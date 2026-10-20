@@ -129,6 +129,8 @@ export class LocalComputeOperator {
             z.object({
               id: z.string().min(1).max(200),
               revision: decimal.optional(),
+              displayName: z.string().optional(),
+              endpoint: z.string().optional(),
               state: z.string().optional(),
             })
           )

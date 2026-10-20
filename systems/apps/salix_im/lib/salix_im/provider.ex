@@ -6,10 +6,11 @@ defmodule SalixIM.Provider do
   connect is always visible. External connects come from group-scoped
   `ctl/im_connects/<group>/...` records and are visible only to roles that are
   allowed to use external provider APIs. Routers see every external provider;
-  workers normally see Slack read operations and `slack.fetch_file` through
-  router-bound connects. A current Task execution scope can also expose its
-  exact granted IM writes. Both discovery and dispatch validate that scope;
-  every other role sees no external provider.
+  workers see every provider's `safety: read` operations and its file
+  downloads (Slack through router-bound connects), plus the whole Feishu and
+  Lark cloud-document and Minutes surface. A current Task execution scope can
+  also expose its exact granted IM writes. Both discovery and dispatch
+  validate that scope; every other role sees no external provider.
 
   This module is the public provider-tool facade. Concrete provider manuals and
   outbound transports live in `SalixIM.Provider.*` modules.
@@ -30,12 +31,18 @@ defmodule SalixIM.Provider do
   end
 
   # Role-based access remains separate from the exact Task execution scope.
-  @worker_external_providers ["slack"]
+  # Workers see every provider that has an operation they may call; WeChat,
+  # iMessage and voice offer only sends.
+  @worker_external_providers ["slack", "feishu", "lark", "qq", "telegram", "signal"]
 
   # Non-mutating media downloads explicitly granted to workers beyond the
   # `safety: read` class. Uploads and any other non-read operation — including
   # newly added ones — fail closed without per-operation role labeling.
-  @worker_media_downloads %{"slack" => ["slack.fetch_file"]}
+  @worker_media_downloads %{
+    "slack" => ["slack.fetch_file"],
+    "feishu" => ["feishu.fetch_message_resource"],
+    "qq" => ["qq.fetch_file"]
+  }
 
   # ---- connects ----
 
@@ -239,13 +246,26 @@ defmodule SalixIM.Provider do
 
   @doc false
   def call_api(agent_id, platform, api, args, provider_opts) when is_list(provider_opts) do
+    if platform == "qq" and api == "qq.send_message" do
+      SalixIM.QQTiming.run(:send, fn ->
+        do_call_api(agent_id, platform, api, args, provider_opts)
+      end)
+    else
+      do_call_api(agent_id, platform, api, args, provider_opts)
+    end
+  end
+
+  defp do_call_api(agent_id, platform, api, args, provider_opts) do
     connect_id = args |> Map.get("connect_id", "") |> to_string() |> String.trim()
     params = Map.get(args, "params") || %{}
     tool_context = Map.get(args, "tool_context") || %{}
 
-    with {:ok, scope} <- GroupDirectory.scope_for_agent(agent_id) do
+    with {:ok, scope} <-
+           SalixIM.QQTiming.measure("agent_scope", fn ->
+             GroupDirectory.scope_for_agent(agent_id)
+           end) do
       scope = put_scope_tool_call_id(scope, args["tool_call_id"])
-      started_ms = System.monotonic_time(:millisecond)
+      started_ms = SystemsClock.monotonic_time(:millisecond)
       log_operation_start(scope, platform, api, connect_id)
 
       result =
@@ -319,6 +339,28 @@ defmodule SalixIM.Provider do
           SalixIM.Provider.Signal.call(scope.agent_id, connect, api, params)
         end)
 
+      "qq" ->
+        call_external(scope, connect_id, "qq", api, params, fn connect ->
+          if api == "qq.post_task_card",
+            do: SalixIM.QQTaskCard.post(scope, connect, params),
+            else: SalixIM.Provider.QQ.call(scope.agent_id, connect, api, params)
+        end)
+
+      "lark" ->
+        call_external(scope, connect_id, "lark", api, params, fn connect ->
+          with :ok <-
+                 SalixIM.Provider.Lark.MeetingActivationAuthorization.authorize(
+                   scope,
+                   connect,
+                   api,
+                   params
+                 ) do
+            if api == "lark.post_task_card",
+              do: SalixIM.LarkTaskCard.post(scope, connect, params),
+              else: SalixIM.Provider.Lark.call(scope.agent_id, connect, api, params, scope)
+          end
+        end)
+
       "voice" ->
         call_external(scope, connect_id, "voice", api, params, fn connect ->
           SalixIM.Provider.Voice.call(scope.agent_id, connect, api, params)
@@ -333,7 +375,9 @@ defmodule SalixIM.Provider do
                    api,
                    params
                  ) do
-            Feishu.call(scope.agent_id, connect, api, params, scope)
+            if api == "feishu.post_task_card",
+              do: SalixIM.FeishuTaskCard.post(scope, connect, params),
+              else: Feishu.call(scope.agent_id, connect, api, params, scope)
           end
         end)
 
@@ -343,10 +387,20 @@ defmodule SalixIM.Provider do
   end
 
   defp call_external(scope, connect_id, provider, api, params, fun) do
-    with {:ok, connect} <- external_connect(scope, connect_id, provider, api, params),
+    with {:ok, connect} <-
+           SalixIM.QQTiming.measure("connect_authorize", fn ->
+             external_connect(scope, connect_id, provider, api, params)
+           end),
          :ok <- triage_slack_read_source_fence(provider, api, connect) do
-      fun.(connect)
-      |> SalixIM.PlatformMessage.record_success(scope, connect, api, params)
+      case fun.(connect) do
+        {:ok, _sent} = result ->
+          SalixIM.QQTiming.measure("platform_message_record", fn ->
+            SalixIM.PlatformMessage.record_success(result, scope, connect, api, params)
+          end)
+
+        result ->
+          SalixIM.PlatformMessage.record_success(result, scope, connect, api, params)
+      end
     end
   end
 
@@ -415,8 +469,8 @@ defmodule SalixIM.Provider do
   end
 
   # The router keeps full external provider authority. Every other role may
-  # dispatch only granted operations: the `safety: read` class plus the
-  # explicitly enumerated non-mutating media downloads above.
+  # dispatch only granted operations: the `safety: read` class, the
+  # enumerated media downloads above, and a provider's explicit worker list.
   defp external_operation_fence(%{agent: %{"role" => "router"}}, _provider, _api), do: :ok
 
   defp external_operation_fence(_scope, provider, api) do
@@ -432,9 +486,17 @@ defmodule SalixIM.Provider do
     end
   end
 
-  defp worker_operation_granted?(_provider, _api, "read"), do: true
+  # Every provider grants its reads, as Slack does. A provider's explicit
+  # worker list adds operations of other safety classes: Feishu and Lark
+  # workers also hold the whole cloud-document and Minutes surface.
+  defp worker_operation_granted?(provider, api, safety) do
+    worker_safety_granted?(provider, api, safety) or
+      api in List.wrap(OperationRegistry.worker_api_names(provider))
+  end
 
-  defp worker_operation_granted?(provider, api, _other_safety),
+  defp worker_safety_granted?(_provider, _api, "read"), do: true
+
+  defp worker_safety_granted?(provider, api, _other_safety),
     do: api in Map.get(@worker_media_downloads, provider, [])
 
   defp put_scope_tool_call_id(scope, tool_call_id) do
@@ -462,7 +524,7 @@ defmodule SalixIM.Provider do
   end
 
   defp log_operation_finish(result, started_ms, scope, provider, api, connect_id) do
-    duration_ms = System.monotonic_time(:millisecond) - started_ms
+    duration_ms = SystemsClock.monotonic_time(:millisecond) - started_ms
 
     Logger.info(fn ->
       [

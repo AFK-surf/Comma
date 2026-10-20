@@ -1,5 +1,7 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Button, LoaderIcon, cx } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { LoaderIcon } from "@comma/ui/components/icons";
+import { cx } from "@comma/ui/components/utils";
 import type { ReactNode, Ref } from "react";
 import type { OnboardingItemId } from "./onboardingSetup";
 

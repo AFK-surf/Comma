@@ -2,7 +2,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   idleConversationChannelState,
   type ConversationChannelState,
-} from "../../components/chat/model/conversationChannel";
+} from "@comma/core/chat";
+import { installUiClock, realUiClock } from "@comma/ui/clock";
 import { createConversationAnalytics } from "../experience";
 
 const analytics = vi.hoisted(() => ({ capture: vi.fn(), identity: "user-a" }));
@@ -10,14 +11,16 @@ vi.mock("../client", () => ({
   captureCommaExperience: analytics.capture,
   commaAnalyticsIdentity: () => analytics.identity,
 }));
+// The UI clock's monotonic time, which the observer reads.
 let now = 0;
+let restoreClock = () => {};
 beforeEach(() => {
   now = 0;
   analytics.identity = "user-a";
   vi.clearAllMocks();
-  vi.spyOn(performance, "now").mockImplementation(() => now);
+  restoreClock = installUiClock({ ...realUiClock, monotonic: () => now });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => restoreClock());
 function state(
   overrides: Partial<ConversationChannelState> = {}
 ): ConversationChannelState {
@@ -39,7 +42,7 @@ function draft(sourceMessageIds: string[]) {
   };
 }
 const userMessage: ConversationChannelState["messages"][number] = {
-  messageId: "msg-private",
+  messageId: "msg1_1234567890123456789",
   clientRequestId: "turn-private",
   role: "user",
   text: "private question",
@@ -58,7 +61,7 @@ it("measures readiness across loading without counting hydrated waits, drafts or
     awaitingReply: true,
     awaitingTurnKey: "turn-private",
     awaitingTimedOut: true,
-    assistantDraft: draft(["msg-private"]),
+    assistantDraft: draft(["msg1_1234567890123456789"]),
     messages: [userMessage],
     participantStatus: {
       conversationId: "cnv-private",
@@ -97,7 +100,7 @@ it("counts the first visible draft only for the exact new turn and deduplicates 
     ...waiting,
     awaitingReply: false,
     awaitingTurnKey: undefined,
-    assistantDraft: draft(["msg-private"]),
+    assistantDraft: draft(["msg1_1234567890123456789"]),
   };
   observe(answer, true);
   observe(answer, true);
@@ -105,7 +108,16 @@ it("counts the first visible draft only for the exact new turn and deduplicates 
     analytics.capture.mock.calls.filter(
       ([event]) => event === "comma_reply_first_visible"
     )
-  ).toEqual([["comma_reply_first_visible", { surface: "home", duration_ms: 250 }]]);
+  ).toEqual([
+    [
+      "comma_reply_first_visible",
+      {
+        surface: "home",
+        source_message_id: "msg1_1234567890123456789",
+        duration_ms: 250,
+      },
+    ],
+  ]);
   expect(JSON.stringify(analytics.capture.mock.calls)).not.toContain("private");
 });
 
@@ -136,7 +148,7 @@ it("reports an existing wait timeout once, and connection recovery across a chan
 it.each(["hidden", "account"])(
   "drops pending response attribution across %s boundaries",
   (boundary) => {
-    const observe = createConversationAnalytics("side-chat");
+    const observe = createConversationAnalytics("route");
     observe(state(), true);
     const waiting = state({
       awaitingReply: true,
@@ -147,7 +159,11 @@ it.each(["hidden", "account"])(
     if (boundary === "hidden") observe(waiting, false);
     else analytics.identity = "user-b";
     observe(
-      { ...waiting, assistantDraft: draft(["msg-private"]), awaitingTimedOut: true },
+      {
+        ...waiting,
+        assistantDraft: draft(["msg1_1234567890123456789"]),
+        awaitingTimedOut: true,
+      },
       true
     );
     expect(

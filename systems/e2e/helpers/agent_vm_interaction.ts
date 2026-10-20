@@ -30,7 +30,7 @@ export async function runAgentVmInteraction(
       cwd: SALIX_ROOT,
       timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       env: {
-        ...Deno.env.toObject(),
+        ...process.env,
         ...providerEnv.env,
         PATH: pathWithAsdf(),
         MIX_ENV: "test",
@@ -40,7 +40,7 @@ export async function runAgentVmInteraction(
         SALIX_AGENT_VM_E2E_SURFACE: surface,
         SALIX_AGENT_VM_E2E_PROVIDER: provider,
         SALIX_VM_E2E_TIMEOUT_MS:
-          Deno.env.get("SALIX_VM_E2E_TIMEOUT_MS") ?? "300000",
+          process.env.SALIX_VM_E2E_TIMEOUT_MS ?? "300000",
       },
     });
   } finally {
@@ -50,6 +50,6 @@ export async function runAgentVmInteraction(
 }
 
 function skipOrThrow(message: string) {
-  if (Deno.env.get("SALIX_VM_E2E_STRICT") === "1") throw new Error(message);
+  if (process.env.SALIX_VM_E2E_STRICT === "1") throw new Error(message);
   console.log(`AGENT_VM_INTERACTION_E2E: SKIP ${message}`);
 }

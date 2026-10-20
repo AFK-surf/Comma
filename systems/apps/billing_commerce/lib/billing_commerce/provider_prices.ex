@@ -311,7 +311,7 @@ defmodule BillingCommerce.ProviderPrices do
   end
 
   defp repo(attrs),
-    do: attrs[:repo] || attrs["repo"] || Application.fetch_env!(:billing_commerce, :repo)
+    do: attrs[:repo] || attrs["repo"] || SystemsRuntime.fetch_env!(:billing_commerce, :repo)
 
   defp sql(attrs), do: attrs[:sql_runner] || attrs["sql_runner"] || Ecto.Adapters.SQL
 
@@ -324,5 +324,5 @@ defmodule BillingCommerce.ProviderPrices do
   end
 
   defp id(prefix),
-    do: prefix <> "_" <> (:crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower))
+    do: prefix <> "_" <> (SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower))
 end

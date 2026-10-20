@@ -5,7 +5,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
 
   import SalixWeb.CloudVM,
     only: [
-      validate_enabled: 2,
       worker_release: 0,
       cloudflare_config: 1,
       release_kind: 1
@@ -19,7 +18,10 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
 
   @env_alias "cloud-vm"
 
-  @config_missing_error "vm.enabled requires tenant vm provider configuration"
+  @config_missing_error "the Cloud VM requires tenant vm provider configuration"
+  # The one container profile of a Group's Cloud VM on an Agent VMM Host (the
+  # `station.default` runtime template); its station's connection names it.
+  @agent_vmm_profile_key "vmm-station-1"
   @defaults %{
     auto_provision: true,
     verify_connector: true,
@@ -110,7 +112,9 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
            SalixStore.Repo.get(GroupCompute.Environment, workload.environment_id),
          {:ok, %{"workload_id" => id, "provider" => provider} = rec} <- get_record(group),
          true <- provider == "cloudflare" || {:error, :unsupported_provider},
-         true <- id == workload.id || {:error, :stale_generation} do
+         true <-
+           (id == workload.id and rec["generation"] == workload.generation) ||
+             {:error, :stale_generation} do
       cond do
         workload.desired_state in ["stopped", "draining"] ->
           with :ok <- teardown(rec, opts), do: {:ok, %{outcome: :group_reconciled}}
@@ -164,9 +168,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
           with {:ok, group_record} <- group_record(group) do
             _ = maybe_meter_ready_interval(rec, group_record, opts)
 
-            if SalixWeb.CloudVM.Runtimes.pending?(rec),
-              do: SalixWeb.CloudVM.Runtimes.schedule(group, opts)
-
             case archive_idle_once(group, opts) do
               {:ok, _} ->
                 {:ok, %{outcome: :group_reconciled}}
@@ -212,19 +213,99 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   @spec get_record(String.t()) :: {:ok, map()} | {:error, :not_found | term()}
   def get_record(group_id), do: GroupCompute.group_workload(group_id)
 
+  @doc "Dispose of one failed temporary disk after the generation-aware Comma rollout completes."
+  def discard_failed_vm(group_id, expected, opts \\ []) when is_map(expected) do
+    with {:ok, current} <- get_record(group_id),
+         {:ok, cfg} <- cloudflare_config(current["tenant_id"]),
+         {:ok, prepared} <- GroupCompute.begin_cloudflare_discard(group_id, expected),
+         client <-
+           cloudflare_client(
+             cfg,
+             Keyword.put_new(
+               opts,
+               :worker_version_id,
+               worker_release()["desired_worker_version_id"]
+             ),
+             prepared
+           ),
+         {:ok, observation} <- CloudflareClient.discard(client, sandbox_id(prepared), prepared),
+         {:ok, discarded} <-
+           GroupCompute.finish_cloudflare_discard(group_id, prepared, observation) do
+      {:ok, discarded}
+    end
+  end
+
   @doc """
   Ensure a VM record exists for the agent's group: create-once `creating`;
   an existing `failed` record is restarted. Returns `{:ok, record, outcome}` with
   outcome `:created | :restarted | :existing`.
   """
   @spec ensure_record(map()) :: {:ok, map(), :created | :restarted | :existing} | {:error, term()}
-  def ensure_record(agent) do
-    case get_in(agent, ["vm", "provider"]) || "cloudflare" do
-      "cloudflare" ->
+  def ensure_record(agent), do: ensure_group_record(agent)
+
+  # The Group's VM keeps the provider it was created on. A new one goes where
+  # `SalixWeb.CloudVM.placement/2` puts it: the Group's Agent VMM Host, or
+  # Cloudflare.
+  defp ensure_group_record(%{"group_id" => group_id, "tenant_id" => tenant_id} = agent) do
+    case get_record(group_id) do
+      {:ok, %{"provider" => "agent_vmm"}} ->
+        restart_if_failed(group_id, "agent_vmm")
+
+      {:ok, _cloudflare} ->
         ensure_cloudflare_record(agent)
 
-      _ ->
-        {:error, :unsupported_provider}
+      {:error, :not_found} ->
+        case SalixWeb.CloudVM.placement(tenant_id, group_id) do
+          # Not on a Runner that is offline: the VM would stay there.
+          {:ok, {:agent_vmm, registration_id}} ->
+            with :ok <- SalixWeb.CloudVM.host_runner_online(tenant_id, registration_id),
+                 do: ensure_agent_vmm_record(agent, registration_id)
+
+          {:ok, :cloudflare} ->
+            ensure_cloudflare_record(agent)
+
+          {:error, _} = error ->
+            error
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  # A Group's Cloud VM on its Agent VMM Host: a container of the station image
+  # on that Host's registration. It keeps the Cloud VM's device identity, so
+  # its station connects as the Group's Cloud VM.
+  defp ensure_agent_vmm_record(
+         %{"group_id" => group_id, "tenant_id" => tenant_id} = agent,
+         registration_id
+       ) do
+    rec =
+      %{
+        "tenant_id" => tenant_id,
+        "group_id" => group_id,
+        "schema_version" => 1,
+        "provider" => "agent_vmm",
+        "provider_resource_name" => RuntimeIds.cloud_vm_provider_resource_name(group_id),
+        "provider_resource_id" => registration_id,
+        "env_id" => cloudvm_env_id(group_id),
+        "device_id" => cloudvm_device_id(group_id),
+        "connector_id" => cloudvm_connector_id(group_id),
+        "provider_spec" => %{"profile_key" => @agent_vmm_profile_key},
+        "alias" => @env_alias,
+        "status" => "creating",
+        "node_id" => nil,
+        "attempt_at" => nil,
+        "created_at" => now_ms(),
+        "ready_at" => nil,
+        "error" => nil
+      }
+      |> maybe_put("created_by_agent_id", agent["agent_id"])
+
+    case GroupCompute.ensure_group_workload(rec) do
+      {:ok, created, :created} -> {:ok, created, :created}
+      {:ok, existing, :existing} -> restart_if_failed(group_id, existing["provider"])
+      {:error, _} = error -> error
     end
   end
 
@@ -342,20 +423,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
       :ok
     else
       {:error, {:conflict, "vm provider change requires a data-preserving migration"}}
-    end
-  end
-
-  @doc "Reject provider changes until the existing data and bindings have been migrated."
-  @spec switch_provider(map(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def switch_provider(%{"group_id" => group_id, "tenant_id" => tenant_id}, provider, _opts \\ []) do
-    with :ok <- validate_enabled(tenant_id, provider),
-         {:ok, current} <- get_record(group_id) do
-      if current["provider"] == provider,
-        do: {:ok, current},
-        else:
-          {:error,
-           {:provider_migration_required,
-            "Move the existing files, archives, and bindings through the Compute release handoff before changing provider."}}
     end
   end
 
@@ -540,12 +607,13 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
                "gateway_base_url" => image_release_gateway_url(rec),
                "status" => rec["status"],
                "archive_recorded" =>
-                 (rec["status"] == "archived" or
-                    (rec["status"] == "waking" and rec["archive_reason"] == "recovery_rebuild" and
-                       get_in(rec, ["archive_last_operation", "operation"]) ==
-                         rec["wake_operation_id"] and
-                       get_in(rec, ["archive_last_operation", "result"]) == "rebuild")) and
-                   matching_recorded_archive?(rec),
+                 release_discard_recorded?(rec) or
+                   ((rec["status"] == "archived" or
+                       (rec["status"] == "waking" and rec["archive_reason"] == "recovery_rebuild" and
+                          get_in(rec, ["archive_last_operation", "operation"]) ==
+                            rec["wake_operation_id"] and
+                          get_in(rec, ["archive_last_operation", "result"]) == "rebuild")) and
+                      matching_recorded_archive?(rec)),
                "gateway_attempt_count" => attempts
              }
            end)
@@ -578,16 +646,10 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
              {:error, :container_profile_changed} do
       case rec["status"] do
         "archived" ->
-          if release_archive_recorded?(rec) and rec["active_operation_count"] == 0 and
-               not SalixWeb.CloudVM.RuntimeLifecycle.demand?(group_id) do
-            with {:ok, cfg} <- cloudflare_config(rec["tenant_id"]),
-                 client <- cloudflare_client(cfg, [], group_id),
-                 {:ok, _} <- keepalive(rec, false, client: client, archive_release: true),
-                 :ok <- destroy(rec, client: client, archive_release: true) do
-              {:ok, "archived"}
-            end
+          if release_discard_recorded?(rec) do
+            {:ok, "archived"}
           else
-            {:error, {:archive_not_quiet, :archive_unverified_or_active}}
+            stop_archived_release_source(rec, group_id)
           end
 
         "archiving" ->
@@ -610,6 +672,10 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         "waking" ->
           start_image_archive_worker(rec, recovery: true, maintenance_id: maintenance_id)
 
+        # A failed VM holds nothing to keep (Cloud VM data policy): its Container is discarded.
+        "failed" ->
+          start_image_archive_worker(rec, maintenance_id: maintenance_id)
+
         status ->
           {:error, {:archive_state_unavailable, status}}
       end
@@ -619,47 +685,127 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     end
   end
 
+  defp stop_archived_release_source(rec, _group_id) do
+    if release_archive_recorded?(rec) and rec["active_operation_count"] == 0 do
+      with {:ok, cfg} <- cloudflare_config(rec["tenant_id"]),
+           client <- cloudflare_client(cfg, [], rec),
+           {:ok, _} <- keepalive(rec, false, client: client, archive_release: true),
+           :ok <- destroy(rec, client: client, archive_release: true) do
+        {:ok, "archived"}
+      end
+    else
+      {:error, {:archive_not_quiet, :archive_unverified_or_active}}
+    end
+  end
+
   defp start_image_archive_worker(rec, opts) do
     group_id = rec["group_id"]
     key = {:image_archive, group_id}
 
-    case Elixir.Registry.lookup(SalixEnv.VM.Providers.Cloudflare.AttachmentRegistry, key) do
+    opts =
+      Keyword.put_new(
+        opts,
+        :archive_operation,
+        rec["archive_operation_id"] || rec["wake_operation_id"] || random_operation_id("archive")
+      )
+
+    case Elixir.Registry.lookup(SalixEnv.VM.Providers.Cloudflare.WorkerRegistry, key) do
       [{_, _}] ->
         {:ok, "archiving"}
 
       [] ->
-        case Task.Supervisor.start_child(SalixWeb.CloudVM.ImageArchiveSupervisor, fn ->
-               case Elixir.Registry.register(
-                      SalixEnv.VM.Providers.Cloudflare.AttachmentRegistry,
-                      key,
-                      nil
-                    ) do
-                 {:ok, _} ->
-                   result =
-                     cond do
-                       rec["status"] == "waking" -> recover_image_release_wake(rec, opts)
-                       rec["status"] == "archiving" -> resume_image_archive(rec, opts)
-                       true -> archive_idle_once(group_id, opts)
+        case SystemsRuntime.TaskSupervisor.start_child(
+               SalixWeb.CloudVM.ImageArchiveSupervisor,
+               fn ->
+                 case Elixir.Registry.register(
+                        SalixEnv.VM.Providers.Cloudflare.WorkerRegistry,
+                        key,
+                        nil
+                      ) do
+                   {:ok, _} ->
+                     result =
+                       cond do
+                         rec["archive_reason"] == "disposable_reset" or rec["status"] == "failed" ->
+                           with :ok <- require_release_worker(opts) do
+                             discard_failed_vm(group_id, rec, opts)
+                           end
+
+                         rec["status"] == "waking" ->
+                           recover_image_release_wake(rec, opts)
+
+                         rec["status"] == "archiving" ->
+                           resume_image_archive(rec, opts)
+
+                         true ->
+                           archive_idle_once(group_id, opts)
+                       end
+
+                     result = finish_image_archive_attempt(rec, opts, result)
+
+                     if match?({:error, _}, result) do
+                       Logger.error("image release archive #{group_id}: #{inspect(result)}")
+
+                       record_last_error(
+                         group_id,
+                         {:image_release_archive_failed, elem(result, 1)}
+                       )
                      end
 
-                   if match?({:error, _}, result) do
-                     Logger.error("image release archive #{group_id}: #{inspect(result)}")
-                     record_last_error(group_id, {:image_release_archive_failed, elem(result, 1)})
-                   end
-
-                 {:error, {:already_registered, _}} ->
-                   :ok
+                   {:error, {:already_registered, _}} ->
+                     :ok
+                 end
                end
-             end) do
+             ) do
           {:ok, _} -> {:ok, "started"}
           {:error, reason} -> {:error, {:archive_worker_unavailable, reason}}
         end
     end
   end
 
+  defp finish_image_archive_attempt(rec, opts, {:error, reason} = result) do
+    if release_discardable_failure?(reason) and is_binary(opts[:maintenance_id]) do
+      with :ok <- require_release_worker(opts),
+           {:ok, current} <- get_record(rec["group_id"]),
+           true <-
+             Map.take(
+               current,
+               ~w(workload_id generation provider_resource_id provider_resource_name provider_spec)
+             ) ==
+               Map.take(
+                 rec,
+                 ~w(workload_id generation provider_resource_id provider_resource_name provider_spec)
+               ),
+           true <-
+             current["archive_operation_id"] == opts[:archive_operation] or
+               (current["status"] == "waking" and is_binary(rec["wake_operation_id"]) and
+                  current["wake_operation_id"] == rec["wake_operation_id"]),
+           {:ok, _} = disposed <- discard_failed_vm(rec["group_id"], current, opts) do
+        disposed
+      else
+        false -> {:error, :archive_operation_lost}
+        {:error, _} = error -> error
+      end
+    else
+      result
+    end
+  end
+
+  defp finish_image_archive_attempt(_rec, _opts, result), do: result
+
+  # Disks the release may discard after the bounded recovery failed (Cloud VM
+  # data policy): an export that failed, a restore that expired, and a VM
+  # whose station could not be reattached to archive at all.
+  defp release_discardable_failure?(reason),
+    do:
+      reason in [
+        :durable_archive_export_failed,
+        :durable_archive_restore_expired,
+        :archive_attachment_unavailable
+      ]
+
   defp seal_release_source(rec) do
     with {:ok, cfg} <- cloudflare_config(rec["tenant_id"]),
-         client <- cloudflare_client(cfg, [], rec["group_id"]),
+         client <- cloudflare_client(cfg, [], rec),
          {:ok, _} <- CloudflareClient.seal_control(client, sandbox_id(rec)) do
       :ok
     end
@@ -670,7 +816,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
          true <- matching_recorded_archive?(rec),
          true <- get_in(rec, ["archive", "restore_operation"]) == rec["archive_operation_id"],
          {:ok, cfg} <- cloudflare_config(rec["tenant_id"]),
-         client <- cloudflare_client(cfg, [], rec["group_id"]),
+         client <- cloudflare_client(cfg, [], rec),
          {:ok, observation} <- CloudflareClient.control_observation(client, sandbox_id(rec)),
          %{
            "running" => false,
@@ -707,30 +853,21 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   defp control_sealed_result({:ok, _}), do: :ok
   defp control_sealed_result({:error, _} = error), do: error
 
+  # A wake the release interrupted. A station that runs holds the receipt of
+  # the recorded archive (its Container restored it before starting it): its
+  # disk is that archive and what ran since, and it is archived again. With no
+  # such station (the Container still restores, or could not), the archive
+  # stays the truth and the target is rebuilt.
   defp recover_image_release_wake(rec, opts) do
     operation = rec["wake_operation_id"]
 
     with true <- is_binary(operation) || {:error, :wake_operation_missing},
-         {:ok, cfg} <- cloudflare_config(rec["tenant_id"]),
-         client <- cloudflare_client(cfg, [], rec["group_id"]),
-         :ok <- settle_release_source(rec, client),
+         :ok <- require_release_worker(opts),
+         :ok <- within_image_release_restore_budget(rec),
+         :ok <- seal_release_source(rec),
          {:ok, sealed} <- get_record(rec["group_id"]),
-         {:ok, %{"quiet" => true} = facts} <-
-           CloudflareClient.connector_control(client, sandbox_id(sealed), "seal", "full"),
-         true <- same_connector_control?(sealed, facts) || {:error, :connector_control_changed} do
-      if facts["never_admitted"] == true do
-        with true <-
-               matching_recorded_archive?(sealed) || {:error, :recovery_source_archive_missing},
-             :ok <-
-               DurableArchive.check_chunks(sealed["archive"], sealed["group_id"], fn ->
-                 require_release_worker(opts)
-               end),
-             :ok <- require_release_worker(opts),
-             :ok <- destroy(sealed, client: client, archive_release: true),
-             {:ok, rebuilt} <- record_rebuild_target(sealed, operation) do
-          {:ok, rebuilt}
-        end
-      else
+         {:ok, :chunked} <- quiesce_archive_runtimes(sealed, operation) do
+      if source_restored?(sealed) do
         with {:ok, recovering} <-
                update_record(rec["group_id"], fn current ->
                  if current["status"] == "waking" and current["wake_operation_id"] == operation and
@@ -746,36 +883,67 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
                end) do
           archive_cloudflare_idle(recovering, Keyword.put(opts, :archive_operation, operation))
         end
+      else
+        {:ok, cfg} = cloudflare_config(sealed["tenant_id"])
+        client = cloudflare_client(cfg, [], sealed)
+
+        with true <-
+               matching_recorded_archive?(sealed) || {:error, :recovery_source_archive_missing},
+             :ok <-
+               DurableArchive.check_chunks(sealed["archive"], sealed["group_id"], fn ->
+                 require_release_worker(opts)
+               end),
+             :ok <- require_release_worker(opts),
+             :ok <- destroy(sealed, client: client, archive_release: true),
+             do: record_rebuild_target(sealed, operation)
       end
-    else
-      {:ok, _} -> {:error, :runtime_not_quiet}
-      {:error, _} = error -> error
     end
   end
 
-  defp settle_release_source(rec, client) do
-    case seal_release_source(rec) do
-      {:error, :cloudflare_control_unsettled} ->
-        with operation when is_binary(operation) <- get_in(rec, ["archive", "operation"]),
-             {:ok, %{"phase" => "restored"}} <-
-               CloudflareClient.archive_import(client, sandbox_id(rec), %{
-                 "action" => "status",
-                 "operation" => operation
-               }),
-             :ok <- seal_release_source(rec),
-             do: :ok
+  defp source_restored?(rec), do: match?({:restored, _}, restore_receipt(rec))
 
-      result ->
-        result
+  # Which archive the VM's connected station runs on, as its disk says: the
+  # receipt of the restore its Container's start made (`archive_status`, kind
+  # `import`). `{:restored, receipt}` for the record's archive (`receipt` nil
+  # when the record names none), `:absent` when the station holds no receipt
+  # of it. A receipt may say more than its phase (how long the restore took):
+  # that is only logged.
+  defp restore_receipt(rec) do
+    case get_in(rec, ["archive", "operation"]) do
+      operation when is_binary(operation) ->
+        case station_rpc(
+               rec,
+               "archive_status",
+               %{"kind" => "import", "operation" => operation},
+               20_000
+             ) do
+          {:ok, %{"phase" => "restored", "operation" => ^operation} = receipt} ->
+            {:restored, receipt}
+
+          {:ok, _partial} ->
+            {:error, :durable_archive_partial_target}
+
+          # The station's connector answers with the method first.
+          {:error, why}
+          when why in ["archive import unavailable", "archive_status: archive import unavailable"] ->
+            :absent
+
+          {:error, reason} ->
+            {:error, {:archive_receipt_unavailable, reason}}
+        end
+
+      _ ->
+        {:restored, nil}
     end
   end
 
-  defp same_connector_control?(rec, facts) do
-    keys = ~w(owner_id operation_id generation revision)
-    control = facts["control"]
+  defp restore_deadline_ms(rec),
+    do: (rec["last_wake_at"] || rec["created_at"]) + 2_700_000
 
-    is_map(control) and control["sealed"] == true and
-      Map.take(control, keys) == Map.take(rec["cloudflare_control"] || %{}, keys)
+  defp within_image_release_restore_budget(rec) do
+    if now_ms() < restore_deadline_ms(rec),
+      do: :ok,
+      else: {:error, :durable_archive_restore_expired}
   end
 
   defp require_release_worker(opts) do
@@ -830,8 +998,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   def archive_operation_status(group_id, operation)
       when is_binary(group_id) and is_binary(operation) do
     with {:ok, %{"provider" => "cloudflare"} = rec} <- get_record(group_id) do
-      diagnostics = Enum.filter(rec["archive_diagnostics"] || [], &(&1["operation"] == operation))
-
       cond do
         rec["archive_operation_id"] == operation ->
           {:ok,
@@ -841,21 +1007,11 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
              "status" => rec["status"],
              "reason" => rec["archive_reason"],
              "progress" => rec["archive_progress"],
-             "cancel_requested" => rec["archive_cancel_requested"] == true,
-             "diagnostics" => diagnostics
+             "cancel_requested" => rec["archive_cancel_requested"] == true
            }}
 
         get_in(rec, ["archive_last_operation", "operation"]) == operation ->
-          {:ok, Map.put(rec["archive_last_operation"], "diagnostics", diagnostics)}
-
-        diagnostics != [] ->
-          {:ok,
-           %{
-             "group_id" => group_id,
-             "operation" => operation,
-             "observation" => true,
-             "diagnostics" => diagnostics
-           }}
+          {:ok, rec["archive_last_operation"]}
 
         true ->
           {:error, :archive_operation_not_found}
@@ -892,10 +1048,8 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
                {:error, :archive_commit_recovery_required}
              end
            end),
-         {:ok, cfg} <- cloudflare_config(rec["tenant_id"]),
-         client <- cloudflare_client(cfg, [], rec["group_id"]),
          :ok <- seal_release_source(rec),
-         :ok <- DurableArchive.cancel(client, sandbox_id(rec), operation) do
+         :ok <- DurableArchive.cancel(station_call(rec), operation) do
       finish_cancelled_archive(rec, operation)
     else
       {:ok, _} -> {:error, :archive_commit_recovery_required}
@@ -924,7 +1078,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
 
     with {:ok, _mode} <- quiesce_archive_runtimes(rec, operation),
          {:ok, %{"resumed" => true}} <- resume_archive_source(rec, operation),
-         :ok <- stop_archive_repair_attachment(rec),
          {:ok, _} <-
            update_record(group_id, fn current ->
              if current["status"] == "archiving" and
@@ -1001,7 +1154,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   defp drain_vm_operations_for_maintenance(opts) do
     {:ok, page} = GroupCompute.page_group_workloads(Keyword.take(opts, [:cursor, :limit]))
     grace_ms = Keyword.get(opts, :grace_ms, 0) |> max(0) |> min(30_000)
-    deadline = System.monotonic_time(:millisecond) + grace_ms
+    deadline = SystemsClock.monotonic_time(:millisecond) + grace_ms
     records = Enum.filter(page.records, &(&1["provider"] == "cloudflare"))
 
     results =
@@ -1011,7 +1164,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         result =
           case wait_for_operation_drain(
                  group_id,
-                 max(deadline - System.monotonic_time(:millisecond), 0)
+                 max(deadline - SystemsClock.monotonic_time(:millisecond), 0)
                ) do
             :ok -> %{"state" => "completed", "active_operation_count" => 0}
             {:error, reason} -> %{"state" => "timeout", "reason" => inspect(reason)}
@@ -1065,7 +1218,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   end
 
   defp wait_for_operation_drain(group_id, grace_ms) do
-    deadline = System.monotonic_time(:millisecond) + max(grace_ms, 0)
+    deadline = SystemsClock.monotonic_time(:millisecond) + max(grace_ms, 0)
     do_wait_for_operation_drain(group_id, deadline)
   end
 
@@ -1076,7 +1229,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
           (rec["active_operation_count"] || 0) == 0 ->
             :ok
 
-          System.monotonic_time(:millisecond) >= deadline ->
+          SystemsClock.monotonic_time(:millisecond) >= deadline ->
             {:error,
              {:active_operations,
               %{
@@ -1085,7 +1238,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
               }}}
 
           true ->
-            Process.sleep(25)
+            SystemsClock.sleep(25)
             do_wait_for_operation_drain(group_id, deadline)
         end
 
@@ -1095,17 +1248,32 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   end
 
   defp switch_gateway_only(%{"group_id" => group_id, "tenant_id" => tenant_id} = rec, opts) do
-    if env_id = rec["env_id"], do: SalixEnv.VM.Providers.Cloudflare.Attachments.stop(env_id)
-
     with {:ok, group} <- switch_group_record(group_id),
          {:ok, cfg} <- cloudflare_config(tenant_id),
          client <-
            cloudflare_client(
              cfg,
              Keyword.put(opts, :worker_version_id, rec["desired_worker_version_id"]),
-             group_id
+             rec
            ),
-         {:ok, %{sandbox: sandbox}} <-
+         {:ok, container} <- ready_container(rec, client) do
+      if container == :archived,
+        do: switch_by_wake(rec, opts),
+        else: switch_running_gateway(rec, group, client)
+    end
+  end
+
+  # The Container stopped: the VM wakes from its last archive on the desired Worker.
+  defp switch_by_wake(%{"group_id" => group_id} = rec, opts) do
+    with {:ok, ready} <- wake_archived_vm(group_id, opts),
+         sandbox = get_in(ready, ["provider_spec", "cloudflare_worker"]) || %{},
+         :ok <- verify_worker_version(sandbox, rec["desired_worker_version_id"]) do
+      mark_rollout_ready(group_id, sandbox, "gateway_only")
+    end
+  end
+
+  defp switch_running_gateway(%{"group_id" => group_id} = rec, group, client) do
+    with {:ok, %{sandbox: sandbox}} <-
            __MODULE__.ensure(rec, group,
              client: client,
              keep_alive: true,
@@ -1327,13 +1495,13 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
 
   defp wake_if_archived_status(group_id) do
     case get_record(group_id) do
-      {:ok, %{"provider" => "cloudflare", "status" => "archived"} = rec} ->
+      {:ok, %{"status" => "archived"} = rec} ->
         {:error, {:vm_waking, %{"retry_after_ms" => 1_000, "env_id" => rec["env_id"]}}}
 
-      {:ok, %{"provider" => "cloudflare", "status" => "waking"} = rec} ->
+      {:ok, %{"status" => "waking"} = rec} ->
         {:error, {:vm_waking, %{"retry_after_ms" => 1_000, "env_id" => rec["env_id"]}}}
 
-      {:ok, %{"provider" => "cloudflare", "status" => "archiving"} = rec} ->
+      {:ok, %{"status" => "archiving"} = rec} ->
         {:error, {:vm_archiving, %{"retry_after_ms" => 1_000, "env_id" => rec["env_id"]}}}
 
       {:ok, %{"status" => "ready"} = rec} ->
@@ -1366,20 +1534,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
          "meta" => %{
            "provider" => "cloudflare",
            "provider_resource_name" => ^resource,
-           "profile_key" => ^profile,
-           "archive_repair" => true
-         }
-       }} ->
-        case stop_archive_repair_attachment(rec) do
-          :ok -> attach_ready_record(rec, group)
-          {:error, _} -> :error
-        end
-
-      {:connected,
-       %{
-         "meta" => %{
-           "provider" => "cloudflare",
-           "provider_resource_name" => ^resource,
            "profile_key" => ^profile
          }
        }} ->
@@ -1390,6 +1544,18 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     end
   end
 
+  # On an Agent VMM Host the shared Compute reconciler starts a stopped
+  # container again; until its station connects, the VM is unavailable.
+  defp targeted_reattach(%{"provider" => "agent_vmm"} = rec, _group) do
+    if SalixWeb.ComputeProviders.AgentVMMCloudVM.station_connected?(rec),
+      do: :revived,
+      else: :error
+  end
+
+  # A ready VM whose station is not connected. A running Container's station
+  # connects again by itself. A stopped one took its disk with it: the VM is
+  # restored from its last archive by a wake, or, never archived, starts
+  # empty with its loss marked.
   defp attach_ready_record(rec, group) do
     with {:ok, cfg} <- cloudflare_config(rec["tenant_id"]),
          client =
@@ -1399,9 +1565,10 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
                worker_version_id:
                  rec["current_worker_version_id"] || rec["desired_worker_version_id"]
              ],
-             rec["group_id"]
+             rec
            ),
-         {:ok, _pid} <- __MODULE__.attach_existing(rec, group, client: client) do
+         {:ok, container} <- ready_container(rec, client),
+         :ok <- reattach_container(container, rec, group, client) do
       :revived
     else
       error ->
@@ -1409,6 +1576,137 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         :error
     end
   end
+
+  defp reattach_container(:running, _rec, _group, _client), do: :ok
+
+  defp reattach_container(:archived, rec, _group, _client) do
+    _ = SalixWeb.CloudVM.RuntimeLifecycle.wake(rec["group_id"])
+    :ok
+  end
+
+  defp reattach_container(:disk_lost, rec, group, client) do
+    with {:ok, _} <- __MODULE__.ensure(rec, group, client: client, keep_alive: true), do: :ok
+  end
+
+  # On Cloudflare a Container's disk lives exactly as long as the Container.
+  # What became of a ready VM's disk, read without starting anything:
+  # `:running` (the disk is there), `:archived` (the Container stopped; the
+  # record is archived again from its last archive, which a wake restores), or
+  # `:disk_lost` (the Container stopped and there is no archive: the loss is
+  # marked, and the VM goes on empty).
+  defp ready_container(rec, client) do
+    case CloudflareClient.control_observation(client, sandbox_id(rec)) do
+      {:ok, %{"running" => true}} ->
+        {:ok, :running}
+
+      # The Gateway's record of that stop is read here, in the observation
+      # that shows it: the seal and destroy that follow are commanded stops.
+      {:ok, %{"running" => false} = observation} ->
+        stop = uncommanded_stop(observation, rec)
+
+        if DurableArchive.restorable?(rec["archive"]),
+          do: archive_lost_container(rec, client, stop),
+          else: mark_disk_lost(rec, stop)
+
+      {:ok, observation} ->
+        {:error, {:container_state_unknown, observation}}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  # The stopped Container's carrier is released as an archive releases its
+  # source: the Gateway's control is sealed and the Container destroyed before
+  # the record is archived. The wake that follows opens a sealed control, as
+  # after any archive; the Gateway refuses a new permit on an unsealed one.
+  defp archive_lost_container(%{"group_id" => group_id} = expected, client, stop) do
+    operation = get_in(expected, ["archive", "operation"])
+
+    with {:ok, _} <- CloudflareClient.seal_control(client, sandbox_id(expected)),
+         :ok <- release_stopped_source(expected, client),
+         {:ok, _} <-
+           update_record(group_id, fn rec ->
+             if rec["status"] == "ready" and same_carrier?(rec, expected) and
+                  rec["archive"] == expected["archive"] do
+               rec
+               |> Map.merge(%{
+                 "status" => "archived",
+                 "archive_reason" => "container_lost",
+                 "archived_at" => now_ms(),
+                 "container_loss" => container_loss(operation, stop),
+                 "active_operation_count" => 0,
+                 "active_operations" => %{},
+                 "node_id" => nil,
+                 "attempt_at" => nil
+               })
+               |> Map.delete("wake_operation_id")
+             else
+               {:error, :ready_record_changed}
+             end
+           end) do
+      Logger.warning(
+        "cloud-vm container stopped and its disk is gone: restoring the last archive group=#{group_id} archive=#{operation} stop=#{inspect(stop)}"
+      )
+
+      {:ok, :archived}
+    end
+  end
+
+  defp mark_disk_lost(%{"group_id" => group_id} = expected, stop) do
+    with {:ok, _} <-
+           update_record(group_id, fn rec ->
+             if same_carrier?(rec, expected),
+               do: Map.put(rec, "container_loss", container_loss(nil, stop)),
+               else: {:error, :ready_record_changed}
+           end) do
+      Logger.warning(
+        "cloud-vm container stopped and its disk is gone with no archive to restore: starting empty group=#{group_id} stop=#{inspect(stop)}"
+      )
+
+      {:ok, :disk_lost}
+    end
+  end
+
+  # Where a lost Container's disk came back from (its last archive, or
+  # nothing) and how it stopped, as the Gateway kept it.
+  defp container_loss(archive_operation, stop),
+    do: %{"at" => now_ms(), "restored_from" => archive_operation, "stop" => stop}
+
+  # How the Container stopped by itself, from the observation that found it
+  # stopped: the Gateway's last stop nobody commanded (kept apart from
+  # commanded ones; a Worker from before that has only its last stop), when
+  # it came after the VM was last ready, with the Worker and image that
+  # answered. `"recorded" => false` when the Gateway kept no such stop: its
+  # object did not see the Container end.
+  defp uncommanded_stop(observation, rec) do
+    since = rec["ready_at"] || 0
+
+    stop =
+      Enum.find([observation["last_uncommanded_stop"], observation["last_stop"]], fn
+        %{"requested" => false, "at" => at} when is_integer(at) -> at >= since
+        _ -> false
+      end)
+
+    worker =
+      Map.take(observation, ~w(worker_version_id gateway_build_id connector_image_version))
+
+    case stop do
+      nil ->
+        Map.put(worker, "recorded", false)
+
+      stop ->
+        stop
+        |> Map.take(~w(at exit_code error requested started_at seen_by operation_id))
+        |> Map.merge(worker)
+        |> Map.put("recorded", true)
+    end
+  end
+
+  defp same_carrier?(rec, expected),
+    do:
+      Map.take(rec, ~w(workload_id generation provider_resource_name)) ==
+        Map.take(expected, ~w(workload_id generation provider_resource_name))
 
   @doc "Return a structured retryable error for an unavailable cloud-vm alias."
   @spec unavailable_error(String.t()) :: map()
@@ -1424,7 +1722,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         SalixAgent.BillingAvailability.error(rec["billing_decision"] || %{})
         |> Map.put("env_id", rec["env_id"])
 
-      {:ok, %{"provider" => "cloudflare"} = rec} ->
+      {:ok, %{"provider" => provider} = rec} when provider in ["cloudflare", "agent_vmm"] ->
         base
         |> Map.put("env_id", rec["env_id"])
         |> maybe_put("sandbox_id", rec["provider_resource_id"])
@@ -1456,33 +1754,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   @doc "Delete the VM record."
   @spec delete_record(String.t()) :: :ok | {:error, term()}
   def delete_record(group_id), do: GroupCompute.retire_group_workload(group_id)
-
-  @doc "Public projection of the Group VM record, or nil."
-  @spec vm_json(String.t()) :: map() | nil
-  def vm_json(group_id) do
-    case get_record(group_id) do
-      {:ok, rec} -> public_json(rec)
-      _ -> nil
-    end
-  end
-
-  @doc false
-  def public_json(rec) do
-    %{
-      "enabled" => true,
-      "provider" => rec["provider"] || "cloudflare",
-      "status" => rec["status"],
-      "env_id" => rec["env_id"],
-      "alias" => rec["alias"] || @env_alias,
-      "capabilities" => provider_capabilities(rec),
-      "error" => rec["error"],
-      "last_error" => rec["last_error"],
-      "billing_decision" => rec["billing_decision"]
-    }
-  end
-
-  defp provider_capabilities(_rec),
-    do: %{"ws" => true, "http_proxy" => true, "restartable" => true}
 
   # ---- lifecycle ----
 
@@ -1524,6 +1795,9 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
       do: {:error, :router_only_tenant},
       else: :ok
   end
+
+  # A Group's Cloud VM on an Agent VMM Host runs on the tenant's own Host.
+  defp authorize_vm_start(_agent, %{"provider" => "agent_vmm"}, _opts), do: :ok
 
   defp authorize_vm_start(agent, rec, opts) do
     billing_owner =
@@ -1661,6 +1935,30 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
       (metadata["scope"] || "full") == (archive["scope"] || "full")
   end
 
+  defp release_discard_recorded?(rec) do
+    receipt = rec["archive_last_operation"] || %{}
+    control = receipt["control"] || %{}
+    terminal = control["last_terminal"] || %{}
+    generation = receipt["generation"]
+    keys = ~w(owner_id operation_id generation revision)
+    profile = get_in(rec, ["provider_spec", "profile_key"])
+    resource = rec["provider_resource_name"]
+
+    rec["status"] == "archived" and rec["archive_reason"] == "discarded" and
+      receipt["result"] == "discarded" and is_integer(generation) and
+      rec["generation"] == generation + 1 and
+      rec["last_discarded_generation"] == generation and
+      is_binary(profile) and is_binary(resource) and
+      receipt["target_resource"] == profile <> ":" <> resource and
+      control["owner_id"] == rec["workload_id"] and control["generation"] == generation and
+      is_binary(receipt["operation"]) and control["operation_id"] == receipt["operation"] and
+      control["sealed"] == true and control["pending"] == nil and
+      terminal["action"] == "destroy" and terminal["outcome"] == "completed" and
+      terminal["claim_id"] == receipt["operation"] and
+      Map.take(terminal, keys) == Map.take(control, keys) and
+      Map.take(rec["cloudflare_control"] || %{}, keys) == Map.take(control, keys)
+  end
+
   defp release_archive_recorded?(rec) do
     archive = rec["archive"] || %{}
     metadata = rec["connector_archive"] || %{}
@@ -1672,7 +1970,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   end
 
   defp vm_authorizer,
-    do: Application.get_env(:salix_web, :vm_authorization_mod, VMAuthorization.Noop)
+    do: SystemsRuntime.get_env(:salix_web, :vm_authorization_mod, VMAuthorization.Noop)
 
   @doc "Run one bounded Cloudflare Group VM provisioning attempt."
   @spec provision_once(String.t(), keyword()) ::
@@ -1761,7 +2059,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
           cloudflare_client(
             cfg,
             Keyword.put(opts, :worker_version_id, rec["desired_worker_version_id"]),
-            rec["group_id"]
+            rec
           ),
           opts
         )
@@ -1769,6 +2067,9 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   end
 
   defp provision_cloudflare_vm(%{"group_id" => group_id} = rec, group, client, opts) do
+    # The device's connection before this start: a later one is its station's.
+    before = connection_generation(rec)
+
     with {:ok, %{attachment: _pid, sandbox: sandbox}} <-
            __MODULE__.ensure(rec, group,
              client: client,
@@ -1777,7 +2078,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
              archive: rec["archive"],
              restore_deadline_ms:
                if(is_binary(opts[:wake_operation_id]),
-                 do: (rec["last_wake_at"] || rec["created_at"]) + 2_700_000
+                 do: restore_deadline_ms(rec)
                ),
              wake_operation_id: opts[:wake_operation_id],
              meta: %{
@@ -1793,25 +2094,44 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
                "wake_operation_id" => opts[:wake_operation_id]
              }
            ),
-         {:ok, _connector_run_id} <- verify_device_connected(rec, opts) do
+         {:ok, receipt} <- await_started_station(rec, sandbox, client, before, opts) do
       :ok = maybe_call_hook(opts, :before_cloudflare_ready, group_id)
 
-      case mark_cloudflare_ready(group_id, rec["env_id"], sandbox, opts) do
-        {:ok, _} -> {:ok, :ready}
-        {:error, _} = err -> err
+      case mark_cloudflare_ready(group_id, rec, sandbox, opts) do
+        {:ok, _} ->
+          log_restored_ready(group_id, receipt)
+          {:ok, :ready}
+
+        {:error, _} = err ->
+          err
       end
     else
-      {:error, :timeout} ->
-        if Keyword.has_key?(opts, :wake_operation_id) do
-          {:error, :timeout}
-        else
-          _ = mark_failed(group_id, "cloud-vm connector did not attach")
-          {:ok, :failed}
+      {:error, why} when why in [:timeout, :container_stopped] ->
+        case {start_failure(rec, client), Keyword.has_key?(opts, :wake_operation_id)} do
+          {failure, true} ->
+            wake_failed(rec, opts[:wake_operation_id], failure)
+
+          {{:error, :timeout}, false} ->
+            _ = mark_failed(group_id, "cloud-vm connector did not attach")
+            {:ok, :failed}
+
+          {{:error, reason}, false} ->
+            _ = mark_failed(group_id, "cloud-vm Container stopped: #{inspect(reason)}")
+            {:ok, :failed}
         end
 
       # The Gateway cannot start this Container profile until the dual-profile
       # Gateway image is released. Retrying inside the provisioning budget only
       # hides that behind "provisioning timed out"; the next use restarts the VM.
+      {:error, :durable_archive_restore_expired} ->
+        {:error,
+         {:gateway_error,
+          %{
+            "code" => "group_archive_restore_expired",
+            "kind" => "action_required",
+            "restore_deadline_ms" => restore_deadline_ms(rec)
+          }}}
+
       {:error, {contract, profile}} = error
       when contract in [:gateway_profile_unsupported, :gateway_control_unsupported] ->
         if Keyword.has_key?(opts, :wake_operation_id) do
@@ -1823,9 +2143,58 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
           {:ok, :failed}
         end
 
+      {:error, {:archive_not_restored_before_start, _}} = failure ->
+        wake_failed(rec, opts[:wake_operation_id], failure)
+
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # Why no station connected, read from the Gateway once the wait for it
+  # ended. A Container that cannot restore its archive starts no station and
+  # exits with 65 (`entrypoint.sh`); any Container that stopped by itself
+  # took its disk with it. The stop the Gateway keeps for this wake's control
+  # says which; a Container that still runs is only late.
+  defp start_failure(rec, client) do
+    case CloudflareClient.control_observation(client, sandbox_id(rec)) do
+      {:ok,
+       %{
+         "running" => false,
+         "control" => %{"operation_id" => operation},
+         "last_stop" => %{"requested" => false, "operation_id" => operation} = stop
+       }} ->
+        detail =
+          stop
+          |> Map.take(~w(exit_code error at))
+          |> Map.put("archive", get_in(rec, ["archive", "operation"]))
+
+        if stop["exit_code"] == 65,
+          do: {:error, {:archive_restore_failed, detail}},
+          else: {:error, {:container_stopped, detail}}
+
+      _ ->
+        {:error, :timeout}
+    end
+  end
+
+  # A wake that failed for a reason the record can name keeps it, while that
+  # wake is the record's. The reconciler retries the wake inside its restore
+  # budget and parks it after; nothing is ready meanwhile.
+  defp wake_failed(_rec, _operation, {:error, :timeout} = failure), do: failure
+  defp wake_failed(_rec, nil, failure), do: failure
+
+  defp wake_failed(%{"group_id" => group_id}, operation, {:error, reason} = failure) do
+    Logger.warning("cloud-vm wake failed: group=#{group_id} #{inspect(reason)}")
+
+    _ =
+      update_record(group_id, fn current ->
+        if current["status"] == "waking" and current["wake_operation_id"] == operation,
+          do: Map.put(current, "last_error", reason |> inspect() |> String.slice(0, 500)),
+          else: current
+      end)
+
+    failure
   end
 
   defp gateway_profile_unsupported_message(profile) do
@@ -1833,11 +2202,14 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
       "release the dual-profile Gateway image, then retry"
   end
 
-  defp mark_cloudflare_ready(group_id, env_id, sandbox, opts) do
+  defp mark_cloudflare_ready(group_id, expected, sandbox, opts) do
     wake_operation_id = Keyword.get(opts, :wake_operation_id)
 
     update_record(group_id, fn rec ->
-      if rec["archive_reason"] != "recovery_rebuild" and
+      owner_keys = ~w(workload_id generation provider_resource_name provider_spec)
+
+      if Map.take(rec, owner_keys) == Map.take(expected, owner_keys) and
+           rec["archive_reason"] not in ["recovery_rebuild", "disposable_reset"] and
            (is_nil(wake_operation_id) or rec["wake_operation_id"] == wake_operation_id) do
         rec
         |> Map.merge(%{
@@ -1847,14 +2219,19 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
           "last_error" => nil,
           "node_id" => nil,
           "attempt_at" => nil,
-          "env_id" => env_id
+          "env_id" => expected["env_id"]
         })
         |> Map.delete("wake_operation_id")
         |> Map.delete("wake_requested_at")
         |> put_cloudflare_worker_metadata(sandbox)
         |> put_current_worker_version(sandbox)
       else
-        {:error, :wake_operation_lost}
+        # The station's connect may complete this wake first, from any node.
+        if is_binary(wake_operation_id) and rec["status"] == "ready" and
+             is_nil(rec["wake_operation_id"]) and
+             Map.take(rec, owner_keys) == Map.take(expected, owner_keys),
+           do: rec,
+           else: {:error, :wake_operation_lost}
       end
     end)
   end
@@ -1926,68 +2303,128 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   @spec cloudvm_connector_id(String.t()) :: String.t()
   def cloudvm_connector_id(group_id), do: RuntimeIds.cloud_vm_connector_id(group_id)
 
-  @doc false
-  def reconcile_runtimes(group_id, opts \\ []) do
-    with {:ok, %{"status" => "ready"} = rec} <- get_record(group_id),
-         true <- SalixWeb.CloudVM.Runtimes.pending?(rec),
-         :ok <- authorize_provision_once(rec, opts) do
-      SalixWeb.CloudVM.Runtimes.reconcile(rec, opts)
-    else
-      {:error, {:billing_unavailable, decision}} ->
-        if SalixAgent.BillingAvailability.denied?({:billing_unavailable, decision}) do
-          SalixWeb.CloudVM.Runtimes.fail_pending(
-            group_id,
-            SalixAgent.BillingAvailability.error(decision)
-          )
-        end
-
-      _ ->
-        :ok
-    end
-  end
-
-  @doc false
-  def wake_runtime_carrier(rec) do
-    with {:ok, group} <- group_record(rec["group_id"]), do: targeted_reattach(rec, group)
-  end
-
-  @doc false
-  def prepare_runtime_connector(%{"provider" => "cloudflare"} = rec) do
-    case current_device(rec) do
-      {:ok, %{"status" => "connected"}} ->
-        with {:ok, _, _} <-
-               GroupCompute.update_group_workload(
-                 rec["group_id"],
-                 &Map.put(&1, "runtime_connector", true)
-               ),
-             do: :ok
-
-      _ ->
-        {:error, :runtime_connector_unavailable}
-    end
-  end
-
-  defp verify_device_connected(rec, opts) do
+  # What a start waits for is one condition: its station is connected and,
+  # when the start named an archive, answers with the receipt of that restore.
+  # A device can show connected when nothing answers there: the Container
+  # before was just destroyed and its disconnect is not registered yet, or
+  # the station is between two connections. That is not an answer, so it is
+  # waited for like a station that has not connected, in the one wait.
+  #
+  # The station of this start connected and is gone again: its Container may
+  # have stopped (Cloudflare stops a Container to roll out a new image). The
+  # Gateway is read once for that connection; a stopped Container ends the
+  # wait with its stop now, not when the wait runs out. A station that only
+  # lost its connection is waited for as before.
+  defp await_started_station(rec, sandbox, client, before, opts) do
     if cfg(:verify_connector, opts) do
       deadline = now_ms() + cfg(:bootstrap_timeout_ms, opts)
-      poll_device_connected(rec, deadline, cfg(:bootstrap_poll_ms, opts))
+
+      poll_started_station(
+        %{rec: rec, sandbox: sandbox, client: client, before: before, read: before},
+        deadline,
+        cfg(:bootstrap_poll_ms, opts)
+      )
     else
       {:ok, nil}
     end
   end
 
-  defp poll_device_connected(rec, deadline, interval) do
-    case current_device(rec) do
-      {:ok, %{"status" => "connected", "connector_run_id" => connector_run_id}} ->
-        {:ok, connector_run_id}
+  defp poll_started_station(wait, deadline, interval) do
+    case started_station(wait.rec, wait.sandbox) do
+      :waiting ->
+        case dropped_station(wait) do
+          {:stopped, _generation} ->
+            {:error, :container_stopped}
 
-      _ ->
-        if now_ms() >= deadline do
-          {:error, :timeout}
-        else
-          Process.sleep(min(interval, max(deadline - now_ms(), 1)))
-          poll_device_connected(rec, deadline, interval)
+          {:running, generation} ->
+            wait_again(%{wait | read: generation}, deadline, interval)
+
+          :none ->
+            wait_again(wait, deadline, interval)
         end
+
+      result ->
+        result
+    end
+  end
+
+  defp wait_again(wait, deadline, interval) do
+    if now_ms() >= deadline do
+      {:error, :timeout}
+    else
+      SystemsClock.sleep(min(interval, max(deadline - now_ms(), 1)))
+      poll_started_station(wait, deadline, interval)
+    end
+  end
+
+  # A connection of this start's station that is no longer connected, and
+  # that the Gateway was not read for yet: whether its Container still runs.
+  defp dropped_station(%{rec: rec, client: client, before: before, read: read}) do
+    with {:ok, %{"status" => status, "connection_generation" => generation}}
+         when status != "connected" and is_integer(generation) <- current_device(rec),
+         true <- generation > (before || 0) and generation > (read || 0) do
+      case start_failure(rec, client) do
+        {:error, :timeout} -> {:running, generation}
+        {:error, _stopped} -> {:stopped, generation}
+      end
+    else
+      _ -> :none
+    end
+  end
+
+  defp connection_generation(rec) do
+    case current_device(rec) do
+      {:ok, %{"connection_generation" => generation}} when is_integer(generation) -> generation
+      _ -> nil
+    end
+  end
+
+  # A VM woken from its archive is ready: what its Container's restore put on
+  # the disk and how long each step took (ms from its start), as the receipt
+  # says. A receipt from an image that kept no timings has only its size.
+  defp log_restored_ready(_group_id, nil), do: :ok
+
+  defp log_restored_ready(group_id, receipt) do
+    Logger.info(
+      "cloud-vm ready on its restored archive: group=#{group_id} operation=#{receipt["operation"]} restore=#{inspect(Map.take(receipt, ~w(bytes entries files timings)))}"
+    )
+  end
+
+  # The connected station runs on the archive its start named when it holds
+  # that restore's receipt, which only a Container's start writes, before the
+  # station. What the wait ends with is that receipt (nil when the start named
+  # no archive). One that answers without it started on an empty disk: its
+  # Container's image does not restore before it starts (an image from before
+  # that moved into the start, still serving while a release is under way).
+  # That station is not this VM's and the VM is not ready: the wake fails,
+  # naming the image, and its restore budget runs on until the image is
+  # released.
+  defp started_station(rec, sandbox) do
+    with {:ok, %{"status" => "connected", "connector_run_id" => _connector_run_id}} <-
+           current_device(rec) do
+      if DurableArchive.restorable?(rec["archive"]) do
+        case restore_receipt(rec) do
+          {:restored, receipt} ->
+            {:ok, receipt}
+
+          :absent ->
+            {:error,
+             {:archive_not_restored_before_start,
+              sandbox
+              |> Map.take(~w(connector_image_version gateway_build_id worker_version_id))
+              |> Map.put("archive", rec["archive"]["operation"])}}
+
+          {:error, {:archive_receipt_unavailable, _}} ->
+            :waiting
+
+          {:error, _} = error ->
+            error
+        end
+      else
+        {:ok, nil}
+      end
+    else
+      _ -> :waiting
     end
   end
 
@@ -2013,7 +2450,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   # capacity ceiling, preventing the orphan cleanup that would free capacity.
   defp teardown_orphan(%{"provider" => "cloudflare", "group_id" => group_id} = rec, opts) do
     with {:ok, cfg} <- cloudflare_config(rec["tenant_id"]),
-         :ok <- __MODULE__.destroy(rec, client: cloudflare_client(cfg, opts, rec["group_id"])),
+         :ok <- __MODULE__.destroy(rec, client: cloudflare_client(cfg, opts, rec)),
          :ok <- delete_record(group_id) do
       :ok
     end
@@ -2045,7 +2482,15 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     end
   end
 
-  defp idle_archive_eligible?(%{"provider" => "cloudflare", "status" => "ready"} = rec, opts) do
+  @doc """
+  Whether a ready Group Cloud VM is idle long enough to sleep: archived on
+  Cloudflare, its container stopped on an Agent VMM Host
+  (`SalixWeb.ComputeProviders.AgentVMMCloudVM`). Answers `:ok` or `{:skip, why}`.
+  """
+  def idle_eligible(rec, opts), do: idle_archive_eligible?(rec, opts)
+
+  defp idle_archive_eligible?(%{"provider" => provider, "status" => "ready"} = rec, opts)
+       when provider in ["cloudflare", "agent_vmm"] do
     now = opts[:now] || now_ms()
     idle_ms = Keyword.get(opts, :idle_archive_ms, cfg(:idle_archive_ms, opts))
     last_operation = rec["last_operation_at"] || 0
@@ -2062,16 +2507,11 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
       provider_cutover_archive_hold?(rec) ->
         {:skip, :provider_cutover_archive_pending}
 
-      SalixWeb.CloudVM.RuntimeLifecycle.demand?(rec["group_id"]) ->
-        {:skip, :accepted_runtime_work}
+      not Keyword.get(opts, :force, false) and (rec["archive_retry_at"] || 0) > now ->
+        {:skip, :archive_retry_pending}
 
       (rec["runtime_selection_until"] || 0) > now ->
         {:skip, :runtime_selection}
-
-      Enum.any?(rec["runtime_targets"] || %{}, fn {_, target} ->
-        target["state"] in ~w(pending installing)
-      end) ->
-        {:skip, :runtime_installing}
 
       active_count > 0 ->
         {:skip, :active_operations}
@@ -2094,10 +2534,10 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
 
   defp archive_cloudflare_idle(%{"group_id" => group_id, "tenant_id" => tenant_id} = rec, opts) do
     archive_operation_id = Keyword.get(opts, :archive_operation) || random_operation_id("archive")
-    archive_started = System.monotonic_time(:millisecond)
+    archive_started = SystemsClock.monotonic_time(:millisecond)
 
     with {:ok, cfg} <- cloudflare_config(tenant_id),
-         client <- cloudflare_client(cfg, opts, rec["group_id"]),
+         client <- cloudflare_client(cfg, opts, rec),
          :ok <- maybe_call_hook(opts, :before_archive_update, group_id),
          {:ok, _} <-
            update_record(group_id, fn current ->
@@ -2128,7 +2568,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
            get_record(group_id),
          :ok <- record_idle_archive_start_delay(archiving, opts),
          :ok <- seal_release_source(archiving),
-         :ok <- ensure_archive_attachment(archiving),
+         :ok <- ensure_archive_attachment(archiving, client),
          {:ok, archive_mode} <- quiesce_archive_runtimes(archiving, archive_operation_id),
          {:ok, result} <-
            export_or_resume_archive(archiving, client, archive_operation_id, archive_mode, opts),
@@ -2183,6 +2623,17 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
       {:ok, _not_owned_archiving} ->
         {:error, :active_or_not_ready}
 
+      :container_stopped ->
+        with {:ok, cfg} <- cloudflare_config(tenant_id),
+             {:ok, current} <- get_record(group_id),
+             do:
+               keep_last_archive(
+                 current,
+                 cloudflare_client(cfg, opts, rec),
+                 archive_operation_id,
+                 opts
+               )
+
       false ->
         _ =
           restore_archiving_record(
@@ -2198,15 +2649,19 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         error
 
       {:error, :archive_attachment_unavailable} = error ->
-        _ = SalixEnv.VM.Providers.Cloudflare.Attachments.stop(rec["env_id"])
-
         _ =
           record_last_error(group_id, {:archive_resume_pending, :archive_attachment_unavailable})
 
         error
 
       {:error, reason} ->
-        _ = restore_archiving_record(group_id, reason, archive_operation_id)
+        if release_discardable_failure?(reason) and is_binary(opts[:maintenance_id]) and
+             require_release_worker(opts) == :ok do
+          _ = record_last_error(group_id, reason)
+        else
+          _ = restore_archiving_record(group_id, reason, archive_operation_id)
+        end
+
         {:error, reason}
     end
   end
@@ -2268,7 +2723,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         Enum.max([rec["last_operation_at"] || 0, idle_since, rec["ready_at"] || 0]) +
           Keyword.get(opts, :idle_archive_ms, cfg(:idle_archive_ms, opts))
 
-      :telemetry.execute(
+      SystemsRuntime.Telemetry.execute(
         [:salix, :vm, :idle_archive, :start],
         %{delay_seconds: max(rec["archive_started_at"] - due_at, 0) / 1_000},
         %{profile: get_in(rec, ["provider_spec", "profile_key"]) || "unknown"}
@@ -2278,18 +2733,56 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     :ok
   end
 
-  defp ensure_archive_attachment(rec) do
-    if device_connected?(rec) do
+  # A running VM's station reconnects by itself. A stopped Container is never
+  # started to be archived: its disk went with it, and the last archive stays
+  # the VM's (`:container_stopped`).
+  defp ensure_archive_attachment(rec, client) do
+    with {:error, _} <- await_archive_attachment(rec, 100),
+         {:ok, %{"running" => true}} <-
+           CloudflareClient.control_observation(client, sandbox_id(rec)),
+         :ok <- await_archive_attachment(rec, 100) do
       :ok
     else
-      with {:ok, group} <- group_record(rec["group_id"]),
-           :revived <- targeted_reattach(rec, group),
-           :ok <- await_archive_attachment(rec, 100) do
-        :ok
-      else
-        _ -> {:error, :archive_attachment_unavailable}
-      end
+      :ok -> :ok
+      {:ok, %{"running" => false}} -> :container_stopped
+      _ -> {:error, :archive_attachment_unavailable}
     end
+  end
+
+  # The archive's source Container stopped: release it as an archive would,
+  # and the record is archived with the archive it already holds.
+  defp keep_last_archive(rec, client, operation, opts) do
+    archive = get_in(rec, ["archive", "operation"])
+
+    # How it stopped is read before the release, which is a commanded stop.
+    stop =
+      case CloudflareClient.control_observation(client, sandbox_id(rec)) do
+        {:ok, observation} -> uncommanded_stop(observation, rec)
+        {:error, _} -> %{"recorded" => false}
+      end
+
+    with :ok <- require_release_worker(opts),
+         :ok <- release_stopped_source(rec, client),
+         {:ok, _} <-
+           update_record(rec["group_id"], fn current ->
+             if current["status"] == "archiving" and
+                  current["archive_operation_id"] == operation,
+                do: Map.put(current, "container_loss", container_loss(archive, stop)),
+                else: {:error, :archive_operation_lost}
+           end),
+         {:ok, archived} <- finish_archived_source(rec["group_id"], operation) do
+      Logger.warning(
+        "cloud-vm archive source container stopped and its disk is gone: keeping the last archive group=#{rec["group_id"]} archive=#{archive || "none"} stop=#{inspect(stop)}"
+      )
+
+      {:ok, archived}
+    end
+  end
+
+  # Releases a sealed source whose Container already stopped.
+  defp release_stopped_source(rec, client) do
+    with {:ok, _} <- __MODULE__.keepalive(rec, false, client: client, archive_release: true),
+         do: __MODULE__.destroy(rec, client: client, archive_release: true)
   end
 
   defp await_archive_attachment(rec, 0) do
@@ -2300,87 +2793,39 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     if device_connected?(rec) do
       :ok
     else
-      Process.sleep(100)
+      SystemsClock.sleep(100)
       await_archive_attachment(rec, attempts - 1)
     end
   end
 
-  defp quiesce_archive_runtimes(%{"cloudflare_control" => control} = rec, token)
-       when is_map(control) do
-    scope =
-      if rec["archive_reason"] in ["recovery", "recovery_committing"],
-        do: "recovery",
-        else: "full"
-
-    with {:ok, cfg} <- cloudflare_config(rec["tenant_id"]),
-         client <- cloudflare_client(cfg, [], rec["group_id"]),
-         {:ok, %{"quiet" => true}} <-
-           CloudflareClient.connector_control(client, sandbox_id(rec), "seal", scope) do
-      {:ok, {:managed, scope}}
-    else
-      {:ok, _} ->
-        {:error, :runtime_not_quiet}
-
-      {:error, reason} = error ->
-        if scope == "full" and legacy_control_error?(reason),
-          do: quiesce_legacy_archive_runtimes(rec, token),
-          else: error
-    end
-  end
-
-  defp quiesce_archive_runtimes(%{"provider" => "cloudflare"} = rec, token) do
-    quiesce_legacy_archive_runtimes(rec, token)
-  end
-
-  defp quiesce_archive_runtimes(_rec, _token), do: {:ok, :legacy}
-
-  defp legacy_control_error?({:api_error, 404, _}), do: true
-  defp legacy_control_error?({:api_error, 404, _, _}), do: true
-  defp legacy_control_error?(_), do: false
-
-  defp quiesce_legacy_archive_runtimes(rec, token) do
+  # The station parks for the archive under the operation's token, while no work runs.
+  defp quiesce_archive_runtimes(rec, token) do
     case archive_runtime_rpc(rec, "cloud_runtime_quiesce", %{
            "token" => token,
            "timeout_ms" => 4_200_000
          }) do
-      {:ok, %{"quiet" => true, "continued" => _}} -> {:ok, :chunked}
-      {:ok, %{"quiet" => true}} -> {:ok, :legacy}
-      {:ok, %{"quiet" => false}} -> {:error, :runtime_not_quiet}
-      {:error, "external runtime still owns work"} -> {:error, :runtime_not_quiet}
-      _ -> {:error, :runtime_quiesce_unconfirmed}
+      {:ok, %{"quiet" => true}} ->
+        {:ok, :chunked}
+
+      {:ok, %{"quiet" => false}} ->
+        {:error, :runtime_not_quiet}
+
+      # The station's connector answers with the method first.
+      {:error, why}
+      when why in ["runtime is not quiet", "cloud_runtime_quiesce: runtime is not quiet"] ->
+        {:error, :runtime_not_quiet}
+
+      _ ->
+        {:error, :runtime_quiesce_unconfirmed}
     end
   end
 
-  defp export_idle_archive(rec, client, token, :chunked, opts) do
+  defp export_idle_archive(rec, _client, token, :chunked, opts) do
     with :ok <- confirm_archive_quiescence(rec, token, :chunked, nil) do
-      DurableArchive.export(client, sandbox_id(rec), rec["group_id"], token, fn progress ->
+      DurableArchive.export(station_call(rec), rec["group_id"], token, fn progress ->
         with :ok <- require_release_worker(opts),
              do: persist_archive_progress(rec["group_id"], token, progress)
       end)
-    end
-  end
-
-  defp export_idle_archive(rec, client, token, {:managed, scope} = mode, opts) do
-    with :ok <- confirm_archive_quiescence(rec, token, mode, nil) do
-      DurableArchive.export(
-        client,
-        sandbox_id(rec),
-        rec["group_id"],
-        token,
-        fn progress ->
-          with :ok <- require_release_worker(opts),
-               do: persist_archive_progress(rec["group_id"], token, progress)
-        end,
-        scope
-      )
-    end
-  end
-
-  defp export_idle_archive(rec, client, _token, :legacy, opts) do
-    with :ok <- require_release_worker(opts),
-         {:ok, %{checkpoint: result}} <-
-           __MODULE__.checkpoint(rec, client: client, provider_neutral_required: true) do
-      {:ok, result["archive"] || result}
     end
   end
 
@@ -2416,20 +2861,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     end
   end
 
-  defp confirm_archive_quiescence(_rec, _token, :legacy, started) do
-    if System.monotonic_time(:millisecond) - started < 13 * 60_000,
-      do: :ok,
-      else: {:error, :archive_quiescence_expired}
-  end
-
-  defp confirm_archive_quiescence(rec, token, {:managed, scope}, _started) do
-    case quiesce_archive_runtimes(rec, token) do
-      {:ok, {:managed, ^scope}} -> :ok
-      {:error, _} = error -> error
-      _ -> {:error, :archive_quiescence_expired}
-    end
-  end
-
   defp confirm_archive_quiescence(rec, token, :chunked, _started) do
     case archive_runtime_rpc(rec, "cloud_runtime_quiesce", %{
            "token" => token,
@@ -2450,22 +2881,20 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
       else
         case resume_archive_source(rec, archive_operation_id) do
           {:ok, %{"resumed" => true}} ->
-            with :ok <- stop_archive_repair_attachment(rec) do
-              update_record(group_id, fn current ->
-                if current["archive_operation_id"] == archive_operation_id do
-                  current
-                  |> Map.put("status", "ready")
-                  |> rollback_failed_archive(archive_operation_id)
-                  |> Map.delete("archive_operation_id")
-                  |> Map.delete("archive_progress")
-                  |> Map.delete("archive_cancel_requested")
-                  |> Map.put("last_error", inspect(reason) |> String.slice(0, 500))
-                  |> maybe_record_archive_cancel(archive_operation_id, reason)
-                else
-                  current
-                end
-              end)
-            end
+            update_record(group_id, fn current ->
+              if current["archive_operation_id"] == archive_operation_id do
+                current
+                |> Map.put("status", "ready")
+                |> rollback_failed_archive(archive_operation_id)
+                |> Map.delete("archive_operation_id")
+                |> Map.delete("archive_progress")
+                |> Map.delete("archive_cancel_requested")
+                |> Map.put("last_error", inspect(reason) |> String.slice(0, 500))
+                |> maybe_record_archive_cancel(archive_operation_id, reason)
+              else
+                current
+              end
+            end)
 
           _ ->
             record_last_error(group_id, {:archive_resume_pending, reason})
@@ -2476,8 +2905,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
 
   defp restore_unquiesced_archiving_record(group_id, archive_operation_id) do
     with {:ok, rec} <- get_record(group_id),
-         :ok <- reopen_unquiesced_source(rec),
-         :ok <- stop_archive_repair_attachment(rec) do
+         :ok <- reopen_unquiesced_source(rec) do
       update_record(group_id, fn current ->
         if current["status"] == "archiving" and
              current["archive_reason"] == "idle" and
@@ -2498,72 +2926,17 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
 
   defp resume_archive_source(rec, operation) do
     with {:ok, cfg} <- cloudflare_config(rec["tenant_id"]),
-         client <- cloudflare_client(cfg, [], rec["group_id"]),
-         {:ok, mode} <- CloudflareClient.resume_control(client, sandbox_id(rec)) do
-      if mode == :managed,
-        do: {:ok, %{"resumed" => true}},
-        else: archive_runtime_rpc(rec, "cloud_runtime_resume", %{"token" => operation})
+         client <- cloudflare_client(cfg, [], rec),
+         {:ok, _} <- CloudflareClient.resume_control(client, sandbox_id(rec)) do
+      archive_runtime_rpc(rec, "cloud_runtime_resume", %{"token" => operation})
     end
   end
 
   defp reopen_unquiesced_source(rec) do
     with {:ok, cfg} <- cloudflare_config(rec["tenant_id"]),
-         client <- cloudflare_client(cfg, [], rec["group_id"]),
+         client <- cloudflare_client(cfg, [], rec),
          {:ok, _} <- CloudflareClient.resume_control(client, sandbox_id(rec)),
          do: :ok
-  end
-
-  defp stop_archive_repair_attachment(rec) do
-    case current_device(rec) do
-      {:ok,
-       %{"meta" => %{"archive_repair" => true}, "node" => owner, "connector_run_id" => run_id}}
-      when is_binary(owner) ->
-        with :ok <- stop_attachment_on_owner(owner, rec["env_id"]) do
-          case current_device(rec) do
-            {:error, :not_found} ->
-              :ok
-
-            {:ok, device} ->
-              if device["connector_run_id"] != run_id or device["status"] != "connected" or
-                   get_in(device, ["meta", "archive_repair"]) != true,
-                 do: :ok,
-                 else: {:error, :archive_repair_attachment_still_connected}
-
-            _ ->
-              {:error, :archive_repair_attachment_still_connected}
-          end
-        end
-
-      {:ok, %{"meta" => %{"archive_repair" => true}}} ->
-        {:error, :archive_repair_attachment_owner_unavailable}
-
-      _ ->
-        :ok
-    end
-  end
-
-  defp stop_attachment_on_owner(owner, env_id) when is_binary(env_id) do
-    case Enum.find([node() | Node.list()], &(to_string(&1) == owner)) do
-      nil ->
-        {:error, :archive_repair_attachment_owner_unavailable}
-
-      owner_node ->
-        try do
-          if owner_node == node() do
-            SalixEnv.VM.Providers.Cloudflare.Attachments.stop(env_id)
-          else
-            :erpc.call(
-              owner_node,
-              SalixEnv.VM.Providers.Cloudflare.Attachments,
-              :stop,
-              [env_id],
-              5_000
-            )
-          end
-        catch
-          _, _ -> {:error, :archive_repair_attachment_owner_unavailable}
-        end
-    end
   end
 
   defp maybe_record_archive_cancel(current, operation, reason)
@@ -2578,6 +2951,11 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   defp maybe_record_archive_cancel(current, _operation, _reason), do: current
 
   defp archive_runtime_rpc(rec, method, params) do
+    timeout = if method == "cloud_runtime_quiesce", do: 100_000, else: 20_000
+    station_rpc(rec, method, params, timeout)
+  end
+
+  defp station_rpc(rec, method, params, timeout) do
     resource = rec["provider_resource_name"]
     profile = get_in(rec, ["provider_spec", "profile_key"])
 
@@ -2593,7 +2971,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
           }}
          when is_binary(run_id) <- current_device(rec),
          true <- archive_attachment_profile?(meta, profile) do
-      timeout = if method == "cloud_runtime_quiesce", do: 100_000, else: 20_000
       SalixEnv.Connector.Live.request(run_id, method, params, timeout: timeout)
     else
       _ -> {:error, :disconnected}
@@ -2601,12 +2978,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   end
 
   defp archive_attachment_profile?(%{"profile_key" => profile}, profile), do: true
-
-  # Pre-profile Cloudflare attachments can remain connected through the first
-  # release. Their only Sandbox namespace was the retained standard-2 app.
-  defp archive_attachment_profile?(meta, "cf-standard-2"),
-    do: not is_map_key(meta, "profile_key")
-
   defp archive_attachment_profile?(_meta, _profile), do: false
 
   defp enqueue_previous_archive_gc(current, new_operation) do
@@ -2636,6 +3007,8 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     |> Map.delete("connector_archive_previous")
     |> queue_archive_gc(operation, "r2")
     |> queue_archive_gc(operation, "salix_s3")
+    # A failed idle archive quiesced the station for nothing: the next one waits a full idle period.
+    |> Map.put("archive_retry_at", now_ms() + cfg(:idle_archive_ms, []))
   end
 
   defp queue_archive_gc(current, operation, storage) do
@@ -2662,7 +3035,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   defp do_wake_archived_vm(group_id, rec, opts) do
     with :ok <- authorize_resume(group_id, opts),
          {:ok, wake_operation_id} <- wake_operation(group_id, rec, opts),
-         :ok <- stop_stale_wake_attachment(rec, wake_operation_id),
          {:ok, group} <- switch_group_record(group_id),
          {:ok, cfg} <- cloudflare_config(rec["tenant_id"]),
          {:ok, %{"status" => "waking", "wake_operation_id" => ^wake_operation_id} = waking} <-
@@ -2674,7 +3046,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
              cloudflare_client(
                cfg,
                Keyword.put(opts, :worker_version_id, rec["desired_worker_version_id"]),
-               rec["group_id"]
+               waking
              ),
              Keyword.put(opts, :wake_operation_id, wake_operation_id)
            ),
@@ -2729,7 +3101,11 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
            "wake_operation_id" => ^operation
          }
        }} ->
-        mark_cloudflare_ready(rec["group_id"], rec["env_id"], %{}, wake_operation_id: operation)
+        # The wake's Container restored the archive before it started this
+        # station: the wake is complete with the station that holds its receipt.
+        if not DurableArchive.restorable?(rec["archive"]) or source_restored?(rec),
+          do: mark_cloudflare_ready(rec["group_id"], rec, %{}, wake_operation_id: operation),
+          else: :continue
 
       _ ->
         :continue
@@ -2764,50 +3140,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   end
 
   defp wake_operation(_group_id, rec, _opts), do: {:error, {:bad_state, rec["status"]}}
-
-  defp stop_stale_wake_attachment(rec, wake_operation_id) do
-    case current_device(rec) do
-      {:ok, %{"node" => owner, "connector_run_id" => run_id} = device}
-      when is_binary(owner) ->
-        meta = device["meta"] || %{}
-
-        if meta["provider_resource_name"] == rec["provider_resource_name"] and
-             (meta["profile_key"] != get_in(rec, ["provider_spec", "profile_key"]) or
-                meta["wake_operation_id"] != wake_operation_id) do
-          with :ok <- stop_attachment_on_owner(owner, rec["env_id"]),
-               :ok <- await_stale_wake_attachment_stop(rec, run_id, 20) do
-            :ok
-          end
-        else
-          :ok
-        end
-
-      _ ->
-        # Without an owner there is no Attachment process to address. The
-        # import admission still rejects a live old connection.
-        :ok
-    end
-  end
-
-  defp await_stale_wake_attachment_stop(rec, run_id, attempts) do
-    case current_device(rec) do
-      {:ok, %{"status" => "connected", "connector_run_id" => ^run_id}} when attempts > 0 ->
-        Process.sleep(250)
-        await_stale_wake_attachment_stop(rec, run_id, attempts - 1)
-
-      {:ok, %{"status" => "connected", "connector_run_id" => ^run_id}} ->
-        {:error, :stale_wake_attachment_still_connected}
-
-      {:ok, _} ->
-        :ok
-
-      {:error, :not_found} ->
-        :ok
-
-      {:error, _} = error ->
-        error
-    end
-  end
 
   defp wake_cloudflare_record(rec, group, client, opts) do
     case provision_cloudflare_vm(rec, group, client, opts) do
@@ -2864,6 +3196,9 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     _exception -> :ok
   end
 
+  # The shared Compute reconciler drives a Cloud VM on an Agent VMM Host.
+  defp sweep_one(%{"provider" => provider}, _opts, acc) when provider != "cloudflare", do: acc
+
   defp sweep_one(%{"group_id" => group_id} = rec, opts, acc) do
     case {group_record(group_id), rec["status"]} do
       {:missing, _status} ->
@@ -2886,10 +3221,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
 
       {{:ok, group}, "ready"} ->
         _ = maybe_meter_ready_interval(rec, group, opts)
-
-        if SalixWeb.CloudVM.Runtimes.pending?(rec) do
-          SalixWeb.CloudVM.Runtimes.schedule(group_id, opts)
-        end
 
         case maybe_archive_idle(rec, opts) do
           :archived ->
@@ -3096,7 +3427,7 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   end
 
   defp call_metering(fun, args, opts) do
-    case Application.get_env(:salix_web, :vm_metering_mod) do
+    case SystemsRuntime.get_env(:salix_web, :vm_metering_mod) do
       nil ->
         :disabled
 
@@ -3158,12 +3489,8 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     end
   end
 
-  defp cloudflare_client(%{base_url: _} = cfg, opts, group_id) do
-    profile_key =
-      case get_record(group_id) do
-        {:ok, rec} -> get_in(rec, ["provider_spec", "profile_key"])
-        _ -> nil
-      end
+  defp cloudflare_client(%{base_url: _} = cfg, opts, rec) when is_map(rec) do
+    profile_key = get_in(rec, ["provider_spec", "profile_key"])
 
     opts[:cloudflare_client] ||
       SalixEnv.VM.Providers.Cloudflare.Client.new(
@@ -3172,14 +3499,15 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
         profile_key: profile_key,
         worker_name: opts[:worker_name] || Map.get(cfg, :worker_name),
         worker_version_id: opts[:worker_version_id],
-        group_id: group_id,
+        group_id: rec["group_id"],
+        expected_owner: Map.take(rec, ~w(workload_id generation)),
         backoff_ms: 1,
         req_options: opts[:req_options] || []
       )
   end
 
   defp random_operation_id(kind),
-    do: kind <> "-" <> (:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower))
+    do: kind <> "-" <> (SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower))
 
   defp idempotency_class(kind)
        when kind in ["read", "read_stream", "process_list", "process_tail"],
@@ -3305,20 +3633,21 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 
   @behaviour SalixEnv.ComputeProvider
-
-  alias SalixEnv.VM.Providers.Cloudflare.Attachments
 
   @impl true
   def capabilities, do: [:runtime_exec, :service_public_http]
 
   @impl true
-  def allocate(allocation, _workload, opts) do
-    with {:ok, resource} <-
+  def allocate(allocation, workload, opts) do
+    with {:ok, station} <-
+           station_start(%{"workload_id" => workload.id, "generation" => workload.generation}),
+         {:ok, resource} <-
            CloudflareClient.ensure(Keyword.fetch!(opts, :client), sandbox_id(allocation),
-             keep_alive: true
+             keep_alive: true,
+             station: station
            ),
          do: {:ok, %{outcome: :succeeded, resource: resource}}
   end
@@ -3351,32 +3680,13 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     end
   end
 
+  # A Cloud VM's archive is its station's (DurableArchive), taken by the Group
+  # Workload's archive flow.
   @impl true
-  def checkpoint(allocation, opts) do
-    with {:ok, archive} <-
-           CloudflareClient.checkpoint(
-             Keyword.fetch!(opts, :client),
-             sandbox_id(allocation),
-             Keyword.put(opts, :provider_neutral_required, true)
-           ),
-         do: {:ok, %{outcome: :succeeded, checkpoint: archive}}
-  end
+  def checkpoint(_allocation, _opts), do: {:error, :unsupported}
 
   @impl true
-  def restore(allocation, archive, opts) do
-    client = Keyword.fetch!(opts, :client)
-
-    case archive do
-      %{"type" => type} when type in ["connector_tar_gz_chunks", "connector_tar_zst_chunks"] ->
-        with :ok <-
-               DurableArchive.restore(client, sandbox_id(allocation), client.group_id, archive),
-             do: {:ok, %{outcome: :succeeded, restore: %{"restored" => true}}}
-
-      _ ->
-        with {:ok, result} <- CloudflareClient.restore(client, sandbox_id(allocation), archive),
-             do: {:ok, %{outcome: :succeeded, restore: result}}
-    end
-  end
+  def restore(_allocation, _checkpoint, _opts), do: {:error, :unsupported}
 
   defp authorize_bootstrap(%{id: workload_id}, %{"token" => token, "workload_id" => workload_id}) do
     case SalixStore.Compute.WorkloadCredential.verify(token, workload_id, "runtime") do
@@ -3392,29 +3702,56 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     ensure_once(rec, group, opts, client, sandbox_id(rec))
   end
 
-  defp ensure_once(rec, group, opts, client, id) do
-    with {:ok, sandbox} <-
-           CloudflareClient.ensure(client, id, keep_alive: Keyword.get(opts, :keep_alive)),
-         :ok <- maybe_restore(client, id, rec["group_id"], Keyword.get(opts, :archive), opts),
-         :ok <- ready?(client, id),
-         :ok <- CloudflareClient.open_connector(client, id),
-         {:ok, attachment} <- maybe_attach(rec, group, client, id, opts) do
-      {:ok, %{sandbox: sandbox, attachment: attachment}}
+  defp ensure_once(rec, _group, opts, client, id) do
+    with {:ok, station} <- station_start(rec, Keyword.get(opts, :archive), opts),
+         {:ok, sandbox} <-
+           CloudflareClient.ensure(client, id,
+             keep_alive: Keyword.get(opts, :keep_alive),
+             station: station
+           ) do
+      {:ok, %{sandbox: sandbox, attachment: nil}}
     end
   end
 
-  @doc "Attach Salix to an already-ready sandbox without mutating provider state."
-  def attach_existing(rec, group, opts) do
-    opts = opts |> Keyword.put(:attach, true) |> Keyword.put_new(:async, true)
-
-    maybe_attach(
-      rec,
-      group,
-      Keyword.fetch!(opts, :client),
-      sandbox_id(rec),
-      opts
-    )
+  # What the Container's station connects to Salix with: the server, and the
+  # Workload's connect credential, which ends with the Workload's generation.
+  defp station_start(rec) do
+    with {:ok, token} <-
+           GroupCompute.WorkloadCredential.issue_connect(rec["workload_id"], rec["generation"]),
+         do:
+           {:ok,
+            %{"server" => SalixEnv.Ports.PublicURL.connector_server_url(), "credential" => token}}
   end
+
+  # A start that gives the VM its disk back names the archive too: the
+  # Container unpacks it before it starts the station, so the station that
+  # connects is the VM's own, with its key, its place and its Sessions. No
+  # station is given an archive after it connected.
+  defp station_start(rec, archive, _opts) when archive in [nil, ""], do: station_start(rec)
+
+  defp station_start(rec, archive, opts) do
+    if DurableArchive.restorable?(archive) do
+      with :ok <- within_restore_budget(opts[:restore_deadline_ms]),
+           {:ok, station} <- station_start(rec),
+           {:ok, restore} <- DurableArchive.restore_instruction(rec["group_id"], archive),
+           do: {:ok, Map.put(station, "restore", restore)}
+    else
+      # A retired connector's archive (gzip, or kept in Salix S3) cannot be
+      # restored for a station: under the Cloud VM data policy this VM starts
+      # empty.
+      Logger.warning(
+        "cloud-vm archive cannot be restored for a station; starting empty: group=#{rec["group_id"]} operation=#{archive["operation"]}"
+      )
+
+      station_start(rec)
+    end
+  end
+
+  defp within_restore_budget(deadline_ms) when is_integer(deadline_ms) do
+    if now_ms() < deadline_ms, do: :ok, else: {:error, :durable_archive_restore_expired}
+  end
+
+  defp within_restore_budget(_no_deadline), do: :ok
 
   def status(rec, opts) do
     opts |> Keyword.fetch!(:client) |> CloudflareClient.status(sandbox_id(rec))
@@ -3422,8 +3759,6 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
 
   def destroy(rec, opts) do
     with :ok <- current_archive_hold_admission(rec["group_id"]) do
-      if env_id = rec["env_id"], do: Attachments.stop(env_id)
-
       opts
       |> Keyword.fetch!(:client)
       |> CloudflareClient.destroy(sandbox_id(rec),
@@ -3462,63 +3797,9 @@ defmodule SalixWeb.ComputeProviders.Cloudflare do
     end
   end
 
-  defp maybe_restore(_client, _id, _group_id, nil, _opts), do: :ok
-  defp maybe_restore(_client, _id, _group_id, "", _opts), do: :ok
-
-  defp maybe_restore(client, id, group_id, %{"type" => type} = archive, opts)
-       when type in ["connector_tar_gz_chunks", "connector_tar_zst_chunks"],
-       do:
-         DurableArchive.restore(client, id, group_id, archive,
-           deadline_ms: opts[:restore_deadline_ms]
-         )
-
-  defp maybe_restore(client, id, _group_id, archive, _opts) do
-    case CloudflareClient.restore(client, id, archive) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp ready?(client, id) do
-    case CloudflareClient.proxy(client, id, "/readyz") do
-      {:ok, %Req.Response{status: status}} when status in 200..299 -> :ok
-      {:ok, %Req.Response{status: status}} -> {:error, {:connector_not_ready, status}}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp maybe_attach(rec, group, client, id, opts) do
-    if Keyword.get(opts, :attach, true) do
-      attachment_opts =
-        [
-          env_id: Map.fetch!(rec, "env_id"),
-          sandbox_id: id,
-          client: client,
-          meta:
-            attachment_meta(rec, group, id)
-            |> Map.merge(Keyword.get(opts, :meta, %{}))
-            |> Map.put("managed_compute", true)
-        ] ++ Keyword.take(opts, [:async])
-
-      Attachments.ensure(attachment_opts)
-    else
-      {:ok, nil}
-    end
-  end
-
-  defp attachment_meta(rec, group, id) do
-    %{
-      "tenant_id" => rec["tenant_id"] || group["tenant_id"],
-      "group_id" => rec["group_id"] || group["id"],
-      "device_id" => Map.fetch!(rec, "device_id"),
-      "connector_id" => Map.fetch!(rec, "connector_id"),
-      "provider_resource_name" => id,
-      "profile_key" => get_in(rec, ["provider_spec", "profile_key"]),
-      "managed_compute" => true,
-      "alias" => rec["alias"] || "cloud-vm",
-      "name" => rec["name"] || group["name"] || "Cloud VM"
-    }
-  end
+  # One request to the VM's current station.
+  defp station_call(rec),
+    do: fn method, params, timeout -> station_rpc(rec, method, params, timeout) end
 
   defp sandbox_id(%GroupCompute.Allocation{provider_observation: observation}),
     do: sandbox_id(observation)

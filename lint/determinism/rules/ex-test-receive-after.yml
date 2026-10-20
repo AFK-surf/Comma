@@ -1,0 +1,28 @@
+id: ex-test-receive-after
+language: elixir
+severity: error
+message: "A test bounds a receive by real time."
+note: |
+  `receive ... after` waits real milliseconds. Settle the test clock and use
+  settle_receive/settle_refute_receive, or SystemsClock.vreceive.
+metadata:
+  category: deadline
+rule:
+  all:
+    - kind: call
+    - has:
+        field: target
+        regex: "^receive$"
+    - has:
+        kind: do_block
+        has:
+          kind: after_block
+          not:
+            has:
+              kind: stab_clause
+              has:
+                field: left
+                regex: "^(0|:infinity)$"
+files:
+  - "systems/apps/*/test/**/*.exs"
+  - "systems/apps/*/test/**/*.ex"

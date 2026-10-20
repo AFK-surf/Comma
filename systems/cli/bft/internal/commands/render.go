@@ -29,8 +29,7 @@ Human mode:
   bft orgs list --limit 20 --filter acme
   bft projects list --org acme --limit 20
   bft agents list --org acme --project bridge --role worker
-  bft agents runtimes --org acme --project bridge --include-unavailable
-  bft agents create --org acme --project bridge --name codex-worker --role worker --runtime-kind external --device-id dev_123 --runtime-id runtime_codex --device-runtime-id devrt_123 --confirm-mutating
+  bft agents create --org acme --project bridge --name codex-worker --role worker --confirm-mutating
   bft agents rebind --org acme --project bridge --agent codex-worker --runtime devrt_123 --confirm-mutating
   bft devices list --org acme --project bridge
   bft devices create --org acme --project bridge --runner studio --confirm-mutating
@@ -47,6 +46,15 @@ Human mode:
   bft feishu setup --org acme --project bridge
   bft feishu connect ensure --org acme --project bridge --app-id cli_app --confirm-mutating
   bft feishu checks --org acme --project bridge
+  bft lark connect --org acme --project bridge --app-id cli_app --app-secret-env BFT_LARK_APP_SECRET --encrypt-key-env BFT_LARK_ENCRYPT_KEY --confirm-mutating
+  bft lark status --org acme --project bridge
+  bft lark checks --org acme --project bridge
+  bft lark scopes --output text
+  bft qq connect --org acme --project bridge --app-id 1900012345 --app-secret-env BFT_QQ_APP_SECRET --confirm-mutating
+  bft qq status --org acme --project bridge
+  bft qq menu --org acme --project bridge
+  bft qq menu add --org acme --project bridge --name 周报 --description 生成本周周报 --prompt "根据本周群聊生成周报" --scope group --confirm-mutating
+  bft qq menu remove --org acme --project bridge --name 周报 --confirm-mutating
   bft runners install-command --org acme --confirm-mutating
   bft runners list --org acme
   bft onboarding smoke --step cli-login --org acme
@@ -201,8 +209,7 @@ func commandSchema() map[string]any {
 			{"name": "orgs list", "example": "bft orgs list --limit 20 --filter acme --json", "mutates": false, "bounded": true},
 			{"name": "projects list", "example": "bft projects list --org acme --limit 20 --json", "mutates": false, "bounded": true},
 			{"name": "agents list", "example": "bft agents list --org acme --project support --role worker --json", "mutates": false, "bounded": true},
-			{"name": "agents runtimes", "example": "bft agents runtimes --org acme --project support --include-unavailable --json", "mutates": false},
-			{"name": "agents create", "example": "bft agents create --org acme --project support --name codex-worker --role worker --runtime-kind external --device-id dev_123 --runtime-id runtime_codex --device-runtime-id devrt_123 --confirm-mutating --json", "mutates": true},
+			{"name": "agents create", "example": "bft agents create --org acme --project support --name codex-worker --role worker --confirm-mutating --json", "mutates": true},
 			{"name": "agents rebind", "example": "bft agents rebind --org acme --project support --agent codex-worker --runtime devrt_123 --confirm-mutating --json", "mutates": true},
 			{"name": "devices list", "example": "bft devices list --org acme --project support --limit 20 --json", "mutates": false, "bounded": true},
 			{"name": "devices create", "example": "bft devices create --org acme --project support --runner studio --confirm-mutating --json", "mutates": true},
@@ -221,6 +228,15 @@ func commandSchema() map[string]any {
 			{"name": "feishu setup", "example": "bft feishu setup --org acme --project support --json", "mutates": false},
 			{"name": "feishu connect ensure", "example": "bft feishu connect ensure --org acme --project support --confirm-mutating --json", "mutates": true},
 			{"name": "feishu checks", "example": "bft feishu checks --org acme --project support --json", "mutates": false},
+			{"name": "lark connect", "example": "bft lark connect --org acme --project support --app-id cli_app --app-secret-env BFT_LARK_APP_SECRET --encrypt-key-env BFT_LARK_ENCRYPT_KEY --confirm-mutating --json", "mutates": true},
+			{"name": "lark status", "example": "bft lark status --org acme --project support --json", "mutates": false},
+			{"name": "lark checks", "example": "bft lark checks --org acme --project support --json", "mutates": false},
+			{"name": "lark scopes", "example": "bft lark scopes --json", "mutates": false},
+			{"name": "qq connect", "example": "bft qq connect --org acme --project support --app-id 1900012345 --app-secret-env BFT_QQ_APP_SECRET --confirm-mutating --json", "mutates": true},
+			{"name": "qq status", "example": "bft qq status --org acme --project support --json", "mutates": false},
+			{"name": "qq menu", "example": "bft qq menu --org acme --project support --json", "mutates": false},
+			{"name": "qq menu add", "example": "bft qq menu add --org acme --project support --name 周报 --description 生成本周周报 --prompt 根据本周群聊生成周报 --scope group --confirm-mutating --json", "mutates": true, "requires_confirm": true},
+			{"name": "qq menu remove", "example": "bft qq menu remove --org acme --project support --name 周报 --confirm-mutating --json", "mutates": true, "requires_confirm": true},
 			{"name": "runners install-command", "example": "bft runners install-command --org acme --confirm-mutating --json", "mutates": true, "requires_confirm": true},
 			{"name": "runners list", "example": "bft runners list --org acme --limit 20 --json", "mutates": false, "bounded": true},
 			{"name": "onboarding smoke", "example": "bft onboarding smoke --step cli-login --org acme --json", "mutates": false},
@@ -246,7 +262,7 @@ func completionShells() []string {
 }
 
 func completionScript(shell string) (string, bool) {
-	words := "agent agents auth commands completion context compute-node conversations devices feishu help meetings calendar replay onboarding orgs projects schema slack sso update version runners add revoke install-command list runtimes rebind show messages send trace delivery redeliver connects create stop disconnect update disable enable delete install status repair remove purge --json --output --quiet --non-interactive --config --url --env --token-env --limit --message-limit --conversation --participant --message --text --filter --org --role --runner --name --alias --request --agent --runtime --device --include-unavailable --runtime-kind --runtime-provider --device-id --runtime-id --device-runtime-id --execute --run-model --confirm-mutating --purge --app-name --app-id --client-secret-env --signing-secret-env --inbound-agent --connect --meeting"
+	words := "agent agents auth commands completion context compute-node conversations devices feishu help meetings calendar replay onboarding orgs projects schema slack sso update version runners add revoke install-command list rebind show messages send trace delivery redeliver connects create stop disconnect update disable enable delete install status repair remove purge --json --output --quiet --non-interactive --config --url --env --token-env --limit --message-limit --conversation --participant --message --text --filter --org --role --runner --name --alias --request --agent --runtime --device --execute --run-model --confirm-mutating --purge --app-name --app-id --client-secret-env --signing-secret-env --inbound-agent --connect --meeting"
 	switch shell {
 	case "bash":
 		return `_bft_completion() {
@@ -278,7 +294,7 @@ _bft "$@"
 }
 
 func agentHelpTopics() []string {
-	return []string{"overview", "onboarding", "auth", "compute-node", "feishu", "runners", "devices", "output"}
+	return []string{"overview", "onboarding", "auth", "compute-node", "feishu", "lark", "runners", "devices", "output"}
 }
 
 func agentHelp(topic string) (map[string]any, bool) {
@@ -359,6 +375,21 @@ func agentHelp(topic string) (map[string]any, bool) {
 				"bft feishu checks --org <org> --project <project> --json",
 			},
 			"next_action": "Run the narrow Feishu smoke/check command and stop at the first manual Feishu gate.",
+		},
+		"lark": {
+			"summary": "A Lark app (open.larksuite.com) is connected to one Agent Swarm with its own credentials; the Lark Developer Console steps remain manual.",
+			"rules": []string{
+				"Pass the App Secret, the Verification Token and the Encrypt Key through environment variables, never as arguments.",
+				"Use --confirm-mutating only after user approval.",
+				"Do not claim first-message success without real Lark message evidence or an explicit waiver.",
+			},
+			"commands": []string{
+				"bft lark scopes --output text",
+				"bft lark connect --org <org> --project <project> --app-id <app> --app-secret-env <env> --encrypt-key-env <env> --confirm-mutating --json",
+				"bft onboarding smoke --step lark-connect --org <org> --project <project> --json",
+				"bft lark checks --org <org> --project <project> --json",
+			},
+			"next_action": "Run bft lark checks and stop at the first manual Lark gate.",
 		},
 		"runners": {
 			"summary": "Runner setup needs both install-command generation and a real runner heartbeat.",
@@ -605,27 +636,6 @@ func agentText(prefix string, data map[string]any) string {
 	}
 
 	return prefix + "\n" + agentsText(listData)
-}
-
-func agentRuntimesText(data map[string]any) string {
-	runtimes, _ := data["runtimes"].([]any)
-	lines := []string{"device_runtime_id\tdevice_id\tdevice_name\truntime_id\tstatus\tbindable\tready\tversion\tconnector_run_id"}
-	for _, raw := range runtimes {
-		row, _ := raw.(map[string]any)
-		lines = append(lines, fmt.Sprintf(
-			"%s\t%s\t%s\t%s\t%s\t%v\t%v\t%s\t%s",
-			stringField(row, "device_runtime_id"),
-			stringField(row, "device_id"),
-			stringField(row, "device_name"),
-			stringField(row, "runtime_id"),
-			stringField(row, "status"),
-			runtimeBindable(row),
-			row["ready"],
-			stringField(row, "version"),
-			stringField(row, "connector_run_id"),
-		))
-	}
-	return strings.Join(lines, "\n") + "\n"
 }
 
 func devicesText(data map[string]any) string {
@@ -920,6 +930,160 @@ func unixMillisText(value any) string {
 	return time.UnixMilli(milliseconds).UTC().Format(time.RFC3339)
 }
 
+func larkConnectText(data map[string]any) string {
+	project, _ := data["project"].(map[string]any)
+	lines := []string{"Lark app connected to " + stringField(project, "name"), "Secrets printed: false"}
+	if action := stringField(data, "action"); action != "" {
+		lines = append(lines, "Action: "+action)
+	}
+	if callbackURL := stringField(data, "callback_url"); callbackURL != "" {
+		lines = append(lines, "Callback URL: "+callbackURL)
+	}
+	return strings.Join(append(lines, larkChecklistLines(data)...), "\n") + "\n"
+}
+
+func larkStatusText(data map[string]any) string {
+	project, _ := data["project"].(map[string]any)
+	connects, _ := data["connects"].([]any)
+	if len(connects) == 0 {
+		return "No Lark app is connected to " + stringField(project, "name") + ".\n"
+	}
+	lines := []string{"Lark apps of " + stringField(project, "name")}
+	for _, item := range connects {
+		connect, _ := item.(map[string]any)
+		state := "enabled"
+		if connect["disabled_at"] != nil {
+			state = "disabled"
+		}
+		name := stringField(connect, "app_name")
+		if name == "" {
+			name = stringField(connect, "app_id")
+		}
+		lines = append(lines, "", name+" ("+state+")", "  App ID: "+stringField(connect, "app_id"), "  Connect: "+stringField(connect, "connect_id"), "  Callback URL: "+stringField(connect, "callback_url"))
+	}
+	return strings.Join(append(lines, larkChecklistLines(data)...), "\n") + "\n"
+}
+
+// larkScopesText is the import JSON alone, so the output can be pasted.
+func larkScopesText(data map[string]any) string {
+	encoded, err := json.MarshalIndent(data["batch_import_payload"], "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(encoded) + "\n"
+}
+
+func larkChecklistLines(data map[string]any) []string {
+	steps, _ := data["manual_checklist"].([]any)
+	if len(steps) == 0 {
+		return nil
+	}
+	lines := []string{"", "Next steps:"}
+	for _, step := range steps {
+		if value, ok := step.(string); ok && value != "" {
+			lines = append(lines, "  - "+value)
+		}
+	}
+	return lines
+}
+
+func qqConnectText(data map[string]any) string {
+	project, _ := data["project"].(map[string]any)
+	lines := []string{"QQ bot connected to " + stringField(project, "name"), "Secrets printed: false"}
+	if action := stringField(data, "action"); action != "" {
+		lines = append(lines, "Action: "+action)
+	}
+	if callbackURL := stringField(data, "callback_url"); callbackURL != "" {
+		lines = append(lines, "Callback URL: "+callbackURL)
+	}
+	return strings.Join(append(lines, qqChecklistLines(data)...), "\n") + "\n"
+}
+
+func qqStatusText(data map[string]any) string {
+	project, _ := data["project"].(map[string]any)
+	connects, _ := data["connects"].([]any)
+	if len(connects) == 0 {
+		return "No QQ bot is connected to " + stringField(project, "name") + ".\n"
+	}
+	lines := []string{"QQ bots of " + stringField(project, "name")}
+	for _, item := range connects {
+		connect, _ := item.(map[string]any)
+		state := "enabled"
+		if connect["disabled_at"] != nil {
+			state = "disabled"
+		}
+		lines = append(lines, "", stringField(connect, "bot_username")+" ("+state+")", "  AppID: "+stringField(connect, "app_id"), "  Connect: "+stringField(connect, "connect_id"), "  Callback URL: "+stringField(connect, "callback_url"))
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// qqMenuText shows the command menu of each QQ bot of a project, or of the
+// one with the AppID.
+func qqMenuText(data map[string]any, appID string) string {
+	project, _ := data["project"].(map[string]any)
+	connects, _ := data["connects"].([]any)
+	blocks := []string{}
+	for _, entry := range connects {
+		connect, _ := entry.(map[string]any)
+		if appID == "" || stringField(connect, "app_id") == appID {
+			blocks = append(blocks, qqMenuLines(connect))
+		}
+	}
+	if len(blocks) == 0 {
+		return "No QQ bot is connected to " + stringField(project, "name") + ".\n"
+	}
+	return strings.Join(blocks, "\n")
+}
+
+// qqMenuLines is the menu of one bot: the fixed control commands, then the
+// shortcuts with where each shows.
+func qqMenuLines(connect map[string]any) string {
+	lines := []string{"Command menu of " + stringField(connect, "bot_username") + " (AppID " + stringField(connect, "app_id") + ")", "  /status, /compact, /help (always shown)"}
+	items, _ := connect["command_menu"].([]any)
+	if len(items) == 0 {
+		lines = append(lines, "  No shortcuts.")
+	}
+	for _, entry := range items {
+		item, _ := entry.(map[string]any)
+		line := "  /" + stringField(item, "name") + " [" + stringField(item, "scope")
+		if admin, _ := item["admin_only"].(bool); admin {
+			line += ", group admins only"
+		}
+		line += "]"
+		if description := stringField(item, "description"); description != "" {
+			line += " " + description
+		}
+		lines = append(lines, line)
+		if prompt := stringField(item, "prompt"); prompt != "" {
+			lines = append(lines, "      asks: "+prompt)
+		}
+	}
+	sync, _ := connect["command_menu_sync"].(map[string]any)
+	for _, scene := range []string{"private", "group"} {
+		switch stringField(sync, scene) {
+		case "owner_panel":
+			lines = append(lines, "  QQ shows another panel in "+scene+" chats: one made in the QQ bot console. Delete it there to show this menu.")
+		case "failed":
+			lines = append(lines, "  QQ did not take the menu for "+scene+" chats. Run the command again.")
+		}
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func qqChecklistLines(data map[string]any) []string {
+	steps, _ := data["manual_checklist"].([]any)
+	if len(steps) == 0 {
+		return nil
+	}
+	lines := []string{"", "Next steps:"}
+	for _, step := range steps {
+		if value, ok := step.(string); ok && value != "" {
+			lines = append(lines, "  - "+value)
+		}
+	}
+	return lines
+}
+
 func feishuSetupText(data map[string]any) string {
 	project, _ := data["project"].(map[string]any)
 	lines := []string{"Feishu setup for " + stringField(project, "name")}
@@ -1205,6 +1369,8 @@ func dependsOn(step string) []string {
 		"feishu-app":     {"context", "feishu-cli"},
 		"feishu-connect": {"feishu-app"},
 		"feishu-checks":  {"feishu-connect"},
+		"lark-connect":   {"context"},
+		"lark-checks":    {"lark-connect"},
 		"target-group":   {"feishu-checks"},
 		"first-message":  {"target-group"},
 		"runner":         {"context"},

@@ -1,10 +1,8 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { toast } from "@comma/ui";
+import { toast } from "@comma/ui/components/toast";
 import { memo, useContext, useState } from "react";
-import { parseBrowserElementInspectionMessage } from "../../../../chat-sidebar/browserElementInspection";
-import { messagePartsPlainText } from "../../inline/MessageInlineElements";
-import type { ChatMessage } from "../../../model/conversationChannel";
-import { parseAttachmentsBlock, parseQuotedTextBlock } from "../../../model/protocol";
+import type { ChatMessage } from "@comma/core/chat";
+import { replyExcerpt } from "../../replies/replyExcerpt";
 import {
   ThreadDefaultActorRoleContext,
   ThreadReplyActionsContext,
@@ -27,23 +25,8 @@ export const MessageReplyPreview = memo(function MessageReplyPreview({
   const defaultRole = useContext(ThreadDefaultActorRoleContext);
   const messagesApi = useCommaMessages();
   const [loading, setLoading] = useState(false);
-  let targetText = target
-    ? messagePartsPlainText(target.parts ?? [{ kind: "markdown", text: target.text }], {
-        task: messagesApi.chat_ref_task(),
-        unavailableTask: messagesApi.chat_ref_task_unavailable(),
-      })
-    : "";
-  if (target?.role === "user") {
-    const parsed = parseQuotedTextBlock(
-      parseAttachmentsBlock(parseBrowserElementInspectionMessage(targetText).body).body
-    );
-    targetText = parsed.body || parsed.quotes.join(" ");
-  }
   const text = target
-    ? targetText.replace(/\s+/g, " ").trim().slice(0, 180) ||
-      target.attachments[0]?.fileName ||
-      target.attachments[0]?.title ||
-      messagesApi.chat_reply_attachment()
+    ? replyExcerpt(target, messagesApi)
     : context?.canLoad
       ? messagesApi.chat_reply_load_earlier()
       : messagesApi.chat_reply_unavailable();
@@ -83,7 +66,6 @@ export const MessageReplyPreview = memo(function MessageReplyPreview({
     >
       {defaultRole !== "router" ? (
         <MessageAvatar
-          actorId={target?.actorId}
           createdBy={target?.createdBy}
           actorRole={
             target && target.role !== "user"

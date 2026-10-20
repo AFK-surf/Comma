@@ -65,16 +65,61 @@ index 0c5f6c95..d0864639 100644
 +	}
 +}
 diff --git a/internal/runtime/executor/helps/utls_client.go b/internal/runtime/executor/helps/utls_client.go
-index 4857bac7..0561621e 100644
+index 4857bac7..d5066e85 100644
 --- a/internal/runtime/executor/helps/utls_client.go
 +++ b/internal/runtime/executor/helps/utls_client.go
-@@ -397,5 +397,6 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
+@@ -7,6 +7,7 @@ import (
+ 	"io"
+ 	"net"
+ 	"net/http"
++	"net/url"
+ 	"strings"
+ 	"sync"
+ 	"time"
+@@ -385,6 +386,15 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
+ 		chromeRT = ctxRoundTripper
+ 		anthropicRT = ctxRoundTripper
+ 		standardTransport = ctxRoundTripper
++	} else if proxyFor := proxyutil.EnvironmentProxy(); proxyFor != nil {
++		// Go's default transport honors HTTPS_PROXY and NO_PROXY; these
++		// fingerprint dialers do not. Without an explicit proxy or an injected
++		// transport, apply the environment's rules to each request so hosts
++		// behind an outbound proxy still reach providers.
++		chromeRT = environmentProxyRoundTripper{proxyFor: proxyFor, via: func(proxyURL string) http.RoundTripper {
++			return newUtlsRoundTripper(proxyURL)
++		}}
++		anthropicRT = environmentProxyRoundTripper{proxyFor: proxyFor, via: cachedClaudeCodeRoundTripper}
+ 	}
+ 
+ 	client := &http.Client{
+@@ -397,5 +407,27 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
  	if timeout > 0 {
  		client.Timeout = timeout
  	}
 +	observeSubscriptionTransport(ctx, client)
  	return client
  }
++
++// environmentProxyRoundTripper sends each request through the fingerprint
++// transport built for the environment proxy that applies to its URL.
++type environmentProxyRoundTripper struct {
++	proxyFor func(*url.URL) (*url.URL, error)
++	via      func(proxyURL string) http.RoundTripper
++}
++
++func (t environmentProxyRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
++	proxyURL, err := t.proxyFor(req.URL)
++	if err != nil {
++		if req.Body != nil {
++			_ = req.Body.Close()
++		}
++		return nil, fmt.Errorf("environment proxy: %w", err)
++	}
++	if proxyURL == nil {
++		return t.via("").RoundTrip(req)
++	}
++	return t.via(proxyURL.String()).RoundTrip(req)
++}
 diff --git a/sdk/auth/codex_device.go b/sdk/auth/codex_device.go
 index cc2febbb..7489b159 100644
 --- a/sdk/auth/codex_device.go
@@ -574,4 +619,40 @@ index 00000000..aa3ef639
 +			}
 +		})
 +	}
++}
+diff --git a/sdk/proxyutil/proxy.go b/sdk/proxyutil/proxy.go
+index 4119baa9..fd86f627 100644
+--- a/sdk/proxyutil/proxy.go
++++ b/sdk/proxyutil/proxy.go
+@@ -10,10 +10,12 @@ import (
+ 	"net"
+ 	"net/http"
+ 	"net/url"
++	"os"
+ 	"strconv"
+ 	"strings"
+ 	"time"
+ 
++	"golang.org/x/net/http/httpproxy"
+ 	"golang.org/x/net/proxy"
+ )
+ 
+@@ -381,3 +383,18 @@ func (c *bufferedConn) Read(p []byte) (int, error) {
+ 	}
+ 	return c.Conn.Read(p)
+ }
++
++// EnvironmentProxy resolves a request's proxy from HTTPS_PROXY (or ALL_PROXY)
++// and NO_PROXY, as Go's default transport does. It is nil when no proxy is set.
++func EnvironmentProxy() func(*url.URL) (*url.URL, error) {
++	proxyConfig := httpproxy.FromEnvironment()
++	for _, key := range []string{"ALL_PROXY", "all_proxy"} {
++		if proxyConfig.HTTPSProxy == "" {
++			proxyConfig.HTTPSProxy = strings.TrimSpace(os.Getenv(key))
++		}
++	}
++	if proxyConfig.HTTPSProxy == "" {
++		return nil
++	}
++	return proxyConfig.ProxyFunc()
 +}

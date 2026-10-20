@@ -1,23 +1,12 @@
+import type { DriveFile, DriveValue } from "@comma/core/contract";
 import { act, fireEvent, render, screen, waitFor } from "@comma/test-utils/render";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DriveStore, type DriveFile } from "../components/drive/driveStore";
-import type { DriveBackend } from "../components/drive/driveSynchronicityBackend";
+import { resetDriveStoreForTest } from "../components/drive/driveStore";
 import { DrivePreviewPanel } from "../components/drive/DrivePreviewPanel";
 
-const state = vi.hoisted(() => ({
-  store: undefined as DriveStore | undefined,
-  backend: undefined as DriveBackend | undefined,
-}));
-vi.mock("../components/drive/driveStore", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../components/drive/driveStore")>()),
-  getDriveStore: () => state.store!,
-}));
-vi.mock("../components/drive/driveBackend", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../components/drive/driveBackend")>()),
-  getDriveBackend: () => state.backend,
-}));
 const file: DriveFile = {
   id: "drive-file",
   contentsHash: "version-a",
@@ -27,12 +16,31 @@ const file: DriveFile = {
   sizeBytes: 20,
   spaceId: "space",
 };
-const seed = (files: DriveFile[]) => ({
+const drive = (files: DriveFile[]): DriveValue => ({
+  node: { status: "ready" },
   originDeviceId: "mac",
   devices: [{ current: true, id: "mac", label: "This Mac" }],
   spaces: [{ id: "space", name: "Space", writable: true }],
   files,
+  versionPolicy: "newest",
+  localSyncEnabled: false,
+  localSyncRoot: "/Drive",
+  syncHistory: [],
+  transfers: [],
 });
+const markdown = (text: string) => ({
+  bytes: new TextEncoder().encode(text),
+  mediaType: "text/markdown",
+});
+
+/** The core's Drive lists `listed`; `read` answers its `drive.read`. */
+let listed: DriveFile[];
+let read: (params: { file: string }) => unknown;
+let core: ReturnType<typeof createScriptedCore>;
+const relist = (files: DriveFile[]) => {
+  listed = files;
+  core.changed("drive");
+};
 const applicationId = `fap1_${"a".repeat(43)}`;
 const saved = {
   status: "saved" as const,
@@ -42,13 +50,15 @@ const saved = {
 const onOpenBrowser = vi.fn();
 const renderPreview = () =>
   render(
-    <StrictMode>
-      <DrivePreviewPanel
-        fileId={file.id}
-        panelId="drive-preview"
-        onOpenBrowser={onOpenBrowser}
-      />
-    </StrictMode>
+    core.wrap(
+      <StrictMode>
+        <DrivePreviewPanel
+          fileId={file.id}
+          panelId="drive-preview"
+          onOpenBrowser={onOpenBrowser}
+        />
+      </StrictMode>
+    )
   );
 async function chooseApp() {
   fireEvent.click(screen.getByRole("button", { name: "Choose application" }));
@@ -56,14 +66,25 @@ async function chooseApp() {
 }
 
 beforeEach(() => {
-  state.backend = undefined;
-  state.store = new DriveStore(
-    seed([{ ...file, blob: new Blob(["# Drive report"], { type: "text/markdown" }) }])
-  );
+  resetDriveStoreForTest();
+  listed = [file];
+  read = () => markdown("# Drive report");
+  core = createScriptedCore({
+    values: (topic) => (topic.topic === "drive" ? drive(listed) : undefined),
+    calls: (name, params) =>
+      name === "drive.read"
+        ? read(params as { file: string })
+        : name === "drive.download"
+          ? {
+              transfer: "t1",
+              saved: { downloadRef: saved.downloadRef, fileName: file.name },
+            }
+          : null,
+  });
 });
 
 describe("Drive uses the shared file reader", () => {
-  it("opens the held file from the common toolbar under StrictMode without retrieving it again", async () => {
+  it("opens the read file from the common toolbar under StrictMode without reading it again", async () => {
     const saveDownload = vi.fn(async () => saved);
     const openDownload = vi.fn(async () => ({ status: "opened" as const }));
     installNativeBridgeMock({
@@ -92,17 +113,14 @@ describe("Drive uses the shared file reader", () => {
       })
     );
     expect(saveDownload).toHaveBeenCalledOnce();
+    expect(core.sentTo("drive.read")).toEqual([{ file: file.id }]);
   });
-  it("keeps Drive streamed downloads and reports failed preview reads in the common error UI", async () => {
-    const saveDownload = vi.fn(async () => saved);
+  it("downloads through the core and reports failed preview reads in the common error UI", async () => {
     const rendererSave = vi.fn();
-    state.store = new DriveStore(seed([{ ...file, sizeBytes: 20_000_000 }]));
-    state.backend = {
-      readFile: vi.fn(async () => {
-        throw new Error("Unavailable preview");
-      }),
-      saveDownload,
-    } as unknown as DriveBackend;
+    listed = [{ ...file, sizeBytes: 20_000_000 }];
+    read = () => {
+      throw new Error("Unavailable preview");
+    };
     installNativeBridgeMock({
       platform: "electron",
       os: "macos",
@@ -117,9 +135,35 @@ describe("Drive uses the shared file reader", () => {
       screen.queryByRole("button", { name: "Choose application" })
     ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Download report.md" }));
-    await waitFor(() => expect(saveDownload).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(core.sentTo("drive.download")).toEqual([{ file: file.id }])
+    );
     expect(rendererSave).not.toHaveBeenCalled();
-    expect(state.store.getSnapshot().transfers[0]?.status).toBe("success");
+  });
+
+  it("plays a large recording from a ranged stream without reading the whole file", async () => {
+    const recording = { ...file, name: "recording.m4a", sizeBytes: 24_000_000 };
+    const streamUrl = "comma-drive://stream/0f8fad5b-d9cb-469f-a165-70867728950e";
+    listed = [recording];
+    const openStream = vi.fn(async () => ({
+      status: "opened" as const,
+      url: streamUrl,
+    }));
+    installNativeBridgeMock({
+      platform: "electron",
+      os: "macos",
+      synchronicity: { openStream },
+    });
+    renderPreview();
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("file-preview-content").querySelector("audio")
+      ).toHaveAttribute("src", streamUrl)
+    );
+    expect(openStream).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "recording.m4a", space: "space" })
+    );
+    expect(core.sentTo("drive.read")).toEqual([]);
   });
 
   it("retires old bytes and cancels a pending native open when a Drive version replaces the Blob", async () => {
@@ -148,21 +192,12 @@ describe("Drive uses the shared file reader", () => {
     expect(await screen.findByRole("heading", { name: "Drive report" })).toBeVisible();
     await chooseApp();
     await waitFor(() => expect(saveDownload).toHaveBeenCalledOnce());
-    act(() =>
-      state.store!.load(
-        seed([
-          {
-            ...file,
-            contentsHash: "version-b",
-            blob: new Blob(["# New version"], { type: "text/markdown" }),
-          },
-        ])
-      )
-    );
+    read = () => markdown("# New version");
+    relist([{ ...file, contentsHash: "version-b" }]);
+    expect(await screen.findByRole("heading", { name: "New version" })).toBeVisible();
     expect(
       screen.queryByRole("heading", { name: "Drive report" })
     ).not.toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "New version" })).toBeVisible();
     await act(async () => resolveSave(saved));
     expect(openDownload).not.toHaveBeenCalled();
     await chooseApp();
@@ -171,32 +206,19 @@ describe("Drive uses the shared file reader", () => {
   });
 
   it("a late read of the replaced Drive version cannot overwrite current content", async () => {
-    let resolveRead!: (value: Blob) => void;
-    const pendingRead = new Promise<Blob>((resolve) => {
-      resolveRead = resolve;
-    });
-    state.store = new DriveStore(seed([{ ...file, contentsHash: "late-version-a" }]));
-    state.backend = { readFile: vi.fn(() => pendingRead) } as unknown as DriveBackend;
+    let resolveRead!: (value: unknown) => void;
+    listed = [{ ...file, contentsHash: "late-version-a" }];
+    read = () => new Promise((resolve) => (resolveRead = resolve));
     installNativeBridgeMock({ platform: "web" });
     renderPreview();
-    await waitFor(() => expect(state.backend!.readFile).toHaveBeenCalledOnce());
-    act(() =>
-      state.store!.load(
-        seed([
-          {
-            ...file,
-            contentsHash: "late-version-b",
-            blob: new Blob(["# Current Drive bytes"], { type: "text/markdown" }),
-          },
-        ])
-      )
-    );
+    await waitFor(() => expect(core.sentTo("drive.read")).toHaveLength(1));
+    const late = resolveRead;
+    read = () => markdown("# Current Drive bytes");
+    relist([{ ...file, contentsHash: "late-version-b" }]);
     expect(
       await screen.findByRole("heading", { name: "Current Drive bytes" })
     ).toBeVisible();
-    await act(async () =>
-      resolveRead(new Blob(["# Stale Drive bytes"], { type: "text/markdown" }))
-    );
+    await act(async () => late(markdown("# Stale Drive bytes")));
     expect(
       screen.queryByRole("heading", { name: "Stale Drive bytes" })
     ).not.toBeInTheDocument();

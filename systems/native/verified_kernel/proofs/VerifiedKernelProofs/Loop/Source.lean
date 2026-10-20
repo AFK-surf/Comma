@@ -167,9 +167,8 @@ def resetEvent (eventId aid count created : Term) : Term :=
     (b "event", .map [(b "assistant_message_id", aid), (b "tool_call_count", count)]),
     (b "created_at", created)]
 
-def noticeAssistant (sid aid call : Term) : Term :=
-  .map [(b "type", b "assistant"), (b "session_id", sid), (b "message_id", aid),
-    (b "content", b ""), (b "tool_calls", list [call]), (b "visible_reply_phase", b "clean")]
+/-- The transcript record of the failure notice `call` at `aid`. -/
+abbrev noticeRecord : Term → Term → Term → Term := native_decl% "VerifiedKernel.Session.Loop.noticeRecord"
 
 def waitSetEvent (sid wait : Term) : Term :=
   .map [(b "type", b "wait_set"), (b "session_id", sid), (b "wait", wait)]
@@ -270,7 +269,7 @@ inductive CommitSource (state machine event : Term) : List Term → Term → Ter
       (retireAnswer : Answers state "runaway_retirement" nil retire) (retireNotList : retire.isList = false)
       (settle : Answers state "guard_failure_local_settlement" nil (list events)) :
       CommitSource state machine event events (list []) nil
-  /-- The runtime failure notice: its assistant record and its attempt. -/
+  /-- The runtime failure notice: its runtime message record and its attempt. -/
   | notice (retire settle reply sid aid disposition callId attempt : Term)
       (entry : GuardEntry machine event)
       (retireAnswer : Answers state "runaway_retirement" nil retire) (retireNotList : retire.isList = false)
@@ -285,7 +284,7 @@ inductive CommitSource (state machine event : Term) : List Term → Term → Ter
       (prepare : Answers state "guard_failure_prepare" (noticeBinding disposition callId) attempt)
       (attemptMap : attempt.isMap = true) :
       CommitSource state machine event
-        [noticeAssistant sid aid (noticeCallOf (mkey attempt "event")), attempt] (hwmOpts aid) nil
+        [noticeRecord sid aid (noticeCallOf (mkey attempt "event")), attempt] (hwmOpts aid) nil
   /-- Cleanup of orphaned local work before the notice runs. -/
   | noticeCleanup (now : Term) (events : List Term)
       (entry : event = a "continue" ∧ phaseIs machine "notice_cleanup")

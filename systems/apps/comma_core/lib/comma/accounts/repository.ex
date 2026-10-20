@@ -30,22 +30,26 @@ defmodule Comma.Accounts.Repository do
   end
 
   @spec ensure_user_by_email(String.t(), map(), keyword()) ::
-          {:ok, User.t()} | {:error, :not_found | :invalid_email | Ecto.Changeset.t()}
+          {:ok, User.t(), :created | :existing}
+          | {:error, :not_found | :invalid_email | Ecto.Changeset.t()}
   def ensure_user_by_email(email, attrs \\ %{}, opts \\ []) when is_map(attrs) do
     with {:ok, normalized} <- Email.normalize(email),
          :ok <- Comma.GuestMode.reject_guest_email(normalized),
          {:ok, values} <- user_values(normalized, attrs) do
       target_repo = repo(opts)
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
-      target_repo.insert_all(
-        User,
-        [Map.merge(values, %{created_at: now, updated_at: now})],
-        on_conflict: :nothing,
-        conflict_target: [:email]
-      )
+      {inserted, _} =
+        target_repo.insert_all(
+          User,
+          [Map.merge(values, %{created_at: now, updated_at: now})],
+          on_conflict: :nothing,
+          conflict_target: [:email]
+        )
 
-      get_user_by_email(normalized, repo: target_repo)
+      with {:ok, user} <- get_user_by_email(normalized, repo: target_repo) do
+        {:ok, user, if(inserted == 1, do: :created, else: :existing)}
+      end
     end
   end
 
@@ -148,7 +152,7 @@ defmodule Comma.Accounts.Repository do
         email_snapshot: value(attrs, :email_snapshot),
         email_verified: value(attrs, :email_verified),
         hosted_domain: value(attrs, :hosted_domain),
-        last_authenticated_at: value(attrs, :last_authenticated_at) || DateTime.utc_now()
+        last_authenticated_at: value(attrs, :last_authenticated_at) || SystemsClock.utc_now()
       }
 
       changeset = Identity.changeset(%Identity{}, values)

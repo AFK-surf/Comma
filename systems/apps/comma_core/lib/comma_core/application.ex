@@ -6,7 +6,7 @@ defmodule CommaCore.Application do
   @impl true
   def start(_type, _args) do
     repo_children =
-      if Application.get_env(:comma_core, :start_repo, false) do
+      if SystemsRuntime.get_env(:comma_core, :start_repo, false) do
         [Comma.Repo] ++ oban_children() ++ schema_readiness_children()
       else
         []
@@ -14,6 +14,7 @@ defmodule CommaCore.Application do
 
     children =
       repo_children ++
+        Comma.Analytics.children() ++
         auth_redis_children() ++
         oauth_idp_rate_limit_children() ++
         task_share_rate_limit_children() ++
@@ -25,14 +26,17 @@ defmodule CommaCore.Application do
           Comma.Notifications.APNs.ProviderToken
         ]
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: CommaCore.Supervisor)
+    SystemsRuntime.Supervisor.start_link(children,
+      strategy: :one_for_one,
+      name: CommaCore.Supervisor
+    )
   end
 
   defp oban_children do
-    if Application.get_env(:comma_core, :start_oban, true) do
+    if SystemsRuntime.get_env(:comma_core, :start_oban, true) do
       :ok = Comma.ObanTelemetry.attach()
 
-      [{Comma.ObanBootstrap, Application.fetch_env!(:comma_core, Oban)}] ++
+      [{Comma.ObanBootstrap, SystemsRuntime.fetch_env!(:comma_core, Oban)}] ++
         backlog_sampler_children()
     else
       []
@@ -40,7 +44,7 @@ defmodule CommaCore.Application do
   end
 
   defp backlog_sampler_children do
-    if Application.get_env(:comma_core, :start_oban_backlog_sampler, true) do
+    if SystemsRuntime.get_env(:comma_core, :start_oban_backlog_sampler, true) do
       [Comma.ObanBacklogSampler]
     else
       []
@@ -48,7 +52,7 @@ defmodule CommaCore.Application do
   end
 
   defp schema_readiness_children do
-    if Application.get_env(:comma_core, :start_schema_readiness, true) do
+    if SystemsRuntime.get_env(:comma_core, :start_schema_readiness, true) do
       [Comma.SchemaReadiness]
     else
       []
@@ -56,7 +60,7 @@ defmodule CommaCore.Application do
   end
 
   defp auth_redis_children do
-    config = Application.get_env(:comma_core, :auth, [])
+    config = SystemsRuntime.get_env(:comma_core, :auth, [])
 
     if Keyword.get(config, :challenge_store, Comma.AuthChallengeStore.Redis) ==
          Comma.AuthChallengeStore.Redis do
@@ -87,14 +91,14 @@ defmodule CommaCore.Application do
   end
 
   defp apple_auth_children do
-    case Application.get_env(:comma_core, :apple_auth, [])[:client_id] do
+    case SystemsRuntime.get_env(:comma_core, :apple_auth, [])[:client_id] do
       id when is_binary(id) and id != "" -> [Comma.Auth.AppleKeys]
       _ -> []
     end
   end
 
   defp google_oidc_children do
-    config = Application.get_env(:comma_core, :google_auth, [])
+    config = SystemsRuntime.get_env(:comma_core, :google_auth, [])
 
     if config[:adapter] == Comma.Auth.GoogleAdapter.Oidcc and configured_client?(config) do
       [
@@ -120,7 +124,7 @@ defmodule CommaCore.Application do
   end
 
   defp profile_avatar_children do
-    config = Application.get_env(:comma_core, :profile_avatar, [])
+    config = SystemsRuntime.get_env(:comma_core, :profile_avatar, [])
 
     if Comma.ProfileAvatar.Storage.configured?() and
          config[:adapter] == Comma.ProfileAvatar.Storage.GCS do

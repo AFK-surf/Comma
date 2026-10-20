@@ -1,0 +1,13 @@
+[package]
+name = "comma-profiles"
+edition = "2024"
+version = "0.1.0"
+publish = false
+description = "Profiles as Comma and its stations both use them: the sources, a Profile, which Profile serves a request, and how a runtime is given one. Salix loads it as a NIF (nif/), a station in its mesh addon."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }

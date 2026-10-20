@@ -5,10 +5,10 @@ defmodule SalixSignalProto.Crypto.MlKem768OpensslTest do
   # spqr-mlkem768.json and the plain-Elixir encapsulation steps.
   #
   # OpenSSL 3.5 or later is required; the release image (Debian trixie) has
-  # it. On hosts with an older OpenSSL these tests skip, and the
-  # test-signal-proto-trixie CI job runs them in a build that does not allow
-  # the plain-Elixir fallback.
-  use ExUnit.Case, async: true
+  # it. On hosts with an older OpenSSL these tests skip; test/openssl35_kem.exs
+  # runs them on a host that has it, in a build that does not allow the
+  # plain-Elixir fallback.
+  use SystemsClock.Case, async: true
 
   import Bitwise
 
@@ -34,7 +34,7 @@ defmodule SalixSignalProto.Crypto.MlKem768OpensslTest do
   end
 
   test "OpenSSL key pairs have the FIPS 203 layout and decapsulate the two-step encapsulation" do
-    {ek, dk} = MlKem768.keypair(:crypto.strong_rand_bytes(64))
+    {ek, dk} = MlKem768.keypair(SystemsRuntime.Proc.random_bytes(64))
     assert {byte_size(ek), byte_size(dk)} == {1184, 2400}
     # dk = dk_pke (1152) || ek (1184) || H(ek) (32) || z (32).
     assert binary_part(dk, 1152, 1184) == ek
@@ -42,7 +42,7 @@ defmodule SalixSignalProto.Crypto.MlKem768OpensslTest do
     assert MlKem768.valid_encapsulation_key?(ek)
 
     <<t::binary-size(1152), rho::binary-size(32)>> = ek
-    m = :crypto.strong_rand_bytes(32)
+    m = SystemsRuntime.Proc.random_bytes(32)
     {secret, c1, r} = MlKem768.encapsulate_first(rho, :crypto.hash(:sha3_256, ek), m)
     c2 = MlKem768.encapsulate_second(t, r, m)
     assert MlKem768.decapsulate(dk, c1 <> c2) == {:ok, secret}
@@ -56,8 +56,8 @@ defmodule SalixSignalProto.Crypto.MlKem768OpensslTest do
   end
 
   test "a decapsulation key that fails the FIPS 203 hash check is refused, not raised" do
-    {ek, dk} = MlKem768.keypair(:crypto.strong_rand_bytes(64))
-    {_secret, ciphertext} = MlKem768.encapsulate(ek, :crypto.strong_rand_bytes(32))
+    {ek, dk} = MlKem768.keypair(SystemsRuntime.Proc.random_bytes(64))
+    {_secret, ciphertext} = MlKem768.encapsulate(ek, SystemsRuntime.Proc.random_bytes(32))
     <<before::binary-size(2336), byte, after_byte::binary>> = dk
 
     assert MlKem768.decapsulate(<<before::binary, bxor(byte, 1), after_byte::binary>>, ciphertext) ==
@@ -65,7 +65,7 @@ defmodule SalixSignalProto.Crypto.MlKem768OpensslTest do
   end
 
   test "post-quantum ratchet epochs complete with OpenSSL key generation and decapsulation" do
-    secret = :crypto.strong_rand_bytes(32)
+    secret = SystemsRuntime.Proc.random_bytes(32)
 
     {alice, bob} =
       Enum.reduce(1..100, {Spqr.new(:initiator, secret), Spqr.new(:responder, secret)}, fn
@@ -80,7 +80,7 @@ defmodule SalixSignalProto.Crypto.MlKem768OpensslTest do
   end
 
   defp exchange(sender, receiver) do
-    {:ok, bytes, key, sender} = Spqr.send(sender, :crypto.strong_rand_bytes(64))
+    {:ok, bytes, key, sender} = Spqr.send(sender, SystemsRuntime.Proc.random_bytes(64))
     assert {:ok, ^key, receiver} = Spqr.receive(receiver, bytes)
     {sender, receiver}
   end

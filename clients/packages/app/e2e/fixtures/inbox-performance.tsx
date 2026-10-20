@@ -9,9 +9,11 @@ import {
   useParams,
 } from "@tanstack/react-router";
 import { initializeCommaI18n } from "@comma/i18n";
-import type { ProductInboxItem } from "@comma/native-bridge";
+import type { ProductInboxItem } from "@comma/core-client";
 import { InboxView } from "../../src/components/inbox/InboxView";
-import { markTaskReviewSeen } from "../../src/components/tasks/taskReviewAttention";
+import { CoreProvider } from "@comma/core-client";
+import { useMarkTaskReviewSeen } from "../../src/components/tasks/taskReviewAttention";
+import { marksCore } from "./marksCore";
 import { InboxPaginationFixture } from "./inbox-pagination";
 import "../../src/styles.css";
 initializeCommaI18n(["en"]);
@@ -26,6 +28,7 @@ declare global {
 }
 function Fixture() {
   const [items, setItems] = useState<ProductInboxItem[]>([]);
+  const markTaskReviewSeen = useMarkTaskReviewSeen();
   const { conversationId } = useParams({ strict: false }) as {
     conversationId?: string;
   };
@@ -90,4 +93,10 @@ const router = createRouter({
   routeTree: root.addChildren([route]),
   history: createMemoryHistory({ initialEntries: ["/"] }),
 });
-createRoot(document.getElementById("root")!).render(<RouterProvider router={router} />);
+// The reader's marks live in the core; this fixture's core keeps only them.
+const core = marksCore();
+createRoot(document.getElementById("root")!).render(
+  <CoreProvider client={core}>
+    <RouterProvider router={router} />
+  </CoreProvider>
+);

@@ -1,5 +1,6 @@
 defmodule SalixAgent.BrowserStorageTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.Browser
   alias SalixAgent.Browser.{Driver, Connection}
   alias SalixStore.{BrowserBindings, BrowserSettings, BrowserStorage, Ids, Repo}
@@ -21,7 +22,7 @@ defmodule SalixAgent.BrowserStorageTest do
     def init(_), do: {:ok, %{browsers: %{}, fail_close: false, fail_status: false}}
     @impl true
     def handle_call(:create, _, state) do
-      id = Ecto.UUID.generate()
+      id = SystemsRuntime.Proc.uuid()
       directory = Path.join(System.tmp_dir!(), "comma-browser-storage-#{id}")
       File.mkdir_p!(directory)
 
@@ -91,7 +92,7 @@ defmodule SalixAgent.BrowserStorageTest do
     defp wait_dead(pid, n) do
       case System.cmd("kill", ["-0", to_string(pid)], stderr_to_stdout: true) do
         {_, 0} ->
-          Process.sleep(20)
+          SystemsClock.sleep(20)
           wait_dead(pid, n - 1)
 
         _ ->
@@ -106,7 +107,7 @@ defmodule SalixAgent.BrowserStorageTest do
         do: :ok,
         else:
           (
-            Process.sleep(25)
+            SystemsClock.sleep(25)
             wait_file(path, n - 1)
           )
     end
@@ -144,19 +145,19 @@ defmodule SalixAgent.BrowserStorageTest do
   end
 
   setup do
-    old_key = Application.get_env(:salix_store, :compute_workload_credential_secret)
-    old_provider = Application.get_env(:salix_agent, :browser_provider)
+    old_key = SystemsRuntime.get_env(:salix_store, :compute_workload_credential_secret)
+    old_provider = SystemsRuntime.get_env(:salix_agent, :browser_provider)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_store,
       :compute_workload_credential_secret,
       String.duplicate("test", 16)
     )
 
-    Application.put_env(:salix_agent, :browser_provider, Provider)
+    SystemsRuntime.put_env(:salix_agent, :browser_provider, Provider)
     start_supervised!(Provider)
 
-    unless Process.whereis(SalixAgent.Browser.Supervisor),
+    unless SystemsRuntime.Proc.whereis(SalixAgent.Browser.Supervisor),
       do:
         start_supervised!(
           {DynamicSupervisor, name: SalixAgent.Browser.Supervisor, strategy: :one_for_one}
@@ -181,12 +182,12 @@ defmodule SalixAgent.BrowserStorageTest do
 
     on_exit(fn ->
       if old_key,
-        do: Application.put_env(:salix_store, :compute_workload_credential_secret, old_key),
-        else: Application.delete_env(:salix_store, :compute_workload_credential_secret)
+        do: SystemsRuntime.put_env(:salix_store, :compute_workload_credential_secret, old_key),
+        else: SystemsRuntime.delete_env(:salix_store, :compute_workload_credential_secret)
 
       if old_provider,
-        do: Application.put_env(:salix_agent, :browser_provider, old_provider),
-        else: Application.delete_env(:salix_agent, :browser_provider)
+        do: SystemsRuntime.put_env(:salix_agent, :browser_provider, old_provider),
+        else: SystemsRuntime.delete_env(:salix_agent, :browser_provider)
 
       import Ecto.Query
       Repo.delete_all(from(r in BrowserBindings.Row, where: r.tenant_id == ^tenant))
@@ -204,7 +205,7 @@ defmodule SalixAgent.BrowserStorageTest do
     navigate(owner, tab, base <> "/login")
     assert {:ok, _} = Browser.execute(owner, "take_control", %{}, "human")
     {:ok, driver} = Driver.ensure(BrowserBindings.get(owner))
-    send(driver, :checkpoint)
+    SystemsRuntime.Proc.send(driver, :checkpoint)
 
     assert eventually(fn ->
              match?(
@@ -300,7 +301,7 @@ defmodule SalixAgent.BrowserStorageTest do
     navigate(owner, tab, base <> "/login")
     row = BrowserBindings.get(owner)
     {:ok, driver} = Driver.ensure(row)
-    conn = :sys.get_state(driver).commands.conn
+    conn = :sys.get_state(driver, :infinity).commands.conn
     origins = Map.new(1..70, fn i -> {"http://site-#{i}.test", [["account", "saved-#{i}"]]} end)
 
     assert {:ok, _} =
@@ -331,16 +332,16 @@ defmodule SalixAgent.BrowserStorageTest do
         do: assert({:ok, _} = Browser.execute(owner, "take_control", %{}, principal))
 
       {:ok, driver} = Driver.ensure(BrowserBindings.get(owner))
-      conn = :sys.get_state(driver).commands.conn
-      :sys.suspend(conn)
+      conn = :sys.get_state(driver, :infinity).commands.conn
+      :sys.suspend(conn, :infinity)
 
       try do
-        checkpoint = Task.async(fn -> Browser.checkpoint(owner) end)
-        assert eventually(fn -> not is_nil(:sys.get_state(driver).pending) end)
+        checkpoint = SystemsRuntime.Task.async(fn -> Browser.checkpoint(owner) end)
+        assert eventually(fn -> not is_nil(:sys.get_state(driver, :infinity).pending) end)
         operation = if principal == :agent, do: "snapshot", else: "input"
 
         command =
-          Task.async(fn ->
+          SystemsRuntime.Task.async(fn ->
             Browser.execute(
               owner,
               operation,
@@ -349,13 +350,13 @@ defmodule SalixAgent.BrowserStorageTest do
             )
           end)
 
-        Process.sleep(50)
-        :sys.resume(conn)
-        assert {:ok, _} = Task.await(command, 20_000)
-        Task.await(checkpoint, 20_000)
+        SystemsClock.sleep(50)
+        :sys.resume(conn, :infinity)
+        assert {:ok, _} = settled_await(command)
+        settled_await(checkpoint)
         assert BrowserBindings.get(owner).pending == nil
       after
-        :sys.resume(conn)
+        :sys.resume(conn, :infinity)
       end
     end
 
@@ -374,7 +375,7 @@ defmodule SalixAgent.BrowserStorageTest do
     provider = BrowserBindings.get(owner).provider_id
 
     Repo.update_all(BrowserBindings.query(owner),
-      set: [updated_at: DateTime.add(DateTime.utc_now(), -901)]
+      set: [updated_at: DateTime.add(SystemsClock.utc_now(), -901)]
     )
 
     assert {:ok, _} = Browser.execute(owner, "open", %{})
@@ -421,7 +422,7 @@ defmodule SalixAgent.BrowserStorageTest do
     assert BrowserBindings.get(owner).pending == creating.pending
 
     Repo.update_all(BrowserBindings.query(owner),
-      set: [updated_at: DateTime.add(DateTime.utc_now(), -121)]
+      set: [updated_at: DateTime.add(SystemsClock.utc_now(), -121)]
     )
 
     open(other)
@@ -449,7 +450,7 @@ defmodule SalixAgent.BrowserStorageTest do
       provider = BrowserBindings.get(owner).provider_id
 
       Repo.update_all(BrowserBindings.query(owner),
-        set: [updated_at: DateTime.add(DateTime.utc_now(), -901)]
+        set: [updated_at: DateTime.add(SystemsClock.utc_now(), -901)]
       )
 
       assert {:error, :browser_shared_profile_in_use} = Browser.execute(other, "open", %{})
@@ -472,7 +473,7 @@ defmodule SalixAgent.BrowserStorageTest do
     navigate(owner, tab, base <> "/login")
     row = BrowserBindings.get(owner)
     {:ok, driver} = Driver.ensure(row)
-    conn = :sys.get_state(driver).commands.conn
+    conn = :sys.get_state(driver, :infinity).commands.conn
 
     origins =
       Map.new(1..5, fn i ->
@@ -522,7 +523,7 @@ defmodule SalixAgent.BrowserStorageTest do
     navigate(owner, tab, base <> "/login")
     row = BrowserBindings.get(owner)
     {:ok, driver} = Driver.ensure(row)
-    conn = :sys.get_state(driver).commands.conn
+    conn = :sys.get_state(driver, :infinity).commands.conn
 
     origins =
       Map.new(1..5, fn i ->
@@ -558,7 +559,7 @@ defmodule SalixAgent.BrowserStorageTest do
     navigate(owner, tab, base <> "/login")
     row = BrowserBindings.get(owner)
     {:ok, driver} = Driver.ensure(row)
-    monitor = Process.monitor(driver)
+    monitor = SystemsRuntime.Proc.monitor(driver)
     age_driver(driver)
 
     for i <- 1..3 do
@@ -578,7 +579,7 @@ defmodule SalixAgent.BrowserStorageTest do
                })
     end
 
-    assert_receive {:DOWN, ^monitor, :process, ^driver, :normal}, 3000
+    settle_receive({:DOWN, ^monitor, :process, ^driver, :normal})
 
     for _ <- 1..3 do
       assert {:error, :browser_driver_unavailable} = Driver.observe(row)
@@ -601,19 +602,19 @@ defmodule SalixAgent.BrowserStorageTest do
     assert {:ok, _} = Browser.execute(owner, "take_control", %{}, "human")
     row = BrowserBindings.get(owner)
     {:ok, driver} = Driver.ensure(row)
-    monitor = Process.monitor(driver)
+    monitor = SystemsRuntime.Proc.monitor(driver)
     age_driver(driver)
-    refute_receive {:DOWN, ^monitor, :process, ^driver, _}, 1500
+    settle_refute_receive({:DOWN, ^monitor, :process, ^driver, _}, 1500)
     :ok = BrowserBindings.heartbeat(owner, "human")
-    send(driver, :idle)
-    refute_receive {:DOWN, ^monitor, :process, ^driver, _}, 100
+    SystemsRuntime.Proc.send(driver, :idle)
+    settle_refute_receive({:DOWN, ^monitor, :process, ^driver, _}, 100)
 
     Repo.update_all(BrowserBindings.query(owner),
-      set: [controller_expires_at: DateTime.add(DateTime.utc_now(), -1)]
+      set: [controller_expires_at: DateTime.add(SystemsClock.utc_now(), -1)]
     )
 
-    send(driver, :idle)
-    assert_receive {:DOWN, ^monitor, :process, ^driver, :normal}, 1000
+    SystemsRuntime.Proc.send(driver, :idle)
+    settle_receive({:DOWN, ^monitor, :process, ^driver, :normal})
     # Explicit human interaction may reconnect while the provider is still live.
     assert {:ok, _} = Browser.execute(owner, "take_control", %{}, "human")
     assert {:ok, replacement} = Driver.observe(row)
@@ -626,41 +627,35 @@ defmodule SalixAgent.BrowserStorageTest do
     open(owner)
     row = BrowserBindings.get(owner)
     {:ok, driver} = Driver.ensure(row)
-    monitor = Process.monitor(driver)
+    monitor = SystemsRuntime.Proc.monitor(driver)
     age_driver(driver)
     assert {:ok, _} = Browser.execute(owner, "tabs", %{})
-    refute_receive {:DOWN, ^monitor, :process, ^driver, _}, 1500
+    settle_refute_receive({:DOWN, ^monitor, :process, ^driver, _}, 1500)
     assert {:ok, _} = Browser.execute(owner, "request_control", %{})
     age_driver(driver)
-    assert_receive {:DOWN, ^monitor, :process, ^driver, :normal}, 3000
+    settle_receive({:DOWN, ^monitor, :process, ^driver, :normal})
     assert BrowserBindings.get(owner).control == "handoff_pending"
     assert {:ok, _} = Browser.execute(owner, "close", %{})
   end
 
   defp age_driver(driver) do
-    :sys.replace_state(driver, fn state ->
-      Process.cancel_timer(state.idle)
+    :sys.replace_state(
+      driver,
+      fn state ->
+        SystemsClock.cancel_timer(state.idle)
 
-      %{
-        state
-        | last_activity: System.monotonic_time(:millisecond) - 600_001,
-          idle: Process.send_after(driver, :idle, 1000)
-      }
-    end)
+        %{
+          state
+          | last_activity: SystemsClock.monotonic_time(:millisecond) - 600_001,
+            idle: SystemsClock.send_after(driver, :idle, 1000)
+        }
+      end,
+      :infinity
+    )
   end
 
-  defp eventually(fun, attempts \\ 100)
-  defp eventually(_, 0), do: false
-
-  defp eventually(fun, attempts) do
-    if fun.(),
-      do: true,
-      else:
-        (
-          Process.sleep(25)
-          eventually(fun, attempts - 1)
-        )
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 
   defp open(owner) do
     assert {:ok, %{"tabs" => [%{"tab_id" => tab} | _]}} = Browser.execute(owner, "open", %{})
@@ -674,7 +669,7 @@ defmodule SalixAgent.BrowserStorageTest do
     row = BrowserBindings.get(owner)
     {:ok, pid} = Driver.ensure(row)
     assert {:ok, _} = Driver.request(pid, "tabs", %{})
-    state = :sys.get_state(pid).commands
+    state = :sys.get_state(pid, :infinity).commands
 
     assert {:ok, result} =
              Connection.command(

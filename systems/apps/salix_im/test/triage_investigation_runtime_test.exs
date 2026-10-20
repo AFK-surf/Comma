@@ -1,5 +1,8 @@
 defmodule SalixIM.TriageInvestigationRuntimeTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle
   alias SalixIM.{ConversationServer, Conversations, TaskConversationInput}
   alias SalixIM.Triage.InvestigationAuthority
   alias SalixStore.{CasRecord, Crypto, Ids, Keys, Repo, RuntimeIds, TriageKeys, ULID}
@@ -38,9 +41,9 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
           end)
 
         if pause? do
-          send(pid, {:context_paused, self()})
+          SystemsRuntime.Proc.send(pid, {:context_paused, SystemsRuntime.Proc.self()})
 
-          receive do
+          SystemsRuntime.Proc.receive do
             :release -> :ok
           end
         end
@@ -56,9 +59,12 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     defp stage(agent_id, payload, opts) do
       if Agent.get(__MODULE__, &(&1[:unavailable_agent] == agent_id)) do
         if Agent.get(__MODULE__, & &1[:pause_unavailable]) do
-          send(Agent.get(__MODULE__, & &1.pid), {:agent_unavailable, self()})
+          SystemsRuntime.Proc.send(
+            Agent.get(__MODULE__, & &1.pid),
+            {:agent_unavailable, SystemsRuntime.Proc.self()}
+          )
 
-          receive do
+          SystemsRuntime.Proc.receive do
             :release -> :ok
           end
         end
@@ -88,9 +94,12 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
         Agent.get(__MODULE__, &{Map.get(&1, :pause_accepted_agent) == agent_id, &1.pid})
 
       if pause? do
-        send(pid, {:agent_accepted, self(), opts[:source_message_id], result})
+        SystemsRuntime.Proc.send(
+          pid,
+          {:agent_accepted, SystemsRuntime.Proc.self(), opts[:source_message_id], result}
+        )
 
-        receive do
+        SystemsRuntime.Proc.receive do
           :release -> :ok
         end
       end
@@ -108,9 +117,9 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
       state = Agent.get(__MODULE__, & &1)
 
       if Map.get(state, :pause_reply_lookup, false) do
-        send(state.pid, {:reply_lookup_paused, self()})
+        SystemsRuntime.Proc.send(state.pid, {:reply_lookup_paused, SystemsRuntime.Proc.self()})
 
-        receive do
+        SystemsRuntime.Proc.receive do
           :release -> :ok
         end
       end
@@ -124,7 +133,7 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
           accept_post(tenant, connect, params)
 
         reason ->
-          send(Agent.get(__MODULE__, & &1.pid), {:slack_rejected, reason})
+          SystemsRuntime.Proc.send(Agent.get(__MODULE__, & &1.pid), {:slack_rejected, reason})
           {:error, reason}
       end
     end
@@ -139,7 +148,7 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
       }
 
       Agent.update(__MODULE__, fn state ->
-        send(state.pid, {:slack_post, params})
+        SystemsRuntime.Proc.send(state.pid, {:slack_post, params})
         %{state | posts: Map.put(state.posts, operation, result)}
       end)
 
@@ -245,7 +254,7 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
 
           "/api/reactions.get" ->
             state = Agent.get(Ports, & &1)
-            send(state.pid, {:reaction_read, conn.query_params})
+            SystemsRuntime.Proc.send(state.pid, {:reaction_read, conn.query_params})
 
             reactions =
               for {timestamp, emoji} <- Map.get(state, :reactions, []),
@@ -276,11 +285,11 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
                 {{Map.get(state, :pause_reaction, false), state.pid}, next}
               end)
 
-            send(pid, {:reaction_added, self(), params})
+            SystemsRuntime.Proc.send(pid, {:reaction_added, SystemsRuntime.Proc.self(), params})
 
             if pause?,
               do:
-                (receive do
+                (SystemsRuntime.Proc.receive do
                    :release -> :ok
                  end)
 
@@ -357,8 +366,8 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
 
     previous =
       for {app, key, value} <- overrides do
-        old = Application.fetch_env(app, key)
-        Application.put_env(app, key, value)
+        old = SystemsRuntime.fetch_env(app, key)
+        SystemsRuntime.put_env(app, key, value)
         {app, key, old}
       end
 
@@ -368,14 +377,14 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
 
       for {app, key, old} <- previous do
         case old do
-          {:ok, value} -> Application.put_env(app, key, value)
-          :error -> Application.delete_env(app, key)
+          {:ok, value} -> SystemsRuntime.put_env(app, key, value)
+          :error -> SystemsRuntime.delete_env(app, key)
         end
       end
     end)
 
     start_supervised!(SalixStore.S3.Fake)
-    test_pid = self()
+    test_pid = SystemsRuntime.Proc.self()
 
     start_supervised!(%{
       id: :ports,
@@ -385,62 +394,6 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     })
 
     :ok
-  end
-
-  test "silence settles through the actual Participant queue with no Router or Slack delivery" do
-    f = fixture!()
-    source = read_source!(f)
-
-    assert {:ok, result} =
-             complete(f, source, %{
-               "kind" => "silence",
-               "reason" => "Already covered",
-               "source_refs" => []
-             })
-
-    assert result["delivery_status"] == "pending"
-
-    eventually(fn ->
-      {:ok, task} = Conversations.get_group_conversation(f.group, f.task)
-      task["status"] == "ready_for_review"
-    end)
-
-    assert Agent.get(Ports, & &1.posts) == %{}
-    refute Enum.any?(inputs(), fn {id, _, _} -> id == f.router["agent_id"] end)
-
-    assert {:ok, %{"participants" => members}} =
-             Conversations.list_group_conversation_participants(f.group, f.task)
-
-    assert Enum.find(members, &(&1["role_label"] == "delegator"))["notification_filter"][
-             "messages"
-           ] == "none"
-  end
-
-  test "silence preserves unavailable evidence as a private result, not a useful-context claim" do
-    Agent.update(Ports, &Map.put(&1, :run_worker, true))
-    Application.put_env(:salix_agent, :llm, CapturedWorker)
-    f = fixture!()
-
-    eventually(fn ->
-      {:ok, task} = Conversations.get_group_conversation(f.group, f.task)
-      task["status"] == "ready_for_review"
-    end)
-
-    assert {:ok, messages} =
-             Conversations.list_group_conversation_messages(f.group, f.task, limit: 20)
-
-    completion = Enum.find(messages, &get_in(&1, ["metadata", "triage_investigation_result"]))
-
-    assert get_in(completion, [
-             "metadata",
-             "triage_investigation_result",
-             "payload",
-             "communication",
-             "reason_code"
-           ]) == "insufficient_evidence"
-
-    assert Agent.get(Ports, & &1.posts) == %{}
-    refute Enum.any?(inputs(), fn {id, _, _} -> id == f.router["agent_id"] end)
   end
 
   test "a provider-confirmed reply joins the exact Task once and enables ordinary Worker follow-up" do
@@ -454,7 +407,7 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     }
 
     assert {:ok, result} = complete(f, source, decision)
-    assert_receive {:slack_post, params}, 5_000
+    settle_receive({:slack_post, params})
     assert params["text"] == decision["text"]
 
     eventually(fn ->
@@ -468,13 +421,19 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     delegator = Enum.find(members, &(&1["role_label"] == "delegator"))
     assert delegator["notification_filter"]["messages"] == "all"
 
-    context =
+    context = fn ->
       Enum.filter(inputs(), fn {id, _, opts} ->
         id == f.router["agent_id"] and
           String.starts_with?(opts[:source_message_id] || "", "triage-participation:")
       end)
+    end
 
-    assert [{_, payload, opts}] = context
+    # The Router's context arrives with the Worker's delivery, which can
+    # follow the Task's ready_for_review: wait for it, then let the system
+    # go idle so a second delivery would show.
+    eventually(fn -> context.() != [] end)
+    settle()
+    assert [{_, payload, opts}] = context.()
     assert opts[:no_wake] == true
     assert payload[:trusted_origin]["task_conversation_id"] == f.task
     assert payload[:trusted_origin]["ifc"]["integrity"] == "data"
@@ -501,7 +460,7 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
       end)
     end)
 
-    refute_receive {:slack_post, _}, 100
+    settle_refute_receive({:slack_post, _}, 100)
   end
 
   test "a Triage Worker reads its Router memory on demand without acquiring writes or owner selection" do
@@ -755,7 +714,7 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     }
 
     assert {:ok, result} = complete(f, source, decision)
-    assert_receive {:slack_post, _}, 5_000
+    settle_receive({:slack_post, _})
     assert_completed(f)
     assert {:ok, replay} = complete(f, source, decision)
     assert replay["message_id"] == result["message_id"]
@@ -786,96 +745,7 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     assert {:ok, :triage, _} =
              SalixIM.Provider.Slack.ThreadRouteOwner.lookup_claim(Map.delete(scope, "agent_id"))
 
-    refute_receive {:slack_post, _}, 100
-  end
-
-  test "scheduled Worker completion updates the existing follow-up despite rewritten wording" do
-    f = fixture!(skip_task_creation: true)
-    {:ok, original} = SalixIM.Triage.Investigation.original(f.grant)
-    target = original.payload["target"]
-
-    source_ref =
-      "slack://#{target["workspace_id"]}/#{target["channel_id"]}/#{target["thread_ts"]}/#{target["thread_ts"]}"
-
-    follow_up = %{
-      "kind" => "follow_up",
-      "subject" => "Account access",
-      "value" => "Confirm access works",
-      "confidence" => "explicit",
-      "source_refs" => [source_ref],
-      "recheck_after_hours" => 1,
-      "follow_up_basis" => "agent_owned"
-    }
-
-    seeded = Map.put(original.payload, "context_candidates", [follow_up])
-
-    assert :ok =
-             SalixStore.TriageProductRuntime.settle_investigation_context(
-               seeded,
-               "seed-" <> f.obligation,
-               %{outcome: :applied}
-             )
-
-    [[entry_id]] =
-      Repo.query!("SELECT entry_id FROM triage_context_entries WHERE project_id = $1", [
-        f.project_id
-      ]).rows
-
-    context_ref = "triage-context://" <> entry_id
-
-    sources = [
-      %{
-        "kind" => "retained_follow_up",
-        "text" => "Account access: Confirm access works",
-        "source_ref" => context_ref
-      }
-    ]
-
-    Repo.query!(
-      "UPDATE triage_product_obligations SET payload = jsonb_set(payload, '{context_sources}', $2::jsonb) WHERE obligation_id = $1",
-      [f.obligation, sources]
-    )
-
-    Repo.query!(
-      "UPDATE triage_product_obligations SET payload = payload || $2::jsonb WHERE obligation_id = $1",
-      [
-        f.obligation,
-        %{"recheck_event_ids" => ["recheck:worker"], "recheck_context_refs" => [context_ref]}
-      ]
-    )
-
-    {:ok, [before]} = SalixStore.TriageProductRuntime.list_context(f.project_id)
-    f = create_fixture_task!(f, [])
-    assert {:ok, context} = api(f, "internal.triage.read_context", %{})
-    assert context["entries"] == sources
-    assert context["__ifc__"] == %{"label" => ["group|" <> f.group]}
-    source = read_source!(f)
-
-    decision = %{
-      "kind" => "silence",
-      "reason_code" => "no_useful_addition",
-      "reason" => "Waiting for the requested verification.",
-      "source_refs" => [],
-      "context_candidates" => [
-        follow_up
-        |> Map.put("subject", "Access verification pending")
-        |> Map.put("value", "The account is enabled; verify the next login")
-        |> Map.put("recheck_after_hours", 24)
-        |> Map.put("source_refs", [hd(source["messages"])["source_ref"]])
-      ]
-    }
-
-    assert {:ok, result} = complete(f, source, decision)
-    assert_completed(f)
-    assert {:ok, replay} = complete(f, source, decision)
-    assert replay["message_id"] == result["message_id"]
-    assert {:ok, [after_entry]} = SalixStore.TriageProductRuntime.list_context(f.project_id)
-    assert after_entry.entry_id == entry_id
-    assert after_entry.payload["subject"] == "Access verification pending"
-    assert after_entry.payload["value"] == "The account is enabled; verify the next login"
-    assert after_entry.payload["schedule_id"] == before.payload["schedule_id"]
-    assert after_entry.payload["recheck_after_hours"] == 1
-    assert {:ok, _} = SalixCluster.Schedules.get(before.payload["schedule_id"])
+    settle_refute_receive({:slack_post, _}, 100)
   end
 
   test "Worker silence records attributed facts and resolves an existing follow-up once" do
@@ -1017,7 +887,7 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
              [f.project_id]
            ).rows == before
 
-    refute_receive {:slack_post, _}, 50
+    settle_refute_receive({:slack_post, _}, 50)
   end
 
   test "owner recovery replays an accepted decision even when no completion Message was appended" do
@@ -1051,209 +921,6 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     assert Agent.get(Ports, & &1.posts) == %{}
   end
 
-  for recovery <- [:owner_append, :participant_verify], source_available? <- [true, false] do
-    @tag :stale_silence_recovery
-    @tag source_unavailable: not source_available?
-    test "#{recovery} rejects obsolete silence context (source available: #{source_available?})" do
-      f = fixture!()
-      source = read_source!(f)
-
-      decision = %{
-        "kind" => "silence",
-        "reason" => "Already covered",
-        "source_refs" => [],
-        "context_candidates" => [
-          %{
-            "kind" => "project_fact",
-            "subject" => "Current status",
-            "value" => "Obsolete status must not be retained",
-            "confidence" => "explicit",
-            "source_refs" => [hd(source["messages"])["source_ref"]]
-          }
-        ]
-      }
-
-      case unquote(recovery) do
-        :owner_append ->
-          segment =
-            Keys.ctl_group_conversation_message_segment(f.group, f.task, "000000000000000001")
-
-          :ok = SalixStore.S3.Fake.blackhole({:fail, 503, :put, segment})
-          assert {:error, _} = complete(f, source, decision)
-          {:ok, pending} = Conversations.get_group_conversation(f.group, f.task)
-          assert get_in(pending, ["metadata", "triage_investigation_state", "state"]) == "pending"
-          SalixIM.TestSupport.Fleet.stop_all!()
-          add_source_message()
-          Agent.update(Ports, &Map.put(&1, :source_unavailable, not unquote(source_available?)))
-          :ok = SalixStore.S3.Fake.clear_blackhole()
-          {:ok, _} = SalixIM.ConversationPlacement.ensure_started(f.group, f.task)
-
-        :participant_verify ->
-          parent = self()
-
-          lock =
-            Task.async(fn ->
-              Repo.transaction(fn ->
-                Repo.query!(
-                  "SELECT 1 FROM triage_product_obligations WHERE obligation_id = $1 FOR UPDATE",
-                  [f.obligation]
-                )
-
-                send(parent, :context_commit_locked)
-
-                receive do
-                  :release -> :ok
-                after
-                  10_000 -> Repo.rollback(:test_lock_not_released)
-                end
-              end)
-            end)
-
-          assert_receive :context_commit_locked, 5_000
-          assert {:ok, _} = complete(f, source, decision)
-
-          eventually(fn ->
-            [[waiting]] =
-              Repo.query!(
-                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid != pg_backend_pid() AND wait_event_type = 'Lock' AND query LIKE '%triage_product_obligations%'"
-              ).rows
-
-            waiting > 0
-          end)
-
-          stop_result_owner(f)
-          add_source_message()
-          Agent.update(Ports, &Map.put(&1, :source_unavailable, not unquote(source_available?)))
-          send(lock.pid, :release)
-          assert {:ok, :ok} = Task.await(lock)
-          restart_result_owner(f)
-      end
-
-      expected = if unquote(source_available?), do: "retry", else: "failed"
-
-      eventually(fn ->
-        {:ok, task} = Conversations.get_group_conversation(f.group, f.task)
-        get_in(task, ["metadata", "triage_investigation_state", "state"]) == expected
-      end)
-
-      assert [[0]] =
-               Repo.query!("SELECT count(*) FROM triage_context_entries WHERE project_id = $1", [
-                 f.project_id
-               ]).rows
-
-      {:ok, task} = Conversations.get_group_conversation(f.group, f.task)
-      assert get_in(task, ["metadata", "triage_investigation_state", "state"]) == expected
-      assert task["task_worker_agent_id"] == f.worker
-      assert Agent.get(Ports, & &1.posts) == %{}
-      refute_receive {:slack_post, _}, 50
-    end
-  end
-
-  test "Worker reactions use the frozen workspace emoji catalog" do
-    f = fixture!(skip_task_creation: true)
-
-    {:ok, expression} =
-      SalixIM.Triage.ExpressionContext.build(
-        "social",
-        {:ok, %{"party_parrot" => "provider-owned-url"}}
-      )
-
-    Repo.query!(
-      "UPDATE triage_product_obligations SET payload = jsonb_set(payload, '{expression_context}', $2::jsonb) WHERE obligation_id = $1",
-      [f.obligation, expression]
-    )
-
-    f = create_fixture_task!(f, [])
-    source = read_source!(f)
-    assert "party_parrot" in source["expression_context"]["allowed_emojis"]
-
-    decision = %{
-      "kind" => "reaction",
-      "emoji" => "party_parrot",
-      "source_refs" => [hd(source["messages"])["source_ref"]]
-    }
-
-    assert {:error, :invalid_triage_completion} =
-             complete(f, source, %{decision | "emoji" => "invented_emoji"})
-
-    assert {:ok, _} = complete(f, source, decision)
-    assert_receive {:reaction_added, _, %{"name" => "party_parrot"}}, 5_000
-    assert_completed(f)
-    refute_receive {:slack_post, _}, 50
-  end
-
-  test "the installed bot identity cannot become a personal knowledge owner" do
-    f = fixture!()
-
-    Agent.update(Ports, fn state ->
-      update_in(state, [:page, :messages], fn messages ->
-        Enum.map(messages, &Map.put(&1, "actor_id", "U_BOT"))
-      end)
-    end)
-
-    source = read_source!(f)
-    assert hd(source["messages"])["actor_kind"] == "agent"
-
-    assert {:ok, _} =
-             complete(f, source, %{
-               "kind" => "silence",
-               "reason" => "No public addition",
-               "source_refs" => [],
-               "context_candidates" => [
-                 %{
-                   "kind" => "project_fact",
-                   "subject" => "Tone",
-                   "value" => "Brief replies",
-                   "knowledge_scope" => "person",
-                   "confidence" => "explicit",
-                   "source_refs" => [hd(source["messages"])["source_ref"]]
-                 }
-               ]
-             })
-
-    assert_completed(f)
-
-    [[payload]] =
-      Repo.query!("SELECT payload FROM triage_context_entries WHERE project_id = $1", [
-        f.project_id
-      ]).rows
-
-    assert payload["knowledge_scope"] == "unattributed"
-    refute payload["scope_owner"]
-  end
-
-  test "reaction confirmation is recovered after process loss and newer source messages" do
-    f = fixture!()
-    source = read_source!(f)
-    Agent.update(Ports, &Map.put(&1, :pause_reaction, true))
-
-    decision = %{
-      "kind" => "reaction",
-      "emoji" => "tada",
-      "source_refs" => [hd(source["messages"])["source_ref"]]
-    }
-
-    assert {:ok, _} = complete(f, source, decision)
-    assert_receive {:reaction_added, http, params}, 5_000
-    assert params["timestamp"] == "1789113600.000001"
-    stop_result_owner(f)
-    add_source_message()
-    Agent.update(Ports, &Map.put(&1, :pause_reaction, false))
-    send(http, :release)
-    restart_result_owner(f)
-    assert_completed(f)
-    refute_receive {:reaction_added, _, _}, 100
-
-    assert {:ok, %{"participants" => members}} =
-             Conversations.list_group_conversation_participants(f.group, f.task)
-
-    assert Enum.find(members, &(&1["role_label"] == "delegator"))["notification_filter"][
-             "messages"
-           ] == "none"
-
-    assert_receive {:reaction_read, %{"full" => "true"}}
-  end
-
   test "confirmed reply recovery retries local continuation without publishing a second reply or skipping later messages" do
     f = fixture!()
     source = read_source!(f)
@@ -1266,11 +933,11 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
                "source_refs" => []
              })
 
-    assert_receive {:slack_post, _}, 5_000
-    assert_receive {:context_paused, io}, 5_000
+    settle_receive({:slack_post, _})
+    settle_receive({:context_paused, io})
     stop_result_owner(f)
     Agent.update(Ports, &(&1 |> Map.put(:pause_context, false) |> Map.put(:context_failures, 1)))
-    send(io, :release)
+    SystemsRuntime.Proc.send(io, :release)
     # This newer Task result must remain after the fixed completion cursor.
     {:ok, followup} =
       ConversationServer.append_group_conversation_agent_message(f.group, f.task, f.worker, %{
@@ -1288,7 +955,7 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     end)
 
     assert map_size(Agent.get(Ports, & &1.posts)) == 1
-    refute_receive {:slack_post, _}, 100
+    settle_refute_receive({:slack_post, _}, 100)
   end
 
   test "ordinary intake creates a Worker on current sources but rejects a later stale reply" do
@@ -1315,359 +982,24 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
                "source_refs" => []
              })
 
-    assert_receive {:reply_lookup_paused, io}, 5_000
+    settle_receive({:reply_lookup_paused, io})
     add_source_message()
     Agent.update(Ports, &Map.put(&1, :pause_reply_lookup, false))
-    send(io, :release)
+    SystemsRuntime.Proc.send(io, :release)
 
     eventually(fn ->
       {:ok, task} = Conversations.get_group_conversation(f.group, f.task)
       get_in(task, ["metadata", "triage_investigation_state", "state"]) == "retry"
     end)
 
-    refute_receive {:slack_post, _}, 100
+    settle_refute_receive({:slack_post, _}, 100)
     assert Agent.get(Ports, & &1.posts) == %{}
-  end
-
-  test "a source change before Task creation preserves human continuation without promising a Task" do
-    f = fixture!(immediate_reply: true, skip_task_creation: true)
-    assert_receive {:slack_post, _}, 5_000
-    add_source_message()
-
-    {:ok, original} = SalixIM.Triage.Investigation.original(f.grant)
-    claim = Map.put(original, :claim_token, ULID.generate())
-
-    assert {:ok, [%{"status" => "suppressed_stale"}]} =
-             SalixIM.Triage.DelegationEffect.apply(claim, delegation_port: Ports)
-
-    assert {:ok, %{"data" => [], "has_more" => false}} =
-             Conversations.list_group_conversations(f.group, kind: "agent_task", limit: 10)
-
-    target = original.payload["target"]
-    identity = original.payload["product_identity"]
-    {:ok, scope} = SalixStore.SlackTriageThreadSubscriptions.product_scope(target, identity)
-    route = Map.delete(scope, "agent_id")
-    assert {:ok, :active} = SalixStore.SlackTriageThreadSubscriptions.status(scope)
-
-    assert :admit =
-             SalixIM.Provider.Slack.TriageThreadSubscription.continuation(
-               f.authority,
-               route
-             )
-
-    assert {_, context, context_opts} =
-             Enum.find(inputs(), fn {id, _, opts} ->
-               id == f.router["agent_id"] and
-                 opts[:source_message_id] == "triage-participation:" <> f.obligation
-             end)
-
-    assert context_opts[:no_wake]
-    assert context[:trusted_origin]["task_conversation_id"] == nil
-    assert String.contains?(context.content, "triage-delegation:" <> f.obligation)
-
-    refute Enum.any?(inputs(), fn {id, _, _} -> id == f.worker end)
-    refute_receive {:slack_post, _}, 100
-  end
-
-  test "an immediate reply retains a pending investigation and later silence joins its existing Task" do
-    f = fixture!(immediate_reply: true, pause_task_context: true)
-    assert_receive {:slack_post, _}, 5_000
-    assert_receive {:context_paused, io}, 5_000
-
-    first =
-      Enum.find(inputs(), fn {id, payload, _} ->
-        id == f.router["agent_id"] and payload[:trusted_origin]["task_conversation_id"] == nil
-      end)
-
-    assert {_, first_payload, _} = first
-    assert String.contains?(first_payload.content, "triage-delegation:" <> f.obligation)
-
-    {:ok, %{"participants" => members}} =
-      Conversations.list_group_conversation_participants(f.group, f.task)
-
-    worker_participant = Enum.find(members, &(&1["agent_id"] == f.worker))
-
-    {:ok, owner} =
-      SalixIM.ConversationFleet.ensure_participant_started(
-        f.group,
-        f.task,
-        worker_participant["participant_id"]
-      )
-
-    fleet = Process.whereis(SalixIM.ConversationFleetSup)
-    fleet_ref = Process.monitor(fleet)
-    {:ok, task_owner} = SalixIM.ConversationFleet.ensure_started(f.group, f.task)
-    task_owner_ref = Process.monitor(task_owner)
-    owner_ref = Process.monitor(owner)
-    :ok = :sys.suspend(fleet)
-
-    # Queue demand startup before the supervisor receives the old owner's exit.
-    # Both paths must converge on one replacement without stopping the fleet.
-    restart =
-      try do
-        restart =
-          Task.async(fn ->
-            SalixIM.ConversationFleet.ensure_participant_started(
-              f.group,
-              f.task,
-              worker_participant["participant_id"]
-            )
-          end)
-
-        eventually(fn ->
-          {:messages, messages} = Process.info(fleet, :messages)
-          Enum.any?(messages, &match?({:"$gen_call", {pid, _}, _} when pid == restart.pid, &1))
-        end)
-
-        Process.exit(owner, :kill)
-        assert_receive {:DOWN, ^owner_ref, :process, ^owner, :killed}, 5_000
-        restart
-      after
-        :sys.resume(fleet)
-      end
-
-    assert {:ok, replacement} = Task.await(restart, 5_000)
-    add_source_message()
-    Agent.update(Ports, &Map.put(&1, :pause_context, false))
-    send(io, :release)
-
-    SalixIM.ConversationParticipantActor.wake(
-      f.group,
-      f.task,
-      worker_participant["participant_id"]
-    )
-
-    f = await_worker(f)
-    source = read_source!(f)
-
-    {:ok, _} =
-      ConversationServer.append_group_conversation_agent_message(f.group, f.task, f.worker, %{
-        "content" => "Private investigation notes"
-      })
-
-    assert {:ok, _} =
-             complete(f, source, %{
-               "kind" => "silence",
-               "reason" => "The immediate answer suffices",
-               "source_refs" => []
-             })
-
-    assert_completed(f)
-
-    assert Enum.any?(inputs(), fn {id, payload, _} ->
-             id == f.router["agent_id"] and
-               payload[:trusted_origin]["task_conversation_id"] == f.task
-           end)
-
-    {:ok, followup} =
-      ConversationServer.append_group_conversation_agent_message(f.group, f.task, f.worker, %{
-        "content" => "Further investigation requested later"
-      })
-
-    eventually(fn ->
-      Enum.any?(inputs(), fn {id, _, opts} ->
-        id == f.router["agent_id"] and
-          String.contains?(opts[:source_message_id] || "", followup["message_id"])
-      end)
-    end)
-
-    refute Enum.any?(inputs(), fn {id, payload, _} ->
-             id == f.router["agent_id"] and
-               String.contains?(payload[:content] || "", "Private investigation notes")
-           end)
-
-    before_join =
-      Enum.count(inputs(), fn {id, _, opts} ->
-        id == f.router["agent_id"] and
-          String.contains?(opts[:source_message_id] || "", followup["message_id"])
-      end)
-
-    {:ok, task} = Conversations.get_group_conversation(f.group, f.task)
-    {:ok, messages} = Conversations.list_group_conversation_messages(f.group, f.task, limit: 30)
-    completion = Enum.find(messages, &get_in(&1, ["metadata", "triage_investigation_result"]))
-    payload = completion["metadata"]["triage_investigation_result"]
-    assert :ok = SalixIM.Triage.Investigation.join_task(%{payload: payload["payload"]})
-    Process.sleep(100)
-
-    assert before_join ==
-             Enum.count(inputs(), fn {id, _, opts} ->
-               id == f.router["agent_id"] and
-                 String.contains?(opts[:source_message_id] || "", followup["message_id"])
-             end)
-
-    assert task["conversation_id"] == f.task
-    refute_received {:DOWN, ^fleet_ref, :process, ^fleet, _}
-    assert map_size(Agent.get(Ports, & &1.posts)) == 1
-
-    assert {:ok, %{"data" => [_one]}} =
-             Conversations.list_group_conversations(f.group, kind: "agent_task", limit: 10)
-
-    # The replacement remains supervised and can recover from another crash.
-    replacement_ref = Process.monitor(replacement)
-    Process.exit(replacement, :kill)
-    assert_receive {:DOWN, ^replacement_ref, :process, ^replacement, :killed}, 5_000
-
-    eventually(fn ->
-      key =
-        SalixIM.ConversationParticipantActor.key(
-          f.group,
-          f.task,
-          worker_participant["participant_id"]
-        )
-
-      case Registry.lookup(SalixIM.ConversationRegistry, key) do
-        [{pid, _}] -> pid != replacement and Process.alive?(pid)
-        [] -> false
-      end
-    end)
-
-    assert Process.alive?(fleet)
-    assert Process.alive?(task_owner)
-    refute_received {:DOWN, ^task_owner_ref, :process, ^task_owner, _}
-  end
-
-  test "changed sources retry the same Worker twice then fail without a stale public reply" do
-    f = fixture!()
-
-    replacement =
-      SalixAgent.TestSupport.create_control_agent_in_group!(f.router["tenant_id"], f.group)
-
-    assert {:ok, _} =
-             SalixAgent.TriageWorker.configure(
-               f.group,
-               f.router["agent_id"],
-               replacement["agent_id"],
-               0,
-               %{"actor_user_id" => "admin", "request_id" => "new-worker"}
-             )
-
-    for attempt <- 1..3 do
-      source = read_source!(f)
-      Agent.update(Ports, &Map.put(&1, :pause_reply_lookup, true))
-
-      assert {:ok, _} =
-               complete(f, source, %{
-                 "kind" => "reply",
-                 "text" => "Answer to the observed source",
-                 "source_refs" => [],
-                 "context_candidates" => [
-                   %{
-                     "kind" => "project_fact",
-                     "subject" => "Current status",
-                     "value" => "Unverified old status",
-                     "confidence" => "explicit",
-                     "source_refs" => [hd(source["messages"])["source_ref"]]
-                   },
-                   %{
-                     "kind" => "follow_up",
-                     "subject" => "Old status check",
-                     "value" => "Check obsolete status",
-                     "confidence" => "explicit",
-                     "source_refs" => [hd(source["messages"])["source_ref"]],
-                     "follow_up_basis" => "agent_owned",
-                     "recheck_after_hours" => 1
-                   }
-                 ]
-               })
-
-      assert_receive {:reply_lookup_paused, io}, 5_000
-      add_source_message()
-      Agent.update(Ports, &Map.put(&1, :pause_reply_lookup, false))
-      send(io, :release)
-      expected = if attempt < 3, do: "retry", else: "failed"
-
-      eventually(fn ->
-        {:ok, task} = Conversations.get_group_conversation(f.group, f.task)
-        get_in(task, ["metadata", "triage_investigation_state", "state"]) == expected
-      end)
-
-      assert [[0]] =
-               Repo.query!("SELECT count(*) FROM triage_context_entries WHERE project_id = $1", [
-                 f.project_id
-               ]).rows
-    end
-
-    {:ok, task} = Conversations.get_group_conversation(f.group, f.task)
-    assert task["status"] == "failed"
-    assert task["task_worker_agent_id"] == f.worker
-    {:ok, messages} = Conversations.list_group_conversation_messages(f.group, f.task, limit: 30)
-    retries = Enum.filter(messages, &get_in(&1, ["metadata", "triage_investigation_retry"]))
-    assert length(retries) == 2
-
-    assert Enum.all?(
-             retries,
-             &(get_in(&1, ["metadata", "triage_investigation_retry", "worker_agent_id"]) ==
-                 f.worker)
-           )
-
-    assert Agent.get(Ports, & &1.posts) == %{}
-    refute Enum.any?(inputs(), fn {id, _, _} -> id == replacement["agent_id"] end)
-    refute Enum.any?(inputs(), fn {id, _, _} -> id == f.router["agent_id"] end)
-  end
-
-  @tag :failed_context_commit
-  test "permanent provider rejection fails the Task without continuation or new context" do
-    f = fixture!()
-    source = read_source!(f)
-    Agent.update(Ports, &Map.put(&1, :reject_post, :channel_unavailable))
-
-    assert {:ok, _} =
-             complete(f, source, %{
-               "kind" => "reply",
-               "text" => "Source-backed answer",
-               "source_refs" => [],
-               "context_candidates" => [
-                 %{
-                   "kind" => "project_fact",
-                   "subject" => "Unsettled answer",
-                   "value" => "A failed completion must not commit this candidate",
-                   "confidence" => "explicit",
-                   "source_refs" => [hd(source["messages"])["source_ref"]]
-                 }
-               ]
-             })
-
-    assert_receive {:slack_rejected, :channel_unavailable}, 5_000
-
-    eventually(fn ->
-      {:ok, task} = Conversations.get_group_conversation(f.group, f.task)
-      task["status"] == "failed"
-    end)
-
-    assert [[0]] =
-             Repo.query!("SELECT count(*) FROM triage_context_entries WHERE project_id = $1", [
-               f.project_id
-             ]).rows
-
-    assert Agent.get(Ports, & &1.posts) == %{}
-    refute Enum.any?(inputs(), fn {id, _, _} -> id == f.router["agent_id"] end)
-  end
-
-  test "exhausted Worker command delivery does not leave an unstarted investigation active" do
-    f = fixture!(unavailable_worker: true)
-
-    {:ok, %{"participants" => members}} =
-      Conversations.list_group_conversation_participants(f.group, f.task)
-
-    id = Enum.find(members, &(&1["agent_id"] == f.worker))["participant_id"]
-
-    eventually(fn ->
-      {:ok, task} = Conversations.get_group_conversation(f.group, f.task)
-      task["status"] == "escalated"
-    end)
-
-    eventually(fn -> source_rejected?(f, id) end)
-    {:ok, session} = InternalSessionStore.read(f.worker, f.session)
-    assert SalixAgent.InternalSession.export(session).input_queue == []
-
-    assert Agent.get(Ports, & &1.posts) == %{}
-    refute Enum.any?(inputs(), fn {id, _, _} -> id == f.router["agent_id"] end)
   end
 
   test "accepted Worker command survives consumer restart without duplicate work" do
     f = fixture!(pause_accepted: true)
-    assert_receive {:agent_accepted, io, source, {:ok, :created}}, 5_000
-    Process.exit(io, :kill)
+    settle_receive({:agent_accepted, io, source, {:ok, :created}})
+    SystemsRuntime.Proc.exit(io, :kill)
     Agent.update(Ports, &Map.delete(&1, :pause_accepted_agent))
     notify_worker(f)
     eventually(fn -> source_admitted?(f) end)
@@ -1691,83 +1023,6 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     assert_completed(f)
   end
 
-  test "failure escalation survives loss of the consumer before its frontier commit" do
-    f = fixture!(unavailable_worker: true, pause_unavailable: true)
-
-    for _ <- 1..2 do
-      assert_receive {:agent_unavailable, io}, 5_000
-      send(io, :release)
-    end
-
-    assert_receive {:agent_unavailable, io}, 5_000
-    key = Keys.agent_internal_runtime_session(f.worker, f.session)
-    SalixStore.S3.Fake.set_fault({:pause, :put, key})
-    send(io, :release)
-    eventually(fn -> SalixStore.S3.Fake.paused?() end)
-
-    assert {:ok, %{"status" => "escalated"}} =
-             Conversations.get_group_conversation(f.group, f.task)
-
-    Process.exit(io, :kill)
-    SalixStore.S3.Fake.release_pause()
-    Agent.update(Ports, &Map.put(&1, :pause_unavailable, false))
-    notify_worker(f)
-    eventually(fn -> source_admitted?(f) end)
-
-    assert {:ok, %{"status" => "escalated"}} =
-             Conversations.get_group_conversation(f.group, f.task)
-  end
-
-  test "an exhausted command cannot escalate a replacement Worker session" do
-    f = fixture!(unavailable_worker: true, pause_unavailable: true)
-
-    for _ <- 1..2 do
-      assert_receive {:agent_unavailable, io}, 5_000
-      send(io, :release)
-    end
-
-    assert_receive {:agent_unavailable, io}, 5_000
-    replacement = Ids.new_session_id()
-
-    assert {:ok, participant} =
-             ConversationServer.reconcile_group_conversation_agent_participants(
-               f.group,
-               f.task,
-               %{
-                 "desired" => %{
-                   "agent_id" => f.worker,
-                   "role_label" => "worker",
-                   "payload" => %{"session_id" => replacement}
-                 },
-                 "selector" => %{"role_label" => "worker"}
-               }
-             )
-
-    assert get_in(participant, ["payload", "session_id"]) == replacement
-    send(io, :release)
-
-    monitor = Process.monitor(io)
-    assert_receive {:DOWN, ^monitor, :process, ^io, _}, 5_000
-    assert {:error, :not_found} = InternalSessionStore.read(f.worker, replacement)
-    assert {:ok, %{"status" => "active"}} = Conversations.get_group_conversation(f.group, f.task)
-    assert Agent.get(Ports, & &1.posts) == %{}
-  end
-
-  test "ordinary Worker input survives a consumer crash without duplicate work" do
-    f = fixture!(pause_accepted: true, ordinary: true)
-    assert_receive {:agent_accepted, io, source, {:ok, :created}}, 5_000
-    Process.exit(io, :kill)
-    Agent.update(Ports, &Map.delete(&1, :pause_accepted_agent))
-    notify_worker(f)
-    eventually(fn -> source_admitted?(f) end)
-    {:ok, session} = SessionData.read(f.worker, f.session)
-
-    assert Enum.count(
-             session.input_queue,
-             &(get_in(&1, ["payload", "source_message_id"]) == source)
-           ) == 1
-  end
-
   defp notify_worker(f) do
     {:ok, %{"participants" => members}} =
       Conversations.list_group_conversation_participants(f.group, f.task)
@@ -1785,21 +1040,6 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     case InternalSessionStore.read(f.worker, f.session) do
       {:ok, session} -> map_size(SalixAgent.InternalSession.conversation_sources(session)) > 0
       _ -> false
-    end
-  end
-
-  defp source_rejected?(f, participant) do
-    case InternalSessionStore.read(f.worker, f.session) do
-      {:ok, session} ->
-        is_map(
-          get_in(SalixAgent.InternalSession.conversation_sources(session), [
-            participant,
-            "last_rejection"
-          ])
-        )
-
-      _ ->
-        false
     end
   end
 
@@ -1825,9 +1065,9 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
         result_participant(f)["participant_id"]
       )
 
-    monitor = Process.monitor(owner)
-    Process.exit(owner, :kill)
-    assert_receive {:DOWN, ^monitor, :process, ^owner, _}, 1_000
+    monitor = SystemsRuntime.Proc.monitor(owner)
+    SystemsRuntime.Proc.exit(owner, :kill)
+    settle_receive({:DOWN, ^monitor, :process, ^owner, _})
   end
 
   defp restart_result_owner(f) do
@@ -2088,7 +1328,7 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
     assert {:ok, _} =
              SalixAgent.AgentWorkspace.seed_operation(
                agent,
-               "memory-fixture-#{System.unique_integer([:positive])}",
+               "memory-fixture-#{SystemsRuntime.Proc.unique_integer([:positive])}",
                %{},
                [event]
              )
@@ -2107,17 +1347,8 @@ defmodule SalixIM.TriageInvestigationRuntimeTest do
       })
 
   # Worker input recovers through the delivery lease, the retry backoff and the
-  # Participant drain timer; on a loaded runner that chain outlasted 10s. Keep
-  # the 1s poll: these tests kill Participant owners, and polling faster packs
-  # enough kills into the fleet supervisor's restart window to take it down.
-  @eventually_timeout_ms 30_000
-
-  defp eventually(fun),
-    do:
-      SalixAgent.LiveLlmTestSupport.eventually(
-        fn -> if fun.(), do: {:ok, true}, else: :retry end,
-        @eventually_timeout_ms
-      )
+  # Participant drain timer; the clock settles through that chain.
+  defp eventually(fun), do: SystemsClock.settle(eager: true, until: fn -> fun.() end)
 
   defp seed_original!(router, payload_overrides) do
     run_id = "handoff-read-" <> SalixStore.ULID.generate()

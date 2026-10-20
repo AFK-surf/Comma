@@ -1,6 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { describe, expect, it } from "vitest";
+import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
+import { beforeEach, describe, expect, it } from "vitest";
 import { CommaAuthContext, type CommaAuthContextValue } from "../../auth-context";
 import { defaultCommaClientSettings } from "@comma/native-bridge";
 import { CommaWebClientSettingsProvider } from "../../commaClientSettings";
@@ -21,6 +22,10 @@ function signedIn(userId: string, completed: string[]) {
 }
 
 describe("useOnboardingAhead", () => {
+  beforeEach(() => {
+    installNativeBridgeMock({ platform: "electron" });
+  });
+
   it("holds an account that has not finished the onboarding, before it has opened", () => {
     const { result } = renderHook(useOnboardingAhead, {
       wrapper: signedIn("usr_new", ["usr_other"]),
@@ -31,6 +36,14 @@ describe("useOnboardingAhead", () => {
   it("lets an account that finished the onboarding through", () => {
     const { result } = renderHook(useOnboardingAhead, {
       wrapper: signedIn("usr_done", ["usr_done"]),
+    });
+    expect(result.current).toBe(false);
+  });
+
+  it("holds nothing back on the web, where the intro card leaves the product usable", () => {
+    installNativeBridgeMock({ platform: "web" });
+    const { result } = renderHook(useOnboardingAhead, {
+      wrapper: signedIn("usr_new", []),
     });
     expect(result.current).toBe(false);
   });

@@ -220,7 +220,7 @@ defmodule SalixStore.CasDirectory do
 
               {:error, :precondition_failed} ->
                 attempt = max(@cas_attempts - attempts + 1, 1)
-                Process.sleep(min(attempt * @cas_backoff_ms, @cas_backoff_max_ms))
+                SystemsClock.sleep(min(attempt * @cas_backoff_ms, @cas_backoff_max_ms))
                 do_transact(dir_key, fun, opts, attempts - 1)
 
               {:error, _} = error ->
@@ -276,7 +276,7 @@ defmodule SalixStore.CasDirectory do
 
   defp retry_update(dir_key, fun, opts, attempts) do
     attempt = max(@cas_attempts - attempts + 1, 1)
-    Process.sleep(min(attempt * @cas_backoff_ms, @cas_backoff_max_ms))
+    SystemsClock.sleep(min(attempt * @cas_backoff_ms, @cas_backoff_max_ms))
     do_update(dir_key, fun, opts, attempts - 1)
   end
 
@@ -487,13 +487,13 @@ defmodule SalixStore.CasDirectory do
   defp decoded_ops(%{"op" => op}) when is_binary(op), do: [op]
   defp decoded_ops(_decoded), do: []
 
-  defp op_token, do: :crypto.strong_rand_bytes(12) |> Base.encode16(case: :lower)
+  defp op_token, do: SystemsRuntime.Proc.random_bytes(12) |> Base.encode16(case: :lower)
 
   defp encode(entries, ops) do
     Jason.encode!(%{
       "format" => 1,
       "entries" => entries,
-      "updated_at" => System.system_time(:millisecond),
+      "updated_at" => SystemsClock.system_time(:millisecond),
       "op" => List.first(ops),
       "ops" => ops
     })

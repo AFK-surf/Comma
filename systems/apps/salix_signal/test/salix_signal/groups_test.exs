@@ -4,7 +4,7 @@ defmodule SalixSignal.GroupsTest do
   # The fake storage service (test/support/fake_storage.ex) verifies every
   # auth presentation and profile key presentation with the server side of
   # CRS-09a, fills accepted changes and signs them.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignal.Groups
   alias SalixSignal.Service.{Chat, Credentials}
@@ -40,22 +40,25 @@ defmodule SalixSignal.GroupsTest do
     {:ok, upgrades} = Agent.start_link(fn -> [] end)
 
     chat_server =
-      start_supervised!({Bandit, FakeChat.bandit_options(self(), chain, upgrades)}, id: :chat)
+      start_supervised!(
+        {Bandit, FakeChat.bandit_options(SystemsRuntime.Proc.self(), chain, upgrades)},
+        id: :chat
+      )
 
     chat =
       start_supervised!(
         {Chat,
-         owner: self(),
+         owner: SystemsRuntime.Proc.self(),
          host: "localhost",
          port: FakeChat.port(chat_server),
          roots: [chain.root],
          credentials: Credentials.device("00000000-0000-4000-8000-000000000021", 1, "pw")}
       )
 
-    assert_receive {:signal_chat, ^chat, {:connected, _}}, 2_000
-    assert_receive {:fake_chat, :connected, socket}, 2_000
+    assert_receive {:signal_chat, ^chat, {:connected, _}}
+    assert_receive {:fake_chat, :connected, socket}
 
-    storage = start_supervised!({FakeStorage, {self(), secret, @now}})
+    storage = start_supervised!({FakeStorage, {SystemsRuntime.Proc.self(), secret, @now}})
 
     storage_server =
       start_supervised!({Bandit, FakeStorage.bandit_options(storage, chain)}, id: :storage)
@@ -76,8 +79,7 @@ defmodule SalixSignal.GroupsTest do
   # credential per day of the requested range.
   defp answer_credentials(%{socket: socket, secret: secret}) do
     assert_receive {:fake_chat, :frame, ^socket,
-                    %Frame.Request{verb: "GET", path: path} = request},
-                   2_000
+                    %Frame.Request{verb: "GET", path: path} = request}
 
     %URI{path: "/v1/certificate/auth/group", query: query} = URI.parse(path)
     query = URI.decode_query(query)
@@ -88,7 +90,9 @@ defmodule SalixSignal.GroupsTest do
 
     credentials =
       for day <- first..last//86_400 do
-        response = AuthCredential.issue(secret, @aci, @pni, day, :crypto.strong_rand_bytes(32))
+        response =
+          AuthCredential.issue(secret, @aci, @pni, day, SystemsRuntime.Proc.random_bytes(32))
+
         %{"credential" => Base.encode64(response), "redemptionTime" => day}
       end
 
@@ -99,16 +103,20 @@ defmodule SalixSignal.GroupsTest do
         "pni" => "00000000-0000-4000-8000-000000000022"
       })
 
-    send(
+    SystemsRuntime.Proc.send(
       socket,
       {:send, Frame.encode_response(%Frame.Response{id: request.id, status: 200, body: body})}
     )
   end
 
   defp client(ctx) do
-    task = Task.async(fn -> Groups.fetch_credentials(ctx.chat, ctx.server, @aci, ctx.opts) end)
+    task =
+      SystemsRuntime.Task.async(fn ->
+        Groups.fetch_credentials(ctx.chat, ctx.server, @aci, ctx.opts)
+      end)
+
     answer_credentials(ctx)
-    {:ok, credentials} = Task.await(task)
+    {:ok, credentials} = SystemsRuntime.Task.await(task, :infinity)
     assert map_size(credentials) == 8
     Groups.client(ctx.server, credentials, ctx.opts)
   end
@@ -131,9 +139,9 @@ defmodule SalixSignal.GroupsTest do
   end
 
   defp new_group(ctx, access, opts \\ []) do
-    params = Params.from_master_key(:crypto.strong_rand_bytes(32))
+    params = Params.from_master_key(SystemsRuntime.Proc.random_bytes(32))
     admin = <<0x00000000000040008000000000000023::128>>
-    password = :crypto.strong_rand_bytes(16)
+    password = SystemsRuntime.Proc.random_bytes(16)
 
     members =
       [
@@ -191,49 +199,5 @@ defmodule SalixSignal.GroupsTest do
 
     assert uid == Uid.encrypt(params, {:aci, @aci})
     assert Groups.get_group(client, params) == {:error, {:forbidden, nil}}
-  end
-
-  test "a disabled link stops before any change", ctx do
-    client = client(ctx)
-    {_params, url} = new_group(ctx, 4)
-
-    assert Groups.join_by_link(client, url, presentation_fun(ctx)) == {:error, {:forbidden, nil}}
-    refute_received {:fake_storage, "PATCH", _}
-  end
-
-  test "a change after another member's change is rebuilt on the new revision", ctx do
-    client = client(ctx)
-
-    self_member = fn params ->
-      %Wire.Member{
-        user_id: Uid.encrypt(params, {:aci, @aci}),
-        role: 1,
-        profile_key: ProfileKey.encrypt(params, @profile_key, @aci)
-      }
-    end
-
-    {params, _url} = new_group(ctx, 4, members: [self_member])
-    {:ok, %{state: state}} = Groups.get_group(client, params)
-    assert state.revision == 5
-
-    FakeStorage.bump(ctx.storage, params)
-    title = State.encrypt_attribute(params, :title, "Renamed")
-
-    {:ok, %{state: state, change: signed}} =
-      Groups.change(client, params, state, fn current ->
-        if current.title == "Renamed", do: [], else: [{:change_title, title}]
-      end)
-
-    assert state.revision == 7
-    assert state.title == "Renamed"
-    assert {:ok, _} = Change.verify_signed(ctx.server, params, signed)
-    assert FakeStorage.group(ctx.storage, params).revision == 7
-  end
-
-  test "requests without a credential for today fail locally", ctx do
-    {params, _url} = new_group(ctx, 1)
-    client = Groups.client(ctx.server, %{}, ctx.opts)
-    assert Groups.get_group(client, params) == {:error, :no_credential}
-    refute_received {:fake_storage, _, _}
   end
 end

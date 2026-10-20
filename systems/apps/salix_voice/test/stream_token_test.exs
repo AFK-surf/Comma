@@ -1,6 +1,7 @@
 defmodule SalixVoice.StreamTokenTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixVoice"]
   alias SalixVoice.StreamToken
 
   @claims %{
@@ -12,9 +13,9 @@ defmodule SalixVoice.StreamTokenTest do
 
   setup do
     # verify/2 requires a live call: stand in for its CallActor in :pg.
-    holder = spawn(fn -> Process.sleep(:infinity) end)
+    holder = SystemsRuntime.Proc.spawn(fn -> SystemsClock.sleep(:infinity) end)
     :ok = :pg.join(SalixVoice.PG, {:call, @claims["call_id"]}, holder)
-    on_exit(fn -> Process.exit(holder, :kill) end)
+    on_exit(fn -> SystemsRuntime.Proc.exit(holder, :kill) end)
     :ok
   end
 

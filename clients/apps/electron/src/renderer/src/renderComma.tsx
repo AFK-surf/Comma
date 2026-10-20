@@ -11,20 +11,19 @@ import {
   CommaElectronClientSettingsProvider,
   CommaReducedMotionRootSync,
   CommaSessionHostProvider,
-  ProductInboxProjectionProvider,
-  SideChatApp,
-  SideChatTestWindow,
-  createElectronProductInboxProjectionController,
-  createElectronSessionHostController,
+  createCoreSessionHostController,
   readLegacyCommaClientSettings,
   setToastsEnabled,
   startCommaAnalytics,
   reportCommaClientError,
   CommaAnalyticsLifecycle,
 } from "@comma/app";
+import { CoreClient, CoreProvider, electronCoreOpener } from "@comma/core-client";
 import { initializeCommaI18n, resolveLocalePreference } from "@comma/i18n";
 import { defaultCommaClientSettings, getNativeBridge } from "@comma/native-bridge";
 import "@comma/app/styles.css";
+import { dismissMainWindowBoot } from "./mainWindowBoot";
+import { MainWindowBootDismissal } from "./MainWindowBootDismissal";
 
 const root = document.getElementById("root");
 
@@ -50,15 +49,6 @@ if (isMeetingRecorderWindow) {
   document.documentElement.dataset.commaWindowRole = "meeting-recorder";
   document.body.dataset.commaWindowRole = "meeting-recorder";
 }
-const isSideChatWindow = rendererRole === "side-chat-window";
-const isSideChatTestWindow = rendererRole === "side-chat-test-window";
-if (isSideChatWindow || isSideChatTestWindow) {
-  // Set before React's first paint so the transparent window never flashes the
-  // main-app background while the Side Chat effect tree is mounting.
-  const commaWindowRole = isSideChatWindow ? "side-chat" : "side-chat-test";
-  document.documentElement.dataset.commaWindowRole = commaWindowRole;
-  document.body.dataset.commaWindowRole = commaWindowRole;
-}
 const isOnboardingWindow = rendererRole === "onboarding-window";
 if (isOnboardingWindow) {
   // The onboarding window covers the whole display: its page stays transparent
@@ -68,13 +58,9 @@ if (isOnboardingWindow) {
 }
 const RendererApp = isBrowserInspectionComposer
   ? BrowserInspectionComposer
-  : isSideChatTestWindow
-    ? SideChatTestWindow
-    : isSideChatWindow
-      ? SideChatApp
-      : isOnboardingWindow
-        ? OnboardingWindowApp
-        : CommaApp;
+  : isOnboardingWindow
+    ? OnboardingWindowApp
+    : CommaApp;
 // Only CommaApp and OnboardingWindowApp mount a <Toaster />, so only they have a
 // toast surface; the onboarding window needs one for plugin authorization
 // failures. Say so explicitly rather than leaving it to whether a stack happens
@@ -82,11 +68,7 @@ const RendererApp = isBrowserInspectionComposer
 // <Toaster />, so a toast raised from a shared chat component here would be
 // retained forever in these long-lived accessory windows.
 setToastsEnabled(
-  !isSitePermissionMenu &&
-    !isMeetingRecorderWindow &&
-    !isBrowserInspectionComposer &&
-    !isSideChatWindow &&
-    !isSideChatTestWindow
+  !isSitePermissionMenu && !isMeetingRecorderWindow && !isBrowserInspectionComposer
 );
 
 async function renderComma() {
@@ -115,7 +97,19 @@ async function renderComma() {
                   <SitePermissionMenuApp />
                 </CommaAppearanceProvider>
               ) : (
-                <MeetingRecorderWindowApp />
+                // The recorder shows the client core's meeting recorder: a channel of its own, no session calls.
+                <CoreProvider
+                  client={
+                    new CoreClient(
+                      electronCoreOpener(() => bridge.core.open()),
+                      {
+                        onFault: (error) => reportCommaClientError(error, "core_fault"),
+                      }
+                    )
+                  }
+                >
+                  <MeetingRecorderWindowApp />
+                </CoreProvider>
               )}
             </CommaReducedMotionRootSync>
           </CommaClientSettingsI18nProvider>
@@ -124,27 +118,36 @@ async function renderComma() {
     );
     return;
   }
-  const sessionController = createElectronSessionHostController({ locale });
-  if (rendererRole === "main-window" || rendererRole === "side-chat-window") {
+  // The client core, in its utility process: Main hands this window a channel. It runs the session; Main keeps the
+  // bearer and adds it to this window's product requests (its `/v1` proxy).
+  const core = new CoreClient(
+    electronCoreOpener(() => bridge.core.open()),
+    { onFault: (error) => reportCommaClientError(error, "core_fault") }
+  );
+  // The window's channel to the core: what E2E drives.
+  (globalThis as { commaCore?: CoreClient }).commaCore = core;
+  const sessionController = createCoreSessionHostController({
+    apiBaseUrl: "assets://.",
+    core,
+    host: "electron",
+    locale,
+  });
+  if (rendererRole === "main-window") {
     const stopAnalytics = startCommaAnalytics({
       runtime: "electron",
-      windowRole: rendererRole,
       lifecycle: sessionController.lifecycle,
+      desktopLaunch: bridge.native
+        .info()
+        .then((info) => info.desktopLaunch)
+        .catch(() => undefined),
     });
     import.meta.hot?.dispose(stopAnalytics);
   }
-  const productInboxController = createElectronProductInboxProjectionController();
-  const rendererApp = <RendererApp />;
-  const reducedMotionAwareRenderer = isSideChatTestWindow ? (
-    <CommaReducedMotionRootSync>{rendererApp}</CommaReducedMotionRootSync>
-  ) : (
-    rendererApp
-  );
-
   createRoot(root!, {
     onUncaughtError: (error) => {
       console.error(error);
       reportCommaClientError(error, "react_uncaught");
+      dismissMainWindowBoot();
     },
   }).render(
     <StrictMode>
@@ -154,11 +157,12 @@ async function renderComma() {
       >
         <CommaClientSettingsI18nProvider>
           <CommaSessionHostProvider controller={sessionController}>
-            <ProductInboxProjectionProvider controller={productInboxController}>
+            {rendererRole === "main-window" ? <MainWindowBootDismissal /> : null}
+            <CoreProvider client={core}>
               <CommaAnalyticsLifecycle>
-                {reducedMotionAwareRenderer}
+                <RendererApp />
               </CommaAnalyticsLifecycle>
-            </ProductInboxProjectionProvider>
+            </CoreProvider>
           </CommaSessionHostProvider>
         </CommaClientSettingsI18nProvider>
       </CommaElectronClientSettingsProvider>

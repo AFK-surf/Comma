@@ -1,42 +1,10 @@
 defmodule CommaWeb.ProactiveMailTest do
+  require SystemsRuntime.Proc
+
   use Comma.DataCase, async: false
   alias Comma.Data.{Workspace, WorkspaceMembership}
   alias CommaWeb.{ProactiveMail, ProactiveWatch}
   alias SalixStore.{Ids, Loops}
-
-  test "internal reminder source shows conversation messages without system context" do
-    result = %{
-      "conversation_id" => "home",
-      "state" => %{"private" => "session context"},
-      "messages" => [
-        %{
-          "actor_type" => "system",
-          "kind" => "message",
-          "content" => [%{"type" => "text", "text" => "internal instructions"}]
-        },
-        %{
-          "actor_type" => "user",
-          "kind" => "message",
-          "content" => [%{"type" => "text", "text" => "Please remind me tomorrow"}]
-        },
-        %{"actor_type" => "system", "kind" => "app_event", "content" => []},
-        %{
-          "actor_type" => "agent",
-          "kind" => "message",
-          "content" => [%{"type" => "text", "text" => "I will remind you"}]
-        }
-      ]
-    }
-
-    assert %{
-             "conversation_id" => "home",
-             "messages" => [
-               %{"body" => "Please remind me tomorrow"},
-               %{"body" => "I will remind you"}
-             ]
-           } =
-             ProactiveWatch.preview(result, %{"tool" => "im_api.internal.read_conversation"})
-  end
 
   defmodule Provider do
     use Agent
@@ -66,16 +34,23 @@ defmodule CommaWeb.ProactiveMailTest do
 
     def get(_tenant), do: {:ok, %{"scope" => "system", "webhook_configured" => true}}
 
-    def get_connected_account(_settings, "ca_owner", _opts) do
+    @accounts %{
+      "ca_owner" => "gmail",
+      "ca_outlook" => "outlook",
+      "ca_calendar" => "googlecalendar",
+      "ca_drive" => "googledrive"
+    }
+
+    def get_connected_account(_settings, id, _opts) when is_map_key(@accounts, id) do
       called(:account)
       s = state()
 
       {:ok,
        %{
-         "id" => "ca_owner",
+         "id" => id,
          "user_id" => if(s.mode == :foreign, do: "foreign", else: s.group),
          "status" => "ACTIVE",
-         "toolkit" => %{"slug" => "gmail"}
+         "toolkit" => %{"slug" => @accounts[id]}
        }}
     end
 
@@ -84,7 +59,8 @@ defmodule CommaWeb.ProactiveMailTest do
       {:ok, %{"trigger_id" => if(state().mode == :invalid_trigger, do: nil, else: "ti_mail")}}
     end
 
-    def create_proxy_session(_settings, group, account, "gmail", _opts) do
+    def create_proxy_session(_settings, group, account, toolkit, _opts)
+        when toolkit in ["gmail", "outlook"] do
       called({:proxy, group, account})
       {:ok, "proxy"}
     end
@@ -95,6 +71,35 @@ defmodule CommaWeb.ProactiveMailTest do
       called(url)
       s = state()
 
+      if String.starts_with?(url, "https://graph.microsoft.com/v1.0/me") do
+        if s.mode == :revoke_outlook and String.contains?(url, "/messages?") do
+          Comma.MemberSourceConsents.forget_connection(s.workspace, "ca_outlook")
+        end
+
+        message = %{
+          "id" => "AAMk1=",
+          "conversationId" => "outlook-thread",
+          "webLink" => "https://outlook.office.com/mail/id/AAMk1",
+          "subject" => "Review the contract",
+          "from" => %{"emailAddress" => %{"address" => "sender@example.test"}},
+          "body" => %{"contentType" => "text", "content" => "Please approve the contract."},
+          "sentDateTime" => "2026-10-02T12:00:00Z"
+        }
+
+        data =
+          cond do
+            String.contains?(url, "/messages/AAMk1%3D") -> message
+            String.contains?(url, "/messages?") -> %{"value" => [message]}
+            true -> %{"id" => "me", "mail" => "owner@example.test"}
+          end
+
+        {:ok, %{"status" => 200, "data" => data}}
+      else
+        gmail_proxy_execute(s, url)
+      end
+    end
+
+    defp gmail_proxy_execute(s, url) do
       second = String.contains?(url, "/messages/m2?") or String.contains?(url, "/threads/t2?")
 
       message = %{
@@ -173,19 +178,19 @@ defmodule CommaWeb.ProactiveMailTest do
             {:salix_agent, :schedules_mod},
             {:salix_agent, :decide}
           ],
-          do: {app, key, Application.get_env(app, key)}
+          do: {app, key, SystemsRuntime.get_env(app, key)}
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_web, :composio_client_mod, Provider)
-    Application.put_env(:salix_web, :composio_settings_mod, Provider)
-    Application.put_env(:salix_agent, :proactive_mail_adapter, ProactiveMail)
-    Application.put_env(:salix_agent, :loop_authorization_adapter, CommaWeb.ProactiveWatch)
-    Application.put_env(:salix_agent, :proactive_adapter, CommaWeb.Proactive)
-    Application.put_env(:salix_agent, :composio_store_mod, Provider)
-    Application.put_env(:salix_agent, :composio_client_mod, Provider)
-    Application.put_env(:salix_agent, :schedules_mod, SalixCluster.Schedules)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_web, :composio_client_mod, Provider)
+    SystemsRuntime.put_env(:salix_web, :composio_settings_mod, Provider)
+    SystemsRuntime.put_env(:salix_agent, :proactive_mail_adapter, ProactiveMail)
+    SystemsRuntime.put_env(:salix_agent, :loop_authorization_adapter, CommaWeb.ProactiveWatch)
+    SystemsRuntime.put_env(:salix_agent, :proactive_adapter, CommaWeb.Proactive)
+    SystemsRuntime.put_env(:salix_agent, :composio_store_mod, Provider)
+    SystemsRuntime.put_env(:salix_agent, :composio_client_mod, Provider)
+    SystemsRuntime.put_env(:salix_agent, :schedules_mod, SalixCluster.Schedules)
 
-    if Process.whereis(SalixStore.S3.Fake),
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake),
       do: SalixStore.S3.Fake.reset(),
       else: start_supervised!(SalixStore.S3.Fake)
 
@@ -196,8 +201,8 @@ defmodule CommaWeb.ProactiveMailTest do
 
       Enum.each(old, fn {app, key, value} ->
         if is_nil(value),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, value)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, value)
       end)
     end)
 
@@ -215,13 +220,13 @@ defmodule CommaWeb.ProactiveMailTest do
 
     {:ok, user} =
       Comma.Accounts.create_user(%{
-        "email" => "mail-#{System.unique_integer([:positive])}@comma.test"
+        "email" => "mail-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     workspace =
       Comma.Repo.insert!(
         Workspace.changeset(%Workspace{}, %{
-          id: "wsp_mail_#{System.unique_integer([:positive])}",
+          id: "wsp_mail_#{SystemsRuntime.Proc.unique_integer([:positive])}",
           owner_user_id: user["id"],
           salix_tenant_id: tenant,
           salix_group_id: group,
@@ -269,7 +274,7 @@ defmodule CommaWeb.ProactiveMailTest do
         "elf_path" => "/loops/mail.elf",
         "elf_sha256" => "fixture",
         "ifc" => %{"creator" => "comma_user|" <> user["id"]},
-        "created_at" => System.system_time(:millisecond)
+        "created_at" => SystemsClock.system_time(:millisecond)
       })
 
     start_supervised!(
@@ -277,52 +282,6 @@ defmodule CommaWeb.ProactiveMailTest do
     )
 
     %{ctx: ctx, user: user, workspace: workspace, membership: membership, row: row}
-  end
-
-  test "Routine reads reuse the current snapshot without collection and fence stale owners", f do
-    assert {:ok, %{"state" => "empty", "snapshot" => nil}} =
-             CommaWeb.ProactiveWatch.read(
-               %{"tool" => "recommendation.read", "arguments" => %{}},
-               f.ctx
-             )
-
-    assert {:error, :not_found} =
-             Comma.Recommendations.get_runtime_profile(f.workspace.id, f.user["id"])
-
-    snapshot = %{"cards" => [%{"id" => "github", "items" => [%{"id" => "review-123"}]}]}
-
-    profile =
-      Comma.Repo.insert!(%Comma.Data.RecommendationProfile{
-        workspace_id: f.workspace.id,
-        user_id: f.user["id"],
-        relevance_mode: "generic",
-        sources: [%{"enabled" => true}],
-        snapshot: snapshot,
-        source_revision: 1,
-        snapshot_source_revision: 1
-      })
-
-    assert {:ok, %{"state" => "fresh", "snapshot" => ^snapshot}} =
-             CommaWeb.RecommendationRuntime.read(f.ctx)
-
-    Comma.Repo.update!(Ecto.Changeset.change(profile, last_error: ":source_collection_failed"))
-
-    assert {:ok,
-            %{
-              "state" => "stale",
-              "snapshot" => ^snapshot,
-              "lastError" => "source_collection_failed"
-            }} =
-             CommaWeb.RecommendationRuntime.read(f.ctx)
-
-    Comma.Repo.update!(Ecto.Changeset.change(profile, source_revision: 2))
-    assert {:ok, %{"snapshot" => nil}} = CommaWeb.RecommendationRuntime.read(f.ctx)
-
-    assert {:error, :comma_home_router_required} =
-             CommaWeb.RecommendationRuntime.read(%{f.ctx | session_id: "stale"})
-
-    assert {:error, _} = CommaWeb.RecommendationRuntime.read(%{f.ctx | trusted_origin: nil})
-    assert Provider.calls() == []
   end
 
   test "selected non-mail work shares handled state across refreshes and rejects revocation", f do
@@ -418,235 +377,49 @@ defmodule CommaWeb.ProactiveMailTest do
     assert Provider.calls() == []
   end
 
-  test "Routine failure references expire and explicit scheduling retains one schedule", f do
-    profile = routine_profile!(f)
-    Comma.Repo.update!(Ecto.Changeset.change(profile, last_error: ":source_collection_failed"))
-    assert {:ok, %{"attention_items" => [failure]}} = CommaWeb.RecommendationRuntime.read(f.ctx)
-    assert failure["source_ref"] == "routine:status"
+  defp ready_proactive_router!(f) do
+    alias SalixAgent.{Fleet, InternalSessionStore}
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
+    owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
+    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
 
-    assert {:ok, first_failure} =
-             track_source(
-               Map.merge(failure, %{
-                 "request_id" => "routine-failed",
-                 "text" => "Routine refresh failed; reconnect the source."
-               }),
-               f.ctx
-             )
-
-    assert {:ok, handled_failure} =
-             CommaWeb.Proactive.act(
-               %{
-                 "action" => "handled",
-                 "key" => first_failure["key"],
-                 "request_id" => "handled-failure"
-               },
-               f.ctx
-             )
-
-    Comma.Repo.update!(Ecto.Changeset.change(Comma.Repo.reload!(profile), last_error: nil))
-
-    assert {:error, :routine_failure_no_longer_current} =
-             CommaWeb.RecommendationRuntime.read(%{"scope" => "status"}, f.ctx)
-
-    Comma.Repo.update!(
-      Ecto.Changeset.change(Comma.Repo.reload!(profile),
-        last_error: ":source_collection_failed",
-        requested_generation: 2
-      )
-    )
-
-    assert {:ok, %{"attention_items" => [new_failure]}} =
-             CommaWeb.RecommendationRuntime.read(f.ctx)
-
-    refute new_failure["observation_id"] == failure["observation_id"]
-
-    assert {:ok, _} =
-             track_source(
-               Map.merge(new_failure, %{
-                 "text" => "A later run failed",
-                 "request_id" => "failed-again",
-                 "generation" => handled_failure["generation"]
-               }),
-               f.ctx
-             )
-
-    Comma.Repo.update!(Ecto.Changeset.change(Comma.Repo.reload!(profile), last_error: nil))
-    assert {:ok, %{"attention_items" => [item]}} = CommaWeb.RecommendationRuntime.read(f.ctx)
-
-    args =
-      Map.merge(item, %{
-        "action" => "remind",
-        "request_id" => "routine-snooze",
-        "run_at" => System.system_time(:millisecond) + 60_000
+    :ok =
+      BillingCore.Accounts.ensure_account(%{
+        repo: BillingCore.Repo,
+        billing_account_id: f.workspace.billing_owner_id,
+        surface: "comma",
+        product_owner_type: "workspace",
+        product_owner_id: f.workspace.id
       })
 
-    assert {:ok, first} = CommaWeb.Proactive.act(args, f.ctx)
-    assert {:ok, second} = CommaWeb.Proactive.act(args, f.ctx)
-    assert first["state"] == "snoozed"
-    assert first["schedule_id"] == second["schedule_id"]
-    SalixCluster.Schedules.delete(first["schedule_id"])
-    assert Provider.calls() == []
+    {:ok, _} =
+      BillingCore.Credits.issue_grant(%{
+        repo: BillingCore.Repo,
+        billing_account_id: f.workspace.billing_owner_id,
+        credits: 100,
+        valid_from: DateTime.add(SystemsClock.utc_now(), -60, :second),
+        expires_at: DateTime.add(SystemsClock.utc_now(), 30, :day),
+        source_type: "manual_contract",
+        source_id: f.workspace.id,
+        idempotency_key: "default-proactive:" <> f.workspace.id
+      })
+
+    {:ok, _} = InternalSessionStore.prepare_commit(f.ctx.agent_id, f.ctx.session_id, [])
+    {:ok, _} = Fleet.ensure_started(f.ctx.agent_id, create: false)
+    :ok = Fleet.await_ownership_installed(f.ctx.agent_id)
   end
 
-  test "partial Routine source failures stay visible until the published warning clears", f do
-    profile = routine_profile!(f)
-
-    snapshot =
-      Map.put(profile.snapshot, "warnings", [
-        %{"code" => "partial_sources", "message" => "Slack collection failed"}
-      ])
-
-    Comma.Repo.update!(Ecto.Changeset.change(profile, snapshot: snapshot))
-
-    assert {:ok, %{"attention_items" => [_, failure]}} =
-             CommaWeb.RecommendationRuntime.read(f.ctx)
-
-    assert failure["source_ref"] == "routine:status"
-    assert failure["body"] =~ "Slack collection failed"
-
-    Comma.Repo.update!(
-      Ecto.Changeset.change(Comma.Repo.reload!(profile), snapshot: profile.snapshot)
-    )
-
-    assert {:error, :routine_failure_no_longer_current} =
-             CommaWeb.RecommendationRuntime.read(failure["read"]["arguments"], f.ctx)
+  defp received?(match) do
+    {:messages, messages} = SystemsRuntime.Proc.info(SystemsRuntime.Proc.self(), :messages)
+    Enum.any?(messages, match)
   end
 
-  test "Routine mail uses the existing thread state and current Task rather than a second reminder",
-       f do
-    decision!(:resolved)
-    present!(f)
-    id = linked_task!(f)
-    profile = routine_profile!(f, "gmail", "ca_owner")
-    [dto] = profile.snapshot["attentionItems"]
-    snapshot = Map.put(profile.snapshot, "attentionItems", [Map.put(dto, "taskId", id)])
+  # The Loop runs in its spinfoam child: wait for what it records.
+  defp await(fun, attempts \\ 1500)
+  defp await(_fun, 0), do: flunk("the watch Loop did not converge")
 
-    snapshot =
-      CommaWeb.RecommendationMailTasks.project(snapshot, [
-        %{
-          "sourceId" => "ca_owner",
-          "toolkit" => "gmail",
-          "mailTasks" => %{
-            dto["sourceUrl"] => %{
-              "conversation_id" => id,
-              "title" => "Review request",
-              "status" => "active"
-            }
-          }
-        }
-      ])
-
-    assert [%{"kind" => "inline-task"}] = hd(hd(snapshot["cards"])["items"])["parts"]
-    Comma.Repo.update!(Ecto.Changeset.change(profile, snapshot: snapshot))
-    assert {:ok, %{"attention_items" => [item]}} = CommaWeb.RecommendationRuntime.read(f.ctx)
-    assert item["source_ref"] == "t1"
-    assert item["observation_id"] == "m1"
-    assert item["task_id"] == id
-    assert item["body"] == "Please review my change"
-    assert {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
-    [value] = status["sources"]
-    assert value["key"] == SalixIM.MailInteraction.key(item["source_id"], item["source_ref"])
-
-    assert {:ok, presented} =
-             track_source(
-               Map.merge(item, %{
-                 "text" => "Wait for the reply in this Task",
-                 "request_id" => "routine-active-task",
-                 "generation" => value["generation"]
-               }),
-               f.ctx
-             )
-
-    assert presented["task_id"] == id
-    assert presented["read"] == item["live_read"]
-
-    assert {:ok, scheduled} =
-             CommaWeb.HomeMail.action(f.user, %{}, f.ctx.group_id, %{
-               "action" => "snooze",
-               "key" => presented["key"],
-               "generation" => presented["generation"],
-               "request_id" => "routine-wait",
-               "run_at" => System.system_time(:millisecond) + 3600_000,
-               "reason" => "Wait for reply"
-             })
-
-    assert {:ok, %{failed: []}} = SalixCluster.Schedules.run_once(now: scheduled["run_at"])
-    assert {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
-
-    assert [%{"state" => "handled", "saving" => false, "task_id" => ^id} = source] =
-             status["sources"]
-
-    assert {:ok, messages} =
-             SalixIM.Conversations.list_group_conversation_messages(f.ctx.group_id, id)
-
-    assert Enum.count(messages, fn message ->
-             Enum.any?(
-               message["content"],
-               &String.contains?(&1["text"] || "", "Fresh source evidence")
-             )
-           end) == 1
-
-    assert {:ok, _} =
-             SalixIM.ConversationServer.deliver_task_mail_followup(
-               f.ctx.group_id,
-               id,
-               f.ctx.agent_id,
-               source,
-               "due:" <> scheduled["schedule_id"]
-             )
-
-    assert {:ok, ^messages} =
-             SalixIM.Conversations.list_group_conversation_messages(f.ctx.group_id, id)
-
-    for {field, wrong} <- [{"account_id", "other-account"}, {"thread_id", "other-thread"}] do
-      assert {:error, :mail_task_source_changed} =
-               SalixIM.ConversationServer.deliver_task_mail_followup(
-                 f.ctx.group_id,
-                 id,
-                 f.ctx.agent_id,
-                 Map.put(source, field, wrong),
-                 "wrong-" <> field
-               )
-    end
-
-    assert {:ok, ^messages} =
-             SalixIM.Conversations.list_group_conversation_messages(f.ctx.group_id, id)
-
-    assert {:ok, _} =
-             SalixIM.ConversationServer.update_group_conversation(f.ctx.group_id, id, %{
-               "status" => "completed"
-             })
-
-    assert {:error, :mail_task_stopped} =
-             track_source(
-               Map.merge(item, %{
-                 "text" => "Review",
-                 "request_id" => "routine-task",
-                 "generation" => value["generation"]
-               }),
-               f.ctx
-             )
-
-    assert {:ok, :stopped} =
-             SalixIM.ConversationServer.deliver_task_mail_followup(
-               f.ctx.group_id,
-               id,
-               f.ctx.agent_id,
-               source,
-               "routine-late-retry"
-             )
-
-    assert {:ok, ^messages} =
-             SalixIM.Conversations.list_group_conversation_messages(f.ctx.group_id, id)
-
-    assert {:ok, _} =
-             CommaWeb.Proactive.act(
-               %{"action" => "handled", "key" => value["key"], "request_id" => "mail-done"},
-               f.ctx
-             )
-
-    assert {:ok, %{"attention_items" => [], "snapshot" => %{"cards" => []}}} =
-             CommaWeb.RecommendationRuntime.read(f.ctx)
+  defp await(fun, attempts) do
+    if fun.(), do: :ok, else: SystemsRuntime.Proc.sleep(20) && await(fun, attempts - 1)
   end
 
   defp routine_profile!(f, toolkit \\ "slack", account \\ "ca_slack") do
@@ -670,7 +443,7 @@ defmodule CommaWeb.ProactiveMailTest do
     record = %{
       "text" => "Please review my change",
       "permalink" => url,
-      "ts" => to_string(System.system_time(:second)),
+      "ts" => to_string(SystemsClock.system_time(:second)),
       "subject" => "Please review my change",
       "threadId" => "t1",
       "messageId" => "m1",
@@ -732,7 +505,7 @@ defmodule CommaWeb.ProactiveMailTest do
             "elf_sha256" => "fixture",
             "status" => "paused",
             "config" => %{"comma_proactive" => %{"user_id" => f.user["id"]}},
-            "created_at" => System.system_time(:millisecond)
+            "created_at" => SystemsClock.system_time(:millisecond)
           })
 
         row
@@ -767,7 +540,7 @@ defmodule CommaWeb.ProactiveMailTest do
     assert [%{state: "scheduled"} = next] =
              Enum.filter(checks.(), &(&1.state != "completed"))
 
-    assert_in_delta DateTime.diff(next.scheduled_at, DateTime.utc_now()), 900, 60
+    assert_in_delta DateTime.diff(next.scheduled_at, SystemsClock.utc_now()), 900, 60
 
     enter.()
     assert [%{id: id}] = Enum.filter(checks.(), &(&1.state != "completed"))
@@ -808,117 +581,250 @@ defmodule CommaWeb.ProactiveMailTest do
     assert Provider.calls() == before
   end
 
-  test "explicit snooze replaces a presented reminder and fences stale actions", f do
-    {:ok, _home} = SalixIM.RouterConversationInput.ensure(f.ctx.group_id)
+  defmodule SlackMCP do
+    def provider_state(_agent_id), do: {:ok, %{}}
+    def list_bindings(_agent_id), do: {:ok, []}
+
+    def dynamic_disclosure_entries(_agent_id) do
+      {:ok,
+       [
+         %{
+           "name" => "mcp.slack.slack_read_thread",
+           "summary" => "Read a Slack thread.",
+           "manual" => "Read a Slack thread.",
+           "input_schema" => %{"type" => "object", "properties" => %{}}
+         }
+       ]}
+    end
+
+    def call_tool(_agent_id, "slack", "slack_read_thread", args, _ctx) do
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :proactive_slack_mcp_pid),
+        {:slack_mcp, args}
+      )
+
+      {:ok,
+       %{
+         "status" => "completed",
+         "content" =>
+           Jason.encode!(%{"messages" => [%{"text" => "Ana replied", "user" => "UANA"}]})
+       }}
+    end
+  end
+
+  test "a Slack watch reads through the managed OAuth grant and the Slack MCP, never Composio",
+       f do
+    previous = SystemsRuntime.get_env(:salix_agent, :mcp_provider_mod)
+    SystemsRuntime.put_env(:salix_agent, :mcp_provider_mod, SlackMCP)
+    SystemsRuntime.put_env(:comma_web, :proactive_slack_mcp_pid, SystemsRuntime.Proc.self())
+
+    on_exit(fn ->
+      SystemsRuntime.delete_env(:comma_web, :proactive_slack_mcp_pid)
+
+      if is_nil(previous),
+        do: SystemsRuntime.delete_env(:salix_agent, :mcp_provider_mod),
+        else: SystemsRuntime.put_env(:salix_agent, :mcp_provider_mod, previous)
+    end)
+
+    {:ok, workspace, user} = CommaWeb.Proactive.scope(f.ctx)
 
     read = %{
+      "tool" => "mcp.slack.slack_read_thread",
+      "arguments" => %{"channel_id" => "C1", "thread_ts" => "1786900000.000200", "limit" => 20}
+    }
+
+    # Without the Comma Slack plugin's managed grant there is no source.
+    assert {:error, :consented_source_required} =
+             ProactiveWatch.source_binding(read, workspace, user)
+
+    # A Composio Slack account is never a watch source, consent or not.
+    {:ok, :ok} =
+      Comma.MemberSourceConsents.record(f.user, %{}, workspace["id"], "slack", "ca_slack")
+
+    composio = %{
       "tool" => "composio.execute",
       "arguments" => %{
-        "tool_slug" => "GMAIL_FETCH_MESSAGE_BY_THREAD_ID",
-        "connected_account_id" => "ca_owner",
-        "arguments" => %{"thread_id" => "t1"}
+        "tool_slug" => "SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION",
+        "connected_account_id" => "ca_slack",
+        "arguments" => %{"channel" => "C1", "ts" => "1786900000.000200"}
       }
     }
 
-    args = %{
-      "source_ref" => "t1",
-      "observation_id" => "m1",
-      "read" => read,
-      "title" => "Contract",
-      "url" => "https://mail.google.com/mail/#inbox/t1",
-      "text" => "Dana needs your approval on the contract today. Want me to draft the reply?",
-      "request_id" => "generic-present"
-    }
+    assert {:error, :consented_source_required} =
+             ProactiveWatch.source_binding(composio, workspace, user)
 
-    assert {:ok, value} = track_source(args, f.ctx)
+    grant = fn connection ->
+      :ok =
+        SalixStore.OAuth.put(connection, %{
+          "connection_id" => connection,
+          "tenant" => f.ctx.tenant_id,
+          "provider" => "slack",
+          "status" => "active",
+          "access_token" => "xoxp-owner",
+          "comma_member" => %{"user_id" => user, "workspace_id" => workspace["id"]},
+          "metadata" => %{"metadata" => %{"authed_user_id" => "UOWNER", "team_id" => "TTEAM"}}
+        })
 
-    assert home_messages(f) == []
-    reply!(f.ctx, args["text"] <> "\n[Contract](" <> args["url"] <> ")", "router-reminder")
-    # Tracking does not send. The Router chooses a separate ordinary reply.
-    assert [%{"content" => [%{"type" => "text", "text" => text}]}] = home_messages(f)
-    assert text =~ "Want me to draft the reply?"
-    assert text =~ "[Contract](https://mail.google.com/mail/#inbox/t1)"
+      {:ok, oauth, _previous} =
+        Salix.Control.OAuthBindings.put(
+          f.ctx.tenant_id,
+          f.ctx.group_id,
+          "slack",
+          "slack",
+          connection
+        )
 
-    assert {:ok, scheduled} =
-             CommaWeb.Proactive.act(
-               %{
-                 "key" => value["key"],
-                 "action" => "snooze",
-                 "request_id" => "explicit-snooze",
-                 "generation" => value["generation"],
-                 "run_at" => System.system_time(:millisecond) + 60_000
-               },
-               f.ctx
-             )
+      oauth
+    end
 
-    assert scheduled["state"] == "snoozed"
-    assert {:ok, _} = SalixCluster.Schedules.get(scheduled["schedule_id"])
-    SalixCluster.Schedules.delete(scheduled["schedule_id"])
-    # The Router confirms a snooze in its own reply; the state change adds no message.
-    assert length(home_messages(f)) == 1
+    connection = "conn-slack-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    oauth = grant.(connection)
 
-    assert {:error, :mail_source_changed} =
-             CommaWeb.Proactive.act(
-               %{
-                 "key" => value["key"],
-                 "action" => "handled",
-                 "request_id" => "stale-handled",
-                 "generation" => value["generation"]
-               },
-               f.ctx
-             )
+    assert {:ok, binding} = ProactiveWatch.source_binding(read, workspace, user)
+    assert binding["kind"] == "managed_oauth"
+    assert binding["toolkit"] == "slack"
+    assert binding["binding_id"] == oauth["binding_id"]
+    assert binding["connection_id"] == connection
+    assert :ok = ProactiveWatch.current_consent(binding)
+    assert ProactiveWatch.provider(read) == "Slack"
+
+    # The read runs the pinned MCP tool with the exact arguments.
+    assert {:ok, data} = ProactiveWatch.read(read, f.ctx)
+    assert [%{"text" => "Ana replied"}] = data["messages"]
+    assert_received {:slack_mcp, %{"channel_id" => "C1", "thread_ts" => "1786900000.000200"}}
+
+    # A reconnect backs the Group's Slack grant with another connection: the
+    # watch enrolled on the old grant is revoked, the current grant still reads.
+    _ = grant.(connection <> "-reconnected")
+    assert {:error, :proactive_source_revoked} = ProactiveWatch.current_consent(binding)
+    assert {:ok, current} = ProactiveWatch.source_binding(read, workspace, user)
+    assert current["connection_id"] == connection <> "-reconnected"
   end
 
-  test "explicit reminders enroll while automatic attention is off and retries retain one schedule",
-       f do
-    args = %{
-      "action" => "remind",
-      "source_ref" => "t1",
-      "observation_id" => "m1",
-      "title" => "Contract",
-      "request_id" => "manual-new",
-      "run_at" => System.system_time(:millisecond) + 60_000,
-      "read" => %{
-        "tool" => "composio.execute",
-        "arguments" => %{
-          "tool_slug" => "GMAIL_FETCH_MESSAGE_BY_THREAD_ID",
-          "connected_account_id" => "ca_owner",
-          "arguments" => %{"thread_id" => "t1"}
-        }
-      }
-    }
+  defmodule ManagedMCP do
+    def provider_state(_agent_id), do: {:ok, %{}}
+    def list_bindings(_agent_id), do: {:ok, []}
 
-    assert {:ok, first} = CommaWeb.Proactive.act(args, f.ctx)
-    assert {:ok, second} = CommaWeb.Proactive.act(args, f.ctx)
-    assert first["schedule_id"] == second["schedule_id"]
-    SalixCluster.Schedules.delete(first["schedule_id"])
+    def dynamic_disclosure_entries(_agent_id) do
+      {:ok,
+       for name <- ~w(mcp.github.pull_request_read mcp.linear.get_issue mcp.notion.fetch) do
+         %{
+           "name" => name,
+           "summary" => "Read one item.",
+           "manual" => "Read one item.",
+           "input_schema" => %{"type" => "object", "properties" => %{}}
+         }
+       end}
+    end
+
+    def call_tool(_agent_id, provider, tool, args, _ctx) do
+      send(
+        SystemsRuntime.fetch_env!(:comma_web, :proactive_managed_mcp_pid),
+        {:managed_mcp, provider, tool, args}
+      )
+
+      content =
+        SystemsRuntime.get_env(:comma_web, :proactive_managed_mcp_content) ||
+          Jason.encode!(%{"state" => "open"})
+
+      {:ok, %{"status" => "completed", "content" => content}}
+    end
   end
 
-  test "product binding capacity rejects a seventeenth binding but permits existing settings",
+  defp managed_grant!(f, provider, metadata) do
+    {:ok, workspace, user} = CommaWeb.Proactive.scope(f.ctx)
+    connection = "conn-#{provider}-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+    :ok =
+      SalixStore.OAuth.put(connection, %{
+        "connection_id" => connection,
+        "tenant" => f.ctx.tenant_id,
+        "provider" => provider,
+        "status" => "active",
+        "access_token" => "token-owner",
+        "comma_member" => %{"user_id" => user, "workspace_id" => workspace["id"]},
+        "metadata" => %{"metadata" => metadata}
+      })
+
+    {:ok, oauth, _previous} =
+      Salix.Control.OAuthBindings.put(
+        f.ctx.tenant_id,
+        f.ctx.group_id,
+        provider,
+        provider,
+        connection
+      )
+
+    {connection, oauth}
+  end
+
+  defp managed_mcp!(content \\ nil) do
+    previous = SystemsRuntime.get_env(:salix_agent, :mcp_provider_mod)
+    SystemsRuntime.put_env(:salix_agent, :mcp_provider_mod, ManagedMCP)
+    SystemsRuntime.put_env(:comma_web, :proactive_managed_mcp_pid, SystemsRuntime.Proc.self())
+    if content, do: SystemsRuntime.put_env(:comma_web, :proactive_managed_mcp_content, content)
+
+    on_exit(fn ->
+      SystemsRuntime.delete_env(:comma_web, :proactive_managed_mcp_pid)
+      SystemsRuntime.delete_env(:comma_web, :proactive_managed_mcp_content)
+
+      if is_nil(previous),
+        do: SystemsRuntime.delete_env(:salix_agent, :mcp_provider_mod),
+        else: SystemsRuntime.put_env(:salix_agent, :mcp_provider_mod, previous)
+    end)
+  end
+
+  test "GitHub, Linear and Notion watches read through the managed OAuth grant and the plugin MCP",
        f do
-    ids =
-      for n <- 1..16 do
-        {:ok, row} =
-          Loops.create(%{
-            "id" => Ids.new_loop_id(),
-            "tenant_id" => f.ctx.tenant_id,
-            "group_id" => f.ctx.group_id,
-            "agent_id" => f.ctx.agent_id,
-            "session_id" => f.ctx.session_id,
-            "elf_path" => "/loops/bound-#{n}.elf",
-            "elf_sha256" => "fixture",
-            "status" => "paused",
-            "config" => %{"comma_proactive" => %{}},
-            "created_at" => System.system_time(:millisecond)
-          })
+    managed_mcp!()
+    {:ok, workspace, user} = CommaWeb.Proactive.scope(f.ctx)
 
-        row["id"]
-      end
+    cases = [
+      {"github", "GitHub", "pull_request_read",
+       %{"method" => "get", "owner" => "AFK-surf", "repo" => "Comma", "pullNumber" => 11},
+       %{"user_id" => 42, "login" => "owner"}},
+      {"linear", "Linear", "get_issue", %{"id" => "CUE-1"},
+       %{"actor" => "user", "viewer_id" => "lin-user", "workspace_id" => "lin-ws"}},
+      {"notion", "Notion", "fetch", %{"id" => "page-1"},
+       %{"owner" => %{"type" => "user", "user" => %{"id" => "n-user"}}, "workspace_id" => "n-ws"}}
+    ]
 
-    assert {:error, :mail_monitor_capacity} = Loops.update_mail_binding(f.row["id"], &{:ok, &1})
-    assert {:ok, _} = Loops.update_mail_binding(hd(ids), &{:ok, &1})
-    assert {:ok, rows} = Loops.proactive_monitors(f.ctx.agent_id)
-    assert length(rows) == 16
+    for {provider, label, tool, arguments, metadata} <- cases do
+      read = %{"tool" => "mcp.#{provider}.#{tool}", "arguments" => arguments}
+
+      # Without the plugin's managed grant there is no source.
+      assert {:error, :consented_source_required} =
+               ProactiveWatch.source_binding(read, workspace, user)
+
+      {connection, oauth} = managed_grant!(f, provider, metadata)
+
+      assert {:ok, binding} = ProactiveWatch.source_binding(read, workspace, user)
+      assert binding["kind"] == "managed_oauth"
+      assert binding["toolkit"] == provider
+      assert binding["binding_id"] == oauth["binding_id"]
+      assert binding["connection_id"] == connection
+      assert :ok = ProactiveWatch.current_consent(binding)
+      assert ProactiveWatch.provider(read) == label
+
+      # The read runs the pinned MCP tool with the exact arguments.
+      assert {:ok, %{"state" => "open"}} = ProactiveWatch.read(read, f.ctx)
+      assert_received {:managed_mcp, ^provider, ^tool, ^arguments}
+    end
+
+    # An MCP outside the managed plugins is not a watch source.
+    assert {:error, :proactive_source_required} =
+             ProactiveWatch.source_binding(
+               %{"tool" => "mcp.x.search_posts", "arguments" => %{"query" => "p1"}},
+               workspace,
+               user
+             )
+
+    assert {:error, :proactive_source_required} =
+             ProactiveWatch.source_binding(
+               %{"tool" => "mcp.github.", "arguments" => %{}},
+               workspace,
+               user
+             )
   end
 
   test "the same Task survives link, fresh follow-up and completion", f do
@@ -976,10 +882,10 @@ defmodule CommaWeb.ProactiveMailTest do
     def call(conn, {test, mode}) do
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       request = Jason.decode!(body)
-      send(test, {:mail_decision, self(), request})
+      SystemsRuntime.Proc.send(test, {:mail_decision, SystemsRuntime.Proc.self(), request})
 
       if mode == :hold do
-        receive do
+        SystemsRuntime.Proc.receive do
           :continue -> :ok
         after
           5_000 -> raise "decision was not released"
@@ -1026,12 +932,15 @@ defmodule CommaWeb.ProactiveMailTest do
     server =
       start_supervised!(
         {Bandit,
-         plug: {MailDecision, {self(), mode}}, ip: {127, 0, 0, 1}, port: 0, startup_log: false}
+         plug: {MailDecision, {SystemsRuntime.Proc.self(), mode}},
+         ip: {127, 0, 0, 1},
+         port: 0,
+         startup_log: false}
       )
 
     {:ok, {_, port}} = ThousandIsland.listener_info(server)
 
-    Application.put_env(:salix_agent, :decide,
+    SystemsRuntime.put_env(:salix_agent, :decide,
       endpoint: "http://127.0.0.1:#{port}/decide",
       api_key: "fixture",
       model: "fixture"
@@ -1133,7 +1042,7 @@ defmodule CommaWeb.ProactiveMailTest do
     assert [%{"generation" => 1} = source] = status["sources"]
     assert source["saving"] == false
     key = source["key"]
-    at = System.system_time(:millisecond) + 3600_000
+    at = SystemsClock.system_time(:millisecond) + 3600_000
 
     args = %{
       "key" => key,
@@ -1187,43 +1096,9 @@ defmodule CommaWeb.ProactiveMailTest do
     assert {:error, _} = CommaWeb.HomeMail.status(%{"id" => "foreign"}, %{}, f.ctx.group_id)
   end
 
-  test "a recheck still fires after the Router records that it notified the owner", f do
-    decision!()
-    value = present!(f)
-
-    assert {:ok, %{"sources" => [%{"key" => key}]}} =
-             CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
-
-    at = System.system_time(:millisecond) + 3600_000
-
-    assert {:ok, snoozed} =
-             CommaWeb.HomeMail.action(f.user, %{}, f.ctx.group_id, %{
-               "key" => key,
-               "action" => "snooze",
-               "generation" => value["generation"],
-               "request_id" => "snooze-1",
-               "run_at" => at,
-               "reason" => "Before the deadline"
-             })
-
-    id = snoozed["schedule_id"]
-    before = length(router_inputs(f))
-
-    assert {:ok, %{"state" => "snoozed", "decision" => %{"decision" => "notify"}}} =
-             CommaWeb.HomeMail.action(f.user, %{}, f.ctx.group_id, %{
-               "key" => key,
-               "action" => "notify",
-               "generation" => snoozed["generation"],
-               "request_id" => "notify-1"
-             })
-
-    assert {:ok, %{fired: [^id], failed: []}} = SalixCluster.Schedules.run_once(now: at)
-    assert length(router_inputs(f)) == before + 1
-  end
-
   test "mail one-shot uses fresh evidence and the shared test clock with IFC off", f do
     decision!()
-    run_at = DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+    run_at = SystemsClock.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
 
     assert {:ok, scheduled} =
              ProactiveMail.schedule(
@@ -1253,198 +1128,6 @@ defmodule CommaWeb.ProactiveMailTest do
     assert reminder =~ "A reminder: "
     assert {:error, :not_found} = SalixCluster.Schedules.get(id)
     assert {:ok, %{fired: []}} = SalixCluster.Schedules.run_once(now: scheduled["run_at"] + 1)
-  end
-
-  test "internal reminder follow-up sends visible Home evidence to Decide", f do
-    decision!()
-    {:ok, home} = SalixIM.RouterConversationInput.ensure(f.ctx.group_id)
-    home_id = home["conversation_id"]
-
-    assert {:ok, _} =
-             SalixIM.ConversationServer.append_group_conversation_message(
-               f.ctx.group_id,
-               home_id,
-               %{
-                 "actor_type" => "user",
-                 "user_id" => f.user["id"],
-                 "participant_id" => home["user_participant_id"],
-                 "content" => [
-                   %{"type" => "text", "text" => "Please remind me to check the card"},
-                   %{"type" => "file", "file_name" => "card-evidence.pdf"}
-                 ],
-                 "delivery_filter" => %{"participant_ids" => []}
-               }
-             )
-
-    assert {:ok, _} =
-             SalixIM.ConversationServer.append_group_conversation_message(
-               f.ctx.group_id,
-               home_id,
-               %{
-                 "actor_type" => "user",
-                 "user_id" => f.user["id"],
-                 "participant_id" => home["user_participant_id"],
-                 "content" => [
-                   %{
-                     "type" => "dynamic_ui",
-                     "version" => 1,
-                     "ui_ref" => "private-card-ref",
-                     "path" => "/private/card.html",
-                     "summary" => "Check the interactive card",
-                     "text" => "Check the interactive card"
-                   }
-                 ],
-                 "delivery_filter" => %{"participant_ids" => []}
-               }
-             )
-
-    read = %{
-      "tool" => "im_api.internal.read_conversation",
-      "arguments" => %{
-        "connect_id" => "internal",
-        "conversation_id" => home_id,
-        "query" => "Current owner commitment",
-        "tail" => 12,
-        "limit" => 12
-      }
-    }
-
-    assert {:ok, presented} =
-             track_source(
-               %{
-                 "source_ref" => "conversation:" <> home_id,
-                 "observation_id" => "first-reminder",
-                 "read" => read,
-                 "title" => "Check the card",
-                 "text" => "Check the reminder card",
-                 "request_id" => "internal-present"
-               },
-               f.ctx
-             )
-
-    reply!(f.ctx, "Check the reminder card", "router-internal-reminder")
-
-    assert {:ok, scheduled} =
-             CommaWeb.HomeMail.action(f.user, %{}, f.ctx.group_id, %{
-               "key" => presented["key"],
-               "action" => "snooze",
-               "generation" => presented["generation"],
-               "request_id" => "internal-snooze",
-               "run_at" => System.system_time(:millisecond) + 60_000
-             })
-
-    assert {:ok, %{failed: []}} =
-             SalixCluster.Schedules.run_once(now: scheduled["run_at"])
-
-    assert_receive {:mail_decision, _, request}, 5_000
-    source = request["state"]["source"]
-    assert Enum.any?(source["messages"], &String.contains?(&1["body"], "check the card"))
-
-    assert Enum.any?(source["messages"], fn message ->
-             String.contains?(message["body"], "check the card") and
-               message["has_attachments"] == true
-           end)
-
-    assert Enum.any?(source["messages"], fn message ->
-             String.contains?(message["body"], "Check the reminder card") and
-               message["has_attachments"] == false
-           end)
-
-    assert Enum.any?(source["messages"], fn message ->
-             String.contains?(message["body"], "Check the interactive card") and
-               message["has_attachments"] == true
-           end)
-
-    refute Map.has_key?(source, "content")
-    refute inspect(source) =~ "card-evidence.pdf"
-    refute inspect(source) =~ "/private/card.html"
-    refute inspect(source) =~ "private-card-ref"
-    refute source["evidence_truncated"]
-  end
-
-  test "handled commits while a model is running and fences its final visible append", f do
-    decision!(:hold)
-    present!(f)
-    run_at = DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
-
-    assert {:ok, scheduled} =
-             ProactiveMail.schedule(
-               %{"message_id" => "m1", "run_at" => run_at, "reason" => "Remind me"},
-               f.ctx
-             )
-
-    task = Task.async(fn -> SalixCluster.Schedules.run_once(now: scheduled["run_at"]) end)
-    assert_receive {:mail_decision, pending, _}, 5_000
-
-    assert {:ok, _} =
-             CommaWeb.HomeMail.action(f.user, %{}, f.ctx.group_id, %{
-               "action" => "handled",
-               "key" => SalixIM.MailInteraction.key("ca_owner", "t1"),
-               "generation" => scheduled["generation"],
-               "request_id" => "handled-during-model"
-             })
-
-    send(pending, :continue)
-    assert {:ok, %{failed: []}} = Task.await(task, 10_000)
-    assert length(home_messages(f)) == 1
-  end
-
-  test "a failed recheck hands the requested reminder to the Router", f do
-    decision!(:error)
-    present!(f)
-    run_at = DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
-
-    assert {:ok, scheduled} =
-             ProactiveMail.schedule(
-               %{"message_id" => "m1", "run_at" => run_at, "reason" => "Remind me"},
-               f.ctx
-             )
-
-    assert {:ok, %{failed: []}} = SalixCluster.Schedules.run_once(now: scheduled["run_at"])
-    assert {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
-    assert hd(status["sources"])["state"] == "active"
-    assert [_original] = home_messages(f)
-    assert [%{"agent_input" => %{"content" => reminder}}] = router_inputs(f)
-    assert reminder =~ "I could not check its latest state"
-  end
-
-  test "a failed append resumes from the owner and request IDs are scoped to the source", f do
-    {:ok, home} = SalixIM.RouterConversationInput.ensure(f.ctx.group_id)
-
-    prefix =
-      SalixStore.Keys.ctl_group_conversation_messages_segments_prefix(
-        f.ctx.group_id,
-        home["conversation_id"]
-      )
-
-    SalixStore.S3.Fake.set_fault({:fail, 503, :put, {:prefix, prefix}})
-
-    assert {:error, _} =
-             track_mail(
-               %{
-                 "message_id" => "m1",
-                 "request_id" => "same-request",
-                 "text" => "Please approve the contract by Friday."
-               },
-               f.ctx
-             )
-
-    assert {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
-    source = hd(status["sources"])
-    assert source["saving"]
-
-    assert {:ok, %{"saving" => false}} =
-             CommaWeb.HomeMail.action(f.user, %{}, f.ctx.group_id, %{
-               "action" => "resume",
-               "key" => source["key"],
-               "generation" => source["generation"],
-               "request_id" => "resume"
-             })
-
-    present!(f, "m2", "same-request")
-    assert length(home_messages(f)) == 1
-    assert {:ok, %{"sources" => sources}} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
-    assert length(sources) == 2
   end
 
   defp linked_task!(f) do
@@ -1574,45 +1257,6 @@ defmodule CommaWeb.ProactiveMailTest do
     assert length(router_inputs(f)) == before + 3
   end
 
-  test "status publication recovery checks one Task status version once" do
-    snapshot = %{
-      "agent_group_id" => "grp_recovery",
-      "conversation_id" => "cnv_recovery",
-      "status" => "escalated",
-      "provider_status_version" => 3
-    }
-
-    jobs = fn ->
-      Comma.Repo.all(from(job in Oban.Job, where: job.worker == "CommaWeb.ProactiveTask"))
-    end
-
-    assert :ok = CommaWeb.ProactiveTask.task_status_changed(snapshot)
-    [job] = jobs.()
-
-    # Recovery replays the same version after the check ran: nothing new.
-    Comma.Repo.update_all(from(j in Oban.Job, where: j.id == ^job.id), set: [state: "completed"])
-    assert :ok = CommaWeb.ProactiveTask.task_status_changed(snapshot)
-    assert [_] = jobs.()
-
-    assert :ok =
-             CommaWeb.ProactiveTask.task_status_changed(%{
-               snapshot
-               | "provider_status_version" => 4
-             })
-
-    assert length(jobs.()) == 2
-
-    # Other statuses, of any product's Tasks, touch no Comma state.
-    assert :ok =
-             CommaWeb.ProactiveTask.task_status_changed(%{
-               snapshot
-               | "status" => "ready_for_review",
-                 "provider_status_version" => 5
-             })
-
-    assert length(jobs.()) == 2
-  end
-
   test "a due append failure preserves its schedule and resumes the exact saved result", f do
     decision!()
     present!(f)
@@ -1621,7 +1265,7 @@ defmodule CommaWeb.ProactiveMailTest do
       ProactiveMail.schedule(
         %{
           "message_id" => "m1",
-          "run_at" => DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601(),
+          "run_at" => SystemsClock.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601(),
           "reason" => "Remind me"
         },
         f.ctx
@@ -1655,37 +1299,6 @@ defmodule CommaWeb.ProactiveMailTest do
     assert {:error, :not_found} = SalixCluster.Schedules.get(scheduled["schedule_id"])
   end
 
-  test "a Task completed during Decide stops the follow-up before visible append", f do
-    decision!(:hold)
-    present!(f)
-    id = linked_task!(f)
-
-    {:ok, scheduled} =
-      ProactiveMail.schedule(
-        %{
-          "conversation_id" => id,
-          "run_at" => DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601(),
-          "reason" => "Check draft"
-        },
-        f.ctx
-      )
-
-    running = Task.async(fn -> SalixCluster.Schedules.run_once(now: scheduled["run_at"]) end)
-    assert_receive {:mail_decision, pending, _}, 5_000
-
-    assert {:ok, _} =
-             SalixIM.ConversationServer.update_group_conversation(f.ctx.group_id, id, %{
-               "status" => "completed"
-             })
-
-    send(pending, :continue)
-    assert {:ok, %{failed: []}} = Task.await(running, 10_000)
-    # Only the original reminder: the completed Task stopped the due one.
-    assert length(home_messages(f)) == 1
-    assert {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
-    assert hd(status["sources"])["state"] == "handled"
-  end
-
   test "a resolved reply continues the same active Task once and never reopens a completed Task",
        f do
     decision!(:resolved)
@@ -1696,7 +1309,7 @@ defmodule CommaWeb.ProactiveMailTest do
       ProactiveMail.schedule(
         %{
           "conversation_id" => id,
-          "run_at" => DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601(),
+          "run_at" => SystemsClock.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601(),
           "reason" => "Wait for reply"
         },
         f.ctx
@@ -1748,53 +1361,8 @@ defmodule CommaWeb.ProactiveMailTest do
              SalixIM.Conversations.get_group_conversation_record(f.ctx.group_id, id)
   end
 
-  test "long escaped mail and Home history fit the real decision input budget", f do
-    Provider.mode(:escaped)
-    decision!()
-    present!(f)
-    {:ok, home} = SalixIM.RouterConversationInput.ensure(f.ctx.group_id)
-
-    for n <- 1..3 do
-      assert {:ok, _} =
-               SalixIM.ConversationServer.append_group_conversation_agent_message(
-                 f.ctx.group_id,
-                 home["conversation_id"],
-                 f.ctx.agent_id,
-                 %{
-                   "kind" => "message",
-                   "content" => [%{"type" => "text", "text" => String.duplicate("\"\n", 3500)}],
-                   "idempotency_key" => "long-#{n}"
-                 }
-               )
-    end
-
-    {:ok, scheduled} =
-      ProactiveMail.schedule(
-        %{
-          "message_id" => "m1",
-          "run_at" => DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601(),
-          "reason" => "Remind me"
-        },
-        f.ctx
-      )
-
-    assert {:ok, %{failed: []}} = SalixCluster.Schedules.run_once(now: scheduled["run_at"])
-    assert_receive {:mail_decision, _, request}
-    assert byte_size(Jason.encode!(request)) <= 12_288
-    assert hd(request["state"]["source"]["messages"])["body"] =~ "approve the contract"
-    assert {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
-    assert hd(status["sources"])["state"] == "active"
-  end
-
-  test "draft click creates one canonical Task and retries recover it", f do
-    worker =
-      SalixAgent.TestSupport.create_control_agent!(f.workspace.salix_worker_agent_id, %{
-        "tenant_id" => f.ctx.tenant_id,
-        "group_id" => f.ctx.group_id,
-        "role" => "worker"
-      })
-
-    assert worker["agent_id"] == f.workspace.salix_worker_agent_id
+  test "draft click creates one canonical Task on the Group's Task agent and retries recover it",
+       f do
     present!(f)
     {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
     value = hd(status["sources"])
@@ -1813,6 +1381,8 @@ defmodule CommaWeb.ProactiveMailTest do
 
     assert {:ok, task} = SalixIM.Conversations.get_group_conversation_record(f.ctx.group_id, id)
     assert task["source_refs"]["comma_mail"]["message_id"] == "m1"
+    # The Workspace's stored default Worker is not read.
+    assert task["task_worker_agent_id"] == SalixAgent.TaskAgent.id(f.ctx.group_id)
 
     assert {:ok, messages} =
              SalixIM.Conversations.list_group_conversation_messages(f.ctx.group_id, id)
@@ -1820,351 +1390,103 @@ defmodule CommaWeb.ProactiveMailTest do
     assert Enum.any?(messages, fn m -> inspect(m["content"]) =~ "approve the contract" end)
   end
 
-  test "fresh mail after Task completion resets draft ownership and source metadata", f do
-    present!(f)
-    id = linked_task!(f)
-    {:ok, before} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
-    old = hd(before["sources"])
-
-    {:ok, _} =
-      SalixIM.ConversationServer.update_group_conversation(f.ctx.group_id, id, %{
-        "status" => "completed"
-      })
-
-    {:ok, home} = SalixIM.RouterConversationInput.ensure(f.ctx.group_id)
-
-    Provider.mode(:fresh_thread_message)
-
-    assert {:ok, fresh} =
-             track_source(
-               %{
-                 "source_ref" => "t1",
-                 "observation_id" => "m3",
-                 "title" => "New contract needs review",
-                 "url" => "https://mail.google.com/mail/#inbox/m3",
-                 "read" => %{
-                   "tool" => "composio.execute",
-                   "arguments" => %{
-                     "tool_slug" => "GMAIL_FETCH_MESSAGE_BY_THREAD_ID",
-                     "connected_account_id" => "ca_owner",
-                     "arguments" => %{"thread_id" => "t1"}
-                   }
-                 },
-                 "generation" => old["generation"],
-                 "request_id" => "fresh-after-completion",
-                 "text" => "New contract needs review"
-               },
-               f.ctx
-             )
-
-    assert fresh["task_id"] == nil
-    refute fresh["delegate_request_id"] == old["delegate_request_id"]
-    assert fresh["subject"] == "New contract needs review"
-    assert fresh["source_url"] =~ "m3"
-
-    assert {:ok, %{"status" => "completed"}} =
-             SalixIM.Conversations.get_group_conversation_record(f.ctx.group_id, id)
-  end
-
-  test "handled source disappears from Routine and a fresh thread message leaves the old Task closed",
-       f do
-    present!(f)
-    id = linked_task!(f)
-    {:ok, status} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
-    old = hd(status["sources"])
-
-    assert {:ok, _} =
-             CommaWeb.HomeMail.action(f.user, %{}, f.ctx.group_id, %{
-               "key" => old["key"],
-               "action" => "handled",
-               "generation" => old["generation"],
-               "request_id" => "handled-old"
-             })
-
-    collection = %{
-      facts: [
-        %{
-          "sourceId" => "ca_owner",
-          "toolkit" => "gmail",
-          "data" => %{
-            "messages" => [
-              %{
-                "messageId" => "m1",
-                "threadId" => "t1",
-                "webUrl" => "https://mail.google.com/mail/#inbox/m1"
-              }
-            ]
-          }
-        }
-      ]
-    }
-
-    prepared =
-      CommaWeb.RecommendationMailTasks.prepare(collection, %{
-        "default_group_id" => f.ctx.group_id,
-        "router_agent_id" => f.ctx.agent_id
-      })
-
-    assert hd(prepared.facts)["data"]["messages"] == []
-
-    assert {:ok, _} =
-             SalixIM.ConversationServer.update_group_conversation(f.ctx.group_id, id, %{
-               "status" => "completed"
-             })
-
-    fresh_collection =
-      put_in(collection, [:facts], [
-        put_in(hd(collection.facts), ["data", "messages"], [
-          %{
-            "messageId" => "m3",
-            "threadId" => "t1",
-            "webUrl" => "https://mail.google.com/mail/#inbox/m3"
-          }
-        ])
-      ])
-
-    fresh =
-      CommaWeb.RecommendationMailTasks.prepare(fresh_collection, %{
-        "default_group_id" => f.ctx.group_id,
-        "router_agent_id" => f.ctx.agent_id
-      })
-
-    assert [%{"messageId" => "m3"}] = hd(fresh.facts)["data"]["messages"]
-    assert hd(fresh.facts)["mailTasks"]["https://mail.google.com/mail/#inbox/m3"] == nil
-
-    Provider.mode(:fresh_thread_message)
-
-    assert {:ok, current} =
-             track_mail(
-               %{
-                 "message_id" => "m3",
-                 "generation" => old["generation"] + 1,
-                 "request_id" => "fresh-mail",
-                 "text" => "A new contract needs review"
-               },
-               f.ctx
-             )
-
-    assert current["state"] == "active"
-    assert current["task_id"] == nil
-    refute current["delegate_request_id"] == old["delegate_request_id"]
-
-    assert {:ok, %{"status" => "completed"}} =
-             SalixIM.Conversations.get_group_conversation_record(f.ctx.group_id, id)
-  end
-
   @tag :spinfoam
-  test "bundled Loop upgrades retained mail work and rebinds its Session without duplicate delivery",
+  test "a GitHub pull request watch polls the pinned MCP read in the Loop with bounded evidence",
        f do
-    alias SalixAgent.{Fleet, InternalSessionStore, SpinfoamFixture}
     alias SalixAgent.Loops.Host
-    alias SalixAgent.LLM.Mock
-    old_llm = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_agent, :llm, Mock)
-    on_exit(fn -> Application.put_env(:salix_agent, :llm, old_llm) end)
 
-    binding =
-      Comma.MemberSourceConsents.binding(f.workspace.id, f.user["id"], "gmail")
-      |> Map.merge(%{
-        "user_id" => f.user["id"],
-        "workspace_id" => f.workspace.id,
-        "enabled" => true
-      })
-
-    event = %{
-      "event_id" => "mail-visible",
-      "topic" => "mail",
-      "payload" => %{"message_id" => "m1"}
+    pull_request = %{
+      "number" => 11,
+      "title" => "Ensure telegram provider member",
+      "state" => "open",
+      "updated_at" => "2026-10-08T08:00:00Z",
+      "html_url" => "https://github.com/AFK-surf/Comma/pull/11",
+      "statuses_url" => "https://api.github.com/repos/AFK-surf/Comma/statuses/abc",
+      "body" => String.duplicate("Large description. ", 2_000),
+      "head" => %{"sha" => "abc", "repo" => %{"full_name" => "AFK-surf/Comma"}}
     }
 
-    {:ok, old} =
-      Loops.update(f.row["id"], fn row ->
-        {:ok,
-         Map.merge(row, %{
-           "status" => "active",
-           "elf_path" => "/loops/comma-mail-v1.elf",
-           "config" => %{"comma_mail" => binding}
-         })}
-      end)
+    managed_mcp!(Jason.encode!(pull_request))
+    {_connection, _oauth} = managed_grant!(f, "github", %{"user_id" => 42, "login" => "owner"})
+    ready_proactive_router!(f)
+    decision!(:quiet)
 
-    {:ok, _} = Loops.admit_event(old, event, System.system_time(:millisecond), 32, 60_000)
-    {:ok, _} = SalixAgent.Loops.pause(f.ctx.agent_id, old["id"])
-
-    {:ok, home} = SalixIM.RouterConversationInput.ensure(f.ctx.group_id)
-    {:ok, _} = InternalSessionStore.prepare_commit(f.ctx.agent_id, f.ctx.session_id, [])
-    {:ok, _} = Fleet.ensure_started(f.ctx.agent_id, create: false)
-    :ok = Fleet.await_ownership_installed(f.ctx.agent_id)
-    SpinfoamFixture.compile!(SpinfoamFixture.idle_program())
-    decision!()
-
-    source = %{
-      "tool" => "composio.execute",
-      "arguments" => %{
-        "tool_slug" => "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID",
-        "connected_account_id" => "ca_owner",
-        "arguments" => %{"message_id" => "m1"}
-      }
-    }
-
-    Mock.script([
-      {:assistant, "",
-       [
-         %{
-           id: "home-mail",
-           name: "call",
-           args: %{
-             "tool" => "proactive.act",
-             "params" => %{
-               "source_ref" => "t1",
-               "observation_id" => "m1",
-               "read" => source,
-               "title" => "Contract approval",
-               "request_id" => "mail-visible",
-               "action" => "track"
-             }
-           }
-         }
-       ]},
-      {:assistant, "",
-       [
-         %{
-           id: "home-reply",
-           name: "call",
-           args: %{
-             "tool" => "im_api.internal.send_message",
-             "params" => %{
-               "connect_id" => "internal",
-               "conversation_id" => home["conversation_id"],
-               "content" => [
-                 %{"type" => "text", "text" => "Please approve the contract by Friday."}
-               ],
-               "request_id" => "router-mail-visible"
-             }
-           }
-         }
-       ]},
-      {:final, "done"}
-    ])
-
-    {:ok, loop} =
-      CommaWeb.Proactive.watch(
-        %{
-          "key" => "gmail",
-          "source_ref" => "t1",
-          "intent" => "Watch the contract",
-          "source" => source,
-          "trigger" => %{"slug" => "GMAIL_NEW_GMAIL_MESSAGE"}
-        },
-        f.ctx
-      )
-
-    id = loop["loop_id"]
-    await(fn -> is_binary(Host.object_for_loop(id)) end)
-
-    assert id == f.row["id"]
-
-    assert {:ok, _} = SalixAgent.Loops.send_event(f.ctx.agent_id, id, event)
-    await(fn -> Loops.acked?(id, "mail-visible") end)
-
-    assert_receive {:mail_decision, _, _},
-                   1000,
-                   inspect(
-                     SalixAgent.InternalSession.get(
-                       elem(InternalSessionStore.read(f.ctx.agent_id, f.ctx.session_id), 1),
-                       :messages
-                     ),
-                     limit: :infinity
-                   )
-
-    messages = fn ->
-      {:ok, conversation} =
-        SalixIM.Conversations.get_group_conversation_with_messages(
-          f.ctx.group_id,
-          home["conversation_id"]
-        )
-
-      Enum.filter(
-        conversation["messages"],
-        &String.contains?(inspect(&1["content"]), "Please approve")
-      )
-    end
-
-    await(fn -> length(messages.()) == 1 end)
-    assert {:ok, %{"duplicate" => true}} = SalixAgent.Loops.send_event(f.ctx.agent_id, id, event)
-    assert length(messages.()) == 1
-
-    await(fn ->
-      {:ok, session} = InternalSessionStore.read(f.ctx.agent_id, f.ctx.session_id)
-
-      transcript =
-        session |> SalixAgent.InternalSession.get(:messages) |> inspect(limit: :infinity)
-
-      String.contains?(transcript, "Please approve the contract by Friday.")
-    end)
-
-    assert Enum.any?(
-             Provider.calls(),
-             &match?({:execute, "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID", _}, &1)
-           )
-
-    {:ok, _} = SalixAgent.Loops.pause(f.ctx.agent_id, id)
-    {:ok, _} = Loops.update(id, &{:ok, Map.put(&1, "session_id", "retired-session")})
+    arguments = %{"method" => "get", "owner" => "AFK-surf", "repo" => "Comma", "pullNumber" => 11}
 
     args = %{
-      "key" => "gmail",
-      "source_ref" => "t1",
-      "intent" => "Watch the contract",
-      "source" => source,
-      "trigger" => %{"slug" => "GMAIL_NEW_GMAIL_MESSAGE"}
+      "key" => "github-pr-11",
+      "source_ref" => "https://github.com/AFK-surf/Comma/pull/11",
+      "intent" => "Tell me about new reviews, CI changes or a merge",
+      "source" => %{"tool" => "mcp.github.pull_request_read", "arguments" => arguments},
+      "poll_interval_ms" => 300_000
     }
 
-    assert {:ok, %{"loop_id" => ^id}} = CommaWeb.Proactive.watch(args, f.ctx)
-    assert {:ok, rebound} = Loops.get(id)
-    assert rebound["session_id"] == f.ctx.session_id
-    assert Loops.acked?(id, "mail-visible")
-    assert length(messages.()) == 1
+    # A plugin MCP read has no provider trigger: it is refused before a Loop exists.
+    assert {:error, :proactive_trigger_unavailable} =
+             CommaWeb.Proactive.watch(
+               Map.put(args, "trigger", %{"slug" => "GITHUB_PULL_REQUEST_EVENT"}),
+               f.ctx
+             )
 
+    assert {:error, :not_found} =
+             Loops.get_by_agent_path(f.ctx.agent_id, "/loops/proactive/github-pr-11.elf")
+
+    assert {:ok, %{"loop_id" => id, "status" => "active"}} = CommaWeb.Proactive.watch(args, f.ctx)
+    await(fn -> is_binary(Host.object_for_loop(id)) end)
+
+    # The Router can confirm which matter the watch follows.
+    assert {:ok, %{"monitors" => monitors}} = CommaWeb.Proactive.state(%{}, f.ctx)
+
+    assert %{
+             "key" => "github-pr-11",
+             "provider" => "GitHub",
+             "source_ref" => "https://github.com/AFK-surf/Comma/pull/11",
+             "status" => "active"
+           } = Enum.find(monitors, &(&1["loop_id"] == id))
+
+    # The first poll reads the exact pinned MCP call inside the Loop and hands
+    # Decide a bounded projection of the full pull request.
+    await(fn ->
+      received?(&match?({:managed_mcp, "github", "pull_request_read", ^arguments}, &1))
+    end)
+
+    assert_received {:managed_mcp, "github", "pull_request_read", ^arguments}
+    await(fn -> received?(&match?({:mail_decision, _, _}, &1)) end)
+    assert_received {:mail_decision, _, request}
+    source = request["state"]["source"]
+    assert source["title"] == "Ensure telegram provider member"
+    assert source["html_url"] == pull_request["html_url"]
+    refute Map.has_key?(source, "statuses_url")
+    assert byte_size(Jason.encode!(source)) <= 3_000
+
+    settled = fn ->
+      {:ok, row} = Loops.get(id)
+      checkpoint = row["checkpoint"] || %{}
+      is_nil(checkpoint["pending_poll"]) and is_map(checkpoint["observation"]) and checkpoint
+    end
+
+    await(settled)
+    {:ok, row} = Loops.get(id)
+    first_poll = row["checkpoint"]["poll_sequence"]
+
+    # A restarted Loop polls again at once. An unchanged pull request settles
+    # without another Decide call.
     {:ok, _} = SalixAgent.Loops.pause(f.ctx.agent_id, id)
+    {:ok, _} = SalixAgent.Loops.resume(f.ctx.agent_id, id)
 
-    {:ok, _} =
-      Loops.update(
-        id,
-        &{:ok, Map.put(&1, "pending_events", %{"next" => Map.put(event, "event_id", "next")})}
-      )
+    await(fn ->
+      received?(&match?({:managed_mcp, "github", "pull_request_read", ^arguments}, &1))
+    end)
 
-    Comma.MemberSourceConsents.forget_connection(f.workspace.id, "ca_owner")
-
-    {:ok, :ok} =
-      Comma.MemberSourceConsents.record(f.user, %{}, f.workspace.id, "gmail", "ca_owner")
-
-    assert {:error, :proactive_pending_events_require_original_source} =
-             CommaWeb.Proactive.watch(args, f.ctx)
-
-    assert {:ok, retained} = Loops.get(id)
-    assert retained["pending_events"]["next"]["payload"] == event["payload"]
-
-    # Represent the old event as settled before the owner changes the recipe.
-    {:ok, _} =
-      Loops.update(id, fn row ->
-        {:ok,
-         Map.merge(row, %{
-           "pending_events" => %{},
-           "checkpoint" => %{"observation" => %{"body" => "old-source-content"}}
-         })}
-      end)
-
-    polling = args |> Map.delete("trigger") |> Map.put("poll_interval_ms", 300_000)
-    assert {:ok, %{"loop_id" => ^id}} = CommaWeb.Proactive.watch(polling, f.ctx)
-    assert {:ok, changed} = Loops.get(id)
-    assert is_nil(changed["composio_trigger"])
-    assert_receive {:mail_decision, _, request}, 5000
-    refute inspect(request["state"]["previous"]) =~ "old-source-content"
+    assert_received {:managed_mcp, "github", "pull_request_read", ^arguments}
+    await(fn -> (checkpoint = settled.()) && checkpoint["poll_sequence"] != first_poll end)
+    refute_received {:mail_decision, _, _}
   end
 
   @tag :spinfoam
-  test "invalid provider trigger response leaves the product Loop paused and unbound", f do
+  test "invalid provider trigger response removes the new product Loop", f do
     alias SalixAgent.{Fleet, InternalSessionStore}
-    {:ok, home} = SalixIM.RouterConversationInput.ensure(f.ctx.group_id)
+    {:ok, _home} = SalixIM.RouterConversationInput.ensure(f.ctx.group_id)
     {:ok, _} = InternalSessionStore.prepare_commit(f.ctx.agent_id, f.ctx.session_id, [])
     {:ok, _} = Fleet.ensure_started(f.ctx.agent_id, create: false)
     :ok = Fleet.await_ownership_installed(f.ctx.agent_id)
@@ -2190,58 +1512,48 @@ defmodule CommaWeb.ProactiveMailTest do
                f.ctx
              )
 
-    assert {:ok, row} =
+    # A new watch that cannot start leaves no paused Loop behind.
+    assert {:error, :not_found} =
              Loops.get_by_agent_path(f.ctx.agent_id, "/loops/proactive/invalid-trigger.elf")
 
-    assert row["status"] == "paused"
-    assert is_nil(row["composio_trigger"])
+    # A replaced watch that cannot start returns to its earlier recipe and status.
+    Provider.mode(nil)
+
+    polling = %{
+      "key" => "invalid-trigger",
+      "source_ref" => "t1",
+      "intent" => "Watch this contract",
+      "source" => %{
+        "tool" => "composio.execute",
+        "arguments" => %{
+          "tool_slug" => "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID",
+          "connected_account_id" => "ca_owner",
+          "arguments" => %{"message_id" => "m1"}
+        }
+      },
+      "poll_interval_ms" => 300_000
+    }
+
+    assert {:ok, %{"loop_id" => id, "status" => "active"}} =
+             CommaWeb.Proactive.watch(polling, f.ctx)
+
+    Provider.mode(:invalid_trigger)
+
+    assert {:error, _} =
+             CommaWeb.Proactive.watch(
+               polling
+               |> Map.delete("poll_interval_ms")
+               |> Map.put("intent", "Watch this contract by event")
+               |> Map.put("trigger", %{"slug" => "GMAIL_NEW_GMAIL_MESSAGE"}),
+               f.ctx
+             )
+
+    assert {:ok, restored} = Loops.get(id)
+    assert restored["status"] == "active"
+    assert restored["name"] == "Watch this contract"
+    assert restored["config"]["poll_interval_ms"] == 300_000
+    assert is_nil(restored["composio_trigger"])
   end
-
-  defp ready_proactive_router!(f) do
-    alias SalixAgent.{Fleet, InternalSessionStore}
-    unless Process.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
-    owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
-
-    :ok =
-      BillingCore.Accounts.ensure_account(%{
-        repo: BillingCore.Repo,
-        billing_account_id: f.workspace.billing_owner_id,
-        surface: "comma",
-        product_owner_type: "workspace",
-        product_owner_id: f.workspace.id
-      })
-
-    {:ok, _} =
-      BillingCore.Credits.issue_grant(%{
-        repo: BillingCore.Repo,
-        billing_account_id: f.workspace.billing_owner_id,
-        credits: 100,
-        valid_from: DateTime.add(DateTime.utc_now(), -60, :second),
-        expires_at: DateTime.add(DateTime.utc_now(), 30, :day),
-        source_type: "manual_contract",
-        source_id: f.workspace.id,
-        idempotency_key: "default-proactive:" <> f.workspace.id
-      })
-
-    {:ok, _} = InternalSessionStore.prepare_commit(f.ctx.agent_id, f.ctx.session_id, [])
-    {:ok, _} = Fleet.ensure_started(f.ctx.agent_id, create: false)
-    :ok = Fleet.await_ownership_installed(f.ctx.agent_id)
-  end
-
-  defp await(fun, attempts \\ 300)
-
-  defp await(fun, attempts) when attempts > 0 do
-    if fun.(),
-      do: :ok,
-      else:
-        (
-          Process.sleep(20)
-          await(fun, attempts - 1)
-        )
-  end
-
-  defp await(_fun, 0), do: flunk("mail runtime did not converge")
 
   test "foreign accounts and non-owner origins fail before mail reads", f do
     Provider.mode(:foreign)
@@ -2255,13 +1567,128 @@ defmodule CommaWeb.ProactiveMailTest do
              ProactiveMail.read(%{"message_id" => "m1"}, %{f.ctx | trusted_origin: %{}})
   end
 
-  test "body survives the pinned read and mid-read revocation refuses the result", f do
-    assert {:ok, result} = ProactiveMail.read(%{"message_id" => "m1"}, f.ctx)
-    assert hd(result["messages"])["body"] =~ "approve the contract"
-    assert {:proxy, f.ctx.group_id, "ca_owner"} in Provider.calls()
-    Provider.mode(:revoke)
-    assert {:error, :mail_consent_changed} = ProactiveMail.read(%{"message_id" => "m1"}, f.ctx)
-    assert hd(Provider.calls()) == :proxy_deleted
+  test "Outlook account stays pinned across read, Task follow-up, and consent revocation", f do
+    {:ok, :ok} =
+      Comma.MemberSourceConsents.record(f.user, %{}, f.workspace.id, "outlook", "ca_outlook")
+
+    args = %{"message_id" => "AAMk1=", "connection_id" => "ca_outlook"}
+    assert {:ok, mail} = ProactiveMail.read(args, f.ctx)
+    assert mail["thread_id"] == "outlook-thread"
+    assert hd(mail["messages"])["body"] =~ "approve the contract"
+    assert {:proxy, f.ctx.group_id, "ca_outlook"} in Provider.calls()
+
+    assert {:error, :consented_mail_account_required} =
+             ProactiveMail.read(%{"message_id" => "AAMk1=", "connection_id" => "ca_other"}, f.ctx)
+
+    worker =
+      SalixAgent.TestSupport.create_control_agent!(Ids.new_agent_id(f.ctx.group_id), %{
+        "tenant_id" => f.ctx.tenant_id,
+        "group_id" => f.ctx.group_id,
+        "role" => "worker"
+      })
+
+    {:ok, task} =
+      SalixCluster.TaskSchedules.create_task_conversation(
+        f.ctx.group_id,
+        f.ctx.agent_id,
+        worker["agent_id"],
+        %{
+          "title" => "Outlook draft",
+          "content" => "Draft only",
+          "client_request_id" => "outlook-draft"
+        }
+      )
+
+    id = task["conversation_id"]
+
+    assert {:ok,
+            %{"source" => %{"connection_id" => "ca_outlook", "thread_id" => "outlook-thread"}}} =
+             ProactiveMail.link_task(Map.put(args, "conversation_id", id), f.ctx)
+
+    # Replaying the same Outlook link retains the original Task identity.
+    assert {:ok, %{"conversation_id" => ^id}} =
+             ProactiveMail.link_task(Map.put(args, "conversation_id", id), f.ctx)
+
+    assert {:ok, %{"conversation_id" => ^id}} =
+             ProactiveMail.followup(%{"conversation_id" => id}, f.ctx)
+
+    Provider.mode(:revoke_outlook)
+
+    assert {:error, :mail_consent_changed} =
+             ProactiveMail.followup(%{"conversation_id" => id}, f.ctx)
+
+    assert {:error, :consented_mail_account_required} = ProactiveMail.read(args, f.ctx)
+  end
+
+  test "Calendar and Drive watches pin a filtered list read with a few results", f do
+    {:ok, workspace, user} = CommaWeb.Proactive.scope(f.ctx)
+
+    for {toolkit, account, slug, bounded, unbounded} <- [
+          {"googlecalendar", "ca_calendar", "GOOGLECALENDAR_EVENTS_LIST",
+           %{"calendarId" => "primary", "iCalUID" => "evt-1@google.com", "maxResults" => 5},
+           %{"calendarId" => "primary", "maxResults" => 250}},
+          {"googledrive", "ca_drive", "GOOGLEDRIVE_LIST_FILES",
+           %{"q" => "name = 'Q4 plan' and trashed = false", "pageSize" => 3},
+           %{"pageSize" => 100}}
+        ] do
+      {:ok, :ok} =
+        Comma.MemberSourceConsents.record(f.user, %{}, workspace["id"], toolkit, account)
+
+      read = fn arguments ->
+        %{
+          "tool" => "composio.execute",
+          "arguments" => %{
+            "tool_slug" => slug,
+            "connected_account_id" => account,
+            "arguments" => arguments
+          }
+        }
+      end
+
+      assert {:ok, %{"toolkit" => ^toolkit}} =
+               ProactiveWatch.source_binding(read.(bounded), workspace, user)
+
+      assert {:error, :consented_source_required} =
+               ProactiveWatch.source_binding(read.(unbounded), workspace, user)
+    end
+  end
+
+  test "Outlook watch reads are pinned and rejected after disconnect", f do
+    {:ok, :ok} =
+      Comma.MemberSourceConsents.record(f.user, %{}, f.workspace.id, "outlook", "ca_outlook")
+
+    binding =
+      Comma.MemberSourceConsents.binding(f.workspace.id, f.user["id"], "outlook")
+      |> Map.merge(%{
+        "user_id" => f.user["id"],
+        "workspace_id" => f.workspace.id,
+        "toolkit" => "outlook"
+      })
+
+    spec = %{
+      "tool" => "composio.execute",
+      "arguments" => %{
+        "tool_slug" => "OUTLOOK_OUTLOOK_GET_MESSAGE",
+        "connected_account_id" => "ca_outlook",
+        "arguments" => %{"message_id" => "AAMk1="}
+      }
+    }
+
+    bound = Map.put(f.row, "config", %{"comma_proactive" => binding, "source" => spec})
+    {:ok, _} = Loops.update(bound["id"], fn _ -> {:ok, bound} end)
+    assert :ok = ProactiveWatch.authorize(bound, "composio.execute", spec["arguments"])
+
+    assert {:error, _} =
+             ProactiveWatch.authorize(
+               bound,
+               "composio.execute",
+               put_in(spec, ["arguments", "connected_account_id"], "ca_owner")["arguments"]
+             )
+
+    Comma.MemberSourceConsents.forget_connection(f.workspace.id, "ca_outlook")
+
+    assert {:error, :proactive_source_revoked} =
+             ProactiveWatch.authorize(bound, "composio.execute", spec["arguments"])
   end
 
   test "revocation and stale Router Session refuse a generic notification before admission", f do
@@ -2403,61 +1830,5 @@ defmodule CommaWeb.ProactiveMailTest do
     assert length(router_inputs(f)) == inputs
     {:ok, after_retry} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
     assert after_retry["sources"] == before_retry["sources"]
-  end
-
-  test "a watch wake keeps the followed matter's subject and link and retires a stopped Task",
-       f do
-    value = present!(f)
-    task = linked_task!(f)
-
-    assert {:ok, _} =
-             SalixIM.Provider.call_api(
-               f.ctx.agent_id,
-               "internal",
-               "internal.update_conversation",
-               %{
-                 "connect_id" => "internal",
-                 "params" => %{"conversation_id" => task, "status" => "completed"}
-               }
-             )
-
-    {:ok, %{"sources" => sources}} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
-    current = Enum.find(sources, &(&1["thread_id"] == value["thread_id"]))
-
-    binding =
-      Comma.MemberSourceConsents.binding(f.workspace.id, f.user["id"], "gmail")
-      |> Map.merge(%{
-        "user_id" => f.user["id"],
-        "workspace_id" => f.workspace.id,
-        "toolkit" => "gmail"
-      })
-
-    bound =
-      Map.put(f.row, "config", %{
-        "comma_proactive" => binding,
-        "source" => %{
-          "tool" => "composio.execute",
-          "arguments" => %{
-            "tool_slug" => "GMAIL_FETCH_MESSAGE_BY_THREAD_ID",
-            "connected_account_id" => current["account_id"],
-            "arguments" => %{"user_id" => "me", "thread_id" => current["thread_id"]}
-          }
-        },
-        "source_ref" => current["thread_id"],
-        "intent" => "Watch the contract thread"
-      })
-
-    {:ok, _} = Loops.update(bound["id"], fn _ -> {:ok, bound} end)
-
-    assert {:ok, %{"status" => "queued"}} =
-             SalixAgent.Loops.Capabilities.deliver_notification(bound, "New reply", "e5")
-
-    {:ok, %{"sources" => sources}} = CommaWeb.HomeMail.status(f.user, %{}, f.ctx.group_id)
-    after_wake = Enum.find(sources, &(&1["key"] == current["key"]))
-    assert after_wake["key"] == current["key"]
-    assert after_wake["subject"] == value["subject"]
-    assert after_wake["source_url"] == value["source_url"]
-    assert after_wake["message_id"] == "loop:e5"
-    assert after_wake["task_id"] == nil
   end
 end

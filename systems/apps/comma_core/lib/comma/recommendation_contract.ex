@@ -258,11 +258,12 @@ defmodule Comma.RecommendationContract do
            is_map(item) and
              only_keys?(
                item,
-               ~w(sourceId sourceUrl title context threadId messageId taskId sourceVersion)
+               ~w(sourceId sourceUrl title context threadId messageId taskId sourceVersion toolkit)
              ) and
              nonblank?(item["sourceId"], 128) and valid_url?(item["sourceUrl"]) and
              nonblank?(item["title"], 120) and string?(item["context"], 601) and
-             optional_string?(item["threadId"], 256) and optional_string?(item["messageId"], 256) and
+             item["toolkit"] in [nil, "gmail", "outlook"] and
+             optional_string?(item["threadId"], 512) and optional_string?(item["messageId"], 512) and
              optional_string?(item["taskId"], 256) and optional_string?(item["sourceVersion"], 64) and
              is_nil(item["threadId"]) == is_nil(item["messageId"])
          end), do: :ok, else: {:error, :invalid_recommendation_attention}

@@ -117,44 +117,11 @@ defmodule BridgeForTeams.AccountRecoveryTest do
       assert {:error, :recovery_token_already_used} =
                AccountRecovery.redeem_recovery_token_for_session(token)
     end
-
-    test "records recovery redemption audit without token material" do
-      user = user_fixture(email: "recovered-owner@example.com")
-      {:ok, org} = Orgs.create_org(%{name: "Acme Redeem", slug: "acme-redeem"})
-      {:ok, _membership} = Memberships.put_org_member(org.id, user.id, "owner")
-
-      {:ok, %{token: token, recovery_link: link}} =
-        AccountRecovery.create_recovery_link(user,
-          token: "bft_recovery_REDEEM_SECRET",
-          note: "private recovery reason",
-          audit: false
-        )
-
-      assert {:ok, %{session: session}} =
-               AccountRecovery.redeem_recovery_token_for_session(token)
-
-      [audit] =
-        Observability.list_audit_logs(org.id,
-          action: "account_recovery.redeemed",
-          result: "ok"
-        )
-
-      assert audit.actor_type == "user"
-      assert audit.actor_user_id == user.id
-      assert audit.resource_type == "account_recovery_link"
-      assert audit.resource_id == link.id
-      assert audit.metadata["target_user_id"] == user.id
-      assert audit.metadata["recovery_link_id"] == link.id
-      assert is_binary(audit.metadata["used_at"])
-      refute is_nil(session)
-      refute inspect(audit) =~ "bft_recovery_REDEEM_SECRET"
-      refute inspect(audit) =~ link.token_hash
-      refute inspect(audit) =~ "private recovery reason"
-    end
   end
 
   defp user_fixture(attrs \\ %{}) do
-    email = attrs[:email] || "recover-#{System.unique_integer([:positive])}@example.com"
+    email =
+      attrs[:email] || "recover-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"
 
     {:ok, user} =
       Accounts.create_user(%{

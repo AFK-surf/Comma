@@ -1,23 +1,50 @@
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { defaultAppPreferences } from "@comma/native-bridge";
 import { describe, expect, it, vi } from "vitest";
 import {
   activateElectronE2eStatusTraySettings,
+  applyElectronE2eStartHooks,
   activateElectronE2eStatusTrayOpenMainAfterRelease,
-  applyElectronE2eHooks,
   awaitElectronE2eMainReadyRelease,
   decorateElectronE2eAppPreferencesProvider,
   resolveElectronE2eHooks,
 } from "../e2e-hooks";
 
 describe("Electron e2e hooks", () => {
+  it("gives a reset the next test's start hooks in place of the last ones and keeps the launch's", () => {
+    const hooks = resolveElectronE2eHooks({
+      createUserDataPath: () => "/tmp/e2e",
+      env: {
+        COMMA_API_BASE_URL: "https://api.e2e.test",
+        COMMA_ELECTRON_E2E_SYNCHRONICITY_MODE: "fake",
+        NODE_ENV: "test",
+      },
+      isPackaged: false,
+    });
+
+    applyElectronE2eStartHooks(hooks, { COMMA_ELECTRON_E2E_CORE_TEST_CLOCK: "1" });
+
+    expect(hooks).toMatchObject({
+      apiBaseUrl: "https://api.e2e.test",
+      coreTestClock: true,
+    });
+    expect(hooks.synchronicityMode).toBeUndefined();
+    expect(() =>
+      applyElectronE2eStartHooks(hooks, {
+        COMMA_ELECTRON_E2E_DEV_RENDERER_URL: "https://renderer.e2e.test",
+      } as never)
+    ).toThrow("COMMA_ELECTRON_E2E_DEV_RENDERER_URL is read at launch");
+  });
+
   it("stays disabled outside Playwright test launches", () => {
     expect(
       resolveElectronE2eHooks({
         env: {
-          COMMA_API_BASE_URL: "http://127.0.0.1:7899",
+          COMMA_API_BASE_URL: "https://api.comma.test",
           COMMA_ELECTRON_E2E_ACTIVATE_STATUS_TRAY_SETTINGS: "1",
           COMMA_ELECTRON_E2E_DOCK_UPDATE_BLOCKED_MARKER_FILE_PATH:
             "/tmp/evil-dock-blocked",
@@ -39,7 +66,6 @@ describe("Electron e2e hooks", () => {
             "/tmp/evil-tray-open-release",
           COMMA_ELECTRON_RENDERER_URL: "https://evil.example",
           COMMA_ELECTRON_E2E_CONNECTOR_MODE: "static",
-          COMMA_ELECTRON_E2E_SIDE_CHAT_HOST_PATH: "/tmp/evil-helper",
           NODE_ENV: "development",
         },
         isPackaged: false,
@@ -48,7 +74,7 @@ describe("Electron e2e hooks", () => {
     expect(
       resolveElectronE2eHooks({
         env: {
-          COMMA_API_BASE_URL: "http://127.0.0.1:7899",
+          COMMA_API_BASE_URL: "https://api.comma.test",
           COMMA_ELECTRON_E2E_ACTIVATE_STATUS_TRAY_SETTINGS: "1",
           COMMA_ELECTRON_E2E_DOCK_UPDATE_BLOCKED_MARKER_FILE_PATH:
             "/tmp/evil-dock-blocked",
@@ -92,8 +118,8 @@ describe("Electron e2e hooks", () => {
             " /tmp/comma-preferences-ack-blocked ",
           COMMA_ELECTRON_E2E_APP_PREFERENCES_UPDATE_ACK_RELEASE_FILE_PATH:
             " /tmp/comma-preferences-ack-release ",
-          COMMA_ELECTRON_E2E_DEV_RENDERER_URL: " http://127.0.0.1:5174/e2e ",
-          COMMA_ELECTRON_RENDERER_URL: " http://127.0.0.1:5173/e2e ",
+          COMMA_ELECTRON_E2E_DEV_RENDERER_URL: " https://vite.comma.test/e2e ",
+          COMMA_ELECTRON_RENDERER_URL: " https://app.comma.test/e2e ",
           NODE_ENV: "test",
         },
         isPackaged: false,
@@ -105,8 +131,8 @@ describe("Electron e2e hooks", () => {
       appPreferencesUpdateAckBlockedMarkerFilePath:
         "/tmp/comma-preferences-ack-blocked",
       appPreferencesUpdateAckReleaseFilePath: "/tmp/comma-preferences-ack-release",
-      devRendererUrl: "http://127.0.0.1:5174/e2e",
-      rendererUrl: "http://127.0.0.1:5173/e2e",
+      devRendererUrl: "https://vite.comma.test/e2e",
+      rendererUrl: "https://app.comma.test/e2e",
       fallbackUserDataPath: "/tmp/comma-e2e-user-data",
     });
   });
@@ -124,31 +150,6 @@ describe("Electron e2e hooks", () => {
     ).toThrow(
       "The app-preferences state response e2e gate requires both blocked-marker and release file paths."
     );
-  });
-
-  it("enables the explicit side-chat visibility hook only in unpackaged tests", () => {
-    expect(
-      resolveElectronE2eHooks({
-        createUserDataPath: () => "/tmp/comma-e2e-user-data",
-        env: {
-          COMMA_ELECTRON_E2E_OPEN_SIDE_CHAT: "1",
-          NODE_ENV: "test",
-        },
-        isPackaged: false,
-      })
-    ).toEqual({
-      openSideChat: true,
-      fallbackUserDataPath: "/tmp/comma-e2e-user-data",
-    });
-    expect(
-      resolveElectronE2eHooks({
-        env: {
-          COMMA_ELECTRON_E2E_OPEN_SIDE_CHAT: "1",
-          NODE_ENV: "test",
-        },
-        isPackaged: true,
-      })
-    ).toEqual({});
   });
 
   it("keeps explicitly backgrounded unpackaged and packaged test windows inactive", () => {
@@ -169,32 +170,6 @@ describe("Electron e2e hooks", () => {
     expect(resolveElectronE2eHooks({ env, isPackaged: true })).toEqual({
       backgroundWindows: true,
     });
-  });
-
-  it("resolves a Side Chat helper fixture only for unpackaged e2e launches", () => {
-    expect(
-      resolveElectronE2eHooks({
-        createUserDataPath: () => "/tmp/comma-e2e-user-data",
-        env: {
-          COMMA_ELECTRON_E2E_SIDE_CHAT_HOST_PATH:
-            " /tmp/comma-side-chat-helper-fixture ",
-          NODE_ENV: "test",
-        },
-        isPackaged: false,
-      })
-    ).toEqual({
-      sideChatHostPath: "/tmp/comma-side-chat-helper-fixture",
-      fallbackUserDataPath: "/tmp/comma-e2e-user-data",
-    });
-    expect(
-      resolveElectronE2eHooks({
-        env: {
-          COMMA_ELECTRON_E2E_SIDE_CHAT_HOST_PATH: "/tmp/comma-side-chat-helper-fixture",
-          NODE_ENV: "test",
-        },
-        isPackaged: true,
-      })
-    ).toEqual({});
   });
 
   it("resolves the explicit Main readiness gate and tray Settings activation hook", () => {
@@ -434,8 +409,8 @@ describe("Electron e2e hooks", () => {
       },
       {
         name: "keeps API base URL override separate from startup Session setup",
-        env: { COMMA_API_BASE_URL: " http://127.0.0.1:7899 " },
-        expected: { apiBaseUrl: "http://127.0.0.1:7899" },
+        env: { COMMA_API_BASE_URL: " https://api.comma.test " },
+        expected: { apiBaseUrl: "https://api.comma.test" },
       },
       {
         name: "resolves a Main-only Google credential for unpackaged e2e launches",
@@ -471,52 +446,14 @@ describe("Electron e2e hooks", () => {
       });
     }
   );
-
-  it("writes the e2e session through SecureSessionStore and reconciles Main", async () => {
-    const setSession = vi.fn(async () => {});
-    const initialize = vi.fn(async () => {});
-
-    await applyElectronE2eHooks(
-      {
-        apiBaseUrl: "http://127.0.0.1:7899",
-        session: {
-          audience: "http://127.0.0.1:7899",
-          email: "e2e@example.com",
-          expiresAtEpochSeconds: 4_102_444_800,
-          sessionId: "e2e-session:e2e@example.com",
-          token: "comma_sess_e2e",
-          userId: "e2e-user:e2e@example.com",
-        },
-      },
-      { setSession },
-      { initialize }
-    );
-
-    expect(setSession).toHaveBeenCalledWith({
-      audience: "http://127.0.0.1:7899",
-      email: "e2e@example.com",
-      expiresAtEpochSeconds: 4_102_444_800,
-      sessionId: "e2e-session:e2e@example.com",
-      token: "comma_sess_e2e",
-      userId: "e2e-user:e2e@example.com",
-    });
-    expect(initialize).toHaveBeenCalledOnce();
-    expect(setSession.mock.invocationCallOrder[0]).toBeLessThan(
-      initialize.mock.invocationCallOrder[0]!
-    );
-  });
 });
 
+/**
+ * Resolves once the hook has written `filePath` (the test's own timeout bounds
+ * a hook that never does). It checks as often as the gate under test checks
+ * its release file: a directory watch can miss a file created while the watch
+ * is still starting.
+ */
 async function waitForFile(filePath: string) {
-  const deadline = Date.now() + 2_000;
-  while (Date.now() < deadline) {
-    try {
-      await access(filePath);
-      return;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-
-  throw new Error(`Timed out waiting for ${filePath}.`);
+  while (!existsSync(filePath)) await delay(10);
 }

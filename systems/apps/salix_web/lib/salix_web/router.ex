@@ -1,4 +1,6 @@
 defmodule SalixWeb.Router do
+  require SystemsClock
+
   @moduledoc """
   HTTP API adapter for Salix runtime, callbacks, connectors, and debug/admin
   surfaces. Most Comma product routes live in the dedicated `CommaWeb` endpoint;
@@ -14,14 +16,14 @@ defmodule SalixWeb.Router do
   plug(:match)
   plug(SystemsObservability.HTTPPlug, endpoint: :salix_api)
   plug(SalixWeb.CORS)
-  plug(SystemsObservability.PodDrainGate)
+  plug(:pod_drain_gate)
   plug(:put_runtime_auth_no_store)
   plug(SalixWeb.Auth)
 
   plug(Plug.Parsers,
     parsers: [:urlencoded, :json],
     json_decoder: Jason,
-    pass: ["application/json"],
+    pass: ["application/json", "application/x-comma-voice"],
     body_reader: {__MODULE__, :cache_raw_body, []}
   )
 
@@ -54,12 +56,10 @@ defmodule SalixWeb.Router do
     CapabilityRequests,
     Control,
     Schedules,
-    Templates,
     Workspace
   }
 
   alias SalixEnv.ConnectorTokens
-  alias SalixEnv.ComputeRuntimeAuth
   alias SalixEnv.Control, as: EnvControl
   alias SalixWeb.E2EReports
 
@@ -196,6 +196,11 @@ defmodule SalixWeb.Router do
     end
   end
 
+  # The platform model a Workload's station is lent (SalixWeb.StationLLM); SalixWeb.Auth admitted the station.
+  post "/v1/station-llm/responses" do
+    SalixWeb.StationLLM.serve(conn)
+  end
+
   post "/v1/compute/enroll" do
     with {:ok, request} <- decode_b64_json(conn.body_params["request_b64"]),
          registration_id when is_binary(registration_id) <- request["registrationId"],
@@ -207,7 +212,7 @@ defmodule SalixWeb.Router do
          true <-
            is_binary(device_id) and is_binary(root_public_key) and is_binary(root_key_revision),
          {:ok, token} <- Base.decode64(request["enrollmentToken"] || ""),
-         credential <- :crypto.strong_rand_bytes(32),
+         credential <- SystemsRuntime.Proc.random_bytes(32),
          {:ok,
           {_registration,
            %{trust_anchor: trust_anchor, membership_credential: membership_credential}}} <-
@@ -315,6 +320,9 @@ defmodule SalixWeb.Router do
 
         {:ok, _} ->
           send_json(conn, 500, %{error: "invalid_command_projection"})
+
+        {:error, :unauthorized} ->
+          send_json(conn, 403, %{error: "registration_inactive"})
 
         _ ->
           send_json(conn, 503, %{error: "control_unavailable"})
@@ -671,38 +679,6 @@ defmodule SalixWeb.Router do
     case Tenants.get(id) do
       {:ok, _tenant} -> send_json(conn, 200, Groups.list(id))
       {:error, :not_found} -> send_json(conn, 404, %{error: "tenant not found"})
-      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
-    end
-  end
-
-  # Tenant-layer Router/Worker default pointers plus the effective default per
-  # role after layering with the platform (SalixAgent.AgentDefaults).
-  get "/v1/agent-defaults" do
-    {:ok, config} = Tenants.get_config(tenant_id(conn), "agent_defaults", %{})
-    send_json(conn, 200, agent_defaults_json(config, tenant_id(conn)))
-  end
-
-  patch "/v1/agent-defaults" do
-    case Tenants.update_config(tenant_id(conn), "agent_defaults", conn.body_params) do
-      {:ok, config} -> send_json(conn, 200, agent_defaults_json(config, tenant_id(conn)))
-      {:error, {:bad_request, message}} -> send_json(conn, 400, %{error: message})
-      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
-    end
-  end
-
-  # Platform-layer default pointers; global templates only.
-  get "/v1/admin/agent-defaults" do
-    case SalixAgent.AgentDefaults.platform() do
-      {:ok, config} -> send_json(conn, 200, agent_defaults_json(config, nil))
-      {:error, reason} -> send_json(conn, 503, %{error: inspect(reason)})
-    end
-  end
-
-  patch "/v1/admin/agent-defaults" do
-    case SalixAgent.AgentDefaults.update_platform(conn.body_params) do
-      {:ok, config} -> send_json(conn, 200, agent_defaults_json(config, nil))
-      {:error, {:bad_request, message}} -> send_json(conn, 400, %{error: message})
-      {:error, :conflict} -> send_json(conn, 409, %{error: "concurrent update"})
       {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
     end
   end
@@ -1603,6 +1579,68 @@ defmodule SalixWeb.Router do
     end)
   end
 
+  post "/v1/runtime/agent-groups/:group_id/im/providers/lark/connects" do
+    with_scoped_group(conn, group_id, fn ->
+      sync_im_public_base_url()
+
+      case ProviderConnects.create_lark_im_connect(tenant_id(conn), group_id, conn.body_params) do
+        {:ok, connect} -> send_json(conn, 201, connect)
+        {:error, {:bad_request, message}} -> send_json(conn, 400, %{error: message})
+        {:error, :not_found} -> send_json(conn, 404, %{error: "agent group not found"})
+        {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+      end
+    end)
+  end
+
+  patch "/v1/runtime/agent-groups/:group_id/im/providers/lark/connects/:connect_id" do
+    with_scoped_group(conn, group_id, fn ->
+      sync_im_public_base_url()
+
+      case ProviderConnects.update_lark_im_connect(
+             tenant_id(conn),
+             group_id,
+             connect_id,
+             conn.body_params
+           ) do
+        {:ok, connect} -> send_json(conn, 200, connect)
+        {:error, {:bad_request, message}} -> send_json(conn, 400, %{error: message})
+        {:error, :not_found} -> send_json(conn, 404, %{error: "connect not found"})
+        {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+      end
+    end)
+  end
+
+  post "/v1/runtime/agent-groups/:group_id/im/providers/qq/connects" do
+    with_scoped_group(conn, group_id, fn ->
+      sync_im_public_base_url()
+
+      case ProviderConnects.create_qq_im_connect(tenant_id(conn), group_id, conn.body_params) do
+        {:ok, connect} -> send_json(conn, 201, connect)
+        {:error, {:bad_request, message}} -> send_json(conn, 400, %{error: message})
+        {:error, :not_found} -> send_json(conn, 404, %{error: "agent group not found"})
+        {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+      end
+    end)
+  end
+
+  patch "/v1/runtime/agent-groups/:group_id/im/providers/qq/connects/:connect_id" do
+    with_scoped_group(conn, group_id, fn ->
+      sync_im_public_base_url()
+
+      case ProviderConnects.update_qq_im_connect(
+             tenant_id(conn),
+             group_id,
+             connect_id,
+             conn.body_params
+           ) do
+        {:ok, connect} -> send_json(conn, 200, connect)
+        {:error, {:bad_request, message}} -> send_json(conn, 400, %{error: message})
+        {:error, :not_found} -> send_json(conn, 404, %{error: "connect not found"})
+        {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+      end
+    end)
+  end
+
   post "/v1/runtime/agent-groups/:group_id/im/providers/feishu/connects" do
     with_scoped_group(conn, group_id, fn ->
       sync_im_public_base_url()
@@ -1745,6 +1783,18 @@ defmodule SalixWeb.Router do
 
   get "/v1/agent-groups/:group_id/voice/sessions" do
     SalixWeb.VoiceRoutes.session(conn, group_id)
+  end
+
+  post "/v1/agent-groups/:group_id/voice/http" do
+    SalixWeb.VoiceRoutes.http_stream(conn, group_id)
+  end
+
+  post "/v1/agent-groups/:group_id/voice/http/:handle" do
+    SalixWeb.VoiceRoutes.http_input(conn, group_id, handle)
+  end
+
+  delete "/v1/agent-groups/:group_id/voice/http/:handle" do
+    SalixWeb.VoiceRoutes.http_input(conn, group_id, handle)
   end
 
   get "/v1/runtime/agent-groups/:group_id/im-connects/voice" do
@@ -1919,66 +1969,6 @@ defmodule SalixWeb.Router do
     end)
   end
 
-  # Tenant keys own private-template management. Catalog reads remain credential-free.
-  get "/v1/templates/catalog" do
-    case Templates.list_available(tenant_id(conn)) do
-      {:ok, templates} -> send_json(conn, 200, templates)
-      {:error, reason} -> send_json(conn, 503, %{error: inspect(reason)})
-    end
-  end
-
-  get "/v1/templates" do
-    case Templates.list_private(tenant_id(conn)) do
-      {:ok, templates} -> send_json(conn, 200, templates)
-      {:error, reason} -> send_json(conn, 503, %{error: inspect(reason)})
-    end
-  end
-
-  post "/v1/templates" do
-    case Templates.create_private(conn.body_params, tenant_id(conn)) do
-      {:ok, template} -> send_json(conn, 201, template)
-      {:error, :exists} -> send_json(conn, 409, %{error: "template already exists"})
-      {:error, {:bad_request, message}} -> send_json(conn, 400, %{error: message})
-      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
-    end
-  end
-
-  get "/v1/templates/:id" do
-    # A management read must never expose global provider credentials to a tenant.
-    result =
-      if SalixStore.Ids.valid_private_template_id?(id),
-        do: Templates.get(id, tenant_id(conn)),
-        else: {:error, :not_found}
-
-    case result do
-      {:ok, template} -> send_json(conn, 200, template)
-      {:error, :not_found} -> send_json(conn, 404, %{error: "template not found"})
-      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
-    end
-  end
-
-  patch "/v1/templates/:id" do
-    case Templates.update_private(id, conn.body_params, tenant_id(conn)) do
-      {:ok, template} -> send_json(conn, 200, template)
-      {:error, {:bad_request, message}} -> send_json(conn, 400, %{error: message})
-      {:error, :not_found} -> send_json(conn, 404, %{error: "template not found"})
-      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
-    end
-  end
-
-  delete "/v1/templates/:id" do
-    case Templates.delete_private(id, tenant_id(conn)) do
-      :ok -> send_json(conn, 200, %{status: "deleted"})
-      {:error, :not_found} -> send_json(conn, 404, %{error: "template not found"})
-      {:error, {:conflict, message}} -> send_json(conn, 409, %{error: message})
-      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
-    end
-  end
-
-  get "/v1/admin/templates/catalog" do
-    send_json(conn, 200, Templates.list())
-  end
-
   get "/v1/initial-agents" do
     send_json(conn, 200, %{"initial_agents" => InitialAgentSeeds.list(tenant_id(conn))})
   end
@@ -1995,45 +1985,6 @@ defmodule SalixWeb.Router do
     case InitialAgentSeeds.set_main(conn.body_params, tenant_id(conn)) do
       {:ok, initial_agent} -> send_json(conn, 200, %{"initial_agent" => initial_agent})
       {:error, {:bad_request, message}} -> send_json(conn, 400, %{error: message})
-      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
-    end
-  end
-
-  get "/v1/admin/templates" do
-    send_json(conn, 200, Templates.list_admin())
-  end
-
-  post "/v1/admin/templates" do
-    case Templates.create(conn.body_params) do
-      {:ok, template} -> send_json(conn, 201, template)
-      {:error, :exists} -> send_json(conn, 409, %{error: "template already exists"})
-      {:error, {:bad_request, message}} -> send_json(conn, 400, %{error: message})
-      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
-    end
-  end
-
-  get "/v1/admin/templates/:id" do
-    case Templates.get(id) do
-      {:ok, template} -> send_json(conn, 200, template)
-      {:error, :not_found} -> send_json(conn, 404, %{error: "template not found"})
-      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
-    end
-  end
-
-  patch "/v1/admin/templates/:id" do
-    case Templates.update(id, conn.body_params) do
-      {:ok, template} -> send_json(conn, 200, template)
-      {:error, {:bad_request, message}} -> send_json(conn, 400, %{error: message})
-      {:error, :not_found} -> send_json(conn, 404, %{error: "template not found"})
-      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
-    end
-  end
-
-  delete "/v1/admin/templates/:id" do
-    case Templates.delete(id) do
-      :ok -> send_json(conn, 200, %{status: "deleted"})
-      {:error, :not_found} -> send_json(conn, 404, %{error: "template not found"})
-      {:error, {:conflict, message}} -> send_json(conn, 409, %{error: message})
       {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
     end
   end
@@ -2261,6 +2212,25 @@ defmodule SalixWeb.Router do
   end
 
   # Live conversation event stream (must precede the :conversation_id routes).
+  get "/v1/runtime/agent-groups/:id/conversations/activity" do
+    with_scoped_group(conn, id, fn ->
+      case ConversationServer.list_group_activity_tasks(id) do
+        {:ok, page} ->
+          send_json(conn, 200, page)
+
+        {:error, :not_found} ->
+          send_json(conn, 404, %{error: "agent group not found"})
+
+        {:error, reason}
+        when reason in [:activity_projection_pending, :activity_projection_unavailable] ->
+          send_json(conn, 503, %{error: Atom.to_string(reason)})
+
+        {:error, _reason} ->
+          send_json(conn, 503, %{error: "activity_projection_unavailable"})
+      end
+    end)
+  end
+
   get "/v1/runtime/agent-groups/:id/conversations/events" do
     with_scoped_group(conn, id, fn -> SalixWeb.ConversationSSE.serve_group(conn, id) end)
   end
@@ -2713,57 +2683,6 @@ defmodule SalixWeb.Router do
     end
   end
 
-  get "/v1/runtime/groups/:group_id/environments/:id/runtimes/:device_runtime_id/sessions" do
-    case EnvControl.runtime_sessions(id, device_runtime_id, group_id, tenant_id(conn)) do
-      {:ok, snapshot} -> send_json(conn, 200, snapshot)
-      {:error, :not_found} -> send_json(conn, 404, %{error: "runtime not found"})
-      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
-    end
-  end
-
-  post "/v1/runtime/agent-groups/:group_id/agents/:id/cloud-vm/runtimes" do
-    conn = put_resp_header(conn, "cache-control", "no-store")
-
-    with {:ok, %{"group_id" => ^group_id} = agent} <- SalixAgent.Control.get(id, tenant_id(conn)),
-         {:ok, result} <- SalixWeb.CloudVM.Runtimes.request(agent, conn.body_params) do
-      send_json(conn, 202, result)
-    else
-      _ -> send_json(conn, 409, %{error: "cloud_vm_runtime_unavailable"})
-    end
-  end
-
-  get "/v1/runtime/groups/:group_id/cloud-vm/runtimes/:request_id" do
-    conn = put_resp_header(conn, "cache-control", "no-store")
-
-    case SalixWeb.CloudVM.Runtimes.get(tenant_id(conn), group_id, request_id) do
-      {:ok, result} -> send_json(conn, 200, result)
-      _ -> send_json(conn, 404, %{error: "not_found"})
-    end
-  end
-
-  put "/v1/runtime/groups/:group_id/cloud-vm/runtimes/:request_id/managed-auth" do
-    conn = put_resp_header(conn, "cache-control", "no-store")
-
-    case SalixWeb.CloudVM.Runtimes.bind_account(
-           tenant_id(conn),
-           group_id,
-           request_id,
-           conn.body_params["account_id"]
-         ) do
-      {:ok, result} -> send_json(conn, 200, result)
-      _ -> send_json(conn, 409, %{error: "runtime_account_unavailable"})
-    end
-  end
-
-  delete "/v1/runtime/groups/:group_id/cloud-vm/runtimes/:request_id/managed-auth" do
-    conn = put_resp_header(conn, "cache-control", "no-store")
-
-    case SalixWeb.CloudVM.Runtimes.unbind_account(tenant_id(conn), group_id, request_id) do
-      {:ok, result} -> send_json(conn, 200, result)
-      _ -> send_json(conn, 409, %{error: "runtime_account_unavailable"})
-    end
-  end
-
   match "/v1/runtime/groups/:group_id/environments/:id/runtimes/:device_runtime_id/managed-auth",
     via: [:get, :put, :delete] do
     operation = %{"GET" => :read, "PUT" => :bind, "DELETE" => :unbind}[conn.method]
@@ -2849,51 +2768,6 @@ defmodule SalixWeb.Router do
       {:error, reason} ->
         send_runtime_auth_error(conn, reason)
     end
-  end
-
-  get "/v1/runtime/agent-groups/:group_id/agents/:id/external-worker/auth" do
-    conn = put_resp_header(conn, "cache-control", "no-store")
-
-    with_scoped_group(conn, group_id, fn ->
-      with_scoped_agent(conn, id, fn agent ->
-        attrs = Map.put(conn.query_params, "group_id", group_id)
-
-        case ComputeRuntimeAuth.call_for_external_worker(:read, agent, attrs) do
-          {:ok, result} -> send_json(conn, 200, result)
-          {:error, reason} -> send_runtime_auth_error(conn, reason)
-        end
-      end)
-    end)
-  end
-
-  post "/v1/runtime/agent-groups/:group_id/agents/:id/external-worker/auth/login" do
-    conn = put_resp_header(conn, "cache-control", "no-store")
-
-    with_scoped_group(conn, group_id, fn ->
-      with_scoped_agent(conn, id, fn agent ->
-        attrs = Map.put(conn.body_params, "group_id", group_id)
-
-        case ComputeRuntimeAuth.call_for_external_worker(:login_start, agent, attrs) do
-          {:ok, ceremony} -> send_json(conn, 200, ceremony)
-          {:error, reason} -> send_runtime_auth_error(conn, reason)
-        end
-      end)
-    end)
-  end
-
-  delete "/v1/runtime/agent-groups/:group_id/agents/:id/external-worker/auth/login" do
-    conn = put_resp_header(conn, "cache-control", "no-store")
-
-    with_scoped_group(conn, group_id, fn ->
-      with_scoped_agent(conn, id, fn agent ->
-        attrs = Map.put(conn.body_params, "group_id", group_id)
-
-        case ComputeRuntimeAuth.call_for_external_worker(:login_cancel, agent, attrs) do
-          {:ok, result} -> send_json(conn, 200, result)
-          {:error, reason} -> send_runtime_auth_error(conn, reason)
-        end
-      end)
-    end)
   end
 
   delete "/v1/runtime/groups/:group_id/environments/:id" do
@@ -3075,17 +2949,6 @@ defmodule SalixWeb.Router do
     end)
   end
 
-  post "/v1/runtime/agents/:id/sessions/:sid/microcompact" do
-    with_scoped_session(conn, id, sid, fn agent ->
-      case SalixAgent.Runtime.microcompact_session(agent, sid) do
-        {:ok, result} -> send_json(conn, 200, result)
-        {:error, {:bad_request, message}} -> send_json(conn, 400, %{error: message})
-        {:error, :not_found} -> send_json(conn, 404, %{error: "session not found"})
-        {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
-      end
-    end)
-  end
-
   post "/v1/runtime/agents/:id/sessions/:sid/transcript/seed" do
     with_scoped_session(conn, id, sid, fn agent ->
       case SalixAgent.Runtime.seed_transcript(agent, sid, conn.body_params) do
@@ -3137,7 +3000,7 @@ defmodule SalixWeb.Router do
         |> put_if(:content, content)
         |> put_if(:session_id, sid)
         |> put_if(:role, body["role"] || "user")
-        |> put_if(:created_at, System.system_time(:second))
+        |> put_if(:created_at, SystemsClock.system_time(:second))
 
       opts =
         []
@@ -3475,6 +3338,89 @@ defmodule SalixWeb.Router do
     end
   end
 
+  # An encrypted Lark envelope names no app, so the callback address Salix
+  # hands out carries the App ID as `app_id`.
+  post "/v1/im/lark/events" do
+    conn = Plug.Conn.fetch_query_params(conn)
+
+    case ProviderHTTP.handle_lark_request(
+           conn.query_params["app_id"],
+           conn.body_params || %{},
+           conn.req_headers,
+           conn.assigns[:raw_body] || ""
+         ) do
+      {:ok, response} ->
+        send_json(conn, 200, response)
+
+      {:error, :not_found} ->
+        send_json(conn, 404, %{error: "Lark connect not found"})
+
+      {:error, :invalid_signature} ->
+        send_json(conn, 401, %{error: "invalid Lark signature"})
+
+      {:error, :invalid_token} ->
+        send_json(conn, 401, %{error: "invalid Lark token"})
+
+      {:error, :invalid_envelope} ->
+        send_json(conn, 400, %{error: "malformed Lark envelope"})
+
+      {:error, :router_not_configured} ->
+        send_json(conn, 409, %{error: "router agent is not configured"})
+
+      {:error, :ignored} ->
+        send_json(conn, 200, %{ignored: true})
+
+      {:error, :scan_capacity_exhausted} ->
+        send_json(conn, 503, %{error: "identity resolution over scan capacity, retry"})
+
+      {:error, reason} ->
+        send_json(conn, 500, %{error: inspect(reason)})
+    end
+  end
+
+  # QQ names the bot in `X-Bot-Appid`; the callback address Salix hands out
+  # carries the same id as `app_id`, so routing does not depend on the header.
+  post "/v1/im/qq/events" do
+    conn = Plug.Conn.fetch_query_params(conn)
+
+    app_id =
+      case Plug.Conn.get_req_header(conn, "x-bot-appid") do
+        [app_id | _rest] when app_id != "" -> app_id
+        _none -> conn.query_params["app_id"]
+      end
+
+    case ProviderHTTP.handle_qq_request(
+           app_id,
+           conn.body_params || %{},
+           conn.req_headers,
+           conn.assigns[:raw_body] || ""
+         ) do
+      {:ok, response} ->
+        send_json(conn, 200, response)
+
+      {:error, :not_found} ->
+        send_json(conn, 404, %{error: "QQ connect not found"})
+
+      {:error, :invalid_signature} ->
+        send_json(conn, 401, %{error: "invalid QQ signature"})
+
+      {:error, :invalid_envelope} ->
+        send_json(conn, 400, %{error: "malformed QQ payload"})
+
+      {:error, :router_not_configured} ->
+        send_json(conn, 409, %{error: "router agent is not configured"})
+
+      {:error, :ignored} ->
+        send_json(conn, 200, %{ignored: true})
+
+      {:error, :scan_capacity_exhausted} ->
+        send_json(conn, 503, %{error: "identity resolution over scan capacity, retry"})
+
+      {:error, reason} ->
+        send_json(conn, 500, %{error: inspect(reason)})
+    end
+  end
+
   get "/v1/admin/e2e-reports/runs" do
     conn = Plug.Conn.fetch_query_params(conn)
     {:ok, runs} = E2EReports.list_runs(conn.query_params)
@@ -3554,12 +3500,6 @@ defmodule SalixWeb.Router do
   # ---- helpers ----
 
   defp tenant_id(conn), do: conn.assigns[:tenant_id]
-
-  defp agent_defaults_json(config, tenant_id) do
-    config
-    |> Map.put("defaults", SalixAgent.AgentDefaults.public_json(config, tenant_id))
-    |> Map.put("effective", SalixAgent.AgentDefaults.effective_role_defaults(tenant_id))
-  end
 
   defp serve_router_inbox_post_message(conn, group_id) do
     raw_body = conn.assigns[:raw_body]
@@ -4267,7 +4207,7 @@ defmodule SalixWeb.Router do
         case session_tool_call_id(result) do
           tool_call_id when is_binary(tool_call_id) and tool_call_id != "" ->
             deadline =
-              System.monotonic_time(:millisecond) + session_tool_http_wait_timeout_ms()
+              SystemsClock.monotonic_time(:millisecond) + session_tool_http_wait_timeout_ms()
 
             await_session_tool_terminal(agent_id, session_id, tool_call_id, deadline)
 
@@ -4300,12 +4240,12 @@ defmodule SalixWeb.Router do
   end
 
   defp wait_for_session_tool_update(agent_id, session_id, tool_call_id, deadline) do
-    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    remaining = max(deadline - SystemsClock.monotonic_time(:millisecond), 0)
 
     if remaining == 0 do
       final_session_tool_read(agent_id, session_id, tool_call_id)
     else
-      receive do
+      SystemsClock.vreceive do
         {:salix_agent_event, ^agent_id, {:session_updated, ^session_id}} ->
           await_session_tool_terminal(agent_id, session_id, tool_call_id, deadline)
       after
@@ -4414,7 +4354,7 @@ defmodule SalixWeb.Router do
   end
 
   defp session_tool_http_wait_timeout_ms do
-    case Application.get_env(:salix_web, :session_tool_http_wait_timeout_ms, 3_000) do
+    case SystemsRuntime.get_env(:salix_web, :session_tool_http_wait_timeout_ms, 3_000) do
       value when is_integer(value) and value > 0 -> min(value, 10_000)
       _invalid -> 3_000
     end
@@ -4586,6 +4526,14 @@ defmodule SalixWeb.Router do
       ["Bearer " <> token] when token != "" -> {:ok, token}
       _ -> {:error, :invalid_runtime_credential}
     end
+  end
+
+  # A draining pod still forwards HTTPS voice uploads: any pod can receive
+  # them while endpoints propagate, and the call lives on its owner node.
+  defp pod_drain_gate(conn, opts) do
+    if SalixWeb.VoiceHTTP.continuation?(conn),
+      do: conn,
+      else: SystemsObservability.PodDrainGate.call(conn, opts)
   end
 
   # Run before authentication so even rejected runtime-auth requests cannot be

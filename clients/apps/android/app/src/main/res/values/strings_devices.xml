@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="devices_section">我的设备</string>
+    <string name="devices_failed">无法加载设备。轻点重试。</string>
+    <string name="devices_online">在线</string>
+    <string name="devices_offline">离线</string>
+    <string name="devices_add">添加设备</string>
+
+    <string name="devices_add_bluetooth_title">打开蓝牙</string>
+    <string name="devices_add_permission_title">使用蓝牙</string>
+    <string name="devices_add_bluetooth_permission">Comma 用蓝牙找到并设置你的设备，只在添加设备时使用。</string>
+    <string name="devices_add_bluetooth_off">蓝牙已关闭。打开蓝牙才能找到设备。</string>
+    <string name="devices_add_allow_bluetooth">允许使用蓝牙</string>
+    <string name="devices_add_turn_on_bluetooth">打开蓝牙</string>
+
+    <string name="devices_add_scan_title">正在查找设备</string>
+    <string name="devices_add_scan_body">给 Comma 设备接上电源。带屏幕的新设备会在屏幕上显示“Hello”。要重新设置一台设备，按住它的按键 3 秒后松开。</string>
+    <string name="devices_add_found">附近的设备</string>
+    <string name="devices_add_scanning">正在查找…</string>
+    <string name="devices_add_scan_quiet">还没有找到设备。让设备靠近手机，并确认它处于配对模式。带屏幕的设备会显示“Hello”或“Pairing mode”。</string>
+
+    <string name="devices_add_connecting_title">正在连接 %1$s</string>
+    <string name="devices_add_connecting_body">让手机靠近 %1$s。</string>
+    <string name="devices_add_code_title">与 %1$s 配对</string>
+    <string name="devices_add_code_body">如果 %1$s 的屏幕上显示 6 位配对码，手机会弹出配对请求让你输入。如果配对请求出现在通知里，先点「Pair &amp; connect」（配对并连接），再输入配对码。没有屏幕的设备会自动完成配对，如果手机弹出配对请求，确认即可。</string>
+
+    <string name="devices_add_wifi_title">选择 Wi-Fi</string>
+    <string name="devices_add_wifi_body">选择 %1$s 在家里使用的网络。</string>
+    <string name="devices_add_wifi_networks">Wi-Fi 网络</string>
+    <string name="devices_add_wifi_band">只显示 2.4 GHz 网络。</string>
+    <string name="devices_add_wifi_scanning">正在查找网络…</string>
+    <string name="devices_add_wifi_rescan">重新查找</string>
+    <string name="devices_add_wifi_scan_failed">无法查找网络，请重试。</string>
+    <string name="devices_add_wifi_strong">信号强</string>
+    <string name="devices_add_wifi_good">信号良好</string>
+    <string name="devices_add_wifi_weak">信号弱</string>
+    <string name="devices_add_wifi_secured">有密码</string>
+    <string name="devices_add_wifi_open">开放</string>
+    <string name="devices_add_wifi_password_description">输入 Wi-Fi 密码。</string>
+    <string name="devices_add_wifi_join">加入</string>
+    <string name="devices_add_wifi_wrong_password">“%1$s”的密码不对，请重试。</string>
+    <string name="devices_add_wifi_not_found">找不到“%1$s”。请确认它是范围内的 2.4 GHz 网络。</string>
+    <string name="devices_add_wifi_timeout">“%1$s”没有响应，请重试。</string>
+    <string name="devices_add_wifi_failed">无法加入“%1$s”，请重试。</string>
+    <string name="devices_add_name">名称</string>
+    <string name="devices_add_name_description">这台设备在 Comma 中显示的名称。</string>
+
+    <string name="devices_add_setup_title">正在设置 %1$s</string>
+    <string name="devices_add_setup_body">完成前请让手机留在设备旁边。</string>
+    <string name="devices_add_setup_wifi">加入“%1$s”</string>
+    <string name="devices_add_setup_credentials">创建访问凭证</string>
+    <string name="devices_add_setup_save">保存到设备</string>
+    <string name="devices_add_setup_online">连接 Comma</string>
+    <string name="devices_add_setup_done">完成</string>
+    <string name="devices_add_setup_working">进行中…</string>
+    <string name="devices_add_setup_waiting">等待</string>
+
+    <string name="devices_add_done_title">配对成功</string>
+    <string name="devices_add_done_body">%1$s 已在线。你可以在“设备”中查看它。</string>
+    <string name="devices_add_almost_title">快好了</string>
+    <string name="devices_add_almost_body">%1$s 已保存设置，但还没上线。这可能需要一分钟，稍后在“设备”里查看。</string>
+    <string name="devices_add_finish">完成</string>
+    <string name="devices_add_failed_title">无法添加设备</string>
+    <string name="devices_add_try_again">重试</string>
+
+    <string name="devices_problem_connect">无法连接。让设备靠近手机，并确认它仍处于配对模式。</string>
+    <string name="devices_problem_pairing">配对没有完成。如果设备显示了配对码，请核对后重试。</string>
+    <string name="devices_problem_disconnected">和设备的连接断开了。</string>
+    <string name="devices_problem_timeout">设备没有响应。</string>
+    <string name="devices_problem_rejected">设备没有接受这些设置。</string>
+    <string name="devices_problem_save">设备无法保存设置。</string>
+    <string name="devices_problem_not_online">设备没有上线。请确认这个 Wi-Fi 能连上互联网。</string>
+    <string name="devices_problem_network">无法连接 Comma，请检查网络。</string>
+    <string name="devices_problem_server">Comma 无法为设备创建访问凭证，请稍后重试。</string>
+    <string name="devices_problem_forbidden">你的账号不能在这个工作区添加设备。</string>
+    <string name="devices_problem_limit">这个工作区的语音密钥已达上限，请先移除一台设备。</string>
+
+    <string name="devices_problem_connector_rejected">Comma 拒绝了这台设备的访问凭证。按住它的按键 3 秒后重新设置。</string>
+    <string name="devices_problem_storage">这部手机无法保存设备的访问凭证，设置已停止。请重试。</string>
+
+    <string name="devices_status">状态</string>
+    <string name="devices_kind">类型</string>
+    <string name="devices_kind_comma">Comma 设备</string>
+    <string name="devices_kind_computer">电脑</string>
+    <string name="devices_remove">移除设备</string>
+    <string name="devices_remove_description">撤销它访问 Comma 的权限。</string>
+    <string name="devices_removing">正在移除…</string>
+    <string name="devices_remove_title">移除 %1$s？</string>
+    <string name="devices_remove_message">%1$s 将无法再访问 Comma。之后请重置设备：按住按键 10 秒，直到它重启。</string>
+    <string name="devices_remove_elsewhere">它是用另一台手机设置的，在重置之前仍可能重新连上。</string>
+    <string name="devices_remove_failed">无法移除设备，请重试。</string>
+    <string name="devices_removed">设备已移除。按住它的按键 10 秒即可重置。</string>
+    <string name="devices_access">允许操作</string>
+    <string name="devices_access_description">让 Comma 通过这台设备执行操作。关闭时设备只读。</string>
+    <string name="devices_access_offline">设备离线。</string>
+    <string name="devices_access_confirm_title">允许操作？</string>
+    <string name="devices_access_confirm_message">Comma 将能通过这台设备向你的局域网发送请求。</string>
+    <string name="devices_access_allow">允许</string>
+    <string name="devices_access_unconfirmed">设备没有确认这次更改，请重试。</string>
+    <string name="devices_access_timeout">设备没有及时响应，请重试。</string>
+    <string name="devices_access_forbidden">你的账号不能更改这台设备的权限。</string>
+    <string name="devices_access_not_found">这台设备已不在你的工作区。</string>
+    <string name="devices_access_server">Comma 无法更改设备的权限，请稍后重试。</string>
+    <string name="devices_password_show">显示密码</string>
+    <string name="devices_password_hide">隐藏密码</string>
+</resources>

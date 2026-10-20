@@ -11,9 +11,11 @@ import {
   AI_INPUT_DROP_OVERLAY_MIN_HEIGHT_PX,
   AI_INPUT_SMALL_TEXTAREA_MIN_HEIGHT_PX,
   AI_INPUT_SMALL_TOOLBAR_HEIGHT_PX,
+  aiInputAttachmentShell,
   aiInputComposer,
   aiInputContent,
   aiInputShell,
+  aiInputSmallAttachmentShell,
   aiInputSmallCompactContent,
   aiInputSmallCompactContentDefaultLeading,
   aiInputSmallCompactContentWithAccess,
@@ -74,11 +76,14 @@ export const AiInputShell = ({
       className={cx(
         aiInputShell,
         "relative",
-        !isSmall && "px-lg pt-lg pb-md",
+        !isSmall && (hasAttachments ? aiInputAttachmentShell : "px-lg pt-lg pb-md"),
         isSmall && aiInputSmallShellMotion,
         usesCompactLayout && !hasAttachments && aiInputSmallCompactShell,
-        isSmall && (!usesCompactLayout || hasAttachments) && aiInputSmallExpandedShell,
-        hasAttachments && "gap-md pt-xs",
+        isSmall &&
+          (hasAttachments
+            ? aiInputSmallAttachmentShell
+            : !usesCompactLayout && aiInputSmallExpandedShell),
+        hasAttachments && "gap-md",
         disabled && "opacity-60",
         className
       )}

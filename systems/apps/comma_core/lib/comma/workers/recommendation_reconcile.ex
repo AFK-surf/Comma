@@ -10,7 +10,8 @@ defmodule Comma.Workers.RecommendationReconcile do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"profile_id" => profile_id} = args}) do
-    Application.fetch_env!(:comma_core, :recommendation_runtime_mod).reconcile_profile(profile_id,
+    SystemsRuntime.fetch_env!(:comma_core, :recommendation_runtime_mod).reconcile_profile(
+      profile_id,
       retire_renderer: args["retire_renderer"] == true
     )
   end

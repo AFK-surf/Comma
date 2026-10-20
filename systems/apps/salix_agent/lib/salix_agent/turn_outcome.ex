@@ -32,10 +32,6 @@ defmodule SalixAgent.TurnOutcome do
       "input_schema" => @input_schema
     }
 
-  def append_reminder(messages, session, enabled?),
-    do:
-      InternalSession.query(session, :provider_request_part, {:turn_reminder, messages, enabled?})
-
   @doc "`InternalSession.decision_required?/1`: an unacked settled assistant tail."
   def decision_required?(session), do: is_integer(pending_assistant_id(session))
 

@@ -14,7 +14,7 @@ theorem KernelHistory.receipts {state : Term} {sealed : List Term} (history : Ke
   | nonretiring before execution canonical safe ih =>
     exact nonretiring_batch_receipt_supported execution before.invariant.ready before.invariant.format canonical safe ih
   | reduceOrdinary before safe call ih =>
-    exact nonretiring_inner_receipt_supported before.invariant.ready before.invariant.format safe ih call
+    exact nonretiring_inner_receipt_supported before.invariant.ready safe ih call
   | materialize before planned execution ih =>
     exact materialize_receipt_supported before.invariant.ready ih planned execution
   | normalize before call ih =>

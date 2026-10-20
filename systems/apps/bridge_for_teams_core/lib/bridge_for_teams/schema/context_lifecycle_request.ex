@@ -6,7 +6,11 @@ defmodule BridgeForTeams.Schema.ContextLifecycleRequest do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   @states ~w(pending processing retry_wait completed canceled failed_terminal)
   @kinds ~w(deletion erasure)

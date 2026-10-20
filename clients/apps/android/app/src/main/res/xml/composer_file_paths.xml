@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Camera captures from the composer, in the app's private cache. -->
+<paths>
+    <cache-path name="composer_camera" path="composer-camera/" />
+</paths>

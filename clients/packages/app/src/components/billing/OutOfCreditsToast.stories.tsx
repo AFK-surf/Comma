@@ -1,5 +1,6 @@
 import { useCommaI18n } from "@comma/i18n/react";
-import { Button, Toaster, toast } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Toaster, toast } from "@comma/ui/components/toast";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useEffect } from "react";
 import "../../styles.css";

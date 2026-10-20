@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="chat_open_sidebar">Open sidebar</string>
+    <string name="chat_close_sidebar">Close sidebar</string>
+    <string name="chat_sidebar_view_all">View all</string>
+</resources>

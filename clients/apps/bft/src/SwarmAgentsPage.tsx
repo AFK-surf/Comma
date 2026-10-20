@@ -1,18 +1,16 @@
-import { Button, Dropdown, ScrollArea, ScrollAreaLoadMore, XIcon } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Dropdown } from "@comma/ui/components/dropdown";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { XIcon } from "@comma/ui/components/icons";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   BftApiError,
+  type BftModelPickerRow,
   type BftSwarmAgent,
   type BftSwarmAgentRow,
   type BftSwarmAgents,
 } from "./api";
-import {
-  AgentTargetPicker,
-  emptyTarget,
-  toTarget,
-  type TargetDraft,
-} from "./AgentTargetPicker";
-import { CopyButton, ConfirmDialog } from "./dialogs";
+import { CopyButton } from "./dialogs";
 import { showFlash } from "./flash";
 import { formatRelative, humanize } from "./format";
 import { messages } from "./messages";
@@ -24,7 +22,6 @@ import {
   FieldError,
   FormDialog,
   TextAreaField,
-  TextField,
   useConfirm,
   useWrite,
 } from "./settingsForm";
@@ -38,17 +35,11 @@ export const agentName = (agent: { name: string | null }) =>
 
 const roleLabel = (role: string) => p.agentRoles[role] ?? humanize(role);
 
-interface More {
-  agents: BftSwarmAgentRow[];
-  cursor: string | null | undefined;
-  loading: boolean;
-  failed: boolean;
-}
-
 /**
- * An Agent Swarm's agents in a table, the selected one in a detail rail. The
- * address names the selected agent, so `/agents/:id` deep-links to it. Writes
- * leave a notice and reload the list, keeping the last list while it loads.
+ * An Agent Swarm's Router in a table, the selected agent in a detail rail. The
+ * address names the selected agent, so `/agents/:id` deep-links to it; a
+ * Worker made before Workers were retired opens there read-only. Writes leave
+ * a notice and reload the list, keeping the last list while it loads.
  */
 export function SwarmAgentsPage({
   org,
@@ -63,29 +54,14 @@ export function SwarmAgentsPage({
   first: Resource<BftSwarmAgents>;
   onRetry: () => void;
 }) {
-  const api = useApi();
   const last = useRef<BftSwarmAgents | undefined>(undefined);
   if (first.state === "ready") last.current = first.data;
   const data = first.state === "ready" ? first.data : last.current;
-  const [creating, setCreating] = useState(false);
   // Refresh also re-reads the open agent.
   const [railReads, setRailReads] = useState(0);
   // A deep link may name the agent by its Salix id; the rail resolves it.
   const [resolved, setResolved] = useState<{ from: string; id: string }>();
   const selected = resolved && resolved.from === agentId ? resolved.id : agentId;
-  const [more, setMore] = useState<More & { from?: BftSwarmAgents }>({
-    agents: [],
-    cursor: undefined,
-    loading: false,
-    failed: false,
-  });
-  // A reloaded first page starts the list over.
-  const current: More =
-    more.from === data
-      ? more
-      : { agents: [], cursor: undefined, loading: false, failed: false };
-  const loading = useRef<AbortController | null>(null);
-  useEffect(() => () => loading.current?.abort(), []);
 
   const agentsPath = projectHref(org, project, "/agents");
   const notify = useCallback(
@@ -96,60 +72,12 @@ export function SwarmAgentsPage({
     [agentsPath, onRetry]
   );
 
-  const agents = data ? [...data.agents, ...current.agents] : [];
-  const cursor =
-    current.cursor === undefined ? (data?.next_cursor ?? null) : current.cursor;
-  const loadMore = () => {
-    if (!cursor || current.loading || !data) return;
-    const controller = new AbortController();
-    loading.current = controller;
-    const from = data;
-    setMore({ ...current, from, loading: true, failed: false });
-    api.swarmAgents(org, project, cursor, controller.signal).then(
-      (page) => {
-        if (controller.signal.aborted) return;
-        setMore((previous) => {
-          if (previous.from !== from) return previous;
-          if (page.status !== "ok")
-            return { ...previous, loading: false, failed: true };
-          const seen = new Set(
-            [...from.agents, ...previous.agents].map((agent) => agent.id)
-          );
-          return {
-            from,
-            agents: [...previous.agents, ...page.agents.filter((a) => !seen.has(a.id))],
-            cursor: page.next_cursor,
-            loading: false,
-            failed: false,
-          };
-        });
-      },
-      () => {
-        if (!controller.signal.aborted)
-          setMore((previous) => ({ ...previous, loading: false, failed: true }));
-      }
-    );
-  };
-
-  const manage = data?.project.role === "admin";
-
   return (
     <div className="bft-page">
       <div className="bft-page-header">
         <div className="bft-page-heading">
           <h1>{t.title}</h1>
           <p>{data ? t.description(data.project.name) : <Skeleton width={220} />}</p>
-        </div>
-        <div className="bft-page-actions">
-          {manage ? (
-            <button
-              className="bft-btn bft-btn-primary"
-              onClick={() => setCreating(true)}
-              type="button"
-            >
-              {t.newAgent}
-            </button>
-          ) : null}
         </div>
       </div>
       {first.state === "error" && !data ? (
@@ -168,7 +96,6 @@ export function SwarmAgentsPage({
           >
             <div className="bft-panel-header">
               <h2 id="bft-agents-list-title">{t.listTitle}</h2>
-              {/* New agents appear once provisioned; this reads the list again. */}
               <Button
                 className="bft-panel-link"
                 hierarchy="tertiary-gray"
@@ -184,9 +111,7 @@ export function SwarmAgentsPage({
             </div>
             {!data ? (
               <div className="bft-rows-skeleton">
-                {Array.from({ length: 5 }, (_, index) => (
-                  <Skeleton height={14} key={index} />
-                ))}
+                <Skeleton height={14} />
               </div>
             ) : data.status === "unavailable" ? (
               <div className="bft-quiet-row">
@@ -197,16 +122,21 @@ export function SwarmAgentsPage({
               </div>
             ) : (
               <AgentRows
-                agents={agents}
-                cursor={cursor}
-                failed={current.failed}
+                agents={data.agents}
                 href={(id) => `${agentsPath}/${encodeURIComponent(id)}`}
-                loading={current.loading}
-                onLoadMore={loadMore}
                 selected={selected}
-                triageHref={data.triage_href}
               />
             )}
+            <p className="bft-quiet">
+              {t.tasksNote}{" "}
+              <a
+                className="bft-link"
+                href={projectHref(org, project, "/settings")}
+                onClick={spaLinkClick}
+              >
+                {t.tasksSettings}
+              </a>
+            </p>
           </section>
           {agentId ? (
             <AgentRail
@@ -222,17 +152,6 @@ export function SwarmAgentsPage({
           ) : null}
         </div>
       )}
-      {creating ? (
-        <NewAgentDialog
-          onClose={() => setCreating(false)}
-          onCreated={(notice) => {
-            setCreating(false);
-            notify(notice);
-          }}
-          org={org}
-          project={project}
-        />
-      ) : null}
     </div>
   );
 }
@@ -241,20 +160,10 @@ function AgentRows({
   agents,
   selected,
   href,
-  triageHref,
-  cursor,
-  loading,
-  failed,
-  onLoadMore,
 }: {
   agents: BftSwarmAgentRow[];
   selected: string | undefined;
   href: (id: string) => string;
-  triageHref: string | null;
-  cursor: string | null;
-  loading: boolean;
-  failed: boolean;
-  onLoadMore: () => void;
 }) {
   if (agents.length === 0) return <p className="bft-quiet">{t.empty}</p>;
   return (
@@ -275,72 +184,38 @@ function AgentRows({
             <th className="bft-col-status" scope="col">
               {p.columnStatus}
             </th>
-            <th className="bft-col-runtime" scope="col">
-              {p.columnRunsOn}
-            </th>
           </tr>
         </thead>
         <tbody>
           {agents.map((agent) => (
             <tr data-selected={agent.id === selected ? true : undefined} key={agent.id}>
               <td>
-                <span className="bft-title-cell">
-                  <a
-                    aria-current={agent.id === selected ? "true" : undefined}
-                    className="bft-link"
-                    href={href(agent.id)}
-                    onClick={spaLinkClick}
-                    title={agentName(agent)}
-                  >
-                    {agentName(agent)}
-                  </a>
-                  {agent.group_router ? (
-                    <span className="bft-tag">{t.groupRouter}</span>
-                  ) : null}
-                  {agent.triage ? (
-                    triageHref ? (
-                      <a className="bft-tag bft-tag-link" href={triageHref}>
-                        {t.usedByTriage}
-                      </a>
-                    ) : (
-                      <span className="bft-tag">{t.usedByTriage}</span>
-                    )
-                  ) : null}
-                </span>
+                <a
+                  aria-current={agent.id === selected ? "true" : undefined}
+                  className="bft-link"
+                  href={href(agent.id)}
+                  onClick={spaLinkClick}
+                  title={agentName(agent)}
+                >
+                  {agentName(agent)}
+                </a>
               </td>
               <td className="bft-col-role">{roleLabel(agent.role)}</td>
               <td className="bft-col-status">
                 <State value={agent.lifecycle} />
               </td>
-              <td className="bft-col-runtime">{p.runtimes[agent.runtime]}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      <ScrollAreaLoadMore
-        failed={failed}
-        hasMore={cursor !== null}
-        loading={loading}
-        onLoadMore={onLoadMore}
-        quiet
-      />
-      {loading ? (
-        <output className="bft-quiet">{t.loadingMore}</output>
-      ) : failed ? (
-        <div className="bft-quiet-row" role="alert">
-          <p className="bft-quiet bft-quiet-inline">{t.loadMoreFailed}</p>
-          <button className="bft-btn bft-btn-sm" onClick={onLoadMore} type="button">
-            {messages.states.retry}
-          </button>
-        </div>
-      ) : null}
     </ScrollArea>
   );
 }
 
-type RailDialog = "configure" | "rebind" | "archive" | null;
-
-/** One agent's facts, its Router session and the admin actions. */
+/**
+ * One agent's facts and prompt; for the Router also its session and the admin
+ * actions. A retired Worker reads as history, without actions.
+ */
 function AgentRail({
   org,
   project,
@@ -365,8 +240,7 @@ function AgentRail({
   );
   const [latest, setLatest] = useState<BftSwarmAgent>();
   const data = latest ?? (loaded.state === "ready" ? loaded.data : undefined);
-  const [dialog, setDialog] = useState<RailDialog>(null);
-  const [notice, setNotice] = useState<string>();
+  const [configuring, setConfiguring] = useState(false);
   const confirm = useConfirm();
   // Best effort: after a refused write the refusal stays the message shown.
   const refresh = () =>
@@ -425,25 +299,12 @@ function AgentRail({
   }
 
   const { agent, router_session: session } = data;
-  const manage = data.project.role === "admin";
+  const manage = data.project.role === "admin" && !agent.read_only;
   const archived = agent.lifecycle === "archived";
   const name = agentName(agent);
-  const openArchive = () => {
-    setNotice(undefined);
-    // The Triage assignment is read again, as the confirmation shows it.
-    api.swarmAgent(org, project, agentId).then(
-      (fresh) => {
-        setLatest(fresh);
-        if (fresh.triage.status === "ok") setDialog("archive");
-        else setNotice(t.triageUnknown);
-      },
-      () => setNotice(t.triageUnknown)
-    );
-  };
   const rows: [string, ReactNode, (string | undefined)?][] = [
     [t.detailRole, roleLabel(agent.role)],
     [t.detailStatus, <State key="status" value={agent.lifecycle} />],
-    [t.detailRunsOn, agent.binding?.summary ?? p.runtimes[agent.runtime]],
     [t.detailModel, agent.model ?? t.modelDefault],
     [
       t.detailCreated,
@@ -468,6 +329,7 @@ function AgentRail({
         viewportClassName="bft-scroll-viewport"
       >
         <div className="bft-rail-body">
+          {agent.read_only ? <p className="bft-notice">{t.retiredNote}</p> : null}
           <dl className="bft-kv">
             {rows.map(([label, value, title]) => (
               <div key={label}>
@@ -478,34 +340,15 @@ function AgentRail({
               </div>
             ))}
           </dl>
-          {notice ? (
-            <p className="bft-dialog-error" role="alert">
-              {notice}
-            </p>
-          ) : null}
           {manage && !archived ? (
             <div className="bft-rail-actions">
               <Button
                 hierarchy="secondary-gray"
-                onPress={() => setDialog("configure")}
+                onPress={() => setConfiguring(true)}
                 size="xs"
               >
                 {t.configure}
               </Button>
-              {agent.rebindable && agent.binding ? (
-                <Button
-                  hierarchy="secondary-gray"
-                  onPress={() => setDialog("rebind")}
-                  size="xs"
-                >
-                  {t.rebind}
-                </Button>
-              ) : null}
-              {agent.role === "router" ? null : (
-                <Button hierarchy="secondary-gray" onPress={openArchive} size="xs">
-                  {t.archive}
-                </Button>
-              )}
             </div>
           ) : null}
           {agent.runtime_id ? (
@@ -528,17 +371,6 @@ function AgentRail({
               {agent.system_prompt ?? t.noPrompt}
             </p>
           </div>
-          {agent.triage ? (
-            <div className="bft-rail-section">
-              <h3>{t.usedByTriage}</h3>
-              <p className="bft-dialog-note">{t.triageNote}</p>
-              {data.triage_href ? (
-                <a className="bft-link" href={data.triage_href}>
-                  {t.openTriage}
-                </a>
-              ) : null}
-            </div>
-          ) : null}
           {session ? (
             <div className="bft-rail-section">
               <h3>{t.sessionTitle}</h3>
@@ -590,129 +422,22 @@ function AgentRail({
           ) : null}
         </div>
       </ScrollArea>
-      {dialog === "configure" ? (
+      {configuring ? (
         <ConfigureDialog
           agentId={agentId}
           name={name}
-          onClose={() => setDialog(null)}
+          onClose={() => setConfiguring(false)}
           onSaved={(saved) => {
             setLatest(saved);
-            setDialog(null);
+            setConfiguring(false);
             notify(saved.notice);
           }}
-          org={org}
-          project={project}
-        />
-      ) : null}
-      {dialog === "rebind" && agent.binding ? (
-        <RebindDialog
-          agentId={agentId}
-          binding={agent.binding}
-          name={name}
-          onClose={() => setDialog(null)}
-          onSaved={(saved) => {
-            setLatest(saved);
-            setDialog(null);
-            notify(saved.notice);
-          }}
-          org={org}
-          project={project}
-        />
-      ) : null}
-      {dialog === "archive" ? (
-        <ArchiveDialog
-          data={data}
-          onArchived={(redirect, text) => {
-            navigate(redirect);
-            notify(text);
-          }}
-          onClose={() => setDialog(null)}
-          onRefused={refresh}
           org={org}
           project={project}
         />
       ) : null}
       {confirm.dialog}
     </aside>
-  );
-}
-
-function NewAgentDialog({
-  org,
-  project,
-  onClose,
-  onCreated,
-}: {
-  org: string;
-  project: string;
-  onClose: () => void;
-  onCreated: (notice: string) => void;
-}) {
-  const api = useApi();
-  const write = useWrite();
-  const [name, setName] = useState("");
-  const [type, setType] = useState<"internal" | "external">("internal");
-  const [target, setTarget] = useState<TargetDraft>(emptyTarget);
-  const change = useCallback(
-    (next: Partial<TargetDraft>) => setTarget((previous) => ({ ...previous, ...next })),
-    []
-  );
-
-  return (
-    <FormDialog
-      description={t.createBody}
-      onClose={() => {
-        if (!write.busy) onClose();
-      }}
-      onSubmit={() =>
-        write.run(
-          () =>
-            api.createAgent(
-              org,
-              project,
-              type === "external"
-                ? { type, name: name.trim(), target: toTarget(target) }
-                : { type, name: name.trim() }
-            ),
-          (created) => onCreated(created.notice)
-        )
-      }
-      submitLabel={t.createConfirm}
-      title={t.newAgent}
-      wide
-      write={write}
-    >
-      <TextField
-        disabled={write.busy}
-        error={write.fields.name}
-        label={t.nameLabel}
-        onChange={setName}
-        placeholder={t.namePlaceholder}
-        value={name}
-      />
-      <Dropdown
-        className="bft-form-field"
-        disabled={write.busy}
-        items={(["internal", "external"] as const).map((option) => ({
-          id: option,
-          label: t.types[option],
-          subtitle: t.typeHints[option],
-        }))}
-        label={t.typeLabel}
-        onChange={(value) => setType(value as "internal" | "external")}
-        size="sm"
-        value={type}
-      />
-      {type === "external" ? (
-        <AgentTargetPicker
-          disabled={write.busy}
-          draft={target}
-          onChange={change}
-          org={org}
-          project={project}
-        />
-      ) : null}
-    </FormDialog>
   );
 }
 
@@ -743,9 +468,9 @@ function ConfigureDialog({
     (signal) => api.agentConfig(org, project, agentId, signal)
   );
   const data = config.state === "ready" ? config.data : undefined;
-  const [template, setTemplate] = useState<string>();
+  const [modelKey, setModelKey] = useState<string>();
   const [prompt, setPrompt] = useState<string>();
-  const chosen = template ?? data?.template_id ?? "";
+  const chosen = modelKey ?? data?.model_key ?? "";
   const text = prompt ?? data?.system_prompt ?? "";
 
   return (
@@ -760,7 +485,12 @@ function ConfigureDialog({
           () =>
             api.configureAgent(org, project, agentId, {
               // An untouched model is kept, even one the org no longer offers.
-              ...(chosen === data.template_id ? {} : { template_id: chosen }),
+              ...(chosen === data.model_key
+                ? {}
+                : {
+                    model:
+                      data.models.find((model) => model.key === chosen)?.choice ?? null,
+                  }),
               system_prompt: text,
             }),
           onSaved
@@ -776,21 +506,13 @@ function ConfigureDialog({
         <Skeleton height={32} />
       ) : (
         <>
-          <Dropdown
-            className="bft-form-field"
-            disabled={write.busy || !data.available}
-            items={data.models.map((model) => ({
-              id: model.id === "" ? followDefault : model.id,
-              label: model.label,
-              disabled: model.disabled,
-              group: model.group,
-            }))}
-            label={t.modelLabel}
-            onChange={(id) => setTemplate(id === followDefault ? "" : id)}
-            size="sm"
-            value={chosen === "" ? followDefault : chosen}
+          <ChoiceModelField
+            available={data.available}
+            busy={write.busy}
+            chosen={chosen}
+            models={data.models}
+            onChange={setModelKey}
           />
-          {data.available ? null : <p className="bft-dialog-note">{t.noModels}</p>}
           <TextAreaField
             disabled={write.busy}
             label={t.promptLabel}
@@ -805,144 +527,42 @@ function ConfigureDialog({
   );
 }
 
-function RebindDialog({
-  org,
-  project,
-  agentId,
-  name,
-  binding,
-  onClose,
-  onSaved,
-}: {
-  org: string;
-  project: string;
-  agentId: string;
-  name: string;
-  binding: NonNullable<BftSwarmAgent["agent"]["binding"]>;
-  onClose: () => void;
-  onSaved: (
-    saved: Awaited<ReturnType<ReturnType<typeof useApi>["rebindAgent"]>>
-  ) => void;
-}) {
-  const api = useApi();
-  const write = useWrite();
-  const [target, setTarget] = useState<TargetDraft>(() => ({
-    ...emptyTarget,
-    location: binding.location,
-    deviceId: binding.device_id ?? "",
-    runtimeId: binding.device_runtime_id ?? "",
-    provider:
-      binding.provider === "pi" || binding.provider === "claude"
-        ? binding.provider
-        : "codex",
-    workloadId: binding.workload_id ?? "",
-  }));
-  const change = useCallback(
-    (next: Partial<TargetDraft>) => setTarget((previous) => ({ ...previous, ...next })),
-    []
-  );
-
-  return (
-    <FormDialog
-      description={t.rebindBody}
-      onClose={() => {
-        if (!write.busy) onClose();
-      }}
-      onSubmit={() =>
-        write.run(
-          () =>
-            api.rebindAgent(org, project, agentId, {
-              expected_binding_revision: binding.revision,
-              target: toTarget(target),
-            }),
-          onSaved
-        )
-      }
-      submitLabel={t.saveRuntime}
-      title={t.rebindTitle(name)}
-      wide
-      write={write}
-    >
-      <p className="bft-dialog-note">{t.currentTarget(binding.summary)}</p>
-      <AgentTargetPicker
-        disabled={write.busy}
-        draft={target}
-        onChange={change}
-        org={org}
-        project={project}
-      />
-    </FormDialog>
-  );
-}
-
 /**
- * Archiving the Triage Worker shows what stops and confirms the Triage
- * revision it showed; an assignment made meanwhile is refused and shown.
+ * The org's model choices as the server lists them; key "" is the row for
+ * "no choice" (the default model, or the org default Task model).
  */
-function ArchiveDialog({
-  org,
-  project,
-  data,
-  onClose,
-  onArchived,
-  onRefused,
+export function ChoiceModelField({
+  models,
+  chosen,
+  busy,
+  label = t.modelLabel,
+  available = true,
+  onChange,
 }: {
-  org: string;
-  project: string;
-  data: BftSwarmAgent;
-  onClose: () => void;
-  onArchived: (redirect: string, notice: string) => void;
-  onRefused: () => Promise<void>;
+  models: BftModelPickerRow[];
+  chosen: string;
+  busy: boolean;
+  label?: string;
+  available?: boolean;
+  onChange: (key: string) => void;
 }) {
-  const api = useApi();
-  const write = useWrite();
-  const { agent, triage } = data;
-  const name = agentName(agent);
-
   return (
-    <ConfirmDialog
-      busy={write.busy}
-      confirmLabel={triage.used ? t.archiveAndPause : t.archive}
-      description={t.archiveBody(name)}
-      destructive
-      error={write.error}
-      onClose={() => {
-        if (!write.busy) onClose();
-      }}
-      onConfirm={() =>
-        write.run(
-          () =>
-            api
-              .archiveAgent(
-                org,
-                project,
-                agent.id,
-                triage.used ? triage.revision : null
-              )
-              .catch(async (error: unknown) => {
-                if (
-                  error instanceof BftApiError &&
-                  error.code === "triage_confirmation_required"
-                )
-                  await onRefused();
-                throw error;
-              }),
-          ({ redirect, notice }) => onArchived(redirect, notice)
-        )
-      }
-      title={t.archiveTitle}
-    >
-      {triage.used ? (
-        <div className="bft-notice" id="archive-triage-warning">
-          <p>{t.triageWarning(data.project.name)}</p>
-          <p>{t.triageWarningMore}</p>
-          {data.triage_href ? (
-            <a className="bft-link" href={data.triage_href}>
-              {t.chooseAnother}
-            </a>
-          ) : null}
-        </div>
-      ) : null}
-    </ConfirmDialog>
+    <>
+      <Dropdown
+        className="bft-form-field"
+        disabled={busy || !available}
+        items={models.map((model) => ({
+          id: model.key === "" ? followDefault : model.key,
+          label: model.label,
+          disabled: model.disabled,
+          group: model.group,
+        }))}
+        label={label}
+        onChange={(id) => onChange(id === followDefault ? "" : id)}
+        size="sm"
+        value={chosen === "" ? followDefault : chosen}
+      />
+      {available ? null : <p className="bft-dialog-note">{t.noModels}</p>}
+    </>
   );
 }

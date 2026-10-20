@@ -1,0 +1,9 @@
+<resources>
+    <item name="conversation_timeline" type="id" />
+    <item name="conversation_status" type="id" />
+    <item name="replay_reply" type="id" />
+    <item name="comma_composer" type="id" />
+    <item name="composer_shown" type="id" />
+    <item name="failed_send_retry" type="id" />
+    <item name="failed_send_delete" type="id" />
+</resources>

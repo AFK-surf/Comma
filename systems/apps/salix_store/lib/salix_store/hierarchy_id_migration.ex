@@ -91,7 +91,7 @@ defmodule SalixStore.HierarchyIdMigration do
           "version" => 1,
           "phase" => Atom.to_string(phase),
           "identity_fingerprint" => fingerprint(identity),
-          "completed_at" => System.system_time(:millisecond)
+          "completed_at" => SystemsClock.system_time(:millisecond)
         })
 
       case S3.put(completion_key(phase), body, if_none_match: "*") do
@@ -212,7 +212,7 @@ defmodule SalixStore.HierarchyIdMigration do
   end
 
   defp encode_record(identity, created_at) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     Jason.encode!(%{
       "version" => 1,

@@ -13,15 +13,15 @@ import type {
   NativeRendererIdentity,
   NativeRendererWindowRole,
   NativeStateBridge,
-  UpdateAsset,
-  UpdateInfo,
-  UpdateStatus,
 } from "@comma/native-bridge";
 import {
   chatPickAttachmentsRendererInputSchema,
   createGeneratedNativePreloadBridge,
   createNativePeerAsyncCall,
+  coreOpenContract,
   generatedNativeStateBindings,
+  nativeCorePortChannel,
+  nativeCorePortMessageSchema,
   nativePeerPortChannel,
   parseNativePeerPortMessage,
   peersConnectContract,
@@ -112,8 +112,6 @@ const knownWindowRoles = new Set<NativeRendererWindowRole>([
   "dev-workbench",
   "main-window",
   "onboarding-window",
-  "side-chat-test-window",
-  "side-chat-window",
 ]);
 
 export function createNativeBridgePreload(
@@ -150,13 +148,12 @@ export function createNativeBridgePreload(
       }
       return invokeContract(contract, contract.input.parse({ ...target, sources }));
     },
-    importLocalFile: (contract, input) => {
-      const { path, source, space } = parseLocalFileImportInput(input);
-      const sourcePath = options.getPathForFile?.(source);
+    stageLocalFile: (contract, input) => {
+      const sourcePath = options.getPathForFile?.(parseSelectedFile(input));
       if (!sourcePath) {
         throw new Error("Unable to resolve a local path for the selected file.");
       }
-      return invokeContract(contract, { path, sourcePath, space });
+      return invokeContract(contract, { sourcePath });
     },
     invoke: invokeContract,
     state: (binding) => createPreloadStateBridge(ipcRenderer, binding),
@@ -168,6 +165,7 @@ export function createNativeBridgePreload(
     ipcRenderer,
   });
   const stateChannels = createSerializedStateControls(generatedBridge);
+  const openCore = createCoreOpener({ invoke: invokeContract, ipcRenderer });
 
   const connector = {
     status: () =>
@@ -209,19 +207,10 @@ export function createNativeBridgePreload(
       connect: peerConnector.connect,
       onConnection: peerConnector.onConnection,
     },
+    core: { open: openCore },
     peerChannels: peerConnector.serialized,
     stateChannels,
     connector,
-    updates: {
-      status: () =>
-        invokeLegacy<UpdateStatus>(ipcRenderer.invoke, "comma:updates:status"),
-      check: () =>
-        invokeLegacy<UpdateInfo | null>(ipcRenderer.invoke, "comma:updates:check"),
-      download: (update: UpdateInfo) =>
-        invokeLegacy<boolean>(ipcRenderer.invoke, "comma:updates:download", update),
-      apply: (update: UpdateInfo | UpdateAsset) =>
-        invokeLegacy<boolean>(ipcRenderer.invoke, "comma:updates:apply", update),
-    },
   };
 }
 
@@ -477,6 +466,53 @@ function createPeerConnector({
   };
 }
 
+/**
+ * `core.open`: Main hands this window one end of a channel to the client core.
+ * The port is passed on to the page itself (a window message `{commaCorePort}`
+ * carrying it), so the core's messages reach the page without crossing the
+ * context bridge; `{commaCoreClosed}` says the core's process went.
+ */
+function createCoreOpener({
+  invoke,
+  ipcRenderer,
+}: {
+  invoke: <Input, Output>(
+    contract: NativeCommandContract<Input, Output>,
+    input: Input
+  ) => Promise<Output>;
+  ipcRenderer: IpcRendererLike;
+}) {
+  const arrived = new Map<string, unknown>();
+  const waiting = new Map<string, (port: unknown) => void>();
+  ipcRenderer.on(nativeCorePortChannel, (event, raw) => {
+    const message = nativeCorePortMessageSchema.safeParse(raw);
+    if (!message.success) return;
+    const { channelId } = message.data;
+    if (message.data.kind === "closed") {
+      window.postMessage({ commaCoreClosed: channelId }, location.origin);
+      return;
+    }
+    const port = (event as { ports?: unknown[] }).ports?.[0];
+    if (!port) return;
+    const wake = waiting.get(channelId);
+    if (wake) {
+      waiting.delete(channelId);
+      wake(port);
+    } else arrived.set(channelId, port);
+  });
+  return async () => {
+    const { channelId } = await invoke(coreOpenContract, undefined);
+    const port =
+      arrived.get(channelId) ??
+      (await new Promise<unknown>((resolve) => waiting.set(channelId, resolve)));
+    arrived.delete(channelId);
+    window.postMessage({ commaCorePort: channelId }, location.origin, [
+      port as MessagePort,
+    ]);
+    return { channelId };
+  };
+}
+
 function summarizePeerConnection(
   connection: NativePeerConnection<object, object>
 ): PeerConnectionSummary {
@@ -509,26 +545,12 @@ function isNativePeerMessagePort(value: unknown): value is NativePeerMessagePort
   );
 }
 
-function parseLocalFileImportInput(input: unknown): {
-  path: string;
-  source: File;
-  space: string;
-} {
-  if (!input || typeof input !== "object") {
-    throw new Error("Drive imports must use a user-selected File handle.");
-  }
-  const { path, source, space } = input as {
-    path?: unknown;
-    source?: unknown;
-    space?: unknown;
-  };
-  if (typeof path !== "string" || typeof space !== "string") {
-    throw new Error("Drive imports require a destination path and space.");
-  }
+function parseSelectedFile(input: unknown): File {
+  const source = (input as { source?: unknown } | null)?.source;
   if (!source || typeof source !== "object") {
     throw new Error("Drive imports must use a user-selected File handle.");
   }
-  return { path, source: source as File, space };
+  return source as File;
 }
 
 export function resolvePreloadRendererIdentity(
@@ -557,8 +579,8 @@ function createPreloadStateBridge<GetInput, Snapshot>(
     subscribe: { channel: string };
   }
 ): NativeStateBridge<Snapshot, GetInput> {
-  // Modeled in tla/app-preferences/AppPreferences.tla for the preference state
-  // leaf; a live event supersedes an older in-flight initial replay.
+  // For the preference state leaf, a live event supersedes an older in-flight
+  // initial replay.
   const get = (input: GetInput) =>
     invokeNativeCommand(ipcRenderer.invoke, binding.get, input);
 

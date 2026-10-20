@@ -6,13 +6,30 @@ defmodule SalixIM.Provider.Feishu do
   import SalixIM.Provider.Util
 
   alias SalixIM.IFC.ReadLabels
-  alias SalixIM.Provider.Feishu.{API, Message, ResourceRef}
+  alias SalixIM.MessageRenderer.Input
+
+  alias SalixIM.Provider.Feishu.{
+    API,
+    Docs,
+    Meetings,
+    Message,
+    MessageRenderer,
+    MessageSearch,
+    Minutes,
+    ResourceRef
+  }
+
+  alias SalixIM.Provider.OperationRegistry
   alias SalixIM.{Diagnostics, FeishuFiles, ProviderConnects, ProviderObservations}
 
   @max_page_size 50
   @max_reaction_pages 10
   @max_image_upload_bytes 10 * 1024 * 1024
   @max_file_upload_bytes 30 * 1024 * 1024
+  @minutes_apis OperationRegistry.feishu_minutes_api_names()
+  @meeting_apis OperationRegistry.feishu_meeting_api_names()
+  @account_apis OperationRegistry.feishu_account_api_names()
+  @document_apis OperationRegistry.worker_api_names("feishu") -- (@minutes_apis ++ @meeting_apis)
 
   @doc """
   Post one runtime-owned interactive card into a person's own direct
@@ -35,17 +52,84 @@ defmodule SalixIM.Provider.Feishu do
     end
   end
 
-  def call(agent_id, connect, api, params, scope \\ %{}) do
-    with :ok <- ensure_connected(connect) do
-      params =
-        params
-        |> Kernel.||(%{})
-        |> string_keys()
-        |> Map.put("__tool_call_id", scope[:tool_call_id])
+  @doc """
+  Reply with one runtime-rendered interactive card under an exact message.
 
+  Like `post_direct_card/3`, this is not in the provider operation table. Its
+  only caller is `SalixIM.FeishuTaskCard`, which derives `uuid` from the card
+  identity so a replay inside Feishu's one-hour deduplication window cannot
+  post a second card. A card reply does not record thread participation.
+  """
+  @spec reply_card(map(), String.t(), map(), String.t(), boolean()) ::
+          {:ok, map()} | {:error, term()}
+  def reply_card(connect, message_id, card, uuid, reply_in_thread?)
+      when is_binary(message_id) and is_map(card) and is_binary(uuid) do
+    with :ok <- ensure_connected(connect) do
+      API.post(connect, "/im/v1/messages/#{segment(message_id)}/reply", %{
+        "msg_type" => "interactive",
+        "content" => Jason.encode!(card),
+        "reply_in_thread" => reply_in_thread?,
+        "uuid" => uuid
+      })
+    end
+  end
+
+  @doc """
+  The chat that holds one exact message. A runtime-owned card verifies its
+  reply address with this read before the first post.
+  """
+  @spec message_chat_id(map(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def message_chat_id(connect, message_id) do
+    with :ok <- ensure_connected(connect),
+         {:ok, message} <- raw_message(connect, message_id) do
+      case str(message["chat_id"]) do
+        "" -> {:error, "Feishu get-message response did not contain a chat_id"}
+        chat_id -> {:ok, chat_id}
+      end
+    end
+  end
+
+  @doc "Replace the content of one interactive card that this app sent."
+  @spec update_card(map(), String.t(), map()) :: {:ok, map()} | {:error, term()}
+  def update_card(connect, message_id, card) when is_binary(message_id) and is_map(card) do
+    with :ok <- ensure_connected(connect) do
+      API.patch(connect, "/im/v1/messages/#{segment(message_id)}", %{
+        "content" => Jason.encode!(card)
+      })
+    end
+  end
+
+  def call(agent_id, connect, api, params, scope \\ %{}) do
+    params =
+      params
+      |> Kernel.||(%{})
+      |> string_keys()
+      |> Map.put("__tool_call_id", scope[:tool_call_id])
+
+    with :ok <- ensure_connected(connect),
+         {:ok, connect} <- acting_connect(agent_id, connect, api, params) do
       do_call(agent_id, connect, api, params)
     end
   end
+
+  # A document or Minutes read that names a signed-in account runs as that
+  # person; everything else runs as the bot.
+  defp acting_connect(agent_id, connect, api, %{"account" => account})
+       when api in @account_apis and is_binary(account) and account != "",
+       do: Meetings.as_account(agent_id, connect, String.trim(account))
+
+  defp acting_connect(_agent_id, connect, _api, _params), do: {:ok, connect}
+
+  # ---- cloud documents and Minutes ----
+
+  defp do_call(agent_id, connect, api, params) when api in @document_apis,
+    do: Docs.call(agent_id, connect, api, params)
+
+  defp do_call(agent_id, connect, api, params) when api in @minutes_apis,
+    do: Minutes.call(agent_id, connect, api, params)
+
+  defp do_call(agent_id, connect, api, params) when api in @meeting_apis,
+    do: Meetings.call(agent_id, connect, api, params)
 
   # ---- messages and media ----
 
@@ -54,35 +138,29 @@ defmodule SalixIM.Provider.Feishu do
     result =
       if api == "feishu.reply_text" do
         with :ok <- require_param(params, "message_id"),
-             :ok <- require_param(params, "text"),
-             {:ok, text} <- outbound_text(params),
+             {:ok, rendered} <- outbound_content(params),
+             body <-
+               rendered
+               |> Map.put("reply_in_thread", reply_in_thread?(params))
+               |> maybe_put("uuid", message_uuid(api, params)),
+             :ok <- MessageRenderer.validate_request(body),
              {:ok, response} <-
-               API.post(
-                 connect,
-                 "/im/v1/messages/#{segment(params["message_id"])}/reply",
-                 %{
-                   "msg_type" => "text",
-                   "content" => Jason.encode!(%{"text" => text}),
-                   "reply_in_thread" => reply_in_thread?(params)
-                 }
-                 |> maybe_put("uuid", message_uuid(api, params))
-               ),
+               API.post(connect, "/im/v1/messages/#{segment(params["message_id"])}/reply", body),
              :ok <- maybe_record_thread_participation(connect, params, response) do
           {:ok, response}
         end
       else
         with :ok <- require_param(params, "receive_id"),
-             :ok <- require_param(params, "text"),
-             {:ok, text} <- outbound_text(params) do
+             {:ok, rendered} <- outbound_content(params),
+             body <-
+               rendered
+               |> Map.put("receive_id", str(params["receive_id"]))
+               |> maybe_put("uuid", message_uuid(api, params)),
+             :ok <- MessageRenderer.validate_request(body) do
           API.post(
             connect,
             "/im/v1/messages?receive_id_type=#{segment(receive_id_type(params))}",
-            %{
-              "receive_id" => str(params["receive_id"]),
-              "msg_type" => "text",
-              "content" => Jason.encode!(%{"text" => text})
-            }
-            |> maybe_put("uuid", message_uuid(api, params))
+            body
           )
         end
       end
@@ -135,6 +213,12 @@ defmodule SalixIM.Provider.Feishu do
 
   defp do_call(_agent_id, connect, "feishu.get_thread_replies", params),
     do: labelled_messages(connect, "thread", params["thread_id"], params)
+
+  defp do_call(_agent_id, connect, "feishu.search_messages", params) do
+    with {:ok, signing_key} <- API.resource_ref_signing_key(connect) do
+      MessageSearch.search(connect, params, &normalize_message(connect, signing_key, &1))
+    end
+  end
 
   defp do_call(_agent_id, connect, "feishu.get_message", params) do
     with {:ok, message} <- raw_message(connect, params["message_id"]),
@@ -208,13 +292,10 @@ defmodule SalixIM.Provider.Feishu do
   end
 
   defp do_call(_agent_id, connect, "feishu.update_message", params) do
-    with :ok <- ensure_bot_authored(connect, params["message_id"]),
-         :ok <- require_param(params, "text"),
-         {:ok, text} <- outbound_text(%{"text" => params["text"]}) do
-      API.put(connect, "/im/v1/messages/#{segment(params["message_id"])}", %{
-        "msg_type" => "text",
-        "content" => Jason.encode!(%{"text" => text})
-      })
+    with {:ok, body} <- outbound_content(Map.take(params, ["text", "format"])),
+         :ok <- MessageRenderer.validate_request(body),
+         :ok <- ensure_bot_authored(connect, params["message_id"]) do
+      API.put(connect, "/im/v1/messages/#{segment(params["message_id"])}", body)
     end
   end
 
@@ -821,77 +902,12 @@ defmodule SalixIM.Provider.Feishu do
     end
   end
 
-  defp outbound_text(params) do
-    with {:ok, mentions} <- outbound_mentions(params["mentions"]) do
-      mention_all =
-        if truthy?(params["mention_all"]),
-          do: [~s(<at user_id="all">所有人</at>)],
-          else: []
-
-      {:ok,
-       (mentions ++ mention_all ++ [xml_escape(params["text"])])
-       |> Enum.reject(&(&1 == ""))
-       |> Enum.join(" ")}
-    end
-  end
-
-  defp outbound_mentions(nil), do: {:ok, []}
-
-  defp outbound_mentions(mentions) when is_binary(mentions) do
-    mentions
-    |> String.split(",", trim: true)
-    |> Enum.map(&String.trim/1)
-    |> outbound_mentions()
-  end
-
-  defp outbound_mentions(mentions) when is_list(mentions) do
-    mentions
-    |> Enum.reduce_while({:ok, []}, fn mention, {:ok, acc} ->
-      case outbound_mention(mention) do
-        {:ok, tag} -> {:cont, {:ok, acc ++ [tag]}}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, tags} -> {:ok, Enum.uniq(tags)}
-      error -> error
-    end
-  end
-
-  defp outbound_mentions(_mentions),
-    do: {:error, "mentions must be a list of {user_id, name} entries"}
-
-  defp outbound_mention(mention) when is_binary(mention) do
-    outbound_mention(%{"user_id" => mention, "name" => "成员"})
-  end
-
-  defp outbound_mention(mention) when is_map(mention) do
-    mention = string_keys(mention)
-    user_id = str(mention["user_id"] || mention["open_id"] || mention["id"])
-    name = blank_default(mention["name"], "成员")
-
-    cond do
-      user_id == "" ->
-        {:error, "each Feishu mention requires user_id"}
-
-      user_id == "all" ->
-        {:error, "use mention_all=true instead of a user_id=all mention"}
-
-      true ->
-        {:ok, ~s(<at user_id="#{xml_escape(user_id)}">#{xml_escape(name)}</at>)}
-    end
-  end
-
-  defp outbound_mention(_mention),
-    do: {:error, "each Feishu mention must be a user ID or {user_id, name} object"}
-
-  defp xml_escape(value) do
-    value
-    |> str()
-    |> String.replace("&", "&amp;")
-    |> String.replace("\"", "&quot;")
-    |> String.replace("<", "&lt;")
-    |> String.replace(">", "&gt;")
+  defp outbound_content(params) do
+    SalixIM.MessageRenderer.render(MessageRenderer, %Input{markdown: params["text"]},
+      format: params["format"],
+      mentions: params["mentions"],
+      mention_all: truthy?(params["mention_all"])
+    )
   end
 
   defp page_size(params, maximum \\ @max_page_size) do

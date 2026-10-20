@@ -19,7 +19,7 @@ without repeating discovery.
 - List, inspect, upload, download, move, or share Google Drive files when scopes allow.
 - Read or update Google Sheets, Docs, and Calendar resources when scopes allow.
 - Discover and call Google Workspace API methods through `gws`.
-- Install or verify the Google Workspace CLI on a persistent environment.
+- Install or verify the Google Workspace CLI on the selected environment.
 - Authenticate Google access using the Salix-managed OAuth flow.
 
 ## Operating Principles
@@ -122,7 +122,7 @@ If a script needs both, inject both environment variables in the same `env.exec`
 
 ## Initial Checks
 
-Use `device.list` followed by `device.get` before choosing where to run commands. Prefer a persistent VM such as `cloud-vm` when available.
+Use `device.list` followed by `device.get` before choosing where to run commands. Prefer `cloud-vm` when connected. Its disk and local credentials are temporary. Reinstall or authenticate again after a reset.
 
 Check `gws`:
 
@@ -172,7 +172,7 @@ rm -rf /tmp/npm-cache-gws
 npm install -g @googleworkspace/cli --cache /tmp/npm-cache-gws
 ```
 
-Put `gws` on the persistent user PATH:
+Put `gws` on the user PATH:
 
 ```bash
 set -e

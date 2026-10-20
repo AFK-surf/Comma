@@ -1,15 +1,18 @@
 defmodule SalixStore.PersonalMeshRegistryTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
+  use SystemsClock.Case, async: false
+
+  use SystemsClock.Test, scope: ["Elixir.SalixStore"]
   alias SalixStore.{PersonalMeshRegistry, Repo}
 
   @p256_order 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
 
   setup do
-    previous_signer = Application.get_env(:salix_store, :personal_mesh_registry_receipt_signer)
-    previous_limits = Application.get_env(:salix_store, :personal_mesh_registry_rate_limits)
+    previous_signer = SystemsRuntime.get_env(:salix_store, :personal_mesh_registry_receipt_signer)
+    previous_limits = SystemsRuntime.get_env(:salix_store, :personal_mesh_registry_rate_limits)
 
-    Application.put_env(:salix_store, :personal_mesh_registry_receipt_signer, fn payload ->
+    SystemsRuntime.put_env(:salix_store, :personal_mesh_registry_receipt_signer, fn payload ->
       {"test-receipt-key", :crypto.hash(:sha256, payload)}
     end)
 
@@ -20,17 +23,21 @@ defmodule SalixStore.PersonalMeshRegistryTest do
     on_exit(fn ->
       if previous_signer,
         do:
-          Application.put_env(
+          SystemsRuntime.put_env(
             :salix_store,
             :personal_mesh_registry_receipt_signer,
             previous_signer
           ),
-        else: Application.delete_env(:salix_store, :personal_mesh_registry_receipt_signer)
+        else: SystemsRuntime.delete_env(:salix_store, :personal_mesh_registry_receipt_signer)
 
       if previous_limits,
         do:
-          Application.put_env(:salix_store, :personal_mesh_registry_rate_limits, previous_limits),
-        else: Application.delete_env(:salix_store, :personal_mesh_registry_rate_limits)
+          SystemsRuntime.put_env(
+            :salix_store,
+            :personal_mesh_registry_rate_limits,
+            previous_limits
+          ),
+        else: SystemsRuntime.delete_env(:salix_store, :personal_mesh_registry_rate_limits)
     end)
 
     :ok
@@ -40,7 +47,7 @@ defmodule SalixStore.PersonalMeshRegistryTest do
     {a_public, a_private} = keypair()
     {b_public, b_private} = keypair()
     {c_public, c_private} = keypair()
-    expires = DateTime.add(DateTime.utc_now(), 3600, :second)
+    expires = DateTime.add(SystemsClock.utc_now(), 3600, :second)
 
     {:ok, genesis} =
       PersonalMeshRegistry.genesis(
@@ -202,7 +209,7 @@ defmodule SalixStore.PersonalMeshRegistryTest do
   test "signature, CAS, invite consumption, and endpoint generation fail closed" do
     {public, private} = keypair()
     {joining_public, joining_private} = keypair()
-    expires = DateTime.add(DateTime.utc_now(), 3600, :second)
+    expires = DateTime.add(SystemsClock.utc_now(), 3600, :second)
 
     attrs = %{
       operation_id: "genesis",
@@ -308,7 +315,7 @@ defmodule SalixStore.PersonalMeshRegistryTest do
           "featureSet" => ["direct"],
           "observedAddressesDigest" => Base.encode64("addresses")
         }),
-      expires_at: DateTime.add(DateTime.utc_now(), 600, :second)
+      expires_at: DateTime.add(SystemsClock.utc_now(), 600, :second)
     }
 
     endpoint_payload = PersonalMeshRegistry.canonical_endpoint(endpoint_attrs)
@@ -366,7 +373,7 @@ defmodule SalixStore.PersonalMeshRegistryTest do
     joining_endpoint_payload = PersonalMeshRegistry.canonical_endpoint(joining_endpoint)
 
     publish = fn ->
-      receive do
+      SystemsRuntime.Proc.receive do
         :start ->
           PersonalMeshRegistry.publish_endpoint(
             Map.merge(joining_endpoint, %{
@@ -379,7 +386,7 @@ defmodule SalixStore.PersonalMeshRegistryTest do
     end
 
     revoke = fn ->
-      receive do
+      SystemsRuntime.Proc.receive do
         :start ->
           PersonalMeshRegistry.revoke(
             operation(
@@ -398,13 +405,13 @@ defmodule SalixStore.PersonalMeshRegistryTest do
       end
     end
 
-    publish_task = Task.async(publish)
-    revoke_task = Task.async(revoke)
-    send(publish_task.pid, :start)
-    send(revoke_task.pid, :start)
+    publish_task = SystemsRuntime.Task.async(publish)
+    revoke_task = SystemsRuntime.Task.async(revoke)
+    SystemsRuntime.Proc.send(publish_task.pid, :start)
+    SystemsRuntime.Proc.send(revoke_task.pid, :start)
 
-    assert Task.await(revoke_task) |> elem(0) == :ok
-    assert Task.await(publish_task) in [:ok, {:error, :unavailable}]
+    assert settled_await(revoke_task) |> elem(0) == :ok
+    assert settled_await(publish_task) in [:ok, {:error, :unavailable}]
 
     assert %{rows: [[0]]} =
              Repo.query!(
@@ -412,11 +419,11 @@ defmodule SalixStore.PersonalMeshRegistryTest do
                ["mesh", "b"]
              )
 
-    Application.put_env(:salix_store, :personal_mesh_registry_rate_limits, %{"snapshot" => 1})
+    SystemsRuntime.put_env(:salix_store, :personal_mesh_registry_rate_limits, %{"snapshot" => 1})
     assert {:ok, _} = PersonalMeshRegistry.snapshot("mesh")
     assert {:error, :rate_limited} = PersonalMeshRegistry.snapshot("mesh")
 
-    Application.delete_env(:salix_store, :personal_mesh_registry_receipt_signer)
+    SystemsRuntime.delete_env(:salix_store, :personal_mesh_registry_receipt_signer)
 
     assert {:error, :receipt_signer_unavailable} =
              PersonalMeshRegistry.genesis(
@@ -464,14 +471,14 @@ defmodule SalixStore.PersonalMeshRegistryTest do
 
   defp keypair do
     {<<4, x::binary-size(32), y::binary-size(32)>>, private_key} =
-      :crypto.generate_key(:ecdh, :secp256r1)
+      SystemsRuntime.Proc.generate_key(:ecdh, :secp256r1)
 
     prefix = 2 + Bitwise.band(:binary.last(y), 1)
     {<<prefix, x::binary>>, private_key}
   end
 
   defp sign(payload, private) do
-    der = :crypto.sign(:ecdsa, :sha256, payload, [private, :secp256r1])
+    der = SystemsRuntime.Proc.sign(:ecdsa, :sha256, payload, [private, :secp256r1])
     <<0x30, _size, 0x02, r_size, rest::binary>> = der
     <<r::binary-size(^r_size), 0x02, s_size, s::binary-size(s_size)>> = rest
     r = pad32(r)

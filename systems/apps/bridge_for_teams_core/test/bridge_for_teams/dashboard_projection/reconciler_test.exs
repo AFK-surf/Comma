@@ -1,5 +1,6 @@
 defmodule BridgeForTeams.DashboardProjection.ReconcilerTest do
   use BridgeForTeams.DataCase, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{
     Accounts,
@@ -37,25 +38,33 @@ defmodule BridgeForTeams.DashboardProjection.ReconcilerTest do
 
     defp notify(message) do
       if pid =
-           Application.get_env(:bridge_for_teams_core, :dashboard_projection_reconciler_test_pid) do
-        send(pid, message)
+           SystemsRuntime.get_env(
+             :bridge_for_teams_core,
+             :dashboard_projection_reconciler_test_pid
+           ) do
+        SystemsRuntime.Proc.send(pid, message)
       end
     end
   end
 
   setup do
-    previous_client = Application.get_env(:bridge_for_teams_core, :salix_client)
+    previous_client = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
 
     previous_pid =
-      Application.get_env(:bridge_for_teams_core, :dashboard_projection_reconciler_test_pid)
+      SystemsRuntime.get_env(:bridge_for_teams_core, :dashboard_projection_reconciler_test_pid)
 
-    Application.put_env(:bridge_for_teams_core, :salix_client, SalixClient)
-    Application.put_env(:bridge_for_teams_core, :dashboard_projection_reconciler_test_pid, self())
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, SalixClient)
+
+    SystemsRuntime.put_env(
+      :bridge_for_teams_core,
+      :dashboard_projection_reconciler_test_pid,
+      SystemsRuntime.Proc.self()
+    )
 
     on_exit(fn ->
-      Application.put_env(:bridge_for_teams_core, :salix_client, previous_client)
+      SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous_client)
 
-      Application.put_env(
+      SystemsRuntime.put_env(
         :bridge_for_teams_core,
         :dashboard_projection_reconciler_test_pid,
         previous_pid
@@ -67,36 +76,58 @@ defmodule BridgeForTeams.DashboardProjection.ReconcilerTest do
 
   test "enqueue coalesces refresh work and writes a snapshot" do
     %{project: project} = fixture()
+    group_id = project.salix_group_id
+    start_supervised!({DashboardProjection.Reconciler, enabled: true})
 
     assert :ok = DashboardProjection.enqueue_refresh(project.id)
     assert :ok = DashboardProjection.enqueue_refresh(project.id)
 
-    assert_receive {:list_group_conversations, _group_id}, 2_000
-    assert_receive {:list_group_meetings, _group_id}, 2_000
+    settle_receive({:list_group_conversations, ^group_id})
+    settle_receive({:list_group_meetings, ^group_id})
 
-    assert_eventually(fn ->
-      case Repo.get(ProjectDashboardSnapshot, project.id) do
-        %ProjectDashboardSnapshot{refreshed_at: %DateTime{}} -> true
-        _ -> false
-      end
-    end)
+    assert %ProjectDashboardSnapshot{refreshed_at: %DateTime{}} =
+             settle_until(fn ->
+               case Repo.get(ProjectDashboardSnapshot, project.id) do
+                 %ProjectDashboardSnapshot{refreshed_at: %DateTime{}} = snapshot -> snapshot
+                 _ -> nil
+               end
+             end)
   end
 
-  defp assert_eventually(fun, attempts \\ 20)
+  test "a refresh requested while a drain runs starts as soon as that drain ends" do
+    %{project: first} = fixture()
+    %{project: second} = fixture()
+    {first_id, second_id} = {first.id, second.id}
+    test = SystemsRuntime.Proc.self()
 
-  defp assert_eventually(fun, attempts) when attempts > 0 do
-    if fun.() do
-      :ok
-    else
-      Process.sleep(50)
-      assert_eventually(fun, attempts - 1)
+    refresh = fn project_id, _opts ->
+      SystemsRuntime.Proc.send(test, {:refreshing, project_id, SystemsRuntime.Proc.self()})
+      receive(do: ({:finish, result} -> result))
     end
-  end
 
-  defp assert_eventually(fun, 0), do: assert(fun.())
+    assert :ok = DashboardProjection.Reconciler.request_refresh(first_id)
+
+    # The interval never passes in this test: only the doorbell can start the
+    # second drain.
+    start_supervised!(
+      {DashboardProjection.Reconciler,
+       enabled: true, interval_ms: 3_600_000, run_opts: [backstop_limit: 0, refresh_fun: refresh]}
+    )
+
+    settle_receive({:refreshing, ^first_id, first_worker})
+    assert :ok = DashboardProjection.enqueue_refresh(second_id)
+    _ = :sys.get_state(DashboardProjection.Reconciler)
+
+    # The running drain ends without claiming more work.
+    SystemsRuntime.Proc.send(first_worker, {:finish, {:error, :unavailable}})
+
+    settle_receive({:refreshing, ^second_id, second_worker})
+    SystemsRuntime.Proc.send(second_worker, {:finish, {:error, :unavailable}})
+    settle()
+  end
 
   defp fixture do
-    n = System.unique_integer([:positive])
+    n = SystemsRuntime.Proc.unique_integer([:positive])
     {:ok, user} = Accounts.create_user(%{"email" => "reconciler-#{n}@example.com"})
     {:ok, org} = Orgs.create_org(%{"name" => "Reconciler #{n}", "slug" => "reconciler-#{n}"})
     {:ok, _membership} = Memberships.put_org_member(org.id, user.id, "owner")

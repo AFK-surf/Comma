@@ -37,7 +37,7 @@ macro_rules
   | `(tactic| queue_step $h:ident) =>
     `(tactic| first
       | (head_is $h [write]; simp only [write_queue_step] at $h:ident; obtain ⟨_, kept⟩ := $h
-         refine queue_trans (kept rfl) ?_)
+         refine queue_trans (kept (by keys_absent)) ?_)
       | (head_step $h "_queue_step"; obtain ⟨_, kept⟩ := $h; refine queue_trans kept ?_))
 
 syntax "queue_walk" ident : tactic

@@ -1,7 +1,16 @@
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, ManagedRuntime } from "effect";
 import { describe, expect, it, vi } from "vitest";
-import { AdminApiError, createAdminApi, isAdminAccessDenied } from "../src/adminApi";
+import {
+  AdminApi,
+  AdminApiError,
+  AdminApiLive,
+  isAdminAccessDenied,
+  type AdminApiShape,
+} from "../src/adminApi";
+import { AdminSession, type SessionLease } from "../src/adminSession";
+import { fakeFetchLayer, flush, jsonResponse } from "./http";
 
-describe("createAdminApi", () => {
+describe("AdminApi", () => {
   it("updates the exact Workspace VM through the audited Admin transport", async () => {
     const result = {
       workspace_id: "wsp_one",
@@ -181,7 +190,7 @@ describe("createAdminApi", () => {
     });
 
     await expect(unsafeApi.listAuditEvents()).rejects.toMatchObject({
-      name: "ZodError",
+      _tag: "AdminResponseError",
     });
   });
 
@@ -321,7 +330,7 @@ describe("createAdminApi", () => {
     });
 
     await expect(api.getUserWorkspaceBilling("workspace_1")).rejects.toMatchObject({
-      name: "ZodError",
+      _tag: "AdminResponseError",
     });
   });
 
@@ -480,11 +489,15 @@ describe("createAdminApi", () => {
         return jsonResponse({
           agent_id: "agent_worker",
           role: "worker",
-          template_id: body.template_id,
-          template_name: "GPT-5.6 Terra",
-          model: "gpt-5.6-terra",
+          source: "pinned",
+          model: body.model.model,
           provider: "openai",
           reasoning_effort: "high",
+          selection: {
+            kind: "catalog",
+            model: body.model.model,
+            reasoning_effort: "high",
+          },
         });
       }
 
@@ -495,19 +508,23 @@ describe("createAdminApi", () => {
           router: {
             agent_id: "agent_router",
             role: "router",
-            template_id: "template_luna",
-            template_name: "GPT-5.6 Luna",
+            source: "platform_default",
             model: "gpt-5.6-luna",
             provider: "openai",
+            selection: { kind: "builtin" },
           },
           worker: {
             agent_id: "agent_worker",
             role: "worker",
-            template_id: "template_sol",
-            template_name: "GPT-5.6 Sol",
+            source: "pinned",
             model: "gpt-5.6-sol",
             provider: "openai",
             reasoning_effort: "high",
+            selection: {
+              kind: "catalog",
+              model: "gpt-5.6-sol",
+              reasoning_effort: "high",
+            },
           },
         },
         workers: {
@@ -515,8 +532,6 @@ describe("createAdminApi", () => {
             {
               agent_id: "agent_worker",
               role: "worker",
-              template_id: "template_sol",
-              template_name: "GPT-5.6 Sol",
               model: "gpt-5.6-sol",
               provider: "openai",
               reasoning_effort: "high",
@@ -527,7 +542,6 @@ describe("createAdminApi", () => {
         platform_defaults: {
           router: null,
           worker: {
-            template_id: "template_sol",
             name: "GPT-5.6 Sol",
             model: "gpt-5.6-sol",
             provider: "openai",
@@ -535,24 +549,6 @@ describe("createAdminApi", () => {
             reasoning_effort: "high",
           },
         },
-        available_models: [
-          {
-            template_id: "template_luna",
-            name: "GPT-5.6 Luna",
-            model: "gpt-5.6-luna",
-            provider: "openai",
-            scope: "global",
-            reasoning_effort: null,
-          },
-          {
-            template_id: "template_terra",
-            name: "GPT-5.6 Terra",
-            model: "gpt-5.6-terra",
-            provider: "openai",
-            scope: "tenant",
-            reasoning_effort: "high",
-          },
-        ],
       });
     });
     const api = createAdminApi({
@@ -564,27 +560,26 @@ describe("createAdminApi", () => {
     await expect(api.getUserWorkspaceAgentModels("usr_1")).resolves.toMatchObject({
       workspace_id: "workspace_1",
       agents: {
-        router: { model: "gpt-5.6-luna" },
-        worker: { model: "gpt-5.6-sol", reasoning_effort: "high" },
+        router: { model: "gpt-5.6-luna", source: "platform_default" },
+        worker: {
+          model: "gpt-5.6-sol",
+          reasoning_effort: "high",
+          selection: { kind: "catalog", model: "gpt-5.6-sol" },
+        },
       },
       workers: { items: [{ reasoning_effort: "high" }], next_cursor: null },
-      platform_defaults: { worker: { reasoning_effort: "high" } },
-      available_models: [
-        { template_id: "template_luna", scope: "global", reasoning_effort: null },
-        { template_id: "template_terra", scope: "tenant", reasoning_effort: "high" },
-      ],
+      platform_defaults: { worker: { name: "GPT-5.6 Sol" } },
     });
 
     await expect(
       api.updateUserWorkspaceAgentModel("usr_1", "worker", {
-        confirmation: "workspace-agent-model:usr_1:worker:template_terra",
+        confirmation: "workspace-agent-model:usr_1:worker:catalog:gpt-5.6-terra",
         idempotencyKey: "workspace-model:12345678",
+        model: { kind: "catalog", model: "gpt-5.6-terra" },
         reason: "Use the approved lower-latency model",
-        templateId: "template_terra",
       })
     ).resolves.toMatchObject({
       role: "worker",
-      template_id: "template_terra",
       model: "gpt-5.6-terra",
       reasoning_effort: "high",
     });
@@ -593,10 +588,10 @@ describe("createAdminApi", () => {
       "https://salix.example/v1/comma/admin/users/usr_1/workspaces/agent-models/worker",
       expect.objectContaining({
         body: JSON.stringify({
-          confirmation: "workspace-agent-model:usr_1:worker:template_terra",
+          confirmation: "workspace-agent-model:usr_1:worker:catalog:gpt-5.6-terra",
           idempotency_key: "workspace-model:12345678",
           reason: "Use the approved lower-latency model",
-          template_id: "template_terra",
+          model: { kind: "catalog", model: "gpt-5.6-terra" },
         }),
         credentials: "include",
         method: "PUT",
@@ -616,8 +611,6 @@ describe("createAdminApi", () => {
             router: {
               agent_id: "agent_router",
               role: "router",
-              template_id: "template_luna",
-              template_name: "GPT-5.6 Luna",
               model: "gpt-5.6-luna",
               provider: "openai",
               provider_config: { api_key: "must-not-cross" },
@@ -625,13 +618,10 @@ describe("createAdminApi", () => {
             worker: {
               agent_id: "agent_worker",
               role: "worker",
-              template_id: "template_luna",
-              template_name: "GPT-5.6 Luna",
               model: "gpt-5.6-luna",
               provider: "openai",
             },
           },
-          available_models: [],
         })
       ),
       sessionTransport: sessionTransport(),
@@ -1035,7 +1025,7 @@ describe("createAdminApi", () => {
     });
 
     await expect(unsafeApi.listUserSessions("usr_1")).rejects.toMatchObject({
-      name: "ZodError",
+      _tag: "AdminResponseError",
     });
   });
 
@@ -1063,47 +1053,54 @@ describe("createAdminApi", () => {
   });
 
   it("treats only the explicit operator-access 403 as a global denial", () => {
-    expect(isAdminAccessDenied(new AdminApiError(403, "forbidden", "forbidden"))).toBe(
+    expect(isAdminAccessDenied(refusal(403, "forbidden", "forbidden"))).toBe(true);
+    expect(isAdminAccessDenied(refusal(403, "disabled", "disabled"))).toBe(false);
+    expect(isAdminAccessDenied(refusal(403, "workspace mismatch", "forbidden"))).toBe(
       true
     );
-    expect(isAdminAccessDenied(new AdminApiError(403, "disabled", "disabled"))).toBe(
-      false
-    );
-    expect(
-      isAdminAccessDenied(new AdminApiError(403, "workspace mismatch", "forbidden"))
-    ).toBe(true);
-    expect(isAdminAccessDenied(new AdminApiError(400, "forbidden", "forbidden"))).toBe(
-      false
-    );
+    expect(isAdminAccessDenied(refusal(400, "forbidden", "forbidden"))).toBe(false);
     expect(isAdminAccessDenied(new Error("forbidden"))).toBe(false);
   });
 
-  it("binds requests to both view and SessionLifecycle abort signals", async () => {
-    const session = new AbortController();
-    const view = new AbortController();
-    let requestSignal: AbortSignal | undefined;
+  it("stops a request when its view leaves or its Session lease ends", async () => {
+    const signals: AbortSignal[] = [];
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, init?: RequestInit) =>
         await new Promise<Response>((_resolve, reject) => {
-          requestSignal = init?.signal ?? undefined;
-          requestSignal?.addEventListener(
-            "abort",
-            () => reject(requestSignal?.reason),
-            { once: true }
-          );
+          const signal = init?.signal;
+          if (signal) signals.push(signal);
+          signal?.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
         })
     );
-    const api = createAdminApi({
+    const lease = makeLease();
+    const harness = adminApiHarness({
       baseUrl: "https://salix.example",
       fetch: fetchMock,
-      sessionTransport: sessionTransport(vi.fn(), session.signal),
+      lease,
     });
 
-    const request = api.listUsers({ signal: view.signal });
-    session.abort(new DOMException("Session changed", "AbortError"));
+    // The view leaves: its request is interrupted, which aborts the fetch.
+    const viewRequest = harness.fork((api) => api.listUsers());
+    await harness.settle();
+    expect(signals).toHaveLength(1);
+    await harness.interrupt(viewRequest);
+    expect(signals[0]?.aborted).toBe(true);
 
-    await expect(request).rejects.toMatchObject({ name: "AbortError" });
-    expect(requestSignal?.aborted).toBe(true);
+    // The lease ends (signed out, refused, or replaced): the request fails for its Session.
+    const sessionRequest = harness.run((api) => api.listUsers());
+    await harness.settle();
+    expect(signals).toHaveLength(2);
+    Effect.runSync(Deferred.succeed(lease.closed, undefined));
+    await expect(sessionRequest).rejects.toMatchObject({ _tag: "AdminSessionClosed" });
+    expect(signals[1]?.aborted).toBe(true);
+
+    // No request starts for an ended lease.
+    await expect(harness.run((api) => api.listUsers())).rejects.toMatchObject({
+      _tag: "AdminSessionClosed",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("binds Agent VMM intent to tenant, target, revision, and audited metadata", async () => {
@@ -1163,30 +1160,106 @@ describe("createAdminApi", () => {
       sessionTransport: sessionTransport(),
     });
 
-    await expect(api.listUsers()).rejects.toMatchObject({ name: "ZodError" });
+    await expect(api.listUsers()).rejects.toMatchObject({
+      _tag: "AdminResponseError",
+    });
   });
 });
 
-function sessionTransport(
-  reportSessionRejection = vi.fn(),
-  signal = new AbortController().signal
-) {
+const sessionId = "11111111-1111-4111-8111-111111111111";
+
+const refusal = (status: number, message: string, code: string) =>
+  new AdminApiError({ code, message, status });
+
+function makeLease(): SessionLease {
   return {
-    credentials: "include" as const,
-    signal,
-    applyHeaders(headers: Record<string, string>) {
-      headers["x-comma-expected-auth-session-id"] =
-        "11111111-1111-4111-8111-111111111111";
-      headers["x-comma-session-lifecycle-version"] = "1";
-      headers["x-comma-session-transport"] = "cookie";
-    },
-    reportSessionRejection,
+    closed: Deferred.makeUnsafe<void>(),
+    email: "owner@example.com",
+    sessionId,
+    userId: "usr_admin",
   };
 }
 
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    headers: { "content-type": "application/json" },
-    status,
+/** The real Admin API and fetch wrapper over `fetch`, for a signed-in lease. */
+function adminApiHarness(options: {
+  baseUrl: string;
+  fetch: (input: string, init?: RequestInit) => Promise<Response>;
+  lease?: SessionLease;
+  refused?: (status: 401 | 409) => void;
+}) {
+  const lease = options.lease ?? makeLease();
+  const session = AdminSession.of({
+    lease: Effect.sync(() => (Deferred.isDoneUnsafe(lease.closed) ? undefined : lease)),
+    refused: (_lease, status) => Effect.sync(() => options.refused?.(status)),
   });
+  const layer = AdminApiLive.pipe(
+    Layer.provide(
+      Layer.merge(
+        fakeFetchLayer(options.baseUrl, options.fetch),
+        Layer.succeed(AdminSession, session)
+      )
+    )
+  );
+  const runtime = ManagedRuntime.make(layer);
+  const api = runtime.runSync(AdminApi);
+  const run = <A, E>(request: (api: AdminApiShape) => Effect.Effect<A, E>) =>
+    runtime
+      .runPromiseExit(request(api))
+      .then((exit) =>
+        Exit.isSuccess(exit)
+          ? exit.value
+          : Promise.reject(Exit.isFailure(exit) ? squash(exit) : undefined)
+      );
+  return {
+    api,
+    run,
+    fork: <A, E>(request: (api: AdminApiShape) => Effect.Effect<A, E>) =>
+      runtime.runFork(request(api)),
+    interrupt: (fiber: Fiber.Fiber<unknown, unknown>) =>
+      runtime.runPromise(Fiber.interrupt(fiber)),
+    settle: flush,
+  };
+}
+
+function squash(exit: Exit.Failure<unknown, unknown>) {
+  return Cause.squash(exit.cause);
+}
+
+type PromiseApi = {
+  [K in keyof AdminApiShape]: AdminApiShape[K] extends (
+    ...args: infer P
+  ) => Effect.Effect<infer A, unknown>
+    ? (...args: P) => Promise<A>
+    : () => Promise<Effect.Success<AdminApiShape[K]>>;
+};
+
+/** The Admin API with Promise results, as the old `createAdminApi` returned them. */
+function createAdminApi(options: {
+  baseUrl: string;
+  fetch: (input: string, init?: RequestInit) => Promise<Response>;
+  sessionTransport: { refused?: (status: 401 | 409) => void };
+}) {
+  const harness = adminApiHarness({
+    baseUrl: options.baseUrl,
+    fetch: options.fetch,
+    ...(options.sessionTransport.refused
+      ? { refused: options.sessionTransport.refused }
+      : {}),
+  });
+  return new Proxy({} as PromiseApi, {
+    get:
+      (_target, name: keyof AdminApiShape) =>
+      (...args: unknown[]) =>
+        harness.run(() => {
+          const member = harness.api[name] as
+            | Effect.Effect<unknown, unknown>
+            | ((...values: unknown[]) => Effect.Effect<unknown, unknown>);
+          return Effect.isEffect(member) ? member : member(...args);
+        }),
+  });
+}
+
+/** A signed-in lease whose Session refusals go to `refused`. */
+function sessionTransport(refused: (status: 401 | 409) => void = vi.fn()) {
+  return { refused };
 }

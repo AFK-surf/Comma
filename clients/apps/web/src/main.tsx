@@ -1,4 +1,3 @@
-import { createWebAppRuntimeBridge } from "./app-runtime-bridge";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -6,18 +5,17 @@ import {
   CommaClientSettingsI18nProvider,
   CommaSessionHostProvider,
   CommaWebClientSettingsProvider,
-  ProductInboxProjectionProvider,
-  createBrowserSessionHostPorts,
-  createProductInboxProjectionController,
-  createWebSessionHostController,
+  createCoreSessionHostController,
   defaultApiBaseUrl,
   readWebCommaClientSettings,
   startCommaAnalytics,
   reportCommaClientError,
   CommaAnalyticsLifecycle,
 } from "@comma/app";
+import { CoreProvider } from "@comma/core-client";
+import { connectWebCore } from "./connect-core";
 import { initializeCommaI18n, resolveLocalePreference } from "@comma/i18n";
-import { snapshotMatchesSessionProductLease } from "@comma/session-contract";
+import { webNativeBridge } from "@comma/native-bridge";
 import "@comma/app/styles.css";
 
 const root = document.getElementById("root");
@@ -29,70 +27,30 @@ if (!root) {
   throw new Error("Root element was not found.");
 }
 
-const sessionController = createWebSessionHostController({
-  apiBaseUrl: defaultApiBaseUrl(),
-  locale,
-  ports: createBrowserSessionHostPorts({
-    read: (key) => localStorage.getItem(key),
-    write: (key, value) => localStorage.setItem(key, value),
-  }),
+// Each tab is a window of its own: its chat leases and presentation are its own in the shared core.
+const windowId = `web:${crypto.randomUUID()}`;
+globalThis.commaNative = {
+  ...webNativeBridge,
+  self: { role: "main-window", windowId },
+};
+
+const apiBaseUrl = defaultApiBaseUrl();
+const { core, dispose: disposeCore } = connectWebCore(apiBaseUrl, {
+  onFault: (error) => reportCommaClientError(error, "core_fault"),
 });
+// The tab's channel to the core: what E2E drives.
+(globalThis as { commaCore?: typeof core }).commaCore = core;
+// The session is the core's: the page shows it and asks the core to change it.
+const sessionController = createCoreSessionHostController({ apiBaseUrl, core, locale });
 const stopAnalytics = startCommaAnalytics({
   runtime: "web",
   lifecycle: sessionController.lifecycle,
 });
 import.meta.hot?.dispose(stopAnalytics);
-const appHost = createWebAppRuntimeBridge(
-  new SharedWorker(new URL("./app-runtime.shared-worker.ts", import.meta.url), {
-    name: `comma-app-runtime-v1:${defaultApiBaseUrl()}`,
-    type: "module",
-  }),
-  {
-    apiBaseUrl: defaultApiBaseUrl(),
-    onSessionRejection({ session, status }) {
-      if (
-        snapshotMatchesSessionProductLease(
-          sessionController.lifecycle.getSnapshotSync(),
-          session
-        )
-      )
-        sessionController.getProductTransport()?.reportSessionRejection(status);
-    },
-  }
-);
-globalThis.commaNative = appHost.bridge;
-const productInboxController = createProductInboxProjectionController({
-  bridge: appHost.bridge.productInbox,
-});
-let previousProductLease:
-  | import("@comma/session-contract").SessionProductLease
-  | undefined;
-const stopHostSession = sessionController.lifecycle.subscribe(() => {
-  const snapshot = sessionController.lifecycle.getSnapshotSync();
-  if (
-    previousProductLease &&
-    (snapshot.phase === "signed_out" ||
-      (snapshot.phase === "signed_in" &&
-        snapshot.session.sessionId !== previousProductLease.sessionId))
-  )
-    appHost.invalidate(previousProductLease);
-  if (snapshot.phase === "signed_in")
-    previousProductLease = {
-      audience: snapshot.session.audience,
-      sessionId: snapshot.session.sessionId,
-      authorityInstanceId: snapshot.authority.authorityInstanceId,
-      generation: snapshot.generation,
-    };
-  else if (snapshot.phase === "signed_out") previousProductLease = undefined;
-});
 import.meta.hot?.dispose(() => {
-  stopHostSession();
-  appHost.disconnect();
+  sessionController.dispose?.();
+  disposeCore();
 });
-window.addEventListener("pagehide", (event) => {
-  if (!event.persisted) appHost.disconnect();
-});
-
 createRoot(root, {
   onUncaughtError: (error) => {
     console.error(error);
@@ -103,11 +61,11 @@ createRoot(root, {
     <CommaWebClientSettingsProvider initialSettings={initialSettings}>
       <CommaClientSettingsI18nProvider>
         <CommaSessionHostProvider controller={sessionController}>
-          <ProductInboxProjectionProvider controller={productInboxController}>
+          <CoreProvider client={core}>
             <CommaAnalyticsLifecycle>
               <CommaApp />
             </CommaAnalyticsLifecycle>
-          </ProductInboxProjectionProvider>
+          </CoreProvider>
         </CommaSessionHostProvider>
       </CommaClientSettingsI18nProvider>
     </CommaWebClientSettingsProvider>

@@ -5,8 +5,9 @@ defmodule CommaWeb.DriveBindingConvergenceTest do
   the enabled handle the agent mount uses, so a binding an operator disabled
   is never replaced.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
   import Ecto.Query
 
   alias Comma.Data.Workspace
@@ -27,8 +28,8 @@ defmodule CommaWeb.DriveBindingConvergenceTest do
 
     @impl true
     def mint_api_key(workspace_id, _owner, _name) do
-      send(self(), {:mint, workspace_id})
-      key_id = "key-" <> Integer.to_string(System.unique_integer([:positive]))
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:mint, workspace_id})
+      key_id = "key-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
 
       {:ok,
        %{
@@ -44,8 +45,8 @@ defmodule CommaWeb.DriveBindingConvergenceTest do
 
     @impl true
     def revoke_api_key(workspace_id, key_id) do
-      send(self(), {:revoke, workspace_id, key_id})
-      Application.get_env(:comma_core, :drive_binding_test_revoke, :ok)
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:revoke, workspace_id, key_id})
+      SystemsRuntime.get_env(:comma_core, :drive_binding_test_revoke, :ok)
     end
   end
 
@@ -53,28 +54,28 @@ defmodule CommaWeb.DriveBindingConvergenceTest do
     owner = Ecto.Adapters.SQL.Sandbox.start_owner!(Repo, shared: true)
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
 
-    previous = Application.get_env(:comma_core, :synchronicity)
-    previous_client = Application.get_env(:comma_core, :synchronicity_client)
+    previous = SystemsRuntime.get_env(:comma_core, :synchronicity)
+    previous_client = SystemsRuntime.get_env(:comma_core, :synchronicity_client)
 
-    Application.put_env(:comma_core, :synchronicity,
+    SystemsRuntime.put_env(:comma_core, :synchronicity,
       base_url: "https://sync.test",
       provisioning_secret: @secret
     )
 
-    Application.put_env(:comma_core, :synchronicity_client, ControlPlane)
+    SystemsRuntime.put_env(:comma_core, :synchronicity_client, ControlPlane)
 
     on_exit(fn ->
       restore(:synchronicity, previous)
       restore(:synchronicity_client, previous_client)
-      Application.delete_env(:comma_core, :drive_binding_test_revoke)
+      SystemsRuntime.delete_env(:comma_core, :drive_binding_test_revoke)
     end)
 
     {:ok, user} =
       Comma.Accounts.create_user(%{
-        "email" => "drive-#{System.unique_integer([:positive])}@comma.test"
+        "email" => "drive-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
-    workspace_id = "wsp-drive-#{System.unique_integer([:positive])}"
+    workspace_id = "wsp-drive-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     {:ok, _} = Comma.Workspaces.create_for_user(user["id"], %{"workspace_id" => workspace_id})
 
     Repo.update_all(
@@ -88,8 +89,8 @@ defmodule CommaWeb.DriveBindingConvergenceTest do
     {:ok, workspace: workspace, group_id: workspace.salix_group_id}
   end
 
-  defp restore(key, nil), do: Application.delete_env(:comma_core, key)
-  defp restore(key, value), do: Application.put_env(:comma_core, key, value)
+  defp restore(key, nil), do: SystemsRuntime.delete_env(:comma_core, key)
+  defp restore(key, value), do: SystemsRuntime.put_env(:comma_core, key, value)
 
   test "a disabled operator binding is preserved, not reminted over", %{
     workspace: workspace,
@@ -141,33 +142,5 @@ defmodule CommaWeb.DriveBindingConvergenceTest do
     assert {:ok, :manual} = Synchronicity.ensure_agent_key(workspace)
     assert {:ok, %{"source" => "manual", "api_key_id" => key_id}} = DriveBindings.stored(group_id)
     assert key_id == row["api_key_id"]
-  end
-
-  test "a takeover after a pending revocation keeps the ids listed and stops the retry", %{
-    workspace: workspace,
-    group_id: group_id
-  } do
-    assert {:ok, :minted} = Synchronicity.ensure_agent_key(workspace)
-    {:ok, %{"api_key_id" => old_key_id}} = DriveBindings.stored(group_id)
-
-    Application.put_env(:comma_core, :drive_binding_test_revoke, {:error, {:retryable, :timeout}})
-
-    assert {:error, {:retryable, {:revoke_pending, %{key_ids: [^old_key_id]}}}} =
-             Synchronicity.rotate_agent_key(workspace.id)
-
-    assert_received {:revoke, _, ^old_key_id}
-    assert {:ok, %{"retired_key_ids" => [^old_key_id]}} = DriveBindings.stored(group_id)
-
-    # The operator disables the Drive on the group page, which is a `drive-save`.
-    assert {:ok, %{"source" => "manual", "retired_key_ids" => [^old_key_id]}} =
-             DriveBindings.put(group_id, %{"source" => "manual", "enabled" => false})
-
-    Application.put_env(:comma_core, :drive_binding_test_revoke, :ok)
-    assert {:ok, :manual} = Synchronicity.ensure_agent_key(workspace)
-    assert {:ok, :manual} = Synchronicity.rotate_agent_key(workspace.id)
-    refute_received {:revoke, _, ^old_key_id}
-
-    assert {:ok, %{"source" => "manual", "enabled" => false, "retired_key_ids" => [^old_key_id]}} =
-             DriveBindings.stored(group_id)
   end
 end

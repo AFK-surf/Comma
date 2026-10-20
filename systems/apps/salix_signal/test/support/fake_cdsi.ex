@@ -41,7 +41,11 @@ defmodule SalixSignal.Test.FakeCdsi do
 
     @impl true
     def call(%{request_path: "/v2/directory/auth"} = conn, state) do
-      send(state.test, {:fake_cdsi, :auth, get_req_header(conn, "authorization")})
+      SystemsRuntime.Proc.send(
+        state.test,
+        {:fake_cdsi, :auth, get_req_header(conn, "authorization")}
+      )
+
       {username, password} = FakeCdsi.credentials()
 
       conn
@@ -50,7 +54,10 @@ defmodule SalixSignal.Test.FakeCdsi do
     end
 
     def call(%{request_path: "/v1/" <> rest} = conn, state) do
-      send(state.test, {:fake_cdsi, :upgrade, rest, get_req_header(conn, "authorization")})
+      SystemsRuntime.Proc.send(
+        state.test,
+        {:fake_cdsi, :upgrade, rest, get_req_header(conn, "authorization")}
+      )
 
       case Map.get(state, :upgrade) do
         {:reject, status, headers} ->
@@ -77,13 +84,13 @@ defmodule SalixSignal.Test.FakeCdsi do
 
     @impl true
     def handle_in({bytes, opcode: :binary}, %{step: :handshake} = state) do
-      send(state.test, {:fake_cdsi, :handshake, byte_size(bytes)})
+      SystemsRuntime.Proc.send(state.test, {:fake_cdsi, :handshake, byte_size(bytes)})
       {:ok, "", handshake} = Noise.responder_read(state.static_private, bytes)
 
       {:ok, message2, noise} =
         Noise.responder_write(handshake,
           ephemeral: X25519.generate_private_key(),
-          kem_randomness: :crypto.strong_rand_bytes(32)
+          kem_randomness: SystemsRuntime.Proc.random_bytes(32)
         )
 
       {:push, {:binary, message2}, %{state | step: :request} |> Map.put(:noise, noise)}
@@ -91,7 +98,7 @@ defmodule SalixSignal.Test.FakeCdsi do
 
     def handle_in({bytes, opcode: :binary}, %{step: :request} = state) do
       {:ok, request, noise} = Noise.open(state.noise, bytes)
-      send(state.test, {:fake_cdsi, :request, request})
+      SystemsRuntime.Proc.send(state.test, {:fake_cdsi, :request, request})
 
       case Map.get(state, :close_after_request) do
         {code, reason} ->
@@ -110,7 +117,7 @@ defmodule SalixSignal.Test.FakeCdsi do
 
     def handle_in({bytes, opcode: :binary}, %{step: :ack} = state) do
       {:ok, ack, noise} = Noise.open(state.noise, bytes)
-      send(state.test, {:fake_cdsi, :ack, ack})
+      SystemsRuntime.Proc.send(state.test, {:fake_cdsi, :ack, ack})
       records = records(state.request, Map.get(state, :results, %{}))
       response = Wire.Response.encode(%Wire.Response{records: records, permits_used: 1})
       {:ok, sealed, noise} = Noise.seal(noise, response)
@@ -118,7 +125,7 @@ defmodule SalixSignal.Test.FakeCdsi do
     end
 
     def handle_in(frame, state) do
-      send(state.test, {:fake_cdsi, :unexpected, frame})
+      SystemsRuntime.Proc.send(state.test, {:fake_cdsi, :unexpected, frame})
       {:ok, state}
     end
 

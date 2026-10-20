@@ -20,6 +20,8 @@ defmodule CommaProduct.Telemetry do
     google_desktop_exchange: "google",
     # APNs latency and rejection distinguish provider unavailability from Task execution.
     apns_delivery: "apns",
+    # Page latency/failures identify stalled Router unread and badge updates.
+    router_notification_projection: "other",
     # Apple key-fetch latency/failures explain blocked Sign in with Apple requests.
     apple_jwks: "apple",
     deliver: "other",
@@ -32,6 +34,14 @@ defmodule CommaProduct.Telemetry do
     profile_avatar_put_cancel: "gcs",
     profile_avatar_get: "gcs",
     profile_avatar_delete: "gcs",
+    # Enrollment rejections (token, signature, capacity) explain stations that never join.
+    station_enroll: "other",
+    # Presence admission outcomes show stations that cannot come online.
+    station_connect: "other",
+    # Member credential failures block clients from reaching any station.
+    station_credential: "other",
+    # Notice batches accepted from stations; APNs outcomes stay on apns_delivery.
+    station_notify: "other",
     admin_command: "other",
     admin_create_user: "other",
     admin_update_user: "other",
@@ -77,6 +87,35 @@ defmodule CommaProduct.Telemetry do
     ]
 
     [
+      # HTTP acceptance/failure includes background profile imports.
+      counter("comma.product.analytics.batch.total",
+        event_name: [:comma_product, :analytics, :batch],
+        tags: [:outcome],
+        tag_values: fn metadata ->
+          %{outcome: if(metadata[:outcome] == "ok", do: "ok", else: "error")}
+        end
+      ),
+      # Detect export loss and saturation without attaching person or Workspace IDs.
+      sum("comma.product.analytics.export.events",
+        event_name: [:comma_product, :analytics, :export],
+        measurement: :count,
+        tags: [:outcome],
+        tag_values: fn metadata ->
+          %{outcome: if(metadata[:outcome] == "ok", do: "ok", else: "error")}
+        end
+      ),
+      sum("comma.product.analytics.export.dropped",
+        event_name: [:comma_product, :analytics, :export],
+        measurement: :dropped
+      ),
+      last_value("comma.product.analytics.export.oldest.age.seconds",
+        event_name: [:comma_product, :analytics, :export],
+        measurement: :oldest_age_seconds
+      ),
+      last_value("comma.product.analytics.export.depth",
+        event_name: [:comma_product, :analytics, :export],
+        measurement: :depth
+      ),
       counter("comma.product.operations.total", operation_options),
       distribution(
         "comma.product.operations.duration.seconds",
@@ -180,7 +219,7 @@ defmodule CommaProduct.Telemetry do
   end
 
   def emit_operation(operation, outcome, duration, metadata \\ %{}) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:comma_product, :operation, :stop],
       %{duration: duration},
       Map.merge(metadata, %{
@@ -200,7 +239,7 @@ defmodule CommaProduct.Telemetry do
   )a
 
   defp operation_provider(operation) when operation in @profile_avatar_operations do
-    case Application.get_env(:comma_core, :profile_avatar, [])[:adapter] do
+    case SystemsRuntime.get_env(:comma_core, :profile_avatar, [])[:adapter] do
       Comma.ProfileAvatar.Storage.S3 -> "s3"
       _other -> "gcs"
     end
@@ -217,7 +256,7 @@ defmodule CommaProduct.Telemetry do
   end
 
   def emit_recommendation_run(trigger, outcome) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:comma_product, :recommendation, :run],
       %{},
       %{trigger: trigger, outcome: outcome}
@@ -225,21 +264,25 @@ defmodule CommaProduct.Telemetry do
   end
 
   def emit_recommendation_exposure(variant) do
-    :telemetry.execute([:comma_product, :recommendation, :exposure], %{}, %{variant: variant})
+    SystemsRuntime.Telemetry.execute([:comma_product, :recommendation, :exposure], %{}, %{
+      variant: variant
+    })
   end
 
   def emit_backlog_retry(queue) do
-    :telemetry.execute([:comma_product, :backlog, :retry], %{}, %{queue: queue})
+    SystemsRuntime.Telemetry.execute([:comma_product, :backlog, :retry], %{}, %{queue: queue})
   end
 
   def emit_backlog_terminal_failure(queue) do
-    :telemetry.execute([:comma_product, :backlog, :terminal_failure], %{}, %{queue: queue})
+    SystemsRuntime.Telemetry.execute([:comma_product, :backlog, :terminal_failure], %{}, %{
+      queue: queue
+    })
   end
 
   def emit_backlog_sample(queue, depth, oldest_age_seconds)
       when is_integer(depth) and depth >= 0 and is_number(oldest_age_seconds) and
              oldest_age_seconds >= 0 do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:comma_product, :backlog, :sample],
       %{depth: depth, oldest_age_seconds: oldest_age_seconds},
       %{queue: queue}

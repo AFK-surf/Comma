@@ -12,11 +12,16 @@
       "types": "./src/tokens/index.ts",
       "default": "./src/tokens/index.ts"
     },
+    "./clock": {
+      "types": "./src/clock/index.ts",
+      "default": "./src/clock/index.ts"
+    },
+    "./motion": {
+      "types": "./src/motion/index.ts",
+      "default": "./src/motion/index.ts"
+    },
     "./styles.css": "./src/styles.css"
   },
-  "sideEffects": [
-    "*.css"
-  ],
   "scripts": {
     "generate:css": "tsx ./scripts/generate-css.ts",
     "storybook": "pnpm generate:css && storybook dev -p 6006",
@@ -30,6 +35,7 @@
     "@central-icons-react/round-filled-radius-2-stroke-2": "^1.1.300",
     "@central-icons-react/round-outlined-radius-2-stroke-1.5": "^1.1.315",
     "@central-icons-react/round-outlined-radius-2-stroke-2": "^1.1.296",
+    "@comma/core": "workspace:*",
     "@comma/i18n": "workspace:*",
     "@radix-ui/react-collapsible": "^1.1.14",
     "cmdk": "^1.1.1",
@@ -40,7 +46,7 @@
     "react-aria": "^3.49.0",
     "react-aria-components": "^1.18.0",
     "shiki": "^3.23.0",
-    "sonner": "^2.0.7",
+    "sonner": "^2.0.8",
     "stream-markdown": "^0.0.16",
     "stream-markdown-parser": "1.0.5",
     "tailwind-merge": "^3.6.0",

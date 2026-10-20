@@ -1,0 +1,14 @@
+# Test files proven deterministic. A file joins once its local proof runs
+# (scripts/determinism/run-*.sh; for clients: base, and all perturbations at
+# once) recorded the same execution of every test
+# (scripts/determinism/compare.mjs); the pull request that adds it carries
+# that comparison. CI runs the files once, as any test.
+systems/apps/systems_sim/test/systems_sim_test.exs
+systems/apps/salix_agent/test/internal_session_async_terminal_test.exs
+systems/apps/salix_agent/test/round_activity_test.exs
+# The client unit suite (Vitest projects node and jsdom), but for the files of
+# determinism/unit-unsettled.txt.
+@unit unit-unsettled.txt
+# The client browser suite (Vitest project browser), but for the files of
+# determinism/browser-unsettled.txt.
+@browser browser-unsettled.txt

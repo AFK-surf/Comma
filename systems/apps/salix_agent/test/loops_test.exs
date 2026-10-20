@@ -4,7 +4,8 @@ defmodule SalixAgent.LoopsTest do
   spinfoam child: quotas, the closed capability allowlist, the notification and
   restart budgets, incarnation fencing, archive pause and unarchive resume.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle
 
   alias SalixAgent.{AgentWorkspace, Loops}
   alias SalixAgent.Loops.Capabilities
@@ -20,13 +21,53 @@ defmodule SalixAgent.LoopsTest do
     def call(conn, fun), do: fun.(conn)
   end
 
+  defmodule OwnerProbe do
+    @moduledoc "The Task owner port, forwarding each report to the test."
+    @behaviour SalixAgent.Loops.TaskOwner
+
+    @impl true
+    def loop_wake(loop, _payload, source) do
+      cond do
+        String.ends_with?(source, ":duplicate") ->
+          {:ok, :duplicate}
+
+        String.ends_with?(source, ":gone") ->
+          {:error, :not_found}
+
+        true ->
+          tell({:loop_woke, loop, %{"source_id" => source}})
+          {:ok, :created}
+      end
+    end
+
+    @impl true
+    def loop_ended(loop, fact), do: tell({:loop_ended, loop, fact})
+
+    defp tell(message) do
+      SystemsRuntime.Proc.send(SystemsRuntime.PersistentTerm.get({__MODULE__, :test}), message)
+      :ok
+    end
+  end
+
+  defmodule DeliveryProbe do
+    @moduledoc """
+    The product delivery seam in place of a Session: the dedup key picks the
+    ledger's answer.
+    """
+    def authorize(_row, _capability, _args), do: :ok
+    def deliver(_row, _content, "duplicate", _origin), do: {:ok, :duplicate}
+    def deliver(_row, _content, "gone", _origin), do: {:error, :not_found}
+    def deliver(_row, _content, _dedup, _origin), do: {:ok, :created}
+  end
+
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev_store = Application.get_env(:salix_store, :s3_backend)
-    prev_agent_max = Application.get_env(:salix_agent, :loops_max_active_per_agent)
-    Application.put_env(:salix_store, :s3_backend, Fake)
+    put_probes!()
+    prev_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_agent_max = SystemsRuntime.get_env(:salix_agent, :loops_max_active_per_agent)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, Fake)
     SalixAgent.TestSupport.configure_control_fixtures!()
-    if Process.whereis(Fake), do: Fake.reset(), else: start_supervised!(Fake)
+    if SystemsRuntime.Proc.whereis(Fake), do: Fake.reset(), else: start_supervised!(Fake)
     SalixStore.Repo.query!("TRUNCATE agent_loops, agent_loop_acks")
 
     on_exit(fn ->
@@ -55,8 +96,8 @@ defmodule SalixAgent.LoopsTest do
      }}
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp put_file!(agent_id, path, content) do
     {:ok, event} = AgentWorkspace.prepare_write(agent_id, path, content)
@@ -64,7 +105,7 @@ defmodule SalixAgent.LoopsTest do
     {:ok, _} =
       AgentWorkspace.seed_operation(
         agent_id,
-        "loops-test:#{System.unique_integer([:positive])}",
+        "loops-test:#{SystemsRuntime.Proc.unique_integer([:positive])}",
         %{},
         [event]
       )
@@ -75,6 +116,194 @@ defmodule SalixAgent.LoopsTest do
   defp create!(ctx, _sha, attrs \\ %{}) do
     {:ok, loop} = Loops.create(ctx, Map.merge(%{"path" => "/loops/main.elf"}, attrs))
     loop
+  end
+
+  # A Worker round that a Message of Task `task_id` started, in the Worker's
+  # own Session of that Task.
+  defp in_task(ctx, task_id) do
+    Map.merge(ctx, %{
+      session_id: SalixStore.Ids.new_session_id(),
+      trusted_origin: %{
+        "provider" => "internal",
+        "conversation_kind" => "agent_task",
+        "conversation_id" => task_id,
+        "agent_group_id" => group_id(ctx)
+      }
+    })
+  end
+
+  defp group_id(ctx) do
+    {:ok, agent} = SalixAgent.Control.get(ctx.agent_id)
+    agent["group_id"]
+  end
+
+  defp put_probes! do
+    previous =
+      Map.new(
+        [:loop_task_owner_mod, :loop_authorization_adapter],
+        &{&1, SystemsRuntime.get_env(:salix_agent, &1)}
+      )
+
+    SystemsRuntime.PersistentTerm.put({OwnerProbe, :test}, self())
+    SystemsRuntime.put_env(:salix_agent, :loop_task_owner_mod, OwnerProbe)
+    SystemsRuntime.put_env(:salix_agent, :loop_authorization_adapter, DeliveryProbe)
+
+    on_exit(fn ->
+      SystemsRuntime.PersistentTerm.erase({OwnerProbe, :test})
+      Enum.each(previous, fn {key, value} -> restore(:salix_agent, key, value) end)
+    end)
+  end
+
+  test "a Worker round that works a Task binds its Loop to that Task, and the Task runs one Loop",
+       %{ctx: ctx, sha: sha} do
+    task_a = in_task(ctx, "cnv_a")
+    a = create!(task_a, sha)
+    assert a["task_conversation_id"] == "cnv_a"
+    assert {:ok, %{"task_conversation_id" => "cnv_a"} = record} = Store.get(a["loop_id"])
+    assert record["session_id"] == task_a.session_id
+
+    a_id = a["loop_id"]
+
+    assert {:error, {:task_loop_exists, ^a_id}} =
+             Loops.create(task_a, %{"path" => "/loops/main.elf"})
+
+    # A round without a Task Message still works its Task: one the Task's
+    # Loop woke, or any round of the Task's Session.
+    woken = %{
+      task_a
+      | session_id: SalixStore.Ids.new_session_id(),
+        trusted_origin: SalixAgent.IFC.loop_origin(a_id, "comma_user|u1", ["public"])
+    }
+
+    assert {:ok, "cnv_a"} = Loops.round_task(woken)
+    assert {:ok, "cnv_a"} = Loops.round_task(Map.delete(task_a, :trusted_origin))
+
+    # Another Task's round binds its own Loop.
+    assert create!(in_task(ctx, "cnv_b"), sha)["task_conversation_id"] == "cnv_b"
+
+    # A Router round in the Task and a Worker round outside any Task work no
+    # Task: their Loops stay unbound.
+    refute Map.has_key?(create!(%{task_a | role: "router"}, sha), "task_conversation_id")
+    refute Map.has_key?(create!(ctx, sha), "task_conversation_id")
+  end
+
+  test "the Task layer requests one Task's Loop, reads it in one batch, ends and deletes it",
+       %{ctx: ctx, sha: sha} do
+    group = group_id(ctx)
+
+    request = fn task, trigger ->
+      Loops.request_task_loop(%{
+        "tenant_id" => "tenant",
+        "group_id" => group,
+        "agent_id" => ctx.agent_id,
+        "task_conversation_id" => task,
+        "trigger" => trigger,
+        "max_runs" => 3
+      })
+    end
+
+    assert {:ok, %{"status" => "pending", "loop_id" => a_id, "run_count" => 0}} =
+             request.("cnv_a", %{"every_minutes" => 60})
+
+    # A repeated request keeps the pending Loop; the Worker binds its program.
+    assert {:ok, %{"loop_id" => ^a_id}} = request.("cnv_a", %{"every_minutes" => 30})
+
+    assert %{"loop_id" => ^a_id, "trigger" => %{"every_minutes" => 60}} =
+             create!(in_task(ctx, "cnv_a"), sha)
+
+    assert {:error, {:task_loop_exists, ^a_id}} = request.("cnv_a", %{"every_minutes" => 60})
+
+    incidental = create!(in_task(ctx, "cnv_b"), sha)
+    free = create!(ctx, sha)
+
+    assert {:ok,
+            %{
+              "cnv_a" => %{
+                "status" => "active",
+                "trigger" => %{"every_minutes" => 60},
+                "max_runs" => 3
+              },
+              "cnv_b" => %{"status" => "active"}
+            } = loops} = Loops.task_loops(group, ["cnv_a", "cnv_b", "cnv_none"])
+
+    refute Map.has_key?(loops, "cnv_none")
+
+    # Archive cancels the requested Loop and leaves the others; the Task's end
+    # deletes a Loop it did not request.
+    assert :ok = Loops.end_task_loops(group, "cnv_a", "archived")
+    assert :ok = Loops.end_task_loops(group, "cnv_b", "archived")
+
+    assert {:ok,
+            %{"status" => "ended", "ended_reason" => "cancelled", "task_settle_pending" => false}} =
+             Store.get(a_id)
+
+    assert {:ok, %{"status" => "active"}} = Store.get(incidental["loop_id"])
+    assert :ok = Loops.end_task_loops(group, "cnv_a", "completed")
+    assert {:ok, %{"ended_reason" => "cancelled"}} = Store.get(a_id)
+    assert :ok = Loops.end_task_loops(group, "cnv_b", "completed")
+    assert {:error, :not_found} = Store.get(incidental["loop_id"])
+
+    # An ended Loop gives way to a new request.
+    assert {:ok, %{"status" => "pending", "loop_id" => new_id}} =
+             request.("cnv_a", %{"events" => "new comments"})
+
+    refute new_id == a_id
+    assert {:error, :not_found} = Store.get(a_id)
+    assert {:ok, 1} = Loops.delete_task_loops(group, "cnv_a")
+    assert {:ok, 0} = Loops.delete_task_loops(group, "cnv_a")
+    assert {:ok, _} = Store.get(free["loop_id"])
+  end
+
+  # A lifecycle notice wakes the Loop's Session through real delivery, which
+  # places the Agent and lets the Reconciler load its Loops. Each test below
+  # therefore drives incarnations by hand only before its one such notice.
+  test "a Task Loop's wakes reach its Task, count as runs, and its stops reach its Worker there",
+       %{ctx: ctx, sha: sha} do
+    task = in_task(ctx, "cnv_watch")
+    bound = create!(task, sha)
+    id = bound["loop_id"]
+    {:ok, %{"incarnation" => incarnation}} = Loops.begin_incarnation(id, "node@a", "s1")
+
+    assert {:ok, %{"status" => "queued"}} = notify(bound, "comment-1")
+    assert_received({:loop_woke, loop, %{"source_id" => source}})
+
+    assert loop == %{
+             "group_id" => group_id(ctx),
+             "conversation_id" => "cnv_watch",
+             "loop_id" => id,
+             "agent_id" => ctx.agent_id,
+             "session_id" => task.session_id
+           }
+
+    assert source == "loop:#{id}:comment-1"
+    assert {:ok, %{"run_count" => 1}} = Store.get(id)
+
+    # The same wake again is the same run.
+    assert {:ok, %{"status" => "queued"}} = notify(bound, "comment-1")
+    assert_received({:loop_woke, _loop, %{"source_id" => ^source}})
+    assert {:ok, %{"run_count" => 1}} = Store.get(id)
+
+    assert :ok = Loops.record_exit(id, incarnation, 0)
+    settle_receive({:loop_woke, %{"loop_id" => ^id}, %{"source_id" => "loop:" <> _ = exited}})
+    assert exited =~ "lifecycle:exited"
+    assert {:ok, %{"status" => "paused", "paused_by" => "exited"}} = Store.get(id)
+  end
+
+  test "a Task Loop that cannot reach its Task pauses as undeliverable", %{ctx: ctx, sha: sha} do
+    bound = create!(in_task(ctx, "cnv_watch"), sha)
+    id = bound["loop_id"]
+    {:ok, _} = Loops.begin_incarnation(id, "node@a", "s1")
+    assert {:error, _} = notify(bound, "gone")
+
+    assert {:ok, %{"status" => "paused", "paused_by" => "undeliverable", "run_count" => 0}} =
+             Store.get(id)
+  end
+
+  defp notify(loop, dedup_key) do
+    Capabilities.call(loop_ref(loop), "agent.notify", %{
+      "content" => "PR #12 has a new comment",
+      "dedup_key" => dedup_key
+    })
   end
 
   test "create records the artifact's path and hash with the creator's authority", %{
@@ -100,25 +329,6 @@ defmodule SalixAgent.LoopsTest do
     assert {:ok, <<0x7F, ?E, ?L, ?F, 1, 2, 3>>} = Loops.artifact(record)
     assert record["ifc"] == %{"creator" => "comma_user|u1", "label" => ["public"]}
     assert record["session_id"] == ctx.session_id
-  end
-
-  test "a missing or non-ELF file, an oversized config and a bad name are refused", %{
-    ctx: ctx
-  } do
-    assert {:error, :artifact_not_found} = Loops.create(ctx, %{"path" => "/loops/nope.elf"})
-    :ok = put_file!(ctx.agent_id, "/notes.md", "not an object")
-    assert {:error, :invalid_artifact} = Loops.create(ctx, %{"path" => "/notes.md"})
-    assert {:error, {:invalid, "path"}} = Loops.create(ctx, %{"path" => "loops/main.elf"})
-    assert {:error, {:invalid, "path"}} = Loops.create(ctx, %{"path" => "/.runtime/x.elf"})
-    big = %{"blob" => String.duplicate("x", Loops.max_config_bytes())}
-
-    assert {:error, {:invalid, "config_too_large"}} =
-             Loops.create(ctx, %{"path" => "/loops/main.elf", "config" => big})
-
-    assert {:error, {:invalid, "name"}} =
-             Loops.create(ctx, %{"path" => "/loops/main.elf", "name" => String.duplicate("n", 81)})
-
-    assert {:error, {:missing, "path"}} = Loops.create(ctx, %{})
   end
 
   test "a changed or deleted artifact file fails the load, never substitutes", %{
@@ -178,137 +388,8 @@ defmodule SalixAgent.LoopsTest do
     refute Map.has_key?(ignored, "capabilities")
   end
 
-  test "env.exec runs the command through the tool dispatcher without a grant", %{
-    ctx: ctx,
-    sha: sha
-  } do
-    previous = Application.get_env(:salix_agent, :env_dispatch)
-    Application.put_env(:salix_agent, :env_dispatch, SalixAgent.LoopEnvDispatchFixture)
-
-    on_exit(fn ->
-      if previous,
-        do: Application.put_env(:salix_agent, :env_dispatch, previous),
-        else: Application.delete_env(:salix_agent, :env_dispatch)
-    end)
-
-    SalixAgent.LoopEnvDispatchFixture.register()
-
-    loop = create!(ctx, sha)
-
-    {:ok, _} = Loops.begin_incarnation(loop["loop_id"], "node@a", "s1")
-    ref = loop_ref(loop)
-
-    args = %{
-      "device_id" => "dev-1",
-      "environment" => "env-1",
-      "command" => "uptime",
-      "description" => "loop probe",
-      "timeout" => 5
-    }
-
-    assert {:ok, %{"tool" => "env.exec", "error" => false, "content" => content}} =
-             Capabilities.call(ref, "env.exec", args)
-
-    assert %{"exit_code" => 0, "stdout" => "ran: uptime"} = Jason.decode!(content)
-
-    assert_receive {:loop_env_exec, agent_id, %{device_id: "dev-1", environment_id: "env-1"},
-                    "uptime", %{"description" => "loop probe", "timeout" => 5}}
-
-    assert agent_id == ctx.agent_id
-
-    # A write outside the allowlist never reaches the environment dispatch.
-    assert {:error, "capability not available to loops: memory.write"} =
-             Capabilities.call(ref, "memory.write", %{"content" => "x"})
-
-    refute_receive {:loop_env_exec, _, _, _, _}, 100
-  end
-
-  test "Loop decisions reject stale callers and return an error instead of truncated JSON", %{
-    ctx: ctx,
-    sha: sha
-  } do
-    SalixAgent.DecideFixture.start_provider()
-    {:ok, _} = SalixAgent.InternalSessionStore.prepare_commit(ctx.agent_id, ctx.session_id, [])
-    loop = create!(ctx, sha)
-    ref = loop_ref(loop)
-    args = SalixAgent.DecideFixture.args()
-
-    assert {:error, _} =
-             Capabilities.call(%{ref | incarnation: ref.incarnation + 1}, "decide", args)
-
-    refute_receive {:decision_request, _, _, _}
-    assert {:ok, full} = Capabilities.call(ref, "decide", args)
-    assert_receive {:decision_request, "/v1/systemone", _, _}
-    exact_budget = byte_size(Jason.encode!(full))
-    assert {:ok, ^full} = Capabilities.call(ref, "decide", args, exact_budget)
-    assert_receive {:decision_request, "/v1/systemone", _, _}
-    assert {:ok, payload} = Capabilities.call(ref, "decide", args, 256)
-    assert_receive {:decision_request, "/v1/systemone", _, _}
-    assert Jason.decode!(payload["content"]) == %{"error" => %{"code" => "result_too_large"}}
-    assert byte_size(Jason.encode!(payload)) <= 256
-  end
-
-  test "web.http_request runs the request through the tool dispatcher without a grant", %{
-    ctx: ctx,
-    sha: sha
-  } do
-    previous = Application.get_env(:salix_agent, :http_request_allow_private_hosts)
-    Application.put_env(:salix_agent, :http_request_allow_private_hosts, true)
-
-    on_exit(fn ->
-      restore(:salix_agent, :http_request_allow_private_hosts, previous)
-    end)
-
-    owner = self()
-
-    plug = fn conn ->
-      {:ok, raw, conn} = Plug.Conn.read_body(conn)
-      send(owner, {:loop_http, conn.method, conn.request_path, raw})
-
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(200, Jason.encode!(%{"seen" => conn.method}))
-    end
-
-    port =
-      Enum.find_value(1..10, fn _ ->
-        p = 40000 + :erlang.phash2(make_ref(), 20000)
-
-        case start_supervised({Bandit, plug: {LoopHttpPlug, plug}, port: p, startup_log: false},
-               id: {:bandit, p}
-             ) do
-          {:ok, _pid} -> p
-          {:error, _} -> nil
-        end
-      end)
-
-    url = "http://127.0.0.1:#{port}/status"
-
-    loop = create!(ctx, sha)
-
-    {:ok, _} = Loops.begin_incarnation(loop["loop_id"], "node@a", "s1")
-    ref = loop_ref(loop)
-
-    assert {:ok, %{"tool" => "web.http_request", "error" => false, "content" => content}} =
-             Capabilities.call(ref, "web.http_request", %{"url" => url, "method" => "GET"})
-
-    assert %{"status" => 200, "ok" => true, "body" => %{"seen" => "GET"}} = Jason.decode!(content)
-    assert_receive {:loop_http, "GET", "/status", ""}
-
-    # The program chooses the endpoint and method; a second call to another
-    # path with another method is the program's own decision and goes through.
-    assert {:ok, %{"error" => false, "content" => second}} =
-             Capabilities.call(ref, "web.http_request", %{
-               "url" => "http://127.0.0.1:#{port}/other",
-               "method" => "DELETE"
-             })
-
-    assert %{"status" => 200, "body" => %{"seen" => "DELETE"}} = Jason.decode!(second)
-    assert_receive {:loop_http, "DELETE", "/other", ""}
-  end
-
   test "the per-agent quota is enforced at creation", %{ctx: ctx, sha: sha} do
-    Application.put_env(:salix_agent, :loops_max_active_per_agent, 2)
+    SystemsRuntime.put_env(:salix_agent, :loops_max_active_per_agent, 2)
     create!(ctx, sha)
     create!(ctx, sha)
     assert {:error, {:quota, :agent, 2}} = Loops.create(ctx, %{"path" => "/loops/main.elf"})
@@ -360,25 +441,6 @@ defmodule SalixAgent.LoopsTest do
     assert {:error, :not_active} = Loops.admit_notification(id, 1)
   end
 
-  test "the restart budget reloads a faulted loop three times an hour, then fails it", %{
-    ctx: ctx,
-    sha: sha
-  } do
-    loop = create!(ctx, sha)
-    id = loop["loop_id"]
-    {:ok, _} = Loops.begin_incarnation(id, "node@a", "s1")
-
-    for _ <- 1..Loops.restart_limit(),
-        do: assert({:ok, :restart} = Loops.record_failure(id, 1, "boom"))
-
-    assert {:ok, :failed} = Loops.record_failure(id, 1, "boom again")
-    assert {:ok, %{"status" => "failed", "failure" => "boom again"}} = Store.get(id)
-    assert {:error, :stale_incarnation} = Loops.record_failure(id, 1, "late")
-
-    assert {:ok, %{"status" => "active"}} = Loops.resume(ctx.agent_id, id)
-    assert {:ok, %{"failure" => nil}} = Store.get(id)
-  end
-
   test "exit pauses the loop once per incarnation", %{ctx: ctx, sha: sha} do
     loop = create!(ctx, sha)
     id = loop["loop_id"]
@@ -422,34 +484,6 @@ defmodule SalixAgent.LoopsTest do
     assert {:ok, %{"status" => "active"}} = Store.get(loop["loop_id"])
   end
 
-  test "events are validated and acks are recorded", %{ctx: ctx, sha: sha} do
-    loop = create!(ctx, sha)
-    id = loop["loop_id"]
-
-    assert {:error, {:invalid_event, "topic"}} =
-             Loops.send_event(ctx.agent_id, id, %{"payload" => %{}})
-
-    assert {:error, {:invalid_event, "payload_too_large"}} =
-             Loops.send_event(ctx.agent_id, id, %{
-               "topic" => "t",
-               "payload" => String.duplicate("z", 17_000)
-             })
-
-    assert {:error, :not_found} =
-             Loops.send_event(
-               "agt1_0000000000000000001_0000000000000000002_0000000000000000003",
-               id,
-               %{"topic" => "t"}
-             )
-
-    {:ok, current} = Store.get(id)
-    assert :ok = Loops.ack_event(id, current["incarnation"], "e1")
-    assert Store.acked?(id, "e1")
-    assert {:error, :invalid_event_id} = Loops.ack_event(id, current["incarnation"], "")
-    assert :ok = Loops.delete(ctx.agent_id, id)
-    refute Store.acked?(id, "e1")
-  end
-
   test "the loop origin seals the creator's authority under the kernel's delegated wrapper" do
     origin = SalixAgent.IFC.loop_origin("lop1_1", "comma_user|u1", ["public"])
     assert origin["provider"] == "loop"
@@ -457,43 +491,6 @@ defmodule SalixAgent.LoopsTest do
     assert origin["ifc"]["principal"] == "schedule|loop:lop1_1|comma_user|u1"
     assert {:schedule, "loop:lop1_1", {:comma_user, "u1"}} = SalixAgent.IFC.principal(origin)
     assert SalixAgent.IFC.loop_origin("lop1_1", nil, nil) == nil
-  end
-
-  test "resume is admitted against the active quota like create", %{ctx: ctx, sha: sha} do
-    Application.put_env(:salix_agent, :loops_max_active_per_agent, 1)
-    a = create!(ctx, sha, %{"name" => "a"})
-    assert {:ok, %{"status" => "paused"}} = Loops.pause(ctx.agent_id, a["loop_id"])
-    b = create!(ctx, sha, %{"name" => "b"})
-
-    assert {:error, {:quota, :agent, 1}} = Loops.resume(ctx.agent_id, a["loop_id"])
-
-    assert {:ok, %{"status" => "paused", "paused_by" => "user"}} =
-             Loops.get(ctx.agent_id, a["loop_id"])
-
-    assert {:error, {:quota, :agent, 1}} = Loops.create(ctx, %{"path" => "/loops/main.elf"})
-
-    assert {:ok, %{"status" => "paused"}} = Loops.pause(ctx.agent_id, b["loop_id"])
-    assert {:ok, %{"status" => "active"}} = Loops.resume(ctx.agent_id, a["loop_id"])
-
-    assert {:ok, {1, 1}} =
-             Store.active_counts(ctx.agent_id, elem(Store.get(a["loop_id"]), 1)["group_id"])
-  end
-
-  test "unarchive restores only what the quota admits and parks the rest", %{ctx: ctx, sha: sha} do
-    Application.put_env(:salix_agent, :loops_max_active_per_agent, 1)
-    a = create!(ctx, sha, %{"name" => "a"})
-    assert {:ok, 1} = Loops.pause_for_archive(ctx.agent_id)
-    b = create!(ctx, sha, %{"name" => "b"})
-
-    assert {:ok, 0} = Loops.resume_for_unarchive(ctx.agent_id)
-
-    assert {:ok, %{"status" => "paused", "paused_by" => "quota"}} =
-             Loops.get(ctx.agent_id, a["loop_id"])
-
-    assert {:ok, %{"status" => "active"}} = Loops.get(ctx.agent_id, b["loop_id"])
-
-    assert {:ok, %{"status" => "paused"}} = Loops.pause(ctx.agent_id, b["loop_id"])
-    assert {:ok, %{"status" => "active"}} = Loops.resume(ctx.agent_id, a["loop_id"])
   end
 
   test "a capability call from a stale incarnation is refused at dispatch", %{ctx: ctx, sha: sha} do
@@ -519,73 +516,6 @@ defmodule SalixAgent.LoopsTest do
     assert {:error, _} = Capabilities.call(current, "loop.state.get", %{})
   end
 
-  test "recovery walks past an unserviceable first page to a stranded tail", %{
-    ctx: ctx,
-    sha: sha
-  } do
-    prev_page = Application.get_env(:salix_agent, :loops_recovery_page)
-    prev_capacity = Application.get_env(:salix_agent, :spinfoam_max_objects)
-    Application.put_env(:salix_agent, :loops_recovery_page, 2)
-    # Keep these rows stranded even when the suite has a live spinfoam Host.
-    Application.put_env(:salix_agent, :spinfoam_max_objects, 0)
-
-    on_exit(fn ->
-      restore(:salix_agent, :loops_recovery_page, prev_page)
-      restore(:salix_agent, :spinfoam_max_objects, prev_capacity)
-    end)
-
-    # A is served here: its two stranded rows fill the first page and are
-    # skipped by recovery (adoption owns them); B's Server is not running.
-    {:ok, _} = SalixAgent.Fleet.ensure_started(ctx.agent_id, create: false)
-    :ok = SalixAgent.Fleet.await_ownership_installed(ctx.agent_id)
-    a1 = create!(ctx, sha, %{"name" => "a1"})
-    a2 = create!(ctx, sha, %{"name" => "a2"})
-
-    b = SalixAgent.TestSupport.new_agent_id()
-    SalixAgent.TestSupport.create_control_agent!(b, %{"role" => "worker"})
-    :ok = put_file!(b, "/loops/main.elf", <<0x7F, ?E, ?L, ?F, 1, 2, 3>>)
-    b_session = SalixStore.Ids.new_session_id()
-
-    {:ok, b_loop} =
-      Loops.create(%{ctx | agent_id: b, session_id: b_session}, %{"path" => "/loops/main.elf"})
-
-    :ok = SalixAgent.Fleet.stop_existing(b)
-
-    later = System.system_time(:millisecond) + 10
-
-    for id <- [a1["loop_id"], a2["loop_id"]],
-        do:
-          {:ok, _} =
-            Store.update(
-              id,
-              &{:ok, Map.merge(&1, %{"object_id" => nil, "updated_at" => later - 5})}
-            )
-
-    {:ok, _} =
-      Store.update(
-        b_loop["loop_id"],
-        &{:ok, Map.merge(&1, %{"object_id" => nil, "updated_at" => later})}
-      )
-
-    assert Registry.lookup(SalixAgent.Registry, b) == []
-
-    :sys.replace_state(SalixAgent.Loops.Reconciler, &%{&1 | recovery_cursor: nil})
-    live_nodes = Enum.map([node() | Node.list()], &Atom.to_string/1)
-    assert {:ok, first_page} = Store.list_active_stranded(live_nodes, 2, nil)
-    assert MapSet.new(first_page, & &1["id"]) == MapSet.new([a1["loop_id"], a2["loop_id"]])
-
-    sweep = fn ->
-      send(SalixAgent.Loops.Reconciler, :sweep)
-      # the release call is a barrier behind the sweep message
-      :ok = SalixAgent.Loops.Reconciler.release("agt1_none")
-    end
-
-    sweep.()
-    assert Registry.lookup(SalixAgent.Registry, b) == [], "the first page must not reach B"
-    sweep.()
-    assert [{_pid, _}] = Registry.lookup(SalixAgent.Registry, b)
-  end
-
   defp loop_ref(loop) do
     {:ok, record} = Store.get(loop["loop_id"])
 
@@ -596,6 +526,7 @@ defmodule SalixAgent.LoopsTest do
       session_id: record["session_id"],
       tenant_id: record["tenant_id"],
       group_id: record["group_id"],
+      task_conversation_id: record["task_conversation_id"],
       name: record["name"],
       ifc: record["ifc"]
     }

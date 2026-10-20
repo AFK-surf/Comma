@@ -15,7 +15,7 @@ export function createBftViteConfig(command: "build" | "serve") {
     resolve: {
       alias: {
         "@comma/ui/styles.css": resolve("../../packages/ui/src/styles.css"),
-        "@comma/ui": resolve("../../packages/ui/src/index.ts"),
+        "@comma/ui": resolve("../../packages/ui/src"),
       },
     },
     plugins: [react(), tailwindcss(), localGroupSelectors()],

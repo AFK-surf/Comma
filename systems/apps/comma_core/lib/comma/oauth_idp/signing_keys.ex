@@ -56,7 +56,11 @@ defmodule Comma.OauthIdp.SigningKeys do
       field(:status, :string)
       field(:retire_after, :utc_datetime_usec)
 
-      timestamps(type: :utc_datetime_usec, inserted_at: :created_at)
+      timestamps(
+        type: :utc_datetime_usec,
+        inserted_at: :created_at,
+        autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+      )
     end
   end
 
@@ -182,14 +186,14 @@ defmodule Comma.OauthIdp.SigningKeys do
           Repo.one(from(k in Key, where: k.status == "pending", lock: "FOR UPDATE")) ||
             Repo.rollback(:no_pending)
 
-        published_for = DateTime.diff(DateTime.utc_now(), pending.created_at, :second)
+        published_for = DateTime.diff(SystemsClock.utc_now(), pending.created_at, :second)
         required = prepublish_seconds()
 
         if published_for < required do
           Repo.rollback({:too_early, pending.kid, published_for, required})
         end
 
-        retire_after = DateTime.add(DateTime.utc_now(), verify_window, :second)
+        retire_after = DateTime.add(SystemsClock.utc_now(), verify_window, :second)
 
         Repo.update_all(from(k in Key, where: k.status == "signing"),
           set: [status: "verify_only", retire_after: retire_after]
@@ -309,7 +313,7 @@ defmodule Comma.OauthIdp.SigningKeys do
         """
 
       %Key{status: "verify_only", retire_after: retire_after} ->
-        if retire_after != nil and DateTime.compare(DateTime.utc_now(), retire_after) == :lt do
+        if retire_after != nil and DateTime.compare(SystemsClock.utc_now(), retire_after) == :lt do
           """
           Comma OAuth IdP key #{inspect(kid)} is inside its verification
           window until #{DateTime.to_iso8601(retire_after)}; removing it
@@ -377,16 +381,16 @@ defmodule Comma.OauthIdp.SigningKeys do
   end
 
   defp prepublish_seconds do
-    config = Application.get_env(:comma_core, :oauth_idp) || []
+    config = SystemsRuntime.get_env(:comma_core, :oauth_idp) || []
     config[:rotation_prepublish_seconds] || @default_prepublish_seconds
   end
 
   defp generate_kid do
-    "comma-idp-" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+    "comma-idp-" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(9), padding: false)
   end
 
   defp encrypt_private_pem!(private_pem) do
-    iv = :crypto.strong_rand_bytes(12)
+    iv = SystemsRuntime.Proc.random_bytes(12)
 
     {ciphertext, tag} =
       :crypto.crypto_one_time_aead(:aes_256_gcm, kek!(), iv, private_pem, @aad, true)
@@ -417,7 +421,7 @@ defmodule Comma.OauthIdp.SigningKeys do
   end
 
   defp kek! do
-    config = Application.get_env(:comma_core, :oauth_idp) || []
+    config = SystemsRuntime.get_env(:comma_core, :oauth_idp) || []
 
     case config[:kek] do
       kek when is_binary(kek) and byte_size(kek) == 32 ->

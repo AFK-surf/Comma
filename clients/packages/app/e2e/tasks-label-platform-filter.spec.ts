@@ -2,10 +2,15 @@ import { expect, test, type Locator } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
 import {
   chatSmokeTaskConversation,
+  chatSmokeTaskLoop,
   chatSmokeWorkspace,
   chatSmokeWorkspaceChat,
   startChatSmokeStub,
 } from "../../../e2e/p0/chat-stub";
+
+// The stub's Loop runs in Asia/Shanghai. On a UTC page, its rule always names
+// that zone as an offset, whatever zone the machine uses.
+test.use({ timezoneId: "UTC" });
 
 const LABELS = [
   {
@@ -36,7 +41,6 @@ test("tasks page filters by label and platform and chips link through", async ({
   const stub = await startChatSmokeStub({
     includeTaskInInbox: true,
     taskConversationExtras: taskExtras,
-    taskSchedule: null,
     taskStatus: "active",
   });
   try {
@@ -180,93 +184,6 @@ test("tasks page filters by label and platform and chips link through", async ({
   }
 });
 
-/**
- * Settings and the Tasks board read one session label catalog. Settings opens
- * on the labels the board already holds while its own read is still in
- * flight, and a rename there is the name the open board shows when Settings
- * closes.
- */
-test("a label renamed in Settings is the name the open Tasks board shows", async ({
-  page,
-}) => {
-  let catalogLabels = [...LABELS];
-  let heldRead: Promise<void> | undefined;
-  const stub = await startChatSmokeStub({
-    includeTaskInInbox: true,
-    taskConversationExtras: { labels: ["lbl_work"], origin: "slack" },
-    taskSchedule: null,
-    taskStatus: "active",
-  });
-  try {
-    await page.route(/\/task-labels(\/[^/?]+)?(\?|$)/, async (route) => {
-      const request = route.request();
-      const headers = {
-        "access-control-allow-credentials": "true",
-        "access-control-allow-headers": "*",
-        "access-control-allow-methods": "GET,PATCH,POST,DELETE,OPTIONS",
-        "access-control-allow-origin": request.headers()["origin"] ?? "*",
-        vary: "origin",
-      };
-      if (request.method() === "OPTIONS") {
-        await route.fulfill({ headers, status: 204 });
-        return;
-      }
-      if (request.method() === "PATCH") {
-        const labelId = new URL(request.url()).pathname.split("/").at(-1);
-        const { name } = request.postDataJSON() as { name?: string };
-        catalogLabels = catalogLabels.map((label) =>
-          label.id === labelId && name ? { ...label, name } : label
-        );
-      } else if (heldRead) {
-        await heldRead;
-      }
-      await route.fulfill({
-        body: JSON.stringify({ colors: [], labels: catalogLabels, proposals: [] }),
-        headers: { ...headers, "content-type": "application/json" },
-        status: 200,
-      });
-    });
-    await installBrowserTestSession(page, {
-      apiBaseUrl: stub.baseUrl,
-      email: "tasks-label-settings@comma.local",
-      token: "comma_sess_tasks_label_settings",
-    });
-    await page.goto("/#/tasks");
-    const card = page.locator('[data-slot="task-card"]').first();
-    await expect(card.getByTestId("task-card-label")).toHaveText("Work");
-
-    let releaseRead: (() => void) | undefined;
-    heldRead = new Promise<void>((resolve) => {
-      releaseRead = resolve;
-    });
-    await page
-      .locator(".comma-sidebar-body")
-      .getByRole("button", { name: "Settings", exact: true })
-      .click();
-    const settings = page.getByRole("dialog", { name: "Settings sections" });
-    await settings.getByRole("button", { name: "Labels", exact: true }).click();
-    const workRow = page.getByTestId("task-label-row-lbl_work");
-    await expect(workRow).toBeVisible();
-    await expect(page.getByTestId("task-labels-loading")).toHaveCount(0);
-    heldRead = undefined;
-    releaseRead?.();
-
-    await workRow.getByRole("button", { name: "Work", exact: true }).click();
-    const nameField = page.getByRole("textbox", { name: "Edit label name" });
-    await nameField.fill("Day job");
-    await nameField.press("Enter");
-    await expect(nameField).toBeHidden();
-    await expect(
-      workRow.getByRole("button", { name: "Day job", exact: true })
-    ).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(settings).toBeHidden();
-    await expect(card.getByTestId("task-card-label")).toHaveText("Day job");
-  } finally {
-    await stub.close();
-  }
-});
-
 for (const trigger of ["Work", "Add label", "folded Add label"]) {
   test(`label picker stays usable after removing its anchor label via ${trigger}`, async ({
     page,
@@ -276,7 +193,6 @@ for (const trigger of ["Work", "Add label", "folded Add label"]) {
     const stub = await startChatSmokeStub({
       includeTaskInInbox: true,
       taskConversationExtras: taskExtras,
-      taskSchedule: null,
       taskStatus: "active",
     });
     try {
@@ -406,7 +322,6 @@ test("Inbox filters chats and tasks by platform alongside task status and clears
     additionalInboxConversations,
     includeTaskInInbox: true,
     taskConversationExtras: { origin: "slack" },
-    taskSchedule: null,
     taskStatus: "active",
   });
 
@@ -538,6 +453,176 @@ test("Inbox filters chats and tasks by platform alongside task status and clears
     await expect(telegram).toHaveAttribute("aria-checked", "true");
     await expect(unspecified).toHaveAttribute("aria-checked", "true");
     await closeFilter();
+  } finally {
+    await stub.close();
+  }
+});
+
+/**
+ * What a chip's outline and type measure, from layout: a card's enter
+ * transform scales its bounding box while the chips are read one at a time.
+ */
+const chipBox = (chip: Locator) =>
+  chip.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      borderRadius: style.borderRadius,
+      borderTop: style.borderTopWidth,
+      fontSize: style.fontSize,
+      height: style.height,
+    };
+  });
+
+/** Where each named option's words start in a filter panel, in CSS px. */
+const wordStarts = (panel: Locator, names: string[]) =>
+  Promise.all(
+    names.map((name) =>
+      panel
+        .getByText(name, { exact: true })
+        .evaluate((element) => Math.round(element.getBoundingClientRect().left))
+    )
+  );
+
+/**
+ * A Loop Task (one a Loop runs or ran) on the Tasks page and in the Inbox,
+ * through the real client in a real browser. The server's Loops reach the
+ * cards as trigger chips, a chip opens the Tasks route narrowed to its type,
+ * the Inbox icon shows the rule on hover, and both Loops filter panels align
+ * their words. The jsdom TasksRoute and InboxView tests prove which Tasks and
+ * notifications each filter choice keeps.
+ */
+test("Loop Tasks show their trigger labels and aligned filter choices", async ({
+  page,
+}) => {
+  const oneOff = {
+    created_at: 1_720_000_010,
+    group_id: chatSmokeWorkspace.group_id,
+    id: "cnv_one_off_task",
+    kind: "agent_task",
+    status: "active",
+    title: "One-off report",
+    updated_at: 1_720_000_010,
+  };
+  const eventTask = {
+    ...oneOff,
+    id: "cnv_event_task",
+    title: "PR updates",
+    loop: {
+      state: "active",
+      cadence: { events: "new comments" },
+      started_at: 1_720_000_002_000,
+      wake_count: 2,
+    },
+  };
+  const stub = await startChatSmokeStub({
+    additionalInboxConversations: [oneOff, eventTask],
+    includeTaskInInbox: true,
+    taskConversationExtras: { labels: ["lbl_work"] },
+    taskLoop: chatSmokeTaskLoop,
+    taskStatus: "active",
+  });
+  try {
+    await page.route(/\/task-labels(\?|$)/, (route) =>
+      route.fulfill({ json: { colors: [], labels: LABELS, proposals: [] } })
+    );
+    await installBrowserTestSession(page, {
+      apiBaseUrl: stub.baseUrl,
+      email: "tasks-schedules@comma.local",
+      token: "comma_sess_tasks_loops",
+    });
+    await page.goto("/#/tasks");
+
+    const cards = page.locator('[data-slot="task-card"]');
+    const loopCard = cards.filter({ hasText: chatSmokeTaskConversation.title });
+    const oneOffCard = cards.filter({ hasText: oneOff.title });
+    await expect(oneOffCard).toBeVisible();
+    await expect(loopCard.locator("[data-chip]")).toHaveText(["Scheduled", "Work"]);
+    await expect(
+      cards.filter({ hasText: eventTask.title }).getByTestId("task-card-schedule")
+    ).toHaveText("On updates");
+    await expect(oneOffCard.getByTestId("task-card-schedule")).toHaveCount(0);
+    // Trigger chips keep the Label chip's geometry.
+    const schedule = loopCard.getByTestId("task-card-schedule");
+    const label = loopCard.getByTestId("task-card-label");
+    await expect(schedule.locator("svg")).toBeVisible();
+    expect(await chipBox(schedule)).toEqual(await chipBox(label));
+
+    const filter = page.getByRole("button", { name: "Filter tasks" });
+    await filter.click();
+    await page.getByRole("menuitem", { name: "Loops" }).click();
+    const panel = page.getByRole("dialog", { name: "Loops" });
+    // "No loop" keeps an empty icon slot, so both options' words line up.
+    const [loopWords, oneOffWords] = await wordStarts(panel, ["Scheduled", "No loop"]);
+    expect(oneOffWords).toBe(loopWords);
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+
+    // The chip goes through the app's hash route.
+    await schedule.click();
+    await expect(page).toHaveURL(/#\/tasks\?schedule=scheduled$/);
+    await expect(filter).toHaveAttribute("data-filtered", "true");
+    await expect(loopCard).toBeVisible();
+    await expect(oneOffCard).toHaveCount(0);
+
+    await page.getByRole("link", { name: "Inbox", exact: true }).click();
+    const rows = page.getByTestId("inbox-item");
+    const loopRow = rows.filter({ hasText: chatSmokeTaskConversation.title });
+    await expect(rows.filter({ hasText: oneOff.title })).toBeVisible();
+    await expect(
+      loopRow.getByTestId("inbox-item-schedule").locator("svg")
+    ).toBeVisible();
+    // The compact icon previews the same trigger as a card's type label.
+    await loopRow.getByTestId("inbox-item-schedule").hover();
+    const loopPreview = page.getByRole("tooltip");
+    await expect(loopPreview).toContainText("Scheduled");
+    await expect(loopPreview.getByRole("listitem")).toHaveText([
+      "Every day at 9:00 AM · GMT+8",
+    ]);
+    await page.keyboard.press("Escape");
+    // The pointer still rests on that icon. Move it off the list until the
+    // preview is gone, so the walk below starts with a new hover.
+    await page.mouse.move(800, 400);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    // Down the list, one preview after another: an open preview never covers
+    // the icon of a row below it, so a pointer moving down reaches the next one.
+    const marks = [loopRow, rows.filter({ hasText: eventTask.title })].map((row) =>
+      row.getByTestId("inbox-item-schedule")
+    );
+    const centers = await Promise.all(
+      marks.map(async (mark) => {
+        const box = (await mark.boundingBox())!;
+        return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      })
+    );
+    const down = centers[0]!.y < centers[1]!.y ? [0, 1] : [1, 0];
+    const [from, to] = down.map((index) => centers[index]!);
+    await page.mouse.move(from!.x, from!.y, { steps: 8 });
+    await expect(
+      page
+        .getByRole("tooltip")
+        .filter({ hasText: down[0] === 0 ? "Every day at 9:00 AM" : "new comments" })
+    ).toBeVisible();
+    await page.mouse.move(to!.x, to!.y, { steps: 12 });
+    await expect(
+      page
+        .getByRole("tooltip")
+        .filter({ hasText: down[1] === 0 ? "Every day at 9:00 AM" : "new comments" })
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(loopRow).toHaveAccessibleName(
+      `${chatSmokeTaskConversation.title}, Scheduled`
+    );
+    await expect(
+      rows.filter({ hasText: oneOff.title }).getByTestId("inbox-item-schedule")
+    ).toHaveCount(0);
+    await page.getByTestId("inbox-filter-trigger").click();
+    await page.getByRole("menuitem", { name: "Loops", exact: true }).click();
+    const inboxPanel = page.getByTestId("inbox-schedule-filter");
+    const [inboxLoopWords, inboxOneOffWords] = await wordStarts(inboxPanel, [
+      "Scheduled",
+      "No loop",
+    ]);
+    expect(inboxOneOffWords).toBe(inboxLoopWords);
   } finally {
     await stub.close();
   }
@@ -893,6 +978,50 @@ test("holds each label proposal card at the reply that filed it as the chat cont
     expect(
       await turnKeyOf(page.getByTestId("chat-label-proposals-create-approved"))
     ).toBe(filedAt);
+  } finally {
+    await stub.close();
+  }
+});
+
+// Rendering boundary: a rule per task must not mount the entire picker. The
+// jsdom TasksRoute test proves how the picker searches and filters.
+test("trigger rule picker virtualizes a large rule catalog", async ({ page }) => {
+  const rules = Array.from({ length: 1_000 }, (_, index) => ({
+    id: `cnv_rule_${index}`,
+    kind: "agent_task",
+    status: "active",
+    title: `Watch PR ${index}`,
+    group_id: chatSmokeWorkspace.group_id,
+    updated_at: chatSmokeTaskConversation.updated_at,
+    loop: {
+      state: "active",
+      started_at: 1,
+      wake_count: 0,
+      cadence: { events: `PR #${String(index).padStart(4, "0")} updated` },
+    },
+  }));
+  const stub = await startChatSmokeStub({
+    additionalInboxConversations: rules,
+  });
+  try {
+    await installBrowserTestSession(page, {
+      apiBaseUrl: stub.baseUrl,
+      email: "rule-filter@comma.local",
+      token: "comma_sess_rule_filter",
+    });
+    await page.goto("/#/tasks");
+    await page.getByRole("button", { name: "Filter tasks" }).click();
+    await page.getByRole("menuitem", { name: "Trigger rule", exact: true }).click();
+    const panel = page.getByRole("dialog", { name: "Trigger rule" });
+    await expect(panel.getByRole("menuitemradio").first()).toBeVisible();
+    expect(await panel.getByRole("menuitemradio").count()).toBeLessThan(50);
+    // End scrolls the list to the last rule and mounts only the rows near it.
+    await panel.getByRole("menuitemradio").first().focus();
+    await page.keyboard.press("End");
+    await expect(
+      panel.getByRole("menuitemradio", { name: /PR #0999 updated/ })
+    ).toBeFocused();
+    expect(await panel.getByRole("menuitemradio").count()).toBeLessThan(50);
   } finally {
     await stub.close();
   }

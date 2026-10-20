@@ -8,7 +8,7 @@ defmodule Mix.Tasks.Salix.Prompt.Dump do
   live control/data stores.
 
       mix salix.prompt.dump
-      mix salix.prompt.dump --role worker --runtime external --no-skill
+      mix salix.prompt.dump --role worker --runtime script --no-skill
       mix salix.prompt.dump --agent-prompt "Additional agent instructions"
 
   The default is an internal Router with its full role-eligible static tool
@@ -31,7 +31,7 @@ defmodule Mix.Tasks.Salix.Prompt.Dump do
     if rest != [] or invalid != [] do
       Mix.raise(
         "usage: mix salix.prompt.dump [--role router|worker|meeting] " <>
-          "[--runtime internal|external|script] [--agent-prompt TEXT] [--no-skill]"
+          "[--runtime internal|script] [--agent-prompt TEXT] [--no-skill]"
       )
     end
 

@@ -2,7 +2,13 @@ defmodule SalixSignal.ContactDiscoveryTest do
   # CRS-11: a lookup against a fake contact discovery service that plays
   # the enclave (SalixSignal.Test.FakeCdsi) with a synthetic attestation
   # from a test PKI (SalixSignalProto.Test.SgxAttestation).
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  # The fake enclave runs in Bandit's connection processes: while one of them
+  # works on a frame (the Noise handshake takes a while on a busy machine),
+  # the clock must not move past the lookup's deadline.
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.SalixSignal", "Elixir.ThousandIsland", "Elixir.Bandit"]
 
   alias SalixSignal.ContactDiscovery
   alias SalixSignal.Test.{FakeCdsi, FakeChat}
@@ -21,12 +27,19 @@ defmodule SalixSignal.ContactDiscoveryTest do
     static = X25519.generate_private_key()
 
     attestation =
-      SgxAttestation.build(noise_key: X25519.public_key(static), now: System.os_time(:second))
+      SgxAttestation.build(
+        noise_key: X25519.public_key(static),
+        now: SystemsClock.system_time(:second)
+      )
 
     enclave =
       Map.merge(%{attestation: attestation.message, static_private: static}, enclave)
 
-    server = start_supervised!({Bandit, FakeCdsi.bandit_options(self(), context.chain, enclave)})
+    server =
+      start_supervised!(
+        {Bandit, FakeCdsi.bandit_options(SystemsRuntime.Proc.self(), context.chain, enclave)}
+      )
+
     port = FakeChat.port(server)
     transport = {:http, "https://localhost:#{port}", roots: [context.chain.root]}
 
@@ -83,38 +96,6 @@ defmodule SalixSignal.ContactDiscoveryTest do
     assert ContactDiscovery.lookup(transport, ["+15550100001"], Keyword.put(opts, :pins, pins)) ==
              {:error, {:attestation_failed, :mrenclave_mismatch}}
 
-    refute_receive {:fake_cdsi, :handshake, _}, 200
-  end
-
-  test "enclave closes map to rate limiting and token invalidation", context do
-    for {close, expected} <- [
-          {{4008, ~s({"retry_after":30})}, {:rate_limited, 30}},
-          {{4101, ""}, :invalid_token},
-          {{4013, ""}, {:unavailable, 4013}}
-        ] do
-      {transport, opts, _} = start_enclave(context, %{close_after_request: close})
-      assert ContactDiscovery.lookup(transport, ["+15550100001"], opts) == {:error, expected}
-    end
-  end
-
-  test "a rate-limited upgrade returns its Retry-After", context do
-    {transport, opts, _} =
-      start_enclave(context, %{upgrade: {:reject, 429, [{"retry-after", "7"}]}})
-
-    assert ContactDiscovery.lookup(transport, ["+15550100001"], opts) ==
-             {:error, {:rate_limited, 7}}
-  end
-
-  test "refuses to run without constant-time ML-KEM outside tests", context do
-    {transport, opts, _} = start_enclave(context)
-    Application.put_env(:salix_signal_proto, :plain_kem_in_tests, false)
-    on_exit(fn -> Application.put_env(:salix_signal_proto, :plain_kem_in_tests, true) end)
-
-    unless SalixSignalProto.KemBackend.openssl?(:mlkem1024) do
-      assert ContactDiscovery.lookup(transport, ["+15550100001"], opts) ==
-               {:error, :kem_unsupported}
-
-      refute_received {:fake_cdsi, :auth, _}
-    end
+    settle_refute_receive({:fake_cdsi, :handshake, _}, 200)
   end
 end

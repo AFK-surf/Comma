@@ -1,5 +1,7 @@
 import VerifiedKernel.AgentLoop.WaitExtension
 import VerifiedKernelProofs.Session.WorkAllocation
+import VerifiedKernelProofs.Proof.NativeProducerTactic
+import VerifiedKernelProofs.Session.AppendOnly.SeqCore
 
 /-! # Wait extension budget
 

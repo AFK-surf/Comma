@@ -14,6 +14,8 @@ defmodule AlertRouter.Catalog do
   @im_runbook "https://github.com/AFK-surf/Comma/blob/main/docs/observability.md"
   @salix_agent_runtime_runbook "https://github.com/AFK-surf/Comma/blob/main/docs/observability.md"
   @deployment_failure_runbook "https://github.com/AFK-surf/Comma/blob/main/docs/observability.md"
+  @station_task_runbook "https://github.com/AFK-surf/Comma/blob/main/docs/salix/tasks-background-execution.md"
+  @cloud_vm_canary_runbook "https://github.com/AFK-surf/Comma/blob/main/docs/observability.md"
 
   @catalog %{
     ["gcp_monitoring", "comma_alerting", "gke_oom_kill"] => %{
@@ -92,26 +94,7 @@ defmodule AlertRouter.Catalog do
       },
       runbook: @deployment_failure_runbook
     },
-    ["gcp_monitoring", "comma_alerting", "external_session_runtime_failed"] => %{
-      source: "gcp_monitoring",
-      source_accounts: [:staging, :production],
-      environments: ~w(staging production),
-      priority: "P0",
-      team: "comma",
-      service: "salix_agent",
-      family: "availability",
-      summary: "Agent session 自动恢复耗尽，需要人工介入",
-      impact: "受影响的外部 Agent session 已耗尽自动恢复预算，当前 execution 需要人工处理。",
-      firing_latest: "已观察到持久化成功后的 recovery_exhausted lifecycle 事实，自动恢复已停止。",
-      evidence_values: %{
-        "cluster" => :gke_cluster,
-        "trigger_error" => "recovery_exhausted",
-        "threshold" => ">= 1 个自动恢复耗尽事件",
-        "duration" => "单次事件"
-      },
-      runbook: @salix_agent_runtime_runbook
-    },
-    ["gcp_monitoring", "comma_alerting", "external_session_runtime_interrupted"] => %{
+    ["gcp_monitoring", "comma_alerting", "task_worker_dependency_failed"] => %{
       source: "gcp_monitoring",
       source_accounts: [:staging, :production],
       environments: ~w(staging production),
@@ -119,15 +102,72 @@ defmodule AlertRouter.Catalog do
       team: "comma",
       service: "salix_agent",
       family: "availability",
-      summary: "Agent 任务执行受阻",
-      impact: "任务可能无法继续执行。受影响的会话和具体失败类型尚待定位。",
-      firing_latest: "监控已报告执行异常，恢复情况尚未确认；不表示自动恢复耗尽。",
+      summary: "Task Worker 依赖失败",
+      impact: "Task Worker 缺少插件投影，任务可能无法继续执行。",
+      firing_latest: "同一 Task activation 已连续三次遇到 plugin_projection:not_found，恢复情况尚未确认。",
       evidence_values: %{
         "cluster" => :gke_cluster,
-        "threshold" => "external 中断 1 次；internal 同一 Task activation 依赖失败 3 次",
-        "duration" => "达到对应事件门槛"
+        "threshold" => "同一 Task activation 依赖失败 3 次",
+        "duration" => "达到事件门槛"
       },
       runbook: @salix_agent_runtime_runbook
+    },
+    ["gcp_monitoring", "comma_alerting", "station_task_stalled"] => %{
+      source: "gcp_monitoring",
+      source_accounts: [:staging],
+      environments: ~w(staging),
+      priority: "P2",
+      team: "comma",
+      service: "salix_im",
+      family: "availability",
+      summary: "Cloud VM Task 委派无人应答",
+      impact: "派到 Group Cloud VM 上的 Task 收到了新委派，但 VM 上的 station 没有回帖；Router 只能等超时，用户看到任务没有进展。",
+      firing_latest:
+        "委派到阈值仍无 Worker 消息：vm_not_ready、station_offline、not_given，或 idle_no_reply、cannot_start（已通知 Router）；running、given_no_reply、桌面 station 只记日志。",
+      evidence_values: %{
+        "cluster" => :gke_cluster,
+        "threshold" => "Cloud VM：VM 未就绪 / 离线 / 未交付 >= 10 分钟；闲着没回帖催促后再 10 分钟；起不来 10 分钟",
+        "duration" => "达到事件门槛"
+      },
+      runbook: @station_task_runbook
+    },
+    ["gcp_monitoring", "comma_alerting", "station_task_canary_stalled"] => %{
+      source: "gcp_monitoring",
+      source_accounts: [:staging],
+      environments: ~w(staging),
+      priority: "P2",
+      team: "comma",
+      service: "salix_im",
+      family: "availability",
+      summary: "Cloud VM canary 任务委派无人应答",
+      impact: "每 30 分钟派到 canary 工作区 Cloud VM 上的命令没有在阈值内得到回帖；用户派到 Cloud VM 的 Task 很可能同样卡住。",
+      firing_latest:
+        "canary 的一条委派到达阶段阈值仍无 Worker 消息；stage 指出断在 VM 唤醒、station 连接、交付，还是 station 内执行。",
+      evidence_values: %{
+        "cluster" => :gke_cluster,
+        "threshold" =>
+          "canary 委派任一阶段超过阈值：前三阶段与 cannot_start 10 分钟，idle_no_reply 催促后再 10 分钟，given_no_reply 30 分钟",
+        "duration" => "达到事件门槛"
+      },
+      runbook: @cloud_vm_canary_runbook
+    },
+    ["gcp_monitoring", "comma_alerting", "station_task_canary_silent"] => %{
+      source: "gcp_monitoring",
+      source_accounts: [:staging],
+      environments: ~w(staging),
+      priority: "P2",
+      team: "comma",
+      service: "salix_im",
+      family: "availability",
+      summary: "Cloud VM canary 两小时无回帖",
+      impact: "两小时内没有任何一条 canary 委派被回帖：链路不通，或 canary 的定时 Task 停了，或配置里没有 canary_group_ids。",
+      firing_latest:
+        "first_reply{canary=\"true\"} 两小时内没有新样本，或该序列不存在；若 station_task_canary_stalled 同时在响，以它的 stage 为准。",
+      evidence_values: %{
+        "threshold" => "2 小时内 first_reply{canary=\"true\"} 增量 < 1，或序列缺失",
+        "duration" => "无额外持续时间"
+      },
+      runbook: @cloud_vm_canary_runbook
     },
     ["gcp_monitoring", "comma_alerting", "router_request_stalled"] => %{
       source: "gcp_monitoring",
@@ -449,7 +489,7 @@ defmodule AlertRouter.Catalog do
   end
 
   defp source_accounts(accounts) when is_list(accounts) do
-    projects = Application.get_env(:alert_router, :gcp_projects, %{})
+    projects = SystemsRuntime.get_env(:alert_router, :gcp_projects, %{})
 
     Enum.flat_map(accounts, fn
       environment when is_atom(environment) ->
@@ -465,7 +505,7 @@ defmodule AlertRouter.Catalog do
 
   defp fetch_entry(policy_identity) do
     with {:ok, entry} <- Map.fetch(@catalog, policy_identity) do
-      cluster = Application.get_env(:alert_router, :gke_cluster)
+      cluster = SystemsRuntime.get_env(:alert_router, :gke_cluster)
 
       values =
         Map.new(entry.evidence_values, fn

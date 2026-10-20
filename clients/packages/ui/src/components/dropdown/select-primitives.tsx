@@ -17,6 +17,7 @@ import {
   SelectStateContext as AriaSelectStateContext,
   Virtualizer,
 } from "react-aria-components";
+import { uiClock } from "../../clock";
 import { borderWidth, spacing, typeScale } from "../../tokens";
 import { ChevronDownSmallIcon } from "../icons";
 import {
@@ -560,11 +561,11 @@ export const useSelectionAlignedPopover = ({
     };
 
     restoreAnchorScroll();
-    const frame = requestAnimationFrame(restoreAnchorScroll);
-    const timeout = window.setTimeout(restoreAnchorScroll, 0);
+    const frame = uiClock.frame(restoreAnchorScroll);
+    const timeout = uiClock.after(0, restoreAnchorScroll);
     return () => {
-      cancelAnimationFrame(frame);
-      window.clearTimeout(timeout);
+      frame();
+      timeout();
     };
   }, [anchorIndex, isOpen]);
 

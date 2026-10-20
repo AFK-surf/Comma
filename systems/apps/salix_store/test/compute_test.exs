@@ -1,5 +1,7 @@
 defmodule SalixStore.ComputeTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
 
   import Ecto.Query
 
@@ -15,6 +17,24 @@ defmodule SalixStore.ComputeTest do
   }
 
   @runtime_bundle_root Path.expand("fixtures/runtime-bundle", __DIR__)
+
+  # The application's settlement sweeper settles every due Agent VMM Command
+  # in the database whenever its timer fires; these tests drive
+  # `AgentVMM.settle_expired_commands/2` themselves and assert what each call
+  # settles, so a sweep between two of those calls would take their Commands.
+  # A sweep already under way finishes first.
+  setup_all do
+    case SystemsRuntime.Proc.whereis(SalixStore.AgentVMMSettlementSweeper) do
+      pid when SystemsRuntime.Proc.is_process(pid) ->
+        :ok = :sys.suspend(pid, :infinity)
+        on_exit(fn -> if SystemsRuntime.Proc.alive?(pid), do: :sys.resume(pid, :infinity) end)
+
+      nil ->
+        :ok
+    end
+
+    :ok
+  end
 
   setup do
     Repo.query!(
@@ -104,187 +124,152 @@ defmodule SalixStore.ComputeTest do
              Compute.prepare_cloudflare_control(group, target, :open)
   end
 
-  test "terminal settlement preserves another claim and rejects mismatched command evidence" do
+  test "disposable reset advances only the exact stopped carrier generation and retains unknown claims" do
     tenant = SalixStore.Ids.new_tenant_id()
     group = SalixStore.Ids.new_group_id(tenant)
-    target = "cf-standard-2:terminal-owner"
+    target = "cf-standard-1:reset-owner"
 
-    assert {:ok, _, :created} =
-             Compute.ensure_group_workload(%{
-               "tenant_id" => tenant,
-               "group_id" => group,
-               "provider" => "cloudflare",
-               "provider_resource_id" => "terminal-owner",
-               "provider_resource_name" => "terminal-owner",
-               "provider_spec" => %{"profile_key" => "cf-standard-2"},
-               "status" => "ready"
-             })
+    {:ok, _, :created} =
+      Compute.ensure_group_workload(%{
+        "tenant_id" => tenant,
+        "group_id" => group,
+        "provider" => "cloudflare",
+        "provider_resource_id" => "reset-owner",
+        "provider_resource_name" => "reset-owner",
+        "provider_spec" => %{"profile_key" => "cf-standard-1"},
+        "status" => "waking",
+        "archive" => %{"operation" => "saved-source"},
+        "wake_operation_id" => "old-wake"
+      })
 
-    {:ok, control} = Compute.prepare_cloudflare_control(group, target, :open)
+    {:ok, opened} = Compute.prepare_cloudflare_control(group, target, :open)
+    {:ok, "unknown"} = Compute.begin_cloudflare_gateway_attempt(group, "unknown", :normal, target)
 
-    for claim <- ["completed", "still-active"] do
-      assert {:ok, ^claim} =
-               Compute.begin_cloudflare_gateway_attempt(group, claim, :normal, target, %{
+    for n <- 1..62 do
+      assert {:ok, _} =
+               Compute.begin_cloudflare_gateway_attempt(group, "managed-#{n}", :normal, target, %{
                  "action" => "import"
                })
     end
 
-    terminal =
-      control
-      |> Map.put("claim_id", "completed")
-      |> Map.put("action", "import")
-      |> Map.put("outcome", "completed")
+    {:ok, "other"} =
+      Compute.begin_cloudflare_gateway_attempt(group, "other", :normal, "cf-standard-2:other")
 
-    mismatched = Map.put(terminal, "revision", control["revision"] + 1)
-
-    assert :ok =
-             Compute.settle_cloudflare_terminal(group, target, %{
-               "control" => Map.put(control, "last_terminal", mismatched)
+    assert {:error, :cloudflare_gateway_attempt_limit} =
+             Compute.begin_cloudflare_gateway_attempt(group, "full", :normal, target, %{
+               "action" => "observe"
              })
 
-    assert {:ok, %{"active_operation_count" => 2}} = Compute.group_workload(group)
-
-    assert :ok =
-             Compute.settle_cloudflare_terminal(group, target, %{
-               "control" => Map.put(control, "last_terminal", terminal)
-             })
-
-    assert {:ok, record} = Compute.group_workload(group)
-    assert Map.keys(record["active_operations"]) == ["still-active"]
-  end
-
-  test "post-rollout profile handoff converts late legacy rows and absent locations in pages" do
-    migration_file =
-      Application.app_dir(
-        :salix_store,
-        "priv/repo/migrations/20260929000100_backfill_cloudflare_group_profile.exs"
-      )
-
-    Code.require_file(migration_file)
-    migration = SalixStore.Repo.Migrations.BackfillCloudflareGroupProfile
-    tenant = SalixStore.Ids.new_tenant_id()
-    initial_group = SalixStore.Ids.new_group_id(tenant)
-    initial_resource = SalixStore.RuntimeIds.cloud_vm_provider_resource_name(initial_group)
-
-    assert {:ok, _, :created} =
-             Compute.ensure_group_workload(%{
-               "tenant_id" => tenant,
-               "group_id" => initial_group,
-               "provider" => "cloudflare",
-               "provider_resource_id" => initial_resource,
-               "provider_resource_name" => initial_resource,
-               "provider_spec" => %{},
-               "status" => "ready",
-               "created_at" => 1_000
-             })
-
-    Repo.transaction(fn ->
-      Repo.query!(migration.backfill_sql())
-      Repo.query!(migration.backfill_gateway_claims_sql())
-    end)
-
-    assert {:ok, initial} = Compute.group_workload(initial_group)
-    assert get_in(initial, ["provider_spec", "profile_key"]) == "cf-standard-2"
-
-    # A discard-source Group cutover names its target resource with 32 hex digits.
-    # It lived in the only Sandbox namespace of its time, so it converts too.
-    cutover_group = SalixStore.Ids.new_group_id(tenant)
-    cutover_resource = "salix-" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
-
-    assert {:ok, _, :created} =
-             Compute.ensure_group_workload(%{
-               "tenant_id" => tenant,
-               "group_id" => cutover_group,
-               "provider" => "cloudflare",
-               "provider_resource_id" => cutover_resource,
-               "provider_resource_name" => cutover_resource,
-               "provider_spec" => %{},
-               "status" => "archived",
-               "created_at" => 1_000
-             })
-
-    # A location Salix did not name stays unresolved for operator repair.
-    foreign_group = SalixStore.Ids.new_group_id(tenant)
-    foreign_resource = "sandbox-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
-
-    assert {:ok, _, :created} =
-             Compute.ensure_group_workload(%{
-               "tenant_id" => tenant,
-               "group_id" => foreign_group,
-               "provider" => "cloudflare",
-               "provider_resource_id" => foreign_resource,
-               "provider_resource_name" => foreign_resource,
-               "provider_spec" => %{},
-               "status" => "ready",
-               "created_at" => 1_000
-             })
-
-    late_groups =
-      Enum.map(1..101, fn index ->
-        group = SalixStore.Ids.new_group_id(tenant)
-        resource = SalixStore.RuntimeIds.cloud_vm_provider_resource_name(group)
-
-        assert {:ok, _, :created} =
-                 Compute.ensure_group_workload(%{
-                   "tenant_id" => tenant,
-                   "group_id" => group,
-                   "provider" => "cloudflare",
-                   "provider_resource_id" => resource,
-                   "provider_resource_name" => resource,
-                   "provider_spec" => %{},
-                   "status" => if(index == 101, do: "absent", else: "ready"),
-                   "created_at" => 1_000
-                 })
-
-        {group, resource}
+    {:ok, _, _} =
+      Compute.update_group_workload(group, fn current ->
+        Map.put(current, "provider_migration", %{
+          "phase" => "preparing",
+          "operation" => "provider-cutover"
+        })
       end)
 
-    {claim_group, claim_resource} = hd(late_groups)
+    {:ok, migrating} = Compute.group_workload(group)
 
-    assert {:ok, _, _} =
-             Compute.update_group_workload(claim_group, fn current ->
-               Map.put(current, "active_operations", %{
-                 "late-start" => %{
-                   "kind" => "cloudflare_gateway_attempt",
-                   "state" => "pending_start",
-                   "target_resource" => claim_resource
-                 }
-               })
-             end)
+    assert {:error, :provider_migration_in_progress} =
+             Compute.begin_cloudflare_discard(group, migrating)
 
-    assert {:ok, %{processed: 100, next_cursor: "allocations"}} =
-             CloudflareProfileHandoff.transfer_page()
+    assert {:ok, ^migrating} = Compute.group_workload(group)
+    {:ok, _, _} = Compute.update_group_workload(group, &Map.delete(&1, "provider_migration"))
+    {:ok, before} = Compute.group_workload(group)
+    {:ok, resetting} = Compute.begin_cloudflare_discard(group, before)
+    control = resetting["cloudflare_control"]
+    assert control["sealed"]
+    assert control["revision"] > opened["revision"]
+    assert resetting["generation"] == before["generation"]
 
-    assert {:ok, %{processed: 2, next_cursor: "claims"}} =
-             CloudflareProfileHandoff.transfer_page("allocations")
+    assert {:error, :cloudflare_discard_in_progress} =
+             Compute.prepare_cloudflare_control(
+               group,
+               target,
+               :seal,
+               Map.take(before, ~w(workload_id generation))
+             )
 
-    assert {:ok, %{processed: 1, next_cursor: nil}} =
-             CloudflareProfileHandoff.transfer_page("claims")
+    assert {:error, :cloudflare_discard_in_progress} =
+             Compute.begin_cloudflare_gateway_attempt(
+               group,
+               "competing-destroy",
+               :archive,
+               target,
+               %{
+                 "action" => "destroy",
+                 "expected_owner" => Map.take(before, ~w(workload_id generation))
+               }
+             )
 
-    assert {:ok, %{processed: 0, next_cursor: "claims"}} =
-             CloudflareProfileHandoff.transfer_page()
+    assert {:ok, ^resetting} = Compute.group_workload(group)
 
-    assert {:ok, %{processed: 0, next_cursor: nil}} =
-             CloudflareProfileHandoff.transfer_page("claims")
+    assert {:error, :cloudflare_discard_target_changed} =
+             Compute.begin_cloudflare_discard(group, before)
 
-    for {group, _resource} <- late_groups do
-      assert {:ok, rec} = Compute.group_workload(group)
-      assert get_in(rec, ["provider_spec", "profile_key"]) == "cf-standard-2"
-    end
+    terminal =
+      Map.merge(control, %{
+        "claim_id" => control["operation_id"],
+        "action" => "destroy",
+        "outcome" => "completed"
+      })
 
-    assert {:ok, absent} = Compute.group_workload(elem(List.last(late_groups), 0))
-    assert absent["status"] == "absent"
+    observation = %{
+      "running" => false,
+      "managed_commands_settled" => true,
+      "control" => Map.merge(control, %{"pending" => nil, "last_terminal" => terminal})
+    }
 
-    assert {:ok, cutover} = Compute.group_workload(cutover_group)
-    assert get_in(cutover, ["provider_spec", "profile_key"]) == "cf-standard-2"
+    assert {:error, :cloudflare_discard_unconfirmed} =
+             Compute.finish_cloudflare_discard(
+               group,
+               resetting,
+               Map.put(observation, "running", true)
+             )
 
-    assert {:ok, foreign} = Compute.group_workload(foreign_group)
-    refute Map.has_key?(foreign["provider_spec"] || %{}, "profile_key")
+    assert {:error, :cloudflare_discard_unconfirmed} =
+             Compute.finish_cloudflare_discard(
+               group,
+               resetting,
+               put_in(observation, ["control", "last_terminal", "claim_id"], "another-destroy")
+             )
 
-    assert {:ok, claimed} = Compute.group_workload(claim_group)
+    {:ok, discarded} = Compute.finish_cloudflare_discard(group, resetting, observation)
+    assert discarded["generation"] == before["generation"] + 1
+    assert discarded["last_discarded_generation"] == before["generation"]
+    assert discarded["status"] == "archived"
+    assert discarded["archive"] == nil
+    assert discarded["archive_previous"] == before["archive"]
+    assert discarded["active_operations"]["unknown"] == before["active_operations"]["unknown"]
+    assert discarded["active_operations"]["other"] == before["active_operations"]["other"]
+    assert Map.keys(discarded["active_operations"]) |> Enum.sort() == ["other", "unknown"]
+    assert discarded["workload_id"] == before["workload_id"]
 
-    assert get_in(claimed, ["active_operations", "late-start", "target_resource"]) ==
-             "cf-standard-2:" <> claim_resource
+    assert {:error, :cloudflare_discard_target_changed} =
+             Compute.finish_cloudflare_discard(group, resetting, observation)
+
+    {:ok, next_control} = Compute.prepare_cloudflare_control(group, target, :open)
+    assert next_control["generation"] == discarded["generation"]
+
+    old_owner = Map.take(before, ~w(workload_id generation))
+
+    assert {:error, :stale_generation} =
+             Compute.prepare_cloudflare_control(group, target, :seal, old_owner)
+
+    assert {:error, :stale_generation} =
+             Compute.begin_cloudflare_gateway_attempt(group, "late-import", :normal, target, %{
+               "action" => "import",
+               "expected_owner" => old_owner
+             })
+
+    assert {:ok, "new-observe"} =
+             Compute.begin_cloudflare_gateway_attempt(group, "new-observe", :normal, target, %{
+               "action" => "observe"
+             })
+
+    assert :ok = Compute.settle_cloudflare_terminal(group, target, observation)
+    {:ok, current} = Compute.group_workload(group)
+    assert current["active_operations"]["new-observe"]["generation"] == next_control["generation"]
   end
 
   test "legacy profile backfill waits for a locked allocation before completing" do
@@ -342,7 +327,7 @@ defmodule SalixStore.ComputeTest do
       )
 
       task =
-        Task.async(fn ->
+        SystemsRuntime.Task.async(fn ->
           Repo.transaction(fn ->
             Repo.query!("SET LOCAL lock_timeout = '5s'")
             Repo.query!(migration.backfill_sql())
@@ -350,9 +335,9 @@ defmodule SalixStore.ComputeTest do
           end)
         end)
 
-      assert Task.yield(task, 100) == nil
+      assert SystemsRuntime.Task.yield(task, 100) == nil
       Postgrex.query!(lock_connection, "COMMIT", [])
-      assert {:ok, {:ok, _}} = Task.yield(task, 5_000)
+      assert {:ok, {:ok, _}} = SystemsRuntime.Task.yield(task, 5_000)
 
       assert {:ok, updated} = Compute.group_workload(group)
       assert updated["provider_spec"]["profile_key"] == "cf-standard-2"
@@ -380,7 +365,7 @@ defmodule SalixStore.ComputeTest do
                allocation_id: "missing-allocation",
                workload_id: "missing-workload",
                environment_id: "missing-environment",
-               kind: "external_worker"
+               kind: "meeting_runtime"
              })
 
     assert Repo.aggregate(Compute.Pool, :count) == 0
@@ -457,127 +442,115 @@ defmodule SalixStore.ComputeTest do
     refute project.id == group.id
   end
 
-  test "Group runtime retries retain archive, device, runtime targets and concurrent activity" do
+  test "a Group's Cloud VM on an Agent VMM Host is the station image on the tenant's own Host" do
     tenant = SalixStore.Ids.new_tenant_id()
     group = SalixStore.Ids.new_group_id(tenant)
+
+    {:ok, registration} =
+      AgentVMM.create_registration(%{
+        id: "group-host",
+        tenant_id: tenant,
+        group_id: group,
+        device_id: "host-device",
+        enrollment_token: String.duplicate("h", 32)
+      })
 
     facts = %{
       "tenant_id" => tenant,
       "group_id" => group,
-      "provider" => "cloudflare",
-      "provider_resource_id" => "existing-sandbox",
-      "env_id" => "existing-environment",
-      "device_id" => "existing-device",
-      "connector_id" => "existing-connector",
-      "status" => "archived",
-      "created_at" => 1234,
-      "archive" => %{"format" => "connector_tar_gz", "key" => "owned-files"},
-      "runtime_targets" => %{"codex" => %{"state" => "ready"}}
+      "provider" => "agent_vmm",
+      "provider_resource_id" => registration.id,
+      "provider_resource_name" => "cloud-vm-resource",
+      "provider_spec" => %{"profile_key" => "vmm-station-1"},
+      "env_id" => "cloud-vm-env",
+      "device_id" => "cloud-vm-device",
+      "connector_id" => "cloud-vm-connector",
+      "status" => "creating",
+      "created_at" => 1234
     }
 
-    assert {:ok, first, :created} = Compute.ensure_group_workload(facts)
-    assert {:ok, retry, :existing} = Compute.ensure_group_workload(facts)
-    assert retry["workload_id"] == first["workload_id"]
-    assert retry["archive"] == facts["archive"]
-    assert retry["runtime_targets"] == facts["runtime_targets"]
-    assert retry["created_at"] == 1234
+    # A Host that is not connected cannot take the Group's Cloud VM yet.
+    assert {:error, :provider_unavailable} = Compute.ensure_group_workload(facts)
+    refute Repo.exists?(from(w in Compute.Workload, where: w.template_key == "station.default"))
 
-    results =
-      1..8
-      |> Task.async_stream(
-        fn index ->
-          Compute.update_group_workload(group, fn current ->
-            Map.update(
-              current,
-              "active_operations",
-              %{to_string(index) => %{"state" => "active"}},
-              &Map.put(&1, to_string(index), %{"state" => "active"})
-            )
-          end)
-        end,
-        max_concurrency: 8
-      )
-      |> Enum.to_list()
+    # The Host connects: its hello made its Project's binding available.
+    connection = %{"connection_epoch" => "41", "gateway_instance_id" => "gateway-a"}
+    connect_host!(tenant, registration.id, connection)
 
-    assert Enum.all?(results, &match?({:ok, {:ok, _, _}}, &1))
-    assert {:ok, current} = Compute.group_workload(group)
-    assert current["active_operation_count"] == 8
-    assert current["device_id"] == facts["device_id"]
+    assert {:ok, record, :created} = Compute.ensure_group_workload(facts)
+    assert record["provider"] == "agent_vmm"
+    assert record["device_id"] == "cloud-vm-device"
+    assert {:ok, ^record, :existing} = Compute.ensure_group_workload(facts)
 
-    assert {:error, :identity_mismatch} =
-             Compute.update_group_workload(group, &Map.put(&1, "device_id", "other"))
+    workload = Repo.get!(Compute.Workload, record["workload_id"])
+    assert workload.template_key == "station.default"
+    assert workload.spec["group_default"] == true
+    assert workload.spec["runtime_artifact"]["class"] == "station"
+    assert workload.runtime_revision == workload.spec["runtime_artifact"]["manifest_digest"]
+    assert {:ok, %{"class" => "station"}} = RuntimeBundleCatalog.image_for_workload(workload)
 
-    assert Repo.aggregate(Compute.Workload, :count) == 1
+    allocation = Repo.get!(Compute.Allocation, workload.allocation_id)
+    binding = Repo.get!(Compute.ProviderBinding, allocation.provider_binding_id)
+    assert {binding.provider, binding.provider_ref} == {"agent_vmm", registration.id}
+    assert binding.status == "available"
+    assert binding.observation == connection
 
-    attrs = %{
-      operation_id: "new-op",
-      kind: "exec",
-      mutating?: true,
-      agent_id: nil,
-      idempotency_class: "non_idempotent"
-    }
+    # The station connects only while the Group still names this Host and profile.
+    resource = %{"name" => "cloud-vm-resource", "profile_key" => "vmm-station-1"}
 
-    assert {:wake, {:error, {:vm_waking, _}}} = Compute.begin_group_operation(group, attrs)
-    assert {:ok, _, _} = Compute.update_group_workload(group, &Map.put(&1, "status", "ready"))
-    assert {:ok, "new-op"} = Compute.begin_group_operation(group, attrs)
-    assert {:ok, "new-op"} = Compute.begin_group_operation(group, attrs)
-    assert {:ok, active} = Compute.group_workload(group)
-    assert active["active_operation_count"] == 9
+    assert :admitted =
+             Compute.with_group_provider(group, "agent_vmm", resource, fn -> :admitted end)
 
-    assert :ok =
-             Compute.finish_group_operation(group, %{
-               operation_id: "new-op",
-               state: "succeeded",
-               result: %{exit_code: 0}
+    assert {:error, :managed_provider_changed} =
+             Compute.with_group_provider(group, "cloudflare", resource, fn -> :admitted end)
+
+    other_group = SalixStore.Ids.new_group_id(SalixStore.Ids.new_tenant_id())
+
+    assert {:error, :agent_vmm_registration_not_found} =
+             Compute.ensure_group_workload(%{
+               facts
+               | "tenant_id" => SalixStore.Ids.tenant_id_from_group!(other_group),
+                 "group_id" => other_group
              })
-
-    assert :ok =
-             Compute.finish_group_operation(group, %{
-               operation_id: "new-op",
-               state: "succeeded",
-               result: %{exit_code: 0}
-             })
-
-    assert {:ok, finished} = Compute.group_workload(group)
-    assert finished["active_operation_count"] == 8
-    assert {:ok, _, _} = Compute.update_group_workload(group, &Map.put(&1, "status", "archiving"))
-
-    assert {:error, {:vm_archiving, _}} =
-             Compute.begin_group_operation(group, %{attrs | operation_id: "late-op"})
   end
 
-  test "concurrent first use fixes one Group profile and resource" do
-    tenant = SalixStore.Ids.new_tenant_id()
-    group = SalixStore.Ids.new_group_id(tenant)
-    resource = SalixStore.RuntimeIds.cloud_vm_provider_resource_name(group)
+  # A Host whose current connection made its Project Environment's binding available.
+  defp connect_host!(tenant, registration_id, observation) do
+    {:ok, pool} =
+      Compute.create_pool(%{
+        id: "host-pool-" <> registration_id,
+        tenant_id: tenant,
+        name: "Host",
+        region: "local",
+        provider_policy: %{"providers" => ["agent_vmm"]},
+        capabilities: ["runtime_exec"]
+      })
 
-    facts = %{
-      "tenant_id" => tenant,
-      "group_id" => group,
-      "provider" => "cloudflare",
-      "provider_resource_id" => resource,
-      "provider_resource_name" => resource,
-      "provider_spec" => %{"profile_key" => "cf-standard-1"},
-      "status" => "creating",
-      "created_at" => System.system_time(:millisecond)
-    }
+    {:ok, environment} =
+      Compute.create_environment(%{
+        id: "host-project-" <> registration_id,
+        tenant_id: tenant,
+        owner_type: "project",
+        owner_id: "project-" <> registration_id,
+        pool_id: pool.id
+      })
 
-    results =
-      1..8
-      |> Task.async_stream(fn _ -> Compute.ensure_group_workload(facts) end,
-        max_concurrency: 8,
-        timeout: 10_000
-      )
-      |> Enum.map(fn {:ok, result} -> result end)
+    {:ok, binding} =
+      Compute.create_provider_binding(%{
+        id: "host-binding-" <> registration_id,
+        pool_id: pool.id,
+        environment_id: environment.id,
+        provider: "agent_vmm",
+        provider_ref: registration_id
+      })
 
-    assert Enum.count(results, &match?({:ok, _, :created}, &1)) == 1
-    assert Enum.count(results, &match?({:ok, _, :existing}, &1)) == 7
+    Repo.update_all(from(r in AgentVMM.Registration, where: r.id == ^registration_id),
+      set: [status: "ready", desired_enabled: true]
+    )
 
-    assert {:ok, %{"provider_spec" => %{"profile_key" => "cf-standard-1"}} = rec} =
-             Compute.group_workload(group)
-
-    assert rec["provider_resource_name"] == resource
-    assert Repo.aggregate(Compute.Workload, :count) == 1
+    Repo.update_all(from(b in Compute.ProviderBinding, where: b.id == ^binding.id),
+      set: [status: "available", observation: observation]
+    )
   end
 
   test "Gateway release waits for tracked calls, fences new calls, and fails closed on storage errors" do
@@ -640,225 +613,9 @@ defmodule SalixStore.ComputeTest do
     assert {:ok, %{"active_operation_count" => 0}} = Compute.group_workload(group)
   end
 
-  test "standalone Gateway probe claim shares the image release fence" do
-    on_exit(fn -> S3.delete(Keys.ctl_vm_maintenance()) end)
-    assert {:ok, "probe-one"} = Compute.begin_cloudflare_direct_gateway_attempt("probe-one")
-
-    assert {:ok, %{"active_direct_attempts" => %{"probe-one" => _}}} =
-             Compute.begin_cloudflare_gateway_release("image-one", %{})
-
-    assert {:error, {:vm_service_upgrading, _}} =
-             Compute.begin_cloudflare_direct_gateway_attempt("probe-two")
-
-    assert :ok = Compute.clear_cloudflare_gateway_release("image-one", "prepared")
-
-    assert {:ok, %{"enabled" => false, "active_direct_attempts" => %{"probe-one" => _}}} =
-             Compute.cloudflare_gateway_release_status()
-
-    assert {:ok, %{"maintenance_id" => "image-two"}} =
-             Compute.begin_cloudflare_gateway_release("image-two", %{})
-
-    assert {:error, :direct_gateway_attempts_pending} =
-             Compute.mark_cloudflare_gateway_release_deploying("image-two")
-
-    assert :ok = Compute.finish_cloudflare_direct_gateway_attempt("probe-one")
-    assert :ok = Compute.clear_cloudflare_gateway_release("image-two", "prepared")
-  end
-
-  test "ready Sandbox settles only its coalesced pending start claim" do
-    tenant = SalixStore.Ids.new_tenant_id()
-    group = SalixStore.Ids.new_group_id(tenant)
-
-    assert {:ok, _, :created} =
-             Compute.ensure_group_workload(%{
-               "tenant_id" => tenant,
-               "group_id" => group,
-               "provider" => "cloudflare",
-               "provider_resource_id" => "sandbox-one",
-               "status" => "ready"
-             })
-
-    assert {:ok, "first"} =
-             Compute.begin_cloudflare_gateway_attempt(
-               group,
-               "first",
-               :normal,
-               "cf-standard-2:sandbox-one"
-             )
-
-    assert :ok =
-             Compute.mark_cloudflare_gateway_starting(group, "first", "cf-standard-2:sandbox-one")
-
-    assert {:ok, "repeat"} =
-             Compute.begin_cloudflare_gateway_attempt(
-               group,
-               "repeat",
-               :normal,
-               "cf-standard-2:sandbox-one"
-             )
-
-    assert :ok =
-             Compute.mark_cloudflare_gateway_starting(
-               group,
-               "repeat",
-               "cf-standard-2:sandbox-one"
-             )
-
-    assert {:ok, "other"} =
-             Compute.begin_cloudflare_gateway_attempt(
-               group,
-               "other",
-               :normal,
-               "cf-standard-1:sandbox-one"
-             )
-
-    assert :ok =
-             Compute.mark_cloudflare_gateway_starting(group, "other", "cf-standard-1:sandbox-one")
-
-    assert {:ok, %{"active_operation_count" => 2}} = Compute.group_workload(group)
-
-    assert :ok = Compute.finish_cloudflare_gateway_starting(group, "cf-standard-2:sandbox-one")
-    assert {:ok, %{"active_operation_count" => 1}} = Compute.group_workload(group)
-    assert :ok = Compute.finish_cloudflare_gateway_starting(group, "cf-standard-1:sandbox-one")
-    assert {:ok, %{"active_operation_count" => 0}} = Compute.group_workload(group)
-  end
-
-  test "a prepared image fence admits only the owned archiving Workload's archive calls" do
-    on_exit(fn -> S3.delete(Keys.ctl_vm_maintenance()) end)
-    tenant = SalixStore.Ids.new_tenant_id()
-    group = SalixStore.Ids.new_group_id(tenant)
-
-    assert {:ok, _, :created} =
-             Compute.ensure_group_workload(%{
-               "tenant_id" => tenant,
-               "group_id" => group,
-               "provider" => "cloudflare",
-               "provider_resource_id" => "sandbox-one",
-               "provider_resource_name" => "sandbox-one",
-               "provider_spec" => %{"profile_key" => "cf-standard-2"},
-               "status" => "archiving",
-               "created_at" => 1234
-             })
-
-    archived_group = SalixStore.Ids.new_group_id(tenant)
-
-    assert {:ok, _, :created} =
-             Compute.ensure_group_workload(%{
-               "tenant_id" => tenant,
-               "group_id" => archived_group,
-               "provider" => "cloudflare",
-               "provider_resource_id" => "saved-sandbox",
-               "provider_resource_name" => "saved-sandbox",
-               "provider_spec" => %{"profile_key" => "cf-standard-2"},
-               "status" => "archived",
-               "archive" => %{
-                 "type" => "connector_tar_gz_chunks",
-                 "storage" => "salix_s3",
-                 "operation" => "saved-archive",
-                 "byte_size" => 1,
-                 "chunk_count" => 1
-               },
-               "connector_archive" => %{
-                 "type" => "connector_tar_gz_chunks",
-                 "storage" => "salix_s3",
-                 "operation" => "saved-archive",
-                 "byte_size" => 1,
-                 "chunk_count" => 1
-               }
-             })
-
-    assert {:ok, %{"phase" => "prepared"}} =
-             Compute.begin_cloudflare_gateway_release("image-archive", %{
-               "reason" => "sandbox_image_release"
-             })
-
-    assert {:error, {:vm_service_upgrading, _}} =
-             Compute.begin_cloudflare_gateway_attempt(group, "ordinary", :normal)
-
-    assert {:ok, "archive"} =
-             Compute.begin_cloudflare_gateway_attempt(
-               group,
-               "archive",
-               :archive,
-               "cf-standard-2:sandbox-one"
-             )
-
-    assert {:error, {:vm_service_upgrading, _}} =
-             Compute.begin_cloudflare_gateway_attempt(
-               group,
-               "wrong-archive",
-               :archive,
-               "cf-standard-1:sandbox-one"
-             )
-
-    assert {:error, {:vm_service_upgrading, _}} =
-             Compute.begin_cloudflare_gateway_attempt(
-               archived_group,
-               "wrong-sandbox",
-               :archive,
-               "cf-standard-1:saved-sandbox"
-             )
-
-    assert {:ok, "finish-saved-archive"} =
-             Compute.begin_cloudflare_gateway_attempt(
-               archived_group,
-               "finish-saved-archive",
-               :archive,
-               "cf-standard-2:saved-sandbox"
-             )
-
-    assert :ok = Compute.finish_cloudflare_gateway_attempt(group, "archive")
-    assert :ok = Compute.finish_cloudflare_gateway_attempt(archived_group, "finish-saved-archive")
-
-    assert {:ok, %{"phase" => "deploying"}} =
-             Compute.mark_cloudflare_gateway_release_deploying("image-archive")
-
-    assert {:error, {:vm_service_upgrading, _}} =
-             Compute.begin_cloudflare_gateway_attempt(group, "late-archive", :archive)
-
-    assert {:error, {:vm_service_upgrading, _}} =
-             Compute.begin_cloudflare_gateway_attempt(
-               archived_group,
-               "late-saved-archive",
-               :archive,
-               "cf-standard-2:saved-sandbox"
-             )
-
-    assert :ok = Compute.clear_cloudflare_gateway_release("image-archive", "deploying")
-  end
-
-  test "new image release takes over an unfinished deploy without opening the fence" do
-    on_exit(fn -> S3.delete(Keys.ctl_vm_maintenance()) end)
-
-    assert {:ok, %{"phase" => "prepared"}} =
-             Compute.begin_cloudflare_gateway_release("image-old", %{
-               "reason" => "sandbox_image_release"
-             })
-
-    assert {:ok, %{"phase" => "deploying"}} =
-             Compute.mark_cloudflare_gateway_release_deploying("image-old")
-
-    assert {:ok,
-            %{
-              "enabled" => true,
-              "phase" => "deploying",
-              "maintenance_id" => "image-new",
-              "superseded_maintenance_id" => "image-old"
-            }} =
-             Compute.begin_cloudflare_gateway_release("image-new", %{
-               "reason" => "sandbox_image_release"
-             })
-
-    assert {:error, :vm_maintenance_owned_by_other_release} =
-             Compute.clear_cloudflare_gateway_release("image-old", "deploying")
-
-    assert :ok = Compute.clear_cloudflare_gateway_release("image-new", "deploying")
-  end
-
   test "agent vmm managed pool owns per-workload isolation limits" do
     {:ok, pool} = Compute.ensure_managed_default_pool("tenant", "agent_vmm")
     policy = pool.capacity["agent_vmm_remote_policy"]
-    refute Map.has_key?(policy, "max_environments")
 
     per_environment = policy["per_environment_limits"]
 
@@ -866,8 +623,6 @@ defmodule SalixStore.ComputeTest do
       assert {:ok, template} = RuntimeBundleCatalog.resolve(key, root: @runtime_bundle_root)
       assert resource_contract_within?(template.resources, per_environment)
     end
-
-    refute Map.has_key?(policy, "aggregate_limits")
 
     {:ok, environment} =
       Compute.ensure_environment(%{
@@ -880,34 +635,6 @@ defmodule SalixStore.ComputeTest do
 
     assert {:ok, %{policy: ^policy, revision: 1}} =
              Compute.agent_vmm_remote_policy(environment.id)
-  end
-
-  test "agent vmm managed pool removes retired aggregate and compute reservations" do
-    {:ok, _pool} = Compute.ensure_managed_default_pool("tenant", "agent_vmm")
-
-    {1, _} =
-      Repo.update_all(
-        Compute.Pool,
-        set: [
-          capacity: %{
-            "agent_vmm_remote_policy" => %{
-              "max_environments" => 1,
-              "aggregate_limits" => %{"cpu_millis" => 1},
-              "per_environment_limits" => %{"cpu_millis" => 1, "memory_bytes" => 1}
-            }
-          }
-        ]
-      )
-
-    assert {:ok, converged} = Compute.ensure_managed_default_pool("tenant", "agent_vmm")
-    assert converged.revision == 2
-    refute Map.has_key?(converged.capacity["agent_vmm_remote_policy"], "max_environments")
-    refute Map.has_key?(converged.capacity["agent_vmm_remote_policy"], "aggregate_limits")
-
-    refute Map.has_key?(
-             converged.capacity["agent_vmm_remote_policy"]["per_environment_limits"],
-             "cpu_millis"
-           )
   end
 
   test "Agent VMM placement requires current observation and exact environment scope" do
@@ -954,14 +681,19 @@ defmodule SalixStore.ComputeTest do
 
     assert binding.status == "disabled"
 
-    for environment_id <- ["environment-a", "environment-b"] do
-      assert {:error, :capacity_unavailable} =
+    # The enrolled Host of environment-a is not connected yet. environment-b
+    # has no Host in its scope at all.
+    for {environment_id, reason} <- [
+          {"environment-a", :node_offline},
+          {"environment-b", :capacity_unavailable}
+        ] do
+      assert {:error, ^reason} =
                Compute.place_workload(%{
                  tenant_id: "tenant",
                  allocation_id: "unobserved-#{environment_id}",
                  workload_id: "unobserved-workload-#{environment_id}",
                  environment_id: environment_id,
-                 kind: "external_worker"
+                 kind: "meeting_runtime"
                })
     end
 
@@ -978,7 +710,7 @@ defmodule SalixStore.ComputeTest do
                allocation_id: "cross-environment-allocation",
                workload_id: "cross-environment-workload",
                environment_id: "environment-b",
-               kind: "external_worker"
+               kind: "meeting_runtime"
              })
 
     assert {:error, :provider_unavailable} =
@@ -995,113 +727,20 @@ defmodule SalixStore.ComputeTest do
                allocation_id: "scoped-allocation",
                workload_id: "scoped-workload",
                environment_id: "environment-a",
-               kind: "external_worker"
+               kind: "meeting_runtime"
              })
 
     assert placed.allocation.provider_binding_id == binding.id
-  end
 
-  test "compatibility reader stays open until the Environment-scope gate is enabled" do
-    previous =
-      Application.get_env(:salix_store, :agent_vmm_environment_scoped_bindings_enabled)
+    assert {:ok, _totals} = AgentVMM.mark_connection_lost(registration.id, "gateway", "1")
 
-    on_exit(fn ->
-      if is_nil(previous) do
-        Application.delete_env(:salix_store, :agent_vmm_environment_scoped_bindings_enabled)
-      else
-        Application.put_env(
-          :salix_store,
-          :agent_vmm_environment_scoped_bindings_enabled,
-          previous
-        )
-      end
-    end)
-
-    {:ok, pool} =
-      Compute.create_pool(%{
-        id: "rollout-pool",
-        tenant_id: "tenant",
-        name: "rollout",
-        region: "local",
-        provider_policy: %{"providers" => ["agent_vmm"]}
-      })
-
-    for environment_id <- ["rollout-a", "rollout-b"] do
-      {:ok, _environment} =
-        Compute.create_environment(%{
-          id: environment_id,
-          tenant_id: "tenant",
-          owner_type: "project",
-          owner_id: environment_id,
-          pool_id: pool.id
-        })
-    end
-
-    now = DateTime.utc_now()
-
-    {1, _} =
-      Repo.insert_all(Compute.ProviderBinding, [
-        %{
-          id: "legacy-unscoped-binding",
-          pool_id: pool.id,
-          environment_id: nil,
-          provider: "agent_vmm",
-          provider_ref: "legacy-registration",
-          status: "available",
-          generation: 1,
-          revision: 1,
-          observation: %{},
-          updated_at: now
-        }
-      ])
-
-    Application.put_env(:salix_store, :agent_vmm_environment_scoped_bindings_enabled, false)
-
-    assert {:error, :environment_scope_rollout_pending} =
-             Compute.create_provider_binding(%{
-               id: "premature-scoped-binding",
-               pool_id: pool.id,
-               environment_id: "rollout-a",
-               provider: "agent_vmm",
-               provider_ref: "premature-registration"
-             })
-
-    assert {:ok, _allocation} =
-             Compute.allocate(%{
-               id: "compatibility-allocation",
-               environment_id: "rollout-a",
-               provider_binding_id: "legacy-unscoped-binding",
-               generation: 1
-             })
-
-    Application.put_env(:salix_store, :agent_vmm_environment_scoped_bindings_enabled, true)
-
-    enrollment_token = :crypto.strong_rand_bytes(32)
-
-    assert {:ok, _registration} =
-             AgentVMM.create_registration(%{
-               id: "scoped-registration",
+    assert {:error, :node_offline} =
+             Compute.place_workload(%{
                tenant_id: "tenant",
-               group_id: "group",
-               device_id: "device",
-               enrollment_token: enrollment_token
-             })
-
-    assert {:ok, %Compute.ProviderBinding{environment_id: "rollout-a"}} =
-             Compute.create_provider_binding(%{
-               id: "scoped-binding",
-               pool_id: pool.id,
-               environment_id: "rollout-a",
-               provider: "agent_vmm",
-               provider_ref: "scoped-registration"
-             })
-
-    assert {:error, :provider_unavailable} =
-             Compute.allocate(%{
-               id: "strict-allocation",
-               environment_id: "rollout-b",
-               provider_binding_id: "legacy-unscoped-binding",
-               generation: 1
+               allocation_id: "disconnected-allocation",
+               workload_id: "disconnected-workload",
+               environment_id: "environment-a",
+               kind: "meeting_runtime"
              })
   end
 
@@ -1123,8 +762,7 @@ defmodule SalixStore.ComputeTest do
                id: "workload",
                environment_id: fixture.environment.id,
                allocation_id: ready.id,
-               kind: "external_worker",
-               spec: %{"runtime" => "codex"},
+               kind: "meeting_runtime",
                capability_requirements: ["runtime_exec"],
                generation: 1
              })
@@ -1232,108 +870,9 @@ defmodule SalixStore.ComputeTest do
              Compute.observe_allocation(ready.id, ready.revision, 1, "ready", "succeeded")
   end
 
-  test "entity-owned allocation observations preserve independent runtime facts" do
-    fixture = compute_fixture()
-
-    assert {:ok, observed} =
-             Compute.observe_allocation(
-               fixture.allocation.id,
-               fixture.allocation.revision,
-               fixture.environment.generation,
-               "ready",
-               "succeeded",
-               %{
-                 "allocation_revision" => 1,
-                 "imported_reference" => "comma.local/runtime/image@sha256:abc",
-                 "current_container" => %{"id" => "container-1", "state" => "running"},
-                 "container_status" => "running"
-               }
-             )
-
-    assert {:ok, refreshed} =
-             Compute.observe_allocation(
-               observed.id,
-               observed.revision,
-               observed.generation,
-               "ready",
-               "succeeded",
-               %{"allocation_revision" => 2, "allocation_state" => "ready"},
-               merge_provider_observation: true
-             )
-
-    assert refreshed.provider_observation["allocation_revision"] == 2
-    assert refreshed.provider_observation["allocation_state"] == "ready"
-
-    assert refreshed.provider_observation["imported_reference"] ==
-             "comma.local/runtime/image@sha256:abc"
-
-    assert refreshed.provider_observation["current_container"] == %{
-             "id" => "container-1",
-             "state" => "running"
-           }
-
-    assert refreshed.provider_observation["container_status"] == "running"
-  end
-
-  test "exact allocation facts remove obsolete provider projections" do
-    fixture = compute_fixture()
-
-    assert {:ok, observed} =
-             Compute.observe_allocation(
-               fixture.allocation.id,
-               fixture.allocation.revision,
-               fixture.environment.generation,
-               "ready",
-               "succeeded",
-               %{"health" => "sleeping", "current_container" => %{}}
-             )
-
-    assert {:ok, refreshed} =
-             Compute.observe_allocation_facts(
-               observed.id,
-               observed.revision,
-               observed.generation,
-               %{"container_status" => "absent", "health" => "ready"},
-               ["health"]
-             )
-
-    refute Map.has_key?(refreshed.provider_observation, "health")
-    assert refreshed.provider_observation["current_container"] == %{}
-    assert refreshed.provider_observation["container_status"] == "absent"
-  end
-
-  test "outbound Workload credentials are short-lived, scoped, and contain no Provider authority" do
-    assert {:ok, credential} =
-             Compute.WorkloadCredential.issue(
-               "workload",
-               "runtime-instance",
-               ["runtime", "workspace"],
-               60
-             )
-
-    token = credential["token"]
-
-    assert {:ok, claims} =
-             Compute.WorkloadCredential.verify(token, "workload", "runtime")
-
-    assert claims["runtime_instance_id"] == "runtime-instance"
-    refute Map.has_key?(claims, "provider")
-    refute Map.has_key?(claims, "registration_id")
-    refute Map.has_key?(claims, "lease_id")
-    refute Map.has_key?(claims, "endpoint")
-
-    assert {:error, :invalid_workload_credential} =
-             Compute.WorkloadCredential.verify(token, "other-workload", "runtime")
-
-    assert {:error, :invalid_workload_credential} =
-             Compute.WorkloadCredential.verify(token, "workload", "hosting")
-
-    refute inspect(Map.drop(credential, ["token"])) =~ token
-  end
-
   test "side effects become unknown while read and desired-state commands remain replayable" do
     fixture = ready_fixture()
-    deadline = DateTime.add(DateTime.utc_now(), 60, :second)
+    deadline = DateTime.add(SystemsClock.utc_now(), 60, :second)
 
     for {id, class} <- [
           {"side", "side_effecting"},
@@ -1364,109 +903,6 @@ defmodule SalixStore.ComputeTest do
     assert Repo.get!(Compute.Command, "desired").status == "pending"
   end
 
-  test "expired admitted work settles without a disconnect callback or reconnect" do
-    fixture = ready_fixture()
-    deadline = DateTime.add(DateTime.utc_now(), 60, :second)
-
-    for {id, class} <- [
-          {"expired-side", "side_effecting"},
-          {"expired-read", "read_only"},
-          {"expired-desired", "desired_state"}
-        ] do
-      assert {:ok, _} =
-               Compute.enqueue_command(%{
-                 id: id,
-                 allocation_id: fixture.allocation.id,
-                 request_id: id,
-                 kind: id,
-                 classification: class,
-                 target_generation: 1,
-                 target_revision: fixture.allocation.revision,
-                 deadline_at: deadline
-               })
-    end
-
-    assert {:ok, claimed} = Compute.claim_commands(fixture.binding.id, 1)
-    assert length(claimed) == 3
-
-    expired_at = DateTime.add(DateTime.utc_now(), -1, :second)
-    Repo.update_all(Compute.Command, set: [deadline_at: expired_at])
-
-    assert {:ok, %{settled: 3, more?: false}} =
-             AgentVMM.settle_expired_commands(32, DateTime.utc_now())
-
-    assert Repo.get!(Compute.Command, "expired-side").status == "unknown_outcome"
-    assert Repo.get!(Compute.Command, "expired-side").outcome == "unknown"
-    assert Repo.get!(Compute.Command, "expired-read").status == "failed"
-    assert Repo.get!(Compute.Command, "expired-read").outcome == "failed"
-    assert Repo.get!(Compute.Command, "expired-desired").status == "failed"
-    assert Repo.get!(Compute.Command, "expired-desired").outcome == "failed"
-
-    retry_deadline = DateTime.add(DateTime.utc_now(), 60, :second)
-
-    assert {:ok, retry} =
-             Compute.enqueue_command(%{
-               id: "retry-expired-desired",
-               allocation_id: fixture.allocation.id,
-               request_id: "expired-desired",
-               kind: "expired-desired",
-               classification: "desired_state",
-               target_generation: 1,
-               target_revision: fixture.allocation.revision,
-               deadline_at: retry_deadline
-             })
-
-    assert retry.id == "retry-expired-desired"
-    assert retry.status == "pending"
-    assert Repo.get(Compute.Command, "expired-desired") == nil
-    assert {:ok, [claimed_retry]} = Compute.claim_commands(fixture.binding.id, 1)
-    assert claimed_retry.id == retry.id
-  end
-
-  test "expired pending replayable work can be issued as a fresh attempt" do
-    fixture = ready_fixture()
-    deadline = DateTime.add(DateTime.utc_now(), 60, :second)
-
-    assert {:ok, _} =
-             Compute.enqueue_command(%{
-               id: "expired-pending",
-               allocation_id: fixture.allocation.id,
-               request_id: "stable-request",
-               kind: "observe",
-               classification: "read_only",
-               target_generation: 1,
-               target_revision: fixture.allocation.revision,
-               deadline_at: deadline
-             })
-
-    expired_at = DateTime.add(DateTime.utc_now(), -1, :second)
-
-    Repo.update_all(Compute.Command, set: [deadline_at: expired_at])
-
-    assert {:ok, %{settled: 1, more?: false}} =
-             AgentVMM.settle_expired_commands(32, DateTime.utc_now())
-
-    assert Repo.get!(Compute.Command, "expired-pending").status == "failed"
-
-    assert {:ok, retry} =
-             Compute.enqueue_command(%{
-               id: "retry-expired-pending",
-               allocation_id: fixture.allocation.id,
-               request_id: "stable-request",
-               kind: "observe",
-               classification: "read_only",
-               target_generation: 1,
-               target_revision: fixture.allocation.revision,
-               deadline_at: DateTime.add(DateTime.utc_now(), 60, :second)
-             })
-
-    assert retry.id == "retry-expired-pending"
-    assert retry.status == "pending"
-    assert Repo.get(Compute.Command, "expired-pending") == nil
-    assert {:ok, [claimed_retry]} = Compute.claim_commands(fixture.binding.id, 1)
-    assert claimed_retry.id == retry.id
-  end
-
   test "grants and bounded owner projection are scoped and revision fenced" do
     fixture = compute_fixture()
 
@@ -1478,7 +914,7 @@ defmodule SalixStore.ComputeTest do
                principal_type: "agent",
                principal_id: "agent",
                permissions: ["runtime", "workspace"],
-               expires_at: DateTime.add(DateTime.utc_now(), 60, :second)
+               expires_at: DateTime.add(SystemsClock.utc_now(), 60, :second)
              })
 
     assert :ok = Compute.revoke_grant("tenant", grant.id, 1)
@@ -1491,122 +927,6 @@ defmodule SalixStore.ComputeTest do
     assert {:ok, empty} = Compute.project("tenant", "project", "other", 10)
     assert empty.environments == []
     assert empty.allocations == []
-  end
-
-  test "workload grants follow an advanced workload on its current allocation" do
-    fixture = ready_fixture()
-
-    assert {:ok, grant} =
-             Compute.issue_grant(%{
-               id: "workload-grant",
-               tenant_id: "tenant",
-               environment_id: fixture.environment.id,
-               workload_id: fixture.workload.id,
-               principal_type: "agent",
-               principal_id: "agent",
-               permissions: ["runtime"],
-               expires_at: DateTime.add(DateTime.utc_now(), 60, :second)
-             })
-
-    Repo.update_all(Compute.Workload, set: [generation: 2])
-
-    assert {:ok, %Compute.Workload{generation: 2}} =
-             Compute.authorize_workload_grant(
-               "tenant",
-               grant.id,
-               fixture.environment.id,
-               "agent",
-               "runtime"
-             )
-  end
-
-  test "work activity is a bounded provider-scoped projection" do
-    fixture = ready_fixture()
-
-    assert {:ok, idle} = Compute.work_activity("tenant", "registration")
-
-    assert idle == %{
-             "activity" => "idle",
-             "active_operation_count" => 0,
-             "workload_count" => 0
-           }
-
-    Repo.update_all(Compute.Workload, set: [observed_state: "ready"])
-
-    assert {:ok, active} =
-             Compute.enqueue_command(%{
-               id: "activity-command",
-               allocation_id: fixture.allocation.id,
-               workload_id: fixture.workload.id,
-               request_id: "activity-request",
-               kind: "compute.exec",
-               classification: "side_effecting",
-               target_generation: 1,
-               target_revision: fixture.allocation.revision,
-               deadline_at: DateTime.add(DateTime.utc_now(), 60, :second)
-             })
-
-    assert active.status == "pending"
-    assert {:ok, projection} = Compute.work_activity("tenant", "registration")
-    assert projection["activity"] == "idle"
-    assert projection["active_operation_count"] == 0
-    assert projection["workload_count"] == 1
-
-    assert {:ok, _claimed} = Compute.claim_commands(fixture.binding.id, 1)
-    assert {:ok, executing} = Compute.work_activity("tenant", "registration")
-    assert executing["activity"] == "active"
-    assert executing["active_operation_count"] == 1
-
-    assert {:error, :invalid_provider_binding} =
-             Compute.work_activity("other-tenant", "registration")
-
-    assert {:error, :invalid_provider_binding} =
-             Compute.work_activity("tenant", "missing-registration")
-  end
-
-  test "External Worker binding accepts only two tagged variants and rejects Provider identity" do
-    fixture = ready_fixture()
-
-    assert {:ok, %{source_kind: "connected_runtime"}} =
-             Compute.put_external_worker_binding(
-               %{id: "connected", tenant_id: "tenant", agent_id: "agent-connected"},
-               %{
-                 "kind" => "connected_runtime",
-                 "device_runtime_id" => "runtime-device",
-                 "runtime_spec" => %{"runtime" => "codex"}
-               }
-             )
-
-    assert {:ok, %{source_kind: "compute_workload"}} =
-             Compute.put_external_worker_binding(
-               %{id: "compute", tenant_id: "tenant", agent_id: "agent-compute"},
-               %{
-                 "kind" => "compute_workload",
-                 "workload_id" => fixture.workload.id,
-                 "runtime_spec" => %{"provider" => "codex", "model" => "gpt-5"}
-               }
-             )
-
-    assert {:error, :unknown_field} =
-             Compute.validate_external_worker_binding(%{
-               "kind" => "compute_workload",
-               "workload_id" => fixture.workload.id,
-               "provider" => "agent_vmm"
-             })
-
-    assert {:error, :provider_native_identity} =
-             Compute.validate_external_worker_binding(%{
-               "kind" => "compute_workload",
-               "workload_id" => fixture.workload.id,
-               "runtime_spec" => %{"endpoint" => "private.example"}
-             })
-
-    assert {:error, :invalid_compute_workload} =
-             Compute.validate_external_worker_binding(%{
-               "kind" => "compute_workload",
-               "workload_id" => fixture.workload.id,
-               "device_runtime_id" => "also-present"
-             })
   end
 
   test "pool reassignment and workload-scoped grants fail closed across tenant boundaries" do
@@ -1664,27 +984,10 @@ defmodule SalixStore.ComputeTest do
                principal_type: "agent",
                principal_id: "agent",
                permissions: ["runtime"],
-               expires_at: DateTime.add(DateTime.utc_now(), 60, :second)
+               expires_at: DateTime.add(SystemsClock.utc_now(), 60, :second)
              })
 
     assert Repo.get(Compute.Grant, "cross-environment-grant") == nil
-  end
-
-  test "workload placement rejects unsupported pool capabilities before allocating" do
-    fixture = compute_fixture()
-
-    assert {:error, :unsupported_capability} =
-             Compute.place_workload(%{
-               tenant_id: fixture.environment.tenant_id,
-               allocation_id: "unsupported-allocation",
-               workload_id: "unsupported-workload",
-               environment_id: fixture.environment.id,
-               kind: "service",
-               capability_requirements: ["service_public_http"]
-             })
-
-    assert Repo.get(Compute.Allocation, "unsupported-allocation") == nil
-    assert Repo.get(Compute.Workload, "unsupported-workload") == nil
   end
 
   test "provider policy rejects disallowed bindings and excludes stale bindings after update" do
@@ -1742,7 +1045,7 @@ defmodule SalixStore.ComputeTest do
                allocation_id: "policy-allocation",
                workload_id: "policy-workload",
                environment_id: environment.id,
-               kind: "external_worker"
+               kind: "meeting_runtime"
              })
 
     assert Repo.get(Compute.Allocation, "stale-policy-allocation") == nil
@@ -1751,7 +1054,7 @@ defmodule SalixStore.ComputeTest do
   end
 
   test "provider binding rejects a registration owned by another tenant" do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     {:ok, registration} =
       AgentVMM.create_registration(%{
@@ -1810,28 +1113,6 @@ defmodule SalixStore.ComputeTest do
     assert Repo.get(Compute.Workload, "cross-tenant-workload") == nil
   end
 
-  test "pool policy and capabilities reject duplicate or unknown values" do
-    base = %{
-      id: "invalid-policy-pool",
-      tenant_id: "tenant",
-      name: "invalid",
-      region: "local"
-    }
-
-    assert {:error, :invalid_provider_policy} =
-             Compute.create_pool(
-               Map.put(base, :provider_policy, %{"providers" => ["agent_vmm", "agent_vmm"]})
-             )
-
-    assert {:error, :invalid_capability} =
-             Compute.create_pool(
-               base
-               |> Map.put(:id, "invalid-capability-pool")
-               |> Map.put(:provider_policy, %{"providers" => ["agent_vmm"]})
-               |> Map.put(:capabilities, ["runtime_exec", "runtime_exec"])
-             )
-  end
-
   test "stopping a workload survives Host ready inventory and releases its allocation" do
     fixture = ready_fixture()
 
@@ -1888,7 +1169,7 @@ defmodule SalixStore.ComputeTest do
     assert current_command.target_revision == current_allocation.revision
 
     assert {:ok, :reissued} =
-             Compute.refresh_due_release_obligation(command.id, DateTime.utc_now())
+             Compute.refresh_due_release_obligation(command.id, SystemsClock.utc_now())
 
     command_id = command.id
 
@@ -1912,34 +1193,6 @@ defmodule SalixStore.ComputeTest do
              )
 
     assert Repo.get!(Compute.Allocation, allocation.id).status == "released"
-  end
-
-  test "a release command insert conflict rolls back the draining transition" do
-    fixture = ready_fixture()
-    command_id = "release:#{fixture.allocation.id}:#{fixture.allocation.generation}"
-
-    assert {:ok, _conflict} =
-             Compute.enqueue_command(%{
-               id: command_id,
-               allocation_id: fixture.allocation.id,
-               workload_id: fixture.workload.id,
-               request_id: "unrelated-command",
-               kind: "observe",
-               classification: "read_only",
-               target_generation: fixture.allocation.generation,
-               target_revision: fixture.allocation.revision,
-               deadline_at: DateTime.add(DateTime.utc_now(), 60, :second)
-             })
-
-    assert {:error, :release_obligation_conflict} =
-             Compute.stop_workload(fixture.workload.id, fixture.workload.revision, "terminal")
-
-    assert Repo.get!(Compute.Workload, fixture.workload.id).desired_state == "ready"
-    assert Repo.get!(Compute.Allocation, fixture.allocation.id).status == "ready"
-
-    refute Repo.get_by(Compute.Command,
-             release_incarnation: Compute.release_incarnation("allocation", 1)
-           )
   end
 
   test "one-time release backfill inserts missing rows and adopts a single legacy identity" do
@@ -1976,7 +1229,7 @@ defmodule SalixStore.ComputeTest do
             classification: "desired_state",
             target_generation: fixture.allocation.generation,
             target_revision: fixture.allocation.revision,
-            deadline_at: DateTime.add(DateTime.utc_now(), 60, :second)
+            deadline_at: DateTime.add(SystemsClock.utc_now(), 60, :second)
           })
 
         case result do
@@ -2060,7 +1313,7 @@ defmodule SalixStore.ComputeTest do
     assert restored.request_id == command.request_id
     assert restored.status == "failed"
     assert restored.outcome == "failed"
-    assert DateTime.compare(restored.next_attempt_at, DateTime.utc_now()) in [:lt, :eq]
+    assert DateTime.compare(restored.next_attempt_at, SystemsClock.utc_now()) in [:lt, :eq]
     assert %{issues: []} = ReleaseObligationBackfill.audit_page(nil, 100)
   end
 
@@ -2108,7 +1361,7 @@ defmodule SalixStore.ComputeTest do
             classification: "desired_state",
             target_generation: fixture.allocation.generation,
             target_revision: fixture.allocation.revision,
-            deadline_at: DateTime.add(DateTime.utc_now(), 60, :second)
+            deadline_at: DateTime.add(SystemsClock.utc_now(), 60, :second)
           })
 
         command
@@ -2158,7 +1411,7 @@ defmodule SalixStore.ComputeTest do
                    classification: "desired_state",
                    target_generation: fixture.allocation.generation,
                    target_revision: fixture.allocation.revision,
-                   deadline_at: DateTime.add(DateTime.utc_now(), 60, :second)
+                   deadline_at: DateTime.add(SystemsClock.utc_now(), 60, :second)
                  })
       end
     after
@@ -2215,7 +1468,7 @@ defmodule SalixStore.ComputeTest do
     )
 
     try do
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       base = %{
         allocation_id: fixture.allocation.id,
@@ -2278,214 +1531,6 @@ defmodule SalixStore.ComputeTest do
     assert %{issues: []} = ReleaseObligationBackfill.audit_page(nil, 100)
   end
 
-  test "release retry selects its bounded due owner row independently of unrelated history" do
-    fixture = ready_fixture()
-
-    assert {:ok, _stopped} =
-             Compute.stop_workload(fixture.workload.id, fixture.workload.revision, "terminal")
-
-    release = Repo.get_by!(Compute.Command, kind: "allocation.release")
-    now = DateTime.utc_now()
-
-    assert {:error, :release_requires_commit} =
-             AgentVMM.record_result(release.id, "succeeded", %{"bypass" => true})
-
-    assert {:error, :release_requires_commit} =
-             Compute.record_command_result(
-               release.id,
-               ["pending"],
-               "succeeded",
-               %{"bypass" => true}
-             )
-
-    assert Repo.get!(Compute.Command, release.id).status == "pending"
-
-    unrelated =
-      for number <- 1..96 do
-        id = "unrelated-failed-#{number}"
-
-        %{
-          id: id,
-          allocation_id: fixture.allocation.id,
-          workload_id: fixture.workload.id,
-          request_id: id,
-          operation_id: id,
-          target_ref: fixture.workload.id,
-          kind: "observe",
-          classification: "read_only",
-          target_generation: release.target_generation,
-          target_revision: release.target_revision,
-          connection_epoch: "1",
-          status: "failed",
-          outcome: "failed",
-          payload: %{},
-          evidence: %{},
-          deadline_at: DateTime.add(now, -1, :second),
-          next_attempt_at: nil,
-          attempt_count: 0,
-          created_at: now,
-          updated_at: now
-        }
-      end
-
-    assert {96, nil} = Repo.insert_all(Compute.Command, unrelated)
-
-    Repo.update_all(from(c in Compute.Command, where: c.id == ^release.id),
-      set: [deadline_at: DateTime.add(now, -1, :second)]
-    )
-
-    assert {:ok, %{settled: 1, release_retries: 0}} =
-             AgentVMM.settle_expired_commands(32, now)
-
-    assert {:ok, %{settled: 0, release_retries: 1, release_blocked: 0}} =
-             AgentVMM.settle_expired_commands(32, DateTime.add(now, 6, :second))
-
-    retried = Repo.get!(Compute.Command, release.id)
-    assert retried.id == release.id
-    assert retried.request_id == release.request_id
-    assert retried.attempt_count == 1
-    assert Repo.aggregate(from(c in Compute.Command, where: c.kind == "observe"), :count) == 96
-  end
-
-  test "only Agent VMM writes and owns allocation release obligations" do
-    agent = ready_fixture()
-
-    assert {:ok, _} =
-             Compute.stop_workload(agent.workload.id, agent.workload.revision, "terminal")
-
-    agent_release = Repo.get_by!(Compute.Command, kind: "allocation.release")
-    now = DateTime.utc_now()
-
-    Repo.update_all(from(c in Compute.Command, where: c.id == ^agent_release.id),
-      set: [
-        status: "failed",
-        outcome: "failed",
-        next_attempt_at: DateTime.add(now, -1, :second)
-      ]
-    )
-
-    Repo.update_all(from(p in Compute.Pool, where: p.id == ^agent.pool.id),
-      set: [provider_policy: %{"providers" => ["agent_vmm", "cloudflare"]}]
-    )
-
-    {:ok, environment} =
-      Compute.create_environment(%{
-        id: "non-agent-environment",
-        tenant_id: "tenant",
-        owner_type: "project",
-        owner_id: "non-agent-project",
-        pool_id: agent.pool.id
-      })
-
-    {:ok, binding} =
-      Compute.create_provider_binding(%{
-        id: "non-agent-binding",
-        pool_id: agent.pool.id,
-        environment_id: environment.id,
-        provider: "cloudflare",
-        provider_ref: "cloudflare-provider",
-        generation: environment.generation
-      })
-
-    Repo.update_all(from(b in Compute.ProviderBinding, where: b.id == ^binding.id),
-      set: [status: "available"]
-    )
-
-    {:ok, allocation} =
-      Compute.allocate(%{
-        id: "non-agent-allocation",
-        environment_id: environment.id,
-        provider_binding_id: binding.id,
-        generation: environment.generation
-      })
-
-    {:ok, allocation} =
-      Compute.observe_allocation(
-        allocation.id,
-        allocation.revision,
-        allocation.generation,
-        "ready",
-        "succeeded"
-      )
-
-    {:ok, workload} =
-      Compute.create_workload(%{
-        id: "non-agent-workload",
-        environment_id: environment.id,
-        allocation_id: allocation.id,
-        kind: "external_worker",
-        generation: environment.generation
-      })
-
-    assert {:ok, _} = Compute.stop_workload(workload.id, workload.revision, "terminal")
-
-    refute Repo.get_by(Compute.Command,
-             allocation_id: allocation.id,
-             kind: "allocation.release"
-           )
-
-    # A mixed-version/non-product row can be the first Command owner row, but
-    # point validation clears its due marker so it cannot permanently starve
-    # the following legal Agent VMM obligation.
-    non_agent_incarnation = Compute.release_incarnation(allocation.id, allocation.generation)
-
-    non_agent_row =
-      agent_release
-      |> Map.take(Compute.Command.__schema__(:fields))
-      |> Map.merge(%{
-        id: "non-agent-release",
-        allocation_id: allocation.id,
-        workload_id: nil,
-        request_id: non_agent_incarnation,
-        operation_id: "non-agent-release",
-        target_ref: allocation.id,
-        target_generation: allocation.generation,
-        target_revision: Repo.get!(Compute.Allocation, allocation.id).revision,
-        status: "failed",
-        outcome: "failed",
-        release_incarnation: non_agent_incarnation,
-        next_attempt_at: DateTime.add(now, -2, :second),
-        created_at: DateTime.add(now, -2, :second),
-        updated_at: DateTime.add(now, -2, :second)
-      })
-
-    assert {1, nil} = Repo.insert_all(Compute.Command, [non_agent_row])
-
-    assert %{
-             issues: [
-               %{
-                 allocation_id: "non-agent-allocation",
-                 reason: :unsupported_provider_release_obligation
-               }
-             ]
-           } =
-             ReleaseObligationBackfill.audit_page(nil, 100)
-
-    assert %{
-             issues: [
-               %{
-                 allocation_id: "non-agent-allocation",
-                 reason: :unsupported_provider_release_obligation
-               }
-             ]
-           } =
-             ReleaseObligationBackfill.backfill_page(nil, 100)
-
-    assert {:ok, %{release_retries: 0, release_blocked: 1, more?: true}} =
-             AgentVMM.settle_expired_commands(1, now)
-
-    blocked = Repo.get!(Compute.Command, "non-agent-release")
-    assert blocked.status == "failed"
-    assert blocked.next_attempt_at == nil
-    assert blocked.evidence["reason"] == "unsupported_provider"
-    assert Repo.get!(Compute.Command, agent_release.id).status == "failed"
-
-    assert {:ok, %{release_retries: 1, release_blocked: 0}} =
-             AgentVMM.settle_expired_commands(1, DateTime.add(now, 1, :second))
-
-    assert Repo.get!(Compute.Command, agent_release.id).status == "pending"
-  end
-
   test "removing run-capacity waits preserves command identity, deadlines and storage actions" do
     %{environment: environment, allocation: allocation} = compute_fixture()
 
@@ -2527,7 +1572,7 @@ defmodule SalixStore.ComputeTest do
         do: migrate.()
     end)
 
-    now = DateTime.utc_now()
+    [[now]] = Repo.query!("SELECT clock_timestamp()").rows
 
     commands =
       for {id, deadline, generation} <- [
@@ -2545,7 +1590,7 @@ defmodule SalixStore.ComputeTest do
             classification: "desired_state",
             target_generation: 1,
             target_revision: allocation.revision,
-            deadline_at: DateTime.add(now, 300, :second),
+            deadline_at: DateTime.add(SystemsClock.utc_now(), 300, :second),
             payload: %{"accepted" => id}
           })
 
@@ -2568,7 +1613,7 @@ defmodule SalixStore.ComputeTest do
           [command.id, workload.id, generation]
         )
 
-        command
+        Repo.get!(Compute.Command, command.id)
       end
 
     for {generation, resource} <- [{1, "run_slot"}, {2, "storage_headroom"}] do
@@ -2604,12 +1649,12 @@ defmodule SalixStore.ComputeTest do
 
   test "one creation request commits one placement under concurrency and keeps deliberate additional work" do
     fixture = compute_fixture()
-    input = %{"environment_id" => fixture.environment.id, "kind" => "external_worker"}
+    input = %{"environment_id" => fixture.environment.id, "kind" => "meeting_runtime"}
 
     attrs = %{
       tenant_id: "tenant",
       environment_id: fixture.environment.id,
-      kind: "external_worker",
+      kind: "meeting_runtime",
       capability_requirements: ["runtime_exec"],
       creation_request_scope: "comma:project",
       creation_request_id: "same-intent",
@@ -2689,7 +1734,7 @@ defmodule SalixStore.ComputeTest do
                  id: "page-workload-#{String.pad_leading(to_string(i), 3, "0")}",
                  environment_id: fixture.environment.id,
                  allocation_id: allocation.id,
-                 kind: "external_worker",
+                 kind: "meeting_runtime",
                  generation: 1
                })
     end
@@ -2725,6 +1770,160 @@ defmodule SalixStore.ComputeTest do
              Compute.project_page("tenant", "project", "project", %{limit: 101})
   end
 
+  test "Shell deletion closes admission and retains allocation authority until exact data cleanup" do
+    fixture = compute_fixture()
+
+    assert {:ok, workload} =
+             Compute.create_workload(%{
+               id: "shell",
+               environment_id: fixture.environment.id,
+               allocation_id: fixture.allocation.id,
+               kind: "shell",
+               template_key: "shell.default",
+               generation: 1
+             })
+
+    Repo.update_all(from(a in Compute.Allocation, where: a.id == ^fixture.allocation.id),
+      set: [status: "ready", provider_observation: %{"allocation_revision" => 7}]
+    )
+
+    alias SalixStore.ComputeWorkloadDeletion, as: Deletion
+    now = SystemsClock.utc_now()
+
+    Repo.insert!(%AgentVMM.RegistrationObservation{
+      registration_id: "registration",
+      gateway_instance_id: "gateway",
+      connection_epoch: "1",
+      observation_sequence: 1,
+      observed_at: now,
+      received_at: now,
+      protocol_version: "1",
+      host_api_version: "1",
+      health_status: "healthy",
+      supported_features: ["allocation-disposal-v1"],
+      capacity: %{},
+      usage: %{},
+      health_components: %{},
+      inventory_watermark: 0,
+      inventory_observed_at: now
+    })
+
+    assert {:error, :not_found} =
+             Deletion.start("other", "project", workload.id, 1, 1, "request", fn -> :ok end)
+
+    assert {:error, :not_found} =
+             Deletion.start("tenant", "project", workload.id, 1, 1, "request", fn ->
+               {:error, :revoked}
+             end)
+
+    assert {:error, :revision_conflict} =
+             Deletion.start("tenant", "project", workload.id, 1, 2, "request", fn -> :ok end)
+
+    assert {:ok, deleting} =
+             Deletion.start("tenant", "project", workload.id, 1, 1, "request", fn -> :ok end)
+
+    assert deleting.desired_state == "draining"
+    assert Repo.get!(Compute.Allocation, fixture.allocation.id).status == "ready"
+
+    assert {:ok, replay} =
+             Deletion.start("tenant", "project", workload.id, 1, 1, "request", fn -> :ok end)
+
+    assert replay.deletion == deleting.deletion
+
+    Repo.update_all(
+      from(o in AgentVMM.RegistrationObservation, where: o.registration_id == "registration"),
+      set: [disconnected_at: SystemsClock.utc_now()]
+    )
+
+    assert {:ok, %{command: pending}} = Deletion.advance(fixture.allocation, deleting)
+    waiting = Repo.get!(Compute.Workload, workload.id)
+    assert waiting.deletion["error"] == "original_device_offline"
+    assert waiting.deletion["registration_id"] == "registration"
+    assert Repo.get!(Compute.Allocation, fixture.allocation.id).status == "ready"
+
+    Repo.update_all(
+      from(o in AgentVMM.RegistrationObservation, where: o.registration_id == "registration"),
+      set: [disconnected_at: nil]
+    )
+
+    assert {:ok, %{command: command}} = Deletion.advance(fixture.allocation, waiting)
+    assert command.id == pending.id
+    assert Repo.get!(Compute.Workload, workload.id).deletion["error"] == nil
+    assert {:ok, claimed} = AgentVMM.claim_registration_command("registration", "gateway", "1")
+    assert claimed.id == command.id
+    assert claimed.kind == "allocation.dispose"
+    assert claimed.payload["command_json"]["disposeAllocation"]["expectedGeneration"] == 1
+
+    evidence = %{
+      "result" => %{
+        "allocation" => %{
+          "allocationId" => "allocation",
+          "state" => "ALLOCATION_STATE_RETAINED",
+          "generation" => "1",
+          "revision" => "7"
+        }
+      }
+    }
+
+    assert {:error, :invalid_host_result} =
+             AgentVMM.commit_registration_result(
+               "registration",
+               "gateway",
+               "1",
+               command.id,
+               "succeeded",
+               evidence
+             )
+
+    assert Repo.get!(Compute.Allocation, fixture.allocation.id).status == "ready"
+    evidence = put_in(evidence, ["result", "allocation", "state"], "ALLOCATION_STATE_DISCARDED")
+
+    assert :ok =
+             AgentVMM.commit_registration_result(
+               "registration",
+               "gateway",
+               "1",
+               command.id,
+               "succeeded",
+               evidence
+             )
+
+    completed = Repo.get!(Compute.Workload, workload.id)
+    assert completed.deletion["phase"] == "complete"
+    assert completed.desired_state == "stopped"
+    assert Repo.get!(Compute.Allocation, fixture.allocation.id).status == "released"
+
+    assert {:ok, replay} =
+             Deletion.start("tenant", "project", workload.id, 1, 1, "request", fn -> :ok end)
+
+    assert replay.id == workload.id
+  end
+
+  test "Shell deletion rejects a shared allocation and business-owned workloads" do
+    fixture = ready_fixture()
+    alias SalixStore.ComputeWorkloadDeletion, as: Deletion
+
+    assert {:error, :business_owner_required} =
+             Deletion.start("tenant", "project", fixture.workload.id, 1, 1, "request", fn ->
+               :ok
+             end)
+
+    assert {:ok, shell} =
+             Compute.create_workload(%{
+               id: "shell",
+               environment_id: fixture.environment.id,
+               allocation_id: fixture.allocation.id,
+               kind: "shell",
+               template_key: "shell.default",
+               generation: 1
+             })
+
+    assert {:error, :shared_allocation} =
+             Deletion.start("tenant", "project", shell.id, 1, 1, "request", fn -> :ok end)
+
+    assert Repo.get!(Compute.Workload, shell.id).desired_state == "ready"
+  end
+
   defp ready_fixture do
     fixture = compute_fixture()
 
@@ -2736,11 +1935,196 @@ defmodule SalixStore.ComputeTest do
         id: "workload",
         environment_id: fixture.environment.id,
         allocation_id: allocation.id,
-        kind: "external_worker",
+        kind: "meeting_runtime",
         generation: 1
       })
 
     Map.merge(fixture, %{allocation: allocation, workload: workload})
+  end
+
+  test "expired authorization fences authentication, existing connections, enable and placement before sweeping" do
+    fixture = compute_fixture()
+    credential = "original-credential"
+
+    Repo.update_all(AgentVMM.Registration,
+      set: [
+        credential_hash: :crypto.hash(:sha256, credential),
+        authorization_expires_at: DateTime.add(SystemsClock.utc_now(), -1, :second)
+      ]
+    )
+
+    registration = Repo.get!(AgentVMM.Registration, "registration")
+
+    assert {:error, :unauthorized} =
+             AgentVMM.authenticate_registration(registration.id, credential)
+
+    assert {:error, :unauthorized} =
+             AgentVMM.claim_registration_command(registration.id, "gateway", "1")
+
+    assert {:error, :revision_conflict} =
+             AgentVMM.configure_registration(registration.id, registration.revision, true)
+
+    assert {:error, :registration_inactive} =
+             AgentVMM.observe_registration(registration.id, "gateway", %{
+               "connectionEpoch" => "2",
+               "inventoryWatermark" => 0,
+               "inventory" => []
+             })
+
+    assert {:error, :provider_unavailable} =
+             Compute.allocate(%{
+               id: "late-allocation",
+               environment_id: fixture.environment.id,
+               provider_binding_id: fixture.binding.id,
+               generation: 1
+             })
+
+    assert {:ok, %{retired: 1}} = AgentVMM.expire_authorizations()
+    expired = Repo.get!(AgentVMM.Registration, registration.id)
+    assert expired.status == "revoked"
+
+    assert {:error, :revision_conflict} =
+             AgentVMM.configure_registration(expired.id, expired.revision, true)
+  end
+
+  test "authenticated contact renews seven days without depending on the disposable health projection" do
+    compute_fixture()
+    now = SystemsClock.utc_now()
+
+    Repo.update_all(AgentVMM.Registration,
+      set: [authorization_expires_at: DateTime.add(now, 60, :second)]
+    )
+
+    assert {:ok, :ok} =
+             AgentVMM.observe_registration("registration", "gateway", %{
+               "connectionEpoch" => "2",
+               "inventoryWatermark" => 0,
+               "inventory" => []
+             })
+
+    registration = Repo.get!(AgentVMM.Registration, "registration")
+    assert DateTime.diff(registration.authorization_expires_at, now) >= 7 * 86_400
+    assert is_nil(Repo.get(AgentVMM.RegistrationObservation, registration.id))
+
+    assert {:ok, %{retired: 0}} =
+             AgentVMM.expire_authorizations(32, DateTime.add(now, 7 * 86_400 - 1, :second))
+
+    assert {:ok, %{retired: 1}} =
+             AgentVMM.expire_authorizations(32, DateTime.add(now, 7 * 86_400 + 1, :second))
+  end
+
+  test "cloud retirement preserves unknown work, business owners and physical evidence across bounded pages" do
+    fixture = compute_fixture()
+
+    {:ok, shell} =
+      Compute.create_workload(%{
+        id: "retired-shell",
+        environment_id: "environment",
+        allocation_id: fixture.allocation.id,
+        kind: "shell",
+        template_key: "shell.default",
+        generation: 1
+      })
+
+    {:ok, business_allocation} =
+      Compute.allocate(%{
+        id: "business-allocation",
+        environment_id: "environment",
+        provider_binding_id: fixture.binding.id,
+        generation: 1
+      })
+
+    {:ok, business} =
+      Compute.create_workload(%{
+        id: "retired-business",
+        environment_id: "environment",
+        allocation_id: business_allocation.id,
+        kind: "meeting_runtime",
+        owner_ref: %{"kind" => "meeting", "id" => "business-owner"},
+        generation: 1
+      })
+
+    Repo.query!(
+      "UPDATE compute_allocations SET operation_outcome='unknown_outcome' WHERE id=$1",
+      [fixture.allocation.id]
+    )
+
+    deadline = DateTime.add(SystemsClock.utc_now(), 60, :second)
+
+    {:ok, command} =
+      Compute.enqueue_command(%{
+        id: "sent-unknown",
+        allocation_id: fixture.allocation.id,
+        workload_id: shell.id,
+        request_id: "sent-unknown",
+        kind: "runtime.exec",
+        classification: "side_effecting",
+        target_generation: 1,
+        target_revision: fixture.allocation.revision,
+        deadline_at: deadline,
+        payload: %{}
+      })
+
+    Repo.update_all(from(c in Compute.Command, where: c.id == ^command.id),
+      set: [status: "unknown_outcome", delivery_started_at: SystemsClock.utc_now()]
+    )
+
+    assert {:ok, _} = Compute.stop_workload(shell.id, shell.revision, "offline")
+
+    release =
+      Repo.get_by!(Compute.Command,
+        release_incarnation: Compute.release_incarnation(fixture.allocation.id, 1)
+      )
+
+    release_evidence = %{"reason" => "lost_host_result", "original" => true}
+
+    Repo.update_all(from(c in Compute.Command, where: c.id == ^release.id),
+      set: [
+        status: "unknown_outcome",
+        outcome: "unknown_outcome",
+        evidence: release_evidence,
+        delivery_started_at: SystemsClock.utc_now(),
+        next_attempt_at: DateTime.add(SystemsClock.utc_now(), -1, :second)
+      ]
+    )
+
+    Repo.update_all(from(a in Compute.Allocation, where: a.id == ^fixture.allocation.id),
+      set: [operation_outcome: "unknown_outcome"]
+    )
+
+    registration = Repo.get!(AgentVMM.Registration, "registration")
+
+    assert {:ok, _} =
+             AgentVMM.revoke_registration("tenant", registration.id, registration.revision)
+
+    assert {:ok, %{after_id: cursor}} = SalixStore.ComputeWorkloadDeletion.retire_revoked(4)
+    assert cursor.level == :workload
+    assert cursor.w in [business.id, shell.id]
+    assert {:ok, _} = SalixStore.ComputeWorkloadDeletion.retire_revoked(32, cursor)
+    retired = Repo.get!(Compute.Workload, shell.id)
+    assert retired.deletion["phase"] == "cloud_retired"
+    assert retired.deletion["local_data_deleted"] == false
+    assert retired.observed_state == shell.observed_state
+    assert Repo.get!(Compute.Command, command.id).status == "unknown_outcome"
+    allocation = Repo.get!(Compute.Allocation, fixture.allocation.id)
+    assert allocation.operation_outcome == "unknown_outcome"
+    assert {:ok, %{release_retries: 0, release_settled: 0}} = AgentVMM.settle_expired_commands()
+    preserved = Repo.get!(Compute.Command, release.id)
+    assert preserved.status == "unknown_outcome"
+    assert preserved.outcome == "unknown_outcome"
+    assert preserved.evidence == release_evidence
+    assert is_nil(preserved.next_attempt_at)
+
+    assert allocation.provider_observation["cloud_retired"]
+    assert allocation.provider_observation["data_deleted"] != true
+    surviving = Repo.get!(Compute.Workload, business.id)
+    assert is_nil(surviving.deletion)
+    assert surviving.owner_ref == business.owner_ref
+    assert surviving.observed_state == business.observed_state
+    assert {:ok, %{after_id: ""}} = SalixStore.ComputeWorkloadDeletion.retire_revoked()
+    assert Repo.get!(Compute.Workload, shell.id).revision == retired.revision
+    assert Repo.get!(Compute.Workload, business.id).revision == surviving.revision
+    assert Repo.get!(Compute.Allocation, allocation.id).revision == allocation.revision
   end
 
   defp compute_fixture do

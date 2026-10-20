@@ -4,7 +4,7 @@ defmodule SalixWeb.OAuthCommitGuard do
   def run(%{"comma_operation" => nil}, write), do: write.()
 
   def run(%{"comma_operation" => %{} = _operation} = auth, write) do
-    case Application.get_env(:salix_web, :comma_oauth_commit_mod) do
+    case SystemsRuntime.get_env(:salix_web, :comma_oauth_commit_mod) do
       module when is_atom(module) and not is_nil(module) -> module.run(auth, write)
       _ -> {:error, "authorization operation unavailable"}
     end

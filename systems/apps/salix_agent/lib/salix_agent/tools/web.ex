@@ -87,7 +87,8 @@ defmodule SalixAgent.Tools.Web do
       {"web.http_request",
        "Call an HTTP JSON API: one request with your choice of method (GET, POST, PUT, PATCH, DELETE, HEAD), headers, query and JSON body. " <>
          "Returns status, ok, headers and the parsed JSON body (body_text when not JSON); a non-2xx status is a result, not an error, so check ok. " <>
-         "Redirects are not followed and requests are never retried. Only public http(s) hosts are reachable. " <>
+         "Redirects are not followed and requests are never retried. Only public http(s) hosts are reachable, " <>
+         "unless via_tailnet is true: then the host is a device in the Group's tailnet (a MagicDNS name or Tailscale address from tailnet.peers). " <>
          "To use a group OAuth credential, reference it with credential_env and write ${ENV_VAR} in the header value. " <>
          "The same call works from script.run through the salix.call gateway and from a background loop through sf_host_call.",
        &SalixAgent.Tools.HttpRequest.request/2, @normal_auto_wait_seconds, @write_opts}
@@ -103,7 +104,7 @@ defmodule SalixAgent.Tools.Web do
     urls = Enum.take(urls, @exa_max_urls_per_request)
 
     api_key =
-      Application.get_env(:salix_agent, :exa_api_key) ||
+      SystemsRuntime.get_env(:salix_agent, :exa_api_key) ||
         raise "web.read_pages is not configured: set :salix_agent, :exa_api_key"
 
     body = %{urls: urls, text: %{maxCharacters: @exa_text_max_characters}}
@@ -126,7 +127,7 @@ defmodule SalixAgent.Tools.Web do
   end
 
   defp exa_base_url do
-    (Application.get_env(:salix_agent, :exa_base_url) || @exa_default_base_url)
+    (SystemsRuntime.get_env(:salix_agent, :exa_base_url) || @exa_default_base_url)
     |> String.trim_trailing("/")
   end
 

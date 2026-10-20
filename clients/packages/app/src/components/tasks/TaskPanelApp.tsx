@@ -1,39 +1,28 @@
 import { taskStatusBucketLabel } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import { Button } from "@comma/ui/components/Button";
+import { ChevronLeftSmallIcon } from "@comma/ui/components/icons";
+import { CommaLogoAnimation } from "@comma/ui/components/comma-mascot";
+import { LoadingIndicator } from "@comma/ui/components/LoadingIndicator";
 import {
-  Button,
-  ChevronLeftSmallIcon,
-  CommaLogoAnimation,
-  LoadingIndicator,
   normalizeTaskStatus,
-  ScrollArea,
   taskProgressLabel,
   taskStatusBucket,
   taskStatusIcon,
   taskUpdatedAtLabel,
   type TaskStatusBucket,
   type TaskSummaryViewModel,
-} from "@comma/ui";
-import {
-  lazy,
-  Suspense,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import {
-  createCommaApi,
-  type CommaApiClient,
-  type CommaConversation,
-  type CommaConversationPreview,
-} from "../../api";
+} from "@comma/ui/components/task-workspace";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { taskRun } from "@comma/core/chat";
+import { useCall, useTopic, type GroupTask } from "@comma/core-client";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { CommaAuthGate, useCommaAuth } from "../AuthGate";
 import { CommaAppearanceProvider } from "../commaAppearance";
 import { ShellIconButton } from "../ShellIconButton";
 import { TaskDetailsPanel } from "../chat/tasks/TaskDetailsPanel";
 import { panelTabButton } from "../panelTabButton";
+import { useTaskSummary } from "./useTaskArchive";
 
 const TaskPanelReport = lazy(() =>
   import("./TaskPanelReport")
@@ -57,10 +46,8 @@ type TaskPanelTarget = {
 };
 
 type PanelScreen = "tasks" | "details";
-const TASK_PAGE_SIZE = 20;
 const TASK_STATUSES: readonly (TaskStatusBucket | "all")[] = [
   "all",
-  "backlog",
   "in_progress",
   "needs_review",
   "done",
@@ -161,16 +148,11 @@ function AuthenticatedTaskPanel({
   host: TaskPanelHost | undefined;
   target: TaskPanelTarget;
 }) {
-  const { apiBaseUrl, productLease, sessionTransport } = useCommaAuth();
-  const api = useMemo(
-    () => createCommaApi({ baseUrl: apiBaseUrl, sessionTransport, token: "" }),
-    [apiBaseUrl, sessionTransport]
-  );
+  const { productLease } = useCommaAuth();
 
   // An account switch must discard the prior account's Task data immediately.
   return (
     <TaskPanelReader
-      api={api}
       host={host}
       key={JSON.stringify([productLease, target])}
       target={target}
@@ -184,11 +166,9 @@ const SCREEN_DEPTH: Record<PanelScreen, number> = {
 };
 
 function TaskPanelReader({
-  api,
   host,
   target,
 }: {
-  api: CommaApiClient;
   host: TaskPanelHost | undefined;
   target: TaskPanelTarget;
 }) {
@@ -215,38 +195,37 @@ function TaskPanelReader({
   const [listShown, setListShown] = useState(screen === "tasks");
   if (screen === "tasks" && !listShown) setListShown(true);
   const [conversationId, setConversationId] = useState(target.conversationId);
+  // Each opening and each refresh reads the Task again.
   const [revision, setRevision] = useState(0);
-  const [conversation, setConversation] = useState<CommaConversationPreview>();
-  const [previewStatus, setPreviewStatus] = useState<
-    "loading" | "unavailable" | "ready"
-  >("loading");
   const { groupId } = target;
-
-  useEffect(() => {
-    if (screen !== "details" || !groupId || !conversationId) return;
-    const request = new AbortController();
-    setConversation(undefined);
-    setPreviewStatus("loading");
-    void api
-      .getConversationPreview(groupId, conversationId, {
-        includeWorker: true,
-        signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
-      })
-      .then((next) => {
-        if (request.signal.aborted) return;
-        setConversation(next);
-        setPreviewStatus("ready");
-      })
-      .catch(() => {
-        if (request.signal.aborted) return;
-        setConversation(undefined);
-        setPreviewStatus("unavailable");
-      });
-    return () => request.abort();
-  }, [api, conversationId, groupId, revision, screen]);
+  const { value: shown } = useTopic(
+    screen === "details" && groupId && conversationId
+      ? {
+          topic: "groupTask",
+          group: groupId,
+          conversation: conversationId,
+          read: String(revision),
+        }
+      : null,
+    { lingerMs: 0 }
+  );
+  const previewStatus =
+    shown?.status === "ready"
+      ? "ready"
+      : shown?.status === "failed"
+        ? "unavailable"
+        : "loading";
+  const conversation = shown?.status === "ready" ? shown.preview : undefined;
+  // The preview carries no Loop: a Loop Task's Loop comes with its summary.
+  const taskLoop = useTaskSummary(
+    groupId ?? "",
+    screen === "details" ? (conversationId ?? "") : "",
+    { fetch: true }
+  )?.loop;
 
   function openTask(id: string) {
     setConversationId(id);
+    setRevision((current) => current + 1);
     setScreen("details");
   }
 
@@ -315,7 +294,6 @@ function TaskPanelReader({
             inert={screen !== "tasks"}
           >
             <TaskPanelList
-              api={api}
               groupId={groupId}
               onFilterChange={host?.selectionChanged}
               onOpenTask={openTask}
@@ -343,7 +321,6 @@ function TaskPanelReader({
                           }
                         >
                           <TaskPanelReport
-                            api={api}
                             conversation={conversation}
                             workspaceId={target.workspaceId}
                           />
@@ -351,22 +328,12 @@ function TaskPanelReader({
                       </div>
                     ) : null}
                     <TaskDetailsPanel
-                      api={api}
-                      canDone={false}
                       conversation={conversation}
-                      doneState="idle"
                       groupId={conversation.group_id}
                       layout="embedded"
+                      loop={taskLoop}
                       open
-                      {...(conversation.bound_worker
-                        ? {
-                            worker: {
-                              participantId: conversation.bound_worker.participant_id,
-                              actorId: conversation.bound_worker.actor_id,
-                              name: conversation.bound_worker.name,
-                            },
-                          }
-                        : {})}
+                      run={taskRun(conversation.run)}
                     />
                   </>
                 ) : previewStatus === "loading" && groupId && conversationId ? (
@@ -426,93 +393,31 @@ function TaskPanelReader({
   );
 }
 
-type TaskPageState =
-  | { status: "loading" }
-  | { status: "error" }
-  | {
-      status: "ready";
-      tasks: CommaConversation[];
-      nextCursor?: string;
-      hasMore: boolean;
-    };
-
 function TaskPanelList({
-  api,
   groupId,
   onFilterChange,
   onOpenTask,
 }: {
-  api: CommaApiClient;
   groupId: string;
   onFilterChange: (() => void) | undefined;
   onOpenTask: (id: string) => void;
 }) {
   const messages = useCommaMessages();
   const locale = useCommaLocale();
-  const [state, setState] = useState<TaskPageState>({ status: "loading" });
+  const call = useCall();
   const [filter, setFilter] = useState<TaskStatusBucket | "all">("all");
   const [revision, setRevision] = useState(0);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [moreError, setMoreError] = useState(false);
-  const requestRef = useRef<AbortController | null>(null);
+  const read = String(revision);
+  const { value } = useTopic(
+    { topic: "groupTasks", group: groupId, read },
+    { lingerMs: 0 }
+  );
+  const state = value ?? { status: "loading" as const };
+  const loadingMore = state.status === "ready" && state.more === "loading";
+  const moreError = state.status === "ready" && state.more === "failed";
 
-  useEffect(() => {
-    if (!groupId) {
-      setState({ status: "error" });
-      return;
-    }
-    const request = new AbortController();
-    requestRef.current = request;
-    setState({ status: "loading" });
-    setLoadingMore(false);
-    setMoreError(false);
-    void api
-      .listConversationPage(groupId, {
-        limit: TASK_PAGE_SIZE,
-        signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
-      })
-      .then((page) => {
-        if (request.signal.aborted) return;
-        setState({
-          status: "ready",
-          tasks: page.data.filter((item) => item.kind === "agent_task"),
-          hasMore: page.hasMore,
-          ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
-        });
-      })
-      .catch(() => {
-        if (!request.signal.aborted) setState({ status: "error" });
-      });
-    return () => request.abort();
-  }, [api, groupId, revision]);
-
-  async function loadMore() {
-    if (state.status !== "ready" || !state.nextCursor || loadingMore) return;
-    const request = requestRef.current;
-    if (!request || request.signal.aborted) return;
-    setLoadingMore(true);
-    setMoreError(false);
-    try {
-      const page = await api.listConversationPage(groupId, {
-        cursor: state.nextCursor,
-        limit: TASK_PAGE_SIZE,
-        signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
-      });
-      if (request.signal.aborted) return;
-      setState({
-        status: "ready",
-        tasks: [
-          ...state.tasks,
-          ...page.data.filter((item) => item.kind === "agent_task"),
-        ],
-        hasMore: page.hasMore,
-        ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
-      });
-    } catch {
-      if (!request.signal.aborted) setMoreError(true);
-    } finally {
-      if (!request.signal.aborted) setLoadingMore(false);
-    }
+  function loadMore() {
+    void call("groupTasks.more", { group: groupId, read }).catch(() => undefined);
   }
 
   const tasks = state.status === "ready" ? state.tasks : [];
@@ -566,14 +471,7 @@ function TaskPanelList({
                     <TaskPanelRow
                       onOpen={() => onOpenTask(task.id)}
                       status={task.status}
-                      task={{
-                        id: task.id,
-                        title: task.title,
-                        statusBucket: taskStatusBucket(task.status),
-                        updatedAt: task.updated_at ?? 0,
-                        activityStatus: task.activity_status ?? "idle",
-                        freshness: task.freshness?.state ?? "unknown",
-                      }}
+                      task={taskSummary(task)}
                     />
                   </li>
                 ))}
@@ -585,7 +483,7 @@ function TaskPanelList({
                     : messages.tasks_filter_no_matches()}
                 </p>
               ) : null}
-              {state.hasMore && state.nextCursor ? (
+              {state.more === "none" ? null : (
                 <div className="mt-3xl flex flex-col items-stretch gap-md">
                   {moreError ? (
                     <p className="text-sm text-tertiary" role="alert">
@@ -595,7 +493,7 @@ function TaskPanelList({
                   <Button
                     hierarchy="tertiary-gray"
                     isDisabled={loadingMore}
-                    onPress={() => void loadMore()}
+                    onPress={loadMore}
                     size="md"
                   >
                     {loadingMore
@@ -603,7 +501,7 @@ function TaskPanelList({
                       : messages.common_load_more()}
                   </Button>
                 </div>
-              ) : null}
+              )}
             </>
           ) : state.status === "loading" ? (
             <output
@@ -628,6 +526,17 @@ function TaskPanelList({
       </ScrollArea>
     </>
   );
+}
+
+function taskSummary(task: GroupTask): TaskSummaryViewModel {
+  return {
+    id: task.id,
+    title: task.title,
+    statusBucket: taskStatusBucket(task.status),
+    updatedAt: task.updatedAt,
+    activityStatus: task.activityStatus,
+    freshness: task.freshness,
+  };
 }
 
 /**

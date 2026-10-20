@@ -19,7 +19,7 @@ theorem seq_sorted_empty {state : Term} (messages : state.get (a "messages") = .
     (last : state.get (a "last_seq") = nil) : SeqSorted state :=
   ⟨[], 0, messages, by simp [lastSeq, last, Term.default, Term.truthy, nil], by simp, List.Pairwise.nil⟩
 
-/-- Every dispatched event, including compaction, microcompact and archive, keeps the invariant. -/
+/-- Every dispatched event, including compaction and archive, keeps the invariant. -/
 theorem inner_seq {state event next : Term} {journal rest : List Term}
     (h : inner state event journal = .ok (next, rest)) : SeqStep state next := by
   unfold inner at h

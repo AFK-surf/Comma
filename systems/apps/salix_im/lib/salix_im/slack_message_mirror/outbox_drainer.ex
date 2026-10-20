@@ -25,7 +25,7 @@ defmodule SalixIM.SlackMessageMirror.OutboxDrainer do
   Model: `tla/salix/SlackMirrorOutbox.tla`.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -46,8 +46,8 @@ defmodule SalixIM.SlackMessageMirror.OutboxDrainer do
 
   def start_link(opts \\ []) do
     case Keyword.get(opts, :name, __MODULE__) do
-      nil -> GenServer.start_link(__MODULE__, opts)
-      name -> GenServer.start_link(__MODULE__, opts, name: name)
+      nil -> SystemsRuntime.Server.start_link(__MODULE__, opts)
+      name -> SystemsRuntime.Server.start_link(__MODULE__, opts, name: name)
     end
   end
 
@@ -57,7 +57,12 @@ defmodule SalixIM.SlackMessageMirror.OutboxDrainer do
 
   @impl true
   def init(opts) do
-    Process.send_after(self(), :tick, setting(opts, :start_delay_ms, 1_000))
+    SystemsClock.send_after(
+      SystemsRuntime.Proc.self(),
+      :tick,
+      setting(opts, :start_delay_ms, 1_000)
+    )
+
     {:ok, %{opts: opts, task: nil}}
   end
 
@@ -66,7 +71,9 @@ defmodule SalixIM.SlackMessageMirror.OutboxDrainer do
     opts = state.opts
 
     task =
-      Task.Supervisor.async_nolink(task_supervisor(state), fn -> drain_once(opts) end)
+      SystemsRuntime.TaskSupervisor.async_nolink(task_supervisor(state), fn ->
+        drain_once(opts)
+      end)
 
     {:noreply, %{state | task: task}}
   end
@@ -74,14 +81,14 @@ defmodule SalixIM.SlackMessageMirror.OutboxDrainer do
   def handle_info(:tick, state), do: {:noreply, state}
 
   def handle_info({ref, result}, %{task: %Task{ref: ref}} = state) do
-    Process.demonitor(ref, [:flush])
-    Process.send_after(self(), :tick, next_delay(state.opts, result))
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, next_delay(state.opts, result))
     {:noreply, %{state | task: nil}}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: %Task{ref: ref}} = state) do
     Logger.error("slack mirror outbox drain crashed: #{inspect(reason)}")
-    Process.send_after(self(), :tick, @failure_backoff_ms)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, @failure_backoff_ms)
     {:noreply, %{state | task: nil}}
   end
 
@@ -229,7 +236,7 @@ defmodule SalixIM.SlackMessageMirror.OutboxDrainer do
   defp report_lag(outbox) do
     case outbox.oldest_pending_age_ms() do
       {:ok, age_ms} ->
-        :telemetry.execute(
+        SystemsRuntime.Telemetry.execute(
           [:salix, :slack_mirror, :outbox, :lag],
           %{oldest_age_seconds: (age_ms || 0) / 1_000},
           %{}
@@ -244,7 +251,7 @@ defmodule SalixIM.SlackMessageMirror.OutboxDrainer do
 
   # Labels stay finite and carry no tenant, workspace, channel or content.
   defp emit(outcome, count) do
-    :telemetry.execute([:salix, :slack_mirror, :outbox, :batch], %{count: count}, %{
+    SystemsRuntime.Telemetry.execute([:salix, :slack_mirror, :outbox, :batch], %{count: count}, %{
       outcome: outcome
     })
 
@@ -264,7 +271,7 @@ defmodule SalixIM.SlackMessageMirror.OutboxDrainer do
 
   defp config(key, default) do
     :salix_im
-    |> Application.get_env(:slack_message_mirror_outbox_drainer, [])
+    |> SystemsRuntime.get_env(:slack_message_mirror_outbox_drainer, [])
     |> Keyword.get(key, default)
   end
 end

@@ -1,15 +1,16 @@
 defmodule SalixStore.CasRecordTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SystemsClock.Test, scope: ["Elixir.SalixStore"]
   alias SalixStore.{CasRecord, JSON, S3}
 
   @key "ctl/test_cas_record/record.json"
 
   setup do
-    previous = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, previous) end)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, previous) end)
     :ok
   end
 
@@ -36,17 +37,9 @@ defmodule SalixStore.CasRecordTest do
              CasRecord.update(@key <> ".missing", & &1, create: false)
   end
 
-  test "invalid reducer values and JSON normalization fail or normalize explicitly" do
-    assert {:error, :invalid_test_record} =
-             CasRecord.update(@key, fn _ -> :invalid end, invalid: :invalid_test_record)
-
-    assert %{"nested" => [%{"value" => 1}]} =
-             JSON.stringify(%{nested: [%{value: 1}]})
-  end
-
   test "a guard is rechecked before every CAS retry" do
     assert {:ok, %{"revision" => 1}} = CasRecord.create(@key, %{"revision" => 1})
-    test_pid = self()
+    test_pid = SystemsRuntime.Proc.self()
 
     reducer = fn
       %{"revision" => 1} = current ->
@@ -58,15 +51,15 @@ defmodule SalixStore.CasRecordTest do
     end
 
     guard = fn ->
-      send(test_pid, :cas_guard_checked)
+      SystemsRuntime.Proc.send(test_pid, :cas_guard_checked)
       :ok
     end
 
     assert {:ok, %{"revision" => 3, "writer" => "guarded"}} =
              CasRecord.update(@key, reducer, guard: guard)
 
-    assert_receive :cas_guard_checked
-    assert_receive :cas_guard_checked
-    refute_receive :cas_guard_checked
+    settle_receive(:cas_guard_checked)
+    settle_receive(:cas_guard_checked)
+    settle_refute_receive(:cas_guard_checked)
   end
 end

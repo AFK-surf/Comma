@@ -39,6 +39,20 @@ if [[ -z "$CODE_SIGNING_TEAM" ]]; then
   exit 1
 fi
 
+# Jobs that only sign (no notarization) set COMMA_MACOS_SIGN_ONLY=1, so they do
+# not depend on the notary profile or on Apple's notary service being reachable.
+if [[ "${COMMA_MACOS_SIGN_ONLY:-}" == "1" ]]; then
+  {
+    echo "COMMA_MACOS_SIGN=1"
+    echo "COMMA_MACOS_KEYCHAIN=$KEYCHAIN_DB"
+    echo "COMMA_MACOS_SIGN_IDENTITY=$CODE_SIGNING_IDENTITY_HASH"
+    echo "COMMA_MACOS_TEAM_ID=$CODE_SIGNING_TEAM"
+  } >> "$GITHUB_ENV"
+  echo "Configured macOS signing identity: $CODE_SIGNING_IDENTITY_HASH (sign only)"
+  echo "Configured macOS signing team: $CODE_SIGNING_TEAM"
+  exit 0
+fi
+
 NOTARIZE_KEYCHAIN_PROFILE=$(
   security dump-keychain -r "$KEYCHAIN_DB" |
     strings |

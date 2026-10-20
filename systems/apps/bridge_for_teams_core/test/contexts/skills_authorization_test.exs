@@ -12,8 +12,8 @@ defmodule BridgeForTeams.SkillsAuthorizationTest.FakeSalix do
   end
 
   def delete_agent_skill(agent_id, tenant_id, skill_id, actor) do
-    send(
-      Application.fetch_env!(:bridge_for_teams_core, :skills_authorization_test_pid),
+    SystemsRuntime.Proc.send(
+      SystemsRuntime.fetch_env!(:bridge_for_teams_core, :skills_authorization_test_pid),
       {:delete_agent_skill, agent_id, tenant_id, skill_id, actor}
     )
 
@@ -28,27 +28,32 @@ end
 
 defmodule BridgeForTeams.SkillsAuthorizationTest do
   use BridgeForTeams.DataCase, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{Accounts, Memberships, Observability, Skills}
   alias BridgeForTeams.Schema.{Agent, Organization, Project}
 
   setup do
-    previous_client = Application.get_env(:bridge_for_teams_core, :salix_client)
+    previous_client = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :salix_client,
       BridgeForTeams.SkillsAuthorizationTest.FakeSalix
     )
 
-    Application.put_env(:bridge_for_teams_core, :skills_authorization_test_pid, self())
+    SystemsRuntime.put_env(
+      :bridge_for_teams_core,
+      :skills_authorization_test_pid,
+      SystemsRuntime.Proc.self()
+    )
 
     on_exit(fn ->
       restore_env(:salix_client, previous_client)
-      Application.delete_env(:bridge_for_teams_core, :skills_authorization_test_pid)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :skills_authorization_test_pid)
     end)
 
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     org =
       %Organization{}
@@ -118,7 +123,7 @@ defmodule BridgeForTeams.SkillsAuthorizationTest do
                  request_id: request_id
                )
 
-      assert_receive {:delete_agent_skill, agent_id, tenant_id, ^skill_id, actor}
+      settle_receive({:delete_agent_skill, agent_id, tenant_id, ^skill_id, actor})
       assert agent_id == agent.salix_agent_id
       assert tenant_id == org.salix_tenant_id
 
@@ -161,9 +166,9 @@ defmodule BridgeForTeams.SkillsAuthorizationTest do
                request_id: "req_member_blocked_#{suffix}"
              )
 
-    refute_receive {:delete_agent_skill, _, _, _, _}
+    settle_refute_receive({:delete_agent_skill, _, _, _, _})
   end
 
-  defp restore_env(key, nil), do: Application.delete_env(:bridge_for_teams_core, key)
-  defp restore_env(key, value), do: Application.put_env(:bridge_for_teams_core, key, value)
+  defp restore_env(key, nil), do: SystemsRuntime.delete_env(:bridge_for_teams_core, key)
+  defp restore_env(key, value), do: SystemsRuntime.put_env(:bridge_for_teams_core, key, value)
 end

@@ -33,6 +33,7 @@ import {
   Popover as AriaPopover,
   Separator as AriaSeparator,
 } from "react-aria-components";
+import { uiClock, type CancelUiTimer } from "../../clock";
 import { borderWidth, motionDuration, spacing, typeScale } from "../../tokens";
 import { CheckboxBase } from "../checkbox/CheckboxBase";
 import { CheckLargeIcon } from "../icons";
@@ -346,7 +347,7 @@ function preserveSubmenuTriggerFocus(
 
   // An animation-free overlay can unmount after React Aria's synchronous focus
   // return and leave the document body focused. Reassert only that lost-focus case.
-  ownerWindow.requestAnimationFrame(() => {
+  uiClock.frame(() => {
     const activeElement = popover.ownerDocument.activeElement;
     const focusWasLost =
       activeElement == null ||
@@ -361,7 +362,7 @@ function preserveSubmenuTriggerFocus(
     ) {
       trigger.focus({ preventScroll: true });
     }
-  });
+  }, ownerWindow);
 }
 
 function useMenuPopoverRef(
@@ -411,12 +412,12 @@ function useCloseSubmenusOnPointerLeave(isEnabled: boolean, group: MenuPopoverGr
       return;
     }
 
-    let closeTimeout: ReturnType<typeof setTimeout> | undefined;
+    let closeTimeout: CancelUiTimer | undefined;
     let pointerPosition: { x: number; y: number } | undefined;
 
     const cancelClose = () => {
       if (closeTimeout) {
-        clearTimeout(closeTimeout);
+        closeTimeout();
         closeTimeout = undefined;
       }
     };
@@ -480,7 +481,7 @@ function useCloseSubmenusOnPointerLeave(isEnabled: boolean, group: MenuPopoverGr
 
       pointerPosition = { x: event.clientX, y: event.clientY };
       cancelClose();
-      closeTimeout = setTimeout(closeOpenSubmenu, motionDuration.submenuCloseDelay);
+      closeTimeout = uiClock.after(motionDuration.submenuCloseDelay, closeOpenSubmenu);
     };
 
     document.addEventListener("pointerover", handlePointerOver, true);
@@ -560,13 +561,13 @@ const SelectionAlignedMenuPopover = forwardRef<
     if (!isOpen) return;
     // Land keyboard focus on the checked row that sits over the trigger, the
     // way macOS highlights the row the pointer is already resting on.
-    const frame = requestAnimationFrame(() => {
+    const frame = uiClock.frame(() => {
       const checked = popoverElementRef.current?.querySelector<HTMLElement>(
         '[data-slot="menu-item"][aria-checked="true"]'
       );
       checked?.focus({ preventScroll: true });
     });
-    return () => cancelAnimationFrame(frame);
+    return () => frame();
   }, [isOpen]);
 
   return (

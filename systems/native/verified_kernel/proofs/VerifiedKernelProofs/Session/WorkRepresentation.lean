@@ -38,12 +38,6 @@ theorem queued_record_same_work {original current record : Term}
     QueuedRecord original record ↔ QueuedRecord current record := by
   simp only [QueuedRecord, StateQuery.acceptedInput, same.1, same.2.1, same.2.2.1, same.2.2.2]
 
-theorem modern_microcompact_representation {s e t item : Term} {sealed j r : List Term} {format : Int}
-    (read : s.get (a "storage_format") = i format) (modern : 2 ≤ format)
-    (h : microcompact s e j = .ok (t, r)) :
-    ConcreteRepresented s sealed item ↔ ConcreteRepresented t sealed item :=
-  concrete_representation_frame (microcompact_modern_work_fields read modern h)
-
 /-- A selected record represents the original work even after queue retry bookkeeping changes. -/
 theorem generated_represents_work {s original current session event record : Term}
     {sealed : List Term} (same : QueueWork original current)

@@ -789,13 +789,19 @@ defmodule SalixAgent.Tools.Schemas do
         "device_id" => %{
           "type" => "string",
           "description" =>
-            "Owning device_id from device.list or device.get; required for device operations."
+            "Owning device_id from device.list or device.get, or a station device_id (station:<id>) from station.list; required for device operations."
         },
         "environment" => %{
           "type" => "string",
           "description" => "Stable environment_id from device.get (required)"
         },
         "command" => %{"type" => "string", "description" => "Shell command to execute"},
+        "shell" => %{
+          "type" => "string",
+          "enum" => ["sh", "powershell"],
+          "description" =>
+            "The shell that runs the command (default: sh; Git Bash on Windows). powershell: PowerShell, for a Windows device."
+        },
         "description" => %{
           "type" => "string",
           "description" =>
@@ -843,7 +849,7 @@ defmodule SalixAgent.Tools.Schemas do
         "device_id" => %{
           "type" => "string",
           "description" =>
-            "Owning device_id from device.list or device.get; required for device operations."
+            "Owning device_id from device.list or device.get, or a station device_id (station:<id>) from station.list; required for device operations."
         },
         "environment" => %{
           "type" => "string",
@@ -858,7 +864,7 @@ defmodule SalixAgent.Tools.Schemas do
         "device_id" => %{
           "type" => "string",
           "description" =>
-            "Owning device_id from device.list or device.get; required for device operations."
+            "Owning device_id from device.list or device.get, or a station device_id (station:<id>) from station.list; required for device operations."
         },
         "environment" => %{
           "type" => "string",
@@ -882,7 +888,7 @@ defmodule SalixAgent.Tools.Schemas do
         "device_id" => %{
           "type" => "string",
           "description" =>
-            "Owning device_id from device.list or device.get; required for device operations."
+            "Owning device_id from device.list or device.get, or a station device_id (station:<id>) from station.list; required for device operations."
         },
         "environment" => %{
           "type" => "string",
@@ -916,11 +922,13 @@ defmodule SalixAgent.Tools.Schemas do
       "properties" => %{
         "src_device_id" => %{
           "type" => "string",
-          "description" => "Required when src_environment is remote; omit for vfs."
+          "description" =>
+            "Required when src_environment is remote (a station uses station:<id>); omit for vfs."
         },
         "dst_device_id" => %{
           "type" => "string",
-          "description" => "Required when dst_environment is remote; omit for vfs."
+          "description" =>
+            "Required when dst_environment is remote (a station uses station:<id>); omit for vfs."
         },
         "src_environment" => %{
           "type" => "string",
@@ -1144,7 +1152,7 @@ defmodule SalixAgent.Tools.Schemas do
         "provider" => %{
           "type" => "string",
           "description" =>
-            "OAuth provider name. Supported: google, github, linear, notion, slack."
+            "OAuth provider name. Supported: #{Enum.join(SalixStore.OAuth.Adapters.supported(), ", ")}."
         },
         "alias" => %{
           "type" => "string",
@@ -1315,6 +1323,76 @@ defmodule SalixAgent.Tools.Schemas do
       "required" => ["subject", "body"]
     },
 
+    # ---- stations (tools/stations.ex) ----
+    "station.list" => %{
+      "type" => "object",
+      "properties" => %{},
+      "required" => [],
+      "additionalProperties" => false
+    },
+    "station.fs" => %{
+      "type" => "object",
+      "properties" => %{
+        "station_id" => %{
+          "type" => "string",
+          "description" => "station_id or device_id from station.list."
+        },
+        "action" => %{"type" => "string", "enum" => ["list", "stat", "read"]},
+        "path" => %{"type" => "string", "description" => "Absolute path on the station."},
+        "offset" => %{
+          "type" => "integer",
+          "minimum" => 0,
+          "description" => "read: byte offset to start from (default 0)."
+        },
+        "length" => %{
+          "type" => "integer",
+          "minimum" => 0,
+          "description" => "read: bytes to read, at most 262144 (the default)."
+        }
+      },
+      "required" => ["station_id", "action", "path"],
+      "additionalProperties" => false
+    },
+    "station.process" => %{
+      "type" => "object",
+      "properties" => %{
+        "station_id" => %{
+          "type" => "string",
+          "description" => "station_id or device_id from station.list."
+        },
+        "action" => %{"type" => "string", "enum" => ["start", "stop"]},
+        "command" => %{"type" => "string", "description" => "start: shell command to run."},
+        "cwd" => %{"type" => "string", "description" => "start: working directory."},
+        "process_id" => %{"type" => "string", "description" => "stop: process_id from start."}
+      },
+      "required" => ["station_id", "action"],
+      "additionalProperties" => false
+    },
+    "station.session" => %{
+      "type" => "object",
+      "properties" => %{
+        "station_id" => %{
+          "type" => "string",
+          "description" => "station_id or device_id from station.list."
+        },
+        "action" => %{"type" => "string", "enum" => ["start", "say", "status"]},
+        "prompt" => %{
+          "type" => "string",
+          "description" => "start: the task for the station's agent, self-contained."
+        },
+        "title" => %{"type" => "string", "description" => "start: optional chat title."},
+        "runtime" => %{
+          "type" => "string",
+          "enum" => ["claude", "codex"],
+          "description" => "start: optional runtime; the station default otherwise."
+        },
+        "thread" => %{"type" => "string", "description" => "say/status: thread from start."},
+        "text" => %{"type" => "string", "description" => "say: message to add."}
+      },
+      "required" => ["station_id", "action"],
+      "additionalProperties" => false
+    },
+
     # ---- media ----
     "image.generate" => %{
       "type" => "object",
@@ -1465,13 +1543,12 @@ defmodule SalixAgent.Tools.Schemas do
   @spec schema(String.t()) :: map() | nil
   def schema("agent.list"), do: SalixAgent.Tools.AgentManagement.schema(:list)
   def schema("agent.get"), do: SalixAgent.Tools.AgentManagement.schema(:get)
+  def schema("agent.models"), do: SalixAgent.Tools.AgentManagement.schema(:models)
   def schema("agent.create_worker"), do: SalixAgent.Tools.AgentManagement.schema(:create)
   def schema("agent.update"), do: SalixAgent.Tools.AgentManagement.schema(:update)
   def schema("agent.rebind_runtime"), do: SalixAgent.Tools.AgentManagement.schema(:rebind)
   def schema("agent.archive"), do: SalixAgent.Tools.AgentManagement.schema(:archive)
-  def schema("env.runtime_targets"), do: SalixAgent.Tools.RuntimeTargets.schema()
   def schema("ui.create"), do: SalixAgent.Tools.DynamicUI.schema()
-  def schema("env.ensure_runtime"), do: SalixAgent.Tools.CloudRuntime.schema()
   def schema(name), do: Map.get(@schemas, name)
 
   @doc false
@@ -1504,5 +1581,5 @@ defmodule SalixAgent.Tools.Schemas do
   def names,
     do:
       Map.keys(@schemas) ++
-        ~w(agent.list agent.get agent.create_worker agent.update agent.rebind_runtime agent.archive env.runtime_targets env.ensure_runtime)
+        ~w(agent.list agent.get agent.models agent.create_worker agent.update agent.rebind_runtime agent.archive)
 end

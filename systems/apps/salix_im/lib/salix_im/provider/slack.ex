@@ -191,7 +191,7 @@ defmodule SalixIM.Provider.Slack do
 
   defp task_card_request_options do
     timeout =
-      Application.get_env(:salix_im, :slack_task_card_request_timeout_ms, 5_000)
+      SystemsRuntime.get_env(:salix_im, :slack_task_card_request_timeout_ms, 5_000)
       |> max(10)
       |> min(5_000)
 

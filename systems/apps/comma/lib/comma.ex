@@ -39,6 +39,7 @@ defmodule Comma do
       :salix_signal_proto,
       :salix_signal,
       :salix_mcp,
+      :salix_meet_native,
       :salix_web,
       :salix_migrate,
       :salix_media,
@@ -72,7 +73,7 @@ defmodule Comma do
   set (see `config/runtime.exs`), otherwise every known subsystem.
   """
   def enabled_subsystems do
-    case Application.fetch_env(:comma, :enabled_subsystems) do
+    case SystemsRuntime.fetch_env(:comma, :enabled_subsystems) do
       {:ok, list} when is_list(list) -> list
       _ -> known_subsystems()
     end

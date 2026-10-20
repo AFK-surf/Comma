@@ -23,7 +23,7 @@ defmodule BridgeForTeams.Migrations.SessionIdentity do
     Application.load(:bridge_for_teams_core)
 
     :bridge_for_teams_core
-    |> Application.fetch_env!(:ecto_repos)
+    |> SystemsRuntime.fetch_env!(:ecto_repos)
     |> Enum.reduce_while({:ok, []}, fn repo, {:ok, refs} ->
       case Ecto.Migrator.with_repo(repo, &inventory_repo/1) do
         {:ok, {:ok, repo_refs}, _started} -> {:cont, {:ok, repo_refs ++ refs}}
@@ -93,7 +93,7 @@ defmodule BridgeForTeams.Migrations.SessionIdentity do
 
   defp rewrite_repos(maps) do
     :bridge_for_teams_core
-    |> Application.fetch_env!(:ecto_repos)
+    |> SystemsRuntime.fetch_env!(:ecto_repos)
     |> Enum.reduce_while({:ok, []}, fn repo, {:ok, summaries} ->
       case Ecto.Migrator.with_repo(repo, &rewrite_repo(&1, maps)) do
         {:ok, {:ok, summary}, _started} ->

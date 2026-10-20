@@ -51,12 +51,12 @@ defmodule SalixAgent.SubscriptionImport do
     with {:ok, ciphertext} <- Store.seal(tenant, id, metadata) do
       record = %{
         "id" => id,
-        "credential_kind" => "subscription_oauth",
-        "provider" => old["provider"],
+        "credential" => "subscription",
+        "source" => old["provider"],
         "email" => metadata["email"],
         "credentials" => ciphertext,
         "disabled" => old["disabled"] || false,
-        "status" => "active"
+        "status" => "ok"
       }
 
       case Store.get(tenant, id) do
@@ -69,7 +69,7 @@ defmodule SalixAgent.SubscriptionImport do
         {:ok, existing} ->
           with {:ok, ^metadata} <- Store.open(tenant, id, existing["credentials"]),
                true <-
-                 existing["provider"] == record["provider"] and
+                 existing["source"] == record["source"] and
                    existing["disabled"] == record["disabled"] do
             :ok
           else

@@ -1,4 +1,6 @@
 defmodule SalixSignal.GroupCall.Session do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   One joined Signal group call (CRS-14), audio only.
 
@@ -62,7 +64,7 @@ defmodule SalixSignal.GroupCall.Session do
   twice, and the group-call-update message. The process then stops.
   """
 
-  use GenServer, restart: :temporary
+  use SystemsRuntime.Server, restart: :temporary
 
   require Logger
 
@@ -101,10 +103,11 @@ defmodule SalixSignal.GroupCall.Session do
 
   # -- API ---------------------------------------------------------------------
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, Map.new(opts))
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, Map.new(opts))
 
   @doc "Makes this session the carrier socket of the voice call `call_id`."
-  def attach_call(pid, call_id), do: GenServer.call(pid, {:attach_call, call_id}, 10_000)
+  def attach_call(pid, call_id),
+    do: SystemsRuntime.Server.call(pid, {:attach_call, call_id}, 10_000)
 
   @doc """
   Hands over a device-to-device message received over signaling from
@@ -112,16 +115,16 @@ defmodule SalixSignal.GroupCall.Session do
   `SalixSignalProto.GroupCall.Messages.decode_opaque/1`).
   """
   def receive_signal(pid, sender_aci, device),
-    do: GenServer.cast(pid, {:signal, sender_aci, device})
+    do: SystemsRuntime.Server.cast(pid, {:signal, sender_aci, device})
 
   @doc "Leaves the call (section 10.3) and stops."
-  def leave(pid), do: GenServer.cast(pid, {:leave, :local})
+  def leave(pid), do: SystemsRuntime.Server.cast(pid, {:leave, :local})
 
   @doc "Queues agent audio (PCM16 mono 24 kHz) for sending."
-  def send_audio(pid, pcm), do: send(pid, {:voice_call, :audio, pcm})
+  def send_audio(pid, pcm), do: SystemsRuntime.Proc.send(pid, {:voice_call, :audio, pcm})
 
   @doc "The joined call: `%{era_id, demux_id, devices, ice_state, key}` and counters."
-  def info(pid), do: GenServer.call(pid, :info)
+  def info(pid), do: SystemsRuntime.Server.call(pid, :info)
 
   # -- Init --------------------------------------------------------------------
 
@@ -135,9 +138,9 @@ defmodule SalixSignal.GroupCall.Session do
     end
 
     <<_::binary-32>> = opts.group_id
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
 
-    case Registry.register(@registry, {opts.aci, opts.group_id}, nil) do
+    case SystemsRuntime.Registry.register(@registry, {opts.aci, opts.group_id}, nil) do
       {:ok, _} -> {:ok, new_state(opts), {:continue, :join}}
       {:error, {:already_registered, _pid}} -> {:stop, {:shutdown, :already_in_call}}
     end
@@ -154,7 +157,8 @@ defmodule SalixSignal.GroupCall.Session do
       group_id: opts.group_id,
       aci: opts.aci,
       owner: owner,
-      owner_ref: if(is_pid(owner), do: Process.monitor(owner)),
+      owner_ref:
+        if(SystemsRuntime.Proc.is_process(owner), do: SystemsRuntime.Proc.monitor(owner)),
       public: public,
       private: private,
       token: nil,
@@ -180,8 +184,8 @@ defmodule SalixSignal.GroupCall.Session do
       encoder: encoder,
       streams: %{},
       mixer: Mixer.new(rate: Opus.rate(), tick_ms: Map.get(opts, :playout_tick_ms, 20)),
-      audio_seq: :rand.uniform(0x7FFF),
-      audio_ts: :rand.uniform(0x7FFFFFFF),
+      audio_seq: SystemsRuntime.Proc.uniform(0x7FFF),
+      audio_ts: SystemsRuntime.Proc.uniform(0x7FFFFFFF),
       talking: false,
       sent_packets: 0,
       sent_octets: 0,
@@ -233,8 +237,9 @@ defmodule SalixSignal.GroupCall.Session do
       notify(state, {:joined, %{era_id: join.era_id, demux_id: join.demux_id}})
       announce(state)
 
+      schedule_idle(:heartbeat, state.timers.heartbeat_ms)
+
       for {message, ms} <- [
-            heartbeat: state.timers.heartbeat_ms,
             playout: state.timers.playout_tick_ms,
             rtcp: state.timers.rtcp_interval_ms,
             refresh_token: state.timers.token_refresh_ms
@@ -265,10 +270,10 @@ defmodule SalixSignal.GroupCall.Session do
     opts =
       [
         role: :controlling,
-        on_new_candidate: self(),
-        on_connection_state_change: self(),
-        on_gathering_state_change: self(),
-        on_data: self()
+        on_new_candidate: SystemsRuntime.Proc.self(),
+        on_connection_state_change: SystemsRuntime.Proc.self(),
+        on_gathering_state_change: SystemsRuntime.Proc.self(),
+        on_data: SystemsRuntime.Proc.self()
       ] ++ (config[:ice_opts] || [])
 
     {:ok, ice} = ExICE.ICEAgent.start_link(opts)
@@ -288,9 +293,9 @@ defmodule SalixSignal.GroupCall.Session do
 
   @impl GenServer
   def handle_call({:attach_call, call_id}, _from, %{call: nil} = state) do
-    case SalixVoice.attach(call_id, self()) do
+    case SalixVoice.attach(call_id, SystemsRuntime.Proc.self()) do
       {:ok, call, info} ->
-        {:reply, {:ok, info}, %{state | call: call, call_ref: Process.monitor(call)}}
+        {:reply, {:ok, info}, %{state | call: call, call_ref: SystemsRuntime.Proc.monitor(call)}}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -352,7 +357,7 @@ defmodule SalixSignal.GroupCall.Session do
   # -- Timers ------------------------------------------------------------------
 
   def handle_info(:heartbeat, state) do
-    schedule(:heartbeat, state.timers.heartbeat_ms)
+    schedule_idle(:heartbeat, state.timers.heartbeat_ms)
     {:noreply, send_heartbeat(state)}
   end
 
@@ -375,7 +380,7 @@ defmodule SalixSignal.GroupCall.Session do
   def handle_info(:refresh_token, state) do
     schedule(:refresh_token, state.timers.token_refresh_ms)
     token_fun = state.config.token
-    Task.Supervisor.async_nolink(@tasks, fn -> {:token, token_fun.()} end)
+    SystemsRuntime.TaskSupervisor.async_nolink(@tasks, fn -> {:token, token_fun.()} end)
     {:noreply, state}
   end
 
@@ -384,7 +389,7 @@ defmodule SalixSignal.GroupCall.Session do
   # -- Task results ------------------------------------------------------------
 
   def handle_info({ref, {:peek, result}}, %{peek_task: ref} = state) do
-    Process.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
     state = %{state | peek_task: nil}
 
     state =
@@ -402,7 +407,7 @@ defmodule SalixSignal.GroupCall.Session do
   end
 
   def handle_info({ref, {:token, result}}, state) when is_reference(ref) do
-    Process.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
 
     case result do
       {:ok, token} -> {:noreply, %{state | token: token}}
@@ -431,7 +436,7 @@ defmodule SalixSignal.GroupCall.Session do
   end
 
   def handle_info({:voice_call, :end, reason}, state) do
-    if state.call_ref, do: Process.demonitor(state.call_ref, [:flush])
+    if state.call_ref, do: SystemsRuntime.Proc.demonitor(state.call_ref, [:flush])
     notify(state, {:call_ended, reason})
     {:noreply, local_leave(%{state | call: nil, call_ref: nil}, :call_ended)}
   end
@@ -454,7 +459,7 @@ defmodule SalixSignal.GroupCall.Session do
 
   @impl GenServer
   def terminate(_reason, state) do
-    if state.call, do: send(state.call, {:voice_carrier, :hangup, :remote})
+    if state.call, do: SystemsRuntime.Proc.send(state.call, {:voice_carrier, :hangup, :remote})
 
     if state.ice do
       try do
@@ -492,7 +497,9 @@ defmodule SalixSignal.GroupCall.Session do
     {url, token, http} = {sfu_url(state), state.token, state.config[:http] || []}
 
     task =
-      Task.Supervisor.async_nolink(@tasks, fn -> {:peek, Sfu.peek(url, token, http: http)} end)
+      SystemsRuntime.TaskSupervisor.async_nolink(@tasks, fn ->
+        {:peek, Sfu.peek(url, token, http: http)}
+      end)
 
     %{state | peek_task: task.ref}
   end
@@ -584,9 +591,9 @@ defmodule SalixSignal.GroupCall.Session do
   end
 
   defp rotate(state) do
-    secret = :crypto.strong_rand_bytes(32)
+    secret = SystemsRuntime.Proc.random_bytes(32)
     recipients = state |> accounts(state.devices) |> MapSet.to_list()
-    schedule(:switch_key, state.timers.rotation_delay_ms)
+    schedule_idle(:switch_key, state.timers.rotation_delay_ms)
     send_key(%{state | pending_key: secret}, recipients, {0, secret})
   end
 
@@ -791,7 +798,10 @@ defmodule SalixSignal.GroupCall.Session do
       end)
 
     {mixed, mixer} = Mixer.pop(mixer)
-    if mixed != nil and is_pid(state.call), do: send(state.call, {:voice_carrier, :audio, mixed})
+
+    if mixed != nil and SystemsRuntime.Proc.is_process(state.call),
+      do: SystemsRuntime.Proc.send(state.call, {:voice_carrier, :audio, mixed})
+
     %{state | streams: streams, mixer: mixer}
   end
 
@@ -835,7 +845,7 @@ defmodule SalixSignal.GroupCall.Session do
   # -- Send --------------------------------------------------------------------
 
   defp start_sending(%{next_send_ms: nil} = state) do
-    send(self(), :send_tick)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :send_tick)
     %{state | next_send_ms: now_ms()}
   end
 
@@ -846,7 +856,12 @@ defmodule SalixSignal.GroupCall.Session do
   defp send_tick(state) do
     frame = Opus.frame_bytes()
     state = %{state | next_send_ms: state.next_send_ms + Opus.frame_ms()}
-    Process.send_after(self(), :send_tick, max(state.next_send_ms - now_ms(), 0))
+
+    SystemsClock.send_after(
+      SystemsRuntime.Proc.self(),
+      :send_tick,
+      max(state.next_send_ms - now_ms(), 0)
+    )
 
     state =
       case state.held do
@@ -920,7 +935,7 @@ defmodule SalixSignal.GroupCall.Session do
     if state.call,
       do:
         Enum.each(played, fn {_, name} ->
-          send(state.call, {:voice_carrier, :mark_played, name})
+          SystemsRuntime.Proc.send(state.call, {:voice_carrier, :mark_played, name})
         end)
 
     %{state | marks: pending}
@@ -984,7 +999,7 @@ defmodule SalixSignal.GroupCall.Session do
 
   defp send_report(state) do
     sender = %{
-      ntp_ms: System.system_time(:millisecond),
+      ntp_ms: SystemsClock.system_time(:millisecond),
       rtp_timestamp: state.audio_ts,
       packets: state.sent_packets,
       octets: state.sent_octets
@@ -1039,7 +1054,7 @@ defmodule SalixSignal.GroupCall.Session do
       end
 
     notify(state, {:left, reason})
-    Process.send_after(self(), :stop, state.timers.linger_ms)
+    schedule_idle(:stop, state.timers.linger_ms)
     %{state | leaving: true}
   end
 
@@ -1051,9 +1066,12 @@ defmodule SalixSignal.GroupCall.Session do
     send_fun = state.config.send
     deadline = state.timers.send_deadline_ms
 
-    Task.Supervisor.start_child(@tasks, fn ->
-      task = Task.async(fn -> send_fun.(recipients, message, %{urgent: urgent}) end)
-      Task.yield(task, deadline) || Task.shutdown(task, :brutal_kill)
+    SystemsRuntime.TaskSupervisor.start_child(@tasks, fn ->
+      task =
+        SystemsRuntime.Task.async(fn -> send_fun.(recipients, message, %{urgent: urgent}) end)
+
+      SystemsRuntime.Task.yield(task, deadline) ||
+        SystemsRuntime.Task.shutdown(task, :brutal_kill)
     end)
 
     state
@@ -1064,18 +1082,23 @@ defmodule SalixSignal.GroupCall.Session do
   defp announce(state) do
     announce_fun = state.config.announce
     era_id = state.era_id
-    Task.Supervisor.start_child(@tasks, fn -> announce_fun.(era_id) end)
+    SystemsRuntime.TaskSupervisor.start_child(@tasks, fn -> announce_fun.(era_id) end)
     :ok
   end
 
-  defp notify(%{owner: owner}, event) when is_pid(owner),
-    do: send(owner, {:signal_group_call, self(), event})
+  defp notify(%{owner: owner}, event) when SystemsRuntime.Proc.is_process(owner),
+    do: SystemsRuntime.Proc.send(owner, {:signal_group_call, SystemsRuntime.Proc.self(), event})
 
   defp notify(_state, _event), do: :ok
 
   defp count(state, key), do: %{state | counters: Map.update!(state.counters, key, &(&1 + 1))}
 
-  defp schedule(message, ms), do: Process.send_after(self(), message, ms)
+  defp schedule(message, ms), do: SystemsClock.send_after(SystemsRuntime.Proc.self(), message, ms)
 
-  defp now_ms, do: System.monotonic_time(:millisecond)
+  # Heartbeats, the key switch and the leave linger only wait, so they run on
+  # SystemsClock (tests speed them up). Media pacing stays on real time.
+  defp schedule_idle(message, ms),
+    do: SystemsClock.send_after(SystemsRuntime.Proc.self(), message, ms)
+
+  defp now_ms, do: SystemsClock.monotonic_time(:millisecond)
 end

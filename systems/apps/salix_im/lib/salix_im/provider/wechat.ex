@@ -245,8 +245,8 @@ defmodule SalixIM.Provider.WeChat do
         {:error, "clawbot media data is empty"}
 
       true ->
-        aes_key = :crypto.strong_rand_bytes(16)
-        file_key_hex = Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+        aes_key = SystemsRuntime.Proc.random_bytes(16)
+        file_key_hex = Base.encode16(SystemsRuntime.Proc.random_bytes(16), case: :lower)
         raw_md5_hex = Base.encode16(:crypto.hash(:md5, data), case: :lower)
         cipher_size = wechat_aes_ecb_padded_size(byte_size(data))
 
@@ -447,7 +447,7 @@ defmodule SalixIM.Provider.WeChat do
 
   defp wechat_cdn_base_url do
     :salix_im
-    |> Application.get_env(:wechat_cdn_base_url, @wechat_cdn_base_url)
+    |> SystemsRuntime.get_env(:wechat_cdn_base_url, @wechat_cdn_base_url)
     |> str()
     |> default_base(@wechat_cdn_base_url)
   end

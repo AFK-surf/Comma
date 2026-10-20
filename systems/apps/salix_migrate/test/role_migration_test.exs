@@ -6,7 +6,7 @@ defmodule SalixMigrate.RoleMigrationTest do
   roles are rejected at the import edge with `{:error, :invalid_role}` and
   absent fields default to role `"worker"` / empty prompts.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixMigrate.Import
   alias SalixStore.{Agent, Keys, S3}
@@ -17,10 +17,10 @@ defmodule SalixMigrate.RoleMigrationTest do
   @session_id "ses1_0000000000000000001"
 
   setup do
-    prev = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, prev) end)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, prev) end)
     {:ok, agent: SalixAgent.TestSupport.new_agent_id()}
   end
 

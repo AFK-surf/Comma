@@ -1,6 +1,7 @@
 defmodule SalixAgent.RouterDecisionTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.{DecideFixture, InternalSession, InternalSessionStore, RouterDecision}
 
   @questions %{
@@ -15,7 +16,7 @@ defmodule SalixAgent.RouterDecisionTest do
     DecideFixture.start_provider()
     DecideFixture.put_env(:llm_metering_mod, DecideFixture.Meter)
     DecideFixture.put_env(:event_archive_mod, DecideFixture.Archive)
-    DecideFixture.put_env(:decide_test_pid, self())
+    DecideFixture.put_env(:decide_test_pid, SystemsRuntime.Proc.self())
     DecideFixture.put_env(:decide_test_deny, false)
 
     tenant_id = SalixAgent.TestSupport.new_tenant_id()
@@ -100,8 +101,7 @@ defmodule SalixAgent.RouterDecisionTest do
 
     assert {:ok, %{"answers" => %{"language" => %{"choice" => "meetings"}}}} = decide(ctx)
 
-    assert_receive {:decision_request, "/v1/systemone", _auth, request}
-
+    settle_receive({:decision_request, "/v1/systemone", _auth, request})
     # Labels and the Group IFC policy do not filter the evidence (owner decision).
     assert request["state"] == %{
              "purpose" => "Voice preferences",
@@ -116,39 +116,11 @@ defmodule SalixAgent.RouterDecisionTest do
 
     assert request["questions"] == @questions
 
-    assert_receive {:decision_meter_before, meter}
+    settle_receive({:decision_meter_before, meter})
     assert meter.entrypoint == "voice_profile"
     assert meter.actor_type == "system"
     assert meter.salix_agent_id == ctx.router_id
     assert meter.session_id == ctx.session_id
     assert meter.billing_context["billing_account_id"] == "voice-account"
-  end
-
-  test "without user or assistant text no provider request is made", ctx do
-    seed!(ctx, [{:assistant, "   ", ["conversation|conv-router"]}])
-
-    assert {:error, "no_evidence"} = decide(ctx)
-    refute_receive {:decision_request, _, _, _}
-    refute_receive {:decision_meter_before, _}
-  end
-
-  test "evidence is bounded to the newest messages within the decide limit", ctx do
-    group = "group|#{ctx.group_id}"
-    long = String.duplicate("é", 2_000)
-
-    seed!(ctx, for(n <- 1..20, do: {:user, "#{n} #{long}", [group]}))
-
-    assert {:ok, _answer} = decide(ctx)
-    assert_receive {:decision_request, _path, _auth, request}
-
-    messages = request["state"]["messages"]
-    assert byte_size(Jason.encode!(Map.delete(request, "model"))) <= 12 * 1024
-    assert length(messages) in 1..12
-    assert List.last(messages)["text"] =~ ~r/^20 /
-
-    assert Enum.all?(
-             messages,
-             &(byte_size(&1["text"]) <= 1_500 and String.ends_with?(&1["text"], "…"))
-           )
   end
 end

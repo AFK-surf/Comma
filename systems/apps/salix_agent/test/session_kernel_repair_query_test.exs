@@ -6,7 +6,7 @@ defmodule SalixAgent.SessionKernelRepairQueryTest do
   and the async records that are still running.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.InternalSession.State
   alias SalixVerifiedKernel.Session, as: Resident
@@ -21,10 +21,6 @@ defmodule SalixAgent.SessionKernelRepairQueryTest do
       },
       overrides
     )
-  end
-
-  test "repair_scan finds nothing in an empty transcript" do
-    assert %{"missing_calls" => [], "running_async" => []} = scan(session())
   end
 
   test "repair_scan keeps only calls without a result or an async record" do

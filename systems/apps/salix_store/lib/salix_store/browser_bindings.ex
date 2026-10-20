@@ -66,7 +66,7 @@ defmodule SalixStore.BrowserBindings do
             controller_expires_at: nil,
             control: "agent",
             storage_error: "browser_storage_not_saved",
-            updated_at: DateTime.utc_now()
+            updated_at: SystemsClock.timestamp(:utc_datetime_usec)
           ]
         ],
         log: false
@@ -117,8 +117,8 @@ defmodule SalixStore.BrowserBindings do
             "shared_storage" => true
           },
           status: "creating",
-          pending: Ecto.UUID.generate(),
-          updated_at: DateTime.utc_now()
+          pending: SystemsRuntime.Proc.uuid(),
+          updated_at: SystemsClock.timestamp(:utc_datetime_usec)
         })
       )
 
@@ -148,7 +148,10 @@ defmodule SalixStore.BrowserBindings do
 
   def finish(row, updates) do
     {clear, updates} = Map.pop(updates, :clear_storage, false)
-    updates = Map.merge(updates, %{pending: nil, updated_at: DateTime.utc_now()}) |> Map.to_list()
+
+    updates =
+      Map.merge(updates, %{pending: nil, updated_at: SystemsClock.timestamp(:utc_datetime_usec)})
+      |> Map.to_list()
 
     Repo.transaction(fn ->
       case Repo.update_all(
@@ -169,7 +172,7 @@ defmodule SalixStore.BrowserBindings do
   def heartbeat(owner, principal) do
     Repo.update_all(
       from(r in query(owner), where: r.controller == ^principal),
-      [set: [controller_expires_at: DateTime.add(DateTime.utc_now(), 10, :second)]],
+      [set: [controller_expires_at: DateTime.add(SystemsClock.utc_now(), 10, :second)]],
       log: false
     )
 
@@ -188,9 +191,10 @@ defmodule SalixStore.BrowserBindings do
 
   # A create without a returned provider ID cannot be deleted remotely. Wait
   # through the maximum requested idle period plus the bounded HTTP request.
-  defp expired_creation?(row) do
+  @doc false
+  def expired_creation?(row) do
     row.status == "creating" and is_nil(row.provider_id) and
-      DateTime.diff(DateTime.utc_now(), row.updated_at, :millisecond) >
+      DateTime.diff(SystemsClock.utc_now(), row.updated_at, :millisecond) >
         (row.options["idle_timeout_ms"] || 60000) + 60000
   end
 
@@ -221,21 +225,23 @@ defmodule SalixStore.BrowserBindings do
         principal != :agent and
           operation not in ["take_control", "tabs", "snapshot"] and
             (row.controller != principal or is_nil(row.controller_expires_at) or
-               DateTime.compare(row.controller_expires_at, DateTime.utc_now()) != :gt) ->
+               DateTime.compare(row.controller_expires_at, SystemsClock.utc_now()) != :gt) ->
           Repo.rollback(:browser_control_required)
 
         principal != :agent and operation == "take_control" and
           row.controller not in [nil, principal] and not is_nil(row.controller_expires_at) and
-            DateTime.compare(row.controller_expires_at, DateTime.utc_now()) == :gt ->
+            DateTime.compare(row.controller_expires_at, SystemsClock.utc_now()) == :gt ->
           Repo.rollback(:browser_control_conflict)
 
         true ->
           :ok
       end
 
-      pending = Ecto.UUID.generate()
+      pending = SystemsRuntime.Proc.uuid()
 
-      Repo.update_all(query(owner), [set: [pending: pending, updated_at: DateTime.utc_now()]],
+      Repo.update_all(
+        query(owner),
+        [set: [pending: pending, updated_at: SystemsClock.timestamp(:utc_datetime_usec)]],
         log: false
       )
 

@@ -8,7 +8,11 @@ defmodule BridgeForTeams.Schema.AccountRecoveryLink do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   schema "account_recovery_links" do
     field :token_hash, :string

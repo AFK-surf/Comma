@@ -1,15 +1,11 @@
-import { render, screen } from "@comma/test-utils/render";
+import { act, render, screen } from "@comma/test-utils/render";
 import { describe, expect, it } from "vitest";
 import { InlineTask } from "../../inline-task";
+import { TaskProgressContext, type TaskProgressSource } from "../taskProgress";
 import { TaskSummaryCard, type TaskSummaryViewModel } from "../TaskSummaryCard";
 import type { TaskStatusBucket } from "../taskStatus";
 
-const RESTING_BUCKETS: TaskStatusBucket[] = [
-  "backlog",
-  "needs_review",
-  "done",
-  "cancelled",
-];
+const RESTING_BUCKETS: TaskStatusBucket[] = ["needs_review", "done", "cancelled"];
 
 function task(
   statusBucket: TaskStatusBucket,
@@ -114,6 +110,58 @@ describe("Task card progress line", () => {
     expect(container.querySelector(".comma-shiny-text")).toHaveTextContent(
       "Stale · Working"
     );
+  });
+});
+
+function source(initial: Record<string, string>) {
+  let steps = new Map(Object.entries(initial));
+  const listeners = new Set<() => void>();
+  const value: TaskProgressSource = {
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    progressOf: (taskId) => steps.get(taskId),
+  };
+  const publish = (next: Record<string, string>) => {
+    steps = new Map(Object.entries(next));
+    for (const listener of listeners) listener();
+  };
+  return { publish, value };
+}
+
+describe("Task card live progress", () => {
+  it("shows its followed Worker's step in place of the stale status words", () => {
+    const steps = source({ "task-a": "Read SKILL.md" });
+    const { container } = render(
+      <TaskProgressContext.Provider value={steps.value}>
+        <TaskSummaryCard
+          task={task("in_progress", { freshness: "stale", id: "task-a" })}
+        />
+        <TaskSummaryCard
+          task={task("in_progress", { freshness: "stale", id: "task-b" })}
+        />
+      </TaskProgressContext.Provider>
+    );
+    const lines = () =>
+      [...container.querySelectorAll(".comma-shiny-text")].map(
+        (line) => line.textContent
+      );
+
+    expect(lines()).toEqual(["Read SKILL.md", "Stale · Working"]);
+    act(() => steps.publish({ "task-a": "Ran the tests", "task-b": "Thinking" }));
+    expect(lines()).toEqual(["Ran the tests", "Thinking"]);
+  });
+
+  it("keeps a resting Task's row gone though a step is still known", () => {
+    const steps = source({ "task-done": "Ran the tests" });
+    const { container } = render(
+      <TaskProgressContext.Provider value={steps.value}>
+        <TaskSummaryCard task={task("done", { id: "task-done" })} />
+      </TaskProgressContext.Provider>
+    );
+
+    expect(metaRow(container)).toBeNull();
   });
 });
 

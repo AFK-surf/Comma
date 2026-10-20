@@ -42,7 +42,7 @@ service Control {
   //
   // The first message carries the header; the daemon takes its gates —
   // publishability, a resolvable target — before it answers, so the response
-  // headers are the client's signal to start streaming and a refusal arrives as
+  // headers are the client's cue to start streaming and a refusal arrives as
   // the coded error it is. Chunks follow, and the write is published only on
   // an explicit commit. Nothing is buffered whole at either end.
   rpc Put(stream PutRequest) returns (stream Written);
@@ -417,6 +417,8 @@ message Cat {
   optional string root = 5;
   // `--select newest|origin=<id>|strict`.
   optional string select = 6;
+  // `--no-cache`: stream a peer's object through without keeping a copy.
+  bool no_cache = 7;
 }
 
 message Get {
@@ -613,6 +615,10 @@ message ReadRequest {
   uint64 start = 4;
   // How many bytes, or unset to the end of the object.
   optional uint64 len = 5;
+  // Serve a peer's object without keeping a copy: bytes this node does not
+  // already hold are verified in memory and forwarded, and nothing is written
+  // to the CAS. Unset reads through the CAS as always.
+  bool no_cache = 6;
 }
 
 message PutRequest {

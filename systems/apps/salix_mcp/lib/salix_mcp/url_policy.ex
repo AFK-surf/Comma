@@ -62,7 +62,7 @@ defmodule SalixMCP.URLPolicy do
     url = URI.to_string(uri)
 
     :salix_mcp
-    |> Application.get_env(:private_http_target_allowlist, [])
+    |> SystemsRuntime.get_env(:private_http_target_allowlist, [])
     |> List.wrap()
     |> Enum.any?(&(&1 == url))
   end
@@ -128,7 +128,7 @@ defmodule SalixMCP.URLPolicy do
 
         [:inet, :inet6]
         |> Enum.find_value(fn family ->
-          case :inet.getaddrs(host, family) do
+          case resolver().getaddrs(host, family) do
             {:ok, [address | _]} -> {:ok, address}
             _ -> nil
           end
@@ -142,13 +142,16 @@ defmodule SalixMCP.URLPolicy do
     _ -> {:error, {:bad_request, "MCP URL host could not be resolved"}}
   end
 
+  # `:inet`, or a test's stand-in (SystemsRuntime.Test.NoDNS).
+  defp resolver, do: SystemsRuntime.get_env(:salix_mcp, :resolver, :inet)
+
   defp resolve_public_address(host) do
     host = to_charlist(host)
 
     addresses =
       [:inet, :inet6]
       |> Enum.flat_map(fn family ->
-        case :inet.getaddrs(host, family) do
+        case resolver().getaddrs(host, family) do
           {:ok, addresses} -> addresses
           _ -> []
         end
@@ -308,20 +311,23 @@ defmodule SalixMCP.URLPolicy do
   defp private_address?({0, 0, 0, 0, 0, 0, 0, 0}), do: true
   defp private_address?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
   defp private_address?({0, 0, 0, 0, 0, 0xFFFF, a, b}), do: private_address?(ipv4_mapped(a, b))
+  defp private_address?({0x2001, 0x0002, 0, _, _, _, _, _}), do: true
   defp private_address?({0x2001, 0x0DB8, _, _, _, _, _, _}), do: true
   defp private_address?({first, _, _, _, _, _, _, _}) when (first &&& 0xFE00) == 0xFC00, do: true
   defp private_address?({first, _, _, _, _, _, _, _}) when (first &&& 0xFFC0) == 0xFE80, do: true
   defp private_address?({first, _, _, _, _, _, _, _}) when (first &&& 0xFF00) == 0xFF00, do: true
   defp private_address?(_address), do: false
 
-  # Some local development networks use 198.18/15 as DNS fake-IP space. These
-  # addresses are never accepted directly; they only trigger a public DNS retry.
+  # Local proxies can use the benchmarking ranges 198.18/15 and 2001:2::/48
+  # as DNS fake-IP space. Never connect to these addresses directly; resolve
+  # the original hostname again through public DNS and validate that answer.
   defp fake_ip_address?({198, second, _, _}) when second in [18, 19], do: true
+  defp fake_ip_address?({0x2001, 0x0002, 0, _, _, _, _, _}), do: true
   defp fake_ip_address?(_address), do: false
 
   defp ipv4_mapped(a, b), do: {a >>> 8, a &&& 0xFF, b >>> 8, b &&& 0xFF}
 
   defp allow_private_http_targets? do
-    Application.get_env(:salix_mcp, :allow_private_http_targets, false) == true
+    SystemsRuntime.get_env(:salix_mcp, :allow_private_http_targets, false) == true
   end
 end

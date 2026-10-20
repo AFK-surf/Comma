@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Focusable } from "react-aria-components";
+import { uiClock, type CancelUiTimer } from "../../clock";
 import { motionDuration } from "../../tokens";
 import { Tooltip } from "../tooltip";
 import { cx } from "../utils";
@@ -117,7 +118,7 @@ export const useChatPanelMediaDownloadController = ({
     kind,
     source,
   };
-  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const successTimerRef = useRef<CancelUiTimer | null>(null);
 
   useEffect(() => {
     requestGenerationRef.current += 1;
@@ -125,13 +126,13 @@ export const useChatPanelMediaDownloadController = ({
     stateRef.current = idleState;
     setState(idleState);
     if (successTimerRef.current) {
-      clearTimeout(successTimerRef.current);
+      successTimerRef.current();
       successTimerRef.current = null;
     }
 
     return () => {
       requestGenerationRef.current += 1;
-      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+      if (successTimerRef.current) successTimerRef.current();
     };
   }, [action?.capability.execute, action?.fileName, kind, source]);
 
@@ -148,7 +149,7 @@ export const useChatPanelMediaDownloadController = ({
     const requestGeneration = requestGenerationRef.current + 1;
     requestGenerationRef.current = requestGeneration;
     if (successTimerRef.current) {
-      clearTimeout(successTimerRef.current);
+      successTimerRef.current();
       successTimerRef.current = null;
     }
     const pendingState: ChatPanelMediaDownloadState = { status: "pending" };
@@ -185,14 +186,14 @@ export const useChatPanelMediaDownloadController = ({
     const successState: ChatPanelMediaDownloadState = { status: "success" };
     stateRef.current = successState;
     setState(successState);
-    successTimerRef.current = setTimeout(() => {
+    successTimerRef.current = uiClock.after(successFeedbackDuration, () => {
       if (requestGenerationRef.current === requestGeneration) {
         const idleState: ChatPanelMediaDownloadState = { status: "idle" };
         stateRef.current = idleState;
         setState(idleState);
       }
       successTimerRef.current = null;
-    }, successFeedbackDuration);
+    });
   };
 
   return {

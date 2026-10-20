@@ -17,18 +17,14 @@ import {
 import { AsyncCall, notify } from "async-call-rpc";
 
 export * from "./capability-leaves";
-export * from "./session-history-contract";
 export * from "./generated/native-capability-artifacts";
 
 export type NativeInfoBridge = GeneratedNativeBridge["native"];
 export type NotchBridge = GeneratedNativeBridge["notch"];
 export type SessionBridge = GeneratedNativeBridge["session"];
-export type SideChatBridge = GeneratedNativeBridge["sideChat"];
 export type WindowsBridge = GeneratedNativeBridge["windows"];
-export type LocalDataBridge = GeneratedNativeBridge["localData"];
 export type LocalFilesBridge = GeneratedNativeBridge["localFiles"];
 export type TransportBridge = GeneratedNativeBridge["transport"];
-export type ProductInboxBridge = GeneratedNativeBridge["productInbox"];
 export type NativePeerCommandBridge = GeneratedNativeBridge["peers"];
 
 export interface ConnectorConfig {
@@ -80,50 +76,6 @@ export interface ConnectorBridge {
 }
 
 export type ComputerUseBridge = GeneratedNativeBridge["computerUse"];
-
-export interface UpdateAsset {
-  PackageId: string;
-  Version: string;
-  Type: string;
-  FileName: string;
-  SHA1: string;
-  SHA256: string;
-  Size: number;
-  NotesMarkdown: string;
-  NotesHtml: string;
-}
-
-export interface UpdateInfo {
-  TargetFullRelease: UpdateAsset;
-  BaseRelease?: UpdateAsset | undefined;
-  DeltasToTarget: UpdateAsset[];
-  IsDowngrade: boolean;
-}
-
-export interface UpdateStatus {
-  configured: boolean;
-  flavor?: "prod" | "staging" | "dev" | undefined;
-  releaseChannel?: "prod" | "staging" | undefined;
-  packageName?: string | undefined;
-  productName?: string | undefined;
-  appBundleId?: string | undefined;
-  packId?: string | undefined;
-  urlScheme?: string | undefined;
-  apiBaseUrl?: string | undefined;
-  updateUrl?: string | undefined;
-  currentVersion: string;
-  appId?: string | undefined;
-  portable?: boolean | undefined;
-  pendingRestart?: UpdateAsset | null | undefined;
-  error?: string | undefined;
-}
-
-export interface UpdateBridge {
-  status(): Promise<UpdateStatus>;
-  check(): Promise<UpdateInfo | null>;
-  download(update: UpdateInfo): Promise<boolean>;
-  apply(update: UpdateInfo | UpdateAsset): Promise<boolean>;
-}
 
 export type SurfacesBridge = GeneratedNativeBridge["surfaces"] & {
   list(): Promise<SurfaceList>;
@@ -212,7 +164,6 @@ export type CommaNativeBridge = Omit<GeneratedNativeBridge, "peers" | "surfaces"
   surfaces: SurfacesBridge;
   peers: NativePeersBridge;
   connector: ConnectorBridge;
-  updates: UpdateBridge;
 };
 
 declare global {
@@ -238,25 +189,6 @@ export const webRendererIdentity: NativeRendererIdentity = Object.freeze({
 });
 
 export const unavailableNotchBridge: NotchBridge = generatedWebBridge.notch;
-
-export const unavailableUpdateBridge: UpdateBridge = {
-  async status() {
-    return {
-      configured: false,
-      currentVersion: "web",
-      error: "Updates are unavailable in this runtime.",
-    };
-  },
-  async check() {
-    return null;
-  },
-  async download() {
-    return false;
-  },
-  async apply() {
-    return false;
-  },
-};
 
 export const unavailableConnectorBridge: ConnectorBridge = {
   async status() {
@@ -307,7 +239,6 @@ export const webNativeBridge: CommaNativeBridge = {
   },
   peers: unavailablePeersBridge,
   connector: unavailableConnectorBridge,
-  updates: unavailableUpdateBridge,
 };
 
 export function createNativePeerAsyncCall<

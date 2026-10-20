@@ -1,3 +1,4 @@
+import { waitForSettledMotion } from "../../../e2e/helpers/motion";
 import { expect, test, type Route } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
 
@@ -199,7 +200,10 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   const landscapeBuffer = Buffer.from(landscape);
   expect(landscapeBuffer.length).toBeGreaterThan(200 * 1024);
   expect(landscapeBuffer.length).toBeLessThanOrEqual(2 * 1024 * 1024);
-  await page.locator('input[type="file"]').setInputFiles({
+  const chooserReady = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Choose image", exact: true }).click();
+  const chooser = await chooserReady;
+  await chooser.setFiles({
     buffer: landscapeBuffer,
     mimeType: "image/png",
     name: "landscape.png",
@@ -209,9 +213,11 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
   await expect(cropDialog).toBeVisible();
   const cropArea = cropDialog.getByTestId("avatar-crop-area");
   await expect(cropArea.locator("img")).toBeVisible();
-  // The open animation scales the panel from 95%, so settle before measuring.
-  await expect.poll(async () => (await cropArea.boundingBox())?.width).toBe(280);
+  // The open animation scales the panel from 95%: measure once it has ended,
+  // not at a frame whose width happens to round to its final size.
+  await waitForSettledMotion(page.locator("body"));
   const cropBox = (await cropArea.boundingBox())!;
+  expect(cropBox.width).toBe(280);
   expect(cropBox.height).toBe(280);
   await cropArea.hover();
   await page.mouse.wheel(0, -200);
@@ -242,6 +248,9 @@ test("keeps the sidebar profile avatar in sync with name and private avatar upda
         .evaluate((image: HTMLImageElement) => image.naturalWidth)
     )
     .toBeGreaterThan(0);
+  await expect(
+    page.getByRole("button", { name: "Choose image", exact: true })
+  ).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(settingsDialog).toBeHidden();
   await expect(sidebarAvatar.locator("img")).toBeVisible();

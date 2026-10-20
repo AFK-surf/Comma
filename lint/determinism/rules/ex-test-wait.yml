@@ -1,0 +1,49 @@
+id: ex-test-wait
+language: elixir
+severity: error
+message: "A test waits with a real-time timeout."
+note: |
+  assert_receive, refute_receive, Task.await and Task.yield (also as
+  SystemsRuntime.Task) give up after real time, and GenServer.call and Agent
+  calls default to 5 seconds of it. In a
+  module on the test clock (SystemsClock.Test or SystemsClock.Case) use
+  settle_receive, settle_refute_receive or settled_await; pass :infinity to
+  calls the test makes.
+metadata:
+  category: deadline
+rule:
+  all:
+    - any:
+        - all:
+            - kind: call
+            - has:
+                field: target
+                regex: "^(assert_receive|refute_receive)$"
+        - all:
+            - kind: call
+            - has:
+                field: target
+                regex: "^(SystemsRuntime\\.)?Task\\.(await|await_many|yield_many)$"
+            # An :infinity timeout waits for the task, not for real time.
+            - not:
+                has:
+                  kind: arguments
+                  has:
+                    regex: "^:infinity$"
+                    nthChild:
+                      position: 2
+        - all:
+            - kind: call
+            - has:
+                field: target
+                regex: "^(SystemsRuntime\\.)?Task\\.yield$"
+            - not:
+                has:
+                  kind: arguments
+                  has:
+                    regex: "^0$"
+                    nthChild:
+                      position: 2
+files:
+  - "systems/apps/*/test/**/*.exs"
+  - "systems/apps/*/test/**/*.ex"

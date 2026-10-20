@@ -1,8 +1,10 @@
 import NodeRenderer, {
+  getCustomComponentsRevision,
   getCustomNodeComponents,
   removeCustomComponents,
   renderNode,
   setCustomComponents,
+  subscribeCustomComponents,
   type CustomComponentMap,
   type NodeComponentProps,
   type NodeRendererProps,
@@ -10,12 +12,14 @@ import NodeRenderer, {
 } from "markstream-react";
 import {
   createContext,
+  useCallback,
   useContext,
   useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import type { BaseNode, ParsedNode } from "stream-markdown-parser";
@@ -156,6 +160,20 @@ export function MarkdownDocumentRenderer({
   // can inspect the current version without rerendering every settled root.
   context.streamRenderVersion = versionRef.current.version;
   liveContext.streamRenderVersion = versionRef.current.version;
+  // NodeRenderer re-renders only for the global mapping and its own layout
+  // scope (patches/markstream-react). The caller's customId is another scope,
+  // so the document observes that one itself; without one it reads only the
+  // global mapping. A stable getSnapshot spares React a store re-check per render.
+  const callerId = context.customId;
+  const readCallerScope = useCallback(
+    () => (callerId ? getCustomComponentsRevision(callerId) : ""),
+    [callerId]
+  );
+  const callerScopeRevision = useSyncExternalStore(
+    subscribeCustomComponents,
+    readCallerScope,
+    readCallerScope
+  );
 
   const resolveContexts = useMemo(() => {
     let cached:
@@ -166,9 +184,9 @@ export function MarkdownDocumentRenderer({
         }
       | undefined;
     return (hostContext: RenderContext | undefined) => {
-      // NodeRenderer owns the public registry subscription. Its updated context
-      // invalidates this document's mapping without another subscription or a
-      // registry write during render. Keep local overrides ahead of that scope.
+      // NodeRenderer's updated context or a new callerScopeRevision invalidates
+      // this document's mapping without a registry write during render. Keep
+      // local overrides ahead of the caller's scope.
       if (!cached || cached.hostComponents !== hostContext?.customComponents) {
         const components = {
           ...getCustomNodeComponents(context.customId),
@@ -184,7 +202,9 @@ export function MarkdownDocumentRenderer({
       cached.live.streamRenderVersion = versionRef.current.version;
       return cached;
     };
-  }, [context, liveContext, customComponents]);
+    // callerScopeRevision only versions what getCustomNodeComponents reads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [context, liveContext, customComponents, callerScopeRevision]);
 
   const slots = useMemo(
     () => markdownPresentationSlots(nodes, blockPresentation),
@@ -309,7 +329,15 @@ function DocumentSlot({ node: scheduled, ctx }: NodeComponentProps<ScheduledNode
   const contexts = snapshot.resolveContexts(ctx);
   if (slot.kind && slot.kind !== "comma-inline") {
     return (
-      <div className="markdown-stream-bubble" data-kind={slot.kind}>
+      <div
+        className="markdown-stream-bubble"
+        data-kind={slot.kind}
+        // Styles find the reply's end by this marker, not by a `:has()` over
+        // sibling slots (GUIDE.md, "Mixed blocks and media").
+        data-last-slot={
+          scheduled.commaDocumentSlotIndex === snapshot.slots.length - 1 || undefined
+        }
+      >
         {slot.rootIndices.map((index) => (
           <div
             className="markdown-stream-bubble-block"

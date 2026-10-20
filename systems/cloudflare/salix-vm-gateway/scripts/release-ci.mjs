@@ -40,6 +40,9 @@ export function inferWorkerReleaseKind(event, fallback = "gateway_only") {
       file === "systems/cloudflare/salix-vm-gateway/scripts/build-connector.sh" ||
       file === "systems/cloudflare/salix-vm-gateway/scripts/install-harnesses.mjs" ||
       file === "systems/runtime-images/runtime-dependencies.lock.json" ||
+      file === "systems/runtime-images/station/silk2wav" ||
+      file === "systems/runtime-images/station/file-tools-packages" ||
+      file === "systems/runtime-images/station/file-tools-requirements.txt" ||
       file.endsWith("/Dockerfile"),
   );
 
@@ -294,12 +297,19 @@ export function requireInactiveContainerInstances(instances, workloads = []) {
 
 const SANDBOX_RUNTIME_PATHS = [
   ":(top)systems/connector/salix-connect",
+  // The Container's station (scripts/build-connector.sh bundles it) and the toolchain its Linux parts are built with.
+  ":(top)systems/station",
+  ":(top)systems/profiles",
+  ":(top).github/actions/station-zig",
   ":(top)systems/cloudflare/salix-vm-gateway/Dockerfile",
   ":(top)systems/cloudflare/salix-vm-gateway/entrypoint.sh",
   ":(top)systems/cloudflare/salix-vm-gateway/wrangler.jsonc",
   ":(top)systems/cloudflare/salix-vm-gateway/scripts/build-connector.sh",
   ":(top)systems/cloudflare/salix-vm-gateway/scripts/install-harnesses.mjs",
   ":(top)systems/runtime-images/runtime-dependencies.lock.json",
+  ":(top)systems/runtime-images/station/silk2wav",
+  ":(top)systems/runtime-images/station/file-tools-packages",
+  ":(top)systems/runtime-images/station/file-tools-requirements.txt",
 ];
 
 export function sameSandboxRuntimeSources(previousRevision, revision, cwd = process.cwd()) {
@@ -312,7 +322,8 @@ export function sameSandboxRuntimeSources(previousRevision, revision, cwd = proc
   const changed = git(["diff", "--name-only", "-z", previousRevision, revision, "--", ...SANDBOX_RUNTIME_PATHS]);
   if (changed.status !== 0) return false;
   if (changed.stdout.split("\0").some((path) => path &&
-      !path.endsWith("_test.go") && !path.endsWith(".test.mjs"))) {
+      !path.endsWith("_test.go") && !path.endsWith(".test.mjs") &&
+      !path.startsWith("systems/station/test/"))) {
     return false;
   }
   return true;
@@ -888,65 +899,113 @@ async function readSalixWorkerRelease() {
   return result;
 }
 
+const IMAGE_PROBE_RUNNING_MS = 30_000;
+
 export async function probeImageContainer({ baseUrl, secret, maintenanceId, sourceRevision, profileKey }, request = signedGatewayRequest) {
   if (!secret) throw new Error("SALIX_VM_GATEWAY_SECRET is required");
   maskSecret(secret);
   const sandboxId = imageProbeSandboxId(maintenanceId, profileKey);
   const basePath = imageProbePath(profileKey, sandboxId);
   const control = { owner_id: maintenanceId, operation_id: sandboxId, generation: 1, revision: 1 };
-  const controlledRequest = (url, key, method, path, body) => request(url, key, method,
-    `${path}${path.includes("?") ? "&" : "?"}salix_control=${encodeURIComponent(JSON.stringify({ ...control, claim_id: randomUUID() }))}`, body);
+  const controlledRequest = (url, key, method, path, body, claimId = randomUUID()) => request(url, key, method,
+    `${path}${path.includes("?") ? "&" : "?"}salix_control=${encodeURIComponent(JSON.stringify({ ...control, claim_id: claimId }))}`, body);
   let attempted = false;
+  let ensureClaimId;
+  const evidence = { sandbox_id: sandboxId, expected_revision: sourceRevision, start_attempts: 0 };
+  const ensure = async () => {
+    ensureClaimId = randomUUID();
+    evidence.start_attempts++;
+    // The probe's station has no Salix to reach: it keeps retrying, and the Container keeps running.
+    const response = await controlledRequest(baseUrl, secret, "POST", `${basePath}/ensure`,
+      { keep_alive: true, station: { server: "wss://image-probe.invalid", credential: "image-probe" } }, ensureClaimId);
+    evidence.ensure = await imageProbeResponse(response, ["code"]);
+    if (!response.ok && ![500, 503, 504].includes(response.status)) {
+      throw new Error(`Fresh Sandbox ensure returned HTTP ${response.status}`);
+    }
+  };
   try {
     attempted = true;
     const opened = await controlledRequest(baseUrl, secret, "POST", `${basePath}/control`,
       { action: "open", control: { ...control, claim_id: "probe-open" } });
     if (!opened.ok) throw new Error(`Fresh Sandbox control returned HTTP ${opened.status}`);
-    const ensured = await controlledRequest(
-      baseUrl,
-      secret,
-      "POST",
-      `${basePath}/ensure`,
-      { keep_alive: true },
-    );
-    if (!ensured.ok && ![500, 503, 504].includes(ensured.status)) {
-      throw new Error(`Fresh Sandbox ensure returned HTTP ${ensured.status}`);
-    }
-
     let confirmed = false;
     const deadline = Date.now() + 15 * 60_000;
+    await ensure();
+    // The image is the one deployed (its digest is content-addressed); the probe shows it starts and its station
+    // keeps running.
+    let runningSince = 0;
     while (Date.now() < deadline) {
       const status = await controlledRequest(baseUrl, secret, "GET", `${basePath}/status`);
-      if (!status.ok || (await status.json()).status !== "ready") {
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
-        continue;
+      evidence.status = await imageProbeResponse(status, ["status"], status.ok);
+      if (status.ok && evidence.status.status === "running") {
+        if (!runningSince) runningSince = Date.now();
+        if (Date.now() - runningSince >= IMAGE_PROBE_RUNNING_MS) {
+          confirmed = true;
+          break;
+        }
+      } else {
+        runningSince = 0;
+        const observation = await controlledRequest(baseUrl, secret, "GET", `${basePath}/control`);
+        if (observation.ok && canRestartImageProbe(await observation.json(), control, ensureClaimId) && Date.now() < deadline) {
+          await ensure();
+        }
       }
-      const ready = await controlledRequest(
-        baseUrl,
-        secret,
-        "GET",
-        `${basePath}/proxy/readyz`,
-      );
-      if (!ready.ok) {
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
-        continue;
-      }
-      const readyBody = await ready.json();
-      if (readyBody.connector_build_revision !== sourceRevision) {
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
-        continue;
-      }
-      confirmed = true;
-      break;
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
     }
     if (!confirmed) {
-      throw new Error("Fresh Sandbox did not serve the expected Connector revision");
+      throw new Error("Fresh Sandbox did not keep running");
     }
+  } catch (error) {
+    // Read the same operation before cleanup replaces its terminal receipt.
+    try {
+      const observation = await controlledRequest(baseUrl, secret, "GET", `${basePath}/control`);
+      const body = await observation.json();
+      evidence.control = {
+        http_status: observation.status,
+        ...imageProbeFields(body, ["running", "managed_commands_settled", "connector_image_version", "worker_version_id", "gateway_build_id"]),
+        pending: imageProbeFields(body?.control?.pending, ["action", "claim_id", "start_issued", "generation", "revision"]),
+        last_terminal: imageProbeFields(body?.control?.last_terminal, ["action", "claim_id", "outcome", "status", "start_issued", "generation", "revision"]),
+      };
+    } catch {
+      evidence.control = { observation_failed: true };
+    }
+    console.error(`Fresh Sandbox probe failed: ${JSON.stringify(evidence)}`);
+    throw error;
   } finally {
     if (attempted) {
       await stopImageProbe({ baseUrl, secret, profileKey, control }, sandboxId, controlledRequest);
     }
   }
+}
+
+function canRestartImageProbe(observation, control, claimId) {
+  const state = observation?.control;
+  const terminal = state?.last_terminal;
+  const matches = (value) => value && Object.entries(control).every(([key, expected]) => value[key] === expected);
+  // A rollout can stop the old image after readiness settled its start. Read
+  // the exact receipt before another start. Unknown commands remain pending.
+  return observation?.running === false && matches(state) && state.sealed === false && state.pending === null &&
+    matches(terminal) && terminal.action === "ensure" && terminal.claim_id === claimId && terminal.outcome === "completed";
+}
+
+function imageProbeFields(body, keys) {
+  const result = {};
+  for (const key of keys) {
+    const value = body?.[key];
+    if (typeof value === "string") result[key] = value.slice(0, 160);
+    else if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) result[key] = value;
+  }
+  return result;
+}
+
+async function imageProbeResponse(response, keys, required = false) {
+  let body;
+  try { body = await response.json(); } catch (error) {
+    if (required) throw error;
+    // Keep HTTP evidence when an error body is unavailable.
+  }
+  return { http_status: response.status, ...imageProbeFields(body, keys),
+    ...imageProbeFields(body?.error, ["code"]) };
 }
 
 function imageProbeSandboxId(maintenanceId, profileKey) {

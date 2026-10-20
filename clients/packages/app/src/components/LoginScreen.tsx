@@ -1,13 +1,22 @@
-import { LoadingIndicator } from "@comma/ui";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { LoadingIndicator } from "@comma/ui/components/LoadingIndicator";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+} from "react";
 import { commaLogoUrl, getActiveCommaConfig } from "@comma/config";
 import { useCommaMessages } from "@comma/i18n/react";
-import { Button, Login, Text } from "@comma/ui";
-import type { LoginCopy } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Login } from "@comma/ui/components/login";
+import { Text } from "@comma/ui/components/Text";
+import type { LoginCopy } from "@comma/ui/components/login";
 import type {
   SessionAuthenticatorController,
   SessionGuestController,
   SessionLoginChallenge,
+  SessionLoginTiming,
 } from "../session/react";
 import { SessionOperationDisplayError } from "../session/operation-error-message";
 
@@ -28,7 +37,8 @@ type LoginScreenProps = {
   oauthResumeNotice?: string | undefined;
 };
 
-const RESEND_DELAY_SECONDS = 60;
+const noLoginTiming: SessionLoginTiming = {};
+const noTimingChanges = () => () => undefined;
 
 export function LoginScreen(props: LoginScreenProps) {
   const requestGoogleLogin = props.authenticator.requestGoogleLogin?.bind(
@@ -61,6 +71,8 @@ function StagedLoginScreen({
   const [code, setCode] = useState("");
   const [challengeId, setChallengeId] = useState("");
   const [challengePurpose, setChallengePurpose] = useState<ChallengePurpose>();
+  const [challengeEmail, setChallengeEmail] = useState("");
+  const [editingEmail, setEditingEmail] = useState(false);
   const [busy, setBusy] = useState(false);
   const [googlePending, setGooglePending] = useState(false);
   const [googleRetryAvailable, setGoogleRetryAvailable] = useState(false);
@@ -83,12 +95,26 @@ function StagedLoginScreen({
   );
   const [error, setError] = useState("");
   const [verificationRetryAvailable, setVerificationRetryAvailable] = useState(false);
-  const [resendSeconds, setResendSeconds] = useState(RESEND_DELAY_SECONDS);
-  const [resendAvailableAt, setResendAvailableAt] = useState(0);
+  // The countdowns are the core's: it counts them on its clock and says when they move.
+  const timing = useSyncExternalStore(
+    authenticator.loginTiming?.subscribe ?? noTimingChanges,
+    authenticator.loginTiming?.get ?? (() => noLoginTiming)
+  );
   const [verificationRevision, setVerificationRevision] = useState(0);
-  const lastAttemptedCodeRef = useRef("");
-  const hasChallenge = Boolean(challengeId);
+  const hasChallenge = Boolean(challengeId) && !editingEmail;
   const canResend = hasChallenge && challengePurpose === "email_login";
+  const challengeTiming =
+    timing.challenge?.challengeId === challengeId ? timing.challenge : undefined;
+  const cooldownSeconds = (address: string) =>
+    timing.cooldown?.email === address.trim().toLowerCase()
+      ? timing.cooldown.seconds
+      : 0;
+  // The core counts both: a code's resend waits for the longer of its own delay and the address's retry-after, and
+  // the address of a code that still works has no cooldown (a request goes back to that code).
+  const requestBlocked = !hasChallenge && cooldownSeconds(email) > 0;
+  const resendSeconds = hasChallenge
+    ? (challengeTiming?.resendInSeconds ?? 0)
+    : cooldownSeconds(email);
 
   const loginCopy: LoginCopy = {
     regionLabel: messages.auth_sign_in_region(),
@@ -101,7 +127,9 @@ function StagedLoginScreen({
       appleAction: messages.auth_sign_in_apple(),
       label: messages.auth_email_label(),
       placeholder: messages.auth_email_address_placeholder(),
-      continueAction: messages.auth_continue_email(),
+      continueAction: requestBlocked
+        ? messages.auth_retry_countdown({ seconds: resendSeconds })
+        : messages.auth_continue_email(),
       invalidError: messages.auth_email_invalid(),
     },
     verification: {
@@ -117,41 +145,11 @@ function StagedLoginScreen({
     },
   };
 
-  useEffect(() => {
-    if (!canResend || resendAvailableAt <= 0) {
-      return;
-    }
-    const updateRemainingTime = () => {
-      const remaining = Math.max(
-        0,
-        Math.ceil((resendAvailableAt - Date.now()) / 1_000)
-      );
-      setResendSeconds(remaining);
-      return remaining;
-    };
-    if (updateRemainingTime() === 0) {
-      return;
-    }
-    const timer = setInterval(() => {
-      if (updateRemainingTime() === 0) {
-        clearInterval(timer);
-      }
-    }, 1_000);
-    return () => clearInterval(timer);
-  }, [canResend, resendAvailableAt]);
-
   // Verifies as soon as six characters exist, covering both typed completion
-  // and challenges that arrive with a prefilled code (local dev). Each code is
-  // attempted once; editing the code below six characters re-arms the attempt.
+  // and challenges that arrive with a prefilled code (local dev). The core
+  // sends a code the server refused for the challenge no more.
   useEffect(() => {
-    if (!hasChallenge || code.length !== 6) {
-      lastAttemptedCodeRef.current = "";
-      return;
-    }
-    if (code === lastAttemptedCodeRef.current) {
-      return;
-    }
-    lastAttemptedCodeRef.current = code;
+    if (!hasChallenge || code.length !== 6) return;
 
     setBusy(true);
     setError("");
@@ -164,7 +162,7 @@ function StagedLoginScreen({
     void verify
       .catch((nextError: unknown) => {
         setError(nextError instanceof Error ? nextError.message : String(nextError));
-        setVerificationRetryAvailable(canRetryCompletedCode(nextError));
+        setVerificationRetryAvailable(true);
       })
       .finally(() => {
         setBusy(false);
@@ -194,28 +192,31 @@ function StagedLoginScreen({
   }
 
   function applyChallenge(challenge: SessionLoginChallenge) {
-    lastAttemptedCodeRef.current = "";
     setVerificationRetryAvailable(false);
     setChallengeId(challenge.challengeId);
     setChallengePurpose(challenge.purpose);
+    setChallengeEmail(challenge.email ?? email);
+    setEditingEmail(false);
     setCode(challenge.code ?? "");
     if (challenge.email) {
       setEmail(challenge.email);
     }
-    setResendAvailableAt(Date.now() + RESEND_DELAY_SECONDS * 1_000);
-    setResendSeconds(RESEND_DELAY_SECONDS);
   }
 
   function handleContinueWithEmail(nextEmail: string) {
+    if (busy || requestBlocked) return;
     clearGoogleAttempt();
     setGoogleRetryAvailable(false);
     setEmail(nextEmail);
+    // The core goes back to the code under way when the address is that code's.
     void runAuthTask(async () => {
-      applyChallenge(await authenticator.requestEmailLogin(nextEmail));
+      const challenge = await authenticator.requestEmailLogin(nextEmail);
+      applyChallenge({ ...challenge, email: challenge.email ?? nextEmail });
     });
   }
 
   function handleContinueWithGoogle() {
+    setChallengeId("");
     clearGoogleAttempt();
     setError("");
     setGoogleRetryAvailable(false);
@@ -269,6 +270,7 @@ function StagedLoginScreen({
 
   function handleTryAsGuest() {
     if (!guest) return;
+    setChallengeId("");
     clearGoogleAttempt();
     setGoogleRetryAvailable(false);
     setGuestPending(true);
@@ -284,36 +286,44 @@ function StagedLoginScreen({
   }
 
   function handleResend() {
-    void (async () => {
-      const succeeded = await runAuthTask(async () => {
-        applyChallenge(await authenticator.requestEmailLogin(email));
-      });
-      if (!succeeded) {
-        lastAttemptedCodeRef.current = "";
-        setChallengeId("");
-        setChallengePurpose(undefined);
-        setCode("");
+    if (busy || resendSeconds > 0) return;
+    void runAuthTask(async () => {
+      try {
+        applyChallenge(
+          await authenticator.requestEmailLogin(challengeEmail, { resend: true })
+        );
+      } catch (nextError) {
+        // The code stays while the core keeps it (a refused or unreachable resend leaves it working).
+        if (authenticator.sharedChallenge?.get()?.challengeId !== challengeId)
+          setChallengeId("");
+        throw nextError;
       }
-    })();
+    });
   }
 
   function handleRetry() {
     if (busy || code.length !== 6) {
       return;
     }
-    lastAttemptedCodeRef.current = "";
     setError("");
     setVerificationRetryAvailable(false);
     setVerificationRevision((current) => current + 1);
   }
 
   function handleUseDifferentEmail() {
+    if (busy) return;
+    if (challengePurpose === "email_login") {
+      setEditingEmail(true);
+      setCode("");
+      setError("");
+      setVerificationRetryAvailable(false);
+      return;
+    }
     void (async () => {
       const succeeded = await runAuthTask(() => authenticator.cancelCurrentAttempt());
       if (!succeeded) {
         return;
       }
-      lastAttemptedCodeRef.current = "";
       setChallengeId("");
       setChallengePurpose(undefined);
       setCode("");
@@ -340,7 +350,9 @@ function StagedLoginScreen({
             {...(error ? { errorMessage: error } : {})}
             {...(canResend ? { onResend: handleResend, resendSeconds } : {})}
             onCodeChange={handleCodeChange}
-            {...(verificationRetryAvailable ? { onRetry: handleRetry } : {})}
+            {...(verificationRetryAvailable && challengeTiming?.retrySameCode
+              ? { onRetry: handleRetry }
+              : {})}
             onUseDifferentEmail={handleUseDifferentEmail}
           />
         ) : (
@@ -349,7 +361,11 @@ function StagedLoginScreen({
             mode="email"
             email={email}
             disabled={busy}
-            onEmailChange={setEmail}
+            continueDisabled={requestBlocked}
+            onEmailChange={(value) => {
+              setEmail(value);
+              setError("");
+            }}
             onContinueWithEmail={handleContinueWithEmail}
             googlePending={googlePending}
             {...(googleRetryAvailable && error ? { googleErrorMessage: error } : {})}
@@ -381,17 +397,6 @@ function StagedLoginScreen({
   );
 }
 
-function canRetryCompletedCode(error: unknown): boolean {
-  if (!(error instanceof SessionOperationDisplayError)) {
-    return true;
-  }
-  return (
-    error.code === "network_unavailable" ||
-    error.code === "provider_unavailable" ||
-    error.code === "unknown"
-  );
-}
-
 function LegacyLoginScreen({
   authenticator,
   guest,
@@ -401,10 +406,15 @@ function LegacyLoginScreen({
 }: LoginScreenProps) {
   const messages = useCommaMessages();
   const commaConfig = getActiveCommaConfig();
-  const [email, setEmail] = useState("");
+  // A code another window asked for is this screen's to enter too (the web: one sign-in for every tab).
+  const shared = authenticator.sharedChallenge;
+  const [initialChallenge] = useState(() => shared?.get());
+  const [email, setEmail] = useState(initialChallenge?.email ?? "");
   const [code, setCode] = useState("");
-  const [challengeId, setChallengeId] = useState("");
-  const [challengePurpose, setChallengePurpose] = useState<ChallengePurpose>();
+  const [challengeId, setChallengeId] = useState(initialChallenge?.challengeId ?? "");
+  const [challengePurpose, setChallengePurpose] = useState<
+    ChallengePurpose | undefined
+  >(initialChallenge?.purpose);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -415,6 +425,32 @@ function LegacyLoginScreen({
   const googleButtonRef = useRef<HTMLDivElement>(null);
   const hasChallenge = Boolean(challengeId);
   const guestAvailable = useGuestAvailability(guest);
+  const sharedChallengeId = useSyncExternalStore(
+    (listener) => shared?.subscribe(listener) ?? (() => undefined),
+    () => shared?.get()?.challengeId
+  );
+  const seenSharedChallengeRef = useRef(sharedChallengeId);
+  useEffect(() => {
+    const previous = seenSharedChallengeRef.current;
+    if (previous === sharedChallengeId) return;
+    seenSharedChallengeRef.current = sharedChallengeId;
+    const next = shared?.get();
+    if (next) {
+      if (next.challengeId === challengeId) return;
+      if (next.email) setEmail(next.email);
+      setChallengeId(next.challengeId);
+      setChallengePurpose(next.purpose);
+      setCode("");
+      setError("");
+      setNotice(messages.auth_verification_code_sent());
+    } else if (previous !== undefined && previous === challengeId) {
+      // The sign-in this screen continued is gone: signed in, given up or replaced in another window.
+      setChallengeId("");
+      setChallengePurpose(undefined);
+      setCode("");
+      setNotice("");
+    }
+  }, [challengeId, messages, shared, sharedChallengeId]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

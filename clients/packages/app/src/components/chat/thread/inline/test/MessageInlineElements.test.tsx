@@ -1,7 +1,10 @@
+import { CoreProvider } from "@comma/core-client";
 import {
-  invalidateTaskSummaries,
-  recordTaskSummary,
-} from "../../../../tasks/taskArchiveState";
+  createScriptedCore,
+  delegateScriptedCore,
+} from "@comma/test-utils/scripted-core";
+import { flush } from "@comma/test-utils/fake-clock";
+import { labelCatalog, labelsCore } from "../../../../../test/labelsCore";
 import {
   Outlet,
   RouterProvider,
@@ -10,23 +13,18 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { act, fireEvent, render, screen, waitFor } from "@comma/test-utils/render";
+import { act, fireEvent, render, screen } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ChatMessagePart } from "@comma/chat-contract";
+import type { ChatMessage } from "@comma/core/chat";
+import { messageMarkdown } from "@comma/core/markdown";
 import type { ReactNode } from "react";
-import { MarkdownStream } from "@comma/ui";
-import type { CommaApiClient } from "../../../../../api";
+import { MarkdownStream } from "@comma/ui/components/markdown-stream";
+import { useProductInboxProjection } from "../../../../../product-inbox";
+import { createProductInboxProjectionHarness } from "../../../../../test/productInboxProjectionHarness";
 import {
-  ProductInboxProjectionProvider,
-  useProductInboxProjection,
-} from "../../../../../product-inbox";
-import {
-  createProductInboxProjectionHarness,
-  testProductLease,
-} from "../../../../../test/productInboxProjectionHarness";
-import {
-  compileMessageMarkdown,
+  messageMarkdownElements,
   InlineTaskLinkAdapterProvider,
   messagePartsHaveInlineElements,
   messagePartsPlainText,
@@ -34,18 +32,53 @@ import {
   sameMessageParts,
   userMessageContentWithMentions,
 } from "../MessageInlineElements";
-import {
-  loadTaskPreview,
-  resetTaskPreviewCacheForTests,
-  taskPreviewCacheSizeForTests,
-} from "../taskPreviewCache";
+
+/** A core that answers each task preview with `preview`, and keeps every `taskPreview` topic the UI asked for. */
+function previewsCore(preview?: Record<string, unknown>) {
+  const asked: Record<string, unknown>[] = [];
+  const core = createScriptedCore({
+    owns: (name) => name === "taskPreview",
+    values: (topic) =>
+      topic.topic === "taskPreview"
+        ? preview
+          ? { status: "ready", preview }
+          : { status: "loading" }
+        : undefined,
+    onSubscribe: (topic) => {
+      if (topic.topic === "taskPreview") asked.push(topic);
+    },
+  });
+  return { ...core, asked };
+}
+
+/** A message of `parts` as the core sends it, drawn as its Markdown renderer draws it. */
+function compileMessageMarkdown(
+  parts: ChatMessagePart[],
+  context: Parameters<typeof messageMarkdownElements>[1]
+) {
+  return messageMarkdownElements(
+    {
+      attachments: [],
+      blocksKey: undefined,
+      clientRequestId: undefined,
+      createdAt: 1,
+      createdBy: undefined,
+      delivery: "sent",
+      error: undefined,
+      markdown: messageMarkdown(parts) as ChatMessage["markdown"],
+      messageId: "m",
+      parts,
+      refs: [],
+      role: "assistant",
+      source: "server",
+      status: "completed",
+      text: "",
+    },
+    context
+  )!;
+}
 
 describe("message inline elements", () => {
-  afterEach(() => {
-    resetTaskPreviewCacheForTests();
-    vi.useRealTimers();
-  });
-
   it("compiles ordered parts through opaque keys and escapes forged reserved tags", () => {
     const parts: ChatMessagePart[] = [
       {
@@ -159,8 +192,9 @@ describe("message inline elements", () => {
       />
     );
 
+    await flush();
     expect(
-      await screen.findByRole("link", { name: "Open task: Deploy report" })
+      screen.getByRole("link", { name: "Open task: Deploy report" })
     ).toBeInTheDocument();
     expect(screen.getAllByRole("link")).toHaveLength(1);
     expect(container).toHaveTextContent("Forged <comma-inline data-key=");
@@ -208,8 +242,9 @@ describe("message inline elements", () => {
       />
     );
 
+    await flush();
     expect(
-      await screen.findByRole("link", { name: "Open task: Deploy report" })
+      screen.getByRole("link", { name: "Open task: Deploy report" })
     ).toBeInTheDocument();
     expect(screen.getAllByRole("link")).toHaveLength(1);
     expect(container).toHaveTextContent("Split <comma-inline data-key=");
@@ -352,7 +387,8 @@ describe("message inline elements", () => {
       />
     );
 
-    await waitFor(() => expect(container).toHaveTextContent("Visible"));
+    await flush();
+    expect(container).toHaveTextContent("Visible");
     expect(container).not.toHaveTextContent("secret");
     expect(screen.queryByRole("link", { name: /SECRET ACTION/ })).toBeNull();
     expect(compiled.inlineElements.size).toBe(0);
@@ -365,7 +401,7 @@ describe("message inline elements", () => {
   });
 
   it("renders an accessible Task link, refreshes its hover preview, and navigates", async () => {
-    const getConversationPreview = vi.fn().mockResolvedValue({
+    const previews = previewsCore({
       activity_status: "idle",
       freshness: { state: "fresh" },
       id: "cnv_task_public",
@@ -375,7 +411,6 @@ describe("message inline elements", () => {
       updated_at: 10,
       group_id: "grp_1",
     });
-    const api = { getConversationPreview } as Partial<CommaApiClient> as CommaApiClient;
     const compiled = compileMessageMarkdown(
       [
         {
@@ -388,45 +423,53 @@ describe("message inline elements", () => {
           },
         },
       ],
-      { api, groupId: "grp_1", workspaceId: "wsp_1" }
+      { live: true, groupId: "grp_1", workspaceId: "wsp_1" }
     );
     const inlineTask = compiled.inlineElements.get("element-0");
-    const user = userEvent.setup();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    renderWithRouter(inlineTask);
+    renderWithRouter(previews.wrap(inlineTask));
+    await flush();
 
-    const link = await screen.findByRole("link", {
+    const link = screen.getByRole("link", {
       name: "Open task: Deploy report",
     });
+    expect(previews.asked).toEqual([]);
     expect(link).toHaveAttribute("href", "/tasks/wsp_1/grp_1/cnv_task_public");
 
     await user.tab();
-    await waitFor(() => expect(getConversationPreview).toHaveBeenCalledOnce());
-    const hoverCard = await screen.findByRole("tooltip");
-    await waitFor(() => expect(hoverCard).toHaveTextContent("Latest deploy report"));
+    await flush();
+    // Opening the card asks the core for the Task's preview (it reads it, or answers what it keeps).
+    expect(previews.asked).toEqual([
+      expect.objectContaining({
+        group: "grp_1",
+        conversation: "cnv_task_public",
+        read: "1",
+      }),
+    ]);
+    const hoverCard = screen.getByRole("tooltip");
+    expect(hoverCard).toHaveTextContent("Latest deploy report");
     await user.hover(hoverCard);
     expect(link).toHaveFocus();
     fireEvent.keyDown(link, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+    await flush();
+    expect(screen.queryByRole("tooltip")).toBeNull();
     expect(link).toHaveFocus();
 
     await user.click(link);
-    expect(await screen.findByTestId("inline-task-target-route")).toHaveTextContent(
+    await flush();
+    expect(screen.getByTestId("inline-task-target-route")).toHaveTextContent(
       "cnv_task_public"
     );
   });
 
   it("updates an inline Task from the shared host projection without a hover read", async () => {
-    const getConversationPreview = vi.fn().mockReturnValue(new Promise(() => {}));
-    const listTaskLabels = vi.fn().mockResolvedValue({
-      colors: [],
-      proposals: [],
-      labels: [{ id: "lbl_work", name: "Work", color: "blue" }],
+    const previews = previewsCore();
+    const labels = labelsCore({
+      catalog: labelCatalog({
+        labels: [{ id: "lbl_work", name: "Work", color: "blue" }],
+      }),
     });
-    const api = {
-      getConversationPreview,
-      listTaskLabels,
-    } as Partial<CommaApiClient> as CommaApiClient;
     const projection = createProductInboxProjectionHarness({
       initial: productInboxTask("Projected task title"),
     });
@@ -440,44 +483,44 @@ describe("message inline elements", () => {
           },
         },
       ],
-      { api, groupId: "grp_1", workspaceId: "wsp_1" }
+      { live: true, groupId: "grp_1", workspaceId: "wsp_1" }
     );
 
+    delegateScriptedCore(projection.controller, labels.client);
+    delegateScriptedCore(labels.client, previews.client);
     renderWithRouter(
-      <ProductInboxProjectionProvider controller={projection.controller}>
+      <CoreProvider client={projection.controller}>
         <ProductInboxDemand />
         {compiled.inlineElements.get("element-0")}
-      </ProductInboxProjectionProvider>
+      </CoreProvider>
     );
+    await flush();
 
     expect(
-      await screen.findByRole("link", { name: "Open task: Projected task title" })
+      screen.getByRole("link", { name: "Open task: Projected task title" })
     ).toBeInTheDocument();
-    expect(getConversationPreview).not.toHaveBeenCalled();
+    expect(previews.asked).toEqual([]);
 
-    projection.emit(productInboxTask("Renamed projected task"));
+    act(() => projection.emit(productInboxTask("Renamed projected task")));
+    await flush();
 
     expect(
-      await screen.findByRole("link", { name: "Open task: Renamed projected task" })
-    ).toBeInTheDocument();
-    expect(getConversationPreview).not.toHaveBeenCalled();
-    await userEvent.hover(
       screen.getByRole("link", { name: "Open task: Renamed projected task" })
-    );
-    const hover = await screen.findByRole("tooltip");
-    await waitFor(() => expect(hover).toHaveTextContent("Work"));
+    ).toBeInTheDocument();
+    expect(previews.asked).toEqual([]);
+    await userEvent
+      .setup({ advanceTimers: vi.advanceTimersByTime })
+      .hover(screen.getByRole("link", { name: "Open task: Renamed projected task" }));
+    // The inline Task's hover card opens without a delay.
+    await flush();
+    const hover = screen.getByRole("tooltip");
+    expect(hover).toHaveTextContent("Work");
     expect(hover).toHaveTextContent("Comma");
   });
 
   it("keeps the snapshot link while summaries load or fail, then keeps a confirmed archive read-only", async () => {
-    let reject!: (reason: Error) => void;
-    const getTaskSummaries = vi.fn(
-      () =>
-        new Promise<never>((_resolve, fail) => {
-          reject = fail;
-        })
-    );
-    const api = { getTaskSummaries } as unknown as CommaApiClient;
+    // The core has said nothing of the Task yet.
+    const core = createScriptedCore();
     const compiled = compileMessageMarkdown(
       [
         { kind: "markdown", text: "Before " },
@@ -492,32 +535,36 @@ describe("message inline elements", () => {
         },
         { kind: "markdown", text: " after" },
       ],
-      { api, groupId: "grp_1", workspaceId: "wsp_1" }
+      { groupId: "grp_1", workspaceId: "wsp_1" }
     );
     renderWithRouter(
-      <MarkdownStream
-        final
-        content={compiled.content}
-        inlineElements={compiled.inlineElements}
-        nodes={compiled.nodes}
-        streamId="slow-summary"
-      />
+      core.wrap(
+        <MarkdownStream
+          final
+          content={compiled.content}
+          inlineElements={compiled.inlineElements}
+          nodes={compiled.nodes}
+          streamId="slow-summary"
+        />
+      )
     );
-    const link = await screen.findByRole("link", { name: "Open task: Old task" });
+    await flush();
+    const link = screen.getByRole("link", { name: "Open task: Old task" });
     expect(link.nextSibling?.textContent).toBe(" after");
-    await waitFor(() => expect(getTaskSummaries).toHaveBeenCalledOnce());
-    await act(async () => reject(new Error("offline")));
+    // Its summary could not be read: the core knows nothing of it.
+    act(() => core.emit("taskSummaries", { summaries: [] }));
+    await flush();
     expect(link).toBeInTheDocument();
-    act(() =>
-      recordTaskSummary(api, {
-        id: "cnv_task_public",
-        group_id: "grp_1",
-        kind: "agent_task",
-        status: "archived",
-        title: "Old task",
-        updated_at: 2,
-      })
-    );
+    const archivedFacts = {
+      id: "cnv_task_public",
+      group_id: "grp_1",
+      kind: "agent_task",
+      status: "archived",
+      title: "Old task",
+      updated_at: 2,
+    };
+    act(() => core.emit("taskSummaries", { summaries: [archivedFacts] }));
+    await flush();
     expect(screen.queryByRole("link", { name: "Open task: Old task" })).toBeNull();
     const archived = screen.getByTestId("chat-inline-task-cnv_task_public");
     expect(archived).toHaveAttribute("aria-disabled", "true");
@@ -526,8 +573,6 @@ describe("message inline elements", () => {
     fireEvent.click(archived);
     fireEvent.contextMenu(archived);
     expect(screen.queryByRole("menu")).toBeNull();
-    act(() => invalidateTaskSummaries(api));
-    expect(screen.queryByRole("link", { name: "Open task: Old task" })).toBeNull();
   });
 
   it("preserves historical structured references as read-only when the owner reports archived", async () => {
@@ -549,20 +594,20 @@ describe("message inline elements", () => {
       { groupId: "grp_1", workspaceId: "wsp_1" }
     );
     renderWithRouter(
-      <ProductInboxProjectionProvider controller={projection.controller}>
+      <CoreProvider client={projection.controller}>
         <ProductInboxDemand />
         {compiled.inlineElements.get("element-0")}
-      </ProductInboxProjectionProvider>
+      </CoreProvider>
     );
+    await flush();
     expect(
-      await screen.findByRole("link", { name: "Open task: Old task" })
+      screen.getByRole("link", { name: "Open task: Old task" })
     ).toBeInTheDocument();
     const archived = productInboxTask("Old task");
     archived.items[0]!.status = "archived";
     act(() => projection.emit(archived));
-    await waitFor(() =>
-      expect(screen.queryByRole("link", { name: "Open task: Old task" })).toBeNull()
-    );
+    await flush();
+    expect(screen.queryByRole("link", { name: "Open task: Old task" })).toBeNull();
   });
 
   it("splices a user message's comma:task mention into the sentence as an InlineTask chip", async () => {
@@ -574,8 +619,9 @@ describe("message inline elements", () => {
 
     renderWithRouter(<span data-testid="user-bubble-content">{content}</span>);
 
-    const bubble = await screen.findByTestId("user-bubble-content");
-    await waitFor(() => expect(bubble).toHaveTextContent("Check Fix login today"));
+    await flush();
+    const bubble = screen.getByTestId("user-bubble-content");
+    expect(bubble).toHaveTextContent("Check Fix login today");
     expect(bubble.textContent).not.toContain("comma:task");
     expect(screen.getByTestId("chat-inline-task-cnv1_menu")).toHaveTextContent(
       "Fix login"
@@ -612,81 +658,11 @@ describe("message inline elements", () => {
 
     renderWithRouter(compiled.inlineElements.get("element-0"));
 
-    expect(await screen.findByTestId("chat-inline-task-unavailable")).toHaveTextContent(
+    await flush();
+    expect(screen.getByTestId("chat-inline-task-unavailable")).toHaveTextContent(
       "Task unavailable"
     );
     expect(screen.queryByRole("link")).toBeNull();
-  });
-
-  it("deduplicates concurrent preview reads inside the session-scoped cache", async () => {
-    let resolvePreview!: (
-      value: Awaited<ReturnType<CommaApiClient["getConversationPreview"]>>
-    ) => void;
-    const getConversationPreview = vi.fn(
-      () =>
-        new Promise<Awaited<ReturnType<CommaApiClient["getConversationPreview"]>>>(
-          (resolve) => {
-            resolvePreview = resolve;
-          }
-        )
-    );
-    const api = { getConversationPreview } as Partial<CommaApiClient> as CommaApiClient;
-
-    const first = loadTaskPreview(api, "grp_1", "cnv_task_public");
-    const second = loadTaskPreview(api, "grp_1", "cnv_task_public");
-    expect(getConversationPreview).toHaveBeenCalledOnce();
-
-    await act(async () => {
-      resolvePreview({
-        activity_status: "idle",
-        freshness: { state: "fresh" },
-        id: "cnv_task_public",
-        kind: "agent_task",
-        status: "running",
-        title: "Deploy report",
-        updated_at: 1,
-        group_id: "grp_1",
-      });
-      await Promise.all([first, second]);
-    });
-
-    expect(await first).toEqual(expect.objectContaining({ id: "cnv_task_public" }));
-  });
-
-  it("stays bounded when evicted in-flight previews resolve later", async () => {
-    const resolvers: Array<
-      (value: Awaited<ReturnType<CommaApiClient["getConversationPreview"]>>) => void
-    > = [];
-    const getConversationPreview = vi.fn(
-      (_groupId: string, conversationId: string) =>
-        new Promise<Awaited<ReturnType<CommaApiClient["getConversationPreview"]>>>(
-          (resolve) => {
-            resolvers.push((value) => resolve({ ...value, id: conversationId }));
-          }
-        )
-    );
-    const api = { getConversationPreview } as Partial<CommaApiClient> as CommaApiClient;
-    const reads = Array.from({ length: 129 }, (_, index) =>
-      loadTaskPreview(api, "grp_1", `cnv_task_${index}`)
-    );
-
-    expect(taskPreviewCacheSizeForTests(api)).toBe(128);
-
-    resolvers.forEach((resolve) =>
-      resolve({
-        activity_status: "idle",
-        freshness: { state: "fresh" },
-        id: "overridden-by-resolver",
-        kind: "agent_task",
-        status: "running",
-        title: "Deploy report",
-        updated_at: 1,
-        group_id: "grp_1",
-      })
-    );
-    await Promise.all(reads);
-
-    expect(taskPreviewCacheSizeForTests(api)).toBe(128);
   });
 });
 
@@ -718,7 +694,7 @@ function TargetRoute() {
 }
 
 function ProductInboxDemand() {
-  useProductInboxProjection({ enabled: true, session: testProductLease });
+  useProductInboxProjection({ enabled: true });
   return null;
 }
 

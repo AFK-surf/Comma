@@ -1,7 +1,8 @@
 defmodule Salix.Bindings.MeetingPublicationReceiver do
   @moduledoc """
   Shared-Schedules receiver for meeting notices. Slack's scheduled card includes
-  the saved preparation body. Feishu retains the T-7 base card.
+  the saved preparation body. Feishu retains the T-7 base card, and Lark has
+  the same card.
 
   Both use direct participant messages on the Router conversation and the
   existing idempotent outbox, never the research conversation. Each notice kind
@@ -148,6 +149,24 @@ defmodule Salix.Bindings.MeetingPublicationReceiver do
       {:ok,
        %{
          "provider" => "feishu",
+         "connect_id" => connect_id,
+         "chat_id" => chat_id,
+         "mentions" => %{"mode" => "none", "users" => []}
+       }}
+    end
+  end
+
+  defp participant_metadata(%{"provider" => "lark", "params" => params}) do
+    params = stringify(params)
+    connect_id = trim(params["connect_id"])
+    chat_id = trim(params["chat_id"])
+
+    if connect_id == "" or chat_id == "" do
+      {:error, :invalid_publication_target}
+    else
+      {:ok,
+       %{
+         "provider" => "lark",
          "connect_id" => connect_id,
          "chat_id" => chat_id,
          "mentions" => %{"mode" => "none", "users" => []}

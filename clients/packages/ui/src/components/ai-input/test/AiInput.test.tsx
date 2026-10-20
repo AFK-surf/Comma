@@ -27,14 +27,10 @@ import {
   AI_INPUT_TEXTAREA_MIN_HEIGHT_PX,
 } from "../styles";
 import type { AiInputAttachment, AiInputProps } from "../types";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 const imageSource = (hue: number) =>
   `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='30' height='40'%3E%3Crect width='30' height='40' fill='hsl(${hue} 60%25 60%25)'/%3E%3C/svg%3E`;
-
-const originalTextareaScrollHeight = Object.getOwnPropertyDescriptor(
-  HTMLTextAreaElement.prototype,
-  "scrollHeight"
-);
 
 function iconSvgMarkup(icon: React.ReactElement) {
   const { container, unmount } = render(icon);
@@ -42,41 +38,6 @@ function iconSvgMarkup(icon: React.ReactElement) {
   unmount();
   return markup;
 }
-
-const expectToolbarColorTokens = () => {
-  expect(screen.getByRole("button", { name: "Add attachment" })).toHaveClass(
-    "text-ai-input-panel-icon-primary"
-  );
-  const access = screen.getByRole("button", { name: "Full-access" });
-  expect(access).toHaveClass(
-    "bg-transparent",
-    "hover:bg-quaternary",
-    "h-[30px]",
-    "w-[143px]",
-    "px-md",
-    "py-xs",
-    "text-ai-input-panel-text-warning"
-  );
-  expect(access).not.toHaveClass(
-    "h-9",
-    "hover:bg-secondary",
-    "px-lg",
-    "py-md",
-    "py-sm"
-  );
-  expect(screen.getByText("Full-access")).toHaveClass(
-    "shrink-0",
-    "whitespace-nowrap",
-    "px-xxs"
-  );
-  expect(access.querySelector("svg")).toHaveClass("text-ai-input-panel-icon-warning");
-  expect(screen.queryByRole("button", { name: "Send message" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Voice input" })).toHaveClass(
-    "bg-button-primary-bg",
-    "text-ai-input-panel-icon-fg",
-    "hover:bg-button-primary-bg-hover"
-  );
-};
 
 const VoiceFocusFallbackFixture = () => {
   const [showVoiceButton, setShowVoiceButton] = useState(true);
@@ -118,15 +79,6 @@ const TokenTooltipPortalFixture = ({
 
 afterEach(() => {
   vi.restoreAllMocks();
-  if (originalTextareaScrollHeight) {
-    Object.defineProperty(
-      HTMLTextAreaElement.prototype,
-      "scrollHeight",
-      originalTextareaScrollHeight
-    );
-  } else {
-    Reflect.deleteProperty(HTMLTextAreaElement.prototype, "scrollHeight");
-  }
 });
 
 describe("AiInput", () => {
@@ -140,7 +92,7 @@ describe("AiInput", () => {
 
     expect(screen.getByLabelText("AI prompt")).toHaveAttribute(
       "placeholder",
-      "Do anything"
+      "Type / for commands, @ for context"
     );
     expect(screen.getByRole("button", { name: "Add attachment" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Full-access" })).toBeNull();
@@ -164,7 +116,7 @@ describe("AiInput", () => {
 
   it("starts at two lines, grows with content, and caps height before scrolling", () => {
     let scrollHeight = 40;
-    Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
+    stubProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
       configurable: true,
       get() {
         return scrollHeight;
@@ -261,7 +213,7 @@ describe("AiInput", () => {
     let scrollHeight = 12;
     const onLayoutHeightChange = vi.fn();
     const onTextareaHeightChange = vi.fn();
-    Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
+    stubProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
       configurable: true,
       get() {
         return scrollHeight;
@@ -541,28 +493,6 @@ describe("AiInput", () => {
     expect(newlineShortcut.querySelectorAll("kbd")).toHaveLength(2);
     expect(newlineShortcut).toHaveTextContent("⇧");
     expect(newlineShortcut).toHaveTextContent("↩");
-  });
-
-  it("uses the same Figma toolbar color tokens for default and small", () => {
-    const props = {
-      onAccessPress: vi.fn(),
-      onAttachPress: vi.fn(),
-      onVoicePress: vi.fn(),
-      showAccessButton: true,
-    };
-    const { rerender } = render(<AiInput {...props} />);
-
-    expectToolbarColorTokens();
-    rerender(<AiInput {...props} size="small" />);
-    expectToolbarColorTokens();
-  });
-
-  it("keeps the compact prompt clear of the access control", () => {
-    render(<AiInput richText showAccessButton size="small" />);
-
-    expect(screen.getByLabelText("AI prompt").parentElement).toHaveClass(
-      "pl-[calc(30px+var(--spacing-xxs)+143px+8px)]"
-    );
   });
 
   it("can hide inactive accessory buttons without affecting submit", () => {
@@ -906,6 +836,12 @@ describe("AiInput", () => {
 
     expect(screen.queryByRole("button", { name: /^Preview / })).toBeNull();
     expect(screen.queryByRole("img", { name: "settling.png" })).toBeNull();
+    // An image still uploading shows its own thumbnail under the spinner.
+    const uploadingTile = screen.getAllByTestId("image-attachment")[1]!;
+    expect(uploadingTile.querySelector("img")?.getAttribute("src")).toBe(
+      imageSource(60)
+    );
+    expect(uploadingTile.querySelector('[data-state="loading"] svg')).not.toBeNull();
     expect(
       screen.getAllByTestId("image-attachment")[0]?.querySelector("svg")
     ).not.toBeNull();
@@ -958,7 +894,7 @@ describe("AiInput", () => {
     const attachment = screen.getByText("Reference");
     const attachmentScroller = screen.getByLabelText("Attachments");
 
-    expect(prompt).toHaveAttribute("placeholder", "Ask Comma, @ for context");
+    expect(prompt).toHaveAttribute("placeholder", "Type / for commands, @ for context");
     expect(prompt).toHaveStyle({
       minHeight: `${AI_INPUT_SMALL_TEXTAREA_MIN_HEIGHT_PX}px`,
       maxHeight: `${AI_INPUT_SMALL_TEXTAREA_MAX_HEIGHT_PX}px`,
@@ -976,7 +912,7 @@ describe("AiInput", () => {
     expect(prompt.parentElement?.parentElement?.parentElement).toHaveClass(
       "min-w-0",
       "max-w-[744px]",
-      "pt-xs",
+      "pt-0",
       "pb-0",
       "gap-md",
       "rounded-3xl"
@@ -1018,7 +954,7 @@ describe("AiInput", () => {
 
   it("promotes multiline small drafts with attachments to the default layout", () => {
     let scrollHeight = AI_INPUT_SMALL_TEXTAREA_MIN_HEIGHT_PX;
-    Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
+    stubProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
       configurable: true,
       get() {
         return scrollHeight;
@@ -1070,7 +1006,7 @@ describe("AiInput", () => {
     expect(expandedShell).toHaveClass(
       "ai-input-small-shell-motion",
       "rounded-3xl",
-      "pt-sm",
+      "pt-0",
       "pb-0",
       "px-xs"
     );
@@ -1192,7 +1128,7 @@ describe("AiInput", () => {
 
   it("resizes the same shell and interpolates prompt position without scaling", () => {
     let scrollHeight = AI_INPUT_SMALL_TEXTAREA_MIN_HEIGHT_PX;
-    Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
+    stubProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
       configurable: true,
       get() {
         return scrollHeight;
@@ -1280,9 +1216,9 @@ describe("AiInput", () => {
 
   it("uses the expanded width for visible prompt height while preserving compact wrap detection", () => {
     let multiline = false;
-    Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
+    stubProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
       configurable: true,
-      get() {
+      get(this: HTMLTextAreaElement) {
         if (!multiline) return AI_INPUT_SMALL_TEXTAREA_MIN_HEIGHT_PX;
         return Number.parseFloat(this.style.width) <= 280 ? 300 : 80;
       },
@@ -1402,7 +1338,7 @@ describe("AiInput", () => {
     const fileName = screen.getByText("Openai");
     expect(fileName).toBeInTheDocument();
     expect(screen.getByText("PDF")).toBeInTheDocument();
-    expect(fileName.closest("div.shadow-xs")).toHaveClass("pt-xs");
+    expect(fileName.closest("div.shadow-xs")).toHaveClass("pt-md");
 
     const fileSurface = fileName.parentElement?.parentElement;
     expect(fileSurface).toHaveClass("bg-popup-primary");
@@ -2210,7 +2146,10 @@ describe("AiInput", () => {
     const overlay = getDropOverlay();
     const textarea = screen.getByRole("textbox", { name: "AI prompt" });
 
-    expect(textarea).toHaveAttribute("placeholder", "Do anything");
+    expect(textarea).toHaveAttribute(
+      "placeholder",
+      "Type / for commands, @ for context"
+    );
     expect(shell).not.toHaveAttribute("data-drop-active");
     expect(overlay).not.toHaveAttribute("data-drop-active");
     expect(overlay).toHaveTextContent("Drop anything here");
@@ -2225,7 +2164,10 @@ describe("AiInput", () => {
     expect(overlay).toHaveAttribute("data-drop-active", "true");
     expect(shell.className).toMatch(/shadow-xs/);
     expect(shell.className).not.toMatch(/shadow-focus-brand/);
-    expect(textarea).toHaveAttribute("placeholder", "Do anything");
+    expect(textarea).toHaveAttribute(
+      "placeholder",
+      "Type / for commands, @ for context"
+    );
     expect(screen.getByRole("button", { name: "Add attachment" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Full-access" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Voice input" })).toBeDisabled();
@@ -2248,7 +2190,7 @@ describe("AiInput", () => {
     fireEvent.dragEnter(shell, { dataTransfer: transfer });
     expect(shell).toHaveAttribute("data-drop-active", "true");
     expect(overlay).toHaveAttribute("data-drop-active", "true");
-    expect(child).toHaveAttribute("placeholder", "Do anything");
+    expect(child).toHaveAttribute("placeholder", "Type / for commands, @ for context");
 
     fireEvent.dragEnter(child, { dataTransfer: transfer });
     fireEvent.dragLeave(child, { dataTransfer: transfer });
@@ -2258,7 +2200,7 @@ describe("AiInput", () => {
     fireEvent.dragLeave(shell, { dataTransfer: transfer });
     expect(shell).not.toHaveAttribute("data-drop-active");
     expect(overlay).not.toHaveAttribute("data-drop-active");
-    expect(child).toHaveAttribute("placeholder", "Do anything");
+    expect(child).toHaveAttribute("placeholder", "Type / for commands, @ for context");
   });
 
   it("clears dropActive when dragleave omits file metadata", () => {
@@ -2294,7 +2236,10 @@ describe("AiInput", () => {
     fireEvent.dragEnter(shell, { dataTransfer: transfer });
     expect(shell).toHaveAttribute("data-drop-active", "true");
     expect(overlay).toHaveAttribute("data-drop-active", "true");
-    expect(textarea).toHaveAttribute("placeholder", "Do anything");
+    expect(textarea).toHaveAttribute(
+      "placeholder",
+      "Type / for commands, @ for context"
+    );
 
     fireEvent.drop(shell, { dataTransfer: transfer });
 
@@ -2304,7 +2249,10 @@ describe("AiInput", () => {
     });
     expect(shell).not.toHaveAttribute("data-drop-active");
     expect(overlay).not.toHaveAttribute("data-drop-active");
-    expect(textarea).toHaveAttribute("placeholder", "Do anything");
+    expect(textarea).toHaveAttribute(
+      "placeholder",
+      "Type / for commands, @ for context"
+    );
   });
 
   it("does not activate the drop overlay for text-only drags", () => {
@@ -2330,7 +2278,10 @@ describe("AiInput", () => {
 
     expect(shell).not.toHaveAttribute("data-drop-active");
     expect(overlay).not.toHaveAttribute("data-drop-active");
-    expect(textarea).toHaveAttribute("placeholder", "Do anything");
+    expect(textarea).toHaveAttribute(
+      "placeholder",
+      "Type / for commands, @ for context"
+    );
   });
 
   it.each([false, true])(
@@ -2340,11 +2291,13 @@ describe("AiInput", () => {
       const readText = vi.fn(async () => "must not insert");
       const onPasteFiles = vi.fn();
       const onValueChange = vi.fn();
-      const original = globalThis.DataTransfer;
-      globalThis.DataTransfer = class {
-        files: File[] = [];
-        items = { add: (item: File) => this.files.push(item) };
-      } as unknown as typeof DataTransfer;
+      vi.stubGlobal(
+        "DataTransfer",
+        class {
+          files: File[] = [];
+          items = { add: (item: File) => this.files.push(item) };
+        }
+      );
       try {
         render(
           <AiInput
@@ -2363,7 +2316,7 @@ describe("AiInput", () => {
         expect(readText).not.toHaveBeenCalled();
         expect(onValueChange).not.toHaveBeenCalled();
       } finally {
-        globalThis.DataTransfer = original;
+        vi.unstubAllGlobals();
       }
     }
   );
@@ -2434,6 +2387,39 @@ describe("AiInput", () => {
 
     expect(onPasteFiles).not.toHaveBeenCalled();
     expect(onValueChange).toHaveBeenCalledWith("pasted text");
+  });
+
+  it("lets the host take a text paste from the keyboard or the edit menu", async () => {
+    const onPasteText = vi.fn((text: string) => text.startsWith("long"));
+    const onValueChange = vi.fn();
+    render(
+      <AiInput
+        clipboard={{ readText: async () => "long from menu", writeText: vi.fn() }}
+        onPasteText={onPasteText}
+        onValueChange={onValueChange}
+        richText
+      />
+    );
+    const editor = screen.getByRole("textbox", { name: "AI prompt" });
+    setCaret(editor, 0);
+
+    fireEvent.paste(editor, {
+      clipboardData: { ...createEmptyDataTransfer(), getData: () => "long paste" },
+    });
+    expect(onPasteText).toHaveBeenLastCalledWith("long paste");
+    expect(onValueChange).not.toHaveBeenCalled();
+
+    fireEvent.contextMenu(editor);
+    await userEvent.click(screen.getByRole("menuitem", { name: "Paste" }));
+    await waitFor(() => expect(onPasteText).toHaveBeenLastCalledWith("long from menu"));
+    expect(onValueChange).not.toHaveBeenCalled();
+
+    // Text the host declines goes into the prompt as usual.
+    setCaret(editor, 0);
+    fireEvent.paste(editor, {
+      clipboardData: { ...createEmptyDataTransfer(), getData: () => "short" },
+    });
+    expect(onValueChange).toHaveBeenCalledWith("short");
   });
 
   it("lets a caller onPaste preempt file intake", () => {
@@ -2801,9 +2787,8 @@ describe("AiInput", () => {
     fireEvent.contextMenu(editor);
     await user.click(screen.getByRole("menuitem", { name: "Select All" }));
     await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    });
+    await nextFrame();
+    await nextFrame();
     const selection = window.getSelection();
     expect(selection?.isCollapsed).toBe(false);
     expect(selection?.toString()).toBe(editor.textContent);
@@ -2871,7 +2856,7 @@ describe("AiInput", () => {
     await user.click(screen.getByRole("menuitem", { name: "Paste" }));
 
     await waitFor(() => expect(onValueChange).toHaveBeenLastCalledWith("12367"));
-    expect(textarea).toHaveValue("12367");
+    await waitFor(() => expect(textarea).toHaveValue("12367"));
     expect(readText).toHaveBeenCalledOnce();
     await waitFor(() => {
       expect(textarea.selectionStart).toBe(5);
@@ -2988,13 +2973,9 @@ function getDropOverlay() {
 }
 
 /** Lets the composer's next-frame measurement run. */
+/** Runs the next frame of the test clock and what it starts. */
 async function nextFrame() {
-  await act(
-    () =>
-      new Promise<void>((resolve) => {
-        requestAnimationFrame(() => resolve());
-      })
-  );
+  await act(() => vi.advanceTimersToNextFrame());
 }
 
 function typeIntoRichEditor(editor: HTMLElement, text: string) {

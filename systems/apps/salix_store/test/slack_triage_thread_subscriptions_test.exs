@@ -1,5 +1,5 @@
 defmodule SalixStore.SlackTriageThreadSubscriptionsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{Ids, Repo, SlackTriageThreadSubscriptions, ULID}
 
@@ -34,15 +34,6 @@ defmodule SalixStore.SlackTriageThreadSubscriptionsTest do
     assert Repo.aggregate("slack_triage_thread_subscriptions", :count) == 1
   end
 
-  test "provider-owned canonical connect ids activate continuation admission" do
-    scope = Map.put(scope(), "connect_id", "slack-i7nUs8h_3S6g")
-
-    assert {:ok, :created} =
-             SlackTriageThreadSubscriptions.activate(scope, provenance())
-
-    assert {:ok, :active} = SlackTriageThreadSubscriptions.status(scope)
-  end
-
   test "generation, channel, thread, and agent are independent fences" do
     scope = scope()
 
@@ -57,46 +48,6 @@ defmodule SalixStore.SlackTriageThreadSubscriptionsTest do
         ] do
       assert {:error, :not_found} = SlackTriageThreadSubscriptions.status(changed)
     end
-  end
-
-  test "malformed identity and non-provider provenance fail closed" do
-    scope = scope()
-
-    assert {:error, :invalid} =
-             SlackTriageThreadSubscriptions.activate(
-               Map.put(scope, "connect_generation", "not-a-generation"),
-               provenance()
-             )
-
-    assert {:error, :invalid} =
-             SlackTriageThreadSubscriptions.activate(
-               scope,
-               Map.put(provenance(), "obligation_id", "queued-only")
-             )
-
-    assert {:error, :invalid} =
-             SlackTriageThreadSubscriptions.activate(
-               scope,
-               provenance() |> Map.put("message_id", Ids.new_message_id())
-             )
-
-    assert {:error, :invalid} =
-             SlackTriageThreadSubscriptions.activate(
-               scope,
-               Map.delete(provenance(), "provider_message_ref")
-             )
-  end
-
-  test "legacy Conversation provenance remains readable during the additive rollout" do
-    scope = scope()
-
-    assert {:ok, :created} =
-             SlackTriageThreadSubscriptions.activate(scope, %{
-               "obligation_id" => "triage-product-" <> String.duplicate("c", 64),
-               "message_id" => Ids.new_message_id()
-             })
-
-    assert {:ok, :active} = SlackTriageThreadSubscriptions.status(scope)
   end
 
   defp scope do

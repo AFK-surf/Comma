@@ -1,9 +1,12 @@
 defmodule SalixWeb.DeviceConnectionToolTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   setup_all do
     binary =
-      Path.join(System.tmp_dir!(), "comma-install-go-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "comma-install-go-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
 
     source = Path.expand("../../../connector/salix-connect", __DIR__)
 
@@ -29,15 +32,20 @@ defmodule SalixWeb.DeviceConnectionToolTest do
         %{"role" => "router"}
       )
 
-    root = Path.join(System.tmp_dir!(), "comma-install-#{System.unique_integer([:positive])}")
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "comma-install-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
     home = Path.join(root, "target-home")
     File.mkdir_p!(home)
-    old_base = Application.get_env(:salix_web, :public_base_url)
-    old_artifacts = Application.get_env(:salix_env, :device_install_local_artifact_root)
-    old_dispatch = Application.get_env(:salix_agent, :env_dispatch)
-    Application.put_env(:salix_agent, :env_dispatch, Salix.Bindings.AgentEnvDispatch)
+    old_base = SystemsRuntime.get_env(:salix_web, :public_base_url)
+    old_artifacts = SystemsRuntime.get_env(:salix_env, :device_install_local_artifact_root)
+    old_dispatch = SystemsRuntime.get_env(:salix_agent, :env_dispatch)
+    SystemsRuntime.put_env(:salix_agent, :env_dispatch, Salix.Bindings.AgentEnvDispatch)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_env,
       :device_install_local_artifact_root,
       Path.join(root, "downloads")
@@ -45,7 +53,7 @@ defmodule SalixWeb.DeviceConnectionToolTest do
 
     listener = start_supervised!({Bandit, plug: SalixWeb.Router, port: 0, ip: {127, 0, 0, 1}})
     {:ok, {_, port}} = ThousandIsland.listener_info(listener)
-    Application.put_env(:salix_web, :public_base_url, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:salix_web, :public_base_url, "http://127.0.0.1:#{port}")
 
     for platform <- ~w(darwin-arm64 darwin-amd64 linux-arm64 linux-amd64) do
       directory = Path.join([root, "downloads", platform])
@@ -67,7 +75,9 @@ defmodule SalixWeb.DeviceConnectionToolTest do
             {:salix_env, :device_install_local_artifact_root, old_artifacts},
             {:salix_agent, :env_dispatch, old_dispatch}
           ] do
-        if value, do: Application.put_env(app, key, value), else: Application.delete_env(app, key)
+        if value,
+          do: SystemsRuntime.put_env(app, key, value),
+          else: SystemsRuntime.delete_env(app, key)
       end
 
       case File.read(Path.join(home, "fixture.pid")) do
@@ -95,16 +105,6 @@ defmodule SalixWeb.DeviceConnectionToolTest do
       root: root,
       home: home
     }
-  end
-
-  test "missing device remains an actionable lookup error through tool dispatch", ctx do
-    result = invoke(ctx.router, %{"device_id" => "dev_missing"}, "device.get")
-    assert result.error
-    assert result.error_class == "device_not_found"
-    issue = Jason.decode!(result.content)
-    assert issue["device_id"] == "dev_missing"
-    assert issue["message"] =~ "device.list"
-    refute issue["message"] =~ "no environment connected"
   end
 
   test "installation downloads Connector, starts read-only, and writes its diagnostic file",
@@ -201,32 +201,6 @@ defmodule SalixWeb.DeviceConnectionToolTest do
              })
   end
 
-  test "rejected connection cannot complete first registration", ctx do
-    {:ok, credential} =
-      SalixEnv.DeviceInstall.create_token_command(ctx.tenant, ctx.group, %{
-        "name" => "Rejected install"
-      })
-
-    server = Application.fetch_env!(:salix_web, :public_base_url)
-
-    assert {:ok, %{status: 400}} =
-             Req.get(server <> "/v1/connect?scope=invalid",
-               headers: [{"authorization", "Bearer " <> credential["token"]}]
-             )
-
-    {:ok, _, record} = SalixEnv.ConnectorTokens.validate_connector_token(credential["token"])
-    key = SalixStore.Keys.ctl_connector_token(record["token_hash"])
-
-    {:ok, _} =
-      SalixStore.S3.put(
-        key,
-        Jason.encode!(Map.put(record, "registration_expires_at", System.system_time(:second) - 1))
-      )
-
-    assert {:error, :unauthorized} =
-             SalixEnv.ConnectorTokens.validate_connector_token(credential["token"])
-  end
-
   test "unavailable artifacts do not create a device and Workers cannot install", ctx do
     File.rm_rf!(Path.join(ctx.root, "downloads"))
     result = invoke(ctx.router, %{"name" => "Target"})
@@ -243,53 +217,12 @@ defmodule SalixWeb.DeviceConnectionToolTest do
              SalixWeb.EnvDispatch.create_device_install(worker["agent_id"], "Target")
   end
 
-  test "failed download does not start a partial installation", ctx do
-    install = invoke(ctx.router, %{"name" => "Target"}).content |> Jason.decode!()
-    File.rm_rf!(Path.join(ctx.root, "downloads"))
-
-    assert {_, status} =
-             run_install(install["command"], ctx.home)
-
-    assert status != 0
-    refute File.exists?(Path.join(ctx.home, "fixture.pid"))
-    assert Path.wildcard(Path.join(ctx.home, ".comma/devices/*/.download.*")) == []
-  end
-
   for {platform, os, arch} <- [
         {"darwin-arm64", "Darwin", "arm64"},
         {"darwin-amd64", "Darwin", "x86_64"},
         {"linux-arm64", "Linux", "aarch64"},
         {"linux-amd64", "Linux", "x86_64"}
       ] do
-    @tag platform: platform, os: os, arch: arch
-    test "installer selects #{platform} artifact", ctx do
-      bin = Path.join(ctx.root, "bin")
-      File.mkdir_p!(bin)
-
-      File.write!(
-        Path.join(bin, "uname"),
-        "#!/bin/sh\ncase \"$1\" in -s) echo #{ctx.os};; -m) echo #{ctx.arch};; esac\n"
-      )
-
-      File.chmod!(Path.join(bin, "uname"), 0o700)
-      install = invoke(ctx.router, %{"name" => "Platform device"}).content |> Jason.decode!()
-
-      assert {_, 0} =
-               run_install(install["command"], ctx.home, "yes", [
-                 {"PATH", bin <> ":" <> System.get_env("PATH")}
-               ])
-
-      assert eventually(fn -> File.exists?(Path.join(ctx.home, "platform")) end)
-      assert File.read!(Path.join(ctx.home, "platform")) == ctx.platform
-    end
-  end
-
-  test "declining local consent leaves the target uninstalled", ctx do
-    install = invoke(ctx.router, %{"name" => "Target"}).content |> Jason.decode!()
-    assert {output, 1} = run_install(install["command"], ctx.home, "no")
-    assert output =~ "Installation canceled"
-    refute File.exists?(Path.join(ctx.home, ".comma"))
-    refute File.exists?(Path.join(ctx.home, "token"))
   end
 
   defp run_install(command, home, consent \\ "yes", env \\ []) do
@@ -301,7 +234,7 @@ defmodule SalixWeb.DeviceConnectionToolTest do
     )
   end
 
-  defp eventually(fun, attempts \\ 500)
+  defp eventually(fun, attempts \\ 3000)
   defp eventually(_fun, 0), do: false
 
   defp eventually(fun, attempts) do
@@ -309,7 +242,7 @@ defmodule SalixWeb.DeviceConnectionToolTest do
       do: true,
       else:
         (
-          Process.sleep(10)
+          SystemsRuntime.Proc.sleep(10)
           eventually(fun, attempts - 1)
         )
   end

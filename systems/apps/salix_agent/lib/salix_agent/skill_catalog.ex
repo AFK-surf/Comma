@@ -267,5 +267,5 @@ defmodule SalixAgent.SkillCatalog do
     end
   end
 
-  defp random_id, do: :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower)
 end

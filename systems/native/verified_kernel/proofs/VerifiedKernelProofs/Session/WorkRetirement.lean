@@ -1,5 +1,6 @@
 import VerifiedKernelProofs.Session.WorkConservation
 import VerifiedKernelProofs.Session.WorkFrames
+import VerifiedKernelProofs.Session.AppendOnly.SeqCore
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

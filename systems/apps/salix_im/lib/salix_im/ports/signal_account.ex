@@ -88,7 +88,7 @@ defmodule SalixIM.Ports.SignalAccount do
 
   def leave_group(account_id, peer), do: impl().leave_group(account_id, peer)
 
-  defp impl, do: Application.get_env(:salix_im, :signal_account_mod, __MODULE__.Unconfigured)
+  defp impl, do: SystemsRuntime.get_env(:salix_im, :signal_account_mod, __MODULE__.Unconfigured)
 
   defmodule Unconfigured do
     @moduledoc false

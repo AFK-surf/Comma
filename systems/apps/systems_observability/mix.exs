@@ -21,6 +21,8 @@ defmodule SystemsObservability.MixProject do
 
   defp deps do
     [
+      {:systems_clock, in_umbrella: true},
+      {:systems_runtime, in_umbrella: true},
       {:bandit, "~> 1.5"},
       {:opentelemetry, "~> 1.7"},
       {:opentelemetry_api, "~> 1.5"},

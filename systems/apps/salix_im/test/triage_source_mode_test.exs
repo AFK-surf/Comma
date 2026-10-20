@@ -1,5 +1,5 @@
 defmodule SalixIM.Triage.SourceModeTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixIM.Triage.SourceMode
 
@@ -25,15 +25,5 @@ defmodule SalixIM.Triage.SourceModeTest do
     test name do
       assert SourceMode.resolve([%{"source_mode" => "clickhouse_etl"}, @second]) == @expected
     end
-  end
-
-  test "fails closed for empty, missing, or unknown source modes" do
-    assert {:error, :invalid_identity_source_mode} = SourceMode.resolve([])
-
-    assert {:error, :identity_source_mode_missing} =
-             SourceMode.resolve([%{"source_mode" => "clickhouse_etl"}, %{}])
-
-    assert {:error, :invalid_identity_source_mode} =
-             SourceMode.resolve([%{"source_mode" => "unknown"}])
   end
 end

@@ -65,7 +65,9 @@ defmodule CommaWeb.WeChatCommands do
         "workspace_id" => workspace["id"]
       })
 
-    origin = Application.fetch_env!(:comma_web, :web_cookie_origin) |> String.trim_trailing("/")
+    origin =
+      SystemsRuntime.fetch_env!(:comma_web, :web_cookie_origin) |> String.trim_trailing("/")
+
     url = origin <> "/task-panel.html?" <> query
 
     list <> "\n\n[查看全部任务](" <> url <> ")\n打开后请使用 Comma 账号登录。"

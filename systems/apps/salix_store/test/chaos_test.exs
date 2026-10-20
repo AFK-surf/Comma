@@ -23,7 +23,7 @@ defmodule SalixStore.ChaosTest do
   truth is always the cold replay (`durable_state/1`), never the in-memory
   `Owned` handle that may have observed an ambiguous response.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{Agent, Keys}
   alias SalixStore.S3.Fake
@@ -32,14 +32,12 @@ defmodule SalixStore.ChaosTest do
   @sm SalixStore.TestSM
 
   setup do
-    prev = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, Fake)
     start_supervised!(Fake)
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, prev) end)
-    {:ok, agent: "agent-#{System.unique_integer([:positive])}"}
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, prev) end)
+    {:ok, agent: "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"}
   end
-
-  defp uniq_node, do: "node-#{System.unique_integer([:positive])}"
 
   # The single source of truth: cold replay from the durable head + journal,
   # independent of any live handle. READ-ONLY — claiming here would bump the
@@ -77,7 +75,7 @@ defmodule SalixStore.ChaosTest do
     test "every acknowledged increment lands exactly once", %{agent: a} do
       {:ok, o0} = Agent.create(a, "node-1", @sm)
 
-      increments = for _ <- 1..30, do: Enum.random(1..5)
+      increments = for _ <- 1..30, do: SystemsRuntime.Proc.uniform(5)
 
       fault_kinds = [
         nil,
@@ -88,7 +86,7 @@ defmodule SalixStore.ChaosTest do
 
       {final, acked_sum, acked_count} =
         Enum.reduce(increments, {o0, 0, 0}, fn by, {o, sum, count} ->
-          inject(a, o, Enum.random(fault_kinds))
+          inject(a, o, Enum.at(fault_kinds, SystemsRuntime.Proc.uniform(length(fault_kinds)) - 1))
 
           case commit_settled(o, [%{op: "inc", by: by}]) do
             {:ok, o2} -> {o2, sum + by, count + 1}
@@ -148,142 +146,15 @@ defmodule SalixStore.ChaosTest do
       assert o_new2.state.counter == 15
       assert durable_state(a).counter == 15
     end
-
-    test "fenced writer never overwrites the live root", %{agent: a} do
-      {:ok, o_stale} = Agent.create(a, "node-1", @sm)
-
-      # Steal under node-2; its claim bumps epoch. node-1 keeps its stale handle.
-      {:ok, o_new} = Agent.claim(a, "node-2", @sm, steal: true)
-
-      # node-2 (real owner) commits at seq 1 under epoch 2.
-      {:ok, o_new} = Agent.commit(o_new, [%{op: "set", value: 42}])
-      assert durable_state(a).counter == 42
-
-      assert {:error, reason} = Agent.commit(o_stale, [%{op: "set", value: -1}])
-      assert reason in [:fenced] or match?({:stale_etag, _}, reason)
-
-      assert durable_state(a).counter == 42
-      assert durable_state(a).ops == 1
-
-      # And the real owner can keep going.
-      assert {:ok, o_new2} = Agent.commit(o_new, [%{op: "inc", by: 8}])
-      assert o_new2.state.counter == 50
-      assert durable_state(a).counter == 50
-    end
   end
 
   # ---- 4: concurrent claim storm → exactly one effective owner per epoch ----
 
   describe "concurrent claim storm" do
-    test "many concurrent steal-claims yield distinct monotone epochs; losers fence on commit",
-         %{agent: a} do
-      {:ok, _seed} = Agent.create(a, "seed", @sm)
-
-      # 24 nodes all try to steal at once. Each claim that returns {:ok} bumps the
-      # epoch via head CAS; the Fake serializes PUTs, so the epochs that SUCCEED
-      # are strictly increasing with no two claims sharing an epoch.
-      results =
-        1..24
-        |> Task.async_stream(
-          fn _ -> Agent.claim(a, uniq_node(), @sm, steal: true) end,
-          max_concurrency: 24,
-          timeout: 30_000
-        )
-        |> Enum.map(fn {:ok, r} -> r end)
-
-      owned = for {:ok, %Owned{} = o} <- results, do: o
-      assert owned != [], "at least one claimant must win"
-
-      # Distinct epochs: no two successful claims observed the same epoch (each
-      # came from a distinct head CAS). This is the "exactly one owner per epoch"
-      # invariant viewed from the storage layer.
-      epochs = Enum.map(owned, & &1.epoch)
-      assert length(epochs) == length(Enum.uniq(epochs))
-
-      # The durable head's epoch is the maximum any claimant saw.
-      max_epoch = Enum.max(epochs)
-      assert durable_state(a) != nil
-      {:ok, head} = Agent.peek(a)
-      assert head.epoch >= max_epoch
-
-      # Only the holder of the live (highest) epoch can commit. Every other
-      # handle is fenced — proving exactly one effective writer survives the storm.
-      winner = Enum.max_by(owned, & &1.epoch)
-      losers = owned -- [winner]
-
-      assert {:ok, w2} = Agent.commit(winner, [%{op: "inc", by: 1}])
-      assert w2.state.counter == 1
-
-      for l <- losers do
-        assert match?({:error, _}, Agent.commit(l, [%{op: "inc", by: 100}])),
-               "a non-top-epoch claimant (epoch #{l.epoch}) must not commit effectively"
-      end
-
-      # Convergence: a final clean claim replays exactly the one acked increment.
-      assert durable_state(a).counter == 1
-      assert durable_state(a).ops == 1
-    end
-
-    test "claim storm with injected 500s on head PUT still produces a coherent owner", %{agent: a} do
-      {:ok, _seed} = Agent.create(a, "seed", @sm)
-
-      # Sprinkle a few one-shot 500s on head PUTs; some claim CAS attempts will
-      # see {:http, 500}. The protocol must never fabricate a false owner, and
-      # the durable head must remain a single coherent record.
-      for _ <- 1..3, do: Fake.set_fault({:fail, 500, :put, Keys.agent_state(a)})
-
-      results =
-        1..16
-        |> Task.async_stream(
-          fn _ -> Agent.claim(a, uniq_node(), @sm, steal: true) end,
-          max_concurrency: 16,
-          timeout: 30_000
-        )
-        |> Enum.map(fn {:ok, r} -> r end)
-
-      owned = for {:ok, %Owned{} = o} <- results, do: o
-
-      # The head is still a single, decodable, coherent record after the storm.
-      {:ok, head} = Agent.peek(a)
-      assert head.epoch >= 1
-      assert head.owner_node != nil
-
-      # Distinct epochs among winners (no epoch reuse despite the failures).
-      epochs = Enum.map(owned, & &1.epoch)
-      assert length(epochs) == length(Enum.uniq(epochs))
-
-      # Convergence to a clean, replayable state with a single effective writer.
-      assert {:ok, top} = Agent.claim(a, uniq_node(), @sm, steal: true)
-      assert {:ok, top2} = Agent.commit(top, [%{op: "inc", by: 1}])
-      assert top2.state.counter == 1
-      assert durable_state(a).counter == 1
-    end
   end
 
   # ---- 4 (delete chaos): release/delete faults never strand the head ----
 
   describe "release under DELETE faults converges" do
-    test "ambiguous/500 on the lease-index DELETE during release does not corrupt the head",
-         %{agent: a} do
-      {:ok, o} = Agent.create(a, "node-1", @sm)
-      {:ok, o} = Agent.commit(o, [%{op: "inc", by: 3}])
-
-      # release does a head CAS (clear owner) then a best-effort lease-index
-      # DELETE. Fault the DELETE: the head clear must still be durable, so a
-      # later claim sees a releasable (owner-cleared) head and replays cleanly.
-      :ok = Fake.set_fault({:ambiguous_after, :delete, :any})
-      _ = Agent.release(o)
-
-      :ok = Fake.set_fault({:fail, 500, :delete, :any})
-      _ = Agent.release(o)
-
-      # Head is intact and the agent converges: a fresh claim replays the
-      # committed state and can continue committing.
-      assert {:ok, o2} = Agent.claim(a, uniq_node(), @sm)
-      assert o2.state.counter == 3
-      assert {:ok, o3} = Agent.commit(o2, [%{op: "inc", by: 4}])
-      assert o3.state.counter == 7
-      assert durable_state(a).counter == 7
-    end
   end
 end

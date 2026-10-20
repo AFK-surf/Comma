@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelProgressTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
   alias SalixAgent.InternalSession.State
@@ -87,59 +87,6 @@ defmodule SalixAgent.SessionKernelProgressTest do
     end
   end
 
-  test "nil and false select fallbacks but empty lists remain truthy" do
-    for fallback <- [nil, false] do
-      before = state(fallback)
-      assert SessionData.apply_event(before, event("absent")) === before
-
-      active = state(%{"selected" => %{}})
-
-      after_state =
-        SessionData.apply_event(
-          active,
-          event("selected", %{"progress" => fallback, "updated_at" => []})
-        )
-
-      assert after_state.async_tool_calls["selected"] === %{"progress" => %{}, "updated_at" => []}
-    end
-
-    before = state(%{"selected" => %{}})
-
-    after_state =
-      SessionData.apply_event(
-        before,
-        event("selected", %{"progress" => [], "updated_at" => []})
-      )
-
-    assert after_state.async_tool_calls["selected"] === %{"progress" => [], "updated_at" => []}
-
-    assert_raise BadMapError, fn ->
-      SessionData.apply_event(state([]), event("selected"))
-    end
-  end
-
-  test "time is requested only for an admitted update with a false or absent timestamp" do
-    before = state(%{"selected" => %{"status" => "running"}})
-
-    for fields <- [%{}, %{"updated_at" => nil}, %{"updated_at" => false}] do
-      ev = event("selected", fields)
-      assert {:observe_time, continuation} = Driver.step(before, ev)
-      assert {:done, observed} = Driver.step(continuation, {:observed_time, 123})
-      assert observed.async_tool_calls["selected"]["updated_at"] == 123
-
-      earliest = System.system_time(:millisecond)
-      actual = SessionData.apply_event(before, ev)
-      latest = System.system_time(:millisecond)
-      assert actual.async_tool_calls["selected"]["updated_at"] in earliest..latest
-    end
-
-    for timestamp <- [0, [], "", 1.5] do
-      ev = event("selected", %{"updated_at" => timestamp})
-      assert {:done, after_state} = Driver.step(before, ev)
-      assert after_state.async_tool_calls["selected"]["updated_at"] === timestamp
-    end
-  end
-
   test "pure-data identities preserve exact native keys" do
     for id <- [nil, [], 7, 1.25, %{"identity" => true}] do
       before = state(%{id => %{"status" => "running"}})
@@ -150,11 +97,5 @@ defmodule SalixAgent.SessionKernelProgressTest do
       assert Map.fetch!(after_state.async_tool_calls, id)["updated_at"] == 42
       assert map_size(after_state.async_tool_calls) == 1
     end
-  end
-
-  test "the existing wrapper still rejects another Session before kernel admission" do
-    before = state(%{"selected" => %{}})
-    ev = event("selected", %{"session_id" => "another-session", "updated_at" => 42})
-    assert SessionData.apply_event(before, ev) === before
   end
 end

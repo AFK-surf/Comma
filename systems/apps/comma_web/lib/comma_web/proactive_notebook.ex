@@ -1,20 +1,19 @@
 defmodule CommaWeb.ProactiveNotebook do
   @moduledoc """
-  The owner's proactive notebook: one Markdown file in their Comma Drive that
-  shows what Comma follows for them, what it decided and why, and what it
-  watches. It is a projection. The Home Conversation's matters, the member
-  source pool and the owner's watch Loops stay the only state; a lost or
-  edited file is replaced by the next render.
+  The owner's proactive notebook: one Markdown file in the Router's VFS,
+  `/Comma/Notebook.md`, that shows what Comma follows for them, what it
+  decided and why, and what it watches. The owner reads it in Drive's System
+  Files (`Comma.SystemFiles`), read-only; it needs no device. It is a
+  projection. The Home Conversation's matters, the member source pool and the
+  owner's watch Loops stay the only state; a lost or edited file is replaced
+  by the next render.
 
   The server renders the file from those facts. No model writes it, so it
-  cannot invent or drop a matter. A write lands as the Drive's hosted version
-  of the path. An edit the owner saves on a device stays as their own version
-  beside it and does not change any matter.
+  cannot invent or drop a matter.
 
-  The Drive is the Workspace's shared folder. The notebook holds the owner's
-  private source titles, so it is written only while the owner is the
-  Workspace's only member. Otherwise the render withdraws the hosted version;
-  a copy an owner's device already synced stays that device's own version.
+  Every member's Router turn can read the Router's VFS. The notebook holds the
+  owner's private source titles, so it is written only while the owner is the
+  Workspace's only member. Otherwise the render deletes it.
 
   Matter changes, source collections and proactive checks queue one render.
   Renders for an owner are at most one per minute, and a render that produces
@@ -24,11 +23,10 @@ defmodule CommaWeb.ProactiveNotebook do
 
   require Logger
   alias CommaWeb.{HomeMail, Proactive, ProactiveWatch}
+  alias SalixAgent.AgentWorkspace
   alias SalixIM.{Conversations, MailInteraction}
 
-  # Drive-relative path; the Router sees it under `/drive`.
-  @path "Comma/Notebook.md"
-  @max_bytes 256_000
+  @path "/Comma/Notebook.md"
   @delay_s 30
 
   # Bounds of each section; the notebook is a summary, not an archive.
@@ -36,9 +34,6 @@ defmodule CommaWeb.ProactiveNotebook do
   @judged_limit 8
   @recent_ms 7 * 24 * 60 * 60 * 1000
   @needs_you_ms 3 * 24 * 60 * 60 * 1000
-
-  @doc "The notebook's path as the Router sees it."
-  def drive_path, do: "/drive/" <> @path
 
   @doc "Queues one render for the owner. Renders queued within a minute merge."
   def enqueue(group, owner) when is_binary(group) and is_binary(owner) do
@@ -61,10 +56,10 @@ defmodule CommaWeb.ProactiveNotebook do
 
   def enqueue(_group, _owner), do: :ok
 
-  @doc "The notebook path when the owner's Drive holds it, for `proactive.state`."
+  @doc "The notebook path when the Router's VFS holds it, for `proactive.state`."
   def locate(ctx) do
-    case SalixAgent.Drive.stat(ctx, @path) do
-      {:ok, %{kind: kind}} when kind != "directory" -> drive_path()
+    case AgentWorkspace.entry(ctx.agent_id, @path) do
+      {:ok, _entry} -> @path
       _ -> nil
     end
   end
@@ -74,9 +69,14 @@ defmodule CommaWeb.ProactiveNotebook do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"group_id" => group, "owner_id" => owner}}) do
+    # Every line of this job names whose notebook it is.
+    Logger.metadata(user_id: owner, group_id: group)
+
     with {:ok, %{"status" => "active"} = user} <- Comma.Accounts.get_user(owner),
          {:ok, workspace, ctx, home} <- HomeMail.context(user, %{}, group),
          true <- workspace["owner_user_id"] == owner do
+      Logger.metadata(workspace_id: workspace["id"])
+
       result =
         if private?(workspace, owner),
           do: publish(workspace, ctx, home, owner),
@@ -92,7 +92,7 @@ defmodule CommaWeb.ProactiveNotebook do
           Logger.warning("proactive_notebook failed reason=retryable")
           error
 
-        # A Workspace without a usable Drive has no notebook until it has one.
+        # A refused write (credits, a gone Router) waits for the next render.
         {:error, reason} ->
           Logger.info("proactive_notebook skipped reason=#{inspect(reason, limit: 3)}")
           :ok
@@ -107,17 +107,24 @@ defmodule CommaWeb.ProactiveNotebook do
     do: Enum.map(workspace["members"] || [], & &1["user_id"]) == [owner]
 
   defp withdraw(ctx) do
-    case SalixAgent.Drive.delete(ctx, @path) do
-      {:ok, _} -> {:ok, :withdrawn}
-      {:error, :not_found} -> {:ok, :absent}
-      error -> error
+    case AgentWorkspace.entry(ctx.agent_id, @path) do
+      {:ok, _entry} ->
+        with {:ok, _} <- SalixAgent.Workspace.delete(ctx.agent_id, @path, storage(ctx)),
+             do: {:ok, :withdrawn}
+
+      {:error, :not_found} ->
+        {:ok, :absent}
+
+      error ->
+        error
     end
   end
 
   defp publish(workspace, ctx, home, owner) do
     with {:ok, conversation} <- Conversations.get_group_conversation_record(ctx.group_id, home),
          {:ok, monitors} <- ProactiveWatch.status(ctx) do
-      now = System.system_time(:millisecond)
+      # The Home Conversation records spends and changes on this clock.
+      now = SystemsClock.system_time(:millisecond)
       profile = profile(workspace, owner)
 
       facts = %{
@@ -135,7 +142,8 @@ defmodule CommaWeb.ProactiveNotebook do
         sources: if(profile, do: Comma.MemberSourceItems.states(profile.id), else: []),
         judged:
           if(profile, do: Comma.MemberSourceItems.judged(profile.id, @judged_limit), else: []),
-        briefing: briefing(workspace, owner, conversation)
+        briefing: briefing(workspace, owner, conversation),
+        portrait: CommaWeb.MemberPortrait.statements(workspace)
       }
 
       body = render(facts)
@@ -181,13 +189,16 @@ defmodule CommaWeb.ProactiveNotebook do
   end
 
   # A render equal to the stored file writes nothing, so collections that
-  # change nothing leave no new Drive version.
+  # change nothing leave no new version. The manifest names a blob by the
+  # SHA-256 of its bytes (`SalixStore.Blob`).
   defp store(ctx, body) do
-    case SalixAgent.Drive.read(ctx, @path, @max_bytes) do
-      {:ok, ^body, false} ->
+    hash = SalixStore.Crypto.hex(body)
+
+    case AgentWorkspace.entry(ctx.agent_id, @path) do
+      {:ok, %{"hash" => ^hash}} ->
         {:ok, :unchanged}
 
-      {:ok, _other, _} ->
+      {:ok, _other} ->
         write(ctx, body)
 
       {:error, :not_found} ->
@@ -199,16 +210,22 @@ defmodule CommaWeb.ProactiveNotebook do
   end
 
   defp write(ctx, body) do
-    with {:ok, _} <- SalixAgent.Drive.write(ctx, @path, body, byte_size(body)),
+    with {:ok, _} <- SalixAgent.Workspace.write(ctx.agent_id, @path, body, storage(ctx)),
          do: {:ok, :written}
   end
+
+  # Billed to the Home Conversation's account, as Comma's own write.
+  defp storage(ctx),
+    do: [billing_context: ctx.billing_context, entrypoint: "comma_notebook", actor_type: "system"]
 
   @doc """
   Renders the notebook. `facts` holds `:now`, `:locale`, `:timezone`,
   `:automatic`, `:notifications` and `:urgent` (notification budget tuples
   for ordinary and critical matters), the owner's `:matters`,
   watch `:monitors`, pool source `:sources`, `:judged` pool items and the
-  latest Routine `:briefing` (`nil`, or its `:generated_at` and `:items`).
+  latest Routine `:briefing` (`nil`, or its `:generated_at` and `:items`), and
+  the Condensed Workspace statements (`:portrait`), of which it lists the
+  portrait (`CommaWeb.MemberPortrait`).
   """
   def render(facts) do
     t = text(facts.locale)
@@ -229,12 +246,21 @@ defmodule CommaWeb.ProactiveNotebook do
       section(t.later, rows(matters, "later", facts, t), nil),
       section(t.waiting, rows(matters, "waiting", facts, t), nil),
       section(t.watching, watching(facts, t), t.empty_watching),
+      section(t.portrait, portrait(facts), nil),
       section(t.quiet, rows(matters, "quiet", facts, t) ++ judged(facts, t), nil),
       section(t.done, rows(matters, "done", facts, t), nil)
     ]
     |> List.flatten()
     |> Enum.join("\n")
     |> Kernel.<>("\n")
+  end
+
+  # What Comma knows about the owner: the portrait statements of the
+  # Condensed Workspace, where the owner edits them.
+  defp portrait(facts) do
+    for %{"text" => text} <- Map.get(facts, :portrait) || [],
+        String.starts_with?(text, ["About you · ", "关于你 · "]),
+        do: "- " <> text
   end
 
   defp section(_heading, [], nil), do: []
@@ -295,12 +321,14 @@ defmodule CommaWeb.ProactiveNotebook do
   defp detail(matter, name, facts, t) do
     parts =
       [
-        matter["urgency"] in ~w(critical high) && t.urgency.(matter["urgency"]),
+        matter["urgency"] in ~w(critical high ask) && t.urgency.(matter["urgency"]),
         name == "later" && is_integer(matter["run_at"]) &&
           t.recheck.(time(matter["run_at"], facts)),
         name == "later" && clean(matter["followup_reason"]),
         name == "waiting" && is_binary(matter["task_id"]) && t.in_task,
         name == "waiting" && matter["state"] == "failed" && t.failed,
+        is_binary(get_in(matter, ["continues", "subject"])) &&
+          t.continues.(clean(matter["continues"]["subject"])),
         decision(matter, facts, t)
       ]
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
@@ -458,14 +486,16 @@ defmodule CommaWeb.ProactiveNotebook do
       later: "接下来",
       waiting: "等待与跟进中",
       watching: "我在盯着",
+      portrait: "我对你的了解（存在精简工作区里，说错了请告诉我）",
       empty_watching: "还没有连接的来源或盯着的事项。",
       quiet: "没打扰你的",
       done: "最近完成",
-      urgency: &%{"critical" => "紧急", "high" => "重要"}[&1],
+      urgency: &%{"critical" => "紧急", "high" => "重要", "ask" => "问你是否归你"}[&1],
       recheck: &"#{&1} 再看",
       in_task: "已在 Task 中处理",
       failed: "上次处理失败",
       notified: &if(&1, do: "#{&1} 已提醒你", else: "已提醒你"),
+      continues: &"接续：#{&1}",
       stayed_quiet: &if(&1, do: "#{&1} 决定不打扰", else: "决定不打扰"),
       watch: "盯着",
       watch_active: "进行中",
@@ -506,14 +536,18 @@ defmodule CommaWeb.ProactiveNotebook do
       later: "Coming up",
       waiting: "Waiting and in progress",
       watching: "Watching",
+      portrait:
+        "What I know about you (kept in the Condensed Workspace; tell me if something is wrong)",
       empty_watching: "No connected sources or watches yet.",
       quiet: "Did not interrupt you",
       done: "Recently done",
-      urgency: &%{"critical" => "urgent", "high" => "important"}[&1],
+      urgency:
+        &%{"critical" => "urgent", "high" => "important", "ask" => "asked if it is yours"}[&1],
       recheck: &"checking again #{&1}",
       in_task: "in a Task",
       failed: "the last action failed",
       notified: &if(&1, do: "told you at #{&1}", else: "told you"),
+      continues: &"continues: #{&1}",
       stayed_quiet: &if(&1, do: "stayed quiet at #{&1}", else: "stayed quiet"),
       watch: "Watch",
       watch_active: "active",

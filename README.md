@@ -8,7 +8,7 @@ Comma is an open-source personal agent built to be sessionless. Your work, memor
 
 It breaks down your goals into Tasks and keeps working through agentic loops until the job is done.
 
-Built by AFK Inc., Comma is our attempt to create an open agentic system that keeps you away from software — and away from the keyboard.
+Built by AFK Inc., Comma is our attempt to create an open agentic system that keeps you away from software and away from the keyboard.
 
 You can use the hosted service at [comma.surf](https://comma.surf), or run your own instance from this repository.
 
@@ -31,7 +31,6 @@ https://github.com/user-attachments/assets/486cde78-d927-4ff0-85de-00c46edc498e
 - **Sessionless**
   - Conversations are just interfaces. **Tasks are the persistent execution state.**
   - Your memory, context, and ongoing Tasks continue across devices, conversations, and interfaces.
-  - You should never have to choose the “right” session, or worry that starting a new conversation will lose unfinished work.
 
 - **Relentless**
   - Comma is always on and works 24/7.
@@ -45,7 +44,7 @@ https://github.com/user-attachments/assets/486cde78-d927-4ff0-85de-00c46edc498e
 
 - **Works with your existing agents**
   - Codex, Claude Code, and other agents can be invoked like applications or registered as Workers and Sub-agents.
-  - Keep your existing tools and workflows; let Comma orchestrate and automate them.
+  - Keep your existing tools and workflows. Comma orchestrates and automates them.
 
 - **Cloud for work. Your device for identity.**
   - Comma uses its own environment for long-running work, while sensitive identity, sessions, payments, and private data can stay on your devices.
@@ -58,8 +57,8 @@ https://github.com/user-attachments/assets/486cde78-d927-4ff0-85de-00c46edc498e
   Task is done.
 - **Waits for your decisions.** When a decision is yours, the Task waits in
   Needs Review. Comma does the rest on its own, or only drafts if you prefer.
-- **Shows all work on one board.** Tasks move through Backlog, In progress,
-  Needs Review, and Done.
+- **Shows all work on one board.** Tasks move through In progress, Needs
+  Review, and Done.
 - **Writes first.** When something needs you, Comma tells you in chat and
   suggests the next step. Routines give you a briefing at the time you set.
 - **Keeps watch with Loops.** A Loop is a small program that your agent writes.
@@ -80,16 +79,14 @@ Each agent runs as its own process on the Erlang VM. When one part fails, it res
 
 The formal models check properties such as:
 
-- accepted work is not silently lost across failures and restarts;
-- a failed reply does not count as completed work;
-- side-effecting actions are recorded before they start;
-- an interrupted mutating action is not accidentally executed twice;
-- stale workers cannot overwrite newer agent state;
-- data only crosses boundaries where policy allows it.
+- Accepted work is not silently lost across failures and restarts.
+- A failed reply does not count as completed work.
+- Side-effecting actions are recorded before they start.
+- An interrupted mutating action does not run twice by accident.
+- Stale workers cannot overwrite newer agent state.
+- Data only crosses boundaries where policy allows it.
 
-Formal verification does not prove model judgment or task success. It verifies something more fundamental: **the runtime behaves according to the rules we designed, even when things fail.**
-
-For a sessionless agent, reliability is not an infrastructure detail. **It is part of the product.**
+Formal verification does not prove model judgment or task success. It verifies that **the runtime follows its rules, even when things fail.**
 
 See [Verification](docs/verification.md) and the [TLA+ models](tla/).
 
@@ -130,8 +127,8 @@ not need a Comma account or a private repository token.
    address.
 6. Read the code in the local inbox at <http://localhost:8025>.
 
-The first start generates persistent secrets and initializes empty stores. By
-default, all public ports bind to loopback only.
+The first start generates persistent secrets in the `config` volume. By
+default, all ports bind to loopback only.
 
 ### Configuration
 
@@ -164,19 +161,13 @@ self-hosted instance does not need Stripe or Comma credits.
 
 ### Public access
 
-For a public instance, put Comma behind your HTTPS reverse proxy. Web, Admin,
-and the Product API must use different origins on one registrable domain, for
-example `app.example.com`, `admin.example.com`, and `api.example.com`. Set a
-real SMTP server. The local inbox is for loopback use only, because anyone who
-can read it can use its login codes.
+Put Comma behind your HTTPS reverse proxy. Web, Admin, and the Product API must
+use different origins on one registrable domain. Set a real SMTP server. The
+local inbox is for loopback use only. Anyone who can read it can use its login
+codes.
 
-### Features that need external accounts
-
-Agents, Tasks, object storage, search, and subscription-account storage run
-inside the stack. To let Comma run commands on your own computer, connect the
-computer from the device settings. Group cloud computers need a Cloudflare
-configuration. Meetings and Agent VMM hosts need runtimes that this repository
-does not include.
+Group cloud computers need a Cloudflare configuration. Meetings and Agent VMM
+hosts need runtimes that this repository does not include.
 
 ### Upgrades and backups
 
@@ -187,7 +178,7 @@ regenerate its secrets. `docker compose down` keeps your data. Do not add `-v`
 unless you want to delete the instance.
 
 Read the [self-hosting guide](systems/DEPLOYMENT.md#self-hosted-compose) before
-public deployment, upgrades, or restores.
+a public deployment, an upgrade, or a restore.
 
 ## Repository layout
 
@@ -217,7 +208,6 @@ from the repository root:
 ```sh
 make test-clients
 make test-systems
-make test-policy
 ```
 
 Start with these documents:

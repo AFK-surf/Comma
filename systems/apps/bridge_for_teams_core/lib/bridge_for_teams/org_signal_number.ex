@@ -54,7 +54,7 @@ defmodule BridgeForTeams.OrgSignalNumber do
         resource_id: org.salix_tenant_id,
         resource_label: "signal",
         result: "ok",
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         metadata: %{"salix_tenant_id" => org.salix_tenant_id},
         redacted_diff: %{
           "number" => %{

@@ -83,7 +83,7 @@ defmodule SalixAgent.ToolTelemetry do
       guidance_reason: guidance_reason(status, result),
       duration_ms: measured_duration_ms(result) || derived_duration_ms(result, attrs),
       started_at: timestamp(field(result, :started_at) || field(attrs, :started_at)),
-      metered_at: DateTime.utc_now(),
+      metered_at: SystemsClock.utc_now(),
       args_fingerprint: fingerprint(decoded(field(result, :input) || field(attrs, :args))),
       result_fingerprint: fingerprint(decoded(field(result, :output) || field(result, :content))),
       call_index: int(field(result, :call_index) || field(attrs, :call_index)),
@@ -129,7 +129,7 @@ defmodule SalixAgent.ToolTelemetry do
   defp derived_duration_ms(result, attrs) do
     case timestamp(field(attrs, :started_at) || field(result, :started_at)) do
       %DateTime{} = started_at ->
-        DateTime.utc_now() |> DateTime.diff(started_at, :millisecond) |> max(0)
+        SystemsClock.utc_now() |> DateTime.diff(started_at, :millisecond) |> max(0)
 
       _ ->
         nil
@@ -268,5 +268,5 @@ defmodule SalixAgent.ToolTelemetry do
 
   defp timestamp(value), do: value
 
-  defp random_id, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower)
 end

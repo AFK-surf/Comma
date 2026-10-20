@@ -10,7 +10,3 @@ export function sidebarTaskNavigationTarget(task: SidebarTaskModel) {
     to: "/tasks/$workspaceId/$groupId/$conversationId" as const,
   };
 }
-
-export function sidebarTaskConversationId(pathname: string) {
-  return pathname.match(/^\/tasks\/[^/]+\/[^/]+\/([^/]+)$/)?.[1];
-}

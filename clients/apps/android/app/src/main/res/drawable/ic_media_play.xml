@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Central Icons (commercially licensed): IconPlay, round-filled-radius-2-stroke-2.
+    Not for redistribution; see ui/icons/IconSources.kt. Tinted in code.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M9.57648 2.53365C7.57781 1.29918 5 2.73688 5 5.08605V18.914C5 21.2632 7.57781 22.7009 9.57648 21.4664L20.7705 14.5524C22.6686 13.3801 22.6686 10.6199 20.7705 9.44763L9.57648 2.53365Z"
+        android:fillColor="#FF000000" />
+</vector>

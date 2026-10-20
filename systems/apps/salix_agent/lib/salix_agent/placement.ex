@@ -43,7 +43,7 @@ defmodule SalixAgent.Placement do
       else: apply(module, function, args)
   end
 
-  defp impl, do: Application.get_env(:salix_agent, :placement, __MODULE__.LocalFleet)
+  defp impl, do: SystemsRuntime.get_env(:salix_agent, :placement, __MODULE__.LocalFleet)
 
   defmodule LocalFleet do
     @moduledoc false

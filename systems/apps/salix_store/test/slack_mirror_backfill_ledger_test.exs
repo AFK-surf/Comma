@@ -7,12 +7,19 @@ defmodule SalixStore.SlackMirrorBackfillLedgerTest do
   moves down, `indexed_to` is set once, and a claim is a dedupe lease that
   expires rather than a fence.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixStore.QueueCase, queues: [:slack_mirror_backfill]
 
   alias SalixStore.{Repo, SlackMirrorBackfillLedger, ULID}
 
   setup do
-    Repo.query!("TRUNCATE slack_mirror_channel_watermarks, slack_mirror_backfill_connects")
+    Repo.query!("TRUNCATE slack_mirror_channel_watermarks")
+
+    # The ledger's SQL reads the database's clock, which follows a manual
+    # SystemsClock (SystemsRuntime.DbClock): a lease runs out because the test
+    # moves the clock past it, not because real time passed.
+    SystemsClock.manual()
+    on_exit(&SystemsClock.reset/0)
     :ok
   end
 
@@ -59,7 +66,7 @@ defmodule SalixStore.SlackMirrorBackfillLedgerTest do
       assert {:ok, _row} = SlackMirrorBackfillLedger.claim_channel(key, 200)
       assert :busy = SlackMirrorBackfillLedger.claim_channel(key, 200)
 
-      Process.sleep(250)
+      SystemsClock.advance(250)
       assert {:ok, _row} = SlackMirrorBackfillLedger.claim_channel(key, 60_000)
     end
 
@@ -69,7 +76,7 @@ defmodule SalixStore.SlackMirrorBackfillLedgerTest do
       {:ok, _row} = SlackMirrorBackfillLedger.claim_channel(key, 200)
       assert :ok = SlackMirrorBackfillLedger.renew_channel(key, 60_000)
 
-      Process.sleep(250)
+      SystemsClock.advance(250)
       # Renewed, so still held.
       assert :busy = SlackMirrorBackfillLedger.claim_channel(key, 60_000)
 
@@ -164,7 +171,7 @@ defmodule SalixStore.SlackMirrorBackfillLedgerTest do
       first = connect()
       second = connect()
       :ok = SlackMirrorBackfillLedger.upsert_connects([first])
-      Process.sleep(5)
+      SystemsClock.advance(5)
       :ok = SlackMirrorBackfillLedger.upsert_connects([second])
 
       assert {:ok, %{"connect_id" => id}} = SlackMirrorBackfillLedger.claim_due_connect(60_000)
@@ -180,7 +187,7 @@ defmodule SalixStore.SlackMirrorBackfillLedgerTest do
       # Released but not due.
       assert :empty = SlackMirrorBackfillLedger.claim_due_connect(60_000)
 
-      Process.sleep(250)
+      SystemsClock.advance(250)
       assert {:ok, _row} = SlackMirrorBackfillLedger.claim_due_connect(60_000)
     end
 
@@ -218,7 +225,7 @@ defmodule SalixStore.SlackMirrorBackfillLedgerTest do
       connect = connect()
       :ok = SlackMirrorBackfillLedger.upsert_connects([connect])
       {:ok, first} = SlackMirrorBackfillLedger.claim_due_connect(200)
-      Process.sleep(250)
+      SystemsClock.advance(250)
       {:ok, second} = SlackMirrorBackfillLedger.claim_due_connect(60_000)
       assert :ok = SlackMirrorBackfillLedger.kick_connect(connect)
 
@@ -266,7 +273,7 @@ defmodule SalixStore.SlackMirrorBackfillLedgerTest do
       :ok = SlackMirrorBackfillLedger.upsert_connects([connect])
       {:ok, _row} = SlackMirrorBackfillLedger.claim_due_connect(200)
 
-      Process.sleep(250)
+      SystemsClock.advance(250)
 
       assert {:error, :claim_lost} =
                SlackMirrorBackfillLedger.renew_connect(connect["connect_id"], 60_000)

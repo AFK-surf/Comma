@@ -31,7 +31,7 @@ defmodule SalixSignal.Storage.Cipher do
   @doc "The derived keys, or `{:error, :storage_key_missing}`."
   @spec keys() :: {:ok, keys()} | {:error, :storage_key_missing}
   def keys do
-    case Application.get_env(:salix_agent, :subscription_storage_key) do
+    case SystemsRuntime.get_env(:salix_agent, :subscription_storage_key) do
       <<_::binary-size(32)>> = subscription_key ->
         root =
           SalixSignalProto.Crypto.Hkdf.derive(
@@ -55,7 +55,7 @@ defmodule SalixSignal.Storage.Cipher do
   @doc "Encrypts `term` for the row `(table, account_id, row_key)`."
   @spec seal(keys(), {atom(), String.t(), binary()}, term()) :: binary()
   def seal(%{data: key}, {table, account_id, row_key}, term) do
-    iv = :crypto.strong_rand_bytes(12)
+    iv = SystemsRuntime.Proc.random_bytes(12)
     plaintext = :erlang.term_to_binary(term)
 
     {ciphertext, tag} =

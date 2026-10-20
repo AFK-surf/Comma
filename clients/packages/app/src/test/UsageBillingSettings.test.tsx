@@ -1,13 +1,12 @@
 import userEvent from "@testing-library/user-event";
 import { CommaI18nProvider } from "@comma/i18n/react";
-import { SettingsPanel } from "@comma/ui";
-import { act, render, screen, waitFor } from "@comma/test-utils/render";
-import { StrictMode } from "react";
+import { SettingsPanel } from "@comma/ui/components/settings-panel";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import { act, render, screen, waitFor, within } from "@comma/test-utils/render";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CommaApiClient } from "../api";
 import { useUsageBillingCategory } from "../components/billing/useUsageBillingCategory";
 
-vi.mock("../runtime-chat/nativePlatformActions", () => ({
+vi.mock("../nativePlatformActions", () => ({
   openNativePlatformExternalUrl: vi.fn(async () => undefined),
   openNativePlatformExternalUrlFromUserAction: vi.fn(
     async (resolveUrl: () => Promise<string>) => {
@@ -17,39 +16,52 @@ vi.mock("../runtime-chat/nativePlatformActions", () => ({
 }));
 
 afterEach(() => {
-  vi.clearAllTimers();
-  vi.useRealTimers();
   window.location.hash = "";
 });
 
 /** The category as Settings renders it: its rows through the shared panel. */
-function UsageBilling({ api }: { api: CommaApiClient }) {
-  const category = useUsageBillingCategory(api, true);
+function UsageBilling() {
+  const category = useUsageBillingCategory(true);
   return <SettingsPanel sections={[...category.sections]} title={category.label} />;
 }
 
-function renderUsageBilling(api: CommaApiClient, strict = false) {
-  const tree = (
-    <CommaI18nProvider>
-      <UsageBilling api={api} />
-    </CommaI18nProvider>
+type Summary = ReturnType<typeof billingSummary>;
+
+/** The page over a core that says `value` for `billing` and answers calls with `calls`. */
+function renderUsageBilling(
+  value: unknown,
+  calls: (name: string, params: Record<string, unknown>) => unknown = () => null
+) {
+  const seen: [string, Record<string, unknown>][] = [];
+  const core = createScriptedCore({
+    values: (topic) => (topic.topic === "billing" ? value : undefined),
+    calls: (name, params) => {
+      seen.push([name, params as Record<string, unknown>]);
+      return calls(name, params as Record<string, unknown>);
+    },
+  });
+  render(
+    core.wrap(
+      <CommaI18nProvider>
+        <UsageBilling />
+      </CommaI18nProvider>
+    )
   );
-  return render(strict ? <StrictMode>{tree}</StrictMode> : tree);
+  return {
+    core,
+    seen,
+    named: (name: string) => seen.filter(([n]) => n === name).map(([, p]) => p),
+  };
 }
 
-function abortOnFirstCall<T>(value: T) {
-  let calls = 0;
-  return vi.fn((options?: { signal?: AbortSignal }) => {
-    calls += 1;
-    if (calls > 1) return Promise.resolve(value);
-    return new Promise<T>((_resolve, reject) => {
-      options?.signal?.addEventListener(
-        "abort",
-        () => reject(new TypeError("Failed to fetch")),
-        { once: true }
-      );
-    });
-  });
+function ready(summary: Summary, plans: unknown[] = [], allowance: unknown = null) {
+  return {
+    status: "ready",
+    workspace: { id: "workspace-1", name: "Personal" },
+    plans,
+    summary,
+    allowance,
+  };
 }
 
 const valuePlan = {
@@ -93,13 +105,9 @@ const topupPack = {
   amount_minor: 900,
   grant_credits: 700,
 };
-const workspaces = [{ id: "workspace-1", group_id: "group-1", name: "Personal" }];
-
 describe("useUsageBillingCategory", () => {
   it("shows an empty catalog without unavailable subscription controls", async () => {
-    renderUsageBilling(
-      billingApi(vi.fn(async () => billingSummary({ current_credits: 20000000 })))
-    );
+    renderUsageBilling(ready(billingSummary({ current_credits: 20000000 })));
     expect(await screen.findByText("20,000,000")).toBeVisible();
     expect(screen.getByText("No subscription")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Manage" })).not.toBeInTheDocument();
@@ -110,121 +118,72 @@ describe("useUsageBillingCategory", () => {
     expect(screen.getByText("No credit packs available.")).toBeVisible();
   });
 
-  it("keeps polling a billing return when positive credits have not changed from baseline", async () => {
-    vi.useFakeTimers();
+  it("says billing is unavailable when the core could read nothing, and reads again on entering", async () => {
+    const page = renderUsageBilling({ status: "unavailable" });
+    expect(
+      (
+        await screen.findAllByText(
+          "Billing is temporarily unavailable. Try again shortly."
+        )
+      )[0]
+    ).toBeVisible();
+    // No workspace was read, yet entering asks for the plans and the balance again.
+    await waitFor(() => expect(page.named("billing.refresh")).toEqual([{}]));
+  });
+
+  it("tells the core of a billing return, even one that arrives while the category is open", async () => {
     window.location.hash = "#/settings?category=usage-billing&billing-return=success";
+    const page = renderUsageBilling(ready(billingSummary()));
+    await waitFor(() =>
+      expect(page.named("billing.returned")).toEqual([{ workspace: "workspace-1" }])
+    );
+    // Read once, the parameter leaves the hash so the next return changes it again.
+    expect(window.location.hash).toBe("#/settings?category=usage-billing");
 
-    const baseline = billingSummary({ current_credits: 12 });
-    const changed = billingSummary({ current_credits: 712 });
-    const getBillingSummary = vi
-      .fn()
-      .mockResolvedValueOnce(baseline)
-      .mockResolvedValueOnce(baseline)
-      .mockResolvedValue(changed);
-
-    renderUsageBilling(billingApi(getBillingSummary));
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
+    // Electron's return moves the hash in place; the page does not reload.
+    act(() => {
+      window.location.hash = "#/settings?category=usage-billing&billing-return=portal";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
     });
-    expect(getBillingSummary).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(600);
+    await waitFor(() => expect(page.named("billing.returned")).toHaveLength(2));
+    // A cancelled checkout reads nothing again.
+    act(() => {
+      window.location.hash = "#/settings?category=usage-billing&billing-return=cancel";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
     });
-    expect(getBillingSummary).toHaveBeenCalledTimes(2);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1_200);
-    });
-    expect(getBillingSummary).toHaveBeenCalledTimes(3);
-    expect(screen.getByText("712")).toBeInTheDocument();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_000);
-    });
-    expect(getBillingSummary).toHaveBeenCalledTimes(3);
+    await act(async () => {});
+    expect(page.named("billing.returned")).toHaveLength(2);
   });
 
-  it("keeps polling a billing return when the active subscription matches baseline", async () => {
-    vi.useFakeTimers();
-    window.location.hash =
-      "#/settings?category=usage-billing&billing-return=subscription";
-
-    const baseline = billingSummary({
-      current_credits: 20_000_000,
-      active_subscription: {
-        package_code: "comma_value",
-        package_version: "v1",
-        source_id: "sub_1",
-        status: "active",
-      },
+  it("asks the core to read the balance again on entering and when the window regains focus", async () => {
+    const page = renderUsageBilling(ready(billingSummary({ current_credits: 12 })));
+    expect(await screen.findByText("12")).toBeVisible();
+    // Entering reads all of it, as a topic start does: the menu-bar item can
+    // hold the topic, which then reads nothing as the page opens.
+    await waitFor(() => expect(page.named("billing.refresh")).toEqual([{}]));
+    act(() => {
+      window.dispatchEvent(new FocusEvent("focus"));
     });
-    const changed = billingSummary({
-      current_credits: 20_000_000,
-      active_subscription: {
-        package_code: "comma_pro",
-        package_version: "v1",
-        source_id: "sub_1",
-        status: "active",
-      },
-    });
-    const getBillingSummary = vi
-      .fn()
-      .mockResolvedValueOnce(baseline)
-      .mockResolvedValueOnce(baseline)
-      .mockResolvedValue(changed);
-
-    renderUsageBilling(billingApi(getBillingSummary));
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-      await vi.advanceTimersByTimeAsync(600);
-    });
-    expect(getBillingSummary).toHaveBeenCalledTimes(2);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1_200);
-    });
-    expect(getBillingSummary).toHaveBeenCalledTimes(3);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_000);
-    });
-    expect(getBillingSummary).toHaveBeenCalledTimes(3);
+    await waitFor(() =>
+      expect(page.named("billing.refresh")).toEqual([{}, { workspace: "workspace-1" }])
+    );
+    // The core's newer balance is what shows.
+    act(() =>
+      page.core.emit("billing", ready(billingSummary({ current_credits: 712 })))
+    );
+    expect(await screen.findByText("712")).toBeVisible();
   });
 
-  it("does not show a billing outage when StrictMode cancels the first load", async () => {
-    const api = {
-      listBillingPlans: abortOnFirstCall([topupPack]),
-      listWorkspaces: abortOnFirstCall(workspaces),
-      getBillingSummary: vi.fn(async () => billingSummary({ current_credits: 12 })),
-    } as unknown as CommaApiClient;
-
-    renderUsageBilling(api, true);
-
-    expect(await screen.findByText("12")).toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  });
-
-  it("lists plans and packs as rows of the page and refreshes credits after redemption", async () => {
-    const getBillingSummary = vi
-      .fn()
-      .mockResolvedValueOnce(billingSummary({ current_credits: 12 }))
-      .mockResolvedValueOnce(billingSummary({ current_credits: 712 }));
-    const redeemBillingCode = vi.fn(async () => ({ idempotent: false }));
-    const createBillingCheckout = vi.fn(async () => ({
-      url: "https://checkout.stripe.com/test",
-    }));
-    const api = {
-      listBillingPlans: vi.fn(async () => [valuePlan, topupPack, valueAnnualPlan]),
-      listWorkspaces: vi.fn(async () => workspaces),
-      getBillingSummary,
-      redeemBillingCode,
-      createBillingCheckout,
-    } as unknown as CommaApiClient;
-
-    renderUsageBilling(api);
+  it("lists plans and packs as rows of the page and redeems a code", async () => {
+    const page = renderUsageBilling(
+      ready(billingSummary({ current_credits: 12 }), [
+        valuePlan,
+        topupPack,
+        valueAnnualPlan,
+      ]),
+      (name) =>
+        name === "billing.checkout" ? { url: "https://checkout.stripe.com/test" } : null
+    );
 
     expect(await screen.findByText("12")).toBeInTheDocument();
     expect(screen.getByText("Personal · Current balance")).toBeInTheDocument();
@@ -250,10 +209,13 @@ describe("useUsageBillingCategory", () => {
     ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "$9.00" }));
     await waitFor(() => {
-      expect(createBillingCheckout).toHaveBeenCalledWith(
-        "workspace-1",
-        "comma_topup_700"
-      );
+      expect(page.named("billing.checkout")).toEqual([
+        {
+          workspace: "workspace-1",
+          plan: "comma_topup_700",
+          return: { apiBase: expect.any(String), environment: expect.any(String) },
+        },
+      ]);
     });
 
     // Redeeming has a section of its own.
@@ -262,7 +224,7 @@ describe("useUsageBillingCategory", () => {
     await userEvent.type(codeInput, " AB ");
     expect(screen.getByRole("button", { name: "Redeem" })).toBeDisabled();
     await userEvent.type(codeInput, "{Enter}");
-    expect(redeemBillingCode).not.toHaveBeenCalled();
+    expect(page.named("billing.redeem")).toEqual([]);
 
     await userEvent.clear(codeInput);
     await userEvent.type(codeInput, " ABC ");
@@ -270,12 +232,25 @@ describe("useUsageBillingCategory", () => {
     await userEvent.click(screen.getByRole("button", { name: "Redeem" }));
 
     await waitFor(() => {
-      expect(redeemBillingCode).toHaveBeenCalledWith("workspace-1", "ABC");
+      expect(page.named("billing.redeem")).toEqual([
+        { workspace: "workspace-1", code: "ABC" },
+      ]);
     });
-    expect(getBillingSummary).toHaveBeenCalledTimes(2);
     expect(
-      screen.getByText("Code redeemed. Your credits are ready.")
+      await screen.findByText("Code redeemed. Your credits are ready.")
     ).toBeInTheDocument();
+  });
+
+  it("words a refused redeem by the server's code", async () => {
+    renderUsageBilling(ready(billingSummary()), (name) => {
+      if (name === "billing.redeem")
+        throw Object.assign(new Error("refused"), { code: "redeem_code_expired" });
+      return null;
+    });
+    const codeInput = await screen.findByPlaceholderText("Enter redeem code");
+    await userEvent.type(codeInput, "OLD-CODE");
+    await userEvent.click(screen.getByRole("button", { name: "Redeem" }));
+    expect(await screen.findByText("That redeem code has expired.")).toBeVisible();
   });
 
   it("only disables the checkout button that is currently opening", async () => {
@@ -283,22 +258,20 @@ describe("useUsageBillingCategory", () => {
     const checkout = new Promise<{ url: string }>((resolve) => {
       resolveCheckout = resolve;
     });
-    const createBillingCheckout = vi.fn(() => checkout);
-    const api = {
-      listBillingPlans: vi.fn(async () => [valuePlan, proPlan]),
-      listWorkspaces: vi.fn(async () => workspaces),
-      getBillingSummary: vi.fn(async () => billingSummary({ current_credits: 12 })),
-      createBillingCheckout,
-    } as unknown as CommaApiClient;
-
-    renderUsageBilling(api);
+    const page = renderUsageBilling(
+      ready(billingSummary({ current_credits: 12 }), [valuePlan, proPlan]),
+      (name) => (name === "billing.checkout" ? checkout : null)
+    );
 
     const buttons = await screen.findAllByRole("button", { name: "Subscribe" });
     await userEvent.click(buttons[0]!);
 
     expect(await screen.findByRole("button", { name: "Opening…" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Subscribe" })).toBeEnabled();
-    expect(createBillingCheckout).toHaveBeenCalledWith("workspace-1", "comma_value_v1");
+    expect(page.named("billing.checkout")[0]).toMatchObject({
+      workspace: "workspace-1",
+      plan: "comma_value_v1",
+    });
 
     resolveCheckout({ url: "https://checkout.stripe.com/test" });
     await waitFor(() => {
@@ -307,10 +280,6 @@ describe("useUsageBillingCategory", () => {
   });
 
   it("changes the existing subscription when an active subscriber upgrades", async () => {
-    const createBillingCheckout = vi.fn();
-    const changeBillingSubscription = vi.fn(async () => ({
-      url: "https://billing.stripe.com/test/change",
-    }));
     const preview = {
       amount_minor: 1_000,
       currency: "usd",
@@ -319,11 +288,8 @@ describe("useUsageBillingCategory", () => {
       period_end: 1782864000,
       effect: "upgrade" as const,
     };
-    const previewBillingSubscriptionChange = vi.fn(async () => preview);
-    const api = {
-      listBillingPlans: vi.fn(async () => [valuePlan, proPlan]),
-      listWorkspaces: vi.fn(async () => workspaces),
-      getBillingSummary: vi.fn(async () =>
+    const page = renderUsageBilling(
+      ready(
         billingSummary({
           current_credits: 20_000_000,
           active_subscription: {
@@ -332,14 +298,16 @@ describe("useUsageBillingCategory", () => {
             source_id: "sub_1",
             status: "active",
           },
-        })
+        }),
+        [valuePlan, proPlan]
       ),
-      createBillingCheckout,
-      changeBillingSubscription,
-      previewBillingSubscriptionChange,
-    } as unknown as CommaApiClient;
-
-    renderUsageBilling(api);
+      (name) =>
+        name === "billing.previewChange"
+          ? { preview, request: "change-1" }
+          : name === "billing.change"
+            ? { url: "https://billing.stripe.com/test/change" }
+            : null
+    );
 
     // The page names the plan you are on (once as status, once in the list)
     // and puts the way to its invoices beside the status.
@@ -358,49 +326,142 @@ describe("useUsageBillingCategory", () => {
       await screen.findByRole("dialog", { name: "Confirm plan change" })
     ).toBeVisible();
     expect(screen.getByText(/Pay \$10.00 now/)).toBeVisible();
-    expect(changeBillingSubscription).not.toHaveBeenCalled();
+    expect(page.named("billing.change")).toEqual([]);
     await userEvent.click(screen.getByRole("button", { name: /^Confirm$/ }));
     await waitFor(() => {
-      expect(changeBillingSubscription).toHaveBeenCalledWith(
-        "workspace-1",
-        "comma_pro_v1",
-        preview,
-        expect.any(String)
-      );
+      expect(page.named("billing.change")).toEqual([
+        {
+          workspace: "workspace-1",
+          plan: "comma_pro_v1",
+          preview,
+          request: "change-1",
+          return: { apiBase: expect.any(String), environment: expect.any(String) },
+        },
+      ]);
     });
-    expect(createBillingCheckout).not.toHaveBeenCalled();
+    expect(page.named("billing.checkout")).toEqual([]);
+  });
+
+  it("keeps a hidden annual current plan through its historical key", async () => {
+    const currentPlan = {
+      plan_key: "cue_max_annual_v1",
+      package_code: "comma_max",
+      package_version: "annual-v1",
+      name: "Comma Max",
+      mode: "subscription" as const,
+      currency: "usd",
+      amount_minor: 200_000,
+      billing_period: "year",
+      grant_period: "current_period",
+      grant_credits: 200_000_000,
+    };
+    const pro = {
+      ...currentPlan,
+      plan_key: "comma_pro_annual_v1",
+      package_code: "comma_pro",
+      name: "Comma Pro",
+      amount_minor: 60_000,
+      grant_credits: 60_000_000,
+    };
+    const preview = {
+      amount_minor: 0,
+      currency: "usd",
+      effect: "keep_current" as const,
+      current_price_id: "price_historical_max",
+      proration_date: 1790000000,
+      period_end: 1800000000,
+    };
+    const page = renderUsageBilling(
+      ready(
+        {
+          billing_account_id: "billing-1",
+          current_credits: 200_000_000,
+          active_grants: [],
+          active_subscription: {
+            package_code: currentPlan.package_code,
+            package_version: currentPlan.package_version,
+            status: "active",
+            source_id: "sub_hidden",
+            plan: currentPlan,
+            source_metadata: {
+              scheduled_plan: {
+                package_code: pro.package_code,
+                package_version: pro.package_version,
+                effective_at: 1800000000,
+              },
+            },
+          },
+        } as unknown as Summary,
+        [
+          pro,
+          {
+            ...pro,
+            plan_key: "comma_pro_v1",
+            package_version: "v1",
+            billing_period: "month",
+            amount_minor: 6_000,
+          },
+        ]
+      ),
+      (name) =>
+        name === "billing.previewChange"
+          ? { preview, request: "keep-1" }
+          : name === "billing.change"
+            ? { url: null }
+            : null
+    );
+    // The plan is no longer offered, yet its scheduled downgrade can be cleared.
+    const keep = await screen.findByRole("button", { name: "Keep current plan" });
+    await waitFor(() => expect(keep).toBeEnabled());
+    expect(screen.getAllByText("Comma Max").length).toBeGreaterThan(0);
+    expect(screen.getByText("$2,000.00 / year · Active")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Monthly" })).toBeDisabled();
+    await userEvent.click(keep);
+    await userEvent.click(
+      within(
+        await screen.findByRole("dialog", { name: "Confirm plan change" })
+      ).getByRole("button", { name: "Confirm" })
+    );
+    await waitFor(() =>
+      expect(page.named("billing.change")[0]).toMatchObject({
+        workspace: "workspace-1",
+        plan: "cue_max_annual_v1",
+        preview,
+        request: "keep-1",
+      })
+    );
   });
 
   it("measures active grants and separates credit expiry from billing status", async () => {
-    const api = {
-      listBillingPlans: vi.fn(async () => [valuePlan]),
-      listWorkspaces: vi.fn(async () => workspaces),
-      getBillingSummary: vi.fn(async () => ({
-        billing_account_id: "billing-1",
-        current_credits: 12_000_000,
-        active_subscription: {
-          package_code: "comma_value",
-          package_version: "v1",
-          source_id: "sub_1",
-          status: "active",
-          plan: valuePlan,
-        },
-        active_grants: [
-          {
-            id: "grant_cycle",
+    renderUsageBilling(
+      ready(
+        {
+          billing_account_id: "billing-1",
+          current_credits: 12_000_000,
+          active_subscription: {
             package_code: "comma_value",
             package_version: "v1",
-            remaining_credits: 12_000_000,
-            valid_from: "2026-09-01T12:00:00Z",
-            expires_at: "2026-10-01T12:00:00Z",
-            source_type: "subscription_cycle",
-            source_id: "cycle_1",
+            source_id: "sub_1",
+            status: "active",
+            plan: valuePlan,
           },
-        ],
-      })),
-    } as unknown as CommaApiClient;
-
-    renderUsageBilling(api);
+          active_grants: [
+            {
+              id: "grant_cycle",
+              package_code: "comma_value",
+              package_version: "v1",
+              remaining_credits: 12_000_000,
+              valid_from: "2026-09-01T12:00:00Z",
+              expires_at: "2026-10-01T12:00:00Z",
+              source_type: "subscription_cycle",
+              source_id: "cycle_1",
+            },
+          ],
+        } as unknown as Summary,
+        [valuePlan],
+        { percent: 60, total: 20_000_000 }
+      )
+    );
 
     const bar = await screen.findByRole("progressbar", {
       name: "Credits remaining",
@@ -444,12 +505,4 @@ function billingSummary(
         }
       : {}),
   };
-}
-
-function billingApi(getBillingSummary: ReturnType<typeof vi.fn>): CommaApiClient {
-  return {
-    listBillingPlans: vi.fn(async () => []),
-    listWorkspaces: vi.fn(async () => workspaces),
-    getBillingSummary,
-  } as unknown as CommaApiClient;
 }

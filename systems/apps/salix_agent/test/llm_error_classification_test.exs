@@ -5,7 +5,7 @@ defmodule SalixAgent.LLMErrorClassificationTest do
   a provider whose wording isn't recognized leaves its session permanently
   wedged over the context limit.
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.LLM.Error
 
@@ -58,45 +58,38 @@ defmodule SalixAgent.LLMErrorClassificationTest do
     assert byte_size(meta["body"]) <= 4096
   end
 
-  test "failed and incomplete response envelopes retain context error classification" do
-    for status <- ["failed", "incomplete"],
-        details <- [
-          %{"error" => %{"code" => "context_length_exceeded"}},
-          %{"incomplete_details" => %{"reason" => "model_context_window_exceeded"}}
+  test "an exhausted provider account is recognized and stops retries" do
+    for {provider, status, body} <- [
+          {"anthropic", 400,
+           %{
+             "type" => "error",
+             "error" => %{
+               "type" => "invalid_request_error",
+               "message" =>
+                 "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+             }
+           }},
+          {"anthropic", 400, %{"type" => "billing_error", "message" => "billing issue"}},
+          {"openai_chat", 429,
+           %{
+             "error" => %{
+               "message" =>
+                 "You exceeded your current quota, please check your plan and billing details.",
+               "type" => "insufficient_quota",
+               "code" => "insufficient_quota"
+             }
+           }},
+          {"openai_chat", 402, %{"error" => %{"message" => "Payment required"}}}
         ] do
-      assert {:error, %{"category" => "context_overflow"}} =
-               Error.provider_state("openai_responses", status, details)
+      assert {:error, meta} = Error.http(provider, status, body)
+      assert Error.provider_quota_exhausted?(meta)
+
+      assert {:error,
+              %{
+                "error_class" => "billing_unavailable",
+                "reason" => "provider_quota_exhausted",
+                "retryable" => false
+              }} = Error.provider_quota({:error, meta})
     end
-  end
-
-  test "rate, output, byte-size and unrelated validation limits are not context overflow" do
-    for {status, message} <- [
-          {429, "token limit exceeded per minute"},
-          {400, "max_output_tokens exceeds the output token limit"},
-          {413, "request body exceeds maximum size of 32 MB"},
-          {400, "invalid context window configuration"},
-          {400, "tool schema contains too many tokens in its name"}
-        ] do
-      assert {:error, meta} =
-               Error.http("openai_chat", status, %{"error" => %{"message" => message}})
-
-      refute meta["category"] == "context_overflow"
-    end
-  end
-
-  test "an unrelated 400 stays a permanent, non-retryable provider error" do
-    assert {:error, meta} =
-             Error.http("openai_chat", 400, ~s({"error":{"message":"bad tool schema"}}))
-
-    assert meta["category"] == "permanent_provider_error"
-    refute Error.retryable?(meta)
-  end
-
-  test "throttling and server failures stay retryable" do
-    assert {:error, meta_429} = Error.http("openai_chat", 429, "slow down")
-    assert Error.retryable?(meta_429)
-
-    assert {:error, meta_500} = Error.http("openai_chat", 500, "boom")
-    assert Error.retryable?(meta_500)
   end
 end

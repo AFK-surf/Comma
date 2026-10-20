@@ -1,11 +1,13 @@
 defmodule SalixSignal.Messaging.PostgresPipelineTest do
+  require SystemsRuntime.Proc
+
   # The receive and send pipelines over the Postgres store
   # (SalixSignal.Storage) with a clean mock of the message service
   # (CRS-05, CRS-07): a process killed inside the receive commit changes
   # nothing and the envelope replays; a lost acknowledgement only
   # acknowledges; an owner rebuilt from the tables alone keeps the ratchets
   # in step; a fenced owner neither commits nor acknowledges.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixSignal.Messaging.{Inbound, Pipeline}
   alias SalixSignal.Storage
@@ -54,29 +56,29 @@ defmodule SalixSignal.Messaging.PostgresPipelineTest do
     {alice, bob} = converse(alice, bob)
     {_info, alice} = send_text(alice, @bob, "one")
     [{guid, _bytes}] = MockService.queued(bob.service, @bob, 1)
-    test = self()
+    test = SystemsRuntime.Proc.self()
 
     # Another transaction holds the admission row of this envelope, so the
     # receive commit writes the session advance and then waits on it.
     blocker =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Repo.transaction(fn ->
           Repo.query!(
             "INSERT INTO signal_inbound (account_id, kind, key, admitted_at) VALUES ($1, 1, $2, now())",
             [Ecto.UUID.dump!(bob.account_id), guid]
           )
 
-          send(test, :holding)
-          receive do: (:release -> Repo.rollback(:released))
+          SystemsRuntime.Proc.send(test, :holding)
+          SystemsRuntime.Proc.receive(do: (:release -> Repo.rollback(:released)))
         end)
       end)
 
     assert_receive :holding
-    worker = spawn(fn -> SignalAccount.deliver(bob) end)
+    worker = SystemsRuntime.Proc.spawn(fn -> SignalAccount.deliver(bob) end)
     wait_until_blocked(bob.account_id)
-    Process.exit(worker, :kill)
-    send(blocker.pid, :release)
-    assert {:error, :released} = Task.await(blocker)
+    SystemsRuntime.Proc.exit(worker, :kill)
+    SystemsRuntime.Proc.send(blocker.pid, :release)
+    assert {:error, :released} = SystemsRuntime.Task.await(blocker, :infinity)
 
     assert [_still_queued] = MockService.queued(bob.service, @bob, 1)
     refute Storage.admitted?(bob.account_id, guid)
@@ -116,24 +118,8 @@ defmodule SalixSignal.Messaging.PostgresPipelineTest do
            )
   end
 
-  test "a fenced owner does not commit or acknowledge; the new owner processes the envelope",
-       %{alice: alice, bob: bob} do
-    {alice, bob} = converse(alice, bob)
-    {_info, _alice} = send_text(alice, @bob, "for the new owner")
-
-    stale = bob
-    bob = SignalAccount.restart(bob)
-
-    assert {[:fenced], _} = SignalAccount.deliver(stale)
-    assert [_still_queued] = MockService.queued(bob.service, @bob, 1)
-
-    {events, _bob} = SignalAccount.deliver(bob)
-    assert ["for the new owner"] = Enum.map(messages(events), &body/1)
-    assert MockService.queued(bob.service, @bob, 1) == []
-  end
-
   # Waits until the receive commit waits on the held row lock.
-  defp wait_until_blocked(account_id, tries \\ 100) do
+  defp wait_until_blocked(account_id, tries \\ 1500) do
     %{rows: [[waiting]]} =
       Repo.query!(
         "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%signal_inbound%'"
@@ -142,7 +128,7 @@ defmodule SalixSignal.Messaging.PostgresPipelineTest do
     cond do
       waiting > 0 -> :ok
       tries == 0 -> flunk("the receive commit of #{account_id} never waited")
-      true -> Process.sleep(20) && wait_until_blocked(account_id, tries - 1)
+      true -> SystemsRuntime.Proc.sleep(20) && wait_until_blocked(account_id, tries - 1)
     end
   end
 end

@@ -7,7 +7,7 @@ defmodule SalixLlm.HttpStreamProgressTest do
   keep-alive comments included, and a call with nothing installed records
   nothing.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.StreamProgress
   alias SalixLlm.{MockSSEServer, OpenAIChat}

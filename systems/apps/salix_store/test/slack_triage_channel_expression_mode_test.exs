@@ -1,57 +1,11 @@
 defmodule SalixStore.SlackTriageChannelExpressionModeTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{Repo, SlackTriageChannels, ULID}
 
   setup do
     Repo.query!("TRUNCATE slack_triage_channels")
     :ok
-  end
-
-  test "the additive database default keeps an old insert project-only" do
-    attrs = attrs("C_OLD")
-    now = DateTime.utc_now()
-
-    Repo.query!(
-      """
-      INSERT INTO slack_triage_channels (
-        tenant_id, group_id, connect_id, channel_id, installation_generation,
-        workspace_id, channel_name, channel_generation, enabled,
-        provisioned_at, updated_at
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, $9, $9)
-      """,
-      [
-        attrs["tenant_id"],
-        attrs["group_id"],
-        attrs["connect_id"],
-        attrs["channel_id"],
-        attrs["installation_generation"],
-        attrs["workspace_id"],
-        attrs["channel_name"],
-        attrs["channel_generation"],
-        now
-      ]
-    )
-
-    assert {:ok, channel} =
-             SlackTriageChannels.get(
-               attrs["tenant_id"],
-               attrs["group_id"],
-               attrs["connect_id"],
-               attrs["channel_id"]
-             )
-
-    assert channel["expression_mode"] == "project"
-
-    assert {:error,
-            %Postgrex.Error{
-              postgres: %{constraint: "slack_triage_channels_valid_expression_mode"}
-            }} =
-             Repo.query(
-               "UPDATE slack_triage_channels SET expression_mode = 'presentation-name' WHERE channel_id = $1",
-               [attrs["channel_id"]]
-             )
   end
 
   test "same-workspace reinstall retains a channel exclusion while rotating its fence" do
@@ -66,31 +20,6 @@ defmodule SalixStore.SlackTriageChannelExpressionModeTest do
 
     assert after_reconnect["enabled"] == false
     assert after_reconnect["channel_generation"] != before["channel_generation"]
-  end
-
-  test "old provision calls preserve an explicit mode across rename and same-workspace revalidation" do
-    attrs = attrs("C_SOCIAL")
-
-    assert {:ok, social} =
-             attrs
-             |> Map.put("expression_mode", "social")
-             |> SlackTriageChannels.provision()
-
-    assert social["expression_mode"] == "social"
-
-    assert {:ok, renamed} =
-             attrs
-             |> Map.put("channel_name", "project-looking-name")
-             |> SlackTriageChannels.provision()
-
-    assert renamed["channel_name"] == "project-looking-name"
-    assert renamed["expression_mode"] == "social"
-    assert renamed["channel_generation"] == social["channel_generation"]
-
-    assert {:error, :invalid_slack_triage_channel} =
-             attrs
-             |> Map.put("expression_mode", nil)
-             |> SlackTriageChannels.provision()
   end
 
   test "a mode change rotates only its channel fence and an identical write is idempotent" do

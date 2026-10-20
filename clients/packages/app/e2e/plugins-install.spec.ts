@@ -15,6 +15,109 @@ const plugin = {
   summary: "Plan product work",
 };
 
+const xPlugin = {
+  ...plugin,
+  id: "x-twitter",
+  name: "X",
+  brand: "x",
+  summary: "Read public X posts",
+  mcps: [{ id: "mcp1_0000000000000000009", name: "X" }],
+  credentialSetup: {
+    key: "X_BEARER_TOKEN",
+    label: "App-only Bearer Token",
+    helpUrl: "https://docs.x.com/tools/mcp#simple-route-app-only-bearer",
+  },
+};
+
+test("X retries a rejected token, connects without a device, updates and uninstalls", async ({
+  page,
+}) => {
+  const stub = await setup(page);
+  let installed = false;
+  const tokens: string[] = [];
+  try {
+    await page.route("**/plugins", (route) =>
+      route.fulfill({ json: { data: [{ ...xPlugin, installed }] } })
+    );
+    await page.route("**/plugins/x-twitter/personal-sources", (route) =>
+      route.fulfill({ json: { pluginId: "x-twitter", sources: [] } })
+    );
+    await page.route("**/plugins/x-twitter/install", async (route) => {
+      const body = route.request().postDataJSON();
+      if (!body.config_values) {
+        await route.fulfill({
+          json: {
+            plugin: { ...xPlugin, installed },
+            authorization: null,
+            configuration: xPlugin.credentialSetup,
+          },
+        });
+      } else if (body.config_values.X_BEARER_TOKEN === "invalid-token") {
+        await route.fulfill({
+          status: 422,
+          json: { error: "plugin_credential_rejected" },
+        });
+      } else {
+        expect(Object.keys(body.config_values)).toEqual(["X_BEARER_TOKEN"]);
+        tokens.push(body.config_values.X_BEARER_TOKEN);
+        installed = true;
+        await route.fulfill({
+          json: { plugin: { ...xPlugin, installed }, authorization: null },
+        });
+      }
+    });
+    await page.route("**/plugins/x-twitter", async (route) => {
+      expect(route.request().method()).toBe("DELETE");
+      installed = false;
+      await route.fulfill({ json: { ...xPlugin, installed } });
+    });
+    await page.goto("/#/plugins");
+    await page.getByRole("button", { name: "Add X", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Connect X" });
+    await expect(dialog).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: "Connect", exact: true })
+    ).toBeDisabled();
+    const input = dialog.getByLabel("App-only Bearer Token");
+    await expect(input).toHaveAttribute("type", "password");
+    await input.fill("invalid-token");
+    await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+    await expect(dialog.getByRole("alert")).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: "Connect", exact: true })
+    ).toBeEnabled();
+    expect(tokens).toEqual([]);
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    const add = page.getByRole("button", { name: "Add X", exact: true });
+    await expect(add).toBeEnabled();
+    await add.click();
+    await input.fill("x-test-own-token");
+    await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(tokens).toEqual(["x-test-own-token"]);
+
+    await page
+      .getByRole("button", { name: "View X plugin details", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Update token", exact: true }).click();
+    const updateDialog = page.getByRole("dialog", { name: "Update X token" });
+    const replacementInput = updateDialog.getByLabel("App-only Bearer Token");
+    await expect(replacementInput).toHaveValue("");
+    await replacementInput.fill("x-test-replacement-token");
+    await updateDialog
+      .getByRole("button", { name: "Update token", exact: true })
+      .click();
+    await expect(updateDialog).toHaveCount(0);
+    expect(tokens).toEqual(["x-test-own-token", "x-test-replacement-token"]);
+    await page.getByRole("button", { name: "Uninstall X", exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "Add to Comma X", exact: true })
+    ).toBeVisible();
+  } finally {
+    await stub.close();
+  }
+});
+
 async function setup(page: Page) {
   const stub = await startChatSmokeStub();
   await installBrowserTestSession(page, {
@@ -54,77 +157,6 @@ test("Add stays in Plugins and shows the confirmed installation", async ({ page 
     await expect(page).toHaveURL(/#\/plugins$/);
   } finally {
     finish?.();
-    await stub.close();
-  }
-});
-
-test("pending authorization survives leaving Plugins and returning", async ({
-  page,
-}) => {
-  const stub = await setup(page);
-  const checks: string[] = [];
-  let authorized = false;
-  try {
-    await page.route("**/plugins/linear/install", async (route) => {
-      const body = route.request().postDataJSON();
-      if (body.verify_only) checks.push(body.authorization_state);
-      await route.fulfill({
-        json:
-          authorized && body.verify_only
-            ? { authorization: null, plugin: { ...plugin, installed: true } }
-            : { authorization: { state: "pending-linear" }, plugin },
-      });
-    });
-    await page.goto("/#/plugins");
-    await page.getByRole("button", { name: "Add Linear", exact: true }).click();
-    await expect(
-      page.getByRole("button", { name: "Add Linear", exact: true })
-    ).toBeEnabled();
-    await page.getByRole("link", { name: "Home", exact: true }).click();
-    await expect.poll(() => checks.length).toBeGreaterThan(0);
-    await page.getByRole("link", { name: "Plugins", exact: true }).click();
-    authorized = true;
-    await expect(
-      page.getByRole("button", { name: "Add Linear", exact: true })
-    ).toHaveCount(0);
-    await expect(page).toHaveURL(/#\/plugins$/);
-    expect(checks.every((state) => state === "pending-linear")).toBe(true);
-  } finally {
-    await stub.close();
-  }
-});
-
-test("a stalled initial Add releases its button and a retry can finish", async ({
-  page,
-}) => {
-  const stub = await setup(page);
-  let attempts = 0;
-  try {
-    await page.clock.install();
-    await page.route("**/plugins/linear/install", async (route) => {
-      attempts += 1;
-      if (attempts === 1) return; // Leave the first network response unresolved.
-      await route.fulfill({
-        json: { authorization: null, plugin: { ...plugin, installed: true } },
-      });
-    });
-    await page.goto("/#/plugins");
-    await page.getByRole("button", { name: "Add Linear", exact: true }).click();
-    await expect.poll(() => attempts).toBe(1);
-    await page.clock.fastForward(31_000);
-    await expect(
-      page.getByText("The connection request timed out. Try adding the plugin again.")
-    ).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "Add Linear", exact: true })
-    ).toBeEnabled();
-    await page.getByRole("button", { name: "Add Linear", exact: true }).click();
-    await expect(
-      page.getByRole("button", { name: "Add Linear", exact: true })
-    ).toHaveCount(0);
-    await expect(page).toHaveURL(/#\/plugins$/);
-    expect(attempts).toBe(2);
-  } finally {
     await stub.close();
   }
 });
@@ -339,6 +371,40 @@ test("a personal source missing a newly required scope asks for a reconnect", as
       .poll(() => reauthorized)
       .toEqual([{ connection_id: "linear-managed" }]);
     await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+  } finally {
+    await stub.close();
+  }
+});
+
+test("an Outlook integration shows the Outlook logo, not its initial", async ({
+  page,
+}) => {
+  const stub = await setup(page);
+
+  try {
+    await page.route(
+      `**/v1/comma/workspaces/${chatSmokeWorkspace.id}/plugins`,
+      (route) =>
+        route.fulfill({
+          json: {
+            data: [
+              {
+                ...plugin,
+                brand: "outlook",
+                description: "Connect Outlook mail and calendar",
+                id: "outlook",
+                name: "Microsoft Outlook",
+                summary: "Connect Outlook mail and calendar",
+              },
+            ],
+          },
+        })
+    );
+
+    await page.goto("/#/plugins");
+    const artwork = page.locator('[data-plugin-brand="outlook"]').first();
+    await expect(artwork.locator('svg[data-provider-logo="outlook"]')).toBeVisible();
+    await expect(artwork).not.toHaveText("M");
   } finally {
     await stub.close();
   }

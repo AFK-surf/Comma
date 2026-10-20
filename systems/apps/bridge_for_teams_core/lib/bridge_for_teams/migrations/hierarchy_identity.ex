@@ -14,7 +14,7 @@ defmodule BridgeForTeams.Migrations.HierarchyIdentity do
 
   def read do
     Application.load(:bridge_for_teams_core)
-    repos = Application.fetch_env!(:bridge_for_teams_core, :ecto_repos)
+    repos = SystemsRuntime.fetch_env!(:bridge_for_teams_core, :ecto_repos)
 
     Enum.reduce_while(repos, {:ok, HierarchyIdMigration.empty()}, fn repo, {:ok, acc} ->
       case Ecto.Migrator.with_repo(repo, &read/1) do

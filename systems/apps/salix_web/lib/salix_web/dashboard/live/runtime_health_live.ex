@@ -273,7 +273,7 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLive do
 
   defp query_opts(socket) do
     {_, _, seconds, bucket} = List.keyfind(@ranges, socket.assigns.range, 0)
-    to = DateTime.utc_now() |> DateTime.truncate(:second)
+    to = SystemsClock.utc_now() |> DateTime.truncate(:second)
     from = DateTime.add(to, -seconds, :second)
 
     [from: from, to: to, bucket_seconds: bucket]
@@ -417,10 +417,10 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLive do
   defp role_summary(lanes, infos) do
     groups =
       Enum.group_by(lanes, fn lane ->
-        info = Map.get(infos, lane.agent_id, %{role: nil, external?: false})
+        info = Map.get(infos, lane.agent_id, %{role: nil})
 
         cond do
-          lane.kind == :session or info.external? -> :external
+          lane.kind == :session -> :external
           info.role == "router" -> :router
           true -> :worker
         end
@@ -461,7 +461,7 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLive do
   # LLM telemetry rides the metering pipeline: no metering module configured
   # means no rows will ever arrive, which deserves its own explanation
   # rather than an eternally empty chart.
-  defp metering_enabled?, do: Application.get_env(:salix_agent, :llm_metering_mod) != nil
+  defp metering_enabled?, do: SystemsRuntime.get_env(:salix_agent, :llm_metering_mod) != nil
 
   # ============================== data shaping ==============================
 
@@ -1140,6 +1140,7 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLive do
         {"tool calls", wall.tool_pct, segment_style_attrs(:tool, :ok)},
         {"waiting for activation", wall.delivery_pct, phase_style_attrs("delivery_wait")},
         {"miniskill selection", wall.miniskill_pct, phase_style_attrs("miniskill")},
+        {"condensed workspace check", wall.workspace_pct, phase_style_attrs("cw_wait")},
         {"activation", wall.activation_pct, phase_style_attrs("activation")},
         {"preparing", wall.prepare_pct, phase_style_attrs("prepare")},
         {"storing replies and results", wall.commit_pct, phase_style_attrs("tool_commit")},
@@ -1349,20 +1350,13 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLive do
     Map.get(assigns.activity_lane_detail, lane.lane_id, assigns.activity_detail?)
   end
 
-  # A session lane's calls came without a round. From an external runtime
-  # that is the normal shape; from an internal agent it would mean calls
-  # recorded outside any round, which is worth saying as such.
-  defp session_lane_label(lane, infos) do
-    case {Enum.any?(lane.segments, &(&1.kind == :compaction)), Map.get(infos, lane.agent_id)} do
-      {true, _} ->
-        "compaction recorded without a matching activation on this page"
-
-      {false, %{external?: true}} ->
-        "external worker: tool calls only, its model runs off-platform"
-
-      _ ->
-        "tool calls recorded outside any round"
-    end
+  # A session lane's calls came without a round: calls recorded outside any
+  # round, which is worth saying as such. Older telemetry also holds the
+  # tool calls of retired External Runtime sessions in this shape.
+  defp session_lane_label(lane, _infos) do
+    if Enum.any?(lane.segments, &(&1.kind == :compaction)),
+      do: "compaction recorded without a matching activation on this page",
+      else: "tool calls recorded outside any round"
   end
 
   # Below this share of the lane a block can't fit even a short duration;
@@ -1408,6 +1402,9 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLive do
     do: "background:#dbeafe;border-color:#2563eb;color:#1e3a8a"
 
   defp phase_style_attrs("miniskill"), do: "background:#ede9fe;border-color:#7c3aed;color:#4c1d95"
+
+  defp phase_style_attrs(workspace) when workspace in ~w(cw_evidence cw_wait),
+    do: "background:#fef9c3;border-color:#ca8a04;color:#713f12"
 
   defp phase_style_attrs("prepare"), do: "background:#e0f2fe;border-color:#0284c7;color:#0c4a6e"
 

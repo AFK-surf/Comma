@@ -1,3 +1,4 @@
+import { uiClock, type CancelUiTimer } from "../../clock";
 import {
   type MouseEvent as ReactMouseEvent,
   useCallback,
@@ -9,8 +10,13 @@ import {
   useState,
 } from "react";
 import { useCommaMessages } from "@comma/i18n/react";
-import { isReducedMotionEnabled, motionEasing } from "../../tokens";
-import { ChevronLeftSmallIcon, ChevronRightSmallIcon, DownloadIcon } from "../icons";
+import { afterAnimations, isReducedMotionEnabled, motionEasing } from "../../tokens";
+import {
+  ChevronLeftSmallIcon,
+  ChevronRightSmallIcon,
+  DownloadIcon,
+  LoadingCircleIcon,
+} from "../icons";
 import { cx } from "../utils";
 import { ChatPanelImageFilmstrip } from "./ChatPanelImageFilmstrip";
 import { type ChatPanelMediaDownloadAction } from "./ChatPanelMediaDownload";
@@ -27,6 +33,8 @@ export interface ChatPanelImageGroupImage {
   onContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
   download?: ChatPanelMediaDownloadAction;
   src: string;
+  /** The image is still uploading: the card dims it under a spinner. */
+  uploading?: boolean;
 }
 
 export interface ChatPanelImageGroupProps {
@@ -211,6 +219,9 @@ interface PendingFlight {
  * and the component carries no entry animation of its own, so
  * outgoing-message flights (the text bubble animation) leave it untouched.
  *
+ * A lone image is not a deck: it keeps its own ratio inside a bounded frame,
+ * so a wide screenshot shows whole instead of cropped to a portrait card.
+ *
  * The 3:4 card crop is purely visual (`object-fit: cover` on the preview):
  * `src` keeps the source dimensions unless a native transport bound requires
  * a smaller encoded variant, and the preview modal shows those same bytes
@@ -238,10 +249,7 @@ export const ChatPanelImageGroup = ({
   const previewReturnFocusRef = useRef<HTMLElement | null>(null);
   const pendingFlightRef = useRef<PendingFlight | null>(null);
   const activeFlightsRef = useRef(
-    new Map<
-      HTMLButtonElement,
-      { animation: Animation; timer: ReturnType<typeof setTimeout> }
-    >()
+    new Map<HTMLButtonElement, { animation: Animation; timer: CancelUiTimer }>()
   );
   const pendingFlipRef = useRef<PendingFlip | null>(null);
   const flipCleanupRef = useRef<(() => void) | null>(null);
@@ -284,7 +292,7 @@ export const ChatPanelImageGroup = ({
   useEffect(
     () => () => {
       for (const [, flight] of activeFlightsRef.current) {
-        clearTimeout(flight.timer);
+        flight.timer();
         flight.animation.cancel();
       }
       activeFlightsRef.current.clear();
@@ -300,7 +308,7 @@ export const ChatPanelImageGroup = ({
       // Delete first: the animation's cancel handler must not be allowed to
       // clean a replacement flight that reuses the same card.
       flights.delete(element);
-      clearTimeout(flight.timer);
+      flight.timer();
       flight.animation.cancel();
       delete element.dataset.flying;
       element.style.removeProperty("z-index");
@@ -347,15 +355,15 @@ export const ChatPanelImageGroup = ({
       ],
       { duration: FLIGHT_DURATION_MS }
     );
-    const timer = setTimeout(() => {
+    const timer = uiClock.after(FLIGHT_DURATION_MS * FLIGHT_LAYER_SWAP_AT, () => {
       element.style.removeProperty("z-index");
-    }, FLIGHT_DURATION_MS * FLIGHT_LAYER_SWAP_AT);
+    });
     const record = { animation, timer };
     flights.set(element, record);
     const settle = () => {
       if (flights.get(element) !== record) return;
       flights.delete(element);
-      clearTimeout(timer);
+      timer();
       delete element.dataset.flying;
       element.style.removeProperty("z-index");
     };
@@ -420,25 +428,27 @@ export const ChatPanelImageGroup = ({
     void wrapper.offsetHeight;
     wrapper.dataset.heightAnimating = "true";
 
-    const releaseFrame = requestAnimationFrame(() => {
+    // The released cards and the wrapper height transition into the new
+    // layout; the pass ends when those transitions do.
+    let cancelSettle: (() => void) | undefined;
+    const cancelRelease = uiClock.frame(() => {
       for (const element of pinnedCards) {
         delete element.dataset.flip;
         element.style.removeProperty("transform");
         element.style.removeProperty("opacity");
       }
       wrapper.style.height = `${targetHeight}px`;
+      cancelSettle = afterAnimations(
+        wrapper,
+        FLIP_DURATION_MS + longestDelay + FLIP_CLEANUP_BUFFER_MS,
+        () => flipCleanupRef.current?.()
+      );
     });
-    const settleTimer = setTimeout(
-      () => {
-        flipCleanupRef.current?.();
-      },
-      FLIP_DURATION_MS + longestDelay + FLIP_CLEANUP_BUFFER_MS
-    );
 
     flipCleanupRef.current = () => {
       flipCleanupRef.current = null;
-      cancelAnimationFrame(releaseFrame);
-      clearTimeout(settleTimer);
+      cancelRelease();
+      cancelSettle?.();
       for (const element of pinnedCards) {
         delete element.dataset.flip;
         element.style.removeProperty("transform");
@@ -550,6 +560,7 @@ export const ChatPanelImageGroup = ({
         <div
           className="chat-panel-image-group-cards"
           data-expanded={isExpanded ? "true" : "false"}
+          data-single={count === 1 ? "true" : undefined}
           id={cardsId}
           ref={cardsRef}
           {...keyboardFocusMotion}
@@ -586,6 +597,17 @@ export const ChatPanelImageGroup = ({
                     loading={isExpanded ? "lazy" : "eager"}
                     src={image.src}
                   />
+                ) : null}
+                {image.uploading ? (
+                  <span
+                    className="chat-panel-image-group-card-uploading"
+                    data-testid="chat-image-uploading"
+                  >
+                    <LoadingCircleIcon className="size-5 animate-spin" />
+                    <span className="sr-only">
+                      {messages.ui_ai_uploading_named({ name: image.alt })}
+                    </span>
+                  </span>
                 ) : null}
               </button>
             );

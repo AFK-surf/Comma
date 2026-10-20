@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/AFK-surf/comma/systems/ops/comma-release/release"
@@ -101,8 +102,8 @@ func testCACertificate(t *testing.T) []byte {
 	template := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "test Agent VMM CA"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
+		NotBefore:             fixtureNow.Add(-time.Hour),
+		NotAfter:              fixtureNow.Add(time.Hour),
 		IsCA:                  true,
 		BasicConstraintsValid: true,
 		KeyUsage:              x509.KeyUsageCertSign,
@@ -176,52 +177,56 @@ func (r bundleSecretRunner) Run(_ context.Context, _ []byte, args ...string) ([]
 }
 
 func TestCommaBundleConfigPreservesConfigOwnedGoogleClientIDs(t *testing.T) {
-	target := map[string]any{
-		"comma": map[string]any{
-			"auth": map[string]any{"secret": "otp-secret"},
+	synctest.Test(t, func(t *testing.T) {
+		target := map[string]any{
+			"comma": map[string]any{
+				"auth": map[string]any{"secret": "otp-secret"},
+				"google_auth": map[string]any{
+					"web_client_id":          "comma-staging.apps.googleusercontent.com",
+					"electron_client_id":     "comma-desktop.apps.googleusercontent.com",
+					"issuer":                 "https://accounts.google.com",
+					"electron_client_secret": "desktop-provider-compatibility-secret",
+				},
+			},
+		}
+		setNested(target, "comma", commaBundleConfig("ecto://comma", "rediss://redis.example.com/0"))
+		merged := target["comma"]
+		want := map[string]any{
+			"database": map[string]any{"url": "ecto://comma"},
 			"google_auth": map[string]any{
 				"web_client_id":          "comma-staging.apps.googleusercontent.com",
 				"electron_client_id":     "comma-desktop.apps.googleusercontent.com",
-				"issuer":                 "https://accounts.google.com",
 				"electron_client_secret": "desktop-provider-compatibility-secret",
+				"issuer":                 "https://accounts.google.com",
 			},
-		},
-	}
-	setNested(target, "comma", commaBundleConfig("ecto://comma", "rediss://redis.example.com/0"))
-	merged := target["comma"]
-	want := map[string]any{
-		"database": map[string]any{"url": "ecto://comma"},
-		"google_auth": map[string]any{
-			"web_client_id":          "comma-staging.apps.googleusercontent.com",
-			"electron_client_id":     "comma-desktop.apps.googleusercontent.com",
-			"electron_client_secret": "desktop-provider-compatibility-secret",
-			"issuer":                 "https://accounts.google.com",
-		},
-		"auth": map[string]any{
-			"secret":    "otp-secret",
-			"redis_url": "rediss://redis.example.com/0",
-		},
-	}
-	if !reflect.DeepEqual(merged, want) {
-		t.Fatalf("unexpected Comma bundle config: %#v", merged)
-	}
+			"auth": map[string]any{
+				"secret":    "otp-secret",
+				"redis_url": "rediss://redis.example.com/0",
+			},
+		}
+		if !reflect.DeepEqual(merged, want) {
+			t.Fatalf("unexpected Comma bundle config: %#v", merged)
+		}
 
+	})
 }
 
 func TestValidateCommaAuthConfigFailsClosedWithoutEverySecret(t *testing.T) {
-	valid := commaAuthConfigForTest(strings.Repeat("a", 32), strings.Repeat("b", 32), "rediss://redis.example.com/0")
+	synctest.Test(t, func(t *testing.T) {
+		valid := commaAuthConfigForTest(strings.Repeat("a", 32), strings.Repeat("b", 32), "rediss://redis.example.com/0")
 
-	if err := validateCommaAuthConfig(valid); err != nil {
-		t.Fatalf("valid Comma auth config rejected: %v", err)
-	}
+		if err := validateCommaAuthConfig(valid); err != nil {
+			t.Fatalf("valid Comma auth config rejected: %v", err)
+		}
 
-	invalid := map[string]any{
-		"email": map[string]any{"postmark_server_token": "postmark-token"},
-		"comma": map[string]any{"auth": map[string]any{"secret": "otp-secret"}},
-	}
-	if err := validateCommaAuthConfig(invalid); err == nil || !strings.Contains(err.Error(), "comma.auth.rate_limit_secret") {
-		t.Fatalf("missing rate-limit secret was not rejected clearly: %v", err)
-	}
+		invalid := map[string]any{
+			"email": map[string]any{"postmark_server_token": "postmark-token"},
+			"comma": map[string]any{"auth": map[string]any{"secret": "otp-secret"}},
+		}
+		if err := validateCommaAuthConfig(invalid); err == nil || !strings.Contains(err.Error(), "comma.auth.rate_limit_secret") {
+			t.Fatalf("missing rate-limit secret was not rejected clearly: %v", err)
+		}
+	})
 }
 
 func TestValidateCommaAuthConfigRejectsWeakReusedOrMalformedValues(t *testing.T) {
@@ -240,10 +245,12 @@ func TestValidateCommaAuthConfigRejectsWeakReusedOrMalformedValues(t *testing.T)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			config := commaAuthConfigForTest(tc.secret, tc.rateLimitSecret, tc.redisURL)
-			if err := validateCommaAuthConfig(config); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("invalid Comma auth config was not rejected clearly: %v", err)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				config := commaAuthConfigForTest(tc.secret, tc.rateLimitSecret, tc.redisURL)
+				if err := validateCommaAuthConfig(config); err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("invalid Comma auth config was not rejected clearly: %v", err)
+				}
+			})
 		})
 	}
 }
@@ -263,139 +270,145 @@ func commaAuthConfigForTest(secret, rateLimitSecret, redisURL string) map[string
 }
 
 func TestBuildBundleInjectsProductDatabasesIntoReleaseConfig(t *testing.T) {
-	setBundleEnvironment(t)
-	var input map[string]any
-	if err := json.Unmarshal([]byte(os.Getenv("SALIX_CONFIG_JSON")), &input); err != nil {
-		t.Fatal(err)
-	}
-	storageKey := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32)))
-	input["subscription_proxy"] = map[string]any{"storage_key": storageKey}
-	encoded, err := json.Marshal(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("SALIX_CONFIG_JSON", string(encoded))
-	body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-		Environment: "staging",
-		Project:     "project",
-		Cluster:     "cluster",
-	}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
+		var input map[string]any
+		if err := json.Unmarshal([]byte(os.Getenv("SALIX_CONFIG_JSON")), &input); err != nil {
+			t.Fatal(err)
+		}
+		storageKey := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32)))
+		input["subscription_proxy"] = map[string]any{"storage_key": storageKey}
+		encoded, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("SALIX_CONFIG_JSON", string(encoded))
+		body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+			Environment: "staging",
+			Project:     "project",
+			Cluster:     "cluster",
+		}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	var bundle release.CandidateBundle
-	if err := json.Unmarshal(body, &bundle); err != nil {
-		t.Fatal(err)
-	}
-	var configBody string
-	var redisURL string
-	for _, resource := range bundle.Resources {
-		if strings.HasPrefix(resource.Name, "salix-config-") {
-			configBody = resource.Data["config.json"]
+		var bundle release.CandidateBundle
+		if err := json.Unmarshal(body, &bundle); err != nil {
+			t.Fatal(err)
 		}
-		if strings.HasPrefix(resource.Name, "comma-secrets-") {
-			redisURL = resource.Data["REDIS_URL"]
+		var configBody string
+		var redisURL string
+		for _, resource := range bundle.Resources {
+			if strings.HasPrefix(resource.Name, "salix-config-") {
+				configBody = resource.Data["config.json"]
+			}
+			if strings.HasPrefix(resource.Name, "comma-secrets-") {
+				redisURL = resource.Data["REDIS_URL"]
+			}
 		}
-	}
-	if configBody == "" {
-		t.Fatal("release bundle omitted salix-config")
-	}
-	var config map[string]any
-	if err := json.Unmarshal([]byte(configBody), &config); err != nil {
-		t.Fatal(err)
-	}
-	if got := config["subscription_proxy"].(map[string]any)["storage_key"]; got != storageKey {
-		t.Fatal("subscription storage key was not preserved in the mounted Salix config")
-	}
-	want := "ecto://comma:secret@127.0.0.1/comma"
-	if got := config["comma"].(map[string]any)["database"].(map[string]any)["url"]; got != want {
-		t.Fatalf("comma database URL = %q, want %q", got, want)
-	}
-	// Salix control metadata shares the BridgeForTeams/Comma physical database;
-	// a serving node without this key refuses to boot, so the bundle must
-	// always carry it (docs/storage-search.md).
-	if got := config["salix"].(map[string]any)["database"].(map[string]any)["url"]; got != want {
-		t.Fatalf("salix database URL = %q, want %q", got, want)
-	}
-	wantBilling := "ecto://billing:secret@127.0.0.1/billing"
-	if got := config["billing"].(map[string]any)["database"].(map[string]any)["url"]; got != wantBilling {
-		t.Fatalf("billing database URL = %q, want %q", got, wantBilling)
-	}
-	if got := config["comma"].(map[string]any)["auth"].(map[string]any)["secret"]; got != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
-		t.Fatalf("comma auth config was not preserved: %q", got)
-	}
-	if got := config["comma"].(map[string]any)["auth"].(map[string]any)["redis_url"]; got != "redis://10.0.0.2:6379/0" {
-		t.Fatalf("comma auth Redis URL = %q", got)
-	}
-	if redisURL != "redis://10.0.0.2:6379/0" {
-		t.Fatalf("comma REDIS_URL = %q", redisURL)
-	}
-	if _, ok := bundle.Replacements["COMMA_LEGACY_PRODUCT_REPLICAS"]; ok {
-		t.Fatal("bundle retained legacy product replica transition control")
-	}
-	if _, ok := bundle.Replacements["COMMA_PRODUCT_SERVING_OWNER"]; ok {
-		t.Fatal("bundle retained product serving owner transition control")
-	}
-	if got := bundle.Replacements["COMMA_WEB_COOKIE_ORIGIN"]; got != "https://app-staging.comma.surf" {
-		t.Fatalf("COMMA_WEB_COOKIE_ORIGIN = %q", got)
-	}
-	if got := bundle.Replacements["COMMA_ADMIN_COOKIE_ORIGIN"]; got != "https://admin-staging.comma.surf" {
-		t.Fatalf("COMMA_ADMIN_COOKIE_ORIGIN = %q", got)
-	}
+		if configBody == "" {
+			t.Fatal("release bundle omitted salix-config")
+		}
+		var config map[string]any
+		if err := json.Unmarshal([]byte(configBody), &config); err != nil {
+			t.Fatal(err)
+		}
+		if got := config["subscription_proxy"].(map[string]any)["storage_key"]; got != storageKey {
+			t.Fatal("subscription storage key was not preserved in the mounted Salix config")
+		}
+		want := "ecto://comma:secret@127.0.0.1/comma"
+		if got := config["comma"].(map[string]any)["database"].(map[string]any)["url"]; got != want {
+			t.Fatalf("comma database URL = %q, want %q", got, want)
+		}
+		// Salix control metadata shares the BridgeForTeams/Comma physical database;
+		// a serving node without this key refuses to boot, so the bundle must
+		// always carry it (docs/storage-search.md).
+		if got := config["salix"].(map[string]any)["database"].(map[string]any)["url"]; got != want {
+			t.Fatalf("salix database URL = %q, want %q", got, want)
+		}
+		wantBilling := "ecto://billing:secret@127.0.0.1/billing"
+		if got := config["billing"].(map[string]any)["database"].(map[string]any)["url"]; got != wantBilling {
+			t.Fatalf("billing database URL = %q, want %q", got, wantBilling)
+		}
+		if got := config["comma"].(map[string]any)["auth"].(map[string]any)["secret"]; got != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+			t.Fatalf("comma auth config was not preserved: %q", got)
+		}
+		if got := config["comma"].(map[string]any)["auth"].(map[string]any)["redis_url"]; got != "redis://10.0.0.2:6379/0" {
+			t.Fatalf("comma auth Redis URL = %q", got)
+		}
+		if redisURL != "redis://10.0.0.2:6379/0" {
+			t.Fatalf("comma REDIS_URL = %q", redisURL)
+		}
+		if _, ok := bundle.Replacements["COMMA_LEGACY_PRODUCT_REPLICAS"]; ok {
+			t.Fatal("bundle retained legacy product replica transition control")
+		}
+		if _, ok := bundle.Replacements["COMMA_PRODUCT_SERVING_OWNER"]; ok {
+			t.Fatal("bundle retained product serving owner transition control")
+		}
+		if got := bundle.Replacements["COMMA_WEB_COOKIE_ORIGIN"]; got != "https://app-staging.comma.surf" {
+			t.Fatalf("COMMA_WEB_COOKIE_ORIGIN = %q", got)
+		}
+		if got := bundle.Replacements["COMMA_ADMIN_COOKIE_ORIGIN"]; got != "https://admin-staging.comma.surf" {
+			t.Fatalf("COMMA_ADMIN_COOKIE_ORIGIN = %q", got)
+		}
+	})
 }
 
 func TestBuildBundleBindsAgentVMMTrustToSelectedCluster(t *testing.T) {
-	setBundleEnvironment(t)
-	t.Setenv("SALIX_CONFIG_JSON", `{
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
+		t.Setenv("SALIX_CONFIG_JSON", `{
 		"web":{"api_base_url":"https://salix.example","sites_domain":"sites.example"},
 		"email":{"postmark_server_token":"postmark-token"},
 		"comma":{"auth":{"secret":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rate_limit_secret":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"email":{"from":"login@comma.test"}},
 		"bridge_for_teams":{"dashboard":{"public_base_url":"https://teams.example"}},
 		"agent_vmm":{"install_material":{"remote_enrollment":{"gateway_endpoint":"gateway.example:7443","trust_bundle":"stale-config-value"}}}
 	}`)
-	fixture := makeVMMFixture(t)
-	ca := fixture.roots["server"]
-	// Issuance output reaches the next release's actual enrollment consumer.
-	kubectl := &bundleKubectlRunner{encodedCA: []byte(fixture.bundle.Secrets[vmmTLSBundleName].Data["ca.crt"])}
+		fixture := makeVMMFixture(t)
+		ca := fixture.roots["server"]
+		// Issuance output reaches the next release's actual enrollment consumer.
+		kubectl := &bundleKubectlRunner{encodedCA: []byte(fixture.bundle.Secrets[vmmTLSBundleName].Data["ca.crt"])}
 
-	body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-		Environment: "staging",
-		Project:     "project",
-		Cluster:     "cluster",
-		Namespace:   "comma",
-	}, bundleSecretRunner{}, kubectl)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if kubectl.calls != 1 {
-		t.Fatalf("kubectl calls = %d, want 1", kubectl.calls)
-	}
-	config := bundleConfig(t, body)
-	got := nestedString(config, "agent_vmm", "install_material", "remote_enrollment", "trust_bundle")
-	want := base64.StdEncoding.EncodeToString(ca)
-	if got != want {
-		t.Fatal("release config did not use the selected cluster gateway CA")
-	}
+		body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+			Environment: "staging",
+			Project:     "project",
+			Cluster:     "cluster",
+			Namespace:   "comma",
+		}, bundleSecretRunner{}, kubectl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if kubectl.calls != 1 {
+			t.Fatalf("kubectl calls = %d, want 1", kubectl.calls)
+		}
+		config := bundleConfig(t, body)
+		got := nestedString(config, "agent_vmm", "install_material", "remote_enrollment", "trust_bundle")
+		want := base64.StdEncoding.EncodeToString(ca)
+		if got != want {
+			t.Fatal("release config did not use the selected cluster gateway CA")
+		}
+	})
 }
 
 func TestBuildBundleRejectsInvalidClusterAgentVMMCA(t *testing.T) {
-	setBundleEnvironment(t)
-	t.Setenv("SALIX_CONFIG_JSON", `{
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
+		t.Setenv("SALIX_CONFIG_JSON", `{
 		"web":{"api_base_url":"https://salix.example","sites_domain":"sites.example"},
 		"email":{"postmark_server_token":"postmark-token"},
 		"comma":{"auth":{"secret":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rate_limit_secret":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"email":{"from":"login@comma.test"}},
 		"bridge_for_teams":{"dashboard":{"public_base_url":"https://teams.example"}},
 		"agent_vmm":{"install_material":{"remote_enrollment":{"gateway_endpoint":"gateway.example:7443"}}}
 	}`)
-	kubectl := &bundleKubectlRunner{encodedCA: []byte(base64.StdEncoding.EncodeToString([]byte("not a certificate")))}
+		kubectl := &bundleKubectlRunner{encodedCA: []byte(base64.StdEncoding.EncodeToString([]byte("not a certificate")))}
 
-	_, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-		Environment: "staging", Project: "project", Cluster: "cluster", Namespace: "comma",
-	}, bundleSecretRunner{}, kubectl)
-	if err == nil || !strings.Contains(err.Error(), "exactly one PEM certificate") {
-		t.Fatalf("buildBundle() error = %v, want invalid gateway CA rejection", err)
-	}
+		_, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+			Environment: "staging", Project: "project", Cluster: "cluster", Namespace: "comma",
+		}, bundleSecretRunner{}, kubectl)
+		if err == nil || !strings.Contains(err.Error(), "exactly one PEM certificate") {
+			t.Fatalf("buildBundle() error = %v, want invalid gateway CA rejection", err)
+		}
+	})
 }
 
 func TestBuildBundleDropsLegacyNativeTriageReviewConfig(t *testing.T) {
@@ -414,8 +427,9 @@ func TestBuildBundleDropsLegacyNativeTriageReviewConfig(t *testing.T) {
 
 	for _, tc := range legacyValues {
 		t.Run(tc.name, func(t *testing.T) {
-			setBundleEnvironment(t)
-			t.Setenv("SALIX_CONFIG_JSON", `{
+			synctest.Test(t, func(t *testing.T) {
+				setBundleEnvironment(t)
+				t.Setenv("SALIX_CONFIG_JSON", `{
 				"web":{"api_base_url":"https://salix.example","sites_domain":"sites.example"},
 				"email":{"postmark_server_token":"postmark-token"},
 				"comma":{"auth":{"secret":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rate_limit_secret":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"email":{"from":"login@comma.test"}},
@@ -423,51 +437,53 @@ func TestBuildBundleDropsLegacyNativeTriageReviewConfig(t *testing.T) {
 				"im":{"identity_scan_max_concurrency":7,"native_triage_review":`+tc.value+`}
 			}`)
 
-			body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-				Environment: "staging",
-				Project:     "project",
-				Cluster:     "cluster",
-			}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			var bundle release.CandidateBundle
-			if err := json.Unmarshal(body, &bundle); err != nil {
-				t.Fatal(err)
-			}
-
-			var configBody string
-			for _, resource := range bundle.Resources {
-				if strings.HasPrefix(resource.Name, "salix-config-") {
-					configBody = resource.Data["config.json"]
+				body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+					Environment: "staging",
+					Project:     "project",
+					Cluster:     "cluster",
+				}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
-			if configBody == "" {
-				t.Fatal("release bundle removed the salix-config Secret")
-			}
 
-			var config map[string]any
-			if err := json.Unmarshal([]byte(configBody), &config); err != nil {
-				t.Fatal(err)
-			}
-			im, ok := config["im"].(map[string]any)
-			if !ok {
-				t.Fatalf("release bundle removed the im config containing sibling keys: %#v", config["im"])
-			}
-			if _, ok := im["native_triage_review"]; ok {
-				t.Fatalf("release bundle retained retired im.native_triage_review: %#v", im)
-			}
-			if got := im["identity_scan_max_concurrency"]; got != float64(7) {
-				t.Fatalf("release bundle changed im.identity_scan_max_concurrency: %#v", got)
-			}
+				var bundle release.CandidateBundle
+				if err := json.Unmarshal(body, &bundle); err != nil {
+					t.Fatal(err)
+				}
+
+				var configBody string
+				for _, resource := range bundle.Resources {
+					if strings.HasPrefix(resource.Name, "salix-config-") {
+						configBody = resource.Data["config.json"]
+					}
+				}
+				if configBody == "" {
+					t.Fatal("release bundle removed the salix-config Secret")
+				}
+
+				var config map[string]any
+				if err := json.Unmarshal([]byte(configBody), &config); err != nil {
+					t.Fatal(err)
+				}
+				im, ok := config["im"].(map[string]any)
+				if !ok {
+					t.Fatalf("release bundle removed the im config containing sibling keys: %#v", config["im"])
+				}
+				if _, ok := im["native_triage_review"]; ok {
+					t.Fatalf("release bundle retained retired im.native_triage_review: %#v", im)
+				}
+				if got := im["identity_scan_max_concurrency"]; got != float64(7) {
+					t.Fatalf("release bundle changed im.identity_scan_max_concurrency: %#v", got)
+				}
+			})
 		})
 	}
 }
 
 func TestBuildBundleDropsLegacyNativeTriageReviewFromCombinedReleaseConfig(t *testing.T) {
-	setBundleEnvironment(t)
-	t.Setenv("SALIX_CONFIG_JSON", `{
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
+		t.Setenv("SALIX_CONFIG_JSON", `{
 		"web":{"api_base_url":"https://salix.example","sites_domain":"sites.example"},
 		"email":{"postmark_server_token":"postmark-token"},
 		"comma":{"auth":{"secret":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rate_limit_secret":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"email":{"from":"login@comma.test"}},
@@ -475,107 +491,112 @@ func TestBuildBundleDropsLegacyNativeTriageReviewFromCombinedReleaseConfig(t *te
 		"im":{"identity_scan_max_concurrency":7,"native_triage_review":{"engine":"review"}}
 	}`)
 
-	body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-		Environment: "staging",
-		Project:     "project",
-		Cluster:     "cluster",
-		AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: "disabled"},
-	}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var bundle release.CandidateBundle
-	if err := json.Unmarshal(body, &bundle); err != nil {
-		t.Fatal(err)
-	}
-	for _, resource := range bundle.Resources {
-		if !strings.HasPrefix(resource.Name, "comma-release-config-") {
-			continue
-		}
-		var config map[string]any
-		if err := json.Unmarshal([]byte(resource.Data["config.json"]), &config); err != nil {
+		body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+			Environment: "staging",
+			Project:     "project",
+			Cluster:     "cluster",
+			AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: "disabled"},
+		}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
+		if err != nil {
 			t.Fatal(err)
 		}
-		im := config["im"].(map[string]any)
-		if _, ok := im["native_triage_review"]; ok {
-			t.Fatalf("combined release config retained retired im.native_triage_review: %#v", im)
-		}
-		if got := im["identity_scan_max_concurrency"]; got != float64(7) {
-			t.Fatalf("combined release config changed im.identity_scan_max_concurrency: %#v", got)
-		}
-		return
-	}
-	t.Fatal("release bundle omitted the combined comma-release-config Secret")
-}
 
-func TestBuildBundleSelectsAlertRouterAndInjectsDisabledConfig(t *testing.T) {
-	setBundleEnvironment(t)
-	body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-		Environment: "staging", Project: "project", Cluster: "cluster",
-		AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: "disabled"},
-	}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var bundle release.CandidateBundle
-	if err = json.Unmarshal(body, &bundle); err != nil {
-		t.Fatal(err)
-	}
-	if got := bundle.Replacements["COMMA_RELEASE_SUBSYSTEMS"]; got != "salix,bridge_for_teams,comma_product,alert_router" {
-		t.Fatalf("release subsystems = %q", got)
-	}
-	if got := bundle.Replacements["COMMA_ALERT_ROUTER_ENABLED"]; got != "true" {
-		t.Fatalf("Alert Router enabled replacement = %q", got)
-	}
-	configs := map[string]map[string]any{}
-	for _, resource := range bundle.Resources {
-		for _, base := range []string{"salix-config-", "alert-router-config-", "comma-release-config-"} {
-			if !strings.HasPrefix(resource.Name, base) {
+		var bundle release.CandidateBundle
+		if err := json.Unmarshal(body, &bundle); err != nil {
+			t.Fatal(err)
+		}
+		for _, resource := range bundle.Resources {
+			if !strings.HasPrefix(resource.Name, "comma-release-config-") {
 				continue
 			}
 			var config map[string]any
-			if err = json.Unmarshal([]byte(resource.Data["config.json"]), &config); err != nil {
+			if err := json.Unmarshal([]byte(resource.Data["config.json"]), &config); err != nil {
 				t.Fatal(err)
 			}
-			configs[strings.TrimSuffix(base, "-")] = config
+			im := config["im"].(map[string]any)
+			if _, ok := im["native_triage_review"]; ok {
+				t.Fatalf("combined release config retained retired im.native_triage_review: %#v", im)
+			}
+			if got := im["identity_scan_max_concurrency"]; got != float64(7) {
+				t.Fatalf("combined release config changed im.identity_scan_max_concurrency: %#v", got)
+			}
+			return
 		}
-	}
-	if _, ok := configs["salix-config"]["alert_router"]; ok {
-		t.Fatal("core runtime config leaked Alert Router credentials")
-	}
-	if len(configs["alert-router-config"]) != 1 {
-		t.Fatalf("Alert Router runtime config leaked core sections: %#v", configs["alert-router-config"])
-	}
-	router := configs["alert-router-config"]["alert_router"].(map[string]any)
-	if router["mode"] != "disabled" {
-		t.Fatalf("Alert Router mode = %#v", router["mode"])
-	}
-	if got := router["database"].(map[string]any)["url"]; got != "ecto://alert_router:secret@127.0.0.1/alert_router" {
-		t.Fatalf("Alert Router database URL = %q", got)
-	}
-	if got := router["database"].(map[string]any)["pool_size"]; got != float64(1) {
-		t.Fatalf("Alert Router serving pool size = %#v, want 1", got)
-	}
-	if configs["comma-release-config"]["comma"] == nil || configs["comma-release-config"]["alert_router"] == nil {
-		t.Fatalf("ephemeral release config does not contain both subsystem configs: %#v", configs["comma-release-config"])
-	}
-	if bundle.Replacements["SALIX_CONFIG_SECRET_NAME"] == bundle.Replacements["ALERT_ROUTER_CONFIG_SECRET_NAME"] ||
-		bundle.Replacements["SALIX_CONFIG_SECRET_NAME"] == bundle.Replacements["COMMA_RELEASE_CONFIG_SECRET_NAME"] {
-		t.Fatal("resident and release config Secret identities were not isolated")
-	}
+		t.Fatal("release bundle omitted the combined comma-release-config Secret")
+	})
+}
+
+func TestBuildBundleSelectsAlertRouterAndInjectsDisabledConfig(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
+		body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+			Environment: "staging", Project: "project", Cluster: "cluster",
+			AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: "disabled"},
+		}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var bundle release.CandidateBundle
+		if err = json.Unmarshal(body, &bundle); err != nil {
+			t.Fatal(err)
+		}
+		if got := bundle.Replacements["COMMA_RELEASE_SUBSYSTEMS"]; got != "salix,bridge_for_teams,comma_product,alert_router" {
+			t.Fatalf("release subsystems = %q", got)
+		}
+		if got := bundle.Replacements["COMMA_ALERT_ROUTER_ENABLED"]; got != "true" {
+			t.Fatalf("Alert Router enabled replacement = %q", got)
+		}
+		configs := map[string]map[string]any{}
+		for _, resource := range bundle.Resources {
+			for _, base := range []string{"salix-config-", "alert-router-config-", "comma-release-config-"} {
+				if !strings.HasPrefix(resource.Name, base) {
+					continue
+				}
+				var config map[string]any
+				if err = json.Unmarshal([]byte(resource.Data["config.json"]), &config); err != nil {
+					t.Fatal(err)
+				}
+				configs[strings.TrimSuffix(base, "-")] = config
+			}
+		}
+		if _, ok := configs["salix-config"]["alert_router"]; ok {
+			t.Fatal("core runtime config leaked Alert Router credentials")
+		}
+		if len(configs["alert-router-config"]) != 1 {
+			t.Fatalf("Alert Router runtime config leaked core sections: %#v", configs["alert-router-config"])
+		}
+		router := configs["alert-router-config"]["alert_router"].(map[string]any)
+		if router["mode"] != "disabled" {
+			t.Fatalf("Alert Router mode = %#v", router["mode"])
+		}
+		if got := router["database"].(map[string]any)["url"]; got != "ecto://alert_router:secret@127.0.0.1/alert_router" {
+			t.Fatalf("Alert Router database URL = %q", got)
+		}
+		if got := router["database"].(map[string]any)["pool_size"]; got != float64(1) {
+			t.Fatalf("Alert Router serving pool size = %#v, want 1", got)
+		}
+		if configs["comma-release-config"]["comma"] == nil || configs["comma-release-config"]["alert_router"] == nil {
+			t.Fatalf("ephemeral release config does not contain both subsystem configs: %#v", configs["comma-release-config"])
+		}
+		if bundle.Replacements["SALIX_CONFIG_SECRET_NAME"] == bundle.Replacements["ALERT_ROUTER_CONFIG_SECRET_NAME"] ||
+			bundle.Replacements["SALIX_CONFIG_SECRET_NAME"] == bundle.Replacements["COMMA_RELEASE_CONFIG_SECRET_NAME"] {
+			t.Fatal("resident and release config Secret identities were not isolated")
+		}
+	})
 }
 
 func TestBuildBundleRejectsAlertRouterConfigInResidentCoreInput(t *testing.T) {
-	setBundleEnvironment(t)
-	t.Setenv("SALIX_CONFIG_JSON", `{"email":{"postmark_server_token":"postmark-token"},"comma":{"auth":{"secret":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rate_limit_secret":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"email":{"from":"login@comma.test"}},"alert_router":{"slack":{"bot_token":"must-not-reach-core"}}}`)
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
+		t.Setenv("SALIX_CONFIG_JSON", `{"email":{"postmark_server_token":"postmark-token"},"comma":{"auth":{"secret":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rate_limit_secret":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"email":{"from":"login@comma.test"}},"alert_router":{"slack":{"bot_token":"must-not-reach-core"}}}`)
 
-	_, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-		Environment: "staging", Project: "project", Cluster: "cluster",
-	}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
-	if err == nil || !strings.Contains(err.Error(), "must not set reserved alert_router") {
-		t.Fatalf("buildBundle() error = %v, want reserved Alert Router rejection", err)
-	}
+		_, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+			Environment: "staging", Project: "project", Cluster: "cluster",
+		}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
+		if err == nil || !strings.Contains(err.Error(), "must not set reserved alert_router") {
+			t.Fatalf("buildBundle() error = %v, want reserved Alert Router rejection", err)
+		}
+	})
 }
 
 func TestAlertRouterDatabaseIsolationRejectsSharedCoreIdentity(t *testing.T) {
@@ -586,10 +607,12 @@ func TestAlertRouterDatabaseIsolationRejectsSharedCoreIdentity(t *testing.T) {
 		{name: "same credential", router: "postgres://comma:other@db.example/alert_router", want: "distinct database credential"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateAlertRouterDatabaseIsolation(tc.router, "ecto://comma:secret@db.example/comma", "ecto://billing:secret@db.example/billing")
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("validation error = %v, want %q", err, tc.want)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				err := validateAlertRouterDatabaseIsolation(tc.router, "ecto://comma:secret@db.example/comma", "ecto://billing:secret@db.example/billing")
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("validation error = %v, want %q", err, tc.want)
+				}
+			})
 		})
 	}
 	if err := validateAlertRouterDatabaseIsolation("ecto://alert_router:secret@db.example/alert_router", "ecto://comma:secret@db.example/comma", "ecto://billing:secret@db.example/billing"); err != nil {
@@ -598,93 +621,97 @@ func TestAlertRouterDatabaseIsolationRejectsSharedCoreIdentity(t *testing.T) {
 }
 
 func TestAlertRouterShadowConfigPinsXpTest(t *testing.T) {
-	secret := map[string]any{
-		"DATABASE_URL": "ecto://alert_router:secret@db.example/alert_router", "SLACK_BOT_TOKEN": "xoxb-test",
-		"SHADOW_CHANNEL_ID": "C0ALMF2AD70", "GCP_PUSH_AUDIENCE": "https://salix.example/v1/events/gcp",
-		"GCP_PUSH_SERVICE_ACCOUNT_EMAIL": "push@example.iam.gserviceaccount.com",
-		"GRAFANA_WEBHOOK_SECRET":         strings.Repeat("s", 32),
-		"GITHUB_WEBHOOK_SECRET":          strings.Repeat("h", 32),
-		"GCP_PROJECT_STAGING":            "example-staging-project",
-		"GCP_PROJECT_PRODUCTION":         "example-production-project",
-		"GKE_CLUSTER":                    "example-cluster",
-		"RUNTIME_LOG":                    map[string]any{"enabled": true, "bucket": "runtime-logs", "storage_access_key_id": "read-only", "unexpected": "not-exported"},
-	}
-	config, err := alertRouterBundleConfig("shadow", "", secret, "https://salix.example/v1/events/gcp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := config["slack"].(map[string]any)["shadow_channel_id"]; got != "C0ALMF2AD70" {
-		t.Fatalf("shadow channel = %q", got)
-	}
-	if got := config["github_webhook"].(map[string]any)["secret"]; got != strings.Repeat("h", 32) {
-		t.Fatalf("GitHub webhook secret was not isolated in Router config")
-	}
-	if source := config["runtime_log"].(map[string]any); source["bucket"] != "runtime-logs" || source["storage_access_key_id"] != "read-only" || source["unexpected"] != nil {
-		t.Fatalf("runtime source config was not narrowly projected: %#v", source)
-	}
-	if got := config["gcp_projects"].(map[string]any); got["staging"] != "example-staging-project" || got["production"] != "example-production-project" || config["gke_cluster"] != "example-cluster" {
-		t.Fatalf("live project and cluster identifiers were not delivered: %#v", config)
-	}
-	secret["SHADOW_CHANNEL_ID"] = "CNOTXPTEST"
-	if _, err = alertRouterBundleConfig("shadow", "", secret, "https://salix.example/v1/events/gcp"); err == nil || !strings.Contains(err.Error(), "#xp-test") {
-		t.Fatalf("non-xp-test shadow destination was accepted: %v", err)
-	}
-	secret["SHADOW_CHANNEL_ID"] = "C0ALMF2AD70"
-	secret["GCP_PUSH_AUDIENCE"] = "https://wrong.example/v1/events/gcp"
-	if _, err = alertRouterBundleConfig("shadow", "", secret, "https://salix.example/v1/events/gcp"); err == nil || !strings.Contains(err.Error(), "GCP push audience") {
-		t.Fatalf("wrong GCP audience was accepted: %v", err)
-	}
-	secret["GCP_PUSH_AUDIENCE"] = "https://salix.example/v1/events/gcp"
-	delete(secret, "GKE_CLUSTER")
-	if _, err = alertRouterBundleConfig("shadow", "", secret, "https://salix.example/v1/events/gcp"); err == nil || !strings.Contains(err.Error(), "GKE_CLUSTER") {
-		t.Fatalf("missing GKE cluster was accepted: %v", err)
-	}
-	secret["GKE_CLUSTER"] = "example-cluster"
-	secret["GITHUB_WEBHOOK_SECRET"] = "too-short"
-	if _, err = alertRouterBundleConfig("shadow", "", secret, "https://salix.example/v1/events/gcp"); err == nil || !strings.Contains(err.Error(), "GitHub webhook secret") {
-		t.Fatalf("short GitHub webhook secret was accepted: %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		secret := map[string]any{
+			"DATABASE_URL": "ecto://alert_router:secret@db.example/alert_router", "SLACK_BOT_TOKEN": "xoxb-test",
+			"SHADOW_CHANNEL_ID": "C0ALMF2AD70", "GCP_PUSH_AUDIENCE": "https://salix.example/v1/events/gcp",
+			"GCP_PUSH_SERVICE_ACCOUNT_EMAIL": "push@example.iam.gserviceaccount.com",
+			"GRAFANA_WEBHOOK_SECRET":         strings.Repeat("s", 32),
+			"GITHUB_WEBHOOK_SECRET":          strings.Repeat("h", 32),
+			"GCP_PROJECT_STAGING":            "example-staging-project",
+			"GCP_PROJECT_PRODUCTION":         "example-production-project",
+			"GKE_CLUSTER":                    "example-cluster",
+			"RUNTIME_LOG":                    map[string]any{"enabled": true, "bucket": "runtime-logs", "storage_access_key_id": "read-only", "unexpected": "not-exported"},
+		}
+		config, err := alertRouterBundleConfig("shadow", "", secret, "https://salix.example/v1/events/gcp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := config["slack"].(map[string]any)["shadow_channel_id"]; got != "C0ALMF2AD70" {
+			t.Fatalf("shadow channel = %q", got)
+		}
+		if got := config["github_webhook"].(map[string]any)["secret"]; got != strings.Repeat("h", 32) {
+			t.Fatalf("GitHub webhook secret was not isolated in Router config")
+		}
+		if source := config["runtime_log"].(map[string]any); source["bucket"] != "runtime-logs" || source["storage_access_key_id"] != "read-only" || source["unexpected"] != nil {
+			t.Fatalf("runtime source config was not narrowly projected: %#v", source)
+		}
+		if got := config["gcp_projects"].(map[string]any); got["staging"] != "example-staging-project" || got["production"] != "example-production-project" || config["gke_cluster"] != "example-cluster" {
+			t.Fatalf("live project and cluster identifiers were not delivered: %#v", config)
+		}
+		secret["SHADOW_CHANNEL_ID"] = "CNOTXPTEST"
+		if _, err = alertRouterBundleConfig("shadow", "", secret, "https://salix.example/v1/events/gcp"); err == nil || !strings.Contains(err.Error(), "#xp-test") {
+			t.Fatalf("non-xp-test shadow destination was accepted: %v", err)
+		}
+		secret["SHADOW_CHANNEL_ID"] = "C0ALMF2AD70"
+		secret["GCP_PUSH_AUDIENCE"] = "https://wrong.example/v1/events/gcp"
+		if _, err = alertRouterBundleConfig("shadow", "", secret, "https://salix.example/v1/events/gcp"); err == nil || !strings.Contains(err.Error(), "GCP push audience") {
+			t.Fatalf("wrong GCP audience was accepted: %v", err)
+		}
+		secret["GCP_PUSH_AUDIENCE"] = "https://salix.example/v1/events/gcp"
+		delete(secret, "GKE_CLUSTER")
+		if _, err = alertRouterBundleConfig("shadow", "", secret, "https://salix.example/v1/events/gcp"); err == nil || !strings.Contains(err.Error(), "GKE_CLUSTER") {
+			t.Fatalf("missing GKE cluster was accepted: %v", err)
+		}
+		secret["GKE_CLUSTER"] = "example-cluster"
+		secret["GITHUB_WEBHOOK_SECRET"] = "too-short"
+		if _, err = alertRouterBundleConfig("shadow", "", secret, "https://salix.example/v1/events/gcp"); err == nil || !strings.Contains(err.Error(), "GitHub webhook secret") {
+			t.Fatalf("short GitHub webhook secret was accepted: %v", err)
+		}
+	})
 }
 
 func TestBuildBundleInjectsEnvironmentOwnedLiveRouteAndDedicatedBotToken(t *testing.T) {
-	setBundleEnvironment(t)
-	body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-		Environment: "staging",
-		Project:     "project",
-		Cluster:     "cluster",
-		AlertRouter: release.AlertRouterEnvironmentSpec{
-			Enabled:        true,
-			Mode:           "live",
-			SlackChannelID: "C0BJ1699HSN",
-		},
-	}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var bundle release.CandidateBundle
-	if err = json.Unmarshal(body, &bundle); err != nil {
-		t.Fatal(err)
-	}
-	for _, resource := range bundle.Resources {
-		if !strings.HasPrefix(resource.Name, "alert-router-config-") {
-			continue
-		}
-		var config map[string]any
-		if err = json.Unmarshal([]byte(resource.Data["config.json"]), &config); err != nil {
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
+		body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+			Environment: "staging",
+			Project:     "project",
+			Cluster:     "cluster",
+			AlertRouter: release.AlertRouterEnvironmentSpec{
+				Enabled:        true,
+				Mode:           "live",
+				SlackChannelID: "C0BJ1699HSN",
+			},
+		}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
+		if err != nil {
 			t.Fatal(err)
 		}
-		router := config["alert_router"].(map[string]any)
-		if router["mode"] != "live" {
-			t.Fatalf("Alert Router mode = %#v", router["mode"])
+
+		var bundle release.CandidateBundle
+		if err = json.Unmarshal(body, &bundle); err != nil {
+			t.Fatal(err)
 		}
-		slack := router["slack"].(map[string]any)
-		if slack["bot_token"] != "xoxb-test" || slack["live_channel_id"] != "C0BJ1699HSN" {
-			t.Fatalf("live Slack config = %#v", slack)
+		for _, resource := range bundle.Resources {
+			if !strings.HasPrefix(resource.Name, "alert-router-config-") {
+				continue
+			}
+			var config map[string]any
+			if err = json.Unmarshal([]byte(resource.Data["config.json"]), &config); err != nil {
+				t.Fatal(err)
+			}
+			router := config["alert_router"].(map[string]any)
+			if router["mode"] != "live" {
+				t.Fatalf("Alert Router mode = %#v", router["mode"])
+			}
+			slack := router["slack"].(map[string]any)
+			if slack["bot_token"] != "xoxb-test" || slack["live_channel_id"] != "C0BJ1699HSN" {
+				t.Fatalf("live Slack config = %#v", slack)
+			}
+			return
 		}
-		return
-	}
-	t.Fatal("release bundle omitted Alert Router config")
+		t.Fatal("release bundle omitted Alert Router config")
+	})
 }
 
 func TestBuildBundleProjectsPostHogOnlyIntoRouterConfigs(t *testing.T) {
@@ -702,75 +729,79 @@ func TestBuildBundleProjectsPostHogOnlyIntoRouterConfigs(t *testing.T) {
 			{name: "malformed", source: map[string]any{"secret": map[string]any{}, "project_id": []any{"597221"}, "origin": false, "environment": 1}, projected: map[string]any{}},
 		} {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
-				setBundleEnvironment(t)
-				runner := bundleSecretRunner{posthog: tc.source}
-				body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-					Environment: "staging", Project: "project", Cluster: "cluster",
-					AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: mode, SlackChannelID: "C0BJ1699HSN"},
-				}, runner, unexpectedBundleKubectlRunner{})
-				if err != nil {
-					t.Fatal(err)
-				}
-				var bundle release.CandidateBundle
-				if err := json.Unmarshal(body, &bundle); err != nil {
-					t.Fatal(err)
-				}
-				seen := 0
-				for _, resource := range bundle.Resources {
-					configBody, ok := resource.Data["config.json"]
-					if !ok {
-						continue
-					}
-					var config map[string]any
-					if err := json.Unmarshal([]byte(configBody), &config); err != nil {
+				synctest.Test(t, func(t *testing.T) {
+					setBundleEnvironment(t)
+					runner := bundleSecretRunner{posthog: tc.source}
+					body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+						Environment: "staging", Project: "project", Cluster: "cluster",
+						AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: mode, SlackChannelID: "C0BJ1699HSN"},
+					}, runner, unexpectedBundleKubectlRunner{})
+					if err != nil {
 						t.Fatal(err)
 					}
-					if strings.HasPrefix(resource.Name, "salix-config-") {
-						if config["alert_router"] != nil || strings.Contains(configBody, want["secret"].(string)) {
-							t.Fatal("PostHog server configuration reached resident core config")
+					var bundle release.CandidateBundle
+					if err := json.Unmarshal(body, &bundle); err != nil {
+						t.Fatal(err)
+					}
+					seen := 0
+					for _, resource := range bundle.Resources {
+						configBody, ok := resource.Data["config.json"]
+						if !ok {
+							continue
 						}
-						continue
-					}
-					router, ok := config["alert_router"].(map[string]any)
-					if !ok {
-						continue
-					}
-					seen++
-					if tc.source != nil && mode != "disabled" {
-						if !reflect.DeepEqual(router["posthog_webhook"], tc.projected) {
-							t.Fatal("release bundle dropped or widened PostHog webhook configuration")
+						var config map[string]any
+						if err := json.Unmarshal([]byte(configBody), &config); err != nil {
+							t.Fatal(err)
 						}
-					} else if router["posthog_webhook"] != nil {
-						t.Fatal("unconfigured or disabled Router gained a PostHog source")
+						if strings.HasPrefix(resource.Name, "salix-config-") {
+							if config["alert_router"] != nil || strings.Contains(configBody, want["secret"].(string)) {
+								t.Fatal("PostHog server configuration reached resident core config")
+							}
+							continue
+						}
+						router, ok := config["alert_router"].(map[string]any)
+						if !ok {
+							continue
+						}
+						seen++
+						if tc.source != nil && mode != "disabled" {
+							if !reflect.DeepEqual(router["posthog_webhook"], tc.projected) {
+								t.Fatal("release bundle dropped or widened PostHog webhook configuration")
+							}
+						} else if router["posthog_webhook"] != nil {
+							t.Fatal("unconfigured or disabled Router gained a PostHog source")
+						}
 					}
-				}
-				if seen != 2 {
-					t.Fatalf("got %d Router configs, want dedicated and migration configs", seen)
-				}
+					if seen != 2 {
+						t.Fatalf("got %d Router configs, want dedicated and migration configs", seen)
+					}
+				})
 			})
 		}
 	}
 }
 
 func TestAlertRouterDesiredStateRejectsUnsafeLiveSelection(t *testing.T) {
-	for _, spec := range []release.EnvironmentSpec{
-		{
-			Environment: "production",
-			AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: "live", SlackChannelID: "C0BJ1699HSN"},
-		},
-		{
-			Environment: "staging",
-			AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: false, Mode: "live", SlackChannelID: "C0BJ1699HSN"},
-		},
-		{
-			Environment: "staging",
-			AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: "live", SlackChannelID: "GPRIVATE"},
-		},
-	} {
-		if _, _, _, err := alertRouterDesiredState(spec); err == nil {
-			t.Fatalf("unsafe Alert Router desired state was accepted: %#v", spec.AlertRouter)
+	synctest.Test(t, func(t *testing.T) {
+		for _, spec := range []release.EnvironmentSpec{
+			{
+				Environment: "production",
+				AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: "live", SlackChannelID: "C0BJ1699HSN"},
+			},
+			{
+				Environment: "staging",
+				AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: false, Mode: "live", SlackChannelID: "C0BJ1699HSN"},
+			},
+			{
+				Environment: "staging",
+				AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: "live", SlackChannelID: "GPRIVATE"},
+			},
+		} {
+			if _, _, _, err := alertRouterDesiredState(spec); err == nil {
+				t.Fatalf("unsafe Alert Router desired state was accepted: %#v", spec.AlertRouter)
+			}
 		}
-	}
+	})
 }
 
 func TestCommaCookieOriginsMatchEffectiveRuntimeConfiguration(t *testing.T) {
@@ -865,125 +896,90 @@ func TestCommaCookieOriginsMatchEffectiveRuntimeConfiguration(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := tc.origin(tc.config, tc.environment)
-			if tc.wantErr == "" {
-				if err != nil || got != tc.want {
-					t.Fatalf("cookie origin = %q, %v; want %q", got, err, tc.want)
+			synctest.Test(t, func(t *testing.T) {
+				got, err := tc.origin(tc.config, tc.environment)
+				if tc.wantErr == "" {
+					if err != nil || got != tc.want {
+						t.Fatalf("cookie origin = %q, %v; want %q", got, err, tc.want)
+					}
+					return
 				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("cookie origin error = %v; want %q", err, tc.wantErr)
-			}
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("cookie origin error = %v; want %q", err, tc.wantErr)
+				}
+			})
 		})
 	}
 }
 
 func TestBuildBundleInjectsOauthIdPKEKWhenSpecEnabled(t *testing.T) {
-	setBundleEnvironment(t)
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
 
-	// Sticky-enablement regression: enablement is environment-spec state,
-	// so two successive ordinary releases (no special inputs anywhere)
-	// both carry the KEK — a later normal release can no longer silently
-	// remove it. Decommissioning requires editing the spec file.
-	for i := 0; i < 2; i++ {
-		commaSecrets, err := buildWithIdPSecret(t, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := commaSecrets["COMMA_OAUTH_IDP_KEK"]; got != testIdPKEK {
-			t.Fatalf("release %d: COMMA_OAUTH_IDP_KEK = %q", i, got)
-		}
-		// Nothing else IdP-related flows through the release: key pairs
-		// live in the shared database table.
-		for key := range commaSecrets {
-			if strings.HasPrefix(key, "COMMA_OAUTH_IDP_") && key != "COMMA_OAUTH_IDP_KEK" {
-				t.Fatalf("release %d: unexpected IdP field %s in comma-secrets", i, key)
+		// Sticky-enablement regression: enablement is environment-spec state,
+		// so two successive ordinary releases (no special inputs anywhere)
+		// both carry the KEK — a later normal release can no longer silently
+		// remove it. Decommissioning requires editing the spec file.
+		for i := 0; i < 2; i++ {
+			commaSecrets, err := buildWithIdPSecret(t, nil)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-	}
-}
-
-func TestBuildBundleEnablesSSHWithoutExtraSecrets(t *testing.T) {
-	setBundleEnvironment(t)
-	spec := release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp", Environment: "staging", Project: "project", Cluster: "cluster", SSHEnabled: true}
-	if _, err := buildBundle(context.Background(), spec, bundleSecretRunner{}, unexpectedBundleKubectlRunner{}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestBuildBundleRejectsBadKEK(t *testing.T) {
-	setBundleEnvironment(t)
-
-	cases := []struct {
-		name   string
-		secret map[string]any
-		want   string
-	}{
-		{"missing KEK", map[string]any{}, "KEK_BASE64"},
-		{"not base64", map[string]any{"KEK_BASE64": "not-base64!!"}, "32 bytes"},
-		{"wrong length", map[string]any{"KEK_BASE64": base64.StdEncoding.EncodeToString([]byte("short"))}, "32 bytes"},
-	}
-	for _, c := range cases {
-		if _, err := buildWithIdPSecret(t, c.secret); err == nil || !strings.Contains(err.Error(), c.want) {
-			t.Errorf("%s: expected error containing %q, got %v", c.name, c.want, err)
-		}
-	}
-}
-
-func TestBuildBundleOmitsOauthIdPFieldsWhenSpecDisabled(t *testing.T) {
-	setBundleEnvironment(t)
-
-	for _, state := range []string{"", "disabled"} {
-		body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-			Environment: "staging",
-			Project:     "project",
-			Cluster:     "cluster",
-			OauthIdp:    state,
-		}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		var bundle release.CandidateBundle
-		if err := json.Unmarshal(body, &bundle); err != nil {
-			t.Fatal(err)
-		}
-		for _, resource := range bundle.Resources {
-			if strings.HasPrefix(resource.Name, "comma-secrets-") {
-				for key := range resource.Data {
-					if strings.HasPrefix(key, "COMMA_OAUTH_IDP_") {
-						t.Fatalf("disabled bundle leaked %s into comma-secrets", key)
-					}
+			if got := commaSecrets["COMMA_OAUTH_IDP_KEK"]; got != testIdPKEK {
+				t.Fatalf("release %d: COMMA_OAUTH_IDP_KEK = %q", i, got)
+			}
+			// Nothing else IdP-related flows through the release: key pairs
+			// live in the shared database table.
+			for key := range commaSecrets {
+				if strings.HasPrefix(key, "COMMA_OAUTH_IDP_") && key != "COMMA_OAUTH_IDP_KEK" {
+					t.Fatalf("release %d: unexpected IdP field %s in comma-secrets", i, key)
 				}
 			}
 		}
-	}
+	})
 }
 
-func TestBuildBundleRejectsInvalidOauthIdPState(t *testing.T) {
-	setBundleEnvironment(t)
-	_, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-		Environment: "staging",
-		Project:     "project",
-		Cluster:     "cluster",
-		OauthIdp:    "true",
-	}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
-	if err == nil || !strings.Contains(err.Error(), `oauthIdp must be`) {
-		t.Fatalf("expected invalid-state error, got %v", err)
-	}
+func TestBuildBundleEnablesSSHWithoutExtraSecrets(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
+		spec := release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp", Environment: "staging", Project: "project", Cluster: "cluster", SSHEnabled: true}
+		if _, err := buildBundle(context.Background(), spec, bundleSecretRunner{}, unexpectedBundleKubectlRunner{}); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
-func TestBuildBundleProjectsSourcedContextExecutorIntent(t *testing.T) {
-	for _, enabled := range []bool{true, false} {
-		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
-			setBundleEnvironment(t)
-			t.Setenv("SALIX_CONFIG_JSON", fmt.Sprintf(`{"web":{"api_base_url":"https://salix.example","sites_domain":"sites.example"},"email":{"postmark_server_token":"postmark-token"},"comma":{"auth":{"secret":"%s","rate_limit_secret":"%s"},"email":{"from":"login@comma.test"}},"bridge_for_teams":{"dashboard":{"public_base_url":"https://teams.example"},"sourced_context":{"background_executor":{"enabled":%t}}}}`, strings.Repeat("a", 32), strings.Repeat("b", 32), enabled))
+func TestBuildBundleRejectsBadKEK(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
 
+		cases := []struct {
+			name   string
+			secret map[string]any
+			want   string
+		}{
+			{"missing KEK", map[string]any{}, "KEK_BASE64"},
+			{"not base64", map[string]any{"KEK_BASE64": "not-base64!!"}, "32 bytes"},
+			{"wrong length", map[string]any{"KEK_BASE64": base64.StdEncoding.EncodeToString([]byte("short"))}, "32 bytes"},
+		}
+		for _, c := range cases {
+			if _, err := buildWithIdPSecret(t, c.secret); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("%s: expected error containing %q, got %v", c.name, c.want, err)
+			}
+		}
+	})
+}
+
+func TestBuildBundleOmitsOauthIdPFieldsWhenSpecDisabled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
+
+		for _, state := range []string{"", "disabled"} {
 			body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
 				Environment: "staging",
 				Project:     "project",
 				Cluster:     "cluster",
+				OauthIdp:    state,
 			}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
 			if err != nil {
 				t.Fatal(err)
@@ -993,74 +989,125 @@ func TestBuildBundleProjectsSourcedContextExecutorIntent(t *testing.T) {
 			if err := json.Unmarshal(body, &bundle); err != nil {
 				t.Fatal(err)
 			}
-
-			var config map[string]any
 			for _, resource := range bundle.Resources {
-				if strings.HasPrefix(resource.Name, "salix-config-") {
-					if err := json.Unmarshal([]byte(resource.Data["config.json"]), &config); err != nil {
-						t.Fatal(err)
+				if strings.HasPrefix(resource.Name, "comma-secrets-") {
+					for key := range resource.Data {
+						if strings.HasPrefix(key, "COMMA_OAUTH_IDP_") {
+							t.Fatalf("disabled bundle leaked %s into comma-secrets", key)
+						}
 					}
 				}
 			}
-			if config == nil {
-				t.Fatal("release bundle omitted salix-config")
-			}
+		}
+	})
+}
 
-			got := config["bridge_for_teams"].(map[string]any)["sourced_context"].(map[string]any)["background_executor"].(map[string]any)["enabled"]
-			if got != enabled {
-				t.Fatalf("background executor enabled = %v, want %v", got, enabled)
-			}
+func TestBuildBundleRejectsInvalidOauthIdPState(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
+		_, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+			Environment: "staging",
+			Project:     "project",
+			Cluster:     "cluster",
+			OauthIdp:    "true",
+		}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
+		if err == nil || !strings.Contains(err.Error(), `oauthIdp must be`) {
+			t.Fatalf("expected invalid-state error, got %v", err)
+		}
+	})
+}
+
+func TestBuildBundleProjectsSourcedContextExecutorIntent(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				setBundleEnvironment(t)
+				t.Setenv("SALIX_CONFIG_JSON", fmt.Sprintf(`{"web":{"api_base_url":"https://salix.example","sites_domain":"sites.example"},"email":{"postmark_server_token":"postmark-token"},"comma":{"auth":{"secret":"%s","rate_limit_secret":"%s"},"email":{"from":"login@comma.test"}},"bridge_for_teams":{"dashboard":{"public_base_url":"https://teams.example"},"sourced_context":{"background_executor":{"enabled":%t}}}}`, strings.Repeat("a", 32), strings.Repeat("b", 32), enabled))
+
+				body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+					Environment: "staging",
+					Project:     "project",
+					Cluster:     "cluster",
+				}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				var bundle release.CandidateBundle
+				if err := json.Unmarshal(body, &bundle); err != nil {
+					t.Fatal(err)
+				}
+
+				var config map[string]any
+				for _, resource := range bundle.Resources {
+					if strings.HasPrefix(resource.Name, "salix-config-") {
+						if err := json.Unmarshal([]byte(resource.Data["config.json"]), &config); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if config == nil {
+					t.Fatal("release bundle omitted salix-config")
+				}
+
+				got := config["bridge_for_teams"].(map[string]any)["sourced_context"].(map[string]any)["background_executor"].(map[string]any)["enabled"]
+				if got != enabled {
+					t.Fatalf("background executor enabled = %v, want %v", got, enabled)
+				}
+			})
 		})
 	}
 }
 
 func TestBuildBundleDoesNotOverrideConfigFromRetiredWorkflowVariables(t *testing.T) {
-	setBundleEnvironment(t)
-	t.Setenv("BFT_CLI_ARTIFACT_BASE_URL", "https://wrong.example/bft-cli")
-	t.Setenv("BFT_CLI_RELEASE_ID", "wrong-release")
-	t.Setenv("BFT_SOURCED_CONTEXT_EXECUTOR_ENABLED", "true")
-	t.Setenv("COMMA_GOOGLE_WEB_CLIENT_ID", "wrong-web-client")
-	t.Setenv("COMMA_GOOGLE_ELECTRON_CLIENT_ID", "wrong-electron-client")
-	t.Setenv("SALIX_HOST", "wrong-salix.example")
-	t.Setenv("SALIX_SITES_DOMAIN", "wrong-sites.example")
-	t.Setenv("BRIDGE_HOST", "wrong-teams.example")
-	t.Setenv("BRIDGE_PUBLIC_BASE_URL", "https://wrong-teams.example")
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
+		t.Setenv("BFT_CLI_ARTIFACT_BASE_URL", "https://wrong.example/bft-cli")
+		t.Setenv("BFT_CLI_RELEASE_ID", "wrong-release")
+		t.Setenv("BFT_SOURCED_CONTEXT_EXECUTOR_ENABLED", "true")
+		t.Setenv("COMMA_GOOGLE_WEB_CLIENT_ID", "wrong-web-client")
+		t.Setenv("COMMA_GOOGLE_ELECTRON_CLIENT_ID", "wrong-electron-client")
+		t.Setenv("SALIX_HOST", "wrong-salix.example")
+		t.Setenv("SALIX_SITES_DOMAIN", "wrong-sites.example")
+		t.Setenv("BRIDGE_HOST", "wrong-teams.example")
+		t.Setenv("BRIDGE_PUBLIC_BASE_URL", "https://wrong-teams.example")
 
-	body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-		Environment: "staging",
-		Project:     "project",
-		Cluster:     "cluster",
-	}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	config := bundleConfig(t, body)
-	bft := config["bridge_for_teams"].(map[string]any)
-	if bft["bft_cli"].(map[string]any)["release_id"] != "config-release" {
-		t.Fatalf("workflow variable overrode config-owned BFT CLI: %#v", bft["bft_cli"])
-	}
-	if bft["sourced_context"].(map[string]any)["background_executor"].(map[string]any)["enabled"] != false {
-		t.Fatalf("workflow variable overrode config-owned executor intent")
-	}
-	google := config["comma"].(map[string]any)["google_auth"].(map[string]any)
-	if google["web_client_id"] != "config-web-client" || google["electron_client_id"] != "config-electron-client" {
-		t.Fatalf("workflow variable overrode config-owned Google clients: %#v", google)
-	}
-	var bundle release.CandidateBundle
-	if err := json.Unmarshal(body, &bundle); err != nil {
-		t.Fatal(err)
-	}
-	wantReplacements := map[string]string{
-		"SALIX_HOST":         "salix.example",
-		"SALIX_SITES_DOMAIN": "sites.example",
-		"BRIDGE_HOST":        "teams.example",
-	}
-	for name, want := range wantReplacements {
-		if got := bundle.Replacements[name]; got != want {
-			t.Fatalf("%s = %q, want config-owned %q", name, got, want)
+		body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+			Environment: "staging",
+			Project:     "project",
+			Cluster:     "cluster",
+		}, bundleSecretRunner{}, unexpectedBundleKubectlRunner{})
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
+
+		config := bundleConfig(t, body)
+		bft := config["bridge_for_teams"].(map[string]any)
+		if bft["bft_cli"].(map[string]any)["release_id"] != "config-release" {
+			t.Fatalf("workflow variable overrode config-owned BFT CLI: %#v", bft["bft_cli"])
+		}
+		if bft["sourced_context"].(map[string]any)["background_executor"].(map[string]any)["enabled"] != false {
+			t.Fatalf("workflow variable overrode config-owned executor intent")
+		}
+		google := config["comma"].(map[string]any)["google_auth"].(map[string]any)
+		if google["web_client_id"] != "config-web-client" || google["electron_client_id"] != "config-electron-client" {
+			t.Fatalf("workflow variable overrode config-owned Google clients: %#v", google)
+		}
+		var bundle release.CandidateBundle
+		if err := json.Unmarshal(body, &bundle); err != nil {
+			t.Fatal(err)
+		}
+		wantReplacements := map[string]string{
+			"SALIX_HOST":         "salix.example",
+			"SALIX_SITES_DOMAIN": "sites.example",
+			"BRIDGE_HOST":        "teams.example",
+		}
+		for name, want := range wantReplacements {
+			if got := bundle.Replacements[name]; got != want {
+				t.Fatalf("%s = %q, want config-owned %q", name, got, want)
+			}
+		}
+	})
 }
 
 func setBundleEnvironment(t *testing.T) {
@@ -1085,48 +1132,97 @@ func setBundleEnvironment(t *testing.T) {
 }
 
 func TestBuildBundleKeepsSlackProgressCredentialsInRouter(t *testing.T) {
-	setBundleEnvironment(t)
-	runner := bundleSecretRunner{slackProgress: map[string]any{
-		"SLACK_SIGNING_SECRET": "only-router-signing-secret", "SLACK_TEAM_ID": "TTEST", "SLACK_APP_ID": "ATEST", "SLACK_INVESTIGATOR_BOT_ID": "BINVESTIGATOR", "UNRELATED": "must-not-copy",
-	}}
-	body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
-		Environment: "staging", Project: "project", Cluster: "cluster",
-		AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: "live", SlackChannelID: "C0BJ1699HSN"},
-	}, runner, unexpectedBundleKubectlRunner{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var bundle release.CandidateBundle
-	if err := json.Unmarshal(body, &bundle); err != nil {
-		t.Fatal(err)
-	}
-	seen := 0
-	for _, resource := range bundle.Resources {
-		configBody, ok := resource.Data["config.json"]
-		if !ok {
-			continue
-		}
-		var config map[string]any
-		if err := json.Unmarshal([]byte(configBody), &config); err != nil {
+	synctest.Test(t, func(t *testing.T) {
+		setBundleEnvironment(t)
+		runner := bundleSecretRunner{slackProgress: map[string]any{
+			"SLACK_SIGNING_SECRET": "only-router-signing-secret", "SLACK_TEAM_ID": "TTEST", "SLACK_APP_ID": "ATEST", "SLACK_INVESTIGATOR_BOT_ID": "BINVESTIGATOR", "UNRELATED": "must-not-copy",
+		}}
+		body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+			Environment: "staging", Project: "project", Cluster: "cluster",
+			AlertRouter: release.AlertRouterEnvironmentSpec{Enabled: true, Mode: "live", SlackChannelID: "C0BJ1699HSN"},
+		}, runner, unexpectedBundleKubectlRunner{})
+		if err != nil {
 			t.Fatal(err)
 		}
-		router, ok := config["alert_router"].(map[string]any)
-		if !ok {
-			if strings.Contains(configBody, "only-router-signing-secret") {
-				t.Fatal("signing secret reached a non-router config")
+		var bundle release.CandidateBundle
+		if err := json.Unmarshal(body, &bundle); err != nil {
+			t.Fatal(err)
+		}
+		seen := 0
+		for _, resource := range bundle.Resources {
+			configBody, ok := resource.Data["config.json"]
+			if !ok {
+				continue
 			}
-			continue
+			var config map[string]any
+			if err := json.Unmarshal([]byte(configBody), &config); err != nil {
+				t.Fatal(err)
+			}
+			router, ok := config["alert_router"].(map[string]any)
+			if !ok {
+				if strings.Contains(configBody, "only-router-signing-secret") {
+					t.Fatal("signing secret reached a non-router config")
+				}
+				continue
+			}
+			seen++
+			slack := router["slack"].(map[string]any)
+			if slack["signing_secret"] != "only-router-signing-secret" || slack["team_id"] != "TTEST" || slack["app_id"] != "ATEST" || slack["investigator_bot_id"] != "BINVESTIGATOR" {
+				t.Fatal("release bundle omitted progress callback configuration")
+			}
+			if strings.Contains(configBody, "must-not-copy") {
+				t.Fatal("unrelated Slack secret key was copied")
+			}
 		}
-		seen++
-		slack := router["slack"].(map[string]any)
-		if slack["signing_secret"] != "only-router-signing-secret" || slack["team_id"] != "TTEST" || slack["app_id"] != "ATEST" || slack["investigator_bot_id"] != "BINVESTIGATOR" {
-			t.Fatal("release bundle omitted progress callback configuration")
+		if seen != 2 {
+			t.Fatalf("got %d router configs, want serving and migration", seen)
 		}
-		if strings.Contains(configBody, "must-not-copy") {
-			t.Fatal("unrelated Slack secret key was copied")
+	})
+}
+
+func TestCommaBundleSharesClientPostHogProject(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		t.Setenv("COMMA_POSTHOG_KEY", "phc_test_project")
+		t.Setenv("COMMA_POSTHOG_HOST", "https://eu.i.posthog.com")
+		config := map[string]any{"comma": map[string]any{"analytics": map[string]any{
+			"excluded_user_ids": []any{"excluded-user"},
+		}}}
+		setNested(config, "comma", commaBundleConfig("ecto://comma", "redis://localhost"))
+		analytics := config["comma"].(map[string]any)["analytics"]
+		want := map[string]any{"api_key": "phc_test_project", "host": "https://eu.i.posthog.com", "excluded_user_ids": []any{"excluded-user"}}
+		if !reflect.DeepEqual(analytics, want) {
+			t.Fatalf("PostHog project configuration = %#v, want %#v", analytics, want)
 		}
-	}
-	if seen != 2 {
-		t.Fatalf("got %d router configs, want serving and migration", seen)
+	})
+}
+
+func TestBuildBundleAddsScreenStreamTurnKeyFromItsSecrets(t *testing.T) {
+	for name, token := range map[string]string{"both set": "turn-token", "token missing": ""} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				setBundleEnvironment(t)
+				t.Setenv("COMMA_SCREEN_STREAM_TURN_KEY_ID", "turn-key")
+				t.Setenv("COMMA_SCREEN_STREAM_TURN_API_TOKEN", token)
+				fixture := makeVMMFixture(t)
+				kubectl := &bundleKubectlRunner{encodedCA: []byte(fixture.bundle.Secrets[vmmTLSBundleName].Data["ca.crt"])}
+
+				body, err := buildBundle(context.Background(), release.EnvironmentSpec{RedisSecret: "test-redis", OAuthIdpSecret: "test-oauth-idp",
+					Environment: "staging",
+					Project:     "project",
+					Cluster:     "cluster",
+					Namespace:   "comma",
+				}, bundleSecretRunner{}, kubectl)
+				if err != nil {
+					t.Fatal(err)
+				}
+				config := bundleConfig(t, body)
+				if got := nestedString(config, "comma", "screen_stream_turn", "key_id"); (got == "turn-key") != (token != "") {
+					t.Fatalf("screen_stream_turn.key_id = %q with token %q", got, token)
+				}
+				if got := nestedString(config, "comma", "screen_stream_turn", "api_token"); got != token {
+					t.Fatalf("screen_stream_turn.api_token = %q, want %q", got, token)
+				}
+			})
+		})
 	}
 }

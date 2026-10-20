@@ -26,12 +26,16 @@ defmodule SalixSignal.Test.SignalAccount do
   ]
 
   def new(service, aci, opts \\ []) do
-    clock = Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
+    clock = Keyword.get(opts, :clock, fn -> SystemsClock.system_time(:millisecond) end)
     now = clock.()
     device_id = Keyword.get(opts, :device_id, 1)
     identity = Keyword.get_lazy(opts, :identity, fn -> Keys.ec_keypair() end)
-    registration_id = Keyword.get_lazy(opts, :registration_id, fn -> :rand.uniform(16_000) end)
-    profile_key = Keyword.get_lazy(opts, :profile_key, fn -> :crypto.strong_rand_bytes(32) end)
+
+    registration_id =
+      Keyword.get_lazy(opts, :registration_id, fn -> SystemsRuntime.Proc.uniform(16_000) end)
+
+    profile_key =
+      Keyword.get_lazy(opts, :profile_key, fn -> SystemsRuntime.Proc.random_bytes(32) end)
 
     pre_keys = PreKeys.Store.new(identity, now)
 

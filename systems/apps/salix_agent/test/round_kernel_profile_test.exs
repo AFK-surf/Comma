@@ -1,6 +1,8 @@
 Code.require_file("../../../native/verified_kernel/test/support/activation_fixture.exs", __DIR__)
 
 defmodule SalixAgent.RoundKernelProfileTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Profiles the Elixir-to-Lean calls of Session Actor rounds.
 
@@ -22,8 +24,10 @@ defmodule SalixAgent.RoundKernelProfileTest do
     Attach a stack sampler to the BEAM process during the loop.
   - `RKP_HOTLOOP_SECONDS`: the loop time for each label.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  require SystemsClock
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.InternalSessionStore
   alias SalixVerifiedKernel.Test.ActivationFixture, as: Fixture
 
@@ -56,16 +60,16 @@ defmodule SalixAgent.RoundKernelProfileTest do
       end
     end
 
-    def reset, do: :persistent_term.put({__MODULE__, :counter}, :counters.new(1, []))
-    defp counter, do: :persistent_term.get({__MODULE__, :counter})
+    def reset, do: SystemsRuntime.PersistentTerm.put({__MODULE__, :counter}, :counters.new(1, []))
+    defp counter, do: SystemsRuntime.PersistentTerm.get({__MODULE__, :counter})
   end
 
   defmodule Observer do
-    def agent_run(fact), do: send(pid(), {:run, fact})
-    def round_phase(fact), do: send(pid(), {:phase, fact})
+    def agent_run(fact), do: SystemsRuntime.Proc.send(pid(), {:run, fact})
+    def round_phase(fact), do: SystemsRuntime.Proc.send(pid(), {:phase, fact})
     def tool_call(_), do: :ok
     def llm_attempt(_), do: :ok
-    defp pid, do: Application.fetch_env!(:salix_agent, :round_kernel_profile_pid)
+    defp pid, do: SystemsRuntime.fetch_env!(:salix_agent, :round_kernel_profile_pid)
   end
 
   setup do
@@ -76,14 +80,14 @@ defmodule SalixAgent.RoundKernelProfileTest do
       {:salix_store, :s3_backend, SalixStore.S3.Fake},
       {:salix_agent, :llm, ToolRoundLLM},
       {:salix_agent, :agent_observability_mod, Observer},
-      {:salix_agent, :round_kernel_profile_pid, self()},
+      {:salix_agent, :round_kernel_profile_pid, SystemsRuntime.Proc.self()},
       {:salix_agent, :ifc_facts_mod, nil}
     ]
 
     previous =
       Enum.map(changes, fn {app, key, value} ->
-        old = Application.fetch_env(app, key)
-        Application.put_env(app, key, value)
+        old = SystemsRuntime.fetch_env(app, key)
+        SystemsRuntime.put_env(app, key, value)
         {app, key, old}
       end)
 
@@ -93,8 +97,8 @@ defmodule SalixAgent.RoundKernelProfileTest do
       SalixAgent.TestSupport.stop_all_agents()
 
       Enum.each(previous, fn
-        {app, key, {:ok, value}} -> Application.put_env(app, key, value)
-        {app, key, :error} -> Application.delete_env(app, key)
+        {app, key, {:ok, value}} -> SystemsRuntime.put_env(app, key, value)
+        {app, key, :error} -> SystemsRuntime.delete_env(app, key)
       end)
     end)
 
@@ -167,18 +171,18 @@ defmodule SalixAgent.RoundKernelProfileTest do
                  content: "Answer #{source}.",
                  role: "user",
                  session_id: session_id,
-                 created_at: System.system_time(:second)
+                 created_at: SystemsClock.system_time(:second)
                },
                source_message_id: "#{session_id}-#{source}"
              )
 
-    assert_receive {:run, %{status: "completed"}}, 120_000
+    settle_receive({:run, %{status: "completed"}})
     :ok = SalixAgent.TestSupport.await_session_quiet(agent_id, session_id, 60_000)
     flush()
   end
 
   defp flush do
-    receive do
+    SystemsRuntime.Proc.receive do
       {tag, _} when tag in [:run, :phase] -> flush()
     after
       0 -> :ok
@@ -188,7 +192,7 @@ defmodule SalixAgent.RoundKernelProfileTest do
   # ---- capture ----
 
   defp capture(fun) do
-    tracer = spawn_link(fn -> collect([]) end)
+    tracer = SystemsRuntime.Proc.spawn_link(fn -> collect([]) end)
     session = :trace.session_create(:round_kernel_profile, tracer, [])
 
     match = [
@@ -199,20 +203,20 @@ defmodule SalixAgent.RoundKernelProfileTest do
     1 = :trace.function(session, {@native, :invoke_etf, 1}, match, [:local])
     :trace.process(session, :all, true, [:call, :monotonic_timestamp])
 
-    started = System.monotonic_time(:microsecond)
+    started = SystemsClock.monotonic_time(:microsecond)
     fun.()
-    wall_us = System.monotonic_time(:microsecond) - started
+    wall_us = SystemsClock.monotonic_time(:microsecond) - started
 
     true = :trace.session_destroy(session)
-    send(tracer, {:done, self()})
+    SystemsRuntime.Proc.send(tracer, {:done, SystemsRuntime.Proc.self()})
     events = receive(do: ({:events, events} -> events))
     {pair(events), wall_us}
   end
 
   defp collect(acc) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:done, from} ->
-        send(from, {:events, drain(acc)})
+        SystemsRuntime.Proc.send(from, {:events, drain(acc)})
 
       event ->
         collect([event | acc])
@@ -220,7 +224,7 @@ defmodule SalixAgent.RoundKernelProfileTest do
   end
 
   defp drain(acc) do
-    receive do
+    SystemsClock.vreceive do
       event when elem(event, 0) == :trace_ts -> drain([event | acc])
     after
       200 -> Enum.reverse(acc)
@@ -517,13 +521,13 @@ defmodule SalixAgent.RoundKernelProfileTest do
       call = Enum.max_by(calls, & &1.replay_ns)
 
       IO.puts(
-        "HOTLOOP start #{label} #{System.os_time(:millisecond)} (#{div(call.replay_ns, 1000)} us)"
+        "HOTLOOP start #{label} #{SystemsClock.system_time(:millisecond)} (#{div(call.replay_ns, 1000)} us)"
       )
 
-      deadline = System.monotonic_time(:millisecond) + seconds * 1000
+      deadline = SystemsClock.monotonic_time(:millisecond) + seconds * 1000
 
       loop = fn loop, n ->
-        if System.monotonic_time(:millisecond) < deadline do
+        if SystemsClock.monotonic_time(:millisecond) < deadline do
           apply(@native, call.fun, call.args)
           loop.(loop, n + 1)
         else
@@ -532,7 +536,7 @@ defmodule SalixAgent.RoundKernelProfileTest do
       end
 
       runs = loop.(loop, 0)
-      IO.puts("HOTLOOP stop #{label} #{System.os_time(:millisecond)} runs=#{runs}")
+      IO.puts("HOTLOOP stop #{label} #{SystemsClock.system_time(:millisecond)} runs=#{runs}")
     end
   end
 

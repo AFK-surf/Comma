@@ -43,9 +43,19 @@ defmodule SalixSignal.Service.Endpoints do
   @type environment :: :production | :staging
   @type service :: :chat | :storage | :cdn0 | :cdn2 | :cdn3 | :cdsi
 
-  @doc "The host of `service` in `environment`. All services listen on port 443."
+  @doc """
+  The host of `service` in `environment`. All services listen on port 443.
+
+  `config :salix_signal, service_host: HOST` sends every service to `HOST`
+  instead (the test configuration names one that does not resolve).
+  """
   @spec host(environment(), service()) :: String.t()
-  def host(environment, service), do: @hosts |> Map.fetch!(environment) |> Map.fetch!(service)
+  def host(environment, service) do
+    case SystemsRuntime.get_env(:salix_signal, :service_host) do
+      nil -> @hosts |> Map.fetch!(environment) |> Map.fetch!(service)
+      host -> host
+    end
+  end
 
   @doc "DER encodings of the pinned Signal roots A and B."
   @spec pinned_roots() :: [binary()]

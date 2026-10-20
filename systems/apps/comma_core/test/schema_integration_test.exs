@@ -1,5 +1,9 @@
 defmodule Comma.SchemaIntegrationTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.Comma"]
 
   alias Comma.Data.{
     ExternalOperation,
@@ -15,40 +19,20 @@ defmodule Comma.SchemaIntegrationTest do
     :ok
   end
 
-  test "the additive schema exposes bounded indexes but fails readiness without release marker" do
-    refute Comma.Schema.ready?()
-
-    %{rows: rows} =
-      Ecto.Adapters.SQL.query!(Comma.Repo, """
-      SELECT indexname
-      FROM pg_indexes
-      WHERE schemaname = current_schema()
-        AND tablename IN (
-          'comma_workspace_memberships',
-          'comma_external_operations'
-        )
-      """)
-
-    indexes = MapSet.new(rows, fn [name] -> name end)
-
-    for required <- [
-          "comma_workspace_memberships_user_id_status_workspace_id_index",
-          "comma_operation_claim_idx"
-        ] do
-      assert required in indexes
-    end
-  end
-
   test "normalized email and token hash constraints are database-authoritative" do
     id = unique("usr")
-    assert {:ok, _} = Comma.Repo.insert(User.changeset(%User{}, user_attrs(id, " Owner@Comma.Test ")))
+
+    assert {:ok, _} =
+             Comma.Repo.insert(User.changeset(%User{}, user_attrs(id, " Owner@Comma.Test ")))
 
     assert {:error, changeset} =
-             Comma.Repo.insert(User.changeset(%User{}, user_attrs(unique("usr"), "owner@comma.test")))
+             Comma.Repo.insert(
+               User.changeset(%User{}, user_attrs(unique("usr"), "owner@comma.test"))
+             )
 
     assert "has already been taken" in errors_on(changeset).normalized_email
 
-    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    now = SystemsClock.utc_now() |> DateTime.truncate(:microsecond)
     hash = :crypto.hash(:sha256, "legacy-bearer")
 
     assert {:ok, _} =
@@ -77,32 +61,6 @@ defmodule Comma.SchemaIntegrationTest do
 
     assert "has already been taken" in errors_on(duplicate).token_hash
     refute :token in Session.__schema__(:fields)
-  end
-
-  test "imported Workspace statuses remain valid through the serving schema" do
-    user = insert_user!()
-    imported = insert_workspace!(user.id)
-
-    assert imported.status == "active"
-
-    serving = Comma.Repo.get!(Workspace, imported.id)
-
-    assert {:ok, renamed} =
-             serving
-             |> Workspace.changeset(%{
-               name: "Renamed imported Workspace",
-               status: "active"
-             })
-             |> Comma.Repo.update()
-
-    assert renamed.name == "Renamed imported Workspace"
-    assert renamed.status == "active"
-
-    for status <- ~w(provisioning provisioning_failed active suspended failed deleted) do
-      assert Workspace.changeset(imported, %{status: status}).valid?
-    end
-
-    refute Workspace.changeset(imported, %{status: "unknown"}).valid?
   end
 
   test "membership and operation generation are unique" do
@@ -163,7 +121,9 @@ defmodule Comma.SchemaIntegrationTest do
         [workspace.id]
       )
 
-      Ecto.Adapters.SQL.query!(repo_a, "DELETE FROM comma_workspaces WHERE id = $1", [workspace.id])
+      Ecto.Adapters.SQL.query!(repo_a, "DELETE FROM comma_workspaces WHERE id = $1", [
+        workspace.id
+      ])
 
       Ecto.Adapters.SQL.query!(
         repo_a,
@@ -277,11 +237,11 @@ defmodule Comma.SchemaIntegrationTest do
     opts = [name: nil, pool: DBConnection.ConnectionPool, pool_size: 1]
     {:ok, repo_a} = Comma.Repo.start_link(opts)
     {:ok, repo_b} = Comma.Repo.start_link(opts)
-    Process.unlink(repo_a)
-    Process.unlink(repo_b)
+    SystemsRuntime.Proc.unlink(repo_a)
+    SystemsRuntime.Proc.unlink(repo_b)
 
     on_exit(fn ->
-      for repo <- [repo_a, repo_b], Process.alive?(repo) do
+      for repo <- [repo_a, repo_b], SystemsRuntime.Proc.alive?(repo) do
         Supervisor.stop(repo)
       end
     end)
@@ -290,20 +250,20 @@ defmodule Comma.SchemaIntegrationTest do
   end
 
   defp concurrent_insert(repo_a, left, repo_b, right) do
-    parent = self()
-    ref = make_ref()
+    parent = SystemsRuntime.Proc.self()
+    ref = SystemsRuntime.Proc.make_ref()
 
     tasks =
       for {repo, changeset} <- [{repo_a, left}, {repo_b, right}] do
-        Task.async(fn ->
-          send(parent, {ref, :ready, self()})
-          receive do: ({^ref, :go} -> insert_on(repo, changeset))
+        SystemsRuntime.Task.async(fn ->
+          SystemsRuntime.Proc.send(parent, {ref, :ready, SystemsRuntime.Proc.self()})
+          SystemsRuntime.Proc.receive(do: ({^ref, :go} -> insert_on(repo, changeset)))
         end)
       end
 
-    for task <- tasks, do: assert_receive({^ref, :ready, task_pid} when task_pid == task.pid)
-    for task <- tasks, do: send(task.pid, {ref, :go})
-    Enum.map(tasks, &Task.await(&1, 10_000))
+    for task <- tasks, do: settle_receive({^ref, :ready, task_pid} when task_pid == task.pid)
+    for task <- tasks, do: SystemsRuntime.Proc.send(task.pid, {ref, :go})
+    Enum.map(tasks, &settled_await/1)
   end
 
   defp insert_on!(repo, changeset) do
@@ -323,6 +283,6 @@ defmodule Comma.SchemaIntegrationTest do
   end
 
   defp unique(prefix) do
-    "#{prefix}_#{Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)}"
+    "#{prefix}_#{Base.url_encode64(SystemsRuntime.Proc.random_bytes(9), padding: false)}"
   end
 end

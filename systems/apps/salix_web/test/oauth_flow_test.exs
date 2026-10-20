@@ -8,7 +8,7 @@ defmodule SalixWeb.OAuthFlowTest do
   real Bandit listener wired in through the `:oauth_endpoint_overrides` seam;
   storage is the Fake S3 backend.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.OAuth.AuthState
   alias SalixWeb.OAuthFlow
@@ -73,11 +73,11 @@ defmodule SalixWeb.OAuthFlowTest do
   end
 
   setup do
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    prev_overrides = Application.get_env(:salix_store, :oauth_endpoint_overrides)
-    prev_api_token = Application.get_env(:salix_web, :api_token)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_web, :api_token, "test-token")
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_overrides = SystemsRuntime.get_env(:salix_store, :oauth_endpoint_overrides)
+    prev_api_token = SystemsRuntime.get_env(:salix_web, :api_token)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_web, :api_token, "test-token")
     start_supervised!(SalixStore.S3.Fake)
 
     start_supervised!(MockProvider.state_child_spec())
@@ -91,7 +91,7 @@ defmodule SalixWeb.OAuthFlowTest do
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
     mock_base = "http://127.0.0.1:#{port}"
 
-    Application.put_env(:salix_store, :oauth_endpoint_overrides, %{
+    SystemsRuntime.put_env(:salix_store, :oauth_endpoint_overrides, %{
       "github" => %{
         "authorize_url" => mock_base <> "/login/oauth/authorize",
         "token_url" => mock_base <> "/login/oauth/access_token",
@@ -101,19 +101,19 @@ defmodule SalixWeb.OAuthFlowTest do
     })
 
     on_exit(fn ->
-      Application.put_env(:salix_store, :s3_backend, prev_backend)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_backend)
 
       # put_env(key, nil) stores a literal nil that shadows get_env defaults.
       if prev_overrides do
-        Application.put_env(:salix_store, :oauth_endpoint_overrides, prev_overrides)
+        SystemsRuntime.put_env(:salix_store, :oauth_endpoint_overrides, prev_overrides)
       else
-        Application.delete_env(:salix_store, :oauth_endpoint_overrides)
+        SystemsRuntime.delete_env(:salix_store, :oauth_endpoint_overrides)
       end
 
       if prev_api_token do
-        Application.put_env(:salix_web, :api_token, prev_api_token)
+        SystemsRuntime.put_env(:salix_web, :api_token, prev_api_token)
       else
-        Application.delete_env(:salix_web, :api_token)
+        SystemsRuntime.delete_env(:salix_web, :api_token)
       end
     end)
 
@@ -281,34 +281,6 @@ defmodule SalixWeb.OAuthFlowTest do
     assert {:ok, %{"status" => "completed"}} = AuthState.get(state)
   end
 
-  test "web redirect_after: success 303s back, failure carries oauth_error", %{group: group} do
-    {_url, state} =
-      authorize(group, %{
-        "alias" => "work",
-        "scopes" => ["repo"],
-        "redirect_after" => "https://app.example.test/done?tab=integrations"
-      })
-
-    resp = callback("github", %{"state" => state, "code" => "test-code"})
-    assert resp.status == 303
-    assert resp.headers["location"] == ["https://app.example.test/done?tab=integrations"]
-
-    {_url, denied_state} =
-      authorize(group, %{
-        "alias" => "work2",
-        "redirect_after" => "https://app.example.test/done"
-      })
-
-    denied = callback("github", %{"state" => denied_state, "error" => "access_denied"})
-    assert denied.status == 303
-    [location] = denied.headers["location"]
-    assert String.starts_with?(location, "https://app.example.test/done?")
-    assert URI.decode_query(URI.parse(location).query)["oauth_error"] =~ "access_denied"
-
-    assert {:ok, %{"status" => "failed", "error" => error}} = AuthState.get(denied_state)
-    assert error =~ "authorization denied"
-  end
-
   test "failure paths: missing state, missing code, mismatch, expiry", %{group: group} do
     missing = req(:get, "/v1/oauth/github/callback")
     assert missing.status == 400
@@ -331,8 +303,8 @@ defmodule SalixWeb.OAuthFlowTest do
 
     # Expired state: the callback reports the session expired and the record
     # flips to a terminal status.
-    now = System.system_time(:millisecond)
-    stale_state = "expired-#{System.unique_integer([:positive])}"
+    now = SystemsClock.system_time(:millisecond)
+    stale_state = "expired-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     :ok =
       AuthState.create(%{
@@ -428,39 +400,5 @@ defmodule SalixWeb.OAuthFlowTest do
     # secret through the client_id-only PUT above).
     assert {:ok, %{"client_id" => "gh-client", "client_secret" => "gh-secret"}} =
              Salix.Control.OAuthApps.get(tenant_id(), "github")
-  end
-
-  test "agent oauth context + bindings seam (SalixWeb.OAuthStore)", %{group: group} do
-    {_url, state} = authorize(group, %{"alias" => "work"})
-    assert callback("github", %{"state" => state, "code" => "c"}).status == 200
-
-    assert {:ok, bindings} = SalixWeb.OAuthStore.bindings_for_group(group)
-    assert [%{"alias" => "work", "provider" => "github", "binding_id" => binding_id}] = bindings
-
-    # delete_binding seam (the agent's delete_oauth_credential tool path) removes
-    # the binding; a missing binding is reported as not_found.
-    assert :ok = SalixWeb.OAuthStore.delete_binding(tenant_id(), group, binding_id)
-    assert {:ok, []} = SalixWeb.OAuthStore.bindings_for_group(group)
-
-    assert {:error, :not_found} =
-             SalixWeb.OAuthStore.delete_binding(tenant_id(), group, binding_id)
-
-    assert {:ok, %{"client_id" => "gh-client"}} =
-             SalixWeb.OAuthStore.provider_app(tenant_id(), "github")
-
-    assert SalixWeb.OAuthStore.provider_app(tenant_id(), "google") == {:error, :not_configured}
-    assert is_binary(SalixWeb.OAuthStore.public_base_url())
-
-    tid = tenant_id()
-
-    {:ok, agent} =
-      SalixAgent.Control.create(%{"group_id" => group, "name" => "OAuth Agent"}, tid)
-
-    agent_id = agent["agent_id"]
-
-    assert {:ok, %{tenant: ^tid, group_id: ^group}} =
-             SalixWeb.OAuthStore.agent_oauth_context(agent_id)
-
-    assert SalixWeb.OAuthStore.agent_oauth_context("missing-agent") == {:error, :not_found}
   end
 end

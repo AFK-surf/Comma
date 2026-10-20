@@ -6,11 +6,17 @@ release/
 coverage/
 playwright-report/
 test-results/
+e2e/app-shell/records/
+# Written by packages/core/scripts/android-markdown-fixtures.ts.
+apps/android/app/src/test/resources/markdown/trees.json
 pnpm-lock.yaml
 packages/ui/storybook-static/
 packages/ui/src/styles/theme.css
 packages/i18n/project.inlang/
 packages/i18n/src/paraglide/
+apps/android/.gradle/
+apps/android/.kotlin/
+apps/android/**/build/
 apps/electron/.dev-electron/
 apps/electron/native/**/.build/
 apps/electron/native/**/.derived/

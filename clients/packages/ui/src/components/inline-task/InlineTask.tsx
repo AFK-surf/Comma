@@ -16,6 +16,7 @@ import type { TaskArchiveAction } from "../task-workspace/TaskArchiveMenu";
 import { HoverCard } from "../hover-card";
 import {
   TaskSummaryCard,
+  taskNeutralIcon,
   taskStatusIcon,
   type TaskSummaryViewModel,
 } from "../task-workspace";
@@ -103,7 +104,7 @@ export function InlineTask({
         data-testid={dataTestId}
       >
         <span aria-hidden className="comma-inline-task-icon">
-          {taskStatusIcon("backlog")}
+          {taskNeutralIcon()}
         </span>
         <span>{label}</span>
       </span>

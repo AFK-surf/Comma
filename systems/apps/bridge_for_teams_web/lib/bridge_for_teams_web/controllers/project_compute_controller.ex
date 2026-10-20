@@ -37,14 +37,11 @@ defmodule BridgeForTeamsWeb.ProjectComputeController do
       result = managed_auth_projection(result, configure)
 
       result =
-        if Map.has_key?(params, "device_id"),
-          do:
-            Map.put(
-              result,
-              "can_self_configure",
-              ProjectScope.authorize_project_for_conn(conn, project, :write) == :ok
-            ),
-          else: result
+        Map.put(
+          result,
+          "can_self_configure",
+          ProjectScope.authorize_project_for_conn(conn, project, :write) == :ok
+        )
 
       status =
         if operation != :read and result["state"] in ["installing", "revoking", "failed"],
@@ -103,10 +100,6 @@ defmodule BridgeForTeamsWeb.ProjectComputeController do
       operation,
       managed_auth_attrs(operation, params)
     )
-  end
-
-  defp managed_auth_operation(org, project, operation, %{"id" => workload} = params) do
-    Compute.managed_auth(org, project, workload, operation, managed_auth_attrs(operation, params))
   end
 
   def request_agent_vmm_install(conn, params) do
@@ -201,6 +194,15 @@ defmodule BridgeForTeamsWeb.ProjectComputeController do
           %{}
         )
 
+      {:error, :project_runner_bound} ->
+        send_error(
+          conn,
+          409,
+          "project_runner_bound",
+          "This project already has a runner. Revoke its install operation before you choose another runner.",
+          %{}
+        )
+
       {:error, :unavailable} ->
         send_error(conn, 503, "compute_unavailable", "Compute is unavailable.", %{})
 
@@ -239,7 +241,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeController do
       accounts =
         Enum.filter(
           page["accounts"],
-          &managed_auth_compatible?(&1, result["provider"], Map.has_key?(params, "device_id"))
+          &managed_auth_compatible?(&1, result["provider"])
         )
 
       {:ok, Map.merge(result, %{"accounts" => accounts, "accounts_next" => page["next"]})}
@@ -254,21 +256,13 @@ defmodule BridgeForTeamsWeb.ProjectComputeController do
     end
   end
 
-  defp managed_auth_compatible?(account, "claude", true) do
-    managed_auth_compatible?(account, "claude") or
-      (account["credential_kind"] == "subscription_oauth" and account["provider"] == "claude" and
-         account["status"] == "active" and account["disabled"] == false)
-  end
+  defp managed_auth_compatible?(%{"credential_kind" => "subscription_oauth"} = account, provider)
+       when provider in ["codex", "claude"],
+       do:
+         account["provider"] == provider and account["status"] == "active" and
+           account["disabled"] == false
 
-  defp managed_auth_compatible?(account, provider, _device),
-    do: managed_auth_compatible?(account, provider)
-
-  defp managed_auth_compatible?(account, "codex"),
-    do:
-      account["credential_kind"] == "subscription_oauth" and account["provider"] == "codex" and
-        account["status"] == "active" and account["disabled"] == false
-
-  defp managed_auth_compatible?(account, provider) when provider in ["pi", "claude"],
+  defp managed_auth_compatible?(account, "claude" = provider),
     do:
       account["credential_kind"] == "provider_api_key" and account["disabled"] == false and
         provider in (account["compatible_runtimes"] || [])

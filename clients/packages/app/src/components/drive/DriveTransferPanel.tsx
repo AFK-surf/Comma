@@ -2,21 +2,24 @@ import { useCommaMessages } from "@comma/i18n/react";
 import {
   CircleCheckFilledIcon,
   CloudSimpleUploadIcon,
-  cx,
   DownloadIcon,
   ExclamationTriangleIcon,
   FileIcon,
   Folder1Icon,
   LoadingCircleIcon,
-  registerToastObstructionTarget,
-  ScrollArea,
   XIcon,
-} from "@comma/ui";
+} from "@comma/ui/components/icons";
+import { cx } from "@comma/ui/components/utils";
+import { registerToastObstructionTarget } from "@comma/ui/components/toast";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { uiClock } from "@comma/ui/clock";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ShellIconButtonControl } from "../ShellIconButton";
 import { panelTabButton } from "../panelTabButton";
 import { DriveFileName } from "./DriveFileName";
-import type { DriveTransfer, DriveTransferDirection } from "./driveStore";
+import { driveFileTypeLabel, type DriveTransfer } from "./driveStore";
+
+type DriveTransferDirection = DriveTransfer["direction"];
 
 /**
  * The panel shares the bottom-right corner with the toast stack and moves in
@@ -111,6 +114,7 @@ function DriveTransferRow({
   revealActionLabel: string | undefined;
   transfer: DriveTransfer;
 }) {
+  const messages = useCommaMessages();
   return (
     <div
       className="flex w-full items-center gap-sm rounded-md border border-primary p-sm"
@@ -134,7 +138,9 @@ function DriveTransferRow({
         {transfer.status === "error" ? (
           <span className="flex min-w-0 items-center gap-xs">
             <span className="min-w-0 truncate text-sm text-error-primary">
-              {transfer.errorMessage}
+              {transfer.direction === "download"
+                ? messages.file_download_failed_title()
+                : messages.drive_upload_failed_publish()}
             </span>
             <button
               className="inline-flex shrink-0 items-center justify-center rounded-md border border-button-secondary-border bg-button-secondary-bg px-xs py-xxs text-xs font-medium text-button-secondary-fg shadow-xs transition-colors hover:bg-secondary focus:outline-none focus-visible:shadow-focus-gray-shadow-xs"
@@ -146,7 +152,7 @@ function DriveTransferRow({
           </span>
         ) : (
           <span className="min-w-0 truncate text-sm text-quaternary">
-            {transfer.detail}
+            {driveFileTypeLabel(transfer.fileName)}
           </span>
         )}
       </span>
@@ -281,8 +287,8 @@ export function DriveTransferPanel({
       setSettled(false);
       return undefined;
     }
-    const frame = requestAnimationFrame(() => setSettled(true));
-    return () => cancelAnimationFrame(frame);
+    const cancelFrame = uiClock.frame(() => setSettled(true));
+    return () => cancelFrame();
   }, [open]);
   // Reads the live obstruction through `--comma-toast-obstruction-right` set on
   // this element (see `toastObstruction`).

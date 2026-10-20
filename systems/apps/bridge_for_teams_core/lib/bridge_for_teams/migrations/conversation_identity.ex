@@ -324,5 +324,5 @@ defmodule BridgeForTeams.Migrations.ConversationIdentity do
   end
 
   defp increment(stats, key), do: Map.update!(stats, key, &(&1 + 1))
-  defp repos, do: Application.fetch_env!(:bridge_for_teams_core, :ecto_repos)
+  defp repos, do: SystemsRuntime.fetch_env!(:bridge_for_teams_core, :ecto_repos)
 end

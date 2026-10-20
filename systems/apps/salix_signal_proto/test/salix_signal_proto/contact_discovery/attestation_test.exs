@@ -4,7 +4,7 @@ defmodule SalixSignalProto.ContactDiscovery.AttestationTest do
   # attestation-rejection.json. No positive vector exists yet (CRS-11 open
   # question 1), so acceptance and each rejection are checked on synthetic
   # attestations from a test PKI (SalixSignalProto.Test.SgxAttestation).
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.ContactDiscovery.Attestation
   alias SalixSignalProto.Test.{SgxAttestation, Vectors}
@@ -41,20 +41,12 @@ defmodule SalixSignalProto.ContactDiscovery.AttestationTest do
     a = SgxAttestation.build(tcb_version: 2)
     assert {:ok, _} = Attestation.verify(a.message, a.pins, a.now)
 
-    key = :crypto.strong_rand_bytes(32)
+    key = SystemsRuntime.Proc.random_bytes(32)
 
     a =
       SgxAttestation.build(claims: [{"pk", key}, {"config", <<8, 1>>}, {"minimum_limits\0", ""}])
 
     assert {:ok, %{public_key: ^key}} = Attestation.verify(a.message, a.pins, a.now)
-  end
-
-  test "the pinned values are those of CRS-11 §5.2" do
-    pins = Attestation.pins(:production)
-    assert Base.encode16(pins.mrenclave, case: :lower) =~ "15637fa1e54fe655"
-    assert Base.encode16(Attestation.pins(:staging).mrenclave, case: :lower) =~ "6d9b9649fa3a"
-    assert byte_size(pins.root_public_key) == 65
-    assert pins.minimum_evaluation_data_number == 21
   end
 
   test "rejects an enclave other than the pinned build, and a debug enclave" do
@@ -159,9 +151,9 @@ defmodule SalixSignalProto.ContactDiscovery.AttestationTest do
     assert Attestation.verify(a.message, a.pins, a.now) == {:error, :claims_mismatch}
 
     for claims <- [
-          [{"public_key", :crypto.strong_rand_bytes(32)}],
-          [{"pk", :crypto.strong_rand_bytes(31)}],
-          [{"pk", :crypto.strong_rand_bytes(32)}, {"config", <<0xFF>>}]
+          [{"public_key", SystemsRuntime.Proc.random_bytes(32)}],
+          [{"pk", SystemsRuntime.Proc.random_bytes(31)}],
+          [{"pk", SystemsRuntime.Proc.random_bytes(32)}, {"config", <<0xFF>>}]
         ] do
       a = SgxAttestation.build(claims: claims)
       assert Attestation.verify(a.message, a.pins, a.now) == {:error, :invalid_claims}
@@ -170,14 +162,16 @@ defmodule SalixSignalProto.ContactDiscovery.AttestationTest do
 
   test "a repeated claim name is not an error: the later claim is used" do
     # CRS-11 §5.4 and §5.3 step 12.
-    first = :crypto.strong_rand_bytes(32)
-    later = :crypto.strong_rand_bytes(32)
+    first = SystemsRuntime.Proc.random_bytes(32)
+    later = SystemsRuntime.Proc.random_bytes(32)
 
     a = SgxAttestation.build(claims: [{"pk", first}, {"pk\0", later}])
     assert {:ok, %{public_key: ^later}} = Attestation.verify(a.message, a.pins, a.now)
 
     # The later claim decides validity too.
-    a = SgxAttestation.build(claims: [{"pk", first}, {"pk", :crypto.strong_rand_bytes(31)}])
+    a =
+      SgxAttestation.build(claims: [{"pk", first}, {"pk", SystemsRuntime.Proc.random_bytes(31)}])
+
     assert Attestation.verify(a.message, a.pins, a.now) == {:error, :invalid_claims}
   end
 

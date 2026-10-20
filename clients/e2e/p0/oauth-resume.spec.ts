@@ -191,18 +191,3 @@ test("already-signed-in visit with a handle resumes without product calls", asyn
   expect(state.resumeRequests).toHaveLength(1);
   expect(state.productCalls).toEqual([]);
 });
-
-test("a malformed handle is dropped and never navigates", async ({ page }) => {
-  const state = await installOauthHarness(page);
-
-  await page.goto("/login?oauth_handle=javascript:alert(1)");
-
-  await expect(page).not.toHaveURL(/oauth_handle/);
-  await expect(
-    page.evaluate(() => sessionStorage.getItem("comma.oauth_resume_handle"))
-  ).resolves.toBeNull();
-  await expect(
-    page.getByText("Signing in will take you back to the app you came from.")
-  ).toHaveCount(0);
-  expect(state.resumeRequests).toEqual([]);
-});

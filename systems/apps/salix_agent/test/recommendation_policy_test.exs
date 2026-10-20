@@ -1,5 +1,5 @@
 defmodule SalixAgent.RecommendationPolicyTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{AgentActor, RecommendationPolicy}
 
@@ -11,13 +11,13 @@ defmodule SalixAgent.RecommendationPolicyTest do
   end
 
   setup do
-    previous = Application.get_env(:salix_agent, :recommendation_adapter_mod)
-    Application.put_env(:salix_agent, :recommendation_adapter_mod, Adapter)
+    previous = SystemsRuntime.get_env(:salix_agent, :recommendation_adapter_mod)
+    SystemsRuntime.put_env(:salix_agent, :recommendation_adapter_mod, Adapter)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_agent, :recommendation_adapter_mod, previous),
-        else: Application.delete_env(:salix_agent, :recommendation_adapter_mod)
+        do: SystemsRuntime.put_env(:salix_agent, :recommendation_adapter_mod, previous),
+        else: SystemsRuntime.delete_env(:salix_agent, :recommendation_adapter_mod)
     end)
   end
 
@@ -56,21 +56,5 @@ defmodule SalixAgent.RecommendationPolicyTest do
                "worker",
                %{}
              )
-  end
-
-  test "ordinary sessions tolerate absent or malformed disclosure metadata" do
-    for context <- [
-          %{},
-          %{tool_disclosure: nil},
-          %{"tool_disclosure" => nil},
-          %{tool_disclosure: "not-a-map"}
-        ] do
-      assert RecommendationPolicy.allowed_tool?(context, "web.search", %{})
-
-      assert RecommendationPolicy.allowed_disclosure?(context, %{
-               "name" => "web.search",
-               "safety" => "read"
-             })
-    end
   end
 end

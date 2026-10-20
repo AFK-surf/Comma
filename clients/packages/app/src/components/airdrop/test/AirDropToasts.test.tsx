@@ -3,7 +3,7 @@ import { CommaI18nProvider } from "@comma/i18n/react";
 import type { AirDropState, AirDropTransfer } from "@comma/native-bridge";
 import { act, render, screen, waitFor, within } from "@comma/test-utils/render";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
-import { Toaster } from "@comma/ui";
+import { Toaster } from "@comma/ui/components/toast";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AirDropToasts } from "../AirDropToasts";

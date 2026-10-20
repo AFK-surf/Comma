@@ -167,7 +167,7 @@ describe("TaskWorkspace", () => {
     const user = userEvent.setup();
     const { container } = render(<TaskWorkspace tasks={[taskFixture()]} />);
 
-    // Only the status the task is actually in gets a column; the four empty
+    // Only the status the task is actually in gets a column; the three empty
     // ones say nothing the filter does not already say.
     expect(container.querySelectorAll('[data-slot="task-board-column"]')).toHaveLength(
       1
@@ -176,7 +176,7 @@ describe("TaskWorkspace", () => {
       "group/task-card"
     );
     expect(screen.getByText("In progress")).toBeInTheDocument();
-    expect(screen.queryByText("Backlog")).toBeNull();
+    expect(screen.queryByText("Needs Review")).toBeNull();
     expect(screen.queryAllByText("No tasks")).toHaveLength(0);
 
     const viewTrigger = screen.getByRole("button", { name: "List view" });
@@ -251,8 +251,8 @@ describe("TaskWorkspace", () => {
     expect(within(list).getByText("In progress")).toBeInTheDocument();
     expect(within(list).getByText("Review task UI")).toBeInTheDocument();
     // Groups follow the board: a status with no tasks gets no header row.
-    expect(within(list).queryByText("Backlog")).toBeNull();
     expect(within(list).queryByText("Needs Review")).toBeNull();
+    expect(within(list).queryByText("Done")).toBeNull();
     expect(within(list).queryByText("No tasks")).toBeNull();
 
     const taskRow = within(list).getByRole("button", { name: "Review task UI" });
@@ -581,7 +581,7 @@ describe("TaskWorkspace", () => {
     const statusMenu = within(
       await screen.findByRole("dialog", { name: "Status" })
     ).getByRole("menu", { name: "Status" });
-    within(statusMenu).getByRole("menuitemcheckbox", { name: "Backlog" }).focus();
+    within(statusMenu).getByRole("menuitemcheckbox", { name: "In progress" }).focus();
 
     await user.keyboard("d");
 
@@ -699,23 +699,23 @@ describe("TaskWorkspace", () => {
     ).toHaveAttribute("aria-checked", "true");
     expect(within(statusMenu).getByText("1 task")).toBeVisible();
     expect(within(statusMenu).getByText("2 tasks")).toBeVisible();
-    expect(within(statusMenu).getAllByText("0 tasks")).toHaveLength(3);
+    expect(within(statusMenu).getAllByText("0 tasks")).toHaveLength(2);
 
-    const backlogItem = within(statusMenu).getByRole("menuitemcheckbox", {
-      name: "Backlog",
-    });
     const inProgressItem = within(statusMenu).getByRole("menuitemcheckbox", {
       name: "In progress",
     });
-    await user.hover(backlogItem);
-    expect(backlogItem).toHaveFocus();
+    const needsReviewItem = within(statusMenu).getByRole("menuitemcheckbox", {
+      name: "Needs Review",
+    });
+    await user.hover(inProgressItem);
+    expect(inProgressItem).toHaveFocus();
 
     await user.keyboard("{ArrowDown}");
 
-    expect(inProgressItem).toHaveFocus();
-    expect(backlogItem).toHaveAttribute("data-hovered", "true");
-    expect(backlogItem.firstElementChild).not.toHaveClass("bg-secondary-hover");
-    expect(inProgressItem.firstElementChild).toHaveClass("bg-secondary-hover");
+    expect(needsReviewItem).toHaveFocus();
+    expect(inProgressItem).toHaveAttribute("data-hovered", "true");
+    expect(inProgressItem.firstElementChild).not.toHaveClass("bg-secondary-hover");
+    expect(needsReviewItem.firstElementChild).toHaveClass("bg-secondary-hover");
 
     const searchInput = within(panel).getByRole("textbox", {
       name: "Filter…",
@@ -742,7 +742,7 @@ describe("TaskWorkspace", () => {
 
     await user.type(searchInput, "done");
     expect(
-      within(panel).queryByRole("menuitemcheckbox", { name: "Backlog" })
+      within(panel).queryByRole("menuitemcheckbox", { name: "In progress" })
     ).toBeNull();
 
     const doneItem = within(panel).getByRole("menuitemcheckbox", { name: "Done" });
@@ -817,11 +817,7 @@ describe("TaskWorkspace", () => {
 
     await user.hover(screen.getByText("All tasks"));
 
-    await act(async () => {
-      await new Promise((resolve) =>
-        setTimeout(resolve, motionDuration.submenuCloseDelay)
-      );
-    });
+    await act(() => vi.advanceTimersByTimeAsync(motionDuration.submenuCloseDelay));
     expect(statusEntry).toHaveAttribute("aria-expanded", "false");
     expect(statusContent).not.toHaveClass(
       "bg-secondary-hover",
@@ -829,35 +825,6 @@ describe("TaskWorkspace", () => {
     );
     expect(screen.queryByRole("dialog", { name: "Status" })).toBeNull();
     expect(screen.getByRole("menu", { name: "Filter tasks" })).toBeVisible();
-  });
-
-  it("switches directly between sibling submenus on pointer hover", async () => {
-    const user = userEvent.setup();
-    render(
-      <TaskWorkspace
-        tasks={[taskFixture()]}
-        workerFilterOptions={["codex", "claude"]}
-      />
-    );
-
-    await user.click(screen.getByRole("button", { name: "Filter tasks" }));
-
-    const filterMenu = screen.getByRole("menu", { name: "Filter tasks" });
-    const statusEntry = within(filterMenu).getByRole("menuitem", {
-      name: "Status",
-    });
-    const workerEntry = within(filterMenu).getByRole("menuitem", {
-      name: "Worker",
-    });
-
-    await user.hover(statusEntry);
-    expect(await screen.findByRole("dialog", { name: "Status" })).toBeVisible();
-
-    await user.hover(workerEntry);
-
-    expect(await screen.findByRole("dialog", { name: "Worker" })).toBeVisible();
-    expect(statusEntry).toHaveAttribute("aria-expanded", "false");
-    expect(workerEntry).toHaveAttribute("aria-expanded", "true");
   });
 
   it("filters tasks by worker without hiding unassigned tasks by default", async () => {

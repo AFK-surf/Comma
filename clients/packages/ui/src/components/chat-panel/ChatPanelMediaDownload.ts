@@ -1,3 +1,4 @@
+import { uiClock } from "../../clock";
 export interface DownloadMediaSourceOptions {
   fileName?: string;
   source: string;
@@ -112,6 +113,6 @@ export const downloadMediaSource = async ({
     anchor.click();
   } finally {
     anchor.remove();
-    globalThis.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+    uiClock.after(0, () => URL.revokeObjectURL(objectUrl));
   }
 };

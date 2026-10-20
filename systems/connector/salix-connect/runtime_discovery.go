@@ -7,12 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -53,7 +51,7 @@ func portableRuntimeEntryWithClaudeIsolation(provider, path, protocol string, tr
 	checkedAt := time.Now()
 	version, versionErr := "", error(nil)
 	authReady, nativeServerStartable, probeErr := false, false, error(nil)
-	if strings.TrimSpace(os.Getenv("SALIX_MANAGED_RUNTIME_ROOT")) != "" && (provider == "claude" || provider == "pi") {
+	if strings.TrimSpace(os.Getenv("SALIX_MANAGED_RUNTIME_ROOT")) != "" && provider == "claude" {
 		version, versionErr, authReady, nativeServerStartable, probeErr = managedPortableReadiness(provider, path, isolateClaude)
 	} else {
 		version, versionErr = commandVersion(path)
@@ -61,7 +59,14 @@ func portableRuntimeEntryWithClaudeIsolation(provider, path, protocol string, tr
 			authReady, nativeServerStartable, probeErr = portableRuntimeProbeWithClaudeIsolation(provider, path, isolateClaude)
 		}
 	}
-	ready := versionErr == nil && probeErr == nil && authReady && nativeServerStartable
+	readinessErr := probeErr
+	if provider == "claude" && errors.Is(probeErr, errRuntimeVerificationRequired) {
+		// Claude can attempt work with local credentials and a native handshake.
+		// Keep auth.status configured until an explicit provider check succeeds.
+		authReady = true
+		readinessErr = nil
+	}
+	ready := versionErr == nil && readinessErr == nil && authReady && nativeServerStartable
 	runtime := map[string]any{
 		"kind":                    "external",
 		"provider":                provider,
@@ -79,14 +84,14 @@ func portableRuntimeEntryWithClaudeIsolation(provider, path, protocol string, tr
 		"protocol_versions":       []string{protocol},
 		"transports":              transports,
 	}
-	if err := errors.Join(versionErr, probeErr); err != nil {
+	if err := errors.Join(versionErr, readinessErr); err != nil {
 		runtime["last_error"] = err.Error()
 	}
-	if issue := portableRuntimeReadinessIssue(versionErr, probeErr); issue != "" {
+	if issue := portableRuntimeReadinessIssue(versionErr, readinessErr); issue != "" {
 		runtime["readiness_issue"] = issue
 		runtime["readiness_message"] = portableRuntimeReadinessMessage(provider, issue)
 	}
-	if provider == "pi" || provider == "claude" {
+	if provider == "claude" {
 		status := "unknown"
 		switch {
 		case errors.Is(probeErr, errRuntimeVerificationRequired):
@@ -98,7 +103,7 @@ func portableRuntimeEntryWithClaudeIsolation(provider, path, protocol string, tr
 		}
 		auth := map[string]any{"schema_version": 1, "status": status, "requires_openai_auth": false, "observed_at": checkedAt.UnixMilli()}
 		var configured runtimeVerificationRequiredError
-		if errors.As(probeErr, &configured) && (configured.backend == "openrouter" || provider == "claude" && configured.backend == "anthropic") {
+		if errors.As(probeErr, &configured) && (configured.backend == "openrouter" || configured.backend == "anthropic") {
 			auth["backend"] = configured.backend
 			runtime["model"] = configured.model
 			runtime["model_provider"] = configured.backend
@@ -118,11 +123,7 @@ func managedPortableReadiness(provider, command string, isolateClaude bool) (str
 	for _, candidate := range harnessLaunchCommands(provider, command) {
 		selected = candidate
 		attempt, stop := context.WithTimeout(ctx, 8*time.Second)
-		if provider == "claude" {
-			authReady, startable, probeErr = probeClaudeRuntimeContext(attempt, candidate, isolateClaude)
-		} else {
-			authReady, startable, probeErr = probePiRuntimeContext(attempt, candidate)
-		}
+		authReady, startable, probeErr = probeClaudeRuntimeContext(attempt, candidate, isolateClaude)
 		stop()
 		if !canRetryHarnessStartup(ctx, probeErr) {
 			break
@@ -168,11 +169,11 @@ func finishReadinessProcess(ctx context.Context, cmd *exec.Cmd, stdin io.Closer,
 		_ = cmd.Wait()
 		close(exited)
 	}()
-	return stopExternalRuntime(cleanup, func() {}, exited)
+	return stopNativeProcess(cleanup, func() {}, exited)
 }
 
 func portableRuntimeReadinessMessage(provider, issue string) string {
-	name := map[string]string{"pi": "Pi", "kimi": "Kimi", "claude": "Claude"}[provider]
+	name := map[string]string{"claude": "Claude"}[provider]
 	switch issue {
 	case "verification_required":
 		return name + " has local model configuration; verify provider access before dispatching work."
@@ -194,10 +195,6 @@ func portableRuntimeProbe(provider, path string) (bool, bool, error) {
 
 func portableRuntimeProbeWithClaudeIsolation(provider, path string, isolateClaude bool) (bool, bool, error) {
 	switch provider {
-	case "pi":
-		return probePiRuntime(path)
-	case "kimi":
-		return probeKimiRuntime(path)
 	case "claude":
 		return probeClaudeRuntimeWithIsolation(path, isolateClaude)
 	default:
@@ -322,14 +319,32 @@ func claudeBackendFromEnvironment(authMethod string) string {
 	return ""
 }
 
-func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, isolateProfile bool) (model string, probeErr error) {
-	nativeID, err := newClaudeSessionID()
+func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, isolateProfile bool) (string, error) {
+	models, err := probeClaudeInitialize(ctx, path, settings, isolateProfile)
 	if err != nil {
 		return "", err
 	}
+	for _, entry := range models {
+		if stringParam(entry, "value") == "default" {
+			if model := stringParam(entry, "resolvedModel"); runtimeAuthCodexToken(model) {
+				return model, nil
+			}
+			break
+		}
+	}
+	return "", nil
+}
+
+// probeClaudeInitialize starts Claude Code in stream-json mode in an empty
+// directory and answers the models its initialize response lists.
+func probeClaudeInitialize(ctx context.Context, path string, settings []string, isolateProfile bool) (models []map[string]any, probeErr error) {
+	nativeID, err := newClaudeSessionID()
+	if err != nil {
+		return nil, err
+	}
 	workdir, err := os.MkdirTemp("", "salix-claude-readiness-")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer os.RemoveAll(workdir)
 
@@ -353,14 +368,14 @@ func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, 
 	cmd.Stderr = diagnostics
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		return "", &harnessStartupError{errors.New("claude stream-json process could not start")}
+		return nil, &harnessStartupError{errors.New("claude stream-json process could not start")}
 	}
 	var joins []<-chan struct{}
 	defer func() {
@@ -380,7 +395,7 @@ func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, 
 	}
 	raw, err := json.Marshal(request)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	writeDone := make(chan error, 1)
 	writerExited := make(chan struct{})
@@ -393,15 +408,15 @@ func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, 
 	select {
 	case err := <-writeDone:
 		if err != nil {
-			return "", &harnessStartupError{errors.New("claude stream-json initialize write failed")}
+			return nil, &harnessStartupError{errors.New("claude stream-json initialize write failed")}
 		}
 	case <-ctx.Done():
-		return "", &harnessStartupError{errors.New("claude stream-json initialize timed out")}
+		return nil, &harnessStartupError{errors.New("claude stream-json initialize timed out")}
 	}
 
 	type initializeResult struct {
-		model string
-		err   error
+		models []map[string]any
+		err    error
 	}
 	response := make(chan initializeResult, 1)
 	readerExited := make(chan struct{})
@@ -435,19 +450,14 @@ func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, 
 				response <- initializeResult{err: &nativeControlRejection{errors.New("claude stream-json initialize was rejected")}}
 				return
 			}
-			model := ""
-			models, _ := mapParam(control, "response")["models"].([]any)
-			for _, item := range models {
-				entry := mapParam(map[string]any{"entry": item}, "entry")
-				if stringParam(entry, "value") == "default" {
-					model = stringParam(entry, "resolvedModel")
-					break
+			listed, _ := mapParam(control, "response")["models"].([]any)
+			models := make([]map[string]any, 0, len(listed))
+			for _, item := range listed {
+				if entry, ok := item.(map[string]any); ok {
+					models = append(models, entry)
 				}
 			}
-			if model != "" && !runtimeAuthCodexToken(model) {
-				model = ""
-			}
-			response <- initializeResult{model: model}
+			response <- initializeResult{models: models}
 			return
 		}
 		if scanner.Err() != nil {
@@ -459,212 +469,10 @@ func probeClaudeStreamJSON(ctx context.Context, path string, settings []string, 
 
 	select {
 	case result := <-response:
-		return result.model, result.err
+		return result.models, result.err
 	case <-ctx.Done():
-		return "", &harnessStartupError{errors.New("claude stream-json initialize timed out")}
+		return nil, &harnessStartupError{errors.New("claude stream-json initialize timed out")}
 	}
-}
-
-func probePiRuntime(path string) (bool, bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return probePiRuntimeContext(ctx, path)
-}
-
-func probePiRuntimeContext(ctx context.Context, path string) (authReady, startable bool, probeErr error) {
-	sessionDir, err := os.MkdirTemp("", "salix-pi-readiness-")
-	if err != nil {
-		return false, false, err
-	}
-	defer os.RemoveAll(sessionDir)
-	cmd := commandContextWithProcessGroup(ctx, path, "--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--session-dir", sessionDir)
-	cmd.Dir, cmd.Env = sessionDir, execEnv(map[string]any{"PATH": runtimeCommandPath(path)})
-	cmd.WaitDelay = claudeCloseTimeout
-	cmd.Cancel = func() error { killHarnessStartupGroup(cmd); return nil }
-	diagnostics := &harnessDiagnosticBuffer{}
-	cmd.Stderr = diagnostics
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return false, false, err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return false, false, err
-	}
-	if err := cmd.Start(); err != nil {
-		return false, false, &harnessStartupError{fmt.Errorf("%w: pi process could not start", errNativeServerUnavailable)}
-	}
-	var joins []<-chan struct{}
-	defer func() {
-		if err := finishReadinessProcess(ctx, cmd, stdin, stdout, joins...); err != nil {
-			probeErr = err
-			return
-		}
-		var startup *harnessStartupError
-		if errors.As(probeErr, &startup) && !diagnostics.permitsStartupRetry() {
-			probeErr = startup.error
-		}
-	}()
-	replies := make(chan piReadinessReply, 1)
-	readerContext, stopReader := context.WithCancel(ctx)
-	defer stopReader()
-	readerExited := make(chan struct{})
-	joins = append(joins, readerExited)
-	go func() {
-		defer close(readerExited)
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 64*1024), claudeReadinessMaxLineBytes)
-		for scanner.Scan() {
-			var message map[string]any
-			if json.Unmarshal(scanner.Bytes(), &message) != nil {
-				select {
-				case replies <- piReadinessReply{err: errors.New("pi returned invalid readiness JSON")}:
-				case <-readerContext.Done():
-				}
-				return
-			}
-			select {
-			case replies <- piReadinessReply{message: message}:
-			case <-readerContext.Done():
-				return
-			}
-		}
-		select {
-		case replies <- piReadinessReply{err: errors.New("pi readiness stream closed or exceeded its response bound")}:
-		case <-readerContext.Done():
-		}
-	}()
-	encoder := json.NewEncoder(stdin)
-	if err := encoder.Encode(map[string]any{"id": "readiness-state", "type": "get_state"}); err != nil {
-		return false, false, &harnessStartupError{fmt.Errorf("%w: pi state request failed", errRuntimeProbeFailed)}
-	}
-	state, err := readPiReadinessReply(ctx, replies, "readiness-state")
-	if err != nil {
-		return false, false, &harnessStartupError{fmt.Errorf("%w: pi state handshake failed", errRuntimeProbeFailed)}
-	}
-	if state["success"] == false {
-		return false, true, &nativeControlRejection{fmt.Errorf("%w: pi state handshake was rejected", errRuntimeProbeFailed)}
-	}
-	if state["success"] != true || stringParam(mapParam(state, "data"), "sessionId") == "" {
-		return false, false, &harnessStartupError{fmt.Errorf("%w: pi state handshake was invalid", errRuntimeProbeFailed)}
-	}
-	stateModel := mapParam(mapParam(state, "data"), "model")
-	if err := encoder.Encode(map[string]any{"id": "readiness-models", "type": "get_available_models"}); err != nil {
-		return false, true, fmt.Errorf("%w: pi model request failed", errRuntimeProbeFailed)
-	}
-	models, err := readPiReadinessReply(ctx, replies, "readiness-models")
-	if err != nil {
-		return false, true, fmt.Errorf("%w: pi model handshake failed", errRuntimeProbeFailed)
-	}
-	if !piModelAvailable(stateModel, models) {
-		return false, true, fmt.Errorf("%w: pi has no configured active model", errRuntimeAuthenticationRequired)
-	}
-	// Local configuration never proves provider authentication.
-	return false, true, runtimeVerificationRequiredError{backend: stringParam(stateModel, "provider"), model: stringParam(stateModel, "id")}
-}
-
-type piReadinessReply struct {
-	message map[string]any
-	err     error
-}
-
-func readPiReadinessReply(ctx context.Context, replies <-chan piReadinessReply, id string) (map[string]any, error) {
-	for {
-		select {
-		case reply := <-replies:
-			if reply.err != nil {
-				return nil, reply.err
-			}
-			if stringParam(reply.message, "id") == id {
-				return reply.message, nil
-			}
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-}
-
-func piModelAvailable(model map[string]any, response map[string]any) bool {
-	if response["success"] != true {
-		return false
-	}
-	provider, modelID := stringParam(model, "provider"), stringParam(model, "id")
-	if provider == "" || modelID == "" || provider == "unknown" || modelID == "unknown" {
-		return false
-	}
-	models, _ := mapParam(response, "data")["models"].([]any)
-	for _, item := range models {
-		candidate, _ := item.(map[string]any)
-		if stringParam(candidate, "provider") == provider && stringParam(candidate, "id") == modelID {
-			return true
-		}
-	}
-	return false
-}
-
-func probeKimiRuntime(path string) (bool, bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	home, err := os.MkdirTemp("", "salix-kimi-readiness-")
-	if err != nil {
-		return false, false, err
-	}
-	defer os.RemoveAll(home)
-	if err := prepareKimiHome(home, sourceKimiHome(path), ""); err != nil {
-		return false, false, err
-	}
-	port, err := reserveLocalPort()
-	if err != nil {
-		return false, false, err
-	}
-	cmd := exec.CommandContext(ctx, path, "web", "--no-open", "--port", strconv.Itoa(port), "--log-level", "error")
-	cmd.Dir = home
-	cmd.Env = execEnv(map[string]any{
-		"KIMI_CODE_HOME":         home,
-		"KIMI_DISABLE_TELEMETRY": "1",
-		"PATH":                   runtimeCommandPath(path),
-	})
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-	if err := cmd.Start(); err != nil {
-		return false, false, fmt.Errorf("%w: %v", errNativeServerUnavailable, err)
-	}
-	defer func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}()
-
-	session := &kimiRuntimeSession{
-		baseURL: "http://127.0.0.1:" + strconv.Itoa(port),
-		cmd:     cmd,
-	}
-	if err := session.waitReady(ctx, filepath.Join(home, "server.token")); err != nil {
-		return false, false, fmt.Errorf("%w: %v", errNativeServerUnavailable, err)
-	}
-	auth, err := session.api(ctx, http.MethodGet, "/api/v1/auth", nil)
-	if err != nil {
-		return false, true, fmt.Errorf("%w: %v", errRuntimeProbeFailed, err)
-	}
-	if auth["ready"] != true || stringParam(auth, "default_model") == "" {
-		return false, true, fmt.Errorf("%w: kimi native auth snapshot is not ready", errRuntimeAuthenticationRequired)
-	}
-	if managed := mapParam(auth, "managed_provider"); len(managed) != 0 && stringParam(managed, "status") != "authenticated" {
-		return false, true, fmt.Errorf("%w: kimi managed provider is %s", errRuntimeAuthenticationRequired, defaultString(stringParam(managed, "status"), "not authenticated"))
-	}
-	created, err := session.api(ctx, "POST", "/api/v1/sessions", map[string]any{
-		"metadata": map[string]any{"cwd": home},
-		"agent_config": map[string]any{
-			"model":           stringParam(auth, "default_model"),
-			"permission_mode": "yolo",
-		},
-	})
-	if err != nil {
-		return false, true, fmt.Errorf("%w: %v", errRuntimeProbeFailed, err)
-	}
-	if stringParam(created, "id") == "" {
-		return false, true, fmt.Errorf("%w: kimi readiness handshake returned no session id", errRuntimeProbeFailed)
-	}
-	return true, true, nil
 }
 
 func portableRuntimeReadinessIssue(versionErr, probeErr error) string {
@@ -710,11 +518,6 @@ func commandVersion(path string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-func defaultKimiCommandPaths() []string {
-	home, _ := os.UserHomeDir()
-	return []string{filepath.Join(home, ".kimi-code", "bin", "kimi")}
-}
-
 func runtimeCommandPath(command string, prefixes ...string) string {
 	dirs := make([]string, 0, len(prefixes)+4)
 	seen := map[string]bool{}
@@ -741,6 +544,10 @@ func runtimeCommandPath(command string, prefixes ...string) string {
 	}
 	return strings.Join(dirs, string(os.PathListSeparator))
 }
+
+// claudeCommandPaths lists the install locations Claude discovery checks
+// beside PATH.
+var claudeCommandPaths = defaultClaudeCommandPaths
 
 func defaultClaudeCommandPaths() []string {
 	home, _ := os.UserHomeDir()

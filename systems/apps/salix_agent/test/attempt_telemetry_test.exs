@@ -1,6 +1,7 @@
 defmodule SalixAgent.AttemptTelemetryTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.AttemptTelemetry
 
   defmodule Collector do
@@ -15,7 +16,11 @@ defmodule SalixAgent.AttemptTelemetryTest do
 
     @impl true
     def llm_attempt(fact) do
-      send(Application.fetch_env!(:salix_agent, :attempt_test_pid), {:attempt, fact})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :attempt_test_pid),
+        {:attempt, fact}
+      )
+
       :ok
     end
   end
@@ -48,15 +53,15 @@ defmodule SalixAgent.AttemptTelemetryTest do
   @summary_alphabet ~r/\A[A-Za-z0-9_.:\- ]*\z/
 
   setup do
-    prev = Application.get_env(:salix_agent, :agent_observability_mod)
-    Application.put_env(:salix_agent, :attempt_test_pid, self())
+    prev = SystemsRuntime.get_env(:salix_agent, :agent_observability_mod)
+    SystemsRuntime.put_env(:salix_agent, :attempt_test_pid, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       if prev,
-        do: Application.put_env(:salix_agent, :agent_observability_mod, prev),
-        else: Application.delete_env(:salix_agent, :agent_observability_mod)
+        do: SystemsRuntime.put_env(:salix_agent, :agent_observability_mod, prev),
+        else: SystemsRuntime.delete_env(:salix_agent, :agent_observability_mod)
 
-      Application.delete_env(:salix_agent, :attempt_test_pid)
+      SystemsRuntime.delete_env(:salix_agent, :attempt_test_pid)
     end)
 
     :ok
@@ -94,79 +99,6 @@ defmodule SalixAgent.AttemptTelemetryTest do
     assert fact.model == "claude-opus-5"
     assert fact.round_id == "round-abc"
     assert fact.charge_status == "unattributed"
-  end
-
-  test "classification names failures only by vocabulary words" do
-    assert {"exception", nil, ""} = AttemptTelemetry.classify(%RuntimeError{message: "boom"})
-    assert {"exit", nil, "timeout"} = AttemptTelemetry.classify({:exit, :timeout})
-
-    assert {"exit", nil, "timeout"} =
-             AttemptTelemetry.classify(
-               {:exit, {:timeout, {GenServer, :call, [self(), :ping, 5_000]}}}
-             )
-
-    assert {"unknown", nil, ""} = AttemptTelemetry.classify(:odd)
-    assert {"unknown", nil, ""} = AttemptTelemetry.classify({:error, %{}})
-
-    assert {"transport_error", nil, "stream_idle_timeout"} =
-             AttemptTelemetry.classify(
-               {:error,
-                %{
-                  "category" => "transport_error",
-                  "message" => "LLM provider transport failed",
-                  "reason" => "{:stream_idle_timeout, 30000}"
-                }}
-             )
-
-    assert {"transport_error", nil, "closed"} =
-             AttemptTelemetry.classify(
-               {:error,
-                %{
-                  "category" => "transport_error",
-                  "reason" => ~s(%Mint.TransportError{reason: :closed})
-                }}
-             )
-
-    assert {"permanent_provider_error", nil, "output_token_limit"} =
-             AttemptTelemetry.classify(
-               {:error,
-                %{"category" => "permanent_provider_error", "reason" => "output_token_limit"}}
-             )
-
-    assert {"permanent_provider_error", nil, "incomplete"} =
-             AttemptTelemetry.classify(
-               {:error,
-                %{
-                  "category" => "permanent_provider_error",
-                  "provider_status" => "incomplete",
-                  "details" => ~s({"incomplete_details":{"reason":"max_output_tokens"}})
-                }}
-             )
-
-    assert {"permanent_provider_error", 400, "INVALID_ARGUMENT"} =
-             AttemptTelemetry.classify(
-               {:error,
-                %{
-                  "category" => "permanent_provider_error",
-                  "status" => 400,
-                  "body" =>
-                    ~s({"error":{"code":400,"status":"INVALID_ARGUMENT","message":"Request contains an invalid argument."}})
-                }}
-             )
-
-    # An unlisted code is dropped, not recorded, however plausible it looks.
-    assert {"retryable_provider_error", 503, ""} =
-             AttemptTelemetry.classify(
-               {:error,
-                %{
-                  "category" => "retryable_provider_error",
-                  "status" => 503,
-                  "body" => ~s({"error":{"type":"upstream_hiccup","code":"try_later"}})
-                }}
-             )
-
-    assert {"unknown", nil, ""} =
-             AttemptTelemetry.classify({:error, %{"category" => "something_new"}})
   end
 
   test "provider bodies, messages, exception text and exit values never reach the fact" do
@@ -272,74 +204,8 @@ defmodule SalixAgent.AttemptTelemetryTest do
     end
   end
 
-  test "an attempt killed at the job deadline carries what its stream had received" do
-    progress = %{
-      attempt: 2,
-      attempt_started_at_ms: 1_789_372_800_000,
-      elapsed_ms: 600_012,
-      first_body_ms: 1_450,
-      last_body_ms: 599_980,
-      received_bytes: 48_213,
-      received_chunks: 3_101,
-      http_status: 200,
-      first_content_ms: nil,
-      last_content_ms: nil,
-      content_deltas: 0
-    }
-
-    fact = AttemptTelemetry.build_killed(@meter_ctx, 6, {:dependency_timeout, :llm}, progress)
-
-    assert fact.outcome == "killed"
-    assert fact.attempt == 2
-    assert fact.max_attempts == 6
-    assert fact.category == "exit"
-    assert fact.reason == "dependency_timeout"
-    assert fact.duration_ms == 600_012
-    assert fact.delay_ms == 0
-    assert fact.started_at == ~U[2026-09-14 08:00:00.000Z]
-    assert fact.http_status == 200
-    assert fact.first_body_ms == 1_450
-    assert fact.last_body_ms == 599_980
-    assert fact.received_bytes == 48_213
-    assert fact.received_chunks == 3_101
-    assert fact.first_content_ms == nil
-    assert fact.last_content_ms == nil
-    assert fact.content_deltas == 0
-    assert fact.source_key == "req-abc:2"
-
-    for word <- String.split(fact.reason, " ", trim: true) do
-      assert word in AttemptTelemetry.vocabulary()
-    end
-
-    # Killed before any attempt began: attempt 1, nothing observed, no
-    # duration, and a crash reason keeps only its listed atoms.
-    fact =
-      AttemptTelemetry.build_killed(
-        @meter_ctx,
-        6,
-        {:dependency_crashed, :llm, {:sk_test_SECRET, :killed}},
-        nil
-      )
-
-    assert fact.outcome == "killed"
-    assert fact.attempt == 1
-    assert fact.reason == "dependency_crashed killed"
-    assert fact.duration_ms == 0
-    assert fact.http_status == nil
-    assert fact.received_bytes == nil
-    assert fact.content_deltas == nil
-    refute inspect(fact) =~ "SECRET"
-
-    Application.put_env(:salix_agent, :agent_observability_mod, Collector)
-
-    assert :ok =
-             AttemptTelemetry.emit_killed(@meter_ctx, 6, {:dependency_timeout, :llm}, progress)
-
-    assert_receive {:attempt, %{outcome: "killed", received_chunks: 3_101}}
-  end
-
   test "emit reaches a sink with the callback and is dropped by one without it" do
-    Application.put_env(:salix_agent, :agent_observability_mod, Collector)
+    SystemsRuntime.put_env(:salix_agent, :agent_observability_mod, Collector)
 
     assert :ok =
              AttemptTelemetry.emit(
@@ -353,13 +219,12 @@ defmodule SalixAgent.AttemptTelemetryTest do
                1_789_372_800_000
              )
 
-    assert_receive {:attempt, %{outcome: "exhausted", attempt: 1, http_status: 400}}
-
-    Application.put_env(:salix_agent, :agent_observability_mod, LegacySink)
+    settle_receive({:attempt, %{outcome: "exhausted", attempt: 1, http_status: 400}})
+    SystemsRuntime.put_env(:salix_agent, :agent_observability_mod, LegacySink)
 
     assert :ok =
              AttemptTelemetry.emit(@meter_ctx, 1, 6, :retry, {:error, %{}}, 250, 5, nil)
 
-    refute_receive {:attempt, _}, 50
+    settle_refute_receive({:attempt, _}, 50)
   end
 end

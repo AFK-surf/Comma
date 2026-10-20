@@ -1,6 +1,9 @@
 defmodule SystemsObservability.HistogramReporterTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
+  use SystemsClock.Case, async: false
+
+  use SystemsClock.Test, scope: ["Elixir.SalixStore", "Elixir.SystemsObservability"]
   import Telemetry.Metrics
 
   alias SystemsObservability.HistogramReporter
@@ -64,7 +67,7 @@ defmodule SystemsObservability.HistogramReporterTest do
     reporter = start_reporter([], [native_metric()])
     duration = System.convert_time_unit(2, :millisecond, :native)
 
-    :telemetry.execute(@native_event, %{duration: duration}, %{})
+    SystemsRuntime.Telemetry.execute(@native_event, %{duration: duration}, %{})
 
     scrape = HistogramReporter.scrape(reporter)
     assert scrape =~ ~s(test_native_duration_seconds_bucket{le="0.005"} 1)
@@ -78,8 +81,10 @@ defmodule SystemsObservability.HistogramReporterTest do
 
     Enum.each(1..64, fn index -> emit("series-#{index}", 1.0) end)
 
+    %{shard_table: shard_table} = GenServer.call(reporter, :scrape_config)
+
     {lookup_calls, match_object_calls} =
-      trace_ets_calls(fn -> HistogramReporter.scrape(reporter) end)
+      trace_ets_calls(shard_table, fn -> HistogramReporter.scrape(reporter) end)
 
     assert lookup_calls == 64 * 16
 
@@ -119,43 +124,48 @@ defmodule SystemsObservability.HistogramReporterTest do
   end
 
   defp emit(outcome, duration) do
-    :telemetry.execute(@event, %{duration: duration}, %{outcome: outcome})
+    SystemsRuntime.Telemetry.execute(@event, %{duration: duration}, %{outcome: outcome})
   end
 
-  defp trace_ets_calls(fun) do
-    parent = self()
-    tracer = spawn(fn -> trace_collector(parent, 0, 0) end)
+  # Counts this process's lookups in `table`, and its match_object calls: a
+  # lookup elsewhere (a module that loads on first use, say) is not the
+  # scrape's.
+  defp trace_ets_calls(table, fun) do
+    parent = SystemsRuntime.Proc.self()
+    tracer = SystemsRuntime.Proc.spawn(fn -> trace_collector(parent, table, 0, 0) end)
 
     :erlang.trace_pattern({:ets, :lookup, 2}, true, [])
     :erlang.trace_pattern({:ets, :match_object, 2}, true, [])
-    :erlang.trace(self(), true, [:call, {:tracer, tracer}])
+    :erlang.trace(SystemsRuntime.Proc.self(), true, [:call, {:tracer, tracer}])
 
     try do
       fun.()
-      delivered = :erlang.trace_delivered(self())
-      assert_receive {:trace_delivered, _, ^delivered}, 1_000
-
-      send(tracer, {:counts, self()})
-      assert_receive {:trace_counts, lookup_calls, match_object_calls}, 1_000
+      delivered = :erlang.trace_delivered(SystemsRuntime.Proc.self())
+      settle_receive({:trace_delivered, _, ^delivered})
+      SystemsRuntime.Proc.send(tracer, {:counts, SystemsRuntime.Proc.self()})
+      settle_receive({:trace_counts, lookup_calls, match_object_calls})
       {lookup_calls, match_object_calls}
     after
-      :erlang.trace(self(), false, [:call])
+      :erlang.trace(SystemsRuntime.Proc.self(), false, [:call])
       :erlang.trace_pattern({:ets, :lookup, 2}, false, [])
       :erlang.trace_pattern({:ets, :match_object, 2}, false, [])
-      Process.exit(tracer, :kill)
+      SystemsRuntime.Proc.exit(tracer, :kill)
     end
   end
 
-  defp trace_collector(parent, lookup_calls, match_object_calls) do
-    receive do
+  defp trace_collector(parent, table, lookup_calls, match_object_calls) do
+    SystemsRuntime.Proc.receive do
+      {:trace, ^parent, :call, {:ets, :lookup, [^table, _key]}} ->
+        trace_collector(parent, table, lookup_calls + 1, match_object_calls)
+
       {:trace, ^parent, :call, {:ets, :lookup, _arguments}} ->
-        trace_collector(parent, lookup_calls + 1, match_object_calls)
+        trace_collector(parent, table, lookup_calls, match_object_calls)
 
       {:trace, ^parent, :call, {:ets, :match_object, _arguments}} ->
-        trace_collector(parent, lookup_calls, match_object_calls + 1)
+        trace_collector(parent, table, lookup_calls, match_object_calls + 1)
 
       {:counts, requester} ->
-        send(requester, {:trace_counts, lookup_calls, match_object_calls})
+        SystemsRuntime.Proc.send(requester, {:trace_counts, lookup_calls, match_object_calls})
     end
   end
 end

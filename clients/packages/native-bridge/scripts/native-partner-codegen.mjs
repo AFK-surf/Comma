@@ -11,15 +11,17 @@ export function createNativePartnerJSONSchema(registry) {
   for (const leaf of registry.toSorted((left, right) =>
     left.id.localeCompare(right.id)
   )) {
-    const schema = plainJSON(
-      z.toJSONSchema(leaf.schema, {
-        // Partner decoders mirror Zod's input semantics: unknown object keys
-        // are accepted and then omitted from the parsed/re-encoded value.
-        io: "input",
-        reused: "inline",
-        target: "draft-2020-12",
-        unrepresentable: "throw",
-      })
+    const schema = withoutNativeOmitted(
+      plainJSON(
+        z.toJSONSchema(leaf.schema, {
+          // Partner decoders mirror Zod's input semantics: unknown object keys
+          // are accepted and then omitted from the parsed/re-encoded value.
+          io: "input",
+          reused: "inline",
+          target: "draft-2020-12",
+          unrepresentable: "throw",
+        })
+      )
     );
     const localDefinitions = schema.$defs ?? {};
     delete schema.$defs;
@@ -48,6 +50,27 @@ export function createNativePartnerJSONSchema(registry) {
     title: "Comma native partner contracts",
     "x-comma-native-protocols": protocols,
   });
+}
+
+/**
+ * The schema without the fields a contract marks `"x-comma-native-omit": true`: JSON the clients' core sends that no
+ * native partner reads (a message's parsed Markdown). Partner decoders accept and drop unknown keys, so they pass.
+ */
+function withoutNativeOmitted(value) {
+  if (Array.isArray(value)) return value.map(withoutNativeOmitted);
+  if (!value || typeof value !== "object") return value;
+  const out = {};
+  for (const [key, child] of Object.entries(value))
+    out[key] = withoutNativeOmitted(child);
+  if (out.properties && typeof out.properties === "object") {
+    const omitted = Object.keys(out.properties).filter(
+      (name) => out.properties[name]?.["x-comma-native-omit"] === true
+    );
+    for (const name of omitted) delete out.properties[name];
+    if (Array.isArray(out.required))
+      out.required = out.required.filter((name) => !omitted.includes(name));
+  }
+  return out;
 }
 
 function validateRegistry(registry) {
@@ -1107,12 +1130,6 @@ ${writes.join("\n")}`;
 }
 
 const semanticNames = new Map([
-  ["CommaChatSnapshotEnvelope.snapshot", "CommaSideChatSnapshot"],
-  ["CommaSideChatSnapshot.session", "CommaSideChatSession"],
-  ["CommaSideChatSnapshot.status", "CommaSideChatSnapshotStatus"],
-  ["CommaSideChatSession.state", "CommaSideChatConversationProjection"],
-  ["CommaSideChatConversationProjection.assistantDraft", "CommaChatAssistantDraft"],
-  ["CommaSideChatConversationProjection.errorKind", "CommaChatErrorKind"],
   ["CommaChatSession.state", "CommaChatConversationProjection"],
   ["CommaChatConversationProjection.activity", "CommaChatActivity"],
   ["CommaChatConversationProjection.assistantDraft", "CommaChatAssistantDraft"],
@@ -1130,7 +1147,6 @@ const semanticNames = new Map([
 ]);
 
 const semanticItemNames = new Map([
-  ["CommaSideChatConversationProjection.messages", "CommaChatMessage"],
   ["CommaChatConversationProjection.draftAttachments", "CommaChatDraftAttachment"],
   ["CommaChatConversationProjection.messages", "CommaChatMessage"],
   ["CommaChatConversationProjection.pending", "CommaChatPendingSend"],
@@ -1159,16 +1175,11 @@ function semanticItemName(parentName, property) {
 }
 
 function variantContextName(kind) {
-  const known = {
-    "chat.snapshot": "CommaChatSnapshotEnvelope",
-    "command.result": "CommaSideChatCommandResult",
-    "side-chat.protocol-error": "CommaSideChatProtocolError",
-  };
-  return known[kind] ?? `Comma${pascal(kind)}`;
+  return `Comma${pascal(kind)}`;
 }
 
 function caseNameForKind(kind) {
-  return swiftCase(kind.replace(/^(?:side-chat|chat|command)\./, ""));
+  return swiftCase(kind.replace(/^status-menu\./, ""));
 }
 
 function fieldPriority(property) {

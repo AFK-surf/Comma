@@ -1,0 +1,146 @@
+id: ts-test-poll
+language: typescript
+severity: error
+message: "A test polls with a real-time deadline."
+note: |
+  A poll gives up after real time, so a slow machine fails it. Under the fake
+  clock (test-clock.ts) testing-library's waits run on the fake clock; otherwise
+  wait for the event itself, or drive the state with a virtual clock and
+  assert it.
+metadata:
+  category: deadline
+rule:
+  any:
+    - pattern: waitFor($$$)
+    - pattern: waitForElementToBeRemoved($$$)
+    - pattern: vi.waitFor($$$)
+    - pattern: vi.waitUntil($$$)
+    - pattern: expect.poll($$$)
+    - pattern: $E.toPass($$$)
+    - pattern: $P.waitForFunction($$$)
+    - all:
+        - kind: call_expression
+        - has:
+            field: function
+            any:
+              - regex: "^find(All)?By[A-Z]"
+              - all:
+                  - kind: member_expression
+                  - has:
+                      field: property
+                      regex: "^find(All)?By[A-Z]"
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"
+  - "clients/apps/**/test/**/*.test.tsx"
+  - "clients/packages/**/test/**/*.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"
+---
+id: tsx-test-poll
+language: tsx
+severity: error
+message: "A test polls with a real-time deadline."
+note: |
+  A poll gives up after real time, so a slow machine fails it. Under the fake
+  clock (test-clock.ts) testing-library's waits run on the fake clock; otherwise
+  wait for the event itself, or drive the state with a virtual clock and
+  assert it.
+metadata:
+  category: deadline
+rule:
+  any:
+    - pattern: waitFor($$$)
+    - pattern: waitForElementToBeRemoved($$$)
+    - pattern: vi.waitFor($$$)
+    - pattern: vi.waitUntil($$$)
+    - pattern: expect.poll($$$)
+    - pattern: $E.toPass($$$)
+    - pattern: $P.waitForFunction($$$)
+    - all:
+        - kind: call_expression
+        - has:
+            field: function
+            any:
+              - regex: "^find(All)?By[A-Z]"
+              - all:
+                  - kind: member_expression
+                  - has:
+                      field: property
+                      regex: "^find(All)?By[A-Z]"
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"
+  - "clients/apps/**/test/**/*.test.tsx"
+  - "clients/packages/**/test/**/*.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"
+---
+id: tsx-test-poll-browser
+language: tsx
+severity: error
+message: "A test polls with a real-time deadline."
+note: |
+  A poll gives up after real time, so a slow machine fails it. Under the fake
+  clock (test-clock.ts) testing-library's waits run on the fake clock; otherwise
+  wait for the event itself, or drive the state with a virtual clock and
+  assert it.
+metadata:
+  category: deadline
+rule:
+  any:
+    - pattern: waitFor($$$)
+    - pattern: waitForElementToBeRemoved($$$)
+    - pattern: vi.waitFor($$$)
+    - pattern: vi.waitUntil($$$)
+    - pattern: expect.poll($$$)
+    - pattern: $E.toPass($$$)
+    - pattern: $P.waitForFunction($$$)
+    - all:
+        - kind: call_expression
+        - has:
+            field: function
+            any:
+              - regex: "^find(All)?By[A-Z]"
+              - all:
+                  - kind: member_expression
+                  - has:
+                      field: property
+                      regex: "^find(All)?By[A-Z]"
+files:
+  - "clients/apps/**/test/**/*.chromium.test.tsx"
+  - "clients/packages/**/test/**/*.chromium.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"

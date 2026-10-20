@@ -1,6 +1,7 @@
 import { formatNumber } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import { FilterOptionsPanel, Menu, MenuItem } from "@comma/ui";
+import { FilterOptionsPanel } from "@comma/ui/components/task-workspace";
+import { Menu, MenuItem } from "@comma/ui/components/menu";
 import { useState } from "react";
 
 export interface InboxWorkspaceSelector {

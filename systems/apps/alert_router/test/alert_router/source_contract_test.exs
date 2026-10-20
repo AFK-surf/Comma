@@ -1,5 +1,5 @@
 defmodule AlertRouter.SourceContractTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   import AlertRouter.TestFixtures
 

@@ -48,7 +48,7 @@ defmodule SalixStore.Config do
   @doc "The active S3 backend module (real AWS/MinIO or the in-memory fake)."
   @spec backend() :: module()
   def backend do
-    Application.get_env(:salix_store, :s3_backend, SalixStore.S3.AWS)
+    SystemsRuntime.get_env(:salix_store, :s3_backend, SalixStore.S3.AWS)
   end
 
   @doc """
@@ -70,7 +70,7 @@ defmodule SalixStore.Config do
   """
   @spec conditional_delete() :: :native | :emulate
   def conditional_delete do
-    case Application.get_env(:salix_store, :s3_conditional_delete, :emulate) do
+    case SystemsRuntime.get_env(:salix_store, :s3_conditional_delete, :emulate) do
       :native -> :native
       _ -> :emulate
     end

@@ -1,5 +1,5 @@
 defmodule SalixSignalProto.CallMedia.ControlTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.CallMedia.{Control, Rtp}
 

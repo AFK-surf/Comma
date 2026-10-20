@@ -8,7 +8,6 @@ import {
 
 it("reaps a real helper that ignores EOF and SIGTERM", async () => {
   let child: ChildProcess | undefined;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
   const capture = new HelperMicrophoneCapture({
     executablePath: process.execPath,
     spawn: () => {
@@ -34,21 +33,14 @@ it("reaps a real helper that ignores EOF and SIGTERM", async () => {
       onError: () => {},
       onFrames: () => {},
     });
-    const stopped = await Promise.race([
-      session.stop().then(() => true),
-      // Allow scheduler slack beyond the 1.5s grace without asserting exact time.
-      new Promise<boolean>((resolve) => {
-        timeout = setTimeout(() => resolve(false), 5000);
-      }),
-    ]);
-    expect(stopped, "Stop must observe exit after forced termination").toBe(true);
+    // Stop settles only once it observes the exit, which the SIGKILL brings.
+    await session.stop();
     expect(child?.signalCode).toBe("SIGKILL");
   } finally {
-    clearTimeout(timeout);
     if (child && child.exitCode === null && child.signalCode === null) {
       const exited = once(child, "exit");
       child.kill("SIGKILL");
       await exited;
     }
   }
-}, 15000);
+});

@@ -7,6 +7,10 @@ defmodule Comma.Data.PluginInstallation do
     field(:workspace_id, :string, primary_key: true)
     field(:plugin_id, :string, primary_key: true)
     field(:connected_observed_at, :utc_datetime_usec)
-    timestamps(type: :utc_datetime_usec)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 end

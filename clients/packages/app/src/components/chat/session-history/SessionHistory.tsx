@@ -1,21 +1,16 @@
-import { LoadingIndicator } from "@comma/ui";
+import { LoadingIndicator } from "@comma/ui/components/LoadingIndicator";
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  Button,
-  CommaLogoAnimation,
-  HoverCard,
-  ScrollArea,
-  ScrollAreaLoadMore,
-} from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { CommaLogoAnimation } from "@comma/ui/components/comma-mascot";
+import { HoverCard } from "@comma/ui/components/hover-card";
+import { ScrollArea, ScrollAreaLoadMore } from "@comma/ui/components/scroll-area";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import type {
-  SessionHistoryInput,
-  SessionHistoryRecord,
-} from "../../../runtime-chat/sessionHistoryBridge";
-import { useSessionHistory } from "../../../runtime-chat/sessionHistoryBridge";
-import { useChatRegistry, useChatProductLease } from "../ChatProvider";
-import type { ChatParticipantStatus } from "../model/conversationChannel";
-import { workerMeshGradientStyle } from "../thread/activity/workerAvatar";
+import type { SessionHistoryInput, SessionHistoryRecord } from "./useSessionHistory";
+import { useSessionHistory } from "./useSessionHistory";
+import { useChatProductLease } from "../ChatProvider";
+import type { ChatParticipantStatus, ChatTaskRun } from "@comma/core/chat";
+import { taskRunLabel } from "../tasks/taskRunLabel";
+import { WorkerModelMark } from "../thread/activity/WorkerModelMark";
 import { useRouterDisplayName } from "../../router-identity/RouterIdentityProvider";
 import { routerDisplayName } from "../../router-identity/routerDisplayName";
 import { withRouterNameSpacing } from "../../router-identity/routerNameSpacing";
@@ -45,7 +40,9 @@ import {
   type SessionHistoryEntry,
 } from "./model/sessionHistoryEntries";
 
-function usePresentedRecords(records: readonly SessionHistoryRecord[] | undefined) {
+export function usePresentedRecords(
+  records: readonly SessionHistoryRecord[] | undefined
+) {
   const m = useCommaMessages();
   // Items depend on the labels, so each labels object gets its own cache.
   // Unchanged records keep their items: a snapshot that appends one record
@@ -88,6 +85,7 @@ function usePresentedRecords(records: readonly SessionHistoryRecord[] | undefine
             telegram: "Telegram",
             slack: "Slack",
             feishu: "Feishu",
+            lark: "Lark",
             wechat: "WeChat",
             imessage: "iMessage",
             voice: m.session_source_voice(),
@@ -135,30 +133,42 @@ function usePresentedRecords(records: readonly SessionHistoryRecord[] | undefine
 export function ConversationParticipants({
   groupId,
   participants,
+  taskRun,
   onOpen,
 }: {
   groupId: string;
   participants: ChatParticipantStatus[];
+  /** A Task's place and model: its Worker's Session goes by them, not by an Agent name. */
+  taskRun?: ChatTaskRun | undefined;
   onOpen(participant: ChatParticipantStatus): void;
 }) {
   const productLease = useChatProductLease();
   const { settings } = useCommaClientSettings();
+  const messages = useCommaMessages();
   if (!productLease || !settings.sessionHistoryEnabled) return null;
+  const runName = taskRun ? taskRunLabel(messages, taskRun) : undefined;
+  const vendor = taskRun?.vendor;
   return (
     <div className="comma-session-participants">
-      {participants.map((participant) => (
-        <ParticipantHistoryLink
-          key={participant.participantId}
-          participant={participant}
-          onOpen={() => onOpen(participant)}
-          input={{
-            session: productLease,
-            groupId,
-            conversationId: participant.conversationId,
-            participantId: participant.participantId,
-          }}
-        />
-      ))}
+      {participants.map((listed) => {
+        const participant =
+          runName && listed.actorRole === "worker"
+            ? { ...listed, name: runName }
+            : listed;
+        return (
+          <ParticipantHistoryLink
+            key={participant.participantId}
+            participant={participant}
+            vendor={vendor}
+            onOpen={() => onOpen(participant)}
+            input={{
+              groupId,
+              conversationId: participant.conversationId,
+              participantId: participant.participantId,
+            }}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -180,10 +190,13 @@ export function sessionParticipantName(
 function ParticipantHistoryLink({
   participant,
   input,
+  vendor,
   onOpen,
 }: {
   participant: ChatParticipantStatus;
   input: SessionHistoryInput;
+  /** The maker of the Task's model, whose mark stands for its Worker. */
+  vendor: string | undefined;
   onOpen(): void;
 }) {
   const [hovered, setHovered] = useState(false);
@@ -208,19 +221,13 @@ function ParticipantHistoryLink({
         aria-label={withRouterNameSpacing(messages.session_history_open({ name }))}
         data-testid="session-history-participant"
       >
-        <span
-          aria-hidden
-          className="comma-session-avatar"
-          style={
-            router
-              ? undefined
-              : workerMeshGradientStyle(
-                  participant.actorId ?? participant.participantId
-                )
-          }
-        >
-          {router ? <CommaLogoAnimation /> : null}
-        </span>
+        {router ? (
+          <span aria-hidden className="comma-session-avatar">
+            <CommaLogoAnimation />
+          </span>
+        ) : (
+          <WorkerModelMark className="comma-session-avatar" vendor={vendor} />
+        )}
         <span>{name}</span>
         <span
           className="comma-session-participant-state"
@@ -334,12 +341,10 @@ export function SessionHistoryPage({
   participant: Pick<ChatParticipantStatus, "conversationId" | "participantId" | "name">;
   active?: boolean;
 }) {
-  const { productLease } = useChatRegistry();
   const messages = useCommaMessages();
   const locale = useCommaLocale();
   const { snapshot, transportError, load } = useSessionHistory(
     {
-      session: productLease,
       groupId,
       conversationId: participant.conversationId,
       participantId: participant.participantId,
@@ -359,22 +364,26 @@ export function SessionHistoryPage({
   );
   const [selected, setSelected] = useState<string>();
   const [focusedIds, setFocusedIds] = useState<ReadonlySet<string>>();
-  const selectRecord = useCallback(
-    (id: string) => {
-      const entryId =
-        entries.find((entry) => entry.id === id || entry.recordIds.includes(id))?.id ??
-        id;
-      setSelected(entryId);
-      followingLatest.current = false;
-      const element = Array.from(
-        viewport.current?.querySelectorAll<HTMLElement>("[data-record-id]") ?? []
-      ).find((row) => row.dataset.recordId === entryId);
-      element?.scrollIntoView({ block: "center" });
-      if (viewport.current)
-        scrollAnchor.current = readSessionScrollAnchor(viewport.current);
-    },
-    [entries]
-  );
+  // Every timeline bar holds the selection callback. A new record must not
+  // replace it, or each bar renders again for the record it did not change.
+  const latestEntries = useRef(entries);
+  useLayoutEffect(() => {
+    latestEntries.current = entries;
+  }, [entries]);
+  const selectRecord = useCallback((id: string) => {
+    const entryId =
+      latestEntries.current.find(
+        (entry) => entry.id === id || entry.recordIds.includes(id)
+      )?.id ?? id;
+    setSelected(entryId);
+    followingLatest.current = false;
+    const element = Array.from(
+      viewport.current?.querySelectorAll<HTMLElement>("[data-record-id]") ?? []
+    ).find((row) => row.dataset.recordId === entryId);
+    element?.scrollIntoView({ block: "center" });
+    if (viewport.current)
+      scrollAnchor.current = readSessionScrollAnchor(viewport.current);
+  }, []);
   const restorePosition = useCallback(() => {
     const element = viewport.current;
     // Loading temporarily changes the page header height. Keep the pre-load
@@ -399,8 +408,11 @@ export function SessionHistoryPage({
     lastScrollTop.current = element.scrollTop;
     scrollAnchor.current = readSessionScrollAnchor(element);
   }, [active, snapshot?.status]);
-  // Source updates can add rows; the ScrollArea resize callback also preserves
-  // the anchor when a live duration line first becomes visible.
+  // Showing the page or settling a load positions it before paint. Rows that a
+  // source update adds or resizes change the content height, and the
+  // ScrollArea resize callback restores the position after that layout. A
+  // read here would force a second full layout of the loaded window.
+  const positionedReady = useRef(false);
   useLayoutEffect(() => {
     const element = viewport.current;
     if (
@@ -408,16 +420,25 @@ export function SessionHistoryPage({
       !element ||
       snapshot?.loaded !== "detail" ||
       snapshot.status !== "ready"
-    )
+    ) {
+      positionedReady.current = false;
       return;
+    }
     if (!initialPositioned.current) {
       element.scrollTop = element.scrollHeight;
       initialPositioned.current = true;
-    }
+    } else if (positionedReady.current) return;
+    positionedReady.current = true;
     restorePosition();
   }, [active, entries, snapshot?.loaded, snapshot?.status, restorePosition]);
   const loadOlder = () => {
-    if (!snapshot?.hasMore || snapshot.status === "loading") return;
+    // Older pages come after the latest one: a preview shown while it loads has none to ask for yet.
+    if (
+      !snapshot?.hasMore ||
+      snapshot.status === "loading" ||
+      snapshot.loaded !== "detail"
+    )
+      return;
     followingLatest.current = false;
     if (viewport.current)
       scrollAnchor.current = readSessionScrollAnchor(viewport.current);
@@ -496,7 +517,11 @@ export function SessionHistoryPage({
               ) : snapshot?.hasMore ? (
                 // Older records load as the reader scrolls up to them; the
                 // anchor loadOlder takes keeps the rows in view where they are.
+                // Each page that lands watches the top again: if it is still in
+                // reach, the next page loads (a page can land without a
+                // loading state ever reaching this view).
                 <ScrollAreaLoadMore
+                  key={records?.length ?? 0}
                   edge="start"
                   hasMore={active}
                   onLoadMore={loadOlder}

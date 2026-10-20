@@ -1,498 +1,304 @@
-import { meetingSubmissionError } from "./submission-error";
-import type { MeetingTaskReceipt } from "@comma/app/api";
-import type { MeetingTaskState } from "./tasks";
+// Main's part of the meeting recorder: the operating system's side only. The client core decides which meeting is
+// offered, when capture starts and stops, and what reaches the meeting's Task (packages/core/src/meeting). Main tells
+// it what it senses (meeting presence, the capture's state, the person's meeting settings, whether the main window
+// shows) and does what it says: capture audio, show the recorder window, ask about a meeting found after a restart,
+// snapshot and register the saved recording with the workspace Connector, and write the meeting's outputs into Drive.
+// Each command that touches the account's data runs only for the lease the core names, when it is Main's current one.
+import type {
+  MeetingAnswer,
+  MeetingCall,
+  MeetingEvent,
+  MeetingFailure,
+  MeetingOps,
+  MeetingPreferences,
+} from "@comma/core/utility-protocol";
 import {
-  unavailableMeetingRecorderState,
-  type CommaClientSettings,
+  audioCaptureSelectMicrophoneCapability,
+  audioCaptureStartCapability,
+  audioCaptureStopCapability,
+  type AudioCaptureRecording,
   type AudioCaptureState,
-  type AudioCaptureSource,
-  type AudioCaptureStopResult,
-  type MeetingPresenceMeeting,
   type MeetingPresenceState,
-  type MeetingRecorderState,
-  type MeetingRecorderWindowLayout,
   type MeetingRecorderWindowDrag,
+  type MeetingRecorderWindowLayout,
+  type SynchronicityMutationResult,
 } from "@comma/native-bridge";
+import type { AudioCaptureService } from "../audio-capture";
+import { NativeSessionAdmissionError } from "../ipc";
+import type {
+  LocalFileRouteRegistrationService,
+  LocalFileSnapshotStore,
+} from "../local-files";
+import { LocalFileRouteRegistrationError } from "../local-files/registration";
+import { LocalFileSnapshotError } from "../local-files/snapshot-store";
+import {
+  getCurrentNativeSessionAdmission,
+  type MainNativeSessionAdmissionGuard,
+} from "../session/native-session-admission";
 
-type Action = "start" | "dismiss" | "pause" | "resume" | "stop" | "discard";
-export interface MeetingRecorderProvider {
-  retryTaskSync(input?: void): Promise<MeetingRecorderState>;
+/** The recorder window's geometry and pointer handling (its native leaves). */
+export interface MeetingRecorderWindowProvider {
   layoutWindow(input: MeetingRecorderWindowLayout): Promise<void>;
   dragWindow(input: MeetingRecorderWindowDrag): Promise<void>;
-  state(input?: void): Promise<MeetingRecorderState>;
-  action(input: {
-    action: Action;
-    meetingKey: string;
-    generation: number;
-  }): Promise<MeetingRecorderState>;
-  selectMicrophone(input: {
-    deviceId: string | null;
-    meetingKey: string;
-    generation: number;
-  }): Promise<MeetingRecorderState>;
-  acknowledgeSaved(input: { receiptId: number }): Promise<void>;
   setInteractive(input: { interactive: boolean }): Promise<void>;
 }
 
 interface Dependencies {
-  layoutWindow?(input: MeetingRecorderWindowLayout): void;
-  dragWindow?(input: MeetingRecorderWindowDrag): void;
-  enterMeeting?(meeting: MeetingPresenceMeeting): Promise<void>;
-  changeMeeting?(
-    meeting: MeetingPresenceMeeting,
-    action: "recording" | "paused" | "dismiss" | "discard"
-  ): Promise<void>;
-  retryMeetings?(): void | Promise<void>;
-  start(
-    source: AudioCaptureSource,
-    meeting: MeetingPresenceMeeting
-  ): Promise<AudioCaptureState>;
-  stop(options: {
-    smartSummary: boolean;
-    meetingKey: string;
-  }): Promise<
-    AudioCaptureStopResult & { summary?: Promise<MeetingTaskReceipt | void> }
+  capture: Pick<
+    AudioCaptureService,
+    "start" | "stop" | "pause" | "resume" | "cancel" | "selectMicrophone"
   >;
-  cancel(): Promise<AudioCaptureState>;
-  pause(): Promise<AudioCaptureState>;
-  resume(): Promise<AudioCaptureState>;
-  selectMicrophone(deviceId: string | null): Promise<AudioCaptureState>;
-  account(): string | undefined;
-  preferences?(): Pick<
-    CommaClientSettings,
-    "meetingStartRecording" | "meetingHideRecorder" | "meetingSmartSummary"
-  >;
-  publish(state: MeetingRecorderState): void;
-  setInteractive(interactive: boolean): void;
+  guard: Pick<MainNativeSessionAdmissionGuard, "run" | "runLease">;
+  files: Pick<LocalFileSnapshotStore, "snapshot" | "markBound">;
+  registrar: Pick<LocalFileRouteRegistrationService, "register">;
+  /** Writes a file into the local Drive (synchronicity). */
+  write(input: {
+    space: string;
+    path: string;
+    content: string;
+  }): Promise<SynchronicityMutationResult>;
+  preferences(): MeetingPreferences;
+  /** Shows the recorder window before capture starts (unless the person hides it). */
+  prepareWindow?(): Promise<void>;
+  /** Asks whether a meeting found after a restart is the one before it. */
+  resolveRecovery?(name: string): Promise<"resume" | "new">;
+  window?: {
+    layout(input: MeetingRecorderWindowLayout): void;
+    drag(input: MeetingRecorderWindowDrag): void;
+    setInteractive(interactive: boolean): void;
+  };
 }
 
-/** One Main owner; renderers only project this snapshot. */
-export class MeetingRecorderService implements MeetingRecorderProvider {
-  #snapshot: MeetingRecorderState = { ...unavailableMeetingRecorderState };
-  #meetings: MeetingPresenceMeeting[] = [];
-  #seen = new Set<string>();
-  #answered = new Set<string>();
-  #initialized = false;
-  #owned = false;
-  #busy = false;
-  #generation = 0;
-  #receipt = 0;
-  #savedMeetingKey: string | undefined;
-  #endingTimer: ReturnType<typeof setTimeout> | undefined;
-  #closed = false;
-  #account: string | undefined;
-  constructor(private readonly deps: Dependencies) {
-    this.#account = deps.account();
+const storageCodes = new Set(["ENOSPC", "EACCES", "EPERM", "EIO", "ENOENT"]);
+
+/** Why a command failed, as the core may know it: no host path, response body or credential. */
+export function meetingFailure(error: unknown): MeetingFailure {
+  if (error instanceof LocalFileRouteRegistrationError)
+    return {
+      kind: "registration",
+      retryable: error.retryable,
+      ...(error.remediation ? { remediation: error.remediation } : {}),
+    };
+  if (error instanceof LocalFileSnapshotError)
+    return { kind: "snapshot", errorClass: error.errorClass };
+  if (error instanceof NativeSessionAdmissionError) return { kind: "session" };
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    storageCodes.has(String(error.code))
+  )
+    return { kind: "storage", code: String(error.code) };
+  return {
+    kind: "failed",
+    ...(error instanceof Error && error.message ? { reason: error.message } : {}),
+  };
+}
+
+export class MeetingRecorderMain implements MeetingRecorderWindowProvider {
+  readonly #deps: Dependencies;
+  #send: (event: MeetingEvent) => void = () => undefined;
+  /** Presence once detection started (the core's first offer waits for it). */
+  #presence: MeetingPresenceState | undefined;
+  #capture: AudioCaptureState | undefined;
+  /** The meeting the running capture was started for: the core takes it up again after a restart. */
+  #captureMeeting: string | undefined;
+  #clientVisible = false;
+  #starting = false;
+
+  constructor(deps: Dependencies) {
+    this.#deps = deps;
   }
 
-  acceptTask(key: string, taskSync: MeetingTaskState) {
-    if (this.#snapshot.meeting?.key === key)
-      this.#set({
-        taskSync: {
-          status: taskSync.status,
-          ...(taskSync.task ? { task: taskSync.task } : {}),
-          ...(taskSync.error ? { error: taskSync.error } : {}),
-        },
-      });
-    if (taskSync.archive && taskSync.recording) {
-      this.#savedMeetingKey = key;
-      this.#set({
-        saved: {
-          receiptId: ++this.#receipt,
-          recording: taskSync.recording,
-          smartSummary: true,
-          summary: "queued",
-          archive: taskSync.archive,
-          ...(taskSync.task ? { task: taskSync.task } : {}),
-        },
-      });
-      return;
-    }
-    const saved = this.#snapshot.saved;
-    if (saved && this.#savedMeetingKey === key)
-      this.#set({
-        saved: {
-          ...saved,
-          summary:
-            taskSync.status === "error"
-              ? "error"
-              : taskSync.status === "synced"
-                ? "queued"
-                : "pending",
-          summaryError: taskSync.status === "error" ? taskSync.error : undefined,
-          ...(taskSync.task ? { task: taskSync.task } : {}),
-        },
-      });
+  /** Where events go (the core's utility process); what Main knows now is told at once. */
+  connect(send: (event: MeetingEvent) => void): void {
+    this.#send = send;
   }
 
-  async retryTaskSync(_input?: void) {
-    if (!this.#closed) await this.deps.retryMeetings?.();
-    return this.#snapshot;
+  /** What the core is told when it (re)starts. */
+  events(): MeetingEvent[] {
+    return [
+      { kind: "preferences", preferences: this.#deps.preferences() },
+      { kind: "clientVisible", visible: this.#clientVisible },
+      ...(this.#capture
+        ? [
+            {
+              kind: "capture" as const,
+              state: this.#capture,
+              ...(this.#captureMeeting ? { meetingKey: this.#captureMeeting } : {}),
+            },
+          ]
+        : []),
+      ...(this.#presence ? [{ kind: "presence" as const, state: this.#presence }] : []),
+    ];
+  }
+
+  /** Meeting detection started (`started`) or saw a change: told only once it started. */
+  presenceChanged(state: MeetingPresenceState, started = false): void {
+    if (!started && !this.#presence) return;
+    this.#presence = state;
+    this.#send({ kind: "presence", state });
+  }
+
+  captureChanged(state: AudioCaptureState): void {
+    this.#capture = state;
+    // A capture that ended is no meeting's (one opening is the meeting's that `start` named).
+    if ((state.status === "idle" || state.status === "unavailable") && !this.#starting)
+      this.#captureMeeting = undefined;
+    this.#send({
+      kind: "capture",
+      state,
+      ...(this.#captureMeeting ? { meetingKey: this.#captureMeeting } : {}),
+    });
+  }
+
+  preferencesChanged(): void {
+    this.#send({ kind: "preferences", preferences: this.#deps.preferences() });
+  }
+
+  setClientVisible(visible: boolean): void {
+    if (this.#clientVisible === visible) return;
+    this.#clientVisible = visible;
+    this.#send({ kind: "clientVisible", visible });
   }
 
   async layoutWindow(input: MeetingRecorderWindowLayout) {
-    if (!this.#closed) this.deps.layoutWindow?.(input);
+    this.#deps.window?.layout(input);
   }
+
   async dragWindow(input: MeetingRecorderWindowDrag) {
-    if (!this.#closed) this.deps.dragWindow?.(input);
+    this.#deps.window?.drag(input);
   }
 
-  async state(_input?: void) {
-    return this.#snapshot;
+  async setInteractive({ interactive }: { interactive: boolean }) {
+    this.#deps.window?.setInteractive(interactive);
   }
 
-  /** The first presence snapshot follows the same saved policy as later meetings. */
-  initializePresence(state: MeetingPresenceState) {
-    if (this.#closed || this.#initialized) return;
-    this.#initialized = true;
-    this.#seen = new Set(state.meetings.map((m) => m.key));
-    this.#meetings = state.meetings;
-    this.#offer();
-  }
-
-  acceptPresence(state: MeetingPresenceState) {
-    if (!this.#initialized || this.#closed) return;
-    this.#meetings = state.meetings;
-    this.#seen = new Set(state.meetings.map((m) => m.key));
-    this.#answered = new Set([...this.#answered].filter((key) => this.#seen.has(key)));
-    this.#updateEnding();
-    this.#offer();
-  }
-
-  preferencesChanged() {
-    this.#set({});
-    this.#offer();
-  }
-
-  acceptCapture(capture: AudioCaptureState) {
-    if (this.#closed) return;
-    const phase =
-      this.#owned &&
-      ["recording", "paused"].includes(capture.status) &&
-      ["recording", "paused"].includes(this.#snapshot.phase)
-        ? (capture.status as "recording" | "paused")
-        : this.#snapshot.phase;
-    this.#set({ capture, phase });
-    if (this.#owned && capture.capped && this.#snapshot.meeting)
-      void this.action({
-        action: "stop",
-        meetingKey: this.#snapshot.meeting.key,
-        generation: this.#generation,
-      });
-    if (this.#owned && !this.#busy && capture.status === "idle") {
-      this.#owned = false;
-      this.#set({ phase: "idle", meeting: null });
-    }
-  }
-
-  sessionChanged() {
-    this.deps.retryMeetings?.();
-    const account = this.deps.account();
-    if (account === this.#account) {
-      this.#offer();
-      return;
-    }
-    this.#account = account;
-    this.#generation++;
-    this.#clearEnding();
-    if (this.#owned) void this.deps.cancel().catch(() => undefined);
-    this.#owned = false;
-    this.#set({
-      phase: "idle",
-      meeting: null,
-      saved: null,
-      error: undefined,
-      generation: this.#generation,
-    });
-    this.#offer();
-  }
-
-  async action({
-    action,
-    meetingKey,
-    generation,
-  }: {
-    action: Action;
-    meetingKey: string;
-    generation: number;
-  }) {
-    const meeting = this.#snapshot.meeting;
-    if (
-      generation !== this.#generation ||
-      this.#closed ||
-      !meeting ||
-      meeting.key !== meetingKey ||
-      this.#busy
-    )
-      return this.#snapshot;
-    if (action === "dismiss") {
-      if (this.#owned) return this.#snapshot;
-      await this.#changeMeeting(meeting, "dismiss");
-      this.#answered.add(meetingKey);
-      this.#set({ phase: "idle", meeting: null, error: undefined });
-      this.#offer();
-      return this.#snapshot;
-    }
-    if (
-      action === "start" ? this.#owned || this.#answered.has(meetingKey) : !this.#owned
-    )
-      return this.#snapshot;
-    if (!this.deps.account()) return this.#snapshot;
-    this.#busy = true;
-    this.#set({ error: undefined });
+  /** A command from the core: its answer, or why it failed. */
+  async command(call: MeetingCall): Promise<MeetingAnswer> {
     try {
-      if (action === "start") {
-        this.#answered.add(meetingKey);
-        this.#set({ phase: "starting", error: undefined });
-        // Owner-approved Recappi-style mix. Meeting identity controls the queue,
-        // while the source includes system output rather than isolating a tab.
-        await this.deps
-          .enterMeeting?.(meeting)
-          .catch((error: unknown) => this.#taskError(error, meeting.key));
-        const capture = await this.deps.start({ kind: "system" }, meeting);
-        if (generation !== this.#generation || this.#closed) {
-          await this.deps.cancel();
-          return this.#snapshot;
-        }
-        if (capture.status !== "recording")
-          throw new Error(capture.reason ?? "Recording could not start.");
-        this.#owned = true;
-        this.#set({ phase: "recording", capture });
-        await this.#changeMeeting(meeting, "recording");
-      } else if (action === "stop") {
-        this.#clearEnding();
-        this.#set({ phase: "saving" });
-        const result = await this.deps.stop({
-          smartSummary: this.deps.preferences?.().meetingSmartSummary ?? true,
-          meetingKey: meeting.key,
-        });
-        this.#owned = false;
-        if (generation !== this.#generation || this.#closed) return this.#snapshot;
-        if (result.status !== "ready")
-          throw new Error(result.reason ?? "Recording could not be saved to Drive.");
-        this.#savedMeetingKey = meeting.key;
-        this.#set({
-          phase: "idle",
-          meeting: null,
-          saved: {
-            receiptId: ++this.#receipt,
-            recording: result.recording,
-            smartSummary: this.deps.preferences?.().meetingSmartSummary ?? true,
-            ...(this.#snapshot.taskSync?.task
-              ? { task: this.#snapshot.taskSync.task }
-              : {}),
-            ...(result.summary ? { summary: "pending" as const } : {}),
-          },
-        });
-        if (result.summary) {
-          const receiptId = this.#receipt;
-          const settle = (
-            summary: "queued" | "error",
-            receipt?: MeetingTaskReceipt | void,
-            summaryError?: string
-          ) => {
-            const saved = this.#snapshot.saved;
-            if (generation === this.#generation && saved?.receiptId === receiptId)
-              this.#set({
-                saved: {
-                  ...saved,
-                  summary,
-                  summaryError,
-                  ...(receipt
-                    ? { task: { groupId: receipt.group_id, taskId: receipt.task_id } }
-                    : {}),
-                },
-              });
-          };
-          void result.summary.then(
-            (receipt) => settle("queued", receipt),
-            (error: unknown) => {
-              const saved = this.#snapshot.saved;
-              settle(
-                "error",
-                undefined,
-                saved?.summaryError ?? meetingSubmissionError("prepare", error)
-              );
-            }
-          );
-        }
-      } else if (action === "discard") {
-        await this.deps.cancel();
-        await this.#changeMeeting(meeting, "discard");
-        this.#owned = false;
-        this.#clearEnding();
-        if (generation === this.#generation)
-          this.#set({ phase: "idle", meeting: null });
-      } else {
-        const capture = await (action === "pause"
-          ? this.deps.pause()
-          : this.deps.resume());
-        if (generation === this.#generation) {
-          this.acceptCapture(capture);
-          await this.#changeMeeting(
-            meeting,
-            action === "pause" ? "paused" : "recording"
-          );
+      return { ok: await this.#run(call) };
+    } catch (error) {
+      return { failure: meetingFailure(error) };
+    }
+  }
+
+  async #run(call: MeetingCall): Promise<MeetingOps[MeetingCall["op"]]["output"]> {
+    const deps = this.#deps;
+    switch (call.op) {
+      case "start": {
+        const { lease, meeting, archiveAtMs } = call.input;
+        if (!deps.preferences().meetingHideRecorder) await deps.prepareWindow?.();
+        const input = {
+          session: lease,
+          source: { kind: "system" as const },
+          microphone: true,
+        };
+        // The capture's own reports name the meeting from the start.
+        this.#captureMeeting = meeting.key;
+        this.#starting = true;
+        try {
+          const state = await deps.guard.run({
+            contract: audioCaptureStartCapability.contract,
+            input,
+            // The saved file is named by the meeting's platform (`Zoom 2026-10-09 14.30-15.15.m4a`). Another
+            // browser's name is no platform, as in the Task's title: its file is a `Meeting`.
+            handler: () =>
+              deps.capture.start(input, {
+                platform:
+                  meeting.kind === "browser" && !meeting.browserTabId
+                    ? "Meeting"
+                    : meeting.name,
+                archiveAtMs,
+              }),
+          });
+          if (state.status !== "recording") this.#captureMeeting = undefined;
+          return state;
+        } catch (error) {
+          this.#captureMeeting = undefined;
+          throw error;
+        } finally {
+          this.#starting = false;
         }
       }
-    } catch (error) {
-      if (generation === this.#generation && !this.#closed)
-        this.#set({
-          phase:
-            this.#owned &&
-            ["recording", "paused"].includes(this.#snapshot.capture.status)
-              ? (this.#snapshot.capture.status as "recording" | "paused")
-              : "error",
-          error: error instanceof Error ? error.message : "Recording failed.",
+      case "stop": {
+        const input = { session: call.input.lease };
+        let savedPath!: (path: string) => void;
+        const saved = new Promise<string>((resolve) => (savedPath = resolve));
+        const result = await deps.guard.run({
+          contract: audioCaptureStopCapability.contract,
+          input,
+          // The meeting's audio goes to its Task (the core sends it), not to the transcription of a plain recording.
+          handler: () =>
+            deps.capture.stop(
+              input,
+              async (_recording: AudioCaptureRecording, _target, path) =>
+                savedPath(path)
+            ),
         });
-    } finally {
-      this.#busy = false;
-      if (!this.#owned) this.#offer();
-      this.#updateEnding();
-    }
-    return this.#snapshot;
-  }
-
-  async selectMicrophone({
-    deviceId,
-    meetingKey,
-    generation,
-  }: {
-    deviceId: string | null;
-    meetingKey: string;
-    generation: number;
-  }) {
-    if (
-      generation !== this.#generation ||
-      !this.#owned ||
-      this.#busy ||
-      this.#snapshot.meeting?.key !== meetingKey
-    )
-      return this.#snapshot;
-    // MicrophoneSelection.tla already permits Stop to invalidate a pending
-    // device switch. Do not serialize Stop behind permission/device opening.
-    const capture = await this.deps.selectMicrophone(deviceId);
-    if (
-      generation === this.#generation &&
-      this.#owned &&
-      ["recording", "paused"].includes(this.#snapshot.phase)
-    )
-      this.acceptCapture(capture);
-    return this.#snapshot;
-  }
-
-  setClientVisible(visible: boolean) {
-    if (this.#snapshot.clientVisible !== visible) this.#set({ clientVisible: visible });
-  }
-
-  async acknowledgeSaved({ receiptId }: { receiptId: number }) {
-    if (this.#snapshot.clientVisible && this.#snapshot.saved?.receiptId === receiptId)
-      this.#set({ saved: null });
-  }
-  async setInteractive({ interactive }: { interactive: boolean }) {
-    this.deps.setInteractive(interactive);
-  }
-
-  close() {
-    this.#closed = true;
-    this.#generation++;
-    this.#clearEnding();
-  }
-  #set(patch: Partial<MeetingRecorderState>) {
-    if (this.#closed) return;
-    this.#snapshot = {
-      ...this.#snapshot,
-      ...patch,
-      hideRecorder: this.deps.preferences?.().meetingHideRecorder ?? false,
-      revision: this.#snapshot.revision + 1,
-    };
-    this.deps.publish(this.#snapshot);
-  }
-  #offer() {
-    if (
-      this.#closed ||
-      !this.#initialized ||
-      this.#owned ||
-      this.#busy ||
-      !this.deps.account() ||
-      this.#snapshot.phase === "error"
-    )
-      return;
-    const meeting = this.#meetings.find(
-      (m) => m.status === "active" && !this.#answered.has(m.key)
-    );
-    const previous = this.#snapshot.meeting;
-    if (
-      previous &&
-      previous.key !== meeting?.key &&
-      this.#snapshot.phase === "detected"
-    )
-      void this.#changeMeeting(previous, "dismiss");
-    if (meeting && previous?.key !== meeting.key) {
-      this.#set({ taskSync: { status: "pending" } });
-      void this.deps
-        .enterMeeting?.(meeting)
-        .catch((error: unknown) => this.#taskError(error, meeting.key));
-    }
-    const automatic =
-      meeting &&
-      this.deps.preferences?.().meetingStartRecording === "auto" &&
-      !["recording", "paused", "finalizing"].includes(this.#snapshot.capture.status);
-    this.#set({
-      meeting: meeting ?? null,
-      phase: meeting && !automatic ? "detected" : "idle",
-    });
-    if (automatic)
-      void this.action({
-        action: "start",
-        meetingKey: meeting.key,
-        generation: this.#generation,
-      });
-  }
-  #taskError(error: unknown, key: string) {
-    if (this.#closed || this.#snapshot.meeting?.key !== key) return;
-    this.#set({
-      taskSync: {
-        ...this.#snapshot.taskSync,
-        status: "error",
-        error: error instanceof Error ? error.message : "Meeting sync failed.",
-      },
-    });
-  }
-  async #changeMeeting(
-    meeting: MeetingPresenceMeeting,
-    action: "recording" | "paused" | "dismiss" | "discard"
-  ) {
-    await this.deps
-      .changeMeeting?.(meeting, action)
-      .catch((error: unknown) => this.#taskError(error, meeting.key));
-  }
-  #clearEnding() {
-    if (this.#endingTimer) clearTimeout(this.#endingTimer);
-    this.#endingTimer = undefined;
-  }
-  #updateEnding() {
-    if (this.#closed || !this.#owned || this.#busy) return;
-    const meeting = this.#snapshot.meeting;
-    if (!meeting) return;
-    const current = this.#meetings.find((m) => m.key === meeting.key);
-    if (current?.status === "active") {
-      this.#clearEnding();
-      return;
-    }
-    if (this.#endingTimer) return;
-    // One timer per capture; no per-meeting polling or fan-out.
-    this.#endingTimer = setTimeout(
-      () => {
-        this.#endingTimer = undefined;
-        void this.action({
-          action: "stop",
-          meetingKey: meeting.key,
-          generation: this.#generation,
+        this.#captureMeeting = undefined;
+        if (result.status !== "ready")
+          return {
+            status: "unavailable",
+            ...(result.reason ? { reason: result.reason } : {}),
+          };
+        return {
+          status: "ready",
+          recording: result.recording,
+          sourcePath: await saved,
+        };
+      }
+      case "pause":
+        return deps.capture.pause();
+      case "resume":
+        return deps.capture.resume();
+      case "cancel":
+        this.#captureMeeting = undefined;
+        return deps.capture.cancel();
+      case "selectMicrophone": {
+        const input = { session: call.input.lease, deviceId: call.input.deviceId };
+        return deps.guard.run({
+          contract: audioCaptureSelectMicrophoneCapability.contract,
+          input,
+          handler: () => deps.capture.selectMicrophone(input),
         });
-      },
-      current ? 5_000 : 0
-    );
-    this.#endingTimer.unref?.();
+      }
+      case "recover":
+        if (!deps.resolveRecovery)
+          throw new Error("Open Comma to resolve the previous meeting Task.");
+        return deps.resolveRecovery(call.input.name);
+      case "snapshot": {
+        const { lease, sourcePath } = call.input;
+        return deps.guard.runLease(lease, () =>
+          deps.files.snapshot(
+            sourcePath,
+            getCurrentNativeSessionAdmission().principalUserId
+          )
+        );
+      }
+      case "register": {
+        const { lease, workspaceId, file } = call.input;
+        return deps.guard.runLease(lease, async (assertCurrent) => {
+          await deps.registrar.register(workspaceId, file, assertCurrent);
+          return null;
+        });
+      }
+      case "markBound":
+        await deps.files.markBound(call.input.localFileRef);
+        return null;
+      case "write": {
+        const { lease, space, path, content } = call.input;
+        return deps.guard.runLease(lease, async (assertCurrent) => {
+          const result = await deps.write({ space, path, content });
+          if (result.status !== "done")
+            throw new Error("Drive did not accept the meeting output.");
+          assertCurrent();
+          return null;
+        });
+      }
+      case "legacy":
+        // The utility process reads Main's old journal itself.
+        return null;
+    }
   }
 }

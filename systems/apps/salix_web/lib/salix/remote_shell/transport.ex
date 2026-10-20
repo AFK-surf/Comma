@@ -1,4 +1,6 @@
 defmodule Salix.RemoteShell.Transport do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   OTP SSH over an authenticated CP WebSocket. A private loopback socket pair
   adapts OTP's existing TCP transport; its listener closes before SSH starts.
@@ -10,7 +12,7 @@ defmodule Salix.RemoteShell.Transport do
   def pin(handle, device, timeout) do
     bounded(timeout, fn ->
       connected(handle, device, :learn, fn _ssh, ref ->
-        receive do
+        SystemsRuntime.Proc.receive do
           {^ref, key} -> {:ok, key}
         after
           0 -> {:error, :host_key_missing}
@@ -42,7 +44,7 @@ defmodule Salix.RemoteShell.Transport do
 
   defp bounded(timeout, fun) when timeout > 0 do
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         try do
           fun.()
         rescue
@@ -52,7 +54,7 @@ defmodule Salix.RemoteShell.Transport do
         end
       end)
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, timeout) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
       _ -> {:error, :command_timeout_or_disconnect}
     end
@@ -65,7 +67,7 @@ defmodule Salix.RemoteShell.Transport do
       try do
         with {:ok, gateway} <- Gateway.open(handle, device, relay) do
           try do
-            ref = make_ref()
+            ref = SystemsRuntime.Proc.make_ref()
 
             options = [
               user: ~c"comma",
@@ -73,7 +75,7 @@ defmodule Salix.RemoteShell.Transport do
               user_interaction: false,
               silently_accept_hosts: false,
               save_accepted_host: false,
-              key_cb: {HostKey, [expected: expected, owner: self(), ref: ref]}
+              key_cb: {HostKey, [expected: expected, owner: SystemsRuntime.Proc.self(), ref: ref]}
             ]
 
             # OTP's hello-line state expects list mode; it selects binary mode after KEX.
@@ -91,7 +93,7 @@ defmodule Salix.RemoteShell.Transport do
                 {:error, :ssh_authentication_or_connect_failed}
             end
           after
-            Process.exit(gateway, :kill)
+            SystemsRuntime.Proc.exit(gateway, :kill)
           end
         end
       after
@@ -150,7 +152,7 @@ defmodule Salix.RemoteShell.Transport do
   end
 
   defp collect(ssh, channel, output, size, status) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:ssh_cm, ^ssh, {:data, ^channel, _, bytes}} ->
         if size + byte_size(bytes) > 1_048_576 do
           {:error, :output_limit}

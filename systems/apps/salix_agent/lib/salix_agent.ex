@@ -53,8 +53,7 @@ defmodule SalixAgent do
   role actor (`AgentActor.stage_delivery/3`) for **every** delivery (plan
   §1.1, widened by #870 and #871). No inbox object, queue marker, or
   recent-touch write is ever made. The session-side dedupe ledger — the
-  internal session's `input_dedupe`, or the external session's `state.json`
-  ledger — commits atomically with the queue append and replies only after
+  session's `input_dedupe` — commits atomically with the queue append and replies only after
   the durable commit, so `{:ok, _}` carries the ack guarantee. Session-less
   payloads are resolved at deliver time by the role actor (a router rewrites
   the delivery onto its persisted canonical router session); a role that
@@ -77,7 +76,7 @@ defmodule SalixAgent do
 
   @spec deliver(String.t(), map(), keyword()) :: {:ok, :created | :duplicate} | {:error, term()}
   def deliver(agent_id, payload, opts \\ []) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     # Phase telemetry: the instant the input reached the runtime, carried on
     # the queued item into the transcript so the round it wakes can report
@@ -96,7 +95,7 @@ defmodule SalixAgent do
       "activation",
       delivery_surface(payload, opts),
       activation_outcome(result),
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     result
@@ -105,7 +104,7 @@ defmodule SalixAgent do
   defp stamp_delivered_at(payload) when is_map(payload) do
     if is_integer(payload[:delivered_at_ms] || payload["delivered_at_ms"]),
       do: payload,
-      else: Map.put(payload, :delivered_at_ms, System.system_time(:millisecond))
+      else: Map.put(payload, :delivered_at_ms, SystemsClock.system_time(:millisecond))
   end
 
   defp stamp_delivered_at(payload), do: payload
@@ -130,37 +129,20 @@ defmodule SalixAgent do
 
   # Read-only until the decision point: classification then the ledgered
   # rpc stage, all inside the caller's deadline.
-  defp classify_and_stage_rpc(agent_id, payload, opts, reclassified \\ false) do
+  defp classify_and_stage_rpc(agent_id, payload, opts) do
     with {:ok, source_id} <- require_source_message_id(payload, opts),
          {:ok, agent} <- Control.get_record(agent_id),
          :ok <- ensure_delivery_allowed(agent),
          :ok <- validate_delivery_session(agent, payload, opts),
          :ok <- require_resolvable_session(agent, payload) do
-      runtime_kind = Control.runtime_kind(agent)
-      # A delivery that wakes an internal session nobody here holds needs a
-      # round configuration next; building it from here overlaps placement,
-      # the claim and the stage. A resident session actor keeps its own.
-      if runtime_kind != "external" and not Keyword.get(opts, :no_wake, false) and
-           not resident_session?(agent_id, payload),
-         do: SalixAgent.RoundConfigPrewarm.start(agent_id)
+      # A delivery that wakes a session nobody here holds needs a round
+      # configuration next; building it from here overlaps placement, the
+      # claim and the stage. A resident session actor keeps its own.
+      if not Keyword.get(opts, :no_wake, false) and not resident_session?(agent_id, payload),
+        do: SalixAgent.RoundConfigPrewarm.start(agent_id)
 
       prefetch_session_birth_probe(agent_id, payload)
-
-      case deliver_via_rpc(agent_id, source_id, payload, opts, runtime_kind) do
-        # The runtime flipped between this classification and the stage's
-        # own routing read (the internal-only fence refused): re-classify
-        # ONCE with the fresh record, inside the same deadline — both
-        # stores are ledgered, so the retry stays on the rpc contract
-        # instead of detouring through the inbox (#870 round 2: the staged
-        # detour acked at inbox durability, the AckImpliesDurable
-        # counterexample). A second refusal returns as-is; the caller
-        # retries with the same source id.
-        {:error, :runtime_changed} when not reclassified ->
-          classify_and_stage_rpc(agent_id, payload, opts, true)
-
-        other ->
-          other
-      end
+      deliver_via_rpc(agent_id, source_id, payload, opts)
     end
   end
 
@@ -223,9 +205,9 @@ defmodule SalixAgent do
     # reads it has back. A read of its still in flight is not waited for:
     # the deadline below is the whole of this call.
     read_scope = SalixStore.ReadScope.capture() || %{}
-    task = Task.async(fn -> SalixStore.ReadScope.run(read_scope, fun) end)
+    task = SystemsRuntime.Task.async(fn -> SalixStore.ReadScope.run(read_scope, fun) end)
 
-    case Task.yield(task, budget) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, budget) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
       {:exit, reason} -> {:error, {:unavailable, {:exit, reason}}}
       nil -> {:error, :timeout}
@@ -233,36 +215,11 @@ defmodule SalixAgent do
   end
 
   # The deadline lives in with_delivery_deadline/2, wrapping the whole chain.
-  defp deliver_via_rpc(agent_id, source_id, payload, opts, runtime_kind) do
-    entry =
-      %{
-        source_message_id: source_id,
-        payload: rpc_delivery_body(payload, opts)
-      }
-      |> tag_runtime_fence(runtime_kind)
+  defp deliver_via_rpc(agent_id, source_id, payload, opts) do
+    entry = %{source_message_id: source_id, payload: rpc_delivery_body(payload, opts)}
 
     rpc_stage_attempts(agent_id, entry, opts, 2)
   end
-
-  # Runtime authority (owner ruling 2026-08-15, plan clause 2b): runtime is
-  # a property of the SESSION, fixed at its birth; the agent record governs
-  # only new-session placement and this best-effort ADMISSION fence. The
-  # stage resolves the target session to its birth store FIRST (session-
-  # grain routing, SessionDelivery.session_birth_runtime/2), so an entry
-  # addressed to an existing session never consults the fence or the agent
-  # record. The fence guards only new-session placement (two-step, like
-  # the owner fence — RpcDeliver.tla StageRouteRead): an internal-
-  # classified entry REFUSES (:runtime_changed) when the placement read
-  # sees external, and the facade re-classifies once in-deadline.
-  # External-classified entries are
-  # untagged — both stores are ledgered, so a same-id retry dedupes
-  # wherever it lands. A flip that wins the admission race (between the
-  # routing read and the session CAS) lands the commit in a truthfully
-  # old-runtime session, which then EXECUTES there — specified behavior,
-  # not a defect (RpcDeliver_LateFlipResidual.cfg is the race boundary;
-  # ExecutionOnSessionRuntime is the invariant that holds).
-  defp tag_runtime_fence(entry, "external"), do: entry
-  defp tag_runtime_fence(entry, _internal), do: Map.put(entry, :require_runtime, :internal)
 
   # Stale placement is reject-and-re-resolve, bounded to 2 hops (plan §1.3):
   # the fenced target refuses with :not_owner, a fresh placement resolution

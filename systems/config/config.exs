@@ -1,5 +1,15 @@
 import Config
 
+# Comma owns bounded admission and calls the SDK HTTP client from its worker.
+config :posthog, enable: false, enable_error_tracking: false
+
+# Bundlex would otherwise download prebuilt libsrtp2 and opus while the
+# dependencies compile. The ex_libsrtp and Membrane Opus NIFs
+# (salix_meet_native) link the system libraries through pkg-config in every
+# environment: libsrtp2-dev and libopus-dev to build, libsrtp2-1 and libopus0
+# in the release image.
+config :bundlex, :disable_precompiled_os_deps, true
+
 # The local recommendation provider is a compile-time capability. Dev/test
 # builds include it; production releases include it only when the Docker
 # builder opts in explicitly. Runtime configuration may toggle the capability
@@ -76,7 +86,7 @@ config :alert_router, Oban,
   name: AlertRouter.Oban,
   repo: AlertRouter.Repo,
   peer: {Oban.Peers.Postgres, []},
-  queues: [alert_delivery: 2, alert_reconciliation: 1, runtime_log: 1],
+  queues: [alert_delivery: 2, alert_reconciliation: 1],
   plugins: [{Oban.Plugins.Pruner, max_age: 86_400}],
   shutdown_grace_period: 10_000
 
@@ -217,6 +227,7 @@ config :comma_core, Oban,
   peer: {Oban.Peers.Postgres, []},
   queues: [
     comma_external: 4,
+    comma_analytics: 1,
     comma_recommendations: 8,
     comma_recommendation_control: 2,
     comma_notifications: 4
@@ -227,7 +238,8 @@ config :comma_core, Oban,
     {Oban.Plugins.Cron,
      crontab: [
        {"*/5 * * * *", Comma.Workers.ProfileAvatarCleanup},
-       {"17 * * * *", Comma.Workers.MemberSourceItemRetention}
+       {"17 * * * *", Comma.Workers.MemberSourceItemRetention},
+       {"* * * * *", Comma.Analytics.ProfileSweep}
      ]}
   ],
   shutdown_grace_period: 30_000
@@ -420,9 +432,9 @@ config :bridge_for_teams_web, BridgeForTeamsWeb.Gettext,
   default_locale: "en",
   locales: ~w(en zh_Hans)
 
-# ---- Dashboard LiveView endpoint (Phoenix on Bandit, port 4101) ----
-# Talks to BridgeForTeams.* contexts in-process. secret_key_base/signing_salt
-# below are dev defaults; runtime.exs supplies prod secrets.
+# ---- Dashboard endpoint (Phoenix on Bandit, port 4101) ----
+# Talks to BridgeForTeams.* contexts in-process. secret_key_base is a dev
+# default below; runtime.exs supplies the prod secret.
 config :bridge_for_teams_web, BridgeForTeamsWeb.DashboardEndpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
@@ -431,7 +443,6 @@ config :bridge_for_teams_web, BridgeForTeamsWeb.DashboardEndpoint,
     layout: false
   ],
   pubsub_server: BridgeForTeamsWeb.PubSub,
-  live_view: [signing_salt: "comma4t-dash-salt"],
   secret_key_base: "dev_only_secret_key_base_change_me_000000000000000000000000000000000000",
   http: [
     ip: {127, 0, 0, 1},
@@ -524,6 +535,7 @@ config :salix_agent,
 
 # schedule_manager tool backend (runtime seam — no compile-time dep/cycle).
 config :salix_agent, schedules_mod: SalixCluster.Schedules
+config :salix_verified_kernel, clock: SystemsClock
 config :salix_calendar, task_change_feed_mod: SalixCluster.TaskSchedules
 # OAuth control-plane reads for the agent-facing OAuth tools + Exec
 # credential_env resolution (contract C3; willow's group bindings / tenant
@@ -656,3 +668,5 @@ end
 
 # Comma owns Router identity and the database policy. Other surfaces are unchanged.
 config :billing_core, llm_billing_policy: Comma.Billing.RouterModels
+
+config :salix_agent, compute_access_mod: Comma.ComputeAgentAccess

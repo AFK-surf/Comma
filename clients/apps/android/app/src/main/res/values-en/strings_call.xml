@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="call_open">Call</string>
+    <string name="call_calling">Calling…</string>
+    <string name="call_ending">Ending…</string>
+    <string name="call_ended">Call ended</string>
+    <string name="call_failed">Call failed</string>
+    <string name="call_interrupted">Call interrupted</string>
+    <string name="call_not_connected">Call not connected</string>
+    <string name="call_disabled">Voice calls are disabled for this workspace.</string>
+    <string name="call_microphone_settings">Allow microphone access in Android Settings, then try again.</string>
+    <string name="call_output_failed">Could not change audio output.</string>
+    <string name="call_minimize">Minimize call</string>
+    <string name="call_expand">Expand call</string>
+    <string name="call_mute">Mute</string>
+    <string name="call_unmute">Unmute</string>
+    <string name="call_end">End</string>
+    <string name="call_output_title">Change audio output</string>
+    <string name="call_output_headphones">Headphones</string>
+    <string name="call_output_bluetooth">Bluetooth</string>
+    <string name="call_output_speaker">Speaker</string>
+    <string name="call_output_phone">Phone</string>
+    <string name="call_output_selected">Selected</string>
+    <string name="call_log_ended">%1$s · Call ended</string>
+    <string name="call_end_call">End call</string>
+</resources>

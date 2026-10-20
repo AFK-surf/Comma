@@ -59,7 +59,11 @@ defmodule CommaWeb.MemberSourceIngest do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"profile_id" => profile_id, "source_id" => source_id}}) do
+    # Every line of this job names whose source it reads.
+    Logger.metadata(profile_id: profile_id, source_id: source_id)
+
     with %RecommendationProfile{} = profile <- Comma.Repo.get(RecommendationProfile, profile_id),
+         Logger.metadata(user_id: profile.user_id, workspace_id: profile.workspace_id),
          {:ok, %{"status" => "active"} = user} <- Comma.Accounts.get_user(profile.user_id),
          {:ok, workspace} <- Comma.Workspaces.authorize(user, %{}, profile.workspace_id),
          true <- workspace["owner_user_id"] == profile.user_id,
@@ -81,7 +85,11 @@ defmodule CommaWeb.MemberSourceIngest do
   end
 
   def perform(%Oban.Job{args: %{"group_id" => group, "user_id" => owner}}) do
+    # Every line of this job names whose collection it is.
+    Logger.metadata(user_id: owner, group_id: group)
+
     with {:ok, workspace, ctx, home} <- HomeMail.context(%{"id" => owner}, %{}, group),
+         Logger.metadata(workspace_id: workspace["id"]),
          true <- workspace["owner_user_id"] == owner,
          # This chain replaced the default proactive Loops; they converge here.
          :ok <- ProactiveWatch.retire_defaults(ctx, owner),
@@ -140,6 +148,8 @@ defmodule CommaWeb.MemberSourceIngest do
       # messages. Arrivals that Routine records wait for the next chain run.
       if opts[:proactive] == true do
         MemberSourceTriggers.ensure(workspace, profile.id)
+        # The portrait tells the consumer which arrivals are the owner's.
+        CommaWeb.MemberPortrait.enqueue(profile)
         # The notebook shows each source's latest read.
         CommaWeb.ProactiveNotebook.enqueue(workspace["default_group_id"], owner)
 
@@ -191,7 +201,10 @@ defmodule CommaWeb.MemberSourceIngest do
     do:
       RecommendationSourceCollector.collect(
         workspace,
-        Enum.filter(profile.sources, &(&1["connectionId"] in source_ids)),
+        with_targets(
+          workspace,
+          Enum.filter(profile.sources, &(&1["connectionId"] in source_ids))
+        ),
         opts |> Keyword.take([:collection_timeout_ms]) |> Keyword.put(:member_user_id, owner)
       )
 
@@ -200,7 +213,7 @@ defmodule CommaWeb.MemberSourceIngest do
   `:max_age_s` and the collector's `:collection_timeout_ms`.
   """
   def collection(workspace, profile, opts) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
 
     with {:ok, sources} <-
            pooled(workspace, profile, MemberSourceItems.enabled_source_ids(profile), opts) do
@@ -212,9 +225,19 @@ defmodule CommaWeb.MemberSourceIngest do
              %{state: %{failure: %{} = failure} = state} <- sources,
              do: Map.put(failure, "sourceId", state.source_id)
            ),
-         duration_ms: System.monotonic_time(:millisecond) - started
+         duration_ms: SystemsClock.monotonic_time(:millisecond) - started
        }}
     end
+  end
+
+  # The owner's portrait names where their work is reported; the Slack and
+  # GitHub reads add those places hourly (`CommaWeb.MemberPortrait.targets/1`).
+  defp with_targets(workspace, sources) do
+    targets =
+      workspace |> CommaWeb.MemberPortrait.statements() |> CommaWeb.MemberPortrait.targets()
+
+    now = SystemsClock.utc_now()
+    Enum.map(sources, &CommaWeb.MemberPortrait.with_targets(&1, targets, now))
   end
 
   # The pool is collected again first when an enabled source was not attempted
@@ -247,7 +270,7 @@ defmodule CommaWeb.MemberSourceIngest do
         do: {state.source_id, subject}
       )
 
-  # One pooled source as a collected fact. Gmail keeps the mail identities the
+  # One pooled source as a collected fact. Consented mail keeps identities the
   # mail Task projection and Routine attention items read.
   defp fact(%{state: state, items: items}) do
     %{
@@ -259,7 +282,7 @@ defmodule CommaWeb.MemberSourceIngest do
       "bound" => state.bound,
       "items" => Enum.map(items, &candidate/1),
       "data" =>
-        if(state.toolkit == "gmail",
+        if(state.toolkit in ~w(gmail outlook),
           do: %{
             "messages" =>
               Enum.map(items, fn item ->
@@ -284,18 +307,19 @@ defmodule CommaWeb.MemberSourceIngest do
       "recipient" => item.recipient,
       "context" => item.context,
       "facts" => item.facts,
-      "promptContext" => item.prompt_context,
+      "quote" => item.quote,
       "sourceVersion" => item.fingerprint
     }
 
   @doc """
   After the mail Task projection removed handled or finished mail, the pooled
-  Gmail candidates follow the mail that remains.
+  mail candidates follow the mail that remains.
   """
   def keep_mail(collection) do
     facts =
       Enum.map(collection.facts, fn
-        %{"toolkit" => "gmail", "items" => items, "data" => data} = fact ->
+        %{"toolkit" => toolkit, "items" => items, "data" => data} = fact
+        when toolkit in ~w(gmail outlook) ->
           urls = MapSet.new(data["messages"] || [], & &1["webUrl"])
           Map.put(fact, "items", Enum.filter(items, &MapSet.member?(urls, &1["url"])))
 
@@ -347,8 +371,11 @@ defmodule CommaWeb.MemberSourceIngest do
     %{collected: collected, failed: Map.drop(failures, Map.keys(collected))}
   end
 
-  # Every admitted member candidate of each collected source, normalized once.
-  defp items(facts) do
+  @doc """
+  Every admitted member candidate of each collected source, normalized once,
+  as pool item attributes grouped by source ID.
+  """
+  def items(facts) do
     context = RecommendationDraft.prepare(facts, Recommendations.source_evidence(facts), "member")
 
     context
@@ -366,14 +393,7 @@ defmodule CommaWeb.MemberSourceIngest do
   defp item(candidate, fact) do
     prompt_context = RecommendationDraft.prompt_context(candidate)
 
-    mail =
-      if fact["toolkit"] == "gmail",
-        do:
-          Enum.find(
-            mail_data(fact["data"])["messages"] || [],
-            &(&1["webUrl"] == candidate["url"])
-          ) || %{},
-        else: %{}
+    provider_ids = provider_ids(fact, candidate["url"])
 
     %{
       "item_key" => digest(candidate["url"]),
@@ -384,11 +404,32 @@ defmodule CommaWeb.MemberSourceIngest do
       "excerpt" => candidate["excerpt"],
       "context" => candidate["context"],
       "prompt_context" => prompt_context,
+      "quote" => candidate["quote"],
       "relationship" => candidate["relationship"],
       "recipient" => candidate["recipient"],
       "facts" => candidate["facts"] || %{},
-      "provider_ids" => Map.take(mail, ~w(threadId messageId))
+      "provider_ids" => provider_ids
     }
+  end
+
+  @doc false
+  # Preserve a Graph id only when the original, collected resource's webUrl
+  # exactly matches the admitted candidate. Never decode an id from the URL.
+  def provider_ids(fact, url) do
+    data = mail_data(fact["data"])
+
+    mail =
+      if fact["toolkit"] in ~w(gmail outlook),
+        do: Enum.find(data["messages"] || [], &(is_map(&1) and &1["webUrl"] == url)) || %{},
+        else: %{}
+
+    event =
+      if fact["toolkit"] == "outlook",
+        do: Enum.find(data["items"] || [], &(is_map(&1) and &1["webUrl"] == url)) || %{},
+        else: %{}
+
+    Map.take(mail, ~w(threadId messageId))
+    |> Map.merge(if(is_binary(event["id"]), do: %{"eventId" => event["id"]}, else: %{}))
   end
 
   # A bounded collection wraps large source data; the mail list is inside.

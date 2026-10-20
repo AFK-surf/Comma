@@ -2,7 +2,7 @@ defmodule SalixSignalProto.SenderKey.SendingTest do
   # Send-side rules of CRS-09c section 6: distribution bookkeeping, rotation,
   # recipient selection and the group send token that the server checks
   # (CRS-09a section 15.6, run with the test server side).
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.Group.{Endorsements, Params, ServerParams, Uid}
   alias SalixSignalProto.SenderKey.{Record, Sending}

@@ -5,7 +5,7 @@ defmodule SalixAgent.QueuePressure do
 
   One Router session serves every conversation of a workspace in one queue, and
   a human request that arrives while another human's activation is open waits
-  until that activation ends (`tla/salix/RouterSourceActivation.tla`). The model
+  until that activation ends (`VerifiedKernel.Session.StateQuery.materializeBatch`). The model
   cannot see that queue, so a Router that keeps taking direct shell or research
   steps for one request blocks everyone else without knowing it. Measured on
   staging on 2026-09-14: two requests waited 33 minutes behind one Router
@@ -36,7 +36,7 @@ defmodule SalixAgent.QueuePressure do
   state map the session adopted last time (`known["queue_pressure"]`).
   """
   @spec prepare(term(), map(), map(), DateTime.t()) :: {[map()], map()}
-  def prepare(session, session_config, known, now \\ DateTime.utc_now()) do
+  def prepare(session, session_config, known, now \\ SystemsClock.utc_now()) do
     previous = known["queue_pressure"] || %{}
 
     if router?(session_config) do
@@ -88,13 +88,13 @@ defmodule SalixAgent.QueuePressure do
         listed ++
         if(omitted > 0, do: ["- #{omitted} more"], else: []) ++
         [
-          "Finish the current request without further direct execution or investigation steps: transfer its remaining work to a Task with task.create and wait_for that result, or reply and end_turn. Do not answer the queued requests here; each arrives as its own input once this activation ends."
+          "Finish the current request without further direct execution or investigation steps. Transfer remaining work to a Task with task.create and wait_for that result. If the current request is complete, call end_turn with outcome=done and reply={tool,params} for its unsent final answer. Include its IFC declaration in reply when needed. If the answer was already sent, omit reply. Queued requests have separate activations and do not prevent the current request from ending. Do not answer them here."
         ]
 
     content = Enum.join(lines, "\n")
 
     %{
-      "runtime_message_id" => "queue-pressure:" <> Ecto.UUID.generate(),
+      "runtime_message_id" => "queue-pressure:" <> SystemsRuntime.Proc.uuid(),
       "runtime_message_type" => "queue_pressure",
       "content_kind" => "model_context",
       "summary" =>

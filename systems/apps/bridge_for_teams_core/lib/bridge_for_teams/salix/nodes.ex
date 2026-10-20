@@ -25,7 +25,7 @@ defmodule BridgeForTeams.Salix.Nodes do
   """
   @spec salix_nodes() :: [node()]
   def salix_nodes do
-    case Application.get_env(:bridge_for_teams_core, :salix_nodes_override) do
+    case SystemsRuntime.get_env(:bridge_for_teams_core, :salix_nodes_override) do
       nodes when is_list(nodes) ->
         Enum.sort(nodes)
 
@@ -58,7 +58,7 @@ defmodule BridgeForTeams.Salix.Nodes do
   end
 
   defp choose(nodes, nil) do
-    Enum.random(nodes)
+    Enum.at(nodes, SystemsRuntime.Proc.uniform(length(nodes)) - 1)
   end
 
   defp choose(nodes, hint) do

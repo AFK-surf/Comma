@@ -17,7 +17,9 @@ defmodule SalixAgent.Tools.DynamicUI do
   @card_brands ~w(apple apple-music app-store google google-play nvidia bitcoin ethereum github linear notion slack figma jira atlassian vercel supabase framer webflow todoist npm stack-overflow product-hunt replit x reddit discord telegram wechat whatsapp tiktok instagram facebook linkedin threads bluesky pinterest snapchat medium substack youtube spotify twitch steam playstation xbox nintendo-switch chrome safari firefox duolingo openai anthropic claude gemini deepseek qwen kimi minimax mistral meta-ai grok perplexity midjourney microsoft-copilot)
 
   @description """
-  Create a Comma widget from supplied data. Returns a content block for delivery through the Task result path.
+  Create a Comma widget from supplied data.
+
+  Returns a content block for delivery through the Task result path.
   Widgets can present and filter data, but cannot fetch it or perform business actions.
   No credentials or private data in external resource URLs. Help contains the SDK and presentation contract.
   """
@@ -27,12 +29,13 @@ defmodule SalixAgent.Tools.DynamicUI do
 
   Widgets suit forecasts, comparisons, trends, and interactive results with useful data. Simple answers and missing-data reports remain text.
   Partial coverage can show known facts with the missing range stated. The original user's format choice governs.
-  Sources and observation times belong in visible text and the fallback summary.
+  Sources and observation times belong in the visible widget and the fallback summary.
+  Widget data gives observation times as ISO times; the widget shows them in the viewer's time zone.
 
   Comma card templates provide layout, typography, icons, color, and theme for common results. Custom HTML is for questions no template fits.
   Archetype, information density, liveness, and interaction are independent choices. Size controls detail rather than fixed height:
   sm has one main object and label, md adds a supporting band, and lg supports 4-6 list rows.
-  The primary decision should stand out. Requested detail can remain accessible through local filtering or paging.
+  The primary decision should stand out. Long requested detail can remain accessible through local filtering or paging.
 
   The shared shell uses the Comma primary surface, 0.5px border, 16px radius and padding, and 8px internal gaps.
   Text roles are 12px title, 24px main value, and 13px body. Semantic accents follow the content and current theme.
@@ -87,7 +90,7 @@ defmodule SalixAgent.Tools.DynamicUI do
         "data" => %{
           "type" => "object",
           "description" =>
-            "Already fetched data. No secrets. Include source and observation time for current facts."
+            "Already fetched data. No secrets. Include the source and the observation time, as an ISO time, for current facts."
         },
         "summary" => %{
           "type" => "string",
@@ -351,9 +354,19 @@ defmodule SalixAgent.Tools.DynamicUI do
         ["#{at} must be one of #{allowed}, got #{card_value(value, segments)}"]
 
       %ExJsonSchema.Validator.Error.Pattern{} ->
-        if schema_at(schema, segments)["title"] == "url",
-          do: ["#{at} must be an HTTPS URL"],
-          else: ["#{at} must not be blank"]
+        case schema_at(schema, segments)["title"] do
+          "url" ->
+            ["#{at} must be an HTTPS URL"]
+
+          "untimed" ->
+            [
+              "#{at} must not be blank or hold a clock time or time zone. " <>
+                "Pass the moment as an ISO time in observedAt, or in at for a feed item"
+            ]
+
+          _other ->
+            ["#{at} must not be blank"]
+        end
 
       %ExJsonSchema.Validator.Error.AnyOf{} ->
         types = schema_at(schema, segments)["anyOf"] |> Enum.map(& &1["type"])
@@ -509,6 +522,12 @@ defmodule SalixAgent.Tools.DynamicUI do
 
       Card templates (comma.card):
       Comma ships native templates for common results. Use one when it fits the question.
+      A template that holds every requested item wins over extra controls. Put secondary
+      facts in its excerpt or tags instead of leaving it. When a card needs filters (see
+      size below), feed and options filter their own rows with filters and filterKeys;
+      never hand-author a filter around a card. An item shows under the filters its
+      filterKeys name, or under every filter when it has none. The first filter starts
+      selected, so every keyed item lists its key.
       Author html by hand only when no template fits. Example:
         html: <section id="card"></section>
         script: comma.card('card', 'forecast', comma.data.forecast);
@@ -583,7 +602,8 @@ defmodule SalixAgent.Tools.DynamicUI do
       - lg: the same main object plus 4-6 list rows. Show a truthful remaining count when useful.
       The reference's 1x1, 2x1 and 2x2 describe density, not fixed chat dimensions.
       Width can fill the chat. Height is natural. Never clip facts to enforce a square.
-      Keep all user-requested details available through functional local filters or paging.
+      Keep all user-requested details available. A list of 6 rows or fewer shows them all:
+      add no filters or paging unless the user asks. Longer lists use functional local filters or paging.
       Narrow width reflows the same content; it must not silently change the requested coverage.
 
       liveness determines how displayed facts change:
@@ -755,7 +775,7 @@ defmodule SalixAgent.Tools.DynamicUI do
     task_id =
       if origin["conversation_kind"] == "agent_task", do: origin["conversation_id"], else: nil
 
-    id = Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+    id = Base.url_encode64(SystemsRuntime.Proc.random_bytes(18), padding: false)
     path = "/.salix/ui/" <> id <> ".json"
 
     with {:ok, event} <-

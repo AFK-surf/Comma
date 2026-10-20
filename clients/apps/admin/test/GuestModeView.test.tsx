@@ -1,13 +1,15 @@
-import { render, screen, waitFor, within } from "@comma/test-utils/render";
+import { Effect } from "effect";
+import { screen, within } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
-import { GuestModeView } from "../src/GuestModeView";
-import {
-  AdminApiError,
-  type AdminApi,
-  type GuestModePolicy,
-  type GuestModeSettings,
+import type {
+  AdminApiShape,
+  GuestModePolicy,
+  GuestModeSettings,
 } from "../src/adminApi";
+import { makeGuestModeModel } from "../src/GuestModeModel";
+import { GuestModeView } from "../src/GuestModeView";
+import { mountModel, ok, refuse, review, settle } from "./support";
 
 const loaded: GuestModePolicy = {
   enabled: false,
@@ -20,14 +22,6 @@ const loaded: GuestModePolicy = {
   created_today: 12,
 };
 
-type User = ReturnType<typeof userEvent.setup>;
-
-async function confirm(user: User, title: string, value: string) {
-  const dialog = screen.getByRole("dialog", { name: title });
-  await user.type(within(dialog).getByRole("textbox"), value);
-  await user.click(within(dialog).getByRole("button", { name: "Confirm" }));
-}
-
 function policyForm(policy: HTMLElement) {
   const scope = within(policy);
   return {
@@ -36,32 +30,27 @@ function policyForm(policy: HTMLElement) {
     enabled: scope.getByRole("switch", { name: /Guest mode enabled/ }),
     lifetime: scope.getByRole("spinbutton", { name: /Guest session lifetime/ }),
     powDifficulty: scope.getByRole("spinbutton", { name: /Proof-of-work difficulty/ }),
-    reason: scope.getByRole("textbox", { name: /^Reason/ }),
-    save: scope.getByRole("button", { name: "Save guest mode" }),
   };
 }
 
-it("loads guest mode and saves the edited policy with its revision", async () => {
-  const update = vi.fn(async (settings: GuestModeSettings) => ({
-    ...loaded,
-    ...settings,
-    revision: settings.revision + 1,
-  }));
-  const api = {
-    getGuestMode: vi.fn(async () => loaded),
-    updateGuestMode: update,
-  } as unknown as AdminApi;
-  const openFreeRouterModels = vi.fn();
-  const user = userEvent.setup();
-  render(
-    <GuestModeView
-      api={api}
-      onAccessDenied={vi.fn()}
-      onOpenFreeRouterModels={openFreeRouterModels}
-    />
-  );
+async function mountGuestMode(api: Partial<AdminApiShape>) {
+  const view = mountModel(makeGuestModeModel, { api });
+  view.render(<GuestModeView model={view.model} />);
+  await settle();
+  return view;
+}
 
-  const tenant = await screen.findByRole("region", { name: "Guest tenant" });
+it("loads guest mode and saves the edited policy with its revision", async () => {
+  const update = vi.fn((settings: GuestModeSettings) =>
+    ok({ ...loaded, ...settings, revision: settings.revision + 1 })
+  );
+  const view = await mountGuestMode({
+    getGuestMode: Effect.suspend(vi.fn(() => ok(loaded))),
+    updateGuestMode: update,
+  });
+  const user = userEvent.setup({ delay: null });
+
+  const tenant = screen.getByRole("region", { name: "Guest tenant" });
   expect(within(tenant).getByText("tenant_guest_a")).toBeVisible();
   expect(within(tenant).getByText("12 of 500")).toBeVisible();
   const policy = screen.getByRole("region", { name: "Guest mode policy" });
@@ -72,18 +61,20 @@ it("loads guest mode and saves the edited policy with its revision", async () =>
   expect(form.lifetime).toHaveValue(7);
   expect(form.powDifficulty).toHaveValue(14);
 
-  const freeRouterLink = within(policy).getByRole("button", {
-    name: "Open Free Router models",
-  });
-  await user.click(freeRouterLink);
-  expect(openFreeRouterModels).toHaveBeenCalled();
+  await user.click(
+    within(policy).getByRole("button", { name: "Open Free Router models" })
+  );
+  await settle();
+  expect(view.links.select).toHaveBeenCalledWith("free-models");
+  expect(
+    screen.queryByRole("region", { name: "Unsaved changes" })
+  ).not.toBeInTheDocument();
 
   await user.click(form.enabled);
   await user.clear(form.concurrency);
   await user.type(form.concurrency, "600");
-  await user.type(form.reason, "Open trial");
   expect(within(policy).getByText("Enter a whole number from 1 to 512.")).toBeVisible();
-  expect(form.save).toBeDisabled();
+  expect(saveButton()).toBeDisabled();
   await user.clear(form.concurrency);
   await user.type(form.concurrency, "16");
   await user.clear(form.lifetime);
@@ -91,13 +82,21 @@ it("loads guest mode and saves the edited policy with its revision", async () =>
   await user.clear(form.powDifficulty);
   await user.type(form.powDifficulty, "25");
   expect(within(policy).getByText("Enter a whole number from 8 to 24.")).toBeVisible();
-  expect(form.save).toBeDisabled();
+  expect(saveButton()).toBeDisabled();
   await user.clear(form.powDifficulty);
   await user.type(form.powDifficulty, "16");
-  await user.click(form.save);
-  await confirm(user, "Save guest mode?", "update-guest-policy:comma");
+  expect(screen.getByRole("region", { name: "Unsaved changes" })).toHaveTextContent(
+    "4 unsaved changes"
+  );
+  await user.click(saveButton());
+  await settle();
+  const dialog = screen.getByRole("dialog", { name: "Save guest mode?" });
+  expect(dialog).toHaveTextContent("Guest session lifetime7 days→2 days");
+  await review(user, "Save guest mode?", "Open trial", "guest mode");
 
-  await screen.findByText("Saved. New guest sessions use these settings.");
+  expect(
+    screen.getByText("Saved. New guest sessions use these settings.")
+  ).toBeVisible();
   expect(update).toHaveBeenCalledWith(
     {
       enabled: true,
@@ -112,79 +111,92 @@ it("loads guest mode and saves the edited policy with its revision", async () =>
       reason: "Open trial",
     })
   );
-  expect(policyForm(policy).save).toBeDisabled();
+  expect(
+    screen.queryByRole("region", { name: "Unsaved changes" })
+  ).not.toBeInTheDocument();
+});
+
+function saveButton() {
+  return screen.getByRole("button", { name: "Save guest mode…" });
+}
+
+it("discards edits back to the saved policy", async () => {
+  await mountGuestMode({ getGuestMode: Effect.suspend(vi.fn(() => ok(loaded))) });
+  const user = userEvent.setup({ delay: null });
+  const form = policyForm(screen.getByRole("region", { name: "Guest mode policy" }));
+  await user.clear(form.daily);
+  await user.type(form.daily, "900");
+  await user.click(screen.getByRole("button", { name: "Discard" }));
+  await settle();
+  expect(form.daily).toHaveValue(500);
+  expect(
+    screen.queryByRole("region", { name: "Unsaved changes" })
+  ).not.toBeInTheDocument();
 });
 
 it("reloads the latest policy when the saved revision is stale", async () => {
   const latest = { ...loaded, daily_creation_limit: 50, revision: 4 };
   const getGuestMode = vi
-    .fn<AdminApi["getGuestMode"]>()
-    .mockResolvedValueOnce(loaded)
-    .mockResolvedValueOnce(latest);
-  const update = vi.fn(async () => {
-    throw new AdminApiError(409, "guest_policy_conflict", "guest_policy_conflict");
+    .fn()
+    .mockReturnValueOnce(ok(loaded))
+    .mockReturnValueOnce(ok(latest));
+  const update = vi.fn(() => refuse(409, "guest_policy_conflict"));
+  await mountGuestMode({
+    getGuestMode: Effect.suspend(getGuestMode),
+    updateGuestMode: update,
   });
-  const api = { getGuestMode, updateGuestMode: update } as unknown as AdminApi;
-  const user = userEvent.setup();
-  render(<GuestModeView api={api} onAccessDenied={vi.fn()} />);
+  const user = userEvent.setup({ delay: null });
 
-  const policy = await screen.findByRole("region", { name: "Guest mode policy" });
+  const policy = screen.getByRole("region", { name: "Guest mode policy" });
   const form = policyForm(policy);
   await user.clear(form.daily);
   await user.type(form.daily, "1000");
-  await user.type(form.reason, "Raise cap");
-  await user.click(form.save);
-  await confirm(user, "Save guest mode?", "update-guest-policy:comma");
+  await user.click(saveButton());
+  await settle();
+  await review(user, "Save guest mode?", "Raise cap", "guest mode");
 
-  await screen.findByText(/Guest mode changed after this page loaded/);
-  await waitFor(() =>
-    expect(screen.getByRole("spinbutton", { name: /Daily creation/ })).toHaveValue(50)
-  );
+  expect(screen.getByText(/Guest mode changed after this page loaded/)).toBeVisible();
+  expect(screen.getByRole("spinbutton", { name: /Daily creation/ })).toHaveValue(50);
   expect(getGuestMode).toHaveBeenCalledTimes(2);
   expect(update).toHaveBeenCalledTimes(1);
 });
 
 it("blocks enabling guest mode until a guest tenant exists", async () => {
-  const api = {
-    getGuestMode: vi.fn(async () => ({ ...loaded, salix_tenant_id: null })),
-  } as unknown as AdminApi;
-  const user = userEvent.setup();
-  render(<GuestModeView api={api} onAccessDenied={vi.fn()} />);
+  await mountGuestMode({
+    getGuestMode: Effect.suspend(vi.fn(() => ok({ ...loaded, salix_tenant_id: null }))),
+  });
+  const user = userEvent.setup({ delay: null });
 
-  const policy = await screen.findByRole("region", { name: "Guest mode policy" });
+  const policy = screen.getByRole("region", { name: "Guest mode policy" });
   const form = policyForm(policy);
   await user.click(form.enabled);
-  await user.type(form.reason, "Open trial");
   expect(within(policy).getByRole("alert")).toHaveTextContent(
     "Create a guest tenant before you enable guest mode."
   );
-  expect(form.save).toBeDisabled();
+  expect(saveButton()).toBeDisabled();
 });
 
 it("creates a new guest tenant after an explained confirmation", async () => {
-  const create = vi.fn(async (revision: number) => ({
-    ...loaded,
-    salix_tenant_id: "tenant_guest_b",
-    revision: revision + 1,
-  }));
-  const api = {
-    getGuestMode: vi.fn(async () => loaded),
+  const create = vi.fn((revision: number) =>
+    ok({ ...loaded, salix_tenant_id: "tenant_guest_b", revision: revision + 1 })
+  );
+  await mountGuestMode({
+    getGuestMode: Effect.suspend(vi.fn(() => ok(loaded))),
     createGuestTenant: create,
-  } as unknown as AdminApi;
-  const user = userEvent.setup();
-  render(<GuestModeView api={api} onAccessDenied={vi.fn()} />);
+  });
+  const user = userEvent.setup({ delay: null });
 
-  const tenant = await screen.findByRole("region", { name: "Guest tenant" });
+  const tenant = screen.getByRole("region", { name: "Guest tenant" });
   const scope = within(tenant);
-  await user.type(scope.getByRole("textbox", { name: /^Reason/ }), "Rotate");
   await user.click(scope.getByRole("button", { name: "Create new guest tenant" }));
+  await settle();
   const dialog = screen.getByRole("dialog", { name: "Create new guest tenant?" });
   expect(dialog).toHaveTextContent(
     "New guests go to the new tenant. Existing guest workspaces stay"
   );
-  await confirm(user, "Create new guest tenant?", "create-guest-tenant:comma");
+  await review(user, "Create new guest tenant?", "Rotate", "guest mode");
 
-  expect(await scope.findByText("tenant_guest_b")).toBeVisible();
+  expect(scope.getByText("tenant_guest_b")).toBeVisible();
   expect(create).toHaveBeenCalledWith(
     3,
     expect.objectContaining({

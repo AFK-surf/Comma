@@ -31,7 +31,7 @@ defmodule SalixMeet.SlackThreadIndex do
         scope
         |> Map.put("provider", @provider)
         |> Map.put("meeting_id", meeting_id)
-        |> Map.put("created_at", System.system_time(:second))
+        |> Map.put("created_at", SystemsClock.system_time(:second))
 
       claim_once(scope, record, 1)
     else

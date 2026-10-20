@@ -478,5 +478,5 @@ defmodule SalixMeet.CalendarProjection do
   defp persistable_error(error), do: inspect(error)
   defp trim(value), do: String.trim(to_string(value || ""))
 
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 end

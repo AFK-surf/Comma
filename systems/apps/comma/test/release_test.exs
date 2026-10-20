@@ -1,6 +1,7 @@
 defmodule Comma.ReleaseTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SystemsClock.Test, scope: ["Elixir.SalixStore", "Elixir.Comma"]
   import ExUnit.CaptureIO
 
   test "completed Group handoff still finishes late Cloudflare profile conversion" do
@@ -36,12 +37,61 @@ defmodule Comma.ReleaseTest do
     assert %{"stage" => "cloudflare_profile", "source" => "claims"} =
              decode_transfer_cursor(cursor)
 
-    assert nil ==
-             transfer_cursor(
-               capture_io(fn ->
-                 assert :ok = Comma.Release.transfer_agent_configuration_page(cursor)
-               end)
+    # The last page closes the station roster's rollout window: core rollout
+    # has succeeded, so no server of the release before writes Comma's tables.
+    SalixStore.Repo.query!(
+      "UPDATE salix_cutover_markers SET evidence = '{\"phase\":\"window\"}' WHERE name = 'station_roster_v1'"
+    )
+
+    SalixStore.Repo.query!(
+      "DELETE FROM salix_cutover_markers WHERE name = 'group_cloud_vm_switch_v1'"
+    )
+
+    on_exit(fn ->
+      SalixStore.Repo.query!(
+        "UPDATE salix_cutover_markers SET evidence = '{\"phase\":\"complete\"}' WHERE name = 'station_roster_v1'"
+      )
+
+      SalixStore.Repo.query!(
+        "DELETE FROM salix_cutover_markers WHERE name = 'group_cloud_vm_switch_v1'"
+      )
+    end)
+
+    cursor =
+      transfer_cursor(
+        capture_io(fn ->
+          assert :ok = Comma.Release.transfer_agent_configuration_page(cursor)
+        end)
+      )
+
+    assert %{"stage" => "station_roster"} = decode_transfer_cursor(cursor)
+    assert Comma.Stations.SalixCopy.phase() == {:ok, :window}
+
+    cursor =
+      transfer_cursor(
+        capture_io(fn ->
+          assert :ok = Comma.Release.transfer_agent_configuration_page(cursor)
+        end)
+      )
+
+    assert Comma.Stations.SalixCopy.phase() == {:ok, :complete}
+
+    # Then the Group Cloud VM switch converges: Salix's pages, then the Comma
+    # Workspaces', then the BFT Projects', whose last page answers no cursor.
+    assert %{"stage" => "group_cloud_vm"} = decode_transfer_cursor(cursor)
+    assert finish_transfer(cursor, 0) == "group_cloud_vm"
+
+    assert %{rows: [[%{"phase" => "complete", "position" => nil}]]} =
+             SalixStore.Repo.query!(
+               "SELECT evidence FROM salix_cutover_markers WHERE name = 'group_cloud_vm_switch_v1'"
              )
+
+    # A later run of the job finds them done and runs no page.
+    output =
+      capture_io(fn -> assert :ok = Comma.Release.transfer_agent_configuration_page(cursor) end)
+
+    [_, body] = Regex.run(~r/COMMA_AGENT_TRANSFER_RESULT:(\{[^\n]+\})/, output)
+    assert Jason.decode!(body) == %{"processed" => 0, "next_cursor" => nil}
 
     assert {:ok, rec} = SalixStore.Compute.group_workload(group)
     assert get_in(rec, ["provider_spec", "profile_key"]) == "cf-standard-2"
@@ -66,13 +116,13 @@ defmodule Comma.ReleaseTest do
       }
     end
 
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     assert :ok =
              Comma.Release.execute_plan_stage("online", manifest, ["billing-1"],
                plan: plan,
                online_executor: fn ids ->
-                 send(parent, {:executed, ids})
+                 SystemsRuntime.Proc.send(parent, {:executed, ids})
                  :ok
                end
              )
@@ -104,7 +154,7 @@ defmodule Comma.ReleaseTest do
       )
     end
 
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
     calls = start_supervised!({Agent, fn -> 0 end})
 
     converging_plan = fn ->
@@ -124,7 +174,7 @@ defmodule Comma.ReleaseTest do
                ["comma-20260723000014", "comma-20260723000007"],
                plan: converging_plan,
                online_executor: fn ids ->
-                 send(parent, {:executed_in_order, ids})
+                 SystemsRuntime.Proc.send(parent, {:executed_in_order, ids})
                  :ok
                end
              )
@@ -139,7 +189,7 @@ defmodule Comma.ReleaseTest do
     # no longer pending. execute_plan_stage must adopt it (idempotent no-op via
     # the executor), not raise "authorized pending ids drift".
     manifest = "sha256:test"
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     applied_plan = fn ->
       %{manifestDigest: manifest, pendingSteps: [], providerPendingIDs: []}
@@ -152,7 +202,7 @@ defmodule Comma.ReleaseTest do
                ["salix-20260724000102"],
                plan: applied_plan,
                cutover_executor: fn ids ->
-                 send(parent, {:adopted_cutover, ids})
+                 SystemsRuntime.Proc.send(parent, {:adopted_cutover, ids})
                  :ok
                end
              )
@@ -215,13 +265,13 @@ defmodule Comma.ReleaseTest do
   end
 
   test "exclusive Ecto and analytics classifications execute only inside cutover" do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
     schema_ids = ["billing-20991231000001", "analytics-20991231000002"]
 
     assert :ok =
              Comma.Release.execute_cutover_steps(schema_ids,
                schema_runner: fn ids ->
-                 send(parent, {:exclusive_schema, ids})
+                 SystemsRuntime.Proc.send(parent, {:exclusive_schema, ids})
                  :ok
                end
              )
@@ -234,12 +284,12 @@ defmodule Comma.ReleaseTest do
   end
 
   test "cutover executes the terminal PostgreSQL marker in the authorized schema batch" do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     assert :ok =
              Comma.Release.execute_cutover_steps(["comma-20260723000003"],
                schema_runner: fn ids ->
-                 send(parent, {:marker_migration, ids})
+                 SystemsRuntime.Proc.send(parent, {:marker_migration, ids})
                  :ok
                end
              )
@@ -262,6 +312,20 @@ defmodule Comma.ReleaseTest do
       "postconditions" => ["test"],
       "repair" => "retry"
     }
+  end
+
+  # Runs the handoff pages from `cursor` until the last; answers the stage of the last page.
+  defp finish_transfer(cursor, pages) when pages < 1_000 do
+    stage = decode_transfer_cursor(cursor)["stage"]
+
+    case transfer_cursor(
+           capture_io(fn ->
+             assert :ok = Comma.Release.transfer_agent_configuration_page(cursor)
+           end)
+         ) do
+      nil -> stage
+      next -> finish_transfer(next, pages + 1)
+    end
   end
 
   defp transfer_cursor(output) do

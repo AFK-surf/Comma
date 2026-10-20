@@ -2,8 +2,8 @@ defmodule BridgeForTeams.OnboardingTest do
   @moduledoc """
   Context tests for the dashboard first-run onboarding: role-based step lists,
   data-derived step completion (Agent Swarms / org OAuth apps via the
-  in-process Salix control plane / observed connections), the tour's effective
-  active step, UI-state writes, and the member→admin OAuth reminders.
+  in-process Salix control plane / observed connections), UI-state writes, and
+  the member→admin OAuth reminders.
   """
   use BridgeForTeams.DataCase, async: false
 
@@ -35,8 +35,6 @@ defmodule BridgeForTeams.OnboardingTest do
     assert snap.total == 3
     refute snap.all_done?
     assert snap.first_project == nil
-    # No active step until the user starts the tour.
-    assert snap.active_step == nil
   end
 
   test "swarm step derives from visible projects and prefers the user's own",
@@ -104,58 +102,18 @@ defmodule BridgeForTeams.OnboardingTest do
     assert Onboarding.snapshot(org, owner.id, "owner").all_done?
   end
 
-  test "effective active step advances past skipped steps", %{org: org, owner: owner} do
-    {:ok, _} = Onboarding.set_active_step(org.id, owner.id, "swarm")
-    {:ok, _} = Onboarding.skip_step(org.id, owner.id, "swarm")
-
-    assert Onboarding.snapshot(org, owner.id, "owner").active_step == "oauth"
-  end
-
-  test "effective active step advances past completed steps", %{org: org, owner: owner} do
-    {:ok, _} = Onboarding.set_active_step(org.id, owner.id, "swarm")
-    assert Onboarding.snapshot(org, owner.id, "owner").active_step == "swarm"
-
-    {:ok, _} =
-      Projects.create_project(org.id, %{"name" => "P", "slug" => "p"}, creator_user_id: owner.id)
-
-    # swarm is now done, so the tour points at the next undone step.
-    assert Onboarding.snapshot(org, owner.id, "owner").active_step == "oauth"
-
-    :ok = Onboarding.observe_connected(org.id, owner.id)
-    {:ok, _} = Onboarding.set_active_step(org.id, owner.id, "connect")
-    # connect already done -> wraps to the remaining undone step.
-    assert Onboarding.snapshot(org, owner.id, "owner").active_step == "oauth"
-  end
-
   test "ui state transitions", %{org: org, owner: owner} do
     state = Onboarding.get_state(org.id, owner.id)
     assert state.id == nil
-    refute state.welcome_seen_at
-
-    {:ok, _} = Onboarding.mark_welcome_seen(org.id, owner.id, active_step: "swarm")
-    state = Onboarding.get_state(org.id, owner.id)
-    assert state.welcome_seen_at
-    assert state.active_step == "swarm"
-    refute state.collapsed
-
-    {:ok, _} = Onboarding.set_collapsed(org.id, owner.id, true)
-    assert Onboarding.get_state(org.id, owner.id).collapsed
+    refute state.dismissed_at
 
     {:ok, _} = Onboarding.dismiss(org.id, owner.id)
     state = Onboarding.get_state(org.id, owner.id)
     assert state.dismissed_at
-    assert state.active_step == nil
-
-    {:ok, _} = Onboarding.resume(org.id, owner.id, "oauth")
-    state = Onboarding.get_state(org.id, owner.id)
-    refute state.dismissed_at
-    refute state.collapsed
-    assert state.active_step == "oauth"
 
     {:ok, _} = Onboarding.celebrate(org.id, owner.id)
     state = Onboarding.get_state(org.id, owner.id)
     assert state.celebrated_at
-    assert state.active_step == nil
   end
 
   test "oauth reminders are idempotent and listed for admins",

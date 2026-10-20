@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CommaSkill } from "../../../../api";
+import type { CommaSkill } from "@comma/core/api-schemas";
 import {
   deriveMentionedSkills,
   detectMentionTrigger,

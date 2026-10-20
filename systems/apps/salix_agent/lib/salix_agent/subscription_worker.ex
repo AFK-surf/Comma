@@ -1,12 +1,21 @@
 defmodule SalixAgent.SubscriptionWorker do
-  @moduledoc "Supervised subscription subprocess with bounded, acknowledged streams."
-  use GenServer
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
+  @moduledoc """
+  Supervised subscription subprocess with bounded, acknowledged streams.
+
+  The `:port_module` option defaults to `Port`. Test adapters implement its
+  `open/2`, `command/3` and `close/1` calls and deliver the same port messages.
+  """
+  use SystemsRuntime.Server
   alias SalixAgent.SubscriptionLog, as: Log
   @limit 64
   @frame_limit 16 * 1024 * 1024
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
   def request(op, body, credential \\ %{}, opts \\ []) do
@@ -20,11 +29,11 @@ defmodule SalixAgent.SubscriptionWorker do
         _ -> request_timeout(op, body)
       end
 
-    id = Integer.to_string(System.unique_integer([:positive, :monotonic]))
+    id = Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive, :monotonic]))
     payload = Jason.encode!(%{type: "call", id: id, op: op, body: body, credential: credential})
 
-    stats = :atomics.new(3, signed: false)
-    started = System.monotonic_time(:millisecond)
+    stats = SystemsRuntime.Atomics.new(3, signed: false)
+    started = SystemsClock.monotonic_time(:millisecond)
 
     observed_consume = fn bytes, current ->
       Log.frame(stats, bytes, started)
@@ -44,20 +53,20 @@ defmodule SalixAgent.SubscriptionWorker do
         if byte_size(payload) > @frame_limit do
           {:error, 413, "request_too_large", acc}
         else
-          monitor = Process.monitor(server)
-          reply_to = :erlang.alias()
+          monitor = SystemsRuntime.Proc.monitor(server)
+          reply_to = SystemsRuntime.Proc.alias()
 
           try do
-            case GenServer.call(server, {:start, id, payload, reply_to}, 5_000) do
+            case SystemsClock.call(server, {:start, id, payload, reply_to}, 5_000) do
               :ok -> receive_data(server, monitor, id, observed_consume, acc, timeout)
               {:error, code} -> {:error, 503, code, acc}
             end
           catch
             :exit, _ -> {:error, 503, "worker_unavailable", acc}
           after
-            :erlang.unalias(reply_to)
-            GenServer.cast(server, {:cancel, id, self()})
-            Process.demonitor(monitor, [:flush])
+            SystemsRuntime.Proc.unalias(reply_to)
+            SystemsRuntime.Server.cast(server, {:cancel, id, SystemsRuntime.Proc.self()})
+            SystemsRuntime.Proc.demonitor(monitor, [:flush])
             flush(id)
           end
         end
@@ -80,11 +89,11 @@ defmodule SalixAgent.SubscriptionWorker do
   end
 
   defp receive_data(server, monitor, id, consume, acc, {timeout_ms, timeout_code, next_timeout}) do
-    receive do
+    SystemsClock.vreceive do
       {:subscription, ^id, %{"type" => "data", "data" => data}} ->
         case consume.(Base.decode64!(data), acc) do
           {:cont, next} ->
-            GenServer.cast(server, {:ack, id, self()})
+            SystemsRuntime.Server.cast(server, {:ack, id, SystemsRuntime.Proc.self()})
             {idle_ms, idle_code} = next_timeout
             receive_data(server, monitor, id, consume, next, {idle_ms, idle_code, next_timeout})
 
@@ -106,14 +115,14 @@ defmodule SalixAgent.SubscriptionWorker do
   end
 
   defp flush(id) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:subscription, ^id, _} -> flush(id)
     after
       0 -> :ok
     end
   end
 
-  def server, do: Application.get_env(:salix_agent, :subscription_worker, __MODULE__)
+  def server, do: SystemsRuntime.get_env(:salix_agent, :subscription_worker, __MODULE__)
 
   # Reuse the provider clients' request construction and incremental parsers.
   # Req is only a response container here; no socket or HTTP request is created.
@@ -162,8 +171,10 @@ defmodule SalixAgent.SubscriptionWorker do
 
   @impl true
   def init(opts) do
-    Process.flag(:trap_exit, true)
-    {:ok, %{port: nil, calls: %{}, command: opts[:command]}}
+    SystemsRuntime.Proc.trap_exit(true)
+
+    {:ok,
+     %{port: nil, calls: %{}, command: opts[:command], port_module: opts[:port_module] || Port}}
   end
 
   @impl true
@@ -173,11 +184,15 @@ defmodule SalixAgent.SubscriptionWorker do
     else
       case ensure_port(state) do
         {:ok, state} ->
-          if Port.command(state.port, payload, [:nosuspend]) do
-            monitor = Process.monitor(pid)
+          if state.port_module.command(state.port, payload, [:nosuspend]) do
+            monitor = SystemsRuntime.Proc.monitor(pid)
 
             timer =
-              Process.send_after(self(), {:deadline, id}, SalixAgent.LLM.request_timeout_ms())
+              SystemsClock.send_after(
+                SystemsRuntime.Proc.self(),
+                {:deadline, id},
+                SalixAgent.LLM.request_timeout_ms()
+              )
 
             {:reply, :ok,
              put_in(state.calls[id], %{
@@ -196,13 +211,20 @@ defmodule SalixAgent.SubscriptionWorker do
     end
   end
 
-  defp ensure_port(%{port: port} = state) when is_port(port), do: {:ok, state}
+  defp ensure_port(%{port: port} = state) when not is_nil(port), do: {:ok, state}
 
   defp ensure_port(state) do
     {exe, args} =
       state.command || {Path.join(:code.priv_dir(:salix_agent), "subscription_worker"), []}
 
-    port = Port.open({:spawn_executable, exe}, [:binary, :exit_status, {:packet, 4}, args: args])
+    port =
+      state.port_module.open({:spawn_executable, exe}, [
+        :binary,
+        :exit_status,
+        {:packet, 4},
+        args: args
+      ])
+
     Log.emit("subscription_worker_started")
     {:ok, %{state | port: port}}
   rescue
@@ -225,7 +247,9 @@ defmodule SalixAgent.SubscriptionWorker do
   def handle_info({port, {:data, bytes}}, %{port: port} = state) do
     case Jason.decode(bytes) do
       {:ok, %{"id" => id, "type" => type} = event} when type in ["data", "done", "error"] ->
-        if call = state.calls[id], do: send(call.reply_to, {:subscription, id, event})
+        if call = state.calls[id],
+          do: SystemsRuntime.Proc.send(call.reply_to, {:subscription, id, event})
+
         {:noreply, if(type == "data", do: state, else: finish(state, id))}
 
       _ ->
@@ -257,7 +281,7 @@ defmodule SalixAgent.SubscriptionWorker do
         error_code: "worker_timeout"
       )
 
-      send(
+      SystemsRuntime.Proc.send(
         call.reply_to,
         {:subscription, id, %{"type" => "error", "status" => 504, "code" => "worker_timeout"}}
       )
@@ -275,7 +299,7 @@ defmodule SalixAgent.SubscriptionWorker do
   defp send_control(%{port: nil} = state, _, _), do: state
 
   defp send_control(state, kind, id) do
-    if Port.command(state.port, Jason.encode!(%{type: kind, id: id}), [:nosuspend]),
+    if state.port_module.command(state.port, Jason.encode!(%{type: kind, id: id}), [:nosuspend]),
       do: state,
       else: fail_calls(state)
   rescue
@@ -288,18 +312,18 @@ defmodule SalixAgent.SubscriptionWorker do
         state
 
       {call, calls} ->
-        Process.cancel_timer(call.timer)
-        Process.demonitor(call.monitor, [:flush])
+        SystemsClock.cancel_timer(call.timer)
+        SystemsRuntime.Proc.demonitor(call.monitor, [:flush])
         %{state | calls: calls}
     end
   end
 
   defp fail_calls(state) do
     Log.emit("subscription_worker_stopped", active_calls: map_size(state.calls))
-    if state.port, do: close_port(state.port)
+    if state.port, do: close_port(state)
 
     Enum.reduce(state.calls, %{state | port: nil}, fn {id, call}, acc ->
-      send(
+      SystemsRuntime.Proc.send(
         call.reply_to,
         {:subscription, id, %{"type" => "error", "status" => 503, "code" => "worker_down"}}
       )
@@ -308,8 +332,8 @@ defmodule SalixAgent.SubscriptionWorker do
     end)
   end
 
-  defp close_port(port) do
-    Port.close(port)
+  defp close_port(state) do
+    state.port_module.close(state.port)
   rescue
     _ -> :ok
   end

@@ -1,5 +1,5 @@
 defmodule SystemsObservability.HTTPPlugTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   import Plug.Conn
   import Plug.Test
 
@@ -50,21 +50,26 @@ defmodule SystemsObservability.HTTPPlugTest do
   end
 
   test "request completion emits a bounded stop event and preserves the response" do
-    handler = {__MODULE__, make_ref()}
-    test = self()
+    handler = {__MODULE__, SystemsRuntime.Proc.make_ref()}
+    test = SystemsRuntime.Proc.self()
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:comma_system, :http, :stop],
-        fn event, measurements, metadata, _ -> send(test, {event, measurements, metadata}) end,
+        fn event, measurements, metadata, _ ->
+          SystemsRuntime.Proc.send(test, {event, measurements, metadata})
+        end,
         nil
       )
 
-    on_exit(fn -> :telemetry.detach(handler) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler) end)
 
     conn = conn(:get, "/health")
-    conn = SystemsObservability.HTTPPlug.call(conn, endpoint: :comma_product_api, route: "/health")
+
+    conn =
+      SystemsObservability.HTTPPlug.call(conn, endpoint: :comma_product_api, route: "/health")
+
     conn = send_resp(conn, 200, "ok")
 
     assert conn.status == 200
@@ -82,18 +87,20 @@ defmodule SystemsObservability.HTTPPlugTest do
   end
 
   test "route extraction uses explicit, Plug, Phoenix, then resolver fallback precedence" do
-    handler = {__MODULE__, make_ref()}
-    test = self()
+    handler = {__MODULE__, SystemsRuntime.Proc.make_ref()}
+    test = SystemsRuntime.Proc.self()
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:comma_system, :http, :stop],
-        fn _event, _measurements, metadata, _ -> send(test, {:route, metadata.route}) end,
+        fn _event, _measurements, metadata, _ ->
+          SystemsRuntime.Proc.send(test, {:route, metadata.route})
+        end,
         nil
       )
 
-    on_exit(fn -> :telemetry.detach(handler) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler) end)
     resolver = {__MODULE__, :fallback_route}
 
     cases = [
@@ -143,18 +150,20 @@ defmodule SystemsObservability.HTTPPlugTest do
   end
 
   test "invalid exception status falls back to one bounded 500 completion" do
-    handler = {__MODULE__, make_ref()}
-    test = self()
+    handler = {__MODULE__, SystemsRuntime.Proc.make_ref()}
+    test = SystemsRuntime.Proc.self()
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:comma_system, :http, :stop],
-        fn event, measurements, metadata, _ -> send(test, {event, measurements, metadata}) end,
+        fn event, measurements, metadata, _ ->
+          SystemsRuntime.Proc.send(test, {event, measurements, metadata})
+        end,
         nil
       )
 
-    on_exit(fn -> :telemetry.detach(handler) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler) end)
 
     :get
     |> conn("/health")

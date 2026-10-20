@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelMetadataTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
   alias SalixAgent.TestSupport.SessionData
@@ -62,91 +62,30 @@ defmodule SalixAgent.SessionKernelMetadataTest do
     end
   end
 
-  test "creation treats only nil and false as fallback and only booleans as hidden values" do
+  test "a Session's model is set at creation, replaced or cleared by an update, and otherwise kept" do
     before = state()
+    choice = %{"kind" => "catalog", "model" => "gpt-5.5", "reasoning_effort" => "high"}
+    other = %{"kind" => "catalog", "model" => "claude-sonnet-5-5"}
 
-    for value <- [nil, false] do
-      fields =
-        Map.new(
-          [
-            "name",
-            "platform",
-            "billing_context",
-            "task_origin",
-            "source_session_id",
-            "source_schedule_id"
-          ],
-          &{&1, value}
-        )
+    assert Driver.step(before, event("session_created", %{"model" => choice})) ===
+             {:done, %State{before | model: choice}}
 
-      assert Driver.step(before, event("session_created", fields)) === {:done, before}
+    chosen = %State{before | model: choice}
 
-      empty = %State{before | name: value, billing_context: value}
-
-      assert Driver.step(empty, event("session_created", fields)) ===
-               {:done, %State{empty | name: "Default", billing_context: %{}}}
+    # Creation never clears an existing choice; a non-map is no choice.
+    for value <- [nil, "gpt-5.5", []] do
+      assert Driver.step(chosen, event("session_created", %{"model" => value})) ===
+               {:done, chosen}
     end
 
-    for hidden <- [true, false] do
-      assert Driver.step(before, event("session_created", %{"hidden" => hidden})) ===
-               {:done, %State{before | hidden: hidden}}
-    end
-  end
+    assert Driver.step(chosen, event("session_update", %{"model" => other})) ===
+             {:done, %State{chosen | model: other}}
 
-  test "creation fills falsey timestamps but preserves zero and empty native values" do
-    before = state()
+    assert Driver.step(chosen, event("session_update", %{"model" => nil})) ===
+             {:done, %State{chosen | model: nil}}
 
-    for old <- [nil, false], supplied <- [nil, false, 0, "", []] do
-      empty = %State{
-        before
-        | created_at: old,
-          last_activity_at: old,
-          activity_status_updated_at: old
-      }
-
-      expected = %State{
-        empty
-        | created_at: supplied,
-          last_activity_at: supplied,
-          activity_status_updated_at: supplied
-      }
-
-      assert Driver.step(empty, event("session_created", %{"created_at" => supplied})) ===
-               {:done, expected}
-    end
-
-    for old <- [0, "", []] do
-      sticky = %State{
-        before
-        | created_at: old,
-          last_activity_at: old,
-          activity_status_updated_at: old
-      }
-
-      assert Driver.step(sticky, event("session_created", %{"created_at" => 99})) ===
-               {:done, sticky}
-    end
-  end
-
-  test "system prompt uses primary then fallback without retaining the old prompt" do
-    before = state()
-
-    for primary <- [0, "", [], %{}, "primary"] do
-      ev = event("session_system_prompt", %{"system_prompt" => primary, "prompt" => "fallback"})
-
-      assert Driver.step(before, ev) === {:done, %State{before | system_prompt: primary}}
-    end
-
-    for primary <- [nil, false], fallback <- [0, "", [], %{}, "fallback"] do
-      ev = event("session_system_prompt", %{"system_prompt" => primary, "prompt" => fallback})
-
-      assert Driver.step(before, ev) === {:done, %State{before | system_prompt: fallback}}
-    end
-
-    for fields <- [%{}, %{"system_prompt" => false, "prompt" => nil}] do
-      assert Driver.step(before, event("session_system_prompt", fields)) ===
-               {:done, %State{before | system_prompt: ""}}
-    end
+    assert Driver.step(chosen, event("session_update", %{"name" => "Renamed"})) ===
+             {:done, %State{chosen | name: "Renamed"}}
   end
 
   test "real State wrapper preserves active activity and delegates both metadata events" do

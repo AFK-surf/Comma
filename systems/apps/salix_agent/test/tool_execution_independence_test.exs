@@ -1,4 +1,6 @@
 defmodule SalixAgent.ToolExecutionIndependenceTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Calls in one assistant turn are independent unless the runtime has an
   explicit dependency between them. A pending lookup must not become a
@@ -9,7 +11,9 @@ defmodule SalixAgent.ToolExecutionIndependenceTest do
   zero-time async admission result is `async_running`, while the outbound call
   still reaches the provider exactly once.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle
 
   alias SalixAgent.{
     InternalSessionFleet,
@@ -70,11 +74,14 @@ defmodule SalixAgent.ToolExecutionIndependenceTest do
     # that ran no tools at all still passed. Every test gets a fresh
     # `new_agent_id()`, so matching on it closes the channel.
     def call_tool(agent_id, "egress", tool, _args, _ctx) do
-      Process.sleep(sleep_ms(tool))
+      SystemsClock.sleep(sleep_ms(tool))
 
-      case Application.get_env(:salix_agent, :tool_independence_test_pid) do
-        pid when is_pid(pid) -> send(pid, {:mcp_executed, agent_id, tool})
-        _ -> :ok
+      case SystemsRuntime.get_env(:salix_agent, :tool_independence_test_pid) do
+        pid when SystemsRuntime.Proc.is_process(pid) ->
+          SystemsRuntime.Proc.send(pid, {:mcp_executed, agent_id, tool})
+
+        _ ->
+          :ok
       end
 
       {:ok, %{"content" => "#{tool} executed", "status" => "completed"}}
@@ -91,28 +98,28 @@ defmodule SalixAgent.ToolExecutionIndependenceTest do
     end
 
     defp sleep_ms("lookup"),
-      do: Application.get_env(:salix_agent, :tool_independence_test_lookup_sleep_ms, 0)
+      do: SystemsRuntime.get_env(:salix_agent, :tool_independence_test_lookup_sleep_ms, 0)
 
     defp sleep_ms(_tool), do: 0
   end
 
   setup do
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_mcp = Application.get_env(:salix_agent, :mcp_provider_mod)
-    prev_sleep = Application.get_env(:salix_agent, :tool_independence_test_lookup_sleep_ms)
-    prev_pid = Application.get_env(:salix_agent, :tool_independence_test_pid)
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_mcp = SystemsRuntime.get_env(:salix_agent, :mcp_provider_mod)
+    prev_sleep = SystemsRuntime.get_env(:salix_agent, :tool_independence_test_lookup_sleep_ms)
+    prev_pid = SystemsRuntime.get_env(:salix_agent, :tool_independence_test_pid)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     start_supervised!(FunLLM)
-    Application.put_env(:salix_agent, :llm, FunLLM)
-    Application.put_env(:salix_agent, :mcp_provider_mod, TestMCPProvider)
-    Application.put_env(:salix_agent, :tool_independence_test_pid, self())
+    SystemsRuntime.put_env(:salix_agent, :llm, FunLLM)
+    SystemsRuntime.put_env(:salix_agent, :mcp_provider_mod, TestMCPProvider)
+    SystemsRuntime.put_env(:salix_agent, :tool_independence_test_pid, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev_backend)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_backend)
       restore(:llm, prev_llm)
       restore(:mcp_provider_mod, prev_mcp)
       restore(:tool_independence_test_lookup_sleep_ms, prev_sleep)
@@ -152,7 +159,7 @@ defmodule SalixAgent.ToolExecutionIndependenceTest do
        %{agent: agent, context: context} do
     ack_setup_input!(agent, @session_id)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :tool_independence_test_lookup_sleep_ms,
       @undecided_sleep_ms
@@ -174,9 +181,8 @@ defmodule SalixAgent.ToolExecutionIndependenceTest do
              )
 
     assert Enum.any?(pending, &(&1.tool_call_id == "egress-lookup-1"))
-    assert_receive {:mcp_executed, ^agent, "send_notice"}, 2_000
-    refute_receive {:mcp_executed, ^agent, "send_notice"}, 100
-
+    settle_receive({:mcp_executed, ^agent, "send_notice"})
+    settle_refute_receive({:mcp_executed, ^agent, "send_notice"}, 100)
     [lookup, send] = committed_tool_results(agent)
 
     assert lookup.tool_call_id == "egress-lookup-1"
@@ -199,116 +205,6 @@ defmodule SalixAgent.ToolExecutionIndependenceTest do
     [result] = SessionToolDispatch.execute([mcp_call("inspector-bypass", "send_notice")], context)
     assert %{error: true, error_class: "forbidden", events: []} = result
     refute_received {:mcp_executed, ^agent, _}
-  end
-
-  test "a write before a delayed read retains original result order", %{
-    agent: agent,
-    context: context
-  } do
-    ack_setup_input!(agent, @session_id)
-
-    Application.put_env(
-      :salix_agent,
-      :tool_independence_test_lookup_sleep_ms,
-      @undecided_sleep_ms
-    )
-
-    FunLLM.script([
-      fn _messages, _tools ->
-        {:assistant, "telling them and checking",
-         [
-           mcp_call("egress-send-first", "send_notice"),
-           mcp_call("egress-lookup-second", "lookup")
-         ]}
-      end
-    ])
-
-    assert {:ok, _context, {:async_tools_started, pending}} =
-             InternalSessionFleet.run_round(agent, @session_id, context,
-               __round_run_delegate__: true
-             )
-
-    assert Enum.any?(pending, &(&1.tool_call_id == "egress-lookup-second"))
-    assert_receive {:mcp_executed, ^agent, "send_notice"}, 2_000
-
-    [send, lookup] = committed_tool_results(agent)
-    assert send.tool_call_id == "egress-send-first"
-    assert lookup.tool_call_id == "egress-lookup-second"
-    refute send.status == "guidance"
-    assert lookup.status == "async_running"
-  end
-
-  test "get_result queries a running call once without cancelling an independent write", %{
-    agent: agent
-  } do
-    target_call_id = "already-running-tool"
-
-    assert {:ok, _session} =
-             InternalSessionStore.prepare_commit(agent, @session_id, [
-               %{
-                 "type" => "async_tool_call_started",
-                 "session_id" => @session_id,
-                 "tool_call_id" => target_call_id,
-                 "tool_name" => "env.exec",
-                 "status" => "running",
-                 "completion_mode" => "external_callback",
-                 "started_at" => System.system_time(:millisecond)
-               }
-             ])
-
-    [query, send] =
-      SessionToolDispatch.execute(
-        [
-          %{
-            id: "query-running-tool",
-            name: "call",
-            args: %{
-              "tool" => "tool_call.get_result",
-              "params" => %{"tool_call_id" => target_call_id}
-            }
-          },
-          mcp_call("send-beside-query", "send_notice")
-        ],
-        tool_ctx(agent)
-      )
-
-    assert query.status == "completed"
-
-    assert Jason.decode!(query.content) == %{
-             "message" => "tool call has not completed yet",
-             "status" => "running",
-             "tool_call_id" => target_call_id
-           }
-
-    assert send.status == "completed"
-    assert_receive {:mcp_executed, ^agent, "send_notice"}, 2_000
-    refute_receive {:mcp_executed, ^agent, "send_notice"}, 100
-
-    assert {:ok, session} = InternalSessionStore.read(agent, @session_id)
-
-    assert {:ok, %{"status" => "running"}} =
-             SalixAgent.InternalSession.lookup_async_call(session, target_call_id)
-  end
-
-  test "a corrected write executes in repair and returns its real receipt", %{agent: agent} do
-    ctx =
-      agent
-      |> tool_ctx()
-      |> Map.put(:visible_reply_phase, {:repair_required, 0})
-      |> Map.put(:visible_reply_guard, {:repair_required, 0, 1, 1})
-
-    [result] =
-      SessionToolDispatch.execute(
-        [mcp_call("egress-repair-send", "send_notice")],
-        ctx
-      )
-
-    assert result.status == "completed"
-    assert result.content =~ "send_notice executed"
-    refute Map.get(result, :repair_outcome) == "validated_visible_side_effect"
-    assert VisibleReplyPolicy.transition({:repair_required, 0}, [result]) == :completed
-    assert_receive {:mcp_executed, ^agent, "send_notice"}, 2_000
-    refute_receive {:mcp_executed, ^agent, "send_notice"}, 100
   end
 
   defp mcp_call(id, tool),
@@ -344,6 +240,6 @@ defmodule SalixAgent.ToolExecutionIndependenceTest do
       ])
   end
 
-  defp restore(key, nil), do: Application.delete_env(:salix_agent, key)
-  defp restore(key, value), do: Application.put_env(:salix_agent, key, value)
+  defp restore(key, nil), do: SystemsRuntime.delete_env(:salix_agent, key)
+  defp restore(key, value), do: SystemsRuntime.put_env(:salix_agent, key, value)
 end

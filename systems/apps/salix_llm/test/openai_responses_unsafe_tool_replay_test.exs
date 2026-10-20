@@ -1,5 +1,5 @@
 defmodule SalixLlm.OpenAIResponsesUnsafeToolReplayTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixLlm.ConvertOpenAI
 

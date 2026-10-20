@@ -1,0 +1,165 @@
+[2026-10-08 03:24:51Z INFO HostContext] No proxy settings were found based on environmental variables (http_proxy/https_proxy/HTTP_PROXY/HTTPS_PROXY)
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 03:24:51Z INFO HostContext] Well known config file 'Credentials': '/Users/admin/actions-runner/.credentials'
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 03:24:51Z INFO HostContext] Well known config file 'Runner': '/Users/admin/actions-runner/.runner'
+[2026-10-08 03:24:51Z INFO Listener] Runner is built for OSX (Arm64) - osx-arm64.
+[2026-10-08 03:24:51Z INFO Listener] RuntimeInformation: Darwin 25.2.0 Darwin Kernel Version 25.2.0: Tue Nov 18 21:09:07 PST 2025; root:xnu-12377.61.12~1/RELEASE_ARM64_VMAPPLE.
+[2026-10-08 03:24:51Z INFO Listener] Version: 2.337.0
+[2026-10-08 03:24:51Z INFO Listener] Commit: 397b032cbf865e9c3ddfab89d533ec19325e1273
+[2026-10-08 03:24:51Z INFO Listener] Culture: en-US
+[2026-10-08 03:24:51Z INFO Listener] UI Culture: en-US
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 03:24:51Z INFO Listener] Validating directory permissions for: '/Users/admin/actions-runner'
+[2026-10-08 03:24:51Z INFO CommandLineParser] Parse
+[2026-10-08 03:24:51Z INFO CommandLineParser] Parsing 1 args
+[2026-10-08 03:24:51Z INFO CommandLineParser] parsing argument
+[2026-10-08 03:24:51Z INFO CommandLineParser] HasArgs: False
+[2026-10-08 03:24:51Z INFO CommandLineParser] Adding Command: run
+[2026-10-08 03:24:51Z INFO Listener] Arguments parsed
+[2026-10-08 03:24:51Z INFO Runner] ExecuteCommand
+[2026-10-08 03:24:51Z INFO ConfigurationStore] currentAssemblyLocation: /Users/admin/actions-runner/bin/Runner.Listener.dll
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 03:24:51Z INFO ConfigurationStore] binPath: /Users/admin/actions-runner/bin
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 03:24:51Z INFO ConfigurationStore] RootFolder: /Users/admin/actions-runner
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 03:24:51Z INFO HostContext] Well known config file 'Runner': '/Users/admin/actions-runner/.runner'
+[2026-10-08 03:24:51Z INFO ConfigurationStore] ConfigFilePath: /Users/admin/actions-runner/.runner
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 03:24:51Z INFO HostContext] Well known config file 'MigratedRunner': '/Users/admin/actions-runner/.runner_migrated'
+[2026-10-08 03:24:51Z INFO ConfigurationStore] MigratedConfigFilePath: /Users/admin/actions-runner/.runner_migrated
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 03:24:51Z INFO HostContext] Well known config file 'Credentials': '/Users/admin/actions-runner/.credentials'
+[2026-10-08 03:24:51Z INFO ConfigurationStore] CredFilePath: /Users/admin/actions-runner/.credentials
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 03:24:51Z INFO HostContext] Well known config file 'MigratedCredentials': '/Users/admin/actions-runner/.credentials_migrated'
+[2026-10-08 03:24:51Z INFO ConfigurationStore] MigratedCredFilePath: /Users/admin/actions-runner/.credentials_migrated
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 03:24:51Z INFO HostContext] Well known config file 'Service': '/Users/admin/actions-runner/.service'
+[2026-10-08 03:24:51Z INFO ConfigurationStore] ServiceConfigFilePath: /Users/admin/actions-runner/.service
+[2026-10-08 03:24:51Z INFO CommandSettings] Flag 'help': 'False'
+[2026-10-08 03:24:51Z INFO CommandSettings] Flag 'version': 'False'
+[2026-10-08 03:24:51Z INFO CommandSettings] Flag 'commit': 'False'
+[2026-10-08 03:24:51Z INFO CommandSettings] Flag 'check': 'False'
+[2026-10-08 03:24:51Z INFO CommandSettings] Command 'configure': 'False'
+[2026-10-08 03:24:51Z INFO CommandSettings] Command 'remove': 'False'
+[2026-10-08 03:24:51Z INFO CommandSettings] Command 'warmup': 'False'
+[2026-10-08 03:24:51Z INFO ConfigurationManager] LoadSettings
+[2026-10-08 03:24:51Z INFO ConfigurationStore] IsConfigured()
+[2026-10-08 03:24:51Z INFO ConfigurationStore] IsConfigured: True
+[2026-10-08 03:24:51Z INFO ConfigurationManager] Is configured: True
+[2026-10-08 03:24:51Z INFO ConfigurationStore] Read setting file: 411 chars
+[2026-10-08 03:24:51Z INFO ConfigurationManager] Settings Loaded
+[2026-10-08 03:24:51Z INFO ConfigurationStore] IsServiceConfigured()
+[2026-10-08 03:24:51Z INFO ConfigurationStore] IsServiceConfigured: False
+[2026-10-08 03:24:51Z INFO CommandSettings] Command 'run': 'True'
+[2026-10-08 03:24:51Z INFO ConfigurationStore] IsConfigured()
+[2026-10-08 03:24:51Z INFO ConfigurationStore] IsConfigured: True
+[2026-10-08 03:24:51Z INFO ConfigurationManager] Is configured: True
+[2026-10-08 03:24:51Z INFO Runner] Could not parse the argument value '' for StartupType. Defaulting to Manual
+[2026-10-08 03:24:51Z INFO Runner] Set runner startup type - Manual
+[2026-10-08 03:24:51Z INFO CommandSettings] Flag 'once': 'False'
+[2026-10-08 03:24:51Z INFO CommandSettings] Flag 'once': 'False'
+[2026-10-08 03:24:51Z INFO Runner] RunAsync
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Work': '/Users/admin/actions-runner/_work'
+[2026-10-08 03:24:51Z INFO Runner] Validating directory permissions for: '/Users/admin/actions-runner/_work'
+[2026-10-08 03:24:51Z INFO ConfigurationManager] LoadMigratedSettings
+[2026-10-08 03:24:51Z INFO ConfigurationStore] IsMigratedConfigured()
+[2026-10-08 03:24:51Z INFO ConfigurationStore] IsMigratedConfigured: False
+[2026-10-08 03:24:51Z INFO Runner] Failed to load migrated settings: No migrated configuration found.
+[2026-10-08 03:24:51Z INFO Runner] Falling back to original .runner settings
+[2026-10-08 03:24:51Z INFO Runner] Using BrokerMessageListener
+[2026-10-08 03:24:51Z INFO BrokerMessageListener] Using provided settings
+[2026-10-08 03:24:51Z INFO BrokerMessageListener] {
+[2026-10-08 03:24:51Z INFO BrokerMessageListener] Loading Credentials
+[2026-10-08 03:24:51Z INFO ConfigurationStore] HasCredentials()
+[2026-10-08 03:24:51Z INFO ConfigurationStore] stored True
+[2026-10-08 03:24:51Z INFO CredentialManager] GetCredentialProvider
+[2026-10-08 03:24:51Z INFO CredentialManager] Creating type OAuth
+[2026-10-08 03:24:51Z INFO CredentialManager] Creating credential type: OAuth
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 03:24:51Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 03:24:51Z INFO HostContext] Well known config file 'RSACredentials': '/Users/admin/actions-runner/.credentials_rsaparams'
+[2026-10-08 03:24:51Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 03:24:51Z INFO BrokerMessageListener] Attempt to create session.
+[2026-10-08 03:24:51Z INFO BrokerMessageListener] Connecting to the Broker Server...
+[2026-10-08 03:24:51Z INFO ConfigurationStore] HasCredentials()
+[2026-10-08 03:24:51Z INFO ConfigurationStore] stored True
+[2026-10-08 03:24:51Z INFO CredentialManager] GetCredentialProvider
+[2026-10-08 03:24:51Z INFO CredentialManager] Creating type OAuth
+[2026-10-08 03:24:51Z INFO CredentialManager] Creating credential type: OAuth
+[2026-10-08 03:24:51Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 03:24:51Z INFO BrokerMessageListener] VssConnection created
+[2026-10-08 03:24:51Z INFO BrokerMessageListener] Connecting to the Runner server...
+[2026-10-08 03:24:51Z INFO RunnerServer] EstablishVssConnection
+[2026-10-08 03:24:51Z INFO RunnerServer] Establish connection with 100 seconds timeout.
+[2026-10-08 03:24:51Z INFO GitHubActionsService] Starting operation Location.GetConnectionData
+[2026-10-08 03:24:51Z INFO RunnerServer] EstablishVssConnection
+[2026-10-08 03:24:51Z INFO RunnerServer] Establish connection with 60 seconds timeout.
+[2026-10-08 03:24:51Z INFO GitHubActionsService] Starting operation Location.GetConnectionData
+[2026-10-08 03:24:51Z INFO RunnerServer] EstablishVssConnection
+[2026-10-08 03:24:51Z INFO RunnerServer] Establish connection with 60 seconds timeout.
+[2026-10-08 03:24:51Z INFO GitHubActionsService] Starting operation Location.GetConnectionData
+[2026-10-08 03:24:53Z INFO GitHubActionsService] Finished operation Location.GetConnectionData
+[2026-10-08 03:24:53Z INFO GitHubActionsService] Finished operation Location.GetConnectionData
+[2026-10-08 03:24:53Z INFO GitHubActionsService] Finished operation Location.GetConnectionData
+[2026-10-08 03:24:53Z INFO BrokerMessageListener] VssConnection created
+[2026-10-08 03:24:53Z INFO Terminal] WRITE LINE: 
+[2026-10-08 03:24:53Z INFO Terminal] WRITE LINE: 
+[2026-10-08 03:24:53Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 03:24:53Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 03:24:54Z INFO GitHubActionsService] AAD Correlation ID for this token request: Unknown
+[2026-10-08 03:25:02Z INFO BrokerMessageListener] Session created.
+[2026-10-08 03:25:02Z INFO Terminal] WRITE LINE: Current runner version: '2.337.0'
+[2026-10-08 03:25:02Z INFO Terminal] WRITE LINE: 2026-10-08 03:25:02Z: Listening for Jobs
+[2026-10-08 03:25:02Z INFO JobDispatcher] Set runner/worker IPC timeout to 30 seconds.
+[2026-10-08 03:25:04Z INFO BrokerMessageListener] Acknowledging runner request '1de7072f-5827-508a-867e-6f4d19e9de95'.
+[2026-10-08 03:25:04Z INFO ConfigurationStore] HasCredentials()
+[2026-10-08 03:25:04Z INFO ConfigurationStore] stored True
+[2026-10-08 03:25:04Z INFO CredentialManager] GetCredentialProvider
+[2026-10-08 03:25:04Z INFO CredentialManager] Creating type OAuth
+[2026-10-08 03:25:04Z INFO CredentialManager] Creating credential type: OAuth
+[2026-10-08 03:25:04Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 03:25:04Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 03:25:04Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 03:25:09Z INFO GitHubActionsService] AAD Correlation ID for this token request: Unknown
+[2026-10-08 03:25:09Z WARN GitHubActionsService] Retrieving an AAD auth token took a long time (5.3687731 seconds)
+[2026-10-08 03:25:25Z INFO JobDispatcher] Job request 0 for plan b532b4b8-8d0f-8438-aae2-94e90c333952 job 1de7072f-5827-508a-867e-6f4d19e9de95 received.
+[2026-10-08 03:25:25Z INFO JobDispatcher] Pull OrchestrationId b532b4b8-8d0f-8438-aae2-94e90c333952.unit-test._2 from JWT claims
+[2026-10-08 03:25:25Z INFO JobDispatcher] Start dispatcher for one time used runner.
+[2026-10-08 03:25:25Z INFO BrokerMessageListener] Received job status event. JobState: Busy
+[2026-10-08 03:25:25Z INFO BrokerMessageListener] _getMessagesTokenSource is already disposed.
+[2026-10-08 03:25:25Z INFO Terminal] WRITE LINE: 2026-10-08 03:25:25Z: Running job: Unit Test (2/2)
+[2026-10-08 03:25:25Z INFO JobDispatcher] Start renew job request 0 for job 1de7072f-5827-508a-867e-6f4d19e9de95.
+[2026-10-08 03:25:25Z INFO Runner] One time used runner received job message.
+[2026-10-08 03:25:30Z INFO JobDispatcher] Successfully renew job 1de7072f-5827-508a-867e-6f4d19e9de95, job is valid till 10/8/2026 3:35:28 AM
+[2026-10-08 03:25:30Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 03:25:30Z INFO ProcessInvokerWrapper] Starting process:
+[2026-10-08 03:25:30Z INFO ProcessInvokerWrapper]   File name: '/Users/admin/actions-runner/bin/Runner.Worker'
+[2026-10-08 03:25:30Z INFO ProcessInvokerWrapper]   Arguments: 'spawnclient 150 153'
+[2026-10-08 03:25:30Z INFO ProcessInvokerWrapper]   Working directory: '/Users/admin/actions-runner/bin'
+[2026-10-08 03:25:30Z INFO ProcessInvokerWrapper]   Require exit code zero: 'False'
+[2026-10-08 03:25:30Z INFO ProcessInvokerWrapper]   Encoding web name:  ; code page: ''
+[2026-10-08 03:25:30Z INFO ProcessInvokerWrapper]   Force kill process on cancellation: 'True'
+[2026-10-08 03:25:30Z INFO ProcessInvokerWrapper]   Redirected STDIN: 'False'
+[2026-10-08 03:25:30Z INFO ProcessInvokerWrapper]   Persist current code page: 'False'
+[2026-10-08 03:25:30Z INFO ProcessInvokerWrapper]   Keep redirected STDIN open: 'False'
+[2026-10-08 03:25:30Z INFO ProcessInvokerWrapper]   High priority process: 'True'
+[2026-10-08 03:25:31Z INFO ProcessInvokerWrapper] Process started with process id 877, waiting for process exit.
+[2026-10-08 03:25:31Z INFO JobDispatcher] Send job request message to worker for job 1de7072f-5827-508a-867e-6f4d19e9de95.
+[2026-10-08 03:25:31Z INFO ProcessChannel] Sending message of length 48079, with hash '6578f181c78e616674901685ccc544bf317fed2d783fd9fbdc13a6d6b91922d5'
+[2026-10-08 03:25:31Z INFO JobNotification] Entering JobStarted Notification
+[2026-10-08 03:25:31Z INFO JobNotification] Entering StartMonitor
+[2026-10-08 03:26:43Z INFO JobDispatcher] Successfully renew job 1de7072f-5827-508a-867e-6f4d19e9de95, job is valid till 10/8/2026 3:36:31 AM

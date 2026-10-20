@@ -22,23 +22,14 @@ defmodule SalixAgent.SessionWorkRecovery do
   models do not prove this recovery loop's progress.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
-  alias SalixAgent.{
-    ExternalSessionStore,
-    InternalSession,
-    InternalSessionStore,
-    SessionWorkIndex
-  }
+  alias SalixAgent.{InternalSession, InternalSessionStore, SessionWorkIndex}
 
   @default_page_size 100
   @default_wake_timeout_ms 500
   @default_page_wake_budget_ms 2_000
-  # Reconnect catch-up is a bounded latency optimization, not the completeness
-  # owner. Scan at most 6,400 candidates; the lease-driven singleton recovery
-  # worker retains every unfinished candidate and continues after this cap.
-  @max_catchup_pages 64
 
   @type lane :: :eager | :deferred
   @type summary :: %{
@@ -54,21 +45,21 @@ defmodule SalixAgent.SessionWorkRecovery do
 
   def start_link(opts \\ []) do
     case Keyword.get(opts, :name, __MODULE__) do
-      nil -> GenServer.start_link(__MODULE__, opts)
-      name -> GenServer.start_link(__MODULE__, opts, name: name)
+      nil -> SystemsRuntime.Server.start_link(__MODULE__, opts)
+      name -> SystemsRuntime.Server.start_link(__MODULE__, opts, name: name)
     end
   end
 
   @doc "Request one lease-authorized sweep without blocking the caller."
   @spec request_sweep(GenServer.server()) :: :ok | {:error, :not_running}
   def request_sweep(server \\ __MODULE__) do
-    case GenServer.whereis(server) do
+    case SystemsRuntime.Server.whereis(server) do
       nil ->
         Logger.warning("session-work recovery worker is not running")
         {:error, :not_running}
 
       _pid ->
-        GenServer.cast(server, :sweep)
+        SystemsRuntime.Server.cast(server, :sweep)
         :ok
     end
   end
@@ -85,7 +76,7 @@ defmodule SalixAgent.SessionWorkRecovery do
       )
       when is_binary(agent_id) and agent_id != "" and
              byte_size(agent_id) <= 256 and
-             runtime in [:internal, :external] and
+             runtime == :internal and
              is_binary(session_id) and session_id != "" and byte_size(session_id) <= 256 do
     server = Keyword.get(opts, :server, __MODULE__)
     candidate_token = Keyword.get(opts, :candidate_token)
@@ -94,13 +85,13 @@ defmodule SalixAgent.SessionWorkRecovery do
       key = {candidate_token || "", agent_id, runtime, session_id}
       target = %{runtime: runtime, session_id: session_id}
 
-      case GenServer.whereis(server) do
+      case SystemsRuntime.Server.whereis(server) do
         nil ->
           Logger.warning("session-work recovery worker is not running")
           {:error, :not_running}
 
         _pid ->
-          GenServer.cast(server, {:wake, key, agent_id, target})
+          SystemsRuntime.Server.cast(server, {:wake, key, agent_id, target})
           :ok
       end
     else
@@ -113,12 +104,10 @@ defmodule SalixAgent.SessionWorkRecovery do
   @doc "Run one bounded session-work recovery pass synchronously."
   @spec sweep(keyword()) :: summary()
   def sweep(opts \\ []) do
-    started_at = System.monotonic_time()
-    now_ms = opts[:now] || System.system_time(:millisecond)
+    started_at = SystemsClock.monotonic_time()
+    now_ms = opts[:now] || SystemsClock.system_time(:millisecond)
     max_keys = Keyword.get(opts, :session_work_max_keys, @default_page_size)
     start_lane = normalize_lane(opts[:session_work_start_lane])
-    group_id = opts[:session_work_group_id]
-    device_id = opts[:session_work_device_id]
 
     wake_timeout_ms =
       positive_integer_option(opts[:session_work_wake_timeout], @default_wake_timeout_ms)
@@ -134,17 +123,15 @@ defmodule SalixAgent.SessionWorkRecovery do
       scanned: 0,
       next: opts[:session_work_cursor],
       deferred_next: opts[:deferred_session_work_cursor],
-      last_attempted_lane: nil,
-      group_id: group_id,
-      device_id: device_id
+      last_attempted_lane: nil
     }
 
-    deadline_ms = System.monotonic_time(:millisecond) + page_wake_budget_ms
+    deadline_ms = SystemsClock.monotonic_time(:millisecond) + page_wake_budget_ms
 
     result =
-      if(is_nil(group_id), do: lane_order(start_lane), else: [:eager])
+      lane_order(start_lane)
       |> Enum.reduce_while(state, fn lane, acc ->
-        if System.monotonic_time(:millisecond) >= deadline_ms do
+        if SystemsClock.monotonic_time(:millisecond) >= deadline_ms do
           {:halt, acc}
         else
           attempt_lane(
@@ -174,31 +161,11 @@ defmodule SalixAgent.SessionWorkRecovery do
       "session_work_recovery",
       "system",
       telemetry_outcome(summary),
-      System.monotonic_time() - started_at
+      SystemsClock.monotonic_time() - started_at
     )
 
     summary
   end
-
-  @doc """
-  Start one bounded device-scoped catch-up pass after Connector reconnect.
-  Candidate rows are only addresses; the existing recovery path rereads and
-  token-fences every authoritative Session before waking its normal owner.
-  """
-  @spec catch_up_external_inputs(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def catch_up_external_inputs(group_id, device_id)
-      when is_binary(group_id) and group_id != "" and is_binary(device_id) and device_id != "" do
-    case Task.Supervisor.start_child(SalixAgent.TaskSup, fn ->
-           run_external_input_catchup(group_id, device_id)
-         end) do
-      {:ok, _pid} -> {:ok, %{"accepted" => true}}
-      {:error, reason} -> {:error, reason}
-    end
-  catch
-    :exit, reason -> {:error, reason}
-  end
-
-  def catch_up_external_inputs(_group_id, _device_id), do: {:error, :invalid_scope}
 
   @doc false
   @spec empty_summary() :: summary()
@@ -283,7 +250,7 @@ defmodule SalixAgent.SessionWorkRecovery do
          } = result},
         %{task: %Task{ref: ref}, task_kind: :sweep} = state
       ) do
-    Process.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
     log_summary(result)
 
     state = %{
@@ -302,7 +269,7 @@ defmodule SalixAgent.SessionWorkRecovery do
         {ref, result},
         %{task: %Task{ref: ref}, task_kind: {:notification_wake, key, started_at}} = state
       ) do
-    Process.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
 
     outcome =
       case result do
@@ -334,7 +301,7 @@ defmodule SalixAgent.SessionWorkRecovery do
   end
 
   def handle_info({ref, result}, %{task: %Task{ref: ref}, task_kind: :sweep} = state) do
-    Process.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
     Logger.warning("session-work recovery returned an invalid result: #{inspect(result)}")
     {:noreply, state |> reset_after_failure() |> maybe_start_next()}
   end
@@ -374,16 +341,20 @@ defmodule SalixAgent.SessionWorkRecovery do
       session_work_start_lane: state.start_lane
     ]
 
-    task = Task.Supervisor.async_nolink(state.task_supervisor, fn -> state.sweep_fn.(opts) end)
+    task =
+      SystemsRuntime.TaskSupervisor.async_nolink(state.task_supervisor, fn ->
+        state.sweep_fn.(opts)
+      end)
+
     %{state | task: task, task_kind: :sweep, pending: false}
   end
 
   defp start_notification_wake(state) do
     {{:value, {key, agent_id, target}}, queue} = :queue.out(state.notification_queue)
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     task =
-      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+      SystemsRuntime.TaskSupervisor.async_nolink(state.task_supervisor, fn ->
         state.wake_fn.(agent_id, target, state.notification_wake_timeout)
       end)
 
@@ -410,7 +381,7 @@ defmodule SalixAgent.SessionWorkRecovery do
     cursor = lane_cursor(state, lane)
     state = %{state | last_attempted_lane: lane}
 
-    case list_lane(lane, cursor, max_keys, now_ms, state.group_id, state.device_id) do
+    case list_lane(lane, cursor, max_keys, now_ms) do
       {:ok, records, eof?} ->
         {stats, next, stopped?} =
           process_lane(
@@ -438,16 +409,14 @@ defmodule SalixAgent.SessionWorkRecovery do
     end
   end
 
-  defp list_lane(:eager, cursor, max_keys, _now_ms, group_id, device_id) do
-    [max_keys: max_keys, group_id: group_id]
+  defp list_lane(:eager, cursor, max_keys, _now_ms) do
+    [max_keys: max_keys]
     |> maybe_put_cursor(cursor)
     |> SessionWorkIndex.list_discovery()
     |> normalize_page()
-    |> scope_page(device_id)
-    |> mark_readiness_notifications()
   end
 
-  defp list_lane(:deferred, cursor, max_keys, now_ms, _group_id, _device_id) do
+  defp list_lane(:deferred, cursor, max_keys, now_ms) do
     opts = [max_keys: max_keys] |> maybe_put_cursor(cursor)
 
     now_ms
@@ -457,16 +426,6 @@ defmodule SalixAgent.SessionWorkRecovery do
 
   defp normalize_page({:ok, %{records: records, eof: eof?}}), do: {:ok, records, eof?}
   defp normalize_page({:error, _} = error), do: error
-
-  defp mark_readiness_notifications({:ok, records, eof?}),
-    do: {:ok, Enum.map(records, &Map.put(&1, "_runtime_ready_notification", true)), eof?}
-
-  defp mark_readiness_notifications(error), do: error
-
-  defp scope_page({:ok, records, eof?}, device_id) when is_binary(device_id),
-    do: {:ok, Enum.map(records, &Map.put(&1, "_catchup_device_id", device_id)), eof?}
-
-  defp scope_page(page, _device_id), do: page
 
   defp log_summary(%{
          rewoken: rewoken,
@@ -546,7 +505,7 @@ defmodule SalixAgent.SessionWorkRecovery do
        ) do
     case resolution do
       {:wake, agent_id, target} ->
-        remaining_ms = deadline_ms - System.monotonic_time(:millisecond)
+        remaining_ms = deadline_ms - SystemsClock.monotonic_time(:millisecond)
 
         if remaining_ms <= 0 do
           {stats, cursor, true}
@@ -650,54 +609,6 @@ defmodule SalixAgent.SessionWorkRecovery do
     end
   end
 
-  defp run_external_input_catchup(group_id, device_id) do
-    case do_external_input_catchup(group_id, device_id, nil, 0, 0) do
-      :ok ->
-        :ok
-
-      {:error, reason, failed} ->
-        Logger.warning(
-          "external-input reconnect catch-up incomplete: " <>
-            "device_id=#{device_id} failed=#{failed} reason=#{inspect(reason)}"
-        )
-    end
-  end
-
-  defp do_external_input_catchup(
-         _group_id,
-         _device_id,
-         _cursor,
-         @max_catchup_pages,
-         failed
-       ),
-       do: {:error, :page_limit, failed}
-
-  defp do_external_input_catchup(group_id, device_id, cursor, pages, failed) do
-    summary =
-      sweep(
-        session_work_group_id: group_id,
-        session_work_device_id: device_id,
-        session_work_cursor: cursor,
-        session_work_start_lane: :eager
-      )
-
-    failed = failed + summary.failed
-
-    cond do
-      is_nil(summary.next) and failed == 0 ->
-        :ok
-
-      is_nil(summary.next) ->
-        {:error, :candidate_failure, failed}
-
-      summary.next == cursor ->
-        {:error, :no_progress, failed}
-
-      true ->
-        do_external_input_catchup(group_id, device_id, summary.next, pages + 1, failed)
-    end
-  end
-
   defp resolve_record(
          %{
            "agent_id" => _agent_id,
@@ -711,48 +622,6 @@ defmodule SalixAgent.SessionWorkRecovery do
       :stale
     else
       resolve_internal_record(record, now_ms)
-    end
-  end
-
-  defp resolve_record(
-         %{
-           "agent_id" => agent_id,
-           "runtime_kind" => "external",
-           "session_id" => session_id,
-           "token" => token
-         } = record,
-         now_ms
-       ) do
-    case ExternalSessionStore.get_session_record_with_etag(agent_id, session_id) do
-      {:ok, session, _current_etag} ->
-        current_reasons = ExternalSessionStore.work_reasons(session)
-
-        cond do
-          different_external_device?(session, record["_catchup_device_id"]) ->
-            :keep
-
-          session["work_index_token"] == token and
-            "runtime_wait" in current_reasons and record["_runtime_ready_notification"] == true ->
-            {:wake, agent_id, %{runtime: :external, session_id: session_id}}
-
-          session["work_index_token"] == token ->
-            classify_current_work(
-              current_reasons,
-              ExternalSessionStore.recovery_wait(session),
-              now_ms,
-              agent_id,
-              %{runtime: :external, session_id: session_id}
-            )
-
-          true ->
-            classify_mismatched_generation(record, session["storage_revision"])
-        end
-
-      {:error, :not_found} ->
-        :unproven
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 
@@ -786,11 +655,6 @@ defmodule SalixAgent.SessionWorkRecovery do
     end
   end
 
-  defp different_external_device?(_session, nil), do: false
-
-  defp different_external_device?(session, device_id),
-    do: get_in(session, ["runtime", "binding", "device_id"]) != device_id
-
   defp classify_mismatched_generation(%{"base_revision" => nil}, _current_revision),
     do: :unproven
 
@@ -806,11 +670,11 @@ defmodule SalixAgent.SessionWorkRecovery do
       SessionWorkIndex.immediate_recovery_reasons?(reasons) ->
         {:wake, agent_id, target}
 
-      Enum.any?(~w(wait_deadline llm_retry capability_deadline runtime_wait), &(&1 in reasons)) and
+      Enum.any?(~w(wait_deadline llm_retry capability_deadline), &(&1 in reasons)) and
           wait_due?(wait, now_ms) ->
         {:wake, agent_id, target}
 
-      Enum.any?(~w(wait_deadline llm_retry capability_deadline runtime_wait), &(&1 in reasons)) ->
+      Enum.any?(~w(wait_deadline llm_retry capability_deadline), &(&1 in reasons)) ->
         :keep
 
       true ->
@@ -858,7 +722,7 @@ defmodule SalixAgent.SessionWorkRecovery do
       "session_work_notification_wake",
       "system",
       outcome,
-      System.monotonic_time() - started_at
+      SystemsClock.monotonic_time() - started_at
     )
   end
 

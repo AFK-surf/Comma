@@ -1,7 +1,6 @@
 defmodule BridgeForTeams.Schema.MemberOnboardingState do
   @moduledoc """
-  Per-(org, user) UI state for the dashboard's first-run onboarding flow
-  (welcome modal, quick-setup checklist, guided tour).
+  Per-(org, user) UI state for the dashboard's quick-setup checklist.
 
   Step *completion* is intentionally not stored here — it is derived from real
   data (the user's Agent Swarms, the org's OAuth provider apps) so the checklist
@@ -12,26 +11,27 @@ defmodule BridgeForTeams.Schema.MemberOnboardingState do
       on every page load.
     * `oauth_reminded_at` — set when an org member asks the admins to configure
       OAuth clients (the "remind an admin" action on the blocked connect step).
-    * `skipped_steps` — steps the user explicitly skipped in the tour; a
-      skipped step counts as done everywhere.
+    * `skipped_steps` — steps the user explicitly skipped; a skipped step
+      counts as done everywhere.
   """
   use Ecto.Schema
   import Ecto.Changeset
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   @steps ~w(swarm oauth connect)
 
   schema "member_onboarding_states" do
-    field :welcome_seen_at, :utc_datetime_usec
     field :dismissed_at, :utc_datetime_usec
     field :celebrated_at, :utc_datetime_usec
     field :connected_at, :utc_datetime_usec
     field :oauth_reminded_at, :utc_datetime_usec
-    field :collapsed, :boolean, default: false
-    field :active_step, :string
     field :skipped_steps, {:array, :string}, default: []
 
     belongs_to :org, BridgeForTeams.Schema.Organization
@@ -51,17 +51,13 @@ defmodule BridgeForTeams.Schema.MemberOnboardingState do
     |> cast(attrs, [
       :org_id,
       :user_id,
-      :welcome_seen_at,
       :dismissed_at,
       :celebrated_at,
       :connected_at,
       :oauth_reminded_at,
-      :collapsed,
-      :active_step,
       :skipped_steps
     ])
     |> validate_required([:org_id, :user_id])
-    |> validate_inclusion(:active_step, @steps)
     |> validate_subset(:skipped_steps, @steps)
     |> unique_constraint([:org_id, :user_id])
   end

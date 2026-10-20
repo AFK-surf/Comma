@@ -1,4 +1,5 @@
 import { useLayoutEffect, type RefObject } from "react";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { findTextHighlights } from "./searchText";
 
 export const TASK_PREVIEW_SEARCH_HIGHLIGHT = "comma-task-preview-search-match";
@@ -88,7 +89,7 @@ export function usePreviewSearchHighlight(
 
     const usesNativeHighlight =
       typeof HighlightConstructor === "function" && Boolean(registry);
-    let animationFrame: number | undefined;
+    let animationFrame: CancelUiTimer | undefined;
     let disposed = false;
     let ranges: Range[] = [];
     let shouldRefreshRanges = true;
@@ -130,7 +131,7 @@ export function usePreviewSearchHighlight(
     const schedulePaint = () => {
       if (disposed) return;
       if (animationFrame !== undefined) return;
-      animationFrame = window.requestAnimationFrame(paint);
+      animationFrame = uiClock.frame(paint);
     };
 
     const scheduleRangeRefresh = () => {
@@ -165,7 +166,7 @@ export function usePreviewSearchHighlight(
         overlay.replaceChildren();
       }
       if (animationFrame !== undefined) {
-        window.cancelAnimationFrame(animationFrame);
+        animationFrame();
       }
       clearOwnedHighlight();
     };

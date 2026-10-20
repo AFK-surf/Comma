@@ -98,6 +98,7 @@ async function fixture(
     );
   return {
     operator,
+    preparation,
     stage,
     confirm,
     run,
@@ -118,6 +119,42 @@ async function fixture(
 }
 
 describe("shared Host maintenance", () => {
+  it("reports download progress before native maintenance starts", async () => {
+    const f = await fixture();
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const originalState = f.preparation.state();
+    vi.spyOn(f.preparation, "state").mockReturnValue({
+      ...originalState,
+      phase: "downloading",
+    });
+    f.stage.mockImplementation(async (_id, _report, _artifact, execute) => {
+      started();
+      await waiting;
+      await execute?.(f.staged);
+      return f.staged;
+    });
+    const owner = f.operator();
+    const operation = owner.maintain({ action: "update", dataPolicy: "preserve" });
+    await entered;
+    try {
+      expect(await owner.state()).toMatchObject({
+        preparationPhase: "downloading",
+        operation: { phase: "preparing", outcome: "pending" },
+      });
+      expect(f.nativeRequests).toHaveLength(0);
+    } finally {
+      release();
+      await operation;
+    }
+    expect((await owner.state()).preparationPhase).toBeUndefined();
+  });
   const actions: HostMaintenanceInput[] = [
     { action: "update", dataPolicy: "preserve" },
     { action: "reinstall", dataPolicy: "preserve" },

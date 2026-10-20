@@ -285,6 +285,9 @@ defmodule SalixIM.Triage.RunFence do
       {:ok, _stored} ->
         {:ok, {:won, creation}}
 
+      {:error, :exists} when identity? ->
+        replace_released(key, scope, input["generation"], creation)
+
       {:error, :exists} ->
         {:ok, :lost}
 
@@ -294,6 +297,86 @@ defmodule SalixIM.Triage.RunFence do
           else: error
     end
   end
+
+  # A released fence proves its run never started transport. The next run of
+  # the same generation replaces it under the next fence epoch, so every write
+  # bound to the released run or epoch fails its CAS binding.
+  # modeled: tla/salix/SessionEpochFence.tla (Claim at the next epoch)
+  defp replace_released(key, scope, generation, %Creation{record: record} = creation) do
+    case CasRecord.update(
+           key,
+           fn current ->
+             if released?(current) and valid_record?(current) and
+                  current["bucket_scope"] == scope and current["generation"] == generation,
+                do: Map.put(record, "fence_epoch", fence_epoch(current) + 1),
+                else: {:error, :lost}
+           end,
+           create: false
+         ) do
+      {:ok, replaced} -> {:ok, {:won, %{creation | record: replaced}}}
+      {:error, :lost} -> {:ok, :lost}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Releases one open identity fence whose run never started transport.
+
+  Only `unused` and `claimed` progress is releasable: neither state permits a
+  source read, a provider request, or an external effect. A released fence
+  has no terminal and accepts no write from its run. The bucket recovery lane
+  starts the generation again under a new fence epoch.
+  """
+  @spec release(map()) :: {:ok, map()} | {:error, term()}
+  def release(%{fence_key: fence_key} = active) when is_binary(fence_key) and fence_key != "" do
+    CasRecord.update(fence_key, &release_transition(&1, active), create: false)
+  end
+
+  def release(_active), do: {:error, :identity_fence_not_releasable}
+
+  defp release_transition(current, active) do
+    with true <- valid_record?(current),
+         true <- current["run_id"] == active[:run_id],
+         true <- current["generation"] == active[:generation],
+         true <- fence_epoch(current) == Map.get(active, :fence_epoch, 1),
+         nil <- current["terminal"] do
+      case current["identity_observation"] do
+        %{"state" => "released"} ->
+          {:unchanged, current}
+
+        %{"schema" => schema, "state" => state} when state in ~w(unused claimed) ->
+          next =
+            Map.put(current, "identity_observation", %{
+              "schema" => schema,
+              "state" => "released",
+              "released_from" => state,
+              "released_at_ms" => now()
+            })
+
+          if valid_record?(next), do: next, else: {:error, :identity_fence_not_releasable}
+
+        _past_transport ->
+          {:error, :identity_fence_not_releasable}
+      end
+    else
+      _not_releasable -> {:error, :identity_fence_not_releasable}
+    end
+  end
+
+  @doc "Whether one stored identity fence was released for a new run."
+  @spec released?(term()) :: boolean()
+  def released?(%{
+        "schema" => "comma.triage-bucket-fence.v2",
+        "terminal" => nil,
+        "identity_observation" => %{"state" => "released"}
+      }),
+      do: true
+
+  def released?(_fence), do: false
+
+  @doc "The fence epoch; records written before release support carry epoch 1."
+  @spec fence_epoch(map()) :: pos_integer()
+  def fence_epoch(fence), do: Map.get(fence, "fence_epoch", 1)
 
   @type settlement_authority :: :result | :timeout
 
@@ -541,6 +624,9 @@ defmodule SalixIM.Triage.RunFence do
       not active_binding?(current, scope, active) ->
         {:error, :identity_diagnostic_invalid_fence}
 
+      released?(current) ->
+        {:error, :identity_fence_released}
+
       current["schema"] == "comma.triage-bucket-fence.v2" and not valid_record?(current) ->
         {:error, :identity_diagnostic_invalid_fence}
 
@@ -588,11 +674,12 @@ defmodule SalixIM.Triage.RunFence do
 
   defp active_binding?(current, scope, active) do
     is_map(current) and current["bucket_scope"] == scope and
-      current["generation"] == active[:generation] and current["run_id"] == active[:run_id]
+      current["generation"] == active[:generation] and current["run_id"] == active[:run_id] and
+      fence_epoch(current) == Map.get(active, :fence_epoch, 1)
   end
 
   @type recovery_authority :: :deadline | :interrupted_worker
-  @type recovery_view :: {:legacy | :identity, :open | :terminal} | :invalid
+  @type recovery_view :: {:legacy | :identity, :open | :terminal | :released} | :invalid
 
   @doc "Classifies one stored fence for Runtime recovery without exposing schema dispatch."
   @spec recovery_view(map()) :: recovery_view()
@@ -605,9 +692,12 @@ defmodule SalixIM.Triage.RunFence do
 
   def recovery_view(%{"schema" => "comma.triage-bucket-fence.v2", "terminal" => terminal} = fence)
       when is_nil(terminal) or is_map(terminal) do
-    if valid_record?(fence),
-      do: {:identity, if(is_nil(terminal), do: :open, else: :terminal)},
-      else: :invalid
+    cond do
+      not valid_record?(fence) -> :invalid
+      released?(fence) -> {:identity, :released}
+      is_nil(terminal) -> {:identity, :open}
+      true -> {:identity, :terminal}
+    end
   end
 
   def recovery_view(_fence), do: :invalid
@@ -1058,6 +1148,7 @@ defmodule SalixIM.Triage.RunFence do
 
   defp recover_open_transition(current, expected, authority, terminal_id) do
     with true <- valid_record?(current),
+         false <- released?(current),
          nil <- current["terminal"],
          true <- current == expected,
          true <- recovery_authority_allowed?(current, authority),
@@ -1435,6 +1526,7 @@ defmodule SalixIM.Triage.RunFence do
   defp valid_identity_fence_for_transition?(current, active) do
     valid_record?(current) and
       current["run_id"] == active.run_id and current["generation"] == active.generation and
+      fence_epoch(current) == Map.get(active, :fence_epoch, 1) and
       not deadline_reached?(current) and is_nil(current["terminal"]) and
       identity_base_input_matches?(current, active)
   end
@@ -1634,8 +1726,9 @@ defmodule SalixIM.Triage.RunFence do
 
   def predecessor_authoritative?(_namespace, _scope, _generation), do: false
 
-  @doc "Returns whether one generation already has a physical fence record."
-  @spec generation_status(binary(), binary(), binary()) :: :present | :missing | :unavailable
+  @doc "Returns whether one generation has a physical fence record, or a released one."
+  @spec generation_status(binary(), binary(), binary()) ::
+          :present | :released | :missing | :unavailable
   def generation_status(namespace, scope, generation)
       when is_binary(namespace) and namespace != "" and is_binary(scope) and scope != "" and
              is_binary(generation) and generation != "" do
@@ -1643,7 +1736,7 @@ defmodule SalixIM.Triage.RunFence do
     |> SalixStore.TriageKeys.ctl_im_triage_bucket_seal(scope, generation)
     |> CasRecord.get()
     |> case do
-      {:ok, _record} -> :present
+      {:ok, record} -> if(released?(record), do: :released, else: :present)
       {:error, :not_found} -> :missing
       {:error, _reason} -> :unavailable
     end
@@ -1745,7 +1838,7 @@ defmodule SalixIM.Triage.RunFence do
          winning_input,
          _mode
        )
-       when state in ~w(unused claimed transport_maybe_started committed) do
+       when state in ~w(unused claimed released transport_maybe_started committed) do
     if base_projection_matches?(fence_base_projection(fence), winning_input),
       do: :ok,
       else: {:error, :identity_diagnostic_invalid_fence}
@@ -2302,6 +2395,7 @@ defmodule SalixIM.Triage.RunFence do
       positive_integer?(fence["created_at"]) and positive_integer?(fence["deadline_at"]) and
       fence["deadline_at"] >= fence["created_at"] and
       valid_identity_observation?(fence["identity_observation"]) and
+      valid_fence_epoch?(fence) and
       valid_identity_fence_input?(fence) and valid_terminal?(fence["terminal"]) and
       valid_archived_generation?(fence)
   end
@@ -2341,12 +2435,13 @@ defmodule SalixIM.Triage.RunFence do
   def valid_terminal?(
         %{
           "terminal_id" => terminal_id,
-          "status" => "skipped_timeout",
+          "status" => status,
           "decision" => decision,
           "evaluator" => evaluator,
           "settled_at" => settled_at
         } = terminal
-      ) do
+      )
+      when status in ~w(skipped_timeout skipped_source_deleted) do
     exact_map_keys?(terminal, ~w(terminal_id status decision evaluator settled_at)) and
       decision == %{"action" => "silence"} and evaluator == %{} and ULID.valid?(terminal_id) and
       positive_integer?(settled_at)
@@ -2660,6 +2755,18 @@ defmodule SalixIM.Triage.RunFence do
   defp valid_identity_observation?(
          %{
            "schema" => "comma.triage-identity-observation.v1",
+           "state" => "released",
+           "released_from" => released_from,
+           "released_at_ms" => released_at
+         } = observation
+       ),
+       do:
+         exact_map_keys?(observation, ~w(schema state released_from released_at_ms)) and
+           released_from in ~w(unused claimed) and positive_integer?(released_at)
+
+  defp valid_identity_observation?(
+         %{
+           "schema" => "comma.triage-identity-observation.v1",
            "state" => "claimed",
            "claim" => claim,
            "claimed_at_ms" => claimed_at
@@ -2873,7 +2980,7 @@ defmodule SalixIM.Triage.RunFence do
          "identity_observation" => %{"state" => state},
          "input_snapshot" => input
        })
-       when state in ~w(unused claimed transport_maybe_started committed projection_bound),
+       when state in ~w(unused claimed released transport_maybe_started committed projection_bound),
        do: valid_identity_base_projection?(input)
 
   defp valid_identity_fence_input?(%{
@@ -3127,9 +3234,15 @@ defmodule SalixIM.Triage.RunFence do
         input_snapshot
         identity_observation
         terminal
-      ) ++ if(Map.has_key?(fence, "sealed_generation"), do: ["sealed_generation"], else: [])
+      ) ++
+        if(Map.has_key?(fence, "sealed_generation"), do: ["sealed_generation"], else: []) ++
+        if(Map.has_key?(fence, "fence_epoch"), do: ["fence_epoch"], else: [])
     )
   end
+
+  # Records from before release support omit the epoch and read as epoch 1.
+  defp valid_fence_epoch?(%{"fence_epoch" => epoch}), do: is_integer(epoch) and epoch > 1
+  defp valid_fence_epoch?(_fence), do: true
 
   # A terminal fence carries its exact sealed copy, so storage can take the
   # generation out of the active bucket. A channel commit requires the copy. A
@@ -3286,7 +3399,7 @@ defmodule SalixIM.Triage.RunFence do
     |> CanonicalJSON.sha256()
   end
 
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 
   defp validate_identity_claim(claim) do
     valid? = valid_slack_identity_claim?(claim) or valid_source_identity_claim?(claim)

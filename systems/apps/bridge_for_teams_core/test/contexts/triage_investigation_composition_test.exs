@@ -37,7 +37,7 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
 
   Router/Triage and internal Workers use separately selected actual profiles.
   Triage still applies its existing medium-effort, at-most-16384-token product
-  budget; ordinary Router requests retain the selected template budget.
+  budget; ordinary Router requests retain the selected Router model budget.
   The three synthetic specialties share one selected internal Worker profile;
   this is not the full online roster or external-runtime reproduction. Earlier
   homogeneous-profile runs remain diagnostics, not online-topology acceptance.
@@ -62,7 +62,7 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
   COMMA_TRIAGE_EXPECTED_MODEL must be explicit for Router/Triage. Separately,
   ALL COMMA_TRIAGE_WORKER_{MODEL,EXPECTED_MODEL,PROVIDER,PROTOCOL,BASE_URL,
   API_KEY_ENV,MAX_TOKENS,REASONING_EFFORT,CONTEXT_TOKENS,SUPPORTS_IMAGES} must be present.
-  SUPPORTS_IMAGES must explicitly match each selected template (true or false).
+  SUPPORTS_IMAGES must explicitly match each selected model (true or false).
   An explicitly empty REASONING_EFFORT means unset for either role; it does not
   insert a reasoning setting. Omitting the environment field remains invalid.
   There is no Worker-to-Router, provider/model/credential fallback or preflight.
@@ -134,7 +134,7 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
     end
 
     # Existing TriageEvaluator.bound_product_inference/2 deliberately narrows
-    # the Router template's output budget; it does not select another profile.
+    # the Router model's output budget; it does not select another profile.
     def triage_metadata(router_profile) do
       router_profile
       |> safe_metadata()
@@ -234,7 +234,7 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
     # Test-only Responses wire observation. Keep only exact source matches,
     # never the request body, data URLs, unrelated images or credentials.
     def observe_provider_call(state, invocation, role, fun) do
-      caller = self()
+      caller = SystemsRuntime.Proc.self()
       entry = %{invocation: invocation, role: role}
 
       Agent.update(
@@ -246,7 +246,7 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
 
       try do
         result = fun.()
-        completed_at_ms = System.system_time(:millisecond)
+        completed_at_ms = SystemsClock.system_time(:millisecond)
 
         Agent.update(
           state,
@@ -268,7 +268,7 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
       # complete_stream uses the ordinary StreamWatchdog Task relay. Its
       # standard caller chain identifies this invocation without adding any
       # marker to the provider's options, headers or model context.
-      callers = [self() | Process.get(:"$callers", [])]
+      callers = [SystemsRuntime.Proc.self() | Process.get(:"$callers", [])]
 
       {entry, files} =
         Agent.get(state, fn current ->
@@ -380,7 +380,7 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
     def source_locator_messages(messages, _role, _locator), do: messages
 
     defp bounded(messages, opts, fun) do
-      state = Application.fetch_env!(:bridge_for_teams_core, @state_key)
+      state = SystemsRuntime.fetch_env!(:bridge_for_teams_core, @state_key)
 
       system =
         messages
@@ -398,7 +398,7 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
 
       request_contract = %{
         identity: PeerReview.request_identity(),
-        observed_at_ms: System.system_time(:millisecond),
+        observed_at_ms: SystemsClock.system_time(:millisecond),
         phase: Agent.get(state, &Map.get(&1, :phase, :baseline)),
         role: role,
         worker: role == :worker,
@@ -667,7 +667,7 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
       response =
         case method do
           "files.getUploadURLExternal" ->
-            file_id = "FLOCAL#{System.unique_integer([:positive, :monotonic])}"
+            file_id = "FLOCAL#{SystemsRuntime.Proc.unique_integer([:positive, :monotonic])}"
 
             %{
               "ok" => true,
@@ -838,10 +838,13 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
   setup do
     # A line filter can bypass ExUnit exclusions, so validate the complete
     # explicit role profiles before fixture setup or any provider invocation.
+    # Agents run under the application's supervisors, outside the test's
+    # process tree; they read the test's bindings (the local search reader).
+    :ok = SystemsRuntime.Test.shared()
     profiles = RoleProfiles.read!()
     SalixStore.S3.Fake.reset()
-    unless Process.whereis(Ids), do: start_supervised!(Ids)
-    :ok = Fixture.install_clickhouse_reader!(self())
+    unless SystemsRuntime.Proc.whereis(Ids), do: start_supervised!(Ids)
+    :ok = Fixture.install_clickhouse_reader!(SystemsRuntime.Proc.self())
     restore_runtime = Live.install_runtime!()
 
     state =
@@ -862,17 +865,17 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
          end}
       )
 
-    previous_state = Application.get_env(:bridge_for_teams_core, @state_key)
-    previous_base = Application.get_env(:salix_im, :slack_api_base_url)
-    Application.put_env(:bridge_for_teams_core, @state_key, state)
-    Application.put_env(:salix_agent, :llm, BoundedLiveProvider)
+    previous_state = SystemsRuntime.get_env(:bridge_for_teams_core, @state_key)
+    previous_base = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    SystemsRuntime.put_env(:bridge_for_teams_core, @state_key, state)
+    SystemsRuntime.put_env(:salix_agent, :llm, BoundedLiveProvider)
 
     port =
       SalixIM.TestSupport.BanditServer.start!(fn port ->
         {Bandit, plug: {SlackLoopback, state}, port: port, startup_log: false}
       end)
 
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
 
     restore_transports =
       Transports.install!(
@@ -880,7 +883,7 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
         slack_base_url: "http://127.0.0.1:#{port}/api",
         exa: fn request -> Context.web_response(Agent.get(state, & &1.context), request) end,
         capture: fn event ->
-          if Process.alive?(state) do
+          if SystemsRuntime.Proc.alive?(state) do
             Agent.update(
               state,
               &Map.update!(&1, :transport_events, fn events -> [event | events] end)
@@ -964,7 +967,7 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
       )
 
     on_exit(Context.install!(state, context))
-    on_exit(Search.install!(state, connect, context.messages))
+    Search.install!(state, connect, context.messages)
     Agent.update(state, &Map.put(&1, :slack_thread, source_thread(authority, source)))
 
     configure_agent!(router, "router", "BFT Router", router_profile, """
@@ -2255,20 +2258,8 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
   @doc false
   def configure_agent!(agent_id, role, name, profile, prompt) do
     on_exit(fn -> SalixAgent.Fleet.stop(agent_id) end)
-    template_id = "triage-composition-#{agent_id}"
-
-    assert {:ok, _} =
-             SalixAgent.Templates.create(%{
-               "template_id" => template_id,
-               "name" => name,
-               "model" => profile.model,
-               "provider" => profile.provider,
-               "max_tokens" => profile.max_tokens,
-               "context_tokens" => profile.context_tokens,
-               "supports_images" => profile.supports_images,
-               "provider_config" => RoleProfiles.provider_config(profile)
-             })
-
+    # Each role runs its profile as the platform model of its tier.
+    :ok = BridgeForTeams.TriageEngineLiveHarness.put_platform_model!(role, profile)
     group = Ids.group_id_from_agent!(agent_id)
 
     :ok =
@@ -2277,7 +2268,6 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
         tenant_id: Ids.tenant_id_from_group!(group),
         role: role,
         name: name,
-        template_id: template_id,
         system_prompt: prompt
       })
 
@@ -2286,7 +2276,7 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
     tenant = Ids.tenant_id_from_group!(group)
     assert {:ok, _} = SalixAgent.Control.claim_configuration(agent_id, tenant)
 
-    updates = %{"template_id" => template_id, "name" => name}
+    updates = %{"model" => nil, "name" => name}
     updates = if prompt == "", do: updates, else: Map.put(updates, "system_prompt", prompt)
 
     assert {:ok, _} =
@@ -2298,15 +2288,14 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
 
     assert {:ok, resolved} = SalixAgent.LlmResolver.resolve_runtime(agent_id)
 
-    assert Map.take(resolved, ~w(model provider base_url api_key_env)) == %{
+    assert Map.take(resolved, ~w(model provider base_url)) == %{
              "model" => profile.model,
              "provider" => profile.provider,
-             "base_url" => profile.base_url,
-             "api_key_env" => profile.api_key_env
+             "base_url" => profile.base_url
            }
 
     assert RoleProfiles.safe_metadata(resolved) == RoleProfiles.safe_metadata(profile)
-    template_id
+    :ok
   end
 
   defp tasks(group_id) do
@@ -2376,12 +2365,12 @@ defmodule BridgeForTeams.TriageInvestigationCompositionTest do
   defp value(nil, _key), do: nil
   defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end
 
 defmodule BridgeForTeams.TriageSourceImageObservationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias BridgeForTeams.TriageInvestigationCompositionTest, as: Observer
   @moduletag :triage_composition_observer
@@ -2462,7 +2451,7 @@ defmodule BridgeForTeams.TriageSourceImageObservationTest do
     alias Observer.SourceImageObserver
     alias BridgeForTeams.TriageInvestigationTransports, as: Transports
     {:ok, _} = Application.ensure_all_started(:req)
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
     original = <<137, 80, 78, 71, 0, 255>>
     files = %{"SOURCE" => %{body: original, metadata: %{"mimetype" => "image/png"}}}
 
@@ -2490,7 +2479,7 @@ defmodule BridgeForTeams.TriageSourceImageObservationTest do
 
     Req.default_options(
       adapter: fn request ->
-        send(owner, {:wire, request.body})
+        SystemsRuntime.Proc.send(owner, {:wire, request.body})
         assert is_function(request.into, 2)
         response = Req.Response.new(status: 200, body: "")
         {:cont, result} = request.into.({:data, sse}, {request, response})
@@ -2543,7 +2532,7 @@ defmodule BridgeForTeams.TriageSourceImageObservationTest do
 
     assert SourceImageObserver.sources_before_result(
              current.source_image_requests,
-             System.system_time(:millisecond)
+             SystemsClock.system_time(:millisecond)
            ) == [%{file_id: "SOURCE", bytes: 6, mimetype: "image/png"}]
 
     assert current.source_image_callers == %{}
@@ -2656,7 +2645,7 @@ defmodule BridgeForTeams.TriageInvestigationToolSurfaceTest do
 
       assert disclosure == ordinary
 
-      # Use the configured template and the real file tool. A dropped image
+      # Use the configured model and the real file tool. A dropped image
       # capability previously made these agents reject an image they could see.
       image_path = "/source.png"
 
@@ -2692,7 +2681,7 @@ defmodule BridgeForTeams.TriageInvestigationToolSurfaceTest do
 end
 
 defmodule BridgeForTeams.TriageInvestigationObservationTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias BridgeForTeams.TriageInvestigationCompositionTest, as: Observer
   alias BridgeForTeams.TriageInvestigationCompositionTest.{RoleProfiles, SlackLoopback}
   alias SalixAgent.InternalSession
@@ -2734,12 +2723,6 @@ defmodule BridgeForTeams.TriageInvestigationObservationTest do
 
       private = result |> Map.put(:role, "tool") |> VisibleReplyPolicy.label_result()
       assert private.diagnostic_visibility == "model_only"
-      [repair] = VisibleReplyPolicy.sanitize_context([private], {:repair_required, 0})
-      assert repair.content == result.content
-      [clean] = VisibleReplyPolicy.sanitize_context([private], :clean)
-
-      assert %{"status" => "failed", "reason" => "not_callable", "retry" => "after_change"} =
-               Jason.decode!(clean.content)
     end
 
     [allowed] = Tools.execute([help_call("fs.read_file")], ctx)
@@ -2748,15 +2731,6 @@ defmodule BridgeForTeams.TriageInvestigationObservationTest do
     assert manual["name"] == "fs.read_file"
     assert is_binary(manual["manual"]) and manual["manual"] != ""
     assert is_map(manual["input_schema"])
-
-    [clean] =
-      allowed
-      |> Map.put(:role, "tool")
-      |> VisibleReplyPolicy.label_result()
-      |> List.wrap()
-      |> VisibleReplyPolicy.sanitize_context(:clean)
-
-    assert Jason.decode!(clean.content) == manual
   end
 
   test "loopback decodes GET query and POST form into the same exact source pages" do

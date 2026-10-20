@@ -1,4 +1,6 @@
 defmodule SalixMCP.RemoteClient do
+  require SystemsRuntime.Proc
+
   @moduledoc false
 
   alias SalixMCP.JSONRPC
@@ -23,7 +25,7 @@ defmodule SalixMCP.RemoteClient do
     with {:ok, target} <- SalixMCP.URLPolicy.public_http_target(config["url"]) do
       id =
         Keyword.get(opts, :request_id) ||
-          "mcp-" <> (:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower))
+          "mcp-" <> (SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower))
 
       body = JSONRPC.request(id, method, params)
       progress_callback = Keyword.get(opts, :progress_callback)
@@ -100,8 +102,8 @@ defmodule SalixMCP.RemoteClient do
     end
   end
 
-  def start_sse(config, owner) when is_pid(owner) do
-    Task.start(fn -> sse_loop(config, owner) end)
+  def start_sse(config, owner) when SystemsRuntime.Proc.is_process(owner) do
+    SystemsRuntime.Task.start(fn -> sse_loop(config, owner) end)
   end
 
   def sse_post(config, endpoint, message, timeout \\ 30_000) do
@@ -291,9 +293,17 @@ defmodule SalixMCP.RemoteClient do
   defp sse_loop(config, owner) do
     do_sse_loop(config, owner)
   rescue
-    e -> send(owner, {:mcp_sse_error, self(), Exception.message(e)})
+    e ->
+      SystemsRuntime.Proc.send(
+        owner,
+        {:mcp_sse_error, SystemsRuntime.Proc.self(), Exception.message(e)}
+      )
   catch
-    kind, reason -> send(owner, {:mcp_sse_error, self(), {kind, reason}})
+    kind, reason ->
+      SystemsRuntime.Proc.send(
+        owner,
+        {:mcp_sse_error, SystemsRuntime.Proc.self(), {kind, reason}}
+      )
   end
 
   defp do_sse_loop(config, owner) do
@@ -308,7 +318,7 @@ defmodule SalixMCP.RemoteClient do
       case Req.get(
              target.url,
              headers: headers,
-             into: sse_stream_into(config, owner, self()),
+             into: sse_stream_into(config, owner, SystemsRuntime.Proc.self()),
              receive_timeout: 86_400_000,
              connect_options: target.connect_options,
              inet6: target.inet6,
@@ -316,16 +326,23 @@ defmodule SalixMCP.RemoteClient do
              retry: false
            ) do
         {:ok, %Req.Response{status: status}} when status in 200..299 ->
-          send(owner, {:mcp_sse_closed, self()})
+          SystemsRuntime.Proc.send(owner, {:mcp_sse_closed, SystemsRuntime.Proc.self()})
 
         {:ok, %Req.Response{status: status}} ->
-          send(owner, {:mcp_sse_error, self(), {:http_error, status}})
+          SystemsRuntime.Proc.send(
+            owner,
+            {:mcp_sse_error, SystemsRuntime.Proc.self(), {:http_error, status}}
+          )
 
         {:error, reason} ->
-          send(owner, {:mcp_sse_error, self(), {:request_failed, request_error(reason)}})
+          SystemsRuntime.Proc.send(
+            owner,
+            {:mcp_sse_error, SystemsRuntime.Proc.self(), {:request_failed, request_error(reason)}}
+          )
       end
     else
-      {:error, reason} -> send(owner, {:mcp_sse_error, self(), reason})
+      {:error, reason} ->
+        SystemsRuntime.Proc.send(owner, {:mcp_sse_error, SystemsRuntime.Proc.self(), reason})
     end
   end
 
@@ -381,14 +398,20 @@ defmodule SalixMCP.RemoteClient do
     case event["event"] do
       "endpoint" ->
         case absolute_sse_endpoint(config["url"], data) do
-          {:ok, endpoint} -> send(owner, {:mcp_sse_endpoint, stream_pid, endpoint})
-          {:error, reason} -> send(owner, {:mcp_sse_error, stream_pid, reason})
+          {:ok, endpoint} ->
+            SystemsRuntime.Proc.send(owner, {:mcp_sse_endpoint, stream_pid, endpoint})
+
+          {:error, reason} ->
+            SystemsRuntime.Proc.send(owner, {:mcp_sse_error, stream_pid, reason})
         end
 
       _ ->
         case Jason.decode(data) do
-          {:ok, %{} = message} -> send(owner, {:mcp_sse_response, stream_pid, message})
-          _ -> :ok
+          {:ok, %{} = message} ->
+            SystemsRuntime.Proc.send(owner, {:mcp_sse_response, stream_pid, message})
+
+          _ ->
+            :ok
         end
     end
   end

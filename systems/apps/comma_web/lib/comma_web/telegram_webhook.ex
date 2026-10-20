@@ -57,5 +57,5 @@ defmodule CommaWeb.TelegramWebhook do
 
   defp normalize_username(nil), do: ""
   defp normalize_username(value), do: value |> to_string() |> String.trim_leading("@")
-  defp telegram_config, do: Application.get_env(:comma_web, :telegram, [])
+  defp telegram_config, do: SystemsRuntime.get_env(:comma_web, :telegram, [])
 end

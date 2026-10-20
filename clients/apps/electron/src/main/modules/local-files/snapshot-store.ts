@@ -101,6 +101,8 @@ type StartupCleanupYield = (signal: AbortSignal) => Promise<void>;
 
 export type LocalFileStartupCleanup = Readonly<{
   close(): Promise<void>;
+  /** Settles once the cleanup has finished, been closed, or failed. */
+  finished: Promise<void>;
 }>;
 
 /**
@@ -113,7 +115,6 @@ export type LocalFileStartupCleanup = Readonly<{
  * bind a stable owner for local preview admission, but public snapshot metadata
  * remains ownerless. A ref is never rebound. Connector remote reads open only
  * the managed object named by this record.
- * Modeled in tla/salix/LocalFileImport.tla.
  */
 export class LocalFileSnapshotStore {
   readonly #activeCleanupOperations = new Set<Promise<void>>();
@@ -609,6 +610,7 @@ export class LocalFileSnapshotStore {
         controller.abort();
         await completion;
       },
+      finished: completion,
     });
   }
 

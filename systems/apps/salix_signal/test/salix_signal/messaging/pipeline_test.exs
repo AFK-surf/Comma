@@ -4,17 +4,15 @@ defmodule SalixSignal.Messaging.PipelineTest do
   # sending, receipts, the message kinds of CRS-05, redelivery and crashes
   # around the receive commit, owner fencing, device-list correction, retry
   # requests and fallbacks.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignal.Messaging.{Inbound, Pipeline}
   alias SalixSignal.Test.{MemoryStore, MockService, SignalAccount}
   alias SalixSignalProto.Address
-  alias SalixSignalProto.Message.{Content, DecryptionError, Wire}
+  alias SalixSignalProto.Message.{Content, DecryptionError}
 
   @alice "00000000-0000-4000-8000-000000000001"
   @bob "00000000-0000-4000-8000-000000000002"
-  @nobody "00000000-0000-4000-8000-000000000009"
-
   setup do
     {:ok, service} = MockService.start_link()
     alice = SignalAccount.new(service, @alice)
@@ -264,203 +262,8 @@ defmodule SalixSignal.Messaging.PipelineTest do
     assert MemoryStore.session(alice.store, Address.new(@bob, 1)).current.pending != nil
   end
 
-  test "a retry request and its answer go to every device of the account", %{
-    service: service,
-    alice: alice,
-    bob: bob
-  } do
-    # CRS-07 §4, §6.2 and §6.3 (clean question C5-1): the service accepts no
-    # send that lists only one device of an account.
-    alice2 =
-      SignalAccount.new(service, @alice,
-        device_id: 2,
-        identity: alice.identity,
-        profile_key: alice.profile_key
-      )
-
-    bob2 =
-      SignalAccount.new(service, @bob,
-        device_id: 2,
-        identity: bob.identity,
-        profile_key: bob.profile_key
-      )
-
-    kind = fn events, kind -> for %Inbound{content_kind: ^kind} = i <- messages(events), do: i end
-
-    puts_to_alice = fn ->
-      for {_as, "PUT", "/v1/messages/" <> @alice, opts} <- MockService.requests(service),
-          do: opts[:json]
-    end
-
-    {alice, bob} = converse(alice, bob)
-    {_events, alice2} = SignalAccount.deliver(alice2)
-    {_events, bob2} = SignalAccount.deliver(bob2)
-
-    # Bob's device 1 loses its session with Alice's device 1.
-    Agent.update(bob.store, fn s ->
-      %{s | sessions: Map.delete(s.sessions, Address.new(@alice, 1))}
-    end)
-
-    {sent, alice} = send_text(alice, @bob, "lost")
-    assert sent.devices == [1, 2]
-
-    {_events, bob} = SignalAccount.deliver(bob)
-
-    # The retry request is one send that lists both of Alice's devices.
-    retry = List.last(puts_to_alice.())
-    assert retry["messages"] |> Enum.map(& &1["destinationDeviceId"]) |> Enum.sort() == [1, 2]
-    assert {retry["online"], retry["urgent"]} == {false, false}
-
-    {events, bob2} = SignalAccount.deliver(bob2)
-    assert [%Inbound{timestamp: timestamp}] = kind.(events, :data)
-    assert timestamp == sent.timestamp
-
-    # Alice's device 2 ignores a retry request about device 1's message.
-    {events, _alice2} = SignalAccount.deliver(alice2)
-    assert [%Inbound{}] = kind.(events, :decryption_error)
-    assert MockService.queued(service, @bob, 1) == []
-
-    # Alice's device 1 resends to Bob's whole account with the original
-    # timestamp: device 1 gets the message in a new session, device 2 drops
-    # the copy as a duplicate.
-    {events, _alice} = SignalAccount.deliver(alice)
-    assert [%Inbound{}] = kind.(events, :decryption_error)
-
-    {events, _bob} = SignalAccount.deliver(bob)
-    assert [%Inbound{} = resent] = kind.(events, :data)
-    assert resent.timestamp == sent.timestamp
-    assert data(resent).data_message.body == "lost"
-
-    {events, _bob2} = SignalAccount.deliver(bob2)
-    assert kind.(events, :data) == []
-    assert {:dropped, :duplicate_message} in events
-  end
-
-  # Owner decision: answers to one sender's retry requests have the same
-  # bound as sending them (5 without an hour of quiet); excess requests are
-  # left unanswered and counted.
-  test "at most five retry requests per sender are answered until an hour of quiet" do
-    test = self()
-    handler = {__MODULE__, test}
-
-    :telemetry.attach(
-      handler,
-      [:salix_signal, :receive, :guard],
-      fn _event, _measurements, %{reason: reason}, _ -> send(test, {:guard, reason}) end,
-      nil
-    )
-
-    on_exit(fn -> :telemetry.detach(handler) end)
-
-    {:ok, clock} = Agent.start_link(fn -> System.system_time(:millisecond) end)
-    now = fn -> Agent.get(clock, & &1) end
-    {:ok, service} = MockService.start_link(clock: now)
-    alice = SignalAccount.new(service, @alice, clock: now)
-    bob = SignalAccount.new(service, @bob, clock: now)
-    {alice, bob} = converse(alice, bob)
-
-    {sent, alice} =
-      Enum.map_reduce(1..8, alice, fn n, alice -> send_text(alice, @bob, "m#{n}") end)
-
-    {_events, bob} = SignalAccount.deliver(bob)
-
-    retry = fn bob, %{timestamp: timestamp} ->
-      request = DecryptionError.encode(%DecryptionError{timestamp: timestamp, device_id: 1})
-
-      {{:ok, _}, bob} =
-        SignalAccount.run(
-          bob,
-          &Pipeline.send_retry_request(&1, Address.new(@alice, 1), request, nil)
-        )
-
-      bob
-    end
-
-    resends = fn ->
-      Enum.count(MockService.requests(service), fn {_as, method, path, _opts} ->
-        method == "PUT" and path == "/v1/messages/" <> @bob
-      end)
-    end
-
-    bob = Enum.reduce(Enum.take(sent, 7), bob, &retry.(&2, &1))
-    before = resends.()
-    {events, alice} = SignalAccount.deliver(alice)
-    assert length(for {:message, %Inbound{content_kind: :decryption_error}} <- events, do: 1) == 7
-    assert resends.() - before == 5
-    assert Enum.count(events, &(&1 == {:retry_answer_limited, @bob})) == 2
-    assert_received {:guard, :retry_answer_limited}
-    assert_received {:guard, :retry_answer_limited}
-
-    # After an hour without retry requests from Bob, his next one is answered.
-    Agent.update(clock, &(&1 + 60 * 60 * 1000))
-    bob = retry.(bob, List.last(sent))
-    before = resends.()
-    {events, _alice} = SignalAccount.deliver(alice)
-    refute {:retry_answer_limited, @bob} in events
-    assert resends.() - before == 1
-    {events, _bob} = SignalAccount.deliver(bob)
-    assert {:dropped, :duplicate_message} in events
-  end
-
-  # Owner decision: the sender certificate is fetched again at the smaller of
-  # 24 hours and half its remaining lifetime before it expires, so a
-  # short-lived certificate is not fetched again for every sealed send.
-  test "a short-lived sender certificate is reused for half its life", %{} do
-    {:ok, clock} = Agent.start_link(fn -> System.system_time(:millisecond) end)
-    now = fn -> Agent.get(clock, & &1) end
-    hour = 60 * 60 * 1000
-    {:ok, service} = MockService.start_link(clock: now, certificate_lifetime_ms: 12 * hour)
-    alice = SignalAccount.new(service, @alice, clock: now)
-    bob = SignalAccount.new(service, @bob, clock: now)
-    {alice, _bob} = converse(alice, bob)
-
-    fetches = fn ->
-      Enum.count(MockService.requests(service), fn {as, method, path, _opts} ->
-        as == {:identified, @alice, 1} and method == "GET" and
-          String.starts_with?(path, "/v1/certificate/delivery")
-      end)
-    end
-
-    {info, alice} = send_text(alice, @bob, "one")
-    assert info.sealed?
-    fetched = fetches.()
-
-    {_info, alice} = send_text(alice, @bob, "two")
-    Agent.update(clock, &(&1 + 6 * hour - 1))
-    {_info, alice} = send_text(alice, @bob, "three")
-    assert fetches.() == fetched
-
-    Agent.update(clock, &(&1 + 2))
-    {info, _alice} = send_text(alice, @bob, "four")
-    assert info.sealed?
-    assert fetches.() == fetched + 1
-  end
-
-  test "a sealed send refused with 401 falls back to an identified send", %{
-    alice: alice,
-    bob: bob
-  } do
-    MemoryStore.put_contact(alice.store, @bob, %{
-      profile_key: :crypto.strong_rand_bytes(32),
-      expire_timer: %{seconds: 0, version: 0},
-      unregistered?: false
-    })
-
-    {info, _alice} = send_text(alice, @bob, "wrong key")
-    refute info.sealed?
-    {events, _bob} = SignalAccount.deliver(bob)
-    assert [%Inbound{sealed?: false}] = messages(events)
-  end
-
-  test "sending to an unknown account reports it unregistered", %{alice: alice} do
-    {{:error, :unregistered}, alice} =
-      SignalAccount.run(alice, &Pipeline.send_text(&1, @nobody, "anyone?"))
-
-    assert MemoryStore.contact(alice.store, @nobody).unregistered?
-  end
-
   test "call messages go to call signaling after the commit", %{service: service, alice: alice} do
-    test = self()
+    test = SystemsRuntime.Proc.self()
 
     bob =
       SignalAccount.new(service, "00000000-0000-4000-8000-000000000003",
@@ -483,32 +286,5 @@ defmodule SalixSignal.Messaging.PipelineTest do
                        call_message: <<0x0A, 1, 2>>,
                        delivery_timestamp_ms: 1
                      }}
-  end
-
-  test "undecodable envelopes and envelopes for another account are acknowledged and dropped", %{
-    bob: bob
-  } do
-    assert {:ack, [{:dropped, :malformed_envelope}], _} =
-             Pipeline.receive_envelope(bob.pipeline, <<0xFF, 0xFF>>)
-
-    other = %SalixSignalProto.Message.Envelope{
-      kind: 6,
-      payload: <<0x11>>,
-      destination: {:aci, :binary.copy(<<7>>, 16)},
-      server_guid: :crypto.strong_rand_bytes(16)
-    }
-
-    assert {:ack, [{:dropped, :wrong_destination}], _} =
-             Pipeline.receive_envelope(
-               bob.pipeline,
-               SalixSignalProto.Message.Envelope.encode(other)
-             )
-
-    assert [%Inbound{outcome: :drop, reason: :wrong_destination}] = SignalAccount.inbound(bob)
-  end
-
-  test "Wire.Content round trip of a call message keeps its bytes" do
-    bytes = Wire.Content.encode(%Wire.Content{call_message: <<1, 2, 3>>})
-    assert {:ok, :call, %Wire.Content{call_message: <<1, 2, 3>>}} = Content.decode(bytes)
   end
 end

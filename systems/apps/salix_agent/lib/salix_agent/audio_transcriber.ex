@@ -18,7 +18,7 @@ defmodule SalixAgent.AudioTranscriber do
 
   @spec transcribe(String.t(), String.t()) :: {:ok, result()} | {:error, term()}
   def transcribe(agent_id, path) when is_binary(agent_id) and is_binary(path) do
-    case Application.get_env(:salix_agent, :audio_transcriber_mod) do
+    case SystemsRuntime.get_env(:salix_agent, :audio_transcriber_mod) do
       nil -> {:error, :asr_not_configured}
       module -> module.transcribe(agent_id, path)
     end

@@ -102,6 +102,13 @@
           "image_build_context": ".",
           "instance_type": "standard-1",
           "max_instances": 512,
+          "ssh": { "enabled": true },
+          "authorized_keys": [
+            {
+              "name": "salix-vm-staging-2026-09",
+              "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAvqGsOvtIJdSji4MlL/mpoGcaha6JzAKn2HGrfFw/Jl salix-vm-staging-2026-09"
+            }
+          ],
         },
       ],
       "durable_objects": {
@@ -194,6 +201,13 @@
           "image_build_context": ".",
           "instance_type": "standard-1",
           "max_instances": 512,
+          "ssh": { "enabled": true },
+          "authorized_keys": [
+            {
+              "name": "salix-vm-prod-2026-09",
+              "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC/cGBlClWyo65Wwab0BzQs7D/TQ/9Ssz97XyG/stu1X salix-vm-prod-2026-09"
+            }
+          ],
         },
       ],
       "durable_objects": {

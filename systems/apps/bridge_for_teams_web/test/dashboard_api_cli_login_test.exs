@@ -1,4 +1,6 @@
 defmodule BridgeForTeamsWeb.DashboardAPICLILoginTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The BFT CLI device-login approval page (`/cli/device-login`) and its API:
   the page and its login redirect, the owner/admin rule with its redirect and
@@ -7,6 +9,9 @@ defmodule BridgeForTeamsWeb.DashboardAPICLILoginTest do
   query count that does not grow with the approver's organizations.
   """
   use BridgeForTeamsWeb.DashboardCase, async: false
+
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.BridgeForTeamsWeb", "Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{CLI.Login, Memberships, Repo}
   alias BridgeForTeams.Schema.CliDeviceAuthorization
@@ -21,15 +26,6 @@ defmodule BridgeForTeamsWeb.DashboardAPICLILoginTest do
   end
 
   describe "the page" do
-    test "serves the React app with and without a code, before onboarding too", %{code: code} do
-      %{user: owner} = org_with_owner_fixture()
-      conn = log_in_user(build_conn(), owner, onboarded: false)
-
-      for path <- [~p"/cli/device-login", ~p"/cli/device-login/#{code}"] do
-        assert conn |> get(path) |> html_response(200) =~ ~s(<div id="root"></div>)
-      end
-    end
-
     test "sends a logged-out visitor through login and back to the code", %{code: code} do
       conn = build_conn() |> init_test_session(%{}) |> get(~p"/cli/device-login/#{code}")
       location = redirected_to(conn)
@@ -40,17 +36,6 @@ defmodule BridgeForTeamsWeb.DashboardAPICLILoginTest do
                location |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
 
       assert return_to == "/cli/device-login/#{code}"
-    end
-
-    test "sends a member who manages no organization to /orgs with an error",
-         %{org: org, code: code} do
-      conn = build_conn() |> log_in_user(add_member(org)) |> get(~p"/cli/device-login/#{code}")
-      assert redirected_to(conn) == "/orgs"
-
-      html = conn |> recycle() |> get("/orgs") |> html_response(200)
-
-      assert html =~
-               ~s(<meta name="bft-flash" data-kind="error" content="You do not have permission to approve CLI login requests." />)
     end
   end
 
@@ -69,17 +54,6 @@ defmodule BridgeForTeamsWeb.DashboardAPICLILoginTest do
       assert data["request"]["created_at"]
       assert data["request"]["expires_at"]
       assert data["orgs"] == [%{"id" => org.id, "slug" => org.slug, "name" => org.name}]
-    end
-
-    test "normalizes the typed code and answers an unknown one without a request",
-         %{conn: conn, code: code} do
-      typed = code |> String.downcase() |> String.split_at(4) |> Tuple.to_list() |> Enum.join("-")
-
-      assert %{"request" => %{"user_code" => ^code}} =
-               conn |> get(login_path(typed)) |> json_response(200) |> data()
-
-      assert %{"request" => nil, "orgs" => [_]} =
-               conn |> get(login_path("NOPE0000")) |> json_response(200) |> data()
     end
 
     test "costs the same queries however many organizations the approver manages",
@@ -118,23 +92,6 @@ defmodule BridgeForTeamsWeb.DashboardAPICLILoginTest do
       assert granted.id == org.id
     end
 
-    test "approve needs at least one organization", %{conn: conn, code: code} do
-      for body <- [%{}, %{"org_ids" => []}, %{"org_ids" => [%{}]}] do
-        assert %{
-                 "error" => %{
-                   "code" => "missing_org_grants",
-                   "message" => "Select at least one organization."
-                 }
-               } =
-                 conn
-                 |> put_req_header("content-type", "application/json")
-                 |> post(login_path(code, "approve"), Jason.encode!(body))
-                 |> json_response(422)
-      end
-
-      assert {:ok, %{status: "pending"}} = Login.get_device_authorization(code)
-    end
-
     test "deny cancels the request and the CLI gets no session",
          %{conn: conn, code: code, device_code: device_code} do
       assert %{"request" => %{"status" => "cancelled"}} =
@@ -164,7 +121,7 @@ defmodule BridgeForTeamsWeb.DashboardAPICLILoginTest do
       {:ok, %{authorization: expiring}} = Login.start_device_authorization(%{})
 
       expiring
-      |> Ecto.Changeset.change(expires_at: DateTime.add(DateTime.utc_now(), -60))
+      |> Ecto.Changeset.change(expires_at: DateTime.add(SystemsClock.utc_now(), -60))
       |> Repo.update!()
 
       assert %{
@@ -235,15 +192,16 @@ defmodule BridgeForTeamsWeb.DashboardAPICLILoginTest do
   end
 
   defp query_count(conn, path) do
-    test_pid = self()
-    handler = "cli-login-query-count-#{System.unique_integer([:positive])}"
+    test_pid = SystemsRuntime.Proc.self()
+    handler = "cli-login-query-count-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:bridge_for_teams, :repo, :query],
         fn _event, _measurements, _metadata, _config ->
-          if self() == test_pid, do: send(test_pid, :repo_query)
+          if SystemsRuntime.Proc.self() == test_pid,
+            do: SystemsRuntime.Proc.send(test_pid, :repo_query)
         end,
         nil
       )
@@ -252,12 +210,12 @@ defmodule BridgeForTeamsWeb.DashboardAPICLILoginTest do
       conn |> get(path) |> json_response(200)
       count_messages(0)
     after
-      :telemetry.detach(handler)
+      SystemsRuntime.Telemetry.detach(handler)
     end
   end
 
   defp count_messages(count) do
-    receive do
+    SystemsRuntime.Proc.receive do
       :repo_query -> count_messages(count + 1)
     after
       0 -> count

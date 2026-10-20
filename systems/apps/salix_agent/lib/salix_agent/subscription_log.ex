@@ -30,7 +30,7 @@ defmodule SalixAgent.SubscriptionLog do
   end
 
   def span(event, fields, fun, extra \\ fn -> [] end) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
     emit(event <> "_start", fields)
 
     try do
@@ -47,7 +47,8 @@ defmodule SalixAgent.SubscriptionLog do
   defp finish(event, fields, result, started, extra) do
     emit(
       event <> "_finish",
-      fields ++ result ++ [duration_ms: System.monotonic_time(:millisecond) - started] ++ extra.()
+      fields ++
+        result ++ [duration_ms: SystemsClock.monotonic_time(:millisecond) - started] ++ extra.()
     )
   rescue
     _ -> :ok
@@ -76,11 +77,15 @@ defmodule SalixAgent.SubscriptionLog do
   def result_fields(_), do: [outcome: "ok"]
 
   def frame(stats, bytes, started) do
-    if :atomics.add_get(stats, 1, 1) == 1 do
-      :atomics.put(stats, 3, System.monotonic_time(:millisecond) - started + 1)
+    if SystemsRuntime.Atomics.add_get(stats, 1, 1) == 1 do
+      SystemsRuntime.Atomics.put(
+        stats,
+        3,
+        SystemsClock.monotonic_time(:millisecond) - started + 1
+      )
     end
 
-    :atomics.add(stats, 2, byte_size(bytes))
+    SystemsRuntime.Atomics.add(stats, 2, byte_size(bytes))
     :ok
   rescue
     _ -> :ok
@@ -88,9 +93,10 @@ defmodule SalixAgent.SubscriptionLog do
 
   def stats(stats) do
     [
-      host_frames: :atomics.get(stats, 1),
-      host_bytes: :atomics.get(stats, 2),
-      host_first_frame_ms: if(:atomics.get(stats, 3) > 0, do: :atomics.get(stats, 3) - 1)
+      host_frames: SystemsRuntime.Atomics.get(stats, 1),
+      host_bytes: SystemsRuntime.Atomics.get(stats, 2),
+      host_first_frame_ms:
+        if(SystemsRuntime.Atomics.get(stats, 3) > 0, do: SystemsRuntime.Atomics.get(stats, 3) - 1)
     ]
   end
 

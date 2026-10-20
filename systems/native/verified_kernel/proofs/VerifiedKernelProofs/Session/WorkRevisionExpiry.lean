@@ -1,4 +1,5 @@
 import VerifiedKernelProofs.Session.WorkQueueDeterminism
+import VerifiedKernelProofs.Session.WorkRevisionRawPlan
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

@@ -70,9 +70,9 @@ defmodule Comma.Accounts.UserPageCursor do
   defp signing_key(opts) do
     secret =
       Keyword.get(opts, :cursor_secret) ||
-        Application.get_env(:comma_core, :user_cursor_secret) ||
-        Application.get_env(:comma_web, :api_token) ||
-        Application.get_env(:salix_web, :api_token)
+        SystemsRuntime.get_env(:comma_core, :user_cursor_secret) ||
+        SystemsRuntime.get_env(:comma_web, :api_token) ||
+        SystemsRuntime.get_env(:salix_web, :api_token)
 
     if is_binary(secret) and String.trim(secret) != "" do
       {:ok, :crypto.mac(:hmac, :sha256, secret, @key_context)}

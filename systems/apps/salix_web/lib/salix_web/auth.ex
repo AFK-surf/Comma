@@ -34,6 +34,10 @@ defmodule SalixWeb.Auth do
           (conn.method == "GET" and SalixWeb.TwilioWebhook.stream_path?(path)) ->
         SalixWeb.TwilioWebhook.admit(conn)
 
+      # A Workload's station asking the platform model it is lent: its key is a token of its connection.
+      conn.method == "POST" and SalixWeb.StationLLM.path?(path) ->
+        SalixWeb.StationLLM.admit(conn, token)
+
       public_path?(path) ->
         conn
 
@@ -59,6 +63,22 @@ defmodule SalixWeb.Auth do
 
       router_inbox_path?(path) ->
         authenticate_group_api_key(conn, token, "inbound")
+
+      SalixWeb.VoiceHTTP.continuation?(conn) ->
+        # Continuation of an authenticated carrier, like frames on an open
+        # WebSocket. Its owner checks the original credential and Group.
+        case token do
+          "salix_vk_" <> _ when byte_size(token) <= 128 ->
+            conn
+            |> assign(:auth_role, :voice_stream)
+            |> assign(
+              :voice_stream_key_hash,
+              :crypto.hash(:sha256, token) |> Base.encode16(case: :lower)
+            )
+
+          _ ->
+            deny(conn)
+        end
 
       voice_session_path?(path) ->
         authenticate_group_api_key(conn, token, "voice")
@@ -93,7 +113,7 @@ defmodule SalixWeb.Auth do
   # and a voice key is refused on the Router inbox.
   @doc false
   def voice_session_path?(path) do
-    Regex.match?(~r|^/v1/agent-groups/[^/]+/voice(/sessions)?$|, path)
+    Regex.match?(~r"^/v1/agent-groups/[^/]+/voice(/sessions|/http(/[0-9a-f]{32})?)?$", path)
   end
 
   defp authenticate_group_api_key(conn, token, kind) do
@@ -146,7 +166,7 @@ defmodule SalixWeb.Auth do
       String.starts_with?(path, "/v1/calendar/feeds/") or
       meeting_runtime_event_path?(path) or
       String.starts_with?(path, "/v1/e2e-report-sessions/") or
-      path == "/v1/im/feishu/events" or
+      path in ["/v1/im/feishu/events", "/v1/im/qq/events", "/v1/im/lark/events"] or
       (String.starts_with?(path, "/v1/oauth/") and String.ends_with?(path, "/callback"))
   end
 
@@ -191,7 +211,7 @@ defmodule SalixWeb.Auth do
   defp authenticate_runtime_carrier(conn, _token), do: deny(conn)
 
   defp authenticate_compute_gateway(conn, token) do
-    configured = Application.get_env(:salix_web, :agent_vmm_gateway_control_secret)
+    configured = SystemsRuntime.get_env(:salix_web, :agent_vmm_gateway_control_secret)
     gateway_ids = get_req_header(conn, "x-agent-vmm-gateway-instance")
 
     if secure_equal?(token, configured) and match?([id] when id != "", gateway_ids) do
@@ -214,7 +234,28 @@ defmodule SalixWeb.Auth do
     end
   end
 
+  # A Compute Workload's station says which credential it brings: its connect
+  # credential names the Workload, whose Environment names the tenant.
   defp authenticate_connector(conn, token) do
+    if get_req_header(conn, "x-salix-credential-kind") == ["workload"],
+      do: authenticate_workload(conn, token),
+      else: authenticate_device_connector(conn, token)
+  end
+
+  defp authenticate_workload(conn, token) do
+    with {:ok, workload} <- SalixStore.Compute.WorkloadCredential.verify_connect(token),
+         %SalixStore.Compute.Environment{tenant_id: tenant_id} <-
+           SalixStore.Repo.get(SalixStore.Compute.Environment, workload.environment_id) do
+      conn
+      |> assign(:auth_role, :connector)
+      |> assign(:tenant_id, tenant_id)
+      |> assign(:connector_workload, workload)
+    else
+      _ -> deny(conn)
+    end
+  end
+
+  defp authenticate_device_connector(conn, token) do
     case SalixEnv.ConnectorTokens.validate_connector_token(token) do
       {:ok, tenant_id, rec} ->
         conn
@@ -282,6 +323,6 @@ defmodule SalixWeb.Auth do
   """
   @spec admin_token() :: String.t() | nil
   def admin_token do
-    Application.get_env(:salix_web, :api_token)
+    SystemsRuntime.get_env(:salix_web, :api_token)
   end
 end

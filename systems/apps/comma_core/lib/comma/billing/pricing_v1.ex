@@ -170,7 +170,7 @@ defmodule Comma.Billing.PricingV1 do
   # Stripe price lookup keys are provider-registered names. The prefix is
   # deploy-time configuration (`:comma_core, :stripe_lookup_key_prefix`).
   defp lookup_key(suffix) do
-    prefix = Application.get_env(:comma_core, :stripe_lookup_key_prefix, "comma")
+    prefix = SystemsRuntime.get_env(:comma_core, :stripe_lookup_key_prefix, "comma")
     prefix <> "_" <> suffix
   end
 

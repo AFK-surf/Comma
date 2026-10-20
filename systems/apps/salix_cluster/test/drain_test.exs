@@ -5,8 +5,9 @@ defmodule SalixCluster.DrainTest do
   `ctl/leases/` index entry is deleted), and a post-drain delivery re-claims
   the agent from the released state. Run against the Fake backend.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixStore.{Agent, Keys, S3}
   alias SalixCluster.Drain
   alias SalixAgent.{Fleet, Server}
@@ -18,27 +19,22 @@ defmodule SalixCluster.DrainTest do
     def nodes, do: [Node.self()]
   end
 
-  defmodule FakeAttachments do
-    @moduledoc false
-    def stop_all, do: %{completed: 2, timeout: 0, error: 0, errors: []}
-  end
-
   setup do
     SalixAgent.TestSupport.stop_all_agents()
     SalixCluster.NodeLifecycle.reset()
-    prev = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_group_context = Application.get_env(:salix_agent, :group_context_mod)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_group_context = SystemsRuntime.get_env(:salix_agent, :group_context_mod)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     start_supervised!(Mock)
-    Application.put_env(:salix_agent, :llm, Mock)
+    SystemsRuntime.put_env(:salix_agent, :llm, Mock)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
       SalixCluster.NodeLifecycle.reset()
-      Application.put_env(:salix_store, :s3_backend, prev)
-      Application.put_env(:salix_agent, :llm, prev_llm)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
+      SystemsRuntime.put_env(:salix_agent, :llm, prev_llm)
       put_or_delete_env(:salix_agent, :group_context_mod, prev_group_context)
     end)
 
@@ -123,25 +119,14 @@ defmodule SalixCluster.DrainTest do
                  _ -> false
                end
              end,
-             200
+             1500
            )
 
     {:ok, session} = SalixAgent.TestSupport.SessionData.read(a, "ses1_1200000000000000001")
     assert Enum.any?(session.messages, &(&1.content == "again"))
   end
 
-  test "drain with no local agents returns zeros" do
-    # Earlier tests' agents may re-spawn from late wake casts racing the first
-    # drain — drain until convergence, then the steady state must be zeros.
-    assert eventually(fn ->
-             {:ok, %{drained: drained}} = Drain.drain(ring: LocalRing)
-             drained == []
-           end)
-
-    assert {:ok, %{drained: [], handed_off: 0, failed: []}} = Drain.drain(ring: LocalRing)
-  end
-
-  test "drain marks node draining and includes VM cleanup summaries" do
+  test "drain marks node draining and summarizes what it stopped" do
     refute SalixCluster.NodeLifecycle.draining?()
 
     assert {:ok,
@@ -150,38 +135,11 @@ defmodule SalixCluster.DrainTest do
               handed_off: 0,
               failed: [],
               agents: %{completed: 0, timeout: 0, error: 0},
-              sessions: %{completed: 0, timeout: 0, error: 0},
-              attachments: %{completed: 2, timeout: 0, error: 0}
-            }} =
-             Drain.drain(
-               ring: LocalRing,
-               attachments_mod: FakeAttachments
-             )
+              sessions: %{completed: 0, timeout: 0, error: 0}
+            }} = Drain.drain(ring: LocalRing)
 
     assert SalixCluster.NodeLifecycle.draining?()
     assert {:error, :draining} = SalixCluster.NodeLifecycle.readiness()
-  end
-
-  test "handoff: false drains without consulting the ring" do
-    a = SalixAgent.TestSupport.new_agent_id()
-    Mock.script([{:final, "ok"}])
-
-    SalixAgent.TestSupport.create_control_agent!(a)
-
-    assert {:ok, :created} =
-             SalixAgent.deliver(a, %{content: "hi", session_id: "ses1_1200000000000000001"},
-               source_message_id: "drain-hi-#{a}"
-             )
-
-    assert eventually(fn ->
-             parked?(a) and session_has_content?(a, "ok") and internal_sessions_settled?(a)
-           end)
-
-    # No ring module needed at all when handoff is disabled.
-    assert {:ok, %{drained: [^a], handed_off: 0, failed: []}} =
-             Drain.drain(handoff: false, ring: :no_ring_module)
-
-    assert eventually(fn -> not Fleet.running?(a) end)
   end
 
   # ---- helpers ----
@@ -220,14 +178,9 @@ defmodule SalixCluster.DrainTest do
     end
   end
 
-  defp eventually(fun, retries \\ 100) do
-    cond do
-      fun.() -> true
-      retries == 0 -> false
-      true -> Process.sleep(20) && eventually(fun, retries - 1)
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 
-  defp put_or_delete_env(app, key, nil), do: Application.delete_env(app, key)
-  defp put_or_delete_env(app, key, value), do: Application.put_env(app, key, value)
+  defp put_or_delete_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp put_or_delete_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

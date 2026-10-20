@@ -85,12 +85,12 @@ defmodule BillingStripe.Customers do
   end
 
   defp config do
-    case Application.get_env(:billing_stripe, :secret_key) do
+    case SystemsRuntime.get_env(:billing_stripe, :secret_key) do
       key when is_binary(key) and key != "" ->
         {:ok,
          %{
            secret_key: key,
-           api: Application.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
+           api: SystemsRuntime.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
          }}
 
       _ ->

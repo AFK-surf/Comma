@@ -1,5 +1,5 @@
 defmodule SalixAnalytics.SlackMirrorReaderClickHouseTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   @moduletag :clickhouse
 
@@ -8,8 +8,8 @@ defmodule SalixAnalytics.SlackMirrorReaderClickHouseTest do
   @clickhouse_url System.get_env("SALIX_TEST_CLICKHOUSE_URL", "http://127.0.0.1:8123/")
 
   setup do
-    database = "slack_mirror_reader_test_#{System.unique_integer([:positive])}"
-    previous = Application.get_env(:salix_analytics, :clickhouse)
+    database = "slack_mirror_reader_test_#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    previous = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
     query!("CREATE DATABASE #{database}")
     migrate!(database)
@@ -20,7 +20,7 @@ defmodule SalixAnalytics.SlackMirrorReaderClickHouseTest do
              )
              |> String.trim()
 
-    Application.put_env(:salix_analytics, :clickhouse,
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
       base_url: @clickhouse_url,
       table: "#{database}.events"
     )
@@ -29,9 +29,9 @@ defmodule SalixAnalytics.SlackMirrorReaderClickHouseTest do
       query!("DROP DATABASE IF EXISTS #{database}")
 
       if is_nil(previous) do
-        Application.delete_env(:salix_analytics, :clickhouse)
+        SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
       else
-        Application.put_env(:salix_analytics, :clickhouse, previous)
+        SystemsRuntime.put_env(:salix_analytics, :clickhouse, previous)
       end
     end)
 

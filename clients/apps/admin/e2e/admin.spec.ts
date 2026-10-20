@@ -4,7 +4,58 @@ const apiBaseUrl = "http://127.0.0.1:65535";
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const adminSessionEmail = "operator-with-a-very-long-name@example.com";
 
-test("Billing saves free Router models and reloads the persisted list", async ({
+test("review code is configured, replaced and removed through account management", async ({
+  page,
+}) => {
+  const writes: AdminWrite[] = [];
+  await installSignedInAdmin(page, {
+    adminRequestHeaders: [],
+    forbidden: false,
+    writes,
+  });
+  await page.goto("/?user=usr_admin_e2e");
+  const userPage = page.getByTestId("admin-user-page");
+  const open = async (name: string) => {
+    await userPage.getByRole("button", { name: "More account actions" }).click();
+    await page.getByRole("menuitem", { name, exact: true }).click();
+  };
+  await open("Change Admin access");
+  const access = page.getByRole("dialog", { name: "Change Admin access", exact: true });
+  await access.getByRole("combobox").selectOption("deny");
+  await access.getByRole("button", { name: "Continue…" }).click();
+  await confirmCommand(page, "Change Admin access?", "Use a dedicated demo account");
+
+  for (const code of ["037291", "482693", null]) {
+    await open("Review login code");
+    const drawer = page.getByRole("dialog", { name: "Review login code", exact: true });
+    if (code === null) {
+      await drawer.getByRole("combobox", { name: /^Action/ }).selectOption("clear");
+    } else {
+      const input = drawer.getByLabel(/^Review login code/);
+      await expect(input).toHaveValue("");
+      await input.fill(code);
+    }
+    await drawer.getByRole("button", { name: "Continue…" }).click();
+    const confirmation = page.getByRole("dialog", {
+      name: "Review login code?",
+      exact: true,
+    });
+    if (code) await expect(confirmation).not.toContainText(code);
+    await confirmCommand(page, "Review login code?", "Prepare app review");
+    expect(writes.at(-1)).toMatchObject({
+      method: "PATCH",
+      body: { review_login_code: code },
+    });
+    await expect(drawer).toHaveCount(0);
+    await expect(userPage).toContainText(code ? "Review login code" : "Email OTP");
+    expect(await localStorageSnapshot(page)).not.toContain(code ?? "037291");
+  }
+  await page.reload();
+  await expect(userPage).toContainText("Email OTP");
+  await expect(userPage).toContainText("Explicit deny");
+});
+
+test("Free Router models saves the edited list after review and reloads it", async ({
   page,
 }) => {
   const writes: AdminWrite[] = [];
@@ -14,20 +65,28 @@ test("Billing saves free Router models and reloads the persisted list", async ({
     writes,
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Redeem codes", exact: true }).click();
+  await page.getByRole("button", { name: "Free Router models", exact: true }).click();
+  await expect(page).toHaveURL(/\?section=free-models$/);
   const panel = page.getByRole("region", { name: "Free Router models", exact: true });
+  const saveBar = page.getByRole("region", { name: "Unsaved changes" });
   await expect(panel.getByText("No models are free under this policy.")).toBeVisible();
+  await expect(saveBar).toHaveCount(0);
   await panel.getByRole("textbox", { name: "Provider", exact: true }).fill("openai");
   await panel.getByRole("textbox", { name: "Model SKU" }).fill("gpt-5.6-luna");
   await panel.getByRole("button", { name: "Add model" }).click();
-  await panel.getByRole("textbox", { name: /^Reason/ }).fill("Offer free Router calls");
-  await panel.getByRole("button", { name: "Save free Router models" }).click();
+  await expect(saveBar).toContainText("1 unsaved change");
+  await saveBar.getByRole("button", { name: "Save free Router models…" }).click();
+  const review = page.getByRole("dialog", { name: "Save free Router models?" });
+  await expect(review.getByRole("definition")).toContainText("Free");
+  await expect(review).toContainText("openai/gpt-5.6-luna");
   await confirmCommand(
     page,
     "Save free Router models?",
-    "update-free-router-models:comma"
+    "Offer free Router calls",
+    "free models"
   );
   await expect(panel).toContainText("Saved. New Router calls use this policy.");
+  await expect(saveBar).toHaveCount(0);
   expect(writes.at(-1)).toMatchObject({
     method: "PUT",
     path: "/v1/comma/admin/billing/free-router-models",
@@ -39,82 +98,23 @@ test("Billing saves free Router models and reloads the persisted list", async ({
     },
   });
   await page.reload();
-  await page.getByRole("button", { name: "Redeem codes", exact: true }).click();
   await panel.getByRole("button", { name: "Remove gpt-5.6-luna" }).click();
-  await panel.getByRole("textbox", { name: /^Reason/ }).fill("End free Router offer");
-  await panel.getByRole("button", { name: "Save free Router models" }).click();
+  await expect(saveBar).toContainText("1 unsaved change");
+  await saveBar.getByRole("button", { name: "Discard" }).click();
+  await expect(
+    panel.getByRole("button", { name: "Remove gpt-5.6-luna" })
+  ).toBeVisible();
+  await panel.getByRole("button", { name: "Remove gpt-5.6-luna" }).click();
+  await saveBar.getByRole("button", { name: "Save free Router models…" }).click();
   await confirmCommand(
     page,
     "Save free Router models?",
-    "update-free-router-models:comma"
+    "End free Router offer",
+    "free models"
   );
   expect(writes.at(-1)).toMatchObject({ body: { models: [], revision: 1 } });
-  await panel.getByRole("button", { name: "Reload", exact: true }).click();
+  await page.getByRole("button", { name: "Reload", exact: true }).click();
   await expect(panel.getByText("No models are free under this policy.")).toBeVisible();
-});
-
-test("Models saves a platform template allowlist and an empty selected list", async ({
-  page,
-}) => {
-  const writes: AdminWrite[] = [];
-  await installSignedInAdmin(page, {
-    adminRequestHeaders: [],
-    forbidden: false,
-    writes,
-  });
-  await page.goto("/");
-  await page.getByRole("button", { name: "Models", exact: true }).click();
-  const panel = page.getByRole("region", { name: "Model selection policy" });
-  await expect(page.getByRole("heading", { name: "Models", level: 1 })).toBeVisible();
-  await expect(
-    panel.getByRole("radio", { name: "All platform templates" })
-  ).toBeChecked();
-
-  await panel.getByRole("radio", { name: "Selected templates only" }).check();
-  await panel.getByRole("textbox", { name: "Search templates" }).fill("gpt-6");
-  await panel
-    .getByRole("checkbox", { name: "Allow GPT-6 Sol (platform-gpt-6-sol)" })
-    .check();
-  await panel
-    .getByRole("textbox", { name: /^Reason/ })
-    .fill("Limit new Comma model choices");
-  await panel.getByRole("button", { name: "Save model choices" }).click();
-  await confirmCommand(
-    page,
-    "Save model choices?",
-    "update-model-selection-policy:comma"
-  );
-  expect(writes.at(-1)).toMatchObject({
-    method: "PUT",
-    path: "/v1/comma/admin/model-selection-policy",
-    body: {
-      mode: "selected",
-      allowed_template_ids: ["platform-gpt-6-sol"],
-      revision: 0,
-      reason: "Limit new Comma model choices",
-    },
-  });
-
-  await page.reload();
-  await expect(
-    panel.getByRole("checkbox", { name: "Allow GPT-6 Sol (platform-gpt-6-sol)" })
-  ).toBeChecked();
-  await panel
-    .getByRole("checkbox", { name: "Allow GPT-6 Sol (platform-gpt-6-sol)" })
-    .uncheck();
-  await panel
-    .getByRole("textbox", { name: /^Reason/ })
-    .fill("Pause new platform choices");
-  await panel.getByRole("button", { name: "Save model choices" }).click();
-  await confirmCommand(
-    page,
-    "Save model choices?",
-    "update-model-selection-policy:comma"
-  );
-  expect(writes.at(-1)).toMatchObject({
-    body: { mode: "selected", allowed_template_ids: [], revision: 1 },
-  });
-  await expect(panel.getByText("0 selected.", { exact: false })).toBeVisible();
 });
 
 test("Guest mode creates a guest tenant, then enables and persists the policy", async ({
@@ -136,12 +136,16 @@ test("Guest mode creates a guest tenant, then enables and persists the policy", 
   await expect(tenant).toContainText("None. Create a guest tenant");
   await expect(tenant).toContainText("7 of 100");
 
-  await tenant.getByRole("textbox", { name: /^Reason/ }).fill("Start guest trials");
   await tenant.getByRole("button", { name: "Create new guest tenant" }).click();
   await expect(
     page.getByRole("dialog", { name: "Create new guest tenant?" })
   ).toContainText("Existing guest workspaces stay in their current tenant.");
-  await confirmCommand(page, "Create new guest tenant?", "create-guest-tenant:comma");
+  await confirmCommand(
+    page,
+    "Create new guest tenant?",
+    "Start guest trials",
+    "guest mode"
+  );
   await expect(tenant.getByText("tenant_guest_e2e_1")).toBeVisible();
   expect(writes.at(-1)).toMatchObject({
     method: "POST",
@@ -163,9 +167,19 @@ test("Guest mode creates a guest tenant, then enables and persists the policy", 
   await policy
     .getByRole("spinbutton", { name: "Proof-of-work difficulty (bits)" })
     .fill("16");
-  await policy.getByRole("textbox", { name: /^Reason/ }).fill("Open guest trials");
-  await policy.getByRole("button", { name: "Save guest mode" }).click();
-  await confirmCommand(page, "Save guest mode?", "update-guest-policy:comma");
+  const saveBar = page.getByRole("region", { name: "Unsaved changes" });
+  await expect(saveBar).toContainText("4 unsaved changes");
+  await saveBar.getByRole("button", { name: "Save guest mode…" }).click();
+  const review = page.getByRole("dialog", { name: "Save guest mode?" });
+  await expect(review).toContainText("Tenant concurrency per node");
+  await expect(review).toContainText("3 days");
+  await review.getByRole("textbox", { name: "Reason" }).fill("Open guest trials");
+  await review.getByRole("button", { name: "Confirm" }).click();
+  await expect(review.getByRole("alert")).toHaveText(
+    "The confirmation does not match this target."
+  );
+  await confirmCommand(page, "Save guest mode?", "Open guest trials", "guest mode");
+  await expect(saveBar).toHaveCount(0);
   await expect(
     page.getByText("Saved. New guest sessions use these settings.")
   ).toBeVisible();
@@ -198,30 +212,6 @@ test("Guest mode creates a guest tenant, then enables and persists the policy", 
   await expect(
     page.getByRole("region", { name: "Free Router models", exact: true })
   ).toBeVisible();
-});
-
-test("Models scrolls as one page when the policy form is taller than the viewport", async ({
-  page,
-}) => {
-  await installSignedInAdmin(page, {
-    adminRequestHeaders: [],
-    forbidden: false,
-    writes: [],
-  });
-  await page.setViewportSize({ width: 1280, height: 480 });
-  await page.goto("/?section=models");
-
-  const panel = page.getByRole("region", { name: "Model selection policy" });
-  await panel.getByRole("radio", { name: "Selected templates only" }).check();
-  const save = panel.getByRole("button", { name: "Save model choices" });
-  await expect(save).not.toBeInViewport();
-
-  await panel.getByRole("heading", { name: "User choices" }).hover();
-  await page.mouse.wheel(0, 2_000);
-  await expect(save).toBeInViewport();
-  await expect(
-    page.getByRole("heading", { name: "Models", level: 1 })
-  ).toBeInViewport();
 });
 
 test("dashboard navigation is reflected in the URL and browser history", async ({
@@ -276,47 +266,32 @@ test("dashboard navigation is reflected in the URL and browser history", async (
   ).toBeVisible();
 });
 
-test("Redeem codes scrolls as one page when the free Router model list is long", async ({
+test("a long Free Router models list scrolls while the save bar stays in view", async ({
   page,
 }) => {
   await installSignedInAdmin(page, {
     adminRequestHeaders: [],
     forbidden: false,
-    freeRouterModels: Array.from({ length: 40 }, (_, index) => ({
+    freeRouterModels: Array.from({ length: 80 }, (_, index) => ({
       provider: "openai",
-      sku: `gpt-e2e-${index}`,
+      sku: `gpt-e2e-model-with-a-long-name-${index}`,
     })),
     writes: [],
   });
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto("/?section=billing");
+  await page.setViewportSize({ width: 1280, height: 600 });
+  await page.goto("/?section=free-models");
 
   const panel = page.getByRole("region", { name: "Free Router models", exact: true });
-  await expect(panel.getByRole("button", { name: "Remove gpt-e2e-39" })).toBeVisible();
-  const codesTable = page.getByRole("table", { name: "Redeem codes" });
-  const codeRecords = page
-    .locator(".admin-table-card")
-    .filter({ has: page.getByRole("heading", { name: "Code records" }) });
-  await expect(codesTable).toBeAttached();
-
-  const pageScroll = page
-    .getByTestId("admin-billing-scroll")
-    .locator(":scope > .comma-scroll-area__viewport");
-  const overflow = await pageScroll.evaluate(
-    (viewport) => viewport.scrollHeight - viewport.clientHeight
-  );
-  expect(overflow).toBeGreaterThan(0);
-
-  await codesTable.getByRole("button", { name: "Manage" }).scrollIntoViewIfNeeded();
-  await expect(codesTable.getByRole("button", { name: "Manage" })).toBeInViewport();
+  const last = panel.getByRole("button", {
+    name: "Remove gpt-e2e-model-with-a-long-name-79",
+  });
+  await last.scrollIntoViewIfNeeded();
+  await last.click();
+  const saveBar = page.getByRole("region", { name: "Unsaved changes" });
+  await expect(saveBar).toBeInViewport();
   await expect(
-    page.getByRole("heading", { name: "Redeem codes", level: 1 })
+    page.getByRole("heading", { name: "Free Router models", level: 1 })
   ).toBeInViewport();
-  const cardBox = await codeRecords.boundingBox();
-  const tableBox = await codesTable.boundingBox();
-  expect(cardBox).not.toBeNull();
-  expect(tableBox).not.toBeNull();
-  expect(cardBox!.height).toBeGreaterThan(tableBox!.height);
 });
 
 test("compute nodes remain usable on narrow screens and support audited actions", async ({
@@ -351,25 +326,19 @@ test("compute nodes remain usable on narrow screens and support audited actions"
     "512 PID limit, 2 GiB writable disk limit, no network access."
   );
   await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Create an isolated shell for validation");
-  await drawer
     .getByRole("button", { name: "Create Shell workload", exact: true })
     .click();
   await confirmCommand(
     page,
     "Create Shell workload",
-    "create_shell_workload:environment-e2e:3"
+    "Create an isolated shell for validation"
   );
   await expect(page.getByText(/was accepted/)).toBeVisible();
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Drain for planned maintenance");
   await drawer.getByRole("button", { name: "Disable / drain" }).click();
   await confirmCommand(
     page,
     "Disable and drain registration",
-    "disable_agent_vmm_registration:registration-e2e:7"
+    "Drain for planned maintenance"
   );
   await expect(page.getByText(/was accepted/)).toBeVisible();
   await drawer.getByRole("button", { name: "Close", exact: true }).click();
@@ -378,8 +347,6 @@ test("compute nodes remain usable on narrow screens and support audited actions"
 test("the standalone dashboard runs audited User and Billing operations", async ({
   page,
 }) => {
-  test.setTimeout(75_000);
-
   const adminRequestHeaders: Array<Record<string, string>> = [];
   const writes: AdminWrite[] = [];
   await installSignedInAdmin(page, {
@@ -392,7 +359,6 @@ test("the standalone dashboard runs audited User and Billing operations", async 
 
   await expect(page).toHaveTitle(/Comma Admin/);
   await expect(page.getByRole("heading", { name: "Users", level: 1 })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Audited operations" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign out" })).toHaveCount(0);
   const accountTrigger = page.getByRole("button", {
     name: `Account menu for ${adminSessionEmail}`,
@@ -435,7 +401,7 @@ test("the standalone dashboard runs audited User and Billing operations", async 
   await expect(usersTable).toContainText("Google");
   let drawer: Locator;
 
-  await page.getByRole("button", { name: "Audited operations" }).click();
+  await page.getByRole("button", { name: "Audit log" }).click();
   await expect(
     page.getByRole("heading", { name: "Audit log", level: 1 })
   ).toBeVisible();
@@ -450,154 +416,168 @@ test("the standalone dashboard runs audited User and Billing operations", async 
   await drawer.getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("button", { name: "Users" }).click();
 
-  await usersTable.getByRole("button", { name: "Manage" }).click();
-  drawer = page.getByRole("dialog", { name: "Manage user" });
-  await expect(drawer).toContainText("owner@gmail.com");
-  await expect(drawer).toContainText("Verified");
-  await drawer.getByRole("button", { name: "Close", exact: true }).click();
+  // A row opens the account's page, kept in the URL; the browser's Back returns to the list.
+  await usersTable.getByRole("button", { name: "Open owner@example.com" }).click();
+  await expect(page).toHaveURL(/\?user=usr_admin_e2e$/);
+  const userPage = page.getByTestId("admin-user-page");
+  await expect(
+    userPage.getByRole("heading", { name: "owner@example.com", level: 1 })
+  ).toBeVisible();
+  await expect(userPage).toContainText("owner@gmail.com");
+  await page.goBack();
+  await expect(usersTable).toContainText("owner@example.com");
 
   await page.getByRole("button", { name: "New user" }).click();
   drawer = page.getByRole("dialog", { name: "New user" });
   await drawer.getByRole("textbox", { name: "Email" }).fill("person@example.com");
   await drawer.getByRole("textbox", { name: "Display name" }).fill("Person");
   await drawer.getByLabel("Admin access").selectOption("allow");
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Create an approved support-managed account");
-  await drawer.getByRole("button", { name: "Review command" }).click();
-  await confirmCommand(page, "Create this user?", "create-user:person@example.com");
-
-  drawer = page.getByRole("dialog", { name: "Manage user" });
-  await expect(drawer).toContainText("person@example.com");
-  await expect(drawer).toContainText("Explicit allow");
-  await expect(drawer).toContainText("Email OTP");
-  await expect(drawer).toContainText("Not linked");
-  await expect(drawer).toContainText("Edit account");
-  await expect(drawer).toContainText("Admin access");
-  await expect(drawer).toContainText("Support session");
-  await expect(drawer).toContainText("Workspace & billing");
-
-  await openTask(drawer, "Edit account");
-  await drawer.getByRole("textbox", { name: "Display name" }).fill("Person Updated");
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Correct the display name");
-  await drawer.getByRole("button", { name: "Review command" }).click();
-  await confirmCommand(page, "Edit account?", "update-user:usr_person_e2e");
-  await expect(drawer).toContainText("Updated person@example.com.");
-
-  await openTask(drawer, "Admin access");
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Remove temporary Admin access");
-  await drawer.getByRole("button", { name: "Review command" }).click();
+  await drawer.getByRole("button", { name: "Create user…" }).click();
+  // Granting Admin access is guarded: the operator types the account's email.
   await confirmCommand(
     page,
-    "Change Admin access?",
-    "admin-access:usr_person_e2e:deny"
+    "Create this user?",
+    "Create an approved support-managed account",
+    "person@example.com"
   );
-  await expect(drawer).toContainText("Explicit deny");
 
-  await openTask(drawer, "Sessions & devices");
-  await expect(drawer.getByText("Web on macOS")).toBeVisible();
-  await expect(drawer.getByText("Comma Desktop on Windows")).toBeVisible();
-  await expect(drawer.getByText(/Reported Web · Email OTP/)).toBeVisible();
-  await expect(drawer.getByText("Comma SSH", { exact: true })).toBeVisible();
-  await expect(drawer.getByText(/Reported SSH · SSH public key/)).toBeVisible();
-  await expect(drawer.getByText("Comma Android app", { exact: true })).toBeVisible();
-  await expect(drawer.getByText(/Reported Android · Google/)).toBeVisible();
+  await expect(page).toHaveURL(/\?user=usr_person_e2e$/);
+  await expect(
+    userPage.getByRole("heading", { name: "person@example.com", level: 1 })
+  ).toBeVisible();
+  await expect(userPage).toContainText("Explicit allow");
+  await expect(userPage).toContainText("Email OTP");
+  await expect(userPage).toContainText("Google not linked");
 
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Remove a stale browser Session");
-  const webSessionCard = drawer
+  const openAction = async (name: string) => {
+    await userPage.getByRole("button", { name: "More account actions" }).click();
+    await page.getByRole("menuitem", { name }).click();
+  };
+
+  await openAction("Edit account");
+  drawer = page.getByRole("dialog", { name: "Edit account" });
+  await drawer.getByRole("textbox", { name: "Display name" }).fill("Person Updated");
+  await drawer.getByRole("button", { name: "Continue…" }).click();
+  await expect(page.getByRole("dialog", { name: "Edit account?" })).toContainText(
+    "Person Updated"
+  );
+  await confirmCommand(page, "Edit account?", "Correct the display name");
+  await expect(drawer).toHaveCount(0);
+  await expect(userPage).toContainText("Updated person@example.com.");
+
+  await openAction("Change Admin access");
+  await page
+    .getByRole("dialog", { name: "Change Admin access" })
+    .getByRole("button", { name: "Continue…" })
+    .click();
+  await confirmCommand(page, "Change Admin access?", "Remove temporary Admin access");
+  await expect(userPage).toContainText("Explicit deny");
+
+  await userPage.getByRole("tab", { name: "Sessions & devices" }).click();
+  const sessions = userPage.getByTestId("admin-user-sessions");
+  await expect(sessions.getByText("Web on macOS")).toBeVisible();
+  await expect(sessions.getByText("Comma Desktop on Windows")).toBeVisible();
+  await expect(sessions.getByText(/Reported Web · Email OTP/)).toBeVisible();
+  await expect(sessions.getByText("Comma SSH", { exact: true })).toBeVisible();
+  await expect(sessions.getByText(/Reported SSH · SSH public key/)).toBeVisible();
+  await expect(sessions.getByText("Comma Android app", { exact: true })).toBeVisible();
+  await expect(sessions.getByText(/Reported Android · Google/)).toBeVisible();
+
+  const webSessionCard = sessions
     .locator("article.admin-session-card")
     .filter({ hasText: "Web on macOS" });
   await webSessionCard.getByRole("button", { name: "Revoke" }).click();
-  await confirmCommand(page, "Revoke this Session?", "revoke-session:sess_web_e2e");
-  await expect(drawer).toContainText("Revoked Web on macOS.");
+  await confirmCommand(page, "Revoke this Session?", "Remove a stale browser Session");
+  await expect(sessions).toContainText("Revoked Web on macOS.");
+  // The list shows active Sessions by default; the revoked one moves to its own filter.
+  await expect(webSessionCard).toHaveCount(0);
+  await sessions.getByRole("button", { name: /Filter by status/ }).click();
+  await page.getByRole("option", { name: "Revoked" }).click();
+  await expect(webSessionCard).toBeVisible();
+  await expect(sessions.locator("article.admin-session-card")).toHaveCount(1);
+  await expect(webSessionCard.getByRole("button", { name: "Revoke" })).toBeDisabled();
+  await webSessionCard.getByText("Session details", { exact: true }).click();
+  await expect(webSessionCard.getByText("sess_web_e2e", { exact: true })).toBeVisible();
+  await sessions.getByRole("button", { name: /Filter by client/ }).click();
+  await page.getByRole("option", { name: "Android" }).click();
+  await expect(sessions.getByText("No matching Sessions")).toBeVisible();
+  await sessions.getByRole("button", { name: "Show all Sessions" }).click();
+  await expect(sessions.locator("article.admin-session-card")).toHaveCount(4);
 
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("End all remaining Sessions");
-  await drawer.getByRole("button", { name: "Revoke all" }).click();
+  await sessions.getByRole("button", { name: "Revoke all" }).click();
   await confirmCommand(
     page,
     "Revoke all Sessions?",
-    "revoke-all-sessions:usr_person_e2e"
+    "End all remaining Sessions",
+    "person@example.com"
   );
-  await expect(drawer).toContainText("Revoked 3 active Sessions.");
-  await drawer.getByRole("button", { name: "Back" }).click();
+  await expect(sessions).toContainText("Revoked 3 active Sessions.");
+  await userPage.getByRole("tab", { name: "Overview" }).click();
 
-  await openTask(drawer, "Support session");
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Investigate a reported account issue");
-  await drawer.getByRole("button", { name: "Review command" }).click();
+  await userPage.getByRole("button", { name: "Support session" }).click();
+  await page
+    .getByRole("dialog", { name: "Create support Session" })
+    .getByRole("button", { name: "Continue…" })
+    .click();
   await confirmCommand(
     page,
     "Create support Session?",
-    "support-session:usr_person_e2e"
+    "Investigate a reported account issue",
+    "person@example.com"
   );
-  await expect(drawer.getByText("comma_sess_support_e2e")).toBeVisible();
+  await expect(userPage.getByText("comma_sess_support_e2e")).toBeVisible();
+  // The account fails to reload after the command; the one-time token stays shown.
   await expect(
-    drawer.getByRole("heading", { name: "Record couldn’t be loaded" })
-  ).toHaveCount(0);
-  expect(await localStorageSnapshot(page)).not.toContain("comma_sess_support_e2e");
-  await drawer.getByRole("button", { name: "Done and clear" }).click();
-  await expect(drawer.getByText("comma_sess_support_e2e")).toHaveCount(0);
-  await expect(
-    drawer.getByRole("heading", { name: "Record couldn’t be loaded" })
+    userPage.getByRole("heading", { name: "Account couldn’t be loaded" })
   ).toBeVisible();
-  await drawer.getByRole("button", { name: "Retry" }).click();
-  await expect(drawer.getByText("Workspace & billing")).toBeVisible();
+  expect(await localStorageSnapshot(page)).not.toContain("comma_sess_support_e2e");
+  await userPage.getByRole("button", { name: "Done and clear" }).click();
+  await expect(userPage.getByText("comma_sess_support_e2e")).toHaveCount(0);
+  await userPage.getByRole("button", { name: "Retry" }).click();
+  await expect(userPage).toContainText("No default Workspace");
 
-  await openTask(drawer, "Workspace & billing");
-  await expect(drawer).toContainText("No default Workspace");
-  await drawer.getByRole("button", { name: "Ensure default Workspace" }).click();
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Ensure the default Workspace exists");
-  await drawer.getByRole("button", { name: "Review command" }).click();
+  await userPage.getByRole("button", { name: "Ensure default Workspace" }).click();
+  await page
+    .getByRole("dialog", { name: "Ensure default Workspace" })
+    .getByRole("button", { name: "Continue…" })
+    .click();
   await confirmCommand(
     page,
     "Ensure default Workspace?",
-    "default-workspace:usr_person_e2e"
+    "Ensure the default Workspace exists"
   );
-  await expect(drawer).toContainText("wsp_person_e2e");
+  await expect(userPage).toContainText("wsp_person_e2e");
 
-  await openTask(drawer, "Workspace & billing");
-  await expect(drawer).toContainText("Person Workspace");
-  await expect(drawer).toContainText("Tenant ID");
-  await expect(drawer).toContainText("tnt_person_e2e");
-  await expect(drawer).toContainText("Agent group ID");
-  await expect(drawer).toContainText("grp_person_e2e");
-  await expect(drawer).toContainText("billing_person_e2e");
-  await expect(drawer.getByRole("heading", { name: "Agent models" })).toBeVisible();
-  await expect(drawer).toContainText("gpt-5.6-luna");
-  await expect(drawer).toContainText("gpt-5.6-sol");
-  const vmSection = drawer.getByRole("region", { name: "Cloud VM", exact: true });
-  await expect(
-    vmSection.getByRole("combobox", { name: "Cloud VM setting" })
-  ).toHaveValue("enabled");
-  await vmSection.screenshot({
-    path: test.info().outputPath("workspace-cloud-vm.png"),
-  });
+  await expect(userPage).toContainText("Person Workspace");
+  await expect(userPage).toContainText("Tenant ID");
+  await expect(userPage).toContainText("tnt_person_e2e");
+  await expect(userPage).toContainText("Agent group ID");
+  await expect(userPage).toContainText("grp_person_e2e");
+  await expect(userPage).toContainText("billing_person_e2e");
+  await expect(userPage.getByRole("heading", { name: "Agent models" })).toBeVisible();
+  await expect(userPage).toContainText("gpt-5.6-luna");
+  await expect(userPage).toContainText("gpt-5.6-sol");
+  const vmSection = userPage.getByRole("region", { name: "Cloud VM", exact: true });
+  const vmSwitch = vmSection.getByRole("switch", { name: "Cloud VM" });
+  await expect(vmSwitch).toBeChecked();
+  // Cancelling the review leaves the saved setting.
+  await vmSwitch.press("Space");
+  await page
+    .getByRole("dialog", { name: "Disable Cloud VM?" })
+    .getByRole("button", { name: "Cancel" })
+    .click();
+  await expect(vmSwitch).toBeChecked();
   for (const setting of ["disabled", "enabled"]) {
-    await vmSection
-      .getByRole("combobox", { name: "Cloud VM setting" })
-      .selectOption(setting);
-    await vmSection
-      .getByRole("textbox", { name: "Reason" })
-      .fill(`Set shared VM ${setting}`);
-    await vmSection.getByRole("button", { name: "Review Cloud VM change" }).click();
+    await vmSwitch.press("Space");
     await confirmCommand(
       page,
       setting === "enabled" ? "Enable Cloud VM?" : "Disable Cloud VM?",
-      `workspace-vm:wsp_person_e2e:${setting === "enabled" ? "enable" : "disable"}`
+      `Set shared VM ${setting}`
     );
     await expect(vmSection).toContainText("Cloud VM setting saved.");
-    await expect(vmSection).toContainText("pending");
+    await expect(vmSection).toContainText("Pending");
+    if (setting === "enabled") await expect(vmSwitch).toBeChecked();
+    else await expect(vmSwitch).not.toBeChecked();
   }
   expect(
     writes
@@ -605,60 +585,58 @@ test("the standalone dashboard runs audited User and Billing operations", async 
       .map((write) => write.body.enabled)
   ).toEqual([false, true]);
 
-  await drawer.getByRole("button", { name: "Change Worker model" }).click();
-  const modelPane = drawer.getByRole("region", { name: "Change Worker model" });
-  await expect(modelPane.locator('option[value="template_terra"]')).toHaveText(
-    "GPT-5.6 Terra — US endpoint"
+  await userPage.getByRole("button", { name: "Change Worker model" }).click();
+  drawer = page.getByRole("dialog", { name: "Change Worker model" });
+  const workerPicker = drawer.getByRole("combobox", { name: "Worker model" });
+  await expect(workerPicker).toHaveValue("catalog:gpt-5.6-sol");
+  await expect(drawer.locator('option[value="default"]')).toHaveText(
+    "Platform default (GPT-5.6 Luna)"
   );
-  await expect(modelPane.locator('option[value="template_terra_eu"]')).toHaveText(
-    "GPT-5.6 Terra — EU endpoint"
-  );
-  await modelPane
-    .getByRole("combobox", { name: "Worker model" })
-    .selectOption("template_terra");
-  await modelPane
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Use the approved lower-latency Worker model");
-  await modelPane.getByRole("button", { name: "Review command" }).click();
+  await workerPicker.selectOption("default");
+  await drawer.getByRole("button", { name: "Change model…" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Change Worker model?" })
+  ).toContainText("Platform default (GPT-5.6 Luna)");
   await confirmCommand(
     page,
     "Change Worker model?",
-    "workspace-agent-model:usr_person_e2e:worker:template_terra"
+    "Use the approved lower-latency Worker model"
   );
-  await expect(drawer).toContainText(
-    "Worker model changed to US endpoint — gpt-5.6-terra."
-  );
-  await expect(drawer).toContainText("gpt-5.6-terra");
-  await expect(drawer).toContainText(
+  await expect(drawer).toHaveCount(0);
+  await expect(userPage).toContainText("Worker model changed to gpt-5.6-luna.");
+  await expect(userPage).not.toContainText("gpt-5.6-sol");
+  await expect(userPage).toContainText(
     "The Billing account does not belong to this Workspace."
   );
   await expect(
-    drawer.getByRole("button", { name: "Apply redeem code" })
+    userPage.getByRole("button", { name: "Apply redeem code" })
   ).toBeDisabled();
-  await expect(drawer.getByRole("button", { name: "Issue credits" })).toBeDisabled();
-  await drawer.getByRole("button", { name: "Refresh", exact: true }).click();
-  await expect(drawer).toContainText("comma_monthly@v1");
-  await expect(drawer.getByText("1,200")).toHaveCount(2);
+  await expect(userPage.getByRole("button", { name: "Issue credits" })).toBeDisabled();
+  await userPage
+    .getByRole("region", { name: "Workspace" })
+    .getByRole("button", { name: "Refresh", exact: true })
+    .click();
+  await expect(userPage).toContainText("comma_monthly@v1");
+  await expect(userPage.getByText("1,200")).toHaveCount(2);
 
-  await drawer.getByRole("button", { name: "Issue credits" }).click();
-  const creditPane = drawer.getByRole("region", { name: "Issue Workspace credits" });
-  await expect(creditPane).toContainText("Person Workspace");
-  await expect(creditPane).toContainText("100 credits");
-  await expect(page.getByRole("dialog")).toHaveCount(1);
-  await creditPane
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Issue the approved direct Workspace credit");
-  await creditPane.getByRole("button", { name: "Review command" }).click();
+  await userPage.getByRole("button", { name: "Issue credits" }).click();
+  drawer = page.getByRole("dialog", { name: "Issue credits" });
+  await expect(drawer).toContainText("Person Workspace");
+  await expect(drawer).toContainText("100 credits");
+  await drawer.getByRole("button", { name: "Issue credits…" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Issue these credits?" })
+  ).toContainText("+100");
   await confirmCommand(
     page,
     "Issue these credits?",
-    "issue-workspace-credits:wsp_person_e2e:comma_monthly:v1"
+    "Issue the approved direct Workspace credit"
   );
-  await expect(creditPane).toHaveCount(0);
-  await expect(drawer).toContainText("Issued 100 credits.");
-  await expect(drawer.getByText("1,300")).toBeVisible();
+  await expect(drawer).toHaveCount(0);
+  await expect(userPage).toContainText("Issued 100 credits.");
+  await expect(userPage.getByText("1,300")).toBeVisible();
 
-  await drawer.getByRole("button", { name: "Apply redeem code" }).click();
+  await userPage.getByRole("button", { name: "Apply redeem code" }).click();
 
   drawer = page.getByRole("dialog", { name: "Apply redeem code" });
   await expect(drawer).toContainText("Person Workspace");
@@ -669,14 +647,11 @@ test("the standalone dashboard runs audited User and Billing operations", async 
   );
   await expect(drawer.getByRole("textbox", { name: "Owner ID" })).toHaveCount(0);
   await drawer.getByLabel("Active code").selectOption("code_e2e");
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Apply the approved Workspace credit");
   await drawer.getByRole("button", { name: "Review command" }).click();
   await confirmCommand(
     page,
     "Apply this redeem code?",
-    "apply-redeem-code:billing_person_e2e"
+    "Apply the approved Workspace credit"
   );
 
   drawer = page.getByRole("dialog", { name: "COMMA-INTERNAL" });
@@ -684,16 +659,13 @@ test("the standalone dashboard runs audited User and Billing operations", async 
     drawer.getByRole("table", { name: "Redemptions for code" })
   ).toContainText("billing_person_e2e");
 
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Retire the completed support code");
   await drawer.getByRole("button", { name: "Disable code" }).click();
   await confirmCommand(
     page,
     "Disable this redeem code?",
-    "disable-redeem-code:code_e2e"
+    "Retire the completed support code"
   );
-  await expect(drawer).toContainText("disabled");
+  await expect(drawer).toContainText("Disabled");
   await drawer.getByRole("button", { name: "Close", exact: true }).click();
 
   await expect(page.getByRole("table", { name: "Redeem codes" })).toContainText(
@@ -702,14 +674,11 @@ test("the standalone dashboard runs audited User and Billing operations", async 
 
   await page.getByRole("button", { name: "New code" }).click();
   drawer = page.getByRole("dialog", { name: "New redeem code" });
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Issue an approved support credit");
   await drawer.getByRole("button", { name: "Review command" }).click();
   await confirmCommand(
     page,
     "Create this redeem code?",
-    "create-redeem-code:comma_monthly:v1"
+    "Issue an approved support credit"
   );
 
   drawer = page.getByRole("dialog", { name: "Code created" });
@@ -749,7 +718,8 @@ test("the standalone dashboard runs audited User and Billing operations", async 
   );
   expect(modelWrite?.body).toEqual(
     expect.objectContaining({
-      template_id: "template_terra",
+      confirmation: "workspace-agent-model:usr_person_e2e:worker:default",
+      model: null,
       reason: "Use the approved lower-latency Worker model",
     })
   );
@@ -757,6 +727,192 @@ test("the standalone dashboard runs audited User and Billing operations", async 
   expect(modelWrite?.body.workspace_id).toBeUndefined();
   expect(modelWrite?.body.tenant_id).toBeUndefined();
   expect(modelWrite?.body.group_id).toBeUndefined();
+});
+
+test("a Workspace without a Worker shows and changes only its Router model", async ({
+  page,
+}) => {
+  await installSignedInAdmin(page, {
+    adminRequestHeaders: [],
+    forbidden: false,
+    workerlessReadyWorkspaces: ["usr_admin_e2e"],
+    writes: [],
+  });
+
+  await page.goto("/");
+
+  const usersTable = page.getByRole("table", { name: "Comma users" });
+  await usersTable.getByRole("button", { name: "Open owner@example.com" }).click();
+  const userPage = page.getByTestId("admin-user-page");
+  await expect(
+    userPage.getByRole("heading", { name: "Agent models", exact: true })
+  ).toBeVisible();
+  await expect(userPage).toContainText("gpt-5.6-luna");
+  await expect(userPage).not.toContainText("gpt-5.6-sol");
+  await expect(
+    userPage.getByRole("button", { name: "Change Router model" })
+  ).toBeVisible();
+  await expect(
+    userPage.getByRole("button", { name: "Change Worker model" })
+  ).toHaveCount(0);
+});
+
+test("the account menu switches the dashboard to Chinese and back", async ({
+  page,
+}) => {
+  await installSignedInAdmin(page, {
+    adminRequestHeaders: [],
+    forbidden: false,
+    writes: [],
+  });
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Users", level: 1 })).toBeVisible();
+
+  await page
+    .getByRole("button", { name: `Account menu for ${adminSessionEmail}` })
+    .click();
+  await page.getByRole("menuitem", { name: "简体中文" }).click();
+  await expect(page.getByRole("heading", { name: "用户", level: 1 })).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
+  await expect(page.getByRole("button", { name: "访客模式" })).toBeVisible();
+
+  await page.getByRole("button", { name: `${adminSessionEmail} 的账号菜单` }).click();
+  await page.getByRole("menuitem", { name: "English" }).click();
+  await expect(page.getByRole("heading", { name: "Users", level: 1 })).toBeVisible();
+});
+
+test("⌘K finds an account by email and opens its page", async ({ page }) => {
+  await installSignedInAdmin(page, {
+    adminRequestHeaders: [],
+    forbidden: false,
+    writes: [],
+  });
+  await page.goto("/?section=audit");
+  await expect(
+    page.getByRole("heading", { name: "Audit log", level: 1 })
+  ).toBeVisible();
+
+  await page.keyboard.press("ControlOrMeta+k");
+  const search = page.getByRole("combobox", { name: "Search accounts" });
+  await expect(search).toBeFocused();
+  await search.fill("owner@");
+  const result = page.getByRole("option", { name: /owner@example\.com/ });
+  await expect(result).toBeVisible();
+  await page.keyboard.press("Enter");
+
+  await expect(page).toHaveURL(/\?user=usr_admin_e2e$/);
+  await expect(
+    page
+      .getByTestId("admin-user-page")
+      .getByRole("heading", { name: "owner@example.com", level: 1 })
+  ).toBeVisible();
+
+  // The sidebar opens the same search, and it also goes to sections.
+  await page.getByRole("button", { name: "Search accounts" }).click();
+  await page.getByRole("combobox", { name: "Search accounts" }).fill("guest");
+  await page.getByRole("option", { name: "Guest mode" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Guest mode", level: 1 })
+  ).toBeVisible();
+});
+
+test("the overview shows sign-ups, guest usage and the latest operations", async ({
+  page,
+}) => {
+  await installSignedInAdmin(page, {
+    adminRequestHeaders: [],
+    forbidden: false,
+    writes: [],
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Overview", exact: true }).click();
+  await expect(page).toHaveURL(/\?section=overview$/);
+  const overview = page.getByTestId("admin-overview");
+  await expect(overview).toContainText("Registered accounts");
+  await expect(overview).toContainText("100");
+  await expect(overview).toContainText("Not counting 20 team accounts on comma.surf");
+  // New in the last 7 days: 8 + 3 + 9 + 5 + 4 + 6 + 7.
+  await expect(overview).toContainText("42");
+  await expect(overview.getByRole("listitem")).toHaveCount(14);
+  await expect(overview).toContainText("7 of 100");
+  await expect(overview).toContainText("Update user");
+
+  await overview.getByRole("button", { name: "Open account" }).click();
+  await expect(page).toHaveURL(/\?user=usr_person_e2e$/);
+});
+
+test("Billing applies a code to an account found by email, not by typed ids", async ({
+  page,
+}) => {
+  const writes: AdminWrite[] = [];
+  await installSignedInAdmin(page, {
+    adminRequestHeaders: [],
+    forbidden: false,
+    workerlessReadyWorkspaces: ["usr_admin_e2e"],
+    writes,
+  });
+  await page.goto("/?section=billing");
+  await page.getByRole("button", { name: "Apply code" }).click();
+  const drawer = page.getByRole("dialog", { name: "Apply redeem code" });
+  await expect(drawer.getByRole("textbox", { name: "Billing account ID" })).toHaveCount(
+    0
+  );
+  await expect(drawer.getByRole("button", { name: "Review command" })).toBeDisabled();
+
+  await drawer.getByRole("textbox", { name: "Account" }).fill("owner@");
+  const owner = drawer.getByRole("button", { name: /owner@example\.com/ });
+  // The first read of this account's billing finds it not yet matched to the Workspace.
+  await owner.click();
+  await expect(drawer.getByRole("alert")).toContainText("isn't ready");
+  await owner.click();
+  await expect(drawer).toContainText("wsp_person_e2e");
+  await expect(drawer).toContainText("billing_person_e2e");
+
+  await drawer.getByLabel("Active code").selectOption("code_e2e");
+  await drawer.getByRole("button", { name: "Review command" }).click();
+  await confirmCommand(page, "Apply this redeem code?", "Apply the approved credit");
+  await expect(page.getByRole("dialog", { name: "COMMA-INTERNAL" })).toBeVisible();
+  expect(writes.at(-1)?.body).toMatchObject({
+    billing_account_id: "billing_person_e2e",
+    product_owner_id: "wsp_person_e2e",
+    product_owner_type: "workspace",
+  });
+});
+
+test("the Audit log filters by action and operator, and a user page shows its own events", async ({
+  page,
+}) => {
+  const auditQueries: string[] = [];
+  await installSignedInAdmin(page, {
+    adminRequestHeaders: [],
+    auditQueries,
+    forbidden: false,
+    writes: [],
+  });
+  await page.goto("/?section=audit");
+  const table = page.getByRole("table", { name: "Admin audit events" });
+  await expect(table).toContainText("Update user");
+
+  await page.getByRole("button", { name: /Filter by action/ }).click();
+  await page.getByRole("option", { name: "Create user" }).click();
+  await expect(page.getByText("No event matches these filters.")).toBeVisible();
+  expect(auditQueries.at(-1)).toContain("action=create_user");
+
+  await page.getByRole("button", { name: "Clear" }).click();
+  await expect(table).toContainText("Update user");
+  await page
+    .getByRole("textbox", { name: "Filter by operator email" })
+    .fill("owner@example.com");
+  await page.keyboard.press("Enter");
+  await expect(table).toContainText("Update user");
+  expect(auditQueries.at(-1)).toContain("actor_email=owner%40example.com");
+
+  await page.goto("/?user=usr_admin_e2e");
+  const userPage = page.getByTestId("admin-user-page");
+  await userPage.getByRole("tab", { name: "Activity" }).click();
+  await expect(userPage.getByText("No audit events yet")).toBeVisible();
+  expect(auditQueries.at(-1)).toContain("target_type=user");
+  expect(auditQueries.at(-1)).toContain("target_id=usr_admin_e2e");
 });
 
 test("a server 403 replaces the dashboard and keeps sign-out reachable", async ({
@@ -795,50 +951,51 @@ test("one-time secrets keep their drawers locked until the command settles", asy
   await page.goto("/");
 
   const usersTable = page.getByRole("table", { name: "Comma users" });
-  await usersTable.getByRole("button", { name: "Manage" }).click();
-  let drawer = page.getByRole("dialog", { name: "Manage user" });
-  await openTask(drawer, "Support session");
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Verify the pending support Session secret lifecycle");
-  await drawer.getByRole("button", { name: "Review command" }).click();
+  await usersTable.getByRole("button", { name: "Open owner@example.com" }).click();
+  const userPage = page.getByTestId("admin-user-page");
+  await userPage.getByRole("button", { name: "Support session" }).click();
+  let drawer = page.getByRole("dialog", {
+    name: "Create support Session",
+    exact: true,
+  });
+  await drawer.getByRole("button", { name: "Continue…" }).click();
 
   let confirmation = page.getByRole("dialog", {
     name: "Create support Session?",
   });
   await confirmation
-    .getByRole("textbox", { name: "Confirmation value" })
-    .fill("support-session:usr_admin_e2e");
+    .getByRole("textbox", { name: "Reason" })
+    .fill("Verify the pending support Session secret lifecycle");
+  await confirmation
+    .getByRole("textbox", { name: "Type “owner@example.com” to confirm" })
+    .fill("owner@example.com");
   await confirmation.getByRole("button", { name: "Confirm" }).click();
   await expect(confirmation.getByRole("button", { name: "Working…" })).toBeVisible();
   await assertPendingSecretDrawerIsLocked(page, drawer, confirmation, "Redeem codes");
 
   supportResponse.resolve();
   await expect(confirmation).toHaveCount(0);
-  await expect(drawer.getByText("comma_sess_support_e2e", { exact: true })).toHaveCount(
-    1
-  );
+  await expect(drawer).toHaveCount(0);
+  await expect(
+    userPage.getByText("comma_sess_support_e2e", { exact: true })
+  ).toHaveCount(1);
   expect(await localStorageSnapshot(page)).not.toContain("comma_sess_support_e2e");
-  await drawer.getByRole("button", { name: "Done and clear" }).click();
-  await expect(drawer.getByText("comma_sess_support_e2e", { exact: true })).toHaveCount(
-    0
-  );
-  await drawer.getByRole("button", { name: "Close", exact: true }).click();
+  await userPage.getByRole("button", { name: "Done and clear" }).click();
+  await expect(
+    userPage.getByText("comma_sess_support_e2e", { exact: true })
+  ).toHaveCount(0);
 
   await page.getByRole("button", { name: "Redeem codes" }).click();
   await page.getByRole("button", { name: "New code" }).click();
   drawer = page.getByRole("dialog", { name: "New redeem code" });
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Verify the pending Redeem Code secret lifecycle");
   await drawer.getByRole("button", { name: "Review command" }).click();
 
   confirmation = page.getByRole("dialog", {
     name: "Create this redeem code?",
   });
   await confirmation
-    .getByRole("textbox", { name: "Confirmation value" })
-    .fill("create-redeem-code:comma_monthly:v1");
+    .getByRole("textbox", { name: "Reason" })
+    .fill("Verify the pending Redeem Code secret lifecycle");
   await confirmation.getByRole("button", { name: "Confirm" }).click();
   await expect(confirmation.getByRole("button", { name: "Working…" })).toBeVisible();
   await assertPendingSecretDrawerIsLocked(page, drawer, confirmation, "Users");
@@ -869,20 +1026,26 @@ test("a command-scoped disabled 403 keeps the Admin shell available", async ({
   await page.goto("/");
 
   const usersTable = page.getByRole("table", { name: "Comma users" });
-  await usersTable.getByRole("button", { name: "Manage" }).click();
-  const drawer = page.getByRole("dialog", { name: "Manage user" });
-  await openTask(drawer, "Support session");
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Verify a task-local command rejection");
-  await drawer.getByRole("button", { name: "Review command" }).click();
+  await usersTable.getByRole("button", { name: "Open owner@example.com" }).click();
+  await page
+    .getByTestId("admin-user-page")
+    .getByRole("button", { name: "Support session" })
+    .click();
+  const drawer = page.getByRole("dialog", {
+    name: "Create support Session",
+    exact: true,
+  });
+  await drawer.getByRole("button", { name: "Continue…" }).click();
 
   const confirmation = page.getByRole("dialog", {
     name: "Create support Session?",
   });
   await confirmation
-    .getByRole("textbox", { name: "Confirmation value" })
-    .fill("support-session:usr_admin_e2e");
+    .getByRole("textbox", { name: "Reason" })
+    .fill("Verify a task-local command rejection");
+  await confirmation
+    .getByRole("textbox", { name: "Type “owner@example.com” to confirm" })
+    .fill("owner@example.com");
   await confirmation.getByRole("button", { name: "Confirm" }).click();
 
   await expect(confirmation).toContainText("disabled");
@@ -917,7 +1080,7 @@ test("OAuth client lifecycle keeps one-time secrets ephemeral", async ({ page })
   const clientsTable = page.getByRole("table", { name: "OAuth clients" });
   await expect(clientsTable).toContainText("Synchronicity");
   await expect(clientsTable).toContainText("Confidential");
-  await expect(clientsTable).toContainText("active");
+  await expect(clientsTable).toContainText("Active");
 
   await page.getByRole("button", { name: "New client" }).click();
   let drawer = page.getByRole("dialog", { name: "New OAuth client" });
@@ -930,16 +1093,13 @@ test("OAuth client lifecycle keeps one-time secrets ephemeral", async ({ page })
     1
   );
   await clientType.selectOption("confidential");
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Register the approved support portal");
   await drawer.getByRole("button", { name: "Review command" }).click();
   const createConfirmation = page.getByRole("dialog", {
     name: "Create this OAuth client?",
   });
   await createConfirmation
-    .getByRole("textbox", { name: "Confirmation value" })
-    .fill("create-oauth-client:Support Portal");
+    .getByRole("textbox", { name: "Reason" })
+    .fill("Register the approved support portal");
   await createConfirmation.getByRole("button", { name: "Confirm" }).click();
   await expect(
     createConfirmation.getByRole("button", { name: "Working…" })
@@ -967,14 +1127,11 @@ test("OAuth client lifecycle keeps one-time secrets ephemeral", async ({ page })
     .getByRole("textbox", { name: "Redirect URIs" })
     .fill("http://127.0.0.1:4812/callback");
   await drawer.getByLabel("Client type").selectOption("public");
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Register the approved native helper");
   await drawer.getByRole("button", { name: "Review command" }).click();
   await confirmCommand(
     page,
     "Create this OAuth client?",
-    "create-oauth-client:Native Helper"
+    "Register the approved native helper"
   );
   drawer = page.getByRole("dialog", { name: "Client created" });
   await expect(drawer).toContainText("Public (PKCE)");
@@ -988,14 +1145,12 @@ test("OAuth client lifecycle keeps one-time secrets ephemeral", async ({ page })
     .click();
   drawer = page.getByRole("dialog", { name: "Manage OAuth client" });
   await expect(drawer).toContainText("https://sync.example.com/auth/callback/oidc");
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Rotate the bootstrap credential before handoff");
   await drawer.getByRole("button", { name: "Rotate secret" }).click();
   await confirmCommand(
     page,
     "Rotate this client secret?",
-    "rotate-oauth-client-secret:oauth_sync_e2e"
+    "Rotate the bootstrap credential before handoff",
+    "Synchronicity"
   );
 
   drawer = page.getByRole("dialog", { name: "Client secret rotated" });
@@ -1006,27 +1161,22 @@ test("OAuth client lifecycle keeps one-time secrets ephemeral", async ({ page })
   await drawer.getByRole("button", { name: "Done and clear" }).click();
 
   drawer = page.getByRole("dialog", { name: "Manage OAuth client" });
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Disable the integration during credential rollout");
   await drawer.getByRole("button", { name: "Disable client" }).click();
   await confirmCommand(
     page,
     "Disable this OAuth client?",
-    "disable-oauth-client:oauth_sync_e2e"
+    "Disable the integration during credential rollout",
+    "Synchronicity"
   );
-  await expect(drawer).toContainText("disabled");
+  await expect(drawer).toContainText("Disabled");
 
-  await drawer
-    .getByRole("textbox", { name: "Reason" })
-    .fill("Restore the integration after credential rollout");
   await drawer.getByRole("button", { name: "Enable client" }).click();
   await confirmCommand(
     page,
     "Enable this OAuth client?",
-    "enable-oauth-client:oauth_sync_e2e"
+    "Restore the integration after credential rollout"
   );
-  await expect(drawer).toContainText("active");
+  await expect(drawer).toContainText("Active");
 
   const oauthWrites = writes.filter((write) =>
     write.path.startsWith("/v1/comma/admin/oauth-clients")
@@ -1045,41 +1195,10 @@ test("OAuth client lifecycle keeps one-time secrets ephemeral", async ({ page })
   }
 });
 
-test("an exhausted Session recovery ticket renews without an error screen", async ({
+test("a signed-out startup asks for the Session once and shows sign-in", async ({
   page,
 }) => {
   let sessionProbeCount = 0;
-  await page.addInitScript(
-    ({ canonicalApiOrigin }) => {
-      const storageKey = `comma.session-lifecycle.v1:${encodeURIComponent(
-        canonicalApiOrigin
-      )}`;
-      localStorage.setItem(
-        storageKey,
-        JSON.stringify({
-          canonicalApiOrigin,
-          cookieAuthorityId: "exhausted-cookie-authority",
-          cookieGeneration: 0,
-          coordinationRevision: 2,
-          kind: "recovering",
-          schemaVersion: 1,
-          ticket: {
-            attemptsStarted: 2,
-            deadlineAtEpochMs: Date.now() - 1_000,
-            expectation: { kind: "unknown_rebind" },
-            maxAttempts: 2,
-            progress: {
-              phase: "exhausted",
-              problem: "session_probe_unavailable",
-            },
-            ticketId: "exhausted-recovery-ticket",
-          },
-          writeNonce: "exhausted-write-nonce",
-        })
-      );
-    },
-    { canonicalApiOrigin: apiBaseUrl }
-  );
 
   await page.route(`${apiBaseUrl}/v1/**`, async (route) => {
     const request = route.request();
@@ -1106,6 +1225,84 @@ test("an exhausted Session recovery ticket renews without an error screen", asyn
     0
   );
   expect(sessionProbeCount).toBe(1);
+});
+
+test("signs in with an emailed code and opens the dashboard", async ({ page }) => {
+  let signedIn = false;
+  const signIns: Array<{ body: unknown; expected: string | undefined; path: string }> =
+    [];
+  const session = {
+    expires_at: 4_102_444_800,
+    session_id: sessionId,
+    user: { email: adminSessionEmail, id: "usr_admin_e2e", status: "active" },
+  };
+  await installSignedInAdmin(page, {
+    adminRequestHeaders: [],
+    forbidden: false,
+    writes: [],
+    async sessionProbe(route, headers) {
+      await fulfillJson(
+        route,
+        signedIn ? session : { error: "unauthorized" },
+        signedIn ? 200 : 401,
+        headers
+      );
+    },
+  });
+  await page.route(`${apiBaseUrl}/v1/comma/auth/**`, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "OPTIONS" || path === "/v1/comma/auth/session") {
+      await route.fallback();
+      return;
+    }
+    const headers = corsHeaders(route);
+    signIns.push({
+      body: request.postDataJSON() as unknown,
+      expected: request.headers()["x-comma-expected-auth-session-id"],
+      path,
+    });
+    if (path === "/v1/comma/auth/email/login") {
+      await fulfillJson(route, { challenge_id: "challenge_e2e" }, 200, headers);
+      return;
+    }
+    if (path === "/v1/comma/auth/email/verify") {
+      signedIn = true;
+      await fulfillJson(route, session, 200, headers);
+      return;
+    }
+    await fulfillJson(route, { error: "google_unavailable" }, 503, headers);
+  });
+
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: "Sign in to Comma" })).toBeVisible();
+  await page.getByLabel("Email", { exact: true }).fill(adminSessionEmail);
+  await page.getByRole("button", { name: "Send code" }).click();
+  await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+  await page.getByLabel("Verification code").fill("123456");
+  await page.getByRole("button", { name: "Verify code" }).click();
+
+  await expect(page.getByRole("heading", { name: "Users", level: 1 })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: `Account menu for ${adminSessionEmail}` })
+  ).toBeVisible();
+  expect(signIns.filter((request) => request.path.includes("/email/"))).toEqual([
+    {
+      body: { email: adminSessionEmail },
+      expected: "none",
+      path: "/v1/comma/auth/email/login",
+    },
+    {
+      body: expect.objectContaining({
+        challenge_id: "challenge_e2e",
+        client_kind: "web",
+        code: "123456",
+      }),
+      expected: "none",
+      path: "/v1/comma/auth/email/verify",
+    },
+  ]);
 });
 
 test("a product 409 adopts the changed Cookie Session without an error screen", async ({
@@ -1210,6 +1407,7 @@ interface AdminWrite {
 }
 
 interface UserRecord {
+  review_login_configured?: boolean;
   admin_access: {
     allowed: boolean;
     decision: "allow" | "deny" | null;
@@ -1219,7 +1417,7 @@ interface UserRecord {
   email: string;
   id: string;
   login_methods: Array<
-    | { email: string; method: "email_otp" }
+    | { email: string; method: "email_otp" | "review_code" }
     | {
         email_snapshot: string;
         email_verified: boolean;
@@ -1268,12 +1466,16 @@ async function installSignedInAdmin(
   page: Page,
   options: {
     adminRequestHeaders: Array<Record<string, string>>;
+    /** Receives the query string of each Audit log read. */
+    auditQueries?: string[];
     createOauthClientGate?: Promise<void>;
     createRedeemCodeGate?: Promise<void>;
     forbidden: boolean;
     freeRouterModels?: Array<{ provider: string; sku: string }>;
     sessionProbe?: (route: Route, headers: Record<string, string>) => Promise<void>;
     supportSessionGate?: Promise<void>;
+    // Users whose default Workspace is already ready and has no Worker.
+    workerlessReadyWorkspaces?: string[];
     supportSessionRejection?: {
       error: string;
       status: number;
@@ -1326,6 +1528,7 @@ async function installSignedInAdmin(
       redirect_uris: ["https://sync.example.com/auth/callback/oidc"],
     },
   ];
+  const auditQueries: string[] = options.auditQueries ?? [];
   const auditEvents = [
     {
       id: "audit_e2e",
@@ -1359,74 +1562,49 @@ async function installSignedInAdmin(
       ],
     ],
   ]);
-  const readyWorkspaces = new Set<string>();
+  const readyWorkspaces = new Set<string>(options.workerlessReadyWorkspaces);
+  const workerless = new Set<string>(options.workerlessReadyWorkspaces);
   const workspaceBillingReads = new Map<string, number>();
   let workspaceVmEnabled = true;
-  const workspaceModelOptions = [
-    {
-      template_id: "template_luna",
-      name: "GPT-5.6 Luna",
-      model: "gpt-5.6-luna",
-      provider: "openai",
-      scope: "global",
-      reasoning_effort: "high",
-    },
-    {
-      template_id: "template_sol",
-      name: "GPT-5.6 Sol",
-      model: "gpt-5.6-sol",
-      provider: "openai",
-      scope: "global",
-      reasoning_effort: "high",
-    },
-    {
-      template_id: "template_terra",
-      name: "US endpoint",
-      model: "gpt-5.6-terra",
-      model_display_name: "GPT-5.6 Terra",
-      provider: "openai",
-      scope: "global",
-      reasoning_effort: "high",
-    },
-    {
-      template_id: "template_terra_eu",
-      name: "EU endpoint",
-      model: "gpt-5.6-terra",
-      model_display_name: "GPT-5.6 Terra",
-      provider: "openai",
-      scope: "global",
-      reasoning_effort: "high",
-    },
-  ];
-  const workspaceAgentModels: Record<
-    "router" | "worker",
-    {
-      agent_id: string;
-      role: "router" | "worker";
-      template_id: string;
-      template_name: string;
-      model: string;
-      provider: string;
-      reasoning_effort: string | null;
-    }
-  > = {
-    router: {
+  const workspacePlatformModel = {
+    name: "GPT-5.6 Luna",
+    model: "gpt-5.6-luna",
+    provider: "openai",
+    scope: "global",
+    reasoning_effort: null,
+  };
+  type WorkspaceAgentModel = {
+    agent_id: string;
+    role: "router" | "worker";
+    source: "pinned" | "platform_default";
+    model: string;
+    provider: string;
+    reasoning_effort: string | null;
+    selection:
+      | { kind: "builtin" }
+      | { kind: "catalog"; model: string; reasoning_effort: string | null };
+  };
+  const followPlatform = (agent: WorkspaceAgentModel): WorkspaceAgentModel => ({
+    ...agent,
+    source: "platform_default",
+    model: workspacePlatformModel.model,
+    provider: workspacePlatformModel.provider,
+    reasoning_effort: null,
+    selection: { kind: "builtin" },
+  });
+  const workspaceAgentModels: Record<"router" | "worker", WorkspaceAgentModel> = {
+    router: followPlatform({
       agent_id: "agent_router_e2e",
-      role: "router" as const,
-      template_id: "template_luna",
-      template_name: "GPT-5.6 Luna",
-      model: "gpt-5.6-luna",
-      provider: "openai",
-      reasoning_effort: null,
-    },
+      role: "router",
+    } as WorkspaceAgentModel),
     worker: {
       agent_id: "agent_worker_e2e",
-      role: "worker" as const,
-      template_id: "template_sol",
-      template_name: "GPT-5.6 Sol",
+      role: "worker",
+      source: "pinned",
       model: "gpt-5.6-sol",
       provider: "openai",
       reasoning_effort: "high",
+      selection: { kind: "catalog", model: "gpt-5.6-sol", reasoning_effort: "high" },
     },
   };
   let issuedWorkspaceCredits = 0;
@@ -1509,11 +1687,6 @@ async function installSignedInAdmin(
     models: options.freeRouterModels ?? [],
     revision: 0,
   };
-  let modelSelectionPolicy: {
-    mode: "all" | "selected";
-    allowed_template_ids: string[];
-    revision: number;
-  } = { mode: "all", allowed_template_ids: [], revision: 0 };
   let guestTenantCount = 0;
   let guestPolicy: {
     enabled: boolean;
@@ -1586,12 +1759,52 @@ async function installSignedInAdmin(
     }
 
     if (`${method} ${url.pathname}` === "GET /v1/comma/admin/audit-events") {
+      const action = url.searchParams.get("action");
+      const actor = url.searchParams.get("actor_email");
+      const targetId = url.searchParams.get("target_id");
+      auditQueries.push(url.search);
       await fulfillJson(
         route,
         {
-          data: auditEvents,
+          data: auditEvents.filter(
+            (event) =>
+              (!action || event.action === action) &&
+              (!actor || event.actor.email === actor) &&
+              (!targetId || event.target.id === targetId)
+          ),
           has_more: false,
           next_cursor: null,
+        },
+        200,
+        headers
+      );
+      return;
+    }
+
+    if (`${method} ${url.pathname}` === "GET /v1/comma/admin/lookup") {
+      const query = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+      const data = users
+        .filter((user) => user.email.startsWith(query) || user.id === query)
+        .map((user) => ({
+          match: user.id === query ? "user_id" : "email",
+          user,
+          workspace: null,
+        }));
+      await fulfillJson(route, { data }, 200, headers);
+      return;
+    }
+
+    if (`${method} ${url.pathname}` === "GET /v1/comma/admin/stats/users") {
+      await fulfillJson(
+        route,
+        {
+          registered_total: 120,
+          registered_team: 20,
+          team_email_domain: "comma.surf",
+          new_by_day: Array.from({ length: 14 }, (_, index) => ({
+            date: `2026-10-${String(index + 1).padStart(2, "0")}`,
+            count: [3, 5, 2, 0, 7, 4, 6, 8, 3, 9, 5, 4, 6, 7][index],
+          })),
         },
         200,
         headers
@@ -1732,11 +1945,13 @@ async function installSignedInAdmin(
     }
 
     if (`${method} ${url.pathname}` === "GET /v1/comma/admin/users") {
-      const exactEmail = url.searchParams.get("email");
+      const search = url.searchParams.get("query")?.toLowerCase();
       await fulfillJson(
         route,
         {
-          data: exactEmail ? users.filter((user) => user.email === exactEmail) : users,
+          data: search
+            ? users.filter((user) => user.email.toLowerCase().includes(search))
+            : users,
           has_more: false,
           next_cursor: null,
         },
@@ -1794,6 +2009,25 @@ async function installSignedInAdmin(
       }
       if (method === "PATCH") {
         const body = request.postDataJSON() as Record<string, string>;
+        if ("review_login_code" in body) {
+          if (
+            body.review_login_code !== null &&
+            user.admin_access.decision !== "deny"
+          ) {
+            await fulfillJson(
+              route,
+              { error: "review_login_requires_admin_denial" },
+              400,
+              headers
+            );
+            return;
+          }
+          user.review_login_configured = body.review_login_code !== null;
+          user.login_methods[0] = {
+            email: user.email,
+            method: user.review_login_configured ? "review_code" : "email_otp",
+          };
+        }
         user.name = body.name ?? user.name;
         user.status = body.status ?? user.status;
         user.updated_at += 1;
@@ -1821,12 +2055,38 @@ async function installSignedInAdmin(
       /^\/v1\/comma\/admin\/users\/([^/]+)\/sessions$/
     );
     if (method === "GET" && sessionListMatch) {
+      // The server filters and sorts before it pages; the cursor here is an offset.
+      // A fixed time after every fixture's last use and before its expiry.
+      const now = 1_784_890_000;
+      const status = url.searchParams.get("status") ?? "all";
+      const client = url.searchParams.get("client_kind") ?? "all";
+      const sort = url.searchParams.get("sort") ?? "created_at";
+      const rows = (sessions.get(sessionListMatch[1]!) ?? [])
+        .filter((session) => {
+          const value = session.revoked_at
+            ? "revoked"
+            : session.expires_at <= now
+              ? "expired"
+              : "active";
+          return (
+            (status === "all" || value === status) &&
+            (client === "all" || (session.client_kind ?? "unknown") === client)
+          );
+        })
+        .toSorted((a, b) =>
+          sort === "last_seen_at"
+            ? (b.last_seen_at ?? 0) - (a.last_seen_at ?? 0)
+            : (b.authenticated_at ?? 0) - (a.authenticated_at ?? 0)
+        );
+      const offset = Number(url.searchParams.get("cursor") ?? 0);
+      const limit = Number(url.searchParams.get("limit") ?? 50);
+      const hasMore = offset + limit < rows.length;
       await fulfillJson(
         route,
         {
-          data: sessions.get(sessionListMatch[1]!) ?? [],
-          has_more: false,
-          next_cursor: null,
+          data: rows.slice(offset, offset + limit),
+          has_more: hasMore,
+          next_cursor: hasMore ? String(offset + limit) : null,
         },
         200,
         headers
@@ -1998,7 +2258,9 @@ async function installSignedInAdmin(
         {
           workspace_id: "wsp_person_e2e",
           response_metadata: { version: 2 },
-          agents: { ...workspaceAgentModels, extra_role: {} },
+          agents: workerless.has(workspaceAgentModelsMatch[1]!)
+            ? { router: workspaceAgentModels.router, worker: null }
+            : { ...workspaceAgentModels, extra_role: {} },
           workers: {
             items: [
               { ...workspaceAgentModels.worker, extra_metadata: {} },
@@ -2015,16 +2277,11 @@ async function installSignedInAdmin(
             ],
             next_cursor: null,
           },
-          worker_default_template_id: null,
           platform_defaults: {
-            router: { ...workspaceModelOptions[0], extra_metadata: {} },
-            worker: workspaceModelOptions[1],
+            router: { ...workspacePlatformModel, extra_metadata: {} },
+            worker: workspacePlatformModel,
             extra_role: {},
           },
-          available_models: workspaceModelOptions.map((model) => ({
-            ...model,
-            extra_metadata: {},
-          })),
         },
         200,
         headers
@@ -2052,23 +2309,31 @@ async function installSignedInAdmin(
     );
     if (method === "PUT" && workspaceAgentModelUpdateMatch) {
       const role = workspaceAgentModelUpdateMatch[2] as "router" | "worker";
-      const body = request.postDataJSON() as { template_id: string };
-      const selected = workspaceModelOptions.find(
-        (model) => model.template_id === body.template_id
-      );
-      if (!selected) {
-        await fulfillJson(route, { error: "invalid_model_template" }, 400, headers);
+      const body = request.postDataJSON() as {
+        model: { kind: string; model: string } | null;
+      };
+      if (body.model?.kind === "catalog") {
+        workspaceAgentModels[role] = {
+          ...workspaceAgentModels[role],
+          source: "pinned",
+          model: body.model.model,
+          selection: {
+            kind: "catalog",
+            model: body.model.model,
+            reasoning_effort: null,
+          },
+        };
+      } else if (body.model === null) {
+        workspaceAgentModels[role] = followPlatform(workspaceAgentModels[role]);
+      } else {
+        await fulfillJson(
+          route,
+          { error: "invalid_workspace_agent_model" },
+          400,
+          headers
+        );
         return;
       }
-
-      workspaceAgentModels[role] = {
-        ...workspaceAgentModels[role],
-        template_id: selected.template_id,
-        template_name: selected.name,
-        model: selected.model,
-        provider: selected.provider,
-        reasoning_effort: selected.reasoning_effort,
-      };
       await fulfillJson(route, workspaceAgentModels[role], 200, headers);
       return;
     }
@@ -2170,58 +2435,6 @@ async function installSignedInAdmin(
       return;
     }
 
-    if (
-      `${method} ${url.pathname}` ===
-      "GET /v1/comma/admin/model-selection-policy/templates"
-    ) {
-      await fulfillJson(
-        route,
-        {
-          data: [
-            {
-              template_id: "platform-gpt-6-sol",
-              name: "GPT-6 Sol",
-              model: "gpt-6-sol",
-              model_vendor: "openai",
-              provider: "openrouter",
-            },
-            {
-              template_id: "platform-claude-sonnet",
-              name: "Claude Sonnet",
-              model: "claude-sonnet",
-              model_vendor: "anthropic",
-              provider: "anthropic",
-            },
-          ],
-        },
-        200,
-        headers
-      );
-      return;
-    }
-
-    if (url.pathname === "/v1/comma/admin/model-selection-policy") {
-      if (method === "PUT") {
-        const body = request.postDataJSON() as typeof modelSelectionPolicy;
-        if (body.revision !== modelSelectionPolicy.revision) {
-          await fulfillJson(
-            route,
-            { error: "model_selection_policy_conflict" },
-            409,
-            headers
-          );
-          return;
-        }
-        modelSelectionPolicy = {
-          mode: body.mode,
-          allowed_template_ids: body.allowed_template_ids,
-          revision: body.revision + 1,
-        };
-      }
-      await fulfillJson(route, modelSelectionPolicy, 200, headers);
-      return;
-    }
-
     if (`${method} ${url.pathname}` === "GET /v1/comma/admin/billing/redeem-codes") {
       await fulfillJson(route, { data: codes }, 200, headers);
       return;
@@ -2314,16 +2527,20 @@ async function installSignedInAdmin(
   });
 }
 
-async function openTask(drawer: Locator, taskName: string) {
-  const card = drawer.locator("article.admin-task-card").filter({ hasText: taskName });
-  await card.getByRole("button", { name: "Open" }).click();
-}
-
-async function confirmCommand(page: Page, title: string, expected: string) {
+/** Reviews an audited command: gives the reason and, for a guarded command, types the target's name. */
+async function confirmCommand(
+  page: Page,
+  title: string,
+  reason: string,
+  typed?: string
+) {
   const confirmation = page.getByRole("dialog", { name: title });
-  await confirmation
-    .getByRole("textbox", { name: "Confirmation value" })
-    .fill(expected);
+  await confirmation.getByRole("textbox", { name: "Reason" }).fill(reason);
+  if (typed !== undefined) {
+    await confirmation
+      .getByRole("textbox", { name: `Type “${typed}” to confirm` })
+      .fill(typed);
+  }
   await confirmation.getByRole("button", { name: "Confirm" }).click();
   await expect(confirmation).toHaveCount(0);
 }

@@ -35,39 +35,16 @@ import {
   browserSidebarCaptureCapability,
   browserSidebarChangedEvent,
   browserSidebarCloseCapability,
+  browserSidebarDismissPasskeyCapability,
+  browserSidebarImportCookiesCapability,
   browserSidebarInspectCapability,
+  browserSidebarListImportProfilesCapability,
   browserSidebarNavigateCapability,
   browserSidebarOpenCapability,
   browserSidebarOpenTabRequestedEvent,
   browserSidebarShowPermissionsCapability,
   browserSidebarUpdateCapability,
-  chatAcceptTaskReviewCapability,
-  chatAcknowledgeIntakeFailuresCapability,
-  chatAttachCapability,
-  chatAttachLocalFilesCapability,
-  chatBeginSendIntentCapability,
-  chatCancelSendIntentCapability,
-  chatClearPresentationCapability,
-  chatDiscardCapability,
-  chatDraftsCapability,
-  chatDraftsChangedEvent,
-  chatDraftsLeaf,
-  chatListSkillsCapability,
   chatPickAttachmentsCapability,
-  chatPresentInSideChatCapability,
-  chatReadGroupImageCapability,
-  chatRefreshCapability,
-  chatReleaseCapability,
-  chatRemoveAttachmentCapability,
-  chatResolveWorkspaceChatCapability,
-  chatRetainCapability,
-  chatRetryAttachmentCapability,
-  chatRetryCapability,
-  chatSendCapability,
-  chatSetDraftCapability,
-  chatStateCapability,
-  chatStateChangedEvent,
-  chatStateLeaf,
   clipboardReadImageCapability,
   clipboardReadTextCapability,
   clipboardWriteImageCapability,
@@ -92,10 +69,7 @@ import {
   connectorRuntimeStateCapability,
   connectorRuntimeStateChangedEvent,
   connectorRuntimeStateLeaf,
-  driveCatalogChangedEvent,
-  driveCatalogQueryCapability,
-  driveCatalogStateCapability,
-  driveCatalogStateLeaf,
+  coreOpenCapability,
   filesCopyDownloadCapability,
   filesListOpenApplicationsCapability,
   filesOpenDownloadCapability,
@@ -106,7 +80,6 @@ import {
   localComputeOverviewCapability,
   localComputeResumeCapability,
   localComputeWorkloadsCapability,
-  localDataStatusCapability,
   localFilesPickCapability,
   localFilesPreviewCapability,
   maintainHostCapability,
@@ -114,16 +87,9 @@ import {
   meetingPresenceStateCapability,
   meetingPresenceStateChangedEvent,
   meetingPresenceStateLeaf,
-  meetingRecorderAcknowledgeSavedCapability,
-  meetingRecorderActionCapability,
   meetingRecorderDragWindowCapability,
   meetingRecorderLayoutWindowCapability,
-  meetingRecorderRetryTaskSyncCapability,
-  meetingRecorderSelectMicrophoneCapability,
   meetingRecorderSetInteractiveCapability,
-  meetingRecorderStateCapability,
-  meetingRecorderStateChangedEvent,
-  meetingRecorderStateLeaf,
   messageNotificationsEvent,
   nativeInfoCapability,
   notchCloseCapability,
@@ -145,67 +111,33 @@ import {
   onboardingWindowChangedEvent,
   onboardingWindowStateLeaf,
   peersConnectCapability,
-  productInboxRefreshCapability,
-  productInboxReleaseCapability,
-  productInboxRetainCapability,
-  productInboxStateCapability,
-  productInboxStateChangedEvent,
-  productInboxStateLeaf,
   recommendationMediaLoadCapability,
   resumeHostMaintenanceCapability,
-  sessionCancelAuthAttemptCapability,
-  sessionHistoryLoadCapability,
-  sessionHistoryReleaseCapability,
-  sessionHistoryRetainCapability,
-  sessionHistoryStateCapability,
-  sessionHistoryStateChangedEvent,
-  sessionHistoryStateLeaf,
-  sessionReconcileCapability,
-  sessionRequestEmailLoginCapability,
-  sessionSignInWithGoogleCapability,
-  sessionSignOutCapability,
   sessionStateCapability,
   sessionStateChangedEvent,
   sessionStateLeaf,
-  sessionVerifyEmailLoginCapability,
-  sessionVerifyGoogleLinkCapability,
   shellOpenExternalCapability,
-  sideChatCloseCapability,
-  sideChatCloseTestWindowCapability,
-  sideChatDebugSettingsCapability,
-  sideChatDebugSettingsChangedEvent,
-  sideChatDebugSettingsStateLeaf,
-  sideChatFinishInteractiveProgressCapability,
-  sideChatOpenSettingsCapability,
-  sideChatOpenTestWindowCapability,
-  sideChatPresentationCapability,
-  sideChatPresentationChangedEvent,
-  sideChatPresentationStateLeaf,
-  sideChatResetDebugSettingsCapability,
-  sideChatSetContentSizeCapability,
-  sideChatSetInteractiveProgressCapability,
-  sideChatUpdateDebugSettingsCapability,
-  sideChatUpdateShortcutCapability,
   sitePermissionMenuActCapability,
   sitePermissionMenuChangedEvent,
   sitePermissionMenuStateCapability,
   sitePermissionMenuStateLeaf,
-  subscriptionAuthorizationCancelCapability,
-  subscriptionAuthorizationStartCapability,
-  subscriptionAuthorizationStatusCapability,
   surfacesChangedEvent,
   surfacesStateCapability,
   surfacesStateLeaf,
+  surfacesWindowControlCapability,
   surfacesWindowFullScreenCapability,
   surfacesWindowFullScreenChangedEvent,
   surfacesWindowFullScreenStateLeaf,
+  surfacesWindowMaximizedCapability,
+  surfacesWindowMaximizedChangedEvent,
+  surfacesWindowMaximizedStateLeaf,
   surfacesWindowResizeSettledEvent,
   synchronicityAdoptCapability,
   synchronicityAdoptTreeCapability,
   synchronicityDeleteCapability,
-  synchronicityImportFileCapability,
   synchronicityListCapability,
   synchronicityOpenLocalRootCapability,
+  synchronicityOpenStreamCapability,
   synchronicityPickFolderCapability,
   synchronicityPinCapability,
   synchronicityReadCapability,
@@ -218,13 +150,10 @@ import {
   synchronicitySetSpaceSettingsCapability,
   synchronicitySourceAddCapability,
   synchronicitySourceRemoveCapability,
+  synchronicityStageImportCapability,
   synchronicityStateCapability,
   synchronicityVersionsCapability,
   synchronicityWriteCapability,
-  tokenDanceAuthorizationCancelCapability,
-  tokenDanceAuthorizationSaveCapability,
-  tokenDanceAuthorizationStartCapability,
-  tokenDanceAuthorizationStatusCapability,
   transportStatusCapability,
   windowsCloseCapability,
   windowsCreateCapability,
@@ -272,6 +201,8 @@ export const generatedNativeCapabilityContracts = {
   notchStop: notchStopCapability.contract,
   surfacesState: surfacesStateCapability.contract,
   surfacesWindowFullScreen: surfacesWindowFullScreenCapability.contract,
+  surfacesWindowMaximized: surfacesWindowMaximizedCapability.contract,
+  surfacesWindowControl: surfacesWindowControlCapability.contract,
   windowsCreate: windowsCreateCapability.contract,
   windowsFocus: windowsFocusCapability.contract,
   windowsClose: windowsCloseCapability.contract,
@@ -283,13 +214,6 @@ export const generatedNativeCapabilityContracts = {
   clipboardReadImage: clipboardReadImageCapability.contract,
   clipboardWriteText: clipboardWriteTextCapability.contract,
   clipboardWriteImage: clipboardWriteImageCapability.contract,
-  subscriptionAuthorizationStart: subscriptionAuthorizationStartCapability.contract,
-  tokenDanceAuthorizationStart: tokenDanceAuthorizationStartCapability.contract,
-  tokenDanceAuthorizationStatus: tokenDanceAuthorizationStatusCapability.contract,
-  tokenDanceAuthorizationSave: tokenDanceAuthorizationSaveCapability.contract,
-  tokenDanceAuthorizationCancel: tokenDanceAuthorizationCancelCapability.contract,
-  subscriptionAuthorizationStatus: subscriptionAuthorizationStatusCapability.contract,
-  subscriptionAuthorizationCancel: subscriptionAuthorizationCancelCapability.contract,
   shellOpenExternal: shellOpenExternalCapability.contract,
   filesSaveDownload: filesSaveDownloadCapability.contract,
   filesCopyDownload: filesCopyDownloadCapability.contract,
@@ -303,21 +227,17 @@ export const generatedNativeCapabilityContracts = {
   browserSidebarNavigate: browserSidebarNavigateCapability.contract,
   browserSidebarClose: browserSidebarCloseCapability.contract,
   browserSidebarInspect: browserSidebarInspectCapability.contract,
+  browserSidebarDismissPasskey: browserSidebarDismissPasskeyCapability.contract,
   browserSidebarShowPermissions: browserSidebarShowPermissionsCapability.contract,
+  browserSidebarListImportProfiles: browserSidebarListImportProfilesCapability.contract,
+  browserSidebarImportCookies: browserSidebarImportCookiesCapability.contract,
   sitePermissionMenuState: sitePermissionMenuStateCapability.contract,
   sitePermissionMenuAct: sitePermissionMenuActCapability.contract,
   peersConnect: peersConnectCapability.contract,
+  coreOpen: coreOpenCapability.contract,
   sessionState: sessionStateCapability.contract,
-  sessionRequestEmailLogin: sessionRequestEmailLoginCapability.contract,
-  sessionVerifyEmailLogin: sessionVerifyEmailLoginCapability.contract,
-  sessionSignInWithGoogle: sessionSignInWithGoogleCapability.contract,
-  sessionVerifyGoogleLink: sessionVerifyGoogleLinkCapability.contract,
-  sessionCancelAuthAttempt: sessionCancelAuthAttemptCapability.contract,
-  sessionReconcile: sessionReconcileCapability.contract,
-  sessionSignOut: sessionSignOutCapability.contract,
   localFilesPick: localFilesPickCapability.contract,
   localFilesPreview: localFilesPreviewCapability.contract,
-  localDataStatus: localDataStatusCapability.contract,
   transportStatus: transportStatusCapability.contract,
   computeNodeState: computeNodeStateCapability.contract,
   computeNodeConfigure: computeNodeConfigureCapability.contract,
@@ -336,50 +256,7 @@ export const generatedNativeCapabilityContracts = {
   computeNodeDrain: computeNodeDrainCapability.contract,
   computeNodeRemove: computeNodeRemoveCapability.contract,
   computeNodeAbandon: computeNodeAbandonCapability.contract,
-  sessionHistoryState: sessionHistoryStateCapability.contract,
-  sessionHistoryLoad: sessionHistoryLoadCapability.contract,
-  sessionHistoryRetain: sessionHistoryRetainCapability.contract,
-  sessionHistoryRelease: sessionHistoryReleaseCapability.contract,
-  productInboxState: productInboxStateCapability.contract,
-  productInboxRetain: productInboxRetainCapability.contract,
-  productInboxRelease: productInboxReleaseCapability.contract,
-  productInboxRefresh: productInboxRefreshCapability.contract,
-  chatState: chatStateCapability.contract,
-  chatDrafts: chatDraftsCapability.contract,
-  sideChatPresentation: sideChatPresentationCapability.contract,
-  sideChatDebugSettings: sideChatDebugSettingsCapability.contract,
-  sideChatUpdateDebugSettings: sideChatUpdateDebugSettingsCapability.contract,
-  sideChatResetDebugSettings: sideChatResetDebugSettingsCapability.contract,
-  sideChatSetContentSize: sideChatSetContentSizeCapability.contract,
-  sideChatSetInteractiveProgress: sideChatSetInteractiveProgressCapability.contract,
-  sideChatFinishInteractiveProgress:
-    sideChatFinishInteractiveProgressCapability.contract,
-  sideChatUpdateShortcut: sideChatUpdateShortcutCapability.contract,
-  sideChatClose: sideChatCloseCapability.contract,
-  sideChatOpenSettings: sideChatOpenSettingsCapability.contract,
-  sideChatOpenTestWindow: sideChatOpenTestWindowCapability.contract,
-  sideChatCloseTestWindow: sideChatCloseTestWindowCapability.contract,
-  chatRetain: chatRetainCapability.contract,
-  chatRelease: chatReleaseCapability.contract,
-  chatClearPresentation: chatClearPresentationCapability.contract,
-  chatSetDraft: chatSetDraftCapability.contract,
-  chatBeginSendIntent: chatBeginSendIntentCapability.contract,
-  chatCancelSendIntent: chatCancelSendIntentCapability.contract,
-  chatSend: chatSendCapability.contract,
-  chatRetry: chatRetryCapability.contract,
-  chatDiscard: chatDiscardCapability.contract,
-  chatAcceptTaskReview: chatAcceptTaskReviewCapability.contract,
-  chatRefresh: chatRefreshCapability.contract,
-  chatAttach: chatAttachCapability.contract,
-  chatAttachLocalFiles: chatAttachLocalFilesCapability.contract,
   chatPickAttachments: chatPickAttachmentsCapability.contract,
-  chatPresentInSideChat: chatPresentInSideChatCapability.contract,
-  chatResolveWorkspaceChat: chatResolveWorkspaceChatCapability.contract,
-  chatListSkills: chatListSkillsCapability.contract,
-  chatReadGroupImage: chatReadGroupImageCapability.contract,
-  chatRemoveAttachment: chatRemoveAttachmentCapability.contract,
-  chatRetryAttachment: chatRetryAttachmentCapability.contract,
-  chatAcknowledgeIntakeFailures: chatAcknowledgeIntakeFailuresCapability.contract,
   audioCaptureState: audioCaptureStateCapability.contract,
   audioCaptureSources: audioCaptureSourcesCapability.contract,
   audioCaptureMicrophones: audioCaptureMicrophonesCapability.contract,
@@ -394,27 +271,21 @@ export const generatedNativeCapabilityContracts = {
     audioCaptureOpenPermissionSettingsCapability.contract,
   meetingPresenceState: meetingPresenceStateCapability.contract,
   meetingPresenceIcon: meetingPresenceIconCapability.contract,
-  meetingRecorderState: meetingRecorderStateCapability.contract,
-  meetingRecorderAction: meetingRecorderActionCapability.contract,
-  meetingRecorderRetryTaskSync: meetingRecorderRetryTaskSyncCapability.contract,
-  meetingRecorderSelectMicrophone: meetingRecorderSelectMicrophoneCapability.contract,
-  meetingRecorderAcknowledgeSaved: meetingRecorderAcknowledgeSavedCapability.contract,
   meetingRecorderSetInteractive: meetingRecorderSetInteractiveCapability.contract,
   meetingRecorderLayoutWindow: meetingRecorderLayoutWindowCapability.contract,
   meetingRecorderDragWindow: meetingRecorderDragWindowCapability.contract,
   airDropState: airDropStateCapability.contract,
   airDropAct: airDropActCapability.contract,
   airDropPreview: airDropPreviewCapability.contract,
-  driveCatalogQuery: driveCatalogQueryCapability.contract,
-  driveCatalogState: driveCatalogStateCapability.contract,
   synchronicityState: synchronicityStateCapability.contract,
   synchronicityList: synchronicityListCapability.contract,
   synchronicityRead: synchronicityReadCapability.contract,
   synchronicitySaveDownload: synchronicitySaveDownloadCapability.contract,
+  synchronicityOpenStream: synchronicityOpenStreamCapability.contract,
   synchronicityOpenLocalRoot: synchronicityOpenLocalRootCapability.contract,
   synchronicityVersions: synchronicityVersionsCapability.contract,
   synchronicityWrite: synchronicityWriteCapability.contract,
-  synchronicityImportFile: synchronicityImportFileCapability.contract,
+  synchronicityStageImport: synchronicityStageImportCapability.contract,
   synchronicityDelete: synchronicityDeleteCapability.contract,
   synchronicityAdopt: synchronicityAdoptCapability.contract,
   synchronicityScan: synchronicityScanCapability.contract,
@@ -464,6 +335,8 @@ export const generatedNativeWebFallbacks = {
   notchStop: notchStopCapability.webFallback,
   surfacesState: surfacesStateCapability.webFallback,
   surfacesWindowFullScreen: surfacesWindowFullScreenCapability.webFallback,
+  surfacesWindowMaximized: surfacesWindowMaximizedCapability.webFallback,
+  surfacesWindowControl: surfacesWindowControlCapability.webFallback,
   windowsCreate: windowsCreateCapability.webFallback,
   windowsFocus: windowsFocusCapability.webFallback,
   windowsClose: windowsCloseCapability.webFallback,
@@ -475,15 +348,6 @@ export const generatedNativeWebFallbacks = {
   clipboardReadImage: clipboardReadImageCapability.webFallback,
   clipboardWriteText: clipboardWriteTextCapability.webFallback,
   clipboardWriteImage: clipboardWriteImageCapability.webFallback,
-  subscriptionAuthorizationStart: subscriptionAuthorizationStartCapability.webFallback,
-  tokenDanceAuthorizationStart: tokenDanceAuthorizationStartCapability.webFallback,
-  tokenDanceAuthorizationStatus: tokenDanceAuthorizationStatusCapability.webFallback,
-  tokenDanceAuthorizationSave: tokenDanceAuthorizationSaveCapability.webFallback,
-  tokenDanceAuthorizationCancel: tokenDanceAuthorizationCancelCapability.webFallback,
-  subscriptionAuthorizationStatus:
-    subscriptionAuthorizationStatusCapability.webFallback,
-  subscriptionAuthorizationCancel:
-    subscriptionAuthorizationCancelCapability.webFallback,
   shellOpenExternal: shellOpenExternalCapability.webFallback,
   filesSaveDownload: filesSaveDownloadCapability.webFallback,
   filesCopyDownload: filesCopyDownloadCapability.webFallback,
@@ -497,21 +361,18 @@ export const generatedNativeWebFallbacks = {
   browserSidebarNavigate: browserSidebarNavigateCapability.webFallback,
   browserSidebarClose: browserSidebarCloseCapability.webFallback,
   browserSidebarInspect: browserSidebarInspectCapability.webFallback,
+  browserSidebarDismissPasskey: browserSidebarDismissPasskeyCapability.webFallback,
   browserSidebarShowPermissions: browserSidebarShowPermissionsCapability.webFallback,
+  browserSidebarListImportProfiles:
+    browserSidebarListImportProfilesCapability.webFallback,
+  browserSidebarImportCookies: browserSidebarImportCookiesCapability.webFallback,
   sitePermissionMenuState: sitePermissionMenuStateCapability.webFallback,
   sitePermissionMenuAct: sitePermissionMenuActCapability.webFallback,
   peersConnect: peersConnectCapability.webFallback,
+  coreOpen: coreOpenCapability.webFallback,
   sessionState: sessionStateCapability.webFallback,
-  sessionRequestEmailLogin: sessionRequestEmailLoginCapability.webFallback,
-  sessionVerifyEmailLogin: sessionVerifyEmailLoginCapability.webFallback,
-  sessionSignInWithGoogle: sessionSignInWithGoogleCapability.webFallback,
-  sessionVerifyGoogleLink: sessionVerifyGoogleLinkCapability.webFallback,
-  sessionCancelAuthAttempt: sessionCancelAuthAttemptCapability.webFallback,
-  sessionReconcile: sessionReconcileCapability.webFallback,
-  sessionSignOut: sessionSignOutCapability.webFallback,
   localFilesPick: localFilesPickCapability.webFallback,
   localFilesPreview: localFilesPreviewCapability.webFallback,
-  localDataStatus: localDataStatusCapability.webFallback,
   transportStatus: transportStatusCapability.webFallback,
   computeNodeState: computeNodeStateCapability.webFallback,
   computeNodeConfigure: computeNodeConfigureCapability.webFallback,
@@ -530,50 +391,7 @@ export const generatedNativeWebFallbacks = {
   computeNodeDrain: computeNodeDrainCapability.webFallback,
   computeNodeRemove: computeNodeRemoveCapability.webFallback,
   computeNodeAbandon: computeNodeAbandonCapability.webFallback,
-  sessionHistoryState: sessionHistoryStateCapability.webFallback,
-  sessionHistoryLoad: sessionHistoryLoadCapability.webFallback,
-  sessionHistoryRetain: sessionHistoryRetainCapability.webFallback,
-  sessionHistoryRelease: sessionHistoryReleaseCapability.webFallback,
-  productInboxState: productInboxStateCapability.webFallback,
-  productInboxRetain: productInboxRetainCapability.webFallback,
-  productInboxRelease: productInboxReleaseCapability.webFallback,
-  productInboxRefresh: productInboxRefreshCapability.webFallback,
-  chatState: chatStateCapability.webFallback,
-  chatDrafts: chatDraftsCapability.webFallback,
-  sideChatPresentation: sideChatPresentationCapability.webFallback,
-  sideChatDebugSettings: sideChatDebugSettingsCapability.webFallback,
-  sideChatUpdateDebugSettings: sideChatUpdateDebugSettingsCapability.webFallback,
-  sideChatResetDebugSettings: sideChatResetDebugSettingsCapability.webFallback,
-  sideChatSetContentSize: sideChatSetContentSizeCapability.webFallback,
-  sideChatSetInteractiveProgress: sideChatSetInteractiveProgressCapability.webFallback,
-  sideChatFinishInteractiveProgress:
-    sideChatFinishInteractiveProgressCapability.webFallback,
-  sideChatUpdateShortcut: sideChatUpdateShortcutCapability.webFallback,
-  sideChatClose: sideChatCloseCapability.webFallback,
-  sideChatOpenSettings: sideChatOpenSettingsCapability.webFallback,
-  sideChatOpenTestWindow: sideChatOpenTestWindowCapability.webFallback,
-  sideChatCloseTestWindow: sideChatCloseTestWindowCapability.webFallback,
-  chatRetain: chatRetainCapability.webFallback,
-  chatRelease: chatReleaseCapability.webFallback,
-  chatClearPresentation: chatClearPresentationCapability.webFallback,
-  chatSetDraft: chatSetDraftCapability.webFallback,
-  chatBeginSendIntent: chatBeginSendIntentCapability.webFallback,
-  chatCancelSendIntent: chatCancelSendIntentCapability.webFallback,
-  chatSend: chatSendCapability.webFallback,
-  chatRetry: chatRetryCapability.webFallback,
-  chatDiscard: chatDiscardCapability.webFallback,
-  chatAcceptTaskReview: chatAcceptTaskReviewCapability.webFallback,
-  chatRefresh: chatRefreshCapability.webFallback,
-  chatAttach: chatAttachCapability.webFallback,
-  chatAttachLocalFiles: chatAttachLocalFilesCapability.webFallback,
   chatPickAttachments: chatPickAttachmentsCapability.webFallback,
-  chatPresentInSideChat: chatPresentInSideChatCapability.webFallback,
-  chatResolveWorkspaceChat: chatResolveWorkspaceChatCapability.webFallback,
-  chatListSkills: chatListSkillsCapability.webFallback,
-  chatReadGroupImage: chatReadGroupImageCapability.webFallback,
-  chatRemoveAttachment: chatRemoveAttachmentCapability.webFallback,
-  chatRetryAttachment: chatRetryAttachmentCapability.webFallback,
-  chatAcknowledgeIntakeFailures: chatAcknowledgeIntakeFailuresCapability.webFallback,
   audioCaptureState: audioCaptureStateCapability.webFallback,
   audioCaptureSources: audioCaptureSourcesCapability.webFallback,
   audioCaptureMicrophones: audioCaptureMicrophonesCapability.webFallback,
@@ -588,29 +406,21 @@ export const generatedNativeWebFallbacks = {
     audioCaptureOpenPermissionSettingsCapability.webFallback,
   meetingPresenceState: meetingPresenceStateCapability.webFallback,
   meetingPresenceIcon: meetingPresenceIconCapability.webFallback,
-  meetingRecorderState: meetingRecorderStateCapability.webFallback,
-  meetingRecorderAction: meetingRecorderActionCapability.webFallback,
-  meetingRecorderRetryTaskSync: meetingRecorderRetryTaskSyncCapability.webFallback,
-  meetingRecorderSelectMicrophone:
-    meetingRecorderSelectMicrophoneCapability.webFallback,
-  meetingRecorderAcknowledgeSaved:
-    meetingRecorderAcknowledgeSavedCapability.webFallback,
   meetingRecorderSetInteractive: meetingRecorderSetInteractiveCapability.webFallback,
   meetingRecorderLayoutWindow: meetingRecorderLayoutWindowCapability.webFallback,
   meetingRecorderDragWindow: meetingRecorderDragWindowCapability.webFallback,
   airDropState: airDropStateCapability.webFallback,
   airDropAct: airDropActCapability.webFallback,
   airDropPreview: airDropPreviewCapability.webFallback,
-  driveCatalogQuery: driveCatalogQueryCapability.webFallback,
-  driveCatalogState: driveCatalogStateCapability.webFallback,
   synchronicityState: synchronicityStateCapability.webFallback,
   synchronicityList: synchronicityListCapability.webFallback,
   synchronicityRead: synchronicityReadCapability.webFallback,
   synchronicitySaveDownload: synchronicitySaveDownloadCapability.webFallback,
+  synchronicityOpenStream: synchronicityOpenStreamCapability.webFallback,
   synchronicityOpenLocalRoot: synchronicityOpenLocalRootCapability.webFallback,
   synchronicityVersions: synchronicityVersionsCapability.webFallback,
   synchronicityWrite: synchronicityWriteCapability.webFallback,
-  synchronicityImportFile: synchronicityImportFileCapability.webFallback,
+  synchronicityStageImport: synchronicityStageImportCapability.webFallback,
   synchronicityDelete: synchronicityDeleteCapability.webFallback,
   synchronicityAdopt: synchronicityAdoptCapability.webFallback,
   synchronicityScan: synchronicityScanCapability.webFallback,
@@ -671,6 +481,8 @@ export const generatedNativePreloadBindings = {
   surfaces: {
     state: surfacesStateCapability.contract,
     windowFullScreen: surfacesWindowFullScreenCapability.contract,
+    windowMaximized: surfacesWindowMaximizedCapability.contract,
+    windowControl: surfacesWindowControlCapability.contract,
   },
   windows: {
     create: windowsCreateCapability.contract,
@@ -688,17 +500,6 @@ export const generatedNativePreloadBindings = {
     readImage: clipboardReadImageCapability.contract,
     writeText: clipboardWriteTextCapability.contract,
     writeImage: clipboardWriteImageCapability.contract,
-  },
-  subscriptionAuthorization: {
-    start: subscriptionAuthorizationStartCapability.contract,
-    status: subscriptionAuthorizationStatusCapability.contract,
-    cancel: subscriptionAuthorizationCancelCapability.contract,
-  },
-  tokenDanceAuthorization: {
-    start: tokenDanceAuthorizationStartCapability.contract,
-    status: tokenDanceAuthorizationStatusCapability.contract,
-    save: tokenDanceAuthorizationSaveCapability.contract,
-    cancel: tokenDanceAuthorizationCancelCapability.contract,
   },
   shell: {
     openExternal: shellOpenExternalCapability.contract,
@@ -720,7 +521,10 @@ export const generatedNativePreloadBindings = {
     navigate: browserSidebarNavigateCapability.contract,
     close: browserSidebarCloseCapability.contract,
     inspect: browserSidebarInspectCapability.contract,
+    dismissPasskey: browserSidebarDismissPasskeyCapability.contract,
     showPermissions: browserSidebarShowPermissionsCapability.contract,
+    listImportProfiles: browserSidebarListImportProfilesCapability.contract,
+    importCookies: browserSidebarImportCookiesCapability.contract,
   },
   sitePermissionMenu: {
     state: sitePermissionMenuStateCapability.contract,
@@ -729,22 +533,15 @@ export const generatedNativePreloadBindings = {
   peers: {
     connect: peersConnectCapability.contract,
   },
+  core: {
+    open: coreOpenCapability.contract,
+  },
   session: {
     state: sessionStateCapability.contract,
-    requestEmailLogin: sessionRequestEmailLoginCapability.contract,
-    verifyEmailLogin: sessionVerifyEmailLoginCapability.contract,
-    signInWithGoogle: sessionSignInWithGoogleCapability.contract,
-    verifyGoogleLink: sessionVerifyGoogleLinkCapability.contract,
-    cancelAuthAttempt: sessionCancelAuthAttemptCapability.contract,
-    reconcile: sessionReconcileCapability.contract,
-    signOut: sessionSignOutCapability.contract,
   },
   localFiles: {
     pick: localFilesPickCapability.contract,
     preview: localFilesPreviewCapability.contract,
-  },
-  localData: {
-    status: localDataStatusCapability.contract,
   },
   transport: {
     status: transportStatusCapability.contract,
@@ -768,56 +565,8 @@ export const generatedNativePreloadBindings = {
     remove: computeNodeRemoveCapability.contract,
     abandon: computeNodeAbandonCapability.contract,
   },
-  sessionHistory: {
-    state: sessionHistoryStateCapability.contract,
-    load: sessionHistoryLoadCapability.contract,
-    retain: sessionHistoryRetainCapability.contract,
-    release: sessionHistoryReleaseCapability.contract,
-  },
-  productInbox: {
-    state: productInboxStateCapability.contract,
-    retain: productInboxRetainCapability.contract,
-    release: productInboxReleaseCapability.contract,
-    refresh: productInboxRefreshCapability.contract,
-  },
   chat: {
-    state: chatStateCapability.contract,
-    drafts: chatDraftsCapability.contract,
-    retain: chatRetainCapability.contract,
-    release: chatReleaseCapability.contract,
-    clearPresentation: chatClearPresentationCapability.contract,
-    setDraft: chatSetDraftCapability.contract,
-    beginSendIntent: chatBeginSendIntentCapability.contract,
-    cancelSendIntent: chatCancelSendIntentCapability.contract,
-    send: chatSendCapability.contract,
-    retry: chatRetryCapability.contract,
-    discard: chatDiscardCapability.contract,
-    acceptTaskReview: chatAcceptTaskReviewCapability.contract,
-    refresh: chatRefreshCapability.contract,
-    attach: chatAttachCapability.contract,
-    attachLocalFiles: chatAttachLocalFilesCapability.contract,
     pickAttachments: chatPickAttachmentsCapability.contract,
-    presentInSideChat: chatPresentInSideChatCapability.contract,
-    resolveWorkspaceChat: chatResolveWorkspaceChatCapability.contract,
-    listSkills: chatListSkillsCapability.contract,
-    readGroupImage: chatReadGroupImageCapability.contract,
-    removeAttachment: chatRemoveAttachmentCapability.contract,
-    retryAttachment: chatRetryAttachmentCapability.contract,
-    acknowledgeIntakeFailures: chatAcknowledgeIntakeFailuresCapability.contract,
-  },
-  sideChat: {
-    presentation: sideChatPresentationCapability.contract,
-    debugSettings: sideChatDebugSettingsCapability.contract,
-    updateDebugSettings: sideChatUpdateDebugSettingsCapability.contract,
-    resetDebugSettings: sideChatResetDebugSettingsCapability.contract,
-    setContentSize: sideChatSetContentSizeCapability.contract,
-    setInteractiveProgress: sideChatSetInteractiveProgressCapability.contract,
-    finishInteractiveProgress: sideChatFinishInteractiveProgressCapability.contract,
-    updateShortcut: sideChatUpdateShortcutCapability.contract,
-    close: sideChatCloseCapability.contract,
-    openSettings: sideChatOpenSettingsCapability.contract,
-    openTestWindow: sideChatOpenTestWindowCapability.contract,
-    closeTestWindow: sideChatCloseTestWindowCapability.contract,
   },
   audioCapture: {
     state: audioCaptureStateCapability.contract,
@@ -837,11 +586,6 @@ export const generatedNativePreloadBindings = {
     icon: meetingPresenceIconCapability.contract,
   },
   meetingRecorder: {
-    state: meetingRecorderStateCapability.contract,
-    action: meetingRecorderActionCapability.contract,
-    retryTaskSync: meetingRecorderRetryTaskSyncCapability.contract,
-    selectMicrophone: meetingRecorderSelectMicrophoneCapability.contract,
-    acknowledgeSaved: meetingRecorderAcknowledgeSavedCapability.contract,
     setInteractive: meetingRecorderSetInteractiveCapability.contract,
     layoutWindow: meetingRecorderLayoutWindowCapability.contract,
     dragWindow: meetingRecorderDragWindowCapability.contract,
@@ -851,19 +595,16 @@ export const generatedNativePreloadBindings = {
     act: airDropActCapability.contract,
     preview: airDropPreviewCapability.contract,
   },
-  driveCatalog: {
-    query: driveCatalogQueryCapability.contract,
-    state: driveCatalogStateCapability.contract,
-  },
   synchronicity: {
     state: synchronicityStateCapability.contract,
     list: synchronicityListCapability.contract,
     read: synchronicityReadCapability.contract,
     saveDownload: synchronicitySaveDownloadCapability.contract,
+    openStream: synchronicityOpenStreamCapability.contract,
     openLocalRoot: synchronicityOpenLocalRootCapability.contract,
     versions: synchronicityVersionsCapability.contract,
     write: synchronicityWriteCapability.contract,
-    importFile: synchronicityImportFileCapability.contract,
+    stageImport: synchronicityStageImportCapability.contract,
     delete: synchronicityDeleteCapability.contract,
     adopt: synchronicityAdoptCapability.contract,
     scan: synchronicityScanCapability.contract,
@@ -900,6 +641,7 @@ export const generatedNativePreloadEventBindings = {
   surfaces: {
     changed: surfacesChangedEvent,
     windowFullScreen: surfacesWindowFullScreenChangedEvent,
+    windowMaximized: surfacesWindowMaximizedChangedEvent,
     windowResizeSettled: surfacesWindowResizeSettledEvent,
   },
   onboarding: {
@@ -912,22 +654,8 @@ export const generatedNativePreloadEventBindings = {
   session: {
     state: sessionStateChangedEvent,
   },
-  sessionHistory: {
-    state: sessionHistoryStateChangedEvent,
-  },
-  productInbox: {
-    state: productInboxStateChangedEvent,
-  },
-  chat: {
-    state: chatStateChangedEvent,
-    drafts: chatDraftsChangedEvent,
-  },
   messageNotifications: {
     event: messageNotificationsEvent,
-  },
-  sideChat: {
-    presentation: sideChatPresentationChangedEvent,
-    debugSettings: sideChatDebugSettingsChangedEvent,
   },
   computeNode: {
     state: computeNodeStateChangedEvent,
@@ -938,14 +666,8 @@ export const generatedNativePreloadEventBindings = {
   meetingPresence: {
     state: meetingPresenceStateChangedEvent,
   },
-  meetingRecorder: {
-    state: meetingRecorderStateChangedEvent,
-  },
   airDrop: {
     state: airDropStateChangedEvent,
-  },
-  driveCatalog: {
-    state: driveCatalogChangedEvent,
   },
 } as const;
 
@@ -977,6 +699,10 @@ export const generatedNativeStateBindings = {
       get: surfacesWindowFullScreenCapability.contract,
       subscribe: surfacesWindowFullScreenChangedEvent,
     },
+    windowMaximized: {
+      get: surfacesWindowMaximizedCapability.contract,
+      subscribe: surfacesWindowMaximizedChangedEvent,
+    },
   },
   onboarding: {
     window: {
@@ -988,38 +714,6 @@ export const generatedNativeStateBindings = {
     state: {
       get: sessionStateCapability.contract,
       subscribe: sessionStateChangedEvent,
-    },
-  },
-  sessionHistory: {
-    state: {
-      get: sessionHistoryStateCapability.contract,
-      subscribe: sessionHistoryStateChangedEvent,
-    },
-  },
-  productInbox: {
-    state: {
-      get: productInboxStateCapability.contract,
-      subscribe: productInboxStateChangedEvent,
-    },
-  },
-  chat: {
-    state: {
-      get: chatStateCapability.contract,
-      subscribe: chatStateChangedEvent,
-    },
-    drafts: {
-      get: chatDraftsCapability.contract,
-      subscribe: chatDraftsChangedEvent,
-    },
-  },
-  sideChat: {
-    presentation: {
-      get: sideChatPresentationCapability.contract,
-      subscribe: sideChatPresentationChangedEvent,
-    },
-    debugSettings: {
-      get: sideChatDebugSettingsCapability.contract,
-      subscribe: sideChatDebugSettingsChangedEvent,
     },
   },
   computeNode: {
@@ -1040,22 +734,10 @@ export const generatedNativeStateBindings = {
       subscribe: meetingPresenceStateChangedEvent,
     },
   },
-  meetingRecorder: {
-    state: {
-      get: meetingRecorderStateCapability.contract,
-      subscribe: meetingRecorderStateChangedEvent,
-    },
-  },
   airDrop: {
     state: {
       get: airDropStateCapability.contract,
       subscribe: airDropStateChangedEvent,
-    },
-  },
-  driveCatalog: {
-    state: {
-      get: driveCatalogStateCapability.contract,
-      subscribe: driveCatalogChangedEvent,
     },
   },
 } as const;
@@ -1300,6 +982,24 @@ export const generatedNativeMainBindingsById = {
     sessionAdmissionRationale:
       surfacesWindowFullScreenCapability.sessionAdmissionRationale,
   },
+  "surfaces.windowMaximized": {
+    contract: surfacesWindowMaximizedCapability.contract,
+    id: surfacesWindowMaximizedCapability.id,
+    method: "windowMaximized",
+    provider: "surfaces",
+    sessionAdmission: surfacesWindowMaximizedCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      surfacesWindowMaximizedCapability.sessionAdmissionRationale,
+  },
+  "surfaces.windowControl": {
+    contract: surfacesWindowControlCapability.contract,
+    id: surfacesWindowControlCapability.id,
+    method: "windowControl",
+    provider: "surfaces",
+    sessionAdmission: surfacesWindowControlCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      surfacesWindowControlCapability.sessionAdmissionRationale,
+  },
   "windows.create": {
     contract: windowsCreateCapability.contract,
     id: windowsCreateCapability.id,
@@ -1388,55 +1088,6 @@ export const generatedNativeMainBindingsById = {
     provider: "clipboard",
     sessionAdmission: clipboardWriteImageCapability.sessionAdmission,
     sessionAdmissionRationale: clipboardWriteImageCapability.sessionAdmissionRationale,
-  },
-  "subscriptionAuthorization.start": {
-    contract: subscriptionAuthorizationStartCapability.contract,
-    id: subscriptionAuthorizationStartCapability.id,
-    method: "start",
-    provider: "subscriptionAuthorization",
-    sessionAdmission: subscriptionAuthorizationStartCapability.sessionAdmission,
-  },
-  "tokenDanceAuthorization.start": {
-    contract: tokenDanceAuthorizationStartCapability.contract,
-    id: tokenDanceAuthorizationStartCapability.id,
-    method: "start",
-    provider: "tokenDanceAuthorization",
-    sessionAdmission: tokenDanceAuthorizationStartCapability.sessionAdmission,
-  },
-  "tokenDanceAuthorization.status": {
-    contract: tokenDanceAuthorizationStatusCapability.contract,
-    id: tokenDanceAuthorizationStatusCapability.id,
-    method: "status",
-    provider: "tokenDanceAuthorization",
-    sessionAdmission: tokenDanceAuthorizationStatusCapability.sessionAdmission,
-  },
-  "tokenDanceAuthorization.save": {
-    contract: tokenDanceAuthorizationSaveCapability.contract,
-    id: tokenDanceAuthorizationSaveCapability.id,
-    method: "save",
-    provider: "tokenDanceAuthorization",
-    sessionAdmission: tokenDanceAuthorizationSaveCapability.sessionAdmission,
-  },
-  "tokenDanceAuthorization.cancel": {
-    contract: tokenDanceAuthorizationCancelCapability.contract,
-    id: tokenDanceAuthorizationCancelCapability.id,
-    method: "cancel",
-    provider: "tokenDanceAuthorization",
-    sessionAdmission: tokenDanceAuthorizationCancelCapability.sessionAdmission,
-  },
-  "subscriptionAuthorization.status": {
-    contract: subscriptionAuthorizationStatusCapability.contract,
-    id: subscriptionAuthorizationStatusCapability.id,
-    method: "status",
-    provider: "subscriptionAuthorization",
-    sessionAdmission: subscriptionAuthorizationStatusCapability.sessionAdmission,
-  },
-  "subscriptionAuthorization.cancel": {
-    contract: subscriptionAuthorizationCancelCapability.contract,
-    id: subscriptionAuthorizationCancelCapability.id,
-    method: "cancel",
-    provider: "subscriptionAuthorization",
-    sessionAdmission: subscriptionAuthorizationCancelCapability.sessionAdmission,
   },
   "shell.openExternal": {
     contract: shellOpenExternalCapability.contract,
@@ -1547,6 +1198,15 @@ export const generatedNativeMainBindingsById = {
     sessionAdmissionRationale:
       browserSidebarInspectCapability.sessionAdmissionRationale,
   },
+  "browserSidebar.dismissPasskey": {
+    contract: browserSidebarDismissPasskeyCapability.contract,
+    id: browserSidebarDismissPasskeyCapability.id,
+    method: "dismissPasskey",
+    provider: "browserSidebar",
+    sessionAdmission: browserSidebarDismissPasskeyCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      browserSidebarDismissPasskeyCapability.sessionAdmissionRationale,
+  },
   "browserSidebar.showPermissions": {
     contract: browserSidebarShowPermissionsCapability.contract,
     id: browserSidebarShowPermissionsCapability.id,
@@ -1555,6 +1215,24 @@ export const generatedNativeMainBindingsById = {
     sessionAdmission: browserSidebarShowPermissionsCapability.sessionAdmission,
     sessionAdmissionRationale:
       browserSidebarShowPermissionsCapability.sessionAdmissionRationale,
+  },
+  "browserSidebar.listImportProfiles": {
+    contract: browserSidebarListImportProfilesCapability.contract,
+    id: browserSidebarListImportProfilesCapability.id,
+    method: "listImportProfiles",
+    provider: "browserSidebar",
+    sessionAdmission: browserSidebarListImportProfilesCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      browserSidebarListImportProfilesCapability.sessionAdmissionRationale,
+  },
+  "browserSidebar.importCookies": {
+    contract: browserSidebarImportCookiesCapability.contract,
+    id: browserSidebarImportCookiesCapability.id,
+    method: "importCookies",
+    provider: "browserSidebar",
+    sessionAdmission: browserSidebarImportCookiesCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      browserSidebarImportCookiesCapability.sessionAdmissionRationale,
   },
   "sitePermissionMenu.state": {
     contract: sitePermissionMenuStateCapability.contract,
@@ -1582,61 +1260,20 @@ export const generatedNativeMainBindingsById = {
     sessionAdmission: peersConnectCapability.sessionAdmission,
     sessionAdmissionRationale: peersConnectCapability.sessionAdmissionRationale,
   },
+  "core.open": {
+    contract: coreOpenCapability.contract,
+    id: coreOpenCapability.id,
+    method: "open",
+    provider: "core",
+    sessionAdmission: coreOpenCapability.sessionAdmission,
+    sessionAdmissionRationale: coreOpenCapability.sessionAdmissionRationale,
+  },
   "session.state": {
     contract: sessionStateCapability.contract,
     id: sessionStateCapability.id,
     method: "state",
     provider: "session",
     sessionAdmission: sessionStateCapability.sessionAdmission,
-  },
-  "session.requestEmailLogin": {
-    contract: sessionRequestEmailLoginCapability.contract,
-    id: sessionRequestEmailLoginCapability.id,
-    method: "requestEmailLogin",
-    provider: "session",
-    sessionAdmission: sessionRequestEmailLoginCapability.sessionAdmission,
-  },
-  "session.verifyEmailLogin": {
-    contract: sessionVerifyEmailLoginCapability.contract,
-    id: sessionVerifyEmailLoginCapability.id,
-    method: "verifyEmailLogin",
-    provider: "session",
-    sessionAdmission: sessionVerifyEmailLoginCapability.sessionAdmission,
-  },
-  "session.signInWithGoogle": {
-    contract: sessionSignInWithGoogleCapability.contract,
-    id: sessionSignInWithGoogleCapability.id,
-    method: "signInWithGoogle",
-    provider: "session",
-    sessionAdmission: sessionSignInWithGoogleCapability.sessionAdmission,
-  },
-  "session.verifyGoogleLink": {
-    contract: sessionVerifyGoogleLinkCapability.contract,
-    id: sessionVerifyGoogleLinkCapability.id,
-    method: "verifyGoogleLink",
-    provider: "session",
-    sessionAdmission: sessionVerifyGoogleLinkCapability.sessionAdmission,
-  },
-  "session.cancelAuthAttempt": {
-    contract: sessionCancelAuthAttemptCapability.contract,
-    id: sessionCancelAuthAttemptCapability.id,
-    method: "cancelAuthAttempt",
-    provider: "session",
-    sessionAdmission: sessionCancelAuthAttemptCapability.sessionAdmission,
-  },
-  "session.reconcile": {
-    contract: sessionReconcileCapability.contract,
-    id: sessionReconcileCapability.id,
-    method: "reconcile",
-    provider: "session",
-    sessionAdmission: sessionReconcileCapability.sessionAdmission,
-  },
-  "session.signOut": {
-    contract: sessionSignOutCapability.contract,
-    id: sessionSignOutCapability.id,
-    method: "signOut",
-    provider: "session",
-    sessionAdmission: sessionSignOutCapability.sessionAdmission,
   },
   "localFiles.pick": {
     contract: localFilesPickCapability.contract,
@@ -1651,14 +1288,6 @@ export const generatedNativeMainBindingsById = {
     method: "preview",
     provider: "localFiles",
     sessionAdmission: localFilesPreviewCapability.sessionAdmission,
-  },
-  "localData.status": {
-    contract: localDataStatusCapability.contract,
-    id: localDataStatusCapability.id,
-    method: "status",
-    provider: "localData",
-    sessionAdmission: localDataStatusCapability.sessionAdmission,
-    sessionAdmissionRationale: localDataStatusCapability.sessionAdmissionRationale,
   },
   "transport.status": {
     contract: transportStatusCapability.contract,
@@ -1807,330 +1436,12 @@ export const generatedNativeMainBindingsById = {
     sessionAdmission: computeNodeAbandonCapability.sessionAdmission,
     sessionAdmissionRationale: computeNodeAbandonCapability.sessionAdmissionRationale,
   },
-  "sessionHistory.state": {
-    contract: sessionHistoryStateCapability.contract,
-    id: sessionHistoryStateCapability.id,
-    method: "state",
-    provider: "sessionHistory",
-    sessionAdmission: sessionHistoryStateCapability.sessionAdmission,
-  },
-  "sessionHistory.load": {
-    contract: sessionHistoryLoadCapability.contract,
-    id: sessionHistoryLoadCapability.id,
-    method: "load",
-    provider: "sessionHistory",
-    sessionAdmission: sessionHistoryLoadCapability.sessionAdmission,
-  },
-  "sessionHistory.retain": {
-    contract: sessionHistoryRetainCapability.contract,
-    id: sessionHistoryRetainCapability.id,
-    method: "retain",
-    provider: "sessionHistory",
-    sessionAdmission: sessionHistoryRetainCapability.sessionAdmission,
-  },
-  "sessionHistory.release": {
-    contract: sessionHistoryReleaseCapability.contract,
-    id: sessionHistoryReleaseCapability.id,
-    method: "release",
-    provider: "sessionHistory",
-    sessionAdmission: sessionHistoryReleaseCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sessionHistoryReleaseCapability.sessionAdmissionRationale,
-  },
-  "productInbox.state": {
-    contract: productInboxStateCapability.contract,
-    id: productInboxStateCapability.id,
-    method: "state",
-    provider: "productInbox",
-    sessionAdmission: productInboxStateCapability.sessionAdmission,
-  },
-  "productInbox.retain": {
-    contract: productInboxRetainCapability.contract,
-    id: productInboxRetainCapability.id,
-    method: "retain",
-    provider: "productInbox",
-    sessionAdmission: productInboxRetainCapability.sessionAdmission,
-  },
-  "productInbox.release": {
-    contract: productInboxReleaseCapability.contract,
-    id: productInboxReleaseCapability.id,
-    method: "release",
-    provider: "productInbox",
-    sessionAdmission: productInboxReleaseCapability.sessionAdmission,
-    sessionAdmissionRationale: productInboxReleaseCapability.sessionAdmissionRationale,
-  },
-  "productInbox.refresh": {
-    contract: productInboxRefreshCapability.contract,
-    id: productInboxRefreshCapability.id,
-    method: "refresh",
-    provider: "productInbox",
-    sessionAdmission: productInboxRefreshCapability.sessionAdmission,
-  },
-  "chat.state": {
-    contract: chatStateCapability.contract,
-    id: chatStateCapability.id,
-    method: "state",
-    provider: "chat",
-    sessionAdmission: chatStateCapability.sessionAdmission,
-  },
-  "chat.drafts": {
-    contract: chatDraftsCapability.contract,
-    id: chatDraftsCapability.id,
-    method: "drafts",
-    provider: "chat",
-    sessionAdmission: chatDraftsCapability.sessionAdmission,
-  },
-  "sideChat.presentation": {
-    contract: sideChatPresentationCapability.contract,
-    id: sideChatPresentationCapability.id,
-    method: "presentation",
-    provider: "sideChat",
-    sessionAdmission: sideChatPresentationCapability.sessionAdmission,
-    sessionAdmissionRationale: sideChatPresentationCapability.sessionAdmissionRationale,
-  },
-  "sideChat.debugSettings": {
-    contract: sideChatDebugSettingsCapability.contract,
-    id: sideChatDebugSettingsCapability.id,
-    method: "debugSettings",
-    provider: "sideChat",
-    sessionAdmission: sideChatDebugSettingsCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatDebugSettingsCapability.sessionAdmissionRationale,
-  },
-  "sideChat.updateDebugSettings": {
-    contract: sideChatUpdateDebugSettingsCapability.contract,
-    id: sideChatUpdateDebugSettingsCapability.id,
-    method: "updateDebugSettings",
-    provider: "sideChat",
-    sessionAdmission: sideChatUpdateDebugSettingsCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatUpdateDebugSettingsCapability.sessionAdmissionRationale,
-  },
-  "sideChat.resetDebugSettings": {
-    contract: sideChatResetDebugSettingsCapability.contract,
-    id: sideChatResetDebugSettingsCapability.id,
-    method: "resetDebugSettings",
-    provider: "sideChat",
-    sessionAdmission: sideChatResetDebugSettingsCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatResetDebugSettingsCapability.sessionAdmissionRationale,
-  },
-  "sideChat.setContentSize": {
-    contract: sideChatSetContentSizeCapability.contract,
-    id: sideChatSetContentSizeCapability.id,
-    method: "setContentSize",
-    provider: "sideChat",
-    sessionAdmission: sideChatSetContentSizeCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatSetContentSizeCapability.sessionAdmissionRationale,
-  },
-  "sideChat.setInteractiveProgress": {
-    contract: sideChatSetInteractiveProgressCapability.contract,
-    id: sideChatSetInteractiveProgressCapability.id,
-    method: "setInteractiveProgress",
-    provider: "sideChat",
-    sessionAdmission: sideChatSetInteractiveProgressCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatSetInteractiveProgressCapability.sessionAdmissionRationale,
-  },
-  "sideChat.finishInteractiveProgress": {
-    contract: sideChatFinishInteractiveProgressCapability.contract,
-    id: sideChatFinishInteractiveProgressCapability.id,
-    method: "finishInteractiveProgress",
-    provider: "sideChat",
-    sessionAdmission: sideChatFinishInteractiveProgressCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatFinishInteractiveProgressCapability.sessionAdmissionRationale,
-  },
-  "sideChat.updateShortcut": {
-    contract: sideChatUpdateShortcutCapability.contract,
-    id: sideChatUpdateShortcutCapability.id,
-    method: "updateShortcut",
-    provider: "sideChat",
-    sessionAdmission: sideChatUpdateShortcutCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatUpdateShortcutCapability.sessionAdmissionRationale,
-  },
-  "sideChat.close": {
-    contract: sideChatCloseCapability.contract,
-    id: sideChatCloseCapability.id,
-    method: "close",
-    provider: "sideChat",
-    sessionAdmission: sideChatCloseCapability.sessionAdmission,
-    sessionAdmissionRationale: sideChatCloseCapability.sessionAdmissionRationale,
-  },
-  "sideChat.openSettings": {
-    contract: sideChatOpenSettingsCapability.contract,
-    id: sideChatOpenSettingsCapability.id,
-    method: "openSettings",
-    provider: "sideChat",
-    sessionAdmission: sideChatOpenSettingsCapability.sessionAdmission,
-    sessionAdmissionRationale: sideChatOpenSettingsCapability.sessionAdmissionRationale,
-  },
-  "sideChat.openTestWindow": {
-    contract: sideChatOpenTestWindowCapability.contract,
-    id: sideChatOpenTestWindowCapability.id,
-    method: "openTestWindow",
-    provider: "sideChat",
-    sessionAdmission: sideChatOpenTestWindowCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatOpenTestWindowCapability.sessionAdmissionRationale,
-  },
-  "sideChat.closeTestWindow": {
-    contract: sideChatCloseTestWindowCapability.contract,
-    id: sideChatCloseTestWindowCapability.id,
-    method: "closeTestWindow",
-    provider: "sideChat",
-    sessionAdmission: sideChatCloseTestWindowCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatCloseTestWindowCapability.sessionAdmissionRationale,
-  },
-  "chat.retain": {
-    contract: chatRetainCapability.contract,
-    id: chatRetainCapability.id,
-    method: "retain",
-    provider: "chat",
-    sessionAdmission: chatRetainCapability.sessionAdmission,
-  },
-  "chat.release": {
-    contract: chatReleaseCapability.contract,
-    id: chatReleaseCapability.id,
-    method: "release",
-    provider: "chat",
-    sessionAdmission: chatReleaseCapability.sessionAdmission,
-  },
-  "chat.clearPresentation": {
-    contract: chatClearPresentationCapability.contract,
-    id: chatClearPresentationCapability.id,
-    method: "clearPresentation",
-    provider: "chat",
-    sessionAdmission: chatClearPresentationCapability.sessionAdmission,
-  },
-  "chat.setDraft": {
-    contract: chatSetDraftCapability.contract,
-    id: chatSetDraftCapability.id,
-    method: "setDraft",
-    provider: "chat",
-    sessionAdmission: chatSetDraftCapability.sessionAdmission,
-  },
-  "chat.beginSendIntent": {
-    contract: chatBeginSendIntentCapability.contract,
-    id: chatBeginSendIntentCapability.id,
-    method: "beginSendIntent",
-    provider: "chat",
-    sessionAdmission: chatBeginSendIntentCapability.sessionAdmission,
-  },
-  "chat.cancelSendIntent": {
-    contract: chatCancelSendIntentCapability.contract,
-    id: chatCancelSendIntentCapability.id,
-    method: "cancelSendIntent",
-    provider: "chat",
-    sessionAdmission: chatCancelSendIntentCapability.sessionAdmission,
-  },
-  "chat.send": {
-    contract: chatSendCapability.contract,
-    id: chatSendCapability.id,
-    method: "send",
-    provider: "chat",
-    sessionAdmission: chatSendCapability.sessionAdmission,
-  },
-  "chat.retry": {
-    contract: chatRetryCapability.contract,
-    id: chatRetryCapability.id,
-    method: "retry",
-    provider: "chat",
-    sessionAdmission: chatRetryCapability.sessionAdmission,
-  },
-  "chat.discard": {
-    contract: chatDiscardCapability.contract,
-    id: chatDiscardCapability.id,
-    method: "discard",
-    provider: "chat",
-    sessionAdmission: chatDiscardCapability.sessionAdmission,
-  },
-  "chat.acceptTaskReview": {
-    contract: chatAcceptTaskReviewCapability.contract,
-    id: chatAcceptTaskReviewCapability.id,
-    method: "acceptTaskReview",
-    provider: "chat",
-    sessionAdmission: chatAcceptTaskReviewCapability.sessionAdmission,
-  },
-  "chat.refresh": {
-    contract: chatRefreshCapability.contract,
-    id: chatRefreshCapability.id,
-    method: "refresh",
-    provider: "chat",
-    sessionAdmission: chatRefreshCapability.sessionAdmission,
-  },
-  "chat.attach": {
-    contract: chatAttachCapability.contract,
-    id: chatAttachCapability.id,
-    method: "attach",
-    provider: "chat",
-    sessionAdmission: chatAttachCapability.sessionAdmission,
-  },
-  "chat.attachLocalFiles": {
-    contract: chatAttachLocalFilesCapability.contract,
-    id: chatAttachLocalFilesCapability.id,
-    method: "attachLocalFiles",
-    provider: "chat",
-    sessionAdmission: chatAttachLocalFilesCapability.sessionAdmission,
-  },
   "chat.pickAttachments": {
     contract: chatPickAttachmentsCapability.contract,
     id: chatPickAttachmentsCapability.id,
     method: "pickAttachments",
     provider: "chat",
     sessionAdmission: chatPickAttachmentsCapability.sessionAdmission,
-  },
-  "chat.presentInSideChat": {
-    contract: chatPresentInSideChatCapability.contract,
-    id: chatPresentInSideChatCapability.id,
-    method: "presentInSideChat",
-    provider: "chat",
-    sessionAdmission: chatPresentInSideChatCapability.sessionAdmission,
-  },
-  "chat.resolveWorkspaceChat": {
-    contract: chatResolveWorkspaceChatCapability.contract,
-    id: chatResolveWorkspaceChatCapability.id,
-    method: "resolveWorkspaceChat",
-    provider: "chat",
-    sessionAdmission: chatResolveWorkspaceChatCapability.sessionAdmission,
-  },
-  "chat.listSkills": {
-    contract: chatListSkillsCapability.contract,
-    id: chatListSkillsCapability.id,
-    method: "listSkills",
-    provider: "chat",
-    sessionAdmission: chatListSkillsCapability.sessionAdmission,
-  },
-  "chat.readGroupImage": {
-    contract: chatReadGroupImageCapability.contract,
-    id: chatReadGroupImageCapability.id,
-    method: "readGroupImage",
-    provider: "chat",
-    sessionAdmission: chatReadGroupImageCapability.sessionAdmission,
-  },
-  "chat.removeAttachment": {
-    contract: chatRemoveAttachmentCapability.contract,
-    id: chatRemoveAttachmentCapability.id,
-    method: "removeAttachment",
-    provider: "chat",
-    sessionAdmission: chatRemoveAttachmentCapability.sessionAdmission,
-  },
-  "chat.retryAttachment": {
-    contract: chatRetryAttachmentCapability.contract,
-    id: chatRetryAttachmentCapability.id,
-    method: "retryAttachment",
-    provider: "chat",
-    sessionAdmission: chatRetryAttachmentCapability.sessionAdmission,
-  },
-  "chat.acknowledgeIntakeFailures": {
-    contract: chatAcknowledgeIntakeFailuresCapability.contract,
-    id: chatAcknowledgeIntakeFailuresCapability.id,
-    method: "acknowledgeIntakeFailures",
-    provider: "chat",
-    sessionAdmission: chatAcknowledgeIntakeFailuresCapability.sessionAdmission,
   },
   "audioCapture.state": {
     contract: audioCaptureStateCapability.contract,
@@ -2234,50 +1545,6 @@ export const generatedNativeMainBindingsById = {
     sessionAdmission: meetingPresenceIconCapability.sessionAdmission,
     sessionAdmissionRationale: meetingPresenceIconCapability.sessionAdmissionRationale,
   },
-  "meetingRecorder.state": {
-    contract: meetingRecorderStateCapability.contract,
-    id: meetingRecorderStateCapability.id,
-    method: "state",
-    provider: "meetingRecorder",
-    sessionAdmission: meetingRecorderStateCapability.sessionAdmission,
-    sessionAdmissionRationale: meetingRecorderStateCapability.sessionAdmissionRationale,
-  },
-  "meetingRecorder.action": {
-    contract: meetingRecorderActionCapability.contract,
-    id: meetingRecorderActionCapability.id,
-    method: "action",
-    provider: "meetingRecorder",
-    sessionAdmission: meetingRecorderActionCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      meetingRecorderActionCapability.sessionAdmissionRationale,
-  },
-  "meetingRecorder.retryTaskSync": {
-    contract: meetingRecorderRetryTaskSyncCapability.contract,
-    id: meetingRecorderRetryTaskSyncCapability.id,
-    method: "retryTaskSync",
-    provider: "meetingRecorder",
-    sessionAdmission: meetingRecorderRetryTaskSyncCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      meetingRecorderRetryTaskSyncCapability.sessionAdmissionRationale,
-  },
-  "meetingRecorder.selectMicrophone": {
-    contract: meetingRecorderSelectMicrophoneCapability.contract,
-    id: meetingRecorderSelectMicrophoneCapability.id,
-    method: "selectMicrophone",
-    provider: "meetingRecorder",
-    sessionAdmission: meetingRecorderSelectMicrophoneCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      meetingRecorderSelectMicrophoneCapability.sessionAdmissionRationale,
-  },
-  "meetingRecorder.acknowledgeSaved": {
-    contract: meetingRecorderAcknowledgeSavedCapability.contract,
-    id: meetingRecorderAcknowledgeSavedCapability.id,
-    method: "acknowledgeSaved",
-    provider: "meetingRecorder",
-    sessionAdmission: meetingRecorderAcknowledgeSavedCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      meetingRecorderAcknowledgeSavedCapability.sessionAdmissionRationale,
-  },
   "meetingRecorder.setInteractive": {
     contract: meetingRecorderSetInteractiveCapability.contract,
     id: meetingRecorderSetInteractiveCapability.id,
@@ -2329,22 +1596,6 @@ export const generatedNativeMainBindingsById = {
     sessionAdmission: airDropPreviewCapability.sessionAdmission,
     sessionAdmissionRationale: airDropPreviewCapability.sessionAdmissionRationale,
   },
-  "driveCatalog.query": {
-    contract: driveCatalogQueryCapability.contract,
-    id: driveCatalogQueryCapability.id,
-    method: "query",
-    provider: "driveCatalog",
-    sessionAdmission: driveCatalogQueryCapability.sessionAdmission,
-    sessionAdmissionRationale: driveCatalogQueryCapability.sessionAdmissionRationale,
-  },
-  "driveCatalog.state": {
-    contract: driveCatalogStateCapability.contract,
-    id: driveCatalogStateCapability.id,
-    method: "state",
-    provider: "driveCatalog",
-    sessionAdmission: driveCatalogStateCapability.sessionAdmission,
-    sessionAdmissionRationale: driveCatalogStateCapability.sessionAdmissionRationale,
-  },
   "synchronicity.state": {
     contract: synchronicityStateCapability.contract,
     id: synchronicityStateCapability.id,
@@ -2378,6 +1629,15 @@ export const generatedNativeMainBindingsById = {
     sessionAdmissionRationale:
       synchronicitySaveDownloadCapability.sessionAdmissionRationale,
   },
+  "synchronicity.openStream": {
+    contract: synchronicityOpenStreamCapability.contract,
+    id: synchronicityOpenStreamCapability.id,
+    method: "openStream",
+    provider: "synchronicity",
+    sessionAdmission: synchronicityOpenStreamCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      synchronicityOpenStreamCapability.sessionAdmissionRationale,
+  },
   "synchronicity.openLocalRoot": {
     contract: synchronicityOpenLocalRootCapability.contract,
     id: synchronicityOpenLocalRootCapability.id,
@@ -2404,14 +1664,14 @@ export const generatedNativeMainBindingsById = {
     sessionAdmission: synchronicityWriteCapability.sessionAdmission,
     sessionAdmissionRationale: synchronicityWriteCapability.sessionAdmissionRationale,
   },
-  "synchronicity.importFile": {
-    contract: synchronicityImportFileCapability.contract,
-    id: synchronicityImportFileCapability.id,
-    method: "importFile",
+  "synchronicity.stageImport": {
+    contract: synchronicityStageImportCapability.contract,
+    id: synchronicityStageImportCapability.id,
+    method: "stageImport",
     provider: "synchronicity",
-    sessionAdmission: synchronicityImportFileCapability.sessionAdmission,
+    sessionAdmission: synchronicityStageImportCapability.sessionAdmission,
     sessionAdmissionRationale:
-      synchronicityImportFileCapability.sessionAdmissionRationale,
+      synchronicityStageImportCapability.sessionAdmissionRationale,
   },
   "synchronicity.delete": {
     contract: synchronicityDeleteCapability.contract,
@@ -2828,6 +2088,28 @@ export const generatedNativeCapabilityManifest = [
     transport: surfacesWindowFullScreenCapability.transport,
   },
   {
+    bridge: surfacesWindowMaximizedCapability.bridge,
+    channel: surfacesWindowMaximizedCapability.channel,
+    id: surfacesWindowMaximizedCapability.id,
+    payloadClass: surfacesWindowMaximizedCapability.payloadClass,
+    permission: surfacesWindowMaximizedCapability.permission,
+    sessionAdmission: surfacesWindowMaximizedCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      surfacesWindowMaximizedCapability.sessionAdmissionRationale,
+    transport: surfacesWindowMaximizedCapability.transport,
+  },
+  {
+    bridge: surfacesWindowControlCapability.bridge,
+    channel: surfacesWindowControlCapability.channel,
+    id: surfacesWindowControlCapability.id,
+    payloadClass: surfacesWindowControlCapability.payloadClass,
+    permission: surfacesWindowControlCapability.permission,
+    sessionAdmission: surfacesWindowControlCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      surfacesWindowControlCapability.sessionAdmissionRationale,
+    transport: surfacesWindowControlCapability.transport,
+  },
+  {
     bridge: windowsCreateCapability.bridge,
     channel: windowsCreateCapability.channel,
     id: windowsCreateCapability.id,
@@ -2937,69 +2219,6 @@ export const generatedNativeCapabilityManifest = [
     sessionAdmission: clipboardWriteImageCapability.sessionAdmission,
     sessionAdmissionRationale: clipboardWriteImageCapability.sessionAdmissionRationale,
     transport: clipboardWriteImageCapability.transport,
-  },
-  {
-    bridge: subscriptionAuthorizationStartCapability.bridge,
-    channel: subscriptionAuthorizationStartCapability.channel,
-    id: subscriptionAuthorizationStartCapability.id,
-    payloadClass: subscriptionAuthorizationStartCapability.payloadClass,
-    permission: subscriptionAuthorizationStartCapability.permission,
-    sessionAdmission: subscriptionAuthorizationStartCapability.sessionAdmission,
-    transport: subscriptionAuthorizationStartCapability.transport,
-  },
-  {
-    bridge: tokenDanceAuthorizationStartCapability.bridge,
-    channel: tokenDanceAuthorizationStartCapability.channel,
-    id: tokenDanceAuthorizationStartCapability.id,
-    payloadClass: tokenDanceAuthorizationStartCapability.payloadClass,
-    permission: tokenDanceAuthorizationStartCapability.permission,
-    sessionAdmission: tokenDanceAuthorizationStartCapability.sessionAdmission,
-    transport: tokenDanceAuthorizationStartCapability.transport,
-  },
-  {
-    bridge: tokenDanceAuthorizationStatusCapability.bridge,
-    channel: tokenDanceAuthorizationStatusCapability.channel,
-    id: tokenDanceAuthorizationStatusCapability.id,
-    payloadClass: tokenDanceAuthorizationStatusCapability.payloadClass,
-    permission: tokenDanceAuthorizationStatusCapability.permission,
-    sessionAdmission: tokenDanceAuthorizationStatusCapability.sessionAdmission,
-    transport: tokenDanceAuthorizationStatusCapability.transport,
-  },
-  {
-    bridge: tokenDanceAuthorizationSaveCapability.bridge,
-    channel: tokenDanceAuthorizationSaveCapability.channel,
-    id: tokenDanceAuthorizationSaveCapability.id,
-    payloadClass: tokenDanceAuthorizationSaveCapability.payloadClass,
-    permission: tokenDanceAuthorizationSaveCapability.permission,
-    sessionAdmission: tokenDanceAuthorizationSaveCapability.sessionAdmission,
-    transport: tokenDanceAuthorizationSaveCapability.transport,
-  },
-  {
-    bridge: tokenDanceAuthorizationCancelCapability.bridge,
-    channel: tokenDanceAuthorizationCancelCapability.channel,
-    id: tokenDanceAuthorizationCancelCapability.id,
-    payloadClass: tokenDanceAuthorizationCancelCapability.payloadClass,
-    permission: tokenDanceAuthorizationCancelCapability.permission,
-    sessionAdmission: tokenDanceAuthorizationCancelCapability.sessionAdmission,
-    transport: tokenDanceAuthorizationCancelCapability.transport,
-  },
-  {
-    bridge: subscriptionAuthorizationStatusCapability.bridge,
-    channel: subscriptionAuthorizationStatusCapability.channel,
-    id: subscriptionAuthorizationStatusCapability.id,
-    payloadClass: subscriptionAuthorizationStatusCapability.payloadClass,
-    permission: subscriptionAuthorizationStatusCapability.permission,
-    sessionAdmission: subscriptionAuthorizationStatusCapability.sessionAdmission,
-    transport: subscriptionAuthorizationStatusCapability.transport,
-  },
-  {
-    bridge: subscriptionAuthorizationCancelCapability.bridge,
-    channel: subscriptionAuthorizationCancelCapability.channel,
-    id: subscriptionAuthorizationCancelCapability.id,
-    payloadClass: subscriptionAuthorizationCancelCapability.payloadClass,
-    permission: subscriptionAuthorizationCancelCapability.permission,
-    sessionAdmission: subscriptionAuthorizationCancelCapability.sessionAdmission,
-    transport: subscriptionAuthorizationCancelCapability.transport,
   },
   {
     bridge: shellOpenExternalCapability.bridge,
@@ -3137,6 +2356,17 @@ export const generatedNativeCapabilityManifest = [
     transport: browserSidebarInspectCapability.transport,
   },
   {
+    bridge: browserSidebarDismissPasskeyCapability.bridge,
+    channel: browserSidebarDismissPasskeyCapability.channel,
+    id: browserSidebarDismissPasskeyCapability.id,
+    payloadClass: browserSidebarDismissPasskeyCapability.payloadClass,
+    permission: browserSidebarDismissPasskeyCapability.permission,
+    sessionAdmission: browserSidebarDismissPasskeyCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      browserSidebarDismissPasskeyCapability.sessionAdmissionRationale,
+    transport: browserSidebarDismissPasskeyCapability.transport,
+  },
+  {
     bridge: browserSidebarShowPermissionsCapability.bridge,
     channel: browserSidebarShowPermissionsCapability.channel,
     id: browserSidebarShowPermissionsCapability.id,
@@ -3146,6 +2376,28 @@ export const generatedNativeCapabilityManifest = [
     sessionAdmissionRationale:
       browserSidebarShowPermissionsCapability.sessionAdmissionRationale,
     transport: browserSidebarShowPermissionsCapability.transport,
+  },
+  {
+    bridge: browserSidebarListImportProfilesCapability.bridge,
+    channel: browserSidebarListImportProfilesCapability.channel,
+    id: browserSidebarListImportProfilesCapability.id,
+    payloadClass: browserSidebarListImportProfilesCapability.payloadClass,
+    permission: browserSidebarListImportProfilesCapability.permission,
+    sessionAdmission: browserSidebarListImportProfilesCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      browserSidebarListImportProfilesCapability.sessionAdmissionRationale,
+    transport: browserSidebarListImportProfilesCapability.transport,
+  },
+  {
+    bridge: browserSidebarImportCookiesCapability.bridge,
+    channel: browserSidebarImportCookiesCapability.channel,
+    id: browserSidebarImportCookiesCapability.id,
+    payloadClass: browserSidebarImportCookiesCapability.payloadClass,
+    permission: browserSidebarImportCookiesCapability.permission,
+    sessionAdmission: browserSidebarImportCookiesCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      browserSidebarImportCookiesCapability.sessionAdmissionRationale,
+    transport: browserSidebarImportCookiesCapability.transport,
   },
   {
     bridge: sitePermissionMenuStateCapability.bridge,
@@ -3180,6 +2432,16 @@ export const generatedNativeCapabilityManifest = [
     transport: peersConnectCapability.transport,
   },
   {
+    bridge: coreOpenCapability.bridge,
+    channel: coreOpenCapability.channel,
+    id: coreOpenCapability.id,
+    payloadClass: coreOpenCapability.payloadClass,
+    permission: coreOpenCapability.permission,
+    sessionAdmission: coreOpenCapability.sessionAdmission,
+    sessionAdmissionRationale: coreOpenCapability.sessionAdmissionRationale,
+    transport: coreOpenCapability.transport,
+  },
+  {
     bridge: sessionStateCapability.bridge,
     channel: sessionStateCapability.channel,
     id: sessionStateCapability.id,
@@ -3187,69 +2449,6 @@ export const generatedNativeCapabilityManifest = [
     permission: sessionStateCapability.permission,
     sessionAdmission: sessionStateCapability.sessionAdmission,
     transport: sessionStateCapability.transport,
-  },
-  {
-    bridge: sessionRequestEmailLoginCapability.bridge,
-    channel: sessionRequestEmailLoginCapability.channel,
-    id: sessionRequestEmailLoginCapability.id,
-    payloadClass: sessionRequestEmailLoginCapability.payloadClass,
-    permission: sessionRequestEmailLoginCapability.permission,
-    sessionAdmission: sessionRequestEmailLoginCapability.sessionAdmission,
-    transport: sessionRequestEmailLoginCapability.transport,
-  },
-  {
-    bridge: sessionVerifyEmailLoginCapability.bridge,
-    channel: sessionVerifyEmailLoginCapability.channel,
-    id: sessionVerifyEmailLoginCapability.id,
-    payloadClass: sessionVerifyEmailLoginCapability.payloadClass,
-    permission: sessionVerifyEmailLoginCapability.permission,
-    sessionAdmission: sessionVerifyEmailLoginCapability.sessionAdmission,
-    transport: sessionVerifyEmailLoginCapability.transport,
-  },
-  {
-    bridge: sessionSignInWithGoogleCapability.bridge,
-    channel: sessionSignInWithGoogleCapability.channel,
-    id: sessionSignInWithGoogleCapability.id,
-    payloadClass: sessionSignInWithGoogleCapability.payloadClass,
-    permission: sessionSignInWithGoogleCapability.permission,
-    sessionAdmission: sessionSignInWithGoogleCapability.sessionAdmission,
-    transport: sessionSignInWithGoogleCapability.transport,
-  },
-  {
-    bridge: sessionVerifyGoogleLinkCapability.bridge,
-    channel: sessionVerifyGoogleLinkCapability.channel,
-    id: sessionVerifyGoogleLinkCapability.id,
-    payloadClass: sessionVerifyGoogleLinkCapability.payloadClass,
-    permission: sessionVerifyGoogleLinkCapability.permission,
-    sessionAdmission: sessionVerifyGoogleLinkCapability.sessionAdmission,
-    transport: sessionVerifyGoogleLinkCapability.transport,
-  },
-  {
-    bridge: sessionCancelAuthAttemptCapability.bridge,
-    channel: sessionCancelAuthAttemptCapability.channel,
-    id: sessionCancelAuthAttemptCapability.id,
-    payloadClass: sessionCancelAuthAttemptCapability.payloadClass,
-    permission: sessionCancelAuthAttemptCapability.permission,
-    sessionAdmission: sessionCancelAuthAttemptCapability.sessionAdmission,
-    transport: sessionCancelAuthAttemptCapability.transport,
-  },
-  {
-    bridge: sessionReconcileCapability.bridge,
-    channel: sessionReconcileCapability.channel,
-    id: sessionReconcileCapability.id,
-    payloadClass: sessionReconcileCapability.payloadClass,
-    permission: sessionReconcileCapability.permission,
-    sessionAdmission: sessionReconcileCapability.sessionAdmission,
-    transport: sessionReconcileCapability.transport,
-  },
-  {
-    bridge: sessionSignOutCapability.bridge,
-    channel: sessionSignOutCapability.channel,
-    id: sessionSignOutCapability.id,
-    payloadClass: sessionSignOutCapability.payloadClass,
-    permission: sessionSignOutCapability.permission,
-    sessionAdmission: sessionSignOutCapability.sessionAdmission,
-    transport: sessionSignOutCapability.transport,
   },
   {
     bridge: localFilesPickCapability.bridge,
@@ -3268,16 +2467,6 @@ export const generatedNativeCapabilityManifest = [
     permission: localFilesPreviewCapability.permission,
     sessionAdmission: localFilesPreviewCapability.sessionAdmission,
     transport: localFilesPreviewCapability.transport,
-  },
-  {
-    bridge: localDataStatusCapability.bridge,
-    channel: localDataStatusCapability.channel,
-    id: localDataStatusCapability.id,
-    payloadClass: localDataStatusCapability.payloadClass,
-    permission: localDataStatusCapability.permission,
-    sessionAdmission: localDataStatusCapability.sessionAdmission,
-    sessionAdmissionRationale: localDataStatusCapability.sessionAdmissionRationale,
-    transport: localDataStatusCapability.transport,
   },
   {
     bridge: transportStatusCapability.bridge,
@@ -3463,345 +2652,6 @@ export const generatedNativeCapabilityManifest = [
     transport: computeNodeAbandonCapability.transport,
   },
   {
-    bridge: sessionHistoryStateCapability.bridge,
-    channel: sessionHistoryStateCapability.channel,
-    id: sessionHistoryStateCapability.id,
-    payloadClass: sessionHistoryStateCapability.payloadClass,
-    permission: sessionHistoryStateCapability.permission,
-    sessionAdmission: sessionHistoryStateCapability.sessionAdmission,
-    transport: sessionHistoryStateCapability.transport,
-  },
-  {
-    bridge: sessionHistoryLoadCapability.bridge,
-    channel: sessionHistoryLoadCapability.channel,
-    id: sessionHistoryLoadCapability.id,
-    payloadClass: sessionHistoryLoadCapability.payloadClass,
-    permission: sessionHistoryLoadCapability.permission,
-    sessionAdmission: sessionHistoryLoadCapability.sessionAdmission,
-    transport: sessionHistoryLoadCapability.transport,
-  },
-  {
-    bridge: sessionHistoryRetainCapability.bridge,
-    channel: sessionHistoryRetainCapability.channel,
-    id: sessionHistoryRetainCapability.id,
-    payloadClass: sessionHistoryRetainCapability.payloadClass,
-    permission: sessionHistoryRetainCapability.permission,
-    sessionAdmission: sessionHistoryRetainCapability.sessionAdmission,
-    transport: sessionHistoryRetainCapability.transport,
-  },
-  {
-    bridge: sessionHistoryReleaseCapability.bridge,
-    channel: sessionHistoryReleaseCapability.channel,
-    id: sessionHistoryReleaseCapability.id,
-    payloadClass: sessionHistoryReleaseCapability.payloadClass,
-    permission: sessionHistoryReleaseCapability.permission,
-    sessionAdmission: sessionHistoryReleaseCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sessionHistoryReleaseCapability.sessionAdmissionRationale,
-    transport: sessionHistoryReleaseCapability.transport,
-  },
-  {
-    bridge: productInboxStateCapability.bridge,
-    channel: productInboxStateCapability.channel,
-    id: productInboxStateCapability.id,
-    payloadClass: productInboxStateCapability.payloadClass,
-    permission: productInboxStateCapability.permission,
-    sessionAdmission: productInboxStateCapability.sessionAdmission,
-    transport: productInboxStateCapability.transport,
-  },
-  {
-    bridge: productInboxRetainCapability.bridge,
-    channel: productInboxRetainCapability.channel,
-    id: productInboxRetainCapability.id,
-    payloadClass: productInboxRetainCapability.payloadClass,
-    permission: productInboxRetainCapability.permission,
-    sessionAdmission: productInboxRetainCapability.sessionAdmission,
-    transport: productInboxRetainCapability.transport,
-  },
-  {
-    bridge: productInboxReleaseCapability.bridge,
-    channel: productInboxReleaseCapability.channel,
-    id: productInboxReleaseCapability.id,
-    payloadClass: productInboxReleaseCapability.payloadClass,
-    permission: productInboxReleaseCapability.permission,
-    sessionAdmission: productInboxReleaseCapability.sessionAdmission,
-    sessionAdmissionRationale: productInboxReleaseCapability.sessionAdmissionRationale,
-    transport: productInboxReleaseCapability.transport,
-  },
-  {
-    bridge: productInboxRefreshCapability.bridge,
-    channel: productInboxRefreshCapability.channel,
-    id: productInboxRefreshCapability.id,
-    payloadClass: productInboxRefreshCapability.payloadClass,
-    permission: productInboxRefreshCapability.permission,
-    sessionAdmission: productInboxRefreshCapability.sessionAdmission,
-    transport: productInboxRefreshCapability.transport,
-  },
-  {
-    bridge: chatStateCapability.bridge,
-    channel: chatStateCapability.channel,
-    id: chatStateCapability.id,
-    payloadClass: chatStateCapability.payloadClass,
-    permission: chatStateCapability.permission,
-    sessionAdmission: chatStateCapability.sessionAdmission,
-    transport: chatStateCapability.transport,
-  },
-  {
-    bridge: chatDraftsCapability.bridge,
-    channel: chatDraftsCapability.channel,
-    id: chatDraftsCapability.id,
-    payloadClass: chatDraftsCapability.payloadClass,
-    permission: chatDraftsCapability.permission,
-    sessionAdmission: chatDraftsCapability.sessionAdmission,
-    transport: chatDraftsCapability.transport,
-  },
-  {
-    bridge: sideChatPresentationCapability.bridge,
-    channel: sideChatPresentationCapability.channel,
-    id: sideChatPresentationCapability.id,
-    payloadClass: sideChatPresentationCapability.payloadClass,
-    permission: sideChatPresentationCapability.permission,
-    sessionAdmission: sideChatPresentationCapability.sessionAdmission,
-    sessionAdmissionRationale: sideChatPresentationCapability.sessionAdmissionRationale,
-    transport: sideChatPresentationCapability.transport,
-  },
-  {
-    bridge: sideChatDebugSettingsCapability.bridge,
-    channel: sideChatDebugSettingsCapability.channel,
-    id: sideChatDebugSettingsCapability.id,
-    payloadClass: sideChatDebugSettingsCapability.payloadClass,
-    permission: sideChatDebugSettingsCapability.permission,
-    sessionAdmission: sideChatDebugSettingsCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatDebugSettingsCapability.sessionAdmissionRationale,
-    transport: sideChatDebugSettingsCapability.transport,
-  },
-  {
-    bridge: sideChatUpdateDebugSettingsCapability.bridge,
-    channel: sideChatUpdateDebugSettingsCapability.channel,
-    id: sideChatUpdateDebugSettingsCapability.id,
-    payloadClass: sideChatUpdateDebugSettingsCapability.payloadClass,
-    permission: sideChatUpdateDebugSettingsCapability.permission,
-    sessionAdmission: sideChatUpdateDebugSettingsCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatUpdateDebugSettingsCapability.sessionAdmissionRationale,
-    transport: sideChatUpdateDebugSettingsCapability.transport,
-  },
-  {
-    bridge: sideChatResetDebugSettingsCapability.bridge,
-    channel: sideChatResetDebugSettingsCapability.channel,
-    id: sideChatResetDebugSettingsCapability.id,
-    payloadClass: sideChatResetDebugSettingsCapability.payloadClass,
-    permission: sideChatResetDebugSettingsCapability.permission,
-    sessionAdmission: sideChatResetDebugSettingsCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatResetDebugSettingsCapability.sessionAdmissionRationale,
-    transport: sideChatResetDebugSettingsCapability.transport,
-  },
-  {
-    bridge: sideChatSetContentSizeCapability.bridge,
-    channel: sideChatSetContentSizeCapability.channel,
-    id: sideChatSetContentSizeCapability.id,
-    payloadClass: sideChatSetContentSizeCapability.payloadClass,
-    permission: sideChatSetContentSizeCapability.permission,
-    sessionAdmission: sideChatSetContentSizeCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatSetContentSizeCapability.sessionAdmissionRationale,
-    transport: sideChatSetContentSizeCapability.transport,
-  },
-  {
-    bridge: sideChatSetInteractiveProgressCapability.bridge,
-    channel: sideChatSetInteractiveProgressCapability.channel,
-    id: sideChatSetInteractiveProgressCapability.id,
-    payloadClass: sideChatSetInteractiveProgressCapability.payloadClass,
-    permission: sideChatSetInteractiveProgressCapability.permission,
-    sessionAdmission: sideChatSetInteractiveProgressCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatSetInteractiveProgressCapability.sessionAdmissionRationale,
-    transport: sideChatSetInteractiveProgressCapability.transport,
-  },
-  {
-    bridge: sideChatFinishInteractiveProgressCapability.bridge,
-    channel: sideChatFinishInteractiveProgressCapability.channel,
-    id: sideChatFinishInteractiveProgressCapability.id,
-    payloadClass: sideChatFinishInteractiveProgressCapability.payloadClass,
-    permission: sideChatFinishInteractiveProgressCapability.permission,
-    sessionAdmission: sideChatFinishInteractiveProgressCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatFinishInteractiveProgressCapability.sessionAdmissionRationale,
-    transport: sideChatFinishInteractiveProgressCapability.transport,
-  },
-  {
-    bridge: sideChatUpdateShortcutCapability.bridge,
-    channel: sideChatUpdateShortcutCapability.channel,
-    id: sideChatUpdateShortcutCapability.id,
-    payloadClass: sideChatUpdateShortcutCapability.payloadClass,
-    permission: sideChatUpdateShortcutCapability.permission,
-    sessionAdmission: sideChatUpdateShortcutCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatUpdateShortcutCapability.sessionAdmissionRationale,
-    transport: sideChatUpdateShortcutCapability.transport,
-  },
-  {
-    bridge: sideChatCloseCapability.bridge,
-    channel: sideChatCloseCapability.channel,
-    id: sideChatCloseCapability.id,
-    payloadClass: sideChatCloseCapability.payloadClass,
-    permission: sideChatCloseCapability.permission,
-    sessionAdmission: sideChatCloseCapability.sessionAdmission,
-    sessionAdmissionRationale: sideChatCloseCapability.sessionAdmissionRationale,
-    transport: sideChatCloseCapability.transport,
-  },
-  {
-    bridge: sideChatOpenSettingsCapability.bridge,
-    channel: sideChatOpenSettingsCapability.channel,
-    id: sideChatOpenSettingsCapability.id,
-    payloadClass: sideChatOpenSettingsCapability.payloadClass,
-    permission: sideChatOpenSettingsCapability.permission,
-    sessionAdmission: sideChatOpenSettingsCapability.sessionAdmission,
-    sessionAdmissionRationale: sideChatOpenSettingsCapability.sessionAdmissionRationale,
-    transport: sideChatOpenSettingsCapability.transport,
-  },
-  {
-    bridge: sideChatOpenTestWindowCapability.bridge,
-    channel: sideChatOpenTestWindowCapability.channel,
-    id: sideChatOpenTestWindowCapability.id,
-    payloadClass: sideChatOpenTestWindowCapability.payloadClass,
-    permission: sideChatOpenTestWindowCapability.permission,
-    sessionAdmission: sideChatOpenTestWindowCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatOpenTestWindowCapability.sessionAdmissionRationale,
-    transport: sideChatOpenTestWindowCapability.transport,
-  },
-  {
-    bridge: sideChatCloseTestWindowCapability.bridge,
-    channel: sideChatCloseTestWindowCapability.channel,
-    id: sideChatCloseTestWindowCapability.id,
-    payloadClass: sideChatCloseTestWindowCapability.payloadClass,
-    permission: sideChatCloseTestWindowCapability.permission,
-    sessionAdmission: sideChatCloseTestWindowCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatCloseTestWindowCapability.sessionAdmissionRationale,
-    transport: sideChatCloseTestWindowCapability.transport,
-  },
-  {
-    bridge: chatRetainCapability.bridge,
-    channel: chatRetainCapability.channel,
-    id: chatRetainCapability.id,
-    payloadClass: chatRetainCapability.payloadClass,
-    permission: chatRetainCapability.permission,
-    sessionAdmission: chatRetainCapability.sessionAdmission,
-    transport: chatRetainCapability.transport,
-  },
-  {
-    bridge: chatReleaseCapability.bridge,
-    channel: chatReleaseCapability.channel,
-    id: chatReleaseCapability.id,
-    payloadClass: chatReleaseCapability.payloadClass,
-    permission: chatReleaseCapability.permission,
-    sessionAdmission: chatReleaseCapability.sessionAdmission,
-    transport: chatReleaseCapability.transport,
-  },
-  {
-    bridge: chatClearPresentationCapability.bridge,
-    channel: chatClearPresentationCapability.channel,
-    id: chatClearPresentationCapability.id,
-    payloadClass: chatClearPresentationCapability.payloadClass,
-    permission: chatClearPresentationCapability.permission,
-    sessionAdmission: chatClearPresentationCapability.sessionAdmission,
-    transport: chatClearPresentationCapability.transport,
-  },
-  {
-    bridge: chatSetDraftCapability.bridge,
-    channel: chatSetDraftCapability.channel,
-    id: chatSetDraftCapability.id,
-    payloadClass: chatSetDraftCapability.payloadClass,
-    permission: chatSetDraftCapability.permission,
-    sessionAdmission: chatSetDraftCapability.sessionAdmission,
-    transport: chatSetDraftCapability.transport,
-  },
-  {
-    bridge: chatBeginSendIntentCapability.bridge,
-    channel: chatBeginSendIntentCapability.channel,
-    id: chatBeginSendIntentCapability.id,
-    payloadClass: chatBeginSendIntentCapability.payloadClass,
-    permission: chatBeginSendIntentCapability.permission,
-    sessionAdmission: chatBeginSendIntentCapability.sessionAdmission,
-    transport: chatBeginSendIntentCapability.transport,
-  },
-  {
-    bridge: chatCancelSendIntentCapability.bridge,
-    channel: chatCancelSendIntentCapability.channel,
-    id: chatCancelSendIntentCapability.id,
-    payloadClass: chatCancelSendIntentCapability.payloadClass,
-    permission: chatCancelSendIntentCapability.permission,
-    sessionAdmission: chatCancelSendIntentCapability.sessionAdmission,
-    transport: chatCancelSendIntentCapability.transport,
-  },
-  {
-    bridge: chatSendCapability.bridge,
-    channel: chatSendCapability.channel,
-    id: chatSendCapability.id,
-    payloadClass: chatSendCapability.payloadClass,
-    permission: chatSendCapability.permission,
-    sessionAdmission: chatSendCapability.sessionAdmission,
-    transport: chatSendCapability.transport,
-  },
-  {
-    bridge: chatRetryCapability.bridge,
-    channel: chatRetryCapability.channel,
-    id: chatRetryCapability.id,
-    payloadClass: chatRetryCapability.payloadClass,
-    permission: chatRetryCapability.permission,
-    sessionAdmission: chatRetryCapability.sessionAdmission,
-    transport: chatRetryCapability.transport,
-  },
-  {
-    bridge: chatDiscardCapability.bridge,
-    channel: chatDiscardCapability.channel,
-    id: chatDiscardCapability.id,
-    payloadClass: chatDiscardCapability.payloadClass,
-    permission: chatDiscardCapability.permission,
-    sessionAdmission: chatDiscardCapability.sessionAdmission,
-    transport: chatDiscardCapability.transport,
-  },
-  {
-    bridge: chatAcceptTaskReviewCapability.bridge,
-    channel: chatAcceptTaskReviewCapability.channel,
-    id: chatAcceptTaskReviewCapability.id,
-    payloadClass: chatAcceptTaskReviewCapability.payloadClass,
-    permission: chatAcceptTaskReviewCapability.permission,
-    sessionAdmission: chatAcceptTaskReviewCapability.sessionAdmission,
-    transport: chatAcceptTaskReviewCapability.transport,
-  },
-  {
-    bridge: chatRefreshCapability.bridge,
-    channel: chatRefreshCapability.channel,
-    id: chatRefreshCapability.id,
-    payloadClass: chatRefreshCapability.payloadClass,
-    permission: chatRefreshCapability.permission,
-    sessionAdmission: chatRefreshCapability.sessionAdmission,
-    transport: chatRefreshCapability.transport,
-  },
-  {
-    bridge: chatAttachCapability.bridge,
-    channel: chatAttachCapability.channel,
-    id: chatAttachCapability.id,
-    payloadClass: chatAttachCapability.payloadClass,
-    permission: chatAttachCapability.permission,
-    sessionAdmission: chatAttachCapability.sessionAdmission,
-    transport: chatAttachCapability.transport,
-  },
-  {
-    bridge: chatAttachLocalFilesCapability.bridge,
-    channel: chatAttachLocalFilesCapability.channel,
-    id: chatAttachLocalFilesCapability.id,
-    payloadClass: chatAttachLocalFilesCapability.payloadClass,
-    permission: chatAttachLocalFilesCapability.permission,
-    sessionAdmission: chatAttachLocalFilesCapability.sessionAdmission,
-    transport: chatAttachLocalFilesCapability.transport,
-  },
-  {
     bridge: chatPickAttachmentsCapability.bridge,
     channel: chatPickAttachmentsCapability.channel,
     id: chatPickAttachmentsCapability.id,
@@ -3809,69 +2659,6 @@ export const generatedNativeCapabilityManifest = [
     permission: chatPickAttachmentsCapability.permission,
     sessionAdmission: chatPickAttachmentsCapability.sessionAdmission,
     transport: chatPickAttachmentsCapability.transport,
-  },
-  {
-    bridge: chatPresentInSideChatCapability.bridge,
-    channel: chatPresentInSideChatCapability.channel,
-    id: chatPresentInSideChatCapability.id,
-    payloadClass: chatPresentInSideChatCapability.payloadClass,
-    permission: chatPresentInSideChatCapability.permission,
-    sessionAdmission: chatPresentInSideChatCapability.sessionAdmission,
-    transport: chatPresentInSideChatCapability.transport,
-  },
-  {
-    bridge: chatResolveWorkspaceChatCapability.bridge,
-    channel: chatResolveWorkspaceChatCapability.channel,
-    id: chatResolveWorkspaceChatCapability.id,
-    payloadClass: chatResolveWorkspaceChatCapability.payloadClass,
-    permission: chatResolveWorkspaceChatCapability.permission,
-    sessionAdmission: chatResolveWorkspaceChatCapability.sessionAdmission,
-    transport: chatResolveWorkspaceChatCapability.transport,
-  },
-  {
-    bridge: chatListSkillsCapability.bridge,
-    channel: chatListSkillsCapability.channel,
-    id: chatListSkillsCapability.id,
-    payloadClass: chatListSkillsCapability.payloadClass,
-    permission: chatListSkillsCapability.permission,
-    sessionAdmission: chatListSkillsCapability.sessionAdmission,
-    transport: chatListSkillsCapability.transport,
-  },
-  {
-    bridge: chatReadGroupImageCapability.bridge,
-    channel: chatReadGroupImageCapability.channel,
-    id: chatReadGroupImageCapability.id,
-    payloadClass: chatReadGroupImageCapability.payloadClass,
-    permission: chatReadGroupImageCapability.permission,
-    sessionAdmission: chatReadGroupImageCapability.sessionAdmission,
-    transport: chatReadGroupImageCapability.transport,
-  },
-  {
-    bridge: chatRemoveAttachmentCapability.bridge,
-    channel: chatRemoveAttachmentCapability.channel,
-    id: chatRemoveAttachmentCapability.id,
-    payloadClass: chatRemoveAttachmentCapability.payloadClass,
-    permission: chatRemoveAttachmentCapability.permission,
-    sessionAdmission: chatRemoveAttachmentCapability.sessionAdmission,
-    transport: chatRemoveAttachmentCapability.transport,
-  },
-  {
-    bridge: chatRetryAttachmentCapability.bridge,
-    channel: chatRetryAttachmentCapability.channel,
-    id: chatRetryAttachmentCapability.id,
-    payloadClass: chatRetryAttachmentCapability.payloadClass,
-    permission: chatRetryAttachmentCapability.permission,
-    sessionAdmission: chatRetryAttachmentCapability.sessionAdmission,
-    transport: chatRetryAttachmentCapability.transport,
-  },
-  {
-    bridge: chatAcknowledgeIntakeFailuresCapability.bridge,
-    channel: chatAcknowledgeIntakeFailuresCapability.channel,
-    id: chatAcknowledgeIntakeFailuresCapability.id,
-    payloadClass: chatAcknowledgeIntakeFailuresCapability.payloadClass,
-    permission: chatAcknowledgeIntakeFailuresCapability.permission,
-    sessionAdmission: chatAcknowledgeIntakeFailuresCapability.sessionAdmission,
-    transport: chatAcknowledgeIntakeFailuresCapability.transport,
   },
   {
     bridge: audioCaptureStateCapability.bridge,
@@ -4002,60 +2789,6 @@ export const generatedNativeCapabilityManifest = [
     transport: meetingPresenceIconCapability.transport,
   },
   {
-    bridge: meetingRecorderStateCapability.bridge,
-    channel: meetingRecorderStateCapability.channel,
-    id: meetingRecorderStateCapability.id,
-    payloadClass: meetingRecorderStateCapability.payloadClass,
-    permission: meetingRecorderStateCapability.permission,
-    sessionAdmission: meetingRecorderStateCapability.sessionAdmission,
-    sessionAdmissionRationale: meetingRecorderStateCapability.sessionAdmissionRationale,
-    transport: meetingRecorderStateCapability.transport,
-  },
-  {
-    bridge: meetingRecorderActionCapability.bridge,
-    channel: meetingRecorderActionCapability.channel,
-    id: meetingRecorderActionCapability.id,
-    payloadClass: meetingRecorderActionCapability.payloadClass,
-    permission: meetingRecorderActionCapability.permission,
-    sessionAdmission: meetingRecorderActionCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      meetingRecorderActionCapability.sessionAdmissionRationale,
-    transport: meetingRecorderActionCapability.transport,
-  },
-  {
-    bridge: meetingRecorderRetryTaskSyncCapability.bridge,
-    channel: meetingRecorderRetryTaskSyncCapability.channel,
-    id: meetingRecorderRetryTaskSyncCapability.id,
-    payloadClass: meetingRecorderRetryTaskSyncCapability.payloadClass,
-    permission: meetingRecorderRetryTaskSyncCapability.permission,
-    sessionAdmission: meetingRecorderRetryTaskSyncCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      meetingRecorderRetryTaskSyncCapability.sessionAdmissionRationale,
-    transport: meetingRecorderRetryTaskSyncCapability.transport,
-  },
-  {
-    bridge: meetingRecorderSelectMicrophoneCapability.bridge,
-    channel: meetingRecorderSelectMicrophoneCapability.channel,
-    id: meetingRecorderSelectMicrophoneCapability.id,
-    payloadClass: meetingRecorderSelectMicrophoneCapability.payloadClass,
-    permission: meetingRecorderSelectMicrophoneCapability.permission,
-    sessionAdmission: meetingRecorderSelectMicrophoneCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      meetingRecorderSelectMicrophoneCapability.sessionAdmissionRationale,
-    transport: meetingRecorderSelectMicrophoneCapability.transport,
-  },
-  {
-    bridge: meetingRecorderAcknowledgeSavedCapability.bridge,
-    channel: meetingRecorderAcknowledgeSavedCapability.channel,
-    id: meetingRecorderAcknowledgeSavedCapability.id,
-    payloadClass: meetingRecorderAcknowledgeSavedCapability.payloadClass,
-    permission: meetingRecorderAcknowledgeSavedCapability.permission,
-    sessionAdmission: meetingRecorderAcknowledgeSavedCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      meetingRecorderAcknowledgeSavedCapability.sessionAdmissionRationale,
-    transport: meetingRecorderAcknowledgeSavedCapability.transport,
-  },
-  {
     bridge: meetingRecorderSetInteractiveCapability.bridge,
     channel: meetingRecorderSetInteractiveCapability.channel,
     id: meetingRecorderSetInteractiveCapability.id,
@@ -4119,26 +2852,6 @@ export const generatedNativeCapabilityManifest = [
     transport: airDropPreviewCapability.transport,
   },
   {
-    bridge: driveCatalogQueryCapability.bridge,
-    channel: driveCatalogQueryCapability.channel,
-    id: driveCatalogQueryCapability.id,
-    payloadClass: driveCatalogQueryCapability.payloadClass,
-    permission: driveCatalogQueryCapability.permission,
-    sessionAdmission: driveCatalogQueryCapability.sessionAdmission,
-    sessionAdmissionRationale: driveCatalogQueryCapability.sessionAdmissionRationale,
-    transport: driveCatalogQueryCapability.transport,
-  },
-  {
-    bridge: driveCatalogStateCapability.bridge,
-    channel: driveCatalogStateCapability.channel,
-    id: driveCatalogStateCapability.id,
-    payloadClass: driveCatalogStateCapability.payloadClass,
-    permission: driveCatalogStateCapability.permission,
-    sessionAdmission: driveCatalogStateCapability.sessionAdmission,
-    sessionAdmissionRationale: driveCatalogStateCapability.sessionAdmissionRationale,
-    transport: driveCatalogStateCapability.transport,
-  },
-  {
     bridge: synchronicityStateCapability.bridge,
     channel: synchronicityStateCapability.channel,
     id: synchronicityStateCapability.id,
@@ -4180,6 +2893,17 @@ export const generatedNativeCapabilityManifest = [
     transport: synchronicitySaveDownloadCapability.transport,
   },
   {
+    bridge: synchronicityOpenStreamCapability.bridge,
+    channel: synchronicityOpenStreamCapability.channel,
+    id: synchronicityOpenStreamCapability.id,
+    payloadClass: synchronicityOpenStreamCapability.payloadClass,
+    permission: synchronicityOpenStreamCapability.permission,
+    sessionAdmission: synchronicityOpenStreamCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      synchronicityOpenStreamCapability.sessionAdmissionRationale,
+    transport: synchronicityOpenStreamCapability.transport,
+  },
+  {
     bridge: synchronicityOpenLocalRootCapability.bridge,
     channel: synchronicityOpenLocalRootCapability.channel,
     id: synchronicityOpenLocalRootCapability.id,
@@ -4212,15 +2936,15 @@ export const generatedNativeCapabilityManifest = [
     transport: synchronicityWriteCapability.transport,
   },
   {
-    bridge: synchronicityImportFileCapability.bridge,
-    channel: synchronicityImportFileCapability.channel,
-    id: synchronicityImportFileCapability.id,
-    payloadClass: synchronicityImportFileCapability.payloadClass,
-    permission: synchronicityImportFileCapability.permission,
-    sessionAdmission: synchronicityImportFileCapability.sessionAdmission,
+    bridge: synchronicityStageImportCapability.bridge,
+    channel: synchronicityStageImportCapability.channel,
+    id: synchronicityStageImportCapability.id,
+    payloadClass: synchronicityStageImportCapability.payloadClass,
+    permission: synchronicityStageImportCapability.permission,
+    sessionAdmission: synchronicityStageImportCapability.sessionAdmission,
     sessionAdmissionRationale:
-      synchronicityImportFileCapability.sessionAdmissionRationale,
-    transport: synchronicityImportFileCapability.transport,
+      synchronicityStageImportCapability.sessionAdmissionRationale,
+    transport: synchronicityStageImportCapability.transport,
   },
   {
     bridge: synchronicityDeleteCapability.bridge,
@@ -4412,6 +3136,12 @@ export const generatedNativeEventManifest = [
     target: surfacesWindowFullScreenChangedEvent.target,
   },
   {
+    channel: surfacesWindowMaximizedChangedEvent.channel,
+    id: surfacesWindowMaximizedChangedEvent.id,
+    permission: surfacesWindowMaximizedChangedEvent.permission,
+    target: surfacesWindowMaximizedChangedEvent.target,
+  },
+  {
     channel: onboardingWindowChangedEvent.channel,
     id: onboardingWindowChangedEvent.id,
     permission: onboardingWindowChangedEvent.permission,
@@ -4436,46 +3166,10 @@ export const generatedNativeEventManifest = [
     target: sessionStateChangedEvent.target,
   },
   {
-    channel: sessionHistoryStateChangedEvent.channel,
-    id: sessionHistoryStateChangedEvent.id,
-    permission: sessionHistoryStateChangedEvent.permission,
-    target: sessionHistoryStateChangedEvent.target,
-  },
-  {
-    channel: productInboxStateChangedEvent.channel,
-    id: productInboxStateChangedEvent.id,
-    permission: productInboxStateChangedEvent.permission,
-    target: productInboxStateChangedEvent.target,
-  },
-  {
-    channel: chatStateChangedEvent.channel,
-    id: chatStateChangedEvent.id,
-    permission: chatStateChangedEvent.permission,
-    target: chatStateChangedEvent.target,
-  },
-  {
-    channel: chatDraftsChangedEvent.channel,
-    id: chatDraftsChangedEvent.id,
-    permission: chatDraftsChangedEvent.permission,
-    target: chatDraftsChangedEvent.target,
-  },
-  {
     channel: messageNotificationsEvent.channel,
     id: messageNotificationsEvent.id,
     permission: messageNotificationsEvent.permission,
     target: messageNotificationsEvent.target,
-  },
-  {
-    channel: sideChatPresentationChangedEvent.channel,
-    id: sideChatPresentationChangedEvent.id,
-    permission: sideChatPresentationChangedEvent.permission,
-    target: sideChatPresentationChangedEvent.target,
-  },
-  {
-    channel: sideChatDebugSettingsChangedEvent.channel,
-    id: sideChatDebugSettingsChangedEvent.id,
-    permission: sideChatDebugSettingsChangedEvent.permission,
-    target: sideChatDebugSettingsChangedEvent.target,
   },
   {
     channel: computeNodeStateChangedEvent.channel,
@@ -4496,12 +3190,6 @@ export const generatedNativeEventManifest = [
     target: meetingPresenceStateChangedEvent.target,
   },
   {
-    channel: meetingRecorderStateChangedEvent.channel,
-    id: meetingRecorderStateChangedEvent.id,
-    permission: meetingRecorderStateChangedEvent.permission,
-    target: meetingRecorderStateChangedEvent.target,
-  },
-  {
     channel: surfacesWindowResizeSettledEvent.channel,
     id: surfacesWindowResizeSettledEvent.id,
     permission: surfacesWindowResizeSettledEvent.permission,
@@ -4512,12 +3200,6 @@ export const generatedNativeEventManifest = [
     id: airDropStateChangedEvent.id,
     permission: airDropStateChangedEvent.permission,
     target: airDropStateChangedEvent.target,
-  },
-  {
-    channel: driveCatalogChangedEvent.channel,
-    id: driveCatalogChangedEvent.id,
-    permission: driveCatalogChangedEvent.permission,
-    target: driveCatalogChangedEvent.target,
   },
 ] as const;
 
@@ -4611,6 +3293,24 @@ export const generatedNativeStateManifest = [
     },
   },
   {
+    bridge: surfacesWindowMaximizedStateLeaf.bridge,
+    get: {
+      channel: surfacesWindowMaximizedStateLeaf.get.channel,
+      id: surfacesWindowMaximizedStateLeaf.get.id,
+      permission: surfacesWindowMaximizedStateLeaf.get.permission,
+      sessionAdmission: surfacesWindowMaximizedStateLeaf.get.sessionAdmission,
+      sessionAdmissionRationale:
+        surfacesWindowMaximizedStateLeaf.get.sessionAdmissionRationale,
+    },
+    id: surfacesWindowMaximizedStateLeaf.id,
+    subscribe: {
+      channel: surfacesWindowMaximizedStateLeaf.subscribe.channel,
+      id: surfacesWindowMaximizedStateLeaf.subscribe.id,
+      permission: surfacesWindowMaximizedStateLeaf.subscribe.permission,
+      target: surfacesWindowMaximizedStateLeaf.subscribe.target,
+    },
+  },
+  {
     bridge: onboardingWindowStateLeaf.bridge,
     get: {
       channel: onboardingWindowStateLeaf.get.channel,
@@ -4643,110 +3343,6 @@ export const generatedNativeStateManifest = [
       id: sessionStateLeaf.subscribe.id,
       permission: sessionStateLeaf.subscribe.permission,
       target: sessionStateLeaf.subscribe.target,
-    },
-  },
-  {
-    bridge: sessionHistoryStateLeaf.bridge,
-    get: {
-      channel: sessionHistoryStateLeaf.get.channel,
-      id: sessionHistoryStateLeaf.get.id,
-      permission: sessionHistoryStateLeaf.get.permission,
-      sessionAdmission: sessionHistoryStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale: sessionHistoryStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: sessionHistoryStateLeaf.id,
-    subscribe: {
-      channel: sessionHistoryStateLeaf.subscribe.channel,
-      id: sessionHistoryStateLeaf.subscribe.id,
-      permission: sessionHistoryStateLeaf.subscribe.permission,
-      target: sessionHistoryStateLeaf.subscribe.target,
-    },
-  },
-  {
-    bridge: productInboxStateLeaf.bridge,
-    get: {
-      channel: productInboxStateLeaf.get.channel,
-      id: productInboxStateLeaf.get.id,
-      permission: productInboxStateLeaf.get.permission,
-      sessionAdmission: productInboxStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale: productInboxStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: productInboxStateLeaf.id,
-    subscribe: {
-      channel: productInboxStateLeaf.subscribe.channel,
-      id: productInboxStateLeaf.subscribe.id,
-      permission: productInboxStateLeaf.subscribe.permission,
-      target: productInboxStateLeaf.subscribe.target,
-    },
-  },
-  {
-    bridge: chatStateLeaf.bridge,
-    get: {
-      channel: chatStateLeaf.get.channel,
-      id: chatStateLeaf.get.id,
-      permission: chatStateLeaf.get.permission,
-      sessionAdmission: chatStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale: chatStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: chatStateLeaf.id,
-    subscribe: {
-      channel: chatStateLeaf.subscribe.channel,
-      id: chatStateLeaf.subscribe.id,
-      permission: chatStateLeaf.subscribe.permission,
-      target: chatStateLeaf.subscribe.target,
-    },
-  },
-  {
-    bridge: chatDraftsLeaf.bridge,
-    get: {
-      channel: chatDraftsLeaf.get.channel,
-      id: chatDraftsLeaf.get.id,
-      permission: chatDraftsLeaf.get.permission,
-      sessionAdmission: chatDraftsLeaf.get.sessionAdmission,
-      sessionAdmissionRationale: chatDraftsLeaf.get.sessionAdmissionRationale,
-    },
-    id: chatDraftsLeaf.id,
-    subscribe: {
-      channel: chatDraftsLeaf.subscribe.channel,
-      id: chatDraftsLeaf.subscribe.id,
-      permission: chatDraftsLeaf.subscribe.permission,
-      target: chatDraftsLeaf.subscribe.target,
-    },
-  },
-  {
-    bridge: sideChatPresentationStateLeaf.bridge,
-    get: {
-      channel: sideChatPresentationStateLeaf.get.channel,
-      id: sideChatPresentationStateLeaf.get.id,
-      permission: sideChatPresentationStateLeaf.get.permission,
-      sessionAdmission: sideChatPresentationStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale:
-        sideChatPresentationStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: sideChatPresentationStateLeaf.id,
-    subscribe: {
-      channel: sideChatPresentationStateLeaf.subscribe.channel,
-      id: sideChatPresentationStateLeaf.subscribe.id,
-      permission: sideChatPresentationStateLeaf.subscribe.permission,
-      target: sideChatPresentationStateLeaf.subscribe.target,
-    },
-  },
-  {
-    bridge: sideChatDebugSettingsStateLeaf.bridge,
-    get: {
-      channel: sideChatDebugSettingsStateLeaf.get.channel,
-      id: sideChatDebugSettingsStateLeaf.get.id,
-      permission: sideChatDebugSettingsStateLeaf.get.permission,
-      sessionAdmission: sideChatDebugSettingsStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale:
-        sideChatDebugSettingsStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: sideChatDebugSettingsStateLeaf.id,
-    subscribe: {
-      channel: sideChatDebugSettingsStateLeaf.subscribe.channel,
-      id: sideChatDebugSettingsStateLeaf.subscribe.id,
-      permission: sideChatDebugSettingsStateLeaf.subscribe.permission,
-      target: sideChatDebugSettingsStateLeaf.subscribe.target,
     },
   },
   {
@@ -4801,23 +3397,6 @@ export const generatedNativeStateManifest = [
     },
   },
   {
-    bridge: meetingRecorderStateLeaf.bridge,
-    get: {
-      channel: meetingRecorderStateLeaf.get.channel,
-      id: meetingRecorderStateLeaf.get.id,
-      permission: meetingRecorderStateLeaf.get.permission,
-      sessionAdmission: meetingRecorderStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale: meetingRecorderStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: meetingRecorderStateLeaf.id,
-    subscribe: {
-      channel: meetingRecorderStateLeaf.subscribe.channel,
-      id: meetingRecorderStateLeaf.subscribe.id,
-      permission: meetingRecorderStateLeaf.subscribe.permission,
-      target: meetingRecorderStateLeaf.subscribe.target,
-    },
-  },
-  {
     bridge: airDropStateLeaf.bridge,
     get: {
       channel: airDropStateLeaf.get.channel,
@@ -4832,23 +3411,6 @@ export const generatedNativeStateManifest = [
       id: airDropStateLeaf.subscribe.id,
       permission: airDropStateLeaf.subscribe.permission,
       target: airDropStateLeaf.subscribe.target,
-    },
-  },
-  {
-    bridge: driveCatalogStateLeaf.bridge,
-    get: {
-      channel: driveCatalogStateLeaf.get.channel,
-      id: driveCatalogStateLeaf.get.id,
-      permission: driveCatalogStateLeaf.get.permission,
-      sessionAdmission: driveCatalogStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale: driveCatalogStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: driveCatalogStateLeaf.id,
-    subscribe: {
-      channel: driveCatalogStateLeaf.subscribe.channel,
-      id: driveCatalogStateLeaf.subscribe.id,
-      permission: driveCatalogStateLeaf.subscribe.permission,
-      target: driveCatalogStateLeaf.subscribe.target,
     },
   },
 ] as const;
@@ -5445,6 +4007,48 @@ export const generatedNativeCapabilityIndex = {
       surfacesWindowFullScreenCapability.sessionAdmissionRationale,
     transport: surfacesWindowFullScreenCapability.transport,
   },
+  "surfaces.windowMaximized": {
+    artifacts: {
+      contract: "surfacesWindowMaximizedContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["surfaces.windowMaximized"]',
+      leaf: "surfacesWindowMaximizedCapability",
+      mainBinding: 'generatedNativeMainBindingsById["surfaces.windowMaximized"]',
+      mock: "surfacesWindowMaximizedCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.surfaces.windowMaximized",
+      webFallback: "generatedNativeWebFallbacks.surfacesWindowMaximized",
+    },
+    bridge: surfacesWindowMaximizedCapability.bridge,
+    channel: surfacesWindowMaximizedCapability.channel,
+    handler: surfacesWindowMaximizedCapability.handler,
+    id: surfacesWindowMaximizedCapability.id,
+    payloadClass: surfacesWindowMaximizedCapability.payloadClass,
+    permission: surfacesWindowMaximizedCapability.permission,
+    sessionAdmission: surfacesWindowMaximizedCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      surfacesWindowMaximizedCapability.sessionAdmissionRationale,
+    transport: surfacesWindowMaximizedCapability.transport,
+  },
+  "surfaces.windowControl": {
+    artifacts: {
+      contract: "surfacesWindowControlContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["surfaces.windowControl"]',
+      leaf: "surfacesWindowControlCapability",
+      mainBinding: 'generatedNativeMainBindingsById["surfaces.windowControl"]',
+      mock: "surfacesWindowControlCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.surfaces.windowControl",
+      webFallback: "generatedNativeWebFallbacks.surfacesWindowControl",
+    },
+    bridge: surfacesWindowControlCapability.bridge,
+    channel: surfacesWindowControlCapability.channel,
+    handler: surfacesWindowControlCapability.handler,
+    id: surfacesWindowControlCapability.id,
+    payloadClass: surfacesWindowControlCapability.payloadClass,
+    permission: surfacesWindowControlCapability.permission,
+    sessionAdmission: surfacesWindowControlCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      surfacesWindowControlCapability.sessionAdmissionRationale,
+    transport: surfacesWindowControlCapability.transport,
+  },
   "windows.create": {
     artifacts: {
       contract: "windowsCreateContract",
@@ -5665,141 +4269,6 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmission: clipboardWriteImageCapability.sessionAdmission,
     sessionAdmissionRationale: clipboardWriteImageCapability.sessionAdmissionRationale,
     transport: clipboardWriteImageCapability.transport,
-  },
-  "subscriptionAuthorization.start": {
-    artifacts: {
-      contract: "subscriptionAuthorizationStartContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["subscriptionAuthorization.start"]',
-      leaf: "subscriptionAuthorizationStartCapability",
-      mainBinding: 'generatedNativeMainBindingsById["subscriptionAuthorization.start"]',
-      mock: "subscriptionAuthorizationStartCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.subscriptionAuthorization.start",
-      webFallback: "generatedNativeWebFallbacks.subscriptionAuthorizationStart",
-    },
-    bridge: subscriptionAuthorizationStartCapability.bridge,
-    channel: subscriptionAuthorizationStartCapability.channel,
-    handler: subscriptionAuthorizationStartCapability.handler,
-    id: subscriptionAuthorizationStartCapability.id,
-    payloadClass: subscriptionAuthorizationStartCapability.payloadClass,
-    permission: subscriptionAuthorizationStartCapability.permission,
-    sessionAdmission: subscriptionAuthorizationStartCapability.sessionAdmission,
-    transport: subscriptionAuthorizationStartCapability.transport,
-  },
-  "tokenDanceAuthorization.start": {
-    artifacts: {
-      contract: "tokenDanceAuthorizationStartContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["tokenDanceAuthorization.start"]',
-      leaf: "tokenDanceAuthorizationStartCapability",
-      mainBinding: 'generatedNativeMainBindingsById["tokenDanceAuthorization.start"]',
-      mock: "tokenDanceAuthorizationStartCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.tokenDanceAuthorization.start",
-      webFallback: "generatedNativeWebFallbacks.tokenDanceAuthorizationStart",
-    },
-    bridge: tokenDanceAuthorizationStartCapability.bridge,
-    channel: tokenDanceAuthorizationStartCapability.channel,
-    handler: tokenDanceAuthorizationStartCapability.handler,
-    id: tokenDanceAuthorizationStartCapability.id,
-    payloadClass: tokenDanceAuthorizationStartCapability.payloadClass,
-    permission: tokenDanceAuthorizationStartCapability.permission,
-    sessionAdmission: tokenDanceAuthorizationStartCapability.sessionAdmission,
-    transport: tokenDanceAuthorizationStartCapability.transport,
-  },
-  "tokenDanceAuthorization.status": {
-    artifacts: {
-      contract: "tokenDanceAuthorizationStatusContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["tokenDanceAuthorization.status"]',
-      leaf: "tokenDanceAuthorizationStatusCapability",
-      mainBinding: 'generatedNativeMainBindingsById["tokenDanceAuthorization.status"]',
-      mock: "tokenDanceAuthorizationStatusCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.tokenDanceAuthorization.status",
-      webFallback: "generatedNativeWebFallbacks.tokenDanceAuthorizationStatus",
-    },
-    bridge: tokenDanceAuthorizationStatusCapability.bridge,
-    channel: tokenDanceAuthorizationStatusCapability.channel,
-    handler: tokenDanceAuthorizationStatusCapability.handler,
-    id: tokenDanceAuthorizationStatusCapability.id,
-    payloadClass: tokenDanceAuthorizationStatusCapability.payloadClass,
-    permission: tokenDanceAuthorizationStatusCapability.permission,
-    sessionAdmission: tokenDanceAuthorizationStatusCapability.sessionAdmission,
-    transport: tokenDanceAuthorizationStatusCapability.transport,
-  },
-  "tokenDanceAuthorization.save": {
-    artifacts: {
-      contract: "tokenDanceAuthorizationSaveContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["tokenDanceAuthorization.save"]',
-      leaf: "tokenDanceAuthorizationSaveCapability",
-      mainBinding: 'generatedNativeMainBindingsById["tokenDanceAuthorization.save"]',
-      mock: "tokenDanceAuthorizationSaveCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.tokenDanceAuthorization.save",
-      webFallback: "generatedNativeWebFallbacks.tokenDanceAuthorizationSave",
-    },
-    bridge: tokenDanceAuthorizationSaveCapability.bridge,
-    channel: tokenDanceAuthorizationSaveCapability.channel,
-    handler: tokenDanceAuthorizationSaveCapability.handler,
-    id: tokenDanceAuthorizationSaveCapability.id,
-    payloadClass: tokenDanceAuthorizationSaveCapability.payloadClass,
-    permission: tokenDanceAuthorizationSaveCapability.permission,
-    sessionAdmission: tokenDanceAuthorizationSaveCapability.sessionAdmission,
-    transport: tokenDanceAuthorizationSaveCapability.transport,
-  },
-  "tokenDanceAuthorization.cancel": {
-    artifacts: {
-      contract: "tokenDanceAuthorizationCancelContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["tokenDanceAuthorization.cancel"]',
-      leaf: "tokenDanceAuthorizationCancelCapability",
-      mainBinding: 'generatedNativeMainBindingsById["tokenDanceAuthorization.cancel"]',
-      mock: "tokenDanceAuthorizationCancelCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.tokenDanceAuthorization.cancel",
-      webFallback: "generatedNativeWebFallbacks.tokenDanceAuthorizationCancel",
-    },
-    bridge: tokenDanceAuthorizationCancelCapability.bridge,
-    channel: tokenDanceAuthorizationCancelCapability.channel,
-    handler: tokenDanceAuthorizationCancelCapability.handler,
-    id: tokenDanceAuthorizationCancelCapability.id,
-    payloadClass: tokenDanceAuthorizationCancelCapability.payloadClass,
-    permission: tokenDanceAuthorizationCancelCapability.permission,
-    sessionAdmission: tokenDanceAuthorizationCancelCapability.sessionAdmission,
-    transport: tokenDanceAuthorizationCancelCapability.transport,
-  },
-  "subscriptionAuthorization.status": {
-    artifacts: {
-      contract: "subscriptionAuthorizationStatusContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["subscriptionAuthorization.status"]',
-      leaf: "subscriptionAuthorizationStatusCapability",
-      mainBinding:
-        'generatedNativeMainBindingsById["subscriptionAuthorization.status"]',
-      mock: "subscriptionAuthorizationStatusCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.subscriptionAuthorization.status",
-      webFallback: "generatedNativeWebFallbacks.subscriptionAuthorizationStatus",
-    },
-    bridge: subscriptionAuthorizationStatusCapability.bridge,
-    channel: subscriptionAuthorizationStatusCapability.channel,
-    handler: subscriptionAuthorizationStatusCapability.handler,
-    id: subscriptionAuthorizationStatusCapability.id,
-    payloadClass: subscriptionAuthorizationStatusCapability.payloadClass,
-    permission: subscriptionAuthorizationStatusCapability.permission,
-    sessionAdmission: subscriptionAuthorizationStatusCapability.sessionAdmission,
-    transport: subscriptionAuthorizationStatusCapability.transport,
-  },
-  "subscriptionAuthorization.cancel": {
-    artifacts: {
-      contract: "subscriptionAuthorizationCancelContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["subscriptionAuthorization.cancel"]',
-      leaf: "subscriptionAuthorizationCancelCapability",
-      mainBinding:
-        'generatedNativeMainBindingsById["subscriptionAuthorization.cancel"]',
-      mock: "subscriptionAuthorizationCancelCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.subscriptionAuthorization.cancel",
-      webFallback: "generatedNativeWebFallbacks.subscriptionAuthorizationCancel",
-    },
-    bridge: subscriptionAuthorizationCancelCapability.bridge,
-    channel: subscriptionAuthorizationCancelCapability.channel,
-    handler: subscriptionAuthorizationCancelCapability.handler,
-    id: subscriptionAuthorizationCancelCapability.id,
-    payloadClass: subscriptionAuthorizationCancelCapability.payloadClass,
-    permission: subscriptionAuthorizationCancelCapability.permission,
-    sessionAdmission: subscriptionAuthorizationCancelCapability.sessionAdmission,
-    transport: subscriptionAuthorizationCancelCapability.transport,
   },
   "shell.openExternal": {
     artifacts: {
@@ -6066,6 +4535,27 @@ export const generatedNativeCapabilityIndex = {
       browserSidebarInspectCapability.sessionAdmissionRationale,
     transport: browserSidebarInspectCapability.transport,
   },
+  "browserSidebar.dismissPasskey": {
+    artifacts: {
+      contract: "browserSidebarDismissPasskeyContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["browserSidebar.dismissPasskey"]',
+      leaf: "browserSidebarDismissPasskeyCapability",
+      mainBinding: 'generatedNativeMainBindingsById["browserSidebar.dismissPasskey"]',
+      mock: "browserSidebarDismissPasskeyCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.browserSidebar.dismissPasskey",
+      webFallback: "generatedNativeWebFallbacks.browserSidebarDismissPasskey",
+    },
+    bridge: browserSidebarDismissPasskeyCapability.bridge,
+    channel: browserSidebarDismissPasskeyCapability.channel,
+    handler: browserSidebarDismissPasskeyCapability.handler,
+    id: browserSidebarDismissPasskeyCapability.id,
+    payloadClass: browserSidebarDismissPasskeyCapability.payloadClass,
+    permission: browserSidebarDismissPasskeyCapability.permission,
+    sessionAdmission: browserSidebarDismissPasskeyCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      browserSidebarDismissPasskeyCapability.sessionAdmissionRationale,
+    transport: browserSidebarDismissPasskeyCapability.transport,
+  },
   "browserSidebar.showPermissions": {
     artifacts: {
       contract: "browserSidebarShowPermissionsContract",
@@ -6086,6 +4576,51 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale:
       browserSidebarShowPermissionsCapability.sessionAdmissionRationale,
     transport: browserSidebarShowPermissionsCapability.transport,
+  },
+  "browserSidebar.listImportProfiles": {
+    artifacts: {
+      contract: "browserSidebarListImportProfilesContract",
+      handlerType:
+        'NativeCapabilityHandlerTypeMap["browserSidebar.listImportProfiles"]',
+      leaf: "browserSidebarListImportProfilesCapability",
+      mainBinding:
+        'generatedNativeMainBindingsById["browserSidebar.listImportProfiles"]',
+      mock: "browserSidebarListImportProfilesCapability.mock",
+      preloadBinding:
+        "generatedNativePreloadBindings.browserSidebar.listImportProfiles",
+      webFallback: "generatedNativeWebFallbacks.browserSidebarListImportProfiles",
+    },
+    bridge: browserSidebarListImportProfilesCapability.bridge,
+    channel: browserSidebarListImportProfilesCapability.channel,
+    handler: browserSidebarListImportProfilesCapability.handler,
+    id: browserSidebarListImportProfilesCapability.id,
+    payloadClass: browserSidebarListImportProfilesCapability.payloadClass,
+    permission: browserSidebarListImportProfilesCapability.permission,
+    sessionAdmission: browserSidebarListImportProfilesCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      browserSidebarListImportProfilesCapability.sessionAdmissionRationale,
+    transport: browserSidebarListImportProfilesCapability.transport,
+  },
+  "browserSidebar.importCookies": {
+    artifacts: {
+      contract: "browserSidebarImportCookiesContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["browserSidebar.importCookies"]',
+      leaf: "browserSidebarImportCookiesCapability",
+      mainBinding: 'generatedNativeMainBindingsById["browserSidebar.importCookies"]',
+      mock: "browserSidebarImportCookiesCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.browserSidebar.importCookies",
+      webFallback: "generatedNativeWebFallbacks.browserSidebarImportCookies",
+    },
+    bridge: browserSidebarImportCookiesCapability.bridge,
+    channel: browserSidebarImportCookiesCapability.channel,
+    handler: browserSidebarImportCookiesCapability.handler,
+    id: browserSidebarImportCookiesCapability.id,
+    payloadClass: browserSidebarImportCookiesCapability.payloadClass,
+    permission: browserSidebarImportCookiesCapability.permission,
+    sessionAdmission: browserSidebarImportCookiesCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      browserSidebarImportCookiesCapability.sessionAdmissionRationale,
+    transport: browserSidebarImportCookiesCapability.transport,
   },
   "sitePermissionMenu.state": {
     artifacts: {
@@ -6149,6 +4684,26 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale: peersConnectCapability.sessionAdmissionRationale,
     transport: peersConnectCapability.transport,
   },
+  "core.open": {
+    artifacts: {
+      contract: "coreOpenContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["core.open"]',
+      leaf: "coreOpenCapability",
+      mainBinding: 'generatedNativeMainBindingsById["core.open"]',
+      mock: "coreOpenCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.core.open",
+      webFallback: "generatedNativeWebFallbacks.coreOpen",
+    },
+    bridge: coreOpenCapability.bridge,
+    channel: coreOpenCapability.channel,
+    handler: coreOpenCapability.handler,
+    id: coreOpenCapability.id,
+    payloadClass: coreOpenCapability.payloadClass,
+    permission: coreOpenCapability.permission,
+    sessionAdmission: coreOpenCapability.sessionAdmission,
+    sessionAdmissionRationale: coreOpenCapability.sessionAdmissionRationale,
+    transport: coreOpenCapability.transport,
+  },
   "session.state": {
     artifacts: {
       contract: "sessionStateContract",
@@ -6167,139 +4722,6 @@ export const generatedNativeCapabilityIndex = {
     permission: sessionStateCapability.permission,
     sessionAdmission: sessionStateCapability.sessionAdmission,
     transport: sessionStateCapability.transport,
-  },
-  "session.requestEmailLogin": {
-    artifacts: {
-      contract: "sessionRequestEmailLoginContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["session.requestEmailLogin"]',
-      leaf: "sessionRequestEmailLoginCapability",
-      mainBinding: 'generatedNativeMainBindingsById["session.requestEmailLogin"]',
-      mock: "sessionRequestEmailLoginCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.session.requestEmailLogin",
-      webFallback: "generatedNativeWebFallbacks.sessionRequestEmailLogin",
-    },
-    bridge: sessionRequestEmailLoginCapability.bridge,
-    channel: sessionRequestEmailLoginCapability.channel,
-    handler: sessionRequestEmailLoginCapability.handler,
-    id: sessionRequestEmailLoginCapability.id,
-    payloadClass: sessionRequestEmailLoginCapability.payloadClass,
-    permission: sessionRequestEmailLoginCapability.permission,
-    sessionAdmission: sessionRequestEmailLoginCapability.sessionAdmission,
-    transport: sessionRequestEmailLoginCapability.transport,
-  },
-  "session.verifyEmailLogin": {
-    artifacts: {
-      contract: "sessionVerifyEmailLoginContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["session.verifyEmailLogin"]',
-      leaf: "sessionVerifyEmailLoginCapability",
-      mainBinding: 'generatedNativeMainBindingsById["session.verifyEmailLogin"]',
-      mock: "sessionVerifyEmailLoginCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.session.verifyEmailLogin",
-      webFallback: "generatedNativeWebFallbacks.sessionVerifyEmailLogin",
-    },
-    bridge: sessionVerifyEmailLoginCapability.bridge,
-    channel: sessionVerifyEmailLoginCapability.channel,
-    handler: sessionVerifyEmailLoginCapability.handler,
-    id: sessionVerifyEmailLoginCapability.id,
-    payloadClass: sessionVerifyEmailLoginCapability.payloadClass,
-    permission: sessionVerifyEmailLoginCapability.permission,
-    sessionAdmission: sessionVerifyEmailLoginCapability.sessionAdmission,
-    transport: sessionVerifyEmailLoginCapability.transport,
-  },
-  "session.signInWithGoogle": {
-    artifacts: {
-      contract: "sessionSignInWithGoogleContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["session.signInWithGoogle"]',
-      leaf: "sessionSignInWithGoogleCapability",
-      mainBinding: 'generatedNativeMainBindingsById["session.signInWithGoogle"]',
-      mock: "sessionSignInWithGoogleCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.session.signInWithGoogle",
-      webFallback: "generatedNativeWebFallbacks.sessionSignInWithGoogle",
-    },
-    bridge: sessionSignInWithGoogleCapability.bridge,
-    channel: sessionSignInWithGoogleCapability.channel,
-    handler: sessionSignInWithGoogleCapability.handler,
-    id: sessionSignInWithGoogleCapability.id,
-    payloadClass: sessionSignInWithGoogleCapability.payloadClass,
-    permission: sessionSignInWithGoogleCapability.permission,
-    sessionAdmission: sessionSignInWithGoogleCapability.sessionAdmission,
-    transport: sessionSignInWithGoogleCapability.transport,
-  },
-  "session.verifyGoogleLink": {
-    artifacts: {
-      contract: "sessionVerifyGoogleLinkContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["session.verifyGoogleLink"]',
-      leaf: "sessionVerifyGoogleLinkCapability",
-      mainBinding: 'generatedNativeMainBindingsById["session.verifyGoogleLink"]',
-      mock: "sessionVerifyGoogleLinkCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.session.verifyGoogleLink",
-      webFallback: "generatedNativeWebFallbacks.sessionVerifyGoogleLink",
-    },
-    bridge: sessionVerifyGoogleLinkCapability.bridge,
-    channel: sessionVerifyGoogleLinkCapability.channel,
-    handler: sessionVerifyGoogleLinkCapability.handler,
-    id: sessionVerifyGoogleLinkCapability.id,
-    payloadClass: sessionVerifyGoogleLinkCapability.payloadClass,
-    permission: sessionVerifyGoogleLinkCapability.permission,
-    sessionAdmission: sessionVerifyGoogleLinkCapability.sessionAdmission,
-    transport: sessionVerifyGoogleLinkCapability.transport,
-  },
-  "session.cancelAuthAttempt": {
-    artifacts: {
-      contract: "sessionCancelAuthAttemptContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["session.cancelAuthAttempt"]',
-      leaf: "sessionCancelAuthAttemptCapability",
-      mainBinding: 'generatedNativeMainBindingsById["session.cancelAuthAttempt"]',
-      mock: "sessionCancelAuthAttemptCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.session.cancelAuthAttempt",
-      webFallback: "generatedNativeWebFallbacks.sessionCancelAuthAttempt",
-    },
-    bridge: sessionCancelAuthAttemptCapability.bridge,
-    channel: sessionCancelAuthAttemptCapability.channel,
-    handler: sessionCancelAuthAttemptCapability.handler,
-    id: sessionCancelAuthAttemptCapability.id,
-    payloadClass: sessionCancelAuthAttemptCapability.payloadClass,
-    permission: sessionCancelAuthAttemptCapability.permission,
-    sessionAdmission: sessionCancelAuthAttemptCapability.sessionAdmission,
-    transport: sessionCancelAuthAttemptCapability.transport,
-  },
-  "session.reconcile": {
-    artifacts: {
-      contract: "sessionReconcileContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["session.reconcile"]',
-      leaf: "sessionReconcileCapability",
-      mainBinding: 'generatedNativeMainBindingsById["session.reconcile"]',
-      mock: "sessionReconcileCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.session.reconcile",
-      webFallback: "generatedNativeWebFallbacks.sessionReconcile",
-    },
-    bridge: sessionReconcileCapability.bridge,
-    channel: sessionReconcileCapability.channel,
-    handler: sessionReconcileCapability.handler,
-    id: sessionReconcileCapability.id,
-    payloadClass: sessionReconcileCapability.payloadClass,
-    permission: sessionReconcileCapability.permission,
-    sessionAdmission: sessionReconcileCapability.sessionAdmission,
-    transport: sessionReconcileCapability.transport,
-  },
-  "session.signOut": {
-    artifacts: {
-      contract: "sessionSignOutContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["session.signOut"]',
-      leaf: "sessionSignOutCapability",
-      mainBinding: 'generatedNativeMainBindingsById["session.signOut"]',
-      mock: "sessionSignOutCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.session.signOut",
-      webFallback: "generatedNativeWebFallbacks.sessionSignOut",
-    },
-    bridge: sessionSignOutCapability.bridge,
-    channel: sessionSignOutCapability.channel,
-    handler: sessionSignOutCapability.handler,
-    id: sessionSignOutCapability.id,
-    payloadClass: sessionSignOutCapability.payloadClass,
-    permission: sessionSignOutCapability.permission,
-    sessionAdmission: sessionSignOutCapability.sessionAdmission,
-    transport: sessionSignOutCapability.transport,
   },
   "localFiles.pick": {
     artifacts: {
@@ -6338,26 +4760,6 @@ export const generatedNativeCapabilityIndex = {
     permission: localFilesPreviewCapability.permission,
     sessionAdmission: localFilesPreviewCapability.sessionAdmission,
     transport: localFilesPreviewCapability.transport,
-  },
-  "localData.status": {
-    artifacts: {
-      contract: "localDataStatusContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["localData.status"]',
-      leaf: "localDataStatusCapability",
-      mainBinding: 'generatedNativeMainBindingsById["localData.status"]',
-      mock: "localDataStatusCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.localData.status",
-      webFallback: "generatedNativeWebFallbacks.localDataStatus",
-    },
-    bridge: localDataStatusCapability.bridge,
-    channel: localDataStatusCapability.channel,
-    handler: localDataStatusCapability.handler,
-    id: localDataStatusCapability.id,
-    payloadClass: localDataStatusCapability.payloadClass,
-    permission: localDataStatusCapability.permission,
-    sessionAdmission: localDataStatusCapability.sessionAdmission,
-    sessionAdmissionRationale: localDataStatusCapability.sessionAdmissionRationale,
-    transport: localDataStatusCapability.transport,
   },
   "transport.status": {
     artifacts: {
@@ -6726,698 +5128,6 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale: computeNodeAbandonCapability.sessionAdmissionRationale,
     transport: computeNodeAbandonCapability.transport,
   },
-  "sessionHistory.state": {
-    artifacts: {
-      contract: "sessionHistoryStateContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sessionHistory.state"]',
-      leaf: "sessionHistoryStateCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sessionHistory.state"]',
-      mock: "sessionHistoryStateCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sessionHistory.state",
-      webFallback: "generatedNativeWebFallbacks.sessionHistoryState",
-    },
-    bridge: sessionHistoryStateCapability.bridge,
-    channel: sessionHistoryStateCapability.channel,
-    handler: sessionHistoryStateCapability.handler,
-    id: sessionHistoryStateCapability.id,
-    payloadClass: sessionHistoryStateCapability.payloadClass,
-    permission: sessionHistoryStateCapability.permission,
-    sessionAdmission: sessionHistoryStateCapability.sessionAdmission,
-    transport: sessionHistoryStateCapability.transport,
-  },
-  "sessionHistory.load": {
-    artifacts: {
-      contract: "sessionHistoryLoadContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sessionHistory.load"]',
-      leaf: "sessionHistoryLoadCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sessionHistory.load"]',
-      mock: "sessionHistoryLoadCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sessionHistory.load",
-      webFallback: "generatedNativeWebFallbacks.sessionHistoryLoad",
-    },
-    bridge: sessionHistoryLoadCapability.bridge,
-    channel: sessionHistoryLoadCapability.channel,
-    handler: sessionHistoryLoadCapability.handler,
-    id: sessionHistoryLoadCapability.id,
-    payloadClass: sessionHistoryLoadCapability.payloadClass,
-    permission: sessionHistoryLoadCapability.permission,
-    sessionAdmission: sessionHistoryLoadCapability.sessionAdmission,
-    transport: sessionHistoryLoadCapability.transport,
-  },
-  "sessionHistory.retain": {
-    artifacts: {
-      contract: "sessionHistoryRetainContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sessionHistory.retain"]',
-      leaf: "sessionHistoryRetainCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sessionHistory.retain"]',
-      mock: "sessionHistoryRetainCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sessionHistory.retain",
-      webFallback: "generatedNativeWebFallbacks.sessionHistoryRetain",
-    },
-    bridge: sessionHistoryRetainCapability.bridge,
-    channel: sessionHistoryRetainCapability.channel,
-    handler: sessionHistoryRetainCapability.handler,
-    id: sessionHistoryRetainCapability.id,
-    payloadClass: sessionHistoryRetainCapability.payloadClass,
-    permission: sessionHistoryRetainCapability.permission,
-    sessionAdmission: sessionHistoryRetainCapability.sessionAdmission,
-    transport: sessionHistoryRetainCapability.transport,
-  },
-  "sessionHistory.release": {
-    artifacts: {
-      contract: "sessionHistoryReleaseContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sessionHistory.release"]',
-      leaf: "sessionHistoryReleaseCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sessionHistory.release"]',
-      mock: "sessionHistoryReleaseCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sessionHistory.release",
-      webFallback: "generatedNativeWebFallbacks.sessionHistoryRelease",
-    },
-    bridge: sessionHistoryReleaseCapability.bridge,
-    channel: sessionHistoryReleaseCapability.channel,
-    handler: sessionHistoryReleaseCapability.handler,
-    id: sessionHistoryReleaseCapability.id,
-    payloadClass: sessionHistoryReleaseCapability.payloadClass,
-    permission: sessionHistoryReleaseCapability.permission,
-    sessionAdmission: sessionHistoryReleaseCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sessionHistoryReleaseCapability.sessionAdmissionRationale,
-    transport: sessionHistoryReleaseCapability.transport,
-  },
-  "productInbox.state": {
-    artifacts: {
-      contract: "productInboxStateContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["productInbox.state"]',
-      leaf: "productInboxStateCapability",
-      mainBinding: 'generatedNativeMainBindingsById["productInbox.state"]',
-      mock: "productInboxStateCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.productInbox.state",
-      webFallback: "generatedNativeWebFallbacks.productInboxState",
-    },
-    bridge: productInboxStateCapability.bridge,
-    channel: productInboxStateCapability.channel,
-    handler: productInboxStateCapability.handler,
-    id: productInboxStateCapability.id,
-    payloadClass: productInboxStateCapability.payloadClass,
-    permission: productInboxStateCapability.permission,
-    sessionAdmission: productInboxStateCapability.sessionAdmission,
-    transport: productInboxStateCapability.transport,
-  },
-  "productInbox.retain": {
-    artifacts: {
-      contract: "productInboxRetainContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["productInbox.retain"]',
-      leaf: "productInboxRetainCapability",
-      mainBinding: 'generatedNativeMainBindingsById["productInbox.retain"]',
-      mock: "productInboxRetainCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.productInbox.retain",
-      webFallback: "generatedNativeWebFallbacks.productInboxRetain",
-    },
-    bridge: productInboxRetainCapability.bridge,
-    channel: productInboxRetainCapability.channel,
-    handler: productInboxRetainCapability.handler,
-    id: productInboxRetainCapability.id,
-    payloadClass: productInboxRetainCapability.payloadClass,
-    permission: productInboxRetainCapability.permission,
-    sessionAdmission: productInboxRetainCapability.sessionAdmission,
-    transport: productInboxRetainCapability.transport,
-  },
-  "productInbox.release": {
-    artifacts: {
-      contract: "productInboxReleaseContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["productInbox.release"]',
-      leaf: "productInboxReleaseCapability",
-      mainBinding: 'generatedNativeMainBindingsById["productInbox.release"]',
-      mock: "productInboxReleaseCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.productInbox.release",
-      webFallback: "generatedNativeWebFallbacks.productInboxRelease",
-    },
-    bridge: productInboxReleaseCapability.bridge,
-    channel: productInboxReleaseCapability.channel,
-    handler: productInboxReleaseCapability.handler,
-    id: productInboxReleaseCapability.id,
-    payloadClass: productInboxReleaseCapability.payloadClass,
-    permission: productInboxReleaseCapability.permission,
-    sessionAdmission: productInboxReleaseCapability.sessionAdmission,
-    sessionAdmissionRationale: productInboxReleaseCapability.sessionAdmissionRationale,
-    transport: productInboxReleaseCapability.transport,
-  },
-  "productInbox.refresh": {
-    artifacts: {
-      contract: "productInboxRefreshContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["productInbox.refresh"]',
-      leaf: "productInboxRefreshCapability",
-      mainBinding: 'generatedNativeMainBindingsById["productInbox.refresh"]',
-      mock: "productInboxRefreshCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.productInbox.refresh",
-      webFallback: "generatedNativeWebFallbacks.productInboxRefresh",
-    },
-    bridge: productInboxRefreshCapability.bridge,
-    channel: productInboxRefreshCapability.channel,
-    handler: productInboxRefreshCapability.handler,
-    id: productInboxRefreshCapability.id,
-    payloadClass: productInboxRefreshCapability.payloadClass,
-    permission: productInboxRefreshCapability.permission,
-    sessionAdmission: productInboxRefreshCapability.sessionAdmission,
-    transport: productInboxRefreshCapability.transport,
-  },
-  "chat.state": {
-    artifacts: {
-      contract: "chatStateContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.state"]',
-      leaf: "chatStateCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.state"]',
-      mock: "chatStateCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.state",
-      webFallback: "generatedNativeWebFallbacks.chatState",
-    },
-    bridge: chatStateCapability.bridge,
-    channel: chatStateCapability.channel,
-    handler: chatStateCapability.handler,
-    id: chatStateCapability.id,
-    payloadClass: chatStateCapability.payloadClass,
-    permission: chatStateCapability.permission,
-    sessionAdmission: chatStateCapability.sessionAdmission,
-    transport: chatStateCapability.transport,
-  },
-  "chat.drafts": {
-    artifacts: {
-      contract: "chatDraftsContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.drafts"]',
-      leaf: "chatDraftsCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.drafts"]',
-      mock: "chatDraftsCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.drafts",
-      webFallback: "generatedNativeWebFallbacks.chatDrafts",
-    },
-    bridge: chatDraftsCapability.bridge,
-    channel: chatDraftsCapability.channel,
-    handler: chatDraftsCapability.handler,
-    id: chatDraftsCapability.id,
-    payloadClass: chatDraftsCapability.payloadClass,
-    permission: chatDraftsCapability.permission,
-    sessionAdmission: chatDraftsCapability.sessionAdmission,
-    transport: chatDraftsCapability.transport,
-  },
-  "sideChat.presentation": {
-    artifacts: {
-      contract: "sideChatPresentationContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sideChat.presentation"]',
-      leaf: "sideChatPresentationCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sideChat.presentation"]',
-      mock: "sideChatPresentationCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sideChat.presentation",
-      webFallback: "generatedNativeWebFallbacks.sideChatPresentation",
-    },
-    bridge: sideChatPresentationCapability.bridge,
-    channel: sideChatPresentationCapability.channel,
-    handler: sideChatPresentationCapability.handler,
-    id: sideChatPresentationCapability.id,
-    payloadClass: sideChatPresentationCapability.payloadClass,
-    permission: sideChatPresentationCapability.permission,
-    sessionAdmission: sideChatPresentationCapability.sessionAdmission,
-    sessionAdmissionRationale: sideChatPresentationCapability.sessionAdmissionRationale,
-    transport: sideChatPresentationCapability.transport,
-  },
-  "sideChat.debugSettings": {
-    artifacts: {
-      contract: "sideChatDebugSettingsContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sideChat.debugSettings"]',
-      leaf: "sideChatDebugSettingsCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sideChat.debugSettings"]',
-      mock: "sideChatDebugSettingsCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sideChat.debugSettings",
-      webFallback: "generatedNativeWebFallbacks.sideChatDebugSettings",
-    },
-    bridge: sideChatDebugSettingsCapability.bridge,
-    channel: sideChatDebugSettingsCapability.channel,
-    handler: sideChatDebugSettingsCapability.handler,
-    id: sideChatDebugSettingsCapability.id,
-    payloadClass: sideChatDebugSettingsCapability.payloadClass,
-    permission: sideChatDebugSettingsCapability.permission,
-    sessionAdmission: sideChatDebugSettingsCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatDebugSettingsCapability.sessionAdmissionRationale,
-    transport: sideChatDebugSettingsCapability.transport,
-  },
-  "sideChat.updateDebugSettings": {
-    artifacts: {
-      contract: "sideChatUpdateDebugSettingsContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sideChat.updateDebugSettings"]',
-      leaf: "sideChatUpdateDebugSettingsCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sideChat.updateDebugSettings"]',
-      mock: "sideChatUpdateDebugSettingsCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sideChat.updateDebugSettings",
-      webFallback: "generatedNativeWebFallbacks.sideChatUpdateDebugSettings",
-    },
-    bridge: sideChatUpdateDebugSettingsCapability.bridge,
-    channel: sideChatUpdateDebugSettingsCapability.channel,
-    handler: sideChatUpdateDebugSettingsCapability.handler,
-    id: sideChatUpdateDebugSettingsCapability.id,
-    payloadClass: sideChatUpdateDebugSettingsCapability.payloadClass,
-    permission: sideChatUpdateDebugSettingsCapability.permission,
-    sessionAdmission: sideChatUpdateDebugSettingsCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatUpdateDebugSettingsCapability.sessionAdmissionRationale,
-    transport: sideChatUpdateDebugSettingsCapability.transport,
-  },
-  "sideChat.resetDebugSettings": {
-    artifacts: {
-      contract: "sideChatResetDebugSettingsContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sideChat.resetDebugSettings"]',
-      leaf: "sideChatResetDebugSettingsCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sideChat.resetDebugSettings"]',
-      mock: "sideChatResetDebugSettingsCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sideChat.resetDebugSettings",
-      webFallback: "generatedNativeWebFallbacks.sideChatResetDebugSettings",
-    },
-    bridge: sideChatResetDebugSettingsCapability.bridge,
-    channel: sideChatResetDebugSettingsCapability.channel,
-    handler: sideChatResetDebugSettingsCapability.handler,
-    id: sideChatResetDebugSettingsCapability.id,
-    payloadClass: sideChatResetDebugSettingsCapability.payloadClass,
-    permission: sideChatResetDebugSettingsCapability.permission,
-    sessionAdmission: sideChatResetDebugSettingsCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatResetDebugSettingsCapability.sessionAdmissionRationale,
-    transport: sideChatResetDebugSettingsCapability.transport,
-  },
-  "sideChat.setContentSize": {
-    artifacts: {
-      contract: "sideChatSetContentSizeContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sideChat.setContentSize"]',
-      leaf: "sideChatSetContentSizeCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sideChat.setContentSize"]',
-      mock: "sideChatSetContentSizeCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sideChat.setContentSize",
-      webFallback: "generatedNativeWebFallbacks.sideChatSetContentSize",
-    },
-    bridge: sideChatSetContentSizeCapability.bridge,
-    channel: sideChatSetContentSizeCapability.channel,
-    handler: sideChatSetContentSizeCapability.handler,
-    id: sideChatSetContentSizeCapability.id,
-    payloadClass: sideChatSetContentSizeCapability.payloadClass,
-    permission: sideChatSetContentSizeCapability.permission,
-    sessionAdmission: sideChatSetContentSizeCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatSetContentSizeCapability.sessionAdmissionRationale,
-    transport: sideChatSetContentSizeCapability.transport,
-  },
-  "sideChat.setInteractiveProgress": {
-    artifacts: {
-      contract: "sideChatSetInteractiveProgressContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sideChat.setInteractiveProgress"]',
-      leaf: "sideChatSetInteractiveProgressCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sideChat.setInteractiveProgress"]',
-      mock: "sideChatSetInteractiveProgressCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sideChat.setInteractiveProgress",
-      webFallback: "generatedNativeWebFallbacks.sideChatSetInteractiveProgress",
-    },
-    bridge: sideChatSetInteractiveProgressCapability.bridge,
-    channel: sideChatSetInteractiveProgressCapability.channel,
-    handler: sideChatSetInteractiveProgressCapability.handler,
-    id: sideChatSetInteractiveProgressCapability.id,
-    payloadClass: sideChatSetInteractiveProgressCapability.payloadClass,
-    permission: sideChatSetInteractiveProgressCapability.permission,
-    sessionAdmission: sideChatSetInteractiveProgressCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatSetInteractiveProgressCapability.sessionAdmissionRationale,
-    transport: sideChatSetInteractiveProgressCapability.transport,
-  },
-  "sideChat.finishInteractiveProgress": {
-    artifacts: {
-      contract: "sideChatFinishInteractiveProgressContract",
-      handlerType:
-        'NativeCapabilityHandlerTypeMap["sideChat.finishInteractiveProgress"]',
-      leaf: "sideChatFinishInteractiveProgressCapability",
-      mainBinding:
-        'generatedNativeMainBindingsById["sideChat.finishInteractiveProgress"]',
-      mock: "sideChatFinishInteractiveProgressCapability.mock",
-      preloadBinding:
-        "generatedNativePreloadBindings.sideChat.finishInteractiveProgress",
-      webFallback: "generatedNativeWebFallbacks.sideChatFinishInteractiveProgress",
-    },
-    bridge: sideChatFinishInteractiveProgressCapability.bridge,
-    channel: sideChatFinishInteractiveProgressCapability.channel,
-    handler: sideChatFinishInteractiveProgressCapability.handler,
-    id: sideChatFinishInteractiveProgressCapability.id,
-    payloadClass: sideChatFinishInteractiveProgressCapability.payloadClass,
-    permission: sideChatFinishInteractiveProgressCapability.permission,
-    sessionAdmission: sideChatFinishInteractiveProgressCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatFinishInteractiveProgressCapability.sessionAdmissionRationale,
-    transport: sideChatFinishInteractiveProgressCapability.transport,
-  },
-  "sideChat.updateShortcut": {
-    artifacts: {
-      contract: "sideChatUpdateShortcutContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sideChat.updateShortcut"]',
-      leaf: "sideChatUpdateShortcutCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sideChat.updateShortcut"]',
-      mock: "sideChatUpdateShortcutCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sideChat.updateShortcut",
-      webFallback: "generatedNativeWebFallbacks.sideChatUpdateShortcut",
-    },
-    bridge: sideChatUpdateShortcutCapability.bridge,
-    channel: sideChatUpdateShortcutCapability.channel,
-    handler: sideChatUpdateShortcutCapability.handler,
-    id: sideChatUpdateShortcutCapability.id,
-    payloadClass: sideChatUpdateShortcutCapability.payloadClass,
-    permission: sideChatUpdateShortcutCapability.permission,
-    sessionAdmission: sideChatUpdateShortcutCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatUpdateShortcutCapability.sessionAdmissionRationale,
-    transport: sideChatUpdateShortcutCapability.transport,
-  },
-  "sideChat.close": {
-    artifacts: {
-      contract: "sideChatCloseContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sideChat.close"]',
-      leaf: "sideChatCloseCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sideChat.close"]',
-      mock: "sideChatCloseCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sideChat.close",
-      webFallback: "generatedNativeWebFallbacks.sideChatClose",
-    },
-    bridge: sideChatCloseCapability.bridge,
-    channel: sideChatCloseCapability.channel,
-    handler: sideChatCloseCapability.handler,
-    id: sideChatCloseCapability.id,
-    payloadClass: sideChatCloseCapability.payloadClass,
-    permission: sideChatCloseCapability.permission,
-    sessionAdmission: sideChatCloseCapability.sessionAdmission,
-    sessionAdmissionRationale: sideChatCloseCapability.sessionAdmissionRationale,
-    transport: sideChatCloseCapability.transport,
-  },
-  "sideChat.openSettings": {
-    artifacts: {
-      contract: "sideChatOpenSettingsContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sideChat.openSettings"]',
-      leaf: "sideChatOpenSettingsCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sideChat.openSettings"]',
-      mock: "sideChatOpenSettingsCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sideChat.openSettings",
-      webFallback: "generatedNativeWebFallbacks.sideChatOpenSettings",
-    },
-    bridge: sideChatOpenSettingsCapability.bridge,
-    channel: sideChatOpenSettingsCapability.channel,
-    handler: sideChatOpenSettingsCapability.handler,
-    id: sideChatOpenSettingsCapability.id,
-    payloadClass: sideChatOpenSettingsCapability.payloadClass,
-    permission: sideChatOpenSettingsCapability.permission,
-    sessionAdmission: sideChatOpenSettingsCapability.sessionAdmission,
-    sessionAdmissionRationale: sideChatOpenSettingsCapability.sessionAdmissionRationale,
-    transport: sideChatOpenSettingsCapability.transport,
-  },
-  "sideChat.openTestWindow": {
-    artifacts: {
-      contract: "sideChatOpenTestWindowContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sideChat.openTestWindow"]',
-      leaf: "sideChatOpenTestWindowCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sideChat.openTestWindow"]',
-      mock: "sideChatOpenTestWindowCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sideChat.openTestWindow",
-      webFallback: "generatedNativeWebFallbacks.sideChatOpenTestWindow",
-    },
-    bridge: sideChatOpenTestWindowCapability.bridge,
-    channel: sideChatOpenTestWindowCapability.channel,
-    handler: sideChatOpenTestWindowCapability.handler,
-    id: sideChatOpenTestWindowCapability.id,
-    payloadClass: sideChatOpenTestWindowCapability.payloadClass,
-    permission: sideChatOpenTestWindowCapability.permission,
-    sessionAdmission: sideChatOpenTestWindowCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatOpenTestWindowCapability.sessionAdmissionRationale,
-    transport: sideChatOpenTestWindowCapability.transport,
-  },
-  "sideChat.closeTestWindow": {
-    artifacts: {
-      contract: "sideChatCloseTestWindowContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["sideChat.closeTestWindow"]',
-      leaf: "sideChatCloseTestWindowCapability",
-      mainBinding: 'generatedNativeMainBindingsById["sideChat.closeTestWindow"]',
-      mock: "sideChatCloseTestWindowCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.sideChat.closeTestWindow",
-      webFallback: "generatedNativeWebFallbacks.sideChatCloseTestWindow",
-    },
-    bridge: sideChatCloseTestWindowCapability.bridge,
-    channel: sideChatCloseTestWindowCapability.channel,
-    handler: sideChatCloseTestWindowCapability.handler,
-    id: sideChatCloseTestWindowCapability.id,
-    payloadClass: sideChatCloseTestWindowCapability.payloadClass,
-    permission: sideChatCloseTestWindowCapability.permission,
-    sessionAdmission: sideChatCloseTestWindowCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      sideChatCloseTestWindowCapability.sessionAdmissionRationale,
-    transport: sideChatCloseTestWindowCapability.transport,
-  },
-  "chat.retain": {
-    artifacts: {
-      contract: "chatRetainContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.retain"]',
-      leaf: "chatRetainCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.retain"]',
-      mock: "chatRetainCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.retain",
-      webFallback: "generatedNativeWebFallbacks.chatRetain",
-    },
-    bridge: chatRetainCapability.bridge,
-    channel: chatRetainCapability.channel,
-    handler: chatRetainCapability.handler,
-    id: chatRetainCapability.id,
-    payloadClass: chatRetainCapability.payloadClass,
-    permission: chatRetainCapability.permission,
-    sessionAdmission: chatRetainCapability.sessionAdmission,
-    transport: chatRetainCapability.transport,
-  },
-  "chat.release": {
-    artifacts: {
-      contract: "chatReleaseContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.release"]',
-      leaf: "chatReleaseCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.release"]',
-      mock: "chatReleaseCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.release",
-      webFallback: "generatedNativeWebFallbacks.chatRelease",
-    },
-    bridge: chatReleaseCapability.bridge,
-    channel: chatReleaseCapability.channel,
-    handler: chatReleaseCapability.handler,
-    id: chatReleaseCapability.id,
-    payloadClass: chatReleaseCapability.payloadClass,
-    permission: chatReleaseCapability.permission,
-    sessionAdmission: chatReleaseCapability.sessionAdmission,
-    transport: chatReleaseCapability.transport,
-  },
-  "chat.clearPresentation": {
-    artifacts: {
-      contract: "chatClearPresentationContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.clearPresentation"]',
-      leaf: "chatClearPresentationCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.clearPresentation"]',
-      mock: "chatClearPresentationCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.clearPresentation",
-      webFallback: "generatedNativeWebFallbacks.chatClearPresentation",
-    },
-    bridge: chatClearPresentationCapability.bridge,
-    channel: chatClearPresentationCapability.channel,
-    handler: chatClearPresentationCapability.handler,
-    id: chatClearPresentationCapability.id,
-    payloadClass: chatClearPresentationCapability.payloadClass,
-    permission: chatClearPresentationCapability.permission,
-    sessionAdmission: chatClearPresentationCapability.sessionAdmission,
-    transport: chatClearPresentationCapability.transport,
-  },
-  "chat.setDraft": {
-    artifacts: {
-      contract: "chatSetDraftContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.setDraft"]',
-      leaf: "chatSetDraftCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.setDraft"]',
-      mock: "chatSetDraftCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.setDraft",
-      webFallback: "generatedNativeWebFallbacks.chatSetDraft",
-    },
-    bridge: chatSetDraftCapability.bridge,
-    channel: chatSetDraftCapability.channel,
-    handler: chatSetDraftCapability.handler,
-    id: chatSetDraftCapability.id,
-    payloadClass: chatSetDraftCapability.payloadClass,
-    permission: chatSetDraftCapability.permission,
-    sessionAdmission: chatSetDraftCapability.sessionAdmission,
-    transport: chatSetDraftCapability.transport,
-  },
-  "chat.beginSendIntent": {
-    artifacts: {
-      contract: "chatBeginSendIntentContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.beginSendIntent"]',
-      leaf: "chatBeginSendIntentCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.beginSendIntent"]',
-      mock: "chatBeginSendIntentCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.beginSendIntent",
-      webFallback: "generatedNativeWebFallbacks.chatBeginSendIntent",
-    },
-    bridge: chatBeginSendIntentCapability.bridge,
-    channel: chatBeginSendIntentCapability.channel,
-    handler: chatBeginSendIntentCapability.handler,
-    id: chatBeginSendIntentCapability.id,
-    payloadClass: chatBeginSendIntentCapability.payloadClass,
-    permission: chatBeginSendIntentCapability.permission,
-    sessionAdmission: chatBeginSendIntentCapability.sessionAdmission,
-    transport: chatBeginSendIntentCapability.transport,
-  },
-  "chat.cancelSendIntent": {
-    artifacts: {
-      contract: "chatCancelSendIntentContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.cancelSendIntent"]',
-      leaf: "chatCancelSendIntentCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.cancelSendIntent"]',
-      mock: "chatCancelSendIntentCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.cancelSendIntent",
-      webFallback: "generatedNativeWebFallbacks.chatCancelSendIntent",
-    },
-    bridge: chatCancelSendIntentCapability.bridge,
-    channel: chatCancelSendIntentCapability.channel,
-    handler: chatCancelSendIntentCapability.handler,
-    id: chatCancelSendIntentCapability.id,
-    payloadClass: chatCancelSendIntentCapability.payloadClass,
-    permission: chatCancelSendIntentCapability.permission,
-    sessionAdmission: chatCancelSendIntentCapability.sessionAdmission,
-    transport: chatCancelSendIntentCapability.transport,
-  },
-  "chat.send": {
-    artifacts: {
-      contract: "chatSendContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.send"]',
-      leaf: "chatSendCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.send"]',
-      mock: "chatSendCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.send",
-      webFallback: "generatedNativeWebFallbacks.chatSend",
-    },
-    bridge: chatSendCapability.bridge,
-    channel: chatSendCapability.channel,
-    handler: chatSendCapability.handler,
-    id: chatSendCapability.id,
-    payloadClass: chatSendCapability.payloadClass,
-    permission: chatSendCapability.permission,
-    sessionAdmission: chatSendCapability.sessionAdmission,
-    transport: chatSendCapability.transport,
-  },
-  "chat.retry": {
-    artifacts: {
-      contract: "chatRetryContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.retry"]',
-      leaf: "chatRetryCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.retry"]',
-      mock: "chatRetryCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.retry",
-      webFallback: "generatedNativeWebFallbacks.chatRetry",
-    },
-    bridge: chatRetryCapability.bridge,
-    channel: chatRetryCapability.channel,
-    handler: chatRetryCapability.handler,
-    id: chatRetryCapability.id,
-    payloadClass: chatRetryCapability.payloadClass,
-    permission: chatRetryCapability.permission,
-    sessionAdmission: chatRetryCapability.sessionAdmission,
-    transport: chatRetryCapability.transport,
-  },
-  "chat.discard": {
-    artifacts: {
-      contract: "chatDiscardContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.discard"]',
-      leaf: "chatDiscardCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.discard"]',
-      mock: "chatDiscardCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.discard",
-      webFallback: "generatedNativeWebFallbacks.chatDiscard",
-    },
-    bridge: chatDiscardCapability.bridge,
-    channel: chatDiscardCapability.channel,
-    handler: chatDiscardCapability.handler,
-    id: chatDiscardCapability.id,
-    payloadClass: chatDiscardCapability.payloadClass,
-    permission: chatDiscardCapability.permission,
-    sessionAdmission: chatDiscardCapability.sessionAdmission,
-    transport: chatDiscardCapability.transport,
-  },
-  "chat.acceptTaskReview": {
-    artifacts: {
-      contract: "chatAcceptTaskReviewContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.acceptTaskReview"]',
-      leaf: "chatAcceptTaskReviewCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.acceptTaskReview"]',
-      mock: "chatAcceptTaskReviewCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.acceptTaskReview",
-      webFallback: "generatedNativeWebFallbacks.chatAcceptTaskReview",
-    },
-    bridge: chatAcceptTaskReviewCapability.bridge,
-    channel: chatAcceptTaskReviewCapability.channel,
-    handler: chatAcceptTaskReviewCapability.handler,
-    id: chatAcceptTaskReviewCapability.id,
-    payloadClass: chatAcceptTaskReviewCapability.payloadClass,
-    permission: chatAcceptTaskReviewCapability.permission,
-    sessionAdmission: chatAcceptTaskReviewCapability.sessionAdmission,
-    transport: chatAcceptTaskReviewCapability.transport,
-  },
-  "chat.refresh": {
-    artifacts: {
-      contract: "chatRefreshContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.refresh"]',
-      leaf: "chatRefreshCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.refresh"]',
-      mock: "chatRefreshCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.refresh",
-      webFallback: "generatedNativeWebFallbacks.chatRefresh",
-    },
-    bridge: chatRefreshCapability.bridge,
-    channel: chatRefreshCapability.channel,
-    handler: chatRefreshCapability.handler,
-    id: chatRefreshCapability.id,
-    payloadClass: chatRefreshCapability.payloadClass,
-    permission: chatRefreshCapability.permission,
-    sessionAdmission: chatRefreshCapability.sessionAdmission,
-    transport: chatRefreshCapability.transport,
-  },
-  "chat.attach": {
-    artifacts: {
-      contract: "chatAttachContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.attach"]',
-      leaf: "chatAttachCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.attach"]',
-      mock: "chatAttachCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.attach",
-      webFallback: "generatedNativeWebFallbacks.chatAttach",
-    },
-    bridge: chatAttachCapability.bridge,
-    channel: chatAttachCapability.channel,
-    handler: chatAttachCapability.handler,
-    id: chatAttachCapability.id,
-    payloadClass: chatAttachCapability.payloadClass,
-    permission: chatAttachCapability.permission,
-    sessionAdmission: chatAttachCapability.sessionAdmission,
-    transport: chatAttachCapability.transport,
-  },
-  "chat.attachLocalFiles": {
-    artifacts: {
-      contract: "chatAttachLocalFilesContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.attachLocalFiles"]',
-      leaf: "chatAttachLocalFilesCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.attachLocalFiles"]',
-      mock: "chatAttachLocalFilesCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.attachLocalFiles",
-      webFallback: "generatedNativeWebFallbacks.chatAttachLocalFiles",
-    },
-    bridge: chatAttachLocalFilesCapability.bridge,
-    channel: chatAttachLocalFilesCapability.channel,
-    handler: chatAttachLocalFilesCapability.handler,
-    id: chatAttachLocalFilesCapability.id,
-    payloadClass: chatAttachLocalFilesCapability.payloadClass,
-    permission: chatAttachLocalFilesCapability.permission,
-    sessionAdmission: chatAttachLocalFilesCapability.sessionAdmission,
-    transport: chatAttachLocalFilesCapability.transport,
-  },
   "chat.pickAttachments": {
     artifacts: {
       contract: "chatPickAttachmentsContract",
@@ -7436,139 +5146,6 @@ export const generatedNativeCapabilityIndex = {
     permission: chatPickAttachmentsCapability.permission,
     sessionAdmission: chatPickAttachmentsCapability.sessionAdmission,
     transport: chatPickAttachmentsCapability.transport,
-  },
-  "chat.presentInSideChat": {
-    artifacts: {
-      contract: "chatPresentInSideChatContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.presentInSideChat"]',
-      leaf: "chatPresentInSideChatCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.presentInSideChat"]',
-      mock: "chatPresentInSideChatCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.presentInSideChat",
-      webFallback: "generatedNativeWebFallbacks.chatPresentInSideChat",
-    },
-    bridge: chatPresentInSideChatCapability.bridge,
-    channel: chatPresentInSideChatCapability.channel,
-    handler: chatPresentInSideChatCapability.handler,
-    id: chatPresentInSideChatCapability.id,
-    payloadClass: chatPresentInSideChatCapability.payloadClass,
-    permission: chatPresentInSideChatCapability.permission,
-    sessionAdmission: chatPresentInSideChatCapability.sessionAdmission,
-    transport: chatPresentInSideChatCapability.transport,
-  },
-  "chat.resolveWorkspaceChat": {
-    artifacts: {
-      contract: "chatResolveWorkspaceChatContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.resolveWorkspaceChat"]',
-      leaf: "chatResolveWorkspaceChatCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.resolveWorkspaceChat"]',
-      mock: "chatResolveWorkspaceChatCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.resolveWorkspaceChat",
-      webFallback: "generatedNativeWebFallbacks.chatResolveWorkspaceChat",
-    },
-    bridge: chatResolveWorkspaceChatCapability.bridge,
-    channel: chatResolveWorkspaceChatCapability.channel,
-    handler: chatResolveWorkspaceChatCapability.handler,
-    id: chatResolveWorkspaceChatCapability.id,
-    payloadClass: chatResolveWorkspaceChatCapability.payloadClass,
-    permission: chatResolveWorkspaceChatCapability.permission,
-    sessionAdmission: chatResolveWorkspaceChatCapability.sessionAdmission,
-    transport: chatResolveWorkspaceChatCapability.transport,
-  },
-  "chat.listSkills": {
-    artifacts: {
-      contract: "chatListSkillsContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.listSkills"]',
-      leaf: "chatListSkillsCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.listSkills"]',
-      mock: "chatListSkillsCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.listSkills",
-      webFallback: "generatedNativeWebFallbacks.chatListSkills",
-    },
-    bridge: chatListSkillsCapability.bridge,
-    channel: chatListSkillsCapability.channel,
-    handler: chatListSkillsCapability.handler,
-    id: chatListSkillsCapability.id,
-    payloadClass: chatListSkillsCapability.payloadClass,
-    permission: chatListSkillsCapability.permission,
-    sessionAdmission: chatListSkillsCapability.sessionAdmission,
-    transport: chatListSkillsCapability.transport,
-  },
-  "chat.readGroupImage": {
-    artifacts: {
-      contract: "chatReadGroupImageContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.readGroupImage"]',
-      leaf: "chatReadGroupImageCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.readGroupImage"]',
-      mock: "chatReadGroupImageCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.readGroupImage",
-      webFallback: "generatedNativeWebFallbacks.chatReadGroupImage",
-    },
-    bridge: chatReadGroupImageCapability.bridge,
-    channel: chatReadGroupImageCapability.channel,
-    handler: chatReadGroupImageCapability.handler,
-    id: chatReadGroupImageCapability.id,
-    payloadClass: chatReadGroupImageCapability.payloadClass,
-    permission: chatReadGroupImageCapability.permission,
-    sessionAdmission: chatReadGroupImageCapability.sessionAdmission,
-    transport: chatReadGroupImageCapability.transport,
-  },
-  "chat.removeAttachment": {
-    artifacts: {
-      contract: "chatRemoveAttachmentContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.removeAttachment"]',
-      leaf: "chatRemoveAttachmentCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.removeAttachment"]',
-      mock: "chatRemoveAttachmentCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.removeAttachment",
-      webFallback: "generatedNativeWebFallbacks.chatRemoveAttachment",
-    },
-    bridge: chatRemoveAttachmentCapability.bridge,
-    channel: chatRemoveAttachmentCapability.channel,
-    handler: chatRemoveAttachmentCapability.handler,
-    id: chatRemoveAttachmentCapability.id,
-    payloadClass: chatRemoveAttachmentCapability.payloadClass,
-    permission: chatRemoveAttachmentCapability.permission,
-    sessionAdmission: chatRemoveAttachmentCapability.sessionAdmission,
-    transport: chatRemoveAttachmentCapability.transport,
-  },
-  "chat.retryAttachment": {
-    artifacts: {
-      contract: "chatRetryAttachmentContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.retryAttachment"]',
-      leaf: "chatRetryAttachmentCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.retryAttachment"]',
-      mock: "chatRetryAttachmentCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.retryAttachment",
-      webFallback: "generatedNativeWebFallbacks.chatRetryAttachment",
-    },
-    bridge: chatRetryAttachmentCapability.bridge,
-    channel: chatRetryAttachmentCapability.channel,
-    handler: chatRetryAttachmentCapability.handler,
-    id: chatRetryAttachmentCapability.id,
-    payloadClass: chatRetryAttachmentCapability.payloadClass,
-    permission: chatRetryAttachmentCapability.permission,
-    sessionAdmission: chatRetryAttachmentCapability.sessionAdmission,
-    transport: chatRetryAttachmentCapability.transport,
-  },
-  "chat.acknowledgeIntakeFailures": {
-    artifacts: {
-      contract: "chatAcknowledgeIntakeFailuresContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["chat.acknowledgeIntakeFailures"]',
-      leaf: "chatAcknowledgeIntakeFailuresCapability",
-      mainBinding: 'generatedNativeMainBindingsById["chat.acknowledgeIntakeFailures"]',
-      mock: "chatAcknowledgeIntakeFailuresCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.chat.acknowledgeIntakeFailures",
-      webFallback: "generatedNativeWebFallbacks.chatAcknowledgeIntakeFailures",
-    },
-    bridge: chatAcknowledgeIntakeFailuresCapability.bridge,
-    channel: chatAcknowledgeIntakeFailuresCapability.channel,
-    handler: chatAcknowledgeIntakeFailuresCapability.handler,
-    id: chatAcknowledgeIntakeFailuresCapability.id,
-    payloadClass: chatAcknowledgeIntakeFailuresCapability.payloadClass,
-    permission: chatAcknowledgeIntakeFailuresCapability.permission,
-    sessionAdmission: chatAcknowledgeIntakeFailuresCapability.sessionAdmission,
-    transport: chatAcknowledgeIntakeFailuresCapability.transport,
   },
   "audioCapture.state": {
     artifacts: {
@@ -7831,112 +5408,6 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale: meetingPresenceIconCapability.sessionAdmissionRationale,
     transport: meetingPresenceIconCapability.transport,
   },
-  "meetingRecorder.state": {
-    artifacts: {
-      contract: "meetingRecorderStateContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["meetingRecorder.state"]',
-      leaf: "meetingRecorderStateCapability",
-      mainBinding: 'generatedNativeMainBindingsById["meetingRecorder.state"]',
-      mock: "meetingRecorderStateCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.meetingRecorder.state",
-      webFallback: "generatedNativeWebFallbacks.meetingRecorderState",
-    },
-    bridge: meetingRecorderStateCapability.bridge,
-    channel: meetingRecorderStateCapability.channel,
-    handler: meetingRecorderStateCapability.handler,
-    id: meetingRecorderStateCapability.id,
-    payloadClass: meetingRecorderStateCapability.payloadClass,
-    permission: meetingRecorderStateCapability.permission,
-    sessionAdmission: meetingRecorderStateCapability.sessionAdmission,
-    sessionAdmissionRationale: meetingRecorderStateCapability.sessionAdmissionRationale,
-    transport: meetingRecorderStateCapability.transport,
-  },
-  "meetingRecorder.action": {
-    artifacts: {
-      contract: "meetingRecorderActionContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["meetingRecorder.action"]',
-      leaf: "meetingRecorderActionCapability",
-      mainBinding: 'generatedNativeMainBindingsById["meetingRecorder.action"]',
-      mock: "meetingRecorderActionCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.meetingRecorder.action",
-      webFallback: "generatedNativeWebFallbacks.meetingRecorderAction",
-    },
-    bridge: meetingRecorderActionCapability.bridge,
-    channel: meetingRecorderActionCapability.channel,
-    handler: meetingRecorderActionCapability.handler,
-    id: meetingRecorderActionCapability.id,
-    payloadClass: meetingRecorderActionCapability.payloadClass,
-    permission: meetingRecorderActionCapability.permission,
-    sessionAdmission: meetingRecorderActionCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      meetingRecorderActionCapability.sessionAdmissionRationale,
-    transport: meetingRecorderActionCapability.transport,
-  },
-  "meetingRecorder.retryTaskSync": {
-    artifacts: {
-      contract: "meetingRecorderRetryTaskSyncContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["meetingRecorder.retryTaskSync"]',
-      leaf: "meetingRecorderRetryTaskSyncCapability",
-      mainBinding: 'generatedNativeMainBindingsById["meetingRecorder.retryTaskSync"]',
-      mock: "meetingRecorderRetryTaskSyncCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.meetingRecorder.retryTaskSync",
-      webFallback: "generatedNativeWebFallbacks.meetingRecorderRetryTaskSync",
-    },
-    bridge: meetingRecorderRetryTaskSyncCapability.bridge,
-    channel: meetingRecorderRetryTaskSyncCapability.channel,
-    handler: meetingRecorderRetryTaskSyncCapability.handler,
-    id: meetingRecorderRetryTaskSyncCapability.id,
-    payloadClass: meetingRecorderRetryTaskSyncCapability.payloadClass,
-    permission: meetingRecorderRetryTaskSyncCapability.permission,
-    sessionAdmission: meetingRecorderRetryTaskSyncCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      meetingRecorderRetryTaskSyncCapability.sessionAdmissionRationale,
-    transport: meetingRecorderRetryTaskSyncCapability.transport,
-  },
-  "meetingRecorder.selectMicrophone": {
-    artifacts: {
-      contract: "meetingRecorderSelectMicrophoneContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["meetingRecorder.selectMicrophone"]',
-      leaf: "meetingRecorderSelectMicrophoneCapability",
-      mainBinding:
-        'generatedNativeMainBindingsById["meetingRecorder.selectMicrophone"]',
-      mock: "meetingRecorderSelectMicrophoneCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.meetingRecorder.selectMicrophone",
-      webFallback: "generatedNativeWebFallbacks.meetingRecorderSelectMicrophone",
-    },
-    bridge: meetingRecorderSelectMicrophoneCapability.bridge,
-    channel: meetingRecorderSelectMicrophoneCapability.channel,
-    handler: meetingRecorderSelectMicrophoneCapability.handler,
-    id: meetingRecorderSelectMicrophoneCapability.id,
-    payloadClass: meetingRecorderSelectMicrophoneCapability.payloadClass,
-    permission: meetingRecorderSelectMicrophoneCapability.permission,
-    sessionAdmission: meetingRecorderSelectMicrophoneCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      meetingRecorderSelectMicrophoneCapability.sessionAdmissionRationale,
-    transport: meetingRecorderSelectMicrophoneCapability.transport,
-  },
-  "meetingRecorder.acknowledgeSaved": {
-    artifacts: {
-      contract: "meetingRecorderAcknowledgeSavedContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["meetingRecorder.acknowledgeSaved"]',
-      leaf: "meetingRecorderAcknowledgeSavedCapability",
-      mainBinding:
-        'generatedNativeMainBindingsById["meetingRecorder.acknowledgeSaved"]',
-      mock: "meetingRecorderAcknowledgeSavedCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.meetingRecorder.acknowledgeSaved",
-      webFallback: "generatedNativeWebFallbacks.meetingRecorderAcknowledgeSaved",
-    },
-    bridge: meetingRecorderAcknowledgeSavedCapability.bridge,
-    channel: meetingRecorderAcknowledgeSavedCapability.channel,
-    handler: meetingRecorderAcknowledgeSavedCapability.handler,
-    id: meetingRecorderAcknowledgeSavedCapability.id,
-    payloadClass: meetingRecorderAcknowledgeSavedCapability.payloadClass,
-    permission: meetingRecorderAcknowledgeSavedCapability.permission,
-    sessionAdmission: meetingRecorderAcknowledgeSavedCapability.sessionAdmission,
-    sessionAdmissionRationale:
-      meetingRecorderAcknowledgeSavedCapability.sessionAdmissionRationale,
-    transport: meetingRecorderAcknowledgeSavedCapability.transport,
-  },
   "meetingRecorder.setInteractive": {
     artifacts: {
       contract: "meetingRecorderSetInteractiveContract",
@@ -8060,46 +5531,6 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale: airDropPreviewCapability.sessionAdmissionRationale,
     transport: airDropPreviewCapability.transport,
   },
-  "driveCatalog.query": {
-    artifacts: {
-      contract: "driveCatalogQueryContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["driveCatalog.query"]',
-      leaf: "driveCatalogQueryCapability",
-      mainBinding: 'generatedNativeMainBindingsById["driveCatalog.query"]',
-      mock: "driveCatalogQueryCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.driveCatalog.query",
-      webFallback: "generatedNativeWebFallbacks.driveCatalogQuery",
-    },
-    bridge: driveCatalogQueryCapability.bridge,
-    channel: driveCatalogQueryCapability.channel,
-    handler: driveCatalogQueryCapability.handler,
-    id: driveCatalogQueryCapability.id,
-    payloadClass: driveCatalogQueryCapability.payloadClass,
-    permission: driveCatalogQueryCapability.permission,
-    sessionAdmission: driveCatalogQueryCapability.sessionAdmission,
-    sessionAdmissionRationale: driveCatalogQueryCapability.sessionAdmissionRationale,
-    transport: driveCatalogQueryCapability.transport,
-  },
-  "driveCatalog.state": {
-    artifacts: {
-      contract: "driveCatalogStateContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["driveCatalog.state"]',
-      leaf: "driveCatalogStateCapability",
-      mainBinding: 'generatedNativeMainBindingsById["driveCatalog.state"]',
-      mock: "driveCatalogStateCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.driveCatalog.state",
-      webFallback: "generatedNativeWebFallbacks.driveCatalogState",
-    },
-    bridge: driveCatalogStateCapability.bridge,
-    channel: driveCatalogStateCapability.channel,
-    handler: driveCatalogStateCapability.handler,
-    id: driveCatalogStateCapability.id,
-    payloadClass: driveCatalogStateCapability.payloadClass,
-    permission: driveCatalogStateCapability.permission,
-    sessionAdmission: driveCatalogStateCapability.sessionAdmission,
-    sessionAdmissionRationale: driveCatalogStateCapability.sessionAdmissionRationale,
-    transport: driveCatalogStateCapability.transport,
-  },
   "synchronicity.state": {
     artifacts: {
       contract: "synchronicityStateContract",
@@ -8181,6 +5612,27 @@ export const generatedNativeCapabilityIndex = {
       synchronicitySaveDownloadCapability.sessionAdmissionRationale,
     transport: synchronicitySaveDownloadCapability.transport,
   },
+  "synchronicity.openStream": {
+    artifacts: {
+      contract: "synchronicityOpenStreamContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["synchronicity.openStream"]',
+      leaf: "synchronicityOpenStreamCapability",
+      mainBinding: 'generatedNativeMainBindingsById["synchronicity.openStream"]',
+      mock: "synchronicityOpenStreamCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.synchronicity.openStream",
+      webFallback: "generatedNativeWebFallbacks.synchronicityOpenStream",
+    },
+    bridge: synchronicityOpenStreamCapability.bridge,
+    channel: synchronicityOpenStreamCapability.channel,
+    handler: synchronicityOpenStreamCapability.handler,
+    id: synchronicityOpenStreamCapability.id,
+    payloadClass: synchronicityOpenStreamCapability.payloadClass,
+    permission: synchronicityOpenStreamCapability.permission,
+    sessionAdmission: synchronicityOpenStreamCapability.sessionAdmission,
+    sessionAdmissionRationale:
+      synchronicityOpenStreamCapability.sessionAdmissionRationale,
+    transport: synchronicityOpenStreamCapability.transport,
+  },
   "synchronicity.openLocalRoot": {
     artifacts: {
       contract: "synchronicityOpenLocalRootContract",
@@ -8243,26 +5695,26 @@ export const generatedNativeCapabilityIndex = {
     sessionAdmissionRationale: synchronicityWriteCapability.sessionAdmissionRationale,
     transport: synchronicityWriteCapability.transport,
   },
-  "synchronicity.importFile": {
+  "synchronicity.stageImport": {
     artifacts: {
-      contract: "synchronicityImportFileContract",
-      handlerType: 'NativeCapabilityHandlerTypeMap["synchronicity.importFile"]',
-      leaf: "synchronicityImportFileCapability",
-      mainBinding: 'generatedNativeMainBindingsById["synchronicity.importFile"]',
-      mock: "synchronicityImportFileCapability.mock",
-      preloadBinding: "generatedNativePreloadBindings.synchronicity.importFile",
-      webFallback: "generatedNativeWebFallbacks.synchronicityImportFile",
+      contract: "synchronicityStageImportContract",
+      handlerType: 'NativeCapabilityHandlerTypeMap["synchronicity.stageImport"]',
+      leaf: "synchronicityStageImportCapability",
+      mainBinding: 'generatedNativeMainBindingsById["synchronicity.stageImport"]',
+      mock: "synchronicityStageImportCapability.mock",
+      preloadBinding: "generatedNativePreloadBindings.synchronicity.stageImport",
+      webFallback: "generatedNativeWebFallbacks.synchronicityStageImport",
     },
-    bridge: synchronicityImportFileCapability.bridge,
-    channel: synchronicityImportFileCapability.channel,
-    handler: synchronicityImportFileCapability.handler,
-    id: synchronicityImportFileCapability.id,
-    payloadClass: synchronicityImportFileCapability.payloadClass,
-    permission: synchronicityImportFileCapability.permission,
-    sessionAdmission: synchronicityImportFileCapability.sessionAdmission,
+    bridge: synchronicityStageImportCapability.bridge,
+    channel: synchronicityStageImportCapability.channel,
+    handler: synchronicityStageImportCapability.handler,
+    id: synchronicityStageImportCapability.id,
+    payloadClass: synchronicityStageImportCapability.payloadClass,
+    permission: synchronicityStageImportCapability.permission,
+    sessionAdmission: synchronicityStageImportCapability.sessionAdmission,
     sessionAdmissionRationale:
-      synchronicityImportFileCapability.sessionAdmissionRationale,
-    transport: synchronicityImportFileCapability.transport,
+      synchronicityStageImportCapability.sessionAdmissionRationale,
+    transport: synchronicityStageImportCapability.transport,
   },
   "synchronicity.delete": {
     artifacts: {
@@ -8615,6 +6067,16 @@ export const generatedNativeEventIndex = {
     permission: surfacesWindowFullScreenChangedEvent.permission,
     target: surfacesWindowFullScreenChangedEvent.target,
   },
+  "surfaces.windowMaximized.changed": {
+    artifacts: {
+      leaf: "surfacesWindowMaximizedChangedEvent",
+      mock: "surfacesWindowMaximizedChangedEvent.mock",
+    },
+    channel: surfacesWindowMaximizedChangedEvent.channel,
+    id: surfacesWindowMaximizedChangedEvent.id,
+    permission: surfacesWindowMaximizedChangedEvent.permission,
+    target: surfacesWindowMaximizedChangedEvent.target,
+  },
   "onboarding.window.changed": {
     artifacts: {
       leaf: "onboardingWindowChangedEvent",
@@ -8655,46 +6117,6 @@ export const generatedNativeEventIndex = {
     permission: sessionStateChangedEvent.permission,
     target: sessionStateChangedEvent.target,
   },
-  "sessionHistory.state.changed": {
-    artifacts: {
-      leaf: "sessionHistoryStateChangedEvent",
-      mock: "sessionHistoryStateChangedEvent.mock",
-    },
-    channel: sessionHistoryStateChangedEvent.channel,
-    id: sessionHistoryStateChangedEvent.id,
-    permission: sessionHistoryStateChangedEvent.permission,
-    target: sessionHistoryStateChangedEvent.target,
-  },
-  "productInbox.state.changed": {
-    artifacts: {
-      leaf: "productInboxStateChangedEvent",
-      mock: "productInboxStateChangedEvent.mock",
-    },
-    channel: productInboxStateChangedEvent.channel,
-    id: productInboxStateChangedEvent.id,
-    permission: productInboxStateChangedEvent.permission,
-    target: productInboxStateChangedEvent.target,
-  },
-  "chat.state.changed": {
-    artifacts: {
-      leaf: "chatStateChangedEvent",
-      mock: "chatStateChangedEvent.mock",
-    },
-    channel: chatStateChangedEvent.channel,
-    id: chatStateChangedEvent.id,
-    permission: chatStateChangedEvent.permission,
-    target: chatStateChangedEvent.target,
-  },
-  "chat.drafts.changed": {
-    artifacts: {
-      leaf: "chatDraftsChangedEvent",
-      mock: "chatDraftsChangedEvent.mock",
-    },
-    channel: chatDraftsChangedEvent.channel,
-    id: chatDraftsChangedEvent.id,
-    permission: chatDraftsChangedEvent.permission,
-    target: chatDraftsChangedEvent.target,
-  },
   "messageNotifications.event": {
     artifacts: {
       leaf: "messageNotificationsEvent",
@@ -8704,26 +6126,6 @@ export const generatedNativeEventIndex = {
     id: messageNotificationsEvent.id,
     permission: messageNotificationsEvent.permission,
     target: messageNotificationsEvent.target,
-  },
-  "sideChat.presentation.changed": {
-    artifacts: {
-      leaf: "sideChatPresentationChangedEvent",
-      mock: "sideChatPresentationChangedEvent.mock",
-    },
-    channel: sideChatPresentationChangedEvent.channel,
-    id: sideChatPresentationChangedEvent.id,
-    permission: sideChatPresentationChangedEvent.permission,
-    target: sideChatPresentationChangedEvent.target,
-  },
-  "sideChat.debugSettings.changed": {
-    artifacts: {
-      leaf: "sideChatDebugSettingsChangedEvent",
-      mock: "sideChatDebugSettingsChangedEvent.mock",
-    },
-    channel: sideChatDebugSettingsChangedEvent.channel,
-    id: sideChatDebugSettingsChangedEvent.id,
-    permission: sideChatDebugSettingsChangedEvent.permission,
-    target: sideChatDebugSettingsChangedEvent.target,
   },
   "computeNode.state.changed": {
     artifacts: {
@@ -8755,16 +6157,6 @@ export const generatedNativeEventIndex = {
     permission: meetingPresenceStateChangedEvent.permission,
     target: meetingPresenceStateChangedEvent.target,
   },
-  "meetingRecorder.state.changed": {
-    artifacts: {
-      leaf: "meetingRecorderStateChangedEvent",
-      mock: "meetingRecorderStateChangedEvent.mock",
-    },
-    channel: meetingRecorderStateChangedEvent.channel,
-    id: meetingRecorderStateChangedEvent.id,
-    permission: meetingRecorderStateChangedEvent.permission,
-    target: meetingRecorderStateChangedEvent.target,
-  },
   "surfaces.windowResizeSettled": {
     artifacts: {
       leaf: "surfacesWindowResizeSettledEvent",
@@ -8784,16 +6176,6 @@ export const generatedNativeEventIndex = {
     id: airDropStateChangedEvent.id,
     permission: airDropStateChangedEvent.permission,
     target: airDropStateChangedEvent.target,
-  },
-  "driveCatalog.state.changed": {
-    artifacts: {
-      leaf: "driveCatalogChangedEvent",
-      mock: "driveCatalogChangedEvent.mock",
-    },
-    channel: driveCatalogChangedEvent.channel,
-    id: driveCatalogChangedEvent.id,
-    permission: driveCatalogChangedEvent.permission,
-    target: driveCatalogChangedEvent.target,
   },
 } as const;
 
@@ -8921,6 +6303,31 @@ export const generatedNativeStateIndex = {
       target: surfacesWindowFullScreenStateLeaf.subscribe.target,
     },
   },
+  "surfaces.windowMaximized": {
+    artifacts: {
+      get: "generatedNativeStateBindings.surfaces.windowMaximized.get",
+      leaf: "surfacesWindowMaximizedStateLeaf",
+      mock: "surfacesWindowMaximizedStateLeaf.mock",
+      subscribe: "generatedNativeStateBindings.surfaces.windowMaximized.subscribe",
+      webFallback: "surfacesWindowMaximizedStateLeaf.webFallback",
+    },
+    bridge: surfacesWindowMaximizedStateLeaf.bridge,
+    get: {
+      channel: surfacesWindowMaximizedStateLeaf.get.channel,
+      id: surfacesWindowMaximizedStateLeaf.get.id,
+      permission: surfacesWindowMaximizedStateLeaf.get.permission,
+      sessionAdmission: surfacesWindowMaximizedStateLeaf.get.sessionAdmission,
+      sessionAdmissionRationale:
+        surfacesWindowMaximizedStateLeaf.get.sessionAdmissionRationale,
+    },
+    id: surfacesWindowMaximizedStateLeaf.id,
+    subscribe: {
+      channel: surfacesWindowMaximizedStateLeaf.subscribe.channel,
+      id: surfacesWindowMaximizedStateLeaf.subscribe.id,
+      permission: surfacesWindowMaximizedStateLeaf.subscribe.permission,
+      target: surfacesWindowMaximizedStateLeaf.subscribe.target,
+    },
+  },
   "onboarding.window": {
     artifacts: {
       get: "generatedNativeStateBindings.onboarding.window.get",
@@ -8968,152 +6375,6 @@ export const generatedNativeStateIndex = {
       id: sessionStateLeaf.subscribe.id,
       permission: sessionStateLeaf.subscribe.permission,
       target: sessionStateLeaf.subscribe.target,
-    },
-  },
-  "sessionHistory.state": {
-    artifacts: {
-      get: "generatedNativeStateBindings.sessionHistory.state.get",
-      leaf: "sessionHistoryStateLeaf",
-      mock: "sessionHistoryStateLeaf.mock",
-      subscribe: "generatedNativeStateBindings.sessionHistory.state.subscribe",
-      webFallback: "sessionHistoryStateLeaf.webFallback",
-    },
-    bridge: sessionHistoryStateLeaf.bridge,
-    get: {
-      channel: sessionHistoryStateLeaf.get.channel,
-      id: sessionHistoryStateLeaf.get.id,
-      permission: sessionHistoryStateLeaf.get.permission,
-      sessionAdmission: sessionHistoryStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale: sessionHistoryStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: sessionHistoryStateLeaf.id,
-    subscribe: {
-      channel: sessionHistoryStateLeaf.subscribe.channel,
-      id: sessionHistoryStateLeaf.subscribe.id,
-      permission: sessionHistoryStateLeaf.subscribe.permission,
-      target: sessionHistoryStateLeaf.subscribe.target,
-    },
-  },
-  "productInbox.state": {
-    artifacts: {
-      get: "generatedNativeStateBindings.productInbox.state.get",
-      leaf: "productInboxStateLeaf",
-      mock: "productInboxStateLeaf.mock",
-      subscribe: "generatedNativeStateBindings.productInbox.state.subscribe",
-      webFallback: "productInboxStateLeaf.webFallback",
-    },
-    bridge: productInboxStateLeaf.bridge,
-    get: {
-      channel: productInboxStateLeaf.get.channel,
-      id: productInboxStateLeaf.get.id,
-      permission: productInboxStateLeaf.get.permission,
-      sessionAdmission: productInboxStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale: productInboxStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: productInboxStateLeaf.id,
-    subscribe: {
-      channel: productInboxStateLeaf.subscribe.channel,
-      id: productInboxStateLeaf.subscribe.id,
-      permission: productInboxStateLeaf.subscribe.permission,
-      target: productInboxStateLeaf.subscribe.target,
-    },
-  },
-  "chat.state": {
-    artifacts: {
-      get: "generatedNativeStateBindings.chat.state.get",
-      leaf: "chatStateLeaf",
-      mock: "chatStateLeaf.mock",
-      subscribe: "generatedNativeStateBindings.chat.state.subscribe",
-      webFallback: "chatStateLeaf.webFallback",
-    },
-    bridge: chatStateLeaf.bridge,
-    get: {
-      channel: chatStateLeaf.get.channel,
-      id: chatStateLeaf.get.id,
-      permission: chatStateLeaf.get.permission,
-      sessionAdmission: chatStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale: chatStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: chatStateLeaf.id,
-    subscribe: {
-      channel: chatStateLeaf.subscribe.channel,
-      id: chatStateLeaf.subscribe.id,
-      permission: chatStateLeaf.subscribe.permission,
-      target: chatStateLeaf.subscribe.target,
-    },
-  },
-  "chat.drafts": {
-    artifacts: {
-      get: "generatedNativeStateBindings.chat.drafts.get",
-      leaf: "chatDraftsLeaf",
-      mock: "chatDraftsLeaf.mock",
-      subscribe: "generatedNativeStateBindings.chat.drafts.subscribe",
-      webFallback: "chatDraftsLeaf.webFallback",
-    },
-    bridge: chatDraftsLeaf.bridge,
-    get: {
-      channel: chatDraftsLeaf.get.channel,
-      id: chatDraftsLeaf.get.id,
-      permission: chatDraftsLeaf.get.permission,
-      sessionAdmission: chatDraftsLeaf.get.sessionAdmission,
-      sessionAdmissionRationale: chatDraftsLeaf.get.sessionAdmissionRationale,
-    },
-    id: chatDraftsLeaf.id,
-    subscribe: {
-      channel: chatDraftsLeaf.subscribe.channel,
-      id: chatDraftsLeaf.subscribe.id,
-      permission: chatDraftsLeaf.subscribe.permission,
-      target: chatDraftsLeaf.subscribe.target,
-    },
-  },
-  "sideChat.presentation": {
-    artifacts: {
-      get: "generatedNativeStateBindings.sideChat.presentation.get",
-      leaf: "sideChatPresentationStateLeaf",
-      mock: "sideChatPresentationStateLeaf.mock",
-      subscribe: "generatedNativeStateBindings.sideChat.presentation.subscribe",
-      webFallback: "sideChatPresentationStateLeaf.webFallback",
-    },
-    bridge: sideChatPresentationStateLeaf.bridge,
-    get: {
-      channel: sideChatPresentationStateLeaf.get.channel,
-      id: sideChatPresentationStateLeaf.get.id,
-      permission: sideChatPresentationStateLeaf.get.permission,
-      sessionAdmission: sideChatPresentationStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale:
-        sideChatPresentationStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: sideChatPresentationStateLeaf.id,
-    subscribe: {
-      channel: sideChatPresentationStateLeaf.subscribe.channel,
-      id: sideChatPresentationStateLeaf.subscribe.id,
-      permission: sideChatPresentationStateLeaf.subscribe.permission,
-      target: sideChatPresentationStateLeaf.subscribe.target,
-    },
-  },
-  "sideChat.debugSettings": {
-    artifacts: {
-      get: "generatedNativeStateBindings.sideChat.debugSettings.get",
-      leaf: "sideChatDebugSettingsStateLeaf",
-      mock: "sideChatDebugSettingsStateLeaf.mock",
-      subscribe: "generatedNativeStateBindings.sideChat.debugSettings.subscribe",
-      webFallback: "sideChatDebugSettingsStateLeaf.webFallback",
-    },
-    bridge: sideChatDebugSettingsStateLeaf.bridge,
-    get: {
-      channel: sideChatDebugSettingsStateLeaf.get.channel,
-      id: sideChatDebugSettingsStateLeaf.get.id,
-      permission: sideChatDebugSettingsStateLeaf.get.permission,
-      sessionAdmission: sideChatDebugSettingsStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale:
-        sideChatDebugSettingsStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: sideChatDebugSettingsStateLeaf.id,
-    subscribe: {
-      channel: sideChatDebugSettingsStateLeaf.subscribe.channel,
-      id: sideChatDebugSettingsStateLeaf.subscribe.id,
-      permission: sideChatDebugSettingsStateLeaf.subscribe.permission,
-      target: sideChatDebugSettingsStateLeaf.subscribe.target,
     },
   },
   "computeNode.state": {
@@ -9188,30 +6449,6 @@ export const generatedNativeStateIndex = {
       target: meetingPresenceStateLeaf.subscribe.target,
     },
   },
-  "meetingRecorder.state": {
-    artifacts: {
-      get: "generatedNativeStateBindings.meetingRecorder.state.get",
-      leaf: "meetingRecorderStateLeaf",
-      mock: "meetingRecorderStateLeaf.mock",
-      subscribe: "generatedNativeStateBindings.meetingRecorder.state.subscribe",
-      webFallback: "meetingRecorderStateLeaf.webFallback",
-    },
-    bridge: meetingRecorderStateLeaf.bridge,
-    get: {
-      channel: meetingRecorderStateLeaf.get.channel,
-      id: meetingRecorderStateLeaf.get.id,
-      permission: meetingRecorderStateLeaf.get.permission,
-      sessionAdmission: meetingRecorderStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale: meetingRecorderStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: meetingRecorderStateLeaf.id,
-    subscribe: {
-      channel: meetingRecorderStateLeaf.subscribe.channel,
-      id: meetingRecorderStateLeaf.subscribe.id,
-      permission: meetingRecorderStateLeaf.subscribe.permission,
-      target: meetingRecorderStateLeaf.subscribe.target,
-    },
-  },
   "airDrop.state": {
     artifacts: {
       get: "generatedNativeStateBindings.airDrop.state.get",
@@ -9234,30 +6471,6 @@ export const generatedNativeStateIndex = {
       id: airDropStateLeaf.subscribe.id,
       permission: airDropStateLeaf.subscribe.permission,
       target: airDropStateLeaf.subscribe.target,
-    },
-  },
-  "driveCatalog.state": {
-    artifacts: {
-      get: "generatedNativeStateBindings.driveCatalog.state.get",
-      leaf: "driveCatalogStateLeaf",
-      mock: "driveCatalogStateLeaf.mock",
-      subscribe: "generatedNativeStateBindings.driveCatalog.state.subscribe",
-      webFallback: "driveCatalogStateLeaf.webFallback",
-    },
-    bridge: driveCatalogStateLeaf.bridge,
-    get: {
-      channel: driveCatalogStateLeaf.get.channel,
-      id: driveCatalogStateLeaf.get.id,
-      permission: driveCatalogStateLeaf.get.permission,
-      sessionAdmission: driveCatalogStateLeaf.get.sessionAdmission,
-      sessionAdmissionRationale: driveCatalogStateLeaf.get.sessionAdmissionRationale,
-    },
-    id: driveCatalogStateLeaf.id,
-    subscribe: {
-      channel: driveCatalogStateLeaf.subscribe.channel,
-      id: driveCatalogStateLeaf.subscribe.id,
-      permission: driveCatalogStateLeaf.subscribe.permission,
-      target: driveCatalogStateLeaf.subscribe.target,
     },
   },
 } as const;
@@ -9305,6 +6518,10 @@ export const notchStopContract = generatedNativeCapabilityContracts.notchStop;
 export const surfacesStateContract = generatedNativeCapabilityContracts.surfacesState;
 export const surfacesWindowFullScreenContract =
   generatedNativeCapabilityContracts.surfacesWindowFullScreen;
+export const surfacesWindowMaximizedContract =
+  generatedNativeCapabilityContracts.surfacesWindowMaximized;
+export const surfacesWindowControlContract =
+  generatedNativeCapabilityContracts.surfacesWindowControl;
 export const windowsCreateContract = generatedNativeCapabilityContracts.windowsCreate;
 export const windowsFocusContract = generatedNativeCapabilityContracts.windowsFocus;
 export const windowsCloseContract = generatedNativeCapabilityContracts.windowsClose;
@@ -9324,20 +6541,6 @@ export const clipboardWriteTextContract =
   generatedNativeCapabilityContracts.clipboardWriteText;
 export const clipboardWriteImageContract =
   generatedNativeCapabilityContracts.clipboardWriteImage;
-export const subscriptionAuthorizationStartContract =
-  generatedNativeCapabilityContracts.subscriptionAuthorizationStart;
-export const tokenDanceAuthorizationStartContract =
-  generatedNativeCapabilityContracts.tokenDanceAuthorizationStart;
-export const tokenDanceAuthorizationStatusContract =
-  generatedNativeCapabilityContracts.tokenDanceAuthorizationStatus;
-export const tokenDanceAuthorizationSaveContract =
-  generatedNativeCapabilityContracts.tokenDanceAuthorizationSave;
-export const tokenDanceAuthorizationCancelContract =
-  generatedNativeCapabilityContracts.tokenDanceAuthorizationCancel;
-export const subscriptionAuthorizationStatusContract =
-  generatedNativeCapabilityContracts.subscriptionAuthorizationStatus;
-export const subscriptionAuthorizationCancelContract =
-  generatedNativeCapabilityContracts.subscriptionAuthorizationCancel;
 export const shellOpenExternalContract =
   generatedNativeCapabilityContracts.shellOpenExternal;
 export const filesSaveDownloadContract =
@@ -9364,32 +6567,24 @@ export const browserSidebarCloseContract =
   generatedNativeCapabilityContracts.browserSidebarClose;
 export const browserSidebarInspectContract =
   generatedNativeCapabilityContracts.browserSidebarInspect;
+export const browserSidebarDismissPasskeyContract =
+  generatedNativeCapabilityContracts.browserSidebarDismissPasskey;
 export const browserSidebarShowPermissionsContract =
   generatedNativeCapabilityContracts.browserSidebarShowPermissions;
+export const browserSidebarListImportProfilesContract =
+  generatedNativeCapabilityContracts.browserSidebarListImportProfiles;
+export const browserSidebarImportCookiesContract =
+  generatedNativeCapabilityContracts.browserSidebarImportCookies;
 export const sitePermissionMenuStateContract =
   generatedNativeCapabilityContracts.sitePermissionMenuState;
 export const sitePermissionMenuActContract =
   generatedNativeCapabilityContracts.sitePermissionMenuAct;
 export const peersConnectContract = generatedNativeCapabilityContracts.peersConnect;
+export const coreOpenContract = generatedNativeCapabilityContracts.coreOpen;
 export const sessionStateContract = generatedNativeCapabilityContracts.sessionState;
-export const sessionRequestEmailLoginContract =
-  generatedNativeCapabilityContracts.sessionRequestEmailLogin;
-export const sessionVerifyEmailLoginContract =
-  generatedNativeCapabilityContracts.sessionVerifyEmailLogin;
-export const sessionSignInWithGoogleContract =
-  generatedNativeCapabilityContracts.sessionSignInWithGoogle;
-export const sessionVerifyGoogleLinkContract =
-  generatedNativeCapabilityContracts.sessionVerifyGoogleLink;
-export const sessionCancelAuthAttemptContract =
-  generatedNativeCapabilityContracts.sessionCancelAuthAttempt;
-export const sessionReconcileContract =
-  generatedNativeCapabilityContracts.sessionReconcile;
-export const sessionSignOutContract = generatedNativeCapabilityContracts.sessionSignOut;
 export const localFilesPickContract = generatedNativeCapabilityContracts.localFilesPick;
 export const localFilesPreviewContract =
   generatedNativeCapabilityContracts.localFilesPreview;
-export const localDataStatusContract =
-  generatedNativeCapabilityContracts.localDataStatus;
 export const transportStatusContract =
   generatedNativeCapabilityContracts.transportStatus;
 export const computeNodeStateContract =
@@ -9424,80 +6619,8 @@ export const computeNodeRemoveContract =
   generatedNativeCapabilityContracts.computeNodeRemove;
 export const computeNodeAbandonContract =
   generatedNativeCapabilityContracts.computeNodeAbandon;
-export const sessionHistoryStateContract =
-  generatedNativeCapabilityContracts.sessionHistoryState;
-export const sessionHistoryLoadContract =
-  generatedNativeCapabilityContracts.sessionHistoryLoad;
-export const sessionHistoryRetainContract =
-  generatedNativeCapabilityContracts.sessionHistoryRetain;
-export const sessionHistoryReleaseContract =
-  generatedNativeCapabilityContracts.sessionHistoryRelease;
-export const productInboxStateContract =
-  generatedNativeCapabilityContracts.productInboxState;
-export const productInboxRetainContract =
-  generatedNativeCapabilityContracts.productInboxRetain;
-export const productInboxReleaseContract =
-  generatedNativeCapabilityContracts.productInboxRelease;
-export const productInboxRefreshContract =
-  generatedNativeCapabilityContracts.productInboxRefresh;
-export const chatStateContract = generatedNativeCapabilityContracts.chatState;
-export const chatDraftsContract = generatedNativeCapabilityContracts.chatDrafts;
-export const sideChatPresentationContract =
-  generatedNativeCapabilityContracts.sideChatPresentation;
-export const sideChatDebugSettingsContract =
-  generatedNativeCapabilityContracts.sideChatDebugSettings;
-export const sideChatUpdateDebugSettingsContract =
-  generatedNativeCapabilityContracts.sideChatUpdateDebugSettings;
-export const sideChatResetDebugSettingsContract =
-  generatedNativeCapabilityContracts.sideChatResetDebugSettings;
-export const sideChatSetContentSizeContract =
-  generatedNativeCapabilityContracts.sideChatSetContentSize;
-export const sideChatSetInteractiveProgressContract =
-  generatedNativeCapabilityContracts.sideChatSetInteractiveProgress;
-export const sideChatFinishInteractiveProgressContract =
-  generatedNativeCapabilityContracts.sideChatFinishInteractiveProgress;
-export const sideChatUpdateShortcutContract =
-  generatedNativeCapabilityContracts.sideChatUpdateShortcut;
-export const sideChatCloseContract = generatedNativeCapabilityContracts.sideChatClose;
-export const sideChatOpenSettingsContract =
-  generatedNativeCapabilityContracts.sideChatOpenSettings;
-export const sideChatOpenTestWindowContract =
-  generatedNativeCapabilityContracts.sideChatOpenTestWindow;
-export const sideChatCloseTestWindowContract =
-  generatedNativeCapabilityContracts.sideChatCloseTestWindow;
-export const chatRetainContract = generatedNativeCapabilityContracts.chatRetain;
-export const chatReleaseContract = generatedNativeCapabilityContracts.chatRelease;
-export const chatClearPresentationContract =
-  generatedNativeCapabilityContracts.chatClearPresentation;
-export const chatSetDraftContract = generatedNativeCapabilityContracts.chatSetDraft;
-export const chatBeginSendIntentContract =
-  generatedNativeCapabilityContracts.chatBeginSendIntent;
-export const chatCancelSendIntentContract =
-  generatedNativeCapabilityContracts.chatCancelSendIntent;
-export const chatSendContract = generatedNativeCapabilityContracts.chatSend;
-export const chatRetryContract = generatedNativeCapabilityContracts.chatRetry;
-export const chatDiscardContract = generatedNativeCapabilityContracts.chatDiscard;
-export const chatAcceptTaskReviewContract =
-  generatedNativeCapabilityContracts.chatAcceptTaskReview;
-export const chatRefreshContract = generatedNativeCapabilityContracts.chatRefresh;
-export const chatAttachContract = generatedNativeCapabilityContracts.chatAttach;
-export const chatAttachLocalFilesContract =
-  generatedNativeCapabilityContracts.chatAttachLocalFiles;
 export const chatPickAttachmentsContract =
   generatedNativeCapabilityContracts.chatPickAttachments;
-export const chatPresentInSideChatContract =
-  generatedNativeCapabilityContracts.chatPresentInSideChat;
-export const chatResolveWorkspaceChatContract =
-  generatedNativeCapabilityContracts.chatResolveWorkspaceChat;
-export const chatListSkillsContract = generatedNativeCapabilityContracts.chatListSkills;
-export const chatReadGroupImageContract =
-  generatedNativeCapabilityContracts.chatReadGroupImage;
-export const chatRemoveAttachmentContract =
-  generatedNativeCapabilityContracts.chatRemoveAttachment;
-export const chatRetryAttachmentContract =
-  generatedNativeCapabilityContracts.chatRetryAttachment;
-export const chatAcknowledgeIntakeFailuresContract =
-  generatedNativeCapabilityContracts.chatAcknowledgeIntakeFailures;
 export const audioCaptureStateContract =
   generatedNativeCapabilityContracts.audioCaptureState;
 export const audioCaptureSourcesContract =
@@ -9524,16 +6647,6 @@ export const meetingPresenceStateContract =
   generatedNativeCapabilityContracts.meetingPresenceState;
 export const meetingPresenceIconContract =
   generatedNativeCapabilityContracts.meetingPresenceIcon;
-export const meetingRecorderStateContract =
-  generatedNativeCapabilityContracts.meetingRecorderState;
-export const meetingRecorderActionContract =
-  generatedNativeCapabilityContracts.meetingRecorderAction;
-export const meetingRecorderRetryTaskSyncContract =
-  generatedNativeCapabilityContracts.meetingRecorderRetryTaskSync;
-export const meetingRecorderSelectMicrophoneContract =
-  generatedNativeCapabilityContracts.meetingRecorderSelectMicrophone;
-export const meetingRecorderAcknowledgeSavedContract =
-  generatedNativeCapabilityContracts.meetingRecorderAcknowledgeSaved;
 export const meetingRecorderSetInteractiveContract =
   generatedNativeCapabilityContracts.meetingRecorderSetInteractive;
 export const meetingRecorderLayoutWindowContract =
@@ -9543,10 +6656,6 @@ export const meetingRecorderDragWindowContract =
 export const airDropStateContract = generatedNativeCapabilityContracts.airDropState;
 export const airDropActContract = generatedNativeCapabilityContracts.airDropAct;
 export const airDropPreviewContract = generatedNativeCapabilityContracts.airDropPreview;
-export const driveCatalogQueryContract =
-  generatedNativeCapabilityContracts.driveCatalogQuery;
-export const driveCatalogStateContract =
-  generatedNativeCapabilityContracts.driveCatalogState;
 export const synchronicityStateContract =
   generatedNativeCapabilityContracts.synchronicityState;
 export const synchronicityListContract =
@@ -9555,14 +6664,16 @@ export const synchronicityReadContract =
   generatedNativeCapabilityContracts.synchronicityRead;
 export const synchronicitySaveDownloadContract =
   generatedNativeCapabilityContracts.synchronicitySaveDownload;
+export const synchronicityOpenStreamContract =
+  generatedNativeCapabilityContracts.synchronicityOpenStream;
 export const synchronicityOpenLocalRootContract =
   generatedNativeCapabilityContracts.synchronicityOpenLocalRoot;
 export const synchronicityVersionsContract =
   generatedNativeCapabilityContracts.synchronicityVersions;
 export const synchronicityWriteContract =
   generatedNativeCapabilityContracts.synchronicityWrite;
-export const synchronicityImportFileContract =
-  generatedNativeCapabilityContracts.synchronicityImportFile;
+export const synchronicityStageImportContract =
+  generatedNativeCapabilityContracts.synchronicityStageImport;
 export const synchronicityDeleteContract =
   generatedNativeCapabilityContracts.synchronicityDelete;
 export const synchronicityAdoptContract =
@@ -9619,6 +6730,8 @@ export type NativeCapabilityTypeMap = {
   "notch.stop": typeof notchStopCapability;
   "surfaces.state": typeof surfacesStateCapability;
   "surfaces.windowFullScreen": typeof surfacesWindowFullScreenCapability;
+  "surfaces.windowMaximized": typeof surfacesWindowMaximizedCapability;
+  "surfaces.windowControl": typeof surfacesWindowControlCapability;
   "windows.create": typeof windowsCreateCapability;
   "windows.focus": typeof windowsFocusCapability;
   "windows.close": typeof windowsCloseCapability;
@@ -9630,13 +6743,6 @@ export type NativeCapabilityTypeMap = {
   "clipboard.readImage": typeof clipboardReadImageCapability;
   "clipboard.writeText": typeof clipboardWriteTextCapability;
   "clipboard.writeImage": typeof clipboardWriteImageCapability;
-  "subscriptionAuthorization.start": typeof subscriptionAuthorizationStartCapability;
-  "tokenDanceAuthorization.start": typeof tokenDanceAuthorizationStartCapability;
-  "tokenDanceAuthorization.status": typeof tokenDanceAuthorizationStatusCapability;
-  "tokenDanceAuthorization.save": typeof tokenDanceAuthorizationSaveCapability;
-  "tokenDanceAuthorization.cancel": typeof tokenDanceAuthorizationCancelCapability;
-  "subscriptionAuthorization.status": typeof subscriptionAuthorizationStatusCapability;
-  "subscriptionAuthorization.cancel": typeof subscriptionAuthorizationCancelCapability;
   "shell.openExternal": typeof shellOpenExternalCapability;
   "files.saveDownload": typeof filesSaveDownloadCapability;
   "files.copyDownload": typeof filesCopyDownloadCapability;
@@ -9650,21 +6756,17 @@ export type NativeCapabilityTypeMap = {
   "browserSidebar.navigate": typeof browserSidebarNavigateCapability;
   "browserSidebar.close": typeof browserSidebarCloseCapability;
   "browserSidebar.inspect": typeof browserSidebarInspectCapability;
+  "browserSidebar.dismissPasskey": typeof browserSidebarDismissPasskeyCapability;
   "browserSidebar.showPermissions": typeof browserSidebarShowPermissionsCapability;
+  "browserSidebar.listImportProfiles": typeof browserSidebarListImportProfilesCapability;
+  "browserSidebar.importCookies": typeof browserSidebarImportCookiesCapability;
   "sitePermissionMenu.state": typeof sitePermissionMenuStateCapability;
   "sitePermissionMenu.act": typeof sitePermissionMenuActCapability;
   "peers.connect": typeof peersConnectCapability;
+  "core.open": typeof coreOpenCapability;
   "session.state": typeof sessionStateCapability;
-  "session.requestEmailLogin": typeof sessionRequestEmailLoginCapability;
-  "session.verifyEmailLogin": typeof sessionVerifyEmailLoginCapability;
-  "session.signInWithGoogle": typeof sessionSignInWithGoogleCapability;
-  "session.verifyGoogleLink": typeof sessionVerifyGoogleLinkCapability;
-  "session.cancelAuthAttempt": typeof sessionCancelAuthAttemptCapability;
-  "session.reconcile": typeof sessionReconcileCapability;
-  "session.signOut": typeof sessionSignOutCapability;
   "localFiles.pick": typeof localFilesPickCapability;
   "localFiles.preview": typeof localFilesPreviewCapability;
-  "localData.status": typeof localDataStatusCapability;
   "transport.status": typeof transportStatusCapability;
   "computeNode.state": typeof computeNodeStateCapability;
   "computeNode.configure": typeof computeNodeConfigureCapability;
@@ -9683,49 +6785,7 @@ export type NativeCapabilityTypeMap = {
   "computeNode.drain": typeof computeNodeDrainCapability;
   "computeNode.remove": typeof computeNodeRemoveCapability;
   "computeNode.abandon": typeof computeNodeAbandonCapability;
-  "sessionHistory.state": typeof sessionHistoryStateCapability;
-  "sessionHistory.load": typeof sessionHistoryLoadCapability;
-  "sessionHistory.retain": typeof sessionHistoryRetainCapability;
-  "sessionHistory.release": typeof sessionHistoryReleaseCapability;
-  "productInbox.state": typeof productInboxStateCapability;
-  "productInbox.retain": typeof productInboxRetainCapability;
-  "productInbox.release": typeof productInboxReleaseCapability;
-  "productInbox.refresh": typeof productInboxRefreshCapability;
-  "chat.state": typeof chatStateCapability;
-  "chat.drafts": typeof chatDraftsCapability;
-  "sideChat.presentation": typeof sideChatPresentationCapability;
-  "sideChat.debugSettings": typeof sideChatDebugSettingsCapability;
-  "sideChat.updateDebugSettings": typeof sideChatUpdateDebugSettingsCapability;
-  "sideChat.resetDebugSettings": typeof sideChatResetDebugSettingsCapability;
-  "sideChat.setContentSize": typeof sideChatSetContentSizeCapability;
-  "sideChat.setInteractiveProgress": typeof sideChatSetInteractiveProgressCapability;
-  "sideChat.finishInteractiveProgress": typeof sideChatFinishInteractiveProgressCapability;
-  "sideChat.updateShortcut": typeof sideChatUpdateShortcutCapability;
-  "sideChat.close": typeof sideChatCloseCapability;
-  "sideChat.openSettings": typeof sideChatOpenSettingsCapability;
-  "sideChat.openTestWindow": typeof sideChatOpenTestWindowCapability;
-  "sideChat.closeTestWindow": typeof sideChatCloseTestWindowCapability;
-  "chat.retain": typeof chatRetainCapability;
-  "chat.release": typeof chatReleaseCapability;
-  "chat.clearPresentation": typeof chatClearPresentationCapability;
-  "chat.setDraft": typeof chatSetDraftCapability;
-  "chat.beginSendIntent": typeof chatBeginSendIntentCapability;
-  "chat.cancelSendIntent": typeof chatCancelSendIntentCapability;
-  "chat.send": typeof chatSendCapability;
-  "chat.retry": typeof chatRetryCapability;
-  "chat.discard": typeof chatDiscardCapability;
-  "chat.acceptTaskReview": typeof chatAcceptTaskReviewCapability;
-  "chat.refresh": typeof chatRefreshCapability;
-  "chat.attach": typeof chatAttachCapability;
-  "chat.attachLocalFiles": typeof chatAttachLocalFilesCapability;
   "chat.pickAttachments": typeof chatPickAttachmentsCapability;
-  "chat.presentInSideChat": typeof chatPresentInSideChatCapability;
-  "chat.resolveWorkspaceChat": typeof chatResolveWorkspaceChatCapability;
-  "chat.listSkills": typeof chatListSkillsCapability;
-  "chat.readGroupImage": typeof chatReadGroupImageCapability;
-  "chat.removeAttachment": typeof chatRemoveAttachmentCapability;
-  "chat.retryAttachment": typeof chatRetryAttachmentCapability;
-  "chat.acknowledgeIntakeFailures": typeof chatAcknowledgeIntakeFailuresCapability;
   "audioCapture.state": typeof audioCaptureStateCapability;
   "audioCapture.sources": typeof audioCaptureSourcesCapability;
   "audioCapture.microphones": typeof audioCaptureMicrophonesCapability;
@@ -9739,27 +6799,21 @@ export type NativeCapabilityTypeMap = {
   "audioCapture.openPermissionSettings": typeof audioCaptureOpenPermissionSettingsCapability;
   "meetingPresence.state": typeof meetingPresenceStateCapability;
   "meetingPresence.icon": typeof meetingPresenceIconCapability;
-  "meetingRecorder.state": typeof meetingRecorderStateCapability;
-  "meetingRecorder.action": typeof meetingRecorderActionCapability;
-  "meetingRecorder.retryTaskSync": typeof meetingRecorderRetryTaskSyncCapability;
-  "meetingRecorder.selectMicrophone": typeof meetingRecorderSelectMicrophoneCapability;
-  "meetingRecorder.acknowledgeSaved": typeof meetingRecorderAcknowledgeSavedCapability;
   "meetingRecorder.setInteractive": typeof meetingRecorderSetInteractiveCapability;
   "meetingRecorder.layoutWindow": typeof meetingRecorderLayoutWindowCapability;
   "meetingRecorder.dragWindow": typeof meetingRecorderDragWindowCapability;
   "airDrop.state": typeof airDropStateCapability;
   "airDrop.act": typeof airDropActCapability;
   "airDrop.preview": typeof airDropPreviewCapability;
-  "driveCatalog.query": typeof driveCatalogQueryCapability;
-  "driveCatalog.state": typeof driveCatalogStateCapability;
   "synchronicity.state": typeof synchronicityStateCapability;
   "synchronicity.list": typeof synchronicityListCapability;
   "synchronicity.read": typeof synchronicityReadCapability;
   "synchronicity.saveDownload": typeof synchronicitySaveDownloadCapability;
+  "synchronicity.openStream": typeof synchronicityOpenStreamCapability;
   "synchronicity.openLocalRoot": typeof synchronicityOpenLocalRootCapability;
   "synchronicity.versions": typeof synchronicityVersionsCapability;
   "synchronicity.write": typeof synchronicityWriteCapability;
-  "synchronicity.importFile": typeof synchronicityImportFileCapability;
+  "synchronicity.stageImport": typeof synchronicityStageImportCapability;
   "synchronicity.delete": typeof synchronicityDeleteCapability;
   "synchronicity.adopt": typeof synchronicityAdoptCapability;
   "synchronicity.scan": typeof synchronicityScanCapability;
@@ -9784,24 +6838,17 @@ export type NativeEventTypeMap = {
   "browserSidebar.openTabRequested": typeof browserSidebarOpenTabRequestedEvent;
   "surfaces.changed": typeof surfacesChangedEvent;
   "surfaces.windowFullScreen.changed": typeof surfacesWindowFullScreenChangedEvent;
+  "surfaces.windowMaximized.changed": typeof surfacesWindowMaximizedChangedEvent;
   "onboarding.window.changed": typeof onboardingWindowChangedEvent;
   "onboarding.handoff": typeof onboardingHandoffEvent;
   "notch.event": typeof notchHostEvent;
   "session.state.changed": typeof sessionStateChangedEvent;
-  "sessionHistory.state.changed": typeof sessionHistoryStateChangedEvent;
-  "productInbox.state.changed": typeof productInboxStateChangedEvent;
-  "chat.state.changed": typeof chatStateChangedEvent;
-  "chat.drafts.changed": typeof chatDraftsChangedEvent;
   "messageNotifications.event": typeof messageNotificationsEvent;
-  "sideChat.presentation.changed": typeof sideChatPresentationChangedEvent;
-  "sideChat.debugSettings.changed": typeof sideChatDebugSettingsChangedEvent;
   "computeNode.state.changed": typeof computeNodeStateChangedEvent;
   "audioCapture.state.changed": typeof audioCaptureStateChangedEvent;
   "meetingPresence.state.changed": typeof meetingPresenceStateChangedEvent;
-  "meetingRecorder.state.changed": typeof meetingRecorderStateChangedEvent;
   "surfaces.windowResizeSettled": typeof surfacesWindowResizeSettledEvent;
   "airDrop.state.changed": typeof airDropStateChangedEvent;
-  "driveCatalog.state.changed": typeof driveCatalogChangedEvent;
 };
 
 export type NativeStateTypeMap = {
@@ -9810,20 +6857,13 @@ export type NativeStateTypeMap = {
   "connectorRuntime.state": typeof connectorRuntimeStateLeaf;
   "surfaces.state": typeof surfacesStateLeaf;
   "surfaces.windowFullScreen": typeof surfacesWindowFullScreenStateLeaf;
+  "surfaces.windowMaximized": typeof surfacesWindowMaximizedStateLeaf;
   "onboarding.window": typeof onboardingWindowStateLeaf;
   "session.state": typeof sessionStateLeaf;
-  "sessionHistory.state": typeof sessionHistoryStateLeaf;
-  "productInbox.state": typeof productInboxStateLeaf;
-  "chat.state": typeof chatStateLeaf;
-  "chat.drafts": typeof chatDraftsLeaf;
-  "sideChat.presentation": typeof sideChatPresentationStateLeaf;
-  "sideChat.debugSettings": typeof sideChatDebugSettingsStateLeaf;
   "computeNode.state": typeof computeNodeStateLeaf;
   "audioCapture.state": typeof audioCaptureStateLeaf;
   "meetingPresence.state": typeof meetingPresenceStateLeaf;
-  "meetingRecorder.state": typeof meetingRecorderStateLeaf;
   "airDrop.state": typeof airDropStateLeaf;
-  "driveCatalog.state": typeof driveCatalogStateLeaf;
 };
 
 // Infer command parameters independently through the contract. Darwin tsgo
@@ -9939,6 +6979,22 @@ export type GeneratedNativeBridge = {
     stop: GeneratedNativeCommandBridgeMethod<typeof notchStopCapability>;
     onEvent: GeneratedNativeEventBridgeMethod<typeof notchHostEvent>;
   };
+  surfaces: {
+    windowControl: GeneratedNativeCommandBridgeMethod<
+      typeof surfacesWindowControlCapability
+    >;
+    state: GeneratedNativeStateBridgeMethod<typeof surfacesStateLeaf>;
+    windowFullScreen: GeneratedNativeStateBridgeMethod<
+      typeof surfacesWindowFullScreenStateLeaf
+    >;
+    windowMaximized: GeneratedNativeStateBridgeMethod<
+      typeof surfacesWindowMaximizedStateLeaf
+    >;
+    onChanged: GeneratedNativeEventBridgeMethod<typeof surfacesChangedEvent>;
+    onWindowResizeSettled: GeneratedNativeEventBridgeMethod<
+      typeof surfacesWindowResizeSettledEvent
+    >;
+  };
   windows: {
     create: GeneratedNativeCommandBridgeMethod<typeof windowsCreateCapability>;
     focus: GeneratedNativeCommandBridgeMethod<typeof windowsFocusCapability>;
@@ -9963,31 +7019,6 @@ export type GeneratedNativeBridge = {
     writeText: GeneratedNativeCommandBridgeMethod<typeof clipboardWriteTextCapability>;
     writeImage: GeneratedNativeCommandBridgeMethod<
       typeof clipboardWriteImageCapability
-    >;
-  };
-  subscriptionAuthorization: {
-    start: GeneratedNativeCommandBridgeMethod<
-      typeof subscriptionAuthorizationStartCapability
-    >;
-    status: GeneratedNativeCommandBridgeMethod<
-      typeof subscriptionAuthorizationStatusCapability
-    >;
-    cancel: GeneratedNativeCommandBridgeMethod<
-      typeof subscriptionAuthorizationCancelCapability
-    >;
-  };
-  tokenDanceAuthorization: {
-    start: GeneratedNativeCommandBridgeMethod<
-      typeof tokenDanceAuthorizationStartCapability
-    >;
-    status: GeneratedNativeCommandBridgeMethod<
-      typeof tokenDanceAuthorizationStatusCapability
-    >;
-    save: GeneratedNativeCommandBridgeMethod<
-      typeof tokenDanceAuthorizationSaveCapability
-    >;
-    cancel: GeneratedNativeCommandBridgeMethod<
-      typeof tokenDanceAuthorizationCancelCapability
     >;
   };
   shell: {
@@ -10024,8 +7055,17 @@ export type GeneratedNativeBridge = {
     >;
     close: GeneratedNativeCommandBridgeMethod<typeof browserSidebarCloseCapability>;
     inspect: GeneratedNativeCommandBridgeMethod<typeof browserSidebarInspectCapability>;
+    dismissPasskey: GeneratedNativeCommandBridgeMethod<
+      typeof browserSidebarDismissPasskeyCapability
+    >;
     showPermissions: GeneratedNativeCommandBridgeMethod<
       typeof browserSidebarShowPermissionsCapability
+    >;
+    listImportProfiles: GeneratedNativeCommandBridgeMethod<
+      typeof browserSidebarListImportProfilesCapability
+    >;
+    importCookies: GeneratedNativeCommandBridgeMethod<
+      typeof browserSidebarImportCookiesCapability
     >;
     onChanged: GeneratedNativeEventBridgeMethod<typeof browserSidebarChangedEvent>;
     onOpenTabRequested: GeneratedNativeEventBridgeMethod<
@@ -10040,32 +7080,12 @@ export type GeneratedNativeBridge = {
   peers: {
     connect: GeneratedNativeCommandBridgeMethod<typeof peersConnectCapability>;
   };
-  session: {
-    requestEmailLogin: GeneratedNativeCommandBridgeMethod<
-      typeof sessionRequestEmailLoginCapability
-    >;
-    verifyEmailLogin: GeneratedNativeCommandBridgeMethod<
-      typeof sessionVerifyEmailLoginCapability
-    >;
-    signInWithGoogle: GeneratedNativeCommandBridgeMethod<
-      typeof sessionSignInWithGoogleCapability
-    >;
-    verifyGoogleLink: GeneratedNativeCommandBridgeMethod<
-      typeof sessionVerifyGoogleLinkCapability
-    >;
-    cancelAuthAttempt: GeneratedNativeCommandBridgeMethod<
-      typeof sessionCancelAuthAttemptCapability
-    >;
-    reconcile: GeneratedNativeCommandBridgeMethod<typeof sessionReconcileCapability>;
-    signOut: GeneratedNativeCommandBridgeMethod<typeof sessionSignOutCapability>;
-    state: GeneratedNativeStateBridgeMethod<typeof sessionStateLeaf>;
+  core: {
+    open: GeneratedNativeCommandBridgeMethod<typeof coreOpenCapability>;
   };
   localFiles: {
     pick: GeneratedNativeCommandBridgeMethod<typeof localFilesPickCapability>;
     preview: GeneratedNativeCommandBridgeMethod<typeof localFilesPreviewCapability>;
-  };
-  localData: {
-    status: GeneratedNativeCommandBridgeMethod<typeof localDataStatusCapability>;
   };
   transport: {
     status: GeneratedNativeCommandBridgeMethod<typeof transportStatusCapability>;
@@ -10105,102 +7125,10 @@ export type GeneratedNativeBridge = {
     abandon: GeneratedNativeCommandBridgeMethod<typeof computeNodeAbandonCapability>;
     state: GeneratedNativeStateBridgeMethod<typeof computeNodeStateLeaf>;
   };
-  sessionHistory: {
-    load: GeneratedNativeCommandBridgeMethod<typeof sessionHistoryLoadCapability>;
-    retain: GeneratedNativeCommandBridgeMethod<typeof sessionHistoryRetainCapability>;
-    release: GeneratedNativeCommandBridgeMethod<typeof sessionHistoryReleaseCapability>;
-    state: GeneratedNativeStateBridgeMethod<typeof sessionHistoryStateLeaf>;
-  };
-  productInbox: {
-    retain: GeneratedNativeCommandBridgeMethod<typeof productInboxRetainCapability>;
-    release: GeneratedNativeCommandBridgeMethod<typeof productInboxReleaseCapability>;
-    refresh: GeneratedNativeCommandBridgeMethod<typeof productInboxRefreshCapability>;
-    state: GeneratedNativeStateBridgeMethod<typeof productInboxStateLeaf>;
-  };
-  sideChat: {
-    updateDebugSettings: GeneratedNativeCommandBridgeMethod<
-      typeof sideChatUpdateDebugSettingsCapability
-    >;
-    resetDebugSettings: GeneratedNativeCommandBridgeMethod<
-      typeof sideChatResetDebugSettingsCapability
-    >;
-    setContentSize: GeneratedNativeCommandBridgeMethod<
-      typeof sideChatSetContentSizeCapability
-    >;
-    setInteractiveProgress: GeneratedNativeCommandBridgeMethod<
-      typeof sideChatSetInteractiveProgressCapability
-    >;
-    finishInteractiveProgress: GeneratedNativeCommandBridgeMethod<
-      typeof sideChatFinishInteractiveProgressCapability
-    >;
-    updateShortcut: GeneratedNativeCommandBridgeMethod<
-      typeof sideChatUpdateShortcutCapability
-    >;
-    close: GeneratedNativeCommandBridgeMethod<typeof sideChatCloseCapability>;
-    openSettings: GeneratedNativeCommandBridgeMethod<
-      typeof sideChatOpenSettingsCapability
-    >;
-    openTestWindow: GeneratedNativeCommandBridgeMethod<
-      typeof sideChatOpenTestWindowCapability
-    >;
-    closeTestWindow: GeneratedNativeCommandBridgeMethod<
-      typeof sideChatCloseTestWindowCapability
-    >;
-    presentation: GeneratedNativeStateBridgeMethod<
-      typeof sideChatPresentationStateLeaf
-    >;
-    debugSettings: GeneratedNativeStateBridgeMethod<
-      typeof sideChatDebugSettingsStateLeaf
-    >;
-  };
   chat: {
-    retain: GeneratedNativeCommandBridgeMethod<typeof chatRetainCapability>;
-    release: GeneratedNativeCommandBridgeMethod<typeof chatReleaseCapability>;
-    clearPresentation: GeneratedNativeCommandBridgeMethod<
-      typeof chatClearPresentationCapability
-    >;
-    setDraft: GeneratedNativeCommandBridgeMethod<typeof chatSetDraftCapability>;
-    beginSendIntent: GeneratedNativeCommandBridgeMethod<
-      typeof chatBeginSendIntentCapability
-    >;
-    cancelSendIntent: GeneratedNativeCommandBridgeMethod<
-      typeof chatCancelSendIntentCapability
-    >;
-    send: GeneratedNativeCommandBridgeMethod<typeof chatSendCapability>;
-    retry: GeneratedNativeCommandBridgeMethod<typeof chatRetryCapability>;
-    discard: GeneratedNativeCommandBridgeMethod<typeof chatDiscardCapability>;
-    acceptTaskReview: GeneratedNativeCommandBridgeMethod<
-      typeof chatAcceptTaskReviewCapability
-    >;
-    refresh: GeneratedNativeCommandBridgeMethod<typeof chatRefreshCapability>;
-    attach: GeneratedNativeCommandBridgeMethod<typeof chatAttachCapability>;
-    attachLocalFiles: GeneratedNativeCommandBridgeMethod<
-      typeof chatAttachLocalFilesCapability
-    >;
     pickAttachments: GeneratedNativeCommandBridgeMethod<
       typeof chatPickAttachmentsCapability
     >;
-    presentInSideChat: GeneratedNativeCommandBridgeMethod<
-      typeof chatPresentInSideChatCapability
-    >;
-    resolveWorkspaceChat: GeneratedNativeCommandBridgeMethod<
-      typeof chatResolveWorkspaceChatCapability
-    >;
-    listSkills: GeneratedNativeCommandBridgeMethod<typeof chatListSkillsCapability>;
-    readGroupImage: GeneratedNativeCommandBridgeMethod<
-      typeof chatReadGroupImageCapability
-    >;
-    removeAttachment: GeneratedNativeCommandBridgeMethod<
-      typeof chatRemoveAttachmentCapability
-    >;
-    retryAttachment: GeneratedNativeCommandBridgeMethod<
-      typeof chatRetryAttachmentCapability
-    >;
-    acknowledgeIntakeFailures: GeneratedNativeCommandBridgeMethod<
-      typeof chatAcknowledgeIntakeFailuresCapability
-    >;
-    state: GeneratedNativeStateBridgeMethod<typeof chatStateLeaf>;
-    drafts: GeneratedNativeStateBridgeMethod<typeof chatDraftsLeaf>;
   };
   audioCapture: {
     sources: GeneratedNativeCommandBridgeMethod<typeof audioCaptureSourcesCapability>;
@@ -10228,16 +7156,6 @@ export type GeneratedNativeBridge = {
     state: GeneratedNativeStateBridgeMethod<typeof meetingPresenceStateLeaf>;
   };
   meetingRecorder: {
-    action: GeneratedNativeCommandBridgeMethod<typeof meetingRecorderActionCapability>;
-    retryTaskSync: GeneratedNativeCommandBridgeMethod<
-      typeof meetingRecorderRetryTaskSyncCapability
-    >;
-    selectMicrophone: GeneratedNativeCommandBridgeMethod<
-      typeof meetingRecorderSelectMicrophoneCapability
-    >;
-    acknowledgeSaved: GeneratedNativeCommandBridgeMethod<
-      typeof meetingRecorderAcknowledgeSavedCapability
-    >;
     setInteractive: GeneratedNativeCommandBridgeMethod<
       typeof meetingRecorderSetInteractiveCapability
     >;
@@ -10247,16 +7165,11 @@ export type GeneratedNativeBridge = {
     dragWindow: GeneratedNativeCommandBridgeMethod<
       typeof meetingRecorderDragWindowCapability
     >;
-    state: GeneratedNativeStateBridgeMethod<typeof meetingRecorderStateLeaf>;
   };
   airDrop: {
     act: GeneratedNativeCommandBridgeMethod<typeof airDropActCapability>;
     preview: GeneratedNativeCommandBridgeMethod<typeof airDropPreviewCapability>;
     state: GeneratedNativeStateBridgeMethod<typeof airDropStateLeaf>;
-  };
-  driveCatalog: {
-    query: GeneratedNativeCommandBridgeMethod<typeof driveCatalogQueryCapability>;
-    state: GeneratedNativeStateBridgeMethod<typeof driveCatalogStateLeaf>;
   };
   synchronicity: {
     state: GeneratedNativeCommandBridgeMethod<typeof synchronicityStateCapability>;
@@ -10265,6 +7178,9 @@ export type GeneratedNativeBridge = {
     saveDownload: GeneratedNativeCommandBridgeMethod<
       typeof synchronicitySaveDownloadCapability
     >;
+    openStream: GeneratedNativeCommandBridgeMethod<
+      typeof synchronicityOpenStreamCapability
+    >;
     openLocalRoot: GeneratedNativeCommandBridgeMethod<
       typeof synchronicityOpenLocalRootCapability
     >;
@@ -10272,8 +7188,8 @@ export type GeneratedNativeBridge = {
       typeof synchronicityVersionsCapability
     >;
     write: GeneratedNativeCommandBridgeMethod<typeof synchronicityWriteCapability>;
-    importFile: GeneratedNativeCommandBridgeMethod<
-      typeof synchronicityImportFileCapability
+    stageImport: GeneratedNativeCommandBridgeMethod<
+      typeof synchronicityStageImportCapability
     >;
     delete: GeneratedNativeCommandBridgeMethod<typeof synchronicityDeleteCapability>;
     adopt: GeneratedNativeCommandBridgeMethod<typeof synchronicityAdoptCapability>;
@@ -10305,15 +7221,8 @@ export type GeneratedNativeBridge = {
       typeof synchronicitySetSpaceSettingsCapability
     >;
   };
-  surfaces: {
-    state: GeneratedNativeStateBridgeMethod<typeof surfacesStateLeaf>;
-    windowFullScreen: GeneratedNativeStateBridgeMethod<
-      typeof surfacesWindowFullScreenStateLeaf
-    >;
-    onChanged: GeneratedNativeEventBridgeMethod<typeof surfacesChangedEvent>;
-    onWindowResizeSettled: GeneratedNativeEventBridgeMethod<
-      typeof surfacesWindowResizeSettledEvent
-    >;
+  session: {
+    state: GeneratedNativeStateBridgeMethod<typeof sessionStateLeaf>;
   };
   messageNotifications: {
     onEvent: GeneratedNativeEventBridgeMethod<typeof messageNotificationsEvent>;
@@ -10343,12 +7252,9 @@ export interface GeneratedNativePreloadBridgeHelpers {
     event: NativeEventLeaf<Payload>,
     listener: (payload: Payload) => void
   ): () => void;
-  importLocalFile<Output>(
-    contract: NativeCommandContract<
-      { path: string; sourcePath: string; space: string },
-      Output
-    >,
-    input: { path: string; source: unknown; space: string }
+  stageLocalFile<Output>(
+    contract: NativeCommandContract<{ sourcePath: string }, Output>,
+    input: { source: unknown }
   ): Promise<Output>;
 }
 
@@ -10456,6 +7362,26 @@ export function createGeneratedNativePreloadBridge(
       stop: () => helpers.invoke(notchStopCapability.contract, undefined),
       onEvent: (listener) => helpers.subscribe(notchHostEvent, listener),
     },
+    surfaces: {
+      windowControl: (
+        input: GeneratedNativeCommandInput<typeof surfacesWindowControlCapability>
+      ) => helpers.invoke(surfacesWindowControlCapability.contract, input),
+      state: helpers.state({
+        get: surfacesStateCapability.contract,
+        subscribe: surfacesChangedEvent,
+      }),
+      windowFullScreen: helpers.state({
+        get: surfacesWindowFullScreenCapability.contract,
+        subscribe: surfacesWindowFullScreenChangedEvent,
+      }),
+      windowMaximized: helpers.state({
+        get: surfacesWindowMaximizedCapability.contract,
+        subscribe: surfacesWindowMaximizedChangedEvent,
+      }),
+      onChanged: (listener) => helpers.subscribe(surfacesChangedEvent, listener),
+      onWindowResizeSettled: (listener) =>
+        helpers.subscribe(surfacesWindowResizeSettledEvent, listener),
+    },
     windows: {
       create: (input: GeneratedNativeCommandInput<typeof windowsCreateCapability>) =>
         helpers.invoke(windowsCreateCapability.contract, input),
@@ -10488,43 +7414,6 @@ export function createGeneratedNativePreloadBridge(
       writeImage: (
         input: GeneratedNativeCommandInput<typeof clipboardWriteImageCapability>
       ) => helpers.invoke(clipboardWriteImageCapability.contract, input),
-    },
-    subscriptionAuthorization: {
-      start: (
-        input: GeneratedNativeCommandInput<
-          typeof subscriptionAuthorizationStartCapability
-        >
-      ) => helpers.invoke(subscriptionAuthorizationStartCapability.contract, input),
-      status: (
-        input: GeneratedNativeCommandInput<
-          typeof subscriptionAuthorizationStatusCapability
-        >
-      ) => helpers.invoke(subscriptionAuthorizationStatusCapability.contract, input),
-      cancel: (
-        input: GeneratedNativeCommandInput<
-          typeof subscriptionAuthorizationCancelCapability
-        >
-      ) => helpers.invoke(subscriptionAuthorizationCancelCapability.contract, input),
-    },
-    tokenDanceAuthorization: {
-      start: (
-        input: GeneratedNativeCommandInput<
-          typeof tokenDanceAuthorizationStartCapability
-        >
-      ) => helpers.invoke(tokenDanceAuthorizationStartCapability.contract, input),
-      status: (
-        input: GeneratedNativeCommandInput<
-          typeof tokenDanceAuthorizationStatusCapability
-        >
-      ) => helpers.invoke(tokenDanceAuthorizationStatusCapability.contract, input),
-      save: (
-        input: GeneratedNativeCommandInput<typeof tokenDanceAuthorizationSaveCapability>
-      ) => helpers.invoke(tokenDanceAuthorizationSaveCapability.contract, input),
-      cancel: (
-        input: GeneratedNativeCommandInput<
-          typeof tokenDanceAuthorizationCancelCapability
-        >
-      ) => helpers.invoke(tokenDanceAuthorizationCancelCapability.contract, input),
     },
     shell: {
       openExternal: (
@@ -10571,11 +7460,21 @@ export function createGeneratedNativePreloadBridge(
       inspect: (
         input: GeneratedNativeCommandInput<typeof browserSidebarInspectCapability>
       ) => helpers.invoke(browserSidebarInspectCapability.contract, input),
+      dismissPasskey: (
+        input: GeneratedNativeCommandInput<
+          typeof browserSidebarDismissPasskeyCapability
+        >
+      ) => helpers.invoke(browserSidebarDismissPasskeyCapability.contract, input),
       showPermissions: (
         input: GeneratedNativeCommandInput<
           typeof browserSidebarShowPermissionsCapability
         >
       ) => helpers.invoke(browserSidebarShowPermissionsCapability.contract, input),
+      listImportProfiles: () =>
+        helpers.invoke(browserSidebarListImportProfilesCapability.contract, undefined),
+      importCookies: (
+        input: GeneratedNativeCommandInput<typeof browserSidebarImportCookiesCapability>
+      ) => helpers.invoke(browserSidebarImportCookiesCapability.contract, input),
       onChanged: (listener) => helpers.subscribe(browserSidebarChangedEvent, listener),
       onOpenTabRequested: (listener) =>
         helpers.subscribe(browserSidebarOpenTabRequestedEvent, listener),
@@ -10595,31 +7494,8 @@ export function createGeneratedNativePreloadBridge(
       connect: (input: GeneratedNativeCommandInput<typeof peersConnectCapability>) =>
         helpers.invoke(peersConnectCapability.contract, input),
     },
-    session: {
-      requestEmailLogin: (
-        input: GeneratedNativeCommandInput<typeof sessionRequestEmailLoginCapability>
-      ) => helpers.invoke(sessionRequestEmailLoginCapability.contract, input),
-      verifyEmailLogin: (
-        input: GeneratedNativeCommandInput<typeof sessionVerifyEmailLoginCapability>
-      ) => helpers.invoke(sessionVerifyEmailLoginCapability.contract, input),
-      signInWithGoogle: (
-        input: GeneratedNativeCommandInput<typeof sessionSignInWithGoogleCapability>
-      ) => helpers.invoke(sessionSignInWithGoogleCapability.contract, input),
-      verifyGoogleLink: (
-        input: GeneratedNativeCommandInput<typeof sessionVerifyGoogleLinkCapability>
-      ) => helpers.invoke(sessionVerifyGoogleLinkCapability.contract, input),
-      cancelAuthAttempt: (
-        input: GeneratedNativeCommandInput<typeof sessionCancelAuthAttemptCapability>
-      ) => helpers.invoke(sessionCancelAuthAttemptCapability.contract, input),
-      reconcile: (
-        input: GeneratedNativeCommandInput<typeof sessionReconcileCapability>
-      ) => helpers.invoke(sessionReconcileCapability.contract, input),
-      signOut: (input: GeneratedNativeCommandInput<typeof sessionSignOutCapability>) =>
-        helpers.invoke(sessionSignOutCapability.contract, input),
-      state: helpers.state({
-        get: sessionStateCapability.contract,
-        subscribe: sessionStateChangedEvent,
-      }),
+    core: {
+      open: () => helpers.invoke(coreOpenCapability.contract, undefined),
     },
     localFiles: {
       pick: (input: GeneratedNativeCommandInput<typeof localFilesPickCapability>) =>
@@ -10627,9 +7503,6 @@ export function createGeneratedNativePreloadBridge(
       preview: (
         input: GeneratedNativeCommandInput<typeof localFilesPreviewCapability>
       ) => helpers.invoke(localFilesPreviewCapability.contract, input),
-    },
-    localData: {
-      status: () => helpers.invoke(localDataStatusCapability.contract, undefined),
     },
     transport: {
       status: () => helpers.invoke(transportStatusCapability.contract, undefined),
@@ -10679,141 +7552,11 @@ export function createGeneratedNativePreloadBridge(
         subscribe: computeNodeStateChangedEvent,
       }),
     },
-    sessionHistory: {
-      load: (input: GeneratedNativeCommandInput<typeof sessionHistoryLoadCapability>) =>
-        helpers.invoke(sessionHistoryLoadCapability.contract, input),
-      retain: (
-        input: GeneratedNativeCommandInput<typeof sessionHistoryRetainCapability>
-      ) => helpers.invoke(sessionHistoryRetainCapability.contract, input),
-      release: (
-        input: GeneratedNativeCommandInput<typeof sessionHistoryReleaseCapability>
-      ) => helpers.invoke(sessionHistoryReleaseCapability.contract, input),
-      state: helpers.state({
-        get: sessionHistoryStateCapability.contract,
-        subscribe: sessionHistoryStateChangedEvent,
-      }),
-    },
-    productInbox: {
-      retain: (
-        input: GeneratedNativeCommandInput<typeof productInboxRetainCapability>
-      ) => helpers.invoke(productInboxRetainCapability.contract, input),
-      release: (
-        input: GeneratedNativeCommandInput<typeof productInboxReleaseCapability>
-      ) => helpers.invoke(productInboxReleaseCapability.contract, input),
-      refresh: (
-        input: GeneratedNativeCommandInput<typeof productInboxRefreshCapability>
-      ) => helpers.invoke(productInboxRefreshCapability.contract, input),
-      state: helpers.state({
-        get: productInboxStateCapability.contract,
-        subscribe: productInboxStateChangedEvent,
-      }),
-    },
-    sideChat: {
-      updateDebugSettings: (
-        input: GeneratedNativeCommandInput<typeof sideChatUpdateDebugSettingsCapability>
-      ) => helpers.invoke(sideChatUpdateDebugSettingsCapability.contract, input),
-      resetDebugSettings: () =>
-        helpers.invoke(sideChatResetDebugSettingsCapability.contract, undefined),
-      setContentSize: (
-        input: GeneratedNativeCommandInput<typeof sideChatSetContentSizeCapability>
-      ) => helpers.invoke(sideChatSetContentSizeCapability.contract, input),
-      setInteractiveProgress: (
-        input: GeneratedNativeCommandInput<
-          typeof sideChatSetInteractiveProgressCapability
-        >
-      ) => helpers.invoke(sideChatSetInteractiveProgressCapability.contract, input),
-      finishInteractiveProgress: (
-        input: GeneratedNativeCommandInput<
-          typeof sideChatFinishInteractiveProgressCapability
-        >
-      ) => helpers.invoke(sideChatFinishInteractiveProgressCapability.contract, input),
-      updateShortcut: (
-        input: GeneratedNativeCommandInput<typeof sideChatUpdateShortcutCapability>
-      ) => helpers.invoke(sideChatUpdateShortcutCapability.contract, input),
-      close: () => helpers.invoke(sideChatCloseCapability.contract, undefined),
-      openSettings: () =>
-        helpers.invoke(sideChatOpenSettingsCapability.contract, undefined),
-      openTestWindow: (
-        input: GeneratedNativeCommandInput<typeof sideChatOpenTestWindowCapability>
-      ) => helpers.invoke(sideChatOpenTestWindowCapability.contract, input),
-      closeTestWindow: () =>
-        helpers.invoke(sideChatCloseTestWindowCapability.contract, undefined),
-      presentation: helpers.state({
-        get: sideChatPresentationCapability.contract,
-        subscribe: sideChatPresentationChangedEvent,
-      }),
-      debugSettings: helpers.state({
-        get: sideChatDebugSettingsCapability.contract,
-        subscribe: sideChatDebugSettingsChangedEvent,
-      }),
-    },
     chat: {
-      retain: (input: GeneratedNativeCommandInput<typeof chatRetainCapability>) =>
-        helpers.invoke(chatRetainCapability.contract, input),
-      release: (input: GeneratedNativeCommandInput<typeof chatReleaseCapability>) =>
-        helpers.invoke(chatReleaseCapability.contract, input),
-      clearPresentation: (
-        input: GeneratedNativeCommandInput<typeof chatClearPresentationCapability>
-      ) => helpers.invoke(chatClearPresentationCapability.contract, input),
-      setDraft: (input: GeneratedNativeCommandInput<typeof chatSetDraftCapability>) =>
-        helpers.invoke(chatSetDraftCapability.contract, input),
-      beginSendIntent: (
-        input: GeneratedNativeCommandInput<typeof chatBeginSendIntentCapability>
-      ) => helpers.invoke(chatBeginSendIntentCapability.contract, input),
-      cancelSendIntent: (
-        input: GeneratedNativeCommandInput<typeof chatCancelSendIntentCapability>
-      ) => helpers.invoke(chatCancelSendIntentCapability.contract, input),
-      send: (input: GeneratedNativeCommandInput<typeof chatSendCapability>) =>
-        helpers.invoke(chatSendCapability.contract, input),
-      retry: (input: GeneratedNativeCommandInput<typeof chatRetryCapability>) =>
-        helpers.invoke(chatRetryCapability.contract, input),
-      discard: (input: GeneratedNativeCommandInput<typeof chatDiscardCapability>) =>
-        helpers.invoke(chatDiscardCapability.contract, input),
-      acceptTaskReview: (
-        input: GeneratedNativeCommandInput<typeof chatAcceptTaskReviewCapability>
-      ) => helpers.invoke(chatAcceptTaskReviewCapability.contract, input),
-      refresh: (input: GeneratedNativeCommandInput<typeof chatRefreshCapability>) =>
-        helpers.invoke(chatRefreshCapability.contract, input),
-      attach: (input: GeneratedNativeCommandInput<typeof chatAttachCapability>) =>
-        helpers.invoke(chatAttachCapability.contract, input),
-      attachLocalFiles: (
-        input: GeneratedNativeCommandInput<typeof chatAttachLocalFilesCapability>
-      ) => helpers.invoke(chatAttachLocalFilesCapability.contract, input),
       pickAttachments: (
         input: GeneratedNativeCommandInput<typeof chatPickAttachmentsCapability>
       ) =>
         helpers.prepareChatAttachments(chatPickAttachmentsCapability.contract, input),
-      presentInSideChat: (
-        input: GeneratedNativeCommandInput<typeof chatPresentInSideChatCapability>
-      ) => helpers.invoke(chatPresentInSideChatCapability.contract, input),
-      resolveWorkspaceChat: (
-        input: GeneratedNativeCommandInput<typeof chatResolveWorkspaceChatCapability>
-      ) => helpers.invoke(chatResolveWorkspaceChatCapability.contract, input),
-      listSkills: (
-        input: GeneratedNativeCommandInput<typeof chatListSkillsCapability>
-      ) => helpers.invoke(chatListSkillsCapability.contract, input),
-      readGroupImage: (
-        input: GeneratedNativeCommandInput<typeof chatReadGroupImageCapability>
-      ) => helpers.invoke(chatReadGroupImageCapability.contract, input),
-      removeAttachment: (
-        input: GeneratedNativeCommandInput<typeof chatRemoveAttachmentCapability>
-      ) => helpers.invoke(chatRemoveAttachmentCapability.contract, input),
-      retryAttachment: (
-        input: GeneratedNativeCommandInput<typeof chatRetryAttachmentCapability>
-      ) => helpers.invoke(chatRetryAttachmentCapability.contract, input),
-      acknowledgeIntakeFailures: (
-        input: GeneratedNativeCommandInput<
-          typeof chatAcknowledgeIntakeFailuresCapability
-        >
-      ) => helpers.invoke(chatAcknowledgeIntakeFailuresCapability.contract, input),
-      state: helpers.state({
-        get: chatStateCapability.contract,
-        subscribe: chatStateChangedEvent,
-      }),
-      drafts: helpers.state({
-        get: chatDraftsCapability.contract,
-        subscribe: chatDraftsChangedEvent,
-      }),
     },
     audioCapture: {
       sources: () => helpers.invoke(audioCaptureSourcesCapability.contract, undefined),
@@ -10854,21 +7597,6 @@ export function createGeneratedNativePreloadBridge(
       }),
     },
     meetingRecorder: {
-      action: (
-        input: GeneratedNativeCommandInput<typeof meetingRecorderActionCapability>
-      ) => helpers.invoke(meetingRecorderActionCapability.contract, input),
-      retryTaskSync: () =>
-        helpers.invoke(meetingRecorderRetryTaskSyncCapability.contract, undefined),
-      selectMicrophone: (
-        input: GeneratedNativeCommandInput<
-          typeof meetingRecorderSelectMicrophoneCapability
-        >
-      ) => helpers.invoke(meetingRecorderSelectMicrophoneCapability.contract, input),
-      acknowledgeSaved: (
-        input: GeneratedNativeCommandInput<
-          typeof meetingRecorderAcknowledgeSavedCapability
-        >
-      ) => helpers.invoke(meetingRecorderAcknowledgeSavedCapability.contract, input),
       setInteractive: (
         input: GeneratedNativeCommandInput<
           typeof meetingRecorderSetInteractiveCapability
@@ -10880,10 +7608,6 @@ export function createGeneratedNativePreloadBridge(
       dragWindow: (
         input: GeneratedNativeCommandInput<typeof meetingRecorderDragWindowCapability>
       ) => helpers.invoke(meetingRecorderDragWindowCapability.contract, input),
-      state: helpers.state({
-        get: meetingRecorderStateCapability.contract,
-        subscribe: meetingRecorderStateChangedEvent,
-      }),
     },
     airDrop: {
       act: (input: GeneratedNativeCommandInput<typeof airDropActCapability>) =>
@@ -10895,14 +7619,6 @@ export function createGeneratedNativePreloadBridge(
         subscribe: airDropStateChangedEvent,
       }),
     },
-    driveCatalog: {
-      query: (input: GeneratedNativeCommandInput<typeof driveCatalogQueryCapability>) =>
-        helpers.invoke(driveCatalogQueryCapability.contract, input),
-      state: helpers.state({
-        get: driveCatalogStateCapability.contract,
-        subscribe: driveCatalogChangedEvent,
-      }),
-    },
     synchronicity: {
       state: () => helpers.invoke(synchronicityStateCapability.contract, undefined),
       list: (input: GeneratedNativeCommandInput<typeof synchronicityListCapability>) =>
@@ -10912,6 +7628,9 @@ export function createGeneratedNativePreloadBridge(
       saveDownload: (
         input: GeneratedNativeCommandInput<typeof synchronicitySaveDownloadCapability>
       ) => helpers.invoke(synchronicitySaveDownloadCapability.contract, input),
+      openStream: (
+        input: GeneratedNativeCommandInput<typeof synchronicityOpenStreamCapability>
+      ) => helpers.invoke(synchronicityOpenStreamCapability.contract, input),
       openLocalRoot: () =>
         helpers.invoke(synchronicityOpenLocalRootCapability.contract, undefined),
       versions: (
@@ -10920,9 +7639,9 @@ export function createGeneratedNativePreloadBridge(
       write: (
         input: GeneratedNativeCommandInput<typeof synchronicityWriteCapability>
       ) => helpers.invoke(synchronicityWriteCapability.contract, input),
-      importFile: (
-        input: GeneratedNativeCommandInput<typeof synchronicityImportFileCapability>
-      ) => helpers.importLocalFile(synchronicityImportFileCapability.contract, input),
+      stageImport: (
+        input: GeneratedNativeCommandInput<typeof synchronicityStageImportCapability>
+      ) => helpers.stageLocalFile(synchronicityStageImportCapability.contract, input),
       delete: (
         input: GeneratedNativeCommandInput<typeof synchronicityDeleteCapability>
       ) => helpers.invoke(synchronicityDeleteCapability.contract, input),
@@ -10959,18 +7678,11 @@ export function createGeneratedNativePreloadBridge(
         >
       ) => helpers.invoke(synchronicitySetSpaceSettingsCapability.contract, input),
     },
-    surfaces: {
+    session: {
       state: helpers.state({
-        get: surfacesStateCapability.contract,
-        subscribe: surfacesChangedEvent,
+        get: sessionStateCapability.contract,
+        subscribe: sessionStateChangedEvent,
       }),
-      windowFullScreen: helpers.state({
-        get: surfacesWindowFullScreenCapability.contract,
-        subscribe: surfacesWindowFullScreenChangedEvent,
-      }),
-      onChanged: (listener) => helpers.subscribe(surfacesChangedEvent, listener),
-      onWindowResizeSettled: (listener) =>
-        helpers.subscribe(surfacesWindowResizeSettledEvent, listener),
     },
     messageNotifications: {
       onEvent: (listener) => helpers.subscribe(messageNotificationsEvent, listener),
@@ -11054,6 +7766,25 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       stop: async () => notchStopCapability.webFallback,
       onEvent: () => () => {},
     },
+    surfaces: {
+      windowControl: async (
+        _input: GeneratedNativeCommandInput<typeof surfacesWindowControlCapability>
+      ) => surfacesWindowControlCapability.webFallback,
+      state: createGeneratedWebStateBridge<
+        GeneratedNativeStateSnapshot<typeof surfacesStateLeaf>,
+        GeneratedNativeStateGetInput<typeof surfacesStateLeaf>
+      >((_input) => surfacesStateLeaf.webFallback),
+      windowFullScreen: createGeneratedWebStateBridge<
+        GeneratedNativeStateSnapshot<typeof surfacesWindowFullScreenStateLeaf>,
+        GeneratedNativeStateGetInput<typeof surfacesWindowFullScreenStateLeaf>
+      >((_input) => surfacesWindowFullScreenStateLeaf.webFallback),
+      windowMaximized: createGeneratedWebStateBridge<
+        GeneratedNativeStateSnapshot<typeof surfacesWindowMaximizedStateLeaf>,
+        GeneratedNativeStateGetInput<typeof surfacesWindowMaximizedStateLeaf>
+      >((_input) => surfacesWindowMaximizedStateLeaf.webFallback),
+      onChanged: () => () => {},
+      onWindowResizeSettled: () => () => {},
+    },
     windows: {
       create: async (
         _input: GeneratedNativeCommandInput<typeof windowsCreateCapability>
@@ -11088,45 +7819,6 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       writeImage: async (
         _input: GeneratedNativeCommandInput<typeof clipboardWriteImageCapability>
       ) => clipboardWriteImageCapability.webFallback,
-    },
-    subscriptionAuthorization: {
-      start: async (
-        _input: GeneratedNativeCommandInput<
-          typeof subscriptionAuthorizationStartCapability
-        >
-      ) => subscriptionAuthorizationStartCapability.webFallback,
-      status: async (
-        _input: GeneratedNativeCommandInput<
-          typeof subscriptionAuthorizationStatusCapability
-        >
-      ) => subscriptionAuthorizationStatusCapability.webFallback,
-      cancel: async (
-        _input: GeneratedNativeCommandInput<
-          typeof subscriptionAuthorizationCancelCapability
-        >
-      ) => subscriptionAuthorizationCancelCapability.webFallback,
-    },
-    tokenDanceAuthorization: {
-      start: async (
-        _input: GeneratedNativeCommandInput<
-          typeof tokenDanceAuthorizationStartCapability
-        >
-      ) => tokenDanceAuthorizationStartCapability.webFallback,
-      status: async (
-        _input: GeneratedNativeCommandInput<
-          typeof tokenDanceAuthorizationStatusCapability
-        >
-      ) => tokenDanceAuthorizationStatusCapability.webFallback,
-      save: async (
-        _input: GeneratedNativeCommandInput<
-          typeof tokenDanceAuthorizationSaveCapability
-        >
-      ) => tokenDanceAuthorizationSaveCapability.webFallback,
-      cancel: async (
-        _input: GeneratedNativeCommandInput<
-          typeof tokenDanceAuthorizationCancelCapability
-        >
-      ) => tokenDanceAuthorizationCancelCapability.webFallback,
     },
     shell: {
       openExternal: async (
@@ -11174,11 +7866,23 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       inspect: async (
         _input: GeneratedNativeCommandInput<typeof browserSidebarInspectCapability>
       ) => browserSidebarInspectCapability.webFallback,
+      dismissPasskey: async (
+        _input: GeneratedNativeCommandInput<
+          typeof browserSidebarDismissPasskeyCapability
+        >
+      ) => browserSidebarDismissPasskeyCapability.webFallback,
       showPermissions: async (
         _input: GeneratedNativeCommandInput<
           typeof browserSidebarShowPermissionsCapability
         >
       ) => browserSidebarShowPermissionsCapability.webFallback,
+      listImportProfiles: async () =>
+        browserSidebarListImportProfilesCapability.webFallback,
+      importCookies: async (
+        _input: GeneratedNativeCommandInput<
+          typeof browserSidebarImportCookiesCapability
+        >
+      ) => browserSidebarImportCookiesCapability.webFallback,
       onChanged: () => () => {},
       onOpenTabRequested: () => () => {},
     },
@@ -11197,32 +7901,8 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
         _input: GeneratedNativeCommandInput<typeof peersConnectCapability>
       ) => peersConnectCapability.webFallback,
     },
-    session: {
-      requestEmailLogin: async (
-        _input: GeneratedNativeCommandInput<typeof sessionRequestEmailLoginCapability>
-      ) => sessionRequestEmailLoginCapability.webFallback,
-      verifyEmailLogin: async (
-        _input: GeneratedNativeCommandInput<typeof sessionVerifyEmailLoginCapability>
-      ) => sessionVerifyEmailLoginCapability.webFallback,
-      signInWithGoogle: async (
-        _input: GeneratedNativeCommandInput<typeof sessionSignInWithGoogleCapability>
-      ) => sessionSignInWithGoogleCapability.webFallback,
-      verifyGoogleLink: async (
-        _input: GeneratedNativeCommandInput<typeof sessionVerifyGoogleLinkCapability>
-      ) => sessionVerifyGoogleLinkCapability.webFallback,
-      cancelAuthAttempt: async (
-        _input: GeneratedNativeCommandInput<typeof sessionCancelAuthAttemptCapability>
-      ) => sessionCancelAuthAttemptCapability.webFallback,
-      reconcile: async (
-        _input: GeneratedNativeCommandInput<typeof sessionReconcileCapability>
-      ) => sessionReconcileCapability.webFallback,
-      signOut: async (
-        _input: GeneratedNativeCommandInput<typeof sessionSignOutCapability>
-      ) => sessionSignOutCapability.webFallback,
-      state: createGeneratedWebStateBridge<
-        GeneratedNativeStateSnapshot<typeof sessionStateLeaf>,
-        GeneratedNativeStateGetInput<typeof sessionStateLeaf>
-      >((_input) => sessionStateLeaf.webFallback),
+    core: {
+      open: async () => coreOpenCapability.webFallback,
     },
     localFiles: {
       pick: async (
@@ -11231,9 +7911,6 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       preview: async (
         _input: GeneratedNativeCommandInput<typeof localFilesPreviewCapability>
       ) => localFilesPreviewCapability.webFallback,
-    },
-    localData: {
-      status: async () => localDataStatusCapability.webFallback,
     },
     transport: {
       status: async () => transportStatusCapability.webFallback,
@@ -11284,146 +7961,10 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
         GeneratedNativeStateGetInput<typeof computeNodeStateLeaf>
       >((_input) => computeNodeStateLeaf.webFallback),
     },
-    sessionHistory: {
-      load: async (
-        _input: GeneratedNativeCommandInput<typeof sessionHistoryLoadCapability>
-      ) => sessionHistoryLoadCapability.webFallback,
-      retain: async (
-        _input: GeneratedNativeCommandInput<typeof sessionHistoryRetainCapability>
-      ) => sessionHistoryRetainCapability.webFallback,
-      release: async (
-        _input: GeneratedNativeCommandInput<typeof sessionHistoryReleaseCapability>
-      ) => sessionHistoryReleaseCapability.webFallback,
-      state: createGeneratedWebStateBridge<
-        GeneratedNativeStateSnapshot<typeof sessionHistoryStateLeaf>,
-        GeneratedNativeStateGetInput<typeof sessionHistoryStateLeaf>
-      >((_input) => sessionHistoryStateLeaf.webFallback),
-    },
-    productInbox: {
-      retain: async (
-        _input: GeneratedNativeCommandInput<typeof productInboxRetainCapability>
-      ) => productInboxRetainCapability.webFallback,
-      release: async (
-        _input: GeneratedNativeCommandInput<typeof productInboxReleaseCapability>
-      ) => productInboxReleaseCapability.webFallback,
-      refresh: async (
-        _input: GeneratedNativeCommandInput<typeof productInboxRefreshCapability>
-      ) => productInboxRefreshCapability.webFallback,
-      state: createGeneratedWebStateBridge<
-        GeneratedNativeStateSnapshot<typeof productInboxStateLeaf>,
-        GeneratedNativeStateGetInput<typeof productInboxStateLeaf>
-      >((_input) => productInboxStateLeaf.webFallback),
-    },
-    sideChat: {
-      updateDebugSettings: async (
-        _input: GeneratedNativeCommandInput<
-          typeof sideChatUpdateDebugSettingsCapability
-        >
-      ) => sideChatUpdateDebugSettingsCapability.webFallback,
-      resetDebugSettings: async () => sideChatResetDebugSettingsCapability.webFallback,
-      setContentSize: async (
-        _input: GeneratedNativeCommandInput<typeof sideChatSetContentSizeCapability>
-      ) => sideChatSetContentSizeCapability.webFallback,
-      setInteractiveProgress: async (
-        _input: GeneratedNativeCommandInput<
-          typeof sideChatSetInteractiveProgressCapability
-        >
-      ) => sideChatSetInteractiveProgressCapability.webFallback,
-      finishInteractiveProgress: async (
-        _input: GeneratedNativeCommandInput<
-          typeof sideChatFinishInteractiveProgressCapability
-        >
-      ) => sideChatFinishInteractiveProgressCapability.webFallback,
-      updateShortcut: async (
-        _input: GeneratedNativeCommandInput<typeof sideChatUpdateShortcutCapability>
-      ) => sideChatUpdateShortcutCapability.webFallback,
-      close: async () => sideChatCloseCapability.webFallback,
-      openSettings: async () => sideChatOpenSettingsCapability.webFallback,
-      openTestWindow: async (
-        _input: GeneratedNativeCommandInput<typeof sideChatOpenTestWindowCapability>
-      ) => sideChatOpenTestWindowCapability.webFallback,
-      closeTestWindow: async () => sideChatCloseTestWindowCapability.webFallback,
-      presentation: createGeneratedWebStateBridge<
-        GeneratedNativeStateSnapshot<typeof sideChatPresentationStateLeaf>,
-        GeneratedNativeStateGetInput<typeof sideChatPresentationStateLeaf>
-      >((_input) => sideChatPresentationStateLeaf.webFallback),
-      debugSettings: createGeneratedWebStateBridge<
-        GeneratedNativeStateSnapshot<typeof sideChatDebugSettingsStateLeaf>,
-        GeneratedNativeStateGetInput<typeof sideChatDebugSettingsStateLeaf>
-      >((_input) => sideChatDebugSettingsStateLeaf.webFallback),
-    },
     chat: {
-      retain: async (
-        _input: GeneratedNativeCommandInput<typeof chatRetainCapability>
-      ) => chatRetainCapability.webFallback,
-      release: async (
-        _input: GeneratedNativeCommandInput<typeof chatReleaseCapability>
-      ) => chatReleaseCapability.webFallback,
-      clearPresentation: async (
-        _input: GeneratedNativeCommandInput<typeof chatClearPresentationCapability>
-      ) => chatClearPresentationCapability.webFallback,
-      setDraft: async (
-        _input: GeneratedNativeCommandInput<typeof chatSetDraftCapability>
-      ) => chatSetDraftCapability.webFallback,
-      beginSendIntent: async (
-        _input: GeneratedNativeCommandInput<typeof chatBeginSendIntentCapability>
-      ) => chatBeginSendIntentCapability.webFallback,
-      cancelSendIntent: async (
-        _input: GeneratedNativeCommandInput<typeof chatCancelSendIntentCapability>
-      ) => chatCancelSendIntentCapability.webFallback,
-      send: async (_input: GeneratedNativeCommandInput<typeof chatSendCapability>) =>
-        chatSendCapability.webFallback,
-      retry: async (_input: GeneratedNativeCommandInput<typeof chatRetryCapability>) =>
-        chatRetryCapability.webFallback,
-      discard: async (
-        _input: GeneratedNativeCommandInput<typeof chatDiscardCapability>
-      ) => chatDiscardCapability.webFallback,
-      acceptTaskReview: async (
-        _input: GeneratedNativeCommandInput<typeof chatAcceptTaskReviewCapability>
-      ) => chatAcceptTaskReviewCapability.webFallback,
-      refresh: async (
-        _input: GeneratedNativeCommandInput<typeof chatRefreshCapability>
-      ) => chatRefreshCapability.webFallback,
-      attach: async (
-        _input: GeneratedNativeCommandInput<typeof chatAttachCapability>
-      ) => chatAttachCapability.webFallback,
-      attachLocalFiles: async (
-        _input: GeneratedNativeCommandInput<typeof chatAttachLocalFilesCapability>
-      ) => chatAttachLocalFilesCapability.webFallback,
       pickAttachments: async (
         _input: GeneratedNativeCommandInput<typeof chatPickAttachmentsCapability>
       ) => chatPickAttachmentsCapability.webFallback,
-      presentInSideChat: async (
-        _input: GeneratedNativeCommandInput<typeof chatPresentInSideChatCapability>
-      ) => chatPresentInSideChatCapability.webFallback,
-      resolveWorkspaceChat: async (
-        _input: GeneratedNativeCommandInput<typeof chatResolveWorkspaceChatCapability>
-      ) => chatResolveWorkspaceChatCapability.webFallback,
-      listSkills: async (
-        _input: GeneratedNativeCommandInput<typeof chatListSkillsCapability>
-      ) => chatListSkillsCapability.webFallback,
-      readGroupImage: async (
-        _input: GeneratedNativeCommandInput<typeof chatReadGroupImageCapability>
-      ) => chatReadGroupImageCapability.webFallback,
-      removeAttachment: async (
-        _input: GeneratedNativeCommandInput<typeof chatRemoveAttachmentCapability>
-      ) => chatRemoveAttachmentCapability.webFallback,
-      retryAttachment: async (
-        _input: GeneratedNativeCommandInput<typeof chatRetryAttachmentCapability>
-      ) => chatRetryAttachmentCapability.webFallback,
-      acknowledgeIntakeFailures: async (
-        _input: GeneratedNativeCommandInput<
-          typeof chatAcknowledgeIntakeFailuresCapability
-        >
-      ) => chatAcknowledgeIntakeFailuresCapability.webFallback,
-      state: createGeneratedWebStateBridge<
-        GeneratedNativeStateSnapshot<typeof chatStateLeaf>,
-        GeneratedNativeStateGetInput<typeof chatStateLeaf>
-      >((_input) => chatStateLeaf.webFallback),
-      drafts: createGeneratedWebStateBridge<
-        GeneratedNativeStateSnapshot<typeof chatDraftsLeaf>,
-        GeneratedNativeStateGetInput<typeof chatDraftsLeaf>
-      >((_input) => chatDraftsLeaf.webFallback),
     },
     audioCapture: {
       sources: async () => audioCaptureSourcesCapability.webFallback,
@@ -11462,20 +8003,6 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       >((_input) => meetingPresenceStateLeaf.webFallback),
     },
     meetingRecorder: {
-      action: async (
-        _input: GeneratedNativeCommandInput<typeof meetingRecorderActionCapability>
-      ) => meetingRecorderActionCapability.webFallback,
-      retryTaskSync: async () => meetingRecorderRetryTaskSyncCapability.webFallback,
-      selectMicrophone: async (
-        _input: GeneratedNativeCommandInput<
-          typeof meetingRecorderSelectMicrophoneCapability
-        >
-      ) => meetingRecorderSelectMicrophoneCapability.webFallback,
-      acknowledgeSaved: async (
-        _input: GeneratedNativeCommandInput<
-          typeof meetingRecorderAcknowledgeSavedCapability
-        >
-      ) => meetingRecorderAcknowledgeSavedCapability.webFallback,
       setInteractive: async (
         _input: GeneratedNativeCommandInput<
           typeof meetingRecorderSetInteractiveCapability
@@ -11489,10 +8016,6 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       dragWindow: async (
         _input: GeneratedNativeCommandInput<typeof meetingRecorderDragWindowCapability>
       ) => meetingRecorderDragWindowCapability.webFallback,
-      state: createGeneratedWebStateBridge<
-        GeneratedNativeStateSnapshot<typeof meetingRecorderStateLeaf>,
-        GeneratedNativeStateGetInput<typeof meetingRecorderStateLeaf>
-      >((_input) => meetingRecorderStateLeaf.webFallback),
     },
     airDrop: {
       act: async (_input: GeneratedNativeCommandInput<typeof airDropActCapability>) =>
@@ -11505,15 +8028,6 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
         GeneratedNativeStateGetInput<typeof airDropStateLeaf>
       >((_input) => airDropStateLeaf.webFallback),
     },
-    driveCatalog: {
-      query: async (
-        _input: GeneratedNativeCommandInput<typeof driveCatalogQueryCapability>
-      ) => driveCatalogQueryCapability.webFallback,
-      state: createGeneratedWebStateBridge<
-        GeneratedNativeStateSnapshot<typeof driveCatalogStateLeaf>,
-        GeneratedNativeStateGetInput<typeof driveCatalogStateLeaf>
-      >((_input) => driveCatalogStateLeaf.webFallback),
-    },
     synchronicity: {
       state: async () => synchronicityStateCapability.webFallback,
       list: async (
@@ -11525,6 +8039,9 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       saveDownload: async (
         _input: GeneratedNativeCommandInput<typeof synchronicitySaveDownloadCapability>
       ) => synchronicitySaveDownloadCapability.webFallback,
+      openStream: async (
+        _input: GeneratedNativeCommandInput<typeof synchronicityOpenStreamCapability>
+      ) => synchronicityOpenStreamCapability.webFallback,
       openLocalRoot: async () => synchronicityOpenLocalRootCapability.webFallback,
       versions: async (
         _input: GeneratedNativeCommandInput<typeof synchronicityVersionsCapability>
@@ -11532,9 +8049,9 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
       write: async (
         _input: GeneratedNativeCommandInput<typeof synchronicityWriteCapability>
       ) => synchronicityWriteCapability.webFallback,
-      importFile: async (
-        _input: GeneratedNativeCommandInput<typeof synchronicityImportFileCapability>
-      ) => synchronicityImportFileCapability.webFallback,
+      stageImport: async (
+        _input: GeneratedNativeCommandInput<typeof synchronicityStageImportCapability>
+      ) => synchronicityStageImportCapability.webFallback,
       delete: async (
         _input: GeneratedNativeCommandInput<typeof synchronicityDeleteCapability>
       ) => synchronicityDeleteCapability.webFallback,
@@ -11571,17 +8088,11 @@ export function createGeneratedNativeWebBridge(): GeneratedNativeBridge {
         >
       ) => synchronicitySetSpaceSettingsCapability.webFallback,
     },
-    surfaces: {
+    session: {
       state: createGeneratedWebStateBridge<
-        GeneratedNativeStateSnapshot<typeof surfacesStateLeaf>,
-        GeneratedNativeStateGetInput<typeof surfacesStateLeaf>
-      >((_input) => surfacesStateLeaf.webFallback),
-      windowFullScreen: createGeneratedWebStateBridge<
-        GeneratedNativeStateSnapshot<typeof surfacesWindowFullScreenStateLeaf>,
-        GeneratedNativeStateGetInput<typeof surfacesWindowFullScreenStateLeaf>
-      >((_input) => surfacesWindowFullScreenStateLeaf.webFallback),
-      onChanged: () => () => {},
-      onWindowResizeSettled: () => () => {},
+        GeneratedNativeStateSnapshot<typeof sessionStateLeaf>,
+        GeneratedNativeStateGetInput<typeof sessionStateLeaf>
+      >((_input) => sessionStateLeaf.webFallback),
     },
     messageNotifications: {
       onEvent: () => () => {},
@@ -11694,6 +8205,29 @@ export function createGeneratedNativeBridgeMock(
       stop: helpers.command(async () => notchStopCapability.mock),
       onEvent: helpers.event((_listener) => () => {}),
     },
+    surfaces: {
+      windowControl: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof surfacesWindowControlCapability>
+        ) => surfacesWindowControlCapability.mock
+      ),
+      state: helpers.state(
+        (_input: GeneratedNativeStateGetInput<typeof surfacesStateLeaf>) =>
+          surfacesStateLeaf.mock
+      ),
+      windowFullScreen: helpers.state(
+        (
+          _input: GeneratedNativeStateGetInput<typeof surfacesWindowFullScreenStateLeaf>
+        ) => surfacesWindowFullScreenStateLeaf.mock
+      ),
+      windowMaximized: helpers.state(
+        (
+          _input: GeneratedNativeStateGetInput<typeof surfacesWindowMaximizedStateLeaf>
+        ) => surfacesWindowMaximizedStateLeaf.mock
+      ),
+      onChanged: helpers.event((_listener) => () => {}),
+      onWindowResizeSettled: helpers.event((_listener) => () => {}),
+    },
     windows: {
       create: helpers.command(
         async (_input: GeneratedNativeCommandInput<typeof windowsCreateCapability>) =>
@@ -11738,59 +8272,6 @@ export function createGeneratedNativeBridgeMock(
         async (
           _input: GeneratedNativeCommandInput<typeof clipboardWriteImageCapability>
         ) => clipboardWriteImageCapability.mock
-      ),
-    },
-    subscriptionAuthorization: {
-      start: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<
-            typeof subscriptionAuthorizationStartCapability
-          >
-        ) => subscriptionAuthorizationStartCapability.mock
-      ),
-      status: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<
-            typeof subscriptionAuthorizationStatusCapability
-          >
-        ) => subscriptionAuthorizationStatusCapability.mock
-      ),
-      cancel: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<
-            typeof subscriptionAuthorizationCancelCapability
-          >
-        ) => subscriptionAuthorizationCancelCapability.mock
-      ),
-    },
-    tokenDanceAuthorization: {
-      start: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<
-            typeof tokenDanceAuthorizationStartCapability
-          >
-        ) => tokenDanceAuthorizationStartCapability.mock
-      ),
-      status: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<
-            typeof tokenDanceAuthorizationStatusCapability
-          >
-        ) => tokenDanceAuthorizationStatusCapability.mock
-      ),
-      save: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<
-            typeof tokenDanceAuthorizationSaveCapability
-          >
-        ) => tokenDanceAuthorizationSaveCapability.mock
-      ),
-      cancel: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<
-            typeof tokenDanceAuthorizationCancelCapability
-          >
-        ) => tokenDanceAuthorizationCancelCapability.mock
       ),
     },
     shell: {
@@ -11867,12 +8348,29 @@ export function createGeneratedNativeBridgeMock(
           _input: GeneratedNativeCommandInput<typeof browserSidebarInspectCapability>
         ) => browserSidebarInspectCapability.mock
       ),
+      dismissPasskey: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<
+            typeof browserSidebarDismissPasskeyCapability
+          >
+        ) => browserSidebarDismissPasskeyCapability.mock
+      ),
       showPermissions: helpers.command(
         async (
           _input: GeneratedNativeCommandInput<
             typeof browserSidebarShowPermissionsCapability
           >
         ) => browserSidebarShowPermissionsCapability.mock
+      ),
+      listImportProfiles: helpers.command(
+        async () => browserSidebarListImportProfilesCapability.mock
+      ),
+      importCookies: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<
+            typeof browserSidebarImportCookiesCapability
+          >
+        ) => browserSidebarImportCookiesCapability.mock
       ),
       onChanged: helpers.event((_listener) => () => {}),
       onOpenTabRequested: helpers.event((_listener) => () => {}),
@@ -11895,45 +8393,8 @@ export function createGeneratedNativeBridgeMock(
           peersConnectCapability.mock
       ),
     },
-    session: {
-      requestEmailLogin: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof sessionRequestEmailLoginCapability>
-        ) => sessionRequestEmailLoginCapability.mock
-      ),
-      verifyEmailLogin: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof sessionVerifyEmailLoginCapability>
-        ) => sessionVerifyEmailLoginCapability.mock
-      ),
-      signInWithGoogle: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof sessionSignInWithGoogleCapability>
-        ) => sessionSignInWithGoogleCapability.mock
-      ),
-      verifyGoogleLink: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof sessionVerifyGoogleLinkCapability>
-        ) => sessionVerifyGoogleLinkCapability.mock
-      ),
-      cancelAuthAttempt: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof sessionCancelAuthAttemptCapability>
-        ) => sessionCancelAuthAttemptCapability.mock
-      ),
-      reconcile: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof sessionReconcileCapability>
-        ) => sessionReconcileCapability.mock
-      ),
-      signOut: helpers.command(
-        async (_input: GeneratedNativeCommandInput<typeof sessionSignOutCapability>) =>
-          sessionSignOutCapability.mock
-      ),
-      state: helpers.state(
-        (_input: GeneratedNativeStateGetInput<typeof sessionStateLeaf>) =>
-          sessionStateLeaf.mock
-      ),
+    core: {
+      open: helpers.command(async () => coreOpenCapability.mock),
     },
     localFiles: {
       pick: helpers.command(
@@ -11945,9 +8406,6 @@ export function createGeneratedNativeBridgeMock(
           _input: GeneratedNativeCommandInput<typeof localFilesPreviewCapability>
         ) => localFilesPreviewCapability.mock
       ),
-    },
-    localData: {
-      status: helpers.command(async () => localDataStatusCapability.mock),
     },
     transport: {
       status: helpers.command(async () => transportStatusCapability.mock),
@@ -12024,208 +8482,11 @@ export function createGeneratedNativeBridgeMock(
           computeNodeStateLeaf.mock
       ),
     },
-    sessionHistory: {
-      load: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof sessionHistoryLoadCapability>
-        ) => sessionHistoryLoadCapability.mock
-      ),
-      retain: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof sessionHistoryRetainCapability>
-        ) => sessionHistoryRetainCapability.mock
-      ),
-      release: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof sessionHistoryReleaseCapability>
-        ) => sessionHistoryReleaseCapability.mock
-      ),
-      state: helpers.state(
-        (_input: GeneratedNativeStateGetInput<typeof sessionHistoryStateLeaf>) =>
-          sessionHistoryStateLeaf.mock
-      ),
-    },
-    productInbox: {
-      retain: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof productInboxRetainCapability>
-        ) => productInboxRetainCapability.mock
-      ),
-      release: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof productInboxReleaseCapability>
-        ) => productInboxReleaseCapability.mock
-      ),
-      refresh: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof productInboxRefreshCapability>
-        ) => productInboxRefreshCapability.mock
-      ),
-      state: helpers.state(
-        (_input: GeneratedNativeStateGetInput<typeof productInboxStateLeaf>) =>
-          productInboxStateLeaf.mock
-      ),
-    },
-    sideChat: {
-      updateDebugSettings: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<
-            typeof sideChatUpdateDebugSettingsCapability
-          >
-        ) => sideChatUpdateDebugSettingsCapability.mock
-      ),
-      resetDebugSettings: helpers.command(
-        async () => sideChatResetDebugSettingsCapability.mock
-      ),
-      setContentSize: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof sideChatSetContentSizeCapability>
-        ) => sideChatSetContentSizeCapability.mock
-      ),
-      setInteractiveProgress: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<
-            typeof sideChatSetInteractiveProgressCapability
-          >
-        ) => sideChatSetInteractiveProgressCapability.mock
-      ),
-      finishInteractiveProgress: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<
-            typeof sideChatFinishInteractiveProgressCapability
-          >
-        ) => sideChatFinishInteractiveProgressCapability.mock
-      ),
-      updateShortcut: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof sideChatUpdateShortcutCapability>
-        ) => sideChatUpdateShortcutCapability.mock
-      ),
-      close: helpers.command(async () => sideChatCloseCapability.mock),
-      openSettings: helpers.command(async () => sideChatOpenSettingsCapability.mock),
-      openTestWindow: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof sideChatOpenTestWindowCapability>
-        ) => sideChatOpenTestWindowCapability.mock
-      ),
-      closeTestWindow: helpers.command(
-        async () => sideChatCloseTestWindowCapability.mock
-      ),
-      presentation: helpers.state(
-        (_input: GeneratedNativeStateGetInput<typeof sideChatPresentationStateLeaf>) =>
-          sideChatPresentationStateLeaf.mock
-      ),
-      debugSettings: helpers.state(
-        (_input: GeneratedNativeStateGetInput<typeof sideChatDebugSettingsStateLeaf>) =>
-          sideChatDebugSettingsStateLeaf.mock
-      ),
-    },
     chat: {
-      retain: helpers.command(
-        async (_input: GeneratedNativeCommandInput<typeof chatRetainCapability>) =>
-          chatRetainCapability.mock
-      ),
-      release: helpers.command(
-        async (_input: GeneratedNativeCommandInput<typeof chatReleaseCapability>) =>
-          chatReleaseCapability.mock
-      ),
-      clearPresentation: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof chatClearPresentationCapability>
-        ) => chatClearPresentationCapability.mock
-      ),
-      setDraft: helpers.command(
-        async (_input: GeneratedNativeCommandInput<typeof chatSetDraftCapability>) =>
-          chatSetDraftCapability.mock
-      ),
-      beginSendIntent: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof chatBeginSendIntentCapability>
-        ) => chatBeginSendIntentCapability.mock
-      ),
-      cancelSendIntent: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof chatCancelSendIntentCapability>
-        ) => chatCancelSendIntentCapability.mock
-      ),
-      send: helpers.command(
-        async (_input: GeneratedNativeCommandInput<typeof chatSendCapability>) =>
-          chatSendCapability.mock
-      ),
-      retry: helpers.command(
-        async (_input: GeneratedNativeCommandInput<typeof chatRetryCapability>) =>
-          chatRetryCapability.mock
-      ),
-      discard: helpers.command(
-        async (_input: GeneratedNativeCommandInput<typeof chatDiscardCapability>) =>
-          chatDiscardCapability.mock
-      ),
-      acceptTaskReview: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof chatAcceptTaskReviewCapability>
-        ) => chatAcceptTaskReviewCapability.mock
-      ),
-      refresh: helpers.command(
-        async (_input: GeneratedNativeCommandInput<typeof chatRefreshCapability>) =>
-          chatRefreshCapability.mock
-      ),
-      attach: helpers.command(
-        async (_input: GeneratedNativeCommandInput<typeof chatAttachCapability>) =>
-          chatAttachCapability.mock
-      ),
-      attachLocalFiles: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof chatAttachLocalFilesCapability>
-        ) => chatAttachLocalFilesCapability.mock
-      ),
       pickAttachments: helpers.command(
         async (
           _input: GeneratedNativeCommandInput<typeof chatPickAttachmentsCapability>
         ) => chatPickAttachmentsCapability.mock
-      ),
-      presentInSideChat: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof chatPresentInSideChatCapability>
-        ) => chatPresentInSideChatCapability.mock
-      ),
-      resolveWorkspaceChat: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof chatResolveWorkspaceChatCapability>
-        ) => chatResolveWorkspaceChatCapability.mock
-      ),
-      listSkills: helpers.command(
-        async (_input: GeneratedNativeCommandInput<typeof chatListSkillsCapability>) =>
-          chatListSkillsCapability.mock
-      ),
-      readGroupImage: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof chatReadGroupImageCapability>
-        ) => chatReadGroupImageCapability.mock
-      ),
-      removeAttachment: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof chatRemoveAttachmentCapability>
-        ) => chatRemoveAttachmentCapability.mock
-      ),
-      retryAttachment: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof chatRetryAttachmentCapability>
-        ) => chatRetryAttachmentCapability.mock
-      ),
-      acknowledgeIntakeFailures: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<
-            typeof chatAcknowledgeIntakeFailuresCapability
-          >
-        ) => chatAcknowledgeIntakeFailuresCapability.mock
-      ),
-      state: helpers.state(
-        (_input: GeneratedNativeStateGetInput<typeof chatStateLeaf>) =>
-          chatStateLeaf.mock
-      ),
-      drafts: helpers.state(
-        (_input: GeneratedNativeStateGetInput<typeof chatDraftsLeaf>) =>
-          chatDraftsLeaf.mock
       ),
     },
     audioCapture: {
@@ -12276,28 +8537,6 @@ export function createGeneratedNativeBridgeMock(
       ),
     },
     meetingRecorder: {
-      action: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof meetingRecorderActionCapability>
-        ) => meetingRecorderActionCapability.mock
-      ),
-      retryTaskSync: helpers.command(
-        async () => meetingRecorderRetryTaskSyncCapability.mock
-      ),
-      selectMicrophone: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<
-            typeof meetingRecorderSelectMicrophoneCapability
-          >
-        ) => meetingRecorderSelectMicrophoneCapability.mock
-      ),
-      acknowledgeSaved: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<
-            typeof meetingRecorderAcknowledgeSavedCapability
-          >
-        ) => meetingRecorderAcknowledgeSavedCapability.mock
-      ),
       setInteractive: helpers.command(
         async (
           _input: GeneratedNativeCommandInput<
@@ -12319,10 +8558,6 @@ export function createGeneratedNativeBridgeMock(
           >
         ) => meetingRecorderDragWindowCapability.mock
       ),
-      state: helpers.state(
-        (_input: GeneratedNativeStateGetInput<typeof meetingRecorderStateLeaf>) =>
-          meetingRecorderStateLeaf.mock
-      ),
     },
     airDrop: {
       act: helpers.command(
@@ -12336,17 +8571,6 @@ export function createGeneratedNativeBridgeMock(
       state: helpers.state(
         (_input: GeneratedNativeStateGetInput<typeof airDropStateLeaf>) =>
           airDropStateLeaf.mock
-      ),
-    },
-    driveCatalog: {
-      query: helpers.command(
-        async (
-          _input: GeneratedNativeCommandInput<typeof driveCatalogQueryCapability>
-        ) => driveCatalogQueryCapability.mock
-      ),
-      state: helpers.state(
-        (_input: GeneratedNativeStateGetInput<typeof driveCatalogStateLeaf>) =>
-          driveCatalogStateLeaf.mock
       ),
     },
     synchronicity: {
@@ -12368,6 +8592,11 @@ export function createGeneratedNativeBridgeMock(
           >
         ) => synchronicitySaveDownloadCapability.mock
       ),
+      openStream: helpers.command(
+        async (
+          _input: GeneratedNativeCommandInput<typeof synchronicityOpenStreamCapability>
+        ) => synchronicityOpenStreamCapability.mock
+      ),
       openLocalRoot: helpers.command(
         async () => synchronicityOpenLocalRootCapability.mock
       ),
@@ -12381,10 +8610,10 @@ export function createGeneratedNativeBridgeMock(
           _input: GeneratedNativeCommandInput<typeof synchronicityWriteCapability>
         ) => synchronicityWriteCapability.mock
       ),
-      importFile: helpers.command(
+      stageImport: helpers.command(
         async (
-          _input: GeneratedNativeCommandInput<typeof synchronicityImportFileCapability>
-        ) => synchronicityImportFileCapability.mock
+          _input: GeneratedNativeCommandInput<typeof synchronicityStageImportCapability>
+        ) => synchronicityStageImportCapability.mock
       ),
       delete: helpers.command(
         async (
@@ -12444,18 +8673,11 @@ export function createGeneratedNativeBridgeMock(
         ) => synchronicitySetSpaceSettingsCapability.mock
       ),
     },
-    surfaces: {
+    session: {
       state: helpers.state(
-        (_input: GeneratedNativeStateGetInput<typeof surfacesStateLeaf>) =>
-          surfacesStateLeaf.mock
+        (_input: GeneratedNativeStateGetInput<typeof sessionStateLeaf>) =>
+          sessionStateLeaf.mock
       ),
-      windowFullScreen: helpers.state(
-        (
-          _input: GeneratedNativeStateGetInput<typeof surfacesWindowFullScreenStateLeaf>
-        ) => surfacesWindowFullScreenStateLeaf.mock
-      ),
-      onChanged: helpers.event((_listener) => () => {}),
-      onWindowResizeSettled: helpers.event((_listener) => () => {}),
     },
     messageNotifications: {
       onEvent: helpers.event((_listener) => () => {}),
@@ -12496,6 +8718,10 @@ export function mergeGeneratedNativeBridgeOverrides(
       ...bridge.notch,
       ...overrides.notch,
     },
+    surfaces: {
+      ...bridge.surfaces,
+      ...overrides.surfaces,
+    },
     windows: {
       ...bridge.windows,
       ...overrides.windows,
@@ -12507,14 +8733,6 @@ export function mergeGeneratedNativeBridgeOverrides(
     clipboard: {
       ...bridge.clipboard,
       ...overrides.clipboard,
-    },
-    subscriptionAuthorization: {
-      ...bridge.subscriptionAuthorization,
-      ...overrides.subscriptionAuthorization,
-    },
-    tokenDanceAuthorization: {
-      ...bridge.tokenDanceAuthorization,
-      ...overrides.tokenDanceAuthorization,
     },
     shell: {
       ...bridge.shell,
@@ -12540,17 +8758,13 @@ export function mergeGeneratedNativeBridgeOverrides(
       ...bridge.peers,
       ...overrides.peers,
     },
-    session: {
-      ...bridge.session,
-      ...overrides.session,
+    core: {
+      ...bridge.core,
+      ...overrides.core,
     },
     localFiles: {
       ...bridge.localFiles,
       ...overrides.localFiles,
-    },
-    localData: {
-      ...bridge.localData,
-      ...overrides.localData,
     },
     transport: {
       ...bridge.transport,
@@ -12559,18 +8773,6 @@ export function mergeGeneratedNativeBridgeOverrides(
     computeNode: {
       ...bridge.computeNode,
       ...overrides.computeNode,
-    },
-    sessionHistory: {
-      ...bridge.sessionHistory,
-      ...overrides.sessionHistory,
-    },
-    productInbox: {
-      ...bridge.productInbox,
-      ...overrides.productInbox,
-    },
-    sideChat: {
-      ...bridge.sideChat,
-      ...overrides.sideChat,
     },
     chat: {
       ...bridge.chat,
@@ -12592,17 +8794,13 @@ export function mergeGeneratedNativeBridgeOverrides(
       ...bridge.airDrop,
       ...overrides.airDrop,
     },
-    driveCatalog: {
-      ...bridge.driveCatalog,
-      ...overrides.driveCatalog,
-    },
     synchronicity: {
       ...bridge.synchronicity,
       ...overrides.synchronicity,
     },
-    surfaces: {
-      ...bridge.surfaces,
-      ...overrides.surfaces,
+    session: {
+      ...bridge.session,
+      ...overrides.session,
     },
     messageNotifications: {
       ...bridge.messageNotifications,

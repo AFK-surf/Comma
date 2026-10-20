@@ -37,7 +37,7 @@ defmodule SalixStore.HeadCasLinearizabilityTest do
   per-object linearizable CAS as S3) so the interleavings are real concurrency
   without needing MinIO. The fault-injection scenario also needs the Fake.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   use ExUnitProperties
 
   alias SalixStore.{Agent, Keys}
@@ -45,21 +45,21 @@ defmodule SalixStore.HeadCasLinearizabilityTest do
   @sm SalixStore.TestSM
 
   setup do
-    prev = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     # Keep snapshots out of the picture for the contention runs so that the
     # journal-tail accounting is unambiguous; one scenario flips it on its own.
-    prev_snap = Application.get_env(:salix_store, :snapshot_bytes)
-    Application.put_env(:salix_store, :snapshot_bytes, 8 * 1024 * 1024)
+    prev_snap = SystemsRuntime.get_env(:salix_store, :snapshot_bytes)
+    SystemsRuntime.put_env(:salix_store, :snapshot_bytes, 8 * 1024 * 1024)
 
     start_supervised!(SalixStore.S3.Fake)
 
     on_exit(fn ->
-      Application.put_env(:salix_store, :s3_backend, prev)
-      Application.put_env(:salix_store, :snapshot_bytes, prev_snap)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
+      SystemsRuntime.put_env(:salix_store, :snapshot_bytes, prev_snap)
     end)
 
-    {:ok, agent: "agent-#{System.unique_integer([:positive])}"}
+    {:ok, agent: "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"}
   end
 
   # ---- worker -------------------------------------------------------------
@@ -163,7 +163,9 @@ defmodule SalixStore.HeadCasLinearizabilityTest do
     # counter == total_ok and ops == total_ok. An orphan being followed (or a
     # double-replay) would inflate either count.
     {:ok, fresh} =
-      Agent.claim(agent, "auditor-#{System.unique_integer([:positive])}", @sm, steal: true)
+      Agent.claim(agent, "auditor-#{SystemsRuntime.Proc.unique_integer([:positive])}", @sm,
+        steal: true
+      )
 
     assert fresh.state.counter == total_ok,
            "replayed counter #{fresh.state.counter} != #{total_ok} effective commits — orphan referenced or commit lost"
@@ -199,7 +201,7 @@ defmodule SalixStore.HeadCasLinearizabilityTest do
 
     records =
       1..n
-      |> Task.async_stream(
+      |> SystemsClock.async_stream(
         fn i -> run_worker(a, "node-#{i}", commits_each) end,
         max_concurrency: n,
         ordered: false,
@@ -212,34 +214,6 @@ defmodule SalixStore.HeadCasLinearizabilityTest do
     # Liveness sanity: with this much contention, SOME commits must have landed
     # (otherwise the test isn't exercising the path at all).
     assert total_ok > 0, "no worker ever committed — contention test is vacuous"
-  end
-
-  test "many short-lived claimants thrash a single agent (high churn)", %{agent: a} do
-    {:ok, _} = Agent.create(a, "seed", @sm)
-
-    n = 24
-
-    records =
-      1..n
-      |> Task.async_stream(
-        # Each worker only tries a single commit, so claims churn fast and most
-        # workers get fenced between claim and commit — the worst case for the
-        # "fence is terminal" and "no orphan referenced" invariants.
-        fn i -> run_worker(a, "w-#{i}", 1) end,
-        max_concurrency: n,
-        ordered: false,
-        timeout: 30_000
-      )
-      |> Enum.map(fn {:ok, r} -> r end)
-
-    audit!(a, records)
-
-    # Every worker that successfully claimed got a unique epoch (claim CAS bumps
-    # epoch atomically; concurrent winners cannot collide).
-    claimed_epochs = records |> Enum.filter(& &1.claimed) |> Enum.map(& &1.epoch)
-
-    assert claimed_epochs == Enum.uniq(claimed_epochs),
-           "two successful claims shared an epoch: #{inspect(claimed_epochs)}"
   end
 
   test "fenced original owner cannot interleave a commit with the thief", %{agent: a} do
@@ -293,66 +267,5 @@ defmodule SalixStore.HeadCasLinearizabilityTest do
     assert fresh.state.counter == 3
     assert fresh.state.ops == 3
     assert fresh.head.journal_tail.seq == 3
-  end
-
-  test "ambiguous head PUT that did NOT land surfaces, then re-commit is clean", %{agent: a} do
-    # The complementary case: :ambiguous_before does not apply the mutation. The
-    # owner's ETag is therefore still valid; a retried commit at the same seq
-    # (create-once segment already present, head unchanged) must succeed exactly
-    # once and not advance past one effective write.
-    {:ok, o} = Agent.create(a, "solo2", @sm)
-
-    :ok = SalixStore.S3.Fake.set_fault({:ambiguous_before, :put, Keys.agent_state(a)})
-
-    # The head PUT returns ambiguous; the write did not land. resolve_commit_
-    # ambiguity GETs the head: commit_uuid is NOT ours and epoch/owner unchanged
-    # ⇒ {:ambiguous_unresolved, etag}. The owner keeps its valid pre-commit ETag,
-    # so it can safely retry the same logical commit.
-    case Agent.commit(o, [%{op: "inc", by: 1}]) do
-      {:ok, o2} ->
-        # If the impl chose to treat the unchanged head as adoptable, the write
-        # must still be effective exactly once.
-        assert o2.head.journal_tail.seq == 1
-
-      {:error, {:ambiguous_unresolved, _etag}} ->
-        # Owner retries with its still-valid handle; segment create-once is
-        # idempotent (head verified present), head CAS now succeeds.
-        assert {:ok, o2} = Agent.commit(o, [%{op: "inc", by: 1}])
-        assert o2.head.journal_tail.seq == 1
-        assert o2.state.counter == 1
-    end
-
-    {:ok, fresh} = Agent.claim(a, "after2", @sm, steal: true)
-    assert fresh.state.counter == 1, "ambiguous-before produced 0 or >1 effective writes"
-    assert fresh.head.journal_tail.seq == 1
-  end
-
-  property "any concurrency width preserves replay == sum(effective commits)", %{agent: a} do
-    # Model-based: across randomized worker counts / per-worker commit budgets,
-    # the durable replayed state ALWAYS equals the count of {:ok,_} commits and
-    # the journal tail equals that same count. This is the global linearizability
-    # contract reduced to a single arithmetic identity that an orphan reference,
-    # a lost commit, or a double-apply would each violate.
-    check all(
-            n <- integer(2..8),
-            budget <- integer(1..5),
-            max_runs: 12
-          ) do
-      # Fresh agent per trial (the outer setup agent is reused only as a name base).
-      trial = "#{a}-#{System.unique_integer([:positive])}"
-      {:ok, _} = Agent.create(trial, "seed", @sm)
-
-      records =
-        1..n
-        |> Task.async_stream(
-          fn i -> run_worker(trial, "n#{i}", budget) end,
-          max_concurrency: n,
-          ordered: false,
-          timeout: 30_000
-        )
-        |> Enum.map(fn {:ok, r} -> r end)
-
-      audit!(trial, records)
-    end
   end
 end

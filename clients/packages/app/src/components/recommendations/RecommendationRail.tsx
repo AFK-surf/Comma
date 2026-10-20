@@ -1,7 +1,8 @@
+import { uiClock } from "@comma/ui/clock";
 import { SourceContext } from "./SourceContext";
 import { useTaskSummary, useArchiveAction } from "../tasks/useTaskArchive";
 import { useProductInboxSnapshot } from "../../product-inbox";
-import { TaskArchiveMenu } from "@comma/ui";
+import { TaskArchiveMenu } from "@comma/ui/components/task-workspace/TaskArchiveMenu";
 import type {
   RecommendationAction,
   RecommendationCard,
@@ -15,35 +16,42 @@ import {
   recommendationLimits,
 } from "@comma/recommendation-contract";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import { Button } from "@comma/ui/components/Button";
 import {
-  Button,
   CirclePlusIcon,
   DragHandleIcon,
-  Dropdown,
+  LoadingCircleIcon,
+  ReloadIcon,
+  SettingsSliderThreeIcon,
+} from "@comma/ui/components/icons";
+import { Dropdown } from "@comma/ui/components/dropdown";
+import {
   GithubProviderLogo,
   GoogleDriveProviderLogo,
-  HoverCard,
+  LinearProviderLogo,
+  normalizeProviderBrandName,
+  SlackProviderLogo,
+} from "@comma/ui/components/provider-brand-logos";
+import { HoverCard } from "@comma/ui/components/hover-card";
+import {
   isReducedMotionEnabled,
   subscribeToReducedMotion,
-  LinearProviderLogo,
+  motionDuration,
+  motionEasing,
+  spacing,
+} from "@comma/ui/tokens";
+import {
   LinkContextMenu,
   type LinkContextMenuAction,
-  MarkdownStream,
   Menu,
   MenuItem,
   MenuPopover,
-  motionDuration,
-  motionEasing,
-  normalizeProviderBrandName,
-  ReloadIcon,
-  ScrollArea,
-  SettingsSliderThreeIcon,
-  SlackProviderLogo,
-  spacing,
-  toast,
-  Tooltip,
   useTextEditContextMenuState,
-} from "@comma/ui";
+} from "@comma/ui/components/menu";
+import { MarkdownStream } from "@comma/ui/components/markdown-stream";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { toast } from "@comma/ui/components/toast";
+import { Tooltip } from "@comma/ui/components/tooltip";
 import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -69,16 +77,13 @@ import {
   GridListItem,
   useDragAndDrop,
 } from "react-aria-components";
-import {
-  CommaApiError,
-  type CommaApiClient,
-  type CommaRecommendationLinkPreview,
-} from "../../api";
+import { useCall, useTopic } from "@comma/core-client";
 import {
   nativePlatformClipboard,
   openNativePlatformExternalUrl,
-} from "../../runtime-chat/nativePlatformActions";
+} from "../../nativePlatformActions";
 import { ShellIconButtonControl } from "../ShellIconButton";
+import { showOutOfCreditsToast } from "../billing/outOfCredits";
 import {
   boundPointerReorderTranslation,
   cancelFlipAnimations,
@@ -94,21 +99,18 @@ import {
   LinkProviderIcon,
   useLinkPreviewMediaUrl,
 } from "../links/linkPreviewCards";
-import {
-  hasRecommendationLinkPreview,
-  loadRecommendationLinkPreview,
-  peekRecommendationLinkPreview,
-} from "./linkPreviewCache";
+import { useLinkPreview } from "../links/useLinkPreview";
 import {
   recommendationLinkHrefAttribute,
   resolveRecommendationLinkFromEventTarget,
 } from "./recommendationLinkMenu";
 
-// Inline-link hover cards read their rich preview through the workspace API.
+// Inline-link hover cards read their rich preview in the rail's workspace.
 // Provided once by the rail; documents rendered outside it (stories, tests,
-// detached cards) keep the generic destination card.
+// detached cards) keep the generic destination card. A source context card
+// stays inside the boundary, the rail, instead of covering the panel beside it.
 type RecommendationLinkPreviewContextValue = {
-  api: CommaApiClient;
+  boundaryRef?: RefObject<Element | null> | undefined;
   workspaceId: string;
 };
 const RecommendationLinkPreviewContext = createContext<
@@ -116,11 +118,14 @@ const RecommendationLinkPreviewContext = createContext<
 >(undefined);
 
 export function RecommendationLinkPreviewProvider({
-  api,
+  boundaryRef,
   children,
   workspaceId,
 }: RecommendationLinkPreviewContextValue & { children: ReactNode }) {
-  const value = useMemo(() => ({ api, workspaceId }), [api, workspaceId]);
+  const value = useMemo(
+    () => ({ boundaryRef, workspaceId }),
+    [boundaryRef, workspaceId]
+  );
   return (
     <RecommendationLinkPreviewContext.Provider value={value}>
       {children}
@@ -128,16 +133,24 @@ export function RecommendationLinkPreviewProvider({
   );
 }
 
+/** A Routine row's prompt as the composer stages it. */
+export type RecommendationComposerPrompt = {
+  text: string;
+  /** The app the row reads, for the staged tile's mark. */
+  source?: RecommendationSource | undefined;
+  /** The item the row is about, such as a Linear issue or a Gmail message. */
+  sourceUrl?: string | undefined;
+};
+
 type RecommendationRailProps = {
   /** The signed-in user's name; greets them by name in the briefing title. */
   greetingName?: string | undefined;
   active?: boolean;
-  api: CommaApiClient;
   /** Opens the Plugins route so the user can connect a first app. */
   onConnectApps?: (() => void) | undefined;
   onOpenTask: (conversationId: string) => void;
   onOpenUrl: (url: string) => void;
-  onUsePrompt: (prompt: string) => void;
+  onUsePrompt: (prompt: RecommendationComposerPrompt) => void;
   workspaceId: string;
 };
 
@@ -149,6 +162,44 @@ type RoutineCardPreferences = {
 
 type RoutineDropPosition = "after" | "before";
 
+/**
+ * The autoscroll speed a routine drag asks for at its pointer, in px/ms: up to
+ * `spacing.md` a frame at 60Hz near an edge, once the drag has passed its
+ * threshold.
+ */
+function routineScrollSpeed(drag: RoutinePointerDrag) {
+  const viewport = drag.scrollViewport;
+  const moved = Math.abs(drag.currentClientY - drag.startClientY) >= spacing.xs;
+  if (!viewport || !(drag.active || moved)) return 0;
+  const bounds = viewport.getBoundingClientRect();
+  const edge = spacing["3xl"];
+  const maxStep = spacing.md;
+  const distanceFromTop = drag.currentClientY - bounds.top;
+  const distanceFromBottom = bounds.bottom - drag.currentClientY;
+  const step =
+    distanceFromTop < edge
+      ? -Math.ceil(maxStep * Math.min(1, (edge - distanceFromTop) / edge))
+      : distanceFromBottom < edge
+        ? Math.ceil(maxStep * Math.min(1, (edge - distanceFromBottom) / edge))
+        : 0;
+  return (step * 60) / 1000;
+}
+
+/** Where a routine drag's autoscroll has taken its viewport by `time`. */
+function routineScrollTop(drag: RoutinePointerDrag, time: number) {
+  const viewport = drag.scrollViewport;
+  if (!viewport) return 0;
+  const scroll = drag.scroll;
+  if (!scroll) return viewport.scrollTop;
+  return Math.max(
+    0,
+    Math.min(
+      viewport.scrollHeight - viewport.clientHeight,
+      scroll.scrollTop + scroll.speed * (time - scroll.time)
+    )
+  );
+}
+
 type RoutinePointerDrag = {
   active: boolean;
   captureTarget: HTMLElement;
@@ -158,6 +209,12 @@ type RoutinePointerDrag = {
   initialTops: ReadonlyMap<string, number>;
   pointerId: number;
   rowHeight: number;
+  /**
+   * Autoscroll since its speed last changed: where it was then, when, and at
+   * what speed (px/ms). A frame scrolls to where that puts it now, the same
+   * at any frame rate.
+   */
+  scroll: { scrollTop: number; speed: number; time: number } | null;
   scrollViewport: HTMLElement | null;
   sourceIndex: number;
   startClientY: number;
@@ -238,83 +295,6 @@ export const routineDragOverdragCap = pointerReorderOverdragCap;
 /** Rubber-band bounded translation; shared with the icon rail's reorder. */
 export const boundRoutineDragTranslation = boundPointerReorderTranslation;
 
-// The daily run publishes while Home may already be open, and the rail only
-// polls while a run is active. Coming back to the window re-reads the
-// projection at most this often.
-const revisitReloadIntervalMs = 60_000;
-
-// The scheduled run starts at the delivery instant and takes about a minute to
-// collect and render; one read shortly after that instant picks the new
-// briefing up, or finds the run still active and hands over to the poll.
-export const deliveryReloadGraceMs = 120_000;
-
-type RecommendationSchedule = RecommendationEnvelope["settings"]["schedule"];
-
-/**
- * Milliseconds from `now` until the next daily delivery instant, read on the
- * schedule's own wall clock. `undefined` when the timezone is unknown to this
- * runtime.
- */
-export function msUntilDailyDelivery(
-  schedule: Pick<RecommendationSchedule, "hour" | "minute" | "timezone">,
-  now: number
-): number | undefined {
-  const dayMs = 86_400_000;
-  try {
-    const formatter = new Intl.DateTimeFormat("en-US", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      hourCycle: "h23",
-      minute: "2-digit",
-      second: "2-digit",
-      timeZone: schedule.timezone,
-    });
-    // Encode wall-clock fields as UTC only for calendar arithmetic.
-    const wallTime = (instant: number) => {
-      const parts = formatter.formatToParts(new Date(instant));
-      const read = (type: Intl.DateTimeFormatPartTypes) =>
-        Number(parts.find((part) => part.type === type)?.value);
-      return Date.UTC(
-        read("year"),
-        read("month") - 1,
-        read("day"),
-        read("hour"),
-        read("minute"),
-        read("second")
-      );
-    };
-    const today = Math.floor(wallTime(now) / dayMs) * dayMs;
-    const targetTime = (schedule.hour * 60 + schedule.minute) * 60_000;
-
-    // Examine three calendar days, using offsets on both sides of a possible
-    // DST transition. Validate each candidate against the schedule's clock:
-    // a missing spring-forward time is skipped, and a repeated time uses
-    // the next future occurrence. The third day covers an already-passed
-    // target today followed by a missing target tomorrow. No network polling.
-    for (const day of [today, today + dayMs, today + 2 * dayMs]) {
-      const target = day + targetTime;
-      const offsets = new Set(
-        [-dayMs, 0, dayMs].map((shift) => wallTime(target + shift) - (target + shift))
-      );
-      const candidates = [...offsets]
-        .map((offset) => target - offset)
-        .filter((instant) => instant > now && wallTime(instant) === target);
-      if (candidates.length > 0) return Math.min(...candidates) - now;
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
-}
-
-// A server-owned run is polled every two seconds. The server keeps a run
-// active within its eight-minute queue, collection, and model budget,
-// so this budget is not the run's life: a poll that keeps failing for 90
-// seconds has lost the projection, not the run.
-const maxConsecutivePollFailures = 45;
-
 // Why the rail has no briefing to show: the projection could not be read, a
 // manual refresh was refused by the hourly budget, or the server reports that
 // the last generation failed.
@@ -322,11 +302,10 @@ type RailFailure = "unavailable" | "rate_limited" | undefined;
 
 // Routine failures that the member cannot act on stay out of the UI: the rail
 // keeps the last briefing, and the server logs and counts every failed run.
-// Only a refused manual refresh answers the member, because they asked for it.
+// Exhausted credits name the action the member can take to resume generation.
 
 export const RecommendationRail = memo(function RecommendationRail({
   active = true,
-  api,
   greetingName,
   onConnectApps,
   onOpenTask,
@@ -336,17 +315,30 @@ export const RecommendationRail = memo(function RecommendationRail({
 }: RecommendationRailProps) {
   const messages = useCommaMessages();
   const locale = useCommaLocale();
-  const [envelope, setEnvelope] = useState<RecommendationEnvelope>();
-  const [failure, setFailure] = useState<RailFailure>();
+  // The core reads the briefing while the rail shows (and again as runs, discovery and the delivery need).
+  const call = useCall();
+  const timezone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
+  const { value: shown } = useTopic(
+    active
+      ? { topic: "recommendations", workspace: workspaceId, timezone, locale }
+      : null
+  );
+  // Home shown again while the topic lingered: discovery checks start over.
+  const wasActiveRef = useRef(active);
+  useEffect(() => {
+    const was = wasActiveRef.current;
+    wasActiveRef.current = active;
+    if (active && !was)
+      void call("recommendations.visit", { workspace: workspaceId }).catch(
+        () => undefined
+      );
+  }, [active, call, workspaceId]);
+  const envelope = shown?.envelope ?? undefined;
+  const failure: RailFailure = shown?.failure ?? undefined;
   const error = failure !== undefined;
-  const [refreshing, setRefreshing] = useState(false);
-  const requestRef = useRef(0);
-  const lastLoadedAtRef = useRef(0);
-  const lastGenerationRef = useRef<number | null>(null);
-  const pollFailuresRef = useRef(0);
-  const [deliveryReloads, setDeliveryReloads] = useState(0);
-  // True while the bounded discovery checks wait for the first source listing.
-  const [discoveringSources, setDiscoveringSources] = useState(false);
+  const refreshing = shown?.refreshing ?? false;
+  const discoveringSources = shown?.discovering ?? false;
+  const creditNoticeWorkspaceRef = useRef<string | null>(null);
   const railRef = useRef<HTMLDivElement | null>(null);
   const linkMenuUrlRef = useRef<string | null>(null);
   const {
@@ -358,19 +350,56 @@ export const RecommendationRail = memo(function RecommendationRail({
     isEnabled: true,
     preserveTextSelection: true,
   });
-  const sourceRetryRef = useRef(0);
-  const sourceRetryTimerRef = useRef<number | undefined>(undefined);
-  const serverRefreshingRef = useRef(false);
-  const pollRetryTimerRef = useRef<number | undefined>(undefined);
+  // The generation last read for this workspace. A later read with another
+  // generation is a new briefing, and the member hears about it once.
+  const seenGenerationRef = useRef<{ generation: number | null; workspaceId: string }>(
+    undefined
+  );
+  // Read at announce time, so a language change does not re-create `load`.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const noteGeneration = useCallback(
+    (next: RecommendationEnvelope) => {
+      const generation = next.snapshot?.generation ?? null;
+      const seen = seenGenerationRef.current;
+      seenGenerationRef.current = { generation, workspaceId };
+      if (
+        seen?.workspaceId === workspaceId &&
+        generation !== null &&
+        generation !== seen.generation
+      ) {
+        toast.success(messagesRef.current.recommendations_updated(), {
+          id: `routine-updated:${workspaceId}`,
+          testId: "routine-updated-toast",
+        });
+      }
+    },
+    [workspaceId]
+  );
   const canRefresh =
     envelope?.settings.sources.some((source) => source.enabled) === true;
   // A server-owned run stays "generating" only while its projection can still
   // be read; once the poll gives up, the last envelope no longer speaks for it.
   const isRefreshing = refreshing || (envelope?.state === "refreshing" && !error);
   // Until the first read answers, the rail takes a briefing's layout, so the
-  // briefing most members have lands where its placeholder was.
+  // briefing most members have lands where its placeholder was. A refresh
+  // keeps the current briefing on screen; only the refresh control spins.
   const initialLoading = !envelope && !error && !isRefreshing;
-  const briefingPending = isRefreshing || initialLoading;
+  useEffect(() => {
+    if (!active || !envelope) return;
+    if (
+      (envelope.state === "error" || envelope.state === "stale") &&
+      envelope.lastError === "insufficient_credits"
+    ) {
+      if (creditNoticeWorkspaceRef.current !== workspaceId) {
+        creditNoticeWorkspaceRef.current = workspaceId;
+        showOutOfCreditsToast(locale);
+      }
+    } else {
+      creditNoticeWorkspaceRef.current = null;
+    }
+  }, [active, envelope, locale, workspaceId]);
+
   const snapshotCards = envelope?.snapshot?.cards;
   const snapshotKey = envelope?.snapshot
     ? `${workspaceId}:${envelope.snapshot.generation}:${envelope.snapshot.generatedAt}`
@@ -467,193 +496,63 @@ export const RecommendationRail = memo(function RecommendationRail({
     [renderableCardIds, snapshotKey]
   );
 
-  const load = useCallback(async () => {
-    if (!active) return undefined;
-    const request = ++requestRef.current;
-    // Stamp the request, not the response: a window focus during the initial
-    // read must not issue a second one.
-    lastLoadedAtRef.current = Date.now();
-    try {
-      const next = await api.getRecommendations(workspaceId, {
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      });
-      if (request === requestRef.current) {
-        pollFailuresRef.current = 0;
-        const generation = next.snapshot?.generation ?? null;
-        const generationChanged = generation !== lastGenerationRef.current;
-        lastGenerationRef.current = generation;
-        setEnvelope(next);
-        serverRefreshingRef.current = next.state === "refreshing";
-        // A successful read heals an unreadable projection. A refused refresh
-        // stays explained until a run starts or a new briefing arrives.
-        setFailure((current) =>
-          current === "rate_limited" &&
-          next.state !== "refreshing" &&
-          !generationChanged
-            ? current
-            : undefined
-        );
-
-        // A failed generation is terminal until the member refreshes; the
-        // discovery checks are for a projection that is still being prepared.
-        const checking =
-          sourceRetryRef.current < 10 &&
-          next.state !== "refreshing" &&
-          next.state !== "error" &&
-          (!next.settings.sourcesCheckedAt ||
-            (next.snapshot === null &&
-              next.settings.sources.some((source) => source.enabled)));
-        if (checking) {
-          // At most ten discovery/dispatch checks per visible rail mount.
-          sourceRetryRef.current += 1;
-          sourceRetryTimerRef.current = window.setTimeout(() => void load(), 1_500);
-        }
-        setDiscoveringSources(checking && !next.settings.sourcesCheckedAt);
-      }
-      return next;
-    } catch {
-      if (request === requestRef.current) {
-        pollFailuresRef.current += 1;
-        if (
-          serverRefreshingRef.current &&
-          pollFailuresRef.current <= maxConsecutivePollFailures
-        ) {
-          if (pollRetryTimerRef.current !== undefined) {
-            window.clearTimeout(pollRetryTimerRef.current);
-          }
-          pollRetryTimerRef.current = window.setTimeout(() => void load(), 2_000);
-        } else {
-          serverRefreshingRef.current = false;
-          setFailure("unavailable");
-        }
-      }
-      return undefined;
-    }
-  }, [active, api, workspaceId]);
-
-  // An app language change regenerates the briefing on the server. Read again
-  // at once, so the rail shows that run instead of the old language.
-  const readLocaleRef = useRef(locale);
+  // Each new briefing (another generation) is announced once.
+  const shownGeneration = envelope?.snapshot?.generation ?? null;
   useEffect(() => {
-    if (readLocaleRef.current === locale) return;
-    readLocaleRef.current = locale;
-    void load();
-  }, [load, locale]);
+    if (envelope) noteGeneration(envelope);
+  }, [envelope, noteGeneration, shownGeneration]);
 
+  // Coming back to the window reads the briefing again when it is a minute old.
   useEffect(() => {
     if (!active) return undefined;
-    void load();
+    const revisit = () => {
+      if (document.visibilityState === "visible")
+        void call("recommendations.revisit", {}).catch(() => undefined);
+    };
+    document.addEventListener("visibilitychange", revisit);
+    window.addEventListener("focus", revisit);
     return () => {
-      requestRef.current += 1;
-      sourceRetryRef.current = 0;
-      if (sourceRetryTimerRef.current !== undefined) {
-        window.clearTimeout(sourceRetryTimerRef.current);
-      }
-      if (pollRetryTimerRef.current !== undefined) {
-        window.clearTimeout(pollRetryTimerRef.current);
-      }
+      document.removeEventListener("visibilitychange", revisit);
+      window.removeEventListener("focus", revisit);
     };
-  }, [active, load]);
-
-  useEffect(() => {
-    if (!active || envelope?.state !== "refreshing") return;
-
-    // One bounded request per visible rail every two seconds while the server owns an
-    // active run. The server ends every run, including across page reloads: from the
-    // 90-second check on, as soon as its renderer goes idle, or at the eight-minute hard cap.
-    const timer = window.setTimeout(() => void load(), 2_000);
-    return () => window.clearTimeout(timer);
-  }, [active, envelope?.state, envelope, load]);
-
-  useEffect(() => {
-    if (!active) return undefined;
-    const reloadIfStale = () => {
-      if (document.visibilityState !== "visible") return;
-      if (Date.now() - lastLoadedAtRef.current < revisitReloadIntervalMs) return;
-      void load();
-    };
-    document.addEventListener("visibilitychange", reloadIfStale);
-    window.addEventListener("focus", reloadIfStale);
-    return () => {
-      document.removeEventListener("visibilitychange", reloadIfStale);
-      window.removeEventListener("focus", reloadIfStale);
-    };
-  }, [active, load]);
-
-  const schedule = envelope?.settings.schedule;
-  const scheduleEnabled = schedule?.enabled === true;
-  const scheduleHour = schedule?.hour;
-  const scheduleMinute = schedule?.minute;
-  const scheduleTimezone = schedule?.timezone;
-  useEffect(() => {
-    if (
-      !active ||
-      !scheduleEnabled ||
-      scheduleHour === undefined ||
-      scheduleMinute === undefined ||
-      scheduleTimezone === undefined
-    ) {
-      return undefined;
-    }
-    const delay = msUntilDailyDelivery(
-      { hour: scheduleHour, minute: scheduleMinute, timezone: scheduleTimezone },
-      Date.now()
-    );
-    if (delay === undefined) return undefined;
-    const timer = window.setTimeout(() => {
-      // Counting the reload re-arms this effect for the next day.
-      void load().then(() => setDeliveryReloads((count) => count + 1));
-    }, delay + deliveryReloadGraceMs);
-    return () => window.clearTimeout(timer);
-  }, [
-    active,
-    deliveryReloads,
-    load,
-    scheduleEnabled,
-    scheduleHour,
-    scheduleMinute,
-    scheduleTimezone,
-  ]);
+  }, [active, call]);
 
   const refresh = async () => {
     if (isRefreshing) return;
-    if (sourceRetryTimerRef.current !== undefined) {
-      window.clearTimeout(sourceRetryTimerRef.current);
-      sourceRetryTimerRef.current = undefined;
-    }
-    setRefreshing(true);
-    setFailure(undefined);
     try {
-      const result = await api.refreshRecommendations(workspaceId);
-      lastLoadedAtRef.current = Date.now();
-      serverRefreshingRef.current = result.envelope.state === "refreshing";
-      setEnvelope(result.envelope);
-    } catch (cause) {
-      const rateLimited = cause instanceof CommaApiError && cause.status === 429;
-      const next = await load();
-      if (rateLimited) {
-        setFailure("rate_limited");
+      const result = await call("recommendations.refresh", { workspace: workspaceId });
+      if (result.rateLimited)
         toast.error(messages.recommendations_title(), {
           id: `routine-refresh-refused:${workspaceId}`,
           description: messages.recommendations_rate_limited(),
           testId: "routine-problem-toast",
         });
-      } else if (!next || next.settings.sources.some((source) => source.enabled)) {
-        setFailure("unavailable");
-      }
-    } finally {
-      setRefreshing(false);
+    } catch {
+      // The core says it failed (`failure`); the header refresh stays the way back.
     }
   };
 
-  const performAction = (action: RecommendationAction) => {
+  const sources = envelope?.settings.sources ?? [];
+  const performAction = (
+    action: RecommendationAction,
+    card: Pick<RecommendationCard, "sourceIds"> = { sourceIds: [] }
+  ) => {
     if (action.type === "open_url") {
       onOpenUrl(action.href);
       return;
     }
-    // Every prompt action fills the composer draft; the user decides whether
-    // to send. Nothing goes to Comma without an explicit send from the input.
-    onUsePrompt(recommendationComposerText(action, messages));
+    // Every prompt action stages its text in the composer; the user decides
+    // whether to send. Nothing goes to Comma without an explicit send from the input.
+    const member = action.type === "send_to_comma" ? action : undefined;
+    onUsePrompt({
+      source:
+        resolveRecommendationSource(sources, member?.sourceId) ??
+        (card.sourceIds.length === 1
+          ? resolveRecommendationSource(sources, card.sourceIds[0])
+          : undefined),
+      sourceUrl: member?.sourceUrl,
+      text: recommendationComposerText(action, messages),
+    });
   };
 
   // A briefing link answers a right-click with the same menu chat gives its
@@ -742,6 +641,9 @@ export const RecommendationRail = memo(function RecommendationRail({
       hiddenCardIds={effectiveHiddenCardIds}
       // An unreadable projection lists no sources; refresh is the way back.
       isRefreshDisabled={isRefreshing || (!canRefresh && failure !== "unavailable")}
+      // Only a briefing on screen swaps its skeleton for the spinner; with no
+      // briefing yet the rail keeps its loading and generating states.
+      isRefreshing={isRefreshing && Boolean(envelope?.snapshot)}
       onRefresh={() => void refresh()}
       onOrderChange={setCardOrder}
       onVisibilityChange={setCardVisibility}
@@ -750,7 +652,7 @@ export const RecommendationRail = memo(function RecommendationRail({
   );
 
   return (
-    <RecommendationLinkPreviewProvider api={api} workspaceId={workspaceId}>
+    <RecommendationLinkPreviewProvider boundaryRef={railRef} workspaceId={workspaceId}>
       <div
         className="comma-recommendations"
         data-state={isRefreshing ? "refreshing" : (envelope?.state ?? "loading")}
@@ -776,23 +678,20 @@ export const RecommendationRail = memo(function RecommendationRail({
             <RecommendationSummary
               fallbackTitle={messages.recommendations_fallback_title()}
               greetingName={greetingName}
+              onAction={performAction}
               onOpenTask={onOpenTask}
               onOpenUrl={onOpenUrl}
               parts={envelope?.snapshot?.summary ?? []}
-              pending={briefingPending}
+              pending={initialLoading}
               sources={envelope?.settings.sources ?? []}
             />
             {routinesToolbar}
-            {briefingPending ? (
-              // The briefing is not on screen yet, or is being replaced: its
-              // cards give way to their shape until a briefing is read.
+            {initialLoading ? (
+              // The briefing is not on screen yet: its cards give way to their
+              // shape until the first read answers.
               <RecommendationsSkeleton
                 groups={cardSkeletonLines}
-                testId={
-                  initialLoading
-                    ? "recommendations-loading"
-                    : "recommendations-refreshing"
-                }
+                testId="recommendations-loading"
               />
             ) : (
               orderedCards
@@ -801,7 +700,7 @@ export const RecommendationRail = memo(function RecommendationRail({
                   <RecommendationGeneratedCardView
                     card={card}
                     key={card.id}
-                    onAction={performAction}
+                    onAction={(action) => performAction(action, card)}
                     onOpenTask={onOpenTask}
                     onOpenUrl={onOpenUrl}
                     sources={envelope?.settings.sources ?? []}
@@ -967,6 +866,7 @@ function RoutinesToolbar({
   cards,
   hiddenCardIds,
   isRefreshDisabled,
+  isRefreshing,
   onRefresh,
   onOrderChange,
   onVisibilityChange,
@@ -975,6 +875,8 @@ function RoutinesToolbar({
   cards: readonly RecommendationGeneratedCard[];
   hiddenCardIds: ReadonlySet<string>;
   isRefreshDisabled: boolean;
+  /** The refresh control turns into a spinner instead of the briefing turning into a skeleton. */
+  isRefreshing: boolean;
   onRefresh: () => void;
   onOrderChange: (orderedIds: readonly string[]) => void;
   onVisibilityChange: (cardId: string, visible: boolean) => void;
@@ -991,7 +893,7 @@ function RoutinesToolbar({
   const previousRoutineRowTops = useRef(new Map<string, number>());
   const pendingRoutineLayoutAnimation = useRef(false);
   const routinePointerDrag = useRef<RoutinePointerDrag | null>(null);
-  const routinePointerFrame = useRef<number | null>(null);
+  const routinePointerFrame = useRef<(() => void) | null>(null);
   const visibilityItems = useMemo(
     () => [
       { id: "show", label: messages.recommendations_card_show() },
@@ -1129,9 +1031,16 @@ function RoutinesToolbar({
       const drag = routinePointerDrag.current;
       if (!drag) return;
       drag.currentClientY = clientY;
+      // The autoscroll starts again from here, at the speed this pointer asks.
+      const movedAt = uiClock.monotonic();
+      drag.scroll = {
+        scrollTop: routineScrollTop(drag, movedAt),
+        speed: routineScrollSpeed(drag),
+        time: movedAt,
+      };
       if (routinePointerFrame.current !== null) return;
 
-      const runFrame = () => {
+      const runFrame = (now: number) => {
         const current = routinePointerDrag.current;
         if (!current) {
           routinePointerFrame.current = null;
@@ -1141,38 +1050,22 @@ function RoutinesToolbar({
         updateRoutinePointerDrag(current.currentClientY);
         const viewport = current.scrollViewport;
         let didScroll = false;
-        if (current.active && viewport) {
-          const bounds = viewport.getBoundingClientRect();
-          const edge = spacing["3xl"];
-          const maxStep = spacing.md;
-          const distanceFromTop = current.currentClientY - bounds.top;
-          const distanceFromBottom = bounds.bottom - current.currentClientY;
-          const step =
-            distanceFromTop < edge
-              ? -Math.ceil(maxStep * Math.min(1, (edge - distanceFromTop) / edge))
-              : distanceFromBottom < edge
-                ? Math.ceil(maxStep * Math.min(1, (edge - distanceFromBottom) / edge))
-                : 0;
-          if (step !== 0) {
-            const before = viewport.scrollTop;
-            viewport.scrollTop = Math.max(
-              0,
-              Math.min(
-                viewport.scrollHeight - viewport.clientHeight,
-                viewport.scrollTop + step
-              )
-            );
-            didScroll = viewport.scrollTop !== before;
-            if (didScroll) updateRoutinePointerDrag(current.currentClientY);
-          }
+        if (
+          current.active &&
+          viewport &&
+          current.scroll &&
+          current.scroll.speed !== 0
+        ) {
+          const before = viewport.scrollTop;
+          viewport.scrollTop = routineScrollTop(current, now);
+          didScroll = viewport.scrollTop !== before;
+          if (didScroll) updateRoutinePointerDrag(current.currentClientY);
         }
 
-        routinePointerFrame.current = didScroll
-          ? requestAnimationFrame(runFrame)
-          : null;
+        routinePointerFrame.current = didScroll ? uiClock.frame(runFrame) : null;
       };
 
-      routinePointerFrame.current = requestAnimationFrame(runFrame);
+      routinePointerFrame.current = uiClock.frame(runFrame);
     },
     [updateRoutinePointerDrag]
   );
@@ -1181,7 +1074,7 @@ function RoutinesToolbar({
       const drag = routinePointerDrag.current;
       if (!drag) return;
       if (routinePointerFrame.current !== null) {
-        cancelAnimationFrame(routinePointerFrame.current);
+        routinePointerFrame.current();
         routinePointerFrame.current = null;
         updateRoutinePointerDrag(drag.currentClientY);
       }
@@ -1210,9 +1103,9 @@ function RoutinesToolbar({
         // The card is still opaque while its lift fades; keep it above the
         // rows it may cross during the settle travel.
         settlingRow.setAttribute("data-routine-drag-settling", "true");
-        window.setTimeout(() => {
+        uiClock.after(motionDuration.spatialMove, () => {
           settlingRow.removeAttribute("data-routine-drag-settling");
-        }, motionDuration.spatialMove);
+        });
       }
 
       if (commit && !sameStringOrder(nextOrder, drag.initialOrder)) {
@@ -1255,6 +1148,7 @@ function RoutinesToolbar({
         initialTops,
         pointerId: event.pointerId,
         rowHeight: rowBounds.height,
+        scroll: null,
         scrollViewport,
         sourceIndex: initialOrder.indexOf(cardId),
         startClientY: event.clientY,
@@ -1292,7 +1186,7 @@ function RoutinesToolbar({
   useEffect(
     () => () => {
       if (routinePointerFrame.current !== null) {
-        cancelAnimationFrame(routinePointerFrame.current);
+        routinePointerFrame.current();
         routinePointerFrame.current = null;
       }
       routinePointerDrag.current = null;
@@ -1343,7 +1237,13 @@ function RoutinesToolbar({
             aria-label={messages.common_refresh()}
             className="comma-recommendations-refresh-control"
             data-no-press-feedback
-            icon={<ReloadIcon className="comma-input-icon" />}
+            icon={
+              isRefreshing ? (
+                <LoadingCircleIcon className="comma-input-icon motion-safe:animate-spin" />
+              ) : (
+                <ReloadIcon className="comma-input-icon" />
+              )
+            }
             isDisabled={isRefreshDisabled}
             onPress={onRefresh}
           />
@@ -1651,6 +1551,23 @@ function recommendationComposerText(
   return messages.recommendations_task_request({ task });
 }
 
+// A briefing summary's task link has no row action: it stands for the member's
+// task its prompt names, so it stages that prompt the way the task's row does.
+function linkTaskAction(
+  link: Extract<RecommendationDocumentPart, { kind: "inline-link" }>["link"],
+  prompt: string
+): RecommendationAction {
+  return {
+    label: link.label,
+    memberTask: true,
+    prompt,
+    requiresConfirmation: true,
+    ...(link.sourceId ? { sourceId: link.sourceId } : {}),
+    sourceUrl: link.href,
+    type: "send_to_comma",
+  };
+}
+
 // The server turns every row into a prompt, except a row that stands for an
 // existing Task (mail with a confirmed Task): that row keeps a source link
 // action and names exactly one Task. It opens the Task and leaves once the Task
@@ -1693,10 +1610,14 @@ function RecommendationTextItem({
     const row = rowRef.current;
     if (!sourceLink || !row) return;
     let label: HTMLElement | null = null;
-    let frame = 0;
+    let cancelFrame = () => {};
     const reset = () => {
-      cancelAnimationFrame(frame);
-      if (label) label.scrollLeft = 0;
+      cancelFrame();
+      if (label) {
+        label.scrollLeft = 0;
+        label.style.removeProperty("--comma-scrolled");
+        label.style.removeProperty("--comma-unscrolled");
+      }
       delete row.dataset.scrolling;
     };
     const update = () => {
@@ -1711,17 +1632,20 @@ function RecommendationTextItem({
       const distance = label.scrollWidth - label.clientWidth;
       if (!active || distance <= 0 || isReducedMotionEnabled()) return;
       row.dataset.scrolling = "true";
-      const start = performance.now() + 600;
+      const start = uiClock.monotonic() + 600;
       const tick = (now: number) => {
         const offset = Math.min(distance, Math.max(0, now - start) * 0.04);
         target.scrollLeft = offset;
-        if (offset < distance) frame = requestAnimationFrame(tick);
+        // The label fades out at each edge that still hides some of it.
+        target.style.setProperty("--comma-scrolled", `${offset}px`);
+        target.style.setProperty("--comma-unscrolled", `${distance - offset}px`);
+        if (offset < distance) cancelFrame = uiClock.frame(tick);
       };
-      frame = requestAnimationFrame(tick);
+      cancelFrame = uiClock.frame(tick);
     };
     const blur = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(update);
+      cancelFrame();
+      cancelFrame = uiClock.frame(update);
     };
     row.addEventListener("pointerenter", update);
     row.addEventListener("pointerleave", update);
@@ -1926,47 +1850,16 @@ function RecommendationLinkHoverCard({
 }) {
   const messages = useCommaMessages();
   const previewContext = useContext(RecommendationLinkPreviewContext);
-  const [preview, setPreview] = useState<CommaRecommendationLinkPreview | "loading">();
-  const requestGeneration = useRef(0);
-  const richPreview =
-    previewContext !== undefined && hasRecommendationLinkPreview(link.href);
-
-  useEffect(() => {
-    requestGeneration.current += 1;
-    setPreview(undefined);
-    return () => {
-      requestGeneration.current += 1;
-    };
-  }, [link.href, link.sourceId]);
-
-  const handleOpenChange = (open: boolean) => {
-    if (!open || link.previewText || !richPreview || preview !== undefined) return;
-    // A settled answer renders at once: no skeleton flash, no request.
-    const cached = peekRecommendationLinkPreview(
-      previewContext.api,
-      previewContext.workspaceId,
-      { href: link.href, sourceId: link.sourceId }
-    );
-    if (cached === "missing") return;
-    if (cached) {
-      setPreview(cached);
-      return;
-    }
-    const generation = ++requestGeneration.current;
-    setPreview("loading");
-    void loadRecommendationLinkPreview(previewContext.api, previewContext.workspaceId, {
-      href: link.href,
-      sourceId: link.sourceId,
-    }).then(
-      (next) => {
-        if (requestGeneration.current === generation) setPreview(next);
-      },
-      () => {
-        // Unavailable: the generic card is the complete answer.
-        if (requestGeneration.current === generation) setPreview(undefined);
-      }
-    );
-  };
+  // Read lazily, once the card first opens; an excerpt admitted with the snapshot needs none.
+  const [preview, handleOpenChange] = useLinkPreview(
+    previewContext && !link.previewText
+      ? {
+          workspaceId: previewContext.workspaceId,
+          href: link.href,
+          sourceId: link.sourceId,
+        }
+      : undefined
+  );
 
   // This excerpt was admitted with the member snapshot. Render only supported
   // inline tokens, not arbitrary HTML or another provider's fetched preview.
@@ -1974,30 +1867,44 @@ function RecommendationLinkHoverCard({
     return (
       <HoverCard
         anchorRef={fallbackAnchorRef}
+        boundaryRef={previewContext?.boundaryRef}
         className="comma-recommendation-prompt-hover-card comma-recommendation-source-detail-card"
         content={
           <ScrollArea
             className="comma-recommendation-source-scroll"
-            contentClassName="comma-recommendation-prompt-preview"
+            contentClassName="comma-recommendation-source-card"
             orientation="vertical"
             edgeEffect="none"
           >
-            <section className="comma-recommendation-source-section comma-recommendation-source-context">
-              <strong>{messages.recommendations_source_context()}</strong>
-              <p className="comma-recommendation-source-detail">
-                <SourceContext
-                  text={link.previewText}
-                  sourceHref={link.href}
-                  onOpenUrl={onOpenUrl}
-                />
-              </p>
-            </section>
+            {/* The task the row starts leads. The quoted source words under
+                it are its evidence, and the last line names their source. */}
             {link.taskPrompt ? (
               <p className="comma-recommendation-task-objective">
                 {/* The task prompt starts with the objective. A blank line separates the source URL. */}
                 {link.taskPrompt.split("\n\n", 1)[0]}
               </p>
             ) : null}
+            <blockquote
+              aria-label={messages.recommendations_source_context()}
+              className="comma-recommendation-source-detail"
+            >
+              <SourceContext
+                text={link.previewText}
+                sourceHref={link.href}
+                onOpenUrl={onOpenUrl}
+              />
+            </blockquote>
+            <div className="comma-recommendation-source-origin">
+              <span
+                aria-hidden="true"
+                className="comma-recommendation-source-origin-mark"
+              >
+                <LinkProviderIcon source={source} />
+              </span>
+              <span className="comma-recommendation-source-origin-name">
+                {source?.appName ?? messages.recommendations_source_context()}
+              </span>
+            </div>
           </ScrollArea>
         }
         placement="bottom start"
@@ -2091,6 +1998,8 @@ function RecommendationActionHoverCard({
 export function RecommendationSummary({
   fallbackTitle,
   greetingName,
+  heading: Heading = "h1",
+  onAction,
   onOpenTask,
   onOpenUrl,
   parts,
@@ -2099,6 +2008,10 @@ export function RecommendationSummary({
 }: {
   fallbackTitle: string;
   greetingName?: string | undefined;
+  /** The greeting's level: the Home screen's title, or a lower one on a page that embeds it. */
+  heading?: "h1" | "h2";
+  /** Stages a task link's prompt; without it, a task link opens its source. */
+  onAction?: ((action: RecommendationAction) => void) | undefined;
   onOpenTask: (conversationId: string) => void;
   onOpenUrl: (url: string) => void;
   parts: readonly RecommendationDocumentPart[];
@@ -2117,12 +2030,13 @@ export function RecommendationSummary({
 
   return (
     <section className="comma-recommendations-summary">
-      <h1>{title}</h1>
+      <Heading className="comma-recommendations-summary-title">{title}</Heading>
       {pending ? (
         <RecommendationsSkeleton groups={summarySkeletonLines} />
       ) : body.length > 0 ? (
         <RecommendationDocument
           className="comma-recommendations-summary-body"
+          onAction={onAction}
           onOpenTask={onOpenTask}
           onOpenUrl={onOpenUrl}
           parts={body}
@@ -2143,7 +2057,7 @@ export function RecommendationSummary({
 export function briefingGreeting(
   messages: ReturnType<typeof useCommaMessages>,
   name: string,
-  now: Date = new Date()
+  now: Date = new Date(uiClock.now())
 ): string {
   const hour = now.getHours();
   if (hour < 12) return messages.recommendations_greeting_morning({ name });
@@ -2226,8 +2140,11 @@ export function RecommendationDocument({
                   data-variant={variant}
                   data-source-detail={part.link.previewText ? "true" : undefined}
                   onClick={() =>
-                    part.link.taskPrompt && fallbackAction && onAction
-                      ? onAction(fallbackAction)
+                    part.link.taskPrompt && onAction
+                      ? onAction(
+                          fallbackAction ??
+                            linkTaskAction(part.link, part.link.taskPrompt)
+                        )
                       : onOpenUrl(part.link.href)
                   }
                   type="button"
@@ -2372,10 +2289,9 @@ function VisibleRecommendationTaskRow({
   const context = useContext(RecommendationLinkPreviewContext);
   const projection = useProductInboxSnapshot();
   const group =
-    projection?.snapshot.workspaces?.find(
-      (workspace) => workspace.id === context?.workspaceId
-    )?.group_id ?? "";
-  const summary = useTaskSummary(context?.api, group, id);
+    projection?.workspaces?.find((workspace) => workspace.id === context?.workspaceId)
+      ?.group_id ?? "";
+  const summary = useTaskSummary(context ? group : "", id);
   if (
     context &&
     (!summary ||
@@ -2397,11 +2313,10 @@ function VisibleRecommendationTask({
   const context = useContext(RecommendationLinkPreviewContext);
   const projection = useProductInboxSnapshot();
   const group =
-    projection?.snapshot.workspaces?.find(
-      (workspace) => workspace.id === context?.workspaceId
-    )?.group_id ?? "";
-  const summary = useTaskSummary(context?.api, group, id);
-  const action = useArchiveAction(context?.api, group, id);
+    projection?.workspaces?.find((workspace) => workspace.id === context?.workspaceId)
+      ?.group_id ?? "";
+  const summary = useTaskSummary(context ? group : "", id);
+  const action = useArchiveAction(context ? group : "", id);
   if (!context) return children;
   if (summary?.status === "archived") return null;
   return (

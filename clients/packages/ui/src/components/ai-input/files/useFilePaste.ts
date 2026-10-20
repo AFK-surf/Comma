@@ -5,14 +5,16 @@ import { dataTransferHasFiles } from "./dataTransferHasFiles";
 export type FilePaste = ReturnType<typeof useFilePaste>;
 
 /**
- * Pastes that carry files, from the keyboard or the edit menu's Paste: the
- * files go to the host the way a drop's do.
+ * Pastes, from the keyboard or the edit menu's Paste, that the host takes
+ * instead of the prompt: files go to the host the way a drop's do, and text
+ * goes to the host when it asks for it.
  */
 export function useFilePaste({
   clipboard,
   onPaste,
   onPasteFiles,
-}: ForwardedAiInputProps<"onPaste" | "onPasteFiles"> & {
+  onPasteText,
+}: ForwardedAiInputProps<"onPaste" | "onPasteFiles" | "onPasteText"> & {
   clipboard: AiInputClipboard;
 }) {
   /**
@@ -24,11 +26,14 @@ export function useFilePaste({
   const handlePaste = (event: ClipboardEvent<HTMLElement>) => {
     onPaste?.(event);
     if (event.defaultPrevented) return;
-    if (!onPasteFiles || !dataTransferHasFiles(event.clipboardData)) {
+    if (onPasteFiles && dataTransferHasFiles(event.clipboardData)) {
+      event.preventDefault();
+      onPasteFiles(event.clipboardData);
       return;
     }
-    event.preventDefault();
-    onPasteFiles(event.clipboardData);
+    if (onPasteText?.(event.clipboardData.getData("text/plain"))) {
+      event.preventDefault();
+    }
   };
 
   const pasteFilesFromMenu = useCallback(async (): Promise<boolean> => {
@@ -47,5 +52,12 @@ export function useFilePaste({
     return true;
   }, [clipboard, onPasteFiles]);
 
-  return { handlePaste, pasteFilesFromMenu };
+  /** The edit menu's Paste: true when the host took the clipboard. */
+  const pasteFromMenu = useCallback(async (): Promise<boolean> => {
+    if (await pasteFilesFromMenu()) return true;
+    if (!onPasteText) return false;
+    return onPasteText(await clipboard.readText());
+  }, [clipboard, onPasteText, pasteFilesFromMenu]);
+
+  return { handlePaste, pasteFromMenu };
 }

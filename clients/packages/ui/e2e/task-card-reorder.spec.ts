@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { installVirtualTime } from "../../../e2e/helpers/virtual-time";
 
 const STORY = "/iframe.html?id=app-components-tasks-task-board--reorder&viewMode=story";
 const LIVE_UPDATE_STORY =
@@ -110,8 +111,17 @@ test("a click still opens the card, and the drag that moved it does not", async 
 test("the card sticks to the hand and falls into the well from where it is", async ({
   page,
 }) => {
+  // The settle animation is 200 ms with an ease-out curve: on real time a busy
+  // machine draws it well along before the test reads it. Stop the clock.
+  const time = await installVirtualTime(page);
   await page.goto(STORY);
   await expect(items(page)).toHaveCount(5);
+  // The last title wraps to a second line only in Inter, which loads on real
+  // time: measure the column once its font is in, as it is when the card lands.
+  await page.evaluate(async () => {
+    document.body.getBoundingClientRect();
+    await document.fonts.ready;
+  });
 
   const first = await items(page).nth(0).boundingBox();
   const last = await items(page).nth(4).boundingBox();
@@ -137,20 +147,33 @@ test("the card sticks to the hand and falls into the well from where it is", asy
   const drawnTop = first.y + first.height / 2 + held.y - first.height / 2;
   await page.mouse.up();
 
-  // The settle animation starts from where the card was drawn — the very next
-  // frame it must still be near the hand, not teleported back into the list.
-  const settling = await items(page)
-    .nth(4)
-    .evaluate((slot) => {
-      const carrier = slot.firstElementChild!;
-      const rect = carrier.getBoundingClientRect();
-      return { animations: carrier.getAnimations().length, top: rect.top };
-    });
+  const carrierTop = () =>
+    items(page)
+      .nth(4)
+      .evaluate((slot) => {
+        const carrier = slot.firstElementChild!;
+        return {
+          animations: carrier.getAnimations().length,
+          top: carrier.getBoundingClientRect().top,
+        };
+      });
+  // The settle animation starts from where the card was drawn, not teleported
+  // back into the list.
+  const settling = await carrierTop();
   expect(settling.animations).toBeGreaterThan(0);
-  expect(Math.abs(settling.top - drawnTop)).toBeLessThan(60);
+  expect(Math.abs(settling.top - drawnTop)).toBeLessThan(1);
 
-  // And it lands as the last card.
+  // And it lands as the last card, in the last slot.
   expect((await titles(page))[4]).toBe("Summarize the latest product feedback");
+  await time.advanceUntil(
+    () =>
+      document
+        .querySelectorAll('[data-slot="task-card-reorder-item"]')[4]!
+        .firstElementChild!.getAnimations().length === 0
+  );
+  // The column keeps its height, so the last slot ends where it ended before.
+  const landed = await carrierTop();
+  expect(Math.abs(landed.top - (last.y + last.height - first.height))).toBeLessThan(1);
 });
 
 test("a neighbour yields only once the card crosses its middle", async ({ page }) => {
@@ -275,9 +298,8 @@ test("a card dragged below the last slot is not cut off by the column body", asy
 test("a live id update cancels the drag without reordering another task", async ({
   page,
 }) => {
-  test.slow();
   await page.goto(LIVE_UPDATE_STORY);
-  await expect(items(page)).toHaveCount(3, { timeout: 45_000 });
+  await expect(items(page)).toHaveCount(3);
 
   await dragCard(page, 0, 1);
   await expect(items(page).nth(0)).toHaveAttribute("data-dragging", "true");

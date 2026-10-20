@@ -8,6 +8,8 @@ import {
   type RecordedRequest,
 } from "./support";
 
+type Reply = { status: number; body: unknown };
+
 const swarms = [
   { id: "p-1", name: "Support Desk" },
   { id: "p-2", name: "Sales Assistant" },
@@ -98,7 +100,7 @@ async function openMeetings(
   path: string,
   handle: (
     request: RecordedRequest
-  ) => { status: number; body: unknown } | undefined = () => undefined
+  ) => Reply | undefined | Promise<Reply | undefined> = () => undefined
 ) {
   await injectCsrfToken(page);
   const requests = await routeApi(page, (request) => {
@@ -361,4 +363,45 @@ test("fits a 900px window without sideways scrolling", async ({ page }) => {
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth
   );
   expect(overflow).toBeLessThanOrEqual(0);
+});
+
+test("settings opened again save the newer server values, not the cached ones", async ({
+  page,
+}) => {
+  let lead = 15;
+  let held: Promise<void> | null = null;
+  const requests = await openMeetings(
+    page,
+    "/orgs/acme/meetings/settings",
+    async (request) => {
+      if (request.path === "/orgs/acme/meetings/p-1" && request.method === "GET") {
+        const value = lead;
+        if (held) await held;
+        return ok(overview({ preparation_lead_minutes: value }));
+      }
+      if (request.path === "/orgs/acme/meetings/p-1/catalog") return ok(catalog);
+      if (request.method === "PUT") return ok({ settings: request.body });
+      return undefined;
+    }
+  );
+  const send = page.getByRole("button", { name: /Send preparation/ });
+  await expect(send).toContainText("15 minutes before");
+
+  const nav = page.getByRole("navigation", { name: "Organization navigation" });
+  await nav.getByRole("link", { name: "Upcoming" }).click();
+  await expect(page.getByText("Weekly product sync")).toBeVisible();
+  lead = 30;
+  const { promise, resolve } = Promise.withResolvers<void>();
+  held = promise;
+  await nav.locator('a[href="/orgs/acme/meetings/settings"]').click();
+  // The cached settings show first; the newer ones replace them.
+  await expect(send).toContainText("15 minutes before");
+  resolve();
+  await expect(send).toContainText("30 minutes before");
+
+  await page.getByRole("button", { name: "Save and enable" }).click();
+  await expect(page).toHaveURL(/\/orgs\/acme\/meetings\?project=p-1$/);
+  expect(
+    requests.filter((request) => request.method === "PUT").at(-1)?.body
+  ).toMatchObject({ preparation_lead_minutes: 30 });
 });

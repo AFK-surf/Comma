@@ -415,7 +415,7 @@ defmodule SalixIM.Provider.Slack.ThreadRouteOwner do
       "schema" => @schema,
       "owner" => owner,
       "claim_identity" => claim_identity,
-      "claimed_at_ms" => System.system_time(:millisecond),
+      "claimed_at_ms" => SystemsClock.system_time(:millisecond),
       "effect" => nil
     })
   end
@@ -504,7 +504,7 @@ defmodule SalixIM.Provider.Slack.ThreadRouteOwner do
               "identity" => effect_identity,
               "reservation_identity" => reservation_identity,
               "state" => "reserved",
-              "reserved_at_ms" => System.system_time(:millisecond)
+              "reserved_at_ms" => SystemsClock.system_time(:millisecond)
             })
 
           case CasRecord.update(

@@ -147,7 +147,7 @@ defmodule SalixAgent.SSH.KnownHosts do
         "host" => normalize_host(host),
         "port" => port,
         "first_seen_at" =>
-          DateTime.utc_now() |> DateTime.truncate(:millisecond) |> DateTime.to_iso8601(),
+          SystemsClock.utc_now() |> DateTime.truncate(:millisecond) |> DateTime.to_iso8601(),
         "first_seen_by_agent_id" => agent_id
       })
 

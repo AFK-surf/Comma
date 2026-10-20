@@ -1,18 +1,18 @@
 defmodule BridgeForTeamsWeb.DashboardRouter do
   @moduledoc """
-  Router for the BridgeForTeams LiveView dashboard (port 4101). The `:browser`
+  Router for the BridgeForTeams dashboard (port 4101). The `:browser`
   pipeline runs the standard plugs plus `fetch_current_user` (resolves the
-  signed session cookie into `:current_user`). Authenticated pages live in the
-  `:authenticated` `live_session` with the `{Dashboard.Auth, :ensure_authenticated}`
-  on_mount hook; anonymous users are redirected to `/login`, which drives the
-  existing OIDC flow via `BridgeForTeamsWeb.Dashboard.AuthController`.
+  signed session cookie into `:current_user`). Dashboard pages are the React
+  app served by `Dashboard.SPAController` behind `:require_authenticated`, and
+  read and write through the `/dashboard/api/v1` JSON API. Anonymous users are
+  redirected to `/login`, which drives the existing OIDC flow via
+  `BridgeForTeamsWeb.Dashboard.AuthController`.
 
   ## Adding a route
 
-  Add a `live "/path", SomeLive` inside the `:authenticated` live_session (so it
-  inherits auth + the app layout), or a `get/post` to a controller in the
-  `:browser` scope for non-LiveView actions. Page-slice ownership is documented
-  in the build manifest.
+  Add a page as a `get` to `SPAController` in the authenticated scope and its
+  data as JSON API routes, or a `get/post` to a controller in the `:browser`
+  scope for non-page actions.
   """
   use BridgeForTeamsWeb.Dashboard, :router
 
@@ -65,16 +65,12 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
   pipeline :browser do
     plug(:accepts, ["html"])
     plug(:fetch_session)
-    plug(:fetch_live_flash)
+    plug(:fetch_flash)
     plug(:put_root_layout, html: {BridgeForTeamsWeb.Dashboard.Layouts, :root})
     plug(:protect_from_forgery)
     plug(:put_secure_browser_headers)
     plug(:fetch_current_user)
     plug(BridgeForTeamsWeb.Dashboard.Locale)
-  end
-
-  pipeline :authenticated_browser do
-    plug(:require_authenticated)
   end
 
   scope "/", BridgeForTeamsWeb do
@@ -108,11 +104,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     get("/dev/login", AuthController, :dev_login)
   end
 
-  scope "/", BridgeForTeamsWeb do
-    pipe_through([:browser, :authenticated_browser])
-    get("/runtime-auth/projects/:project_id", ProjectDeviceController, :runtime_auth_management)
-  end
-
   # Public product bootstrap endpoints that do not require an authenticated CLI
   # or dashboard session.
   scope "/v1", BridgeForTeamsWeb do
@@ -131,6 +122,13 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     # The first-run checklist on the Overview.
     get("/orgs/:org/onboarding", DashboardAPIController, :onboarding)
     post("/orgs/:org/onboarding/dismiss", DashboardAPIController, :dismiss_onboarding)
+
+    post(
+      "/orgs/:org/onboarding/remind-admins",
+      DashboardAPIController,
+      :remind_onboarding_admins
+    )
+
     get("/orgs/:org/health", DashboardAPIController, :health)
     get("/orgs/:org/audit", DashboardAPIController, :audit)
     get("/orgs/:org/projects", DashboardAPIController, :projects)
@@ -138,13 +136,14 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     get("/orgs/:org/projects/:id/overview", DashboardAPIController, :project_overview)
 
     # One Agent Swarm's React pages: Agents (with the agent detail rail),
-    # Devices (with Compute environments), Tasks (with its Scheduled view),
-    # the Overview's Websites panel, and Settings with Access.
+    # Devices (with Compute environments), Plugins (with one plugin's
+    # connections), Skills, Tasks (with its Scheduled view), Connections
+    # (messaging channels and accounts), the Overview's Websites panel, and
+    # Settings with Access.
     scope "/orgs/:org/projects/:id" do
       get("/agents", DashboardAPIController, :project_agents)
       post("/agents", DashboardAPIController, :create_project_agent)
       get("/agents/targets", DashboardAPIController, :project_agent_targets)
-      get("/agents/workloads", DashboardAPIController, :project_agent_workloads)
       get("/agents/:agent_id", DashboardAPIController, :project_agent)
       patch("/agents/:agent_id", DashboardAPIController, :configure_project_agent)
       get("/agents/:agent_id/config", DashboardAPIController, :project_agent_config)
@@ -162,6 +161,8 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
       get("/devices/provisioning", DashboardAPIController, :project_device_provisioning)
       get("/devices/runners", DashboardAPIController, :project_device_runners)
       put("/devices/cloud", DashboardAPIController, :set_project_cloud_computer)
+      put("/devices/cloud-vm/runner", DashboardAPIController, :set_project_cloud_vm_runner)
+      delete("/devices/cloud-vm/runner", DashboardAPIController, :remove_project_cloud_vm_runner)
       post("/devices/:device_id/disconnect", DashboardAPIController, :disconnect_project_device)
       delete("/devices/:device_id", DashboardAPIController, :delete_project_device)
 
@@ -173,13 +174,130 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
 
       post("/compute/:environment_id/drain", DashboardAPIController, :drain_project_environment)
       post("/compute/:environment_id/revoke", DashboardAPIController, :revoke_project_environment)
+      get("/plugins", DashboardAPIController, :project_plugins)
+      post("/plugins", DashboardAPIController, :create_project_plugin)
+      get("/plugins/:plugin_id", DashboardAPIController, :project_plugin)
+      put("/plugins/:plugin_id", DashboardAPIController, :update_project_plugin)
+
+      put(
+        "/plugins/:plugin_id/enablement",
+        DashboardAPIController,
+        :set_project_plugin_enablement
+      )
+
+      post(
+        "/plugins/:plugin_id/connections/:connection_id/connect",
+        DashboardAPIController,
+        :connect_project_plugin
+      )
+
+      post(
+        "/plugins/:plugin_id/connections/:connection_id/disconnect",
+        DashboardAPIController,
+        :disconnect_project_plugin
+      )
+
+      get("/connections", DashboardAPIController, :project_connections)
+      get("/connections/slack/manifest", DashboardAPIController, :project_slack_manifest)
+      post("/connections/feishu", DashboardAPIController, :create_project_feishu_connect)
+      post("/connections/feishu/checks", DashboardAPIController, :run_project_feishu_checks)
+      post("/connections/qq", DashboardAPIController, :create_project_qq_connect)
+      post("/connections/lark", DashboardAPIController, :create_project_lark_connect)
+
+      post(
+        "/connections/lark/:connect_id/checks",
+        DashboardAPIController,
+        :run_project_lark_checks
+      )
+
+      put(
+        "/connections/qq/:connect_id/menu",
+        DashboardAPIController,
+        :update_project_qq_command_menu
+      )
+
+      post("/connections/slack", DashboardAPIController, :create_project_slack_connect)
+
+      post(
+        "/connections/slack/:connect_id/checks",
+        DashboardAPIController,
+        :run_project_slack_checks
+      )
+
+      put(
+        "/connections/im/:connect_id/enablement",
+        DashboardAPIController,
+        :set_project_im_connect_enablement
+      )
+
+      delete("/connections/im/:connect_id", DashboardAPIController, :delete_project_im_connect)
+      post("/connections/signal/claims", DashboardAPIController, :create_project_signal_claim)
+
+      delete(
+        "/connections/signal/bindings/:binding_id",
+        DashboardAPIController,
+        :remove_project_signal_binding
+      )
+
+      put("/connections/tailnet", DashboardAPIController, :connect_project_tailnet)
+      delete("/connections/tailnet", DashboardAPIController, :disconnect_project_tailnet)
+      post("/connections/accounts", DashboardAPIController, :connect_project_account)
+
+      put(
+        "/connections/accounts/:binding_id/enablement",
+        DashboardAPIController,
+        :set_project_account_enablement
+      )
+
+      delete(
+        "/connections/accounts/:binding_id",
+        DashboardAPIController,
+        :delete_project_account
+      )
+
+      post(
+        "/connections/composio/:toolkit/connect",
+        DashboardAPIController,
+        :connect_project_composio
+      )
+
+      delete(
+        "/connections/composio/:account_id",
+        DashboardAPIController,
+        :delete_project_composio
+      )
+
+      get("/skills", DashboardAPIController, :project_skills)
+      post("/skills", DashboardAPIController, :create_project_skill)
+      post("/skills/upload", DashboardAPIController, :upload_project_skill)
+      get("/skills/:skill_id", DashboardAPIController, :project_skill)
+      delete("/skills/:skill_id", DashboardAPIController, :delete_project_skill)
       get("/websites", DashboardAPIController, :project_websites)
       get("/tasks", DashboardAPIController, :project_tasks)
       post("/tasks", DashboardAPIController, :create_project_task)
+      get("/tasks/targets", DashboardAPIController, :project_task_targets)
+      # Task detail: the thread (polled with `after`, paged with `before`),
+      # steering, review acceptance and the task's own schedule.
+      get("/tasks/:task_id", DashboardAPIController, :project_task)
+      get("/tasks/:task_id/messages", DashboardAPIController, :project_task_messages)
+      post("/tasks/:task_id/messages", DashboardAPIController, :send_project_task_message)
+      post("/tasks/:task_id/review", DashboardAPIController, :accept_project_task_review)
+      put("/tasks/:task_id/schedule", DashboardAPIController, :put_project_task_schedule)
+      delete("/tasks/:task_id/schedule", DashboardAPIController, :delete_project_task_schedule)
+
+      get(
+        "/tasks/:task_id/schedule/preview",
+        DashboardAPIController,
+        :preview_project_task_schedule
+      )
+
       get("/schedules", DashboardAPIController, :project_schedules)
       delete("/schedules/:schedule_id", DashboardAPIController, :delete_project_schedule)
       get("/settings", DashboardAPIController, :project_settings)
       patch("/settings", DashboardAPIController, :update_project_settings)
+      put("/settings/task-model", DashboardAPIController, :put_project_task_model)
+      delete("/settings/task-model", DashboardAPIController, :delete_project_task_model)
+      put("/settings/task-place", DashboardAPIController, :put_project_task_place)
       post("/archive", DashboardAPIController, :archive_project)
       get("/access", DashboardAPIController, :project_access)
       post("/access", DashboardAPIController, :grant_project_access)
@@ -265,11 +383,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     put("/orgs/:org/settings/models", DashboardAPIController, :update_settings_models)
 
     scope "/orgs/:org/settings/models" do
-      get("/templates", DashboardAPIController, :model_templates)
-      post("/templates", DashboardAPIController, :create_model_template)
-      post("/templates/discover", DashboardAPIController, :discover_template_models)
-      put("/templates/:id", DashboardAPIController, :update_model_template)
-      delete("/templates/:id", DashboardAPIController, :delete_model_template)
       get("/accounts", DashboardAPIController, :model_accounts)
       post("/accounts", DashboardAPIController, :create_model_account)
       post("/accounts/oauth", DashboardAPIController, :begin_model_account_oauth)
@@ -336,21 +449,18 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
       :delete_settings_feishu_app
     )
 
-    post(
-      "/orgs/:org/settings/integrations/feishu/routes",
-      DashboardAPIController,
-      :connect_settings_feishu_route
-    )
-
-    post(
-      "/orgs/:org/settings/integrations/feishu/projects/:project_id/routes/:connect_id/disable",
-      DashboardAPIController,
-      :disable_settings_feishu_route
-    )
-
     get("/cli/device-login/:user_code", DashboardAPIController, :cli_login)
     post("/cli/device-login/:user_code/approve", DashboardAPIController, :approve_cli_login)
     post("/cli/device-login/:user_code/deny", DashboardAPIController, :deny_cli_login)
+
+    # The first-run onboarding wizard; it belongs to the user, not to an org.
+    get("/onboarding", DashboardAPIController, :onboarding_wizard)
+    get("/onboarding/integrations", DashboardAPIController, :onboarding_wizard_integrations)
+    put("/onboarding/capabilities", DashboardAPIController, :save_onboarding_capabilities)
+    post("/onboarding/profile", DashboardAPIController, :save_onboarding_profile)
+    post("/onboarding/connect", DashboardAPIController, :connect_onboarding_toolkit)
+    post("/onboarding/complete", DashboardAPIController, :complete_onboarding)
+    post("/onboarding/skip", DashboardAPIController, :skip_onboarding)
   end
 
   scope "/dashboard", BridgeForTeamsWeb do
@@ -363,18 +473,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     )
 
     get(
-      "/orgs/:org/projects/:project/runtime-auth/requests",
-      ProjectDeviceController,
-      :runtime_auth_requests
-    )
-
-    post(
-      "/orgs/:org/projects/:project/runtime-auth/requests/:request_id/complete",
-      ProjectDeviceController,
-      :complete_runtime_auth_request
-    )
-
-    get(
       "/orgs/:org/projects/:project/devices/:device_id/runtimes/:runtime_id/managed-auth",
       ProjectComputeController,
       :managed_auth
@@ -388,24 +486,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
 
     delete(
       "/orgs/:org/projects/:project/devices/:device_id/runtimes/:runtime_id/managed-auth",
-      ProjectComputeController,
-      :managed_auth
-    )
-
-    get(
-      "/orgs/:org/projects/:project/workloads/:id/managed-auth",
-      ProjectComputeController,
-      :managed_auth
-    )
-
-    put(
-      "/orgs/:org/projects/:project/workloads/:id/managed-auth",
-      ProjectComputeController,
-      :managed_auth
-    )
-
-    delete(
-      "/orgs/:org/projects/:project/workloads/:id/managed-auth",
       ProjectComputeController,
       :managed_auth
     )
@@ -418,8 +498,6 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     pipe_through(:cli_api)
 
     get("/orgs/:org/projects/:project/agents", ProjectAgentController, :index)
-    get("/orgs/:org/projects/:project/agents/runtimes", ProjectAgentController, :runtimes)
-    get("/orgs/:org/projects/:project/agents/workloads", ProjectAgentController, :workloads)
     post("/orgs/:org/projects/:project/agents", ProjectAgentController, :create)
 
     patch(
@@ -621,6 +699,13 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     post("/feishu/setup", CLIController, :feishu_setup)
     post("/feishu/connect", CLIController, :feishu_connect)
     post("/feishu/checks", CLIController, :feishu_checks)
+    post("/qq/connect", CLIController, :qq_connect)
+    get("/qq/status", CLIController, :qq_status)
+    post("/qq/menu", CLIController, :qq_menu)
+    post("/lark/connect", CLIController, :lark_connect)
+    get("/lark/status", CLIController, :lark_status)
+    post("/lark/checks", CLIController, :lark_checks)
+    get("/lark/scopes", CLIController, :lark_scopes)
     post("/sso/checks", CLIController, :sso_checks)
     post("/auth/logout", CLIAuthController, :logout)
     post("/auth/orgs/device", CLIAuthController, :start_org_grant_authorization)
@@ -679,8 +764,7 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
 
     get("/orgs/:org/operations/audit.csv", OperationsExportController, :audit)
 
-    # Pages owned by the React dashboard (clients/apps/bft). Pages move here
-    # from the LiveView live_session one at a time.
+    # Pages owned by the React dashboard (clients/apps/bft).
     get("/", SPAController, :index)
     # The organization picker is the top-bar switcher; `/orgs` opens the
     # first organization like `/`.
@@ -689,14 +773,26 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     get("/orgs/:org/projects", SPAController, :index)
     get("/orgs/:org/projects/:id", SPAController, :index)
     # Agent Swarm pages: Agents (an agent's address opens it in the detail
-    # rail), Devices, Tasks (the retired Schedules page is its Scheduled
-    # view), Settings (Access is a section of it), and the retired Websites
-    # page, which opens the Overview.
-    for page <- ~w(agents devices tasks schedules settings access websites) do
+    # rail), Devices, Plugins (with one plugin's page), Skills, Tasks (the
+    # retired Schedules page is its Scheduled view), Connections (the retired
+    # Integrations page is its messaging section), Settings (Access is a
+    # section of it), and the retired Websites page, which opens the Overview.
+    for page <- ~w(agents devices plugins skills tasks schedules settings access websites) do
       get("/orgs/:org/projects/:id/#{page}", SPAController, :index)
     end
 
+    # The onboarding integrations step links to its swarm's messaging setup,
+    # so Connections (and its retired Integrations address) skip the
+    # first-run gate.
+    for page <- ~w(connections integrations) do
+      get("/orgs/:org/projects/:id/#{page}", SPAController, :before_onboarding)
+    end
+
     get("/orgs/:org/projects/:id/agents/:agent_id", SPAController, :index)
+    # Task detail. The retired session inspector's address opens it.
+    get("/orgs/:org/projects/:id/tasks/:conversation_id", SPAController, :index)
+    get("/orgs/:org/projects/:id/tasks/:conversation_id/session", SPAController, :task_session)
+    get("/orgs/:org/projects/:id/plugins/:plugin_id", SPAController, :index)
 
     get("/orgs/:org/plugins", SPAController, :index)
     get("/orgs/:org/meetings", SPAController, :index)
@@ -726,11 +822,11 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     get("/orgs/:org/settings/signal", SPAController, :index)
     get("/orgs/:org/settings/feishu", SPAController, :index)
     # The onboarding integrations step sends admins to Composio before they
-    # finish onboarding, so these two pages skip the first-run gate.
+    # finish onboarding, so these two pages skip the first-run gate too.
     get("/orgs/:org/settings/integrations", SPAController, :before_onboarding)
     get("/orgs/:org/settings/composio", SPAController, :before_onboarding)
-    # The retired private-template and organization-account pages are
-    # sections of AI models now.
+    # Old links to the retired private-template and organization-account
+    # pages open AI models.
     get("/orgs/:org/settings/models/templates", SPAController, :index)
     get("/orgs/:org/settings/subscriptions", SPAController, :index)
     # BFT CLI device-login approval: owners and admins only, and exempt from
@@ -747,49 +843,12 @@ defmodule BridgeForTeamsWeb.DashboardRouter do
     # The retired tasks step: stale tabs and bookmarks resume the wizard.
     get("/onboarding/tasks", OnboardingController, :resume)
 
-    # First-run onboarding: authenticated but NOT gated by :require_onboarded
-    # (this is where the gate sends people). Steps are live_actions so the
-    # OAuth consent round trip can land back on /onboarding/integrations.
-    live_session :onboarding,
-      on_mount: [
-        {BridgeForTeamsWeb.Dashboard.Auth, :ensure_authenticated},
-        {BridgeForTeamsWeb.Dashboard.Auth, :set_locale}
-      ] do
-      live("/onboarding", OnboardingLive, :capabilities)
-      live("/onboarding/profile", OnboardingLive, :profile)
-      live("/onboarding/integrations", OnboardingLive, :integrations)
-    end
-
-    live_session :authenticated,
-      on_mount: [
-        {BridgeForTeamsWeb.Dashboard.Auth, :ensure_authenticated},
-        {BridgeForTeamsWeb.Dashboard.Auth, :require_onboarded},
-        {BridgeForTeamsWeb.Dashboard.Auth, :set_locale},
-        # Member onboarding overlays (welcome modal / quick-setup checklist /
-        # guided tour): assigns @onboarding + @oauth_reminder_alert for the app
-        # shell. Runs after the first-run gate — the full-screen /onboarding
-        # flow renders without the shell and does not use these assigns.
-        BridgeForTeamsWeb.Dashboard.Onboarding
-      ] do
-      # slice "project-detail"
-      live("/orgs/:org/projects/:id/integrations", ProjectLive.Show, :integrations)
-      live("/orgs/:org/projects/:id/connections", ProjectLive.Show, :connections)
-      live("/orgs/:org/projects/:id/plugins", ProjectLive.Show, :plugins)
-      live("/orgs/:org/projects/:id/plugins/:plugin_id", ProjectLive.Show, :plugin)
-      live("/orgs/:org/projects/:id/skills", ProjectLive.Show, :skills)
-
-      live(
-        "/orgs/:org/projects/:id/tasks/:conversation_id",
-        ConversationLive.Show,
-        :show
-      )
-
-      live(
-        "/orgs/:org/projects/:id/tasks/:conversation_id/session",
-        ConversationSessionLive.Show,
-        :show
-      )
-    end
+    # First-run onboarding (React): authenticated but not gated, since this is
+    # where the gate sends people. Each step has an address so the Composio
+    # round trip lands back on /onboarding/integrations.
+    get("/onboarding", SPAController, :onboarding)
+    get("/onboarding/profile", SPAController, :onboarding)
+    get("/onboarding/integrations", SPAController, :onboarding)
   end
 
   defp authenticate_provisioner_api_key(conn, _opts) do

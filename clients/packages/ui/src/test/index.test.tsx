@@ -1,12 +1,12 @@
 import userEvent from "@testing-library/user-event";
 import { render, screen } from "@comma/test-utils/render";
+import { Button } from "@comma/ui/components/Button";
 import {
-  Button,
   hexToOklch,
   oklchChromaEnvelope,
   oklchChromaGainFromSample,
   oklchShiftedLightness,
-} from "@comma/ui";
+} from "@comma/ui/tokens";
 import { describe, expect, it, vi } from "vitest";
 
 describe("Button", () => {

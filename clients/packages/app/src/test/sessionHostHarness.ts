@@ -2,7 +2,7 @@ import type {
   SessionLifecycleSnapshot,
   TerminalSessionSnapshot,
 } from "@comma/session-contract";
-import type { CommaApiSessionTransport } from "../api";
+import type { CommaApiSessionTransport } from "../session/controller";
 import type { SessionHostController } from "../session/controller";
 
 const testSessionPublishers = new WeakMap<
@@ -22,6 +22,9 @@ export function createTestSessionHostController({
   onSignOut?: () => Promise<TerminalSessionSnapshot>;
 }): SessionHostController {
   let snapshot: SessionLifecycleSnapshot = initial;
+  let recovery: "trying" | "exhausted" | null = null;
+  const recoveryListeners = new Set<() => void>();
+  let recovers = 0;
   const listeners = new Set<(value: SessionLifecycleSnapshot) => void>();
   const signal = new AbortController().signal;
   const transport: CommaApiSessionTransport = {
@@ -79,10 +82,36 @@ export function createTestSessionHostController({
         return () => listeners.delete(listener);
       },
     },
-    recover: async () => undefined,
+    connectionRecovery: {
+      get: () => recovery,
+      subscribe: (listener) => {
+        recoveryListeners.add(listener);
+        return () => void recoveryListeners.delete(listener);
+      },
+    },
+    recover: async () => {
+      recovers += 1;
+    },
   };
   testSessionPublishers.set(controller, publish);
+  testRecoveries.set(controller, {
+    set(next) {
+      recovery = next;
+      for (const listener of Array.from(recoveryListeners)) listener();
+    },
+    recovers: () => recovers,
+  });
   return controller;
+}
+
+const testRecoveries = new WeakMap<
+  SessionHostController,
+  { set(next: "trying" | "exhausted" | null): void; recovers(): number }
+>();
+
+/** The core's connection recovery as a test scripts it: what the window is told, and how often it asked again. */
+export function testConnectionRecovery(controller: SessionHostController) {
+  return testRecoveries.get(controller)!;
 }
 
 export function publishTestSessionSnapshot(

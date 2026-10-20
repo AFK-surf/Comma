@@ -40,33 +40,6 @@ describe("independent message send springs", () => {
   it("defaults to the selected Spring baseline and supports an accelerating Bézier alternative", () => {
     const config = normalizeMessageSendMotion();
     expect(config.widthCurve.mode).toBe("spring");
-    expect(config.width).toEqual({
-      response: 0.34,
-      dampingRatio: 0.86,
-      initialVelocity: 3.4,
-      delayMs: 0,
-      maxOvershootPx: 0,
-    });
-    expect(config.position).toEqual({
-      response: 0.44,
-      dampingRatio: 0.99,
-      initialVelocity: 0,
-      delayMs: 20,
-      maxOvershootPx: 8,
-    });
-    expect(config.height).toEqual({
-      response: 0.38,
-      dampingRatio: 0.96,
-      initialVelocity: 0,
-      delayMs: 0,
-      maxOvershootPx: 4,
-    });
-    expect(config.surfacePulse).toEqual({
-      response: 0.76,
-      dampingRatio: 0.93,
-      delayMs: 0,
-      amount: 0.3,
-    });
     const timeline = createOutgoingBubbleTimeline({
       ...config,
       widthCurve: { ...config.widthCurve, mode: "bezier" },

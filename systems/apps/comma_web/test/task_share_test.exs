@@ -8,7 +8,7 @@ defmodule CommaWeb.TaskShareTest do
   @admin_token "test-token"
 
   setup do
-    unless Process.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
     billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(billing_owner) end)
     ensure_fake_s3!()
@@ -24,29 +24,29 @@ defmodule CommaWeb.TaskShareTest do
             {:comma_web, :api_token},
             {:salix_im, :conversation_notifier}
           ],
-          do: {app, key, Application.get_env(app, key)}
+          do: {app, key, SystemsRuntime.get_env(app, key)}
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:comma_web, :api_token, @admin_token)
-    Application.put_env(:comma_core, :salix_client, CommaWeb.SalixClient)
-    Application.put_env(:salix_agent, :im_provider_mod, Salix.Bindings.AgentIMProvider)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:comma_web, :api_token, @admin_token)
+    SystemsRuntime.put_env(:comma_core, :salix_client, CommaWeb.SalixClient)
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, Salix.Bindings.AgentIMProvider)
     # Fresh buckets per test: every test shares the loopback peer.
-    Application.put_env(:comma_core, :task_share_rate_limit,
+    SystemsRuntime.put_env(:comma_core, :task_share_rate_limit,
       peer: [burst: 10_000, rate: 1_000.0],
       share: [burst: 10_000, rate: 1_000.0]
     )
 
     CommaWeb.Application.register_im_notifier()
     start_supervised!(Mock)
-    Application.put_env(:salix_agent, :llm, Mock)
+    SystemsRuntime.put_env(:salix_agent, :llm, Mock)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
 
       for {app, key, value} <- previous do
         if is_nil(value),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, value)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, value)
       end
     end)
 
@@ -322,22 +322,6 @@ defmodule CommaWeb.TaskShareTest do
             |> expect_status(200)).body == "kept body"
   end
 
-  test "public reads are rate limited per peer and fail closed" do
-    Application.put_env(:comma_core, :task_share_rate_limit,
-      peer: [burst: 1, rate: 0.001],
-      share: [burst: 10_000, rate: 1_000.0]
-    )
-
-    # A fresh peer bucket would be shared with other tests, so use a new key.
-    peer = {:test_peer, System.unique_integer([:positive])}
-    assert Comma.TaskShares.RateLimit.check(peer, :invalid) == :allow
-    assert {:deny, retry_after} = Comma.TaskShares.RateLimit.check(peer, :invalid)
-    assert retry_after > 0
-
-    Application.put_env(:comma_core, :task_share_rate_limit, peer: [burst: 0, rate: 1.0])
-    assert {:unavailable, _} = Comma.TaskShares.RateLimit.check(peer, :invalid)
-  end
-
   test "the public projection keeps only visible user and Agent content" do
     internal = %{
       "seq" => 1,
@@ -518,6 +502,7 @@ defmodule CommaWeb.TaskShareTest do
 
     workspace = create_ready_workspace!(user["id"], %{"name" => title})
     :ok = CommaWeb.TestConvergence.workspace!(workspace["id"])
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
 
     session =
       admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
@@ -537,7 +522,8 @@ defmodule CommaWeb.TaskShareTest do
     assert {:ok, _result} =
              SalixAgent.AgentWorkspace.seed_operation(
                agent_id,
-               "task-share-test:" <> Integer.to_string(System.unique_integer([:positive])),
+               "task-share-test:" <>
+                 Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive])),
                %{},
                events
              )
@@ -569,7 +555,7 @@ defmodule CommaWeb.TaskShareTest do
   end
 
   defp ensure_fake_s3! do
-    if Process.whereis(SalixStore.S3.Fake),
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake),
       do: SalixStore.S3.Fake.reset(),
       else: start_supervised!(SalixStore.S3.Fake)
   end

@@ -36,7 +36,7 @@ defmodule BridgeForTeams.ProjectOAuthConnections do
   alias BridgeForTeams.Schema.{Organization, Project}
 
   # Supported third-party OAuth platforms (mirror SalixStore.OAuth.Adapters).
-  @providers ~w(github google linear notion slack)
+  @providers ~w(feishu github google lark linear notion slack x)
   @transient [:unavailable, :timeout]
 
   @type result :: {:ok, term()} | {:error, term()}
@@ -318,7 +318,7 @@ defmodule BridgeForTeams.ProjectOAuthConnections do
              resource_label:
                Keyword.get(audit_opts, :resource_label, project_oauth_label(project, provider)),
              result: "ok",
-             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+             request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
              metadata:
                %{
                  "project_id" => project.id,
@@ -356,7 +356,7 @@ defmodule BridgeForTeams.ProjectOAuthConnections do
              resource_label: provider || "Project OAuth connection",
              result: "failed",
              reason: reason,
-             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+             request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
              surface: "oauth",
              metadata: project_oauth_attempt_metadata(project_id, provider, attrs)
            }) do
@@ -412,7 +412,7 @@ defmodule BridgeForTeams.ProjectOAuthConnections do
              "status" => "unavailable"
            },
            correlation_id: "project:#{project.id}:oauth-connections",
-           occurred_at: DateTime.utc_now()
+           occurred_at: SystemsClock.utc_now()
          }) do
       {:ok, _event} ->
         :ok
@@ -520,10 +520,17 @@ defmodule BridgeForTeams.ProjectOAuthConnections do
 
   defp put_scopes(params, _scopes), do: params
 
+  # A swarm holds several accounts of one provider, one binding each. A
+  # sign-in without a label adds an account under an alias of its own, so
+  # two sign-ins never replace each other whatever order their callbacks
+  # land in; a label names the binding to (re)authorize.
   defp connection_alias(attrs, provider) do
     case blank_to_nil(attrs["alias"]) do
-      nil -> provider
-      alias_name -> alias_name
+      nil ->
+        provider <> "-" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(6), padding: false)
+
+      alias_name ->
+        alias_name
     end
   end
 

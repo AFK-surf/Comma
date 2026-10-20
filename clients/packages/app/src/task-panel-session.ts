@@ -1,3 +1,2 @@
-export { defaultApiBaseUrl } from "./api/config";
-export { createBrowserSessionHostPorts } from "./session/web/browser-session-host";
-export { WebCookieSessionAdapter } from "./session/web/web-cookie-session-adapter";
+// What the Task panel needs before its view loads: where the API is (its core's worker is named for it).
+export { defaultApiBaseUrl } from "./apiBaseUrl";

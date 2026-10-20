@@ -1,0 +1,26 @@
+id: go-test-timer
+language: go
+severity: error
+message: "A test arms a real timer outside a synctest bubble."
+note: |
+  Run the test in synctest.Test, where timers run on virtual time.
+metadata:
+  category: timer
+rule:
+  all:
+    - kind: selector_expression
+    - regex: "^time\\.(After|Tick|NewTimer|NewTicker|AfterFunc)$"
+
+    - not:
+        inside:
+          kind: call_expression
+          has:
+            field: function
+            regex: "^synctest\\.(Test|Run)$"
+          stopBy: end
+files:
+  - "**/*_test.go"
+# Live tests reach real services and skip unless their credentials are given;
+# CI never runs them.
+ignores:
+  - "**/*_live_test.go"

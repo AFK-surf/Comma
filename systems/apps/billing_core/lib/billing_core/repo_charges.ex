@@ -13,7 +13,7 @@ defmodule BillingCore.RepoCharges do
   @credits_per_usd 1_000_000
 
   def charge_meter_event(attrs) when is_map(attrs) do
-    repo = attrs[:repo] || Application.fetch_env!(:billing_core, :repo)
+    repo = attrs[:repo] || SystemsRuntime.fetch_env!(:billing_core, :repo)
     sql = attrs[:sql_runner] || Ecto.Adapters.SQL
 
     repo
@@ -292,7 +292,7 @@ defmodule BillingCore.RepoCharges do
   defp charge_typed_sink(%{typed_sink: false}), do: nil
 
   defp charge_typed_sink(event),
-    do: event[:typed_sink] || Application.get_env(:billing_core, :charge_typed_sink)
+    do: event[:typed_sink] || SystemsRuntime.get_env(:billing_core, :charge_typed_sink)
 
   defp transaction(repo, fun), do: repo.transaction(fun)
   defp unwrap_transaction({:ok, result}), do: result
@@ -664,6 +664,6 @@ defmodule BillingCore.RepoCharges do
   defp numeric(value) when is_float(value), do: value
 
   defp id(prefix) do
-    prefix <> "_" <> (:crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower))
+    prefix <> "_" <> (SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower))
   end
 end

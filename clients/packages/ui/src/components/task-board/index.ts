@@ -1,5 +1,7 @@
 export { TaskCard, TaskCardMeta } from "./TaskCard";
 export type { TaskCardProps, TaskCardMetaProps } from "./TaskCard";
+export { TaskProgressText } from "./TaskProgressText";
+export type { TaskProgressTextProps } from "./TaskProgressText";
 export { TaskBoard, TaskBoardColumn, TASK_BOARD_COLUMN_WIDTH } from "./TaskBoard";
 export type { TaskBoardProps, TaskBoardColumnProps } from "./TaskBoard";
 export {

@@ -137,7 +137,8 @@ describe("NotchService host boundary", () => {
       expect(() => {
         firstChild.emit("error", new Error("late injected host A error"));
       }).not.toThrow();
-
+      // Host A's late output and exit come now, while host B starts.
+      process.kill(firstChild.pid!, "SIGUSR2");
       await firstChildClosed;
       const replacementChild = children[1];
       if (!replacementChild) {
@@ -145,6 +146,8 @@ describe("NotchService host boundary", () => {
       }
 
       expect(replacementChild.exitCode).toBeNull();
+      // process.kill, not child.kill: the latter marks the host as killed.
+      process.kill(replacementChild.pid!, "SIGUSR1");
       await expect(replacementStart).resolves.toMatchObject({
         payload: { method: "start", value: "host-b" },
         type: "result",
@@ -161,13 +164,14 @@ describe("NotchService host boundary", () => {
       expect(events.filter((event) => event.type === "exit")).toEqual([]);
     } finally {
       service.dispose();
+      // Host A ignores SIGTERM until it has had its SIGUSR2.
       for (const child of children) {
-        if (child.exitCode === null && !child.killed) {
-          child.kill();
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
         }
       }
     }
-  }, 10_000);
+  });
 });
 
 describe("NotchService presentation settings", () => {
@@ -233,6 +237,22 @@ describe("NotchService presentation settings", () => {
           tasks: [{ id: "task-1" }],
         },
       });
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("forgets the scene and its host on reset, as a launch finds it", async () => {
+    const { hosts, service } = createService();
+    try {
+      service.setPresentation({ sideWidth: 200, visible: false });
+      await service.update({ hasActivity: true, notify: true, tasks: [task] });
+
+      service.reset();
+      // The preferences turn it off and on again after a reset, as at a launch: no scene comes back.
+      service.setPresentation({ sideWidth: 156, visible: false });
+      service.setPresentation({ sideWidth: 156, visible: true });
+      expect(hosts).toHaveLength(0);
     } finally {
       service.dispose();
     }
@@ -320,18 +340,293 @@ describe("NotchService presentation settings", () => {
   });
 });
 
+describe("NotchService with Main's own Tasks", () => {
+  const rendererTask = {
+    conversationId: "conversation-1",
+    groupId: "group-1",
+    id: "group-1:conversation-1",
+    status: "in_progress" as const,
+    subtitle: "In progress",
+    title: "Ship the Notch",
+    updatedAt: 1_787_563_200_000,
+    workspaceId: "workspace-1",
+  };
+  const sent = {
+    ...rendererTask,
+    conversationId: "quick-chat:request-1",
+    groupId: "quick-chat:request-1",
+    id: "quick-chat:request-1",
+    subtitle: "进行中",
+    title: "Plan the review",
+    updatedAt: 1_787_563_260_000,
+  };
+  const created = {
+    ...sent,
+    conversationId: "conversation-2",
+    groupId: "group-1",
+    id: "group-1:conversation-2",
+    title: "Design review plan",
+    workspaceId: "workspace-1",
+  };
+
+  function createService() {
+    const hosts: FakeNotchHost[] = [];
+    const service = new NotchService({
+      isSupportedPlatform: () => true,
+      locale: "zh-CN",
+      pathExists: () => true,
+      resolveHostPath: () => "/comma/NotchHost",
+      spawnHost: () => {
+        const host = new FakeNotchHost();
+        hosts.push(host);
+        return host as unknown as ChildProcessWithoutNullStreams;
+      },
+    });
+    return { hosts, service };
+  }
+
+  it("shows Main's Tasks after the renderer's, and the renderer's copy of a Task wins", async () => {
+    const { hosts, service } = createService();
+    try {
+      // Without a window, Main labels the list in its own language.
+      service.setMainTasks([sent], { notify: true });
+      const host = hosts[0]!;
+      await expect(answered(host)).resolves.toMatchObject({ method: "configure" });
+      await expect(answered(host)).resolves.toMatchObject({
+        method: "update",
+        payload: {
+          hasActivity: true,
+          listTitle: "任务动态",
+          notify: true,
+          openChatLabel: "打开聊天",
+          tasks: [{ id: sent.id, title: "Plan the review" }],
+        },
+      });
+
+      // A renderer write replaces NotchHost's whole list, so Main's Task rides along, the newest first.
+      await Promise.all([
+        service.update({
+          hasActivity: true,
+          listTitle: "Conversation activity",
+          tasks: [rendererTask],
+        }),
+        expect(answered(host)).resolves.toMatchObject({
+          payload: {
+            listTitle: "Conversation activity",
+            tasks: [{ id: sent.id }, { id: rendererTask.id }],
+          },
+        }),
+      ]);
+
+      // The Task the server made replaces the one shown on sending, without a bounce.
+      service.setMainTasks([created]);
+      const replaced = await answered(host);
+      expect(replaced.payload).not.toHaveProperty("notify");
+      expect(replaced.payload).toMatchObject({
+        listTitle: "Conversation activity",
+        tasks: [
+          { id: created.id, title: "Design review plan" },
+          { id: rendererTask.id },
+        ],
+      });
+      expect(service.showsMainTask(created.id)).toBe(true);
+
+      // Once the renderer has the Task too, its copy (with the Worker's step) is the one shown.
+      const followed = { ...created, subtitle: "Reading the calendar" };
+      await Promise.all([
+        service.update({ tasks: [followed, rendererTask] }),
+        expect(answered(host)).resolves.toMatchObject({
+          payload: {
+            tasks: [
+              { id: created.id, subtitle: "Reading the calendar" },
+              { id: rendererTask.id },
+            ],
+          },
+        }),
+      ]);
+      expect(service.showsMainTask(created.id)).toBe(false);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("shows a renderer Task in the row of the message it came from, once", async () => {
+    const { hosts, service } = createService();
+    try {
+      service.setMainTasks([{ ...sent, status: "sent", subtitle: "已发送" }], {
+        notify: true,
+      });
+      const host = hosts[0]!;
+      await answered(host);
+      await answered(host);
+
+      // Main's row now stands for the Task the Router made; the renderer lists it too.
+      const running = {
+        ...created,
+        subtitle: "Reading the calendar",
+        updatedAt: sent.updatedAt + 1,
+      };
+      service.setMainTasks([
+        { ...sent, title: created.title, subtitle: "进行中", standsFor: created.id },
+      ]);
+      await answered(host);
+      await Promise.all([
+        service.update({ tasks: [running, rendererTask] }),
+        expect(answered(host)).resolves.toMatchObject({
+          payload: {
+            tasks: [
+              {
+                id: sent.id,
+                conversationId: created.conversationId,
+                subtitle: "Reading the calendar",
+                title: created.title,
+              },
+              { id: rendererTask.id },
+            ],
+          },
+        }),
+      ]);
+      // The row is Main's, so Main answers its click.
+      expect(service.showsMainTask(sent.id)).toBe(true);
+
+      // The renderer stops listing the Task: Main's row shows what Main last said.
+      await Promise.all([
+        service.update({ tasks: [rendererTask] }),
+        expect(answered(host)).resolves.toMatchObject({
+          payload: {
+            tasks: [
+              { id: sent.id, title: created.title, subtitle: "进行中" },
+              { id: rendererTask.id },
+            ],
+          },
+        }),
+      ]);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("lists the newest twenty of the renderer's and Main's Tasks together", async () => {
+    const { hosts, service } = createService();
+    try {
+      const rendererTasks = Array.from({ length: 25 }, (_, n) => ({
+        ...rendererTask,
+        conversationId: `conversation-${n + 1}`,
+        id: `group-1:conversation-${n + 1}`,
+        updatedAt: rendererTask.updatedAt + n * 1_000,
+      }));
+      service.setMainTasks([sent], { notify: true });
+      const host = hosts[0]!;
+      await answered(host);
+      await answered(host);
+
+      await Promise.all([
+        service.update({ hasActivity: true, tasks: rendererTasks }),
+        expect(answered(host)).resolves.toMatchObject({
+          payload: {
+            tasks: [
+              { id: sent.id },
+              { id: "group-1:conversation-25" },
+              ...Array.from({ length: 18 }, (_, n) => ({
+                id: `group-1:conversation-${24 - n}`,
+              })),
+            ],
+          },
+        }),
+      ]);
+      // Main's send is newer than every renderer Task here; the six oldest are left out.
+      await Promise.all([
+        service.update({ tasks: rendererTasks }),
+        expect(answered(host)).resolves.toMatchObject({
+          payload: {
+            tasks: expect.toSatisfy((tasks: unknown[]) => tasks.length === 20),
+          },
+        }),
+      ]);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("keeps Main's Tasks when the renderer hides its scene, and on a restarted host", async () => {
+    const { hosts, service } = createService();
+    try {
+      const update = service.update({ hasActivity: true, tasks: [rendererTask] });
+      const first = hosts[0]!;
+      await answered(first);
+      await answered(first);
+      await update;
+      service.setMainTasks([sent], { notify: true });
+      await answered(first);
+
+      const hide = service.hide();
+      const hidden = await answered(first);
+      await hide;
+      expect(hidden).toMatchObject({
+        method: "update",
+        payload: { airDrop: {}, hasActivity: true, tasks: [{ id: sent.id }] },
+      });
+      expect(hidden.payload?.tasks).toHaveLength(1);
+
+      first.emit("exit", null);
+      const second = hosts[1]!;
+      await answered(second);
+      const restore = await answered(second);
+      expect(restore).toMatchObject({
+        method: "update",
+        payload: { listTitle: "任务动态", tasks: [{ id: sent.id }] },
+      });
+      expect(restore.payload).not.toHaveProperty("notify");
+
+      // Without Main's Tasks, hiding is NotchHost's own `hide` again.
+      service.setMainTasks([]);
+      await expect(answered(second)).resolves.toMatchObject({
+        payload: { hasActivity: false, tasks: [] },
+      });
+      const lastHide = service.hide();
+      await expect(answered(second)).resolves.toMatchObject({ method: "hide" });
+      await lastHide;
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("keeps Main's Tasks while the Notch is turned off and shows them once it is on", async () => {
+    const { hosts, service } = createService();
+    try {
+      service.setPresentation({ sideWidth: 156, visible: false });
+      service.setMainTasks([sent], { notify: true });
+      expect(hosts).toHaveLength(0);
+
+      service.setPresentation({ sideWidth: 156, visible: true });
+      const host = hosts[0]!;
+      await answered(host);
+      const shown = await answered(host);
+      expect(shown).toMatchObject({
+        method: "update",
+        payload: { hasActivity: true, tasks: [{ id: sent.id }] },
+      });
+      expect(shown.payload).not.toHaveProperty("notify");
+    } finally {
+      service.dispose();
+    }
+  });
+});
+
+/** The host's next command, answered. */
+async function answered(host: FakeNotchHost) {
+  const request = await host.nextRequest();
+  host.respond({ id: request.id, payload: { running: true }, type: "ack" });
+  return request;
+}
+
 function waitForHostValue(service: NotchService, expectedValue: string) {
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      unsubscribe();
-      reject(new Error(`Timed out waiting for NotchHost value: ${expectedValue}`));
-    }, 2_000);
+  return new Promise<void>((resolve) => {
     const unsubscribe = service.onEvent((event) => {
       if (event.payload?.value !== expectedValue) {
         return;
       }
 
-      clearTimeout(timer);
       unsubscribe();
       resolve();
     });

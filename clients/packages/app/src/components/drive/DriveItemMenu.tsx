@@ -1,4 +1,4 @@
-import type { MenuPointerOffsets } from "@comma/ui";
+import type { MenuPointerOffsets } from "@comma/ui/components/menu";
 import { useCallback, useState } from "react";
 
 /**

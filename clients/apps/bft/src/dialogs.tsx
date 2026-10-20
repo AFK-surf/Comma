@@ -1,4 +1,5 @@
-import { Button, Dialog } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Dialog } from "@comma/ui/components/dialog";
 import { useEffect, useState, type ReactNode } from "react";
 import { BftApiError, BftUnauthenticatedError, csrfRejectedCode } from "./api";
 import { messages } from "./messages";
@@ -80,8 +81,19 @@ export function DialogError({ message }: { message: string | undefined }) {
   ) : null;
 }
 
-/** Copies `text`; the label confirms for two seconds. */
-export function CopyButton({ text, label }: { text: string; label: string }) {
+/**
+ * Copies `text`; the label confirms for two seconds. `children` names what is
+ * copied where the button does not sit beside its own label.
+ */
+export function CopyButton({
+  text,
+  label,
+  children = t.copy,
+}: {
+  text: string;
+  label: string;
+  children?: string;
+}) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
 
   useEffect(() => {
@@ -105,7 +117,7 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
   return (
     <span className="bft-copy">
       <Button aria-label={label} hierarchy="secondary-gray" onPress={copy} size="xs">
-        {state === "copied" ? t.copied : t.copy}
+        {state === "copied" ? t.copied : children}
       </Button>
       {state === "failed" ? (
         <span className="bft-copy-failed" role="alert">

@@ -3,8 +3,8 @@ import {
   detectAppKeybindingPlatform,
   sameAppKeybinding,
   type AppKeybinding,
-} from "@comma/ui";
-import { type SideChatShortcutBinding } from "@comma/native-bridge";
+} from "@comma/ui/components/settings-shortcut";
+import { getNativeBridge, type GlobalShortcutBinding } from "@comma/native-bridge";
 import {
   createContext,
   useCallback,
@@ -14,9 +14,7 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import { useOptionalCommaSideChatShortcut } from "../commaSideChatShortcut";
 import { useCommaClientSettings } from "../commaClientSettings";
-import { isElectronSideChatRuntime } from "../../runtime-side-chat/nativeSideChat";
 import {
   appShortcutIds,
   createDefaultAppShortcutBindings,
@@ -25,9 +23,9 @@ import {
   type AppShortcutPlatform,
 } from "./appShortcutRegistry";
 import {
-  appBindingConflictsWithSideChatShortcut,
-  findAppShortcutConflictForSideChat,
-} from "./sideChatShortcutConflict";
+  appBindingConflictsWithGlobalShortcut,
+  findAppShortcutConflictForGlobalShortcut,
+} from "./globalShortcutConflict";
 import {
   appShortcutBindingsToOverrides,
   resolveAppShortcutBindings,
@@ -58,16 +56,14 @@ const findConflict = (
     (otherId) => otherId !== id && appKeybindingsConflict(bindings[otherId], binding)
   );
 
-const disableSideChatConflict = (
+const disableGlobalShortcutConflict = (
   bindings: AppShortcutBindings,
-  ...shortcuts: Array<SideChatShortcutBinding | undefined>
+  shortcut: GlobalShortcutBinding | undefined
 ) => {
-  let next = bindings;
-  for (const shortcut of shortcuts) {
-    if (!shortcut) continue;
-    const conflict = findAppShortcutConflictForSideChat(next, shortcut);
-    if (conflict) next = { ...next, [conflict]: null };
-  }
+  const conflict = shortcut
+    ? findAppShortcutConflictForGlobalShortcut(bindings, shortcut)
+    : undefined;
+  const next = conflict ? { ...bindings, [conflict]: null } : bindings;
   return { bindings: next, changed: next !== bindings };
 };
 
@@ -79,16 +75,10 @@ export function CommaAppShortcutsProvider({
   platform?: AppShortcutPlatform;
 }) {
   const clientSettings = useCommaClientSettings();
-  const sideChatShortcutContext = useOptionalCommaSideChatShortcut();
-  const sideChatShortcut =
-    isElectronSideChatRuntime() &&
-    sideChatShortcutContext &&
-    !sideChatShortcutContext.registrationPending
-      ? sideChatShortcutContext.shortcut
+  const openCommaShortcut =
+    getNativeBridge().platform === "electron"
+      ? clientSettings.settings.openCommaShortcut
       : undefined;
-  const openCommaShortcut = isElectronSideChatRuntime()
-    ? clientSettings.settings.openCommaShortcut
-    : undefined;
   const defaults = useMemo(
     () => createDefaultAppShortcutBindings(platform),
     [platform]
@@ -104,18 +94,13 @@ export function CommaAppShortcutsProvider({
   const bindingsRef = useRef(bindings);
   bindingsRef.current = bindings;
   const effectiveBindings = useMemo(
-    () =>
-      disableSideChatConflict(bindings, sideChatShortcut, openCommaShortcut).bindings,
-    [bindings, sideChatShortcut, openCommaShortcut]
+    () => disableGlobalShortcutConflict(bindings, openCommaShortcut).bindings,
+    [bindings, openCommaShortcut]
   );
 
   useEffect(() => {
-    if (!sideChatShortcut && !openCommaShortcut) return;
-    const reconciled = disableSideChatConflict(
-      bindings,
-      sideChatShortcut,
-      openCommaShortcut
-    );
+    if (!openCommaShortcut) return;
+    const reconciled = disableGlobalShortcutConflict(bindings, openCommaShortcut);
     if (!reconciled.changed) return;
     bindingsRef.current = reconciled.bindings;
     void clientSettings.update({
@@ -124,7 +109,7 @@ export function CommaAppShortcutsProvider({
         defaults
       ),
     });
-  }, [bindings, clientSettings, defaults, sideChatShortcut, openCommaShortcut]);
+  }, [bindings, clientSettings, defaults, openCommaShortcut]);
 
   const conflictFor = useCallback(
     (id: AppShortcutId, binding: AppKeybinding | null) =>
@@ -134,17 +119,14 @@ export function CommaAppShortcutsProvider({
 
   const setBinding = useCallback(
     (id: AppShortcutId, binding: AppKeybinding | null) => {
-      const current = disableSideChatConflict(
+      const current = disableGlobalShortcutConflict(
         bindingsRef.current,
-        sideChatShortcut,
         openCommaShortcut
       ).bindings;
       if (
         findConflict(current, id, binding) ||
-        (sideChatShortcut &&
-          appBindingConflictsWithSideChatShortcut(binding, sideChatShortcut)) ||
         (openCommaShortcut &&
-          appBindingConflictsWithSideChatShortcut(binding, openCommaShortcut))
+          appBindingConflictsWithGlobalShortcut(binding, openCommaShortcut))
       ) {
         return false;
       }
@@ -155,15 +137,11 @@ export function CommaAppShortcutsProvider({
       });
       return true;
     },
-    [clientSettings, defaults, sideChatShortcut, openCommaShortcut]
+    [clientSettings, defaults, openCommaShortcut]
   );
 
   const resetAll = useCallback(() => {
-    const reconciled = disableSideChatConflict(
-      defaults,
-      sideChatShortcut,
-      openCommaShortcut
-    );
+    const reconciled = disableGlobalShortcutConflict(defaults, openCommaShortcut);
     bindingsRef.current = reconciled.bindings;
     void clientSettings.update({
       appShortcutOverrides: appShortcutBindingsToOverrides(
@@ -171,7 +149,7 @@ export function CommaAppShortcutsProvider({
         defaults
       ),
     });
-  }, [clientSettings, defaults, sideChatShortcut, openCommaShortcut]);
+  }, [clientSettings, defaults, openCommaShortcut]);
 
   const isDefault = useMemo(
     () =>

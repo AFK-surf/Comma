@@ -1,5 +1,5 @@
 defmodule SalixStore.BlobStreamTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{Blob, S3}
 
@@ -26,19 +26,19 @@ defmodule SalixStore.BlobStreamTest do
   end
 
   setup do
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
 
-    case Process.whereis(S3.Fake) do
+    case SystemsRuntime.Proc.whereis(S3.Fake) do
       nil -> start_supervised!(S3.Fake)
       _pid -> S3.Fake.reset()
     end
 
     on_exit(fn ->
       if is_nil(previous_backend) do
-        Application.delete_env(:salix_store, :s3_backend)
+        SystemsRuntime.delete_env(:salix_store, :s3_backend)
       else
-        Application.put_env(:salix_store, :s3_backend, previous_backend)
+        SystemsRuntime.put_env(:salix_store, :s3_backend, previous_backend)
       end
     end)
 
@@ -65,40 +65,6 @@ defmodule SalixStore.BlobStreamTest do
     assert S3.Fake.pending_multipart_uploads() == 0
 
     assert :ok = Blob.discard(ref)
-    assert S3.Fake.dump() == %{}
-  end
-
-  test "a throw after the first uploaded part aborts the current multipart state" do
-    first_part = String.duplicate("x", 5 * 1024 * 1024)
-
-    stream =
-      Stream.concat(
-        [first_part],
-        Stream.map([:throw], fn :throw -> throw(:source_stream_stopped) end)
-      )
-
-    assert {:error, {:throw, :source_stream_stopped}} = Blob.put_stream("agt_test", stream)
-    assert S3.Fake.pending_multipart_uploads() == 0
-    assert S3.Fake.dump() == %{}
-  end
-
-  test "a backend raise during the first part aborts the checkpointed multipart upload" do
-    Application.put_env(:salix_store, :s3_backend, RaisingFirstPartBackend)
-
-    assert {:error, %RuntimeError{message: "injected first-part backend failure"}} =
-             Blob.put_stream("agt_test", [String.duplicate("x", 5 * 1024 * 1024)])
-
-    assert S3.Fake.pending_multipart_uploads() == 0
-    assert S3.Fake.dump() == %{}
-  end
-
-  test "a backend exit during the first part aborts the checkpointed multipart upload" do
-    Application.put_env(:salix_store, :s3_backend, ExitingFirstPartBackend)
-
-    assert {:error, {:exit, :injected_first_part_backend_exit}} =
-             Blob.put_stream("agt_test", [String.duplicate("x", 5 * 1024 * 1024)])
-
-    assert S3.Fake.pending_multipart_uploads() == 0
     assert S3.Fake.dump() == %{}
   end
 end

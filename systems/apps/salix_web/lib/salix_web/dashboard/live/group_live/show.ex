@@ -16,8 +16,8 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
   alias SalixIM.RouterConversationInput
   alias SalixWeb.Dashboard.{Format, MessageContent}
 
-  @tabs ~w(overview conversations oauth composio drive router im connectors api-keys voice signal)
-  @tab_labels %{"api-keys" => "Inbound API"}
+  @tabs ~w(overview conversations oauth composio drive router im connectors api-keys voice signal tailnet)
+  @tab_labels %{"api-keys" => "Inbound API", "tailnet" => "Tailscale"}
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -118,6 +118,15 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
     case Salix.Control.Signal.status(socket.assigns.group_id, socket.assigns.current_tenant) do
       {:ok, status} -> assign(socket, signal_status: status, signal_error: nil)
       {:error, reason} -> assign(socket, signal_status: nil, signal_error: signal_error(reason))
+    end
+  end
+
+  # Tailscale (SalixAgent.Tailnet): the Group's node in its own tailnet. The
+  # status is read from the Group's lease record; it never starts the node.
+  defp load_tab(socket, "tailnet") do
+    case SalixAgent.Tailnet.status(socket.assigns.group_id) do
+      {:ok, status} -> assign(socket, tailnet: status, tailnet_error: nil)
+      {:error, reason} -> assign(socket, tailnet: nil, tailnet_error: inspect(reason))
     end
   end
 
@@ -251,7 +260,7 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
   end
 
   defp composio_client,
-    do: Application.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
+    do: SystemsRuntime.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
 
   defp format_composio_error(reason) when is_binary(reason), do: reason
   defp format_composio_error(reason), do: inspect(reason)
@@ -556,6 +565,56 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
     end
   end
 
+  def handle_event("toggle-cloud-vm", %{"enabled" => enabled}, socket) do
+    enabled = enabled == "true"
+
+    case Groups.update(
+           socket.assigns.group_id,
+           %{"cloud_vm_enabled" => enabled},
+           socket.assigns.current_tenant
+         ) do
+      {:ok, group} ->
+        {:noreply,
+         socket
+         |> assign(group: group)
+         |> put_flash(:info, if(enabled, do: "Cloud VM enabled.", else: "Cloud VM disabled."))}
+
+      {:error, {_, msg}} ->
+        {:noreply, put_flash(socket, :error, msg)}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Update failed: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("toggle-condensed-workspace", %{"enabled" => enabled}, socket) do
+    enabled = enabled == "true"
+
+    case Groups.update(
+           socket.assigns.group_id,
+           %{"condensed_workspace_enabled" => enabled},
+           socket.assigns.current_tenant
+         ) do
+      {:ok, group} ->
+        {:noreply,
+         socket
+         |> assign(group: group)
+         |> put_flash(
+           :info,
+           if(enabled,
+             do: "Condensed Workspace enabled.",
+             else: "Condensed Workspace disabled."
+           )
+         )}
+
+      {:error, {_, msg}} ->
+        {:noreply, put_flash(socket, :error, msg)}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Update failed: #{inspect(reason)}")}
+    end
+  end
+
   def handle_event("delete-group", _params, socket) do
     case Groups.delete(socket.assigns.group_id, socket.assigns.current_tenant) do
       :ok ->
@@ -688,6 +747,38 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
 
   def handle_event("dismiss-api-key", _params, socket),
     do: {:noreply, assign(socket, new_api_key: nil)}
+
+  # ---- Tailscale ----
+
+  def handle_event("tailnet-connect", params, socket) do
+    attrs = %{
+      "tags" => tailnet_tags(params["tags"]),
+      "accept_routes" => params["accept_routes"] == "true",
+      "expected_tailnet" => params["expected_tailnet"]
+    }
+
+    case SalixAgent.Tailnet.connect(socket.assigns.group_id, attrs, "salix_admin") do
+      {:ok, _status} ->
+        {:noreply, socket |> put_flash(:info, "Tailscale settings saved.") |> load_tab("tailnet")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, tailnet_error(reason))}
+    end
+  end
+
+  def handle_event("tailnet-disconnect", _params, socket) do
+    case SalixAgent.Tailnet.disconnect(socket.assigns.group_id, "salix_admin") do
+      {:ok, _status} ->
+        {:noreply,
+         socket |> put_flash(:info, "The Group left its tailnet.") |> load_tab("tailnet")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, tailnet_error(reason))}
+    end
+  end
+
+  def handle_event("tailnet-refresh", _params, socket),
+    do: {:noreply, load_tab(socket, "tailnet")}
 
   # ---- Voice ----
 
@@ -972,6 +1063,11 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
         />
         <:tab label="Voice" patch={"/dash/groups/#{@group_id}?tab=voice"} active={@tab == "voice"} />
         <:tab label="Signal" patch={"/dash/groups/#{@group_id}?tab=signal"} active={@tab == "signal"} />
+        <:tab
+          label="Tailscale"
+          patch={"/dash/groups/#{@group_id}?tab=tailnet"}
+          active={@tab == "tailnet"}
+        />
       </.tabs>
 
       <div :if={@tab == "overview"} class="space-y-3">
@@ -1046,6 +1142,47 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
               phx-click="toggle-control-command-vfs"
               phx-value-enabled={
                 if @group["control_command_vfs_enabled"] == true, do: "false", else: "true"
+              }
+            />
+          </div>
+        </.card>
+        <.card>
+          <:title>Cloud VM</:title>
+          <div class="flex flex-wrap items-center justify-between gap-4">
+            <p class="max-w-2xl text-sm text-neutral-700">
+              Let this group's Agents start the group's Cloud VM and run Tasks on it.
+            </p>
+            <.toggle
+              id="cloud-vm-toggle"
+              name="cloud_vm_enabled"
+              label={if @group["cloud_vm_enabled"] == true, do: "Enabled", else: "Disabled"}
+              checked={@group["cloud_vm_enabled"] == true}
+              phx-click="toggle-cloud-vm"
+              phx-value-enabled={if @group["cloud_vm_enabled"] == true, do: "false", else: "true"}
+            />
+          </div>
+        </.card>
+        <.card>
+          <:title>Condensed Workspace</:title>
+          <div class="flex flex-wrap items-center justify-between gap-4">
+            <div class="max-w-2xl">
+              <p class="text-sm text-neutral-700">
+                Keep a shared list of current facts in the context of every Router and Worker
+                Session in this group, and let a decision model remind Agents to update it or
+                to correct their course.
+              </p>
+              <p class="mt-1 text-xs text-neutral-500">
+                Disabled by default. Active Sessions adopt the change after their round configuration refreshes.
+              </p>
+            </div>
+            <.toggle
+              id="condensed-workspace-toggle"
+              name="condensed_workspace_enabled"
+              label={if @group["condensed_workspace_enabled"] == true, do: "Enabled", else: "Disabled"}
+              checked={@group["condensed_workspace_enabled"] == true}
+              phx-click="toggle-condensed-workspace"
+              phx-value-enabled={
+                if @group["condensed_workspace_enabled"] == true, do: "false", else: "true"
               }
             />
           </div>
@@ -1574,6 +1711,100 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
         <.empty_state :if={@api_keys == [] and is_nil(@api_keys_error)} icon="key" title="No inbound API keys" />
       </div>
 
+      <div :if={@tab == "tailnet"} class="space-y-4">
+        <p :if={@tailnet_error} class="text-xs text-red-700">
+          Tailscale is unavailable: {@tailnet_error}
+        </p>
+
+        <.card :if={@tailnet}>
+          <:title>Tailscale network</:title>
+          <:actions>
+            <.badge color={tailnet_color(@tailnet["state"])}>{@tailnet["state"]}</.badge>
+            <.button size="sm" phx-click="tailnet-refresh">Refresh</.button>
+          </:actions>
+          <p class="mb-3 text-xs text-neutral-500">
+            The group's node in its own tailnet. A tailnet admin approves it once with the login
+            link. The tailnet policy decides which devices and ports the group's agents reach.
+          </p>
+
+          <div :if={@tailnet["login_url"]} class="mb-3 rounded-md border border-amber-200 bg-amber-50 p-3">
+            <p class="text-xs text-amber-800">
+              Send this link only to the tailnet admin. Whoever approves it adds the node to their tailnet.
+            </p>
+            <a
+              id="tailnet-login-url"
+              href={@tailnet["login_url"]}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="break-all font-mono text-xs text-brand-700 underline"
+            >
+              {@tailnet["login_url"]}
+            </a>
+          </div>
+
+          <p :if={@tailnet["error"]} class="mb-3 text-xs text-red-700">
+            {@tailnet["error"]["code"]}: {@tailnet["error"]["message"]}
+          </p>
+
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <.kv label="Tailnet">{@tailnet["tailnet"] || "—"}</.kv>
+            <.kv label="Node">{@tailnet["node_name"] || "—"}</.kv>
+            <.kv label="Owner">{tailnet_node_owner(@tailnet)}</.kv>
+            <.kv label="Node tags">{tailnet_list(@tailnet["node_tags"])}</.kv>
+            <.kv label="Addresses">{tailnet_list(@tailnet["addresses"])}</.kv>
+            <.kv label="Key expiry">
+              {if @tailnet["key_expiry"], do: Format.datetime(@tailnet["key_expiry"]), else: "never"}
+            </.kv>
+            <.kv label="Lease">{tailnet_lease(@tailnet["owner"])}</.kv>
+            <.kv label="Updated">
+              {Format.datetime(@tailnet["updated_at"])} by {@tailnet["updated_by"] || "—"}
+            </.kv>
+          </div>
+        </.card>
+
+        <.card :if={@tailnet}>
+          <:title>{if @tailnet["enabled"], do: "Settings", else: "Connect"}</:title>
+          <form id="tailnet-form" phx-submit="tailnet-connect" class="space-y-3">
+            <div class="flex flex-wrap items-end gap-2">
+              <.input
+                name="tags"
+                label="Tags (comma-separated; empty for a user-owned node)"
+                value={Enum.join(@tailnet["settings"]["tags"], ", ")}
+                class="w-80"
+              />
+              <.input
+                name="expected_tailnet"
+                label="Expected tailnet (optional)"
+                value={@tailnet["settings"]["expected_tailnet"]}
+                placeholder="example.com or tail1234.ts.net"
+                class="w-72"
+              />
+            </div>
+            <.toggle
+              id="tailnet-accept-routes"
+              name="accept_routes"
+              value="true"
+              label="Use approved subnet routes"
+              checked={@tailnet["settings"]["accept_routes"]}
+            />
+            <div class="flex gap-2">
+              <.button type="submit" variant="primary">
+                {if @tailnet["enabled"], do: "Save", else: "Connect"}
+              </.button>
+              <.button
+                :if={@tailnet["enabled"]}
+                type="button"
+                variant="danger"
+                phx-click="tailnet-disconnect"
+                data-confirm="Disconnect this group from its tailnet? The node logs out and a new login link is needed to reconnect."
+              >
+                Disconnect
+              </.button>
+            </div>
+          </form>
+        </.card>
+      </div>
+
       <div :if={@tab == "voice"} class="space-y-4">
         <p :if={@voice_error} class="text-xs text-red-700">Voice is unavailable: {@voice_error}</p>
 
@@ -1941,4 +2172,32 @@ defmodule SalixWeb.Dashboard.GroupLive.Show do
     </div>
     """
   end
+
+  defp tailnet_tags(nil), do: []
+
+  defp tailnet_tags(text),
+    do: text |> String.split([",", " "], trim: true) |> Enum.map(&String.trim/1)
+
+  defp tailnet_error(reason) when reason in [:invalid_tags, :invalid_expected_tailnet],
+    do: "Tags look like tag:name (at most 8); the expected tailnet is at most 253 characters."
+
+  defp tailnet_error(reason), do: "Tailscale settings were not saved: #{inspect(reason)}"
+
+  defp tailnet_color("running"), do: "green"
+
+  defp tailnet_color(state) when state in ["needs_login", "needs_approval", "starting"],
+    do: "amber"
+
+  defp tailnet_color("error"), do: "red"
+  defp tailnet_color(_state), do: "neutral"
+
+  defp tailnet_node_owner(%{"login_name" => login}) when is_binary(login), do: login
+  defp tailnet_node_owner(%{"node_tags" => [_ | _]}), do: "tagged"
+  defp tailnet_node_owner(_status), do: "—"
+
+  defp tailnet_list([_ | _] = items), do: Enum.join(items, ", ")
+  defp tailnet_list(_items), do: "—"
+
+  defp tailnet_lease(%{"node" => node, "epoch" => epoch}), do: "#{node} (epoch #{epoch})"
+  defp tailnet_lease(_owner), do: "released"
 end

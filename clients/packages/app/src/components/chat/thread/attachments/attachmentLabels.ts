@@ -1,6 +1,6 @@
 import { formatNumber, type CommaLocale } from "@comma/i18n";
 import type { useCommaMessages } from "@comma/i18n/react";
-import type { ChatAttachment } from "../../model/conversationChannel";
+import type { ChatAttachment } from "@comma/core/chat";
 
 export function attachmentLabel(
   attachment: ChatAttachment,

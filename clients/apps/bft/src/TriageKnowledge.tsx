@@ -1,4 +1,5 @@
-import { Dropdown, InputField } from "@comma/ui";
+import { Dropdown } from "@comma/ui/components/dropdown";
+import { InputField } from "@comma/ui/components/input";
 import { useState } from "react";
 import type { BftTriageAgent, BftTriageKnowledge, BftTriageReveal } from "./api";
 import { writeErrorMessage } from "./dialogs";

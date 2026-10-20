@@ -12,7 +12,7 @@ defmodule AlertRouter.Adapters.PostHog do
   @policy ["posthog", "comma_client_critical_issue"]
 
   def configuration do
-    config = Application.get_env(:alert_router, :posthog_webhook, [])
+    config = SystemsRuntime.get_env(:alert_router, :posthog_webhook, [])
     project_id = Keyword.get(config, :project_id)
     origin = Keyword.get(config, :origin)
     environment = Keyword.get(config, :environment)

@@ -28,6 +28,9 @@ vi.mock("electron", () => ({
   net: {
     fetch: electronMocks.fetch,
   },
+  session: {
+    fromPartition: () => ({ fetch: electronMocks.fetch }),
+  },
   protocol: {
     handle: electronMocks.handle,
     registerSchemesAsPrivileged: electronMocks.registerSchemesAsPrivileged,
@@ -119,7 +122,7 @@ describe("Electron app protocol", () => {
         { headers: { "content-type": "text/javascript" } }
       );
     });
-    registerAppProtocol("http://localhost:5173/");
+    registerAppProtocol("https://vite.comma.test/");
 
     const handler = electronMocks.handle.mock.calls.find(
       ([scheme]) => scheme === "assets"
@@ -128,17 +131,10 @@ describe("Electron app protocol", () => {
     const assetRequests = Array.from({ length: 39 }, (_, index) =>
       handler(new Request(`assets://./module-${index}.ts`))
     );
-    await vi.waitFor(() => expect(electronMocks.fetch).toHaveBeenCalledTimes(32));
-    const documentResponse = await resolvesWithin(
-      documentRequest,
-      1_000,
-      "The dev renderer document did not return after its headers arrived."
-    );
-    const firstAssetBatch = await resolvesWithin(
-      Promise.all(assetRequests.slice(0, 31)),
-      1_000,
-      "Dev renderer asset responses did not return after their headers arrived."
-    );
+    // These responses return with their headers while every body is still open.
+    const documentResponse = await documentRequest;
+    const firstAssetBatch = await Promise.all(assetRequests.slice(0, 31));
+    expect(electronMocks.fetch).toHaveBeenCalledTimes(32);
     expect(peakActive).toBe(32);
 
     const firstTexts = firstAssetBatch.slice(0, 8).map((response) => response.text());
@@ -147,9 +143,9 @@ describe("Electron app protocol", () => {
     await expect(Promise.all(firstTexts)).resolves.toEqual(
       Array.from({ length: 8 }, () => "export default true")
     );
-    await vi.waitFor(() => expect(electronMocks.fetch).toHaveBeenCalledTimes(40));
 
     const assetResponses = await Promise.all(assetRequests);
+    expect(electronMocks.fetch).toHaveBeenCalledTimes(40);
     expect(peakActive).toBe(32);
     await Promise.all(
       [documentResponse, ...assetResponses.slice(8)].map((response) =>
@@ -181,7 +177,7 @@ describe("Electron app protocol", () => {
         )
       );
     });
-    registerAppProtocol("http://localhost:5173/");
+    registerAppProtocol("https://vite.comma.test/");
 
     const handler = electronMocks.handle.mock.calls.find(
       ([scheme]) => scheme === "assets"
@@ -189,39 +185,39 @@ describe("Electron app protocol", () => {
     const assetRequests = Array.from({ length: 32 }, (_, index) =>
       handler(new Request(`assets://./stalled-${index}.ts`))
     );
-    await vi.waitFor(() => expect(electronMocks.fetch).toHaveBeenCalledTimes(31));
-    const activeAssetResponses = await resolvesWithin(
-      Promise.all(assetRequests.slice(0, 31)),
-      1_000,
-      "The initial 31 dev assets did not acquire ordinary permits."
-    );
+    const activeAssetResponses = await Promise.all(assetRequests.slice(0, 31));
+    expect(electronMocks.fetch).toHaveBeenCalledTimes(31);
 
+    // The replacement document is not queued behind the old dev assets.
     const documentRequest = handler(new Request("assets://./"));
-    await vi.waitFor(() => expect(electronMocks.fetch).toHaveBeenCalledTimes(32));
-    const documentResponse = await resolvesWithin(
-      documentRequest,
-      1_000,
-      "The replacement document was queued behind old dev assets."
-    );
-    expect(fetchedUrls.at(-1)).toBe("http://localhost:5173/");
+    const documentResponse = await documentRequest;
+    expect(electronMocks.fetch).toHaveBeenCalledTimes(32);
+    expect(fetchedUrls.at(-1)).toBe("https://vite.comma.test/");
     expect(peakActive).toBe(32);
 
     await documentResponse.body?.cancel("document consumed");
     await Promise.all(
       activeAssetResponses.map((response) => response.body?.cancel("navigation"))
     );
-    await vi.waitFor(() => expect(electronMocks.fetch).toHaveBeenCalledTimes(33));
     const staleQueuedResponse = await assetRequests[31]!;
+    expect(electronMocks.fetch).toHaveBeenCalledTimes(33);
     await staleQueuedResponse.body?.cancel("stale request cleanup");
     expect(active).toBe(0);
   });
 
   it("cancels a live dev renderer body and admits one queued asset without awaiting upstream teardown", async () => {
+    const upstreamCancelled = deferred<void>();
     const upstreamCancelSettled = deferred<void>();
-    const upstreamCancel = vi.fn((reason?: unknown) =>
-      reason === "navigation superseded" ? upstreamCancelSettled.promise : undefined
-    );
-    const upstreamPull = vi.fn(() => new Promise<void>(() => undefined));
+    const upstreamCancel = vi.fn((reason?: unknown) => {
+      if (reason !== "navigation superseded") return undefined;
+      upstreamCancelled.resolve();
+      return upstreamCancelSettled.promise;
+    });
+    const upstreamPulled = deferred<void>();
+    const upstreamPull = vi.fn(() => {
+      upstreamPulled.resolve();
+      return new Promise<void>(() => undefined);
+    });
     const fetchSignals: AbortSignal[] = [];
     electronMocks.fetch.mockImplementation(async (_url, init) => {
       fetchSignals.push(init.signal as AbortSignal);
@@ -236,7 +232,7 @@ describe("Electron app protocol", () => {
         { headers: { "content-type": "text/javascript" } }
       );
     });
-    registerAppProtocol("http://localhost:5173/");
+    registerAppProtocol("https://vite.comma.test/");
 
     const handler = electronMocks.handle.mock.calls.find(
       ([scheme]) => scheme === "assets"
@@ -244,43 +240,30 @@ describe("Electron app protocol", () => {
     const requests = Array.from({ length: 33 }, (_, index) =>
       handler(new Request(`assets://./reload-${index}.ts`))
     );
-    await vi.waitFor(() => expect(electronMocks.fetch).toHaveBeenCalledTimes(31));
-    const firstBatch = await resolvesWithin(
-      Promise.all(requests.slice(0, 31)),
-      1_000,
-      "Live dev renderer responses did not return after their headers arrived."
-    );
+    const firstBatch = await Promise.all(requests.slice(0, 31));
+    expect(electronMocks.fetch).toHaveBeenCalledTimes(31);
     const reader = firstBatch[0]!.body!.getReader();
     const pendingRead = reader.read();
-    await vi.waitFor(() => expect(upstreamPull).toHaveBeenCalledTimes(1));
+    await upstreamPulled.promise;
+    expect(upstreamPull).toHaveBeenCalledTimes(1);
     expect(fetchSignals[0]?.aborted).toBe(false);
 
     const cancellation = reader.cancel("navigation superseded");
     expect(fetchSignals[0]?.aborted).toBe(true);
     expect(fetchSignals[0]?.reason).toBe("navigation superseded");
-    await vi.waitFor(() =>
-      expect(upstreamCancel).toHaveBeenCalledWith("navigation superseded")
-    );
-    await vi.waitFor(() => expect(electronMocks.fetch).toHaveBeenCalledTimes(32));
+    await upstreamCancelled.promise;
+    // Upstream teardown is still pending when the first queued asset is admitted.
+    const admitted = await requests[31]!;
     expect(electronMocks.fetch).toHaveBeenCalledTimes(32);
     await expect(pendingRead).resolves.toEqual({ done: true, value: undefined });
 
     upstreamCancelSettled.resolve();
     await cancellation;
-    const admitted = await resolvesWithin(
-      requests[31]!,
-      1_000,
-      "The first queued asset was not admitted after downstream cancellation."
-    );
     await Promise.all([
       ...firstBatch.slice(1).map((response) => response.body?.cancel("test cleanup")),
       admitted.body?.cancel("test cleanup"),
     ]);
-    const finalResponse = await resolvesWithin(
-      requests[32]!,
-      1_000,
-      "Cancellation released more or fewer than one permit."
-    );
+    const finalResponse = await requests[32]!;
     await finalResponse.body?.cancel("test cleanup");
   });
 
@@ -292,7 +275,7 @@ describe("Electron app protocol", () => {
         headers: { "content-type": "text/javascript" },
       });
     });
-    registerAppProtocol("http://localhost:5173/");
+    registerAppProtocol("https://vite.comma.test/");
 
     const handler = electronMocks.handle.mock.calls.find(
       ([scheme]) => scheme === "assets"
@@ -347,7 +330,7 @@ describe("Electron app protocol", () => {
         )
       );
     });
-    registerAppProtocol("http://localhost:5173/");
+    registerAppProtocol("https://vite.comma.test/");
 
     const handler = electronMocks.handle.mock.calls.find(
       ([scheme]) => scheme === "assets"
@@ -355,15 +338,11 @@ describe("Electron app protocol", () => {
     const requests = Array.from({ length: 32 }, (_, index) =>
       handler(new Request(`assets://./body-error-${index}.ts`))
     );
-    const firstBatch = await resolvesWithin(
-      Promise.all(requests.slice(0, 31)),
-      1_000,
-      "Dev renderer responses did not return before body consumption."
-    );
+    const firstBatch = await Promise.all(requests.slice(0, 31));
 
     await expect(firstBatch[0]!.text()).rejects.toThrow("Vite body failed");
-    await vi.waitFor(() => expect(electronMocks.fetch).toHaveBeenCalledTimes(32));
     const admitted = await requests[31]!;
+    expect(electronMocks.fetch).toHaveBeenCalledTimes(32);
     await Promise.all([
       ...firstBatch.slice(1).map((response) => response.body?.cancel("test cleanup")),
       admitted.body?.cancel("test cleanup"),
@@ -379,7 +358,7 @@ describe("Electron app protocol", () => {
       if (index === 1) throw new Error("Vite unavailable");
       return new Response(new ReadableStream<Uint8Array>({}, { highWaterMark: 0 }));
     });
-    registerAppProtocol("http://localhost:5173/");
+    registerAppProtocol("https://vite.comma.test/");
 
     const handler = electronMocks.handle.mock.calls.find(
       ([scheme]) => scheme === "assets"
@@ -392,10 +371,10 @@ describe("Electron app protocol", () => {
       handler(new Request(`assets://./live-${index}.ts`))
     );
 
-    await vi.waitFor(() => expect(electronMocks.fetch).toHaveBeenCalledTimes(33));
     await expect(bodyless).resolves.toMatchObject({ status: 204 });
     await expect(rejected).resolves.toEqual(new Error("Vite unavailable"));
     const liveResponses = await Promise.all(live);
+    expect(electronMocks.fetch).toHaveBeenCalledTimes(33);
     await Promise.all(
       liveResponses.map((response) => response.body?.cancel("test cleanup"))
     );
@@ -457,8 +436,61 @@ describe("Electron app protocol", () => {
     expect(electronMocks.fetch).not.toHaveBeenCalled();
   });
 
+  it("ends the upstream request when its caller lets it go, and does not read it again", async () => {
+    const { authority } = fakeCredentialAuthority();
+    const upstreamSignal = deferred<AbortSignal>();
+    electronMocks.fetch.mockImplementation(
+      (_url: string, init: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          upstreamSignal.resolve(init.signal);
+          init.signal.addEventListener("abort", () => reject(init.signal.reason));
+        })
+    );
+    const caller = new AbortController();
+    const request = new Request(commaApiRequest(), { signal: caller.signal });
+    const answered = proxyCommaApiRequest(
+      request,
+      new URL("assets://./v1/comma/groups/grp_1/conversations/events"),
+      authority,
+      electronMocks.fetch
+    );
+    const upstream = await upstreamSignal.promise;
+    caller.abort();
+    expect(upstream.aborted).toBe(true);
+    await answered;
+    expect(electronMocks.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("ends the upstream request when its answer's body is let go, whatever the caller's signal does", async () => {
+    const { authority } = fakeCredentialAuthority();
+    let upstream: AbortSignal | undefined;
+    electronMocks.fetch.mockImplementation(
+      (_url: string, init: { signal: AbortSignal }) => {
+        upstream = init.signal;
+        // An event stream: open until the server or the client ends it.
+        return Promise.resolve(
+          new Response(new ReadableStream<Uint8Array>(), {
+            headers: { "content-type": "text/event-stream" },
+            status: 200,
+          })
+        );
+      }
+    );
+    // As Electron's protocol handler gives it: a request whose signal never aborts.
+    const response = await proxyCommaApiRequest(
+      commaApiRequest(),
+      new URL("assets://./v1/comma/groups/grp_1/conversations/events"),
+      authority,
+      electronMocks.fetch
+    );
+
+    expect(upstream?.aborted).toBe(false);
+    await response.body?.cancel();
+    expect(upstream?.aborted).toBe(true);
+  });
+
   it("acquires the exact lease, strips renderer authority, and injects only Main's bearer", async () => {
-    const { authority, lease } = fakeCredentialAuthority();
+    const { authority } = fakeCredentialAuthority();
     electronMocks.fetch.mockResolvedValue(
       new Response("ok", {
         headers: {
@@ -475,6 +507,7 @@ describe("Electron app protocol", () => {
         {
           authorization: "Bearer renderer_legacy",
           cookie: "ambient=secret",
+          "idempotency-key": "req_1",
           "proxy-authorization": "Basic renderer_proxy",
           "x-comma-client-surface": "web",
           "x-comma-session-lifecycle-version": "999",
@@ -493,12 +526,14 @@ describe("Electron app protocol", () => {
         credentials: "omit",
         method: "GET",
         redirect: "manual",
-        signal: lease.signal,
+        signal: expect.any(AbortSignal),
       })
     );
     const init = electronMocks.fetch.mock.calls[0]?.[1] as { headers: Headers };
     expect(init.headers.get("authorization")).toBe("Bearer main_secret");
     expect(init.headers.get("cookie")).toBeNull();
+    // A write's dedupe key reaches the server; without it an install request is rejected.
+    expect(init.headers.get("idempotency-key")).toBe("req_1");
     expect(init.headers.get("proxy-authorization")).toBeNull();
     expect(init.headers.get("x-comma-client-surface")).toBeNull();
     expect(init.headers.get(sessionPresenceExpectationHeader)).toBeNull();
@@ -661,6 +696,8 @@ describe("Electron app protocol", () => {
     });
     expect(response.headers.get("location")).toBeNull();
     expect(electronMocks.fetch).toHaveBeenCalledTimes(1);
+    // The withheld answer does not keep its request open.
+    expect(signalOfUpstreamCall(0).aborted).toBe(true);
   });
 
   it("settles the exact lease before delivery and reports only a current 401", async () => {
@@ -681,6 +718,7 @@ describe("Electron app protocol", () => {
     );
     expect(staleResponse.status).toBe(409);
     expect(reportUnauthorized).not.toHaveBeenCalled();
+    expect(signalOfUpstreamCall(0).aborted).toBe(true);
 
     current.value = true;
     electronMocks.fetch.mockResolvedValueOnce(
@@ -700,7 +738,47 @@ describe("Electron app protocol", () => {
     expect(unauthorized.status).toBe(401);
     await expect(unauthorized.json()).resolves.toEqual({ error: "unauthorized" });
     expect(unauthorized.headers.get("www-authenticate")).toBeNull();
+    expect(signalOfUpstreamCall(1).aborted).toBe(true);
   });
+
+  for (const path of [
+    "/v1/comma/me/bootstrap",
+    "/v1/comma/groups/grp_1/assistant-chat",
+  ]) {
+    it.each([401, 403, 404])(
+      `reports only a 401 from POST ${path} to the session owner (%i)`,
+      async (status) => {
+        const { authority, lease, reportUnauthorized } = fakeCredentialAuthority();
+        electronMocks.fetch.mockResolvedValue(
+          new Response(JSON.stringify({ error: "refused" }), { status })
+        );
+        const request = new Request(`assets://.${path}`, {
+          method: "POST",
+          headers: commaApiRequest().headers,
+        });
+        const response = await proxyCommaApiRequest(
+          request,
+          new URL(request.url),
+          authority,
+          electronMocks.fetch
+        );
+        expect(response.status).toBe(status);
+        expect(electronMocks.fetch).toHaveBeenCalledOnce();
+        expect(electronMocks.fetch.mock.calls[0]?.[0]).toBe(`${lease.audience}${path}`);
+        const sent = electronMocks.fetch.mock.calls[0]?.[1] as RequestInit;
+        expect(sent.method).toBe("POST");
+        expect(new Headers(sent.headers).get("authorization")).toBe(
+          `Bearer ${lease.token}`
+        );
+        if (status === 401) {
+          expect(reportUnauthorized).toHaveBeenCalledExactlyOnceWith(lease);
+        } else {
+          expect(reportUnauthorized).not.toHaveBeenCalled();
+        }
+        await response.text();
+      }
+    );
+  }
 
   it("withholds delayed response bytes when the exact lease changes after headers arrive", async () => {
     const current = { account: "A" };
@@ -862,27 +940,19 @@ function fakeCredentialAuthority({
   return { authority, controller, lease, reportUnauthorized };
 }
 
+/** The signal Main gave its `call`th upstream request. */
+function signalOfUpstreamCall(call: number): AbortSignal {
+  const init = electronMocks.fetch.mock.calls[call]?.[1] as
+    | { signal: AbortSignal }
+    | undefined;
+  if (!init) throw new Error(`no upstream request ${call}`);
+  return init.signal;
+}
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((promiseResolve) => {
     resolve = promiseResolve;
   });
   return { promise, resolve };
-}
-
-async function resolvesWithin<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message: string
-): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
-  });
-
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    if (timeoutId !== undefined) clearTimeout(timeoutId);
-  }
 }

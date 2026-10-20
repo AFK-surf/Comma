@@ -84,7 +84,7 @@ defmodule SalixAgent.AttemptTelemetry do
   @transport_pattern ~r/(?<![A-Za-z0-9_])(?:#{Enum.join(@transport_kinds, "|")})(?![A-Za-z0-9_])/
 
   @doc "Wall-clock milliseconds, the unit every attempt is stamped in."
-  def now_ms, do: System.system_time(:millisecond)
+  def now_ms, do: SystemsClock.system_time(:millisecond)
 
   @doc """
   Emit one failed-attempt fact. `reason` is what the provider seam returned
@@ -176,7 +176,7 @@ defmodule SalixAgent.AttemptTelemetry do
       duration_ms: max(duration_ms || 0, 0),
       delay_ms: max(delay_ms || 0, 0),
       started_at: DateTime.from_unix!(started_ms || now_ms(), :millisecond),
-      metered_at: DateTime.utc_now(),
+      metered_at: SystemsClock.utc_now(),
       trace_id: field(meter_ctx, :trace_id),
       request_id: request_id,
       salix_agent_id: field(meter_ctx, :salix_agent_id) || field(meter_ctx, :agent_id),
@@ -273,5 +273,5 @@ defmodule SalixAgent.AttemptTelemetry do
 
   defp field(_map, _key), do: nil
 
-  defp random_id, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower)
 end

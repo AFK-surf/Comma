@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Placeholder: a circular retry arrow. To be replaced by the icon set. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="20dp" android:height="20dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="@color/token_text_secondary"
+        android:pathData="M12,5V2L7.5,6.5 12,11V7.5c2.48,0 4.5,2.02 4.5,4.5s-2.02,4.5 -4.5,4.5 -4.5,-2.02 -4.5,-4.5H5c0,3.87 3.13,7 7,7s7,-3.13 7,-7 -3.13,-7 -7,-7z" />
+</vector>

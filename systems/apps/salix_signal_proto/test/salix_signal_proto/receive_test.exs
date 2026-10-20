@@ -3,7 +3,7 @@ defmodule SalixSignalProto.ReceiveTest do
   # §5.4, §6): a full sealed pre-key decryption from
   # vectors/CRS-06/sealed-sender-v1-decrypt.json, and Comma-to-Comma envelopes
   # for each outcome class.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.{Keys, Receive, SealedSender, ServiceId, Session}
   alias SalixSignalProto.Message.{Content, DecryptionError, Envelope, Padding, Wire}
@@ -157,7 +157,7 @@ defmodule SalixSignalProto.ReceiveTest do
         source_device: alice.device_id,
         payload: bytes,
         destination: {:aci, bob.aci},
-        server_guid: :crypto.strong_rand_bytes(16)
+        server_guid: SystemsRuntime.Proc.random_bytes(16)
       }
     end
 
@@ -184,7 +184,7 @@ defmodule SalixSignalProto.ReceiveTest do
         client_timestamp: Keyword.get(opts, :timestamp, @t),
         payload: SealedSender.seal(inner, alice.identity, bob.identity.public),
         destination: {:aci, bob.aci},
-        server_guid: :crypto.strong_rand_bytes(16)
+        server_guid: SystemsRuntime.Proc.random_bytes(16)
       }
     end
 
@@ -350,7 +350,7 @@ defmodule SalixSignalProto.ReceiveTest do
       bob: bob,
       authority: authority
     } do
-      group_id = :crypto.strong_rand_bytes(32)
+      group_id = SystemsRuntime.Proc.random_bytes(32)
       envelope = sealed(alice, bob, authority, :sender_key, <<0x33, 1, 2, 3>>, group_id: group_id)
       result = Receive.open(envelope, context(bob, authority))
 

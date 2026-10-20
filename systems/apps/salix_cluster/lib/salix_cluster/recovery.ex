@@ -38,7 +38,7 @@ defmodule SalixCluster.Recovery do
   durable candidate discovery repairs lost hints. The retired notification
   model is historical evidence, not a current machine-checked guarantee.
   """
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
   alias SalixCluster.S3Lease
@@ -64,7 +64,7 @@ defmodule SalixCluster.Recovery do
   # ---- API ----
 
   def start_link(opts \\ []),
-    do: GenServer.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
 
   @doc """
   Run one recovery pass. Returns `{:ok, summary_map}`.
@@ -73,7 +73,7 @@ defmodule SalixCluster.Recovery do
   """
   @spec sweep_once(keyword()) :: {:ok, map()} | {:error, term()}
   def sweep_once(opts \\ []) do
-    now = opts[:now] || System.system_time(:millisecond)
+    now = opts[:now] || SystemsClock.system_time(:millisecond)
 
     session_work =
       if Keyword.get(opts, :session_work, true),
@@ -150,9 +150,9 @@ defmodule SalixCluster.Recovery do
   @doc "Request a lease-gated durable Session-work catch-up after LISTEN succeeds."
   @spec request_session_work_catchup(GenServer.server()) :: :ok | {:error, :not_running}
   def request_session_work_catchup(server \\ __MODULE__) do
-    case GenServer.whereis(server) do
+    case SystemsRuntime.Server.whereis(server) do
       nil -> {:error, :not_running}
-      _pid -> GenServer.cast(server, :session_work_catch_up)
+      _pid -> SystemsRuntime.Server.cast(server, :session_work_catch_up)
     end
   end
 
@@ -228,7 +228,7 @@ defmodule SalixCluster.Recovery do
   # either already retired (fresh resolve returns nothing → no-op) or still
   # the stale generation the connection_generation fence expects.
   defp sweep_dead_node_markers(markers, live, opts) do
-    now = opts[:now] || System.system_time(:millisecond)
+    now = opts[:now] || SystemsClock.system_time(:millisecond)
 
     markers
     |> Enum.reject(fn {node, _id} -> node in live end)
@@ -242,7 +242,7 @@ defmodule SalixCluster.Recovery do
   # ---- deep pass: authoritative-record scan + index reconciliation ----
 
   defp sweep_envs_deep(markers, live, opts) do
-    now = opts[:now] || System.system_time(:millisecond)
+    now = opts[:now] || SystemsClock.system_time(:millisecond)
 
     case SalixStore.S3.list_all(SalixStore.Keys.connector_runs_prefix()) do
       {:ok, objects} ->
@@ -442,7 +442,7 @@ defmodule SalixCluster.Recovery do
         state
       end
 
-    Process.send_after(self(), :tick, state.interval)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, state.interval)
     state
   end
 

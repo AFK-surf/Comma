@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/AFK-surf/comma/systems/cli/bft/internal/config"
@@ -195,6 +196,9 @@ func TestAuthDeviceLoginTerminalStatusDoesNotPersistConfig(t *testing.T) {
 func TestAuthDeviceLoginStopsPollingAtServerExpiry(t *testing.T) {
 	var pollCount int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// An idle kept-alive connection waits on the network, which would
+		// keep the bubble's clock from reaching the expiry.
+		w.Header().Set("Connection", "close")
 		switch r.URL.Path {
 		case "/v1/cli/auth/device":
 			writeOK(w, map[string]any{
@@ -202,7 +206,7 @@ func TestAuthDeviceLoginStopsPollingAtServerExpiry(t *testing.T) {
 				"user_code":                 "ABCD1234",
 				"verification_uri":          serverURL(r) + "/cli/device-login",
 				"verification_uri_complete": serverURL(r) + "/cli/device-login/ABCD1234",
-				"expires_at":                time.Now().Add(25 * time.Millisecond).UTC().Format(time.RFC3339Nano),
+				"expires_at":                bubbleStart.Add(25 * time.Millisecond).Format(time.RFC3339Nano),
 				"interval_seconds":          60,
 			})
 		case "/v1/cli/auth/device/poll":
@@ -218,29 +222,33 @@ func TestAuthDeviceLoginStopsPollingAtServerExpiry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	configPath := filepath.Join(t.TempDir(), "cli.json")
-	exitCode, stdout, stderr := runCLI(t, []string{
-		"auth", "login",
-		"--url", server.URL,
-		"--config", configPath,
-		"--json",
-	}, nil)
+	// The CLI runs on the bubble's clock, which stands still while a request is
+	// in flight: it polls once, then waits out the 25 ms to the server's expiry.
+	synctest.Test(t, func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "cli.json")
+		exitCode, stdout, stderr := runCLI(t, []string{
+			"auth", "login",
+			"--url", server.URL,
+			"--config", configPath,
+			"--json",
+		}, nil)
 
-	if exitCode != output.ExitUsage {
-		t.Fatalf("exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
-	}
-	if stdout != "" {
-		t.Fatalf("stdout = %q, want empty", stdout)
-	}
-	if pollCount != 1 {
-		t.Fatalf("poll count = %d, want exactly one pending poll before local expiry", pollCount)
-	}
-	var body map[string]any
-	decodeJSON(t, stderr, &body)
-	if body["error"].(map[string]any)["code"] != "cli_device_login_expired" {
-		t.Fatalf("stderr body = %#v", body)
-	}
-	assertNoPersistedToken(t, configPath)
+		if exitCode != output.ExitUsage {
+			t.Fatalf("exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+		}
+		if stdout != "" {
+			t.Fatalf("stdout = %q, want empty", stdout)
+		}
+		if pollCount != 1 {
+			t.Fatalf("poll count = %d, want exactly one pending poll before local expiry", pollCount)
+		}
+		var body map[string]any
+		decodeJSON(t, stderr, &body)
+		if body["error"].(map[string]any)["code"] != "cli_device_login_expired" {
+			t.Fatalf("stderr body = %#v", body)
+		}
+		assertNoPersistedToken(t, configPath)
+	})
 }
 
 func TestDeviceLoginDeadlineFallsBackAndCapsServerExpiry(t *testing.T) {
@@ -1334,6 +1342,210 @@ func TestFeishuCommandsUseCLIAPIContracts(t *testing.T) {
 	}
 }
 
+func TestLarkCommandsUseCLIAPIContracts(t *testing.T) {
+	const callbackURL = "https://salix.example.test/v1/im/lark/events?app_id=cli_lark1"
+	var connectBody map[string]any
+	var checksBody map[string]any
+	var statusQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/cli/lark/connect":
+			if err := json.NewDecoder(r.Body).Decode(&connectBody); err != nil {
+				t.Fatalf("decode connect body: %v", err)
+			}
+			writeOK(w, map[string]any{"mode": "lark_connect", "action": "created", "project": map[string]any{"name": "Support"}, "callback_url": callbackURL, "manual_checklist": []string{"Save the callback URL as the request URL."}})
+		case "/v1/cli/lark/checks":
+			if err := json.NewDecoder(r.Body).Decode(&checksBody); err != nil {
+				t.Fatalf("decode checks body: %v", err)
+			}
+			writeOK(w, map[string]any{"mode": "lark_checks", "checks": map[string]any{"gates": []map[string]any{{"gate_id": "bot.callback", "status": "fail", "next_action": "Verification Token mismatch."}}}})
+		case "/v1/cli/lark/scopes":
+			writeOK(w, map[string]any{"mode": "lark_scopes", "required_scopes": []string{"im:message"}, "batch_import_payload": map[string]any{"scopes": map[string]any{"tenant": []string{"im:message"}}}})
+		case "/v1/cli/lark/status":
+			statusQuery = r.URL.RawQuery
+			writeOK(w, map[string]any{"mode": "lark_status", "project": map[string]any{"name": "Support"}, "connects": []map[string]any{{"connect_id": "imc1_lark", "app_id": "cli_lark1", "app_name": "Acme Lark bot", "callback_url": callbackURL}}, "manual_checklist": []string{"Publish a version of the app."}})
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "cli.json")
+	if err := config.Persist(configPath, func(string) string { return "" }, config.Config{APIBaseURL: server.URL, Token: "from-config-token"}); err != nil {
+		t.Fatalf("persist config: %v", err)
+	}
+	env := map[string]string{"BFT_LARK_APP_SECRET": "raw-lark-secret", "BFT_LARK_ENCRYPT_KEY": "raw-lark-key"}
+	base := []string{"lark", "connect", "--org", "acme", "--project", "support", "--app-id", "cli_lark1", "--app-secret-env", "BFT_LARK_APP_SECRET", "--config", configPath}
+
+	// Lark signs events with the token or the key: without either, nothing is sent.
+	if exitCode, _, _ := runCLI(t, append(base, "--confirm-mutating"), env); exitCode == output.ExitOK || connectBody != nil {
+		t.Fatalf("connect without token or key: exit = %d body = %#v", exitCode, connectBody)
+	}
+
+	connect := append(base, "--encrypt-key-env", "BFT_LARK_ENCRYPT_KEY")
+
+	// Nothing is sent before the write is confirmed.
+	if exitCode, _, _ := runCLI(t, connect, env); exitCode == output.ExitOK || connectBody != nil {
+		t.Fatalf("unconfirmed connect: exit = %d body = %#v", exitCode, connectBody)
+	}
+
+	exitCode, stdout, stderr := runCLI(t, append(connect, "--confirm-mutating"), env)
+	if exitCode != output.ExitOK {
+		t.Fatalf("connect exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	if connectBody["org"] != "acme" || connectBody["project"] != "support" || connectBody["app_id"] != "cli_lark1" || connectBody["app_secret"] != "raw-lark-secret" || connectBody["encrypt_key"] != "raw-lark-key" {
+		t.Fatalf("connect body = %#v", connectBody)
+	}
+	if _, sent := connectBody["verification_token"]; sent {
+		t.Fatalf("connect body carries a token that was not given: %#v", connectBody)
+	}
+	if strings.Contains(stdout+stderr, "raw-lark-secret") || strings.Contains(stdout+stderr, "raw-lark-key") {
+		t.Fatalf("secret leaked in output: %s%s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Callback URL: "+callbackURL) || !strings.Contains(stdout, "Save the callback URL as the request URL.") {
+		t.Fatalf("connect output = %s", stdout)
+	}
+
+	exitCode, stdout, stderr = runCLI(t, []string{"lark", "status", "--org", "acme", "--project", "support", "--config", configPath}, nil)
+	if exitCode != output.ExitOK {
+		t.Fatalf("status exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	if !strings.Contains(statusQuery, "org=acme") || !strings.Contains(statusQuery, "project=support") {
+		t.Fatalf("status query = %s", statusQuery)
+	}
+	if !strings.Contains(stdout, "Acme Lark bot (enabled)") || !strings.Contains(stdout, "Callback URL: "+callbackURL) || !strings.Contains(stdout, "Publish a version of the app.") {
+		t.Fatalf("status output = %s", stdout)
+	}
+
+	exitCode, stdout, stderr = runCLI(t, []string{"lark", "checks", "--org", "acme", "--project", "support", "--connect-id", "imc1_lark", "--config", configPath}, nil)
+	if exitCode != output.ExitOK {
+		t.Fatalf("checks exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	if checksBody["org"] != "acme" || checksBody["project"] != "support" || checksBody["connect_id"] != "imc1_lark" {
+		t.Fatalf("checks body = %#v", checksBody)
+	}
+	if !strings.Contains(stdout, "Lark checks") || !strings.Contains(stdout, "[fail] bot.callback: Verification Token mismatch.") {
+		t.Fatalf("checks output = %s", stdout)
+	}
+
+	// The text output is the import JSON alone, so it can be pasted as it is.
+	exitCode, stdout, stderr = runCLI(t, []string{"lark", "scopes", "--config", configPath}, nil)
+	if exitCode != output.ExitOK {
+		t.Fatalf("scopes exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	var payload map[string]map[string][]string
+	decodeJSON(t, stdout, &payload)
+	if tenant := payload["scopes"]["tenant"]; len(tenant) != 1 || tenant[0] != "im:message" {
+		t.Fatalf("scopes output = %s", stdout)
+	}
+}
+
+func TestOnboardingLarkStepsReadTheConnectAndRunItsChecks(t *testing.T) {
+	connects := []map[string]any{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /v1/cli/lark/status":
+			writeOK(w, map[string]any{"mode": "lark_status", "connects": connects})
+		case "POST /v1/cli/lark/checks":
+			writeOK(w, map[string]any{"checks": map[string]any{"gates": []map[string]any{
+				{"gate_id": "bot.callback", "status": "ok", "required": true},
+				{"gate_id": "bot.calendar", "status": "skipped", "reason_class": "calendar_policy_not_configured", "required": false},
+			}}})
+		default:
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "cli.json")
+	if err := config.Persist(configPath, func(string) string { return "" }, config.Config{APIBaseURL: server.URL, Token: "from-config-token"}); err != nil {
+		t.Fatalf("persist config: %v", err)
+	}
+	smoke := func(step string) (int, map[string]any) {
+		exitCode, stdout, _ := runCLI(t, []string{"onboarding", "smoke", "--step", step, "--org", "acme", "--project", "support", "--config", configPath, "--json"}, nil)
+		var body map[string]any
+		decodeJSON(t, stdout, &body)
+		return exitCode, body["data"].(map[string]any)
+	}
+
+	// Without a Lark app the step asks for bft lark connect and writes nothing.
+	exitCode, data := smoke("lark-connect")
+	if exitCode != output.ExitNeedsManual || data["status"] != "needs_manual" || !strings.Contains(data["next_action"].(string), "bft lark connect") {
+		t.Fatalf("lark-connect without an app: exit = %d data = %#v", exitCode, data)
+	}
+
+	connects = []map[string]any{{"connect_id": "imc1_lark", "app_id": "cli_lark1", "callback_url": "https://salix.example.test/v1/im/lark/events?app_id=cli_lark1"}}
+	exitCode, data = smoke("lark-connect")
+	if exitCode != output.ExitOK || data["status"] != "ok" {
+		t.Fatalf("lark-connect with an app: exit = %d data = %#v", exitCode, data)
+	}
+
+	exitCode, data = smoke("lark-checks")
+	if exitCode != output.ExitOK || data["status"] != "ok" || len(data["gates"].([]any)) != 2 {
+		t.Fatalf("lark-checks: exit = %d data = %#v", exitCode, data)
+	}
+	if deps := data["depends_on"].([]any); len(deps) != 1 || deps[0] != "lark-connect" {
+		t.Fatalf("lark-checks depends_on = %#v", data["depends_on"])
+	}
+}
+
+func TestQQCommandsUseCLIAPIContracts(t *testing.T) {
+	var connectBody map[string]any
+	var statusQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/cli/qq/connect":
+			if err := json.NewDecoder(r.Body).Decode(&connectBody); err != nil {
+				t.Fatalf("decode connect body: %v", err)
+			}
+			writeOK(w, map[string]any{"mode": "qq_connect", "action": "created", "project": map[string]any{"name": "Support"}, "callback_url": "https://salix.example.test/v1/im/qq/events?app_id=1900012345", "manual_checklist": []string{"Save the callback URL."}})
+		case "/v1/cli/qq/status":
+			statusQuery = r.URL.RawQuery
+			writeOK(w, map[string]any{"mode": "qq_status", "project": map[string]any{"name": "Support"}, "connects": []map[string]any{{"connect_id": "imc1_qq", "app_id": "1900012345", "bot_username": "Acme helper", "callback_url": "https://salix.example.test/v1/im/qq/events?app_id=1900012345"}}})
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "cli.json")
+	if err := config.Persist(configPath, func(string) string { return "" }, config.Config{APIBaseURL: server.URL, Token: "from-config-token"}); err != nil {
+		t.Fatalf("persist config: %v", err)
+	}
+	env := map[string]string{"BFT_QQ_APP_SECRET": "raw-qq-secret"}
+	connect := []string{"qq", "connect", "--org", "acme", "--project", "support", "--app-id", "1900012345", "--app-secret-env", "BFT_QQ_APP_SECRET", "--config", configPath}
+
+	// Nothing is sent before the write is confirmed.
+	if exitCode, _, _ := runCLI(t, connect, env); exitCode == output.ExitOK || connectBody != nil {
+		t.Fatalf("unconfirmed connect: exit = %d body = %#v", exitCode, connectBody)
+	}
+
+	exitCode, stdout, stderr := runCLI(t, append(connect, "--confirm-mutating"), env)
+	if exitCode != output.ExitOK {
+		t.Fatalf("connect exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	if connectBody["org"] != "acme" || connectBody["project"] != "support" || connectBody["app_id"] != "1900012345" || connectBody["app_secret"] != "raw-qq-secret" {
+		t.Fatalf("connect body = %#v", connectBody)
+	}
+	if strings.Contains(stdout+stderr, "raw-qq-secret") {
+		t.Fatalf("secret leaked in output: %s%s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Callback URL: https://salix.example.test/v1/im/qq/events?app_id=1900012345") || !strings.Contains(stdout, "Save the callback URL.") {
+		t.Fatalf("connect output = %s", stdout)
+	}
+
+	exitCode, stdout, stderr = runCLI(t, []string{"qq", "status", "--org", "acme", "--project", "support", "--config", configPath}, nil)
+	if exitCode != output.ExitOK {
+		t.Fatalf("status exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	if !strings.Contains(statusQuery, "org=acme") || !strings.Contains(statusQuery, "project=support") {
+		t.Fatalf("status query = %s", statusQuery)
+	}
+	if !strings.Contains(stdout, "Acme helper (enabled)") || !strings.Contains(stdout, "AppID: 1900012345") {
+		t.Fatalf("status output = %s", stdout)
+	}
+}
+
 func TestFeishuSetupRendersScopePresetInTextAndJSON(t *testing.T) {
 	setupData := map[string]any{
 		"mode":    "feishu_setup",
@@ -1742,44 +1954,12 @@ func TestAgentsListCommandShowsRuntimeIdentity(t *testing.T) {
 	}
 }
 
-func TestAgentsRuntimesAndRebindCommandsUseProjectAPIContracts(t *testing.T) {
-	runtimesPath := "/v1/orgs/acme/projects/support/agents/runtimes"
+func TestAgentsRebindCommandUsesProjectAPIContract(t *testing.T) {
 	rebindPath := "/v1/orgs/acme/projects/support/agents/agt_codex/runtime"
-	var sawRuntimes bool
 	var seenRebind map[string]any
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == runtimesPath && r.Method == http.MethodGet:
-			sawRuntimes = true
-			writeOK(w, map[string]any{
-				"mode": "project_agent_runtimes_list",
-				"runtimes": []map[string]any{{
-					"device_runtime_id": "devrt_codex_ZL",
-					"device_id":         "dev_ZL",
-					"device_name":       "Mac Studio",
-					"runtime_id":        "runtime_codex",
-					"status":            "available",
-					"ready":             true,
-					"version":           "codex-test",
-					"connector_run_id":  "connrun_ZL",
-					"working_dir":       "/Users/test/project",
-					"model":             "claude-sonnet-4",
-					"model_provider":    "anthropic",
-				}, {
-					"device_runtime_id":    "devrt_codex_not_ready",
-					"device_id":            "dev_ZL",
-					"device_name":          "Mac Studio",
-					"runtime_id":           "runtime_codex_not_ready",
-					"status":               "available",
-					"ready":                false,
-					"version":              "codex-test",
-					"connector_run_id":     "connrun_ZL",
-					"app_server_startable": true,
-					"auth_ready":           true,
-				}},
-			})
-
 		case r.URL.Path == rebindPath && r.Method == http.MethodPatch:
 			if err := json.NewDecoder(r.Body).Decode(&seenRebind); err != nil {
 				t.Fatalf("decode rebind body: %v", err)
@@ -1816,36 +1996,6 @@ func TestAgentsRuntimesAndRebindCommandsUseProjectAPIContracts(t *testing.T) {
 	}
 
 	exitCode, stdout, stderr := runCLI(t, []string{
-		"agents", "runtimes",
-		"--org", "acme",
-		"--project", "support",
-		"--config", configPath,
-	}, nil)
-	if exitCode != output.ExitOK {
-		t.Fatalf("runtimes exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
-	}
-	if !sawRuntimes || !strings.Contains(stdout, "devrt_codex_ZL") || !strings.Contains(stdout, "connrun_ZL") {
-		t.Fatalf("runtimes output = %s", stdout)
-	}
-	if strings.Contains(stdout, "devrt_codex_not_ready") {
-		t.Fatalf("runtimes default output should include only bindable runtimes:\n%s", stdout)
-	}
-
-	exitCode, stdout, stderr = runCLI(t, []string{
-		"agents", "runtimes",
-		"--org", "acme",
-		"--project", "support",
-		"--include-unavailable",
-		"--config", configPath,
-	}, nil)
-	if exitCode != output.ExitOK {
-		t.Fatalf("runtimes include unavailable exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
-	}
-	if !strings.Contains(stdout, "devrt_codex_not_ready") || !strings.Contains(stdout, "false") {
-		t.Fatalf("runtimes include unavailable output = %s", stdout)
-	}
-
-	exitCode, stdout, stderr = runCLI(t, []string{
 		"agents", "rebind",
 		"--org", "acme",
 		"--project", "support",
@@ -1888,21 +2038,9 @@ func TestAgentsCreateCommandUsesProjectAPIContract(t *testing.T) {
 				"name":           "codex-worker",
 				"role":           "worker",
 				"status":         "active",
-				"runtime_config": map[string]any{
-					"kind":              "external",
-					"provider":          "codex",
-					"device_id":         "dev_ZL",
-					"runtime_id":        "runtime_codex",
-					"device_runtime_id": "devrt_codex_ZL",
-				},
 				"runtime": map[string]any{
-					"kind":              "external",
-					"status":            "ready",
-					"device_id":         "dev_ZL",
-					"runtime_id":        "runtime_codex",
-					"device_runtime_id": "devrt_codex_ZL",
-					"connector_run_id":  "connrun_ZL",
-					"device_status":     "connected",
+					"kind":   "internal",
+					"status": "ready",
 				},
 			},
 		})
@@ -1920,17 +2058,13 @@ func TestAgentsCreateCommandUsesProjectAPIContract(t *testing.T) {
 		"--project", "support",
 		"--name", "codex-worker",
 		"--role", "worker",
-		"--runtime-kind", "external",
-		"--device-id", "dev_ZL",
-		"--runtime-id", "runtime_codex",
-		"--device-runtime-id", "devrt_codex_ZL",
 		"--confirm-mutating",
 		"--config", configPath,
 	}, nil)
 	if exitCode != output.ExitOK {
 		t.Fatalf("exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
 	}
-	for _, want := range []string{"Agent created.", "agent_created", "runtime_status", "ready", "devrt_codex_ZL"} {
+	for _, want := range []string{"Agent created.", "agent_created", "runtime_status", "ready"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("create output missing %q:\n%s", want, stdout)
 		}
@@ -1938,14 +2072,7 @@ func TestAgentsCreateCommandUsesProjectAPIContract(t *testing.T) {
 	if seenBody["org"] != nil || seenBody["project"] != nil {
 		t.Fatalf("project identifiers should be path params, body = %#v", seenBody)
 	}
-	runtimeConfig, _ := seenBody["runtime_config"].(map[string]any)
-	if seenBody["name"] != "codex-worker" ||
-		seenBody["role"] != "worker" ||
-		runtimeConfig["kind"] != "external" ||
-		runtimeConfig["provider"] != "codex" ||
-		runtimeConfig["device_id"] != "dev_ZL" ||
-		runtimeConfig["runtime_id"] != "runtime_codex" ||
-		runtimeConfig["device_runtime_id"] != "devrt_codex_ZL" {
+	if seenBody["name"] != "codex-worker" || seenBody["role"] != "worker" {
 		t.Fatalf("create body = %#v", seenBody)
 	}
 }
@@ -1961,10 +2088,6 @@ func TestAgentsCreateCommandRequiresConfirmation(t *testing.T) {
 		"--org", "acme",
 		"--project", "support",
 		"--name", "codex-worker",
-		"--runtime-kind", "external",
-		"--device-id", "dev_ZL",
-		"--runtime-id", "runtime_codex",
-		"--device-runtime-id", "devrt_codex_ZL",
 		"--config", configPath,
 		"--json",
 	}, nil)
@@ -1976,53 +2099,25 @@ func TestAgentsCreateCommandRequiresConfirmation(t *testing.T) {
 	}
 }
 
-func TestAgentsCreateCommandRejectsInvalidLocalRuntimeFlags(t *testing.T) {
-	tests := []struct {
-		name string
-		args []string
-		code string
-	}{
-		{
-			name: "role",
-			args: []string{"--role", "meeting"},
-			code: "invalid_role",
-		},
-		{
-			name: "runtime kind",
-			args: []string{"--runtime-kind", "external.codex"},
-			code: "invalid_runtime_kind",
-		},
-		{
-			name: "runtime provider",
-			args: []string{"--runtime-kind", "external", "--runtime-provider", "openai", "--device-id", "dev_ZL", "--runtime-id", "runtime_codex", "--device-runtime-id", "devrt_codex_ZL"},
-			code: "invalid_runtime_provider",
-		},
+func TestAgentsCreateCommandRejectsInvalidRole(t *testing.T) {
+	exitCode, stdout, stderr := runCLI(t, []string{
+		"agents", "create",
+		"--org", "acme",
+		"--project", "support",
+		"--name", "codex-worker",
+		"--role", "meeting",
+		"--json",
+	}, nil)
+	if exitCode != output.ExitUsage {
+		t.Fatalf("exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			args := []string{
-				"agents", "create",
-				"--org", "acme",
-				"--project", "support",
-				"--name", "codex-worker",
-				"--json",
-			}
-			args = append(args, tt.args...)
-
-			exitCode, stdout, stderr := runCLI(t, args, nil)
-			if exitCode != output.ExitUsage {
-				t.Fatalf("exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
-			}
-			if stdout != "" {
-				t.Fatalf("stdout = %q, want empty", stdout)
-			}
-			var body map[string]any
-			decodeJSON(t, stderr, &body)
-			if body["error"].(map[string]any)["code"] != tt.code {
-				t.Fatalf("stderr body = %#v, want code %s", body, tt.code)
-			}
-		})
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	var body map[string]any
+	decodeJSON(t, stderr, &body)
+	if body["error"].(map[string]any)["code"] != "invalid_role" {
+		t.Fatalf("stderr body = %#v, want code invalid_role", body)
 	}
 }
 
@@ -2990,8 +3085,13 @@ func serverURL(r *http.Request) string {
 	return "http://" + r.Host
 }
 
+// bubbleStart is what time.Now() returns when a synctest bubble starts.
+var bubbleStart = time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+// futureAuthExpiresAt is an expiry no login reaches: the CLI caps it at its
+// own longest wait.
 func futureAuthExpiresAt() string {
-	return time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339Nano)
+	return "2099-01-01T00:00:00Z"
 }
 
 func writeAPIError(w http.ResponseWriter, status int, code, message string) {
@@ -3011,5 +3111,79 @@ func decodeJSON(t *testing.T, raw string, target any) {
 	t.Helper()
 	if err := json.Unmarshal([]byte(raw), target); err != nil {
 		t.Fatalf("invalid JSON %q: %v", raw, err)
+	}
+}
+
+func TestQQMenuCommandsChangeTheStoredShortcuts(t *testing.T) {
+	var menuBody map[string]any
+	menu := []map[string]any{{"name": "总结群聊", "description": "总结最近的群聊内容", "prompt": "总结这个群最近的聊天内容", "scope": "group", "admin_only": false}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connect := map[string]any{"connect_id": "imc1_qq", "app_id": "1900012345", "bot_username": "Acme helper", "command_menu": menu, "command_menu_sync": map[string]any{"private": "synced", "group": "owner_panel"}}
+		switch r.URL.Path {
+		case "/v1/cli/qq/status":
+			writeOK(w, map[string]any{"mode": "qq_status", "project": map[string]any{"name": "Support"}, "connects": []map[string]any{connect}})
+		case "/v1/cli/qq/menu":
+			if err := json.NewDecoder(r.Body).Decode(&menuBody); err != nil {
+				t.Fatalf("decode menu body: %v", err)
+			}
+			connect["command_menu"] = menuBody["items"]
+			writeOK(w, map[string]any{"mode": "qq_menu", "connect": connect})
+		default:
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "cli.json")
+	if err := config.Persist(configPath, func(string) string { return "" }, config.Config{APIBaseURL: server.URL, Token: "from-config-token"}); err != nil {
+		t.Fatalf("persist config: %v", err)
+	}
+	base := []string{"--org", "acme", "--project", "support", "--config", configPath}
+
+	exitCode, stdout, stderr := runCLI(t, append([]string{"qq", "menu"}, base...), nil)
+	if exitCode != output.ExitOK {
+		t.Fatalf("menu exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	for _, want := range []string{"/status, /compact, /help (always shown)", "/总结群聊 [group] 总结最近的群聊内容", "asks: 总结这个群最近的聊天内容", "QQ shows another panel in group chats"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("menu output lacks %q: %s", want, stdout)
+		}
+	}
+
+	add := append([]string{"qq", "menu", "add", "--name", "周报", "--description", "生成本周周报", "--prompt", "根据本周群聊生成周报", "--scope", "group", "--admin-only"}, base...)
+	// Nothing is sent before the write is confirmed.
+	if exitCode, _, _ := runCLI(t, add, nil); exitCode == output.ExitOK || menuBody != nil {
+		t.Fatalf("unconfirmed add: exit = %d body = %#v", exitCode, menuBody)
+	}
+	exitCode, stdout, stderr = runCLI(t, append(add, "--confirm-mutating"), nil)
+	if exitCode != output.ExitOK {
+		t.Fatalf("add exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	items, _ := menuBody["items"].([]any)
+	if menuBody["app_id"] != "1900012345" || len(items) != 2 {
+		t.Fatalf("add body = %#v", menuBody)
+	}
+	added, _ := items[1].(map[string]any)
+	if added["name"] != "周报" || added["prompt"] != "根据本周群聊生成周报" || added["scope"] != "group" || added["admin_only"] != true {
+		t.Fatalf("added item = %#v", added)
+	}
+	if !strings.Contains(stdout, "/周报 [group, group admins only] 生成本周周报") {
+		t.Fatalf("add output = %s", stdout)
+	}
+
+	exitCode, stdout, stderr = runCLI(t, append([]string{"qq", "menu", "remove", "--name", "总结群聊", "--confirm-mutating"}, base...), nil)
+	if exitCode != output.ExitOK {
+		t.Fatalf("remove exit = %d stdout=%s stderr=%s", exitCode, stdout, stderr)
+	}
+	if items, _ := menuBody["items"].([]any); len(items) != 0 {
+		t.Fatalf("remove body = %#v", menuBody)
+	}
+	if !strings.Contains(stdout, "No shortcuts.") {
+		t.Fatalf("remove output = %s", stdout)
+	}
+
+	menuBody = nil
+	if exitCode, _, _ := runCLI(t, append([]string{"qq", "menu", "remove", "--name", "不存在", "--confirm-mutating"}, base...), nil); exitCode == output.ExitOK || menuBody != nil {
+		t.Fatalf("remove of an unknown item: exit = %d body = %#v", exitCode, menuBody)
 	}
 }

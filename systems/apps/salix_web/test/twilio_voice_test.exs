@@ -1,10 +1,15 @@
 defmodule SalixWeb.TwilioVoiceTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Twilio voice (docs/messaging-voice.md): signed webhooks admit a verified
   caller, the media stream socket carries the call to a fake GPT-Live model,
   and the control routes verify caller numbers through Twilio Verify.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   alias SalixIM.ProviderConnects
   alias SalixVoice.Carrier.Twilio
@@ -28,13 +33,13 @@ defmodule SalixWeb.TwilioVoiceTest do
       {:ok, body, conn} = read_body(conn)
       params = URI.decode_query(body)
 
-      send(
-        Application.fetch_env!(:salix_web, :twilio_stub_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_web, :twilio_stub_pid),
         {:twilio, conn.request_path, params}
       )
 
       {status, reply} =
-        Application.get_env(:salix_web, :twilio_stub_replies, %{})
+        SystemsRuntime.get_env(:salix_web, :twilio_stub_replies, %{})
         |> Enum.find_value({200, %{"status" => "pending"}}, fn {suffix, reply} ->
           if String.ends_with?(conn.request_path, suffix), do: reply
         end)
@@ -45,24 +50,26 @@ defmodule SalixWeb.TwilioVoiceTest do
 
   setup do
     prev =
-      for {app, key} <- env_keys(), into: %{}, do: {{app, key}, Application.get_env(app, key)}
+      for {app, key} <- env_keys(), into: %{}, do: {{app, key}, SystemsRuntime.get_env(app, key)}
 
-    Application.put_env(:salix_web, :api_token, "test-token")
-    Application.put_env(:salix_voice, :model_mod, Fake)
-    Application.put_env(:salix_voice, :fake_model_observer, self())
-    Application.put_env(:salix_voice, :metering_mod, nil)
-    Application.put_env(:salix_voice, :ingress_mod, SalixVoice.TestStubs.Ingress)
-    Application.put_env(:salix_voice, :test_pid, self())
-    Application.put_env(:salix_web, :twilio_stub_pid, self())
-    Application.delete_env(:salix_web, :twilio_stub_replies)
+    SystemsRuntime.put_env(:salix_web, :api_token, "test-token")
+    SystemsRuntime.put_env(:salix_voice, :model_mod, Fake)
+    SystemsRuntime.put_env(:salix_voice, :fake_model_observer, SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_voice, :metering_mod, nil)
+    SystemsRuntime.put_env(:salix_voice, :ingress_mod, SalixVoice.TestStubs.Ingress)
+    SystemsRuntime.put_env(:salix_voice, :test_pid, SystemsRuntime.Proc.self())
+    # A revoked live call ends after its notice goes quiet or this bound.
+    SystemsRuntime.put_env(:salix_voice, :timers, notice_max_ms: 200, quiet_ms: 100)
+    SystemsRuntime.put_env(:salix_web, :twilio_stub_pid, SystemsRuntime.Proc.self())
+    SystemsRuntime.delete_env(:salix_web, :twilio_stub_replies)
     # The fixed test caller number would otherwise exhaust its Redis bucket
     # across repeated runs.
-    Application.put_env(:salix_web, :voice_verify_rate_limits, number_per_hour: 1_000_000)
+    SystemsRuntime.put_env(:salix_web, :voice_verify_rate_limits, number_per_hour: 1_000_000)
 
     stub = start_supervised!({Bandit, plug: TwilioStub, port: 0, ip: {127, 0, 0, 1}})
     {:ok, {_, port}} = ThousandIsland.listener_info(stub)
-    Application.put_env(:salix_web, :twilio_api_base_url, "http://127.0.0.1:#{port}")
-    Application.put_env(:salix_web, :twilio_verify_base_url, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:salix_web, :twilio_api_base_url, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:salix_web, :twilio_verify_base_url, "http://127.0.0.1:#{port}")
 
     SalixStore.S3.Fake.reset()
     Comma.PodLifecycle.reset_for_test()
@@ -71,8 +78,8 @@ defmodule SalixWeb.TwilioVoiceTest do
     on_exit(fn ->
       for {{app, key}, value} <- prev do
         if is_nil(value),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, value)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, value)
       end
 
       for pid <- :pg.get_local_members(SalixVoice.PG, :calls),
@@ -109,6 +116,7 @@ defmodule SalixWeb.TwilioVoiceTest do
       {:salix_voice, :metering_mod},
       {:salix_voice, :ingress_mod},
       {:salix_voice, :test_pid},
+      {:salix_voice, :timers},
       {:salix_web, :twilio_stub_pid},
       {:salix_web, :twilio_stub_replies},
       {:salix_web, :twilio_api_base_url},
@@ -129,7 +137,7 @@ defmodule SalixWeb.TwilioVoiceTest do
     Map.merge(
       %{
         "AccountSid" => "AC123",
-        "CallSid" => "CA" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower),
+        "CallSid" => "CA" <> Base.encode16(SystemsRuntime.Proc.random_bytes(8), case: :lower),
         "From" => @caller,
         "To" => @line,
         "CallStatus" => "ringing",
@@ -153,9 +161,17 @@ defmodule SalixWeb.TwilioVoiceTest do
   end
 
   test "one flooding source is rate limited without blocking other sources" do
-    Application.put_env(:salix_web, :twilio_webhook_rate_limits, source_per_minute: 2)
-    # Fresh addresses, so an earlier run's window does not count.
-    address = fn -> {10, :rand.uniform(250), :rand.uniform(250), :rand.uniform(250)} end
+    SystemsRuntime.put_env(:salix_web, :twilio_webhook_rate_limits, source_per_minute: 2)
+    # Addresses no run has used before, so an earlier run's window does not
+    # count: the limiter's Redis keeps it for a minute, and an address drawn
+    # from the test's seed repeats with the seed.
+    address = fn ->
+      {:ok, n} =
+        Redix.command(Salix.App.RouterInbox.RateLimit, ["INCR", "salix:test:twilio-source"])
+
+      {10, rem(div(n, 65_536), 256), rem(div(n, 256), 256), rem(n, 256)}
+    end
+
     flood = address.()
     twilio = address.()
 
@@ -211,10 +227,12 @@ defmodule SalixWeb.TwilioVoiceTest do
                  response.body
                )
 
-      assert {:ok, claims} = SalixVoice.StreamToken.verify(token, System.system_time(:second))
+      assert {:ok, claims} =
+               SalixVoice.StreamToken.verify(token, SystemsClock.system_time(:second))
+
       assert claims["group_id"] == ctx.group_id
       assert claims["carrier_call_id"] == params["CallSid"]
-      assert_receive {:fake_model, _model, {:started, %{audio_format: :pcmu_8k}}}
+      settle_receive({:fake_model, _model, {:started, %{audio_format: :pcmu_8k}}})
     end
 
     test "an unattested caller enters a PIN; wrong PINs lock the number", ctx do
@@ -293,7 +311,10 @@ defmodule SalixWeb.TwilioVoiceTest do
       assert [_, token] = Regex.run(~r|/v1/voice/twilio/stream/([^"]+)"|, body)
 
       ws = SalixWeb.TwilioWebhook.ws_url(SalixWeb.Application.base_url())
-      {:ok, client} = VoiceWsClient.start(ws <> "/v1/voice/twilio/stream/" <> token, self())
+
+      {:ok, client} =
+        VoiceWsClient.start(ws <> "/v1/voice/twilio/stream/" <> token, SystemsRuntime.Proc.self())
+
       VoiceWsClient.send_json(client, %{"event" => "connected", "protocol" => "Call"})
       VoiceWsClient.close(client)
       assert_group_free(ctx.group_id)
@@ -302,7 +323,7 @@ defmodule SalixWeb.TwilioVoiceTest do
     end
   end
 
-  defp assert_group_free(group_id, attempts \\ 50) do
+  defp assert_group_free(group_id, attempts \\ 1500) do
     cond do
       not SalixVoice.group_busy?(group_id) ->
         :ok
@@ -311,7 +332,7 @@ defmodule SalixWeb.TwilioVoiceTest do
         flunk("the Group is still busy")
 
       true ->
-        Process.sleep(20)
+        SystemsClock.sleep(20)
         assert_group_free(group_id, attempts - 1)
     end
   end
@@ -322,11 +343,13 @@ defmodule SalixWeb.TwilioVoiceTest do
     params = call_params(%{"StirVerstat" => "TN-Validation-Passed-A"})
     body = twilio_post("/v1/voice/twilio/incoming", params).body
     [_, token] = Regex.run(~r|/v1/voice/twilio/stream/([^"]+)"|, body)
-    assert_receive {:fake_model, model, {:started, _opts}}
+    settle_receive({:fake_model, model, {:started, _opts}})
     Fake.emit(model, {:started, "sess_" <> stream_sid})
 
     ws = SalixWeb.TwilioWebhook.ws_url(SalixWeb.Application.base_url())
-    {:ok, client} = VoiceWsClient.start(ws <> "/v1/voice/twilio/stream/" <> token, self())
+
+    {:ok, client} =
+      VoiceWsClient.start(ws <> "/v1/voice/twilio/stream/" <> token, SystemsRuntime.Proc.self())
 
     VoiceWsClient.send_json(client, %{
       "event" => "start",
@@ -334,23 +357,24 @@ defmodule SalixWeb.TwilioVoiceTest do
       "start" => %{"streamSid" => stream_sid, "callSid" => params["CallSid"]}
     })
 
-    call = :sys.get_state(model).opts.owner
+    call = :sys.get_state(model, :infinity).opts.owner
     assert_attached(call)
     # Both ends are ready, so the call asks the model to greet the caller.
-    assert_receive {:fake_model, ^model, {:append, :instructions, nil, _greeting}}, 3_000
+    settle_receive({:fake_model, ^model, {:append, :instructions, nil, _greeting}})
     {model, client, params["CallSid"]}
   end
 
   # The caller hears a short notice, the stream closes, and Salix ends the
   # phone call over the Calls API.
   defp assert_revoked_call_ends(ctx, model, client, call_sid) do
-    assert_receive {:fake_model, ^model, {:append, :instructions, nil, notice}}, 2_000
+    settle_receive({:fake_model, ^model, {:append, :instructions, nil, notice}})
     assert notice =~ "revoked"
-    assert_receive {:ws_closed, ^client, _close}, 8_000
+    settle_receive({:ws_closed, ^client, _close})
 
-    assert_receive {:twilio, "/2010-04-01/Accounts/AC123/Calls/" <> ^call_sid <> ".json",
-                    %{"Status" => "completed"}},
-                   3_000
+    settle_receive(
+      {:twilio, "/2010-04-01/Accounts/AC123/Calls/" <> ^call_sid <> ".json",
+       %{"Status" => "completed"}}
+    )
 
     refute SalixVoice.group_busy?(ctx.group_id)
   end
@@ -370,16 +394,16 @@ defmodule SalixWeb.TwilioVoiceTest do
     assert_revoked_call_ends(ctx, model, client, call_sid)
   end
 
-  defp assert_attached(call, attempts \\ 50) do
+  defp assert_attached(call, attempts \\ 1500) do
     cond do
-      is_pid(:sys.get_state(call).socket) ->
+      SystemsRuntime.Proc.is_process(:sys.get_state(call, :infinity).socket) ->
         :ok
 
       attempts == 0 ->
         flunk("the stream did not attach")
 
       true ->
-        Process.sleep(20)
+        SystemsClock.sleep(20)
         assert_attached(call, attempts - 1)
     end
   end
@@ -389,7 +413,7 @@ defmodule SalixWeb.TwilioVoiceTest do
     params = call_params(%{"StirVerstat" => "TN-Validation-Passed-A"})
     body = twilio_post("/v1/voice/twilio/incoming", params).body
     [_, token] = Regex.run(~r|/v1/voice/twilio/stream/([^"]+)"|, body)
-    assert_receive {:fake_model, model, {:started, _opts}}
+    settle_receive({:fake_model, model, {:started, _opts}})
     Fake.emit(model, {:started, "sess_1"})
 
     # Another token is refused before the upgrade.
@@ -400,7 +424,10 @@ defmodule SalixWeb.TwilioVoiceTest do
            ).status == 404
 
     ws = SalixWeb.TwilioWebhook.ws_url(SalixWeb.Application.base_url())
-    {:ok, client} = VoiceWsClient.start(ws <> "/v1/voice/twilio/stream/" <> token, self())
+
+    {:ok, client} =
+      VoiceWsClient.start(ws <> "/v1/voice/twilio/stream/" <> token, SystemsRuntime.Proc.self())
+
     stream_sid = "MZ0001"
 
     VoiceWsClient.send_json(client, %{
@@ -437,30 +464,27 @@ defmodule SalixWeb.TwilioVoiceTest do
       }
     })
 
-    assert_receive {:fake_model, ^model, {:audio, ^caller_audio}}, 2_000
-
+    settle_receive({:fake_model, ^model, {:audio, ^caller_audio}})
     agent_audio = :binary.copy(<<0x55>>, 320)
     Fake.emit(model, {:audio, agent_audio})
 
-    assert_receive {:ws, ^client,
-                    {:json, %{"event" => "media", "streamSid" => ^stream_sid} = media}},
-                   2_000
+    settle_receive(
+      {:ws, ^client, {:json, %{"event" => "media", "streamSid" => ^stream_sid} = media}}
+    )
 
     assert Base.decode64!(media["media"]["payload"]) == agent_audio
 
     Fake.emit(model, :speech_started)
 
-    assert_receive {:ws, ^client, {:json, %{"event" => "clear", "streamSid" => ^stream_sid}}},
-                   2_000
-
+    settle_receive({:ws, ^client, {:json, %{"event" => "clear", "streamSid" => ^stream_sid}}})
     # A call mark reaches Twilio, and Twilio's echo returns to the call.
-    call = :sys.get_state(model).opts.owner
-    socket = :sys.get_state(call).socket
-    send(socket, {:voice_call, :mark, "greeting-done"})
+    call = :sys.get_state(model, :infinity).opts.owner
+    socket = :sys.get_state(call, :infinity).socket
+    SystemsRuntime.Proc.send(socket, {:voice_call, :mark, "greeting-done"})
 
-    assert_receive {:ws, ^client,
-                    {:json, %{"event" => "mark", "mark" => %{"name" => "greeting-done"}}}},
-                   2_000
+    settle_receive(
+      {:ws, ^client, {:json, %{"event" => "mark", "mark" => %{"name" => "greeting-done"}}}}
+    )
 
     :erlang.trace(call, true, [:receive])
 
@@ -470,13 +494,12 @@ defmodule SalixWeb.TwilioVoiceTest do
       "mark" => %{"name" => "greeting-done"}
     })
 
-    assert_receive {:trace, ^call, :receive, {:voice_carrier, :mark_played, "greeting-done"}},
-                   2_000
-
+    settle_receive({:trace, ^call, :receive, {:voice_carrier, :mark_played, "greeting-done"}})
     :erlang.trace(call, false, [:receive])
 
     # A second socket with the same token is refused: one socket per call.
-    {:ok, replay} = VoiceWsClient.start(ws <> "/v1/voice/twilio/stream/" <> token, self())
+    {:ok, replay} =
+      VoiceWsClient.start(ws <> "/v1/voice/twilio/stream/" <> token, SystemsRuntime.Proc.self())
 
     VoiceWsClient.send_json(replay, %{
       "event" => "start",
@@ -484,7 +507,7 @@ defmodule SalixWeb.TwilioVoiceTest do
       "start" => %{"streamSid" => "MZ0002", "callSid" => params["CallSid"]}
     })
 
-    assert_receive {:ws_closed, ^replay, {1008, _}}, 2_000
+    settle_receive({:ws_closed, ^replay, {1008, _}})
 
     VoiceWsClient.send_json(client, %{
       "event" => "stop",
@@ -492,8 +515,8 @@ defmodule SalixWeb.TwilioVoiceTest do
       "stop" => %{"callSid" => params["CallSid"]}
     })
 
-    assert_receive {:fake_model, ^model, :close}, 2_000
-    assert_receive {:ws_closed, ^client, _close}, 5_000
+    settle_receive({:fake_model, ^model, :close})
+    settle_receive({:ws_closed, ^client, _close})
     # The caller hung up; Salix does not also end the call over REST.
     refute_received {:twilio, "/2010-04-01/" <> _, _}
   end
@@ -517,10 +540,11 @@ defmodule SalixWeb.TwilioVoiceTest do
       assert started.status == 200
       assert started.body == %{"e164" => @caller, "line" => @line, "status" => "pending"}
 
-      assert_receive {:twilio, "/v2/Services/VA123/Verifications",
-                      %{"To" => @caller, "Channel" => "sms"}}
+      settle_receive(
+        {:twilio, "/v2/Services/VA123/Verifications", %{"To" => @caller, "Channel" => "sms"}}
+      )
 
-      Application.put_env(:salix_web, :twilio_stub_replies, %{
+      SystemsRuntime.put_env(:salix_web, :twilio_stub_replies, %{
         "VerificationCheck" => {200, %{"status" => "pending"}}
       })
 
@@ -531,7 +555,7 @@ defmodule SalixWeb.TwilioVoiceTest do
 
       assert wrong.status == 422
 
-      Application.put_env(:salix_web, :twilio_stub_replies, %{
+      SystemsRuntime.put_env(:salix_web, :twilio_stub_replies, %{
         "VerificationCheck" => {200, %{"status" => "approved"}}
       })
 
@@ -545,8 +569,9 @@ defmodule SalixWeb.TwilioVoiceTest do
       assert [%{"e164" => @caller, "line" => @line, "pin_configured" => false}] =
                checked.body["numbers"]
 
-      assert_receive {:twilio, "/v2/Services/VA123/VerificationCheck",
-                      %{"To" => @caller, "Code" => "123456"}}
+      settle_receive(
+        {:twilio, "/v2/Services/VA123/VerificationCheck", %{"To" => @caller, "Code" => "123456"}}
+      )
 
       # Another Group cannot bind the same caller on the same line.
       other =

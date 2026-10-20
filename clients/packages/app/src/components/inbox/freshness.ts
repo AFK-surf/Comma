@@ -1,4 +1,4 @@
-import type { ProductInboxItem, ProductInboxListSource } from "@comma/native-bridge";
+import type { ProductInboxItem, ProductInboxListSource } from "@comma/core-client";
 
 export type ProductFreshness = NonNullable<ProductInboxItem["freshness"]>;
 

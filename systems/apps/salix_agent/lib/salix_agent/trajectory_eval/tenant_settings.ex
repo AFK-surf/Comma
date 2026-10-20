@@ -38,7 +38,7 @@ defmodule SalixAgent.TrajectoryEval.TenantSettings do
 
   @doc "The configured implementation module, or nil."
   @spec impl() :: module() | nil
-  def impl, do: Application.get_env(:salix_agent, :trajectory_eval_tenant_mod)
+  def impl, do: SystemsRuntime.get_env(:salix_agent, :trajectory_eval_tenant_mod)
 
   @doc """
   Resolve a tenant's overrides as a three-way result (see the moduledoc). Never

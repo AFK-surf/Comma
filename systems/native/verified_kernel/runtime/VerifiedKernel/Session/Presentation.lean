@@ -1,25 +1,25 @@
 import VerifiedKernel.Session.Query.Repair
-import VerifiedKernel.Session.FailureOutcome
 import VerifiedKernel.Grapheme
 import VerifiedKernel.AgentLoop.Policy
+import VerifiedKernel.Provider.Messages
 
 namespace VerifiedKernel.Session.Presentation
 open Data
 open ReplyQuery (policyValue nonNegInt)
 open RepairQuery (stringValue presentString pendingResult failureResult)
 
-private def set (data : Term) (key : String) (item : Term) : Term :=
+def set (data : Term) (key : String) (item : Term) : Term :=
   data.put (if data.has (b key) then b key else a key) item
 
-private def drop (data : Term) (keys : List String) : KernelM Term :=
+def drop (data : Term) (keys : List String) : KernelM Term :=
   keys.foldlM (fun data key => do remove (← remove data (a key)) (b key)) data
 
-private def flushText (run : ByteArray) (limit : Nat) : ByteArray × Nat :=
+def flushText (run : ByteArray) (limit : Nat) : ByteArray × Nat :=
   let text := (String.fromUTF8? run).getD ""
   let kept := Grapheme.takeString text limit
   (kept.toUTF8, Grapheme.countString kept)
 
-private def takeMixed (raw : ByteArray) : Nat → Nat → Nat → ByteArray → ByteArray → ByteArray
+def takeMixed (raw : ByteArray) : Nat → Nat → Nat → ByteArray → ByteArray → ByteArray
   | 0, _, limit, run, result => result ++ (flushText run limit).1
   | fuel + 1, offset, limit, run, result =>
     if offset ≥ raw.size then result ++ (flushText run limit).1 else
@@ -34,7 +34,7 @@ private def takeMixed (raw : ByteArray) : Nat → Nat → Nat → ByteArray → 
         if count ≥ limit then result else
           takeMixed raw fuel (offset + 1) (limit - count - 1) ByteArray.empty (result.push (raw.data[offset]?.getD 0))
 
-private def summary (value : Term) : Term :=
+def summary (value : Term) : Term :=
   match RepairQuery.presentString value with
   | .binary raw =>
     match String.fromUTF8? raw with
@@ -66,26 +66,36 @@ def label (result : Term) : KernelM Term := do
   let visibility := if ← failureResult result then b "model_only" else b "none"
   drop (set result "diagnostic_visibility" visibility) ["public_summary"]
 
-private def repairBudget : KernelM Term := do
+def repairBudget : KernelM Term := do
   let configured ← observe (.tuple [a "config", a "salix_agent", a "visible_reply_repair_budget", i 2])
   return if configured.isInteger && integerValue configured > 0 then configured else i 2
 
-private def failedTransition (attempts : Term) : KernelM Term := do
+def failedTransition (attempts : Term) : KernelM Term := do
   let next ← add attempts (i 1)
   let budget ← repairBudget
   return .tuple [if ← atMost budget next then a "exhausted" else a "required", next]
 
-private def acceptable (result : Term) : KernelM Bool := do
+/-- The guidance answer to a model call of `get_runtime_message`, the name the
+runtime uses to show its own messages. No tool ran, so it is not a tool
+failure: it neither opens repair nor uses a repair attempt. The runaway guard
+still counts its round as non-settling. -/
+def runtimeMessageCall (result : Term) : KernelM Bool := do
+  return result.isMap && (← stringValue result "status") == b "guidance" &&
+    (← stringValue result "name") == b VerifiedKernel.Provider.Messages.runtimeToolName
+
+def acceptable (result : Term) : KernelM Bool := do
   if ← pendingResult result then return false
   if (← stringValue result "repair_outcome") == b "contained_scheduled_task_failure" then return true
   if ← userReportable result then return true
   return !(← modelOnly result) && !(← failureResult result)
 
-def transition (phase : Term) (results : List Term) : KernelM Term := do
+def transition (phase : Term) (all : List Term) : KernelM Term := do
+  let results ← all.filterM (fun result => return !(← runtimeMessageCall result))
   if phase == a "clean" then
     let privateResults ← results.mapM privateResult
     return if privateResults.any id then .tuple [a "required", i 0] else a "none"
   let .tuple [.atom "repair_required", attempts] := phase | fail "function_clause"
+  if results.isEmpty && !all.isEmpty then return .tuple [a "required", attempts]
   if (← results.mapM pendingResult).any id then return .tuple [a "required", attempts]
   if !results.isEmpty && (← results.mapM acceptable).all id then return a "completed"
   failedTransition attempts
@@ -112,7 +122,7 @@ def transitionEvents (transition sessionId hwm : Term) : KernelM (List Term) := 
     .map [(b "type", b "ack"), (b "session_id", sessionId), (b "last_ack_message_id", hwm)],
     .map [(b "type", b "status"), (b "session_id", sessionId), (b "status", b "idle")]]
 
-private def preserveRequired (facts sessionId attempts diagnostic : Term) : KernelM (List Term) := do
+def preserveRequired (facts sessionId attempts diagnostic : Term) : KernelM (List Term) := do
   let hwm ← maximum (← maximum (facts.get (b "next_hwm")) (facts.get (b "repair_diagnostic_hwm"))) (nonNegInt diagnostic)
   let events ← transitionEvents (.tuple [a "required", attempts]) sessionId hwm
   let revision ← add (facts.get (b "repair_revision")) (i 1)
@@ -161,112 +171,36 @@ def recoveredCompletion (state args : Term) : KernelM Term := do
     return ← asyncCompletion state (.tuple [list events, first, hwm])
   return list (events ++ (← transitionEvents (← transition phase results) (← field state "session_id") hwm))
 
-private def legacyFailure (message : Term) : KernelM Bool := do
-  let .binary kind ← stringValue message "type" | fail "badarg"
-  return (← stringValue message "role") == b "runtime" &&
-    ((kind.size ≥ 7 && kind.extract (kind.size - 7) kind.size == "_failed".toUTF8) ||
-      ![nil, list []].contains (policyValue message "failed_tool_calls") ||
-      policyValue message "failed_llm_call" != nil)
-
--- The conditions below read fields only while the answer is open, like the
--- short-circuit `&&` and `||` of `VisibleReplyPolicy`. A `(← _)` inside `&&`
--- would read every field of every message.
-private def privateDiagnostic (message : Term) : KernelM Bool := do
-  if !message.isMap then return false
-  if ![b "tool", b "runtime"].contains (← stringValue message "role") then return false
-  if ← userReportable message then return false
-  if ← repairOrigin message then return true
-  if ← modelOnly message then return true
-  if ← failureResult message then return true
-  legacyFailure message
-
-private def sensitiveFields : List String := ["source_refs", "reason", "failed_tool_calls",
+def sensitiveFields : List String := ["source_refs", "reason", "failed_tool_calls",
   "pending_external_callback_tool_calls", "failed_llm_call", "input", "output", "error_class",
   "error_message", "guidance_reason", "repair_outcome", "provider_meta"]
 
-private def sanitizePublic (message : Term) : KernelM Term := do
-  if !message.isMap || ![b "tool", b "runtime"].contains (← stringValue message "role") ||
-      !(← userReportable message) then return message
+/-- The header that marks a private diagnostic in a request. -/
+def privateHeader : ByteArray := "[private diagnostic]\n".toUTF8
+
+/-- The request projection of one tool or runtime message. A user-reportable
+failure shows only its public summary. A model-only diagnostic keeps its
+content behind a header that tells the model it is private. -/
+def sanitizePublic (message : Term) : KernelM Term := do
+  if !message.isMap || ![b "tool", b "runtime"].contains (← stringValue message "role") then return message
+  if ← modelOnly message then
+    let .binary content := policyValue message "content" | return message
+    if content.extract 0 privateHeader.size == privateHeader then return message
+    return set message "content" (.binary (privateHeader ++ content))
+  if !(← userReportable message) then return message
   let publicSummary := summary (policyValue message "public_summary")
   let some content ← Json.encode (.map [(b "status", b "error"), (b "public_summary", publicSummary)])
     | fail "invalid_term"
   drop (set (set message "content" (.binary content)) "summary" publicSummary) sensitiveFields
 
-/-- The content that replaces a private diagnostic after repair. It keeps the
-result state and the closed facts of `FailureOutcome`, never diagnostic text.
-A failure must not read as a success. -/
-private def retainedContent (message : Term) : KernelM Term := do
-  if ← pendingResult message then return b "{\"status\":\"running\"}"
-  -- `label` marks only failures `model_only`. A private message without a
-  -- failure mark or with a structural `completed` status is a success, for
-  -- example a send made during repair.
-  let status ← stringValue message "status"
-  let failed := (← failureResult message) || (← legacyFailure message) ||
-    ((← modelOnly message) && status != b "completed")
-  if !failed then return b "{\"status\":\"completed\"}"
-  let guidance := status == b "guidance"
-  let kind := if (← stringValue message "role") == b "runtime" then policyValue message "type" else nil
-  let record := FailureOutcome.record (policyValue message "error_class")
-    (policyValue message "guidance_reason") kind guidance
-  let some content ← Json.encode record | fail "invalid_term"
-  return .binary content
+/-- The request projection of messages. Each message is shown as it was
+committed, with the public summary or private header above: the projection of
+a message reads only that message, so it never changes when later messages or
+the reply phase change. -/
+def sanitizeContext (messages : List Term) : KernelM Term :=
+  return list (← messages.mapM sanitizePublic)
 
-/-- Redacted arguments of a call whose result was a private diagnostic. The
-target tool name survives when it is a valid identifier. -/
-private def redactedArgs (call : Term) : KernelM Term := do
-  let args := policyValue call "args"
-  let target := if (← stringValue call "name") == b "call" && args.isMap then
-      FailureOutcome.token? (policyValue args "tool") 128 true else none
-  return .map ((target.map (fun tool => (b "tool", b tool))).toList ++
-    [(b "repair_context", b "redacted")])
-
-private def sanitizeClean (message : Term) (ids : List Term) : KernelM Term := do
-  if !message.isMap then return message
-  if ← privateDiagnostic message then
-    if (← stringValue message "guidance_reason") == b "information_flow" then return message
-    return ← drop (set (set message "content" (← retainedContent message)) "diagnostic_visibility" (b "model_only"))
-      (sensitiveFields ++ ["summary", "error", "public_summary"])
-  let role ← stringValue message "role"
-  if [b "tool", b "runtime"].contains role then
-    if ← userReportable message then return ← sanitizePublic message
-  if role != b "assistant" then return message
-  let calls := policyValue message "tool_calls"
-  let repair := (← stringValue message "visible_reply_phase") == b "repair"
-  let hasPrivate ← if repair || !calls.isList then pure false
-    else (← (← asList calls).mapM (fun call => return ids.contains (← stringValue call "id"))).any id |> pure
-  if repair || hasPrivate then
-    let message := set message "content" (b "")
-    let message ← if calls.isList then do
-      let redacted ← (← asList calls).mapM (fun call => do
-        if ids.contains (← stringValue call "id") then return set call "args" (← redactedArgs call)
-        return call)
-      pure (set message "tool_calls" (list redacted))
-      else pure message
-    drop message ["provider_meta"]
-  else pure message
-
-/-- The tool call ids of private diagnostic tool results, newest first. -/
-private def privateToolCallIds (messages : List Term) : KernelM (List Term) :=
-  messages.foldlM (fun ids message => do
-    if (← stringValue message "role") != b "tool" then return ids
-    if !(← privateDiagnostic message) then return ids
-    if (← stringValue message "guidance_reason") == b "information_flow" then return ids
-    let id ← stringValue message "tool_call_id"
-    return if id == b "" then ids else id :: ids) []
-
-/-- `sanitizeContext messages phase` restricted to `selected`, a sublist of
-`messages`: the private tool call ids still come from every message. -/
-def sanitizeSelected (messages selected : List Term) (phase : Term) : KernelM Term := do
-  if required phase then return list (← selected.mapM sanitizePublic)
-  let ids ← privateToolCallIds messages
-  return list (← selected.mapM (fun message => sanitizeClean message ids))
-
-def sanitizeContext (messages : List Term) (phase : Term) : KernelM Term := do
-  if required phase then return list (← messages.mapM sanitizePublic)
-  let ids ← privateToolCallIds messages
-  return list (← messages.mapM (fun message => sanitizeClean message ids))
-
-private def stampOrigin (result phase : Term) : KernelM Term := do
+def stampOrigin (result phase : Term) : KernelM Term := do
   if !result.isMap || !required phase then return result
   let result := set result "visible_reply_origin" (b "repair")
   let events := policyValue result "events"
@@ -310,11 +244,6 @@ def policy (args : Term) : KernelM Term := do
     let .tuple [calls, phase] := args | fail "function_clause"
     if !required phase then return calls
     return list ((← asList calls).map (fun call => call.put (a "args") empty |>.put (b "args") empty))
-  if operation == a "append_repair_reminder" then
-    let .tuple [messages, phase] := args | fail "function_clause"
-    if !required phase then return messages
-    let reminder := b "A private tool diagnostic requires repair. Keep private diagnostics private and do not quote or expose them. Use the currently disclosed tools as needed; calls execute normally and return their real results or receipts. A successful terminal tool result completes repair, while a pending or failed result keeps repair active. Plain text, blank output, and end_turn cannot settle it."
-    return list ((← asList messages) ++ [.map [(a "role", b "summary"), (a "content", reminder)]])
   if operation == a "label_result" then return ← label args
   if operation == a "model_only_result?" then return Term.bool (← modelOnly args)
   if operation == a "user_reportable_result?" then return Term.bool (← userReportable args)
@@ -331,9 +260,7 @@ def policy (args : Term) : KernelM Term := do
   if operation == a "transition_events" then
     let .tuple [decision, sessionId, hwm] := args | fail "function_clause"
     return list (← transitionEvents decision sessionId hwm)
-  if operation == a "sanitize_context" then
-    let .tuple [messages, phase] := args | fail "function_clause"
-    return ← sanitizeContext (← asList messages) phase
+  if operation == a "sanitize_context" then return ← sanitizeContext (← asList args)
   fail "function_clause"
 
 def containedFailure (results : List Term) : KernelM Bool := do
@@ -342,7 +269,7 @@ def containedFailure (results : List Term) : KernelM Bool := do
     b "scheduled_task_failure_pending", b "scheduled_task_failure_failed"].contains outcome)
   return !scheduled.isEmpty && scheduled.all (· == b "contained_scheduled_task_failure")
 
-private def outputPreparation (state args : Term) : KernelM Term := do
+def outputPreparation (state args : Term) : KernelM Term := do
   let .tuple [phase, terminal] := args | fail "function_clause"
   let repair := required phase
   let count ← ReplyQuery.blockingObligationCount state
@@ -353,7 +280,7 @@ private def outputPreparation (state args : Term) : KernelM Term := do
     else .map [(b "status", b "accepted"), (b "outcome", terminal)]
   return .tuple [body, list (if repair then [] else [a "draft_clear"])]
 
-private def finishOutput (state args : Term) : KernelM Term := do
+def finishOutput (state args : Term) : KernelM Term := do
   let .tuple [leading, assistant, hwm, phase, terminal, unsettled] := args | fail "function_clause"
   let sessionId ← field state "session_id"
   let idle := Term.map [(b "type", b "status"), (b "session_id", sessionId), (b "status", b "idle")]
@@ -375,7 +302,7 @@ private def finishOutput (state args : Term) : KernelM Term := do
       Term.tuple [a "report", b "repair_failed"], .tuple [a "activity", a "llm_failed"], .tuple [a "activity", a "idle"]] else []
   return result events (if exhausted then a "final" else a "round_boundary") effects false
 
-private def outputCommitted (state args : Term) : KernelM Term := do
+def outputCommitted (state args : Term) : KernelM Term := do
   let .tuple [plan, onboarding] := args | fail "function_clause"
   let outcome := plan.get (a "outcome")
   let outcome ← if onboarding.truthy then pure (a "completed")
@@ -396,7 +323,7 @@ def finishToolBatch (state args : Term) : KernelM Term := do
     else pure (if wait.truthy then [idle] else [])
   return .tuple [a "ok", list (events ++ extra), hwm]
 
-private def toolContinuation (_state args : Term) : KernelM Term := do
+def toolContinuation (_state args : Term) : KernelM Term := do
   let .tuple [park, terminal, async, wait, results, checkpoint] := args | fail "function_clause"
   let exhausted := match checkpoint with | .tuple [.atom "exhausted", _] => true | _ => false
   return a (VerifiedKernel.AgentLoop.Policy.continuation park.truthy terminal.truthy

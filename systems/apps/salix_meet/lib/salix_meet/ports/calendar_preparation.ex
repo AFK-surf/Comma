@@ -4,7 +4,7 @@ defmodule SalixMeet.Ports.CalendarPreparation do
   @callback write(plan :: map()) :: {:ok, map()} | {:error, term()}
 
   def write(plan) do
-    Application.get_env(:salix_meet, :calendar_preparation_mod, __MODULE__.None).write(plan)
+    SystemsRuntime.get_env(:salix_meet, :calendar_preparation_mod, __MODULE__.None).write(plan)
   end
 
   defmodule None do

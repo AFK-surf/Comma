@@ -5,11 +5,17 @@ defmodule SalixIM.Provider.Slack.SearchQuery do
   Juxtaposition is AND. `OR` combines AND-groups. `-term` and `-"phrase"`
   exclude from the whole query. Matching is case-insensitive at read time.
   Modifiers this index does not implement still fail closed.
+
+  The `:feishu` dialect is the same grammar for `im_api.feishu.search_messages`
+  with Feishu identifiers: `from:` takes an `ou_…` open_id or `cli_…` app id and
+  `in:` an `oc_…` chat id, both kept as written.
   """
 
   @max_terms 8
   @from_id ~r/\A[UBAuba][A-Za-z0-9]{8,}\z/
   @channel_id ~r/\A[CGDcgd][A-Za-z0-9]{8,}\z/
+  @feishu_from_id ~r/\A(?:ou|cli)_[A-Za-z0-9]{4,64}\z/
+  @feishu_chat_id ~r/\Aoc_[A-Za-z0-9]{4,64}\z/
   @date ~r/\A(\d{4})-(\d{2})-(\d{2})\z/
 
   @type parsed :: %{
@@ -22,15 +28,17 @@ defmodule SalixIM.Provider.Slack.SearchQuery do
           has_file: boolean()
         }
 
-  @spec parse(term()) :: {:ok, parsed()} | {:error, String.t()}
-  def parse(query) when is_binary(query) do
+  @spec parse(term(), :slack | :feishu) :: {:ok, parsed()} | {:error, String.t()}
+  def parse(query, dialect \\ :slack)
+
+  def parse(query, dialect) when is_binary(query) and dialect in [:slack, :feishu] do
     case String.trim(query) do
       "" -> {:error, "query required"}
-      trimmed -> tokenize(trimmed) |> compile()
+      trimmed -> tokenize(trimmed) |> compile(dialect)
     end
   end
 
-  def parse(_query), do: {:error, "query required"}
+  def parse(_query, _dialect), do: {:error, "query required"}
 
   defp tokenize(query), do: tokenize(query, [])
 
@@ -62,10 +70,11 @@ defmodule SalixIM.Provider.Slack.SearchQuery do
   defp classify_token(token) when token in ["OR", "or", "Or"], do: :or
   defp classify_token(token), do: {:token, token}
 
-  defp compile({:error, reason}), do: {:error, reason}
+  defp compile({:error, reason}, _dialect), do: {:error, reason}
 
-  defp compile({:ok, tokens}) do
+  defp compile({:ok, tokens}, dialect) do
     empty = %{
+      dialect: dialect,
       clause: [],
       clauses: [],
       exclude_terms: [],
@@ -79,7 +88,7 @@ defmodule SalixIM.Provider.Slack.SearchQuery do
     with {:ok, parsed} <- Enum.reduce_while(tokens, {:ok, empty}, &take_token/2),
          {:ok, parsed} <- finish_clauses(parsed),
          :ok <- validate(parsed) do
-      {:ok, Map.drop(parsed, [:clause])}
+      {:ok, Map.drop(parsed, [:clause, :dialect])}
     end
   end
 
@@ -165,7 +174,10 @@ defmodule SalixIM.Provider.Slack.SearchQuery do
       parsed.actor_id != nil ->
         {:halt, {:error, "from: may be used once"}}
 
-      Regex.match?(@from_id, id) ->
+      parsed.dialect == :feishu and Regex.match?(@feishu_from_id, id) ->
+        {:cont, {:ok, %{parsed | actor_id: id}}}
+
+      parsed.dialect == :slack and Regex.match?(@from_id, id) ->
         {:cont, {:ok, %{parsed | actor_id: canonical_id(id)}}}
 
       true ->
@@ -180,8 +192,14 @@ defmodule SalixIM.Provider.Slack.SearchQuery do
       parsed.channel_id != nil ->
         {:halt, {:error, "in: may be used once"}}
 
-      Regex.match?(@channel_id, id) ->
+      parsed.dialect == :feishu and Regex.match?(@feishu_chat_id, id) ->
+        {:cont, {:ok, %{parsed | channel_id: id}}}
+
+      parsed.dialect == :slack and Regex.match?(@channel_id, id) ->
         {:cont, {:ok, %{parsed | channel_id: canonical_id(id)}}}
+
+      parsed.dialect == :feishu ->
+        {:halt, {:error, "in: requires a chat id (oc_…); resolve names with feishu.list_chats"}}
 
       true ->
         {:halt,

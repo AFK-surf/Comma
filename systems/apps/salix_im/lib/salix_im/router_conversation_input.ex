@@ -11,6 +11,7 @@ defmodule SalixIM.RouterConversationInput do
   alias SalixIM.{
     ControlCommand,
     ConversationIds,
+    ModelMentionTask,
     ConversationInput,
     ConversationServer,
     Conversations,
@@ -85,20 +86,21 @@ defmodule SalixIM.RouterConversationInput do
         attrs = stringify(attrs)
         command_text = command_text(attrs["content"])
         command? = ControlCommand.parse(command_text) != :none
+        # A message naming a model starts a Task with it instead of the Router's turn.
+        model_task =
+          if command?,
+            do: :none,
+            else: ModelMentionTask.parse(said_text(attrs["content"]), attrs["content"])
 
         message =
-          attrs
-          |> stringify()
-          |> Map.put("participant_id", conversation["user_participant_id"])
-          |> Map.put("actor_type", "user")
-          |> Map.put_new("user_id", "current")
-          |> Map.put("delivery_filter", %{
-            "participant_ids" =>
-              if(command?, do: [], else: [conversation["router_participant_id"]])
-          })
-          |> Map.update("metadata", %{"source" => "group_router"}, fn metadata ->
-            metadata |> stringify() |> Map.put("source", "group_router")
-          end)
+          user_message(
+            conversation,
+            attrs,
+            if(command? or model_task != :none,
+              do: [],
+              else: [conversation["router_participant_id"]]
+            )
+          )
 
         with {:ok, result} <-
                ConversationServer.append_group_conversation_message(
@@ -129,24 +131,49 @@ defmodule SalixIM.RouterConversationInput do
             end
           end
 
+          with {:ok, mention} <- model_task,
+               true <- result["inserted"] == true do
+            ModelMentionTask.start(
+              group_id,
+              conversation,
+              result["message_id"],
+              attrs["user_id"],
+              mention
+            )
+          end
+
           {:ok, result}
         end
       end
     end)
   end
 
+  defp user_message(conversation, attrs, participant_ids) do
+    attrs
+    |> Map.put("participant_id", conversation["user_participant_id"])
+    |> Map.put("actor_type", "user")
+    |> Map.put_new("user_id", "current")
+    |> Map.put("delivery_filter", %{"participant_ids" => participant_ids})
+    |> Map.update("metadata", %{"source" => "group_router"}, fn metadata ->
+      Map.put(metadata, "source", "group_router")
+    end)
+  end
+
   # Provider adapters have already checked the sender and sealed its provenance.
   # The owner persists these facts with the Message, before any Session admission.
   def append_provider_input(group_id, source_message_id, payload, metadata \\ %{}) do
-    with {:ok, conversation} <- ensure(group_id) do
-      ConversationServer.append_provider_input(
-        group_id,
-        conversation["conversation_id"],
-        conversation["router_participant_id"],
-        source_message_id,
-        payload,
-        metadata
-      )
+    with {:ok, conversation} <-
+           SalixIM.QQTiming.measure("conversation_ensure", fn -> ensure(group_id) end) do
+      SalixIM.QQTiming.measure("conversation_append", fn ->
+        ConversationServer.append_provider_input(
+          group_id,
+          conversation["conversation_id"],
+          conversation["router_participant_id"],
+          source_message_id,
+          payload,
+          metadata
+        )
+      end)
     end
   end
 
@@ -163,12 +190,16 @@ defmodule SalixIM.RouterConversationInput do
 
   defp command_text(_), do: ""
 
+  # What the person wrote: the app sends its words as one string.
+  defp said_text(content) when is_binary(content), do: content
+  defp said_text(content), do: command_text(content)
+
   @spec desired_spec(String.t()) :: {:ok, map()} | {:error, term()}
   def desired_spec(group_id) do
     with {:ok, group} <- GroupDirectory.get_group(group_id),
          {:ok, router_agent} <- router_agent(group),
          {:ok, conversation_id} <- ConversationIds.group_router(group) do
-      timestamp = group["created_at"] || System.system_time(:millisecond)
+      timestamp = group["created_at"] || SystemsClock.system_time(:millisecond)
 
       {:ok,
        %{

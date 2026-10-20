@@ -1,12 +1,12 @@
 defmodule SystemsObservability.Runtime do
   @moduledoc false
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
   @retry_ms 5_000
 
-  def start_link(_opts), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
+  def start_link(_opts), do: SystemsRuntime.Server.start_link(__MODULE__, nil, name: __MODULE__)
 
   @impl true
   def init(nil) do
@@ -26,7 +26,7 @@ defmodule SystemsObservability.Runtime do
 
   @impl true
   def terminate(_reason, pid) when is_pid(pid) do
-    if Process.alive?(pid), do: Supervisor.stop(pid, :shutdown)
+    if Process.alive?(pid), do: SystemsRuntime.Supervisor.stop(pid, :shutdown)
     :ok
   end
 
@@ -52,7 +52,7 @@ defmodule SystemsObservability.Runtime do
       SystemsObservability.EctoHandler
     ]
 
-    case Supervisor.start_link(children, strategy: :one_for_one) do
+    case SystemsRuntime.Supervisor.start_link(children, strategy: :one_for_one) do
       {:ok, pid} ->
         pid
 
@@ -72,7 +72,7 @@ defmodule SystemsObservability.Runtime do
 
   defp unavailable do
     Logger.warning("systems_observability.runtime.unavailable", error_class: "internal")
-    Process.send_after(self(), :retry, @retry_ms)
+    SystemsClock.send_after(self(), :retry, @retry_ms)
     :ok
   end
 

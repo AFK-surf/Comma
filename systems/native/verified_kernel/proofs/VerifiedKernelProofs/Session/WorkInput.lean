@@ -13,8 +13,8 @@ theorem inputEvent_binary_keys {session source payload now event : Term} {j r : 
   rw [pure_ok h]
   exact compact_binary_keys _
 
-theorem preInputEvent_binary_keys (session payload : Term) :
-    BinaryKeys (Command.preInputEvent session payload) := compact_binary_keys _
+theorem preInputEvent_binary_keys (session activationSource payload : Term) :
+    BinaryKeys (Command.preInputEvent session activationSource payload) := compact_binary_keys _
 
 theorem initialAttrs_binary_keys {payload attrs : Term} {j r : List Term}
     (h : Command.initialAttrs payload j = .ok (attrs, r)) : BinaryKeys attrs := by
@@ -42,6 +42,7 @@ theorem input_generated_keys {s args result : Term} {j r : List Term}
       obtain ⟨time, _, _, h⟩ := bind_ok h
       obtain ⟨attrs, _, attrsRead, h⟩ := bind_ok h
       obtain ⟨event, _, eventRead, h⟩ := bind_ok h
+      obtain ⟨human, _, _, h⟩ := bind_ok h
       refine Or.inr (Or.inr ⟨_, _, _, ?_, h⟩)
       intro current member
       simp only [List.mem_append, List.mem_singleton] at member
@@ -57,7 +58,7 @@ theorem input_generated_keys {s args result : Term} {j r : List Term}
         · simp at created
       · obtain ⟨payload, _, same⟩ := List.mem_map.mp pre
         subst current
-        exact preInputEvent_binary_keys _ _
+        exact preInputEvent_binary_keys _ _ _
       · subst current
         exact inputEvent_binary_keys eventRead
   · exact (fail_ok h).elim

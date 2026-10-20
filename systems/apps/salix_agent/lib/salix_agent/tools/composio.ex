@@ -514,7 +514,7 @@ defmodule SalixAgent.Tools.Composio do
   end
 
   defp client do
-    Application.get_env(:salix_agent, :composio_client_mod, SalixStore.Composio)
+    SystemsRuntime.get_env(:salix_agent, :composio_client_mod, SalixStore.Composio)
   end
 
   # ---- arg helpers (same conventions as SalixAgent.Tools.OAuth) ----

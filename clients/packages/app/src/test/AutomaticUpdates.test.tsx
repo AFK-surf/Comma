@@ -1,13 +1,12 @@
+import type { AppUpdateValue } from "@comma/core-client";
 import type { CommaLocale } from "@comma/i18n";
 import { CommaI18nProvider } from "@comma/i18n/react";
-import type {
-  ApplicationMenuCommand,
-  UpdateAsset,
-  UpdateInfo,
-} from "@comma/native-bridge";
+import type { ApplicationMenuCommand } from "@comma/native-bridge";
+import { flush } from "@comma/test-utils/fake-clock";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { act, fireEvent, render, screen, waitFor } from "@comma/test-utils/render";
-import { Toaster, toast } from "@comma/ui";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import { Toaster, toast } from "@comma/ui/components/toast";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AutomaticUpdates } from "../components/AutomaticUpdates";
@@ -19,31 +18,51 @@ import {
   signedOutSessionSnapshot,
 } from "./sessionHostHarness";
 
-const targetRelease: UpdateAsset = {
-  PackageId: "comma-staging",
-  Version: "0.0.2-staging.abc123",
-  Type: "Full",
-  FileName: "comma-staging-0.0.2-full.nupkg",
-  SHA1: "sha1",
-  SHA256: "sha256",
-  Size: 1024,
-  NotesMarkdown: "",
-  NotesHtml: "",
+const nothing: AppUpdateValue = { downloading: false, ready: null };
+const ready: AppUpdateValue = {
+  downloading: false,
+  ready: { productName: "Comma Staging", version: "0.0.2-staging.abc123" },
 };
 
-const availableUpdate: UpdateInfo = {
-  TargetFullRelease: targetRelease,
-  DeltasToTarget: [],
-  IsDowngrade: false,
-};
+/** The core as this window sees it: the `appUpdate` topic, and what each call answers. */
+function scriptedUpdates(
+  value: AppUpdateValue,
+  calls: (name: string) => unknown = () => null
+) {
+  return createScriptedCore({
+    values: (topic) => (topic.topic === "appUpdate" ? value : undefined),
+    calls,
+  });
+}
+
+function installDesktop(windowId = "win_main") {
+  let invoke: ((id: ApplicationMenuCommand) => void) | undefined;
+  installNativeBridgeMock({
+    platform: "electron",
+    self: { role: "main-window", windowId },
+    applicationMenu: {
+      update: vi.fn(async () => {}),
+      onCommand: (listener) => {
+        invoke = listener;
+        return () => {};
+      },
+    },
+  });
+  return { checkForUpdates: () => act(async () => invoke?.("check-updates")) };
+}
 
 function renderAutomaticUpdates(
-  locale: CommaLocale = "en",
-  controller = createTestSessionHostController({ initial: signedInSessionSnapshot })
+  core: ReturnType<typeof createScriptedCore>,
+  {
+    locale = "en",
+    controller = createTestSessionHostController({ initial: signedInSessionSnapshot }),
+  }: {
+    locale?: CommaLocale;
+    controller?: ReturnType<typeof createTestSessionHostController>;
+  } = {}
 ) {
-  return {
-    controller,
-    ...render(
+  render(
+    core.wrap(
       <StrictMode>
         <CommaSessionHostProvider controller={controller}>
           <CommaI18nProvider locale={locale}>
@@ -52,79 +71,86 @@ function renderAutomaticUpdates(
           </CommaI18nProvider>
         </CommaSessionHostProvider>
       </StrictMode>
-    ),
-  };
+    )
+  );
+  return controller;
 }
 
 describe("AutomaticUpdates", () => {
   afterEach(() => {
     toast.dismissAll();
-    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  it.each(["current", "failed"] as const)(
-    "shows immediate manual-check feedback and the %s outcome",
-    async (outcome) => {
-      let invoke: ((id: ApplicationMenuCommand) => void) | undefined;
-      let resolveCheck!: (value: null) => void;
-      let rejectCheck!: (error: Error) => void;
-      const pending = new Promise<null>((resolve, reject) => {
-        resolveCheck = resolve;
-        rejectCheck = reject;
-      });
-      const check = vi.fn().mockResolvedValueOnce(null).mockReturnValueOnce(pending);
-      installNativeBridgeMock({
-        platform: "electron",
-        self: { role: "main-window", windowId: "win_main" },
-        applicationMenu: {
-          update: vi.fn(async () => {}),
-          onCommand: (listener) => {
-            invoke = listener;
-            return () => {};
-          },
-        },
-        updates: {
-          status: vi.fn(async () => ({ configured: true, currentVersion: "0.0.1" })),
-          check,
-        },
-      });
-      renderAutomaticUpdates();
-      await waitFor(() => expect(check).toHaveBeenCalledTimes(1));
-      await act(async () => invoke?.("check-updates"));
+  it.each([
+    ["current", "You’re up to date"],
+    ["unconfigured", "Updates are not configured for this build"],
+    ["failed", "Could not check for updates"],
+  ] as const)(
+    "shows Check for Updates' progress and the %s outcome",
+    async (outcome, shown) => {
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      let answer!: () => void;
+      const core = scriptedUpdates(nothing, (name) =>
+        name === "appUpdate.check"
+          ? new Promise((resolve, reject) => {
+              answer = () =>
+                outcome === "failed"
+                  ? reject(Object.assign(new Error("offline"), { code: "host" }))
+                  : resolve({ outcome });
+            })
+          : null
+      );
+      const desktop = installDesktop();
+      renderAutomaticUpdates(core);
+      await desktop.checkForUpdates();
       expect(await screen.findByText("Checking for updates…")).toBeInTheDocument();
-      await act(async () => {
-        if (outcome === "current") resolveCheck(null);
-        else rejectCheck(new Error("network offline"));
-      });
-      expect(
-        await screen.findByText(
-          outcome === "current" ? "You’re up to date" : "Could not check for updates"
-        )
-      ).toBeInTheDocument();
+      expect(core.sentTo("appUpdate.check")).toHaveLength(1);
+      await act(async () => answer());
+      expect(await screen.findByText(shown)).toBeInTheDocument();
       await waitFor(() =>
         expect(screen.queryByText("Checking for updates…")).not.toBeInTheDocument()
       );
     }
   );
 
-  it("checks once, downloads an update, and offers to restart", async () => {
-    const status = vi.fn(async () => ({
-      configured: true,
-      currentVersion: "0.0.1-staging.abc123",
-      productName: "Comma Staging",
-    }));
-    const check = vi.fn(async () => availableUpdate);
-    const download = vi.fn(async () => true);
-    const apply = vi.fn(async () => true);
+  it("quietly follows an automatic download and applies only when Restart is pressed", async () => {
+    let finishApply!: () => void;
+    const core = scriptedUpdates(nothing, (name) =>
+      name === "appUpdate.apply"
+        ? new Promise((resolve) => (finishApply = () => resolve({ applied: true })))
+        : null
+    );
+    installDesktop();
+    renderAutomaticUpdates(core);
+    await flush();
+    expect(screen.queryByText("You’re up to date")).not.toBeInTheDocument();
 
-    installNativeBridgeMock({
-      platform: "electron",
-      self: { role: "main-window", windowId: "win_main" },
-      updates: { status, check, download, apply },
-    });
+    await act(async () => core.emit("appUpdate", { downloading: true, ready: null }));
+    expect(screen.queryByText("Downloading update…")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Restart now" })
+    ).not.toBeInTheDocument();
+    await act(async () => core.emit("appUpdate", ready));
+    await flush();
+    expect(screen.getByText("Update ready")).toBeInTheDocument();
+    expect(core.sentTo("appUpdate.check")).toEqual([]);
+    expect(core.sentTo("appUpdate.apply")).toEqual([]);
 
-    renderAutomaticUpdates();
+    const restart = screen.getByRole("button", { name: "Restart now" });
+    fireEvent.click(restart);
+    fireEvent.click(restart);
+    await flush();
+    expect(core.sentTo("appUpdate.apply")).toEqual([{}]);
+    await act(async () => finishApply());
+  });
+
+  it("reports when the downloaded update could not be installed", async () => {
+    const core = scriptedUpdates(ready, (name) =>
+      name === "appUpdate.apply" ? { applied: false } : null
+    );
+    installDesktop();
+    renderAutomaticUpdates(core);
 
     expect(await screen.findByText("Update ready")).toBeInTheDocument();
     expect(
@@ -132,204 +158,113 @@ describe("AutomaticUpdates", () => {
         "Comma Staging 0.0.2-staging.abc123 has been downloaded. Restart to finish installing."
       )
     ).toBeInTheDocument();
-    expect(status).toHaveBeenCalledTimes(1);
-    expect(check).toHaveBeenCalledTimes(1);
-    expect(download).toHaveBeenCalledTimes(1);
-    expect(download).toHaveBeenCalledWith(availableUpdate);
 
     fireEvent.click(screen.getByRole("button", { name: "Restart now" }));
-
-    await waitFor(() => expect(apply).toHaveBeenCalledWith(availableUpdate));
-  });
-
-  it("offers to apply an update that is already pending restart", async () => {
-    const check = vi.fn(async () => null);
-    const download = vi.fn(async () => true);
-    const apply = vi.fn(async () => true);
-
-    installNativeBridgeMock({
-      platform: "electron",
-      self: { role: "main-window", windowId: "win_main" },
-      updates: {
-        status: vi.fn(async () => ({
-          configured: true,
-          currentVersion: "0.0.1",
-          pendingRestart: targetRelease,
-          productName: "Comma",
-        })),
-        check,
-        download,
-        apply,
-      },
-    });
-
-    renderAutomaticUpdates();
-
-    expect(await screen.findByText("Update ready")).toBeInTheDocument();
-    expect(check).not.toHaveBeenCalled();
-    expect(download).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Restart now" }));
-
-    await waitFor(() => expect(apply).toHaveBeenCalledWith(targetRelease));
+    await waitFor(() => expect(core.sentTo("appUpdate.apply")).toHaveLength(1));
+    // The platform could not start it: the window says so.
+    expect(
+      await screen.findByText("Update could not be installed")
+    ).toBeInTheDocument();
   });
 
   it("shows update controls in Simplified Chinese", async () => {
-    installNativeBridgeMock({
-      platform: "electron",
-      self: { role: "main-window", windowId: "win_main" },
-      updates: {
-        status: vi.fn(async () => ({
-          configured: true,
-          currentVersion: "0.0.1",
-          pendingRestart: targetRelease,
-          productName: "Comma",
-        })),
-        check: vi.fn(async () => null),
-        download: vi.fn(async () => true),
-        apply: vi.fn(async () => true),
-      },
-    });
-
-    renderAutomaticUpdates("zh-CN");
+    installDesktop();
+    renderAutomaticUpdates(scriptedUpdates(ready), { locale: "zh-CN" });
 
     expect(await screen.findByText("更新已就绪")).toBeInTheDocument();
     expect(
-      screen.getByText("Comma 0.0.2-staging.abc123 已下载。重启后即可完成安装。")
+      screen.getByText(
+        "Comma Staging 0.0.2-staging.abc123 已下载。重启后即可完成安装。"
+      )
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "立即重启" })).toBeInTheDocument();
-    expect(screen.queryByText("Update ready")).not.toBeInTheDocument();
   });
 
-  it("downloads from the login screen but holds the restart offer until sign-in", async () => {
-    const status = vi.fn(async () => ({
-      configured: true,
-      currentVersion: "0.0.1-staging.abc123",
-      productName: "Comma Staging",
-    }));
-    const check = vi.fn(async () => availableUpdate);
-    const download = vi.fn(async () => true);
-
-    installNativeBridgeMock({
-      platform: "electron",
-      self: { role: "main-window", windowId: "win_main" },
-      updates: { status, check, download, apply: vi.fn(async () => true) },
-    });
-
+  it("holds the restart offer until sign-in, and takes it down when the session ends", async () => {
+    installDesktop();
     const dismiss = vi.spyOn(toast, "dismiss");
-    const controller = createTestSessionHostController({
-      initial: signedOutSessionSnapshot,
+    const controller = renderAutomaticUpdates(scriptedUpdates(ready), {
+      controller: createTestSessionHostController({
+        initial: signedOutSessionSnapshot,
+      }),
     });
-    renderAutomaticUpdates("en", controller);
-
-    // The release lands on disk while the user is still typing their password.
-    await waitFor(() => expect(download).toHaveBeenCalledWith(availableUpdate));
-    expect(status).toHaveBeenCalledTimes(1);
-    expect(check).toHaveBeenCalledTimes(1);
+    await act(async () => {});
     expect(screen.queryByText("Update ready")).not.toBeInTheDocument();
     // Never retire an offer this window has not raised: sonner delivers a
     // dismissal a frame late, and it would land on the toast shown in between.
     expect(dismiss).not.toHaveBeenCalled();
 
     act(() => publishTestSessionSnapshot(controller, signedInSessionSnapshot));
-
-    expect(await screen.findByText("Update ready")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Comma Staging 0.0.2-staging.abc123 has been downloaded. Restart to finish installing."
-      )
-    ).toBeInTheDocument();
-    // Signing in reveals the offer; it does not re-run the check.
-    expect(status).toHaveBeenCalledTimes(1);
-    expect(check).toHaveBeenCalledTimes(1);
-    expect(download).toHaveBeenCalledTimes(1);
-  });
-
-  it("takes the restart offer down when the session ends", async () => {
-    installNativeBridgeMock({
-      platform: "electron",
-      self: { role: "main-window", windowId: "win_main" },
-      updates: {
-        status: vi.fn(async () => ({
-          configured: true,
-          currentVersion: "0.0.1",
-          pendingRestart: targetRelease,
-          productName: "Comma",
-        })),
-        check: vi.fn(async () => null),
-        download: vi.fn(async () => true),
-        apply: vi.fn(async () => true),
-      },
-    });
-
-    const controller = createTestSessionHostController({
-      initial: signedInSessionSnapshot,
-    });
-    renderAutomaticUpdates("en", controller);
-
     expect(await screen.findByText("Update ready")).toBeInTheDocument();
 
     act(() => publishTestSessionSnapshot(controller, signedOutSessionSnapshot));
-
     await waitFor(() =>
       expect(screen.queryByText("Update ready")).not.toBeInTheDocument()
     );
   });
 
-  it("does not check from web or secondary renderer windows", async () => {
-    const webStatus = vi.fn(async () => ({
-      configured: true,
-      currentVersion: "0.0.1",
-    }));
-    installNativeBridgeMock({
-      platform: "web",
-      updates: { status: webStatus },
-    });
+  it("says when Check for Updates waits on a download, and offers it again each time", async () => {
+    let answer!: () => void;
+    const core = scriptedUpdates({ downloading: true, ready: null }, (name) =>
+      name === "appUpdate.check"
+        ? new Promise((resolve) => (answer = () => resolve({ outcome: "ready" })))
+        : null
+    );
+    const desktop = installDesktop();
+    renderAutomaticUpdates(core);
+    await desktop.checkForUpdates();
+    expect(await screen.findByText("Downloading update…")).toBeInTheDocument();
 
-    const webRender = renderAutomaticUpdates();
-    await Promise.resolve();
-    expect(webStatus).not.toHaveBeenCalled();
-    webRender.unmount();
+    core.emit("appUpdate", ready);
+    await act(async () => answer());
+    expect(await screen.findByText("Update ready")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Downloading update…")).not.toBeInTheDocument()
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss notification" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Update ready")).not.toBeInTheDocument()
+    );
 
-    const secondaryStatus = vi.fn(async () => ({
-      configured: true,
-      currentVersion: "0.0.1",
-    }));
-    installNativeBridgeMock({
-      platform: "electron",
-      self: { role: "main-window", windowId: "win_dynamic_1" },
-      updates: { status: secondaryStatus },
-    });
-
-    renderAutomaticUpdates();
-    await Promise.resolve();
-    expect(secondaryStatus).not.toHaveBeenCalled();
+    // The core answers at once now; the window shows the offer again.
+    await desktop.checkForUpdates();
+    await act(async () => answer());
+    expect(await screen.findByText("Update ready")).toBeInTheDocument();
   });
 
-  it("retries transient failures twice without polling indefinitely", async () => {
-    vi.useFakeTimers();
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const status = vi.fn(async () => {
-      throw new Error("temporary network failure");
-    });
+  it("lets the core catch up when the main window comes back", async () => {
+    const core = scriptedUpdates(nothing);
+    installDesktop();
+    renderAutomaticUpdates(core);
+    for (const event of ["focus", "online"])
+      await act(async () => {
+        window.dispatchEvent(new Event(event));
+      });
+    expect(core.sentTo("appUpdate.wake")).toHaveLength(2);
+  });
 
-    installNativeBridgeMock({
-      platform: "electron",
-      self: { role: "main-window", windowId: "win_main" },
-      updates: { status },
-    });
+  it("offers only what its own check found in a secondary window, and nothing on the web", async () => {
+    const core = scriptedUpdates(ready, (name) =>
+      name === "appUpdate.check" ? { outcome: "ready" } : null
+    );
+    const desktop = installDesktop("win_dynamic_1");
+    renderAutomaticUpdates(core);
+    await flush();
+    window.dispatchEvent(new Event("focus"));
+    expect(screen.queryByText("Update ready")).not.toBeInTheDocument();
+    expect(core.sentTo("appUpdate.wake")).toHaveLength(0);
 
-    renderAutomaticUpdates();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(status).toHaveBeenCalledTimes(1);
+    await desktop.checkForUpdates();
+    expect(await screen.findByText("Update ready")).toBeInTheDocument();
+  });
 
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(status).toHaveBeenCalledTimes(2);
-
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(status).toHaveBeenCalledTimes(3);
-
-    await vi.advanceTimersByTimeAsync(10 * 60_000);
-    expect(status).toHaveBeenCalledTimes(3);
+  it("asks the core nothing on the web", async () => {
+    const subscribed: unknown[] = [];
+    const core = createScriptedCore({ onSubscribe: (topic) => subscribed.push(topic) });
+    installNativeBridgeMock({ platform: "web" });
+    renderAutomaticUpdates(core);
+    await act(async () => {});
+    expect(subscribed).toEqual([]);
+    expect(core.sent).toEqual([]);
   });
 });

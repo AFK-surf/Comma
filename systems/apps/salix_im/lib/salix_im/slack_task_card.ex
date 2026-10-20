@@ -4,19 +4,19 @@ defmodule SalixIM.SlackTaskCard do
 
   Tasks render as `task_card`.
 
-  Conversation lifecycle remains authoritative; this module materializes its
-  externally deliverable projection and classifies Slack write evidence. The
-  ordered delivery, receipt-first settlement, quarantine, and crash recovery
-  protocol is modeled in `tla/salix/SlackTaskCard.tla`.
+  Conversation lifecycle remains authoritative. `SalixIM.TaskCardProjection`
+  owns the provider-neutral projection; this module owns the Slack address,
+  layout and write evidence: ordered delivery, receipt-first settlement through
+  signed message metadata, quarantine, and crash recovery.
   """
 
   alias SalixIM.{
-    AgentModelLabel,
     ConversationMessage,
     ConversationServer,
     Conversations,
     MessageRenderer,
-    ProviderConversationInput
+    ProviderConversationInput,
+    TaskCardProjection
   }
 
   alias SalixIM.MessageRenderer.Surface
@@ -24,19 +24,14 @@ defmodule SalixIM.SlackTaskCard do
 
   alias SalixStore.Crypto
 
-  import SalixIM.Provider.Util, only: [int_or: 2, str: 1]
+  import SalixIM.Provider.Util, only: [str: 1]
 
   @kind "slack_task_card"
   @metadata_event_type "comma_task_card_projection"
-  @projection_version 2
+  @projection_version TaskCardProjection.projection_version()
   @render_version 7
-  @lifecycles ~w(active ready_for_review completed failed cancelled escalated)
+  @lifecycles TaskCardProjection.lifecycles()
   @terminal ~w(completed failed cancelled)
-  @content_limit 2_500
-  @timeline_entry_limit 1_200
-  @timeline_details_limit 2
-  @timeline_window_limit 3
-  @initial_timeline_scan_limit 200
   @timestamp ~r/\A\d{1,20}\.\d{1,12}\z/
 
   def metadata_event_type, do: @metadata_event_type
@@ -169,29 +164,11 @@ defmodule SalixIM.SlackTaskCard do
 
   def delivery?(rec), do: get_in(rec, ["participant_payload", "projection"]) == @kind
 
-  def output_message?(%{"actor_type" => "agent"} = message) do
-    str(message["role_label"]) != "delegator" and
-      timeline_message?(message)
-  end
+  defdelegate output_message?(message), to: TaskCardProjection
+  defdelegate timeline_message?(message), to: TaskCardProjection
 
-  def output_message?(_message), do: false
-
-  def timeline_message?(%{"actor_type" => actor_type} = message)
-      when actor_type in ["agent", "user", "provider_user"] do
-    String.trim(ConversationMessage.text_content(message["content"])) != "" and
-      get_in(message, ["metadata", "message_type"]) != "task_command" and
-      nonempty_audience?(message["delivery_filter"]) and
-      nonempty_audience?(message["mentions"])
-  end
-
-  def timeline_message?(_message), do: false
-
-  def participant?(%{
-        "actor_type" => "provider",
-        "provider" => "slack",
-        "role_label" => "task_card"
-      }),
-      do: true
+  def participant?(%{"provider" => "slack"} = participant),
+    do: TaskCardProjection.participant?(participant)
 
   def participant?(_participant), do: false
 
@@ -294,16 +271,6 @@ defmodule SalixIM.SlackTaskCard do
     end
   end
 
-  @spec merge_participant_receipt(map(), map()) :: map()
-  def merge_participant_receipt(
-        %{"payload" => %{"projection" => @kind, "blocked_reason" => reason}} = participant,
-        _receipt
-      )
-      when is_binary(reason) and reason != "",
-      do: participant
-
-  def merge_participant_receipt(participant, receipt), do: Map.merge(participant, receipt)
-
   defp address_authorized?(payload, event) do
     payload["message_ts"] in ["", event["message_ts"]] or
       event["kind"] == "message_metadata_posted"
@@ -339,120 +306,28 @@ defmodule SalixIM.SlackTaskCard do
           conversation["conversation_id"] <> ProviderConversationInput.target_key(target)
         )
 
-    tail_seq =
-      max(int_or(conversation["message_tail_seq"] || conversation["message_count"], 0), 0)
-
-    with {:ok, output} <- initial_output(conversation),
-         {:ok, recent_messages} <- initial_recent_messages(conversation) do
-      payload =
-        %{
-          "task_id" => task_id,
-          "message_ts" => "",
-          "title" => title(conversation["title"]),
-          "lifecycle" => lifecycle(conversation["status"], "active"),
-          "projection_version" => @projection_version,
-          "recent_messages" => recent_messages,
-          "recent_messages_through_seq" => tail_seq,
-          "render_repair_required" => true,
-          "output" => output
-        }
-        |> put_model_label(AgentModelLabel.resolve(conversation["task_worker_agent_id"]))
-        |> Map.put("surface_kind", "task_card")
+    with {:ok, projection} <- TaskCardProjection.initial_payload(conversation) do
+      payload = Map.merge(projection, %{"task_id" => task_id, "message_ts" => ""})
 
       {:ok,
        ProviderConversationInput.provider_participant(target, %{
          "role_label" => "task_card",
-         "delivery_cursor_seq" => tail_seq,
+         "delivery_cursor_seq" => TaskCardProjection.tail_seq(conversation),
          "notification_filter" => %{"messages" => "all", "statuses" => "all"},
          "payload" => payload
        })}
     end
   end
 
-  defp initial_output(%{"task_public_output_message_id" => message_id} = conversation)
-       when is_binary(message_id) do
-    case Conversations.get_group_conversation_message(
-           conversation["agent_group_id"],
-           conversation["conversation_id"],
-           message_id
-         ) do
-      {:ok, message} ->
-        {:ok,
-         message["content"]
-         |> ConversationMessage.text_content()
-         |> String.trim()
-         |> bounded_content()}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp initial_output(_conversation), do: {:ok, ""}
-
-  defp initial_recent_messages(
-         %{
-           "agent_group_id" => group_id,
-           "conversation_id" => conversation_id
-         } = conversation
-       ) do
-    tail_seq = conversation["message_tail_seq"] || conversation["message_count"]
-    recent_messages_through(group_id, conversation_id, max(int_or(tail_seq, 0), 0))
-  end
-
-  defp recent_messages_through(_group_id, _conversation_id, 0), do: {:ok, []}
-
-  defp recent_messages_through(group_id, conversation_id, boundary_seq)
-       when is_integer(boundary_seq) and boundary_seq > 0 do
-    case Conversations.list_group_conversation_messages(group_id, conversation_id,
-           after_seq: max(boundary_seq - @initial_timeline_scan_limit, 0),
-           limit: @initial_timeline_scan_limit
-         ) do
-      {:ok, messages} ->
-        {:ok,
-         messages
-         |> Enum.filter(&(int_or(&1["seq"], 0) <= boundary_seq))
-         |> Enum.filter(&timeline_message?/1)
-         |> Enum.take(-@timeline_window_limit)
-         |> Enum.map(&recent_message/1)}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
   defp refresh_projection_payload(payload, _rec, 1), do: {:ok, payload}
 
-  defp refresh_projection_payload(
-         payload,
-         %{
-           "agent_group_id" => group_id,
-           "conversation_id" => conversation_id
-         } = rec,
-         @projection_version
-       ) do
-    boundary_seq = int_or(rec["message_seq"] || rec["conversation_message_tail_seq"], -1)
-
-    with true <- boundary_seq >= 0,
-         {:ok, recent_messages} <-
-           recent_messages_through(group_id, conversation_id, boundary_seq) do
-      {:ok,
-       payload
-       |> Map.delete("details")
-       |> Map.put("render_repair_required", false)
-       |> Map.put("recent_messages", recent_messages)
-       |> Map.put("recent_messages_through_seq", boundary_seq)}
-    else
-      false -> {:error, :invalid_slack_task_card_projection_boundary}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp refresh_projection_payload(_payload, _rec, @projection_version),
-    do: {:error, :invalid_slack_task_card_projection_boundary}
+  defp refresh_projection_payload(payload, rec, @projection_version),
+    do: TaskCardProjection.refresh(payload, rec)
 
   defp advance(payload, rec, 1) do
-    next_lifecycle = lifecycle(rec["conversation_status"], payload["lifecycle"])
+    next_lifecycle =
+      TaskCardProjection.lifecycle(rec["conversation_status"], payload["lifecycle"])
+
     output = rec["message_content"] |> ConversationMessage.text_content() |> String.trim()
     metadata = rec["message_metadata"] || %{}
 
@@ -466,55 +341,19 @@ defmodule SalixIM.SlackTaskCard do
 
         rec["source_actor_type"] == "agent" and str(rec["source_role_label"]) != "delegator" and
             output != "" ->
-          bounded_content(output)
+          TaskCardProjection.bounded_content(output)
 
         true ->
           payload["output"]
       end
 
     payload
-    |> Map.put("title", title(rec["conversation_title"]))
+    |> Map.put("title", TaskCardProjection.title(rec["conversation_title"]))
     |> Map.put("lifecycle", next_lifecycle)
     |> Map.put("output", next_output)
   end
 
-  defp advance(payload, rec, @projection_version) do
-    payload = normalize_recent_messages(payload)
-    next_lifecycle = lifecycle(rec["conversation_status"], payload["lifecycle"])
-    message_text = rec["message_content"] |> ConversationMessage.text_content() |> String.trim()
-    metadata = rec["message_metadata"] || %{}
-    recent_messages = append_recent_message(payload["recent_messages"], rec, message_text)
-
-    next_output =
-      cond do
-        metadata["task_command"] == true ->
-          ""
-
-        payload["lifecycle"] in @terminal and next_lifecycle == payload["lifecycle"] ->
-          payload["output"]
-
-        rec["source_actor_type"] == "agent" and str(rec["source_role_label"]) != "delegator" and
-            message_text != "" ->
-          bounded_content(message_text)
-
-        true ->
-          payload["output"]
-      end
-
-    payload
-    |> Map.put("title", title(rec["conversation_title"]))
-    |> Map.put("lifecycle", next_lifecycle)
-    |> Map.put("recent_messages", recent_messages)
-    |> Map.put(
-      "recent_messages_through_seq",
-      max(
-        int_or(payload["recent_messages_through_seq"], 0),
-        max(int_or(rec["message_seq"] || rec["conversation_message_tail_seq"], 0), 0)
-      )
-    )
-    |> Map.put("output", next_output)
-    |> Map.put("surface_kind", "task_card")
-  end
+  defp advance(payload, rec, @projection_version), do: TaskCardProjection.advance(payload, rec)
 
   defp surface_status("pending"), do: :pending
   defp surface_status("in_progress"), do: :in_progress
@@ -545,7 +384,7 @@ defmodule SalixIM.SlackTaskCard do
   end
 
   defp render(payload, @projection_version) do
-    {status, status_label} = status_details(payload["lifecycle"])
+    {status, status_label} = TaskCardProjection.status(payload["lifecycle"])
 
     surface =
       %Surface{
@@ -555,8 +394,8 @@ defmodule SalixIM.SlackTaskCard do
         fallback: "Task #{payload["title"]}: #{String.downcase(status_label)}",
         title: payload["title"],
         status: surface_status(status),
-        details: card_details(payload),
-        output: timeline_output(payload)
+        details: TaskCardProjection.details(payload),
+        output: TaskCardProjection.output(payload)
       }
 
     {:ok, rendered} = MessageRenderer.render_surface(SlackMessageRenderer, surface)
@@ -577,7 +416,7 @@ defmodule SalixIM.SlackTaskCard do
   defp normalized_render_payload(payload, 1), do: payload
 
   defp normalized_render_payload(payload, @projection_version),
-    do: normalize_recent_messages(payload)
+    do: TaskCardProjection.normalize(payload)
 
   # Version 2 deliberately retains the deployed version-1 identity. An old
   # ordinal preserves unknown payload fields but can still render and sign this
@@ -614,25 +453,6 @@ defmodule SalixIM.SlackTaskCard do
     block_id(payload, version)
   end
 
-  defp normalize_recent_messages(payload) do
-    recent_messages =
-      payload["recent_messages"]
-      |> List.wrap()
-      |> Enum.map(&normalize_recent_message/1)
-      |> Enum.reject(&is_nil/1)
-      |> Enum.uniq_by(& &1["seq"])
-      |> Enum.sort_by(& &1["seq"])
-      |> Enum.take(-@timeline_window_limit)
-
-    payload
-    |> Map.delete("details")
-    |> Map.put("recent_messages", recent_messages)
-    |> Map.put(
-      "recent_messages_through_seq",
-      max(int_or(payload["recent_messages_through_seq"], 0), 0)
-    )
-  end
-
   defp receipt_projection(payload, @projection_version, %{"render_version" => @render_version}),
     do: Map.put(payload, "render_repair_required", false)
 
@@ -640,109 +460,6 @@ defmodule SalixIM.SlackTaskCard do
     do: Map.put(payload, "render_repair_required", true)
 
   defp receipt_projection(payload, 1, _event), do: payload
-
-  defp append_recent_message(recent_messages, rec, text) do
-    message = if delivery_timeline_message?(rec, text), do: recent_message(rec, text)
-
-    case message do
-      nil ->
-        recent_messages
-
-      message ->
-        recent_messages
-        |> Enum.reject(&(&1["seq"] == message["seq"]))
-        |> Kernel.++([message])
-        |> Enum.sort_by(& &1["seq"])
-        |> Enum.take(-@timeline_window_limit)
-    end
-  end
-
-  defp recent_message(message) do
-    %{
-      "seq" => message["seq"],
-      "role" => timeline_role(message["actor_type"], message["role_label"]),
-      "text" => timeline_text(message["content"])
-    }
-  end
-
-  defp recent_message(%{"message_seq" => seq} = rec, text)
-       when is_integer(seq) and seq > 0 and text != "" do
-    %{
-      "seq" => seq,
-      "role" => timeline_role(rec["source_actor_type"], rec["source_role_label"]),
-      "text" => timeline_text(text)
-    }
-  end
-
-  defp recent_message(_rec, _text), do: nil
-
-  defp normalize_recent_message(%{"seq" => seq, "role" => role, "text" => text})
-       when is_integer(seq) and seq > 0 and role in ["Router", "Worker", "User"] and
-              is_binary(text) do
-    case timeline_text(text) do
-      "" -> nil
-      text -> %{"seq" => seq, "role" => role, "text" => text}
-    end
-  end
-
-  defp normalize_recent_message(_message), do: nil
-
-  defp card_details(payload) do
-    [model_line(payload), timeline_details(payload)]
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.join("\n\n")
-    |> bounded_content()
-  end
-
-  defp model_line(payload) do
-    case str(payload["model_label"]) do
-      "" -> ""
-      label -> "Model: " <> label
-    end
-  end
-
-  defp put_model_label(payload, ""), do: payload
-  defp put_model_label(payload, label), do: Map.put(payload, "model_label", label)
-
-  defp timeline_details(%{"recent_messages" => [_ | _] = messages}) do
-    messages
-    |> Enum.drop(-1)
-    |> Enum.take(-@timeline_details_limit)
-    |> Enum.map_join("\n\n", &"#{&1["role"]}: #{timeline_detail_text(&1["text"])}")
-    |> bounded_content()
-  end
-
-  defp timeline_details(_payload), do: ""
-
-  defp timeline_output(%{"recent_messages" => [_ | _] = messages}) do
-    messages
-    |> List.last()
-    |> Map.fetch!("text")
-    |> timeline_text()
-  end
-
-  defp timeline_output(_payload), do: ""
-
-  defp timeline_role("agent", "delegator"), do: "Router"
-  defp timeline_role("agent", _role), do: "Worker"
-  defp timeline_role(actor_type, _role) when actor_type in ["user", "provider_user"], do: "User"
-  defp timeline_role(_actor_type, _role), do: "User"
-
-  defp timeline_text(content) do
-    content
-    |> ConversationMessage.text_content()
-    |> String.trim()
-  end
-
-  defp timeline_detail_text(content),
-    do: content |> timeline_text() |> String.slice(0, @timeline_entry_limit)
-
-  defp status_details("active"), do: {"in_progress", "Work in progress"}
-  defp status_details("ready_for_review"), do: {"complete", "Ready for review"}
-  defp status_details("completed"), do: {"complete", "Completed"}
-  defp status_details("failed"), do: {"error", "Failed"}
-  defp status_details("cancelled"), do: {"error", "Cancelled"}
-  defp status_details("escalated"), do: {"error", "Needs attention"}
 
   defp legacy_status_details("active", _output), do: {"in_progress", "Work in progress"}
   defp legacy_status_details("ready_for_review", _output), do: {"complete", "Ready for review"}
@@ -762,15 +479,6 @@ defmodule SalixIM.SlackTaskCard do
       ]
     }
 
-  defp title(value),
-    do: value |> str() |> String.slice(0, 200) |> then(&if(&1 == "", do: "Task", else: &1))
-
-  defp bounded_content(value),
-    do: value |> str() |> String.trim() |> String.slice(0, @content_limit)
-
-  defp lifecycle(value, fallback),
-    do: if(str(value) in @lifecycles, do: str(value), else: fallback)
-
   defp projection_version(%{"projection_version" => @projection_version}),
     do: {:ok, @projection_version}
 
@@ -785,14 +493,5 @@ defmodule SalixIM.SlackTaskCard do
   defp render_version(1), do: 1
   defp render_version(@projection_version), do: @render_version
 
-  defp delivery_timeline_message?(rec, text) do
-    rec["source_actor_type"] in ["agent", "user", "provider_user"] and text != "" and
-      get_in(rec, ["message_metadata", "message_type"]) != "task_command"
-  end
-
   defp valid_message_ts?(value), do: is_binary(value) and Regex.match?(@timestamp, value)
-
-  defp nonempty_audience?(nil), do: true
-  defp nonempty_audience?(%{"participant_ids" => [_ | _]}), do: true
-  defp nonempty_audience?(_audience), do: false
 end

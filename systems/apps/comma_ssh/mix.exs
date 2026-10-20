@@ -10,7 +10,11 @@ defmodule CommaSSH.MixProject do
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
       elixir: "~> 1.20",
-      deps: [{:comma_core, in_umbrella: true}, {:comma_tui, in_umbrella: true}]
+      deps: [
+        {:comma_core, in_umbrella: true},
+        {:comma_tui, in_umbrella: true},
+        {:systems_clock, in_umbrella: true}
+      ]
     ]
 
   def application, do: [extra_applications: [:logger, :ssh], mod: {CommaSSH.Application, []}]

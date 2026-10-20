@@ -1,39 +1,47 @@
 import { describe, expect, it, vi } from "vitest";
-import type { CommaApiClient, CommaConversation } from "../../../api";
-import type { ChatRegistry } from "../ChatProvider";
+import type { CallFn } from "@comma/core-client";
+import type { CommaConversation } from "@comma/core/api-schemas";
+import type { ChatContextValue } from "../ChatProvider";
 import { ConversationPreparation } from "../prepareConversations";
 
+type Prepared = { conversation: CommaConversation; messages: [] } | null;
+const session = { audience: "https://api.test", sessionId: "session-1" };
+
 function fixture() {
-  const pending: { resolve(value: CommaConversation): void; signal: AbortSignal }[] =
-    [];
-  const getConversation = vi.fn(
-    (_group, _id, options) =>
-      new Promise<CommaConversation>((resolve) => {
-        pending.push({ resolve, signal: options.signal });
+  const pending: {
+    params: { groupId: string; conversationId: string };
+    resolve(value: Prepared): void;
+    signal: AbortSignal;
+  }[] = [];
+  // The core reads each conversation ahead (chat.prepare); here each read waits for the test.
+  const call = vi.fn(
+    (_name: string, params: unknown, signal?: AbortSignal) =>
+      new Promise<Prepared>((resolve) => {
+        pending.push({
+          params: params as { groupId: string; conversationId: string },
+          resolve,
+          signal: signal!,
+        });
       })
   );
   const remember = vi.fn();
   const registry = {
     getRetainedSnapshot: vi.fn(),
+    productLease: session,
     rememberConversationSnapshot: remember,
     beginAttempt: () => ({
-      run: (work: (api: CommaApiClient, signal: AbortSignal) => unknown) =>
-        Promise.resolve(
-          work(
-            { getConversation } as unknown as CommaApiClient,
-            new AbortController().signal
-          )
-        ),
+      run: (work: (signal: AbortSignal) => unknown) =>
+        Promise.resolve(work(new AbortController().signal)),
       isCurrent: () => true,
       release: vi.fn(),
     }),
-  } as unknown as ChatRegistry;
+  } as unknown as ChatContextValue;
   return {
     pending,
-    getConversation,
+    call,
     remember,
     registry,
-    owner: new ConversationPreparation(registry),
+    owner: new ConversationPreparation(registry, call as unknown as CallFn),
   };
 }
 const tasks = Array.from({ length: 100 }, (_, i) => ({
@@ -50,6 +58,10 @@ const conversation = {
   updated_at: 1,
   messages: [],
 } satisfies CommaConversation;
+const prepared = (read: CommaConversation): Prepared => ({
+  conversation: read,
+  messages: [],
+});
 const settle = async () => {
   for (let i = 0; i < 6; i++) await Promise.resolve();
 };
@@ -58,19 +70,19 @@ describe("conversation preparation", () => {
   it("bounds visible-page reads and shares completed reads across repeated visibility reports", async () => {
     const f = fixture();
     f.owner.update(tasks);
-    expect(f.getConversation).toHaveBeenCalledTimes(2);
-    expect(f.getConversation).toHaveBeenCalledWith(
-      "g",
-      "c0",
-      expect.objectContaining({ messageLimit: 24 })
+    expect(f.call).toHaveBeenCalledTimes(2);
+    expect(f.call).toHaveBeenCalledWith(
+      "chat.prepare",
+      { session, groupId: "g", conversationId: "c0" },
+      expect.any(AbortSignal)
     );
     for (let i = 0; i < 6; i++) {
-      f.pending[i]!.resolve({ ...conversation, id: `c${i}` });
+      f.pending[i]!.resolve(prepared({ ...conversation, id: `c${i}` }));
       await settle();
-      expect(f.getConversation.mock.calls.length - i - 1).toBeLessThanOrEqual(2);
+      expect(f.call.mock.calls.length - i - 1).toBeLessThanOrEqual(2);
     }
     f.owner.update(tasks);
-    expect(f.getConversation).toHaveBeenCalledTimes(6);
+    expect(f.call).toHaveBeenCalledTimes(6);
     expect(f.remember).toHaveBeenCalledTimes(6);
   });
 
@@ -78,14 +90,14 @@ describe("conversation preparation", () => {
     const f = fixture();
     f.owner.update(tasks);
     f.owner.update(tasks.slice(90));
-    f.pending[0]!.resolve(conversation);
+    f.pending[0]!.resolve(prepared(conversation));
     await settle();
-    expect(f.getConversation.mock.calls[2]?.[1]).toBe("c90");
+    expect(f.pending[2]?.params.conversationId).toBe("c90");
     f.owner.dispose();
     expect(f.pending[1]!.signal.aborted).toBe(true);
-    f.pending[1]!.resolve({ ...conversation, id: "c1" });
+    f.pending[1]!.resolve(prepared({ ...conversation, id: "c1" }));
     await settle();
     expect(f.remember).toHaveBeenCalledTimes(1);
-    expect(f.getConversation).toHaveBeenCalledTimes(3);
+    expect(f.call).toHaveBeenCalledTimes(3);
   });
 });

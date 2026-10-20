@@ -1,3 +1,4 @@
+import { uiClock } from "../../clock";
 import { matchTextIdentity } from "./textRevealIdentity";
 
 // Paint the arriving tail without splitting the browser's text shaping run.
@@ -151,7 +152,7 @@ export function createTextReveal(maxCharacters: number) {
         if (!keys.has(key)) rootText.delete(key);
       }
       active = active.filter((glyph) => keys.has(glyph.root));
-      if (highlights) paint(performance.now(), false);
+      if (highlights) paint(uiClock.monotonic(), false);
     },
     unmountRoot(root: string) {
       // React can replace a root wrapper in the same commit that confirms its
@@ -171,11 +172,11 @@ export function createTextReveal(maxCharacters: number) {
       );
       active = active.filter((glyph) => glyph.root !== root);
       if (!supported() || reducedMotion() || limit === 0) {
-        paint(performance.now(), false);
+        paint(uiClock.monotonic(), false);
         return;
       }
       const identity = matchTextIdentity(previous, content);
-      const now = performance.now();
+      const now = uiClock.monotonic();
       const candidates: RevealedGrapheme[] = [];
       const arriving = new Set<RevealedGrapheme>();
       let rootEnd = content.length;

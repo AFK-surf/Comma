@@ -1,0 +1,12 @@
+# Client browser test files whose two runs of the determinism proof
+# (scripts/determinism/run-browser.sh: base, and all perturbations at once)
+# did not record the same execution. They run in the browser suite and stay
+# outside determinism/manifest.txt's @browser entry until the harness gives
+# them one execution; they are fixed in batches by common cause in the
+# harness. A file leaves this list once proven; none joins it.
+#
+# video-picture-in-picture-recorder: "a floating video keeps clear of the
+#   meeting recorder, which stays on top" recorded 1b78a34c in one base run
+#   of the proof of intersections at a fixed point (#3361), 7b917c09 in 19
+#   other runs; the cause is not found.
+clients/e2e/app-shell/video-picture-in-picture-recorder.chromium.test.ts

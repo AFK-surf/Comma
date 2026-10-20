@@ -63,6 +63,7 @@ theorem input_source_commit {s entry born result : Term} {source : ByteArray} {j
     obtain ⟨time, _, _, h⟩ := bind_ok h
     obtain ⟨attrs, _, attrsRead, h⟩ := bind_ok h
     obtain ⟨event, middle, eventRead, h⟩ := bind_ok h
+    obtain ⟨human, _, _, h⟩ := bind_ok h
     change Command.inputEvent session (RoundQuery.atomFirst entry "source_message_id")
       (RoundQuery.atomFirst entry "payload") _ _ = .ok (event, middle) at eventRead
     rw [sourceValue, sessionEq] at eventRead
@@ -80,7 +81,7 @@ theorem input_source_commit {s entry born result : Term} {source : ByteArray} {j
       · simp at created
     · obtain ⟨payload, _, same⟩ := List.mem_map.mp pre
       subst current
-      exact preInputEvent_binary_keys _ _
+      exact preInputEvent_binary_keys _ _ _
 
 theorem commit_input_main_start {s entry result event : Term} {trailing j r : List Term}
     {notifyInput : Bool}

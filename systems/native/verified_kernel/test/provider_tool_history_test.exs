@@ -56,8 +56,10 @@ defmodule SalixVerifiedKernel.ProviderToolHistoryTest do
       ]
 
       wire = messages |> chat() |> assert_adjacent()
-      assert outputs(wire) == ["old send_message result", "new status result"]
-      [first, next] = Enum.filter(wire, &(&1["role"] == "assistant"))
+      # The runtime message follows the pending call's result as a synthetic call.
+      assert ["old send_message result", "new status result", runtime] = outputs(wire)
+      assert runtime =~ ~s("content":"context between call and result")
+      [first, next, _runtime] = Enum.filter(wire, &(&1["role"] == "assistant"))
       assert first["reasoning_details"] == first_extra["reasoning_details"]
 
       assert next["reasoning_details"] ==
@@ -115,26 +117,25 @@ defmodule SalixVerifiedKernel.ProviderToolHistoryTest do
     end
   end
 
-  test "suffixes avoid original IDs in later parallel calls and leave unique IDs unchanged" do
+  test "a later original ID takes a free suffix and leaves earlier calls unchanged" do
     parallel = %{
       role: "assistant",
       content: "",
       tool_calls: for(n <- 2..8, do: %{id: "same__#{n}", name: "call", args: %{}})
     }
 
-    messages = [
+    history = [
       assistant("same", "reply"),
       tool("same", "old"),
       assistant("same", "call"),
-      tool("same", "new"),
-      parallel
+      tool("same", "new")
     ]
 
-    wire = chat(messages) |> assert_adjacent()
+    wire = chat(history ++ [parallel]) |> assert_adjacent()
     ids = for %{"tool_calls" => calls} <- wire, call <- calls, do: call["id"]
-    assert ids == ["same", "same__9"] ++ Enum.map(2..8, &"same__#{&1}")
+    assert ids == ["same", "same__2", "same__2__3"] ++ Enum.map(3..8, &"same__#{&1}")
     assert length(Enum.uniq(ids)) == length(ids)
-    assert chat(messages) == wire
+    assert List.starts_with?(wire, chat(history))
   end
 
   test "a suffixed orphan cannot become the renamed invocation's result" do
@@ -151,7 +152,7 @@ defmodule SalixVerifiedKernel.ProviderToolHistoryTest do
     assert outputs(wire) == ["old", "new"]
     assert Enum.any?(wire, &(&1["role"] == "user" and &1["content"] =~ "orphan"))
     [_, renamed] = Enum.filter(wire, &(&1["role"] == "assistant"))
-    assert hd(renamed["tool_calls"])["id"] == "same__3"
+    assert hd(renamed["tool_calls"])["id"] == "same__2"
   end
 
   test "renamed calls preserve unrelated reasoning and update vision references" do
@@ -245,6 +246,20 @@ defmodule SalixVerifiedKernel.ProviderToolHistoryTest do
     assert outputs(wire) == ["new"]
     assert hd(wire)["content"] =~ "<unclaimed-tool-result"
     assert hd(wire)["content"] =~ "orphan"
+  end
+
+  test "images follow the last result of their batch, so a later result does not move them" do
+    image = ~s([{"type":"image_url","image_url":{"url":"data:image/png;base64,eA=="}}])
+
+    history = [
+      %{role: "user", content: "look"},
+      assistant("shot", "screenshot"),
+      Map.put(tool("shot", image), :native_content_trusted, true)
+    ]
+
+    earlier = chat(history)
+    assert %{"role" => "user", "content" => [_ | _]} = List.last(earlier)
+    assert List.starts_with?(chat(history ++ [tool("late", "orphan")]), earlier)
   end
 
   test "vision labels use the preceding invocation's name, not a later reused ID" do

@@ -1,8 +1,8 @@
 defmodule SalixWeb.VoiceWsClient do
   @moduledoc false
   # WebSocket test client for the voice sockets. Every frame and the final
-  # disconnect go to the owner as `{:ws, self(), frame}` and
-  # `{:ws_closed, self(), close}`. With `auto_played: true` it answers each
+  # disconnect go to the owner as `{:ws, SystemsRuntime.Proc.self(), frame}` and
+  # `{:ws_closed, SystemsRuntime.Proc.self(), close}`. With `auto_played: true` it answers each
   # `output.mark` with `output.played`, as a comma.voice.v1 player does.
 
   use WebSockex
@@ -28,7 +28,7 @@ defmodule SalixWeb.VoiceWsClient do
   @impl true
   def handle_frame({:text, text}, state) do
     message = Jason.decode!(text)
-    send(state.owner, {:ws, self(), {:json, message}})
+    SystemsRuntime.Proc.send(state.owner, {:ws, SystemsRuntime.Proc.self(), {:json, message}})
 
     if state.auto_played and message["type"] == "output.mark" do
       reply = Jason.encode!(%{"type" => "output.played", "name" => message["name"]})
@@ -39,7 +39,7 @@ defmodule SalixWeb.VoiceWsClient do
   end
 
   def handle_frame({:binary, data}, state) do
-    send(state.owner, {:ws, self(), {:binary, data}})
+    SystemsRuntime.Proc.send(state.owner, {:ws, SystemsRuntime.Proc.self(), {:binary, data}})
     {:ok, state}
   end
 
@@ -52,7 +52,7 @@ defmodule SalixWeb.VoiceWsClient do
         other -> other
       end
 
-    send(state.owner, {:ws_closed, self(), close})
+    SystemsRuntime.Proc.send(state.owner, {:ws_closed, SystemsRuntime.Proc.self(), close})
     {:ok, state}
   end
 end

@@ -81,11 +81,11 @@ defmodule SalixAnalytics.TypedEvent do
 
   defp date(_), do: Date.utc_today() |> Date.to_iso8601()
 
-  defp timestamp(nil), do: DateTime.utc_now() |> DateTime.to_iso8601()
+  defp timestamp(nil), do: SystemsClock.utc_now() |> DateTime.to_iso8601()
   defp timestamp(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp timestamp(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)
   defp timestamp(value) when is_binary(value), do: value
-  defp timestamp(_), do: DateTime.utc_now() |> DateTime.to_iso8601()
+  defp timestamp(_), do: SystemsClock.utc_now() |> DateTime.to_iso8601()
 
   defp known_key(key) do
     case key do

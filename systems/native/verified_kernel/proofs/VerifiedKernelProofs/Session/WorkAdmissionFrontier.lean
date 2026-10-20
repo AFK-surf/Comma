@@ -35,18 +35,11 @@ theorem frontier_issue_write (context : Context) (continuation : Term) (events :
 
 theorem frontier_issue (context : Context) (result : Term) :
     AdmissionFrontier context (issue context result) := by
-  unfold issue
-  split
-  · exact .returned _ _
-  · exact frontier_issue_write _ _ _ _
-  · exact frontier_issue_write _ _ _ _
-  · exact frontier_issue_write _ _ _ _
-  · exact .fence _
-  · exact .effect _ _
-  · exact .effect _ _
-  · exact .effect _ _
-  · exact .effect _ _
-  · exact .effect _ _
+  refine issue_rec (P := AdmissionFrontier context) context result ?_ ?_ ?_ ?_ ?_
+  · intro _ _ _; exact .returned _ _
+  · intro _ _ _ _ _; exact frontier_issue_write _ _ _ _
+  · intro _ _; exact .fence _
+  · intro _ _ _ _; exact .effect _ _
   · exact .failed _
 
 theorem frontier_query (context : Context) (operation args : Term) (observations : List Term) : AdmissionFrontier context (query context operation args observations) := by

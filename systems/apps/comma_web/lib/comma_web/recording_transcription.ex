@@ -1,18 +1,29 @@
 defmodule CommaWeb.RecordingTranscription do
-  @moduledoc "Authenticated recording uploads to the shared meeting ASR backend."
+  @moduledoc """
+  Authenticated recording uploads to the shared meeting ASR backend. With
+  `?purpose=dictation` (Quick Chat's words) the transcript is plain text
+  instead of timed speaker lines.
+  """
   import Plug.Conn
 
   @max_bytes 30 * 1024 * 1024
   @timeout_ms 610_000
 
   def call(conn, opts \\ []) do
+    conn = fetch_query_params(conn)
+    purpose = if conn.query_params["purpose"] == "dictation", do: :dictation, else: :recording
+
     transcribe =
-      Keyword.get(opts, :transcribe, &Salix.Bindings.AgentAudioTranscriber.transcribe_upload/3)
+      Keyword.get(opts, :transcribe, fn stream, size, filename ->
+        Salix.Bindings.AgentAudioTranscriber.transcribe_upload(stream, size, filename,
+          purpose: purpose
+        )
+      end)
 
     path =
       Path.join(
         System.tmp_dir!(),
-        "comma-asr-#{Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)}.m4a"
+        "comma-asr-#{Base.url_encode64(SystemsRuntime.Proc.random_bytes(18), padding: false)}.m4a"
       )
 
     try do
@@ -31,6 +42,7 @@ defmodule CommaWeb.RecordingTranscription do
             stream_result(
               conn,
               fn -> transcribe.(File.stream!(path, 262_144, []), size, "recording.m4a") end,
+              purpose,
               opts
             )
 
@@ -68,7 +80,7 @@ defmodule CommaWeb.RecordingTranscription do
     end
   end
 
-  defp stream_result(conn, run, opts) do
+  defp stream_result(conn, run, purpose, opts) do
     conn =
       conn
       |> put_resp_content_type("text/event-stream")
@@ -77,7 +89,7 @@ defmodule CommaWeb.RecordingTranscription do
       |> send_chunked(200)
 
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         try do
           run.()
         rescue
@@ -87,25 +99,27 @@ defmodule CommaWeb.RecordingTranscription do
         end
       end)
 
-    started_at = System.monotonic_time()
-    deadline = System.monotonic_time(:millisecond) + Keyword.get(opts, :timeout_ms, @timeout_ms)
+    started_at = SystemsClock.monotonic_time()
+
+    deadline =
+      SystemsClock.monotonic_time(:millisecond) + Keyword.get(opts, :timeout_ms, @timeout_ms)
 
     try do
       {conn, result} = await_result(conn, task, deadline)
-      observe_result(result, System.monotonic_time() - started_at)
+      observe_result(result, purpose, SystemsClock.monotonic_time() - started_at)
       conn
     after
-      Task.shutdown(task, :brutal_kill)
+      SystemsRuntime.Task.shutdown(task, :brutal_kill)
     end
   end
 
   defp await_result(conn, task, deadline) do
-    remaining = deadline - System.monotonic_time(:millisecond)
+    remaining = deadline - SystemsClock.monotonic_time(:millisecond)
 
     if remaining <= 0 do
       finish(conn, {:error, :timeout})
     else
-      case Task.yield(task, min(remaining, 15_000)) do
+      case SystemsRuntime.Task.yield(task, min(remaining, 15_000)) do
         {:ok, result} ->
           finish(conn, result)
 
@@ -134,10 +148,10 @@ defmodule CommaWeb.RecordingTranscription do
   defp payload(_),
     do: %{status: "error", reason: "Transcription failed. The audio remains in Drive."}
 
-  defp observe_result(result, duration) do
+  defp observe_result(result, purpose, duration) do
     Salix.Telemetry.emit_operation(
       "salix_meet",
-      "meeting_asr",
+      if(purpose == :dictation, do: "dictation_asr", else: "meeting_asr"),
       "comma",
       Salix.Bindings.MeetingSummary.asr_telemetry_outcome(result),
       duration

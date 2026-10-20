@@ -153,7 +153,7 @@ defmodule CommaWeb.OauthIdpConsent do
   end
 
   defp login_url(handle) do
-    origin = Application.fetch_env!(:comma_web, :web_cookie_origin)
+    origin = SystemsRuntime.fetch_env!(:comma_web, :web_cookie_origin)
     origin <> "/login?" <> URI.encode_query(%{"oauth_handle" => handle})
   end
 

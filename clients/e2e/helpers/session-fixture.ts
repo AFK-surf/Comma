@@ -103,6 +103,29 @@ export function startSessionProjectionStub(identity: E2eSessionIdentity) {
       writeJson(response, createE2eSessionProjection(identity));
       return;
     }
+    // The email sign-in, for an app that starts signed out (an Electron worker's shared app): any code signs in as
+    // this identity.
+    if (request.method === "POST" && path === "/v1/comma/auth/email/login") {
+      request.resume();
+      request.on("end", () =>
+        writeJson(response, {
+          challenge_id: "e2e-email-challenge",
+          expires_in: 900,
+          resend_after: 60,
+        })
+      );
+      return;
+    }
+    if (request.method === "POST" && path === "/v1/comma/auth/email/verify") {
+      request.resume();
+      request.on("end", () =>
+        writeJson(response, {
+          ...createE2eSessionProjection(identity),
+          token: `e2e-token:${identity.email.toLowerCase()}`,
+        })
+      );
+      return;
+    }
     if (
       request.method === "GET" &&
       path === "/v1/comma/me/profile" &&
@@ -157,12 +180,15 @@ export function startSessionProjectionStub(identity: E2eSessionIdentity) {
   return new Promise<{
     baseUrl: string;
     close: () => Promise<void>;
+    /** Its server: requests another server hands it (an Electron worker's shared API address) are answered too. */
+    server: Server;
     /** The account every session this stub verifies belongs to. */
     userId: string;
   }>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
       resolve({
+        server,
         baseUrl: `http://127.0.0.1:${port}`,
         close: () =>
           new Promise<void>((done) => {

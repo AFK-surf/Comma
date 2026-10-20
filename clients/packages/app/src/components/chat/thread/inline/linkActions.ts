@@ -1,7 +1,7 @@
 import {
   nativePlatformClipboard,
   openNativePlatformExternalUrl,
-} from "../../../../runtime-chat/nativePlatformActions";
+} from "../../../../nativePlatformActions";
 
 /** Opens an http(s) URL in the OS browser (Electron) or a new tab (web). */
 export async function openUrlInExternalBrowser(url: string): Promise<void> {

@@ -15,7 +15,7 @@ defmodule SalixAnalytics.EventArchiveClickHouseTest do
         -e CLICKHOUSE_SKIP_USER_SETUP=1 clickhouse/clickhouse-server:24.8
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAnalytics.EventArchive.{Completeness, Item, Recipients, Sink}
   alias SalixStore.Age
@@ -23,12 +23,12 @@ defmodule SalixAnalytics.EventArchiveClickHouseTest do
   @moduletag :clickhouse
 
   setup do
-    database = "salix_archive_test_#{System.unique_integer([:positive])}"
+    database = "salix_archive_test_#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
-    previous_ch = Application.get_env(:salix_analytics, :clickhouse)
-    previous_archive = Application.get_env(:salix_analytics, :event_archive)
+    previous_ch = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
+    previous_archive = SystemsRuntime.get_env(:salix_analytics, :event_archive)
 
-    Application.put_env(:salix_analytics, :clickhouse,
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
       base_url: System.get_env("CLICKHOUSE_URL") || "http://127.0.0.1:8123",
       database: database,
       table: "#{database}.events"
@@ -37,7 +37,7 @@ defmodule SalixAnalytics.EventArchiveClickHouseTest do
     {recipient, identity_string} = Age.generate_keypair()
     {:ok, identity} = Age.parse_identity(identity_string)
 
-    Application.put_env(:salix_analytics, :event_archive,
+    SystemsRuntime.put_env(:salix_analytics, :event_archive,
       enabled: true,
       recipients: [%{key_id: "ch", public_key: recipient}]
     )
@@ -51,12 +51,12 @@ defmodule SalixAnalytics.EventArchiveClickHouseTest do
       drop_database(database)
 
       if previous_ch,
-        do: Application.put_env(:salix_analytics, :clickhouse, previous_ch),
-        else: Application.delete_env(:salix_analytics, :clickhouse)
+        do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, previous_ch),
+        else: SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
 
       if previous_archive,
-        do: Application.put_env(:salix_analytics, :event_archive, previous_archive),
-        else: Application.delete_env(:salix_analytics, :event_archive)
+        do: SystemsRuntime.put_env(:salix_analytics, :event_archive, previous_archive),
+        else: SystemsRuntime.delete_env(:salix_analytics, :event_archive)
 
       Recipients.reset()
     end)
@@ -107,7 +107,7 @@ defmodule SalixAnalytics.EventArchiveClickHouseTest do
     {:ok, row} = Item.seal(attrs(seq: 7), %{"a" => 1}, [recipient])
     assert :ok = Sink.write([row])
 
-    cfg = Application.get_env(:salix_analytics, :clickhouse, [])
+    cfg = SystemsRuntime.get_env(:salix_analytics, :clickhouse, [])
 
     {:ok, %{body: body}} =
       Req.post(cfg[:base_url],
@@ -299,7 +299,7 @@ defmodule SalixAnalytics.EventArchiveClickHouseTest do
   end
 
   defp drop_database(database) do
-    cfg = Application.get_env(:salix_analytics, :clickhouse, [])
+    cfg = SystemsRuntime.get_env(:salix_analytics, :clickhouse, [])
 
     Req.post(cfg[:base_url],
       params: [query: "DROP DATABASE IF EXISTS #{database}"],

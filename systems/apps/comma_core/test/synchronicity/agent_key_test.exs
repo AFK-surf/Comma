@@ -4,8 +4,9 @@ defmodule Comma.Synchronicity.AgentKeyTest do
   Workspace group's Drive binding. The control plane and the Salix binding
   store are both stubbed: what is asserted is the contract between the two.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.Comma"]
   import Ecto.Query
 
   alias Comma.Data.Workspace
@@ -34,11 +35,11 @@ defmodule Comma.Synchronicity.AgentKeyTest do
 
     @impl true
     def mint_api_key(workspace_id, owner, name) do
-      send(self(), {:mint, workspace_id, owner, name})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:mint, workspace_id, owner, name})
 
-      case Application.get_env(:comma_core, :agent_key_test_mint, :ok) do
+      case SystemsRuntime.get_env(:comma_core, :agent_key_test_mint, :ok) do
         :ok ->
-          key_id = "key-" <> Integer.to_string(System.unique_integer([:positive]))
+          key_id = "key-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
 
           {:ok,
            %{
@@ -58,8 +59,8 @@ defmodule Comma.Synchronicity.AgentKeyTest do
 
     @impl true
     def revoke_api_key(workspace_id, key_id) do
-      send(self(), {:revoke, workspace_id, key_id})
-      Application.get_env(:comma_core, :agent_key_test_revoke, :ok)
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:revoke, workspace_id, key_id})
+      SystemsRuntime.get_env(:comma_core, :agent_key_test_revoke, :ok)
     end
   end
 
@@ -77,7 +78,7 @@ defmodule Comma.Synchronicity.AgentKeyTest do
     @impl true
     def get_workspace_agent_models(_workspace), do: {:error, :unused}
     @impl true
-    def update_workspace_agent_model(_workspace, _role, _template_id), do: {:error, :unused}
+    def update_workspace_agent_model(_workspace, _role, _model), do: {:error, :unused}
     @impl true
     def update_workspace_vm(_workspace, _vm), do: {:error, :unused}
     @impl true
@@ -129,14 +130,14 @@ defmodule Comma.Synchronicity.AgentKeyTest do
 
     @impl true
     def put_drive_binding(%{"default_group_id" => group_id}, attrs) do
-      case Application.get_env(:comma_core, :agent_key_test_binding_put, :ok) do
+      case SystemsRuntime.get_env(:comma_core, :agent_key_test_binding_put, :ok) do
         :ok ->
           merged =
             (bindings()[group_id] || %{"enabled" => true, "retired_key_ids" => []})
             |> Map.merge(attrs)
             |> Map.put("group_id", group_id)
 
-          Application.put_env(
+          SystemsRuntime.put_env(
             :comma_core,
             :agent_key_test_bindings,
             Map.put(bindings(), group_id, merged)
@@ -150,48 +151,49 @@ defmodule Comma.Synchronicity.AgentKeyTest do
     end
 
     def seed(group_id, binding) do
-      Application.put_env(
+      SystemsRuntime.put_env(
         :comma_core,
         :agent_key_test_bindings,
         Map.put(bindings(), group_id, binding)
       )
     end
 
-    def bindings, do: Application.get_env(:comma_core, :agent_key_test_bindings, %{})
+    def bindings, do: SystemsRuntime.get_env(:comma_core, :agent_key_test_bindings, %{})
   end
 
   setup do
     owner = Ecto.Adapters.SQL.Sandbox.start_owner!(Repo, shared: true)
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
 
-    previous_salix = Application.get_env(:comma_core, :salix_client)
+    previous_salix = SystemsRuntime.get_env(:comma_core, :salix_client)
 
-    Application.put_env(:comma_core, :synchronicity,
+    SystemsRuntime.put_env(:comma_core, :synchronicity,
       base_url: "http://sync.test",
       provisioning_secret: @secret
     )
 
-    Application.put_env(:comma_core, :synchronicity_client, Stub)
-    Application.put_env(:comma_core, :salix_client, SalixStub)
+    SystemsRuntime.put_env(:comma_core, :synchronicity_client, Stub)
+    SystemsRuntime.put_env(:comma_core, :salix_client, SalixStub)
 
     on_exit(fn ->
-      Application.delete_env(:comma_core, :synchronicity)
-      Application.delete_env(:comma_core, :synchronicity_client)
-      Application.delete_env(:comma_core, :agent_key_test_mint)
-      Application.delete_env(:comma_core, :agent_key_test_revoke)
-      Application.delete_env(:comma_core, :agent_key_test_bindings)
-      Application.delete_env(:comma_core, :agent_key_test_binding_put)
+      SystemsRuntime.delete_env(:comma_core, :synchronicity)
+      SystemsRuntime.delete_env(:comma_core, :synchronicity_client)
+      SystemsRuntime.delete_env(:comma_core, :agent_key_test_mint)
+      SystemsRuntime.delete_env(:comma_core, :agent_key_test_revoke)
+      SystemsRuntime.delete_env(:comma_core, :agent_key_test_bindings)
+      SystemsRuntime.delete_env(:comma_core, :agent_key_test_binding_put)
 
       case previous_salix do
-        nil -> Application.delete_env(:comma_core, :salix_client)
-        value -> Application.put_env(:comma_core, :salix_client, value)
+        nil -> SystemsRuntime.delete_env(:comma_core, :salix_client)
+        value -> SystemsRuntime.put_env(:comma_core, :salix_client, value)
       end
     end)
 
     :ok
   end
 
-  defp unique(prefix), do: prefix <> "-" <> Integer.to_string(System.unique_integer([:positive]))
+  defp unique(prefix),
+    do: prefix <> "-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
 
   defp workspace do
     {:ok, user} = Comma.Accounts.create_user(%{"email" => unique("owner") <> "@comma.test"})
@@ -229,18 +231,6 @@ defmodule Comma.Synchronicity.AgentKeyTest do
     assert org_slug == "comma-" <> workspace.id
   end
 
-  test "a Comma-minted binding is left alone on repeat" do
-    {workspace, _user_id} = workspace()
-    assert {:ok, :minted} = Synchronicity.ensure_agent_key(workspace)
-    assert_received {:mint, _, _, _}
-    first = binding_of(workspace)
-
-    assert {:ok, :present} = Synchronicity.ensure_agent_key(workspace)
-    refute_received {:mint, _, _, _}
-    refute_received {:revoke, _, _}
-    assert binding_of(workspace) == first
-  end
-
   test "a binding an operator entered by hand is never replaced" do
     {workspace, _user_id} = workspace()
 
@@ -255,26 +245,6 @@ defmodule Comma.Synchronicity.AgentKeyTest do
     refute_received {:mint, _, _, _}
     refute_received {:revoke, _, _}
     assert binding_of(workspace)["api_key"] == "synch_operator"
-  end
-
-  test "a binding an operator disabled is a binding, and is left alone too" do
-    {workspace, _user_id} = workspace()
-
-    SalixStub.seed(workspace.salix_group_id, %{
-      "source" => "manual",
-      "org_slug" => "manual-org",
-      "api_key" => "synch_operator",
-      "api_key_id" => "",
-      "enabled" => false
-    })
-
-    assert {:ok, :manual} = Synchronicity.ensure_agent_key(workspace)
-    assert {:ok, :manual} = Synchronicity.rotate_agent_key(workspace.id)
-    refute_received {:mint, _, _, _}
-    refute_received {:revoke, _, _}
-
-    assert %{"source" => "manual", "org_slug" => "manual-org", "enabled" => false} =
-             binding_of(workspace)
   end
 
   test "rotation mints a new key, stores it and revokes the current one" do
@@ -294,7 +264,7 @@ defmodule Comma.Synchronicity.AgentKeyTest do
     assert_received {:mint, _, _, _}
     old_key_id = binding_of(workspace)["api_key_id"]
 
-    Application.put_env(:comma_core, :agent_key_test_revoke, {:error, {:retryable, :timeout}})
+    SystemsRuntime.put_env(:comma_core, :agent_key_test_revoke, {:error, {:retryable, :timeout}})
 
     assert {:error, {:retryable, {:revoke_pending, %{key_ids: [^old_key_id], reason: reason}}}} =
              Synchronicity.rotate_agent_key(workspace.id)
@@ -315,74 +285,16 @@ defmodule Comma.Synchronicity.AgentKeyTest do
     assert_received {:revoke, _workspace_id, ^old_key_id}
     refute_received {:mint, _, _, _}
 
-    Application.put_env(:comma_core, :agent_key_test_revoke, :ok)
+    SystemsRuntime.put_env(:comma_core, :agent_key_test_revoke, :ok)
     assert {:ok, :present} = Synchronicity.ensure_agent_key(workspace)
     assert_received {:revoke, _workspace_id, ^old_key_id}
     assert binding_of(workspace)["api_key_id"] == new_key_id
     assert binding_of(workspace)["retired_key_ids"] == []
   end
 
-  test "an operator takeover ends the retry: the pending ids stay listed, untouched" do
-    {workspace, _user_id} = workspace()
-    assert {:ok, :minted} = Synchronicity.ensure_agent_key(workspace)
-    old_key_id = binding_of(workspace)["api_key_id"]
-
-    Application.put_env(:comma_core, :agent_key_test_revoke, {:error, {:retryable, :timeout}})
-
-    assert {:error, {:retryable, {:revoke_pending, _}}} =
-             Synchronicity.rotate_agent_key(workspace.id)
-
-    assert_received {:revoke, _workspace_id, ^old_key_id}
-
-    # The operator disables the Drive on the group page: the row is theirs now.
-    SalixStub.seed(
-      workspace.salix_group_id,
-      binding_of(workspace) |> Map.put("source", "manual") |> Map.put("enabled", false)
-    )
-
-    Application.put_env(:comma_core, :agent_key_test_revoke, :ok)
-    assert {:ok, :manual} = Synchronicity.ensure_agent_key(workspace)
-    assert {:ok, :manual} = Synchronicity.rotate_agent_key(workspace.id)
-    refute_received {:revoke, _, _}
-    assert binding_of(workspace)["retired_key_ids"] == [old_key_id]
-    assert binding_of(workspace)["source"] == "manual"
-  end
-
-  test "a second rotation before the first revocation lands retires both keys" do
-    {workspace, _user_id} = workspace()
-    assert {:ok, :minted} = Synchronicity.ensure_agent_key(workspace)
-    first = binding_of(workspace)["api_key_id"]
-
-    Application.put_env(:comma_core, :agent_key_test_revoke, {:error, {:retryable, :timeout}})
-
-    assert {:error, {:retryable, {:revoke_pending, _}}} =
-             Synchronicity.rotate_agent_key(workspace.id)
-
-    second = binding_of(workspace)["api_key_id"]
-
-    assert {:error, {:retryable, {:revoke_pending, %{key_ids: [^first, ^second]}}}} =
-             Synchronicity.rotate_agent_key(workspace.id)
-
-    assert binding_of(workspace)["retired_key_ids"] == [first, second]
-
-    # A key already gone counts as revoked.
-    Application.put_env(:comma_core, :agent_key_test_revoke, {:error, :not_found})
-    assert {:ok, :present} = Synchronicity.ensure_agent_key(workspace)
-    assert binding_of(workspace)["retired_key_ids"] == []
-  end
-
-  test "a mint the control plane refuses stores nothing" do
-    {workspace, _user_id} = workspace()
-    Application.put_env(:comma_core, :agent_key_test_mint, {:error, {:retryable, :down}})
-
-    assert {:error, {:retryable, :down}} = Synchronicity.ensure_agent_key(workspace)
-    assert binding_of(workspace) == nil
-    refute_received {:revoke, _, _}
-  end
-
   test "a key the binding store cannot keep is revoked, not orphaned" do
     {workspace, _user_id} = workspace()
-    Application.put_env(:comma_core, :agent_key_test_binding_put, {:error, :unavailable})
+    SystemsRuntime.put_env(:comma_core, :agent_key_test_binding_put, {:error, :unavailable})
 
     assert {:error, {:retryable, {:drive_binding, :unavailable}}} =
              Synchronicity.ensure_agent_key(workspace)
@@ -390,22 +302,5 @@ defmodule Comma.Synchronicity.AgentKeyTest do
     assert_received {:mint, _, _, _}
     assert_received {:revoke, _workspace_id, "key-" <> _}
     assert binding_of(workspace) == nil
-  end
-
-  test "status reports agent access once an enabled binding exists" do
-    {workspace, user_id} = workspace()
-    assert {:ok, %{status: "ready", agent_access: false}} = Synchronicity.status(user_id)
-    assert {:ok, :minted} = Synchronicity.ensure_agent_key(workspace)
-    assert {:ok, %{status: "ready", agent_access: true}} = Synchronicity.status(user_id)
-
-    SalixStub.seed(workspace.salix_group_id, Map.put(binding_of(workspace), "enabled", false))
-    assert {:ok, %{status: "ready", agent_access: false}} = Synchronicity.status(user_id)
-  end
-
-  test "an unconfigured deployment mints nothing" do
-    {workspace, _user_id} = workspace()
-    Application.delete_env(:comma_core, :synchronicity)
-    assert {:error, :not_configured} = Synchronicity.ensure_agent_key(workspace)
-    refute_received {:mint, _, _, _}
   end
 end

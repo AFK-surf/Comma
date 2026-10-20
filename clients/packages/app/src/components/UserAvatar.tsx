@@ -1,4 +1,5 @@
-import { Avatar, cx, type AvatarSize } from "@comma/ui";
+import { Avatar, type AvatarSize } from "@comma/ui/components/avatar";
+import { cx } from "@comma/ui/components/utils";
 
 export type UserAvatarSize = AvatarSize | "compact";
 

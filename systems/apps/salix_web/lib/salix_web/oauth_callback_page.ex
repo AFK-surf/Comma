@@ -18,7 +18,15 @@ defmodule SalixWeb.OAuthCallbackPage do
     "slack" => "Slack"
   }
 
-  @svgs (for name <- ["comma", "arrow", "failed", "mcp" | Map.keys(@providers)], into: %{} do
+  # Remote MCP servers with a branded logo, matched by the resource server's
+  # host (the domain or any subdomain), never by the user-chosen alias.
+  # Logos are the vendors' published brand marks.
+  @mcp_brands %{"posthog.com" => "posthog"}
+
+  @svgs (for name <-
+               ["comma", "arrow", "failed", "mcp" | Map.keys(@providers)] ++
+                 Map.values(@mcp_brands),
+             into: %{} do
            path = Path.join(@asset_dir, name <> ".svg")
            @external_resource path
            {name, File.read!(path)}
@@ -56,14 +64,32 @@ defmodule SalixWeb.OAuthCallbackPage do
 
   @doc """
   Renders an MCP connection without treating its user-chosen alias as a provider key.
-  The MCP asset is the supplied export from Figma node `1620:14762`.
+  A `resource_server_url` on a branded host (`@mcp_brands`) shows that vendor's
+  logo; any other server shows the generic MCP asset, the supplied export from
+  Figma node `1620:14762`.
   """
-  @spec render_mcp(String.t(), String.t() | nil) :: String.t()
-  def render_mcp(service, error_message \\ nil) do
+  @spec render_mcp(String.t(), String.t() | nil, String.t() | nil) :: String.t()
+  def render_mcp(service, error_message \\ nil, resource_server_url \\ nil) do
     name = service |> to_string() |> String.trim()
     name = if name == "", do: "remote MCP", else: name
-    render_page(name, :mcp, error_message)
+    render_page(name, {:mcp, mcp_brand(resource_server_url)}, error_message)
   end
+
+  defp mcp_brand(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{host: host} when is_binary(host) ->
+        host = String.downcase(host)
+
+        Enum.find_value(@mcp_brands, fn {domain, logo} ->
+          if host == domain or String.ends_with?(host, "." <> domain), do: logo
+        end)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp mcp_brand(_url), do: nil
 
   defp render_page(name, key, error_message) do
     {heading, body} =
@@ -84,8 +110,11 @@ defmodule SalixWeb.OAuthCallbackPage do
       "</p></div></main></body></html>"
   end
 
-  defp logos(:mcp, link),
+  defp logos({:mcp, nil}, link),
     do: tile("comma") <> @svgs[link] <> tile("mcp")
+
+  defp logos({:mcp, brand}, link),
+    do: tile("comma") <> @svgs[link] <> tile(brand)
 
   defp logos(key, link) when is_map_key(@providers, key),
     do: tile("comma") <> @svgs[link] <> tile(key)

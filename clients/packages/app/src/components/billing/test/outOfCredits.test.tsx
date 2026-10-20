@@ -1,5 +1,5 @@
 import { act, render, screen, waitFor } from "@comma/test-utils/render";
-import { Toaster, toast } from "@comma/ui";
+import { Toaster, toast } from "@comma/ui/components/toast";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { OUT_OF_CREDITS_TOAST_ID, showOutOfCreditsToast } from "../outOfCredits";
@@ -26,8 +26,10 @@ describe("showOutOfCreditsToast", () => {
 
     const toastShell = await screen.findByTestId(OUT_OF_CREDITS_TOAST_ID);
     expect(screen.getAllByTestId(OUT_OF_CREDITS_TOAST_ID)).toHaveLength(1);
-    expect(toastShell).toHaveTextContent("Out of usage credits");
-    expect(toastShell).toHaveTextContent("Add credits or switch plans, then retry.");
+    expect(toastShell).toHaveTextContent("Out of Comma credits");
+    expect(toastShell).toHaveTextContent(
+      "This request is paid with Comma credits. Add credits or change plan, then retry."
+    );
 
     // A toast action does not close its toast on its own; this one must, or
     // the refusal would still be showing over the billing page it opened.

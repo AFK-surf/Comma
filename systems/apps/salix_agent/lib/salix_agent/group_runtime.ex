@@ -6,7 +6,7 @@ defmodule SalixAgent.GroupRuntime do
   def call(agent_id, config_key, missing_error, command, args) when is_list(args) do
     with {:ok, group_id} <- group_id(agent_id),
          module when is_atom(module) and not is_nil(module) <-
-           Application.get_env(:salix_agent, config_key) do
+           SystemsRuntime.get_env(:salix_agent, config_key) do
       apply(module, command, [group_id | args])
     else
       nil -> {:error, missing_error}

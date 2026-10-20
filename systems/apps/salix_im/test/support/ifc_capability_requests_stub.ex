@@ -1,4 +1,6 @@
 defmodule SalixIM.Test.IFCCapabilityRequestsStub do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Stands in for `SalixAgent.CapabilityRequests` across the IM seam
   (`config :salix_im, :capability_request_mod`).
@@ -14,17 +16,17 @@ defmodule SalixIM.Test.IFCCapabilityRequestsStub do
 
   @doc "Installs the stub and the request one card will be answered against."
   def install(request) do
-    Application.put_env(:salix_im, :capability_request_mod, __MODULE__)
-    :persistent_term.put(@caller_key, self())
-    :persistent_term.put(@request_key, request)
+    SystemsRuntime.put_env(:salix_im, :capability_request_mod, __MODULE__)
+    SystemsRuntime.PersistentTerm.put(@caller_key, SystemsRuntime.Proc.self())
+    SystemsRuntime.PersistentTerm.put(@request_key, request)
     :ok
   end
 
   @doc "Removes the stub and everything it held."
   def uninstall do
-    Application.delete_env(:salix_im, :capability_request_mod)
-    :persistent_term.erase(@caller_key)
-    :persistent_term.erase(@request_key)
+    SystemsRuntime.delete_env(:salix_im, :capability_request_mod)
+    SystemsRuntime.PersistentTerm.erase(@caller_key)
+    SystemsRuntime.PersistentTerm.erase(@request_key)
     :ok
   end
 
@@ -42,11 +44,11 @@ defmodule SalixIM.Test.IFCCapabilityRequestsStub do
     {:ok, request()}
   end
 
-  defp request, do: :persistent_term.get(@request_key, nil)
+  defp request, do: SystemsRuntime.PersistentTerm.get(@request_key, nil)
 
   defp notify(message) do
-    case :persistent_term.get(@caller_key, nil) do
-      pid when is_pid(pid) -> send(pid, message)
+    case SystemsRuntime.PersistentTerm.get(@caller_key, nil) do
+      pid when SystemsRuntime.Proc.is_process(pid) -> SystemsRuntime.Proc.send(pid, message)
       _none -> :ok
     end
   end

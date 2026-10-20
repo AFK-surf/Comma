@@ -276,6 +276,20 @@ theorem legacyFork_canonical {source session attrs maxId t : Term} {j r : List T
       | dsimp only at h
   all_goals exact normalize_build_canonical h
 
+theorem forkFinish_canonical {source session attrs next : Term} {copy : Bool}
+    {messages facts results : List Term} {lastSeq lastAck forkThrough nextId created : Term}
+    {j r : List Term}
+    (h : forkFinish source session attrs copy messages facts results
+      lastSeq lastAck forkThrough nextId created j = .ok (next, r)) : Canonical next := by
+  cases copy <;> unfold forkFinish at h <;> simp only [Bool.false_eq_true, ↓reduceIte] at h
+  all_goals repeat
+    fail_if_success bind_head_is h [Lifecycle.normalize]
+    obtain ⟨_, _, _, h⟩ := bind_ok h
+  all_goals
+    obtain ⟨child, _, normalized, h⟩ := bind_ok h
+    exact (rebuildRefs_frame h).canonical (normalize_build_canonical normalized)
+
+/-- Each branch of the fork selection ends with `forkFinish` (`forkFinish_canonical`). -/
 theorem currentFork_canonical {source session attrs maxId t : Term} {j r : List Term}
     (h : Fork.currentFork source session attrs maxId j = .ok (t, r)) : Canonical t := by
   rw [current_fork_factor] at h
@@ -283,6 +297,7 @@ theorem currentFork_canonical {source session attrs maxId t : Term} {j r : List 
   repeat'
     fail_if_success bind_head_is h [Lifecycle.normalize]
     first
+      | (head_is h [forkFinish]; exact forkFinish_canonical h)
       | (head_is h [VerifiedKernel.fail]; exact (fail_ok h).elim)
       | (obtain ⟨_, _, _, h⟩ := bind_ok h)
       | split at h

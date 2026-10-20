@@ -97,7 +97,7 @@ defmodule SalixStore.BrowserStorage do
 
       case Repo.update_all(
              from(r in query(row), where: not r.deleted),
-             [set: [ciphertext: cipher, saved_at: DateTime.utc_now()]],
+             [set: [ciphertext: cipher, saved_at: SystemsClock.utc_now()]],
              log: false
            ) do
         {1, _} -> :saved
@@ -160,14 +160,15 @@ defmodule SalixStore.BrowserStorage do
 
   # CDP does not expose cookie access times. Website visits and changed cookie
   # values refresh recency. Export and restore alone do not refresh origin use.
-  defp merge_and_evict(previous, patch) do
+  @doc false
+  def merge_and_evict(previous, patch) do
     origins =
       Map.merge(previous["origins"], patch["origins"])
       |> Map.reject(fn {_, entries} -> entries == [] end)
 
     old_used = previous["last_used"] || %{}
     access = patch["access"] || %{}
-    now = System.system_time(:microsecond)
+    now = SystemsClock.system_time(:microsecond)
     prior_cookies = Map.new(previous["cookies"], &{cookie_key(&1), &1})
     cookies = Map.new(patch["cookies"], &{cookie_key(&1), &1})
     hosts = Enum.map(access, fn {origin, used} -> {URI.parse(origin).host, used} end)
@@ -242,13 +243,14 @@ defmodule SalixStore.BrowserStorage do
 
   # The deployment root protects a stolen database and AEAD binds ciphertext
   # to its Group. Application compromise is outside this boundary.
-  defp encrypt(owner, %{"cookies" => cookies, "origins" => origins} = snapshot)
-       when is_list(cookies) and is_map(origins) do
+  @doc false
+  def encrypt(owner, %{"cookies" => cookies, "origins" => origins} = snapshot)
+      when is_list(cookies) and is_map(origins) do
     encoded = Jason.encode!(snapshot)
 
     if byte_size(encoded) <= @max_bytes do
       with {:ok, key} <- Crypto.derived_key("browser-group-storage-v1") do
-        iv = :crypto.strong_rand_bytes(12)
+        iv = SystemsRuntime.Proc.random_bytes(12)
 
         {cipher, tag} =
           :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, encoded, aad(owner), true)
@@ -260,9 +262,10 @@ defmodule SalixStore.BrowserStorage do
     end
   end
 
-  defp encrypt(_, _), do: {:error, :browser_storage_invalid}
+  def encrypt(_, _), do: {:error, :browser_storage_invalid}
 
-  defp decrypt(owner, encoded) do
+  @doc false
+  def decrypt(owner, encoded) do
     with {:ok, key} <- Crypto.derived_key("browser-group-storage-v1"),
          {:ok, <<iv::binary-size(12), tag::binary-size(16), cipher::binary>>} <-
            Base.decode64(encoded),

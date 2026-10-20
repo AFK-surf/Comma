@@ -1,5 +1,6 @@
 import VerifiedKernelProofs.Session.WorkMaterializedIdentity
 import VerifiedKernelProofs.Session.WorkRevisionExpiry
+import VerifiedKernelProofs.Session.WorkRevisionRawPlan
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

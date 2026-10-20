@@ -1,8 +1,9 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { MarkdownStream, cx } from "@comma/ui";
-import { memo, useContext, useState, type Ref } from "react";
-import type { CommaApiClient } from "../../../../../api";
-import { nativePlatformClipboard } from "../../../../../runtime-chat/nativePlatformActions";
+import { MarkdownStream } from "@comma/ui/components/markdown-stream";
+import { cx } from "@comma/ui/components/utils";
+import { memo, useContext, useMemo, type Ref } from "react";
+import { fromMarkdownTree, type MarkdownTree } from "@comma/core/markdown";
+import { nativePlatformClipboard } from "../../../../../nativePlatformActions";
 import { useCommaUiThemeName } from "../../../../commaUiTheme";
 import { useRouterDisplayName } from "../../../../router-identity/RouterIdentityProvider";
 import type {
@@ -11,13 +12,16 @@ import type {
   ChatImagePreviewRef,
   ChatMessage,
   LocalFilePreview,
-} from "../../../model/conversationChannel";
+} from "@comma/core/chat";
+import { WidgetPresence, useWidgetPresence } from "../../../dynamic-ui/widgetPresence";
 import { messagePartsPlainText } from "../../inline/MessageInlineElements";
 import { normalizeMessageTimestamp } from "../../layout/messageTimestamp";
 import type {
   ReplyChainState,
   RowRelationshipProps,
 } from "../../replies/messageRelationships";
+import { MessageTaskCards } from "../../../tasks/MessageTaskCards";
+import { MessageQuestionCards } from "../../../question/QuestionCard";
 import { ThreadDefaultActorRoleContext } from "../../threadContexts";
 import { MessageAvatar } from "../MessageAvatar";
 import { MessageBlockExtras } from "../MessageBlockExtras";
@@ -29,8 +33,6 @@ import { useFrameCoalescedContent } from "./useFrameCoalescedContent";
 const ChatMarkdownStream = memo(MarkdownStream);
 
 export const AssistantResponseRow = memo(function AssistantResponseRow({
-  api,
-  animateEntry,
   articleRef,
   bubbleTail,
   chainState,
@@ -38,6 +40,7 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
   groupFirst,
   groupId,
   groupLast,
+  live = false,
   message,
   onOpenConversationRef,
   onPreviewLocalFile,
@@ -48,12 +51,11 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
   streamId,
   workspaceId,
 }: RowRelationshipProps & {
-  api?: CommaApiClient | undefined;
-  animateEntry: boolean;
   articleRef?: Ref<HTMLElement> | undefined;
   chainState: ReplyChainState;
   draft?: ChatAssistantDraft | undefined;
   groupId: string;
+  live?: boolean;
   message?: ChatMessage | undefined;
   onOpenConversationRef?: ((conversationRef: ChatConversationRef) => void) | undefined;
   onPreviewLocalFile?:
@@ -62,25 +64,27 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
   referenceMode: "link" | "static";
   showActions: boolean;
   streamId: string;
-  variant?: "default" | "side-chat";
   workspaceId: string;
 }) {
   const messagesApi = useCommaMessages();
   const isDark = useCommaUiThemeName() === "Dark mode";
   const routerName = useRouterDisplayName();
   const relationshipId = message?.messageId ?? draft?.draftId;
-  // Only a newly mounted canonical row enters. Committing an existing draft,
-  // and later renders of that completed row, cannot restart its entrance.
-  const [animateOnMount] = useState(() => animateEntry && !draft);
   const streaming = Boolean(draft && !message);
   const activelyStreaming = streaming && draft?.status === "streaming";
   const renderedContent = useFrameCoalescedContent(
     message?.text ?? draft?.text ?? "",
     activelyStreaming
   );
+  // A reply streaming in, as the core parsed it so far.
+  const draftTree = streaming ? draft?.markdown : undefined;
+  const draftNodes = useMemo(
+    () => (draftTree ? fromMarkdownTree(draftTree as MarkdownTree) : undefined),
+    [draftTree]
+  );
   const compiledMessage = useCompiledMessageMarkdown(
     message,
-    api,
+    live,
     groupId,
     workspaceId
   );
@@ -89,6 +93,21 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
   const hideRouterIdentity = defaultActorRole === "router" && actorRole === "router";
   const actorSourceLabel =
     actorRole === "router" ? routerName : messagesApi.chat_actor_worker();
+  // The row marks what it holds (source label, reply preview, widget) so the stylesheet
+  // needs no `:has()` anchor, which Chromium re-checked for every streamed node.
+  const [holdsWidget, reportWidget] = useWidgetPresence();
+  const sourceLabel =
+    !hideRouterIdentity && actorRole && groupFirst !== false ? (
+      <div className="comma-chat-assistant-source-label">{actorSourceLabel}</div>
+    ) : null;
+  const replyPreview =
+    replyPreviewTargetId && relationshipId ? (
+      <MessageReplyPreview
+        sourceId={relationshipId}
+        target={replyPreviewTarget}
+        targetId={replyPreviewTargetId}
+      />
+    ) : null;
   const markdown = (
     <ChatMarkdownStream
       animation="reveal"
@@ -97,6 +116,7 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
       clipboard={nativePlatformClipboard}
       content={compiledMessage?.content ?? renderedContent}
       final={!activelyStreaming}
+      parsed={compiledMessage ? undefined : draftNodes}
       isDark={isDark}
       showCursor={false}
       smoothStreaming={false}
@@ -110,22 +130,25 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
     />
   );
   const extras = message ? (
-    <MessageBlockExtras
-      groupId={groupId}
-      message={message}
-      onOpenConversationRef={onOpenConversationRef}
-      onPreviewLocalFile={onPreviewLocalFile}
-      referenceMode={referenceMode}
-      workspaceId={workspaceId}
-    />
+    <>
+      <MessageBlockExtras
+        groupId={groupId}
+        message={message}
+        onOpenConversationRef={onOpenConversationRef}
+        onPreviewLocalFile={onPreviewLocalFile}
+        referenceMode={referenceMode}
+        workspaceId={workspaceId}
+      />
+      <MessageTaskCards groupId={groupId} message={message} workspaceId={workspaceId} />
+      <MessageQuestionCards message={message} />
+    </>
   ) : null;
   return (
     <article
       ref={articleRef}
       className={cx(
         "comma-chat-message-assistant",
-        streaming && "comma-chat-message-assistant--draft",
-        animateOnMount && "comma-side-chat-assistant-entry"
+        streaming && "comma-chat-message-assistant--draft"
       )}
       data-message-id={relationshipId}
       data-reply-animation-key={streamId}
@@ -135,31 +158,27 @@ export const AssistantResponseRow = memo(function AssistantResponseRow({
       data-reply-streaming={streaming ? "true" : undefined}
       data-reply-chain-state={chainState}
       data-reply-to-message-id={message?.replyToMessageId}
-      data-message-group-first={
-        groupFirst === undefined ? undefined : String(groupFirst)
-      }
-      data-message-group-last={groupLast === undefined ? undefined : String(groupLast)}
+      data-message-group-first={groupFirst?.toString()}
+      data-message-group-last={groupLast?.toString()}
       data-actor-role={actorRole}
       data-router-identity-hidden={hideRouterIdentity || undefined}
       data-bubble-tail={hideRouterIdentity && bubbleTail ? "left" : undefined}
+      data-reply-preview={replyPreview ? true : undefined}
+      data-widget={holdsWidget || undefined}
       data-slot="chat-assistant-output"
       data-testid={streaming ? "chat-assistant-draft" : undefined}
     >
       {!hideRouterIdentity && actorRole && groupLast !== false ? (
-        <MessageAvatar actorId={message?.actorId} actorRole={actorRole} />
+        <MessageAvatar actorRole={actorRole} />
       ) : null}
-      {replyPreviewTargetId && relationshipId ? (
-        <MessageReplyPreview
-          sourceId={relationshipId}
-          target={replyPreviewTarget}
-          targetId={replyPreviewTargetId}
-        />
-      ) : null}
-      <div className="comma-chat-assistant-response-body">
-        {!hideRouterIdentity && actorRole && groupFirst !== false ? (
-          <div className="comma-chat-assistant-source-label">{actorSourceLabel}</div>
-        ) : null}
-        {markdown}
+      {replyPreview}
+      <div
+        className="comma-chat-assistant-response-body"
+        data-source-label={sourceLabel ? true : undefined}
+        data-widget={holdsWidget || undefined}
+      >
+        {sourceLabel}
+        <WidgetPresence value={reportWidget}>{markdown}</WidgetPresence>
         {extras}
         {showActions && message ? (
           <MessageCopyAction

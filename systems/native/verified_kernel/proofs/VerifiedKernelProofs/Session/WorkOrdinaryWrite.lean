@@ -1,6 +1,7 @@
 import VerifiedKernelProofs.Session.WorkOwnerControlFrame
 import VerifiedKernelProofs.Session.WorkPhysicalRecords
 import VerifiedKernelProofs.Session.WorkOrdinaryKinds
+import VerifiedKernelProofs.Session.WorkPhysicalPreservation
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data ArchivePublication

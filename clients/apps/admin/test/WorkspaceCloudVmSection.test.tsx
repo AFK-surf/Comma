@@ -1,52 +1,64 @@
-import { render, screen, within } from "@testing-library/react";
+import { screen, within } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { AdminApi } from "../src/adminApi";
+import { makeWorkspaceCloudVmModel } from "../src/WorkspaceCloudVmModel";
 import { WorkspaceCloudVmSection } from "../src/WorkspaceCloudVmSection";
+import { mountModel, ok, refuse, review, settle } from "./support";
 
 describe("Workspace Cloud VM", () => {
   it("preserves the saved setting on failure and retries the exact audited command", async () => {
     const update = vi
       .fn()
-      .mockRejectedValueOnce(new Error("Provider unavailable"))
-      .mockResolvedValue({
-        workspace_id: "wsp_one",
-        enabled: true,
-        convergence_status: "pending",
-      });
-    const user = userEvent.setup();
-    render(
-      <WorkspaceCloudVmSection
-        api={{ updateUserWorkspaceVm: update } as unknown as AdminApi}
-        current={{
+      .mockReturnValueOnce(refuse(503, "provider_unavailable", "Provider unavailable"))
+      .mockReturnValue(
+        ok({
+          workspace_id: "wsp_one",
+          enabled: true,
+          convergence_status: "pending",
+        })
+      );
+    const user = userEvent.setup({ delay: null });
+    const view = mountModel(
+      makeWorkspaceCloudVmModel({
+        current: {
           workspace_id: "wsp_one",
           enabled: false,
           convergence_status: "succeeded",
-        }}
-        onAccessDenied={vi.fn()}
-        ready
-        userId="usr_one"
-      />
+        },
+        ready: true,
+        userId: "usr_one",
+      }),
+      { api: { updateUserWorkspaceVm: update } }
     );
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Cloud VM setting" }),
-      "enabled"
+    view.render(<WorkspaceCloudVmSection model={view.model} />);
+    await settle();
+    const vm = screen.getByRole("switch", { name: "Cloud VM" });
+    expect(vm).not.toBeChecked();
+    // Cancelling the review keeps the saved setting.
+    await user.click(vm);
+    await settle();
+    await user.click(
+      within(screen.getByRole("dialog", { name: "Enable Cloud VM?" })).getByRole(
+        "button",
+        {
+          name: "Cancel",
+        }
+      )
     );
-    expect(
-      screen.getByRole("button", { name: "Review Cloud VM change" })
-    ).toBeDisabled();
-    await user.type(
-      screen.getByRole("textbox", { name: /^Reason/ }),
-      "Enable VM for this Workspace"
-    );
-    await user.click(screen.getByRole("button", { name: "Review Cloud VM change" }));
+    await settle();
+    expect(vm).not.toBeChecked();
+    expect(update).not.toHaveBeenCalled();
+
+    await user.click(vm);
+    await settle();
+    await review(user, "Enable Cloud VM?", "Enable VM for this Workspace");
     const dialog = screen.getByRole("dialog", { name: "Enable Cloud VM?" });
-    await user.type(within(dialog).getByRole("textbox"), "workspace-vm:wsp_one:enable");
+    expect(within(dialog).getByText("Provider unavailable")).toBeVisible();
+    expect(vm).not.toBeChecked();
     await user.click(within(dialog).getByRole("button", { name: /^Confirm$/ }));
-    expect(await within(dialog).findByText("Provider unavailable")).toBeVisible();
-    expect(screen.getByText("Disabled", { selector: "dd" })).toBeVisible();
-    await user.click(within(dialog).getByRole("button", { name: /^Confirm$/ }));
-    expect(await screen.findByText(/Cloud VM setting saved/)).toBeVisible();
+    await settle();
+    expect(screen.getByText(/Cloud VM setting saved/)).toBeVisible();
+    expect(vm).toBeChecked();
     expect(update).toHaveBeenCalledTimes(2);
     expect(update.mock.calls[0]).toEqual(update.mock.calls[1]);
     expect(update.mock.calls[0]).toEqual([
@@ -60,21 +72,21 @@ describe("Workspace Cloud VM", () => {
     ]);
   });
 
-  it("does not expose a mutation for an unready Workspace", () => {
-    render(
-      <WorkspaceCloudVmSection
-        api={{} as AdminApi}
-        current={{
+  it("does not expose a mutation for an unready Workspace", async () => {
+    const view = mountModel(
+      makeWorkspaceCloudVmModel({
+        current: {
           workspace_id: "wsp_one",
           enabled: true,
           convergence_status: "pending",
-        }}
-        onAccessDenied={vi.fn()}
-        ready={false}
-        userId="usr_one"
-      />
+        },
+        ready: false,
+        userId: "usr_one",
+      })
     );
-    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    view.render(<WorkspaceCloudVmSection model={view.model} />);
+    await settle();
+    expect(screen.getByRole("switch", { name: "Cloud VM" })).toBeDisabled();
     expect(screen.getByText(/when the Workspace is ready/)).toBeVisible();
   });
 });

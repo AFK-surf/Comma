@@ -1,4 +1,6 @@
 defmodule SalixSignal.CallMedia.Connection do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   One 1:1 call media connection to one remote device (CRS-13).
 
@@ -57,7 +59,7 @@ defmodule SalixSignal.CallMedia.Connection do
   the first answer with `set_remote/2`.
   """
 
-  use GenServer, restart: :temporary
+  use SystemsRuntime.Server, restart: :temporary
 
   alias SalixSignal.CallMedia.{JitterBuffer, Opus}
   alias SalixSignalProto.CallMedia
@@ -97,23 +99,23 @@ defmodule SalixSignal.CallMedia.Connection do
   (this account's Signal device ID), `ice_opts` (extra
   `ExICE.ICEAgent` options) and timer overrides.
   """
-  def start_link(opts), do: GenServer.start_link(__MODULE__, Map.new(opts))
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, Map.new(opts))
 
   @doc """
   This side's connection parameters for the offer or answer:
   `%{public_key, ice_ufrag, ice_pwd}`.
   """
-  def local_parameters(pid), do: GenServer.call(pid, :local_parameters)
+  def local_parameters(pid), do: SystemsRuntime.Server.call(pid, :local_parameters)
 
   @doc "Caller role: binds the connection to the answering device's parameters."
-  def set_remote(pid, remote), do: GenServer.call(pid, {:set_remote, remote})
+  def set_remote(pid, remote), do: SystemsRuntime.Server.call(pid, {:set_remote, remote})
 
   @doc """
   Adds a remote ICE candidate (`candidate:...`, from an ICE update). After
   `max_remote_candidates/0` candidates, further ones are dropped.
   """
   def add_remote_candidate(pid, candidate),
-    do: GenServer.cast(pid, {:remote_candidate, candidate})
+    do: SystemsRuntime.Server.cast(pid, {:remote_candidate, candidate})
 
   @doc """
   Removes a remote candidate (CRS-12 section 5.3.2). The ICE library cannot
@@ -126,7 +128,7 @@ defmodule SalixSignal.CallMedia.Connection do
   def max_remote_candidates, do: @max_remote_candidates
 
   @doc "Callee role: the local user accepted. Sends \"accepted\" and enables media."
-  def accept(pid), do: GenServer.call(pid, :accept)
+  def accept(pid), do: SystemsRuntime.Server.call(pid, :accept)
 
   @doc """
   Sends an in-band hangup (CRS-13 section 9.4) and stops the connection.
@@ -134,23 +136,25 @@ defmodule SalixSignal.CallMedia.Connection do
   field.
   """
   def hangup(pid, type \\ 0, device_id \\ nil),
-    do: GenServer.cast(pid, {:hangup, type, device_id})
+    do: SystemsRuntime.Server.cast(pid, {:hangup, type, device_id})
 
   @doc "Makes this connection the carrier socket of the voice call `call_id`."
-  def attach_call(pid, call_id), do: GenServer.call(pid, {:attach_call, call_id}, 10_000)
+  def attach_call(pid, call_id),
+    do: SystemsRuntime.Server.call(pid, {:attach_call, call_id}, 10_000)
 
   @doc "Queues agent audio (PCM16 mono 24 kHz) for sending."
-  def send_audio(pid, pcm), do: send(pid, {:voice_call, :audio, pcm})
+  def send_audio(pid, pcm), do: SystemsRuntime.Proc.send(pid, {:voice_call, :audio, pcm})
 
   @doc "Counters for tests and diagnostics."
-  def stats(pid), do: GenServer.call(pid, :stats)
+  def stats(pid), do: SystemsRuntime.Server.call(pid, :stats)
 
   # -- Init --------------------------------------------------------------------
 
   @impl GenServer
   def init(%{role: role, call_id: call_id, owner: owner} = opts)
-      when role in [:caller, :callee] and is_integer(call_id) and is_pid(owner) do
-    Process.flag(:trap_exit, true)
+      when role in [:caller, :callee] and is_integer(call_id) and
+             SystemsRuntime.Proc.is_process(owner) do
+    SystemsRuntime.Proc.trap_exit(true)
     timers = Map.merge(@defaults, Map.take(opts, Map.keys(@defaults)))
     {public, private} = opts[:keypair] || Keys.generate_keypair()
     {:ok, encoder} = Opus.encoder()
@@ -161,10 +165,10 @@ defmodule SalixSignal.CallMedia.Connection do
         role: if(role == :caller, do: :controlling, else: :controlled),
         ice_servers: opts[:ice_servers] || [],
         ice_transport_policy: if(opts[:relay_only], do: :relay, else: :all),
-        on_new_candidate: self(),
-        on_connection_state_change: self(),
-        on_gathering_state_change: self(),
-        on_data: self()
+        on_new_candidate: SystemsRuntime.Proc.self(),
+        on_connection_state_change: SystemsRuntime.Proc.self(),
+        on_gathering_state_change: SystemsRuntime.Proc.self(),
+        on_data: SystemsRuntime.Proc.self()
       ] ++ (opts[:ice_opts] || [])
 
     {:ok, ice} = ExICE.ICEAgent.start_link(ice_opts)
@@ -175,7 +179,7 @@ defmodule SalixSignal.CallMedia.Connection do
       role: role,
       call_id: call_id,
       owner: owner,
-      owner_ref: Process.monitor(owner),
+      owner_ref: SystemsRuntime.Proc.monitor(owner),
       identity: {opts.caller_identity_key, opts.callee_identity_key},
       local_device_id: opts[:local_device_id],
       private: private,
@@ -196,8 +200,8 @@ defmodule SalixSignal.CallMedia.Connection do
       jitter: JitterBuffer.new(delay_ms: timers.jitter_delay_ms),
       last_played_samples: nil,
       input_pcm: <<>>,
-      audio_seq: :rand.uniform(0x7FFF),
-      audio_ts: :rand.uniform(0x7FFFFFFF),
+      audio_seq: SystemsRuntime.Proc.uniform(0x7FFF),
+      audio_ts: SystemsRuntime.Proc.uniform(0x7FFFFFFF),
       talking: false,
       held: <<>>,
       held_consumed: 0,
@@ -254,9 +258,9 @@ defmodule SalixSignal.CallMedia.Connection do
   def handle_call(:accept, _from, state), do: {:reply, {:error, :not_acceptable}, state}
 
   def handle_call({:attach_call, call_id}, _from, %{call: nil} = state) do
-    case SalixVoice.attach(call_id, self()) do
+    case SalixVoice.attach(call_id, SystemsRuntime.Proc.self()) do
       {:ok, call, info} ->
-        {:reply, {:ok, info}, %{state | call: call, call_ref: Process.monitor(call)}}
+        {:reply, {:ok, info}, %{state | call: call, call_ref: SystemsRuntime.Proc.monitor(call)}}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -363,7 +367,7 @@ defmodule SalixSignal.CallMedia.Connection do
   end
 
   def handle_info({:voice_call, :end, reason}, state) do
-    if state.call_ref, do: Process.demonitor(state.call_ref, [:flush])
+    if state.call_ref, do: SystemsRuntime.Proc.demonitor(state.call_ref, [:flush])
     notify(state, {:call_ended, reason})
     {:noreply, local_hangup(%{state | call: nil, call_ref: nil}, 0, nil)}
   end
@@ -387,7 +391,7 @@ defmodule SalixSignal.CallMedia.Connection do
   @impl GenServer
   def terminate(_reason, state) do
     SalixSignal.CallMedia.TLSRelay.stop(state.tls_relay)
-    if state.call, do: send(state.call, {:voice_carrier, :hangup, :remote})
+    if state.call, do: SystemsRuntime.Proc.send(state.call, {:voice_carrier, :hangup, :remote})
 
     if state.ice do
       try do
@@ -543,7 +547,7 @@ defmodule SalixSignal.CallMedia.Connection do
     do: type in 1..3 and device != nil and device == state.local_device_id
 
   defp stop_now(state) do
-    send(self(), :linger_done)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :linger_done)
     %{state | closing: true}
   end
 
@@ -597,7 +601,7 @@ defmodule SalixSignal.CallMedia.Connection do
     samples |> min(cap) |> max(0) |> div(step) |> Kernel.*(step)
   end
 
-  defp queue_input(%{call: call} = state, pcm) when is_pid(call) do
+  defp queue_input(%{call: call} = state, pcm) when SystemsRuntime.Proc.is_process(call) do
     buffered = state.input_pcm <> pcm
     keep = min(byte_size(buffered), @max_input_pcm_bytes)
     pcm = binary_part(buffered, byte_size(buffered) - keep, keep)
@@ -607,12 +611,12 @@ defmodule SalixSignal.CallMedia.Connection do
   defp queue_input(state, _pcm), do: state
 
   defp deliver_playout(%{accepted: true, closing: false, call: call} = state)
-       when is_pid(call) do
+       when SystemsRuntime.Proc.is_process(call) do
     bytes = div(Opus.rate() * state.timers.playout_tick_ms, 1000) * 2
     take = min(byte_size(state.input_pcm), bytes)
     <<audio::binary-size(^take), rest::binary>> = state.input_pcm
     pcm = audio <> :binary.copy(<<0>>, bytes - take)
-    send(call, {:voice_carrier, :audio, pcm})
+    SystemsRuntime.Proc.send(call, {:voice_carrier, :audio, pcm})
     %{state | input_pcm: rest}
   end
 
@@ -621,7 +625,7 @@ defmodule SalixSignal.CallMedia.Connection do
   # -- Send --------------------------------------------------------------------
 
   defp start_sending(%{next_send_ms: nil} = state) do
-    send(self(), :send_tick)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :send_tick)
     %{state | next_send_ms: now_ms()}
   end
 
@@ -632,7 +636,12 @@ defmodule SalixSignal.CallMedia.Connection do
   defp send_tick(state) do
     frame = Opus.frame_bytes()
     state = %{state | next_send_ms: state.next_send_ms + Opus.frame_ms()}
-    Process.send_after(self(), :send_tick, max(state.next_send_ms - now_ms(), 0))
+
+    SystemsClock.send_after(
+      SystemsRuntime.Proc.self(),
+      :send_tick,
+      max(state.next_send_ms - now_ms(), 0)
+    )
 
     state =
       case state.held do
@@ -714,7 +723,7 @@ defmodule SalixSignal.CallMedia.Connection do
     if state.call,
       do:
         Enum.each(played, fn {_, name} ->
-          send(state.call, {:voice_carrier, :mark_played, name})
+          SystemsRuntime.Proc.send(state.call, {:voice_carrier, :mark_played, name})
         end)
 
     %{state | marks: pending}
@@ -735,7 +744,13 @@ defmodule SalixSignal.CallMedia.Connection do
     event = {:hangup, state.call_id, type, device_id}
     {packet, control_tx} = Control.send_event(state.control_tx, event)
     state = send_rtp(%{state | control_tx: control_tx}, packet)
-    Process.send_after(self(), :linger_done, state.timers.hangup_linger_ms)
+    # Control timing, not media pacing: it runs on SystemsClock.
+    SystemsClock.send_after(
+      SystemsRuntime.Proc.self(),
+      :linger_done,
+      state.timers.hangup_linger_ms
+    )
+
     %{state | closing: true}
   end
 
@@ -745,7 +760,7 @@ defmodule SalixSignal.CallMedia.Connection do
     sender =
       if state.sent_since_report do
         %{
-          ntp_ms: System.system_time(:millisecond),
+          ntp_ms: SystemsClock.system_time(:millisecond),
           rtp_timestamp: state.audio_ts,
           packets: state.sent_packets,
           octets: state.sent_octets
@@ -786,14 +801,14 @@ defmodule SalixSignal.CallMedia.Connection do
 
   # -- Helpers -----------------------------------------------------------------
 
-  defp notify(%{owner: owner}, event) when is_pid(owner),
-    do: send(owner, {:signal_call_media, self(), event})
+  defp notify(%{owner: owner}, event) when SystemsRuntime.Proc.is_process(owner),
+    do: SystemsRuntime.Proc.send(owner, {:signal_call_media, SystemsRuntime.Proc.self(), event})
 
   defp notify(_state, _event), do: :ok
 
   defp count(state, key), do: %{state | counters: Map.update!(state.counters, key, &(&1 + 1))}
 
-  defp schedule(message, ms), do: Process.send_after(self(), message, ms)
+  defp schedule(message, ms), do: SystemsClock.send_after(SystemsRuntime.Proc.self(), message, ms)
 
-  defp now_ms, do: System.monotonic_time(:millisecond)
+  defp now_ms, do: SystemsClock.monotonic_time(:millisecond)
 end

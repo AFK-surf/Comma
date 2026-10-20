@@ -1,7 +1,7 @@
 defmodule CommaWeb.RecommendationGoogleMemberSource do
   @moduledoc false
 
-  alias CommaWeb.RecommendationMemberRead
+  alias CommaWeb.{RecommendationMemberRead, RecommendationSourceQuote}
 
   # Official Google APIs through the account-pinned proxy. Each read uses the
   # provider-asserted self identity of the same consented account.
@@ -9,26 +9,33 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
   @calendar "https://www.googleapis.com/calendar/v3/calendars/primary"
   @drive "https://www.googleapis.com/drive/v3"
   @week 7 * 86_400
-  @awaiting "in:inbox is:important to:me -category:promotions -category:social newer_than:7d"
+  @awaiting "in:inbox to:me -category:promotions newer_than:7d"
+  @window 15
 
-  # Important mail to the member that still waits for a reply, read or not:
+  # Recent inbox mail to the member, read or not. Provider importance and social
+  # categories do not decide whether a matter needs the member. As before,
   # the thread's latest message is not one the member sent. One item per thread.
+  # Important mail keeps its own read window and precedes ordinary mail within
+  # the byte budget. Important threads alone can still exceed that budget.
   def read("gmail", request, _now) do
-    [profile, list] =
+    [profile, important, recent] =
       RecommendationMemberRead.map(
         [
           @gmail <> "/profile",
-          @gmail <> "/threads?" <> URI.encode_query(%{"q" => @awaiting, "maxResults" => 15})
+          threads_url("is:important " <> @awaiting),
+          threads_url(@awaiting)
         ],
         &request.("GET", &1, []),
-        2
+        3
       )
 
     with {:ok, %{"emailAddress" => email}} when is_binary(email) and email != "" <- profile,
-         {:ok, list} when is_map(list) <- list do
+         {:ok, important} when is_map(important) <- important,
+         {:ok, recent} when is_map(recent) <- recent do
       results =
-        List.wrap(list["threads"])
+        (List.wrap(important["threads"]) ++ List.wrap(recent["threads"]))
         |> Enum.filter(&(is_map(&1) and valid_id?(&1["id"])))
+        |> Enum.uniq_by(& &1["id"])
         |> RecommendationMemberRead.map(
           &request.("GET", @gmail <> "/threads/" <> &1["id"] <> "?format=full", []),
           8
@@ -41,7 +48,7 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
       readable = for {:ok, item} <- results, do: item
       missing = Enum.count(results, &(&1 == :missing))
 
-      # Keep readable work, but never report an unreadable mailbox as caught up.
+      # Keep readable mail, but never report an unreadable mailbox as caught up.
       if readable != [] or missing == 0 do
         data = %{"messages" => readable, "memberRelation" => "awaiting_your_reply"}
 
@@ -101,6 +108,10 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
           item
           |> CommaWeb.RecommendationSourceContext.attach(~w(status description location))
           |> Map.take(~w(id summary htmlLink start end context))
+          |> RecommendationSourceQuote.put(
+            title: item["summary"],
+            body: {:html, item["description"]}
+          )
         end)
 
       {:ok, %{"items" => selected, "memberRelation" => "your_upcoming_events"},
@@ -164,6 +175,10 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
           |> CommaWeb.RecommendationSourceContext.attach(~w(description))
           |> Map.take(~w(id name webViewLink modifiedTime context))
           |> Map.put("memberRelation", "your_recently_changed_file")
+          |> RecommendationSourceQuote.put(
+            title: item["name"],
+            body: {:plain, item["description"]}
+          )
         end)
 
       {:ok,
@@ -181,6 +196,9 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
     end
   end
 
+  defp threads_url(query),
+    do: @gmail <> "/threads?" <> URI.encode_query(%{"q" => query, "maxResults" => @window})
+
   defp drive_files({:ok, %{"files" => files}}) when is_list(files), do: {files, []}
   defp drive_files({:error, reason}), do: {[], [reason]}
   defp drive_files(_response), do: {[], [:invalid_provider_response]}
@@ -196,8 +214,8 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
         :missing
 
       "SENT" in labels or
-        not Enum.all?(~w(INBOX IMPORTANT), &(&1 in labels)) or
-          Enum.any?(~w(CATEGORY_PROMOTIONS CATEGORY_SOCIAL SPAM TRASH), &(&1 in labels)) ->
+        "INBOX" not in labels or
+          Enum.any?(~w(CATEGORY_PROMOTIONS SPAM TRASH), &(&1 in labels)) ->
         :closed
 
       true ->
@@ -233,17 +251,35 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
     if mail_context?(item) do
       {:ok,
        item
-       |> CommaWeb.RecommendationSourceContext.attach(~w(sender snippet messageText))
+       # The snippet repeats the start of the text; it stands in only without one.
+       |> CommaWeb.RecommendationSourceContext.attach(
+         if(is_binary(text) and text != "", do: ~w(sender messageText), else: ~w(sender snippet))
+       )
        |> Map.take(~w(messageId threadId subject sender messageTimestamp context))
        |> Map.put(
          "webUrl",
          "https://mail.google.com/mail/?authuser=" <>
            URI.encode_www_form(email) <> "#inbox/" <> message["id"]
+       )
+       |> RecommendationSourceQuote.put(
+         title: item["subject"],
+         author: sender_name(item["sender"]),
+         body: CommaWeb.ProactiveMailSource.quote_body(message) || {:html, item["snippet"]}
        )}
     else
       :missing
     end
   end
+
+  # "Alex Chen <alex@example.com>" is Alex Chen. An address alone stays.
+  defp sender_name(from) when is_binary(from) do
+    case Regex.run(~r/^\s*"?([^"<]*?)"?\s*<[^>]+>\s*$/u, from) do
+      [_, name] when name != "" -> name
+      _ -> from
+    end
+  end
+
+  defp sender_name(_from), do: nil
 
   defp internal_ms(%{"internalDate" => value}) do
     case Integer.parse(to_string(value)) do
@@ -339,6 +375,11 @@ defmodule CommaWeb.RecommendationGoogleMemberSource do
         }
         |> CommaWeb.RecommendationSourceContext.attach(~w(mention))
         |> Map.delete("mention")
+        |> RecommendationSourceQuote.put(
+          title: file["name"],
+          author: get_in(latest, ["author", "displayName"]),
+          body: {:plain, latest["content"]}
+        )
       ]
     else
       []

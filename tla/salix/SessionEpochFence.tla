@@ -53,6 +53,9 @@
 (* - SalixAgent.ExternalSessionStore.update_state/3                        *)
 (* - SalixAgent.InternalSessionActor/ExternalSessionActor init (freeze)    *)
 (* - SalixAgent.OwnershipCell (fence/install; local mirror only)           *)
+(* - SalixIM.Triage.RunFence fence_epoch: a released fence is replaced   *)
+(*   at the next epoch; release_transition/active_binding? refuse a stale  *)
+(*   run (README "Triage run fence release")                               *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, TLC
 

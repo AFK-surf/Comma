@@ -556,7 +556,6 @@ describe("AiActivity", () => {
   });
 
   it("coalesces 30ms headline updates behind the active swap and keeps only the latest target", () => {
-    vi.useFakeTimers();
     const frames: FrameRequestCallback[] = [];
     let frameId = 0;
     const requestFrame = vi
@@ -678,7 +677,6 @@ describe("AiActivity", () => {
     } finally {
       cancelFrame.mockRestore();
       requestFrame.mockRestore();
-      vi.useRealTimers();
     }
   });
 
@@ -734,7 +732,6 @@ describe("AiActivity", () => {
   });
 
   it("settles the latest headline when transitionend is lost", () => {
-    vi.useFakeTimers();
     const frames: FrameRequestCallback[] = [];
     const requestFrame = vi
       .spyOn(window, "requestAnimationFrame")
@@ -798,7 +795,6 @@ describe("AiActivity", () => {
       expect(settledLayers[0]).toHaveTextContent("Answering…");
     } finally {
       requestFrame.mockRestore();
-      vi.useRealTimers();
     }
   });
 

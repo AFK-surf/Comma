@@ -2,7 +2,7 @@ defmodule SalixWeb.CloudVM do
   @moduledoc "Group and tenant cloud-provider settings. Compute owns resource lifecycle."
   alias SalixStore.{Crypto, Keys, S3}
   @cloudflare_worker_name "salix-vm-verify"
-  @config_missing_error "vm.enabled requires tenant vm provider configuration"
+  @config_missing_error "the Cloud VM requires tenant vm provider configuration"
   @empty_organization_vm %{
     "config_source" => "organization",
     "default_provider" => "cloudflare",
@@ -210,10 +210,96 @@ defmodule SalixWeb.CloudVM do
   def validate_enabled(_tenant_id, _provider),
     do: {:error, {:bad_request, "vm.provider must be cloudflare"}}
 
+  @doc """
+  Where a Group's new Cloud VM goes: on its Agent VMM Host when the Group (a
+  BFT Project) has one bound (its Mac mini Runner), otherwise on Cloudflare.
+  Placement is fixed when the VM's record is created; an existing VM keeps
+  its provider. A Group with more than one bound Host gets no VM: no rule
+  chooses between them.
+  """
+  @spec placement(String.t(), String.t()) ::
+          {:ok, :cloudflare | {:agent_vmm, String.t()}} | {:error, term()}
+  def placement(tenant_id, group_id) do
+    case SalixStore.AgentVMM.group_registration_ids(tenant_id, group_id) do
+      [] -> {:ok, :cloudflare}
+      [registration_id] -> {:ok, {:agent_vmm, registration_id}}
+      [_ | _] -> {:error, {:conflict, "the Project has more than one Agent VMM Host"}}
+    end
+  end
+
+  @doc """
+  Whether a new Cloud VM may be created on the Agent VMM Host
+  `registration_id`: a Host installed on a BFT Runner must be connected to
+  Salix now (`SalixStore.AgentVMM.connected?/1`), because that connection
+  takes the VM's create and start. The Runner's BFT heartbeat does not say
+  so: the Mac can report to BFT while its Host is disconnected. A VM keeps
+  the provider it was created on, so one created on a disconnected Host
+  would stay there; it is not moved to Cloudflare either, because a Project
+  bound to a Runner runs its VM there.
+  `{:error, {:runner_offline, %{"name" => ..., "status" => "host_disconnected"}}}`
+  otherwise. The Runner's name comes from the BFT port
+  (`:agent_vmm_runner_mod`, `runner_status/2`).
+  """
+  @spec host_runner_online(String.t(), String.t()) :: :ok | {:error, term()}
+  def host_runner_online(tenant_id, registration_id) do
+    case SalixStore.AgentVMMInstallations.bft_runner(tenant_id, registration_id) do
+      nil ->
+        :ok
+
+      runner_id ->
+        if SalixStore.AgentVMM.connected?(registration_id) do
+          :ok
+        else
+          {:error,
+           {:runner_offline,
+            %{"name" => runner_name(tenant_id, runner_id), "status" => "host_disconnected"}}}
+        end
+    end
+  end
+
+  defp runner_name(tenant_id, runner_id) do
+    case runner_mod().runner_status(tenant_id, runner_id) do
+      {:ok, %{"name" => name}} when is_binary(name) and name != "" -> name
+      _unnamed -> runner_id
+    end
+  end
+
+  defp runner_mod,
+    do: SystemsRuntime.get_env(:salix_web, :agent_vmm_runner_mod, __MODULE__.NoRunners)
+
+  defmodule NoRunners do
+    @moduledoc false
+    # A node without BFT cannot name a Runner.
+    def runner_status(_tenant_id, _runner_id), do: {:error, :not_found}
+  end
+
+  @doc """
+  Validate that the Cloud VM switch of `group_id` may be turned on: the
+  Group's existing VM, or where a new one goes (`placement/2`).
+  """
+  @spec validate_group_enabled(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def validate_group_enabled(tenant_id, group_id, provider) do
+    case SalixStore.Compute.group_workload(group_id) do
+      {:ok, %{"provider" => "agent_vmm"}} ->
+        :ok
+
+      _ ->
+        case placement(tenant_id, group_id) do
+          {:ok, {:agent_vmm, _registration_id}} -> :ok
+          {:ok, :cloudflare} -> validate_enabled(tenant_id, provider)
+          {:error, _} = error -> error
+        end
+    end
+  end
+
   @spec validate_group_provider(String.t(), String.t()) :: :ok | {:error, term()}
   def validate_group_provider(group_id, provider) do
     case SalixStore.Compute.group_workload(group_id) do
       {:ok, %{"provider" => ^provider}} ->
+        :ok
+
+      # The Group's VM on its Agent VMM Host serves its Agents' Cloud VM.
+      {:ok, %{"provider" => "agent_vmm"}} when provider == "cloudflare" ->
         :ok
 
       {:ok, _} ->
@@ -299,8 +385,8 @@ defmodule SalixWeb.CloudVM do
           vm
 
         _ ->
-          Application.get_env(:salix_web, :platform_vm) ||
-            Application.get_env(:comma_core, :salix_vm)
+          SystemsRuntime.get_env(:salix_web, :platform_vm) ||
+            SystemsRuntime.get_env(:comma_core, :salix_vm)
       end
 
     case config do
@@ -480,5 +566,5 @@ defmodule SalixWeb.CloudVM do
     end
   end
 
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 end

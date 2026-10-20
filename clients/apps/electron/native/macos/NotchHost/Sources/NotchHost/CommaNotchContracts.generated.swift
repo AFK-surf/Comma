@@ -581,7 +581,7 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
         conversationId: String,
         groupId: String,
         id: String,
-        status: CommaNotchScenePayloadTaskStatus = .inProgress,
+        status: CommaNotchScenePayloadTaskStatus,
         subtitle: String,
         title: String,
         updatedAt: Double,
@@ -603,13 +603,6 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
         self.groupId = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: 256)
         self.id = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .id, minimumLength: 1, maximumLength: 256)
         self.status = try container.decode(CommaNotchScenePayloadTaskStatus.self, forKey: .status)
-        guard self.status == .inProgress else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .status,
-                in: container,
-                debugDescription: "Unexpected constant value for status."
-            )
-        }
         self.subtitle = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .subtitle, minimumLength: nil, maximumLength: 2048)
         self.title = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .title, minimumLength: nil, maximumLength: 2048)
         self.updatedAt = try container.decode(Double.self, forKey: .updatedAt)
@@ -624,15 +617,6 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
         try container.encode(self.groupId, forKey: .groupId)
         try CommaNativeContractValidation.validateStringForEncoding(id, minimumLength: 1, maximumLength: 256, codingPath: container.codingPath + [CodingKeys.id])
         try container.encode(self.id, forKey: .id)
-        guard self.status == .inProgress else {
-            throw EncodingError.invalidValue(
-                self.status,
-                EncodingError.Context(
-                    codingPath: container.codingPath + [CodingKeys.status],
-                    debugDescription: "Unexpected constant value for status."
-                )
-            )
-        }
         try container.encode(self.status, forKey: .status)
         try CommaNativeContractValidation.validateStringForEncoding(subtitle, minimumLength: nil, maximumLength: 2048, codingPath: container.codingPath + [CodingKeys.subtitle])
         try container.encode(self.subtitle, forKey: .subtitle)
@@ -657,4 +641,6 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
 
 public enum CommaNotchScenePayloadTaskStatus: String, Codable, Equatable, Sendable {
     case inProgress = "in_progress"
+    case failed = "failed"
+    case sent = "sent"
 }

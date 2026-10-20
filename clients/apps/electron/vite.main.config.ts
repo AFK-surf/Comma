@@ -30,8 +30,6 @@ export default defineConfig({
     alias: {
       "@comma/config": resolve("../../packages/config/src/index.ts"),
       "@comma/i18n": resolve("../../packages/i18n/src/index.ts"),
-      "@comma/app/api": resolve("../../packages/app/src/api/index.ts"),
-      "@comma/app/chat-core": resolve("../../packages/app/src/chat-core.ts"),
       "@comma/session-contract": resolve(
         "../../packages/session-contract/src/index.ts"
       ),

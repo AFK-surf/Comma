@@ -17,7 +17,7 @@ defmodule SalixWeb.Dashboard.Format do
   end
 
   def time_ago(%DateTime{} = dt) do
-    diff = DateTime.diff(DateTime.utc_now(), dt, :second)
+    diff = DateTime.diff(SystemsClock.utc_now(), dt, :second)
 
     cond do
       diff < 0 -> "just now"
@@ -115,6 +115,6 @@ defmodule SalixWeb.Dashboard.Format do
 
   @doc "A web-originated client request id for dedupe (willow `web-<uuid>`)."
   def request_id do
-    "web-" <> (:crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false))
+    "web-" <> (SystemsRuntime.Proc.random_bytes(16) |> Base.url_encode64(padding: false))
   end
 end

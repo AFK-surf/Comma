@@ -10,8 +10,8 @@ defmodule SalixMeet.RouterSummary do
   @list_fields ~w(attendees key_points decisions open_questions blockers)
 
   def enabled?(state) do
-    not is_nil(Application.get_env(:salix_meet, :router_summary_mod)) and
-      state["status"] == "done" and state["provider"] in ["slack", "feishu"]
+    not is_nil(SystemsRuntime.get_env(:salix_meet, :router_summary_mod)) and
+      state["status"] == "done" and state["provider"] in ["slack", "feishu", "lark", "comma"]
   end
 
   def source_fingerprint(state) do
@@ -27,7 +27,7 @@ defmodule SalixMeet.RouterSummary do
 
   def generate(state, context, claim) do
     id = state["meeting_id"]
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
     fingerprint = source_fingerprint(state)
 
     with {:ok, %{"state" => live}, _} <-
@@ -52,7 +52,7 @@ defmodule SalixMeet.RouterSummary do
 
                  request = %{
                    "request_id" =>
-                     Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false),
+                     Base.url_encode64(SystemsRuntime.Proc.random_bytes(24), padding: false),
                    "source_fingerprint" => fingerprint,
                    "status" => "pending",
                    "attempt" => attempt,
@@ -78,7 +78,7 @@ defmodule SalixMeet.RouterSummary do
         true ->
           # Retrying enqueue uses the same source id, including after a lost ACK.
           # The request is durable before Router can receive it or submit.
-          mod = Application.fetch_env!(:salix_meet, :router_summary_mod)
+          mod = SystemsRuntime.fetch_env!(:salix_meet, :router_summary_mod)
 
           case mod.request(Map.put(live, "meeting_id", id), request) do
             :ok -> {:error, :router_summary_pending}
@@ -178,7 +178,7 @@ defmodule SalixMeet.RouterSummary do
         {:error, :summary_request_closed}
 
       request["status"] != "pending" or
-          (request["expires_at"] || 0) <= System.system_time(:millisecond) ->
+          (request["expires_at"] || 0) <= SystemsClock.system_time(:millisecond) ->
         {:error, :summary_request_expired}
 
       true ->

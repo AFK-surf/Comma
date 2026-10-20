@@ -46,7 +46,7 @@ theorem inputEvent_nil_fields {session payload now event : Term} {j r : List Ter
   intro name value member
   simp only [List.mem_cons, List.mem_singleton, Prod.mk.injEq] at member
   rcases member with ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ |
-    ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ <;> simp_all
+    ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ <;> string_ne
 
 theorem nil_input_not_appended {s t session payload now event : Term} {j r before after : List Term}
     (generated : Command.inputEvent session nil payload now before = .ok (event, after))

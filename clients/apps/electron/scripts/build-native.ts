@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -25,25 +25,35 @@ import {
   micCaptureBinaryName,
   micCaptureHostDistPath,
   nativeDistRoot,
+  cableScannerAddonDistPath,
   fileApplicationsAddonDistPath,
   fontFamiliesAddonDistPath,
+  keychainPasswordAddonDistPath,
   notchBinaryName,
   notchHostDistPath,
   notificationAuthorizationAddonDistPath,
   platformNativeDistDir,
-  salixConnectBinaryName,
-  salixConnectBinaryPath,
+  quickChatBinaryName,
+  quickChatHostDistPath,
+  stationDistDir,
+  stationLauncherDistPath,
+  stationMeshAddonDistPath,
   sharedMacOSNativeDistDir,
-  sideChatAppName,
-  sideChatBackdropAddonDistPath,
-  sideChatHostBundleId,
-  sideChatHostDistAppPath,
+  menuBarAppName,
+  menuBarHostBundleId,
+  menuBarHostDistAppPath,
   sleepGuardAddonDistPath,
   sleepGuardBinaryName,
   sleepGuardDistPath,
   synchBinaryName,
   synchBinaryPath,
 } from "./native-paths";
+import {
+  NativeInstallCache,
+  copyNativeFile,
+  snapshotPaths,
+} from "./native-build-cache";
+import { buildNativeAddon } from "./native-addon-build";
 import { fetchOpenDropKit } from "./opendropkit-release";
 import {
   synchControlProtocol,
@@ -52,17 +62,19 @@ import {
   synchReleaseTag,
 } from "./synch-release";
 
+const incremental =
+  process.argv.includes("--incremental") && !process.argv.includes("--force");
 const configuration = process.env.NODE_ENV === "production" ? "release" : "debug";
 const appDir = resolve(import.meta.dirname, "..");
 const repoRoot = resolve(appDir, "../../..");
 const releaseConfig = getCommaReleaseConfig();
 const notchPackageDir = resolve(appDir, "native/macos/NotchHost");
 const micCapturePackageDir = resolve(appDir, "native/macos/MicCaptureHost");
+const quickChatPackageDir = resolve(appDir, "native/macos/QuickChatHost");
 const sleepGuardDir = resolve(appDir, "native/macos/SleepGuard");
 const sleepGuardOutput = sleepGuardDistPath(appDir);
 const sleepGuardAddonOutput = sleepGuardAddonDistPath(appDir);
-const sideChatProjectDir = resolve(appDir, "native/macos/SideChatHost");
-const sideChatBackdropAddonDir = resolve(appDir, "native/macos/SideChatBackdrop");
+const menuBarProjectDir = resolve(appDir, "native/macos/MenuBarHost");
 const notificationAuthorizationAddonDir = resolve(
   appDir,
   "native/macos/NotificationAuthorization"
@@ -73,26 +85,45 @@ const fileApplicationsOnly = process.argv.includes("--file-applications-only");
 const fontFamiliesAddonDir = resolve(appDir, "native/macos/FontFamilies");
 const fontFamiliesOutput = fontFamiliesAddonDistPath(appDir);
 const fontFamiliesOnly = process.argv.includes("--font-families-only");
+const keychainPasswordAddonDir = resolve(appDir, "native/macos/KeychainPassword");
+const keychainPasswordOutput = keychainPasswordAddonDistPath(appDir);
+const keychainPasswordOnly = process.argv.includes("--keychain-password-only");
+const cableScannerAddonDir = resolve(appDir, "native/macos/CableScanner");
+const cableScannerOutput = cableScannerAddonDistPath(appDir);
+const cableScannerOnly = process.argv.includes("--cable-scanner-only");
 const notificationAuthorizationOnly = process.argv.includes(
   "--notification-authorization-only"
 );
 const nodeGypPath = resolve(repoRoot, "node_modules/.bin/node-gyp");
-const salixConnectDir = resolve(repoRoot, "systems/connector/salix-connect");
+/** The Computer Use helper's sources (they move beside the station once the Go connector goes). */
+const computerUseSourceDir = resolve(repoRoot, "systems/connector/salix-connect");
 const computerUsePackageScript = resolve(
-  salixConnectDir,
+  computerUseSourceDir,
   "scripts/package-computer-use-helper.sh"
 );
-const salixConnectOutputDir = platformNativeDistDir(appDir);
-const salixConnectBinary = salixConnectBinaryPath(appDir);
+const platformOutputDir = platformNativeDistDir(appDir);
+const stationBundleScript = resolve(repoRoot, "systems/station/scripts/bundle.sh");
+const stationNativeScript = resolve(repoRoot, "systems/station/scripts/native.ts");
+const stationMeshAddon = stationMeshAddonDistPath(appDir);
+const stationOutput = stationDistDir(appDir);
+const stationLauncher = stationLauncherDistPath(appDir, platform);
+/** The platforms the station is released for (bundle.sh). */
+const stationPlatform = (
+  {
+    "darwin-arm64": "darwin-arm64",
+    "linux-x64": "linux-x64",
+    "linux-arm64": "linux-arm64",
+    "win32-x64": "win32-x64",
+  } as Record<string, string>
+)[`${platform}-${arch}`];
 const computerUseAppPath = computerUseDistAppPath(appDir);
 const outputDir = sharedMacOSNativeDistDir(appDir);
 const notchHostOutput = notchHostDistPath(appDir);
 const micCaptureHostOutput = micCaptureHostDistPath(appDir);
-const sideChatHostOutput = sideChatHostDistAppPath(appDir);
-const sideChatBackdropOutput = sideChatBackdropAddonDistPath(appDir);
+const quickChatHostOutput = quickChatHostDistPath(appDir);
+const menuBarHostOutput = menuBarHostDistAppPath(appDir);
 const notificationAuthorizationOutput = notificationAuthorizationAddonDistPath(appDir);
-const sideChatOnly = process.argv.includes("--side-chat-only");
-const sideChatBackdropOnly = process.argv.includes("--side-chat-backdrop-only");
+const menuBarOnly = process.argv.includes("--menu-bar-only");
 /** Fetch only the synchronicity daemon: no Go, Swift or Xcode needed. */
 const synchOnly = process.argv.includes("--synch-only");
 const airDropOnly = process.argv.includes("--airdrop-only");
@@ -103,7 +134,21 @@ async function buildAirDrop() {
     arch,
     binaryOverride: process.env.COMMA_OPENDROPKIT_BINARY,
     token: process.env.OPENDROPKIT_RELEASE_TOKEN,
+    incremental,
+    // A CI host keeps pinned downloads across jobs (COMMA_TOOL_CACHE).
+    downloadCache: process.env.COMMA_TOOL_CACHE
+      ? join(process.env.COMMA_TOOL_CACHE, "opendropkit")
+      : undefined,
   });
+}
+
+function installCache(name: string, inputs: unknown, outputs: string[]) {
+  return new NativeInstallCache(
+    resolve(appDir, ".native-cache/installs", `${name}.json`),
+    incremental,
+    { platform, arch, configuration, inputs },
+    outputs
+  );
 }
 
 function run(command: string, args: string[], cwd: string) {
@@ -137,9 +182,10 @@ function assertDirectory(path: string, label: string) {
 function buildMicCaptureHost() {
   run("swift", ["build", "-c", configuration], micCapturePackageDir);
   mkdirSync(outputDir, { recursive: true });
-  copyFileSync(
+  copyNativeFile(
     resolve(micCapturePackageDir, ".build", configuration, micCaptureBinaryName),
-    micCaptureHostOutput
+    micCaptureHostOutput,
+    incremental
   );
   assertFile(micCaptureHostOutput, "Native MicCaptureHost");
 
@@ -150,9 +196,10 @@ function buildMicCaptureHost() {
 function buildSleepGuard() {
   run("swift", ["build", "-c", configuration], sleepGuardDir);
   mkdirSync(outputDir, { recursive: true });
-  copyFileSync(
+  copyNativeFile(
     resolve(sleepGuardDir, ".build", configuration, sleepGuardBinaryName),
-    sleepGuardOutput
+    sleepGuardOutput,
+    incremental
   );
   assertFile(sleepGuardOutput, "Native CommaSleepGuard");
   buildNodeAddon({
@@ -163,21 +210,45 @@ function buildSleepGuard() {
   });
 }
 
+/**
+ * Quick Chat. It targets macOS 26 (SpeechAnalyzer), so it needs the macOS 26
+ * SDK (Xcode 26, as NotchKit's Liquid Glass already does); Main starts it only
+ * on macOS 26 and later.
+ */
+function buildQuickChatHost() {
+  run("swift", ["build", "-c", configuration], quickChatPackageDir);
+  mkdirSync(outputDir, { recursive: true });
+  copyNativeFile(
+    resolve(quickChatPackageDir, ".build", configuration, quickChatBinaryName),
+    quickChatHostOutput,
+    incremental
+  );
+  assertFile(quickChatHostOutput, "Native QuickChatHost");
+
+  console.log(`Native QuickChatHost built (${configuration}).`);
+}
+
 function buildNotchHost() {
   run("swift", ["build", "-c", configuration], notchPackageDir);
   mkdirSync(outputDir, { recursive: true });
-  copyFileSync(
+  copyNativeFile(
     resolve(notchPackageDir, ".build", configuration, notchBinaryName),
-    notchHostOutput
+    notchHostOutput,
+    incremental
   );
   assertFile(notchHostOutput, "Native NotchHost");
 
   console.log(`Native NotchHost built (${configuration}).`);
 }
 
-function buildSideChatHost() {
+function buildMenuBarHost() {
+  // Builds with Side Chat left these here; an incremental build would package
+  // them unsigned.
+  for (const retired of ["CommaSideChatHost.app", "comma-side-chat-backdrop.node"]) {
+    rmSync(resolve(outputDir, retired), { force: true, recursive: true });
+  }
   const xcodeConfiguration = configuration === "release" ? "Release" : "Debug";
-  const derivedDataPath = resolve(sideChatProjectDir, ".derived");
+  const derivedDataPath = resolve(menuBarProjectDir, ".derived");
   run(
     "xcodebuild",
     [
@@ -190,27 +261,36 @@ function buildSideChatHost() {
       "-derivedDataPath",
       derivedDataPath,
       "CODE_SIGNING_ALLOWED=NO",
-      `PRODUCT_BUNDLE_IDENTIFIER=${sideChatHostBundleId(releaseConfig.appBundleId)}`,
+      `PRODUCT_BUNDLE_IDENTIFIER=${menuBarHostBundleId(releaseConfig.appBundleId)}`,
       "build",
     ],
-    sideChatProjectDir
+    menuBarProjectDir
   );
 
-  rmSync(sideChatHostOutput, { force: true, recursive: true });
-  cpSync(
-    resolve(
-      derivedDataPath,
-      "Build/Products",
-      xcodeConfiguration,
-      `${sideChatAppName}.app`
-    ),
-    sideChatHostOutput,
-    { dereference: true, recursive: true }
+  const builtApp = resolve(
+    derivedDataPath,
+    "Build/Products",
+    xcodeConfiguration,
+    `${menuBarAppName}.app`
   );
-  assertDirectory(sideChatHostOutput, `Native ${sideChatAppName}.app`);
+  const cache = installCache(
+    "menu-bar",
+    {
+      source: snapshotPaths([builtApp]),
+      signingIdentity: process.env.COMMA_MACOS_DEV_SIGN_IDENTITY ?? "-",
+    },
+    [menuBarHostOutput]
+  );
+  if (cache.reuse()) {
+    console.log("Native menu-bar helper unchanged.");
+    return;
+  }
+  rmSync(menuBarHostOutput, { force: true, recursive: true });
+  cpSync(builtApp, menuBarHostOutput, { dereference: true, recursive: true });
+  assertDirectory(menuBarHostOutput, `Native ${menuBarAppName}.app`);
   assertFile(
-    resolve(sideChatHostOutput, "Contents/MacOS", sideChatAppName),
-    `Native ${sideChatAppName}`
+    resolve(menuBarHostOutput, "Contents/MacOS", menuBarAppName),
+    `Native ${menuBarAppName}`
   );
 
   // xcodebuild intentionally skips signing so CI does not require an Apple
@@ -225,53 +305,27 @@ function buildSideChatHost() {
       "--deep",
       "--sign",
       process.env.COMMA_MACOS_DEV_SIGN_IDENTITY ?? "-",
-      sideChatHostOutput,
+      menuBarHostOutput,
     ],
     appDir
   );
   run(
     "codesign",
-    ["--verify", "--deep", "--strict", "--verbose=2", sideChatHostOutput],
+    ["--verify", "--deep", "--strict", "--verbose=2", menuBarHostOutput],
     appDir
   );
 
-  console.log(`Native ${sideChatAppName}.app built (${xcodeConfiguration}).`);
+  cache.save();
+  console.log(`Native ${menuBarAppName}.app built (${xcodeConfiguration}).`);
 }
 
-function buildNodeAddon({
-  addonDir,
-  label,
-  output,
-  targetName,
-}: {
+function buildNodeAddon(options: {
   addonDir: string;
   label: string;
   output: string;
   targetName: string;
 }) {
-  const nodeGypConfiguration = configuration === "release" ? "Release" : "Debug";
-  run(
-    nodeGypPath,
-    ["rebuild", configuration === "release" ? "--release" : "--debug"],
-    addonDir
-  );
-  mkdirSync(outputDir, { recursive: true });
-  copyFileSync(
-    resolve(addonDir, "build", nodeGypConfiguration, `${targetName}.node`),
-    output
-  );
-  assertFile(output, label);
-
-  console.log(`${label} built (${configuration}).`);
-}
-
-function buildSideChatBackdropAddon() {
-  buildNodeAddon({
-    addonDir: sideChatBackdropAddonDir,
-    label: "Native Side Chat backdrop addon",
-    output: sideChatBackdropOutput,
-    targetName: "comma_side_chat_backdrop",
-  });
+  buildNativeAddon({ ...options, nodeGypPath, configuration, incremental });
 }
 
 function buildFileApplicationsAddon() {
@@ -292,6 +346,24 @@ function buildFontFamiliesAddon() {
   });
 }
 
+function buildKeychainPasswordAddon() {
+  buildNodeAddon({
+    addonDir: keychainPasswordAddonDir,
+    label: "Native keychain password addon",
+    output: keychainPasswordOutput,
+    targetName: "comma_keychain_password",
+  });
+}
+
+function buildCableScannerAddon() {
+  buildNodeAddon({
+    addonDir: cableScannerAddonDir,
+    label: "Native caBLE scanner addon",
+    output: cableScannerOutput,
+    targetName: "comma_cable_scanner",
+  });
+}
+
 function buildNotificationAuthorizationAddon() {
   buildNodeAddon({
     addonDir: notificationAuthorizationAddonDir,
@@ -302,6 +374,63 @@ function buildNotificationAuthorizationAddon() {
 }
 
 function buildComputerUseHelper() {
+  let cache: NativeInstallCache | undefined;
+  if (incremental) {
+    run(
+      "bash",
+      [
+        computerUsePackageScript,
+        "--configuration",
+        configuration,
+        "--app-path",
+        computerUseAppPath,
+        "--build-only",
+      ],
+      repoRoot
+    );
+    const packageDir = resolve(computerUseSourceDir, "native/macos/ComputerUseHost");
+    const binDir = execFileSync(
+      "swift",
+      [
+        "build",
+        "--package-path",
+        packageDir,
+        "-c",
+        configuration,
+        "--product",
+        computerUseProductName,
+        "--show-bin-path",
+      ],
+      { encoding: "utf8" }
+    ).trim();
+    cache = installCache(
+      "computer-use",
+      {
+        source: snapshotPaths([
+          computerUsePackageScript,
+          resolve(binDir, computerUseProductName),
+          ...[
+            "ComputerUseHost_CommaComputerUseDaemon.bundle",
+            "ComputerUseHost_CUShared.bundle",
+            "ComputerUseHost_CUForeground.bundle",
+            "PermissionFlow_PermissionFlow.bundle",
+          ].map((name) => resolve(binDir, name)),
+          resolve(
+            packageDir,
+            "Sources/CommaComputerUseDaemon/Resources/panel-logo.png"
+          ),
+        ]),
+        bundleId: releaseConfig.appBundleId,
+        displayName: releaseConfig.productName,
+        signingIdentity: process.env.COMMA_MACOS_DEV_SIGN_IDENTITY ?? "-",
+      },
+      [computerUseAppPath]
+    );
+    if (cache.reuse()) {
+      console.log("Native Computer Use host unchanged.");
+      return;
+    }
+  }
   run(
     "bash",
     [
@@ -317,6 +446,7 @@ function buildComputerUseHelper() {
       "--sign-identity",
       process.env.COMMA_MACOS_DEV_SIGN_IDENTITY ?? "-",
       "--stop-running",
+      ...(incremental ? ["--package-only"] : []),
     ],
     repoRoot
   );
@@ -326,11 +456,16 @@ function buildComputerUseHelper() {
     `Native ${computerUseProductName}`
   );
 
+  cache?.save();
   console.log(`Native ${computerUseAppName}.app built (${configuration}).`);
 }
 
 const synchBinary = synchBinaryPath(appDir);
-const synchArchiveCacheDir = resolve(appDir, ".native-cache", "synchronicity");
+// A CI host keeps pinned downloads across jobs (COMMA_TOOL_CACHE); the pinned
+// SHA-256 checks the archive either way.
+const synchArchiveCacheDir = process.env.COMMA_TOOL_CACHE
+  ? join(process.env.COMMA_TOOL_CACHE, "synchronicity")
+  : resolve(appDir, ".native-cache", "synchronicity");
 const synchControlProto = resolve(
   appDir,
   "src/main/modules/synchronicity/control.proto"
@@ -401,12 +536,21 @@ function findExtractedSynch(root: string): string | undefined {
  * against an unreleased daemon.
  */
 async function fetchSynch() {
-  mkdirSync(salixConnectOutputDir, { recursive: true });
+  mkdirSync(platformOutputDir, { recursive: true });
 
   const override = process.env.COMMA_SYNCH_BINARY?.trim();
+  const cache = installCache(
+    "synch",
+    override
+      ? { override: snapshotPaths([override]) }
+      : { tag: synchReleaseTag, ...synchReleaseArchive(platform, arch) },
+    [synchBinary]
+  );
+  if (cache.reuse()) return;
   if (override) {
     assertFile(override, "COMMA_SYNCH_BINARY");
     placeSynchBinary(override);
+    cache.save();
     console.log(`synch copied from COMMA_SYNCH_BINARY (${override}).`);
     return;
   }
@@ -422,7 +566,10 @@ async function fetchSynch() {
     if (!response.ok) {
       throw new Error(`Fetching ${url} failed: HTTP ${response.status}`);
     }
-    writeFileSync(cachedArchive, Buffer.from(await response.arrayBuffer()));
+    // Another build may read the same cache: the archive appears whole or not at all.
+    const staged = `${cachedArchive}.${process.pid}.tmp`;
+    writeFileSync(staged, Buffer.from(await response.arrayBuffer()));
+    renameSync(staged, cachedArchive);
   }
 
   const actual = sha256Of(cachedArchive);
@@ -435,8 +582,13 @@ async function fetchSynch() {
 
   const extractDir = mkdtempSync(join(tmpdir(), "comma-synch-"));
   try {
-    // bsdtar reads both the .tar.gz and the Windows .zip.
-    run("tar", ["-xf", cachedArchive, "-C", extractDir], appDir);
+    // bsdtar reads both the .tar.gz and the Windows .zip. On Windows that is System32's: the tar a Git Bash puts first
+    // on PATH is GNU's, which reads `C:` as a host to connect to.
+    const tar =
+      platform === "win32"
+        ? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe")
+        : "tar";
+    run(tar, ["-xf", cachedArchive, "-C", extractDir], appDir);
     const extracted = findExtractedSynch(extractDir);
     if (!extracted) {
       throw new Error(`${archive} does not contain ${synchBinaryName(platform)}.`);
@@ -447,11 +599,13 @@ async function fetchSynch() {
   }
 
   assertFile(synchBinary, `synch ${platform}/${arch} binary`);
+  cache.save();
   console.log(`synch ${synchReleaseTag} ready for ${platform}/${arch}.`);
 }
 
 function verifyNativeOutputs() {
-  assertFile(salixConnectBinary, `salix-connect ${platform}/${arch} binary`);
+  if (stationPlatform)
+    assertFile(stationLauncher, `station ${platform}/${arch} launcher`);
   assertFile(synchBinary, `synch ${platform}/${arch} binary`);
   if (platform !== "darwin") {
     return;
@@ -459,20 +613,60 @@ function verifyNativeOutputs() {
 
   assertFile(notchHostOutput, "Native NotchHost");
   assertFile(micCaptureHostOutput, "Native MicCaptureHost");
+  assertFile(quickChatHostOutput, "Native QuickChatHost");
   assertFile(sleepGuardOutput, "Native CommaSleepGuard");
   assertFile(sleepGuardAddonOutput, "Native sleep guard addon");
-  assertFile(sideChatBackdropOutput, "Native Side Chat backdrop addon");
   assertFile(
     notificationAuthorizationOutput,
     "Native notification authorization addon"
   );
   assertFile(fontFamiliesOutput, "Native font families addon");
-  assertDirectory(sideChatHostOutput, `Native ${sideChatAppName}.app`);
+  assertFile(keychainPasswordOutput, "Native keychain password addon");
+  assertFile(cableScannerOutput, "Native caBLE scanner addon");
+  assertDirectory(menuBarHostOutput, `Native ${menuBarAppName}.app`);
   assertDirectory(computerUseAppPath, `Native ${computerUseAppName}.app`);
   assertFile(
     resolve(computerUseAppPath, "Contents/MacOS", computerUseProductName),
     `Native ${computerUseProductName}`
   );
+}
+
+/** The Comma station: prebuilt native parts and the TypeScript bundle (systems/station/scripts/bundle.sh). */
+function bundleStation() {
+  if (!stationPlatform) {
+    console.log(
+      `No station is released for ${platform}/${arch}; the app carries none.`
+    );
+    return;
+  }
+  run("sh", [stationBundleScript, stationOutput, stationPlatform], repoRoot);
+  assertFile(stationLauncher, `station ${platform}/${arch} launcher`);
+  console.log(`station bundled for ${platform}/${arch}.`);
+}
+
+/**
+ * The station's mesh addon alone, where the station has it, for a build without the native parts: the core's endpoint
+ * to stations is on it. Only a prebuilt one (native.ts `fetch` compiles nothing); without one the build reaches no
+ * station.
+ */
+function fetchStationMeshAddon() {
+  if (!stationPlatform) return;
+  let dir: string;
+  try {
+    dir = execFileSync(
+      process.execPath,
+      [stationNativeScript, "fetch", "mesh", stationPlatform],
+      { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }
+    ).trim();
+  } catch {
+    console.warn(
+      `The station's mesh addon for ${stationPlatform} is not prebuilt; this build reaches no station.`
+    );
+    return;
+  }
+  mkdirSync(resolve(stationMeshAddon, ".."), { recursive: true });
+  copyFileSync(join(dir, "mesh.node"), stationMeshAddon);
+  console.log(`station mesh addon fetched for ${stationPlatform}.`);
 }
 
 async function buildNative() {
@@ -488,6 +682,7 @@ async function buildNative() {
 
   if (process.env.COMMA_SKIP_NATIVE_BUILD === "1") {
     mkdirSync(nativeDistRoot(appDir), { recursive: true });
+    fetchStationMeshAddon();
     console.log("Skipping native build because COMMA_SKIP_NATIVE_BUILD=1.");
     return;
   }
@@ -508,6 +703,22 @@ async function buildNative() {
     return;
   }
 
+  if (keychainPasswordOnly) {
+    if (platform !== "darwin") {
+      throw new Error("The keychain password addon can only be built on macOS.");
+    }
+    buildKeychainPasswordAddon();
+    return;
+  }
+
+  if (cableScannerOnly) {
+    if (platform !== "darwin") {
+      throw new Error("The caBLE scanner addon can only be built on macOS.");
+    }
+    buildCableScannerAddon();
+    return;
+  }
+
   if (notificationAuthorizationOnly) {
     if (platform !== "darwin") {
       throw new Error(
@@ -518,44 +729,18 @@ async function buildNative() {
     return;
   }
 
-  if (sideChatOnly) {
+  if (menuBarOnly) {
     if (platform !== "darwin") {
-      throw new Error("The Side Chat host can only be built on macOS.");
+      throw new Error("The menu-bar helper can only be built on macOS.");
     }
     mkdirSync(outputDir, { recursive: true });
-    buildSideChatBackdropAddon();
-    buildSideChatHost();
+    buildMenuBarHost();
     return;
   }
 
-  if (sideChatBackdropOnly) {
-    if (platform !== "darwin") {
-      throw new Error("The Side Chat backdrop addon can only be built on macOS.");
-    }
-    mkdirSync(outputDir, { recursive: true });
-    buildSideChatBackdropAddon();
-    return;
-  }
-
-  rmSync(nativeDistRoot(appDir), { force: true, recursive: true });
-  mkdirSync(salixConnectOutputDir, { recursive: true });
-  run(
-    "go",
-    [
-      "build",
-      "-ldflags",
-      `-X 'main.computerUseHelperAppName=${computerUseAppName}.app'`,
-      "-o",
-      salixConnectBinary,
-      ".",
-    ],
-    salixConnectDir
-  );
-  assertFile(
-    salixConnectBinary,
-    `salix-connect ${platform}/${arch} binary (${salixConnectBinaryName(platform)})`
-  );
-  console.log(`salix-connect built for ${platform}/${arch}.`);
+  if (!incremental) rmSync(nativeDistRoot(appDir), { force: true, recursive: true });
+  mkdirSync(platformOutputDir, { recursive: true });
+  bundleStation();
   await fetchSynch();
 
   if (platform !== "darwin") {
@@ -565,13 +750,15 @@ async function buildNative() {
 
   buildNotchHost();
   buildMicCaptureHost();
+  buildQuickChatHost();
   buildSleepGuard();
   await buildAirDrop();
-  buildSideChatBackdropAddon();
   buildNotificationAuthorizationAddon();
   buildFileApplicationsAddon();
   buildFontFamiliesAddon();
-  buildSideChatHost();
+  buildKeychainPasswordAddon();
+  buildCableScannerAddon();
+  buildMenuBarHost();
   buildComputerUseHelper();
   verifyNativeOutputs();
 }

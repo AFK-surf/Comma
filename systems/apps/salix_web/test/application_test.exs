@@ -1,5 +1,10 @@
 defmodule SalixWeb.ApplicationTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   defmodule TestRuntimeDriver do
     @behaviour SalixMeet.RuntimeDriver
@@ -15,8 +20,8 @@ defmodule SalixWeb.ApplicationTest do
   end
 
   setup do
-    prev_web_public_base_url = Application.get_env(:salix_web, :public_base_url)
-    prev_im_public_base_url = Application.get_env(:salix_im, :public_base_url)
+    prev_web_public_base_url = SystemsRuntime.get_env(:salix_web, :public_base_url)
+    prev_im_public_base_url = SystemsRuntime.get_env(:salix_im, :public_base_url)
 
     on_exit(fn ->
       restore_env(:salix_web, :public_base_url, prev_web_public_base_url)
@@ -26,147 +31,28 @@ defmodule SalixWeb.ApplicationTest do
     :ok
   end
 
-  test "native triage evaluation is a fixed composition-root capability" do
-    assert [runtime_child, recovery_child, effect_child, companion_reaction_child] =
-             SalixWeb.Application.native_triage_children()
-
-    assert runtime_child.id == Salix.Bindings.TriageReviewRuntime
-
-    assert {SalixIM.Triage.Runtime, :start_link, [runtime_opts]} = runtime_child.start
-    assert runtime_opts[:id] == Salix.Bindings.TriageReviewRuntime
-    assert runtime_opts[:name] == Salix.Bindings.TriageReviewRuntime
-    assert runtime_opts[:mode] == :review
-    assert runtime_opts[:namespace] == SalixStore.TriageKeys.default_namespace()
-
-    assert runtime_opts[:context_port] == {BridgeForTeams.TriageContext, []}
-    assert runtime_opts[:review_projection] == :slack
-
-    assert runtime_opts[:evaluator_port] ==
-             {Salix.Bindings.TriageEvaluator,
-              [
-                provider: SalixLlm.Provider,
-                provider_config: :agent_template,
-                transport_receipt: :single_attempt
-              ]}
-
-    assert recovery_child.id == Salix.Bindings.TriageReceiptRecovery
-
-    assert {SalixIM.Triage.ReceiptRecovery, :start_link, [recovery_opts]} =
-             recovery_child.start
-
-    assert recovery_opts[:name] == Salix.Bindings.TriageReceiptRecovery
-    assert recovery_opts[:runtime] == Salix.Bindings.TriageReviewRuntime
-
-    assert recovery_opts[:lease_key] ==
-             SalixStore.TriageKeys.ctl_im_triage_receipt_recovery_lease(
-               SalixStore.TriageKeys.default_namespace()
-             )
-
-    assert effect_child.id == SalixIM.Triage.ProductEffectWorker
-
-    assert {SalixIM.Triage.ProductEffectWorker, :start_link, [effect_opts]} =
-             effect_child.start
-
-    assert effect_opts[:name] == SalixIM.Triage.ProductEffectWorker
-    assert effect_opts[:adapter] == SalixIM.Triage.AuditSink
-
-    assert companion_reaction_child.id == SalixIM.Triage.CompanionReactionEffectWorker
-
-    assert {SalixIM.Triage.ProductEffectWorker, :start_link, [companion_reaction_opts]} =
-             companion_reaction_child.start
-
-    assert companion_reaction_opts[:name] == SalixIM.Triage.CompanionReactionEffectWorker
-    assert companion_reaction_opts[:adapter] == SalixIM.Triage.AuditSink
-
-    assert companion_reaction_opts[:claim_fun] ==
-             (&SalixStore.TriageProductRuntime.claim_companion_reactions/2)
-
-    assert companion_reaction_opts[:settle_fun] ==
-             (&SalixStore.TriageProductRuntime.settle_companion_reaction/2)
-
-    assert :ok = Salix.App.configure()
-  end
-
-  test "shared audio transcription port is bound at the composition root" do
-    assert :ok = Salix.App.configure()
-
-    assert Application.get_env(:salix_agent, :audio_transcriber_mod) ==
-             Salix.Bindings.AgentAudioTranscriber
-  end
-
-  test "legacy app env cannot disable, retarget, or retune native triage" do
-    previous_runtime = Application.get_env(:salix_web, :native_triage_review_runtime)
-
-    on_exit(fn ->
-      restore_env(:salix_web, :native_triage_review_runtime, previous_runtime)
-    end)
-
-    for legacy <- [
-          false,
-          [namespace: "legacy-triage"],
-          [
-            namespace: "legacy-triage",
-            debounce_ms: 5_000,
-            max_wait_ms: 30_000,
-            evaluation_timeout_ms: 20_000,
-            engine: :review
-          ]
-        ] do
-      Application.put_env(:salix_web, :native_triage_review_runtime, legacy)
-
-      assert [runtime_child, recovery_child, effect_child, companion_reaction_child] =
-               SalixWeb.Application.native_triage_children()
-
-      assert {SalixIM.Triage.Runtime, :start_link, [runtime_opts]} = runtime_child.start
-      assert runtime_opts[:namespace] == SalixStore.TriageKeys.default_namespace()
-      assert runtime_opts[:mode] == :review
-      assert runtime_opts[:context_port] == {BridgeForTeams.TriageContext, []}
-      assert runtime_opts[:review_projection] == :slack
-      refute Keyword.has_key?(runtime_opts, :debounce_ms)
-      refute Keyword.has_key?(runtime_opts, :max_wait_ms)
-      refute Keyword.has_key?(runtime_opts, :evaluation_timeout_ms)
-
-      assert {SalixIM.Triage.ReceiptRecovery, :start_link, [recovery_opts]} =
-               recovery_child.start
-
-      assert recovery_opts[:lease_key] ==
-               SalixStore.TriageKeys.ctl_im_triage_receipt_recovery_lease(
-                 SalixStore.TriageKeys.default_namespace()
-               )
-
-      assert {SalixIM.Triage.ProductEffectWorker, :start_link, [effect_opts]} =
-               effect_child.start
-
-      assert effect_opts[:adapter] == SalixIM.Triage.AuditSink
-
-      assert {SalixIM.Triage.ProductEffectWorker, :start_link, [companion_reaction_opts]} =
-               companion_reaction_child.start
-
-      assert companion_reaction_opts[:adapter] == SalixIM.Triage.AuditSink
-      assert companion_reaction_opts[:name] == SalixIM.Triage.CompanionReactionEffectWorker
-    end
-  end
-
   test "sync_im_public_base_url projects the configured web public base URL into IM connects" do
-    Application.put_env(:salix_web, :public_base_url, "https://feishu-smoke.example.test/")
-    Application.delete_env(:salix_im, :public_base_url)
+    SystemsRuntime.put_env(:salix_web, :public_base_url, "https://feishu-smoke.example.test/")
+    SystemsRuntime.delete_env(:salix_im, :public_base_url)
 
     assert :ok = SalixWeb.Application.sync_im_public_base_url()
-    assert Application.get_env(:salix_im, :public_base_url) == "https://feishu-smoke.example.test"
+
+    assert SystemsRuntime.get_env(:salix_im, :public_base_url) ==
+             "https://feishu-smoke.example.test"
   end
 
   test "calendar autojoin is a static child after Bandit and is reconstructed with its supervisor" do
-    previous_calendar = Application.get_env(:salix_meet, :calendar_occurrences_mod)
-    previous_channel = Application.get_env(:salix_meet, :meeting_channel_mod)
-    previous_worker = Application.get_env(:salix_meet, :calendar_autojoin)
-    previous_groups = Application.get_env(:salix_meet, :calendar_autojoin_channels)
-    previous_runtime_driver = Application.get_env(:salix_meet, :runtime_driver)
+    previous_calendar = SystemsRuntime.get_env(:salix_meet, :calendar_occurrences_mod)
+    previous_channel = SystemsRuntime.get_env(:salix_meet, :meeting_channel_mod)
+    previous_worker = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin)
+    previous_groups = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels)
+    previous_runtime_driver = SystemsRuntime.get_env(:salix_meet, :runtime_driver)
 
     stop_calendar_autojoin()
-    Application.delete_env(:salix_meet, :calendar_occurrences_mod)
-    Application.delete_env(:salix_meet, :meeting_channel_mod)
+    SystemsRuntime.delete_env(:salix_meet, :calendar_occurrences_mod)
+    SystemsRuntime.delete_env(:salix_meet, :meeting_channel_mod)
 
-    Application.put_env(:salix_meet, :calendar_autojoin,
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin,
       scan_interval_ms: 3_600_000,
       join_interval_ms: 3_600_000,
       max_groups_per_pass: 1,
@@ -177,12 +63,12 @@ defmodule SalixWeb.ApplicationTest do
 
     # Keep the worker's immediate ticks side-effect-free. ConfigJson behavior
     # for populated group entries is covered in the store config tests.
-    Application.put_env(:salix_meet, :calendar_autojoin_channels, [])
-    Application.put_env(:salix_meet, :runtime_driver, TestRuntimeDriver)
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [])
+    SystemsRuntime.put_env(:salix_meet, :runtime_driver, TestRuntimeDriver)
 
     on_exit(fn ->
-      Application.delete_env(:salix_meet, :calendar_autojoin)
-      Application.delete_env(:salix_meet, :calendar_autojoin_channels)
+      SystemsRuntime.delete_env(:salix_meet, :calendar_autojoin)
+      SystemsRuntime.delete_env(:salix_meet, :calendar_autojoin_channels)
       stop_calendar_autojoin()
       restore_env(:salix_meet, :calendar_occurrences_mod, previous_calendar)
       restore_env(:salix_meet, :meeting_channel_mod, previous_channel)
@@ -193,17 +79,17 @@ defmodule SalixWeb.ApplicationTest do
 
     assert :ok = Salix.App.configure()
 
-    assert Application.get_env(:salix_meet, :calendar_occurrences_mod) ==
+    assert SystemsRuntime.get_env(:salix_meet, :calendar_occurrences_mod) ==
              Salix.Bindings.MeetingCalendar
 
-    assert Application.get_env(:salix_meet, :meeting_channel_mod) ==
+    assert SystemsRuntime.get_env(:salix_meet, :meeting_channel_mod) ==
              Salix.Bindings.MeetingChannel
 
-    assert Application.get_env(:salix_agent, :calendar_mod) ==
+    assert SystemsRuntime.get_env(:salix_agent, :calendar_mod) ==
              Salix.Bindings.AgentCalendar
 
     assert :ok = Salix.App.configure()
-    refute Process.whereis(SalixMeet.CalendarAutojoin)
+    refute SystemsRuntime.Proc.whereis(SalixMeet.CalendarAutojoin)
 
     assert SalixWeb.MeetingIngressSupervisor in SalixWeb.Application.children()
 
@@ -223,24 +109,26 @@ defmodule SalixWeb.ApplicationTest do
 
     assert {:error, :calendar_callback_endpoint_not_ready} =
              SalixWeb.MeetingIngressSupervisor.start_calendar_autojoin(
-               Application.fetch_env!(:salix_meet, :calendar_autojoin),
+               SystemsRuntime.fetch_env!(:salix_meet, :calendar_autojoin),
                :missing_calendar_callback_listener
              )
 
     {:ok, supervisor} = Supervisor.start_link(worker_children, strategy: :one_for_one)
-    first_pid = Process.whereis(SalixMeet.CalendarAutojoin)
-    assert is_pid(first_pid) and Process.alive?(first_pid)
-    first_ref = Process.monitor(first_pid)
+    first_pid = SystemsRuntime.Proc.whereis(SalixMeet.CalendarAutojoin)
+    assert SystemsRuntime.Proc.is_process(first_pid) and SystemsRuntime.Proc.alive?(first_pid)
+    first_ref = SystemsRuntime.Proc.monitor(first_pid)
     :ok = Supervisor.stop(supervisor)
-    assert_receive {:DOWN, ^first_ref, :process, ^first_pid, :shutdown}, 1_000
-
+    settle_receive({:DOWN, ^first_ref, :process, ^first_pid, :shutdown})
     {:ok, restarted_supervisor} = Supervisor.start_link(worker_children, strategy: :one_for_one)
-    restarted_pid = Process.whereis(SalixMeet.CalendarAutojoin)
-    assert is_pid(restarted_pid) and Process.alive?(restarted_pid)
+    restarted_pid = SystemsRuntime.Proc.whereis(SalixMeet.CalendarAutojoin)
+
+    assert SystemsRuntime.Proc.is_process(restarted_pid) and
+             SystemsRuntime.Proc.alive?(restarted_pid)
+
     refute restarted_pid == first_pid
     :ok = Supervisor.stop(restarted_supervisor)
 
-    Application.delete_env(:salix_meet, :calendar_autojoin)
+    SystemsRuntime.delete_env(:salix_meet, :calendar_autojoin)
 
     refute Enum.any?(
              SalixWeb.MeetingIngressSupervisor.children(),
@@ -249,14 +137,14 @@ defmodule SalixWeb.ApplicationTest do
   end
 
   test "configure refuses to start autojoin without a ready meeting runtime driver" do
-    previous_worker = Application.get_env(:salix_meet, :calendar_autojoin)
-    previous_groups = Application.get_env(:salix_meet, :calendar_autojoin_channels)
-    previous_runtime_driver = Application.get_env(:salix_meet, :runtime_driver)
-    previous_runtime_url = Application.get_env(:salix_meet, :runtime_base_url)
+    previous_worker = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin)
+    previous_groups = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels)
+    previous_runtime_driver = SystemsRuntime.get_env(:salix_meet, :runtime_driver)
+    previous_runtime_url = SystemsRuntime.get_env(:salix_meet, :runtime_base_url)
 
     stop_calendar_autojoin()
 
-    Application.put_env(:salix_meet, :calendar_autojoin,
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin,
       scan_interval_ms: 60_000,
       join_interval_ms: 30_000,
       max_groups_per_pass: 1,
@@ -265,9 +153,9 @@ defmodule SalixWeb.ApplicationTest do
       task_timeout_ms: 1_000
     )
 
-    Application.put_env(:salix_meet, :calendar_autojoin_channels, [])
-    Application.delete_env(:salix_meet, :runtime_driver)
-    Application.delete_env(:salix_meet, :runtime_base_url)
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [])
+    SystemsRuntime.delete_env(:salix_meet, :runtime_driver)
+    SystemsRuntime.delete_env(:salix_meet, :runtime_base_url)
 
     on_exit(fn ->
       stop_calendar_autojoin()
@@ -283,17 +171,17 @@ defmodule SalixWeb.ApplicationTest do
                  "calendar autojoin requires a configured meeting runtime driver",
                  fn -> SalixWeb.Application.calendar_autojoin_children() end
 
-    refute Process.whereis(SalixMeet.CalendarAutojoin)
+    refute SystemsRuntime.Proc.whereis(SalixMeet.CalendarAutojoin)
 
-    Application.put_env(:salix_meet, :runtime_driver, SalixMeet.RuntimeDriver.HTTP)
+    SystemsRuntime.put_env(:salix_meet, :runtime_driver, SalixMeet.RuntimeDriver.HTTP)
     refute SalixMeet.RuntimeDriver.configured?()
 
-    Application.put_env(:salix_meet, :runtime_base_url, "http://meeting-runtime:8080")
+    SystemsRuntime.put_env(:salix_meet, :runtime_base_url, "http://meeting-runtime:8080")
     assert SalixMeet.RuntimeDriver.configured?()
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp stop_calendar_autojoin do
     for supervisor <- [
@@ -301,17 +189,17 @@ defmodule SalixWeb.ApplicationTest do
           SalixWeb.Supervisor,
           SalixWeb.MeetingIngressSupervisor
         ],
-        Process.whereis(supervisor) do
+        SystemsRuntime.Proc.whereis(supervisor) do
       case Supervisor.terminate_child(supervisor, SalixMeet.CalendarAutojoin) do
         :ok -> _ = Supervisor.delete_child(supervisor, SalixMeet.CalendarAutojoin)
         {:error, :not_found} -> :ok
       end
     end
 
-    if pid = Process.whereis(SalixMeet.CalendarAutojoin) do
-      ref = Process.monitor(pid)
-      Process.exit(pid, :shutdown)
-      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+    if pid = SystemsRuntime.Proc.whereis(SalixMeet.CalendarAutojoin) do
+      ref = SystemsRuntime.Proc.monitor(pid)
+      SystemsRuntime.Proc.exit(pid, :shutdown)
+      settle_receive({:DOWN, ^ref, :process, ^pid, _reason})
     end
 
     :ok

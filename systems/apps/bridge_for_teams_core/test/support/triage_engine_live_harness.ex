@@ -1,4 +1,6 @@
 defmodule BridgeForTeams.TriageEngineLiveHarness do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The six-round driver both real-provider acceptance drives share.
 
@@ -9,18 +11,19 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
   stubbed; the only thing a caller chooses is where the provider's `base_url`
   points — at a real model, or at a loopback that speaks the same wire.
 
-  ## Why the provider is resolved through the agent template
+  ## Why the provider is resolved through the Router's model
 
   `SalixWeb.Application` wires the production evaluator port as
   `provider_config: :agent_template`, so a production Triage run never carries
   provider credentials in its port options: the adapter reads the Router agent id
-  out of the identity fence, `SalixAgent.LlmResolver.resolve_runtime/1` maps that
-  id → agent control record → `template_id` → the template's `provider_config`,
-  and `SalixLlm.ProviderConfig` resolves `api_key_env` against the OS
-  environment at request time. This harness reproduces that chain rather than
-  short-circuiting it, so a live round also proves the composition root's own
-  provider resolution reaches a real model — and so no API key is ever written
-  into a test file, a fixture, or a durable record.
+  out of the identity fence, and `SalixAgent.LlmResolver.resolve_runtime/1` maps
+  that id → agent control record → its model (`SalixAgent.AgentModel`; here the
+  platform Router model) → the endpoint and key of the Profile that serves it.
+  This harness reproduces that chain rather than short-circuiting it, so a live
+  round also proves the composition root's own provider resolution reaches a
+  real model. The key comes from the environment variable that the profile
+  names; it is stored only in the encrypted platform Profile that the test
+  deletes when it exits, never in a test file or a fixture.
 
   ## The one seam the harness keeps
 
@@ -102,8 +105,8 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
 
   @doc """
   The evaluator port every round runs behind: the real adapter, the real
-  protocol dispatcher, provider credentials resolved live from the agent
-  template, and an observing transport receipt that reports each outbound
+  protocol dispatcher, provider credentials resolved live from the Router's
+  model, and an observing transport receipt that reports each outbound
   payload to `test_pid`.
   """
   def evaluator_port(test_pid) do
@@ -112,7 +115,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
        provider: live_provider(),
        provider_config: :agent_template,
        transport_receipt: fn payload_bytes ->
-         send(test_pid, {:llm_request, byte_size(payload_bytes)})
+         SystemsRuntime.Proc.send(test_pid, {:llm_request, byte_size(payload_bytes)})
          %{payload_sha256: Fixture.sha256(payload_bytes), request_count: 1}
        end
      ]}
@@ -127,68 +130,53 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
   @doc """
   A complete, isolated round fixture: a fresh Slack connect and control group, a
   fresh project with three members, a Router and a Worker, a fresh
-  twelve-meeting group, and the agent template that names the model this round
-  will call.
+  twelve-meeting group, and the platform Router model that this round will
+  call.
   """
   def new_round_context!(profile) do
     authority = Fixture.seed_authority!()
-    template_id = seed_agent_template!(authority, profile)
+    seed_router!(authority, profile)
     project = Fixture.seed_project!(authority)
-    seed_worker!(authority, project, template_id)
+    seed_worker!(authority, project)
     Fixture.seed_meetings!(authority["group_id"])
 
     %{
       authority: authority,
-      template_id: template_id,
       root_ts: Fixture.new_root_ts(),
       project: project
     }
   end
 
-  @doc false
-  def seed_worker!(authority, project, template_id \\ nil) do
-    template_id = template_id || seed_worker_template!()
-
-    assert {:ok, _} =
-             BridgeForTeams.Salix.Erpc.update_tenant_config(
-               authority["tenant_id"],
-               "agent_defaults",
-               %{"worker_template_id" => template_id}
-             )
+  @doc """
+  A Worker that follows the platform Worker model, assigned to Triage. Triage
+  takes only a Worker whose model resolves, so this sets up that model; the
+  rounds stop before the Worker runs.
+  """
+  def seed_worker!(authority, project) do
+    SalixAgent.TestSupport.configure_platform_tier!(
+      "worker",
+      "https://triage-worker.example.test/v1",
+      "triage-fixture-worker"
+    )
 
     assert {:ok, worker} =
              BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(
                project.id,
-               %{
-                 "name" => "Investigator",
-                 "role" => "worker",
-                 "template_id" => template_id
-               }
+               %{"name" => "Investigator", "role" => "worker"}
              )
 
     assert {:ok, %{"revision" => revision}} = SalixAgent.TriageWorker.get(authority["group_id"])
 
     assert {:ok, _} =
-             BridgeForTeams.Salix.Erpc.configure_triage_worker(
+             SalixAgent.TriageWorker.configure(
                authority["group_id"],
                authority["inbound_agent_id"],
                worker.salix_agent_id,
                revision,
-               %{"actor_user_id" => "fixture-admin", "request_id" => Ecto.UUID.generate()}
+               %{"actor_user_id" => "fixture-admin", "request_id" => SystemsRuntime.Proc.uuid()}
              )
 
     worker
-  end
-
-  defp seed_worker_template! do
-    {:ok, template} =
-      SalixAgent.Templates.create(%{
-        "name" => "Triage fixture Worker",
-        "model" => "mock",
-        "provider" => "mock"
-      })
-
-    template["template_id"]
   end
 
   @doc false
@@ -248,45 +236,22 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
   end
 
   @doc """
-  Gives a round's Router agent a real agent control record and a real template
-  carrying `provider_config` — the only place this harness ever names a model, a
-  base URL, or the NAME of the environment variable holding the key.
+  Gives a round's Router agent a real agent control record that follows the
+  platform Router model, and makes that model the round's profile: a platform
+  Profile at the profile's endpoint with its key. This is the only place this
+  harness ever names a model, a base URL, or a key.
+
+  The platform model settings are shared, so they are restored when the test
+  exits. The provider is inferred from the model id (`SalixAgent.LLMProvider`),
+  because a Custom endpoint names no provider.
   """
-  def seed_agent_template!(authority, profile) do
-    template_id = "tmpl-triage-live-#{System.unique_integer([:positive])}"
-
-    provider_config =
-      %{"protocol" => profile.protocol, "base_url" => profile.base_url}
-      |> put_credential(profile)
-
-    provider_config =
-      if profile[:reasoning_effort],
-        do: Map.put(provider_config, "reasoning_effort", profile.reasoning_effort),
-        else: provider_config
-
-    assert {:ok, template} =
-             SalixAgent.Templates.create(%{
-               "template_id" => template_id,
-               "name" => "Triage live acceptance",
-               "model" => profile.model,
-               # Named rather than inferred. `SalixAgent.Templates` derives the
-               # provider label from the base URL or the model when a template
-               # omits it, and a loopback base URL matches neither — which the
-               # adapter's `valid_resolved_provider?/1` then rejects as an
-               # incomplete provider config, several layers away from the cause.
-               "provider" => profile.provider,
-               "provider_config" => provider_config,
-               "max_tokens" => profile.max_tokens,
-               "context_tokens" => profile[:context_tokens] || 0
-             })
-
-    assert template["template_id"] == template_id
+  def seed_router!(authority, profile) do
+    :ok = put_platform_model!("router", profile)
 
     assert {:ok, _agent} =
              SalixAgent.Control.create_preallocated(
                %{
                  "group_id" => authority["group_id"],
-                 "template_id" => template_id,
                  "name" => "BFT Router",
                  "role" => "router"
                },
@@ -295,7 +260,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
              )
 
     # The chain the adapter walks on every round, asserted once per round so a
-    # broken template surfaces as a fixture error here instead of as an opaque
+    # broken model surfaces as a fixture error here instead of as an opaque
     # `:invalid_triage_provider_config` six rounds deep.
     assert {:ok, resolved} =
              SalixAgent.LlmResolver.resolve_runtime(authority["inbound_agent_id"])
@@ -308,16 +273,60 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
     # unasserted, a missing one surfaces four layers later as a terminal whose
     # only word for it is `identity_diagnostic_internal_error`.
     assert resolved["provider"] == profile.provider
-    assert resolved["api_key"] != "" or resolved["api_key_env"] != ""
+    assert resolved["api_key"] != ""
 
-    template_id
+    :ok
   end
 
-  defp put_credential(config, %{api_key_env: env}) when is_binary(env) and env != "",
-    do: Map.put(config, "api_key_env", env)
+  @doc """
+  Makes `profile` the platform model of `tier` ("router" or "worker"): a
+  platform Profile at the profile's endpoint with its key. Agents of that role
+  that have no model choice run it. The platform model settings are shared,
+  so they are restored, and the Profile deleted, when the test exits.
+  """
+  def put_platform_model!(tier, profile) do
+    {:ok, account} =
+      SalixAgent.AccountPool.create(SalixAgent.AccountPool.platform_tenant(), %{
+        "credential_kind" => "provider_api_key",
+        "source" => "custom",
+        "api_key" => api_key(profile),
+        "base_url" => profile.base_url,
+        "protocol" => profile.protocol,
+        "models" => [profile.model]
+      })
 
-  defp put_credential(config, %{api_key: key}) when is_binary(key) and key != "",
-    do: Map.put(config, "api_key", key)
+    {:ok, previous} = SalixAgent.PlatformModels.get()
+
+    ExUnit.Callbacks.on_exit(fn ->
+      _ = SalixAgent.PlatformModels.put(Map.put_new(previous, "tiers", %{}))
+
+      SalixAgent.SubscriptionStore.query("DELETE FROM subscription_accounts WHERE id=$1", [
+        account["id"]
+      ])
+    end)
+
+    entry =
+      %{
+        "profile_id" => account["id"],
+        "model" => profile.model,
+        "max_tokens" => profile.max_tokens,
+        "context_tokens" => profile[:context_tokens],
+        "reasoning_effort" => profile[:reasoning_effort],
+        "images" => profile[:supports_images]
+      }
+      |> Map.reject(fn {_key, value} -> value in [nil, 0] end)
+
+    tiers = Map.put(previous["tiers"] || %{}, tier, entry)
+    assert {:ok, _} = SalixAgent.PlatformModels.put(Map.put(previous, "tiers", tiers))
+    :ok
+  end
+
+  # A live profile names the variable that holds its key; a profile that sends
+  # no request may name an unset one.
+  defp api_key(%{api_key_env: env}) when is_binary(env) and env != "",
+    do: System.get_env(env) || "unset-#{env}"
+
+  defp api_key(%{api_key: key}) when is_binary(key) and key != "", do: key
 
   ## Scenarios
 
@@ -507,9 +516,9 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
   """
   def drive_round!(spec, evaluator_port, opts \\ []) do
     %{authority: authority, root_ts: root_ts} = spec
-    namespace = "triage-live-#{spec.id}-#{System.unique_integer([:positive])}"
+    namespace = "triage-live-#{spec.id}-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     attempts = Keyword.get(opts, :attempts, 400)
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     # The harness admits each scenario synchronously. Keep the ordinary window
     # comfortably wider than a real PostgreSQL admission so a root cannot seal
@@ -523,7 +532,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
         Keyword.get(opts, :evaluation_timeout_ms, 30_000)
       )
       |> Keyword.put(:before_seal_hook, fn _scope_key, _generation ->
-        send(owner, {:sealed_at, System.monotonic_time(:millisecond)})
+        SystemsRuntime.Proc.send(owner, {:sealed_at, SystemsClock.monotonic_time(:millisecond)})
         :ok
       end)
 
@@ -538,7 +547,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
     _ = Fixture.collected_source_reads()
     _ = Fixture.collected_slack_calls()
 
-    started_at = System.monotonic_time(:millisecond)
+    started_at = SystemsClock.monotonic_time(:millisecond)
 
     receipts =
       Enum.map(spec.inputs, fn
@@ -564,7 +573,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
     end)
 
     run = Fixture.await_run!(server, attempts)
-    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+    elapsed_ms = SystemsClock.monotonic_time(:millisecond) - started_at
     seal_ms = awaited_seal_ms(started_at)
     request_count = length(drain_llm_requests())
     source_reads = Fixture.collected_source_reads()
@@ -661,7 +670,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
   # The seal timestamp the engine reported through its own pre-seal hook. Only
   # the FIRST is meaningful: it is the moment this bucket became due.
   defp awaited_seal_ms(started_at) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:sealed_at, at} ->
         _later = drain_seal_marks()
         at - started_at
@@ -671,7 +680,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
   end
 
   defp drain_seal_marks(acc \\ []) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:sealed_at, at} -> drain_seal_marks([at | acc])
     after
       0 -> acc
@@ -834,7 +843,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarness do
 
   @doc "Drains and returns the byte size of every observed outbound payload."
   def drain_llm_requests(acc \\ []) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:llm_request, size} -> drain_llm_requests([size | acc])
     after
       0 -> Enum.reverse(acc)
@@ -903,7 +912,7 @@ end
 
 defmodule BridgeForTeams.TriageObservedLiveProvider do
   def complete(messages, tools, opts) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
     # This optional provider is loaded by the release-composition harness,
     # not a compile dependency of the product core.
     result = apply(SalixLlm.Provider, :complete, [messages, tools, opts])
@@ -914,7 +923,7 @@ defmodule BridgeForTeams.TriageObservedLiveProvider do
           "model" => opts["model"],
           "reasoning_effort" => opts["reasoning_effort"],
           "max_tokens" => opts["max_tokens"],
-          "elapsed_ms" => System.monotonic_time(:millisecond) - started,
+          "elapsed_ms" => SystemsClock.monotonic_time(:millisecond) - started,
           "usage" => usage(result),
           "output" => output_summary(result)
         }

@@ -142,8 +142,11 @@ defmodule SalixStore.Keys do
   # tenant-config object (docs/storage-search.md).
   def ctl_tenant_configs_prefix, do: "ctl/tenant_configs/"
 
-  # Platform-wide Router/Worker default template pointers (SalixAgent.AgentDefaults).
+  # Platform Router/Worker default template pointers that earlier releases stored;
+  # only released migrations read them (SalixAgent.Migrations.TemplateRecords).
   def ctl_system_agent_defaults, do: "ctl/system/agent_defaults.json"
+  def ctl_system_media_settings, do: "ctl/system/media_settings.json"
+  def ctl_system_platform_models, do: "ctl/system/platform_models.json"
 
   # Platform-wide voice call settings (SalixVoice.Settings).
   def ctl_system_voice, do: "ctl/system/voice.json"
@@ -247,6 +250,14 @@ defmodule SalixStore.Keys do
     do:
       ctl_group_conversation_list_prefix(group_id) <>
         sort_key <> "/" <> Crypto.hex(conversation_id) <> ".json"
+
+  def ctl_group_task_activity_prefix(group_id), do: "ctl/group_task_activity/#{group_id}/"
+
+  def ctl_group_task_activity_entry(group_id, sort_key),
+    do: ctl_group_task_activity_prefix(group_id) <> sort_key <> ".json"
+
+  def ctl_group_task_activity_rebuild(group_id),
+    do: "ctl/group_task_activity_rebuild/#{group_id}.json"
 
   def ctl_group_conversation_dir(group_id, conversation_id),
     do: "ctl/group_conversations/#{group_id}/#{conversation_id}/"
@@ -595,6 +606,16 @@ defmodule SalixStore.Keys do
   def ctl_im_feishu_thread_participation_prefix(group_id),
     do: "ctl/im_feishu_thread_participation/#{group_id}/"
 
+  # A Lark message a connect's callback already handled (`SalixIM.LarkInbound`).
+  def ctl_im_lark_event_receipt(connect_id, message_id),
+    do: "ctl/im_lark_event_receipts/#{connect_id}/#{Crypto.hex(message_id)}.json"
+
+  # A Lark thread the bot of a connect answers in (`SalixIM.LarkThreads`).
+  def ctl_im_lark_thread(group_id, connect_id, chat_id, thread_id) do
+    identity = Enum.join([connect_id, chat_id, thread_id], ":")
+    "ctl/im_lark_threads/#{group_id}/#{Crypto.hex(identity)}.json"
+  end
+
   def ctl_im_telegram_chat(connect_id, chat_id),
     do: "ctl/im_telegram_chats/#{connect_id}/#{Crypto.hex(chat_id)}.json"
 
@@ -605,6 +626,11 @@ defmodule SalixStore.Keys do
 
   def ctl_im_telegram_users_prefix(connect_id), do: "ctl/im_telegram_users/#{connect_id}/"
 
+  def ctl_im_qq_chat(connect_id, chat_id),
+    do: "ctl/im_qq_chats/#{connect_id}/#{Crypto.hex(chat_id)}.json"
+
+  def ctl_im_qq_chats_prefix(connect_id), do: "ctl/im_qq_chats/#{connect_id}/"
+
   def ctl_im_feishu_chat(connect_id, chat_id),
     do: "ctl/im_feishu_chats/#{connect_id}/#{Crypto.hex(chat_id)}.json"
 
@@ -614,6 +640,16 @@ defmodule SalixStore.Keys do
     do: "ctl/im_feishu_users/#{connect_id}/#{Crypto.hex(open_id)}.json"
 
   def ctl_im_feishu_users_prefix(connect_id), do: "ctl/im_feishu_users/#{connect_id}/"
+
+  def ctl_im_lark_chat(connect_id, chat_id),
+    do: "ctl/im_lark_chats/#{connect_id}/#{Crypto.hex(chat_id)}.json"
+
+  def ctl_im_lark_chats_prefix(connect_id), do: "ctl/im_lark_chats/#{connect_id}/"
+
+  def ctl_im_lark_user(connect_id, open_id),
+    do: "ctl/im_lark_users/#{connect_id}/#{Crypto.hex(open_id)}.json"
+
+  def ctl_im_lark_users_prefix(connect_id), do: "ctl/im_lark_users/#{connect_id}/"
 
   def ctl_mcp_system_definitions_prefix, do: "ctl/system/mcp/definitions/"
 
@@ -883,6 +919,18 @@ defmodule SalixStore.Keys do
 
   def ctl_group_ssh_known_hosts(group_id),
     do: ctl_group_ssh_prefix(group_id) <> "known_hosts.json"
+
+  @doc "The Group's encrypted LAN device secrets (`SalixAgent.DeviceSecrets`)."
+  def ctl_group_device_secrets(group_id), do: "ctl/device_secrets/groups/#{group_id}.json"
+
+  # ---- Group tailnet (SalixAgent.Tailnet) ----
+
+  # The Group's tailnet settings, and the lease record of its tailnet node:
+  # holder, epoch and the sealed node state and status. Group deletion removes
+  # both.
+  def ctl_group_tailnet_prefix(group_id), do: "ctl/tailnet/groups/#{group_id}/"
+  def ctl_group_tailnet_config(group_id), do: ctl_group_tailnet_prefix(group_id) <> "config.json"
+  def ctl_group_tailnet_node(group_id), do: ctl_group_tailnet_prefix(group_id) <> "node.json"
 
   # ---- site APIs (willow site_doc_namespaces / site_llm_billing) ----
 

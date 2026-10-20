@@ -1,0 +1,412 @@
+/* Compute details use the device surface's typography, card geometry and colors. */
+.compute-settings,
+.comma-devices {
+  --compute-border: var(--color-border-primary);
+  --compute-hairline: var(--border-width-0-5) solid var(--compute-border);
+  --compute-muted: var(--color-text-tertiary);
+  /* The edge of content inside a card or a panel. */
+  --compute-inset: var(--spacing-xl);
+  /* The edge of text outside a panel, relative to the panel's own edge. */
+  --compute-text-inset: var(--spacing-none);
+}
+/* Devices keeps panels on its gutter and lines text up with its title. */
+.comma-devices {
+  --compute-text-inset: var(--spacing-xl);
+}
+.compute-scroll {
+  container-type: inline-size;
+  height: 100%;
+  min-height: 0;
+}
+.compute-settings {
+  width: 100%;
+  max-width: 640px;
+  margin-inline: auto;
+  padding: var(--spacing-3xl) var(--spacing-4xl);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  min-width: 0;
+}
+.compute-settings h1 {
+  margin: 0;
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+  font-weight: 500;
+  letter-spacing: var(--text-xl--letter-spacing);
+  overflow-wrap: anywhere;
+  outline: none;
+}
+.compute-settings h2,
+.comma-devices .compute-section h2 {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.compute-settings h3 {
+  margin: 0 0 var(--spacing-md);
+  font-size: var(--text-md);
+  font-weight: 500;
+}
+.compute-settings p,
+.comma-devices .compute-section p,
+.compute-node-summary p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.compute-muted {
+  color: var(--compute-muted);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+.compute-subtitle {
+  margin-top: var(--spacing-xs) !important;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.compute-section {
+  margin-top: var(--spacing-3xl);
+}
+.compute-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-md);
+  padding-inline: var(--compute-text-inset);
+  flex-wrap: wrap;
+}
+.compute-panel {
+  border: var(--compute-hairline);
+  border-radius: var(--radius-2xl);
+  background: var(--color-main-panel-item-bg);
+  overflow: hidden;
+}
+.compute-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-xl);
+  padding: var(--spacing-xl) var(--compute-inset);
+  min-width: 0;
+}
+.compute-row > div:first-child {
+  min-width: 0;
+  flex: 1;
+}
+.compute-row + .compute-row {
+  border-top: var(--compute-hairline);
+}
+.compute-row p:not(:first-child) {
+  margin-top: var(--spacing-xxs);
+}
+.compute-row-title {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.compute-actions {
+  display: flex;
+  gap: var(--spacing-md);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.compute-status {
+  display: inline-flex;
+  gap: var(--spacing-sm);
+  align-items: center;
+  color: var(--compute-muted);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  white-space: normal;
+}
+.compute-status:not([data-pending="true"])::before {
+  content: "";
+  width: var(--spacing-sm);
+  height: var(--spacing-sm);
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+.compute-status[data-tone="good"] {
+  color: var(--color-text-success-primary);
+}
+.compute-status[data-tone="warning"] {
+  color: var(--color-text-warning-primary);
+}
+.compute-notice {
+  background: var(--color-bg-secondary);
+  border-radius: var(--radius-lg);
+  margin: var(--spacing-xl) var(--compute-inset);
+  padding: var(--spacing-lg);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+.compute-notice .compute-actions {
+  margin-top: var(--spacing-md);
+}
+.compute-foot {
+  border-top: var(--compute-hairline);
+  background: var(--color-bg-secondary);
+  padding: var(--spacing-lg) var(--compute-inset);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-lg);
+  flex-wrap: wrap;
+}
+.compute-list-foot {
+  border: 0;
+  padding-inline: var(--compute-text-inset);
+  background: transparent;
+}
+.compute-workload {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-inline: var(--compute-inset);
+}
+/* The icon button's own padding hangs past the edge, so the icon sits on it. */
+.compute-menu {
+  margin-right: calc(-1 * var(--spacing-sm));
+}
+.compute-workload + .compute-workload {
+  border-top: var(--compute-hairline);
+}
+.compute-resource {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+  flex: 1;
+  min-width: 0;
+  padding: var(--spacing-lg) 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: var(--cursor-interaction, default);
+  font: inherit;
+}
+.compute-resource:focus-visible {
+  outline: 2px solid var(--color-border-brand);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.compute-resource:hover .compute-row-title {
+  text-decoration: underline;
+}
+.compute-resource-identity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  flex: 1;
+  min-width: 0;
+}
+.compute-resource > .compute-status {
+  max-width: 38%;
+}
+.compute-chevron {
+  flex-shrink: 0;
+  color: var(--compute-muted);
+}
+.compute-empty {
+  padding: var(--spacing-3xl) var(--compute-inset);
+}
+.compute-empty p:not(:first-child) {
+  margin-top: var(--spacing-xxs);
+}
+.compute-empty > button {
+  margin-top: var(--spacing-xl);
+}
+.compute-back {
+  margin-bottom: var(--spacing-2xl);
+}
+.compute-inset {
+  padding: var(--spacing-md) var(--compute-inset);
+}
+.compute-form {
+  margin-top: var(--spacing-3xl);
+}
+.compute-bottom {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-3xl);
+  flex-wrap: wrap;
+}
+.compute-note {
+  margin-top: var(--spacing-md) !important;
+}
+.compute-diagnostics {
+  margin-top: var(--spacing-2xl);
+  color: var(--compute-muted);
+  font-size: var(--text-xs);
+}
+.compute-diagnostics summary,
+.compute-history summary {
+  cursor: var(--cursor-interaction, default);
+  padding: var(--spacing-md) 0;
+}
+.compute-diagnostics .compute-section {
+  margin-top: var(--spacing-md);
+}
+.compute-diagnostics .compute-section-heading {
+  display: none;
+}
+.compute-history {
+  border-top: var(--compute-hairline);
+  padding-block: var(--spacing-md);
+  color: var(--compute-muted);
+  font-size: var(--text-xs);
+}
+.compute-history > summary {
+  margin-inline: var(--compute-inset);
+}
+.compute-settings dl {
+  margin: 0;
+}
+.compute-fact {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacing-xl);
+  padding: var(--spacing-lg) 0;
+  border-bottom: var(--compute-hairline);
+}
+.compute-fact:last-child {
+  border: 0;
+}
+.compute-fact dt {
+  color: var(--compute-muted);
+  flex: 0 0 auto;
+}
+.compute-fact dd {
+  margin: 0;
+  max-width: 65%;
+  text-align: right;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.compute-steps {
+  list-style: none;
+  margin: var(--spacing-3xl) 0;
+  padding: 0;
+}
+.compute-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-lg) 0;
+}
+.compute-step-number {
+  width: var(--spacing-4xl);
+  height: var(--spacing-4xl);
+  flex-shrink: 0;
+  border: var(--compute-hairline);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  color: var(--compute-muted);
+  display: grid;
+  place-items: center;
+  font-size: var(--text-xs);
+}
+.compute-steps li[data-phase="ready"] .compute-step-number {
+  color: var(--color-text-success-primary);
+}
+.compute-steps li[data-phase="failed"] .compute-step-number {
+  color: var(--color-text-warning-primary);
+}
+.compute-error {
+  color: var(--color-text-warning-primary);
+  margin-top: var(--spacing-lg) !important;
+}
+.compute-section > .compute-error {
+  padding-inline: var(--compute-text-inset);
+}
+.compute-danger {
+  color: var(--color-text-error-primary);
+}
+
+/*
+ * The compute environment of the local device, as a section of its device
+ * card: a hairline, a heading with the environment's status, and its rows.
+ * It keeps the card section's spacing (see DeviceSettings.css).
+ */
+.compute-node-summary {
+  margin-inline: var(--compute-inset);
+  padding-block: var(--spacing-xs);
+  border-top: var(--compute-hairline);
+}
+.compute-panel > .compute-node-summary:first-child {
+  border-top: 0;
+}
+.compute-node-summary .compute-section-heading {
+  box-sizing: content-box;
+  min-height: var(--spacing-2xl);
+  margin: 0;
+  padding: var(--spacing-lg) 0 0;
+  color: var(--compute-muted);
+}
+.compute-node-summary h2 {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  font-weight: 400;
+}
+.compute-node-summary .compute-row,
+.compute-summary-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md) var(--spacing-xl);
+  padding: var(--spacing-lg) 0;
+}
+.compute-summary-actions {
+  border-top: var(--compute-hairline);
+}
+.compute-node-name {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  font-weight: 500;
+}
+@container (max-width: 420px) {
+  .compute-settings {
+    padding: var(--spacing-3xl) var(--spacing-2xl);
+  }
+  .compute-row,
+  .compute-summary-actions {
+    flex-wrap: wrap;
+  }
+  /* The text keeps the row's width and its action moves under it. */
+  .compute-row > div:first-child {
+    flex-basis: 100%;
+  }
+  .compute-resource {
+    display: grid;
+    grid-template-columns: var(--spacing-4xl) minmax(0, 1fr) var(--spacing-lg);
+    gap: var(--spacing-md) var(--spacing-lg);
+  }
+  .compute-resource > .compute-status {
+    grid-column: 2;
+    max-width: none;
+  }
+  .compute-resource > .compute-chevron {
+    grid-column: 3;
+    grid-row: 1;
+  }
+}
+
+.compute-home {
+  height: 100%;
+  min-height: 0;
+}
+
+.compute-recovery-content {
+  display: grid;
+  gap: var(--spacing-lg);
+}
+
+.compute-resource-identity > .compute-muted {
+  word-break: keep-all;
+}

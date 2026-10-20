@@ -98,6 +98,10 @@ func Run(args []string, stdout, stderr io.Writer, env envFunc) int {
 		return rt.sso(args[1:])
 	case "feishu":
 		return rt.feishu(args[1:])
+	case "lark":
+		return rt.lark(args[1:])
+	case "qq":
+		return rt.qq(args[1:])
 	case "slack":
 		return rt.slack(args[1:])
 	case "meetings":
@@ -816,20 +820,18 @@ func (rt runtime) projects(args []string) int {
 
 func (rt runtime) agents(args []string) int {
 	if len(args) == 0 {
-		return output.RenderError(rt.stderr, rt.defaultOutputOptions(), output.Usage("missing_agents_command", "Run bft agents list, runtimes, create, or rebind.", nil))
+		return output.RenderError(rt.stderr, rt.defaultOutputOptions(), output.Usage("missing_agents_command", "Run bft agents list, create, or rebind.", nil))
 	}
 
 	switch args[0] {
 	case "list":
 		return rt.agentsList(args[1:])
-	case "runtimes":
-		return rt.agentsRuntimes(args[1:])
 	case "create":
 		return rt.agentsCreate(args[1:])
 	case "rebind":
 		return rt.agentsRebind(args[1:])
 	default:
-		return output.RenderError(rt.stderr, rt.fallbackOutputOptions(args), output.Usage("unknown_agents_command", "Run bft agents list, runtimes, create, or rebind.", map[string]any{"command": strings.Join(args, " ")}))
+		return output.RenderError(rt.stderr, rt.fallbackOutputOptions(args), output.Usage("unknown_agents_command", "Run bft agents list, create, or rebind.", map[string]any{"command": strings.Join(args, " ")}))
 	}
 }
 
@@ -872,43 +874,12 @@ func (rt runtime) agentsList(args []string) int {
 	return rt.render(opts.outputOptions(), data, func() string { return agentsText(data) }, output.ExitOK)
 }
 
-func (rt runtime) agentsRuntimes(args []string) int {
-	fs, opts := rt.newFlagSet("bft agents runtimes")
-	org := fs.String("org", "", "org id or slug")
-	project := fs.String("project", "", "project id or slug")
-	includeUnavailable := fs.Bool("include-unavailable", false, "include runtimes that are visible but not currently bindable")
-	if err := parse(fs, args, opts); err.ExitCode != 0 {
-		return output.RenderError(rt.stderr, opts.outputOptions(), err)
-	}
-	if err := require("org", *org); err.ExitCode != 0 {
-		return output.RenderError(rt.stderr, opts.outputOptions(), err)
-	}
-	if err := require("project", *project); err.ExitCode != 0 {
-		return output.RenderError(rt.stderr, opts.outputOptions(), err)
-	}
-	api, err := rt.apiClient(opts)
-	if err.ExitCode != 0 {
-		return output.RenderError(rt.stderr, opts.outputOptions(), err)
-	}
-	data, apiErr := api.Get(context.Background(), projectAgentRuntimesPath(*org, *project), nil)
-	if apiErr.ExitCode != 0 {
-		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
-	}
-	data = filterAgentRuntimes(data, *includeUnavailable)
-	return rt.render(opts.outputOptions(), data, func() string { return agentRuntimesText(data) }, output.ExitOK)
-}
-
 func (rt runtime) agentsCreate(args []string) int {
 	fs, opts := rt.newFlagSet("bft agents create")
 	org := fs.String("org", "", "org id or slug")
 	project := fs.String("project", "", "project id or slug")
 	name := fs.String("name", "", "agent display name")
 	role := fs.String("role", "worker", "agent role: router or worker")
-	runtimeKind := fs.String("runtime-kind", "internal", "runtime kind: internal or external")
-	runtimeProvider := fs.String("runtime-provider", "codex", "external runtime provider")
-	deviceID := fs.String("device-id", "", "device id for external runtime")
-	runtimeID := fs.String("runtime-id", "", "runtime id on the selected device")
-	deviceRuntimeID := fs.String("device-runtime-id", "", "stable device runtime id")
 	confirm := fs.Bool("confirm-mutating", false, "confirm mutating write")
 	if err := parse(fs, args, opts); err.ExitCode != 0 {
 		return output.RenderError(rt.stderr, opts.outputOptions(), err)
@@ -922,11 +893,8 @@ func (rt runtime) agentsCreate(args []string) int {
 	if err := validateAgentRole(*role); err.ExitCode != 0 {
 		return output.RenderError(rt.stderr, opts.outputOptions(), err)
 	}
-	if err := validateAgentRuntimeFlags(*runtimeKind, *runtimeProvider, *deviceID, *runtimeID, *deviceRuntimeID); err.ExitCode != 0 {
-		return output.RenderError(rt.stderr, opts.outputOptions(), err)
-	}
 	if !*confirm {
-		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("confirm_mutating_required", "Pass --confirm-mutating after reviewing the agent role and device runtime target.", map[string]any{"command": "agents.create"}))
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("confirm_mutating_required", "Pass --confirm-mutating after reviewing the agent name and role.", map[string]any{"command": "agents.create"}))
 	}
 	api, err := rt.apiClient(opts)
 	if err.ExitCode != 0 {
@@ -936,15 +904,6 @@ func (rt runtime) agentsCreate(args []string) int {
 		"role": strings.TrimSpace(*role),
 	}
 	putIfPresent(body, "name", *name)
-	if strings.TrimSpace(*runtimeKind) == "external" {
-		body["runtime_config"] = map[string]any{
-			"kind":              "external",
-			"provider":          strings.TrimSpace(*runtimeProvider),
-			"device_id":         strings.TrimSpace(*deviceID),
-			"runtime_id":        strings.TrimSpace(*runtimeID),
-			"device_runtime_id": strings.TrimSpace(*deviceRuntimeID),
-		}
-	}
 	data, apiErr := api.Post(context.Background(), projectAgentsPath(*org, *project), body)
 	if apiErr.ExitCode != 0 {
 		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
@@ -957,7 +916,7 @@ func (rt runtime) agentsRebind(args []string) int {
 	org := fs.String("org", "", "org id or slug")
 	project := fs.String("project", "", "project id or slug")
 	agent := fs.String("agent", "", "agent id, Salix agent id, or unique name")
-	runtimeRef := fs.String("runtime", "", "device_runtime_id or unique runtime reference from bft agents runtimes")
+	runtimeRef := fs.String("runtime", "", "device_runtime_id or runtime reference")
 	deviceRef := fs.String("device", "", "optional device id, device name, or connector_run_id to disambiguate runtime")
 	confirm := fs.Bool("confirm-mutating", false, "confirm external agent runtime rebind")
 	if err := parse(fs, args, opts); err.ExitCode != 0 {
@@ -1493,6 +1452,319 @@ func (rt runtime) feishuSetup(args []string, ensureConnect bool) int {
 	return rt.render(opts.outputOptions(), data, func() string { return feishuSetupText(data) }, output.ExitOK)
 }
 
+func (rt runtime) lark(args []string) int {
+	if len(args) == 0 {
+		return output.RenderError(rt.stderr, rt.defaultOutputOptions(), output.Usage("missing_lark_command", "Run bft lark connect, status, checks or scopes.", nil))
+	}
+	switch args[0] {
+	case "connect":
+		return rt.larkConnect(args[1:])
+	case "status":
+		return rt.larkStatus(args[1:])
+	case "checks":
+		return rt.larkChecks(args[1:])
+	case "scopes":
+		return rt.larkScopes(args[1:])
+	}
+	return output.RenderError(rt.stderr, rt.fallbackOutputOptions(args), output.Usage("unknown_lark_command", "Unknown Lark command.", map[string]any{"command": args[0]}))
+}
+
+// larkConnect connects a Lark app to a project. The App Secret, the
+// Verification Token and the Encrypt Key come from environment variables, so
+// they are never arguments or in shell history. Lark signs events with the
+// token or the key, so one of the two is needed.
+func (rt runtime) larkConnect(args []string) int {
+	fs, opts := rt.newFlagSet("bft lark connect")
+	org := fs.String("org", "", "org id or slug")
+	project := fs.String("project", "", "project id or slug")
+	appID := fs.String("app-id", "", "Lark app App ID")
+	appSecretEnv := fs.String("app-secret-env", "", "environment variable containing the Lark app's App Secret")
+	verificationTokenEnv := fs.String("verification-token-env", "", "environment variable containing the Verification Token; this or --encrypt-key-env is needed")
+	encryptKeyEnv := fs.String("encrypt-key-env", "", "environment variable containing the Encrypt Key; this or --verification-token-env is needed")
+	confirm := fs.Bool("confirm-mutating", false, "confirm mutating write")
+	if err := parse(fs, args, opts); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	for _, flag := range [][2]string{{"org", *org}, {"project", *project}, {"app-id", *appID}, {"app-secret-env", *appSecretEnv}} {
+		if err := require(flag[0], flag[1]); err.ExitCode != 0 {
+			return output.RenderError(rt.stderr, opts.outputOptions(), err)
+		}
+	}
+	body := map[string]any{"org": *org, "project": *project, "app_id": *appID}
+	putSecretFromEnv(body, "app_secret", *appSecretEnv, rt.env)
+	if _, ok := body["app_secret"]; !ok {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("missing_lark_app_secret", "The environment variable named by --app-secret-env is empty.", map[string]any{"env": *appSecretEnv}))
+	}
+	putSecretFromEnv(body, "verification_token", *verificationTokenEnv, rt.env)
+	putSecretFromEnv(body, "encrypt_key", *encryptKeyEnv, rt.env)
+	_, hasToken := body["verification_token"]
+	_, hasKey := body["encrypt_key"]
+	if !hasToken && !hasKey {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("missing_lark_event_key", "Pass --verification-token-env or --encrypt-key-env naming a variable that is not empty.", nil))
+	}
+	if !*confirm {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("confirm_mutating_required", "Pass --confirm-mutating to connect the Lark app.", map[string]any{"command": "lark.connect"}))
+	}
+	api, err := rt.apiClient(opts)
+	if err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	data, apiErr := api.Post(context.Background(), "/v1/cli/lark/connect", body)
+	if apiErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
+	}
+	return rt.render(opts.outputOptions(), data, func() string { return larkConnectText(data) }, output.ExitOK)
+}
+
+func (rt runtime) larkStatus(args []string) int {
+	fs, opts := rt.newFlagSet("bft lark status")
+	org := fs.String("org", "", "org id or slug")
+	project := fs.String("project", "", "project id or slug")
+	if err := parse(fs, args, opts); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if err := require("org", *org); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if err := require("project", *project); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	api, err := rt.apiClient(opts)
+	if err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	data, apiErr := api.Get(context.Background(), "/v1/cli/lark/status", map[string]string{"org": *org, "project": *project})
+	if apiErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
+	}
+	return rt.render(opts.outputOptions(), data, func() string { return larkStatusText(data) }, output.ExitOK)
+}
+
+// larkChecks runs the checks of one Lark app of a project: the app of
+// --connect-id, or the first enabled one.
+func (rt runtime) larkChecks(args []string) int {
+	fs, opts := rt.newFlagSet("bft lark checks")
+	org := fs.String("org", "", "org id or slug")
+	project := fs.String("project", "", "project id or slug")
+	connectID := fs.String("connect-id", "", "connect id")
+	if err := parse(fs, args, opts); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if err := require("org", *org); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if err := require("project", *project); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	api, err := rt.apiClient(opts)
+	if err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	body := map[string]any{"org": *org, "project": *project}
+	putIfPresent(body, "connect_id", *connectID)
+	data, apiErr := api.Post(context.Background(), "/v1/cli/lark/checks", body)
+	if apiErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
+	}
+	return rt.render(opts.outputOptions(), data, func() string { return checksText("Lark checks", data) }, output.ExitOK)
+}
+
+// larkScopes prints the scopes a Lark app needs. The text output is only the
+// JSON for the batch import of the Lark Developer Console.
+func (rt runtime) larkScopes(args []string) int {
+	fs, opts := rt.newFlagSet("bft lark scopes")
+	if err := parse(fs, args, opts); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	api, err := rt.apiClient(opts)
+	if err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	data, apiErr := api.Get(context.Background(), "/v1/cli/lark/scopes", nil)
+	if apiErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
+	}
+	return rt.render(opts.outputOptions(), data, func() string { return larkScopesText(data) }, output.ExitOK)
+}
+
+func (rt runtime) qq(args []string) int {
+	if len(args) == 0 {
+		return output.RenderError(rt.stderr, rt.defaultOutputOptions(), output.Usage("missing_qq_command", "Run bft qq connect, status or menu.", nil))
+	}
+	switch args[0] {
+	case "connect":
+		return rt.qqConnect(args[1:])
+	case "status":
+		return rt.qqStatus(args[1:])
+	case "menu":
+		return rt.qqMenu(args[1:])
+	}
+	return output.RenderError(rt.stderr, rt.fallbackOutputOptions(args), output.Usage("unknown_qq_command", "Unknown QQ command.", map[string]any{"command": args[0]}))
+}
+
+// qqConnect connects a QQ bot to a project. The AppSecret comes from an
+// environment variable, so it is never an argument or in shell history.
+func (rt runtime) qqConnect(args []string) int {
+	fs, opts := rt.newFlagSet("bft qq connect")
+	org := fs.String("org", "", "org id or slug")
+	project := fs.String("project", "", "project id or slug")
+	appID := fs.String("app-id", "", "QQ bot AppID")
+	appSecretEnv := fs.String("app-secret-env", "", "environment variable containing the QQ bot AppSecret")
+	confirm := fs.Bool("confirm-mutating", false, "confirm mutating write")
+	if err := parse(fs, args, opts); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	for name, value := range map[string]string{"org": *org, "project": *project, "app-id": *appID, "app-secret-env": *appSecretEnv} {
+		if err := require(name, value); err.ExitCode != 0 {
+			return output.RenderError(rt.stderr, opts.outputOptions(), err)
+		}
+	}
+	body := map[string]any{"org": *org, "project": *project, "app_id": *appID}
+	putSecretFromEnv(body, "app_secret", *appSecretEnv, rt.env)
+	if _, ok := body["app_secret"]; !ok {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("missing_qq_app_secret", "The environment variable named by --app-secret-env is empty.", map[string]any{"env": *appSecretEnv}))
+	}
+	if !*confirm {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("confirm_mutating_required", "Pass --confirm-mutating to connect the QQ bot.", map[string]any{"command": "qq.connect"}))
+	}
+	api, err := rt.apiClient(opts)
+	if err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	data, apiErr := api.Post(context.Background(), "/v1/cli/qq/connect", body)
+	if apiErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
+	}
+	return rt.render(opts.outputOptions(), data, func() string { return qqConnectText(data) }, output.ExitOK)
+}
+
+func (rt runtime) qqStatus(args []string) int {
+	fs, opts := rt.newFlagSet("bft qq status")
+	org := fs.String("org", "", "org id or slug")
+	project := fs.String("project", "", "project id or slug")
+	if err := parse(fs, args, opts); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if err := require("org", *org); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	if err := require("project", *project); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	api, err := rt.apiClient(opts)
+	if err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	data, apiErr := api.Get(context.Background(), "/v1/cli/qq/status", map[string]string{"org": *org, "project": *project})
+	if apiErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
+	}
+	return rt.render(opts.outputOptions(), data, func() string { return qqStatusText(data) }, output.ExitOK)
+}
+
+// qqMenu shows or changes the command menu of a QQ bot: what QQ shows when a
+// person types a slash. The control commands are fixed; add and remove change
+// the shortcuts. A change replaces the stored list, and QQ gets the new menu
+// at once.
+func (rt runtime) qqMenu(args []string) int {
+	action := "show"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		action, args = args[0], args[1:]
+	}
+	if action != "show" && action != "add" && action != "remove" {
+		return output.RenderError(rt.stderr, rt.fallbackOutputOptions(args), output.Usage("unknown_qq_menu_command", "Run bft qq menu, bft qq menu add or bft qq menu remove.", map[string]any{"command": action}))
+	}
+	fs, opts := rt.newFlagSet("bft qq menu " + action)
+	org := fs.String("org", "", "org id or slug")
+	project := fs.String("project", "", "project id or slug")
+	appID := fs.String("app-id", "", "QQ bot AppID; needed when the project has more than one bot")
+	name := new(string)
+	description := new(string)
+	prompt := new(string)
+	scope := new(string)
+	adminOnly := new(bool)
+	confirm := new(bool)
+	if action != "show" {
+		fs.StringVar(name, "name", "", "item name; QQ puts it in the input box after a slash")
+		fs.BoolVar(confirm, "confirm-mutating", false, "confirm mutating write")
+	}
+	if action == "add" {
+		fs.StringVar(description, "description", "", "what the item does, shown in the menu")
+		fs.StringVar(prompt, "prompt", "", "what the agent is asked when a person picks the item")
+		fs.StringVar(scope, "scope", "all", "where the item shows: all, private or group")
+		fs.BoolVar(adminOnly, "admin-only", false, "in a group, only group admins can pick the item")
+	}
+	if err := parse(fs, args, opts); err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	required := map[string]string{"org": *org, "project": *project}
+	if action != "show" {
+		required["name"] = *name
+	}
+	for flagName, value := range required {
+		if err := require(flagName, value); err.ExitCode != 0 {
+			return output.RenderError(rt.stderr, opts.outputOptions(), err)
+		}
+	}
+	if action != "show" && !*confirm {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("confirm_mutating_required", "Pass --confirm-mutating to change the QQ bot's command menu.", map[string]any{"command": "qq.menu." + action}))
+	}
+	api, err := rt.apiClient(opts)
+	if err.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), err)
+	}
+	status, apiErr := api.Get(context.Background(), "/v1/cli/qq/status", map[string]string{"org": *org, "project": *project})
+	if apiErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
+	}
+	if action == "show" {
+		return rt.render(opts.outputOptions(), status, func() string { return qqMenuText(status, *appID) }, output.ExitOK)
+	}
+	connect, found := qqMenuConnect(status, *appID)
+	if !found {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("qq_bot_not_found", "Name one QQ bot of this project with --app-id.", nil))
+	}
+	current, _ := connect["command_menu"].([]any)
+	items := make([]any, 0, len(current)+1)
+	removed := false
+	for _, entry := range current {
+		item, _ := entry.(map[string]any)
+		if strings.EqualFold(stringField(item, "name"), strings.TrimPrefix(*name, "/")) {
+			removed = true
+			continue
+		}
+		items = append(items, entry)
+	}
+	if action == "remove" && !removed {
+		return output.RenderError(rt.stderr, opts.outputOptions(), output.Usage("qq_menu_item_not_found", "The menu has no item with that name.", map[string]any{"name": *name}))
+	}
+	if action == "add" {
+		items = append(items, map[string]any{"name": *name, "description": *description, "prompt": *prompt, "scope": *scope, "admin_only": *adminOnly})
+	}
+	body := map[string]any{"org": *org, "project": *project, "app_id": stringField(connect, "app_id"), "items": items}
+	data, apiErr := api.Post(context.Background(), "/v1/cli/qq/menu", body)
+	if apiErr.ExitCode != 0 {
+		return output.RenderError(rt.stderr, opts.outputOptions(), apiErr)
+	}
+	return rt.render(opts.outputOptions(), data, func() string {
+		saved, _ := data["connect"].(map[string]any)
+		return qqMenuLines(saved)
+	}, output.ExitOK)
+}
+
+// qqMenuConnect picks the bot a menu command is about: the one with the
+// AppID, or the only one.
+func qqMenuConnect(status map[string]any, appID string) (map[string]any, bool) {
+	connects, _ := status["connects"].([]any)
+	for _, entry := range connects {
+		connect, _ := entry.(map[string]any)
+		if appID == "" && len(connects) == 1 || appID != "" && stringField(connect, "app_id") == appID {
+			return connect, true
+		}
+	}
+	return nil, false
+}
+
 func (rt runtime) feishuChecks(args []string) int {
 	fs, opts := rt.newFlagSet("bft feishu checks")
 	org := fs.String("org", "", "org id or slug")
@@ -1891,7 +2163,7 @@ func (rt runtime) onboarding(args []string) int {
 	step := fs.String("step", "context", "onboarding step")
 	org := fs.String("org", "", "org id or slug")
 	project := fs.String("project", "", "project id or slug")
-	appID := fs.String("app-id", "", "Feishu app id")
+	appID := fs.String("app-id", "", "Feishu app id, or Lark app id for the lark-* steps")
 	larkCLI := fs.String("lark-cli", "lark-cli", "lark/Feishu CLI path")
 	assistLarkAppInit := fs.Bool("assist-lark-app-init", false, "emit an assisted lark-cli config init --new gate without running it")
 	targetChatID := fs.String("target-chat-id", "", "target chat id")
@@ -1963,7 +2235,7 @@ func (rt runtime) onboardingPayload(opts *commonOptions, step, org, project, app
 		payload, code := rt.runnerSmoke(opts, org)
 		gates = append(gates, payload...)
 		exitCode = code
-	case "sso", "admin-login", "feishu-app", "feishu-connect", "feishu-checks":
+	case "sso", "admin-login", "feishu-app", "feishu-connect", "feishu-checks", "lark-connect", "lark-checks":
 		gates, exitCode = rt.apiBackedSmoke(opts, step, org, project, appID)
 	default:
 		gates = append(gates, map[string]any{"gate_id": "onboarding." + step, "label": "Onboarding " + step, "classification": "blocked", "status": "fail", "reason_class": "invalid_onboarding_step", "required": true, "next_action": "Use bft commands --json to inspect supported onboarding steps.", "evidence": map[string]any{"step": step}, "redacted": true})
@@ -2061,6 +2333,33 @@ func (rt runtime) apiBackedSmoke(opts *commonOptions, step, org, project, appID 
 		data, apiErr := api.Post(context.Background(), "/v1/cli/feishu/checks", map[string]any{"org": org, "project": project})
 		if apiErr.ExitCode != 0 {
 			return []map[string]any{blockedGate("feishu.checks", "Feishu checks", apiErr)}, apiErr.ExitCode
+		}
+		return gatesFromChecks(data), output.ExitOK
+	case "lark-connect":
+		// A Lark app is connected with its own secrets, so this step only reads.
+		if project == "" {
+			return []map[string]any{assistedGate("lark.connect", "Lark app connected", "Pass --project, then rerun this step.")}, output.ExitNeedsManual
+		}
+		data, apiErr := api.Get(context.Background(), "/v1/cli/lark/status", map[string]string{"org": org, "project": project})
+		if apiErr.ExitCode != 0 {
+			return []map[string]any{blockedGate("lark.connect", "Lark app connected", apiErr)}, apiErr.ExitCode
+		}
+		connects, _ := data["connects"].([]any)
+		for _, item := range connects {
+			connect, _ := item.(map[string]any)
+			if connect["disabled_at"] == nil && (appID == "" || stringField(connect, "app_id") == appID) {
+				evidence := map[string]any{"connect_id": connect["connect_id"], "app_id": connect["app_id"], "callback_url": connect["callback_url"]}
+				return []map[string]any{okGateWithEvidence("lark.connect", "Lark app connected", "Lark app is connected; continue to lark-checks.", evidence)}, output.ExitOK
+			}
+		}
+		return []map[string]any{assistedGate("lark.connect", "Lark app connected", "Run bft lark connect --confirm-mutating with the app's App ID and secret env vars, then rerun this step.")}, output.ExitNeedsManual
+	case "lark-checks":
+		if project == "" {
+			return []map[string]any{assistedGate("lark.checks", "Lark checks", "Pass --project, then rerun this step.")}, output.ExitNeedsManual
+		}
+		data, apiErr := api.Post(context.Background(), "/v1/cli/lark/checks", map[string]any{"org": org, "project": project})
+		if apiErr.ExitCode != 0 {
+			return []map[string]any{blockedGate("lark.checks", "Lark checks", apiErr)}, apiErr.ExitCode
 		}
 		return gatesFromChecks(data), output.ExitOK
 	}
@@ -2271,29 +2570,6 @@ func validateAgentRole(role string) output.Error {
 	}
 }
 
-func validateAgentRuntimeFlags(kind, provider, deviceID, runtimeID, deviceRuntimeID string) output.Error {
-	switch strings.TrimSpace(kind) {
-	case "internal":
-		return output.Error{}
-	case "external":
-		if strings.TrimSpace(provider) != "codex" {
-			return output.Usage("invalid_runtime_provider", "Pass --runtime-provider codex.", map[string]any{"runtime_provider": provider})
-		}
-		if err := require("device-id", deviceID); err.ExitCode != 0 {
-			return err
-		}
-		if err := require("runtime-id", runtimeID); err.ExitCode != 0 {
-			return err
-		}
-		if err := require("device-runtime-id", deviceRuntimeID); err.ExitCode != 0 {
-			return err
-		}
-		return output.Error{}
-	default:
-		return output.Usage("invalid_runtime_kind", "Pass --runtime-kind internal or external.", map[string]any{"runtime_kind": kind})
-	}
-}
-
 func listQuery(limit int, filter string) map[string]string {
 	query := map[string]string{"limit": strconv.Itoa(limit)}
 	if strings.TrimSpace(filter) != "" {
@@ -2330,52 +2606,6 @@ func boundList(data map[string]any, key string, limit int, filter string) map[st
 		"truncated":  truncated,
 	}
 	return data
-}
-
-func filterAgentRuntimes(data map[string]any, includeUnavailable bool) map[string]any {
-	if includeUnavailable {
-		return data
-	}
-	runtimes, _ := data["runtimes"].([]any)
-	filtered := make([]any, 0, len(runtimes))
-	for _, raw := range runtimes {
-		row, _ := raw.(map[string]any)
-		if runtimeBindable(row) {
-			filtered = append(filtered, raw)
-		}
-	}
-	result := make(map[string]any, len(data))
-	for key, value := range data {
-		result[key] = value
-	}
-	result["runtimes"] = filtered
-	return result
-}
-
-func runtimeBindable(runtime map[string]any) bool {
-	status := strings.TrimSpace(stringField(runtime, "status"))
-	return (status == "available" || status == "ready") &&
-		runtimeFlagNotFalse(runtime, "ready") &&
-		runtimeFlagNotFalse(runtime, "auth_ready") &&
-		runtimeFlagNotFalse(runtime, "app_server_startable")
-}
-
-func runtimeFlagNotFalse(runtime map[string]any, key string) bool {
-	if runtime == nil {
-		return true
-	}
-	value, ok := runtime[key]
-	if !ok || value == nil {
-		return true
-	}
-	switch typed := value.(type) {
-	case bool:
-		return typed
-	case string:
-		return strings.ToLower(strings.TrimSpace(typed)) != "false"
-	default:
-		return true
-	}
 }
 
 func itemMatches(item any, filter string) bool {
@@ -2472,10 +2702,6 @@ func slackConnectsPath(org, project string) string {
 
 func projectAgentsPath(org, project string) string {
 	return "/v1/orgs/" + urlPathEscape(org) + "/projects/" + urlPathEscape(project) + "/agents"
-}
-
-func projectAgentRuntimesPath(org, project string) string {
-	return projectAgentsPath(org, project) + "/runtimes"
 }
 
 func projectAgentRuntimePath(org, project, agent string) string {

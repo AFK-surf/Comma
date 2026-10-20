@@ -1,4 +1,4 @@
-import type { CommaSkill } from "../../../api";
+import type { CommaSkill } from "@comma/core/api-schemas";
 
 export type MentionTrigger = {
   query: string;

@@ -4,6 +4,8 @@ defmodule SystemsObservability.RouteCatalog do
   @routes %{
     "comma_product_api" => MapSet.new(~w(
       /health
+      /stations/*
+      /v1/comma/stations/*
       /v1/comma/admin/*
       /v1/comma/auth/*
       /v1/comma/billing/*
@@ -21,7 +23,6 @@ defmodule SystemsObservability.RouteCatalog do
       /site-content/*
       /dash/*
       /v1/admin/*
-      /v1/agent-defaults
       /v1/agent-groups/*
       /v1/cloud-vm/*
       /v1/connect
@@ -50,12 +51,12 @@ defmodule SystemsObservability.RouteCatalog do
   def classify(_endpoint, _path), do: "unmatched"
 
   defp route_group("/health"), do: "/health"
-  defp route_group("/v1/agent-defaults"), do: "/v1/agent-defaults"
   defp route_group("/v1/connect"), do: "/v1/connect"
   defp route_group("/v1/initial-agents"), do: "/v1/initial-agents"
   defp route_group("/_site/api"), do: "/site-api/*"
   defp route_group("/_site/content"), do: "/site-content/*"
   defp route_group("/dash" <> _rest), do: "/dash/*"
+  defp route_group("/stations/" <> _rest), do: "/stations/*"
   defp route_group("/site/" <> _rest), do: "/site/:id/*"
 
   # The Comma API is one namespace; its families are one level below it.

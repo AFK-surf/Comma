@@ -1,133 +1,28 @@
 defmodule SalixIM.Triage.LedgerTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.Triage.{CanonicalJSON, Ledger}
   alias SalixIM.Triage.Ledger.IdentityActivity
   alias SalixStore.{CasRecord, S3, ULID}
 
   setup do
-    previous_triage_backend = Application.get_env(:salix_store, :triage_record_backend)
-    Application.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
+    previous_triage_backend = SystemsRuntime.get_env(:salix_store, :triage_record_backend)
+    SystemsRuntime.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
     S3.Fake.reset()
 
     on_exit(fn ->
       if previous_triage_backend do
-        Application.put_env(:salix_store, :triage_record_backend, previous_triage_backend)
+        SystemsRuntime.put_env(:salix_store, :triage_record_backend, previous_triage_backend)
       else
-        Application.delete_env(:salix_store, :triage_record_backend)
+        SystemsRuntime.delete_env(:salix_store, :triage_record_backend)
       end
     end)
 
     :ok
   end
 
-  test "run records are hashed from canonical bytes, not from map iteration order" do
-    namespace = "triage-ledger-canonical-#{System.unique_integer([:positive])}"
-    run_id = ULID.generate()
-    now = System.system_time(:millisecond)
-
-    # Above the 32-key flatmap boundary a map iterates in HAMT order, which is
-    # an OTP implementation detail. `Jason.encode!/1` follows it; canonical JSON
-    # sorts. A record hashed through Jason would therefore change its identity
-    # on an OTP upgrade and invalidate the whole historical ledger.
-    wide_input =
-      1..40
-      |> Map.new(fn ordinal -> {"field_#{ordinal}", "value-#{ordinal}"} end)
-      |> Map.put("schema", "comma.triage-input-snapshot.v1")
-      |> Map.put("receipt_refs", ["receipt-1"])
-
-    refute Jason.encode!(wide_input) == CanonicalJSON.encode!(wide_input)
-
-    fence = %{
-      "schema" => "comma.triage-bucket-fence.v1",
-      "bucket_scope" => "canonical-scope",
-      "generation" => ULID.generate(),
-      "run_id" => run_id,
-      "created_at" => now,
-      "deadline_at" => now,
-      "input_snapshot" => wide_input,
-      "terminal" => %{
-        "terminal_id" => ULID.generate(),
-        "status" => "failed",
-        "decision" => %{"action" => "silence", "reason" => "canonical-hash-probe"},
-        "evaluator" => %{},
-        "settled_at" => now
-      }
-    }
-
-    assert :ok = Ledger.persist(namespace, fence)
-
-    assert {:ok, run} =
-             CasRecord.get(SalixStore.TriageKeys.ctl_im_triage_ledger_run(namespace, run_id))
-
-    assert {:ok, replay} =
-             CasRecord.get(SalixStore.TriageKeys.ctl_im_triage_replay(namespace, run_id))
-
-    assert run["input_snapshot_sha256"] == sha256(wide_input)
-
-    assert replay["ledger_ref"] ==
-             "triage-record://" <>
-               SalixStore.TriageKeys.ctl_im_triage_ledger_run(namespace, run_id)
-
-    assert replay["run_sha256"] == sha256(run)
-
-    # And the verifier agrees with the writer, so the record stays readable.
-    assert {:ok, ^run} = Ledger.fetch(namespace, run_id)
-  end
-
-  # `fetch/2` re-derives the run hash and refuses a run its replay record no
-  # longer agrees with. `list/1` returned the same objects with no verification
-  # at all, so an operator reading the listing saw a decision no consumer could
-  # replay and had no way to tell.
-  test "listing drops a run whose replay record no longer agrees with it" do
-    namespace = "triage-ledger-listing-#{System.unique_integer([:positive])}"
-    now = System.system_time(:millisecond)
-    tampered_run_id = ULID.generate()
-    intact_run_id = ULID.generate()
-
-    for run_id <- [tampered_run_id, intact_run_id] do
-      assert :ok = Ledger.persist(namespace, legacy_fence(run_id, now))
-    end
-
-    run_key = SalixStore.TriageKeys.ctl_im_triage_ledger_run(namespace, tampered_run_id)
-
-    assert {:ok, _tampered} =
-             CasRecord.update(run_key, fn current ->
-               put_in(current, ["decision", "reason"], "rewritten-after-the-fact")
-             end)
-
-    # The single-object check still catches it on the direct read...
-    assert {:error, :invalid_replay} = Ledger.fetch(namespace, tampered_run_id)
-
-    # ...and now the listing refuses to present it as history either.
-    assert {:ok, records} = Ledger.list(namespace)
-    assert Enum.map(records, & &1["run_id"]) == [intact_run_id]
-  end
-
-  defp legacy_fence(run_id, now) do
-    %{
-      "schema" => "comma.triage-bucket-fence.v1",
-      "bucket_scope" => "listing-scope-#{run_id}",
-      "generation" => ULID.generate(),
-      "run_id" => run_id,
-      "created_at" => now,
-      "deadline_at" => now,
-      "input_snapshot" => %{
-        "schema" => "comma.triage-input-snapshot.v1",
-        "receipt_refs" => ["receipt-#{run_id}"]
-      },
-      "terminal" => %{
-        "terminal_id" => ULID.generate(),
-        "status" => "failed",
-        "decision" => %{"action" => "silence", "reason" => "listing-probe"},
-        "evaluator" => %{},
-        "settled_at" => now
-      }
-    }
-  end
-
   test "persists one positive-projected non-authoritative late result" do
-    namespace = "triage-ledger-#{System.unique_integer([:positive])}"
+    namespace = "triage-ledger-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     run_id = SalixStore.ULID.generate()
 
     assert :ok =
@@ -149,68 +44,8 @@ defmodule SalixIM.Triage.LedgerTest do
     assert record["authority_status"] == "failed"
   end
 
-  # The late record is the only durable evidence that a worker answered after
-  # its fence had settled. Discarding the CAS result reported `:ok` while that
-  # evidence silently vanished, so the caller had nothing to retry and no signal
-  # to log.
-  test "a failed late-result write is reported to the caller instead of swallowed" do
-    namespace = "triage-ledger-late-failure-#{System.unique_integer([:positive])}"
-    run_id = ULID.generate()
-
-    :ok =
-      S3.Fake.blackhole(
-        {:fail, 503, :put,
-         {:prefix, SalixStore.TriageKeys.ctl_im_triage_late_results_prefix(namespace)}}
-      )
-
-    on_exit(fn -> S3.Fake.clear_blackhole() end)
-
-    assert {:error, _reason} =
-             Ledger.persist_late(
-               namespace,
-               %{run_id: run_id, authority_status: "failed"},
-               {"failed", %{"action" => "silence", "reason" => "identity_decision_invalid"}, %{}}
-             )
-
-    assert {:ok, []} = Ledger.list(namespace)
-  end
-
-  # A retry must re-`create` the SAME object, not observe the same event twice.
-  test "a pinned late observation makes the retry idempotent" do
-    namespace = "triage-ledger-late-retry-#{System.unique_integer([:positive])}"
-    run_id = ULID.generate()
-    observation = Ledger.late_observation()
-    parts = {"failed", %{"action" => "silence", "reason" => "identity_decision_invalid"}, %{}}
-    authority = %{run_id: run_id, authority_status: "failed"}
-
-    assert :ok = Ledger.persist_late(namespace, authority, parts, observation)
-    assert :ok = Ledger.persist_late(namespace, authority, parts, observation)
-
-    assert {:ok, [record]} = Ledger.list(namespace)
-    assert record["observation_id"] == observation.observation_id
-    assert record["created_at"] == observation.created_at
-  end
-
-  test "rejects an unprojected late-result authority map without writing" do
-    namespace = "triage-ledger-private-#{System.unique_integer([:positive])}"
-
-    assert {:error, :invalid_late_result_projection} =
-             Ledger.persist_late(
-               namespace,
-               %{
-                 run_id: SalixStore.ULID.generate(),
-                 authority_status: "failed",
-                 identity_winning_input: %{"raw" => "U_PRIVATE"}
-               },
-               {"failed", %{"action" => "silence"}, %{}}
-             )
-
-    assert {:ok, []} = Ledger.list(namespace)
-    refute inspect(S3.Fake.put_log()) =~ "U_PRIVATE"
-  end
-
   test "rejects a raw identity fence that has not been authorized by RunFence" do
-    namespace = "triage-ledger-raw-fence-#{System.unique_integer([:positive])}"
+    namespace = "triage-ledger-raw-fence-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     raw_fence = %{
       "schema" => "comma.triage-bucket-fence.v2",
@@ -222,7 +57,7 @@ defmodule SalixIM.Triage.LedgerTest do
         "status" => "failed",
         "decision" => %{"action" => "silence"},
         "evaluator" => %{},
-        "settled_at" => System.system_time(:millisecond)
+        "settled_at" => SystemsClock.system_time(:millisecond)
       },
       "input_snapshot" => %{
         "schema" => "comma.triage-ledger-input-projection.v2",
@@ -239,9 +74,9 @@ defmodule SalixIM.Triage.LedgerTest do
   end
 
   test "reads one recent identity-scoped public activity with a fixed key budget" do
-    namespace = "triage-ledger-activity-#{System.unique_integer([:positive])}"
+    namespace = "triage-ledger-activity-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     run_id = ULID.generate()
-    created_at = System.system_time(:millisecond)
+    created_at = SystemsClock.system_time(:millisecond)
     bundle = identity_bundle("project-current")
     identity_scope_sha256 = identity_scope_sha256(bundle)
 

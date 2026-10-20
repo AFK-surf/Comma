@@ -15,7 +15,7 @@ defmodule SalixAnalytics.AgentTelemetryQueriesClickHouseTest do
     * sess-d: activity, then run terminal after it — accounted for.
     * sess-e: run terminal `llm_failed` — a hard failure, not unconverged.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAnalytics.AgentTelemetryQueries, as: Queries
   alias SalixAnalytics.Migrations
@@ -34,12 +34,12 @@ defmodule SalixAnalytics.AgentTelemetryQueriesClickHouseTest do
   setup_all do
     Application.ensure_all_started(:req)
 
-    database = "salix_telemetry_q_test_#{System.unique_integer([:positive])}"
-    prev = Application.get_env(:salix_analytics, :clickhouse)
+    database = "salix_telemetry_q_test_#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    prev = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
     clickhouse_query!("DROP DATABASE IF EXISTS #{database}")
 
-    Application.put_env(:salix_analytics, :clickhouse,
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
       base_url: @clickhouse_url,
       table: "#{database}.events"
     )
@@ -48,7 +48,10 @@ defmodule SalixAnalytics.AgentTelemetryQueriesClickHouseTest do
     {:ok, 14} = ClickHouseTyped.insert(seed_rows())
 
     on_exit(fn ->
-      Application.put_env(:salix_analytics, :clickhouse, prev)
+      if prev,
+        do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, prev),
+        else: SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
+
       clickhouse_query!("DROP DATABASE IF EXISTS #{database}")
     end)
 

@@ -1,5 +1,5 @@
-import VerifiedKernelProofs.Session.WorkKernelHistory
 import VerifiedKernelProofs.Proof.CatalogFrameTactic
+import VerifiedKernelProofs.Session.WorkArchiveMetadata
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data
@@ -87,7 +87,7 @@ cheaper than a walk over every branch of `runtimeAppend`. -/
 theorem runtimeAppend_catalog_frame {state event next : Term} {journal rest : List Term}
     (call : runtimeAppend state event journal = .ok (next, rest)) : CatalogFrame state next := by
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops call
-  exact catalog_frame_trans (appendFields_catalog_frame appended) (catalog_frame_trans (write_catalog_frame written rfl rfl rfl)
+  exact catalog_frame_trans (appendFields_catalog_frame appended) (catalog_frame_trans (write_catalog_frame written (by keys_absent) (by keys_absent) (by keys_absent))
     (catalog_frame_trans (bumpHwm_catalog_frame bumped) (resetFresh_catalog_frame reset)))
 
 theorem runtimeAppend_catalog_frame_step {state event next : Term} {journal rest : List Term} :
@@ -101,14 +101,23 @@ theorem transcriptDelivery_catalog_frame {state event next : Term} {journal rest
     (call : transcriptDelivery state event journal = .ok (next, rest)) : CatalogFrame state next := by
   rcases transcriptDelivery_ops call with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, obligated, bumped, reset⟩
   · exact catalog_frame_refl _
-  · exact catalog_frame_trans (appendFields_catalog_frame appended) (catalog_frame_trans (write_catalog_frame written rfl rfl rfl)
+  · exact catalog_frame_trans (appendFields_catalog_frame appended) (catalog_frame_trans (write_catalog_frame written (by keys_absent) (by keys_absent) (by keys_absent))
       (catalog_frame_trans (addObligation_catalog_frame obligated) (catalog_frame_trans (bumpHwm_catalog_frame bumped) (resetFresh_catalog_frame reset))))
 
 theorem transcriptDelivery_catalog_frame_step {state event next : Term} {journal rest : List Term} :
     transcriptDelivery state event journal = .ok (next, rest) ↔
       Except.ok (next, rest) = transcriptDelivery state event journal ∧ CatalogFrame state next :=
   step_iff transcriptDelivery_catalog_frame
-catalog_rule transcriptSeed (state event)
+/-- Compose the two writes of `transcriptSeed` (`transcriptSeed_ops`). -/
+theorem transcriptSeed_catalog_frame {state event next : Term} {journal rest : List Term}
+    (call : transcriptSeed state event journal = .ok (next, rest)) : CatalogFrame state next := by
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, seeded, bytes⟩ := transcriptSeed_ops call
+  exact catalog_frame_trans (write_catalog_frame seeded (by keys_absent) (by keys_absent) (by keys_absent)) (write_catalog_frame bytes (by keys_absent) (by keys_absent) (by keys_absent))
+
+theorem transcriptSeed_catalog_frame_step {state event next : Term} {journal rest : List Term} :
+    transcriptSeed state event journal = .ok (next, rest) ↔
+      Except.ok (next, rest) = transcriptSeed state event journal ∧ CatalogFrame state next :=
+  step_iff transcriptSeed_catalog_frame
 catalog_rule queueAppend (state event)
 catalog_rule queueAck (state event)
 catalog_rule queueConsume (state event)
@@ -123,30 +132,6 @@ theorem sessionEvent_catalog_frame_step {state event next : Term} {journal rest 
     sessionEvent state event journal = .ok (next, rest) ↔
       Except.ok (next, rest) = sessionEvent state event journal ∧ CatalogFrame state next :=
   step_iff sessionEvent_catalog_frame
-theorem mergePredicate_catalog_frame {state kind through replacement extra next : Term} {journal rest : List Term}
-    (call : mergePredicate state kind through replacement extra journal = .ok (next, rest)) : CatalogFrame state next := by
-  unfold mergePredicate at call
-  repeat' first
-    | exact write_catalog_frame call rfl rfl rfl
-    | split at call
-    | (obtain ⟨_, _, _, call⟩ := bind_ok call)
-
-theorem mergePredicate_catalog_frame_step {state kind through replacement extra next : Term} {journal rest : List Term} :
-    mergePredicate state kind through replacement extra journal = .ok (next, rest) ↔
-      Except.ok (next, rest) = mergePredicate state kind through replacement extra journal ∧ CatalogFrame state next :=
-  step_iff mergePredicate_catalog_frame
-
-theorem microcompactIds_catalog_frame {state replacement event next : Term} {ids journal rest : List Term}
-    (call : microcompactIds state ids replacement event journal = .ok (next, rest)) : CatalogFrame state next := by
-  unfold microcompactIds at call
-  catalog_frame_walk call
-
-theorem microcompactIds_catalog_frame_step {state replacement event next : Term} {ids journal rest : List Term} :
-    microcompactIds state ids replacement event journal = .ok (next, rest) ↔
-      Except.ok (next, rest) = microcompactIds state ids replacement event journal ∧ CatalogFrame state next :=
-  step_iff microcompactIds_catalog_frame
-
-catalog_rule microcompact (state event)
 
 theorem afterEvent_catalog_frame {previous state event next : Term} {journal rest : List Term}
     (call : afterEvent previous state event journal = .ok (next, rest)) : CatalogFrame state next := by

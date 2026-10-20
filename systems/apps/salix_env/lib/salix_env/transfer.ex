@@ -39,10 +39,10 @@ defmodule SalixEnv.Transfer do
   def advertise_url(token),
     do: "http://#{advertise_host()}:#{advertise_port()}/stream/#{token}"
 
-  def port, do: Application.get_env(:salix_env, :transfer_port, 4400)
+  def port, do: SystemsRuntime.get_env(:salix_env, :transfer_port, 4400)
 
   @doc "Externally reachable port carried in transfer URLs; defaults to the listener port."
-  def advertise_port, do: Application.get_env(:salix_env, :advertise_port, port())
+  def advertise_port, do: SystemsRuntime.get_env(:salix_env, :advertise_port, port())
 
   defp decode_json(body) when is_binary(body) do
     case Jason.decode(body) do
@@ -52,7 +52,7 @@ defmodule SalixEnv.Transfer do
   end
 
   defp advertise_host do
-    Application.get_env(:salix_env, :advertise_host) || System.get_env("SALIX_ADVERTISE_HOST") ||
+    SystemsRuntime.get_env(:salix_env, :advertise_host) || System.get_env("SALIX_ADVERTISE_HOST") ||
       "127.0.0.1"
   end
 end

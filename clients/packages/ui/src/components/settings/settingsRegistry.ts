@@ -18,6 +18,7 @@ export type SettingsCategoryIcon =
   | "keyboard-shortcuts"
   | "usage-billing"
   | "devices"
+  | "tailscale"
   | "computer-use"
   | "models-api-keys"
   | "debug";

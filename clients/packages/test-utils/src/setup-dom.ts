@@ -1,6 +1,42 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup } from "@testing-library/react";
-import { afterEach, vi } from "vitest";
+// React Aria patches `HTMLElement.prototype.focus` when this module loads, as
+// a page runs its scripts before anyone interacts. Loaded here, it does so
+// before a test's user-event replaces `focus` with a getter (user-event's
+// `patchFocus`), also when a later file of a shared process loads React Aria
+// for the first time.
+import "react-aria/private/interactions/useFocusVisible";
+import { act, cleanup } from "@testing-library/react";
+import { toast } from "sonner";
+import { afterAll, afterEach, beforeEach, vi } from "vitest";
+import { baseLocale, initializeCommaI18n } from "@comma/i18n";
+import { stopTimersOfEndedTests } from "./ended-test-timers";
+import { stepUserEventOnTestClock } from "./user-event-clock";
+
+stopTimersOfEndedTests();
+stepUserEventOnTestClock();
+
+// Where each test starts, as a page load would: the address the file's window
+// opened at.
+const startUrl = window.location.href;
+
+// And the root element's attributes (lang, theme) as the file's modules left
+// them, read before its first test.
+let rootAttributes: [string, string][] | undefined;
+beforeEach(() => {
+  rootAttributes ??= Array.from(document.documentElement.attributes, (attribute) => [
+    attribute.name,
+    attribute.value,
+  ]);
+});
+
+// sonner adds its own stylesheet (97 rules) to the head when it loads. jsdom
+// lays nothing out, yet each getComputedStyle matches every rule on the page,
+// and role queries (accessible names, visibility) and user-event's
+// pointer-events check call it for an element and each of its ancestors: the
+// sheet doubled that cost. No test reads a toast's computed style, so the page
+// starts without it.
+for (const style of Array.from(document.head.querySelectorAll("style")))
+  if (style.textContent?.includes("[data-sonner-toaster]")) style.remove();
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
@@ -163,6 +199,44 @@ jsdomCustomPropertyFloor.textContent = `:root {
 }`;
 document.head.append(jsdomCustomPropertyFloor);
 
+// The files of the `jsdom-shared` project run one after another in one
+// process and on one page (vitest.config.ts `sharedDomFiles`). Each starts
+// where a page load would put it: at the page's first address, with an empty
+// body, a head without the stylesheets earlier files added, and a navigator
+// without what an earlier file's user-event added (its clipboard stub, which
+// user-event removes only after the first file).
+type FirstPage = { url: string; navigator: Set<PropertyKey> };
+const firstPageKey = Symbol.for("comma.test.firstPage");
+const pageScope = globalThis as { [firstPageKey]?: FirstPage };
+const firstPage = (pageScope[firstPageKey] ??= {
+  url: window.location.href,
+  navigator: new Set(Reflect.ownKeys(navigator)),
+});
+window.history.replaceState(null, "", firstPage.url);
+document.body.replaceChildren();
+// jsdom keeps the sheet of a <style> that left the document inside a removed
+// subtree (a component's own <style>, unmounted) in `document.styleSheets`,
+// where every later getComputedStyle still matches its rules. Removing the
+// element itself drops the sheet.
+for (const sheet of Array.from(document.styleSheets)) {
+  const owner = sheet.ownerNode;
+  if (owner && !owner.isConnected) {
+    document.head.append(owner);
+    owner.remove();
+  }
+}
+document.head.replaceChildren(jsdomCustomPropertyFloor);
+for (const name of document.body.getAttributeNames())
+  document.body.removeAttribute(name);
+for (const key of Reflect.ownKeys(navigator))
+  if (!firstPage.navigator.has(key)) Reflect.deleteProperty(navigator, key);
+
+// Globals and environment variables a file stubbed end with it.
+afterAll(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
 globalThis.ResizeObserver = ResizeObserverMock;
 globalThis.IntersectionObserver = IntersectionObserverMock;
 (
@@ -171,24 +245,31 @@ globalThis.IntersectionObserver = IntersectionObserverMock;
 
 /**
  * sonner arms a bare `setTimeout(removeToast, TIME_BEFORE_UNMOUNT)` when a
- * toast closes and never clears it on unmount. Once the file's environment is
- * torn down that callback still runs, reaches React's `resolveUpdatePriority`,
- * and throws `ReferenceError: window is not defined` — an unhandled error that
- * fails the run while every test reports green. Drain it, and only for a test
- * that actually rendered a toaster, so nothing else pays for the wait.
+ * toast closes and never clears it on unmount. It is a timer of the fake clock
+ * (test-clock.ts), so the drain after each test below runs it while the window
+ * is still there.
  */
-const SONNER_UNMOUNT_DRAIN_MS = 250;
-
-afterEach(async () => {
-  const toasted = document.querySelector("[data-sonner-toaster]") !== null;
+afterEach(() => {
   cleanup();
-  if (toasted) {
-    await new Promise((settle) => {
-      setTimeout(settle, SONNER_UNMOUNT_DRAIN_MS);
-    });
-  }
+  // sonner keeps its toasts in one module-wide store and replays the active
+  // ones to a Toaster that mounts later, as a window's single Toaster should.
+  // A test's toasts must not reach the next test's Toaster.
+  toast.dismiss();
+  // Time passes after a test as it would for a user: what the test left on the
+  // clock (a library's deferred cleanup, React's last work) runs before the
+  // next test starts, not during it. Timers that keep rearming stop after a
+  // fixed number of rounds.
+  for (let round = 0; round < 20 && vi.getTimerCount() > 0; round += 1)
+    act(() => vi.runOnlyPendingTimers());
   globalThis.localStorage.clear();
   globalThis.sessionStorage.clear();
-  vi.useRealTimers();
+  // Paraglide keeps the active locale in module state, which the next test
+  // shares; a test that switched to another language must not leave it.
+  initializeCommaI18n([baseLocale], { documentLanguage: false });
   Reflect.deleteProperty(globalThis, "commaNative");
+  // A page load starts at its address.
+  window.history.replaceState(null, "", startUrl);
+  const root = document.documentElement;
+  for (const name of root.getAttributeNames()) root.removeAttribute(name);
+  for (const [name, value] of rootAttributes ?? []) root.setAttribute(name, value);
 });

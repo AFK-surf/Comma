@@ -1,0 +1,36 @@
+id: direct-randomness
+language: elixir
+severity: error
+message: "$M.$F draws from the machine directly. Call SystemsRuntime.Proc instead, the one place randomness enters."
+note: |
+  Ecto.UUID.generate/0           -> SystemsRuntime.Proc.uuid/0
+  :crypto.strong_rand_bytes/1    -> SystemsRuntime.Proc.random_bytes/1
+  :rand.uniform/0,1              -> SystemsRuntime.Proc.uniform/0,1
+  Enum.random/1                  -> Enum.at(list, SystemsRuntime.Proc.uniform(length(list)) - 1)
+  System.unique_integer/0,1      -> SystemsRuntime.Proc.unique_integer/0,1
+  :erlang.unique_integer/0,1     -> SystemsRuntime.Proc.unique_integer/0,1
+  :crypto.generate_key/2,3       -> SystemsRuntime.Proc.generate_key/2,3
+  :crypto.sign/4                 -> SystemsRuntime.Proc.sign/4
+  A capture is a call too: write &SystemsRuntime.Proc.uuid/0, not &Ecto.UUID.generate/0.
+  Each is the function it replaces.
+  See docs/testing.md#deterministic-runtime.
+rule:
+  any:
+    - pattern: $M.$F($$$)
+    - pattern: "&$M.$F/$A"
+constraints:
+  M: { regex: '^(Ecto\.UUID|:crypto|:rand|Enum|System|:erlang)$' }
+  F: { regex: '^(generate|bingenerate|strong_rand_bytes|rand_uniform|generate_key|sign|uniform|uniform_real|normal|bytes|seed|random|shuffle|take_random|unique_integer)$' }
+files:
+  - systems/apps/*/lib/**/*.ex
+  - systems/apps/*/lib/**/*.exs
+  - systems/apps/*/test/**/*.ex
+  - systems/apps/*/test/**/*.exs
+ignores:
+  # The runtime itself and the apps below it
+  # (`@harness` in systems/apps/systems_runtime/lib/systems_runtime.ex).
+  - systems/apps/systems_runtime/**
+  - systems/apps/systems_clock/**
+  - systems/apps/systems_sim/**
+  - systems/apps/systems_observability/**
+  - systems/apps/comma_log/**

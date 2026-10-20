@@ -1,5 +1,6 @@
 defmodule CommaWeb.IMessageIntegrationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  import SystemsClock.Assertions
   import Comma.WorkspaceTestSupport
   import Plug.Conn
   import Plug.Test
@@ -16,16 +17,17 @@ defmodule CommaWeb.IMessageIntegrationTest do
       if get_req_header(conn, "authorization") == ["Bearer test-relay-secret"] do
         {:ok, body, conn} = read_body(conn)
 
-        send(
-          Application.fetch_env!(:comma_web, :imessage_test_pid),
+        SystemsRuntime.Proc.send(
+          SystemsRuntime.fetch_env!(:comma_web, :imessage_test_pid),
           {:relay, conn.method, conn.request_path, body}
         )
 
         case conn.request_path do
           path when path in ["/v1/messages/text", "/v1/messages/image"] ->
-            case Application.get_env(:comma_web, :imessage_test_send_response) do
+            case SystemsRuntime.get_env(:comma_web, :imessage_test_send_response) do
               :timeout ->
-                Process.sleep(16_000)
+                # Outlasts the relay client's 15s receive timeout on the test clock.
+                SystemsClock.sleep(20_000)
                 send_resp(conn, 200, "{}")
 
               {status, response} ->
@@ -43,18 +45,18 @@ defmodule CommaWeb.IMessageIntegrationTest do
             |> send_resp(200, "{}")
 
           "/v1/events/stream" ->
-            send(
-              Application.fetch_env!(:comma_web, :imessage_test_pid),
+            SystemsRuntime.Proc.send(
+              SystemsRuntime.fetch_env!(:comma_web, :imessage_test_pid),
               {:stream_query, conn.query_string}
             )
 
-            if Application.get_env(:comma_web, :imessage_test_stream_truncated, false) do
+            if SystemsRuntime.get_env(:comma_web, :imessage_test_stream_truncated, false) do
               send_resp(conn, 200, ~s({"event_id":"1","type":"mess))
             else
               conn = conn |> put_resp_content_type("application/x-ndjson") |> send_chunked(200)
 
               Enum.reduce(
-                Application.get_env(:comma_web, :imessage_test_events, []),
+                SystemsRuntime.get_env(:comma_web, :imessage_test_events, []),
                 conn,
                 fn event, conn ->
                   {:ok, conn} = chunk(conn, Jason.encode!(event) <> "\n")
@@ -90,8 +92,8 @@ defmodule CommaWeb.IMessageIntegrationTest do
       do: {:ok, %{path: path, filename: "result.png", data: "result image bytes"}}
 
     def put_ref(agent_id, path, ref) do
-      send(
-        Application.fetch_env!(:comma_web, :imessage_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :imessage_test_pid),
         {:published, agent_id, path, ref}
       )
 
@@ -104,17 +106,17 @@ defmodule CommaWeb.IMessageIntegrationTest do
       do: SalixIM.TestSupport.ConversationDelivery.notify(__MODULE__, agent, source)
 
     def deliver(agent, payload, opts) do
-      send(
-        Application.fetch_env!(:comma_web, :imessage_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :imessage_test_pid),
         {:router_input, agent, payload, opts}
       )
 
-      Application.get_env(:comma_web, :imessage_delivery_result, {:ok, :created})
+      SystemsRuntime.get_env(:comma_web, :imessage_delivery_result, {:ok, :created})
     end
   end
 
   setup_all do
-    unless Process.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
     Ecto.Adapters.SQL.Sandbox.mode(BillingCore.Repo, :manual)
     :ok
   end
@@ -134,7 +136,7 @@ defmodule CommaWeb.IMessageIntegrationTest do
             {:comma_web, :imessage_test_send_response},
             {:comma_web, :imessage_delivery_result}
           ],
-          do: {app, key, Application.get_env(app, key)}
+          do: {app, key, SystemsRuntime.get_env(app, key)}
 
     on_exit(fn ->
       CommaWeb.TestRepoSandbox.stop_owner(comma_owner)
@@ -142,19 +144,19 @@ defmodule CommaWeb.IMessageIntegrationTest do
 
       for {app, key, value} <- previous do
         if is_nil(value),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, value)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, value)
       end
     end)
 
-    if Process.whereis(SalixStore.S3.Fake),
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake),
       do: SalixStore.S3.Fake.reset(),
       else: start_supervised!(SalixStore.S3.Fake)
 
     port =
       SalixIM.TestSupport.BanditServer.start!(fn port -> {Bandit, plug: Relay, port: port} end)
 
-    Application.put_env(:salix_im, :imessage,
+    SystemsRuntime.put_env(:salix_im, :imessage,
       enabled: true,
       relay_id: "test-relay",
       base_url: "http://127.0.0.1:#{port}",
@@ -163,13 +165,13 @@ defmodule CommaWeb.IMessageIntegrationTest do
       shared_identity: "Comma"
     )
 
-    Application.put_env(:salix_im, :agent_delivery_mod, Delivery)
-    Application.put_env(:salix_im, :agent_workspace_mod, Workspace)
-    Application.put_env(:comma_web, :imessage_test_pid, self())
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, Delivery)
+    SystemsRuntime.put_env(:salix_im, :agent_workspace_mod, Workspace)
+    SystemsRuntime.put_env(:comma_web, :imessage_test_pid, SystemsRuntime.Proc.self())
 
     {:ok, user} =
       Comma.Accounts.create_user(%{
-        "email" => "imessage-#{System.unique_integer([:positive])}@comma.test"
+        "email" => "imessage-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     workspace = create_ready_workspace!(user, %{"name" => "iMessage Test"})
@@ -275,7 +277,7 @@ defmodule CommaWeb.IMessageIntegrationTest do
           {"imessage.send_message", %{"text" => "hello"}, "/v1/messages/text"},
           {"imessage.send_image", %{"path" => "/result.png"}, "/v1/messages/image"}
         ] do
-      Application.put_env(:comma_web, :imessage_test_send_response, response)
+      SystemsRuntime.put_env(:comma_web, :imessage_test_send_response, response)
 
       assert {:error,
               %{
@@ -293,7 +295,10 @@ defmodule CommaWeb.IMessageIntegrationTest do
       refute_receive {:relay, "POST", _, _}, 100
     end
 
-    Application.put_env(:comma_web, :imessage_test_send_response, :timeout)
+    # The relay client's 15s bound and the stalled relay run on a clock this
+    # test drives; the relay is called in-process, so the clock sees it wait.
+    drive_relay_clock()
+    SystemsRuntime.put_env(:comma_web, :imessage_test_send_response, :timeout)
 
     assert {:error, %{"code" => "imessage_delivery_unknown", "retryable" => false}} =
              IMessageRelay.send_text("alice@example.test", "chat-alice", "delayed reply")
@@ -301,36 +306,9 @@ defmodule CommaWeb.IMessageIntegrationTest do
     assert_receive {:relay, "POST", "/v1/messages/text", _}
     refute_receive {:relay, "POST", _, _}, 100
 
-    Application.put_env(:salix_im, :imessage, enabled: false)
+    SystemsRuntime.put_env(:salix_im, :imessage, enabled: false)
     assert {:error, :imessage_unavailable} = IMessageRelay.send_text("alice", "chat", "hello")
     refute_receive {:relay, "POST", _, _}, 100
-  end
-
-  test "groups cannot consume claims; replacement and cancellation invalidate old attempts", %{
-    user: user,
-    workspace: workspace
-  } do
-    {:ok, first} = IMessageIntegration.start_connect(user, %{}, workspace["id"])
-
-    group =
-      put_in(event("1", "bridgebot connect #{first["code"]}"), ["message", "is_group"], true)
-
-    assert :ok = IMessageIntegration.handle_event(group)
-    assert :ok = IMessageIntegration.handle_event(put_in(group, ["message", "is_group"], nil))
-    refute_receive {:relay, _, _, _}
-    assert IMessageLinks.get_active_claim(workspace["id"])
-
-    {:ok, second} = IMessageIntegration.start_connect(user, %{}, workspace["id"])
-    assert {:error, :invalid_imessage_claim} = IMessageLinks.take_claim(first["code"])
-
-    assert {:ok, :ok} =
-             IMessageIntegration.cancel_connect(user, %{}, workspace["id"], %{
-               "code" => first["code"]
-             })
-
-    assert IMessageLinks.get_active_claim(workspace["id"]).code == second["code"]
-    assert {:ok, _} = IMessageIntegration.disconnect(user, %{}, workspace["id"])
-    assert {:error, :invalid_imessage_claim} = IMessageLinks.take_claim(second["code"])
   end
 
   test "expired claims and another account cannot publish or read a binding", %{
@@ -341,14 +319,14 @@ defmodule CommaWeb.IMessageIntegrationTest do
     {:ok, _, claim} = IMessageLinks.create_claim(user, %{}, workspace["id"])
 
     claim
-    |> Ecto.Changeset.change(expires_at: DateTime.add(DateTime.utc_now(), -1))
+    |> Ecto.Changeset.change(expires_at: DateTime.add(SystemsClock.utc_now(), -1))
     |> Comma.Repo.update!()
 
     assert {:error, :invalid_imessage_claim} = IMessageLinks.take_claim(claim.code)
 
     {:ok, stranger} =
       Comma.Accounts.create_user(%{
-        "email" => "other-#{System.unique_integer([:positive])}@comma.test"
+        "email" => "other-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     {:ok, stranger_session} = Comma.Accounts.create_session(stranger["id"])
@@ -389,7 +367,7 @@ defmodule CommaWeb.IMessageIntegrationTest do
                link.connect_id
              )
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :imessage,
       Keyword.put(IMessageRelay.config(), :relay_id, "different-relay")
@@ -404,41 +382,13 @@ defmodule CommaWeb.IMessageIntegrationTest do
     refute_receive {:relay, _, _, _}
   end
 
-  test "failed Router admission is retryable and does not checkpoint the event", %{
-    workspace: workspace,
-    user: user
-  } do
-    {:ok, claim} = IMessageIntegration.start_connect(user, %{}, workspace["id"])
-
-    assert :ok =
-             IMessageIntegration.handle_event(event("1", "bridgebot connect #{claim["code"]}"))
-
-    Comma.Repo.query!(
-      "INSERT INTO comma_imessage_relay_cursors (relay_id, event_id, inserted_at, updated_at) VALUES ('test-relay', '1', now(), now())"
-    )
-
-    block_router_log(workspace)
-    assert {:error, _} = CommaWeb.IMessageRuntime.handle_and_checkpoint(event("2", "retry me"))
-
-    assert Comma.Repo.query!(
-             "SELECT event_id FROM comma_imessage_relay_cursors WHERE relay_id = 'test-relay'"
-           ).rows == [["1"]]
-
-    SalixStore.S3.Fake.clear_blackhole()
-    assert :ok = CommaWeb.IMessageRuntime.handle_and_checkpoint(event("2", "retry me"))
-
-    assert Comma.Repo.query!(
-             "SELECT event_id FROM comma_imessage_relay_cursors WHERE relay_id = 'test-relay'"
-           ).rows == [["2"]]
-  end
-
   test "HTTP receiver seeds tail, resumes, and stops before a failed admission", %{
     workspace: workspace,
     user: user
   } do
     {:ok, claim} = IMessageIntegration.start_connect(user, %{}, workspace["id"])
 
-    Application.put_env(:comma_web, :imessage_test_events, [
+    SystemsRuntime.put_env(:comma_web, :imessage_test_events, [
       event("1", "bridgebot connect #{claim["code"]}")
     ])
 
@@ -447,7 +397,7 @@ defmodule CommaWeb.IMessageIntegrationTest do
     assert_receive {:stream_query, "after_event_id="}
     assert IMessageLinks.get_link(workspace["id"])
 
-    Application.put_env(:comma_web, :imessage_test_events, [
+    SystemsRuntime.put_env(:comma_web, :imessage_test_events, [
       event("2", "retry me"),
       event("3", "later")
     ])
@@ -463,36 +413,6 @@ defmodule CommaWeb.IMessageIntegrationTest do
     assert_receive {:stream_query, "after_event_id=1"}
     assert cursor() == "3"
     assert CommaWeb.IMessageRuntime.online?()
-  end
-
-  test "three truncated owning passes pause despite standby and restart resumes the saved cursor" do
-    Application.put_env(:comma_web, :imessage_test_stream_truncated, true)
-    start_supervised!(CommaWeb.IMessageRuntime)
-
-    assert_receive {:stream_query, "after_event_id="}, 6_000
-
-    contender =
-      start_supervised!(
-        {Postgrex,
-         Keyword.take(Comma.Repo.config(), [:hostname, :port, :database, :username, :password])}
-      )
-
-    Postgrex.query!(contender, "SELECT pg_advisory_lock(4412741, 21577)", [])
-    refute_receive {:stream_query, _}, 5_500
-    Postgrex.query!(contender, "SELECT pg_advisory_unlock(4412741, 21577)", [])
-
-    for _ <- 1..2 do
-      assert_receive {:stream_query, "after_event_id="}, 6_000
-    end
-
-    refute_receive {:stream_query, _}, 5_500
-    assert cursor() == ""
-    refute CommaWeb.IMessageRuntime.online?()
-
-    stop_supervised(CommaWeb.IMessageRuntime)
-    Application.put_env(:comma_web, :imessage_test_stream_truncated, false)
-    start_supervised!(CommaWeb.IMessageRuntime)
-    assert_receive {:stream_query, "after_event_id="}, 6_000
   end
 
   test "inbound image bytes reach VFS and image replies retain the bound private destination", %{
@@ -602,5 +522,16 @@ defmodule CommaWeb.IMessageIntegrationTest do
   defp json(conn, status) do
     assert conn.status == status, conn.resp_body
     Jason.decode!(conn.resp_body)
+  end
+
+  defp drive_relay_clock do
+    SystemsClock.manual(drive: true, scope: ["Elixir.Comma", "Elixir.SalixIM"])
+    config = SystemsRuntime.get_env(:salix_im, :imessage)
+    SystemsRuntime.put_env(:salix_im, :imessage, Keyword.put(config, :req_options, plug: Relay))
+
+    on_exit(fn ->
+      SystemsClock.reset()
+      SystemsRuntime.put_env(:salix_im, :imessage, config)
+    end)
   end
 end

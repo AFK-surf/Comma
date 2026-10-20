@@ -48,13 +48,14 @@ defmodule SalixMeet.MeetingComputeCarrier do
     end
   end
 
-  defp place_active_workload(tenant_id, environment_id, _meeting_id, identity, workload_id) do
+  defp place_active_workload(tenant_id, environment_id, meeting_id, identity, workload_id) do
     case Compute.place_workload(%{
            tenant_id: tenant_id,
            allocation_id: "meeting_allocation_" <> identity,
            workload_id: workload_id,
            environment_id: environment_id,
            kind: "meeting_runtime",
+           owner_ref: %{"kind" => "meeting", "id" => meeting_id},
            template_key: "meeting.meetnative",
            capability_requirements: ["runtime_exec", "runtime_process"]
          }) do
@@ -62,6 +63,13 @@ defmodule SalixMeet.MeetingComputeCarrier do
         {:ok, workload}
 
       {:error, :already_exists} ->
+        Repo.update_all(
+          from(w in Compute.Workload,
+            where: w.id == ^workload_id and is_nil(w.owner_ref)
+          ),
+          set: [owner_ref: %{"kind" => "meeting", "id" => meeting_id}]
+        )
+
         {:ok, Repo.get_by!(Compute.Workload, id: "meeting_workload_" <> identity)}
 
       {:error, _} = error ->

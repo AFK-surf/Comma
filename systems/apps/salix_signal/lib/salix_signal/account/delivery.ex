@@ -24,7 +24,7 @@ defmodule SalixSignal.Account.Delivery do
   delivery process.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -35,12 +35,12 @@ defmodule SalixSignal.Account.Delivery do
   @batch 100
 
   @doc false
-  def start_link(opts), do: GenServer.start_link(__MODULE__, Map.new(opts))
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, Map.new(opts))
 
   @doc "Tells the process that new items may be in the feed."
   @spec notify(pid()) :: :ok
   def notify(pid) do
-    send(pid, :deliver)
+    SystemsRuntime.Proc.send(pid, :deliver)
     :ok
   end
 
@@ -124,7 +124,9 @@ defmodule SalixSignal.Account.Delivery do
 
   defp retry(state, reason) do
     Logger.info("signal inbound delivery deferred: #{inspect(reason)}")
-    {:noreply, %{state | timer: Process.send_after(self(), :retry, state.retry_ms)}}
+
+    {:noreply,
+     %{state | timer: SystemsClock.send_after(SystemsRuntime.Proc.self(), :retry, state.retry_ms)}}
   end
 
   defp deliverable?(%Inbound{outcome: :message, content_kind: kind}), do: kind in @delivered_kinds

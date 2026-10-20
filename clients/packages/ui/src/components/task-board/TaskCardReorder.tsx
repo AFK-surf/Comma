@@ -10,6 +10,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import { uiClock, type CancelUiTimer } from "../../clock";
 import { isReducedMotionEnabled, motionDuration, motionEasing } from "../../tokens";
 import { cx } from "../utils";
 import {
@@ -25,8 +26,8 @@ import {
 const DRAG_THRESHOLD = 4;
 /** Distance from a scrollport edge where a held card starts scrolling it. */
 const AUTOSCROLL_EDGE = 56;
-/** Peak autoscroll speed, in pixels per frame at the very edge. */
-const AUTOSCROLL_MAX_SPEED = 18;
+/** Peak autoscroll speed at the very edge: 18px a frame at 60Hz, in pixels per ms. */
+const AUTOSCROLL_MAX_SPEED = (18 * 60) / 1000;
 /**
  * How far the card leans sideways at most. Reordering is vertical, so sideways
  * pointer travel only tilts the card toward the hand — asymptotically, never
@@ -48,6 +49,65 @@ type ReorderContextValue = {
   ids: readonly string[];
   onPointerDown: (id: string, event: ReactPointerEvent<HTMLDivElement>) => void;
   register: (id: string, element: HTMLDivElement | null) => void;
+};
+
+type ReorderGesture = {
+  from: number;
+  id: string;
+  /** Ordered ids this gesture belongs to; a live sequence change cancels it. */
+  ids: string[];
+  lifted: boolean;
+  /** Scroll range at lift; the held card's own travel must not extend it. */
+  maxScrollTop: number;
+  pointerId: number;
+  pointerX: number;
+  pointerY: number;
+  /**
+   * Autoscroll since its speed last changed: where it was then, when, and at
+   * what speed (px/ms). A frame draws where that puts it now, the same at any
+   * frame rate.
+   */
+  scroll: { scrollTop: number; speed: number; time: number } | null;
+  scrollTop: number;
+  startX: number;
+  startY: number;
+  to: number;
+  viewport: HTMLElement | null;
+};
+
+/** The autoscroll speed the pointer asks for, in px/ms (negative: up). */
+const autoScrollSpeed = (gesture: ReorderGesture) => {
+  const viewport = gesture.viewport;
+  if (!viewport) return 0;
+  const bounds = viewport.getBoundingClientRect();
+  const overTop = bounds.top + AUTOSCROLL_EDGE - gesture.pointerY;
+  const overBottom = gesture.pointerY - (bounds.bottom - AUTOSCROLL_EDGE);
+  const over =
+    overTop > 0
+      ? -Math.min(overTop, AUTOSCROLL_EDGE)
+      : overBottom > 0
+        ? Math.min(overBottom, AUTOSCROLL_EDGE)
+        : 0;
+  return (over / AUTOSCROLL_EDGE) * AUTOSCROLL_MAX_SPEED;
+};
+
+/** Where the autoscroll has taken the viewport by `time`. */
+const autoScrollTop = (gesture: ReorderGesture, time: number) => {
+  const scroll = gesture.scroll;
+  if (!scroll) return gesture.viewport?.scrollTop ?? 0;
+  return Math.min(
+    Math.max(scroll.scrollTop + scroll.speed * (time - scroll.time), 0),
+    gesture.maxScrollTop
+  );
+};
+
+/** Starts the autoscroll again at `time`, from where it is, at the pointer's speed. */
+const retargetAutoScroll = (gesture: ReorderGesture, time: number) => {
+  gesture.scroll = {
+    scrollTop: autoScrollTop(gesture, time),
+    speed: autoScrollSpeed(gesture),
+    time,
+  };
 };
 
 const ReorderContext = createContext<ReorderContextValue | null>(null);
@@ -88,24 +148,8 @@ export function TaskCardReorderList({
   const [drag, setDrag] = useState<DragState | null>(null);
   /** Slot geometry captured at lift, so pointer math never re-reads layout. */
   const slotsRef = useRef<{ height: number; id: string; top: number }[]>([]);
-  const gestureRef = useRef<{
-    from: number;
-    id: string;
-    /** Ordered ids this gesture belongs to; a live sequence change cancels it. */
-    ids: string[];
-    lifted: boolean;
-    /** Scroll range at lift; the held card's own travel must not extend it. */
-    maxScrollTop: number;
-    pointerId: number;
-    pointerX: number;
-    pointerY: number;
-    scrollTop: number;
-    startX: number;
-    startY: number;
-    to: number;
-    viewport: HTMLElement | null;
-  } | null>(null);
-  const autoScrollRef = useRef(0);
+  const gestureRef = useRef<ReorderGesture | null>(null);
+  const autoScrollRef = useRef<CancelUiTimer | null>(null);
   /** Where every card was drawn at drop time, replayed as the settle motion. */
   const settleRef = useRef<Map<string, { x: number; y: number }> | null>(null);
   /** True from the moment a lift happens until the click it produces is eaten. */
@@ -126,8 +170,8 @@ export function TaskCardReorderList({
 
   const stopAutoScroll = useCallback(() => {
     if (!autoScrollRef.current) return;
-    cancelAnimationFrame(autoScrollRef.current);
-    autoScrollRef.current = 0;
+    autoScrollRef.current();
+    autoScrollRef.current = null;
   }, []);
 
   /**
@@ -171,28 +215,19 @@ export function TaskCardReorderList({
     setDrag({ from: gesture.from, span: spanOf(slots, gesture.from), to });
   }, []);
 
-  const runAutoScroll = useCallback(() => {
-    const gesture = gestureRef.current;
-    const viewport = gesture?.viewport;
-    if (!gesture?.lifted || !viewport) return;
-    const bounds = viewport.getBoundingClientRect();
-    const overTop = bounds.top + AUTOSCROLL_EDGE - gesture.pointerY;
-    const overBottom = gesture.pointerY - (bounds.bottom - AUTOSCROLL_EDGE);
-    const speed =
-      overTop > 0
-        ? -Math.min(overTop, AUTOSCROLL_EDGE)
-        : overBottom > 0
-          ? Math.min(overBottom, AUTOSCROLL_EDGE)
-          : 0;
-    if (speed !== 0) {
-      viewport.scrollTop = Math.min(
-        viewport.scrollTop + (speed / AUTOSCROLL_EDGE) * AUTOSCROLL_MAX_SPEED,
-        gesture.maxScrollTop
-      );
-      applyPointer();
-    }
-    autoScrollRef.current = requestAnimationFrame(runAutoScroll);
-  }, [applyPointer]);
+  const runAutoScroll = useCallback(
+    (now: number) => {
+      const gesture = gestureRef.current;
+      const viewport = gesture?.viewport;
+      if (!gesture?.lifted || !viewport) return;
+      if (gesture.scroll && gesture.scroll.speed !== 0) {
+        viewport.scrollTop = autoScrollTop(gesture, now);
+        applyPointer();
+      }
+      autoScrollRef.current = uiClock.frame(runAutoScroll);
+    },
+    [applyPointer]
+  );
 
   /**
    * Hands the cards over from the hand to the layout: every card is measured
@@ -249,6 +284,7 @@ export function TaskCardReorderList({
         pointerId: event.pointerId,
         pointerX: event.clientX,
         pointerY: event.clientY,
+        scroll: null,
         scrollTop: viewport?.scrollTop ?? 0,
         startX: event.clientX,
         startY: event.clientY,
@@ -274,6 +310,7 @@ export function TaskCardReorderList({
       if (!gesture || event.pointerId !== gesture.pointerId) return;
       gesture.pointerX = event.clientX;
       gesture.pointerY = event.clientY;
+      if (gesture.lifted) retargetAutoScroll(gesture, uiClock.monotonic());
       if (!gesture.lifted) {
         if (Math.abs(event.clientY - gesture.startY) < DRAG_THRESHOLD) return;
         slotsRef.current = idsRef.current.map((id) => {
@@ -292,7 +329,8 @@ export function TaskCardReorderList({
           span: spanOf(slotsRef.current, gesture.from),
           to: gesture.from,
         });
-        autoScrollRef.current = requestAnimationFrame(runAutoScroll);
+        retargetAutoScroll(gesture, uiClock.monotonic());
+        autoScrollRef.current = uiClock.frame(runAutoScroll);
       }
       // A lifted card owns the pointer: no text selection, no scroll chaining.
       event.preventDefault();

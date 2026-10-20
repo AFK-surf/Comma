@@ -32,7 +32,7 @@ describe("writeConnectorConfig", () => {
           name: "legacy connector",
           reconnect: false,
           root: "/tmp/salix-root",
-          server: "http://127.0.0.1:4200",
+          server: "https://api.comma.test",
         },
         electron: { connector_binary_sha256: "abc123" },
       })
@@ -44,7 +44,7 @@ describe("writeConnectorConfig", () => {
         name: "legacy connector",
         reconnect: false,
         root: "/tmp/salix-root",
-        server: "http://127.0.0.1:4200",
+        server: "https://api.comma.test",
       },
       electron: {
         connector_binary_sha256: "abc123",
@@ -65,7 +65,7 @@ describe("writeConnectorConfig", () => {
 
     await writeConnectorConfig(
       {
-        server: " http://127.0.0.1:4200 ",
+        server: " https://api.comma.test ",
         token: " token ",
         alias: " laptop ",
       },
@@ -74,7 +74,7 @@ describe("writeConnectorConfig", () => {
 
     await expect(readConnectorConfig(path)).resolves.toEqual({
       connector: {
-        server: "http://127.0.0.1:4200",
+        server: "https://api.comma.test",
         connector_token: "token",
         name: "Comma Test",
         alias: "laptop",
@@ -93,7 +93,7 @@ describe("writeConnectorConfig", () => {
 
     await writeConnectorConfig(
       {
-        commaApiBaseUrl: " http://127.0.0.1:4200 ",
+        commaApiBaseUrl: " https://api.comma.test ",
         commaSessionToken: " comma_sess_test ",
         workspaceId: " wsp_1 ",
         alias: " laptop ",
@@ -103,7 +103,7 @@ describe("writeConnectorConfig", () => {
 
     await expect(readConnectorConfig(path)).resolves.toEqual({
       comma: {
-        api_base_url: "http://127.0.0.1:4200",
+        api_base_url: "https://api.comma.test",
         session_token: "comma_sess_test",
         workspace_id: "wsp_1",
       },
@@ -125,7 +125,7 @@ describe("writeConnectorConfig", () => {
     await expect(
       writeConnectorConfig(
         {
-          commaApiBaseUrl: "http://127.0.0.1:4200",
+          commaApiBaseUrl: "https://api.comma.test",
           workspaceId: "wsp_1",
         },
         join(tempDir, "connector.json")
@@ -138,7 +138,7 @@ describe("writeConnectorConfig", () => {
 
     await writeConnectorConfig(
       {
-        server: "http://127.0.0.1:4200",
+        server: "https://api.comma.test",
         token: "connector-token",
         name: "dev machine",
         root: "/tmp/salix-root",
@@ -149,7 +149,7 @@ describe("writeConnectorConfig", () => {
 
     await expect(readConnectorConfig(path)).resolves.toEqual({
       connector: {
-        server: "http://127.0.0.1:4200",
+        server: "https://api.comma.test",
         connector_token: "connector-token",
         name: "dev machine",
         root: "/tmp/salix-root",
@@ -173,7 +173,7 @@ describe("writeConnectorConfig", () => {
 
     await writeConnectorConfig(
       {
-        commaApiBaseUrl: "http://127.0.0.1:4200",
+        commaApiBaseUrl: "https://api.comma.test",
         commaSessionToken: "comma_sess_test",
         workspaceId: "wsp_1",
         name: "dev machine",
@@ -184,7 +184,7 @@ describe("writeConnectorConfig", () => {
 
     await expect(readConnectorConfig(path)).resolves.toEqual({
       comma: {
-        api_base_url: "http://127.0.0.1:4200",
+        api_base_url: "https://api.comma.test",
         session_token: "comma_sess_test",
         workspace_id: "wsp_1",
       },

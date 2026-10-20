@@ -154,7 +154,7 @@ defmodule BridgeForTeams.LoginLinks do
   end
 
   defp generate_token do
-    "bft_login_" <> Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
+    "bft_login_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(24), padding: false)
   end
 
   defp token_hash(token), do: token |> String.trim() |> Sessions.hash_token()
@@ -232,7 +232,7 @@ defmodule BridgeForTeams.LoginLinks do
   defp check_rate_limits(org_slug, email, opts) do
     limits =
       :bridge_for_teams_core
-      |> Application.get_env(:login_link_rate_limits, [])
+      |> SystemsRuntime.get_env(:login_link_rate_limits, [])
       |> Keyword.merge(Keyword.get(opts, :rate_limits, []))
 
     ip = normalize(opts[:remote_ip])
@@ -272,7 +272,7 @@ defmodule BridgeForTeams.LoginLinks do
            resource_id: link.id,
            resource_label: "Email sign-in link #{String.slice(link.id, 0, 8)}",
            result: "ok",
-           request_id: opts[:request_id] || Ecto.UUID.generate(),
+           request_id: opts[:request_id] || SystemsRuntime.Proc.uuid(),
            metadata: %{
              "user_id" => user.id,
              "expires_at" => DateTime.to_iso8601(link.expires_at)
@@ -288,5 +288,5 @@ defmodule BridgeForTeams.LoginLinks do
   defp normalize(value) when is_binary(value), do: String.trim(value)
   defp normalize(_value), do: ""
 
-  defp now, do: DateTime.utc_now()
+  defp now, do: SystemsClock.utc_now()
 end

@@ -34,5 +34,10 @@ defmodule BridgeForTeams.Auth.OIDC do
   @doc "The configured OIDC provider (`{:bridge_for_teams_core, :oidc_provider}`)."
   @spec impl() :: module()
   def impl,
-    do: Application.get_env(:bridge_for_teams_core, :oidc_provider, BridgeForTeams.Auth.OIDC.HTTP)
+    do:
+      SystemsRuntime.get_env(
+        :bridge_for_teams_core,
+        :oidc_provider,
+        BridgeForTeams.Auth.OIDC.HTTP
+      )
 end

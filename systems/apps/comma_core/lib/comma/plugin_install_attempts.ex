@@ -27,7 +27,7 @@ defmodule Comma.PluginInstallAttempts do
   end
 
   defp with_lock_transaction(workspace_id, plugin_id, operation, rollback_errors?) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     Repo.transaction(fn ->
       %PluginInstallAttempt{
@@ -91,7 +91,7 @@ defmodule Comma.PluginInstallAttempts do
           "connection_id" => connection_id,
           "prior_revision" => prior_revision
         },
-        expires_at: DateTime.add(DateTime.utc_now(), 120, :second)
+        expires_at: DateTime.add(SystemsClock.utc_now(), 120, :second)
       })
       |> Repo.update()
     end
@@ -103,7 +103,7 @@ defmodule Comma.PluginInstallAttempts do
          not expired?(attempt) do
       attempt
       |> Ecto.Changeset.change(%{
-        authorization_state: Ecto.UUID.generate(),
+        authorization_state: SystemsRuntime.Proc.uuid(),
         operation_data: Map.put(attempt.operation_data, "identity", identity)
       })
       |> Repo.update()
@@ -129,7 +129,7 @@ defmodule Comma.PluginInstallAttempts do
         operation_kind: "reauthorize",
         initiator_user_id: user_id,
         operation_data: %{"connection_id" => connection_id},
-        expires_at: DateTime.add(DateTime.utc_now(), 120, :second)
+        expires_at: DateTime.add(SystemsClock.utc_now(), 120, :second)
       })
       |> Repo.update()
     end
@@ -161,7 +161,7 @@ defmodule Comma.PluginInstallAttempts do
       attempt
       |> Ecto.Changeset.change(
         operation_data: Map.put(attempt.operation_data, "callback_phase", outcome),
-        expires_at: DateTime.add(DateTime.utc_now(), 120, :second)
+        expires_at: DateTime.add(SystemsClock.utc_now(), 120, :second)
       )
       |> Repo.update()
     else
@@ -175,7 +175,7 @@ defmodule Comma.PluginInstallAttempts do
          not expired?(attempt) do
       attempt
       |> Ecto.Changeset.change(%{
-        authorization_state: Ecto.UUID.generate(),
+        authorization_state: SystemsRuntime.Proc.uuid(),
         provider_state: provider_state
       })
       |> Repo.update()
@@ -188,7 +188,7 @@ defmodule Comma.PluginInstallAttempts do
       when is_binary(provider_state) and provider_state != "" do
     attempt
     |> Ecto.Changeset.change(%{
-      authorization_state: Ecto.UUID.generate(),
+      authorization_state: SystemsRuntime.Proc.uuid(),
       provider_state: provider_state
     })
     |> Repo.update()
@@ -202,7 +202,7 @@ defmodule Comma.PluginInstallAttempts do
   def expired?(%PluginInstallAttempt{expires_at: nil}), do: false
 
   def expired?(%PluginInstallAttempt{expires_at: expires_at}),
-    do: DateTime.compare(expires_at, DateTime.utc_now()) != :gt
+    do: DateTime.compare(expires_at, SystemsClock.utc_now()) != :gt
 
   def invalidate_locked(%PluginInstallAttempt{} = attempt) do
     reserve_locked(attempt)

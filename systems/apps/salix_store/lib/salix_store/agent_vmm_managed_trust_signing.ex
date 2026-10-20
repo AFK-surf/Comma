@@ -76,7 +76,7 @@ defmodule SalixStore.AgentVMMManagedTrustSigning do
   end
 
   defp compressed_public_key!(private_key) do
-    case :crypto.generate_key(:ecdh, :secp256r1, private_key) do
+    case SystemsRuntime.Proc.generate_key(:ecdh, :secp256r1, private_key) do
       {<<4, x::binary-size(32), y::binary-size(32)>>, ^private_key} ->
         <<2 + band(:binary.last(y), 1), x::binary>>
 
@@ -91,7 +91,7 @@ defmodule SalixStore.AgentVMMManagedTrustSigning do
   end
 
   defp sign_low_s(payload, private_key) when is_binary(payload) do
-    der = :crypto.sign(:ecdsa, :sha256, payload, [private_key, :secp256r1])
+    der = SystemsRuntime.Proc.sign(:ecdsa, :sha256, payload, [private_key, :secp256r1])
     <<0x30, _size, 0x02, r_size, rest::binary>> = der
     <<r::binary-size(^r_size), 0x02, s_size, s::binary-size(s_size)>> = rest
 

@@ -1,8 +1,10 @@
 import { useCommaLocale } from "@comma/i18n/react";
-import { useCallback, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useReplyChainHighlight } from "./replies/useReplyChainHighlight";
 import type { ConversationThreadProps } from "./conversationThreadProps";
+import { newestAgentTimestampId } from "./layout/conversationLayout";
 import { useTranscriptLayout } from "./layout/useTranscriptLayout";
+import { useAwayNews } from "./useAwayNews";
 import { useThreadNavigation } from "./navigation/useThreadNavigation";
 import {
   sameNumberStringMap,
@@ -22,7 +24,6 @@ export type ConversationThreadModel = ReturnType<typeof useConversationThread>;
 
 /** Runs the thread's hooks in the order their effects must run. */
 export function useConversationThread({
-  api,
   assistantDraft,
   assistantResponseSlotId = "conversation",
   afterMessages,
@@ -34,46 +35,43 @@ export function useConversationThread({
   defaultAssistantActorRole,
   freezeContentInlineSizeOnWindowResize = false,
   groupId,
+  live = false,
   messages: currentMessages,
   onDiscard,
   onOpenAttachment,
   onOpenConversationRef,
   onOutgoingAnimationComplete,
   onPreviewLocalFile,
+  onExitReplyThread,
   onRetry,
   outgoingLaunches = noOutgoingLaunches,
+  replyThread,
+  revealMessageHandle,
   revealTurnHandle,
   scrollAreaEdgeMask = CHAT_EDGE_MASK,
   showMessageActions = true,
-  variant = "default",
   workspaceId,
 }: ConversationThreadProps) {
   const historyScope = `${workspaceId}/${groupId}/${conversationId ?? ""}`;
   const replyChain = useReplyChainHighlight(historyScope);
   const history = useReplyHistory({
-    api,
     conversationId,
     conversationKind,
     currentMessages,
     groupId,
     historyScope,
+    live,
   });
   const { messages } = history;
   const locale = useCommaLocale();
-  // Attachment bytes come from the same api and conversation the transcript was
-  // read from, so an attachment is addressed by where it arrived rather than by
+  // Attachment bytes come from the conversation the transcript was read from, so an attachment is addressed by where it arrived rather than by
   // any locator of its own. Keep this context stable across transcript updates.
   const fileSourceContext = useMemo(
     () =>
-      api && conversationId && variant !== "side-chat"
-        ? { api, groupId, conversationId, open: onOpenAttachment }
+      live && conversationId
+        ? { groupId, conversationId, open: onOpenAttachment }
         : undefined,
-    [api, conversationId, groupId, onOpenAttachment, variant]
-  );
-  const [initialMessageIds] = useState<ReadonlySet<string> | undefined>(() =>
-    variant === "side-chat"
-      ? new Set(messages.map((message) => message.messageId))
-      : undefined
+    [conversationId, groupId, live, onOpenAttachment]
   );
   const [initialReplyDraftId] = useState(assistantDraft?.draftId);
   const [outgoingMatches, setOutgoingMatches] = useState<ReadonlyMap<number, string>>(
@@ -86,12 +84,29 @@ export function useConversationThread({
     messages,
     outgoingLaunches,
     outgoingMatches,
-    variant,
   });
+  // Home marks its newest timestamp "New" while it heads what the agent sent
+  // on its own while the window was not in front; a Task transcript or a
+  // static preview has no such news.
+  const draftId = assistantDraft?.draftId;
+  const awayNews = useAwayNews(currentMessages, draftId);
+  const { canonicalLayout, draftTimestamp } = layout;
+  const newTimestampId = useMemo(
+    () =>
+      live && conversationKind === "user_chat"
+        ? newestAgentTimestampId(
+            canonicalLayout.turns,
+            draftId === undefined
+              ? undefined
+              : { id: draftId, timestamped: Boolean(draftTimestamp) },
+            (id) => awayNews.has(id)
+          )
+        : undefined,
+    [awayNews, canonicalLayout, conversationKind, draftId, draftTimestamp, live]
+  );
   const elements = useThreadElements();
   const { follow, revealTurn, turnWindow } = useThreadNavigation({
     anchoredTails,
-    api,
     assistantDraft,
     assistantResponseSlotId,
     historyReveal: history.historyReveal,
@@ -99,7 +114,6 @@ export function useConversationThread({
     layout,
     resolveNewestTurn: elements.resolveNewestTurn,
     revealTurnHandle,
-    variant,
   });
   // A floating video jumps back the way a reply jump does: the thread stops
   // following, scrolls the video into reading position, and focuses its message.
@@ -115,29 +129,47 @@ export function useConversationThread({
     [revealElement]
   );
   const replies = useThreadRelationships({
-    api,
     assistantDraft,
     canonicalLayout: layout.canonicalLayout,
     conversationId,
     conversationKind,
     defaultAssistantActorRole,
+    draftTimestamped: Boolean(layout.draftTimestamp),
     follow,
     history,
+    live,
     replyChain,
     revealTurn,
     turnWindow,
-    variant,
   });
+  // A message in the transcript is revealed in place; an older one is read
+  // first, the way a reply's quoted message is.
+  const { loadReplyTarget } = history;
+  useEffect(() => {
+    if (!revealMessageHandle) return undefined;
+    revealMessageHandle.current = (messageId) => {
+      const turn = canonicalLayout.turns.find((candidate) =>
+        candidate.entries.some((entry) => entry.message?.messageId === messageId)
+      );
+      if (turn)
+        revealTurn(turn.key, messageId, { focusMessage: true, highlightInPlace: true });
+      // A message the server no longer has leaves the transcript where it is.
+      else void loadReplyTarget(messageId).catch(() => undefined);
+    };
+    return () => {
+      revealMessageHandle.current = null;
+    };
+  }, [canonicalLayout, loadReplyTarget, revealMessageHandle, revealTurn]);
   const completeOutgoingAnimation = useOutgoingAnimationCompletion(
     onOutgoingAnimationComplete
   );
   const scrollbar = useThreadScrollbar({
     follow,
-    latestTurnKey: layout.latestTurnKey,
+    latestTurnKey: layout.lastTurnKey,
     messageKey: layout.messageKey,
+    presentingOutgoing: layout.outgoing.outgoingPresentations.length > 0,
     readThreadGeometry: elements.readThreadGeometry,
     reconcileViewport: turnWindow.reconcileViewport,
-    variant,
   });
   const resize = useMeasuredThreadResize({
     follow,
@@ -145,6 +177,18 @@ export function useConversationThread({
     scrollbar,
     turnWindow,
   });
+
+  const { anchorTurn } = follow;
+  const { decideForOutgoingLaunch } = scrollbar;
+  // A launching message settles whether the thread scrolls before anchoring its turn,
+  // so the flight measures the layout it lands in.
+  const anchorOutgoingTurn = useCallback(
+    (turnKey: string) => {
+      decideForOutgoingLaunch();
+      anchorTurn(turnKey);
+    },
+    [anchorTurn, decideForOutgoingLaunch]
+  );
 
   const { outgoingPresentations } = layout.outgoing;
   useLayoutEffect(() => {
@@ -169,19 +213,25 @@ export function useConversationThread({
     follow,
     freezeContentInlineSizeOnWindowResize,
     historyBoundaryMessageId: history.historyBoundaryMessageId,
-    initialMessageIds,
     initialReplyDraftId,
     isEmpty: messages.length === 0 && !assistantDraft,
     layout,
     locale,
+    newTimestampId,
     replies,
+    replyThread: {
+      assistantDraft,
+      messages: history.messages,
+      onExit: onExitReplyThread,
+      selection: replyThread,
+    },
     resize,
     responseFeedback,
     revealVideo,
     rows: {
-      api,
       groupId,
-      onAnchorOutgoingTurn: follow.anchorTurn,
+      live,
+      onAnchorOutgoingTurn: anchorOutgoingTurn,
       onDiscard,
       onOpenConversationRef,
       onOutgoingAnimationComplete: completeOutgoingAnimation,
@@ -193,6 +243,5 @@ export function useConversationThread({
     scrollbar,
     showMessageActions,
     turnWindow,
-    variant,
   };
 }

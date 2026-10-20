@@ -51,7 +51,7 @@ defmodule SalixIM.ProviderIdentityScanLimiter do
   (config.json `im.identity_scan_max_concurrency`, default 4), so
   operators can retune without a restart.
   """
-  use GenServer
+  use SystemsRuntime.Server
 
   @default_cap 4
   @default_table :salix_im_identity_scan_permits
@@ -64,15 +64,15 @@ defmodule SalixIM.ProviderIdentityScanLimiter do
   still scanning. Idempotent.
   """
   def create_table!(table \\ @default_table) do
-    if :ets.whereis(table) == :undefined do
-      _ = :ets.new(table, [:named_table, :public, :set, read_concurrency: true])
+    if SystemsRuntime.ETS.whereis(table) == :undefined do
+      _ = SystemsRuntime.ETS.new(table, [:named_table, :public, :set, read_concurrency: true])
     end
 
     :ok
   end
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, Keyword.get(opts, :table, @default_table),
+    SystemsRuntime.Server.start_link(__MODULE__, Keyword.get(opts, :table, @default_table),
       name: Keyword.get(opts, :name, __MODULE__)
     )
   end
@@ -88,13 +88,17 @@ defmodule SalixIM.ProviderIdentityScanLimiter do
   owner-exit gap).
   """
   def acquire(server \\ __MODULE__, timeout \\ @acquire_timeout) do
-    permit_ref = make_ref()
+    permit_ref = SystemsRuntime.Proc.make_ref()
 
     try do
-      GenServer.call(server, {:acquire, self(), permit_ref}, timeout)
+      SystemsRuntime.Server.call(
+        server,
+        {:acquire, SystemsRuntime.Proc.self(), permit_ref},
+        timeout
+      )
     catch
       :exit, _ ->
-        GenServer.cast(server, {:cancel, permit_ref})
+        SystemsRuntime.Server.cast(server, {:cancel, permit_ref})
         {:error, :scan_capacity_exhausted}
     end
   end
@@ -106,14 +110,14 @@ defmodule SalixIM.ProviderIdentityScanLimiter do
   """
   def release(server \\ __MODULE__, {table, ref}) do
     _ = safe_delete(table, ref)
-    GenServer.cast(server, {:released, ref})
+    SystemsRuntime.Server.cast(server, {:released, ref})
     :ok
   catch
     :exit, _ -> :ok
   end
 
   @doc false
-  def count(server \\ __MODULE__), do: GenServer.call(server, :count)
+  def count(server \\ __MODULE__), do: SystemsRuntime.Server.call(server, :count)
 
   @impl true
   def init(table) do
@@ -125,13 +129,13 @@ defmodule SalixIM.ProviderIdentityScanLimiter do
     # raced this adoption already deleted it and must never be
     # resurrected. Rows are never re-inserted here.
     monitors =
-      Enum.reduce(:ets.tab2list(table), %{}, fn {ref, pid}, acc ->
-        mon = Process.monitor(pid)
+      Enum.reduce(SystemsRuntime.ETS.tab2list(table), %{}, fn {ref, pid}, acc ->
+        mon = SystemsRuntime.Proc.monitor(pid)
 
-        if :ets.member(table, ref) do
+        if SystemsRuntime.ETS.member(table, ref) do
           Map.put(acc, ref, mon)
         else
-          Process.demonitor(mon, [:flush])
+          SystemsRuntime.Proc.demonitor(mon, [:flush])
           acc
         end
       end)
@@ -141,16 +145,17 @@ defmodule SalixIM.ProviderIdentityScanLimiter do
 
   @impl true
   def handle_call({:acquire, pid, permit_ref}, _from, state) do
-    if :ets.info(state.table, :size) < cap() do
-      mon = Process.monitor(pid)
-      :ets.insert(state.table, {permit_ref, pid})
+    if SystemsRuntime.ETS.info(state.table, :size) < cap() do
+      mon = SystemsRuntime.Proc.monitor(pid)
+      SystemsRuntime.ETS.insert(state.table, {permit_ref, pid})
       {:reply, {:ok, {state.table, permit_ref}}, put_in(state.monitors[permit_ref], mon)}
     else
       {:reply, {:error, :scan_capacity_exhausted}, state}
     end
   end
 
-  def handle_call(:count, _from, state), do: {:reply, :ets.info(state.table, :size), state}
+  def handle_call(:count, _from, state),
+    do: {:reply, SystemsRuntime.ETS.info(state.table, :size), state}
 
   @impl true
   def handle_cast({:released, ref}, state) do
@@ -158,7 +163,7 @@ defmodule SalixIM.ProviderIdentityScanLimiter do
     # (which differs from the ref after an adoption), so a normal
     # release never leaves the replacement monitor attached.
     {mon, monitors} = Map.pop(state.monitors, ref)
-    if mon, do: Process.demonitor(mon, [:flush])
+    if mon, do: SystemsRuntime.Proc.demonitor(mon, [:flush])
     {:noreply, %{state | monitors: monitors}}
   end
 
@@ -172,7 +177,7 @@ defmodule SalixIM.ProviderIdentityScanLimiter do
   def handle_cast({:cancel, ref}, state) do
     _ = safe_delete(state.table, ref)
     {mon, monitors} = Map.pop(state.monitors, ref)
-    if mon, do: Process.demonitor(mon, [:flush])
+    if mon, do: SystemsRuntime.Proc.demonitor(mon, [:flush])
     {:noreply, %{state | monitors: monitors}}
   end
 
@@ -193,14 +198,14 @@ defmodule SalixIM.ProviderIdentityScanLimiter do
   # unbounded admission an Erlang term comparison against a string
   # would produce.
   defp cap do
-    case Application.get_env(:salix_im, :identity_scan_max_concurrency, @default_cap) do
+    case SystemsRuntime.get_env(:salix_im, :identity_scan_max_concurrency, @default_cap) do
       cap when is_integer(cap) and cap >= 0 -> cap
       _invalid -> 0
     end
   end
 
   defp safe_delete(table, ref) do
-    :ets.delete(table, ref)
+    SystemsRuntime.ETS.delete(table, ref)
   rescue
     ArgumentError -> :ok
   end

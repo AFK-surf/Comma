@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -47,61 +48,65 @@ func TestPlanRejectsIncompatibleLocalSeedStep(t *testing.T) {
 }
 
 func TestBlockedLegacyPlanCannotReachMigrationOrWorkloadMutation(t *testing.T) {
-	plan := testPlan(t, ModeOnline)
-	plan.RequiredMode = Mode("blocked_legacy")
-	plan.PendingIDs = []string{"salix-legacy"}
-	plan.PendingSteps = []MigrationStepV2{testMigrationStep("salix-legacy", "legacy")}
+	synctest.Test(t, func(t *testing.T) {
+		plan := testPlan(t, ModeOnline)
+		plan.RequiredMode = Mode("blocked_legacy")
+		plan.PendingIDs = []string{"salix-legacy"}
+		plan.PendingSteps = []MigrationStepV2{testMigrationStep("salix-legacy", "legacy")}
 
-	store := &memoryStore{}
-	platform := &fakePlatform{plan: plan}
-	engine := Engine{Store: store, Platform: platform, Now: time.Now}
+		store := &memoryStore{}
+		platform := &fakePlatform{plan: plan}
+		engine := Engine{Store: store, Platform: platform, Now: time.Now}
 
-	_, err := engine.Prepare(context.Background(), "staging", "legacy", "image", []byte("bundle"))
-	if err == nil || !strings.Contains(err.Error(), "automatic zero-replica cutover is forbidden") {
-		t.Fatalf("expected plan-stage legacy rejection, got %v", err)
-	}
-	if platform.quiesced || platform.applied || platform.verified || len(platform.jobs) != 0 {
-		t.Fatalf("blocked legacy plan mutated the serving path: platform=%#v", platform)
-	}
-	if !store.exists || store.record.State.Phase != PhasePrepared {
-		t.Fatalf("expected only a failed prepared release claim, got %#v", store.record.State)
-	}
+		_, err := engine.Prepare(context.Background(), "staging", "legacy", "image", []byte("bundle"))
+		if err == nil || !strings.Contains(err.Error(), "automatic zero-replica cutover is forbidden") {
+			t.Fatalf("expected plan-stage legacy rejection, got %v", err)
+		}
+		if platform.quiesced || platform.applied || platform.verified || len(platform.jobs) != 0 {
+			t.Fatalf("blocked legacy plan mutated the serving path: platform=%#v", platform)
+		}
+		if !store.exists || store.record.State.Phase != PhasePrepared {
+			t.Fatalf("expected only a failed prepared release claim, got %#v", store.record.State)
+		}
+	})
 }
 
 func TestAuditedLegacyUpgradeUsesDedicatedStagesAndStartsOnlyTheCandidate(t *testing.T) {
-	ctx := context.Background()
-	plan := auditedLegacyUpgradePlan(t)
-	store := &memoryStore{}
-	platform := &fakePlatform{plan: plan}
-	engine := Engine{Store: store, Platform: platform, Now: time.Now}
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		plan := auditedLegacyUpgradePlan(t)
+		store := &memoryStore{}
+		platform := &fakePlatform{plan: plan}
+		engine := Engine{Store: store, Platform: platform, Now: time.Now}
 
-	prepared, err := engine.PrepareLegacyUpgrade(ctx, "production", "legacy-r1", "image", []byte("bundle"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if prepared.RequiredMode != ModeBlockedLegacy {
-		t.Fatalf("legacy upgrade identity was not durable: %#v", prepared)
-	}
+		prepared, err := engine.PrepareLegacyUpgrade(ctx, "production", "legacy-r1", "image", []byte("bundle"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prepared.RequiredMode != ModeBlockedLegacy {
+			t.Fatalf("legacy upgrade identity was not durable: %#v", prepared)
+		}
 
-	state, err := engine.Reconcile(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.Phase != PhaseSucceeded || !platform.quiesced || !platform.applied || !platform.verified {
-		t.Fatalf("legacy upgrade did not reach verified candidate serving: state=%#v platform=%#v", state, platform)
-	}
-	if len(platform.jobs) != 2 || platform.jobs[0].Stage != "legacy-online" || platform.jobs[1].Stage != "legacy-cutover" {
-		t.Fatalf("legacy upgrade used ordinary or reordered stages: %#v", platform.jobs)
-	}
-	wantCutover := []string{
-		"salix-20260728000103",
-		"salix-20260729000001",
-		"salix-20260729000002",
-		"salix-exclusive-after-legacy",
-	}
-	if got := platform.jobs[1].AllowedStepIDs; !slices.Equal(got, wantCutover) {
-		t.Fatalf("legacy cutover ids = %v, want %v", got, wantCutover)
-	}
+		state, err := engine.Reconcile(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Phase != PhaseSucceeded || !platform.quiesced || !platform.applied || !platform.verified {
+			t.Fatalf("legacy upgrade did not reach verified candidate serving: state=%#v platform=%#v", state, platform)
+		}
+		if len(platform.jobs) != 2 || platform.jobs[0].Stage != "legacy-online" || platform.jobs[1].Stage != "legacy-cutover" {
+			t.Fatalf("legacy upgrade used ordinary or reordered stages: %#v", platform.jobs)
+		}
+		wantCutover := []string{
+			"salix-20260728000103",
+			"salix-20260729000001",
+			"salix-20260729000002",
+			"salix-exclusive-after-legacy",
+		}
+		if got := platform.jobs[1].AllowedStepIDs; !slices.Equal(got, wantCutover) {
+			t.Fatalf("legacy cutover ids = %v, want %v", got, wantCutover)
+		}
+	})
 }
 
 func TestAuditedLegacyUpgradeRejectsAnUnreservedLegacyStep(t *testing.T) {

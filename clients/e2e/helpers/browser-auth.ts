@@ -13,9 +13,9 @@ export type BrowserTestSession = {
   token: string;
   userId?: string;
   /**
-   * Every signed-in account meets the first-launch onboarding until this
-   * device records it as finished. Sessions start with it recorded, so a spec
-   * lands on the shell; onboarding specs pass `false` to meet it.
+   * Every signed-in account meets the first-launch intro card until this
+   * device records it as seen. Sessions start with it recorded, so a spec
+   * lands on the shell; intro specs pass `false` to meet it.
    */
   onboardingCompleted?: boolean;
 };
@@ -137,7 +137,7 @@ export async function installBrowserTestSession(
 }
 
 /**
- * Records first-launch onboarding as finished on this device for the given
+ * Records the first-launch introduction as seen on this device for the given
  * user ids, as the app does when a user finishes it. Merged into whatever a
  * spec or an earlier load stored, so reloads keep later user changes.
  */
@@ -166,24 +166,12 @@ export async function recordOnboardingCompleted(
 }
 
 /**
- * Closes first-launch onboarding the way a user does. For specs that start
- * from legacy renderer stores: recording completion up front would write the
- * client settings those stores are migrated into.
- *
- * Close ends it from where it is and counts it as finished. That hands the
- * focus to Home's composer, if Home is open; it is taken back, so the spec's
- * keys go where they would without the onboarding.
+ * Closes the web's first-launch intro card the way a user does. For specs
+ * that start from legacy renderer stores: recording it up front would write
+ * the client settings those stores are migrated into.
  */
-export async function dismissOnboarding(page: Page) {
-  const onboarding = page.getByRole("dialog", { name: "Welcome to Comma" });
-  await onboarding.getByRole("button", { name: "Continue" }).click();
-  await onboarding.getByRole("button", { name: "Close onboarding" }).click();
-  await expect(onboarding).toHaveCount(0);
-  const prompt = page
-    .getByTestId("comma-route-outlet")
-    .locator(".comma-chat-composer")
-    .getByRole("textbox", { name: "AI prompt" });
-  if ((await prompt.count()) === 0) return;
-  await expect(prompt).toBeFocused();
-  await prompt.blur();
+export async function dismissWebIntro(page: Page) {
+  const card = page.getByRole("complementary", { name: "Comma on the web" });
+  await card.getByRole("button", { name: "Close" }).click();
+  await expect(card).toHaveCount(0);
 }

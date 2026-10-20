@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from "react";
-import type { CommaApiClient, CommaConversationKind } from "../../../../api";
-import type { ChatAssistantDraft, ChatMessage } from "../../model/conversationChannel";
-import { visibleReplyIdentityKey } from "../../model/visibleReplyPresentation";
+import type { CommaConversationKind } from "@comma/core/api-schemas";
+import type { ChatAssistantDraft, ChatMessage } from "@comma/core/chat";
+import { visibleReplyIdentityKey } from "@comma/core/chat";
 import type { ConversationLayout } from "../layout/conversationLayout";
 import type { ThreadTurnWindow } from "../navigation/useThreadTurnWindow";
 import type { RevealTurn } from "../navigation/useTurnReveal";
@@ -18,34 +18,35 @@ import type { useReplyHistory } from "./useReplyHistory";
 import { useReplyPreviewAvatar } from "./useReplyPreviewAvatar";
 
 export function useThreadRelationships({
-  api,
   assistantDraft,
   canonicalLayout,
   conversationId,
+  draftTimestamped,
   conversationKind,
   defaultAssistantActorRole,
   follow,
   history,
+  live,
   replyChain,
   revealTurn,
   turnWindow: { visibleCanonicalTurns },
-  variant,
 }: {
-  api: CommaApiClient | undefined;
   assistantDraft: ChatAssistantDraft | undefined;
   canonicalLayout: ConversationLayout;
   conversationId: string | undefined;
   conversationKind: CommaConversationKind;
+  /** The streaming draft opens a timestamp, so it starts its own group. */
+  draftTimestamped: boolean;
   defaultAssistantActorRole: ChatMessage["actorRole"];
   follow: Pick<ReturnType<typeof useStickToBottom>, "stopFollowing">;
   history: Pick<
     ReturnType<typeof useReplyHistory>,
     "historyBoundaryMessageId" | "loadReplyTarget" | "messages"
   >;
+  live: boolean;
   replyChain: ReturnType<typeof useReplyChainHighlight>;
   revealTurn: RevealTurn;
   turnWindow: Pick<ThreadTurnWindow, "visibleCanonicalTurns">;
-  variant: "default" | "side-chat";
 }) {
   const { historyBoundaryMessageId, messages } = history;
   const highlightedMessageId = replyChain.messageId;
@@ -98,10 +99,16 @@ export function useThreadRelationships({
       turn.entries.flatMap((entry) => (entry.message ? [entry.message] : []))
     );
     if (draftRelationship) visibleMessages.push(draftRelationship);
-    const groupBreaks = new Set([
+    const timestamped = [
       ...visibleCanonicalTurns.flatMap((turn) =>
-        variant !== "side-chat" && turn.timestamp ? [turn.timestamp.messageId] : []
+        turn.entries.flatMap((entry) =>
+          entry.timestamp && entry.message ? [entry.message.messageId] : []
+        )
       ),
+      ...(draftRelationship && draftTimestamped ? [draftRelationship.messageId] : []),
+    ];
+    const groupBreaks = new Set([
+      ...timestamped,
       ...(historyBoundaryMessageId ? [historyBoundaryMessageId] : []),
     ]);
     const layout = messageRelationships(visibleMessages, groupBreaks);
@@ -120,7 +127,12 @@ export function useThreadRelationships({
         .map((message) => message.messageId)
     );
     return { ...layout, tailMessageIds };
-  }, [draftRelationship, historyBoundaryMessageId, variant, visibleCanonicalTurns]);
+  }, [
+    draftRelationship,
+    draftTimestamped,
+    historyBoundaryMessageId,
+    visibleCanonicalTurns,
+  ]);
   // Stays the same object while only the draft changes.
   const messageById = useMemo(
     () => new Map(messages.map((message) => [message.messageId, message])),
@@ -146,11 +158,11 @@ export function useThreadRelationships({
     [messageById, relationships]
   );
   const replyActions = useReplyActions({
-    api,
     canonicalLayout,
     conversationId,
     follow,
     history,
+    live,
     replyChain,
     revealTurn,
   });

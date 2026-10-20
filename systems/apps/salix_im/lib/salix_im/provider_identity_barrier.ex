@@ -15,7 +15,7 @@ defmodule SalixIM.ProviderIdentityBarrier do
 
   @spec hit(atom()) :: :ok
   def hit(name) do
-    case Application.get_env(:salix_im, :provider_identity_barrier) do
+    case SystemsRuntime.get_env(:salix_im, :provider_identity_barrier) do
       nil ->
         :ok
 

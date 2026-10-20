@@ -32,12 +32,12 @@ defmodule BillingStripe.Portal do
   end
 
   defp config do
-    case Application.get_env(:billing_stripe, :secret_key) do
+    case SystemsRuntime.get_env(:billing_stripe, :secret_key) do
       key when is_binary(key) and key != "" ->
         {:ok,
          %{
            secret_key: key,
-           api: Application.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
+           api: SystemsRuntime.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
          }}
 
       _ ->
@@ -46,7 +46,7 @@ defmodule BillingStripe.Portal do
   end
 
   defp configured_portal do
-    case Application.get_env(:billing_stripe, :portal_configuration_id) do
+    case SystemsRuntime.get_env(:billing_stripe, :portal_configuration_id) do
       id when is_binary(id) and id != "" -> {:ok, id}
       _ -> {:error, :stripe_portal_not_configured}
     end

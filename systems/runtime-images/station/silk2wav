@@ -1,0 +1,47 @@
+#!/bin/sh
+# silk2wav IN OUT.wav: decodes a SILK v3 voice message (WeChat's, which starts
+# with 0x02 "#!SILK_V3", or a plain "#!SILK_V3" file such as QQ's) into a
+# 24 kHz mono 16-bit WAV that speech-to-text tools and ffmpeg read.
+set -eu
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: silk2wav IN.silk OUT.wav" >&2
+  exit 2
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+printf '#!SILK_V3' >"$work/magic"
+
+# silk-v3-decoder skips the first byte before the header, so a plain file gets
+# WeChat's 0x02 in front.
+if head -c 9 "$1" | cmp -s - "$work/magic"; then
+  { printf '\002'; cat "$1"; } >"$work/in"
+elif head -c 10 "$1" | tail -c +2 | cmp -s - "$work/magic"; then
+  cp "$1" "$work/in"
+else
+  echo "silk2wav: $1 is not a SILK v3 file" >&2
+  exit 1
+fi
+
+# The decoder copies its paths into 150-byte buffers, so it runs in $work with
+# short relative names whatever TMPDIR is. It reports errors on stdout and
+# exits 0, so an empty output fails.
+(cd "$work" && silk-v3-decoder in pcm -Fs_API 24000 -quiet) >"$work/log"
+if [ ! -s "$work/pcm" ]; then
+  cat "$work/log" >&2
+  exit 1
+fi
+
+le32() {
+  printf "\\$(printf %03o $(($1 & 255)))\\$(printf %03o $(($1 >> 8 & 255)))"
+  printf "\\$(printf %03o $(($1 >> 16 & 255)))\\$(printf %03o $(($1 >> 24 & 255)))"
+}
+size="$(wc -c <"$work/pcm" | tr -d ' ')"
+{
+  printf 'RIFF'; le32 $((size + 36)); printf 'WAVEfmt '
+  le32 16; printf '\001\000\001\000'; le32 24000; le32 48000; printf '\002\000\020\000'
+  printf 'data'; le32 "$size"
+  cat "$work/pcm"
+} >"$work/wav"
+mv "$work/wav" "$2"

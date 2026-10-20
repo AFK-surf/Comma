@@ -1,5 +1,6 @@
-import { Button, XIcon } from "@comma/ui";
-import { useReducer } from "react";
+import { Button } from "@comma/ui/components/Button";
+import { XIcon } from "@comma/ui/components/icons";
+import { useSyncExternalStore } from "react";
 import { messages } from "./messages";
 
 export interface FlashMessage {
@@ -27,10 +28,25 @@ const flash = {
   shownAt: null as string | null,
 };
 
-/** Leaves a notice for the page at `pathname`, as a redirect's flash would. */
+const listeners = new Set<() => void>();
+const subscribe = (listener: () => void) => {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+};
+const setItems = (items: FlashMessage[]) => {
+  flash.items = items;
+  for (const listener of listeners) listener();
+};
+
+/**
+ * Leaves a notice for the page at `pathname`, as a redirect's flash would; a
+ * notice already on screen shows it at once.
+ */
 export function showFlash(item: FlashMessage, pathname: string) {
-  flash.items = [item];
   flash.shownAt = pathname;
+  setItems([item]);
 }
 
 function currentFlash(pathname: string) {
@@ -40,8 +56,8 @@ function currentFlash(pathname: string) {
 }
 
 export function FlashNotice({ pathname }: { pathname: string }) {
-  const [, rerender] = useReducer((n: number) => n + 1, 0);
-  const items = flash.items.length > 0 ? currentFlash(pathname) : flash.items;
+  const all = useSyncExternalStore(subscribe, () => flash.items);
+  const items = all.length > 0 ? currentFlash(pathname) : all;
   if (items.length === 0) return null;
 
   return (
@@ -59,10 +75,7 @@ export function FlashNotice({ pathname }: { pathname: string }) {
             hierarchy="tertiary-gray"
             iconLeading={<XIcon />}
             iconOnly
-            onPress={() => {
-              flash.items = flash.items.filter((other) => other !== item);
-              rerender();
-            }}
+            onPress={() => setItems(flash.items.filter((other) => other !== item))}
             size="xs"
           />
         </div>

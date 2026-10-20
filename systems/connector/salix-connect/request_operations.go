@@ -34,7 +34,7 @@ const (
 )
 
 func recoverableRequest(msg message) bool {
-	return msg.ID != "" && msg.Method != "android" && msg.Method != "read_stream" && msg.Method != "read_ref" && msg.Method != "write_stream" && msg.Method != "meeting_artifact_read"
+	return msg.ID != "" && msg.Method != "android" && msg.Method != "read_stream" && msg.Method != "read_ref" && msg.Method != "write_stream" && msg.Method != "meeting_artifact_read" && msg.Method != "lan_tcp_dial"
 }
 
 func requestFingerprint(msg message) ([sha256.Size]byte, error) {

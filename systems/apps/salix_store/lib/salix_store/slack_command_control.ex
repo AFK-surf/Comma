@@ -69,7 +69,7 @@ defmodule SalixStore.SlackCommandControl do
              "tenant_id" => tenant_id,
              "name" => "slack_command_configuration",
              "value" => %{"profiles" => Map.put(profiles, profile, sealed)},
-             "updated_at" => System.system_time(:second)
+             "updated_at" => SystemsClock.system_time(:second)
            }) do
       :ok
     else

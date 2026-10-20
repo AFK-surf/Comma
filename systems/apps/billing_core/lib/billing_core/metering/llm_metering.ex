@@ -185,7 +185,7 @@ defmodule BillingCore.LLMMetering do
   end
 
   defp free_router_call?(fact) do
-    case Application.get_env(:billing_core, :llm_billing_policy) do
+    case SystemsRuntime.get_env(:billing_core, :llm_billing_policy) do
       nil ->
         {:ok, false}
 
@@ -443,7 +443,7 @@ defmodule BillingCore.LLMMetering do
   defp metered_at(fact) do
     fact[:metered_at] || fact["metered_at"] || fact[:completed_at] || fact["completed_at"] ||
       ms_to_datetime(fact[:completed_at_ms] || fact["completed_at_ms"]) ||
-      DateTime.utc_now()
+      SystemsClock.utc_now()
   end
 
   defp started_at(fact) do
@@ -510,10 +510,11 @@ defmodule BillingCore.LLMMetering do
 
   defp sink(fact) do
     fact[:typed_sink] || fact["typed_sink"] ||
-      Application.get_env(:billing_core, :llm_typed_sink, SalixAnalytics.TypedSinkWorker)
+      SystemsRuntime.get_env(:billing_core, :llm_typed_sink, SalixAnalytics.TypedSinkWorker)
   end
 
-  defp fee_env(key), do: Application.get_env(:billing_core, :fee_control, []) |> Keyword.get(key)
+  defp fee_env(key),
+    do: SystemsRuntime.get_env(:billing_core, :fee_control, []) |> Keyword.get(key)
 
   defp present?(value), do: is_binary(value) and String.trim(value) != ""
   defp present_text?(value), do: is_binary(value) and String.trim(value) != ""

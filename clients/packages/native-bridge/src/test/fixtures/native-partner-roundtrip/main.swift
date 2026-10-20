@@ -4,16 +4,6 @@ let encoder = JSONEncoder()
 encoder.outputFormatting = [.sortedKeys]
 let decoder = JSONDecoder()
 
-let linkedMessageData = Data(
-    #"{"attachments":[],"delivery":"sent","messageId":"reply","platformSource":"telegram","refs":[],"replyToMessageId":"source","threadRootMessageId":"root","role":"assistant","source":"server","text":"Reply"}"#.utf8
-)
-let linkedMessage = try decoder.decode(CommaChatMessage.self, from: linkedMessageData)
-precondition(linkedMessage.replyToMessageId == "source")
-precondition(linkedMessage.threadRootMessageId == "root")
-precondition(linkedMessage.platformSource == "telegram")
-let linkedMessageRoundTrip = try decoder.decode(CommaChatMessage.self, from: encoder.encode(linkedMessage))
-precondition(linkedMessageRoundTrip == linkedMessage)
-
 func expectDecodeFailure<Value: Decodable>(
     _ type: Value.Type,
     json: String,
@@ -24,128 +14,81 @@ func expectDecodeFailure<Value: Decodable>(
     }
 }
 
-let command = CommaSideChatCommand.send(
-    workspaceId: "workspace-1",
-    conversationId: "conversation-1",
+let menu = CommaStatusMenuHostFrame.show(
     requestId: "request-1",
-    consumeDraft: false,
-    groupId: "group-1",
-    replyToMessageId: "message-parent",
-    sendIntentId: "intent-fixture-0001",
-    sessionEpoch: 1,
-    skills: nil,
-    surfaceId: "native-side-chat",
-    text: "Hello"
+    clickId: "status-item:click",
+    closeId: nil,
+    iconPath: "/resources/CommaTemplate.png",
+    openId: nil,
+    rows: [
+        CommaStatusMenuShowRow(id: "open-comma", kind: .item, shortcut: "⌥ Space", title: "Open Comma"),
+        CommaStatusMenuShowRow(kind: .separator),
+        CommaStatusMenuShowRow(detail: "40% · resets in 2h", fraction: 0.4, kind: .meter, title: "5-hour", tone: .normal),
+    ],
+    toolTip: "Comma is running",
+    width: 260
 )
-let commandData = try encoder.encode(command)
-let commandObject = try JSONSerialization.jsonObject(with: commandData) as? [String: Any]
-precondition(commandObject?["kind"] as? String == "chat.send")
-precondition(commandObject?["protocolVersion"] as? Int == 3)
-precondition(commandObject?["replyToMessageId"] as? String == "message-parent")
-let decodedCommand = try decoder.decode(CommaSideChatCommand.self, from: commandData)
-precondition(decodedCommand == command)
+let menuData = try encoder.encode(menu)
+let menuObject = try JSONSerialization.jsonObject(with: menuData) as? [String: Any]
+precondition(menuObject?["kind"] as? String == "status-menu.show")
+precondition(menuObject?["protocolVersion"] as? Int == 3)
+precondition(menuObject?["closeId"] == nil)
+let decodedMenu = try decoder.decode(CommaStatusMenuHostFrame.self, from: menuData)
+precondition(decodedMenu == menu)
 
-let resultData = Data(
-    #"{"kind":"command.result","ok":true,"protocolVersion":3,"requestId":"request-1"}"#.utf8
+let select = try decoder.decode(
+    CommaStatusMenuClientFrame.self,
+    from: Data(#"{"id":"open-comma","kind":"status-menu.select","protocolVersion":3,"requestId":"select-1"}"#.utf8)
 )
-_ = try decoder.decode(CommaSideChatHostFrame.self, from: resultData)
-_ = try decoder.decode(CommaSideChatClientFrame.self, from: resultData)
+precondition(select == .select(requestId: "select-1", id: "open-comma"))
 
-let additiveData = Data(
-    #"{"kind":"side-chat.close","protocolVersion":3,"requestId":"request-additive","unexpected":true}"#.utf8
+let additiveFrame = try decoder.decode(
+    CommaStatusMenuHostFrame.self,
+    from: Data(#"{"kind":"status-menu.hide","protocolVersion":3,"requestId":"request-additive","unexpected":true}"#.utf8)
 )
-let additiveFrame = try decoder.decode(CommaSideChatHostFrame.self, from: additiveData)
-let additiveRoundTripData = try encoder.encode(additiveFrame)
 let additiveRoundTripObject = try JSONSerialization.jsonObject(
-    with: additiveRoundTripData
+    with: try encoder.encode(additiveFrame)
 ) as? [String: Any]
 precondition(additiveRoundTripObject?["unexpected"] == nil)
 
-let protocolError = CommaSideChatClientFrame.protocolError(
+let protocolError = CommaStatusMenuClientFrame.protocolError(
     error: "Unsupported protocol version",
-    frameKind: "side-chat.open",
+    frameKind: "status-menu.hide",
     receivedProtocolVersion: 2
 )
-let protocolErrorData = try encoder.encode(protocolError)
 let decodedProtocolError = try decoder.decode(
-    CommaSideChatClientFrame.self,
-    from: protocolErrorData
+    CommaStatusMenuClientFrame.self,
+    from: try encoder.encode(protocolError)
 )
 precondition(decodedProtocolError == protocolError)
 
-let wrongVersionData = Data(
-    #"{"kind":"side-chat.open","protocolVersion":1,"requestId":"request-2"}"#.utf8
-)
 do {
-    _ = try decoder.decode(CommaSideChatHostFrame.self, from: wrongVersionData)
+    _ = try decoder.decode(
+        CommaStatusMenuHostFrame.self,
+        from: Data(#"{"kind":"status-menu.hide","protocolVersion":1,"requestId":"request-2"}"#.utf8)
+    )
     fatalError("version mismatch unexpectedly decoded")
 } catch DecodingError.dataCorrupted {
     // Expected: CommaChatProtocolVersion only admits the generated current version.
 }
 
 expectDecodeFailure(
-    CommaSideChatHostFrame.self,
-    json: #"{"kind":"side-chat.open","protocolVersion":3,"requestId":""}"#,
+    CommaStatusMenuHostFrame.self,
+    json: #"{"kind":"status-menu.hide","protocolVersion":3,"requestId":""}"#,
     label: "empty requestId"
 )
 expectDecodeFailure(
-    CommaSideChatClientFrame.self,
-    json: #"{"error":"Unsupported protocol version","expectedProtocolVersion":3,"frameKind":null,"kind":"side-chat.protocol-error","protocolVersion":3}"#,
+    CommaStatusMenuClientFrame.self,
+    json: #"{"error":"Unsupported protocol version","expectedProtocolVersion":3,"frameKind":null,"kind":"status-menu.protocol-error","protocolVersion":3}"#,
     label: "explicit null optional field"
 )
 expectDecodeFailure(
-    CommaSideChatHostFrame.self,
-    json: #"{"kind":"chat.snapshot","protocolVersion":3,"snapshot":{"protocolVersion":3,"revision":-1,"sessionEpoch":0,"status":"signed-out"}}"#,
-    label: "negative revision"
-)
-expectDecodeFailure(
-    CommaSideChatClientFrame.self,
-    json: #"{"conversationId":"conversation-1","groupId":"group-1","kind":"chat.send","protocolVersion":3,"requestId":"request-without-epoch","surfaceId":"native-side-chat","text":"Hello","workspaceId":"workspace-1"}"#,
-    label: "missing command sessionEpoch"
-)
-expectDecodeFailure(
-    CommaSideChatClientFrame.self,
-    json: #"{"conversationId":"conversation-1","groupId":"group-1","kind":"chat.send","protocolVersion":3,"requestId":"request-negative-epoch","sessionEpoch":-1,"surfaceId":"native-side-chat","text":"Hello","workspaceId":"workspace-1"}"#,
-    label: "negative command sessionEpoch"
+    CommaStatusMenuHostFrame.self,
+    json: #"{"iconPath":"/icon.png","kind":"status-menu.show","protocolVersion":3,"requestId":"narrow","rows":[],"toolTip":"Comma","width":119}"#,
+    label: "menu narrower than its minimum"
 )
 
-let oversizedMessages: [[String: Any]] = (0..<201).map { index in
-    [
-        "attachments": [],
-        "delivery": "sent",
-        "messageId": "message-\(index)",
-        "refs": [],
-        "role": "assistant",
-        "source": "server",
-        "text": "message \(index)",
-    ]
-}
-let oversizedSnapshot: [String: Any] = [
-    "kind": "chat.snapshot",
-    "protocolVersion": 3,
-    "snapshot": [
-        "protocolVersion": 3,
-        "revision": 1,
-        "session": [
-            "conversationId": "conversation-1",
-            "groupId": "group-1",
-            "revision": 1,
-            "state": [
-                "awaitingReply": false,
-                "messages": oversizedMessages,
-            ],
-            "workspaceId": "workspace-1",
-        ],
-        "sessionEpoch": 1,
-        "status": "ready",
-    ],
-]
-let oversizedSnapshotData = try JSONSerialization.data(withJSONObject: oversizedSnapshot)
-if let _ = try? decoder.decode(CommaSideChatHostFrame.self, from: oversizedSnapshotData) {
-    fatalError("oversized side-chat message window unexpectedly decoded")
-}
-
-let invalidCommand = CommaSideChatHostFrame.open(requestId: "")
+let invalidCommand = CommaStatusMenuHostFrame.hide(requestId: "")
 if (try? encoder.encode(invalidCommand)) != nil {
     fatalError("invalid generated frame unexpectedly encoded")
 }
@@ -158,6 +101,7 @@ let notch = CommaNotchScenePayload(
             conversationId: "conversation-1",
             groupId: "group-1",
             id: "task-1",
+            status: .inProgress,
             subtitle: "In progress",
             title: "Ship the Notch",
             updatedAt: 1_787_563_200,

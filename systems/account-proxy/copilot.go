@@ -6,6 +6,7 @@ package accountproxy
 // Only github.com accounts are supported; GitHub Enterprise domains are not.
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -239,12 +240,10 @@ func (e copilotExecutor) Refresh(ctx context.Context, a *auth.Auth) (*auth.Auth,
 }
 
 // Copilot reports plan quota through the GitHub API with the GitHub token.
-// Premium requests do not gate included models, so that window carries a
-// "premium" scope and never excludes the account from selection.
-func copilotQuota(ctx context.Context, a *auth.Auth, now time.Time) (Snapshot, error) {
+func copilotQuota(ctx context.Context, a *auth.Auth) ([]byte, error) {
 	github, _ := a.Metadata["refresh_token"].(string)
 	if github == "" {
-		return Snapshot{}, errors.New("missing GitHub token")
+		return nil, errors.New("missing GitHub token")
 	}
 	header := map[string]string{"Authorization": "Bearer " + github}
 	for k, v := range copilotHeaders {
@@ -252,32 +251,7 @@ func copilotQuota(ctx context.Context, a *auth.Auth, now time.Time) (Snapshot, e
 	}
 	status, data, err := copilotHTTP(ctx, http.MethodGet, "https://api.github.com/copilot_internal/user", nil, header)
 	if err != nil || status != http.StatusOK {
-		return Snapshot{}, fmt.Errorf("quota HTTP %d", status)
+		return nil, fmt.Errorf("quota HTTP %d", status)
 	}
-	return decodeCopilotQuota(data, now)
-}
-
-func decodeCopilotQuota(data []byte, now time.Time) (Snapshot, error) {
-	root := gjson.ParseBytes(data)
-	s := Snapshot{ObservedAt: now, PlanType: strings.TrimSpace(root.Get("copilot_plan").String())}
-	raw := root.Get("quota_reset_date_utc").String()
-	reset, err := time.Parse(time.RFC3339, raw)
-	if err != nil {
-		reset, err = time.Parse("2006-01-02", root.Get("quota_reset_date").String())
-	}
-	if err != nil {
-		return Snapshot{}, errors.New("missing quota reset")
-	}
-	for _, scope := range []struct{ key, model string }{{"chat", ""}, {"premium_interactions", "premium"}} {
-		q := root.Get("quota_snapshots." + scope.key)
-		remaining := q.Get("percent_remaining")
-		if !q.Exists() || q.Get("unlimited").Bool() || remaining.Type != gjson.Number {
-			continue
-		}
-		s.addWindow(remaining.Float(), reset, "month", scope.model)
-	}
-	if len(s.Windows) == 0 {
-		return Snapshot{}, errors.New("no supported quota windows")
-	}
-	return s, nil
+	return readQuotaBody(bytes.NewReader(data))
 }

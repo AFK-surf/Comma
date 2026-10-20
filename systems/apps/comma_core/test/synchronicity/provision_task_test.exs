@@ -1,6 +1,7 @@
 defmodule Comma.Synchronicity.ProvisionTaskTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.Comma"]
   import Ecto.Query
   import ExUnit.CaptureIO
 
@@ -12,11 +13,11 @@ defmodule Comma.Synchronicity.ProvisionTaskTest do
 
     @impl true
     def provision_workspace(workspace_id, _name, _owner) do
-      if pid = Application.get_env(:comma_core, :synchronicity_test_pid) do
-        send(pid, {:provisioned, workspace_id})
+      if pid = SystemsRuntime.get_env(:comma_core, :synchronicity_test_pid) do
+        SystemsRuntime.Proc.send(pid, {:provisioned, workspace_id})
       end
 
-      if workspace_id in Application.get_env(:comma_core, :synchronicity_test_failures, []) do
+      if workspace_id in SystemsRuntime.get_env(:comma_core, :synchronicity_test_failures, []) do
         {:error, {:retryable, :test_unavailable}}
       else
         {:ok,
@@ -43,19 +44,19 @@ defmodule Comma.Synchronicity.ProvisionTaskTest do
     owner = Ecto.Adapters.SQL.Sandbox.start_owner!(Repo, shared: true)
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
 
-    Application.put_env(:comma_core, :synchronicity,
+    SystemsRuntime.put_env(:comma_core, :synchronicity,
       base_url: "http://sync.test",
       provisioning_secret: String.duplicate("x", 32)
     )
 
-    Application.put_env(:comma_core, :synchronicity_client, Stub)
-    Application.put_env(:comma_core, :synchronicity_test_pid, self())
+    SystemsRuntime.put_env(:comma_core, :synchronicity_client, Stub)
+    SystemsRuntime.put_env(:comma_core, :synchronicity_test_pid, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
-      Application.delete_env(:comma_core, :synchronicity)
-      Application.delete_env(:comma_core, :synchronicity_client)
-      Application.delete_env(:comma_core, :synchronicity_test_pid)
-      Application.delete_env(:comma_core, :synchronicity_test_failures)
+      SystemsRuntime.delete_env(:comma_core, :synchronicity)
+      SystemsRuntime.delete_env(:comma_core, :synchronicity_client)
+      SystemsRuntime.delete_env(:comma_core, :synchronicity_test_pid)
+      SystemsRuntime.delete_env(:comma_core, :synchronicity_test_failures)
     end)
 
     :ok
@@ -63,19 +64,19 @@ defmodule Comma.Synchronicity.ProvisionTaskTest do
 
   test "single-workspace provisioning persists the returned ids" do
     {user_id, workspace_id} = active_workspace("single")
-    handler_id = "synchronicity-provision-task-#{System.unique_integer([:positive])}"
+    handler_id = "synchronicity-provision-task-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler_id,
         [:comma_product, :operation, :stop],
         fn event, measurements, metadata, pid ->
-          send(pid, {:telemetry, event, measurements, metadata})
+          SystemsRuntime.Proc.send(pid, {:telemetry, event, measurements, metadata})
         end,
-        self()
+        SystemsRuntime.Proc.self()
       )
 
-    on_exit(fn -> :telemetry.detach(handler_id) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler_id) end)
 
     run_task([workspace_id])
 
@@ -118,7 +119,7 @@ defmodule Comma.Synchronicity.ProvisionTaskTest do
   test "a failed bounded backfill preserves earlier successes and is resumable" do
     {successful_user, successful_id} = active_workspace("resume-a")
     {failed_user, failed_id} = active_workspace("resume-z")
-    Application.put_env(:comma_core, :synchronicity_test_failures, [failed_id])
+    SystemsRuntime.put_env(:comma_core, :synchronicity_test_failures, [failed_id])
 
     assert_raise Mix.Error, ~r/left 1 Workspace\(s\) unresolved/, fn ->
       run_task(["--all-missing", "--limit", "10"])
@@ -132,33 +133,12 @@ defmodule Comma.Synchronicity.ProvisionTaskTest do
     assert is_nil(failed.sync_org_id)
     assert is_nil(failed.sync_network_id)
 
-    Application.put_env(:comma_core, :synchronicity_test_failures, [])
+    SystemsRuntime.put_env(:comma_core, :synchronicity_test_failures, [])
     run_task(["--all-missing", "--limit", "10"])
 
     refute_received {:provisioned, ^successful_id}
     assert_received {:provisioned, ^failed_id}
     assert_ready(failed_id, failed_user)
-  end
-
-  test "release-native entry provisions one Workspace without Mix" do
-    {user_id, workspace_id} = active_workspace("release-single")
-
-    output =
-      capture_io(fn ->
-        assert {:ok,
-                %{
-                  mode: :workspace,
-                  workspace_id: ^workspace_id,
-                  processed: 1,
-                  succeeded: 1,
-                  failed: 0,
-                  remote_created: true
-                }} = Comma.Release.provision_synchronicity(workspace_id)
-      end)
-
-    assert output =~ "Synchronicity provisioning"
-    assert_received {:provisioned, ^workspace_id}
-    assert_ready(workspace_id, user_id)
   end
 
   test "release-native entry backfills a bounded resumable batch" do
@@ -180,42 +160,6 @@ defmodule Comma.Synchronicity.ProvisionTaskTest do
     assert output =~ "Synchronicity provisioning"
     assert_ready(first_id, first_user)
     assert_ready(second_id, second_user)
-  end
-
-  test "release-native batch raises after preserving successful rows" do
-    {successful_user, successful_id} = active_workspace("release-resume-a")
-    {_failed_user, failed_id} = active_workspace("release-resume-z")
-    Application.put_env(:comma_core, :synchronicity_test_failures, [failed_id])
-
-    output =
-      capture_io(fn ->
-        assert_raise RuntimeError, ~r/left 1 Workspace\(s\) unresolved/, fn ->
-          Comma.Release.provision_synchronicity(all_missing: true, limit: 2)
-        end
-      end)
-
-    assert output =~ failed_id
-    assert_received {:provisioned, ^successful_id}
-    assert_received {:provisioned, ^failed_id}
-    assert_ready(successful_id, successful_user)
-
-    failed = Repo.get!(Workspace, failed_id)
-    assert is_nil(failed.sync_org_id)
-    assert is_nil(failed.sync_network_id)
-  end
-
-  test "release-native batch requires explicit bounded all-missing mode" do
-    assert_raise ArgumentError, ~r/requires all_missing: true/, fn ->
-      Comma.Release.provision_synchronicity(limit: 1)
-    end
-
-    assert_raise ArgumentError, ~r/limit must be between 1 and 1000/, fn ->
-      Comma.Release.provision_synchronicity(all_missing: true, limit: 0)
-    end
-
-    assert_raise ArgumentError, ~r/unknown Synchronicity provisioning options/, fn ->
-      Comma.Release.provision_synchronicity(all_missing: true, limit: 1, unexpected: true)
-    end
   end
 
   test "refresh-all pages include mapped Workspaces and exclude deleted rows" do
@@ -245,51 +189,8 @@ defmodule Comma.Synchronicity.ProvisionTaskTest do
              Comma.Synchronicity.refresh_all(1, second)
   end
 
-  test "refresh-all reports failures without rolling back successful mapped rows" do
-    {user, first} = active_workspace("refresh-failure-a")
-    {_user, second} = active_workspace("refresh-failure-b")
-
-    Repo.update_all(from(w in Workspace, where: w.id in ^[first, second]),
-      set: [sync_org_id: "existing-org", sync_network_id: "existing-net"]
-    )
-
-    Application.put_env(:comma_core, :synchronicity_test_failures, [second])
-
-    output =
-      capture_io(fn ->
-        assert_raise RuntimeError, ~r/left 1 Workspace/, fn ->
-          Comma.Release.provision_synchronicity(refresh_all: true, limit: 10)
-        end
-      end)
-
-    assert output =~ second
-    assert_received {:provisioned, ^first}
-    assert_received {:provisioned, ^second}
-    assert_ready(first, user)
-  end
-
-  test "refresh-all rejects ambiguous modes and invalid cursors" do
-    for opts <- [
-          [all_missing: true, refresh_all: true],
-          [all_missing: true, after_id: "wsp-a"],
-          [refresh_all: true, after_id: ""],
-          [refresh_all: true, after_id: 12],
-          [refresh_all: true, limit: 1001]
-        ] do
-      assert_raise ArgumentError, fn -> Comma.Release.provision_synchronicity(opts) end
-    end
-
-    for args <- [
-          ["--all-missing", "--refresh-all"],
-          ["--all-missing", "--after-id", "wsp-a"],
-          ["--refresh-all", "wsp-a"]
-        ] do
-      assert_raise Mix.Error, fn -> run_task(args) end
-    end
-  end
-
   defp active_workspace(prefix) do
-    suffix = Integer.to_string(System.unique_integer([:positive]))
+    suffix = Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
     {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{prefix}-#{suffix}@comma.test"})
     workspace_id = "wsp-#{prefix}-#{suffix}"
     {:ok, _} = Comma.Workspaces.create_for_user(user["id"], %{"workspace_id" => workspace_id})

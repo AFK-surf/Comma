@@ -49,7 +49,7 @@ defmodule SalixSignalProto.Registration do
   """
   @spec random_registration_id() :: pos_integer()
   def random_registration_id do
-    <<n::32>> = :crypto.strong_rand_bytes(4)
+    <<n::32>> = SystemsRuntime.Proc.random_bytes(4)
     rem(n, 16_380) + 1
   end
 

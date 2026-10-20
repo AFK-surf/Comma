@@ -8,8 +8,93 @@ defmodule Salix.Bindings.MCPCredentials do
 
   @refresh_leeway_ms 60_000
 
+  require Logger
+
+  # X chooses its OAuth account at request time instead of storing a fixed reference.
+  # Refresh discovery after account changes so Agents also see the current tool set.
+  def oauth_binding_changed(%{"provider" => "x"} = binding) do
+    context = SystemsObservability.Context.capture()
+
+    case SystemsRuntime.TaskSupervisor.start_child(SalixWeb.OAuthMCPRefreshSupervisor, fn ->
+           SystemsObservability.Context.run(context, fn ->
+             refresh_x_bindings(binding["tenant_id"], binding["group_id"], nil)
+           end)
+         end) do
+      {:ok, _pid} -> :ok
+      {:error, _reason} -> Logger.warning("X MCP discovery refresh could not start")
+    end
+  end
+
+  def oauth_binding_changed(_binding), do: :ok
+
+  # Background work reads 64 objects per page and refreshes one binding at a time.
+  # The existing supervisor admits at most 16 OAuth discovery workers across providers.
+  defp refresh_x_bindings(tenant_id, group_id, cursor) do
+    prefix = SalixStore.Keys.ctl_mcp_group_bindings_prefix(tenant_id, group_id)
+
+    case SalixStore.S3.list(prefix, max_keys: 64, continuation_token: cursor) do
+      {:ok, %{objects: objects, next: next}} ->
+        Enum.each(objects, fn %{key: key} ->
+          if String.ends_with?(key, "/state.json") do
+            with {:ok, %{"mcp_id" => "mcp1_0000000000000000009"} = binding} <-
+                   Salix.Control.Store.get_record(key),
+                 true <- binding["enabled"] != false and is_nil(binding["deleted_at"]),
+                 false <- get_in(binding, ["config_values", "X_AUTH_MODE"]) == "app_only" do
+              SalixMCP.Gateway.refresh_binding(tenant_id, group_id, binding["binding_id"])
+            end
+          end
+        end)
+
+        if next, do: refresh_x_bindings(tenant_id, group_id, next), else: :ok
+
+      {:error, _reason} ->
+        Logger.warning("X MCP discovery refresh could not read bindings")
+    end
+  end
+
   @impl true
+  def resolve(%{
+        "mcp_id" => "mcp1_0000000000000000009",
+        "config_values" => %{"X_AUTH_MODE" => "app_only"}
+      }),
+      do: {:ok, %{}}
+
+  def resolve(%{"mcp_id" => "mcp1_0000000000000000009"} = binding) do
+    group_id = to_string(binding["group_id"] || "")
+
+    case OAuthBindings.select_provider_record(group_id, "x", "x") do
+      {:error, :not_found} ->
+        {:ok, %{}}
+
+      {:ok, oauth} ->
+        resolve_refs(
+          Map.put(binding, "oauth_binding_refs", %{
+            "X_BEARER_TOKEN" => %{
+              "binding_id" => oauth["binding_id"],
+              "provider" => "x",
+              "credential" => "access_token",
+              "scopes" => ~w(tweet.read users.read)
+            }
+          })
+        )
+
+      {:error, :ambiguous_oauth_accounts} ->
+        {:error,
+         {:missing_oauth,
+          "Multiple X accounts are connected. Give the intended account the alias x."}}
+
+      {:error, _reason} ->
+        {:error, {:missing_oauth, "Cannot read the X OAuth connection. Retry the request."}}
+    end
+  end
+
   def resolve(%{"oauth_binding_refs" => refs} = mcp_binding) when is_map(refs) do
+    resolve_refs(mcp_binding)
+  end
+
+  def resolve(_binding), do: {:ok, %{}}
+
+  defp resolve_refs(%{"oauth_binding_refs" => refs} = mcp_binding) do
     group_id = to_string(mcp_binding["group_id"] || "")
     tenant_id = to_string(mcp_binding["tenant_id"] || "")
 
@@ -22,9 +107,10 @@ defmodule Salix.Bindings.MCPCredentials do
     end)
   end
 
-  def resolve(_binding), do: {:ok, %{}}
-
   @impl true
+  def resolve_remote_headers(%{"mcp_id" => "mcp1_0000000000000000009"}, _binding),
+    do: {:ok, %{}}
+
   def resolve_remote_headers(_definition, binding) do
     Salix.Control.RemoteMCPOAuth.resolve_headers(binding)
   end
@@ -191,7 +277,7 @@ defmodule Salix.Bindings.MCPCredentials do
   end
 
   defp maybe_refresh(tenant_id, provider, conn_id, conn, adapter) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     cond do
       not is_integer(conn["expires_at"]) or conn["expires_at"] <= 0 ->
@@ -211,7 +297,7 @@ defmodule Salix.Bindings.MCPCredentials do
            OAuth.valid_token(
              conn_id,
              fn record -> refresh_tokens(adapter, app, record) end,
-             now: System.system_time(:millisecond) + @refresh_leeway_ms
+             now: SystemsClock.system_time(:millisecond) + @refresh_leeway_ms
            ),
          {:ok, conn} <- OAuth.get(conn_id) do
       {:ok, conn}

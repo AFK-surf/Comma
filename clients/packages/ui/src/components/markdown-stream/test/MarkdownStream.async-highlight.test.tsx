@@ -54,11 +54,9 @@ async function complete(index: number) {
 describe("progressive React-owned code highlighting", () => {
   afterEach(() => {
     requests.length = 0;
-    vi.useRealTimers();
   });
 
   it("consumes the explicit complete-blur queue through code before revealing the next paragraph", async () => {
-    vi.useFakeTimers();
     const { container } = render(
       <MarkdownStream
         content={"Lead\n\n```ts\nABCD\n```\n\nTail"}

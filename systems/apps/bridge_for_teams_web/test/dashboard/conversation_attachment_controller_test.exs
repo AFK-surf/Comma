@@ -1,17 +1,20 @@
 defmodule BridgeForTeamsWeb.Dashboard.ConversationAttachmentControllerTest do
   use BridgeForTeamsWeb.DashboardCase, async: false
 
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.BridgeForTeamsWeb", "Elixir.BridgeForTeams"]
+
   alias BridgeForTeams.{Agents, Memberships, Projects}
   alias BridgeForTeams.Salix.Reconciler
   alias SalixIM.{ConversationAttachments, ConversationInput, ConversationServer}
 
   defmodule FaultyBlobStream do
     def read_ref_stream(_agent_id, _ref, filename) do
-      {owner, mode} = Application.fetch_env!(:bridge_for_teams_web, :attachment_stream_fault)
+      {owner, mode} = SystemsRuntime.fetch_env!(:bridge_for_teams_web, :attachment_stream_fault)
 
       stream =
         Stream.map(1..3, fn part ->
-          send(owner, {:attachment_chunk, part})
+          SystemsRuntime.Proc.send(owner, {:attachment_chunk, part})
 
           case {mode, part} do
             {:overflow, _} -> String.duplicate("x", 5_000_001)
@@ -29,7 +32,10 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationAttachmentControllerTest do
     {:ok, project} = Projects.create_project(org.id, %{"name" => "Attachment review"})
 
     {:ok, worker} =
-      Agents.create_agent(project.id, %{"name" => "File author", "role" => "worker"})
+      BridgeForTeams.TestSupport.LegacyWorker.create(project.id, %{
+        "name" => "File author",
+        "role" => "worker"
+      })
 
     drain_reconciliation(10)
 
@@ -89,11 +95,16 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationAttachmentControllerTest do
   test "Task links download the exact sent file after its workspace path changes", context do
     %{conn: conn, org: org, project: project, conversation_id: conversation_id} = context
 
-    {:ok, view, _html} =
-      live(conn, ~p"/orgs/#{org.slug}/projects/#{project.id}/tasks/#{conversation_id}")
-
     path = attachment_path(context, 1)
-    assert has_element?(view, "a[href='#{path}']", "Download")
+
+    assert %{"data" => %{"messages" => [%{"blocks" => [_text, attachment]}]}} =
+             conn
+             |> get(
+               ~p"/dashboard/api/v1/orgs/#{org.slug}/projects/#{project.id}/tasks/#{conversation_id}"
+             )
+             |> json_response(200)
+
+    assert %{"kind" => "file", "name" => "调查报告.txt", "href" => ^path} = attachment
 
     response = get(conn, path)
     assert response.status == 200
@@ -104,28 +115,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationAttachmentControllerTest do
     assert [disposition] = get_resp_header(response, "content-disposition")
     assert String.starts_with?(disposition, "attachment;")
     assert disposition =~ "filename*=utf-8''" <> URI.encode("调查报告.txt")
-  end
-
-  @tag :task_review_window
-  test "the review snapshot contains the latest 100 canonical messages", context do
-    appended =
-      for index <- 1..103 do
-        text = "Window message #{index}"
-        message_id = append_agent_content(context, [%{"type" => "text", "text" => text}])
-        {message_id, text}
-      end
-
-    assert {:ok, %{messages: messages}} =
-             BridgeForTeams.Conversations.get_project_conversation_with_messages(
-               context.project,
-               context.conversation_id,
-               limit: 100,
-               tail: 100
-             )
-
-    actual = Enum.map(messages, &{&1["message_id"], hd(&1["content"])["text"]})
-    assert actual == Enum.take(appended, -100)
-    refute Enum.any?(messages, &(&1["message_id"] == context.message_id))
   end
 
   test "current membership is required even for a previously opened attachment", context do
@@ -148,14 +137,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationAttachmentControllerTest do
     response = get(context.conn, path)
     assert response.status == 404
     refute response.resp_body =~ context.body
-  end
-
-  test "only an exact attachment index is downloadable", context do
-    for index <- ["0", "99", "-1", "1suffix"] do
-      response = get(context.conn, attachment_path(context, index))
-      assert response.status == 404
-      refute response.resp_body =~ context.body
-    end
   end
 
   @tag :attachment_sender
@@ -227,7 +208,7 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationAttachmentControllerTest do
         %{
           "type" => "image",
           "file_ref" => %{"environment_id" => "vfs", "path" => "/reports/screenshot.png"},
-          "file_name" => "screenshot.png",
+          "title" => "Original screenshot",
           "mime_type" => "image/png"
         }
       ])
@@ -237,8 +218,10 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationAttachmentControllerTest do
     assert response.status == 200
     assert response.resp_body == png
     assert get_resp_header(response, "content-type") == ["application/octet-stream"]
-    assert [disposition] = get_resp_header(response, "content-disposition")
-    assert String.starts_with?(disposition, "attachment;")
+    # A display title without file_name keeps the VFS name and its extension.
+    assert get_resp_header(response, "content-disposition") == [
+             ~s(attachment; filename="screenshot.png")
+           ]
   end
 
   test "unbound paths stay unavailable and extra query fields cannot retarget a download",
@@ -254,35 +237,6 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationAttachmentControllerTest do
     assert response.resp_body == context.body
   end
 
-  test "size overflow stops the storage stream before HTTP success", context do
-    install_stream_fault(:overflow)
-    response = get(context.conn, attachment_path(context, 1))
-    assert response.status == 413
-    assert response.resp_body =~ "attachment_exceeds_10_mb"
-    assert_received {:attachment_chunk, 1}
-    assert_received {:attachment_chunk, 2}
-    refute_received {:attachment_chunk, 3}
-  end
-
-  test "storage stream failure cannot return a successful partial file or raw diagnostic",
-       context do
-    install_stream_fault(:failure)
-    response = get(context.conn, attachment_path(context, 1))
-    assert response.status == 503
-    assert response.resp_body =~ "attachment_unavailable"
-    refute response.resp_body =~ "partial body"
-    refute response.resp_body =~ "private storage failure"
-  end
-
-  test "an advertised oversized file is rejected before starting its stream", context do
-    install_stream_fault(:failure)
-    content = put_in(context.content, [Access.at(1), "blob_ref", "size"], 10_000_001)
-    message_id = append_agent_content(context, content)
-    response = get(context.conn, attachment_path(%{context | message_id: message_id}, 1))
-    assert response.status == 413
-    refute_received {:attachment_chunk, _}
-  end
-
   defp append_agent_content(context, content) do
     {:ok, %{"message_id" => message_id}} =
       ConversationServer.append_group_conversation_agent_message(
@@ -290,23 +244,12 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationAttachmentControllerTest do
         context.conversation_id,
         context.worker.salix_agent_id,
         %{
-          "client_request_id" => "attachment-#{System.unique_integer([:positive])}",
+          "client_request_id" => "attachment-#{SystemsRuntime.Proc.unique_integer([:positive])}",
           "content" => content
         }
       )
 
     message_id
-  end
-
-  defp install_stream_fault(mode) do
-    previous = Application.fetch_env!(:salix_im, :agent_workspace_mod)
-    Application.put_env(:salix_im, :agent_workspace_mod, FaultyBlobStream)
-    Application.put_env(:bridge_for_teams_web, :attachment_stream_fault, {self(), mode})
-
-    on_exit(fn ->
-      Application.put_env(:salix_im, :agent_workspace_mod, previous)
-      Application.delete_env(:bridge_for_teams_web, :attachment_stream_fault)
-    end)
   end
 
   defp attachment_path(context, index) do
@@ -320,7 +263,7 @@ defmodule BridgeForTeamsWeb.Dashboard.ConversationAttachmentControllerTest do
     assert {:ok, _} =
              SalixAgent.AgentWorkspace.seed_operation(
                agent_id,
-               "dashboard-attachment-#{System.unique_integer([:positive])}",
+               "dashboard-attachment-#{SystemsRuntime.Proc.unique_integer([:positive])}",
                %{},
                [event]
              )

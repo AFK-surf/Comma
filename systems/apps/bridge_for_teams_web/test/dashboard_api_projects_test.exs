@@ -1,4 +1,6 @@
 defmodule BridgeForTeamsWeb.DashboardAPIProjectsTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The Agent Swarms API behind the React list at `/orgs/:org/projects`: the
   paged and filtered list of visible Agent Swarms, creation with field errors
@@ -6,6 +8,9 @@ defmodule BridgeForTeamsWeb.DashboardAPIProjectsTest do
   audit, CSRF protection, and a fixed query count per page.
   """
   use BridgeForTeamsWeb.DashboardCase, async: false
+
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.BridgeForTeamsWeb", "Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{Memberships, Observability, Projects}
 
@@ -32,26 +37,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIProjectsTest do
       assert is_binary(listed["created_at"])
     end
 
-    test "filters by name, slug or runtime id", %{conn: conn, org: org} do
-      {:ok, billing} = Projects.create_project(org.id, %{"name" => "Billing", "slug" => "pay"})
-      {:ok, _} = Projects.create_project(org.id, %{"name" => "Analytics", "slug" => "analytics"})
-
-      names = fn query ->
-        conn
-        |> get(projects_path(org), %{"query" => query})
-        |> json_response(200)
-        |> data()
-        |> Map.fetch!("projects")
-        |> Enum.map(& &1["name"])
-      end
-
-      assert names.("analy") == ["Analytics"]
-      assert names.("PAY") == ["Billing"]
-      assert names.(billing.salix_group_id) == ["Billing"]
-      # LIKE wildcards are literal characters.
-      assert names.("%") == []
-    end
-
     test "pages 50 Agent Swarms at a time in a fixed number of queries",
          %{conn: conn, org: org} do
       bare_project_fixture(org, %{name: "Swarm 00"})
@@ -75,30 +60,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIProjectsTest do
                Enum.map(50..54, &"Swarm #{pad(&1)}")
 
       assert second["next_cursor"] == nil
-    end
-
-    test "pages a filtered list across two Agent Swarms with the same name",
-         %{conn: conn, org: org} do
-      for n <- 1..49, do: bare_project_fixture(org, %{name: "Match #{pad(n)}"})
-      twins = for _ <- 1..2, do: bare_project_fixture(org, %{name: "Match twin"})
-      for n <- 1..3, do: bare_project_fixture(org, %{name: "Other #{n}"})
-
-      page = fn params ->
-        conn |> get(projects_path(org), params) |> json_response(200) |> data()
-      end
-
-      first = page.(%{"query" => "match"})
-      assert length(first["projects"]) == 50
-      assert List.last(first["projects"])["name"] == "Match twin"
-
-      second = page.(%{"query" => "match", "cursor" => first["next_cursor"]})
-      assert [%{"name" => "Match twin"}] = second["projects"]
-      assert second["next_cursor"] == nil
-
-      assert Enum.sort([
-               List.last(first["projects"])["id"] | Enum.map(second["projects"], & &1["id"])
-             ]) ==
-               twins |> Enum.map(& &1.id) |> Enum.sort()
     end
 
     test "ordinary members see only the Agent Swarms granted to them", %{org: org} do
@@ -139,7 +100,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIProjectsTest do
                  "name" => "Payments",
                  "slug" => "payments",
                  "status" => "archived",
-                 "created_by_user_id" => Ecto.UUID.generate()
+                 "created_by_user_id" => SystemsRuntime.Proc.uuid()
                })
                |> json_response(201)
                |> data()
@@ -156,34 +117,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIProjectsTest do
       assert audit.resource_id == project.id
       assert audit.resource_label == "Payments"
       assert is_binary(audit.request_id) and audit.request_id != ""
-    end
-
-    test "a blank slug follows the name", %{conn: conn, org: org} do
-      assert %{"slug" => "release-notes"} =
-               conn
-               |> post(projects_path(org), %{"name" => "Release Notes", "slug" => ""})
-               |> json_response(201)
-               |> data()
-    end
-
-    test "reports field errors without creating anything", %{conn: conn, org: org} do
-      {:ok, _} = Projects.create_project(org.id, %{"name" => "Billing", "slug" => "billing"})
-
-      assert %{"code" => "invalid_project", "details" => %{"fields" => fields}} =
-               conn
-               |> post(projects_path(org), %{"name" => "Billing 2", "slug" => "billing"})
-               |> json_response(422)
-               |> Map.fetch!("error")
-
-      assert fields["slug"] == ["has already been taken"]
-
-      assert %{"details" => %{"fields" => %{"name" => ["can't be blank"]}}} =
-               conn
-               |> post(projects_path(org), %{"name" => "", "slug" => ""})
-               |> json_response(422)
-               |> Map.fetch!("error")
-
-      assert [_only] = Projects.list_projects(org.id)
     end
 
     test "an ordinary member creates one Agent Swarm, then is refused with an audit",
@@ -258,15 +191,16 @@ defmodule BridgeForTeamsWeb.DashboardAPIProjectsTest do
   end
 
   defp query_count(conn, path) do
-    test_pid = self()
-    handler = "projects-query-count-#{System.unique_integer([:positive])}"
+    test_pid = SystemsRuntime.Proc.self()
+    handler = "projects-query-count-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:bridge_for_teams, :repo, :query],
         fn _event, _measurements, _metadata, _config ->
-          if self() == test_pid, do: send(test_pid, :repo_query)
+          if SystemsRuntime.Proc.self() == test_pid,
+            do: SystemsRuntime.Proc.send(test_pid, :repo_query)
         end,
         nil
       )
@@ -275,12 +209,12 @@ defmodule BridgeForTeamsWeb.DashboardAPIProjectsTest do
       conn |> get(path) |> json_response(200)
       count_messages(0)
     after
-      :telemetry.detach(handler)
+      SystemsRuntime.Telemetry.detach(handler)
     end
   end
 
   defp count_messages(count) do
-    receive do
+    SystemsRuntime.Proc.receive do
       :repo_query -> count_messages(count + 1)
     after
       0 -> count

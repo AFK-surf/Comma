@@ -1,0 +1,46 @@
+---
+name: lark
+description: "Lark (larksuite.com): cloud documents, wiki pages, and Minutes recordings through the Lark connect; sheets, Base, calendar, tasks, approvals, and mail through the official Lark CLI."
+activation: per-message
+---
+
+Shared procedure: `/.runtime/skills/service-access/SKILL.md`.
+
+## Cloud documents and Minutes through the Lark connect
+
+When `im.connects_list` shows a Lark connect, use its document operations
+first: `im_api.lark.fetch_doc`, `update_doc`, `create_doc`, and the other
+`*doc*` operations listed by `im.provider_apis_list`. They act as the bot and
+need no login. The bot opens only documents shared with a chat it is in,
+shared with the app, or open by link inside the company. If a read is denied,
+ask the user to share the document with the chat. Minutes recordings work the
+same way through `get_minute`, `list_minutes`, and `fetch_minute_media`. Use
+the CLI below only for work that needs the user's own identity, such as
+editing Minutes, or a document type these operations do not support.
+
+A Lark connect takes `larksuite.com` links only. A `feishu.cn` link belongs
+to a Feishu connect: use the `feishu` skill for it.
+
+Lark recommends its official CLI `@larksuite/cli` (github.com/larksuite/cli)
+for agents. It stores tokens in the OS keychain, so run it with `env.exec` on
+the user's Mac.
+
+## Setup
+
+1. `npm i -g @larksuite/cli` (or `npx @larksuite/cli@latest install`).
+2. `lark-cli config init` needs the App ID and App Secret of a custom Lark
+   app. The user enters them in their own terminal.
+3. User identity: `lark-cli auth login --domain <calendar|docs|im|...> --no-wait`
+   returns a verification URL. Give it to the user, then resume with
+   `lark-cli auth login --device-code <code>`. Use `--as bot` for bot actions.
+
+## Use
+
+- Discover commands with `lark-cli --help` and `lark-cli <domain> --help`. Do
+  not guess flags.
+- Output is a JSON envelope. Check `ok == true` before you report success.
+- Pass `--domain https://open.larksuite.com` where the command asks for a
+  domain, so the CLI talks to Lark and not to Feishu.
+
+Sending messages, calendar invites, approvals, and deletes affect other people
+or are permanent. Confirm the recipients and content first.

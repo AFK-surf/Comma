@@ -1,39 +1,58 @@
 {
-  "extends": "../../tsconfig.react.json",
+  "extends": ["../../tsconfig.react.json", "../../tsconfig.effect.json"],
   "compilerOptions": {
     "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.admin.app.tsbuildinfo",
     "types": ["vite/client"],
     "paths": {
-      "@comma/app/auth": ["../../packages/app/src/auth/index.ts"],
       "@comma/config": ["../../packages/config/src/index.ts"],
-      "@comma/native-bridge": ["../../packages/native-bridge/src/index.ts"],
-      "@comma/session-contract": ["../../packages/session-contract/src/index.ts"],
-      "@comma/ui": ["../../packages/ui/src/index.ts"]
+      "@comma/i18n": ["../../packages/i18n/src/index.ts"],
+      "@comma/ui": ["../../packages/ui/src/index.ts"],
+      "@comma/ui/*": ["../../packages/ui/src/*"]
     }
   },
-  "include": [
-    "src/**/*.ts",
-    "src/**/*.tsx",
-    "../../packages/app/src/api/**/*.ts",
-    "../../packages/app/src/analytics/client.ts",
-    "../../packages/app/src/auth/**/*.ts",
-    "../../packages/app/src/components/AuthGate.tsx",
-    "../../packages/app/src/components/LoginScreen.tsx",
-    "../../packages/app/src/components/auth-context.ts",
-    "../../packages/app/src/components/oauth-resume.ts",
-    "../../packages/app/src/session/**/*.ts",
-    "../../packages/app/src/session/**/*.tsx",
-    "../../packages/config/src/**/*.ts",
-    "../../packages/native-bridge/src/**/*.ts",
-    "../../packages/session-contract/src/**/*.ts",
-    "../../packages/ui/src/**/*.ts",
-    "../../packages/ui/src/**/*.tsx",
-    "../../packages/ui/src/**/*.json"
-  ],
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
   "exclude": [
     "**/*.test.*",
     "**/*.spec.*",
     "../../packages/**/*.test.*",
     "../../packages/**/*.spec.*"
+  ],
+  "references": [
+    {
+      "path": "../../packages/analytics"
+    },
+    {
+      "path": "../../packages/app"
+    },
+    {
+      "path": "../../packages/chat-contract"
+    },
+    {
+      "path": "../../packages/config"
+    },
+    {
+      "path": "../../packages/core"
+    },
+    {
+      "path": "../../packages/core-client"
+    },
+    {
+      "path": "../../packages/core-kernel"
+    },
+    {
+      "path": "../../packages/i18n"
+    },
+    {
+      "path": "../../packages/native-bridge"
+    },
+    {
+      "path": "../../packages/recommendation-contract"
+    },
+    {
+      "path": "../../packages/session-contract"
+    },
+    {
+      "path": "../../packages/ui"
+    }
   ]
 }

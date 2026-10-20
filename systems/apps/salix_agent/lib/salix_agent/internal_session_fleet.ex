@@ -1,4 +1,6 @@
 defmodule SalixAgent.InternalSessionFleet do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Spawn-on-demand for internal session actors.
 
@@ -69,11 +71,23 @@ defmodule SalixAgent.InternalSessionFleet do
     # An archived agent refuses a wake. Past that, a resident actor already
     # passed the canonical-session check when its Router owner started it and
     # re-checks at every commit; a wake only nudges it, so the durable
-    # canonical re-read is for actors that must be started.
+    # canonical re-read is for actors that must be started, and for an actor
+    # that is retiring: a Router cutover retires the old session's actor
+    # after it commits, so the durable record, not how far that shutdown has
+    # got, says whether the session was retired.
     with :ok <- SalixAgent.Control.ensure_not_stopped(agent_id) do
-      case Registry.lookup(SalixAgent.Registry, InternalSessionActor.key(agent_id, session_id)) do
+      case SystemsRuntime.Registry.lookup(
+             SalixAgent.Registry,
+             InternalSessionActor.key(agent_id, session_id)
+           ) do
         [{_pid, _value}] ->
-          InternalSessionActor.wake(agent_id, session_id)
+          case InternalSessionActor.wake(agent_id, session_id) do
+            {:error, :session_actor_retiring} = retiring ->
+              with :ok <- durable_router_session_admission(agent_id, session_id), do: retiring
+
+            result ->
+              result
+          end
 
         [] ->
           with {:ok, _pid} <- ensure_started(agent_id, session_id) do
@@ -93,10 +107,15 @@ defmodule SalixAgent.InternalSessionFleet do
 
     with :ok <- SalixAgent.Control.ensure_not_stopped(agent_id),
          :ok <- durable_router_session_admission(agent_id, session_id) do
-      case Registry.lookup(SalixAgent.Registry, InternalSessionActor.key(agent_id, session_id)) do
+      systems_self = SystemsRuntime.Proc.self()
+
+      case SystemsRuntime.Registry.lookup(
+             SalixAgent.Registry,
+             InternalSessionActor.key(agent_id, session_id)
+           ) do
         # The owner runs a direct round from its mailbox, never inside one of
         # its own callbacks.
-        [{pid, _}] when pid == self() ->
+        [{pid, _}] when pid == systems_self ->
           {:error, :session_owner_reentry}
 
         _ ->
@@ -140,8 +159,13 @@ defmodule SalixAgent.InternalSessionFleet do
     start_opts = opts |> Keyword.drop([:timeout]) |> Keyword.put(:process_on_init, false)
 
     with :ok <- SalixAgent.Control.ensure_not_stopped(agent_id) do
-      case Registry.lookup(SalixAgent.Registry, InternalSessionActor.key(agent_id, session_id)) do
-        [{pid, _}] when pid == self() ->
+      systems_self = SystemsRuntime.Proc.self()
+
+      case SystemsRuntime.Registry.lookup(
+             SalixAgent.Registry,
+             InternalSessionActor.key(agent_id, session_id)
+           ) do
+        [{pid, _}] when pid == systems_self ->
           {:error, :session_owner_reentry}
 
         _ ->
@@ -161,8 +185,13 @@ defmodule SalixAgent.InternalSessionFleet do
     start_opts = opts |> Keyword.drop([:timeout]) |> Keyword.put(:process_on_init, false)
 
     with :ok <- SalixAgent.Control.ensure_not_stopped(agent_id) do
-      case Registry.lookup(SalixAgent.Registry, InternalSessionActor.key(agent_id, session_id)) do
-        [{pid, _}] when pid == self() ->
+      systems_self = SystemsRuntime.Proc.self()
+
+      case SystemsRuntime.Registry.lookup(
+             SalixAgent.Registry,
+             InternalSessionActor.key(agent_id, session_id)
+           ) do
+        [{pid, _}] when pid == systems_self ->
           {:error, :session_owner_reentry}
 
         _ ->
@@ -189,8 +218,13 @@ defmodule SalixAgent.InternalSessionFleet do
 
     with :ok <- SalixAgent.Control.ensure_not_stopped(agent_id),
          :ok <- admit_router_stage(session_id, opts) do
-      case Registry.lookup(SalixAgent.Registry, InternalSessionActor.key(agent_id, session_id)) do
-        [{pid, _}] when pid == self() ->
+      systems_self = SystemsRuntime.Proc.self()
+
+      case SystemsRuntime.Registry.lookup(
+             SalixAgent.Registry,
+             InternalSessionActor.key(agent_id, session_id)
+           ) do
+        [{pid, _}] when pid == systems_self ->
           InternalSessionActor.stage_delivery_in_owner(agent_id, session_id, entry)
 
         # A resident actor passed the canonical-session check when its Router
@@ -209,8 +243,11 @@ defmodule SalixAgent.InternalSessionFleet do
 
   defp admit_router_stage(session_id, opts) do
     case Keyword.get(opts, :router_owner) do
-      pid when is_pid(pid) -> SalixAgent.AgentRoleActor.admit_canonical_session(pid, session_id)
-      _other -> :ok
+      pid when SystemsRuntime.Proc.is_process(pid) ->
+        SalixAgent.AgentRoleActor.admit_canonical_session(pid, session_id)
+
+      _other ->
+        :ok
     end
   end
 
@@ -222,8 +259,13 @@ defmodule SalixAgent.InternalSessionFleet do
     start_opts = opts |> Keyword.drop([:timeout]) |> Keyword.put(:process_on_init, false)
 
     with :ok <- SalixAgent.Control.ensure_not_stopped(agent_id) do
-      case Registry.lookup(SalixAgent.Registry, InternalSessionActor.key(agent_id, session_id)) do
-        [{pid, _}] when pid == self() ->
+      systems_self = SystemsRuntime.Proc.self()
+
+      case SystemsRuntime.Registry.lookup(
+             SalixAgent.Registry,
+             InternalSessionActor.key(agent_id, session_id)
+           ) do
+        [{pid, _}] when pid == systems_self ->
           InternalSessionActor.stage_wait_timeout_in_owner(agent_id, session_id, entry)
 
         _ ->
@@ -242,8 +284,13 @@ defmodule SalixAgent.InternalSessionFleet do
     start_opts = opts |> Keyword.drop([:timeout]) |> Keyword.put(:process_on_init, false)
 
     with :ok <- SalixAgent.Control.ensure_not_stopped(agent_id) do
-      case Registry.lookup(SalixAgent.Registry, InternalSessionActor.key(agent_id, session_id)) do
-        [{pid, _}] when pid == self() ->
+      systems_self = SystemsRuntime.Proc.self()
+
+      case SystemsRuntime.Registry.lookup(
+             SalixAgent.Registry,
+             InternalSessionActor.key(agent_id, session_id)
+           ) do
+        [{pid, _}] when pid == systems_self ->
           InternalSessionActor.stage_control_in_owner(agent_id, session_id, entry)
 
         _ ->
@@ -263,11 +310,13 @@ defmodule SalixAgent.InternalSessionFleet do
     start_opts = opts |> Keyword.drop([:timeout]) |> Keyword.put(:process_on_init, false)
 
     with :ok <- SalixAgent.Control.ensure_not_stopped(agent_id) do
-      case Registry.lookup(
+      systems_self = SystemsRuntime.Proc.self()
+
+      case SystemsRuntime.Registry.lookup(
              SalixAgent.Registry,
              InternalSessionActor.key(agent_id, target_session_id)
            ) do
-        [{pid, _}] when pid == self() ->
+        [{pid, _}] when pid == systems_self ->
           InternalSessionActor.fork_session_in_owner(
             agent_id,
             source_session_id,
@@ -303,11 +352,13 @@ defmodule SalixAgent.InternalSessionFleet do
     start_opts = opts |> Keyword.drop([:timeout]) |> Keyword.put(:process_on_init, false)
 
     with :ok <- SalixAgent.Control.ensure_not_stopped(agent_id) do
-      case Registry.lookup(
+      systems_self = SystemsRuntime.Proc.self()
+
+      case SystemsRuntime.Registry.lookup(
              SalixAgent.Registry,
              InternalSessionActor.key(agent_id, target_session_id)
            ) do
-        [{pid, _}] when pid == self() ->
+        [{pid, _}] when pid == systems_self ->
           InternalSessionActor.seed_session_in_owner(
             agent_id,
             source_session,
@@ -337,8 +388,13 @@ defmodule SalixAgent.InternalSessionFleet do
     start_opts = opts |> Keyword.drop([:timeout]) |> Keyword.put(:process_on_init, false)
 
     with :ok <- SalixAgent.Control.ensure_not_stopped(agent_id) do
-      case Registry.lookup(SalixAgent.Registry, InternalSessionActor.key(agent_id, session_id)) do
-        [{pid, _}] when pid == self() ->
+      systems_self = SystemsRuntime.Proc.self()
+
+      case SystemsRuntime.Registry.lookup(
+             SalixAgent.Registry,
+             InternalSessionActor.key(agent_id, session_id)
+           ) do
+        [{pid, _}] when pid == systems_self ->
           InternalSessionActor.seed_transcript_in_owner(agent_id, session_id, event)
 
         _ ->
@@ -393,12 +449,9 @@ defmodule SalixAgent.InternalSessionFleet do
   end
 
   defp ensure_agent_server_owner_local(agent_id, opts) do
-    case Registry.lookup(SalixAgent.Registry, agent_id) do
-      [{pid, _}] when node(pid) == node() ->
-        :ok
-
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, agent_id) do
       [{pid, _}] ->
-        {:error, {:agent_owner_remote, node(pid)}}
+        local_owner(pid)
 
       [] ->
         ensure_agent_server_owner_started_local(agent_id, opts)
@@ -407,15 +460,17 @@ defmodule SalixAgent.InternalSessionFleet do
 
   defp ensure_agent_server_owner_started_local(agent_id, opts) do
     case SalixAgent.Placement.ensure_started(agent_id, agent_owner_start_opts(opts)) do
-      {:ok, pid} when node(pid) == node() ->
-        :ok
-
       {:ok, pid} ->
-        {:error, {:agent_owner_remote, node(pid)}}
+        local_owner(pid)
 
       {:error, _} = err ->
         err
     end
+  end
+
+  defp local_owner(pid) do
+    owner = SystemsRuntime.Proc.node(pid)
+    if owner == SystemsRuntime.Proc.node(), do: :ok, else: {:error, {:agent_owner_remote, owner}}
   end
 
   defp agent_owner_start_opts(opts) do

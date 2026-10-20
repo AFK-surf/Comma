@@ -37,7 +37,7 @@ defmodule CommaWeb.OauthIdpEndpoints do
   @doc "True when the deployment has switched the IdP surface on."
   @spec enabled?() :: boolean()
   def enabled? do
-    Application.get_env(:comma_web, :oauth_idp_enabled, false) == true
+    SystemsRuntime.get_env(:comma_web, :oauth_idp_enabled, false) == true
   end
 
   @doc """
@@ -140,7 +140,7 @@ defmodule CommaWeb.OauthIdpEndpoints do
     case Map.fetch(@telemetry_endpoints, conn.request_path) do
       {:ok, endpoint} ->
         register_before_send(conn, fn conn ->
-          :telemetry.execute(
+          SystemsRuntime.Telemetry.execute(
             [:comma_product, :oauth_idp, :request],
             %{count: 1},
             %{endpoint: endpoint, outcome: response_outcome(conn)}
@@ -277,7 +277,7 @@ defmodule CommaWeb.OauthIdpEndpoints do
   # carries client_id and nothing about the user or tokens.
   defp emit_issuance(%TokenResponse{token: %{client: %{id: client_id}}})
        when is_binary(client_id) do
-    :telemetry.execute([:comma_product, :oauth_idp, :issuance], %{count: 1}, %{})
+    SystemsRuntime.Telemetry.execute([:comma_product, :oauth_idp, :issuance], %{count: 1}, %{})
     Logger.info("oauth_idp token issued", oauth_idp_client_id: client_id)
   end
 

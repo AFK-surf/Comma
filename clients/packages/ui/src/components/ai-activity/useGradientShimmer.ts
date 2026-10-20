@@ -1,51 +1,38 @@
 import { useLayoutEffect, type RefObject } from "react";
+import { scheduleLayoutRead, uiClock, type CancelUiTimer } from "../../clock";
 import { isReducedMotionEnabled, subscribeToReducedMotion } from "../../tokens";
+import {
+  applyShimmerBand,
+  clearShimmerBand,
+  gradientShimmerMotion,
+  measureShimmerBand,
+  type ShimmerBand,
+} from "./gradientShimmerBand";
 
-/**
- * Product shimmer tuned from the public interaction controls demonstrated by
- * https://github.com/BIAsia/gradient-shimmer. This is a Comma-owned
- * implementation: real DOM text, a measured finite band, and one WAAPI sweep
- * followed by an explicit idle interval.
- */
-export const gradientShimmerMotion = {
-  angleDegrees: 105,
-  bandCoreRatio: 0.44,
-  easing: "cubic-bezier(0.76, 0, 0.24, 1)",
-  maximumSpreadPx: 48,
-  pauseMs: 300,
-  spreadMidRatio: 0.72,
-  spreadPerCharacterPx: 5,
-  sweepDurationMs: 2_000,
-} as const;
+export { gradientShimmerMotion } from "./gradientShimmerBand";
 
-const BASE_FONT_SIZE_PX = 14;
-const FALLBACK_TEXT_WIDTH_PX = 96;
 const INTERSECTION_ROOT_MARGIN = "160px";
-const SCROLL_IDLE_MS = 120;
 
 type GradientShimmerOptions = {
   active: boolean;
   contentIdentity: unknown;
-};
-
-type ShimmerMeasurement = {
-  endPositionPx: number;
-  startPositionPx: number;
+  /** Sweep again after each pause (default), or sweep once and rest. */
+  repeat?: boolean | undefined;
 };
 
 /** Runs the shared Comma gradient shimmer on an existing, readable text node. */
 export function useGradientShimmer(
   ref: RefObject<HTMLElement | null>,
-  { active, contentIdentity }: GradientShimmerOptions
+  { active, contentIdentity, repeat = true }: GradientShimmerOptions
 ) {
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element || !active || !supportsGradientText()) return;
 
-    element.dataset.shimmerReady = "true";
     let animation: Animation | null = null;
-    let cycleTimer: number | undefined;
-    let scrollTimer: number | undefined;
+    let cycleTimer: CancelUiTimer | undefined;
+    let scrollTimer: CancelUiTimer | undefined;
+    let sweepRead: CancelUiTimer | undefined;
     let disposed = false;
     let pendingSweep = false;
     let inViewport = true;
@@ -63,55 +50,8 @@ export function useGradientShimmer(
       !reducedMotion &&
       !forcedColors;
 
-    const measure = (): ShimmerMeasurement => {
-      const textLength = countCodePoints(element.textContent ?? "");
-      const fontSize = Number.parseFloat(getComputedStyle(element).fontSize);
-      const fontScale = Number.isFinite(fontSize) ? fontSize / BASE_FONT_SIZE_PX : 1;
-      const spreadPx = Math.min(
-        textLength * gradientShimmerMotion.spreadPerCharacterPx * fontScale,
-        gradientShimmerMotion.maximumSpreadPx * fontScale
-      );
-      const spreadMidPx = spreadPx * gradientShimmerMotion.spreadMidRatio;
-      const spreadCorePx = spreadMidPx * gradientShimmerMotion.bandCoreRatio;
-      const spreadInnerPx = spreadCorePx / 3;
-      const textWidth =
-        element.getBoundingClientRect().width || FALLBACK_TEXT_WIDTH_PX * fontScale;
-      const layerWidth = Math.max(1, textWidth + spreadPx * 2);
-      const startPositionPx = -spreadPx - layerWidth / 2;
-      const endPositionPx = textWidth + spreadPx - layerWidth / 2;
-
-      element.style.setProperty("--ai-activity-shimmer-spread", `${spreadPx}px`);
-      element.style.setProperty("--ai-activity-shimmer-spread-mid", `${spreadMidPx}px`);
-      element.style.setProperty(
-        "--ai-activity-shimmer-spread-core",
-        `${spreadCorePx}px`
-      );
-      element.style.setProperty(
-        "--ai-activity-shimmer-spread-inner",
-        `${spreadInnerPx}px`
-      );
-      element.style.setProperty(
-        "--ai-activity-shimmer-angle",
-        `${gradientShimmerMotion.angleDegrees}deg`
-      );
-      element.style.backgroundSize = `${layerWidth}px 100%`;
-      element.style.backgroundPosition = `${startPositionPx}px center`;
-
-      return { endPositionPx, startPositionPx };
-    };
-
-    const beginSweep = () => {
-      window.clearTimeout(cycleTimer);
-      cycleTimer = undefined;
-      if (!mayAnimate()) {
-        pendingSweep = true;
-        return;
-      }
-
-      pendingSweep = false;
-      const { endPositionPx, startPositionPx } = measure();
+    const sweep = ({ endPositionPx, startPositionPx }: ShimmerBand) => {
       if (typeof element.animate !== "function") return;
-
       const nextAnimation = element.animate(
         [
           { backgroundPosition: `${startPositionPx}px center` },
@@ -126,9 +66,23 @@ export function useGradientShimmer(
       animation?.cancel();
       animation = nextAnimation;
       nextAnimation.onfinish = () => {
-        if (disposed || animation !== nextAnimation) return;
-        cycleTimer = window.setTimeout(beginSweep, gradientShimmerMotion.pauseMs);
+        if (disposed || animation !== nextAnimation || !repeat) return;
+        // motion
+        cycleTimer = uiClock.after(gradientShimmerMotion.pauseMs, beginSweep);
       };
+    };
+
+    const beginSweep = () => {
+      cycleTimer?.();
+      cycleTimer = undefined;
+      if (!mayAnimate()) {
+        pendingSweep = true;
+        return;
+      }
+      pendingSweep = false;
+      const band = measureShimmerBand(element);
+      applyShimmerBand(element, band);
+      sweep(band);
     };
 
     const reconcileActivity = () => {
@@ -148,12 +102,13 @@ export function useGradientShimmer(
 
     const onScroll = () => {
       scrolling = true;
-      window.clearTimeout(scrollTimer);
+      scrollTimer?.();
       reconcileActivity();
-      scrollTimer = window.setTimeout(() => {
+      // motion
+      scrollTimer = uiClock.after(gradientShimmerMotion.scrollIdleMs, () => {
         scrolling = false;
         reconcileActivity();
-      }, SCROLL_IDLE_MS);
+      });
     };
     window.addEventListener("scroll", onScroll, { capture: true, passive: true });
 
@@ -181,37 +136,39 @@ export function useGradientShimmer(
     };
     forcedColorsQuery?.addEventListener("change", onForcedColorsChange);
 
-    measure();
-    beginSweep();
+    // The first band is measured in the frame's shared layout read phase:
+    // the shimmer mounts in the commit that adds a turn, and reading there
+    // forced the transcript's layout ahead of the frame's own.
+    sweepRead = scheduleLayoutRead(() => {
+      sweepRead = undefined;
+      if (disposed) return undefined;
+      const band = measureShimmerBand(element);
+      return () => {
+        if (disposed) return;
+        applyShimmerBand(element, band);
+        if (!mayAnimate()) {
+          pendingSweep = true;
+          return;
+        }
+        pendingSweep = false;
+        sweep(band);
+      };
+    });
 
     return () => {
       disposed = true;
       animation?.cancel();
-      window.clearTimeout(cycleTimer);
-      window.clearTimeout(scrollTimer);
+      cycleTimer?.();
+      sweepRead?.();
+      scrollTimer?.();
       intersectionObserver?.disconnect();
       stopReducedMotion();
       forcedColorsQuery?.removeEventListener("change", onForcedColorsChange);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("scroll", onScroll, { capture: true });
-      element.removeAttribute("data-shimmer-ready");
-      element.style.removeProperty("--ai-activity-shimmer-spread");
-      element.style.removeProperty("--ai-activity-shimmer-spread-mid");
-      element.style.removeProperty("--ai-activity-shimmer-spread-core");
-      element.style.removeProperty("--ai-activity-shimmer-spread-inner");
-      element.style.removeProperty("--ai-activity-shimmer-angle");
-      element.style.removeProperty("background-position");
-      element.style.removeProperty("background-size");
+      clearShimmerBand(element);
     };
-  }, [active, contentIdentity, ref]);
-}
-
-function countCodePoints(value: string) {
-  let count = 0;
-  for (const codePoint of value) {
-    if (codePoint) count += 1;
-  }
-  return count;
+  }, [active, contentIdentity, ref, repeat]);
 }
 
 function supportsGradientText() {

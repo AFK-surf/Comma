@@ -1,6 +1,68 @@
-import { fireEvent, render, screen } from "@comma/test-utils/render";
+import { act, cleanup, fireEvent, render, screen } from "@comma/test-utils/render";
 import { describe, expect, it, vi } from "vitest";
+import { installUiClock } from "../../../clock";
+import { createVirtualUiClock } from "../../../clock/virtual";
 import { CommaMascot, commaMascotMaxGazeDistance } from "../CommaMascot";
+
+// The mascot on a clock that frames every `frameMs`.
+function onClock<T>(
+  frameMs: number,
+  run: (clock: ReturnType<typeof createVirtualUiClock>) => T
+) {
+  const clock = createVirtualUiClock({ frameMs });
+  const restore = installUiClock(clock);
+  try {
+    return run(clock);
+  } finally {
+    cleanup();
+    restore();
+  }
+}
+
+const mascotAt = (mascot: HTMLElement) => {
+  vi.spyOn(mascot, "getBoundingClientRect").mockReturnValue(
+    DOMRect.fromRect({ x: 0, y: 0, width: 96, height: 96 })
+  );
+  Object.assign(mascot, {
+    hasPointerCapture: vi.fn(() => true),
+    releasePointerCapture: vi.fn(),
+    setPointerCapture: vi.fn(),
+  });
+};
+
+// The pointer moves off to the right; 200ms later the eyes are still
+// swinging toward it.
+const gazeAt200ms = (frameMs: number) =>
+  onClock(frameMs, (clock) => {
+    render(<CommaMascot followPointer size={96} />);
+    const mascot = screen.getByRole("img", { name: "Comma mascot" });
+    mascotAt(mascot);
+    const move = new MouseEvent("pointermove", { clientX: 400, clientY: 60 });
+    Object.defineProperty(move, "pointerType", { value: "mouse" });
+    act(() => {
+      window.dispatchEvent(move);
+    });
+    act(() => clock.advance(200));
+    return mascot.querySelector(".comma-mascot__gaze")?.getAttribute("transform");
+  });
+
+// The body is pulled for 100ms and let go; 300ms later it still wobbles.
+const meshAt400ms = (frameMs: number) =>
+  onClock(frameMs, (clock) => {
+    render(<CommaMascot size={96} />);
+    const mascot = screen.getByRole("img", { name: "Comma mascot" });
+    mascotAt(mascot);
+    const pointer = { button: 0, pointerId: 7, pointerType: "mouse" };
+    fireEvent.pointerDown(mascot, { ...pointer, clientX: 30, clientY: 30 });
+    act(() => clock.advance(50));
+    fireEvent.pointerMove(mascot, { ...pointer, clientX: 45, clientY: 34 });
+    act(() => clock.advance(50));
+    fireEvent.pointerUp(mascot, { ...pointer, clientX: 45, clientY: 34 });
+    act(() => clock.advance(300));
+    return [...mascot.querySelectorAll("path")]
+      .map((path) => path.getAttribute("d"))
+      .join("|");
+  });
 
 describe("CommaMascot", () => {
   it("renders an accessible SVG backed by the deformable mesh", () => {
@@ -85,6 +147,22 @@ describe("CommaMascot", () => {
 
     rerender(<CommaMascot followPointer={false} />);
     expect(mascot).toHaveAttribute("data-follow-pointer", "false");
+  });
+
+  it("turns its gaze to the same place at a moment whatever the frame rate before it", () => {
+    const at60fps = gazeAt200ms(1000 / 60);
+    expect(at60fps).not.toBe("translate(0.000 0.000)");
+    expect(gazeAt200ms(100)).toBe(at60fps);
+    // One frame, at 200ms: straight to the moment.
+    expect(gazeAt200ms(200)).toBe(at60fps);
+  });
+
+  it("wobbles the same at a moment whatever the frame rate before it", () => {
+    // Frames every 16ms land on 400ms exactly; 1000/60 does not add up to it.
+    const at60fps = meshAt400ms(16);
+    expect(meshAt400ms(100)).toBe(at60fps);
+    // Frames only where the pointer moved: straight to each moment.
+    expect(meshAt400ms(400)).toBe(at60fps);
   });
 
   it("releases the soft-body drag when the pointer ends outside the SVG", () => {

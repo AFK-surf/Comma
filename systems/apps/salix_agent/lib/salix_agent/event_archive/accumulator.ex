@@ -75,8 +75,8 @@ defmodule SalixAgent.EventArchive.Accumulator do
   end
 
   defp ensure(name, opts) do
-    case :ets.whereis(name) do
-      :undefined -> :ets.new(name, opts)
+    case SystemsRuntime.ETS.whereis(name) do
+      :undefined -> SystemsRuntime.ETS.new(name, opts)
       _ -> :ok
     end
   rescue
@@ -92,11 +92,11 @@ defmodule SalixAgent.EventArchive.Accumulator do
   @spec new() :: t()
   def new do
     if SalixAgent.EventArchive.enabled?() do
-      key = make_ref()
+      key = SystemsRuntime.Proc.make_ref()
       create_table()
       maybe_sweep()
       # {ref, bytes, count, truncated?, next_index, created_ms}
-      :ets.insert(@meta, {key, 0, 0, false, 0, now_ms()})
+      SystemsRuntime.ETS.insert(@meta, {key, 0, 0, false, 0, now_ms()})
       key
     else
       nil
@@ -145,15 +145,15 @@ defmodule SalixAgent.EventArchive.Accumulator do
     size = byte_size(text)
 
     cond do
-      :ets.update_counter(@meta, key, {3, 1}) > @max_capture_deltas ->
+      SystemsRuntime.ETS.update_counter(@meta, key, {3, 1}) > @max_capture_deltas ->
         mark_truncated(key)
 
-      :ets.update_counter(@meta, key, {2, size}) > @max_capture_bytes ->
+      SystemsRuntime.ETS.update_counter(@meta, key, {2, size}) > @max_capture_bytes ->
         mark_truncated(key)
 
       true ->
-        index = :ets.update_counter(@meta, key, {5, 1})
-        :ets.insert(@deltas, {{key, index}, kind, text})
+        index = SystemsRuntime.ETS.update_counter(@meta, key, {5, 1})
+        SystemsRuntime.ETS.insert(@deltas, {{key, index}, kind, text})
         :ok
     end
   rescue
@@ -163,7 +163,7 @@ defmodule SalixAgent.EventArchive.Accumulator do
   end
 
   defp mark_truncated(key) do
-    :ets.update_element(@meta, key, {4, true})
+    SystemsRuntime.ETS.update_element(@meta, key, {4, true})
     :ok
   rescue
     ArgumentError -> :ok
@@ -179,7 +179,7 @@ defmodule SalixAgent.EventArchive.Accumulator do
   def drain(nil), do: nil
 
   def drain(key) do
-    case :ets.take(@meta, key) do
+    case SystemsRuntime.ETS.take(@meta, key) do
       [{^key, _bytes, 0, _truncated, _next, _created}] ->
         discard(key)
         nil
@@ -213,13 +213,15 @@ defmodule SalixAgent.EventArchive.Accumulator do
 
   # ordered_set returns the range in key order, which is delta order.
   defp take_rows(key) do
-    rows = :ets.select(@deltas, [{{{key, :"$1"}, :"$2", :"$3"}, [], [{{:"$2", :"$3"}}]}])
+    rows =
+      SystemsRuntime.ETS.select(@deltas, [{{{key, :"$1"}, :"$2", :"$3"}, [], [{{:"$2", :"$3"}}]}])
+
     discard(key)
     rows
   end
 
   defp discard(key) do
-    :ets.match_delete(@deltas, {{key, :_}, :_, :_})
+    SystemsRuntime.ETS.match_delete(@deltas, {{key, :_}, :_, :_})
     :ok
   rescue
     ArgumentError -> :ok
@@ -236,12 +238,12 @@ defmodule SalixAgent.EventArchive.Accumulator do
     cutoff = now_ms() - @stale_after_ms
 
     stale =
-      :ets.select(@meta, [
+      SystemsRuntime.ETS.select(@meta, [
         {{:"$1", :_, :_, :_, :_, :"$2"}, [{:<, :"$2", cutoff}], [:"$1"]}
       ])
 
     Enum.each(stale, fn key ->
-      :ets.delete(@meta, key)
+      SystemsRuntime.ETS.delete(@meta, key)
       discard(key)
     end)
 
@@ -258,13 +260,13 @@ defmodule SalixAgent.EventArchive.Accumulator do
     now = now_ms()
 
     last =
-      case :ets.lookup(@meta, @sweep_key) do
+      case SystemsRuntime.ETS.lookup(@meta, @sweep_key) do
         [{@sweep_key, at}] -> at
         [] -> 0
       end
 
     if now - last >= @sweep_every_ms do
-      :ets.insert(@meta, {@sweep_key, now})
+      SystemsRuntime.ETS.insert(@meta, {@sweep_key, now})
       sweep()
     end
 
@@ -273,7 +275,7 @@ defmodule SalixAgent.EventArchive.Accumulator do
     ArgumentError -> :ok
   end
 
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 
   @doc """
   Wrap an `:on_reasoning_delta` callback in `llm_opts` so reasoning is captured

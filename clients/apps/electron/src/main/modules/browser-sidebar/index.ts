@@ -1,5 +1,10 @@
 import {
+  browserCookieImportInputSchema,
   browserSitePermissionsInputSchema,
+  type BrowserCookieImportInput,
+  type BrowserCookieImportResult,
+  type BrowserImportProfiles,
+  type BrowserPageMenuItem,
   type BrowserSitePermissionsInput,
 } from "@comma/native-bridge";
 import {
@@ -29,19 +34,31 @@ import {
 } from "@comma/native-bridge";
 import type { Session } from "electron";
 import type { BrowserSitePermissions } from "./site-permissions";
+import {
+  importBrowserCookies,
+  listBrowserImportProfiles,
+  type BrowserImportPlatform,
+} from "./browser-import";
+import type { HybridPasskeys } from "./hybrid";
 import { BrowserMeetingProbe } from "./meeting-presence";
+import { BrowserTabPasskeys } from "./passkeys";
 import { randomUUID } from "node:crypto";
 import { getCurrentNativeCallerContext } from "../ipc";
 import type { NativeSurfaceService } from "../surfaces";
 import { isAllowedUrl } from "../../security";
 import {
   browserSidebarElementInspectorCancelSource,
+  browserSidebarElementInspectorHighlightSource,
+  browserSidebarElementInspectorRectSource,
   browserSidebarElementInspectorSource,
 } from "./element-inspector";
 
 export const BROWSER_SIDEBAR_PARTITION = "persist:comma-browser-sidebar";
 const BROWSER_SIDEBAR_ROLE = "browser-sidebar";
 const BROWSER_SIDEBAR_CLOSE_CONFIRMATION_TIMEOUT_MS = 250;
+const BROWSER_SIDEBAR_CAPTURE_ATTEMPTS = 3;
+// The longest edge a model reads an image at; a larger capture is scaled down.
+const BROWSER_INSPECTION_SCREENSHOT_MAX_EDGE = 1568;
 export const CLIENT_CDP_TIMEOUT_MS = 10_000;
 export const CLIENT_BROWSER_OPEN_TIMEOUT_MS = 10_000;
 const CLIENT_SCREENSHOT_MAX_BYTES = 5 * 1024 * 1024;
@@ -57,6 +74,9 @@ const BROWSER_SIDEBAR_FAVICON_FETCH_TIMEOUT_MS = 5_000;
 export const BROWSER_SIDEBAR_WEB_PREFERENCES = {
   contextIsolation: true,
   nodeIntegration: false,
+  // Runs the page preload in iframes too, so an embedded sign-in form gets the
+  // same WebAuthn guard. The sandbox keeps Node.js out of every frame.
+  nodeIntegrationInSubFrames: true,
   partition: BROWSER_SIDEBAR_PARTITION,
   sandbox: true,
   webSecurity: true,
@@ -110,6 +130,16 @@ interface BrowserSidebarMouseInputLike {
   type?: string | undefined;
 }
 
+interface BrowserSidebarImageLike {
+  getSize(): { height: number; width: number };
+  resize(options: {
+    height: number;
+    quality: "best";
+    width: number;
+  }): BrowserSidebarImageLike;
+  toPNG(): Uint8Array;
+}
+
 interface BrowserSidebarWebContentsLike {
   readonly id: number;
   readonly session: BrowserSidebarSessionLike;
@@ -128,13 +158,19 @@ interface BrowserSidebarWebContentsLike {
       commandParams?: Record<string, unknown>
     ): Promise<unknown>;
   };
-  capturePage(): Promise<{ toPNG(): Uint8Array }>;
+  capturePage(rect?: SurfaceBounds): Promise<BrowserSidebarImageLike>;
   close(options: { waitForBeforeUnload: boolean }): void;
   executeJavaScript(source: string): Promise<unknown>;
+  /** The top frame. Absent in tests that do not answer passkey requests. */
+  readonly mainFrame?: {
+    readonly origin: string;
+    executeJavaScript(source: string): Promise<unknown>;
+  } | null;
   focus(): void;
   getOSProcessId(): number;
   getTitle(): string;
   getURL(): string;
+  getZoomFactor(): number;
   isLoading(): boolean;
   isDestroyed(): boolean;
   loadURL(url: string): Promise<unknown>;
@@ -146,6 +182,7 @@ interface BrowserSidebarWebContentsLike {
       | "did-start-navigation"
       | "did-start-loading"
       | "did-stop-loading"
+      | "dom-ready"
       | "page-favicon-updated"
       | "page-title-updated",
     listener: (...args: unknown[]) => void
@@ -198,7 +235,6 @@ export interface BrowserSidebarNativeViewLike {
 
 export interface BrowserSidebarViewLike extends BrowserSidebarNativeViewLike {
   readonly webContents: BrowserSidebarWebContentsLike;
-  readonly nativeView?: BrowserSidebarNativeViewLike;
 }
 
 interface BrowserInspectionComposer {
@@ -211,6 +247,11 @@ interface BrowserInspectionComposer {
 type BrowserInspectionComposerResult =
   | BrowserSidebarInspectResult
   | { status: "reselect" };
+
+type BrowserSidebarHistoryAction = Exclude<
+  BrowserSidebarNavigateInput["action"],
+  "stop"
+>;
 
 interface BrowserInspectionComposerSurface {
   height: number;
@@ -238,16 +279,29 @@ export interface BrowserSidebarOwnerWindowLike {
   };
 }
 
+type BrowserSitePermissionsResult = {
+  status: "opened" | "unavailable";
+  reason?: string;
+  picked?: BrowserPageMenuItem;
+};
+
 export interface BrowserSidebarProvider {
+  listImportProfiles(
+    input: void
+  ): Promise<BrowserImportProfiles> | BrowserImportProfiles;
+  importCookies(
+    input: BrowserCookieImportInput
+  ): Promise<BrowserCookieImportResult> | BrowserCookieImportResult;
   showPermissions(
     input: BrowserSitePermissionsInput
-  ):
-    | Promise<{ status: "opened" | "unavailable"; reason?: string }>
-    | { status: "opened" | "unavailable"; reason?: string };
+  ): Promise<BrowserSitePermissionsResult> | BrowserSitePermissionsResult;
   capture(
     input: BrowserSidebarCaptureInput
   ): Promise<BrowserSidebarCaptureResult> | BrowserSidebarCaptureResult;
   close(
+    input: BrowserSidebarCloseInput
+  ): Promise<BrowserSidebarState> | BrowserSidebarState;
+  dismissPasskey(
     input: BrowserSidebarCloseInput
   ): Promise<BrowserSidebarState> | BrowserSidebarState;
   inspect(
@@ -282,11 +336,17 @@ interface ActiveBrowserSidebar {
   navigationPendingGeneration?: number | undefined;
   navigationRevision: number;
   navigationResumeUrl?: string | undefined;
+  /** A back, forward or reload asked for and not yet committed: hiding the view stops it. */
+  navigationPendingAction?: BrowserSidebarHistoryAction | undefined;
+  /** The stopped back, forward or reload to repeat when the view shows again. */
+  navigationResumeAction?: BrowserSidebarHistoryAction | undefined;
   navigationUrl?: string | undefined;
   navigationUrlGeneration?: number | undefined;
   inspectionComposer?: BrowserInspectionComposer | undefined;
   owner: BrowserSidebarOwnerWindowLike;
   ownerWindowId: string;
+  /** Answers the page's passkey requests with a phone, where available. */
+  passkeys?: BrowserTabPasskeys | undefined;
   reason?: string | undefined;
   sessionId: string;
   tabId: string;
@@ -322,7 +382,6 @@ interface BrowserSidebarSurfaces {
   ): Promise<boolean> | boolean;
 }
 
-// Modeled in tla/browser-sidebar/BrowserSidebar.tla.
 export class NativeBrowserSidebarService implements BrowserSidebarProvider {
   readonly #activeByTabId = new Map<string, ActiveBrowserSidebar>();
   readonly #activeByOwnerWindowId = new Map<
@@ -348,6 +407,11 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
   ) => BrowserSidebarOwnerWindowLike | undefined;
   readonly #surfaces: BrowserSidebarSurfaces;
   readonly #sitePermissions: BrowserSitePermissions | undefined;
+  readonly #browserImport: BrowserImportPlatform | undefined;
+  #cookieImport: Promise<BrowserCookieImportResult> | undefined;
+  readonly #hybridPasskeys: HybridPasskeys | undefined;
+  /** The session each owner window shows last, even while an overlay hides it. */
+  readonly #foregroundSessionIds = new Map<string, string>();
   #disposed = false;
   readonly #meetingProbe = new BrowserMeetingProbe();
 
@@ -357,13 +421,41 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     if (!active || active.closing || !this.#sitePermissions)
       return {
         status: "unavailable" as const,
-        reason: "Website permissions are unavailable for this tab.",
+        reason: "The page menu is unavailable for this tab.",
       };
     return this.#sitePermissions.showSettings(active.webContents, parsed.anchor);
   }
 
+  async listImportProfiles(): Promise<BrowserImportProfiles> {
+    if (!this.#browserImport) return { profiles: [] };
+    return { profiles: await listBrowserImportProfiles(this.#browserImport) };
+  }
+
+  /**
+   * One import at a time: the keychain prompt and the cookie writes of a
+   * second request would interleave with the first.
+   */
+  async importCookies(
+    input: BrowserCookieImportInput
+  ): Promise<BrowserCookieImportResult> {
+    const parsed = browserCookieImportInputSchema.parse(input);
+    if (!this.#browserImport) return { status: "unavailable" };
+    if (this.#cookieImport) return { status: "busy" };
+    const running = importBrowserCookies(this.#browserImport, parsed).catch(
+      (): BrowserCookieImportResult => ({ status: "failed" })
+    );
+    this.#cookieImport = running;
+    try {
+      return await running;
+    } finally {
+      this.#cookieImport = undefined;
+    }
+  }
+
   constructor({
+    browserImport,
     createView,
+    hybridPasskeys,
     sitePermissions,
     createComposerView,
     composerUrl,
@@ -374,8 +466,12 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     resolveOwnerWindow,
     surfaces,
   }: {
+    /** Absent where cookies cannot be imported, such as on other platforms. */
+    browserImport?: BrowserImportPlatform | undefined;
     sitePermissions?: BrowserSitePermissions | undefined;
     createView: (ownerWindowId: string) => BrowserSidebarViewLike;
+    /** Absent where no phone can answer, such as without Bluetooth. */
+    hybridPasskeys?: HybridPasskeys | undefined;
     createComposerView?: (() => BrowserSidebarViewLike) | undefined;
     composerUrl?: string | undefined;
     getCallerWindowId?: (() => string) | undefined;
@@ -391,7 +487,9 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     resolveOwnerWindow: (windowId: string) => BrowserSidebarOwnerWindowLike | undefined;
     surfaces: BrowserSidebarSurfaces;
   }) {
+    this.#browserImport = browserImport;
     this.#createView = createView;
+    this.#hybridPasskeys = hybridPasskeys;
     this.#sitePermissions = sitePermissions;
     this.#createComposerView = createComposerView;
     this.#composerUrl = composerUrl;
@@ -546,7 +644,21 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
         ) {
           return { status: "cancelled" };
         }
-        const composed = await this.#showInspectionComposer(active, selection);
+        const screenshot = await this.#captureInspectedElement(active);
+        if (
+          inspectionGeneration !== active.inspectionGeneration ||
+          active.closing ||
+          active.webContents.isDestroyed()
+        ) {
+          return { status: "cancelled" };
+        }
+        void active.webContents
+          .executeJavaScript(browserSidebarElementInspectorHighlightSource)
+          .catch(() => undefined);
+        const composed = await this.#showInspectionComposer(
+          active,
+          screenshot ? { ...selection, screenshot } : selection
+        );
         if (composed.status === "reselect") continue;
         if (inspectionGeneration === active.inspectionGeneration) {
           await this.#cancelInspection(active);
@@ -600,8 +712,8 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       if (requestedNavigationRevision > previous.navigationRevision) {
         previous.navigationRevision = requestedNavigationRevision;
         this.#startNavigation(previous, normalizeBrowserSidebarUrl(parsed.url));
-      } else if (previous.navigationResumeUrl) {
-        this.#startNavigation(previous, previous.navigationResumeUrl);
+      } else {
+        this.#resumeNavigation(previous);
       }
       await this.#surfaces.updateView(previous.id, previous.view, {
         bounds: parsed.bounds,
@@ -686,12 +798,13 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
           !active.closing && this.#active(ownerWindowId, active.sessionId) === active
       );
       this.#installNavigationStatePublishing(active);
+      this.#installPasskeys(active);
       view.setBounds(parsed.bounds);
       view.setVisible(true);
-      owner.contentView.addChildView(view.nativeView ?? view);
+      owner.contentView.addChildView(view);
     } catch (error: unknown) {
       try {
-        owner.contentView.removeChildView(view.nativeView ?? view);
+        owner.contentView.removeChildView(view);
       } catch {
         // Continue to the explicit WebContents close below.
       }
@@ -777,14 +890,28 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       ) {
         return { status: "unavailable" };
       }
-      try {
-        return {
-          pngImage: (await active.webContents.capturePage()).toPNG(),
-          status: "ready",
-        };
-      } catch {
-        // The caller falls back to hiding without a stand-in.
-        return { status: "unavailable" };
+      // Chromium's compositor can refuse one copy of a frame it is still
+      // producing (`UnknownVizError` on macOS CI, about one capture in a
+      // hundred); the next request gets the frame. Each attempt rechecks that
+      // the view is still the one on screen.
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          return {
+            pngImage: (await active.webContents.capturePage()).toPNG(),
+            status: "ready",
+          };
+        } catch {
+          if (
+            attempt === BROWSER_SIDEBAR_CAPTURE_ATTEMPTS ||
+            active.closing ||
+            active.webContents.isDestroyed() ||
+            !active.view.getVisible() ||
+            this.#active(ownerWindowId, parsed.sessionId) !== active
+          ) {
+            // The caller falls back to hiding without a stand-in.
+            return { status: "unavailable" };
+          }
+        }
       }
     });
   }
@@ -965,8 +1092,8 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     if (parsed.url) {
       const nextUrl = normalizeBrowserSidebarUrl(parsed.url);
       this.#startNavigation(active, nextUrl);
-    } else if (parsed.visible && active.navigationResumeUrl) {
-      this.#startNavigation(active, active.navigationResumeUrl);
+    } else if (parsed.visible) {
+      this.#resumeNavigation(active);
     }
 
     const state = await this.#state(ownerWindowId, parsed.sessionId);
@@ -986,20 +1113,9 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       }
       this.#touchActive(active);
 
-      const { navigationHistory } = active.webContents;
-      if (parsed.action === "back" && navigationHistory.canGoBack()) {
-        this.#invalidateNavigation(active);
-        active.reason = undefined;
-        navigationHistory.goBack();
-      } else if (parsed.action === "forward" && navigationHistory.canGoForward()) {
-        this.#invalidateNavigation(active);
-        active.reason = undefined;
-        navigationHistory.goForward();
-      } else if (parsed.action === "reload") {
-        this.#invalidateNavigation(active);
-        active.reason = undefined;
-        active.webContents.reload();
-      } else if (parsed.action === "stop") {
+      if (parsed.action !== "stop") {
+        this.#runHistoryAction(active, parsed.action);
+      } else {
         this.#invalidateNavigation(active);
         active.webContents.stop();
       }
@@ -1018,6 +1134,17 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     return this.#enqueueOwnerOperation(ownerWindowId, () =>
       this.#closeSession(ownerWindowId, parsed.sessionId)
     );
+  }
+
+  /** Ends the tab's phone passkey request, or closes its failure message. */
+  async dismissPasskey(input: BrowserSidebarCloseInput): Promise<BrowserSidebarState> {
+    this.#requireAvailable();
+    const parsed = browserSidebarCloseInputSchema.parse(input);
+    const ownerWindowId = this.#getCallerWindowId();
+    const active = this.#active(ownerWindowId, parsed.sessionId);
+    if (!active || active.closing) return availableInactiveState(parsed.sessionId);
+    active.passkeys?.dismiss();
+    return this.#state(ownerWindowId, parsed.sessionId);
   }
 
   async disposeOwner(ownerWindowId: string) {
@@ -1149,7 +1276,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     }
 
     try {
-      active.owner.contentView.removeChildView(active.view.nativeView ?? active.view);
+      active.owner.contentView.removeChildView(active.view);
     } catch (error: unknown) {
       firstError ??= error;
     }
@@ -1212,7 +1339,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     active.closing = true;
     this.#deleteActive(active);
     try {
-      active.owner.contentView.removeChildView(active.view.nativeView ?? active.view);
+      active.owner.contentView.removeChildView(active.view);
     } catch {
       // The owner may already be closing; the WebContents is still explicitly gone.
     }
@@ -1265,8 +1392,47 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       url: active.url,
       title: active.webContents.getTitle(),
       ...(active.favicon ? { favicon: active.favicon } : {}),
+      ...(active.passkeys?.prompt ? { passkey: active.passkeys.prompt } : {}),
       visible: active.view.getVisible(),
     };
+  }
+
+  /**
+   * The page preload exposes a passkey broker in the top frame of each
+   * document. Main polls it from the first commit, and again when the
+   * document is ready in case the broker did not exist yet.
+   */
+  #installPasskeys(active: ActiveBrowserSidebar) {
+    if (!this.#hybridPasskeys) return;
+    const { webContents } = active;
+    active.passkeys = new BrowserTabPasskeys({
+      page: {
+        origin: () => {
+          try {
+            return webContents.mainFrame?.origin;
+          } catch {
+            return undefined;
+          }
+        },
+        execute: async (source) => {
+          const frame = webContents.mainFrame;
+          if (!frame) throw new Error("The tab has no top frame.");
+          return frame.executeJavaScript(source);
+        },
+        isDestroyed: () => this.#isWebContentsDestroyed(active),
+      },
+      phone: this.#hybridPasskeys,
+      // The passkey dialog hides the page, so "shown last" is the check, not
+      // the view's visibility. A background tab gets no dialog.
+      canPrompt: () =>
+        !active.closing &&
+        this.#foregroundSessionIds.get(active.ownerWindowId) === active.sessionId,
+      onPromptChanged: () => {
+        void this.#publishState(active).catch(() => undefined);
+      },
+    });
+    webContents.on("did-navigate", () => active.passkeys?.documentChanged());
+    webContents.on("dom-ready", () => active.passkeys?.documentReady());
   }
 
   #installNavigationStatePublishing(active: ActiveBrowserSidebar) {
@@ -1313,7 +1479,10 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       }
       publish();
     });
-    active.webContents.on("did-navigate", publish);
+    active.webContents.on("did-navigate", () => {
+      active.navigationPendingAction = undefined;
+      publish();
+    });
     active.webContents.on("did-navigate-in-page", publish);
     active.webContents.on("page-favicon-updated", (...args) => {
       void this.#loadFavicon(active, args[1])
@@ -1326,7 +1495,10 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
       active.reason = undefined;
       publish();
     });
-    active.webContents.on("did-stop-loading", publish);
+    active.webContents.on("did-stop-loading", () => {
+      active.navigationPendingAction = undefined;
+      publish();
+    });
     active.webContents.on("page-title-updated", publish);
   }
 
@@ -1393,6 +1565,8 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     active.reason = undefined;
     active.navigationPendingGeneration = navigationGeneration;
     active.navigationResumeUrl = undefined;
+    active.navigationPendingAction = undefined;
+    active.navigationResumeAction = undefined;
     active.navigationUrl = url;
     active.navigationUrlGeneration = navigationGeneration;
     active.url = url;
@@ -1504,7 +1678,11 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
   ) {
     active.navigationGeneration += 1;
     active.navigationPendingGeneration = undefined;
-    if (!preserveResume) active.navigationResumeUrl = undefined;
+    active.navigationPendingAction = undefined;
+    if (!preserveResume) {
+      active.navigationResumeUrl = undefined;
+      active.navigationResumeAction = undefined;
+    }
     active.navigationUrl = undefined;
     active.navigationUrlGeneration = undefined;
   }
@@ -1515,8 +1693,32 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
         ? active.navigationUrl
         : undefined;
     if (resumableUrl) active.navigationResumeUrl = resumableUrl;
+    if (active.navigationPendingAction)
+      active.navigationResumeAction = active.navigationPendingAction;
     this.#invalidateNavigation(active, { preserveResume: true });
     active.webContents.stop();
+  }
+
+  /** Repeats what hiding the view stopped: a page it was loading, or a back, forward or reload. */
+  #resumeNavigation(active: ActiveBrowserSidebar) {
+    if (active.navigationResumeUrl) {
+      this.#startNavigation(active, active.navigationResumeUrl);
+    } else if (active.navigationResumeAction) {
+      this.#runHistoryAction(active, active.navigationResumeAction);
+    }
+  }
+
+  #runHistoryAction(active: ActiveBrowserSidebar, action: BrowserSidebarHistoryAction) {
+    const { navigationHistory } = active.webContents;
+    if (action === "back" && !navigationHistory.canGoBack()) return;
+    if (action === "forward" && !navigationHistory.canGoForward()) return;
+    this.#invalidateNavigation(active);
+    active.reason = undefined;
+    // Pending until the page it loads commits or loading stops.
+    active.navigationPendingAction = action;
+    if (action === "back") navigationHistory.goBack();
+    else if (action === "forward") navigationHistory.goForward();
+    else active.webContents.reload();
   }
 
   async #cancelInspection(active: ActiveBrowserSidebar) {
@@ -1537,7 +1739,97 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     }
   }
 
-  // Modeled in tla/browser-sidebar/BrowserInspectionComposer.tla.
+  /**
+   * The selected element as the page shows it, cut to the part on screen: a PNG whose longest edge is at most
+   * `BROWSER_INSPECTION_SCREENSHOT_MAX_EDGE`. Undefined when none of it is on screen, no frame could be copied, or the
+   * element moved while it was captured (a scroll would cut the frame where it no longer is); the selection then goes
+   * without one.
+   */
+  async #captureInspectedElement(
+    active: ActiveBrowserSidebar
+  ): Promise<Uint8Array | undefined> {
+    // Where the element is now: the page may have scrolled since the click.
+    const rect = await this.#selectedElementRect(active);
+    if (!rect) return undefined;
+    const screenshot = await this.#captureElementRect(active, rect);
+    if (!screenshot) return undefined;
+    const after = await this.#selectedElementRect(active);
+    return after &&
+      after.x === rect.x &&
+      after.y === rect.y &&
+      after.width === rect.width &&
+      after.height === rect.height
+      ? screenshot
+      : undefined;
+  }
+
+  /** The selected element's place in the page's viewport, in CSS pixels, as the page reports it now. */
+  async #selectedElementRect(
+    active: ActiveBrowserSidebar
+  ): Promise<SurfaceBounds | undefined> {
+    if (active.closing || active.webContents.isDestroyed()) return undefined;
+    const rect = (await active.webContents
+      .executeJavaScript(browserSidebarElementInspectorRectSource)
+      .catch(() => undefined)) as Partial<SurfaceBounds> | undefined;
+    const { height, width, x, y } = rect ?? {};
+    return [height, width, x, y].every(
+      (value) => typeof value === "number" && Number.isFinite(value)
+    )
+      ? ({ height, width, x, y } as SurfaceBounds)
+      : undefined;
+  }
+
+  async #captureElementRect(
+    active: ActiveBrowserSidebar,
+    rect: SurfaceBounds
+  ): Promise<Uint8Array | undefined> {
+    // The page measures in CSS pixels; the capture is in the view's.
+    const zoom = active.webContents.getZoomFactor();
+    const viewport = active.view.getBounds();
+    const left = Math.max(0, Math.floor(rect.x * zoom));
+    const top = Math.max(0, Math.floor(rect.y * zoom));
+    const right = Math.min(viewport.width, Math.ceil((rect.x + rect.width) * zoom));
+    const bottom = Math.min(viewport.height, Math.ceil((rect.y + rect.height) * zoom));
+    if (right - left < 1 || bottom - top < 1) return undefined;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const image = await active.webContents.capturePage({
+          height: bottom - top,
+          width: right - left,
+          x: left,
+          y: top,
+        });
+        const size = image.getSize();
+        if (size.width === 0 || size.height === 0) return undefined;
+        const scale = Math.min(
+          1,
+          BROWSER_INSPECTION_SCREENSHOT_MAX_EDGE / Math.max(size.width, size.height)
+        );
+        const png = (
+          scale < 1
+            ? image.resize({
+                height: Math.max(1, Math.round(size.height * scale)),
+                quality: "best",
+                width: Math.max(1, Math.round(size.width * scale)),
+              })
+            : image
+        ).toPNG();
+        return png.byteLength > 0 && png.byteLength <= CLIENT_SCREENSHOT_MAX_BYTES
+          ? png
+          : undefined;
+      } catch {
+        // As in `capture`: the compositor can refuse one copy of a frame.
+        if (
+          attempt === BROWSER_SIDEBAR_CAPTURE_ATTEMPTS ||
+          active.closing ||
+          active.webContents.isDestroyed()
+        ) {
+          return undefined;
+        }
+      }
+    }
+  }
+
   async #showInspectionComposer(
     active: ActiveBrowserSidebar,
     selection: Extract<BrowserSidebarInspectResult, { status: "selected" }>
@@ -1645,7 +1937,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     webContents.on("destroyed", () => {
       resolveReady(false);
       try {
-        active.owner.contentView.removeChildView(view.nativeView ?? view);
+        active.owner.contentView.removeChildView(view);
       } catch {
         // Owner teardown may remove the child first.
       }
@@ -1704,14 +1996,14 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     });
     view.setBackgroundColor?.("#00000000");
     view.setVisible(false);
-    active.owner.contentView.addChildView(view.nativeView ?? view);
+    active.owner.contentView.addChildView(view);
     void webContents.loadURL(composerUrl).catch(() => {
       resolveReady(false);
       if (active.inspectionComposerSurface === surface) {
         active.inspectionComposerSurface = undefined;
       }
       try {
-        active.owner.contentView.removeChildView(view.nativeView ?? view);
+        active.owner.contentView.removeChildView(view);
       } catch {
         // Owner teardown may remove the child first.
       }
@@ -1727,7 +2019,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
     active.inspectionComposerSurface = undefined;
     if (!surface) return;
     try {
-      active.owner.contentView.removeChildView(surface.view.nativeView ?? surface.view);
+      active.owner.contentView.removeChildView(surface.view);
     } catch {
       // Owner teardown may remove the child first.
     }
@@ -1766,6 +2058,10 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
   }
 
   #deleteActive(active: ActiveBrowserSidebar) {
+    active.passkeys?.dispose();
+    if (this.#foregroundSessionIds.get(active.ownerWindowId) === active.sessionId) {
+      this.#foregroundSessionIds.delete(active.ownerWindowId);
+    }
     if (this.#activeByTabId.get(active.tabId) === active) {
       this.#activeByTabId.delete(active.tabId);
     }
@@ -1779,6 +2075,7 @@ export class NativeBrowserSidebarService implements BrowserSidebarProvider {
   }
 
   #hideOtherSessions(ownerWindowId: string, sessionId: string) {
+    this.#foregroundSessionIds.set(ownerWindowId, sessionId);
     const sessions = this.#activeByOwnerWindowId.get(ownerWindowId);
     for (const active of sessions?.values() ?? []) {
       if (active.sessionId === sessionId || active.closing) continue;
@@ -2046,6 +2343,23 @@ function isBrowserSidebarKeyboardActivation(input: BrowserSidebarKeyboardInputLi
   // them conservatively instead of granting third-party page code a popup
   // budget from an input it may never receive.
   return !input.alt && !input.control && !input.meta;
+}
+
+/**
+ * Gives every page in the browser sidebar partition the page preload,
+ * including sign-in popups, which share the partition. The preload installs
+ * the WebAuthn guard from `preload/browser-page-webauthn.ts` and nothing else.
+ * Register it before the first tab opens.
+ */
+export function registerBrowserSidebarPagePreload(
+  session: Pick<Session, "registerPreloadScript">,
+  filePath: string
+) {
+  session.registerPreloadScript({
+    filePath,
+    id: "comma-browser-page",
+    type: "frame",
+  });
 }
 
 /**

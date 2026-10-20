@@ -30,7 +30,7 @@ defmodule SalixAgent.InputTime do
   defp iso(_), do: nil
 
   defp timezone(zone) when is_binary(zone) and byte_size(zone) <= 64 do
-    case DateTime.shift_zone(DateTime.utc_now(), zone) do
+    case DateTime.shift_zone(SystemsClock.utc_now(), zone) do
       {:ok, _} -> zone
       _ -> nil
     end

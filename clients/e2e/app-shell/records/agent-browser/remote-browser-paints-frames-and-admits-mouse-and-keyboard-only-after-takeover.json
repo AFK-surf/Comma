@@ -1,0 +1,4097 @@
+{
+ "userId": "e2e-user:smoke@comma.local",
+ "seed": 3585013996,
+ "start": {
+  "session": {
+   "email": "smoke@comma.local",
+   "token": "web-app-session"
+  },
+  "stub": {
+   "taskStatus": "active"
+  },
+  "routes": "agent-browser"
+ },
+ "entries": [
+  {
+   "at": 0,
+   "dir": "step",
+   "before": true,
+   "data": {
+    "name": "stub.browserParticipant",
+    "args": [],
+    "result": "ptc_browser_worker"
+   }
+  },
+  {
+   "at": 0,
+   "dir": "step",
+   "before": true,
+   "data": {
+    "name": "stub.setTaskParticipants",
+    "args": [
+     [],
+     {
+      "participant_id": "ptc_browser_worker",
+      "actor_id": "agent-browser-e2e",
+      "name": "Browser worker"
+     }
+    ]
+   }
+  },
+  {
+   "at": 0,
+   "dir": "step",
+   "before": true,
+   "data": {
+    "name": "stub.setBrowserFrame",
+    "args": [
+     "/9j/4AAQSkZJRgABAQAAAQABAAD/4gHYSUNDX1BST0ZJTEUAAQEAAAHIAAAAAAQwAABtbnRyUkdCIFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAACRyWFlaAAABFAAAABRnWFlaAAABKAAAABRiWFlaAAABPAAAABR3dHB0AAABUAAAABRyVFJDAAABZAAAAChnVFJDAAABZAAAAChiVFJDAAABZAAAAChjcHJ0AAABjAAAADxtbHVjAAAAAAAAAAEAAAAMZW5VUwAAAAgAAAAcAHMAUgBHAEJYWVogAAAAAAAAb6IAADj1AAADkFhZWiAAAAAAAABimQAAt4UAABjaWFlaIAAAAAAAACSgAAAPhAAAts9YWVogAAAAAAAA9tYAAQAAAADTLXBhcmEAAAAAAAQAAAACZmYAAPKnAAANWQAAE9AAAApbAAAAAAAAAABtbHVjAAAAAAAAAAEAAAAMZW5VUwAAACAAAAAcAEcAbwBvAGcAbABlACAASQBuAGMALgAgADIAMAAxADb/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAAJABADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABwn/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdAAYqm//Z"
+    ]
+   }
+  },
+  {
+   "at": 0,
+   "dir": "out",
+   "data": {
+    "id": 1,
+    "subscribe": {
+     "topic": "session"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 48,
+   "dir": "rest"
+  },
+  {
+   "at": 48,
+   "dir": "in",
+   "data": {
+    "id": 1,
+    "value": {
+     "phase": "unknown",
+     "lifecycle": {
+      "authority": {
+       "authorityInstanceId": "9086dea8-2b0b-fba0-1f28-0f9d64160413",
+       "kind": "web_cookie"
+      },
+      "cleanup": {
+       "revocation": "idle"
+      },
+      "contractVersion": 1,
+      "generation": 0,
+      "phase": "initializing",
+      "principal": null,
+      "revision": 0,
+      "session": null
+     },
+     "attempt": null,
+     "emailCooldown": null,
+     "guestImports": 0
+    }
+   }
+  },
+  {
+   "at": 48,
+   "dir": "rest"
+  },
+  {
+   "at": 48,
+   "dir": "step",
+   "data": {
+    "name": "stub.browserState",
+    "args": [],
+    "result": {
+     "scopedReads": 0,
+     "inputs": [],
+     "streams": 0,
+     "cleared": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "due"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 1,
+    "delta": [
+     {
+      "path": [
+       "audience"
+      ],
+      "set": "http://comma-stub.test"
+     },
+     {
+      "path": [
+       "lifecycle",
+       "generation"
+      ],
+      "set": 1
+     },
+     {
+      "path": [
+       "lifecycle",
+       "phase"
+      ],
+      "set": "signed_in"
+     },
+     {
+      "path": [
+       "lifecycle",
+       "principal"
+      ],
+      "set": {
+       "email": "smoke@comma.local",
+       "userId": "e2e-user:smoke@comma.local"
+      }
+     },
+     {
+      "path": [
+       "lifecycle",
+       "revision"
+      ],
+      "set": 1
+     },
+     {
+      "path": [
+       "lifecycle",
+       "session"
+      ],
+      "set": {
+       "audience": "http://comma-stub.test",
+       "expiresAtEpochSeconds": 4102444800,
+       "sessionId": "e2e-session:smoke@comma.local"
+      }
+     },
+     {
+      "path": [
+       "phase"
+      ],
+      "set": "signed_in"
+     },
+     {
+      "path": [
+       "sessionId"
+      ],
+      "set": "e2e-session:smoke@comma.local"
+     },
+     {
+      "path": [
+       "userId"
+      ],
+      "set": "e2e-user:smoke@comma.local"
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 2,
+    "subscribe": {
+     "topic": "pluginNotices"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 3,
+    "subscribe": {
+     "topic": "session"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 4,
+    "subscribe": {
+     "topic": "workspace"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 5,
+    "subscribe": {
+     "topic": "workspaceChat"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 6,
+    "subscribe": {
+     "topic": "tasks",
+     "workspace": ""
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 7,
+    "subscribe": {
+     "topic": "marks",
+     "kind": "inboxDeleted"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 8,
+    "subscribe": {
+     "topic": "marks",
+     "kind": "inboxUnread"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 9,
+    "subscribe": {
+     "topic": "marks",
+     "kind": "taskReviewSeen"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 10,
+    "subscribe": {
+     "topic": "taskSummaries",
+     "group": "grp-smoke",
+     "ids": "cnv_public_task_smoke",
+     "peek": "1"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 11,
+    "subscribe": {
+     "topic": "mentionTasks",
+     "group": "grp-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 12,
+    "subscribe": {
+     "topic": "recommendations",
+     "workspace": "ws-smoke",
+     "reads": "once"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 13,
+    "subscribe": {
+     "topic": "plugins",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 14,
+    "subscribe": {
+     "topic": "marks",
+     "kind": "chatTaskDismissed"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 15,
+    "subscribe": {
+     "topic": "taskLabels",
+     "group": "grp-smoke",
+     "key": "",
+     "mode": ""
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 16,
+    "subscribe": {
+     "topic": "chatView",
+     "workspace": "ws-smoke",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_task_smoke",
+     "surface": "web:4717baa2-23c4-4ad9-84da-fb0ac77ac1b9"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 17,
+    "subscribe": {
+     "topic": "skills",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 18,
+    "subscribe": {
+     "topic": "meetingRecorder"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 19,
+    "subscribe": {
+     "topic": "profile"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 20,
+    "subscribe": {
+     "topic": "creditWarning",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 3,
+    "value": {
+     "phase": "signed_in",
+     "userId": "e2e-user:smoke@comma.local",
+     "audience": "http://comma-stub.test",
+     "sessionId": "e2e-session:smoke@comma.local",
+     "lifecycle": {
+      "authority": {
+       "authorityInstanceId": "9086dea8-2b0b-fba0-1f28-0f9d64160413",
+       "kind": "web_cookie"
+      },
+      "cleanup": {
+       "revocation": "idle"
+      },
+      "contractVersion": 1,
+      "generation": 1,
+      "revision": 1,
+      "phase": "signed_in",
+      "principal": {
+       "email": "smoke@comma.local",
+       "userId": "e2e-user:smoke@comma.local"
+      },
+      "session": {
+       "audience": "http://comma-stub.test",
+       "expiresAtEpochSeconds": 4102444800,
+       "sessionId": "e2e-session:smoke@comma.local"
+      }
+     },
+     "attempt": null,
+     "emailCooldown": null,
+     "guestImports": 0
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 2,
+    "value": {
+     "notices": []
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 4,
+    "value": {
+     "status": "loading",
+     "workspace": null,
+     "selected": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 5,
+    "value": {
+     "status": "loading",
+     "chat": null,
+     "kept": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 6,
+    "value": null
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 7,
+    "value": {
+     "marks": {}
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 8,
+    "value": {
+     "marks": {}
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 9,
+    "value": {
+     "marks": {}
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 10,
+    "value": {
+     "summaries": []
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 11,
+    "value": null
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 12,
+    "value": {
+     "workspace": "ws-smoke",
+     "envelope": null,
+     "failure": null,
+     "discovering": false,
+     "refreshing": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 13,
+    "value": {
+     "status": "loading"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 14,
+    "value": {
+     "marks": {}
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 15,
+    "value": {
+     "catalog": null,
+     "error": false,
+     "loading": true
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "value": {
+     "session": {
+      "sessionId": "e2e-session:smoke@comma.local",
+      "audience": "http://comma-stub.test"
+     },
+     "revision": 3,
+     "draftEpoch": 0,
+     "lease": {
+      "leaseId": "e6e1bdad-9000-4b8f-aac1-6818bdf61d0e",
+      "subscriberId": "web:4717baa2-23c4-4ad9-84da-fb0ac77ac1b9:grp-smoke/cnv_public_task_smoke"
+     },
+     "state": {
+      "awaitingReply": false,
+      "awaitingTimedOut": false,
+      "connection": "connecting",
+      "draft": "",
+      "draftAttachments": [],
+      "lastBackoffMs": 0,
+      "locallyAwaitingReply": false,
+      "messages": [],
+      "pending": [],
+      "reply": {
+       "coming": false,
+       "thinking": false,
+       "streaming": false,
+       "working": false,
+       "failed": false,
+       "timedOut": false
+      },
+      "serverMessages": [],
+      "status": "loading"
+     }
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 17,
+    "value": {
+     "status": "loading",
+     "skills": []
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 18,
+    "value": {
+     "clientVisible": false,
+     "phase": "idle",
+     "revision": 1,
+     "generation": 0,
+     "meeting": null,
+     "capture": {
+      "available": false,
+      "capped": false,
+      "channels": 0,
+      "durationMs": 0,
+      "level": 0,
+      "microphone": "off",
+      "permission": "unknown",
+      "reason": "Audio capture is unavailable in this runtime.",
+      "revision": 1,
+      "sampleRate": 0,
+      "status": "unavailable"
+     },
+     "saved": null
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 19,
+    "value": {
+     "status": "loading",
+     "profile": null
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 20,
+    "value": null
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 4,
+    "value": {
+     "status": "ready",
+     "workspace": {
+      "id": "ws-smoke",
+      "groupId": "grp-smoke",
+      "name": "Smoke Workspace"
+     },
+     "selected": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 21,
+    "subscribe": {
+     "topic": "tasks",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 22,
+    "call": "tasks.focus",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 23,
+    "call": "tasks.focus",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 24,
+    "subscribe": {
+     "topic": "router",
+     "workspace": "ws-smoke",
+     "read": "0"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 13,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": {
+       "code": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "message": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "status": 404,
+       "detail": {
+        "error": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins"
+       }
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "error"
+     },
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": "ws-smoke"
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 11,
+    "value": []
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 12,
+    "delta": [
+     {
+      "path": [
+       "envelope"
+      ],
+      "set": {
+       "settings": {
+        "autoEnableNewSources": true,
+        "schedule": {
+         "enabled": true,
+         "hour": 8,
+         "minute": 0,
+         "timezone": "UTC"
+        },
+        "sourcesCheckedAt": "2026-01-01T00:00:00.000Z",
+        "sourceRevision": 1,
+        "sources": []
+       },
+       "snapshot": null,
+       "state": "empty"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 15,
+    "value": {
+     "catalog": null,
+     "error": true,
+     "loading": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 4
+     },
+     {
+      "path": [
+       "state",
+       "connection"
+      ],
+      "set": "live"
+     },
+     {
+      "path": [
+       "state",
+       "conversation"
+      ],
+      "set": {
+       "created_at": 1720000002,
+       "group_id": "grp-smoke",
+       "id": "cnv_public_task_smoke",
+       "kind": "agent_task",
+       "messages": [],
+       "status": "active",
+       "title": "冒烟任务",
+       "updated_at": 1720000003
+      }
+     },
+     {
+      "path": [
+       "state",
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 25,
+    "subscribe": {
+     "topic": "taskSummaries",
+     "group": "grp-smoke",
+     "ids": "cnv_public_task_smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 17,
+    "value": {
+     "status": "ready",
+     "skills": [
+      {
+       "skill_id": "weekly-summary",
+       "name": "周会总结",
+       "description": "整理会议要点和后续事项",
+       "location": "salix://skills/weekly-summary"
+      },
+      {
+       "skill_id": "code-review",
+       "name": "代码审查",
+       "description": "检查实现风险和测试缺口",
+       "location": "salix://skills/code-review"
+      },
+      {
+       "skill_id": "weekly-reminder",
+       "name": "周会提醒",
+       "description": "提醒周会议程",
+       "location": "salix://skills/weekly-reminder",
+       "activation": "per-message"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 22,
+    "ok": null
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 23,
+    "ok": null
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 5,
+    "value": {
+     "status": "ready",
+     "chat": {
+      "workspaceId": "ws-smoke",
+      "groupId": "grp-smoke",
+      "conversationId": "cnv_public_chat_smoke",
+      "createdAt": 1720000000,
+      "updatedAt": 1720000000
+     },
+     "kept": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 26,
+    "subscribe": {
+     "topic": "chatView",
+     "workspace": "ws-smoke",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_chat_smoke",
+     "surface": "web:4717baa2-23c4-4ad9-84da-fb0ac77ac1b9"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 19,
+    "value": {
+     "status": "ready",
+     "profile": {
+      "avatar_id": null,
+      "email": "smoke@comma.local",
+      "id": "e2e-user:smoke@comma.local",
+      "name": null
+     }
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 27,
+    "call": "profile.update",
+    "params": {
+     "locale": "en"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 5
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 21,
+    "value": null
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 24,
+    "value": null
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "value": {
+     "summaries": []
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 8
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "value": {
+     "session": {
+      "sessionId": "e2e-session:smoke@comma.local",
+      "audience": "http://comma-stub.test"
+     },
+     "revision": 8,
+     "draftEpoch": 0,
+     "lease": {
+      "leaseId": "8f15a963-6f1a-41c3-9ebb-e47b20a5b758",
+      "subscriberId": "web:4717baa2-23c4-4ad9-84da-fb0ac77ac1b9:grp-smoke/cnv_public_chat_smoke"
+     },
+     "state": {
+      "awaitingReply": false,
+      "awaitingTimedOut": false,
+      "connection": "connecting",
+      "draft": "",
+      "draftAttachments": [],
+      "lastBackoffMs": 0,
+      "locallyAwaitingReply": false,
+      "messages": [],
+      "pending": [],
+      "reply": {
+       "coming": false,
+       "thinking": false,
+       "streaming": false,
+       "working": false,
+       "failed": false,
+       "timedOut": false
+      },
+      "serverMessages": [],
+      "status": "loading"
+     }
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 19,
+    "delta": [
+     {
+      "path": [
+       "profile",
+       "locale"
+      ],
+      "set": "en"
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 10,
+    "delta": [
+     {
+      "path": [
+       "summaries"
+      ],
+      "key": [
+       "id"
+      ],
+      "put": {
+       "archive_availability": {
+        "allowed": false,
+        "reason": "not_finished"
+       },
+       "group_id": "grp-smoke",
+       "id": "cnv_public_task_smoke",
+       "kind": "agent_task",
+       "status": "active",
+       "title": "冒烟任务",
+       "updated_at": 1720000003,
+       "status_bucket": "in_progress",
+       "status_failed": false
+      },
+      "before": null
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "delta": [
+     {
+      "path": [
+       "summaries"
+      ],
+      "key": [
+       "id"
+      ],
+      "put": {
+       "archive_availability": {
+        "allowed": false,
+        "reason": "not_finished"
+       },
+       "group_id": "grp-smoke",
+       "id": "cnv_public_task_smoke",
+       "kind": "agent_task",
+       "status": "active",
+       "title": "冒烟任务",
+       "updated_at": 1720000003,
+       "status_bucket": "in_progress",
+       "status_failed": false
+      },
+      "before": null
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "ok": {
+     "avatar_id": null,
+     "email": "smoke@comma.local",
+     "id": "e2e-user:smoke@comma.local",
+     "name": null,
+     "locale": "en"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 6,
+    "value": {
+     "activeWorkspaceId": "ws-smoke",
+     "workspaces": [
+      {
+       "group_id": "grp-smoke",
+       "id": "ws-smoke",
+       "name": "Smoke Workspace"
+      }
+     ],
+     "hasMore": false,
+     "items": [],
+     "lastSyncedAt": 1768478400050,
+     "source": "live-sync"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 21,
+    "value": {
+     "activeWorkspaceId": "ws-smoke",
+     "workspaces": [
+      {
+       "group_id": "grp-smoke",
+       "id": "ws-smoke",
+       "name": "Smoke Workspace"
+      }
+     ],
+     "hasMore": false,
+     "items": [],
+     "lastSyncedAt": 1768478400050,
+     "source": "live-sync"
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 10
+     },
+     {
+      "path": [
+       "state",
+       "boundWorker"
+      ],
+      "set": {
+       "participantId": "ptc_browser_worker",
+       "actorId": "agent-browser-e2e",
+       "name": "Browser worker"
+      }
+     },
+     {
+      "path": [
+       "state",
+       "participantStatuses"
+      ],
+      "set": []
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 28,
+    "subscribe": {
+     "topic": "sessionBrowser",
+     "workspace": "ws-smoke",
+     "conversation": "cnv_public_task_smoke",
+     "participant": "ptc_browser_worker"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 10
+     },
+     {
+      "path": [
+       "state",
+       "conversation"
+      ],
+      "set": {
+       "created_at": 1720000000,
+       "group_id": "grp-smoke",
+       "id": "cnv_public_chat_smoke",
+       "kind": "user_chat",
+       "messages": [],
+       "status": "active",
+       "title": "聊天",
+       "updated_at": 1720000000
+      }
+     },
+     {
+      "path": [
+       "state",
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 14
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 14
+     },
+     {
+      "path": [
+       "state",
+       "connection"
+      ],
+      "set": "live"
+     },
+     {
+      "path": [
+       "state",
+       "participantStatus"
+      ],
+      "set": {
+       "conversationId": "cnv_public_chat_smoke",
+       "participantId": "ptp-router-smoke",
+       "state": "stopped",
+       "status": "",
+       "updatedAt": 1
+      }
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 28,
+    "value": null
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "step",
+   "data": {
+    "name": "stub.browserState",
+    "args": [],
+    "result": {
+     "scopedReads": 1,
+     "inputs": [],
+     "streams": 0,
+     "cleared": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "step",
+   "data": {
+    "name": "stub.setBrowserActive",
+    "args": [
+     true
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "due"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 28,
+    "value": {
+     "browser": null
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 1050,
+   "dir": "due"
+  },
+  {
+   "at": 3050,
+   "dir": "due"
+  },
+  {
+   "at": 3050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 15
+     }
+    ]
+   }
+  },
+  {
+   "at": 3050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 15
+     }
+    ]
+   }
+  },
+  {
+   "at": 3050,
+   "dir": "rest"
+  },
+  {
+   "at": 3050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 18
+     }
+    ]
+   }
+  },
+  {
+   "at": 3050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 18
+     }
+    ]
+   }
+  },
+  {
+   "at": 3050,
+   "dir": "rest"
+  },
+  {
+   "at": 4050,
+   "dir": "due"
+  },
+  {
+   "at": 6050,
+   "dir": "due"
+  },
+  {
+   "at": 6050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 19
+     }
+    ]
+   }
+  },
+  {
+   "at": 6050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 19
+     }
+    ]
+   }
+  },
+  {
+   "at": 6050,
+   "dir": "rest"
+  },
+  {
+   "at": 6050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 22
+     }
+    ]
+   }
+  },
+  {
+   "at": 6050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 22
+     }
+    ]
+   }
+  },
+  {
+   "at": 6050,
+   "dir": "rest"
+  },
+  {
+   "at": 7050,
+   "dir": "due"
+  },
+  {
+   "at": 9050,
+   "dir": "due"
+  },
+  {
+   "at": 9050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 23
+     }
+    ]
+   }
+  },
+  {
+   "at": 9050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 23
+     }
+    ]
+   }
+  },
+  {
+   "at": 9050,
+   "dir": "rest"
+  },
+  {
+   "at": 9050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 26
+     }
+    ]
+   }
+  },
+  {
+   "at": 9050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 26
+     }
+    ]
+   }
+  },
+  {
+   "at": 9050,
+   "dir": "rest"
+  },
+  {
+   "at": 10050,
+   "dir": "due"
+  },
+  {
+   "at": 10100,
+   "dir": "due"
+  },
+  {
+   "at": 10100,
+   "dir": "in",
+   "data": {
+    "id": 28,
+    "value": {
+     "browser": {
+      "agent_id": "agent-browser-e2e",
+      "session_id": "browser-e2e",
+      "status": "ready",
+      "control": "agent",
+      "busy": false,
+      "storage_error": null,
+      "updated_at": "2026-05-28T20:26:40.000Z"
+     }
+    }
+   }
+  },
+  {
+   "at": 10100,
+   "dir": "rest"
+  },
+  {
+   "at": 12050,
+   "dir": "due"
+  },
+  {
+   "at": 12050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 27
+     }
+    ]
+   }
+  },
+  {
+   "at": 12050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 27
+     }
+    ]
+   }
+  },
+  {
+   "at": 12050,
+   "dir": "rest"
+  },
+  {
+   "at": 12050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 30
+     }
+    ]
+   }
+  },
+  {
+   "at": 12050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 30
+     }
+    ]
+   }
+  },
+  {
+   "at": 12050,
+   "dir": "rest"
+  },
+  {
+   "at": 12080,
+   "dir": "out",
+   "data": {
+    "id": 29,
+    "subscribe": {
+     "topic": "browserView",
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "2f602cd2-be96-495c-b40c-4645050daf91"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 12080,
+   "dir": "rest"
+  },
+  {
+   "at": 12080,
+   "dir": "in",
+   "data": {
+    "id": 29,
+    "value": {
+     "tabs": [],
+     "tab": "",
+     "status": "loading",
+     "controlling": false,
+     "error": null,
+     "pending": false,
+     "frame": null
+    }
+   }
+  },
+  {
+   "at": 12080,
+   "dir": "rest"
+  },
+  {
+   "at": 12080,
+   "dir": "in",
+   "data": {
+    "id": 29,
+    "delta": [
+     {
+      "path": [
+       "status"
+      ],
+      "set": "connecting"
+     },
+     {
+      "path": [
+       "tab"
+      ],
+      "set": "tab"
+     },
+     {
+      "path": [
+       "tabs"
+      ],
+      "append": [
+       {
+        "tab_id": "tab",
+        "title": "Remote test page",
+        "url": "https://example.com"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "at": 12080,
+   "dir": "rest"
+  },
+  {
+   "at": 12080,
+   "dir": "in",
+   "data": {
+    "id": 29,
+    "delta": [
+     {
+      "path": [
+       "frame"
+      ],
+      "set": {
+       "seq": 1,
+       "data": "/9j/4AAQSkZJRgABAQAAAQABAAD/4gHYSUNDX1BST0ZJTEUAAQEAAAHIAAAAAAQwAABtbnRyUkdCIFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAACRyWFlaAAABFAAAABRnWFlaAAABKAAAABRiWFlaAAABPAAAABR3dHB0AAABUAAAABRyVFJDAAABZAAAAChnVFJDAAABZAAAAChiVFJDAAABZAAAAChjcHJ0AAABjAAAADxtbHVjAAAAAAAAAAEAAAAMZW5VUwAAAAgAAAAcAHMAUgBHAEJYWVogAAAAAAAAb6IAADj1AAADkFhZWiAAAAAAAABimQAAt4UAABjaWFlaIAAAAAAAACSgAAAPhAAAts9YWVogAAAAAAAA9tYAAQAAAADTLXBhcmEAAAAAAAQAAAACZmYAAPKnAAANWQAAE9AAAApbAAAAAAAAAABtbHVjAAAAAAAAAAEAAAAMZW5VUwAAACAAAAAcAEcAbwBvAGcAbABlACAASQBuAGMALgAgADIAMAAxADb/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAAJABADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABwn/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdAAYqm//Z",
+       "width": 1280,
+       "height": 720
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "agent"
+     },
+     {
+      "path": [
+       "storageError"
+      ],
+      "set": null
+     }
+    ]
+   }
+  },
+  {
+   "at": 12080,
+   "dir": "rest"
+  },
+  {
+   "at": 12176,
+   "dir": "step",
+   "data": {
+    "name": "stub.browserState",
+    "args": [],
+    "result": {
+     "scopedReads": 2,
+     "inputs": [],
+     "streams": 1,
+     "cleared": false
+    }
+   }
+  },
+  {
+   "at": 12240,
+   "dir": "out",
+   "data": {
+    "id": 30,
+    "call": "browserView.command",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
+     "operation": "take_control"
+    }
+   }
+  },
+  {
+   "at": 12240,
+   "dir": "rest"
+  },
+  {
+   "at": 12240,
+   "dir": "in",
+   "data": {
+    "id": 29,
+    "delta": [
+     {
+      "path": [
+       "pending"
+      ],
+      "set": true
+     }
+    ]
+   }
+  },
+  {
+   "at": 12240,
+   "dir": "rest"
+  },
+  {
+   "at": 12240,
+   "dir": "in",
+   "data": {
+    "id": 30,
+    "ok": {
+     "closed": false
+    }
+   }
+  },
+  {
+   "at": 12240,
+   "dir": "in",
+   "data": {
+    "id": 29,
+    "delta": [
+     {
+      "path": [
+       "controlling"
+      ],
+      "set": true
+     },
+     {
+      "path": [
+       "pending"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 12240,
+   "dir": "rest"
+  },
+  {
+   "at": 12288,
+   "dir": "out",
+   "data": {
+    "id": 31,
+    "call": "browserView.input",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
+     "input": {
+      "type": "mouseMoved",
+      "x": 33.362293657688966,
+      "y": 22.241529105125977,
+      "button": "none",
+      "buttons": 0,
+      "clickCount": 1,
+      "modifiers": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 12288,
+   "dir": "rest"
+  },
+  {
+   "at": 12288,
+   "dir": "in",
+   "data": {
+    "id": 31,
+    "ok": null
+   }
+  },
+  {
+   "at": 12288,
+   "dir": "rest"
+  },
+  {
+   "at": 12304,
+   "dir": "out",
+   "data": {
+    "id": 32,
+    "call": "browserView.input",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
+     "input": {
+      "type": "mousePressed",
+      "x": 33.362293657688966,
+      "y": 22.241529105125977,
+      "button": "left",
+      "buttons": 1,
+      "clickCount": 1,
+      "modifiers": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 12304,
+   "dir": "rest"
+  },
+  {
+   "at": 12304,
+   "dir": "in",
+   "data": {
+    "id": 32,
+    "ok": null
+   }
+  },
+  {
+   "at": 12304,
+   "dir": "rest"
+  },
+  {
+   "at": 12320,
+   "dir": "out",
+   "data": {
+    "id": 33,
+    "call": "browserView.input",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
+     "input": {
+      "type": "mouseReleased",
+      "x": 33.362293657688966,
+      "y": 22.241529105125977,
+      "button": "left",
+      "buttons": 0,
+      "clickCount": 1,
+      "modifiers": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 12320,
+   "dir": "rest"
+  },
+  {
+   "at": 12320,
+   "dir": "in",
+   "data": {
+    "id": 33,
+    "ok": null
+   }
+  },
+  {
+   "at": 12320,
+   "dir": "rest"
+  },
+  {
+   "at": 12330,
+   "dir": "due"
+  },
+  {
+   "at": 12330,
+   "dir": "in",
+   "data": {
+    "id": 29,
+    "delta": [
+     {
+      "path": [
+       "frame",
+       "seq"
+      ],
+      "set": 2
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "human"
+     }
+    ]
+   }
+  },
+  {
+   "at": 12330,
+   "dir": "rest"
+  },
+  {
+   "at": 12336,
+   "dir": "out",
+   "data": {
+    "id": 34,
+    "call": "browserView.input",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
+     "input": {
+      "type": "keyDown",
+      "key": "Tab",
+      "code": "Tab",
+      "keyCode": 9,
+      "modifiers": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 12336,
+   "dir": "out",
+   "data": {
+    "id": 35,
+    "call": "browserView.input",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
+     "input": {
+      "type": "keyUp",
+      "key": "Tab",
+      "code": "Tab",
+      "keyCode": 9,
+      "modifiers": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 12336,
+   "dir": "rest"
+  },
+  {
+   "at": 12336,
+   "dir": "in",
+   "data": {
+    "id": 34,
+    "ok": null
+   }
+  },
+  {
+   "at": 12336,
+   "dir": "in",
+   "data": {
+    "id": 35,
+    "ok": null
+   }
+  },
+  {
+   "at": 12336,
+   "dir": "rest"
+  },
+  {
+   "at": 12384,
+   "dir": "out",
+   "data": {
+    "id": 36,
+    "call": "browserView.input",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
+     "input": {
+      "type": "keyUp",
+      "key": "Shift",
+      "code": "Shift",
+      "keyCode": 0,
+      "modifiers": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 12384,
+   "dir": "out",
+   "data": {
+    "id": 37,
+    "call": "browserView.input",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
+     "input": {
+      "type": "keyUp",
+      "key": "Control",
+      "code": "Control",
+      "keyCode": 0,
+      "modifiers": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 12384,
+   "dir": "out",
+   "data": {
+    "id": 38,
+    "call": "browserView.input",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
+     "input": {
+      "type": "keyUp",
+      "key": "Alt",
+      "code": "Alt",
+      "keyCode": 0,
+      "modifiers": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 12384,
+   "dir": "out",
+   "data": {
+    "id": 39,
+    "call": "browserView.input",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
+     "input": {
+      "type": "keyUp",
+      "key": "Meta",
+      "code": "Meta",
+      "keyCode": 0,
+      "modifiers": 0
+     }
+    }
+   }
+  },
+  {
+   "at": 12384,
+   "dir": "rest"
+  },
+  {
+   "at": 12384,
+   "dir": "in",
+   "data": {
+    "id": 36,
+    "ok": null
+   }
+  },
+  {
+   "at": 12384,
+   "dir": "in",
+   "data": {
+    "id": 37,
+    "ok": null
+   }
+  },
+  {
+   "at": 12384,
+   "dir": "in",
+   "data": {
+    "id": 38,
+    "ok": null
+   }
+  },
+  {
+   "at": 12384,
+   "dir": "in",
+   "data": {
+    "id": 39,
+    "ok": null
+   }
+  },
+  {
+   "at": 12384,
+   "dir": "rest"
+  },
+  {
+   "at": 12448,
+   "dir": "out",
+   "data": {
+    "id": 40,
+    "call": "browserView.input",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
+     "input": {
+      "type": "text",
+      "text": "中文輸入"
+     }
+    }
+   }
+  },
+  {
+   "at": 12448,
+   "dir": "rest"
+  },
+  {
+   "at": 12448,
+   "dir": "in",
+   "data": {
+    "id": 40,
+    "ok": null
+   }
+  },
+  {
+   "at": 12448,
+   "dir": "rest"
+  },
+  {
+   "at": 12464,
+   "dir": "step",
+   "data": {
+    "name": "stub.browserState",
+    "args": [],
+    "result": {
+     "scopedReads": 2,
+     "inputs": [
+      {
+       "type": "mouseMoved",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "none",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "mousePressed",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 1,
+       "modifiers": 0
+      },
+      {
+       "type": "mouseReleased",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyDown",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Shift",
+       "code": "Shift",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Control",
+       "code": "Control",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Alt",
+       "code": "Alt",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Meta",
+       "code": "Meta",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "text",
+       "text": "中文輸入"
+      }
+     ],
+     "streams": 2,
+     "cleared": false
+    }
+   }
+  },
+  {
+   "at": 12464,
+   "dir": "step",
+   "data": {
+    "name": "stub.browserState",
+    "args": [],
+    "result": {
+     "scopedReads": 2,
+     "inputs": [
+      {
+       "type": "mouseMoved",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "none",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "mousePressed",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 1,
+       "modifiers": 0
+      },
+      {
+       "type": "mouseReleased",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyDown",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Shift",
+       "code": "Shift",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Control",
+       "code": "Control",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Alt",
+       "code": "Alt",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Meta",
+       "code": "Meta",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "text",
+       "text": "中文輸入"
+      }
+     ],
+     "streams": 2,
+     "cleared": false
+    }
+   }
+  },
+  {
+   "at": 12464,
+   "dir": "step",
+   "data": {
+    "name": "stub.browserState",
+    "args": [],
+    "result": {
+     "scopedReads": 2,
+     "inputs": [
+      {
+       "type": "mouseMoved",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "none",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "mousePressed",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 1,
+       "modifiers": 0
+      },
+      {
+       "type": "mouseReleased",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyDown",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Shift",
+       "code": "Shift",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Control",
+       "code": "Control",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Alt",
+       "code": "Alt",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Meta",
+       "code": "Meta",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "text",
+       "text": "中文輸入"
+      }
+     ],
+     "streams": 2,
+     "cleared": false
+    }
+   }
+  },
+  {
+   "at": 12528,
+   "dir": "out",
+   "data": {
+    "id": 41,
+    "call": "browserView.command",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "2f602cd2-be96-495c-b40c-4645050daf91",
+     "operation": "return_control"
+    }
+   }
+  },
+  {
+   "at": 12528,
+   "dir": "rest"
+  },
+  {
+   "at": 12528,
+   "dir": "in",
+   "data": {
+    "id": 29,
+    "delta": [
+     {
+      "path": [
+       "pending"
+      ],
+      "set": true
+     }
+    ]
+   }
+  },
+  {
+   "at": 12528,
+   "dir": "rest"
+  },
+  {
+   "at": 12528,
+   "dir": "in",
+   "data": {
+    "id": 41,
+    "ok": {
+     "closed": false
+    }
+   }
+  },
+  {
+   "at": 12528,
+   "dir": "in",
+   "data": {
+    "id": 29,
+    "delta": [
+     {
+      "path": [
+       "controlling"
+      ],
+      "set": false
+     },
+     {
+      "path": [
+       "pending"
+      ],
+      "set": false
+     },
+     {
+      "path": [
+       "storageError"
+      ],
+      "set": "browser_storage_partially_saved"
+     }
+    ]
+   }
+  },
+  {
+   "at": 12528,
+   "dir": "rest"
+  },
+  {
+   "at": 12580,
+   "dir": "due"
+  },
+  {
+   "at": 12580,
+   "dir": "in",
+   "data": {
+    "id": 29,
+    "delta": [
+     {
+      "path": [
+       "frame",
+       "seq"
+      ],
+      "set": 3
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "agent"
+     }
+    ]
+   }
+  },
+  {
+   "at": 12580,
+   "dir": "rest"
+  },
+  {
+   "at": 12608,
+   "dir": "out",
+   "data": {
+    "id": 29,
+    "unsubscribe": true
+   }
+  },
+  {
+   "at": 12608,
+   "dir": "rest"
+  },
+  {
+   "at": 12624,
+   "dir": "step",
+   "data": {
+    "name": "stub.browserState",
+    "args": [],
+    "result": {
+     "scopedReads": 2,
+     "inputs": [
+      {
+       "type": "mouseMoved",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "none",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "mousePressed",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 1,
+       "modifiers": 0
+      },
+      {
+       "type": "mouseReleased",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyDown",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Shift",
+       "code": "Shift",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Control",
+       "code": "Control",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Alt",
+       "code": "Alt",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Meta",
+       "code": "Meta",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "text",
+       "text": "中文輸入"
+      }
+     ],
+     "streams": 3,
+     "cleared": false
+    }
+   }
+  },
+  {
+   "at": 13050,
+   "dir": "due"
+  },
+  {
+   "at": 13124,
+   "dir": "step",
+   "data": {
+    "name": "stub.browserState",
+    "args": [],
+    "result": {
+     "scopedReads": 2,
+     "inputs": [
+      {
+       "type": "mouseMoved",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "none",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "mousePressed",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 1,
+       "modifiers": 0
+      },
+      {
+       "type": "mouseReleased",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyDown",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Shift",
+       "code": "Shift",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Control",
+       "code": "Control",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Alt",
+       "code": "Alt",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Meta",
+       "code": "Meta",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "text",
+       "text": "中文輸入"
+      }
+     ],
+     "streams": 3,
+     "cleared": false
+    }
+   }
+  },
+  {
+   "at": 15050,
+   "dir": "due"
+  },
+  {
+   "at": 15050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 31
+     }
+    ]
+   }
+  },
+  {
+   "at": 15050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 31
+     }
+    ]
+   }
+  },
+  {
+   "at": 15050,
+   "dir": "rest"
+  },
+  {
+   "at": 15050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 34
+     }
+    ]
+   }
+  },
+  {
+   "at": 15050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 34
+     }
+    ]
+   }
+  },
+  {
+   "at": 15050,
+   "dir": "rest"
+  },
+  {
+   "at": 15072,
+   "dir": "out",
+   "data": {
+    "id": 42,
+    "subscribe": {
+     "topic": "browserView",
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "36b97e54-3012-4e40-b59f-34f45f9c21aa"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 15072,
+   "dir": "rest"
+  },
+  {
+   "at": 15072,
+   "dir": "in",
+   "data": {
+    "id": 42,
+    "value": {
+     "tabs": [],
+     "tab": "",
+     "status": "loading",
+     "controlling": false,
+     "error": null,
+     "pending": false,
+     "frame": null
+    }
+   }
+  },
+  {
+   "at": 15072,
+   "dir": "rest"
+  },
+  {
+   "at": 15072,
+   "dir": "in",
+   "data": {
+    "id": 42,
+    "delta": [
+     {
+      "path": [
+       "status"
+      ],
+      "set": "connecting"
+     },
+     {
+      "path": [
+       "tab"
+      ],
+      "set": "tab"
+     },
+     {
+      "path": [
+       "tabs"
+      ],
+      "append": [
+       {
+        "tab_id": "tab",
+        "title": "Remote test page",
+        "url": "https://example.com"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "at": 15072,
+   "dir": "rest"
+  },
+  {
+   "at": 15072,
+   "dir": "in",
+   "data": {
+    "id": 42,
+    "delta": [
+     {
+      "path": [
+       "frame"
+      ],
+      "set": {
+       "seq": 1,
+       "data": "/9j/4AAQSkZJRgABAQAAAQABAAD/4gHYSUNDX1BST0ZJTEUAAQEAAAHIAAAAAAQwAABtbnRyUkdCIFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAACRyWFlaAAABFAAAABRnWFlaAAABKAAAABRiWFlaAAABPAAAABR3dHB0AAABUAAAABRyVFJDAAABZAAAAChnVFJDAAABZAAAAChiVFJDAAABZAAAAChjcHJ0AAABjAAAADxtbHVjAAAAAAAAAAEAAAAMZW5VUwAAAAgAAAAcAHMAUgBHAEJYWVogAAAAAAAAb6IAADj1AAADkFhZWiAAAAAAAABimQAAt4UAABjaWFlaIAAAAAAAACSgAAAPhAAAts9YWVogAAAAAAAA9tYAAQAAAADTLXBhcmEAAAAAAAQAAAACZmYAAPKnAAANWQAAE9AAAApbAAAAAAAAAABtbHVjAAAAAAAAAAEAAAAMZW5VUwAAACAAAAAcAEcAbwBvAGcAbABlACAASQBuAGMALgAgADIAMAAxADb/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAAJABADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABwn/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdAAYqm//Z",
+       "width": 1280,
+       "height": 720
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "agent"
+     },
+     {
+      "path": [
+       "storageError"
+      ],
+      "set": "browser_storage_partially_saved"
+     }
+    ]
+   }
+  },
+  {
+   "at": 15072,
+   "dir": "rest"
+  },
+  {
+   "at": 15152,
+   "dir": "out",
+   "data": {
+    "id": 43,
+    "call": "browserView.command",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "36b97e54-3012-4e40-b59f-34f45f9c21aa",
+     "operation": "close"
+    }
+   }
+  },
+  {
+   "at": 15152,
+   "dir": "rest"
+  },
+  {
+   "at": 15152,
+   "dir": "in",
+   "data": {
+    "id": 42,
+    "delta": [
+     {
+      "path": [
+       "pending"
+      ],
+      "set": true
+     }
+    ]
+   }
+  },
+  {
+   "at": 15152,
+   "dir": "rest"
+  },
+  {
+   "at": 15152,
+   "dir": "in",
+   "data": {
+    "id": 43,
+    "ok": {
+     "closed": true
+    }
+   }
+  },
+  {
+   "at": 15152,
+   "dir": "out",
+   "data": {
+    "id": 44,
+    "call": "sessionBrowser.refresh",
+    "params": {
+     "workspace": "ws-smoke",
+     "conversation": "cnv_public_task_smoke",
+     "participant": "ptc_browser_worker"
+    }
+   }
+  },
+  {
+   "at": 15152,
+   "dir": "in",
+   "data": {
+    "id": 42,
+    "delta": [
+     {
+      "path": [
+       "pending"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 15152,
+   "dir": "rest"
+  },
+  {
+   "at": 15152,
+   "dir": "in",
+   "data": {
+    "id": 44,
+    "ok": null
+   }
+  },
+  {
+   "at": 15152,
+   "dir": "rest"
+  },
+  {
+   "at": 15202,
+   "dir": "due"
+  },
+  {
+   "at": 15202,
+   "dir": "in",
+   "data": {
+    "id": 28,
+    "value": {
+     "browser": null
+    }
+   }
+  },
+  {
+   "at": 15202,
+   "dir": "out",
+   "data": {
+    "id": 42,
+    "unsubscribe": true
+   }
+  },
+  {
+   "at": 15202,
+   "dir": "rest"
+  },
+  {
+   "at": 15202,
+   "dir": "step",
+   "data": {
+    "name": "stub.setBrowserActive",
+    "args": [
+     true
+    ]
+   }
+  },
+  {
+   "at": 16050,
+   "dir": "due"
+  },
+  {
+   "at": 18050,
+   "dir": "due"
+  },
+  {
+   "at": 18050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 35
+     }
+    ]
+   }
+  },
+  {
+   "at": 18050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 35
+     }
+    ]
+   }
+  },
+  {
+   "at": 18050,
+   "dir": "rest"
+  },
+  {
+   "at": 18050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 38
+     }
+    ]
+   }
+  },
+  {
+   "at": 18050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 38
+     }
+    ]
+   }
+  },
+  {
+   "at": 18050,
+   "dir": "rest"
+  },
+  {
+   "at": 19050,
+   "dir": "due"
+  },
+  {
+   "at": 20050,
+   "dir": "due"
+  },
+  {
+   "at": 20100,
+   "dir": "due"
+  },
+  {
+   "at": 21050,
+   "dir": "due"
+  },
+  {
+   "at": 21050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 39
+     }
+    ]
+   }
+  },
+  {
+   "at": 21050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 39
+     }
+    ]
+   }
+  },
+  {
+   "at": 21050,
+   "dir": "rest"
+  },
+  {
+   "at": 21050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 42
+     }
+    ]
+   }
+  },
+  {
+   "at": 21050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 42
+     }
+    ]
+   }
+  },
+  {
+   "at": 21050,
+   "dir": "rest"
+  },
+  {
+   "at": 22050,
+   "dir": "due"
+  },
+  {
+   "at": 24050,
+   "dir": "due"
+  },
+  {
+   "at": 24050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 43
+     }
+    ]
+   }
+  },
+  {
+   "at": 24050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 43
+     }
+    ]
+   }
+  },
+  {
+   "at": 24050,
+   "dir": "rest"
+  },
+  {
+   "at": 24050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 46
+     }
+    ]
+   }
+  },
+  {
+   "at": 24050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 46
+     }
+    ]
+   }
+  },
+  {
+   "at": 24050,
+   "dir": "rest"
+  },
+  {
+   "at": 25050,
+   "dir": "due"
+  },
+  {
+   "at": 25152,
+   "dir": "due"
+  },
+  {
+   "at": 25202,
+   "dir": "due"
+  },
+  {
+   "at": 25202,
+   "dir": "in",
+   "data": {
+    "id": 28,
+    "value": {
+     "browser": {
+      "agent_id": "agent-browser-e2e",
+      "session_id": "browser-e2e",
+      "status": "ready",
+      "control": "agent",
+      "busy": false,
+      "storage_error": "browser_storage_partially_saved",
+      "updated_at": "2026-05-28T20:26:40.002Z"
+     }
+    }
+   }
+  },
+  {
+   "at": 25202,
+   "dir": "rest"
+  },
+  {
+   "at": 27050,
+   "dir": "due"
+  },
+  {
+   "at": 27050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 47
+     }
+    ]
+   }
+  },
+  {
+   "at": 27050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 47
+     }
+    ]
+   }
+  },
+  {
+   "at": 27050,
+   "dir": "rest"
+  },
+  {
+   "at": 27050,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 50
+     }
+    ]
+   }
+  },
+  {
+   "at": 27050,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 50
+     }
+    ]
+   }
+  },
+  {
+   "at": 27050,
+   "dir": "rest"
+  },
+  {
+   "at": 27072,
+   "dir": "out",
+   "data": {
+    "id": 45,
+    "subscribe": {
+     "topic": "browserView",
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "534335b4-fb87-489e-83e1-272d534a08b6"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 27072,
+   "dir": "rest"
+  },
+  {
+   "at": 27072,
+   "dir": "in",
+   "data": {
+    "id": 45,
+    "value": {
+     "tabs": [],
+     "tab": "",
+     "status": "loading",
+     "controlling": false,
+     "error": null,
+     "pending": false,
+     "frame": null
+    }
+   }
+  },
+  {
+   "at": 27072,
+   "dir": "rest"
+  },
+  {
+   "at": 27072,
+   "dir": "in",
+   "data": {
+    "id": 45,
+    "delta": [
+     {
+      "path": [
+       "status"
+      ],
+      "set": "connecting"
+     },
+     {
+      "path": [
+       "tab"
+      ],
+      "set": "tab"
+     },
+     {
+      "path": [
+       "tabs"
+      ],
+      "append": [
+       {
+        "tab_id": "tab",
+        "title": "Remote test page",
+        "url": "https://example.com"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "at": 27072,
+   "dir": "rest"
+  },
+  {
+   "at": 27072,
+   "dir": "in",
+   "data": {
+    "id": 45,
+    "delta": [
+     {
+      "path": [
+       "frame"
+      ],
+      "set": {
+       "seq": 1,
+       "data": "/9j/4AAQSkZJRgABAQAAAQABAAD/4gHYSUNDX1BST0ZJTEUAAQEAAAHIAAAAAAQwAABtbnRyUkdCIFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAACRyWFlaAAABFAAAABRnWFlaAAABKAAAABRiWFlaAAABPAAAABR3dHB0AAABUAAAABRyVFJDAAABZAAAAChnVFJDAAABZAAAAChiVFJDAAABZAAAAChjcHJ0AAABjAAAADxtbHVjAAAAAAAAAAEAAAAMZW5VUwAAAAgAAAAcAHMAUgBHAEJYWVogAAAAAAAAb6IAADj1AAADkFhZWiAAAAAAAABimQAAt4UAABjaWFlaIAAAAAAAACSgAAAPhAAAts9YWVogAAAAAAAA9tYAAQAAAADTLXBhcmEAAAAAAAQAAAACZmYAAPKnAAANWQAAE9AAAApbAAAAAAAAAABtbHVjAAAAAAAAAAEAAAAMZW5VUwAAACAAAAAcAEcAbwBvAGcAbABlACAASQBuAGMALgAgADIAMAAxADb/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAAJABADASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABwn/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdAAYqm//Z",
+       "width": 1280,
+       "height": 720
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "agent"
+     },
+     {
+      "path": [
+       "storageError"
+      ],
+      "set": "browser_storage_partially_saved"
+     }
+    ]
+   }
+  },
+  {
+   "at": 27072,
+   "dir": "rest"
+  },
+  {
+   "at": 27168,
+   "dir": "step",
+   "data": {
+    "name": "stub.browserState",
+    "args": [],
+    "result": {
+     "scopedReads": 4,
+     "inputs": [
+      {
+       "type": "mouseMoved",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "none",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "mousePressed",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 1,
+       "modifiers": 0
+      },
+      {
+       "type": "mouseReleased",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyDown",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Shift",
+       "code": "Shift",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Control",
+       "code": "Control",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Alt",
+       "code": "Alt",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Meta",
+       "code": "Meta",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "text",
+       "text": "中文輸入"
+      }
+     ],
+     "streams": 5,
+     "cleared": false
+    }
+   }
+  },
+  {
+   "at": 27248,
+   "dir": "step",
+   "data": {
+    "name": "stub.browserState",
+    "args": [],
+    "result": {
+     "scopedReads": 4,
+     "inputs": [
+      {
+       "type": "mouseMoved",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "none",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "mousePressed",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 1,
+       "modifiers": 0
+      },
+      {
+       "type": "mouseReleased",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyDown",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Shift",
+       "code": "Shift",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Control",
+       "code": "Control",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Alt",
+       "code": "Alt",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Meta",
+       "code": "Meta",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "text",
+       "text": "中文輸入"
+      }
+     ],
+     "streams": 5,
+     "cleared": false
+    }
+   }
+  },
+  {
+   "at": 27322,
+   "dir": "due"
+  },
+  {
+   "at": 27322,
+   "dir": "in",
+   "data": {
+    "id": 45,
+    "delta": [
+     {
+      "path": [
+       "frame",
+       "seq"
+      ],
+      "set": 2
+     }
+    ]
+   }
+  },
+  {
+   "at": 27322,
+   "dir": "rest"
+  },
+  {
+   "at": 27392,
+   "dir": "out",
+   "data": {
+    "id": 46,
+    "call": "browserView.command",
+    "params": {
+     "workspace": "ws-smoke",
+     "agent": "agent-browser-e2e",
+     "session": "browser-e2e",
+     "viewer": "534335b4-fb87-489e-83e1-272d534a08b6",
+     "operation": "clear_storage"
+    }
+   }
+  },
+  {
+   "at": 27392,
+   "dir": "rest"
+  },
+  {
+   "at": 27392,
+   "dir": "in",
+   "data": {
+    "id": 45,
+    "delta": [
+     {
+      "path": [
+       "pending"
+      ],
+      "set": true
+     }
+    ]
+   }
+  },
+  {
+   "at": 27392,
+   "dir": "rest"
+  },
+  {
+   "at": 27392,
+   "dir": "in",
+   "data": {
+    "id": 46,
+    "ok": {
+     "closed": true
+    }
+   }
+  },
+  {
+   "at": 27392,
+   "dir": "out",
+   "data": {
+    "id": 47,
+    "call": "sessionBrowser.refresh",
+    "params": {
+     "workspace": "ws-smoke",
+     "conversation": "cnv_public_task_smoke",
+     "participant": "ptc_browser_worker"
+    }
+   }
+  },
+  {
+   "at": 27392,
+   "dir": "in",
+   "data": {
+    "id": 45,
+    "delta": [
+     {
+      "path": [
+       "pending"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 27392,
+   "dir": "rest"
+  },
+  {
+   "at": 27392,
+   "dir": "in",
+   "data": {
+    "id": 47,
+    "ok": null
+   }
+  },
+  {
+   "at": 27392,
+   "dir": "rest"
+  },
+  {
+   "at": 27408,
+   "dir": "step",
+   "data": {
+    "name": "stub.browserState",
+    "args": [],
+    "result": {
+     "scopedReads": 5,
+     "inputs": [
+      {
+       "type": "mouseMoved",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "none",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "mousePressed",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 1,
+       "modifiers": 0
+      },
+      {
+       "type": "mouseReleased",
+       "x": 33.362293657688966,
+       "y": 22.241529105125977,
+       "button": "left",
+       "clickCount": 1,
+       "buttons": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyDown",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Tab",
+       "code": "Tab",
+       "keyCode": 9,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Shift",
+       "code": "Shift",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Control",
+       "code": "Control",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Alt",
+       "code": "Alt",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "keyUp",
+       "key": "Meta",
+       "code": "Meta",
+       "keyCode": 0,
+       "modifiers": 0
+      },
+      {
+       "type": "text",
+       "text": "中文輸入"
+      }
+     ],
+     "streams": 6,
+     "cleared": true
+    }
+   }
+  },
+  {
+   "at": 27442,
+   "dir": "due"
+  },
+  {
+   "at": 27442,
+   "dir": "in",
+   "data": {
+    "id": 28,
+    "value": {
+     "browser": null
+    }
+   }
+  },
+  {
+   "at": 27442,
+   "dir": "out",
+   "data": {
+    "id": 45,
+    "unsubscribe": true
+   }
+  },
+  {
+   "at": 27442,
+   "dir": "rest"
+  }
+ ]
+}

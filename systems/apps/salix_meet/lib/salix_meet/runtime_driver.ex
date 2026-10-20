@@ -12,7 +12,7 @@ defmodule SalixMeet.RuntimeDriver do
   @doc "Whether the configured runtime driver is callable."
   @spec configured?() :: boolean()
   def configured? do
-    case Application.get_env(:salix_meet, :runtime_driver) do
+    case SystemsRuntime.get_env(:salix_meet, :runtime_driver) do
       mod when is_atom(mod) and mod != __MODULE__ ->
         Code.ensure_loaded?(mod) and function_exported?(mod, :join, 1) and
           (not function_exported?(mod, :configured?, 0) or mod.configured?())
@@ -28,7 +28,7 @@ defmodule SalixMeet.RuntimeDriver do
   @doc "Request the external meeting runtime to join one meeting."
   @spec join(map()) :: :ok | {:ok, map()} | {:error, term()}
   def join(meeting_doc) when is_map(meeting_doc) do
-    case Application.get_env(:salix_meet, :runtime_driver) do
+    case SystemsRuntime.get_env(:salix_meet, :runtime_driver) do
       nil ->
         {:error, :runtime_driver_not_configured}
 
@@ -134,7 +134,7 @@ defmodule SalixMeet.RuntimeDriver.HTTP do
   end
 
   defp runtime_base_url do
-    Application.get_env(:salix_meet, :runtime_base_url)
+    SystemsRuntime.get_env(:salix_meet, :runtime_base_url)
     |> trim()
     |> String.trim_trailing("/")
   end

@@ -11,7 +11,13 @@ defmodule Comma.Data.IMessageDMLink do
     field(:sender_label, :string)
     field(:chat_guid, :string)
     field(:connect_id, :string)
-    timestamps(type: :utc_datetime_usec)
+    field(:transport, :string, default: "relay")
+    field(:assignment_id, :string)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 
   def changeset(link, attrs) do
@@ -22,11 +28,14 @@ defmodule Comma.Data.IMessageDMLink do
       :sender_handle,
       :sender_label,
       :chat_guid,
-      :connect_id
+      :connect_id,
+      :transport,
+      :assignment_id
     ])
     |> update_change(:sender_handle, &String.trim/1)
     |> update_change(:sender_label, &normalize_label/1)
     |> validate_required([:workspace_id, :owner_user_id, :sender_handle, :chat_guid, :connect_id])
+    |> validate_inclusion(:transport, ~w(relay photon))
     |> foreign_key_constraint(:workspace_id)
     |> foreign_key_constraint(:owner_user_id)
     |> unique_constraint(:workspace_id, name: :comma_imessage_dm_links_pkey)

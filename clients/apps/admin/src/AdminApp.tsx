@@ -1,45 +1,94 @@
-import { CommaAuthGate, useCommaAuth } from "@comma/app/auth";
 import { commaLogoUrl } from "@comma/config";
+import { Badge } from "@comma/ui/components/Badge";
+import { Button } from "@comma/ui/components/Button";
 import {
-  Badge,
-  Button,
+  ApiConnectionIcon,
   ChainLinkIcon,
   ChevronDownSmallIcon,
-  FileIcon,
+  CubeIcon,
+  HomeIcon,
+  SearchIcon,
   GlobeIcon,
-  ListChecksIcon,
-  Menu,
-  MenuItem,
-  MenuPopover,
-  MenuTrigger,
+  HistoryIcon,
   PanelLeftIcon,
   PeopleCircleIcon,
-  ShieldCheckIcon,
-} from "@comma/ui";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { createAdminApi, type AdminRedeemTarget } from "./adminApi";
-import {
-  adminSectionFromSearch,
-  adminSectionHref,
-  type AdminSection,
-} from "./adminNavigation";
+  SparklesIcon,
+  TagLabelIcon,
+} from "@comma/ui/components/icons";
+import { Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui/components/menu";
+import { type ReactNode } from "react";
+import type { AdminSection } from "./adminNavigation";
+import { useAdminCommand, useAdminService, useAdminState } from "./adminRuntime";
+import { AdminShell, type SectionView } from "./adminShell";
+import { AdminSessionScreen } from "./AdminSignIn";
+import { AdminAuth } from "./auth";
 import { AuditLogView } from "./AuditLogView";
 import { BillingView } from "./BillingView";
 import { GuestModeView } from "./GuestModeView";
-import { ModelSelectionView } from "./ModelSelectionView";
 import { ComputeNodesView } from "./ComputeNodesView";
+import { FreeRouterModelsView } from "./FreeRouterModelsView";
+import { OverviewView } from "./OverviewView";
+import { AdminSearchPalette } from "./AdminSearchPalette";
 import { OAuthClientsView } from "./OAuthClientsView";
 import { UsersView } from "./UsersView";
+import { messages, type CommaLocale } from "@comma/i18n";
+import { AdminBrowser } from "./adminBrowser";
 
-const sectionLabels: Record<AdminSection, string> = {
-  audit: "Audit log",
-  billing: "Redeem codes",
-  compute: "Compute nodes",
-  guest: "Guest mode",
-  models: "Models",
-  oauth: "OAuth clients",
-  users: "Users",
+const sectionLabels: Record<AdminSection, () => string> = {
+  audit: messages.admin_section_audit,
+  billing: messages.admin_section_billing,
+  compute: messages.admin_section_compute,
+  "free-models": messages.admin_section_free_models,
+  guest: messages.admin_section_guest,
+  oauth: messages.admin_section_oauth,
+  overview: messages.admin_section_overview,
+  users: messages.admin_section_users,
 };
+
+const sectionGroups: Record<AdminSection, (() => string) | undefined> = {
+  audit: messages.admin_group_records,
+  billing: messages.admin_group_billing,
+  compute: messages.admin_group_platform,
+  "free-models": messages.admin_group_billing,
+  guest: messages.admin_group_platform,
+  oauth: messages.admin_group_platform,
+  overview: undefined,
+  users: messages.admin_group_people,
+};
+
+const navigation: ReadonlyArray<{
+  readonly group?: () => string;
+  readonly items: ReadonlyArray<{
+    readonly icon: ReactNode;
+    readonly section: AdminSection;
+  }>;
+}> = [
+  {
+    items: [
+      { icon: <HomeIcon />, section: "overview" },
+      { icon: <PeopleCircleIcon />, section: "users" },
+    ],
+  },
+  {
+    group: messages.admin_group_billing,
+    items: [
+      { icon: <TagLabelIcon />, section: "billing" },
+      { icon: <SparklesIcon />, section: "free-models" },
+    ],
+  },
+  {
+    group: messages.admin_group_platform,
+    items: [
+      { icon: <GlobeIcon />, section: "guest" },
+      { icon: <CubeIcon />, section: "compute" },
+      { icon: <ApiConnectionIcon />, section: "oauth" },
+    ],
+  },
+  {
+    group: messages.admin_group_records,
+    items: [{ icon: <HistoryIcon />, section: "audit" }],
+  },
+];
 
 interface AdminObservabilityLink {
   href: string;
@@ -81,74 +130,32 @@ export function observabilityLinksForApiBaseUrl(
   return [];
 }
 
-export function AdminApp() {
-  return (
-    <CommaAuthGate>
-      <AdminSurface />
-    </CommaAuthGate>
-  );
+const setLanguage = (locale: CommaLocale) =>
+  AdminBrowser.use((browser) => browser.setLocale(locale));
+
+export function AdminApp({ apiBaseUrl }: { apiBaseUrl: string }) {
+  const auth = useAdminService(AdminAuth);
+  const state = useAdminState(auth.state);
+  if (state.phase !== "signed_in") return <AdminSessionScreen state={state} />;
+  return <AdminSurface apiBaseUrl={apiBaseUrl} userEmail={state.lease.email} />;
 }
 
-function AdminSurface() {
-  const { apiBaseUrl, sessionTransport, signOut, userEmail } = useCommaAuth();
-  const [accessDenied, setAccessDenied] = useState(false);
-  const [redeemTarget, setRedeemTarget] = useState<AdminRedeemTarget>();
-  const [section, setSection] = useState<AdminSection>(() =>
-    adminSectionFromSearch(window.location.search)
+function AdminSurface({
+  apiBaseUrl,
+  userEmail,
+}: {
+  apiBaseUrl: string;
+  userEmail: string;
+}) {
+  const auth = useAdminService(AdminAuth);
+  const shell = useAdminService(AdminShell);
+  const run = useAdminCommand();
+  const { accessDenied, section, sidebarCollapsed, sidebarOpen, view } = useAdminState(
+    shell.state
   );
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const api = useMemo(
-    () =>
-      createAdminApi({
-        baseUrl: apiBaseUrl,
-        sessionTransport,
-      }),
-    [apiBaseUrl, sessionTransport]
-  );
-  const observabilityLinks = useMemo(
-    () => observabilityLinksForApiBaseUrl(apiBaseUrl),
-    [apiBaseUrl]
-  );
-  const onAccessDenied = useCallback(() => {
-    setAccessDenied(true);
-  }, []);
-  useEffect(() => {
-    const syncSection = () => {
-      setSection(adminSectionFromSearch(window.location.search));
-      setSidebarOpen(false);
-    };
-    window.addEventListener("popstate", syncSection);
-    return () => window.removeEventListener("popstate", syncSection);
-  }, []);
-  const selectSection = useCallback((nextSection: AdminSection) => {
-    if (adminSectionFromSearch(window.location.search) !== nextSection) {
-      window.history.pushState(
-        null,
-        "",
-        adminSectionHref(nextSection, window.location.href)
-      );
-    }
-    setSection(nextSection);
-    setSidebarOpen(false);
-  }, []);
-  const toggleSidebar = useCallback(() => {
-    if (window.matchMedia("(max-width: 900px)").matches) {
-      setSidebarOpen((current) => !current);
-      return;
-    }
-    setSidebarCollapsed((current) => !current);
-  }, []);
-  const applyRedeemCodeFor = useCallback(
-    (target: AdminRedeemTarget) => {
-      setRedeemTarget(target);
-      selectSection("billing");
-    },
-    [selectSection]
-  );
-  const consumeRedeemTarget = useCallback(() => {
-    setRedeemTarget(undefined);
-  }, []);
+  const observabilityLinks = observabilityLinksForApiBaseUrl(apiBaseUrl);
+  const selectSection = (nextSection: AdminSection) => run(shell.select(nextSection));
+  const signOut = () => run(auth.signOut);
 
   if (accessDenied) {
     return <AdminAccessDenied onSignOut={signOut} userEmail={userEmail} />;
@@ -161,74 +168,55 @@ function AdminSurface() {
       data-sidebar-open={sidebarOpen ? "true" : "false"}
       data-testid="admin-app"
     >
-      <aside aria-label="Admin navigation" className="admin-sidebar">
+      <aside aria-label={messages.admin_nav_label()} className="admin-sidebar">
         <div className="admin-sidebar-brand">
           <img alt="" aria-hidden="true" src={commaLogoUrl} />
           <div>
             <strong>Comma Admin</strong>
-            <span>Operations</span>
+            <span>{messages.admin_brand_subtitle()}</span>
           </div>
         </div>
 
+        <button
+          aria-keyshortcuts="Meta+K Control+K"
+          className="admin-search-trigger"
+          onClick={() => run(shell.search.setOpen(true))}
+          type="button"
+        >
+          <SearchIcon aria-hidden="true" />
+          <span>{messages.admin_search_trigger()}</span>
+          <kbd>⌘K</kbd>
+        </button>
+
         <nav className="admin-nav">
-          <p>Platform</p>
-          <AdminNavButton
-            active={section === "users"}
-            icon={<ListChecksIcon />}
-            label="Users"
-            onPress={() => selectSection("users")}
-          />
-          <AdminNavButton
-            active={section === "compute"}
-            icon={<ListChecksIcon />}
-            label="Compute nodes"
-            onPress={() => selectSection("compute")}
-          />
-          <AdminNavButton
-            active={section === "oauth"}
-            icon={<GlobeIcon />}
-            label="OAuth clients"
-            onPress={() => selectSection("oauth")}
-          />
-          <AdminNavButton
-            active={section === "billing"}
-            icon={<FileIcon />}
-            label="Redeem codes"
-            onPress={() => selectSection("billing")}
-          />
-          <AdminNavButton
-            active={section === "models"}
-            icon={<ListChecksIcon />}
-            label="Models"
-            onPress={() => selectSection("models")}
-          />
-          <AdminNavButton
-            active={section === "guest"}
-            icon={<PeopleCircleIcon />}
-            label="Guest mode"
-            onPress={() => selectSection("guest")}
-          />
-          <p>Operations</p>
-          <AdminNavButton
-            active={section === "audit"}
-            icon={<ShieldCheckIcon />}
-            label="Audit log"
-            onPress={() => selectSection("audit")}
-          />
+          {navigation.map((group, index) => (
+            <div className="admin-nav-group" key={index}>
+              {group.group ? <p>{group.group()}</p> : null}
+              {group.items.map((item) => (
+                <AdminNavButton
+                  active={section === item.section}
+                  icon={item.icon}
+                  key={item.section}
+                  label={sectionLabels[item.section]()}
+                  onPress={() => selectSection(item.section)}
+                />
+              ))}
+            </div>
+          ))}
           {observabilityLinks.length ? (
-            <>
-              <p>Observability · staging</p>
+            <div className="admin-nav-group">
+              <p>{messages.admin_grafana_group()}</p>
               {observabilityLinks.map((link) => (
                 <AdminExternalNavLink key={link.href} {...link} />
               ))}
-            </>
+            </div>
           ) : null}
         </nav>
 
         <div className="admin-sidebar-account">
           <MenuTrigger>
             <Button
-              aria-label={`Account menu for ${userEmail}`}
+              aria-label={messages.admin_account_menu({ email: userEmail })}
               className="admin-account-trigger"
               hierarchy="tertiary-gray"
               size="sm"
@@ -239,7 +227,7 @@ function AdminSurface() {
                 </span>
                 <span className="admin-account-copy">
                   <strong title={userEmail}>{userEmail}</strong>
-                  <span>Administrator</span>
+                  <span>{messages.admin_account_role()}</span>
                 </span>
                 <ChevronDownSmallIcon
                   aria-hidden="true"
@@ -249,13 +237,16 @@ function AdminSurface() {
             </Button>
             <MenuPopover className="admin-account-menu-popover" placement="top start">
               <Menu
-                aria-label="Account actions"
+                aria-label={messages.admin_account_actions()}
                 onAction={(key) => {
                   if (key === "sign-out") signOut();
+                  if (key === "en" || key === "zh-CN") run(setLanguage(key));
                 }}
               >
+                <MenuItem id="zh-CN">{messages.admin_language_chinese()}</MenuItem>
+                <MenuItem id="en">{messages.admin_language_english()}</MenuItem>
                 <MenuItem id="sign-out" tone="destructive">
-                  Sign out
+                  {messages.admin_sign_out()}
                 </MenuItem>
               </Menu>
             </MenuPopover>
@@ -265,9 +256,9 @@ function AdminSurface() {
 
       <button
         aria-hidden={sidebarOpen ? undefined : "true"}
-        aria-label="Close navigation"
+        aria-label={messages.admin_close_navigation()}
         className="admin-sidebar-overlay"
-        onClick={() => setSidebarOpen(false)}
+        onClick={() => run(shell.closeSidebar)}
         tabIndex={sidebarOpen ? 0 : -1}
         type="button"
       />
@@ -276,65 +267,64 @@ function AdminSurface() {
         <header className="admin-topbar">
           <div className="admin-topbar-leading">
             <Button
-              aria-label="Toggle navigation"
+              aria-label={messages.admin_toggle_navigation()}
               hierarchy="tertiary-gray"
               iconLeading={<PanelLeftIcon />}
               iconOnly
-              onPress={toggleSidebar}
+              onPress={() => run(shell.toggleSidebar)}
               size="sm"
             />
             <span aria-hidden="true" className="admin-topbar-divider" />
             <div className="admin-topbar-breadcrumb">
-              <span>Admin</span>
-              <strong>{sectionLabels[section]}</strong>
+              {sectionGroups[section] ? (
+                <span>{sectionGroups[section]?.()}</span>
+              ) : null}
+              <strong>{sectionLabels[section]()}</strong>
             </div>
           </div>
-          <Button
-            className="admin-audit-status"
-            hierarchy="secondary-gray"
-            iconLeading={<ShieldCheckIcon />}
-            onPress={() => selectSection("audit")}
-            size="sm"
-          >
-            Audited operations
-          </Button>
         </header>
+
+        <AdminSearchPalette
+          model={shell.search}
+          onOpenSection={selectSection}
+          onOpenUser={(userId) => run(shell.openUser(userId))}
+          sections={navigation.flatMap((group) =>
+            group.items.map((item) => ({
+              label: sectionLabels[item.section](),
+              section: item.section,
+            }))
+          )}
+        />
 
         <div className="admin-main-content">
           <div className="admin-view-content">
-            {section === "users" ? (
-              <UsersView
-                api={api}
-                onAccessDenied={onAccessDenied}
-                onApplyRedeemCode={applyRedeemCodeFor}
-              />
-            ) : section === "oauth" ? (
-              <OAuthClientsView api={api} onAccessDenied={onAccessDenied} />
-            ) : section === "compute" ? (
-              <ComputeNodesView api={api} onAccessDenied={onAccessDenied} />
-            ) : section === "billing" ? (
-              <BillingView
-                api={api}
-                applyTarget={redeemTarget}
-                onAccessDenied={onAccessDenied}
-                onApplyTargetConsumed={consumeRedeemTarget}
-              />
-            ) : section === "models" ? (
-              <ModelSelectionView api={api} onAccessDenied={onAccessDenied} />
-            ) : section === "guest" ? (
-              <GuestModeView
-                api={api}
-                onAccessDenied={onAccessDenied}
-                onOpenFreeRouterModels={() => selectSection("billing")}
-              />
-            ) : (
-              <AuditLogView api={api} onAccessDenied={onAccessDenied} />
-            )}
+            {view ? <AdminSectionView view={view} /> : null}
           </div>
         </div>
       </main>
     </div>
   );
+}
+
+function AdminSectionView({ view }: { view: SectionView }) {
+  switch (view.section) {
+    case "users":
+      return <UsersView model={view.model} />;
+    case "oauth":
+      return <OAuthClientsView model={view.model} />;
+    case "compute":
+      return <ComputeNodesView model={view.model} />;
+    case "billing":
+      return <BillingView model={view.model} />;
+    case "free-models":
+      return <FreeRouterModelsView model={view.model} />;
+    case "guest":
+      return <GuestModeView model={view.model} />;
+    case "audit":
+      return <AuditLogView model={view.model} />;
+    case "overview":
+      return <OverviewView model={view.model} />;
+  }
 }
 
 function AdminExternalNavLink({ href, label }: AdminObservabilityLink) {
@@ -344,7 +334,7 @@ function AdminExternalNavLink({ href, label }: AdminObservabilityLink) {
       href={href}
       rel="noreferrer"
       target="_blank"
-      title={`${label} — staging Grafana`}
+      title={messages.admin_grafana_link_title({ label })}
     >
       <ChainLinkIcon aria-hidden="true" className="admin-nav-external" />
       <span>{label}</span>
@@ -395,17 +385,14 @@ function AdminAccessDenied({
           <Badge color="gray" size="sm" type="pill-outline">
             Comma Admin
           </Badge>
-          <h1 id="admin-access-title">Admin access required</h1>
-          <p>
-            This signed-in account is not authorized for the Comma Admin surface. Use an
-            active, unrestricted account on the configured admin email domain.
-          </p>
+          <h1 id="admin-access-title">{messages.admin_access_required_title()}</h1>
+          <p>{messages.admin_access_required_body()}</p>
         </div>
         <div className="admin-access-account">
-          <span>Current account</span>
+          <span>{messages.admin_access_current_account()}</span>
           <strong>{userEmail}</strong>
         </div>
-        <Button onPress={onSignOut}>Sign out</Button>
+        <Button onPress={onSignOut}>{messages.admin_sign_out()}</Button>
       </section>
     </main>
   );

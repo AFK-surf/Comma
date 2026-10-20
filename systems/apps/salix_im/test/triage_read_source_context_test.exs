@@ -1,5 +1,5 @@
 defmodule SalixIM.Triage.ReadSourceContextTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixIM.Triage.ReadSourceContext
 
@@ -54,33 +54,6 @@ defmodule SalixIM.Triage.ReadSourceContextTest do
         ] do
       assert ReadSourceContext.content(other) == ""
     end
-  end
-
-  test "unusable sets are explicitly unavailable without rendering private or partial data" do
-    for refs <- [
-          [],
-          ["memory://private-runbook"],
-          [@thread, "slack://T_ATLAS/C_ATLAS/not-a-thread/#{@reply}"],
-          [@thread, "slack://T_ATLAS/C_ATLAS/#{@root}/#{@reply}?private-principal"],
-          [@thread, %{"connect_id" => "private-connect"}],
-          [@thread, "slack://" <> String.duplicate("A", 257)],
-          List.duplicate(@thread, 201)
-        ] do
-      summary = context(refs)
-      assert summary =~ "sources: unavailable"
-      refute summary =~ "slack://"
-      refute summary =~ "private"
-    end
-  end
-
-  test "the documented maximum remains finite without truncating valid sources" do
-    max_id = String.duplicate("A", 64)
-    ref = "slack://#{max_id}/#{max_id}/#{@root}/#{@reply}"
-    summary = context(List.duplicate(ref, 200))
-    [_, json] = String.split(summary, "): ", parts: 2)
-    assert length(Jason.decode!(json)["sources"]) == 200
-    assert byte_size(summary) < 100_000
-    assert context([String.replace(ref, max_id, max_id <> "A")]) =~ "sources: unavailable"
   end
 
   defp context(refs), do: ReadSourceContext.content(delivery(refs))

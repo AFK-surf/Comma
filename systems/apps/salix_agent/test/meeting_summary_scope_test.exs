@@ -1,5 +1,5 @@
 defmodule SalixAgent.MeetingSummaryScopeTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias SalixAgent.{MeetingSummaryScope, IFC.Destination}
 
   defp origin do
@@ -62,5 +62,23 @@ defmodule SalixAgent.MeetingSummaryScopeTest do
     assert target["scope_id"] == "original-channel"
     assert target["thread_id"] == "original-thread"
     assert {:read, %{}} = Destination.describe("meeting.read_summary_materials", %{}, %{})
+  end
+
+  test "a Comma meeting's summary goes to the sealed Conversation it came from" do
+    comma =
+      origin()
+      |> Map.put("provider", "comma")
+      |> Map.update!("provider_context", fn context ->
+        context
+        |> Map.drop(~w(connect_id channel_id thread_ts))
+        |> Map.put("conversation_id", "original-conversation")
+      end)
+
+    assert {:egress, %{"kind" => "conversation", "conversation_id" => "original-conversation"}} =
+             Destination.describe(
+               "meeting.submit_summary",
+               %{"meeting_id" => "meeting", "request_id" => "request"},
+               %{trusted_origin: comma}
+             )
   end
 end

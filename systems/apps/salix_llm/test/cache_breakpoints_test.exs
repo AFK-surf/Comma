@@ -8,7 +8,7 @@ defmodule SalixLlm.CacheBreakpointsTest do
   20-content-block lookback window, and the request never exceeds the 4
   breakpoints the API allows.
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixLlm.CacheBreakpoints
 

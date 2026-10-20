@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@comma/test-utils/render";
+import { act, render, screen, waitFor } from "@comma/test-utils/render";
 import { fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { setInteractionModality } from "react-aria/private/interactions/useFocusVisible";
@@ -184,7 +184,7 @@ describe("LinkContextMenu", () => {
     expect(await screen.findByRole("menu", { name: "Link menu" })).toBeInTheDocument();
 
     await user.hover(screen.getByRole("button", { name: "Hovered" }));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await act(() => vi.advanceTimersByTimeAsync(50));
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     expect(screen.getByRole("menu", { name: "Link menu" })).toBeInTheDocument();
 

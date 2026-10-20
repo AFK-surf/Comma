@@ -1,5 +1,5 @@
 defmodule SalixLlm.HttpRetryAfterTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixLlm.Http
 
@@ -9,7 +9,7 @@ defmodule SalixLlm.HttpRetryAfterTest do
   end
 
   test "HTTP-date form reads as the distance from now, never negative" do
-    future = DateTime.add(DateTime.utc_now(), 90, :second)
+    future = DateTime.add(SystemsClock.utc_now(), 90, :second)
     value = Calendar.strftime(future, "%a, %d %b %Y %H:%M:%S GMT")
     ms = Http.retry_after_ms(%{"retry-after" => [value]})
     assert ms > 85_000 and ms <= 90_000

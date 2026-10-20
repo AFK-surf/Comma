@@ -48,7 +48,7 @@ func (c *connector) applySubscriptionDelivery(ctx context.Context, target runtim
 	if !current() {
 		return nil, errSubscriptionUnavailable
 	}
-	if m.attempt(target.key()) != nil || (params["require_idle"] == true && m.targetBusy(target)) {
+	if m.attempt(target.key()) != nil {
 		return nil, errors.New("runtime_busy")
 	}
 
@@ -70,7 +70,7 @@ func (c *connector) applySubscriptionDelivery(ctx context.Context, target runtim
 		}
 		return map[string]any{"auth": codexAuthIssueSnapshot("auth_probe_failed", time.Now().UnixMilli())}, nil
 	}
-	if target.provider == "pi" || target.provider == "claude" {
+	if target.provider == "claude" {
 		if err := m.applyManagedDeliveryLocked(ctx, target, params); err != nil {
 			return nil, err
 		}
@@ -221,7 +221,7 @@ func (c *connector) subscriptionAccess(ctx context.Context, transport *runtimeTr
 func (c *connector) subscriptionAccessRequest(ctx context.Context, transport *runtimeTransport, command, rejected string, admitted bool) (map[string]any, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	if transport == nil || !c.externalRuntimesEnabled() || c.currentScope() == scopeLocalFileRead {
+	if transport == nil || !c.runtimesEnabled() || c.currentScope() == scopeLocalFileRead {
 		return nil, errSubscriptionUnavailable
 	}
 	if !admitted {
@@ -274,40 +274,6 @@ func (c *connector) subscriptionAccessRequest(ctx context.Context, transport *ru
 		}
 	}
 	return result, nil
-}
-
-// One scoped read before new input or recovery. No credential reaches a session
-// payload, the durable inbox, metadata, logs, or auth.json.
-func (r *codexRuntime) ensureSubscription(ctx context.Context) error {
-	c := r.implementation.connector
-	transport := c.getActiveTransport()
-	// Local provider probes have no server transport and cannot acquire a binding.
-	if transport == nil {
-		r.subscriptionMu.Lock()
-		bound := r.subscriptionAccountID != ""
-		r.subscriptionMu.Unlock()
-		if bound || c.cfg.server != "" || c.cfg.deviceMode || computeRuntimeIdentityConfigured(c.cfg) {
-			return errSubscriptionUnavailable
-		}
-		return nil
-	}
-	target := runtimeProbeTarget{provider: "codex", identityMaterial: r.command}
-	unlock := r.implementation.auth.lockTarget(target.key())
-	defer unlock()
-	result, err := c.subscriptionAccess(ctx, transport, r.command, "")
-	if err != nil {
-		return err
-	}
-	r.subscriptionMu.Lock()
-	bound := r.subscriptionAccountID != ""
-	r.subscriptionMu.Unlock()
-	if result["bound"] == false && !bound {
-		return nil
-	}
-	if r.implementation.auth.attempt(target.key()) != nil {
-		return errors.New("runtime_busy")
-	}
-	return r.applySubscription(ctx, result, func() bool { return ctx.Err() == nil && c.getActiveTransport() == transport && r.subscriptionCurrent() }, false)
 }
 
 // Native server requests must not block its read loop: that loop also receives

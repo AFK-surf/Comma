@@ -43,5 +43,5 @@ defmodule SalixVoice.Model do
   @callback close(pid()) :: :ok
 
   @doc "The configured model implementation."
-  def impl, do: Application.get_env(:salix_voice, :model_mod, SalixVoice.Model.GptLive)
+  def impl, do: SystemsRuntime.get_env(:salix_voice, :model_mod, SalixVoice.Model.GptLive)
 end

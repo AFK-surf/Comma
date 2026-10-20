@@ -13,15 +13,22 @@
 # ---- Cloud SQL Proxy builder -----------------------------------------------
 # Build the official proxy v2.25.4 from its pinned release commit with a patched
 # Go toolchain. This release contains the reviewed upstream dependency updates
-# for gRPC 1.83.2 and golang.org/x/crypto 0.55.0.
-FROM golang:1.26.6-trixie AS cloud-sql-proxy-builder
+# for gRPC 1.83.2 and golang.org/x/crypto 0.55.0. A build module raises
+# golang.org/x/net to 0.60.0 for CVE-2026-78669; v2.26.0 still pins 0.59.0.
+FROM golang:1.26.9-trixie AS cloud-sql-proxy-builder
 
 ARG CLOUD_SQL_PROXY_VERSION=7905bdd628cd80cfb15714a7197f5bbd4a49d844
-RUN GOBIN=/out CGO_ENABLED=0 go install \
-      github.com/GoogleCloudPlatform/cloud-sql-proxy/v2@${CLOUD_SQL_PROXY_VERSION}
+ARG CLOUD_SQL_PROXY_X_NET_VERSION=v0.60.0
+WORKDIR /src/cloud-sql-proxy
+RUN go mod init cloud-sql-proxy-build \
+    && go get \
+      github.com/GoogleCloudPlatform/cloud-sql-proxy/v2@${CLOUD_SQL_PROXY_VERSION} \
+      golang.org/x/net@${CLOUD_SQL_PROXY_X_NET_VERSION} \
+    && CGO_ENABLED=0 go build -trimpath -o /out/cloud-sql-proxy \
+      github.com/GoogleCloudPlatform/cloud-sql-proxy/v2
 
 # ---- Subscription worker builder ------------------------------------------
-FROM golang:1.26.6-trixie AS subscription-worker-builder
+FROM golang:1.26.9-trixie AS subscription-worker-builder
 WORKDIR /src
 COPY systems/account-proxy/go.mod systems/account-proxy/go.sum systems/account-proxy/bootstrap.sh ./
 COPY systems/account-proxy/patches ./patches
@@ -30,17 +37,41 @@ COPY systems/account-proxy/*.go ./
 COPY systems/account-proxy/cmd ./cmd
 RUN CGO_ENABLED=0 go build -trimpath -o /subscription_worker ./cmd/salix-account-proxy
 
+# ---- Profiles NIF builder --------------------------------------------------
+# The Profiles' logic Comma and its stations share (systems/profiles), as
+# SalixAgent.Profiles.Native loads it. Only its sources are copied, so the
+# layer is rebuilt when they change and not otherwise.
+FROM rust:1.95.0-slim-trixie AS profiles-nif-builder
+WORKDIR /src
+COPY systems/profiles/Cargo.toml systems/profiles/sources.json profiles/
+COPY systems/profiles/src profiles/src
+COPY systems/profiles/nif/Cargo.toml systems/profiles/nif/Cargo.lock profiles/nif/
+COPY systems/profiles/nif/src profiles/nif/src
+RUN cargo build --release --locked --manifest-path profiles/nif/Cargo.toml \
+    && cp profiles/nif/target/release/libcomma_profiles_nif.so /comma_profiles_nif.so
+
 # ---- Tailcat gateway builder ----------------------------------------------
 # One process per Salix node for outbound SSH over Tailcat
 # (SalixAgent.Tailcat.Gateway). Only the gateway command ships; the test peer
 # stays out of the image.
-FROM golang:1.27.1-trixie AS tailcat-gateway-builder
+FROM golang:1.27.2-trixie AS tailcat-gateway-builder
 WORKDIR /src
 COPY systems/tailcat-gateway/go.mod systems/tailcat-gateway/go.sum ./
 RUN go mod download
 COPY systems/tailcat-gateway/*.go ./
 COPY systems/tailcat-gateway/cmd/salix-tailcat-gateway ./cmd/salix-tailcat-gateway
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /tailcat_gateway ./cmd/salix-tailcat-gateway
+
+# ---- Tailnet gateway builder -----------------------------------------------
+# One process per Salix node for the tailnet nodes of the Agent Groups that
+# node owns (SalixAgent.Tailnet.Gateway).
+FROM golang:1.27.2-trixie AS tailnet-gateway-builder
+WORKDIR /src
+COPY systems/tailnet-gateway/go.mod systems/tailnet-gateway/go.sum ./
+RUN go mod download
+COPY systems/tailnet-gateway/*.go ./
+COPY systems/tailnet-gateway/cmd/salix-tailnet-gateway ./cmd/salix-tailnet-gateway
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /tailnet_gateway ./cmd/salix-tailnet-gateway
 
 # ---- spinfoam fetcher -------------------------------------------------------
 # The userspace eBPF runtime behind Agent background Loops
@@ -81,8 +112,15 @@ ENV MIX_ENV=prod \
 
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
       build-essential git ca-certificates nodejs npm curl cmake pkg-config libuv1-dev libssl-dev \
-      libsodium-dev libopus-dev \
+      libsodium-dev libopus-dev libsrtp2-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# ex_sctp builds a Rust NIF; use the same toolchain as CI.
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
+ENV PATH="/opt/cargo/bin:${PATH}"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh \
+    && sh /tmp/rustup-init.sh -y --no-modify-path --profile minimal --default-toolchain 1.96.0 \
+    && rm /tmp/rustup-init.sh
 
 WORKDIR /app
 
@@ -107,6 +145,8 @@ COPY systems/apps/comma_log/mix.exs apps/comma_log/
 COPY systems/apps/comma_ssh/mix.exs apps/comma_ssh/
 COPY systems/apps/comma_tui/mix.exs apps/comma_tui/
 COPY systems/apps/systems_observability/mix.exs apps/systems_observability/
+COPY systems/apps/systems_clock/mix.exs apps/systems_clock/
+COPY systems/apps/systems_runtime/mix.exs apps/systems_runtime/
 COPY systems/apps/billing_core/mix.exs apps/billing_core/
 COPY systems/apps/billing_commerce/mix.exs apps/billing_commerce/
 COPY systems/apps/billing_stripe/mix.exs apps/billing_stripe/
@@ -125,6 +165,7 @@ COPY systems/apps/salix_analytics/mix.exs apps/salix_analytics/
 COPY systems/apps/salix_migrate/mix.exs apps/salix_migrate/
 COPY systems/apps/salix_media/mix.exs apps/salix_media/
 COPY systems/apps/salix_meet/mix.exs apps/salix_meet/
+COPY systems/apps/salix_meet_native/mix.exs apps/salix_meet_native/
 COPY systems/apps/salix_voice/mix.exs apps/salix_voice/
 COPY systems/apps/salix_signal/mix.exs apps/salix_signal/
 COPY systems/apps/salix_signal_proto/mix.exs apps/salix_signal_proto/
@@ -148,6 +189,7 @@ COPY systems/apps/salix_signal/Makefile apps/salix_signal/Makefile
 COPY systems/apps/salix_signal/c_src apps/salix_signal/c_src
 COPY systems/connector/mac-mini-provisioner-install.sh connector/mac-mini-provisioner-install.sh
 COPY systems/runtime-images/runtime-dependencies.lock.json runtime-images/runtime-dependencies.lock.json
+COPY systems/private private
 RUN mix deps.get --only prod && mix deps.compile
 
 # Source + release.
@@ -155,7 +197,9 @@ COPY systems/config config
 COPY systems/apps apps
 COPY --from=subscription-worker-builder /subscription_worker apps/salix_agent/priv/subscription_worker
 COPY --from=tailcat-gateway-builder /tailcat_gateway apps/salix_agent/priv/tailcat_gateway
+COPY --from=tailnet-gateway-builder /tailnet_gateway apps/salix_agent/priv/tailnet_gateway
 COPY --from=spinfoam-fetcher /out/spinfoam apps/salix_agent/priv/spinfoam
+COPY --from=profiles-nif-builder /comma_profiles_nif.so apps/salix_agent/priv/native/comma_profiles_nif.so
 # CommaWeb.RecommendationRuntime embeds the versioned recommendation template
 # catalog at compile time. Keep the repository-level catalog as the SSOT and
 # make that external resource available at the same absolute path produced by
@@ -179,13 +223,15 @@ FROM debian:trixie-slim AS runtime
 # libssl3t64 provides libcrypto.so.3 (required by the crypto NIF — see above).
 # Trixie ships OpenSSL 3.5, which gives `:crypto` ML-KEM.
 # libsodium23 is the shared library behind the salix_signal_proto NIF.
-# libopus0 is the shared library behind the salix_signal Opus NIF (call media).
+# libopus0 is the shared library behind the salix_signal Opus NIF (call media)
+# and the Membrane Opus NIFs; libsrtp2-1 is the one behind the ex_libsrtp NIF
+# (salix_meet_native).
 # spinfoam (Agent background Loops) embeds its own C compiler, so the
 # runtime image carries no toolchain for it (DEPLOYMENT.md, "Background Loops").
 ARG RUNTIME_APT_REFRESH=local
 RUN echo "${RUNTIME_APT_REFRESH}" >/dev/null \
     && apt-get update -y && apt-get install -y --no-install-recommends \
-      libstdc++6 libssl3t64 libsodium23 libopus0 openssl libpcre2-8-0 ca-certificates curl ffmpeg \
+      libstdc++6 libssl3t64 libsodium23 libopus0 libsrtp2-1 openssl libpcre2-8-0 ca-certificates curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=cloud-sql-proxy-builder /out/cloud-sql-proxy /usr/local/bin/cloud-sql-proxy

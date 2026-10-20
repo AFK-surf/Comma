@@ -20,7 +20,7 @@ defmodule SalixIM.TriageEngineFixtures do
 
   @doc "Builds and durably seeds one verifiable Slack Triage authority."
   def authority!(opts \\ []) do
-    unless Process.whereis(Ids), do: ExUnit.Callbacks.start_supervised!(Ids)
+    unless SystemsRuntime.Proc.whereis(Ids), do: ExUnit.Callbacks.start_supervised!(Ids)
 
     tenant_id = Keyword.get(opts, :tenant_id, Ids.new_tenant_id())
     group_id = Keyword.get(opts, :group_id, Ids.new_group_id(tenant_id))
@@ -161,22 +161,36 @@ defmodule SalixIM.TriageEngineFixtures do
   end
 
   @doc "Polls `fun` until it returns a non-empty value or the attempts run out."
-  def eventually(fun, attempts \\ 100)
+  def eventually(fun, attempts \\ 3000)
   def eventually(fun, 0), do: fun.()
 
-  def eventually(fun, attempts) do
+  # A test that drives a manual clock settles instead of polling real time:
+  # the value counts once it is neither empty, false nor nil.
+  def eventually(fun, attempts) when is_integer(attempts) do
+    if SystemsClock.drives?() do
+      {:value, value} =
+        SystemsClock.settle(
+          until: fn ->
+            case fun.() do
+              empty when empty in [[], false, nil] -> nil
+              value -> {:value, value}
+            end
+          end
+        )
+
+      value
+    else
+      poll(fun, attempts)
+    end
+  end
+
+  defp poll(fun, 0), do: fun.()
+
+  defp poll(fun, attempts) do
     case fun.() do
-      [] ->
-        Process.sleep(10)
-        eventually(fun, attempts - 1)
-
-      false ->
-        Process.sleep(10)
-        eventually(fun, attempts - 1)
-
-      nil ->
-        Process.sleep(10)
-        eventually(fun, attempts - 1)
+      empty when empty in [[], false, nil] ->
+        SystemsRuntime.Proc.sleep(10)
+        poll(fun, attempts - 1)
 
       value ->
         value

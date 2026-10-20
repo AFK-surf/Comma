@@ -29,7 +29,6 @@ export type TaskListItemPlaygroundPanelProps = {
 };
 
 const contentIconOptions: Record<string, ContentTaskIconState> = {
-  Backlog: "backlog",
   "In progress": "in-progress",
   "Needs review": "review",
   Done: "done",

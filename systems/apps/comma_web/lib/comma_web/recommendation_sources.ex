@@ -3,6 +3,11 @@ defmodule CommaWeb.RecommendationSources do
 
   alias CommaWeb.RecommendationSourceCatalog
 
+  # These apps read through Salix OAuth Group bindings only. An active Composio
+  # account for one of them is never a Routine source, with or without a
+  # native binding.
+  @native_only_apps ~w(github linear notion slack)
+
   def discover(workspace), do: discover(workspace, nil, "generic", [])
 
   def discover(workspace, user_id, mode), do: discover(workspace, user_id, mode, [])
@@ -16,7 +21,7 @@ defmodule CommaWeb.RecommendationSources do
       when mode in ~w(generic member) and is_list(existing_sources) do
     with :ok <- member_scope(workspace, user_id, mode),
          native = discover_oauth(tenant_id, group_id),
-         {:ok, composio} <- discover_composio(workspace, user_id, mode, existing_sources, native) do
+         {:ok, composio} <- discover_composio(workspace, user_id, mode, existing_sources) do
       {:ok,
        (native ++ composio)
        |> Enum.uniq_by(& &1["connectionId"])
@@ -37,7 +42,7 @@ defmodule CommaWeb.RecommendationSources do
     group_id
     |> Salix.Control.OAuthBindings.list()
     |> Enum.filter(fn binding ->
-      binding["provider"] in ~w(github linear notion slack) and
+      CommaWeb.RecommendationPreviewCatalog.managed?(binding["provider"]) and
         binding["alias"] == binding["provider"] and binding["status"] == "active" and
         binding["enabled"] != false
     end)
@@ -59,33 +64,27 @@ defmodule CommaWeb.RecommendationSources do
          %{"salix_tenant_id" => tenant_id, "default_group_id" => group_id} = workspace,
          user_id,
          mode,
-         existing_sources,
-         native
+         existing_sources
        ) do
     case Salix.Composio.list_all_group_connected_accounts(tenant_id, group_id) do
       {:ok, accounts} when is_list(accounts) ->
         bindings =
           if mode == "member",
-            do: Comma.MemberSourceConsents.bindings(workspace["id"], user_id),
+            do: composio_bindings(workspace["id"], user_id),
             else: %{}
-
-        bindings =
-          if Enum.any?(native, &(&1["appId"] == "slack")),
-            do: Map.delete(bindings, "slack"),
-            else: bindings
 
         {:ok,
          accounts
          |> Enum.filter(&(&1["user_id"] == group_id))
          |> Enum.flat_map(&usable_composio_account/1)
-         |> Enum.reject(fn account ->
-           account.toolkit == "slack" and Enum.any?(native, &(&1["appId"] == "slack"))
-         end)
+         # Outlook is a personal mailbox/calendar source: no generic collection
+         # may bypass owner confirmation of the exact connected account.
+         |> Enum.reject(&(mode == "generic" and &1.toolkit == "outlook"))
          |> selected_accounts(bindings, mode)
          |> Enum.map(&composio_source/1)}
 
       {:error, :not_configured} when mode == "member" ->
-        if existing_composio_choice?(workspace["id"], user_id, existing_sources, native),
+        if existing_composio_choice?(workspace["id"], user_id, existing_sources),
           do: {:error, {:composio_source_discovery_failed, :not_configured}},
           else: {:ok, []}
 
@@ -100,15 +99,19 @@ defmodule CommaWeb.RecommendationSources do
     end
   end
 
-  defp existing_composio_choice?(workspace_id, user_id, sources, native) do
-    slack_managed? = Enum.any?(native, &(&1["appId"] == "slack"))
-    bindings = Comma.MemberSourceConsents.bindings(workspace_id, user_id)
-    bindings = if slack_managed?, do: Map.delete(bindings, "slack"), else: bindings
-
+  # A saved Composio Slack source or consent is not a Routine choice: Slack
+  # reads use the managed binding, so it neither requires Composio nor
+  # surfaces a Composio account.
+  defp existing_composio_choice?(workspace_id, user_id, sources) do
     Enum.any?(sources, fn source ->
-      source["kind"] == "composio" and
-        not (slack_managed? and source["appId"] == "slack")
-    end) or map_size(bindings) > 0
+      source["kind"] == "composio" and source["appId"] not in @native_only_apps
+    end) or map_size(composio_bindings(workspace_id, user_id)) > 0
+  end
+
+  defp composio_bindings(workspace_id, user_id) do
+    workspace_id
+    |> Comma.MemberSourceConsents.bindings(user_id)
+    |> Map.drop(@native_only_apps)
   end
 
   defp selected_accounts(accounts, _bindings, "generic"),
@@ -138,7 +141,7 @@ defmodule CommaWeb.RecommendationSources do
 
     if status in ["active", "connected", "ready"] and present?(toolkit) and present?(id) and
          RecommendationSourceCatalog.supported_composio_toolkit?(toolkit) and
-         toolkit not in ~w(github linear notion),
+         toolkit not in @native_only_apps,
        do: [%{toolkit: toolkit, id: id, connected_at: connected_at(account)}],
        else: []
   end

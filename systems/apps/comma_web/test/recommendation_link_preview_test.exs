@@ -1,49 +1,81 @@
 defmodule CommaWeb.RecommendationLinkPreviewTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
   alias CommaWeb.RecommendationLinkPreview
 
   defmodule Settings do
     def settings(tenant_id), do: {:ok, %{"api_key" => "test", "tenant" => tenant_id}}
   end
 
+  defmodule NoComposio do
+    def settings(_tenant_id), do: {:error, :not_configured}
+  end
+
   defmodule Client do
+    def get_connected_account(_settings, id) do
+      toolkit =
+        cond do
+          String.contains?(id, "calendar") -> "googlecalendar"
+          String.contains?(id, "drive") -> "googledrive"
+          String.contains?(id, "slack") -> "slack"
+          true -> "github"
+        end
+
+      {:ok,
+       %{
+         "id" => id,
+         "user_id" => "grp-1",
+         "toolkit" => %{"slug" => toolkit},
+         "status" => "ACTIVE"
+       }}
+    end
+
     def execute_tool(settings, tool_slug, group_id, arguments, opts) do
-      test_pid = Application.fetch_env!(:comma_web, :recommendation_link_preview_test_pid)
-      send(test_pid, {:execute, settings, tool_slug, group_id, arguments, opts})
-      Application.fetch_env!(:comma_web, :recommendation_link_preview_test_response)
+      test_pid = SystemsRuntime.fetch_env!(:comma_web, :recommendation_link_preview_test_pid)
+
+      SystemsRuntime.Proc.send(
+        test_pid,
+        {:execute, settings, tool_slug, group_id, arguments, opts}
+      )
+
+      SystemsRuntime.fetch_env!(:comma_web, :recommendation_link_preview_test_response)
     end
 
     def create_proxy_session(_settings, group_id, account_id, toolkit, _opts) do
-      send(
-        Application.fetch_env!(:comma_web, :recommendation_link_preview_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :recommendation_link_preview_test_pid),
         {:proxy_session, group_id, account_id, toolkit}
       )
 
-      Application.get_env(:comma_web, :recommendation_link_preview_test_session, {:ok, "sess-1"})
+      SystemsRuntime.get_env(
+        :comma_web,
+        :recommendation_link_preview_test_session,
+        {:ok, "sess-1"}
+      )
     end
 
     def proxy_execute(_settings, session_id, request, _opts) do
-      send(
-        Application.fetch_env!(:comma_web, :recommendation_link_preview_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :recommendation_link_preview_test_pid),
         {:proxy, session_id, request}
       )
 
       # Multi-request reads (Slack) queue ordered answers; single-request
       # reads keep the one shared response.
-      case Application.get_env(:comma_web, :recommendation_link_preview_test_responses) do
+      case SystemsRuntime.get_env(:comma_web, :recommendation_link_preview_test_responses) do
         [next | rest] ->
-          Application.put_env(:comma_web, :recommendation_link_preview_test_responses, rest)
+          SystemsRuntime.put_env(:comma_web, :recommendation_link_preview_test_responses, rest)
           next
 
         _ ->
-          Application.fetch_env!(:comma_web, :recommendation_link_preview_test_response)
+          SystemsRuntime.fetch_env!(:comma_web, :recommendation_link_preview_test_response)
       end
     end
 
     def delete_proxy_session(_settings, session_id) do
-      send(
-        Application.fetch_env!(:comma_web, :recommendation_link_preview_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :recommendation_link_preview_test_pid),
         {:proxy_closed, session_id}
       )
 
@@ -61,15 +93,20 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       :recommendation_link_preview_test_session
     ]
 
-    previous = Map.new(keys, &{&1, Application.get_env(:comma_web, &1)})
-    Application.put_env(:comma_web, :recommendation_composio_client_mod, Client)
-    Application.put_env(:comma_web, :recommendation_composio_settings_mod, Settings)
-    Application.put_env(:comma_web, :recommendation_link_preview_test_pid, self())
+    previous = Map.new(keys, &{&1, SystemsRuntime.get_env(:comma_web, &1)})
+    SystemsRuntime.put_env(:comma_web, :recommendation_composio_client_mod, Client)
+    SystemsRuntime.put_env(:comma_web, :recommendation_composio_settings_mod, Settings)
+
+    SystemsRuntime.put_env(
+      :comma_web,
+      :recommendation_link_preview_test_pid,
+      SystemsRuntime.Proc.self()
+    )
 
     on_exit(fn ->
       Enum.each(previous, fn
-        {key, nil} -> Application.delete_env(:comma_web, key)
-        {key, value} -> Application.put_env(:comma_web, key, value)
+        {key, nil} -> SystemsRuntime.delete_env(:comma_web, key)
+        {key, value} -> SystemsRuntime.put_env(:comma_web, key, value)
       end)
     end)
 
@@ -100,7 +137,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       )
 
       assert {:ok, preview} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("linear", "ca-linear"), source("github", "ca-github")],
                  "https://github.com/AFK-surf/Comma/pull/845/",
@@ -134,7 +171,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       )
 
       assert {:ok, %{"state" => "open", "title" => "Open PR", "author" => nil}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("github", "ca-github")],
                  "https://github.com/AFK-surf/Comma/pull/12",
@@ -149,7 +186,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       respond({:ok, %{"successful" => true, "data" => %{"state" => "open", "draft" => true}}})
 
       assert {:ok, %{"state" => "draft"}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("github", "ca-github")],
                  "https://github.com/AFK-surf/Comma/pull/12",
@@ -159,7 +196,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       respond({:ok, %{"successful" => true, "data" => %{"state" => "closed", "merged" => false}}})
 
       assert {:ok, %{"state" => "closed"}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("github", "ca-github")],
                  "https://github.com/AFK-surf/Comma/pull/12",
@@ -196,7 +233,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       )
 
       assert {:ok, preview} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("github", "ca-github"), source("linear", "ca-linear")],
                  "https://linear.app/comma/issue/COMMA-143/fix-onboarding-crash",
@@ -238,7 +275,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       )
 
       assert {:ok, %{"title" => "Nested", "state" => nil, "assignee" => nil}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("linear", "ca-linear")],
                  "https://linear.app/comma/issue/COMMA-1",
@@ -248,7 +285,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       respond({:ok, %{"successful" => true, "data" => %{"issue" => nil}}})
 
       assert {:error, :not_found} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("linear", "ca-linear")],
                  "https://linear.app/comma/issue/COMMA-404",
@@ -287,7 +324,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       )
 
       assert {:ok, preview} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("notion", "ca-notion")],
                  "https://www.notion.so/comma/Q3-plan-4b8e7d0d9f1a4ed89d6ba8d11080a812",
@@ -321,7 +358,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       )
 
       assert {:ok, %{"title" => "Untitled", "icon" => nil, "parent" => "workspace"}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("notion", "ca-notion")],
                  "https://notion.so/4b8e7d0d9f1a4ed89d6ba8d11080a812?pvs=4",
@@ -359,7 +396,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       )
 
       assert {:ok, preview} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("googlecalendar", "ca-calendar")],
                  @event_href,
@@ -402,7 +439,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       )
 
       assert {:error, :not_found} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("googlecalendar", "ca-calendar")],
                  @event_href,
@@ -421,7 +458,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
         )
 
         assert {:error, :not_found} =
-                 RecommendationLinkPreview.preview(
+                 authorized_preview(
                    workspace(),
                    [source("googlecalendar", "ca-calendar")],
                    @event_href,
@@ -439,7 +476,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       )
 
       assert {:ok, %{"title" => "Default visibility"}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("googlecalendar", "ca-calendar")],
                  @event_href,
@@ -464,7 +501,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
 
       assert {:ok,
               %{"allDay" => true, "startsAt" => 1_788_220_800_000, "endsAt" => 1_788_307_200_000}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("googlecalendar", "ca-calendar")],
                  "https://calendar.google.com/calendar/u/0/r/eventedit/ZXZ0MTIzIHphbndlaUBjb21tYS5sb2NhbA",
@@ -478,13 +515,65 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
     @message_href "https://comma-local.slack.com/archives/C01234567/p1786900000000200"
     @message_ts "1786900000.000200"
     @thread_ts "1786899000.000100"
+    @token "xoxp-managed-user-token"
 
-    # The session's first request binds the permalink's workspace subdomain.
-    @auth_ok {:ok,
-              %{
-                "status" => 200,
-                "data" => %{"ok" => true, "url" => "https://comma-local.slack.com/"}
-              }}
+    # The first request binds the permalink's workspace subdomain.
+    # The token must also answer as the viewer's own member identity.
+    @auth_ok %{
+      "ok" => true,
+      "url" => "https://comma-local.slack.com/",
+      "user_id" => "UVIEWER",
+      "team_id" => "TCOMMA"
+    }
+
+    # Slack reads use the Group's managed Slack binding, not a Composio
+    # account: the Web API is stubbed through Req.Test and the binding is
+    # seeded like the Comma Slack plugin's completed authorization.
+    setup do
+      Req.Test.set_req_test_to_shared()
+
+      previous =
+        for {app, key} <- [
+              {:comma_web, :recommendation_oauth_http_options},
+              {:salix_store, :s3_backend}
+            ],
+            do: {app, key, SystemsRuntime.get_env(app, key)}
+
+      SystemsRuntime.put_env(:comma_web, :recommendation_oauth_http_options,
+        plug: {Req.Test, __MODULE__}
+      )
+
+      SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+
+      if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake),
+        do: SalixStore.S3.Fake.reset(),
+        else: start_supervised!(SalixStore.S3.Fake)
+
+      on_exit(fn ->
+        Enum.each(previous, fn
+          {app, key, nil} -> SystemsRuntime.delete_env(app, key)
+          {app, key, value} -> SystemsRuntime.put_env(app, key, value)
+        end)
+      end)
+
+      connection = "conn-slack-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+      :ok =
+        SalixStore.OAuth.put(connection, %{
+          "connection_id" => connection,
+          "tenant" => "ten-1",
+          "provider" => "slack",
+          "status" => "active",
+          "access_token" => @token,
+          "comma_member" => %{"user_id" => "test-viewer", "workspace_id" => "wsp-1"},
+          "metadata" => %{"metadata" => %{"authed_user_id" => "UVIEWER", "team_id" => "TCOMMA"}}
+        })
+
+      {:ok, binding, nil} =
+        Salix.Control.OAuthBindings.put("ten-1", "grp-1", "slack", "slack", connection)
+
+      %{binding: binding, source: managed_slack(binding["binding_id"])}
+    end
 
     test "decodes the permalink into channel id + ts and rejects near misses" do
       assert {:ok, {:slack_message, "comma-local.slack.com", "C01234567", @message_ts, nil}} =
@@ -514,47 +603,41 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       end
     end
 
-    test "reads the message and its garnishes through one Tool Router session" do
-      respond_queue([
-        @auth_ok,
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{
-             "ok" => true,
-             "messages" => [
-               %{"ts" => @message_ts, "text" => "Ship the launch review", "user" => "U777"}
-             ]
-           }
-         }},
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{"ok" => true, "channel" => %{"id" => "C01234567", "name" => "launch"}}
-         }},
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{
-             "ok" => true,
-             "user" => %{
-               "name" => "zanwei.guo",
-               "real_name" => "Zanwei Guo",
-               "profile" => %{
-                 "display_name" => "zanwei",
-                 "image_72" => "https://avatars.example/zanwei-72"
-               }
-             }
-           }
-         }}
-      ])
+    test "reads the message and its garnishes with the managed binding's user token", ctx do
+      # No Composio configuration is needed for a Slack link.
+      SystemsRuntime.put_env(:comma_web, :recommendation_composio_settings_mod, NoComposio)
+
+      slack_api(%{
+        "/api/auth.test" => @auth_ok,
+        "/api/conversations.history" => %{
+          "ok" => true,
+          "messages" => [
+            %{"ts" => @message_ts, "text" => "Ship the launch review", "user" => "U777"}
+          ]
+        },
+        "/api/conversations.info" => %{
+          "ok" => true,
+          "channel" => %{"id" => "C01234567", "name" => "launch"}
+        },
+        "/api/users.info" => %{
+          "ok" => true,
+          "user" => %{
+            "name" => "zanwei.guo",
+            "real_name" => "Zanwei Guo",
+            "profile" => %{
+              "display_name" => "zanwei",
+              "image_72" => "https://avatars.example/zanwei-72"
+            }
+          }
+        }
+      })
 
       assert {:ok, preview} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
-                 [source("googlecalendar", "ca-calendar"), source("slack", "ca-slack")],
+                 [source("googlecalendar", "ca-calendar"), ctx.source],
                  @message_href,
-                 "ca-slack"
+                 ctx.source["connectionId"]
                )
 
       assert preview == %{
@@ -569,53 +652,41 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
                "postedAt" => 1_786_900_000_000
              }
 
-      assert_received {:proxy_session, "grp-1", "ca-slack", "slack"}
+      bearer = ["Bearer " <> @token]
 
-      # The session's first request binds the permalink's workspace.
-      assert_received {:proxy, "sess-1", %{"toolkit_slug" => "slack", "endpoint" => auth}}
-      assert auth == "https://slack.com/api/auth.test"
+      # The workspace binding comes first, then the required message read,
+      # then the garnishes, each with the managed user token.
+      assert_received {:slack, "/api/auth.test", _, ^bearer}
 
-      # A plain permalink still reads through conversations.history.
-      assert_received {:proxy, "sess-1", %{"toolkit_slug" => "slack", "endpoint" => history}}
-
-      assert history ==
-               "https://slack.com/api/conversations.history?channel=C01234567&latest=#{@message_ts}&inclusive=true&limit=1"
-
-      assert_received {:proxy, "sess-1",
+      assert_received {:slack, "/api/conversations.history",
                        %{
-                         "endpoint" =>
-                           "https://slack.com/api/conversations.info?channel=C01234567"
-                       }}
+                         "channel" => "C01234567",
+                         "latest" => @message_ts,
+                         "inclusive" => "true",
+                         "limit" => "1"
+                       }, ^bearer}
 
-      assert_received {:proxy, "sess-1",
-                       %{"endpoint" => "https://slack.com/api/users.info?user=U777"}}
-
-      # All four requests share the one session, closed exactly once.
-      assert_received {:proxy_closed, "sess-1"}
+      assert_received {:slack, "/api/conversations.info", %{"channel" => "C01234567"}, ^bearer}
+      assert_received {:slack, "/api/users.info", %{"user" => "U777"}, ^bearer}
       refute_received {:proxy_session, _, _, _}
-      refute_received {:proxy_closed, _}
     end
 
-    test "trims long text and keeps failed garnishes silent" do
-      respond_queue([
-        @auth_ok,
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{
-             "ok" => true,
-             "messages" => [%{"ts" => @message_ts, "text" => String.duplicate("a", 300)}]
-           }
-         }},
-        {:ok, %{"status" => 200, "data" => %{"ok" => false, "error" => "missing_scope"}}}
-      ])
+    test "trims long text and keeps failed garnishes silent", ctx do
+      slack_api(%{
+        "/api/auth.test" => @auth_ok,
+        "/api/conversations.history" => %{
+          "ok" => true,
+          "messages" => [%{"ts" => @message_ts, "text" => String.duplicate("a", 300)}]
+        },
+        "/api/conversations.info" => %{"ok" => false, "error" => "missing_scope"}
+      })
 
       assert {:ok, preview} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
-                 [source("slack", "ca-slack")],
+                 [ctx.source],
                  @message_href,
-                 "ca-slack"
+                 ctx.source["connectionId"]
                )
 
       assert preview["channel"] == %{"id" => "C01234567", "name" => nil}
@@ -623,133 +694,103 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       assert preview["author"] == nil
       assert String.length(preview["text"]) == 280
       assert String.ends_with?(preview["text"], "…")
-      refute_received {:proxy, _, %{"endpoint" => "https://slack.com/api/users.info" <> _}}
+      refute_received {:slack, "/api/users.info", _, _}
     end
 
-    test "maps Slack's ok:false answers to missing or unavailable" do
-      respond_queue([
-        @auth_ok,
-        {:ok, %{"status" => 200, "data" => %{"ok" => false, "error" => "channel_not_found"}}}
-      ])
+    test "maps Slack's ok:false answers to missing or unavailable", ctx do
+      preview = fn ->
+        authorized_preview(
+          workspace(),
+          [ctx.source],
+          @message_href,
+          ctx.source["connectionId"]
+        )
+      end
 
-      assert {:error, :not_found} =
-               RecommendationLinkPreview.preview(
-                 workspace(),
-                 [source("slack", "ca-slack")],
-                 @message_href,
-                 "ca-slack"
-               )
+      slack_api(%{
+        "/api/auth.test" => @auth_ok,
+        "/api/conversations.history" => %{"ok" => false, "error" => "channel_not_found"}
+      })
 
-      assert_received {:proxy_closed, "sess-1"}
+      assert {:error, :not_found} = preview.()
 
-      respond_queue([
-        @auth_ok,
-        {:ok, %{"status" => 200, "data" => %{"ok" => false, "error" => "ratelimited"}}}
-      ])
+      slack_api(%{
+        "/api/auth.test" => @auth_ok,
+        "/api/conversations.history" => %{"ok" => false, "error" => "ratelimited"}
+      })
 
-      assert {:error, {:unavailable, {:slack_api, "ratelimited"}}} =
-               RecommendationLinkPreview.preview(
-                 workspace(),
-                 [source("slack", "ca-slack")],
-                 @message_href,
-                 "ca-slack"
-               )
+      assert {:error, {:unavailable, {:slack_api, "ratelimited"}}} = preview.()
+
+      # Slack also rate-limits outside its envelope.
+      slack_api(%{"/api/auth.test" => {429, %{"ok" => false, "error" => "ratelimited"}}})
+      assert {:error, {:unavailable, {:slack_http, 429}}} = preview.()
 
       # The nearest earlier message is not the linked message.
-      respond_queue([
-        @auth_ok,
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{
-             "ok" => true,
-             "messages" => [%{"ts" => "1786899999.000100", "text" => "earlier"}]
-           }
-         }}
-      ])
+      slack_api(%{
+        "/api/auth.test" => @auth_ok,
+        "/api/conversations.history" => %{
+          "ok" => true,
+          "messages" => [%{"ts" => "1786899999.000100", "text" => "earlier"}]
+        }
+      })
 
-      assert {:error, :not_found} =
-               RecommendationLinkPreview.preview(
-                 workspace(),
-                 [source("slack", "ca-slack")],
-                 @message_href,
-                 "ca-slack"
-               )
+      assert {:error, :not_found} = preview.()
     end
 
-    test "replaces one missing Tool Router session for the required read only" do
-      respond_queue([
-        # The stale session dies on its first request (auth.test)...
-        {:error, :not_found},
-        # ...and the replacement session re-runs the workspace binding.
-        @auth_ok,
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{
-             "ok" => true,
-             "messages" => [%{"ts" => @message_ts, "text" => "Recovered"}]
-           }
-         }},
-        {:ok, %{"status" => 200, "data" => %{"ok" => true, "channel" => %{"name" => "launch"}}}}
-      ])
+    test "binds the permalink's workspace before any message read", ctx do
+      preview = fn ->
+        authorized_preview(
+          workspace(),
+          [ctx.source],
+          @message_href,
+          ctx.source["connectionId"]
+        )
+      end
 
-      assert {:ok, %{"text" => "Recovered", "channel" => %{"name" => "launch"}}} =
-               RecommendationLinkPreview.preview(
-                 workspace(),
-                 [source("slack", "ca-slack")],
-                 @message_href,
-                 "ca-slack"
-               )
+      # A foreign subdomain never dresses itself in this workspace's messages.
+      slack_api(%{
+        "/api/auth.test" => %{@auth_ok | "url" => "https://other-team.slack.com/"},
+        "/api/conversations.history" => %{
+          "ok" => true,
+          "messages" => [%{"ts" => @message_ts, "text" => "Leaked"}]
+        }
+      })
 
-      assert_received {:proxy_session, "grp-1", "ca-slack", "slack"}
-      assert_received {:proxy_closed, "sess-1"}
-      assert_received {:proxy_session, "grp-1", "ca-slack", "slack"}
-      assert_received {:proxy_closed, "sess-1"}
+      assert {:error, :not_found} = preview.()
+      refute_received {:slack, "/api/conversations.history", _, _}
 
-      respond_queue([{:error, :not_found}, {:error, :not_found}])
-
-      assert {:error, {:unavailable, :composio_proxy_session_unavailable}} =
-               RecommendationLinkPreview.preview(
-                 workspace(),
-                 [source("slack", "ca-slack")],
-                 @message_href,
-                 "ca-slack"
-               )
+      # An unverifiable team never skips the check.
+      slack_api(%{"/api/auth.test" => %{"ok" => false, "error" => "invalid_auth"}})
+      assert {:error, {:unavailable, {:slack_api, "invalid_auth"}}} = preview.()
+      refute_received {:slack, "/api/conversations.history", _, _}
     end
 
-    test "reads a thread reply through conversations.replies pinned to the exact ts" do
-      respond_queue([
-        @auth_ok,
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{
-             "ok" => true,
-             "messages" => [
-               %{"ts" => @thread_ts, "text" => "Parent", "user" => "U111"},
-               %{"ts" => @message_ts, "text" => "The reply", "user" => "U777"}
-             ]
-           }
-         }},
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{"ok" => true, "channel" => %{"id" => "C01234567", "name" => "launch"}}
-         }},
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{"ok" => true, "user" => %{"profile" => %{"display_name" => "zanwei"}}}
-         }}
-      ])
+    test "reads a thread reply through conversations.replies pinned to the exact ts", ctx do
+      slack_api(%{
+        "/api/auth.test" => @auth_ok,
+        "/api/conversations.replies" => %{
+          "ok" => true,
+          "messages" => [
+            %{"ts" => @thread_ts, "text" => "Parent", "user" => "U111"},
+            %{"ts" => @message_ts, "text" => "The reply", "user" => "U777"}
+          ]
+        },
+        "/api/conversations.info" => %{
+          "ok" => true,
+          "channel" => %{"id" => "C01234567", "name" => "launch"}
+        },
+        "/api/users.info" => %{
+          "ok" => true,
+          "user" => %{"profile" => %{"display_name" => "zanwei"}}
+        }
+      })
 
       assert {:ok, preview} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
-                 [source("slack", "ca-slack")],
+                 [ctx.source],
                  @message_href <> "?thread_ts=#{@thread_ts}&cid=C01234567",
-                 "ca-slack"
+                 ctx.source["connectionId"]
                )
 
       # The reply itself is previewed, not the thread parent Slack lists first.
@@ -757,91 +798,84 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       assert preview["postedAt"] == 1_786_900_000_000
       assert preview["author"] == %{"name" => "zanwei", "avatarUrl" => nil}
 
-      assert_received {:proxy, "sess-1", %{"endpoint" => "https://slack.com/api/auth.test"}}
-      assert_received {:proxy, "sess-1", %{"toolkit_slug" => "slack", "endpoint" => replies}}
+      assert_received {:slack, "/api/conversations.replies",
+                       %{
+                         "channel" => "C01234567",
+                         "ts" => @thread_ts,
+                         "latest" => @message_ts,
+                         "inclusive" => "true",
+                         "limit" => "1"
+                       }, _}
 
-      assert replies ==
-               "https://slack.com/api/conversations.replies?channel=C01234567" <>
-                 "&ts=#{@thread_ts}&latest=#{@message_ts}&inclusive=true&limit=1"
-
-      refute_received {:proxy, _,
-                       %{"endpoint" => "https://slack.com/api/conversations.history" <> _}}
+      refute_received {:slack, "/api/conversations.history", _, _}
     end
 
-    test "treats a reply missing from its thread window as not found" do
-      respond_queue([
-        @auth_ok,
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{"ok" => true, "messages" => [%{"ts" => @thread_ts, "text" => "Parent"}]}
-         }}
-      ])
+    test "treats a reply missing from its thread window as not found", ctx do
+      preview = fn ->
+        authorized_preview(
+          workspace(),
+          [ctx.source],
+          @message_href <> "?thread_ts=#{@thread_ts}",
+          ctx.source["connectionId"]
+        )
+      end
 
-      assert {:error, :not_found} =
-               RecommendationLinkPreview.preview(
-                 workspace(),
-                 [source("slack", "ca-slack")],
-                 @message_href <> "?thread_ts=#{@thread_ts}",
-                 "ca-slack"
-               )
+      slack_api(%{
+        "/api/auth.test" => @auth_ok,
+        "/api/conversations.replies" => %{
+          "ok" => true,
+          "messages" => [%{"ts" => @thread_ts, "text" => "Parent"}]
+        }
+      })
 
-      respond_queue([
-        @auth_ok,
-        {:ok, %{"status" => 200, "data" => %{"ok" => false, "error" => "thread_not_found"}}}
-      ])
+      assert {:error, :not_found} = preview.()
 
-      assert {:error, :not_found} =
-               RecommendationLinkPreview.preview(
-                 workspace(),
-                 [source("slack", "ca-slack")],
-                 @message_href <> "?thread_ts=#{@thread_ts}",
-                 "ca-slack"
-               )
+      slack_api(%{
+        "/api/auth.test" => @auth_ok,
+        "/api/conversations.replies" => %{"ok" => false, "error" => "thread_not_found"}
+      })
+
+      assert {:error, :not_found} = preview.()
     end
 
-    test "never previews a foreign workspace's permalink over the connected account" do
-      respond_queue([@auth_ok])
+    test "a Composio Slack source or a disabled binding is never a preview reader", ctx do
+      slack_api(%{"/api/auth.test" => @auth_ok})
 
+      # The sourceId pins a saved Composio Slack account: no reader.
       assert {:error, :not_found} =
-               RecommendationLinkPreview.preview(
-                 workspace(),
-                 [source("slack", "ca-slack")],
-                 "https://evil.slack.com/archives/C01234567/p1786900000000200",
-                 "ca-slack"
-               )
-
-      assert_received {:proxy, "sess-1", %{"endpoint" => "https://slack.com/api/auth.test"}}
-      assert_received {:proxy_closed, "sess-1"}
-      # No message, channel, or user read follows the failed binding.
-      refute_received {:proxy, _, _}
-    end
-
-    test "requires a verifiable workspace before reading any message" do
-      respond_queue([
-        {:ok, %{"status" => 200, "data" => %{"ok" => false, "error" => "invalid_auth"}}}
-      ])
-
-      assert {:error, {:unavailable, {:slack_api, "invalid_auth"}}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("slack", "ca-slack")],
                  @message_href,
                  "ca-slack"
                )
 
-      assert_received {:proxy_closed, "sess-1"}
-      refute_received {:proxy, _, %{"endpoint" => "https://slack.com/api/conversations." <> _}}
-
-      respond_queue([{:ok, %{"status" => 500, "data" => %{}}}])
-
-      assert {:error, {:unavailable, {:slack_http, 500}}} =
-               RecommendationLinkPreview.preview(
+      # A disabled managed source is not a reader either.
+      assert {:error, :not_found} =
+               authorized_preview(
                  workspace(),
-                 [source("slack", "ca-slack")],
+                 [Map.put(ctx.source, "enabled", false)],
                  @message_href,
-                 "ca-slack"
+                 ctx.source["connectionId"]
                )
+
+      refute_received {:slack, _, _, _}
+      refute_received {:proxy_session, _, _, _}
+    end
+
+    test "a revoked managed binding is an unavailable reader, not a missing message", ctx do
+      slack_api(%{"/api/auth.test" => @auth_ok})
+      _ = Salix.Control.OAuthBindings.delete("grp-1", ctx.binding["binding_id"])
+
+      assert {:error, {:unavailable, :member_identity_unavailable}} =
+               authorized_preview(
+                 workspace(),
+                 [ctx.source],
+                 @message_href,
+                 ctx.source["connectionId"]
+               )
+
+      refute_received {:slack, _, _, _}
     end
   end
 
@@ -878,7 +912,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
             "https://docs.google.com/spreadsheets/d/e/2PACX-1vRabc/pubhtml"
           ] do
         assert {:error, :not_found} =
-                 RecommendationLinkPreview.preview(
+                 authorized_preview(
                    workspace(),
                    [source("googledrive", "ca-drive")],
                    href,
@@ -903,7 +937,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       )
 
       assert {:ok, %{"title" => "Launch brief", "owner" => nil}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("googledrive", "ca-drive")],
                  "https://drive.google.com/file/d/1AbC_def-123/view",
@@ -930,7 +964,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       )
 
       assert {:ok, preview} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("googledrive", "ca-drive")],
                  "https://docs.google.com/document/d/1AbC_def-123/edit?usp=sharing",
@@ -971,7 +1005,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
         respond({:ok, %{"status" => 200, "data" => %{"mimeType" => mime, "size" => "482133"}}})
 
         assert {:ok, %{"fileKind" => ^kind, "size" => 482_133}} =
-                 RecommendationLinkPreview.preview(
+                 authorized_preview(
                    workspace(),
                    [source("googledrive", "ca-drive")],
                    "https://drive.google.com/file/d/1AbC_def-123/view",
@@ -990,7 +1024,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
                 "size" => nil,
                 "href" => "https://drive.google.com/open?id=1AbC_def-123"
               }} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("googledrive", "ca-drive")],
                  "https://drive.google.com/open?id=1AbC_def-123",
@@ -1002,7 +1036,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       respond({:ok, %{"status" => 404, "data" => %{}}})
 
       assert {:error, :not_found} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("googledrive", "ca-drive")],
                  "https://drive.google.com/file/d/1AbC_def-123/view",
@@ -1014,7 +1048,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       respond({:ok, %{"status" => 403, "data" => %{}}})
 
       assert {:error, {:unavailable, {:google_drive_http, 403}}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("googledrive", "ca-drive")],
                  "https://drive.google.com/file/d/1AbC_def-123/view",
@@ -1029,7 +1063,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       ])
 
       assert {:ok, %{"title" => "Recovered brief"}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("googledrive", "ca-drive")],
                  "https://drive.google.com/file/d/1AbC_def-123/view",
@@ -1054,7 +1088,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
             "https://www.google.com/calendar/event?eid=%%%"
           ] do
         assert {:error, :not_found} =
-                 RecommendationLinkPreview.preview(
+                 authorized_preview(
                    workspace(),
                    [
                      source("github", "ca-github"),
@@ -1067,7 +1101,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       end
 
       assert {:error, {:bad_request, _}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("github", "ca-github")],
                  nil,
@@ -1082,7 +1116,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       disabled = Map.put(source("github", "ca-github"), "enabled", false)
 
       assert {:error, :not_found} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("linear", "ca-linear"), disabled],
                  "https://github.com/AFK-surf/Comma/pull/845",
@@ -1090,7 +1124,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
                )
 
       assert {:error, :not_found} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("github", "ca-github")],
                  "https://linear.app/comma/issue/COMMA-143",
@@ -1104,7 +1138,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       respond({:ok, %{"successful" => false, "error" => "rate limited"}})
 
       assert {:error, {:unavailable, {:provider_failed, "rate limited"}}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("github", "ca-github")],
                  "https://github.com/AFK-surf/Comma/pull/845",
@@ -1114,7 +1148,7 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       respond({:error, :timeout})
 
       assert {:error, {:unavailable, :timeout}} =
-               RecommendationLinkPreview.preview(
+               authorized_preview(
                  workspace(),
                  [source("notion", "ca-notion")],
                  "https://www.notion.so/4b8e7d0d9f1a4ed89d6ba8d11080a812",
@@ -1124,13 +1158,78 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
   end
 
   defp respond(response),
-    do: Application.put_env(:comma_web, :recommendation_link_preview_test_response, response)
+    do: SystemsRuntime.put_env(:comma_web, :recommendation_link_preview_test_response, response)
 
   defp respond_queue(responses),
-    do: Application.put_env(:comma_web, :recommendation_link_preview_test_responses, responses)
+    do: SystemsRuntime.put_env(:comma_web, :recommendation_link_preview_test_responses, responses)
+
+  test "production preview never borrows a group Composio account without viewer consent" do
+    owner = Ecto.Adapters.SQL.Sandbox.start_owner!(Comma.Repo, shared: true)
+    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
+    workspace = Map.put(workspace(), "owner_user_id", "viewer-no-consent")
+    viewer = workspace["owner_user_id"]
+
+    for href <- [
+          "https://workspace.slack.com/archives/C01234567/p1786900000000200",
+          "https://drive.google.com/file/d/1AbC_dEf-9/view",
+          "https://www.google.com/calendar/event?eid=ZXZ0MTIzIHphbndlaUBjb21tYS5sb2NhbA"
+        ] do
+      assert {:error, :not_found} =
+               CommaWeb.RecommendationLinkPreview.preview_connected(
+                 workspace,
+                 href,
+                 "unconsented-group-account",
+                 viewer
+               )
+    end
+
+    # Outlook collection exists on main, but these opaque web links do not
+    # establish a resource ID suitable for a bounded, authorized Graph read.
+    for href <- [
+          "https://outlook.office.com/mail/deeplink/read/opaque",
+          "https://outlook.office.com/calendar/item/opaque",
+          "https://mail.google.com/mail/#inbox/opaque"
+        ] do
+      assert {:error, :not_found} =
+               CommaWeb.RecommendationLinkPreview.parse_href(href)
+    end
+  end
 
   defp workspace,
     do: %{"id" => "wsp-1", "default_group_id" => "grp-1", "salix_tenant_id" => "ten-1"}
+
+  # Answers by Web API path. A `{status, body}` answer sets the HTTP status.
+  # Every request reports its path, query and authorization to the test.
+  defp slack_api(answers) do
+    test_pid = SystemsRuntime.Proc.self()
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      conn = Plug.Conn.fetch_query_params(conn)
+
+      SystemsRuntime.Proc.send(
+        test_pid,
+        {:slack, conn.request_path, conn.query_params,
+         Plug.Conn.get_req_header(conn, "authorization")}
+      )
+
+      case Map.fetch(answers, conn.request_path) do
+        {:ok, {status, body}} -> conn |> Plug.Conn.put_status(status) |> Req.Test.json(body)
+        {:ok, body} -> Req.Test.json(conn, body)
+        :error -> Req.Test.json(conn, %{"ok" => false, "error" => "unknown_method"})
+      end
+    end)
+  end
+
+  defp managed_slack(binding_id) do
+    %{
+      "appId" => "slack",
+      "appName" => "Slack",
+      "connectionId" => binding_id,
+      "enabled" => true,
+      "kind" => "managed_oauth",
+      "toolkit" => "slack"
+    }
+  end
 
   defp source(toolkit, connection_id) do
     %{
@@ -1141,5 +1240,11 @@ defmodule CommaWeb.RecommendationLinkPreviewTest do
       "kind" => "composio",
       "toolkit" => toolkit
     }
+  end
+
+  defp authorized_preview(workspace, sources, href, source_id) do
+    viewer = workspace["owner_user_id"] || "test-viewer"
+    workspace = Map.put(workspace, "owner_user_id", viewer)
+    CommaWeb.RecommendationLinkPreview.preview(workspace, sources, href, source_id, viewer)
   end
 end

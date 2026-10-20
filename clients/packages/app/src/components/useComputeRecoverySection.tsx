@@ -1,16 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useContext, useEffect, useRef, useState } from "react";
 import { getNativeBridge, type ComputeRecoveryCandidates } from "@comma/native-bridge";
 import { useCommaMessages } from "@comma/i18n/react";
-import { Dialog, type SettingsPanelSection } from "@comma/ui";
+import { CommaAuthContext } from "./auth-context";
+import { computeOperationMessage } from "./useComputeNode";
+import { Dialog } from "@comma/ui/components/dialog";
 
 /** Manual bounded recovery discovery. A candidate key is valid only in Main's current Session. */
 export function useComputeRecoverySection(
   workspaceId: string | undefined,
   confirmationId: string | undefined,
-  onRecovered: () => void
+  onRecovered: () => void,
+  workspaceName?: string
 ) {
   const m = useCommaMessages(),
     bridge = getNativeBridge();
+  const auth = useContext(CommaAuthContext);
   const [page, setPage] = useState<ComputeRecoveryCandidates>();
   const [selection, setSelection] = useState<string>();
   const [pending, setPending] = useState(false),
@@ -33,58 +37,15 @@ export function useComputeRecoverySection(
         workspaceId,
         ...(cursor ? { cursor } : {}),
       });
-      if (epoch.current === current) setPage(next);
+      if (epoch.current !== current) return;
+      setPage(next);
+      if (!cursor && next.candidates.length === 1 && !next.nextCursor)
+        setSelection(next.candidates[0]!.key);
     } catch (reason) {
-      if (epoch.current === current)
-        setError(reason instanceof Error ? reason.message : String(reason));
+      if (epoch.current === current) setError(computeOperationMessage(reason, m));
     } finally {
       if (epoch.current === current) setPending(false);
     }
-  };
-  const section: SettingsPanelSection = {
-    id: "compute-node.recovery",
-    title: m.compute_recovery_title(),
-    items: [
-      {
-        id: "compute-node.recovery.find",
-        title: m.compute_recovery_find(),
-        description:
-          page?.candidates.length === 0
-            ? m.compute_recovery_none()
-            : m.compute_recovery_explanation(),
-        ...(error ? { errorMessage: error } : {}),
-        control: {
-          type: "button",
-          label: m.compute_recovery_find(),
-          disabled: pending || !workspaceId,
-          onPress: () => void discover(),
-        },
-      },
-      ...(page?.candidates.map((row) => ({
-        id: row.key,
-        title: m.compute_recovery_candidate({ id: row.label }),
-        control: {
-          type: "button" as const,
-          label: m.compute_recovery_title(),
-          disabled: pending,
-          onPress: () => setSelection(row.key),
-        },
-      })) ?? []),
-      ...(page?.nextCursor
-        ? [
-            {
-              id: "compute-node.recovery.next",
-              title: m.compute_recovery_next(),
-              control: {
-                type: "button" as const,
-                label: m.compute_recovery_next(),
-                disabled: pending,
-                onPress: () => void discover(page.nextCursor),
-              },
-            },
-          ]
-        : []),
-    ],
   };
   const overlay =
     selection && page ? (
@@ -123,7 +84,7 @@ export function useComputeRecoverySection(
                 })
                 .catch((reason: unknown) => {
                   if (epoch.current === current)
-                    setError(reason instanceof Error ? reason.message : String(reason));
+                    setError(computeOperationMessage(reason, m));
                 })
                 .finally(() => {
                   if (epoch.current === current) setPending(false);
@@ -131,7 +92,36 @@ export function useComputeRecoverySection(
             },
           },
         ]}
-      />
+      >
+        <dl className="compute-recovery-facts">
+          <div>
+            <dt>{m.compute_ui_account()}</dt>
+            <dd>{auth?.userEmail ?? m.compute_ui_account_unknown()}</dd>
+          </div>
+          {page.candidates
+            .filter((row) => row.key === selection)
+            .map((row) => (
+              <Fragment key={row.key}>
+                <div>
+                  <dt>{m.compute_ui_device()}</dt>
+                  <dd>{row.machine ?? row.label}</dd>
+                </div>
+                <div>
+                  <dt>{m.compute_ui_workspace()}</dt>
+                  <dd>
+                    {row.workspaceId === workspaceId
+                      ? (workspaceName ?? row.workspaceId)
+                      : row.workspaceId}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{m.compute_ui_service()}</dt>
+                  <dd>{row.endpoint ?? m.compute_activity_unknown()}</dd>
+                </div>
+              </Fragment>
+            ))}
+        </dl>
+      </Dialog>
     ) : undefined;
-  return { section, overlay };
+  return { page, pending, error, select: setSelection, overlay, discover };
 }

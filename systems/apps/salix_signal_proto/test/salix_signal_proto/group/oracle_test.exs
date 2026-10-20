@@ -5,7 +5,7 @@ defmodule SalixSignalProto.Group.OracleTest do
   # accept or reject the same inputs. Operations with internal oracle
   # randomness (sender key signatures) run as round trips. Run with
   # `--include signal_oracle` and COMMA_SIGNAL_ORACLE=host:port.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.Group.{
@@ -363,7 +363,7 @@ defmodule SalixSignalProto.Group.OracleTest do
               plaintexts <- list_of(binary(max_length: 80), min_length: 1, max_length: 4),
               max_runs: 15
             ) do
-        distribution_id = :crypto.strong_rand_bytes(16)
+        distribution_id = SystemsRuntime.Proc.random_bytes(16)
         distribution_text = uuid_text(distribution_id)
         sender = Record.create(Record.new(), chain_id: chain_id, iteration: iteration)
         {:ok, distribution} = Record.distribution_message(sender, distribution_id)
@@ -381,7 +381,7 @@ defmodule SalixSignalProto.Group.OracleTest do
 
         assert Oracle.unhex(encoded) == distribution
 
-        store = "sk-#{System.unique_integer([:positive])}"
+        store = "sk-#{SystemsRuntime.Proc.unique_integer([:positive])}"
         Oracle.call!(oracle, "store.create", %{store: {:text, store}})
         address = %{"name" => "00000000-0000-4000-8000-000000000031", "device_id" => 2}
 
@@ -411,7 +411,7 @@ defmodule SalixSignalProto.Group.OracleTest do
               plaintexts <- list_of(binary(max_length: 80), min_length: 1, max_length: 5),
               max_runs: 15
             ) do
-        store = "sk-#{System.unique_integer([:positive])}"
+        store = "sk-#{SystemsRuntime.Proc.unique_integer([:positive])}"
         Oracle.call!(oracle, "store.create", %{store: {:text, store}})
         address = %{"name" => "00000000-0000-4000-8000-000000000032", "device_id" => 1}
         distribution_id = "00000000-0000-4000-8000-000000000033"

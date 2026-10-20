@@ -3,10 +3,12 @@ import "@comma/ui/styles.css";
 import {
   ChatPanelVideo,
   ChatPanelVideoPictureInPictureProvider,
+} from "@comma/ui/components/chat-panel";
+import {
   DraggableRecorder,
   MeetingRecordingBlock,
-  ScrollArea,
-} from "@comma/ui";
+} from "@comma/ui/components/meeting-recorder";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 

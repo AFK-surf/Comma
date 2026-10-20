@@ -94,7 +94,7 @@ defmodule BillingCore.AgentObservability do
   defp log_discard(_kind, _result), do: :ok
 
   defp sink do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :billing_core,
       :agent_observability_typed_sink,
       SalixAnalytics.TypedSinkWorker
@@ -102,6 +102,6 @@ defmodule BillingCore.AgentObservability do
   end
 
   defp sink_server do
-    Application.get_env(:billing_core, :agent_observability_typed_sink_server, @worker)
+    SystemsRuntime.get_env(:billing_core, :agent_observability_typed_sink_server, @worker)
   end
 end

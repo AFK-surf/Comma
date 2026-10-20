@@ -17,7 +17,7 @@ defmodule SalixIM.TelegramStatusTransport do
 
   defp call(connect, target, method, fields) do
     if authorized?(connect, target) do
-      started = System.monotonic_time()
+      started = SystemsClock.monotonic_time()
       result = request(connect, target, method, fields)
       observe(result, started)
       result
@@ -39,7 +39,7 @@ defmodule SalixIM.TelegramStatusTransport do
   end
 
   defp request(connect, target, method, fields) do
-    base = Application.get_env(:salix_im, :telegram_api_base_url, "https://api.telegram.org")
+    base = SystemsRuntime.get_env(:salix_im, :telegram_api_base_url, "https://api.telegram.org")
     body = Map.put(fields, "chat_id", positive_id(target["chat_id"]))
     thread = target["message_thread_id"]
 
@@ -105,9 +105,9 @@ defmodule SalixIM.TelegramStatusTransport do
         _ -> :unavailable
       end
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{
         component: "salix_im",
         operation: "private_chat_status",

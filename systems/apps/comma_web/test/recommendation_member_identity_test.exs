@@ -1,17 +1,17 @@
 defmodule CommaWeb.RecommendationMemberIdentityTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias CommaWeb.RecommendationMemberIdentity, as: Identity
 
   setup do
-    previous = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_store, :s3_backend, previous),
-        else: Application.delete_env(:salix_store, :s3_backend)
+        do: SystemsRuntime.put_env(:salix_store, :s3_backend, previous),
+        else: SystemsRuntime.delete_env(:salix_store, :s3_backend)
     end)
 
     :ok

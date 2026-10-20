@@ -71,11 +71,11 @@ defmodule Salix.Composio do
   defp validate_toolkit(""), do: {:error, {:bad_request, "toolkit is required"}}
   defp validate_toolkit(_toolkit), do: :ok
 
-  defp client, do: Application.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
+  defp client, do: SystemsRuntime.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
 
   defp settings,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :salix_web,
         :composio_settings_mod,
         Salix.Control.ComposioSettings

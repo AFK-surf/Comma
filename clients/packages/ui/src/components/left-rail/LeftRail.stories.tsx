@@ -8,6 +8,7 @@ import {
   PuzzleIcon,
   SettingsIcon,
 } from "../index";
+import { HomeFilledIcon } from "../icons";
 
 const meta = {
   title: "App components/Left Rail",
@@ -62,7 +63,7 @@ export const SettingsActive: Story = {
 export const InboxUnread: Story = {
   args: {
     items: [
-      { icon: <HomeIcon />, id: "home", label: "Home", selected: true },
+      { icon: <HomeFilledIcon />, id: "home", label: "Home", selected: true },
       { badge: true, icon: <InboxIcon />, id: "inbox", label: "Inbox" },
       { icon: <ListChecksIcon mode="raw" />, id: "tasks", label: "Tasks" },
       { icon: <PuzzleIcon />, id: "plugins", label: "Plugins" },

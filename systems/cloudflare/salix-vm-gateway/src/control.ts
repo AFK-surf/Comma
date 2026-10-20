@@ -129,11 +129,21 @@ export class ContainerControl {
     action: ControlAction,
     invoke: () => Promise<T>,
     terminal: (value: T) => { status?: number },
-    options: { sealed?: boolean; archive_operation?: string } = {},
+    options: { sealed?: boolean; archive_operation?: string; discard?: boolean } = {},
   ): Promise<T> {
     const p = parseControlPermit(permit);
+    if (options.discard && (action !== "destroy" || options.sealed !== true)) {
+      throw new ControlError("control_seal_required");
+    }
     const state = this.current(p, options.sealed ?? false);
-    if (state.pending) throw new ControlError("control_command_unsettled");
+    if (state.pending) {
+      // Approved local-disk disposal closes this old command's carrier. It does
+      // not establish whether business input ran or an external effect happened.
+      const covered = options.discard && state.pending.action !== "destroy" &&
+        state.pending.owner_id === p.owner_id && state.pending.generation === p.generation &&
+        state.pending.revision < p.revision;
+      if (!covered) throw new ControlError("control_command_unsettled");
+    }
     // Retries of a completed request use its existing receipt / owner observation;
     // replaying a destroy after a new incarnation must never become a new call.
     if (state.last_terminal?.claim_id === p.claim_id) {
@@ -164,45 +174,6 @@ export class ContainerControl {
     this.storage.write({ ...latest, pending: null, last_terminal: { ...pending, outcome: "completed", ...evidence } });
     await this.storage.sync();
     return result;
-  }
-
-  startIssued(permit: ControlPermit): void {
-    const state = this.current(permit, false);
-    if (state.pending?.claim_id !== permit.claim_id || state.pending.action !== "ensure") throw new ControlError("control_command_changed");
-    this.storage.write({ ...state, pending: { ...state.pending, start_issued: true } });
-  }
-
-  async confirmReady(permit: ControlPermit): Promise<void> {
-    const state = this.current(permit);
-    const pending = state.pending;
-    if (pending?.action !== "ensure" || !pending.start_issued ||
-        pending.owner_id !== permit.owner_id || pending.generation !== permit.generation) return;
-    // There is no SDK start retry behind the one issued native start. A ready
-    // response from this exact Container therefore settles that start request.
-    this.storage.write({ ...state, pending: null, last_terminal: { ...pending, outcome: "completed", status: 200 } });
-    await this.storage.sync();
-  }
-
-  async confirmImported(permit: ControlPermit, operation: string): Promise<void> {
-    const state = this.current(permit);
-    const pending = state.pending;
-    if (pending?.action !== "import" || pending.archive_operation !== operation ||
-        pending.owner_id !== permit.owner_id || pending.generation !== permit.generation) return;
-    // Connector status uses the import mutex and checks the immutable import
-    // operation. Once restored, late part/finish calls return that same receipt.
-    this.storage.write({ ...state, pending: null, last_terminal: { ...pending, outcome: "completed", status: 200 } });
-    await this.storage.sync();
-  }
-
-  async confirmStartEnded(issued: ControlPermit): Promise<void> {
-    const state = this.storage.read();
-    const pending = state?.pending;
-    if (!state || pending?.action !== "ensure" || !pending.start_issued ||
-        (["owner_id", "operation_id", "generation", "revision", "claim_id"] as const)
-          .some((key) => pending[key] !== issued[key])) return;
-    this.storage.write({ ...state, pending: null,
-      last_terminal: { ...pending, outcome: "completed", status: 503 } });
-    await this.storage.sync();
   }
 
   private assertOwner(state: ControlState, p: ControlPermit): void {

@@ -1,37 +1,30 @@
-import { PageLoading } from "@comma/ui";
+import { PageLoading } from "@comma/ui/components/PageLoading";
 import { useCommaMessages } from "@comma/i18n/react";
+import { Button } from "@comma/ui/components/Button";
 import {
-  Button,
   PluginCatalog,
   PluginDetail,
-  toast,
   type PluginCatalogCopy,
   type PluginCatalogTab,
   type PluginCategory,
   type PluginDefinition,
   type PluginDetailCopy,
-} from "@comma/ui";
+} from "@comma/ui/components/plugins";
+import { toast } from "@comma/ui/components/toast";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { CommaPlugin } from "../../api";
+import { useCall, useTopic, type Plugin } from "@comma/core-client";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { PluginBrandArtwork } from "./PluginBrandArtwork";
-import { usePluginInstall } from "./PluginInstallProvider";
+import { usePluginInstall } from "./pluginInstall";
 import { PluginPersonalSources, withMcpGrants } from "./PluginPersonalSources";
 import { SkillDetailPage } from "./SkillDetailPage";
 import { usePluginPersonalSources } from "./usePluginPersonalSources";
-import { readActiveWorkspaceId, writeActiveWorkspaceId } from "../activeWorkspace";
-import { useChatApi } from "../chat/ChatProvider";
+import { useSelectWorkspace, useWorkspacePreference } from "../activeWorkspace";
 import { useWorkspaceSkillsState } from "../chat/useWorkspaceSkills";
 
-type PluginsRouteState =
-  | { status: "loading" }
-  | { status: "empty" }
-  | { status: "error"; message: string }
-  | { status: "ready"; plugins: CommaPlugin[]; workspaceId: string };
-
 export function PluginsRoute() {
-  const api = useChatApi();
   const installation = usePluginInstall();
+  const call = useCall();
   const messages = useCommaMessages();
   const navigate = useNavigate();
   const catalogCopy: PluginCatalogCopy = {
@@ -67,144 +60,70 @@ export function PluginsRoute() {
     uninstallLabel: messages.plugins_uninstall(),
     uninstallPluginAriaLabel: (name) => messages.plugins_uninstall_named({ name }),
   };
-  const [revision, setRevision] = useState(0);
-  const [state, setState] = useState<PluginsRouteState>({ status: "loading" });
+  // The core picks the workspace: the active one when it can have plugins, else the first that can.
+  const preferredWorkspaceId = useWorkspacePreference();
+  const selectWorkspace = useSelectWorkspace();
+  const { value: state = { status: "loading" } } = useTopic(
+    preferredWorkspaceId === undefined
+      ? null
+      : { topic: "plugins", prefer: preferredWorkspaceId }
+  );
   const [selectedPluginId, setSelectedPluginId] = useState<string>();
   const [catalogTab, setCatalogTab] = useState<PluginCatalogTab>("plugins");
   const [selectedSkillId, setSelectedSkillId] = useState<string>();
   const [skillCategoryId, setSkillCategoryId] = useState<string>();
-  const [pendingPluginIds, setPendingPluginIds] = useState<ReadonlySet<string>>(
-    () => new Set()
-  );
-  const mutationInFlight = useRef(new Map<string, symbol>());
 
+  const workspaceId = state.status === "ready" ? state.workspace : undefined;
   useEffect(() => {
-    const controller = new AbortController();
-    let active = true;
-    setState({ status: "loading" });
-
-    void api
-      .listWorkspaces({ signal: controller.signal })
-      .then(async (workspaces) => {
-        const preferredWorkspaceId = readActiveWorkspaceId();
-        const workspace =
-          workspaces.find(
-            (candidate) =>
-              candidate.id === preferredWorkspaceId &&
-              workspaceSupportsPlugins(candidate)
-          ) ?? workspaces.find(workspaceSupportsPlugins);
-
-        if (!workspace) {
-          if (active) setState({ status: "empty" });
-          return;
-        }
-
-        writeActiveWorkspaceId(workspace.id);
-        const plugins = await api.listWorkspacePlugins(workspace.id, {
-          signal: controller.signal,
-        });
-        if (active)
-          setState({
-            plugins: plugins.filter((plugin) => plugin.id !== "feishu"),
-            status: "ready",
-            workspaceId: workspace.id,
-          });
-      })
-      .catch((error: unknown) => {
-        if (!active || controller.signal.aborted) return;
-        setState({
-          message:
-            error instanceof Error ? error.message : messages.plugins_load_failed(),
-          status: "error",
-        });
-      });
-
-    return () => {
-      active = false;
-      controller.abort();
-    };
-  }, [api, messages, revision]);
+    if (workspaceId) selectWorkspace(workspaceId);
+  }, [workspaceId, selectWorkspace]);
+  const retry = useCallback(
+    () =>
+      void call("plugins.refresh", {
+        workspace: state.status === "error" ? (state.workspace ?? "") : "",
+      }).catch(() => undefined),
+    [call, state]
+  );
 
   const selectedPlugin =
     state.status === "ready"
       ? state.plugins.find((plugin) => plugin.id === selectedPluginId)
       : undefined;
   const personalSources = usePluginPersonalSources({
-    api,
-    workspaceId: state.status === "ready" ? state.workspaceId : undefined,
+    workspaceId,
     pluginId: selectedPlugin?.installed ? selectedPlugin.id : undefined,
-    refreshToken: installation.completionVersion,
   });
 
-  const updatePlugin = useCallback((plugin: CommaPlugin) => {
-    setState((current) =>
-      current.status === "ready"
-        ? {
-            ...current,
-            plugins: current.plugins.map((candidate) =>
-              candidate.id === plugin.id ? plugin : candidate
-            ),
-          }
-        : current
-    );
-  }, []);
-
-  const workspaceId = state.status === "ready" ? state.workspaceId : undefined;
-  const skillCatalog = useWorkspaceSkillsState(api, workspaceId ?? "");
+  const skillCatalog = useWorkspaceSkillsState(workspaceId ?? "");
   const skills = skillCatalog.skills;
-  useEffect(() => {
-    if (installation.result?.workspaceId === workspaceId) {
-      if (installation.result) updatePlugin(installation.result.plugin);
-    }
-  }, [installation.result, workspaceId, updatePlugin]);
 
-  const mutatePlugin = async (pluginId: string, installed: boolean) => {
-    if (state.status !== "ready" || mutationInFlight.current.has(pluginId)) return;
-    const target = { pluginId, workspaceId: state.workspaceId };
+  const mutatePlugin = (pluginId: string, installed: boolean) => {
+    if (!workspaceId) return;
     if (installed) {
-      await installation.install(target);
+      void installation.install({ pluginId, workspaceId });
       return;
     }
-    installation.cancel(target);
-    const requestId = Symbol();
-    mutationInFlight.current.set(pluginId, requestId);
-    setPendingPluginIds((current) => new Set(current).add(pluginId));
-    try {
-      updatePlugin(await api.uninstallWorkspacePlugin(state.workspaceId, pluginId));
-    } catch (error) {
-      toast.error(
-        messages.plugins_uninstall_failed(),
-        error instanceof Error ? { description: error.message } : {}
-      );
-    } finally {
-      mutationInFlight.current.delete(pluginId);
-      setPendingPluginIds((current) => {
-        const next = new Set(current);
-        next.delete(pluginId);
-        return next;
-      });
-    }
+    // The core stops an install under way first; a failure is its notice.
+    void call("plugin.uninstall", { plugin: pluginId, workspace: workspaceId }).catch(
+      () => undefined
+    );
   };
 
   // Load failures ride the toast stack with a Retry action; the panel keeps a
   // quiet placeholder so the content area is never blank.
+  const errorMessage = state.status === "error" ? state.error.message : undefined;
   useEffect(() => {
     if (state.status !== "error") return undefined;
     // Each effect owns its toast. A delayed dismissal must not close a retry's toast.
     const toastId = toast.error(messages.plugins_load_failed(), {
-      ...(state.message ? { description: state.message } : {}),
-      actions: [
-        {
-          label: messages.common_retry(),
-          onPress: () => setRevision((value) => value + 1),
-        },
-      ],
+      ...(errorMessage ? { description: errorMessage } : {}),
+      actions: [{ label: messages.common_retry(), onPress: retry }],
       testId: "plugins-load-error",
     });
     return () => {
       toast.dismiss(toastId);
     };
-  }, [messages, state]);
+  }, [errorMessage, messages, retry, state.status]);
 
   if (state.status === "loading") {
     return (
@@ -226,36 +145,37 @@ export function PluginsRoute() {
     return (
       <PluginsRouteStatus label={messages.plugins_title()} role="alert">
         <span>{messages.plugins_load_failed()}</span>
-        <Button
-          hierarchy="secondary-gray"
-          onPress={() => setRevision((value) => value + 1)}
-          size="sm"
-        >
+        <Button hierarchy="secondary-gray" onPress={retry} size="sm">
           {messages.common_retry()}
         </Button>
       </PluginsRouteStatus>
     );
   }
 
-  const pendingIds = new Set(pendingPluginIds);
-  if (installation.pending?.workspaceId === state.workspaceId)
-    pendingIds.add(installation.pending.pluginId);
+  // A request in flight; an authorization waiting on the browser is not one.
+  const pendingIds = new Set(
+    state.plugins
+      .filter(
+        (plugin) =>
+          plugin.activity === "installing" ||
+          plugin.activity === "verifying" ||
+          plugin.activity === "reauthorizing" ||
+          plugin.activity === "uninstalling"
+      )
+      .map((plugin) => plugin.id)
+  );
   const pluginDefinitions = state.plugins.map(toPluginDefinition);
   const definitionById = new Map(
     pluginDefinitions.map((plugin) => [plugin.id, plugin])
   );
 
   if (selectedPlugin) {
-    const reauthorizingConnectionId =
-      installation.pending?.workspaceId === state.workspaceId &&
-      installation.pending.pluginId === selectedPlugin.id
-        ? installation.pending.connectionId
-        : undefined;
+    const reauthorizingConnectionId = selectedPlugin.reauthorizing;
     const reauthorize = (connectionId: string) => {
       personalSources.cancel();
       void installation.reauthorize({
         pluginId: selectedPlugin.id,
-        workspaceId: state.workspaceId,
+        workspaceId: state.workspace,
         connectionId,
       });
     };
@@ -265,6 +185,28 @@ export function PluginsRoute() {
       pluginName: selectedPlugin.name,
       reauthorizingConnectionId,
     });
+    if (selectedPlugin.credentialSetup) {
+      plugin.description = [
+        plugin.description ?? plugin.summary,
+        messages.plugins_credentials_description({ name: selectedPlugin.name }),
+      ].join(" ");
+      if (selectedPlugin.installed) {
+        plugin.mcps = (plugin.mcps ?? []).map((resource) => ({
+          ...resource,
+          trailingContent: (
+            <Button
+              className="relative -my-xxs h-7 px-lg py-xs after:absolute after:inset-x-0 after:-inset-y-md"
+              hierarchy="tertiary-gray"
+              size="sm"
+              isDisabled={pendingIds.has(selectedPlugin.id)}
+              onPress={() => void mutatePlugin(selectedPlugin.id, true)}
+            >
+              {messages.plugins_credentials_update()}
+            </Button>
+          ),
+        }));
+      }
+    }
 
     return (
       <PluginDetail
@@ -273,13 +215,13 @@ export function PluginsRoute() {
         installed={selectedPlugin.installed}
         installPending={pendingIds.has(selectedPlugin.id)}
         onBack={() => setSelectedPluginId(undefined)}
-        onInstall={() => void mutatePlugin(selectedPlugin.id, true)}
+        onInstall={() => mutatePlugin(selectedPlugin.id, true)}
         onTryInChat={() => void navigate({ to: "/" })}
         plugin={plugin}
         {...(!selectedPlugin.locked
           ? {
-              onUninstall: () => void mutatePlugin(selectedPlugin.id, false),
-              uninstallPending: pendingPluginIds.has(selectedPlugin.id),
+              onUninstall: () => mutatePlugin(selectedPlugin.id, false),
+              uninstallPending: selectedPlugin.activity === "uninstalling",
             }
           : {})}
       >
@@ -306,7 +248,6 @@ export function PluginsRoute() {
   if (selectedSkill) {
     return (
       <SkillDetailPage
-        api={api}
         categoryName={
           skillCategories.find((category) => category.id === selectedSkill.source)?.name
         }
@@ -314,19 +255,17 @@ export function PluginsRoute() {
         onBack={() => setSelectedSkillId(undefined)}
         onTryInChat={() => void navigate({ to: "/" })}
         skill={selectedSkill}
-        workspaceId={state.workspaceId}
+        workspaceId={state.workspace}
       />
     );
   }
 
-  const installedPlugins = state.plugins
-    .filter((plugin) => plugin.installed)
-    .map((plugin) => definitionById.get(plugin.id)!);
-  const categories = pluginCategories(
-    state.plugins,
-    definitionById,
-    messages.plugins_category_integrations()
-  );
+  const installedPlugins = state.installed.map((id) => definitionById.get(id)!);
+  const categories: PluginCategory[] = state.categories.map((category) => ({
+    id: category.id,
+    name: category.name ?? messages.plugins_category_integrations(),
+    plugins: category.plugins.map((id) => definitionById.get(id)!),
+  }));
 
   return (
     <PluginCatalog
@@ -334,7 +273,7 @@ export function PluginsRoute() {
       categories={categories}
       copy={catalogCopy}
       installedPlugins={installedPlugins}
-      onPluginInstall={(plugin) => void mutatePlugin(plugin.id, true)}
+      onPluginInstall={(plugin) => mutatePlugin(plugin.id, true)}
       onPluginOpen={(plugin) => setSelectedPluginId(plugin.id)}
       onTabChange={setCatalogTab}
       pendingPluginIds={pendingIds}
@@ -387,35 +326,7 @@ function PluginsRouteStatus({
   );
 }
 
-function pluginCategories(
-  plugins: readonly CommaPlugin[],
-  definitionById: ReadonlyMap<string, PluginDefinition>,
-  fallbackCategoryName: string
-): PluginCategory[] {
-  const categories = new Map<string, { name: string; plugins: PluginDefinition[] }>();
-
-  for (const plugin of plugins) {
-    if (plugin.installed) continue;
-    const sourceCategory = plugin.category.trim();
-    const categoryId = sourceCategory || "Integrations";
-    const categoryName =
-      categoryId === "Integrations" ? fallbackCategoryName : categoryId;
-    const category = categories.get(categoryId) ?? {
-      name: categoryName,
-      plugins: [],
-    };
-    category.plugins.push(definitionById.get(plugin.id)!);
-    categories.set(categoryId, category);
-  }
-
-  return Array.from(categories, ([id, category]) => ({
-    id: id.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-"),
-    name: category.name,
-    plugins: category.plugins,
-  }));
-}
-
-function toPluginDefinition(plugin: CommaPlugin): PluginDefinition {
+function toPluginDefinition(plugin: Plugin): PluginDefinition {
   // MCPs carry no brand of their own; they show their plugin's product logo.
   const icon = <PluginBrandArtwork brand={plugin.brand} name={plugin.name} />;
   return {
@@ -427,10 +338,4 @@ function toPluginDefinition(plugin: CommaPlugin): PluginDefinition {
     summary: plugin.summary,
     ...(plugin.description ? { description: plugin.description } : {}),
   };
-}
-
-function workspaceSupportsPlugins(workspace: {
-  status?: "failed" | "provisioning" | "ready" | undefined;
-}) {
-  return workspace.status === undefined || workspace.status === "ready";
 }

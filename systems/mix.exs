@@ -10,16 +10,42 @@ defmodule Comma.MixProject do
       apps_path: "apps",
       version: "0.1.0",
       start_permanent: Mix.env() == :prod,
+      consolidation_path: consolidation_path(),
       releases: releases(),
       aliases: aliases(),
       deps: deps()
     ]
   end
 
+  # Each Mix run in this umbrella consolidates protocols again, even after a
+  # clean compile. Concurrent test processes (MIX_TEST_PARTITION, see
+  # .github/CI.md) each get their own directory instead of rewriting one.
+  defp consolidation_path do
+    if partition = System.get_env("MIX_TEST_PARTITION") do
+      Path.expand("_build/#{Mix.env()}/consolidated-#{partition}", __DIR__)
+    end
+  end
+
+  # Points git at the repository's hooks in scripts/git-hooks. Image builds
+  # copy systems/ alone and have no script.
+  defp install_git_hooks(_args) do
+    script = Path.expand("../scripts/git-hooks/install.sh", __DIR__)
+    if File.exists?(script), do: System.cmd("sh", [script])
+  end
+
   # Dashboard asset pipeline (bridge_for_teams_web). Standalone tailwind+esbuild
   # Hex installers download their binaries on first `assets.setup` run.
   defp aliases do
     [
+      # A module loads on its first call; mid-test that is work the test clock
+      # cannot see. Every module loads before the suite starts, before the
+      # applications' processes compete with the code server for the load,
+      # with its atoms made in one order on every run (`SystemsSim.Preload`).
+      # Only the first app.config of a run counts. The test aliases of
+      # salix_store, comma_core, alert_router and bridge_for_teams_core run
+      # ecto.create, whose app.config would otherwise come first.
+      test: &run_tests/1,
+      "deps.get": ["deps.get", &install_git_hooks/1],
       "assets.setup": [
         "tailwind.install --if-missing",
         "esbuild.install --if-missing"
@@ -46,6 +72,26 @@ defmodule Comma.MixProject do
         "do --app salix_web phx.digest priv/static"
       ]
     ]
+  end
+
+  # CI compiles once before its test processes start. Pass their --no-compile
+  # flag through this alias so preloading does not start another compilation.
+  defp run_tests(args) do
+    Mix.Task.run("app.config", args)
+    preload_modules()
+    Mix.Task.run("test", args)
+  end
+
+  # What `app.config --preload-modules` does, with the code path cached first
+  # and the modules' atoms made in one order (`SystemsSim.Preload`). The code
+  # server finds a module by asking the file system in each directory of the
+  # path that it has not listed: for the umbrella's 6,900 modules that was
+  # 20 s of system calls in every test process. Cached, it lists each
+  # directory once. Compilation is over by now, so the directories keep their
+  # contents.
+  defp preload_modules do
+    true = :code.set_path(:code.get_path(), :cache)
+    SystemsSim.Preload.modules()
   end
 
   # One release (`comma`), one Docker image — but a pod runs only the subsystems
@@ -125,6 +171,7 @@ defmodule Comma.MixProject do
       salix_analytics: :load,
       salix_migrate: :load,
       salix_media: :load,
+      salix_meet_native: :load,
       salix_meet: :load,
       salix_voice: :load,
       salix_signal_proto: :load,
@@ -132,7 +179,10 @@ defmodule Comma.MixProject do
     ]
   end
 
+  # Membrane's ratio (salix_meet_native) caps decimal at 2.x while ecto_sql
+  # needs 3.x; ratio uses decimal only optionally. A child's override does not
+  # reach the umbrella's own dependency check.
   defp deps do
-    []
+    [{:decimal, "~> 3.1", override: true}]
   end
 end

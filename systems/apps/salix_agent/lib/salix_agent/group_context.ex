@@ -14,7 +14,7 @@ defmodule SalixAgent.GroupContext do
   def list(tenant_id), do: impl().list(tenant_id)
   def get(group_id, tenant_id), do: impl().get(group_id, tenant_id)
 
-  defp impl, do: Application.get_env(:salix_agent, :group_context_mod, __MODULE__.None)
+  defp impl, do: SystemsRuntime.get_env(:salix_agent, :group_context_mod, __MODULE__.None)
 
   defmodule None do
     @moduledoc false

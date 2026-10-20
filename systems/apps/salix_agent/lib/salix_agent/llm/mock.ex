@@ -25,9 +25,10 @@ defmodule SalixAgent.LLM.Mock do
   @behaviour SalixAgent.LLM
 
   use Agent
+  alias SystemsRuntime.Agent, as: WorldAgent
 
   def start_link(_ \\ []) do
-    case Agent.start_link(fn -> [] end, name: __MODULE__) do
+    case WorldAgent.start_link(fn -> [] end, name: __MODULE__) do
       {:error, {:already_started, pid}} -> {:ok, pid}
       other -> other
     end
@@ -36,7 +37,7 @@ defmodule SalixAgent.LLM.Mock do
   @doc "Install responses; `{:final, ...}` is shorthand for an explicit done decision."
   def script(responses) when is_list(responses) do
     ensure_started()
-    Agent.update(__MODULE__, fn _ -> responses end)
+    WorldAgent.update(__MODULE__, fn _ -> responses end)
   end
 
   @impl true
@@ -90,7 +91,7 @@ defmodule SalixAgent.LLM.Mock do
     ensure_started()
 
     __MODULE__
-    |> Agent.get_and_update(fn
+    |> WorldAgent.get_and_update(fn
       [next | rest] -> {next, rest}
       [] -> {{:final, "done"}, []}
     end)
@@ -121,7 +122,7 @@ defmodule SalixAgent.LLM.Mock do
 
   defp done_call do
     %{
-      id: "mock_end_turn_#{System.unique_integer([:positive, :monotonic])}",
+      id: "mock_end_turn_#{SystemsRuntime.Proc.unique_integer([:positive, :monotonic])}",
       name: "end_turn",
       args: %{"outcome" => "done"}
     }
@@ -189,7 +190,7 @@ defmodule SalixAgent.LLM.Mock do
   end
 
   defp ensure_started do
-    case Process.whereis(__MODULE__) do
+    case SystemsRuntime.Proc.whereis(__MODULE__) do
       nil -> start_link()
       _ -> :ok
     end

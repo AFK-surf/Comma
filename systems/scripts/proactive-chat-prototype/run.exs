@@ -131,14 +131,16 @@ defmodule ProactivePrototype do
         201
       )["key"]
 
-    template =
-      req(
-        @token,
-        :post,
-        "/v1/admin/templates",
-        %{template_id: "prototype-#{id}", name: "Prototype", model: "mock-model"},
-        201
-      )
+    # The Router follows the platform model; the scripted model answers it.
+    {:ok, _tiers} =
+      SalixAgent.Migrations.PlatformModels.seed(%{
+        "model" => "mock-model",
+        "provider_config" => %{
+          "base_url" => "https://platform-model.example.invalid/v1",
+          "api_key" => "sk-prototype-0123456789",
+          "protocol" => "chat_completions"
+        }
+      })
 
     group =
       req(key, :post, "/v1/runtime/agent-groups", %{name: "PROTOTYPE #{id}"}, 201)["group_id"]
@@ -150,7 +152,6 @@ defmodule ProactivePrototype do
         "/v1/runtime/agents",
         %{
           group_id: group,
-          template_id: template["template_id"],
           role: "router",
           name: "Prototype assistant"
         },

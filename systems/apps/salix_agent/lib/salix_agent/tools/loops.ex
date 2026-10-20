@@ -16,6 +16,11 @@ defmodule SalixAgent.Tools.Loops do
   its own input schema. Tool functions receive `(args, ctx)` with
   `ctx = %{agent_id, session_id, ...}`; every target is the calling Agent
   and the current Session, never an argument.
+
+  A Worker round that works a Task creates that Task's one Loop and manages
+  only it; every other round manages only the Agent's Loops that belong to
+  no Task (`SalixAgent.Loops.scope/1`). Another scope's Loop reads as
+  missing.
   """
 
   alias SalixAgent.Loops
@@ -32,9 +37,9 @@ defmodule SalixAgent.Tools.Loops do
 
   @sdk_description "Read this before writing a background loop: the exact spinfoam.h header loop.build compiles against, the eBPF target constraints (4 KiB stack, no heap or libc, handle limits), the handle and error model, and the host capability contract with argument and result shapes, plus a minimal example."
 
-  @build_description "Compile a C background loop with spinfoam's embedded compiler (integer C only: no floating point, no signed division or modulo) and write the ELF into your workspace at `path` (default /loops/main.elf); pass that path to loop.create. Read loop.sdk first for the header and constraints. The program includes \"spinfoam.h\" and defines `SF_MAIN sf_i64 main(void)`; it loops with sf_sleep_ms / sf_event_next, reads its JSON config with sf_config / sf_json_get, calls host capabilities with sf_host_call(name, args_json_handle, timeout_ms), and returns to stop. Host capabilities every loop may call, with no grant step: agent.notify {content, dedup_key} to wake this session (rate limited, use a stable dedup_key per condition), loop.state.put {state} / loop.state.get to checkpoint across restarts (the last checkpoint is passed back as config.state), loop.ack {event_id}, loop.log {message}, plus read-only Salix tools, the external environment tools (env.exec, env.copy, env.process_*, device.*, ssh.*) and decide (classify runtime data), and composio.execute (read or write through a connected provider), and web.http_request (poll or post to an HTTP JSON API) by their canonical name, under your own tool authorization. Use this only when a condition must be watched for a long time without spending model turns; do not use it to run a one-off task."
+  @build_description "Compile a background loop for loop.create. Use this only when a condition must be watched for a long time without spending model turns; do not use it to run a one-off task.\n\nCompile a C background loop with spinfoam's embedded compiler (integer C only: no floating point, no signed division or modulo) and write the ELF into your workspace at `path` (default /loops/main.elf); pass that path to loop.create. Read loop.sdk first for the header and constraints. The program includes \"spinfoam.h\" and defines `SF_MAIN sf_i64 main(void)`; it loops with sf_sleep_ms / sf_event_next, reads its JSON config with sf_config / sf_json_get, calls host capabilities with sf_host_call(name, args_json_handle, timeout_ms), and returns to stop. Host capabilities every loop may call, with no grant step: agent.notify {content, dedup_key} to wake this session (rate limited, use a stable dedup_key per condition), loop.state.put {state} / loop.state.get to checkpoint across restarts (the last checkpoint is passed back as config.state), loop.ack {event_id}, loop.log {message}, loop.next_run {after_ms} for the next time of the loop's trigger, plus read-only Salix tools, the external environment tools (env.exec, env.copy, env.process_*, device.*, ssh.*) and decide (classify runtime data), and composio.execute (read or write through a connected provider), and web.http_request (poll or post to an HTTP JSON API) by their canonical name, under your own tool authorization."
 
-  @create_description "Create a background loop from an ELF file loop.build wrote into your workspace (`path`) and start it. The loop records the file's path and hash; keep the file as long as the loop exists. Give it a name and a JSON config the program reads. The program may call every loop capability by name with no grant step: agent.notify (the only way it wakes this session), the loop.* checkpoint and ack calls, read tools, the external environment tools (env.exec and the other env.*/device.* tools) to act on a connected device, ssh.* tools for remote SSH hosts, decide for typed runtime judgments, composio.execute for connected provider reads and writes, and web.http_request to poll or post to an HTTP JSON API, each under your own tool authorization; never Salix messaging, memory, workspace or schedule writes. It persists across restarts and node moves, resuming from its last loop.state.put checkpoint. Limits: 20 active loops per agent, 100 per group."
+  @create_description "Create a background loop from an ELF file loop.build wrote into your workspace (`path`) and start it.\n\nThe loop records the file's path and hash; keep the file as long as the loop exists. Give it a name and a JSON config the program reads. The program may call every loop capability by name with no grant step: agent.notify (the only way it wakes this session), the loop.* checkpoint and ack calls, read tools, the external environment tools (env.exec and the other env.*/device.* tools) to act on a connected device, ssh.* tools for remote SSH hosts, decide for typed runtime judgments, composio.execute for connected provider reads and writes, and web.http_request to poll or post to an HTTP JSON API, each under your own tool authorization; never Salix messaging, memory, workspace or schedule writes. It persists across restarts and node moves, resuming from its last loop.state.put checkpoint. Limits: 20 active loops per agent, 100 per group.\n\nOptional trigger: `every_minutes` (5 to 1440), or `cron` (5 fields: minute hour day-of-month month day-of-week) with `timezone` (an IANA name such as Asia/Shanghai; default: the timezone of the request you are serving). The program asks loop.next_run for the time of its next run and waits until then; the host does the clock and timezone math.\n\nInside a Task the loop belongs to that Task: a Task has one loop, and from the Task you manage only that loop. When the Task requested its loop (a Loop Task), the loop already has the requested trigger and limits: pass no trigger, and the server stops the loop at its run limit or end time."
 
   @list_description "List the background loops owned by this agent with their status (active, paused with a reason, failed), node and secret webhook URL when enabled. Treat webhook URLs as credentials."
 
@@ -120,6 +125,21 @@ defmodule SalixAgent.Tools.Loops do
           "type" => "object",
           "description" =>
             "JSON the program reads through sf_config (at most 16 KiB). The runtime adds loop_id, incarnation and state (the last checkpoint)."
+        },
+        "every_minutes" => %{
+          "type" => "integer",
+          "minimum" => 5,
+          "maximum" => 1440,
+          "description" => "Optional interval trigger for loop.next_run. Not with cron."
+        },
+        "cron" => %{
+          "type" => "string",
+          "description" => "Optional 5-field cron trigger for loop.next_run."
+        },
+        "timezone" => %{
+          "type" => "string",
+          "description" =>
+            "IANA timezone of `cron`, for example Asia/Shanghai. Default: the timezone of the request."
         }
       },
       "required" => ["path"]
@@ -226,7 +246,10 @@ defmodule SalixAgent.Tools.Loops do
     attrs = %{
       "path" => path,
       "name" => args["name"] || args[:name],
-      "config" => args["config"] || args[:config]
+      "config" => args["config"] || args[:config],
+      "every_minutes" => args["every_minutes"] || args[:every_minutes],
+      "cron" => args["cron"] || args[:cron],
+      "timezone" => args["timezone"] || args[:timezone]
     }
 
     case Loops.create(ctx, attrs) do
@@ -244,6 +267,16 @@ defmodule SalixAgent.Tools.Loops do
 
       {:error, {:quota, :group, limit}} ->
         raise "this group already has #{limit} active loops"
+
+      {:error, {:task_loop_exists, loop_id}} ->
+        raise "this Task already has background loop #{loop_id}, and a Task runs one loop. " <>
+                "Use that loop: loop.get shows its state."
+
+      {:error, {:invalid, "trigger"}} ->
+        raise "give either every_minutes or cron with timezone, and none for a Loop Task: its loop already has the requested trigger"
+
+      {:error, {:invalid, "cron"}} ->
+        raise "invalid cron or timezone: use 5 cron fields (minute hour day-of-month month day-of-week) and an IANA timezone such as Asia/Shanghai"
 
       {:error, {:invalid, field}} ->
         raise "invalid #{field}"
@@ -269,7 +302,7 @@ defmodule SalixAgent.Tools.Loops do
 
   @doc false
   def list(_args, ctx) do
-    case Loops.list(ctx.agent_id) do
+    case Loops.list(scope!(ctx)) do
       {:ok, loops} -> Jason.encode!(loops)
       {:error, reason} -> raise "loop.list failed: #{inspect(reason)}"
     end
@@ -277,7 +310,7 @@ defmodule SalixAgent.Tools.Loops do
 
   @doc false
   def get(args, ctx) do
-    case Loops.get(ctx.agent_id, loop_id!(args)) do
+    case Loops.get(scope!(ctx), loop_id!(args)) do
       {:ok, loop} -> Jason.encode!(loop)
       {:error, :not_found} -> raise "loop not found"
       {:error, reason} -> raise "loop.get failed: #{inspect(reason)}"
@@ -286,7 +319,7 @@ defmodule SalixAgent.Tools.Loops do
 
   @doc false
   def pause(args, ctx) do
-    case Loops.pause(ctx.agent_id, loop_id!(args)) do
+    case Loops.pause(scope!(ctx), loop_id!(args)) do
       {:ok, loop} -> Jason.encode!(loop)
       {:error, :not_found} -> raise "loop not found"
       {:error, reason} -> raise "loop.pause failed: #{inspect(reason)}"
@@ -295,12 +328,27 @@ defmodule SalixAgent.Tools.Loops do
 
   @doc false
   def resume(args, ctx) do
-    case Loops.resume(ctx.agent_id, loop_id!(args)) do
-      {:ok, loop} -> Jason.encode!(loop)
-      {:error, :not_found} -> raise "loop not found"
-      {:error, :already_active} -> raise "loop is already active"
-      {:error, :agent_archived} -> raise "loop is paused by archive; unarchive the agent instead"
-      {:error, reason} -> raise "loop.resume failed: #{inspect(reason)}"
+    case Loops.resume(scope!(ctx), loop_id!(args)) do
+      {:ok, loop} ->
+        Jason.encode!(loop)
+
+      {:error, :not_found} ->
+        raise "loop not found"
+
+      {:error, :already_active} ->
+        raise "loop is already active"
+
+      {:error, :agent_archived} ->
+        raise "loop is paused by archive; unarchive the agent instead"
+
+      {:error, {:not_active, "ended"}} ->
+        raise "loop has ended and does not run again"
+
+      {:error, {:not_active, "pending"}} ->
+        raise "loop has no program yet; create it with loop.create"
+
+      {:error, reason} ->
+        raise "loop.resume failed: #{inspect(reason)}"
     end
   end
 
@@ -308,7 +356,7 @@ defmodule SalixAgent.Tools.Loops do
   def delete(args, ctx) do
     loop_id = loop_id!(args)
 
-    case Loops.delete(ctx.agent_id, loop_id) do
+    case Loops.delete(scope!(ctx), loop_id) do
       :ok -> Jason.encode!(%{"status" => "deleted", "loop_id" => loop_id})
       {:error, :not_found} -> raise "loop not found"
       {:error, reason} -> raise "loop.delete failed: #{inspect(reason)}"
@@ -318,10 +366,10 @@ defmodule SalixAgent.Tools.Loops do
   @doc false
   def webhook(args, ctx) do
     unless arg(args, "action") == "revoke" or
-             is_function(Application.get_env(:salix_agent, :loop_webhook_url_builder), 1),
+             is_function(SystemsRuntime.get_env(:salix_agent, :loop_webhook_url_builder), 1),
            do: raise("loop webhook URL is not configured")
 
-    case Loops.configure_webhook(ctx.agent_id, loop_id!(args), arg(args, "action")) do
+    case Loops.configure_webhook(scope!(ctx), loop_id!(args), arg(args, "action")) do
       {:ok, loop} -> Jason.encode!(loop)
       {:error, :not_found} -> raise "loop not found"
       {:error, reason} -> raise "loop.webhook failed: #{inspect(reason)}"
@@ -336,7 +384,7 @@ defmodule SalixAgent.Tools.Loops do
       "event_id" => arg(args, "event_id")
     }
 
-    case Loops.send_event(ctx.agent_id, loop_id!(args), event) do
+    case Loops.send_event(scope!(ctx), loop_id!(args), event) do
       {:ok, reply} ->
         Jason.encode!(%{"status" => "accepted", "duplicate" => reply["duplicate"] == true})
 
@@ -361,6 +409,13 @@ defmodule SalixAgent.Tools.Loops do
   end
 
   # ---- helpers ---------------------------------------------------------------
+
+  defp scope!(ctx) do
+    case Loops.scope(ctx) do
+      {:ok, scope} -> scope
+      {:error, reason} -> raise "background loops unavailable: #{inspect(reason)}"
+    end
+  end
 
   defp loop_id!(args) do
     case arg(args, "loop_id") do

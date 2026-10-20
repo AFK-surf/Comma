@@ -282,8 +282,8 @@ defmodule SalixAgent.ActivityEvent do
         "display_priority" => priority,
         "display_hold_ms" => hold_ms(priority),
         "producer_epoch" => producer_epoch,
-        "sequence" => System.unique_integer([:monotonic, :positive]),
-        "updated_at" => System.system_time(:millisecond) / 1000
+        "sequence" => SystemsRuntime.Proc.unique_integer([:monotonic, :positive]),
+        "updated_at" => SystemsClock.system_time(:millisecond) / 1000
       }
       |> Map.merge(activity_v2_scope(activation_scope, producer_epoch))
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)

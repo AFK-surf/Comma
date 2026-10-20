@@ -52,7 +52,7 @@ defmodule BridgeForTeamsWeb.MacMiniInstallController do
       _ ->
         case Logger.metadata()[:request_id] do
           value when is_binary(value) and value != "" -> value
-          _ -> Ecto.UUID.generate()
+          _ -> SystemsRuntime.Proc.uuid()
         end
     end
   end

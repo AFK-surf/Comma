@@ -27,7 +27,7 @@ function harness(filePath?: string) {
   };
   const platform: SitePermissionPlatform = {
     prompt: vi.fn(async () => "allow" as const),
-    settings: vi.fn(async () => {}),
+    settings: vi.fn(async () => undefined),
     hasSystemAccess: () => true,
     ensureSystemAccess: vi.fn(async () => true),
     reportError: vi.fn(),
@@ -72,7 +72,22 @@ function harness(filePath?: string) {
         }),
     };
   }
-  return { tab, platform, service, session, request: () => request };
+  /** Holds the next prompt open: `shown` once it is up, `answer` to close it. */
+  function holdPrompt() {
+    const shown = Promise.withResolvers<void>();
+    let answer!: (choice: SitePermissionChoice) => void;
+    vi.mocked(platform.prompt).mockImplementationOnce(() => {
+      shown.resolve();
+      return new Promise((resolve) => {
+        answer = resolve;
+      });
+    });
+    return {
+      shown: shown.promise,
+      answer: (choice: SitePermissionChoice) => answer(choice),
+    };
+  }
+  return { tab, platform, service, session, holdPrompt, request: () => request };
 }
 
 describe("website microphone and camera permissions", () => {
@@ -139,23 +154,21 @@ describe("website microphone and camera permissions", () => {
     for (const action of ["reload", "navigate", "close"] as const) {
       const h = harness();
       const tab = h.tab();
-      let finish!: (choice: SitePermissionChoice) => void;
-      vi.mocked(h.platform.prompt).mockImplementation(
-        () =>
-          new Promise((resolve) => {
-            finish = resolve;
-          })
-      );
+      const prompt = h.holdPrompt();
       const pending = tab.ask();
-      await vi.waitFor(() => expect(h.platform.prompt).toHaveBeenCalled());
+      await prompt.shown;
       if (action === "close") tab.contents.destroy();
       else
         tab.contents.navigate(
           action === "reload" ? tab.contents.getURL() : "https://other.example/"
         );
       expect(await pending).toBe(false);
-      finish("allow");
-      await new Promise((resolve) => setImmediate(resolve));
+      prompt.answer("allow");
+      // Prompts take turns, so the next tab is asked only after the stale
+      // Allow has settled; it would not be asked at all had that Allow saved.
+      vi.mocked(h.platform.prompt).mockResolvedValueOnce("ask");
+      expect(await h.tab().ask()).toBe(false);
+      expect(h.platform.prompt).toHaveBeenCalledTimes(2);
       expect(h.service.choices("https://meet.google.com").microphone).toBe("ask");
     }
   });
@@ -163,18 +176,13 @@ describe("website microphone and camera permissions", () => {
     const h = harness();
     const first = h.tab();
     const second = h.tab("https://second.example/");
-    let finish!: (choice: SitePermissionChoice) => void;
-    vi.mocked(h.platform.prompt).mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finish = resolve;
-        })
-    );
+    const prompt = h.holdPrompt();
     const one = first.ask();
     const two = second.ask();
-    await vi.waitFor(() => expect(h.platform.prompt).toHaveBeenCalledTimes(1));
+    await prompt.shown;
+    expect(h.platform.prompt).toHaveBeenCalledTimes(1);
     expect(await first.ask()).toBe(false);
-    finish("allow");
+    prompt.answer("allow");
     expect(await one).toBe(true);
     expect(await two).toBe(true);
     expect(h.platform.prompt).toHaveBeenCalledTimes(2);
@@ -183,52 +191,54 @@ describe("website microphone and camera permissions", () => {
   });
   it("bounds pending prompts at 32 tabs and denies overflow without another dialog", async () => {
     const h = harness();
-    let finish!: (choice: SitePermissionChoice) => void;
-    vi.mocked(h.platform.prompt).mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          finish = resolve;
-        })
-    );
+    const prompt = h.holdPrompt();
     const tabs = Array.from({ length: 33 }, (_, index) =>
       h.tab(`https://site-${index}.example/`)
     );
     const pending = tabs.slice(0, 32).map((tab) => tab.ask());
-    await vi.waitFor(() => expect(h.platform.prompt).toHaveBeenCalledTimes(1));
+    await prompt.shown;
+    expect(h.platform.prompt).toHaveBeenCalledTimes(1);
     expect(await tabs[32]!.ask()).toBe(false);
     tabs.forEach((tab) => tab.contents.destroy());
     expect(await Promise.all(pending)).toEqual(Array(32).fill(false));
-    finish("ask");
+    prompt.answer("ask");
   });
 
   it("settings change and reset decisions; pending prompts cannot undo a reset", async () => {
     const h = harness();
     const tab = h.tab();
-    vi.mocked(h.platform.settings).mockImplementation(async ({ change }) =>
-      change("camera", "block")
-    );
-    await h.service.showSettings(tab.contents);
-    expect(await tab.ask(["video"])).toBe(false);
-    let finish!: (choice: SitePermissionChoice) => void;
-    vi.mocked(h.platform.prompt).mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          finish = resolve;
-        })
-    );
-    const pending = tab.ask();
-    await vi.waitFor(() => expect(h.platform.prompt).toHaveBeenCalled());
-    vi.mocked(h.platform.settings).mockImplementation(async ({ reset, reload }) => {
-      reset();
-      reload();
+    vi.mocked(h.platform.settings).mockImplementation(async ({ site }) => {
+      site!.change("camera", "block");
+      return undefined;
     });
     await h.service.showSettings(tab.contents);
-    finish("allow");
+    expect(await tab.ask(["video"])).toBe(false);
+    const prompt = h.holdPrompt();
+    const pending = tab.ask();
+    await prompt.shown;
+    vi.mocked(h.platform.settings).mockImplementation(async ({ site }) => {
+      site!.reset();
+      site!.reload();
+      return undefined;
+    });
+    await h.service.showSettings(tab.contents);
+    prompt.answer("allow");
     expect(await pending).toBe(false);
     expect(h.service.choices("https://meet.google.com")).toEqual({
       microphone: "ask",
       camera: "ask",
     });
     expect(tab.contents.reload).toHaveBeenCalledOnce();
+  });
+
+  it("opens the page menu on a non-HTTPS page without site permissions and returns the pick", async () => {
+    const h = harness();
+    const tab = h.tab("http://example.com/page");
+    vi.mocked(h.platform.settings).mockResolvedValue("open-external");
+    expect(await h.service.showSettings(tab.contents)).toEqual({
+      status: "opened",
+      picked: "open-external",
+    });
+    expect(vi.mocked(h.platform.settings).mock.calls[0]![0].site).toBeUndefined();
   });
 });

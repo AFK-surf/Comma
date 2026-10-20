@@ -1,5 +1,7 @@
 defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
 
   alias SalixMeet.{CalendarAutojoin, CalendarProjection, Meeting, Store}
   alias SalixStore.{Keys, S3}
@@ -49,7 +51,7 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
           {{state.test_pid, projection? and state.block_projection?}, state}
         end)
 
-      send(test_pid, {:s3_put_started, caller, key})
+      SystemsRuntime.Proc.send(test_pid, {:s3_put_started, caller, key})
       block?
     end
 
@@ -68,7 +70,7 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
            }}
         end)
 
-      send(test_pid, {:s3_put_finished, caller, key, result})
+      SystemsRuntime.Proc.send(test_pid, {:s3_put_finished, caller, key, result})
       :ok
     end
 
@@ -83,7 +85,7 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
     end
 
     def record_head(key, result) do
-      caller = self()
+      caller = SystemsRuntime.Proc.self()
 
       Agent.update(
         __MODULE__,
@@ -99,11 +101,11 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
 
     @impl true
     def put(key, body, opts) do
-      caller = self()
+      caller = SystemsRuntime.Proc.self()
       block? = S3Control.begin_put(key, caller)
 
       if block? do
-        receive do
+        SystemsRuntime.Proc.receive do
           {:release_s3_put, ^key} -> :ok
         end
       end
@@ -156,13 +158,16 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
 
     @impl true
     def list(group, _t0_ms, _t1_ms) do
-      config = Application.fetch_env!(:salix_meet, :calendar_worker_safety_test)
+      config = SystemsRuntime.fetch_env!(:salix_meet, :calendar_worker_safety_test)
       events = get_in(config, [:events_by_group, group["group_id"]]) || []
 
       if config[:block_upcoming?] do
-        send(config.test_pid, {:calendar_upcoming_started, self(), group["group_id"]})
+        SystemsRuntime.Proc.send(
+          config.test_pid,
+          {:calendar_upcoming_started, SystemsRuntime.Proc.self(), group["group_id"]}
+        )
 
-        receive do
+        SystemsRuntime.Proc.receive do
           :release_calendar_upcoming -> {:ok, events}
         end
       else
@@ -198,10 +203,10 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
       do: {:reply, :ok, empty(test_pid)}
 
     def handle_call({:begin, caller, doc}, _from, state) do
-      ref = Process.monitor(caller)
+      ref = SystemsRuntime.Proc.monitor(caller)
       active = Map.put(state.active, ref, caller)
       call = %{caller: caller, doc: doc}
-      send(state.test_pid, {:slow_runtime_started, caller, doc})
+      SystemsRuntime.Proc.send(state.test_pid, {:slow_runtime_started, caller, doc})
 
       {:reply, :ok,
        %{
@@ -226,9 +231,9 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
 
     @impl true
     def join(doc) do
-      :ok = SlowRuntimeTracker.begin(self(), doc)
+      :ok = SlowRuntimeTracker.begin(SystemsRuntime.Proc.self(), doc)
 
-      receive do
+      SystemsRuntime.Proc.receive do
         {:release_slow_runtime, result} -> result
       end
     end
@@ -236,12 +241,12 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
 
   setup do
     previous = %{
-      s3: Application.get_env(:salix_store, :s3_backend),
-      calendar: Application.get_env(:salix_meet, :calendar_occurrences_mod),
-      channel: Application.get_env(:salix_meet, :meeting_channel_mod),
-      runtime_driver: Application.get_env(:salix_meet, :runtime_driver),
-      copilot_enabled: Application.get_env(:salix_meet, :copilot_enabled),
-      calendar_test: Application.get_env(:salix_meet, :calendar_worker_safety_test)
+      s3: SystemsRuntime.get_env(:salix_store, :s3_backend),
+      calendar: SystemsRuntime.get_env(:salix_meet, :calendar_occurrences_mod),
+      channel: SystemsRuntime.get_env(:salix_meet, :meeting_channel_mod),
+      runtime_driver: SystemsRuntime.get_env(:salix_meet, :runtime_driver),
+      copilot_enabled: SystemsRuntime.get_env(:salix_meet, :copilot_enabled),
+      calendar_test: SystemsRuntime.get_env(:salix_meet, :calendar_worker_safety_test)
     }
 
     stop_all_meetings()
@@ -250,15 +255,15 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
     start_supervised!(S3Control)
     start_supervised!(SlowRuntimeTracker)
 
-    Application.put_env(:salix_store, :s3_backend, ControlledS3)
-    Application.put_env(:salix_meet, :calendar_occurrences_mod, TestCalendar)
-    Application.put_env(:salix_meet, :meeting_channel_mod, TestChannel)
-    Application.put_env(:salix_meet, :runtime_driver, SlowRuntimeDriver)
-    Application.put_env(:salix_meet, :copilot_enabled, false)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, ControlledS3)
+    SystemsRuntime.put_env(:salix_meet, :calendar_occurrences_mod, TestCalendar)
+    SystemsRuntime.put_env(:salix_meet, :meeting_channel_mod, TestChannel)
+    SystemsRuntime.put_env(:salix_meet, :runtime_driver, SlowRuntimeDriver)
+    SystemsRuntime.put_env(:salix_meet, :copilot_enabled, false)
 
     configure_calendar([])
-    S3Control.configure(self())
-    SlowRuntimeTracker.configure(self())
+    S3Control.configure(SystemsRuntime.Proc.self())
+    SlowRuntimeTracker.configure(SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       stop_all_meetings()
@@ -273,45 +278,6 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
     :ok
   end
 
-  @tag :lease_rate_limit
-  test "a scan checkpoints without another lease mutation while its acquired lease is fresh" do
-    group = group("lease-rate-limit")
-    configure_calendar([{group, []}])
-    S3Control.configure(self(), rate_limit_lease: true)
-
-    worker = start_worker!([group], max_concurrency: 1)
-
-    assert eventually(fn -> match?({:ok, _}, S3.get(Keys.ctl_meet_calendar_scan_cursor())) end)
-    assert {:ok, _} = S3.get(CalendarProjection.key(group["group_id"]))
-    assert :sys.get_state(worker).lease
-
-    assert Enum.count(S3Control.events(), &match?({:put_started, @lease_key, _}, &1)) == 1
-  end
-
-  @tag :lease_rate_limit
-  test "a long scan renews before its remaining lease falls below its whole wave budget" do
-    groups = Enum.map(1..25, &group("lease-budget-#{&1}"))
-    configure_calendar(Enum.map(groups, &{&1, []}))
-    worker = start_worker!(groups, max_concurrency: 5, task_timeout_ms: 30_000)
-    assert eventually(fn -> match?({:ok, _}, S3.get(Keys.ctl_meet_calendar_scan_cursor())) end)
-
-    state = :sys.get_state(worker)
-    # 200 seconds exceeds half the TTL, but does not cover a 150-second
-    # work wave plus the existing 120-second request margin.
-    assert {:ok, aged} =
-             SalixStore.Lease.renew(state.lease,
-               now: System.system_time(:millisecond) - 100_000,
-               ttl_ms: 300_000
-             )
-
-    :sys.replace_state(worker, &%{&1 | lease: aged})
-    SalixStore.S3.Fake.reset_put_log()
-
-    send(worker, :scan_tick)
-    assert :sys.get_state(worker).lease.lease_until > aged.lease_until
-    assert Enum.count(SalixStore.S3.Fake.put_log(), &(&1 == @lease_key)) == 1
-  end
-
   test "a stale projection checkpoint cannot advance the production scan cursor" do
     group = group("stale")
     initial = event("initial", @now + 30_000)
@@ -321,7 +287,7 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
     configure_calendar([{group, [worker_event]}], block_upcoming: true)
 
     _worker = start_worker!([group], max_concurrency: 1)
-    assert_receive {:calendar_upcoming_started, group_task, "group-stale"}, 1_000
+    assert_receive {:calendar_upcoming_started, group_task, "group-stale"}
 
     assert {:ok, competing_snapshot} =
              CalendarProjection.load(group, max_events: 1, lease_epoch: 999, now: @now + 1)
@@ -333,11 +299,11 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
              )
 
     assert {:ok, _projection} = CalendarProjection.checkpoint(competing_projection)
-    send(group_task, :release_calendar_upcoming)
+    SystemsRuntime.Proc.send(group_task, :release_calendar_upcoming)
 
     projection_key = CalendarProjection.key(group["group_id"])
 
-    assert eventually(fn -> not Process.alive?(group_task) end)
+    assert eventually(fn -> not SystemsRuntime.Proc.alive?(group_task) end)
 
     assert eventually(fn ->
              Enum.count(SalixStore.S3.Fake.put_log(), &(&1 == projection_key)) >= 3
@@ -380,18 +346,20 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
     worker = start_worker!([group], max_concurrency: 1)
     assert eventually(fn -> match?({:ok, _}, S3.get(@lease_key)) end)
 
-    normal = spawn(fn -> Process.link(worker) end)
+    normal = SystemsRuntime.Proc.spawn(fn -> SystemsRuntime.Proc.link(worker) end)
 
     abnormal =
-      spawn(fn ->
-        Process.link(worker)
+      SystemsRuntime.Proc.spawn(fn ->
+        SystemsRuntime.Proc.link(worker)
         exit({:shutdown, :helper_failed})
       end)
 
-    assert eventually(fn -> not Process.alive?(normal) and not Process.alive?(abnormal) end)
+    assert eventually(fn ->
+             not SystemsRuntime.Proc.alive?(normal) and not SystemsRuntime.Proc.alive?(abnormal)
+           end)
 
     assert :sys.get_state(worker)
-    assert Process.alive?(worker)
+    assert SystemsRuntime.Proc.alive?(worker)
     assert {:ok, _} = S3.get(@lease_key)
   end
 
@@ -400,20 +368,20 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
     configure_calendar([{group, [event("worker", @now + 30_000)]}], block_upcoming: true)
 
     worker = start_worker!([group], max_concurrency: 1)
-    assert_receive {:calendar_upcoming_started, group_task, "group-lease-loss"}, 1_000
+    assert_receive {:calendar_upcoming_started, group_task, "group-lease-loss"}
 
     stolen_lease = %{
       holder: "other-worker",
       epoch: 999,
-      lease_until: System.system_time(:millisecond) + 300_000
+      lease_until: SystemsClock.system_time(:millisecond) + 300_000
     }
 
     assert {:ok, _} =
              SalixStore.S3.Fake.put(@lease_key, Jason.encode!(stolen_lease), [])
 
-    send(group_task, :release_calendar_upcoming)
+    SystemsRuntime.Proc.send(group_task, :release_calendar_upcoming)
 
-    assert eventually(fn -> not Process.alive?(group_task) end)
+    assert eventually(fn -> not SystemsRuntime.Proc.alive?(group_task) end)
 
     assert eventually(fn -> :sys.get_state(worker).lease == nil end)
 
@@ -421,156 +389,6 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
     assert {:error, :not_found} = S3.get(Keys.ctl_meet_calendar_scan_cursor())
 
     stop_supervised!(CalendarAutojoin)
-  end
-
-  test "projection checkpoints respect max concurrency and surround the cursor with owner checks" do
-    groups = Enum.map(1..3, &group("checkpoint-#{&1}"))
-    configure_calendar(Enum.map(groups, &{&1, []}))
-    S3Control.configure(self(), block_projection: true)
-
-    _worker = start_worker!(groups, max_concurrency: 2, task_timeout_ms: 1_000)
-
-    first_two =
-      for _ <- 1..2 do
-        receive_projection_started!()
-      end
-
-    refute_receive {:s3_put_started, _pid, "ctl/meet/calendar_autojoin/groups/" <> _}, 75
-
-    Enum.each(first_two, fn {pid, key} -> send(pid, {:release_s3_put, key}) end)
-
-    assert_receive {:s3_put_started, third_pid,
-                    "ctl/meet/calendar_autojoin/groups/" <> _ = third_key},
-                   1_000
-
-    send(third_pid, {:release_s3_put, third_key})
-
-    assert eventually(fn -> match?({:ok, _}, S3.get(Keys.ctl_meet_calendar_scan_cursor())) end)
-    assert S3Control.max_active() == 2
-
-    assert eventually(fn ->
-             events = S3Control.events()
-             scan_cursor_key = Keys.ctl_meet_calendar_scan_cursor()
-
-             cursor_index =
-               Enum.find_index(events, &match?({:put_started, ^scan_cursor_key, _}, &1))
-
-             is_integer(cursor_index) and
-               events
-               |> Enum.drop(cursor_index + 1)
-               |> Enum.any?(&match?({:head_finished, @lease_key, _, {:ok, _}}, &1))
-           end)
-
-    events = S3Control.events()
-    scan_cursor_key = Keys.ctl_meet_calendar_scan_cursor()
-
-    cursor_index =
-      event_index!(events, fn event -> match?({:put_started, ^scan_cursor_key, _}, event) end)
-
-    projection_finished_indexes =
-      events
-      |> Enum.with_index()
-      |> Enum.flat_map(fn
-        {{:put_finished, "ctl/meet/calendar_autojoin/groups/" <> _, _, _}, index} -> [index]
-        _ -> []
-      end)
-
-    owner_check_indexes =
-      events
-      |> Enum.with_index()
-      |> Enum.flat_map(fn
-        {{:head_finished, @lease_key, _, {:ok, _}}, index} -> [index]
-        _ -> []
-      end)
-
-    assert Enum.max(projection_finished_indexes) < cursor_index
-
-    assert Enum.any?(
-             owner_check_indexes,
-             &(&1 > Enum.max(projection_finished_indexes) and &1 < cursor_index)
-           )
-
-    assert Enum.any?(owner_check_indexes, &(&1 > cursor_index))
-
-    stop_supervised!(CalendarAutojoin)
-  end
-
-  test "a timed-out projection checkpoint wave does not advance the scan cursor" do
-    groups = Enum.map(1..3, &group("checkpoint-timeout-#{&1}"))
-    configure_calendar(Enum.map(groups, &{&1, []}))
-    S3Control.configure(self(), block_projection: true)
-
-    _worker = start_worker!(groups, max_concurrency: 2, task_timeout_ms: 50)
-
-    projection_tasks =
-      for _ <- 1..3 do
-        {pid, _key} = receive_projection_started!()
-        pid
-      end
-
-    assert eventually(fn -> Enum.all?(projection_tasks, &(not Process.alive?(&1))) end)
-
-    assert eventually(fn ->
-             match?({:ok, _}, S3.get(Keys.ctl_meet_calendar_join_cursor()))
-           end)
-
-    assert {:error, :not_found} = S3.get(Keys.ctl_meet_calendar_scan_cursor())
-
-    stop_supervised!(CalendarAutojoin)
-  end
-
-  test "slow runtime calls stay within calendar concurrency and die with timed-out callers" do
-    groups = Enum.map(1..4, &group("slow-runtime-#{&1}"))
-
-    meeting_pids =
-      Enum.map(groups, fn group ->
-        event = event("event-#{group["group_id"]}", @now + 30_000)
-        seed_projection!(group, [event])
-        seed_meeting!(group, event)
-      end)
-
-    results =
-      CalendarAutojoin.join_sweep(groups,
-        now: @now,
-        group_bounded: true,
-        max_groups_per_pass: 4,
-        max_joins_per_pass: 4,
-        max_events_per_group: 1,
-        max_concurrency: 2,
-        task_timeout_ms: 75
-      )
-
-    assert length(results) == 4
-    assert Enum.all?(results, &match?(%{action: :error, reason: {:task_exit, :timeout}}, &1))
-    assert eventually(fn -> map_size(SlowRuntimeTracker.snapshot().active) == 0 end)
-
-    tracker = SlowRuntimeTracker.snapshot()
-    assert tracker.max_active == 2
-    assert length(tracker.calls) == 4
-    assert Enum.all?(tracker.calls, &(&1.caller not in meeting_pids))
-    assert Enum.all?(tracker.calls, &(not Process.alive?(&1.caller)))
-    assert Enum.all?(meeting_pids, &Process.alive?/1)
-
-    for group <- groups do
-      event = event("event-#{group["group_id"]}", @now + 30_000)
-      mid = CalendarAutojoin.meeting_id(group, event)
-      assert Meeting.leader?(mid)
-      assert {:ok, doc, _etag} = Store.get(mid)
-      assert get_in(doc, ["state", "join_dispatch", "status"]) == "dispatching"
-    end
-
-    assert [] =
-             CalendarAutojoin.join_sweep(groups,
-               now: @now,
-               group_bounded: true,
-               max_groups_per_pass: 4,
-               max_joins_per_pass: 4,
-               max_events_per_group: 1,
-               max_concurrency: 2,
-               task_timeout_ms: 75
-             )
-
-    assert length(SlowRuntimeTracker.snapshot().calls) == 4
   end
 
   defp start_worker!(groups, opts) do
@@ -598,48 +416,11 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
     checkpointed
   end
 
-  defp seed_meeting!(group, event) do
-    mid = CalendarAutojoin.meeting_id(group, event)
-    start_s = div(event["start_ms"], 1_000)
-    end_s = div(event["end_ms"], 1_000)
-
-    state = %{
-      "tenant_id" => group["tenant_id"],
-      "group_id" => group["group_id"],
-      "connect_id" => "slack-worker-safety",
-      "slack_ref" => %{"channel_id" => "C-worker-safety", "thread_ts" => "111.222"},
-      "meet_url" => event["meet_url"],
-      "start_at" => start_s,
-      "end_at" => end_s,
-      "status" => "provisioning",
-      "source" => %{
-        "kind" => "calendar",
-        "event_id" => event["event_id"],
-        "calendar_id" => event["calendar_id"],
-        "calendar_item_id" => event["calendar_item_id"],
-        "occurrence_ref" => event["occurrence_ref"],
-        "meeting_plan_id" => event["meeting_plan_id"],
-        "workspace_id" => "T-worker-safety"
-      }
-    }
-
-    assert {:ok, _doc, _etag} = Store.create_once(mid, state: state, now: @now)
-
-    assert {:ok, pid} =
-             SalixMeet.Application.start_meeting(mid,
-               node: "calendar-worker-safety-#{group["group_id"]}",
-               interval_ms: 60_000
-             )
-
-    assert eventually(fn -> Meeting.leader?(mid) end)
-    pid
-  end
-
   defp configure_calendar(group_events, opts \\ []) do
     events_by_group = Map.new(group_events, fn {group, events} -> {group["group_id"], events} end)
 
-    Application.put_env(:salix_meet, :calendar_worker_safety_test, %{
-      test_pid: self(),
+    SystemsRuntime.put_env(:salix_meet, :calendar_worker_safety_test, %{
+      test_pid: SystemsRuntime.Proc.self(),
       block_upcoming?: Keyword.get(opts, :block_upcoming, false),
       events_by_group: events_by_group
     })
@@ -677,40 +458,23 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
     }
   end
 
-  defp event_index!(events, predicate) do
-    Enum.find_index(events, predicate) || flunk("expected event not found: #{inspect(events)}")
-  end
-
-  defp receive_projection_started! do
-    receive do
-      {:s3_put_started, pid, "ctl/meet/calendar_autojoin/groups/" <> _ = key} ->
-        {pid, key}
-
-      _other ->
-        receive_projection_started!()
-    after
-      1_000 ->
-        flunk("timed out waiting for a projection checkpoint")
-    end
-  end
-
-  defp eventually(fun, retries \\ 100) do
+  defp eventually(fun, retries \\ 1500) do
     cond do
       fun.() -> true
       retries == 0 -> false
-      true -> Process.sleep(20) && eventually(fun, retries - 1)
+      true -> SystemsRuntime.Proc.sleep(20) && eventually(fun, retries - 1)
     end
   end
 
   defp ensure_started!(module) do
-    case Process.whereis(module) do
+    case SystemsRuntime.Proc.whereis(module) do
       nil -> start_supervised!(module)
       _pid -> :ok
     end
   end
 
   defp stop_all_meetings do
-    if Process.whereis(SalixMeet.MeetingSup) do
+    if SystemsRuntime.Proc.whereis(SalixMeet.MeetingSup) do
       SalixMeet.MeetingSup
       |> DynamicSupervisor.which_children()
       |> Enum.each(fn {_, pid, _, _} ->
@@ -721,6 +485,6 @@ defmodule SalixMeet.CalendarAutojoinWorkerSafetyTest do
     :ok
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

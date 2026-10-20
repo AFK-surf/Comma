@@ -129,7 +129,7 @@ defmodule SalixAgent.RuntimeFiles do
   defp covered_messages(session, compacted_through) do
     window =
       session
-      |> InternalSession.masked_messages()
+      |> InternalSession.get(:messages)
       |> Enum.filter(&(message_id(&1) <= compacted_through))
 
     window_ids = MapSet.new(window, &message_id/1)

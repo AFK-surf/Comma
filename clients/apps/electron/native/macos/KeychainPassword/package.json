@@ -1,0 +1,7 @@
+{
+  "name": "@comma/keychain-password",
+  "private": true,
+  "type": "module",
+  "version": "0.0.1",
+  "gypfile": true
+}

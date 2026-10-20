@@ -37,6 +37,7 @@ defmodule SystemsObservability.Trace do
     salix_stream_persistence_wait: "salix.stream.persistence.wait",
     salix_llm: "salix.llm.request",
     salix_im_send: "salix.im.send.stage",
+    salix_im_ingress: "salix.im.ingress.stage",
     salix_tool: "salix.tool.execute",
     salix_vm: "salix.vm.call",
     triage_recovery: "salix.triage.recovery",
@@ -54,8 +55,9 @@ defmodule SystemsObservability.Trace do
 
     unless kind in @kinds, do: raise(ArgumentError, "unsupported span kind #{inspect(kind)}")
 
-    Tracer.with_span name,
-                     %{kind: kind, attributes: sanitize_attributes(attributes), links: links} do
+    options = %{kind: kind, attributes: sanitize_attributes(attributes), links: links}
+
+    Tracer.with_span name, options do
       result = fun.()
       record_result(result)
       result
@@ -112,7 +114,7 @@ defmodule SystemsObservability.Trace do
   defp normalize_value(:model_key, value) do
     SystemsObservability.Classifier.model_key(
       value,
-      Application.get_env(:systems_observability, :model_keys, [])
+      SystemsRuntime.get_env(:systems_observability, :model_keys, [])
     )
   end
 end

@@ -2,7 +2,8 @@ defmodule SalixWeb.Dashboard.AgentLive.Show do
   @moduledoc "Agent detail: edit config, lifecycle actions and sites."
   use SalixWeb.Dashboard, :live_view
 
-  alias SalixAgent.{Control, Templates}
+  alias SalixAgent.Control
+  alias SalixWeb.Dashboard.ModelField
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -18,10 +19,8 @@ defmodule SalixWeb.Dashboard.AgentLive.Show do
            agent: agent,
            archived?: Control.archived?(agent),
            page_title: agent["name"],
-           breadcrumbs: [{"Agents", "/dash/agents"}, {agent["name"], nil}],
-           templates: available_templates(socket.assigns.current_tenant)
+           breadcrumbs: [{"Agents", "/dash/agents"}, {agent["name"], nil}]
          )
-         |> then(&assign(&1, catalog_available?: &1.assigns.templates != nil))
          |> load_side()}
 
       {:error, _} ->
@@ -49,25 +48,17 @@ defmodule SalixWeb.Dashboard.AgentLive.Show do
 
   def handle_event("save", params, socket) do
     # Partial patch (willow semantics): only send fields with a value. The
-    # runtime rejects clearing system_prompt to empty. An empty template pins
-    # nothing: the Agent follows its role default. Without a loaded catalog
-    # the page shows no template choice and leaves the current pin alone.
+    # runtime rejects clearing system_prompt to empty. An empty model follows
+    # the platform model of the role (`ModelField`).
     attrs =
-      %{
-        "tool_router_enabled" => params["tool_router_enabled"] == "true",
-        "vm" => %{
-          "enabled" => params["vm_enabled"] == "true",
-          "provider" =>
-            params["vm_provider"] || get_in(socket.assigns.agent, ["vm", "provider"]) ||
-              "cloudflare"
-        }
-      }
+      %{"tool_router_enabled" => params["tool_router_enabled"] == "true"}
       |> put_if_present("name", params["name"])
       |> put_if_present("system_prompt", params["system_prompt"])
       |> then(fn attrs ->
-        if socket.assigns.catalog_available?,
-          do: Map.put(attrs, "template_id", params["template_id"] || ""),
-          else: attrs
+        case ModelField.change(params["model"], socket.assigns.agent["model"]) do
+          :keep -> attrs
+          model -> Map.put(attrs, "model", model)
+        end
       end)
 
     case Control.configure(socket.assigns.agent_id, attrs, socket.assigns.current_tenant) do
@@ -162,19 +153,13 @@ defmodule SalixWeb.Dashboard.AgentLive.Show do
         <form phx-submit="save" class="space-y-3">
           <.input name="name" label="Name" value={@agent["name"]} disabled={@archived?} />
           <.select
-            :if={@catalog_available?}
-            name="template_id"
-            label="Template"
-            value={@agent["template_id"] || ""}
-            prompt={follow_default_prompt(@agent)}
-            options={template_options(@templates, @agent["template_id"])}
-            model_catalog={@templates}
-            model_default_icon={SalixAgent.AgentDefaults.default_icon(@agent["role"])}
+            name="model"
+            label="Model"
+            value={ModelField.value(@agent["model"])}
+            prompt={SalixAgent.AgentModel.default_label(@agent["role"])}
+            options={ModelField.options(@agent["model"])}
             disabled={@archived?}
           />
-          <p :if={!@catalog_available?} class="text-sm text-neutral-500">
-            Template catalog unavailable. The current template stays unchanged.
-          </p>
           <.textarea
             name="system_prompt"
             label="System prompt"
@@ -188,20 +173,6 @@ defmodule SalixWeb.Dashboard.AgentLive.Show do
               label="Tool router"
               checked={@agent["tool_router_enabled"]}
               value="true"
-              disabled={@archived?}
-            />
-            <.toggle
-              name="vm_enabled"
-              label="VM"
-              checked={get_in(@agent, ["vm", "enabled"]) == true}
-              value="true"
-              disabled={@archived?}
-            />
-            <.select
-              name="vm_provider"
-              label="VM provider"
-              value={get_in(@agent, ["vm", "provider"]) || "cloudflare"}
-              options={[{"Cloudflare", "cloudflare"}]}
               disabled={@archived?}
             />
           </div>
@@ -224,29 +195,4 @@ defmodule SalixWeb.Dashboard.AgentLive.Show do
     </div>
     """
   end
-
-  # `nil` marks an unavailable catalog, distinct from an empty one.
-  defp available_templates(tenant_id) do
-    case Templates.list_private(tenant_id) do
-      {:ok, private} -> Templates.list_admin() ++ private
-      {:error, _} -> nil
-    end
-  end
-
-  defp template_options(templates, current) do
-    Enum.flat_map(templates, fn template ->
-      cond do
-        template["template_id"] != "default" ->
-          [{SalixAgent.ModelPresentation.name(template), template["template_id"]}]
-
-        current == "default" ->
-          [[key: "#{template["model"]} (current choice)", value: current]]
-
-        true ->
-          []
-      end
-    end)
-  end
-
-  defp follow_default_prompt(agent), do: SalixAgent.AgentDefaults.default_label(agent["role"])
 end

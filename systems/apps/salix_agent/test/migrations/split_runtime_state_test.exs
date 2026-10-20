@@ -1,5 +1,5 @@
 defmodule SalixAgent.Migrations.SplitRuntimeStateTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.AgentWorkspace
   alias SalixAgent.InternalSessionStore
@@ -8,7 +8,7 @@ defmodule SalixAgent.Migrations.SplitRuntimeStateTest do
   alias SalixStore.{Agent, Codec, Crypto, Head, Keys, S3}
 
   setup do
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     :ok
   end
@@ -162,5 +162,5 @@ defmodule SalixAgent.Migrations.SplitRuntimeStateTest do
     do: "agents/#{agent_id}/sessions/#{Crypto.hex(sid)}/#{ref}.etf.zst"
 
   defp unique_id("agent"), do: SalixAgent.TestSupport.new_agent_id()
-  defp unique_id(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
+  defp unique_id(prefix), do: "#{prefix}-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 end

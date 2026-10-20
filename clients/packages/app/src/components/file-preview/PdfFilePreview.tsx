@@ -1,5 +1,5 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Button } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
 import { useEffect, useRef, useState } from "react";
 // Vite turns this local package asset into a bundled URL.
 // oxlint-disable-next-line import/default

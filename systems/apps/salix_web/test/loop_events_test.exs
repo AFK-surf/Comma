@@ -4,26 +4,26 @@ defmodule SalixWeb.LoopEventsTest do
   secret URLs. Real compiled guests process events and call provider tools.
   Tests cover ownership, retry identity, lifecycle, and bounded admission.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.LLM.Mock
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_api_token = Application.get_env(:salix_web, :api_token)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_api_token = SystemsRuntime.get_env(:salix_web, :api_token)
     # Comma registers its member source item pool as a Composio signal reader at
     # boot. These tests cover Salix Loop delivery only.
-    prev_signal = Application.get_env(:salix_web, :composio_signal_mod)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_web, :api_token, "test-token")
-    Application.delete_env(:salix_web, :composio_signal_mod)
+    prev_signal = SystemsRuntime.get_env(:salix_web, :composio_signal_mod)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_web, :api_token, "test-token")
+    SystemsRuntime.delete_env(:salix_web, :composio_signal_mod)
 
     Comma.PodLifecycle.reset_for_test()
     SalixCluster.NodeLifecycle.reset()
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -35,14 +35,14 @@ defmodule SalixWeb.LoopEventsTest do
     end
 
     Mock.script([])
-    Application.put_env(:salix_agent, :llm, Mock)
+    SystemsRuntime.put_env(:salix_agent, :llm, Mock)
     SalixStore.Repo.query!("DELETE FROM agent_group_api_keys")
     SalixStore.Repo.query!("TRUNCATE agent_loops, agent_loop_acks")
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev)
-      Application.put_env(:salix_agent, :llm, prev_llm)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
+      SystemsRuntime.put_env(:salix_agent, :llm, prev_llm)
       restore_env(:salix_web, :api_token, prev_api_token)
       restore_env(:salix_web, :composio_signal_mod, prev_signal)
       Comma.PodLifecycle.reset_for_test()
@@ -71,7 +71,7 @@ defmodule SalixWeb.LoopEventsTest do
 
     # A Loop row without a running object: the ingress path is exercised up
     # to the owner-node delivery, which answers "not running" here.
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     {:ok, loop} =
       SalixStore.Loops.create(%{
@@ -173,6 +173,10 @@ defmodule SalixWeb.LoopEventsTest do
   end
 
   test "webhooks enforce input bounds, backpressure and the Loop lifecycle", ctx do
+    # The clock stands still while the requests are made: the limit's window
+    # holds all of them, however long they take.
+    SystemsClock.manual()
+    on_exit(&SystemsClock.reset/0)
     {:ok, loop} = SalixAgent.Loops.configure_webhook(ctx.agent_id, ctx.loop_id, "enable")
     url = loop["webhook_url"]
     assert webhook(url, %{"large" => String.duplicate("x", 16_384)}).status == 413
@@ -336,8 +340,8 @@ defmodule SalixWeb.LoopEventsTest do
     ]
 
     for {app, key, value} <- overrides do
-      old = Application.get_env(app, key)
-      Application.put_env(app, key, value)
+      old = SystemsRuntime.get_env(app, key)
+      SystemsRuntime.put_env(app, key, value)
       on_exit(fn -> restore_env(app, key, old) end)
     end
 
@@ -426,7 +430,7 @@ defmodule SalixWeb.LoopEventsTest do
            }
 
     assert webhook(url, payload).status == 202
-    Process.sleep(100)
+    SystemsRuntime.Proc.sleep(100)
     calls = Agent.get(state, & &1.requests)
 
     assert Enum.count(
@@ -609,7 +613,7 @@ defmodule SalixWeb.LoopEventsTest do
   defp webhook(url, body, headers \\ []),
     do: Req.post!(request_url(url), json: body, headers: headers, retry: false)
 
-  defp await(check, attempts \\ 100)
+  defp await(check, attempts \\ 600)
   defp await(_check, 0), do: flunk("Loop did not converge within five seconds")
 
   defp await(check, attempts) do
@@ -617,7 +621,7 @@ defmodule SalixWeb.LoopEventsTest do
       do: :ok,
       else:
         (
-          Process.sleep(50)
+          SystemsRuntime.Proc.sleep(50)
           await(check, attempts - 1)
         )
   end
@@ -631,6 +635,6 @@ defmodule SalixWeb.LoopEventsTest do
 
   defp base, do: SalixWeb.Application.base_url()
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

@@ -4,14 +4,15 @@ import {
   SignalProviderMark,
   SlackProviderLogo,
   TelegramProviderLogo,
-  WechatBrandIcon,
-} from "@comma/ui";
+} from "@comma/ui/components/provider-brand-logos";
+import { WechatBrandIcon } from "@comma/ui/components/icons";
 
 /** Where a Task was asked for: a chat provider, or Comma itself. */
 export const TASK_ORIGIN_KEYS = [
   "slack",
   "telegram",
   "feishu",
+  "lark",
   "wechat",
   "signal",
   "comma",
@@ -32,6 +33,8 @@ export function taskOriginLabel(messages: CommaMessages, key: TaskOriginKey): st
       return messages.task_panel_origin_telegram();
     case "feishu":
       return messages.task_panel_origin_feishu();
+    case "lark":
+      return messages.task_panel_origin_lark();
     case "wechat":
       return messages.task_panel_origin_wechat();
     case "signal":

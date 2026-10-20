@@ -1,4 +1,5 @@
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import { render, screen, waitFor } from "@comma/test-utils/render";
 import {
   Outlet,
@@ -8,45 +9,18 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CommaApiClient } from "../../../api";
+import { beforeEach, describe, expect, it } from "vitest";
 import { testProductLease } from "../../../test/productInboxProjectionHarness";
-import {
-  readActiveWorkspaceId,
-  subscribeActiveWorkspace,
-  writeActiveWorkspaceId,
-} from "../../activeWorkspace";
 import { ChatProvider, useHomeConversationTarget } from "../ChatProvider";
 import { HomeConversationTargetBootstrap } from "../HomeConversationTargetBootstrap";
 
 // Integrated regression for the multi-Workspace reload scope bug: the
 // route-independent bootstrap resolves the server's default Workspace, and an
-// unguarded resolution used to call writeActiveWorkspaceId — flipping a
-// multi-Workspace user's selected Workspace (and every active-Workspace
-// subscriber, e.g. /tasks) to the default one after a renderer reload on a
-// non-Home route. Real ChatProvider, bootstrap, useWorkspaceChat,
-// localStorage, and subscriber; only the network api is faked.
-
-function createApi(): CommaApiClient {
-  return {
-    bootstrapWorkspace: vi.fn(async () => ({
-      status: "ready",
-      workspace: {
-        group_id: "grp_default",
-        id: "wsp_default",
-        name: "Default Workspace",
-      },
-    })),
-    ensureGroupChat: vi.fn(async () => ({
-      group_id: "grp_default",
-      id: "cnv_default",
-      kind: "user_chat",
-      messages: [],
-      status: "open",
-      title: "Chat",
-    })),
-  } as unknown as CommaApiClient;
-}
+// unguarded resolution used to select its Workspace (`workspace.select`) —
+// flipping a multi-Workspace user's selected Workspace (and every surface that
+// follows it, e.g. /tasks) to the default one after a renderer reload on a
+// non-Home route. Real ChatProvider, bootstrap and useWorkspaceChat; only the
+// core is scripted.
 
 function TargetProbe() {
   const target = useHomeConversationTarget();
@@ -57,7 +31,7 @@ function TargetProbe() {
   );
 }
 
-function renderBootstrapOnTasksRoute(api: CommaApiClient) {
+function renderBootstrapOnTasksRoute() {
   const rootRoute = createRootRoute({
     component: () => (
       <>
@@ -77,42 +51,44 @@ function renderBootstrapOnTasksRoute(api: CommaApiClient) {
     history: createMemoryHistory({ initialEntries: ["/tasks"] }),
   });
 
+  // The core resolves the account's default Workspace Chat.
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "workspaceChat"
+        ? {
+            status: "ready",
+            chat: {
+              conversationId: "cnv_default",
+              groupId: "grp_default",
+              workspaceId: "wsp_default",
+            },
+            kept: false,
+          }
+        : undefined,
+  });
   render(
-    <ChatProvider api={api} productLease={testProductLease} releaseDelayMs={0}>
-      <RouterProvider router={router} />
-    </ChatProvider>
+    core.wrap(
+      <ChatProvider productLease={testProductLease}>
+        <RouterProvider router={router} />
+      </ChatProvider>
+    )
   );
+  return core;
 }
 
 describe("HomeConversationTargetBootstrap Workspace activation", () => {
   beforeEach(() => {
     installNativeBridgeMock({ platform: "web" });
-    localStorage.clear();
-  });
-
-  afterEach(() => {
-    localStorage.clear();
   });
 
   it("remembers the Home conversation target without activating its Workspace", async () => {
-    writeActiveWorkspaceId("wsp_selected");
-    const activeWorkspaceChanges: (string | undefined)[] = [];
-    const unsubscribe = subscribeActiveWorkspace((workspaceId) =>
-      activeWorkspaceChanges.push(workspaceId)
+    const core = renderBootstrapOnTasksRoute();
+
+    await waitFor(() =>
+      expect(screen.getByRole("status", { name: "home-target" })).toHaveTextContent(
+        "wsp_default:cnv_default"
+      )
     );
-
-    try {
-      renderBootstrapOnTasksRoute(createApi());
-
-      await waitFor(() =>
-        expect(screen.getByRole("status", { name: "home-target" })).toHaveTextContent(
-          "wsp_default:cnv_default"
-        )
-      );
-      expect(readActiveWorkspaceId()).toBe("wsp_selected");
-      expect(activeWorkspaceChanges).toEqual([]);
-    } finally {
-      unsubscribe();
-    }
+    expect(core.sentTo("workspace.select")).toEqual([]);
   });
 });

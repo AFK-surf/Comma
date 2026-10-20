@@ -1,0 +1,3 @@
+#!/bin/sh
+# The fake claude (claude.mjs), started as the real one is: by name on PATH.
+exec node "$(dirname "$0")/claude.mjs" "$@"

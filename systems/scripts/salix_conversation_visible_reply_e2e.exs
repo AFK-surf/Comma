@@ -1,10 +1,10 @@
 # End-to-end validation for visible internal conversation replies.
 #
-# Run through Deno:
-#   deno test --allow-all e2e/tests/salix_conversation_visible_reply_test.ts
+# Run through Bun, from systems/e2e:
+#   bun test tests/salix_conversation_visible_reply_test.ts
 #
 # The product path under test is public HTTP only: admin/runtime REST APIs create
-# the tenant, template, group, agents and conversations; conversation messages
+# the tenant, group, agents and conversations; conversation messages
 # are written and read through `/v1/runtime/agent-groups/.../conversations`.
 
 defmodule SalixConversationVisibleReplyE2E do
@@ -22,11 +22,11 @@ defmodule SalixConversationVisibleReplyE2E do
 
     run_id = System.unique_integer([:positive])
     tenant_key = create_tenant_key!(run_id)
-    template_id = create_template!(run_id)
+    :ok = configure_platform_model!()
     group_id = create_group!(tenant_key, run_id)
 
-    run_worker_conversation!(tenant_key, group_id, template_id, run_id)
-    run_router_conversation!(tenant_key, group_id, template_id, run_id)
+    run_worker_conversation!(tenant_key, group_id, run_id)
+    run_router_conversation!(tenant_key, group_id, run_id)
 
     IO.puts("SALIX_CONVERSATION_VISIBLE_REPLY_E2E: PASS")
   rescue
@@ -36,11 +36,10 @@ defmodule SalixConversationVisibleReplyE2E do
       System.halt(1)
   end
 
-  defp run_worker_conversation!(tenant_key, group_id, template_id, run_id) do
+  defp run_worker_conversation!(tenant_key, group_id, run_id) do
     agent =
       post_runtime!(tenant_key, "/v1/runtime/agents", %{
         "group_id" => group_id,
-        "template_id" => template_id,
         "name" => "Conversation worker #{run_id}",
         "role" => "worker"
       })
@@ -75,11 +74,10 @@ defmodule SalixConversationVisibleReplyE2E do
     wait_for_agent_sessions_settled!(tenant_key, agent_id, "worker conversation")
   end
 
-  defp run_router_conversation!(tenant_key, group_id, template_id, run_id) do
+  defp run_router_conversation!(tenant_key, group_id, run_id) do
     router =
       post_runtime!(tenant_key, "/v1/runtime/agents", %{
         "group_id" => group_id,
-        "template_id" => template_id,
         "name" => "Conversation router #{run_id}",
         "role" => "router"
       })
@@ -269,15 +267,20 @@ defmodule SalixConversationVisibleReplyE2E do
     key["key"] || raise("tenant API key response did not include key")
   end
 
-  defp create_template!(run_id) do
-    template =
-      post_admin!("/v1/admin/templates", %{
-        "template_id" => "conversation-visible-template-#{run_id}",
-        "name" => "Conversation Visible #{run_id}",
-        "model" => "mock-model"
-      })
-
-    template["template_id"] || raise("template response did not include template_id")
+  # The Agents follow the platform model of their role; the scripted LLM mock
+  # answers whatever it names.
+  defp configure_platform_model! do
+    case SalixAgent.Migrations.PlatformModels.seed(%{
+           "model" => "mock-model",
+           "provider_config" => %{
+             "base_url" => "https://platform-model.example.invalid/v1",
+             "api_key" => "sk-conversation-visible-0123456789",
+             "protocol" => "chat_completions"
+           }
+         }) do
+      {:ok, _tiers} -> :ok
+      {:error, reason} -> raise "platform model not configured: #{inspect(reason)}"
+    end
   end
 
   defp create_group!(tenant_key, run_id) do

@@ -8,7 +8,7 @@ defmodule SalixEnv.Ports.GroupDirectory do
   def get_group(group_id, tenant_id), do: impl().get_group(group_id, tenant_id)
 
   defp impl do
-    Application.get_env(:salix_env, :group_directory_mod, __MODULE__.None)
+    SystemsRuntime.get_env(:salix_env, :group_directory_mod, __MODULE__.None)
   end
 
   defmodule None do

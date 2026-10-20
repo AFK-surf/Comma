@@ -17,6 +17,8 @@ const hierarchies = [
 const sizes = ["xs", "sm", "md", "lg"] as const satisfies readonly ButtonSize[];
 
 const meta = {
+  // Asserts rendered icon sizes.
+  tags: ["browser"],
   title: "Base components/Buttons",
   component: Button,
   args: {

@@ -46,7 +46,7 @@ defmodule Comma.AuthChallenges do
 
   def request_email_login(attrs) when is_map(attrs) do
     with {:ok, email} <- Email.normalize_recipient(attrs["email"] || attrs[:email]),
-         {:ok, response} <- request_challenge(email, "email_login", %{}, attrs) do
+         {:ok, response} <- request_login_challenge(email, attrs) do
       {:ok, response}
     end
   end
@@ -57,15 +57,18 @@ defmodule Comma.AuthChallenges do
 
     with true <- id != "" and code =~ ~r/^\d{6}$/,
          {:ok, hashed_code} <- code_hash(id, "email_login", code),
-         {:ok, challenge} <- store_verify(id, hashed_code),
+         {:ok, review_hash} <- review_code_hash(code),
+         {:ok, review_candidate} <- code_hash(id, "email_login", review_hash),
+         {:ok, challenge} <- store_verify(id, hashed_code, review_candidate),
          :ok <- require_purpose(challenge, "email_login"),
-         {:ok, user} <- user_for_email(challenge["email"]),
+         {:ok, user} <- login_user(challenge),
          {:ok, response} <-
            SessionIssuer.issue(
              user,
              Keyword.merge(
                [
-                 auth_method: "email_otp",
+                 auth_method:
+                   if(challenge["review_user_id"], do: "review_code", else: "email_otp"),
                  ttl_seconds: session_ttl_seconds()
                ],
                SessionClientMetadata.options(attrs)
@@ -187,7 +190,64 @@ defmodule Comma.AuthChallenges do
 
   def verify_apple_link_challenge(_), do: {:error, :invalid_verification_code}
 
+  # The database owns the credential. The existing auth key prevents database-only
+  # readers from enumerating six-digit codes. Key rotation requires saving the code again.
+  def review_code_hash(code) when is_binary(code) do
+    if code =~ ~r/\A[0-9]{6}\z/ do
+      with {:ok, secret} <- configured_secret(:secret) do
+        {:ok,
+         :crypto.mac(:hmac, :sha256, secret, "comma-review-login-code-v1:" <> code)
+         |> Base.encode16(case: :lower)}
+      end
+    else
+      {:error, :invalid_review_login_code}
+    end
+  end
+
+  def review_code_hash(_), do: {:error, :invalid_review_login_code}
+
+  defp request_login_challenge(email, attrs) do
+    case Accounts.Repository.get_user_by_email(email) do
+      {:ok, %{review_login_code_hash: hash} = user} when is_binary(hash) ->
+        started_at = SystemsClock.monotonic_time(:millisecond)
+        id = random_challenge_id()
+
+        with {:ok, email_fingerprint} <- fingerprint("email", email),
+             {:ok, ip_fingerprint} <- fingerprint("ip", remote_ip(attrs)),
+             {:ok, challenge} <-
+               challenge(id, email, email_fingerprint, hash, "email_login", %{
+                 "review_user_id" => user.id,
+                 "review_code_hash" => hash
+               }),
+             :ok <- store_reserve(challenge, ip_fingerprint) do
+          {:ok, Map.merge(%{"challenge_id" => id}, challenge_timing("email_login", started_at))}
+        end
+
+      {:ok, _user} ->
+        request_challenge(email, "email_login", %{}, attrs)
+
+      {:error, :not_found} ->
+        request_challenge(email, "email_login", %{}, attrs)
+
+      error ->
+        error
+    end
+  end
+
+  defp login_user(%{"review_user_id" => user_id, "review_code_hash" => hash} = challenge) do
+    with {:ok, user} <- Accounts.Repository.get_user(user_id),
+         true <- user.email == challenge["email"] and user.review_login_code_hash == hash do
+      {:ok, user}
+    else
+      _ -> {:error, :invalid_verification_code}
+    end
+  end
+
+  defp login_user(challenge), do: user_for_email(challenge["email"])
+
   defp request_challenge(email, purpose, extra, attrs) do
+    started_at = SystemsClock.monotonic_time(:millisecond)
+
     with {:ok, code} <- verification_code(),
          id <- random_challenge_id(),
          {:ok, email_fingerprint} <- fingerprint("email", email),
@@ -195,7 +255,7 @@ defmodule Comma.AuthChallenges do
          {:ok, challenge} <-
            challenge(id, email, email_fingerprint, code, purpose, extra),
          :ok <- store_reserve(challenge, ip_fingerprint) do
-      deliver_challenge(email, code, id, purpose)
+      deliver_challenge(email, code, id, purpose, started_at)
     end
   end
 
@@ -225,12 +285,12 @@ defmodule Comma.AuthChallenges do
   end
 
   defp verification_code do
-    <<n::32>> = :crypto.strong_rand_bytes(4)
+    <<n::32>> = SystemsRuntime.Proc.random_bytes(4)
     {:ok, n |> rem(1_000_000) |> Integer.to_string() |> String.pad_leading(6, "0")}
   end
 
   defp random_challenge_id,
-    do: "comma_auth_" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+    do: "comma_auth_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(18), padding: false)
 
   defp code_hash(id, purpose, code) do
     with {:ok, secret} <- configured_secret(:secret) do
@@ -277,9 +337,14 @@ defmodule Comma.AuthChallenges do
     end
   end
 
-  defp store_verify(id, hashed_code) do
+  defp store_verify(id, hashed_code, review_candidate \\ "") do
     case observe(:redis_challenge, fn ->
-           store().verify(id, hashed_code, max_attempts(), verification_limit_options())
+           store().verify(
+             id,
+             hashed_code,
+             max_attempts(),
+             Map.put(verification_limit_options(), :review_candidate, review_candidate)
+           )
          end) do
       {:ok, _challenge} = success ->
         success
@@ -314,20 +379,18 @@ defmodule Comma.AuthChallenges do
     end
   end
 
-  defp deliver_challenge(email, code, id, purpose) do
-    response = challenge_response(id, code)
-
+  defp deliver_challenge(email, code, id, purpose, started_at) do
     case send_login_code(email, code, id, purpose) do
       :ok ->
         record_delivery(:ok)
-        {:ok, response}
+        {:ok, challenge_response(id, code, purpose, started_at)}
 
       {:error, {:transport, _reason}} ->
         # The provider may have accepted the request before the connection
         # failed. Do not auto-retry and double-deliver; leave the bounded
         # challenge usable in case the message arrives.
         record_delivery(:error)
-        {:ok, response}
+        {:ok, challenge_response(id, code, purpose, started_at)}
 
       {:error, :recipient_rejected} ->
         # This challenge cannot be delivered, but a recipient-specific
@@ -342,10 +405,26 @@ defmodule Comma.AuthChallenges do
     end
   end
 
-  defp challenge_response(id, code) do
-    response = %{"challenge_id" => id}
+  defp challenge_response(id, code, purpose, started_at) do
+    response =
+      %{"challenge_id" => id}
+      |> Map.merge(challenge_timing(purpose, started_at))
+
     if expose_codes?(), do: Map.put(response, "code", code), else: response
   end
+
+  # Only the email login request exposes timing; it drives desktop resend and reentry.
+  defp challenge_timing("email_login", started_at) do
+    elapsed_ms = SystemsClock.monotonic_time(:millisecond) - started_at
+    cooldown = nonnegative_config(:resend_cooldown_seconds, @default_resend_cooldown_seconds)
+
+    %{
+      "expires_in" => max(div(ttl_seconds() * 1000 - elapsed_ms, 1000), 0),
+      "resend_after" => max(ceil((cooldown * 1000 - elapsed_ms) / 1000), 0)
+    }
+  end
+
+  defp challenge_timing(_purpose, _started_at), do: %{}
 
   defp record_delivery(outcome) do
     observe(:redis_challenge, fn -> store().record_delivery(outcome, circuit_options()) end)
@@ -356,7 +435,7 @@ defmodule Comma.AuthChallenges do
   end
 
   defp observe(operation, fun) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     try do
       result = fun.()
@@ -364,7 +443,7 @@ defmodule Comma.AuthChallenges do
       CommaProduct.Telemetry.emit_operation(
         operation,
         dependency_outcome(result),
-        System.monotonic_time() - started
+        SystemsClock.monotonic_time() - started
       )
 
       result
@@ -373,7 +452,7 @@ defmodule Comma.AuthChallenges do
         CommaProduct.Telemetry.emit_operation(
           operation,
           :error,
-          System.monotonic_time() - started
+          SystemsClock.monotonic_time() - started
         )
 
         reraise exception, __STACKTRACE__
@@ -467,7 +546,7 @@ defmodule Comma.AuthChallenges do
     end
   end
 
-  defp auth_config, do: Application.get_env(:comma_core, :auth, [])
+  defp auth_config, do: SystemsRuntime.get_env(:comma_core, :auth, [])
   defp require_purpose(%{"purpose" => purpose}, purpose), do: :ok
   defp require_purpose(_challenge, _purpose), do: {:error, :wrong_purpose}
   defp nonempty?(value) when is_binary(value), do: String.trim(value) != ""

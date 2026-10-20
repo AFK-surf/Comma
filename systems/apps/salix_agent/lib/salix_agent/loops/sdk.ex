@@ -115,6 +115,7 @@ defmodule SalixAgent.Loops.Sdk do
   | `loop.state.get` | `{}` | `{"state": ...}` |
   | `loop.ack` | `{"event_id": id}` | `{"status": "acked", "event_id": id}` |
   | `loop.log` | `{"message": text <= 1 KiB}` | `{"status": "logged"}` |
+  | `loop.next_run` | `{"after_ms": unix ms, optional}` | `{"next_run_at": unix ms}` or `{"ended": true}` |
   | read-only Salix tools, by canonical name | that tool's arguments | `{"tool": name, "error": false, "content": text <= 16 KiB}` |
   | any external environment tool (`env.exec`, `env.copy`, `env.process_list/tail/write`, `env.computer_use`, `env.android`, `device.list`, `device.get`) | that tool's arguments | the same envelope; `content` is the tool's JSON text (for `env.exec`: `exit_code`, `stdout`, `stderr`) |
   | any SSH tool (`ssh.*`) | that tool's arguments from `help ssh` | the same envelope. Parse `content` as JSON for the SSH result. |
@@ -140,6 +141,19 @@ defmodule SalixAgent.Loops.Sdk do
     insufficient evidence are failures, not a quiet classification. Do not
     acknowledge them as completed. For a useful result, acknowledge only
     after `agent.notify` returns `queued` or `duplicate`.
+  * A Loop with an `every_minutes` or `cron` trigger asks for its next run
+    with `loop.next_run`: pass the time of the run it just did as
+    `after_ms` (keep it in the checkpoint), or nothing on the first run.
+    The host computes the time in the trigger's timezone, so the program
+    needs no clock rules. When runs were missed (the Loop was down), the
+    answer is the latest missed time, which is already due: run once. Wait
+    with `sf_event_next(next - sf_now_unix_ms())` so events still arrive;
+    one wait returns after at most 24 hours, so wait again until the time
+    is reached. `{"ended": true}` means the Loop ended at its end time:
+    return.
+  * The Loop's runs are its delivered `agent.notify` wakes. At its
+    `max_runs` or its `ends_at` the host ends the Loop and the next host
+    call returns `SF_CLOSED` or an error: return.
   * `loop.webhook` enables a secret URL for this Loop. `loop.list` and
     `loop.get` return the saved URL. External senders POST a JSON object
     without an Authorization header. The topic is `webhook` and the payload
@@ -255,7 +269,7 @@ defmodule SalixAgent.Loops.Sdk do
   @doc "The exact `spinfoam.h` of the pinned binary on this node, cached."
   @spec header() :: {:ok, String.t()} | {:error, term()}
   def header do
-    case :persistent_term.get(@header_key, nil) do
+    case SystemsRuntime.PersistentTerm.get(@header_key, nil) do
       nil -> dump_header()
       header -> {:ok, header}
     end
@@ -273,7 +287,7 @@ defmodule SalixAgent.Loops.Sdk do
     with {:ok, exe} <- Host.executable() do
       case System.cmd(exe, ["--dump-sdk"], stderr_to_stdout: false) do
         {header, 0} when byte_size(header) > 0 ->
-          :persistent_term.put(@header_key, header)
+          SystemsRuntime.PersistentTerm.put(@header_key, header)
           {:ok, header}
 
         {output, status} ->

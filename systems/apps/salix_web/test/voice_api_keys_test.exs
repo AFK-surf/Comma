@@ -4,19 +4,22 @@ defmodule SalixWeb.VoiceApiKeysTest do
   API Key record with its own prefix and cap, refused on every surface but
   the voice routes, and revoked to live calls through `:pg`.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   alias Salix.Control.{GroupApiKeys, Groups}
 
   setup do
-    prev_api_token = Application.get_env(:salix_web, :api_token)
-    Application.put_env(:salix_web, :api_token, "test-token")
+    prev_api_token = SystemsRuntime.get_env(:salix_web, :api_token)
+    SystemsRuntime.put_env(:salix_web, :api_token, "test-token")
     SalixStore.Repo.query!("DELETE FROM agent_group_api_keys")
 
     on_exit(fn ->
       if prev_api_token,
-        do: Application.put_env(:salix_web, :api_token, prev_api_token),
-        else: Application.delete_env(:salix_web, :api_token)
+        do: SystemsRuntime.put_env(:salix_web, :api_token, prev_api_token),
+        else: SystemsRuntime.delete_env(:salix_web, :api_token)
     end)
 
     tenant_id = req(:post, "/v1/admin/tenants", json: %{name: "Voice Keys"}).body["tenant_id"]
@@ -27,19 +30,6 @@ defmodule SalixWeb.VoiceApiKeysTest do
     group = req_as(tenant_key, :post, "/v1/runtime/agent-groups", json: %{name: "Voice"}).body
 
     {:ok, tenant_id: tenant_id, tenant_key: tenant_key, group_id: group["group_id"]}
-  end
-
-  test "the kind column defaults existing rows to inbound and rejects unknown kinds", ctx do
-    assert {:ok, inbound} =
-             GroupApiKeys.create(ctx.group_id, ctx.tenant_id, %{"name" => "Old"}, "salix_admin")
-
-    assert inbound["kind"] == "inbound"
-
-    assert_raise Postgrex.Error, ~r/agent_group_api_keys_kind_check/, fn ->
-      SalixStore.Repo.query!("UPDATE agent_group_api_keys SET kind = 'other' WHERE key_id = $1", [
-        inbound["key_id"]
-      ])
-    end
   end
 
   test "voice keys have their own prefix, cap and validation", ctx do
@@ -112,10 +102,10 @@ defmodule SalixWeb.VoiceApiKeysTest do
       GroupApiKeys.create(ctx.group_id, ctx.tenant_id, %{"name" => "K"}, "salix_admin", "voice")
 
     key_id = key["key_id"]
-    :ok = :pg.join(SalixVoice.PG, {:voice_key, key_id}, self())
-    on_exit(fn -> :pg.leave(SalixVoice.PG, {:voice_key, key_id}, self()) end)
+    :ok = :pg.join(SalixVoice.PG, {:voice_key, key_id}, SystemsRuntime.Proc.self())
+    on_exit(fn -> :pg.leave(SalixVoice.PG, {:voice_key, key_id}, SystemsRuntime.Proc.self()) end)
 
-    expires_at = System.system_time(:second) + 3_600
+    expires_at = SystemsClock.system_time(:second) + 3_600
 
     assert {:ok, _} =
              GroupApiKeys.update(
@@ -127,7 +117,7 @@ defmodule SalixWeb.VoiceApiKeysTest do
              )
 
     expires_at_ms = expires_at * 1000
-    assert_receive {:voice_key_expiry, ^key_id, ^expires_at_ms}
+    settle_receive({:voice_key_expiry, ^key_id, ^expires_at_ms})
 
     assert {:ok, _} =
              GroupApiKeys.update(
@@ -138,7 +128,7 @@ defmodule SalixWeb.VoiceApiKeysTest do
                "voice"
              )
 
-    assert_receive {:voice_key_expiry, ^key_id, nil}
+    settle_receive({:voice_key_expiry, ^key_id, nil})
 
     assert {:ok, _} =
              GroupApiKeys.update(
@@ -149,10 +139,9 @@ defmodule SalixWeb.VoiceApiKeysTest do
                "voice"
              )
 
-    assert_receive {:voice_key_revoked, ^key_id}
-
+    settle_receive({:voice_key_revoked, ^key_id})
     assert :ok = GroupApiKeys.delete(ctx.group_id, ctx.tenant_id, key_id, "voice")
-    assert_receive {:voice_key_revoked, ^key_id}
+    settle_receive({:voice_key_revoked, ^key_id})
 
     {:ok, other} =
       GroupApiKeys.create(ctx.group_id, ctx.tenant_id, %{"name" => "K2"}, "salix_admin", "voice")

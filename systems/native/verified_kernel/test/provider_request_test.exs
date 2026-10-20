@@ -2,22 +2,8 @@ defmodule SalixVerifiedKernel.ProviderRequestTest do
   use ExUnit.Case, async: true
   alias SalixVerifiedKernel.Session
 
-  test "Responses keeps prior implicit cache boundaries across three reminder-bearing rounds" do
-    catalog =
-      Session.query(
-        Session.new("agent", "session"),
-        :provider_request_part,
-        {:turn_reminder_catalog}
-      )
-
-    origin = %{
-      "provider" => "internal",
-      "source_actor_type" => "user",
-      "conversation_kind" => "user_chat",
-      "conversation_id" => "conv"
-    }
-
-    user = %{id: 1, role: "user", content: "turn: repair=on (quoted user text)"}
+  test "Responses keeps prior implicit cache boundaries across three rounds" do
+    user = %{id: 1, role: "user", content: "question"}
     summary = %{id: 2, role: "summary", content: "Historical quoted context"}
 
     histories = [
@@ -29,88 +15,76 @@ defmodule SalixVerifiedKernel.ProviderRequestTest do
         [%{id: 8, role: "assistant", content: "", tool_calls: []}]
     ]
 
-    for prompt <- ["Stable instructions", "Stable instructions\n\n" <> catalog],
-        repair <- [nil, %{"status" => "required", "attempts" => 0}] do
-      bodies =
-        for history <- histories do
-          state =
-            session(%{
-              system_prompt: prompt,
-              messages: history,
-              visible_reply_repair: repair,
-              provider_reply_obligations: %{
-                "target" => %{"provider" => "slack", "channel" => "C1"}
-              }
-            })
+    bodies =
+      for history <- histories do
+        state = session(%{system_prompt: "Stable instructions", messages: history})
+        before = Session.export(state)
+        body = request_body(state, "responses")
 
-          before = Session.export(state)
-          body = request_body(state, "responses", origin)
-
-          neutral =
-            Session.query(
-              state,
-              :provider_dispatch,
-              {nil, false, origin, %{}, false, :neutral, nil, [], "stream"}
-            )
-
-          reminders = Enum.drop(neutral, 1 + length(history))
-          assert reminders != []
-
-          expected =
-            Enum.map(
-              reminders,
-              &%{
-                "role" => "developer",
-                "content" => "<system>\n" <> String.trim(&1.content) <> "\n</system>"
-              }
-            )
-
-          assert Enum.map(Enum.take(body["input"], -length(expected)), & &1["content"]) ==
-                   Enum.map(expected, & &1["content"])
-
-          assert body["instructions"] == prompt
-          assert hd(body["input"])["role"] == "user"
-
-          assert Enum.at(body["input"], 1) == %{
-                   "role" => "user",
-                   "content" => "<system>\nHistorical quoted context\n</system>"
-                 }
-
-          assert Session.export(state) == before
-          body
-        end
-
-      for [previous, next] <- Enum.chunk_every(bodies, 2, 1, :discard) do
-        assert List.last(cache_prefixes(previous)) in cache_prefixes(next)
+        assert body["instructions"] == "Stable instructions"
+        assert Session.export(state) == before
+        body
       end
+
+    for [previous, next] <- Enum.chunk_every(bodies, 2, 1, :discard) do
+      assert List.last(cache_prefixes(previous)) in cache_prefixes(next)
     end
   end
 
-  test "transient reminders preserve other protocols and do not enter empty-context instructions" do
-    state =
-      session(%{
-        system_prompt: "Stable instructions",
-        provider_reply_obligations: %{"target" => %{"provider" => "slack", "channel" => "C1"}}
-      })
+  test "with no history, a placeholder turn follows the prompt outside Responses" do
+    state = session(%{system_prompt: "Stable instructions"})
+    placeholder = "[No new user message.]"
 
-    neutral =
-      Session.query(
-        state,
-        :provider_dispatch,
-        {nil, false, nil, %{}, false, :neutral, nil, [], "stream"}
-      )
+    assert [
+             %{"role" => "system", "content" => "Stable instructions"},
+             %{"role" => "user", "content" => ^placeholder}
+           ] = request_body(state, "chat")["messages"]
 
-    for protocol <- ["chat", "anthropic"] do
-      expected =
-        call(:encoded_body, {protocol, %{model: "test"}, neutral, [], "stream"})
-        |> then(&call(:normalize, &1))
+    anthropic = request_body(state, "anthropic")
+    assert [%{"text" => "Stable instructions"}] = anthropic["system"]
+    assert [%{"role" => "user", "content" => [%{"text" => ^placeholder}]}] = anthropic["messages"]
+  end
 
-      assert request_body(state, protocol) == expected
-    end
+  test "a request marks private diagnostics and shows public summaries" do
+    call = %{
+      id: 2,
+      role: "assistant",
+      content: "",
+      tool_calls: [%{id: "a", name: "read", args: %{}}, %{id: "b", name: "read", args: %{}}]
+    }
 
-    body = request_body(state, "responses")
-    assert body["instructions"] == "Stable instructions"
-    assert [%{"role" => "developer"}] = body["input"]
+    private = %{
+      id: 3,
+      role: "tool",
+      tool_call_id: "a",
+      content: "upstream 500 at internal host",
+      diagnostic_visibility: "model_only"
+    }
+
+    public = %{
+      id: 4,
+      role: "tool",
+      tool_call_id: "b",
+      content: "secret detail",
+      diagnostic_visibility: "user_reportable",
+      public_summary: "Search is unavailable."
+    }
+
+    messages = [%{id: 1, role: "user", content: "question"}, call, private, public]
+    state = session(%{messages: messages})
+    args = {nil, :neutral, nil, [], "stream"}
+    request = Session.query(state, :provider_dispatch, args)
+
+    assert Enum.find(request, &(&1[:id] == 3)).content ==
+             "[private diagnostic]\nupstream 500 at internal host"
+
+    shown = Enum.find(request, &(&1[:id] == 4))
+    refute shown.content =~ "secret detail"
+    assert shown.content =~ "Search is unavailable."
+
+    # A later message does not change how these render.
+    later = session(%{messages: messages ++ [%{id: 5, role: "user", content: "next"}]})
+    assert Enum.take(Session.query(later, :provider_dispatch, args), length(request)) == request
   end
 
   defp cache_tool_round(id, calls) do
@@ -128,11 +102,11 @@ defmodule SalixVerifiedKernel.ProviderRequestTest do
     ]
   end
 
-  defp request_body(state, protocol, origin \\ nil) do
+  defp request_body(state, protocol) do
     Session.query(
       state,
       :provider_dispatch,
-      {nil, false, origin, %{}, false, protocol, %{model: "test"}, [], "stream"}
+      {nil, protocol, %{model: "test"}, [], "stream"}
     )
     |> then(&call(:normalize, &1))
   end
@@ -204,7 +178,7 @@ defmodule SalixVerifiedKernel.ProviderRequestTest do
       ]
     }
 
-    args = {delta, false, nil, %{"tools" => []}, false, :neutral, nil, [], "stream"}
+    args = {delta, :neutral, nil, [], "stream"}
 
     assert [prompt, summary, user, activation] = Session.query(session, :provider_dispatch, args)
     assert prompt == %{role: "summary", content: "stored prompt"}
@@ -245,7 +219,7 @@ defmodule SalixVerifiedKernel.ProviderRequestTest do
     }
 
     args = fn delta ->
-      {delta, false, nil, %{"tools" => []}, false, :neutral, nil, [], "stream"}
+      {delta, :neutral, nil, [], "stream"}
     end
 
     first = Session.query(session(%{messages: [user]}), :provider_dispatch, args.(delta))
@@ -273,212 +247,15 @@ defmodule SalixVerifiedKernel.ProviderRequestTest do
 
     {second_items, _instructions} = call(:responses_parts, second)
 
-    knowledge_index = Enum.find_index(first_items, &(&1["content"] =~ "project-knowledge:1"))
+    # Project knowledge renders as a synthetic `get_runtime_message` result.
+    knowledge? = &(&1["type"] == "function_call_output" and inspect(&1) =~ "project-knowledge:1")
+    knowledge_index = Enum.find_index(first_items, knowledge?)
     assert is_integer(knowledge_index)
 
     assert Enum.take(second_items, knowledge_index + 1) ==
              Enum.take(first_items, knowledge_index + 1)
 
-    assert Enum.count(second_items, &(&1["content"] =~ "project-knowledge:1")) == 1
-  end
-
-  test "clean context removes private diagnostic payloads without changing stored facts" do
-    message = %{
-      id: 1,
-      role: "tool",
-      tool_call_id: "call",
-      content: "private-token-雪",
-      diagnostic_visibility: "model_only",
-      error_message: "private-token-雪",
-      source_refs: %{"secret" => "private-token-雪"}
-    }
-
-    session = session(%{messages: [message]})
-    assert [projected] = Session.query(session, :provider_context)
-    refute projected.content =~ "private-token"
-    refute Map.has_key?(projected, :source_refs)
-    refute Map.has_key?(projected, :error_message)
-    assert Session.get(session, :messages) == [message]
-  end
-
-  test "terminal reply receipts replace running placeholders only in the provider request" do
-    original = reply_invocation(1, "reply", "end_turn")
-    legacy = reply_invocation(4, "legacy", "call")
-    label = %{"readers" => ["user:owner"]}
-
-    messages = [
-      original,
-      Map.put(running_reply(2, "reply"), :ifc, label),
-      %{id: 3, role: "user", content: "another request"},
-      legacy,
-      running_reply(5, "legacy")
-    ]
-
-    state =
-      session(%{
-        messages: messages,
-        events: [reply_delivered(1, "reply", "done"), reply_delivered(4, "legacy", "blocked")]
-      })
-
-    before = Session.export(state)
-    assert [^original, reply, _, ^legacy, blocked] = Session.query(state, :provider_context)
-    assert reply.status == "completed"
-    assert reply.ifc == label
-    assert :json.decode(reply.content)["status"] == "completed"
-    assert :json.decode(reply.content)["outcome"] == "done"
-    assert :json.decode(blocked.content)["outcome"] == "blocked"
-
-    {body, _, _} =
-      measured_dispatch(state, fn request -> flunk("unexpected read: #{inspect(request)}") end)
-
-    wire = SalixVerifiedKernel.Provider.call(:normalize, body)
-
-    receipts =
-      for %{"role" => "tool", "content" => content} <- wire["messages"], do: :json.decode(content)
-
-    assert Enum.map(receipts, & &1["status"]) == ["completed", "completed"]
-    assert Enum.map(receipts, & &1["outcome"]) == ["done", "blocked"]
-    assert Session.export(state) == before
-
-    private_state =
-      session(%{
-        messages: [
-          original,
-          Map.put(running_reply(2, "reply"), :diagnostic_visibility, "model_only")
-        ],
-        events: [reply_delivered(1, "reply", "done")]
-      })
-
-    assert [_, redacted] = Session.query(private_state, :provider_context)
-    assert :json.decode(redacted.content) == %{"status" => "completed"}
-  end
-
-  test "terminal receipts do not leak into reused calls, pending sends, failures or reader pages" do
-    page = ~s({"result_page":{"offset":0,"content":"old page","total_chars":8}})
-
-    messages = [
-      reply_invocation(1, "reused", "end_turn"),
-      running_reply(2, "reused"),
-      reply_invocation(3, "reused", "end_turn"),
-      running_reply(4, "reused"),
-      reply_invocation(5, "pending", "end_turn"),
-      running_reply(6, "pending"),
-      reply_invocation(7, "failed", "end_turn"),
-      %{running_reply(8, "failed") | status: "failed", content: "delivery rejected"},
-      %{
-        id: 9,
-        role: "assistant",
-        content: "",
-        tool_calls: [%{id: "reused", name: "call", args: %{"tool" => "tool_call.get_result"}}]
-      },
-      %{
-        id: 10,
-        role: "tool",
-        tool_call_id: "reused",
-        tool_name: "tool_call.get_result",
-        status: "completed",
-        content: page
-      },
-      reply_invocation(11, "unrelated", "end_turn"),
-      running_reply(12, "unrelated")
-    ]
-
-    state =
-      session(%{
-        messages: messages,
-        events: [reply_delivered(1, "reused", "done"), reply_delivered(11, "other-call", "done")]
-      })
-
-    projected = Session.query(state, :provider_context)
-    assert :json.decode(Enum.at(projected, 1).content)["status"] == "completed"
-    assert Enum.drop(projected, 2) == Enum.drop(messages, 2)
-    assert Session.get(state, :messages) == messages
-  end
-
-  defp reply_invocation(id, call_id, name) do
-    reply = %{"tool" => "im_api.internal.send_message", "params" => %{"content" => "answer"}}
-
-    args =
-      if name == "end_turn",
-        do: %{"outcome" => "done", "reply" => reply},
-        else: Map.merge(reply, %{"reply_mode" => "final", "final_outcome" => "done"})
-
-    %{
-      id: id,
-      role: "assistant",
-      content: "",
-      tool_calls: [%{id: call_id, name: name, args: args}],
-      provider_meta: %{
-        "chat_message_extra" => %{
-          "reasoning_details" => [
-            %{"type" => "reasoning.encrypted", "id" => call_id, "data" => "signature"}
-          ]
-        }
-      }
-    }
-  end
-
-  defp running_reply(id, call_id) do
-    %{
-      id: id,
-      role: "tool",
-      tool_call_id: call_id,
-      tool_name: "im_api.internal.send_message",
-      status: "async_running",
-      content:
-        IO.iodata_to_binary(
-          :json.encode(%{
-            "status" => "running",
-            "tool_call_id" => call_id,
-            "tool_name" => "im_api.internal.send_message",
-            "message" =>
-              "tool is still running asynchronously; completion will arrive as a session notification"
-          })
-        )
-    }
-  end
-
-  defp reply_delivered(assistant_id, call_id, outcome) do
-    %{
-      "kind" => "terminal_reply_delivered",
-      "event" => %{
-        "assistant_id" => assistant_id,
-        "tool_call_id" => call_id,
-        "outcome" => outcome,
-        "settled_ack_hwm" => assistant_id + 1
-      }
-    }
-  end
-
-  test "obligation rendering is bounded and excludes unrelated target metadata" do
-    targets =
-      Map.new(1..23, fn id ->
-        key = String.pad_leading(to_string(id), 2, "0")
-
-        {key,
-         %{
-           "key" => key,
-           "provider" => "slack",
-           "channel" => "channel-#{key}",
-           "private_metadata" => "never-render"
-         }}
-      end)
-
-    session = session(%{provider_reply_obligations: targets})
-
-    assert [%{content: content}] =
-             Session.query(
-               session,
-               :provider_dispatch,
-               {nil, false, nil, %{}, false, :neutral, nil, [], "stream"}
-             )
-
-    assert length(Regex.scan(~r/^- /m, content)) == 21
-    assert content =~ "3 additional target(s)"
-    assert content =~ "channel-20"
-    refute content =~ "channel-21"
-    refute content =~ "never-render"
-    assert map_size(Session.get(session, :provider_reply_obligations)) == 23
+    assert Enum.count(second_items, knowledge?) == 1
   end
 
   # An inbound attachment is never model input, whatever type the sender's block
@@ -513,7 +290,7 @@ defmodule SalixVerifiedKernel.ProviderRequestTest do
         Session.query(
           state,
           :provider_dispatch,
-          {nil, false, nil, %{}, false, protocol, cfg, [], "stream"},
+          {nil, protocol, cfg, [], "stream"},
           read
         )
 
@@ -666,7 +443,7 @@ defmodule SalixVerifiedKernel.ProviderRequestTest do
 
   defp measured_dispatch({:verified_kernel, 1, :session_state, resident}, read) do
     cfg = SalixVerifiedKernel.Provider.call(:config, {%{"model" => "test-model"}, "", ""})
-    args = {nil, false, nil, %{}, false, "chat", cfg, [], "stream"}
+    args = {nil, "chat", cfg, [], "stream"}
     measure(resident, :query, {:provider_dispatch, args, Session.prelude()}, read, 0, 0)
   end
 
@@ -697,99 +474,6 @@ defmodule SalixVerifiedKernel.ProviderRequestTest do
   defp call(op, payload) do
     assert {:ok, {:value, value}} = SalixVerifiedKernel.invoke(:provider, op, payload)
     value
-  end
-
-  test "tool availability alone does not add turn reminders" do
-    catalog =
-      Session.query(
-        Session.new("agent", "session"),
-        :provider_request_part,
-        {:turn_reminder_catalog}
-      )
-
-    session =
-      session(%{
-        system_prompt: "stored prompt\n\n" <> catalog,
-        summary: "durable summary",
-        messages: [%{id: 1, role: "user", content: "问题"}]
-      })
-
-    off =
-      {nil, false, %{"provider" => "internal"}, %{"tools" => []}, false, :neutral, nil, [],
-       "stream"}
-
-    on =
-      {nil, true, %{"provider" => "internal"}, %{"tools" => []}, false, :neutral, nil, [],
-       "stream"}
-
-    assert [%{role: "summary"}, _summary, %{content: "问题"}] =
-             Session.query(session, :provider_dispatch, off)
-
-    assert [_prompt, _summary, _user] =
-             Session.query(session, :provider_dispatch, on)
-  end
-
-  test "only unanswered Comma user input activates the opening rule" do
-    catalog =
-      Session.query(
-        Session.new("agent", "session"),
-        :provider_request_part,
-        {:turn_reminder_catalog}
-      )
-
-    comma = %{
-      "provider" => "internal",
-      "source_actor_type" => "user",
-      "conversation_kind" => "user_chat",
-      "conversation_id" => "conv"
-    }
-
-    slack = %{"provider" => "slack", "source_actor_type" => "provider_user"}
-    user = %{id: 1, role: "user", content: "问题"}
-    tool_calls = [%{id: "c", name: "call", args: %{}}]
-    call = %{id: 2, role: "assistant", content: "", tool_calls: tool_calls}
-    result = %{id: 3, role: "tool", tool_call_id: "c", content: "ok"}
-
-    flags = fn messages, origin ->
-      session = session(%{system_prompt: "prompt\n\n" <> catalog, messages: messages})
-      args = {nil, false, origin, %{"tools" => []}, false, :neutral, nil, [], "stream"}
-
-      case List.last(Session.query(session, :provider_dispatch, args)) do
-        %{role: "summary", content: "turn: " <> line} -> String.split(line)
-        _ -> []
-      end
-    end
-
-    assert "opening=on" in flags.([user], comma)
-    refute "opening=on" in flags.([user, call, result], comma)
-    # A message sent while the model works is a new request of its own.
-    assert "opening=on" in flags.([user, call, result, %{user | id: 4}], comma)
-    refute "opening=on" in flags.([user], %{comma | "conversation_kind" => "agent_task"})
-    refute "opening=on" in flags.([user], slack)
-  end
-
-  test "a stored prompt without the catalog keeps the full per-request reminders" do
-    session =
-      session(%{
-        system_prompt: "stored prompt from before the catalog",
-        summary: "durable summary",
-        messages: [%{id: 1, role: "user", content: "问题"}]
-      })
-
-    on =
-      {nil, true, %{"provider" => "internal"}, %{"tools" => []}, false, :neutral, nil, [],
-       "stream"}
-
-    assert [_prompt, _summary, _user] = Session.query(session, :provider_dispatch, on)
-
-    assert Session.query(
-             session,
-             :provider_request_part,
-             {:catalog_present?, "x\n## Turn reminders\ny"}
-           )
-
-    refute Session.query(session, :provider_request_part, {:catalog_present?, "stored prompt"})
-    refute Session.query(session, :provider_request_part, {:catalog_present?, nil})
   end
 
   test "activation adopts the configured prompt without changing accepted work" do

@@ -121,7 +121,7 @@ defmodule SalixAgent.Tools.OwnerEmail do
   # caller above maps onto the configuration message.
   defp from_email do
     :salix_agent
-    |> Application.get_env(:owner_notification_from_email)
+    |> SystemsRuntime.get_env(:owner_notification_from_email)
     |> to_string()
     |> String.trim()
   end

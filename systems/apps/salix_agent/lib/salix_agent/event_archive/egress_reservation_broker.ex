@@ -1,4 +1,8 @@
 defmodule SalixAgent.EventArchive.EgressReservationBroker do
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
   @moduledoc false
 
   alias SalixAgent.EventArchive.Emit
@@ -12,12 +16,12 @@ defmodule SalixAgent.EventArchive.EgressReservationBroker do
   @doc false
   def start(context, session_id) when is_map(context) do
     if SalixAgent.EventArchive.enabled?() do
-      owner = self()
-      token = make_ref()
+      owner = SystemsRuntime.Proc.self()
+      token = SystemsRuntime.Proc.make_ref()
 
       pid =
-        spawn(fn ->
-          owner_ref = Process.monitor(owner)
+        SystemsRuntime.Proc.spawn(fn ->
+          owner_ref = SystemsRuntime.Proc.monitor(owner)
           loop(owner, owner_ref, token, context, session_id, :unreserved)
         end)
 
@@ -28,19 +32,20 @@ defmodule SalixAgent.EventArchive.EgressReservationBroker do
   def start(_context, _session_id), do: nil
 
   @doc false
-  def stop({pid, token}) when is_pid(pid) and is_reference(token) do
-    send(pid, {@stop_tag, token})
+  def stop({pid, token})
+      when SystemsRuntime.Proc.is_process(pid) and SystemsRuntime.Proc.is_ref(token) do
+    SystemsRuntime.Proc.send(pid, {@stop_tag, token})
     :ok
   end
 
   def stop(_broker), do: :ok
 
   defp loop(owner, owner_ref, token, context, session_id, reservation) do
-    receive do
+    SystemsClock.vreceive do
       {@request_tag, ^token, request_ref, reply_to}
-      when is_reference(request_ref) and is_pid(reply_to) ->
+      when SystemsRuntime.Proc.is_ref(request_ref) and SystemsRuntime.Proc.is_process(reply_to) ->
         reservation = reserve_once(reservation, context, session_id)
-        send(reply_to, {@reply_tag, token, request_ref, reservation})
+        SystemsRuntime.Proc.send(reply_to, {@reply_tag, token, request_ref, reservation})
         loop(owner, owner_ref, token, context, session_id, reservation)
 
       {@stop_tag, ^token} ->
@@ -54,11 +59,11 @@ defmodule SalixAgent.EventArchive.EgressReservationBroker do
   end
 
   defp owner_exit_grace(token, context, session_id, reservation) do
-    receive do
+    SystemsClock.vreceive do
       {@request_tag, ^token, request_ref, reply_to}
-      when is_reference(request_ref) and is_pid(reply_to) ->
+      when SystemsRuntime.Proc.is_ref(request_ref) and SystemsRuntime.Proc.is_process(reply_to) ->
         reservation = reserve_once(reservation, context, session_id)
-        send(reply_to, {@reply_tag, token, request_ref, reservation})
+        SystemsRuntime.Proc.send(reply_to, {@reply_tag, token, request_ref, reservation})
         owner_exit_grace(token, context, session_id, reservation)
 
       {@stop_tag, ^token} ->

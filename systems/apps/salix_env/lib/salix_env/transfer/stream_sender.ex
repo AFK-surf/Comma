@@ -1,20 +1,20 @@
 defmodule SalixEnv.Transfer.StreamSender do
   @moduledoc false
-  use GenServer
+  use SystemsRuntime.Server
 
   def start_link(url) do
-    GenServer.start_link(__MODULE__, url)
+    SystemsRuntime.Server.start_link(__MODULE__, url)
   end
 
-  def chunk(pid, data), do: GenServer.call(pid, {:chunk, data}, :infinity)
-  def eof(pid), do: GenServer.call(pid, :eof, :infinity)
-  def result(pid), do: GenServer.call(pid, :result, :infinity)
+  def chunk(pid, data), do: SystemsRuntime.Server.call(pid, {:chunk, data}, :infinity)
+  def eof(pid), do: SystemsRuntime.Server.call(pid, :eof, :infinity)
+  def result(pid), do: SystemsRuntime.Server.call(pid, :result, :infinity)
 
   def stream(pid) do
     Stream.resource(
       fn -> pid end,
       fn pid ->
-        case GenServer.call(pid, :next, :infinity) do
+        case SystemsRuntime.Server.call(pid, :next, :infinity) do
           {:chunk, chunk} -> {[chunk], pid}
           :eof -> {:halt, pid}
         end
@@ -25,12 +25,12 @@ defmodule SalixEnv.Transfer.StreamSender do
 
   @impl true
   def init(url) do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     {:ok, task} =
-      Task.start(fn ->
+      SystemsRuntime.Task.start(fn ->
         result = SalixEnv.Transfer.send_stream(url, stream(parent))
-        send(parent, {:upload_result, result})
+        SystemsRuntime.Proc.send(parent, {:upload_result, result})
       end)
 
     {:ok,
@@ -47,7 +47,7 @@ defmodule SalixEnv.Transfer.StreamSender do
 
   @impl true
   def handle_call({:chunk, data}, _from, %{waiting: waiting} = state) when not is_nil(waiting) do
-    GenServer.reply(waiting, {:chunk, data})
+    SystemsRuntime.Server.reply(waiting, {:chunk, data})
     {:reply, :ok, %{state | waiting: nil}}
   end
 
@@ -55,7 +55,7 @@ defmodule SalixEnv.Transfer.StreamSender do
     do: {:noreply, %{state | producer: from, pending: data}}
 
   def handle_call(:eof, _from, %{waiting: waiting} = state) when not is_nil(waiting) do
-    GenServer.reply(waiting, :eof)
+    SystemsRuntime.Server.reply(waiting, :eof)
     {:reply, :ok, %{state | waiting: nil}}
   end
 
@@ -63,12 +63,12 @@ defmodule SalixEnv.Transfer.StreamSender do
 
   def handle_call(:next, _from, %{pending: data, producer: producer} = state)
       when not is_nil(producer) do
-    GenServer.reply(producer, :ok)
+    SystemsRuntime.Server.reply(producer, :ok)
     {:reply, {:chunk, data}, %{state | pending: nil, producer: nil}}
   end
 
   def handle_call(:next, _from, %{eof_from: eof_from} = state) when not is_nil(eof_from) do
-    GenServer.reply(eof_from, :ok)
+    SystemsRuntime.Server.reply(eof_from, :ok)
     {:reply, :eof, %{state | eof_from: nil}}
   end
 
@@ -81,7 +81,7 @@ defmodule SalixEnv.Transfer.StreamSender do
 
   @impl true
   def handle_info({:upload_result, result}, state) do
-    for waiter <- state.result_waiters, do: GenServer.reply(waiter, result)
+    for waiter <- state.result_waiters, do: SystemsRuntime.Server.reply(waiter, result)
     {:noreply, %{state | result: result, result_waiters: []}}
   end
 end

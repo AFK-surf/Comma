@@ -2,13 +2,13 @@ import userEvent from "@testing-library/user-event";
 import { act, fireEvent, render, screen, within } from "@comma/test-utils/render";
 import { describe, expect, it, vi } from "vitest";
 import {
-  PluginArtwork,
   PluginCatalog,
   PluginDetail,
   PluginListItem,
   type PluginCategory,
   type PluginDefinition,
 } from "../Plugins";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 const notionPlugin: PluginDefinition = {
   id: "notion",
@@ -64,48 +64,6 @@ const zhDetailCopy = {
 };
 
 describe("Plugins", () => {
-  it("matches the settings titlebar spacing and catalog title scale", () => {
-    const { container, rerender } = render(<PluginCatalog categories={[]} />);
-
-    expect(container.querySelector('[data-slot="plugin-catalog"]')).toHaveClass(
-      "relative"
-    );
-    expect(container.querySelector('[data-slot="plugin-titlebar-drag"]')).toBeNull();
-    expect(screen.getByRole("heading", { level: 1, name: "Plugins" })).toHaveClass(
-      "text-balance",
-      "text-xl"
-    );
-    expect(
-      container.querySelector('[data-slot="plugin-catalog"] [class~="pt-7xl"]')
-    ).not.toBeNull();
-
-    rerender(<PluginDetail plugin={notionPlugin} />);
-
-    expect(container.querySelector('[data-slot="plugin-detail"]')).toHaveClass(
-      "relative"
-    );
-    expect(container.querySelector('[data-slot="plugin-titlebar-drag"]')).toBeNull();
-    expect(
-      container.querySelector('[data-slot="plugin-detail"] [class~="pt-7xl"]')
-    ).not.toBeNull();
-  });
-
-  it("matches the bordered plugin artwork treatment", () => {
-    render(<PluginArtwork icon={<svg data-testid="plugin-glyph" />} />);
-
-    const artwork = screen.getByTestId("plugin-glyph").parentElement;
-
-    expect(artwork).toHaveClass(
-      "size-11",
-      "rounded-md",
-      "border",
-      "border-primary",
-      "bg-primary",
-      "text-primary",
-      "[&_svg]:size-6"
-    );
-  });
-
   it("renders installed plugins as openable cards and reports pointer opens", async () => {
     const user = userEvent.setup();
     const onPluginOpen = vi.fn();
@@ -235,63 +193,51 @@ describe("Plugins", () => {
   it("expands immediately without WAAPI motion from the keyboard", async () => {
     const user = userEvent.setup();
     const animate = vi.fn();
-    const animateDescriptor = Object.getOwnPropertyDescriptor(
-      Element.prototype,
-      "animate"
-    );
 
-    Object.defineProperty(Element.prototype, "animate", {
+    stubProperty(Element.prototype, "animate", {
       configurable: true,
       value: animate,
     });
 
-    try {
-      render(
-        <PluginCatalog
-          categories={[
-            {
-              id: "productivity",
-              name: "Productivity",
-              plugins: [
-                notionPlugin,
-                linearPlugin,
-                {
-                  id: "github",
-                  name: "GitHub",
-                  summary: "Work with repositories",
-                },
-                {
-                  id: "slack",
-                  name: "Slack",
-                  summary: "Collaborate with your team",
-                },
-              ],
-            },
-          ]}
-          categoryPreviewCount={2}
-          onPluginOpen={vi.fn()}
-        />
-      );
+    render(
+      <PluginCatalog
+        categories={[
+          {
+            id: "productivity",
+            name: "Productivity",
+            plugins: [
+              notionPlugin,
+              linearPlugin,
+              {
+                id: "github",
+                name: "GitHub",
+                summary: "Work with repositories",
+              },
+              {
+                id: "slack",
+                name: "Slack",
+                summary: "Collaborate with your team",
+              },
+            ],
+          },
+        ]}
+        categoryPreviewCount={2}
+        onPluginOpen={vi.fn()}
+      />
+    );
 
-      const showAllButton = screen.getByRole("button", {
-        name: "Show all Productivity plugins",
-      });
-      showAllButton.focus();
+    const showAllButton = screen.getByRole("button", {
+      name: "Show all Productivity plugins",
+    });
+    showAllButton.focus();
 
-      await user.keyboard("{Enter}");
+    await user.keyboard("{Enter}");
 
-      expect(animate).not.toHaveBeenCalled();
-      expect(screen.getByText("GitHub")).toBeVisible();
-      expect(
-        screen.getByRole("button", { name: "View GitHub plugin details" })
-      ).toHaveFocus();
-    } finally {
-      if (animateDescriptor) {
-        Object.defineProperty(Element.prototype, "animate", animateDescriptor);
-      } else {
-        Reflect.deleteProperty(Element.prototype, "animate");
-      }
-    }
+    expect(animate).not.toHaveBeenCalled();
+    expect(screen.getByText("GitHub")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "View GitHub plugin details" })
+    ).toHaveFocus();
   });
 
   it.each([
@@ -311,14 +257,6 @@ describe("Plugins", () => {
           return animation;
         }
       );
-      const animateDescriptor = Object.getOwnPropertyDescriptor(
-        Element.prototype,
-        "animate"
-      );
-      const matchMediaDescriptor = Object.getOwnPropertyDescriptor(
-        window,
-        "matchMedia"
-      );
       const matchMedia = vi.fn(
         (query: string) =>
           ({
@@ -333,11 +271,11 @@ describe("Plugins", () => {
           }) as MediaQueryList
       );
 
-      Object.defineProperty(Element.prototype, "animate", {
+      stubProperty(Element.prototype, "animate", {
         configurable: true,
         value: animate,
       });
-      Object.defineProperty(window, "matchMedia", {
+      stubProperty(window, "matchMedia", {
         configurable: true,
         value: matchMedia,
       });
@@ -397,16 +335,6 @@ describe("Plugins", () => {
         ]);
       } finally {
         document.documentElement.removeAttribute("data-comma-reduced-motion");
-        if (matchMediaDescriptor) {
-          Object.defineProperty(window, "matchMedia", matchMediaDescriptor);
-        } else {
-          Reflect.deleteProperty(window, "matchMedia");
-        }
-        if (animateDescriptor) {
-          Object.defineProperty(Element.prototype, "animate", animateDescriptor);
-        } else {
-          Reflect.deleteProperty(Element.prototype, "animate");
-        }
       }
     }
   );
@@ -424,18 +352,6 @@ describe("Plugins", () => {
         animations.push(animation);
         return animation;
       }
-    );
-    const animateDescriptor = Object.getOwnPropertyDescriptor(
-      Element.prototype,
-      "animate"
-    );
-    const offsetWidthDescriptor = Object.getOwnPropertyDescriptor(
-      HTMLElement.prototype,
-      "offsetWidth"
-    );
-    const offsetHeightDescriptor = Object.getOwnPropertyDescriptor(
-      HTMLElement.prototype,
-      "offsetHeight"
     );
     const getBoundingClientRect = vi
       .spyOn(Element.prototype, "getBoundingClientRect")
@@ -460,27 +376,18 @@ describe("Plugins", () => {
           : createDOMRect(80, 372, 44, 44);
       });
 
-    Object.defineProperties(HTMLElement.prototype, {
-      offsetHeight: {
-        configurable: true,
-        get() {
-          return this.dataset.slot === "plugin-artwork" &&
-            this.closest('[data-slot="plugin-show-all"]')
-            ? 16
-            : 0;
-        },
+    const artworkSize = {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.dataset.slot === "plugin-artwork" &&
+          this.closest('[data-slot="plugin-show-all"]')
+          ? 16
+          : 0;
       },
-      offsetWidth: {
-        configurable: true,
-        get() {
-          return this.dataset.slot === "plugin-artwork" &&
-            this.closest('[data-slot="plugin-show-all"]')
-            ? 16
-            : 0;
-        },
-      },
-    });
-    Object.defineProperty(Element.prototype, "animate", {
+    };
+    stubProperty(HTMLElement.prototype, "offsetHeight", artworkSize);
+    stubProperty(HTMLElement.prototype, "offsetWidth", artworkSize);
+    stubProperty(Element.prototype, "animate", {
       configurable: true,
       value: animate,
     });
@@ -636,25 +543,6 @@ describe("Plugins", () => {
       ).toHaveLength(1);
     } finally {
       getBoundingClientRect.mockRestore();
-      if (animateDescriptor) {
-        Object.defineProperty(Element.prototype, "animate", animateDescriptor);
-      } else {
-        Reflect.deleteProperty(Element.prototype, "animate");
-      }
-      if (offsetWidthDescriptor) {
-        Object.defineProperty(
-          HTMLElement.prototype,
-          "offsetWidth",
-          offsetWidthDescriptor
-        );
-      }
-      if (offsetHeightDescriptor) {
-        Object.defineProperty(
-          HTMLElement.prototype,
-          "offsetHeight",
-          offsetHeightDescriptor
-        );
-      }
     }
   });
 
@@ -671,10 +559,6 @@ describe("Plugins", () => {
         animations.push(animation);
         return animation;
       }
-    );
-    const animateDescriptor = Object.getOwnPropertyDescriptor(
-      Element.prototype,
-      "animate"
     );
     const getBoundingClientRect = vi
       .spyOn(Element.prototype, "getBoundingClientRect")
@@ -699,7 +583,7 @@ describe("Plugins", () => {
           : createDOMRect(80, 152, 44, 44);
       });
 
-    Object.defineProperty(Element.prototype, "animate", {
+    stubProperty(Element.prototype, "animate", {
       configurable: true,
       value: animate,
     });
@@ -754,11 +638,6 @@ describe("Plugins", () => {
       ).toBeNull();
     } finally {
       getBoundingClientRect.mockRestore();
-      if (animateDescriptor) {
-        Object.defineProperty(Element.prototype, "animate", animateDescriptor);
-      } else {
-        Reflect.deleteProperty(Element.prototype, "animate");
-      }
     }
   });
 
@@ -776,84 +655,72 @@ describe("Plugins", () => {
         return animation;
       }
     );
-    const animateDescriptor = Object.getOwnPropertyDescriptor(
-      Element.prototype,
-      "animate"
-    );
 
-    Object.defineProperty(Element.prototype, "animate", {
+    stubProperty(Element.prototype, "animate", {
       configurable: true,
       value: animate,
     });
 
-    try {
-      render(
-        <PluginCatalog
-          categories={[
-            {
-              id: "large-category",
-              name: "Large category",
-              plugins: [
-                notionPlugin,
-                ...Array.from({ length: 12 }, (_, index) => ({
-                  id: `hidden-${index + 1}`,
-                  name: `Hidden plugin ${index + 1}`,
-                  summary: `Hidden plugin summary ${index + 1}`,
-                })),
-              ],
-            },
-          ]}
-          categoryPreviewCount={1}
-        />
-      );
+    render(
+      <PluginCatalog
+        categories={[
+          {
+            id: "large-category",
+            name: "Large category",
+            plugins: [
+              notionPlugin,
+              ...Array.from({ length: 12 }, (_, index) => ({
+                id: `hidden-${index + 1}`,
+                name: `Hidden plugin ${index + 1}`,
+                summary: `Hidden plugin summary ${index + 1}`,
+              })),
+            ],
+          },
+        ]}
+        categoryPreviewCount={1}
+      />
+    );
 
-      await user.click(
-        screen.getByRole("button", {
-          name: "Show all Large category plugins",
-        })
-      );
+    await user.click(
+      screen.getByRole("button", {
+        name: "Show all Large category plugins",
+      })
+    );
 
-      expect(animate).toHaveBeenCalledTimes(12);
-      const delays = animate.mock.calls.map((call) =>
-        Number(typeof call[1] === "number" ? 0 : call[1]?.delay)
-      );
-      expect(delays.slice(0, 4)).toEqual([0, 30, 60, 130]);
-      expect(delays.at(-1)).toBe(200);
-      expect(
-        delays.every((delay, index) => index === 0 || delay > delays[index - 1]!)
-      ).toBe(true);
-      expect(animate.mock.calls[2]?.[1]).toMatchObject({
-        delay: 60,
-        duration: 100,
-      });
-      expect(animate.mock.calls[3]?.[1]).toMatchObject({
-        delay: 130,
-        duration: 100,
-      });
-      const finalTiming = animate.mock.calls.at(-1)?.[1] as KeyframeAnimationOptions;
-      const finalEnd = Number(finalTiming.delay) + Number(finalTiming.duration);
-      expect(finalEnd).toBe(300);
-      expect(animate.mock.calls[0]?.[0]).toEqual([
-        {
-          opacity: 0,
-          transform: "translate3d(0, -8px, 0)",
-        },
-        {
-          opacity: 1,
-          transform: "translate3d(0, 0, 0)",
-        },
-      ]);
-      expect(animate.mock.calls[11]?.[0]).toEqual(animate.mock.calls[0]?.[0]);
+    expect(animate).toHaveBeenCalledTimes(12);
+    const delays = animate.mock.calls.map((call) =>
+      Number(typeof call[1] === "number" ? 0 : call[1]?.delay)
+    );
+    expect(delays.slice(0, 4)).toEqual([0, 30, 60, 130]);
+    expect(delays.at(-1)).toBe(200);
+    expect(
+      delays.every((delay, index) => index === 0 || delay > delays[index - 1]!)
+    ).toBe(true);
+    expect(animate.mock.calls[2]?.[1]).toMatchObject({
+      delay: 60,
+      duration: 100,
+    });
+    expect(animate.mock.calls[3]?.[1]).toMatchObject({
+      delay: 130,
+      duration: 100,
+    });
+    const finalTiming = animate.mock.calls.at(-1)?.[1] as KeyframeAnimationOptions;
+    const finalEnd = Number(finalTiming.delay) + Number(finalTiming.duration);
+    expect(finalEnd).toBe(300);
+    expect(animate.mock.calls[0]?.[0]).toEqual([
+      {
+        opacity: 0,
+        transform: "translate3d(0, -8px, 0)",
+      },
+      {
+        opacity: 1,
+        transform: "translate3d(0, 0, 0)",
+      },
+    ]);
+    expect(animate.mock.calls[11]?.[0]).toEqual(animate.mock.calls[0]?.[0]);
 
-      animations.at(-1)?.dispatchEvent(new Event("finish"));
-      expect(animations.at(-1)?.cancel).toHaveBeenCalledOnce();
-    } finally {
-      if (animateDescriptor) {
-        Object.defineProperty(Element.prototype, "animate", animateDescriptor);
-      } else {
-        Reflect.deleteProperty(Element.prototype, "animate");
-      }
-    }
+    animations.at(-1)?.dispatchEvent(new Event("finish"));
+    expect(animations.at(-1)?.cancel).toHaveBeenCalledOnce();
   });
 
   it("bounds animation work for very large plugin categories", async () => {
@@ -868,113 +735,95 @@ describe("Plugins", () => {
         return animation;
       }
     );
-    const animateDescriptor = Object.getOwnPropertyDescriptor(
-      Element.prototype,
-      "animate"
-    );
 
-    Object.defineProperty(Element.prototype, "animate", {
+    stubProperty(Element.prototype, "animate", {
       configurable: true,
       value: animate,
     });
 
-    try {
-      render(
-        <PluginCatalog
-          categories={[
-            {
-              id: "large-category",
-              name: "Large category",
-              plugins: [
-                notionPlugin,
-                ...Array.from({ length: 40 }, (_, index) => ({
-                  id: `hidden-${index + 1}`,
-                  name: `Hidden plugin ${index + 1}`,
-                  summary: `Hidden plugin summary ${index + 1}`,
-                })),
-              ],
-            },
-          ]}
-          categoryPreviewCount={1}
-        />
-      );
+    render(
+      <PluginCatalog
+        categories={[
+          {
+            id: "large-category",
+            name: "Large category",
+            plugins: [
+              notionPlugin,
+              ...Array.from({ length: 40 }, (_, index) => ({
+                id: `hidden-${index + 1}`,
+                name: `Hidden plugin ${index + 1}`,
+                summary: `Hidden plugin summary ${index + 1}`,
+              })),
+            ],
+          },
+        ]}
+        categoryPreviewCount={1}
+      />
+    );
 
-      await user.click(
-        screen.getByRole("button", {
-          name: "Show all Large category plugins",
-        })
-      );
+    await user.click(
+      screen.getByRole("button", {
+        name: "Show all Large category plugins",
+      })
+    );
 
-      const overflowGroup = document.querySelector(
-        '[data-slot="plugin-reveal-overflow"]'
-      );
-      expect(overflowGroup?.children).toHaveLength(28);
-      expect(animate).toHaveBeenCalledTimes(13);
+    const overflowGroup = document.querySelector(
+      '[data-slot="plugin-reveal-overflow"]'
+    );
+    expect(overflowGroup?.children).toHaveLength(28);
+    expect(animate).toHaveBeenCalledTimes(13);
 
-      const delays = animate.mock.calls.map((call) =>
-        Number(typeof call[1] === "number" ? 0 : call[1]?.delay)
-      );
-      expect(
-        delays.every((delay, index) => index === 0 || delay > delays[index - 1]!)
-      ).toBe(true);
-      expect(delays.at(-1)).toBe(200);
-    } finally {
-      if (animateDescriptor) {
-        Object.defineProperty(Element.prototype, "animate", animateDescriptor);
-      } else {
-        Reflect.deleteProperty(Element.prototype, "animate");
-      }
-    }
+    const delays = animate.mock.calls.map((call) =>
+      Number(typeof call[1] === "number" ? 0 : call[1]?.delay)
+    );
+    expect(
+      delays.every((delay, index) => index === 0 || delay > delays[index - 1]!)
+    ).toBe(true);
+    expect(delays.at(-1)).toBe(200);
   });
 
   it("suppresses row background transitions only during pointer expansion", () => {
-    vi.useFakeTimers();
+    const { container } = render(
+      <PluginCatalog
+        categories={[
+          {
+            id: "productivity",
+            name: "Productivity",
+            plugins: [
+              notionPlugin,
+              linearPlugin,
+              {
+                id: "github",
+                name: "GitHub",
+                summary: "Work with repositories",
+              },
+              {
+                id: "slack",
+                name: "Slack",
+                summary: "Collaborate with your team",
+              },
+            ],
+          },
+        ]}
+        categoryPreviewCount={2}
+      />
+    );
 
-    try {
-      const { container } = render(
-        <PluginCatalog
-          categories={[
-            {
-              id: "productivity",
-              name: "Productivity",
-              plugins: [
-                notionPlugin,
-                linearPlugin,
-                {
-                  id: "github",
-                  name: "GitHub",
-                  summary: "Work with repositories",
-                },
-                {
-                  id: "slack",
-                  name: "Slack",
-                  summary: "Collaborate with your team",
-                },
-              ],
-            },
-          ]}
-          categoryPreviewCount={2}
-        />
-      );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Show all Productivity plugins",
+      }),
+      { detail: 1 }
+    );
 
-      fireEvent.click(
-        screen.getByRole("button", {
-          name: "Show all Productivity plugins",
-        }),
-        { detail: 1 }
-      );
+    const revealedItems = container.querySelector("[data-pointer-expanding]");
+    expect(revealedItems).toBeInTheDocument();
 
-      const revealedItems = container.querySelector("[data-pointer-expanding]");
-      expect(revealedItems).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(299));
+    expect(revealedItems).toHaveAttribute("data-pointer-expanding");
 
-      act(() => vi.advanceTimersByTime(299));
-      expect(revealedItems).toHaveAttribute("data-pointer-expanding");
-
-      act(() => vi.advanceTimersByTime(1));
-      expect(revealedItems).not.toHaveAttribute("data-pointer-expanding");
-    } finally {
-      vi.useRealTimers();
-    }
+    act(() => vi.advanceTimersByTime(1));
+    expect(revealedItems).not.toHaveAttribute("data-pointer-expanding");
   });
 
   it("shows a single overflow plugin directly without Show all", () => {

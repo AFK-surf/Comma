@@ -7,21 +7,32 @@
       "@comma/app": ["../../packages/app/src/index.tsx"],
       "@comma/config": ["../../packages/config/src/index.ts"],
       "@comma/native-bridge": ["../../packages/native-bridge/src/index.ts"],
-      "@comma/ui": ["../../packages/ui/src/index.ts"]
+      "@comma/ui": ["../../packages/ui/src/index.ts"],
+      "@comma/ui/*": ["../../packages/ui/src/*"]
     }
   },
-  "include": [
-    "vite.config.ts",
-    "wrangler.worker.ts",
-    "../../vite/*.ts",
-    "../../packages/config/src/**/*.ts",
-    "../../packages/layout-inspector/src/source-location.ts",
-    "../../packages/layout-inspector/src/vite.ts"
-  ],
+  "include": ["vite.config.ts", "wrangler.worker.ts", "../../vite/*.ts"],
   "exclude": [
     "**/*.test.*",
     "**/*.spec.*",
     "../../packages/**/*.test.*",
     "../../packages/**/*.spec.*"
+  ],
+  "references": [
+    {
+      "path": "../../packages/config"
+    },
+    {
+      "path": "../../packages/i18n"
+    },
+    {
+      "path": "../../packages/layout-inspector"
+    },
+    {
+      "path": "../../packages/i18n/tsconfig.tools.json"
+    },
+    {
+      "path": "../../packages/layout-inspector/tsconfig.tools.json"
+    }
   ]
 }

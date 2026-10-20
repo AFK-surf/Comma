@@ -227,7 +227,7 @@ defmodule BillingCommerce.ManualGrants do
        when not is_nil(grant) do
     Projection.emit(%{
       source_key: "manual_grant:#{source.id}:#{source.status}",
-      occurred_at: DateTime.utc_now(),
+      occurred_at: SystemsClock.utc_now(),
       surface: required(attrs, :surface),
       billing_account_id: source.billing_account_id,
       product_owner_type: required(attrs, :product_owner_type),
@@ -349,7 +349,7 @@ defmodule BillingCommerce.ManualGrants do
   end
 
   defp verify_admin_expiry(%{expires_at: expires_at}) do
-    if DateTime.compare(expires_at, DateTime.utc_now()) == :gt,
+    if DateTime.compare(expires_at, SystemsClock.utc_now()) == :gt,
       do: :ok,
       else: {:error, :invalid_manual_grant}
   end
@@ -478,7 +478,7 @@ defmodule BillingCommerce.ManualGrants do
   end
 
   defp best_effort_wake(payload) do
-    case Application.get_env(
+    case SystemsRuntime.get_env(
            :billing_commerce,
            :vm_resume_waker,
            BillingCommerce.VMWake.SalixCloudVM
@@ -504,7 +504,7 @@ defmodule BillingCommerce.ManualGrants do
   end
 
   defp repo(attrs),
-    do: attrs[:repo] || attrs["repo"] || Application.fetch_env!(:billing_commerce, :repo)
+    do: attrs[:repo] || attrs["repo"] || SystemsRuntime.fetch_env!(:billing_commerce, :repo)
 
   defp sql(attrs), do: attrs[:sql_runner] || attrs["sql_runner"] || Ecto.Adapters.SQL
 
@@ -517,5 +517,5 @@ defmodule BillingCommerce.ManualGrants do
   end
 
   defp id(prefix),
-    do: prefix <> "_" <> (:crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower))
+    do: prefix <> "_" <> (SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower))
 end

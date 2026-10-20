@@ -17,7 +17,7 @@ defmodule SalixStore.ReleaseObligationBackfill do
       when (is_nil(after_id) or is_binary(after_id)) and limit in 1..@max_page do
     page = allocation_page(after_id, limit)
     allocations = page
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     results =
       Enum.map(allocations, fn allocation ->

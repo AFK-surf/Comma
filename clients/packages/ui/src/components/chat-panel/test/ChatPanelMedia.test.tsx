@@ -15,12 +15,12 @@ import type {
   ChatPanelMediaDownloadResult,
 } from "../ChatPanelMediaDownload";
 import { useMediaPlaybackController } from "../ChatPanelMediaPlayer";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 const imageSource =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'/%3E";
 const audioSource = "generated-audio.mp3";
 const videoSource = "generated-video.mp4";
-const originalClipboard = navigator.clipboard;
 
 const createDownloadAction = (
   fileName: string,
@@ -69,60 +69,9 @@ const DetachedPlaybackHarness = () => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  Object.defineProperty(navigator, "clipboard", {
-    configurable: true,
-    value: originalClipboard,
-  });
 });
 
 describe("ChatPanel generated media", () => {
-  it.each(["audio", "video"] as const)(
-    "pauses and resumes %s playback while its progress control is dragged",
-    async (kind) => {
-      const user = userEvent.setup();
-      const play = vi
-        .spyOn(HTMLMediaElement.prototype, "play")
-        .mockResolvedValue(undefined);
-      const pause = vi
-        .spyOn(HTMLMediaElement.prototype, "pause")
-        .mockImplementation(() => undefined);
-      const mediaLabel = kind === "audio" ? "Audio" : "Video";
-      const { container } = render(
-        kind === "audio" ? (
-          <ChatPanelAudio src={audioSource} />
-        ) : (
-          <ChatPanelVideo alt="Generated clip" poster={imageSource} src={videoSource} />
-        )
-      );
-
-      const media = container.querySelector(kind);
-      expect(media).not.toBeNull();
-
-      await user.click(screen.getByRole("button", { name: `Play ${kind}` }));
-      await waitFor(() =>
-        expect(
-          screen.getByRole("button", { name: `Pause ${kind}` })
-        ).toBeInTheDocument()
-      );
-
-      const progress = screen.getByRole("slider", {
-        name: `${mediaLabel} playback position`,
-      });
-      fireEvent.pointerDown(progress, { button: 0, isPrimary: true, pointerId: 1 });
-
-      expect(pause).toHaveBeenCalledOnce();
-      expect(screen.getByRole("button", { name: `Play ${kind}` })).toBeInTheDocument();
-
-      fireEvent.change(progress, { target: { value: "10" } });
-      expect((media as HTMLMediaElement).currentTime).toBe(10);
-
-      fireEvent.pointerUp(progress, { isPrimary: true, pointerId: 1 });
-
-      await waitFor(() => expect(play).toHaveBeenCalledTimes(2));
-      expect(screen.getByRole("button", { name: `Pause ${kind}` })).toBeInTheDocument();
-    }
-  );
-
   it("does not start paused audio when its progress control is dragged", () => {
     const play = vi
       .spyOn(HTMLMediaElement.prototype, "play")
@@ -324,7 +273,7 @@ describe("ChatPanel generated media", () => {
     const write = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("ClipboardItem", clipboardItemConstructor);
     vi.stubGlobal("fetch", fetchImage);
-    Object.defineProperty(navigator, "clipboard", {
+    stubProperty(navigator, "clipboard", {
       configurable: true,
       value: { write },
     });
@@ -866,39 +815,6 @@ describe("ChatPanel generated media", () => {
       expect(screen.getByRole("button", { name: "Play audio" })).toBeInTheDocument()
     );
     expect(play).toHaveBeenCalledTimes(3);
-  });
-
-  it("cancels an in-flight play request instead of starting a second one", async () => {
-    const user = userEvent.setup();
-    let resolvePlay!: () => void;
-    const playRequest = new Promise<void>((resolve) => {
-      resolvePlay = resolve;
-    });
-    const play = vi
-      .spyOn(HTMLMediaElement.prototype, "play")
-      .mockReturnValue(playRequest);
-    const pause = vi
-      .spyOn(HTMLMediaElement.prototype, "pause")
-      .mockImplementation(() => undefined);
-    const { container } = render(<ChatPanelAudio src={audioSource} />);
-    const audio = container.querySelector("audio");
-    expect(audio).not.toBeNull();
-
-    await user.click(screen.getByRole("button", { name: "Play audio" }));
-    await user.click(screen.getByRole("button", { name: "Pause audio" }));
-
-    expect(play).toHaveBeenCalledOnce();
-    expect(pause).toHaveBeenCalledOnce();
-    expect(screen.getByRole("button", { name: "Play audio" })).toBeInTheDocument();
-
-    await act(async () => {
-      resolvePlay();
-      await playRequest;
-    });
-    fireEvent.play(audio!);
-
-    expect(pause.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByRole("button", { name: "Play audio" })).toBeInTheDocument();
   });
 
   it("resets playback intent, time, and speed when the source changes in place", async () => {

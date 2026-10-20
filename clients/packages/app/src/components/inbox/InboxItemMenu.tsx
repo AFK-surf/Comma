@@ -1,13 +1,12 @@
 /* oxlint-disable jsx-a11y/no-autofocus -- A newly opened context menu must receive keyboard focus. */
 import { useCommaMessages } from "@comma/i18n/react";
+import { InboxDeleteIcon, InboxMarkUnreadIcon } from "@comma/ui/components/icons";
 import {
-  InboxDeleteIcon,
-  InboxMarkUnreadIcon,
   Menu,
   MenuItem,
   MenuPopover,
   type MenuPointerOffsets,
-} from "@comma/ui";
+} from "@comma/ui/components/menu";
 import { useCallback, useState, type RefObject } from "react";
 
 export type InboxItemMenuAction = "mark-unread" | "mark-read" | "delete";

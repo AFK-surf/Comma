@@ -4,10 +4,12 @@ import {
   Button as AriaButton,
   Dialog as AriaDialog,
   DialogTrigger,
+  ListLayout,
+  Virtualizer,
 } from "react-aria-components";
 import { formatNumber as formatLocalizedNumber, type CommaLocale } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import { motionDuration, spacing } from "../../tokens";
+import { motionDuration, spacing, typeScale } from "../../tokens";
 import {
   BarsThreeIcon,
   ChevronRightSmallIcon,
@@ -19,13 +21,14 @@ import {
   SquareCursorIcon,
 } from "../icons";
 import { InputField } from "../input";
+import { ScrollArea } from "../scroll-area";
 import { Menu, MenuItem, MenuPopover, MenuTrigger, SubmenuTrigger } from "../menu";
 import { menuFilterFieldClasses, menuSurfaceClasses } from "../menu/styles";
 import { cx } from "../utils";
 import type { TaskView } from "../task-board";
 import {
   TASK_STATUS_COLUMNS,
-  taskStatusIcon,
+  taskNeutralIcon,
   taskStatusLabel,
   type TaskStatusBucket,
   type TaskWorker,
@@ -39,28 +42,44 @@ export interface TaskFilterOption {
   icon?: ReactNode;
   id: string;
   label: string;
+  /** Hover text that says more than the label, for example a zone's full name. */
+  title?: string | undefined;
 }
 
-/**
- * A caller-defined filter dimension (labels, platforms) rendered as one more
- * submenu of the Tasks filter, multi-select like Status and Worker. Selection
- * and the resulting narrowing stay with the caller; the menu only edits the
- * selected set.
- */
-export interface TaskFilterSection {
+interface TaskFilterSectionBase {
   icon: ReactNode;
   id: string;
   label: string;
-  /**
-   * Whether the section narrows the list right now. Defaults to "not every
-   * option is selected"; a caller whose narrowing came from outside the menu
-   * (a deep link to the one platform present) states it explicitly.
-   */
-  narrowed?: boolean | undefined;
   onChange: (selected: ReadonlySet<string>) => void;
   options: readonly TaskFilterOption[];
   selected: ReadonlySet<string>;
 }
+
+/**
+ * A caller-defined filter dimension (labels, platforms, Loop types, trigger
+ * rules) rendered as one more submenu of the Tasks filter. Selection and the
+ * resulting narrowing stay with the caller; the menu only edits the selected
+ * set.
+ *
+ * A section is multi-select by default, like Status and Worker. A
+ * single-select section always has one option selected, so it must state
+ * `narrowed`, for example false while its "All tasks" option is selected.
+ */
+export type TaskFilterSection =
+  | (TaskFilterSectionBase & {
+      /**
+       * Whether the section narrows the list right now. Defaults to "not every
+       * option is selected"; a caller whose narrowing came from outside the menu
+       * (a deep link to the one platform present) states it explicitly.
+       */
+      narrowed?: boolean | undefined;
+      selectionMode?: "multiple" | undefined;
+    })
+  | (TaskFilterSectionBase & {
+      /** Whether the selected option narrows the list right now. */
+      narrowed: boolean;
+      selectionMode: "single";
+    });
 
 export function isTaskFilterSectionNarrowed(section: TaskFilterSection): boolean {
   return (
@@ -302,7 +321,7 @@ function TaskStatusFilter({
               className={connectedSubmenuTriggerClasses}
               contentClassName="h-8"
               gutter="none"
-              icon={taskStatusIcon("backlog")}
+              icon={taskNeutralIcon()}
               id="status"
               shortcut={<ChevronRightSmallIcon className="size-4" />}
             >
@@ -355,7 +374,7 @@ function TaskStatusFilter({
                 {section.label}
               </MenuItem>
               <MenuPopover isNonModal offset={0} placement="left top">
-                <TaskSectionFilterPanel section={section} />
+                <TaskSectionFilterPanel panelClassName="w-64" section={section} />
               </MenuPopover>
             </SubmenuTrigger>
           ))}
@@ -525,7 +544,14 @@ function WorkerFilterPanel({
   );
 }
 
-/** One caller-defined dimension (labels, platforms): the same searchable multi-select as Worker. */
+// Variable rows keep long rules readable; only visible rows mount in large
+// menus. The gap matches the Menu's own `gap-xxs`, which virtual rows ignore.
+const filterLayoutOptions = {
+  estimatedRowHeight: typeScale.textSm.lineHeight + spacing.sm * 2,
+  gap: spacing.xxs,
+};
+
+/** A searchable dimension. Callers choose single or multiple selection. */
 export function TaskSectionFilterPanel({
   panelClassName,
   renderCount,
@@ -542,6 +568,55 @@ export function TaskSectionFilterPanel({
     option.label.toLocaleLowerCase(locale).includes(normalizedQuery)
   );
 
+  const single = section.selectionMode === "single";
+  const menu = (
+    <Menu
+      aria-label={section.label}
+      className="flex min-w-0 flex-col gap-xxs"
+      items={visibleOptions}
+      onSelectionChange={(keys) =>
+        section.onChange(
+          keys === "all"
+            ? new Set(section.options.map((option) => option.id))
+            : new Set(Array.from(keys, String))
+        )
+      }
+      selectedKeys={section.selected}
+      selectionMode={section.selectionMode ?? "multiple"}
+      disallowEmptySelection={single}
+      shouldCloseOnSelect={false}
+      variant="embedded"
+    >
+      {(option) => (
+        <MenuItem
+          activeClassName="bg-secondary-hover"
+          contentClassName={single ? "min-h-8" : "h-8"}
+          gutter="none"
+          id={option.id}
+          {...(option.icon ? { icon: option.icon } : {})}
+          selectionIndicator={single ? "check" : "checkbox"}
+          shortcut={
+            renderCount ? (
+              renderCount(option.count)
+            ) : single ? (
+              formatLocalizedNumber(option.count, locale)
+            ) : (
+              <TaskCount count={option.count} locale={locale} />
+            )
+          }
+          textValue={option.label}
+        >
+          {/* A rule shows in full and wraps. */}
+          <span
+            className={cx("text-primary", single && "whitespace-normal break-words")}
+            title={single ? option.title : undefined}
+          >
+            {option.label}
+          </span>
+        </MenuItem>
+      )}
+    </Menu>
+  );
   return (
     <FilterOptionsPanel
       className={panelClassName}
@@ -550,43 +625,21 @@ export function TaskSectionFilterPanel({
       onQueryChange={setQuery}
       query={query}
     >
-      <Menu
-        aria-label={section.label}
-        className="flex min-w-0 flex-col gap-xxs px-sm py-sm"
-        onSelectionChange={(keys) =>
-          section.onChange(
-            keys === "all"
-              ? new Set(section.options.map((option) => option.id))
-              : new Set(Array.from(keys, String))
-          )
-        }
-        selectedKeys={section.selected}
-        selectionMode="multiple"
-        shouldCloseOnSelect={false}
-        variant="embedded"
+      {/* The Menu keeps keyboard focus, so the viewport is not a tab stop. */}
+      <ScrollArea
+        className="max-h-64"
+        viewportClassName="max-h-64"
+        viewportProps={{ tabIndex: -1 }}
+        contentClassName="px-sm py-sm"
       >
-        {visibleOptions.map((option) => (
-          <MenuItem
-            activeClassName="bg-secondary-hover"
-            contentClassName="h-8"
-            gutter="none"
-            id={option.id}
-            {...(option.icon ? { icon: option.icon } : {})}
-            key={option.id}
-            selectionIndicator="checkbox"
-            shortcut={
-              renderCount ? (
-                renderCount(option.count)
-              ) : (
-                <TaskCount count={option.count} locale={locale} />
-              )
-            }
-            textValue={option.label}
-          >
-            <span className="text-primary">{option.label}</span>
-          </MenuItem>
-        ))}
-      </Menu>
+        {section.options.length > 50 ? (
+          <Virtualizer layout={ListLayout} layoutOptions={filterLayoutOptions}>
+            {menu}
+          </Virtualizer>
+        ) : (
+          menu
+        )}
+      </ScrollArea>
     </FilterOptionsPanel>
   );
 }

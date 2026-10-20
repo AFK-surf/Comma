@@ -61,7 +61,7 @@ defmodule BridgeForTeams.SlackHistoryOnboarding do
   @doc "Returns the independently gated launch slices used by context onboarding."
   @spec readiness() :: readiness()
   def readiness do
-    features = Application.get_env(:bridge_for_teams_core, :sourced_context_features, [])
+    features = SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_features, [])
     discovery? = features[:discovery] == true
     acquisition? = features[:acquisition] == true
     derivation? = features[:derivation] == true
@@ -437,7 +437,7 @@ defmodule BridgeForTeams.SlackHistoryOnboarding do
 
   defp source_authority(org, project, connect_id, channel_ids) do
     channel_ids
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn channel_id ->
         Client.impl().slack_history_source_authority(%{
           tenant_id: org.salix_tenant_id,
@@ -613,7 +613,7 @@ defmodule BridgeForTeams.SlackHistoryOnboarding do
   end
 
   defp default_range(days) when is_integer(days) and days in 1..@max_range_days do
-    range_end = DateTime.utc_now()
+    range_end = SystemsClock.utc_now()
     validate_range(DateTime.add(range_end, -days, :day), range_end)
   end
 

@@ -1,5 +1,5 @@
 defmodule BridgeForTeamsWeb.ProjectAPIResponseTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias BridgeForTeamsWeb.ProjectAPIResponse
 

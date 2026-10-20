@@ -211,8 +211,179 @@
         }
       ]
     },
+    "expected": ["blocked"]
+  },
+  {
+    "name": "actionable_personal_and_work_matters",
+    "input": {
+      "timezone": "Asia/Singapore",
+      "candidates": [
+        {
+          "id": "personal_security",
+          "source": "source_mailbox",
+          "title": "Your personal password manager account will be permanently deleted in 48 hours unless you confirm that you want to keep it. No confirmation has been received.",
+          "relationship": "email_to_you",
+          "facts": {}
+        },
+        {
+          "id": "personal_bill",
+          "source": "source_mailbox",
+          "title": "Your home electricity payment failed. Pay the outstanding bill within two days to avoid disconnection.",
+          "relationship": "email_to_you",
+          "facts": {}
+        },
+        {
+          "id": "social_chatter",
+          "source": "source_mailbox",
+          "title": "Happy birthday! Hope you have a great weekend.",
+          "relationship": "direct_message",
+          "facts": {}
+        },
+        {
+          "id": "personal_resolved",
+          "source": "source_mailbox",
+          "title": "Your passport renewal is complete. Your new passport has been delivered. No action is needed.",
+          "relationship": "email_to_you",
+          "facts": {}
+        },
+        {
+          "id": "promotion",
+          "source": "source_mailbox",
+          "title": "Our summer sale ends tomorrow. Save 30 percent on a new phone.",
+          "relationship": "email_to_you",
+          "facts": {}
+        },
+        {
+          "id": "other_person",
+          "source": "source_mailbox",
+          "title": "Alex needs to renew his passport. This message is only an update for you; Alex is handling it and needs nothing from you.",
+          "relationship": "mentioned_you",
+          "facts": {}
+        },
+        {
+          "id": "work_review",
+          "source": "source_mailbox",
+          "title": "Please review the permissions change in this pull request before we merge it tomorrow.",
+          "relationship": "review_requested",
+          "facts": {}
+        }
+      ]
+    },
+    "expected": ["personal_security", "personal_bill", "work_review"]
+  },
+  {
+    "name": "actionable_social_request_in_one_mailbox",
+    "input": {
+      "timezone": "Asia/Singapore",
+      "candidates": [
+        {
+          "id": "social_action",
+          "source": "source_mailbox",
+          "title": "Please confirm whether you can collect your child from school tomorrow. The school needs your answer today to arrange supervision.",
+          "relationship": "direct_message",
+          "facts": {}
+        },
+        {
+          "id": "social_chatter",
+          "source": "source_mailbox",
+          "title": "Happy birthday! Hope you have a great weekend.",
+          "relationship": "direct_message",
+          "facts": {}
+        },
+        {
+          "id": "personal_resolved",
+          "source": "source_mailbox",
+          "title": "Your passport renewal is complete. Your new passport has been delivered. No action is needed.",
+          "relationship": "email_to_you",
+          "facts": {}
+        },
+        {
+          "id": "promotion",
+          "source": "source_mailbox",
+          "title": "Our summer sale ends tomorrow. Save 30 percent on a new phone.",
+          "relationship": "email_to_you",
+          "facts": {}
+        },
+        {
+          "id": "other_person",
+          "source": "source_mailbox",
+          "title": "Alex needs to renew his passport. This message is only an update for you; Alex is handling it and needs nothing from you.",
+          "relationship": "mentioned_you",
+          "facts": {}
+        }
+      ]
+    },
+    "expected": ["social_action"]
+  },
+  {
+    "name": "more_than_three_matters_in_one_mailbox",
+    "input": {
+      "timezone": "Asia/Singapore",
+      "candidates": [
+        {
+          "id": "account_deletion",
+          "source": "source_mailbox",
+          "title": "Your personal password manager account will be permanently deleted on Oct 21 unless you sign in and choose to keep it.",
+          "relationship": "email_to_you",
+          "facts": {}
+        },
+        {
+          "id": "power_bill",
+          "source": "source_mailbox",
+          "title": "Your home electricity payment failed. Pay by Oct 22 to avoid disconnection.",
+          "relationship": "email_to_you",
+          "facts": {}
+        },
+        {
+          "id": "airport_pickup",
+          "source": "source_mailbox",
+          "title": "Mia asks: can you confirm by tonight whether you can pick Grandma up at the airport Tuesday at 6pm? Otherwise she must book a car.",
+          "relationship": "direct_message",
+          "facts": {}
+        },
+        {
+          "id": "claim_photos",
+          "source": "source_mailbox",
+          "title": "Claim 4471 will be closed without payment on Oct 23 unless you send the photos of the damage.",
+          "relationship": "email_to_you",
+          "facts": {}
+        },
+        {
+          "id": "work_review",
+          "source": "source_mailbox",
+          "title": "Please review the permissions change in PR 812 before we merge it Tuesday. You own the auth module, so we need your approval.",
+          "relationship": "review_requested",
+          "facts": {}
+        },
+        {
+          "id": "birthday",
+          "source": "source_mailbox",
+          "title": "Happy birthday! Hope you have a great weekend.",
+          "relationship": "direct_message",
+          "facts": {}
+        },
+        {
+          "id": "passport_done",
+          "source": "source_mailbox",
+          "title": "Your passport renewal is complete and was delivered. No action is needed.",
+          "relationship": "email_to_you",
+          "facts": {}
+        },
+        {
+          "id": "promotion",
+          "source": "source_mailbox",
+          "title": "Our summer sale ends tomorrow. Save 30 percent on a new phone.",
+          "relationship": "email_to_you",
+          "facts": {}
+        }
+      ]
+    },
     "expected": [
-      "blocked"
+      "account_deletion",
+      "power_bill",
+      "airport_pickup",
+      "claim_photos",
+      "work_review"
     ]
   }
 ]

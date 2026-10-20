@@ -1,9 +1,10 @@
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import {
   isReducedMotionEnabled,
   motionDuration,
   motionEasing,
   spacing,
-} from "@comma/ui";
+} from "@comma/ui/tokens";
 import {
   useCallback,
   useEffect,
@@ -80,11 +81,11 @@ export function useSidebarNavReorder({
   const orderRef = useRef(order);
   orderRef.current = order;
   const dragRef = useRef<PointerDrag | null>(null);
-  const frameRef = useRef<number | null>(null);
+  const frameRef = useRef<CancelUiTimer | null>(null);
   const previousTops = useRef(new Map<string, number>());
   const pendingLayoutAnimation = useRef(false);
   const suppressClick = useRef(false);
-  const clickResetTimer = useRef<number | null>(null);
+  const clickResetTimer = useRef<CancelUiTimer | null>(null);
   const releasePointerRef = useRef<(() => void) | null>(null);
 
   const registerRow = useCallback((id: string, element: HTMLElement | null) => {
@@ -223,7 +224,7 @@ export function useSidebarNavReorder({
       if (!drag) return;
       drag.currentClientY = clientY;
       if (frameRef.current !== null) return;
-      frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = uiClock.frame(() => {
         frameRef.current = null;
         const current = dragRef.current;
         if (current) updateDrag(current.currentClientY);
@@ -237,7 +238,7 @@ export function useSidebarNavReorder({
       const drag = dragRef.current;
       if (!drag) return;
       if (frameRef.current !== null) {
-        cancelAnimationFrame(frameRef.current);
+        frameRef.current();
         frameRef.current = null;
         updateDrag(drag.currentClientY);
       }
@@ -266,9 +267,9 @@ export function useSidebarNavReorder({
       if (settlingRow) {
         // Keep the lifted row above the rows it may cross while it settles.
         settlingRow.setAttribute("data-sidebar-drag-settling", "true");
-        window.setTimeout(() => {
+        uiClock.after(motionDuration.spatialMove, () => {
           settlingRow.removeAttribute("data-sidebar-drag-settling");
-        }, motionDuration.spatialMove);
+        });
       }
 
       if (commit && !sameStringOrder(nextOrder, drag.initialOrder)) {
@@ -294,7 +295,7 @@ export function useSidebarNavReorder({
       event.preventDefault();
       releasePointerRef.current?.();
       if (clickResetTimer.current !== null) {
-        window.clearTimeout(clickResetTimer.current);
+        clickResetTimer.current();
         clickResetTimer.current = null;
       }
       suppressClick.current = false;
@@ -307,10 +308,10 @@ export function useSidebarNavReorder({
         if (drag && !drag.active) finishDrag(false);
         releasePointerRef.current?.();
         releasePointerRef.current = null;
-        clickResetTimer.current = window.setTimeout(() => {
+        clickResetTimer.current = uiClock.after(0, () => {
           suppressClick.current = false;
           clickResetTimer.current = null;
-        }, 0);
+        });
       };
       document.addEventListener("pointerup", closePress, true);
       document.addEventListener("pointercancel", closePress, true);
@@ -371,14 +372,14 @@ export function useSidebarNavReorder({
   useEffect(
     () => () => {
       if (frameRef.current !== null) {
-        cancelAnimationFrame(frameRef.current);
+        frameRef.current();
         frameRef.current = null;
       }
       dragRef.current = null;
       releasePointerRef.current?.();
       releasePointerRef.current = null;
       if (clickResetTimer.current !== null) {
-        window.clearTimeout(clickResetTimer.current);
+        clickResetTimer.current();
         clickResetTimer.current = null;
       }
       clearTransforms();

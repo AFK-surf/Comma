@@ -99,7 +99,7 @@ defmodule CommaWeb.ChatDeviceView do
       text: safe(workspace["name"], 60) <> "\n" <> body <> "\n\n" <> snapshot <> "\n" <> warning,
       choices: choices ++ navigation,
       manage_url:
-        Application.fetch_env!(:comma_web, :web_cookie_origin)
+        SystemsRuntime.fetch_env!(:comma_web, :web_cookie_origin)
         |> String.trim_trailing("/")
         |> Kernel.<>("/#/settings?category=devices"),
       manage_label:

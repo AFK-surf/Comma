@@ -31,7 +31,7 @@ defmodule SalixAgent.SiteId do
   @doc "Configured wildcard sites domain, or nil when site hosting is disabled."
   @spec sites_domain() :: String.t() | nil
   def sites_domain do
-    case Application.get_env(:salix_agent, :sites_domain) do
+    case SystemsRuntime.get_env(:salix_agent, :sites_domain) do
       domain when is_binary(domain) and domain != "" -> domain
       _ -> nil
     end
@@ -44,7 +44,7 @@ defmodule SalixAgent.SiteId do
   """
   @spec sites_port() :: pos_integer() | nil
   def sites_port do
-    case Application.get_env(:salix_agent, :sites_port) do
+    case SystemsRuntime.get_env(:salix_agent, :sites_port) do
       port when is_integer(port) and port > 0 and port != 80 -> port
       _ -> nil
     end

@@ -137,7 +137,7 @@ defmodule SalixStore.SessionIdMigration do
           "version" => 1,
           "phase" => Atom.to_string(phase),
           "identity_fingerprint" => fingerprint(maps),
-          "completed_at" => System.system_time(:millisecond)
+          "completed_at" => SystemsClock.system_time(:millisecond)
         })
 
       case S3.put(completion_key(phase), body, if_none_match: "*") do
@@ -712,7 +712,7 @@ defmodule SalixStore.SessionIdMigration do
         _ -> nil
       end
 
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     Jason.encode!(%{
       "version" => 1,

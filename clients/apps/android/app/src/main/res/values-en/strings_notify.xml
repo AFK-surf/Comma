@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notify_channel_replies">Replies</string>
+    <string name="notify_channel_replies_description">When a reply finishes after you leave the app</string>
+    <string name="notify_channel_receiving">Receiving in background</string>
+    <string name="notify_channel_receiving_description">Keeps receiving a reply after you leave the app</string>
+    <string name="notify_receiving_title">Receiving a reply</string>
+    <string name="notify_reply_public">New reply</string>
+</resources>

@@ -1,5 +1,5 @@
 {
- "generated_from": "@earendil-works/pi-ai@0.85.1",
+ "generated_from": "@earendil-works/pi-ai@1.1.0",
  "sources": {
   "openai": {
    "name": "OpenAI",
@@ -236,7 +236,8 @@
    "kind": "api_key",
    "endpoints": {},
    "protocols": [
-    "responses"
+    "responses",
+    "chat_completions"
    ],
    "endpoint_required": true
   },
@@ -336,6 +337,18 @@
    "name": "GitHub Copilot",
    "kind": "subscription"
   },
+  "lmhub": {
+   "name": "LMHub",
+   "kind": "api_key",
+   "endpoints": {},
+   "protocols": [
+    "chat_completions",
+    "responses",
+    "anthropic"
+   ],
+   "endpoint_required": true,
+   "platform_only": true
+  },
   "custom": {
    "name": "Custom",
    "kind": "api_key",
@@ -349,6 +362,58 @@
   }
  },
  "models": [
+  {
+   "id": "gpt-daybreak-blue-latest",
+   "name": "Daybreak Blue",
+   "family": "Daybreak Blue",
+   "vendor": "openai",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1050000,
+   "max_tokens": 128000,
+   "routes": {
+    "openai": {
+     "model": "gpt-daybreak-blue-latest",
+     "protocol": "responses"
+    },
+    "azure-openai": {
+     "model": "gpt-daybreak-blue-latest",
+     "protocol": "responses"
+    }
+   }
+  },
+  {
+   "id": "gpt-daybreak-red-latest",
+   "name": "Daybreak Red",
+   "family": "Daybreak Red",
+   "vendor": "openai",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 400000,
+   "max_tokens": 128000,
+   "routes": {
+    "openai": {
+     "model": "gpt-daybreak-red-latest",
+     "protocol": "responses"
+    },
+    "azure-openai": {
+     "model": "gpt-daybreak-red-latest",
+     "protocol": "responses"
+    }
+   }
+  },
   {
    "id": "gpt-5.1-thinking",
    "name": "GPT 5.1 Thinking",
@@ -366,6 +431,28 @@
     "vercel-ai-gateway": {
      "model": "openai/gpt-5.1-thinking",
      "protocol": "anthropic"
+    }
+   }
+  },
+  {
+   "id": "gpt-astra-latest",
+   "name": "GPT Astra Latest",
+   "family": "GPT Astra",
+   "vendor": "openai",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1050000,
+   "max_tokens": 128000,
+   "routes": {
+    "openrouter": {
+     "model": "~openai/gpt-astra-latest",
+     "protocol": "chat_completions"
     }
    }
   },
@@ -418,9 +505,9 @@
    }
   },
   {
-   "id": "gpt-latest",
-   "name": "GPT Latest",
-   "family": "GPT",
+   "id": "gpt-luna-latest",
+   "name": "GPT Luna Latest",
+   "family": "GPT Luna",
    "vendor": "openai",
    "efforts": [
     "low",
@@ -434,7 +521,7 @@
    "max_tokens": 128000,
    "routes": {
     "openrouter": {
-     "model": "~openai/gpt-latest",
+     "model": "~openai/gpt-luna-latest",
      "protocol": "chat_completions"
     }
    }
@@ -456,6 +543,50 @@
    "routes": {
     "openrouter": {
      "model": "~openai/gpt-mini-latest",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "gpt-sol-latest",
+   "name": "GPT Sol Latest",
+   "family": "GPT Sol",
+   "vendor": "openai",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1050000,
+   "max_tokens": 128000,
+   "routes": {
+    "openrouter": {
+     "model": "~openai/gpt-sol-latest",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "gpt-terra-latest",
+   "name": "GPT Terra Latest",
+   "family": "GPT Terra",
+   "vendor": "openai",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1050000,
+   "max_tokens": 128000,
+   "routes": {
+    "openrouter": {
+     "model": "~openai/gpt-terra-latest",
      "protocol": "chat_completions"
     }
    }
@@ -561,22 +692,6 @@
     "azure-openai": {
      "model": "gpt-4-turbo",
      "protocol": "responses"
-    }
-   }
-  },
-  {
-   "id": "gpt-4-turbo-preview",
-   "name": "GPT-4 Turbo Preview",
-   "family": "GPT",
-   "vendor": "openai",
-   "efforts": [],
-   "images": false,
-   "context_tokens": 128000,
-   "max_tokens": 4096,
-   "routes": {
-    "openrouter": {
-     "model": "openai/gpt-4-turbo-preview",
-     "protocol": "chat_completions"
     }
    }
   },
@@ -1312,10 +1427,6 @@
      "model": "gpt-5.4",
      "protocol": "responses"
     },
-    "codex": {
-     "model": "gpt-5.4",
-     "protocol": "responses"
-    },
     "github-copilot": {
      "model": "gpt-5.4",
      "protocol": "responses"
@@ -1358,10 +1469,6 @@
      "protocol": "responses"
     },
     "azure-openai": {
-     "model": "gpt-5.4-mini",
-     "protocol": "responses"
-    },
-    "codex": {
      "model": "gpt-5.4-mini",
      "protocol": "responses"
     },
@@ -1797,6 +1904,10 @@
      "model": "gpt-6-astra",
      "protocol": "responses"
     },
+    "cloudflare-ai-gateway": {
+     "model": "gpt-6-astra",
+     "protocol": "responses"
+    },
     "azure-openai": {
      "model": "gpt-6-astra",
      "protocol": "responses"
@@ -1807,7 +1918,7 @@
     },
     "github-copilot": {
      "model": "gpt-6-astra",
-     "protocol": "chat_completions"
+     "protocol": "responses"
     }
    }
   },
@@ -1834,6 +1945,226 @@
    }
   },
   {
+   "id": "gpt-6-luna",
+   "name": "GPT-6 Luna",
+   "family": "GPT Luna",
+   "vendor": "openai",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 272000,
+   "max_tokens": 128000,
+   "routes": {
+    "openai": {
+     "model": "gpt-6-luna",
+     "protocol": "responses"
+    },
+    "openrouter": {
+     "model": "openai/gpt-6-luna",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "openai/gpt-6-luna",
+     "protocol": "anthropic"
+    },
+    "opencode": {
+     "model": "gpt-6-luna",
+     "protocol": "responses"
+    },
+    "opencode-go": {
+     "model": "gpt-6-luna",
+     "protocol": "responses"
+    },
+    "cloudflare-ai-gateway": {
+     "model": "gpt-6-luna",
+     "protocol": "responses"
+    },
+    "azure-openai": {
+     "model": "gpt-6-luna",
+     "protocol": "responses"
+    },
+    "codex": {
+     "model": "gpt-6-luna",
+     "protocol": "responses"
+    },
+    "github-copilot": {
+     "model": "gpt-6-luna",
+     "protocol": "responses"
+    }
+   }
+  },
+  {
+   "id": "gpt-6-luna-pro",
+   "name": "GPT-6 Luna Pro",
+   "family": "GPT Luna Pro",
+   "vendor": "openai",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1050000,
+   "max_tokens": 128000,
+   "routes": {
+    "openrouter": {
+     "model": "openai/gpt-6-luna-pro",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "gpt-6-sol",
+   "name": "GPT-6 Sol",
+   "family": "GPT Sol",
+   "vendor": "openai",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 272000,
+   "max_tokens": 128000,
+   "routes": {
+    "openai": {
+     "model": "gpt-6-sol",
+     "protocol": "responses"
+    },
+    "openrouter": {
+     "model": "openai/gpt-6-sol",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "openai/gpt-6-sol",
+     "protocol": "anthropic"
+    },
+    "opencode": {
+     "model": "gpt-6-sol",
+     "protocol": "responses"
+    },
+    "cloudflare-ai-gateway": {
+     "model": "gpt-6-sol",
+     "protocol": "responses"
+    },
+    "azure-openai": {
+     "model": "gpt-6-sol",
+     "protocol": "responses"
+    },
+    "codex": {
+     "model": "gpt-6-sol",
+     "protocol": "responses"
+    },
+    "github-copilot": {
+     "model": "gpt-6-sol",
+     "protocol": "responses"
+    }
+   }
+  },
+  {
+   "id": "gpt-6-sol-pro",
+   "name": "GPT-6 Sol Pro",
+   "family": "GPT Sol Pro",
+   "vendor": "openai",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1050000,
+   "max_tokens": 128000,
+   "routes": {
+    "openrouter": {
+     "model": "openai/gpt-6-sol-pro",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "gpt-6.1-sol",
+   "name": "GPT-6.1 Sol",
+   "family": "GPT Sol",
+   "vendor": "openai",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 272000,
+   "max_tokens": 128000,
+   "routes": {
+    "openai": {
+     "model": "gpt-6.1-sol",
+     "protocol": "responses"
+    },
+    "openrouter": {
+     "model": "openai/gpt-6.1-sol",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "openai/gpt-6.1-sol",
+     "protocol": "anthropic"
+    },
+    "opencode": {
+     "model": "gpt-6.1-sol",
+     "protocol": "responses"
+    },
+    "cloudflare-ai-gateway": {
+     "model": "gpt-6.1-sol",
+     "protocol": "responses"
+    },
+    "azure-openai": {
+     "model": "gpt-6.1-sol",
+     "protocol": "responses"
+    },
+    "codex": {
+     "model": "gpt-6.1-sol",
+     "protocol": "responses"
+    },
+    "github-copilot": {
+     "model": "gpt-6.1-sol",
+     "protocol": "responses"
+    }
+   }
+  },
+  {
+   "id": "gpt-6.1-sol-pro",
+   "name": "GPT-6.1 Sol Pro",
+   "family": "GPT Sol Pro",
+   "vendor": "openai",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1050000,
+   "max_tokens": 128000,
+   "routes": {
+    "openrouter": {
+     "model": "openai/gpt-6.1-sol-pro",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
    "id": "gpt-oss-20b",
    "name": "gpt-oss-20b",
    "family": "GPT OSS",
@@ -1845,7 +2176,7 @@
    ],
    "images": false,
    "context_tokens": 131072,
-   "max_tokens": 117964,
+   "max_tokens": 32768,
    "routes": {
     "openrouter": {
      "model": "openai/gpt-oss-20b",
@@ -1864,10 +2195,6 @@
      "protocol": "chat_completions"
     },
     "groq": {
-     "model": "openai/gpt-oss-20b",
-     "protocol": "chat_completions"
-    },
-    "together": {
      "model": "openai/gpt-oss-20b",
      "protocol": "chat_completions"
     },
@@ -2248,7 +2575,7 @@
      "protocol": "anthropic"
     },
     "cloudflare-ai-gateway": {
-     "model": "claude-fable-5.1",
+     "model": "claude-fable-5-1",
      "protocol": "anthropic"
     },
     "claude": {
@@ -2293,10 +2620,6 @@
    "context_tokens": 200000,
    "max_tokens": 4096,
    "routes": {
-    "openrouter": {
-     "model": "anthropic/claude-3-haiku",
-     "protocol": "anthropic"
-    },
     "vercel-ai-gateway": {
      "model": "anthropic/claude-3-haiku",
      "protocol": "anthropic"
@@ -2334,7 +2657,7 @@
      "protocol": "anthropic"
     },
     "cloudflare-ai-gateway": {
-     "model": "claude-haiku-4.5",
+     "model": "claude-haiku-4-5",
      "protocol": "anthropic"
     },
     "claude": {
@@ -2348,6 +2671,48 @@
    }
   },
   {
+   "id": "claude-haiku-5-5",
+   "name": "Haiku 5.5",
+   "family": "Haiku",
+   "vendor": "anthropic",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1000000,
+   "max_tokens": 128000,
+   "routes": {
+    "anthropic": {
+     "model": "claude-haiku-5-5",
+     "protocol": "anthropic"
+    },
+    "openrouter": {
+     "model": "anthropic/claude-haiku-5.5",
+     "protocol": "anthropic"
+    },
+    "vercel-ai-gateway": {
+     "model": "anthropic/claude-haiku-5.5",
+     "protocol": "anthropic"
+    },
+    "opencode": {
+     "model": "claude-haiku-5-5",
+     "protocol": "anthropic"
+    },
+    "opencode-go": {
+     "model": "claude-haiku-5-5",
+     "protocol": "anthropic"
+    },
+    "claude": {
+     "model": "claude-haiku-5-5",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
    "id": "claude-haiku-latest",
    "name": "Haiku Latest",
    "family": "Haiku",
@@ -2355,11 +2720,13 @@
    "efforts": [
     "low",
     "medium",
-    "high"
+    "high",
+    "xhigh",
+    "max"
    ],
    "images": true,
-   "context_tokens": 200000,
-   "max_tokens": 64000,
+   "context_tokens": 1000000,
+   "max_tokens": 128000,
    "routes": {
     "openrouter": {
      "model": "~anthropic/claude-haiku-latest",
@@ -2381,10 +2748,6 @@
    "context_tokens": 200000,
    "max_tokens": 32000,
    "routes": {
-    "openrouter": {
-     "model": "anthropic/claude-opus-4",
-     "protocol": "anthropic"
-    },
     "vercel-ai-gateway": {
      "model": "anthropic/claude-opus-4",
      "protocol": "anthropic"
@@ -2442,7 +2805,7 @@
      "protocol": "anthropic"
     },
     "cloudflare-ai-gateway": {
-     "model": "claude-opus-4.5",
+     "model": "claude-opus-4-5",
      "protocol": "anthropic"
     },
     "claude": {
@@ -2483,7 +2846,7 @@
      "protocol": "anthropic"
     },
     "cloudflare-ai-gateway": {
-     "model": "claude-opus-4.6",
+     "model": "claude-opus-4-6",
      "protocol": "anthropic"
     },
     "claude": {
@@ -2525,7 +2888,7 @@
      "protocol": "anthropic"
     },
     "cloudflare-ai-gateway": {
-     "model": "claude-opus-4.7",
+     "model": "claude-opus-4-7",
      "protocol": "anthropic"
     },
     "claude": {
@@ -2571,7 +2934,7 @@
      "protocol": "anthropic"
     },
     "cloudflare-ai-gateway": {
-     "model": "claude-opus-4.8",
+     "model": "claude-opus-4-8",
      "protocol": "anthropic"
     },
     "claude": {
@@ -2626,6 +2989,52 @@
     },
     "github-copilot": {
      "model": "claude-opus-5",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
+   "id": "claude-opus-5-5",
+   "name": "Opus 5.5",
+   "family": "Opus",
+   "vendor": "anthropic",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1000000,
+   "max_tokens": 128000,
+   "routes": {
+    "anthropic": {
+     "model": "claude-opus-5-5",
+     "protocol": "anthropic"
+    },
+    "openrouter": {
+     "model": "anthropic/claude-opus-5.5",
+     "protocol": "anthropic"
+    },
+    "vercel-ai-gateway": {
+     "model": "anthropic/claude-opus-5.5",
+     "protocol": "anthropic"
+    },
+    "opencode": {
+     "model": "claude-opus-5-5",
+     "protocol": "anthropic"
+    },
+    "cloudflare-ai-gateway": {
+     "model": "claude-opus-5-5",
+     "protocol": "anthropic"
+    },
+    "claude": {
+     "model": "claude-opus-5-5",
+     "protocol": "anthropic"
+    },
+    "github-copilot": {
+     "model": "claude-opus-5.5",
      "protocol": "anthropic"
     }
    }
@@ -2711,7 +3120,7 @@
      "protocol": "anthropic"
     },
     "cloudflare-ai-gateway": {
-     "model": "claude-sonnet-4.5",
+     "model": "claude-sonnet-4-5",
      "protocol": "anthropic"
     },
     "claude": {
@@ -2752,7 +3161,7 @@
      "protocol": "anthropic"
     },
     "cloudflare-ai-gateway": {
-     "model": "claude-sonnet-4.6",
+     "model": "claude-sonnet-4-6",
      "protocol": "anthropic"
     },
     "claude": {
@@ -2812,6 +3221,52 @@
    }
   },
   {
+   "id": "claude-sonnet-5-5",
+   "name": "Sonnet 5.5",
+   "family": "Sonnet",
+   "vendor": "anthropic",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1000000,
+   "max_tokens": 128000,
+   "routes": {
+    "anthropic": {
+     "model": "claude-sonnet-5-5",
+     "protocol": "anthropic"
+    },
+    "openrouter": {
+     "model": "anthropic/claude-sonnet-5.5",
+     "protocol": "anthropic"
+    },
+    "vercel-ai-gateway": {
+     "model": "anthropic/claude-sonnet-5.5",
+     "protocol": "anthropic"
+    },
+    "opencode": {
+     "model": "claude-sonnet-5-5",
+     "protocol": "anthropic"
+    },
+    "cloudflare-ai-gateway": {
+     "model": "claude-sonnet-5-5",
+     "protocol": "anthropic"
+    },
+    "claude": {
+     "model": "claude-sonnet-5-5",
+     "protocol": "anthropic"
+    },
+    "github-copilot": {
+     "model": "claude-sonnet-5.5",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
    "id": "claude-sonnet-latest",
    "name": "Sonnet Latest",
    "family": "Sonnet",
@@ -2829,6 +3284,26 @@
    "routes": {
     "openrouter": {
      "model": "~anthropic/claude-sonnet-latest",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "diffusiongemma-26b-a4b-it",
+   "name": "DiffusionGemma 26B A4B IT",
+   "family": "DiffusionGemma",
+   "vendor": "google",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 250000,
+   "max_tokens": 32768,
+   "routes": {
+    "nvidia": {
+     "model": "google/diffusiongemma-26b-a4b-it",
      "protocol": "chat_completions"
     }
    }
@@ -2918,26 +3393,6 @@
    }
   },
   {
-   "id": "gemini-2.5-pro-preview-05-06",
-   "name": "Gemini 2.5 Pro Preview 05-06",
-   "family": "Gemini Pro",
-   "vendor": "google",
-   "efforts": [
-    "low",
-    "medium",
-    "high"
-   ],
-   "images": true,
-   "context_tokens": 1048576,
-   "max_tokens": 65535,
-   "routes": {
-    "openrouter": {
-     "model": "google/gemini-2.5-pro-preview-05-06",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
    "id": "gemini-2.5-pro-preview",
    "name": "Gemini 2.5 Pro Preview 06-05",
    "family": "Gemini Pro",
@@ -2987,6 +3442,7 @@
    "family": "Gemini Flash",
    "vendor": "google",
    "efforts": [
+    "minimal",
     "low",
     "medium",
     "high"
@@ -3011,6 +3467,7 @@
    "family": "Gemini Flash Lite",
    "vendor": "google",
    "efforts": [
+    "minimal",
     "low",
     "medium",
     "high"
@@ -3043,6 +3500,7 @@
    "family": "Gemini Flash Lite",
    "vendor": "google",
    "efforts": [
+    "minimal",
     "low",
     "medium",
     "high"
@@ -3100,6 +3558,7 @@
    "vendor": "google",
    "efforts": [
     "low",
+    "medium",
     "high"
    ],
    "images": true,
@@ -3127,6 +3586,7 @@
    "vendor": "google",
    "efforts": [
     "low",
+    "medium",
     "high"
    ],
    "images": true,
@@ -3149,6 +3609,7 @@
    "family": "Gemini Flash",
    "vendor": "google",
    "efforts": [
+    "minimal",
     "low",
     "medium",
     "high"
@@ -3181,6 +3642,7 @@
    "family": "Gemini Flash Lite",
    "vendor": "google",
    "efforts": [
+    "minimal",
     "low",
     "medium",
     "high"
@@ -3213,6 +3675,7 @@
    "family": "Gemini Flash",
    "vendor": "google",
    "efforts": [
+    "minimal",
     "low",
     "medium",
     "high"
@@ -3357,6 +3820,7 @@
    "family": "Gemini Flash",
    "vendor": "google",
    "efforts": [
+    "minimal",
     "low",
     "medium",
     "high"
@@ -3381,6 +3845,7 @@
    "family": "Gemini Flash Lite",
    "vendor": "google",
    "efforts": [
+    "minimal",
     "low",
     "medium",
     "high"
@@ -3423,8 +3888,12 @@
    "efforts": [],
    "images": true,
    "context_tokens": 131072,
-   "max_tokens": 16384,
+   "max_tokens": 131072,
    "routes": {
+    "huggingface": {
+     "model": "google/gemma-3-4b-it",
+     "protocol": "chat_completions"
+    },
     "nvidia": {
      "model": "google/gemma-3-4b-it",
      "protocol": "chat_completions"
@@ -3445,6 +3914,10 @@
      "model": "google/gemma-3-12b-it",
      "protocol": "chat_completions"
     },
+    "huggingface": {
+     "model": "google/gemma-3-12b-it",
+     "protocol": "chat_completions"
+    },
     "nvidia": {
      "model": "google/gemma-3-12b-it",
      "protocol": "chat_completions"
@@ -3462,6 +3935,10 @@
    "max_tokens": 117964,
    "routes": {
     "openrouter": {
+     "model": "google/gemma-3-27b-it",
+     "protocol": "chat_completions"
+    },
+    "huggingface": {
      "model": "google/gemma-3-27b-it",
      "protocol": "chat_completions"
     }
@@ -3531,10 +4008,6 @@
      "model": "google/gemma-4-31b-it",
      "protocol": "anthropic"
     },
-    "together": {
-     "model": "google/gemma-4-31B-it",
-     "protocol": "chat_completions"
-    },
     "huggingface": {
      "model": "google/gemma-4-31B-it",
      "protocol": "chat_completions"
@@ -3542,21 +4015,20 @@
    }
   },
   {
-   "id": "gemma-4-31b",
-   "name": "Gemma 4 31B IT",
-   "family": "Gemma",
+   "id": "gemini-nano-banana-2.1",
+   "name": "Nano Banana 2.1",
+   "family": "Nano Banana",
    "vendor": "google",
    "efforts": [
-    "low",
-    "medium",
+    "minimal",
     "high"
    ],
    "images": true,
-   "context_tokens": 131072,
-   "max_tokens": 40960,
+   "context_tokens": 65536,
+   "max_tokens": 58982,
    "routes": {
-    "cerebras": {
-     "model": "gemma-4-31b",
+    "openrouter": {
+     "model": "google/gemini-nano-banana-2.1",
      "protocol": "chat_completions"
     }
    }
@@ -3710,6 +4182,51 @@
     },
     "github-copilot": {
      "model": "grok-4.6",
+     "protocol": "responses"
+    }
+   }
+  },
+  {
+   "id": "grok-4.7",
+   "name": "Grok 4.7",
+   "family": "Grok",
+   "vendor": "xai",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ],
+   "images": true,
+   "context_tokens": 500000,
+   "max_tokens": 500000,
+   "routes": {
+    "xai": {
+     "model": "grok-4.7",
+     "protocol": "responses"
+    },
+    "openrouter": {
+     "model": "x-ai/grok-4.7",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "spacexai/grok-4.7",
+     "protocol": "anthropic"
+    },
+    "opencode": {
+     "model": "grok-4.7",
+     "protocol": "responses"
+    },
+    "opencode-go": {
+     "model": "grok-4.7",
+     "protocol": "responses"
+    },
+    "grok": {
+     "model": "grok-4.7",
+     "protocol": "responses"
+    },
+    "github-copilot": {
+     "model": "grok-4.7",
      "protocol": "responses"
     }
    }
@@ -3896,14 +4413,34 @@
    }
   },
   {
+   "id": "deepseek-pro-latest",
+   "name": "DeepSeek Pro Latest",
+   "family": "DeepSeek Pro",
+   "vendor": "deepseek",
+   "efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "images": false,
+   "context_tokens": 1048576,
+   "max_tokens": 393216,
+   "routes": {
+    "openrouter": {
+     "model": "~deepseek/deepseek-pro-latest",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
    "id": "deepseek-chat",
    "name": "DeepSeek V3",
    "family": "DeepSeek",
    "vendor": "deepseek",
    "efforts": [],
    "images": false,
-   "context_tokens": 163840,
-   "max_tokens": 16384,
+   "context_tokens": 128000,
+   "max_tokens": 16000,
    "routes": {
     "openrouter": {
      "model": "deepseek/deepseek-chat",
@@ -3918,8 +4455,8 @@
    "vendor": "deepseek",
    "efforts": [],
    "images": false,
-   "context_tokens": 163840,
-   "max_tokens": 147456,
+   "context_tokens": 128000,
+   "max_tokens": 115200,
    "routes": {
     "openrouter": {
      "model": "deepseek/deepseek-chat-v3-0324",
@@ -3942,8 +4479,8 @@
     "high"
    ],
    "images": false,
-   "context_tokens": 161000,
-   "max_tokens": 144900,
+   "context_tokens": 163840,
+   "max_tokens": 32768,
    "routes": {
     "openrouter": {
      "model": "deepseek/deepseek-chat-v3.1",
@@ -3970,16 +4507,12 @@
     "high"
    ],
    "images": false,
-   "context_tokens": 131072,
-   "max_tokens": 32768,
+   "context_tokens": 163840,
+   "max_tokens": 147456,
    "routes": {
     "openrouter": {
      "model": "deepseek/deepseek-v3.1-terminus",
      "protocol": "chat_completions"
-    },
-    "vercel-ai-gateway": {
-     "model": "deepseek/deepseek-v3.1-terminus",
-     "protocol": "anthropic"
     }
    }
   },
@@ -4031,7 +4564,7 @@
    ],
    "images": false,
    "context_tokens": 163840,
-   "max_tokens": 65536,
+   "max_tokens": 147456,
    "routes": {
     "openrouter": {
      "model": "deepseek/deepseek-v3.2-exp",
@@ -4061,7 +4594,6 @@
    "family": "DeepSeek Flash",
    "vendor": "deepseek",
    "efforts": [
-    "low",
     "high",
     "max"
    ],
@@ -4069,10 +4601,6 @@
    "context_tokens": 1000000,
    "max_tokens": 384000,
    "routes": {
-    "deepseek": {
-     "model": "deepseek-v4-flash",
-     "protocol": "chat_completions"
-    },
     "qwen": {
      "model": "deepseek-v4-flash",
      "protocol": "chat_completions"
@@ -4144,16 +4672,8 @@
      "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
      "protocol": "chat_completions"
     },
-    "fireworks": {
-     "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
-     "protocol": "anthropic"
-    },
     "huggingface": {
      "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
-     "protocol": "chat_completions"
-    },
-    "nvidia": {
-     "model": "deepseek-ai/deepseek-v4-flash-0731",
      "protocol": "chat_completions"
     },
     "baseten": {
@@ -4173,13 +4693,9 @@
     "max"
    ],
    "images": true,
-   "context_tokens": 1000000,
-   "max_tokens": 384000,
+   "context_tokens": 1048576,
+   "max_tokens": 262144,
    "routes": {
-    "deepseek": {
-     "model": "deepseek-v4-flash-vision-exp",
-     "protocol": "chat_completions"
-    },
     "openrouter": {
      "model": "deepseek/deepseek-v4-flash-vision-exp",
      "protocol": "chat_completions"
@@ -4195,10 +4711,6 @@
     "opencode-go": {
      "model": "deepseek-v4-flash-vision-exp",
      "protocol": "chat_completions"
-    },
-    "fireworks": {
-     "model": "accounts/fireworks/models/deepseek-v4-flash-vision-exp",
-     "protocol": "anthropic"
     },
     "huggingface": {
      "model": "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
@@ -4247,8 +4759,8 @@
      "model": "deepseek-v4-pro",
      "protocol": "chat_completions"
     },
-    "together": {
-     "model": "deepseek-ai/DeepSeek-V4-Pro",
+    "azure-openai": {
+     "model": "deepseek-v4-pro",
      "protocol": "chat_completions"
     },
     "huggingface": {
@@ -4302,20 +4814,100 @@
      "model": "deepseek-ai/DeepSeek-V4-Pro-0813",
      "protocol": "chat_completions"
     },
-    "fireworks": {
-     "model": "accounts/fireworks/models/deepseek-v4-pro-0813",
-     "protocol": "anthropic"
-    },
     "huggingface": {
      "model": "deepseek-ai/DeepSeek-V4-Pro-0813",
      "protocol": "chat_completions"
     },
+    "baseten": {
+     "model": "deepseek-ai/DeepSeek-V4-Pro-0813",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "deepseek-flash",
+   "name": "DeepSeek V4.1 Flash",
+   "family": "DeepSeek Flash",
+   "vendor": "deepseek",
+   "efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1000000,
+   "max_tokens": 384000,
+   "routes": {
+    "deepseek": {
+     "model": "deepseek-flash",
+     "protocol": "chat_completions"
+    },
+    "openrouter": {
+     "model": "~deepseek/deepseek-flash-latest",
+     "protocol": "chat_completions"
+    },
+    "fireworks": {
+     "model": "accounts/fireworks/routers/deepseek-flash-latest",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
+   "id": "deepseek-v4.1-flash",
+   "name": "DeepSeek V4.1 Flash",
+   "family": "DeepSeek Flash",
+   "vendor": "deepseek",
+   "efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1000000,
+   "max_tokens": 384000,
+   "routes": {
+    "qwen": {
+     "model": "deepseek-v4.1-flash",
+     "protocol": "chat_completions"
+    },
+    "qwen-cn": {
+     "model": "deepseek-v4.1-flash",
+     "protocol": "chat_completions"
+    },
+    "openrouter": {
+     "model": "deepseek/deepseek-v4.1-flash",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "deepseek/deepseek-v4.1-flash",
+     "protocol": "anthropic"
+    },
+    "opencode": {
+     "model": "deepseek-v4.1-flash",
+     "protocol": "chat_completions"
+    },
+    "opencode-go": {
+     "model": "deepseek-v4.1-flash",
+     "protocol": "chat_completions"
+    },
+    "together": {
+     "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+     "protocol": "chat_completions"
+    },
+    "fireworks": {
+     "model": "accounts/fireworks/models/deepseek-v4p1-flash",
+     "protocol": "anthropic"
+    },
+    "huggingface": {
+     "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+     "protocol": "chat_completions"
+    },
     "nvidia": {
-     "model": "deepseek-ai/deepseek-v4-pro-0813",
+     "model": "deepseek-ai/deepseek-v4.1-flash",
      "protocol": "chat_completions"
     },
     "baseten": {
-     "model": "deepseek-ai/DeepSeek-V4-Pro-0813",
+     "model": "deepseek-ai/DeepSeek-V4.1-Flash",
      "protocol": "chat_completions"
     }
    }
@@ -4481,9 +5073,9 @@
    }
   },
   {
-   "id": "qwen3.8-flash-next",
-   "name": "Qwen 3.8 Flash Next",
-   "family": "Qwen Flash Next",
+   "id": "qwen-max-latest",
+   "name": "Qwen Max Latest (Qwen3.8 Max)",
+   "family": "Qwen Max",
    "vendor": "qwen",
    "efforts": [
     "low",
@@ -4491,11 +5083,11 @@
     "high"
    ],
    "images": true,
-   "context_tokens": 1048576,
-   "max_tokens": 1048576,
+   "context_tokens": 262144,
+   "max_tokens": 131072,
    "routes": {
-    "vercel-ai-gateway": {
-     "model": "alibaba/qwen3.8-flash-next",
+    "fireworks": {
+     "model": "accounts/fireworks/routers/qwen-max-latest",
      "protocol": "anthropic"
     }
    }
@@ -5284,7 +5876,7 @@
    ],
    "images": true,
    "context_tokens": 262144,
-   "max_tokens": 235929,
+   "max_tokens": 81920,
    "routes": {
     "openrouter": {
      "model": "qwen/qwen3.5-397b-a17b",
@@ -5355,8 +5947,8 @@
     "high"
    ],
    "images": true,
-   "context_tokens": 262144,
-   "max_tokens": 235929,
+   "context_tokens": 256000,
+   "max_tokens": 32768,
    "routes": {
     "openrouter": {
      "model": "qwen/qwen3.5-9b",
@@ -5408,7 +6000,7 @@
    ],
    "images": true,
    "context_tokens": 262144,
-   "max_tokens": 16384,
+   "max_tokens": 235929,
    "routes": {
     "openrouter": {
      "model": "qwen/qwen3.5-35b-a3b",
@@ -5432,7 +6024,7 @@
    ],
    "images": true,
    "context_tokens": 262144,
-   "max_tokens": 81920,
+   "max_tokens": 65536,
    "routes": {
     "openrouter": {
      "model": "qwen/qwen3.5-122b-a10b",
@@ -5602,10 +6194,6 @@
      "model": "qwen3.6-plus",
      "protocol": "anthropic"
     },
-    "opencode-go": {
-     "model": "qwen3.6-plus",
-     "protocol": "chat_completions"
-    },
     "together": {
      "model": "Qwen/Qwen3.6-Plus",
      "protocol": "chat_completions"
@@ -5666,10 +6254,6 @@
      "model": "alibaba/qwen3.7-max",
      "protocol": "anthropic"
     },
-    "opencode-go": {
-     "model": "qwen3.7-max",
-     "protocol": "chat_completions"
-    },
     "together": {
      "model": "Qwen/Qwen3.7-Max",
      "protocol": "chat_completions"
@@ -5708,10 +6292,6 @@
     },
     "opencode-go": {
      "model": "qwen3.7-plus",
-     "protocol": "chat_completions"
-    },
-    "fireworks": {
-     "model": "accounts/fireworks/models/qwen3p7-plus",
      "protocol": "anthropic"
     }
    }
@@ -5727,8 +6307,8 @@
     "xhigh"
    ],
    "images": false,
-   "context_tokens": 1000000,
-   "max_tokens": 262144,
+   "context_tokens": 1048576,
+   "max_tokens": 131072,
    "routes": {
     "openrouter": {
      "model": "qwen/qwen3.8-2.4t-a95b",
@@ -5789,6 +6369,26 @@
    }
   },
   {
+   "id": "qwen-3.8-27b",
+   "name": "Qwen3.8 27B",
+   "family": "Qwen",
+   "vendor": "qwen",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 131072,
+   "max_tokens": 40960,
+   "routes": {
+    "cerebras": {
+     "model": "qwen-3.8-27b",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
    "id": "qwen3.8-flash",
    "name": "Qwen3.8 Flash",
    "family": "Qwen Flash",
@@ -5816,6 +6416,10 @@
     },
     "vercel-ai-gateway": {
      "model": "alibaba/qwen3.8-flash",
+     "protocol": "anthropic"
+    },
+    "opencode": {
+     "model": "qwen3.8-flash",
      "protocol": "anthropic"
     },
     "opencode-go": {
@@ -5850,9 +6454,13 @@
      "model": "alibaba/qwen3.8-max",
      "protocol": "anthropic"
     },
-    "opencode-go": {
+    "opencode": {
      "model": "qwen3.8-max",
      "protocol": "chat_completions"
+    },
+    "opencode-go": {
+     "model": "qwen3.8-max",
+     "protocol": "anthropic"
     },
     "fireworks": {
      "model": "accounts/fireworks/models/qwen3p8-max",
@@ -5887,9 +6495,80 @@
    }
   },
   {
+   "id": "qwen3.8-max-prime",
+   "name": "Qwen3.8 Max Prime",
+   "family": "Qwen Max Prime",
+   "vendor": "qwen",
+   "efforts": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ],
+   "images": true,
+   "context_tokens": 1000000,
+   "max_tokens": 131072,
+   "routes": {
+    "openrouter": {
+     "model": "qwen/qwen3.8-max-prime",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "alibaba/qwen3.8-max-prime",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
+   "id": "qwen3.8-omni-flash",
+   "name": "Qwen3.8 Omni Flash",
+   "family": "Qwen Omni Flash",
+   "vendor": "qwen",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 1000000,
+   "max_tokens": 131072,
+   "routes": {
+    "openrouter": {
+     "model": "qwen/qwen3.8-omni-flash",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "alibaba/qwen3.8-omni-flash",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
+   "id": "kimi-fast-latest",
+   "name": "Kimi Fast Latest",
+   "family": "Kimi",
+   "vendor": "kimi",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1048576,
+   "max_tokens": 131072,
+   "routes": {
+    "fireworks": {
+     "model": "accounts/fireworks/routers/kimi-fast-latest",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
    "id": "kimi-for-coding-highspeed",
    "name": "Kimi For Coding HighSpeed",
-   "family": "Kimi For Coding",
+   "family": "kimi for coding",
    "vendor": "kimi",
    "efforts": [
     "low",
@@ -5907,26 +6586,6 @@
    }
   },
   {
-   "id": "kimi-k2-0711-preview",
-   "name": "Kimi K2 0711",
-   "family": "Kimi",
-   "vendor": "kimi",
-   "efforts": [],
-   "images": false,
-   "context_tokens": 131072,
-   "max_tokens": 16384,
-   "routes": {
-    "moonshotai": {
-     "model": "kimi-k2-0711-preview",
-     "protocol": "chat_completions"
-    },
-    "moonshotai-cn": {
-     "model": "kimi-k2-0711-preview",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
    "id": "kimi-k2",
    "name": "Kimi K2 0711",
    "family": "Kimi",
@@ -5934,7 +6593,7 @@
    "efforts": [],
    "images": false,
    "context_tokens": 131072,
-   "max_tokens": 100352,
+   "max_tokens": 98304,
    "routes": {
     "openrouter": {
      "model": "moonshotai/kimi-k2",
@@ -5947,26 +6606,6 @@
    }
   },
   {
-   "id": "kimi-k2-0905-preview",
-   "name": "Kimi K2 0905",
-   "family": "Kimi",
-   "vendor": "kimi",
-   "efforts": [],
-   "images": false,
-   "context_tokens": 262144,
-   "max_tokens": 262144,
-   "routes": {
-    "moonshotai": {
-     "model": "kimi-k2-0905-preview",
-     "protocol": "chat_completions"
-    },
-    "moonshotai-cn": {
-     "model": "kimi-k2-0905-preview",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
    "id": "kimi-k2-0905",
    "name": "Kimi K2 0905",
    "family": "Kimi",
@@ -5974,7 +6613,7 @@
    "efforts": [],
    "images": false,
    "context_tokens": 262144,
-   "max_tokens": 100352,
+   "max_tokens": 98304,
    "routes": {
     "openrouter": {
      "model": "moonshotai/kimi-k2-0905",
@@ -5994,70 +6633,14 @@
    ],
    "images": false,
    "context_tokens": 262144,
-   "max_tokens": 262144,
+   "max_tokens": 235929,
    "routes": {
-    "moonshotai": {
-     "model": "kimi-k2-thinking",
-     "protocol": "chat_completions"
-    },
-    "moonshotai-cn": {
-     "model": "kimi-k2-thinking",
-     "protocol": "chat_completions"
-    },
     "openrouter": {
      "model": "moonshotai/kimi-k2-thinking",
      "protocol": "chat_completions"
     },
-    "vercel-ai-gateway": {
-     "model": "moonshotai/kimi-k2-thinking",
-     "protocol": "anthropic"
-    },
     "huggingface": {
      "model": "moonshotai/Kimi-K2-Thinking",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "kimi-k2-thinking-turbo",
-   "name": "Kimi K2 Thinking Turbo",
-   "family": "Kimi",
-   "vendor": "kimi",
-   "efforts": [
-    "low",
-    "medium",
-    "high"
-   ],
-   "images": false,
-   "context_tokens": 262144,
-   "max_tokens": 262144,
-   "routes": {
-    "moonshotai": {
-     "model": "kimi-k2-thinking-turbo",
-     "protocol": "chat_completions"
-    },
-    "moonshotai-cn": {
-     "model": "kimi-k2-thinking-turbo",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "kimi-k2-turbo-preview",
-   "name": "Kimi K2 Turbo",
-   "family": "Kimi",
-   "vendor": "kimi",
-   "efforts": [],
-   "images": false,
-   "context_tokens": 262144,
-   "max_tokens": 262144,
-   "routes": {
-    "moonshotai": {
-     "model": "kimi-k2-turbo-preview",
-     "protocol": "chat_completions"
-    },
-    "moonshotai-cn": {
-     "model": "kimi-k2-turbo-preview",
      "protocol": "chat_completions"
     }
    }
@@ -6074,16 +6657,8 @@
    ],
    "images": true,
    "context_tokens": 262144,
-   "max_tokens": 262144,
+   "max_tokens": 98304,
    "routes": {
-    "moonshotai": {
-     "model": "kimi-k2.5",
-     "protocol": "chat_completions"
-    },
-    "moonshotai-cn": {
-     "model": "kimi-k2.5",
-     "protocol": "chat_completions"
-    },
     "qwen": {
      "model": "kimi-k2.5",
      "protocol": "chat_completions"
@@ -6156,10 +6731,6 @@
      "model": "kimi-k2.6",
      "protocol": "chat_completions"
     },
-    "opencode-go": {
-     "model": "kimi-k2.6",
-     "protocol": "chat_completions"
-    },
     "cloudflare-workers-ai": {
      "model": "@cf/moonshotai/kimi-k2.6",
      "protocol": "chat_completions"
@@ -6167,14 +6738,6 @@
     "cloudflare-ai-gateway": {
      "model": "workers-ai/@cf/moonshotai/kimi-k2.6",
      "protocol": "chat_completions"
-    },
-    "together": {
-     "model": "moonshotai/Kimi-K2.6",
-     "protocol": "chat_completions"
-    },
-    "fireworks": {
-     "model": "accounts/fireworks/models/kimi-k2p6",
-     "protocol": "anthropic"
     },
     "huggingface": {
      "model": "moonshotai/Kimi-K2.6",
@@ -6244,14 +6807,6 @@
      "model": "workers-ai/@cf/moonshotai/kimi-k2.7-code",
      "protocol": "chat_completions"
     },
-    "together": {
-     "model": "moonshotai/Kimi-K2.7-Code",
-     "protocol": "chat_completions"
-    },
-    "fireworks": {
-     "model": "accounts/fireworks/models/kimi-k2p7-code",
-     "protocol": "anthropic"
-    },
     "huggingface": {
      "model": "moonshotai/Kimi-K2.7-Code",
      "protocol": "chat_completions"
@@ -6263,26 +6818,6 @@
     "github-copilot": {
      "model": "kimi-k2.7-code",
      "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "kimi-for-coding",
-   "name": "Kimi K2.7 Code",
-   "family": "Kimi Code",
-   "vendor": "kimi",
-   "efforts": [
-    "low",
-    "medium",
-    "high"
-   ],
-   "images": true,
-   "context_tokens": 262144,
-   "max_tokens": 32768,
-   "routes": {
-    "kimi-code": {
-     "model": "kimi-for-coding",
-     "protocol": "anthropic"
     }
    }
   },
@@ -6326,7 +6861,7 @@
    ],
    "images": true,
    "context_tokens": 1048576,
-   "max_tokens": 131072,
+   "max_tokens": 1048576,
    "routes": {
     "moonshotai": {
      "model": "kimi-k3",
@@ -6419,6 +6954,30 @@
     "openrouter": {
      "model": "~moonshotai/kimi-latest",
      "protocol": "chat_completions"
+    },
+    "fireworks": {
+     "model": "accounts/fireworks/routers/kimi-latest",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
+   "id": "kimi-for-coding",
+   "name": "kimi-for-coding",
+   "family": "kimi for coding",
+   "vendor": "kimi",
+   "efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1048576,
+   "max_tokens": 32768,
+   "routes": {
+    "kimi-code": {
+     "model": "kimi-for-coding",
+     "protocol": "anthropic"
     }
    }
   },
@@ -6549,8 +7108,8 @@
     "high"
    ],
    "images": false,
-   "context_tokens": 204800,
-   "max_tokens": 131072,
+   "context_tokens": 198000,
+   "max_tokens": 16384,
    "routes": {
     "openrouter": {
      "model": "z-ai/glm-4.6",
@@ -6577,8 +7136,8 @@
     "high"
    ],
    "images": false,
-   "context_tokens": 202752,
-   "max_tokens": 16384,
+   "context_tokens": 131072,
+   "max_tokens": 117964,
    "routes": {
     "openrouter": {
      "model": "z-ai/glm-4.7-flash",
@@ -6623,8 +7182,72 @@
    }
   },
   {
-   "id": "glm-5.3-promo-50",
-   "name": "GLM 5.3",
+   "id": "glm-fast-latest",
+   "name": "GLM 5.3 Fast",
+   "family": "GLM",
+   "vendor": "glm",
+   "efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "images": false,
+   "context_tokens": 1048572,
+   "max_tokens": 262144,
+   "routes": {
+    "fireworks": {
+     "model": "accounts/fireworks/routers/glm-fast-latest",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "glm-5.3-flashx",
+   "name": "GLM 5.3 FlashX",
+   "family": "GLM FlashX",
+   "vendor": "glm",
+   "efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1048576,
+   "max_tokens": 131072,
+   "routes": {
+    "openrouter": {
+     "model": "z-ai/glm-5.3-flashx",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "zai/glm-5.3-flashx",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
+   "id": "glm-5.3-prime",
+   "name": "GLM 5.3 Prime",
+   "family": "GLM Prime",
+   "vendor": "glm",
+   "efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "images": false,
+   "context_tokens": 1000000,
+   "max_tokens": 131072,
+   "routes": {
+    "openrouter": {
+     "model": "z-ai/glm-5.3-prime",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "glm-5v-turbo",
+   "name": "GLM 5V Turbo",
    "family": "GLM",
    "vendor": "glm",
    "efforts": [
@@ -6632,12 +7255,16 @@
     "medium",
     "high"
    ],
-   "images": false,
-   "context_tokens": 1048576,
-   "max_tokens": 1048576,
+   "images": true,
+   "context_tokens": 202752,
+   "max_tokens": 131072,
    "routes": {
+    "openrouter": {
+     "model": "z-ai/glm-5v-turbo",
+     "protocol": "chat_completions"
+    },
     "vercel-ai-gateway": {
-     "model": "zai/glm-5.3-promo-50",
+     "model": "zai/glm-5v-turbo",
      "protocol": "anthropic"
     }
    }
@@ -6654,10 +7281,14 @@
    ],
    "images": true,
    "context_tokens": 1048576,
-   "max_tokens": 943718,
+   "max_tokens": 131072,
    "routes": {
     "openrouter": {
      "model": "~z-ai/glm-flash-latest",
+     "protocol": "chat_completions"
+    },
+    "fireworks": {
+     "model": "accounts/fireworks/routers/glm-flash-latest",
      "protocol": "chat_completions"
     }
    }
@@ -6673,11 +7304,15 @@
     "max"
    ],
    "images": false,
-   "context_tokens": 262144,
-   "max_tokens": 235929,
+   "context_tokens": 1048576,
+   "max_tokens": 943718,
    "routes": {
     "openrouter": {
      "model": "~z-ai/glm-latest",
+     "protocol": "chat_completions"
+    },
+    "fireworks": {
+     "model": "accounts/fireworks/routers/glm-latest",
      "protocol": "chat_completions"
     }
    }
@@ -6741,10 +7376,6 @@
    "max_tokens": 131072,
    "routes": {
     "zai": {
-     "model": "glm-4.7",
-     "protocol": "chat_completions"
-    },
-    "zai-coding-cn": {
      "model": "glm-4.7",
      "protocol": "chat_completions"
     },
@@ -6827,10 +7458,6 @@
      "model": "glm-5-turbo",
      "protocol": "chat_completions"
     },
-    "zai-coding-cn": {
-     "model": "glm-5-turbo",
-     "protocol": "chat_completions"
-    },
     "openrouter": {
      "model": "z-ai/glm-5-turbo",
      "protocol": "chat_completions"
@@ -6847,18 +7474,13 @@
    "family": "GLM",
    "vendor": "glm",
    "efforts": [
-    "low",
-    "medium",
-    "high"
+    "high",
+    "max"
    ],
    "images": false,
-   "context_tokens": 200000,
-   "max_tokens": 131072,
+   "context_tokens": 202752,
+   "max_tokens": 128000,
    "routes": {
-    "zai-coding-cn": {
-     "model": "glm-5.1",
-     "protocol": "chat_completions"
-    },
     "qwen": {
      "model": "glm-5.1",
      "protocol": "chat_completions"
@@ -6879,10 +7501,6 @@
      "model": "glm-5.1",
      "protocol": "chat_completions"
     },
-    "opencode-go": {
-     "model": "glm-5.1",
-     "protocol": "chat_completions"
-    },
     "huggingface": {
      "model": "zai-org/GLM-5.1",
      "protocol": "chat_completions"
@@ -6894,27 +7512,7 @@
    }
   },
   {
-   "id": "zai-glm-5-2",
-   "name": "GLM-5.2",
-   "family": "GLM",
-   "vendor": "glm",
-   "efforts": [
-    "low",
-    "medium",
-    "high"
-   ],
-   "images": false,
-   "context_tokens": 1000000,
-   "max_tokens": 131072,
-   "routes": {
-    "mistral": {
-     "model": "zai-glm-5-2",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "glm-5.2",
+   "id": "glm-5-2",
    "name": "GLM-5.2",
    "family": "GLM",
    "vendor": "glm",
@@ -6923,14 +7521,14 @@
     "max"
    ],
    "images": false,
-   "context_tokens": 1000000,
+   "context_tokens": 1048576,
    "max_tokens": 131072,
    "routes": {
-    "zai": {
-     "model": "glm-5.2",
+    "mistral": {
+     "model": "glm-5-2",
      "protocol": "chat_completions"
     },
-    "zai-coding-cn": {
+    "zai": {
      "model": "glm-5.2",
      "protocol": "chat_completions"
     },
@@ -6970,16 +7568,31 @@
      "model": "zai-org/GLM-5.2",
      "protocol": "chat_completions"
     },
-    "fireworks": {
-     "model": "accounts/fireworks/models/glm-5p2",
-     "protocol": "chat_completions"
-    },
     "huggingface": {
      "model": "zai-org/GLM-5.2",
      "protocol": "chat_completions"
     },
     "baseten": {
      "model": "zai-org/GLM-5.2",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "zai-glm-5-2",
+   "name": "GLM-5.2",
+   "family": "GLM",
+   "vendor": "glm",
+   "efforts": [
+    "high",
+    "max"
+   ],
+   "images": false,
+   "context_tokens": 1048576,
+   "max_tokens": 131072,
+   "routes": {
+    "mistral": {
+     "model": "zai-glm-5-2",
      "protocol": "chat_completions"
     }
    }
@@ -7000,9 +7613,25 @@
     "zai": {
      "model": "glm-5.2-highspeed",
      "protocol": "chat_completions"
-    },
-    "zai-coding-cn": {
-     "model": "glm-5.2-highspeed",
+    }
+   }
+  },
+  {
+   "id": "zai-glm-5-3",
+   "name": "GLM-5.3",
+   "family": "GLM",
+   "vendor": "glm",
+   "efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "images": false,
+   "context_tokens": 1048576,
+   "max_tokens": 131072,
+   "routes": {
+    "mistral": {
+     "model": "zai-glm-5-3",
      "protocol": "chat_completions"
     }
    }
@@ -7026,6 +7655,14 @@
      "protocol": "chat_completions"
     },
     "zai-coding-cn": {
+     "model": "glm-5.3",
+     "protocol": "chat_completions"
+    },
+    "qwen": {
+     "model": "glm-5.3",
+     "protocol": "chat_completions"
+    },
+    "qwen-cn": {
      "model": "glm-5.3",
      "protocol": "chat_completions"
     },
@@ -7063,6 +7700,10 @@
     },
     "huggingface": {
      "model": "zai-org/GLM-5.3",
+     "protocol": "chat_completions"
+    },
+    "nvidia": {
+     "model": "z-ai/glm-5.3",
      "protocol": "chat_completions"
     },
     "baseten": {
@@ -7153,6 +7794,10 @@
      "model": "zai-org/GLM-5.3-Flash",
      "protocol": "chat_completions"
     },
+    "nvidia": {
+     "model": "z-ai/glm-5.3-flash",
+     "protocol": "chat_completions"
+    },
     "baseten": {
      "model": "zai-org/GLM-5.3-Flash",
      "protocol": "chat_completions"
@@ -7160,29 +7805,21 @@
    }
   },
   {
-   "id": "glm-5v-turbo",
-   "name": "GLM-5V-Turbo",
-   "family": "GLM",
-   "vendor": "glm",
+   "id": "minimax-latest",
+   "name": "MiniMax Latest",
+   "family": "MiniMax",
+   "vendor": "minimax",
    "efforts": [
     "low",
     "medium",
     "high"
    ],
-   "images": true,
-   "context_tokens": 200000,
-   "max_tokens": 131072,
+   "images": false,
+   "context_tokens": 512000,
+   "max_tokens": 512000,
    "routes": {
-    "zai-coding-cn": {
-     "model": "glm-5v-turbo",
-     "protocol": "chat_completions"
-    },
-    "openrouter": {
-     "model": "z-ai/glm-5v-turbo",
-     "protocol": "chat_completions"
-    },
-    "vercel-ai-gateway": {
-     "model": "zai/glm-5v-turbo",
+    "fireworks": {
+     "model": "accounts/fireworks/routers/minimax-latest",
      "protocol": "anthropic"
     }
    }
@@ -7218,8 +7855,8 @@
     "high"
    ],
    "images": false,
-   "context_tokens": 204800,
-   "max_tokens": 131072,
+   "context_tokens": 196608,
+   "max_tokens": 176947,
    "routes": {
     "openrouter": {
      "model": "minimax/minimax-m2",
@@ -7430,7 +8067,7 @@
     "high"
    ],
    "images": true,
-   "context_tokens": 1048576,
+   "context_tokens": 1000000,
    "max_tokens": 512000,
    "routes": {
     "minimax": {
@@ -7468,10 +8105,6 @@
     "huggingface": {
      "model": "MiniMaxAI/MiniMax-M3",
      "protocol": "chat_completions"
-    },
-    "nvidia": {
-     "model": "minimaxai/minimax-m3",
-     "protocol": "chat_completions"
     }
    }
   },
@@ -7497,14 +8130,18 @@
   },
   {
    "id": "codestral-2508",
-   "name": "Codestral 2508",
+   "name": "Codestral 25.08",
    "family": "Codestral",
    "vendor": "mistral",
    "efforts": [],
    "images": false,
    "context_tokens": 256000,
-   "max_tokens": 204800,
+   "max_tokens": 8192,
    "routes": {
+    "mistral": {
+     "model": "codestral-2508",
+     "protocol": "chat_completions"
+    },
     "openrouter": {
      "model": "mistralai/codestral-2508",
      "protocol": "chat_completions"
@@ -7564,22 +8201,6 @@
    }
   },
   {
-   "id": "devstral-2",
-   "name": "Devstral 2",
-   "family": "Devstral",
-   "vendor": "mistral",
-   "efforts": [],
-   "images": false,
-   "context_tokens": 256000,
-   "max_tokens": 256000,
-   "routes": {
-    "vercel-ai-gateway": {
-     "model": "mistral/devstral-2",
-     "protocol": "anthropic"
-    }
-   }
-  },
-  {
    "id": "devstral-medium-2507",
    "name": "Devstral Medium",
    "family": "Devstral Medium",
@@ -7628,22 +8249,6 @@
    }
   },
   {
-   "id": "devstral-small-2",
-   "name": "Devstral Small 2",
-   "family": "Devstral Small",
-   "vendor": "mistral",
-   "efforts": [],
-   "images": true,
-   "context_tokens": 256000,
-   "max_tokens": 256000,
-   "routes": {
-    "vercel-ai-gateway": {
-     "model": "mistral/devstral-small-2",
-     "protocol": "anthropic"
-    }
-   }
-  },
-  {
    "id": "devstral-small-2505",
    "name": "Devstral Small 2505",
    "family": "Devstral Small",
@@ -7660,17 +8265,33 @@
    }
   },
   {
+   "id": "labs-leanstral-1-5-1",
+   "name": "Leanstral 1.5",
+   "family": "Leanstral",
+   "vendor": "mistral",
+   "efforts": [
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 262144,
+   "max_tokens": 128000,
+   "routes": {
+    "mistral": {
+     "model": "labs-leanstral-1-5-1",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
    "id": "magistral-medium-latest",
    "name": "Magistral Medium",
    "family": "Magistral Medium",
    "vendor": "mistral",
    "efforts": [
-    "low",
-    "medium",
     "high"
    ],
-   "images": false,
-   "context_tokens": 128000,
+   "images": true,
+   "context_tokens": 262144,
    "max_tokens": 16384,
    "routes": {
     "mistral": {
@@ -7680,35 +8301,19 @@
    }
   },
   {
-   "id": "magistral-small",
-   "name": "Magistral Small",
-   "family": "Magistral Small",
-   "vendor": "mistral",
-   "efforts": [
-    "low",
-    "medium",
-    "high"
-   ],
-   "images": false,
-   "context_tokens": 128000,
-   "max_tokens": 128000,
-   "routes": {
-    "mistral": {
-     "model": "magistral-small",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
    "id": "ministral-3b-2512",
-   "name": "Ministral 3 3B 2512",
+   "name": "Ministral 3 3B",
    "family": "Ministral",
    "vendor": "mistral",
    "efforts": [],
    "images": true,
    "context_tokens": 131072,
-   "max_tokens": 104857,
+   "max_tokens": 262144,
    "routes": {
+    "mistral": {
+     "model": "ministral-3b-2512",
+     "protocol": "chat_completions"
+    },
     "openrouter": {
      "model": "mistralai/ministral-3b-2512",
      "protocol": "chat_completions"
@@ -7717,14 +8322,18 @@
   },
   {
    "id": "ministral-8b-2512",
-   "name": "Ministral 3 8B 2512",
+   "name": "Ministral 3 8B",
    "family": "Ministral",
    "vendor": "mistral",
    "efforts": [],
    "images": true,
    "context_tokens": 262144,
-   "max_tokens": 209715,
+   "max_tokens": 262144,
    "routes": {
+    "mistral": {
+     "model": "ministral-8b-2512",
+     "protocol": "chat_completions"
+    },
     "openrouter": {
      "model": "mistralai/ministral-8b-2512",
      "protocol": "chat_completions"
@@ -7733,14 +8342,18 @@
   },
   {
    "id": "ministral-14b-2512",
-   "name": "Ministral 3 14B 2512",
+   "name": "Ministral 3 14B",
    "family": "Ministral",
    "vendor": "mistral",
    "efforts": [],
    "images": true,
    "context_tokens": 262144,
-   "max_tokens": 209715,
+   "max_tokens": 262144,
    "routes": {
+    "mistral": {
+     "model": "ministral-14b-2512",
+     "protocol": "chat_completions"
+    },
     "openrouter": {
      "model": "mistralai/ministral-14b-2512",
      "protocol": "chat_completions"
@@ -7753,8 +8366,8 @@
    "family": "Ministral",
    "vendor": "mistral",
    "efforts": [],
-   "images": false,
-   "context_tokens": 128000,
+   "images": true,
+   "context_tokens": 131072,
    "max_tokens": 128000,
    "routes": {
     "mistral": {
@@ -7773,8 +8386,8 @@
    "family": "Ministral",
    "vendor": "mistral",
    "efforts": [],
-   "images": false,
-   "context_tokens": 128000,
+   "images": true,
+   "context_tokens": 262144,
    "max_tokens": 128000,
    "routes": {
     "mistral": {
@@ -7794,7 +8407,7 @@
    "vendor": "mistral",
    "efforts": [],
    "images": true,
-   "context_tokens": 256000,
+   "context_tokens": 262144,
    "max_tokens": 256000,
    "routes": {
     "vercel-ai-gateway": {
@@ -7882,12 +8495,56 @@
    "vendor": "mistral",
    "efforts": [],
    "images": true,
-   "context_tokens": 256000,
+   "context_tokens": 262144,
    "max_tokens": 256000,
    "routes": {
     "vercel-ai-gateway": {
      "model": "mistral/mistral-large-3",
      "protocol": "anthropic"
+    }
+   }
+  },
+  {
+   "id": "mistral-large-4",
+   "name": "Mistral Large 4",
+   "family": "Mistral Large",
+   "vendor": "mistral",
+   "efforts": [
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 524288,
+   "max_tokens": 262144,
+   "routes": {
+    "mistral": {
+     "model": "mistral-large-4",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "mistral/mistral-large-4",
+     "protocol": "anthropic"
+    },
+    "opencode": {
+     "model": "mistral-large-4",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "mistral-large-4-0",
+   "name": "Mistral Large 4",
+   "family": "Mistral Large",
+   "vendor": "mistral",
+   "efforts": [
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 524288,
+   "max_tokens": 262144,
+   "routes": {
+    "openrouter": {
+     "model": "mistralai/mistral-large-4-0",
+     "protocol": "chat_completions"
     }
    }
   },
@@ -7913,8 +8570,6 @@
    "family": "Mistral Medium",
    "vendor": "mistral",
    "efforts": [
-    "low",
-    "medium",
     "high"
    ],
    "images": true,
@@ -7924,10 +8579,6 @@
     "mistral": {
      "model": "mistral-medium-latest",
      "protocol": "chat_completions"
-    },
-    "vercel-ai-gateway": {
-     "model": "mistral/mistral-medium",
-     "protocol": "anthropic"
     }
    }
   },
@@ -8001,8 +8652,6 @@
    "family": "Mistral Medium",
    "vendor": "mistral",
    "efforts": [
-    "low",
-    "medium",
     "high"
    ],
    "images": true,
@@ -8021,8 +8670,6 @@
    "family": "Mistral Medium",
    "vendor": "mistral",
    "efforts": [
-    "low",
-    "medium",
     "high"
    ],
    "images": true,
@@ -8073,12 +8720,10 @@
    "family": "Mistral Small",
    "vendor": "mistral",
    "efforts": [
-    "low",
-    "medium",
     "high"
    ],
    "images": true,
-   "context_tokens": 256000,
+   "context_tokens": 262144,
    "max_tokens": 256000,
    "routes": {
     "mistral": {
@@ -8093,14 +8738,18 @@
   },
   {
    "id": "mistral-small-3.1-24b-instruct",
-   "name": "Mistral Small 3.1 24B Instruct",
+   "name": "Mistral Small 3.1 24B",
    "family": "Mistral Small",
    "vendor": "mistral",
    "efforts": [],
-   "images": false,
+   "images": true,
    "context_tokens": 128000,
-   "max_tokens": 128000,
+   "max_tokens": 102400,
    "routes": {
+    "openrouter": {
+     "model": "mistralai/mistral-small-3.1-24b-instruct",
+     "protocol": "chat_completions"
+    },
     "cloudflare-workers-ai": {
      "model": "@cf/mistralai/mistral-small-3.1-24b-instruct",
      "protocol": "chat_completions"
@@ -8134,7 +8783,7 @@
    "vendor": "mistral",
    "efforts": [],
    "images": true,
-   "context_tokens": 128000,
+   "context_tokens": 256000,
    "max_tokens": 16384,
    "routes": {
     "openrouter": {
@@ -8149,12 +8798,10 @@
    "family": "Mistral Small",
    "vendor": "mistral",
    "efforts": [
-    "low",
-    "medium",
     "high"
    ],
    "images": true,
-   "context_tokens": 256000,
+   "context_tokens": 262144,
    "max_tokens": 256000,
    "routes": {
     "mistral": {
@@ -8260,10 +8907,6 @@
     "mistral": {
      "model": "pixtral-12b",
      "protocol": "chat_completions"
-    },
-    "vercel-ai-gateway": {
-     "model": "mistral/pixtral-12b",
-     "protocol": "anthropic"
     }
    }
   },
@@ -8300,13 +8943,29 @@
    }
   },
   {
+   "id": "voxtral-small-2507",
+   "name": "Voxtral Small",
+   "family": "Voxtral Small",
+   "vendor": "mistral",
+   "efforts": [],
+   "images": false,
+   "context_tokens": 32768,
+   "max_tokens": 32000,
+   "routes": {
+    "mistral": {
+     "model": "voxtral-small-2507",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
    "id": "voxtral-small-latest",
    "name": "Voxtral Small",
    "family": "Voxtral Small",
    "vendor": "mistral",
    "efforts": [],
    "images": false,
-   "context_tokens": 32000,
+   "context_tokens": 32768,
    "max_tokens": 32000,
    "routes": {
     "mistral": {
@@ -8440,9 +9099,97 @@
     "xiaomi": {
      "model": "mimo-v2.5-pro-ultraspeed",
      "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "mimo-v2.6-flash",
+   "name": "MiMo-V2.6-Flash",
+   "family": "MiMo Flash",
+   "vendor": "xiaomi",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 1048576,
+   "max_tokens": 131072,
+   "routes": {
+    "xiaomi": {
+     "model": "mimo-v2.6-flash",
+     "protocol": "chat_completions"
+    },
+    "openrouter": {
+     "model": "xiaomi/mimo-v2.6-flash",
+     "protocol": "chat_completions"
     },
     "vercel-ai-gateway": {
-     "model": "xiaomi/mimo-v2.5-pro-ultraspeed",
+     "model": "xiaomi/mimo-v2.6-flash",
+     "protocol": "anthropic"
+    },
+    "opencode-go": {
+     "model": "mimo-v2.6-flash",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "mimo-v2.6-pro",
+   "name": "MiMo-V2.6-Pro",
+   "family": "MiMo Pro",
+   "vendor": "xiaomi",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 1048576,
+   "max_tokens": 131072,
+   "routes": {
+    "xiaomi": {
+     "model": "mimo-v2.6-pro",
+     "protocol": "chat_completions"
+    },
+    "openrouter": {
+     "model": "xiaomi/mimo-v2.6-pro",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "xiaomi/mimo-v2.6-pro",
+     "protocol": "anthropic"
+    },
+    "opencode-go": {
+     "model": "mimo-v2.6-pro",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "mimo-v2.6-pro-ultraspeed",
+   "name": "MiMo-V2.6-Pro-UltraSpeed",
+   "family": "MiMo Pro UltraSpeed",
+   "vendor": "xiaomi",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 1048576,
+   "max_tokens": 131072,
+   "routes": {
+    "xiaomi": {
+     "model": "mimo-v2.6-pro-ultraspeed",
+     "protocol": "chat_completions"
+    },
+    "openrouter": {
+     "model": "xiaomi/mimo-v2.6-pro-ultraspeed",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "xiaomi/mimo-v2.6-pro-ultraspeed",
      "protocol": "anthropic"
     }
    }
@@ -8515,7 +9262,7 @@
    ],
    "images": false,
    "context_tokens": 262144,
-   "max_tokens": 235929,
+   "max_tokens": 32768,
    "routes": {
     "openrouter": {
      "model": "inclusionai/ling-3.0-flash-fin",
@@ -8543,6 +9290,54 @@
    "routes": {
     "vercel-ai-gateway": {
      "model": "inclusionai/ling-3.0-flash-sante",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
+   "id": "ling-3.0-flash-vl",
+   "name": "Ling 3.0 Flash VL",
+   "family": "Ling Flash VL",
+   "vendor": "ant-ling",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 262144,
+   "max_tokens": 32768,
+   "routes": {
+    "openrouter": {
+     "model": "inclusionai/ling-3.0-flash-vl",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "inclusionai/ling-3.0-flash-vl",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
+   "id": "ling-3.1-flash",
+   "name": "Ling 3.1 Flash",
+   "family": "Ling Flash",
+   "vendor": "ant-ling",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": false,
+   "context_tokens": 262144,
+   "max_tokens": 32768,
+   "routes": {
+    "openrouter": {
+     "model": "inclusionai/ling-3.1-flash",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "inclusionai/ling-3.1-flash",
      "protocol": "anthropic"
     }
    }
@@ -8742,7 +9537,7 @@
    "efforts": [],
    "images": true,
    "context_tokens": 128000,
-   "max_tokens": 115200,
+   "max_tokens": 16384,
    "routes": {
     "openrouter": {
      "model": "meta-llama/llama-4-maverick",
@@ -8823,7 +9618,7 @@
    ],
    "images": true,
    "context_tokens": 131072,
-   "max_tokens": 117964,
+   "max_tokens": 16384,
    "routes": {
     "openrouter": {
      "model": "meta/muse-glimmer-30b",
@@ -8831,10 +9626,6 @@
     },
     "vercel-ai-gateway": {
      "model": "meta/muse-glimmer-30b",
-     "protocol": "anthropic"
-    },
-    "fireworks": {
-     "model": "accounts/fireworks/models/muse-glimmer-30b",
      "protocol": "anthropic"
     },
     "nvidia": {
@@ -9059,7 +9850,7 @@
    ],
    "images": false,
    "context_tokens": 262144,
-   "max_tokens": 235929,
+   "max_tokens": 32768,
    "routes": {
     "openrouter": {
      "model": "nvidia/nemotron-3-nano-30b-a3b",
@@ -9102,7 +9893,7 @@
    ],
    "images": false,
    "context_tokens": 262144,
-   "max_tokens": 16384,
+   "max_tokens": 235929,
    "routes": {
     "openrouter": {
      "model": "nvidia/nemotron-3-super-120b-a12b",
@@ -9152,8 +9943,8 @@
     "high"
    ],
    "images": false,
-   "context_tokens": 256000,
-   "max_tokens": 32768,
+   "context_tokens": 262144,
+   "max_tokens": 16384,
    "routes": {
     "openrouter": {
      "model": "nvidia/nemotron-3-ultra-550b-a55b",
@@ -9334,6 +10125,46 @@
    }
   },
   {
+   "id": "aion-3.5",
+   "name": "Aion 3.5",
+   "family": "Aion",
+   "vendor": "other",
+   "efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "images": false,
+   "context_tokens": 262144,
+   "max_tokens": 32768,
+   "routes": {
+    "openrouter": {
+     "model": "aion-labs/aion-3.5",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "aion-3.5-mini",
+   "name": "Aion 3.5 Mini",
+   "family": "Aion Mini",
+   "vendor": "other",
+   "efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "images": false,
+   "context_tokens": 262144,
+   "max_tokens": 32768,
+   "routes": {
+    "openrouter": {
+     "model": "aion-labs/aion-3.5-mini",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
    "id": "aion-2.0",
    "name": "Aion-2.0",
    "family": "Aion",
@@ -9394,6 +10225,46 @@
    }
   },
   {
+   "id": "arrow-2",
+   "name": "Arrow 2",
+   "family": "Arrow",
+   "vendor": "other",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 131072,
+   "max_tokens": 131072,
+   "routes": {
+    "vercel-ai-gateway": {
+     "model": "quiverai/arrow-2",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
+   "id": "arrow-2-telos",
+   "name": "Arrow 2 Telos",
+   "family": "Arrow Telos",
+   "vendor": "other",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 131072,
+   "max_tokens": 131072,
+   "routes": {
+    "vercel-ai-gateway": {
+     "model": "quiverai/arrow-2-telos",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
    "id": "seed-1.8",
    "name": "Bytedance Seed 1.8",
    "family": "Bytedance Seed",
@@ -9430,6 +10301,26 @@
    }
   },
   {
+   "id": "command-a-plus",
+   "name": "Command A+",
+   "family": "Command A+",
+   "vendor": "other",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 192000,
+   "max_tokens": 64000,
+   "routes": {
+    "openrouter": {
+     "model": "cohere/command-a-plus",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
    "id": "command-r-08-2024",
    "name": "Command R (08-2024)",
    "family": "Command R",
@@ -9462,6 +10353,58 @@
    }
   },
   {
+   "id": "ember-1",
+   "name": "Ember-1",
+   "family": "Ember",
+   "vendor": "other",
+   "efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1048576,
+   "max_tokens": 943718,
+   "routes": {
+    "openrouter": {
+     "model": "fireworks/ember-1",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "fireworks/ember-1",
+     "protocol": "anthropic"
+    },
+    "fireworks": {
+     "model": "accounts/fireworks/models/ember-1",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
+   "id": "fugu-max",
+   "name": "Fugu Max",
+   "family": "Fugu Max",
+   "vendor": "other",
+   "efforts": [
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1000000,
+   "max_tokens": 128000,
+   "routes": {
+    "openrouter": {
+     "model": "sakana/fugu-max",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "sakana/fugu-max",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
    "id": "fugu-ultra",
    "name": "Fugu Ultra",
    "family": "Fugu Ultra",
@@ -9486,6 +10429,30 @@
    }
   },
   {
+   "id": "fugu-ultra-v2",
+   "name": "Fugu Ultra v2",
+   "family": "Fugu Ultra",
+   "vendor": "other",
+   "efforts": [
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1000000,
+   "max_tokens": 128000,
+   "routes": {
+    "openrouter": {
+     "model": "sakana/fugu-ultra-v2",
+     "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "sakana/fugu-ultra-v2",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
    "id": "fusion",
    "name": "Fusion",
    "family": "Fusion",
@@ -9502,6 +10469,26 @@
     "openrouter": {
      "model": "openrouter/fusion",
      "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "glyph-cluster",
+   "name": "Glyph Cluster",
+   "family": "Glyph Cluster",
+   "vendor": "other",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": false,
+   "context_tokens": 256000,
+   "max_tokens": 256000,
+   "routes": {
+    "vercel-ai-gateway": {
+     "model": "stealth/glyph-cluster",
+     "protocol": "anthropic"
     }
    }
   },
@@ -9618,6 +10605,10 @@
     "opencode-go": {
      "model": "hy4-preview",
      "protocol": "chat_completions"
+    },
+    "huggingface": {
+     "model": "tencent/Hy4-preview",
+     "protocol": "chat_completions"
     }
    }
   },
@@ -9718,9 +10709,9 @@
    }
   },
   {
-   "id": "kat-coder-air-v2.5",
-   "name": "Kat Coder Air V2.5",
-   "family": "Kat Coder Air",
+   "id": "jev-router",
+   "name": "Jev Router",
+   "family": "Jev Router",
    "vendor": "other",
    "efforts": [
     "low",
@@ -9728,68 +10719,12 @@
     "high"
    ],
    "images": true,
-   "context_tokens": 256000,
-   "max_tokens": 80000,
-   "routes": {
-    "vercel-ai-gateway": {
-     "model": "kwaipilot/kat-coder-air-v2.5",
-     "protocol": "anthropic"
-    }
-   }
-  },
-  {
-   "id": "kat-coder-pro-v1",
-   "name": "KAT-Coder-Pro V1",
-   "family": "KAT Coder Pro",
-   "vendor": "other",
-   "efforts": [],
-   "images": false,
-   "context_tokens": 256000,
-   "max_tokens": 32000,
-   "routes": {
-    "vercel-ai-gateway": {
-     "model": "kwaipilot/kat-coder-pro-v1",
-     "protocol": "anthropic"
-    }
-   }
-  },
-  {
-   "id": "kat-coder-pro-v2",
-   "name": "KAT-Coder-Pro V2",
-   "family": "KAT Coder Pro",
-   "vendor": "other",
-   "efforts": [],
-   "images": false,
-   "context_tokens": 262144,
-   "max_tokens": 144000,
+   "context_tokens": 1000000,
+   "max_tokens": 4096,
    "routes": {
     "openrouter": {
-     "model": "kwaipilot/kat-coder-pro-v2",
+     "model": "typesafe/jev-router",
      "protocol": "chat_completions"
-    },
-    "vercel-ai-gateway": {
-     "model": "kwaipilot/kat-coder-pro-v2",
-     "protocol": "anthropic"
-    }
-   }
-  },
-  {
-   "id": "kat-coder-pro-v2.5",
-   "name": "KAT-Coder-Pro V2.5",
-   "family": "KAT Coder Pro",
-   "vendor": "other",
-   "efforts": [],
-   "images": false,
-   "context_tokens": 262144,
-   "max_tokens": 235929,
-   "routes": {
-    "openrouter": {
-     "model": "kwaipilot/kat-coder-pro-v2.5",
-     "protocol": "chat_completions"
-    },
-    "vercel-ai-gateway": {
-     "model": "kwaipilot/kat-coder-pro-v2.5",
-     "protocol": "anthropic"
     }
    }
   },
@@ -9882,6 +10817,26 @@
    }
   },
   {
+   "id": "longcat-2.5-preview",
+   "name": "LongCat 2.5 Preview",
+   "family": "LongCat",
+   "vendor": "other",
+   "efforts": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "images": true,
+   "context_tokens": 1048576,
+   "max_tokens": 131072,
+   "routes": {
+    "vercel-ai-gateway": {
+     "model": "meituan/longcat-2.5-preview",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
    "id": "mai-code-1-flash-picker",
    "name": "MAI-Code-1-Flash",
    "family": "MAI Code Flash",
@@ -9946,8 +10901,8 @@
    }
   },
   {
-   "id": "mercury-2.5-preview",
-   "name": "Mercury 2.5 Preview",
+   "id": "mercury-2.5",
+   "name": "Mercury 2.5",
    "family": "Mercury",
    "vendor": "other",
    "efforts": [
@@ -9960,8 +10915,12 @@
    "max_tokens": 65536,
    "routes": {
     "openrouter": {
-     "model": "inception/mercury-2.5-preview",
+     "model": "inception/mercury-2.5",
      "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "inception/mercury-2.5",
+     "protocol": "anthropic"
     }
    }
   },
@@ -9982,32 +10941,11 @@
    }
   },
   {
-   "id": "nex-n2-mini",
-   "name": "Nex-N2-Mini",
-   "family": "Nex N Mini",
-   "vendor": "other",
-   "efforts": [
-    "low",
-    "medium",
-    "high"
-   ],
-   "images": true,
-   "context_tokens": 262144,
-   "max_tokens": 235929,
-   "routes": {
-    "openrouter": {
-     "model": "nex-agi/nex-n2-mini",
-     "protocol": "chat_completions"
-    }
-   }
-  },
-  {
-   "id": "nex-n2-pro",
-   "name": "Nex-N2-Pro",
+   "id": "nex-n2.5-pro",
+   "name": "Nex-N2.5-Pro",
    "family": "Nex N Pro",
    "vendor": "other",
    "efforts": [
-    "low",
     "medium",
     "high"
    ],
@@ -10016,7 +10954,7 @@
    "max_tokens": 235929,
    "routes": {
     "openrouter": {
-     "model": "nex-agi/nex-n2-pro",
+     "model": "nex-agi/nex-n2.5-pro",
      "protocol": "chat_completions"
     }
    }
@@ -10174,20 +11112,54 @@
    }
   },
   {
-   "id": "omen-alpha",
-   "name": "Omen Alpha",
-   "family": "Omen Alpha",
+   "id": "pareto",
+   "name": "Pareto",
+   "family": "Pareto",
+   "vendor": "other",
+   "efforts": [],
+   "images": true,
+   "context_tokens": 262144,
+   "max_tokens": 131072,
+   "routes": {
+    "openrouter": {
+     "model": "unbiased/pareto",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "pareto-26.10-preview",
+   "name": "Pareto 26.10 Preview",
+   "family": "Pareto",
+   "vendor": "other",
+   "efforts": [],
+   "images": true,
+   "context_tokens": 1048576,
+   "max_tokens": 131072,
+   "routes": {
+    "openrouter": {
+     "model": "unbiased/pareto-26.10-preview",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "perceptron-mk1.5",
+   "name": "Perceptron Mk1.5",
+   "family": "Perceptron Mk",
    "vendor": "other",
    "efforts": [
+    "minimal",
     "low",
+    "medium",
     "high"
    ],
    "images": true,
-   "context_tokens": 500000,
-   "max_tokens": 128000,
+   "context_tokens": 36864,
+   "max_tokens": 8192,
    "routes": {
-    "opencode-go": {
-     "model": "omen-alpha",
+    "openrouter": {
+     "model": "perceptron/perceptron-mk1.5",
      "protocol": "chat_completions"
     }
    }
@@ -10323,6 +11295,10 @@
     "openrouter": {
      "model": "bytedance-seed/seed-2-1-turbo",
      "protocol": "chat_completions"
+    },
+    "vercel-ai-gateway": {
+     "model": "bytedance/seed-2.1-turbo",
+     "protocol": "anthropic"
     }
    }
   },
@@ -10389,11 +11365,35 @@
    }
   },
   {
+   "id": "solar-mini4",
+   "name": "Solar Mini 4",
+   "family": "Solar Mini",
+   "vendor": "other",
+   "efforts": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": false,
+   "context_tokens": 524288,
+   "max_tokens": 131072,
+   "routes": {
+    "openrouter": {
+     "model": "upstage/solar-mini4",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
    "id": "solar-pro-3",
    "name": "Solar Pro 3",
    "family": "Solar Pro",
    "vendor": "other",
    "efforts": [
+    "minimal",
     "low",
     "medium",
     "high"
@@ -10414,9 +11414,12 @@
    "family": "Solar Pro",
    "vendor": "other",
    "efforts": [
+    "minimal",
     "low",
     "medium",
-    "high"
+    "high",
+    "xhigh",
+    "max"
    ],
    "images": false,
    "context_tokens": 524288,
@@ -10424,6 +11427,28 @@
    "routes": {
     "openrouter": {
      "model": "upstage/solar-pro4",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "space-bunny",
+   "name": "Space Bunny",
+   "family": "Space Bunny",
+   "vendor": "other",
+   "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "images": true,
+   "context_tokens": 1048576,
+   "max_tokens": 524288,
+   "routes": {
+    "opencode-go": {
+     "model": "space-bunny",
      "protocol": "chat_completions"
     }
    }
@@ -10445,10 +11470,6 @@
     "openrouter": {
      "model": "stepfun/step-3.5-flash",
      "protocol": "chat_completions"
-    },
-    "vercel-ai-gateway": {
-     "model": "stepfun/step-3.5-flash",
-     "protocol": "anthropic"
     },
     "huggingface": {
      "model": "stepfun-ai/Step-3.5-Flash",
@@ -10485,6 +11506,41 @@
    }
   },
   {
+   "id": "ternary-bonsai-2-27b",
+   "name": "Ternary Bonsai 2 27B",
+   "family": "Ternary Bonsai",
+   "vendor": "other",
+   "efforts": [
+    "medium",
+    "xhigh"
+   ],
+   "images": true,
+   "context_tokens": 262144,
+   "max_tokens": 32768,
+   "routes": {
+    "openrouter": {
+     "model": "prism-ml/ternary-bonsai-2-27b",
+     "protocol": "chat_completions"
+    }
+   }
+  },
+  {
+   "id": "toast-1",
+   "name": "Toast 1",
+   "family": "Toast",
+   "vendor": "other",
+   "efforts": [],
+   "images": false,
+   "context_tokens": 131000,
+   "max_tokens": 4000,
+   "routes": {
+    "vercel-ai-gateway": {
+     "model": "mixedbread/toast-1",
+     "protocol": "anthropic"
+    }
+   }
+  },
+  {
    "id": "trinity-large-thinking",
    "name": "Trinity Large Thinking",
    "family": "Trinity Large",
@@ -10505,22 +11561,6 @@
     "vercel-ai-gateway": {
      "model": "arcee-ai/trinity-large-thinking",
      "protocol": "anthropic"
-    }
-   }
-  },
-  {
-   "id": "unslopnemo-12b",
-   "name": "UnslopNemo 12B",
-   "family": "UnslopNemo",
-   "vendor": "other",
-   "efforts": [],
-   "images": false,
-   "context_tokens": 32768,
-   "max_tokens": 26214,
-   "routes": {
-    "openrouter": {
-     "model": "thedrummer/unslopnemo-12b",
-     "protocol": "chat_completions"
     }
    }
   }

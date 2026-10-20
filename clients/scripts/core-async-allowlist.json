@@ -1,0 +1,4 @@
+{
+  "//": "Client core files still written with async functions, promises, raw timers or unsafe deferreds. Each is rewritten with fibers in scopes, queues and the core's Clock; counts only shrink (check:foundation). Host adapters (hosts/) and the test kit (testing/) are not counted.",
+  "async": {}
+}

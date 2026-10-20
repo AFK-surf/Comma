@@ -2184,6 +2184,130 @@
           }
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 600,
+      "title": "Station Task delegations unanswered",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. One point per delegation and stage (phase) that SalixIM.StationTaskWatch reported for a Task running on a Cloud VM or desktop station (kind). The Cloud Monitoring P2 pages on vm_not_ready, station_offline and not_given; given_no_reply is counted only, because a long turn and a dead one look alike.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 93,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{kind}} {{phase}}",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "sum by (workload, phase, kind) (increase(salix_station_tasks_stalled_total{namespace=\"comma\",workload=\"comma\"}[30m]))",
+            "step": "$__interval"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "transparent": false,
+      "repeatDirection": "h",
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "asc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "id": 601,
+      "title": "Station Task first reply p95",
+      "description": "Lazy Salix series. No data may mean no matching event occurred; compare the required workload scrape health above. Time from a delegation to the first Worker Message a station posted for it, every answered delegation. A rising p95 with no stall points is a slow station, not a stuck one.",
+      "datasource": {
+        "type": "stackdriver",
+        "uid": "${gcm_datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 93,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "promQL",
+          "aliasBy": "{{workload}} {{kind}} p95",
+          "datasource": {
+            "type": "stackdriver",
+            "uid": "${gcm_datasource}"
+          },
+          "timeSeriesList": {
+            "projectName": "",
+            "crossSeriesReducer": ""
+          },
+          "promQLQuery": {
+            "projectName": "${gcp_project}",
+            "expr": "histogram_quantile(0.95, sum by (workload, le, kind) (rate(salix_station_tasks_first_reply_seconds_bucket{namespace=\"comma\",workload=\"comma\"}[30m])))",
+            "step": "$__interval"
+          }
+        }
+      ]
     }
   ]
 }

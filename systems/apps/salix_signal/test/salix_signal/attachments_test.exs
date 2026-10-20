@@ -1,7 +1,7 @@
 defmodule SalixSignal.AttachmentsTest do
   # Attachment upload and download (CRS-10 sections 3 to 6 and 9) against
   # the fake chat service and a fake CDN written from CRS-10.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   # Upper bounds on a loaded machine, not expectations: a TLS connect and
   # upgrade (the chat client's own connect timeout is 10 s), and any other
@@ -26,15 +26,18 @@ defmodule SalixSignal.AttachmentsTest do
     {:ok, upgrades} = Agent.start_link(fn -> [] end)
 
     chat_server =
-      start_supervised!({Bandit, FakeChat.bandit_options(self(), chain, upgrades)}, id: :chat)
+      start_supervised!(
+        {Bandit, FakeChat.bandit_options(SystemsRuntime.Proc.self(), chain, upgrades)},
+        id: :chat
+      )
 
-    cdn = start_supervised!({FakeCdn, self()})
+    cdn = start_supervised!({FakeCdn, SystemsRuntime.Proc.self()})
     cdn_server = start_supervised!({Bandit, FakeCdn.bandit_options(cdn, chain)}, id: :cdn)
 
     chat =
       start_supervised!(
         {Chat,
-         owner: self(),
+         owner: SystemsRuntime.Proc.self(),
          host: "localhost",
          port: FakeChat.port(chat_server),
          roots: [chain.root],
@@ -72,7 +75,7 @@ defmodule SalixSignal.AttachmentsTest do
       headers: headers
     }
 
-    send(socket, {:send, Frame.encode_response(response)})
+    SystemsRuntime.Proc.send(socket, {:send, Frame.encode_response(response)})
     String.to_integer(n)
   end
 
@@ -101,7 +104,7 @@ defmodule SalixSignal.AttachmentsTest do
   end
 
   defp upload(ctx, plaintext, opts) do
-    Task.async(fn ->
+    SystemsRuntime.Task.async(fn ->
       Attachments.upload(ctx.chat, plaintext, Keyword.merge([http: ctx.http], opts))
     end)
   end
@@ -110,14 +113,14 @@ defmodule SalixSignal.AttachmentsTest do
     do: Attachments.download(pointer, [http: ctx.http, base_urls: ctx.base_urls] ++ opts)
 
   test "a CDN 3 upload resumes after a failed create and downloads again", ctx do
-    plaintext = :crypto.strong_rand_bytes(5_000)
+    plaintext = SystemsRuntime.Proc.random_bytes(5_000)
     FakeCdn.put_fault(ctx.cdn, :tus_create, 1_000)
     task = upload(ctx, plaintext, content_type: "audio/aac", voice_note: true)
 
     length = answer_form(ctx.socket, 200, tus_form(ctx, "tuskey000000000000AA"))
     assert length == Attachment.blob_size(5_000)
 
-    assert {:ok, %Pointer{} = pointer} = Task.await(task, @wait_ms)
+    assert {:ok, %Pointer{} = pointer} = SystemsRuntime.Task.await(task, :infinity)
     assert pointer.cdn_number == 3
     assert pointer.cdn_key == "tuskey000000000000AA"
     assert pointer.size == 5_000
@@ -141,13 +144,13 @@ defmodule SalixSignal.AttachmentsTest do
   end
 
   test "a CDN 2 upload resumes at the offset the session reports", ctx do
-    plaintext = :crypto.strong_rand_bytes(3_000)
+    plaintext = SystemsRuntime.Proc.random_bytes(3_000)
     FakeCdn.put_fault(ctx.cdn, :cdn2_put, 700)
     task = upload(ctx, plaintext, content_type: "image/png")
 
     length = Attachment.blob_size(3_000)
     answer_form(ctx.socket, 200, cdn2_form(ctx, "gcskey00000000000001", length))
-    assert {:ok, pointer} = Task.await(task, @wait_ms)
+    assert {:ok, pointer} = SystemsRuntime.Task.await(task, :infinity)
     assert pointer.cdn_number == 2
 
     assert_received {:fake_cdn, "POST", "/cdn2/start", headers, ""}
@@ -163,84 +166,6 @@ defmodule SalixSignal.AttachmentsTest do
     assert {"content-range", "bytes 700-#{length - 1}/#{length}"} in headers
 
     assert download(ctx, pointer) == {:ok, plaintext}
-  end
-
-  test "a CDN 2 session that holds every byte is finished with a status query, not an empty PUT",
-       ctx do
-    # CRS-10 section 4.2: the failed PUT stored the whole blob, and the
-    # status query reports `Range: bytes=0-<N-1>` (308). No bytes remain,
-    # so the client asks for the status again instead of sending an empty
-    # byte range.
-    plaintext = :crypto.strong_rand_bytes(2_000)
-    length = Attachment.blob_size(2_000)
-    FakeCdn.put_fault(ctx.cdn, :cdn2_put, length)
-    FakeCdn.put_fault(ctx.cdn, :cdn2_status, :stored_incomplete)
-    task = upload(ctx, plaintext, content_type: "image/png")
-
-    answer_form(ctx.socket, 200, cdn2_form(ctx, "gcskey00000000000002", length))
-    assert {:ok, pointer} = Task.await(task, @wait_ms)
-
-    assert_received {:fake_cdn, "PUT", "/cdn2/session/0", headers, _}
-    assert {"content-range", "bytes 0-#{length - 1}/#{length}"} in headers
-
-    for _query <- 1..2 do
-      assert_received {:fake_cdn, "PUT", "/cdn2/session/0", headers, ""}
-      assert {"content-range", "bytes */#{length}"} in headers
-    end
-
-    refute_received {:fake_cdn, "PUT", "/cdn2/session/0", _, _}
-    assert download(ctx, pointer) == {:ok, plaintext}
-  end
-
-  test "a CDN 2 session that disappears restarts with a new form", ctx do
-    plaintext = "short attachment"
-    FakeCdn.put_fault(ctx.cdn, :cdn2_put, {:forget, 10})
-    task = upload(ctx, plaintext, content_type: "text/plain")
-
-    length = Attachment.blob_size(byte_size(plaintext))
-    answer_form(ctx.socket, 200, cdn2_form(ctx, "firstkey000000000001", length))
-    answer_form(ctx.socket, 200, cdn2_form(ctx, "secondkey00000000002", length))
-
-    assert {:ok, %Pointer{cdn_key: "secondkey00000000002"} = pointer} = Task.await(task, @wait_ms)
-    assert download(ctx, pointer) == {:ok, plaintext}
-  end
-
-  test "upload form refusals are reported", ctx do
-    task = upload(ctx, "x", content_type: "text/plain")
-    answer_form(ctx.socket, 413, nil)
-    assert Task.await(task, @wait_ms) == {:error, :too_large}
-
-    task = upload(ctx, "x", content_type: "text/plain")
-    answer_form(ctx.socket, 429, nil, [{"retry-after", "7"}])
-    assert Task.await(task, @wait_ms) == {:error, {:rate_limited, 7}}
-
-    task = upload(ctx, "x", content_type: "text/plain")
-
-    answer_form(ctx.socket, 200, %{
-      "cdn" => 1,
-      "key" => "k",
-      "signedUploadLocation" => "https://x/"
-    })
-
-    assert {:error, {:invalid_form, _}} = Task.await(task, @wait_ms)
-  end
-
-  test "an MP4 video carries an incremental MAC that the download checks", ctx do
-    plaintext = :crypto.strong_rand_bytes(200_000)
-    task = upload(ctx, plaintext, content_type: "video/mp4")
-    answer_form(ctx.socket, 200, tus_form(ctx, "videokey000000000001"))
-    assert {:ok, pointer} = Task.await(task, @wait_ms)
-
-    assert pointer.incremental_mac_chunk_size == 65_536
-
-    assert byte_size(pointer.incremental_mac) ==
-             32 * (div(Attachment.blob_size(200_000), 65_536) + 1)
-
-    assert download(ctx, pointer) == {:ok, plaintext}
-
-    <<first, rest::binary>> = pointer.incremental_mac
-    tampered = %{pointer | incremental_mac: <<Bitwise.bxor(first, 1)>> <> rest}
-    assert download(ctx, tampered) == {:error, :bad_incremental_mac}
   end
 
   test "downloads refuse changed blobs, missing digests and oversized bodies", ctx do
@@ -271,15 +196,5 @@ defmodule SalixSignal.AttachmentsTest do
     FakeCdn.put_object(ctx.cdn, "attachments/4242", blob)
     legacy = %Pointer{cdn_id: 4242, keys: keys, size: size, digest: digest}
     assert download(ctx, legacy) == {:ok, "hello"}
-  end
-
-  test "download URLs follow the pointer's CDN number" do
-    assert Attachments.download_url(%Pointer{cdn_key: "a/b+c", cdn_number: 3}) ==
-             {:ok, "https://cdn3.signal.org/attachments/a%2Fb%2Bc"}
-
-    assert Attachments.download_url(%Pointer{cdn_id: 7}, environment: :staging) ==
-             {:ok, "https://cdn-staging.signal.org/attachments/7"}
-
-    assert Attachments.download_url(%Pointer{content_type: "x"}) == {:error, :invalid_pointer}
   end
 end

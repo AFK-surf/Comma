@@ -59,15 +59,17 @@ defmodule SalixSignalProto.SenderKey.Record do
   """
   @spec create(t(), keyword()) :: t()
   def create(%__MODULE__{} = record, opts \\ []) do
-    <<_::1, random_chain_id::31>> = :crypto.strong_rand_bytes(4)
-    signing = Keys.ec_keypair(Keyword.get(opts, :signing_private, :crypto.strong_rand_bytes(32)))
+    <<_::1, random_chain_id::31>> = SystemsRuntime.Proc.random_bytes(4)
+
+    signing =
+      Keys.ec_keypair(Keyword.get(opts, :signing_private, SystemsRuntime.Proc.random_bytes(32)))
 
     chain = %Chain{
       chain_id: Keyword.get(opts, :chain_id, random_chain_id),
       signing_public: signing.public,
       signing_private: signing.private,
       iteration: Keyword.get(opts, :iteration, 0),
-      chain_key: Keyword.get(opts, :chain_key, :crypto.strong_rand_bytes(32))
+      chain_key: Keyword.get(opts, :chain_key, SystemsRuntime.Proc.random_bytes(32))
     }
 
     add_chain(record, chain)
@@ -153,7 +155,7 @@ defmodule SalixSignalProto.SenderKey.Record do
             ciphertext: AesCbc.encrypt(key, iv, plaintext)
           },
           private,
-          Keyword.get(opts, :random, :crypto.strong_rand_bytes(64))
+          Keyword.get(opts, :random, SystemsRuntime.Proc.random_bytes(64))
         )
 
       next = %{chain | iteration: chain.iteration + 1, chain_key: next_chain_key(chain.chain_key)}

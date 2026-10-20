@@ -6,7 +6,10 @@ body[data-comma-window-role="side-chat"] {
 html[data-comma-window-role="side-chat"] #root {
   position: relative;
   display: block;
-  overflow: hidden;
+  /* The host hangs 9px below the window (its bottom: -9px). Hidden overflow
+     is still a scroller: a focus or scrollIntoView near the shell's bottom
+     scrolled the whole floating shell up by those 9px. Clip cannot scroll. */
+  overflow: clip;
   background: transparent;
 }
 
@@ -98,14 +101,12 @@ html[data-comma-window-role="side-chat"] #root {
   );
 }
 
-.comma-side-chat-host .comma-scroll-area__viewport:focus {
-  outline: none;
-}
-
 .comma-chat-route[data-variant="side-chat"] .comma-chat-thread {
   --comma-chat-thread-top-inset: var(--spacing-2xl);
 
-  /* The chat scroll viewport is a size container. */
+  /* The chat scroll viewport is a size container. This thread and the column
+     add no inline padding inside it, so its 100cqi is the column's width: the
+     bubble caps below rely on that. */
   min-height: 100cqb;
   align-items: flex-end;
   padding: 0;
@@ -253,7 +254,7 @@ html[data-comma-window-role="side-chat"] #root {
 
 .comma-chat-route[data-variant="side-chat"] .comma-chat-user-bubble-slot {
   /* Same containment as the default variant: the cap resolves against the
-     definite column container, not the shrink-to-fit flex-end chain. */
+     full-width user row container, not the shrink-to-fit flex-end chain. */
   max-width: calc(100cqi - 42px);
 }
 
@@ -286,6 +287,8 @@ html[data-comma-window-role="side-chat"] #root {
   backdrop-filter: saturate(180%);
   width: fit-content;
   min-width: 50px;
+  /* 100cqi: the column's width, through the transcript's scroll viewport or
+     the reply thread's own column (app styles.css). */
   max-width: min(100%, calc(100cqi - 42px));
   border-radius: 20px;
   background: var(--comma-side-chat-assistant-bg);
@@ -1562,10 +1565,12 @@ html[data-comma-window-role="side-chat-test"]:has(#comma-task-window-boot) #root
   );
 }
 
-.comma-side-chat-message-slot:has(.comma-chat-message-user)
-  + .comma-side-chat-message-slot:has(.comma-chat-message-user),
-.comma-side-chat-message-slot:has(.comma-chat-message-assistant)
-  + .comma-side-chat-message-slot:has(.comma-chat-message-assistant) {
+/* Each slot names its row's role (SideChatTurns): a `:has()` anchor on every
+   slot would be re-checked for each node inserted anywhere inside it. */
+.comma-side-chat-message-slot[data-role="user"]
+  + .comma-side-chat-message-slot[data-role="user"],
+.comma-side-chat-message-slot[data-role="assistant"]
+  + .comma-side-chat-message-slot[data-role="assistant"] {
   margin-block-start: calc(
     var(--comma-chat-consecutive-message-gap) - var(--comma-chat-turn-row-gap)
   );

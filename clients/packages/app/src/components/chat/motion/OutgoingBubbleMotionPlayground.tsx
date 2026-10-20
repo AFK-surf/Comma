@@ -1,3 +1,4 @@
+import { uiClock } from "@comma/ui/clock";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   createMemoryHistory,
@@ -8,17 +9,16 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { Pane } from "tweakpane";
-import { Button, ScrollArea, motionMessageSend } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { motionMessageSend } from "@comma/ui/tokens";
 import {
   ConversationView,
   type ConversationViewActions,
 } from "../conversation/ConversationView";
 import { fixedDraftSource } from "../composer/conversationDraft";
 import type { OutgoingBubblePlaybackRate } from "./outgoingBubbleMotion";
-import type {
-  ChatMessage,
-  ConversationChannelState,
-} from "../model/conversationChannel";
+import type { ChatMessage, ConversationChannelState } from "@comma/core/chat";
 import {
   createOutgoingBubbleTimeline,
   messageSendChannels,
@@ -54,7 +54,8 @@ function demoMessage(
     createdBy: undefined,
     error: undefined,
     status: "active",
-    createdAt: Date.now(),
+    // motion
+    createdAt: uiClock.now(),
     delivery: "sent",
     source: "server",
   };
@@ -172,7 +173,6 @@ function Playground() {
   const [config, setConfig] = useState(() => normalizeMessageSendMotion());
   const [state, setState] = useState(initialState);
   const draftSource = useMemo(() => fixedDraftSource(state.draft), [state.draft]);
-  const [variant, setVariant] = useState<"route" | "side-chat">("route");
   const [replay, setReplay] = useState(0);
   const [playbackRate, setPlaybackRate] = useState<OutgoingBubblePlaybackRate>(1);
   const [copied, setCopied] = useState(false);
@@ -213,7 +213,7 @@ function Playground() {
   );
   useLayoutEffect(() => {
     if (!source.current || state.messages.length < 2) return;
-    const frame = requestAnimationFrame(() => {
+    return uiClock.frame(() => {
       const target = preview.current
         ?.querySelector(".comma-chat-user-bubble-slot")
         ?.getBoundingClientRect();
@@ -227,12 +227,11 @@ function Playground() {
         ),
       });
     });
-    return () => cancelAnimationFrame(frame);
   }, [state.messages]);
   useEffect(() => {
     if (!replay) return;
-    let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => {
+    let cancel = uiClock.frame(() => {
+      cancel = uiClock.frame(() => {
         const button = Array.from(
           preview.current?.querySelectorAll<HTMLButtonElement>(
             ".comma-chat-composer button"
@@ -241,7 +240,7 @@ function Playground() {
         button?.click();
       });
     });
-    return () => cancelAnimationFrame(frame);
+    return () => cancel();
   }, [replay]);
   const timeline = useMemo(
     () => createOutgoingBubbleTimeline(config, distances),
@@ -297,35 +296,24 @@ function Playground() {
               {name}
             </Button>
           ))}
-          <Button
-            hierarchy="secondary-gray"
-            size="sm"
-            onClick={() => {
-              setVariant((current) => (current === "route" ? "side-chat" : "route"));
-              setState(initialState());
-            }}
-          >
-            {variant === "route" ? "Preview side chat" : "Preview main chat"}
-          </Button>
         </div>
         <div
           ref={preview}
-          className={`relative flex min-h-0 flex-1 flex-col rounded-2xl border border-secondary bg-primary ${variant === "side-chat" ? "comma-side-chat-host" : ""}`}
+          className="relative flex min-h-0 flex-1 flex-col rounded-2xl border border-secondary bg-primary"
           style={{
             position: "relative",
             flex: "1 1 0%",
             bottom: "auto",
             left: "auto",
-            width: variant === "side-chat" ? "min(100%, 440px)" : "100%",
+            width: "100%",
             alignSelf: "center",
           }}
         >
           <ConversationView
-            key={variant}
             draftSource={draftSource}
             state={state}
             actions={actions}
-            variant={variant}
+            variant="route"
             outgoingMotion={config}
             outgoingPlaybackRate={playbackRate}
           />

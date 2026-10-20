@@ -1,6 +1,10 @@
 defmodule Salix.Control.InitialAgentSeeds do
   @moduledoc """
   Initial agent seed control-plane API.
+
+  A seed may store a model choice (`model`, `SalixAgent.ModelChoice`) that the
+  Agents it creates take. A seed without one creates Agents that follow the
+  platform model of their role.
   """
 
   alias Salix.Control.{Groups, Store}
@@ -88,7 +92,6 @@ defmodule Salix.Control.InitialAgentSeeds do
         nil ->
           attrs = %{
             "group_id" => group["group_id"],
-            "template_id" => slot_rec["template_id"],
             "name" => slot_rec["display_name"],
             "role" => slot_rec["role"],
             "is_router" => slot_rec["is_router"] == true,
@@ -96,6 +99,9 @@ defmodule Salix.Control.InitialAgentSeeds do
             "source_initial_agent_revision" =>
               slot_rec["updated_at"] || slot_rec["created_at"] || 0
           }
+
+          attrs =
+            if slot_rec["model"], do: Map.put(attrs, "model", slot_rec["model"]), else: attrs
 
           with {:ok, agent} <- SalixAgent.Control.create(attrs, tenant_id),
                {:ok, agent} <- maybe_assign_router(group["group_id"], slot_rec, agent) do
@@ -112,27 +118,20 @@ defmodule Salix.Control.InitialAgentSeeds do
     end
   end
 
-  defp load_visible_template(template_id, tenant_id) do
-    with {:ok, template} <- SalixAgent.Templates.get(template_id, tenant_id),
-         true <- template["hidden"] != true do
-      {:ok, template}
-    else
-      false -> {:error, {:bad_request, "template not found"}}
-      {:error, :not_found} -> {:error, {:bad_request, "template not found"}}
-      {:error, _} = err -> err
-    end
+  # Seeds stored by earlier releases name a template and hold the model's
+  # name as text; they follow the platform model.
+  defp stored_model(rec) do
+    if SalixAgent.ModelChoice.value?(rec["model"]), do: rec["model"]
   end
 
   defp initial_agent_json(rec) do
-    template = SalixAgent.Templates.snapshot(rec["template_id"], rec["tenant_id"])
+    model = stored_model(rec)
 
     %{
       "slot" => rec["slot"],
-      "display_name" => rec["display_name"] || template["name"] || "",
+      "display_name" => rec["display_name"] || "",
       "description" => rec["description"] || "",
-      "template_id" => rec["template_id"],
-      "template_name" => template["name"] || rec["template_name"] || "",
-      "model" => template["model"] || rec["model"] || "",
+      "model" => model,
       "is_default" => rec["is_default"] == true,
       "is_router" => rec["is_router"] == true,
       "role" =>
@@ -161,10 +160,8 @@ defmodule Salix.Control.InitialAgentSeeds do
   end
 
   defp updates(slot, attrs, tenant_id) do
-    template_id = Store.trim(attrs["template_id"])
-
-    with :ok <- validate_template(template_id),
-         {:ok, template} <- load_visible_template(template_id, tenant_id),
+    with :ok <- reject_template_id(attrs),
+         {:ok, model} <- validate_model(attrs["model"], tenant_id),
          {:ok, is_default} <- optional_bool(attrs, "is_default", false),
          {:ok, is_router} <- optional_bool(attrs, "is_router", false),
          {:ok, enabled} <- optional_bool(attrs, "enabled", true),
@@ -176,7 +173,7 @@ defmodule Salix.Control.InitialAgentSeeds do
         attrs["display_name"]
         |> Store.trim()
         |> case do
-          "" -> template["name"] || slot
+          "" -> slot
           value -> value
         end
 
@@ -184,9 +181,7 @@ defmodule Salix.Control.InitialAgentSeeds do
        %{
          "display_name" => display_name,
          "description" => Store.trim(attrs["description"]),
-         "template_id" => template_id,
-         "template_name" => template["name"] || "",
-         "model" => template["model"] || "",
+         "model" => model,
          "is_default" => is_default,
          "is_router" => is_router,
          "role" => role,
@@ -199,8 +194,20 @@ defmodule Salix.Control.InitialAgentSeeds do
     end
   end
 
-  defp validate_template(""), do: {:error, {:bad_request, "template_id is required"}}
-  defp validate_template(_template_id), do: :ok
+  defp reject_template_id(attrs) do
+    if Map.has_key?(attrs, "template_id"),
+      do: {:error, {:bad_request, "template_id is not supported; give model"}},
+      else: :ok
+  end
+
+  defp validate_model(nil, _tenant_id), do: {:ok, nil}
+
+  defp validate_model(model, tenant_id) do
+    case SalixAgent.ModelChoice.choose(model, tenant_id) do
+      {:ok, value} -> {:ok, value}
+      {:error, _reason} -> {:error, {:bad_request, "invalid model"}}
+    end
+  end
 
   defp validate_role("router", false, true), do: :ok
   defp validate_role("worker", true, false), do: :ok

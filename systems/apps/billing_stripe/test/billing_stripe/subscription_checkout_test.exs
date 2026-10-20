@@ -1,5 +1,9 @@
 defmodule BillingStripe.SubscriptionCheckoutTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  require SystemsClock
+
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.BillingStripe", "Elixir.BillingCore"]
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(BillingCore.Repo)
@@ -17,10 +21,10 @@ defmodule BillingStripe.SubscriptionCheckoutTest do
   end
 
   test "unknown creation retries the fixed request and holds other plans", %{attrs: attrs} do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     timeout = fn request ->
-      send(owner, {:request, request})
+      SystemsRuntime.Proc.send(owner, {:request, request})
       {:error, :timeout}
     end
 
@@ -29,7 +33,7 @@ defmodule BillingStripe.SubscriptionCheckoutTest do
     assert {:error, :timeout} =
              BillingCommerce.SubscriptionCheckout.create(attrs, timeout, unused)
 
-    assert_receive {:request, first}
+    settle_receive({:request, first})
 
     assert {:error, :subscription_checkout_pending} =
              BillingCommerce.SubscriptionCheckout.create(
@@ -41,9 +45,9 @@ defmodule BillingStripe.SubscriptionCheckoutTest do
     assert {:error, :timeout} =
              BillingCommerce.SubscriptionCheckout.create(attrs, timeout, unused)
 
-    assert_receive {:request, second}
+    settle_receive({:request, second})
     assert first == second
-    assert first["expires_at"] > DateTime.to_unix(DateTime.utc_now())
+    assert first["expires_at"] > DateTime.to_unix(SystemsClock.utc_now())
   end
 
   test "completed session holds until subscription is recorded and confirmed expiry allows a new plan",
@@ -83,7 +87,7 @@ defmodule BillingStripe.SubscriptionCheckoutTest do
   end
 
   test "two concurrent plans cannot reserve two subscription Sessions", %{attrs: attrs} do
-    account = "ba_checkout_concurrent_#{System.unique_integer([:positive])}"
+    account = "ba_checkout_concurrent_#{SystemsRuntime.Proc.unique_integer([:positive])}"
     attrs = %{attrs | billing_account_id: account, product_owner_id: account}
     repo = BillingCore.Repo
 
@@ -91,18 +95,18 @@ defmodule BillingStripe.SubscriptionCheckoutTest do
       :ok = BillingCore.Accounts.ensure_account(attrs)
     end)
 
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     try do
       first =
-        Task.async(fn ->
+        SystemsRuntime.Task.async(fn ->
           Ecto.Adapters.SQL.Sandbox.unboxed_run(repo, fn ->
             BillingCommerce.SubscriptionCheckout.create(
               attrs,
               fn request ->
-                send(owner, {:creating, request})
+                SystemsRuntime.Proc.send(owner, {:creating, request})
 
-                receive do
+                SystemsClock.vreceive do
                   :continue -> {:ok, %{"id" => "cs_concurrent", "status" => "open"}}
                 after
                   5_000 -> {:error, :timeout}
@@ -113,10 +117,10 @@ defmodule BillingStripe.SubscriptionCheckoutTest do
           end)
         end)
 
-      assert_receive {:creating, request}, 5_000
+      settle_receive({:creating, request})
 
       second =
-        Task.async(fn ->
+        SystemsRuntime.Task.async(fn ->
           Ecto.Adapters.SQL.Sandbox.unboxed_run(repo, fn ->
             BillingCommerce.SubscriptionCheckout.create(
               %{attrs | provider_price_id: "price_two"},
@@ -126,9 +130,9 @@ defmodule BillingStripe.SubscriptionCheckoutTest do
           end)
         end)
 
-      assert {:error, :subscription_checkout_pending} = Task.await(second)
-      send(first.pid, :continue)
-      assert {:ok, %{"id" => "cs_concurrent"}} = Task.await(first)
+      assert {:error, :subscription_checkout_pending} = settled_await(second)
+      SystemsRuntime.Proc.send(first.pid, :continue)
+      assert {:ok, %{"id" => "cs_concurrent"}} = settled_await(first)
       assert is_binary(request["idempotency_key"])
     after
       Ecto.Adapters.SQL.Sandbox.unboxed_run(repo, fn ->

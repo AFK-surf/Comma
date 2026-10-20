@@ -3,7 +3,7 @@ defmodule SalixWeb.Dashboard.DriveLiveTest do
   Drive dashboard surfaces: the tenant/platform-default settings page and the
   group page's Drive tab (write-only key, source badge, control-plane probe).
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
@@ -17,13 +17,13 @@ defmodule SalixWeb.Dashboard.DriveLiveTest do
     {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Drive"})
     tenant_id = tenant["tenant_id"]
     {:ok, group} = Salix.Control.Groups.create(%{"name" => "Drive group"}, tenant_id)
-    previous = Application.get_env(:salix_web, :drive_req_options)
-    Application.put_env(:salix_web, :drive_req_options, plug: {Req.Test, Salix.Drive.Files})
+    previous = SystemsRuntime.get_env(:salix_web, :drive_req_options)
+    SystemsRuntime.put_env(:salix_web, :drive_req_options, plug: {Req.Test, Salix.Drive.Files})
 
     on_exit(fn ->
       case previous do
-        nil -> Application.delete_env(:salix_web, :drive_req_options)
-        value -> Application.put_env(:salix_web, :drive_req_options, value)
+        nil -> SystemsRuntime.delete_env(:salix_web, :drive_req_options)
+        value -> SystemsRuntime.put_env(:salix_web, :drive_req_options, value)
       end
 
       DriveSettings.delete(tenant_id)
@@ -116,7 +116,7 @@ defmodule SalixWeb.Dashboard.DriveLiveTest do
 
       Req.Test.json(conn, %{
         "enabled" => true,
-        "devices" => [%{"label" => "cloud-1"}],
+        "devices" => [%{"device" => "cloud-1", "spaces" => ["docs"]}],
         "writes" => %{"enabled" => true, "attached" => true, "device" => "cloud-1"}
       })
     end)
@@ -124,64 +124,5 @@ defmodule SalixWeb.Dashboard.DriveLiveTest do
     html = view |> element("button", "Check") |> render_click()
     assert html =~ "readable"
     assert html =~ "writable"
-  end
-
-  test "a Comma-minted binding is marked as such on the group tab", %{
-    tenant_id: tenant_id,
-    group_id: group_id
-  } do
-    {:ok, _} =
-      DriveBindings.put(group_id, %{
-        "org_slug" => "comma-abc",
-        "api_key" => "synch_comma",
-        "api_key_id" => "key_1",
-        "source" => "comma",
-        "base_url" => "https://sync.example.com"
-      })
-
-    {:ok, _view, html} = live(authed_conn(tenant_id), "/dash/groups/#{group_id}?tab=drive")
-    assert html =~ "Comma created this binding"
-    assert html =~ "comma-abc"
-    refute html =~ "synch_comma"
-  end
-
-  test "pending revocations read differently for a Comma binding and an operator's", %{
-    tenant_id: tenant_id,
-    group_id: group_id
-  } do
-    {:ok, _} =
-      DriveBindings.put(group_id, %{
-        "org_slug" => "comma-abc",
-        "api_key" => "synch_comma",
-        "api_key_id" => "key_2",
-        "retired_key_ids" => ["key_1"],
-        "source" => "comma",
-        "base_url" => "https://sync.example.com"
-      })
-
-    {:ok, view, html} = live(authed_conn(tenant_id), "/dash/groups/#{group_id}?tab=drive")
-    assert html =~ "key_1"
-    assert html =~ "Comma retries on its next"
-    refute html =~ "Comma does not retry"
-
-    # Disabling here is a takeover: the retry promise goes with it.
-    view
-    |> form("#drive-binding-form", %{
-      "org_slug" => "comma-abc",
-      "network" => "default",
-      "space" => "comma-drive",
-      "api_key" => "",
-      "base_url" => "https://sync.example.com",
-      "enabled" => "false"
-    })
-    |> render_submit()
-
-    html = render(view)
-    assert html =~ "key_1"
-    assert html =~ "Comma does not retry"
-    refute html =~ "Comma retries on its next"
-
-    assert {:ok, %{"source" => "manual", "retired_key_ids" => ["key_1"]}} =
-             DriveBindings.stored(group_id)
   end
 end

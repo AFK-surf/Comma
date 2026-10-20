@@ -15,7 +15,7 @@ defmodule SalixIM.WeChatStatusTransport do
   end
 
   def send(connect, target, kind, ticket, _text) when kind in [:typing, :cancel] do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = send_status(connect, target, kind, ticket)
     observe(result, started)
     result
@@ -47,9 +47,9 @@ defmodule SalixIM.WeChatStatusTransport do
         _ -> :unavailable
       end
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{
         component: "salix_im",
         operation: "private_chat_status",

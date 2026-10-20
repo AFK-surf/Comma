@@ -83,6 +83,53 @@ defmodule SalixWeb.VoiceRoutes do
       send_json(conn, 400, %{error: "websocket_upgrade_required", message: error.message})
   end
 
+  @doc "Opens the HTTPS carrier on the normal Salix listener."
+  def http_stream(conn, group_id) do
+    with {:ok, key} <- voice_key(conn, group_id),
+         :ok <- not_draining(conn),
+         {:ok, connect} <- voice_connect(conn, key, group_id) do
+      SalixWeb.VoiceHTTP.stream(conn, %{
+        tenant_id: key["tenant_id"],
+        group_id: group_id,
+        connect_id: connect["connect_id"],
+        key: key,
+        transport: :https
+      })
+    end
+  end
+
+  @doc "Delivers a bounded upload or closes its original HTTPS carrier."
+  def http_input(conn, group_id, handle) do
+    with %{auth_role: :voice_stream, voice_stream_key_hash: hash} <- conn.assigns,
+         true <- Regex.match?(~r/\A[0-9a-f]{32}\z/, handle),
+         [owner] when byte_size(owner) <= 255 <- get_req_header(conn, "x-voice-node"),
+         {:ok, command, conn} <- http_command(conn) do
+      scope = {group_id, hash}
+
+      case SalixWeb.VoiceHTTP.dispatch(owner, handle, scope, command) do
+        :ok -> send_resp(conn, 204, "")
+        {:error, status} -> send_json(conn, status, %{error: "voice_transport_unavailable"})
+      end
+    else
+      %Plug.Conn{} = conn -> conn
+      _ -> send_json(conn, 400, %{error: "invalid_voice_upload"})
+    end
+  end
+
+  defp http_command(%{method: "DELETE"} = conn), do: {:ok, :close, conn}
+
+  defp http_command(conn) do
+    with [value] when byte_size(value) <= 16 <- get_req_header(conn, "x-voice-sequence"),
+         {sequence, ""} when sequence >= 0 <- Integer.parse(value),
+         {:ok, body, conn} <-
+           read_body(conn, length: 32 * 1024, read_length: 32 * 1024, read_timeout: 3_000),
+         {:ok, frames} <- SalixWeb.VoiceHTTP.decode(body) do
+      {:ok, {:upload, sequence, frames}, conn}
+    else
+      _ -> {:error, :bad_frame}
+    end
+  end
+
   # The Auth plug admitted only a valid, active voice key; the key's Group
   # must also be the path Group.
   defp voice_key(conn, group_id) do
@@ -125,7 +172,7 @@ defmodule SalixWeb.VoiceRoutes do
 
   @doc "Upgrades the Twilio media socket named by a valid stream token."
   def twilio_stream(conn, token) do
-    case SalixVoice.StreamToken.verify(token, System.system_time(:second)) do
+    case SalixVoice.StreamToken.verify(token, SystemsClock.system_time(:second)) do
       {:ok, claims} ->
         WebSockAdapter.upgrade(
           conn,

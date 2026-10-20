@@ -1,5 +1,5 @@
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import type { SessionHistoryRecord } from "../../../runtime-chat/sessionHistoryBridge";
+import type { SessionHistoryRecord } from "./useSessionHistory";
 import { formatSessionDuration } from "./model/sessionHistoryPresentation";
 import { sessionModelMetrics } from "./model/sessionHistoryModelMetrics";
 

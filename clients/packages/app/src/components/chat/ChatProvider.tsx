@@ -1,26 +1,28 @@
 import type { CommaLocale } from "@comma/i18n";
 import { useCommaLocale } from "@comma/i18n/react";
+import { useCall, useCore, type CoreClient } from "@comma/core-client";
 import { getNativeBridge } from "@comma/native-bridge";
 import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { CommaApiClient, CommaConversation } from "../../api";
+import type { CommaConversation } from "@comma/core/api-schemas";
 import type { SessionProductLease } from "@comma/session-contract";
-import { BridgeConversationChannel } from "../../runtime-chat/channel/BridgeConversationChannel";
-import type { ChatChannel } from "../../runtime-chat/channel/ChatChannel";
+import type { ChatChannel } from "./channel/ChatChannel";
+import { CoreConversationChannel } from "./channel/CoreConversationChannel";
+import { DraftSnippetsProvider } from "./composer/draftSnippets";
 import {
-  ConversationChannel,
   idleConversationChannelState,
-  normalizeServerMessages,
+  type ChatMessage,
   type ConversationChannelState,
-} from "./model/conversationChannel";
+} from "@comma/core/chat";
 
 export class StaleChatSessionError extends Error {
   constructor() {
@@ -47,9 +49,7 @@ export type ChatRegistryAttempt = {
     groupId: string,
     conversationId: string
   ): ChatRegistryLease;
-  run<T>(
-    operation: (api: CommaApiClient, signal: AbortSignal) => PromiseLike<T> | T
-  ): Promise<T>;
+  run<T>(operation: (signal: AbortSignal) => PromiseLike<T> | T): Promise<T>;
 };
 
 export type HomeConversationSummary = Readonly<
@@ -81,7 +81,11 @@ export type ChatRegistry = {
     groupId: string,
     conversationId: string
   ): ReturnType<ChatChannel["getSnapshot"]> | undefined;
-  rememberConversationSnapshot(conversation: CommaConversation): void;
+  /** Paints a conversation the core read ahead of its opening (`chat.prepare`) until its channel reads it. */
+  rememberConversationSnapshot(prepared: {
+    conversation: CommaConversation;
+    messages: ChatMessage[];
+  }): void;
   rememberHomeConversationTarget(
     workspaceId: string,
     groupId: string,
@@ -98,14 +102,14 @@ export type ChatRegistry = {
 };
 
 export type ChatContextValue = ChatRegistry & {
-  api: CommaApiClient;
+  /** The core the conversations are kept in. */
+  core: CoreClient;
   productLease: SessionProductLease;
 };
 
 type RegistryEntry = {
   channel: ChatChannel;
   leases: Set<symbol>;
-  releaseTimer: ReturnType<typeof setTimeout> | undefined;
 };
 
 type ChatSessionOwner = {
@@ -150,6 +154,12 @@ const ChatSessionContext = createContext<ChatSession | null>(null);
 let nextSessionIdentity = 0;
 
 export function ChatProvider({ children, ...sessionProps }: ChatSessionProviderProps) {
+  // The core words chat's messages (errors, defaults) in this window's language.
+  const locale = useCommaLocale();
+  const call = useCall();
+  useEffect(() => {
+    void call("chat.locale", { locale }).catch(() => undefined);
+  }, [call, locale]);
   return (
     <ChatSessionProvider {...sessionProps}>
       <ChatConsumerBoundary>{children}</ChatConsumerBoundary>
@@ -158,10 +168,8 @@ export function ChatProvider({ children, ...sessionProps }: ChatSessionProviderP
 }
 
 type ChatSessionProviderProps = {
-  api: CommaApiClient;
   children: ReactNode;
   productLease: SessionProductLease;
-  releaseDelayMs?: number;
   sessionSignal?: AbortSignal;
 };
 
@@ -170,13 +178,12 @@ type ChatSessionProviderProps = {
 // one authenticated Outlet. Settings is a product-shell overlay outside the
 // keyed consumer boundary, so a generation bump cannot wipe its local state.
 export function ChatSessionProvider({
-  api,
   children,
   productLease,
-  releaseDelayMs = 30_000,
   sessionSignal,
 }: ChatSessionProviderProps) {
   const locale = useCommaLocale();
+  const core = useCore();
   const owner = useRef<ChatSessionOwner>({
     current: undefined,
     channelSeeds: undefined,
@@ -199,14 +206,13 @@ export function ChatSessionProvider({
   const session = useMemo(
     () =>
       createChatSession({
-        api,
+        core,
         locale,
         owner,
         productLease: stableProductLease,
-        releaseDelayMs,
         sessionSignal,
       }),
-    [api, locale, owner, releaseDelayMs, sessionSignal, stableProductLease]
+    [core, locale, owner, sessionSignal, stableProductLease]
   );
 
   // A changed exact product lease is a changed credential capability. Publish
@@ -245,7 +251,7 @@ export function ChatConsumerBoundary({ children }: { children: ReactNode }) {
 
   return (
     <ChatContext.Provider key={session.identity} value={session.context}>
-      {children}
+      <DraftSnippetsProvider>{children}</DraftSnippetsProvider>
     </ChatContext.Provider>
   );
 }
@@ -274,14 +280,6 @@ export function useChatProductLease() {
   return useContext(ChatContext)?.productLease;
 }
 
-export function useChatApi() {
-  const context = useContext(ChatContext);
-  if (!context) {
-    throw new Error("useChatApi must be used within ChatProvider");
-  }
-  return context.api;
-}
-
 export function useHomeConversationTarget() {
   const registry = useChatRegistry();
   const subscribe = useCallback(
@@ -297,18 +295,16 @@ export function useHomeConversationTarget() {
 }
 
 function createChatSession({
-  api,
+  core,
   locale,
   owner,
   productLease,
-  releaseDelayMs,
   sessionSignal,
 }: {
-  api: CommaApiClient;
+  core: CoreClient;
   locale: CommaLocale;
   owner: ChatSessionOwner;
   productLease: SessionProductLease;
-  releaseDelayMs: number;
   sessionSignal: AbortSignal | undefined;
 }): ChatSession {
   const identity = ++nextSessionIdentity;
@@ -318,7 +314,6 @@ function createChatSession({
   let generation = 0;
   let permanentlyRevoked = sessionSignal?.aborted === true;
   let revocationBound = false;
-  let apiCapability!: CommaApiClient;
   // The Home conversation target is a pair of identifiers, not conversation
   // content, so it may survive the provider remount a product-lease generation
   // bump forces (credential reconcile after a renderer 401/409, token
@@ -367,25 +362,19 @@ function createChatSession({
       return;
     }
 
-    const current = entries.get(key);
-    if (current !== entry || entry.leases.size > 0 || entry.releaseTimer) {
+    if (entries.get(key) !== entry || entry.leases.size > 0) {
       return;
     }
-
-    entry.releaseTimer = setTimeout(() => {
-      entry.releaseTimer = undefined;
-      if (entries.get(key) !== entry || entry.leases.size > 0) {
-        return;
-      }
-      rememberChannelSeed(
-        owner,
-        homeTargetCarryIdentity,
-        key,
-        entry.channel.getSnapshot()
-      );
-      entry.channel.stop();
-      entries.delete(key);
-    }, releaseDelayMs);
+    // The core keeps the conversation warm after its last lease (its own release delay, on its Clock); the seed
+    // paints this window's next channel for it at once.
+    rememberChannelSeed(
+      owner,
+      homeTargetCarryIdentity,
+      key,
+      entry.channel.getSnapshot()
+    );
+    entry.channel.stop();
+    entries.delete(key);
   };
 
   const retain = (
@@ -400,34 +389,20 @@ function createChatSession({
     if (!entry) {
       const seed = takeChannelSeed(owner, homeTargetCarryIdentity, key);
       entry = {
-        channel:
-          getNativeBridge().platform === "electron" ||
-          getNativeBridge().runtimeHost === "shared-worker"
-            ? new BridgeConversationChannel({
-                conversationId,
-                groupId,
-                ...(seed ? { initialState: seed } : {}),
-                locale,
-                session: productLease,
-                workspaceId,
-              })
-            : new ConversationChannel({
-                api: apiCapability,
-                ...(seed ? { initialState: seed } : {}),
-                conversationId,
-                groupId,
-                locale,
-                workspaceId,
-              }),
+        // The conversation itself is the client core's; this window's channel follows it.
+        channel: new CoreConversationChannel({
+          bridge: getNativeBridge(),
+          client: core,
+          conversationId,
+          groupId,
+          ...(seed ? { initialState: seed } : {}),
+          locale,
+          session: productLease,
+          workspaceId,
+        }),
         leases: new Set(),
-        releaseTimer: undefined,
       };
       entries.set(key, entry);
-    }
-
-    if (entry.releaseTimer) {
-      clearTimeout(entry.releaseTimer);
-      entry.releaseTimer = undefined;
     }
 
     const retainedEntry = entry;
@@ -492,10 +467,6 @@ function createChatSession({
       }
       return attempt.generation;
     };
-    const attemptApi = createGuardedApi(apiCapability, {
-      assertCurrent: assertAttemptCurrent,
-    });
-
     return {
       signal: attempt.controller.signal,
       isCurrent: attemptIsCurrent,
@@ -518,13 +489,11 @@ function createChatSession({
         attempt.leases.add(lease);
         return lease;
       },
-      run<T>(
-        operation: (api: CommaApiClient, signal: AbortSignal) => PromiseLike<T> | T
-      ) {
+      run<T>(operation: (signal: AbortSignal) => PromiseLike<T> | T) {
         assertAttemptCurrent();
         let result: PromiseLike<T> | T;
         try {
-          result = operation(attemptApi, attempt.controller.signal);
+          result = operation(attempt.controller.signal);
         } catch (error) {
           return Promise.reject(error);
         }
@@ -554,9 +523,6 @@ function createChatSession({
       );
     }
     for (const entry of entries.values()) {
-      if (entry.releaseTimer) {
-        clearTimeout(entry.releaseTimer);
-      }
       entry.leases.clear();
       entry.channel.stop();
     }
@@ -619,12 +585,9 @@ function createChatSession({
     },
   };
 
-  apiCapability = createGuardedApi(api, {
-    assertCurrent,
-  });
   session.context = {
-    api: apiCapability,
     beginAttempt,
+    core,
     getHomeConversationTarget() {
       return isCurrent() ? homeConversationTarget : undefined;
     },
@@ -641,7 +604,7 @@ function createChatSession({
       );
     },
     productLease,
-    rememberConversationSnapshot(conversation) {
+    rememberConversationSnapshot({ conversation, messages }) {
       assertCurrent();
       const key = channelKey(conversation.group_id, conversation.id);
       // Preparation supplies display-only canonical data. The retained runtime
@@ -652,18 +615,6 @@ function createChatSession({
           ? owner.channelSeeds.states.get(key)?.conversation
           : undefined;
       if (existing && (existing.updated_at ?? 0) >= (conversation.updated_at ?? 0))
-        return;
-      const messages = normalizeServerMessages(
-        conversation.messages ?? [],
-        [],
-        conversation.kind
-      );
-      // A tail containing only private delivery records cannot establish an
-      // empty public transcript or acknowledge an unseen review result.
-      if (
-        messages.length === 0 &&
-        (conversation.message_count ?? conversation.messages?.length ?? 0) > 0
-      )
         return;
       rememberChannelSeed(owner, homeTargetCarryIdentity, key, {
         ...idleConversationChannelState,
@@ -767,53 +718,6 @@ function sameHomeConversationSummary(
     left?.title === right?.title &&
     left?.updated_at === right?.updated_at
   );
-}
-
-function createGuardedApi(
-  api: CommaApiClient,
-  session: {
-    assertCurrent(expectedGeneration?: number): number;
-  }
-): CommaApiClient {
-  const methods = new Map<PropertyKey, (...args: unknown[]) => unknown>();
-  let proxy!: CommaApiClient;
-  proxy = new Proxy(api, {
-    get(target, property) {
-      const value = Reflect.get(target, property, target);
-      if (typeof value !== "function") {
-        return value;
-      }
-
-      const cached = methods.get(property);
-      if (cached) {
-        return cached;
-      }
-
-      const guarded = (...args: unknown[]) => {
-        let generation: number;
-        let result: unknown;
-        try {
-          generation = session.assertCurrent();
-          result = Reflect.apply(value, proxy, args);
-        } catch (error) {
-          return Promise.reject(error);
-        }
-        return Promise.resolve(result).then(
-          (resolved) => {
-            session.assertCurrent(generation);
-            return resolved;
-          },
-          (error: unknown) => {
-            session.assertCurrent(generation);
-            throw error;
-          }
-        );
-      };
-      methods.set(property, guarded);
-      return guarded;
-    },
-  });
-  return proxy;
 }
 
 function createGuardedChannel(channel: ChatChannel, assertCurrent: () => void) {
@@ -923,9 +827,9 @@ const MAX_CHANNEL_SEEDS = 16;
  * the canonical transcript and conversation metadata survive with their object
  * identities intact (so memoized rows never re-render). Everything owned by
  * the dead Main entry is dropped — pending sends, attachments, activity,
- * streaming state, and the draft: an auth reset preserves no ghost drafts
- * (ADR 2026-07-17-electron-side-chat-window), and displaying an already
- * fetched transcript is the one thing a revoked generation leaves behind.
+ * streaming state, and the draft: an auth reset preserves no ghost drafts,
+ * and displaying an already fetched transcript is the one thing a revoked
+ * generation leaves behind.
  * Returns undefined when there is nothing worth painting.
  */
 export function seedableChannelState(

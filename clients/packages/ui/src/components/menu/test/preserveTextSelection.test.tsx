@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CONTEXT_SELECTION_HIGHLIGHT,
   clearContextSelectionHighlight,
   paintContextSelectionHighlight,
   snapshotLiveTextSelection,
 } from "../preserveTextSelection";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 const selectText = (element: HTMLElement, endOffset: number) => {
   const textNode = element.firstChild;
@@ -58,11 +59,8 @@ describe("preserveTextSelection", () => {
       }
     }
     const highlights = new Map<string, FakeHighlight>();
-    Object.defineProperty(window, "Highlight", {
-      configurable: true,
-      value: FakeHighlight,
-    });
-    Object.defineProperty(CSS, "highlights", {
+    vi.stubGlobal("Highlight", FakeHighlight);
+    stubProperty(CSS, "highlights", {
       configurable: true,
       value: highlights,
     });

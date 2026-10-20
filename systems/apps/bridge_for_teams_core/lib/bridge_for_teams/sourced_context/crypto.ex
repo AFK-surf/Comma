@@ -7,7 +7,7 @@ defmodule BridgeForTeams.SourcedContext.Crypto do
   @spec seal(binary(), binary()) :: {:ok, String.t()} | {:error, term()}
   def seal(plaintext, aad) when is_binary(plaintext) and is_binary(aad) do
     with {:ok, key} <- encryption_key() do
-      iv = :crypto.strong_rand_bytes(12)
+      iv = SystemsRuntime.Proc.random_bytes(12)
 
       {ciphertext, tag} =
         :crypto.crypto_one_time_aead(
@@ -53,7 +53,7 @@ defmodule BridgeForTeams.SourcedContext.Crypto do
   def available?, do: match?({:ok, _key}, encryption_key())
 
   defp encryption_key do
-    case Application.get_env(:bridge_for_teams_core, :sourced_context_encryption_key) do
+    case SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_encryption_key) do
       value when is_binary(value) ->
         case Base.decode64(value) do
           {:ok, key} when byte_size(key) == 32 -> {:ok, key}

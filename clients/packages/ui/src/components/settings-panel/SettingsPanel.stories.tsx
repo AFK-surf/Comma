@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect } from "storybook/test";
+import { expect, within } from "storybook/test";
 import {
   ClaudeAiIcon,
   DevicesIcon,
@@ -7,8 +7,13 @@ import {
   MoreHorizontalIcon,
   OpenAiIcon,
 } from "../icons";
-import { PiProviderLogo } from "../provider-brand-logos";
+import {
+  PiProviderLogo,
+  SignalProviderLogo,
+  TelegramProviderLogo,
+} from "../provider-brand-logos";
 import { SettingsPanel } from "../index";
+import type { SettingsPanelSection } from "../index";
 
 const meta = {
   title: "App components/Settings",
@@ -127,4 +132,91 @@ export const RowStateAndMenu: Story = {
       ]}
     />
   ),
+};
+
+const channelSections: SettingsPanelSection[] = [
+  {
+    id: "telegram",
+    title: "",
+    items: [
+      {
+        id: "telegram.connection",
+        title: "Telegram",
+        icon: <TelegramProviderLogo />,
+        control: { type: "button", label: "Disconnect", onPress: () => {} },
+        integration: {
+          status: { label: "Connected", color: "success" },
+          details: [
+            {
+              label: "Bot",
+              value: "@comma_workspace_bot",
+              actionLabel: "Open in Telegram",
+              onPress: () => {},
+            },
+            { label: "Account", value: "Ada Lovelace" },
+          ],
+          content: <p className="text-sm text-secondary">Replies go to this chat.</p>,
+          note: "Comma only reads messages sent to the bot.",
+        },
+      },
+    ],
+  },
+  {
+    id: "signal",
+    title: "",
+    items: [
+      {
+        id: "signal.connection",
+        title: "Signal",
+        icon: <SignalProviderLogo />,
+        control: { type: "button", label: "Connect", onPress: () => {} },
+        integration: {
+          status: { label: "Not connected", color: "gray" },
+          details: [],
+          note: "Connect with a one-time code.",
+        },
+      },
+    ],
+  },
+];
+
+/**
+ * Connected-service cards: the mark, title and action share the header; the
+ * account facts, the service's own settings and the fine print hang off the
+ * title's text edge under one divider.
+ */
+export const ServiceCards: Story = {
+  render: () => (
+    <SettingsPanel
+      className="h-[720px] w-[1134px]"
+      title="Channels"
+      sections={channelSections}
+    />
+  ),
+};
+
+/** On a narrow card the action drops under the title, and the content keeps the title's edge. */
+export const ServiceCardsNarrow: Story = {
+  // The check measures layout, which jsdom has none of.
+  tags: ["browser"],
+  render: () => (
+    <SettingsPanel
+      className="h-[720px] w-[360px]"
+      title="Channels"
+      sections={channelSections}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const card = within(
+      within(canvasElement).getByRole("region", { name: "Telegram" })
+    );
+    const title = card.getByText("Telegram").getBoundingClientRect();
+    const fact = card.getByText("Account").getBoundingClientRect();
+    const action = card
+      .getByRole("button", { name: "Disconnect" })
+      .getBoundingClientRect();
+
+    await expect(fact.left).toBe(title.left);
+    await expect(action.top).toBeGreaterThanOrEqual(title.bottom);
+  },
 };

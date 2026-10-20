@@ -15,11 +15,13 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	hostv1 "github.com/AFK-surf/agent-vmm/api/host/v1"
@@ -178,47 +180,49 @@ func gatewayHostHello() *remotev1.HostHello {
 }
 
 func TestConnectAcknowledgesObservedInventoryBeforeClaim(t *testing.T) {
-	control := &scriptedGatewayControl{}
-	ctx, cancel := context.WithCancel(context.Background())
-	stream := &scriptedConnectStream{
-		ctx:      gatewayControlContext(ctx),
-		received: []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}},
-		sentCh:   make(chan struct{}, 1),
-	}
-	gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	done := make(chan error, 1)
-	go func() { done <- gateway.Connect(stream) }()
-	select {
-	case <-stream.sentCh:
-	case <-time.After(time.Second):
-		t.Fatal("ControllerReady was not sent")
-	}
-	stream.mu.Lock()
-	ready := stream.sent[0].GetControllerReady()
-	stream.mu.Unlock()
-	if ready.GetRegistrationId() != "registration-1" || ready.GetConnectionEpoch() != 19 || ready.GetAcknowledgedInventoryWatermark() != 7 {
-		t.Fatalf("controller ready = %+v", ready)
-	}
-	var claims int
-	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
-		control.mu.Lock()
-		claims = control.claimCount
-		control.mu.Unlock()
-		if claims > 0 {
-			break
+	synctest.Test(t, func(t *testing.T) {
+		control := &scriptedGatewayControl{}
+		ctx, cancel := context.WithCancel(context.Background())
+		stream := &scriptedConnectStream{
+			ctx:      gatewayControlContext(ctx),
+			received: []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}},
+			sentCh:   make(chan struct{}, 1),
 		}
-		time.Sleep(time.Millisecond)
-	}
-	if claims == 0 {
-		t.Fatal("gateway did not enter claim loop after ControllerReady")
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("Connect did not stop after cancellation")
-	}
+		gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+		done := make(chan error, 1)
+		go func() { done <- gateway.Connect(stream) }()
+		select {
+		case <-stream.sentCh:
+		case <-time.After(time.Second):
+			t.Fatal("ControllerReady was not sent")
+		}
+		stream.mu.Lock()
+		ready := stream.sent[0].GetControllerReady()
+		stream.mu.Unlock()
+		if ready.GetRegistrationId() != "registration-1" || ready.GetConnectionEpoch() != 19 || ready.GetAcknowledgedInventoryWatermark() != 7 {
+			t.Fatalf("controller ready = %+v", ready)
+		}
+		var claims int
+		for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+			control.mu.Lock()
+			claims = control.claimCount
+			control.mu.Unlock()
+			if claims > 0 {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if claims == 0 {
+			t.Fatal("gateway did not enter claim loop after ControllerReady")
+		}
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("Connect did not stop after cancellation")
+		}
+	})
 }
 
 func TestConnectRecordsAuthenticationFailureWithoutCredential(t *testing.T) {
@@ -298,122 +302,128 @@ func TestConnectInventoryChangingEnsureOutcomesForceFreshHandshake(t *testing.T)
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			command := &remotev1.ControllerCommand{
-				CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19,
-				DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
-				Command:            &remotev1.ControllerCommand_EnsureAllocation{EnsureAllocation: &remotev1.EnsureAllocation{AllocationId: "allocation-1"}},
-			}
-			control := &scriptedGatewayControl{command: command}
-			messages := []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}}
-			messages = append(messages, test.messages...)
-			stream := &scriptedConnectStream{ctx: gatewayControlContext(context.Background()), received: messages}
-			gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-			if err := gateway.Connect(stream); err != nil {
-				t.Fatalf("Connect error = %v", err)
-			}
-			control.mu.Lock()
-			defer control.mu.Unlock()
-			if control.claimCount != 1 {
-				t.Fatalf("claims=%d, want exactly one before fresh handshake", control.claimCount)
-			}
-			if len(control.committed) != 1 {
-				t.Fatalf("committed transcript = %+v", control.committed)
-			}
-			if result := control.committed[0].Result; test.outcome == remotev1.CommandOutcome_COMMAND_OUTCOME_UNSPECIFIED {
-				if result != nil {
-					t.Fatalf("result = %+v, want missing", result)
+			synctest.Test(t, func(t *testing.T) {
+				command := &remotev1.ControllerCommand{
+					CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19,
+					DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
+					Command:            &remotev1.ControllerCommand_EnsureAllocation{EnsureAllocation: &remotev1.EnsureAllocation{AllocationId: "allocation-1"}},
 				}
-			} else if result.GetOutcome() != test.outcome {
-				t.Fatalf("outcome = %v, want %v", result.GetOutcome(), test.outcome)
-			}
+				control := &scriptedGatewayControl{command: command}
+				messages := []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}}
+				messages = append(messages, test.messages...)
+				stream := &scriptedConnectStream{ctx: gatewayControlContext(context.Background()), received: messages}
+				gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+				if err := gateway.Connect(stream); err != nil {
+					t.Fatalf("Connect error = %v", err)
+				}
+				control.mu.Lock()
+				defer control.mu.Unlock()
+				if control.claimCount != 1 {
+					t.Fatalf("claims=%d, want exactly one before fresh handshake", control.claimCount)
+				}
+				if len(control.committed) != 1 {
+					t.Fatalf("committed transcript = %+v", control.committed)
+				}
+				if result := control.committed[0].Result; test.outcome == remotev1.CommandOutcome_COMMAND_OUTCOME_UNSPECIFIED {
+					if result != nil {
+						t.Fatalf("result = %+v, want missing", result)
+					}
+				} else if result.GetOutcome() != test.outcome {
+					t.Fatalf("outcome = %v, want %v", result.GetOutcome(), test.outcome)
+				}
+			})
 		})
 	}
 }
 
 func TestConnectCapacityRejectedEnsureContinuesOnSameConnection(t *testing.T) {
-	ensure := &remotev1.ControllerCommand{
-		CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19,
-		DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
-		Command:            &remotev1.ControllerCommand_EnsureAllocation{EnsureAllocation: &remotev1.EnsureAllocation{AllocationId: "allocation-1"}},
-	}
-	next := &remotev1.ControllerCommand{
-		CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, TargetRevision: 1,
-		DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
-		Command:            &remotev1.ControllerCommand_OpenSession{OpenSession: &remotev1.OpenSession{AllocationId: "allocation-2", AllocationGeneration: 1, ExecutionOwnerId: "runtime:2"}},
-	}
-	control := &scriptedGatewayControl{commands: []*remotev1.ControllerCommand{ensure, next}}
-	ctx, cancel := context.WithCancel(context.Background())
-	stream := &scriptedConnectStream{ctx: gatewayControlContext(ctx), received: []*remotev1.HostControlMessage{
-		{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}},
-		{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
-		{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_REJECTED, Reason: remotev1.ErrorReason_ERROR_REASON_CAPACITY_EXHAUSTED, InventoryWatermark: 7}}},
-		{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
-		{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED, InventoryWatermark: 7}}},
-	}}
-	gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	done := make(chan error, 1)
-	go func() { done <- gateway.Connect(stream) }()
-
-	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
-		control.mu.Lock()
-		committed := len(control.committed)
-		control.mu.Unlock()
-		if committed == 2 {
-			break
+	synctest.Test(t, func(t *testing.T) {
+		ensure := &remotev1.ControllerCommand{
+			CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19,
+			DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
+			Command:            &remotev1.ControllerCommand_EnsureAllocation{EnsureAllocation: &remotev1.EnsureAllocation{AllocationId: "allocation-1"}},
 		}
-		time.Sleep(time.Millisecond)
-	}
-	control.mu.Lock()
-	if len(control.committed) != 2 || control.committed[0].Result.GetReason() != remotev1.ErrorReason_ERROR_REASON_CAPACITY_EXHAUSTED || control.committed[1].Result.GetOutcome() != remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED {
-		committed := append([]controllerremote.CommandTranscript(nil), control.committed...)
+		next := &remotev1.ControllerCommand{
+			CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, TargetRevision: 1,
+			DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
+			Command:            &remotev1.ControllerCommand_OpenSession{OpenSession: &remotev1.OpenSession{AllocationId: "allocation-2", AllocationGeneration: 1, ExecutionOwnerId: "runtime:2"}},
+		}
+		control := &scriptedGatewayControl{commands: []*remotev1.ControllerCommand{ensure, next}}
+		ctx, cancel := context.WithCancel(context.Background())
+		stream := &scriptedConnectStream{ctx: gatewayControlContext(ctx), received: []*remotev1.HostControlMessage{
+			{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}},
+			{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
+			{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "ensure-1", Sequence: 1, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_REJECTED, Reason: remotev1.ErrorReason_ERROR_REASON_CAPACITY_EXHAUSTED, InventoryWatermark: 7}}},
+			{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
+			{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "open-2", Sequence: 2, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED, InventoryWatermark: 7}}},
+		}}
+		gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		done := make(chan error, 1)
+		go func() { done <- gateway.Connect(stream) }()
+
+		for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+			control.mu.Lock()
+			committed := len(control.committed)
+			control.mu.Unlock()
+			if committed == 2 {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		control.mu.Lock()
+		if len(control.committed) != 2 || control.committed[0].Result.GetReason() != remotev1.ErrorReason_ERROR_REASON_CAPACITY_EXHAUSTED || control.committed[1].Result.GetOutcome() != remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED {
+			committed := append([]controllerremote.CommandTranscript(nil), control.committed...)
+			control.mu.Unlock()
+			cancel()
+			t.Fatalf("committed transcripts = %+v", committed)
+		}
 		control.mu.Unlock()
 		cancel()
-		t.Fatalf("committed transcripts = %+v", committed)
-	}
-	control.mu.Unlock()
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("Connect did not stop after cancellation")
-	}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("Connect did not stop after cancellation")
+		}
+	})
 }
 
 func TestConnectStaleAllocationRevisionRequiresFreshHandshake(t *testing.T) {
-	command := &remotev1.ControllerCommand{
-		CommandId: "open-1", Sequence: 1, ConnectionEpoch: 19, TargetRevision: 7,
-		DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
-		Command:            &remotev1.ControllerCommand_OpenSession{OpenSession: &remotev1.OpenSession{AllocationId: "allocation-1", AllocationGeneration: 1, ExecutionOwnerId: "runtime:1"}},
-	}
-	control := &scriptedGatewayControl{command: command}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	stream := &scriptedConnectStream{ctx: gatewayControlContext(ctx), received: []*remotev1.HostControlMessage{
-		{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}},
-		{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "open-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
-		{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "open-1", Sequence: 1, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_REJECTED, Reason: remotev1.ErrorReason_ERROR_REASON_STALE_REVISION, InventoryWatermark: 8}}},
-	}}
-	gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	done := make(chan error, 1)
-	go func() { done <- gateway.Connect(stream) }()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Connect error = %v", err)
+	synctest.Test(t, func(t *testing.T) {
+		command := &remotev1.ControllerCommand{
+			CommandId: "open-1", Sequence: 1, ConnectionEpoch: 19, TargetRevision: 7,
+			DeadlineUnixMillis: time.Now().Add(time.Second).UnixMilli(),
+			Command:            &remotev1.ControllerCommand_OpenSession{OpenSession: &remotev1.OpenSession{AllocationId: "allocation-1", AllocationGeneration: 1, ExecutionOwnerId: "runtime:1"}},
 		}
-	case <-time.After(time.Second):
-		cancel()
-		<-done
-		t.Fatal("stale revision kept the connection without a fresh inventory handshake")
-	}
+		control := &scriptedGatewayControl{command: command}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		stream := &scriptedConnectStream{ctx: gatewayControlContext(ctx), received: []*remotev1.HostControlMessage{
+			{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}},
+			{Payload: &remotev1.HostControlMessage_Ack{Ack: &remotev1.CommandAck{CommandId: "open-1", Sequence: 1, ConnectionEpoch: 19, Disposition: remotev1.CommandAckDisposition_COMMAND_ACK_DISPOSITION_ADMITTED}}},
+			{Payload: &remotev1.HostControlMessage_Result{Result: &remotev1.CommandResult{CommandId: "open-1", Sequence: 1, ConnectionEpoch: 19, Outcome: remotev1.CommandOutcome_COMMAND_OUTCOME_REJECTED, Reason: remotev1.ErrorReason_ERROR_REASON_STALE_REVISION, InventoryWatermark: 8}}},
+		}}
+		gateway := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		done := make(chan error, 1)
+		go func() { done <- gateway.Connect(stream) }()
 
-	control.mu.Lock()
-	defer control.mu.Unlock()
-	if control.claimCount != 1 || len(control.committed) != 1 {
-		t.Fatalf("claims=%d commits=%d, want one terminal attempt before reconnect", control.claimCount, len(control.committed))
-	}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Connect error = %v", err)
+			}
+		case <-time.After(time.Second):
+			cancel()
+			<-done
+			t.Fatal("stale revision kept the connection without a fresh inventory handshake")
+		}
+
+		control.mu.Lock()
+		defer control.mu.Unlock()
+		if control.claimCount != 1 || len(control.committed) != 1 {
+			t.Fatalf("claims=%d commits=%d, want one terminal attempt before reconnect", control.claimCount, len(control.committed))
+		}
+	})
 }
 
 func TestChangesAuthoritativeInventory(t *testing.T) {
@@ -549,48 +559,50 @@ func TestHTTPControlPreservesTopLevelErrorWhenReasonIsAbsent(t *testing.T) {
 }
 
 func TestHTTPControlSettlesTypedRemoteObservationOnDedicatedEndpoint(t *testing.T) {
-	var got struct {
-		GatewayInstanceID string `json:"gateway_instance_id"`
-		RegistrationID    string `json:"registration_id"`
-		Renewal           string `json:"renewal_b64"`
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/v1/compute/connections/observation" {
-			t.Fatalf("path = %q", request.URL.Path)
+	synctest.Test(t, func(t *testing.T) {
+		var got struct {
+			GatewayInstanceID string `json:"gateway_instance_id"`
+			RegistrationID    string `json:"registration_id"`
+			Renewal           string `json:"renewal_b64"`
 		}
-		if err := json.NewDecoder(request.Body).Decode(&got); err != nil {
+		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			if request.URL.Path != "/v1/compute/connections/observation" {
+				t.Fatalf("path = %q", request.URL.Path)
+			}
+			if err := json.NewDecoder(request.Body).Decode(&got); err != nil {
+				t.Fatal(err)
+			}
+			response.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client := &httpControlClient{baseURL: server.URL, secret: "secret", gatewayID: "gateway", client: server.Client()}
+		renewal := &remotev1.RemoteObservationRenewal{
+			ConnectionEpoch: 19,
+			Observation: &remotev1.RemoteObservationSnapshot{
+				Sequence:           2,
+				ObservedUnixMillis: time.Now().UnixMilli(),
+				Health:             &remotev1.RemoteObservationHealth{Status: "healthy"},
+			},
+		}
+		if err := client.SettleObservation(context.Background(), "gateway", "registration", renewal); err != nil {
 			t.Fatal(err)
 		}
-		response.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	client := &httpControlClient{baseURL: server.URL, secret: "secret", gatewayID: "gateway", client: server.Client()}
-	renewal := &remotev1.RemoteObservationRenewal{
-		ConnectionEpoch: 19,
-		Observation: &remotev1.RemoteObservationSnapshot{
-			Sequence:           2,
-			ObservedUnixMillis: time.Now().UnixMilli(),
-			Health:             &remotev1.RemoteObservationHealth{Status: "healthy"},
-		},
-	}
-	if err := client.SettleObservation(context.Background(), "gateway", "registration", renewal); err != nil {
-		t.Fatal(err)
-	}
-	if got.GatewayInstanceID != "gateway" || got.RegistrationID != "registration" {
-		t.Fatalf("settlement identity = %+v", got)
-	}
-	raw, err := base64.StdEncoding.DecodeString(got.Renewal)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decoded := new(remotev1.RemoteObservationRenewal)
-	if err := protojson.Unmarshal(raw, decoded); err != nil {
-		t.Fatal(err)
-	}
-	if !proto.Equal(decoded, renewal) {
-		t.Fatalf("renewal = %+v, want %+v", decoded, renewal)
-	}
+		if got.GatewayInstanceID != "gateway" || got.RegistrationID != "registration" {
+			t.Fatalf("settlement identity = %+v", got)
+		}
+		raw, err := base64.StdEncoding.DecodeString(got.Renewal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded := new(remotev1.RemoteObservationRenewal)
+		if err := protojson.Unmarshal(raw, decoded); err != nil {
+			t.Fatal(err)
+		}
+		if !proto.Equal(decoded, renewal) {
+			t.Fatalf("renewal = %+v, want %+v", decoded, renewal)
+		}
+	})
 }
 
 func (fakeControl) Authenticate(context.Context, string, []byte) error         { return nil }
@@ -884,6 +896,8 @@ func testRuntimeSession(t *testing.T, transport *testSessionConn) *runtimeSessio
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The session's client goroutines end with the test, not after it.
+	t.Cleanup(session.Close)
 	return session
 }
 
@@ -1288,33 +1302,35 @@ func TestTypedRuntimeOperationUsesNamedEndpoint(t *testing.T) {
 }
 
 func TestTypedRuntimeComputeExecPreservesCommandAndEnvironment(t *testing.T) {
-	gateway := newGateway("gateway", fakeControl{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	clientSide, hostSide := net.Pipe()
-	key := sessionKey{registrationID: "registration", allocationID: "allocation", allocationGeneration: 7, connectionEpoch: 0}
-	starts := make(chan *hostv1.ExecStart, 1)
-	grpcServer := grpc.NewServer()
-	hostv1.RegisterAgentRuntimeServiceServer(grpcServer, fakeAgentRuntime{execStart: starts})
-	go func() { _ = grpcServer.Serve(&singleConnListener{connection: hostSide, closed: make(chan struct{})}) }()
-	defer grpcServer.Stop()
-	gateway.sessions[key] = testRuntimeSession(t, &testSessionConn{Conn: clientSide, done: make(chan struct{})})
-	server := httptest.NewServer(gateway.proxyHandler())
-	defer server.Close()
+	synctest.Test(t, func(t *testing.T) {
+		gateway := newGateway("gateway", fakeControl{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		clientSide, hostSide := net.Pipe()
+		key := sessionKey{registrationID: "registration", allocationID: "allocation", allocationGeneration: 7, connectionEpoch: 0}
+		starts := make(chan *hostv1.ExecStart, 1)
+		grpcServer := grpc.NewServer()
+		hostv1.RegisterAgentRuntimeServiceServer(grpcServer, fakeAgentRuntime{execStart: starts})
+		go func() { _ = grpcServer.Serve(&singleConnListener{connection: hostSide, closed: make(chan struct{})}) }()
+		defer grpcServer.Stop()
+		gateway.sessions[key] = testRuntimeSession(t, &testSessionConn{Conn: clientSide, done: make(chan struct{})})
+		server := httptest.NewServer(gateway.proxyHandler())
+		defer server.Close()
 
-	body := typedRuntimeRequest(t, server, "compute.exec", `{"request_id":"exec-1","command":["sh","-lc","printf ok"],"env":["GH_TOKEN=ephemeral-test"]}`)
-	if !strings.Contains(string(body), `"exit_code":0`) {
-		t.Fatalf("compute.exec=%s", body)
-	}
-	got := <-starts
-	if !reflect.DeepEqual(got.GetArgv(), []string{"sh", "-lc", "printf ok"}) || !reflect.DeepEqual(got.GetEnv(), []string{"GH_TOKEN=ephemeral-test"}) {
-		t.Fatal("compute.exec did not preserve command and environment")
-	}
-	if strings.Contains(string(body), "ephemeral-test") {
-		t.Fatal("compute.exec response exposed the credential")
-	}
-	if got.GetExecutionId() != "exec:exec-1" || got.GetExecutionKind() != hostv1.ExecutionKind_EXECUTION_KIND_EXEC ||
-		got.GetExpectedInstanceId() != "instance-current" || got.GetExecutionDeadlineUnixNano() <= time.Now().UnixNano() {
-		t.Fatalf("Host-owned execution metadata=%v", got)
-	}
+		body := typedRuntimeRequest(t, server, "compute.exec", `{"request_id":"exec-1","command":["sh","-lc","printf ok"],"env":["GH_TOKEN=ephemeral-test"]}`)
+		if !strings.Contains(string(body), `"exit_code":0`) {
+			t.Fatalf("compute.exec=%s", body)
+		}
+		got := <-starts
+		if !reflect.DeepEqual(got.GetArgv(), []string{"sh", "-lc", "printf ok"}) || !reflect.DeepEqual(got.GetEnv(), []string{"GH_TOKEN=ephemeral-test"}) {
+			t.Fatal("compute.exec did not preserve command and environment")
+		}
+		if strings.Contains(string(body), "ephemeral-test") {
+			t.Fatal("compute.exec response exposed the credential")
+		}
+		if got.GetExecutionId() != "exec:exec-1" || got.GetExecutionKind() != hostv1.ExecutionKind_EXECUTION_KIND_EXEC ||
+			got.GetExpectedInstanceId() != "instance-current" || got.GetExecutionDeadlineUnixNano() <= time.Now().UnixNano() {
+			t.Fatalf("Host-owned execution metadata=%v", got)
+		}
+	})
 }
 
 func TestTypedRuntimeExecDisconnectKeepsExactExecutionRight(t *testing.T) {
@@ -1350,88 +1366,90 @@ func TestTypedRuntimeExecDisconnectKeepsExactExecutionRight(t *testing.T) {
 }
 
 func TestTypedRuntimeProcessUsesOneCurrentContainerAndRetainsBoundedOutput(t *testing.T) {
-	gateway := newGateway("gateway", fakeControl{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	clientSide, hostSide := net.Pipe()
-	key := sessionKey{registrationID: "registration", allocationID: "allocation", allocationGeneration: 7, connectionEpoch: 0}
-	starts := make(chan *hostv1.ExecStart, 1)
-	grpcServer := grpc.NewServer()
-	hostv1.RegisterAgentRuntimeServiceServer(grpcServer, fakeAgentRuntime{execStart: starts})
-	go func() { _ = grpcServer.Serve(&singleConnListener{connection: hostSide, closed: make(chan struct{})}) }()
-	defer grpcServer.Stop()
-	gateway.sessions[key] = testRuntimeSession(t, &testSessionConn{Conn: clientSide, done: make(chan struct{})})
-	server := httptest.NewServer(gateway.proxyHandler())
-	defer server.Close()
+	synctest.Test(t, func(t *testing.T) {
+		gateway := newGateway("gateway", fakeControl{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		clientSide, hostSide := net.Pipe()
+		key := sessionKey{registrationID: "registration", allocationID: "allocation", allocationGeneration: 7, connectionEpoch: 0}
+		starts := make(chan *hostv1.ExecStart, 1)
+		grpcServer := grpc.NewServer()
+		hostv1.RegisterAgentRuntimeServiceServer(grpcServer, fakeAgentRuntime{execStart: starts})
+		go func() { _ = grpcServer.Serve(&singleConnListener{connection: hostSide, closed: make(chan struct{})}) }()
+		defer grpcServer.Stop()
+		gateway.sessions[key] = testRuntimeSession(t, &testSessionConn{Conn: clientSide, done: make(chan struct{})})
+		server := httptest.NewServer(gateway.proxyHandler())
+		defer server.Close()
 
-	start := typedRuntimeRequest(t, server, "process.start", `{"request_id":"start-request-1","command":["sh"],"env":["GH_TOKEN=ephemeral-process-test"]}`)
-	if got := <-starts; !reflect.DeepEqual(got.GetEnv(), []string{"GH_TOKEN=ephemeral-process-test"}) ||
-		got.GetExecutionId() != "process:process-request-start-request-1" ||
-		got.GetExecutionKind() != hostv1.ExecutionKind_EXECUTION_KIND_PROCESS ||
-		got.GetExpectedInstanceId() != "instance-current" {
-		t.Fatalf("process.start did not preserve environment and Host-owned execution metadata: %v", got)
-	}
-	var started struct {
-		ProcessID string `json:"process_id"`
-	}
-	if err := json.Unmarshal(start, &started); err != nil || started.ProcessID == "" {
-		t.Fatalf("start=%s err=%v", start, err)
-	}
-	retry := typedRuntimeRequest(t, server, "process.start", `{"request_id":"start-request-1","command":["sh"],"env":["GH_TOKEN=ephemeral-process-test"]}`)
-	var retried struct {
-		ProcessID string `json:"process_id"`
-	}
-	if err := json.Unmarshal(retry, &retried); err != nil || retried.ProcessID != started.ProcessID {
-		t.Fatalf("retry=%s started=%s err=%v", retry, start, err)
-	}
+		start := typedRuntimeRequest(t, server, "process.start", `{"request_id":"start-request-1","command":["sh"],"env":["GH_TOKEN=ephemeral-process-test"]}`)
+		if got := <-starts; !reflect.DeepEqual(got.GetEnv(), []string{"GH_TOKEN=ephemeral-process-test"}) ||
+			got.GetExecutionId() != "process:process-request-start-request-1" ||
+			got.GetExecutionKind() != hostv1.ExecutionKind_EXECUTION_KIND_PROCESS ||
+			got.GetExpectedInstanceId() != "instance-current" {
+			t.Fatalf("process.start did not preserve environment and Host-owned execution metadata: %v", got)
+		}
+		var started struct {
+			ProcessID string `json:"process_id"`
+		}
+		if err := json.Unmarshal(start, &started); err != nil || started.ProcessID == "" {
+			t.Fatalf("start=%s err=%v", start, err)
+		}
+		retry := typedRuntimeRequest(t, server, "process.start", `{"request_id":"start-request-1","command":["sh"],"env":["GH_TOKEN=ephemeral-process-test"]}`)
+		var retried struct {
+			ProcessID string `json:"process_id"`
+		}
+		if err := json.Unmarshal(retry, &retried); err != nil || retried.ProcessID != started.ProcessID {
+			t.Fatalf("retry=%s started=%s err=%v", retry, start, err)
+		}
 
-	write := typedRuntimeRequest(t, server, "process.write", `{"process_id":"`+started.ProcessID+`","data_base64":"`+base64.StdEncoding.EncodeToString([]byte("hello\n"))+`"}`)
-	if !strings.Contains(string(write), `"written_bytes":6`) {
-		t.Fatalf("write=%s", write)
-	}
+		write := typedRuntimeRequest(t, server, "process.write", `{"process_id":"`+started.ProcessID+`","data_base64":"`+base64.StdEncoding.EncodeToString([]byte("hello\n"))+`"}`)
+		if !strings.Contains(string(write), `"written_bytes":6`) {
+			t.Fatalf("write=%s", write)
+		}
 
-	var tail map[string]any
-	for attempt := 0; attempt < 20; attempt++ {
-		raw := typedRuntimeRequest(t, server, "process.tail", `{"process_id":"`+started.ProcessID+`"}`)
-		if err := json.Unmarshal(raw, &tail); err != nil {
-			t.Fatal(err)
+		var tail map[string]any
+		for attempt := 0; attempt < 20; attempt++ {
+			raw := typedRuntimeRequest(t, server, "process.tail", `{"process_id":"`+started.ProcessID+`"}`)
+			if err := json.Unmarshal(raw, &tail); err != nil {
+				t.Fatal(err)
+			}
+			stdout, _ := base64.StdEncoding.DecodeString(tail["stdout_base64"].(string))
+			if strings.Contains(string(stdout), "hello") {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 		stdout, _ := base64.StdEncoding.DecodeString(tail["stdout_base64"].(string))
-		if strings.Contains(string(stdout), "hello") {
-			break
+		if !strings.Contains(string(stdout), "started") || !strings.Contains(string(stdout), "hello") {
+			t.Fatalf("tail=%v", tail)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	stdout, _ := base64.StdEncoding.DecodeString(tail["stdout_base64"].(string))
-	if !strings.Contains(string(stdout), "started") || !strings.Contains(string(stdout), "hello") {
-		t.Fatalf("tail=%v", tail)
-	}
 
-	stop := typedRuntimeRequest(t, server, "process.stop", `{"process_id":"`+started.ProcessID+`"}`)
-	if !strings.Contains(string(stop), `"state":"stopping"`) {
-		t.Fatalf("stop=%s", stop)
-	}
-	for attempt := 0; attempt < 20; attempt++ {
-		tail := typedRuntimeRequest(t, server, "process.tail", `{"process_id":"`+started.ProcessID+`"}`)
-		if strings.Contains(string(tail), `"state":"exited"`) {
-			break
+		stop := typedRuntimeRequest(t, server, "process.stop", `{"process_id":"`+started.ProcessID+`"}`)
+		if !strings.Contains(string(stop), `"state":"stopping"`) {
+			t.Fatalf("stop=%s", stop)
 		}
-		if attempt == 19 {
-			t.Fatalf("process exit was not confirmed: %s", tail)
+		for attempt := 0; attempt < 20; attempt++ {
+			tail := typedRuntimeRequest(t, server, "process.tail", `{"process_id":"`+started.ProcessID+`"}`)
+			if strings.Contains(string(tail), `"state":"exited"`) {
+				break
+			}
+			if attempt == 19 {
+				t.Fatalf("process exit was not confirmed: %s", tail)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
 
-	staleRequest, err := http.NewRequest(http.MethodPost, server.URL+"/v1/sessions/registration/allocation/7/1/process.list", strings.NewReader(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err := http.DefaultClient.Do(staleRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusNotFound {
-		t.Fatalf("stale epoch status=%d", response.StatusCode)
-	}
+		staleRequest, err := http.NewRequest(http.MethodPost, server.URL+"/v1/sessions/registration/allocation/7/1/process.list", strings.NewReader(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := http.DefaultClient.Do(staleRequest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusNotFound {
+			t.Fatalf("stale epoch status=%d", response.StatusCode)
+		}
+	})
 }
 
 func TestTypedRuntimeProcessRetriesKnownPreSendFailure(t *testing.T) {
@@ -1467,66 +1485,68 @@ func TestTypedRuntimeProcessRetriesKnownPreSendFailure(t *testing.T) {
 }
 
 func TestTypedRuntimeProcessAdmitsCapacityBeforeRemoteStart(t *testing.T) {
-	clientSide, hostSide := net.Pipe()
-	var starts int32
-	runtime := fakeAgentRuntime{startCount: &starts}
-	grpcServer := grpc.NewServer()
-	hostv1.RegisterAgentRuntimeServiceServer(grpcServer, runtime)
-	go func() { _ = grpcServer.Serve(&singleConnListener{connection: hostSide, closed: make(chan struct{})}) }()
-	defer grpcServer.Stop()
+	synctest.Test(t, func(t *testing.T) {
+		clientSide, hostSide := net.Pipe()
+		var starts int32
+		runtime := fakeAgentRuntime{startCount: &starts}
+		grpcServer := grpc.NewServer()
+		hostv1.RegisterAgentRuntimeServiceServer(grpcServer, runtime)
+		go func() { _ = grpcServer.Serve(&singleConnListener{connection: hostSide, closed: make(chan struct{})}) }()
+		defer grpcServer.Stop()
 
-	session := testRuntimeSession(t, &testSessionConn{Conn: clientSide, done: make(chan struct{})})
-	defer func() {
+		session := testRuntimeSession(t, &testSessionConn{Conn: clientSide, done: make(chan struct{})})
+		defer func() {
+			session.processMu.Lock()
+			session.processes = make(map[string]*runtimeProcess)
+			session.processMu.Unlock()
+			session.Close()
+		}()
+
 		session.processMu.Lock()
-		session.processes = make(map[string]*runtimeProcess)
-		session.processMu.Unlock()
-		session.Close()
-	}()
-
-	session.processMu.Lock()
-	for index := 0; index < maxRuntimeProcesses; index++ {
-		session.processes[fmt.Sprintf("process-%d", index)] = &runtimeProcess{
-			cancel:    func() {},
-			createdAt: time.Unix(int64(index), 0),
-			state:     "running",
+		for index := 0; index < maxRuntimeProcesses; index++ {
+			session.processes[fmt.Sprintf("process-%d", index)] = &runtimeProcess{
+				cancel:    func() {},
+				createdAt: time.Unix(int64(index), 0),
+				state:     "running",
+			}
 		}
-	}
-	session.processMu.Unlock()
+		session.processMu.Unlock()
 
-	args := map[string]any{"request_id": "capacity-start", "command": []any{"sh"}}
-	if _, err := startRuntimeProcess(context.Background(), session, args); err == nil {
-		t.Fatal("expected the full process capacity to reject the start")
-	}
-	if atomic.LoadInt32(&starts) != 0 {
-		t.Fatalf("remote starts=%d, want 0", starts)
-	}
+		args := map[string]any{"request_id": "capacity-start", "command": []any{"sh"}}
+		if _, err := startRuntimeProcess(context.Background(), session, args); err == nil {
+			t.Fatal("expected the full process capacity to reject the start")
+		}
+		if atomic.LoadInt32(&starts) != 0 {
+			t.Fatalf("remote starts=%d, want 0", starts)
+		}
 
-	session.processMu.Lock()
-	session.processes["process-0"].mu.Lock()
-	session.processes["process-0"].state = "stopped"
-	session.processes["process-0"].mu.Unlock()
-	session.processMu.Unlock()
+		session.processMu.Lock()
+		session.processes["process-0"].mu.Lock()
+		session.processes["process-0"].state = "stopped"
+		session.processes["process-0"].mu.Unlock()
+		session.processMu.Unlock()
 
-	result, err := startRuntimeProcess(context.Background(), session, args)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result["process_id"] != "process-request-capacity-start" {
-		t.Fatalf("result=%v", result)
-	}
-	for attempt := 0; attempt < 20 && atomic.LoadInt32(&starts) != 1; attempt++ {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if atomic.LoadInt32(&starts) != 1 {
-		t.Fatalf("remote starts=%d, want 1", starts)
-	}
+		result, err := startRuntimeProcess(context.Background(), session, args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result["process_id"] != "process-request-capacity-start" {
+			t.Fatalf("result=%v", result)
+		}
+		for attempt := 0; attempt < 20 && atomic.LoadInt32(&starts) != 1; attempt++ {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if atomic.LoadInt32(&starts) != 1 {
+			t.Fatalf("remote starts=%d, want 1", starts)
+		}
 
-	if _, err := startRuntimeProcess(context.Background(), session, args); err != nil {
-		t.Fatal(err)
-	}
-	if atomic.LoadInt32(&starts) != 1 {
-		t.Fatalf("duplicate remote starts=%d, want 1", starts)
-	}
+		if _, err := startRuntimeProcess(context.Background(), session, args); err != nil {
+			t.Fatal(err)
+		}
+		if atomic.LoadInt32(&starts) != 1 {
+			t.Fatalf("duplicate remote starts=%d, want 1", starts)
+		}
+	})
 }
 
 type blockedExecStream struct {
@@ -1726,10 +1746,9 @@ func TestTypedRuntimeProcessCloseWaitsForInFlightStart(t *testing.T) {
 				session.Close()
 				close(closeDone)
 			}()
-			select {
-			case <-closeDone:
+			// Close either returns or waits for the start's lock; it must wait.
+			if !waitUntilLocked(closeDone, "(*runtimeSession).Close") {
 				t.Fatal("Close returned before the in-flight start completed")
-			case <-time.After(10 * time.Millisecond):
 			}
 
 			stream.release <- test.sendErr
@@ -1747,6 +1766,26 @@ func TestTypedRuntimeProcessCloseWaitsForInFlightStart(t *testing.T) {
 				t.Fatalf("session state after close: starting=%d processes=%d", startingProcesses, processCount)
 			}
 		})
+	}
+}
+
+// waitUntilLocked reports whether a goroutine running function waits to lock a
+// mutex, before done closes. A mutex wait cannot be observed through a channel,
+// so it reads the goroutine states; it yields between reads and needs no clock.
+func waitUntilLocked(done <-chan struct{}, function string) bool {
+	buf := make([]byte, 1<<20)
+	for {
+		select {
+		case <-done:
+			return false
+		default:
+		}
+		for _, g := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+			if strings.Contains(g, "[sync.Mutex.Lock") && strings.Contains(g, function) {
+				return true
+			}
+		}
+		runtime.Gosched()
 	}
 }
 
@@ -1884,37 +1923,39 @@ func typedOperationForTest(operation string) string {
 }
 
 func TestControlClaimUsesTypedAgentVMMCommandAndNoWorkSignal(t *testing.T) {
-	command := &remotev1.ControllerCommand{CommandId: "command", DeadlineUnixMillis: time.Now().Add(time.Minute).UnixMilli(), TargetRevision: 3, TargetGeneration: 2}
-	raw, _ := protojson.Marshal(command)
-	epoch := uint64(1) << 63
-	noWork := false
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Authorization") != "control-secret" {
-			http.Error(response, "forbidden", http.StatusForbidden)
-			return
+	synctest.Test(t, func(t *testing.T) {
+		command := &remotev1.ControllerCommand{CommandId: "command", DeadlineUnixMillis: time.Now().Add(time.Minute).UnixMilli(), TargetRevision: 3, TargetGeneration: 2}
+		raw, _ := protojson.Marshal(command)
+		epoch := uint64(1) << 63
+		noWork := false
+		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			if request.Header.Get("Authorization") != "control-secret" {
+				http.Error(response, "forbidden", http.StatusForbidden)
+				return
+			}
+			var envelope struct {
+				ConnectionEpoch string `json:"connection_epoch"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil || envelope.ConnectionEpoch != "9223372036854775808" {
+				t.Fatalf("connection_epoch=%q err=%v", envelope.ConnectionEpoch, err)
+			}
+			if noWork {
+				response.WriteHeader(http.StatusNoContent)
+				return
+			}
+			_ = json.NewEncoder(response).Encode(map[string]json.RawMessage{"command_json": raw})
+		}))
+		defer server.Close()
+		client := &httpControlClient{baseURL: server.URL, secret: "control-secret", gatewayID: "gateway", client: server.Client()}
+		claimed, err := client.Claim(context.Background(), "registration", epoch)
+		if err != nil || !proto.Equal(claimed, command) {
+			t.Fatalf("claimed=%+v err=%v", claimed, err)
 		}
-		var envelope struct {
-			ConnectionEpoch string `json:"connection_epoch"`
+		noWork = true
+		if _, err := client.Claim(context.Background(), "registration", epoch); err != errNoCommand {
+			t.Fatalf("no-work err=%v", err)
 		}
-		if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil || envelope.ConnectionEpoch != "9223372036854775808" {
-			t.Fatalf("connection_epoch=%q err=%v", envelope.ConnectionEpoch, err)
-		}
-		if noWork {
-			response.WriteHeader(http.StatusNoContent)
-			return
-		}
-		_ = json.NewEncoder(response).Encode(map[string]json.RawMessage{"command_json": raw})
-	}))
-	defer server.Close()
-	client := &httpControlClient{baseURL: server.URL, secret: "control-secret", gatewayID: "gateway", client: server.Client()}
-	claimed, err := client.Claim(context.Background(), "registration", epoch)
-	if err != nil || !proto.Equal(claimed, command) {
-		t.Fatalf("claimed=%+v err=%v", claimed, err)
-	}
-	noWork = true
-	if _, err := client.Claim(context.Background(), "registration", epoch); err != errNoCommand {
-		t.Fatalf("no-work err=%v", err)
-	}
+	})
 }
 
 func TestControlClaimParsesRuntimeExecutionIdentity(t *testing.T) {
@@ -2148,33 +2189,35 @@ func TestConnectPreservesHostAcrossTransientClaimFailure(t *testing.T) {
 		io.ErrUnexpectedEOF,
 	} {
 		t.Run(failure.Error(), func(t *testing.T) {
-			control := &recoveringClaimControl{failure: failure, recovered: make(chan struct{}, 1)}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			stream := &liveClaimStream{scriptedConnectStream{ctx: gatewayControlContext(ctx),
-				received: []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}}}}
-			g := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			done := make(chan error, 1)
-			go func() { done <- g.Connect(stream) }()
-			select {
-			case <-control.recovered:
-			case err := <-done:
-				t.Fatalf("healthy Host disconnected before claim recovery: %v", err)
-			case <-time.After(2 * time.Second):
-				t.Fatal("claim did not recover")
-			}
-			g.mu.RLock()
-			live := g.live["registration-1"]
-			g.mu.RUnlock()
-			if live.epoch != 19 || control.disconnects.Load() != 0 {
-				t.Fatalf("Host identity lost: epoch=%d disconnects=%d", live.epoch, control.disconnects.Load())
-			}
-			cancel()
-			select {
-			case <-done:
-			case <-time.After(time.Second):
-				t.Fatal("Connect ignored cancellation")
-			}
+			synctest.Test(t, func(t *testing.T) {
+				control := &recoveringClaimControl{failure: failure, recovered: make(chan struct{}, 1)}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				stream := &liveClaimStream{scriptedConnectStream{ctx: gatewayControlContext(ctx),
+					received: []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}}}}
+				g := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
+				done := make(chan error, 1)
+				go func() { done <- g.Connect(stream) }()
+				select {
+				case <-control.recovered:
+				case err := <-done:
+					t.Fatalf("healthy Host disconnected before claim recovery: %v", err)
+				case <-time.After(2 * time.Second):
+					t.Fatal("claim did not recover")
+				}
+				g.mu.RLock()
+				live := g.live["registration-1"]
+				g.mu.RUnlock()
+				if live.epoch != 19 || control.disconnects.Load() != 0 {
+					t.Fatalf("Host identity lost: epoch=%d disconnects=%d", live.epoch, control.disconnects.Load())
+				}
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Fatal("Connect ignored cancellation")
+				}
+			})
 		})
 	}
 }
@@ -2187,18 +2230,20 @@ func TestConnectDoesNotRetryRejectedOrUnknownClaim(t *testing.T) {
 		errors.New("invalid claim response"),
 	} {
 		t.Run(failure.Error(), func(t *testing.T) {
-			control := &recoveringClaimControl{failure: failure, recovered: make(chan struct{}, 1)}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			stream := &liveClaimStream{scriptedConnectStream{ctx: gatewayControlContext(ctx),
-				received: []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}}}}
-			g := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			if err := g.Connect(stream); err == nil {
-				t.Fatal("claim rejection was ignored")
-			}
-			if control.calls.Load() != 1 || control.disconnects.Load() != 1 {
-				t.Fatalf("claim rejection retried: calls=%d disconnects=%d", control.calls.Load(), control.disconnects.Load())
-			}
+			synctest.Test(t, func(t *testing.T) {
+				control := &recoveringClaimControl{failure: failure, recovered: make(chan struct{}, 1)}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				stream := &liveClaimStream{scriptedConnectStream{ctx: gatewayControlContext(ctx),
+					received: []*remotev1.HostControlMessage{{Payload: &remotev1.HostControlMessage_Hello{Hello: gatewayHostHello()}}}}}
+				g := newGateway("gateway", control, slog.New(slog.NewTextHandler(io.Discard, nil)))
+				if err := g.Connect(stream); err == nil {
+					t.Fatal("claim rejection was ignored")
+				}
+				if control.calls.Load() != 1 || control.disconnects.Load() != 1 {
+					t.Fatalf("claim rejection retried: calls=%d disconnects=%d", control.calls.Load(), control.disconnects.Load())
+				}
+			})
 		})
 	}
 }

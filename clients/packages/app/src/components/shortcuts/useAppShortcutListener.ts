@@ -5,18 +5,18 @@ import {
 } from "../home/homeRailCollapse";
 import { useApplicationMenu } from "../application-menu/useApplicationMenu";
 import { useIsGuestSession } from "../auth-context";
-import { formatAppKeybinding } from "@comma/ui";
+import { formatAppKeybinding } from "@comma/ui/components/settings-shortcut";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import {
   APP_KEYBINDING_SEQUENCE_TIMEOUT_MS,
   isEditableTarget,
   matchesAppKeyStroke,
   type AppKeyCode,
-} from "@comma/ui";
+} from "@comma/ui/components/settings-shortcut";
 import { useNavigate, useRouter } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useChatSidebar } from "../chat-sidebar/ChatSidebarContext";
 import { useCommandPalette } from "../search/CommandPaletteContext";
-import { driveSynchronicityAvailable } from "../drive/driveSynchronicityBackend";
 import { isOnboardingOpen } from "../onboarding/onboardingPresence";
 import { useCommaSettingsOverlay } from "../settingsOverlay";
 import { useCommaSidebar } from "../sidebar/SidebarContext";
@@ -72,9 +72,6 @@ const productShortcutIds = [
   ...shellShortcutIds,
 ] as const satisfies readonly AppShortcutId[];
 
-// Drive has no page to open where its synchronicity node does not run.
-const webProductShortcutIds = productShortcutIds.filter((id) => id !== "go-drive");
-
 // A guest Session has no Chat Sidebar and no Task search.
 const guestUnavailableShortcutIds: ReadonlySet<AppShortcutId> = new Set([
   "go-search",
@@ -83,14 +80,8 @@ const guestUnavailableShortcutIds: ReadonlySet<AppShortcutId> = new Set([
 const guestProductShortcutIds = productShortcutIds.filter(
   (id) => !guestUnavailableShortcutIds.has(id)
 );
-const guestWebProductShortcutIds = webProductShortcutIds.filter(
-  (id) => !guestUnavailableShortcutIds.has(id)
-);
-
 function availableProductShortcutIds(guest: boolean): readonly AppShortcutId[] {
-  if (driveSynchronicityAvailable())
-    return guest ? guestProductShortcutIds : productShortcutIds;
-  return guest ? guestWebProductShortcutIds : webProductShortcutIds;
+  return guest ? guestProductShortcutIds : productShortcutIds;
 }
 
 const navigationShortcutIdSet: ReadonlySet<AppShortcutId> = new Set(
@@ -116,25 +107,28 @@ function useScopedAppShortcutListener(
 ) {
   const { bindings } = useCommaAppShortcuts();
   const sequenceRef = useRef<SequenceState | undefined>(undefined);
-  const sequenceTimerRef = useRef<number | undefined>(undefined);
+  const sequenceTimerRef = useRef<CancelUiTimer | undefined>(undefined);
 
   useEffect(() => {
     const clearSequence = () => {
       sequenceRef.current = undefined;
       if (sequenceTimerRef.current !== undefined) {
-        window.clearTimeout(sequenceTimerRef.current);
+        sequenceTimerRef.current();
         sequenceTimerRef.current = undefined;
       }
     };
 
     const armSequenceTimeout = () => {
       if (sequenceTimerRef.current !== undefined) {
-        window.clearTimeout(sequenceTimerRef.current);
+        sequenceTimerRef.current();
       }
-      sequenceTimerRef.current = window.setTimeout(() => {
-        sequenceRef.current = undefined;
-        sequenceTimerRef.current = undefined;
-      }, APP_KEYBINDING_SEQUENCE_TIMEOUT_MS);
+      sequenceTimerRef.current = uiClock.after(
+        APP_KEYBINDING_SEQUENCE_TIMEOUT_MS,
+        () => {
+          sequenceRef.current = undefined;
+          sequenceTimerRef.current = undefined;
+        }
+      );
     };
 
     const run = (id: AppShortcutId) => {
@@ -370,7 +364,8 @@ export function useAppProductShortcutListener() {
       },
     },
   ]);
-  useScopedAppShortcutListener(availableProductShortcutIds(guest), runShortcut);
+  const shortcutIds = useMemo(() => availableProductShortcutIds(guest), [guest]);
+  useScopedAppShortcutListener(shortcutIds, runShortcut);
 }
 
 export function AppProductShortcutListener() {

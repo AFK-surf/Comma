@@ -27,12 +27,12 @@ defmodule Comma.Notifications.APNs.Transport do
         Req.post(options)
       else
         pool = Finch.Pool.new(origin)
-        deadline = System.monotonic_time(:millisecond) + @timeout
+        deadline = SystemsClock.monotonic_time(:millisecond) + @timeout
 
         # start_pool is idempotent but HTTP/2 registration is asynchronous.
         # It does NOT inherit the instance's default pool configuration.
         with :ok <- Finch.start_pool(finch, pool, pool_options),
-             :ok <- await_pool(finch, pool, deadline) do
+             :ok <- await_pool(finch, pool, deadline, 10) do
           Req.post(Keyword.put(options, :finch, finch))
         end
       end
@@ -47,10 +47,11 @@ defmodule Comma.Notifications.APNs.Transport do
   # Readiness is bounded by 5s, independently of the existing 5s connect and
   # receive phase limits. This is not an absolute 5s delivery deadline. Check
   # on every send (including after reconnect); never cache readiness forever.
-  # At most 500 short waits per send, for only the two product-owned origins.
+  # The waits start at 10 ms and double up to 1 s: a pool that never registers
+  # (a failed TLS handshake) costs about a dozen checks per send, not 500.
   # No warm-up HTTP request or application-level notification retry is sent.
-  defp await_pool(finch, pool, deadline) do
-    remaining = deadline - System.monotonic_time(:millisecond)
+  defp await_pool(finch, pool, deadline, wait) do
+    remaining = deadline - SystemsClock.monotonic_time(:millisecond)
 
     if remaining <= 0 do
       {:error, :pool_readiness_timeout}
@@ -60,10 +61,8 @@ defmodule Comma.Notifications.APNs.Transport do
           :ok
 
         :error ->
-          receive do
-          after
-            min(10, remaining) -> await_pool(finch, pool, deadline)
-          end
+          SystemsClock.sleep(min(wait, remaining))
+          await_pool(finch, pool, deadline, min(wait * 2, 1_000))
       end
     end
   end

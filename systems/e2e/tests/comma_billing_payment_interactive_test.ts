@@ -1,3 +1,4 @@
+import { setDefaultTimeout, test } from "bun:test";
 import {
   assert,
   assertArray,
@@ -13,123 +14,120 @@ import {
   waitForEnter,
 } from "../helpers/comma_billing.ts";
 
-Deno.test({
-  name:
-    "comma billing manual Stripe payment journey grants credits and probes usage",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn() {
-    if (!interactiveEnabled()) {
-      console.log(
-        "SKIP: set COMMA_STRIPE_INTERACTIVE=1 to run hosted Stripe Checkout",
-      );
-      return;
-    }
+// Builds and subprocesses here take longer than the five-second default.
+setDefaultTimeout(30 * 60_000);
 
-    const api = new CommaApi(env("COMMA_BASE_URL", "http://127.0.0.1:4200"), {
-      adminToken: Deno.env.get("COMMA_ADMIN_TOKEN") || undefined,
-    });
-    const planKey = env("COMMA_BILLING_E2E_PLAN_KEY", "example_addon_plan_v1");
-    const billingEnvironment = encodeURIComponent(
-      env("COMMA_BILLING_E2E_ENVIRONMENT", "dev"),
+test("comma billing manual Stripe payment journey grants credits and probes usage", async () => {
+  if (!interactiveEnabled()) {
+    console.log(
+      "SKIP: set COMMA_STRIPE_INTERACTIVE=1 to run hosted Stripe Checkout",
     );
-    const paymentTimeoutMs = Number(
-      env("COMMA_BILLING_E2E_PAYMENT_TIMEOUT_MS", "300000"),
-    );
-    const usageTimeoutMs = Number(
-      env("COMMA_BILLING_E2E_USAGE_TIMEOUT_MS", "90000"),
-    );
-    const strictUsage = Deno.env.get("COMMA_BILLING_E2E_REQUIRE_USAGE") === "1";
+    return;
+  }
 
-    await api.health();
+  const api = new CommaApi(env("COMMA_BASE_URL", "http://127.0.0.1:4200"), {
+    adminToken: process.env.COMMA_ADMIN_TOKEN || undefined,
+  });
+  const planKey = env("COMMA_BILLING_E2E_PLAN_KEY", "example_addon_plan_v1");
+  const billingEnvironment = encodeURIComponent(
+    env("COMMA_BILLING_E2E_ENVIRONMENT", "dev"),
+  );
+  const paymentTimeoutMs = Number(
+    env("COMMA_BILLING_E2E_PAYMENT_TIMEOUT_MS", "300000"),
+  );
+  const usageTimeoutMs = Number(
+    env("COMMA_BILLING_E2E_USAGE_TIMEOUT_MS", "90000"),
+  );
+  const strictUsage = process.env.COMMA_BILLING_E2E_REQUIRE_USAGE === "1";
 
-    const fixture = await createBillingFixture(api);
-    console.log(`run_id=${fixture.runId}`);
-    console.log(`email=${fixture.email}`);
-    console.log(`user_id=${fixture.userId}`);
-    console.log(`workspace_id=${fixture.workspaceId}`);
-    console.log(`group_id=${fixture.groupId}`);
-    console.log(`billing_account_id=${fixture.billingAccountId}`);
+  await api.health();
 
-    const plans = await api.listPlans(fixture.token);
-    assertArray((plans as { data?: unknown }).data, "plans.data");
-    const selectedPlan = (plans as { data: unknown[] }).data.find(
-      (plan) =>
-        plan &&
-        typeof plan === "object" &&
-        (plan as Record<string, unknown>).plan_key === planKey,
-    );
-    assert(
-      selectedPlan,
-      `plan ${planKey} was not returned by /v1/comma/billing/plans`,
-    );
+  const fixture = await createBillingFixture(api);
+  console.log(`run_id=${fixture.runId}`);
+  console.log(`email=${fixture.email}`);
+  console.log(`user_id=${fixture.userId}`);
+  console.log(`workspace_id=${fixture.workspaceId}`);
+  console.log(`group_id=${fixture.groupId}`);
+  console.log(`billing_account_id=${fixture.billingAccountId}`);
 
-    const beforeSummary = await api.billingSummary(
-      fixture.token,
-      fixture.workspaceId,
-    );
-    const beforeCredits = numberField(beforeSummary, "current_credits");
-    console.log(`credits_before_payment=${beforeCredits}`);
+  const plans = await api.listPlans(fixture.token);
+  assertArray((plans as { data?: unknown }).data, "plans.data");
+  const selectedPlan = (plans as { data: unknown[] }).data.find(
+    (plan) =>
+      plan &&
+      typeof plan === "object" &&
+      (plan as Record<string, unknown>).plan_key === planKey,
+  );
+  assert(
+    selectedPlan,
+    `plan ${planKey} was not returned by /v1/comma/billing/plans`,
+  );
 
-    const checkout = await api.createCheckout(
-      fixture.token,
-      fixture.workspaceId,
-      {
-        plan_key: planKey,
-        client_request_id: `checkout-${fixture.runId}`,
-        success_url:
-          `${api.baseUrl}/v1/comma/billing/stripe/checkout/return?environment=${billingEnvironment}&status=success&run_id=${fixture.runId}`,
-        cancel_url:
-          `${api.baseUrl}/v1/comma/billing/stripe/checkout/cancel?environment=${billingEnvironment}&run_id=${fixture.runId}`,
-      },
-    );
-    const checkoutUrl = stringField(checkout, "url");
-    console.log(`checkout_url=${checkoutUrl}`);
+  const beforeSummary = await api.billingSummary(
+    fixture.token,
+    fixture.workspaceId,
+  );
+  const beforeCredits = numberField(beforeSummary, "current_credits");
+  console.log(`credits_before_payment=${beforeCredits}`);
 
-    await openUrlIfRequested(checkoutUrl);
-    if (Deno.env.get("COMMA_BILLING_E2E_WAIT_FOR_ENTER") === "1") {
-      await waitForEnter(
-        "Complete the Stripe test payment in a browser, then press Enter here to continue.",
-      );
-    } else {
-      console.log(
-        "payment_wait=auto_polling_credits; complete Stripe Checkout in the browser",
-      );
-    }
+  const checkout = await api.createCheckout(
+    fixture.token,
+    fixture.workspaceId,
+    {
+      plan_key: planKey,
+      client_request_id: `checkout-${fixture.runId}`,
+      success_url:
+        `${api.baseUrl}/v1/comma/billing/stripe/checkout/return?environment=${billingEnvironment}&status=success&run_id=${fixture.runId}`,
+      cancel_url:
+        `${api.baseUrl}/v1/comma/billing/stripe/checkout/cancel?environment=${billingEnvironment}&run_id=${fixture.runId}`,
+    },
+  );
+  const checkoutUrl = stringField(checkout, "url");
+  console.log(`checkout_url=${checkoutUrl}`);
 
-    const paid = await waitForCredits(
-      api,
-      fixture.token,
-      fixture.workspaceId,
-      (credits) => credits > beforeCredits,
-      {
-        timeoutMs: paymentTimeoutMs,
-        label: "Stripe webhook credit grant",
-        logEveryMs: 15_000,
-      },
+  await openUrlIfRequested(checkoutUrl);
+  if (process.env.COMMA_BILLING_E2E_WAIT_FOR_ENTER === "1") {
+    await waitForEnter(
+      "Complete the Stripe test payment in a browser, then press Enter here to continue.",
     );
-    console.log(`credits_after_payment=${paid.credits}`);
+  } else {
+    console.log(
+      "payment_wait=auto_polling_credits; complete Stripe Checkout in the browser",
+    );
+  }
 
-    await probeLlmUsage(
-      api,
-      fixture,
-      paid.credits,
-      usageTimeoutMs,
-      strictUsage,
-    );
-    const afterUsageSummary = await api.billingSummary(
-      fixture.token,
-      fixture.workspaceId,
-    );
-    await probeStorageUsage(
-      api,
-      fixture,
-      numberField(afterUsageSummary, "current_credits"),
-      usageTimeoutMs,
-      strictUsage,
-    );
-    probeVmUsage(strictUsage);
-  },
+  const paid = await waitForCredits(
+    api,
+    fixture.token,
+    fixture.workspaceId,
+    (credits) => credits > beforeCredits,
+    {
+      timeoutMs: paymentTimeoutMs,
+      label: "Stripe webhook credit grant",
+      logEveryMs: 15_000,
+    },
+  );
+  console.log(`credits_after_payment=${paid.credits}`);
+
+  await probeLlmUsage(
+    api,
+    fixture,
+    paid.credits,
+    usageTimeoutMs,
+    strictUsage,
+  );
+  const afterUsageSummary = await api.billingSummary(
+    fixture.token,
+    fixture.workspaceId,
+  );
+  await probeStorageUsage(
+    api,
+    fixture,
+    numberField(afterUsageSummary, "current_credits"),
+    usageTimeoutMs,
+    strictUsage,
+  );
+  probeVmUsage(strictUsage);
 });
 
 async function probeLlmUsage(
@@ -144,7 +142,7 @@ async function probeLlmUsage(
   timeoutMs: number,
   strict: boolean,
 ) {
-  if (Deno.env.get("COMMA_BILLING_E2E_LLM") === "0") {
+  if (process.env.COMMA_BILLING_E2E_LLM === "0") {
     console.log("SKIP: LLM usage probe disabled by COMMA_BILLING_E2E_LLM=0");
     return;
   }
@@ -215,32 +213,38 @@ async function probeStorageUsage(
   timeoutMs: number,
   strict: boolean,
 ) {
-  if (Deno.env.get("COMMA_BILLING_E2E_STORAGE") === "0") {
+  if (process.env.COMMA_BILLING_E2E_STORAGE === "0") {
     console.log("STORAGE_USAGE: SKIP disabled by COMMA_BILLING_E2E_STORAGE=0");
     return;
   }
 
   try {
     console.log("STORAGE_USAGE: writing_minio_object_and_sampling_prefix");
-    const command = new Deno.Command("mix", {
-      args: ["run", "--no-start", "e2e/scripts/probe_storage_usage.exs"],
-      cwd: new URL("../..", import.meta.url).pathname,
-      env: {
-        ...Deno.env.toObject(),
-        COMMA_E2E_BILLING_ACCOUNT_ID: fixture.billingAccountId,
-        COMMA_E2E_WORKSPACE_ID: fixture.workspaceId,
-        COMMA_E2E_RUN_ID: fixture.runId,
+    const child = Bun.spawn(
+      ["mix", "run", "--no-start", "e2e/scripts/probe_storage_usage.exs"],
+      {
+        cwd: new URL("../..", import.meta.url).pathname,
+        env: {
+          ...process.env,
+          COMMA_E2E_BILLING_ACCOUNT_ID: fixture.billingAccountId,
+          COMMA_E2E_WORKSPACE_ID: fixture.workspaceId,
+          COMMA_E2E_RUN_ID: fixture.runId,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
       },
-      stdout: "piped",
-      stderr: "piped",
-    });
+    );
 
-    const output = await command.output();
-    const stdout = new TextDecoder().decode(output.stdout).trim();
-    const stderr = new TextDecoder().decode(output.stderr).trim();
-    if (!output.success) {
+    const [rawStdout, rawStderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    const stdout = rawStdout.trim();
+    const stderr = rawStderr.trim();
+    if (code !== 0) {
       throw new Error(
-        `storage probe failed status=${output.code} stdout=${stdout} stderr=${stderr}`,
+        `storage probe failed status=${code} stdout=${stdout} stderr=${stderr}`,
       );
     }
 

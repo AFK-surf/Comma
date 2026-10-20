@@ -1,5 +1,6 @@
 defmodule SalixWeb.ComputePressureE2ETest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
   import Ecto.Query
   alias SalixStore.{AgentVMM, AgentVMMHostClient, Compute, Repo}
 
@@ -10,7 +11,13 @@ defmodule SalixWeb.ComputePressureE2ETest do
     previous_level = Logger.level()
     Logger.configure(level: :warning)
     on_exit(fn -> Logger.configure(level: previous_level) end)
-    root = Path.join(System.tmp_dir!(), "comma-pressure-#{System.unique_integer([:positive])}")
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "comma-pressure-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
     File.mkdir_p!(root)
     File.chmod!(root, 0o700)
     config_path = Path.join(root, "fixture.json")
@@ -98,11 +105,11 @@ defmodule SalixWeb.ComputePressureE2ETest do
     {:ok, {_, control_port}} = ThousandIsland.listener_info(listener)
     remote_port = free_port()
     internal_port = free_port()
-    secret = Base.url_encode64(:crypto.strong_rand_bytes(32))
+    secret = Base.url_encode64(SystemsRuntime.Proc.random_bytes(32))
     image = System.fetch_env!("COMMA_VMM_PRESSURE_IMAGE") |> File.read!() |> Jason.decode!()
 
     images =
-      for class <- ~w(external meeting shell),
+      for class <- ~w(meeting shell station),
           do:
             Map.merge(image, %{
               "class" => class,
@@ -135,13 +142,13 @@ defmodule SalixWeb.ComputePressureE2ETest do
     configure(:salix_store, :compute_workload_credential_secret, secret)
     configure(:salix_store, :runtime_bundle_root, root)
 
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     registrations =
       for n <- 1..6 do
         id = "pressure-#{suffix}-#{n}"
-        enrollment = :crypto.strong_rand_bytes(32)
-        credential = :crypto.strong_rand_bytes(32)
+        enrollment = SystemsRuntime.Proc.random_bytes(32)
+        credential = SystemsRuntime.Proc.random_bytes(32)
 
         {:ok, registration} =
           AgentVMM.create_registration(%{
@@ -246,8 +253,8 @@ defmodule SalixWeb.ComputePressureE2ETest do
             id: id,
             environment_id: id,
             allocation_id: allocation.id,
-            kind: "external_worker",
-            template_key: "external.pi",
+            kind: "meeting_runtime",
+            template_key: "meeting.meetnative",
             capability_requirements: ["runtime_exec", "runtime_process"],
             generation: 1
           })
@@ -261,10 +268,7 @@ defmodule SalixWeb.ComputePressureE2ETest do
                 File.exists?(config_path <> ".imported-" <> allocation.id)
 
               _ ->
-                SalixEnv.ComputeReconciler.reconcile_workload(id, 1,
-                  credential: credential,
-                  external_demand: true
-                )
+                SalixEnv.ComputeReconciler.reconcile_workload(id, 1, credential: credential)
 
                 false
             end
@@ -274,10 +278,7 @@ defmodule SalixWeb.ComputePressureE2ETest do
 
         eventually(
           fn ->
-            SalixEnv.ComputeReconciler.reconcile_workload(id, 1,
-              credential: credential,
-              external_demand: true
-            )
+            SalixEnv.ComputeReconciler.reconcile_workload(id, 1, credential: credential)
 
             Repo.exists?(
               from(r in Compute.RuntimeInstance,
@@ -302,7 +303,7 @@ defmodule SalixWeb.ComputePressureE2ETest do
     end
 
     # The idle deadline alone must not stop any of these real carriers.
-    Process.sleep(65_000)
+    SystemsClock.sleep(65_000)
 
     for workload <- workloads do
       SalixEnv.ComputeReconciler.reconcile_workload(workload.id, 1)
@@ -359,7 +360,7 @@ defmodule SalixWeb.ComputePressureE2ETest do
              AgentVMMHostClient.provider_call(:execution_acquire, execution, busy.id)
 
     pressure =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         exec(busy.id, [
           "node",
           "-e",
@@ -406,7 +407,7 @@ defmodule SalixWeb.ComputePressureE2ETest do
       refute candidate?(busy)
     end
 
-    assert {:ok, %{"exit_code" => 0}} = Task.await(pressure, 90_000)
+    assert {:ok, %{"exit_code" => 0}} = settled_await(pressure)
     assert {:ok, _} = AgentVMMHostClient.provider_call(:execution_release, execution, busy.id)
 
     # With every surviving instance execution-held, only the kernel may choose
@@ -436,7 +437,7 @@ defmodule SalixWeb.ComputePressureE2ETest do
     before_oom = guest_sample(config_path)["oom"]
 
     oom_task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         exec(busy.id, [
           "node",
           "-e",
@@ -449,10 +450,10 @@ defmodule SalixWeb.ComputePressureE2ETest do
 
     for _ <- 1..10 do
       for workload <- survivors, do: refute(candidate?(workload))
-      Process.sleep(1_000)
+      SystemsClock.sleep(1_000)
     end
 
-    refute match?({:ok, %{"exit_code" => 0}}, Task.await(oom_task, 90_000))
+    refute match?({:ok, %{"exit_code" => 0}}, settled_await(oom_task))
 
     # Parent OOM may affect any workload. The contract above is that the
     # pressure controller does not select an execution-held instance.
@@ -461,15 +462,15 @@ defmodule SalixWeb.ComputePressureE2ETest do
     end
 
     File.write!(config_path <> ".stop", "stop")
-    assert {_, 0} = Task.await(host, 30_000)
-    assert {_, 0} = Task.await(gateway, 30_000)
+    assert {_, 0} = settled_await(host)
+    assert {_, 0} = settled_await(gateway)
   end
 
   defp candidate?(workload) do
     candidate =
       Repo.get!(AgentVMM.RegistrationObservation, workload.id).usage["workload_reclaim_candidate"]
 
-    is_map(candidate) and candidate["expires_at_ms"] > System.system_time(:millisecond)
+    is_map(candidate) and candidate["expires_at_ms"] > SystemsClock.system_time(:millisecond)
   end
 
   defp guest_log(config_path) do
@@ -505,19 +506,19 @@ defmodule SalixWeb.ComputePressureE2ETest do
   end
 
   defp configure(app, key, value) do
-    previous = Application.fetch_env(app, key)
-    Application.put_env(app, key, value)
+    previous = SystemsRuntime.fetch_env(app, key)
+    SystemsRuntime.put_env(app, key, value)
 
     on_exit(fn ->
       case previous do
-        {:ok, old} -> Application.put_env(app, key, old)
-        :error -> Application.delete_env(app, key)
+        {:ok, old} -> SystemsRuntime.put_env(app, key, old)
+        :error -> SystemsRuntime.delete_env(app, key)
       end
     end)
   end
 
   defp launch(binary, test, config, root, name) do
-    Task.async(fn ->
+    SystemsRuntime.Task.async(fn ->
       output = File.stream!(Path.join(root, name <> ".log"))
 
       result =
@@ -544,15 +545,18 @@ defmodule SalixWeb.ComputePressureE2ETest do
     port
   end
 
-  defp eventually(fun, timeout) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    poll(fun, deadline)
-  end
+  # The chain waits on a real Host, Guest and gateway, so this opt-in fixture
+  # runs on the machine clock: a manual clock would skip past their work.
+  defp eventually(fun, ms), do: poll(fun, SystemsClock.monotonic_time(:millisecond) + ms)
+
+  defp settled_await(task), do: Task.await(task, :infinity)
 
   defp poll(fun, deadline) do
     unless fun.() do
-      assert System.monotonic_time(:millisecond) < deadline, "pressure fixture did not converge"
-      Process.sleep(1_000)
+      assert SystemsClock.monotonic_time(:millisecond) < deadline,
+             "pressure fixture did not converge"
+
+      SystemsClock.sleep(1_000)
       poll(fun, deadline)
     end
   end

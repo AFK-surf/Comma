@@ -12,6 +12,10 @@ defmodule Comma.Data.TaskShare do
     field(:through_seq, :integer)
     field(:snapshot, :map, default: %{})
     field(:revoked_at, :utc_datetime_usec)
-    timestamps(type: :utc_datetime_usec)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 end

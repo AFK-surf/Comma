@@ -1,14 +1,14 @@
 import { formatDate } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import { cx } from "@comma/ui/components/utils";
+import { Dialog } from "@comma/ui/components/dialog";
 import {
-  cx,
-  Dialog,
   FileIcon,
   Folder1Icon,
   InboxIcon,
   ReloadIcon,
   XIcon,
-} from "@comma/ui";
+} from "@comma/ui/components/icons";
 import { useState } from "react";
 import { Button as AriaButton } from "react-aria-components";
 import { ShellIconButtonControl } from "../ShellIconButton";

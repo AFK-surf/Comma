@@ -1,0 +1,16 @@
+diff --git a/src/js/finder.js b/src/js/finder.js
+--- a/src/js/finder.js
++++ b/src/js/finder.js
+@@ -1220,6 +1220,12 @@
+           break;
+         }
+         case 'focus-visible': {
++          // An element removed from the document is no longer the one that
++          // last had visible focus: kept, it made the next keyboard focus of
++          // the page (a later test on the same window) not focus-visible.
++          if (this.#lastFocusVisible && !this.#lastFocusVisible.isConnected) {
++            this.#lastFocusVisible = null;
++          }
+           if (node === this.#document.activeElement && isFocusableArea(node)) {
+             let bool;
+             if (isFocusVisible(node)) {

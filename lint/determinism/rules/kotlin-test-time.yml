@@ -1,0 +1,69 @@
+id: kotlin-test-sleep
+language: kotlin
+severity: error
+message: "A test sleeps real time."
+note: |
+  Use runTest and its virtual time (advanceTimeBy, advanceUntilIdle), or
+  wait for the event.
+metadata:
+  category: sleep
+rule:
+  all:
+    - kind: call_expression
+    - regex: "^(Thread\\.sleep|SystemClock\\.sleep|TimeUnit\\.[A-Z]+\\.sleep)\\("
+files:
+  - "**/src/test/**/*.kt"
+  - "**/src/androidTest/**/*.kt"
+---
+id: kotlin-test-clock
+language: kotlin
+severity: error
+message: "A test reads the machine clock."
+note: |
+  Use runTest's testScheduler.currentTime or a clock the test controls.
+metadata:
+  category: clock
+rule:
+  all:
+    - kind: call_expression
+    - regex: "^(System\\.currentTimeMillis|System\\.nanoTime|SystemClock\\.(elapsedRealtime|uptimeMillis)|Instant\\.now|LocalDateTime\\.now|LocalDate\\.now|Clock\\.System\\.now)\\("
+files:
+  - "**/src/test/**/*.kt"
+  - "**/src/androidTest/**/*.kt"
+---
+id: kotlin-test-deadline
+language: kotlin
+severity: error
+message: "A test bounds a wait by real time."
+note: |
+  Await the result itself, or run under runTest where timeouts are virtual.
+metadata:
+  category: deadline
+rule:
+  all:
+    - kind: call_expression
+    - regex: "\\.await\\([^)]*TimeUnit|\\.get\\([^)]*TimeUnit|^withTimeout(OrNull)?\\(|^delay\\("
+    - not:
+        inside:
+          kind: call_expression
+          regex: "^runTest\\b"
+          stopBy: end
+files:
+  - "**/src/test/**/*.kt"
+  - "**/src/androidTest/**/*.kt"
+---
+id: kotlin-test-random
+language: kotlin
+severity: error
+message: "A test uses unseeded randomness."
+note: |
+  Use fixed values or Random(seed).
+metadata:
+  category: random
+rule:
+  all:
+    - kind: call_expression
+    - regex: "^(UUID\\.randomUUID|Random\\.next[A-Za-z]*|Math\\.random)\\("
+files:
+  - "**/src/test/**/*.kt"
+  - "**/src/androidTest/**/*.kt"

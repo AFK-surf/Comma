@@ -1,0 +1,26 @@
+id: ex-harness-real-clock
+language: elixir
+severity: error
+message: "The test clock, the simulation scheduler or a runtime binding reads real time."
+note: |
+  A threshold, deadline or wait in real time makes a test's result depend on
+  how busy the machine is (docs/testing.md, "Deterministic tests"). Only the clock's own source
+  of time, used when no manual clock runs, reads it; each such call carries an
+  `ast-grep-ignore` with its reason. Everything else here is ledger to remove.
+metadata:
+  category: deadline
+rule:
+  any:
+    - pattern: $M.$F($$$)
+    - pattern: "&$M.$F/$A"
+# A call that reads real time, waits for it, or decides by how busy the
+# machine is (`:erlang.statistics`: run queues, context switches).
+constraints:
+  M: { regex: '^(DateTime|NaiveDateTime|Time|Date|System|Process|:erlang|:os|:timer|:calendar)$' }
+  F:
+    regex: '^(utc_now|utc_today|monotonic_time|system_time|os_time|timestamp|perf_counter|now|send_after|start_timer|sleep|apply_after|send_interval|apply_interval|tc|exit_after|kill_after|local_time|universal_time|statistics)$'
+
+files:
+  - "systems/apps/systems_clock/lib/**/*.ex"
+  - "systems/apps/systems_runtime/lib/**/*.ex"
+  - "systems/apps/systems_sim/lib/**/*.ex"

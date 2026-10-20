@@ -11,7 +11,7 @@ defmodule Salix.Runtime.Placement do
   def owner(agent_id) do
     ring = Module.concat([SalixCluster, Ring])
 
-    if Code.ensure_loaded?(ring) and Process.whereis(ring) do
+    if Code.ensure_loaded?(ring) and SystemsRuntime.Proc.whereis(ring) do
       apply(ring, :owner, [agent_id])
     else
       Node.self()

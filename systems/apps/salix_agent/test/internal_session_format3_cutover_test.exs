@@ -1,12 +1,13 @@
 defmodule SalixAgent.InternalSessionFormat3CutoverTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.{InternalSession, InternalSessionFormat3Cutover, InternalSessionStore}
   alias SalixStore.{ArchiveLog, Codec, Ids, Keys, S3}
 
   setup do
-    old = Application.get_env(:salix_store, :seal_line_bytes)
-    Application.put_env(:salix_store, :seal_line_bytes, 300)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
+    old = SystemsRuntime.get_env(:salix_store, :seal_line_bytes)
+    SystemsRuntime.put_env(:salix_store, :seal_line_bytes, 300)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
     start_supervised!(S3.Fake)
 
     SalixStore.Repo.query!(
@@ -15,8 +16,8 @@ defmodule SalixAgent.InternalSessionFormat3CutoverTest do
 
     on_exit(fn ->
       if old,
-        do: Application.put_env(:salix_store, :seal_line_bytes, old),
-        else: Application.delete_env(:salix_store, :seal_line_bytes)
+        do: SystemsRuntime.put_env(:salix_store, :seal_line_bytes, old),
+        else: SystemsRuntime.delete_env(:salix_store, :seal_line_bytes)
     end)
 
     :ok
@@ -34,7 +35,7 @@ defmodule SalixAgent.InternalSessionFormat3CutoverTest do
     }
 
   defp seed(format \\ 2) do
-    agent = "migration-agent-#{System.unique_integer([:positive])}"
+    agent = "migration-agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     session = Ids.new_session_id()
 
     state =
@@ -140,7 +141,7 @@ defmodule SalixAgent.InternalSessionFormat3CutoverTest do
     end
   end
 
-  test "only the committed archive prefix is backed up, and redactions remain an overlay" do
+  test "only the committed archive prefix is backed up" do
     {key, state, _} = seed()
 
     {:ok, %{body: prefix}} =
@@ -160,8 +161,7 @@ defmodule SalixAgent.InternalSessionFormat3CutoverTest do
     state = %{
       state
       | archived_through: 4,
-        archive_chunks: ArchiveLog.spans(archived, 0),
-        redactions: [%{"seq" => 1, "replacement" => "masked"}]
+        archive_chunks: ArchiveLog.spans(archived, 0)
     }
 
     {:ok, _} = S3.put(key, Codec.encode_snapshot(state))
@@ -172,10 +172,9 @@ defmodule SalixAgent.InternalSessionFormat3CutoverTest do
     assert source == prefix <> extra
     migrated = read!(key)
 
-    {:ok, raw} = InternalSessionStore.archived_records(state.agent_id, migrated, mask: false)
+    {:ok, raw} = InternalSessionStore.archived_records(state.agent_id, migrated)
 
     assert hd(raw).data["content"] == hd(archived).data["content"]
-    assert InternalSession.get(migrated, :redactions) == state.redactions
   end
 
   test "a failed segment write leaves the legacy snapshot readable and resumes from landed segments" do
@@ -193,8 +192,8 @@ defmodule SalixAgent.InternalSessionFormat3CutoverTest do
     {key, state, _} = seed()
 
     task =
-      Task.async(fn ->
-        S3.Fake.set_fault_for(self(), {:pause, :put, key})
+      SystemsRuntime.Task.async(fn ->
+        S3.Fake.set_fault_for(SystemsRuntime.Proc.self(), {:pause, :put, key})
         InternalSessionFormat3Cutover.migrate_session(key)
       end)
 
@@ -202,14 +201,14 @@ defmodule SalixAgent.InternalSessionFormat3CutoverTest do
     newer = state |> InternalSession.open() |> InternalSession.apply_events([delivery(9)])
     {:ok, _} = S3.put(key, Codec.compress_snapshot_etf(InternalSession.persist(newer)))
     :ok = S3.Fake.release_pause()
-    assert {:ok, :migrated} = Task.await(task)
+    assert {:ok, :migrated} = settled_await(task)
     assert full_ids(read!(key)) == Enum.to_list(1..9)
   end
 
   test "backup failure preserves the original snapshot and prevents a completion marker" do
     {key, _, bytes} = seed(1)
     prefix = String.replace_suffix(key, "state.etf.zst", "backup/format3/")
-    S3.Fake.set_fault_for(self(), {:fail, 403, :put, {:prefix, prefix}})
+    S3.Fake.set_fault_for(SystemsRuntime.Proc.self(), {:fail, 403, :put, {:prefix, prefix}})
 
     assert {:error, {:session_migration_failed, ^key, _}} =
              InternalSessionFormat3Cutover.run(dry_run: false)
@@ -226,7 +225,7 @@ defmodule SalixAgent.InternalSessionFormat3CutoverTest do
 
   test "a lost normalization CAS reply is settled without duplicating legacy history" do
     {key, _, _} = seed(1)
-    S3.Fake.set_fault_for(self(), {:ambiguous_after, :put, key})
+    S3.Fake.set_fault_for(SystemsRuntime.Proc.self(), {:ambiguous_after, :put, key})
     assert {:ok, :migrated} = InternalSessionFormat3Cutover.migrate_session(key)
     assert full_ids(read!(key)) == Enum.to_list(1..8)
   end
@@ -298,7 +297,7 @@ defmodule SalixAgent.InternalSessionFormat3CutoverTest do
     archive_key =
       backups(key) |> Enum.find(&String.ends_with?(&1.key, "archive.jsonl")) |> Map.fetch!(:key)
 
-    S3.Fake.set_fault_for(self(), {:fail, 403, :delete, archive_key})
+    S3.Fake.set_fault_for(SystemsRuntime.Proc.self(), {:fail, 403, :delete, archive_key})
     assert {:error, {:backup_prune_failed, _, _}} = prune.run(retention_days: 0, dry_run: false)
 
     assert {:error, :not_found} =
@@ -327,11 +326,13 @@ defmodule SalixAgent.InternalSessionFormat3CutoverTest do
              SalixAgent.SessionFormat3BackupPrune.run(dry_run: false)
   end
 
-  # PostgreSQL timestamp(0) can round a freshly completed marker forward by
-  # a fraction of a second. Give zero-day cleanup fixtures a definite past.
+  # Cleanup reads the marker against the clock the code runs on, as the
+  # backups' own times are; the database's now() is another clock. Two
+  # seconds before that clock is a definite past, past timestamp(0) rounding.
   defp age_completed_marker! do
     SalixStore.Repo.query!(
-      "UPDATE salix_cutover_markers SET completed_at = now() - interval '2 seconds' WHERE name = 'internal_session_format3_v1'"
+      "UPDATE salix_cutover_markers SET completed_at = $1 WHERE name = 'internal_session_format3_v1'",
+      [SystemsClock.utc_now() |> DateTime.add(-2, :second) |> DateTime.to_naive()]
     )
   end
 
@@ -342,7 +343,7 @@ defmodule SalixAgent.InternalSessionFormat3CutoverTest do
       do: :ok,
       else:
         (
-          Process.sleep(10)
+          SystemsClock.sleep(10)
           wait_paused(n - 1)
         )
   end

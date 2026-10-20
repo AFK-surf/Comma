@@ -1,5 +1,5 @@
 defmodule Salix.SlackMirrorReaderOperationScrapeTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   @reporter Module.concat(__MODULE__, Reporter)
   @scoped_event [:salix, :operation, :slack_mirror_reader_scrape_test]
@@ -10,16 +10,19 @@ defmodule Salix.SlackMirrorReaderOperationScrapeTest do
     slack_mirror_thread
     slack_mirror_thread_reactions
     slack_mirror_search
+    feishu_mirror_search
+    qq_mirror_search
+    lark_mirror_search
   )
 
-  test "Slack mirror reader query families retain finite operation labels" do
+  test "Slack and Feishu mirror reader query families retain finite operation labels" do
     start_supervised!(
       {TelemetryMetricsPrometheus.Core,
        name: @reporter, metrics: scoped_metrics(), start_async: false}
     )
 
     Enum.each(@operations, fn operation ->
-      :telemetry.execute(
+      SystemsRuntime.Telemetry.execute(
         @scoped_event,
         %{duration: System.convert_time_unit(1, :millisecond, :native)},
         %{

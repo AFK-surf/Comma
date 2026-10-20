@@ -1,0 +1,18 @@
+id: ex-test-random
+language: elixir
+severity: error
+message: "A test uses unseeded randomness."
+note: |
+  Use fixed values. ExUnit seeds :rand in the test process from --seed; other
+  processes are not seeded.
+metadata:
+  category: random
+rule:
+  all:
+    - kind: call
+    - has:
+        field: target
+        regex: "^(Enum\\.(random|shuffle|take_random)|:crypto\\.strong_rand_bytes|:rand\\.[a-z_]+|Ecto\\.UUID\\.generate|UUID\\.uuid4)$"
+files:
+  - "systems/apps/*/test/**/*.exs"
+  - "systems/apps/*/test/**/*.ex"

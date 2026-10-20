@@ -333,7 +333,7 @@ defmodule SalixAgent.Browser.Commands do
     if old = state.refs[tab],
       do: cdp(state, "Runtime.releaseObjectGroup", %{objectGroup: old.group}, session)
 
-    group = Ecto.UUID.generate()
+    group = SystemsRuntime.Proc.uuid()
     generation = Connection.generation(state.conn, session)
 
     array =
@@ -397,14 +397,17 @@ defmodule SalixAgent.Browser.Commands do
     {%{"tab_id" => tab, "url" => String.slice(url, 0, 4096)}, %{state | refs: refs || state.refs}}
   end
 
-  defp wait_until(timeout, fun), do: poll(System.monotonic_time(:millisecond) + timeout, fun)
+  defp wait_until(timeout, fun),
+    do: poll(SystemsClock.monotonic_time(:millisecond) + timeout, fun)
 
   defp poll(deadline, fun) do
     if value = fun.() do
       value
     else
-      if System.monotonic_time(:millisecond) >= deadline, do: fail("browser_operation_failed")
-      Process.sleep(100)
+      if SystemsClock.monotonic_time(:millisecond) >= deadline,
+        do: fail("browser_operation_failed")
+
+      SystemsClock.sleep(100)
       poll(deadline, fun)
     end
   end

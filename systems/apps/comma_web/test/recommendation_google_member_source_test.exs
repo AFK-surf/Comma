@@ -1,5 +1,5 @@
 defmodule CommaWeb.RecommendationGoogleMemberSourceTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias CommaWeb.RecommendationGoogleMemberSource, as: Source
 
   @gmail "https://gmail.googleapis.com/gmail/v1/users/me"
@@ -40,15 +40,50 @@ defmodule CommaWeb.RecommendationGoogleMemberSourceTest do
 
   defp thread(id, messages), do: {:ok, %{"id" => id, "messages" => messages}}
 
-  test "Gmail keeps important mail to the member until the member replies in its thread" do
+  # Answers a thread search as Gmail does: a thread matches when one of its
+  # messages matches every term, newest thread first, at most maxResults.
+  defp search(threads, query, now) do
+    since = DateTime.to_unix(now, :millisecond) - 7 * 86_400_000
+
+    latest = fn messages ->
+      messages |> Enum.map(&String.to_integer(&1["internalDate"])) |> Enum.max()
+    end
+
+    matches? = fn %{"labelIds" => labels, "internalDate" => at} ->
+      query["q"]
+      |> String.split()
+      |> Enum.all?(fn
+        "in:inbox" -> "INBOX" in labels
+        "is:important" -> "IMPORTANT" in labels
+        "to:me" -> true
+        "-category:" <> category -> "CATEGORY_#{String.upcase(category)}" not in labels
+        "newer_than:7d" -> String.to_integer(at) >= since
+        term -> flunk("unsupported Gmail search term #{term}")
+      end)
+    end
+
+    threads
+    |> Enum.filter(fn {_id, messages} -> Enum.any?(messages, matches?) end)
+    |> Enum.sort_by(fn {_id, messages} -> latest.(messages) end, :desc)
+    |> Enum.take(String.to_integer(query["maxResults"]))
+    |> then(&{:ok, %{"threads" => Enum.map(&1, fn {id, _} -> %{"id" => id} end)}})
+  end
+
+  test "Gmail keeps personal and work mail without relying on importance or social labels" do
     routes = [
       {@gmail <> "/profile", {:ok, %{"emailAddress" => "member@example.com"}}},
       {@gmail <> "/threads",
        fn query ->
          assert query["q"] =~ "to:me"
          refute query["q"] =~ "is:unread"
+         refute query["q"] =~ "-category:social"
+         assert query["maxResults"] == "15"
 
-         {:ok, %{"threads" => Enum.map(~w(open answered reopened promo), &%{"id" => &1})}}
+         {:ok,
+          %{
+            "threads" =>
+              Enum.map(~w(open answered reopened personal social promo), &%{"id" => &1})
+          }}
        end},
       {@gmail <> "/threads/open",
        thread("open", [
@@ -65,19 +100,86 @@ defmodule CommaWeb.RecommendationGoogleMemberSourceTest do
          mail("m5", 2_000, ~w(SENT), "Answered."),
          mail("m6", 3_000, ~w(INBOX UNREAD IMPORTANT), "One more question about the launch.")
        ])},
+      {@gmail <> "/threads/personal",
+       thread("personal", [
+         mail(
+           "m8",
+           1_000,
+           ~w(INBOX),
+           "Your home electricity payment failed. Pay by Friday to avoid disconnection."
+         )
+       ])},
+      {@gmail <> "/threads/social",
+       thread("social", [
+         mail(
+           "m9",
+           1_000,
+           ~w(INBOX CATEGORY_SOCIAL),
+           "Confirm today whether you can collect your child tomorrow."
+         )
+       ])},
       {@gmail <> "/threads/promo",
        thread("promo", [mail("m7", 1_000, ~w(INBOX CATEGORY_PROMOTIONS), "Sale")])}
     ]
 
     assert {:ok, %{"messages" => messages, "memberRelation" => "awaiting_your_reply"},
             %{"provider_mailbox" => "member@example.com"}} =
-             Source.read("gmail", request(routes), DateTime.utc_now())
+             Source.read("gmail", request(routes), SystemsClock.utc_now())
 
     # Read but unanswered mail stays; a reply closes the thread until someone writes again.
-    assert Enum.map(messages, & &1["messageId"]) == ["m1", "m6"]
+    assert Enum.map(messages, & &1["messageId"]) == ["m1", "m6", "m8", "m9"]
     assert hd(messages)["context"]["text"] =~ "Your approval is needed before Friday."
     assert hd(messages)["sender"] == "Lead <lead@example.com>"
     assert hd(messages)["messageTimestamp"] == "1970-01-01T00:00:01.000Z"
+  end
+
+  test "Gmail keeps older important mail and recent personal mail under busy ordinary mail" do
+    now = SystemsClock.utc_now()
+    at = fn minutes -> DateTime.to_unix(now, :millisecond) - minutes * 60_000 end
+
+    notices =
+      for n <- 1..14,
+          do: {"notice#{n}", [mail("n#{n}", at.(n), ~w(INBOX CATEGORY_UPDATES), "Digest #{n}")]}
+
+    threads = [
+      {"bill",
+       [
+         mail(
+           "bill",
+           at.(180),
+           ~w(INBOX CATEGORY_UPDATES),
+           "Your home electricity payment failed. Pay by Friday to avoid disconnection."
+         )
+       ]},
+      {"review",
+       [
+         mail(
+           "review",
+           at.(2_880),
+           ~w(INBOX IMPORTANT),
+           "Please approve the permissions change before Tuesday's merge."
+         )
+       ]}
+      | notices
+    ]
+
+    routes =
+      [
+        {@gmail <> "/profile", {:ok, %{"emailAddress" => "member@example.com"}}},
+        {@gmail <> "/threads", &search(threads, &1, now)}
+      ] ++
+        Enum.map(threads, fn {id, messages} ->
+          {@gmail <> "/threads/" <> id, thread(id, messages)}
+        end)
+
+    assert {:ok, %{"messages" => messages}, _} = Source.read("gmail", request(routes), now)
+
+    # Fourteen newer notices fill all but one place of the recent window. The
+    # important review is older than all of them and still comes first.
+    ids = Enum.map(messages, & &1["messageId"])
+    assert hd(ids) == "review"
+    assert "bill" in ids
+    assert length(ids) == 16
   end
 
   test "Gmail distinguishes absent request context from genuinely empty mail" do
@@ -93,7 +195,7 @@ defmodule CommaWeb.RecommendationGoogleMemberSourceTest do
             )}}
         ] ++ Enum.map(threads, fn {id, answer} -> {@gmail <> "/threads/" <> id, answer} end)
 
-      Source.read("gmail", request(routes), DateTime.utc_now())
+      Source.read("gmail", request(routes), SystemsClock.utc_now())
     end
 
     blank = thread("blank", [mail("m1", 1_000, ~w(INBOX IMPORTANT), nil)])
@@ -153,7 +255,7 @@ defmodule CommaWeb.RecommendationGoogleMemberSourceTest do
 
     assert {:ok, %{"items" => [%{"id" => "e1"}]},
             %{"provider_calendar_id" => "member@example.com"}} =
-             Source.read("googlecalendar", request(routes), DateTime.utc_now())
+             Source.read("googlecalendar", request(routes), SystemsClock.utc_now())
   end
 
   test "Drive requires verified ownership, not mere visibility or sharing" do
@@ -186,10 +288,14 @@ defmodule CommaWeb.RecommendationGoogleMemberSourceTest do
     ]
 
     assert {:ok, %{"files" => [%{"id" => "d1"}]}, _} =
-             Source.read("googledrive", request(routes), DateTime.utc_now())
+             Source.read("googledrive", request(routes), SystemsClock.utc_now())
 
     assert {:error, :denied} =
-             Source.read("googledrive", fn _, _, _ -> {:error, :denied} end, DateTime.utc_now())
+             Source.read(
+               "googledrive",
+               fn _, _, _ -> {:error, :denied} end,
+               SystemsClock.utc_now()
+             )
   end
 
   test "Drive adds open comments by others that mention the member" do
@@ -243,7 +349,7 @@ defmodule CommaWeb.RecommendationGoogleMemberSourceTest do
     ]
 
     assert {:ok, %{"files" => [mention]}, _} =
-             Source.read("googledrive", request(routes), DateTime.utc_now())
+             Source.read("googledrive", request(routes), SystemsClock.utc_now())
 
     assert mention["memberRelation"] == "mentioned_you"
     assert mention["name"] == "Launch plan"

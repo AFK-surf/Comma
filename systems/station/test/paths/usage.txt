@@ -1,0 +1,45 @@
+# GET /usage: no bounds, bounds, time zones (clamped to ±24 h), Rust's float syntax for numbers, and ones that do not read.
+/admin/api/usage
+/admin/api/usage?from=0
+/admin/api/usage?from=1790800000000
+/admin/api/usage?from=1790600000000&to=1790900000000
+/admin/api/usage?from=1790600000000&to=1790900000000&tz=480
+/admin/api/usage?from=1790600000000&to=1790900000000&tz=-300
+/admin/api/usage?tz=99999
+/admin/api/usage?tz=-99999
+/admin/api/usage?tz=330.9
+/admin/api/usage?tz=-0.5
+/admin/api/usage?from=abc&to=xyz&tz=zz
+/admin/api/usage?from=1e12&to=inf
+/admin/api/usage?from=-inf&to=NaN
+/admin/api/usage?from=-Infinity&to=1e400
+/admin/api/usage?from=+1790900000000&to=.17909e13
+/admin/api/usage?from=1790900000000.&to=-0
+/admin/api/usage?from=&to=
+/admin/api/usage?from=99999999999999999999&to=-99999999999999999999
+/admin/api/usage?from=0x10&to=1_000
+/admin/api/usage?from=1790800000000&from=0
+/admin/api/usage/
+# GET /machine-sessions and one of them: unknown ids, bad ids, unknown runtimes, too few or extra segments, limits.
+/admin/api/machine-sessions
+/admin/api/machine-sessions/
+/admin/api/machine-sessions/claude
+/admin/api/machine-sessions/claude/
+/admin/api/machine-sessions/claude/00000000-0000-0000-0000-000000000000
+/admin/api/machine-sessions/codex/00000000-0000-0000-0000-000000000000
+/admin/api/machine-sessions/codex/nope?limit=5
+/admin/api/machine-sessions/gemini/x
+/admin/api/machine-sessions/Claude/x
+/admin/api/machine-sessions/claude/bad%20id
+/admin/api/machine-sessions/claude/a+b
+/admin/api/machine-sessions/claude/%E4%BD%A0
+/admin/api/machine-sessions/claude/x/extra
+/admin/api/machine-sessions//claude//x
+/admin/api/machine-sessions/claude/x?limit=-1
+# GET /memory, /host (values move between two looks: compared in shape), /footprint (retired).
+/admin/api/memory
+/admin/api/memory/
+/admin/api/host
+/admin/api/host/
+/admin/api/footprint
+/admin/api/footprint/

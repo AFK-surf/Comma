@@ -146,13 +146,13 @@ defmodule SalixStore.Convergence do
   """
   @spec converged?(module()) :: boolean()
   def converged?(impl) do
-    :persistent_term.get({__MODULE__, impl}, false) or read_converged(impl)
+    SystemsRuntime.PersistentTerm.get({__MODULE__, impl}, false) or read_converged(impl)
   end
 
   @doc "Test hook: drop the monotonic converged cache (backing store was reset)."
   @spec reset_converged_cache(module()) :: :ok
   def reset_converged_cache(impl) do
-    _ = :persistent_term.erase({__MODULE__, impl})
+    _ = SystemsRuntime.PersistentTerm.erase({__MODULE__, impl})
     :ok
   end
 
@@ -177,7 +177,7 @@ defmodule SalixStore.Convergence do
     # before it even starts). Tests inject a fixed `now`.
     now_fn =
       case opts[:now] do
-        nil -> fn -> System.system_time(:millisecond) end
+        nil -> fn -> SystemsClock.system_time(:millisecond) end
         fixed -> fn -> fixed end
       end
 
@@ -186,7 +186,7 @@ defmodule SalixStore.Convergence do
       page_size: opts[:page_size] || @default_page_size
     }
 
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
 
     case read_marker(impl) do
       {:error, :not_found} ->
@@ -242,7 +242,7 @@ defmodule SalixStore.Convergence do
   def next_due_in(impl, reconcile_ms) do
     case read_marker(impl) do
       {:ok, %{"completed_at" => at}, _etag} when is_integer(at) ->
-        now = System.system_time(:millisecond)
+        now = SystemsClock.system_time(:millisecond)
 
         cond do
           at > now -> 0
@@ -266,7 +266,7 @@ defmodule SalixStore.Convergence do
   def impl_reconcile_ms(impl) do
     # On a fresh BEAM the consumer module may not be loaded yet;
     # function_exported?/3 alone would silently pin the default interval.
-    _ = Code.ensure_loaded(impl)
+    _ = SystemsRuntime.Proc.ensure_loaded?(impl)
 
     if function_exported?(impl, :reconcile_ms, 0),
       do: impl.reconcile_ms(),
@@ -313,7 +313,7 @@ defmodule SalixStore.Convergence do
   end
 
   defp put_completed_ever(impl) do
-    body = Jason.encode!(%{"completed_at" => System.system_time(:millisecond)})
+    body = Jason.encode!(%{"completed_at" => SystemsClock.system_time(:millisecond)})
 
     case S3.put(completed_key(impl), body, if_none_match: "*") do
       {:ok, _} ->
@@ -480,7 +480,7 @@ defmodule SalixStore.Convergence do
   end
 
   defp cache_converged(impl) do
-    :persistent_term.put({__MODULE__, impl}, true)
+    SystemsRuntime.PersistentTerm.put({__MODULE__, impl}, true)
     true
   end
 
@@ -550,7 +550,7 @@ defmodule SalixStore.Convergence do
   end
 
   defp emit(impl, outcome, stats, started) do
-    duration_ms = System.monotonic_time(:millisecond) - started
+    duration_ms = SystemsClock.monotonic_time(:millisecond) - started
 
     CommaLog.log(
       "store_convergence",
@@ -560,7 +560,7 @@ defmodule SalixStore.Convergence do
       |> Map.put(:duration_ms, duration_ms)
     )
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :store, :convergence],
       Map.put(stats, :duration_ms, duration_ms),
       %{name: impl.name(), outcome: to_string(outcome)}

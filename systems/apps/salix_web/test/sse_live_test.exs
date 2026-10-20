@@ -1,4 +1,6 @@
 defmodule SalixWeb.SSELiveTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   End-to-end SSE test over a real streaming HTTP/1.1 connection: a raw
   `:gen_tcp` client connects to the Bandit server, de-chunks the
@@ -11,7 +13,7 @@ defmodule SalixWeb.SSELiveTest do
   byte-at-a-time recv variant proves the framing survives every possible
   chunk-boundary split.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.LLM.Mock
 
@@ -19,11 +21,11 @@ defmodule SalixWeb.SSELiveTest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_api_token = Application.get_env(:salix_web, :api_token)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_web, :api_token, "test-token")
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_api_token = SystemsRuntime.get_env(:salix_web, :api_token)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_web, :api_token, "test-token")
     start_supervised!(SalixStore.S3.Fake)
 
     case start_supervised(Mock) do
@@ -31,12 +33,12 @@ defmodule SalixWeb.SSELiveTest do
       {:error, {:already_started, _pid}} -> :ok
     end
 
-    Application.put_env(:salix_agent, :llm, Mock)
+    SystemsRuntime.put_env(:salix_agent, :llm, Mock)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev)
-      Application.put_env(:salix_agent, :llm, prev_llm)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
+      SystemsRuntime.put_env(:salix_agent, :llm, prev_llm)
       restore_env(:salix_web, :api_token, prev_api_token)
     end)
 
@@ -51,30 +53,18 @@ defmodule SalixWeb.SSELiveTest do
     Process.put(:test_tenant_key, tenant_key)
 
     # Lazy agent creation is gone: the agent must exist before any
-    # session/stream operation, so create a group + template + agent up front.
-    suffix = System.unique_integer([:positive])
-    template_id = "tmpl-sse-#{suffix}"
-
+    # session/stream operation, so create a group + agent up front.
     %{status: 201, body: group} =
       treq(:post, "/v1/runtime/agent-groups", json: %{name: "SSE Group"})
 
     group_id = group["group_id"]
 
-    %{status: 201} =
-      req(:post, "/v1/admin/templates",
-        json: %{
-          template_id: template_id,
-          name: "SSE Template",
-          provider: "openai",
-          model: "gpt-test"
-        }
-      )
+    SalixAgent.TestSupport.configure_platform_models!()
 
     %{status: 201, body: agent} =
       treq(:post, "/v1/runtime/agents",
         json: %{
           group_id: group_id,
-          template_id: template_id,
           name: "SSE Agent"
         }
       )
@@ -101,8 +91,8 @@ defmodule SalixWeb.SSELiveTest do
     )
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   test "snapshot is the FIRST event on the live stream", %{agent: a, session_id: session_id} do
     Mock.script([{:final, "hello back"}])
@@ -129,14 +119,14 @@ defmodule SalixWeb.SSELiveTest do
     {:ok, expected} = SalixAgent.InternalSessionStore.read(a, session_id)
 
     client = open_stream(a, session_id)
-    on_exit(fn -> Process.exit(client, :kill) end)
+    on_exit(fn -> SystemsRuntime.Proc.exit(client, :kill) end)
 
-    assert_receive {:sse_headers, headers}, 3_000
+    assert_receive {:sse_headers, headers}
     assert headers =~ "HTTP/1.1 200"
     assert String.downcase(headers) =~ "content-type: text/event-stream"
 
     # The very first frame on the wire must be the snapshot.
-    assert_receive {:sse_frame, frame}, 3_000
+    assert_receive {:sse_frame, frame}
     assert frame["event"] == "snapshot"
     assert frame["data"]["type"] == "snapshot"
 
@@ -166,10 +156,10 @@ defmodule SalixWeb.SSELiveTest do
     # Open the stream on the freshly-created agent: the snapshot reflects its
     # empty session state (idle, no messages) before any delivery settles.
     client = open_stream(a, session_id)
-    on_exit(fn -> Process.exit(client, :kill) end)
+    on_exit(fn -> SystemsRuntime.Proc.exit(client, :kill) end)
 
-    assert_receive {:sse_headers, _headers}, 3_000
-    assert_receive {:sse_frame, %{"event" => "snapshot", "data" => snap}}, 3_000
+    assert_receive {:sse_headers, _headers}
+    assert_receive {:sse_frame, %{"event" => "snapshot", "data" => snap}}
     assert snap["message_count"] == 0
     assert snap["status"] == "idle"
 
@@ -210,14 +200,14 @@ defmodule SalixWeb.SSELiveTest do
     @notification notification
     test label, %{agent: a, session_id: session_id} do
       client = open_stream(a, session_id)
-      on_exit(fn -> Process.exit(client, :kill) end)
+      on_exit(fn -> SystemsRuntime.Proc.exit(client, :kill) end)
 
-      assert_receive {:sse_headers, _headers}, 3_000
-      assert_receive {:sse_frame, %{"event" => "snapshot"}}, 3_000
+      assert_receive {:sse_headers, _headers}
+      assert_receive {:sse_frame, %{"event" => "snapshot"}}
 
       :ok = SalixAgent.Notifier.notify(a, notification_message(@notification, session_id))
 
-      assert_receive {:sse_frame, %{"event" => "update", "data" => data}}, 3_000
+      assert_receive {:sse_frame, %{"event" => "update", "data" => data}}
       assert data["type"] == "update"
       assert data["session"]["status"] == "idle"
       assert data["session"]["message_count"] == 0
@@ -233,12 +223,12 @@ defmodule SalixWeb.SSELiveTest do
     # recv exactly one byte at a time: every possible split of the chunked
     # framing AND the SSE framing is exercised; the parser must reassemble.
     client = open_stream(a, session_id, recv_len: 1)
-    on_exit(fn -> Process.exit(client, :kill) end)
+    on_exit(fn -> SystemsRuntime.Proc.exit(client, :kill) end)
 
-    assert_receive {:sse_headers, headers}, 4_000
+    assert_receive {:sse_headers, headers}
     assert String.downcase(headers) =~ "transfer-encoding: chunked"
 
-    assert_receive {:sse_frame, %{"event" => "snapshot", "data" => snap}}, 4_000
+    assert_receive {:sse_frame, %{"event" => "snapshot", "data" => snap}}
     assert snap == %{"type" => "snapshot", "status" => "idle", "message_count" => 0}
 
     {:ok, :created} =
@@ -263,25 +253,21 @@ defmodule SalixWeb.SSELiveTest do
   defp notification_message(:session_updated, session_id), do: {:session_updated, session_id}
   defp notification_message(:settled, _session_id), do: {:settled, %{}}
 
-  defp assert_update_matching(predicate, timeout \\ 4_000) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    do_assert_update_matching(predicate, deadline)
-  end
-
-  defp do_assert_update_matching(predicate, deadline) do
-    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
-
-    receive do
+  # Waits for the update or for the stream to end, with no deadline of its
+  # own: how long the round takes depends on the machine, and the test's own
+  # timeout ends a wait that never settles.
+  defp assert_update_matching(predicate) do
+    SystemsRuntime.Proc.receive do
       {:sse_frame, %{"event" => "update", "data" => data} = frame} ->
         if predicate.(data, frame),
           do: {data, frame},
-          else: do_assert_update_matching(predicate, deadline)
+          else: assert_update_matching(predicate)
+
+      {:sse_closed, reason} ->
+        flunk("SSE stream closed before a matching update frame: #{inspect(reason)}")
 
       {:sse_client_error, message} ->
         flunk("SSE client error: #{message}")
-    after
-      remaining ->
-        flunk("expected matching SSE update frame")
     end
   end
 
@@ -295,12 +281,12 @@ defmodule SalixWeb.SSELiveTest do
   #   {:sse_client_error, message}   — parser crash (should never happen)
   # `recv_len: 1` forces worst-case byte-at-a-time delivery into the parser.
   defp open_stream(agent_id, session_id, opts \\ []) do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
     recv_len = Keyword.get(opts, :recv_len, 0)
     token = tenant_key()
     path = "/v1/runtime/agents/#{agent_id}/sessions/#{session_id}/stream"
 
-    spawn(fn ->
+    SystemsRuntime.Proc.spawn(fn ->
       port = SalixWeb.Application.http_port()
       {:ok, sock} = :gen_tcp.connect(@host, port, [:binary, active: false, packet: :raw], 2_000)
 
@@ -316,7 +302,11 @@ defmodule SalixWeb.SSELiveTest do
       try do
         recv_loop(sock, parent, recv_len, %{phase: :headers, buf: "", sse: ""})
       rescue
-        e -> send(parent, {:sse_client_error, Exception.format(:error, e, __STACKTRACE__)})
+        e ->
+          SystemsRuntime.Proc.send(
+            parent,
+            {:sse_client_error, Exception.format(:error, e, __STACKTRACE__)}
+          )
       after
         :gen_tcp.close(sock)
       end
@@ -328,11 +318,11 @@ defmodule SalixWeb.SSELiveTest do
       {:ok, bytes} ->
         case ingest(parent, %{st | buf: st.buf <> bytes}) do
           {:cont, st} -> recv_loop(sock, parent, recv_len, st)
-          :done -> send(parent, {:sse_closed, :final_chunk})
+          :done -> SystemsRuntime.Proc.send(parent, {:sse_closed, :final_chunk})
         end
 
       {:error, reason} ->
-        send(parent, {:sse_closed, reason})
+        SystemsRuntime.Proc.send(parent, {:sse_closed, reason})
     end
   end
 
@@ -340,7 +330,7 @@ defmodule SalixWeb.SSELiveTest do
   defp ingest(parent, %{phase: :headers, buf: buf} = st) do
     case :binary.split(buf, "\r\n\r\n") do
       [head, rest] ->
-        send(parent, {:sse_headers, head})
+        SystemsRuntime.Proc.send(parent, {:sse_headers, head})
         ingest(parent, %{st | phase: :body, buf: rest})
 
       [_incomplete] ->
@@ -396,9 +386,9 @@ defmodule SalixWeb.SSELiveTest do
       parsed = parse_frame(frame)
 
       if Map.has_key?(parsed, "event") or Map.has_key?(parsed, "data") do
-        send(parent, {:sse_frame, parsed})
+        SystemsRuntime.Proc.send(parent, {:sse_frame, parsed})
       else
-        send(parent, {:sse_comment, parsed["comment"]})
+        SystemsRuntime.Proc.send(parent, {:sse_comment, parsed["comment"]})
       end
     end
 
@@ -420,11 +410,11 @@ defmodule SalixWeb.SSELiveTest do
     end)
   end
 
-  defp eventually(fun, retries \\ 200) do
+  defp eventually(fun, retries \\ 1500) do
     cond do
       fun.() -> :ok
       retries == 0 -> flunk("condition never became true")
-      true -> Process.sleep(20) && eventually(fun, retries - 1)
+      true -> SystemsRuntime.Proc.sleep(20) && eventually(fun, retries - 1)
     end
   end
 end

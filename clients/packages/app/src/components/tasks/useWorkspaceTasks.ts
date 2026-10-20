@@ -2,34 +2,52 @@ import { useTaskArchive, archiveDisabledReason } from "./useTaskArchive";
 import { useCommaMessages } from "@comma/i18n/react";
 import { useCommaLocale } from "@comma/i18n/react";
 import {
+  useTopic,
   type ProductInboxItem,
   type ProductInboxListResult,
-} from "@comma/native-bridge";
-import { taskStatusBucket, type TaskWorkspaceTask } from "@comma/ui";
+  type StationTask,
+  type TaskLoop,
+} from "@comma/core-client";
+import {
+  taskStatusBucket,
+  type TaskWorkspaceTask,
+} from "@comma/ui/components/task-workspace";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   productInboxErrorMessage,
   useProductInboxProjection,
 } from "../../product-inbox";
 import { taskOriginKey, type TaskOriginKey } from "./taskOrigin";
-import {
-  readActiveWorkspaceId,
-  subscribeActiveWorkspace,
-  writeActiveWorkspaceId,
-} from "../activeWorkspace";
-import { useCommaAuth } from "../AuthGate";
+import { useSelectWorkspace, useWorkspacePreference } from "../activeWorkspace";
 import { effectiveProductFreshness } from "../inbox/freshness";
+
+/** Where a Task a station hosts runs (a station's own chat, listed from the Task index). */
+export interface TaskHost {
+  station: string;
+  thread: string;
+  /** The machine's name, where this device knows it; null else. */
+  machine: string | null;
+  /** Whether the machine is online, where this device knows it. */
+  online: boolean | null;
+  model: string | null;
+}
 
 export type TaskViewModel = TaskWorkspaceTask & {
   origin: TaskOriginKey | undefined;
+  /** Set on a Task a station hosts. */
+  host?: TaskHost | undefined;
   labels?: readonly string[] | undefined;
   clientPlatform?: string | undefined;
+  /** Set on a Loop Task only: its cards wear the Loops chip. */
+  loop?: TaskLoop | undefined;
 };
 
 export interface UseWorkspaceTasksOptions {
   /** Retains the host-owned ProductInbox projection while this surface is active. */
   enabled?: boolean;
   includeTask?: { groupId: string; conversationId: string } | undefined;
+  /** Lists the Tasks the workspace's stations host too (the Tasks page and Home's rail open them). */
+  stationTasks?: boolean;
 }
 
 export interface WorkspaceTasksState {
@@ -47,23 +65,23 @@ export interface WorkspaceTasksState {
 export function useWorkspaceTasks({
   enabled = true,
   includeTask,
+  stationTasks: withStationTasks = false,
 }: UseWorkspaceTasksOptions = {}): WorkspaceTasksState {
   const locale = useCommaLocale();
   const archive = useTaskArchive();
   const messages = useCommaMessages();
-  const auth = useCommaAuth();
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState(readActiveWorkspaceId);
+  const preference = useWorkspacePreference(enabled);
+  const activeWorkspaceId = preference || undefined;
+  const selectWorkspace = useSelectWorkspace();
   const [loadMoreState, setLoadMoreState] = useState<{
     error?: string;
     pending: boolean;
   }>({ pending: false });
   const { refresh, result } = useProductInboxProjection({
-    enabled,
-    session: auth.productLease,
+    enabled: enabled && preference !== undefined,
     ...(activeWorkspaceId ? { workspaceId: activeWorkspaceId } : {}),
   });
 
-  useEffect(() => subscribeActiveWorkspace(setActiveWorkspaceId), []);
   useEffect(() => {
     const requestedWorkspace = includeTask
       ? result?.workspaces?.find(
@@ -71,11 +89,24 @@ export function useWorkspaceTasks({
         )?.id
       : undefined;
     const next = requestedWorkspace ?? result?.activeWorkspaceId;
-    if (next && next !== activeWorkspaceId) writeActiveWorkspaceId(next);
-  }, [activeWorkspaceId, includeTask, result?.activeWorkspaceId, result?.workspaces]);
+    if (next && next !== activeWorkspaceId) selectWorkspace(next);
+  }, [
+    activeWorkspaceId,
+    includeTask,
+    result?.activeWorkspaceId,
+    result?.workspaces,
+    selectWorkspace,
+  ]);
 
+  // The Tasks the workspace's stations host, listed beside those Salix keeps.
+  const listedWorkspaceId = result?.activeWorkspaceId || activeWorkspaceId;
+  const stationTasks = useTopic(
+    enabled && withStationTasks && listedWorkspaceId
+      ? { topic: "stationTasks", workspace: listedWorkspaceId }
+      : null
+  ).value;
   const taskCache = useRef(new Map<string, TaskViewModel>());
-  const tasks = useMemo(() => {
+  const salixTasks = useMemo(() => {
     if (!result) return [];
     const previous = taskCache.current;
     const next = new Map<string, TaskViewModel>();
@@ -117,9 +148,23 @@ export function useWorkspaceTasks({
     () =>
       result?.workspaces?.find((workspace) => workspace.id === selectedWorkspaceId)
         ?.group_id ??
-      tasks.find((task) => task.workspaceId === selectedWorkspaceId)?.groupId,
-    [result?.workspaces, selectedWorkspaceId, tasks]
+      salixTasks.find((task) => task.workspaceId === selectedWorkspaceId)?.groupId,
+    [result?.workspaces, selectedWorkspaceId, salixTasks]
   );
+  const tasks = useMemo(() => {
+    if (!result || !selectedWorkspaceId || !stationTasks) return salixTasks;
+    const hosted = stationTasks.tasks
+      .filter((task) => task.status !== "archived")
+      .map((task) =>
+        toStationTaskViewModel(
+          task,
+          selectedWorkspaceId,
+          activeGroupId ?? "",
+          stationTasks
+        )
+      );
+    return hosted.length === 0 ? salixTasks : [...salixTasks, ...hosted];
+  }, [activeGroupId, result, salixTasks, selectedWorkspaceId, stationTasks]);
 
   const requestedTask = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -129,7 +174,7 @@ export function useWorkspaceTasks({
     );
     if (!targetWorkspace) return;
     if (targetWorkspace.id !== selectedWorkspaceId) {
-      writeActiveWorkspaceId(targetWorkspace.id);
+      selectWorkspace(targetWorkspace.id);
       return;
     }
     const key = `${targetWorkspace.id}:${includeTask.conversationId}`;
@@ -140,7 +185,7 @@ export function useWorkspaceTasks({
       workspaceId: targetWorkspace.id,
       conversationIds: [includeTask.conversationId],
     }).catch(() => undefined);
-  }, [enabled, includeTask, result, selectedWorkspaceId, refresh]);
+  }, [enabled, includeTask, result, selectedWorkspaceId, refresh, selectWorkspace]);
 
   const loadMore = useCallback(async () => {
     if (loadMoreState.pending || !result?.hasMore || !result.nextCursor) return;
@@ -149,17 +194,17 @@ export function useWorkspaceTasks({
 
     setLoadMoreState({ pending: true });
     try {
-      const envelope = await refresh({
+      await refresh({
         cursor: result.nextCursor,
-        limit: 50,
         workspaceId,
       });
-      if (envelope.snapshot.source !== "live-sync") {
-        throw new Error(productInboxErrorMessage(envelope.snapshot.errorCode, locale));
-      }
       setLoadMoreState({ pending: false });
     } catch (error) {
-      setLoadMoreState({ error: errorMessage(error), pending: false });
+      // The core says why with the list's own error code.
+      setLoadMoreState({
+        error: productInboxErrorMessage((error as { code?: string }).code, locale),
+        pending: false,
+      });
     }
   }, [activeWorkspaceId, loadMoreState.pending, locale, refresh, result]);
 
@@ -207,10 +252,44 @@ function toTaskViewModel(
     origin: taskOriginKey(item.origin),
     labels: item.labels,
     clientPlatform: item.clientPlatform,
+    loop: item.loop,
     statusBucket: taskStatusBucket(item.status),
     title: item.title,
     updatedAt: item.updatedAt,
     workspaceId: item.workspaceId,
+  };
+}
+
+function toStationTaskViewModel(
+  task: StationTask,
+  workspaceId: string,
+  groupId: string,
+  list: { state: string; failed?: boolean | undefined }
+): TaskViewModel {
+  return {
+    activityStatus: task.status,
+    // A station's Task has no Salix conversation: its id stands in, and opening it goes to the station.
+    conversationId: task.id,
+    freshness: list.state === "ready" && !list.failed ? "fresh" : "stale",
+    groupId,
+    host: {
+      station: task.station,
+      thread: task.thread,
+      machine: task.machine?.name ?? null,
+      online: task.machine ? task.machine.online : null,
+      model: task.model,
+    },
+    id: task.id,
+    labels: task.labels,
+    messages: [],
+    origin: undefined,
+    statusBucket: taskStatusBucket(task.status),
+    title: task.title ?? "",
+    updatedAt: task.lastActivityAt ?? task.createdAt ?? 0,
+    workspaceId,
+    ...(task.runtime === "codex" || task.runtime === "claude"
+      ? { worker: task.runtime }
+      : {}),
   };
 }
 
@@ -227,6 +306,7 @@ function sameTaskViewModel(a: TaskViewModel, b: TaskViewModel): boolean {
         b.labels !== undefined &&
         a.labels.length === b.labels.length &&
         a.labels.every((label, index) => label === b.labels?.[index]))) &&
+    sameLoop(a.loop, b.loop) &&
     a.statusBucket === b.statusBucket &&
     a.title === b.title &&
     a.updatedAt === b.updatedAt &&
@@ -234,6 +314,7 @@ function sameTaskViewModel(a: TaskViewModel, b: TaskViewModel): boolean {
   );
 }
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
+/** Each topic value is a new object; a Loop changes when one of its facts does. */
+function sameLoop(a: TaskLoop | undefined, b: TaskLoop | undefined) {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
 }

@@ -4,21 +4,23 @@ defmodule SalixAgent.Browser.Connection do
   The socket process retains one frame per attached target and never forwards
   page events into a consumer mailbox.
   """
-  use GenServer
+  use SystemsRuntime.Server
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts)
 
   def command(pid, method, params \\ %{}, session \\ nil, timeout \\ 15_000),
-    do: GenServer.call(pid, {:command, method, params, session, timeout}, timeout + 2000)
+    do: SystemsClock.call(pid, {:command, method, params, session, timeout}, timeout + 2000)
 
-  def storage_session(pid, session), do: GenServer.call(pid, {:storage_session, session})
-  def origins(pid), do: GenServer.call(pid, :origins)
-  def forget_origin(pid, origin), do: GenServer.call(pid, {:forget_origin, origin})
-  def remember_origin(pid, origin), do: GenServer.call(pid, {:origin, origin})
+  def storage_session(pid, session),
+    do: SystemsRuntime.Server.call(pid, {:storage_session, session})
 
-  def frame(pid, session), do: GenServer.call(pid, {:frame, session})
-  def clear_frame(pid, session), do: GenServer.call(pid, {:clear_frame, session})
-  def generation(pid, session), do: GenServer.call(pid, {:generation, session})
+  def origins(pid), do: SystemsRuntime.Server.call(pid, :origins)
+  def forget_origin(pid, origin), do: SystemsRuntime.Server.call(pid, {:forget_origin, origin})
+  def remember_origin(pid, origin), do: SystemsRuntime.Server.call(pid, {:origin, origin})
+
+  def frame(pid, session), do: SystemsRuntime.Server.call(pid, {:frame, session})
+  def clear_frame(pid, session), do: SystemsRuntime.Server.call(pid, {:clear_frame, session})
+  def generation(pid, session), do: SystemsRuntime.Server.call(pid, {:generation, session})
 
   @impl true
   def format_status(status),
@@ -27,7 +29,7 @@ defmodule SalixAgent.Browser.Connection do
   @impl true
   def init(opts) do
     owner = Keyword.fetch!(opts, :owner)
-    Process.monitor(owner)
+    SystemsRuntime.Proc.monitor(owner)
     uri = URI.parse(Keyword.fetch!(opts, :url))
     scheme = if uri.scheme == "wss", do: :https, else: :http
     ws_scheme = if uri.scheme == "wss", do: :wss, else: :ws
@@ -43,7 +45,7 @@ defmodule SalixAgent.Browser.Connection do
            ),
          {:ok, conn, ref} <-
            Mint.WebSocket.upgrade(ws_scheme, conn, path, Keyword.get(opts, :headers, [])) do
-      timer = Process.send_after(self(), :upgrade_timeout, 10_000)
+      timer = SystemsClock.send_after(SystemsRuntime.Proc.self(), :upgrade_timeout, 10_000)
 
       {:ok,
        %{
@@ -82,7 +84,7 @@ defmodule SalixAgent.Browser.Connection do
       id = state.serial + 1
       message = %{id: id, method: method, params: params}
       message = if session, do: Map.put(message, :sessionId, session), else: message
-      timer = Process.send_after(self(), {:timeout, id}, timeout)
+      timer = SystemsClock.send_after(SystemsRuntime.Proc.self(), {:timeout, id}, timeout)
       pending = Map.put(state.pending, id, {from, timer, message})
       state = %{state | serial: id, pending: pending}
       if state.ws, do: {:noreply, send_json(state, message)}, else: {:noreply, state}
@@ -162,7 +164,7 @@ defmodule SalixAgent.Browser.Connection do
   defp response({:done, _}, state) do
     case Mint.WebSocket.new(state.conn, state.ref, state.status, state.headers) do
       {:ok, conn, ws} ->
-        Process.cancel_timer(state.timer)
+        SystemsClock.cancel_timer(state.timer)
 
         Enum.reduce(Enum.sort(state.pending), %{state | conn: conn, ws: ws, headers: []}, fn {_,
                                                                                               {_,
@@ -200,7 +202,7 @@ defmodule SalixAgent.Browser.Connection do
             state
 
           {{from, timer, command}, pending} ->
-            Process.cancel_timer(timer)
+            SystemsClock.cancel_timer(timer)
 
             result =
               if Map.has_key?(packet, "result"),
@@ -208,7 +210,7 @@ defmodule SalixAgent.Browser.Connection do
                 else: {:error, "browser_operation_failed"}
 
             state = track_session(state, command, result)
-            GenServer.reply(from, result)
+            SystemsRuntime.Server.reply(from, result)
             %{state | pending: pending}
         end
 
@@ -250,7 +252,7 @@ defmodule SalixAgent.Browser.Connection do
 
         state = %{state | serial: state.serial + 1}
         previous = state.frames[session]
-        now = System.monotonic_time(:millisecond)
+        now = SystemsClock.monotonic_time(:millisecond)
 
         if MapSet.member?(state.sessions, session) and byte_size(frame["data"] || "") <= 1_400_000 and
              (is_nil(previous) or now - previous["received_at"] >= 100) do
@@ -258,7 +260,7 @@ defmodule SalixAgent.Browser.Connection do
             frame
             |> Map.take(~w(data metadata))
             |> Map.put("received_at", now)
-            |> Map.put("sequence", System.unique_integer([:positive, :monotonic]))
+            |> Map.put("sequence", SystemsRuntime.Proc.unique_integer([:positive, :monotonic]))
 
           %{state | frames: Map.put(state.frames, session, value)}
         else
@@ -317,7 +319,8 @@ defmodule SalixAgent.Browser.Connection do
       Map.has_key?(state.origins, origin) ->
         %{
           state
-          | origin_access: Map.put(state.origin_access, origin, System.system_time(:microsecond))
+          | origin_access:
+              Map.put(state.origin_access, origin, SystemsClock.system_time(:microsecond))
         }
 
       true ->
@@ -328,7 +331,8 @@ defmodule SalixAgent.Browser.Connection do
           | origins: Map.put(state.origins, origin, serial),
             origin_queue: :gb_sets.add({serial, origin}, state.origin_queue),
             origin_serial: serial,
-            origin_access: Map.put(state.origin_access, origin, System.system_time(:microsecond))
+            origin_access:
+              Map.put(state.origin_access, origin, SystemsClock.system_time(:microsecond))
         }
     end
   end
@@ -356,7 +360,7 @@ defmodule SalixAgent.Browser.Connection do
   @impl true
   def terminate(_, state) do
     Enum.each(state.pending, fn {_, {from, _, _}} ->
-      GenServer.reply(from, {:error, :browser_outcome_unknown})
+      SystemsRuntime.Server.reply(from, {:error, :browser_outcome_unknown})
     end)
 
     Mint.HTTP.close(state.conn)

@@ -19,7 +19,7 @@ defmodule SalixIM.ConversationSeedInput do
 
   def prepare(group_id, conversation_id, attrs) when is_map(attrs) do
     attrs = stringify(attrs)
-    now = timestamp(attrs["created_at"] || System.system_time(:millisecond))
+    now = timestamp(attrs["created_at"] || SystemsClock.system_time(:millisecond))
     conversation = attrs["conversation"] || %{}
     kind = nonblank(conversation["kind"] || attrs["kind"], "user_chat")
 

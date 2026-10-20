@@ -103,7 +103,6 @@ defmodule SalixAgent.InternalSession.State do
             flush_id: nil,
             async_results: [],
             async_result_refs: %{},
-            redactions: [],
             llm_failure_streak: nil,
             context_overflow_recovery: nil,
             runaway_unsettled_streak: nil,
@@ -112,7 +111,10 @@ defmodule SalixAgent.InternalSession.State do
             active_source_message_ids: [],
             last_compaction_recovery: nil,
             compact_results: %{},
-            fork_request_id: nil
+            fork_request_id: nil,
+            # The Session's own model choice (`SalixAgent.ModelChoice`); nil
+            # follows the Agent's configuration.
+            model: nil
 
   @type status :: :idle | :active
   @type activity_status :: :paused | :thinking | :execution | :messaging | :waiting | :failed
@@ -143,19 +145,23 @@ defmodule SalixAgent.InternalSession.State do
 
   def llm_failure_activation_cap,
     do:
-      Application.get_env(:salix_agent, :llm_failure_activation_cap, @llm_failure_activation_cap)
+      SystemsRuntime.get_env(
+        :salix_agent,
+        :llm_failure_activation_cap,
+        @llm_failure_activation_cap
+      )
 
   def runaway_unsettled_round_cap,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :salix_agent,
         :runaway_unsettled_round_cap,
         @runaway_unsettled_round_cap
       )
 
   def repeated_tool_result_cap,
-    do: Application.get_env(:salix_agent, :repeated_tool_result_cap, @repeated_tool_result_cap)
+    do: SystemsRuntime.get_env(:salix_agent, :repeated_tool_result_cap, @repeated_tool_result_cap)
 
   def input_round_cap,
-    do: Application.get_env(:salix_agent, :input_round_cap, @input_round_cap)
+    do: SystemsRuntime.get_env(:salix_agent, :input_round_cap, @input_round_cap)
 end

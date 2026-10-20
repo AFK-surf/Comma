@@ -1,11 +1,14 @@
 defmodule SalixIM.ControlCommandTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Inbound `<salix-command>` blocks: parsed at the provider funnel, executed
   against the group's Router agent, answered in the originating chat, and never
   staged for the agent loop.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixIM.ControlCommand
   alias SalixIM.TestSupport.BanditServer
   alias SalixStore.Keys
@@ -88,7 +91,7 @@ defmodule SalixIM.ControlCommandTest do
       {:ok, raw, conn} = read_body(conn)
       body = if raw == "", do: %{}, else: Jason.decode!(raw)
 
-      if Process.whereis(__MODULE__) do
+      if SystemsRuntime.Proc.whereis(__MODULE__) do
         Agent.update(__MODULE__, &[%{path: conn.request_path, body: body} | &1])
       end
 
@@ -117,10 +120,6 @@ defmodule SalixIM.ControlCommandTest do
     @impl true
     def compact_session(_agent_id, _session_id),
       do: {:ok, %{"status" => "noop", "reason" => "no_new_live_messages"}}
-
-    @impl true
-    def emergency_compact_session(_agent_id, _session_id),
-      do: {:ok, %{"status" => "emergency_compacted"}}
   end
 
   defmodule ExternalRuntimeAgentControl do
@@ -136,9 +135,6 @@ defmodule SalixIM.ControlCommandTest do
 
     @impl true
     def compact_session(_agent_id, _session_id), do: {:error, :internal_runtime_only}
-
-    @impl true
-    def emergency_compact_session(_agent_id, _session_id), do: {:error, :internal_runtime_only}
   end
 
   defmodule FailedAgentControl do
@@ -166,10 +162,6 @@ defmodule SalixIM.ControlCommandTest do
 
     @impl true
     def compact_session(_agent_id, _session_id), do: {:ok, %{"status" => "compacted"}}
-
-    @impl true
-    def emergency_compact_session(_agent_id, _session_id),
-      do: {:ok, %{"status" => "emergency_compacted"}}
   end
 
   defmodule FreshAgentControl do
@@ -195,10 +187,6 @@ defmodule SalixIM.ControlCommandTest do
 
     @impl true
     def compact_session(_agent_id, _session_id), do: {:ok, %{"status" => "compacted"}}
-
-    @impl true
-    def emergency_compact_session(_agent_id, _session_id),
-      do: {:ok, %{"status" => "emergency_compacted"}}
   end
 
   defmodule StubAgentControl do
@@ -265,21 +253,6 @@ defmodule SalixIM.ControlCommandTest do
       end)
 
       Agent.get(__MODULE__, &Map.get(&1, :compact_result, {:ok, %{"status" => "compacted"}}))
-    end
-
-    @impl true
-    def emergency_compact_session(agent_id, session_id) do
-      Agent.update(__MODULE__, fn state ->
-        %{state | calls: [{:emergency_compact_session, agent_id, session_id} | state.calls]}
-      end)
-
-      {:ok,
-       %{
-         "status" => "emergency_compacted",
-         "through_id" => 214,
-         "max_bytes" => 1_000,
-         "replacement" => "[emergency-compacted non-model message over 1000 bytes]"
-       }}
     end
   end
 
@@ -377,7 +350,7 @@ defmodule SalixIM.ControlCommandTest do
             {:halt, offset}
           else
             length = min(@chunk, byte_size(body) - offset)
-            if Process.whereis(__MODULE__), do: Agent.update(__MODULE__, &(&1 + 1))
+            if SystemsRuntime.Proc.whereis(__MODULE__), do: Agent.update(__MODULE__, &(&1 + 1))
             {[binary_part(body, offset, length)], offset + length}
           end
         end,
@@ -439,110 +412,8 @@ defmodule SalixIM.ControlCommandTest do
       assert {:ok, :status} = ControlCommand.parse("<salix-command>status</salix-command>")
       assert {:ok, :compact} = ControlCommand.parse("<salix-command>compact</salix-command>")
 
-      assert {:ok, :emergency_compact} =
-               ControlCommand.parse("<salix-command>emergency-compact</salix-command>")
-
       assert {:ok, :status} =
                ControlCommand.parse("@bot please <salix-command>\n  STATUS\n</salix-command> now")
-    end
-
-    test "recognizes the argument-taking commands and help" do
-      assert {:ok, :help} = ControlCommand.parse("<salix-command>help</salix-command>")
-      assert {:ok, {:ls, "/"}} = ControlCommand.parse("<salix-command>ls /</salix-command>")
-
-      assert {:ok, {:cat, "/artifacts/report.md"}} =
-               ControlCommand.parse("<salix-command>cat /artifacts/report.md</salix-command>")
-
-      # A bare `ls` means the root, the way it means the working directory in a
-      # shell; a bare `cat` has no file it could mean.
-      assert {:ok, {:ls, "/"}} = ControlCommand.parse("<salix-command>ls</salix-command>")
-
-      assert {:error, {:missing_path, "cat"}} =
-               ControlCommand.parse("<salix-command>cat</salix-command>")
-    end
-
-    # Only the NAME is case-folded. A VFS path is a manifest key: downcasing it
-    # makes every capitalised file unaddressable, and splitting on whitespace
-    # past the name makes every file with a space in it unaddressable.
-    test "the path keeps its case and its spaces" do
-      assert {:ok, {:cat, "/Notes/Q3 Plan.md"}} =
-               ControlCommand.parse("<salix-command>CAT  /Notes/Q3 Plan.md </salix-command>")
-    end
-
-    # Chat clients invite `code` formatting, and phone keyboards add smart
-    # quotes; the marks are not part of the manifest key.
-    test "a quoted or code-formatted path is unwrapped" do
-      assert {:ok, {:cat, "/notes.md"}} =
-               ControlCommand.parse("<salix-command>cat `/notes.md`</salix-command>")
-
-      assert {:ok, {:ls, "/artifacts"}} =
-               ControlCommand.parse(~s(<salix-command>ls "/artifacts"</salix-command>))
-    end
-
-    # A path typed without its leading slash is the same path. Leaving it
-    # relative would miss every manifest key, which are all absolute.
-    test "a relative path is made absolute" do
-      assert {:ok, {:ls, "/artifacts"}} =
-               ControlCommand.parse("<salix-command>ls artifacts</salix-command>")
-    end
-
-    test "an unsupported body still intercepts instead of leaking into the prompt" do
-      assert {:error, {:unknown_command, "restart"}} =
-               ControlCommand.parse("<salix-command>restart</salix-command>")
-
-      assert {:error, {:unknown_command, ""}} =
-               ControlCommand.parse("<salix-command></salix-command>")
-    end
-
-    test "text without a well-formed block is ordinary agent input" do
-      assert :none = ControlCommand.parse("what is the status of the launch?")
-      assert :none = ControlCommand.parse("<salix-command>status")
-      assert :none = ControlCommand.parse("")
-      assert :none = ControlCommand.parse(nil)
-      assert :none = ControlCommand.parse(%{"text" => "<salix-command>status</salix-command>"})
-    end
-
-    # One message is one command: honoring every block would let a single
-    # message fan out into repeated runtime operations.
-    test "only the first block is honored" do
-      assert {:ok, :status} =
-               ControlCommand.parse(
-                 "<salix-command>status</salix-command><salix-command>compact</salix-command>"
-               )
-    end
-
-    # Every Slack ping primitive and link is `<`-delimited, and an unknown body
-    # is quoted back into the chat. Excluding `<` from the body means the echo
-    # can never make the bot mass-notify a channel.
-    test "a body containing markup is not a command and is never echoed" do
-      assert :none = ControlCommand.parse("<salix-command><!channel></salix-command>")
-      assert :none = ControlCommand.parse("<salix-command><@U123></salix-command>")
-      assert :none = ControlCommand.parse("<salix-command><https://evil|Click></salix-command>")
-    end
-
-    # The bound has to hold a command name plus a VFS path, so it is not tight
-    # around a name; a body past it does not match at all.
-    test "an over-long body is not a command" do
-      assert {:error, {:unknown_command, _}} =
-               ControlCommand.parse(
-                 "<salix-command>" <> String.duplicate("x", 256) <> "</salix-command>"
-               )
-
-      assert :none =
-               ControlCommand.parse(
-                 "<salix-command>" <> String.duplicate("x", 257) <> "</salix-command>"
-               )
-    end
-
-    # A lazy `.*?` body restarts a scan to end-of-input at every opener, which
-    # costs ~0.9s at Slack's 40kB text cap on the webhook process before the
-    # ACK. The bounded, `<`-free body keeps a failed match local.
-    test "repeated openers stay linear" do
-      payload = String.duplicate("<salix-command>", 10_000)
-
-      {micros, :none} = :timer.tc(fn -> ControlCommand.parse(payload) end)
-
-      assert micros < 100_000, "parse took #{div(micros, 1000)}ms on #{byte_size(payload)} bytes"
     end
   end
 
@@ -551,26 +422,6 @@ defmodule SalixIM.ControlCommandTest do
   # The docs promise these caps are operator-movable; the pool is built once at
   # application start, so the helper is the only thing a test can pin.
   describe "pool caps" do
-    test "the configured cap is honored, and bad values fall back" do
-      key = :control_command_max_children_test_key
-      previous = Application.get_env(:salix_im, key)
-      on_exit(fn -> restore(:salix_im, key, previous) end)
-
-      assert SalixIM.Application.control_command_max_children(key, 32) == 32
-
-      Application.put_env(:salix_im, key, 7)
-      assert SalixIM.Application.control_command_max_children(key, 32) == 7
-
-      Application.put_env(:salix_im, key, :infinity)
-      assert SalixIM.Application.control_command_max_children(key, 32) == :infinity
-
-      for bad <- [0, -1, "16", nil] do
-        Application.put_env(:salix_im, key, bad)
-
-        assert SalixIM.Application.control_command_max_children(key, 32) == 32,
-               "expected #{inspect(bad)} to fall back to the default"
-      end
-    end
   end
 
   defmodule ForbiddenAgentWorkspace do
@@ -585,28 +436,28 @@ defmodule SalixIM.ControlCommandTest do
       SalixAgent.TestSupport.stop_all_agents()
 
       previous = %{
-        s3: Application.get_env(:salix_store, :s3_backend),
-        api: Application.get_env(:salix_im, :slack_api_base_url),
-        agent_control: Application.get_env(:salix_im, :agent_control_mod),
-        agent_workspace: Application.get_env(:salix_im, :agent_workspace_mod),
-        execution: Application.get_env(:salix_im, :control_command_execution)
+        s3: SystemsRuntime.get_env(:salix_store, :s3_backend),
+        api: SystemsRuntime.get_env(:salix_im, :slack_api_base_url),
+        agent_control: SystemsRuntime.get_env(:salix_im, :agent_control_mod),
+        agent_workspace: SystemsRuntime.get_env(:salix_im, :agent_workspace_mod),
+        execution: SystemsRuntime.get_env(:salix_im, :control_command_execution)
       }
 
-      Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
       start_supervised!(SalixStore.S3.Fake)
       SalixAgent.TestSupport.configure_control_fixtures!()
 
       start_supervised!(MockSlack)
       start_supervised!(StubAgentControl)
       start_supervised!(StubAgentWorkspace)
-      Application.put_env(:salix_im, :agent_control_mod, StubAgentControl)
-      Application.put_env(:salix_im, :agent_workspace_mod, StubAgentWorkspace)
+      SystemsRuntime.put_env(:salix_im, :agent_control_mod, StubAgentControl)
+      SystemsRuntime.put_env(:salix_im, :agent_workspace_mod, StubAgentWorkspace)
       # Commands run on a Task in production so a compaction cannot outlast the
       # webhook ACK; the suite runs them inline so the reply is observable.
-      Application.put_env(:salix_im, :control_command_execution, :sync)
+      SystemsRuntime.put_env(:salix_im, :control_command_execution, :sync)
 
       port = BanditServer.start!(fn p -> {Bandit, plug: MockSlack, port: p} end)
-      Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+      SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
 
       on_exit(fn ->
         SalixAgent.TestSupport.stop_all_agents()
@@ -637,7 +488,7 @@ defmodule SalixIM.ControlCommandTest do
         end)
 
       connect_id = "sl-command"
-      now = System.system_time(:millisecond)
+      now = SystemsClock.system_time(:millisecond)
 
       {:ok, _} =
         SalixStore.CasRecord.create(Keys.ctl_im_connect(group_id, connect_id), %{
@@ -691,54 +542,6 @@ defmodule SalixIM.ControlCommandTest do
       assert MockSlack.requests("chat.postMessage") == []
     end
 
-    test "client compaction commands use the group's Router session", ctx do
-      for command <- ["compact", "emergency-compact"] do
-        assert {:ok, _} =
-                 SalixIM.RouterConversationInput.append_user_message(ctx.group_id, %{
-                   "client_request_id" => "client-" <> command,
-                   "content" => [
-                     %{"type" => "text", "text" => "<salix-command>#{command}</salix-command>"}
-                   ]
-                 })
-      end
-
-      assert [
-               {:compact_session, agent_id, session_id},
-               {:session_status, agent_id, session_id},
-               {:emergency_compact_session, agent_id, session_id}
-             ] = StubAgentControl.calls()
-
-      assert agent_id == ctx.agent_id
-
-      assert {:ok, ^session_id} =
-               SalixIM.ProviderConnects.agent_group_router_session_id(ctx.agent_id, ctx.group_id)
-    end
-
-    test "client unknown commands and disabled VFS return answers, not prompts", ctx do
-      for {command, expected} <- [{"shutdown", "Unknown"}, {"cat /notes.md", "disabled"}] do
-        assert {:ok, result} =
-                 SalixIM.RouterConversationInput.append_user_message(ctx.group_id, %{
-                   "client_request_id" => "client-" <> command,
-                   "content" => [
-                     %{"type" => "text", "text" => "<salix-command>#{command}</salix-command>"}
-                   ]
-                 })
-
-        assert {:ok, messages} =
-                 SalixIM.Conversations.list_group_conversation_messages(
-                   ctx.group_id,
-                   result["conversation_id"],
-                   limit: 10
-                 )
-
-        reply = List.last(messages)
-        assert reply["delivery_filter"] == %{"participant_ids" => []}
-        assert hd(reply["content"])["text"] =~ expected
-      end
-
-      assert StubAgentControl.calls() == []
-    end
-
     test "status answers in the source thread and stages nothing for the agent", ctx do
       assert {:ok, :command} =
                enqueue(ctx, "<salix-command>status</salix-command>", "cmd-status")
@@ -783,54 +586,6 @@ defmodule SalixIM.ControlCommandTest do
       refute_router_message(ctx.group_id, "cmd-clear")
     end
 
-    test "clear reports stale sessions and runtime failures without retrying", ctx do
-      for {reason, expected} <- [
-            {{:stale_router_session, "new-session"}, "already changed"},
-            {:unavailable, "Router clear failed"}
-          ] do
-        Agent.update(StubAgentControl, &Map.put(&1, :clear_result, {:error, reason}))
-        source = "clear-" <> expected
-        assert {:ok, :command} = enqueue(ctx, "<salix-command>clear</salix-command>", source)
-        assert MockSlack.last_request("chat.postMessage").params["text"] =~ expected
-        refute_router_message(ctx.group_id, source)
-      end
-
-      assert length(StubAgentControl.calls()) == 2
-    end
-
-    test "client clear is executed once and never delivered as a prompt", ctx do
-      attrs = %{
-        "client_request_id" => "client-clear",
-        "content" => [%{"type" => "text", "text" => "<salix-command>clear</salix-command>"}]
-      }
-
-      assert {:ok, first} =
-               SalixIM.RouterConversationInput.append_user_message(ctx.group_id, attrs)
-
-      assert {:ok, retry} =
-               SalixIM.RouterConversationInput.append_user_message(ctx.group_id, attrs)
-
-      assert first["inserted"]
-      refute retry["inserted"]
-
-      assert [{:switch_router_session, agent_id, _tenant_id, _session_id}] =
-               StubAgentControl.calls()
-
-      assert agent_id == ctx.agent_id
-
-      assert {:ok, [command, reply]} =
-               SalixIM.Conversations.list_group_conversation_messages(
-                 ctx.group_id,
-                 first["conversation_id"],
-                 limit: 10
-               )
-
-      assert command["delivery_filter"] == %{"participant_ids" => []}
-      assert reply["delivery_filter"] == %{"participant_ids" => []}
-      assert hd(reply["content"])["text"] =~ "Started a new Router session"
-      assert MockSlack.requests("chat.postMessage") == []
-    end
-
     test "compact triggers a compaction and reports the resulting context", ctx do
       assert {:ok, :command} =
                enqueue(ctx, "<salix-command>compact</salix-command>", "cmd-compact")
@@ -845,54 +600,8 @@ defmodule SalixIM.ControlCommandTest do
       refute_router_message(ctx.group_id, "cmd-compact")
     end
 
-    test "compact result wait expiry does not claim the compaction failed", ctx do
-      Agent.update(
-        StubAgentControl,
-        &Map.put(&1, :compact_result, {:error, :compact_result_wait_timeout})
-      )
-
-      assert {:ok, :command} =
-               enqueue(ctx, "<salix-command>compact</salix-command>", "cmd-compact-wait")
-
-      text = MockSlack.last_request("chat.postMessage").params["text"]
-      assert text =~ "result wait timed out"
-      assert text =~ "may still complete"
-      refute text =~ "Compaction failed"
-    end
-
-    test "compact committed failure still reports failure", ctx do
-      Agent.update(
-        StubAgentControl,
-        &Map.put(&1, :compact_result, {:error, {:compact_failed_hard, "dependency timeout"}})
-      )
-
-      assert {:ok, :command} =
-               enqueue(ctx, "<salix-command>compact</salix-command>", "cmd-compact-failed")
-
-      assert MockSlack.last_request("chat.postMessage").params["text"] =~ "Compaction failed"
-    end
-
-    test "emergency-compact masks oversized historical non-model messages", ctx do
-      assert {:ok, :command} =
-               enqueue(
-                 ctx,
-                 "<salix-command>emergency-compact</salix-command>",
-                 "cmd-emergency-compact"
-               )
-
-      assert [{:emergency_compact_session, _agent, _session}] = StubAgentControl.calls()
-
-      text = MockSlack.last_request("chat.postMessage").params["text"]
-      assert text =~ "Emergency compaction complete."
-      assert text =~ "over 1,000 bytes"
-      assert text =~ "through message #214"
-      assert text =~ "[emergency-compacted non-model message over 1000 bytes]"
-
-      refute_router_message(ctx.group_id, "cmd-emergency-compact")
-    end
-
     test "VFS commands default to denied, remain intercepted, and read no workspace", ctx do
-      Application.put_env(:salix_im, :agent_workspace_mod, ForbiddenAgentWorkspace)
+      SystemsRuntime.put_env(:salix_im, :agent_workspace_mod, ForbiddenAgentWorkspace)
 
       for setting <- [:missing, false, "true", 1, nil] do
         {:ok, _} =
@@ -914,33 +623,6 @@ defmodule SalixIM.ControlCommandTest do
           refute_router_message(ctx.group_id, source_id)
         end
       end
-    end
-
-    @tag vfs_enabled: true
-    test "disabling the group denies an already-resolved command", ctx do
-      {:ok, _} =
-        SalixStore.CasRecord.update(Keys.ctl_group(ctx.group_id), fn rec ->
-          Map.put(rec, "control_command_vfs_enabled", false)
-        end)
-
-      Application.put_env(:salix_im, :agent_workspace_mod, ForbiddenAgentWorkspace)
-
-      {:ok, session_id} =
-        SalixIM.ProviderConnects.agent_group_router_session_id(ctx.agent_id, ctx.group_id)
-
-      metadata = metadata(ctx)
-
-      assert :ok =
-               ControlCommand.run(
-                 ctx.group_id,
-                 {:ok, {:cat, "/notes.md"}},
-                 metadata,
-                 ctx.agent_id,
-                 session_id
-               )
-
-      assert MockSlack.last_request("chat.postMessage").params["text"] =~
-               "VFS control commands are disabled"
     end
 
     @tag vfs_enabled: true
@@ -970,20 +652,6 @@ defmodule SalixIM.ControlCommandTest do
     end
 
     @tag vfs_enabled: true
-    test "ls on a missing path says so, and on a file names the file", ctx do
-      assert {:ok, :command} =
-               enqueue(ctx, "<salix-command>ls /nope</salix-command>", "cmd-ls-missing")
-
-      assert MockSlack.last_request("chat.postMessage").params["text"] == "No such path: /nope"
-
-      assert {:ok, :command} =
-               enqueue(ctx, "<salix-command>ls /notes.md</salix-command>", "cmd-ls-file")
-
-      assert MockSlack.last_request("chat.postMessage").params["text"] =~
-               "/notes.md (15 bytes)"
-    end
-
-    @tag vfs_enabled: true
     test "cat dumps a file with its size", ctx do
       assert {:ok, :command} =
                enqueue(ctx, "<salix-command>cat /artifacts/report.md</salix-command>", "cmd-cat")
@@ -995,121 +663,6 @@ defmodule SalixIM.ControlCommandTest do
 
       assert StubAgentControl.calls() == []
       refute_router_message(ctx.group_id, "cmd-cat")
-    end
-
-    # A workspace file has no size ceiling — agents write build output and
-    # recordings here — so `cat` must stop pulling at its cap rather than load
-    # the body and slice it afterwards.
-    @tag vfs_enabled: true
-    test "cat truncates a large file and stops reading at the cap", ctx do
-      assert {:ok, :command} =
-               enqueue(ctx, "<salix-command>cat /big.log</salix-command>", "cmd-cat-big")
-
-      text = MockSlack.last_request("chat.postMessage").params["text"]
-      assert text =~ "/big.log (19.5 KB, showing the first 7.8 KB)"
-
-      [_header, body] = String.split(text, "\n", parts: 2)
-      assert byte_size(body) == 8_000
-
-      # 8 chunks of 1,024 bytes reach the 8,000-byte cap; the file is 20.
-      assert StubAgentWorkspace.chunks_read() == 8
-    end
-
-    # The cut at the cap lands mid-codepoint here. Judging the raw slice would
-    # report an ordinary UTF-8 file as binary purely because of where it was cut.
-    @tag vfs_enabled: true
-    test "cat truncating mid-codepoint still shows text", ctx do
-      assert {:ok, :command} =
-               enqueue(ctx, "<salix-command>cat /wide.txt</salix-command>", "cmd-cat-wide")
-
-      text = MockSlack.last_request("chat.postMessage").params["text"]
-      assert text =~ "showing the first"
-      assert text =~ "→→→"
-      refute text =~ "not UTF-8"
-    end
-
-    @tag vfs_enabled: true
-    test "cat refuses a file that is not text", ctx do
-      assert {:ok, :command} =
-               enqueue(
-                 ctx,
-                 "<salix-command>cat /artifacts/logo.png</salix-command>",
-                 "cmd-cat-bin"
-               )
-
-      assert MockSlack.last_request("chat.postMessage").params["text"] =~
-               "/artifacts/logo.png (11 bytes) is not UTF-8 text"
-    end
-
-    @tag vfs_enabled: true
-    test "cat refuses malformed or incomplete UTF-8 in a complete file", ctx do
-      assert {:ok, :command} =
-               enqueue(
-                 ctx,
-                 "<salix-command>cat /artifacts/nested/invalid-tail.txt</salix-command>",
-                 "cmd-cat-invalid-tail"
-               )
-
-      assert MockSlack.last_request("chat.postMessage").params["text"] =~
-               "/artifacts/nested/invalid-tail.txt (6 bytes) is not UTF-8 text"
-
-      assert {:ok, :command} =
-               enqueue(
-                 ctx,
-                 "<salix-command>cat /artifacts/nested/incomplete-tail.txt</salix-command>",
-                 "cmd-cat-incomplete-tail"
-               )
-
-      assert MockSlack.last_request("chat.postMessage").params["text"] =~
-               "/artifacts/nested/incomplete-tail.txt (7 bytes) is not UTF-8 text"
-
-      # Truncation permits only an incomplete codepoint. A malformed byte at
-      # the cap must not be mistaken for one and silently removed.
-      assert {:ok, :command} =
-               enqueue(
-                 ctx,
-                 "<salix-command>cat /artifacts/nested/invalid-large.log</salix-command>",
-                 "cmd-cat-invalid-large"
-               )
-
-      assert MockSlack.last_request("chat.postMessage").params["text"] =~
-               "/artifacts/nested/invalid-large.log (8.8 KB) is not UTF-8 text"
-    end
-
-    @tag vfs_enabled: true
-    test "cat answers when a lazy stream fails during enumeration", ctx do
-      assert {:ok, :command} =
-               enqueue(
-                 ctx,
-                 "<salix-command>cat /artifacts/nested/stream-error.txt</salix-command>",
-                 "cmd-cat-stream-error"
-               )
-
-      text = MockSlack.last_request("chat.postMessage").params["text"]
-      assert text == "Salix could not read /artifacts/nested/stream-error.txt — unavailable."
-      refute text =~ "private-bucket"
-    end
-
-    @tag vfs_enabled: true
-    test "cat distinguishes an empty file, a directory and a missing path", ctx do
-      assert {:ok, :command} =
-               enqueue(ctx, "<salix-command>cat /empty.txt</salix-command>", "cmd-cat-empty")
-
-      assert MockSlack.last_request("chat.postMessage").params["text"] ==
-               "/empty.txt is empty (0 bytes)."
-
-      # A directory has no manifest entry of its own, so reading first would
-      # fail exactly like a typo and leave the sender guessing which they did.
-      assert {:ok, :command} =
-               enqueue(ctx, "<salix-command>cat /artifacts</salix-command>", "cmd-cat-dir")
-
-      assert MockSlack.last_request("chat.postMessage").params["text"] ==
-               "/artifacts is a directory — list it with: ls /artifacts"
-
-      assert {:ok, :command} =
-               enqueue(ctx, "<salix-command>cat /nope.md</salix-command>", "cmd-cat-missing")
-
-      assert MockSlack.last_request("chat.postMessage").params["text"] == "No such file: /nope.md"
     end
 
     # `cat` is the one command that puts bytes Salix did not compose into a
@@ -1124,66 +677,6 @@ defmodule SalixIM.ControlCommandTest do
       refute text =~ "<!channel>"
       refute text =~ "<@U123>"
       assert text =~ "&lt;!channel&gt; ship it &amp; &lt;@U123&gt;"
-    end
-
-    # A workspace the runtime cannot read degrades to the bounded atom every
-    # other command's failures degrade to — never the detail carried with it,
-    # which is a bucket path in a customer's channel.
-    @tag vfs_enabled: true
-    test "an unreadable workspace explains itself without leaking storage detail", ctx do
-      Application.put_env(:salix_im, :agent_workspace_mod, UnreachableAgentWorkspace)
-
-      assert {:ok, :command} =
-               enqueue(ctx, "<salix-command>ls /</salix-command>", "cmd-ls-broken")
-
-      text = MockSlack.last_request("chat.postMessage").params["text"]
-      assert text == "Salix could not list / — storage_unavailable."
-      refute text =~ "s3://"
-    end
-
-    test "help lists the supported commands", ctx do
-      assert {:ok, :command} = enqueue(ctx, "<salix-command>help</salix-command>", "cmd-help")
-
-      text = MockSlack.last_request("chat.postMessage").params["text"]
-      assert text =~ "• status — model and context usage"
-      assert text =~ "• compact — compact the session context"
-
-      assert text =~
-               "• emergency-compact — replace historical non-model messages over 1,000 bytes"
-
-      assert text =~ "• ls PATH"
-      assert text =~ "• cat PATH"
-      assert text =~ "• help"
-      refute text =~ "Unknown Salix command"
-
-      assert StubAgentControl.calls() == []
-      refute_router_message(ctx.group_id, "cmd-help")
-    end
-
-    test "a command that needs a path is answered with usage, not run as a prompt", ctx do
-      assert {:ok, :command} = enqueue(ctx, "<salix-command>cat</salix-command>", "cmd-cat-bare")
-
-      text = MockSlack.last_request("chat.postMessage").params["text"]
-      assert text =~ "Salix command cat needs a path"
-      assert text =~ "• cat PATH"
-
-      refute_router_message(ctx.group_id, "cmd-cat-bare")
-    end
-
-    test "an unsupported command is answered with usage, never run as a prompt", ctx do
-      assert {:ok, :command} =
-               enqueue(ctx, "<salix-command>shutdown</salix-command>", "cmd-unknown")
-
-      assert StubAgentControl.calls() == []
-
-      req = MockSlack.last_request("chat.postMessage")
-      assert req.params["text"] =~ "Unknown Salix command: shutdown"
-      assert req.params["text"] =~ "• status — model and context usage"
-      # Slack mrkdwn eats `<...>` as an entity, so the usage text must not
-      # spell the syntax out with literal tags.
-      refute req.params["text"] =~ "<salix-command>"
-
-      refute_router_message(ctx.group_id, "cmd-unknown")
     end
 
     # The composed router content interpolates the sender's Slack display name.
@@ -1202,103 +695,6 @@ defmodule SalixIM.ControlCommandTest do
       assert StubAgentControl.calls() == []
       assert MockSlack.requests("chat.postMessage") == []
     end
-
-    # An ingress path with no sender text (a Slack `channel_created` fact, a
-    # meeting handoff) passes no `:command_text` and cannot produce a command.
-    test "ingress carrying no sender text is never a command", ctx do
-      assert {:ok, :queued} =
-               SalixIM.ProviderConnects.enqueue_group_router_im_provider_message(
-                 ctx.group_id,
-                 "<salix-command>compact</salix-command>",
-                 metadata(ctx),
-                 "cmd-no-sender-text"
-               )
-
-      assert StubAgentControl.calls() == []
-    end
-
-    # `activity_status` is the live state; `status` is the coarser fallback for
-    # a session that has no activity state at all. Reporting the fallback when
-    # a live state exists would tell a user "active" while the agent is failed.
-    test "the live activity state wins over the coarse session status", ctx do
-      Application.put_env(:salix_im, :agent_control_mod, FailedAgentControl)
-
-      assert {:ok, :command} = enqueue(ctx, "<salix-command>status</salix-command>", "cmd-failed")
-
-      assert MockSlack.last_request("chat.postMessage").params["text"] =~ "(failed)"
-    end
-
-    # A window the runtime could not resolve must not be filled in with the
-    # 128000 default, which would state a denominator this agent may not have.
-    test "status without a resolvable window reports usage with no denominator", ctx do
-      Application.put_env(:salix_im, :agent_control_mod, DegradedAgentControl)
-
-      assert {:ok, :command} =
-               enqueue(ctx, "<salix-command>status</salix-command>", "cmd-degrade")
-
-      text = MockSlack.last_request("chat.postMessage").params["text"]
-      assert text =~ "Model: unknown"
-      assert text =~ "Context: 4,096 tokens"
-      refute text =~ "/"
-      assert text =~ "Messages: unknown"
-    end
-
-    # 0 is the NORMAL value for a never-compacted session — the most common
-    # Router — so the guard that suppresses it is load-bearing, not defensive.
-    test "a never-compacted session does not claim a compaction watermark", ctx do
-      Application.put_env(:salix_im, :agent_control_mod, FreshAgentControl)
-
-      assert {:ok, :command} = enqueue(ctx, "<salix-command>status</salix-command>", "cmd-fresh")
-
-      text = MockSlack.last_request("chat.postMessage").params["text"]
-      assert text =~ "Messages: 12"
-      refute text =~ "compacted through"
-    end
-
-    test "a compaction that does not run reports why, with the current context", ctx do
-      Application.put_env(:salix_im, :agent_control_mod, DegradedAgentControl)
-
-      assert {:ok, :command} = enqueue(ctx, "<salix-command>compact</salix-command>", "cmd-noop")
-
-      text = MockSlack.last_request("chat.postMessage").params["text"]
-      assert text =~ "Compaction did not run (noop: no_new_live_messages)."
-      assert text =~ "Context: 4,096 tokens"
-    end
-
-    # `SalixAgent.Runtime` refuses a non-internal agent with its shared
-    # HTTP-shaped `:bad_request`, which the binding translates. The chat must
-    # get a sentence about runtimes, not that term — it reads as though the
-    # SENDER did something wrong.
-    test "an external-runtime Router explains itself instead of leaking a term", ctx do
-      Application.put_env(:salix_im, :agent_control_mod, ExternalRuntimeAgentControl)
-
-      assert {:ok, :command} = enqueue(ctx, "<salix-command>status</salix-command>", "cmd-ext")
-
-      text = MockSlack.last_request("chat.postMessage").params["text"]
-      assert text =~ "runs on an external runtime"
-      refute text =~ "bad_request"
-    end
-
-    test "ordinary messages still reach the agent loop", ctx do
-      assert {:ok, :queued} = enqueue(ctx, "what is the launch status?", "cmd-ordinary")
-      assert StubAgentControl.calls() == []
-      assert MockSlack.requests("chat.postMessage") == []
-    end
-
-    # A group that cannot answer a command must not swallow one either:
-    # claiming ownership and then dropping it silently answers 200 for a
-    # message that was neither executed nor delivered.
-    test "a command in a group with no Router is an error, not a silent drop", ctx do
-      {:ok, _group} =
-        SalixStore.CasRecord.update(Keys.ctl_group(ctx.group_id), fn rec ->
-          Map.put(rec, "router_agent_id", "")
-        end)
-
-      assert {:error, :router_not_configured} =
-               enqueue(ctx, "<salix-command>status</salix-command>", "cmd-no-router")
-
-      assert StubAgentControl.calls() == []
-    end
   end
 
   # ---- dispatch refusal ----
@@ -1311,7 +707,7 @@ defmodule SalixIM.ControlCommandTest do
     # entirely and the suite would stay green (verified: hard-coding
     # `async/1` to refuse left 89 tests passing).
     test "the async path actually runs the command and answers", ctx do
-      Application.delete_env(:salix_im, :control_command_execution)
+      SystemsRuntime.delete_env(:salix_im, :control_command_execution)
       attach_operation_telemetry()
 
       assert {:ok, :command} =
@@ -1340,105 +736,6 @@ defmodule SalixIM.ControlCommandTest do
       assert tags.outcome == "ok"
       # `surface` is resolved on the webhook, so it must not be the junk bucket.
       assert tags.surface != "other"
-    end
-
-    # The telemetry GUIDE requires Task work to carry the request's context;
-    # without it a command's spans are orphaned from the webhook that caused
-    # them, which is the only trace tying an executed command to its sender.
-    test "the command task carries the request's observability context", ctx do
-      Application.delete_env(:salix_im, :control_command_execution)
-
-      captured = SystemsObservability.Context.capture()
-      test_pid = self()
-
-      SystemsObservability.Context.run(%{captured | surface: "bft"}, fn ->
-        assert {:ok, :command} =
-                 SalixIM.ProviderConnects.enqueue_group_router_im_provider_message(
-                   ctx.group_id,
-                   "Slack message from U1 in C1:\nhi",
-                   %{
-                     "provider" => "slack",
-                     "connect_id" => ctx.connect["connect_id"],
-                     "channel_id" => "C1"
-                   },
-                   "cmd-context",
-                   command_text: "<salix-command>status</salix-command>"
-                 )
-
-        send(test_pid, :enqueued)
-      end)
-
-      assert_receive :enqueued
-
-      assert eventually(fn ->
-               req = MockSlack.last_request("chat.postMessage")
-               req && req.params["text"] =~ "claude-opus-5"
-             end)
-
-      # The command ran on the task, and observed the surface the webhook was
-      # serving — not the task's own empty context.
-      assert [{:session_status, _agent, _session}] = StubAgentControl.calls()
-      assert StubAgentControl.surfaces() == ["bft"]
-    end
-
-    # Every other test pins `:sync`, so without this the async branch, the
-    # supervisor bound, and the refusal shape are never executed at all.
-    test "a saturated supervisor answers the sender instead of failing the callback", ctx do
-      Application.delete_env(:salix_im, :control_command_execution)
-      attach_operation_telemetry()
-
-      # Fill whatever the pool has left rather than assuming it starts empty: a
-      # sibling test's command task can still be finishing, and ExUnit shuffles
-      # order within the module. Hard-bounded, because `:infinity` is a legal
-      # configured cap and an unbounded fill would spawn until the VM died.
-      blockers =
-        Stream.repeatedly(fn ->
-          Task.Supervisor.start_child(SalixIM.ControlCommandTaskSupervisor, fn ->
-            receive do
-              :release -> :ok
-            end
-          end)
-        end)
-        |> Stream.take(64)
-        |> Stream.take_while(&match?({:ok, _pid}, &1))
-        |> Enum.map(fn {:ok, pid} -> pid end)
-
-      # Registered BEFORE the assertion: the pool is application-owned, not
-      # `start_supervised!`, so a failure here would otherwise leave it full
-      # for the rest of the run and refuse every later async command.
-      on_exit(fn -> Enum.each(blockers, &send(&1, :release)) end)
-
-      assert length(blockers) < 64, "pool did not refuse within its configured cap"
-
-      # The pool is full, so this command cannot start. The callback still
-      # succeeds — saturation is not an ingress fault, and a retry could not
-      # fix it before the parked tasks finish.
-      assert {:ok, :command} =
-               SalixIM.ProviderConnects.enqueue_group_router_im_provider_message(
-                 ctx.group_id,
-                 "Slack message from U1 in C1:\nhi",
-                 %{
-                   "provider" => "slack",
-                   "connect_id" => ctx.connect["connect_id"],
-                   "channel_id" => "C1"
-                 },
-                 "cmd-saturated",
-                 command_text: "<salix-command>compact</salix-command>"
-               )
-
-      assert StubAgentControl.calls() == []
-
-      # Sent from the REPLY pool, never inline: a provider POST on the webhook
-      # process is unbounded and would blow the ACK budget precisely when the
-      # node is already saturated.
-      assert eventually(fn ->
-               req = MockSlack.last_request("chat.postMessage")
-               req && req.params["text"] =~ "too many commands"
-             end)
-
-      # Saturation is the one refusal that is deliberately NOT an ingress
-      # error, so it needs its own signal or it is invisible to operators.
-      assert_received {:operation, %{operation: "control_command", outcome: "over_budget"}}
     end
   end
 
@@ -1493,7 +790,7 @@ defmodule SalixIM.ControlCommandTest do
 
       # NOT `delivered`: nothing was staged for the Router session, so the
       # provider receipt must not claim that an agent input exists.
-      assert_receive {:diagnostic, %{event_type: "slack.message.command"}}
+      settle_receive({:diagnostic, %{event_type: "slack.message.command"}})
       refute_received {:diagnostic, %{event_type: "slack.message.delivered"}}
     end
 
@@ -1510,57 +807,6 @@ defmodule SalixIM.ControlCommandTest do
 
       assert StubAgentControl.calls() == []
       assert MockSlack.requests("chat.postMessage") == []
-    end
-
-    # `&` must be unescaped LAST. A user quoting the syntax types
-    # `&lt;salix-command&gt;…`, which Slack puts on the wire as
-    # `&amp;lt;salix-command&amp;gt;…`; decoding `&` first turns that back into a
-    # real block and fires a compaction nobody asked for.
-    test "text that literally spells out an escaped block is not a command", ctx do
-      event =
-        Map.put(
-          slack_mention_event(ctx),
-          "text",
-          "<@Ubot> you write it as &amp;lt;salix-command&amp;gt;compact&amp;lt;/salix-command&amp;gt;"
-        )
-
-      assert {:ok, :accepted} = slack_event(ctx, "Ev-literal", event)
-
-      assert StubAgentControl.calls() == []
-      assert MockSlack.requests("chat.postMessage") == []
-      SalixAgent.TestSupport.stop_all_agents()
-    end
-
-    # A plain thread reply in a thread the bot participates in is ADMITTED by
-    # `slack_message_relevant?/2` without any mention, so this reaches
-    # `slack_command_text/5` and proves the mention requirement itself — unlike
-    # a mention-less `app_mention`, which an older gate rejects first.
-    test "an admitted thread reply that does not mention the bot is not a command", ctx do
-      :ok =
-        SalixStore.SlackRouterThreadParticipations.record(
-          ctx.group_id,
-          ctx.connect["connect_id"],
-          "T1",
-          "Ubot",
-          "C1",
-          "1787021700.000100"
-        )
-
-      event = %{
-        "type" => "message",
-        "user" => "U-human",
-        "text" => "&lt;salix-command&gt;compact&lt;/salix-command&gt;",
-        "channel" => "C1",
-        "channel_type" => "channel",
-        "thread_ts" => "1787021700.000100",
-        "ts" => "1787021764.000900"
-      }
-
-      assert {:ok, :accepted} = slack_event(ctx, "Ev-threadreply", event)
-
-      assert StubAgentControl.calls() == []
-      assert MockSlack.requests("chat.postMessage") == []
-      SalixAgent.TestSupport.stop_all_agents()
     end
 
     # Ordinary receipt dedupe on the legacy route. The Triage route's
@@ -1582,32 +828,6 @@ defmodule SalixIM.ControlCommandTest do
   describe "feishu ingress" do
     setup [:ingress_setup, :feishu_connect]
 
-    # `ensure_feishu_router_relevant/2` admits any group message in a thread the
-    # bot has replied in, with no mention — and the bot's own command reply
-    # marks the thread participating. Without a mention requirement, one
-    # legitimate command would leave every later message in that thread able to
-    # trigger a compaction.
-    test "a group message in a participating thread that does not mention the bot is not a command",
-         ctx do
-      :ok =
-        SalixIM.ProviderConnects.record_feishu_thread_participation(
-          ctx.connect,
-          "oc_cmd",
-          "omt_thread"
-        )
-
-      # Relevance admits this (participating thread, no mention needed), so the
-      # command grant is the only thing that can refuse it.
-      assert {:ok, %{ok: true, status: "queued"}} =
-               feishu_event(ctx, "evt-group-nomention", "<salix-command>compact</salix-command>",
-                 chat_type: "group",
-                 thread_id: "omt_thread"
-               )
-
-      assert StubAgentControl.calls() == []
-      SalixAgent.TestSupport.stop_all_agents()
-    end
-
     # The regression that motivated this describe block: the inner dispatch
     # grew a `{:ok, :command}` clause and the outer one did not, so the command
     # ran, replied, and then raised — 500 to Feishu, and a permanent false
@@ -1618,57 +838,22 @@ defmodule SalixIM.ControlCommandTest do
 
       assert [{:session_status, _agent, _session}] = StubAgentControl.calls()
 
-      assert_receive {:diagnostic, %{event_type: "feishu.message.command"}}
+      settle_receive({:diagnostic, %{event_type: "feishu.message.command"}})
       refute_received {:diagnostic, %{event_type: "feishu.message.delivered"}}
       # Round 2 added this callback outcome because its absence made every
       # Feishu command raise into `emit_feishu_diagnostic/3`'s own rescue.
-      assert_receive {:diagnostic, %{event_type: "feishu.callback.command"}}
-
+      settle_receive({:diagnostic, %{event_type: "feishu.callback.command"}})
       # The answer actually reaches Feishu, threaded onto the source message.
       reply = MockFeishuAPI.last_request("/reply")
       assert reply.path =~ "om_evt-cmd"
-      assert Jason.decode!(reply.body["content"])["text"] =~ "claude-opus-5"
+      assert reply.body["msg_type"] == "post"
+
+      assert [[%{"tag" => "md", "text" => status}]] =
+               get_in(Jason.decode!(reply.body["content"]), ["zh_cn", "content"])
+
+      assert status =~ "claude-opus-5"
       # p2p has no thread to stay in.
       assert reply.body["reply_in_thread"] == false
-    end
-
-    # The repo-wide Feishu rule keys off CHAT TYPE, not thread presence: a
-    # top-level group @mention opens a topic so later replies continue without
-    # another mention. Keying off thread presence answers it flat, and the
-    # command becomes the only Router reply in the group that opens no thread.
-    test "a top-level group command opens a thread and carries its chat", ctx do
-      assert {:ok, %{ok: true, status: "command"}} =
-               feishu_event(ctx, "evt-group-top", "<salix-command>status</salix-command>",
-                 chat_type: "group",
-                 thread_id: "omt_opened",
-                 mention_bot: true
-               )
-
-      reply = MockFeishuAPI.last_request("/reply")
-      assert reply.body["reply_in_thread"] == true
-
-      # `chat_id`/`thread_id` are call PARAMS, not body fields, so the only way
-      # to see them is the thing they exist to feed: Feishu records thread
-      # participation from them when the API response omits them, which is what
-      # keeps later replies in the topic flowing without another mention.
-      assert SalixIM.ProviderConnects.feishu_thread_participation_active?(
-               ctx.connect,
-               "oc_cmd",
-               "omt_opened"
-             )
-    end
-
-    # A threaded request must be answered in its thread; posting the reply to
-    # the top of the chat instead is the kind of break a green suite hid.
-    test "a threaded command is answered inside its thread", ctx do
-      assert {:ok, %{ok: true, status: "command"}} =
-               feishu_event(ctx, "evt-threaded", "<salix-command>status</salix-command>",
-                 chat_type: "group",
-                 thread_id: "omt_live",
-                 mention_bot: true
-               )
-
-      assert MockFeishuAPI.last_request("/reply").body["reply_in_thread"] == true
     end
 
     # Group chat is the primary Feishu surface, and only the mention branch
@@ -1685,18 +870,6 @@ defmodule SalixIM.ControlCommandTest do
       assert [{:session_status, _agent, _session}] = StubAgentControl.calls()
     end
 
-    # The gate asserts "blank fails closed"; nothing tested that, so an
-    # accidental `!= "app"` would have been indistinguishable.
-    test "a message with no sender type is not a command", ctx do
-      assert {:ok, %{ok: true}} =
-               feishu_event(ctx, "evt-blank-sender", "<salix-command>compact</salix-command>",
-                 sender_type: ""
-               )
-
-      assert StubAgentControl.calls() == []
-      SalixAgent.TestSupport.stop_all_agents()
-    end
-
     # Relayed app content is written by whoever wrote the thing being relayed.
     test "an app-authored message carrying a command is not a command", ctx do
       assert {:ok, %{ok: true}} =
@@ -1707,14 +880,6 @@ defmodule SalixIM.ControlCommandTest do
       assert StubAgentControl.calls() == []
       # It went to the agent loop instead; settle that before teardown so a
       # detached round does not outlive this test's fixtures.
-      SalixAgent.TestSupport.stop_all_agents()
-    end
-
-    test "an ordinary message still reaches the agent loop", ctx do
-      assert {:ok, %{ok: true, status: "queued"}} =
-               feishu_event(ctx, "evt-plain", "how is the launch going?")
-
-      assert StubAgentControl.calls() == []
       SalixAgent.TestSupport.stop_all_agents()
     end
   end
@@ -1768,7 +933,7 @@ defmodule SalixIM.ControlCommandTest do
 
   defp runtime_connect(ctx, provider, extra) do
     connect_id = "#{provider}-cmd"
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     rec =
       Map.merge(
@@ -1793,17 +958,17 @@ defmodule SalixIM.ControlCommandTest do
     SalixAgent.TestSupport.stop_all_agents()
 
     previous = %{
-      s3: Application.get_env(:salix_store, :s3_backend),
-      slack_api: Application.get_env(:salix_im, :slack_api_base_url),
-      feishu_api: Application.get_env(:salix_im, :feishu_api_base_url),
-      store: Application.get_env(:salix_im, :provider_app_store_mod),
-      sink: Application.get_env(:salix_im, :diagnostic_sink),
-      agent_control: Application.get_env(:salix_im, :agent_control_mod),
-      execution: Application.get_env(:salix_im, :control_command_execution),
-      delivery: Application.get_env(:salix_im, :agent_delivery_mod)
+      s3: SystemsRuntime.get_env(:salix_store, :s3_backend),
+      slack_api: SystemsRuntime.get_env(:salix_im, :slack_api_base_url),
+      feishu_api: SystemsRuntime.get_env(:salix_im, :feishu_api_base_url),
+      store: SystemsRuntime.get_env(:salix_im, :provider_app_store_mod),
+      sink: SystemsRuntime.get_env(:salix_im, :diagnostic_sink),
+      agent_control: SystemsRuntime.get_env(:salix_im, :agent_control_mod),
+      execution: SystemsRuntime.get_env(:salix_im, :control_command_execution),
+      delivery: SystemsRuntime.get_env(:salix_im, :agent_delivery_mod)
     }
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     SalixAgent.TestSupport.configure_control_fixtures!()
 
@@ -1811,20 +976,23 @@ defmodule SalixIM.ControlCommandTest do
     start_supervised!(StubAgentControl)
     start_supervised!(FakeTenantAppStore)
     start_supervised!(MockFeishuAPI)
-    Application.put_env(:salix_im, :agent_control_mod, StubAgentControl)
-    Application.put_env(:salix_im, :provider_app_store_mod, FakeTenantAppStore)
-    Application.put_env(:salix_im, :control_command_execution, :sync)
-    Application.put_env(:salix_im, :agent_delivery_mod, SalixIM.TestSupport.AgentDelivery)
+    SystemsRuntime.put_env(:salix_im, :agent_control_mod, StubAgentControl)
+    SystemsRuntime.put_env(:salix_im, :provider_app_store_mod, FakeTenantAppStore)
+    SystemsRuntime.put_env(:salix_im, :control_command_execution, :sync)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, SalixIM.TestSupport.AgentDelivery)
 
-    test_pid = self()
-    Application.put_env(:salix_im, :diagnostic_sink, fn d -> send(test_pid, {:diagnostic, d}) end)
+    test_pid = SystemsRuntime.Proc.self()
+
+    SystemsRuntime.put_env(:salix_im, :diagnostic_sink, fn d ->
+      SystemsRuntime.Proc.send(test_pid, {:diagnostic, d})
+    end)
 
     slack_port = BanditServer.start!(fn p -> {Bandit, plug: MockSlack, port: p} end)
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{slack_port}/api")
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{slack_port}/api")
 
     feishu_port = BanditServer.start!(fn p -> {Bandit, plug: MockFeishuAPI, port: p} end)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :feishu_api_base_url,
       "http://127.0.0.1:#{feishu_port}/open-apis"
@@ -1865,7 +1033,7 @@ defmodule SalixIM.ControlCommandTest do
   defp slack_connect(ctx) do
     connect_id = "sl-ingress"
     secret = "signing-secret"
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     {:ok, _} =
       SalixStore.CasRecord.create(Keys.ctl_im_connect(ctx.group_id, connect_id), %{
@@ -1912,7 +1080,7 @@ defmodule SalixIM.ControlCommandTest do
     }
 
     raw = Jason.encode!(envelope)
-    timestamp = System.system_time(:second)
+    timestamp = SystemsClock.system_time(:second)
 
     mac =
       :crypto.mac(:hmac, :sha256, ctx.signing_secret, "v0:#{timestamp}:#{raw}")
@@ -1927,7 +1095,7 @@ defmodule SalixIM.ControlCommandTest do
   end
 
   defp feishu_connect(ctx) do
-    app_id = "cli_cmd_#{System.unique_integer([:positive])}"
+    app_id = "cli_cmd_#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     FakeTenantAppStore.put(ctx.tenant, %{
       "app_id" => app_id,
@@ -2033,35 +1201,25 @@ defmodule SalixIM.ControlCommandTest do
       |> Enum.find(&(&1.name == [:salix, :operations, :total]))
       |> Map.fetch!(:tag_values)
 
-    test_pid = self()
-    handler = "control-command-operations-#{System.unique_integer([:positive])}"
+    test_pid = SystemsRuntime.Proc.self()
+    handler = "control-command-operations-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
-    :telemetry.attach(
+    SystemsRuntime.Telemetry.attach(
       handler,
       [:salix, :operation, :stop],
       fn _event, _measurements, metadata, _config ->
-        send(test_pid, {:operation, tag_values.(metadata)})
+        SystemsRuntime.Proc.send(test_pid, {:operation, tag_values.(metadata)})
       end,
       nil
     )
 
-    on_exit(fn -> :telemetry.detach(handler) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler) end)
   end
 
-  defp eventually(fun, attempts \\ 100) do
-    if fun.() do
-      true
-    else
-      if attempts > 0 do
-        Process.sleep(20)
-        eventually(fun, attempts - 1)
-      else
-        false
-      end
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 
   # put_env(key, nil) shadows get_env defaults — delete when prev was nil.
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

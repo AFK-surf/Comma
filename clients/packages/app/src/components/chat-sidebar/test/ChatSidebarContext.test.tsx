@@ -53,6 +53,52 @@ function useRegisteredSidebar() {
   return useChatSidebar();
 }
 
+describe("a host that loads after the sidebar opens", () => {
+  function useLoadingRoute({
+    awaitingHost,
+    loaded,
+  }: {
+    awaitingHost: boolean;
+    loaded: boolean;
+  }) {
+    useRegisterChatSidebarHost(loaded ? host : undefined, { awaitingHost });
+    return useChatSidebar();
+  }
+
+  it("keeps the sidebar the reader opened while the route's host loaded", () => {
+    installNativeBridgeMock({ platform: "web" });
+    const { result, rerender } = renderHook(useLoadingRoute, {
+      initialProps: { awaitingHost: true, loaded: false },
+      wrapper: ChatSidebarProvider,
+    });
+    act(() => result.current.toggleActive());
+    expect(result.current.isOpen).toBe(true);
+    const page = result.current.activeSession!.browserPages[0]!;
+
+    rerender({ awaitingHost: true, loaded: true });
+    expect(result.current.activeHost).toEqual(host);
+    expect(result.current.isOpen).toBe(true);
+    expect(result.current.activeSession?.browserPages).toEqual([page]);
+
+    act(() => result.current.toggleActive());
+    expect(result.current.isOpen).toBe(false);
+  });
+
+  it("leaves the global sidebar behind when another route's host registers", () => {
+    installNativeBridgeMock({ platform: "web" });
+    const { result, rerender } = renderHook(useLoadingRoute, {
+      initialProps: { awaitingHost: false, loaded: false },
+      wrapper: ChatSidebarProvider,
+    });
+    act(() => result.current.toggleActive());
+    expect(result.current.isOpen).toBe(true);
+
+    rerender({ awaitingHost: false, loaded: true });
+    expect(result.current.activeHost).toEqual(host);
+    expect(result.current.isOpen).toBe(false);
+  });
+});
+
 describe("sidebar tab closing", () => {
   it.each(tabCases)("collapses after the last $name tab closes", ({ open, close }) => {
     installNativeBridgeMock({ platform: "web" });

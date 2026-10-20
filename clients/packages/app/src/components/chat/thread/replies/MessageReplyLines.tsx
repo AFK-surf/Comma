@@ -1,4 +1,6 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { flushSync } from "react-dom";
+import { scheduleLayoutRead, type CancelUiTimer } from "@comma/ui/clock";
 import type { MessageReply } from "./messageRelationships";
 
 export function MessageReplyLines({
@@ -43,9 +45,12 @@ export function MessageReplyLines({
       setPaths((previous) => (previous.length === 0 ? previous : []));
       return;
     }
-    let frame = 0;
-    const measure = () => {
-      frame = 0;
+    let frame: CancelUiTimer | undefined;
+    // Reads every anchor in the frame's shared layout read phase and commits
+    // the paths after it; reading inside the commit that changed the rows
+    // forced the transcript's layout ahead of the frame's own.
+    const read = () => {
+      frame = undefined;
       const bounds = column.getBoundingClientRect();
       const rows = new Map(
         [...column.querySelectorAll<HTMLElement>("article[data-message-id]")].map(
@@ -126,6 +131,35 @@ export function MessageReplyLines({
               })();
         if (!source || !target) continue;
         const top = target.y + target.radius;
+        const row = rows.get(reply.messageId);
+        const key = row?.dataset.replyAnimationKey ?? reply.messageId;
+        const animate =
+          currentPaths.current.get(key) ??
+          (!seen.current.has(key) &&
+            ((row?.dataset.replyStreaming === "true" &&
+              reply.messageId !== initialDraftId) ||
+              Number(row?.dataset.messageCreatedAt) >= openedAt));
+        if (reply.fromMember) {
+          // A member's reply sits on the other side: drop from under the
+          // message it answers and turn toward the reply at its height in a
+          // short arm, the mirror of an Agent's hook to a member's prompt.
+          const bubble = row?.querySelector<HTMLElement>(".comma-chat-user-bubble");
+          if (!bubble) continue;
+          const rect = bubble.getBoundingClientRect();
+          const y = rect.top - bounds.top + rect.height / 2;
+          if (y <= top) continue;
+          const turn = Math.min(24, y - top);
+          const d = `M ${target.x} ${top} V ${y - turn} Q ${target.x} ${y} ${target.x + turn} ${y} H ${target.x + 24}`;
+          seen.current.add(key);
+          next.push({
+            id: reply.messageId,
+            key,
+            animate,
+            targetId: reply.targetId,
+            d,
+          });
+          continue;
+        }
         const bottom = source.y - source.radius;
         if (bottom <= top) continue;
         const bend = Math.min(24, bottom - top);
@@ -143,14 +177,6 @@ export function MessageReplyLines({
           target.radius > 0 || ("bubbleEdge" in target && target.bubbleEdge)
             ? `M ${source.x} ${top} ${stem}`
             : `M ${source.x + 24} ${top} H ${source.x + bend} Q ${source.x} ${top} ${source.x} ${top + bend} ${stem}`;
-        const row = rows.get(reply.messageId);
-        const key = row?.dataset.replyAnimationKey ?? reply.messageId;
-        const animate =
-          currentPaths.current.get(key) ??
-          (!seen.current.has(key) &&
-            ((row?.dataset.replyStreaming === "true" &&
-              reply.messageId !== initialDraftId) ||
-              Number(row?.dataset.messageCreatedAt) >= openedAt));
         seen.current.add(key);
         next.push({
           id: reply.messageId,
@@ -160,15 +186,19 @@ export function MessageReplyLines({
           d,
         });
       }
-      currentPaths.current = new Map(next.map((path) => [path.key, path.animate]));
-      setPaths((previous) =>
-        JSON.stringify(previous) === JSON.stringify(next) ? previous : next
-      );
+      // Commit before this frame paints, so the lines land with their rows.
+      return () =>
+        flushSync(() => {
+          currentPaths.current = new Map(next.map((path) => [path.key, path.animate]));
+          setPaths((previous) =>
+            JSON.stringify(previous) === JSON.stringify(next) ? previous : next
+          );
+        });
     };
     const schedule = () => {
-      if (!frame) frame = requestAnimationFrame(measure);
+      if (!frame) frame = scheduleLayoutRead(read);
     };
-    measure();
+    schedule();
     column.addEventListener("animationend", schedule);
     // One observer per transcript, shared by the currently mounted rows. Image,
     // Markdown, font and width reflow update paths without scroll-time layout reads.
@@ -179,7 +209,7 @@ export function MessageReplyLines({
     return () => {
       column.removeEventListener("animationend", schedule);
       observer.disconnect();
-      cancelAnimationFrame(frame);
+      frame?.();
     };
   }, [columnRef, replies, openedAt, initialDraftId]);
   return (

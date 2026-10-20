@@ -1,0 +1,46 @@
+#!/bin/sh
+# The fake adb (adb.mjs), found as the real one is: by name on PATH. What needs no socket (`get-state`, `shell`,
+# `disconnect`, an unknown ask) is answered here as adb.mjs would, without a node starting; the rest, and any argument
+# that would need escaping in its `calls` line, goes to adb.mjs.
+to_node() { exec node "$(dirname "$0")/adb.mjs" "$@"; }
+for a in "$@"; do
+  case $a in *[!A-Za-z0-9._:@=+,/-]* | "") to_node "$@" ;; esac
+done
+case $1 in connect | pair) to_node "$@" ;; esac
+if [ "$1" = -s ] && [ $# -lt 3 ]; then to_node "$@"; fi
+if [ "$1" = disconnect ] && [ $# -lt 2 ]; then to_node "$@"; fi
+
+dir=$FAKE_ADB_DIR
+# What a file holds, trimmed, as adb.mjs `read` has it.
+read_trimmed() {
+  s=$(cat "$dir/$1")
+  s=${s#"${s%%[![:space:]]*}"}
+  s=${s%"${s##*[![:space:]]}"}
+  printf '%s' "$s"
+}
+line='['
+sep=''
+for a in "$@"; do
+  line="$line$sep\"$a\""
+  sep=','
+done
+printf '%s]\n' "$line" >>"$dir/calls"
+
+if [ "$1" = -s ] && [ "$3" = get-state ]; then
+  if [ ! -e "$dir/state" ]; then
+    printf "error: device '%s' not found\n" "$2" >&2
+    exit 1
+  fi
+  printf '%s\n' "$(read_trimmed state)"
+elif [ "$1" = -s ] && [ "$3" = shell ]; then
+  if [ -e "$dir/grant-says" ]; then
+    says=$(read_trimmed grant-says)
+    if [ -n "$says" ]; then printf '%s\n' "$says"; fi
+  fi
+elif [ "$1" = disconnect ]; then
+  rm -f "$dir/state"
+  printf 'disconnected %s\n' "$2"
+else
+  printf 'fake adb: unknown %s\n' "$*" >&2
+  exit 1
+fi

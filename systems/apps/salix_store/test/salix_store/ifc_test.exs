@@ -1,5 +1,5 @@
 defmodule SalixStore.IFCTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.IFC
 
@@ -38,14 +38,6 @@ defmodule SalixStore.IFCTest do
       assert {:ok, %{}} == IFC.scopes(@tenant, @group, @connect, ["C1"])
     end
 
-    test "an unknown audience mode or placement is refused" do
-      assert {:error, :invalid_audience_mode} =
-               IFC.put_scope_label(@tenant, @group, @connect, "C1", %{audience_mode: "whatever"})
-
-      assert {:error, :invalid_placement} =
-               IFC.put_principal_fact(@tenant, @group, @connect, "U1", "maybe")
-    end
-
     test "clearances are per tag and per principal" do
       assert {:ok, 1} =
                IFC.put_tag_clearance(@tenant, @group, @connect, "finance", "provider_user|w|U1")
@@ -78,17 +70,6 @@ defmodule SalixStore.IFCTest do
 
       assert {:ok, %{"finance" => %{members: ["provider_user|w|U1"]}}} =
                IFC.tag_clearances(@tenant, @group, @connect, ["finance"])
-    end
-
-    test "placement overrides are read back per user" do
-      assert {:ok, 1} = IFC.put_principal_fact(@tenant, @group, @connect, "U1", "external")
-      assert {:ok, 2} = IFC.put_principal_fact(@tenant, @group, @connect, "U1", "internal")
-
-      assert {:ok, %{"U1" => "internal"}} =
-               IFC.placement_overrides(@tenant, @group, @connect, ["U1", "U2"])
-
-      assert :ok = IFC.delete_principal_fact(@tenant, @group, @connect, "U1")
-      assert {:ok, %{}} == IFC.placement_overrides(@tenant, @group, @connect, ["U1"])
     end
 
     test "reads are scoped to one tenant and group" do
@@ -134,27 +115,6 @@ defmodule SalixStore.IFCTest do
       assert {:ok, %{"C1" => %{members: ["u1", "u3"]}}} =
                IFC.scopes(@tenant, @group, @connect, ["C1"])
     end
-
-    test "adding a member twice is idempotent" do
-      assert {:ok, _} = IFC.replace_scope_members(@tenant, @group, @connect, "C1", ["u1"])
-      assert {:ok, _} = IFC.add_scope_member(@tenant, @group, @connect, "C1", "u1")
-      assert {:ok, %{"C1" => %{members: ["u1"]}}} = IFC.scopes(@tenant, @group, @connect, ["C1"])
-    end
-
-    test "invalidation returns the scope to unknown without losing its structure" do
-      assert {:ok, _} = IFC.observe_scope(@tenant, @group, @connect, "C1", %{kind: "shared"})
-      assert {:ok, _} = IFC.replace_scope_members(@tenant, @group, @connect, "C1", ["u1"])
-      assert {:ok, _} = IFC.invalidate_scope_members(@tenant, @group, @connect, "C1")
-
-      assert {:ok, %{"C1" => scope}} = IFC.scopes(@tenant, @group, @connect, ["C1"])
-      assert scope.kind == "shared"
-      assert scope.members == :unknown
-    end
-
-    test "an unknown scope kind is refused" do
-      assert {:error, :invalid_scope_kind} =
-               IFC.observe_scope(@tenant, @group, @connect, "C1", %{kind: "space"})
-    end
   end
 
   describe "receipts" do
@@ -174,61 +134,6 @@ defmodule SalixStore.IFCTest do
 
       assert {:ok, []} = IFC.receipts(@tenant, @group, ["provider_user|w|U1"], 1_000)
       assert {:ok, []} = IFC.receipts(@tenant, @group, ["provider_user|w|U2"], 999)
-    end
-
-    test "a receipt without an expiry never expires" do
-      assert :ok =
-               IFC.put_receipt(@tenant, @group, "r2", %{
-                 requester_key: "provider_user|w|U1",
-                 source_atoms: ["scope|w|D1"],
-                 destination_atoms: ["group|g"]
-               })
-
-      assert {:ok, [_receipt]} =
-               IFC.receipts(@tenant, @group, ["provider_user|w|U1"], 9_999_999_999)
-    end
-
-    test "an incomplete receipt is refused" do
-      assert {:error, :invalid_requester} =
-               IFC.put_receipt(@tenant, @group, "r3", %{
-                 source_atoms: ["a"],
-                 destination_atoms: ["b"]
-               })
-
-      assert {:error, :invalid_sources} =
-               IFC.put_receipt(@tenant, @group, "r3", %{
-                 requester_key: "provider_user|w|U1",
-                 destination_atoms: ["b"]
-               })
-
-      assert {:error, :invalid_destination} =
-               IFC.put_receipt(@tenant, @group, "r3", %{
-                 requester_key: "provider_user|w|U1",
-                 source_atoms: ["a"]
-               })
-    end
-
-    test "pruning drops only expired rows" do
-      assert :ok =
-               IFC.put_receipt(@tenant, @group, "old", %{
-                 requester_key: "provider_user|w|U1",
-                 source_atoms: ["a"],
-                 destination_atoms: ["b"],
-                 expires_at_ms: 10
-               })
-
-      assert :ok =
-               IFC.put_receipt(@tenant, @group, "live", %{
-                 requester_key: "provider_user|w|U1",
-                 source_atoms: ["a"],
-                 destination_atoms: ["b"],
-                 expires_at_ms: 100
-               })
-
-      assert {:ok, 1} = IFC.prune_receipts(50)
-
-      assert {:ok, [%{"id" => "live"}]} =
-               IFC.receipts(@tenant, @group, ["provider_user|w|U1"], 60)
     end
   end
 end

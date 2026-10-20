@@ -59,7 +59,7 @@ defmodule Salix.Control.IntegrationMaterializationLifecycle do
   end
 
   defp acquire(key, holder) do
-    deadline = System.monotonic_time(:millisecond) + @acquire_timeout_ms
+    deadline = SystemsClock.monotonic_time(:millisecond) + @acquire_timeout_ms
     acquire(key, holder, deadline)
   end
 
@@ -92,10 +92,10 @@ defmodule Salix.Control.IntegrationMaterializationLifecycle do
   end
 
   defp retry_acquire(key, holder, deadline) do
-    if System.monotonic_time(:millisecond) >= deadline do
+    if SystemsClock.monotonic_time(:millisecond) >= deadline do
       {:error, {:conflict, "integration materialization is already in progress"}}
     else
-      Process.sleep(@retry_ms)
+      SystemsClock.sleep(@retry_ms)
       acquire(key, holder, deadline)
     end
   end

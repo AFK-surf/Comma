@@ -12,8 +12,8 @@ defmodule Comma.EmailDelivery.Logger do
       delivery: "test"
     )
 
-    if pid = Process.whereis(:comma_email_delivery_test) do
-      send(pid, {:comma_login_code, email, code})
+    if pid = SystemsRuntime.Proc.whereis(:comma_email_delivery_test) do
+      SystemsRuntime.Proc.send(pid, {:comma_login_code, email, code})
     end
 
     :ok

@@ -6,7 +6,7 @@ defmodule Salix.Control.Tenants do
   alias Salix.Control.Store
   alias SalixStore.{FeishuTenantApps, Ids, Keys, TenantApiKeys, TenantConfigs}
 
-  @tenant_config_sections ~w(agent_defaults vm)
+  @tenant_config_sections ~w(vm)
   @tenant_im_config_sections ~w(slack telegram discord imessage feishu meetings)
   @tenant_im_status_platforms ~w(slack telegram discord imessage feishu)
   @generated_id_retries 5
@@ -205,16 +205,6 @@ defmodule Salix.Control.Tenants do
     end
   rescue
     _exception -> {:error, :unavailable}
-  end
-
-  def update_config(tenant_id, "agent_defaults", value) when is_map(value) do
-    # Default pointers must name templates this tenant can see; a blank value
-    # clears the pointer so the role defers to the platform default.
-    with {:ok, validated} <- SalixAgent.AgentDefaults.validate_attrs(value, tenant_id) do
-      result = update_tenant_config_section(tenant_id, "agent_defaults", validated)
-      SalixStore.ReadScope.invalidate({:tenant_agent_defaults, tenant_id})
-      result
-    end
   end
 
   def update_config(tenant_id, name, value) do

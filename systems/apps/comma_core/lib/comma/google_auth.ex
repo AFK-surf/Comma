@@ -21,7 +21,6 @@ defmodule Comma.GoogleAuth do
 
   @spec complete(map()) :: {:ok, map()} | {:error, term()}
   def complete(attrs) when is_map(attrs) do
-    # Protocol anchor: tla/google_desktop_auth/GoogleDesktopAuth.tla
     with {:ok, platform} <- google_completion_platform(attrs),
          {:ok, attempt} <- GoogleLoginAttempts.consume(attrs, platform),
          {:ok, raw_claims} <- verified_claims(attempt, attrs),
@@ -61,7 +60,7 @@ defmodule Comma.GoogleAuth do
   end
 
   defp verified_claims(%{"platform" => "electron"} = attempt, attrs) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     result =
       adapter().exchange_authorization_code(trim(value(attrs, "authorization_code")),
@@ -76,7 +75,7 @@ defmodule Comma.GoogleAuth do
     Telemetry.emit_operation(
       :google_desktop_exchange,
       exchange_outcome(result),
-      System.monotonic_time() - started_at
+      SystemsClock.monotonic_time() - started_at
     )
 
     result
@@ -182,9 +181,9 @@ defmodule Comma.GoogleAuth do
       nil ->
         if claims.email_verified == true do
           case Repository.ensure_user_by_email(email, %{name: claims.name}, repo: Repo) do
-            {:ok, user} ->
+            {:ok, user, creation} ->
               user = user_for_update!(user.id)
-              {:signed_in, link_identity_locked!(user, claims)}
+              {:signed_in, link_identity_locked!(user, claims), creation}
 
             {:error, reason} ->
               Repo.rollback(reason)
@@ -257,7 +256,7 @@ defmodule Comma.GoogleAuth do
   end
 
   defp metadata_updates(claims) do
-    %{last_authenticated_at: DateTime.utc_now()}
+    %{last_authenticated_at: SystemsClock.utc_now()}
     |> maybe_put(:email_snapshot, claims.email, &is_binary/1)
     |> maybe_put(:email_verified, claims.email_verified, &is_boolean/1)
     |> maybe_put_hosted_domain(claims.hosted_domain)
@@ -332,6 +331,12 @@ defmodule Comma.GoogleAuth do
 
   defp finish({:signed_in, %User{} = user}, _claims, attrs), do: issue_session(user, attrs)
 
+  defp finish({:signed_in, %User{} = user, creation}, _claims, attrs) do
+    # The account and identity transaction has committed before capture.
+    if creation == :created, do: Comma.Analytics.registered(user.id)
+    issue_session(user, attrs)
+  end
+
   defp finish({:otp_required, %User{} = user}, claims, attrs) do
     claims
     |> GoogleClaims.link_state(user.id)
@@ -357,7 +362,7 @@ defmodule Comma.GoogleAuth do
     google_config()[:adapter] || Comma.Auth.GoogleAdapter.Oidcc
   end
 
-  defp google_config, do: Application.get_env(:comma_core, :google_auth, [])
+  defp google_config, do: SystemsRuntime.get_env(:comma_core, :google_auth, [])
 
   defp valid_credential?(credential),
     do:

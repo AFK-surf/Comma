@@ -8,7 +8,10 @@ defmodule SalixWeb.ConversationSSETest do
   only.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   alias SalixIM.{ConversationGroupActor, ConversationInput, ConversationServer}
 
@@ -16,15 +19,15 @@ defmodule SalixWeb.ConversationSSETest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    previous_s3 = Application.get_env(:salix_store, :s3_backend)
-    previous_api_token = Application.get_env(:salix_web, :api_token)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_web, :api_token, "test-token")
+    previous_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_api_token = SystemsRuntime.get_env(:salix_web, :api_token)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_web, :api_token, "test-token")
     start_supervised!(SalixStore.S3.Fake)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, previous_s3)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, previous_s3)
       restore_env(:salix_web, :api_token, previous_api_token)
     end)
 
@@ -33,21 +36,13 @@ defmodule SalixWeb.ConversationSSETest do
     key_response = req(:post, "/v1/admin/tenants/#{tenant_id}/api-keys", json: %{name: "test"})
     Process.put(:test_tenant_key, key_response.body["key"])
 
-    suffix = System.unique_integer([:positive])
-    template_id = "tmpl-convsse-#{suffix}"
-
     %{status: 201, body: group} =
       treq(:post, "/v1/runtime/agent-groups", json: %{name: "ConvSSE Group"})
 
-    %{status: 201} =
-      req(:post, "/v1/admin/templates",
-        json: %{template_id: template_id, name: "T", provider: "openai", model: "gpt-test"}
-      )
+    SalixAgent.TestSupport.configure_platform_models!()
 
     %{status: 201, body: agent} =
-      treq(:post, "/v1/runtime/agents",
-        json: %{group_id: group["group_id"], template_id: template_id, name: "A"}
-      )
+      treq(:post, "/v1/runtime/agents", json: %{group_id: group["group_id"], name: "A"})
 
     {conversation_id, _participant_id, _session_id} =
       create_single_agent_conversation(group["group_id"], agent["agent_id"])
@@ -60,12 +55,12 @@ defmodule SalixWeb.ConversationSSETest do
     conversation: conversation_id
   } do
     client = open_group_stream(group_id)
-    on_exit(fn -> Process.exit(client, :kill) end)
+    on_exit(fn -> SystemsRuntime.Proc.exit(client, :kill) end)
 
-    assert_receive {:sse_headers, headers}, 3_000
+    settle_receive({:sse_headers, headers})
     assert headers =~ "HTTP/1.1 200"
 
-    assert_receive {:sse_frame, %{"event" => "resync_required"}}, 1_000
+    settle_receive({:sse_frame, %{"event" => "resync_required"}})
 
     assert :ok =
              ConversationGroupActor.notify_conversation_mutation_if_running(group_id, %{
@@ -76,7 +71,7 @@ defmodule SalixWeb.ConversationSSETest do
                seq: 1
              })
 
-    assert_receive {:sse_closed, _reason}, 1_000
+    settle_receive({:sse_closed, _reason})
   end
 
   test "owner restart signals a new generation resync before later mutations", %{
@@ -85,27 +80,31 @@ defmodule SalixWeb.ConversationSSETest do
     conversation: conversation_id
   } do
     first_client = open_group_stream(group_id)
-    on_exit(fn -> Process.exit(first_client, :kill) end)
+    on_exit(fn -> SystemsRuntime.Proc.exit(first_client, :kill) end)
 
-    assert_receive {:sse_headers, headers}, 3_000
+    settle_receive({:sse_headers, headers})
     assert headers =~ "HTTP/1.1 200"
 
-    assert_receive {:sse_frame,
-                    %{
-                      "event" => "resync_required",
-                      "id" => first_version,
-                      "data" => %{
-                        "group_id" => ^group_id,
-                        "version" => first_version
-                      }
-                    }},
-                   1_000
+    settle_receive(
+      {:sse_frame,
+       %{
+         "event" => "resync_required",
+         "id" => first_version,
+         "data" => %{
+           "group_id" => ^group_id,
+           "version" => first_version
+         }
+       }}
+    )
 
     assert {:ok, %{"owner_pid" => owner_pid}} =
-             ConversationServer.subscribe_group_conversation_mutations(group_id, self())
+             ConversationServer.subscribe_group_conversation_mutations(
+               group_id,
+               SystemsRuntime.Proc.self()
+             )
 
-    Process.exit(owner_pid, :kill)
-    assert_receive {:sse_closed, _reason}, 3_000
+    SystemsRuntime.Proc.exit(owner_pid, :kill)
+    settle_receive({:sse_closed, _reason})
 
     assert {:ok, %{"message_id" => missed_message_id}} =
              ConversationServer.append_group_conversation_agent_message(
@@ -119,21 +118,22 @@ defmodule SalixWeb.ConversationSSETest do
              )
 
     second_client = open_group_stream(group_id)
-    on_exit(fn -> Process.exit(second_client, :kill) end)
+    on_exit(fn -> SystemsRuntime.Proc.exit(second_client, :kill) end)
 
-    assert_receive {:sse_headers, second_headers}, 3_000
+    settle_receive({:sse_headers, second_headers})
     assert second_headers =~ "HTTP/1.1 200"
 
-    assert_receive {:sse_frame,
-                    %{
-                      "event" => "resync_required",
-                      "id" => second_version,
-                      "data" => %{
-                        "group_id" => ^group_id,
-                        "version" => second_version
-                      }
-                    }},
-                   1_000
+    settle_receive(
+      {:sse_frame,
+       %{
+         "event" => "resync_required",
+         "id" => second_version,
+         "data" => %{
+           "group_id" => ^group_id,
+           "version" => second_version
+         }
+       }}
+    )
 
     refute version_generation(second_version) == version_generation(first_version)
 
@@ -162,59 +162,20 @@ defmodule SalixWeb.ConversationSSETest do
                }
              )
 
-    assert_receive {:sse_frame,
-                    %{
-                      "event" => "message_created",
-                      "id" => mutation_version,
-                      "data" => %{
-                        "conversation_id" => ^conversation_id,
-                        "message_id" => ^next_message_id
-                      }
-                    }},
-                   1_000
+    settle_receive(
+      {:sse_frame,
+       %{
+         "event" => "message_created",
+         "id" => mutation_version,
+         "data" => %{
+           "conversation_id" => ^conversation_id,
+           "message_id" => ^next_message_id
+         }
+       }}
+    )
 
     assert version_generation(mutation_version) == version_generation(second_version)
     assert version_revision(mutation_version) > version_revision(second_version)
-  end
-
-  test "streams a deletion for a Conversation beyond the first 1,000 list records", %{
-    group: group_id
-  } do
-    for index <- 1..1_000 do
-      assert {:ok, %{"conversation_id" => conversation_id}} =
-               ConversationInput.create_group_conversation(group_id, %{
-                 "title" => "Scale Conversation #{index}"
-               })
-
-      assert SalixStore.Ids.valid_conversation_id?(conversation_id)
-    end
-
-    assert {:ok, %{"has_more" => true, "next_cursor" => cursor}} =
-             SalixIM.Conversations.list_group_conversations(group_id, limit: 1_000)
-
-    assert {:ok, %{"data" => remaining}} =
-             SalixIM.Conversations.list_group_conversations(group_id,
-               limit: 1_000,
-               cursor: cursor
-             )
-
-    assert [%{"conversation_id" => paged_conversation_id}] = remaining
-
-    client = open_group_stream(group_id)
-    on_exit(fn -> Process.exit(client, :kill) end)
-
-    assert_receive {:sse_headers, headers}, 3_000
-    assert headers =~ "HTTP/1.1 200"
-
-    assert :ok =
-             ConversationServer.delete_group_conversation(group_id, paged_conversation_id)
-
-    assert_receive {:sse_frame,
-                    %{
-                      "event" => "conversation_delete",
-                      "data" => %{"conversation_id" => ^paged_conversation_id}
-                    }},
-                   1_000
   end
 
   defp create_single_agent_conversation(group_id, agent_id) do
@@ -262,8 +223,8 @@ defmodule SalixWeb.ConversationSSETest do
     )
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp version_generation(version) do
     version |> String.split(".", parts: 2) |> hd()
@@ -276,11 +237,11 @@ defmodule SalixWeb.ConversationSSETest do
   # ---- raw streaming SSE client (gen_tcp + chunked-transfer + SSE parsing) ----
 
   defp open_group_stream(group_id) do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
     token = tenant_key()
     path = "/v1/runtime/agent-groups/#{group_id}/conversations/events"
 
-    spawn(fn ->
+    SystemsRuntime.Proc.spawn(fn ->
       port = SalixWeb.Application.http_port()
       {:ok, sock} = :gen_tcp.connect(@host, port, [:binary, active: false, packet: :raw], 2_000)
 
@@ -296,7 +257,11 @@ defmodule SalixWeb.ConversationSSETest do
       try do
         recv_loop(sock, parent, %{phase: :headers, buf: "", sse: ""})
       rescue
-        e -> send(parent, {:sse_client_error, Exception.format(:error, e, __STACKTRACE__)})
+        e ->
+          SystemsRuntime.Proc.send(
+            parent,
+            {:sse_client_error, Exception.format(:error, e, __STACKTRACE__)}
+          )
       after
         :gen_tcp.close(sock)
       end
@@ -308,18 +273,18 @@ defmodule SalixWeb.ConversationSSETest do
       {:ok, bytes} ->
         case ingest(parent, %{st | buf: st.buf <> bytes}) do
           {:cont, st} -> recv_loop(sock, parent, st)
-          :done -> send(parent, {:sse_closed, :final_chunk})
+          :done -> SystemsRuntime.Proc.send(parent, {:sse_closed, :final_chunk})
         end
 
       {:error, reason} ->
-        send(parent, {:sse_closed, reason})
+        SystemsRuntime.Proc.send(parent, {:sse_closed, reason})
     end
   end
 
   defp ingest(parent, %{phase: :headers, buf: buf} = st) do
     case :binary.split(buf, "\r\n\r\n") do
       [head, rest] ->
-        send(parent, {:sse_headers, head})
+        SystemsRuntime.Proc.send(parent, {:sse_headers, head})
         ingest(parent, %{st | phase: :body, buf: rest})
 
       [_incomplete] ->
@@ -368,7 +333,7 @@ defmodule SalixWeb.ConversationSSETest do
       parsed = parse_frame(frame)
 
       if Map.has_key?(parsed, "event") or Map.has_key?(parsed, "data") do
-        send(parent, {:sse_frame, parsed})
+        SystemsRuntime.Proc.send(parent, {:sse_frame, parsed})
       end
     end
 

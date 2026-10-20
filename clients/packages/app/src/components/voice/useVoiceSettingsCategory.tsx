@@ -1,19 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useCall, useTopic, type VoiceKeyCreated } from "@comma/core-client";
 import type { CommaLocale } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import {
-  MoreHorizontalIcon,
-  type SettingsCategoryDefinition,
-  type SettingsPanelItem,
-} from "@comma/ui";
-import {
-  CommaApiError,
-  type CommaApiClient,
-  type CommaVoiceApiKey,
-  type CommaVoiceApiKeyCreated,
-  type CommaVoiceIntegration,
-} from "../../api";
-import { readActiveWorkspaceId, subscribeActiveWorkspace } from "../activeWorkspace";
+import { MoreHorizontalIcon } from "@comma/ui/components/icons";
+import { type SettingsCategoryDefinition } from "@comma/ui/components/settings";
+import { type SettingsPanelItem } from "@comma/ui/components/settings-panel";
+import { useWorkspacePreference } from "../activeWorkspace";
 import {
   CreatedVoiceKeyPanel,
   VoiceDialog,
@@ -34,14 +26,15 @@ function formatTime(ms: number, locale: CommaLocale): string {
   });
 }
 
-/** The server's error code, read from a failed Comma API response. */
+/** The server's error code, as a refused core call carries it. */
 function errorCode(error: unknown): string | undefined {
-  return error instanceof CommaApiError ? error.body?.error : undefined;
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : undefined;
 }
 
 /** A failed number or PIN write, in words the person can act on. */
 function numberErrorMessage(error: unknown, m: Messages): string {
-  const status = error instanceof CommaApiError ? error.status : undefined;
+  const status = (error as { status?: unknown } | null)?.status;
   const code = errorCode(error);
   if (code === "voice_number_in_use" || status === 409)
     return m.settings_voice_number_in_use();
@@ -69,71 +62,45 @@ function readinessText(reason: string | null | undefined, m: Messages): string {
  * API keys that custom voice clients connect with, and whether voice calls are
  * available now (docs/messaging-voice.md).
  *
- * A freshly minted key's plaintext lives in this hook's state only: it is
- * never written to storage, and it is gone once the person dismisses it or
- * leaves the category.
+ * The core reads them while the page shows; each change is one of its calls. A
+ * freshly minted key's plaintext comes back to this hook only: it is never
+ * written to storage, and it is gone once the person dismisses it or leaves
+ * the category.
  */
-export function useVoiceSettingsCategory(
-  api: CommaApiClient,
-  enabled: boolean
-): SettingsCategoryDefinition {
+export function useVoiceSettingsCategory(enabled: boolean): SettingsCategoryDefinition {
   const m = useCommaMessages();
   const locale = useCommaLocale();
-  const [workspaceId, setWorkspaceId] = useState(readActiveWorkspaceId);
-  useEffect(() => subscribeActiveWorkspace(setWorkspaceId), []);
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>();
+  const call = useCall();
+  const prefer = useWorkspacePreference();
+  const { value } = useTopic(
+    enabled && prefer !== undefined ? { topic: "voice", prefer } : null
+  );
+  const activeWorkspaceId = value?.workspace ?? undefined;
+  const integration = value?.integration ?? undefined;
+  const keys = value?.keys ?? undefined;
+  const integrationError = value?.integrationError ?? false;
+  const keysError = value?.keysError ?? false;
+  const loading = enabled && !value;
 
-  const [integration, setIntegration] = useState<CommaVoiceIntegration>();
-  const [keys, setKeys] = useState<CommaVoiceApiKey[]>();
-  const [loading, setLoading] = useState(false);
-  const [integrationError, setIntegrationError] = useState(false);
-  const [keysError, setKeysError] = useState(false);
   const [saveError, setSaveError] = useState<"numbers" | "keys">();
   const [busy, setBusy] = useState(false);
-  const [created, setCreated] = useState<CommaVoiceApiKeyCreated>();
+  const [created, setCreated] = useState<VoiceKeyCreated>();
   const [dialog, setDialog] = useState<VoiceDialogState>();
   const [dialogError, setDialogError] = useState<string>();
-  const generation = useRef(0);
+  const load = useCallback(
+    () =>
+      call("voice.refresh", {}).then(
+        () => undefined,
+        () => undefined
+      ),
+    [call]
+  );
 
-  const load = useCallback(async () => {
-    const request = ++generation.current;
-    setLoading(true);
-    try {
-      const id = workspaceId ?? (await api.listWorkspaces())[0]?.id;
-      if (!id) throw new Error("workspace unavailable");
-      // The two halves fail independently: an unconfigured voice line must
-      // not hide the keys, nor the other way round.
-      const [status, list] = await Promise.allSettled([
-        api.getVoiceIntegration(id),
-        api.listVoiceApiKeys(id),
-      ]);
-      if (request !== generation.current) return;
-      setActiveWorkspaceId(id);
-      setIntegrationError(status.status === "rejected");
-      if (status.status === "fulfilled") setIntegration(status.value);
-      setKeysError(list.status === "rejected");
-      if (list.status === "fulfilled") setKeys(list.value);
-    } catch {
-      if (request === generation.current) {
-        setIntegrationError(true);
-        setKeysError(true);
-      }
-    } finally {
-      if (request === generation.current) setLoading(false);
-    }
-  }, [api, workspaceId]);
-
-  const invalidate = useCallback(() => {
-    generation.current++;
-  }, []);
   useEffect(() => {
-    if (enabled) void load();
-    else {
-      setCreated(undefined);
-      setDialog(undefined);
-    }
-    return invalidate;
-  }, [enabled, load, invalidate]);
+    if (enabled) return;
+    setCreated(undefined);
+    setDialog(undefined);
+  }, [enabled]);
 
   const openDialog = useCallback((next: VoiceDialogState | undefined) => {
     setDialogError(undefined);
@@ -173,14 +140,13 @@ export function useVoiceSettingsCategory(
       setSaveError(undefined);
       try {
         await run(activeWorkspaceId);
-        await load();
       } catch {
         setSaveError(section);
       } finally {
         setBusy(false);
       }
     },
-    [activeWorkspaceId, load]
+    [activeWorkspaceId]
   );
 
   const saveFailed = m.settings_voice_save_failed();
@@ -190,7 +156,8 @@ export function useVoiceSettingsCategory(
   const dialogs = {
     onStartVerification: (e164: string, line: string | undefined) =>
       void runDialog(async (workspace) => {
-        await api.startVoiceNumberVerification(workspace, {
+        await call("voice.startVerification", {
+          workspace,
           e164,
           ...(line ? { line } : {}),
         });
@@ -198,44 +165,37 @@ export function useVoiceSettingsCategory(
       }, numberError),
     onCheckCode: (e164: string, line: string | undefined, code: string) =>
       void runDialog(async (workspace) => {
-        setIntegration(
-          await api.checkVoiceNumberVerification(workspace, {
-            e164,
-            code,
-            ...(line ? { line } : {}),
-          })
-        );
+        await call("voice.checkCode", {
+          workspace,
+          e164,
+          code,
+          ...(line ? { line } : {}),
+        });
         return undefined;
       }, numberError),
     onSetPin: (e164: string, pin: string) =>
       void runDialog(async (workspace) => {
-        setIntegration(await api.setVoiceNumberPin(workspace, { e164, pin }));
+        await call("voice.setPin", { workspace, e164, pin });
         return undefined;
       }, numberError),
     onRemoveNumber: (e164: string) =>
       void runDialog(async (workspace) => {
-        setIntegration(await api.removeVoiceNumber(workspace, e164));
+        await call("voice.removeNumber", { workspace, e164 });
         return undefined;
       }, numberError),
     onCreateKey: (name: string) =>
       void runDialog(async (workspace) => {
-        setCreated(await api.createVoiceApiKey(workspace, { name }));
-        // The write landed: a failed re-read shows as a load error.
-        void load();
+        setCreated(await call("voice.createKey", { workspace, name }));
         return undefined;
       }, keyError),
     onRenameKey: (keyId: string, name: string) =>
       void runDialog(async (workspace) => {
-        await api.updateVoiceApiKey(workspace, keyId, { name });
-        // The write landed: a failed re-read shows as a load error.
-        void load();
+        await call("voice.updateKey", { workspace, key: keyId, name });
         return undefined;
       }, keyError),
     onDeleteKey: (keyId: string) =>
       void runDialog(async (workspace) => {
-        await api.deleteVoiceApiKey(workspace, keyId);
-        // The write landed: a failed re-read shows as a load error.
-        void load();
+        await call("voice.deleteKey", { workspace, key: keyId });
         return undefined;
       }, keyError),
   };
@@ -324,7 +284,7 @@ export function useVoiceSettingsCategory(
                     label: m.settings_voice_clear_pin(),
                     onPress: () =>
                       void mutate("numbers", (workspace) =>
-                        api.setVoiceNumberPin(workspace, { e164: number.e164, pin: "" })
+                        call("voice.setPin", { workspace, e164: number.e164, pin: "" })
                       ),
                   },
                 ]
@@ -423,7 +383,9 @@ export function useVoiceSettingsCategory(
               : m.settings_inbound_api_enable(),
             onPress: () =>
               void mutate("keys", (workspace) =>
-                api.updateVoiceApiKey(workspace, apiKey.key_id, {
+                call("voice.updateKey", {
+                  workspace,
+                  key: apiKey.key_id,
                   status: active ? "disabled" : "active",
                 })
               ),

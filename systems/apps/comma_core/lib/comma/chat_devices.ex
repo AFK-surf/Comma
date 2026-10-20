@@ -54,7 +54,7 @@ defmodule Comma.ChatDevices do
          view = %{
            "user_id" => user["id"],
            "workspace_id" => workspace["id"],
-           "revision" => Base.encode16(:crypto.strong_rand_bytes(6)),
+           "revision" => Base.encode16(SystemsRuntime.Proc.random_bytes(6)),
            "expires_at" => now() + @ttl,
            "cursor" => cursor,
            "next_cursor" => page.next_cursor,
@@ -92,5 +92,5 @@ defmodule Comma.ChatDevices do
   defp key(connect_id),
     do: "comma/chat_device_views/" <> Base.url_encode64(connect_id, padding: false) <> ".json"
 
-  defp now, do: System.system_time(:second)
+  defp now, do: SystemsClock.system_time(:second)
 end

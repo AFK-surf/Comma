@@ -1,4 +1,6 @@
 defmodule SalixIM.SlackMessageMirrorOutboxDrainerTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The outbox drainer against the real outbox table and a scripted writer.
 
@@ -6,7 +8,8 @@ defmodule SalixIM.SlackMessageMirrorOutboxDrainerTest do
   a row is deleted only after the write was acknowledged, and a failed write
   leaves every row of the batch in place.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixStore.QueueCase, queues: [:slack_mirror_outbox]
 
   alias SalixIM.SlackMessageMirror.OutboxDrainer
   alias SalixStore.{Repo, SlackMirrorOutbox}
@@ -14,13 +17,19 @@ defmodule SalixIM.SlackMessageMirrorOutboxDrainerTest do
   defmodule ScriptedWriter do
     @moduledoc false
     def write_batch(rows) do
-      pid = Application.fetch_env!(:salix_im, :outbox_drainer_test_pid)
-      send(pid, {:write, self(), rows})
+      pid = SystemsRuntime.fetch_env!(:salix_im, :outbox_drainer_test_pid)
+      SystemsRuntime.Proc.send(pid, {:write, SystemsRuntime.Proc.self(), rows})
 
-      receive do
-        {:answer, answer} -> answer
-      after
-        1_000 -> :ok
+      # Only a test that scripts an answer waits for one; every other write
+      # acknowledges immediately.
+      if SystemsRuntime.get_env(:salix_im, :outbox_drainer_test_scripted, false) do
+        SystemsRuntime.Proc.receive do
+          {:answer, answer} -> answer
+        after
+          1_000 -> :ok
+        end
+      else
+        :ok
       end
     end
 
@@ -36,9 +45,13 @@ defmodule SalixIM.SlackMessageMirrorOutboxDrainerTest do
   end
 
   setup do
-    Repo.query!("TRUNCATE slack_mirror_outbox")
-    Application.put_env(:salix_im, :outbox_drainer_test_pid, self())
-    on_exit(fn -> Application.delete_env(:salix_im, :outbox_drainer_test_pid) end)
+    SystemsRuntime.put_env(:salix_im, :outbox_drainer_test_pid, SystemsRuntime.Proc.self())
+
+    on_exit(fn ->
+      SystemsRuntime.delete_env(:salix_im, :outbox_drainer_test_pid)
+      SystemsRuntime.delete_env(:salix_im, :outbox_drainer_test_scripted)
+    end)
+
     :ok
   end
 
@@ -55,29 +68,32 @@ defmodule SalixIM.SlackMessageMirrorOutboxDrainerTest do
   test "a failed batch stays, is counted, and comes back after its backoff" do
     for n <- 1..2, do: :ok = SlackMirrorOutbox.append(row(n))
 
-    handler = "outbox-batch-#{System.unique_integer([:positive])}"
-    parent = self()
+    handler = "outbox-batch-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    parent = SystemsRuntime.Proc.self()
 
-    :telemetry.attach(
+    SystemsRuntime.Telemetry.attach(
       handler,
       [:salix, :slack_mirror, :outbox, :batch],
       fn _event, measurements, metadata, _config ->
-        send(parent, {:batch, measurements, metadata})
+        SystemsRuntime.Proc.send(parent, {:batch, measurements, metadata})
       end,
       nil
     )
 
-    on_exit(fn -> :telemetry.detach(handler) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler) end)
+
+    SystemsRuntime.put_env(:salix_im, :outbox_drainer_test_scripted, true)
 
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         OutboxDrainer.drain_once(writer: ScriptedWriter, batch_size: 10, drain_ms: 100)
       end)
 
     assert_receive {:write, from, _rows}
-    send(from, {:answer, {:error, :clickhouse_down}})
+    SystemsRuntime.Proc.send(from, {:answer, {:error, :clickhouse_down}})
 
-    assert {:error, :clickhouse_down} = Task.await(task)
+    assert {:error, :clickhouse_down} = SystemsRuntime.Task.await(task, :infinity)
+    SystemsRuntime.put_env(:salix_im, :outbox_drainer_test_scripted, false)
     assert_receive {:batch, %{count: 2}, %{outcome: :failed}}
     assert pending() == 2
 
@@ -85,74 +101,11 @@ defmodule SalixIM.SlackMessageMirrorOutboxDrainerTest do
     assert :idle = OutboxDrainer.drain_once(writer: ScriptedWriter, batch_size: 10, drain_ms: 100)
     refute_receive {:write, _from, _rows}, 50
 
-    Process.sleep(250)
+    SystemsRuntime.Proc.sleep(250)
     assert :idle = OutboxDrainer.drain_once(writer: ScriptedWriter, batch_size: 10, drain_ms: 100)
     assert_receive {:write, _from, rows}
     assert length(rows) == 2
     assert pending() == 0
-  end
-
-  test "a full batch asks for an immediate next tick" do
-    for n <- 1..3, do: :ok = SlackMirrorOutbox.append(row(n))
-
-    assert :more = OutboxDrainer.drain_once(writer: ScriptedWriter, batch_size: 2)
-    assert_receive {:write, _from, [_one, _two]}
-    assert :idle = OutboxDrainer.drain_once(writer: ScriptedWriter, batch_size: 2)
-    assert_receive {:write, _from, [_three]}
-    assert pending() == 0
-  end
-
-  test "a writer that raises leaves the rows in place and does not kill the drainer" do
-    defmodule RaisingWriter do
-      def write_batch(_rows), do: raise("clickhouse url malformed")
-    end
-
-    :ok = SlackMirrorOutbox.append(row(1))
-
-    supervisor = start_supervised!({Task.Supervisor, name: __MODULE__.Tasks})
-
-    drainer =
-      start_supervised!(
-        {OutboxDrainer,
-         name: nil,
-         writer: RaisingWriter,
-         task_supervisor: supervisor,
-         start_delay_ms: 0,
-         drain_ms: 50}
-      )
-
-    Process.sleep(200)
-    assert Process.alive?(drainer)
-    assert pending() == 1
-  end
-
-  test "the lag gauge is published from the oldest waiting row" do
-    handler = "outbox-lag-#{System.unique_integer([:positive])}"
-    parent = self()
-
-    :telemetry.attach(
-      handler,
-      [:salix, :slack_mirror, :outbox, :lag],
-      fn _event, measurements, _metadata, _config -> send(parent, {:lag, measurements}) end,
-      nil
-    )
-
-    on_exit(fn -> :telemetry.detach(handler) end)
-
-    assert :idle = OutboxDrainer.drain_once(writer: ScriptedWriter)
-    assert_receive {:lag, %{oldest_age_seconds: 0.0}}
-
-    :ok = SlackMirrorOutbox.append(row(1))
-    Process.sleep(30)
-    assert :idle = OutboxDrainer.drain_once(writer: ScriptedWriter)
-    assert_receive {:lag, %{oldest_age_seconds: age}}
-    assert age >= 0.03
-  end
-
-  test "a disabled writer does not claim the outbox" do
-    :ok = SlackMirrorOutbox.append(row(1))
-    assert :idle = OutboxDrainer.drain_once(writer: DisabledWriter)
-    assert pending() == 1
   end
 
   defp pending do

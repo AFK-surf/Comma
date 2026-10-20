@@ -3,29 +3,28 @@ package main
 import (
 	"context"
 	"testing"
-	"time"
+	"testing/synctest"
 )
 
 func TestRunWaitsUntilCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- run(ctx) }()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- run(ctx) }()
 
-	select {
-	case err := <-done:
-		t.Fatalf("run returned before cancellation: %v", err)
-	case <-time.After(10 * time.Millisecond):
-	}
+		// run is blocked once every goroutine of the bubble is.
+		synctest.Wait()
+		select {
+		case err := <-done:
+			t.Fatalf("run returned before cancellation: %v", err)
+		default:
+		}
 
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
+		cancel()
+		if err := <-done; err != nil {
 			t.Fatalf("run returned error: %v", err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("run did not stop after cancellation")
-	}
+	})
 }
 
 func TestRunRejectsNilContext(t *testing.T) {

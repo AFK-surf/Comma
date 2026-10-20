@@ -1,4 +1,6 @@
 defmodule SalixAgent.Round do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Drives one round of an internal runtime session. A round is one activation
   precondition pass, one LLM request, and the synchronous tool results produced
@@ -48,6 +50,7 @@ defmodule SalixAgent.Round do
     ActivityEvent,
     SessionDriver,
     AgentActor,
+    CondensedWorkspace,
     ContextProviders,
     ProjectKnowledgeContext,
     SendMessageDraftStream,
@@ -84,6 +87,12 @@ defmodule SalixAgent.Round do
   # times in ten seconds and the rounds failed anyway.
   @llm_rate_limit_retry_base_ms 5_000
   @llm_rate_limit_statuses [429, 529]
+  # A streamed tool call whose arguments do not parse is usually a sampling
+  # glitch, not a property of the request, so one fresh attempt often heals
+  # it. Staging 2026-10-02: a deepseek-flash round failed on half-written
+  # arguments and the user saw the model-service notice. More attempts would
+  # resend a full context window for a model that keeps failing the same way.
+  @llm_invalid_tool_arguments_max_retries 1
   @llm_retry_delay_cap_ms 60_000
   @tool_result_envelope_max_bytes ToolResultProjection.model_envelope_max_bytes()
   @llm_meter_tracker_key {__MODULE__, :llm_meter_tracker}
@@ -160,7 +169,7 @@ defmodule SalixAgent.Round do
           :salix_stream_persistence_wait,
           %{component: "salix_agent", surface: SystemsObservability.Context.current_surface()},
           fn ->
-            receive do
+            SystemsRuntime.Proc.receive do
               {:persistence_fence, ^gate, ready} ->
                 Process.put({__MODULE__, gate}, ready)
                 ready
@@ -174,6 +183,8 @@ defmodule SalixAgent.Round do
   end
 
   defp persistence_ready?(_context), do: true
+
+  defp persistence_gate(context), do: Map.take(context, [:persistence_gate])
 
   @doc false
   # The first half of a round, before the kernel builds its request. The
@@ -192,7 +203,7 @@ defmodule SalixAgent.Round do
     opts =
       opts
       |> Keyword.put_new(:round_started_ms, SalixAgent.PhaseTelemetry.now_ms())
-      |> Keyword.put_new(:round_operation_started, System.monotonic_time())
+      |> Keyword.put_new(:round_operation_started, SystemsClock.monotonic_time())
 
     CommaLog.log("round_start", %{agent_id: context.agent_id, session_id: session_id})
 
@@ -223,7 +234,7 @@ defmodule SalixAgent.Round do
             end
 
           {false, nil} ->
-            with {:ok, llm_opts} <- resolved_llm_opts(context, opts),
+            with {:ok, llm_opts} <- resolved_llm_opts(context, revision_state(context), opts),
                  {:ok, context} <-
                    set_status(context, session_id, "active")
                    |> tag_pre_llm_error(:round_status_activation) do
@@ -258,7 +269,7 @@ defmodule SalixAgent.Round do
   # A prepared round that will not start: its authorization ends, and a round
   # that set the session active restores it.
   def abandon(prep, reason) do
-    Task.shutdown(prep.authorization, :brutal_kill)
+    SystemsRuntime.Task.shutdown(prep.authorization, :brutal_kill)
 
     {:error, reason}
     |> restore_idle(prep)
@@ -274,7 +285,8 @@ defmodule SalixAgent.Round do
       "round",
       operation_surface(context, opts),
       if(match?({:ok, _, _}, result), do: "ok", else: "error"),
-      System.monotonic_time() - (opts[:round_operation_started] || System.monotonic_time())
+      SystemsClock.monotonic_time() -
+        (opts[:round_operation_started] || SystemsClock.monotonic_time())
     )
 
     result
@@ -310,16 +322,16 @@ defmodule SalixAgent.Round do
 
   defp clear_active_status_after_round_error(result, _context, _session_id), do: result
 
-  defp resolved_llm_opts(context, opts) do
+  defp resolved_llm_opts(context, session, opts) do
     case opts[:resolved_round_config] do
       %{llm_opts: llm_opts} -> {:ok, llm_opts}
-      _ -> resolve_llm_opts(context)
+      _ -> resolve_llm_opts(context, session)
     end
   end
 
-  defp resolve_llm_opts(context) do
+  defp resolve_llm_opts(context, session) do
     with :ok <- SalixAgent.Control.ensure_not_stopped(context.agent_id),
-         do: SalixAgent.LlmResolver.resolve_runtime(context.agent_id)
+         do: SalixAgent.LlmResolver.resolve_session(context.agent_id, session)
   end
 
   defp validate_prepared_activation(context, session_id, %{
@@ -358,7 +370,7 @@ defmodule SalixAgent.Round do
   end
 
   defp await_authorization(task, agent_id) do
-    case Task.yield(task, :infinity) do
+    case SystemsClock.yield(task, :infinity) do
       {:ok, {:error, _} = error} ->
         error
 
@@ -395,7 +407,7 @@ defmodule SalixAgent.Round do
       captured = SystemsObservability.Context.capture()
 
       authorization =
-        Task.Supervisor.async_nolink(SalixAgent.TaskSup, fn ->
+        SystemsRuntime.TaskSupervisor.async_nolink(SalixAgent.TaskSup, fn ->
           SystemsObservability.Context.run(captured, fn ->
             before_llm_call_with_ownership(context.agent_id, meter_ctx)
           end)
@@ -415,7 +427,7 @@ defmodule SalixAgent.Round do
           authorization
         )
 
-      with {:error, _} <- prepared, do: Task.shutdown(authorization, :brutal_kill)
+      with {:error, _} <- prepared, do: SystemsRuntime.Task.shutdown(authorization, :brutal_kill)
       prepared
     end
   end
@@ -431,9 +443,11 @@ defmodule SalixAgent.Round do
          meter_ctx,
          authorization
        ) do
-    with {:ok, session, activation_delta} <-
+    with {:ok, session, activation_delta, cw_wait_timing} <-
            context_provider_activation(context, session_id, session, session_config),
          {:ok, view} <- InternalSession.query(session, :round_view) do
+      # Emitted with the round's other phase facts once its activation key is known.
+      session_config = Map.put(session_config, :cw_wait_timing, cw_wait_timing)
       platform = InternalSession.get(session, :platform)
 
       %{
@@ -457,6 +471,14 @@ defmodule SalixAgent.Round do
           trusted_origin: trusted_origin
         })
 
+      activation_delta =
+        ContextProviders.with_interaction_reminder(
+          activation_delta,
+          session,
+          session_config.tool_disclosure,
+          trusted_origin
+        )
+
       context =
         context
         |> Map.put(:visible_reply_phase, visible_reply_phase)
@@ -470,7 +492,8 @@ defmodule SalixAgent.Round do
             :tool_disclosure,
             :skill_projection_revision,
             :plugin_projection,
-            :plugin_projection_revision
+            :plugin_projection_revision,
+            :condensed_workspace_enabled
           ])
         )
 
@@ -496,13 +519,18 @@ defmodule SalixAgent.Round do
       inspector_withholds_draft? =
         SalixAgent.InspectorPolicy.restricted?(%{tool_disclosure: session_config.tool_disclosure})
 
+      # The stream callbacks run in the provider job. They capture these
+      # fields, not `context`: its tool catalog would be copied into the job.
+      agent_id = context.agent_id
+      gate = persistence_gate(context)
+
       # Token deltas fan out via the Notifier while the round runs.
       # Best-effort: Notifier.notify rescues, so a bad consumer never breaks a round.
       on_delta = fn text ->
         record_first_delta(text)
 
-        if not repair_request? and persistence_ready?(context) do
-          SalixAgent.Notifier.notify(context.agent_id, {:delta, session_id, text})
+        if not repair_request? and persistence_ready?(gate) do
+          SalixAgent.Notifier.notify(agent_id, {:delta, session_id, text})
         end
       end
 
@@ -514,7 +542,7 @@ defmodule SalixAgent.Round do
 
         unless repair_request? or not is_map(visible_reply_scope) or ifc_withholds_draft? or
                  inspector_withholds_draft? do
-          if persistence_ready?(context) do
+          if persistence_ready?(gate) do
             stream =
               Process.get(@send_message_draft_stream_key, SendMessageDraftStream.new())
 
@@ -530,7 +558,7 @@ defmodule SalixAgent.Round do
             case action do
               {:publish, cumulative_text} ->
                 publish_visible_reply_text(
-                  context.agent_id,
+                  agent_id,
                   session_id,
                   visible_reply_scope,
                   cumulative_text
@@ -555,7 +583,7 @@ defmodule SalixAgent.Round do
         when is_binary(text) and text != "" ->
           record_first_delta(text)
 
-          if not repair_request? and persistence_ready?(context) do
+          if not repair_request? and persistence_ready?(gate) do
             # last_emit nil = nothing emitted yet (monotonic time can be
             # negative, so no sentinel arithmetic).
             {tail, last_emit} = Process.get(@reasoning_activity_key, {"", nil})
@@ -567,11 +595,11 @@ defmodule SalixAgent.Round do
                 @reasoning_tail_max_chars
               )
 
-            now = System.monotonic_time(:millisecond)
+            now = SystemsClock.monotonic_time(:millisecond)
 
             if last_emit == nil or now - last_emit >= @reasoning_activity_throttle_ms do
               ActivityEvent.thinking(
-                context.agent_id,
+                agent_id,
                 session_id,
                 tail,
                 visible_reply_scope
@@ -677,6 +705,12 @@ defmodule SalixAgent.Round do
 
     trace_ctx = request_trace_ctx(prep.trace_ctx, facts)
 
+    # The provider job copies what its closures capture. Keep the round
+    # context and its options in the owner; the job needs these fields only.
+    agent_id = context.agent_id
+    gate = persistence_gate(context)
+    phase_opts = Keyword.take(opts, [:round_started_ms, :activation_started_ms])
+
     try do
       provider_request = fn ->
         # Archive boundaries 2 and 3 are NOT emitted here: they live in the
@@ -685,7 +719,7 @@ defmodule SalixAgent.Round do
         # remembering to instrument each call site. What the seam cannot
         # derive on its own is passed to it — see `archive_identity`.
         try do
-          case SalixAgent.OwnershipCell.check(context.agent_id) do
+          case SalixAgent.OwnershipCell.check(agent_id) do
             :ok ->
               response =
                 LLM.complete_stream(request_input, specs, on_delta, stream_opts, archive_identity)
@@ -695,7 +729,11 @@ defmodule SalixAgent.Round do
                 %{} = tracker ->
                   Process.put(
                     @llm_meter_tracker_key,
-                    Map.put(tracker, :provider_completed_at, System.monotonic_time(:millisecond))
+                    Map.put(
+                      tracker,
+                      :provider_completed_at,
+                      SystemsClock.monotonic_time(:millisecond)
+                    )
                   )
 
                 _ ->
@@ -708,7 +746,7 @@ defmodule SalixAgent.Round do
               raise "runtime fenced before provider dispatch"
           end
         after
-          _ = persistence_ready?(context)
+          _ = persistence_ready?(gate)
         end
       end
 
@@ -741,6 +779,14 @@ defmodule SalixAgent.Round do
           :ok
       end
 
+      case session_config[:cw_wait_timing] do
+        %{started_at_ms: started, ended_at_ms: ended} ->
+          SalixAgent.PhaseTelemetry.emit(:cw_wait, meter_ctx, activation_key, started, ended)
+
+        _ ->
+          :ok
+      end
+
       SalixAgent.PhaseTelemetry.emit_delivery_wait(
         meter_ctx,
         opts,
@@ -762,6 +808,10 @@ defmodule SalixAgent.Round do
           meter_ctx = LLMMetering.capture_decision(meter_ctx, decision)
 
           stream_progress = SalixAgent.StreamProgress.new()
+          # A Router's request budget is shorter than other roles'; the job
+          # deadline never outlives the budget the retry loop plans against.
+          request_timeout_ms = LLM.request_timeout_ms(session_config.role)
+          job_timeout_ms = min(DependencyJob.timeout_ms(:llm), request_timeout_ms)
 
           pending = %{
             session_id: session_id,
@@ -780,6 +830,8 @@ defmodule SalixAgent.Round do
             skill_projection_revision: session_config.skill_projection_revision,
             plugin_projection: session_config.plugin_projection,
             plugin_projection_revision: session_config.plugin_projection_revision,
+            condensed_workspace_enabled:
+              Map.get(session_config, :condensed_workspace_enabled) == true,
             visible_reply_phase: visible_reply_phase,
             visible_reply_guard: visible_reply_guard,
             visible_reply_scope: visible_reply_scope,
@@ -796,22 +848,30 @@ defmodule SalixAgent.Round do
               SalixAgent.StreamProgress.install(stream_progress)
 
               SalixAgent.RouterRequestMonitor.started(
-                context.agent_id,
+                agent_id,
                 session_id,
                 source_message_ids
               )
 
-              SalixAgent.PhaseTelemetry.emit_pre_dispatch(meter_ctx, opts, activation_key)
-              started = System.monotonic_time(:millisecond)
+              SalixAgent.PhaseTelemetry.emit_pre_dispatch(meter_ctx, phase_opts, activation_key)
+              started = SystemsClock.monotonic_time(:millisecond)
 
               {response, meter_meta} =
-                metered_provider_call(meter_ctx, stream_opts, started, provider_request)
+                metered_provider_call(
+                  meter_ctx,
+                  stream_opts,
+                  started,
+                  request_timeout_ms,
+                  provider_request
+                )
 
               {response, meter_meta.execution_timing["duration_ms"], meter_meta}
             end)
           end
 
-          case DependencyJob.start(:llm, session_config.tenant_id, dependency) do
+          case DependencyJob.start(:llm, session_config.tenant_id, dependency,
+                 timeout_ms: job_timeout_ms
+               ) do
             {:ok, job} ->
               pending =
                 Map.merge(pending, %{dependency_job: job, ref: job.ref, pid: job.pid})
@@ -826,7 +886,7 @@ defmodule SalixAgent.Round do
           end
       end
     after
-      Task.shutdown(authorization, :brutal_kill)
+      SystemsRuntime.Task.shutdown(authorization, :brutal_kill)
     end
     |> restore_idle(prep)
     |> finish_round(context, session_id, opts)
@@ -841,7 +901,7 @@ defmodule SalixAgent.Round do
   defp restore_idle(result, _prep), do: result
 
   # The configuration of the kernel's `round_request`: the request's provider
-  # configuration, delta, and disclosure, and the facts its response carries.
+  # configuration and delta, and the facts its response carries.
   # The kernel builds the request: the stored prompt snapshot, the compaction
   # context, the activation delta, and the request generation. Stored image
   # refs inline as native image input through `request_reader/1`; other
@@ -874,10 +934,8 @@ defmodule SalixAgent.Round do
       "restricted" =>
         SalixAgent.InspectorPolicy.restricted?(%{tool_disclosure: session_config.tool_disclosure}),
       "guard_config" => true,
-      "nonce" => System.unique_integer([:positive]),
+      "nonce" => SystemsRuntime.Proc.unique_integer([:positive]),
       "delta" => activation_delta,
-      "available" => false,
-      "disclosure" => request_disclosure(session_config.tool_disclosure),
       "protocol" => protocol,
       "cfg" => cfg,
       "tools" => session_config.tool_specs,
@@ -886,21 +944,6 @@ defmodule SalixAgent.Round do
 
     {config, image_ctx, protocol}
   end
-
-  # The kernel reads only the tool names of the disclosure, for the
-  # current-source interaction reminder. The full catalog is hundreds of
-  # kilobytes, and the round request carries it into the kernel on each step.
-  defp request_disclosure(%{"tools" => tools}) when is_list(tools) do
-    %{
-      "tools" =>
-        Enum.map(tools, fn
-          %{} = tool -> Map.take(tool, ["name"])
-          other -> other
-        end)
-    }
-  end
-
-  defp request_disclosure(disclosure), do: disclosure
 
   @doc false
   # The reader the kernel's `round_request` asks for images and results.
@@ -1011,9 +1054,22 @@ defmodule SalixAgent.Round do
   defp traced_context_provider_activation(context, session_id, session, session_config) do
     base = ContextProviders.prepare_activation_delta(session, session_config)
     knowledge = ProjectKnowledgeContext.prepare(context.agent_id, session_id, session)
+    # Waits up to the check's deadline for the previous response's answer.
+    {reminder, wait_timing} = CondensedWorkspace.Decision.reminder(session_id, session_config)
 
-    {:ok, session, merge_activation_delta(base, knowledge)}
+    delta =
+      base
+      |> merge_activation_delta(knowledge)
+      |> append_activation_messages(reminder)
+
+    {:ok, session, delta, wait_timing}
   end
+
+  defp append_activation_messages(delta, :none), do: delta
+  defp append_activation_messages(nil, {:messages, messages}), do: %{messages: messages}
+
+  defp append_activation_messages(delta, {:messages, messages}),
+    do: Map.update(delta, :messages, messages, &(&1 ++ messages))
 
   defp merge_activation_delta(:none, :none), do: nil
 
@@ -1092,7 +1148,8 @@ defmodule SalixAgent.Round do
     :tool_disclosure,
     :skill_projection_revision,
     :plugin_projection,
-    :plugin_projection_revision
+    :plugin_projection_revision,
+    :condensed_workspace_enabled
   ]
 
   defp respond_host(context, pending, response, duration_ms, meter_meta, meter_ctx) do
@@ -1158,7 +1215,7 @@ defmodule SalixAgent.Round do
   end
 
   defp round_facts(host, id_snapshot, guard) do
-    config = Map.put(facts_config(host), "nonce", System.unique_integer([:positive]))
+    config = Map.put(facts_config(host), "nonce", SystemsRuntime.Proc.unique_integer([:positive]))
     InternalSession.query(loop_state(host.context), :round_facts, {config, id_snapshot, guard})
   end
 
@@ -1277,6 +1334,8 @@ defmodule SalixAgent.Round do
     with {:ok, written} <- InternalSessionStore.write_revision(revision, events, opts),
          {:ok, task} <-
            InternalSessionStore.start_durable_fence(agent_id, host.session_id, written) do
+      start_workspace_check(host, host.calls)
+
       # The canonical batch passed authorization and schema checks. Resource
       # admission still runs at the Tools seam. Results wait for this revision.
       executed =
@@ -1381,6 +1440,11 @@ defmodule SalixAgent.Round do
           status
         )
 
+        # A final model failure: the kernel stops this input without retrying.
+        if status == "llm_failed" and
+             InternalSession.query(loop_state(context), :runtime_failure_reason) == "model",
+           do: report_task_failure(host, :model)
+
       {:activity, :idle} ->
         ActivityEvent.idle(agent_id, session_id, visible_scope(host))
 
@@ -1424,6 +1488,7 @@ defmodule SalixAgent.Round do
 
       {:guard_parked, {guard, detail}} ->
         log_guard_parked(host, guard, detail)
+        report_task_failure(host, :guard)
 
       {:llm_parked, {streak, meta}} ->
         Logger.error(
@@ -1441,6 +1506,25 @@ defmodule SalixAgent.Round do
     end
 
     host
+  end
+
+  # The kernel's own failure notice answers only a human source; a Worker's
+  # Task gets its report here.
+  defp report_task_failure(host, reason) do
+    detail =
+      case host[:response] do
+        {:error, %{} = info} -> info
+        _ -> nil
+      end
+
+    SalixAgent.WorkerTaskFailureReport.maybe_send(
+      loop_state(host.context),
+      host.guard_tool_config,
+      host.context,
+      host.source_message_ids,
+      reason,
+      detail
+    )
   end
 
   defp log_guard_parked(host, "runaway_guard_parked", streak) do
@@ -1623,6 +1707,8 @@ defmodule SalixAgent.Round do
 
   defp run_tools(host, calls, %{"mode" => "model_turn"} = flags) do
     started = SalixAgent.PhaseTelemetry.now_ms()
+    # A speculative batch started its check before it ran.
+    if is_nil(host.speculative), do: start_workspace_check(host, calls)
     {results, pending} = host.speculative || execute_internal_tool_calls(calls, host.ctx)
 
     SalixAgent.PhaseTelemetry.emit(
@@ -1672,6 +1758,23 @@ defmodule SalixAgent.Round do
     {%{host | async_pending: pending, billing_context: ctx.billing_context}, results}
   end
 
+  # The Condensed Workspace check runs while this response's tools run.
+  defp start_workspace_check(host, calls) do
+    config = host.guard_tool_config || %{}
+
+    CondensedWorkspace.Decision.start(%{
+      enabled: config[:condensed_workspace_enabled] == true,
+      session: loop_state(host.context),
+      calls: Enum.reject(List.wrap(calls), &(tool_name(&1) == "wait_for")),
+      agent_id: host.context.agent_id,
+      session_id: host.session_id,
+      tenant_id: config[:tenant_id],
+      group_id: config[:group_id],
+      meter_ctx: host.meter_ctx,
+      activation_key: host.context[:phase_activation_key]
+    })
+  end
+
   # The workspace commit runs once per batch; a retried transaction reuses it
   # and projects the results again against the fresh session.
   defp store_results(host, kpending, results) do
@@ -1719,7 +1822,7 @@ defmodule SalixAgent.Round do
              actor_type: pending.meter_ctx.actor_type
            ),
          {:ok, candidates} <- prepare_tool_result_candidates(results) do
-      at = System.system_time(:millisecond)
+      at = SystemsClock.system_time(:millisecond)
       {:ok, %{host | workspace: {input, results, candidates, at}}, results, candidates, at}
     end
   end
@@ -1860,7 +1963,7 @@ defmodule SalixAgent.Round do
              pending,
              [],
              results,
-             System.system_time(:millisecond)
+             SystemsClock.system_time(:millisecond)
            ),
          true <- byte_size(Jason.encode!(envelope)) <= @tool_result_envelope_max_bytes,
          {:ok, events, hwm} <- tool_events(projected, pending, results) do
@@ -1931,8 +2034,8 @@ defmodule SalixAgent.Round do
   defp run_wait_for_call(call, ctx) do
     id = call[:id] || call["id"] || "wait-for-" <> random_hex(4)
     args = call[:args] || call["args"] || %{}
-    started_at = System.system_time(:millisecond)
-    started = System.monotonic_time(:millisecond)
+    started_at = SystemsClock.system_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
 
     try do
       case SalixAgent.Tools.AsyncOps.wait_for(args, ctx) do
@@ -1945,7 +2048,7 @@ defmodule SalixAgent.Round do
             input: Jason.encode!(args),
             output: content,
             status: "completed",
-            duration_ms: System.monotonic_time(:millisecond) - started,
+            duration_ms: SystemsClock.monotonic_time(:millisecond) - started,
             started_at: started_at,
             call_index: call[:call_index] || call["call_index"],
             events: events
@@ -1964,7 +2067,7 @@ defmodule SalixAgent.Round do
           input: Jason.encode!(args),
           output: content,
           status: "error",
-          duration_ms: System.monotonic_time(:millisecond) - started,
+          duration_ms: SystemsClock.monotonic_time(:millisecond) - started,
           started_at: started_at,
           call_index: call[:call_index] || call["call_index"],
           error_class: SalixAgent.Tools.exception_error_class(e),
@@ -2109,7 +2212,7 @@ defmodule SalixAgent.Round do
   defp register_read_timers(agent_id, events) do
     context = SystemsObservability.Context.capture()
 
-    case Task.Supervisor.start_child(SalixAgent.WaitTimerTasks, fn ->
+    case SystemsRuntime.TaskSupervisor.start_child(SalixAgent.WaitTimerTasks, fn ->
            SystemsObservability.Context.run(context, fn ->
              register_committed_timers(agent_id, events)
            end)
@@ -2153,7 +2256,7 @@ defmodule SalixAgent.Round do
         name: name,
         content: message,
         error: true,
-        input: Jason.encode!(args),
+        input: SalixAgent.Tools.recorded_input(name, args),
         output: message,
         status: "error",
         duration_ms: 0,
@@ -2306,7 +2409,7 @@ defmodule SalixAgent.Round do
     end
   end
 
-  defp metered_provider_call(meter_ctx, llm_opts, started, fun) do
+  defp metered_provider_call(meter_ctx, llm_opts, started, budget_ms, fun) do
     billing = meter_ctx[:billing_context] || %{}
 
     SystemsObservability.Trace.with_span(
@@ -2318,17 +2421,18 @@ defmodule SalixAgent.Round do
         provider: meter_ctx[:provider] || "other",
         model_key: meter_ctx[:model] || "other"
       },
-      fn -> do_metered_provider_call(meter_ctx, llm_opts, started, fun) end,
+      fn -> do_metered_provider_call(meter_ctx, llm_opts, started, budget_ms, fun) end,
       kind: :client
     )
   end
 
-  defp do_metered_provider_call(meter_ctx, llm_opts, started, fun) do
+  defp do_metered_provider_call(meter_ctx, llm_opts, started, budget_ms, fun) do
     execution_started = SalixAgent.ExecutionTiming.start()
     meter_ctx = Map.put(meter_ctx, :started_at_ms, elem(execution_started, 0))
 
     Process.put(@llm_meter_tracker_key, %{
       started_at: started,
+      budget_ms: budget_ms,
       attempt_started_at: nil,
       attempts: 0,
       request_first_token_at: nil,
@@ -2350,7 +2454,7 @@ defmodule SalixAgent.Round do
         SalixAgent.ExecutionTiming.finish_at(
           execution_started,
           Process.get(@llm_meter_tracker_key)[:provider_completed_at] ||
-            System.monotonic_time(:millisecond),
+            SystemsClock.monotonic_time(:millisecond),
           Process.get(@llm_meter_tracker_key).request_first_token_at
         )
 
@@ -2367,7 +2471,7 @@ defmodule SalixAgent.Round do
 
         LLM.emit_logical_request(llm_opts, {:error, exception})
 
-        duration_ms = System.monotonic_time(:millisecond) - started
+        duration_ms = SystemsClock.monotonic_time(:millisecond) - started
         meter_meta = llm_meter_tracker_meta()
 
         _ =
@@ -2386,7 +2490,7 @@ defmodule SalixAgent.Round do
 
         LLM.emit_logical_request(llm_opts, {:error, {kind, reason}})
 
-        duration_ms = System.monotonic_time(:millisecond) - started
+        duration_ms = SystemsClock.monotonic_time(:millisecond) - started
         meter_meta = llm_meter_tracker_meta()
 
         _ =
@@ -2451,7 +2555,7 @@ defmodule SalixAgent.Round do
       %{} = tracker ->
         Process.put(@llm_meter_tracker_key, %{
           tracker
-          | attempt_started_at: System.monotonic_time(:millisecond),
+          | attempt_started_at: SystemsClock.monotonic_time(:millisecond),
             attempts: tracker.attempts + 1,
             first_token_ms: nil
         })
@@ -2490,7 +2594,7 @@ defmodule SalixAgent.Round do
   defp record_request_first_delta(text) when is_binary(text) and text != "" do
     case Process.get(@llm_meter_tracker_key) do
       %{request_first_token_at: nil} = tracker ->
-        first = System.monotonic_time(:millisecond)
+        first = SystemsClock.monotonic_time(:millisecond)
 
         Process.put(@llm_meter_tracker_key, %{
           tracker
@@ -2514,7 +2618,7 @@ defmodule SalixAgent.Round do
     case Process.get(@llm_meter_tracker_key) do
       %{attempt_started_at: attempt_started_at, first_token_ms: nil} = tracker
       when is_integer(attempt_started_at) ->
-        first_token_ms = max(System.monotonic_time(:millisecond) - attempt_started_at, 0)
+        first_token_ms = max(SystemsClock.monotonic_time(:millisecond) - attempt_started_at, 0)
         Process.put(@llm_meter_tracker_key, %{tracker | first_token_ms: first_token_ms})
 
       _ ->
@@ -2556,7 +2660,8 @@ defmodule SalixAgent.Round do
     end
 
     cond do
-      not retryable_llm_error?(reason) or retries_done >= @llm_request_max_retries ->
+      not retryable_llm_error?(reason, retries_done) or
+          retries_done >= @llm_request_max_retries ->
         record_attempt.(:exhausted, 0)
         on_exhausted.()
 
@@ -2570,7 +2675,7 @@ defmodule SalixAgent.Round do
       true ->
         record_attempt.(:retry, delay_ms)
         log_llm_request_retry(meter_ctx, retry_number, delay_ms, reason)
-        Process.sleep(delay_ms)
+        SystemsClock.sleep(delay_ms)
         retry_llm_provider_call(meter_ctx, fun, retry_number)
     end
   end
@@ -2579,9 +2684,19 @@ defmodule SalixAgent.Round do
   # oversized request, an invalid parameter) never heal by resending the same
   # payload; retrying only burns time and rate limit. Overflow recovery is
   # the exhausted path's job (auto-compaction), not the retry loop's.
-  defp retryable_llm_error?({:error, reason}), do: retryable_llm_error?(reason)
-  defp retryable_llm_error?(%{"retryable" => false}), do: false
-  defp retryable_llm_error?(reason), do: not SalixAgent.BillingAvailability.denied?(reason)
+  #
+  # Malformed tool arguments stay non-retryable for the session's activation
+  # retries, but the round itself resends them a bounded number of times.
+  defp retryable_llm_error?({:error, reason}, retries_done),
+    do: retryable_llm_error?(reason, retries_done)
+
+  defp retryable_llm_error?(%{"reason" => "invalid_tool_arguments"}, retries_done),
+    do: retries_done < @llm_invalid_tool_arguments_max_retries
+
+  defp retryable_llm_error?(%{"retryable" => false}, _retries_done), do: false
+
+  defp retryable_llm_error?(reason, _retries_done),
+    do: not SalixAgent.BillingAvailability.denied?(reason)
 
   @doc "How many provider attempts one logical model request may make."
   @spec llm_request_max_attempts() :: pos_integer()
@@ -2618,7 +2733,7 @@ defmodule SalixAgent.Round do
 
     case Process.get(@llm_meter_tracker_key) do
       %{attempt_started_at: started} when is_integer(started) ->
-        duration = max(System.monotonic_time(:millisecond) - started, 0)
+        duration = max(SystemsClock.monotonic_time(:millisecond) - started, 0)
         {duration, now_wall - duration}
 
       _ ->
@@ -2626,14 +2741,15 @@ defmodule SalixAgent.Round do
     end
   end
 
-  # Time left on the logical request's deadline, from the meter tracker that
-  # `run_llm_provider_call/3` installs; absent (a caller outside the round
-  # loop) means no bound.
+  # Time left on the logical request's deadline (the session role's
+  # `LLM.request_timeout_ms/1`, the same budget as the dependency job), from
+  # the meter tracker that `run_llm_provider_call/3` installs; absent (a
+  # caller outside the round loop) means no bound.
   defp remaining_request_budget_ms do
     case Process.get(@llm_meter_tracker_key) do
-      %{started_at: started_at} when is_integer(started_at) ->
-        elapsed = System.monotonic_time(:millisecond) - started_at
-        max(SalixAgent.LLM.request_timeout_ms() - elapsed, 0)
+      %{started_at: started_at, budget_ms: budget_ms} when is_integer(started_at) ->
+        elapsed = SystemsClock.monotonic_time(:millisecond) - started_at
+        max(budget_ms - elapsed, 0)
 
       _ ->
         :infinity
@@ -2648,7 +2764,7 @@ defmodule SalixAgent.Round do
   defp rate_limited_llm_error?(_reason), do: false
 
   defp rate_limit_retry_base_ms do
-    case Application.get_env(:salix_agent, :llm_rate_limit_retry_base_ms) do
+    case SystemsRuntime.get_env(:salix_agent, :llm_rate_limit_retry_base_ms) do
       ms when is_integer(ms) and ms >= 0 -> ms
       _ -> @llm_rate_limit_retry_base_ms
     end
@@ -2773,7 +2889,7 @@ defmodule SalixAgent.Round do
       tenant_account_pool: SalixAgent.AccountPool.owns_route?(llm_opts),
       credential_scope: llm_opt(llm_opts, :credential_scope),
       app_revision: SalixAgent.AppRevision.value(),
-      started_at_ms: System.system_time(:millisecond),
+      started_at_ms: SystemsClock.system_time(:millisecond),
       billing_context: billing_context,
       actor_type: billing_context["actor_type"] || billing_context[:actor_type] || "user",
       entrypoint: billing_context["entrypoint"] || billing_context[:entrypoint] || "agent_round"
@@ -2790,7 +2906,7 @@ defmodule SalixAgent.Round do
       status: status,
       stale: status == "stale",
       duration_ms: duration_ms,
-      completed_at_ms: System.system_time(:millisecond),
+      completed_at_ms: SystemsClock.system_time(:millisecond),
       response_kind: elem(response, 0),
       usage: meta["usage"] || meta[:usage] || %{},
       provider_model: meta["model"] || meta[:model]
@@ -2806,7 +2922,7 @@ defmodule SalixAgent.Round do
       status: "error",
       stale: false,
       duration_ms: duration_ms,
-      completed_at_ms: System.system_time(:millisecond),
+      completed_at_ms: SystemsClock.system_time(:millisecond),
       error: inspect(reason),
       error_type: llm_exception_error_type(reason)
     })
@@ -2905,5 +3021,6 @@ defmodule SalixAgent.Round do
     }
   end
 
-  defp random_hex(bytes), do: :crypto.strong_rand_bytes(bytes) |> Base.encode16(case: :lower)
+  defp random_hex(bytes),
+    do: SystemsRuntime.Proc.random_bytes(bytes) |> Base.encode16(case: :lower)
 end

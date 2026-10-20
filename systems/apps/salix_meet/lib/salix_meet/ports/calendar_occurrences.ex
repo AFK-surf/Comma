@@ -13,7 +13,7 @@ defmodule SalixMeet.Ports.CalendarOccurrences do
   def revalidate(group, occurrence), do: impl().revalidate(group, occurrence)
 
   defp impl,
-    do: Application.get_env(:salix_meet, :calendar_occurrences_mod, __MODULE__.None)
+    do: SystemsRuntime.get_env(:salix_meet, :calendar_occurrences_mod, __MODULE__.None)
 
   defmodule None do
     @moduledoc false

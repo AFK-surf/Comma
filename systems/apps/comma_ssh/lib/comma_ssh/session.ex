@@ -1,22 +1,24 @@
 defmodule CommaSSH.Session do
+  require SystemsRuntime.Proc
+
   @moduledoc "Connection-owned enrollment and Comma commands. Credentials never enter the view model."
-  use GenServer
+  use SystemsRuntime.Server
   alias Comma.Accounts.SSHIdentities
 
-  def start_link(context), do: GenServer.start_link(__MODULE__, context)
+  def start_link(context), do: SystemsRuntime.Server.start_link(__MODULE__, context)
 
   def init(context) do
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
     Process.flag(:sensitive, true)
-    send(self(), :start)
-    Process.send_after(self(), :enrollment_deadline, 900_000)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :start)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :enrollment_deadline, 900_000)
 
     {:ok,
      Map.merge(context, %{
        token: nil,
        stage: :email,
        challenge: nil,
-       binding: Base.url_encode64(:crypto.strong_rand_bytes(32)),
+       binding: Base.url_encode64(SystemsRuntime.Proc.random_bytes(32)),
        workspaces: [],
        stream: nil
      })}
@@ -46,11 +48,11 @@ defmodule CommaSSH.Session do
           state
 
         _ ->
-          send(state.ui, :close)
+          SystemsRuntime.Proc.send(state.ui, :close)
           state
       end
 
-    send(state.ui, :done)
+    SystemsRuntime.Proc.send(state.ui, :done)
     {:noreply, next}
   end
 
@@ -71,7 +73,7 @@ defmodule CommaSSH.Session do
   end
 
   def handle_info({:chat_close, pid}, %{stream: pid} = state) do
-    send(state.ui, :close)
+    SystemsRuntime.Proc.send(state.ui, :close)
     {:noreply, state}
   end
 
@@ -90,13 +92,13 @@ defmodule CommaSSH.Session do
         :ok
       end
 
-    if match?({:error, _}, valid), do: send(state.ui, :close)
-    send(state.ui, :done)
+    if match?({:error, _}, valid), do: SystemsRuntime.Proc.send(state.ui, :close)
+    SystemsRuntime.Proc.send(state.ui, :done)
     {:noreply, state}
   end
 
   def handle_cast({:submit, _screen, text}, state) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     {next, outcome} =
       try do
@@ -108,17 +110,17 @@ defmodule CommaSSH.Session do
       catch
         :exit, _ ->
           emit(state, {:notice, "Service unavailable. Retry your action."})
-          send(state.ui, :service_unavailable)
+          SystemsRuntime.Proc.send(state.ui, :service_unavailable)
           {state, :timeout}
       end
 
     CommaProduct.Telemetry.emit_operation(
       :ssh_command,
       outcome,
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
-    send(state.ui, :done)
+    SystemsRuntime.Proc.send(state.ui, :done)
     {:noreply, next}
   end
 
@@ -189,15 +191,15 @@ defmodule CommaSSH.Session do
           emit(state, {:notice, if(result == :ok, do: "Key revoked.", else: "Key not found.")})
 
           if match?({:error, _}, Comma.Accounts.resolve_session(state.token)),
-            do: send(state.ui, :close)
+            do: SystemsRuntime.Proc.send(state.ui, :close)
 
           state
 
         state.stage == :workspace ->
           select_workspace(text, state)
 
-        state.stage == :chat and is_pid(state.stream) ->
-          GenServer.call(state.stream, {:command, text}, 15_000)
+        state.stage == :chat and SystemsRuntime.Proc.is_process(state.stream) ->
+          SystemsRuntime.Server.call(state.stream, {:command, text}, 15_000)
           state
 
         true ->
@@ -206,7 +208,7 @@ defmodule CommaSSH.Session do
       end
     else
       _ ->
-        send(state.ui, :close)
+        SystemsRuntime.Proc.send(state.ui, :close)
         state
     end
   end
@@ -283,7 +285,11 @@ defmodule CommaSSH.Session do
   end
 
   defp open_workspace(workspace, state) do
-    case CommaSSH.Chat.start_link(%{ui: self(), token: state.token, workspace: workspace}) do
+    case CommaSSH.Chat.start_link(%{
+           ui: SystemsRuntime.Proc.self(),
+           token: state.token,
+           workspace: workspace
+         }) do
       {:ok, stream} ->
         {:ok,
          Map.merge(state, %{stage: :chat, stream: stream, current_workspace: workspace["id"]})}
@@ -293,16 +299,16 @@ defmodule CommaSSH.Session do
     end
   end
 
-  defp stop_stream(%{stream: pid} = state) when is_pid(pid) do
-    GenServer.stop(pid, :normal, 2_000)
+  defp stop_stream(%{stream: pid} = state) when SystemsRuntime.Proc.is_process(pid) do
+    SystemsRuntime.Server.stop(pid, :normal, 2_000)
     Map.merge(state, %{stream: nil, current_workspace: nil})
   end
 
   defp stop_stream(state), do: state
-  defp emit(state, event), do: send(state.ui, {:ui, event})
+  defp emit(state, event), do: SystemsRuntime.Proc.send(state.ui, {:ui, event})
 
   def terminate(_, state) do
-    if state.stream, do: Process.exit(state.stream, :shutdown)
+    if state.stream, do: SystemsRuntime.Proc.exit(state.stream, :shutdown)
     if state.token, do: Comma.Accounts.revoke_session_token(state.token)
     :ok
   rescue

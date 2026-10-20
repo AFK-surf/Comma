@@ -1,0 +1,92 @@
+id: ts-test-sleep
+language: typescript
+severity: error
+message: "A test waits a fixed span of real time."
+note: |
+  Wait for the state or event the test needs (a locator assertion, a message,
+  a promise the code resolves), or move a virtual clock (installVirtualTime,
+  the fake clock's advance, advanceCoreClock).
+metadata:
+  category: sleep
+rule:
+  any:
+    - pattern: $P.waitForTimeout($$$)
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"
+  - "clients/apps/**/test/**/*.test.tsx"
+  - "clients/packages/**/test/**/*.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"
+---
+id: tsx-test-sleep
+language: tsx
+severity: error
+message: "A test waits a fixed span of real time."
+note: |
+  Wait for the state or event the test needs (a locator assertion, a message,
+  a promise the code resolves), or move a virtual clock (installVirtualTime,
+  the fake clock's advance, advanceCoreClock).
+metadata:
+  category: sleep
+rule:
+  any:
+    - pattern: $P.waitForTimeout($$$)
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"
+  - "clients/apps/**/test/**/*.test.tsx"
+  - "clients/packages/**/test/**/*.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"
+---
+id: tsx-test-sleep-browser
+language: tsx
+severity: error
+message: "A test waits a fixed span of real time."
+note: |
+  Wait for the state or event the test needs (a locator assertion, a message,
+  a promise the code resolves), or move a virtual clock (installVirtualTime,
+  the fake clock's advance, advanceCoreClock).
+metadata:
+  category: sleep
+rule:
+  any:
+    - pattern: $P.waitForTimeout($$$)
+files:
+  - "clients/apps/**/test/**/*.chromium.test.tsx"
+  - "clients/packages/**/test/**/*.chromium.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"

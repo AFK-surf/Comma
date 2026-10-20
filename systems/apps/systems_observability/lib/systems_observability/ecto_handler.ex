@@ -1,6 +1,6 @@
 defmodule SystemsObservability.EctoHandler do
   @moduledoc false
-  use GenServer
+  use SystemsRuntime.Server
 
   require OpenTelemetry.Tracer
 
@@ -13,22 +13,25 @@ defmodule SystemsObservability.EctoHandler do
 
   @span_name "comma.db.query"
 
-  def start_link(_opts), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
+  def start_link(_opts), do: SystemsRuntime.Server.start_link(__MODULE__, [], name: __MODULE__)
 
   @impl true
   def init(_opts) do
     # This handler owns both the metric and trace boundary. Detach the upstream
     # integration defensively so a hot upgrade or duplicate setup cannot retain
     # its URL, source, statement, or exception-bearing spans.
-    Enum.each(@events, &:telemetry.detach({OpentelemetryEcto, &1}))
-    :telemetry.detach(__MODULE__)
-    :ok = :telemetry.attach_many(__MODULE__, @events, &__MODULE__.handle_event/4, nil)
+    Enum.each(@events, &SystemsRuntime.Telemetry.detach({OpentelemetryEcto, &1}))
+    SystemsRuntime.Telemetry.detach(__MODULE__)
+
+    :ok =
+      SystemsRuntime.Telemetry.attach_many(__MODULE__, @events, &__MODULE__.handle_event/4, nil)
+
     {:ok, nil}
   end
 
   @impl true
   def terminate(_reason, _state) do
-    :telemetry.detach(__MODULE__)
+    SystemsRuntime.Telemetry.detach(__MODULE__)
   end
 
   def handle_event(event, measurements, metadata, _config) do
@@ -47,7 +50,7 @@ defmodule SystemsObservability.EctoHandler do
         |> Map.put(:duration, measurements[:total_time] || measurements[:query_time] || 0)
         |> Map.put_new(:queue_time, 0)
 
-      :telemetry.execute([:comma_system, :db, :query], measurements, normalized)
+      SystemsRuntime.Telemetry.execute([:comma_system, :db, :query], measurements, normalized)
       record_span(measurements, normalized)
     rescue
       _exception -> handler_failure()
@@ -122,7 +125,7 @@ defmodule SystemsObservability.EctoHandler do
   defp detach_parent(token), do: OpenTelemetry.Ctx.detach(token)
 
   defp handler_failure do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:systems_observability, :handler, :failure],
       %{},
       %{reason: "invalid_measurement"}

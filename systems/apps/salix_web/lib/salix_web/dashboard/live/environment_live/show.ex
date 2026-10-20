@@ -9,8 +9,6 @@ defmodule SalixWeb.Dashboard.EnvironmentLive.Show do
   def mount(%{"group_id" => group_id, "id" => id}, _session, socket) do
     case SalixEnv.Control.get_environment(id, group_id, socket.assigns.current_tenant) do
       {:ok, env} ->
-        runtime_id = first_external_runtime_id(env)
-
         {:ok,
          assign(socket,
            active_nav: :environments,
@@ -20,9 +18,7 @@ defmodule SalixWeb.Dashboard.EnvironmentLive.Show do
            managed_runtime_id: nil,
            managed_auth: nil,
            managed_accounts: [],
-           managed_accounts_next: nil,
-           selected_runtime_id: runtime_id,
-           runtime_sessions: runtime_sessions(env, runtime_id, socket.assigns.current_tenant)
+           managed_accounts_next: nil
          )}
 
       {:error, _} ->
@@ -34,19 +30,6 @@ defmodule SalixWeb.Dashboard.EnvironmentLive.Show do
   end
 
   @impl true
-  def handle_event("select-runtime", %{"device_runtime_id" => runtime_id}, socket) do
-    if Enum.any?(external_runtimes(socket.assigns.env), &(&1["device_runtime_id"] == runtime_id)) do
-      {:noreply,
-       assign(socket,
-         selected_runtime_id: runtime_id,
-         runtime_sessions:
-           runtime_sessions(socket.assigns.env, runtime_id, socket.assigns.current_tenant)
-       )}
-    else
-      {:noreply, put_flash(socket, :error, "Runtime not found.")}
-    end
-  end
-
   def handle_event("probe-runtime", %{"id" => runtime_id}, socket) do
     env = socket.assigns.env
 
@@ -66,15 +49,7 @@ defmodule SalixWeb.Dashboard.EnvironmentLive.Show do
 
         {:noreply,
          socket
-         |> assign(
-           env: refreshed,
-           runtime_sessions:
-             runtime_sessions(
-               refreshed,
-               socket.assigns.selected_runtime_id,
-               socket.assigns.current_tenant
-             )
-         )
+         |> assign(env: refreshed)
          |> put_flash(:info, "Runtime probe completed.")}
 
       {:error, reason} ->
@@ -211,21 +186,17 @@ defmodule SalixWeb.Dashboard.EnvironmentLive.Show do
     <.kv label="Requests">{health(@env, "request_inflight")} / {health(@env, "request_capacity")}</.kv>
     <.kv label="Runtime proxy">{health(@env, "runtime_proxy_inflight")} / {health(@env, "runtime_proxy_capacity")}</.kv>
     <.kv label="Managed processes">{health(@env, "managed_processes")}</.kv>
-    <.kv label="Resumable sessions">{optional_health(@env, "resumable_runtime_sessions")}</.kv>
-    <.kv label="Recoverable executions">{health(@env, "recoverable_runtime_sessions")}</.kv>
-    <.kv label="Pending input batches">{health(@env, "pending_input_batches")}</.kv>
-    <.kv label="Pending runtime events">{health(@env, "pending_runtime_events")}</.kv>
     </div>
     <p :if={!is_map(@env["connector_health"])} class="text-sm text-neutral-500">Not reported by this Connector.</p>
     </.card>
 
     <.card>
-    <:title>External runtimes</:title>
+    <:title>Runtimes</:title>
     <div class="overflow-x-auto">
     <table class="w-full text-left text-sm">
     <thead><tr class="border-b border-neutral-200 text-xs uppercase text-neutral-500"><th class="py-2">Provider</th><th>Version</th><th>Availability</th><th>Issue</th><th>Checked</th><th>Valid until</th><th></th></tr></thead>
     <tbody>
-     <tr :for={runtime <- external_runtimes(@env)} class="border-b border-neutral-100">
+     <tr :for={runtime <- agent_runtimes(@env)} class="border-b border-neutral-100">
     <td class="py-2 font-medium">{runtime["provider"]}</td>
     <td>{runtime["version"] || "—"}</td>
     <td><.status_pill status={runtime["status"]} /></td>
@@ -234,23 +205,11 @@ defmodule SalixWeb.Dashboard.EnvironmentLive.Show do
     <td>{Format.datetime(iso(runtime["readiness_valid_until"]))}</td>
     <td class="space-x-2 text-right">
       <.button :if={runtime["provider"] in ~w(codex claude)} size="sm" phx-click="manage-account" phx-value-id={runtime["device_runtime_id"]}>Account</.button>
-      <.button size="sm" phx-click="select-runtime" phx-value-device_runtime_id={runtime["device_runtime_id"]}>Sessions</.button>
       <.button size="sm" phx-click="probe-runtime" phx-value-id={runtime["device_runtime_id"]} disabled={@env["status"] != "connected"}>Re-probe</.button>
     </td>
      </tr>
     </tbody>
     </table>
-    </div>
-    <div :if={@selected_runtime_id} class="mt-4 space-y-2">
-    <h3 class="text-sm font-medium">Connector-held sessions</h3>
-    <p :if={@runtime_sessions["observation_status"] == "not_reported"} class="text-sm text-neutral-500">Not reported by this Connector.</p>
-    <p :if={@runtime_sessions["observation_status"] == "last_observed"} class="text-sm text-amber-700">Connector disconnected; showing the last observed snapshot.</p>
-    <p :if={is_integer(@runtime_sessions["observed_at"])} class="text-xs text-neutral-500">Observed {Format.datetime(iso_ms(@runtime_sessions["observed_at"]))}</p>
-    <p :if={@runtime_sessions["session_ids"] == [] && @runtime_sessions["observation_status"] != "not_reported"} class="text-sm text-neutral-500">No Connector-held sessions.</p>
-    <p :if={@runtime_sessions["truncated"] == true} class="text-xs text-neutral-500">Showing {length(@runtime_sessions["session_ids"])} of {@runtime_sessions["session_count"]} sessions.</p>
-    <div :for={session_id <- @runtime_sessions["session_ids"]} class="rounded-lg border border-neutral-200 px-3 py-2 font-mono text-xs">
-    {session_id}
-    </div>
     </div>
     </.card>
 
@@ -292,37 +251,14 @@ defmodule SalixWeb.Dashboard.EnvironmentLive.Show do
 
   defp system_info?(env), do: is_map(env["system_info"]) and env["system_info"] != %{}
 
-  defp external_runtimes(env),
+  defp agent_runtimes(env),
     do:
       Enum.filter(
         env["device_runtimes"] || [],
         &(&1["provider"] in ["codex", "pi", "kimi", "claude"])
       )
 
-  defp first_external_runtime_id(env) do
-    case external_runtimes(env) do
-      [runtime | _] -> runtime["device_runtime_id"]
-      [] -> nil
-    end
-  end
-
-  defp runtime_sessions(_env, nil, _tenant_id),
-    do: %{"observation_status" => "not_reported", "session_ids" => []}
-
-  defp runtime_sessions(env, runtime_id, tenant_id) do
-    case SalixEnv.Control.runtime_sessions(
-           env["device_id"],
-           runtime_id,
-           env["group_id"],
-           tenant_id
-         ) do
-      {:ok, snapshot} -> snapshot
-      {:error, _} -> %{"observation_status" => "not_reported", "session_ids" => []}
-    end
-  end
-
   defp health(env, key), do: get_in(env, ["connector_health", key]) || 0
-  defp optional_health(env, key), do: get_in(env, ["connector_health", key]) || "Not reported"
 
   defp connector_release(env) do
     get_in(env, ["capabilities", "component_releases", "salix-connect", "release_id"]) ||

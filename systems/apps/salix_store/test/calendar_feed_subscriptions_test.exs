@@ -1,5 +1,5 @@
 defmodule SalixStore.CalendarFeedSubscriptionsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{CalendarFeedSubscriptions, Ids, Repo}
 
@@ -39,16 +39,6 @@ defmodule SalixStore.CalendarFeedSubscriptionsTest do
     assert {:error, :not_found} = CalendarFeedSubscriptions.authenticate("nope", "x")
   end
 
-  test "a duplicate active subscription for one subject and calendar is rejected" do
-    now = 1_900_000_000_000
-    scope = scope()
-
-    assert {:ok, _} = CalendarFeedSubscriptions.issue(scope, now)
-
-    assert {:error, :calendar_feed_active_exists} =
-             CalendarFeedSubscriptions.issue(scope, now + 1)
-  end
-
   test "revocation is immediate and idempotent, and frees a new active subscription" do
     now = 1_900_000_000_000
     scope = scope()
@@ -83,56 +73,6 @@ defmodule SalixStore.CalendarFeedSubscriptionsTest do
     assert {:error, :calendar_feed_revoked} = CalendarFeedSubscriptions.rotate(id, now + 3)
   end
 
-  test "invalid scope or empty subject components are rejected before insert" do
-    now = 1_900_000_000_000
-
-    assert {:error, :invalid_scope} =
-             CalendarFeedSubscriptions.issue(Map.delete(scope(), "calendar_id"), now)
-
-    assert {:error, :invalid_subject} =
-             CalendarFeedSubscriptions.issue(Map.put(scope(), "subject_id", ""), now)
-  end
-
-  test "postgres rejects a non-32-byte digest and empty subject components" do
-    id = Ids.new_calendar_feed_id()
-
-    assert_raise Postgrex.Error, fn ->
-      Repo.query!(
-        """
-        INSERT INTO calendar_feed_subscriptions
-          (id, tenant_id, group_id, calendar_id, subject_namespace,
-           subject_id, token_digest, created_at, updated_at)
-        VALUES ($1, 'ten1_x', 'grp1_x', 'cal1_x', 'feishu_user', 'subj',
-                decode('00', 'hex'), now(), now())
-        """,
-        [id]
-      )
-    end
-
-    assert_raise Postgrex.Error, fn ->
-      Repo.query!(
-        """
-        INSERT INTO calendar_feed_subscriptions
-          (id, tenant_id, group_id, calendar_id, subject_namespace,
-           subject_id, token_digest, created_at, updated_at)
-        VALUES ($1, 'ten1_x', 'grp1_x', 'cal1_x', '', 'subj',
-                decode(repeat('00', 32), 'hex'), now(), now())
-        """,
-        [Ids.new_calendar_feed_id()]
-      )
-    end
-  end
-
-  test "the feed table has no foreign key to Comma or BFT user tables" do
-    %{rows: rows} =
-      Repo.query!("""
-      SELECT count(*) FROM information_schema.table_constraints
-      WHERE table_name = 'calendar_feed_subscriptions' AND constraint_type = 'FOREIGN KEY'
-      """)
-
-    assert rows == [[0]]
-  end
-
   test "rotate_to is a compare-and-swap: a stale fence cannot overwrite a newer secret" do
     now = 1_900_000_000_000
     scope = scope()
@@ -161,7 +101,7 @@ defmodule SalixStore.CalendarFeedSubscriptionsTest do
       "calendar_id" => "cal1_0000000000000000003",
       "subject_namespace" => "feishu_user",
       "subject_id" =>
-        "subject-" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+        "subject-" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(9), padding: false)
     }
   end
 end

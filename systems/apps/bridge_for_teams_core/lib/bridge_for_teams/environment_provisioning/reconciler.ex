@@ -5,7 +5,7 @@ defmodule BridgeForTeams.EnvironmentProvisioning.Reconciler do
   The deterministic `drain_once/1` entrypoint is shared by direct callers and
   the GenServer loop, which only schedules that same pass.
   """
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -19,7 +19,7 @@ defmodule BridgeForTeams.EnvironmentProvisioning.Reconciler do
   @doc "Start the provision-request reconcile worker."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc """
@@ -35,19 +35,25 @@ defmodule BridgeForTeams.EnvironmentProvisioning.Reconciler do
   @spec drain_once(keyword()) ::
           {:ok, %{required(atom()) => non_neg_integer()}} | {:error, term()}
   def drain_once(opts \\ []) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     try do
       result = Environments.reconcile_device_provision_requests(opts)
       outcome = if match?({:ok, _}, result), do: "ok", else: "error"
-      Telemetry.emit_operation(:environment_provision, outcome, System.monotonic_time() - started)
+
+      Telemetry.emit_operation(
+        :environment_provision,
+        outcome,
+        SystemsClock.monotonic_time() - started
+      )
+
       result
     rescue
       e ->
         Telemetry.emit_operation(
           :environment_provision,
           "error",
-          System.monotonic_time() - started
+          SystemsClock.monotonic_time() - started
         )
 
         Logger.error("bridge_for_teams.environment_provision_reconcile.failed",
@@ -60,7 +66,7 @@ defmodule BridgeForTeams.EnvironmentProvisioning.Reconciler do
 
   @impl true
   def init(opts) do
-    cfg = Application.get_env(:bridge_for_teams_core, __MODULE__, [])
+    cfg = SystemsRuntime.get_env(:bridge_for_teams_core, __MODULE__, [])
 
     state = %{
       interval_ms: opts[:interval_ms] || cfg[:interval_ms] || @default_interval_ms,
@@ -86,5 +92,6 @@ defmodule BridgeForTeams.EnvironmentProvisioning.Reconciler do
     {:noreply, state}
   end
 
-  defp schedule(interval_ms), do: Process.send_after(self(), :drain, interval_ms)
+  defp schedule(interval_ms),
+    do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :drain, interval_ms)
 end

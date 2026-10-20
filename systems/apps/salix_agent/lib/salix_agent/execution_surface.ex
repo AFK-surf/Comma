@@ -4,29 +4,33 @@ defmodule SalixAgent.ExecutionSurface do
   observational overlay, never a transcript, activity or execution authority.
   Requests and tools publish at their execution seams. Exact-owner reads avoid
   accepting a previous node's cache after placement changes. Missing observations
-  remain unknown. Modeled in tla/session-history/ExecutionHistoryObservation.tla;
-  network admission is modeled by SessionHistoryLive.tla in the same directory.
+  remain unknown.
   """
-  use GenServer
+  use SystemsRuntime.Server
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
+
   def init(_), do: {:ok, %{entries: %{}, refs: %{}, targets: %{}}}
 
   def observe(%{agent_id: agent, session_id: session}, record)
       when is_binary(agent) and is_binary(session) do
-    GenServer.cast(__MODULE__, {:observe, {agent, session}, self(), record})
+    SystemsRuntime.Server.cast(
+      __MODULE__,
+      {:observe, {agent, session}, SystemsRuntime.Proc.self(), record}
+    )
   end
 
   def observe(_, _), do: :ok
 
-  def get(agent, session), do: GenServer.call(__MODULE__, {:get, {agent, session}})
+  def get(agent, session), do: SystemsRuntime.Server.call(__MODULE__, {:get, {agent, session}})
 
   def handle_cast({:observe, target, pid, record}, state) do
     key = {target, record["id"]}
     {entry, entries} = Map.pop(state.entries, key)
-    if entry, do: Process.demonitor(entry.ref, [:flush])
-    ref = Process.monitor(pid)
-    now = System.monotonic_time(:millisecond)
+    if entry, do: SystemsRuntime.Proc.demonitor(entry.ref, [:flush])
+    ref = SystemsRuntime.Proc.monitor(pid)
+    now = SystemsClock.monotonic_time(:millisecond)
     entries = Map.put(entries, key, %{record: record, pid: pid, ref: ref, at: now})
     # Bounded diagnostic memory even with abandoned Sessions. Canonical history
     # remains complete; evicted or expired measurements are simply unavailable.
@@ -39,7 +43,7 @@ defmodule SalixAgent.ExecutionSurface do
 
     for {old_key, old} <- state.entries,
         not Map.has_key?(entries, old_key),
-        do: Process.demonitor(old.ref, [:flush])
+        do: SystemsRuntime.Proc.demonitor(old.ref, [:flush])
 
     SalixAgent.Notifier.notify(elem(target, 0), {:execution_history_updated, elem(target, 1)})
 
@@ -52,7 +56,7 @@ defmodule SalixAgent.ExecutionSurface do
   end
 
   def handle_call({:get, target}, _from, state) do
-    now = System.monotonic_time(:millisecond)
+    now = SystemsClock.monotonic_time(:millisecond)
 
     records =
       for entry <- Map.get(state.targets, target, []),

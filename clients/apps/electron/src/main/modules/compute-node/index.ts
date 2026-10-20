@@ -23,10 +23,12 @@ import type {
   ComputeNodeConfigureInput,
   ComputeNodeExpectedBinding,
   ComputeNodeOperation,
+  ComputeNodeProblem,
   ComputeNodeState,
 } from "@comma/native-bridge";
 import { z } from "zod";
 import { readIntentFile } from "./intent-file";
+import { redactNativeObservation } from "../observability";
 import {
   computeNodeOperationSchema,
   computeNodeStateSchema,
@@ -61,6 +63,8 @@ const persistedIntentSchema = z.strictObject({
   remoteRevocationConfirmed: z.boolean().optional(),
   initializationPending: z.boolean().optional(),
   receiptMissing: z.boolean().optional(),
+  /** One user-initiated enable already restarted an install whose material handoff expired. */
+  handoffRestartUsed: z.boolean().optional(),
   recoveryPending: z
     .strictObject({
       operationId: savedId,
@@ -80,6 +84,11 @@ type PersistedIntent = z.infer<typeof persistedIntentSchema>;
 export interface ComputeNodeServiceOptions {
   adapter: ComputeNodeRuntimeAdapter;
   preparation?: HostPreparation;
+  installationBlocked?: (operationId: string) => Promise<boolean>;
+  /** Rejects while local Host maintenance forbids a new installation. */
+  assertInstallationAllowed?: () => Promise<void>;
+  /** Main's diagnostic log. It receives bounded, redacted lines only. */
+  log?: (line: string) => void;
   filePath: string;
   onStateChanged?: ((state: ComputeNodeState) => void) | undefined;
   installAuthorization?: ComputeNodeInstallAuthorizationOwner | undefined;
@@ -97,9 +106,12 @@ export class ComputeNodeService {
   private tail: Promise<unknown> = Promise.resolve();
   private workActivity: ComputeNodeWorkActivity = "unknown";
   private productUnavailable = false;
+  private installationBlocked = false;
   private installationPhase:
     | import("./install-authorization").ComputeNodeInstallAuthorizationPhase
     | undefined;
+  private installationErrorCode: string | undefined;
+  private loggedInstallationFailure: string | undefined;
   private refreshPromise: Promise<ComputeNodeState> | undefined;
   private observationFresh = false;
   private observedAt?: string;
@@ -238,7 +250,11 @@ export class ComputeNodeService {
   }
 
   configure(input: ComputeNodeConfigureInput) {
-    return this.run(async () => {
+    return this.run(() => this.configureInternal(input, true));
+  }
+
+  private async configureInternal(input: ComputeNodeConfigureInput, explicit: boolean) {
+    {
       this.requireEligible();
       this.requireIntentReadable();
       if (this.intent.recoveryPending)
@@ -256,10 +272,22 @@ export class ComputeNodeService {
         throw new Error("Remove the existing compute node before changing workspace.");
       }
 
+      if (await this.readInstallationFence())
+        return this.publish("action_required", await this.observeAfterFailure());
+
+      if (this.intent.installOperationId) {
+        const current = await this.options.adapter.observe(this.intent.registrationId);
+        if (this.installationFailure(current)?.retryable === false)
+          return this.publish("action_required", current);
+      }
+
       // Persist the user's target before crossing the helper side-effect
       // boundary. A process exit after install but before the final
       // observation must recover toward enabled, not toward the old value.
+      const wasEnabled = this.intent.desiredEnabled;
       delete this.intent.remoteRevocationConfirmed;
+      // Each user-initiated enable allows one automatic restart after an expired material handoff.
+      if (explicit) delete this.intent.handoffRestartUsed;
       this.intent.desiredEnabled = true;
       this.intent.workspaceId = input.workspaceId;
       if (
@@ -276,6 +304,7 @@ export class ComputeNodeService {
       this.publish("processing");
       await this.persistIntent();
       let observed: ComputeNodeRuntimeObservation;
+      let stage = "preparation";
       try {
         await this.options.preparation?.ensure((preparation) =>
           this.reportPreparation(preparation)
@@ -284,32 +313,52 @@ export class ComputeNodeService {
         if (!operation) {
           throw new Error("Compute node authorization identity is unavailable.");
         }
-        if (this.intent.installOperationId && this.snapshot.status !== "removed") {
+        stage = "inspect";
+        let projection =
+          this.intent.installOperationId && this.snapshot.status !== "removed"
+            ? await this.options.installAuthorization.inspect({
+                operationId: this.intent.installOperationId,
+                workspaceId: input.workspaceId,
+              })
+            : undefined;
+        if (projection && handoffExpired(projection)) {
+          // The server revoked this Registration and cannot resume the operation.
+          // Keep it as evidence and request a new installation with this fresh request id.
+          await this.archiveInstallation();
+          projection = undefined;
+        }
+        if (projection && this.intent.installOperationId) {
           const operationId = this.intent.installOperationId;
-          const projection = await this.options.installAuthorization.inspect({
-            operationId,
-            workspaceId: input.workspaceId,
-          });
           if (projection.authorizationStatus === "requested") {
+            stage = "retry";
             const authorization = await this.options.installAuthorization.retry({
               operationId,
               workspaceId: input.workspaceId,
             });
             this.intent.registrationId = authorization.registrationId;
             await this.persistIntent();
+            stage = "install";
             await this.options.adapter.install(operationId, authorization.descriptor);
             this.intent.installAppliedOperationId = operationId;
           } else if (projection.authorizationStatus === "exchange_committed") {
+            stage = "resume";
             await this.options.adapter.resume(operationId, operation.requestId);
             this.intent.installAppliedOperationId = operationId;
           } else if (projection.authorizationStatus === "handed_off") {
+            const needsResume = this.intent.installAppliedOperationId !== operationId;
             if (this.intent.installAppliedOperationId !== operationId) {
-              this.intent.receiptMissing = true;
+              stage = "resume";
+              // ACK records durable material delivery, not completed enrollment.
+              // The helper owns the original plan and refuses an absent or invalid one.
+              await this.options.adapter.resume(operationId, operation.requestId);
+              this.intent.installAppliedOperationId = operationId;
+              delete this.intent.receiptMissing;
               await this.persistIntent();
-              throw new Error(
-                "The original installation receipt is missing. Recover management of the existing connection before continuing."
-              );
-            } else if (!this.intent.initializationPending) {
+            }
+            // Do not restart a healthy connection just to retry its Shell.
+            // Re-enabling admission does not depend on initial Shell creation.
+            if (needsResume || !wasEnabled || projection.status !== "ready") {
+              stage = "enable";
               await this.options.installAuthorization.configure({
                 enabled: true,
                 operationId,
@@ -328,6 +377,7 @@ export class ComputeNodeService {
             );
           }
         } else {
+          stage = "authorize";
           const authorization = await this.options.installAuthorization.authorize({
             requestId: operation.requestId,
             workspaceId: input.workspaceId,
@@ -336,33 +386,36 @@ export class ComputeNodeService {
           this.intent.registrationId = authorization.registrationId;
           operation.operationId = authorization.operationId;
           await this.persistIntent();
+          stage = "install";
           await this.options.adapter.install(
             authorization.operationId,
             authorization.descriptor
           );
           this.intent.installAppliedOperationId = authorization.operationId;
         }
+        stage = "observe";
         observed = await this.options.adapter.observe(this.intent.registrationId);
       } catch (error) {
+        const problem = isUnknownFailure(error) ? "setup_unknown" : "setup_failed";
+        this.logSetupFailure(problem, stage, error);
         observed = await this.observeAfterFailure();
         this.finishOperation(isUnknownFailure(error) ? "unknown" : "failed");
         await this.persistIntent();
-        this.publish(
-          "action_required",
-          observed,
-          error instanceof Error ? error.message : "Compute node operation failed."
-        );
+        if (await this.readInstallationFence())
+          return this.publish("action_required", observed);
+        this.publish("action_required", observed, problem);
         throw error;
       }
       observed = await this.observeProductStatus(observed);
       if (observed.salix === "degraded") {
+        this.logSetupFailure(
+          "authorization_attention",
+          "product_status",
+          this.installationErrorCode ?? this.installationPhase ?? "unavailable"
+        );
         this.finishOperation("failed");
         await this.persistIntent();
-        this.publish(
-          "action_required",
-          observed,
-          "Compute node product authorization requires attention."
-        );
+        this.publish("action_required", observed, "authorization_attention");
         throw new Error("Compute node product authorization requires attention.");
       }
       this.intent.initializationPending = true;
@@ -372,39 +425,112 @@ export class ComputeNodeService {
         delete this.intent.initializationPending;
         this.finishOperation("succeeded");
       } catch (error) {
+        this.logSetupFailure("operation_failed", "initialize_shell", error);
         this.finishOperation("failed");
         await this.persistIntent();
         throw error;
       }
       await this.persistIntent();
       return this.reconcile();
-    });
+    }
+  }
+
+  /** Archives the current installation and detaches it, the way an explicit removal keeps its record. */
+  private async archiveInstallation() {
+    const operationId = this.intent.installOperationId;
+    if (!operationId) return;
+    const directory = `${this.options.filePath}.removals`;
+    await mkdir(directory, { recursive: true });
+    const file = join(
+      directory,
+      `${Buffer.from(operationId).toString("base64url")}.json`
+    );
+    await writeFile(`${file}.tmp`, JSON.stringify(this.intent), { mode: 0o600 });
+    this.requireCurrentAuthority();
+    await rename(`${file}.tmp`, file);
+    delete this.intent.installOperationId;
+    delete this.intent.installAppliedOperationId;
+    delete this.intent.registrationId;
+    delete this.intent.initializationPending;
+    delete this.intent.receiptMissing;
+    this.installationPhase = undefined;
+    this.installationErrorCode = undefined;
+  }
+
+  /**
+   * The server revoked the current install because its material handoff expired.
+   * Start one new installation for the same workspace per user-initiated enable.
+   */
+  private async restartExpiredInstallation(): Promise<ComputeNodeState | undefined> {
+    const workspaceId = this.intent.workspaceId;
+    if (
+      !this.handoffExpiredHere() ||
+      !workspaceId ||
+      this.intent.handoffRestartUsed ||
+      this.intent.recoveryPending ||
+      this.installationBlocked ||
+      !this.snapshot.eligibility.eligible ||
+      !this.intentReadable
+    )
+      return undefined;
+    try {
+      await this.options.assertInstallationAllowed?.();
+    } catch {
+      // Local Host maintenance owns the Host now. A later observation retries.
+      this.requireCurrentAuthority();
+      return undefined;
+    }
+    this.requireCurrentAuthority();
+    await this.archiveInstallation();
+    this.intent.handoffRestartUsed = true;
+    this.beginOperation("configure");
+    await this.persistIntent();
+    try {
+      return await this.configureInternal({ desiredEnabled: true, workspaceId }, false);
+    } catch (error) {
+      if (
+        error instanceof ComputeNodeBindingChangedError ||
+        error instanceof ComputeNodeSessionChangedError
+      )
+        throw error;
+      // The setup path already logged and published its failure. Show the current result.
+      return this.reconcile(false);
+    }
+  }
+
+  /** The current account's install operation expired before its material handoff, with enable still desired. */
+  private handoffExpiredHere() {
+    return (
+      this.intent.desiredEnabled &&
+      !!this.intent.installOperationId &&
+      !this.intent.remoteRevocationConfirmed &&
+      this.intent.operation?.kind !== "remove" &&
+      this.intent.operation?.kind !== "drain" &&
+      handoffExpired({
+        authorizationStatus: this.installationPhase,
+        errorCode: this.installationErrorCode,
+      })
+    );
+  }
+
+  private logSetupFailure(problem: ComputeNodeProblem, stage: string, error: unknown) {
+    const message =
+      error instanceof Error ? error.message : typeof error === "string" ? error : "";
+    this.options.log?.(
+      `compute-node setup failed: problem=${problem} stage=${redactDiagnostic(stage).slice(0, 64)} message=${JSON.stringify(redactDiagnostic(message))}`
+    );
   }
 
   private async initializeWorkload() {
-    const owner = this.options.installAuthorization!;
-    const operationId = this.intent.installOperationId!;
-    const workspaceId = this.intent.workspaceId!;
-    // One enable action observes one node, at most 31 times over 30 seconds.
-    // Only status reads repeat. The mutation runs once and requires explicit retry on failure.
-    const deadline = Date.now() + (this.options.initializationWaitMs ?? 30_000);
-    while (true) {
-      const status = await owner.observe({ operationId, workspaceId });
-      if (status === "ready") {
-        await owner.initializeWorkload({ operationId, workspaceId });
-        return;
-      }
-      if (
-        status === "action_required" ||
-        status === "removed" ||
-        Date.now() >= deadline
-      ) {
-        throw new Error(
-          "Compute node workload initialization could not complete. Check the node connection, then select Continue / Retry."
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
-    }
+    // One enable action waits for one node (at most 30 s, on the client core's Clock) and initializes it once.
+    // The mutation requires explicit retry on failure.
+    await this.options.installAuthorization!.initializeWorkload({
+      operationId: this.intent.installOperationId!,
+      workspaceId: this.intent.workspaceId!,
+      ...(this.options.initializationWaitMs === undefined
+        ? {}
+        : { waitMs: this.options.initializationWaitMs }),
+    });
   }
 
   rebuild() {
@@ -429,7 +555,8 @@ export class ComputeNodeService {
         this.publish(
           "action_required",
           await this.observeAfterFailure(),
-          error instanceof Error ? error.message : String(error)
+          "rebuild_failed",
+          errorDetail(error)
         );
         throw error;
       }
@@ -463,11 +590,7 @@ export class ComputeNodeService {
         }
         this.finishOperation(isUnknownFailure(error) ? "unknown" : "failed");
         await this.persistIntent();
-        this.publish(
-          "action_required",
-          observed,
-          error instanceof Error ? error.message : "Compute node repair failed."
-        );
+        this.publish("action_required", observed, "repair_failed", errorDetail(error));
         throw error;
       }
       this.finishOperation("succeeded");
@@ -538,11 +661,7 @@ export class ComputeNodeService {
         const observed = await this.observeAfterFailure();
         this.finishOperation(isUnknownFailure(error) ? "unknown" : "failed");
         await this.persistIntent();
-        this.publish(
-          "action_required",
-          observed,
-          error instanceof Error ? error.message : "Compute node removal failed."
-        );
+        this.publish("action_required", observed, "removal_failed", errorDetail(error));
         throw error;
       }
       let observed = await this.options.adapter.observe(this.intent.registrationId);
@@ -554,11 +673,7 @@ export class ComputeNodeService {
       ) {
         this.finishOperation("unknown");
         await this.persistIntent();
-        return this.publish(
-          "action_required",
-          observed,
-          "Compute node removal is not confirmed."
-        );
+        return this.publish("action_required", observed, "removal_unconfirmed");
       }
       this.finishOperation("succeeded");
       this.intent.remoteRevocationConfirmed = !unavailableRegistration;
@@ -585,9 +700,7 @@ export class ComputeNodeService {
       return this.publish(
         "removed",
         observed,
-        unavailableRegistration
-          ? "Local binding removed. The previous registration was inaccessible; remote revocation is not confirmed."
-          : undefined
+        unavailableRegistration ? "remote_revocation_unconfirmed" : undefined
       );
     });
   }
@@ -655,7 +768,8 @@ export class ComputeNodeService {
         this.publish(
           "action_required",
           undefined,
-          "Saved compute node intent is unreadable."
+          "intent_unreadable",
+          errorDetail(error)
         );
         return;
       }
@@ -702,18 +816,25 @@ export class ComputeNodeService {
       }
       this.finishOperation(isUnknownFailure(error) ? "unknown" : "failed");
       await this.persistIntent();
-      this.publish(
-        "action_required",
-        observed,
-        error instanceof Error ? error.message : "Compute node drain failed."
-      );
+      this.publish("action_required", observed, "stop_failed", errorDetail(error));
       throw error;
     }
     this.finishOperation("succeeded");
     return this.reconcile();
   }
 
+  private async readInstallationFence() {
+    const operationId = this.intent.installOperationId;
+    const blocked = !!(
+      operationId && (await this.options.installationBlocked?.(operationId))
+    );
+    this.requireCurrentAuthority();
+    this.installationBlocked = blocked;
+    return blocked;
+  }
+
   private async reconcile(settleOperation = true) {
+    await this.readInstallationFence();
     if (
       !this.intent.installOperationId &&
       this.intent.workspaceId &&
@@ -753,6 +874,8 @@ export class ComputeNodeService {
     this.observationFresh = true;
     let observed = await this.options.adapter.observe(this.intent.registrationId);
     observed = await this.observeProductStatus(observed);
+    const restarted = await this.restartExpiredInstallation();
+    if (restarted) return restarted;
     if (settleOperation && this.confirmedOperation(observed)) {
       this.finishOperation("succeeded");
       await this.persistIntent();
@@ -760,7 +883,12 @@ export class ComputeNodeService {
     if (observed.readability !== "readable") this.observationFresh = false;
     if (this.observationFresh) this.observedAt = new Date().toISOString();
     let status: ComputeNodeState["status"];
-    if (observed.readability === "unreadable") status = "action_required";
+    if (
+      this.installationBlocked ||
+      observed.readability === "unreadable" ||
+      this.installationFailure(observed)
+    )
+      status = "action_required";
     else if (
       this.intent.operation?.outcome === "failed" ||
       this.intent.operation?.outcome === "unknown"
@@ -784,15 +912,40 @@ export class ComputeNodeService {
       status = "ready";
     else if (observed.salix === "enrolling") status = "processing";
     else status = "action_required";
-    return this.publish(status, observed);
+    return this.publish(
+      status,
+      observed,
+      this.handoffExpiredHere() ? "setup_handoff_expired" : undefined
+    );
   }
 
   private publish(
     status: ComputeNodeState["status"],
     observed = this.snapshot.observed,
-    problem?: string
+    problem?: ComputeNodeProblem,
+    problemDetail?: string
   ) {
     this.requireCurrentAuthority();
+    const failure = this.installationFailure(observed);
+    if (failure) {
+      problem = !failure.retryable
+        ? failure.code === "retry_limit_reached"
+          ? "connection_retry_limit"
+          : "setup_blocked"
+        : failure.stage === "register"
+          ? "connection_failed"
+          : "components_failed";
+      // Log each helper failure receipt once; observation republishes it on every read.
+      const key = `${failure.operationId}/${failure.stage}/${failure.code}`;
+      if (key !== this.loggedInstallationFailure) {
+        this.loggedInstallationFailure = key;
+        this.logSetupFailure(
+          problem,
+          failure.stage,
+          `helper failure code ${failure.code}${failure.retryable ? " (retryable)" : ""}`
+        );
+      }
+    }
     // registrationId remains Main-owned for runtime targeting and must not
     // leak into the renderer's strict native state schema.
     const stateObserved: ComputeNodeState["observed"] = {
@@ -810,12 +963,43 @@ export class ComputeNodeService {
       observationFresh: this.observationFresh,
       remoteRevocationConfirmed: this.intent.remoteRevocationConfirmed,
       canAbandonRequest: !!(
+        !this.installationBlocked &&
         this.intent.installOperationId &&
         !this.intent.installAppliedOperationId &&
         !this.intent.recoveryPending &&
         this.options.installAuthorization?.abandon
       ),
       ...this.recoveryFor(status, observed),
+      setup: {
+        components:
+          observed.host === "ready"
+            ? "ready"
+            : this.snapshot.preparation?.phase === "failed"
+              ? "failed"
+              : this.snapshot.preparation && this.snapshot.preparation.phase !== "idle"
+                ? "preparing"
+                : observed.host === "absent"
+                  ? "not_started"
+                  : "unknown",
+        connection: failure
+          ? "failed"
+          : !this.observationFresh
+            ? "unknown"
+            : observed.salix === "ready"
+              ? "ready"
+              : observed.salix === "enrolling"
+                ? "connecting"
+                : observed.salix === "unregistered"
+                  ? this.intent.operation?.kind === "configure" &&
+                    ["failed", "unknown"].includes(this.intent.operation.outcome) &&
+                    observed.host === "ready"
+                    ? "failed"
+                    : "not_started"
+                  : observed.salix === "degraded" || observed.salix === "revoked"
+                    ? "failed"
+                    : "unknown",
+        shell: this.shellPhase,
+      },
       desiredEnabled: this.intent.desiredEnabled,
       eligibility: this.snapshot.eligibility,
       preparation: this.snapshot.preparation,
@@ -823,6 +1007,7 @@ export class ComputeNodeService {
       facets: facetsFor(status, observed, this.workActivity),
       ...(this.intent.operation ? { operation: this.intent.operation } : {}),
       ...(problem ? { problem } : {}),
+      ...(problemDetail ? { problemDetail: problemDetail.slice(-4096) } : {}),
       revision: Math.max(this.snapshot.revision + 1, this.intent.revision),
       status,
     });
@@ -847,19 +1032,46 @@ export class ComputeNodeService {
       };
     if (this.intent.recoveryPending)
       return { issue: "operation_unknown", recoveryActions: ["check_status"] };
+    if (this.installationBlocked && this.intent.installOperationId)
+      return {
+        issue: "removal_incomplete",
+        recoveryActions: ["finish_remove", "check_status"],
+      };
     if (observed.reason === "capability_missing")
       return { issue: "capability_missing", recoveryActions: ["check_status"] };
     if (this.productUnavailable)
       return { issue: "authorization_unavailable", recoveryActions: ["check_status"] };
+    if (this.handoffExpiredHere())
+      // Main restarts once per enable. After that, the user's Continue starts a new installation.
+      return {
+        issue: "enable_incomplete",
+        recoveryActions: ["continue_enable", "check_status"],
+      };
     if (this.intent.receiptMissing)
       return {
-        issue: "installation_receipt_missing",
-        recoveryActions: ["check_status"],
+        issue: "enable_incomplete",
+        recoveryActions: ["continue_enable", "check_status"],
+      };
+    if (this.shellPhase === "preparing" || this.shellPhase === "failed")
+      return {
+        issue: "shell_initialization_pending",
+        recoveryActions:
+          this.shellPhase === "failed"
+            ? ["continue_shell", "check_status"]
+            : ["check_status"],
       };
     if (this.intent.initializationPending)
       return {
         issue: "shell_initialization_pending",
         recoveryActions: ["continue_shell", "check_status"],
+      };
+    const failure = this.installationFailure(observed);
+    if (failure)
+      return {
+        issue: failure.stage === "register" ? "connection" : "enable_incomplete",
+        recoveryActions: failure.retryable
+          ? ["continue_enable", "check_status"]
+          : ["check_status"],
       };
     const canContinue =
       this.intent.desiredEnabled &&
@@ -873,8 +1085,7 @@ export class ComputeNodeService {
         (!this.intent.installOperationId ||
           this.installationPhase === "requested" ||
           this.installationPhase === "exchange_committed" ||
-          (this.installationPhase === "handed_off" &&
-            this.intent.installAppliedOperationId === this.intent.installOperationId));
+          this.installationPhase === "handed_off");
       return {
         issue: "operation_unknown",
         recoveryActions: canResume
@@ -893,6 +1104,16 @@ export class ComputeNodeService {
       issue: canContinue ? "enable_incomplete" : "needs_attention",
       recoveryActions,
     };
+  }
+
+  private installationFailure(observed: ComputeNodeRuntimeObservation) {
+    const failure = observed.installationFailure;
+    return observed.readability === "readable" &&
+      this.intent.desiredEnabled &&
+      this.intent.operation?.kind !== "remove" &&
+      failure?.operationId === this.intent.installOperationId
+      ? failure
+      : undefined;
   }
 
   private async persistIntent() {
@@ -985,10 +1206,13 @@ export class ComputeNodeService {
     }
   }
 
+  private shellPhase: NonNullable<ComputeNodeState["setup"]>["shell"] = "unknown";
+
   private async observeProductStatus(observed: ComputeNodeRuntimeObservation) {
     this.workActivity = "unknown";
     this.productUnavailable = false;
     this.installationPhase = undefined;
+    this.installationErrorCode = undefined;
     const owner = this.options.installAuthorization;
     const workspaceId = this.intent.workspaceId;
     const operationId = this.intent.installOperationId;
@@ -996,11 +1220,14 @@ export class ComputeNodeService {
       return { ...observed, salix: "revoked" as const };
     if (!owner || !workspaceId || !operationId) return observed;
     try {
-      const { status, workActivity, authorizationStatus } = await owner.inspect({
-        operationId,
-        workspaceId,
-      });
+      const { status, workActivity, authorizationStatus, shellPhase, errorCode } =
+        await owner.inspect({
+          operationId,
+          workspaceId,
+        });
+      this.installationErrorCode = errorCode;
       this.workActivity = workActivity;
+      this.shellPhase = shellPhase ?? "unknown";
       this.installationPhase = authorizationStatus;
       return {
         ...observed,
@@ -1146,7 +1373,10 @@ export class ComputeNodeService {
           this.publish(
             "action_required",
             undefined,
-            error instanceof Error ? error.message : "Compute node operation failed."
+            error instanceof ComputeNodeCommandError && isUnknownFailure(error)
+              ? "operation_unknown"
+              : "operation_failed",
+            error instanceof ComputeNodeCommandError ? undefined : errorDetail(error)
           );
           throw error;
         }
@@ -1200,6 +1430,34 @@ function facetsFor(
     // Node readiness never manufactures an activity result.
     workActivity,
   };
+}
+
+/** Only this server code means a revoked install that a new installation can replace. */
+function handoffExpired(projection: {
+  authorizationStatus?: string | undefined;
+  errorCode?: string | undefined;
+}) {
+  return (
+    projection.authorizationStatus === "action_required" &&
+    projection.errorCode === "material_handoff_expired"
+  );
+}
+
+/** A log-safe diagnostic: secret-looking values redacted, at most 512 characters. */
+function redactDiagnostic(text: string) {
+  const redacted = redactNativeObservation(text) as string;
+  return redacted
+    .replace(
+      /("?[\w-]*(?:secret|token|password|credential|descriptor|material|authorization)[\w-]*"?\s*[:=]\s*)("[^"]*"|[^\s,;}]+)/gi,
+      "$1[redacted]"
+    )
+    .replace(/[A-Za-z0-9+/_-]{32,}={0,2}/g, "[redacted]")
+    .slice(0, 512);
+}
+
+/** The raw error text, kept for diagnostics beside a problem code. */
+function errorDetail(error: unknown) {
+  return error instanceof Error ? error.message : undefined;
 }
 
 function isUnknownFailure(error: unknown) {

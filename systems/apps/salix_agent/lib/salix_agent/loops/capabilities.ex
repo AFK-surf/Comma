@@ -14,6 +14,8 @@ defmodule SalixAgent.Loops.Capabilities do
       is reloaded from. `put` is fenced by incarnation.
     * `loop.ack` — record that an external event was processed.
     * `loop.log` — a bounded diagnostic line.
+    * `loop.next_run` — the next timed run of the Loop's declared trigger
+      (`SalixAgent.Loops.next_run/3`).
     * every registry tool classified `safety: "read"`, every external
       environment tool (`env.*`, `device.*`: `env.exec`, `env.copy`, the
       process tools, computer use, Android), every SSH tool (`ssh.*`), and the HTTP API request tool
@@ -38,8 +40,10 @@ defmodule SalixAgent.Loops.Capabilities do
   dispatch. The Agent's tool disclosure and IFC checks remain authoritative.
   """
 
+  require Logger
+
   alias SalixAgent.{IFC, Loops, SessionToolDispatch, ToolDisclosure, Tools}
-  alias SalixAgent.Loops.Reconciler
+  alias SalixAgent.Loops.{Reconciler, TaskOwner}
 
   # `arguments` was the exact-equality pin spinfoam applied per capability;
   # without grants every entry is unconstrained.
@@ -50,7 +54,8 @@ defmodule SalixAgent.Loops.Capabilities do
   @state_get "loop.state.get"
   @ack "loop.ack"
   @log "loop.log"
-  @builtin [@notify, @state_put, @state_get, @ack, @log]
+  @next_run "loop.next_run"
+  @builtin [@notify, @state_put, @state_get, @ack, @log, @next_run]
 
   # The external environment surface (`SalixAgent.Tools.Peers`): every tool
   # that acts on a connected device or its environments.
@@ -73,7 +78,8 @@ defmodule SalixAgent.Loops.Capabilities do
           required(:tenant_id) => String.t(),
           required(:group_id) => String.t(),
           required(:ifc) => map(),
-          optional(:name) => String.t() | nil
+          optional(:name) => String.t() | nil,
+          optional(:task_conversation_id) => String.t() | nil
         }
 
   @doc "The built-in capability names."
@@ -118,10 +124,51 @@ defmodule SalixAgent.Loops.Capabilities do
           ["im_api.internal.read_conversation"]
       )
 
-  @doc "The whole Loop allowlist, constrained by the Agent's authorization at dispatch."
-  @spec load_capabilities() :: [map()]
-  def load_capabilities do
-    Enum.map(allowed_names(), &%{"name" => &1, "arguments" => @unconstrained})
+  @doc """
+  The whole Loop allowlist plus the tools the Loop's product binding pins,
+  constrained by the Agent's authorization at dispatch.
+  """
+  @spec load_capabilities(map() | nil) :: [map()]
+  def load_capabilities(row \\ nil) do
+    Enum.map(
+      Enum.uniq(allowed_names() ++ pinned_tools(row)),
+      &%{"name" => &1, "arguments" => @unconstrained}
+    )
+  end
+
+  # A product that owns a Loop may pin dynamic tools (a plugin MCP read) that
+  # are not on the closed allowlist. The adapter's `authorize/3` still checks
+  # the exact arguments of every call.
+  defp pinned_tools(row) when is_map(row) do
+    module = SystemsRuntime.get_env(:salix_agent, :loop_authorization_adapter)
+
+    if not is_nil(module) and function_exported?(module, :pinned_tools, 1),
+      do: module.pinned_tools(row),
+      else: []
+  end
+
+  defp pinned_tools(_row), do: []
+
+  # The product owning a Loop may bound a pinned dynamic read before the guest
+  # sees it, so a full provider object fits the program's evidence limits.
+  defp project_result(loop, "mcp." <> _ = tool_name, content) do
+    module = SystemsRuntime.get_env(:salix_agent, :loop_authorization_adapter)
+
+    with true <- not is_nil(module) and function_exported?(module, :project_result, 3),
+         {:ok, row} <- SalixStore.Loops.get(loop.loop_id) do
+      module.project_result(row, tool_name, content)
+    else
+      _ -> content
+    end
+  end
+
+  defp project_result(_loop, _tool_name, content), do: content
+
+  defp pinned_row_tools(loop_id) do
+    case SalixStore.Loops.get(loop_id) do
+      {:ok, row} -> pinned_tools(row)
+      _ -> []
+    end
   end
 
   # ---- execution -----------------------------------------------------------
@@ -133,18 +180,34 @@ defmodule SalixAgent.Loops.Capabilities do
   @spec call(loop_ref(), String.t(), map(), pos_integer() | nil) ::
           {:ok, term()} | {:error, String.t()}
   def call(loop, capability, arguments, max_result_bytes \\ nil) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     arguments = if is_map(arguments), do: arguments, else: %{}
 
     result =
-      with :ok <- check_allowed(capability),
+      with :ok <- check_allowed(loop, capability),
            :ok <- check_incarnation(loop) do
         execute(loop, capability, arguments, max_result_bytes || @default_result_bytes)
       end
 
-    emit("loop_host_call", result_outcome(result), System.monotonic_time() - started)
+    emit("loop_host_call", result_outcome(result), SystemsClock.monotonic_time() - started)
+    log_builtin_failure(loop, capability, result)
     result
   end
+
+  # A failed built-in is usually what makes a guest give up (a lost
+  # checkpoint, a dropped wake), and the guest's own exit code does not say
+  # why. Tool failures are the tool's business, and an over-budget notify is
+  # the budget working; both stay out of the log.
+  defp log_builtin_failure(_loop, _capability, {:error, "rate_limited"}), do: :ok
+
+  defp log_builtin_failure(loop, capability, {:error, message}) when capability in @builtin do
+    Logger.warning(
+      "loop #{loop.loop_id} incarnation #{loop.incarnation} #{capability} failed: " <>
+        String.slice(message, 0, 512)
+    )
+  end
+
+  defp log_builtin_failure(_loop, _capability, _result), do: :ok
 
   # Every capability, read or write, is refused once the Loop has moved to a
   # newer incarnation or left `active`: a stale object on a superseded node
@@ -159,8 +222,8 @@ defmodule SalixAgent.Loops.Capabilities do
   # Salix's own check of the closed allowlist; spinfoam applies the same list
   # in the guest. A tool on the list still passes the Agent's disclosure in
   # `SessionToolDispatch`.
-  defp check_allowed(capability) do
-    if capability in allowed_names(),
+  defp check_allowed(loop, capability) do
+    if capability in allowed_names() or capability in pinned_row_tools(loop.loop_id),
       do: :ok,
       else: {:error, "capability not available to loops: " <> capability}
   end
@@ -200,6 +263,9 @@ defmodule SalixAgent.Loops.Capabilities do
       {:error, :checkpoint_too_large} ->
         {:error, "checkpoint exceeds #{Loops.max_checkpoint_bytes()} bytes"}
 
+      {:error, :checkpoint_not_encodable} ->
+        {:error, "checkpoint is not JSON-encodable: strings must be valid UTF-8"}
+
       {:error, reason} ->
         {:error, "checkpoint unavailable: #{inspect(reason)}"}
     end
@@ -219,6 +285,31 @@ defmodule SalixAgent.Loops.Capabilities do
       :ok -> {:ok, %{"status" => "acked", "event_id" => event_id}}
       {:error, :invalid_event_id} -> {:error, "event_id is required"}
       {:error, reason} -> {:error, "ack unavailable: #{inspect(reason)}"}
+    end
+  end
+
+  defp execute(loop, @next_run, arguments, _max) do
+    case arguments["after_ms"] do
+      after_ms when is_integer(after_ms) or is_nil(after_ms) ->
+        case Loops.next_run(loop.loop_id, loop.incarnation, after_ms) do
+          {:ok, :ended} ->
+            {:ok, %{"ended" => true}}
+
+          {:ok, next} ->
+            {:ok, %{"next_run_at" => next}}
+
+          {:error, :no_timed_trigger} ->
+            {:error, "this loop has no every_minutes or cron trigger"}
+
+          {:error, :stale_incarnation} ->
+            {:error, "stale incarnation"}
+
+          {:error, reason} ->
+            {:error, "next run unavailable: #{inspect(reason)}"}
+        end
+
+      _other ->
+        {:error, "after_ms must be an integer of unix milliseconds"}
     end
   end
 
@@ -256,17 +347,21 @@ defmodule SalixAgent.Loops.Capabilities do
 
   defp execute_tool(loop, tool_name, arguments, max_result_bytes) do
     call = %{
-      id: "loop:" <> loop.loop_id <> ":" <> Integer.to_string(System.unique_integer([:positive])),
+      id:
+        "loop:" <>
+          loop.loop_id <>
+          ":" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive])),
       name: tool_name,
       args: arguments
     }
 
-    ctx = tool_ctx(loop)
+    ctx = tool_ctx(loop, tool_name)
 
     case SessionToolDispatch.execute([call], ctx) do
       [result] ->
         content = to_string(result[:content] || result["content"] || "")
         error? = result[:error] == true or result["error"] == true
+        content = if error?, do: content, else: project_result(loop, tool_name, content)
 
         # A Loop owns no Session revision, so journal events the tool
         # returned are dropped here, deliberately.
@@ -307,17 +402,44 @@ defmodule SalixAgent.Loops.Capabilities do
   end
 
   # Result bodies are bounded by spinfoam (16 KiB encoded); leave headroom
-  # for the envelope keys.
+  # for the envelope keys. The cut lands on a UTF-8 character boundary: a
+  # byte cut inside a multi-byte character makes the reply unencodable, and
+  # the Host encodes every reply before it reaches the guest.
   defp bounded_content(content, max_result_bytes) do
     budget = max(max_result_bytes - 256, 256)
 
-    if byte_size(content) <= budget,
-      do: content,
-      else:
-        binary_part(content, 0, budget) <> "\n…[truncated #{byte_size(content) - budget} bytes]"
+    if byte_size(content) <= budget do
+      content
+    else
+      kept = binary_part(content, 0, utf8_boundary(content, budget))
+      kept <> "\n…[truncated #{byte_size(content) - byte_size(kept)} bytes]"
+    end
   end
 
-  defp tool_ctx(loop) do
+  # The largest `n <= limit` such that the first `n` bytes of `content` do not
+  # end inside a multi-byte UTF-8 character. Content that was already invalid
+  # is left as it is beyond the last complete character at the cut.
+  defp utf8_boundary(content, limit) do
+    start = char_start(content, limit - 1, 3)
+
+    case binary_part(content, start, limit - start) do
+      <<_::utf8>> -> limit
+      _ -> start
+    end
+  end
+
+  # Walk back over at most `steps` continuation bytes (10xxxxxx) to the byte
+  # that starts the character containing byte `index`.
+  defp char_start(content, index, steps) when index > 0 and steps > 0 do
+    case :binary.at(content, index) do
+      byte when byte >= 0x80 and byte < 0xC0 -> char_start(content, index - 1, steps - 1)
+      _ -> index
+    end
+  end
+
+  defp char_start(_content, index, _steps), do: index
+
+  defp tool_ctx(loop, tool_name) do
     origin = origin(loop)
     role = agent_role(loop.agent_id)
     ifc_mode = IFC.mode_for(loop.tenant_id, loop.group_id)
@@ -343,7 +465,7 @@ defmodule SalixAgent.Loops.Capabilities do
         :internal,
         base,
         SalixAgent.Tools.ImRouter.internal_read_disclosure_entries(base),
-        []
+        pinned_mcp_entries(loop, tool_name, base)
       )
     )
     |> then(fn ctx ->
@@ -355,6 +477,15 @@ defmodule SalixAgent.Loops.Capabilities do
       if ifc_mode == :off, do: ctx, else: Map.put(ctx, :ifc, activation_wire(loop, origin))
     end)
   end
+
+  # A pinned MCP read is the one dynamic MCP tool this call may use.
+  defp pinned_mcp_entries(loop, "mcp." <> _ = tool_name, ctx) do
+    if tool_name in pinned_row_tools(loop.loop_id),
+      do: Enum.filter(Tools.MCP.dynamic_disclosure_entries(ctx), &(&1["name"] == tool_name)),
+      else: []
+  end
+
+  defp pinned_mcp_entries(_loop, _tool_name, _ctx), do: []
 
   # Under audit or enforce the check needs the activation wire a round would
   # carry: the Loop's target Session labelled with the Loop's sealed origin
@@ -382,10 +513,20 @@ defmodule SalixAgent.Loops.Capabilities do
 
   # ---- notification --------------------------------------------------------
 
+  # A delivered wake is one run of the Loop (`Loops.record_run/3`). A wake
+  # the delivery ledger already held counts once: the run keeps its source.
   defp notify(loop, content, dedup) do
     case Loops.admit_notification(loop.loop_id, loop.incarnation) do
       :ok ->
-        deliver_notification(loop_record(loop), content, dedup)
+        with {:ok, _} = delivered <- deliver_notification(loop_record(loop), content, dedup) do
+          case Loops.record_run(loop.loop_id, loop.incarnation, "loop:#{loop.loop_id}:#{dedup}") do
+            :ok -> delivered
+            {:error, reason} -> {:error, "run not recorded: #{inspect(reason)}"}
+          end
+        end
+
+      {:error, :ended} ->
+        {:error, "the loop ended at its end time"}
 
       {:error, :rate_limited} ->
         {:error, "rate_limited"}
@@ -409,7 +550,7 @@ defmodule SalixAgent.Loops.Capabilities do
   @spec deliver_notification(map(), String.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, String.t()}
   def deliver_notification(record, content, dedup, opts \\ []) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     loop_id = record["id"] || record[:loop_id]
     agent_id = record["agent_id"] || record[:agent_id]
     session_id = record["session_id"] || record[:session_id]
@@ -423,7 +564,7 @@ defmodule SalixAgent.Loops.Capabilities do
         session_id: session_id,
         kind: "loop",
         role: "user",
-        source_sent_at_ms: System.system_time(:millisecond)
+        source_sent_at_ms: SystemsClock.system_time(:millisecond)
       }
       |> put_origin(IFC.loop_origin(loop_id, ifc["creator"], ifc["label"]))
 
@@ -432,11 +573,13 @@ defmodule SalixAgent.Loops.Capabilities do
         # A product that owns this Loop's wakes records them as its own matters
         # and hands them to the agent through its one delivery path. Every
         # other Loop wakes its Session directly.
-        # A lifecycle notice (paused, exited, failed) is about the Loop itself.
+        # A lifecycle notice (paused, exited, failed) is about the Loop
+        # itself: it reaches a Task Loop's Worker in its Task, and any other
+        # Loop's Session directly.
         delivered =
           if opts[:lifecycle] == true,
-            do: :default,
-            else: product_delivery(loop_id, content, dedup, payload[:trusted_origin])
+            do: TaskOwner.wake(record, payload, "loop:" <> loop_id <> ":" <> dedup),
+            else: task_or_product_delivery(record, loop_id, content, dedup, payload)
 
         case delivered do
           :default ->
@@ -460,7 +603,7 @@ defmodule SalixAgent.Loops.Capabilities do
         {:error, _} -> "error"
       end
 
-    emit("loop_notify", outcome, System.monotonic_time() - started)
+    emit("loop_notify", outcome, SystemsClock.monotonic_time() - started)
 
     case result do
       {:ok, :created} ->
@@ -479,8 +622,15 @@ defmodule SalixAgent.Loops.Capabilities do
     end
   end
 
+  defp task_or_product_delivery(record, loop_id, content, dedup, payload) do
+    case TaskOwner.wake(record, payload, "loop:" <> loop_id <> ":" <> dedup) do
+      :default -> product_delivery(loop_id, content, dedup, payload[:trusted_origin])
+      result -> result
+    end
+  end
+
   defp product_delivery(loop_id, content, dedup, origin) do
-    module = Application.get_env(:salix_agent, :loop_authorization_adapter)
+    module = SystemsRuntime.get_env(:salix_agent, :loop_authorization_adapter)
 
     with true <- not is_nil(module) and function_exported?(module, :deliver, 4),
          {:ok, row} <- SalixStore.Loops.get(loop_id) do
@@ -493,7 +643,7 @@ defmodule SalixAgent.Loops.Capabilities do
 
   defp authorize_source(loop_id, capability \\ "agent.notify", args \\ %{}) do
     with {:ok, row} <- SalixStore.Loops.get(loop_id) do
-      case Application.get_env(:salix_agent, :loop_authorization_adapter) do
+      case SystemsRuntime.get_env(:salix_agent, :loop_authorization_adapter) do
         nil ->
           if is_map(row["config"]["comma_proactive"]) or is_map(row["config"]["comma_mail"]),
             do: {:error, :proactive_authorization_unavailable},
@@ -509,6 +659,8 @@ defmodule SalixAgent.Loops.Capabilities do
   # this Loop; storage trouble and timeouts are not.
   defp undeliverable_target?({:bad_request, "agent is archived"}), do: true
   defp undeliverable_target?(:not_found), do: true
+  # The Task Loop's Worker left its Task: no run reaches anyone.
+  defp undeliverable_target?(:task_worker_missing), do: true
   defp undeliverable_target?(_), do: false
 
   defp put_origin(payload, nil), do: payload
@@ -522,8 +674,10 @@ defmodule SalixAgent.Loops.Capabilities do
   defp loop_record(loop) do
     %{
       "id" => loop.loop_id,
+      "group_id" => loop[:group_id],
       "agent_id" => loop.agent_id,
       "session_id" => loop.session_id,
+      "task_conversation_id" => loop[:task_conversation_id],
       "name" => loop[:name],
       "ifc" => loop.ifc
     }

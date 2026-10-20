@@ -2,7 +2,7 @@ defmodule CommaWeb.TelegramTelemetry do
   @moduledoc "Content-free observation of authenticated Comma Telegram work."
 
   def observe(operation, fun) when operation in [:telegram_webhook, :telegram_send_message] do
-    observe(operation, fun, System.monotonic_time())
+    observe(operation, fun, SystemsClock.monotonic_time())
   end
 
   defp observe(operation, fun, started) do
@@ -30,7 +30,11 @@ defmodule CommaWeb.TelegramTelemetry do
   defp outcome(_result), do: :error
 
   defp emit(operation, outcome, started) do
-    CommaProduct.Telemetry.emit_operation(operation, outcome, System.monotonic_time() - started)
+    CommaProduct.Telemetry.emit_operation(
+      operation,
+      outcome,
+      SystemsClock.monotonic_time() - started
+    )
   rescue
     _ -> :ok
   catch

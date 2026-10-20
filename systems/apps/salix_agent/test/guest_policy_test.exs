@@ -1,12 +1,12 @@
 defmodule SalixAgent.GuestPolicyTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{Control, GuestPolicy, ToolDisclosure}
   alias SalixStore.{Ids, TenantConfigs, TenantProfiles}
 
   setup do
-    previous_store = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
 
     tenant_id = SalixAgent.TestSupport.new_tenant_id()
@@ -16,8 +16,8 @@ defmodule SalixAgent.GuestPolicyTest do
       TenantConfigs.delete(tenant_id, "product_profile")
 
       if previous_store,
-        do: Application.put_env(:salix_store, :s3_backend, previous_store),
-        else: Application.delete_env(:salix_store, :s3_backend)
+        do: SystemsRuntime.put_env(:salix_store, :s3_backend, previous_store),
+        else: SystemsRuntime.delete_env(:salix_store, :s3_backend)
     end)
 
     %{tenant_id: tenant_id, group_id: Ids.new_group_id(tenant_id)}
@@ -30,7 +30,7 @@ defmodule SalixAgent.GuestPolicyTest do
     assert GuestPolicy.allowed_tool?(guest, "im_api.internal.send_message")
 
     for denied <-
-          ~w(agent.create_worker env.exec env.ensure_runtime plugin.definition_create plugin.enable mcp_manager.definition_create im_api.internal.task.create composio.connect ssh.exec) do
+          ~w(agent.create_worker env.exec plugin.definition_create plugin.enable mcp_manager.definition_create im_api.internal.task.create composio.connect ssh.exec) do
       refute GuestPolicy.allowed_tool?(guest, denied), denied
     end
 
@@ -56,7 +56,7 @@ defmodule SalixAgent.GuestPolicyTest do
     assert Enum.any?(ordinary, &String.starts_with?(&1, "agent."))
   end
 
-  test "a router-only Tenant admits only guest Routers without a VM", ctx do
+  test "a router-only Tenant admits only guest Routers", ctx do
     guest_purpose = TenantProfiles.guest_router_purpose()
 
     # The guest purpose requires the router-only profile.
@@ -69,21 +69,13 @@ defmodule SalixAgent.GuestPolicyTest do
     assert {:error, {:bad_request, _}} = create(ctx, "worker", guest_purpose)
     assert {:error, {:bad_request, _}} = create(ctx, "router", "comma_workspace_router")
 
-    assert {:error, {:bad_request, _}} =
-             create(ctx, "router", guest_purpose, %{"enabled" => true, "provider" => "cloudflare"})
-
-    # Comma.GuestModeTest provisions an admitted guest Router end to end.
+    # Comma.GuestModeTest provisions an admitted guest Router end to end. Its
+    # Group's Cloud VM switch never turns on (SalixWeb.CloudVMTest).
   end
 
-  defp create(ctx, role, purpose, vm \\ %{"enabled" => false}) do
+  defp create(ctx, role, purpose) do
     Control.create_preallocated(
-      %{
-        "group_id" => ctx.group_id,
-        "role" => role,
-        "purpose" => purpose,
-        "name" => "Agent",
-        "vm" => vm
-      },
+      %{"group_id" => ctx.group_id, "role" => role, "purpose" => purpose, "name" => "Agent"},
       ctx.tenant_id,
       Ids.new_agent_id(ctx.group_id)
     )

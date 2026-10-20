@@ -29,15 +29,15 @@ theorem log_issue_terminal {context : Context} {entry checkpoint result : Term} 
       .ok (result, rest)) : QueryTerminal (issue context result) := by
   rcases log_start call with invalidRole | invalidInput | ⟨batch, started, _, _⟩
   · rw [invalidRole]
-    simp [QueryTerminal, Command.finish, issue, a]
+    simp [QueryTerminal, issue_finish, a]
   · rw [invalidInput]
-    simp [QueryTerminal, Command.finish, issue, a]
+    simp [QueryTerminal, issue_finish, a]
   · have fixed := log_write_unchanged (continuation := logWriteContinuation) call started
     rcases started with direct | ⟨operation, metadata, workspace, billing, workspaceStart⟩
     · rw [direct, issue_log_write, fixed]
       simp [QueryTerminal, preparedWrite, a]
     · rw [workspaceStart]
-      simp [QueryTerminal, Command.perform, issue, a]
+      simp [QueryTerminal, issue_workspace, a]
 
 theorem log_query_observation_resource {context : Context} {entry checkpoint saved request : Term}
     {observations : List Term}
@@ -100,9 +100,9 @@ theorem log_initial_write {context : Context} {entry checkpoint saved : Term}
   have actual := issued.symm
   rcases log_start call with invalidRole | invalidInput | ⟨original, started, _, _⟩
   · rw [invalidRole] at actual
-    simp [Command.finish, issue, a] at actual
+    simp [issue_finish, a] at actual
   · rw [invalidInput] at actual
-    simp [Command.finish, issue, a] at actual
+    simp [issue_finish, a] at actual
   · have fixed := log_write_unchanged (continuation := logWriteContinuation) call started
     rcases started with direct | ⟨operation, metadata, workspace, billing, workspaceStart⟩
     · rw [direct, issue_log_write, fixed] at actual
@@ -112,7 +112,7 @@ theorem log_initial_write {context : Context} {entry checkpoint saved : Term}
       subst batch
       exact ⟨journal, result, rest, call, Or.inl direct, savedEq.symm⟩
     · rw [workspaceStart] at actual
-      simp [Command.perform, issue, a] at actual
+      simp [issue_workspace, a] at actual
 
 theorem log_initial_workspace {context : Context} {args checkpoint saved request : Term}
     {observations : List Term}
@@ -132,9 +132,9 @@ theorem log_initial_workspace {context : Context} {args checkpoint saved request
   have actual := issued.symm
   rcases log_start call with saturated | invalidInput | ⟨batch, started, _, _⟩
   · rw [saturated] at actual
-    simp [Command.finish, issue, a] at actual
+    simp [issue_finish, a] at actual
   · rw [invalidInput] at actual
-    simp [Command.finish, issue, a] at actual
+    simp [issue_finish, a] at actual
   · have fixed := log_write_unchanged (continuation := logWriteContinuation) call started
     rcases started with direct | ⟨operation, metadata, workspace, billing, workspaceStart⟩
     · rw [direct, issue_log_write, fixed] at actual
@@ -179,8 +179,8 @@ theorem log_workspace_write {context : Context} {args checkpoint initial saved o
   | error reason =>
     rw [effect_captured _ _ _ _ (by rfl)] at trace
     change ObservationTrace (issue context (Command.finish (.tuple [a "error", reason]))) _ at trace
-    have issued := trace.fixed (by simp [Command.finish, issue, a])
-    simp [Command.finish, issue, a] at issued
+    have issued := trace.fixed (by simp [issue_finish, a])
+    simp [issue_finish, a] at issued
 
 inductive LogAdmissionTrace (context : Context) (args checkpoint : Term) (observations : List Term) :
     Output → Prop where
@@ -246,7 +246,7 @@ theorem log_workspace_admission_observations {context : Context}
     rw [effect_captured _ _ _ _ (by rfl)] at trace ⊢
     change AdmissionTrace (issue context (Command.finish (.tuple [a "error", reason]))) final at trace
     change ObservationTrace (issue context (Command.finish (.tuple [a "error", reason]))) final
-    rw [trace.fixed (by simp [Command.finish, issue, a])]
+    rw [trace.fixed (by simp [issue_finish, a])]
     exact .done _
 
 /-- The actual initial command admits at most one workspace effect before its write. -/

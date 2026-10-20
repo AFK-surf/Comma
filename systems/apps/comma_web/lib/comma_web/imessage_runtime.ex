@@ -6,7 +6,7 @@ defmodule CommaWeb.IMessageRuntime do
   The canonical Session deduplicates stable source ids after a lost checkpoint.
   No progress is promised while the relay, database or Router is unavailable.
   """
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
   alias Comma.Repo
   alias SalixIM.IMessageRelay
@@ -15,23 +15,25 @@ defmodule CommaWeb.IMessageRuntime do
   @max_failures 3
 
   def child_specs, do: if(IMessageRelay.configured?(), do: [__MODULE__], else: [])
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
   def init(_opts) do
-    send(self(), :poll)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :poll)
     {:ok, %{task: nil, failures: 0}}
   end
 
   @impl true
   def handle_info(:poll, %{task: nil, failures: failures} = state)
       when failures < @max_failures do
-    task = Task.async(fn -> run_once() end)
+    task = SystemsRuntime.Task.async(fn -> run_once() end)
     {:noreply, %{state | task: task}}
   end
 
   def handle_info({ref, result}, %{task: %{ref: ref}} = state) do
-    Process.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
 
     failures =
       case result do
@@ -45,7 +47,7 @@ defmodule CommaWeb.IMessageRuntime do
         "iMessage receiver paused after three failed passes; restore the relay or database, then restart the receiver"
       )
     else
-      Process.send_after(self(), :poll, @retry_ms)
+      SystemsClock.send_after(SystemsRuntime.Proc.self(), :poll, @retry_ms)
     end
 
     {:noreply, %{state | task: nil, failures: failures}}

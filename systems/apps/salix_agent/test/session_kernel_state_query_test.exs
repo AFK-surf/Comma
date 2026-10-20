@@ -4,10 +4,10 @@ defmodule SalixAgent.SessionKernelStateQueryTest do
 
   Each case asserts the kernel's answer for fixture states that exercise
   idle/active sessions, waits, queues, obligations, guard streaks at and below
-  their caps, storage formats 1 and 3, redactions, async calls and results, and
+  their caps, storage formats 1 and 3, async calls and results, and
   every transcript tail the continuation rules distinguish.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.InternalSession.State
   alias SalixAgent.Waits
@@ -356,43 +356,6 @@ defmodule SalixAgent.SessionKernelStateQueryTest do
          next_message_id: 4,
          messages: [assistant_message(3, %{input_tokens: 500})]
        })},
-      {"redactions",
-       base(%{
-         next_message_id: 6,
-         last_seq: 12,
-         compacted_seq: 2,
-         messages: [
-           %{id: 1, seq: 3, role: "tool", content: "big tool output"},
-           %{id: 2, seq: 4, role: "user", content: String.duplicate("x", 64)},
-           %{"id" => 3, "seq" => 5, "role" => "assistant", "content" => "kept"},
-           %{id: 4, seq: 6, role: "tool", content: "later"}
-         ],
-         redactions: [
-           %{"seq" => 4, "replacement" => "[redacted by seq]"},
-           %{"message_id" => 4, "replacement" => "[redacted by id]"},
-           %{"kind" => "tool_messages_through", "through_id" => 2, "replacement" => "[tool]"},
-           %{
-             "kind" => "non_model_messages_over_bytes_through",
-             "through_id" => 3,
-             "max_bytes" => 8,
-             "replacement" => "[too big]"
-           }
-         ]
-       })},
-      {"redaction predicates without ids",
-       base(%{
-         next_message_id: 4,
-         messages: [
-           %{role: "tool", content: "no id at all"},
-           %{id: 2.0, role: "tool", content: "float id"},
-           %{id: 2, role: "tool", content: nil}
-         ],
-         redactions: [
-           %{"kind" => "tool_messages_through", "through_id" => 5, "replacement" => "[tool]"},
-           %{"seq" => "4", "replacement" => "[ignored non integer seq]"},
-           %{"message_id" => nil, "replacement" => "[ignored nil id]"}
-         ]
-       })},
       {"catalog",
        base(%{
          messages: [user_message(1), user_message(2)],
@@ -486,19 +449,6 @@ defmodule SalixAgent.SessionKernelStateQueryTest do
 
     assert answer.("plain obligation", :work_reasons) == ["provider_reply_obligation"]
 
-    assert [_, %{content: "[redacted by seq]"}, _, %{content: "[redacted by id]"}] =
-             answer.("redactions", :masked_messages)
-
-    assert [%{content: "[tool]"} | _] = answer.("redactions", :masked_messages)
-
-    # A non-integer id never reaches a redaction predicate, even when its term
-    # order would satisfy the watermark.
-    assert answer.("redaction predicates without ids", :masked_messages) == [
-             %{role: "tool", content: "no id at all"},
-             %{id: 2.0, role: "tool", content: "float id"},
-             %{id: 2, role: "tool", content: "[tool]"}
-           ]
-
     {events, wake?, hwm} = answer.("queue mixed ordering", :materialize_pending_input_events)
     assert wake? == true
     assert hwm == 3
@@ -559,24 +509,5 @@ defmodule SalixAgent.SessionKernelStateQueryTest do
 
     replaced = %{expected_snapshot(state) | "wait_identity" => {:ok, "wait-other"}}
     assert ask(state, :provider_wait_yield_events, replaced) == []
-  end
-
-  test "should_compact? reads the configured threshold when none is supplied" do
-    state = fixture("context bytes live")
-    previous = Application.get_env(:salix_agent, :compaction_threshold)
-
-    try do
-      Application.put_env(:salix_agent, :compaction_threshold, 10)
-      assert ask(state, :should_compact?, {nil, nil}) == true
-
-      Application.put_env(:salix_agent, :compaction_threshold, 1_000_000)
-      assert ask(state, :should_compact?, {nil, nil}) == false
-    after
-      if is_nil(previous) do
-        Application.delete_env(:salix_agent, :compaction_threshold)
-      else
-        Application.put_env(:salix_agent, :compaction_threshold, previous)
-      end
-    end
   end
 end

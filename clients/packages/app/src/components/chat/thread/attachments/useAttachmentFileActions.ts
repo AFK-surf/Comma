@@ -1,3 +1,4 @@
+import { useCall } from "@comma/core-client";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import { useMemo } from "react";
 import { createFileOpenInAction } from "../../../../runtime-files/fileOpenActions";
@@ -7,7 +8,7 @@ import {
 } from "../../../../runtime-files/fileSources";
 import { useOptionalChatSidebar } from "../../../chat-sidebar/ChatSidebarContext";
 import { useOptionalChatRegistry } from "../../ChatProvider";
-import type { ChatAttachment } from "../../model/conversationChannel";
+import type { ChatAttachment } from "@comma/core/chat";
 import type { ThreadFileSource } from "../threadContexts";
 import { attachmentLabel } from "./attachmentLabels";
 
@@ -18,6 +19,7 @@ export function useAttachmentFileActions(
 ) {
   const locale = useCommaLocale();
   const messagesApi = useCommaMessages();
+  const call = useCall();
   const registry = useOptionalChatRegistry();
   const sidebar = useOptionalChatSidebar();
   const fileActionSignature = JSON.stringify(
@@ -76,7 +78,7 @@ export function useAttachmentFileActions(
                 openIn:
                   sourceContext && beginAttempt
                     ? createFileOpenInAction({
-                        api: sourceContext.api,
+                        call,
                         source,
                         locale,
                         beginAttempt,
@@ -87,7 +89,15 @@ export function useAttachmentFileActions(
             ] as const
         )
       ),
-    [fileSources, sourceContext, locale, beginAttempt, activeHost, openFilePreview]
+    [
+      fileSources,
+      sourceContext,
+      call,
+      locale,
+      beginAttempt,
+      activeHost,
+      openFilePreview,
+    ]
   );
   return { beginAttempt, fileActions, fileSources };
 }

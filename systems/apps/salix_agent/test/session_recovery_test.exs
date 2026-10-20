@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionRecoveryTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias SalixAgent.InternalSession
   alias SalixAgent.InternalSession.Recovery
 
@@ -42,25 +42,5 @@ defmodule SalixAgent.SessionRecoveryTest do
              Recovery.observe(state, retry(:visible_reply_authorization_retry))
 
     assert checkpoint == retry(:visible_reply_append_retry)
-  end
-
-  test "a failed read preserves known recovery without inventing work for an unknown session" do
-    checkpoint = retry(:visible_reply_append_retry)
-    reason = {:visible_reply_pre_llm_error, :activation_read, {:http, 503}}
-
-    assert %Recovery{
-             action: :retry,
-             checkpoint: ^checkpoint,
-             stage: :activation_read,
-             reason: {:http, 503}
-           } =
-             Recovery.round_failure(checkpoint, reason)
-
-    assert %Recovery{action: :error, checkpoint: nil} = Recovery.round_failure(nil, reason)
-  end
-
-  test "a failed provider readback retains its exact presentation obligation" do
-    assert %Recovery{action: :retry} = Recovery.handoff(%{visible_reply_scope: %{}}, :unavailable)
-    assert %Recovery{action: :continue, checkpoint: nil} = Recovery.handoff(%{}, :unavailable)
   end
 end

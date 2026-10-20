@@ -1,16 +1,16 @@
 defmodule BridgeForTeams.TestSupport.CanonicalAgentClient do
   @moduledoc "Real Agent owner calls for tests that replace an unrelated Salix integration."
   def drain do
-    previous = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, BridgeForTeams.Salix.Erpc)
+    previous = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, BridgeForTeams.Salix.Erpc)
 
     try do
       drain_batches(100)
     after
       if previous do
-        Application.put_env(:bridge_for_teams_core, :salix_client, previous)
+        SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous)
       else
-        Application.delete_env(:bridge_for_teams_core, :salix_client)
+        SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
       end
     end
   end
@@ -33,7 +33,14 @@ defmodule BridgeForTeams.TestSupport.CanonicalAgentClient do
   end
 
   def create_provisioned_agent(project_id, attrs) do
-    with {:ok, agent} <- BridgeForTeams.Agents.create_agent(project_id, attrs) do
+    # BridgeForTeams makes no new Worker: one is made as before the
+    # retirement (`BridgeForTeams.TestSupport.LegacyWorker`).
+    create =
+      if to_string(attrs["role"] || attrs[:role]) == "worker",
+        do: &BridgeForTeams.TestSupport.LegacyWorker.create/2,
+        else: &BridgeForTeams.Agents.create_agent/2
+
+    with {:ok, agent} <- create.(project_id, attrs) do
       drain()
 
       case BridgeForTeams.Agents.get_agent(agent.id) do
@@ -47,10 +54,11 @@ defmodule BridgeForTeams.TestSupport.CanonicalAgentClient do
     quote do
       defdelegate create_owned_agent(attrs), to: BridgeForTeams.Salix.Erpc
       defdelegate configure_agent(id, tenant, attrs), to: BridgeForTeams.Salix.Erpc
-      defdelegate triage_worker_binding(group), to: BridgeForTeams.Salix.Erpc
+      defdelegate triage_tools(group), to: BridgeForTeams.Salix.Erpc
+      defdelegate ensure_task_agent(tenant, group), to: BridgeForTeams.Salix.Erpc
       defdelegate archive_agent_configuration(id, tenant), to: BridgeForTeams.Salix.Erpc
 
-      defdelegate rebind_agent_configuration(id, tenant, target, expected, invocation),
+      defdelegate rebind_station_worker(id, tenant, binding, expected),
         to: BridgeForTeams.Salix.Erpc
 
       defdelegate claim_agent_configuration(id, tenant, archived_at),
@@ -58,14 +66,36 @@ defmodule BridgeForTeams.TestSupport.CanonicalAgentClient do
 
       defdelegate page_group_agents(tenant, group, opts), to: BridgeForTeams.Salix.Erpc
       defdelegate get_agent(id, tenant), to: BridgeForTeams.Salix.Erpc
+      defdelegate model_catalog(), to: BridgeForTeams.Salix.Erpc
+      defdelegate servable_models(tenant), to: BridgeForTeams.Salix.Erpc
+      defdelegate choose_model(choice, tenant), to: BridgeForTeams.Salix.Erpc
+      defdelegate public_model(choice, tenant), to: BridgeForTeams.Salix.Erpc
+      defdelegate platform_model(role), to: BridgeForTeams.Salix.Erpc
+      defdelegate get_group_task_model(group), to: BridgeForTeams.Salix.Erpc
+      defdelegate put_group_task_model(tenant, group, choice), to: BridgeForTeams.Salix.Erpc
+      defdelegate get_group_task_place(group), to: BridgeForTeams.Salix.Erpc
+      defdelegate put_group_task_place(tenant, group, place), to: BridgeForTeams.Salix.Erpc
+
+      defdelegate create_placed_task_conversation(group, router, attrs),
+        to: BridgeForTeams.Salix.Erpc
 
       defoverridable create_owned_agent: 1,
                      configure_agent: 3,
                      archive_agent_configuration: 2,
-                     rebind_agent_configuration: 5,
+                     rebind_station_worker: 4,
                      claim_agent_configuration: 3,
                      page_group_agents: 3,
-                     get_agent: 2
+                     get_agent: 2,
+                     model_catalog: 0,
+                     servable_models: 1,
+                     choose_model: 2,
+                     public_model: 2,
+                     platform_model: 1,
+                     get_group_task_model: 1,
+                     put_group_task_model: 3,
+                     get_group_task_place: 1,
+                     put_group_task_place: 3,
+                     create_placed_task_conversation: 3
     end
   end
 end

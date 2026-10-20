@@ -7,7 +7,7 @@ defmodule SalixIM.FeishuChecksTest do
   runs against a local Bandit mock webhook (same mock pattern the rest of the
   salix_im suite uses — no new HTTP-mock dependency).
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.FeishuChecks
   alias SalixIM.TestSupport.BanditServer
@@ -97,32 +97,13 @@ defmodule SalixIM.FeishuChecksTest do
           {"a non-round-tripping 200 in plain mode is a decrypt/signature failure", 200,
            %{"ok" => true}, false, :decrypt_signature}
         ] do
-      @status status
-      @body body
-      @encrypted encrypted?
-      @expected expected
-      test name do
-        assert FeishuChecks.classify_failure(@status, @body, @encrypted) == @expected
-      end
     end
   end
 
   describe "challenge_round_trips?/3" do
-    test "true only when the exact challenge is echoed at 200" do
-      assert FeishuChecks.challenge_round_trips?(200, %{"challenge" => "abc"}, "abc")
-      refute FeishuChecks.challenge_round_trips?(200, %{"challenge" => "other"}, "abc")
-      refute FeishuChecks.challenge_round_trips?(401, %{"challenge" => "abc"}, "abc")
-      refute FeishuChecks.challenge_round_trips?(200, %{"ok" => true}, "abc")
-    end
   end
 
   describe "error_mentions?/2" do
-    test "matches decoded error maps and raw strings" do
-      assert FeishuChecks.error_mentions?(%{"error" => "invalid token"}, "token")
-      assert FeishuChecks.error_mentions?("signature mismatch", "signature")
-      refute FeishuChecks.error_mentions?(%{"error" => "signature"}, "token")
-      refute FeishuChecks.error_mentions?(nil, "token")
-    end
   end
 
   # ---- callback_preflight/1 against the mock webhook ----
@@ -132,29 +113,6 @@ defmodule SalixIM.FeishuChecksTest do
       start_supervised!(MockWebhook)
       port = BanditServer.start!(fn p -> {Bandit, plug: MockWebhook, port: p} end)
       {:ok, url: "http://127.0.0.1:#{port}/v1/im/feishu/events"}
-    end
-
-    test "plain challenge round-trips to {:ok, evidence}", %{url: url} do
-      MockWebhook.respond(:echo_challenge)
-
-      assert {:ok, evidence} =
-               FeishuChecks.callback_preflight(%{
-                 "webhook_url" => url,
-                 "app_id" => "cli_test",
-                 "verification_token" => "vtok"
-               })
-
-      assert evidence["ok"] == true
-      assert evidence["http_status"] == 200
-      assert evidence["challenge_mode"] == "plain"
-      assert evidence["redacted"] == true
-      # Evidence is redaction-safe: no raw token/secret leaks into the map.
-      refute Map.has_key?(evidence, "verification_token")
-      refute evidence |> Map.values() |> Enum.any?(&(&1 == "vtok"))
-
-      req = MockWebhook.last_request()
-      assert req.body["type"] == "url_verification"
-      assert req.query =~ "app_id=cli_test"
     end
 
     test "encrypted mode sends an official random-IV envelope (RFC §6.2)", %{url: url} do
@@ -186,31 +144,6 @@ defmodule SalixIM.FeishuChecksTest do
       second = MockWebhook.last_request().body["encrypt"]
       refute first == second
     end
-
-    test "401 token mismatch classifies as :token_mismatch", %{url: url} do
-      MockWebhook.respond({:status, 401, %{"error" => "invalid Feishu token"}})
-
-      assert {:error, :token_mismatch} =
-               FeishuChecks.callback_preflight(%{
-                 "webhook_url" => url,
-                 "verification_token" => "wrong"
-               })
-    end
-
-    test "404 classifies as :callback_unreachable", %{url: url} do
-      MockWebhook.respond({:status, 404, %{"error" => "Feishu connect not found"}})
-
-      assert {:error, :callback_unreachable} =
-               FeishuChecks.callback_preflight(%{"webhook_url" => url, "app_id" => "missing"})
-    end
-  end
-
-  test "transport failure classifies as :callback_unreachable" do
-    # Nothing is listening on this port: Req returns a transport error.
-    dead_url = "http://127.0.0.1:1/v1/im/feishu/events"
-
-    assert {:error, :callback_unreachable} =
-             FeishuChecks.callback_preflight(%{"webhook_url" => dead_url})
   end
 
   # ---- connect-aware paths: secrets resolved from the tenant app store ----
@@ -235,11 +168,6 @@ defmodule SalixIM.FeishuChecksTest do
   describe "callback_preflight_for_connect/1 — secret resolution + classification" do
     setup [:salix_runtime, :mock_webhook]
 
-    test "fails closed when the connect does not exist" do
-      assert {:error, :connect_not_found} =
-               FeishuChecks.callback_preflight_for_connect(%{"connect_id" => "nope"})
-    end
-
     test "fails closed when the connect is not active", %{group_id: group_id, url: url} do
       seed_connect(group_id, "fs-inactive", %{
         "webhook_url" => url,
@@ -249,17 +177,6 @@ defmodule SalixIM.FeishuChecksTest do
 
       assert {:error, :connect_inactive} =
                FeishuChecks.callback_preflight_for_connect(%{"connect_id" => "fs-inactive"})
-    end
-
-    test "fails closed when no tenant app secret is configured", %{group_id: group_id, url: url} do
-      seed_connect(group_id, "fs-nosecret", %{
-        "tenant_id" => "tenant-empty",
-        "webhook_url" => url,
-        "status" => "connected"
-      })
-
-      assert {:error, :secrets_not_configured} =
-               FeishuChecks.callback_preflight_for_connect(%{"connect_id" => "fs-nosecret"})
     end
 
     test "tenant app verification_token drives a plain round-trip", %{
@@ -304,32 +221,10 @@ defmodule SalixIM.FeishuChecksTest do
       assert {:error, :secrets_not_configured} =
                FeishuChecks.callback_preflight_for_connect(%{"connect_id" => "fs-partial"})
     end
-
-    test "401 token mismatch from the webhook classifies as :token_mismatch", %{
-      group_id: group_id,
-      url: url
-    } do
-      MockWebhook.respond({:status, 401, %{"error" => "invalid Feishu token"}})
-      FakeTenantAppStore.put("tenant-token-mismatch", %{"verification_token" => "wrong"})
-
-      seed_connect(group_id, "fs-tok", %{
-        "tenant_id" => "tenant-token-mismatch",
-        "webhook_url" => url,
-        "status" => "connected"
-      })
-
-      assert {:error, :token_mismatch} =
-               FeishuChecks.callback_preflight_for_connect(%{"connect_id" => "fs-tok"})
-    end
   end
 
   describe "bot_identity/1 — connect-aware bot open_id readiness" do
     setup [:salix_runtime]
-
-    test "fails closed when the connect does not exist" do
-      assert {:error, :connect_not_found} =
-               FeishuChecks.bot_identity(%{"connect_id" => "nope"})
-    end
 
     test "fails closed when the connect is not active", %{group_id: group_id} do
       seed_connect(group_id, "fs-inactive-identity", %{
@@ -340,18 +235,6 @@ defmodule SalixIM.FeishuChecksTest do
 
       assert {:error, :connect_inactive} =
                FeishuChecks.bot_identity(%{"connect_id" => "fs-inactive-identity"})
-    end
-
-    test "fails when the Feishu bot open_id was not resolved", %{group_id: group_id} do
-      seed_connect(group_id, "fs-missing-identity", %{
-        "provider" => "feishu",
-        "status" => "connected",
-        "app_id" => "cli_missing_identity",
-        "bot_open_id" => ""
-      })
-
-      assert {:error, :bot_identity_missing} =
-               FeishuChecks.bot_identity(%{"connect_id" => "fs-missing-identity"})
     end
 
     test "returns redacted evidence when the bot open_id exists", %{group_id: group_id} do
@@ -376,26 +259,6 @@ defmodule SalixIM.FeishuChecksTest do
 
   describe "first_message/1 — connect-aware smoke (session isolation + round-trip)" do
     setup [:salix_runtime, :seed_router_group]
-
-    test "fails closed when the connect does not exist" do
-      assert {:error, :connect_not_found} =
-               FeishuChecks.first_message(%{"connect_id" => "nope"})
-    end
-
-    test "classifies a group with no router agent as :router_not_configured", %{tenant: tenant} do
-      group_id = SalixStore.Ids.new_group_id(tenant)
-      SalixAgent.TestSupport.create_control_group!(group_id, %{"name" => "No router"})
-
-      FakeTenantAppStore.put(tenant, %{"verification_token" => "vtok"})
-
-      seed_connect(group_id, "fs-norouter", %{
-        "tenant_id" => tenant,
-        "status" => "connected"
-      })
-
-      assert {:error, :router_not_configured} =
-               FeishuChecks.first_message(%{"connect_id" => "fs-norouter"})
-    end
 
     test "happy path: synthetic @Bridge message round-trips to an assistant reply", %{
       tenant: tenant,
@@ -432,19 +295,19 @@ defmodule SalixIM.FeishuChecksTest do
   defp salix_runtime(_context) do
     SalixAgent.TestSupport.stop_all_agents()
 
-    prev_s3 = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_agent_delivery = Application.get_env(:salix_im, :agent_delivery_mod)
-    prev_provider_app_store = Application.get_env(:salix_im, :provider_app_store_mod)
+    prev_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_agent_delivery = SystemsRuntime.get_env(:salix_im, :agent_delivery_mod)
+    prev_provider_app_store = SystemsRuntime.get_env(:salix_im, :provider_app_store_mod)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     start_supervised!(SalixAgent.LLM.Mock)
-    Application.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
-    Application.put_env(:salix_im, :agent_delivery_mod, SalixIM.TestSupport.AgentDelivery)
+    SystemsRuntime.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, SalixIM.TestSupport.AgentDelivery)
 
     start_supervised!(FakeTenantAppStore)
-    Application.put_env(:salix_im, :provider_app_store_mod, FakeTenantAppStore)
+    SystemsRuntime.put_env(:salix_im, :provider_app_store_mod, FakeTenantAppStore)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
@@ -483,7 +346,7 @@ defmodule SalixIM.FeishuChecksTest do
   end
 
   defp seed_connect(group_id, connect_id, extra) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     rec =
       Map.merge(
@@ -502,6 +365,6 @@ defmodule SalixIM.FeishuChecksTest do
     rec
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

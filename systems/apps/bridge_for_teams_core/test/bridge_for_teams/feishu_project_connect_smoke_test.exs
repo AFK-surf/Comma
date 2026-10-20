@@ -1,5 +1,6 @@
 defmodule BridgeForTeams.FeishuProjectConnectSmokeTest do
   use BridgeForTeams.DataCase, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{Agents, Orgs, ProjectIMConnects, Projects, TestBandit}
   alias BridgeForTeams.Salix.Client
@@ -27,26 +28,27 @@ defmodule BridgeForTeams.FeishuProjectConnectSmokeTest do
   setup do
     SalixAgent.TestSupport.stop_all_agents()
 
-    prev_store = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_public_base_url = Application.get_env(:salix_im, :public_base_url)
-    prev_feishu_api_base = Application.get_env(:salix_im, :feishu_api_base_url)
+    prev_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_public_base_url = SystemsRuntime.get_env(:salix_im, :public_base_url)
+    prev_feishu_api_base = SystemsRuntime.get_env(:salix_im, :feishu_api_base_url)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_im, :public_base_url, SalixWeb.Application.base_url())
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_im, :public_base_url, SalixWeb.Application.base_url())
 
     %{url: feishu_url} =
       TestBandit.start_supervised!(plug: MockFeishuAPI, startup_log: false)
 
-    Application.put_env(:salix_im, :feishu_api_base_url, feishu_url <> "/open-apis")
+    SystemsRuntime.put_env(:salix_im, :feishu_api_base_url, feishu_url <> "/open-apis")
     start_fake_store()
+    SalixAgent.TestSupport.configure_platform_models!()
 
     case start_supervised(Mock) do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok
     end
 
-    Application.put_env(:salix_agent, :llm, Mock)
+    SystemsRuntime.put_env(:salix_agent, :llm, Mock)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
@@ -60,7 +62,7 @@ defmodule BridgeForTeams.FeishuProjectConnectSmokeTest do
   end
 
   test "BridgeForTeams project Feishu connect verifies and routes a non-live group event" do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
     app_id = "cli_smoke_#{suffix}"
     {:ok, org} = Orgs.create_org(%{name: "Smoke #{suffix}", slug: "smoke-#{suffix}"})
     {:ok, project} = Projects.create_project(org.id, %{name: "Bridge", slug: "bridge-#{suffix}"})
@@ -133,7 +135,7 @@ defmodule BridgeForTeams.FeishuProjectConnectSmokeTest do
   end
 
   defp start_fake_store do
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -189,11 +191,11 @@ defmodule BridgeForTeams.FeishuProjectConnectSmokeTest do
     |> URI.to_string()
   end
 
-  defp wait_for(fun, retries \\ 100) do
+  defp wait_for(fun, retries \\ 1500) do
     case fun.() do
       {:ok, value} -> {:ok, value}
       _ when retries == 0 -> {:error, :timeout}
-      _ -> Process.sleep(20) && wait_for(fun, retries - 1)
+      _ -> SystemsClock.sleep(20) && wait_for(fun, retries - 1)
     end
   end
 
@@ -249,6 +251,6 @@ defmodule BridgeForTeams.FeishuProjectConnectSmokeTest do
 
   defp content_contains?(_content, _expected), do: false
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

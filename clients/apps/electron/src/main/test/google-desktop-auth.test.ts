@@ -80,7 +80,11 @@ describe("SystemBrowserGoogleAuth", () => {
     expect(callbackResponse).toBeDefined();
     const response = await callbackResponse!;
     expect(response.status).toBe(200);
-    await expect(response.text()).resolves.toContain("登录已完成，你可以返回 Comma。");
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    const html = await response.text();
+    expect(html).toContain('<html lang="zh-CN">');
+    expect(html).toContain("<h1>已登录 Comma</h1>");
+    expect(html).toContain("<p>你可以关闭此窗口并返回 Comma。</p>");
   });
 
   it.each(
@@ -109,7 +113,11 @@ describe("SystemBrowserGoogleAuth", () => {
     await expect(
       auth.authenticate({ clientId: "desktop-client", nonce: "backend-nonce" })
     ).rejects.toThrow("Google sign-in could not be completed.");
-    await expect(callbackResponse).resolves.toMatchObject({ status: 400 });
+    const response = await callbackResponse!;
+    expect(response.status).toBe(400);
+    const html = await response.text();
+    expect(html).toContain("<h1>Sign-in failed</h1>");
+    expect(html).not.toContain("Signed in to Comma");
   });
 
   it("accepts the loopback callback only once", async () => {

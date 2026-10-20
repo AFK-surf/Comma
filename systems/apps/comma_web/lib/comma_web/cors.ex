@@ -5,7 +5,7 @@ defmodule CommaWeb.CORS do
 
   @allowed_headers "authorization,content-type,if-none-match,x-comma-session-transport,x-comma-session-lifecycle-version,x-comma-expected-auth-session-id"
   @allowed_methods "GET,POST,PATCH,PUT,DELETE,OPTIONS"
-  @exposed_headers "etag"
+  @exposed_headers "etag,retry-after"
 
   def init(opts), do: opts
 

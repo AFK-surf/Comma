@@ -24,15 +24,15 @@ describe("createSenderPolicy", () => {
 
   it("allows configured dev server origins only in development", () => {
     const devPolicy = createSenderPolicy({
-      devOrigins: ["http://127.0.0.1:5173"],
+      devOrigins: ["https://vite.comma.test"],
       isDevelopment: true,
     });
     const prodPolicy = createSenderPolicy({
-      devOrigins: ["http://127.0.0.1:5173"],
+      devOrigins: ["https://vite.comma.test"],
       isDevelopment: false,
     });
     const caller = {
-      origin: "http://127.0.0.1:5173",
+      origin: "https://vite.comma.test",
       role: "main-window" as const,
       webContentsId: 1,
       windowId: "win_main",

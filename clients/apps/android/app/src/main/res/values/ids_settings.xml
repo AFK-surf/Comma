@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="chat_settings" type="id" />
+    <item name="settings_profile_header" type="id" />
+    <item name="settings_language" type="id" />
+    <item name="settings_label_changes" type="id" />
+    <item name="settings_reply_notifications" type="id" />
+    <item name="settings_theme" type="id" />
+    <item name="settings_font_size" type="id" />
+    <item name="settings_devices" type="id" />
+    <item name="settings_devices_status" type="id" />
+    <item name="settings_devices_sign_out_others" type="id" />
+    <item name="settings_sign_out" type="id" />
+    <item name="settings_version" type="id" />
+    <item name="settings_licenses" type="id" />
+    <item name="settings_avatar_choose" type="id" />
+    <item name="settings_avatar_remove" type="id" />
+    <item name="settings_name" type="id" />
+    <item name="settings_name_input" type="id" />
+    <item name="settings_dialog_confirm" type="id" />
+    <item name="settings_workspace" type="id" />
+    <item name="settings_notifications_toggle" type="id" />
+</resources>

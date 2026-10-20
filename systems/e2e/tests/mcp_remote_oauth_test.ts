@@ -1,44 +1,43 @@
+import { setDefaultTimeout, test } from "bun:test";
+
+// Builds and subprocesses here take longer than the five-second default.
+setDefaultTimeout(30 * 60_000);
+
 const SYSTEMS_ROOT = new URL("../..", import.meta.url).pathname;
 const DEFAULT_TIMEOUT_MS = 300_000;
 
-Deno.test({
-  name: "Salix MCP remote OAuth covers DCR, static client, refresh, disable, reauthorization, and redaction",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn() {
-    const output = await run(
-      "mix",
-      ["run", "scripts/mcp_remote_oauth_e2e.exs"],
-      {
-        cwd: SYSTEMS_ROOT,
-        env: {
-          ...Deno.env.toObject(),
-          PATH: pathWithAsdf(),
-          MIX_ENV: "test",
-        },
-        timeoutMs: DEFAULT_TIMEOUT_MS,
+test("Salix MCP remote OAuth covers DCR, static client, refresh, disable, reauthorization, and redaction", async () => {
+  const output = await run(
+    "mix",
+    ["run", "scripts/mcp_remote_oauth_e2e.exs"],
+    {
+      cwd: SYSTEMS_ROOT,
+      env: {
+        ...process.env,
+        PATH: pathWithAsdf(),
+        MIX_ENV: "test",
       },
-    );
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+    },
+  );
 
-    assertIncludes(output.combined, "MCP_REMOTE_OAUTH_E2E: PASS");
-  },
+  assertIncludes(output.combined, "MCP_REMOTE_OAUTH_E2E: PASS");
 });
 
 type RunOptions = {
   cwd?: string;
-  env?: Record<string, string>;
+  env?: Record<string, string | undefined>;
   timeoutMs?: number;
   allowFailure?: boolean;
 };
 
 async function run(command: string, args: string[], opts: RunOptions = {}) {
-  const child = new Deno.Command(command, {
-    args,
+  const child = Bun.spawn([command, ...args], {
     cwd: opts.cwd,
-    env: opts.env,
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
+    env: { ...process.env, ...opts.env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -50,29 +49,31 @@ async function run(command: string, args: string[], opts: RunOptions = {}) {
     }
   }, opts.timeoutMs ?? 60_000);
 
-  const output = await child.output();
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
   clearTimeout(timer);
 
-  const stdout = new TextDecoder().decode(output.stdout);
-  const stderr = new TextDecoder().decode(output.stderr);
   const combined = stdout + stderr;
 
-  if ((!output.success || timedOut) && !opts.allowFailure) {
+  if ((code !== 0 || timedOut) && !opts.allowFailure) {
     throw new Error(
       [
         `command failed: ${command} ${args.join(" ")}`,
-        `code=${output.code} timedOut=${timedOut}`,
+        `code=${code} timedOut=${timedOut}`,
         combined,
       ].join("\n"),
     );
   }
 
-  return { ...output, stdout, stderr, combined };
+  return { success: code === 0, code, stdout, stderr, combined };
 }
 
 function pathWithAsdf() {
-  const path = Deno.env.get("PATH") ?? "";
-  const home = Deno.env.get("HOME");
+  const path = process.env.PATH ?? "";
+  const home = process.env.HOME;
   if (!home) return path;
   return `${home}/.asdf/shims:${path}`;
 }

@@ -3,6 +3,7 @@ import {
   createNativePeerAsyncCall,
   defaultCommaClientSettings,
   generatedNativeMainBindingsById,
+  nativeCorePortChannel,
   nativePeerPortChannel,
   nativeCapabilityRegistry,
   nativeEventRegistry,
@@ -17,17 +18,6 @@ const TEST_SESSION_PRODUCT_LEASE = {
   authorityInstanceId: "authority-1",
   generation: 3,
   sessionId: "session-1",
-} as const;
-
-const TEST_SESSION_ABSENCE_EXPECTATION = {
-  authorityInstanceId: TEST_SESSION_PRODUCT_LEASE.authorityInstanceId,
-  expectedSessionId: null,
-  generation: 2,
-} as const;
-
-const TEST_SESSION_AUTH_ATTEMPT = {
-  attemptId: "attempt-1",
-  expected: TEST_SESSION_ABSENCE_EXPECTATION,
 } as const;
 
 const TEST_CHAT_LEASE = {
@@ -81,16 +71,6 @@ describe("createNativeBridgePreload", () => {
         argv: ["--window-id=win_main"],
         expected: { role: "unknown", windowId: "unknown" },
       },
-      {
-        name: "recognizes the dedicated side-chat renderer role",
-        argv: ["--window-id=win_side_chat", "--window-role=side-chat-window"],
-        expected: { role: "side-chat-window", windowId: "win_side_chat" },
-      },
-      {
-        name: "recognizes the isolated side-chat test-window renderer role",
-        argv: ["--window-id=win_side_chat_test", "--window-role=side-chat-test-window"],
-        expected: { role: "side-chat-test-window", windowId: "win_side_chat_test" },
-      },
     ].map((row) => [row.name, row] as [string, typeof row])
   )("%s", (_name, { argv, expected }) => {
     const bridge = createNativeBridgePreload(
@@ -116,9 +96,14 @@ describe("createNativeBridgePreload", () => {
   });
 
   it("binds every runtime leaf to its generated main channel", async () => {
-    const invoke = vi.fn(async (channel: string) => ({
+    const { invoke, invoked } = createInvokeHarness(async (channel) => ({
       ok: true,
-      value: channel === "comma:peers:connect" ? { channelId: "peer_test" } : {},
+      value:
+        channel === "comma:peers:connect"
+          ? { channelId: "peer_test" }
+          : channel === "comma:core:open"
+            ? { channelId: "core_test" }
+            : {},
     }));
     const { emitIpcMessage, on } = createIpcListenerHarness();
     const off = vi.fn();
@@ -144,13 +129,13 @@ describe("createNativeBridgePreload", () => {
 
       if (capability.id === "peers.connect") {
         const [localPort] = createLinkedPeerPorts();
+        const requested = invoked(expectedChannel);
         const connect = (member as (input: unknown) => Promise<unknown>)(input);
-        await vi.waitFor(() => {
-          expect(invoke.mock.calls.at(-1), `${capability.id} preload channel`).toEqual([
-            expectedChannel,
-            input,
-          ]);
-        });
+        await requested;
+        expect(invoke.mock.calls.at(-1), `${capability.id} preload channel`).toEqual([
+          expectedChannel,
+          input,
+        ]);
         emitIpcMessage(nativePeerPortChannel, {
           event: { ports: [localPort] },
           payload: {
@@ -161,23 +146,39 @@ describe("createNativeBridgePreload", () => {
           },
         });
         await connect;
-      } else if (stateIds.has(capability.id)) {
-        await (member as NativeStateBridge<unknown, unknown>).get(input);
-      } else if (capability.id === "synchronicity.importFile") {
-        const source = new File(["sample"], "sample.mov");
-        getPathForFile.mockReturnValueOnce("/Users/me/sample.mov");
-        await (member as (input?: unknown) => Promise<unknown>)({
-          path: "notes/today.md",
-          source,
-          space: "comma-drive",
-        });
+      } else if (capability.id === "core.open") {
+        // The window's end of the channel goes on to the page as a window message.
+        const postMessage = vi.fn();
+        vi.stubGlobal("window", { postMessage });
+        vi.stubGlobal("location", { origin: "assets://." });
+        const [corePort] = createLinkedPeerPorts();
+        const requested = invoked(expectedChannel);
+        const open = (member as () => Promise<unknown>)();
+        await requested;
         expect(invoke.mock.calls.at(-1), `${capability.id} preload channel`).toEqual([
           expectedChannel,
-          {
-            path: "notes/today.md",
-            sourcePath: "/Users/me/sample.mov",
-            space: "comma-drive",
-          },
+          undefined,
+        ]);
+        emitIpcMessage(nativeCorePortChannel, {
+          event: { ports: [corePort] },
+          payload: { channelId: "core_test", kind: "connected" },
+        });
+        await expect(open).resolves.toEqual({ channelId: "core_test" });
+        expect(postMessage).toHaveBeenCalledWith(
+          { commaCorePort: "core_test" },
+          "assets://.",
+          [corePort]
+        );
+        vi.unstubAllGlobals();
+      } else if (stateIds.has(capability.id)) {
+        await (member as NativeStateBridge<unknown, unknown>).get(input);
+      } else if (capability.id === "synchronicity.stageImport") {
+        const source = new File(["sample"], "sample.mov");
+        getPathForFile.mockReturnValueOnce("/Users/me/sample.mov");
+        await (member as (input?: unknown) => Promise<unknown>)({ source });
+        expect(invoke.mock.calls.at(-1), `${capability.id} preload channel`).toEqual([
+          expectedChannel,
+          { sourcePath: "/Users/me/sample.mov" },
         ]);
         continue;
       } else {
@@ -216,7 +217,7 @@ describe("createNativeBridgePreload", () => {
       ping(input: { message: string }): Promise<{ reply: string }>;
     }
 
-    const invoke = vi.fn(async () => ({
+    const { invoke, invoked } = createInvokeHarness(async () => ({
       ok: true,
       value: { channelId: "peer_1" },
     }));
@@ -233,13 +234,13 @@ describe("createNativeBridgePreload", () => {
     });
     const bridge = createNativeBridgePreload({ invoke, on, off: vi.fn() });
 
+    const requested = invoked("comma:peers:connect");
     const connectionPromise = bridge.peers.connect<PeerApi>({
       target: { windowId: "win_peer" },
     });
-    await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("comma:peers:connect", {
-        target: { windowId: "win_peer" },
-      });
+    await requested;
+    expect(invoke).toHaveBeenCalledWith("comma:peers:connect", {
+      target: { windowId: "win_peer" },
     });
     emitIpcMessage(nativePeerPortChannel, {
       event: { ports: [localPort] },
@@ -276,7 +277,8 @@ describe("createNativeBridgePreload", () => {
         side: "target",
       },
     });
-    const accepted = vi.fn();
+    const delivered = Promise.withResolvers<void>();
+    const accepted = vi.fn(() => delivered.resolve());
 
     bridge.peers.onConnection<Record<string, never>, TargetApi>(accepted, {
       localApi: {
@@ -290,15 +292,14 @@ describe("createNativeBridgePreload", () => {
       port: initiatorPort,
     });
 
-    await vi.waitFor(() => {
-      expect(accepted).toHaveBeenCalledWith(
-        expect.objectContaining({
-          channelId: "peer_1",
-          peer: { role: "main-window", windowId: "win_main" },
-          side: "target",
-        })
-      );
-    });
+    await delivered.promise;
+    expect(accepted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channelId: "peer_1",
+        peer: { role: "main-window", windowId: "win_main" },
+        side: "target",
+      })
+    );
     await expect(
       initiatorConnection.remote.ping({ message: "hello" })
     ).resolves.toEqual({
@@ -307,21 +308,21 @@ describe("createNativeBridgePreload", () => {
   });
 
   it("turns peer-channel closed notifications into terminal onClose callbacks", async () => {
-    const invoke = vi.fn(async () => ({
+    const { invoke, invoked } = createInvokeHarness(async () => ({
       ok: true,
       value: { channelId: "peer_1" },
     }));
     const { emitIpcMessage, on } = createIpcListenerHarness();
     const [localPort] = createLinkedPeerPorts();
     const bridge = createNativeBridgePreload({ invoke, on, off: vi.fn() });
+    const requested = invoked("comma:peers:connect");
     const connectionPromise = bridge.peers.connect({
       target: { windowId: "win_peer" },
     });
 
-    await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("comma:peers:connect", {
-        target: { windowId: "win_peer" },
-      });
+    await requested;
+    expect(invoke).toHaveBeenCalledWith("comma:peers:connect", {
+      target: { windowId: "win_peer" },
     });
     emitIpcMessage(nativePeerPortChannel, {
       event: { ports: [localPort] },
@@ -501,17 +502,17 @@ describe("createNativeBridgePreload", () => {
     }>((resolve) => {
       resolveReplay = resolve;
     });
-    const invoke = vi.fn(() => replay);
+    const { invoke, invoked } = createInvokeHarness(() => replay);
     const { emitIpcMessage, on } = createIpcListenerHarness();
     const off = vi.fn();
     const bridge = createNativeBridgePreload({ invoke, on, off });
     const listener = vi.fn();
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
 
+    const requested = invoked("comma:app-preferences:state");
     const unsubscribe = bridge.appPreferences.state.subscribe(listener);
-    await vi.waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("comma:app-preferences:state", undefined)
-    );
+    await requested;
+    expect(invoke).toHaveBeenCalledWith("comma:app-preferences:state", undefined);
     emitIpcMessage("comma:app-preferences:changed", {
       payload: newerPreferences,
     });
@@ -536,33 +537,6 @@ describe("createNativeBridgePreload", () => {
     );
   });
 
-  it("forwards the exact Session lease through ProductInbox state reads", async () => {
-    const input = { session: TEST_SESSION_PRODUCT_LEASE };
-    const envelope = {
-      session: TEST_SESSION_PRODUCT_LEASE,
-      snapshot: {
-        items: [],
-        source: "cache",
-      },
-    };
-    const invoke = vi.fn(async () => ({ ok: true, value: envelope }));
-    const bridge = createNativeBridgePreload({
-      invoke,
-      on: vi.fn(),
-      off: vi.fn(),
-    });
-    const path = { method: "state", namespace: "productInbox" };
-    const listener = vi.fn();
-
-    await expect(bridge.stateChannels.get(path, input)).resolves.toEqual(envelope);
-    const unsubscribe = bridge.stateChannels.subscribe(path, listener, input);
-    await vi.waitFor(() => expect(listener).toHaveBeenCalledWith(envelope));
-    unsubscribe();
-
-    expect(invoke).toHaveBeenNthCalledWith(1, "comma:product-inbox:state", input);
-    expect(invoke).toHaveBeenNthCalledWith(2, "comma:product-inbox:state", input);
-  });
-
   it("reports a failed state replay instead of leaving an unhandled rejection", async () => {
     const replayError = new Error("session state unavailable");
     const invoke = vi.fn(async () => {
@@ -570,16 +544,18 @@ describe("createNativeBridgePreload", () => {
     });
     const on = vi.fn();
     const off = vi.fn();
-    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const reported = Promise.withResolvers<void>();
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => reported.resolve());
     const bridge = createNativeBridgePreload({ invoke, on, off });
     const listener = vi.fn();
 
     const unsubscribe = bridge.session.state.subscribe(listener);
-    await vi.waitFor(() =>
-      expect(error).toHaveBeenCalledWith(
-        "[native-bridge] comma:session:state replay failed",
-        replayError
-      )
+    await reported.promise;
+    expect(error).toHaveBeenCalledWith(
+      "[native-bridge] comma:session:state replay failed",
+      replayError
     );
     expect(listener).not.toHaveBeenCalled();
 
@@ -664,9 +640,7 @@ describe("createNativeBridgePreload", () => {
 
     let caught: unknown;
     try {
-      await bridge.productInbox.refresh({
-        session: TEST_SESSION_PRODUCT_LEASE,
-      });
+      await bridge.appPreferences.state.get();
     } catch (error) {
       caught = error;
     }
@@ -744,33 +718,6 @@ function getGeneratedBridgeMember(bridge: unknown, namespace: string, method: st
 
 function sampleCommandInput(id: string) {
   switch (id) {
-    case "subscriptionAuthorization.start":
-      return {
-        session: TEST_SESSION_PRODUCT_LEASE,
-        requestId: "11111111-1111-4111-8111-111111111111",
-        workspaceId: "workspace-1",
-        provider: "codex",
-      };
-    case "tokenDanceAuthorization.start":
-      return {
-        session: TEST_SESSION_PRODUCT_LEASE,
-        requestId: "11111111-1111-4111-8111-111111111111",
-        workspaceId: "workspace-1",
-      };
-    case "tokenDanceAuthorization.save":
-      return {
-        session: TEST_SESSION_PRODUCT_LEASE,
-        requestId: "11111111-1111-4111-8111-111111111111",
-        name: "TokenDance",
-      };
-    case "tokenDanceAuthorization.status":
-    case "tokenDanceAuthorization.cancel":
-    case "subscriptionAuthorization.status":
-    case "subscriptionAuthorization.cancel":
-      return {
-        session: TEST_SESSION_PRODUCT_LEASE,
-        requestId: "11111111-1111-4111-8111-111111111111",
-      };
     case "onboarding.presentWindow":
       return { session: TEST_SESSION_PRODUCT_LEASE };
     case "onboarding.closeWindow":
@@ -784,12 +731,6 @@ function sampleCommandInput(id: string) {
       return { action: "accept", requestId: "11111111-1111-4111-8111-111111111111" };
     case "airDrop.preview":
       return { index: 0, requestId: "11111111-1111-4111-8111-111111111111" };
-    case "meetingRecorder.action":
-      return { action: "start", meetingKey: "zoom:1", generation: 0 };
-    case "meetingRecorder.selectMicrophone":
-      return { deviceId: "default", meetingKey: "zoom:1", generation: 0 };
-    case "meetingRecorder.acknowledgeSaved":
-      return { receiptId: 1 };
     case "meetingRecorder.setInteractive":
       return { interactive: true };
     case "meetingRecorder.layoutWindow":
@@ -809,20 +750,6 @@ function sampleCommandInput(id: string) {
       };
     case "audioCapture.stop":
       return { session: TEST_SESSION_PRODUCT_LEASE };
-    case "sessionHistory.state":
-    case "sessionHistory.load":
-    case "sessionHistory.retain":
-    case "sessionHistory.release":
-      return {
-        session: TEST_SESSION_PRODUCT_LEASE,
-        groupId: "group-1",
-        conversationId: "conversation-1",
-        participantId: "participant-1",
-        ...(id === "sessionHistory.load" ? { mode: "latest" } : {}),
-        ...(id === "sessionHistory.retain" || id === "sessionHistory.release"
-          ? { consumerId: "history-panel-1" }
-          : {}),
-      };
     case "computeNode.configure":
       return { desiredEnabled: true };
     case "computeNode.maintainHost":
@@ -865,35 +792,6 @@ function sampleCommandInput(id: string) {
       return { title: "Focus" };
     case "notch.preview":
       return { sideWidth: 96, title: "Focus" };
-    case "session.requestEmailLogin":
-      return {
-        email: "person@example.com",
-        expected: TEST_SESSION_ABSENCE_EXPECTATION,
-      };
-    case "session.verifyEmailLogin":
-    case "session.verifyGoogleLink":
-      return {
-        attempt: TEST_SESSION_AUTH_ATTEMPT,
-        challengeId: "challenge_1",
-        code: "123456",
-      };
-    case "session.signInWithGoogle":
-      return {
-        expected: TEST_SESSION_ABSENCE_EXPECTATION,
-      };
-    case "session.cancelAuthAttempt":
-      return { attempt: TEST_SESSION_AUTH_ATTEMPT };
-    case "session.reconcile":
-      return { reason: "manual_retry" };
-    case "session.signOut":
-      return {
-        expected: {
-          authorityInstanceId: TEST_SESSION_PRODUCT_LEASE.authorityInstanceId,
-          expectedAudience: TEST_SESSION_PRODUCT_LEASE.audience,
-          expectedSessionId: TEST_SESSION_PRODUCT_LEASE.sessionId,
-          generation: TEST_SESSION_PRODUCT_LEASE.generation,
-        },
-      };
     case "localFiles.pick":
       return {
         maxFiles: 50,
@@ -906,11 +804,6 @@ function sampleCommandInput(id: string) {
         localFileRef: `lfi1_${"p".repeat(43)}`,
         session: TEST_SESSION_PRODUCT_LEASE,
       };
-    case "productInbox.refresh":
-      return { limit: 10, session: TEST_SESSION_PRODUCT_LEASE };
-    case "productInbox.state":
-    case "productInbox.retain":
-    case "productInbox.release":
     case "chat.state":
     case "chat.drafts":
     case "chat.resolveWorkspaceChat":
@@ -919,7 +812,6 @@ function sampleCommandInput(id: string) {
     case "chat.release":
     case "chat.clearPresentation":
     case "chat.refresh":
-    case "chat.presentInSideChat":
       return {
         ...TEST_CHAT_LEASE,
         session: TEST_SESSION_PRODUCT_LEASE,
@@ -929,6 +821,13 @@ function sampleCommandInput(id: string) {
         ...TEST_CHAT_LEASE,
         reviewVersion: 1,
         session: TEST_SESSION_PRODUCT_LEASE,
+      };
+    case "chat.setTaskStatus":
+      return {
+        ...TEST_CHAT_LEASE,
+        expectedUpdatedAt: 1,
+        session: TEST_SESSION_PRODUCT_LEASE,
+        status: "cancelled",
       };
     case "chat.setDraft":
       return {
@@ -963,17 +862,20 @@ function sampleCommandInput(id: string) {
         policy: "origin=key:abc",
         space: "comma-drive",
       };
+    case "synchronicity.openStream":
+      return {
+        contentType: "audio/mp4",
+        path: "recording.m4a",
+        policy: "origin=key:abc",
+        space: "comma-drive",
+      };
     case "synchronicity.versions":
     case "synchronicity.delete":
       return { path: "notes/today.md", space: "comma-drive" };
     case "synchronicity.write":
       return { content: "aGk=", path: "notes/today.md", space: "comma-drive" };
-    case "synchronicity.importFile":
-      return {
-        path: "notes/today.md",
-        source: new File(["sample"], "sample.mov"),
-        space: "comma-drive",
-      };
+    case "synchronicity.stageImport":
+      return { source: new File(["sample"], "sample.mov") };
     case "synchronicity.adopt":
       return { path: "notes/today.md", select: "origin=key:abc", space: "comma-drive" };
     case "synchronicity.setDomain":
@@ -1084,6 +986,7 @@ function sampleCommandInput(id: string) {
         sessionId: "workspace-1:conversation-1",
       };
     case "browserSidebar.close":
+    case "browserSidebar.dismissPasskey":
       return { sessionId: "workspace-1:conversation-1" };
     case "browserSidebar.inspect":
       return {
@@ -1095,6 +998,8 @@ function sampleCommandInput(id: string) {
         anchor: { height: 24, width: 24, x: 860, y: 44 },
         sessionId: "workspace-1:conversation-1",
       };
+    case "browserSidebar.importCookies":
+      return { profiles: [{ profileDirectory: "Default", source: "arc" }] };
     case "sitePermissionMenu.act":
       return {
         action: "change",
@@ -1123,31 +1028,13 @@ function sampleCommandInput(id: string) {
       return { url: "https://media.example/image.png" };
     case "peers.connect":
       return { target: { windowId: "win_peer" } };
-    case "sideChat.setContentSize":
-      return { height: 286, width: 364 };
-    case "sideChat.updateDebugSettings":
-      return { blurRadius: 4 };
-    case "sideChat.setInteractiveProgress":
-      return { progress: 0.42 };
-    case "sideChat.finishInteractiveProgress":
-      return { shouldOpen: true };
-    case "sideChat.updateShortcut":
-      return {
-        key: "z",
-        modifiers: {
-          alt: false,
-          control: true,
-          meta: false,
-          shift: false,
-        },
-      };
-    case "sideChat.openTestWindow":
-      return { sourceFrame: { height: 30, width: 30, x: 42, y: 84 } };
     case "windows.create":
       return { route: "/inbox" };
     case "windows.focus":
     case "windows.close":
       return { windowId: "win_main" };
+    case "surfaces.windowControl":
+      return { action: "minimize" };
     default:
       return undefined;
   }
@@ -1182,6 +1069,28 @@ function createIpcListenerHarness() {
       }
     },
     on,
+  };
+}
+
+/**
+ * `invoke` answering with `answer`. `invoked(channel)` resolves at the next
+ * call on `channel`; arm it before the call, which may come synchronously.
+ */
+function createInvokeHarness(answer: (channel: string) => Promise<unknown>) {
+  const waiting = new Map<string, () => void>();
+  const invoke = vi.fn((channel: string, _input?: unknown) => {
+    waiting.get(channel)?.();
+    waiting.delete(channel);
+    return answer(channel);
+  });
+
+  return {
+    invoke,
+    invoked(channel: string) {
+      const call = Promise.withResolvers<void>();
+      waiting.set(channel, call.resolve);
+      return call.promise;
+    },
   };
 }
 

@@ -307,7 +307,7 @@ defmodule CommaWeb.TelegramIntegration do
   end
 
   defp web_origin,
-    do: Application.fetch_env!(:comma_web, :web_cookie_origin) |> String.trim_trailing("/")
+    do: SystemsRuntime.fetch_env!(:comma_web, :web_cookie_origin) |> String.trim_trailing("/")
 
   defp disconnect_from_telegram(identity) do
     TelegramLinks.with_lifecycle_lock(fn ->

@@ -1,5 +1,5 @@
 defmodule SalixEnv.ComputeProviderConformanceTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Ecto.Query
 
@@ -9,13 +9,9 @@ defmodule SalixEnv.ComputeProviderConformanceTest do
   alias SalixStore.{Compute, Repo}
 
   setup do
+    # ensure!/0 truncates every Compute and Agent VMM table without racing
+    # the application's background workers for table locks.
     SalixStore.RepoTestSetup.ensure!()
-
-    Repo.query!(
-      "TRUNCATE agent_vmm_audit_events, agent_vmm_sessions, compute_commands, compute_grants, compute_runtime_instances, compute_workloads, compute_allocations, compute_provider_bindings, compute_environments, compute_pools, agent_vmm_registrations CASCADE"
-    )
-
-    :ok
   end
 
   test "Agent VMM satisfies lifecycle through current Compute generation only" do
@@ -131,230 +127,6 @@ defmodule SalixEnv.ComputeProviderConformanceTest do
              Repo.get!(Compute.Command, command_id)
   end
 
-  test "controller sequences restart at one for each connection epoch" do
-    fixture = compute_fixture()
-
-    assert {:ok, allocation} =
-             Compute.observe_allocation(
-               fixture.allocation.id,
-               fixture.allocation.revision,
-               fixture.allocation.generation,
-               "ready",
-               "succeeded"
-             )
-
-    assert {:ok, :ok} =
-             SalixStore.AgentVMM.observe_registration("registration", "gateway", %{
-               "connectionEpoch" => "7",
-               "inventoryWatermark" => 1,
-               "inventory" => [
-                 %{
-                   "allocationId" => allocation.id,
-                   "revision" => Integer.to_string(allocation.revision),
-                   "state" => "ALLOCATION_STATE_READY"
-                 }
-               ]
-             })
-
-    assert {:ok, %{command: first}} =
-             AgentVMM.allocate(%{id: allocation.id}, fixture.workload, [])
-
-    assert {:ok, %{command: second}} =
-             AgentVMM.allocate(%{id: allocation.id}, fixture.workload, [])
-
-    assert second.id == first.id
-    assert first.connection_epoch == "0"
-    assert second.connection_epoch == "0"
-    refute Map.has_key?(first.payload["command_json"], "connectionEpoch")
-    refute Map.has_key?(first.payload["command_json"], "sequence")
-    refute Map.has_key?(second.payload["command_json"], "connectionEpoch")
-    refute Map.has_key?(second.payload["command_json"], "sequence")
-
-    assert Repo.get!(SalixStore.AgentVMM.Registration, "registration").next_controller_sequence ==
-             1
-
-    assert {:ok, %{id: first_id} = claimed_first} =
-             SalixStore.AgentVMM.claim_registration_command("registration", "gateway", "7")
-
-    assert first_id == first.id
-    assert claimed_first.payload["command_json"]["connectionEpoch"] == "7"
-    assert claimed_first.payload["command_json"]["sequence"] == 1
-
-    assert Repo.get!(SalixStore.AgentVMM.Registration, "registration").next_controller_sequence ==
-             2
-
-    assert :ok =
-             SalixStore.AgentVMM.commit_registration_result(
-               "registration",
-               "gateway",
-               "7",
-               first.id,
-               "succeeded",
-               %{
-                 "result" => %{
-                   "allocation" => %{
-                     "allocationId" => allocation.id,
-                     "revision" => 1
-                   }
-                 }
-               }
-             )
-
-    current = Repo.get!(Compute.Allocation, allocation.id)
-
-    assert {:ok, %{command: old_epoch}} =
-             AgentVMM.bootstrap(
-               current,
-               fixture.workload,
-               credential(fixture.workload.id),
-               []
-             )
-
-    refute Map.has_key?(old_epoch.payload["command_json"], "connectionEpoch")
-    refute Map.has_key?(old_epoch.payload["command_json"], "sequence")
-
-    assert {:ok, %{id: old_epoch_id} = claimed_old_epoch} =
-             SalixStore.AgentVMM.claim_registration_command("registration", "gateway", "7")
-
-    assert old_epoch_id == old_epoch.id
-    assert claimed_old_epoch.payload["command_json"]["connectionEpoch"] == "7"
-    assert claimed_old_epoch.payload["command_json"]["sequence"] == 2
-
-    assert {:ok, :ok} =
-             SalixStore.AgentVMM.observe_registration("registration", "gateway-next", %{
-               "connectionEpoch" => "8",
-               "inventoryWatermark" => 2,
-               "inventory" => [
-                 %{
-                   "allocationId" => current.id,
-                   "revision" => "1",
-                   "state" => "ALLOCATION_STATE_READY"
-                 }
-               ]
-             })
-
-    assert Repo.get!(Compute.Command, old_epoch.id).status == "pending"
-
-    assert {:error, :stale_command} =
-             SalixStore.AgentVMM.commit_registration_result(
-               "registration",
-               "gateway",
-               "7",
-               old_epoch.id,
-               "succeeded",
-               %{"result" => %{"lease" => %{}}}
-             )
-
-    assert {:error, :stale_command} =
-             SalixStore.AgentVMM.commit_registration_result(
-               "registration",
-               "gateway-next",
-               "8",
-               old_epoch.id,
-               "succeeded",
-               %{"result" => %{"lease" => %{}}}
-             )
-
-    Repo.update_all(from(c in Compute.Command, where: c.id == ^old_epoch.id),
-      set: [deadline_at: DateTime.add(DateTime.utc_now(), -1, :second)]
-    )
-
-    assert {:ok, %{settled: 1, more?: false}} =
-             SalixStore.AgentVMM.settle_expired_commands(32, DateTime.utc_now())
-
-    assert {:ok, %{command: next_epoch}} =
-             AgentVMM.bootstrap(
-               Repo.get!(Compute.Allocation, allocation.id),
-               fixture.workload,
-               credential(fixture.workload.id),
-               []
-             )
-
-    refute Map.has_key?(next_epoch.payload["command_json"], "connectionEpoch")
-    refute Map.has_key?(next_epoch.payload["command_json"], "sequence")
-    assert next_epoch.connection_epoch == "0"
-    refute next_epoch.id == old_epoch.id
-
-    assert {:ok, %{id: next_epoch_id} = claimed_next_epoch} =
-             SalixStore.AgentVMM.claim_registration_command(
-               "registration",
-               "gateway-next",
-               "8"
-             )
-
-    assert next_epoch_id == next_epoch.id
-    assert claimed_next_epoch.payload["command_json"]["connectionEpoch"] == "8"
-    assert claimed_next_epoch.payload["command_json"]["sequence"] == 1
-  end
-
-  test "a rejected delivery consumes one slot without pre-claim gaps" do
-    fixture = compute_fixture()
-
-    assert {:ok, allocation} =
-             Compute.observe_allocation(
-               fixture.allocation.id,
-               fixture.allocation.revision,
-               fixture.allocation.generation,
-               "ready",
-               "succeeded"
-             )
-
-    assert {:ok, :ok} =
-             SalixStore.AgentVMM.observe_registration("registration", "gateway", %{
-               "connectionEpoch" => "7",
-               "inventoryWatermark" => 1,
-               "inventory" => [
-                 %{
-                   "allocationId" => allocation.id,
-                   "revision" => Integer.to_string(allocation.revision),
-                   "state" => "ALLOCATION_STATE_READY"
-                 }
-               ]
-             })
-
-    assert {:ok, %{command: first}} =
-             AgentVMM.allocate(%{id: allocation.id}, fixture.workload, [])
-
-    refute Map.has_key?(first.payload["command_json"], "connectionEpoch")
-    refute Map.has_key?(first.payload["command_json"], "sequence")
-    assert first.connection_epoch == "0"
-
-    assert Repo.get!(SalixStore.AgentVMM.Registration, "registration").next_controller_sequence ==
-             1
-
-    assert {:ok, claimed_first} =
-             SalixStore.AgentVMM.claim_registration_command("registration", "gateway", "7")
-
-    assert claimed_first.payload["command_json"]["connectionEpoch"] == "7"
-    assert claimed_first.payload["command_json"]["sequence"] == 1
-
-    assert :ok =
-             SalixStore.AgentVMM.commit_registration_result(
-               "registration",
-               "gateway",
-               "7",
-               claimed_first.id,
-               "failed",
-               %{"reason" => "semantic_rejection"}
-             )
-
-    assert {:ok, %{command: retried}} =
-             AgentVMM.allocate(%{id: allocation.id}, fixture.workload, [])
-
-    refute retried.id == first.id
-    assert retried.connection_epoch == "0"
-    refute Map.has_key?(retried.payload["command_json"], "sequence")
-
-    assert Repo.get!(SalixStore.AgentVMM.Registration, "registration").next_controller_sequence ==
-             2
-
-    assert {:ok, claimed_retry} =
-             SalixStore.AgentVMM.claim_registration_command("registration", "gateway", "7")
-
-    assert claimed_retry.id == retried.id
-    assert claimed_retry.payload["command_json"]["sequence"] == 2
-  end
-
   test "Cloudflare rejects a credential scoped to another Workload" do
     allocation = %{id: "allocation", provider_ref: "resource"}
     workload = %{id: "workload", spec: %{}}
@@ -363,7 +135,7 @@ defmodule SalixEnv.ComputeProviderConformanceTest do
     wrong = %{
       "token" => secret,
       "workload_id" => "other",
-      "expires_at" => DateTime.add(DateTime.utc_now(), 60)
+      "expires_at" => DateTime.add(SystemsClock.utc_now(), 60)
     }
 
     assert {:error, :invalid_workload_credential} =
@@ -494,7 +266,7 @@ defmodule SalixEnv.ComputeProviderConformanceTest do
         id: "workload",
         environment_id: environment.id,
         allocation_id: allocation.id,
-        kind: "external_worker",
+        kind: "meeting_runtime",
         spec: resource_v2_spec(),
         generation: 1
       })

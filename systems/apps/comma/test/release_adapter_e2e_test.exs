@@ -1,5 +1,9 @@
 defmodule Comma.ReleaseAdapterE2ETest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+
+  use SystemsClock.Test, scope: ["Elixir.SalixStore", "Elixir.Comma"]
 
   defmodule SharedLedgerRepo do
     use Ecto.Repo,
@@ -29,9 +33,9 @@ defmodule Comma.ReleaseAdapterE2ETest do
     {:ok, _} = Application.ensure_all_started(:billing_core)
 
     started_repo =
-      unless Process.whereis(BillingCore.Repo) do
+      unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
         {:ok, pid} = BillingCore.Repo.start_link()
-        Process.unlink(pid)
+        SystemsRuntime.Proc.unlink(pid)
         pid
       end
 
@@ -42,15 +46,15 @@ defmodule Comma.ReleaseAdapterE2ETest do
     write_ecto_migrations(migration_dir)
     write_clickhouse_migrations(migration_dir)
 
-    previous_sources = Application.get_env(:comma, :release_ecto_sources)
-    previous_clickhouse = Application.get_env(:comma, :release_clickhouse_opts)
-    clickhouse_database = "comma_release_e2e_#{System.unique_integer([:positive])}"
+    previous_sources = SystemsRuntime.get_env(:comma, :release_ecto_sources)
+    previous_clickhouse = SystemsRuntime.get_env(:comma, :release_clickhouse_opts)
+    clickhouse_database = "comma_release_e2e_#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
-    Application.put_env(:comma, :release_ecto_sources, %{
+    SystemsRuntime.put_env(:comma, :release_ecto_sources, %{
       billing_core: [repo: BillingCore.Repo, migration_dir: migration_dir]
     })
 
-    Application.put_env(:comma, :release_clickhouse_opts,
+    SystemsRuntime.put_env(:comma, :release_clickhouse_opts,
       base_url: System.get_env("RELEASE_E2E_CLICKHOUSE_URL", "http://127.0.0.1:8123"),
       table: "#{clickhouse_database}.events",
       migration_dir: migration_dir
@@ -73,8 +77,8 @@ defmodule Comma.ReleaseAdapterE2ETest do
   end
 
   test "aggregate release migration applies the Comma schema" do
-    previous_subsystems = Application.get_env(:comma, :enabled_subsystems)
-    Application.put_env(:comma, :enabled_subsystems, [:comma_product])
+    previous_subsystems = SystemsRuntime.get_env(:comma, :enabled_subsystems)
+    SystemsRuntime.put_env(:comma, :enabled_subsystems, [:comma_product])
     on_exit(fn -> restore_env(:enabled_subsystems, previous_subsystems) end)
 
     assert :ok = Comma.Release.migrate()
@@ -115,8 +119,8 @@ defmodule Comma.ReleaseAdapterE2ETest do
   end
 
   test "aggregate dev/compose migration relocates retained nested participant state" do
-    previous_subsystems = Application.get_env(:comma, :enabled_subsystems)
-    Application.put_env(:comma, :enabled_subsystems, [:salix])
+    previous_subsystems = SystemsRuntime.get_env(:comma, :enabled_subsystems)
+    SystemsRuntime.put_env(:comma, :enabled_subsystems, [:salix])
     on_exit(fn -> restore_env(:enabled_subsystems, previous_subsystems) end)
 
     fixture = prepare_participant_state_cutover!()
@@ -133,8 +137,8 @@ defmodule Comma.ReleaseAdapterE2ETest do
   end
 
   test "cold aggregate Salix migration leaves cutovers a supervised Repo" do
-    previous_subsystems = Application.get_env(:comma, :enabled_subsystems)
-    Application.put_env(:comma, :enabled_subsystems, [:salix])
+    previous_subsystems = SystemsRuntime.get_env(:comma, :enabled_subsystems)
+    SystemsRuntime.put_env(:comma, :enabled_subsystems, [:salix])
 
     on_exit(fn ->
       restore_env(:enabled_subsystems, previous_subsystems)
@@ -147,16 +151,141 @@ defmodule Comma.ReleaseAdapterE2ETest do
     )
 
     :ok = Application.stop(:salix_store)
-    refute Process.whereis(SalixStore.Repo)
+    refute SystemsRuntime.Proc.whereis(SalixStore.Repo)
 
     assert :ok = Comma.Release.migrate()
-    assert Process.whereis(SalixStore.Repo)
+    assert SystemsRuntime.Proc.whereis(SalixStore.Repo)
 
     assert Enum.any?(Supervisor.which_children(SalixStore.Supervisor), fn
-             {_id, pid, _type, [SalixStore.Repo]} when is_pid(pid) -> true
+             {_id, pid, _type, [SalixStore.Repo]} when SystemsRuntime.Proc.is_process(pid) -> true
              _child -> false
            end)
   end
+
+  test "an authorized Salix step that starts :salix_store leaves the next step a supervised Repo" do
+    on_exit(fn -> {:ok, _} = Application.ensure_all_started(:salix_store) end)
+
+    SalixStore.Repo.query!(
+      "DELETE FROM salix_schema_migrations WHERE version = $1",
+      [20_260_831_000_101]
+    )
+
+    :ok = Application.stop(:salix_store)
+
+    assert :ok = Comma.Release.execute_authorized_schema_steps(["salix-20260831000101"])
+
+    # The step's migration started the application while the migrator owned
+    # the Repo. A later step of a product (Comma's station roster copy) starts
+    # :salix_store to write through SalixStore.Repo.
+    refute SystemsRuntime.Proc.whereis(SalixStore.Repo)
+    {:ok, _} = Application.ensure_all_started(:salix_store)
+
+    assert Enum.any?(Supervisor.which_children(SalixStore.Supervisor), fn
+             {_id, pid, _type, [SalixStore.Repo]} when SystemsRuntime.Proc.is_process(pid) -> true
+             _child -> false
+           end)
+  end
+
+  test "a release crossing both station changes copies existing stations and Workspace ids" do
+    alias Comma.Repo
+    alias SalixStore.Repo, as: SalixRepo
+
+    user =
+      Repo.insert!(%Comma.Data.User{
+        id: "usr_release_station",
+        normalized_email: "station@release.test"
+      })
+
+    workspace =
+      Repo.insert!(%Comma.Data.Workspace{
+        id: "wsp_release_station",
+        owner_user_id: user.id,
+        name: "Release station",
+        salix_tenant_id: "tnt_release_station",
+        salix_group_id: "grp_release_station",
+        group_generation: "release-test",
+        salix_router_agent_id: "agt_release_router",
+        salix_worker_agent_id: "agt_release_worker",
+        billing_owner_id: "release-test",
+        status: "active"
+      })
+
+    station =
+      Repo.insert!(%Comma.Stations.Station{
+        id: String.duplicate("a", 64),
+        workspace_id: workspace.id,
+        name: "Existing station",
+        enrolled_by: user.id,
+        enrolled_at: SystemsClock.utc_now()
+      })
+
+    # Preserve the migrated test baseline while reproducing production before
+    # the workspace table and the earlier station copy have run.
+    marker =
+      SalixRepo.query!("SELECT * FROM salix_cutover_markers WHERE name = 'station_roster_v1'")
+
+    SalixRepo.query!("CREATE SCHEMA station_release_baseline")
+    SalixRepo.query!("ALTER TABLE salix_station_workspaces SET SCHEMA station_release_baseline")
+
+    migrations = [
+      {Repo, "schema_migrations", 20_261_010_200_002},
+      {SalixRepo, "salix_schema_migrations", 20_261_011_110_001}
+    ]
+
+    ledgers =
+      for {repo, table, version} <- migrations do
+        saved = repo.query!("DELETE FROM #{table} WHERE version = $1 RETURNING *", [version])
+        {repo, table, version, saved}
+      end
+
+    on_exit(fn ->
+      SalixRepo.query!("DROP TABLE IF EXISTS salix_station_workspaces")
+
+      SalixRepo.query!(
+        "ALTER TABLE station_release_baseline.salix_station_workspaces SET SCHEMA public"
+      )
+
+      SalixRepo.query!("DROP SCHEMA station_release_baseline")
+      SalixRepo.query!("DELETE FROM salix_cutover_markers WHERE name = 'station_roster_v1'")
+      SalixRepo.insert_all("salix_cutover_markers", result_rows(marker))
+
+      for {repo, table, version, saved} <- ledgers do
+        repo.query!("DELETE FROM #{table} WHERE version = $1", [version])
+        repo.insert_all(table, result_rows(saved))
+      end
+
+      SalixRepo.query!("DELETE FROM salix_stations WHERE id = $1", [station.id])
+      Repo.delete!(station)
+      Repo.delete!(workspace)
+      Repo.delete!(user)
+    end)
+
+    SalixRepo.query!("DELETE FROM salix_cutover_markers WHERE name = 'station_roster_v1'")
+
+    ids =
+      Comma.ReleaseManifestV2.manifest()["steps"]
+      |> Enum.filter(&(&1["id"] in ["comma-20261010200002", "salix-20261011110001"]))
+      |> Comma.ReleaseManifestV2.order_steps()
+      |> Enum.map(& &1["id"])
+
+    assert :ok = Comma.Release.execute_authorized_schema_steps(ids)
+
+    assert %{rows: [["grp_release_station", "Existing station"]]} =
+             SalixRepo.query!("SELECT group_id, name FROM salix_stations WHERE id = $1", [
+               station.id
+             ])
+
+    assert %{rows: [["wsp_release_station"]]} =
+             SalixRepo.query!(
+               "SELECT workspace_id FROM salix_station_workspaces WHERE group_id = $1",
+               [workspace.salix_group_id]
+             )
+
+    assert Repo.get!(Comma.Stations.Station, station.id) == station
+  end
+
+  defp result_rows(%{columns: columns, rows: rows}),
+    do: Enum.map(rows, &Map.new(Enum.zip(columns, &1)))
 
   test "pending assistant binding migration repairs a missing prior constraint" do
     assert :ok = Comma.Release.migrate()
@@ -233,7 +362,7 @@ defmodule Comma.ReleaseAdapterE2ETest do
   test "real cutover entrypoint runs the terminal marker in the schema batch" do
     manifest_digest = "sha256:" <> String.duplicate("a", 64)
     marker_id = "comma-20260723000003"
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
     calls = start_supervised!({Agent, fn -> 0 end})
 
     plan = fn ->
@@ -252,7 +381,7 @@ defmodule Comma.ReleaseAdapterE2ETest do
                cutover_executor: fn ids ->
                  Comma.Release.execute_cutover_steps(ids,
                    schema_runner: fn schema_ids ->
-                     send(parent, {:cutover_schema_ids, schema_ids})
+                     SystemsRuntime.Proc.send(parent, {:cutover_schema_ids, schema_ids})
                      :ok
                    end
                  )
@@ -283,7 +412,7 @@ defmodule Comma.ReleaseAdapterE2ETest do
            ) =~
              "priv/release_migrations/20260807000101_external_session_activity_revision_cutover.exs"
 
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
     calls = start_supervised!({Agent, fn -> 0 end})
 
     plan = fn ->
@@ -300,7 +429,7 @@ defmodule Comma.ReleaseAdapterE2ETest do
              Comma.Release.execute_plan_stage("cutover", manifest_digest, [id],
                plan: plan,
                cutover_executor: fn ids ->
-                 send(parent, {:external_activity_cutover_ids, ids})
+                 SystemsRuntime.Proc.send(parent, {:external_activity_cutover_ids, ids})
                  :ok
                end
              )
@@ -316,10 +445,10 @@ defmodule Comma.ReleaseAdapterE2ETest do
         |> Keyword.put(:name, SharedLedgerRepo)
       )
 
-    Process.unlink(repo)
+    SystemsRuntime.Proc.unlink(repo)
 
     on_exit(fn ->
-      if Process.alive?(repo), do: Supervisor.stop(repo, :normal)
+      if SystemsRuntime.Proc.alive?(repo), do: Supervisor.stop(repo, :normal)
 
       Ecto.Adapters.SQL.query!(
         BridgeForTeams.Repo,
@@ -405,7 +534,7 @@ defmodule Comma.ReleaseAdapterE2ETest do
   test "a newly pending known migration cannot escape the persisted allowed ids", %{
     clickhouse_database: clickhouse_database
   } do
-    clickhouse_opts = Application.fetch_env!(:comma, :release_clickhouse_opts)
+    clickhouse_opts = SystemsRuntime.fetch_env!(:comma, :release_clickhouse_opts)
     assert {:ok, clickhouse_plan} = SalixAnalytics.Migrations.plan(clickhouse_opts)
     assert Enum.sort(clickhouse_plan.pending) == [@analytics_a, @analytics_b]
     refute clickhouse_database_exists?(clickhouse_database)
@@ -641,10 +770,10 @@ defmodule Comma.ReleaseAdapterE2ETest do
   end
 
   defp prepare_participant_state_cutover! do
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    case Process.whereis(SalixStore.S3.Fake) do
+    case SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       nil -> start_supervised!(SalixStore.S3.Fake)
       _pid -> SalixStore.S3.Fake.reset()
     end
@@ -673,7 +802,7 @@ defmodule Comma.ReleaseAdapterE2ETest do
     assert {:ok, _} = SalixStore.S3.put(old_key, Jason.encode!(participant))
 
     on_exit(fn ->
-      if Process.whereis(SalixStore.S3.Fake), do: SalixStore.S3.Fake.reset()
+      if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake), do: SalixStore.S3.Fake.reset()
       restore_env_for(:salix_store, :s3_backend, previous_backend)
     end)
 
@@ -681,13 +810,13 @@ defmodule Comma.ReleaseAdapterE2ETest do
   end
 
   defp production_release_plan do
-    previous = Application.get_env(:salix_analytics, :clickhouse)
+    previous = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
     clickhouse =
-      Application.fetch_env!(:comma, :release_clickhouse_opts)
+      SystemsRuntime.fetch_env!(:comma, :release_clickhouse_opts)
       |> Keyword.drop([:migration_dir])
 
-    Application.put_env(:salix_analytics, :clickhouse, clickhouse)
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse, clickhouse)
 
     try do
       Comma.ReleasePlan.plan()
@@ -899,7 +1028,7 @@ defmodule Comma.ReleaseAdapterE2ETest do
   defp seed_final_import_ledger! do
     identity = "comma-product-state-final-import-v1"
     digest = String.duplicate("0", 64)
-    completed_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    completed_at = SystemsClock.utc_now() |> DateTime.truncate(:microsecond)
 
     evidence = %{
       "schema_version" => 1,
@@ -953,9 +1082,9 @@ defmodule Comma.ReleaseAdapterE2ETest do
   defp canonical(value) when is_list(value), do: Enum.map(value, &canonical/1)
   defp canonical(value), do: value
 
-  defp restore_env(key, nil), do: Application.delete_env(:comma, key)
-  defp restore_env(key, value), do: Application.put_env(:comma, key, value)
+  defp restore_env(key, nil), do: SystemsRuntime.delete_env(:comma, key)
+  defp restore_env(key, value), do: SystemsRuntime.put_env(:comma, key, value)
 
-  defp restore_env_for(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env_for(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env_for(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env_for(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

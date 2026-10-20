@@ -3,6 +3,7 @@ import {
   type MeetingRecorderWindowDrag,
   type MeetingRecorderWindowLayout,
 } from "@comma/native-bridge";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import {
   useCallback,
   useLayoutEffect,
@@ -42,7 +43,7 @@ export function useNativeRecorderWindow(
   const menuMeasureReady = useRef(false);
   const menuAbove = useRef<boolean | undefined>(undefined);
   const drag = useRef<number | undefined>(undefined);
-  const dragFrame = useRef<number | undefined>(undefined);
+  const dragFrame = useRef<CancelUiTimer | undefined>(undefined);
   const latest = useRef<MeetingRecorderWindowDrag | undefined>(undefined);
   const onMenuOpenChange = useCallback((open: boolean) => {
     menu.current = open;
@@ -71,8 +72,8 @@ export function useNativeRecorderWindow(
         .finally(() => {
           inFlight = false;
           if (menu.current && !menuMeasureReady.current && !disposed) {
-            requestAnimationFrame(() =>
-              requestAnimationFrame(() => {
+            uiClock.frame(() =>
+              uiClock.frame(() => {
                 if (disposed || !menu.current) return;
                 menuMeasureReady.current = true;
                 measure.current();
@@ -96,19 +97,17 @@ export function useNativeRecorderWindow(
       }
       const bounds = card.getBoundingClientRect();
       const style = getComputedStyle(motion);
-      const compact = motion.hasAttribute("data-compact");
+      // Hover changes the card only. The live envelope always fits the expanded
+      // card: a native resize moves the card under a resting pointer, and
+      // Chromium then hit-tests the stale pointer position and drops the hover.
       const targetWidth = Number.parseFloat(
-        style.getPropertyValue(
-          compact ? "--meeting-recorder-compact-width" : "--meeting-recorder-width"
-        )
+        style.getPropertyValue("--meeting-recorder-width")
       );
       const notice = card.querySelector(".comma-recorder-notice");
-      const liveHeight = compact
-        ? 42
-        : !notice && ["recording", "paused"].includes(card.dataset.phase ?? "")
-          ? 56
-          : bounds.height;
-      const key = `${card.dataset.phase}:${compact}:${notice?.textContent ?? ""}`;
+      const live =
+        !notice && ["recording", "paused"].includes(card.dataset.phase ?? "");
+      const liveHeight = live ? 56 : bounds.height;
+      const key = `${card.dataset.phase}:${notice?.textContent ?? ""}`;
       const target = { width: targetWidth, height: liveHeight };
       if (key !== layoutKey) {
         // Reserve both endpoint sizes once. CSS owns the 180ms interpolation;
@@ -131,7 +130,10 @@ export function useNativeRecorderWindow(
         void Promise.allSettled(animations.map((animation) => animation.finished)).then(
           () => {
             if (disposed || revision !== layoutRevision) return;
-            envelope = { width: target.width, height: card.offsetHeight };
+            envelope = {
+              width: target.width,
+              height: live ? target.height : card.offsetHeight,
+            };
             schedule();
           }
         );
@@ -183,10 +185,10 @@ export function useNativeRecorderWindow(
     };
     // Do not write geometry inside observer delivery: portal placement can resize
     // the observed menu again. Coalesce observations into the next frame instead.
-    let measureFrame: number | undefined;
+    let measureFrame: CancelUiTimer | undefined;
     const schedule = () => {
       if (measureFrame !== undefined) return;
-      measureFrame = requestAnimationFrame(() => {
+      measureFrame = uiClock.frame(() => {
         measureFrame = undefined;
         if (!disposed) sample();
       });
@@ -210,31 +212,31 @@ export function useNativeRecorderWindow(
     window.addEventListener("blur", blur);
     measure.current = sample;
     // First layout arrives only after React and its stylesheet have painted.
-    let firstPaint = requestAnimationFrame(() => {
-      firstPaint = requestAnimationFrame(() => {
+    let firstPaint = uiClock.frame(() => {
+      firstPaint = uiClock.frame(() => {
         painted = true;
         sample();
       });
     });
     return () => {
-      cancelAnimationFrame(firstPaint);
+      firstPaint();
       disposed = true;
       menu.current = false;
       menuMeasureReady.current = false;
       menuAbove.current = undefined;
-      if (measureFrame !== undefined) cancelAnimationFrame(measureFrame);
+      if (measureFrame !== undefined) measureFrame();
       layoutRevision += 1;
       observer.disconnect();
       mutation.disconnect();
       window.removeEventListener("blur", blur);
       measure.current = () => {};
-      if (dragFrame.current) cancelAnimationFrame(dragFrame.current);
+      if (dragFrame.current) dragFrame.current();
     };
   }, [active, root]);
 
   const finish = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (drag.current !== event.pointerId) return;
-    if (dragFrame.current) cancelAnimationFrame(dragFrame.current);
+    if (dragFrame.current) dragFrame.current();
     dragFrame.current = undefined;
     drag.current = undefined;
     sendDrag(point(event, "end"));
@@ -262,7 +264,7 @@ export function useNativeRecorderWindow(
         if (drag.current !== event.pointerId) return;
         latest.current = point(event, "move");
         if (dragFrame.current) return;
-        dragFrame.current = requestAnimationFrame(() => {
+        dragFrame.current = uiClock.frame(() => {
           dragFrame.current = undefined;
           if (latest.current && drag.current !== undefined) sendDrag(latest.current);
         });

@@ -1,5 +1,5 @@
 import { useSyncExternalStore, type MouseEvent } from "react";
-import type { BftSession } from "./api";
+import type { BftSession, BftWizardStep } from "./api";
 
 /*
  * Minimal History API router. The SPA owns `/` and `/orgs` (both open the
@@ -7,12 +7,15 @@ import type { BftSession } from "./api";
  * `/orgs/:org/operations/:tab` bookmarks), `/orgs/:org/members`,
  * `/orgs/:org/fin` (Runners), `/orgs/:org/plugins`, the Settings pages,
  * the Meetings pages, the Slack triage pages, `/orgs/:org/information-flow` (Data policy),
- * `/orgs/:org/projects`, an Agent Swarm's Overview, Agents, Devices, Tasks and
- * Settings (`/orgs/:org/projects/:id[/agents|/devices|/tasks|/settings]`, plus the retired
- * Websites, Schedules and Access addresses), one agent at
- * `/orgs/:org/projects/:id/agents/:agent` and the BFT CLI login approval at
- * `/cli/device-login[/:code]`; every other dashboard address is a LiveView page
- * and is reached with a full page load.
+ * `/orgs/:org/projects`, every page of an Agent Swarm: Overview, Agents,
+ * Devices, Plugins, Skills, Tasks, Connections and Settings
+ * (`/orgs/:org/projects/:id[/agents|/devices|/plugins|/skills|/tasks|/connections|/settings]`,
+ * plus the retired Websites, Schedules, Integrations and Access addresses),
+ * one agent at `/orgs/:org/projects/:id/agents/:agent`, one plugin at
+ * `/orgs/:org/projects/:id/plugins/:plugin`, one task at
+ * `/orgs/:org/projects/:id/tasks/:task`, the BFT CLI login approval at
+ * `/cli/device-login[/:code]` and the first-run onboarding wizard at
+ * `/onboarding[/profile|/integrations]`.
  */
 
 export const settingsPages = ["general", "models", "sso", "integrations"] as const;
@@ -20,15 +23,16 @@ export type SettingsPage = (typeof settingsPages)[number];
 
 /**
  * Retired Settings addresses and the page section (its anchor) that replaced
- * each: the old tabs are sections of Integrations, the old private-template
- * and organization-account pages sections of AI models.
+ * each: the old tabs are sections of Integrations, the old organization-account
+ * page a section of AI models. The retired private-template page opens the
+ * allowed models.
  */
 const legacySections: Record<string, [SettingsPage, string]> = {
   oauth: ["integrations", "oauth"],
   composio: ["integrations", "composio"],
   signal: ["integrations", "signal"],
   feishu: ["integrations", "feishu"],
-  "models/templates": ["models", "templates"],
+  "models/templates": ["models", "allowed"],
   subscriptions: ["models", "accounts"],
 };
 
@@ -60,17 +64,29 @@ export type BftRoute =
       legacySection?: string;
     }
   | {
-      name: "project-overview" | "project-tasks" | "project-settings";
+      name:
+        | "project-overview"
+        | "project-tasks"
+        | "project-connections"
+        | "project-settings";
       org: string;
       project: string;
       /**
        * A retired address that opens this page: Websites (the Overview's
-       * Websites panel), Schedules (the Tasks page's Scheduled view) or Access
-       * (a section of Settings).
+       * Websites panel), Schedules (the Tasks page's Scheduled view),
+       * Integrations (the messaging section of Connections) or Access (a
+       * section of Settings).
        */
       retired?: true;
     }
-  | { name: "project-devices"; org: string; project: string }
+  | { name: "project-devices" | "project-skills"; org: string; project: string }
+  | {
+      name: "project-plugins";
+      org: string;
+      project: string;
+      /** The plugin whose page is open. */
+      plugin?: string;
+    }
   | {
       name: "project-agents";
       org: string;
@@ -78,7 +94,15 @@ export type BftRoute =
       /** The agent open in the detail rail. */
       agent?: string;
     }
+  | {
+      name: "project-task";
+      org: string;
+      project: string;
+      /** The task (conversation) id. */
+      task: string;
+    }
   | { name: "cli-login"; code?: string }
+  | { name: "onboarding"; step: BftWizardStep }
   | { name: "unknown" };
 
 /** Org pages without sub-pages, by their last path segment. */
@@ -93,12 +117,17 @@ const orgPages = {
 /** Agent Swarm pages by their last path segment, and whether the address is retired. */
 const projectPages: Record<
   string,
-  ["project-overview" | "project-tasks" | "project-settings", boolean]
+  [
+    "project-overview" | "project-tasks" | "project-connections" | "project-settings",
+    boolean,
+  ]
 > = {
   "": ["project-overview", false],
   websites: ["project-overview", true],
   tasks: ["project-tasks", false],
   schedules: ["project-tasks", true],
+  connections: ["project-connections", false],
+  integrations: ["project-connections", true],
   settings: ["project-settings", false],
   access: ["project-settings", true],
 };
@@ -178,6 +207,13 @@ export function matchRoute(pathname: string): BftRoute {
         };
       }
     }
+    const wizard = /^\/onboarding(?:\/(profile|integrations))?$/.exec(path);
+    if (wizard) {
+      return {
+        name: "onboarding",
+        step: (wizard[1] as BftWizardStep | undefined) ?? "capabilities",
+      };
+    }
     const cli = /^\/cli\/device-login(?:\/([^/]+))?$/.exec(path);
     if (cli) {
       return {
@@ -196,16 +232,36 @@ export function matchRoute(pathname: string): BftRoute {
         ...(agents[3] ? { agent: decodeURIComponent(agents[3]) } : {}),
       };
     }
-    const devices = /^\/orgs\/([^/]+)\/projects\/([^/]+)\/devices$/.exec(path);
+    const devices = /^\/orgs\/([^/]+)\/projects\/([^/]+)\/(devices|skills)$/.exec(path);
     if (devices?.[1] && devices[2]) {
       return {
-        name: "project-devices",
+        name: devices[3] === "skills" ? "project-skills" : "project-devices",
         org: decodeURIComponent(devices[1]),
         project: decodeURIComponent(devices[2]),
       };
     }
+    const plugins = /^\/orgs\/([^/]+)\/projects\/([^/]+)\/plugins(?:\/([^/]+))?$/.exec(
+      path
+    );
+    if (plugins?.[1] && plugins[2]) {
+      return {
+        name: "project-plugins",
+        org: decodeURIComponent(plugins[1]),
+        project: decodeURIComponent(plugins[2]),
+        ...(plugins[3] ? { plugin: decodeURIComponent(plugins[3]) } : {}),
+      };
+    }
+    const task = /^\/orgs\/([^/]+)\/projects\/([^/]+)\/tasks\/([^/]+)$/.exec(path);
+    if (task?.[1] && task[2] && task[3]) {
+      return {
+        name: "project-task",
+        org: decodeURIComponent(task[1]),
+        project: decodeURIComponent(task[2]),
+        task: decodeURIComponent(task[3]),
+      };
+    }
     const project =
-      /^\/orgs\/([^/]+)\/projects\/([^/]+)(?:\/(tasks|schedules|settings|access|websites))?$/.exec(
+      /^\/orgs\/([^/]+)\/projects\/([^/]+)(?:\/(tasks|schedules|connections|integrations|settings|access|websites))?$/.exec(
         path
       );
     if (project?.[1] && project[2]) {

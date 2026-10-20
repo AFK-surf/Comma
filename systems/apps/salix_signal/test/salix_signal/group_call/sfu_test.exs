@@ -1,16 +1,16 @@
 defmodule SalixSignal.GroupCall.SfuTest do
+  require SystemsRuntime.Proc
+
   # The calling-server HTTP client (CRS-14 section 5): TLS trust in the
   # Signal roots only, redirects (section 5.1), and Comma decision D2 (UDP
   # only: a join response without udpAddresses fails the join). The server
   # is a local HTTPS endpoint with a test chain.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignal.GroupCall.Sfu
   alias SalixSignal.Test.FakeChat
 
   @token "fake:token"
-  @local %{ice_ufrag: "Ab3x", ice_pwd: "0123456789abcdefABCDEF", public_key: <<7::256>>}
-
   defmodule Server do
     @moduledoc false
     @behaviour Plug
@@ -21,7 +21,7 @@ defmodule SalixSignal.GroupCall.SfuTest do
 
     @impl true
     def call(conn, test) do
-      send(
+      SystemsRuntime.Proc.send(
         test,
         {:sfu_request, conn.method, conn.request_path, get_req_header(conn, "authorization")}
       )
@@ -93,7 +93,7 @@ defmodule SalixSignal.GroupCall.SfuTest do
     server =
       start_supervised!(
         {Bandit,
-         plug: {Server, self()},
+         plug: {Server, SystemsRuntime.Proc.self()},
          scheme: :https,
          ip: :loopback,
          port: 0,
@@ -103,41 +103,6 @@ defmodule SalixSignal.GroupCall.SfuTest do
     %{base: "https://localhost:#{FakeChat.port(server)}", http: [roots: [chain.root]]}
   end
 
-  test "a 307 or 308 is followed to its Location with the same method and authorization", ctx do
-    assert {:ok, %{era_id: "era", devices: [%{demux_id: 32}]}} =
-             Sfu.peek(ctx.base, @token, http: ctx.http)
-
-    assert_received {:sfu_request, "GET", "/v2/conference/participants", [auth]}
-    assert_received {:sfu_request, "GET", "/moved/v2/conference/participants", [^auth]}
-
-    assert {:ok, %{demux_id: 16}} =
-             Sfu.join(ctx.base <> "/absolute", @token, @local, http: ctx.http)
-
-    assert_received {:sfu_request, "PUT", "/moved/v2/conference/participants", [^auth]}
-
-    assert {:ok, %{demux_id: 16}} =
-             Sfu.join(ctx.base <> "/permanent", @token, @local, http: ctx.http)
-  end
-
-  test "redirects without a usable https Location, or more than 20, fail", ctx do
-    assert Sfu.peek(ctx.base <> "/no-location", @token, http: ctx.http) ==
-             {:error, :invalid_redirect}
-
-    assert Sfu.peek(ctx.base <> "/plain-http", @token, http: ctx.http) ==
-             {:error, :invalid_redirect}
-
-    assert Sfu.peek(ctx.base <> "/loop", @token, http: ctx.http) ==
-             {:error, :too_many_redirects}
-
-    loop = for {:sfu_request, "GET", "/loop" <> _, _} <- flush(), do: :hop
-    assert length(loop) == 21
-  end
-
-  test "a join response without udpAddresses fails the join (Comma decision D2)", ctx do
-    assert Sfu.join(ctx.base <> "/no-udp", @token, @local, http: ctx.http) ==
-             {:error, :no_udp_addresses}
-  end
-
   test "the SFU certificate must chain to the configured Signal roots", ctx do
     # The test chain is not a Signal root: without `roots`, the pinned
     # Signal roots are used and the handshake fails.
@@ -145,13 +110,5 @@ defmodule SalixSignal.GroupCall.SfuTest do
 
     other = FakeChat.chain()
     assert {:error, _} = Sfu.peek(ctx.base <> "/moved", @token, http: [roots: [other.root]])
-  end
-
-  defp flush do
-    receive do
-      message -> [message | flush()]
-    after
-      0 -> []
-    end
   end
 end

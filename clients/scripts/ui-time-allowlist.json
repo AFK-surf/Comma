@@ -1,0 +1,6 @@
+{
+  "//": "UI files that still use platform timers or clock reads (setTimeout, setInterval, requestAnimationFrame, Date.now(), performance.now(), new Date()) instead of uiClock from @comma/ui/clock. Business timing moves into the client core (packages/core) on its Clock; presentation timing moves onto the UI clock. Counts only shrink (check:foundation).",
+  "time": {
+    "packages/ui/src/components/markdown-stream/textReveal.ts": 1
+  }
+}

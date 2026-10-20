@@ -1,5 +1,7 @@
 defmodule BillingCore.FeeControl.ServerTest do
-  use ExUnit.Case, async: true
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: true
 
   alias BillingCore.FeeControl.Server
   @moduletag :capture_log
@@ -12,10 +14,15 @@ defmodule BillingCore.FeeControl.ServerTest do
   test "a held account query does not block another account's cached or enforced checks", %{
     server: server
   } do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
     cached = attrs("cached", fn -> %{balance_snapshot: 100} end)
     assert {:ok, _} = Server.check(cached, server: server)
-    slow = Task.async(fn -> Server.check(attrs("slow", held_query(owner)), server: server) end)
+
+    slow =
+      SystemsRuntime.Task.async(fn ->
+        Server.check(attrs("slow", held_query(owner)), server: server)
+      end)
+
     assert_receive {:query_held, worker}
 
     try do
@@ -30,21 +37,21 @@ defmodule BillingCore.FeeControl.ServerTest do
       assert {:ok, %{allowed?: false, query_performed: true, reason: "insufficient_credits"}} =
                Server.check(enforce, server: server, timeout: 500)
     after
-      send(worker, :release)
-      Task.await(slow)
+      SystemsRuntime.Proc.send(worker, :release)
+      SystemsRuntime.Task.await(slow, :infinity)
     end
   end
 
   test "an older refresh cannot overwrite a newer result for the same cache key", %{
     server: server
   } do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
     cached = Map.put(attrs("shared", fn -> %{balance_snapshot: 0} end), :now, 100)
     assert {:ok, _} = Server.check(cached, server: server)
     refresh = Map.put(cached, :force_refresh, true)
 
     slow =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Server.check(%{refresh | query_fun: held_query(owner)}, server: server)
       end)
 
@@ -57,8 +64,8 @@ defmodule BillingCore.FeeControl.ServerTest do
                  timeout: 500
                )
     after
-      send(worker, :release)
-      Task.await(slow)
+      SystemsRuntime.Proc.send(worker, :release)
+      SystemsRuntime.Task.await(slow, :infinity)
     end
 
     assert {:ok, %{cache_hit: true, balance_snapshot: 0}} =
@@ -76,10 +83,10 @@ defmodule BillingCore.FeeControl.ServerTest do
   end
 
   test "a timed-out query worker retires while other checks remain available", %{server: server} do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     caller =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         try do
           Server.check(attrs("slow", held_query(owner)), server: server, timeout: 100)
         catch
@@ -88,9 +95,14 @@ defmodule BillingCore.FeeControl.ServerTest do
       end)
 
     assert_receive {:query_held, worker}
-    monitor = Process.monitor(worker)
-    assert Task.await(caller) in [:caller_timeout, {:error, :fee_control_check_timeout}]
-    assert_receive {:DOWN, ^monitor, :process, ^worker, _}, 1_000
+    monitor = SystemsRuntime.Proc.monitor(worker)
+
+    assert SystemsRuntime.Task.await(caller, :infinity) in [
+             :caller_timeout,
+             {:error, :fee_control_check_timeout}
+           ]
+
+    assert_receive {:DOWN, ^monitor, :process, ^worker, _}
 
     assert {:ok, _} =
              Server.check(attrs("other", fn -> %{balance_snapshot: 100} end), server: server)
@@ -108,9 +120,9 @@ defmodule BillingCore.FeeControl.ServerTest do
 
   defp held_query(owner) do
     fn ->
-      send(owner, {:query_held, self()})
+      SystemsRuntime.Proc.send(owner, {:query_held, SystemsRuntime.Proc.self()})
 
-      receive do
+      SystemsRuntime.Proc.receive do
         :release -> %{balance_snapshot: 100}
       after
         5_000 -> raise "query barrier was not released"

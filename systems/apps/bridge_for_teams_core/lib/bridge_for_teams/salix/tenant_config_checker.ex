@@ -7,7 +7,7 @@ defmodule BridgeForTeams.Salix.TenantConfigChecker do
   supervision startup callback or in request/Slack runtime paths.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -41,19 +41,19 @@ defmodule BridgeForTeams.Salix.TenantConfigChecker do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @spec status() :: map()
   def status do
-    GenServer.call(__MODULE__, :status)
+    SystemsRuntime.Server.call(__MODULE__, :status)
   catch
     :exit, _ -> %{status: "unavailable"}
   end
 
   @spec ensure_now() :: :ok
   def ensure_now do
-    GenServer.cast(__MODULE__, :ensure_now)
+    SystemsRuntime.Server.cast(__MODULE__, :ensure_now)
   catch
     :exit, _ -> :ok
   end
@@ -76,7 +76,7 @@ defmodule BridgeForTeams.Salix.TenantConfigChecker do
 
   @impl true
   def init(opts) do
-    cfg = Application.get_env(:bridge_for_teams_core, __MODULE__, [])
+    cfg = SystemsRuntime.get_env(:bridge_for_teams_core, __MODULE__, [])
     enabled? = Keyword.get(opts, :enabled, Keyword.get(cfg, :enabled, true))
 
     state = %__MODULE__{
@@ -118,7 +118,7 @@ defmodule BridgeForTeams.Salix.TenantConfigChecker do
 
   @impl true
   def handle_cast(:ensure_now, state) do
-    Process.send(self(), :check_all, [])
+    Process.send(SystemsRuntime.Proc.self(), :check_all, [])
     {:noreply, state}
   end
 
@@ -126,7 +126,7 @@ defmodule BridgeForTeams.Salix.TenantConfigChecker do
   def handle_info(:check_all, %{enabled?: false} = state), do: {:noreply, state}
 
   def handle_info(:check_all, state) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     case run_once() do
       {:ok, summary} ->
@@ -179,7 +179,7 @@ defmodule BridgeForTeams.Salix.TenantConfigChecker do
 
   defp claim_scan(repo, opts) do
     lease_ms = Keyword.get(opts, :lease_ms, @default_lease_ms)
-    token = Ecto.UUID.generate()
+    token = SystemsRuntime.Proc.uuid()
 
     repo.transaction(fn ->
       repo.query!(
@@ -319,7 +319,7 @@ defmodule BridgeForTeams.Salix.TenantConfigChecker do
   end
 
   defp schedule(interval) do
-    Process.send_after(self(), :check_all, max(interval, 0))
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :check_all, max(interval, 0))
   end
 
   defp retry_interval(state, failure_count) do
@@ -368,7 +368,7 @@ defmodule BridgeForTeams.Salix.TenantConfigChecker do
         reason_class: reason_class
       },
       correlation_id: "tenant-config:#{org_id}:#{TenantConfig.conversation_links_config_name()}",
-      occurred_at: DateTime.utc_now()
+      occurred_at: SystemsClock.utc_now()
     }
 
     case Observability.create_event(attrs) do

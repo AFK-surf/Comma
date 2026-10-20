@@ -82,24 +82,11 @@ defmodule AlertRouter.Web.Router do
     end
   end
 
-  post "/v1/events/runtime-storage" do
-    with :ok <- AlertRouter.Web.GCPPushAuth.OIDC.authorize(conn, :runtime_storage_push),
-         {:ok, config} <- AlertRouter.RuntimeLog.config(),
-         {:ok, raw_body, conn} <- read_full_body(conn),
-         {:ok, envelope} <- Jason.decode(raw_body),
-         {:ok, result} <- enqueue_runtime_notification(envelope, config) do
-      send_json(conn, 202, %{"disposition" => result})
-    else
-      {:error, :unauthorized} -> send_json(conn, 401, %{"error" => "unauthorized"})
-      {:error, _} -> send_json(conn, 503, %{"error" => "runtime_notification_unavailable"})
-    end
-  end
-
   post "/v1/events/grafana" do
     with {:ok, raw_body, conn} <- read_full_body(conn),
          :ok <- GrafanaHMAC.verify(conn, raw_body),
          {:ok, payload} <- Jason.decode(raw_body),
-         {:ok, events} <- Grafana.normalize(payload, DateTime.utc_now()),
+         {:ok, events} <- Grafana.normalize(payload, SystemsClock.utc_now()),
          {:ok, dispositions} <- ingest_all(events) do
       send_json(conn, 202, %{"dispositions" => Enum.map(dispositions, &Atom.to_string/1)})
     else
@@ -131,36 +118,6 @@ defmodule AlertRouter.Web.Router do
   match _ do
     send_resp(conn, 404, "not found")
   end
-
-  defp enqueue_runtime_notification(
-         %{"message" => %{"attributes" => attrs, "messageId" => notification_id}},
-         config
-       )
-       when is_map(attrs) and is_binary(notification_id) and byte_size(notification_id) in 1..255 do
-    if attrs["bucketId"] == config[:bucket] and attrs["eventType"] == "OBJECT_FINALIZE" do
-      case AlertRouter.RuntimeLog.parse_object(attrs["objectId"]) do
-        {:ok, agent, session} ->
-          case Oban.insert(
-                 AlertRouter.Oban,
-                 AlertRouter.Workers.ConsumeRuntimeLog.new(%{
-                   "object" => attrs["objectId"],
-                   "notification_id" => notification_id,
-                   "scope" => "#{config[:environment]}:#{agent}:#{session}"
-                 })
-               ) do
-            {:ok, _} -> {:ok, "queued"}
-            {:error, reason} -> {:error, reason}
-          end
-
-        :ignored ->
-          {:ok, "ignored"}
-      end
-    else
-      {:error, :invalid_storage_notification}
-    end
-  end
-
-  defp enqueue_runtime_notification(_, _), do: {:error, :invalid_storage_notification}
 
   defp handle_github_event(conn, "ping", _raw_body) do
     send_json(conn, 202, %{"disposition" => "ignored"})
@@ -255,7 +212,7 @@ defmodule AlertRouter.Web.Router do
   end
 
   defp gcp_auth do
-    Application.get_env(:alert_router, :gcp_push, [])
+    SystemsRuntime.get_env(:alert_router, :gcp_push, [])
     |> Keyword.get(:auth_module, AlertRouter.Web.GCPPushAuth.DenyAll)
   end
 

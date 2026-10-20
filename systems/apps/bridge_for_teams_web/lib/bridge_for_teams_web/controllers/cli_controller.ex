@@ -17,6 +17,8 @@ defmodule BridgeForTeamsWeb.CLIController do
     Conversations,
     FeishuAppBindings,
     FeishuScopes,
+    LarkRunChecks,
+    LarkScopes,
     Meetings,
     Orgs,
     ProjectIMConnects,
@@ -398,6 +400,268 @@ defmodule BridgeForTeamsWeb.CLIController do
     do_feishu_setup(conn, params, true)
   end
 
+  @doc "Connects a Lark app to a project, or refreshes the credentials of a connected one."
+  def lark_connect(conn, params) do
+    with {:ok, org} <- require_org(params),
+         :ok <- authorize_org(conn, org, "admin"),
+         {:ok, project} <- require_project(conn, org, params),
+         :ok <- authorize_project(conn, project, :write),
+         {:ok, attrs} <- lark_credentials(params) do
+      case ProjectIMConnects.create_project_connect(org.id, project.id, "lark", attrs) do
+        {:ok, connect} ->
+          send_ok(conn, %{
+            "mode" => "lark_connect",
+            "org" => public_org(org),
+            "project" => public_project(project),
+            "action" => connect["action"] || "created",
+            "connect" => public_connect(connect),
+            "callback_url" => sanitize_url(connect["webhook_url"]),
+            "manual_checklist" => lark_manual_checklist()
+          })
+
+        {:error, reason} ->
+          send_backend_error(conn, reason, "Could not connect the Lark app.")
+      end
+    else
+      error -> send_cli_error(conn, error)
+    end
+  end
+
+  @doc "The Lark apps of a project."
+  def lark_status(conn, params) do
+    with {:ok, org} <- require_org(params),
+         {:ok, project} <- require_project(conn, org, params),
+         :ok <- authorize_project(conn, project, :read) do
+      case ProjectIMConnects.list_project_connects(org.id, project.id, "lark") do
+        {:ok, connects} ->
+          send_ok(conn, %{
+            "mode" => "lark_status",
+            "org" => public_org(org),
+            "project" => public_project(project),
+            "connects" =>
+              Enum.map(connects, fn connect ->
+                connect
+                |> public_connect()
+                |> Map.put("callback_url", sanitize_url(connect["webhook_url"]))
+              end),
+            "manual_checklist" => lark_manual_checklist()
+          })
+
+        {:error, reason} ->
+          send_backend_error(conn, reason, "Could not read the Lark apps.")
+      end
+    else
+      error -> send_cli_error(conn, error)
+    end
+  end
+
+  @doc "Runs the checks of one Lark connect of a project."
+  def lark_checks(conn, params) do
+    with {:ok, org} <- require_org(params),
+         :ok <- authorize_org(conn, org, "member"),
+         {:ok, project} <- require_project(conn, org, params),
+         :ok <- authorize_project(conn, project, :read),
+         {:ok, checks} <- LarkRunChecks.run_bot(org, project, connect_id: params["connect_id"]) do
+      send_ok(conn, %{
+        "mode" => "lark_checks",
+        "org" => public_org(org),
+        "project" => public_project(project),
+        "checks" => RunChecks.to_json_map(checks)
+      })
+    else
+      {:error, :connect_not_found} ->
+        send_error(conn, 404, "connect_not_found", "Lark connect not found.", %{})
+
+      {:error, reason} ->
+        send_backend_error(conn, reason, "Could not run Lark checks.")
+
+      error ->
+        send_cli_error(conn, error)
+    end
+  end
+
+  @doc "The scopes a Lark app needs, as the JSON of the Lark Developer Console's batch import."
+  def lark_scopes(conn, _params) do
+    send_ok(conn, %{
+      "mode" => "lark_scopes",
+      "required_scopes" => LarkScopes.required_scope_ids(),
+      "batch_import_payload" => LarkScopes.import_payload(),
+      "import_path" => "Lark Developer Console → Permissions & Scopes → batch import"
+    })
+  end
+
+  defp lark_credentials(params) do
+    attrs =
+      Map.new(~w(app_id app_secret verification_token encrypt_key), &{&1, trim(params[&1])})
+
+    missing = Enum.filter(~w(app_id app_secret), &(attrs[&1] == ""))
+
+    cond do
+      missing != [] ->
+        error(400, "missing_lark_credentials", "Pass the Lark app's App ID and App Secret.", %{
+          "fields" => missing
+        })
+
+      attrs["verification_token"] == "" and attrs["encrypt_key"] == "" ->
+        error(
+          400,
+          "missing_lark_credentials",
+          "Pass the Verification Token or the Encrypt Key of the Lark app's event subscription.",
+          %{"fields" => ["verification_token"]}
+        )
+
+      true ->
+        {:ok, attrs}
+    end
+  end
+
+  defp lark_manual_checklist do
+    [
+      "In the Lark Developer Console, add the Bot capability to the app.",
+      "Under Events & Callbacks, choose \"Send events to developer's server\" and save the callback URL as the request URL.",
+      "Subscribe to the events im.message.receive_v1 and im.message.recalled_v1.",
+      "Under Permissions & Scopes, batch-import the JSON that bft lark scopes prints. It has im:message.group_msg, so that people can go on in a thread without mentioning the bot, and every message of a group is recorded.",
+      "Create a version of the app and publish it; scopes and events take effect with the published version.",
+      "Add the bot to a group and mention it, or write to it in a private chat.",
+      "Run bft lark checks to verify the request URL and the route."
+    ]
+  end
+
+  @doc "Connects a QQ bot to a project, or refreshes the credentials of a connected one."
+  def qq_connect(conn, params) do
+    with {:ok, org} <- require_org(params),
+         :ok <- authorize_org(conn, org, "admin"),
+         {:ok, project} <- require_project(conn, org, params),
+         :ok <- authorize_project(conn, project, :write),
+         {:ok, attrs} <- qq_credentials(params) do
+      case ProjectIMConnects.create_project_connect(org.id, project.id, "qq", attrs) do
+        {:ok, connect} ->
+          send_ok(conn, %{
+            "mode" => "qq_connect",
+            "org" => public_org(org),
+            "project" => public_project(project),
+            "action" => connect["action"] || "created",
+            "connect" => public_connect(connect),
+            "callback_url" => sanitize_url(connect["webhook_url"]),
+            "manual_checklist" => qq_manual_checklist()
+          })
+
+        {:error, reason} ->
+          send_backend_error(conn, reason, "Could not connect the QQ bot.")
+      end
+    else
+      error -> send_cli_error(conn, error)
+    end
+  end
+
+  @doc "The QQ bots of a project."
+  def qq_status(conn, params) do
+    with {:ok, org} <- require_org(params),
+         {:ok, project} <- require_project(conn, org, params),
+         :ok <- authorize_project(conn, project, :read) do
+      case ProjectIMConnects.list_project_connects(org.id, project.id, "qq") do
+        {:ok, connects} ->
+          send_ok(conn, %{
+            "mode" => "qq_status",
+            "org" => public_org(org),
+            "project" => public_project(project),
+            "connects" =>
+              Enum.map(connects, fn connect ->
+                connect
+                |> public_connect()
+                |> Map.put("callback_url", sanitize_url(connect["webhook_url"]))
+              end),
+            "manual_checklist" => qq_manual_checklist()
+          })
+
+        {:error, reason} ->
+          send_backend_error(conn, reason, "Could not read the QQ bots.")
+      end
+    else
+      error -> send_cli_error(conn, error)
+    end
+  end
+
+  @doc """
+  Replaces the shortcuts of a QQ bot's command menu. `app_id` names the bot
+  when the project has more than one.
+  """
+  def qq_menu(conn, params) do
+    with {:ok, org} <- require_org(params),
+         :ok <- authorize_org(conn, org, "admin"),
+         {:ok, project} <- require_project(conn, org, params),
+         :ok <- authorize_project(conn, project, :write),
+         {:ok, items} <- qq_menu_items(params["items"]),
+         {:ok, connects} <- ProjectIMConnects.list_project_connects(org.id, project.id, "qq"),
+         {:ok, connect} <- qq_menu_connect(connects, trim(params["app_id"])) do
+      case ProjectIMConnects.update_project_qq_command_menu(
+             org.id,
+             project.id,
+             connect["connect_id"],
+             items
+           ) do
+        {:ok, connect} ->
+          send_ok(conn, %{
+            "mode" => "qq_menu",
+            "org" => public_org(org),
+            "project" => public_project(project),
+            "connect" => public_connect(connect)
+          })
+
+        {:error, {:invalid_menu, message}} ->
+          send_cli_error(conn, error(400, "invalid_qq_menu", message))
+
+        {:error, reason} ->
+          send_backend_error(conn, reason, "Could not update the QQ bot's command menu.")
+      end
+    else
+      error -> send_cli_error(conn, error)
+    end
+  end
+
+  defp qq_menu_items(items) when is_list(items), do: {:ok, items}
+  defp qq_menu_items(_items), do: error(400, "invalid_qq_menu", "Pass the menu items as a list.")
+
+  defp qq_menu_connect([connect], ""), do: {:ok, connect}
+
+  defp qq_menu_connect([], _app_id),
+    do: error(404, "qq_bot_not_found", "This project has no QQ bot. Run bft qq connect first.")
+
+  defp qq_menu_connect(_connects, ""),
+    do: error(400, "qq_app_id_required", "This project has more than one QQ bot. Pass --app-id.")
+
+  defp qq_menu_connect(connects, app_id) do
+    case Enum.find(connects, &(trim(&1["app_id"]) == app_id)) do
+      nil -> error(404, "qq_bot_not_found", "This project has no QQ bot with that AppID.")
+      connect -> {:ok, connect}
+    end
+  end
+
+  defp qq_credentials(params) do
+    attrs = %{"app_id" => trim(params["app_id"]), "app_secret" => trim(params["app_secret"])}
+
+    case Enum.filter(~w(app_id app_secret), &(attrs[&1] == "")) do
+      [] ->
+        {:ok, attrs}
+
+      missing ->
+        error(400, "missing_qq_credentials", "Pass the QQ bot's AppID and AppSecret.", %{
+          "fields" => missing
+        })
+    end
+  end
+
+  defp qq_manual_checklist do
+    [
+      "In the QQ bot console, choose Webhook as the event delivery method and save the callback URL.",
+      "Subscribe to the private chat, group, interaction and group member events.",
+      "If the console has an IP allowlist, add this deployment's egress addresses.",
+      "Add the bot to a group and mention it, or write to it in a private chat.",
+      "For messages later than 5 minutes after a mention, a group admin turns on \"机器人主动在群聊内发言\" in the bot's settings in that group.",
+      "To record the whole group conversation, a group admin sets \"机器人可获取的群聊消息范围\" to \"获取群内全部消息\"."
+    ]
+  end
+
   def feishu_checks(conn, params) do
     with {:ok, org} <- require_org(params),
          :ok <- authorize_org(conn, org, "member"),
@@ -427,14 +691,25 @@ defmodule BridgeForTeamsWeb.CLIController do
          :ok <- authorize_org(conn, org, "admin") do
       sso_connection = Orgs.get_sso_connection(org.id)
       redirect_uri = dashboard_redirect_uri(conn)
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
-      send_ok(conn, %{
-        "mode" => "sso_checks",
-        "org" => public_org(org),
-        "checks" => build_sso_checks(org, sso_connection, redirect_uri, now),
-        "admin_login" => feishu_admin_login_gate(org, current_user(conn))
-      })
+      case sso_connection do
+        %OrgSsoConnection{provider: "lark"} ->
+          send_ok(conn, %{
+            "mode" => "sso_checks",
+            "org" => public_org(org),
+            "checks" => build_lark_sso_checks(org, sso_connection, redirect_uri),
+            "admin_login" => lark_admin_login_gate(org, current_user(conn))
+          })
+
+        _ ->
+          send_ok(conn, %{
+            "mode" => "sso_checks",
+            "org" => public_org(org),
+            "checks" => build_sso_checks(org, sso_connection, redirect_uri, now),
+            "admin_login" => feishu_admin_login_gate(org, current_user(conn))
+          })
+      end
     else
       error -> send_cli_error(conn, error)
     end
@@ -462,7 +737,7 @@ defmodule BridgeForTeamsWeb.CLIController do
         "slack_apps_url" => "https://api.slack.com/apps",
         "credential_guide" => slack_credential_guide(),
         "create_connect_command" => slack_create_connect_command(org, project),
-        "create_worker_connect_command" => slack_create_worker_connect_command(org, project),
+        "create_task_connect_command" => slack_create_task_connect_command(org, project),
         "manual_checklist" => [
           "Create or update the Slack app from the manifest.",
           "Confirm Interactivity is enabled with the manifest's request URL.",
@@ -633,10 +908,10 @@ defmodule BridgeForTeamsWeb.CLIController do
         "source" => "Slack app -> Basic Information -> App Credentials -> Signing Secret"
       },
       %{
-        "field" => "inbound_agent_id",
-        "flag" => "--inbound-agent",
+        "field" => "inbound_tasks",
+        "flag" => "--tasks",
         "source" =>
-          "Optional. BFT project Agents page -> target router or worker Salix agent id. Omit to bind the group router."
+          "Optional. Bind the connection to Tasks instead of the Router: each new Slack thread becomes a Task. Give {\"model\": <model choice>} to run that model, or {} for the project's default Task model. Omit to bind the project's Router."
       }
     ]
   end
@@ -645,8 +920,8 @@ defmodule BridgeForTeamsWeb.CLIController do
     "bft slack connects create --org #{cli_ref(org.slug, org.id)} --project #{cli_ref(project.slug, project.id)} --app-id <app-id> --client-id <client-id> --client-secret-env BFT_SLACK_CLIENT_SECRET --signing-secret-env BFT_SLACK_SIGNING_SECRET --confirm-mutating"
   end
 
-  defp slack_create_worker_connect_command(org, project) do
-    slack_create_connect_command(org, project) <> " --inbound-agent <salix-agent-id>"
+  defp slack_create_task_connect_command(org, project) do
+    slack_create_connect_command(org, project) <> " --tasks"
   end
 
   defp cli_ref(value, fallback) do
@@ -674,7 +949,7 @@ defmodule BridgeForTeamsWeb.CLIController do
           "required_scopes" => FeishuScopes.required_scope_ids(:bot),
           "batch_import_payload" => FeishuScopes.import_payload(:bot),
           "optional_scopes" => FeishuScopes.optional_bot_scopes(),
-          "event_subscriptions" => ["im.message.receive_v1"],
+          "event_subscriptions" => ["im.message.receive_v1", "im.message.recalled_v1"],
           "manual_checklist" => feishu_manual_checklist(),
           "limitations" => [
             "One bot-enabled Feishu app can be connected to one Agent Swarm until multi-route support lands.",
@@ -836,7 +1111,7 @@ defmodule BridgeForTeamsWeb.CLIController do
       _ ->
         case Logger.metadata()[:request_id] do
           request_id when is_binary(request_id) and request_id != "" -> request_id
-          _ -> Ecto.UUID.generate()
+          _ -> SystemsRuntime.Proc.uuid()
         end
     end
   end
@@ -941,7 +1216,7 @@ defmodule BridgeForTeamsWeb.CLIController do
       "Enable group bot (IM) on the org Feishu app binding.",
       "Create or resync the Agent Swarm Feishu connect to generate the callback URL.",
       "Paste the callback URL into Feishu Events & Callbacks.",
-      "Subscribe to im.message.receive_v1.",
+      "Subscribe to im.message.receive_v1 and im.message.recalled_v1.",
       "Batch-import the required bot scopes, publish/install the app version, and add the bot to the target group.",
       "Run bft feishu checks --json and then test a real @Bridge message."
     ]
@@ -1095,6 +1370,83 @@ defmodule BridgeForTeamsWeb.CLIController do
     }
   end
 
+  # ---- sign-in with Lark ----
+
+  # The gates of `LarkRunChecks.run_sso/2`, then the two the CLI adds for every
+  # provider: the saved connection and the authorization URL.
+  defp build_lark_sso_checks(org, %OrgSsoConnection{} = connection, redirect_uri) do
+    {:ok, checks} = LarkRunChecks.run_sso(org, redirect_uri: redirect_uri)
+    checks = RunChecks.to_json_map(checks)
+
+    connection_gate = %{
+      "gate_id" => "sso.connection",
+      "label" => "Lark SSO connection exists",
+      "status" => "ok",
+      "next_action" => "Lark SSO connection is saved.",
+      "evidence" => %{"connection" => public_sso_connection(connection)}
+    }
+
+    Map.put(
+      checks,
+      "gates",
+      [connection_gate] ++ checks["gates"] ++ [lark_sso_authorize_url_gate(org, redirect_uri)]
+    )
+  end
+
+  defp lark_sso_authorize_url_gate(org, redirect_uri) do
+    gate = %{
+      "gate_id" => "sso.authorize_url",
+      "label" => "Lark authorization URL can be generated"
+    }
+
+    case Auth.authorize_url(org.id, redirect_uri: redirect_uri) do
+      {:ok, %{url: url}} ->
+        Map.merge(gate, %{
+          "status" => "ok",
+          "next_action" =>
+            "Open the BFT login page for this org and complete the Lark sign-in in a browser.",
+          "evidence" => %{
+            "authorize_url_host" => URI.parse(url).host,
+            "authorize_url_generated" => true
+          }
+        })
+
+      {:error, reason} ->
+        Map.merge(gate, %{
+          "status" => "fail",
+          "next_action" =>
+            "Could not generate a Lark authorization URL; inspect the SSO connection.",
+          "evidence" => %{"reason" => safe_reason(reason)}
+        })
+    end
+  end
+
+  defp lark_admin_login_gate(org, user) do
+    seen? =
+      Repo.exists?(
+        from(i in OrgSsoIdentity,
+          where: i.org_id == ^org.id and i.user_id == ^user.id and i.provider == "lark"
+        )
+      )
+
+    %{
+      "gate_id" => "sso.admin_login",
+      "label" => "Current admin has signed in with Lark",
+      "classification" => if(seen?, do: "automatic", else: "assisted"),
+      "status" => if(seen?, do: "ok", else: "needs_manual"),
+      "reason_class" => if(seen?, do: nil, else: "sso_login_not_observed"),
+      "required" => true,
+      "next_action" =>
+        if seen? do
+          "This CLI session belongs to an admin user with a Lark identity."
+        else
+          "Sign out, sign in with Lark as an org admin, generate a fresh BFT CLI login command, then rerun this step."
+        end,
+      "evidence" => %{"user_id" => user.id, "lark_sso_identity_seen" => seen?},
+      "redacted" => true
+    }
+  end
+
   defp public_sso_connection(%OrgSsoConnection{} = connection) do
     %{
       "id" => connection.id,
@@ -1117,7 +1469,7 @@ defmodule BridgeForTeamsWeb.CLIController do
       conn |> dashboard_base_url() |> String.trim_trailing("/") |> then(&(&1 <> "/auth/callback"))
 
   defp dashboard_base_url(_conn) do
-    case Application.get_env(:bridge_for_teams_web, :public_base_url) do
+    case SystemsRuntime.get_env(:bridge_for_teams_web, :public_base_url) do
       base when is_binary(base) and base != "" ->
         base
 
@@ -1128,7 +1480,7 @@ defmodule BridgeForTeamsWeb.CLIController do
 
   defp dashboard_endpoint_base_url do
     endpoint_config =
-      Application.get_env(
+      SystemsRuntime.get_env(
         :bridge_for_teams_web,
         BridgeForTeamsWeb.DashboardEndpoint,
         []

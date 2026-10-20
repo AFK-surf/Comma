@@ -1,4 +1,4 @@
-import { cx } from "@comma/ui";
+import { cx } from "@comma/ui/components/utils";
 
 /**
  * The tab in a panel toolbar: a pill that fills in when it is the one

@@ -1,7 +1,7 @@
 import userEvent from "@testing-library/user-event";
 import { act, fireEvent, render, screen } from "@comma/test-utils/render";
 import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { formatSettingsShortcut, SettingsShortcut } from "../SettingsShortcut";
 
 const shortcut = {
@@ -15,6 +15,26 @@ const shortcut = {
 } as const;
 
 describe("SettingsShortcut", () => {
+  // macOS's keycaps unless a test says otherwise (Windows': Ctrl, Alt, Win).
+  beforeEach(() => {
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+  });
+
+  it("shows Windows' modifier names on Windows", () => {
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue("Win32");
+    render(
+      <SettingsShortcut
+        ariaLabel="Open Comma"
+        value={{
+          key: "comma",
+          modifiers: { alt: true, control: false, meta: false, shift: false },
+        }}
+      />
+    );
+    expect(screen.getByText("Alt")).toBeInTheDocument();
+    expect(screen.queryByText("⌥")).not.toBeInTheDocument();
+  });
+
   it("records Option-Space from its physical key code", async () => {
     const onChange = vi.fn();
     render(

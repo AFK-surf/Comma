@@ -53,6 +53,13 @@ defmodule SalixAgent.AccountPool do
 
   def provider?(provider), do: is_map_key(@providers, provider)
 
+  # OpenCode Go signs in with an OpenCode Console account (`SalixAgent.OpenCodeConsole`);
+  # the Profile it makes is an `opencode-go` key the Console renews.
+  @console_source "opencode-go"
+
+  @doc "Whether `provider` signs in (`begin_oauth/2`): a subscription, or OpenCode Go's Console account."
+  def sign_in?(provider), do: provider?(provider) or provider == @console_source
+
   @doc """
   The per-provider dispatch seam: provider ID to `{protocol, base_url}` route.
   `resolve_config/2` merges this route with the model request ID, and
@@ -81,7 +88,7 @@ defmodule SalixAgent.AccountPool do
   defp refresh_lead(_), do: 30
 
   def connection(tenant) when is_binary(tenant) do
-    key = Application.get_env(:salix_agent, :subscription_storage_key)
+    key = SystemsRuntime.get_env(:salix_agent, :subscription_storage_key)
 
     if SalixStore.Ids.valid_tenant_id?(tenant) and is_binary(key) and byte_size(key) == 32,
       do: :ok,
@@ -136,7 +143,7 @@ defmodule SalixAgent.AccountPool do
          access when is_binary(access) and byte_size(access) > 0 <- credentials["access_token"],
          account when is_binary(account) and byte_size(account) > 0 <- credentials["account_id"],
          {:ok, expires, _} <- DateTime.from_iso8601(credentials["expired"] || ""),
-         true <- DateTime.diff(expires, DateTime.utc_now()) > 30 do
+         true <- DateTime.diff(expires, SystemsClock.utc_now()) > 30 do
       {:ok,
        %{
          "credential_kind" => "subscription_oauth",
@@ -160,7 +167,7 @@ defmodule SalixAgent.AccountPool do
 
   def runtime_access(tenant, id, "claude", rejected_revision) do
     with {:ok, record} <- Store.get(tenant, id) do
-      if record["credential_kind"] == "subscription_oauth" do
+      if record["credential"] == "subscription" do
         claude_oauth_access(tenant, record, rejected_revision)
       else
         provider_key_access(tenant, id, "claude")
@@ -168,24 +175,21 @@ defmodule SalixAgent.AccountPool do
     end
   end
 
-  def runtime_access(tenant, id, "pi", _rejected_revision),
-    do: provider_key_access(tenant, id, "pi")
-
   def runtime_access(_, _, _, _), do: {:error, :subscription_access_unavailable}
 
   defp provider_key_access(tenant, id, provider) do
     with :ok <- connection(tenant),
          {:ok, record} <- Store.get(tenant, id),
-         true <- record["credential_kind"] == "provider_api_key",
+         true <- record["credential"] == "api_key",
          true <- record["disabled"] == false,
-         true <- provider in compatible_runtimes(record["connection"]["protocol"]),
+         true <- provider in compatible_runtimes(Store.connection(record)["protocol"]),
          {:ok, %{"api_key" => api_key}} <- Store.open(tenant, id, record["credentials"]),
          true <- is_binary(api_key) and byte_size(api_key) > 0 do
       {:ok,
        %{
          "credential_kind" => "provider_api_key",
          "subscription_account_id" => id,
-         "connection" => Map.take(record["connection"], ~w(endpoint protocol auth_scheme)),
+         "connection" => Store.connection(record),
          "api_key" => api_key,
          "account_version" => record["version"]
        }}
@@ -199,17 +203,17 @@ defmodule SalixAgent.AccountPool do
 
     with :ok <- connection(tenant),
          true <-
-           record["provider"] == "claude" and record["status"] == "active" and
+           record["source"] == "claude" and record["status"] == "ok" and
              record["disabled"] == false,
          {:ok, credentials} <- Store.open(tenant, id, record["credentials"]),
          {:ok, record, credentials} <- runtime_prepare(tenant, record, credentials, rejected),
          {:ok, current} <- Store.get(tenant, id),
          true <-
-           current["disabled"] == false and current["status"] == "active" and
+           current["disabled"] == false and current["status"] == "ok" and
              current["credentials"] == record["credentials"],
          token when is_binary(token) and byte_size(token) > 0 <- credentials["access_token"],
          {:ok, expires, _} <- DateTime.from_iso8601(credentials["expired"] || ""),
-         true <- DateTime.diff(expires, DateTime.utc_now()) > 30 do
+         true <- DateTime.diff(expires, SystemsClock.utc_now()) > 30 do
       {:ok,
        %{
          "credential_kind" => "subscription_oauth",
@@ -224,24 +228,20 @@ defmodule SalixAgent.AccountPool do
     end
   end
 
-  def compatible_runtimes("anthropic_messages"), do: ["pi", "claude"]
-
-  def compatible_runtimes(protocol) when protocol in ["openai_completions", "openai_responses"],
-    do: ["pi"]
-
+  def compatible_runtimes("anthropic_messages"), do: ["claude"]
   def compatible_runtimes(_), do: []
 
   defp usable_codex?(record),
     do:
-      subscription?(record) and record["provider"] == "codex" and record["status"] == "active" and
+      subscription?(record) and record["source"] == "codex" and record["status"] == "ok" and
         record["disabled"] == false
 
-  defp subscription?(record), do: record["credential_kind"] == "subscription_oauth"
+  defp subscription?(record), do: record["credential"] == "subscription"
 
   defp runtime_prepare(tenant, record, credentials, rejected_revision) do
     expires_soon =
       case DateTime.from_iso8601(credentials["expired"] || "") do
-        {:ok, expires, _} -> DateTime.diff(expires, DateTime.utc_now()) < 300
+        {:ok, expires, _} -> DateTime.diff(expires, SystemsClock.utc_now()) < 300
         _ -> true
       end
 
@@ -291,7 +291,7 @@ defmodule SalixAgent.AccountPool do
     Log.context([tenant_id: tenant], fn ->
       Log.span("provider_account_create", [], fn ->
         with :ok <- connection(tenant),
-             {:ok, value, credentials} <- source_value(attrs),
+             {:ok, value, credentials} <- source_value(tenant, attrs),
              id = Store.id(),
              {:ok, ciphertext} <- Store.seal(tenant, id, credentials),
              {:ok, record} <-
@@ -299,8 +299,8 @@ defmodule SalixAgent.AccountPool do
                  tenant,
                  Map.merge(value, %{
                    "id" => id,
-                   "credential_kind" => "provider_api_key",
-                   "provider" => "custom",
+                   "credential" => "api_key",
+                   "status" => "ok",
                    "credentials" => ciphertext,
                    "disabled" => false
                  })
@@ -324,8 +324,9 @@ defmodule SalixAgent.AccountPool do
                  value.public
                  |> Map.merge(%{
                    "id" => id,
-                   "credential_kind" => "provider_api_key",
-                   "provider" => "custom",
+                   "credential" => "api_key",
+                   "source" => "custom",
+                   "status" => "ok",
                    "credentials" => ciphertext,
                    "disabled" => false
                  })
@@ -349,9 +350,24 @@ defmodule SalixAgent.AccountPool do
     end)
   end
 
+  # The models a Profile does not offer, by model id. Stored as exclusions,
+  # so a model the catalog adds later starts offered.
   defp update_record(
          tenant,
-         %{"credential_kind" => "subscription_oauth"} = record,
+         %{"credential" => kind} = record,
+         %{"disabled_models" => models, "version" => expected} = attrs
+       )
+       when kind in ["subscription", "api_key"] and map_size(attrs) == 2 do
+    with {:ok, models} <- disabled_models(models) do
+      Store.update_edition(tenant, record["id"], expected, fn current ->
+        Store.update(tenant, Map.put(current, "disabled_models", models), current["version"])
+      end)
+    end
+  end
+
+  defp update_record(
+         tenant,
+         %{"credential" => "subscription"} = record,
          %{
            "name" => _,
            "version" => expected
@@ -359,47 +375,55 @@ defmodule SalixAgent.AccountPool do
        )
        when map_size(attrs) == 2 do
     with {:ok, name} <- provider_name(attrs["name"]) do
-      Store.update_locked(tenant, record["id"], expected, fn current ->
-        Store.update(tenant, Map.put(current, "name", name), expected)
+      Store.update_edition(tenant, record["id"], expected, fn current ->
+        Store.update(tenant, Map.put(current, "name", name), current["version"])
       end)
     end
   end
 
-  defp update_record(tenant, %{"credential_kind" => "subscription_oauth"} = record, attrs) do
-    with true <- record["version"] == attrs["version"],
-         {:ok, record} <- replacement(tenant, record, attrs["credentials"]),
-         {:ok, updated} <-
-           Store.update(
-             tenant,
-             Map.merge(record, Map.take(attrs, ["disabled"])),
-             attrs["version"]
-           ) do
-      {:ok, updated}
+  defp update_record(tenant, %{"credential" => "subscription"} = record, attrs) do
+    expected = attrs["version"]
+
+    # A stale edition fails before the credential normalization call.
+    with true <-
+           is_binary(expected) and Store.edition(record["version"]) == Store.edition(expected),
+         {:ok, replace} <- replacement(tenant, record, attrs["credentials"]) do
+      Store.update_edition(tenant, record["id"], expected, fn current ->
+        Store.update(
+          tenant,
+          current |> replace.() |> Map.merge(Map.take(attrs, ["disabled"])),
+          current["version"]
+        )
+      end)
     else
       false -> {:error, :conflict}
       other -> other
     end
   end
 
-  defp update_record(tenant, %{"credential_kind" => "provider_api_key"} = record, attrs) do
+  defp update_record(tenant, %{"credential" => "api_key"} = record, attrs) do
     expected = attrs["version"]
 
     cond do
       Map.keys(attrs) |> Enum.sort() == ["name", "version"] ->
         with {:ok, name} <- provider_name(attrs["name"]) do
-          Store.update_locked(tenant, record["id"], expected, fn current ->
-            Store.update(tenant, Map.put(current, "name", name), expected)
+          Store.update_edition(tenant, record["id"], expected, fn current ->
+            Store.update(tenant, Map.put(current, "name", name), current["version"])
           end)
         end
 
       Map.keys(attrs) |> Enum.sort() == ["disabled", "version"] and is_boolean(attrs["disabled"]) ->
-        Store.update_locked(tenant, record["id"], expected, fn current ->
-          Store.update(tenant, Map.put(current, "disabled", attrs["disabled"]), expected)
+        Store.update_edition(tenant, record["id"], expected, fn current ->
+          Store.update(
+            tenant,
+            Map.put(current, "disabled", attrs["disabled"]),
+            current["version"]
+          )
         end)
 
       Map.keys(attrs) |> Enum.sort() == ["api_key", "version"] and is_binary(record["source"]) ->
         with {:ok, key} <- source_key(record["source"], attrs["api_key"]) do
-          Store.update_locked(
+          Store.update_edition(
             tenant,
             record["id"],
             expected,
@@ -410,7 +434,7 @@ defmodule SalixAgent.AccountPool do
                   current
                   |> Map.put("credentials", ciphertext)
                   |> put_key_hint(key),
-                  expected
+                  current["version"]
                 )
               end
             end,
@@ -425,7 +449,7 @@ defmodule SalixAgent.AccountPool do
                  "connection" => attrs["connection"],
                  "credentials" => attrs["credentials"]
                }) do
-          Store.update_locked(
+          Store.update_edition(
             tenant,
             record["id"],
             expected,
@@ -434,9 +458,9 @@ defmodule SalixAgent.AccountPool do
                 Store.update(
                   tenant,
                   current
-                  |> Map.put("connection", value.public["connection"])
+                  |> Map.merge(Map.take(value.public, ~w(endpoint protocol auth)))
                   |> Map.put("credentials", ciphertext),
-                  expected
+                  current["version"]
                 )
               end
             end,
@@ -451,25 +475,29 @@ defmodule SalixAgent.AccountPool do
 
   defp update_record(_, _, _), do: {:error, :invalid_input}
 
-  defp replacement(_tenant, record, nil), do: {:ok, record}
+  # The change replacing credentials makes to an account, applied to the
+  # account as it is when the write takes its lock.
+  defp replacement(_tenant, _record, nil), do: {:ok, & &1}
 
   defp replacement(tenant, record, credentials) do
     with {:ok, data} <-
            adapter(tenant, "/normalize", %{
-             "provider" => record["provider"],
+             "provider" => record["source"],
              "credentials" => credentials
            }),
          {:ok, ciphertext} <- Store.seal(tenant, record["id"], data["credentials"]) do
       {:ok,
-       record
-       |> Map.merge(%{
-         "credentials" => ciphertext,
-         "credential_revision" => Store.id(),
-         "email" => data["email"],
-         "status" => "active",
-         "prepared" => false
-       })
-       |> Map.drop(["quota", "reset_attempt"])}
+       fn current ->
+         current
+         |> Map.merge(%{
+           "credentials" => ciphertext,
+           "credential_revision" => Store.id(),
+           "email" => data["email"],
+           "status" => "ok",
+           "prepared" => false
+         })
+         |> Map.drop(["quota", "reset_attempt"])
+       end}
     end
   end
 
@@ -477,9 +505,7 @@ defmodule SalixAgent.AccountPool do
     Log.context([tenant_id: tenant, account_id: id], fn ->
       Log.span("account_delete", [], fn ->
         with {:ok, record} <- Store.get(tenant, id) do
-          if record["credential_kind"] == "provider_api_key",
-            do: Store.delete_locked(tenant, id, version),
-            else: Store.delete(tenant, id, version)
+          Store.delete_edition(tenant, id, version, record["credential"] == "api_key")
         else
           {:error, :not_found} -> {:error, :conflict}
           other -> other
@@ -494,16 +520,18 @@ defmodule SalixAgent.AccountPool do
          do: Store.list_bindings(tenant, account_id, after_id)
   end
 
-  @source_fields ~w(credential_kind source name api_key base_url protocol models)
+  @source_fields ~w(credential_kind source name api_key base_url protocol models model_info)
   @wire %{
     "anthropic" => "anthropic_messages",
     "chat_completions" => "openai_completions",
     "responses" => "openai_responses"
   }
 
-  defp source_value(attrs) do
+  defp source_value(tenant, attrs) do
     with true <- Enum.all?(Map.keys(attrs), &(&1 in @source_fields)),
          {:ok, %{"kind" => "api_key"} = source} <- SalixAgent.Models.source(attrs["source"]),
+         # A platform-only source (an internal gateway) is the platform's alone.
+         true <- source["platform_only"] != true or tenant == platform_tenant(),
          {:ok, key} <- source_key(attrs["source"], attrs["api_key"]),
          {:ok, name} <- provider_name(attrs["name"] || source["name"] <> " API Key"),
          {:ok, endpoints} <- source_endpoints(source, attrs) do
@@ -511,19 +539,31 @@ defmodule SalixAgent.AccountPool do
       # Anthropic and an Anthropic-native Custom endpoint take `x-api-key`.
       auth = if attrs["source"] in ["anthropic", "custom"], do: "api_key", else: "bearer"
 
+      # An internal gateway (a platform-only source) may sit on the cluster's
+      # own network, without TLS; so may any platform Profile, which only the
+      # platform's operators and deployment configuration create (a local or
+      # self-hosted installation's one model).
+      schemes =
+        if source["platform_only"] == true or tenant == platform_tenant(),
+          do: ["https", "http"],
+          else: ["https"]
+
       with {:ok, connection} <-
-             provider_connection(%{
-               "endpoint" => endpoints[protocol],
-               "protocol" => @wire[protocol],
-               "auth_scheme" => if(protocol == "anthropic", do: auth, else: "bearer")
-             }) do
+             provider_connection(
+               %{
+                 "endpoint" => endpoints[protocol],
+                 "protocol" => @wire[protocol],
+                 "auth_scheme" => if(protocol == "anthropic", do: auth, else: "bearer")
+               },
+               schemes
+             ) do
         {:ok,
          %{
            "source" => attrs["source"],
            "name" => name,
-           "endpoints" => endpoints,
-           "connection" => connection
+           "endpoints" => endpoints
          }
+         |> Map.merge(stored_connection(connection))
          |> put_key_hint(key)
          |> Map.merge(custom_models(attrs)), key_credentials(key)}
       end
@@ -554,17 +594,45 @@ defmodule SalixAgent.AccountPool do
 
   # A Custom endpoint lists the model ids it serves (from model discovery).
   # One bad id drops only that id, not the endpoint's other models.
-  defp custom_models(%{"source" => "custom", "models" => models})
+  defp custom_models(%{"source" => "custom", "models" => models} = attrs)
        when is_list(models) and length(models) <= 500 do
-    %{
-      "models" =>
-        models
-        |> Enum.filter(&(is_binary(&1) and &1 != "" and byte_size(&1) <= 200))
-        |> Enum.uniq()
-    }
+    models =
+      models
+      |> Enum.filter(&(is_binary(&1) and &1 != "" and byte_size(&1) <= 200))
+      |> Enum.uniq()
+
+    info = model_info(attrs["model_info"], models)
+    if info == %{}, do: %{"models" => models}, else: %{"models" => models, "model_info" => info}
   end
 
   defp custom_models(_), do: %{}
+
+  # What a Custom endpoint says of its listed models: context and output
+  # limits, image input and reasoning efforts. A field of the wrong kind, or a
+  # model it does not list, is dropped, not the endpoint.
+  defp model_info(info, models) when is_map(info) do
+    for {model, fields} <- info, model in models, is_map(fields), into: %{} do
+      {model,
+       %{
+         "context_tokens" => positive(fields["context_tokens"]),
+         "max_tokens" => positive(fields["max_tokens"]),
+         "images" => if(is_boolean(fields["images"]), do: fields["images"]),
+         "efforts" => efforts(fields["efforts"])
+       }
+       |> Map.reject(fn {_key, value} -> value in [nil, []] end)}
+    end
+    |> Map.reject(fn {_model, fields} -> fields == %{} end)
+  end
+
+  defp model_info(_info, _models), do: %{}
+
+  defp positive(value) when is_integer(value) and value > 0 and value <= 10_000_000, do: value
+  defp positive(_), do: nil
+
+  defp efforts(values) when is_list(values) and length(values) <= 10,
+    do: Enum.filter(values, &(is_binary(&1) and &1 != "" and byte_size(&1) <= 32))
+
+  defp efforts(_), do: []
 
   # A Custom endpoint (Ollama, a self-hosted gateway) may need no key: then it
   # has no key at all, and dispatch sends no auth header. Every catalog source
@@ -593,7 +661,7 @@ defmodule SalixAgent.AccountPool do
          {:ok, api_key} <- provider_key(attrs["credentials"]) do
       {:ok,
        %{
-         public: %{"name" => name, "connection" => connection},
+         public: Map.merge(%{"name" => name}, stored_connection(connection)),
          credentials: %{"api_key" => api_key}
        }}
     end
@@ -611,7 +679,27 @@ defmodule SalixAgent.AccountPool do
 
   defp provider_name(_), do: {:error, :invalid_input}
 
-  defp provider_connection(connection) when is_map(connection) and map_size(connection) == 3 do
+  @disabled_models_limit 500
+
+  defp disabled_models(models)
+       when is_list(models) and length(models) <= @disabled_models_limit do
+    if Enum.all?(
+         models,
+         &(is_binary(&1) and &1 != "" and byte_size(&1) <= 200 and not control?(&1))
+       ),
+       do: {:ok, Enum.uniq(models)},
+       else: {:error, :invalid_input}
+  end
+
+  defp disabled_models(_), do: {:error, :invalid_input}
+
+  # Whether a Profile's owner turned this model off for it.
+  defp excluded?(record, model), do: model in List.wrap(record["disabled_models"])
+
+  defp provider_connection(connection, schemes \\ ["https"])
+
+  defp provider_connection(connection, schemes)
+       when is_map(connection) and map_size(connection) == 3 do
     endpoint = connection["endpoint"]
     protocol = connection["protocol"]
     auth_scheme = connection["auth_scheme"]
@@ -626,7 +714,7 @@ defmodule SalixAgent.AccountPool do
       ]
 
     if is_binary(endpoint) and byte_size(endpoint) <= 2048 and not control?(endpoint) and
-         uri.scheme == "https" and is_binary(uri.host) and uri.host != "" and is_nil(uri.userinfo) and
+         uri.scheme in schemes and is_binary(uri.host) and uri.host != "" and is_nil(uri.userinfo) and
          is_nil(uri.query) and is_nil(uri.fragment) and valid_pair do
       {:ok, Map.take(connection, ~w(endpoint protocol auth_scheme))}
     else
@@ -634,7 +722,17 @@ defmodule SalixAgent.AccountPool do
     end
   end
 
-  defp provider_connection(_), do: {:error, :invalid_input}
+  defp provider_connection(_, _), do: {:error, :invalid_input}
+
+  # A key's address as the Profile stores it (Store.connection gives it back).
+  defp stored_connection(connection) do
+    %{
+      "endpoint" => connection["endpoint"],
+      "protocol" => Store.stored_protocol(connection["protocol"]),
+      "auth" => connection["auth_scheme"]
+    }
+    |> Map.reject(fn {_, v} -> is_nil(v) end)
+  end
 
   defp provider_key(%{"api_key" => api_key})
        when is_binary(api_key) and byte_size(api_key) > 0 and byte_size(api_key) <= 16_384 do
@@ -650,7 +748,7 @@ defmodule SalixAgent.AccountPool do
   # A late result cannot overwrite a replacement or resurrect a deleted record.
   defp prepare(tenant, record) do
     if subscription?(record) and record["prepared"] == true and
-         not expiring?(record["expires_at"], refresh_lead(record["provider"])) do
+         not expiring?(record["expires_at"], refresh_lead(record["source"])) do
       with {:ok, credentials} <- Store.open(tenant, record["id"], record["credentials"]),
            do: {:ok, record, credentials}
     else
@@ -662,23 +760,23 @@ defmodule SalixAgent.AccountPool do
 
   defp expiring?(value, lead) do
     case DateTime.from_iso8601(value) do
-      {:ok, time, _} -> DateTime.diff(time, DateTime.utc_now()) < lead
+      {:ok, time, _} -> DateTime.diff(time, SystemsClock.utc_now()) < lead
       _ -> false
     end
   end
 
   defp refresh(tenant, record, force \\ false) do
-    Log.context([tenant_id: tenant, account_id: record["id"], provider: record["provider"]], fn ->
+    Log.context([tenant_id: tenant, account_id: record["id"], provider: record["source"]], fn ->
       Log.span("subscription_account_refresh", [], fn ->
-        with true <- record["status"] == "active",
+        with true <- record["status"] == "ok",
              true <- subscription?(record),
              {:ok, claimed} <-
-               Store.update(
+               Store.update_background(
                  tenant,
                  Map.merge(record, %{
-                   "status" => "reauthorization_required",
+                   "status" => "login",
                    "refresh_deadline" =>
-                     System.system_time(:second) +
+                     SystemsClock.system_time(:second) +
                        if(force, do: 10, else: div(SalixAgent.LLM.request_timeout_ms(), 1000) + 5)
                  }),
                  record["version"]
@@ -688,18 +786,19 @@ defmodule SalixAgent.AccountPool do
                prepare_admitted(tenant, record, claimed, credentials, force),
              {:ok, ciphertext} <- Store.seal(tenant, record["id"], data["credentials"]),
              {:ok, saved} <-
-               Store.update(
+               Store.apply_background(
                  tenant,
-                 Map.merge(claimed, %{
-                   "status" => "active",
+                 record["id"],
+                 &still_claimed?(&1, claimed),
+                 &Map.merge(&1, %{
+                   "status" => "ok",
                    "refresh_deadline" => nil,
                    "credentials" => ciphertext,
                    "credential_revision" => Store.id(),
                    "email" => data["email"],
                    "prepared" => true,
                    "expires_at" => data["credentials"]["expired"]
-                 }),
-                 claimed["version"]
+                 })
                ) do
           {:ok, saved, data["credentials"]}
         else
@@ -712,18 +811,49 @@ defmodule SalixAgent.AccountPool do
 
   defp prepare_admitted(tenant, record, claimed, credentials, force) do
     case adapter(tenant, "/prepare", %{
-           "provider" => record["provider"],
+           "provider" => record["source"],
            "force_refresh" => force,
            "credentials" => credentials
          }) do
       {:error, {:worker_rejected, _, _}} = error ->
         # No executor ran, so the original credential remains usable for a later refresh.
-        # The claim version prevents restoration over a concurrent edit or deletion.
-        with {:ok, _} <- Store.update(tenant, record, claimed["version"]), do: error
+        # The claim is lifted only while it is still this refresh's: a replacement
+        # or deletion meanwhile is kept, a user's other change is kept too.
+        with {:ok, _} <-
+               Store.apply_background(
+                 tenant,
+                 record["id"],
+                 &still_claimed?(&1, claimed),
+                 &Map.merge(&1, %{
+                   "status" => record["status"],
+                   "refresh_deadline" => record["refresh_deadline"]
+                 })
+               ),
+             do: error
 
       result ->
         result
     end
+  end
+
+  # The account still holds this refresh's claim on the same credentials: no
+  # replacement, deletion or other refresh came in between.
+  defp still_claimed?(current, claimed) do
+    current["status"] == "login" and
+      current["refresh_deadline"] == claimed["refresh_deadline"] and
+      current["credential_revision"] == claimed["credential_revision"]
+  end
+
+  # The account still has the credentials a background answer was about.
+  defp same_credentials?(current, record),
+    do: current["credential_revision"] == record["credential_revision"]
+
+  # A quota answer read for `record` is still the newest: no other quota write
+  # and no reset since. A slow poll's answer from before a reset must not
+  # replace the quota the reset's own read wrote.
+  defp quota_still_current?(current, record) do
+    same_credentials?(current, record) and current["quota"] == record["quota"] and
+      current["reset_attempt"] == record["reset_attempt"]
   end
 
   def quota(tenant, id) do
@@ -742,19 +872,27 @@ defmodule SalixAgent.AccountPool do
   end
 
   defp fetch_quota(tenant, record, credentials, opts \\ []) do
-    with {:ok, snapshot} <-
+    with {:ok, %{"body" => answer}} <-
            adapter(
              tenant,
              "/quota",
              %{
-               "provider" => record["provider"],
+               "provider" => record["source"],
                "credentials" => credentials
              },
              opts
            ),
          {:ok, saved} <-
-           Store.update(tenant, Map.put(record, "quota", snapshot), record["version"]) do
+           Store.apply_background(
+             tenant,
+             record["id"],
+             &quota_still_current?(&1, record),
+             &Map.put(&1, "quota", SalixAgent.Profiles.quota(record["source"], answer))
+           ) do
       {:ok, Store.public(saved)}
+    else
+      {:ok, _not_an_answer} -> {:error, :quota_unavailable}
+      other -> other
     end
   end
 
@@ -767,23 +905,22 @@ defmodule SalixAgent.AccountPool do
         with :ok <- connection(tenant),
              true <- Regex.match?(~r/^[A-Za-z0-9_-]{16,128}$/, key),
              {:ok, record} <- Store.get(tenant, id),
-             true <- record["provider"] == "codex",
-             true <- record["status"] == "active",
+             true <- record["source"] == "codex",
+             true <- record["status"] == "ok",
              :ok <- reset_admission(record, version, key),
              {:ok, record, credentials} <- prepare(tenant, record),
              {:ok, claimed} <- claim_reset(tenant, record, key),
              {:ok, result} <- execute_reset(tenant, claimed, credentials),
-             {:ok, saved} <- settle_reset(tenant, claimed, result) do
+             {:ok, saved, outcome} <- settle_reset(tenant, claimed, result) do
           # Do not turn a completed reset into a failed mutation if this read fails.
           case quota(tenant, id) do
             {:ok, account} ->
-              {:ok,
-               %{"outcome" => result["code"], "account" => account, "quota_refreshed" => true}}
+              {:ok, %{"outcome" => outcome, "account" => account, "quota_refreshed" => true}}
 
             _ ->
               {:ok,
                %{
-                 "outcome" => result["code"],
+                 "outcome" => outcome,
                  "account" => Store.public(saved),
                  "quota_refreshed" => false
                }}
@@ -812,7 +949,7 @@ defmodule SalixAgent.AccountPool do
         {:ok, record}
 
       _ ->
-        Store.update(
+        Store.update_background(
           tenant,
           Map.put(record, "reset_attempt", %{"request_id" => key, "outcome" => "pending"}),
           record["version"]
@@ -841,15 +978,34 @@ defmodule SalixAgent.AccountPool do
     end
   end
 
+  # Records the reset's outcome once. A request with the same key that settles
+  # second (the page retries a pending key) reads the recorded outcome
+  # instead of replacing it.
   defp settle_reset(tenant, record, result) do
     if record["reset_attempt"]["outcome"] == result["code"] do
-      {:ok, record}
+      {:ok, record, result["code"]}
     else
-      value = put_in(record, ["reset_attempt", "outcome"], result["code"])
+      key = record["reset_attempt"]["request_id"]
       # Keep observed quota until the follow-up read succeeds. Never invent 100%.
-      case Store.update(tenant, value, record["version"]) do
-        {:ok, saved} -> {:ok, saved}
-        _ -> {:error, :reset_pending}
+      case Store.apply_background(
+             tenant,
+             record["id"],
+             &(same_credentials?(&1, record) and
+                 match?(%{"reset_attempt" => %{"request_id" => ^key, "outcome" => "pending"}}, &1)),
+             &put_in(&1, ["reset_attempt", "outcome"], result["code"])
+           ) do
+        {:ok, saved} ->
+          {:ok, saved, result["code"]}
+
+        _ ->
+          case Store.get(tenant, record["id"]) do
+            {:ok, %{"reset_attempt" => %{"request_id" => ^key, "outcome" => outcome}} = current}
+            when outcome != "pending" ->
+              {:ok, current, outcome}
+
+            _ ->
+              {:error, :reset_pending}
+          end
       end
     end
   end
@@ -872,7 +1028,7 @@ defmodule SalixAgent.AccountPool do
                  "state" => Store.id()
                }) do
           id = Store.id()
-          expires = DateTime.add(DateTime.utc_now(), 900)
+          expires = DateTime.add(SystemsClock.utc_now(), 900)
 
           with {:ok, ciphertext} <-
                  Store.seal(
@@ -882,7 +1038,7 @@ defmodule SalixAgent.AccountPool do
                    |> Map.merge(Map.take(attrs, ["account_id", "version"]))
                    |> Map.put(
                      "next_poll_at",
-                     System.system_time(:second) + (attempt["interval"] || 5)
+                     SystemsClock.system_time(:second) + (attempt["interval"] || 5)
                    )
                  ),
                {:ok, _} <-
@@ -902,6 +1058,24 @@ defmodule SalixAgent.AccountPool do
     end)
   end
 
+  defp start_authorization(_tenant, %{"provider" => @console_source} = attrs, _body) do
+    with false <- Map.has_key?(attrs, "account_id"),
+         {:ok, device} <- SalixAgent.OpenCodeConsole.start() do
+      {:ok,
+       %{
+         "provider" => @console_source,
+         "mode" => "device",
+         "device_code" => device.device_code,
+         "user_code" => device.user_code,
+         "url" => device.url,
+         "interval" => device.interval
+       }}
+    else
+      true -> {:error, :invalid_input}
+      other -> other
+    end
+  end
+
   defp start_authorization(tenant, %{"provider" => provider} = attrs, body) do
     flows = @providers[provider][:flows] || []
 
@@ -917,8 +1091,9 @@ defmodule SalixAgent.AccountPool do
   defp oauth_target(tenant, %{"account_id" => id} = attrs) do
     with {:ok, a} <- Store.get(tenant, id),
          true <-
-           subscription?(a) and a["version"] == attrs["version"] and
-             a["provider"] == attrs["provider"] do
+           subscription?(a) and is_binary(attrs["version"]) and
+             Store.edition(a["version"]) == Store.edition(attrs["version"]) and
+             a["source"] == attrs["provider"] do
       :ok
     else
       false -> {:error, :conflict}
@@ -944,7 +1119,7 @@ defmodule SalixAgent.AccountPool do
                  "SELECT ciphertext,expires_at FROM subscription_oauth_attempts WHERE tenant_id=$1 AND id=$2",
                  [tenant, id]
                ),
-             true <- DateTime.compare(as_datetime(expires), DateTime.utc_now()) == :gt,
+             true <- DateTime.compare(as_datetime(expires), SystemsClock.utc_now()) == :gt,
              {:ok, attempt} <- Store.open(tenant, id, ciphertext),
              true <- attempt["mode"] != "device",
              {:ok, code} <- authorization_code(input, attempt["state"]),
@@ -975,7 +1150,7 @@ defmodule SalixAgent.AccountPool do
              "SELECT ciphertext,expires_at FROM subscription_oauth_attempts WHERE tenant_id=$1 AND id=$2",
              [tenant, id]
            ),
-         true <- DateTime.compare(as_datetime(expires), DateTime.utc_now()) == :gt,
+         true <- DateTime.compare(as_datetime(expires), SystemsClock.utc_now()) == :gt,
          {:ok, %{"mode" => "device"} = attempt} <- Store.open(tenant, id, ciphertext),
          {:ok, %{num_rows: 1}} <-
            Store.query(
@@ -983,14 +1158,9 @@ defmodule SalixAgent.AccountPool do
              [tenant, id, ciphertext]
            ) do
       result =
-        if System.system_time(:second) < attempt["next_poll_at"],
+        if SystemsClock.system_time(:second) < attempt["next_poll_at"],
           do: {:ok, %{"status" => "pending"}},
-          else:
-            adapter(
-              tenant,
-              "/oauth/device/poll",
-              Map.take(attempt, ~w(provider device_auth_id user_code context))
-            )
+          else: poll_device(tenant, attempt)
 
       case result do
         {:ok, %{"status" => "pending"} = pending} ->
@@ -1006,9 +1176,9 @@ defmodule SalixAgent.AccountPool do
             Map.put(
               attempt,
               "next_poll_at",
-              if(System.system_time(:second) < attempt["next_poll_at"],
+              if(SystemsClock.system_time(:second) < attempt["next_poll_at"],
                 do: attempt["next_poll_at"],
-                else: System.system_time(:second) + interval
+                else: SystemsClock.system_time(:second) + interval
               )
             )
 
@@ -1033,6 +1203,25 @@ defmodule SalixAgent.AccountPool do
       other -> other
     end
   end
+
+  defp poll_device(_tenant, %{"provider" => @console_source} = attempt) do
+    case SalixAgent.OpenCodeConsole.poll(attempt["device_code"]) do
+      {:pending, slow_down} -> {:ok, %{"status" => "pending", "slow_down" => slow_down}}
+      {:ok, token} -> {:ok, %{"console" => token}}
+      error -> error
+    end
+  end
+
+  defp poll_device(tenant, attempt),
+    do:
+      adapter(
+        tenant,
+        "/oauth/device/poll",
+        Map.take(attempt, ~w(provider device_auth_id user_code context))
+      )
+
+  defp save_authorization(tenant, _attempt, %{"console" => token}),
+    do: save_console(tenant, token)
 
   defp save_authorization(tenant, attempt, data) do
     if attempt["account_id"] do
@@ -1103,7 +1292,9 @@ defmodule SalixAgent.AccountPool do
     model = config["catalog_model"]
 
     base =
-      Map.drop(config, ~w(catalog_tenant catalog_model allow_paid profile_id protocol base_url))
+      config
+      |> Map.drop(~w(catalog_tenant catalog_model allow_paid profile_id protocol base_url))
+      |> put_route_session(identity)
 
     Log.context([tenant_id: tenant] ++ Log.sanitize(identity), fn ->
       Log.span("catalog_dispatch", [], fn ->
@@ -1112,9 +1303,9 @@ defmodule SalixAgent.AccountPool do
           Log.emit("catalog_candidates", candidate_count: length(attempts))
           # Output started, or a pool worker already received response bytes:
           # either way no other Profile may take the request over.
-          received = :atomics.new(1, [])
-          on_received = fn -> :atomics.put(received, 1, 1) end
-          started? = fn -> started?.() or :atomics.get(received, 1) == 1 end
+          received = SystemsRuntime.Atomics.new(1, [])
+          on_received = fn -> SystemsRuntime.Atomics.put(received, 1, 1) end
+          started? = fn -> started?.() or SystemsRuntime.Atomics.get(received, 1) == 1 end
           run_attempts(attempts, {call, on_received}, started?, identity, unavailable(model))
         else
           {:error, :not_configured} ->
@@ -1132,17 +1323,17 @@ defmodule SalixAgent.AccountPool do
   # model, subscriptions first, keys when pay-per-use is allowed.
   defp catalog_attempts(tenant, base, model, %{"profile_id" => id}) when is_binary(id) do
     case Store.get(tenant, id) do
-      {:ok, %{"credential_kind" => "subscription_oauth", "provider" => provider}}
+      {:ok, %{"credential" => "subscription", "source" => provider} = record}
       when provider in @pool_sources ->
         {:ok,
-         for {:ok, route} <- [plan_route(model, provider)] do
-           {:subscription,
+         for {:ok, route} <- [plan_route(model, provider)], not excluded?(record, model) do
+           {{:subscription, model}, funding(provider, nil),
             fn ->
               base |> pool_opts(tenant, provider, route["model"]) |> Map.put("account_pin", id)
             end}
          end}
 
-      {:ok, %{"credential_kind" => "provider_api_key", "disabled" => false} = record} ->
+      {:ok, %{"credential" => "api_key", "disabled" => false} = record} ->
         {:ok, key_attempts(tenant, base, model, [record])}
 
       {:ok, _} ->
@@ -1156,6 +1347,8 @@ defmodule SalixAgent.AccountPool do
     end
   end
 
+  # Only the Tenant's own Profiles serve a catalog model; the platform pays
+  # only for the Comma model, never for a model the member chose.
   defp catalog_attempts(tenant, base, model, config) do
     with {:ok, keys} <-
            if(config["allow_paid"] == true, do: Store.usable_api_keys(tenant), else: {:ok, []}) do
@@ -1163,14 +1356,19 @@ defmodule SalixAgent.AccountPool do
     end
   end
 
+  @platform SalixStore.Ids.platform_tenant_id()
+
+  @doc "The reserved tenant that owns platform-funded Profiles."
+  def platform_tenant, do: @platform
+
   @doc "Whether a tenant's Profile can serve a catalog model at all."
   def profile_serves?(tenant, id, model) when is_binary(id) do
     case Store.get(tenant, id) do
-      {:ok, %{"credential_kind" => "subscription_oauth", "provider" => provider}}
+      {:ok, %{"credential" => "subscription", "source" => provider} = record}
       when provider in @pool_sources ->
-        match?({:ok, _}, plan_route(model, provider))
+        match?({:ok, _}, plan_route(model, provider)) and not excluded?(record, model)
 
-      {:ok, %{"credential_kind" => "provider_api_key"} = record} ->
+      {:ok, %{"credential" => "api_key"} = record} ->
         match?({:ok, _, _}, key_route(record, model))
 
       _ ->
@@ -1180,11 +1378,201 @@ defmodule SalixAgent.AccountPool do
 
   def profile_serves?(_, _, _), do: false
 
+  @doc """
+  Whether the Tenant's own Codex subscription serves a catalog choice: its
+  pinned Profile is one, or, unpinned, an enabled, signed-in Codex
+  subscription of the Tenant serves the model. Reads at most the bounded
+  serving Profile page.
+  """
+  def codex_serves?(tenant, %{"kind" => "catalog", "model" => model} = choice)
+      when is_binary(tenant) do
+    case choice["profile_id"] do
+      id when is_binary(id) ->
+        match?(
+          {:ok, %{"credential" => "subscription", "source" => "codex"}},
+          Store.get(tenant, id)
+        ) and profile_serves?(tenant, id, model)
+
+      _unpinned ->
+        with :ok <- connection(tenant),
+             {:ok, %{profiles: profiles}} <- Store.serving_profiles(tenant),
+             {:ok, _route} <- plan_route(model, "codex") do
+          Enum.any?(profiles, fn profile ->
+            profile["credential"] == "subscription" and profile["source"] == "codex" and
+              not excluded?(profile, model)
+          end)
+        else
+          _ -> false
+        end
+    end
+  end
+
+  def codex_serves?(_tenant, _choice), do: false
+
   @doc "Whether a tenant's Profile is an API key (pay-per-use)."
   def key_profile?(tenant, id) when is_binary(id),
-    do: match?({:ok, %{"credential_kind" => "provider_api_key"}}, Store.get(tenant, id))
+    do: match?({:ok, %{"credential" => "api_key"}}, Store.get(tenant, id))
 
   def key_profile?(_, _), do: false
+
+  @doc """
+  Models that at least one Profile able to serve Agents now can serve: an
+  enabled API key, or an enabled, signed-in subscription. The server form of
+  the client's `servingProfiles`/`canServeAgents`. It reads at most 100
+  Profiles and returns at most `limit` models, those a subscription serves
+  first. Custom endpoints add the model ids they listed. `filter` (a function
+  of the model list) narrows the models before `limit` applies.
+  """
+  def servable_models(tenant, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 50)
+    filter = Keyword.get(opts, :filter, &Function.identity/1)
+    query = opts |> Keyword.get(:query) |> to_string() |> String.trim() |> String.downcase()
+
+    with :ok <- connection(tenant),
+         {:ok, %{profiles: profiles, truncated: profiles_truncated}} <-
+           Store.serving_profiles(tenant) do
+      {plans, keys} =
+        Enum.split_with(profiles, &(&1["credential"] == "subscription"))
+
+      plans = Enum.filter(plans, &(&1["source"] in @pool_sources))
+
+      catalog =
+        for model <- SalixAgent.Models.list(),
+            {_, _, _} = served <- [served_by(model["id"], plans, keys)],
+            do: servable_entry(model, served)
+
+      catalog_ids = MapSet.new(catalog, & &1["id"])
+
+      custom =
+        for %{"source" => "custom"} = key <- keys,
+            id <- List.wrap(key["models"]),
+            is_binary(id),
+            not MapSet.member?(catalog_ids, id),
+            not excluded?(key, id),
+            do: custom_entry(id, get_in(key, ["model_info", id]) || %{})
+
+      matching =
+        (catalog ++ Enum.uniq_by(custom, & &1["id"]))
+        |> Enum.filter(&servable_match?(&1, query))
+        |> filter.()
+        |> Enum.sort_by(&if(&1["served_by"] == "subscription", do: 0, else: 1))
+
+      {:ok,
+       %{
+         "models" => Enum.take(matching, limit),
+         "truncated" => profiles_truncated or length(matching) > limit
+       }}
+    else
+      # Without Profile storage no Profile exists.
+      {:error, :not_configured} -> {:ok, %{"models" => [], "truncated" => false}}
+      error -> error
+    end
+  end
+
+  @doc """
+  The models one Profile serves: the catalog models its plan or key serves,
+  less those it disabled, and a Custom endpoint's own models. What a station
+  that borrows it may run.
+  """
+  @spec profile_models(map()) :: [String.t()]
+  def profile_models(record) when is_map(record) do
+    # A key stored before endpoints by protocol names its one endpoint.
+    record =
+      case record do
+        %{"endpoints" => %{}} ->
+          record
+
+        %{"protocol" => p, "endpoint" => e} when is_binary(p) ->
+          Map.put(record, "endpoints", %{p => e})
+
+        _ ->
+          record
+      end
+
+    {plans, keys} =
+      if record["credential"] == "subscription",
+        do: {Enum.filter([record], &(&1["source"] in @pool_sources)), []},
+        else: {[], [record]}
+
+    catalog =
+      for model <- SalixAgent.Models.list(),
+          served_by(model["id"], plans, keys) != nil,
+          do: model["id"]
+
+    custom =
+      for id <- List.wrap(record["models"]), is_binary(id), not excluded?(record, id), do: id
+
+    Enum.uniq(catalog ++ custom)
+  end
+
+  # A plan serves the model when one of its signed-in accounts still offers it.
+  # The key sources that route it are reported as well, so a model a plan
+  # serves can also say that pay-per-use keys serve it.
+  defp served_by(model, plans, keys) do
+    subscriptions =
+      plans
+      |> Enum.reject(&excluded?(&1, model))
+      |> Enum.map(& &1["source"])
+      |> Enum.uniq()
+      |> Enum.filter(&match?({:ok, _}, plan_route(model, &1)))
+
+    key_sources =
+      keys
+      |> Enum.filter(&match?({:ok, _, _}, key_route(&1, model)))
+      |> Enum.map(& &1["source"])
+      |> Enum.uniq()
+
+    cond do
+      subscriptions != [] -> {"subscription", subscriptions, key_sources}
+      key_sources != [] -> {"api_key", [], key_sources}
+      true -> nil
+    end
+  end
+
+  defp servable_entry(model, {served_by, plans, key_sources}) do
+    model
+    |> Map.take(~w(id name family vendor efforts))
+    |> Map.merge(%{
+      "served_by" => served_by,
+      "subscription_plans" => plans,
+      "api_key_sources" => Enum.map(key_sources, &key_source/1),
+      "requires_allow_paid" => served_by != "subscription"
+    })
+  end
+
+  defp custom_entry(id, info) do
+    %{
+      "id" => id,
+      "name" => id,
+      "family" => nil,
+      "vendor" => nil,
+      "efforts" => info["efforts"] || [],
+      "served_by" => "api_key",
+      "subscription_plans" => [],
+      "api_key_sources" => [key_source("custom")],
+      "requires_allow_paid" => true
+    }
+  end
+
+  # A key source with its display name (`SalixAgent.Models.sources/0`).
+  defp key_source(id) do
+    name =
+      case SalixAgent.Models.source(id) do
+        {:ok, %{"name" => name}} when is_binary(name) -> name
+        _ -> id
+      end
+
+    %{"id" => id, "name" => name}
+  end
+
+  defp servable_match?(_model, ""), do: true
+
+  defp servable_match?(model, query) do
+    Enum.any?(
+      ~w(id name family vendor),
+      &String.contains?(String.downcase(to_string(model[&1])), query)
+    )
+  end
 
   # A plan serves a catalog route unless the route needs the Responses API
   # and the plan's pool does not send it upstream: Copilot sends Chat
@@ -1203,13 +1591,22 @@ defmodule SalixAgent.AccountPool do
 
   # Only plans with a usable account: an empty pool is not an attempt, so its
   # "unavailable" never hides the answer of a Profile that could have served.
+  # An account that turned the model off is not in its plan's pool for it.
   defp subscription_attempts(tenant, base, model) do
     for source <- @pool_sources,
         {:ok, route} <- [plan_route(model, source)],
-        {:ok, [_ | _]} <- [Store.candidates(tenant, source, route["model"])] do
-      {:subscription, fn -> pool_opts(base, tenant, source, route["model"]) end}
+        {:ok, [_ | _]} <- [Store.candidates(tenant, source, route["model"], nil, [], model)] do
+      {{:subscription, model}, funding(source, nil),
+       fn -> pool_opts(base, tenant, source, route["model"]) end}
     end
   end
+
+  # The Profile a failed attempt would have spent, for the member's own fix:
+  # its catalog source and, for a key, the Profile they named. Never a credential.
+  defp funding(source, nil), do: %{"source" => source}
+
+  defp funding(source, record),
+    do: %{"source" => source, "profile_id" => record["id"], "profile_name" => record["name"]}
 
   # Endpoint, credential and header fields a Profile's route replaces. The
   # rest of `base` is per-request runtime settings (streaming callbacks,
@@ -1225,28 +1622,189 @@ defmodule SalixAgent.AccountPool do
 
   defp key_attempts(tenant, base, model, keys) do
     for record <- keys, {:ok, request, protocol} <- [key_route(record, model)] do
-      {:api_key,
-       fn ->
-         case Store.open(tenant, record["id"], record["credentials"]) do
-           {:ok, credentials} when is_map(credentials) ->
-             key_opts(base, record, request, protocol, credentials["api_key"])
-
-           _ ->
-             nil
-         end
-       end}
+      {:api_key, funding(record["source"] || "custom", record),
+       fn -> open_key(tenant, base, record, request, protocol, "tenant") end}
     end
   end
 
+  defp open_key(tenant, base, record, request, protocol, scope) do
+    case Store.open(tenant, record["id"], record["credentials"]) do
+      {:ok, credentials} when is_map(credentials) ->
+        credentials = renew_console(tenant, record, credentials)
+        key_opts(base, record, request, protocol, credentials["api_key"], scope)
+
+      _ ->
+        nil
+    end
+  end
+
+  # ── OpenCode Go signed in with an OpenCode Console account ──────────────
+
+  # The Console's access token lasts 30 days; it is renewed this long before.
+  @console_renew_lead 3 * 24 * 3600
+
+  # A signed-in account is its key: one Profile per Console account, which a
+  # later sign-in to the same account renews rather than duplicates.
+  defp save_console(tenant, token) do
+    email = SalixAgent.OpenCodeConsole.email(token.access)
+    console = console_credentials(token, email)
+
+    with :ok <- connection(tenant),
+         {:ok, existing} <- console_profile(tenant, email) do
+      case existing do
+        nil ->
+          with {:ok, value, credentials} <-
+                 source_value(tenant, %{
+                   "source" => @console_source,
+                   "api_key" => token.access,
+                   "name" => console_name(email)
+                 }),
+               id = Store.id(),
+               {:ok, ciphertext} <- Store.seal(tenant, id, Map.merge(credentials, console)),
+               {:ok, record} <-
+                 Store.create(
+                   tenant,
+                   value
+                   |> Map.merge(%{
+                     "id" => id,
+                     "credential" => "api_key",
+                     "status" => "ok",
+                     "credentials" => ciphertext,
+                     "disabled" => false
+                   })
+                   |> put_console_email(email)
+                 ) do
+            {:ok, Store.public(record)}
+          end
+
+        record ->
+          with {:ok, ciphertext} <-
+                 Store.seal(
+                   tenant,
+                   record["id"],
+                   Map.merge(key_credentials(token.access), console)
+                 ),
+               {:ok, saved} <-
+                 Store.update_edition(tenant, record["id"], record["version"], fn current ->
+                   Store.update(
+                     tenant,
+                     current
+                     |> Map.put("credentials", ciphertext)
+                     |> Map.delete("refresh_deadline")
+                     |> put_key_hint(token.access),
+                     current["version"]
+                   )
+                 end) do
+            {:ok, Store.public(saved)}
+          end
+      end
+    end
+  end
+
+  defp console_credentials(token, email) do
+    %{
+      "console" =>
+        %{"refresh" => token.refresh, "expires_at" => token.expires_at}
+        |> then(&if(email, do: Map.put(&1, "email", email), else: &1))
+    }
+  end
+
+  defp console_name(nil), do: "OpenCode Go"
+  defp console_name(email), do: "OpenCode Go · " <> email
+
+  defp put_console_email(record, nil), do: Map.put(record, "console_email", "")
+  defp put_console_email(record, email), do: Map.put(record, "console_email", email)
+
+  # The Profile an earlier sign-in to this Console account made, if any.
+  defp console_profile(_tenant, nil), do: {:ok, nil}
+
+  defp console_profile(tenant, email) do
+    with {:ok, %{rows: rows}} <-
+           Store.query(
+             """
+             SELECT value,version FROM subscription_accounts
+             WHERE tenant_id=$1 AND value->>'source'=$2 AND value->>'console_email'=$3
+             ORDER BY id LIMIT 1
+             """,
+             [tenant, @console_source, email]
+           ) do
+      case rows do
+        [[value, version]] -> {:ok, Map.put(value, "version", version)}
+        [] -> {:ok, nil}
+      end
+    end
+  end
+
+  # A signed-in key close to running out is renewed first. The renewal is
+  # claimed on the Profile (`refresh_deadline`), so one request renews while
+  # the others keep the current key, which still works for days; a refresh
+  # token is spent when used. A refused renewal leaves the key as it is: it
+  # works until it runs out, and a new sign-in replaces it.
+  defp renew_console(
+         tenant,
+         record,
+         %{"console" => %{"refresh" => refresh} = console} = credentials
+       )
+       when is_binary(refresh) do
+    now = SystemsClock.system_time(:second)
+
+    if console["expires_at"] - now > @console_renew_lead or
+         (is_integer(record["refresh_deadline"]) and record["refresh_deadline"] > now) do
+      credentials
+    else
+      claim = Map.put(record, "refresh_deadline", now + 30)
+
+      with {:ok, claimed} <- Store.update_background(tenant, claim, record["version"]),
+           {:ok, token} <- SalixAgent.OpenCodeConsole.renew(refresh),
+           renewed =
+             credentials
+             |> Map.put("api_key", token.access)
+             |> Map.merge(console_credentials(token, console["email"])),
+           {:ok, ciphertext} <- Store.seal(tenant, record["id"], renewed),
+           {:ok, _saved} <-
+             Store.apply_background(
+               tenant,
+               record["id"],
+               &(&1["refresh_deadline"] == claimed["refresh_deadline"]),
+               &(&1
+                 |> Map.put("credentials", ciphertext)
+                 |> Map.delete("refresh_deadline")
+                 |> put_key_hint(token.access))
+             ) do
+        renewed
+      else
+        {:error, :refused} ->
+          # Signed out at the Console, or the token was spent elsewhere: not
+          # asked again before the key runs out, nor more than hourly after.
+          Log.emit("console_renew_refused")
+
+          Store.apply_background(
+            tenant,
+            record["id"],
+            &(&1["refresh_deadline"] == now + 30),
+            &Map.put(&1, "refresh_deadline", max(console["expires_at"], now + 3600))
+          )
+
+          credentials
+
+        {:error, reason} ->
+          Log.emit("console_renew_failed", reason: inspect(reason))
+          credentials
+      end
+    end
+  end
+
+  defp renew_console(_tenant, _record, credentials), do: credentials
+
   # The Profile's own credential only: the template's key never reaches a
   # Profile's endpoint. Only a Custom endpoint may have none.
-  defp key_opts(base, record, request, protocol, key) do
-    base = Map.drop(base, @route_fields)
+  defp key_opts(base, record, request, protocol, key, scope) do
+    {session, base} = Map.pop(Map.drop(base, @route_fields), "route_session")
 
     auth =
       cond do
         is_binary(key) and key != "" and protocol == "anthropic" and
-            record["connection"]["auth_scheme"] == "bearer" ->
+            record["auth"] == "bearer" ->
           %{"auth_token" => key}
 
         is_binary(key) and key != "" ->
@@ -1267,21 +1825,47 @@ defmodule SalixAgent.AccountPool do
         "protocol" => protocol,
         "base_url" => record["endpoints"][protocol],
         "model" => request,
-        "credential_scope" => "tenant"
+        "credential_scope" => scope
       })
+      |> put_source_headers(record, session)
     end
+  end
+
+  # OpenCode Go refuses a request without an `x-opencode-session` id (HTTP 400
+  # `MissingSessionID`): one per Session keeps its requests on one routing and
+  # prompt-cache lane. Without a Session, the Profile's own id.
+  defp put_source_headers(opts, %{"source" => "opencode-go"} = record, session),
+    do: Map.put(opts, "default_headers", %{"x-opencode-session" => session || record["id"]})
+
+  defp put_source_headers(opts, _record, _session), do: opts
+
+  # The Session a catalog request belongs to, for a source that keys its
+  # routing by it (`put_source_headers/3`).
+  defp put_route_session(base, identity) do
+    case identity[:session_id] || base["session_id"] do
+      session when is_binary(session) and session != "" ->
+        Map.put(base, "route_session", SalixAgent.LLM.prompt_cache_key(session))
+
+      _ ->
+        base
+    end
+  end
+
+  # A key serves nothing its owner turned off for it.
+  defp key_route(record, model) do
+    if excluded?(record, model), do: :error, else: source_route(record, model)
   end
 
   # The catalog names the request id a source uses. A Custom endpoint is not in
   # the catalog: it serves the model ids it listed when it was connected.
-  defp key_route(%{"source" => "custom", "endpoints" => endpoints} = record, model)
+  defp source_route(%{"source" => "custom", "endpoints" => endpoints} = record, model)
        when map_size(endpoints) == 1 do
     if model in List.wrap(record["models"]),
       do: {:ok, model, hd(Map.keys(endpoints))},
       else: :error
   end
 
-  defp key_route(%{"source" => source, "endpoints" => endpoints}, model)
+  defp source_route(%{"source" => source, "endpoints" => endpoints}, model)
        when is_binary(source) and is_map(endpoints) do
     case SalixAgent.Models.route(model, source) do
       {:ok, %{"model" => request, "protocol" => protocol}} when is_map_key(endpoints, protocol) ->
@@ -1292,12 +1876,12 @@ defmodule SalixAgent.AccountPool do
     end
   end
 
-  defp key_route(_, _), do: :error
+  defp source_route(_, _), do: :error
 
   defp run_attempts([], _call, _started?, _identity, last), do: last
 
   defp run_attempts(
-         [{kind, prepare} | rest],
+         [{kind, funding, prepare} | rest],
          {call, on_received} = calls,
          started?,
          identity,
@@ -1310,11 +1894,14 @@ defmodule SalixAgent.AccountPool do
       opts ->
         result =
           case kind do
-            :subscription -> dispatch_pool(opts, call, started?, identity, on_received)
-            :api_key -> call.(opts)
+            {:subscription, model} ->
+              dispatch_pool(opts, call, started?, identity, on_received, model)
+
+            :api_key ->
+              call.(opts)
           end
 
-        case result do
+        case tag_funding(result, funding) do
           {:error, meta} = error ->
             # Keep the first answer that another Profile could not change.
             if not started?.() and fail_over?(meta),
@@ -1337,6 +1924,14 @@ defmodule SalixAgent.AccountPool do
 
   defp fail_over?(_), do: false
 
+  defp tag_funding({:error, %{} = meta}, funding),
+    do: {:error, Map.put_new(meta, "funding", compact_funding(funding))}
+
+  defp tag_funding(result, _funding), do: result
+
+  defp compact_funding(funding),
+    do: funding |> Enum.reject(fn {_key, value} -> value in [nil, ""] end) |> Map.new()
+
   defp first_error({:error, %{"body" => "no enabled profile serves " <> _}}, error), do: error
   defp first_error(last, _error), do: last
 
@@ -1352,17 +1947,27 @@ defmodule SalixAgent.AccountPool do
   # A pinned account is the only candidate, whatever its rank in the pool. It
   # still passes the pool's filter: its plan, enabled and active, and quota
   # left for this model. Otherwise the request is cleanly unavailable.
-  defp pool_candidates(tenant, provider, %{"account_pin" => id} = config) when is_binary(id),
-    do: Store.candidates(tenant, provider, config["model"], id)
+  # `catalog_model`: the catalog id this request serves, so an account that
+  # turned it off is no candidate. Nil on a template's own pool route.
+  defp pool_candidates(tenant, provider, %{"account_pin" => id} = config, catalog_model)
+       when is_binary(id),
+       do: Store.candidates(tenant, provider, config["model"], id, [], catalog_model)
 
-  defp pool_candidates(tenant, provider, config),
-    do: Store.candidates(tenant, provider, config["model"])
+  defp pool_candidates(tenant, provider, config, catalog_model),
+    do: Store.candidates(tenant, provider, config["model"], nil, [], catalog_model)
 
   # `on_received` runs when a worker passes on the first response bytes.
   # At most this many accounts serve one request, refills included.
   @account_attempts 10
 
-  defp dispatch_pool(opts, call, started?, identity, on_received \\ fn -> :ok end) do
+  defp dispatch_pool(
+         opts,
+         call,
+         started?,
+         identity,
+         on_received \\ fn -> :ok end,
+         catalog_model \\ nil
+       ) do
     if owns_route?(opts) do
       config = Map.new(opts, fn {k, v} -> {to_string(k), v} end)
       tenant = config["account_pool_tenant"]
@@ -1372,7 +1977,7 @@ defmodule SalixAgent.AccountPool do
         Log.span("subscription_dispatch", [], fn ->
           case with(
                  :ok <- connection(tenant),
-                 do: pool_candidates(tenant, provider, config)
+                 do: pool_candidates(tenant, provider, config, catalog_model)
                ) do
             {:ok, candidates} ->
               {ready, cooling} = Enum.split_with(candidates, &(cooldown_ms(&1) == 0))
@@ -1405,7 +2010,14 @@ defmodule SalixAgent.AccountPool do
                 if is_binary(config["account_pin"]) do
                   []
                 else
-                  case Store.candidates(tenant, provider, config["model"], nil, tried) do
+                  case Store.candidates(
+                         tenant,
+                         provider,
+                         config["model"],
+                         nil,
+                         tried,
+                         catalog_model
+                       ) do
                     {:ok, more} -> Enum.filter(more, &(cooldown_ms(&1) == 0))
                     _ -> []
                   end
@@ -1436,20 +2048,8 @@ defmodule SalixAgent.AccountPool do
     end
   end
 
-  defp cooldown_ms(%{"cooldown_until" => value}) when is_binary(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, until, _} ->
-        until
-        |> DateTime.diff(DateTime.utc_now(), :microsecond)
-        |> Kernel.+(999)
-        |> div(1_000)
-        |> max(0)
-        |> min(30_000)
-
-      _ ->
-        0
-    end
-  end
+  defp cooldown_ms(%{"cooldown_until" => until}) when is_integer(until),
+    do: (until - SystemsClock.system_time(:millisecond)) |> max(0) |> min(30_000)
 
   defp cooldown_ms(_), do: 0
 
@@ -1496,7 +2096,7 @@ defmodule SalixAgent.AccountPool do
 
           credential = %{"provider" => provider, "credentials" => credentials}
 
-          received = :atomics.new(2, [])
+          received = SystemsRuntime.Atomics.new(2, [])
 
           transport = fn url, opts ->
             path = URI.parse(url).path
@@ -1506,10 +2106,10 @@ defmodule SalixAgent.AccountPool do
               opts,
               credential,
               fn ->
-                :atomics.put(received, 1, 1)
+                SystemsRuntime.Atomics.put(received, 1, 1)
                 on_received.()
               end,
-              fn -> :atomics.put(received, 2, 1) end
+              fn -> SystemsRuntime.Atomics.put(received, 2, 1) end
             )
           end
 
@@ -1524,7 +2124,7 @@ defmodule SalixAgent.AccountPool do
               # request, not the account, so other requests keep it. 401,
               # 402, 429, 5xx and transport failures still cool it down.
               # A worker that refused before running says nothing of the account.
-              rejected = :atomics.get(received, 2) == 1
+              rejected = SystemsRuntime.Atomics.get(received, 2) == 1
 
               unless rejected or status in [400, 403, 404], do: cool_down(tenant, record)
 
@@ -1540,7 +2140,7 @@ defmodule SalixAgent.AccountPool do
                 status == 400 ->
                   result
 
-                :atomics.get(received, 1) == 1 or started?.() ->
+                SystemsRuntime.Atomics.get(received, 1) == 1 or started?.() ->
                   Log.emit("subscription_retry_stopped", candidate_count: length(rest))
                   result
 
@@ -1580,19 +2180,16 @@ defmodule SalixAgent.AccountPool do
       [
         tenant_id: tenant,
         account_id: record["id"],
-        provider: record["provider"],
+        provider: record["source"],
         retry_after_ms: 30_000
       ],
       fn ->
         Log.span("subscription_account_cooldown", [], fn ->
-          Store.update(
+          Store.apply_background(
             tenant,
-            Map.put(
-              record,
-              "cooldown_until",
-              DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), 30))
-            ),
-            record["version"]
+            record["id"],
+            &same_credentials?(&1, record),
+            &Map.put(&1, "cooldown_until", SystemsClock.system_time(:millisecond) + 30_000)
           )
         end)
       end
@@ -1609,14 +2206,13 @@ defmodule SalixAgent.AccountPool do
            else: {:error, {:bad_request, "catalog models require a known model and allow_paid"}}
 
       %{"catalog_model" => _} ->
-        {:error, {:bad_request, "catalog models require a private template"}}
+        {:error, {:bad_request, "catalog models require a tenant"}}
 
       %{"account_pool" => provider} when is_binary(tenant) and is_map_key(@providers, provider) ->
         :ok
 
       %{"account_pool" => _} ->
-        {:error,
-         {:bad_request, "account pools require a private template and a subscription provider"}}
+        {:error, {:bad_request, "account pools require a tenant and a subscription provider"}}
 
       _ ->
         :ok
@@ -1630,20 +2226,25 @@ defmodule SalixAgent.AccountPool do
   end
 
   @doc "A model a Custom endpoint serves, shaped like a catalog entry."
+  # A model the catalog does not know takes what its Custom Profile says of it
+  # (`model_info`), else the defaults.
   def custom_model(tenant, model) do
-    if Store.custom_model?(tenant, model),
-      do:
+    case Store.custom_model_info(tenant, model) do
+      :error ->
+        {:error, :invalid_model_configuration}
+
+      {:ok, info} ->
         {:ok,
          %{
            "id" => model,
            "name" => model,
            "vendor" => nil,
-           "efforts" => [],
-           "max_tokens" => 32_000,
-           "context_tokens" => 0,
-           "images" => false
-         }},
-      else: {:error, :invalid_model_configuration}
+           "efforts" => info["efforts"] || [],
+           "max_tokens" => info["max_tokens"] || 32_000,
+           "context_tokens" => info["context_tokens"] || 0,
+           "images" => info["images"] == true
+         }}
+    end
   end
 
   def resolve_config(%{"catalog_model" => model} = config, tenant) do
@@ -1707,8 +2308,12 @@ defmodule SalixAgent.AccountPool do
 
   def agent_uses_pool?(agent_id, tenant) when is_binary(agent_id) and is_binary(tenant) do
     with {:ok, agent} <- SalixAgent.Control.get(agent_id, tenant),
-         {:ok, config} <- SalixAgent.Templates.resolve_llm_for_record(agent) do
-      owns_route?(config)
+         {:ok, config} <- SalixAgent.AgentModel.resolve_llm(agent) do
+      # Only the Tenant's own Profiles serve a catalog choice; it never falls
+      # back to platform credentials.
+      owns_route?(config) or
+        (is_map(config) and is_binary(config["catalog_model"]) and
+           config["catalog_tenant"] == tenant)
     else
       _ -> false
     end

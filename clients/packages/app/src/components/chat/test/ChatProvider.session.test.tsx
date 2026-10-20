@@ -1,9 +1,16 @@
-import { chatProtocolVersion } from "@comma/chat-contract";
+import { idleConversationChannelState } from "@comma/core/chat";
 import userEvent from "@testing-library/user-event";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
-import { render, screen, waitFor, act } from "@comma/test-utils/render";
-import { StrictMode, useLayoutEffect, useState } from "react";
-import type { CommaApiClient } from "../../../api";
+import { advance, flush } from "@comma/test-utils/fake-clock";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import { render as renderUi, screen } from "@comma/test-utils/render";
+import {
+  StrictMode,
+  useLayoutEffect,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { testProductLease } from "../../../test/productInboxProjectionHarness";
 import { HomeRoute } from "../../RouteScreens";
 import { ChatSidebarProvider } from "../../chat-sidebar/ChatSidebarContext";
@@ -19,7 +26,7 @@ import {
   type ChatContextValue,
   useChatRegistry,
 } from "../ChatProvider";
-import { ConversationChannel } from "../model/conversationChannel";
+import { CoreConversationChannel } from "../channel/CoreConversationChannel";
 import { useConversation } from "../conversation/useConversation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -59,112 +66,100 @@ vi.mock("../useWorkspaceSkills", () => ({
   useWorkspaceSkills: () => [],
 }));
 
+/** The window's views of conversations (`chatView`) it subscribed to and let go. */
+let views: { subscribed: number; unsubscribed: number } = {
+  subscribed: 0,
+  unsubscribed: 0,
+};
+/** The core the window's chat talks to: it shows nothing, unless a test scripts its chat. */
+let core = scriptedChat(undefined, false);
+
+function Core({ children }: { children: ReactNode }) {
+  return core.wrap(children);
+}
+
+function render(ui: ReactElement) {
+  return renderUi(ui, { wrapper: Core });
+}
+
 describe("ChatProvider session ownership", () => {
   beforeEach(() => {
+    core = scriptedChat(undefined, false);
     installNativeBridgeMock({ platform: "web" });
     workspaceChat.resolve.mockReset();
     workspaceChat.state = { status: "loading" };
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
   it("fails a delayed startup attempt closed after provider teardown", async () => {
     const resolution = deferred<ReadyResolution>();
     workspaceChat.resolve.mockReturnValue(resolution.promise);
-    const apiA = createApi();
     const sessionA = new AbortController();
-    const start = vi.spyOn(ConversationChannel.prototype, "start");
-    const send = vi.spyOn(ConversationChannel.prototype, "send");
+    const start = vi.spyOn(CoreConversationChannel.prototype, "start");
+    const send = vi.spyOn(CoreConversationChannel.prototype, "send");
     const rendered = render(
-      <ChatProvider
-        api={apiA}
-        productLease={testProductLease}
-        sessionSignal={sessionA.signal}
-      >
+      <ChatProvider productLease={testProductLease} sessionSignal={sessionA.signal}>
         <ChatSidebarProvider>
           <HomeRoute />
         </ChatSidebarProvider>
       </ChatProvider>
     );
 
-    await userEvent.type(screen.getByRole("textbox", { name: "AI prompt" }), "A");
-    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.type(screen.getByRole("textbox", { name: "AI prompt" }), "A");
+    await user.click(screen.getByRole("button", { name: "Send" }));
     expect(workspaceChat.resolve).toHaveBeenCalledOnce();
 
     rendered.unmount();
     resolution.resolve(readyResolution());
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
 
     expect(start).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
-    expect(apiA.streamConversationEvents).not.toHaveBeenCalled();
-    expect(apiA.sendMessage).not.toHaveBeenCalled();
+    expect(views.subscribed).toBe(0);
+    expect(core.sentTo("chatView.send")).toEqual([]);
   });
 
-  it("revokes an attempt-scoped API before a pending step can continue", async () => {
-    const api = createApi();
-    const pendingWorkspaces = deferred<never[]>();
-    vi.mocked(api.listWorkspaces).mockReturnValueOnce(pendingWorkspaces.promise);
+  it("revokes an attempt before a pending step can continue", async () => {
+    const pendingStep = deferred<string>();
     const contexts: ChatContextValue[] = [];
     render(
-      <ChatProvider api={api} productLease={testProductLease}>
+      <ChatProvider productLease={testProductLease}>
         <RegistryProbe onContext={(context) => contexts.push(context)} />
       </ChatProvider>
     );
     const attempt = contexts.at(-1)!.beginAttempt();
-    let attemptApi!: CommaApiClient;
-    const result = attempt.run(async (apiCapability) => {
-      attemptApi = apiCapability;
-      await apiCapability.listWorkspaces();
-      return apiCapability.bootstrapWorkspace();
+    let attemptSignal!: AbortSignal;
+    const result = attempt.run((signal) => {
+      attemptSignal = signal;
+      return pendingStep.promise;
     });
 
-    expect(api.listWorkspaces).toHaveBeenCalledOnce();
     attempt.release();
-    pendingWorkspaces.resolve([]);
+    pendingStep.resolve("late");
 
     await expect(result).rejects.toBeInstanceOf(StaleChatSessionError);
-    await expect(attemptApi.listWorkspaces()).rejects.toBeInstanceOf(
-      StaleChatSessionError
-    );
-    expect(api.bootstrapWorkspace).not.toHaveBeenCalled();
+    expect(attemptSignal.aborted).toBe(true);
   });
 
-  it("revokes old API and registry capabilities without letting an old release touch B", async () => {
-    vi.useFakeTimers();
-    const apiA = createApi();
-    const apiB = createApi();
+  it("revokes old registry capabilities without letting an old release touch B", async () => {
     const sessionA = new AbortController();
     const sessionB = new AbortController();
     const contexts: ChatContextValue[] = [];
     const rendered = render(
-      <ChatProvider
-        api={apiA}
-        productLease={testProductLease}
-        releaseDelayMs={0}
-        sessionSignal={sessionA.signal}
-      >
+      <ChatProvider productLease={testProductLease} sessionSignal={sessionA.signal}>
         <RegistryProbe onContext={(context) => contexts.push(context)} />
       </ChatProvider>
     );
     const contextA = contexts.at(-1)!;
-    const pendingApiCall = deferred<never[]>();
-    vi.mocked(apiA.listWorkspaces).mockReturnValueOnce(pendingApiCall.promise);
-    const oldApiResult = contextA.api.listWorkspaces();
     const leaseA = contextA.retain("wsp_same", "grp_test", "cnv_same");
 
     sessionA.abort();
     rendered.rerender(
-      <ChatProvider
-        api={apiB}
-        productLease={testProductLease}
-        releaseDelayMs={0}
-        sessionSignal={sessionB.signal}
-      >
+      <ChatProvider productLease={testProductLease} sessionSignal={sessionB.signal}>
         <RegistryProbe onContext={(context) => contexts.push(context)} />
       </ChatProvider>
     );
@@ -172,21 +167,16 @@ describe("ChatProvider session ownership", () => {
     const leaseB = contextB.retain("wsp_same", "grp_test", "cnv_same");
     const stopB = vi.spyOn(leaseB.channel, "stop");
 
-    pendingApiCall.resolve([]);
-    await expect(oldApiResult).rejects.toBeInstanceOf(StaleChatSessionError);
-    await expect(contextA.api.listWorkspaces()).rejects.toBeInstanceOf(
-      StaleChatSessionError
-    );
     expect(() => contextA.retain("wsp_same", "grp_test", "cnv_same")).toThrow(
       StaleChatSessionError
     );
 
     leaseA.release();
-    await vi.runAllTimersAsync();
+    await flush();
     expect(stopB).not.toHaveBeenCalled();
 
     leaseB.release();
-    await vi.runAllTimersAsync();
+    await flush();
     expect(stopB).toHaveBeenCalledOnce();
   });
 
@@ -194,11 +184,7 @@ describe("ChatProvider session ownership", () => {
     const sessionA = new AbortController();
     const contexts: ChatContextValue[] = [];
     const rendered = render(
-      <ChatProvider
-        api={createApi()}
-        productLease={testProductLease}
-        sessionSignal={sessionA.signal}
-      >
+      <ChatProvider productLease={testProductLease} sessionSignal={sessionA.signal}>
         <RegistryProbe onContext={(context) => contexts.push(context)} />
       </ChatProvider>
     );
@@ -245,7 +231,6 @@ describe("ChatProvider session ownership", () => {
     // generation bump — deliberately keeps the target; see the carry test.)
     rendered.rerender(
       <ChatProvider
-        api={createApi()}
         productLease={{
           ...testProductLease,
           sessionId: `${testProductLease.sessionId}-relogin`,
@@ -262,44 +247,31 @@ describe("ChatProvider session ownership", () => {
   it("opens prepared canonical content synchronously and isolates it from another login", () => {
     const contexts: ChatContextValue[] = [];
     const view = render(
-      <ChatProvider api={createApi()} productLease={testProductLease}>
+      <ChatProvider productLease={testProductLease}>
         <RegistryProbe onContext={(context) => contexts.push(context)} />
       </ChatProvider>
     );
     const registry = contexts.at(-1)!;
+    // What the core read ahead (chat.prepare): the conversation and its last messages as the transcript shows them.
     registry.rememberConversationSnapshot({
-      group_id: "grp_test",
-      id: "cnv_private_tail",
-      kind: "agent_task",
-      status: "ready_for_review",
-      title: "Private tail",
-      message_count: 100,
+      conversation: {
+        group_id: "grp_test",
+        id: "cnv_prepared",
+        kind: "agent_task",
+        status: "active",
+        title: "Prepared Task",
+        updated_at: 2,
+        messages: [],
+      },
       messages: [
         {
-          message_id: "msg_delivery",
-          kind: "app_event",
-          actor_type: "system",
-          content: [],
-          metadata: { event_type: "provider.status" },
-        },
-      ],
-    });
-    expect(
-      registry.getRetainedSnapshot("grp_test", "cnv_private_tail")
-    ).toBeUndefined();
-    registry.rememberConversationSnapshot({
-      group_id: "grp_test",
-      id: "cnv_prepared",
-      kind: "agent_task",
-      status: "active",
-      title: "Prepared Task",
-      updated_at: 2,
-      messages: [
-        {
-          message_id: "msg_prepared",
-          kind: "message",
-          actor_type: "agent",
-          content: [{ type: "text", text: "Ready before navigation" }],
+          messageId: "msg_prepared",
+          role: "assistant",
+          text: "Ready before navigation",
+          attachments: [],
+          refs: [],
+          delivery: "sent",
+          source: "server",
         },
       ],
     });
@@ -309,10 +281,7 @@ describe("ChatProvider session ownership", () => {
     );
     lease.release();
     view.rerender(
-      <ChatProvider
-        api={createApi()}
-        productLease={{ ...testProductLease, sessionId: "another-login" }}
-      >
+      <ChatProvider productLease={{ ...testProductLease, sessionId: "another-login" }}>
         <RegistryProbe onContext={(context) => contexts.push(context)} />
       </ChatProvider>
     );
@@ -324,7 +293,7 @@ describe("ChatProvider session ownership", () => {
   it("retains only the lightweight canonical Home conversation summary", () => {
     const contexts: ChatContextValue[] = [];
     render(
-      <ChatProvider api={createApi()} productLease={testProductLease}>
+      <ChatProvider productLease={testProductLease}>
         <RegistryProbe onContext={(context) => contexts.push(context)} />
       </ChatProvider>
     );
@@ -381,7 +350,7 @@ describe("ChatProvider session ownership", () => {
   it("carries the Home target across a same-session generation remount only", () => {
     const contexts: ChatContextValue[] = [];
     const rendered = render(
-      <ChatProvider api={createApi()} productLease={testProductLease}>
+      <ChatProvider productLease={testProductLease}>
         <RegistryProbe onContext={(context) => contexts.push(context)} />
       </ChatProvider>
     );
@@ -393,7 +362,6 @@ describe("ChatProvider session ownership", () => {
     // route-independent Comma assistant status owner never drops its lease.
     rendered.rerender(
       <ChatProvider
-        api={createApi()}
         productLease={{
           ...testProductLease,
           generation: testProductLease.generation + 1,
@@ -415,7 +383,6 @@ describe("ChatProvider session ownership", () => {
     contextB.retireHomeConversationTarget("grp_test", "cnv_a");
     rendered.rerender(
       <ChatProvider
-        api={createApi()}
         productLease={{
           ...testProductLease,
           generation: testProductLease.generation + 2,
@@ -430,7 +397,6 @@ describe("ChatProvider session ownership", () => {
     contexts.at(-1)!.rememberHomeConversationTarget("wsp_a", "grp_test", "cnv_a");
     rendered.rerender(
       <ChatProvider
-        api={createApi()}
         productLease={{
           ...testProductLease,
           generation: testProductLease.generation + 3,
@@ -454,76 +420,44 @@ describe("ChatProvider session ownership", () => {
       source: "server" as const,
       text: "Carried history",
     };
-    const runtimeSnapshot = {
-      protocolVersion: chatProtocolVersion,
-      revision: 1,
-      sessions: [
-        {
-          conversationId: "cnv_seed",
-          groupId: "grp_seed",
-          draftOwnerSurfaceId: undefined,
-          key: "grp_seed/cnv_seed",
-          refs: 1,
-          revision: 1,
-          state: {
-            activity: undefined,
-            assistantDraft: undefined,
-            awaitingReply: false,
-            awaitingSince: undefined,
-            awaitingTimedOut: false,
-            connection: "live",
-            conversation: undefined,
-            draft: "",
-            draftAttachments: [],
-            errorKind: undefined,
-            lastBackoffMs: 0,
-            messages: [transcriptMessage],
-            pending: [],
-            serverMessages: [transcriptMessage],
-            status: "ready",
-            syncWarning: undefined,
-          },
-          workspaceId: "wsp_seed",
-        },
-      ],
-    };
-    installNativeBridgeMock({
-      chat: {
-        release: vi.fn(async () => ({ revision: 2 })),
-        retain: vi.fn(async () => ({ revision: 1 })),
-        state: {
-          get: vi.fn(async (input: { session: unknown }) => ({
-            session: input.session,
-            snapshot: runtimeSnapshot,
-          })),
-          subscribe: vi.fn(() => vi.fn()),
-        },
-      } as never,
-      platform: "electron",
-      self: { role: "main-window", windowId: "renderer-1" },
+    core = createScriptedCore({
+      values: (topic) =>
+        topic.topic === "chatView"
+          ? {
+              session: {
+                sessionId: testProductLease.sessionId,
+                audience: testProductLease.audience,
+              },
+              revision: 1,
+              draftEpoch: 0,
+              lease: { leaseId: "lease", subscriberId: "web:test:grp_seed/cnv_seed" },
+              state: {
+                ...idleConversationChannelState,
+                connection: "live" as const,
+                messages: [transcriptMessage],
+                serverMessages: [transcriptMessage],
+                status: "ready" as const,
+              },
+            }
+          : undefined,
     });
     const contexts: ChatContextValue[] = [];
     const rendered = render(
-      <ChatProvider
-        api={createApi()}
-        productLease={testProductLease}
-        releaseDelayMs={0}
-      >
+      <ChatProvider productLease={testProductLease}>
         <RegistryProbe onContext={(context) => contexts.push(context)} />
       </ChatProvider>
     );
     const leaseA = contexts.at(-1)!.retain("wsp_seed", "grp_seed", "cnv_seed");
-    await waitFor(() =>
-      expect(leaseA.channel.getSnapshot().messages.map((item) => item.text)).toEqual([
-        "Carried history",
-      ])
-    );
+    await flush();
+    expect(leaseA.channel.getSnapshot().messages.map((item) => item.text)).toEqual([
+      "Carried history",
+    ]);
     const seededRows = leaseA.channel.getSnapshot().serverMessages;
 
     // Navigating away lets the lease and transport expire, but the next
     // render can still read the canonical transcript without native IPC.
     leaseA.release();
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await advance(10);
     expect(
       contexts.at(-1)!.getRetainedSnapshot("grp_seed", "cnv_seed")?.serverMessages
     ).toBe(seededRows);
@@ -535,7 +469,6 @@ describe("ChatProvider session ownership", () => {
     // round-trip — with the previous rows' object identities intact.
     rendered.rerender(
       <ChatProvider
-        api={createApi()}
         productLease={{
           ...testProductLease,
           generation: testProductLease.generation + 1,
@@ -551,7 +484,6 @@ describe("ChatProvider session ownership", () => {
     // A different signed-in session gets a cold channel, never a seed.
     rendered.rerender(
       <ChatProvider
-        api={createApi()}
         productLease={{
           ...testProductLease,
           generation: testProductLease.generation + 2,
@@ -566,60 +498,52 @@ describe("ChatProvider session ownership", () => {
   });
 
   it("reactivates the current generation after StrictMode's simulated cleanup", async () => {
-    const api = createApi();
+    core = scriptedChat();
     const contexts: ChatContextValue[] = [];
     const session = new AbortController();
     render(
       <StrictMode>
-        <ChatProvider
-          api={api}
-          productLease={testProductLease}
-          releaseDelayMs={0}
-          sessionSignal={session.signal}
-        >
+        <ChatProvider productLease={testProductLease} sessionSignal={session.signal}>
           <RegistryProbe onContext={(context) => contexts.push(context)} />
           <ConversationProbe />
         </ChatProvider>
       </StrictMode>
     );
 
-    const context = contexts.at(-1)!;
-    await expect(context.api.listWorkspaces()).resolves.toEqual([]);
-    await waitFor(() =>
-      expect(screen.getByRole("status", { name: "strict-status" })).toHaveTextContent(
-        "ready"
-      )
+    await flush();
+    expect(screen.getByRole("status", { name: "strict-status" })).toHaveTextContent(
+      "ready"
     );
-    expect(api.streamConversationEvents).toHaveBeenCalledOnce();
+    // The window retained its conversation in the core once and kept it: every release StrictMode's simulated
+    // cleanup made was answered by a retain. That the core keeps the conversation's one stream through such a
+    // release and retain is the core's own: core/test/chat/chat.test.ts, "keeps its conversation's one stream
+    // when it lets go and retains it again within the release delay".
+    expect(views.subscribed).toBeGreaterThan(0);
+    expect(views.subscribed).toBe(views.unsubscribed + 1);
   });
 
   it("keeps the Home conversation lease while route consumers unmount", async () => {
-    const api = createApi();
-    const rendered = render(homeLeaseTree(api, { route: true }));
+    core = scriptedChat();
+    const rendered = render(homeLeaseTree({ route: true }));
 
-    await waitFor(() =>
-      expect(screen.getByRole("status", { name: "strict-status" })).toHaveTextContent(
-        "ready:Chat"
-      )
+    await flush();
+    expect(screen.getByRole("status", { name: "strict-status" })).toHaveTextContent(
+      "ready:Chat"
     );
 
-    rendered.rerender(homeLeaseTree(api, { route: false }));
-    await waitFor(() =>
-      expect(screen.queryByRole("status", { name: "strict-status" })).toBeNull()
-    );
-    await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
-    });
-    rendered.rerender(homeLeaseTree(api, { route: false }));
+    rendered.rerender(homeLeaseTree({ route: false }));
+    await flush();
+    expect(screen.queryByRole("status", { name: "strict-status" })).toBeNull();
+    await flush();
+    rendered.rerender(homeLeaseTree({ route: false }));
     expect(
       screen.getByRole("status", { name: "home-lease-snapshot" })
     ).toHaveTextContent("ready:Chat");
 
-    rendered.rerender(homeLeaseTree(api, { route: true }));
-    await waitFor(() =>
-      expect(screen.getByRole("status", { name: "strict-status" })).toHaveTextContent(
-        "ready:Chat"
-      )
+    rendered.rerender(homeLeaseTree({ route: true }));
+    await flush();
+    expect(screen.getByRole("status", { name: "strict-status" })).toHaveTextContent(
+      "ready:Chat"
     );
     expect(
       screen.getByRole("status", { name: "home-lease-snapshot" })
@@ -627,21 +551,20 @@ describe("ChatProvider session ownership", () => {
   });
 
   it("keeps unkeyed Settings state and Home history across a generation bump", async () => {
-    const api = createApi("Kept through Settings");
+    core = scriptedChat("Kept through Settings");
     const rendered = render(
-      authenticatedSessionTree(api, testProductLease, { view: "home" })
+      authenticatedSessionTree(testProductLease, { view: "home" })
     );
 
-    await waitFor(() =>
-      expect(screen.getByRole("status", { name: "home-history" })).toHaveTextContent(
-        "Kept through Settings"
-      )
+    await flush();
+    expect(screen.getByRole("status", { name: "home-history" })).toHaveTextContent(
+      "Kept through Settings"
     );
 
-    rendered.rerender(
-      authenticatedSessionTree(api, testProductLease, { view: "settings" })
-    );
-    await userEvent.click(screen.getByRole("button", { name: "Open edit name" }));
+    rendered.rerender(authenticatedSessionTree(testProductLease, { view: "settings" }));
+    await userEvent
+      .setup({ advanceTimers: vi.advanceTimersByTime })
+      .click(screen.getByRole("button", { name: "Open edit name" }));
     expect(screen.getByRole("status", { name: "settings-category" })).toHaveTextContent(
       "profile"
     );
@@ -651,7 +574,6 @@ describe("ChatProvider session ownership", () => {
 
     rendered.rerender(
       authenticatedSessionTree(
-        api,
         { ...testProductLease, generation: testProductLease.generation + 1 },
         { view: "settings" }
       )
@@ -662,15 +584,13 @@ describe("ChatProvider session ownership", () => {
     expect(screen.getByRole("status", { name: "settings-draft" })).toHaveTextContent(
       "Ada Lovelace"
     );
-    await waitFor(() =>
-      expect(screen.getByRole("status", { name: "home-history" })).toHaveTextContent(
-        "Kept through Settings"
-      )
+    await flush();
+    expect(screen.getByRole("status", { name: "home-history" })).toHaveTextContent(
+      "Kept through Settings"
     );
 
     rendered.rerender(
       authenticatedSessionTree(
-        api,
         { ...testProductLease, generation: testProductLease.generation + 1 },
         { view: "home" }
       )
@@ -684,55 +604,41 @@ describe("ChatProvider session ownership", () => {
   });
 
   it("fails observer reads closed to an empty snapshot during synchronous revocation", async () => {
-    const api = createApi();
+    core = scriptedChat();
     const session = new AbortController();
     render(
-      <ChatProvider
-        api={api}
-        productLease={testProductLease}
-        releaseDelayMs={0}
-        sessionSignal={session.signal}
-      >
+      <ChatProvider productLease={testProductLease} sessionSignal={session.signal}>
         <ConversationProbe />
       </ChatProvider>
     );
 
-    await waitFor(() =>
-      expect(screen.getByRole("status", { name: "strict-status" })).toHaveTextContent(
-        "ready:Chat"
-      )
+    await flush();
+    expect(screen.getByRole("status", { name: "strict-status" })).toHaveTextContent(
+      "ready:Chat"
     );
 
     session.abort();
 
-    await waitFor(() =>
-      expect(screen.getByRole("status", { name: "strict-status" })).toHaveTextContent(
-        "idle:"
-      )
+    await flush();
+    expect(screen.getByRole("status", { name: "strict-status" })).toHaveTextContent(
+      "idle:"
     );
   });
 
   it("fails a passive retain closed when revocation wins the commit race", async () => {
-    const api = createApi();
     const session = new AbortController();
     render(
-      <ChatProvider
-        api={api}
-        productLease={testProductLease}
-        releaseDelayMs={0}
-        sessionSignal={session.signal}
-      >
+      <ChatProvider productLease={testProductLease} sessionSignal={session.signal}>
         <AbortSessionInLayout controller={session} />
         <ConversationProbe />
       </ChatProvider>
     );
 
-    await waitFor(() =>
-      expect(screen.getByRole("status", { name: "strict-status" })).toHaveTextContent(
-        "idle:"
-      )
+    await flush();
+    expect(screen.getByRole("status", { name: "strict-status" })).toHaveTextContent(
+      "idle:"
     );
-    expect(api.streamConversationEvents).not.toHaveBeenCalled();
+    expect(views.subscribed).toBe(0);
   });
 });
 
@@ -766,9 +672,9 @@ function HomeLeaseSnapshot() {
   );
 }
 
-function homeLeaseTree(api: CommaApiClient, { route }: { route: boolean }) {
+function homeLeaseTree({ route }: { route: boolean }) {
   return (
-    <ChatProvider api={api} productLease={testProductLease} releaseDelayMs={0}>
+    <ChatProvider productLease={testProductLease}>
       <RememberHomeTarget />
       <CommaCenterStatusOwner />
       <HomeLeaseSnapshot />
@@ -778,12 +684,11 @@ function homeLeaseTree(api: CommaApiClient, { route }: { route: boolean }) {
 }
 
 function authenticatedSessionTree(
-  api: CommaApiClient,
   productLease: typeof testProductLease,
   { view }: { view: "home" | "settings" }
 ) {
   return (
-    <ChatSessionProvider api={api} productLease={productLease} releaseDelayMs={0}>
+    <ChatSessionProvider productLease={productLease}>
       <CommaCenterStatusProvider>
         <ChatConsumerBoundary>
           <CommaCenterStatusOwner />
@@ -850,48 +755,64 @@ function AbortSessionInLayout({ controller }: { controller: AbortController }) {
   return null;
 }
 
-function createApi(historyText?: string) {
-  return {
-    bootstrapWorkspace: vi.fn(),
-    listWorkspaces: vi.fn(async () => []),
-    pollConversation: vi.fn(async (groupId: string, conversationId: string) => ({
-      conversation: {
-        group_id: groupId,
-        id: conversationId,
-        kind: "user_chat" as const,
-        messages: historyText
-          ? [
-              {
-                actor_type: "agent",
-                content: [{ text: historyText, type: "text" }],
-                created_at: 1_720_000_002,
-                kind: "message",
-                message_id: "msg-settings-history",
+/**
+ * The window's chat on a scripted core (what it shows, not the core's own behavior): Home's conversation, titled
+ * "Chat", with `historyText` as its one message, while a window shows it (`shows: false`: never). Counts the views
+ * the window subscribes to and lets go (`views`).
+ */
+function scriptedChat(historyText?: string, shows = true) {
+  const session = {
+    sessionId: testProductLease.sessionId,
+    audience: testProductLease.audience,
+  };
+  const counted = { subscribed: 0, unsubscribed: 0 };
+  views = counted;
+  const messages = historyText
+    ? [
+        {
+          attachments: [],
+          delivery: "sent" as const,
+          messageId: "msg-settings-history",
+          parts: [{ kind: "markdown" as const, text: historyText }],
+          refs: [],
+          role: "assistant" as const,
+          source: "server" as const,
+          text: historyText,
+        },
+      ]
+    : [];
+  return createScriptedCore({
+    values: (topic) =>
+      topic.topic === "chatView" && shows
+        ? {
+            session,
+            revision: 1,
+            draftEpoch: 0,
+            lease: { leaseId: "lease", subscriberId: "web:test:grp_strict/cnv_strict" },
+            state: {
+              ...idleConversationChannelState,
+              connection: "live" as const,
+              conversation: {
+                group_id: "grp_strict",
+                id: "cnv_strict",
+                kind: "user_chat" as const,
+                status: "active",
+                title: "Chat",
               },
-            ]
-          : [],
-        status: "active",
-        title: "Chat",
-      },
-      notModified: false,
-    })),
-    streamConversationEvents: vi.fn(
-      async (
-        _groupId: string,
-        _conversationId: string,
-        opts: Parameters<CommaApiClient["streamConversationEvents"]>[2]
-      ) =>
-        new Promise<void>((resolve) => {
-          if (opts.signal?.aborted) {
-            resolve();
-            return;
+              messages,
+              serverMessages: messages,
+              status: "ready" as const,
+            },
           }
-          opts.signal?.addEventListener("abort", () => resolve(), { once: true });
-        })
-    ),
-    sendMessage: vi.fn(),
-    uploadGroupFile: vi.fn(),
-  } as unknown as CommaApiClient;
+        : undefined,
+    calls: () => ({ revision: 1, draftEpoch: 0 }),
+    onSubscribe: (topic) => {
+      if (topic.topic === "chatView") counted.subscribed += 1;
+    },
+    onUnsubscribe: (topic) => {
+      if (topic.topic === "chatView") counted.unsubscribed += 1;
+    },
+  });
 }
 
 type ReadyResolution = ReturnType<typeof readyResolution>;

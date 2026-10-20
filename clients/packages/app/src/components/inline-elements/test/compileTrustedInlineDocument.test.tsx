@@ -1,5 +1,5 @@
 import { render, screen } from "@comma/test-utils/render";
-import { MarkdownStream } from "@comma/ui";
+import { MarkdownStream } from "@comma/ui/components/markdown-stream";
 import { describe, expect, it } from "vitest";
 import { compileTrustedInlineDocument } from "../compileTrustedInlineDocument";
 

@@ -11,11 +11,5 @@ npm run build
 The app reuses the Salix admin bearer token flow. Set the backend URL and admin
 key on `/`, then open `/e2e-reports`.
 
-The vendored Playwright Trace Viewer is served from:
-
-```text
-/e2e-reports/trace-viewer/
-```
-
-The trace viewer files are served from the installed `playwright-core` package
-in development and emitted into the production build by the Vite config.
+The Playwright Trace Viewer is served from `/e2e-reports/trace-viewer/`. It
+comes from the installed `playwright-core` package.

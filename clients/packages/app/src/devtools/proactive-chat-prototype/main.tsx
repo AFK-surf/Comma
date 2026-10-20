@@ -1,3 +1,4 @@
+import { uiClock } from "@comma/ui/clock";
 // Throwaway UI: five fictional scenarios in Comma Home, with three presentation
 // variants selected by ?variant=A|B|C. No provider, model, or product mutations.
 // Visual thesis: Comma's warm neutral Home, quiet typography, one useful message.
@@ -259,11 +260,10 @@ function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [switchVariant]);
   useEffect(() => {
-    const frame = requestAnimationFrame(() => {
+    return uiClock.frame(() => {
       const viewport = chatViewport.current;
       if (viewport) viewport.scrollTo({ top: viewport.scrollHeight });
     });
-    return () => cancelAnimationFrame(frame);
   }, [sceneId, phase, variant, expanded, advanced]);
   function action(kind: "primary" | "snooze" | "done") {
     setNotice("");

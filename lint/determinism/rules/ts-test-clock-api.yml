@@ -1,0 +1,25 @@
+id: tsx-test-clock-api
+language: tsx
+severity: error
+message: "A test replaces or leaves the test clock."
+note: |
+  Every jsdom test already runs on the fake clock from setup-clock.ts, which
+  stays installed. Move it (advance, flush, vi.advanceTimersByTime) instead of
+  installing or removing a clock.
+metadata:
+  category: clock
+rule:
+  any:
+    - pattern: vi.useFakeTimers($$$)
+    - pattern: vi.useRealTimers()
+    - pattern: useFakeClock($$$)
+files:
+  - "clients/apps/**/test/**/*.test.tsx"
+  - "clients/packages/**/test/**/*.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"
+ignores:
+  - "clients/apps/**/test/**/*.chromium.test.tsx"
+  - "clients/packages/**/test/**/*.chromium.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"

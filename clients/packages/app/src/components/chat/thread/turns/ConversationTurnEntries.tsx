@@ -52,7 +52,7 @@ export const ConversationTurnEntries = memo(function ConversationTurnEntries({
     rows.push(...renderEntry(visualKey ? { ...entry, key: visualKey } : entry, turn));
   }
   // Before the first body this is the reply's waiting position. Once content
-  // exists, notices and Side Chat's current tool activity follow the body.
+  // exists, notices follow the body.
   rows.push(
     <Fragment key="response-status">{responseFeedback?.({ hasResponse })}</Fragment>
   );

@@ -6,8 +6,9 @@ import { NativeSessionAdmissionError } from "../modules/ipc";
 import {
   getCurrentNativeSessionAdmission,
   MainNativeSessionAdmissionGuard,
-  MainProductCredentialAuthority,
+  MainCredentialGate,
 } from "../modules/session";
+import { acceptVerified, beginInvalidation } from "../../test-support/session-gate";
 
 const audience = "https://api.comma.example";
 const requiredContract = {
@@ -89,7 +90,7 @@ describe("MainNativeSessionAdmissionGuard", () => {
       input: { session: lease },
     });
 
-    authority.beginInvalidation({
+    beginInvalidation(authority, {
       authorityInstanceId: lease.authorityInstanceId,
       expectedAudience: lease.audience,
       expectedSessionId: lease.sessionId,
@@ -107,7 +108,7 @@ describe("MainNativeSessionAdmissionGuard", () => {
       expect(getCurrentNativeSessionAdmission().principalUserId).toBe("user-1");
       return delayed.promise;
     });
-    authority.beginInvalidation({
+    beginInvalidation(authority, {
       authorityInstanceId: lease.authorityInstanceId,
       expectedAudience: lease.audience,
       expectedSessionId: lease.sessionId,
@@ -137,11 +138,11 @@ describe("MainNativeSessionAdmissionGuard", () => {
 });
 
 function createGuard() {
-  const authority = new MainProductCredentialAuthority({
+  const authority = new MainCredentialGate({
     authorityInstanceId: "authority-1",
     trustedAudience: audience,
   });
-  const snapshot = authority.acceptVerifiedCredential({
+  const snapshot = acceptVerified(authority, {
     audience,
     email: "peng@example.com",
     expiresAtEpochSeconds: 1_900_000_000,

@@ -1,5 +1,5 @@
 defmodule SalixStore.SlackTriageChannelExpressionModeMigrationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{Repo, SlackTriageChannels, ULID}
 

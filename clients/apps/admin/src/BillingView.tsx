@@ -1,18 +1,12 @@
-import { FreeRouterModelsPanel } from "./FreeRouterModelsPanel";
-import { Badge, Button, InputField, PlusIcon, ScrollArea } from "@comma/ui";
-import { useEffect, useMemo, useState } from "react";
-import {
-  createIdempotencyKey,
-  isAdminAccessDenied,
-  isAdminSessionRejection,
-  type AdminApi,
-  type AdminPackageVersion,
-  type AdminRedeemCode,
-  type AdminRedeemCodeCreation,
-  type AdminRedeemTarget,
-  type AdminRedemption,
-  type AdminRedemptionResult,
-} from "./adminApi";
+import { Badge } from "@comma/ui/components/Badge";
+import { Button } from "@comma/ui/components/Button";
+import { InputField } from "@comma/ui/components/input";
+import { PlusIcon, SearchIcon } from "@comma/ui/components/icons";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import type { AdminPackageVersion } from "./adminApi";
+import { lookupMatchLabel, lookupSubtitle } from "./AdminSearchPalette";
+import { confirmationBusy } from "./adminModel";
+import { useAdminCommand, useAdminState } from "./adminRuntime";
 import {
   AdminConfirmationDialog,
   AdminDrawer,
@@ -21,120 +15,44 @@ import {
   AdminState,
   DetailList,
   NativeField,
-  ReasonField,
   StatusBadge,
   displayText,
   formatIso,
 } from "./adminUi";
-import { adminErrorMessage, guardedAdminCommand } from "./adminErrors";
+import type {
+  ApplyCodeModel,
+  BillingModel,
+  CatalogState,
+  CreateCodeModel,
+  RedeemCodeModel,
+  RedemptionsState,
+} from "./BillingModel";
+import {
+  billingViewLimit,
+  packageLabel,
+  packageVersionKey,
+  redemptionOwner,
+  scopeLabel,
+  selectedPackage,
+  type CatalogRedeemCode,
+} from "./redeemCodeCatalog";
 
-const billingViewLimit = 100;
+export {
+  withoutRedeemCodePlaintext,
+  type CatalogRedeemCode,
+} from "./redeemCodeCatalog";
+import { messages } from "@comma/i18n";
 
-export type CatalogRedeemCode = AdminRedeemCode & { code?: never };
-
-type CatalogState =
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | {
-      status: "ready";
-      codes: CatalogRedeemCode[];
-      packageNotice?: string;
-      packages: AdminPackageVersion[];
-    };
-
-type BillingDrawer =
-  | { kind: "apply"; target?: AdminRedeemTarget }
-  | { kind: "code"; code: CatalogRedeemCode }
-  | { kind: "create" };
-
-export function BillingView({
-  api,
-  applyTarget,
-  onAccessDenied,
-  onApplyTargetConsumed,
-}: {
-  api: AdminApi;
-  applyTarget: AdminRedeemTarget | undefined;
-  onAccessDenied: () => void;
-  onApplyTargetConsumed: () => void;
-}) {
-  const [drawer, setDrawer] = useState<BillingDrawer>();
-  const [notice, setNotice] = useState<string>();
-  const [revision, setRevision] = useState(0);
-  const [state, setState] = useState<CatalogState>({ status: "loading" });
-
-  useEffect(() => {
-    const request = new AbortController();
-    setState({ status: "loading" });
-
-    void loadCatalog(api, request.signal).then((result) => {
-      if (request.signal.aborted) return;
-
-      const rejected = [result.codes, result.packages]
-        .filter((entry): entry is PromiseRejectedResult => entry.status === "rejected")
-        .map((entry) => entry.reason);
-
-      if (rejected.some(isAdminAccessDenied)) {
-        onAccessDenied();
-        return;
-      }
-      if (rejected.some(isAdminSessionRejection)) return;
-      if (result.codes.status === "rejected") {
-        setState({
-          status: "error",
-          message: adminErrorMessage(
-            result.codes.reason,
-            "Unable to load redeem codes."
-          ),
-        });
-        return;
-      }
-
-      setState({
-        status: "ready",
-        codes: result.codes.value,
-        packages: result.packages.status === "fulfilled" ? result.packages.value : [],
-        ...(result.packages.status === "rejected"
-          ? {
-              packageNotice:
-                "Package labels are temporarily unavailable; code writes are paused.",
-            }
-          : {}),
-      });
-    });
-
-    return () => request.abort();
-  }, [api, onAccessDenied, revision]);
-
-  useEffect(() => {
-    if (!applyTarget || state.status !== "ready") return;
-    setDrawer({ kind: "apply", target: applyTarget });
-    onApplyTargetConsumed();
-  }, [applyTarget, onApplyTargetConsumed, state.status]);
-
-  const completed = (message: string, updatedCode?: CatalogRedeemCode) => {
-    setNotice(message);
-    if (updatedCode) {
-      setState((current) => {
-        if (current.status !== "ready") return current;
-        const exists = current.codes.some((code) => code.id === updatedCode.id);
-        return {
-          ...current,
-          codes: exists
-            ? current.codes.map((code) =>
-                code.id === updatedCode.id ? updatedCode : code
-              )
-            : [updatedCode, ...current.codes],
-        };
-      });
-    }
-  };
+export function BillingView({ model }: { model: BillingModel }) {
+  const run = useAdminCommand();
+  const { catalog: state, drawer, notice } = useAdminState(model.state);
+  const closeDrawer = () => run(model.closeDrawer);
 
   const ready = state.status === "ready" ? state : undefined;
 
   return (
     <section
-      aria-label="Billing"
+      aria-label={messages.admin_billing_region()}
       className="admin-workspace"
       data-testid="admin-billing"
     >
@@ -144,22 +62,21 @@ export function BillingView({
             <Button
               hierarchy="secondary-gray"
               isDisabled={!ready?.codes.length}
-              onPress={() => setDrawer({ kind: "apply" })}
+              onPress={() => run(model.openApply)}
             >
-              Apply code
+              {messages.admin_apply_code()}
             </Button>
             <Button
               iconLeading={<PlusIcon />}
               isDisabled={!ready?.packages.length}
-              onPress={() => setDrawer({ kind: "create" })}
+              onPress={() => run(model.openCreate)}
             >
-              New code
+              {messages.admin_new_code()}
             </Button>
           </div>
         }
-        description="Issue, apply, disable, and inspect package-backed redeem codes."
-        eyebrow="Commerce"
-        title="Redeem codes"
+        description={messages.admin_codes_description()}
+        title={messages.admin_section_billing()}
       />
 
       <ScrollArea
@@ -170,76 +87,46 @@ export function BillingView({
         orientation="vertical"
         scrollbarVisibility="hover"
       >
-        <FreeRouterModelsPanel api={api} onAccessDenied={onAccessDenied} />
-
         {notice ? (
-          <AdminNotice message={notice} onDismiss={() => setNotice(undefined)} />
+          <AdminNotice message={notice} onDismiss={() => run(model.dismissNotice)} />
         ) : null}
 
         <div className="admin-table-card admin-table-card--flow">
           <div className="admin-table-card-header">
             <div>
-              <h2>Code records</h2>
-              <p>Latest {billingViewLimit} from the bounded Admin API view</p>
+              <h2>{messages.admin_code_records()}</h2>
+              <p>{messages.admin_latest_codes({ count: billingViewLimit })}</p>
             </div>
             <Button
               hierarchy="secondary-gray"
-              onPress={() => setRevision((current) => current + 1)}
+              onPress={() => run(model.reload)}
               size="sm"
             >
-              Refresh
+              {messages.admin_refresh()}
             </Button>
           </div>
 
           <CatalogContent
-            onRetry={() => setRevision((current) => current + 1)}
-            onSelect={(code) => setDrawer({ kind: "code", code })}
+            onRetry={() => run(model.reload)}
+            onSelect={(code) => run(model.openCode(code))}
             state={state}
           />
         </div>
       </ScrollArea>
 
       {drawer?.kind === "create" && ready ? (
-        <CreateCodeDrawer
-          api={api}
-          onAccessDenied={onAccessDenied}
-          onClose={() => setDrawer(undefined)}
-          onCreated={(code) => {
-            completed(`Created ${displayText(code.display_prefix)}.`, code);
-          }}
-          packages={ready.packages}
-        />
+        <CreateCodeDrawer model={drawer.model} onClose={closeDrawer} />
       ) : null}
 
       {drawer?.kind === "apply" && ready ? (
-        <ApplyCodeDrawer
-          api={api}
-          codes={ready.codes}
-          onAccessDenied={onAccessDenied}
-          onApplied={(code, result) => {
-            setDrawer({ kind: "code", code });
-            completed(
-              result.idempotent
-                ? `${displayText(code.display_prefix)} was already applied during an earlier attempt.`
-                : `Applied ${displayText(code.display_prefix)}.`
-            );
-          }}
-          onClose={() => setDrawer(undefined)}
-          target={drawer.target}
-        />
+        <ApplyCodeDrawer model={drawer.model} onClose={closeDrawer} />
       ) : null}
 
       {drawer?.kind === "code" && ready ? (
         <RedeemCodeDrawer
-          api={api}
-          code={drawer.code}
-          onAccessDenied={onAccessDenied}
-          onChanged={(code, message) => {
-            setDrawer({ kind: "code", code });
-            completed(message, code);
-          }}
-          onClose={() => setDrawer(undefined)}
-          packageLabel={packageLabel(drawer.code, ready.packages)}
+          model={drawer.model}
+          onClose={closeDrawer}
+          packages={ready.packages}
         />
       ) : null}
     </section>
@@ -256,19 +143,14 @@ function CatalogContent({
   state: CatalogState;
 }) {
   if (state.status === "loading") {
-    return (
-      <AdminState
-        message="Fetching the latest bounded code records."
-        title="Loading redeem codes…"
-      />
-    );
+    return <AdminState title={messages.admin_loading_codes()} />;
   }
   if (state.status === "error") {
     return (
       <AdminState
         message={state.message}
         onAction={onRetry}
-        title="Redeem codes couldn’t be loaded"
+        title={messages.admin_codes_load_failed()}
         tone="error"
       />
     );
@@ -280,8 +162,8 @@ function CatalogContent({
           <output className="admin-inline-notice">{state.packageNotice}</output>
         ) : null}
         <AdminState
-          message="Create the first package-backed code for an approved operation."
-          title="No redeem codes"
+          message={messages.admin_codes_none_body()}
+          title={messages.admin_codes_none()}
         />
       </>
     );
@@ -300,21 +182,29 @@ function CatalogContent({
         scrollbarVisibility="hover"
         viewportClassName="admin-table-viewport"
       >
-        <table aria-label="Redeem codes" className="admin-data-table">
+        <table
+          aria-label={messages.admin_section_billing()}
+          className="admin-data-table"
+        >
           <thead>
             <tr>
-              <th scope="col">Code</th>
-              <th scope="col">Package</th>
-              <th scope="col">Status</th>
-              <th scope="col">Scope</th>
-              <th scope="col">Expires</th>
-              <th aria-label="Manage code" scope="col" />
+              <th scope="col">{messages.admin_column_code()}</th>
+              <th scope="col">{messages.admin_column_package()}</th>
+              <th scope="col">{messages.admin_column_status()}</th>
+              <th scope="col">{messages.admin_column_scope()}</th>
+              <th scope="col">{messages.admin_column_expires()}</th>
+              <th aria-label={messages.admin_manage_code()} scope="col" />
             </tr>
           </thead>
           <tbody>
             {state.codes.map((code) => (
               <tr key={code.id}>
-                <th aria-label={`Code ${displayText(code.display_prefix)}`} scope="row">
+                <th
+                  aria-label={messages.admin_code_named({
+                    name: displayText(code.display_prefix),
+                  })}
+                  scope="row"
+                >
                   <div className="admin-primary-cell">
                     <strong>{displayText(code.display_prefix)}</strong>
                     <span>{displayText(code.code_type)}</span>
@@ -332,7 +222,7 @@ function CatalogContent({
                     onPress={() => onSelect(code)}
                     size="sm"
                   >
-                    Manage
+                    {messages.admin_manage()}
                   </Button>
                 </td>
               </tr>
@@ -351,40 +241,25 @@ function CatalogContent({
 }
 
 function CreateCodeDrawer({
-  api,
-  onAccessDenied,
+  model,
   onClose,
-  onCreated,
-  packages,
 }: {
-  api: AdminApi;
-  onAccessDenied: () => void;
+  model: CreateCodeModel;
   onClose: () => void;
-  onCreated: (code: CatalogRedeemCode) => void;
-  packages: AdminPackageVersion[];
 }) {
-  const firstPackage = packages[0];
-  const [commandBusy, setCommandBusy] = useState(false);
-  const [confirmationOpen, setConfirmationOpen] = useState(false);
-  const [customCode, setCustomCode] = useState("");
-  const [expiresAt, setExpiresAt] = useState("");
-  const [maxRedemptions, setMaxRedemptions] = useState(10);
-  const [packageKey, setPackageKey] = useState(
-    firstPackage ? packageVersionKey(firstPackage) : ""
-  );
-  const [perAccountLimit, setPerAccountLimit] = useState(1);
-  const [reason, setReason] = useState("");
-  const [created, setCreated] = useState<AdminRedeemCodeCreation>();
-  const [copied, setCopied] = useState(false);
-  const [idempotencyKey] = useState(() => createIdempotencyKey("create-code"));
-
-  const selectedPackage = useMemo(
-    () => packages.find((item) => packageVersionKey(item) === packageKey),
-    [packageKey, packages]
-  );
-  const expected = selectedPackage
-    ? `create-redeem-code:${selectedPackage.package_code}:${selectedPackage.version}`
-    : "create-redeem-code:missing:missing";
+  const run = useAdminCommand();
+  const {
+    copied,
+    created,
+    customCode,
+    expiresAt,
+    maxRedemptions,
+    packageKey,
+    perAccountLimit,
+  } = useAdminState(model.state);
+  const commandBusy = useAdminState(model.confirmation.state, confirmationBusy);
+  const { packages } = model;
+  const selected = selectedPackage(packages, packageKey);
 
   if (created) {
     if (created.kind === "recovered_redacted") {
@@ -392,33 +267,33 @@ function CreateCodeDrawer({
 
       return (
         <AdminDrawer
-          eyebrow="Redeem code command"
+          eyebrow={messages.admin_section_billing()}
           onClose={onClose}
-          title="Code already created"
+          title={messages.admin_code_recovered_title()}
         >
-          <section aria-label="Recovered redeem code" className="admin-secret-panel">
+          <section
+            aria-label={messages.admin_code_recovered_region()}
+            className="admin-secret-panel"
+          >
             <Badge color="gray" size="sm" type="pill-color">
-              Recovered
+              {messages.admin_recovered()}
             </Badge>
             <div>
               <h3>{displayText(record.display_prefix)}</h3>
-              <p>
-                This command completed during an earlier attempt. The plaintext is
-                intentionally unavailable; review the record or create a new code.
-              </p>
+              <p>{messages.admin_code_recovered_body()}</p>
             </div>
             <DetailList
               items={[
-                { label: "Code ID", value: record.id },
+                { label: messages.admin_code_id(), value: record.id },
                 {
-                  label: "Package",
+                  label: messages.admin_package(),
                   value: `${record.package_code}@${record.package_version}`,
                 },
-                { label: "Type", value: displayText(record.code_type) },
+                { label: messages.admin_type(), value: displayText(record.code_type) },
               ]}
             />
             <div className="admin-command-actions">
-              <Button onPress={onClose}>Done</Button>
+              <Button onPress={onClose}>{messages.admin_done()}</Button>
             </div>
           </section>
         </AdminDrawer>
@@ -428,40 +303,38 @@ function CreateCodeDrawer({
     const record = created.record;
 
     return (
-      <AdminDrawer eyebrow="Redeem code command" onClose={onClose} title="Code created">
-        <section aria-label="One-time redeem code" className="admin-secret-panel">
+      <AdminDrawer
+        eyebrow={messages.admin_section_billing()}
+        onClose={onClose}
+        title={messages.admin_code_created()}
+      >
+        <section
+          aria-label={messages.admin_code_once_region()}
+          className="admin-secret-panel"
+        >
           <Badge color="warning" size="sm" type="pill-color">
-            Shown once
+            {messages.admin_shown_once()}
           </Badge>
           <div>
             <h3>{displayText(record.display_prefix)}</h3>
-            <p>
-              Copy the plaintext now. Closing this panel clears it from the Admin UI.
-            </p>
+            <p>{messages.admin_code_once_body()}</p>
           </div>
           <code>{record.code}</code>
           <DetailList
             items={[
-              { label: "Code ID", value: record.id },
+              { label: messages.admin_code_id(), value: record.id },
               {
-                label: "Package",
+                label: messages.admin_package(),
                 value: `${record.package_code}@${record.package_version}`,
               },
-              { label: "Type", value: displayText(record.code_type) },
+              { label: messages.admin_type(), value: displayText(record.code_type) },
             ]}
           />
           <div className="admin-command-actions">
-            <Button
-              hierarchy="secondary-gray"
-              onPress={() => {
-                void navigator.clipboard
-                  .writeText(record.code)
-                  .then(() => setCopied(true));
-              }}
-            >
-              {copied ? "Copied" : "Copy code"}
+            <Button hierarchy="secondary-gray" onPress={() => run(model.copyCode)}>
+              {copied ? messages.admin_copied() : messages.admin_copy_code()}
             </Button>
-            <Button onPress={onClose}>Done and clear</Button>
+            <Button onPress={onClose}>{messages.admin_done_and_clear()}</Button>
           </div>
         </section>
       </AdminDrawer>
@@ -470,21 +343,21 @@ function CreateCodeDrawer({
 
   return (
     <AdminDrawer
-      eyebrow="Redeem code command"
+      eyebrow={messages.admin_section_billing()}
       isDismissable={!commandBusy}
       onClose={onClose}
-      title="New redeem code"
+      title={messages.admin_new_redeem_code()}
     >
       <form
         className="admin-command-form"
         onSubmit={(event) => {
           event.preventDefault();
-          setConfirmationOpen(true);
+          run(model.review);
         }}
       >
-        <NativeField label="Package version">
+        <NativeField label={messages.admin_package_version()}>
           <select
-            onChange={(event) => setPackageKey(event.target.value)}
+            onChange={(event) => run(model.setField("packageKey", event.target.value))}
             value={packageKey}
           >
             {packages.map((item) => (
@@ -495,126 +368,92 @@ function CreateCodeDrawer({
           </select>
         </NativeField>
         <InputField
-          hint="Optional. Use at least 9 characters, or leave blank to generate a high-entropy code."
-          label="Custom code"
+          hint={messages.admin_custom_code_hint()}
+          label={messages.admin_custom_code()}
           minLength={9}
-          onChange={(event) => setCustomCode(event.target.value)}
+          onChange={(event) => run(model.setField("customCode", event.target.value))}
           value={customCode}
         />
         <div className="admin-form-grid">
           <InputField
-            label="Maximum redemptions"
+            label={messages.admin_max_redemptions()}
             min={1}
-            onChange={(event) => setMaxRedemptions(Number(event.target.value))}
+            onChange={(event) =>
+              run(model.setLimit("maxRedemptions", Number(event.target.value)))
+            }
             type="number"
             value={String(maxRedemptions)}
           />
           <InputField
-            label="Per-account limit"
+            label={messages.admin_per_account_limit()}
             min={1}
-            onChange={(event) => setPerAccountLimit(Number(event.target.value))}
+            onChange={(event) =>
+              run(model.setLimit("perAccountLimit", Number(event.target.value)))
+            }
             type="number"
             value={String(perAccountLimit)}
           />
         </div>
         <InputField
-          label="Expires at (optional)"
-          onChange={(event) => setExpiresAt(event.target.value)}
+          label={messages.admin_expires_optional()}
+          onChange={(event) => run(model.setField("expiresAt", event.target.value))}
           type="datetime-local"
           value={expiresAt}
         />
-        <ReasonField onChange={setReason} value={reason} />
         <div className="admin-command-actions">
           <Button hierarchy="secondary-gray" onPress={onClose}>
-            Cancel
+            {messages.admin_cancel()}
           </Button>
           <Button
             isDisabled={
-              !selectedPackage ||
-              reason.trim().length < 3 ||
+              !selected ||
               (customCode.trim().length > 0 && customCode.trim().length < 9)
             }
             type="submit"
           >
-            Review command
+            {messages.admin_review_command()}
           </Button>
         </div>
       </form>
 
-      <AdminConfirmationDialog
-        expected={expected}
-        isOpen={confirmationOpen}
-        onBusyChange={setCommandBusy}
-        onConfirm={async () => {
-          if (!selectedPackage) throw new Error("Select an issuable package.");
-          const code = await guardedAdminCommand(
-            api.createRedeemCode({
-              ...(customCode.trim() ? { code: customCode.trim() } : {}),
-              confirmation: expected,
-              ...(expiresAt ? { expiresAt: new Date(expiresAt).toISOString() } : {}),
-              idempotencyKey,
-              maxRedemptions,
-              packageCode: selectedPackage.package_code,
-              packageVersion: selectedPackage.version,
-              perAccountLimit,
-              reason: reason.trim(),
-            }),
-            onAccessDenied
-          );
-          setCreated(code);
-          onCreated(withoutRedeemCodePlaintext(code.record));
-        }}
-        onOpenChange={setConfirmationOpen}
-        title="Create this redeem code?"
-      />
+      <AdminConfirmationDialog confirmation={model.confirmation} />
     </AdminDrawer>
   );
 }
 
 function ApplyCodeDrawer({
-  api,
-  codes,
-  onAccessDenied,
-  onApplied,
+  model,
   onClose,
-  target,
 }: {
-  api: AdminApi;
-  codes: CatalogRedeemCode[];
-  onAccessDenied: () => void;
-  onApplied: (code: CatalogRedeemCode, result: AdminRedemptionResult) => void;
+  model: ApplyCodeModel;
   onClose: () => void;
-  target: AdminRedeemTarget | undefined;
 }) {
+  const run = useAdminCommand();
+  const { codeId, target } = useAdminState(model.state);
+  const commandBusy = useAdminState(model.confirmation.state, confirmationBusy);
+  const { codes } = model;
   const activeCodes = codes.filter((code) => code.status === "active");
-  const [billingAccountId, setBillingAccountId] = useState(
-    target?.billingAccountId ?? ""
-  );
-  const [codeId, setCodeId] = useState(activeCodes[0]?.id ?? "");
-  const [commandBusy, setCommandBusy] = useState(false);
-  const [confirmationOpen, setConfirmationOpen] = useState(false);
-  const [ownerId, setOwnerId] = useState(target?.productOwnerId ?? "");
-  const [reason, setReason] = useState("");
-  const [idempotencyKey] = useState(() => createIdempotencyKey("apply-code"));
   const selected = codes.find((code) => code.id === codeId);
-  const expected = `apply-redeem-code:${billingAccountId.trim()}`;
 
   return (
     <AdminDrawer
-      eyebrow="Redemption command"
+      eyebrow={messages.admin_section_billing()}
       isDismissable={!commandBusy}
       onClose={onClose}
-      title="Apply redeem code"
+      title={messages.admin_apply_redeem_code_title()}
     >
       <form
         className="admin-command-form"
         onSubmit={(event) => {
           event.preventDefault();
-          setConfirmationOpen(true);
+          run(model.review);
         }}
       >
-        <NativeField label="Active code">
-          <select onChange={(event) => setCodeId(event.target.value)} value={codeId}>
+        <NativeField label={messages.admin_active_code()}>
+          <select
+            onChange={(event) => run(model.setCode(event.target.value))}
+            value={codeId}
+          >
             {activeCodes.map((code) => (
               <option key={code.id} value={code.id}>
                 {displayText(code.display_prefix)} · {code.package_code}@
@@ -624,145 +463,136 @@ function ApplyCodeDrawer({
           </select>
         </NativeField>
         {target ? (
-          <DetailList
-            items={[
-              {
-                label: "Target Workspace",
-                value: target.workspaceName || target.productOwnerId,
-              },
-              { label: "Workspace ID", value: target.productOwnerId },
-              { label: "Billing account", value: target.billingAccountId },
-            ]}
-          />
-        ) : (
-          <>
-            <InputField
-              label="Billing account ID"
-              onChange={(event) => setBillingAccountId(event.target.value)}
-              required
-              value={billingAccountId}
+          <div className="admin-apply-target">
+            <DetailList
+              items={[
+                ...(target.accountLabel
+                  ? [
+                      {
+                        label: messages.admin_apply_account(),
+                        value: target.accountLabel,
+                      },
+                    ]
+                  : []),
+                {
+                  label: messages.admin_target_workspace(),
+                  value: target.workspaceName || target.productOwnerId,
+                },
+                { label: messages.admin_workspace_id(), value: target.productOwnerId },
+                {
+                  label: messages.admin_billing_account(),
+                  value: target.billingAccountId,
+                },
+              ]}
             />
-            <div className="admin-form-grid">
-              <NativeField label="Owner type">
-                <p>Workspace</p>
-              </NativeField>
-              <InputField
-                label="Owner ID"
-                onChange={(event) => setOwnerId(event.target.value)}
-                required
-                value={ownerId}
-              />
-            </div>
-          </>
+            {target.accountLabel ? (
+              <Button
+                hierarchy="link-gray"
+                onPress={() => run(model.changeAccount)}
+                size="sm"
+              >
+                {messages.admin_apply_change_account()}
+              </Button>
+            ) : null}
+          </div>
+        ) : (
+          <ApplyAccountPicker model={model} />
         )}
-        <ReasonField onChange={setReason} value={reason} />
         <div className="admin-command-actions">
           <Button hierarchy="secondary-gray" onPress={onClose}>
-            Cancel
+            {messages.admin_cancel()}
           </Button>
-          <Button
-            isDisabled={
-              !selected ||
-              !billingAccountId.trim() ||
-              !ownerId.trim() ||
-              reason.trim().length < 3
-            }
-            type="submit"
-          >
-            Review command
+          <Button isDisabled={!selected || !target} type="submit">
+            {messages.admin_review_command()}
           </Button>
         </div>
       </form>
 
-      <AdminConfirmationDialog
-        expected={expected}
-        isOpen={confirmationOpen}
-        onBusyChange={setCommandBusy}
-        onConfirm={async () => {
-          if (!selected) throw new Error("Select an active redeem code.");
-          const result = await guardedAdminCommand(
-            api.applyRedeemCode({
-              billingAccountId: billingAccountId.trim(),
-              codeId: selected.id,
-              confirmation: expected,
-              idempotencyKey,
-              productOwnerId: ownerId.trim(),
-              productOwnerType: "workspace",
-              reason: reason.trim(),
-            }),
-            onAccessDenied
-          );
-          onApplied(selected, result);
-        }}
-        onOpenChange={setConfirmationOpen}
-        title="Apply this redeem code?"
-      />
+      <AdminConfirmationDialog confirmation={model.confirmation} />
     </AdminDrawer>
   );
 }
 
+/** Finds the account a code goes to by email or any id, the way ⌘K does, and reads its Workspace. */
+function ApplyAccountPicker({ model }: { model: ApplyCodeModel }) {
+  const run = useAdminCommand();
+  const { account } = useAdminState(model.state);
+  const { query, results } = useAdminState(model.search.state);
+  const status =
+    account.status === "loading"
+      ? messages.admin_apply_account_loading({ email: account.email })
+      : results.status === "idle"
+        ? messages.admin_search_hint()
+        : results.status === "loading"
+          ? messages.admin_searching()
+          : results.status === "error"
+            ? results.message
+            : results.results.length === 0
+              ? messages.admin_search_empty()
+              : undefined;
+
+  return (
+    <div className="admin-account-picker">
+      <InputField
+        className="admin-account-search"
+        label={messages.admin_apply_account()}
+        leadingIcon={<SearchIcon />}
+        onChange={(event) => run(model.search.setQuery(event.target.value))}
+        placeholder={messages.admin_search_placeholder()}
+        value={query}
+      />
+      {account.status === "error" ? (
+        <p className="admin-account-picker-note" role="alert">
+          {account.message}
+        </p>
+      ) : status ? (
+        <p className="admin-account-picker-note">{status}</p>
+      ) : null}
+      {results.status === "ready" && results.results.length > 0 ? (
+        <ul
+          aria-label={messages.admin_search_results()}
+          className="admin-account-results"
+        >
+          {results.results.map((result) => (
+            <li key={`${result.match}:${result.user.id}`}>
+              <button
+                disabled={account.status === "loading"}
+                onClick={() => run(model.chooseAccount(result))}
+                type="button"
+              >
+                <span className="admin-account-result-copy">
+                  <strong>{displayText(result.user.email ?? result.user.id)}</strong>
+                  <span>{lookupSubtitle(result)}</span>
+                </span>
+                <span className="admin-account-result-match">
+                  {lookupMatchLabel(result)}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 function RedeemCodeDrawer({
-  api,
-  code,
-  onAccessDenied,
-  onChanged,
+  model,
   onClose,
-  packageLabel: resolvedPackageLabel,
+  packages,
 }: {
-  api: AdminApi;
-  code: CatalogRedeemCode;
-  onAccessDenied: () => void;
-  onChanged: (code: CatalogRedeemCode, message: string) => void;
+  model: RedeemCodeModel;
   onClose: () => void;
-  packageLabel: string;
+  packages: ReadonlyArray<AdminPackageVersion>;
 }) {
-  const [commandBusy, setCommandBusy] = useState(false);
-  const [confirmationOpen, setConfirmationOpen] = useState(false);
-  const [reason, setReason] = useState("");
-  const [revision, setRevision] = useState(0);
-  const [idempotencyKey] = useState(() => createIdempotencyKey("disable-code"));
-  const [state, setState] = useState<
-    | { status: "loading" }
-    | { status: "error"; message: string }
-    | { status: "ready"; redemptions: AdminRedemption[] }
-  >({ status: "loading" });
-
-  useEffect(() => {
-    const request = new AbortController();
-    setState({ status: "loading" });
-
-    void api
-      .listRedemptions({
-        limit: billingViewLimit,
-        redeemCodeId: code.id,
-        signal: request.signal,
-      })
-      .then((redemptions) => {
-        if (!request.signal.aborted) setState({ status: "ready", redemptions });
-      })
-      .catch((error: unknown) => {
-        if (request.signal.aborted || isAdminSessionRejection(error)) return;
-        if (isAdminAccessDenied(error)) {
-          onAccessDenied();
-          return;
-        }
-        setState({
-          status: "error",
-          message: adminErrorMessage(
-            error,
-            "Unable to load redemption history for this code."
-          ),
-        });
-      });
-
-    return () => request.abort();
-  }, [api, code.id, onAccessDenied, revision]);
-
-  const expected = `disable-redeem-code:${code.id}`;
+  const run = useAdminCommand();
+  const { code, redemptions } = useAdminState(model.state);
+  const commandBusy = useAdminState(model.confirmation.state, confirmationBusy);
+  const resolvedPackageLabel = packageLabel(code, packages);
 
   return (
     <AdminDrawer
-      eyebrow="Redeem code operations"
+      eyebrow={messages.admin_section_billing()}
       isDismissable={!commandBusy}
       onClose={onClose}
       title={displayText(code.display_prefix)}
@@ -777,83 +607,60 @@ function RedeemCodeDrawer({
 
       <DetailList
         items={[
-          { label: "Code ID", value: code.id },
-          { label: "Display prefix", value: displayText(code.display_prefix) },
-          { label: "Package", value: resolvedPackageLabel },
-          { label: "Surface", value: displayText(code.surface) },
-          { label: "Scope", value: scopeLabel(code) },
+          { label: messages.admin_code_id(), value: code.id },
           {
-            label: "Maximum redemptions",
-            value: code.max_redemptions ?? "Unlimited",
+            label: messages.admin_display_prefix(),
+            value: displayText(code.display_prefix),
+          },
+          { label: messages.admin_package(), value: resolvedPackageLabel },
+          { label: messages.admin_surface(), value: displayText(code.surface) },
+          { label: messages.admin_column_scope(), value: scopeLabel(code) },
+          {
+            label: messages.admin_max_redemptions(),
+            value: code.max_redemptions ?? messages.admin_unlimited(),
           },
           {
-            label: "Per-account limit",
-            value: code.per_account_limit ?? "Unlimited",
+            label: messages.admin_per_account_limit(),
+            value: code.per_account_limit ?? messages.admin_unlimited(),
           },
-          { label: "Valid from", value: formatIso(code.valid_from) },
-          { label: "Expires", value: formatIso(code.expires_at) },
+          { label: messages.admin_valid_from(), value: formatIso(code.valid_from) },
+          { label: messages.admin_expires(), value: formatIso(code.expires_at) },
         ]}
       />
 
       {code.status === "active" ? (
         <section className="admin-danger-zone">
           <div>
-            <h3>Disable code</h3>
-            <p>Prevents future redemption while preserving historical records.</p>
+            <h3>{messages.admin_disable_code()}</h3>
+            <p>{messages.admin_disable_code_body()}</p>
           </div>
-          <ReasonField onChange={setReason} value={reason} />
-          <Button
-            hierarchy="destructive"
-            isDisabled={reason.trim().length < 3}
-            onPress={() => setConfirmationOpen(true)}
-          >
-            Disable code
+          <Button hierarchy="destructive" onPress={() => run(model.reviewDisable)}>
+            {messages.admin_disable_code()}
           </Button>
         </section>
       ) : null}
 
-      <section className="admin-drawer-section" aria-label="Redemptions">
+      <section
+        className="admin-drawer-section"
+        aria-label={messages.admin_redemptions()}
+      >
         <div className="admin-drawer-section-header">
           <div>
-            <h3>Redemptions</h3>
-            <p>Latest {billingViewLimit}, scoped to this code</p>
+            <h3>{messages.admin_redemptions()}</h3>
+            <p>{messages.admin_redemptions_scope({ count: billingViewLimit })}</p>
           </div>
           <Button
             hierarchy="secondary-gray"
-            onPress={() => setRevision((current) => current + 1)}
+            onPress={() => run(model.reload)}
             size="sm"
           >
-            Refresh
+            {messages.admin_refresh()}
           </Button>
         </div>
-        <RedemptionsContent
-          onRetry={() => setRevision((current) => current + 1)}
-          state={state}
-        />
+        <RedemptionsContent onRetry={() => run(model.reload)} state={redemptions} />
       </section>
 
-      <AdminConfirmationDialog
-        destructive
-        expected={expected}
-        isOpen={confirmationOpen}
-        onBusyChange={setCommandBusy}
-        onConfirm={async () => {
-          const disabled = await guardedAdminCommand(
-            api.disableRedeemCode(code.id, {
-              confirmation: expected,
-              idempotencyKey,
-              reason: reason.trim(),
-            }),
-            onAccessDenied
-          );
-          onChanged(
-            withoutRedeemCodePlaintext(disabled),
-            `Disabled ${displayText(code.display_prefix)}.`
-          );
-        }}
-        onOpenChange={setConfirmationOpen}
-        title="Disable this redeem code?"
-      />
+      <AdminConfirmationDialog confirmation={model.confirmation} />
     </AdminDrawer>
   );
 }
@@ -863,22 +670,17 @@ function RedemptionsContent({
   state,
 }: {
   onRetry: () => void;
-  state:
-    | { status: "loading" }
-    | { status: "error"; message: string }
-    | { status: "ready"; redemptions: AdminRedemption[] };
+  state: RedemptionsState;
 }) {
   if (state.status === "loading") {
-    return (
-      <AdminState message="Reading this code’s bounded history." title="Loading…" />
-    );
+    return <AdminState title={messages.admin_loading()} />;
   }
   if (state.status === "error") {
     return (
       <AdminState
         message={state.message}
         onAction={onRetry}
-        title="Redemptions couldn’t be loaded"
+        title={messages.admin_redemptions_load_failed()}
         tone="error"
       />
     );
@@ -886,8 +688,8 @@ function RedemptionsContent({
   if (state.redemptions.length === 0) {
     return (
       <AdminState
-        message="This code has no redemption records in the current view."
-        title="No redemptions"
+        message={messages.admin_redemptions_none_body()}
+        title={messages.admin_redemptions_none()}
       />
     );
   }
@@ -902,13 +704,16 @@ function RedemptionsContent({
         scrollbarVisibility="hover"
         viewportClassName="admin-table-viewport"
       >
-        <table aria-label="Redemptions for code" className="admin-data-table">
+        <table
+          aria-label={messages.admin_redemptions_for_code()}
+          className="admin-data-table"
+        >
           <thead>
             <tr>
-              <th scope="col">Billing account</th>
-              <th scope="col">Owner</th>
-              <th scope="col">Source</th>
-              <th scope="col">Status</th>
+              <th scope="col">{messages.admin_column_billing_account()}</th>
+              <th scope="col">{messages.admin_column_owner()}</th>
+              <th scope="col">{messages.admin_column_source()}</th>
+              <th scope="col">{messages.admin_column_status()}</th>
             </tr>
           </thead>
           <tbody>
@@ -931,47 +736,4 @@ function RedemptionsContent({
       </p>
     </>
   );
-}
-
-function loadCatalog(api: AdminApi, signal: AbortSignal) {
-  return Promise.allSettled([
-    api
-      .listRedeemCodes({ limit: billingViewLimit, signal })
-      .then((codes) => codes.map(withoutRedeemCodePlaintext)),
-    api.listPackageVersions({ signal }),
-  ]).then(([codes, packages]) => ({ codes, packages }));
-}
-
-export function withoutRedeemCodePlaintext(code: AdminRedeemCode): CatalogRedeemCode {
-  const catalogCode = { ...code };
-  delete catalogCode.code;
-  return catalogCode as CatalogRedeemCode;
-}
-
-function packageVersionKey(version: AdminPackageVersion) {
-  return `${version.package_code}\u0000${version.version}`;
-}
-
-function packageLabel(code: AdminRedeemCode, packages: AdminPackageVersion[]) {
-  const raw = `${code.package_code}@${code.package_version}`;
-  const matched = packages.find(
-    (version) =>
-      version.package_code === code.package_code &&
-      version.version === code.package_version
-  );
-  return matched?.package_name ? `${matched.package_name} · ${raw}` : raw;
-}
-
-function scopeLabel(code: AdminRedeemCode) {
-  if (code.scope_product_owner_type && code.scope_product_owner_id) {
-    return `${code.scope_product_owner_type}:${code.scope_product_owner_id}`;
-  }
-  return code.scope_product_owner_type || "Global";
-}
-
-function redemptionOwner(redemption: AdminRedemption) {
-  if (redemption.product_owner_type && redemption.product_owner_id) {
-    return `${redemption.product_owner_type}:${redemption.product_owner_id}`;
-  }
-  return redemption.product_owner_id || "—";
 }

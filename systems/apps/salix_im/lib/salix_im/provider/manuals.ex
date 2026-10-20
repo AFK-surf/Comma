@@ -60,7 +60,7 @@ defmodule SalixIM.Provider.Manuals do
   end
 
   def external_providers do
-    ["slack", "wechat", "telegram", "feishu", "imessage", "voice", "signal"]
+    ["slack", "wechat", "telegram", "feishu", "imessage", "voice", "signal", "qq", "lark"]
   end
 
   def manual(platform) do
@@ -74,6 +74,8 @@ defmodule SalixIM.Provider.Manuals do
       "imessage" -> {:ok, canonical_manual(provider, imessage_manual())}
       "voice" -> {:ok, canonical_manual(provider, voice_manual())}
       "signal" -> {:ok, canonical_manual(provider, signal_manual())}
+      "qq" -> {:ok, canonical_manual(provider, qq_manual())}
+      "lark" -> {:ok, canonical_manual(provider, SalixIM.Provider.Lark.Manual.manual())}
       "feishu" -> {:ok, canonical_manual(provider, feishu_manual())}
       _ -> {:error, :unsupported}
     end
@@ -239,11 +241,10 @@ defmodule SalixIM.Provider.Manuals do
           "safety" => "write",
           "roles" => ["router"],
           "description" =>
-            "Create one distinct durable Task as an agent_task Conversation. Supply agent_id for the responsible Worker. Do not use this operation to continue, clarify, correct, restart or retry work inside an exact existing Task, or add requirements to it. A new Task does not inherit another Conversation history, so content must be self-contained. A plain one-shot Task may be set to completed by its own Router after verified delivery with no remaining work or human decision. Optional schedule is only for a recurring single-worker Task. Put recurrence in this same call, confirm a successful result has a non-empty schedule.schedule_id, and never pair a one-shot Task create with schedule.create because that operation targets the calling Router and Session rather than the Task. Use a known group-local agent_id and call agent.list only when it is unknown. An exact transport retry preserves the same server-derived request identity: trusted internal-origin retries require the same source Message and immutable create command; Triage handoffs require the same original obligation and delegation ordinal across Sessions and still reject changed Worker/content/title; other runtimes require the same Session and tool-call identity. A newly issued create command does not continue an existing Task. Source Conversation provenance and retry identity are bound by the server and are not model parameters. Participant responses arrive later as ordinary Messages in the returned Task Conversation. For a Slack-sourced Task, the runtime records the selected original reply coordinates automatically and includes task_reply_source with each delivered Task message; do not invent or overwrite this source, and use it rather than an unrelated later request when returning the result. Select existing labels from the supplied catalog and pass label_ids in this call. A human Slack source automatically receives its Task card through the runtime. Read task_card.status in the result. Do not publish again when it is queued. If publication failed, retry only post_task_card for the returned conversation_id. If useful labels are missing, then request them together via internal.label.propose op=create with the returned conversation_id and labels array. Label approval never blocks the Worker from proceeding.",
-          "required_params" => ["content", "agent_id"],
+            "Create one distinct durable Task as an agent_task Conversation. Omit agent_id: the Group's own Task agent runs every Task. Choose the Task's model, and runs_on when it must run in a particular place. Do not use this operation to continue, clarify, correct, restart or retry work inside an exact existing Task, or add requirements to it. A new Task does not inherit another Conversation history, so content must be self-contained. A plain one-shot Task may be set to completed by its own Router after verified delivery with no remaining work or human decision. Delegated work that repeats or keeps watching something is one Loop Task: pass loop in this call, never one Task per run. Do not use schedule for new work, and never pair a Task create with schedule.create, loop.build or loop.create, because those target the calling Router and Session rather than the Task: the Task's Worker makes the Task's Loop. An exact transport retry preserves the same server-derived request identity: trusted internal-origin retries require the same source Message and immutable create command; Triage handoffs require the same original obligation and delegation ordinal across Sessions and still reject changed content/title; other runtimes require the same Session and tool-call identity. A newly issued create command does not continue an existing Task. Source Conversation provenance and retry identity are bound by the server and are not model parameters. Participant responses arrive later as ordinary Messages in the returned Task Conversation. For a Slack-sourced Task, the runtime records the selected original reply coordinates automatically and includes task_reply_source with each delivered Task message; do not invent or overwrite this source, and use it rather than an unrelated later request when returning the result. Select existing labels from the supplied catalog and pass label_ids in this call. A human Slack, Feishu, Lark or QQ source automatically receives its Task card through the runtime. Read task_card.status in the result. Do not publish again when it is queued. If publication failed, retry only the source provider's post_task_card for the returned conversation_id. If useful labels are missing, then request them together via internal.label.propose op=create with the returned conversation_id and labels array. Label approval never blocks the Worker from proceeding.",
+          "required_params" => ["content"],
           "example_params" => %{
             "connect_id" => "internal",
-            "agent_id" => "known group-local agent_id",
             "content" => "required content"
           },
           "input_schema" => %{
@@ -276,7 +277,7 @@ defmodule SalixIM.Provider.Manuals do
               "triage_delegation_ref" => %{
                 "type" => "string",
                 "description" =>
-                  "For a product-authored Triage handoff, copy its exact triage_delegation_ref to select that current source. Never combine it with source_message_id or invent a ref. It selects server authority, not a client request id. Do not supply a schedule. Retries keep the original obligation/ordinal across Sessions; changing Worker/content/title conflicts and must not create a replacement Task."
+                  "For a product-authored Triage handoff, copy its exact triage_delegation_ref to select that current source. Never combine it with source_message_id or invent a ref. It selects server authority, not a client request id. Do not supply a schedule. Retries keep the original obligation/ordinal across Sessions; changing content/title conflicts and must not create a replacement Task."
               },
               "source_message_id" => %{
                 "type" => "string",
@@ -286,24 +287,52 @@ defmodule SalixIM.Provider.Manuals do
               "agent_id" => %{
                 "type" => "string",
                 "description" =>
-                  "Group-local Agent id. Assigns the Task to this Worker. Use a known id directly; agent.list is only for discovery."
+                  "Omit it: Workers are retired, and the Group's own Task agent takes every new Task."
+              },
+              "model" => %{
+                "type" => "object",
+                "additionalProperties" => false,
+                "required" => ["kind"],
+                "description" =>
+                  "Optional model for this Task only. Kind platform with tier worker, when agent.models lists the platform model: the platform's model, shown to people by its name. Kind catalog, from agent.models: the Task runs it; reasoning_effort must be one of that model's efforts, allow_paid true lets pay-per-use keys serve it, and profile_id pins one Profile that serves it. Kind runtime, with runs_on: provider codex or claude names the station runtime that runs the Task, and model one that station runs (its task_models in device.get or device.list); give only kind and provider to run that runtime's default model on the station (on the Cloud VM, the platform model with Codex), or omit model with runs_on to use the station's default. A product may limit catalog models, as an organization's allowed list does (model_not_allowed); agent.models lists only the ones it accepts. Some products reject model. Omit it, without runs_on, to use the Group's default Task model, which people set in the product's settings (the platform model unless they changed it); when the Group's default place to run Tasks is a station or the Cloud VM, that station runs its default model.",
+                "properties" => %{
+                  "kind" => %{"type" => "string", "enum" => ["catalog", "runtime", "platform"]},
+                  "tier" => %{"type" => "string", "enum" => ["worker"]},
+                  "provider" => %{"type" => "string", "enum" => ["codex", "claude"]},
+                  "model" => %{"type" => "string", "minLength" => 1, "maxLength" => 256},
+                  "reasoning_effort" => %{"type" => "string", "minLength" => 1, "maxLength" => 32},
+                  "allow_paid" => %{"type" => "boolean"},
+                  "profile_id" => %{"type" => "string", "minLength" => 1}
+                }
+              },
+              "runs_on" => %{
+                "type" => "object",
+                "additionalProperties" => false,
+                "required" => ["kind"],
+                "description" =>
+                  "Optional place this Task runs: {kind: cloud_vm} for this Workspace's Cloud VM (woken or created as needed; the Workspace's Cloud VM switch must be on), {kind: station, device_id} for a connected desktop station from device.list, or {kind: salix} for inside Salix. A Loop Task (loop) runs while every app is closed, so it cannot run on a person's own computer: use salix or cloud_vm. A model with cloud_vm or station must be of kind runtime. Omit it to run at the Group's default place to run Tasks, which people set in the product's settings (inside Salix unless they changed it); a Task with a model not of kind runtime runs inside Salix. A default place that cannot take the Task refuses it, as a place you named does.",
+                "properties" => %{
+                  "kind" => %{"type" => "string", "enum" => ["cloud_vm", "station", "salix"]},
+                  "device_id" => %{"type" => "string", "minLength" => 1}
+                }
               },
               "content" => %{
                 "type" => "string",
                 "description" =>
-                  "Complete Task objective. Write this natural-language value in the dominant language of the current user request unless the user explicitly requested a different target language. For agent_id it is delivered to that participant. Describe only the work to perform; do not include instructions to create or manage a Schedule or say that the Task is recurring. Put recurrence only in schedule. For a Task Schedule whose user specified a result-reporting destination, preserve that destination here and instruct the worker to repeat the exact destination in its final Task response as a reminder to the Router, without delivering to the external destination itself."
+                  "Complete Task objective. Write this natural-language value in the dominant language of the current user request unless the user explicitly requested a different target language. It is delivered to the Agent that runs the Task. Describe only the work to perform; do not include instructions to create or manage a Schedule or Loop or say that the Task is recurring. For a Loop Task, describe the work of one run with its conditions and people, such as only Alice's comments. Put the cadence and the limits (max_runs, ends_at, until) only in loop. For recurring work whose user specified a result-reporting destination, preserve that destination here and instruct the worker to repeat the exact destination in its final Task response of each run as a reminder to the Router, without delivering to the external destination itself."
               },
               "title" => %{
                 "type" => "string",
                 "description" =>
                   "Optional title stored on the task conversation. Write this natural-language value in the dominant language of the current user request unless the user explicitly requested a different target language."
               },
+              "loop" => task_loop_schema(),
               "schedule" =>
                 task_recurrence_schema(
-                  "Optional recurrence for a shared Schedule bound to this Task. The Task receives a read-only dry-run immediately; the production command runs at future scheduled windows in the same Task. Calendar recurrence such as daily or weekly must use cron with an explicit local run time and IANA timezone. Never guess a time or timezone: if either is unclear, do not call im_api.internal.task.create yet; ask the user. Use interval_minutes only when the user explicitly requests a duration-based interval such as every 30 minutes or every 6 hours."
+                  "Optional recurrence of a Task Schedule. Do not use it for new work: work that repeats or keeps watching something is a Loop Task (loop). For a shared Schedule bound to this Task, the Task receives a read-only dry-run immediately; the production command runs at future scheduled windows in the same Task. Calendar recurrence such as daily or weekly must use cron with an explicit local run time and IANA timezone. Never guess a time or timezone: if either is unclear, do not call im_api.internal.task.create yet; ask the user. Use interval_minutes only when the user explicitly requests a duration-based interval such as every 30 minutes or every 6 hours."
                 )
             },
-            "required" => ["content", "agent_id"]
+            "required" => ["content"]
           }
         },
         %{
@@ -311,7 +340,7 @@ defmodule SalixIM.Provider.Manuals do
           "safety" => "write",
           "roles" => ["router"],
           "description" =>
-            "Update the same Task's stored production command and/or future Schedule. Omit schedule to change only the command; pass a recurrence object to add or update the Schedule; pass schedule=null to remove future triggers while preserving the Task and command. Updates affect future windows only and do not run the production command immediately.",
+            "Update the same Task's stored production command and/or future Schedule. Omit schedule to change only the command; pass a recurrence object to add or update the Schedule; pass schedule=null to remove future triggers while preserving the Task and command. Schedule updates affect future windows only and do not run the production command immediately. To restart an ended Loop in the same Task after a new user request, pass loop and command together. This sets the Task active, resets runs to zero, and delivers the new command to its Worker. It replaces all old cadence and limit values. Do not pass schedule with loop. An ordinary status change does not restart a Loop.",
           "required_params" => ["conversation_id"],
           "example_params" => %{
             "connect_id" => "internal",
@@ -331,8 +360,9 @@ defmodule SalixIM.Provider.Manuals do
                 "type" => "string",
                 "minLength" => 1,
                 "description" =>
-                  "Optional complete production command for future scheduled windows. Write this natural-language value in the dominant language of the current user request unless the user explicitly requested a different target language. Omit to preserve the current command."
+                  "Required with loop: the complete work for one run with its conditions and people. With a Schedule: optional complete production command for future windows. Write this natural-language value in the dominant language of the current user request unless the user explicitly requested a different target language. Omit to preserve the current command."
               },
+              "loop" => task_loop_schema(),
               "schedule" => %{
                 "description" =>
                   "Optional future recurrence. Pass null to remove future triggers while preserving the Task and command.",
@@ -352,7 +382,7 @@ defmodule SalixIM.Provider.Manuals do
           "roles" => ["router"],
           "runtimes" => ["internal", "script"],
           "description" =>
-            "List one ordinary bounded page of the authenticated group's internal IM conversation and Task resources. Results are newest first and are not filtered by title or Conversation kind.",
+            "List one ordinary bounded page of the authenticated group's internal IM conversation and Task resources. Results are newest first and are not filtered by title or Conversation kind. A Loop Task carries loop: its cadence, runs so far (runs), the time of the last run, its limits and, once it ended, why (ended).",
           "required_params" => [],
           "parameters" => %{
             "limit" => "Optional page size, default 200, max 1000.",
@@ -505,7 +535,7 @@ defmodule SalixIM.Provider.Manuals do
           "safety" => "write",
           "roles" => ["router"],
           "description" =>
-            "Update ordinary Conversation state without sending a Message. Only the Router can call this provider operation; the Router uses it for lifecycle changes such as active, ready_for_review, failed, or cancelled. Only the Task's own Router may set completed for a plain one-shot Task after actual delivery, with no remaining work or human decision. Legacy Workflow, recurring and product-assigned Triage Tasks cannot use this completion path. Report confirmed lifecycle changes to the user at the end of the source reply; if it was already sent, promptly send a short follow-up. Report update errors without claiming the intended status. The existing labels field replaces the Task's full label list. For automatic classification prefer internal.label.assign, which adds matching existing catalog ids without removing the user's labels. Catalog changes use internal.label.propose; an explicit full replacement can also be proposed for confirmation. Workers publish ordinary result Messages and cannot change Conversation status. The committed update or its error is returned directly.",
+            "Update ordinary Conversation state without sending a Message. Only the Router can call this provider operation; the Router uses it for lifecycle changes such as active, ready_for_review, failed, or cancelled. Only the Task's own Router may set completed for a plain one-shot Task after actual delivery, with no remaining work or human decision. Legacy Workflow, Task Schedule and product-assigned Triage Tasks cannot use this completion path. A Loop Task (loop) stays active between runs and cannot be set ready_for_review while its Loop runs; escalated does not pause its Loop. When a Worker asks the user a question in its Task (a Message with a question block), set the Task escalated while it waits for the answer, and active when the work resumes; do not answer the question yourself. The server completes a Loop Task itself when its Loop reaches its run limit or end time. Complete it when the Worker reports that its stop condition holds, or when the user asks; completed, cancelled, failed and archive end its Loop for good. Report confirmed lifecycle changes to the user at the end of the source reply; if it was already sent, promptly send a short follow-up. Report update errors without claiming the intended status. The existing labels field replaces the Task's full label list. For automatic classification prefer internal.label.assign, which adds matching existing catalog ids without removing the user's labels. Catalog changes use internal.label.propose; an explicit full replacement can also be proposed for confirmation. Workers publish ordinary result Messages and cannot change Conversation status. The committed update or its error is returned directly.",
           "required_params" => ["conversation_id"],
           "example_params" => %{
             "connect_id" => "internal",
@@ -679,7 +709,7 @@ defmodule SalixIM.Provider.Manuals do
           "name" => "internal.send_message",
           "safety" => "write",
           "description" =>
-            "Send one visible message to an internal Comma group conversation. Continue existing work by sending the complete follow-up to the exact Task instead of creating a replacement. Task Messages never change Task lifecycle. Routers use internal.update_conversation for Conversation status. Supply mentions only for an intentionally targeted Message. For a single visible reply, call this API once; the system supplies a stable idempotency key for the tool call. Only pass request_id when intentionally retrying the exact same visible reply, and do not copy request IDs from incoming messages.",
+            "Send one visible message to an internal Comma group conversation. Continue existing work by sending the complete follow-up to the exact Task instead of creating a replacement. Task Messages never change Task lifecycle. Routers use internal.update_conversation for Conversation status. Supply mentions only for an intentionally targeted Message. For a single visible reply, call this API once; the system supplies a stable idempotency key for the tool call. Only pass request_id when intentionally retrying the exact same visible reply, and do not copy request IDs from incoming messages. A Worker records each key step it finishes as a milestone: {\"type\":\"milestone\",\"title\":\"Wrote the invite for Bob\"}. The app lists a Task's milestones as its Activity. Write one short line in the user's language that names an outcome: one milestone per item for a few items, one per batch for many (about eight per request at most), never one per tool call or for reporting back, and none for a Loop run that changed nothing. Send milestones in the same response as other tool calls or in the report, never in a response of their own. A Message may carry several. A Message with only milestones notifies no Participant; one with text reaches the Router, so add text only to report results.",
           "required_params" => ["conversation_id", "content"],
           "parameters" => %{
             "conversation_id" => "Required internal Comma group conversation ID.",
@@ -694,7 +724,7 @@ defmodule SalixIM.Provider.Manuals do
             "content" => %{
               "type" => "array",
               "description" =>
-                "Canonical Comma IM content blocks in visible sentence order. For interactive Comma UI, send the dynamic_ui block returned by ui.create unchanged, using the reader-local path from Task delivery. Only one dynamic_ui block is allowed per message. Include its summary as text for external providers. For updates, set reply_to_message_id to the previous card in this same Conversation. Use text blocks for visible prose and normal URLs. Whenever that prose semantically mentions a concrete Task whose unique conversation_id is known from trusted source context, a successful tool result, or a validated structured reference, replace each mention at that position with {\"type\":\"conversation_ref\",\"conversation_id\":\"cnv1_...\",\"kind\":\"agent_task\",\"presentation\":\"inline\"}; this includes the current Task, new Tasks, progress/completion, comparisons, and repeated mentions. Do not emit a ref for generic, quoted, code-example, ambiguous, or unresolved Task names, and never put raw IDs in text. Inline refs are committed rich blocks, not plain-text or draft marker syntax. To send an agent VFS file to conversation participants, include {\"type\":\"file\",\"path\":\"/path/in/workspace\",\"title\":\"optional title\"}. To send an image read from VFS, include {\"type\":\"image\",\"file_ref\":{\"environment_id\":\"vfs\",\"path\":\"/path/image.png\"},\"file_name\":\"optional name\"}. Workspace files are only delivered externally when referenced by one of these file/image blocks.",
+                "Canonical Comma IM content blocks in visible sentence order. For interactive Comma UI, send the dynamic_ui block returned by ui.create unchanged, using the reader-local path from Task delivery. Only one dynamic_ui block is allowed per message. Include its summary as text for external providers. For updates, set reply_to_message_id to the previous card in this same Conversation. Use text blocks for visible prose and normal URLs. Whenever that prose semantically mentions a concrete Task whose unique conversation_id is known from trusted source context, a successful tool result, or a validated structured reference, replace each mention at that position with {\"type\":\"conversation_ref\",\"conversation_id\":\"cnv1_...\",\"kind\":\"agent_task\",\"presentation\":\"inline\"}; this includes the current Task, new Tasks, progress/completion, comparisons, and repeated mentions. Do not emit a ref for generic, quoted, code-example, ambiguous, or unresolved Task names, and never put raw IDs in text. Inline refs are committed rich blocks, not plain-text or draft marker syntax. To send an agent VFS file to conversation participants, include {\"type\":\"file\",\"path\":\"/path/in/workspace/report.pdf\",\"file_name\":\"report.pdf\",\"title\":\"optional display title\"}. To send an image read from VFS, include {\"type\":\"image\",\"file_ref\":{\"environment_id\":\"vfs\",\"path\":\"/path/image.png\"},\"file_name\":\"image.png\"}. file_name is the saved filename and must keep its extension; title is only shown to people. Workspace files are only delivered externally when referenced by one of these file/image blocks. To ask the user to choose, include one question block: {\"type\":\"question\",\"prompt\":\"...\",\"choices\":[{\"label\":\"...\",\"description\":\"optional consequence\",\"reply\":\"optional sentence sent for the user\",\"recommended\":true}],\"multi_select\":false,\"allow_other\":true}. It offers 2 to 6 choices, at most one recommended and listed first. The app shows it as a card; the user's answer is a new message that replies to it. Do not repeat the choices in text.",
               "items" => %{
                 "type" => "object",
                 "description" =>
@@ -710,7 +740,12 @@ defmodule SalixIM.Provider.Manuals do
                   "presentation" => "inline"
                 },
                 %{"type" => "text", "text" => " is ready for review."},
-                %{"type" => "file", "path" => "/attachments/report.pdf", "title" => "report.pdf"},
+                %{
+                  "type" => "file",
+                  "path" => "/attachments/report.pdf",
+                  "file_name" => "report.pdf",
+                  "title" => "Quarterly report"
+                },
                 %{
                   "type" => "image",
                   "file_ref" => %{"environment_id" => "vfs", "path" => "/attachments/diagram.png"},
@@ -757,6 +792,55 @@ defmodule SalixIM.Provider.Manuals do
           }
         }
       ]
+    }
+  end
+
+  defp task_loop_schema do
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "required" => ["cadence"],
+      "description" =>
+        "The requested Loop: delegated work that repeats or keeps watching something, such as posting a digest every morning or handling each new comment on a pull request, until the Task ends, a run limit, an end time or a stop condition. The Task's Worker runs it with one Background Loop in the Task and reports each run in the Task. The server ends the Loop at max_runs and at ends_at and completes the Task, and ends the Loop when the Task ends. When the Loop stops on its own, the Worker says why in the Task. Keep the Task active between runs and never set ready_for_review. Pass only what the user asked for. If the user gave no cadence, or a day without a clock time, do not set the Loop yet: ask once and propose a concrete one. Do not combine with schedule.",
+      "properties" => %{
+        "cadence" => %{
+          "type" => "object",
+          "additionalProperties" => false,
+          "description" =>
+            "Exactly one of cron, every_minutes or events. Use cron with timezone for clock times and days, such as 0 9 * * * for every day at 09:00. Use every_minutes for a stated interval, such as 360 for every 6 hours. Use events for work that runs when something happens. timezone is an IANA name. Omit it to use the requester's device or source timezone.",
+          "properties" => %{
+            "every_minutes" => %{"type" => "integer", "minimum" => 5, "maximum" => 1440},
+            "cron" => %{"type" => "string", "minLength" => 9, "maxLength" => 120},
+            "timezone" => %{"type" => "string", "minLength" => 1},
+            "events" => %{
+              "type" => "string",
+              "minLength" => 1,
+              "maxLength" => 32,
+              "description" =>
+                "A label of at most 32 characters that the Task shows as its trigger. Name only the source and the change, such as New comments on PR #12 or PR #12 新评论. Put the conditions, the people and the work of one run in content (command in task.update). Put the stop condition in until."
+            }
+          }
+        },
+        "max_runs" => %{
+          "type" => "integer",
+          "minimum" => 1,
+          "maximum" => 1000,
+          "description" =>
+            "Optional run limit, only from a count the user stated: the server stops the Loop after this many runs."
+        },
+        "ends_at" => %{
+          "type" => "string",
+          "description" =>
+            "Optional future end time, only from an end date or duration the user stated, computed from the request's time: RFC 3339 with the user's UTC offset, such as 2026-11-02T18:00:00+08:00. The server stops the Loop at its first run at or after this time."
+        },
+        "until" => %{
+          "type" => "string",
+          "minLength" => 1,
+          "maxLength" => 500,
+          "description" =>
+            "Optional stop condition in the user's words, only when the user stated one, such as PR #12 is merged. The Worker says in its report when it holds; then complete the Task."
+        }
+      }
     }
   end
 
@@ -884,15 +968,29 @@ defmodule SalixIM.Provider.Manuals do
   end
 
   defp imessage_manual do
+    chat_id = "Required: the bound chat_id from the source context."
+
     %{
       "provider" => "imessage",
       "overview" =>
-        "Reply through Comma's shared iMessage identity to this connection's bound private chat.",
+        "Reply through Comma's iMessage identity to this connection's bound private chat.",
+      "source_context_mapping" => %{
+        "connect_id" => "Use as the top-level connect_id argument.",
+        "chat_id" => "Use as chat_id inside params.",
+        "message_id" => "The source message itself. It does not identify a quoted message.",
+        "reply_to_message_id" =>
+          "When supplied, identifies the message the person replied to. Its text appears as [Replying to message …]. " <>
+            "Photon can omit this ID even for native replies. Without it, the quoted message is unknown."
+      },
       "workflow" => [
         "Use connect_id and chat_id from the source context. This connection cannot address other chats or enumerate private messages.",
         "Send one plain-text answer with imessage.send_message. Images use imessage.send_image with an agent workspace path. " <>
           imessage_send_outcome_manual() <>
-          " No SMS, groups, typing stream or arbitrary files."
+          " No SMS, groups or arbitrary files. Comma shows the typing indicator; do not send status messages.",
+        "Use ordinary text or image answers. Native inline replies and tapbacks are not advertised by this integration. " <>
+          "If reply_fallback=ordinary_message appears, the text or image was sent without an inline reply. Do not send it again.",
+        "When the reply target is not supplied, do not infer it from recent messages. " <>
+          "If the request depends on the quoted text, ask the person to paste it."
       ],
       "apis" => [
         %{
@@ -901,7 +999,11 @@ defmodule SalixIM.Provider.Manuals do
           "description" =>
             "Send plain text to the bound private chat (maximum 65536 UTF-8 bytes). " <>
               imessage_send_outcome_manual(),
-          "required_params" => ["chat_id", "text"]
+          "required_params" => ["chat_id", "text"],
+          "parameters" => %{
+            "chat_id" => chat_id,
+            "text" => "Plain text, at most 65536 UTF-8 bytes."
+          }
         },
         %{
           "name" => "imessage.send_image",
@@ -909,7 +1011,12 @@ defmodule SalixIM.Provider.Manuals do
           "description" =>
             "Send an image from the agent workspace, maximum 20 MiB. Optional caption. " <>
               imessage_send_outcome_manual(),
-          "required_params" => ["chat_id", "path"]
+          "required_params" => ["chat_id", "path"],
+          "parameters" => %{
+            "chat_id" => chat_id,
+            "path" => "Absolute agent workspace path of the image.",
+            "caption" => "Optional text sent after the image."
+          }
         }
       ]
     }
@@ -981,6 +1088,202 @@ defmodule SalixIM.Provider.Manuals do
 
   # Contract: docs/messaging-voice.md. Every operation addresses a chat that
   # is bound to the connect; the binding names the Comma Signal account.
+  defp qq_manual do
+    chat_id =
+      "Optional chat_id: group:<group_openid> or c2c:<user_openid>. Defaults to the chat of the current QQ source."
+
+    group_id =
+      "Optional group:<group_openid>. Defaults to the group of the current QQ source."
+
+    %{
+      "provider" => "qq",
+      "overview" =>
+        "Reply through this Group's QQ bot: in QQ groups where a member mentioned the bot, and in private chats with people who wrote to it. You can only address chats that have written to the bot. In a group you can also read what the group is and who is in it.",
+      "source_context_mapping" => %{
+        "connect_id" => "Use as the top-level connect_id argument.",
+        "chat_id" =>
+          "The QQ chat: group:<group_openid> for a group, c2c:<user_openid> for a private chat. Omit chat_id to answer the current chat.",
+        "message_id" => "The source message. A send to its chat replies to it while QQ allows.",
+        "from_user_id" =>
+          "The sender's OpenID for this bot. It is not a QQ number and means nothing to another bot. In a group it is the member_id of the sender.",
+        "from_member_role" =>
+          "The sender's role in the group: member, admin or owner. Present for a group message."
+      },
+      "workflow" => [
+        "Answer with qq.send_message. The text is Markdown: headings, bold, italic, strikethrough, links, images by public https URL, lists, quotes, dividers, tables and fenced code blocks.",
+        "QQ cannot edit a sent message. Do not send a placeholder to update later. Send the result when you have it. In a private chat, qq.stream_message shows one message that grows while you work.",
+        "A group takes at most 5 replies within 5 minutes of the mention; a private chat takes 4 within 60 minutes. Put the answer in few messages.",
+        "After that time a send is a proactive message. A private chat takes it unless the person turned such messages off. A group takes it only when a group admin allowed the bot to speak on its own in that group. On a refusal, do not retry: the result says what the people in the chat can do.",
+        "Task creation automatically queues a QQ status card. Do not send a duplicate acknowledgment when task_card.status is queued. The card shows creation, Worker activity, attention and terminal states. Send the actual result through the normal reply path.",
+        "To mention a group member, write <qqbot-at-user id=\"MEMBER_ID\" /> in the text, with the member's from_user_id or member_id. To quote a message, pass its message_id as quote_message_id.",
+        "A url button opens a link, such as a Task or a document. A callback button asks the person for a choice: when a person taps it, you get a message \"[button tapped: <the button's callback>]\" from that person. Treat it as that person's answer, and check from_user_id when only one person may decide.",
+        "Use any conversation context QQ attached. When more context is needed, read it with qq.search_messages, and a file in it with qq.fetch_file. The record holds what QQ delivered to the bot: every message of a group whose admin lets the bot read all messages, and only mentions and the bot's own messages of any other group. It also holds who joined, who left and who asked to join.",
+        "Before you rely on what a group lets the bot do, read qq.get_group_info: it says whether the bot is an admin, whether it reads every message, and whether it may send proactive messages.",
+        "QQ opens the member list only to bots on its allowlist. When a result says QQ has not opened the method to this bot, do not retry; tell the person that the bot's owner must ask the QQ open platform."
+      ],
+      "apis" => [
+        %{
+          "name" => "qq.post_task_card",
+          "safety" => "write",
+          "description" =>
+            "Subscribe the creating QQ chat to Task status cards. The runtime does this after Task creation. Retry only this operation when card publication failed. QQ sends a new card for meaningful status changes, not an editable message.",
+          "required_params" => ["conversation_id", "chat_id"],
+          "parameters" => %{"conversation_id" => "The existing Task ID.", "chat_id" => chat_id}
+        },
+        %{
+          "name" => "qq.send_message",
+          "safety" => "write",
+          "description" =>
+            "Send Markdown text, and optionally one file from your workspace, to a QQ chat. Returns the message ids and whether each went out as a reply or as a proactive message.",
+          "required_params" => ["text"],
+          "parameters" => %{
+            "chat_id" => chat_id,
+            "text" => "Markdown text, at most 12000 bytes. May be empty when path is given.",
+            "format" => "Optional. \"text\" sends the text literally, without Markdown.",
+            "path" =>
+              "Optional workspace path of one file to attach, at most 200 MiB. png, jpg and mp4 show inline; other files show as a file card.",
+            "buttons" =>
+              "Optional list of at most 5 buttons under the message. Each has a \"label\" of at most 10 characters and one of: \"url\" (an https link to open), \"callback\" (at most 256 bytes; a tap comes back to you as a message), \"command\" (text put in the person's input box). Optional \"confirm\": a question of at most 40 characters the person must confirm first. Optional \"admin_only\": true lets only group admins tap. Buttons need Markdown text.",
+            "quote_message_id" =>
+              "Optional message_id of a message of this chat to quote: the source message, a qq.search_messages hit, or a message you sent.",
+            "wakeup" =>
+              "Optional, private chats only. true sends the message as one of the few QQ allows to a person who has been silent: one on the same day, one in days 1 to 3, one in days 3 to 7 and one in days 7 to 30 after their last message."
+          }
+        },
+        %{
+          "name" => "qq.stream_message",
+          "safety" => "write",
+          "description" =>
+            "Show one message in a private chat and extend it as you work. Each call sends the whole text so far, which must start with the text of the call before it. The first call takes one of the replies to the person's newest message and returns stream_id; pass it to each later call, and end with done=true. A group has no such message.",
+          "required_params" => ["text"],
+          "parameters" => %{
+            "chat_id" =>
+              "Optional c2c:<user_openid>. Defaults to the private chat of the current QQ source.",
+            "text" => "The whole Markdown text so far, at most 12000 bytes.",
+            "format" =>
+              "Optional. \"text\" sends the text literally, without Markdown. Keep it the same for every call of one message.",
+            "stream_id" =>
+              "The stream_id of the call before this one. Omit it to start a message.",
+            "done" => "true on the last call. The message stops growing."
+          }
+        },
+        %{
+          "name" => "qq.delete_message",
+          "safety" => "write",
+          "description" =>
+            "Take back a message you sent. QQ allows it for 2 minutes after the message was sent.",
+          "required_params" => ["message_id"],
+          "parameters" => %{
+            "chat_id" => chat_id,
+            "message_id" => "The message_id that qq.send_message returned."
+          }
+        },
+        %{
+          "name" => "qq.search_messages",
+          "safety" => "read",
+          "description" =>
+            "Read the record of a QQ group's messages, newest first, or search it by keyword. Without query it returns the latest messages of the group. A hit with \"event\" is not a message: a member joined or left, or a person asked to join. Private chats are not recorded.",
+          "required_params" => [],
+          "parameters" => %{
+            "chat_id" =>
+              "Optional group:<group_openid>. Defaults to the group of the current QQ source. \"all\" with a query searches every group of this bot.",
+            "query" => "Optional keywords, at most 6 words; a message must contain all of them.",
+            "from_user_id" => "Optional sender OpenID, as from_user_id of a source or a hit.",
+            "after" => "Optional first day, YYYY-MM-DD (UTC).",
+            "before" => "Optional day to stop before, YYYY-MM-DD (UTC).",
+            "count" => "Optional, 1 to 100. Defaults to 30.",
+            "cursor" => "Optional next_cursor of the page before, with the same other parameters."
+          }
+        },
+        %{
+          "name" => "qq.fetch_file",
+          "safety" => "media",
+          "description" =>
+            "Download one file of a recorded QQ group message into your workspace and return its VFS path. Use it to read a file a group member sent without mentioning the bot: find the message with qq.search_messages, then pass its message_id and the file's file_index. Read the file with fs.read_file. QQ's download address expires; when the fetch fails, ask the sender to send the file again and mention the bot. QQ has no list of a group's shared files: only files sent as messages can be read.",
+          "required_params" => ["message_id"],
+          "parameters" => %{
+            "message_id" => "The message_id of a qq.search_messages hit that lists files.",
+            "file_index" => "Optional file_index of the file in that hit. Defaults to 0.",
+            "chat_id" => group_id
+          }
+        },
+        %{
+          "name" => "qq.list_chats",
+          "safety" => "read",
+          "description" =>
+            "List the QQ chats this bot knows, newest first: groups it was added to and people who added it or wrote to it. Each has whether it takes proactive messages when that is known, the group's name once qq.get_group_info read it, and gone=true for a group the bot left or a person who removed the bot.",
+          "required_params" => [],
+          "parameters" => %{
+            "query" =>
+              "Optional text to match against the chat id, the group's name or the last sender's name.",
+            "limit" => "Optional, 1 to 100. Defaults to 50."
+          }
+        },
+        %{
+          "name" => "qq.get_group_info",
+          "safety" => "read",
+          "description" =>
+            "Read a QQ group: its name, description, category, tags and member count, and the bot's place in it: bot_role (member, admin or owner), bot_reads (all, only_mention or mention_and_context) and proactive (whether the group takes proactive messages).",
+          "required_params" => [],
+          "parameters" => %{"chat_id" => group_id}
+        },
+        %{
+          "name" => "qq.list_members",
+          "safety" => "read",
+          "description" =>
+            "List the members of a QQ group, 30 to a page: member_id, name, role, joined_at and bot=true for a bot. QQ opens this only to bots on its allowlist.",
+          "required_params" => [],
+          "parameters" => %{
+            "chat_id" => group_id,
+            "cursor" =>
+              "Optional next_cursor of the page before. An empty next_cursor means the last page."
+          }
+        },
+        %{
+          "name" => "qq.get_member",
+          "safety" => "read",
+          "description" =>
+            "Read one member of a QQ group: name, role and joined_at. QQ opens this only to bots on its allowlist.",
+          "required_params" => ["member_id"],
+          "parameters" => %{
+            "chat_id" => group_id,
+            "member_id" =>
+              "The member's OpenID: from_user_id of a message, or member_id of a list."
+          }
+        },
+        %{
+          "name" => "qq.get_menu",
+          "safety" => "read",
+          "description" => "Read the menu QQ shows in every private chat with this bot.",
+          "required_params" => [],
+          "parameters" => %{}
+        },
+        %{
+          "name" => "qq.set_menu",
+          "safety" => "write",
+          "description" =>
+            "Replace the menu QQ shows in every private chat with this bot. Everyone who talks to the bot sees the same menu; change it only on a request of the bot's owner. An empty list removes the menu.",
+          "required_params" => ["items"],
+          "parameters" => %{
+            "items" =>
+              "List of at most 10 items, shown left to right. Each has a \"name\" of at most 10 characters and one of: \"text\" (put in the person's input box), \"url\" (an https link), or \"items\" (a submenu of at most 5 entries with text or url)."
+          }
+        },
+        %{
+          "name" => "qq.create_share_link",
+          "safety" => "write",
+          "description" =>
+            "Make a link that lets a person add this bot in QQ. When a person adds the bot through it, qq.list_chats shows their chat with added_from set to the link's data.",
+          "required_params" => [],
+          "parameters" => %{
+            "data" =>
+              "Optional mark of where the link is used, at most 32 letters, digits and the characters _ . : -"
+          }
+        }
+      ]
+    }
+  end
+
   defp signal_manual do
     chat_id =
       "Optional chat_id of a chat bound to this connect. Defaults to the chat of the current Signal source."
@@ -1102,7 +1405,7 @@ defmodule SalixIM.Provider.Manuals do
   end
 
   defp imessage_send_outcome_manual do
-    "A message_id acknowledges relay acceptance, not delivery. " <>
+    "A message_id acknowledges that the relay or Photon accepted the send, not delivery. " <>
       "After success, use end_turn when the request is complete. " <>
       "If imessage_delivery_unknown occurs, do not retry the text/image or send a failure notice. " <>
       "This integration has no delivery-verification API. " <>
@@ -1243,11 +1546,15 @@ defmodule SalixIM.Provider.Manuals do
       "overview" =>
         "Feishu provider APIs operate on a group-scoped custom app bot. A connect does not represent one chat or one user; targets must come from source context, user instruction, or Feishu discovery APIs. Message history and group-file access are explicit tools, not automatically present just because the app has permission.",
       "workflow" => [
-        "For recent top-level group context, call feishu.get_chat_history with the source chat_id and paginate deliberately. For a known/current thread, call feishu.get_thread_replies with its thread_id. Like Slack, these are explicit provider pages; this Bot integration does not promise keyword search across every unknown old thread.",
+        "For recent top-level group context, call feishu.get_chat_history with the source chat_id and paginate deliberately. For a known/current thread, call feishu.get_thread_replies with its thread_id. Like Slack, these are explicit provider pages; for keyword search across chats and threads the app can read, call feishu.search_messages; it reads a local index, so check incomplete and stale before treating no matches as absence.",
         "Images already staged from the current triggering message are included in the model request as native image input; do not list history or download them again. Every other attachment is staged in the agent workspace and announced with its VFS path only — its bytes are never in the request. Read a text file with fs.read_file, and convert a PDF, Office document, archive, audio or video file by staging it on a connected runner with env.copy and running the conversion with env.exec. For historical group files, call feishu.list_chat_files for top-level messages or feishu.get_thread_replies for a known thread before answering.",
         "For a historical file the user wants inspected, copy that attachment's exact resource_ref into feishu.fetch_message_resource; never reconstruct or shorten message_id/file_key fields. That stages the bytes in the agent workspace and returns its VFS path; a synchronous image result is also attached natively on the following model turn. If the fetch completes asynchronously, wait for completion and call tool_call.get_result without offset or limit. Then read the file yourself: fs.read_file for text, or env.copy plus env.exec on a connected runner for anything binary. Report an explicit read or conversion failure instead of claiming Feishu history or files are unavailable, and never describe a file you have not actually read.",
         "For group members, call feishu.list_chat_members. For the organization directory, first call feishu.list_contact_scopes to learn the app's authorized roots, then traverse feishu.list_departments and feishu.list_department_users page by page and use feishu.get_user for an explicit ID. These roots and pages can be partial; not finding somebody is not proof they are absent from the tenant.",
         "For a top-level group @mention reply, use feishu.reply_text with reply_in_thread=true and source chat_id. For an existing thread, pass source thread_id so participation remains active.",
+        "Feishu cloud documents (Docx and Docx pages in a wiki) use this app's identity, for the Router and for Workers. The app opens a document only when it is shared with a chat that includes the bot, shared with the app, or open by link inside the tenant; on a permission error, ask the user to share the document with the source chat, and never claim a document is empty or missing. Read with feishu.fetch_doc (outline first for long documents), then edit with feishu.update_doc using block IDs from a detail=with-ids fetch, and fetch again after every write because block IDs change. Create with feishu.create_doc and share_chat_id set to the source chat unless the user names another audience, then reply with the returned URL. Comments, collaborators, link sharing, embedded media, and wiki discovery have their own feishu.*doc* operations. Sharing a document opens all of its content to that audience. Spreadsheets, Base, and legacy /doc/ documents are not supported.",
+        "Feishu Minutes (妙记) recordings are read as this app, for the Router and for Workers: feishu.get_minute with include for the AI summary, todos, chapters, keywords, or transcript; feishu.list_minutes to find recordings; feishu.fetch_minute_media for the audio or video. The same sharing rule applies as for documents. Minutes cannot be edited here. Ask before calling feishu.request_minute_access, because Feishu notifies the owner.",
+        "Feishu shows a meeting, its AI meeting notes, its transcript and its recording only to people. When people of the Agent Swarm signed in (feishu.list_accounts), read them as those people without asking anyone to share: find the meeting with feishu.search_meetings, read it with feishu.get_meeting, then the notes with feishu.get_note and feishu.fetch_doc, and the recording with feishu.get_minute, passing the account that found the meeting. The document and Minutes reads take the same account parameter when the bot itself cannot open a link. When the person who asks has no signed-in account (or theirs expired), let them sign in from the chat: call oauth.request_authorization with provider feishu, an alias such as feishu-<their name> (an expired account's own alias to renew it) and a reason, send the returned authorization_url in the chat the request came from (like any answer), and continue once the authorization completes. Swarm admins can also add accounts on the swarm's Connections page.",
+        "The runtime publishes the native Task card after im_api.internal.task.create for a human Feishu source. Do not publish again when task_card.status is queued. If publication failed, use feishu.post_task_card with the returned Task conversation_id, the source chat_id and the source message to reply to. The card is a projection; it does not bind the thread to the Task.",
         "To edit or delete a previous bot reply, first obtain that reply's message_id from the successful send/reply result or history and verify its normalized sender is this app. Never use the current inbound human message_id for update/delete; those operations are bot-owned only.",
         "Keep ordinary proactive Feishu reminders owned by the current Router/session. Use schedule.create with run_at for one itinerary/reminder time, cron plus timezone for calendar recurrence, or interval_minutes for duration recurrence. Put the exact im_api.feishu.send_text call, connect_id, receive_id=chat_id, text, and structured mention parameters in the schedule prompt. Resolve named people through chat members or the visible directory first and pass mentions=[{user_id,name}]; use mention_all=true only when the chat permits the bot to @all. A reminder's delegated worker computes content and must return the result to the Router. For an ordinary personal Comma Task with an explicit execution_requests grant, the Worker can instead call its granted feishu.send_text operation at the fixed recipient; all provider and IFC checks still apply.",
         FeishuCalendarContract.instruction(),

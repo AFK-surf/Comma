@@ -11,12 +11,11 @@ import (
 
 const cloudRuntimeQuietProcessLimit = 128
 
+var errRuntimeNotQuiet = errors.New("runtime still owns work")
+
 // Only release idle native processes. The coordinator's target sections fence
-// Send, recovery and credential mutation while native quiet checks run. Durable
-// inputs, recovery obligations and unacknowledged outputs always prevent quiet.
-func (c *connector) quietManagedCloudRuntimes(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, cloudRuntimeQuietTimeout)
-	defer cancel()
+// credential mutation while the quiet check runs.
+func (c *connector) quietManagedCloudRuntimes() error {
 	if c.cloudRuntimeRequests != 0 {
 		return errRuntimeNotQuiet
 	}
@@ -36,7 +35,7 @@ func (c *connector) quietManagedCloudRuntimes(ctx context.Context) error {
 	}
 
 	owner := c.runtimeAuthCoordinator()
-	if owner == nil || c.externalRuntimeState == nil {
+	if owner == nil {
 		return errRuntimeNotQuiet
 	}
 	targets := []runtimeProbeTarget{}
@@ -58,34 +57,12 @@ func (c *connector) quietManagedCloudRuntimes(ctx context.Context) error {
 			return errRuntimeNotQuiet
 		}
 		unlocks = append(unlocks, unlock)
-		if owner.targetBusy(target) || owner.attempt(target.key()) != nil {
+		if owner.attempt(target.key()) != nil {
 			return errRuntimeNotQuiet
 		}
 	}
-	_, active, inputs, events := c.externalRuntimeState.healthCounts()
-	if active != 0 || inputs != 0 || events != 0 {
-		return errRuntimeNotQuiet
-	}
-	// Kimi has no native quiet query. Its explicit Stop operation removes the
-	// exact session; until then, absence of new inputs cannot prove it is idle.
-	if kimi, ok := c.runtimeImplementations["kimi"].(*kimiRuntimeImplementation); ok {
-		kimi.mu.Lock()
-		present := len(kimi.sessions) != 0
-		kimi.mu.Unlock()
-		if present {
-			return errRuntimeNotQuiet
-		}
-	}
-	for _, provider := range []string{"claude", "codex", "pi"} {
-		if implementation, ok := c.runtimeImplementations[provider].(externalRuntimeQuietChecker); ok {
-			if err := implementation.Quiet(ctx); err != nil {
-				return err
-			}
-		}
-	}
-	// Quiet has checked all sessions, including native background terminals.
 	// Detach exact idle generations before killing them. Exit callbacks cannot
-	// remove a newer process; native history and durable Session identity stay.
+	// remove a newer process.
 	if implementation, ok := c.runtimeImplementations["codex"].(*codexRuntimeImplementation); ok {
 		implementation.mu.Lock()
 		for _, target := range targets {
@@ -139,7 +116,7 @@ func (c *connector) methodCloudRuntimeLifecycle(ctx context.Context, method stri
 			return nil, errRuntimeNotQuiet
 		}
 		continued := c.cloudRuntimeQuiesced && c.cloudRuntimeParkToken == token
-		if err := c.quietManagedCloudRuntimes(ctx); err != nil {
+		if err := c.quietManagedCloudRuntimes(); err != nil {
 			return nil, err
 		}
 		c.cloudRuntimeQuiesced = true

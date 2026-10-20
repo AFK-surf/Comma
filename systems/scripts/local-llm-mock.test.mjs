@@ -34,17 +34,35 @@ function body(context, user = "hello") {
 }
 
 // Chat Completions rejects a system message that is not the first one, so the
-// chat projection carries every later system-authored block on a
-// `<system>`-wrapped user message.
+// chat projection carries every later system-authored block as a synthetic
+// `get_runtime_message` call with a `system_reminder` result.
 function wrappedSystemBody(context, user = "hello") {
   const [source, manual, turn] = body(context, user).messages;
+  const id = "rtm_source";
 
-  // The session prompt leads; per-message source context arrives later, so it
-  // rides on a user message.
+  // The session prompt leads; per-message source context arrives later.
   return {
     messages: [
       manual,
-      { role: "user", content: `<system>\n${source.content}\n</system>` },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id,
+            type: "function",
+            function: { name: "get_runtime_message", arguments: "{}" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: id,
+        content: JSON.stringify({
+          type: "system_reminder",
+          content: source.content,
+        }),
+      },
       turn,
     ],
   };
@@ -144,6 +162,43 @@ async function readSseEvents(response) {
   return events;
 }
 
+// The provider kernel sends a background tool completion as a synthetic
+// `get_runtime_message` call and its structured result.
+function runtimeCompletion(call, result) {
+  const id = `rtm_${call.id}`;
+  return [
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id,
+          type: "function",
+          function: { name: "get_runtime_message", arguments: "{}" },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: id,
+      content: JSON.stringify({
+        runtime_message_id: `tool-call-result:${call.id}`,
+        type: "tool_call_completed",
+        source_tool_call_id: call.id,
+        summary: `async tool ${call.args.tool} completed`,
+        content: {
+          status: "completed",
+          tool_call_id: call.id,
+          tool_name: call.args.tool,
+          type: "tool_call_completed",
+          result,
+        },
+        source_refs: { status: "completed" },
+      }),
+    },
+  ];
+}
+
 describe("Comma local deterministic LLM", () => {
   beforeEach(() => resetMockState());
 
@@ -212,27 +267,7 @@ describe("Comma local deterministic LLM", () => {
             tool_name: sourceRead.args.tool,
           }),
         },
-        {
-          role: "system",
-          content: [
-            "<runtime-message>",
-            "This is system-generated runtime state for the current Salix session.",
-            "It is not a user request.",
-            `runtime_message_id: tool-call-result:${sourceRead.id}`,
-            "type: tool_call_completed",
-            `source_tool_call_id: ${sourceRead.id}`,
-            `summary: async tool ${sourceRead.args.tool} completed`,
-            `content: ${JSON.stringify({
-              status: "completed",
-              tool_call_id: sourceRead.id,
-              tool_name: sourceRead.args.tool,
-              type: "tool_call_completed",
-              result: sourceResult,
-            })}`,
-            `source_refs: ${JSON.stringify({ status: "completed" })}`,
-            "</runtime-message>",
-          ].join("\n"),
-        },
+        ...runtimeCompletion(sourceRead, sourceResult),
       ],
     });
 
@@ -306,27 +341,7 @@ describe("Comma local deterministic LLM", () => {
             tool_name: sourceRead.args.tool,
           }),
         },
-        {
-          role: "system",
-          content: [
-            "<runtime-message>",
-            "This is system-generated runtime state for the current Salix session.",
-            "It is not a user request.",
-            `runtime_message_id: tool-call-result:${sourceRead.id}`,
-            "type: tool_call_completed",
-            `source_tool_call_id: ${sourceRead.id}`,
-            `summary: async tool ${sourceRead.args.tool} completed`,
-            `content: ${JSON.stringify({
-              status: "completed",
-              tool_call_id: sourceRead.id,
-              tool_name: sourceRead.args.tool,
-              type: "tool_call_completed",
-              result: sourceResult,
-            })}`,
-            `source_refs: ${JSON.stringify({ status: "completed" })}`,
-            "</runtime-message>",
-          ].join("\n"),
-        },
+        ...runtimeCompletion(sourceRead, sourceResult),
         {
           role: "assistant",
           tool_calls: [
@@ -635,7 +650,10 @@ describe("Comma local deterministic LLM", () => {
     for (const [index, [expectedAlias, href]] of sources.entries()) {
       const decision = decide({ messages });
       assert.equal(decision.kind, "tool");
-      assert.equal(decision.args.tool, `mcp.${expectedAlias}.comma_local_search`);
+      assert.equal(
+        decision.args.tool,
+        `mcp.${expectedAlias}.comma_local_search`,
+      );
       assert.equal(decision.args.params.source, expectedAlias);
       messages.push({
         role: "assistant",
@@ -883,7 +901,7 @@ Inbound message source:
     );
   });
 
-  it("creates a Task from cited asynchronous agent discovery", () => {
+  it("creates a Task from cited asynchronous model discovery", () => {
     const initial = body(
       "- conversation_id: cnv1_0000000000000000001",
       "LOCAL_CREATE_TASK",
@@ -891,12 +909,12 @@ Inbound message source:
     const discovery = decide(initial);
     const completion = {
       status: "completed",
-      tool_name: "agent.list",
+      tool_name: "agent.models",
       result: {
         status: "completed",
         content: JSON.stringify({
-          items: [
-            { agent_id: "agt1_worker", name: "Default workspace Worker" },
+          models: [
+            { id: "gpt-5.5", served_by: "subscription", efforts: ["low"] },
           ],
         }),
       },
@@ -912,16 +930,75 @@ Inbound message source:
         },
         { role: "tool", content: JSON.stringify({ status: "running" }) },
         {
-          role: "user",
-          content: `<system>\n<runtime-message>\ntype: tool_call_completed\ncontent: [src:a-14]\n${JSON.stringify(completion)}\nsource_refs: {}\n</runtime-message>\n</system>`,
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "rtm_completion",
+              type: "function",
+              function: { name: "get_runtime_message", arguments: "{}" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          tool_call_id: "rtm_completion",
+          content: JSON.stringify({
+            type: "tool_call_completed",
+            ref: "src:a-14",
+            content: completion,
+          }),
         },
       ],
     });
     assert.equal(creation.args.tool, "im_api.internal.task.create");
-    assert.equal(creation.args.params.agent_id, "agt1_worker");
+    assert.equal(creation.args.params.model.model, "gpt-5.5");
   });
 
-  it("creates a Task for the selected Worker after agent discovery", () => {
+  it("runs the Task on a servable model and leaves the Worker to the Workspace", () => {
+    const initial = body(
+      "- conversation_id: cnv1_0000000000000000001",
+      "LOCAL_CREATE_TASK",
+    );
+    const discovery = decide(initial);
+    assert.equal(discovery.args.tool, "agent.models");
+
+    const task = decide({
+      messages: [
+        ...initial.messages,
+        {
+          role: "assistant",
+          tool_calls: [
+            { function: { arguments: JSON.stringify(discovery.args) } },
+          ],
+        },
+        {
+          role: "tool",
+          content: JSON.stringify({
+            models: [
+              { id: "claude-haiku-4-5", served_by: "api_key", efforts: [] },
+              {
+                id: "gpt-5.5",
+                served_by: "subscription",
+                efforts: ["low", "high"],
+              },
+            ],
+            truncated: false,
+            user: { locale: "zh-CN", timezone: "Asia/Shanghai" },
+          }),
+        },
+      ],
+    });
+    assert.equal(task.args.tool, "im_api.internal.task.create");
+    assert.equal(task.args.params.agent_id, undefined);
+    assert.deepEqual(task.args.params.model, {
+      kind: "catalog",
+      model: "gpt-5.5",
+      reasoning_effort: "low",
+    });
+  });
+
+  it("creates a Task on the built-in model when no model is listed", () => {
     const context = `
 - conversation_id: cnv1_0000000000000000001
 - conversation_kind: user_chat
@@ -933,9 +1010,8 @@ Inbound message source:
     const discovery = decide(initial);
 
     assert.equal(discovery.kind, "tool");
-    assert.equal(discovery.args.tool, "agent.list");
+    assert.equal(discovery.args.tool, "agent.models");
 
-    const workerId = "agt1_0000000000000000001";
     const creation = decide({
       messages: [
         ...initial.messages,
@@ -949,11 +1025,7 @@ Inbound message source:
         },
         {
           role: "tool",
-          content: JSON.stringify({
-            agents: [
-              { agent_id: workerId, name: "Local Worker", role: "worker" },
-            ],
-          }),
+          content: JSON.stringify({ models: [] }),
         },
       ],
     });
@@ -961,7 +1033,8 @@ Inbound message source:
     assert.equal(creation.kind, "tool");
     assert.equal(creation.args.tool, "im_api.internal.task.create");
     assert.equal(creation.args.params.connect_id, "internal");
-    assert.equal(creation.args.params.agent_id, workerId);
+    assert.equal(creation.args.params.agent_id, undefined);
+    assert.equal(creation.args.params.model, undefined);
     assert.equal(creation.args.params.parent_conversation_id, undefined);
     assert.match(creation.args.params.content, /LOCAL_TASK/);
 
@@ -979,11 +1052,7 @@ Inbound message source:
         },
         {
           role: "tool",
-          content: JSON.stringify({
-            agents: [
-              { agent_id: workerId, name: "Local Worker", role: "worker" },
-            ],
-          }),
+          content: JSON.stringify({ models: [] }),
         },
         {
           role: "assistant",
@@ -1370,7 +1439,7 @@ Inbound message source:
     });
   });
 
-  it("streams fallback text as ordered OpenAI SSE deltas across timer ticks", async () => {
+  it("serves the normalized /v1 endpoint with ordered OpenAI SSE deltas", async () => {
     const directory = await mkdtemp(
       path.join(tmpdir(), "comma-local-llm-mock-test-"),
     );
@@ -1390,7 +1459,7 @@ Inbound message source:
         stream: true,
       };
       const response = await fetch(
-        `http://127.0.0.1:${address.port}/chat/completions`,
+        `http://127.0.0.1:${address.port}/v1/chat/completions`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },

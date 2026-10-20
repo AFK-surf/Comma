@@ -89,7 +89,8 @@ def sessionJson (state agentId : Term) : KernelM Term := do
      (b "source_session_id", ← field state "source_session_id"),
      (b "source_schedule_id", ← field state "source_schedule_id"),
      (b "conversation_sources", ← field state "conversation_sources"),
-     (b "compaction_failure", ← field state "compaction_failure")]
+     (b "compaction_failure", ← field state "compaction_failure"),
+     (b "model", state.get (a "model"))]
   return .map (entries.filter (fun pair => pair.2 != nil))
 
 /-- `compact_result_for/2`: the explicit field first, the format-1 fact scan second. -/
@@ -101,17 +102,6 @@ def compactResultFor (state sourceId : Term) : KernelM Term := do
   enumFind ((← field state "events").default (list [])) (fun fact => do
     if msgValue fact "kind" != b "session_compact_result" then return false
     return msgValue fact "source_message_id" == sourceId)
-
-/-- `emergency_compact_result/2`: the recorded redaction watermark, the pre-format-2
-transcript head, or `nil` when a format-2 session recorded no result. -/
-def emergencyCompactThroughId (state : Term) : KernelM Term := do
-  let found ← enumFind ((← field state "redactions").default (list []))
-    (fun entry => return (← access entry (b "kind")) == b "non_model_messages_over_bytes_through")
-  let through := found.get (b "through_id")
-  if found.isMap && through.isInteger then return through
-  let format ← field state "storage_format"
-  if format.isInteger && integerValue format ≥ 2 then return nil
-  maximum (← sub ((← field state "next_message_id").default (i 1)) (i 1)) (i 0)
 
 /-- `session_trace_lineage/4`'s parent pointer: only a same-agent fork has a lineage. -/
 def lineageSourceSessionId (state : Term) : KernelM Term := do
@@ -244,7 +234,6 @@ private def predicate (f : Term → KernelM Bool) : Op :=
 def table : OpTable :=
   [("session_json", sessionJson),
    ("compact_result_for", compactResultFor),
-   ("emergency_compact_through_id", query emergencyCompactThroughId),
    ("lineage_source_session_id", query lineageSourceSessionId),
    ("title_has_assistant?", predicate titleHasAssistant),
    ("title_source_content", query titleSourceContent),

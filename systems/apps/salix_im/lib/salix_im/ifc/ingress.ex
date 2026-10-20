@@ -242,6 +242,51 @@ defmodule SalixIM.IFC.Ingress do
     end
   end
 
+  # A private Lark chat (`p2p`) names neither person, so this inbound, which
+  # carries the sender, is where the pairing is learned: a later read or send
+  # that names only the chat resolves through it. A Lark group is a room.
+  defp audience("lark", scope, metadata) do
+    chat_id = text(metadata["chat_id"])
+    sender = text(metadata["sender_open_id"] || metadata["sender_user_id"])
+
+    cond do
+      chat_id == "" ->
+        nil
+
+      text(metadata["chat_type"]) == "p2p" and sender != "" ->
+        Projection.observe_direct(scope, chat_id, sender)
+        scope_id = Projection.direct_scope_id(sender)
+        atoms(scope, scope_id, stored(scope, scope_id, "direct"))
+
+      true ->
+        {canonical, row} = Projection.structure(scope, chat_id)
+        atoms(scope, canonical, if(is_nil(row.kind), do: %{row | kind: "room"}, else: row))
+    end
+  end
+
+  # A private QQ chat is `c2c:<user_openid>`, and that user is the sender:
+  # record it as that one-to-one. A QQ group (`group:<group_openid>`) is a
+  # room; QQ opens its member list only to bots on an allowlist, so it keeps
+  # the room's own atom.
+  defp audience("qq", scope, metadata) do
+    chat_id = text(metadata["chat_id"])
+    sender = text(metadata["from_user_id"])
+
+    cond do
+      chat_id == "" ->
+        nil
+
+      sender != "" and chat_id == "c2c:" <> sender ->
+        Projection.observe_direct(scope, chat_id, sender)
+        scope_id = Projection.direct_scope_id(sender)
+        atoms(scope, scope_id, stored(scope, scope_id, "direct"))
+
+      true ->
+        {canonical, row} = Projection.structure(scope, chat_id)
+        atoms(scope, canonical, if(is_nil(row.kind), do: %{row | kind: "room"}, else: row))
+    end
+  end
+
   # A message posted through the group's inbound API belongs to the whole
   # group (docs/product-features.md): the caller addressed
   # the group, not any one of its channels, so the content may reach any

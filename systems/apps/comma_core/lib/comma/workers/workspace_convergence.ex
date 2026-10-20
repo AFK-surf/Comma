@@ -5,9 +5,6 @@ defmodule Comma.Workers.WorkspaceConvergence do
   The operation id is the only durable job argument. Provider identity comes
   from the workspace's stable billing and Salix ids, while the operation row
   owns retry, terminal failure, and generation fencing.
-
-  Synchronicity's remote-present/local-missing retry boundary is modeled in
-  `tla/comma_synchronicity/WorkspaceProvisioning.tla`.
   """
 
   use Oban.Worker,
@@ -153,6 +150,15 @@ defmodule Comma.Workers.WorkspaceConvergence do
     end)
     |> case do
       {:ok, {:ok, succeeded}} ->
+        if operation.generation == 1 do
+          Comma.Analytics.capture(
+            workspace.owner_user_id,
+            "comma_workspace_ready",
+            workspace.id,
+            %{"workspace_id" => workspace.id, "initiator_kind" => "system"}
+          )
+        end
+
         {:ok, succeeded}
 
       {:ok, {:complete, complete}} ->
@@ -189,7 +195,7 @@ defmodule Comma.Workers.WorkspaceConvergence do
   end
 
   defp ensure_selfhost_entitlement(workspace) do
-    if Application.get_env(:comma_core, :selfhost, false) do
+    if SystemsRuntime.get_env(:comma_core, :selfhost, false) do
       case BillingCore.Credits.issue_grant(%{
              repo: BillingCore.Repo,
              billing_account_id: workspace["billing_account_id"],
@@ -250,7 +256,7 @@ defmodule Comma.Workers.WorkspaceConvergence do
       )
     else
       delay = retry_delay(operation.attempt)
-      next_attempt_at = DateTime.add(DateTime.utc_now(), delay, :second)
+      next_attempt_at = DateTime.add(SystemsClock.utc_now(), delay, :second)
 
       case Operations.retryable(
              operation.operation_id,

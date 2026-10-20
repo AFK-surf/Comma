@@ -16,7 +16,7 @@ defmodule SalixEnv.RuntimeProxy do
   end
 
   defp handler do
-    Application.get_env(:salix_env, :runtime_proxy_handler, __MODULE__.Unconfigured)
+    SystemsRuntime.get_env(:salix_env, :runtime_proxy_handler, __MODULE__.Unconfigured)
   end
 
   defmodule Unconfigured do

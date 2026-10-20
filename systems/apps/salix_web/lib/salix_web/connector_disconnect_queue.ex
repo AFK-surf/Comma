@@ -1,13 +1,16 @@
 defmodule SalixWeb.ConnectorDisconnectQueue do
+  require SystemsRuntime.Proc
+
   @moduledoc false
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
   alias SalixEnv.Registry
 
   @admission_key {__MODULE__, :admission}
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   # Socket teardown must remain wait-free. The atomic lease is retained from
   # ingress through active work and retries, so queued + active identities stay
@@ -24,16 +27,16 @@ defmodule SalixWeb.ConnectorDisconnectQueue do
   end
 
   defp try_submit(operation, rejected_pid) do
-    case :persistent_term.get(@admission_key, nil) do
-      {pid, counter} when is_pid(pid) and pid != rejected_pid ->
-        if Process.alive?(pid) and acquire_admission(counter) do
-          case :persistent_term.get(@admission_key, nil) do
+    case SystemsRuntime.PersistentTerm.get(@admission_key, nil) do
+      {pid, counter} when SystemsRuntime.Proc.is_process(pid) and pid != rejected_pid ->
+        if SystemsRuntime.Proc.alive?(pid) and acquire_admission(counter) do
+          case SystemsRuntime.PersistentTerm.get(@admission_key, nil) do
             {^pid, ^counter} ->
-              send(pid, {:disconnect, operation})
+              SystemsRuntime.Proc.send(pid, {:disconnect, operation})
               :submitted
 
             _restarted ->
-              :atomics.sub(counter, 1, 1)
+              SystemsRuntime.Atomics.sub(counter, 1, 1)
               :retry
           end
         else
@@ -47,8 +50,8 @@ defmodule SalixWeb.ConnectorDisconnectQueue do
 
   @impl true
   def init(_opts) do
-    ingress = :atomics.new(1, signed: false)
-    :persistent_term.put(@admission_key, {self(), ingress})
+    ingress = SystemsRuntime.Atomics.new(1, signed: false)
+    SystemsRuntime.PersistentTerm.put(@admission_key, {SystemsRuntime.Proc.self(), ingress})
 
     {:ok,
      %{
@@ -56,7 +59,7 @@ defmodule SalixWeb.ConnectorDisconnectQueue do
        pending: %{},
        active: %{},
        retries: %{},
-       concurrency: Application.get_env(:salix_web, :connector_disconnect_task_limit, 16),
+       concurrency: SystemsRuntime.get_env(:salix_web, :connector_disconnect_task_limit, 16),
        capacity: queue_limit()
      }}
   end
@@ -75,14 +78,14 @@ defmodule SalixWeb.ConnectorDisconnectQueue do
     state =
       case Enum.find(state.active, fn {_ref, active} -> active.token == token end) do
         {ref, active} ->
-          Process.demonitor(ref, [:flush])
+          SystemsRuntime.Proc.demonitor(ref, [:flush])
           finish(state, ref, active, result)
 
         nil ->
           state
       end
 
-    send(wrapper, {:disconnect_result_ack, token})
+    SystemsRuntime.Proc.send(wrapper, {:disconnect_result_ack, token})
     {:noreply, state}
   end
 
@@ -96,8 +99,8 @@ defmodule SalixWeb.ConnectorDisconnectQueue do
   def handle_info({:disconnect_timeout, ref}, state) do
     case Map.fetch(state.active, ref) do
       {:ok, active} ->
-        Process.exit(active.pid, :kill)
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.exit(active.pid, :kill)
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         {:noreply, finish(state, ref, active, {:error, :timeout})}
 
       :error ->
@@ -116,17 +119,22 @@ defmodule SalixWeb.ConnectorDisconnectQueue do
 
   @impl true
   def terminate(_reason, state) do
-    case :persistent_term.get(@admission_key, nil) do
-      {pid, _counter} when pid == self() -> :persistent_term.erase(@admission_key)
-      _other -> :ok
+    systems_self = SystemsRuntime.Proc.self()
+
+    case SystemsRuntime.PersistentTerm.get(@admission_key, nil) do
+      {pid, _counter} when pid == systems_self ->
+        SystemsRuntime.PersistentTerm.erase(@admission_key)
+
+      _other ->
+        :ok
     end
 
-    Enum.each(state.retries, fn {_base, timer} -> Process.cancel_timer(timer) end)
+    Enum.each(state.retries, fn {_base, timer} -> SystemsClock.cancel_timer(timer) end)
 
     Enum.each(state.active, fn {ref, active} ->
-      Process.cancel_timer(active.timer)
-      Process.demonitor(ref, [:flush])
-      Process.exit(active.pid, :kill)
+      SystemsClock.cancel_timer(active.timer)
+      SystemsRuntime.Proc.demonitor(ref, [:flush])
+      SystemsRuntime.Proc.exit(active.pid, :kill)
     end)
 
     :ok
@@ -169,12 +177,18 @@ defmodule SalixWeb.ConnectorDisconnectQueue do
         if is_nil(operation) do
           drain(state)
         else
-          parent = self()
-          token = make_ref()
+          parent = SystemsRuntime.Proc.self()
+          token = SystemsRuntime.Proc.make_ref()
 
           {pid, ref} = spawn_monitor(fn -> execute_with_parent(parent, token, operation) end)
 
-          timer = Process.send_after(self(), {:disconnect_timeout, ref}, task_timeout_ms())
+          timer =
+            SystemsClock.send_after(
+              SystemsRuntime.Proc.self(),
+              {:disconnect_timeout, ref},
+              task_timeout_ms()
+            )
+
           active = %{pid: pid, timer: timer, operation: operation, token: token}
 
           state = %{state | active: Map.put(state.active, ref, active)}
@@ -188,7 +202,7 @@ defmodule SalixWeb.ConnectorDisconnectQueue do
   end
 
   defp finish(state, ref, active, result) do
-    Process.cancel_timer(active.timer)
+    SystemsClock.cancel_timer(active.timer)
     base = base(active.operation)
 
     state = %{state | active: Map.delete(state.active, ref)}
@@ -222,12 +236,19 @@ defmodule SalixWeb.ConnectorDisconnectQueue do
   defp schedule_retry(state, base, operation) do
     operation = newer(operation, state.pending[base])
     state = %{state | pending: Map.delete(state.pending, base)}
-    timer = Process.send_after(self(), {:retry_disconnect, base, operation}, retry_ms())
+
+    timer =
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
+        {:retry_disconnect, base, operation},
+        retry_ms()
+      )
+
     %{state | retries: Map.put(state.retries, base, timer)}
   end
 
   defp safe_execute(operation) do
-    case Application.get_env(:salix_web, :connector_disconnect_executor) do
+    case SystemsRuntime.get_env(:salix_web, :connector_disconnect_executor) do
       fun when is_function(fun, 1) -> fun.(operation)
       _ -> Registry.mark_disconnected(operation.connector_run_id, registry_opts(operation))
     end
@@ -256,29 +277,32 @@ defmodule SalixWeb.ConnectorDisconnectQueue do
   defp base(operation), do: {operation.connector_run_id, operation.owner_node}
 
   defp execute_with_parent(parent, token, operation) do
-    parent_monitor = Process.monitor(parent)
-    outer = self()
+    parent_monitor = SystemsRuntime.Proc.monitor(parent)
+    outer = SystemsRuntime.Proc.self()
 
     executor =
-      spawn_link(fn ->
-        send(outer, {:executor_result, safe_execute(operation)})
+      SystemsRuntime.Proc.spawn_link(fn ->
+        SystemsRuntime.Proc.send(outer, {:executor_result, safe_execute(operation)})
       end)
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {:executor_result, result} ->
-        send(parent, {:disconnect_result, token, result, self()})
+        SystemsRuntime.Proc.send(
+          parent,
+          {:disconnect_result, token, result, SystemsRuntime.Proc.self()}
+        )
 
-        receive do
+        SystemsRuntime.Proc.receive do
           {:disconnect_result_ack, ^token} ->
-            Process.demonitor(parent_monitor, [:flush])
+            SystemsRuntime.Proc.demonitor(parent_monitor, [:flush])
 
           {:DOWN, ^parent_monitor, :process, ^parent, _reason} ->
             resubmit_after_restart(parent, operation, 100)
         end
 
       {:DOWN, ^parent_monitor, :process, ^parent, _reason} ->
-        Process.unlink(executor)
-        Process.exit(executor, :kill)
+        SystemsRuntime.Proc.unlink(executor)
+        SystemsRuntime.Proc.exit(executor, :kill)
         resubmit_after_restart(parent, operation, 100)
     end
   end
@@ -303,7 +327,7 @@ defmodule SalixWeb.ConnectorDisconnectQueue do
         :ok
 
       :retry ->
-        Process.sleep(10)
+        SystemsClock.sleep(10)
         resubmit_after_restart(old_parent, operation, attempts - 1)
     end
   end
@@ -324,13 +348,13 @@ defmodule SalixWeb.ConnectorDisconnectQueue do
   end
 
   defp acquire_admission(counter) do
-    current = :atomics.get(counter, 1)
+    current = SystemsRuntime.Atomics.get(counter, 1)
 
     cond do
       current >= queue_limit() ->
         false
 
-      :atomics.compare_exchange(counter, 1, current, current + 1) == :ok ->
+      SystemsRuntime.Atomics.compare_exchange(counter, 1, current, current + 1) == :ok ->
         true
 
       true ->
@@ -339,17 +363,19 @@ defmodule SalixWeb.ConnectorDisconnectQueue do
   end
 
   defp release_admission do
-    case :persistent_term.get(@admission_key, nil) do
-      {pid, counter} when pid == self() -> :atomics.sub(counter, 1, 1)
+    systems_self = SystemsRuntime.Proc.self()
+
+    case SystemsRuntime.PersistentTerm.get(@admission_key, nil) do
+      {pid, counter} when pid == systems_self -> SystemsRuntime.Atomics.sub(counter, 1, 1)
       _other -> :ok
     end
   end
 
   defp queue_limit,
-    do: Application.get_env(:salix_web, :connector_disconnect_queue_limit, 1_024)
+    do: SystemsRuntime.get_env(:salix_web, :connector_disconnect_queue_limit, 1_024)
 
   defp task_timeout_ms,
-    do: Application.get_env(:salix_web, :connector_disconnect_task_timeout_ms, 30_000)
+    do: SystemsRuntime.get_env(:salix_web, :connector_disconnect_task_timeout_ms, 30_000)
 
-  defp retry_ms, do: Application.get_env(:salix_web, :connector_disconnect_retry_ms, 1_000)
+  defp retry_ms, do: SystemsRuntime.get_env(:salix_web, :connector_disconnect_retry_ms, 1_000)
 end

@@ -198,16 +198,16 @@ defmodule SalixWeb.SiteAPI do
   @spec cached_config(String.t(), String.t()) :: {:ok, map() | nil} | {:error, term()}
   def cached_config(agent_id, site_name) do
     key = agent_id <> ":" <> site_name
-    now = System.monotonic_time(:millisecond)
+    now = SystemsClock.monotonic_time(:millisecond)
 
-    case :ets.lookup(__MODULE__.Cache, key) do
+    case SystemsRuntime.ETS.lookup(__MODULE__.Cache, key) do
       [{^key, cfg, fetched_at}] when now - fetched_at < @config_cache_ttl_ms ->
         {:ok, cfg}
 
       _ ->
         case load_config(agent_id, site_name) do
           {:ok, cfg} ->
-            :ets.insert(__MODULE__.Cache, {key, cfg, now})
+            SystemsRuntime.ETS.insert(__MODULE__.Cache, {key, cfg, now})
             {:ok, cfg}
 
           err ->
@@ -271,18 +271,26 @@ defmodule SalixWeb.SiteAPI do
     request and emits bounded telemetry; no local fallback is permitted.
     """
 
-    use Hammer,
-      backend: Hammer.Redis,
-      algorithm: :sliding_window,
-      prefix: "salix:site-llm:v1",
-      timeout: 2_000
+    @prefix "salix:site-llm:v1"
+    @timeout 2_000
+
+    # Hammer supervises the Redis connection; the window is
+    # SalixStore.RedisLimit's, on the application's clock.
+    use Hammer, backend: Hammer.Redis, prefix: @prefix, timeout: @timeout
 
     @window_ms 60_000
 
     def allow?(agent_id, max_rpm) when is_binary(agent_id) do
       limit = if is_integer(max_rpm) and max_rpm > 0, do: max_rpm, else: 60
 
-      case hit(digest(agent_id), @window_ms, limit) do
+      case SalixStore.RedisLimit.sliding_window(
+             __MODULE__,
+             @prefix,
+             digest(agent_id),
+             @window_ms,
+             limit,
+             @timeout
+           ) do
         {:allow, _count} ->
           emit(:allow)
           true
@@ -305,7 +313,7 @@ defmodule SalixWeb.SiteAPI do
       do: :crypto.hash(:sha256, agent_id) |> Base.encode16(case: :lower)
 
     defp emit(outcome) do
-      :telemetry.execute(
+      SystemsRuntime.Telemetry.execute(
         [:salix, :site_llm, :rate_limit, :decision],
         %{count: 1},
         %{outcome: outcome}
@@ -321,10 +329,10 @@ defmodule SalixWeb.SiteAPI do
     deliberately not stored in this ETS owner.
     """
 
-    use GenServer
+    use SystemsRuntime.Server
 
     @prune_every_ms 5 * 60_000
-    def start_link(_opts), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
+    def start_link(_opts), do: SystemsRuntime.Server.start_link(__MODULE__, nil, name: __MODULE__)
 
     @doc "Global Redis sliding-window rate limit for SiteLLM."
     @spec allow?(String.t(), integer()) :: boolean()
@@ -332,20 +340,26 @@ defmodule SalixWeb.SiteAPI do
 
     @impl true
     def init(nil) do
-      :ets.new(SalixWeb.SiteAPI.Cache, [:named_table, :set, :public, read_concurrency: true])
-      Process.send_after(self(), :prune, @prune_every_ms)
+      SystemsRuntime.ETS.new(SalixWeb.SiteAPI.Cache, [
+        :named_table,
+        :set,
+        :public,
+        read_concurrency: true
+      ])
+
+      SystemsClock.send_after(SystemsRuntime.Proc.self(), :prune, @prune_every_ms)
       {:ok, %{}}
     end
 
     @impl true
     def handle_info(:prune, state) do
-      now = System.monotonic_time(:millisecond)
+      now = SystemsClock.monotonic_time(:millisecond)
 
-      :ets.select_delete(SalixWeb.SiteAPI.Cache, [
+      SystemsRuntime.ETS.select_delete(SalixWeb.SiteAPI.Cache, [
         {{:_, :_, :"$1"}, [{:<, :"$1", now - 2 * 60_000}], [true]}
       ])
 
-      Process.send_after(self(), :prune, @prune_every_ms)
+      SystemsClock.send_after(SystemsRuntime.Proc.self(), :prune, @prune_every_ms)
       {:noreply, state}
     end
   end

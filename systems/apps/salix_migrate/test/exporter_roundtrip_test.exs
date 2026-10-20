@@ -16,7 +16,7 @@ defmodule SalixMigrate.ExporterRoundtripTest do
   Tagged `:go_exporter` and excluded by default (requires go + sqlite3 + bash);
   run with: mix test --include go_exporter
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   @moduletag :go_exporter
 
@@ -43,7 +43,7 @@ defmodule SalixMigrate.ExporterRoundtripTest do
     db =
       Path.join(
         System.tmp_dir!(),
-        "willow-salix-fixture-#{System.unique_integer([:positive])}.db"
+        "willow-salix-fixture-#{SystemsRuntime.Proc.unique_integer([:positive])}.db"
       )
 
     {out, status} = System.cmd("bash", [@script, exporter], stderr_to_stdout: true)
@@ -60,11 +60,11 @@ defmodule SalixMigrate.ExporterRoundtripTest do
   end
 
   setup do
-    prev = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, prev) end)
-    {:ok, agent: "agent-#{System.unique_integer([:positive])}"}
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, prev) end)
+    {:ok, agent: "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"}
   end
 
   test "exporter emits the documented import shape", %{export: export} do

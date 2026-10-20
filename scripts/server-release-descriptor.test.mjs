@@ -27,6 +27,8 @@ const fixture = () => {
     root,
     serverBuildId: BUILD_ID,
     agentVMMReleaseId: "agent-vmm-release-1",
+    darwinSalixConnectReleaseId: "salix-connect-darwin-1",
+    computerUseHelperReleaseId: "computer-use-helper-1",
     baseUrl: "https://comma-release.example/server-install-artifacts",
   });
   writeFileSync(join(root, DESCRIPTOR_FILENAME), `${JSON.stringify(descriptor)}\n`);
@@ -40,6 +42,11 @@ test("canonical descriptor verifies exact bundled bytes and selects one target",
     assert.equal(selectArtifact(descriptor, "agent-vmm-host", "darwin-arm64").component, "agent-vmm-host");
     assert.equal(selectArtifact(descriptor, "agent-vmm-host", "darwin-arm64").release_id, "agent-vmm-release-1");
     assert.throws(() => selectArtifact(descriptor, "agent-vmm-host", "linux-arm64"), /no exact artifact/);
+    assert.equal(selectArtifact(descriptor, "salix-connect", "darwin-arm64").release_id, "salix-connect-darwin-1");
+    assert.equal(selectArtifact(descriptor, "salix-connect", "linux-arm64").release_id, BUILD_ID);
+    const helper = selectArtifact(descriptor, "computer-use-helper", "darwin-arm64");
+    assert.equal(helper.artifact, "comma-computer-use.tar.gz");
+    assert.equal(helper.release_id, "computer-use-helper-1");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -1,7 +1,7 @@
 import "@comma/ui/styles.css";
 import "../../../../../packages/app/src/styles.css";
 
-import { MarkdownStream } from "@comma/ui";
+import { MarkdownStream } from "@comma/ui/components/markdown-stream";
 import {
   RouterProvider,
   createMemoryHistory,
@@ -17,30 +17,47 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type ReactElement,
 } from "react";
 import { createRoot } from "react-dom/client";
-import type { CommaApiClient } from "../../../../../packages/app/src/api";
 import { measureOutgoingBubbleSource } from "../../../../../packages/app/src/components/chat/motion/outgoingBubbleMotion";
 import { ParticipantStatusSlot } from "../../../../../packages/app/src/components/chat/thread/activity/ActivityLine";
 import {
-  ConversationThread,
+  ConversationThread as ProductConversationThread,
   type ChatOutgoingLaunch,
 } from "../../../../../packages/app/src/components/chat/thread/ConversationThread";
+import { readDraft, readMessage, readState } from "../../coreReading";
+
+/** The product thread, shown what the core sends with the messages this fixture builds. */
+function ConversationThread(props: ComponentProps<typeof ProductConversationThread>) {
+  const messages = useMemo(() => props.messages.map(readMessage), [props.messages]);
+  const assistantDraft = useMemo(
+    () => props.assistantDraft && readDraft(props.assistantDraft),
+    [props.assistantDraft]
+  );
+  return (
+    <ProductConversationThread
+      {...props}
+      assistantDraft={assistantDraft}
+      messages={messages}
+    />
+  );
+}
 import {
   idleConversationChannelState,
-  type ChatAssistantDraft,
   type ChatMessage,
   type ChatParticipantStatus,
   type ConversationChannelState,
   type PendingSend,
-} from "../../../../../packages/app/src/components/chat/model/conversationChannel";
+} from "@comma/core/chat";
 import {
   ConversationView,
   type ConversationViewActions,
 } from "../../../../../packages/app/src/components/chat/conversation/ConversationView";
 import { fixedDraftSource } from "../../../../../packages/app/src/components/chat/composer/conversationDraft";
 import { CommaUiThemeProvider } from "../../../../../packages/app/src/components/commaUiTheme";
-import type { CommaUiThemeName } from "../../../../../packages/app/src/components/sideChatAppearance";
+import type { CommaUiThemeName } from "../../../../../packages/app/src/components/commaUiTheme";
+import { fixtureSearch } from "../../../support/search";
 
 const introMarkdown = [
   "# Streaming Markdown Fixture",
@@ -106,8 +123,6 @@ const outgoingHistoryUserKeys = Array.from(
 
 type ScenarioName = "intro" | "full" | "final" | "retarget-a" | "retarget-b";
 type ConversationStage = "history" | "sent" | "draft" | "draft-grown" | "final";
-type SideChatMotionStage = "idle" | "waiting" | "streaming" | "final";
-type DelayedActivityVariant = "route" | "side-chat";
 type OutgoingUserStage = "pending" | "failed" | "canonical";
 type OutgoingUserEntry = {
   clientRequestId: string;
@@ -128,10 +143,6 @@ declare global {
         reset: () => void;
         start: () => void;
       };
-      sideChat?: {
-        reset: () => void;
-        start: () => void;
-      };
     };
     markdownStreamFixture?: {
       getSnapshot: () => {
@@ -144,10 +155,11 @@ declare global {
       setConversationStage: (stage: ConversationStage) => void;
       ackOutgoingUser: () => void;
       failOutgoingUser: () => void;
+      /** The agent's reply arrives in the render in which the flying message lands. */
+      replyWhenOutgoingUserLands: () => void;
       resetOutgoingUser: () => void;
       setOutgoingHistoryEnabled: (enabled: boolean) => void;
       setOutgoingUserText: (text: string) => void;
-      setSideChatMotion: (stage: SideChatMotionStage, text?: string) => void;
       setScenario: (scenario: ScenarioName) => void;
       setTheme: (theme: CommaUiThemeName) => void;
       startOutgoingUser: () => void;
@@ -155,27 +167,31 @@ declare global {
   }
 }
 
-// Performance runs mount one scenario so unrelated transcript demos do not rerender.
+// A test mounts only the scenes it uses (`?fixture=<test id>,<test id>`), so
+// the others neither render nor rerender under it.
 function FixtureScope({ children, ...props }: ComponentProps<"main">) {
-  const selected = new URLSearchParams(window.location.search).get("fixture");
+  const selected = new URLSearchParams(fixtureSearch()).get("fixture")?.split(",");
   const visible = selected
     ? Children.toArray(children).filter(
         (child) =>
           isValidElement<{ "data-testid"?: string }>(child) &&
-          child.props["data-testid"] === selected
+          selected.includes(sceneId(child))
       )
     : children;
   return <main {...props}>{visible}</main>;
+}
+
+/** The test id a scene renders at its root. */
+function sceneId(scene: ReactElement<{ "data-testid"?: string }>) {
+  return scene.type === DelayedActivityOutgoingFixture
+    ? "delayed-activity-outgoing-route-fixture"
+    : (scene.props["data-testid"] ?? "");
 }
 
 function MarkdownStreamFixture() {
   const [state, setState] = useState({ content: introMarkdown, final: true });
   const [conversationStage, setConversationStage] =
     useState<ConversationStage>("history");
-  const [sideChatMotion, setSideChatMotion] = useState<{
-    stage: SideChatMotionStage;
-    text: string;
-  }>({ stage: "idle", text: "" });
   const [outgoingUserEntries, setOutgoingUserEntries] = useState<
     readonly OutgoingUserEntry[]
   >([]);
@@ -186,6 +202,8 @@ function MarkdownStreamFixture() {
     readonly ChatOutgoingLaunch[]
   >([]);
   const [outgoingHistoryEnabled, setOutgoingHistoryEnabled] = useState(false);
+  const [outgoingUserReplied, setOutgoingUserReplied] = useState(false);
+  const replyWhenOutgoingUserLandsRef = useRef(false);
   const outgoingLaunchId = useRef(0);
   const [theme, setTheme] = useState<CommaUiThemeName>("Light mode");
   const blurAnimation = useMemo(
@@ -243,11 +261,16 @@ function MarkdownStreamFixture() {
         outgoingUserEntriesRef.current = next;
         setOutgoingUserEntries(next);
       },
+      replyWhenOutgoingUserLands: () => {
+        replyWhenOutgoingUserLandsRef.current = true;
+      },
       resetOutgoingUser: () => {
         outgoingLaunchId.current = 0;
         outgoingUserEntriesRef.current = [];
         outgoingUserTextRef.current = defaultOutgoingUserText;
+        replyWhenOutgoingUserLandsRef.current = false;
         setOutgoingLaunches([]);
+        setOutgoingUserReplied(false);
         setOutgoingHistoryEnabled(false);
         setOutgoingUserEntries([]);
         setOutgoingUserText(defaultOutgoingUserText);
@@ -256,9 +279,6 @@ function MarkdownStreamFixture() {
       setOutgoingUserText: (text) => {
         outgoingUserTextRef.current = text;
         setOutgoingUserText(text);
-      },
-      setSideChatMotion: (stage, text = "") => {
-        setSideChatMotion({ stage, text });
       },
       setScenario: (scenario) => {
         if (scenario === "intro") {
@@ -317,7 +337,6 @@ function MarkdownStreamFixture() {
             expiresAt: Date.now() + 2_000,
             id,
             sourceFrame: measureOutgoingBubbleSource(source),
-            startedFromEmpty: false,
             text,
           },
         ]);
@@ -385,14 +404,6 @@ function MarkdownStreamFixture() {
     parts: [{ kind: "markdown", text: "The generated report is ready." }],
     text: "The generated report is ready.",
   };
-  const downloadContractApi = useMemo(
-    () =>
-      ({
-        fetchConversationAttachment: async () =>
-          new Blob(["report bytes"], { type: "application/pdf" }),
-      }) as Partial<CommaApiClient> as CommaApiClient,
-    []
-  );
   const timestampMessages: ChatMessage[] = [
     {
       ...productUserMessage,
@@ -481,9 +492,20 @@ function MarkdownStreamFixture() {
       text: `Historical answer ${index + 1} with enough detail to occupy a row.`,
     },
   ]).flat();
-  const outgoingMotionMessages = outgoingHistoryEnabled
-    ? [...turnHistory, ...outgoingUserMessages]
-    : outgoingUserMessages;
+  const outgoingMotionMessages = [
+    ...(outgoingHistoryEnabled ? turnHistory : []),
+    ...outgoingUserMessages,
+    ...(outgoingUserReplied
+      ? [
+          {
+            ...productMessage,
+            messageId: "outgoing-user-reply",
+            parts: [{ kind: "markdown" as const, text: "Reply to the sent message." }],
+            text: "Reply to the sent message.",
+          },
+        ]
+      : []),
+  ];
   const currentTurnUser: ChatMessage = {
     ...productUserMessage,
     clientRequestId: "turn-request",
@@ -523,27 +545,8 @@ function MarkdownStreamFixture() {
               : "Streaming reply is growing in place.",
         }
       : undefined;
-  const sideChatMotionUser: ChatMessage = {
-    ...productUserMessage,
-    messageId: "side-chat-motion-user",
-    text: "Stream this answer without jank",
-  };
-  const sideChatMotionAwaiting = ["waiting", "streaming"].includes(
-    sideChatMotion.stage
-  );
-  const sideChatMotionDraft: ChatAssistantDraft | undefined =
-    sideChatMotion.stage === "streaming"
-      ? {
-          conversationId: "side-chat-motion-e2e",
-          draftId: "side-chat-motion-draft",
-          responseKey: "side-chat-motion-response",
-          sourceMessageIds: [sideChatMotionUser.messageId],
-          status: "streaming",
-          text: sideChatMotion.text,
-        }
-      : undefined;
   // The two notices a failed turn can print, in the order the chat prints them:
-  // the send that never left, and the model that could not be reached. They are
+  // the send that never left, and the model request that failed. They are
   // one card, and the parity test holds them to it.
   const noticeParityMessage: ChatMessage = {
     attachments: [],
@@ -569,32 +572,6 @@ function MarkdownStreamFixture() {
     status: "",
     updatedAt: 1,
   };
-  const sideChatMotionParticipantStatus: ChatParticipantStatus | undefined =
-    sideChatMotionAwaiting
-      ? {
-          conversationId: "side-chat-motion-e2e",
-          participantId: "side-chat-motion-participant",
-          state: "active",
-          status:
-            sideChatMotion.stage === "streaming"
-              ? "is composing a message..."
-              : "is thinking...",
-          updatedAt: sideChatMotion.stage === "streaming" ? 2 : 1,
-        }
-      : undefined;
-  const sideChatMotionMessages: ChatMessage[] =
-    sideChatMotion.stage === "final"
-      ? [
-          sideChatMotionUser,
-          {
-            ...productMessage,
-            messageId: "side-chat-motion-final",
-            parts: [{ kind: "markdown", text: sideChatMotion.text }],
-            text: sideChatMotion.text,
-          },
-        ]
-      : [sideChatMotionUser];
-
   return (
     <CommaUiThemeProvider theme={theme}>
       <FixtureScope
@@ -639,7 +616,7 @@ function MarkdownStreamFixture() {
         <section
           aria-label="Production conversation Markdown"
           className="comma-chat-route"
-          data-variant="side-chat"
+          data-variant="route"
           data-testid="conversation-markdown-fixture"
           style={{
             border: "1px solid var(--color-border-primary)",
@@ -660,7 +637,6 @@ function MarkdownStreamFixture() {
             messages={[productUserMessage, productMessage]}
             onDiscard={() => undefined}
             onRetry={() => undefined}
-            variant="side-chat"
             workspaceId="markdown-e2e"
           />
         </section>
@@ -736,40 +712,13 @@ function MarkdownStreamFixture() {
           }}
         >
           <ConversationThread
-            api={downloadContractApi}
+            live
             conversationId="generated-file-main"
             groupId="grp-markdown-e2e"
             messages={[generatedFileMessage]}
             onDiscard={() => undefined}
             onRetry={() => undefined}
             workspaceId="generated-file-main"
-          />
-        </section>
-
-        <section
-          aria-label="Side Chat generated-file download contract"
-          className="comma-chat-route comma-side-chat-host"
-          data-variant="side-chat"
-          data-testid="generated-file-download-side-chat-fixture"
-          style={{
-            border: "1px solid var(--color-border-primary)",
-            borderRadius: 12,
-            margin: "0 auto",
-            maxWidth: 960,
-            minHeight: 240,
-            padding: 24,
-            width: "calc(100vw - 64px)",
-          }}
-        >
-          <ConversationThread
-            api={downloadContractApi}
-            conversationId="generated-file-side-chat"
-            groupId="grp-markdown-e2e"
-            messages={[generatedFileMessage]}
-            onDiscard={() => undefined}
-            onRetry={() => undefined}
-            variant="side-chat"
-            workspaceId="generated-file-side-chat"
           />
         </section>
 
@@ -864,6 +813,12 @@ function MarkdownStreamFixture() {
               setOutgoingLaunches((current) =>
                 current.filter((launch) => launch.id !== launchId)
               );
+              // Both updates are made in this one callback, so React commits
+              // them in one render.
+              if (replyWhenOutgoingUserLandsRef.current) {
+                replyWhenOutgoingUserLandsRef.current = false;
+                setOutgoingUserReplied(true);
+              }
             }}
             onRetry={() => undefined}
             outgoingLaunches={outgoingLaunches}
@@ -913,7 +868,6 @@ function MarkdownStreamFixture() {
 
         <section
           aria-label="ConversationView rejected send motion"
-          className="comma-side-chat-host"
           data-testid="conversation-view-rejected-send-fixture"
           style={{
             border: "1px solid var(--color-border-primary)",
@@ -931,8 +885,7 @@ function MarkdownStreamFixture() {
           <PlainPromiseRejectedSendFixture />
         </section>
 
-        <DelayedActivityOutgoingFixture variant="route" />
-        <DelayedActivityOutgoingFixture variant="side-chat" />
+        <DelayedActivityOutgoingFixture />
 
         <section
           data-testid="markdown-stream-fixture"
@@ -977,45 +930,6 @@ function MarkdownStreamFixture() {
             streamId="markdown-stream-layout-e2e"
           />
         </section>
-
-        <section
-          aria-label="Side Chat streaming motion"
-          className="comma-chat-route comma-side-chat-host"
-          data-variant="side-chat"
-          data-testid="side-chat-motion-fixture"
-          style={{
-            border: "1px solid var(--color-border-primary)",
-            borderRadius: 12,
-            bottom: 0,
-            display: "flex",
-            flexDirection: "column",
-            height: 280,
-            left: 0,
-            margin: "0 auto",
-            maxWidth: 960,
-            overflow: "hidden",
-            padding: 24,
-            position: "relative",
-            width: "calc(100vw - 64px)",
-          }}
-        >
-          <ConversationThread
-            afterMessages={
-              sideChatMotionAwaiting ? (
-                <ParticipantStatusSlot
-                  participantStatus={sideChatMotionParticipantStatus}
-                />
-              ) : undefined
-            }
-            assistantDraft={sideChatMotionDraft}
-            groupId="grp-markdown-e2e"
-            messages={sideChatMotionMessages}
-            onDiscard={() => undefined}
-            onRetry={() => undefined}
-            variant="side-chat"
-            workspaceId="side-chat-motion-e2e"
-          />
-        </section>
       </FixtureScope>
     </CommaUiThemeProvider>
   );
@@ -1028,46 +942,29 @@ const delayedActivityOutgoingText = Array.from({ length: 400 }, () => "行").joi
 const delayedActivityDelayMs = 1_000;
 
 const delayedActivityRouteRoot = createRootRoute({
-  component: () => <DelayedActivityConversationView variant="route" />,
+  component: () => <DelayedActivityConversationView />,
 });
 const delayedActivityRouteRouter = createRouter({
   history: createMemoryHistory({ initialEntries: ["/"] }),
   routeTree: delayedActivityRouteRoot,
 });
-const delayedActivitySideChatRoot = createRootRoute({
-  component: () => <DelayedActivityConversationView variant="side-chat" />,
-});
-const delayedActivitySideChatRouter = createRouter({
-  history: createMemoryHistory({ initialEntries: ["/"] }),
-  routeTree: delayedActivitySideChatRoot,
-});
 
-function DelayedActivityOutgoingFixture({
-  variant,
-}: {
-  variant: DelayedActivityVariant;
-}) {
-  return variant === "side-chat" ? (
-    <RouterProvider router={delayedActivitySideChatRouter} />
-  ) : (
-    <RouterProvider router={delayedActivityRouteRouter} />
-  );
+function DelayedActivityOutgoingFixture() {
+  return <RouterProvider router={delayedActivityRouteRouter} />;
 }
 
-function DelayedActivityConversationView({
-  variant,
-}: {
-  variant: DelayedActivityVariant;
-}) {
+function DelayedActivityConversationView() {
   const activityTimerRef = useRef<number | undefined>(undefined);
-  const turnKey = `delayed-activity-${variant}-request`;
+  const turnKey = "delayed-activity-route-request";
   const [viewState, setViewState] = useState<ConversationChannelState>(() =>
-    delayedActivityInitialState(variant)
+    delayedActivityInitialState()
   );
   const draftSource = useMemo(
     () => fixedDraftSource(viewState.draft),
     [viewState.draft]
   );
+  // The core sends its reading of the conversation with it.
+  const shownState = useMemo(() => readState(viewState), [viewState]);
 
   useEffect(() => {
     const reset = () => {
@@ -1075,37 +972,33 @@ function DelayedActivityConversationView({
         window.clearTimeout(activityTimerRef.current);
         activityTimerRef.current = undefined;
       }
-      setViewState(delayedActivityInitialState(variant));
+      setViewState(delayedActivityInitialState());
     };
     const start = () => {
       const root = document.querySelector<HTMLElement>(
-        `[data-testid='delayed-activity-outgoing-${variant}-fixture']`
+        "[data-testid='delayed-activity-outgoing-route-fixture']"
       );
       const sendButton = root?.querySelector<HTMLButtonElement>(
         'button[aria-label="Send message"]'
       );
       if (!sendButton || sendButton.disabled) {
-        throw new Error(`Delayed ${variant} ConversationView send was not ready.`);
+        throw new Error("Delayed route ConversationView send was not ready.");
       }
       sendButton.click();
     };
     const controller = { reset, start };
-    const key = variant === "side-chat" ? "sideChat" : "route";
-    const fixture = window.delayedOutgoingActivityFixture ?? {};
-    fixture[key] = controller;
-    window.delayedOutgoingActivityFixture = fixture;
+    window.delayedOutgoingActivityFixture = { route: controller };
 
     return () => {
       if (activityTimerRef.current !== undefined) {
         window.clearTimeout(activityTimerRef.current);
         activityTimerRef.current = undefined;
       }
-      if (fixture[key] === controller) delete fixture[key];
-      if (!fixture.route && !fixture.sideChat) {
+      if (window.delayedOutgoingActivityFixture?.route === controller) {
         delete window.delayedOutgoingActivityFixture;
       }
     };
-  }, [turnKey, variant]);
+  }, [turnKey]);
 
   const actions = useMemo<ConversationViewActions>(
     () => ({
@@ -1131,7 +1024,7 @@ function DelayedActivityConversationView({
           awaitingSince: undefined,
           awaitingTurnKey: undefined,
           draft: "",
-          messages: [...current.messages, delayedActivityMessage(variant, pending)],
+          messages: [...current.messages, delayedActivityMessage(pending)],
           pending: [pending],
         }));
         if (activityTimerRef.current !== undefined) {
@@ -1141,7 +1034,7 @@ function DelayedActivityConversationView({
           activityTimerRef.current = undefined;
           setViewState((current) => ({
             ...current,
-            participantStatus: delayedParticipantStatus(variant),
+            participantStatus: delayedParticipantStatus(),
           }));
         }, delayedActivityDelayMs);
       },
@@ -1149,17 +1042,16 @@ function DelayedActivityConversationView({
         setViewState((current) => ({ ...current, draft }));
       },
     }),
-    [turnKey, variant]
+    [turnKey]
   );
 
   return (
     <section
-      aria-label={`Delayed ${variant} outgoing activity`}
-      className={variant === "side-chat" ? "comma-side-chat-host" : undefined}
+      aria-label="Delayed route outgoing activity"
       data-draft-id={viewState.assistantDraft?.draftId ?? ""}
       data-participant-id={viewState.participantStatus?.participantId ?? ""}
-      data-variant={variant}
-      data-testid={`delayed-activity-outgoing-${variant}-fixture`}
+      data-variant="route"
+      data-testid="delayed-activity-outgoing-route-fixture"
       style={{
         border: "1px solid var(--color-border-primary)",
         borderRadius: 12,
@@ -1177,42 +1069,40 @@ function DelayedActivityConversationView({
         actions={actions}
         draftSource={draftSource}
         groupId="grp-markdown-e2e"
-        state={viewState}
-        variant={variant === "side-chat" ? "side-chat" : "route"}
-        workspaceId={`delayed-activity-${variant}-e2e`}
+        state={shownState}
+        variant="route"
+        workspaceId="delayed-activity-route-e2e"
       />
     </section>
   );
 }
 
-function delayedActivityInitialState(
-  variant: DelayedActivityVariant
-): ConversationChannelState {
+function delayedActivityInitialState(): ConversationChannelState {
   return {
     ...idleConversationChannelState,
     connection: "live",
     conversation: {
       group_id: "grp-markdown-e2e",
-      id: `delayed-activity-${variant}`,
+      id: "delayed-activity-route",
       kind: "agent_task",
       status: "completed",
       title: "Delayed Activity spring",
     },
     draft: delayedActivityOutgoingText,
-    messages: delayedActivityHistory(variant),
+    messages: delayedActivityHistory(),
     status: "ready",
   };
 }
 
-function delayedActivityHistory(variant: DelayedActivityVariant): ChatMessage[] {
-  const params = new URLSearchParams(window.location.search);
+function delayedActivityHistory(): ChatMessage[] {
+  const params = new URLSearchParams(fixtureSearch());
   const count = params.has("compactHistory")
     ? 2
     : params.has("extendedHistory")
       ? 40
       : 10;
   return Array.from({ length: count }, (_, index) => {
-    const userId = `delayed-activity-${variant}-history-user-${index}`;
+    const userId = `delayed-activity-route-history-user-${index}`;
     return [
       {
         attachments: [],
@@ -1237,7 +1127,7 @@ function delayedActivityHistory(variant: DelayedActivityVariant): ChatMessage[] 
         createdBy: undefined,
         delivery: "sent" as const,
         error: undefined,
-        messageId: `delayed-activity-${variant}-history-assistant-${index}`,
+        messageId: `delayed-activity-route-history-assistant-${index}`,
         refs: [],
         role: "assistant" as const,
         source: "server" as const,
@@ -1248,10 +1138,7 @@ function delayedActivityHistory(variant: DelayedActivityVariant): ChatMessage[] 
   }).flat();
 }
 
-function delayedActivityMessage(
-  variant: DelayedActivityVariant,
-  pending: PendingSend
-): ChatMessage {
+function delayedActivityMessage(pending: PendingSend): ChatMessage {
   return {
     attachments: [],
     blocksKey: undefined,
@@ -1260,7 +1147,7 @@ function delayedActivityMessage(
     createdBy: undefined,
     delivery: "sending",
     error: undefined,
-    messageId: `delayed-activity-${variant}-pending`,
+    messageId: "delayed-activity-route-pending",
     refs: [],
     role: "user",
     source: "pending",
@@ -1269,12 +1156,10 @@ function delayedActivityMessage(
   };
 }
 
-function delayedParticipantStatus(
-  variant: DelayedActivityVariant
-): ChatParticipantStatus {
+function delayedParticipantStatus(): ChatParticipantStatus {
   return {
-    conversationId: `delayed-activity-${variant}`,
-    participantId: `delayed-activity-${variant}-participant`,
+    conversationId: "delayed-activity-route",
+    participantId: "delayed-activity-route-participant",
     state: "active",
     status: "is thinking...",
     updatedAt: Date.now(),
@@ -1308,6 +1193,8 @@ function PlainPromiseRejectedSendFixture() {
     () => fixedDraftSource(viewState.draft),
     [viewState.draft]
   );
+  // The core sends its reading of the conversation with it.
+  const shownState = useMemo(() => readState(viewState), [viewState]);
 
   useEffect(() => {
     const controller = {
@@ -1409,8 +1296,8 @@ function PlainPromiseRejectedSendFixture() {
     <ConversationView
       actions={actions}
       draftSource={draftSource}
-      state={viewState}
-      variant="side-chat"
+      state={shownState}
+      variant="route"
       workspaceId="markdown-e2e"
     />
   );

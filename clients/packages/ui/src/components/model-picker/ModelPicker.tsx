@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   Button as AriaButton,
   Dialog as AriaDialog,
@@ -60,6 +60,8 @@ export interface ModelPickerProps {
   builtin: { label: string; icon: ReactNode };
   /** Names a current choice that is not among `models`, such as an older setting. */
   currentLabel?: string;
+  /** Marks that choice's maker; the built-in's mark would misname it. */
+  currentIcon?: ReactNode;
   models: readonly ModelPickerModel[];
   /** Profiles that can serve a model, in the order to offer them. */
   accountsFor: (model: string) => readonly ModelPickerAccount[];
@@ -88,6 +90,7 @@ export function ModelPicker({
   value,
   builtin,
   currentLabel,
+  currentIcon,
   models,
   accountsFor,
   labels,
@@ -100,6 +103,16 @@ export function ModelPicker({
   const [draft, setDraft] = useState(value);
   const [filter, setFilter] = useState("");
   const [accountsOpen, setAccountsOpen] = useState(false);
+  const accountButton = useRef<HTMLButtonElement>(null);
+  const accountChosen = useRef(false);
+  // Choosing an account closes its panel and puts focus back on the Account
+  // button in the same commit. The panel's own restore waits a frame, and
+  // until then focus rests on the page, where an enclosing dialog may take it.
+  useLayoutEffect(() => {
+    if (accountsOpen || !accountChosen.current) return;
+    accountChosen.current = false;
+    accountButton.current?.focus();
+  }, [accountsOpen]);
 
   const current = models.find((model) => model.id === value.model);
   const chosen = models.find((model) => model.id === draft.model);
@@ -179,7 +192,7 @@ export function ModelPicker({
           "hover:bg-primary_hover focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-60"
         )}
       >
-        {value.model && current ? current.icon : builtin.icon}
+        {value.model ? (current?.icon ?? currentIcon) : builtin.icon}
         <span id={valueId} className="flex min-w-0 items-center gap-sm">
           <span className="min-w-0 truncate font-medium">
             {value.model
@@ -297,6 +310,7 @@ export function ModelPicker({
             <div className="mt-sm flex items-center gap-sm border-t border-secondary pt-sm">
               <DialogTrigger isOpen={accountsOpen} onOpenChange={setAccountsOpen}>
                 <AriaButton
+                  ref={accountButton}
                   aria-label={labels.account}
                   className="flex min-w-0 flex-1 cursor-pointer items-center gap-xs rounded-md px-md py-xs text-left text-sm text-secondary outline-none hover:bg-secondary focus-visible:bg-secondary"
                 >
@@ -353,6 +367,7 @@ export function ModelPicker({
                         className={optionClass(draft.profile === entry.id)}
                         onClick={() => {
                           choose({ profile: entry.id });
+                          accountChosen.current = true;
                           setAccountsOpen(false);
                         }}
                       >

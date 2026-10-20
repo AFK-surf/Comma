@@ -1,5 +1,6 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Dialog, InputField } from "@comma/ui";
+import { Dialog } from "@comma/ui/components/dialog";
+import { InputField } from "@comma/ui/components/input";
 import { useEffect, useRef, useState } from "react";
 import { DriveInlinePath } from "./DriveInlinePath";
 

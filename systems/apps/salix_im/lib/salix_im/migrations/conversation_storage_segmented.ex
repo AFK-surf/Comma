@@ -407,5 +407,5 @@ defmodule SalixIM.Migrations.ConversationStorageSegmented do
   defp trim(nil), do: ""
   defp trim(value) when is_binary(value), do: String.trim(value)
   defp trim(value), do: value |> to_string() |> String.trim()
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 end

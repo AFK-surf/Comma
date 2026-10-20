@@ -170,7 +170,7 @@ defmodule SalixCalendar.SourceAdapter.SalixTaskSchedule do
     with true <- group_id == query_contract["group_id"],
          true <- query_contract["object_type"] in [nil, "Task"],
          mod when is_atom(mod) and not is_nil(mod) <-
-           Application.get_env(:salix_calendar, :task_change_feed_mod),
+           SystemsRuntime.get_env(:salix_calendar, :task_change_feed_mod),
          {:ok, page} <-
            mod.page(group_id,
              continuation: opts[:continuation],

@@ -265,7 +265,7 @@ defmodule BridgeForTeams.ContextLifecycle.Operations do
         Repo.rollback(:stale_lifecycle_revision)
 
       true ->
-        now = DateTime.utc_now()
+        now = SystemsClock.utc_now()
 
         request =
           request
@@ -309,7 +309,7 @@ defmodule BridgeForTeams.ContextLifecycle.Operations do
   defp persist_claim(request_id, worker_id) do
     request = lock_request(request_id)
     bundle = lock_bundle(request.bundle_id)
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     :ok = ensure_bundle_pending(bundle, request)
     :ok = ensure_claimable(request, now)
@@ -359,7 +359,7 @@ defmodule BridgeForTeams.ContextLifecycle.Operations do
     # Recheck time after it returns so an expired worker rolls the adapter's
     # deletes back instead of publishing stale completion evidence.
     :ok = ensure_current_claim(request, fence)
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     {subject_count, _subjects} =
       Repo.delete_all(
@@ -429,7 +429,7 @@ defmodule BridgeForTeams.ContextLifecycle.Operations do
     retryable? = failure.retryable? and retry_count < bound(:context_lifecycle_retries, 4)
 
     if retryable? do
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       request =
         request
@@ -525,7 +525,7 @@ defmodule BridgeForTeams.ContextLifecycle.Operations do
       action,
       bundle_scope(bundle),
       request.requested_by_user_id,
-      Ecto.UUID.generate(),
+      SystemsRuntime.Proc.uuid(),
       lifecycle_metadata(bundle, request)
       |> Map.put(:outcome, Atom.to_string(outcome))
       |> Map.put(:error_class, request.last_error_class)
@@ -635,7 +635,7 @@ defmodule BridgeForTeams.ContextLifecycle.Operations do
 
   defp resolve_purger(source_type, opts) do
     configured =
-      Application.get_env(:bridge_for_teams_core, :context_lifecycle_purgers, %{})
+      SystemsRuntime.get_env(:bridge_for_teams_core, :context_lifecycle_purgers, %{})
 
     purger = Keyword.get(opts, :purger) || Map.get(configured, source_type)
 
@@ -712,7 +712,7 @@ defmodule BridgeForTeams.ContextLifecycle.Operations do
     do: Repo.rollback({:lifecycle_request_not_claimable, state})
 
   defp ensure_current_claim(request, fence) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     if request.state == "processing" and request.lease_owner == fence.lease_owner and
          request.lease_generation == fence.lease_generation and
@@ -831,7 +831,7 @@ defmodule BridgeForTeams.ContextLifecycle.Operations do
   defp normalize_error_class(_value), do: "unknown"
 
   defp bound(key, default) do
-    Application.get_env(:bridge_for_teams_core, :context_lifecycle_bounds, [])
+    SystemsRuntime.get_env(:bridge_for_teams_core, :context_lifecycle_bounds, [])
     |> Keyword.get(key, default)
   end
 

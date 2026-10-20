@@ -134,8 +134,8 @@ Bench.time("Compaction.should_compact?/2 (per cycle)", 200, fn ->
   Compaction.should_compact?(session, context_tokens: 200_000)
 end)
 
-Bench.time("masked_messages (transcript for an LLM call)", 50, fn ->
-  InternalSession.masked_messages(session)
+Bench.time("messages (transcript for an LLM call)", 50, fn ->
+  InternalSession.get(session, :messages)
 end)
 
 Bench.time("Convert.to_anthropic/1 (per LLM call)", 200, fn ->

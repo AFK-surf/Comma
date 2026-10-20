@@ -3,39 +3,23 @@ defmodule Salix.Bindings.AgentCloudVM do
 
   @behaviour SalixAgent.CloudVM
 
+  # Where the Group's VM goes is `SalixWeb.CloudVM.placement/2`; on
+  # Cloudflare it needs the Tenant's Cloudflare configuration.
   @impl true
-  def default_provider(tenant_id), do: SalixWeb.CloudVM.default_provider(tenant_id)
-
-  @impl true
-  def validate_enabled(tenant_id, provider),
-    do: SalixWeb.CloudVM.validate_enabled(tenant_id, provider)
-
-  @impl true
-  def validate_group_provider(group_id, provider),
-    do: SalixWeb.CloudVM.validate_group_provider(group_id, provider)
+  def validate_group_enabled(tenant_id, group_id) do
+    with :ok <- SalixWeb.CloudVM.validate_group_enabled(tenant_id, group_id, "cloudflare"),
+         do: SalixWeb.CloudVM.validate_group_provider(group_id, "cloudflare")
+  end
 
   @impl true
   def ensure_provisioning(agent),
     do: SalixWeb.ComputeProviders.Cloudflare.ensure_provisioning(agent)
 
   @impl true
-  def ensure_runtime(agent, args), do: SalixWeb.CloudVM.Runtimes.request(agent, args)
-
-  @impl true
-  def switch_provider(agent, provider),
-    do: SalixWeb.ComputeProviders.Cloudflare.switch_provider(agent, provider)
-
-  @impl true
-  def attach(%{"vm" => %{"enabled" => true}, "group_id" => group_id} = agent) do
-    case SalixWeb.ComputeProviders.Cloudflare.vm_json(group_id) do
-      nil -> agent
-      vm -> Map.put(agent, "vm", Map.merge(agent["vm"], vm))
-    end
-  end
-
-  def attach(agent), do: agent
-
-  @impl true
   def mark_agent_settled(agent_id),
     do: SalixWeb.ComputeProviders.Cloudflare.mark_agent_settled(agent_id)
+
+  @impl true
+  def start(agent_id, worker_id, budget_ms),
+    do: SalixWeb.CloudVM.Start.run(agent_id, budget_ms, worker_id)
 end

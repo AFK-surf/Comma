@@ -101,11 +101,14 @@ defmodule SalixWeb.Dashboard.ActivityTimeline do
   @cap_ms 180_000
 
   # Phases drawn on the lane, in the order they occur in a round.
-  @drawn_phases ~w(miniskill delivery_wait activation prepare response_commit tool_commit boundary finalize async_pickup async_commit async_config)
+  @drawn_phases ~w(miniskill delivery_wait activation cw_wait prepare response_commit cw_evidence tool_commit boundary finalize async_pickup async_commit async_config)
   # Summary buckets: the three commit-shaped phases roll up into one, and
   # so do the three steps of settling a background tool's result.
   @commit_phases ~w(response_commit tool_commit boundary)
   @async_phases ~w(async_pickup async_commit async_config)
+  # The Condensed Workspace check: reading the transcript tail beside the
+  # tools, and the next activation waiting for the answer.
+  @workspace_phases ~w(cw_evidence cw_wait)
 
   # The lane's top band, in the order tracks are claimed: model calls
   # first, then tool calls, then the unknown stretches, which fill what is
@@ -569,6 +572,7 @@ defmodule SalixWeb.Dashboard.ActivityTimeline do
       activation_ms: 0,
       prepare_ms: 0,
       miniskill_ms: 0,
+      workspace_ms: 0,
       commit_ms: 0,
       finalize_ms: 0,
       async_ms: 0,
@@ -769,6 +773,8 @@ defmodule SalixWeb.Dashboard.ActivityTimeline do
   def phase_title("async_pickup"), do: "Picking up a background result"
   def phase_title("async_commit"), do: "Storing a background result"
   def phase_title("async_config"), do: "Preparing the next round's config"
+  def phase_title("cw_evidence"), do: "Condensed Workspace check: reading the transcript"
+  def phase_title("cw_wait"), do: "Condensed Workspace check: waiting for the answer"
   def phase_title(other), do: to_string(other)
 
   defp phase_tooltip("delivery_wait", ms) do
@@ -847,6 +853,21 @@ defmodule SalixWeb.Dashboard.ActivityTimeline do
     [
       "#{phase_title("async_config")} · #{fmt_ms(ms)}",
       "waiting for the next round's config build, started alongside the commit, to finish"
+    ]
+  end
+
+  defp phase_tooltip("cw_evidence", ms) do
+    [
+      "#{phase_title("cw_evidence")} · #{fmt_ms(ms)}",
+      "the session actor reading the newest transcript messages and starting the decision " <>
+        "check; runs beside the tool batch"
+    ]
+  end
+
+  defp phase_tooltip("cw_wait", ms) do
+    [
+      "#{phase_title("cw_wait")} · #{fmt_ms(ms)}",
+      "the next round's activation waiting for the decision check, at most until its deadline"
     ]
   end
 
@@ -1084,6 +1105,7 @@ defmodule SalixWeb.Dashboard.ActivityTimeline do
       activation_ms: phase_ms(chain.segments, ["activation"]),
       prepare_ms: phase_ms(chain.segments, ["prepare"]),
       miniskill_ms: phase_ms(chain.segments, ["miniskill"]),
+      workspace_ms: phase_ms(chain.segments, @workspace_phases),
       commit_ms: phase_ms(chain.segments, @commit_phases),
       finalize_ms: phase_ms(chain.segments, ["finalize"]),
       async_ms: phase_ms(chain.segments, @async_phases),
@@ -1103,9 +1125,10 @@ defmodule SalixWeb.Dashboard.ActivityTimeline do
   # phases, then tool calls (background waits are what usually overlap),
   # and the unknown stretches last (exclusive by construction anyway). So
   # the parts always add up to the lane's total.
-  @wall_categories ~w(miniskill compaction llm tool delivery activation prepare commit finalize async unknown)a
+  @wall_categories ~w(miniskill workspace compaction llm tool delivery activation prepare commit finalize async unknown)a
   @wall_priority %{
     miniskill: 0.5,
+    workspace: 0.5,
     compaction: -1,
     llm: 0,
     delivery: 1,
@@ -1157,6 +1180,10 @@ defmodule SalixWeb.Dashboard.ActivityTimeline do
   end
 
   defp wall_category(%{kind: :phase, phase: "miniskill"}), do: :miniskill
+
+  defp wall_category(%{kind: :phase, phase: phase}) when phase in @workspace_phases,
+    do: :workspace
+
   defp wall_category(%{kind: :compaction}), do: :compaction
   defp wall_category(%{kind: :llm}), do: :llm
   defp wall_category(%{kind: :tool}), do: :tool
@@ -1189,6 +1216,7 @@ defmodule SalixWeb.Dashboard.ActivityTimeline do
     activation_ms = lane_sum.(:activation_ms)
     prepare_ms = lane_sum.(:prepare_ms)
     miniskill_ms = lane_sum.(:miniskill_ms)
+    workspace_ms = lane_sum.(:workspace_ms)
     commit_ms = lane_sum.(:commit_ms)
     finalize_ms = lane_sum.(:finalize_ms)
     async_ms = lane_sum.(:async_ms)
@@ -1240,12 +1268,13 @@ defmodule SalixWeb.Dashboard.ActivityTimeline do
       activation_ms: activation_ms,
       prepare_ms: prepare_ms,
       miniskill_ms: miniskill_ms,
+      workspace_ms: workspace_ms,
       commit_ms: commit_ms,
       finalize_ms: finalize_ms,
       async_ms: async_ms,
       phase_ms:
-        miniskill_ms + delivery_ms + activation_ms + prepare_ms + commit_ms + finalize_ms +
-          async_ms,
+        miniskill_ms + workspace_ms + delivery_ms + activation_ms + prepare_ms + commit_ms +
+          finalize_ms + async_ms,
       llm_pct: share(llm_ms, total_ms),
       tool_pct: share(tool_ms, total_ms),
       unknown_pct: share(unknown_ms, total_ms),
@@ -1256,13 +1285,14 @@ defmodule SalixWeb.Dashboard.ActivityTimeline do
       activation_pct: share(activation_ms, total_ms),
       prepare_pct: share(prepare_ms, total_ms),
       miniskill_pct: share(miniskill_ms, total_ms),
+      workspace_pct: share(workspace_ms, total_ms),
       commit_pct: share(commit_ms, total_ms),
       finalize_pct: share(finalize_ms, total_ms),
       async_pct: share(async_ms, total_ms),
       phase_pct:
         share(
-          miniskill_ms + delivery_ms + activation_ms + prepare_ms + commit_ms + finalize_ms +
-            async_ms,
+          miniskill_ms + workspace_ms + delivery_ms + activation_ms + prepare_ms + commit_ms +
+            finalize_ms + async_ms,
           total_ms
         ),
       wall: %{
@@ -1274,6 +1304,7 @@ defmodule SalixWeb.Dashboard.ActivityTimeline do
         activation_pct: wall_pct.(:activation),
         prepare_pct: wall_pct.(:prepare),
         miniskill_pct: wall_pct.(:miniskill),
+        workspace_pct: wall_pct.(:workspace),
         commit_pct: wall_pct.(:commit),
         finalize_pct: wall_pct.(:finalize),
         async_pct: wall_pct.(:async),
@@ -1281,8 +1312,8 @@ defmodule SalixWeb.Dashboard.ActivityTimeline do
         # Summed work minus wall clock: the overlap parallel records hide.
         overlap_ms:
           max(
-            llm_ms + tool_ms + miniskill_ms + delivery_ms + activation_ms + prepare_ms + commit_ms +
-              finalize_ms + async_ms + unknown_ms - total_ms,
+            llm_ms + tool_ms + miniskill_ms + workspace_ms + delivery_ms + activation_ms +
+              prepare_ms + commit_ms + finalize_ms + async_ms + unknown_ms - total_ms,
             0
           )
       },

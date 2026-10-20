@@ -19,7 +19,7 @@ defmodule BridgeForTeamsWeb.DashboardHealth do
 
   @doc "The Health page payload for `org`."
   def health(org) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     policy = Observability.freshness_policy()
     projects = Projects.list_projects(org.id)
     runners = Environments.list_mac_mini_provisioners(org.id)

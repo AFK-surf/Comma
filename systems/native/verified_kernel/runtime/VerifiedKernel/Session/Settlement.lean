@@ -29,9 +29,22 @@ private def validBinding (binding : Term) : Bool :=
     id.isInteger && ack.isInteger && integerValue id > integerValue ack &&
     call.isBinary && call != b "" && [b "done", b "blocked"].contains (binding.get (b "outcome"))
 
+def isWake (id event : Term) : Bool :=
+  event.get (b "type") == b "queue_append" && (event.get (b "payload")).get (b "source_tool_call_id") == id
+
 def withoutWake (events : List Term) (id : Term) : List Term :=
-  events.filter (fun event => !(event.get (b "type") == b "queue_append" &&
-    (event.get (b "payload")).get (b "source_tool_call_id") == id))
+  events.filter (fun event => !isWake id event)
+
+/-- The transcript record of a consumed completion wake: the no-wake runtime
+message that materializing the queued item would write, without the queue. -/
+def notice (sid wake id : Term) : KernelM Term := do
+  let item := wake.put (b "wake") (a "false")
+  let payload ← stringify ((← access item (b "payload")).default empty)
+  StateQuery.runtimeEvent sid item payload id
+
+/-- The records of the consumed wakes, with message ids from `start`. -/
+def notices (sid start : Term) (wakes : List Term) : KernelM (List Term) :=
+  wakes.zipIdx.mapM (fun (wake, k) => do notice sid wake (← add start (i k)))
 
 def settled (events : List Term) : Bool :=
   events.any (fun event => [b "terminal_reply_delivered", b "channel_onboarding_settled", b "runtime_failure_reply_settled"].contains
@@ -71,8 +84,14 @@ def terminal (state record result : Term) (events : List Term) : KernelM Term :=
     [b "guidance", b "error", b "failed", b "completed"].contains (valueOf result "status"))
   if !(validBinding binding && terminal && (← RoundQuery.bindingMatches state binding).truthy) then return nil
   let sid ← field state "session_id"
-  let events := withoutWake events (binding.get (b "tool_call_id")) ++
-    (if onboarding then [completedRepair sid] else [])
+  let call := binding.get (b "tool_call_id")
+  let wakes := events.filter (isWake call)
+  let kept := withoutWake events call ++ (if onboarding then [completedRepair sid] else [])
+  -- The settlement consumes the completion wake, but the completion still
+  -- reaches the transcript as a no-wake runtime message. The running
+  -- placeholder stays as committed, and the notification it promises arrives.
+  let start ← field (← project state kept) "next_message_id"
+  let events := kept ++ (← notices sid start wakes)
   let next ← project state events
   if !((← RoundQuery.bindingMatches next binding).truthy && (← ReplyQuery.phase next) == a "clean" &&
     (← ready next) && !(← RoundQuery.replyRunning next).truthy) then return nil

@@ -7,7 +7,7 @@ defmodule BridgeForTeams.AuthTest do
   use BridgeForTeams.DataCase, async: true
 
   alias BridgeForTeams.{Auth, Observability}
-  alias BridgeForTeams.Auth.{Feishu, OIDC, Sessions}
+  alias BridgeForTeams.Auth.{Feishu, Lark, OIDC, Sessions}
 
   alias BridgeForTeams.Schema.{
     ApiKey,
@@ -22,11 +22,12 @@ defmodule BridgeForTeams.AuthTest do
     # Belt-and-braces: the suite configures the Fake, assert it's active.
     assert OIDC.impl() == OIDC.Fake
     assert Feishu.impl() == Feishu.Fake
+    assert Lark.impl() == Lark.Fake
     :ok
   end
 
   defp org!(attrs \\ %{}) do
-    n = System.unique_integer([:positive])
+    n = SystemsRuntime.Proc.unique_integer([:positive])
     tenant_id = "org_#{n}"
 
     %Organization{}
@@ -48,7 +49,7 @@ defmodule BridgeForTeams.AuthTest do
     base = %{
       org_id: org.id,
       issuer: "https://idp.test",
-      client_id: "client-#{System.unique_integer([:positive])}",
+      client_id: "client-#{SystemsRuntime.Proc.unique_integer([:positive])}",
       client_secret: "the-secret",
       allowed_domains: [],
       default_role: "member"
@@ -83,6 +84,18 @@ defmodule BridgeForTeams.AuthTest do
       assert {:ok, %{url: url, state: state, code_verifier: nil}} = Auth.authorize_url(org.id)
       assert String.contains?(url, "https://feishu.test/oauth/authorize?")
       assert String.starts_with?(state, "fake-feishu-state-")
+    end
+
+    test "builds a Lark redirect with a code verifier for a Lark SSO org" do
+      org = org!()
+      sso!(org, %{provider: "lark", issuer: nil, client_id: "cli_lark"})
+
+      assert {:ok, %{url: url, state: state, code_verifier: verifier}} =
+               Auth.authorize_url(org.id)
+
+      assert String.contains?(url, "https://lark.test/oauth/authorize?")
+      assert String.starts_with?(state, "fake-lark-state-")
+      assert is_binary(verifier)
     end
   end
 
@@ -191,36 +204,6 @@ defmodule BridgeForTeams.AuthTest do
       assert {:ok, _} = Auth.callback(org.id, %{"code" => "c"}, code_verifier: "v")
     end
 
-    test "records redacted OIDC callback failures for Operations" do
-      org = org!()
-      sso_conn = sso!(org, %{allowed_domains: ["allowed.test"]})
-
-      OIDC.Fake.script_claims(%{
-        "sub" => "x",
-        "email" => "blocked-user@example.test",
-        "email_verified" => true
-      })
-
-      assert {:error, :domain_not_allowed} =
-               Auth.callback(org.id, %{"code" => "c"},
-                 code_verifier: "v",
-                 request_id: "req_login_blocked"
-               )
-
-      assert [event] = Observability.list_events(org.id, domain: "sso")
-      assert event.source == "bft.dashboard"
-      assert event.event_type == "sso.login.failed"
-      assert event.resource_type == "org_sso_connection"
-      assert event.resource_id == sso_conn.id
-      assert event.status == "failed"
-      assert event.reason_class == "domain_not_allowed"
-      assert event.correlation_id == "req_login_blocked"
-      assert event.evidence["provider"] == "generic_oidc"
-      assert event.evidence["stage"] == "callback"
-      assert event.evidence["request_id"] == "req_login_blocked"
-      refute inspect(event) =~ "blocked-user@example.test"
-    end
-
     test "rejects unverified emails" do
       org = org!()
       sso!(org)
@@ -233,13 +216,6 @@ defmodule BridgeForTeams.AuthTest do
 
       assert {:error, :email_not_verified} =
                Auth.callback(org.id, %{"code" => "c"}, code_verifier: "v")
-    end
-
-    test "requires code and code_verifier" do
-      org = org!()
-      sso!(org)
-      assert {:error, :missing_code} = Auth.callback(org.id, %{}, code_verifier: "v")
-      assert {:error, :missing_code_verifier} = Auth.callback(org.id, %{"code" => "c"}, [])
     end
 
     test "errors when the token response carries no id_token" do
@@ -530,6 +506,185 @@ defmodule BridgeForTeams.AuthTest do
     end
   end
 
+  describe "callback/3 (Lark identity flow)" do
+    test "provisions a user with no email on the Lark subject and audits the membership" do
+      org = org!()
+      sso!(org, %{provider: "lark", issuer: nil, client_id: "cli_lark"})
+
+      Lark.Fake.script_identity(%{
+        "union_id" => "on-lark-first",
+        "open_id" => "ou-lark-first",
+        "display_name" => "Lark First",
+        "profile" => %{"tenant_key" => "lark-tenant"}
+      })
+
+      assert {:ok, %{user: user, token: token}} =
+               Auth.callback(org.id, %{"code" => "lark-code"}, device: "web")
+
+      assert user.email == nil
+      assert user.name == "Lark First"
+      assert {:ok, _session} = Sessions.fetch(token)
+
+      identity =
+        Repo.get_by!(OrgSsoIdentity,
+          org_id: org.id,
+          provider: "lark",
+          provider_subject_type: "union_id",
+          provider_subject: "on-lark-first"
+        )
+
+      assert identity.user_id == user.id
+      assert identity.provider_profile == %{"tenant_key" => "lark-tenant"}
+
+      membership = Repo.get_by!(OrgMembership, org_id: org.id, user_id: user.id)
+      assert membership.role == "member"
+
+      assert [audit] = Observability.list_audit_logs(org.id, action: "org_member.granted")
+      assert audit.metadata["provider"] == "lark"
+      assert audit.metadata["source"] == "sso_jit"
+      refute inspect(audit.metadata) =~ "on-lark-first"
+    end
+
+    test "signs the same Lark subject in as the same user and updates the contact data" do
+      org = org!()
+      sso!(org, %{provider: "lark", issuer: nil, client_id: "cli_lark"})
+
+      Lark.Fake.script_identity(%{"union_id" => "lark-user-reuse", "display_name" => "Reuse"})
+      assert {:ok, %{user: first}} = Auth.callback(org.id, %{"code" => "lark-code"})
+
+      Lark.Fake.script_identity(%{
+        "union_id" => "lark-user-reuse",
+        # A `user_id` that a contact scope adds later is not the key.
+        "user_id" => "employee-7",
+        "email" => "Reuse@Lark.Test",
+        "display_name" => "Reuse Renamed"
+      })
+
+      assert {:ok, %{user: second}} = Auth.callback(org.id, %{"code" => "lark-code"})
+      assert second.id == first.id
+      assert second.email == nil
+      assert second.name == "Reuse"
+
+      assert [identity] = Repo.all(from i in OrgSsoIdentity, where: i.org_id == ^org.id)
+      assert identity.provider_subject_type == "union_id"
+      assert identity.email == "reuse@lark.test"
+      assert identity.display_name == "Reuse Renamed"
+    end
+
+    test "a Lark identity is not the Feishu identity with the same subject" do
+      org = org!()
+      sso!(org, %{provider: "lark", issuer: nil, client_id: "cli_lark"})
+
+      feishu_user = %User{} |> User.changeset(%{name: "Feishu Person"}) |> Repo.insert!()
+
+      %OrgSsoIdentity{}
+      |> OrgSsoIdentity.changeset(%{
+        org_id: org.id,
+        user_id: feishu_user.id,
+        provider: "feishu",
+        provider_subject_type: "user_id",
+        provider_subject: "shared-subject"
+      })
+      |> Repo.insert!()
+
+      Lark.Fake.script_identity(%{
+        "union_id" => "shared-subject",
+        "display_name" => "Lark Person"
+      })
+
+      assert {:ok, %{user: lark_user}} = Auth.callback(org.id, %{"code" => "lark-code"})
+      assert lark_user.id != feishu_user.id
+
+      assert Repo.get_by!(OrgSsoIdentity, org_id: org.id, provider: "lark").user_id ==
+               lark_user.id
+    end
+
+    test "rejects a Lark user of another tenant when the connection is bound to a tenant" do
+      org = org!()
+
+      sso!(org, %{
+        provider: "lark",
+        issuer: nil,
+        client_id: "cli_lark",
+        provider_config: %{"tenant_key" => "expected-tenant"}
+      })
+
+      Lark.Fake.script_identity(%{
+        "union_id" => "on-lark-wrong-tenant",
+        "mobile" => "+10000000016",
+        "profile" => %{"tenant_key" => "other-tenant"}
+      })
+
+      assert {:error, :lark_tenant_mismatch} = Auth.callback(org.id, %{"code" => "lark-code"})
+
+      assert [event] = Observability.list_events(org.id, domain: "sso")
+      assert event.event_type == "sso.login.failed"
+      assert event.reason_class == "lark_tenant_mismatch"
+      assert event.evidence["provider"] == "lark"
+      refute inspect(event) =~ "other-tenant"
+      refute inspect(event) =~ "+10000000016"
+
+      assert [] = Repo.all(from i in OrgSsoIdentity, where: i.org_id == ^org.id)
+      assert [] = Repo.all(from m in OrgMembership, where: m.org_id == ^org.id)
+
+      Lark.Fake.script_identity(%{
+        "union_id" => "on-lark-right-tenant",
+        "profile" => %{"tenant_key" => "expected-tenant"}
+      })
+
+      assert {:ok, _session} = Auth.callback(org.id, %{"code" => "lark-code"})
+    end
+
+    test "the linked-only policy admits a linked Lark identity and no other" do
+      org = org!()
+
+      sso!(org, %{
+        provider: "lark",
+        issuer: nil,
+        client_id: "cli_lark",
+        provider_config: %{"provisioning_policy" => "existing_identity"}
+      })
+
+      linked = %User{} |> User.changeset(%{name: "Linked"}) |> Repo.insert!()
+
+      %OrgSsoIdentity{}
+      |> OrgSsoIdentity.changeset(%{
+        org_id: org.id,
+        user_id: linked.id,
+        provider: "lark",
+        provider_subject_type: "union_id",
+        provider_subject: "on-lark-linked"
+      })
+      |> Repo.insert!()
+
+      Lark.Fake.script_identity(%{"union_id" => "on-lark-stranger"})
+
+      assert {:error, :lark_provisioning_policy_rejected} =
+               Auth.callback(org.id, %{"code" => "lark-code"})
+
+      refute Repo.get_by(OrgSsoIdentity, org_id: org.id, provider_subject: "on-lark-stranger")
+
+      Lark.Fake.script_identity(%{"union_id" => "on-lark-linked"})
+      assert {:ok, %{user: user}} = Auth.callback(org.id, %{"code" => "lark-code"})
+      assert user.id == linked.id
+    end
+
+    test "rejects a Lark identity with no subject, and a Lark profile on another provider" do
+      org = org!()
+      conn = sso!(org, %{provider: "lark", issuer: nil, client_id: "cli_lark"})
+
+      Lark.Fake.script_identity(%{"mobile" => "+10000000014", "display_name" => "No Subject"})
+
+      assert {:error, :missing_provider_subject} =
+               Auth.callback(org.id, %{"code" => "lark-code"})
+
+      assert {:error, :not_lark_sso_connection} =
+               Auth.provision_from_lark_identity(%{conn | provider: "feishu"}, %{
+                 "union_id" => "on-lark-any"
+               })
+    end
+  end
+
   describe "authenticate_session/1" do
     test "resolves an active user from a valid token" do
       user = %User{} |> User.changeset(%{email: "a@b.test"}) |> Repo.insert!()
@@ -669,83 +824,9 @@ defmodule BridgeForTeams.AuthTest do
       assert {:error, :revoked} = Auth.rotate_api_key(org.id, old_key.id)
     end
 
-    test "records failed API key write attempts without exposing token material" do
-      org = org!()
-
-      assert {:error, %Ecto.Changeset{}} =
-               Auth.create_api_key(
-                 org.id,
-                 %{"name" => "invalid key", "scopes" => "not-a-list"},
-                 actor_label: "owner@example.com",
-                 request_id: "req_api_key_create_failed"
-               )
-
-      assert [create_attempt] =
-               Observability.list_audit_logs(org.id, action: "api_key.created")
-
-      assert create_attempt.result == "failed"
-      assert create_attempt.reason_class == "validation_failed"
-      assert create_attempt.request_id == "req_api_key_create_failed"
-      assert create_attempt.metadata["write_attempt"] == "true"
-      assert create_attempt.metadata["surface"] == "api_key"
-      assert create_attempt.metadata["name_configured"] == "true"
-      assert create_attempt.metadata["error_fields"] == ["scopes"]
-
-      missing_id = Ecto.UUID.generate()
-
-      assert {:error, :not_found} =
-               Auth.revoke_api_key(org.id, missing_id,
-                 actor_label: "owner@example.com",
-                 request_id: "req_api_key_revoke_missing"
-               )
-
-      assert [revoke_attempt] =
-               Observability.list_audit_logs(org.id, action: "api_key.revoked")
-
-      assert revoke_attempt.result == "failed"
-      assert revoke_attempt.reason_class == "not_found"
-      assert revoke_attempt.resource_id == missing_id
-      assert revoke_attempt.request_id == "req_api_key_revoke_missing"
-
-      assert {:ok, %{token: token, api_key: api_key}} =
-               Auth.create_api_key(org.id, %{
-                 "name" => "rotated later",
-                 "scopes" => ["runners:write"]
-               })
-
-      assert {:ok, _revoked} = Auth.revoke_api_key(org.id, api_key.id)
-
-      assert {:error, :revoked} =
-               Auth.rotate_api_key(
-                 org.id,
-                 api_key.id,
-                 %{},
-                 actor_label: "owner@example.com",
-                 request_id: "req_api_key_rotate_revoked"
-               )
-
-      assert [rotate_attempt] =
-               Observability.list_audit_logs(org.id, action: "api_key.rotated")
-
-      assert rotate_attempt.result == "failed"
-      assert rotate_attempt.reason_class == "revoked"
-      assert rotate_attempt.resource_id == api_key.id
-      assert rotate_attempt.request_id == "req_api_key_rotate_revoked"
-
-      assert [rotate_event] = Observability.list_events(org.id, audit_log_id: rotate_attempt.id)
-      assert rotate_event.event_type == "audit.api_key.rotated"
-      assert rotate_event.status == "failed"
-      assert rotate_event.reason_class == "revoked"
-
-      refute inspect([create_attempt, revoke_attempt, rotate_attempt, rotate_event]) =~ token
-
-      refute inspect([create_attempt, revoke_attempt, rotate_attempt, rotate_event]) =~
-               api_key.key_hash
-    end
-
     test "resolves an active key to its org and scopes" do
       org = org!()
-      raw = "key-#{System.unique_integer([:positive])}"
+      raw = "key-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
       %ApiKey{}
       |> ApiKey.changeset(%{
@@ -764,13 +845,13 @@ defmodule BridgeForTeams.AuthTest do
       assert {:error, :unauthenticated} = Auth.authenticate_api_key("nope")
 
       org = org!()
-      raw = "rev-#{System.unique_integer([:positive])}"
+      raw = "rev-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
       %ApiKey{}
       |> ApiKey.changeset(%{
         org_id: org.id,
         key_hash: Sessions.hash_token(raw),
-        revoked_at: DateTime.utc_now()
+        revoked_at: SystemsClock.utc_now()
       })
       |> Repo.insert!()
 

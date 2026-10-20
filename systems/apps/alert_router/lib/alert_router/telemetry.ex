@@ -5,7 +5,7 @@ defmodule AlertRouter.Telemetry do
 
   @buckets [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5]
   # Progress ingress outcome and latency show whether thread reports reach the card owner.
-  @operations ~w(ingest progress runtime_log root_post root_update timeline_post root_reconcile timeline_reconcile permalink)
+  @operations ~w(ingest progress root_post root_update timeline_post root_reconcile timeline_reconcile permalink)
   @providers ~w(gcp_monitoring salix_runtime grafana posthog slack other)
   @outcomes ~w(ok accepted duplicate stale ignored rejected unavailable conflict rate_limited retryable ambiguous incomplete negative other)
 
@@ -33,26 +33,26 @@ defmodule AlertRouter.Telemetry do
 
   @spec observe(atom(), atom() | String.t(), (-> result)) :: result when result: term()
   def observe(operation, provider, fun) when is_function(fun, 0) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     try do
       result = fun.()
-      emit(operation, provider, outcome(result), System.monotonic_time() - started_at)
+      emit(operation, provider, outcome(result), SystemsClock.monotonic_time() - started_at)
       result
     rescue
       exception ->
-        emit(operation, provider, :other, System.monotonic_time() - started_at)
+        emit(operation, provider, :other, SystemsClock.monotonic_time() - started_at)
         reraise exception, __STACKTRACE__
     catch
       kind, reason ->
-        emit(operation, provider, :other, System.monotonic_time() - started_at)
+        emit(operation, provider, :other, SystemsClock.monotonic_time() - started_at)
         :erlang.raise(kind, reason, __STACKTRACE__)
     end
   end
 
   @spec emit(atom(), atom() | String.t(), atom() | String.t(), integer()) :: :ok
   def emit(operation, provider, outcome, duration) when is_integer(duration) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:alert_router, :operation, :stop],
       %{duration: duration},
       %{operation: operation, provider: provider, outcome: outcome}

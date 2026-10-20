@@ -1,5 +1,5 @@
 defmodule Comma.ReleaseNoDowntimeMigrationsTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   @legacy_salix_versions [
     20_260_728_000_103,
@@ -22,7 +22,22 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
                                  "comma-20260918000000",
                                  # Contract: drops the retired Routine profile locale.
                                  "comma-20261001190001",
-                                 "salix-20261001000200"
+                                 "salix-20261001000200",
+                                 # Aggregate Live Activity targets: an old server may reject
+                                 # or remove them until every server updates.
+                                 "comma-20261003010000",
+                                 # Contract: drops the retired BFT onboarding UI-state columns.
+                                 "bridge-20261005000101",
+                                 # Subscription accounts are rewritten as the shared Profile;
+                                 # an old server cannot read or write that shape.
+                                 "salix-20261008100000",
+                                 # Contract: drop the Feishu app `domain` columns that
+                                 # nothing reads since #3589.
+                                 "bridge-20261014000101",
+                                 "salix-20261015000101",
+                                 # Contract: drops the Loop Task columns that nothing
+                                 # reads since the Loop holds its Task's facts.
+                                 "salix-20261020300002"
                                ])
   @recertification_versions [20_260_910_140_001, 20_260_915_183_001]
 
@@ -44,6 +59,14 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
   # {name, owner, version, expected release mode, step checks}. A `true` check
   # must be truthy, `false` falsy, and any other value equal.
   @incompatible_step_cases [
+    {"subscription accounts become shared Profiles through an exclusive cutover with backup",
+     :salix, 20_261_008_100_000, "exclusive",
+     [
+       {["phase"], "exclusive"},
+       {["safety", "backupRequired"], true},
+       {["compatibility", "oldRuntimeRead"], false},
+       {["compatibility", "oldRuntimeWrite"], false}
+     ]},
     {"Task graph retirement requires exclusive cutover and retained-data backup", :salix,
      20_260_924_000_101, "exclusive",
      [
@@ -83,6 +106,14 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
        {["safety", "destructive"], false},
        {["safety", "backupRequired"], false},
        {["execution", "transactional"], true}
+     ]},
+    {"aggregate Live Activity targets expand online without destroying retained addresses",
+     :comma, 20_261_003_010_000, "online",
+     [
+       {["compatibility", "oldRuntimeRead"], false},
+       {["compatibility", "oldRuntimeWrite"], false},
+       {["safety", "destructive"], false},
+       {["safety", "backupRequired"], false}
      ]},
     {"Routine generation cutover requires writer fencing and backup evidence", :comma,
      20_260_912_000_001, "exclusive",
@@ -125,6 +156,22 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
     end
   end
 
+  test "the station roster moves to Salix in a rolling release: no exclusive stage, no shutdown" do
+    current = facts()
+
+    for version <- [20_261_010_200_002, 20_261_011_100_001] do
+      assert {:ok, plan} =
+               Comma.ReleasePlan.plan(
+                 facts: fn -> facts(%{comma: set_status(current.comma, version, :down)}) end
+               )
+
+      assert plan.requiredMode == "online"
+      assert [%{"phase" => "expand", "version" => ^version} = step] = plan.pendingSteps
+      assert Enum.all?(step["compatibility"], fn {_fact, compatible?} -> compatible? end)
+      refute step["safety"]["destructive"]
+    end
+  end
+
   test "recovery projection recertification requires an exclusive, non-destructive release" do
     current = facts()
 
@@ -143,46 +190,6 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
       refute step["safety"]["destructive"]
       refute step["safety"]["backupRequired"]
     end
-  end
-
-  test "meeting projection sealing is a later rolling-compatible release" do
-    refute Enum.any?(
-             Comma.ReleaseManifestV2.manifest()["steps"],
-             &(&1["id"] == "salix-20260820000102")
-           )
-
-    step =
-      Enum.find(
-        Comma.ReleaseManifestV2.manifest()["steps"],
-        &(&1["id"] == "salix-20260831000101")
-      )
-
-    assert step["phase"] == "expand"
-    assert Enum.all?(step["compatibility"], fn {_fact, compatible?} -> compatible? end)
-    assert step["execution"]["idempotent"]
-    refute step["execution"]["transactional"]
-    refute step["safety"]["destructive"]
-    refute step["safety"]["backupRequired"]
-
-    assert step["source"] ==
-             "systems/apps/salix_store/priv/repo/migrations/20260831000101_backfill_meeting_group_projection.exs"
-  end
-
-  test "direct Slack Triage provenance expands the subscription schema online" do
-    step =
-      Enum.find(
-        Comma.ReleaseManifestV2.manifest()["steps"],
-        &(&1["id"] == "salix-20260901000101")
-      )
-
-    assert step["phase"] == "expand"
-    assert Enum.all?(step["compatibility"], fn {_fact, compatible?} -> compatible? end)
-    assert step["execution"]["transactional"]
-    refute step["safety"]["destructive"]
-    refute step["safety"]["backupRequired"]
-
-    assert step["source"] ==
-             "systems/apps/salix_store/priv/repo/migrations/20260901000101_add_slack_triage_provider_message_ref.exs"
   end
 
   test "published Salix compatibility migrations never select the zero-replica release path" do
@@ -224,7 +231,7 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
                end
              )
 
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     assert_raise RuntimeError, fn ->
       Comma.Release.execute_plan_stage(
@@ -233,7 +240,7 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
         plan.pendingIDs,
         plan: fn -> plan end,
         cutover_executor: fn ids ->
-          send(parent, {:cutover_executed, ids})
+          SystemsRuntime.Proc.send(parent, {:cutover_executed, ids})
           :ok
         end
       )
@@ -244,7 +251,7 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
 
   test "a stale cutover invocation cannot rerun an already-applied legacy step" do
     assert {:ok, plan} = Comma.ReleasePlan.plan(facts: fn -> facts() end)
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     assert_raise RuntimeError, fn ->
       Comma.Release.execute_plan_stage(
@@ -253,7 +260,7 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
         ["salix-20260728000103"],
         plan: fn -> plan end,
         cutover_executor: fn ids ->
-          send(parent, {:stale_cutover_executed, ids})
+          SystemsRuntime.Proc.send(parent, {:stale_cutover_executed, ids})
           :ok
         end
       )
@@ -280,7 +287,7 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
              )
 
     assert plan.requiredMode == "blocked_legacy"
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     assert_raise RuntimeError, fn ->
       Comma.Release.execute_plan_stage(
@@ -289,7 +296,7 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
         ["salix-20260810000101"],
         plan: fn -> plan end,
         online_executor: fn ids ->
-          send(parent, {:online_executed_while_legacy_pending, ids})
+          SystemsRuntime.Proc.send(parent, {:online_executed_while_legacy_pending, ids})
           :ok
         end
       )
@@ -315,7 +322,7 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
 
     assert plan.requiredMode == "blocked_legacy"
     assert plan.providerPendingIDs == ["billing-provider", "comma-signup-credits"]
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     assert_raise RuntimeError, fn ->
       Comma.Release.execute_plan_stage(
@@ -324,7 +331,7 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
         plan.providerPendingIDs,
         plan: fn -> plan end,
         provider_executor: fn ->
-          send(parent, :provider_executed_while_legacy_pending)
+          SystemsRuntime.Proc.send(parent, :provider_executed_while_legacy_pending)
           :ok
         end
       )
@@ -335,7 +342,7 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
 
   test "the audited legacy-upgrade executor requires its dedicated carrier" do
     plan = legacy_upgrade_plan()
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     assert_raise RuntimeError,
                  "legacy upgrade execution requires the audited upgrade carrier",
@@ -347,7 +354,11 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
                      plan: fn -> plan end,
                      legacy_upgrade_authorized: false,
                      cutover_executor: fn ids ->
-                       send(parent, {:unauthorized_legacy_upgrade_executed, ids})
+                       SystemsRuntime.Proc.send(
+                         parent,
+                         {:unauthorized_legacy_upgrade_executed, ids}
+                       )
+
                        :ok
                      end
                    )
@@ -358,7 +369,7 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
 
   test "the audited legacy-upgrade executor runs only the three reserved migrations" do
     plan = legacy_upgrade_plan()
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
     {:ok, converged?} = Agent.start_link(fn -> false end)
 
     plan_fun = fn ->
@@ -374,7 +385,7 @@ defmodule Comma.ReleaseNoDowntimeMigrationsTest do
                legacy_upgrade_authorized: true,
                cutover_executor: fn ids ->
                  Agent.update(converged?, fn _ -> true end)
-                 send(parent, {:legacy_upgrade_executed, ids})
+                 SystemsRuntime.Proc.send(parent, {:legacy_upgrade_executed, ids})
                  :ok
                end
              )

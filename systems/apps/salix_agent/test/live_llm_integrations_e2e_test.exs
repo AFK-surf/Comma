@@ -1,11 +1,13 @@
 defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Real-model checks for integration decisions that deterministic adapter tests
   cannot exercise. External systems terminate at local seams; the LLM,
   session actor, round driver, disclosure policy, call envelope, tool
   dispatcher, and workspace commits are the production implementations.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.LiveLlmTestSupport, as: Live
 
@@ -19,24 +21,30 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
     @state_key {__MODULE__, :state}
 
     def configure(owner, feishu_help_code \\ nil) do
-      :persistent_term.put(@state_key, %{owner: owner, feishu_help_code: feishu_help_code})
+      SystemsRuntime.PersistentTerm.put(@state_key, %{
+        owner: owner,
+        feishu_help_code: feishu_help_code
+      })
     end
 
     def set_owner(pid), do: configure(pid)
 
     def set_thread_marker(marker) do
-      :persistent_term.put(@state_key, Map.put(state!(), :thread_marker, marker))
+      SystemsRuntime.PersistentTerm.put(@state_key, Map.put(state!(), :thread_marker, marker))
     end
 
     def set_context_marker(marker) do
-      :persistent_term.put(@state_key, Map.put(state!(), :context_marker, marker))
+      SystemsRuntime.PersistentTerm.put(@state_key, Map.put(state!(), :context_marker, marker))
     end
 
     def enable_internal_calls do
-      :persistent_term.put(@state_key, Map.put(state!(), :internal_passthrough, true))
+      SystemsRuntime.PersistentTerm.put(
+        @state_key,
+        Map.put(state!(), :internal_passthrough, true)
+      )
     end
 
-    def clear_owner, do: :persistent_term.erase(@state_key)
+    def clear_owner, do: SystemsRuntime.PersistentTerm.erase(@state_key)
 
     @impl true
     def list_connects(_agent_id) do
@@ -237,7 +245,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
 
     @impl true
     def call_api(agent_id, provider, api, args) do
-      send(owner!(), {:integration_im_call, agent_id, provider, api, args})
+      SystemsRuntime.Proc.send(owner!(), {:integration_im_call, agent_id, provider, api, args})
 
       if provider == "internal" and Map.get(state!(), :internal_passthrough, false),
         do: SalixIM.Provider.call_api(agent_id, provider, api, args),
@@ -418,7 +426,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
     defp dispatch(_provider, _api, _args), do: {:ok, %{"ok" => true}}
 
     defp owner!, do: state!().owner
-    defp state!, do: :persistent_term.get(@state_key)
+    defp state!, do: SystemsRuntime.PersistentTerm.get(@state_key)
   end
 
   defmodule InventoryMCPProvider do
@@ -427,10 +435,10 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
     @operation "mcp.inventory.lookup_batch"
 
     def configure(owner, marker) do
-      :persistent_term.put(@state_key, %{owner: owner, marker: marker})
+      SystemsRuntime.PersistentTerm.put(@state_key, %{owner: owner, marker: marker})
     end
 
-    def clear, do: :persistent_term.erase(@state_key)
+    def clear, do: SystemsRuntime.PersistentTerm.erase(@state_key)
 
     def provider_state(_agent_id), do: {:ok, %{"revision" => "inventory-live-v1"}}
 
@@ -460,8 +468,8 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
     end
 
     def call_tool(agent_id, "inventory", "lookup_batch", args, _ctx) do
-      %{owner: owner, marker: marker} = :persistent_term.get(@state_key)
-      send(owner, {:integration_mcp_call, agent_id, args})
+      %{owner: owner, marker: marker} = SystemsRuntime.PersistentTerm.get(@state_key)
+      SystemsRuntime.Proc.send(owner, {:integration_mcp_call, agent_id, args})
 
       {:ok,
        %{
@@ -484,7 +492,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
     @state_key {__MODULE__, :state}
 
     def configure(owner, plan_id, revision) do
-      :persistent_term.put(@state_key, %{
+      SystemsRuntime.PersistentTerm.put(@state_key, %{
         owner: owner,
         plan_id: plan_id,
         revision: revision,
@@ -494,8 +502,8 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
       })
     end
 
-    def clear, do: :persistent_term.erase(@state_key)
-    def snapshot, do: :persistent_term.get(@state_key)
+    def clear, do: SystemsRuntime.PersistentTerm.erase(@state_key)
+    def snapshot, do: SystemsRuntime.PersistentTerm.get(@state_key)
 
     def open_trigger(group_id, plan_id, "decision", revision, caller_agent_id, _session_id) do
       state = snapshot()
@@ -503,7 +511,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
       if plan_id != state.plan_id or revision != state.revision do
         {:error, :stale_dispatch_revision}
       else
-        send(state.owner, {
+        SystemsRuntime.Proc.send(state.owner, {
           :integration_meeting_call,
           :open_trigger,
           group_id,
@@ -512,7 +520,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
           caller_agent_id
         })
 
-        :persistent_term.put(@state_key, %{state | opened: true})
+        SystemsRuntime.PersistentTerm.put(@state_key, %{state | opened: true})
 
         {:ok,
          %{
@@ -553,7 +561,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
           {:error, :stale_dispatch_revision}
 
         true ->
-          send(state.owner, {
+          SystemsRuntime.Proc.send(state.owner, {
             :integration_meeting_call,
             :record_decision,
             group_id,
@@ -564,7 +572,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
             caller_agent_id
           })
 
-          :persistent_term.put(
+          SystemsRuntime.PersistentTerm.put(
             @state_key,
             %{state | decision: decision, baseline: baseline}
           )
@@ -585,9 +593,11 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
     @moduledoc false
     @state_key {__MODULE__, :state}
 
-    def configure(owner), do: :persistent_term.put(@state_key, %{owner: owner, schedules: []})
-    def clear, do: :persistent_term.erase(@state_key)
-    def snapshot, do: :persistent_term.get(@state_key)
+    def configure(owner),
+      do: SystemsRuntime.PersistentTerm.put(@state_key, %{owner: owner, schedules: []})
+
+    def clear, do: SystemsRuntime.PersistentTerm.erase(@state_key)
+    def snapshot, do: SystemsRuntime.PersistentTerm.get(@state_key)
 
     def create(id, params) do
       state = snapshot()
@@ -598,8 +608,12 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
         |> Map.put("id", id)
         |> Map.put("receiver", "agent")
 
-      :persistent_term.put(@state_key, %{state | schedules: state.schedules ++ [schedule]})
-      send(state.owner, {:integration_schedule_create, schedule})
+      SystemsRuntime.PersistentTerm.put(@state_key, %{
+        state
+        | schedules: state.schedules ++ [schedule]
+      })
+
+      SystemsRuntime.Proc.send(state.owner, {:integration_schedule_create, schedule})
       {:ok, schedule}
     end
 
@@ -615,7 +629,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
           {:error, :not_found}
 
         {_deleted, rest} ->
-          :persistent_term.put(@state_key, %{state | schedules: rest})
+          SystemsRuntime.PersistentTerm.put(@state_key, %{state | schedules: rest})
           :ok
       end
     end
@@ -738,7 +752,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
     help_code = "FEISHU-HELP-#{String.upcase(suffix)}"
     message_id = "om-live-#{suffix}"
     chat_id = "oc-live-#{suffix}"
-    IntegrationIMProvider.configure(self(), help_code)
+    IntegrationIMProvider.configure(SystemsRuntime.Proc.self(), help_code)
     put_agent_env(:im_provider_mod, IntegrationIMProvider)
 
     %{tenant_id: tenant_id, group_id: group_id, agent_id: agent_id, session_id: session_id} =
@@ -787,7 +801,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
     suffix = Live.unique_suffix()
     marker = String.upcase(suffix)
     catalog_key = "CATALOG-#{marker}"
-    InventoryMCPProvider.configure(self(), marker)
+    InventoryMCPProvider.configure(SystemsRuntime.Proc.self(), marker)
     put_agent_env(:mcp_provider_mod, InventoryMCPProvider)
 
     %{tenant_id: tenant_id, group_id: group_id, agent_id: agent_id, session_id: session_id} =
@@ -827,7 +841,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
   end
 
   test "Slack named DM paginates list_users and sends once to the returned id", %{llm: llm} do
-    IntegrationIMProvider.set_owner(self())
+    IntegrationIMProvider.set_owner(SystemsRuntime.Proc.self())
     put_agent_env(:im_provider_mod, IntegrationIMProvider)
 
     suffix = Live.unique_suffix()
@@ -876,7 +890,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
   end
 
   test "Slack channel message resolves a named user into a native mention", %{llm: llm} do
-    IntegrationIMProvider.set_owner(self())
+    IntegrationIMProvider.set_owner(SystemsRuntime.Proc.self())
     put_agent_env(:im_provider_mod, IntegrationIMProvider)
 
     suffix = Live.unique_suffix()
@@ -929,7 +943,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
   end
 
   test "Slack named channel follows a sparse page cursor before posting", %{llm: llm} do
-    IntegrationIMProvider.set_owner(self())
+    IntegrationIMProvider.set_owner(SystemsRuntime.Proc.self())
     put_agent_env(:im_provider_mod, IntegrationIMProvider)
 
     suffix = Live.unique_suffix()
@@ -985,7 +999,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
   test "Slack thread reply reads every earlier page before acting on its ambiguous trigger", %{
     llm: llm
   } do
-    IntegrationIMProvider.set_owner(self())
+    IntegrationIMProvider.set_owner(SystemsRuntime.Proc.self())
     put_agent_env(:im_provider_mod, IntegrationIMProvider)
 
     suffix = Live.unique_suffix()
@@ -1061,7 +1075,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
       ] do
     @tag :slack_context_recovery
     test "Slack top-level #{scenario} recovers evidence before its first reply", %{llm: llm} do
-      IntegrationIMProvider.set_owner(self())
+      IntegrationIMProvider.set_owner(SystemsRuntime.Proc.self())
       put_agent_env(:im_provider_mod, IntegrationIMProvider)
       marker = "BONUS-#{String.upcase(Live.unique_suffix())}"
       IntegrationIMProvider.set_context_marker(marker)
@@ -1127,7 +1141,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
 
   @tag :slack_prompt_boundaries
   test "explicit channel creation continues to invitations and confirms only once", %{llm: llm} do
-    IntegrationIMProvider.set_owner(self())
+    IntegrationIMProvider.set_owner(SystemsRuntime.Proc.self())
     put_agent_env(:im_provider_mod, IntegrationIMProvider)
     %{agent_id: agent_id, session_id: session_id} = new_agent!(llm, "router")
     channel_name = "context-#{Live.unique_suffix()}"
@@ -1175,7 +1189,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
   test "unavailable thread history reports its limitation without executing the request", %{
     llm: llm
   } do
-    IntegrationIMProvider.set_owner(self())
+    IntegrationIMProvider.set_owner(SystemsRuntime.Proc.self())
     put_agent_env(:im_provider_mod, IntegrationIMProvider)
     IntegrationIMProvider.enable_internal_calls()
     %{group_id: group_id, agent_id: agent_id, session_id: session_id} = new_agent!(llm, "router")
@@ -1228,7 +1242,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
     suffix = Live.unique_suffix()
     plan_id = SalixStore.Ids.new_meeting_plan_id()
     revision = "dispatch-live-#{suffix}"
-    MeetingPreparationSeam.configure(self(), plan_id, revision)
+    MeetingPreparationSeam.configure(SystemsRuntime.Proc.self(), plan_id, revision)
     put_agent_env(:meeting_preparation_mod, MeetingPreparationSeam)
 
     %{agent_id: agent_id, session_id: session_id} =
@@ -1266,8 +1280,8 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
   end
 
   test "current-session reminder uses one cron schedule with an explicit timezone", %{llm: llm} do
-    IntegrationIMProvider.set_owner(self())
-    ScheduleSeam.configure(self())
+    IntegrationIMProvider.set_owner(SystemsRuntime.Proc.self())
+    ScheduleSeam.configure(SystemsRuntime.Proc.self())
     put_agent_env(:im_provider_mod, IntegrationIMProvider)
     put_agent_env(:schedules_mod, ScheduleSeam)
 
@@ -1315,7 +1329,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
   end
 
   test "a recurring reminder without a clock time stays in chat for clarification", %{llm: llm} do
-    ScheduleSeam.configure(self())
+    ScheduleSeam.configure(SystemsRuntime.Proc.self())
     put_agent_env(:schedules_mod, ScheduleSeam)
 
     suffix = Live.unique_suffix()
@@ -1382,8 +1396,7 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
       %{
         tenant_id: tenant_id,
         group_id: group_id,
-        role: role,
-        template_id: "live-integrations-#{role}-#{suffix}"
+        role: role
       }
       |> maybe_put(:system_prompt, opts[:system_prompt])
       |> maybe_put(:router_system_prompt, opts[:router_system_prompt])
@@ -1417,13 +1430,13 @@ defmodule SalixAgent.LiveLlmIntegrationsE2eTest do
   end
 
   defp put_agent_env(key, value) do
-    previous = Application.get_env(:salix_agent, key)
-    Application.put_env(:salix_agent, key, value)
+    previous = SystemsRuntime.get_env(:salix_agent, key)
+    SystemsRuntime.put_env(:salix_agent, key, value)
     on_exit(fn -> Live.restore_env(key, previous) end)
   end
 
   defp collect_slack_calls_until(agent_id, terminal_api, calls \\ []) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:integration_im_call, ^agent_id, "slack", api, args} ->
         calls = [{api, args} | calls]
 

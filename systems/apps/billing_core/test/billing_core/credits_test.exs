@@ -1,5 +1,5 @@
 defmodule BillingCore.CreditsTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias BillingCore.{Credits, State}
   alias BillingCore.Entitlements.Policy

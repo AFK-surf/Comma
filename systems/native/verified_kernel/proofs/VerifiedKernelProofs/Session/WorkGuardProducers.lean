@@ -1,5 +1,6 @@
 import VerifiedKernelProofs.Session.WorkPresentationProducers
 import VerifiedKernelProofs.Proof.NativeProducerTactic
+import VerifiedKernelProofs.Proof.OwnerControlFrameTactic
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

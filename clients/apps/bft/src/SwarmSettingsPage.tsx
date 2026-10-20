@@ -1,4 +1,6 @@
-import { Button, Dropdown, InputField } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Dropdown } from "@comma/ui/components/dropdown";
+import { InputField } from "@comma/ui/components/input";
 import { useEffect, useState } from "react";
 import type {
   BftSwarmAccessPage,
@@ -6,6 +8,7 @@ import type {
   BftSwarmAccessWrite,
   BftSwarmMember,
   BftSwarmSettings,
+  BftSwarmTaskPlace,
 } from "./api";
 import { CopyButton } from "./dialogs";
 import { showFlash } from "./flash";
@@ -14,6 +17,14 @@ import { messages } from "./messages";
 import { State } from "./ProjectOverviewPage";
 import { useApi } from "./resource";
 import { navigate } from "./router";
+import {
+  PlaceFields,
+  TargetsUnavailable,
+  useAgentTargets,
+  type PlaceLocation,
+} from "./StationTargetPicker";
+import { Skeleton } from "./states";
+import { ChoiceModelField } from "./SwarmAgentsPage";
 import {
   FormActions,
   FormDialog,
@@ -30,8 +41,9 @@ const memberName = (member: BftSwarmMember) =>
   member.name ?? member.email ?? messages.members.unnamed;
 
 /**
- * An Agent Swarm's Settings: its name and runtime ids, the Access list, and
- * archiving. Members see the same page read-only. Every write answers the whole
+ * An Agent Swarm's Settings: its name and runtime ids, the default Task model,
+ * the default place to run Tasks, the Access list, and archiving. Members see
+ * the same page read-only. Every write answers the whole
  * page, which replaces the loaded one; it carries the caller's role read again,
  * so a self-demotion drops the admin controls. A caller who removed their own
  * access is sent to the swarms list with a notice.
@@ -40,13 +52,10 @@ export function SwarmSettingsPage({
   org,
   project,
   data: loaded,
-  onRenamed,
 }: {
   org: string;
   project: string;
   data: BftSwarmSettings;
-  /** The shell's swarm list shows the new name. */
-  onRenamed: () => void;
 }) {
   const [data, setData] = useState(loaded);
   const manage = data.project.role === "admin";
@@ -68,10 +77,22 @@ export function SwarmSettingsPage({
       <General
         data={data}
         manage={manage}
-        onSaved={(next) => {
-          setData(next);
-          onRenamed();
-        }}
+        // The shell re-reads its swarm list after the write.
+        onSaved={setData}
+        org={org}
+        project={project}
+      />
+      <TaskModel
+        data={data}
+        manage={manage}
+        onSaved={setData}
+        org={org}
+        project={project}
+      />
+      <TaskPlace
+        data={data}
+        manage={manage}
+        onSaved={setData}
         org={org}
         project={project}
       />
@@ -165,6 +186,176 @@ function General({
         ))}
       </dl>
     </FormSection>
+  );
+}
+
+/**
+ * The model a Task runs when the Router names none. Until an admin sets one,
+ * each Task runs the org default Task model; choosing that row (key "") clears
+ * the default again.
+ */
+function TaskModel({
+  org,
+  project,
+  data,
+  manage,
+  onSaved,
+}: {
+  org: string;
+  project: string;
+  data: BftSwarmSettings;
+  manage: boolean;
+  onSaved: (data: BftSwarmSettings) => void;
+}) {
+  const api = useApi();
+  const write = useWrite();
+  const model = data.task_model;
+  const [chosen, setChosen] = useState(model.key);
+  const row = model.models.find(
+    (candidate) => candidate.key === chosen && !candidate.disabled
+  );
+
+  return (
+    <FormSection description={t.taskModelNote} title={t.taskModelTitle}>
+      {model.status === "unavailable" ? (
+        <p className="bft-quiet bft-quiet-inline">{t.taskModelUnavailable}</p>
+      ) : manage ? (
+        <>
+          <ChoiceModelField
+            busy={write.busy}
+            chosen={chosen}
+            label={t.taskModelLabel}
+            models={model.models}
+            onChange={setChosen}
+          />
+          <FormActions write={write}>
+            <SaveButton
+              busy={write.busy}
+              disabled={chosen === model.key || !row}
+              onPress={() => {
+                const choice = row?.choice;
+                if (choice)
+                  write.run(() => api.setSwarmTaskModel(org, project, choice), onSaved);
+                else if (row)
+                  write.run(() => api.clearSwarmTaskModel(org, project), onSaved);
+              }}
+            />
+          </FormActions>
+        </>
+      ) : (
+        <dl className="bft-kv">
+          <div>
+            <dt>{t.taskModelLabel}</dt>
+            <dd title={model.label ?? undefined}>{model.label ?? "—"}</dd>
+          </div>
+        </dl>
+      )}
+    </FormSection>
+  );
+}
+
+/**
+ * Where a Task runs when the Router names no place: Salix (also when none is
+ * set), the Cloud VM or one of the swarm's stations.
+ */
+function TaskPlace({
+  org,
+  project,
+  data,
+  manage,
+  onSaved,
+}: {
+  org: string;
+  project: string;
+  data: BftSwarmSettings;
+  manage: boolean;
+  onSaved: (data: BftSwarmSettings) => void;
+}) {
+  const setting = data.task_place;
+  return (
+    <FormSection description={t.taskPlaceNote} title={t.taskPlaceTitle}>
+      {setting.status === "unavailable" || !setting.place ? (
+        <p className="bft-quiet bft-quiet-inline">{t.taskPlaceUnavailable}</p>
+      ) : manage ? (
+        <TaskPlaceForm
+          current={setting.place}
+          onSaved={onSaved}
+          org={org}
+          project={project}
+        />
+      ) : (
+        <dl className="bft-kv">
+          <div>
+            <dt>{t.taskPlaceLabel}</dt>
+            <dd title={setting.label ?? undefined}>{setting.label ?? "—"}</dd>
+          </div>
+        </dl>
+      )}
+    </FormSection>
+  );
+}
+
+const placeOf = (
+  location: PlaceLocation,
+  deviceId: string
+): BftSwarmTaskPlace | null =>
+  location === "station"
+    ? deviceId
+      ? { kind: "station", device_id: deviceId }
+      : null
+    : { kind: location };
+
+function TaskPlaceForm({
+  org,
+  project,
+  current,
+  onSaved,
+}: {
+  org: string;
+  project: string;
+  current: BftSwarmTaskPlace;
+  onSaved: (data: BftSwarmSettings) => void;
+}) {
+  const api = useApi();
+  const write = useWrite();
+  const [targets, retry] = useAgentTargets(org, project);
+  const [location, setLocation] = useState<PlaceLocation>(current.kind);
+  const [deviceId, setDeviceId] = useState(
+    current.kind === "station" ? current.device_id : ""
+  );
+  if (targets.state === "loading") return <Skeleton height={32} />;
+  if (targets.state === "error") return <TargetsUnavailable retry={retry} />;
+  // A station that is gone or no longer selectable is not a choice to save.
+  const station = targets.data.stations.find(
+    (item) => item.id === deviceId && item.selectable
+  );
+  const chosen = placeOf(location, station?.id ?? "");
+  const unchanged =
+    chosen?.kind === current.kind &&
+    (chosen.kind !== "station" ||
+      (current.kind === "station" && chosen.device_id === current.device_id));
+  return (
+    <>
+      <PlaceFields
+        deviceId={deviceId}
+        disabled={write.busy}
+        location={location}
+        locations={["salix", "station", "cloud_vm"]}
+        onLocation={setLocation}
+        onStation={setDeviceId}
+        targets={targets.data}
+      />
+      <FormActions write={write}>
+        <SaveButton
+          busy={write.busy}
+          disabled={!chosen || unchanged}
+          onPress={() => {
+            if (chosen)
+              write.run(() => api.setSwarmTaskPlace(org, project, chosen), onSaved);
+          }}
+        />
+      </FormActions>
+    </>
   );
 }
 

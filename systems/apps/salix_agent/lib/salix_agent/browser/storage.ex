@@ -56,7 +56,7 @@ defmodule SalixAgent.Browser.Storage do
         used =
           case state.cookies[key] do
             {^cookie, used} -> used
-            _ -> System.system_time(:microsecond)
+            _ -> SystemsClock.system_time(:microsecond)
           end
 
         domain = String.trim_leading(cookie["domain"] || "", ".")
@@ -137,7 +137,7 @@ defmodule SalixAgent.Browser.Storage do
       fun.(session)
     after
       Commands.cdp(state, "Target.closeTarget", %{targetId: target})
-      wait_closed(state, target, System.monotonic_time(:millisecond) + 5000)
+      wait_closed(state, target, SystemsClock.monotonic_time(:millisecond) + 5000)
       Connection.storage_session(state.conn, nil)
     end
   end
@@ -147,8 +147,10 @@ defmodule SalixAgent.Browser.Storage do
          Commands.cdp(state, "Target.getTargets")["targetInfos"],
          &(&1["targetId"] == target)
        ) do
-      if System.monotonic_time(:millisecond) >= deadline, do: fail(:browser_storage_unavailable)
-      Process.sleep(10)
+      if SystemsClock.monotonic_time(:millisecond) >= deadline,
+        do: fail(:browser_storage_unavailable)
+
+      SystemsClock.sleep(10)
       wait_closed(state, target, deadline)
     end
   end
@@ -156,7 +158,7 @@ defmodule SalixAgent.Browser.Storage do
   defp navigate(state, session, origin) do
     result = Commands.cdp(state, "Page.navigate", %{url: origin <> "/"}, session)
     if result["errorText"], do: fail(:browser_storage_unavailable)
-    wait_origin(state, session, origin, System.monotonic_time(:millisecond) + 5000)
+    wait_origin(state, session, origin, SystemsClock.monotonic_time(:millisecond) + 5000)
   end
 
   defp wait_origin(state, session, origin, deadline) do
@@ -165,8 +167,10 @@ defmodule SalixAgent.Browser.Storage do
     if frame["securityOrigin"] == origin do
       :ok
     else
-      if System.monotonic_time(:millisecond) >= deadline, do: fail(:browser_storage_unavailable)
-      Process.sleep(10)
+      if SystemsClock.monotonic_time(:millisecond) >= deadline,
+        do: fail(:browser_storage_unavailable)
+
+      SystemsClock.sleep(10)
       wait_origin(state, session, origin, deadline)
     end
   end

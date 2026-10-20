@@ -1,50 +1,49 @@
+import { useCall, useTopic } from "@comma/core-client";
+import type { SessionBrowserBinding } from "@comma/core/contract";
 import { useEffect, useState } from "react";
-import type { CommaApiClient } from "../../../../api";
-import type { BrowserBinding } from "../../../../api/browser";
 
 /**
- * The ready browser, if any, that this conversation's participant runs.
- * Rechecked every 10 seconds while the page is visible.
+ * The ready browser, if any, that this conversation's participant runs, as the
+ * core reads it: every 10 seconds while the page is visible. A hidden page lets
+ * the core stop; the last answer stays shown until the core reads it again.
  */
 export function useSessionBrowser(
-  api: CommaApiClient | undefined,
+  enabled: boolean,
   workspaceId: string | undefined,
   conversationId: string | undefined,
   participantId: string | undefined
 ) {
+  const call = useCall();
   const scope = JSON.stringify([workspaceId, conversationId, participantId]);
-  const [result, setResult] = useState<{ scope: string; browser?: BrowserBinding }>();
-  const [revision, setRevision] = useState(0);
+  const [hidden, setHidden] = useState(() => document.hidden);
   useEffect(() => {
-    if (!api || !workspaceId || !conversationId || !participantId) return;
-    const abort = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    const refresh = async () => {
-      if (!document.hidden) {
-        try {
-          const { browsers } = await api.listBrowsers(
-            workspaceId,
-            { conversationId, participantId },
-            AbortSignal.any([abort.signal, AbortSignal.timeout(10_000)])
-          );
-          if (!abort.signal.aborted) {
-            const browser = browsers.find((item) => item.status === "ready");
-            setResult({ scope, ...(browser ? { browser } : {}) });
-          }
-        } catch {
-          if (!abort.signal.aborted) setResult({ scope });
+    const seen = () => setHidden(document.hidden);
+    document.addEventListener("visibilitychange", seen);
+    return () => document.removeEventListener("visibilitychange", seen);
+  }, []);
+  const target =
+    enabled && workspaceId && conversationId && participantId
+      ? {
+          workspace: workspaceId,
+          conversation: conversationId,
+          participant: participantId,
         }
-      }
-      if (!abort.signal.aborted) timer = setTimeout(() => void refresh(), 10_000);
-    };
-    void refresh();
-    return () => {
-      abort.abort();
-      clearTimeout(timer);
-    };
-  }, [api, workspaceId, conversationId, participantId, scope, revision]);
+      : null;
+  const { value } = useTopic(
+    target && !hidden ? { topic: "sessionBrowser", ...target } : null,
+    { lingerMs: 0 }
+  );
+  // The last answer for this conversation and participant.
+  const [last, setLast] = useState<{
+    scope: string;
+    browser: SessionBrowserBinding | null;
+  }>();
+  if (value && target && (last?.scope !== scope || last.browser !== value.browser))
+    setLast({ scope, browser: value.browser });
   return {
-    browser: api && result?.scope === scope ? result.browser : undefined,
-    refresh: () => setRevision((value) => value + 1),
+    browser: target && last?.scope === scope ? (last.browser ?? undefined) : undefined,
+    refresh: () => {
+      if (target) void call("sessionBrowser.refresh", target).catch(() => {});
+    },
   };
 }

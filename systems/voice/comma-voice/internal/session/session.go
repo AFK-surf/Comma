@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -65,6 +66,9 @@ type Options struct {
 	JSON io.Writer
 	// Log receives status and final transcript lines.
 	Log io.Writer
+	// Dial connects to the server; nil is the network's own dialer. Tests
+	// serve the server in memory.
+	Dial func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 // HandshakeError reports an HTTP answer instead of a WebSocket upgrade.
@@ -205,6 +209,7 @@ func Dial(ctx context.Context, opts Options) (*Session, error) {
 		Proxy:            http.ProxyFromEnvironment,
 		HandshakeTimeout: startTimeout,
 		Subprotocols:     []string{Subprotocol},
+		NetDialContext:   opts.Dial,
 	}
 	header := http.Header{"Authorization": {"Bearer " + opts.Key}}
 	conn, resp, err := dialer.DialContext(ctx, wsURL, header)

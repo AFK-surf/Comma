@@ -7,6 +7,7 @@ defmodule BridgeForTeams.ProjectComposioConnectionsTest do
   client.
   """
   use BridgeForTeams.DataCase, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{OrgComposioSettings, Orgs, ProjectComposioConnections, Projects}
 
@@ -28,13 +29,16 @@ defmodule BridgeForTeams.ProjectComposioConnectionsTest do
     def ensure_auth_config(_settings, toolkit), do: {:ok, "ac_" <> toolkit}
 
     def create_connect_link(settings, auth_config_id, user_id, opts \\ []) do
-      send(Application.get_env(:bridge_for_teams_core, :composio_test_pid), {
-        :connect_link,
-        settings,
-        auth_config_id,
-        user_id,
-        opts
-      })
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.get_env(:bridge_for_teams_core, :composio_test_pid),
+        {
+          :connect_link,
+          settings,
+          auth_config_id,
+          user_id,
+          opts
+        }
+      )
 
       {:ok,
        %{
@@ -60,18 +64,18 @@ defmodule BridgeForTeams.ProjectComposioConnectionsTest do
   setup do
     SalixStore.S3.Fake.reset()
 
-    prev_http = Application.get_env(:salix_web, :composio_client_mod)
-    Application.put_env(:salix_web, :composio_client_mod, StubComposioHttpClient)
-    Application.put_env(:bridge_for_teams_core, :composio_test_pid, self())
+    prev_http = SystemsRuntime.get_env(:salix_web, :composio_client_mod)
+    SystemsRuntime.put_env(:salix_web, :composio_client_mod, StubComposioHttpClient)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :composio_test_pid, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       if prev_http do
-        Application.put_env(:salix_web, :composio_client_mod, prev_http)
+        SystemsRuntime.put_env(:salix_web, :composio_client_mod, prev_http)
       else
-        Application.delete_env(:salix_web, :composio_client_mod)
+        SystemsRuntime.delete_env(:salix_web, :composio_client_mod)
       end
 
-      Application.delete_env(:bridge_for_teams_core, :composio_test_pid)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :composio_test_pid)
     end)
 
     {:ok, org} = Orgs.create_org(%{name: "Acme", slug: "acme-composio-conn"})
@@ -80,14 +84,14 @@ defmodule BridgeForTeams.ProjectComposioConnectionsTest do
   end
 
   defp with_salix_client(mod) do
-    prev = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, mod)
+    prev = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, mod)
 
     on_exit(fn ->
       if prev do
-        Application.put_env(:bridge_for_teams_core, :salix_client, prev)
+        SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, prev)
       else
-        Application.delete_env(:bridge_for_teams_core, :salix_client)
+        SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
       end
     end)
   end

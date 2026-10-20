@@ -1,5 +1,5 @@
 defmodule BillingCommerce.ManualGrantsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias BillingCommerce.{ManualGrants, PackageCatalog}
 
@@ -16,12 +16,17 @@ defmodule BillingCommerce.ManualGrantsTest do
       start: {Agent, :start_link, [fn -> [] end, [name: __MODULE__.ProjectionLog]]}
     })
 
-    Application.put_env(:billing_commerce, :vm_resume_waker, {__MODULE__, :record_wake})
-    Application.put_env(:billing_commerce, :billing_source_typed_sink, __MODULE__.ProjectionSink)
+    SystemsRuntime.put_env(:billing_commerce, :vm_resume_waker, {__MODULE__, :record_wake})
+
+    SystemsRuntime.put_env(
+      :billing_commerce,
+      :billing_source_typed_sink,
+      __MODULE__.ProjectionSink
+    )
 
     on_exit(fn ->
-      Application.delete_env(:billing_commerce, :vm_resume_waker)
-      Application.delete_env(:billing_commerce, :billing_source_typed_sink)
+      SystemsRuntime.delete_env(:billing_commerce, :vm_resume_waker)
+      SystemsRuntime.delete_env(:billing_commerce, :billing_source_typed_sink)
     end)
 
     seed_package("bridge_contract", "bridge")
@@ -123,11 +128,11 @@ defmodule BillingCommerce.ManualGrantsTest do
   end
 
   test "BFT manual grants do not require Stripe configuration" do
-    previous_secret_key = Application.get_env(:billing_stripe, :secret_key)
-    previous_webhook_secret = Application.get_env(:billing_stripe, :webhook_secret)
+    previous_secret_key = SystemsRuntime.get_env(:billing_stripe, :secret_key)
+    previous_webhook_secret = SystemsRuntime.get_env(:billing_stripe, :webhook_secret)
 
-    Application.delete_env(:billing_stripe, :secret_key)
-    Application.delete_env(:billing_stripe, :webhook_secret)
+    SystemsRuntime.delete_env(:billing_stripe, :secret_key)
+    SystemsRuntime.delete_env(:billing_stripe, :webhook_secret)
 
     attrs =
       manual_attrs(%{
@@ -275,7 +280,7 @@ defmodule BillingCommerce.ManualGrantsTest do
 
     assert {:error, :invalid_manual_grant} =
              attrs
-             |> Map.put(:expires_at, DateTime.add(DateTime.utc_now(), -1, :second))
+             |> Map.put(:expires_at, DateTime.add(SystemsClock.utc_now(), -1, :second))
              |> ManualGrants.issue_comma_admin_support_grant()
 
     assert {:ok, issued} = ManualGrants.issue_comma_admin_support_grant(attrs)
@@ -495,6 +500,6 @@ defmodule BillingCommerce.ManualGrantsTest do
   defp decode_json(value) when is_binary(value), do: Jason.decode!(value)
   defp decode_json(value), do: value
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

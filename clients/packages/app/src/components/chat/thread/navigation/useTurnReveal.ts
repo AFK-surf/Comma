@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from "react";
-import type { CommaApiClient } from "../../../../api";
 import type { ReplyChainReveal } from "../replies/useReplyChainHighlight";
 import type { useStickToBottom } from "../scroll/useStickToBottom";
 import type { ConversationLayout } from "../layout/conversationLayout";
@@ -12,10 +11,13 @@ export type RevealTurnHandle = {
   current: ((turnKey: string, highlightMessageId?: string) => void) | null;
 };
 
+export type RevealMessageHandle = {
+  current: ((messageId: string) => void) | null;
+};
+
 export type RevealTurn = ReturnType<typeof useTurnReveal>;
 
 export function useTurnReveal({
-  api,
   canonicalLayout,
   follow: { anchorTurn, revealElement, scrollRootRef, stopFollowing },
   historyReveal,
@@ -23,7 +25,6 @@ export function useTurnReveal({
   revealTurnHandle,
   turnWindow: { getWindowViewport, hasOlder, revealWindowTurn, windowKeyByMessage },
 }: {
-  api: CommaApiClient | undefined;
   canonicalLayout: ConversationLayout;
   follow: Pick<
     Follow,
@@ -41,10 +42,16 @@ export function useTurnReveal({
   const pendingRevealMessageRef = useRef<{
     messageId: string;
     focusMessage: boolean;
+    highlightInPlace: boolean;
     lifecycle?: ReplyChainReveal | undefined;
   } | null>(null);
   const revealMountedMessage = useCallback(
-    (messageId: string, allowEarlierContext = true, lifecycle?: ReplyChainReveal) => {
+    (
+      messageId: string,
+      allowEarlierContext = true,
+      lifecycle?: ReplyChainReveal,
+      highlightInPlace = false
+    ) => {
       const message = getWindowViewport()?.querySelector<HTMLElement>(
         `[data-message-id="${CSS.escape(messageId)}"]`
       );
@@ -61,7 +68,8 @@ export function useTurnReveal({
             lifecycle.arrived();
             return;
           }
-          if (!scrolled) return;
+          // A target already in place still answers the press that asked for it.
+          if (!scrolled && !highlightInPlace) return;
           body.removeAttribute("data-reveal-highlight");
           void body.offsetWidth;
           body.setAttribute("data-reveal-highlight", "true");
@@ -80,20 +88,26 @@ export function useTurnReveal({
       highlightMessageId?: string,
       {
         focusMessage = false,
+        highlightInPlace = false,
         lifecycle,
-      }: { focusMessage?: boolean; lifecycle?: ReplyChainReveal | undefined } = {}
+      }: {
+        focusMessage?: boolean;
+        /** Highlight the message even when it needs no scroll. */
+        highlightInPlace?: boolean;
+        lifecycle?: ReplyChainReveal | undefined;
+      } = {}
     ) => {
       if (
         focusMessage &&
         highlightMessageId &&
-        revealMountedMessage(highlightMessageId, true, lifecycle)
+        revealMountedMessage(highlightMessageId, true, lifecycle, highlightInPlace)
       ) {
         return;
       }
       stopFollowing();
       pendingRevealTurnKeyRef.current = turnKey;
       pendingRevealMessageRef.current = highlightMessageId
-        ? { messageId: highlightMessageId, focusMessage, lifecycle }
+        ? { messageId: highlightMessageId, focusMessage, highlightInPlace, lifecycle }
         : null;
       const windowKey = highlightMessageId
         ? windowKeyByMessage.get(highlightMessageId)
@@ -123,7 +137,14 @@ export function useTurnReveal({
     const pending = pendingRevealMessageRef.current;
     pendingRevealMessageRef.current = null;
     if (pending?.focusMessage) {
-      if (!revealMountedMessage(pending.messageId, false, pending.lifecycle))
+      if (
+        !revealMountedMessage(
+          pending.messageId,
+          false,
+          pending.lifecycle,
+          pending.highlightInPlace
+        )
+      )
         pending.lifecycle?.cancel();
       return;
     }
@@ -148,7 +169,7 @@ export function useTurnReveal({
   });
   useLayoutEffect(() => {
     const pending = historyReveal.current;
-    if (!pending || pending.scope !== historyScope || pending.api !== api) return;
+    if (!pending || pending.scope !== historyScope) return;
     historyReveal.current = null;
     const turn = canonicalLayout.turns.find((candidate) =>
       candidate.entries.some((entry) => entry.message?.messageId === pending.messageId)
@@ -159,6 +180,6 @@ export function useTurnReveal({
         lifecycle: pending.lifecycle,
       });
     else pending.lifecycle?.cancel();
-  }, [api, canonicalLayout, historyReveal, historyScope, revealTurn]);
+  }, [canonicalLayout, historyReveal, historyScope, revealTurn]);
   return revealTurn;
 }

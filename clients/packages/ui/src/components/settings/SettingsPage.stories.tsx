@@ -380,6 +380,8 @@ const SettingsStory = () => {
 };
 
 const meta = {
+  // Asserts that the selected option aligns with its trigger.
+  tags: ["browser"],
   title: "App components/Settings/Page",
   component: SettingsPage,
   args: {

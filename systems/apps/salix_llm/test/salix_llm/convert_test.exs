@@ -7,7 +7,7 @@ defmodule SalixLlm.ConvertTest do
   A 400 on replay wedges the session permanently because the same transcript is
   resent verbatim on every wake.
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixLlm.Convert
 
@@ -82,8 +82,11 @@ defmodule SalixLlm.ConvertTest do
     # summary, and the prompt snapshot and the end-of-turn reminder are
     # system-authored too, so the leading run is the whole transcript. Hoisting
     # all of it left `messages: []` and the API answered
-    # "messages: at least one message is required" (HTTP 400).
-    test "keeps the prompt snapshot in system and demotes the last reminder" do
+    # "messages: at least one message is required" (HTTP 400). A placeholder
+    # user turn opens the conversation instead of a system tag in a user turn.
+    @placeholder %{"role" => "user", "content" => "[No new user message.]"}
+
+    test "keeps all context in system and adds a placeholder user turn" do
       {system, messages} =
         Convert.to_anthropic([
           %{role: "summary", content: "ROUTER PROMPT"},
@@ -91,17 +94,13 @@ defmodule SalixLlm.ConvertTest do
           %{role: "system", content: "<end-of-turn>settle this round</end-of-turn>"}
         ])
 
-      assert system == "ROUTER PROMPT\n\n<compacted-context>what happened</compacted-context>"
+      assert system ==
+               "ROUTER PROMPT\n\n<compacted-context>what happened</compacted-context>\n\n<end-of-turn>settle this round</end-of-turn>"
 
-      assert messages == [
-               %{
-                 "role" => "user",
-                 "content" => "<system>\n<end-of-turn>settle this round</end-of-turn>\n</system>"
-               }
-             ]
+      assert messages == [@placeholder]
     end
 
-    test "a runtime fact is demoted with its wrapper intact" do
+    test "a runtime fact stays in system with its wrapper intact" do
       {system, messages} =
         Convert.to_anthropic([
           %{role: "summary", content: "ROUTER PROMPT"},
@@ -114,24 +113,10 @@ defmodule SalixLlm.ConvertTest do
           }
         ])
 
-      assert system == "ROUTER PROMPT"
-      assert [%{"role" => "user", "content" => content}] = messages
-      assert content =~ "<runtime-message>"
-      assert content =~ "type: wait_timeout"
-    end
-
-    # Demotion walks past a message the projection drops rather than stopping
-    # on it: a blank one contributes no turn either.
-    test "blank system-authored messages are skipped while demoting" do
-      {system, messages} =
-        Convert.to_anthropic([
-          %{role: "summary", content: "ROUTER PROMPT"},
-          %{role: "system", content: "still here?"},
-          %{role: "system", content: "   "}
-        ])
-
-      assert system == "ROUTER PROMPT"
-      assert messages == [%{"role" => "user", "content" => "<system>\nstill here?\n</system>"}]
+      assert system =~ "ROUTER PROMPT"
+      assert system =~ "<runtime-message>"
+      assert system =~ "type: wait_timeout"
+      assert messages == [@placeholder]
     end
 
     # An assistant turn with neither text nor tool calls is dropped, so a
@@ -144,18 +129,13 @@ defmodule SalixLlm.ConvertTest do
           %{role: "assistant", content: "", tool_calls: []}
         ])
 
-      assert system == "ROUTER PROMPT"
-      assert messages == [%{"role" => "user", "content" => "<system>\nreminder\n</system>"}]
+      assert system == "ROUTER PROMPT\n\nreminder"
+      assert messages == [@placeholder]
     end
 
-    # The last resort: with a single system-authored message there is nothing
-    # to hoist it above, so it becomes the conversation instead of leaving the
-    # request with no messages at all.
-    test "a lone system message becomes the conversation" do
-      {system, messages} = Convert.to_anthropic([%{role: "summary", content: "ROUTER PROMPT"}])
-
-      assert system == nil
-      assert messages == [%{"role" => "user", "content" => "<system>\nROUTER PROMPT\n</system>"}]
+    test "a lone system message stays in system" do
+      assert {"ROUTER PROMPT", [@placeholder]} =
+               Convert.to_anthropic([%{role: "summary", content: "ROUTER PROMPT"}])
     end
 
     test "a transcript with nothing to say is left alone" do

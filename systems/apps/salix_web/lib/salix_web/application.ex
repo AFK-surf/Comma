@@ -38,45 +38,47 @@ defmodule SalixWeb.Application do
     SalixWeb.ConnectorTaskAdmission.initialize()
 
     opts = [strategy: :one_for_one, name: SalixWeb.Supervisor]
-    Supervisor.start_link(children(), opts)
+    SystemsRuntime.Supervisor.start_link(children(), opts)
   end
 
   @doc false
   def children do
     [
       {Phoenix.PubSub, name: SalixWeb.PubSub},
+      {SystemsRuntime.Registry, keys: :unique, name: SalixWeb.VoiceHTTP.Registry},
       Salix.RemoteShell.Registrations,
-      %{
-        id: SalixWeb.ComputeRuntimeRPCPG,
-        start: {:pg, :start_link, [SalixWeb.ComputeRuntimeRPCPG]}
-      },
-      {Task.Supervisor,
+      {SystemsRuntime.TaskSupervisor,
        name: SalixWeb.ConnectorControlTaskSupervisor,
-       max_children: Application.get_env(:salix_web, :connector_control_task_limit, 16)},
+       max_children: SystemsRuntime.get_env(:salix_web, :connector_control_task_limit, 16)},
       SalixWeb.ConnectorDisconnectQueue,
-      SalixWeb.SubscriptionRuntimeWorker,
-      {Task.Supervisor,
+      SalixWeb.StationRelay,
+      SalixWeb.StationTaskIndex,
+      background(SalixWeb.SubscriptionRuntimeWorker, :subscription_runtime_worker),
+      {SystemsRuntime.TaskSupervisor,
        name: SalixWeb.ConnectorRequestTaskSupervisor,
-       max_children: Application.get_env(:salix_web, :connector_request_task_limit, 64)},
-      {Task.Supervisor,
-       name: SalixWeb.ConnectorExternalEventTaskSupervisor,
-       max_children: Application.get_env(:salix_web, :connector_external_event_task_limit, 64)},
-      SalixWeb.ConnectorExternalEventCoordinator,
-      {Task.Supervisor,
+       max_children: SystemsRuntime.get_env(:salix_web, :connector_request_task_limit, 64)},
+      # Tasks kept here with Sessions of other stations taking part: one giver per Task and station on a node, and
+      # once started, each given what it has not had (SalixWeb.StationTasks).
+      {SystemsRuntime.Registry, keys: :unique, name: SalixWeb.StationTasks.Registry},
+      {SystemsRuntime.TaskSupervisor, name: SalixWeb.StationTasks.Supervisor},
+      Supervisor.child_spec({Task, &give_station_tasks/0},
+        id: :give_station_tasks,
+        restart: :temporary
+      ),
+      {SystemsRuntime.TaskSupervisor,
        name: SalixWeb.ConnectorStreamTaskSupervisor,
-       max_children: Application.get_env(:salix_web, :connector_stream_task_limit, 32)},
-      {Task.Supervisor, name: SalixWeb.OAuthMCPRefreshSupervisor, max_children: 16},
-      {Task.Supervisor, name: SalixWeb.CloudVM.ArchiveDiagnosticsSupervisor, max_children: 4},
-      {Task.Supervisor, name: SalixWeb.CloudVM.RuntimeInstallSupervisor, max_children: 4},
-      {Task.Supervisor, name: SalixWeb.CloudVM.ImageArchiveSupervisor, max_children: 4},
-      SalixWeb.CloudVM.ArchiveGC,
+       max_children: SystemsRuntime.get_env(:salix_web, :connector_stream_task_limit, 32)},
+      {SystemsRuntime.TaskSupervisor, name: SalixWeb.OAuthMCPRefreshSupervisor, max_children: 16},
+      {SystemsRuntime.TaskSupervisor,
+       name: SalixWeb.CloudVM.ImageArchiveSupervisor, max_children: 4},
+      background(SalixWeb.CloudVM.ArchiveGC, :cloud_vm_archive_gc),
       Salix.Control.PluginCatalogCache,
       # One supervised Redis connection for the global SiteLLM sliding window.
       {SalixWeb.SiteAPI.RateLimit,
-       url: Application.fetch_env!(:salix_web, :site_rate_limit_redis_url)},
+       url: SystemsRuntime.fetch_env!(:salix_web, :site_rate_limit_redis_url)},
       # And one for the Router post_message API's per-key / per-group windows.
       {Salix.App.RouterInbox.RateLimit,
-       url: Application.fetch_env!(:salix_web, :site_rate_limit_redis_url)},
+       url: SystemsRuntime.fetch_env!(:salix_web, :site_rate_limit_redis_url)},
       # Site-API node-local _api.json config cache.
       SalixWeb.SiteAPI.State,
       # Admin dashboard Phoenix endpoint. Started in every env (so LiveViewTest
@@ -84,7 +86,20 @@ defmodule SalixWeb.Application do
       # its own and is invoked as a plug by SalixWeb.Endpoint for `/dash/*`,
       # sharing the single Bandit listener below. Reuses SalixWeb.PubSub.
       SalixWeb.DashboardEndpoint
-    ] ++ [SalixWeb.MeetingIngressSupervisor] ++ native_triage_children()
+    ]
+    |> List.flatten()
+    |> Kernel.++([SalixWeb.MeetingIngressSupervisor] ++ native_triage_children())
+  end
+
+  # A worker that does its work on a timer starts unless its switch is off.
+  # The test configuration turns each one off: a test calls the worker's work
+  # itself, or starts the worker under its own supervisor.
+  defp background(child, switch),
+    do: if(SystemsRuntime.get_env(:salix_web, switch, true), do: [child], else: [])
+
+  defp give_station_tasks do
+    if Keyword.get(SystemsRuntime.get_env(:salix_web, :station_tasks, []), :give_at_start, true),
+      do: SalixWeb.StationTasks.give_all()
   end
 
   @doc false
@@ -98,7 +113,8 @@ defmodule SalixWeb.Application do
       namespace: namespace,
       context_port: @native_triage_context_port,
       evaluator_port: @native_triage_evaluator_port,
-      review_projection: :slack
+      review_projection: :slack,
+      draining?: &SalixCluster.NodeLifecycle.draining?/0
     ]
 
     recovery_opts = [
@@ -122,18 +138,22 @@ defmodule SalixWeb.Application do
       settle_fun: &SalixStore.TriageProductRuntime.settle_companion_reaction/2
     ]
 
-    [
-      SalixIM.Triage.Runtime.child_spec(runtime_opts),
-      SalixIM.Triage.ReceiptRecovery.child_spec(recovery_opts),
-      SalixIM.Triage.ProductEffectWorker.child_spec(product_effect_opts),
-      SalixIM.Triage.ProductEffectWorker.child_spec(companion_reaction_opts)
-    ]
+    if SystemsRuntime.get_env(:salix_web, :native_triage, true) do
+      [
+        SalixIM.Triage.Runtime.child_spec(runtime_opts),
+        SalixIM.Triage.ReceiptRecovery.child_spec(recovery_opts),
+        SalixIM.Triage.ProductEffectWorker.child_spec(product_effect_opts),
+        SalixIM.Triage.ProductEffectWorker.child_spec(companion_reaction_opts)
+      ]
+    else
+      []
+    end
   end
 
   @doc "HTTP listen port (app config / 4000)."
   def port do
     cond do
-      v = Application.get_env(:salix_web, :port) -> v
+      v = SystemsRuntime.get_env(:salix_web, :port) -> v
       true -> 4000
     end
   end
@@ -157,7 +177,7 @@ defmodule SalixWeb.Application do
   for cloud-VM install links and the connector dial-back URL.
   """
   def public_base_url do
-    case Application.get_env(:salix_web, :public_base_url) do
+    case SystemsRuntime.get_env(:salix_web, :public_base_url) do
       v when is_binary(v) and v != "" -> String.trim_trailing(v, "/")
       _ -> base_url()
     end
@@ -170,13 +190,13 @@ defmodule SalixWeb.Application do
 
   @doc false
   def sync_im_public_base_url do
-    Application.put_env(:salix_im, :public_base_url, public_base_url())
+    SystemsRuntime.put_env(:salix_im, :public_base_url, public_base_url())
   end
 
   defp sync_configured_im_public_base_url do
-    case Application.get_env(:salix_web, :public_base_url) do
+    case SystemsRuntime.get_env(:salix_web, :public_base_url) do
       v when is_binary(v) and v != "" ->
-        Application.put_env(:salix_im, :public_base_url, String.trim_trailing(v, "/"))
+        SystemsRuntime.put_env(:salix_im, :public_base_url, String.trim_trailing(v, "/"))
 
       _ ->
         :ok

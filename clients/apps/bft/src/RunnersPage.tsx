@@ -1,16 +1,14 @@
+import { Button } from "@comma/ui/components/Button";
+import { ChevronRightSmallIcon, MoreHorizontalIcon } from "@comma/ui/components/icons";
+import { Dialog } from "@comma/ui/components/dialog";
 import {
-  Button,
-  ChevronRightSmallIcon,
-  Dialog,
   Menu,
   MenuItem,
   MenuPopover,
   MenuSeparator,
   MenuTrigger,
-  MoreHorizontalIcon,
-  ScrollArea,
-  ScrollAreaLoadMore,
-} from "@comma/ui";
+} from "@comma/ui/components/menu";
+import { ScrollArea, ScrollAreaLoadMore } from "@comma/ui/components/scroll-area";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type {
   BftInstallCommand,
@@ -94,6 +92,12 @@ function useFleet(first: Resource<BftRunnersPage>, api: RunnerApi) {
   const [pages, setPages] = useState<BftRunnersPage[] | null>(null);
   const [more, setMore] = useState({ loading: false, failed: false });
   const base = first.state === "ready" ? first.data : undefined;
+  // Fresh data for the first page (after a cached one) starts the list over.
+  const [pagesBase, setPagesBase] = useState(base);
+  if (base !== undefined && pagesBase !== base) {
+    setPagesBase(base);
+    setPages(null);
+  }
   const current = pages ?? (base ? [base] : null);
   const currentRef = useRef(current);
   currentRef.current = current;

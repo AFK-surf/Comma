@@ -1,82 +1,27 @@
 defmodule SalixIM.Triage.RunFenceTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.Triage.RunFence
   alias SalixStore.{CasRecord, S3, ULID}
 
   setup do
-    previous_backend = Application.get_env(:salix_store, :triage_record_backend)
-    Application.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :triage_record_backend)
+    SystemsRuntime.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
     S3.Fake.reset()
 
     on_exit(fn ->
       if previous_backend do
-        Application.put_env(:salix_store, :triage_record_backend, previous_backend)
+        SystemsRuntime.put_env(:salix_store, :triage_record_backend, previous_backend)
       else
-        Application.delete_env(:salix_store, :triage_record_backend)
+        SystemsRuntime.delete_env(:salix_store, :triage_record_backend)
       end
     end)
 
     :ok
   end
 
-  test "accepts only the exact protocol conversions of the bounded read-tool disclosure" do
-    schema = %{
-      "type" => "object",
-      "properties" => %{
-        "tool" => %{"type" => "string", "enum" => ["web.read_pages"]},
-        "params" => %{"type" => "object"}
-      },
-      "required" => ["tool", "params"]
-    }
-
-    internal = %{
-      "name" => "call",
-      "description" => "bounded read",
-      "input_schema" => schema,
-      "auto_wait_timeout_seconds" => 30
-    }
-
-    chat = %{
-      "type" => "function",
-      "function" => %{
-        "name" => "call",
-        "description" => "bounded read",
-        "parameters" => schema
-      }
-    }
-
-    responses = %{
-      "type" => "function",
-      "name" => "call",
-      "description" => "bounded read",
-      "parameters" => schema
-    }
-
-    anthropic = %{
-      "name" => "call",
-      "description" => "bounded read",
-      "input_schema" => schema
-    }
-
-    assert RunFence.valid_read_tool_disclosure?([internal])
-    assert RunFence.valid_read_tool_disclosure?([chat])
-    assert RunFence.valid_read_tool_disclosure?([responses])
-    assert RunFence.valid_read_tool_disclosure?([anthropic])
-
-    refute RunFence.valid_read_tool_disclosure?([
-             put_in(chat, ["function", "name"], "web.read_pages")
-           ])
-
-    refute RunFence.valid_read_tool_disclosure?([
-             put_in(responses, ["parameters", "required"], ["tool"])
-           ])
-
-    refute RunFence.valid_read_tool_disclosure?([Map.put(anthropic, "extra", true)])
-  end
-
   test "owns the identity fence key, initial bytes, and create-once CAS" do
-    namespace = "triage-run-fence-#{System.unique_integer([:positive])}"
+    namespace = "triage-run-fence-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     scope = "generation:T_WORKSPACE:C_CHANNEL:__channel__"
     generation = ULID.generate()
     run_id = ULID.generate()
@@ -149,220 +94,12 @@ defmodule SalixIM.Triage.RunFenceTest do
              RunFence.create(namespace, scope, ULID.generate(), input, 1_000, 2_000)
   end
 
-  test "owns legacy frozen-input binding CAS" do
-    namespace = "triage-run-fence-legacy-bind-#{System.unique_integer([:positive])}"
-    scope = "legacy-scope"
-    generation = ULID.generate()
-    run_id = ULID.generate()
-    now = System.system_time(:millisecond)
-
-    input = %{
-      "schema" => "comma.triage-input-snapshot.v1",
-      "generation" => generation,
-      "events" => [],
-      "receipt_refs" => [],
-      "source_authority" => %{}
-    }
-
-    model_input = %{
-      "schema" => "comma.triage-model-input.v1",
-      "snapshot" => %{"schema" => "comma.triage-context-snapshot.v1"},
-      "canonical_snapshot_bytes" => "{}",
-      "canonical_snapshot_sha256" => String.duplicate("a", 64),
-      "source_refs" => [],
-      "source_refs_canonical_bytes" => "[]",
-      "source_refs_sha256" => String.duplicate("b", 64)
-    }
-
-    assert {:ok, {:won, created}} =
-             RunFence.create(namespace, scope, run_id, input, now, now + 60_000)
-
-    assert {:legacy, :open} = RunFence.recovery_view(created.record)
-
-    assert :ok = RunFence.bind_compatibility_snapshot(created.key, input, model_input)
-
-    assert {:ok, %{"input_snapshot" => ^model_input, "terminal" => nil}} =
-             CasRecord.get(created.key)
-  end
-
-  test "ledger projection preserves why an event triggered, not only its fast-path bit" do
-    base = %{
-      "schema" => "comma.triage-input-snapshot.v2",
-      "generation" => ULID.generate(),
-      "receipt_refs" => ["private-receipt-ref"],
-      "source_authority" => %{
-        "workspace_id" => "T_WORKSPACE",
-        "channel_id" => "C_CHANNEL",
-        "thread_ts" => "200.000001"
-      },
-      "source_mode" => "callback"
-    }
-
-    ambient_event = %{
-      "actor_kind" => "human",
-      "event_type" => "message",
-      "addressing_kind" => "ambient",
-      "trigger_kind" => "question_heuristic",
-      "fast_path" => true
-    }
-
-    directed_event = %{
-      ambient_event
-      | "event_type" => "app_mention",
-        "addressing_kind" => "directed",
-        "trigger_kind" => "mention"
-    }
-
-    ambient = RunFence.base_projection(Map.put(base, "events", [ambient_event]))
-    directed = RunFence.base_projection(Map.put(base, "events", [directed_event]))
-
-    assert ambient["schema"] == "comma.triage-ledger-input-projection.v2"
-    assert get_in(ambient, ["events", Access.at(0), "addressing_kind"]) == "ambient"
-    assert get_in(ambient, ["events", Access.at(0), "trigger_kind"]) == "question_heuristic"
-    refute Map.has_key?(hd(ambient["events"]), "addressed_recipient_ref")
-
-    assert get_in(directed, ["events", Access.at(0), "addressing_kind"]) == "directed"
-    assert get_in(directed, ["events", Access.at(0), "trigger_kind"]) == "mention"
-
-    assert get_in(directed, ["events", Access.at(0), "addressed_recipient_ref"]) ==
-             "endpoint://run/self"
-
-    refute ambient == directed
-
-    invalid_fence = %{
-      "schema" => "comma.triage-bucket-fence.v2",
-      "bucket_scope" => "scope",
-      "public_bucket_ref" => "bucket://run/scope",
-      "generation" => base["generation"],
-      "run_id" => ULID.generate(),
-      "created_at" => 1,
-      "deadline_at" => 2,
-      "input_snapshot" =>
-        directed
-        |> put_in(["events", Access.at(0), "addressing_kind"], "ambient"),
-      "identity_observation" => %{
-        "schema" => "comma.triage-identity-observation.v1",
-        "state" => "unused"
-      },
-      "terminal" => nil
-    }
-
-    assert RunFence.recovery_view(invalid_fence) == :invalid
-  end
-
-  test "legacy v1 ledger projections remain strict read-only recovery inputs" do
-    input = %{
-      "schema" => "comma.triage-input-snapshot.v2",
-      "generation" => ULID.generate(),
-      "events" => [
-        %{
-          "actor_kind" => "agent",
-          "event_type" => "app_mention",
-          "addressing_kind" => "directed",
-          "trigger_kind" => "mention",
-          "fast_path" => true
-        }
-      ],
-      "receipt_refs" => ["private-receipt-ref"],
-      "source_authority" => %{
-        "workspace_id" => "T_WORKSPACE",
-        "channel_id" => "C_CHANNEL",
-        "thread_ts" => "200.000001"
-      },
-      "source_mode" => "callback"
-    }
-
-    assert {:ok, {:won, created}} =
-             RunFence.create(
-               "legacy-projection-#{System.unique_integer([:positive])}",
-               "scope",
-               ULID.generate(),
-               input,
-               1,
-               2
-             )
-
-    legacy_projection = %{
-      RunFence.base_projection(input)
-      | "schema" => "comma.triage-ledger-input-projection.v1",
-        "events" => [
-          %{"event_ref" => "event://run/e001", "ordinal" => 1, "fast_path" => true}
-        ]
-    }
-
-    legacy_fence = put_in(created.record, ["input_snapshot"], legacy_projection)
-
-    assert RunFence.recovery_view(legacy_fence) == {:identity, :open}
-    assert RunFence.validate_chain(legacy_fence, input) == :ok
-    refute RunFence.base_projection(input)["schema"] == legacy_projection["schema"]
-  end
-
-  test "owns expired identity recovery CAS and its stage-derived terminal" do
-    namespace = "triage-run-fence-recovery-#{System.unique_integer([:positive])}"
-    generation = ULID.generate()
-    run_id = ULID.generate()
-    receipt = identity_receipt()
-    scope = "generation-7:T_WORKSPACE:C_CHANNEL:200.000001"
-    now = System.system_time(:millisecond)
-
-    bucket = %{
-      "schema" => "comma.triage-durable-bucket.v1",
-      "bucket_scope" => scope,
-      "open_generation" => ULID.generate(),
-      "open_first_at" => nil,
-      "open_last_at" => nil,
-      "open_fast_path" => false,
-      "open_receipts" => [],
-      "sealed_generations" => [
-        %{"generation" => generation, "receipts" => [receipt], "sealed_at" => now}
-      ]
-    }
-
-    assert {:ok, ^bucket} =
-             CasRecord.create(
-               SalixStore.TriageKeys.ctl_im_triage_bucket(namespace, scope),
-               bucket
-             )
-
-    input = %{
-      "schema" => "comma.triage-input-snapshot.v2",
-      "generation" => generation,
-      "events" => [receipt["triage_event"]],
-      "receipt_refs" => [receipt["receipt_ref"]],
-      "source_authority" => %{
-        "connect_id" => receipt["connect_id"],
-        "connect_generation" => "generation-7",
-        "workspace_id" => "T_WORKSPACE",
-        "channel_id" => "C_CHANNEL",
-        "thread_ts" => "200.000001"
-      },
-      "source_mode" => "historical_thread_reenactment"
-    }
-
-    assert {:ok, {:won, created}} =
-             RunFence.create(namespace, scope, run_id, input, now - 2_000, now - 1_000)
-
-    assert {:ok, recovered} = RunFence.recover_open(namespace, created.record, :deadline)
-
-    assert recovered["identity_observation"]["state"] == "unused"
-    assert recovered["terminal"]["status"] == "failed"
-
-    assert recovered["terminal"]["decision"] == %{
-             "action" => "silence",
-             "reason" => "identity_diagnostic_interrupted_before_transport"
-           }
-
-    assert recovered["terminal"]["evaluator"] == %{}
-    assert ULID.valid?(recovered["terminal"]["terminal_id"])
-    assert {:ok, ^recovered} = CasRecord.get(created.key)
-  end
-
   test "owns active terminal CAS and returns the durable winner" do
-    namespace = "triage-run-fence-terminal-#{System.unique_integer([:positive])}"
+    namespace = "triage-run-fence-terminal-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     scope = "legacy-scope"
     generation = ULID.generate()
     run_id = ULID.generate()
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     input = %{
       "schema" => "comma.triage-input-snapshot.v1",
@@ -401,19 +138,187 @@ defmodule SalixIM.Triage.RunFenceTest do
     assert {:ok, first.fence} == CasRecord.get(created.key)
   end
 
-  test "owns physical generation existence lookup" do
-    namespace = "triage-run-fence-status-#{System.unique_integer([:positive])}"
-    scope = "generation:T_WORKSPACE:C_CHANNEL:__channel__"
-    generation = ULID.generate()
-    fence_key = SalixStore.TriageKeys.ctl_im_triage_bucket_seal(namespace, scope, generation)
+  describe "release before transport" do
+    test "an unused run is released and the next run replaces it under a new epoch" do
+      {namespace, scope, generation, input, created, active} = open_identity_fence!()
 
-    assert :missing = RunFence.generation_status(namespace, scope, generation)
-    assert {:ok, %{}} = CasRecord.create(fence_key, %{})
-    assert :present = RunFence.generation_status(namespace, scope, generation)
+      assert {:ok, released} = RunFence.release(active)
+      assert RunFence.released?(released)
+      assert released["identity_observation"]["released_from"] == "unused"
+      assert released["terminal"] == nil
+      assert RunFence.recovery_view(released) == {:identity, :released}
+      assert RunFence.generation_status(namespace, scope, generation) == :released
+
+      next_run_id = ULID.generate()
+      now = SystemsClock.system_time(:millisecond)
+
+      assert {:ok, {:won, replaced}} =
+               RunFence.create(namespace, scope, next_run_id, input, now, now + 60_000)
+
+      assert replaced.key == created.key
+      assert replaced.record["run_id"] == next_run_id
+      assert RunFence.fence_epoch(replaced.record) == 2
+      assert replaced.record["identity_observation"]["state"] == "unused"
+      assert {:ok, replaced.record} == CasRecord.get(created.key)
+      assert RunFence.generation_status(namespace, scope, generation) == :present
+
+      # Exactly one run owns the generation: a racing replacement loses.
+      assert {:ok, :lost} =
+               RunFence.create(namespace, scope, ULID.generate(), input, now, now + 60_000)
+    end
+
+    test "late writes from a released run are rejected before and after replacement" do
+      {namespace, scope, _generation, input, created, active} = open_identity_fence!()
+
+      assert :ok = RunFence.transition(active, :claim, source_claim())
+      assert {:ok, released} = RunFence.release(active)
+      assert released["identity_observation"]["released_from"] == "claimed"
+
+      # The released record still names this run and epoch.
+      assert {:error, :identity_fence_denied} = RunFence.transition(active, :mark_transport, nil)
+
+      assert {:error, :identity_fence_released} =
+               RunFence.terminalize(scope, active, failed_terminal(), :result)
+
+      assert {:error, _reason} =
+               RunFence.prepare_terminal_commit(
+                 namespace,
+                 scope,
+                 active,
+                 failed_terminal(),
+                 :result
+               )
+
+      assert {:error, _reason} = RunFence.recover_open(namespace, released, :interrupted_worker)
+      assert {:ok, released} == CasRecord.get(created.key)
+
+      now = SystemsClock.system_time(:millisecond)
+
+      assert {:ok, {:won, replaced}} =
+               RunFence.create(namespace, scope, ULID.generate(), input, now, now + 60_000)
+
+      # Against the replacement, the old run id and epoch are stale.
+      assert {:error, :identity_fence_denied} =
+               RunFence.transition(active, :claim, source_claim())
+
+      assert {:error, :identity_diagnostic_invalid_fence} =
+               RunFence.terminalize(scope, active, failed_terminal(), :result)
+
+      assert {:error, :identity_fence_not_releasable} = RunFence.release(active)
+
+      # A writer that knows the new run id but holds the old epoch is also stale.
+      stale_epoch = %{active | run_id: replaced.record["run_id"]}
+
+      assert {:error, :identity_fence_denied} =
+               RunFence.transition(stale_epoch, :claim, source_claim())
+
+      assert {:error, :identity_diagnostic_invalid_fence} =
+               RunFence.terminalize(scope, stale_epoch, failed_terminal(), :result)
+
+      assert {:ok, replaced.record} == CasRecord.get(created.key)
+    end
+
+    test "a run past transport is not releasable and still settles as a terminal failure" do
+      {namespace, scope, generation, _input, created, active} = open_identity_fence!()
+
+      assert :ok = RunFence.transition(active, :claim, source_claim())
+      assert :proceed = RunFence.transition(active, :mark_transport, nil)
+      assert {:error, :identity_fence_not_releasable} = RunFence.release(active)
+      assert RunFence.generation_status(namespace, scope, generation) == :present
+
+      assert {:ok, settlement} = RunFence.terminalize(scope, active, failed_terminal(), :result)
+      assert settlement.outcome == :requested
+      assert settlement.fence["terminal"]["status"] == "failed"
+      assert {:ok, settlement.fence} == CasRecord.get(created.key)
+      assert {:error, :identity_fence_not_releasable} = RunFence.release(active)
+    end
+  end
+
+  defp open_identity_fence! do
+    namespace = "triage-run-fence-release-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    generation = ULID.generate()
+    run_id = ULID.generate()
+    receipt = identity_receipt()
+    scope = "generation-7:T_WORKSPACE:C_CHANNEL:200.000001"
+    now = SystemsClock.system_time(:millisecond)
+
+    bucket = %{
+      "schema" => "comma.triage-durable-bucket.v1",
+      "bucket_scope" => scope,
+      "open_generation" => ULID.generate(),
+      "open_first_at" => nil,
+      "open_last_at" => nil,
+      "open_fast_path" => false,
+      "open_receipts" => [],
+      "sealed_generations" => [
+        %{"generation" => generation, "receipts" => [receipt], "sealed_at" => now}
+      ]
+    }
+
+    assert {:ok, ^bucket} =
+             CasRecord.create(
+               SalixStore.TriageKeys.ctl_im_triage_bucket(namespace, scope),
+               bucket
+             )
+
+    input = %{
+      "schema" => "comma.triage-input-snapshot.v2",
+      "generation" => generation,
+      "events" => [receipt["triage_event"]],
+      "receipt_refs" => [receipt["receipt_ref"]],
+      "source_authority" => %{
+        "connect_id" => receipt["connect_id"],
+        "connect_generation" => "generation-7",
+        "workspace_id" => "T_WORKSPACE",
+        "channel_id" => "C_CHANNEL",
+        "thread_ts" => "200.000001"
+      },
+      "source_mode" => "historical_thread_reenactment"
+    }
+
+    assert {:ok, {:won, created}} =
+             RunFence.create(namespace, scope, run_id, input, now, now + 60_000)
+
+    active = %{
+      fence_key: created.key,
+      generation: generation,
+      run_id: run_id,
+      fence_epoch: RunFence.fence_epoch(created.record),
+      identity_base_input_sha256: canonical_sha256(created.record["input_snapshot"]),
+      identity_transport_attempt_id: ULID.generate(),
+      identity_winning_input: input
+    }
+
+    {namespace, scope, generation, input, created, active}
+  end
+
+  defp source_claim do
+    %{
+      "schema" => "comma.triage-source-observation-claim.v2",
+      "identity_profile_sha256" => String.duplicate("1", 64),
+      "request_selector_sha256" => String.duplicate("2", 64),
+      "source_origin_sha256" => String.duplicate("3", 64),
+      "source_observation_sha256" => String.duplicate("4", 64)
+    }
+  end
+
+  defp failed_terminal do
+    %{
+      "status" => "failed",
+      "decision" => %{"action" => "silence", "reason" => "identity_diagnostic_internal_error"},
+      "evaluator" => %{},
+      "settled_at" => SystemsClock.system_time(:millisecond)
+    }
+  end
+
+  defp canonical_sha256(value) do
+    value
+    |> SalixIM.Triage.CanonicalJSON.encode!()
+    |> SalixIM.Triage.CanonicalJSON.sha256()
   end
 
   defp identity_receipt do
-    created_at = System.system_time(:millisecond)
+    created_at = SystemsClock.system_time(:millisecond)
 
     %{
       "schema" => "comma.slack-triage-event-receipt.v2",

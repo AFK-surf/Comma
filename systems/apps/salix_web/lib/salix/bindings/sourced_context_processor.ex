@@ -7,11 +7,11 @@ defmodule Salix.Bindings.SourcedContextProcessor do
   reference again before persistence.
 
   Before automatic preview requests are persisted, `prepare_evidence/2` captures
-  the group's current Router and its resolved template, not the global default.
+  the group's current Router and the model it runs.
   Manual request producers must also prepare evidence. Dispatch resolves again
   and rejects changed identity or provider configuration before the external call.
   The revision is a drift comparison, not an authentication proof: Salix group
-  and template records are the authority. Credentials are not versioned here.
+  and Agent model records are the authority. Credentials are not versioned here.
   Prompt text is hashed; policy/schema names remain explicit version contracts.
   These reads do not lock concurrent Salix configuration changes atomically.
 
@@ -102,7 +102,7 @@ defmodule Salix.Bindings.SourcedContextProcessor do
   end
 
   defp evidence_from_config(agent_id, config) do
-    # This is a drift fence, not authentication: the current Router/template are
+    # This is a drift fence, not authentication: the current Router/model are
     # authoritative. Credential rotation must not invalidate pending previews.
     contract =
       config
@@ -144,7 +144,7 @@ defmodule Salix.Bindings.SourcedContextProcessor do
          config
          |> Map.put(:default_headers, normalized)
          |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
-         |> Map.merge(Map.take(llm, ~w(template_id provider context_tokens)))}
+         |> Map.merge(Map.take(llm, ~w(model_choice provider context_tokens)))}
       else
         {:error, :unsupported_processor_headers}
       end

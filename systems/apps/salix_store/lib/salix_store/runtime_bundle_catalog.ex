@@ -8,10 +8,10 @@ defmodule SalixStore.RuntimeBundleCatalog do
   deployment environment variables can substitute an image authority.
   """
 
-  @classes ~w(external meeting shell)
+  @classes ~w(meeting shell station)
   @runtime_bundle_public_base_url "https://comma-release.afk.surf"
   @container_log_limit_bytes 1_048_576
-  @external_volume %{
+  @provider_state_volume %{
     "role" => "provider_state",
     "destination" => "/workspace",
     "owner_uid" => 1_000,
@@ -20,7 +20,7 @@ defmodule SalixStore.RuntimeBundleCatalog do
     "read_only" => false
   }
   @meeting_volume %{
-    @external_volume
+    @provider_state_volume
     | "owner_uid" => 10_001,
       "owner_gid" => 10_001
   }
@@ -34,30 +34,12 @@ defmodule SalixStore.RuntimeBundleCatalog do
       },
       egress_mode: "deny_all"
     },
-    "external.codex" => %{
-      class: "external",
+    # A Group's Cloud VM on an Agent VMM Host: the Comma station, which
+    # connects out to Salix with its Workload's connect credential.
+    "station.default" => %{
+      class: "station",
       capabilities: ["runtime_exec", "runtime_process"],
-      volume_requirements: [@external_volume],
-      resources: %{
-        "pid_max" => 512,
-        "writable_quota_bytes" => 2_147_483_648
-      },
-      egress_mode: "public_internet"
-    },
-    "external.claude" => %{
-      class: "external",
-      capabilities: ["runtime_exec", "runtime_process"],
-      volume_requirements: [@external_volume],
-      resources: %{
-        "pid_max" => 512,
-        "writable_quota_bytes" => 2_147_483_648
-      },
-      egress_mode: "public_internet"
-    },
-    "external.pi" => %{
-      class: "external",
-      capabilities: ["runtime_exec", "runtime_process"],
-      volume_requirements: [@external_volume],
+      volume_requirements: [@provider_state_volume],
       resources: %{
         "pid_max" => 512,
         "writable_quota_bytes" => 2_147_483_648
@@ -150,7 +132,7 @@ defmodule SalixStore.RuntimeBundleCatalog do
   def load(opts \\ []) do
     root = Keyword.get(opts, :root, bundle_root())
 
-    with {:ok, raw} <- File.read(Path.join(root, "manifest.json")),
+    with {:ok, raw} <- SystemsRuntime.FS.read(Path.join(root, "manifest.json")),
          {:ok, %{"schemaVersion" => 3, "sourceRevision" => revision, "images" => images}}
          when is_binary(revision) and is_list(images) <- Jason.decode(raw),
          {:ok, indexed} <- validate_images(images) do
@@ -284,7 +266,7 @@ defmodule SalixStore.RuntimeBundleCatalog do
   end
 
   defp bundle_root,
-    do: Application.get_env(:salix_store, :runtime_bundle_root, "/opt/comma/runtime-images")
+    do: SystemsRuntime.get_env(:salix_store, :runtime_bundle_root, "/opt/comma/runtime-images")
 
   defp field(value, key) when is_map(value),
     do: Map.get(value, key) || Map.get(value, Atom.to_string(key))

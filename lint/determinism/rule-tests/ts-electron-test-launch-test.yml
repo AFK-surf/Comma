@@ -1,0 +1,10 @@
+id: ts-electron-test-launch
+valid:
+  - |
+    import { electron, expect, test } from "./electron-test";
+    const app = await electron.launch({ args: [main] });
+invalid:
+  - |
+    import { _electron } from "@playwright/test";
+  - |
+    const app = await _electron.launch({ args: [main] });

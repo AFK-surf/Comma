@@ -24,6 +24,7 @@ defmodule BillingCommerce.MixProject do
 
   defp deps do
     [
+      {:systems_clock, in_umbrella: true},
       {:billing_core, in_umbrella: true},
       {:salix_analytics, in_umbrella: true},
       {:ecto_sql, "~> 3.12"},

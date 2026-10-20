@@ -90,28 +90,28 @@ model {
           link ../../../clients/apps/electron/src/main/index.ts 'Current exceptions'
         }
 
-        main_session = component 'Main Session 权威' {
-          description '桌面 bearer、Session generation/lease 与认证并发的唯一 owner'
+        main_session = component 'Main Session 凭证与 gate' {
+          description '桌面 bearer 的唯一持有者（safeStorage）；按 client core 发布的 Session generation/lease 同步开关 gate'
           technology 'TypeScript composition root + safeStorage'
-          link ../../../clients/apps/electron/src/main/modules/session/session-service.ts 'Source'
+          link ../../../clients/apps/electron/src/main/modules/session/session-host.ts 'Source'
         }
 
-        main_product = component 'Main Chat 与 ProductInbox 协调器' {
+        main_product = component 'Main Chat 协调器' {
           description '在 exact Session lease 下访问产品 API，并协调 renderer demand'
           technology 'TypeScript services'
           link ../../../clients/apps/electron/src/main/modules/electron-main.module.ts 'Composition root'
         }
 
-        sqlite_utility = component 'LocalData Utility Process' {
-          description '保存按 principal/audience 分区、可重建的 SQLite cache；不持有 bearer'
-          technology 'Electron utility process + SQLite'
-          link ../../../clients/apps/electron/src/utility/local-data-service.ts 'Source'
+        client_core = component 'Client core utility process' {
+          description '任务列表等业务逻辑与按账号分库的 SQLite；API 请求经 Main 的 /v1 代理，不持有 bearer'
+          technology 'Electron utility process + Effect + SQLite'
+          link ../../../clients/packages/core/src/core.ts 'Source'
         }
 
         native_hosts = component '原生能力宿主' {
-          description 'Notch、Side Chat、Connector 与操作系统能力的 Main-owned 实现'
+          description 'Notch、菜单栏、Quick Chat、Connector 与操作系统能力的 Main-owned 实现'
           technology 'Swift helpers / JSON Lines / local process'
-          link ../../../clients/apps/electron/src/main/native-side-chat.ts 'Example'
+          link ../../../clients/apps/electron/src/main/native-status-menu.ts 'Example'
         }
       }
 
@@ -121,8 +121,9 @@ model {
       electron.preload .command electron.ipc_gateway '生成式 IPC Binding'
       electron.renderer .command electron.legacy_ipc '冻结的兼容表面'
       electron.ipc_gateway .command electron.main_session 'Session 命令与准入'
-      electron.ipc_gateway .command electron.main_product 'Chat / Inbox 命令'
-      electron.main_product .local_call electron.sqlite_utility '不托管 bearer 的 cache 读写'
+      electron.ipc_gateway .command electron.main_product 'Chat 命令'
+      electron.renderer .command electron.client_core 'core.open 的 MessagePort：订阅与命名调用'
+      electron.client_core .command electron.main_product '/v1 代理（Main 注入凭证）'
       electron.ipc_gateway .command electron.native_hosts 'Native Capability Handler'
     }
 
@@ -241,12 +242,6 @@ model {
           link ../../../systems/apps/salix_env/lib/salix_env/compute_provider.ex 'Provider contract'
         }
 
-        runtime_binding = component 'External Worker Runtime Binding' {
-          description '只接受 connected_runtime 或 compute_workload；stable target 与 live connection epoch 分离，catch-up 后才采用 reconnect epoch'
-          technology 'SalixAgent.RuntimeBindingResolver + SalixWeb driver'
-          link ../../../systems/apps/salix_agent/lib/salix_agent/runtime_binding_resolver.ex 'Resolver'
-        }
-
         service_routes = component 'Service Route Authority' {
           description 'provider-neutral export/import/route ledger；每次访问重查两端 Workload generation、route capability、环境 authority 与 expiry'
           technology 'SalixStore.ServiceRoutes'
@@ -279,7 +274,6 @@ model {
         agent_runtime .read_write storage_kernel 'Claim、root/session state 与 inbox'
         cluster_runtime .read_write storage_kernel 'Lease、恢复与调度'
         agent_runtime .command integration_runtime 'Tool 与 Provider 调用'
-        agent_runtime .command runtime_binding 'External Session 解析 stable target 与 live epoch'
         integration_runtime .command compute_control 'Compute intent、grant 与 current generation'
         compute_control .command compute_providers '按 pool policy 与 capability 调度 Provider operation'
         service_routes .read_write compute_control '每次访问重查 Workload/Environment authority'
@@ -354,7 +348,7 @@ model {
       }
 
       runtime_agent = application 'Salix Runtime Agent' {
-        description '所有 External Worker carrier 共用 durable inbox/outbox、stable event ID、partial ACK、dedupe、catch-up 与 native resume；只使用 outbound scoped credential'
+        description '会议 runtime carrier：durable input、stable event ID、ACK 与 catch-up；只使用 outbound scoped credential'
         technology 'salix-connect --runtime-agent'
         link ../../../systems/connector/salix-connect/main.go 'Source'
       }
@@ -404,7 +398,6 @@ model {
     systems.salix.integration_runtime .request collaboration_providers 'IM/日历/OAuth/MCP API 与回调'
     systems.comma_product.recommendation_sources .request collaboration_providers '有界只读：Salix 解析 Group OAuth binding 凭证并直连 GitHub/Linear/Notion；其他 provider 经 Composio exact connected-account recipe'
     systems.salix.integration_runtime .command edge_runtimes.connector 'WebSocket Bridge 与执行 Stream'
-    systems.salix.runtime_binding .command edge_runtimes.runtime_agent '同一 External Worker transport contract'
     systems.salix.compute_providers .command edge_runtimes.runtime_agent 'Provider bootstrap 后 outbound attach'
     systems.salix.integration_runtime .command edge_runtimes.vm_gateway '受管 Cloud VM Attach/Control'
     edge_runtimes.vm_gateway .request runtime_providers 'Sandbox 生命周期'

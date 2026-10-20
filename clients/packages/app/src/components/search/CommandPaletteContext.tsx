@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { uiClock } from "@comma/ui/clock";
 import { useIsGuestSession } from "../auth-context";
 import { ChatConsumerBoundary } from "../chat/ChatProvider";
 import { AppCommandPalette } from "./AppCommandPalette";
@@ -44,7 +45,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
     setOpen(false);
     const target = focusBeforeOpen.current;
     focusBeforeOpen.current = null;
-    window.setTimeout(() => {
+    uiClock.after(0, () => {
       if (target?.isConnected) target.focus({ preventScroll: true });
     });
   }, []);

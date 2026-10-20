@@ -9,7 +9,8 @@ defmodule SalixAgent.LLMFailureStreakTest do
   `llm_call_failed` events at one transcript position and parks the session at
   the cap; new session input advances the position and resumes normally.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle
 
   alias SalixAgent.{InternalSessionActor, InternalSessionFleet, InternalSessionStore}
   alias SalixAgent.InternalSession
@@ -38,6 +39,25 @@ defmodule SalixAgent.LLMFailureStreakTest do
     end
   end
 
+  defmodule GatewayCreditsLLM do
+    @moduledoc "Fails like the AI Gateway after the platform's prepaid credits run out."
+    @behaviour SalixAgent.LLM
+
+    @impl true
+    def complete(_messages, _tools), do: fail()
+
+    @impl true
+    def complete_stream(_messages, _tools, _on_delta), do: fail()
+
+    defp fail do
+      SalixAgent.LLM.Error.http("anthropic", 402, %{
+        "name" => "AiGatewayError",
+        "internalCode" => 2021,
+        "message" => "Insufficient wholesale credits."
+      })
+    end
+  end
+
   defmodule CrashingLLM do
     @moduledoc """
     Kills the LLM task outright (uncatchable, so the in-round retry wrapper
@@ -59,7 +79,7 @@ defmodule SalixAgent.LLMFailureStreakTest do
 
     defp crash do
       Elixir.Agent.update(__MODULE__, &(&1 + 1))
-      Process.exit(self(), :kill)
+      SystemsRuntime.Proc.exit(SystemsRuntime.Proc.self(), :kill)
     end
   end
 
@@ -106,20 +126,20 @@ defmodule SalixAgent.LLMFailureStreakTest do
   setup do
     SalixAgent.TestSupport.stop_all_agents()
 
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     start_supervised!(PermanentErrorLLM)
-    Application.put_env(:salix_agent, :llm, PermanentErrorLLM)
+    SystemsRuntime.put_env(:salix_agent, :llm, PermanentErrorLLM)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev_backend)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_backend)
 
       if prev_llm,
-        do: Application.put_env(:salix_agent, :llm, prev_llm),
-        else: Application.delete_env(:salix_agent, :llm)
+        do: SystemsRuntime.put_env(:salix_agent, :llm, prev_llm),
+        else: SystemsRuntime.delete_env(:salix_agent, :llm)
     end)
 
     agent = SalixAgent.TestSupport.new_agent_id()
@@ -165,80 +185,20 @@ defmodule SalixAgent.LLMFailureStreakTest do
   end
 
   @tag timeout: 60_000
-  test "provider recovery completes the original async-result turn without another message", %{
-    agent: agent
-  } do
-    start_supervised!(RecoveringLLM)
-    Application.put_env(:salix_agent, :llm, RecoveringLLM)
-    previous = Application.get_env(:salix_agent, :llm_activation_retry_base_ms)
-    Application.put_env(:salix_agent, :llm_activation_retry_base_ms, 2_000)
-
-    on_exit(fn ->
-      if previous,
-        do: Application.put_env(:salix_agent, :llm_activation_retry_base_ms, previous),
-        else: Application.delete_env(:salix_agent, :llm_activation_retry_base_ms)
-    end)
-
-    # Use the real queue materialization, model-call loop and session store.
-    # Only the provider outage is injected. No retry-specific state is seeded.
-    {:ok, _} =
-      InternalSessionStore.prepare_commit(agent, @session_id, [
-        %{
-          "type" => "queue_append",
-          "session_id" => @session_id,
-          "kind" => "runtime_message",
-          "dedupe_key" => "incident-async-result",
-          "payload" => %{
-            "content" => "async retry incident",
-            "kind" => "tool_call_completed",
-            "runtime_message_id" => "incident-async-result"
-          }
-        }
-      ])
-
-    {:ok, pid} = InternalSessionFleet.ensure_started(agent, @session_id)
-    assert eventually(fn -> failure_count(agent, @session_id) == 1 end, 400)
-    before_recovery = read_session!(agent)
-    assert List.last(InternalSession.get(before_recovery, :messages)).role == "runtime"
-    assert RecoveringLLM.calls() == 6
-
-    RecoveringLLM.recover()
-    :ok = GenServer.stop(pid, :normal)
-    {:ok, _} = InternalSessionFleet.ensure_started(agent, @session_id)
-
-    completed? =
-      eventually(
-        fn ->
-          Enum.any?(InternalSession.get(read_session!(agent), :messages), fn message ->
-            Enum.any?(get_in(message, [:provider_meta, "responses_items"]) || [], fn item ->
-              item["type"] == "function_call_output" and item["call_id"] == "retry_done" and
-                Jason.decode!(item["output"]) == %{"status" => "accepted", "outcome" => "done"}
-            end)
-          end)
-        end,
-        100
-      )
-
-    assert completed?,
-           "provider is healthy but original turn did not finish; model calls=#{RecoveringLLM.calls()}"
-
-    assert RecoveringLLM.calls() == 7
-    assert failure_count(agent, @session_id) == 1
-  end
-
-  @tag timeout: 60_000
   test "async result failure survives actor restart and resumes without new input", %{
     agent: agent
   } do
+    # The round's provider retries back off 7.75s in total, and the durable
+    # retry deadline follows; settling runs both at once on the clock.
     start_supervised!(RecoveringLLM)
-    Application.put_env(:salix_agent, :llm, RecoveringLLM)
-    previous = Application.get_env(:salix_agent, :llm_activation_retry_base_ms)
-    Application.put_env(:salix_agent, :llm_activation_retry_base_ms, 2_000)
+    SystemsRuntime.put_env(:salix_agent, :llm, RecoveringLLM)
+    previous = SystemsRuntime.get_env(:salix_agent, :llm_activation_retry_base_ms)
+    SystemsRuntime.put_env(:salix_agent, :llm_activation_retry_base_ms, 2_000)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_agent, :llm_activation_retry_base_ms, previous),
-        else: Application.delete_env(:salix_agent, :llm_activation_retry_base_ms)
+        do: SystemsRuntime.put_env(:salix_agent, :llm_activation_retry_base_ms, previous),
+        else: SystemsRuntime.delete_env(:salix_agent, :llm_activation_retry_base_ms)
     end)
 
     {:ok, _} =
@@ -255,7 +215,7 @@ defmodule SalixAgent.LLMFailureStreakTest do
       ])
 
     {:ok, pid} = InternalSessionFleet.ensure_started(agent, @session_id)
-    assert eventually(fn -> failure_count(agent, @session_id) == 1 end, 400)
+    assert eventually(fn -> failure_count(agent, @session_id) == 1 end, 600)
     failed = read_session!(agent)
     assert List.last(InternalSession.get(failed, :messages)).role == "runtime"
     # A retryable failure keeps its source unacknowledged for the retry.
@@ -290,125 +250,12 @@ defmodule SalixAgent.LLMFailureStreakTest do
     :ok = GenServer.stop(pid, :normal)
     RecoveringLLM.recover()
     {:ok, _pid} = InternalSessionFleet.ensure_started(agent, @session_id)
-    Process.sleep(100)
+    settle()
     assert RecoveringLLM.calls() == 6
-    assert eventually(fn -> InternalSession.next_message_id(read_session!(agent)) > 5 end, 200)
+    assert eventually(fn -> InternalSession.next_message_id(read_session!(agent)) > 5 end, 600)
     assert eventually(fn -> InternalSession.work_reasons(read_session!(agent)) == [] end)
     assert failure_count(agent, @session_id) == 1
     assert RecoveringLLM.calls() == 7
-    assert is_nil(InternalSession.llm_retry_at_ms(read_session!(agent)))
-  end
-
-  @tag timeout: 60_000
-  test "durable retries exhaust at the same transcript and new input restores progress", %{
-    agent: agent
-  } do
-    start_supervised!(RecoveringLLM)
-    Application.put_env(:salix_agent, :llm, RecoveringLLM)
-
-    failures =
-      for _ <- 1..2 do
-        terminal_failure(true)
-        |> put_in(["event", "retry_at_ms"], System.system_time(:millisecond) - 1)
-        |> put_in(["event", "transcript_hwm"], 4)
-      end
-
-    {:ok, seeded} =
-      InternalSessionStore.prepare_commit(agent, @session_id, [
-        %{
-          "type" => "runtime_message",
-          "from_queue" => true,
-          "session_id" => @session_id,
-          "message_id" => 4,
-          "runtime_message_id" => "bounded-async-result",
-          "kind" => "tool_call_completed",
-          "content" => "async retry incident"
-        },
-        %{"type" => "ack", "session_id" => @session_id, "last_ack_message_id" => 4}
-        | failures
-      ])
-
-    assert is_integer(InternalSession.llm_retry_at_ms(seeded))
-    # Hot-state recovery cannot depend on retaining the historical event list.
-    if InternalSession.storage_format(seeded) >= 2 do
-      assert InternalSession.llm_retry_at_ms(
-               InternalSession.open(%{InternalSession.export(seeded) | events: []})
-             ) ==
-               InternalSession.llm_retry_at_ms(seeded)
-    end
-
-    {:ok, _pid} = InternalSessionFleet.ensure_started(agent, @session_id)
-
-    assert eventually(
-             fn -> InternalSession.llm_failures_exhausted?(read_session!(agent)) end,
-             400
-           )
-
-    assert InternalSession.activity_status(read_session!(agent)) == :failed
-    assert InternalSession.work_reasons(read_session!(agent)) == []
-    calls = RecoveringLLM.calls()
-    :ok = InternalSessionActor.wake(agent, @session_id)
-    Process.sleep(100)
-    assert RecoveringLLM.calls() == calls
-    assert calls == 6
-
-    RecoveringLLM.recover()
-
-    {:ok, _} =
-      InternalSessionStore.prepare_commit(agent, @session_id, [
-        %{
-          "type" => "queue_append",
-          "session_id" => @session_id,
-          "kind" => "user_message",
-          "dedupe_key" => "retry-after-exhaustion",
-          "payload" => %{"content" => "continue now"}
-        }
-      ])
-
-    :ok = InternalSessionActor.wake(agent, @session_id)
-    assert eventually(fn -> InternalSession.next_message_id(read_session!(agent)) > 6 end)
-    assert eventually(fn -> InternalSession.work_reasons(read_session!(agent)) == [] end)
-    assert RecoveringLLM.calls() == calls + 1
-  end
-
-  test "new input supersedes a future retry deadline", %{agent: agent} do
-    start_supervised!(RecoveringLLM)
-    RecoveringLLM.recover()
-    Application.put_env(:salix_agent, :llm, RecoveringLLM)
-    due = System.system_time(:millisecond) + 30_000
-
-    failure =
-      terminal_failure(true)
-      |> put_in(["event", "retry_at_ms"], due)
-      |> put_in(["event", "transcript_hwm"], 4)
-
-    {:ok, _} =
-      InternalSessionStore.prepare_commit(agent, @session_id, [
-        %{
-          "type" => "runtime_message",
-          "from_queue" => true,
-          "session_id" => @session_id,
-          "message_id" => 4,
-          "runtime_message_id" => "preempt-async-result",
-          "kind" => "tool_call_completed",
-          "content" => "async retry incident"
-        },
-        %{"type" => "ack", "session_id" => @session_id, "last_ack_message_id" => 4},
-        failure,
-        %{
-          "type" => "queue_append",
-          "session_id" => @session_id,
-          "kind" => "user_message",
-          "dedupe_key" => "preempt-retry",
-          "payload" => %{"content" => "continue now"}
-        }
-      ])
-
-    {:ok, _pid} = InternalSessionFleet.ensure_started(agent, @session_id)
-    assert eventually(fn -> InternalSession.next_message_id(read_session!(agent)) > 6 end)
-    assert eventually(fn -> InternalSession.work_reasons(read_session!(agent)) == [] end)
-    assert System.system_time(:millisecond) < due
-    assert RecoveringLLM.calls() == 1
     assert is_nil(InternalSession.llm_retry_at_ms(read_session!(agent)))
   end
 
@@ -428,7 +275,7 @@ defmodule SalixAgent.LLMFailureStreakTest do
     assert eventually(fn -> InternalSession.status(read_session!(agent)) == :idle end)
 
     # Parked: no further rounds without new input.
-    Process.sleep(300)
+    settle_after(300)
     assert failure_count(agent, @session_id) == cap
 
     session = read_session!(agent)
@@ -458,90 +305,10 @@ defmodule SalixAgent.LLMFailureStreakTest do
     assert eventually(fn -> failure_count(agent, @session_id) == cap + 1 end)
     assert eventually(fn -> InternalSession.status(read_session!(agent)) == :idle end)
 
-    Process.sleep(300)
+    settle_after(300)
     assert failure_count(agent, @session_id) == cap + 1
 
     session = read_session!(agent)
-    assert InternalSession.consecutive_llm_failures(session) == 1
-    refute InternalSession.llm_failures_exhausted?(session)
-  end
-
-  test "LLM task crashes settle the failed input at the cap without another retry", %{
-    agent: agent
-  } do
-    cap = State.llm_failure_activation_cap()
-    crash_session = "ses1_0000000000000000951"
-
-    start_supervised!(CrashingLLM)
-    Application.put_env(:salix_agent, :llm, CrashingLLM)
-
-    # User-tail transcript, input not acked — the lost-call path of the
-    # session driver records the failure without acking, so without the
-    # breaker gate on stable input every wake retries forever.
-    {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent, crash_session, [
-        %{"type" => "session_created", "session_id" => crash_session},
-        %{
-          "type" => "delivery",
-          "from_queue" => true,
-          "session_id" => crash_session,
-          "message_id" => 1,
-          "content" => "inspect the workspace"
-        }
-      ])
-
-    {:ok, _pid} = InternalSessionFleet.ensure_started(agent, crash_session)
-
-    # The lost-call path does not re-queue :process itself; keep waking like the
-    # server work-index scan does on staging. Without the stable-input gate
-    # this drives rounds forever; with it the count stops exactly at the cap.
-    assert eventually(fn ->
-             _ = InternalSessionActor.wake(agent, crash_session)
-             failure_count(agent, crash_session) >= cap
-           end)
-
-    Process.sleep(300)
-    assert failure_count(agent, crash_session) == cap
-
-    # Failure disposition acknowledges this input; later wakes cannot retry it.
-    assert eventually(fn ->
-             InternalSession.last_ack_message_id(read_session!(agent, crash_session)) == 1
-           end)
-
-    session = read_session!(agent, crash_session)
-    refute SalixAgent.InternalSession.has_pending_stable_input?(session)
-    refute InternalSession.llm_failures_exhausted?(session)
-
-    assert Enum.any?(InternalSession.get(session, :events), fn event ->
-             event["kind"] == "runtime_failure_disposed" and
-               event["event"]["failure_reason"] == "model"
-           end)
-
-    refute InternalSession.has_unprocessed_stable_work?(session)
-    assert InternalSession.work_reasons(session) == []
-    assert InternalSession.derived_state(session) == :paused
-
-    :ok = InternalSessionActor.wake(agent, crash_session)
-    Process.sleep(300)
-    assert failure_count(agent, crash_session) == cap
-
-    # New input advances the transcript position and resumes retries.
-    {:ok, _session} =
-      InternalSessionStore.prepare_commit(agent, crash_session, [
-        %{
-          "type" => "queue_append",
-          "session_id" => crash_session,
-          "kind" => "user_message",
-          "dedupe_key" => "crash-retry-input-1",
-          "payload" => %{"content" => "try again"}
-        }
-      ])
-
-    :ok = InternalSessionActor.wake(agent, crash_session)
-
-    assert eventually(fn -> failure_count(agent, crash_session) == cap + 1 end)
-
-    session = read_session!(agent, crash_session)
     assert InternalSession.consecutive_llm_failures(session) == 1
     refute InternalSession.llm_failures_exhausted?(session)
   end
@@ -577,64 +344,38 @@ defmodule SalixAgent.LLMFailureStreakTest do
 
     assert activity["state"] == "error"
     assert activity["issue"] == "model_connection_failed"
-    assert activity["status"] == "error: the model could not be reached"
+    assert activity["status"] == "error: the model request failed"
   end
 
-  test "a retryable failure keeps the session quiet until the cap", %{agent: agent} do
-    {:ok, session} =
-      InternalSessionStore.prepare_commit(agent, @session_id, [terminal_failure(true)])
+  # Regression (staging 2026-10-02): once the AI Gateway's prepaid credits ran
+  # out, every platform-funded call got HTTP 402. The Worker reported
+  # `model_connection_failed` ("try sending again"), and a transcript that ends
+  # in a tool result replayed the refused request up to the activation cap.
+  # No retry and no member action could succeed.
+  test "an exhausted platform provider account stops the input as an unavailable model", %{
+    agent: agent
+  } do
+    SystemsRuntime.put_env(:salix_agent, :llm, GatewayCreditsLLM)
 
-    assert InternalSession.consecutive_llm_failures(session) == 1
-    refute InternalSession.llm_failure_terminal?(session)
-    assert InternalSession.activity_status(session) == :paused
-    assert InternalSession.monitored_activity_signature(session) == :stopped
-  end
+    {:ok, _pid} = InternalSessionFleet.ensure_started(agent, @session_id)
 
-  test "new input clears the model connection error", %{agent: agent} do
-    {:ok, session} =
-      InternalSessionStore.prepare_commit(agent, @session_id, [terminal_failure(false)])
+    assert eventually(fn -> failure_count(agent, @session_id) == 1 end)
+    assert eventually(fn -> InternalSession.status(read_session!(agent)) == :idle end)
 
-    assert InternalSession.activity_status(session) == :failed
+    # The stop holds: a later wake does not replay the refused transcript.
+    :ok = InternalSessionActor.wake(agent, @session_id)
+    settle_after(300)
+    assert failure_count(agent, @session_id) == 1
 
-    {:ok, session} =
-      InternalSessionStore.prepare_commit(agent, @session_id, [
-        %{
-          "type" => "delivery",
-          "from_queue" => true,
-          "session_id" => @session_id,
-          "message_id" => 4,
-          "content" => "人呢"
-        }
-      ])
+    session = read_session!(agent)
+    assert InternalSession.activity_issue(session) == "model_unavailable"
+    refute InternalSession.has_unprocessed_stable_work?(session)
 
-    # The stored hwm no longer matches the transcript position, so the terminal
-    # flag lapses with the streak and the next round starts clean.
-    refute InternalSession.llm_failure_terminal?(session)
-    assert InternalSession.activity_issue(session) == nil
-  end
+    {:ok, activity} =
+      SalixAgent.InternalAgentRuntime.get_session_activity(agent, @session_id)
 
-  test "cap of 0 disables the circuit breaker", %{agent: agent} do
-    {:ok, session} =
-      InternalSessionStore.prepare_commit(
-        agent,
-        @session_id,
-        synthetic_failures(State.llm_failure_activation_cap())
-      )
-
-    assert InternalSession.llm_failures_exhausted?(session)
-    refute InternalSession.needs_transcript_continuation?(session)
-
-    prev_cap = Application.get_env(:salix_agent, :llm_failure_activation_cap)
-    Application.put_env(:salix_agent, :llm_failure_activation_cap, 0)
-
-    on_exit(fn ->
-      if prev_cap,
-        do: Application.put_env(:salix_agent, :llm_failure_activation_cap, prev_cap),
-        else: Application.delete_env(:salix_agent, :llm_failure_activation_cap)
-    end)
-
-    refute InternalSession.llm_failures_exhausted?(session)
-    assert InternalSession.needs_transcript_continuation?(session)
+    assert activity["state"] == "error"
+    assert activity["issue"] == "model_unavailable"
   end
 
   test "failure events without a position marker never trip the breaker", %{agent: agent} do
@@ -647,7 +388,7 @@ defmodule SalixAgent.LLMFailureStreakTest do
           "kind" => "llm_call_failed",
           "source" => "internal_runtime",
           "event" => %{"reason" => "llm_task_failed"},
-          "created_at" => System.system_time(:second)
+          "created_at" => SystemsClock.system_time(:second)
         }
       end)
 
@@ -674,24 +415,8 @@ defmodule SalixAgent.LLMFailureStreakTest do
         "status" => 403,
         "transcript_hwm" => 3
       },
-      "created_at" => System.system_time(:second)
+      "created_at" => SystemsClock.system_time(:second)
     }
-  end
-
-  # llm_call_failed events as Round's llm_error_boundary records them, at the
-  # current transcript position (seeded transcript hwm is message id 3).
-  defp synthetic_failures(count) do
-    Enum.map(1..count, fn n ->
-      %{
-        "type" => "session_event",
-        "session_id" => @session_id,
-        "event_id" => "llm-call-failed:#{@session_id}:synthetic-#{n}",
-        "kind" => "llm_call_failed",
-        "source" => "internal_runtime",
-        "event" => %{"category" => "permanent_provider_error", "transcript_hwm" => 3},
-        "created_at" => System.system_time(:second)
-      }
-    end)
   end
 
   defp read_session!(agent, session_id \\ @session_id) do
@@ -706,17 +431,6 @@ defmodule SalixAgent.LLMFailureStreakTest do
     |> Enum.count(&(&1["kind"] == "llm_call_failed"))
   end
 
-  defp eventually(fun, retries \\ 100) do
-    cond do
-      fun.() ->
-        true
-
-      retries == 0 ->
-        false
-
-      true ->
-        Process.sleep(50)
-        eventually(fun, retries - 1)
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 end

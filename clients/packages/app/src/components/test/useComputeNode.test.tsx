@@ -77,3 +77,21 @@ it("accepts a new account's lower revision and rejects late old command results 
   expect(mock.get).not.toHaveBeenCalled();
   expect(result.current.state?.confirmationId).toBe("A:3");
 });
+
+it("shows a safe cloud failure and retains the existing connection request", async () => {
+  mock.configure.mockReset();
+  mock.get.mockResolvedValue(state("A:1", 1, "workspace"));
+  const { result } = renderHook(() => useComputeNode());
+  act(() => mock.listener?.(state("A:1", 1, "workspace")));
+  mock.configure.mockRejectedValueOnce(
+    Object.assign(new Error("private transport token"), {
+      bridgeError: { code: "COMPUTE_CLOUD_UNAVAILABLE" },
+    })
+  );
+  await act(async () => {
+    await result.current.configure({ desiredEnabled: true, workspaceId: "workspace" });
+  });
+  expect(result.current.error).toMatch(/workspace service|工作区服务/);
+  expect(result.current.error).not.toContain("private transport token");
+  expect(result.current.state?.bindingWorkspaceId).toBe("workspace");
+});

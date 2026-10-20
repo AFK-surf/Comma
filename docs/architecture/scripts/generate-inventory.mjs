@@ -469,10 +469,10 @@ const productConceptAnchorSpecs = [
     path: "systems/apps/salix_agent/lib/salix_agent/internal_session_actor.ex",
   },
   {
-    concept: "External Runtime Session",
+    concept: "Retired Session",
     layer: "执行 Owner",
-    implementation: "SalixAgent.ExternalSessionActor",
-    path: "systems/apps/salix_agent/lib/salix_agent/external_session_actor.ex",
+    implementation: "SalixAgent.RetiredSessions",
+    path: "systems/apps/salix_agent/lib/salix_agent/retired_sessions.ex",
   },
 ];
 

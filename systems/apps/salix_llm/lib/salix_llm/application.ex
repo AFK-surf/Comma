@@ -15,6 +15,6 @@ defmodule SalixLlm.Application do
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: SalixLlm.Supervisor]
-    Supervisor.start_link(children, opts)
+    SystemsRuntime.Supervisor.start_link(children, opts)
   end
 end

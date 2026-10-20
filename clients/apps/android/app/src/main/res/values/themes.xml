@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <style name="Theme.Chat" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowBackground">@color/canvas_grey</item>
+        <item name="android:forceDarkAllowed">false</item>
+    </style>
+
+    <!-- Task list and task detail pages. -->
+    <style name="Theme.Chat.Tasks" parent="Theme.Chat">
+        <item name="android:windowBackground">@color/token_bg_primary</item>
+    </style>
+
+    <!-- Full-screen media: drawn over the screen that opened it, which shows through as the
+         backdrop fades during drag-to-close. -->
+    <style name="Theme.Comma.MediaViewer" parent="Theme.Chat">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+
+    <style name="Theme.Comma.VideoPlayer" parent="Theme.Chat">
+        <item name="android:windowBackground">@color/token_bg_overlay</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+    <!-- Settings slide in over the chat, which stays visible under the page until it covers it. -->
+    <style name="Theme.Comma.Settings" parent="Theme.Chat">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+</resources>

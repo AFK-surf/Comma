@@ -17,6 +17,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { mergeRefs } from "react-aria";
+import { uiClock, type CancelUiTimer } from "../../clock";
 import { PlusSmallIcon, XIcon } from "../icons";
 import { ScrollArea } from "../scroll-area";
 import {
@@ -190,6 +191,7 @@ export const RightSidebar = <TabId extends string = string>({
   );
   const stopResizeRef = useRef<(() => void) | undefined>(undefined);
   const tablistRef = useRef<HTMLDivElement | null>(null);
+  const tabStripRef = useRef<HTMLDivElement | null>(null);
   // Browser tab strips hold every tab at its width while the pointer that
   // closed one stays on the strip, so the next tab's close button slides in
   // under it; the strip reflows once the pointer leaves.
@@ -261,9 +263,9 @@ export const RightSidebar = <TabId extends string = string>({
     // flipped the aside open, forces the whole window's style recalc inside
     // that commit and once more at the frame, when the rest of the commit
     // has dirtied styles again. At the next frame one recalc serves both.
-    const firstFrame = requestAnimationFrame(publish);
+    const firstFrame = uiClock.frame(publish);
     return () => {
-      cancelAnimationFrame(firstFrame);
+      firstFrame();
       observer.disconnect();
       releaseToastObstructionRight(rightSidebarObstructionClaim);
     };
@@ -283,18 +285,36 @@ export const RightSidebar = <TabId extends string = string>({
       "(prefers-reduced-motion: reduce)"
     ).matches;
     const exitFallbackMs = reduceMotion ? 0 : getExitFallbackMs(sidebarRef.current);
-    const timeout = window.setTimeout(() => {
+    const timeout = uiClock.after(exitFallbackMs, () => {
       if (exitCompletedRef.current) return;
       exitCompletedRef.current = true;
       onExitCompleteRef.current?.();
-    }, exitFallbackMs);
-    return () => window.clearTimeout(timeout);
+    });
+    return () => timeout();
   }, [open]);
 
   useEffect(() => {
     if (resolvedActiveTab === undefined || resolvedActiveTab === activeTab) return;
     onTabChange(resolvedActiveTab);
   }, [activeTab, onTabChange, resolvedActiveTab]);
+
+  // The strip's pointerleave is not enough to end the hold: the node under the
+  // pointer is the close button just pressed, and it leaves the DOM with its
+  // tab. When the pointer leaves before the next frame has re-resolved hover,
+  // Chromium sends no pointerleave to the strip. A pointer move whose target
+  // is outside the strip ends the hold too.
+  const tabWidthHoldActive = lockedTabWidths !== null;
+  useLayoutEffect(() => {
+    const strip = tabStripRef.current;
+    if (!tabWidthHoldActive || !strip) return undefined;
+    const releaseOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && strip.contains(event.target)) return;
+      setLockedTabWidths(null);
+    };
+    const ownerDocument = strip.ownerDocument;
+    ownerDocument.addEventListener("pointermove", releaseOutside, true);
+    return () => ownerDocument.removeEventListener("pointermove", releaseOutside, true);
+  }, [tabWidthHoldActive]);
 
   // A tab that arrives mid-lock has no width to hold, and a closed sidebar
   // never sees the pointer leave.
@@ -358,7 +378,7 @@ export const RightSidebar = <TabId extends string = string>({
       drawnWidth > 0 ? Math.min(constrainedWidth, drawnWidth) : constrainedWidth;
     let pendingWidth: number | null = null;
     let previewedWidth = anchorWidth;
-    let commitFrame: number | null = null;
+    let commitFrame: CancelUiTimer | null = null;
     event.preventDefault();
     try {
       resizeHandle.setPointerCapture?.(pointerId);
@@ -392,8 +412,7 @@ export const RightSidebar = <TabId extends string = string>({
     const applyWidth = (next: number) => {
       if (onWidthPreview) {
         pendingWidth = next;
-        if (commitFrame === null)
-          commitFrame = requestAnimationFrame(commitPendingWidth);
+        if (commitFrame === null) commitFrame = uiClock.frame(commitPendingWidth);
         return;
       }
 
@@ -408,7 +427,7 @@ export const RightSidebar = <TabId extends string = string>({
         resizeBoundsRef.current.onWidthChange(next);
         commitFrame =
           typeof requestAnimationFrame === "function"
-            ? requestAnimationFrame(commitPendingWidth)
+            ? uiClock.frame(commitPendingWidth)
             : null;
         return;
       }
@@ -444,7 +463,7 @@ export const RightSidebar = <TabId extends string = string>({
       if (stopped) return;
       stopped = true;
       if (commitFrame !== null) {
-        cancelAnimationFrame(commitFrame);
+        commitFrame();
         commitPendingWidth();
       }
       if (onWidthPreview) resizeBoundsRef.current.onWidthChange(previewedWidth);
@@ -571,7 +590,9 @@ export const RightSidebar = <TabId extends string = string>({
 
         <header
           className={cx(
-            "comma-chat-sidebar-header flex h-11 shrink-0 items-center justify-between gap-sm border-b-[0.5px] border-primary py-0 pr-2.5 [-webkit-app-region:no-drag]",
+            // pr-lg matches the window bar's trailing inset, so the header's
+            // trailing actions share the Chat Sidebar toggle's column.
+            "comma-chat-sidebar-header flex h-11 shrink-0 items-center justify-between gap-sm border-b-[0.5px] border-primary py-0 pr-lg [-webkit-app-region:no-drag]",
             tabs.length === 0 ? "pl-xs" : "pl-lg"
           )}
         >
@@ -583,6 +604,7 @@ export const RightSidebar = <TabId extends string = string>({
             onPointerLeave={() => {
               if (lockedTabWidths !== null) setLockedTabWidths(null);
             }}
+            ref={tabStripRef}
           >
             <ScrollArea
               className="comma-chat-sidebar-tabs min-w-0 [-webkit-app-region:no-drag]"
@@ -693,10 +715,7 @@ export const RightSidebar = <TabId extends string = string>({
             ) : null}
           </div>
           <div
-            className={cx(
-              "flex shrink-0 items-center gap-xs pr-2",
-              headerActionsClassName
-            )}
+            className={cx("flex shrink-0 items-center gap-xs", headerActionsClassName)}
           >
             {headerActions}
           </div>
@@ -741,7 +760,7 @@ function RightSidebarResizeHandle({
   const [tooltipOpen, setTooltipOpen] = useState(false);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const pointerPosition = useRef({ x: 0, y: 0 });
-  const tooltipShowTimer = useRef<number | null>(null);
+  const tooltipShowTimer = useRef<CancelUiTimer | null>(null);
   const resizeDescriptionId = useId();
   const dragToResize = messages.shell_sidebar_drag_to_resize();
 
@@ -781,7 +800,7 @@ function RightSidebarResizeHandle({
       return;
     }
 
-    window.clearTimeout(tooltipShowTimer.current);
+    tooltipShowTimer.current();
     tooltipShowTimer.current = null;
   }, []);
 
@@ -835,10 +854,10 @@ function RightSidebarResizeHandle({
 
           trackPointer(event);
           cancelTooltipShow();
-          tooltipShowTimer.current = window.setTimeout(() => {
+          tooltipShowTimer.current = uiClock.after(resizeTooltipShowDelay, () => {
             tooltipShowTimer.current = null;
             setTooltipOpen(true);
-          }, resizeTooltipShowDelay);
+          });
         }}
         onPointerLeave={hideTooltip}
         onPointerMove={trackPointer}

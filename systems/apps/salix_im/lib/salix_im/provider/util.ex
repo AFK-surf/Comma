@@ -23,7 +23,10 @@ defmodule SalixIM.Provider.Util do
     if path == "" do
       {:error, "path is required"}
     else
-      SalixIM.Ports.AgentWorkspace.read_upload(agent_id, path, title)
+      with {:ok, upload} <- SalixIM.Ports.AgentWorkspace.read_upload(agent_id, path, title) do
+        SalixIM.PlatformMessage.note_upload(path, upload.data)
+        {:ok, upload}
+      end
     end
   end
 
@@ -64,8 +67,8 @@ defmodule SalixIM.Provider.Util do
       {:ok, %{status: status, body: body}} ->
         {:error, "provider HTTP #{status}: #{inspect(body)}"}
 
-      # The request may have reached the provider. The stable class keeps
-      # that unknown outcome in model context after repair.
+      # The request may have reached the provider. The stable class names
+      # that unknown outcome.
       {:error, %Req.TransportError{reason: :timeout} = reason} ->
         {:error, %{"error_class" => "provider_timeout", "message" => inspect(reason)}}
 
@@ -101,7 +104,7 @@ defmodule SalixIM.Provider.Util do
 
   def random_id do
     <<a::binary-4, b::binary-2, c::binary-2, d::binary-2, e::binary-6>> =
-      :crypto.strong_rand_bytes(16)
+      SystemsRuntime.Proc.random_bytes(16)
 
     [a, b, c, d, e]
     |> Enum.map(&Base.encode16(&1, case: :lower))

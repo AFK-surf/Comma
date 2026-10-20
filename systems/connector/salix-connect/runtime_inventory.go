@@ -149,7 +149,7 @@ func (inventory *runtimeInventory) target(provider, identityMaterial string) (ru
 	return target, ok
 }
 
-// probeOne's joined-probe retry contract is modeled in tla/connector/RuntimeAuth.tla.
+// probeOne owns the joined-probe retry contract.
 func (inventory *runtimeInventory) probeOne(
 	ctx context.Context,
 	target runtimeProbeTarget,
@@ -211,7 +211,7 @@ func (inventory *runtimeInventory) probeOneAttempt(
 	return cloneRuntimeObservation(call.runtime), call.err
 }
 
-// finishProbe's guarded publication is modeled in tla/connector/RuntimeAuth.tla.
+// finishProbe guards its publication.
 func (inventory *runtimeInventory) finishProbe(
 	target runtimeProbeTarget,
 	call *runtimeProbeCall,
@@ -286,13 +286,7 @@ func discoverAgentRuntimeTargets() []runtimeProbeTarget {
 	for _, path := range detectCodexCommands() {
 		targets = append(targets, runtimeProbeTarget{provider: "codex", identityMaterial: path})
 	}
-	for _, path := range detectCommands("pi", nil) {
-		targets = append(targets, runtimeProbeTarget{provider: "pi", identityMaterial: path})
-	}
-	for _, path := range detectCommands("kimi", defaultKimiCommandPaths()) {
-		targets = append(targets, runtimeProbeTarget{provider: "kimi", identityMaterial: path})
-	}
-	for _, path := range detectCommands("claude", defaultClaudeCommandPaths()) {
+	for _, path := range detectCommands("claude", claudeCommandPaths()) {
 		targets = append(targets, runtimeProbeTarget{provider: "claude", identityMaterial: path})
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].key() < targets[j].key() })
@@ -303,10 +297,6 @@ func probeAgentRuntimeTarget(target runtimeProbeTarget) map[string]any {
 	switch target.provider {
 	case "codex":
 		return codexRuntimeEntries([]string{target.identityMaterial})[0]
-	case "pi":
-		return portableRuntimeEntry("pi", target.identityMaterial, "rpc", []string{"stdio"})
-	case "kimi":
-		return portableRuntimeEntry("kimi", target.identityMaterial, "server", []string{"http", "ws"})
 	case "claude":
 		return portableRuntimeEntry("claude", target.identityMaterial, "agent-sdk-stream-json", []string{"stdio"})
 	default:

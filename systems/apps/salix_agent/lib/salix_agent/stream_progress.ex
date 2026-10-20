@@ -1,4 +1,6 @@
 defmodule SalixAgent.StreamProgress do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   What a streamed model attempt had received so far, readable after the
   process that made the request is gone.
@@ -16,7 +18,8 @@ defmodule SalixAgent.StreamProgress do
   Two kinds of progress are kept apart on purpose:
 
     * **body** — every response chunk `SalixLlm.Http` receives, keep-alive
-      comments included. This is what the stream watchdog counts as activity.
+      comments included. The stream watchdog counts only SSE events, not
+      comments, as activity, so body alone is not what keeps a stream open.
     * **content** — a delta the round could use: text, a tool-argument
       fragment, or reasoning. A body that never becomes content is a provider
       heartbeating over an empty stream.
@@ -76,12 +79,12 @@ defmodule SalixAgent.StreamProgress do
 
   @doc "A fresh progress array for one logical model request."
   @spec new() :: t()
-  def new, do: :atomics.new(@slots, signed: true)
+  def new, do: SystemsRuntime.Atomics.new(@slots, signed: true)
 
   @doc "Make `ref` the array the calling process's writers update."
   @spec install(t() | nil) :: :ok
   def install(ref) do
-    if is_reference(ref), do: Process.put(@key, ref), else: Process.delete(@key)
+    if SystemsRuntime.Proc.is_ref(ref), do: Process.put(@key, ref), else: Process.delete(@key)
     :ok
   end
 
@@ -96,11 +99,11 @@ defmodule SalixAgent.StreamProgress do
   @spec begin_attempt(pos_integer(), t() | nil) :: :ok
   def begin_attempt(attempt, ref \\ current())
 
-  def begin_attempt(attempt, ref) when is_reference(ref) and is_integer(attempt) do
-    for slot <- @first_body..@settled, do: :atomics.put(ref, slot, 0)
-    :atomics.put(ref, @attempt_started_mono, now())
-    :atomics.put(ref, @attempt_started_wall, System.system_time(:millisecond))
-    :atomics.put(ref, @attempt, attempt)
+  def begin_attempt(attempt, ref) when SystemsRuntime.Proc.is_ref(ref) and is_integer(attempt) do
+    for slot <- @first_body..@settled, do: SystemsRuntime.Atomics.put(ref, slot, 0)
+    SystemsRuntime.Atomics.put(ref, @attempt_started_mono, now())
+    SystemsRuntime.Atomics.put(ref, @attempt_started_wall, SystemsClock.system_time(:millisecond))
+    SystemsRuntime.Atomics.put(ref, @attempt, attempt)
     :ok
   end
 
@@ -110,8 +113,8 @@ defmodule SalixAgent.StreamProgress do
   @spec settle(t() | nil) :: :ok
   def settle(ref \\ current())
 
-  def settle(ref) when is_reference(ref) do
-    :atomics.put(ref, @settled, 1)
+  def settle(ref) when SystemsRuntime.Proc.is_ref(ref) do
+    SystemsRuntime.Atomics.put(ref, @settled, 1)
     :ok
   end
 
@@ -121,13 +124,17 @@ defmodule SalixAgent.StreamProgress do
   @spec observe_body(non_neg_integer(), term(), t() | nil) :: :ok
   def observe_body(byte_count, status, ref \\ current())
 
-  def observe_body(byte_count, status, ref) when is_reference(ref) and is_integer(byte_count) do
+  def observe_body(byte_count, status, ref)
+      when SystemsRuntime.Proc.is_ref(ref) and is_integer(byte_count) do
     at = now()
-    _ = :atomics.compare_exchange(ref, @first_body, 0, at)
-    :atomics.put(ref, @last_body, at)
-    :atomics.add(ref, @bytes, byte_count)
-    :atomics.add(ref, @chunks, 1)
-    if is_integer(status) and status > 0, do: :atomics.put(ref, @http_status, status)
+    _ = SystemsRuntime.Atomics.compare_exchange(ref, @first_body, 0, at)
+    SystemsRuntime.Atomics.put(ref, @last_body, at)
+    SystemsRuntime.Atomics.add(ref, @bytes, byte_count)
+    SystemsRuntime.Atomics.add(ref, @chunks, 1)
+
+    if is_integer(status) and status > 0,
+      do: SystemsRuntime.Atomics.put(ref, @http_status, status)
+
     :ok
   end
 
@@ -137,11 +144,11 @@ defmodule SalixAgent.StreamProgress do
   @spec observe_content(t() | nil) :: :ok
   def observe_content(ref \\ current())
 
-  def observe_content(ref) when is_reference(ref) do
+  def observe_content(ref) when SystemsRuntime.Proc.is_ref(ref) do
     at = now()
-    _ = :atomics.compare_exchange(ref, @first_content, 0, at)
-    :atomics.put(ref, @last_content, at)
-    :atomics.add(ref, @content, 1)
+    _ = SystemsRuntime.Atomics.compare_exchange(ref, @first_content, 0, at)
+    SystemsRuntime.Atomics.put(ref, @last_content, at)
+    SystemsRuntime.Atomics.add(ref, @content, 1)
     :ok
   end
 
@@ -152,25 +159,25 @@ defmodule SalixAgent.StreamProgress do
   array or no attempt has begun on it.
   """
   @spec snapshot(t() | nil) :: snapshot() | nil
-  def snapshot(ref) when is_reference(ref) do
-    case :atomics.get(ref, @attempt) do
+  def snapshot(ref) when SystemsRuntime.Proc.is_ref(ref) do
+    case SystemsRuntime.Atomics.get(ref, @attempt) do
       attempt when attempt > 0 ->
-        started = :atomics.get(ref, @attempt_started_mono)
-        body_seen? = :atomics.get(ref, @first_body) != 0
+        started = SystemsRuntime.Atomics.get(ref, @attempt_started_mono)
+        body_seen? = SystemsRuntime.Atomics.get(ref, @first_body) != 0
 
         %{
           attempt: attempt,
-          in_flight: :atomics.get(ref, @settled) == 0,
-          attempt_started_at_ms: :atomics.get(ref, @attempt_started_wall),
+          in_flight: SystemsRuntime.Atomics.get(ref, @settled) == 0,
+          attempt_started_at_ms: SystemsRuntime.Atomics.get(ref, @attempt_started_wall),
           elapsed_ms: max(now() - started, 0),
           first_body_ms: relative(ref, @first_body, started),
           last_body_ms: relative(ref, @last_body, started),
-          received_bytes: if(body_seen?, do: :atomics.get(ref, @bytes)),
-          received_chunks: if(body_seen?, do: :atomics.get(ref, @chunks)),
-          http_status: positive(:atomics.get(ref, @http_status)),
+          received_bytes: if(body_seen?, do: SystemsRuntime.Atomics.get(ref, @bytes)),
+          received_chunks: if(body_seen?, do: SystemsRuntime.Atomics.get(ref, @chunks)),
+          http_status: positive(SystemsRuntime.Atomics.get(ref, @http_status)),
           first_content_ms: relative(ref, @first_content, started),
           last_content_ms: relative(ref, @last_content, started),
-          content_deltas: :atomics.get(ref, @content)
+          content_deltas: SystemsRuntime.Atomics.get(ref, @content)
         }
 
       _no_attempt ->
@@ -184,7 +191,7 @@ defmodule SalixAgent.StreamProgress do
   def snapshot(_ref), do: nil
 
   defp relative(ref, slot, started) do
-    case :atomics.get(ref, slot) do
+    case SystemsRuntime.Atomics.get(ref, slot) do
       0 -> nil
       at -> max(at - started, 0)
     end
@@ -193,5 +200,5 @@ defmodule SalixAgent.StreamProgress do
   defp positive(value) when is_integer(value) and value > 0, do: value
   defp positive(_value), do: nil
 
-  defp now, do: System.monotonic_time(:millisecond)
+  defp now, do: SystemsClock.monotonic_time(:millisecond)
 end

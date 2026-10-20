@@ -176,7 +176,7 @@ defmodule SalixCluster.TaskSchedules do
           |> Map.put(
             "updated_at",
             max(
-              System.system_time(:millisecond),
+              SystemsClock.system_time(:millisecond),
               (conversation["updated_at"] || conversation["created_at"] || 0) + 1
             )
           )
@@ -362,7 +362,7 @@ defmodule SalixCluster.TaskSchedules do
       conversation_id,
       schedule_id,
       scheduled_for_ms,
-      now: opts[:now] || System.system_time(:millisecond)
+      now: opts[:now] || SystemsClock.system_time(:millisecond)
     )
     |> case do
       {:ok, %{"task_schedule_status" => "fired"}} ->
@@ -433,14 +433,23 @@ defmodule SalixCluster.TaskSchedules do
   defp initial_task_message(conversation_id, delegator_agent_id, attrs, schedule) do
     %{
       "kind" => "message",
-      "actor_type" => "agent",
-      "agent_id" => delegator_agent_id,
       "content" => initial_task_content(schedule["command"], schedule["schedule_id"]),
       "metadata" => initial_task_metadata(attrs, schedule["schedule_id"]),
       "client_request_id" => "delegate-task-" <> conversation_id,
-      "created_at" => System.system_time(:millisecond)
+      "created_at" => SystemsClock.system_time(:millisecond)
     }
+    |> Map.merge(initial_author(delegator_agent_id, attrs))
   end
+
+  # The person who asked writes the first Message when the words are theirs
+  # (`"initial_author" => "owner"`, a model mention in Home); otherwise the
+  # delegating Agent does.
+  defp initial_author(_delegator_agent_id, %{"initial_author" => "owner", "owner_user_id" => user})
+       when is_binary(user) and user != "",
+       do: %{"actor_type" => "user", "user_id" => user}
+
+  defp initial_author(delegator_agent_id, _attrs),
+    do: %{"actor_type" => "agent", "agent_id" => delegator_agent_id}
 
   # Modeled in tla/salix/ScheduledTaskDryRunUpgrade.tla. This structured
   # envelope is deliberately self-contained in Message content.

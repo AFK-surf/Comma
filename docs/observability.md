@@ -2,115 +2,70 @@
 
 ## Data planes and failure isolation
 
-Each BEAM VM starts `systems_observability` before selected subsystems.
-It exposes cluster-only `/metrics` on port 9568 and uses one OTel SDK.
-Managed Prometheus scrapes application and collector metrics.
-Applications send OTLP traces to the dedicated Comma collector. JSON stdout goes to Cloud Logging.
-ClickHouse remains the business, usage, and billing fact store.
+Each BEAM VM starts `systems_observability` before selected subsystems. It serves cluster-only `/metrics` on port 9568 and runs one OTel SDK.
+Managed Prometheus scrapes application and collector metrics. Applications send OTLP traces to the Comma collector. JSON stdout goes to Cloud Logging.
+ClickHouse stays the business, usage, and billing fact store.
 Telemetry outages must not affect readiness or business results.
-Agent phase, run, tool, and fee-check rows use a separate, bounded ETS reporting buffer.
-Admission does not call a worker or execute telemetry handlers. The worker batches writes and emits buffer metrics.
-Each occupied ring slot drops the new row. Failed reporting writes drop the batch.
-Shutdown closes admission and attempts buffered writes within the worker's 30-second budget.
-LLM usage uses a separate buffer with the loss and retry contract in [Billing and models](billing-models.md#llm-usage-delivery).
-Trace queues and retries remain bounded. Metrics are pull-only.
-Do not introduce runtime Grafana API or dashboard dependencies.
 
-Use the metric definitions and checked-in dashboard/rule consumers as the catalog, not a duplicate handwritten inventory.
+Metric definitions and checked-in dashboards and rules are the catalog. Do not copy it into docs.
 `workload`, `component`, and `surface` are independent dimensions.
 Application labels must be finite and normalized.
-Never add tenant, Session, Conversation, user IDs, message content, tokens, or secrets as metric labels.
+Never use tenant, Session, Conversation, or user IDs, message content, tokens, or secrets as metric labels.
 
-Application PodMonitoring uses a 30-second interval and ten-second timeout.
-The target limit is 12,000 samples and 19 labels: fixed target labels, at most five application labels, and histogram `le`.
-Collector self-monitoring is capped at 16 labels.
-Change these bounds only with cardinality evidence and the matching consumer/configuration review.
+Application PodMonitoring uses a 30-second interval, a ten-second timeout, 12,000 samples and 19 labels.
+The 19 labels are fixed target labels, at most five application labels, and histogram `le`. Collector self-monitoring allows 16 labels.
+A change to these bounds requires cardinality evidence and consumer and config review.
+
+## Comma product analytics
+
+[Comma.Analytics](../systems/apps/comma_core/lib/comma/analytics.ex) exports Users and activity by client User ID.
+Profiles contain email, creation time, kind, status, locale and `is_internal`. Guests and content are not exported.
+
+Before erasure:
+
+1. Set `comma.analytics.excluded_user_ids` (an ID or a list, non-strings ignored) on all pods.
+2. Let in-flight attempts finish.
+3. Delete the PostHog data.
+
+Request DNT suppresses route observations, including Tasks, but not account imports.
+
+First touch and pageviews record UTM source, medium and campaign (64-character slugs), referrer host, page and `locale`.
+They record no raw URLs, query fields, content or click IDs. Respect DNT. Downloads do not prove installs.
+
+Marketing reports use full UTC+8 days from production. Use `build_sha`. Activation joins Message IDs to `source_message_id`. D7 needs seven cohort days.
+
+Desktop events count new and existing profiles, version changes and repeats, not installs.
+Reloads deduplicate locally. Reinstalls keep state. Cleared profiles count as new. DNT and errors lose events.
 
 ## Diagnosis order
 
-### Android Google login
-
-Android attempts return 503 `google_not_configured` until `comma.google_auth.android_client_ids` is set. A token `azp` outside it returns 401.
-
-### Desktop Google login
-
-Electron does not automatically retry Google login. Each click starts one attempt.
-After failure, the login screen explains the error and offers a manual retry.
-Network errors suggest a connection check. Provider errors suggest a later retry.
-Code exchange is single-use and is never replayed automatically.
-
-The initiating renderer reports terminal infrastructure failures to PostHog as `login_unavailable`, with a bounded `login_error_code`.
-These reports contain no credentials, email, raw exception text, or request bodies. Cancellation, conflicts, and rate limits do not create these issues.
-Reports are best-effort and capped at 20 per renderer lifetime. They do not prove delivery when the client has no network.
-The existing issue-created/reopened destinations in `observability/posthog/client-critical-issues.json` also carry this error kind.
-Alert router maps these issues to `comma_client_login_unavailable`, priority P1, independently of the existing P2 rendering rule.
-One issue occurrence triggers an incident. Duplicate deliveries deduplicate. Repeated failures in an open issue do not generate new incidents.
-Successful login does not automatically resolve an issue or prove recovery for other clients.
-Deploy the router change and the updated desktop client before treating this coverage as live.
-
 ### Service diagnostics
 
-1. Check the PodMonitoring target.
-2. Read the exact Pod's `/metrics`.
-3. Inspect reporter scrape diagnostics.
-4. Inspect the application trace queue.
-5. Inspect collector receiver and queue state.
-6. Check collector exporter/IAM and backend ingestion.
-
-Managed Prometheus `up` owns scrape reachability.
-An application cannot report its own failed scrape through that same failed scrape.
-`comma_system_startup_duration_seconds` measures selected-subsystem startup.
-Container uptime is not equivalent to readiness latency.
-Normalize GKE native `pod_name`/`namespace_name` labels before joining metrics that use `pod`/`namespace`.
-
-Monitoring resources follow their normal Helm owner.
-Do not raw-apply or delete Helm-owned resources as an improvised rollback.
+Helm owns monitoring resources. Never raw-apply or delete them as an improvised rollback.
 See [Release operations](release-operations.md).
 
-### Model call killed at the deadline
+### QQ delivery timing
 
-A round whose model call reaches the request deadline ends as `actor_failed` in `agent_run_events_v2`.
-The session actor kills the job, so the call never returns to the retry loop.
-The actor writes that attempt to `llm_attempt_events` with outcome `killed` and the stream progress it read after the kill.
-An attempt that had already returned keeps the retry loop's row: a job that dies during a retry backoff or after the loop gave up writes no `killed` row.
-`received_bytes`, `received_chunks`, `first_body_ms`, and `last_body_ms` count every response chunk, keep-alive comments included.
-`content_deltas`, `first_content_ms`, and `last_content_ms` count text, tool-argument, and reasoning deltas that reached the round.
-Body without content is a provider that heartbeats over an empty stream. Recent content is an answer still being written.
-NULL body columns mean no response body arrived, or the call did not stream through `SalixLlm.Http`.
-Read the rows by `round_id` next to the `actor_failed` run. The pod log line `llm task failed` carries the same summary.
+Filter JSON stdout by `msg="qq_delivery_timing"` and group by `correlation_id` or the existing trace context.
+Each QQ callback and each `qq.send_message` writes one log when it ends.
+It names its `direction` (`ingress` or `send`), `started_at_ms`, total `duration_ms`, `outcome`, and `phases`.
+Each phase entry has `phase`, `offset_ms` from the start, `duration_ms`, and `outcome`, in completion order.
+A log keeps at most 64 phases and counts the rest in `phases_dropped`.
+Durations use the local monotonic clock. Nested phases are inclusive: `router_enqueue` contains the admission phases after it, and `access_token` contains `token_http`.
+The log runs in a correlation context. When the caller has none, it starts one, which later Conversation and Session work inherits.
 
-## Internal message send latency
+Unattributed callbacks write no timing log: an unknown bot or a rejected signature. The `im_ingress` metric still counts them.
+After signature verification, a message callback adds `source_sent_at_ms`, `handler_started_at_ms`, and their signed difference, `source_to_handler_ms`.
+The handler starts at `ProviderHTTP.handle_qq_request`, after HTTP body parsing.
+This difference includes upstream delivery and parsing. QQ timestamp precision and clock skew apply. It is not pure network latency.
 
-Internal sends emit `salix_operations_duration_seconds` with `component="salix_im"` and fixed `im_send_*` operations.
-Child spans use `salix.im.send.stage` and the same operation names.
-`total` covers the internal provider, after group scope resolution.
-`authorize`, `conversation`, `attachments`, and `participant` cover activation provenance, conversation reads, file binding, and sender lookup.
-`placement` covers owner discovery or startup. `call` covers the owner request and response.
-`actor` covers owner execution. `membership`, `sender`, and `sender_fence` cover participant loading, sender resolution, and incarnation validation.
-`prepare`, `commit`, and `delivery` cover message preparation, append, and source notification hints.
-`result` covers routed-recipient result reads when the conversation requires them.
-These are nested measurements, not an additive partition. Uninstrumented work can remain between child spans.
-
-`queue` measures dispatch to handler entry only when sender and owner share one VM.
-Remote calls retain client and actor spans, but emit no queue duration because their monotonic clocks are independent.
-Do not infer a pure remote queue duration from their timestamp difference.
-The transient owner envelope carries bounded trace context and timing. It never enters message storage.
-Metrics work without sampled traces. Neither signal establishes external receipt.
-Timing adds no polling, extra storage reads, or participant fan-out.
-
-## Triage decision diagnostics
-
-Triage rejection logs name the failed contract check and a fixed reason without recording the rejected value.
-The evaluator reports product, assessment, and Worker assignment failures.
-The bound validator also distinguishes decision shape, schema, assignment, and projected decision failures.
-These diagnostics do not change terminal error codes, retry behavior, source authority, or recipient routing.
-
-Assessment text uses the provider schema's limit of 1,200 Unicode code points per field, with at most 4,800 UTF-8 bytes.
-The evaluator includes the same output schema in the model prompt, including field types and allowed source references.
-Only Responses requests send the strict response format. Chat and Anthropic requests use the prompt schema and backend validation.
-The schema guides generation. Backend validation still rejects invalid types and references.
-An empty terminal evaluator record does not prove that no model request ran.
-Check the provider request and settlement logs before attributing the failure.
+Ingress phases separate connect lookup, verification, message recording, chat observation, mention context, group checks, control commands, Router resolution, attachments, payload preparation, and Conversation admission.
+`conversation_append` ends when the Conversation call returns. Later asynchronous Session delivery uses the existing Session arrival timestamps.
+A button callback acknowledges the tap through the QQ API, so its ingress log also has `access_token` and `api_http`.
+Send phases cover Agent scope, connect authorization, upload preparation, file part uploads, quote lookup, reply reservation, access tokens, HTTP, and local send records (`sent_message_record`, `sent_reference_record`, `platform_message_record`).
+`token_http` runs only when a token needs renewal. Each `api_http` entry covers one API attempt, including response decoding. A failed send records no local send record.
+An API or tool success does not prove that the QQ client displayed the reply.
+These logs contain no message content, provider identifiers, request bodies, credentials, or error text. Logging failures do not change operation results.
 
 ## Encrypted Agent event archive
 
@@ -123,169 +78,139 @@ Preserve six observation seams:
 5. Tool result.
 6. Visible reply.
 
-Encrypt in the caller before handing data to the archive path.
-Do not place plaintext in archive mailboxes, logs, or metrics.
-The archive is observational. Its failure cannot fail the Agent's task.
-Bound its queues and retry work.
-Keep runtime seam guards and adapter shape tests when removing redundant tests.
+Encrypt in the caller before data enters the archive path.
+Do not put plaintext in archive mailboxes, logs, or metrics.
+The archive is observational. Its failure cannot fail the Agent's task. Bound its queues and retry work.
 
-Resident Session dispatch archives the final provider JSON as `request_body`, with its wire `protocol`.
-List-based callers archive their provider-neutral `messages`. Both forms retain explicit dispatch identity and credential-scrubbed options.
-Request bodies remain content-bearing encrypted payloads, never logs or metric labels.
-
-A sequence hole can prove bracketed loss when later events arrive.
-Tail loss or process loss can leave no live signal.
+A sequence hole proves bracketed loss when later events arrive. Tail loss or process loss can leave no live signal.
 Do not claim complete capture or guaranteed loss detection from a contiguous observed prefix.
 An archive record proves the observed seam, not external receipt or user consumption.
 
 ## Alert ownership
 
-Cloud Monitoring and Grafana own evaluation and source incident lifecycle for their respective rules.
+Cloud Monitoring and Grafana own evaluation and the source incident lifecycle for their rules.
 A notification router formats and routes those decisions. It is not another incident engine.
 It must not independently trigger, merge, recover, or close a source incident.
-A source CLOSED/RESOLVED event does not establish service recovery verification.
+A source CLOSED or RESOLVED event does not verify service recovery.
 
 Keep source-native notification fallback independent of router failure.
 The router's delivery-health alert must bypass the router.
 Do not remove Grafana direct Slack without an approved source-native fallback.
-Verify current environment routing before claiming a historical rollout choice is live.
 
 Runtime terminal failures, request stalls, IM ingress, OOM, and deployment failures have distinct owners and evidence.
-Use the exact current rule and its source labels rather than parse prose to recover identity.
-Alert status changes should update the same incident-generation presentation while retaining useful lifecycle events.
-Do not emit repeated noise for unchanged state.
+Use the exact current rule and its source labels. Do not parse prose to recover identity.
+Alert status changes update the same incident-generation presentation and keep useful lifecycle events.
+Do not repeat notifications for unchanged state.
 
 ### Slack cards and investigation progress
 
-Live P0 and P1 firing roots notify the channel. A later priority escalation posts
-a separate channel message, because a mention inside a thread does not notify the channel.
-Root edits, ordinary thread events, shadow delivery, and recovery do not mention the channel.
-The accepted EventRecord stores the escalation destination. Delivery and ambiguous-result
-reconciliation use that same destination and existing Block Kit marker.
-The first root's published revision suppresses an escalation already included in that root.
-Legacy EventRecords without a channel destination remain thread deliveries, including during reconciliation.
-Each separate channel escalation requests one root permalink. A failed link lookup does not suppress the notification.
+`我来处理` lets a Slack user claim an unassigned Incident. Only the current owner can transfer it.
+Callbacks check the configured workspace and app, the exact channel and root, and the card revision. Source events cannot replace the owner.
+Claims, transfers, explicit reports, and quality feedback send compact channel updates with a root link and no mention.
+Shadow updates stay in the thread. All updates reuse the existing delivery lease, marker, and uncertain-result reconciliation.
+Attributed feedback accepts `需要行动`, `自愈`, or `误报`. Source refreshes preserve it.
+Feedback changes no source status, recovery verification, priority, or reminder deadline. Review source evidence before you change rules.
 
-The Incident owns a latest investigation report separately from its source status.
-A person can submit a report in the original alert thread:
+Configure the Alert Router Slack app:
 
-```text
-告警进展
-已确认：一个会话恢复后再次中断。
-影响：已定位一个会话，整体范围尚未确认。
-下一步：核对第二次执行结果。
-```
+1. Set `SLACK_SIGNING_SECRET`, `SLACK_TEAM_ID`, and `SLACK_APP_ID` in `alert-router-slack-<environment>`.
+2. Set the Events API URL to `/v1/events/slack` on that environment.
+3. Subscribe to `message.channels` with `channels:history`.
+4. Join the alert channel.
+5. Enable Interactivity at `/v1/interactions/slack` on that environment.
+6. In an approved test channel, verify reports, claims, transfers, overdue reminders, and cancellation before live use.
 
-For an explicit report, the first line must be exactly `告警进展`. The report body is limited to 1,800
-characters and 4,000 UTF-8 bytes. The card shows the report, reporter ID, and Slack
-message time as plain text. Ordinary discussion, edits, and deleted-message events
-do not replace the report. Post a new report to correct an earlier one.
-Duplicate or older message timestamps do not change it. Source events preserve it.
-A report never changes source priority, owner, recovery verification, or closure.
-The source thread retains the history. No background channel scans or per-incident
-polling run. One signed callback performs an indexed channel/root lookup and one
-Incident transaction, which also queues the existing root update worker.
+The release bundle copies only the signing secret, team ID, app ID, and bot token into the dedicated Router config.
+The config keys are `alert_router.slack.signing_secret`, `team_id`, and `app_id`.
+Environment alternatives are `ALERT_ROUTER_SLACK_SIGNING_SECRET`, `ALERT_ROUTER_SLACK_TEAM_ID`, and `ALERT_ROUTER_SLACK_APP_ID`.
 
-The root card also provides `我来处理` and an owner transfer selector.
-A Slack user can claim an unassigned Incident. Only its current owner can transfer it.
-The callback checks the configured workspace/app and the exact channel/root.
-It rejects stale card revisions. Source events cannot replace the owner.
-Claims, transfers, explicit reports, and quality feedback add a compact channel update with a root link.
-These updates do not mention the channel. Shadow updates stay in the thread.
-Their EventRecords use the existing delivery lease, marker, and uncertain-result reconciliation.
-
-The card accepts attributed feedback: `需要行动`, `自愈`, or `误报`.
-Feedback survives source refreshes. It does not change source status, recovery verification, priority, or the reminder deadline.
-Review these labels against the source evidence before changing an alert rule.
-
-For active P0 and P1 incidents, an unassigned phase has one reminder after 15 minutes.
-An assigned phase has one reminder after 30 minutes without a new report or transfer.
-The live reminder mentions the channel when unassigned, or the current owner when assigned.
-It does not repeat for the same phase. A claim, transfer, or report on an assigned Incident starts a new handling revision.
-Source refreshes do not restart that revision. Source closure stops reminders, even when recovery remains unverified.
-Each successful root delivery schedules at most one Oban job for its handling revision.
-Old jobs and unsent notices check that revision before delivery. No incident scan or periodic polling runs.
-A reminder already accepted by Slack remains a historical message if handling changes during delivery.
-Oban runs at most two delivery jobs concurrently. Reminder jobs use one Incident lookup and one EventRecord lookup.
-
-A configured investigator bot can also update the root without the prefix.
-Set `SLACK_INVESTIGATOR_BOT_ID` in the same Router Slack secret.
-It becomes `alert_router.slack.investigator_bot_id`, with environment variable `ALERT_ROUTER_SLACK_INVESTIGATOR_BOT_ID` as an alternative.
-The signed event must identify that bot and a different app from the alert-delivery Slack app.
-Unlisted bots, ordinary human discussion, edits, and deletions cannot use this path.
-Bot reports retain attribution and the same recovery boundary. Long reports show an explicit truncation notice.
-Identical bot reports do not reset handling. Automatic reports update the root without another channel notice, to avoid bot reply loops.
-Reports received before a person claims the Incident do not postpone the unassigned reminder.
-
-Configure the Alert Router Slack app before using this path:
-
-1. Set `SLACK_SIGNING_SECRET`, `SLACK_TEAM_ID`, and `SLACK_APP_ID` in the existing
-   `alert-router-slack-<environment>` secret. The release bundle copies only these
-   values and the bot token into the dedicated Router config.
-   They become `alert_router.slack.signing_secret`, `team_id`, and `app_id`.
-   The equivalent variables are `ALERT_ROUTER_SLACK_SIGNING_SECRET`,
-   `ALERT_ROUTER_SLACK_TEAM_ID`, and `ALERT_ROUTER_SLACK_APP_ID`.
-2. Set the Events API request URL to the environment's `/v1/events/slack` endpoint.
-3. Subscribe to `message.channels` with `channels:history` and join the alert channel.
-4. Enable Interactivity with the environment's `/v1/interactions/slack` endpoint.
-5. Post an approved test report. Verify the root update and one channel progress notice without a channel mention.
-6. Claim the Incident and transfer it. Verify the owner in the original card and one notice for each change.
-7. Verify overdue delivery and cancellation in an approved test channel before enabling live use.
-
-Slack's app signing secret is the independent authority for incoming callbacks.
-The HTTP adapter verifies the raw-body signature and five-minute request timestamp
-before parsing. It rejects unsigned requests. Progress ingress also checks the
-configured workspace/app and an existing alert root in the reported channel.
-This prevents arbitrary HTTP callers or another installation from rewriting cards.
-The reporter's claims remain attributed reports, not verified recovery evidence.
-The optional path stays closed until configured. Existing source ingestion stays available.
-See [Slack signature verification](https://docs.slack.dev/authentication/verifying-requests-from-slack/)
-and [message events](https://docs.slack.dev/reference/events/message/).
-
-The additive `alert-router-20260924000001` migration preserves existing incidents
-and adds the report value, first published root revision, and channel/root index.
-Migration `alert-router-20260924000002` adds the handling revision and quality feedback without changing existing owners.
-Roll back the binary while retaining these fields if needed. Do not drop reports during rollback.
-Automatic source investigation, Jev decisions, and human recovery verification are not implemented by these callbacks.
-
-## Validation
-
-Keep event-to-scrape, finite-label, queue-bound, failure-isolation, and runtime seam regressions.
-A copied PromQL string or metric-name list does not prove telemetry behavior.
-An encrypted archive and aggregate metrics protect different boundaries and do not replace each other.
-Dashboard and alert configuration lives under `observability/` and `k8s/`.
-No documentation-only metric catalog is a second runtime authority.
+The adapter verifies the Slack raw-body signature and five-minute timestamp before parsing. Unsigned callbacks fail.
+Progress ingress also requires the configured workspace and app and an existing root in the reported channel.
+Reporter claims stay unverified reports. The optional path stays closed until configured. Source ingestion stays available.
+Binary rollback keeps report, revision and feedback fields.
+These callbacks do not implement automatic source investigation, Jev decisions, or human recovery verification.
 
 ## Routine job queues
 
 Generation uses the finite `comma_recommendations` queue label.
 Deadlines and schedule reconciliation use `comma_recommendation_control`.
 Existing Oban execution and backlog metrics expose those queues.
-Generation logs include run ID, outcome, source counts, collection duration, input bytes, model duration, and usage, but no source content.
-A failed generation logs its run ID, bounded failure reason, and duration.
-A published or superseded run keeps the same counts in `metrics`, with per-source truncation counts and projection counts.
-The profile keeps the published generation's copy in `published_metrics`. Neither field crosses the API.
-The rail's `GET` of a fresh Routine emits `[:comma_product, :recommendation, :exposure]` with the finite `variant` label.
-It also writes a `routine_exposure` log line with the user ID, workspace ID, generation, and variant.
-Reads are not deduplicated. Count exposed generations from the log line, not from the counter.
-A fresh read shows that an active rail fetched the Routine. It does not show that the member looked at it.
 See [Routine generation](product-features.md#routine-generation) for deadlines and recovery limits.
 
-## Cloud VM archive diagnostics
+## Cloud VM archive operations
 
-Connector export/import status carries optional, finite phase timing fields in milliseconds.
-Salix stores eight recent operation/direction summaries in the existing Workload `archive_diagnostics` value.
-`connector_outcome` describes the Connector phase. `outcome` describes the Salix result.
-Parallel PUT/GET durations are sums across requests. They do not add up to wall time.
-Salix duration includes its orchestration. The fields do not cover every internal stage.
+Use the Container stderr log for archive errors. Access the exact running Container through Worker Sandbox SSH.
+Connector export and import status includes optional phase timings. These are diagnostics, not retained recovery facts.
+Read the current operation through `GET /v1/admin/vm/archive/operation?group_id=GROUP&operation=OPERATION` with existing admin authorization.
+The response reports current progress and cancellation state, or the owner's last operation result.
+Use that result for cancellation or same-operation recovery. Salix stores no second history of timing summaries.
 
-Query `GET /v1/admin/vm/archive/operation?group_id=GROUP&operation=OPERATION` with existing admin authorization.
-For all retained summaries, call `SalixWeb.CloudVM.ArchiveDiagnostics.list("GROUP")` through the serving release RPC.
-Old summaries return `observation: true`. They grant no cancellation or recovery authority.
-Queries read one Workload. No tail or separate R2 log object is required.
+## Cloud VM canary
 
-A dedicated Task Supervisor permits four diagnostic writes and drops observations when full.
-Storage errors do not change archive/restore results or trigger business retries.
-Successful imports reuse the original receipt write. Failed imports asynchronously save one optional timing sidecar without fsync.
-Missing or mismatched sidecars cannot reject imports. Command content, paths, URLs, credentials and raw errors are excluded.
-Loss before reporting, failed writes and retention eviction can leave no summary. These records are diagnostics, not lossless audit.
+The canary proves every 30 minutes that staging can give a Task to a Group's Cloud VM and get an answer back.
+It is one scheduled Task in a Workspace made for it. Nothing else is new.
+`SalixCluster.Schedules` appends the command to the Task when the schedule fires.
+`SalixWeb.StationTasks` gives the Message to the VM's station (`task.put`) and wakes an archived VM.
+`SalixIM.StationTaskWatch` times the station's first reply ([Station Tasks](salix/tasks-background-execution.md#station-tasks)).
+
+A Task of a Group named in `station_task_watch.canary_group_ids` carries `canary: true` in its `station_task_stalled`, `station_task_recovered` and `station_task_stale` events.
+Its samples carry `canary="true"` in `salix.station_tasks.stalled.total` and `salix.station_tasks.first_reply.seconds`. Every other station Task carries `false`.
+
+The canary does not prove that a Router hands a result to a person. It does not prove production: production has no canary Workspace, so the two canary policies are staging-only.
+
+### Set up
+
+Do these steps in this order. `station_task_canary_silent` fires from its release until the canary has answered twice.
+
+1. In staging, create a Workspace for the canary only. Turn its Cloud VM on in Settings > Models. Bind no Runner. Choose a cheap Router model.
+2. Start the Cloud VM and wait until it is `ready`. A Task for a station that is not connected is refused.
+3. Create a Worker bound to the Cloud VM and its scheduled Task. Ask the Workspace's Router in its chat, for example: "Create a Worker named Canary that runs on the Cloud VM. Give it a Task that repeats every 30 minutes with this command: This is the Cloud VM canary. Reply with chat_post and all_done. Write only the current UTC time and the host name. Do nothing else."
+   The Router calls `agent.create_worker` with `runtime {"kind": "cloud_vm"}` and `im_api.internal.task.create` with `schedule {"interval_minutes": 30}`. A bound Worker runs every Task on the VM, so the Task names no `runs_on`.
+   Or create the Task over `bin/comma rpc` on a `comma-*` pod, after the Worker exists. This path skips the Router's checks of the place and the model:
+
+   ```elixir
+   group = "grp1_..."
+
+   Salix.Bindings.AgentConversations.create_task_conversation(group, router_agent_id, worker_agent_id, %{
+     "content" => "This is the Cloud VM canary. Reply with chat_post and all_done. Write only the current UTC time and the host name. Do nothing else.",
+     "client_request_id" => "cloud-vm-canary",
+     "schedule" => %{"interval_minutes" => 30},
+     "runs_on" => %{"kind" => "station", "device_id" => SalixStore.RuntimeIds.cloud_vm_device_id(group)},
+     "session_model" => %{"kind" => "runtime", "provider" => "codex"}
+   })
+   ```
+
+4. Check the Task and the station over rpc:
+
+   ```elixir
+   {:ok, task} = SalixIM.Conversations.get_group_conversation(group, conversation_id)
+   Map.take(task, ~w(status schedule task_worker_agent_id))
+   SalixStore.StationTaskSessions.of_task(group, conversation_id)
+   ```
+
+   `status` is `active` and `schedule` has a `schedule_id`. `of_task` has one row whose `device_id` is `SalixStore.RuntimeIds.cloud_vm_device_id(group)`; its `sent` and `answered` grow with each firing.
+5. Add the Group to the config secret and roll it out: `"station_task_watch": {"canary_group_ids": ["grp1_..."]}` in `/etc/salix/config.json` (`SalixStore.ConfigJson`). The section also takes the stage thresholds in milliseconds.
+6. Release the two policies from `k8s/comma/cloud-monitoring`.
+
+### Alerts
+
+| Policy | Fires when | Delay after a break |
+| --- | --- | --- |
+| `comma_alerting:station_task_canary_stalled` (P2, log) | A canary delegation reaches a stage threshold without a reply: `vm_not_ready`, `station_offline` or `not_given` after 10 minutes; `idle_no_reply` once the station's Session sat idle 10 minutes, was reminded, and sat idle 10 minutes more; `cannot_start` after 10 minutes; `given_no_reply` (a station that cannot say) after 30 minutes. The stage names the broken segment. | About 40 minutes for the first three stages, about 50 for `idle_no_reply` and about 60 for `given_no_reply`: the next firing plus the threshold. |
+| `comma_alerting:station_task_canary_silent` (P2, PromQL) | `salix_station_tasks_first_reply_seconds_count{canary="true"}` grew by less than one in two hours, or does not exist. | About two hours. |
+
+`station_task_canary_silent` also fires when the schedule does not fire (the Task's schedule cleared, the Task closed or archived), when every firing stalls (then `station_task_canary_stalled` fires too and names the stage), and when `canary_group_ids` is empty or names the wrong Group.
+A counter born at its first answer shows no increase, so the alert closes after the second answer.
+
+### Cost and pause
+
+Each firing wakes the archived Cloud VM, runs one short turn, and the VM archives again after 5 idle minutes (`idle_archive_ms`): 48 wakes a day of about 6 to 8 minutes of container time each.
+The Router runs one round on the reply. The station's Worker spends a few hundred tokens of the platform model each time.
+
+To pause the canary, clear the Task's schedule (`SalixCluster.TaskSchedules.update_task_schedule(group, conversation_id, nil)`) or archive the Task. `station_task_canary_silent` fires two hours later.
+To end it, archive the Task and remove the Group from `canary_group_ids`.
+
+### Acceptance
+
+After the config is live and the Task has fired twice, `salix_station_tasks_first_reply_seconds_count{canary="true"}` has samples in Metrics Explorer and `station_task_canary_silent` is closed.
+Pause the schedule for more than two hours: `station_task_canary_silent` opens. Restore it: the alert closes after the second answer.

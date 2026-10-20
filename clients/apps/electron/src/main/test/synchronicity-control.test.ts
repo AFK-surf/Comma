@@ -1,4 +1,5 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -6,7 +7,7 @@ import { createHash } from "node:crypto";
 import { blake3 } from "@noble/hashes/blake3.js";
 import { promisify } from "node:util";
 import * as grpc from "@grpc/grpc-js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SynchControlClient,
   synchControlEndpoint,
@@ -14,6 +15,23 @@ import {
 } from "../modules/synchronicity/control-client";
 
 import { SynchronicityNodeService } from "../modules/synchronicity";
+
+// Lets a test hold the client's token read, the one await before it takes a channel.
+const tokenReads = vi.hoisted(() => ({
+  hold: undefined as undefined | (() => Promise<void>),
+}));
+vi.mock(import("node:fs/promises"), async (importOriginal) => {
+  const actual = await importOriginal();
+  const heldReadFile = (async (...args: Parameters<typeof actual.readFile>) => {
+    await tokenReads.hold?.();
+    return actual.readFile(...args);
+  }) as typeof actual.readFile;
+  return {
+    ...actual,
+    default: { ...actual, readFile: heldReadFile },
+    readFile: heldReadFile,
+  };
+});
 
 const TOKEN_HEADER = "x-synch-control-token-bin";
 const VERSION_HEADER = "x-synch-control-version";
@@ -49,6 +67,7 @@ describe("SynchControlClient", () => {
   });
 
   afterEach(async () => {
+    tokenReads.hold = undefined;
     server?.forceShutdown();
     server = undefined;
     await rm(dataDir, { force: true, recursive: true });
@@ -315,23 +334,23 @@ describe("SynchControlClient", () => {
   it("does not let concurrent failed calls close each other's replacement channel", async () => {
     await writeFile(join(dataDir, "control.token"), Buffer.alloc(32, 7));
     let attempts = 0;
+    const calls: TestServerStream[] = [];
     server = await startServer(dataDir, {
       list(call: TestServerStream) {
         attempts += 1;
-        if (attempts <= 2) {
-          setTimeout(
-            () =>
-              call.emit(
-                "error",
-                Object.assign(new Error("daemon restarted"), {
-                  code: grpc.status.UNAVAILABLE,
-                })
-              ),
-            0
-          );
-          return;
-        }
-        setTimeout(() => call.end(), 20);
+        calls.push(call);
+        // Both first calls fail only once both are open, and both retries
+        // finish only once both are open: each retry runs while the other
+        // call's failure is handled.
+        if (attempts === 2)
+          for (const failed of calls.splice(0))
+            failed.emit(
+              "error",
+              Object.assign(new Error("daemon restarted"), {
+                code: grpc.status.UNAVAILABLE,
+              })
+            );
+        if (attempts === 4) for (const open of calls.splice(0)) open.end();
       },
     });
     const client = new SynchControlClient({
@@ -401,14 +420,59 @@ describe("SynchControlClient", () => {
     client.close();
   });
 
+  it("starts a call on the channel that is current once its token is read", async () => {
+    await writeFile(join(dataDir, "control.token"), Buffer.alloc(32, 9));
+    let attempts = 0;
+    server = await startServer(dataDir, {
+      list(call: TestServerStream) {
+        attempts += 1;
+        if (attempts === 1) {
+          call.emit(
+            "error",
+            Object.assign(new Error("daemon restarted"), {
+              code: grpc.status.UNAVAILABLE,
+            })
+          );
+          return;
+        }
+        call.end();
+      },
+    });
+    const client = new SynchControlClient({
+      callTimeoutMs: 2_000,
+      dataDir,
+      streamTimeoutMs: 2_000,
+    });
+    const first = client.list({ prefix: "", space: "comma-drive" });
+    // The second call reads its token only after the first call failed, closed
+    // its channel, and succeeded on a new one.
+    const firstSettled = Promise.withResolvers<void>();
+    let reads = 0;
+    tokenReads.hold = async () => {
+      if (++reads === 1) await firstSettled.promise;
+    };
+    const second = client.list({ prefix: "", space: "comma-drive" });
+    await expect(first).resolves.toEqual({ entries: [], nextCursor: "" });
+    firstSettled.resolve();
+    await expect(second).resolves.toEqual({ entries: [], nextCursor: "" });
+    expect(attempts).toBe(3);
+    client.close();
+  });
+
   it("aborts a Put instead of committing when its byte source fails", async () => {
     await writeFile(join(dataDir, "control.token"), Buffer.alloc(32, 3));
     const parts: PutPart[] = [];
+    // The server has the whole Put once its stream ends.
+    let ended!: () => void;
+    const received = new Promise<void>((resolve) => (ended = resolve));
     server = await startServer(dataDir, {
       put(call: TestDuplexStream) {
         call.sendMetadata(new grpc.Metadata());
         call.on("data", (part: PutPart) => parts.push(part));
-        call.on("end", () => call.end());
+        call.on("end", () => {
+          call.end();
+          ended();
+        });
       },
     });
     const client = new SynchControlClient({
@@ -427,7 +491,7 @@ describe("SynchControlClient", () => {
         space: "comma-drive",
       })
     ).rejects.toThrow("source failed");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await received;
     expect(parts.map((part) => part.part)).toEqual(["header", "chunk", "abort"]);
     expect(parts.some((part) => part.part === "commit")).toBe(false);
     client.close();
@@ -437,101 +501,99 @@ describe("SynchControlClient", () => {
 const realSynchBinary = process.env.COMMA_SYNCH_CONTROL_TEST_BINARY ?? "";
 
 describe.skipIf(!realSynchBinary)("SynchControlClient with the pinned daemon", () => {
-  it(
-    "pauses and resumes the default folder through Main and a real daemon",
-    { timeout: 120_000 },
-    async () => {
-      const directory = await realpath(await mkdtemp(join(tmpdir(), "comma-pause-")));
-      const dataDir = join(directory, "node");
-      const root = join(directory, "Comma Drive");
-      const options = {
-        binaryPath: realSynchBinary,
-        dataDir,
-        defaultSpace: { id: "comma-drive", root },
-      };
-      let service = new SynchronicityNodeService({
-        ...options,
-        binaryPath: process.env.COMMA_SYNCH_UPGRADE_FROM_BINARY || realSynchBinary,
+  it("pauses and resumes the default folder through Main and a real daemon", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "comma-pause-")));
+    const dataDir = join(directory, "node");
+    const root = join(directory, "Comma Drive");
+    const options = {
+      binaryPath: realSynchBinary,
+      dataDir,
+      defaultSpace: { id: "comma-drive", root },
+    };
+    let service = new SynchronicityNodeService({
+      ...options,
+      binaryPath: process.env.COMMA_SYNCH_UPGRADE_FROM_BINARY || realSynchBinary,
+    });
+    const control = new SynchControlClient({ dataDir });
+    const paths = async () =>
+      (
+        await control.list({ space: "comma-drive", prefix: "", limit: 100 })
+      ).entries.map((entry) => entry.path);
+    try {
+      await service.start();
+      expect((await service.state()).status).toBe("ready");
+      await writeFile(join(root, "keep.txt"), "before");
+      await control.run({ sourceScan: { space: "comma-drive" } });
+      await service.setSpaceSettings({ space: "comma-drive", syncEnabled: false });
+      await writeFile(join(root, "later.txt"), "while paused");
+      await control.run({ sourceScan: { space: "comma-drive" } });
+      expect(await paths()).toEqual(["keep.txt"]);
+      expect(
+        await service.adopt({
+          space: "comma-drive",
+          path: "incoming.txt",
+          select: "newest",
+          automatic: true,
+        })
+      ).toEqual({ status: "done", skipped: true });
+      const upload = join(directory, "manual-upload.txt");
+      await writeFile(upload, "explicit upload while paused");
+      await expect(
+        service.importFile({
+          space: "comma-drive",
+          path: "manual.txt",
+          sourcePath: upload,
+        })
+      ).resolves.toEqual({ status: "done" });
+      expect(await paths()).toEqual(["keep.txt", "manual.txt"]);
+      await service.write({
+        space: "comma-drive",
+        path: "manual.txt",
+        content: Buffer.from("explicit replacement").toString("base64"),
       });
-      const control = new SynchControlClient({ dataDir });
-      const paths = async () =>
-        (
-          await control.list({ space: "comma-drive", prefix: "", limit: 100 })
-        ).entries.map((entry) => entry.path);
-      try {
-        await service.start();
-        expect((await service.state()).status).toBe("ready");
-        await writeFile(join(root, "keep.txt"), "before");
-        await control.run({ sourceScan: { space: "comma-drive" } });
-        await service.setSpaceSettings({ space: "comma-drive", syncEnabled: false });
-        await writeFile(join(root, "later.txt"), "while paused");
-        await control.run({ sourceScan: { space: "comma-drive" } });
-        expect(await paths()).toEqual(["keep.txt"]);
-        expect(
-          await service.adopt({
-            space: "comma-drive",
-            path: "incoming.txt",
-            select: "newest",
-            automatic: true,
-          })
-        ).toEqual({ status: "done", skipped: true });
-        const upload = join(directory, "manual-upload.txt");
-        await writeFile(upload, "explicit upload while paused");
-        await expect(
-          service.importFile({
-            space: "comma-drive",
-            path: "manual.txt",
-            sourcePath: upload,
-          })
-        ).resolves.toEqual({ status: "done" });
-        expect(await paths()).toEqual(["keep.txt", "manual.txt"]);
-        await service.write({
-          space: "comma-drive",
-          path: "manual.txt",
-          content: Buffer.from("explicit replacement").toString("base64"),
-        });
-        const uploaded: Buffer[] = [];
-        for await (const chunk of control.read({
-          space: "comma-drive",
-          path: "manual.txt",
-          start: 0,
-        }))
-          uploaded.push(Buffer.from(chunk));
-        expect(Buffer.concat(uploaded).toString()).toBe("explicit replacement");
-        expect((await service.state()).spaces[0]?.sourcePaused).toBe(true);
-        await service.close();
-        service = new SynchronicityNodeService(options);
-        await service.start();
-        const restartedSpace = (await service.state()).spaces[0]!;
-        expect(restartedSpace).toMatchObject({
-          sourcePaused: true,
-          autoAdopt: false,
-        });
-        // Rust canonicalizes Windows paths with a verbatim namespace prefix.
-        expect(await realpath(restartedSpace.sourcePath)).toBe(await realpath(root));
-        expect(await paths()).toEqual(["keep.txt", "manual.txt"]);
-        expect(await readFile(join(root, "later.txt"), "utf8")).toBe("while paused");
-        await service.setSpaceSettings({ space: "comma-drive", syncEnabled: true });
-        expect(await paths()).toEqual(["keep.txt", "later.txt", "manual.txt"]);
-        await writeFile(join(root, "automatic.txt"), "watcher resumed");
-        await expect.poll(paths, { timeout: 15_000 }).toContain("automatic.txt");
-      } finally {
-        await service.close();
-        control.close();
-        // Windows can retain SQLite handles briefly after daemon stop returns.
-        await rm(directory, {
-          recursive: true,
-          force: true,
-          maxRetries: 10,
-          retryDelay: 200,
-        });
-      }
+      const uploaded: Buffer[] = [];
+      for await (const chunk of control.read({
+        space: "comma-drive",
+        path: "manual.txt",
+        start: 0,
+      }))
+        uploaded.push(Buffer.from(chunk));
+      expect(Buffer.concat(uploaded).toString()).toBe("explicit replacement");
+      expect((await service.state()).spaces[0]?.sourcePaused).toBe(true);
+      await service.close();
+      service = new SynchronicityNodeService(options);
+      await service.start();
+      const restartedSpace = (await service.state()).spaces[0]!;
+      expect(restartedSpace).toMatchObject({
+        sourcePaused: true,
+        autoAdopt: false,
+      });
+      // Rust canonicalizes Windows paths with a verbatim namespace prefix.
+      expect(await realpath(restartedSpace.sourcePath)).toBe(await realpath(root));
+      expect(await paths()).toEqual(["keep.txt", "manual.txt"]);
+      expect(await readFile(join(root, "later.txt"), "utf8")).toBe("while paused");
+      await service.setSpaceSettings({ space: "comma-drive", syncEnabled: true });
+      expect(await paths()).toEqual(["keep.txt", "later.txt", "manual.txt"]);
+      await writeFile(join(root, "automatic.txt"), "watcher resumed");
+      // The resumed watcher publishes the file on its own and says nothing
+      // when it has, so list until it is there.
+      let listed = await paths();
+      while (!listed.includes("automatic.txt")) listed = await paths();
+    } finally {
+      await service.close();
+      control.close();
+      // Windows can retain SQLite handles briefly after daemon stop returns.
+      await rm(directory, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 200,
+      });
     }
-  );
+  });
 
   it.each(["success", "collision", "rename failure"])(
     "preserves the published tree during a real-daemon migration: %s",
-    { timeout: 120_000 },
     async (scenario) => {
       const directory = await realpath(await mkdtemp(join(tmpdir(), "comma-migrate-")));
       const dataDir = join(directory, "node");
@@ -541,10 +603,8 @@ describe.skipIf(!realSynchBinary)("SynchControlClient with the pinned daemon", (
           ? join(directory, "missing-parent", "Comma Drive")
           : join(directory, "Comma Drive");
       const run = (args: string[]) =>
-        execFileAsync(realSynchBinary, [...args, "--data-dir", dataDir], {
-          timeout: 30_000,
-        });
-      let pid: number | undefined;
+        execFileAsync(realSynchBinary, [...args, "--data-dir", dataDir]);
+      let daemon: ReturnType<typeof runDaemon> | undefined;
       const control = new SynchControlClient({ dataDir });
       const service = new SynchronicityNodeService({
         binaryPath: realSynchBinary,
@@ -559,7 +619,8 @@ describe.skipIf(!realSynchBinary)("SynchControlClient with the pinned daemon", (
           await writeFile(join(root, "private.txt"), "never publish");
         }
         await run(["init"]);
-        pid = daemonPidFrom((await run(["daemon", "start"])).stdout);
+        daemon = runDaemon(dataDir);
+        await daemon.ready;
         await control.run({
           sourceAdd: { api: false, path: legacy, space: "comma-drive" },
         });
@@ -585,124 +646,100 @@ describe.skipIf(!realSynchBinary)("SynchControlClient with the pinned daemon", (
         expect(Buffer.concat(bytes).toString()).toBe("keep publishing");
       } finally {
         await service.close();
-        if (pid) await waitForProcessExit(pid);
+        if (daemon) {
+          await run(["daemon", "stop"]).catch(() => undefined);
+          await daemon.exited;
+        }
         control.close();
         await rm(directory, { recursive: true, force: true });
       }
     }
   );
 
-  it(
-    "streams a file larger than the renderer limit and survives token rotation",
-    { timeout: 120_000 },
-    async () => {
-      const root = await mkdtemp(join(tmpdir(), "comma synch rc-"));
-      const node = join(root, "Comma Node");
-      const source = join(root, "Comma Drive");
-      await mkdir(source, { recursive: true });
-      let client: SynchControlClient | undefined;
-      let daemonPid: number | undefined;
-      const run = (args: string[], env: NodeJS.ProcessEnv = process.env) =>
-        execFileAsync(realSynchBinary, args, {
-          env,
-          maxBuffer: 1024 * 1024,
-          timeout: 30_000,
-        });
-      const startAfterStop = async () => {
-        const deadline = Date.now() + 30_000;
-        for (;;) {
-          try {
-            return await run(["daemon", "start", "--data-dir", node]);
-          } catch (error) {
-            const detail = `${(error as { stderr?: string }).stderr ?? ""}${
-              (error as { stdout?: string }).stdout ?? ""
-            }`;
-            if (
-              !detail.includes(
-                "another daemon or CAS migration owns this data directory"
-              ) ||
-              Date.now() >= deadline
-            ) {
-              throw error;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 50));
+  it("streams a file larger than the renderer limit and survives token rotation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "comma synch rc-"));
+    const node = join(root, "Comma Node");
+    const source = join(root, "Comma Drive");
+    await mkdir(source, { recursive: true });
+    let client: SynchControlClient | undefined;
+    let daemon: ReturnType<typeof runDaemon> | undefined;
+    const run = (args: string[], env: NodeJS.ProcessEnv = process.env) =>
+      execFileAsync(realSynchBinary, args, { env, maxBuffer: 1024 * 1024 });
+    try {
+      await run(["init", "--data-dir", node]);
+      daemon = runDaemon(node);
+      await daemon.ready;
+      client = new SynchControlClient({ dataDir: node });
+
+      const id = await client.run({ id: {} });
+      expect(id.stdout).toMatch(/^origin: key:/m);
+      await client.run({ sourceAdd: { api: false, path: source, space: "drive" } });
+
+      const chunkBytes = 256 * 1024;
+      const chunkCount = 41;
+      const expectedHash = createHash("sha256");
+      const written = await client.put({
+        chunks: (async function* () {
+          for (let index = 0; index < chunkCount; index += 1) {
+            const chunk = Buffer.alloc(chunkBytes, index);
+            expectedHash.update(chunk);
+            yield chunk;
           }
-        }
-      };
-      try {
-        await run(["init", "--data-dir", node]);
-        const started = await run(["daemon", "start", "--data-dir", node]);
-        daemonPid = daemonPidFrom(started.stdout);
-        client = new SynchControlClient({ dataDir: node });
+        })(),
+        path: "large.bin",
+        space: "drive",
+      });
+      expect(written.size).toBe(chunkBytes * chunkCount);
 
-        const id = await client.run({ id: {} });
-        expect(id.stdout).toMatch(/^origin: key:/m);
-        await client.run({ sourceAdd: { api: false, path: source, space: "drive" } });
-
-        const chunkBytes = 256 * 1024;
-        const chunkCount = 41;
-        const expectedHash = createHash("sha256");
-        const written = await client.put({
-          chunks: (async function* () {
-            for (let index = 0; index < chunkCount; index += 1) {
-              const chunk = Buffer.alloc(chunkBytes, index);
-              expectedHash.update(chunk);
-              yield chunk;
-            }
-          })(),
-          path: "large.bin",
-          space: "drive",
-        });
-        expect(written.size).toBe(chunkBytes * chunkCount);
-
-        const actualHash = createHash("sha256");
-        let chunksRead = 0;
-        for await (const chunk of client.read({
-          path: "large.bin",
-          space: "drive",
-          start: 0,
-        })) {
-          chunksRead += 1;
-          actualHash.update(chunk);
-        }
-        expect(chunksRead).toBeGreaterThan(1);
-        expect(actualHash.digest("hex")).toBe(expectedHash.digest("hex"));
-        await expect(
-          client.list({ limit: 10, prefix: "", space: "drive" })
-        ).resolves.toMatchObject({ entries: [{ path: "large.bin" }] });
-        const driveSpace = (await client.listSpaces()).find(
-          (space) => space.id === "drive"
-        );
-        expect(driveSpace).toMatchObject({
-          id: "drive",
-          sourcePath: expect.any(String),
-        });
-        expect(await realpath(driveSpace!.sourcePath!)).toBe(await realpath(source));
-
-        const cliId = await run(["id"], {
-          ...process.env,
-          SYNCH_DATA_DIR: node,
-        });
-        expect(cliId.stdout).toBe(id.stdout);
-
-        const firstToken = await readFile(join(node, "control.token"));
-        await client.run({ daemonStop: {} });
-        const restarted = await startAfterStop();
-        daemonPid = daemonPidFrom(restarted.stdout);
-        const secondToken = await readFile(join(node, "control.token"));
-        expect(secondToken).not.toEqual(firstToken);
-        const restartedId = await client.run({ id: {} });
-        expect(restartedId.lines).toContain(
-          id.lines.find((line) => line.startsWith("origin:"))
-        );
-      } finally {
-        client?.close();
-        await run(["daemon", "stop", "--data-dir", node]).catch(() => undefined);
-        if (daemonPid) await waitForProcessExit(daemonPid);
-        await rm(root, { force: true, recursive: true });
+      const actualHash = createHash("sha256");
+      let chunksRead = 0;
+      for await (const chunk of client.read({
+        path: "large.bin",
+        space: "drive",
+        start: 0,
+      })) {
+        chunksRead += 1;
+        actualHash.update(chunk);
       }
+      expect(chunksRead).toBeGreaterThan(1);
+      expect(actualHash.digest("hex")).toBe(expectedHash.digest("hex"));
+      await expect(
+        client.list({ limit: 10, prefix: "", space: "drive" })
+      ).resolves.toMatchObject({ entries: [{ path: "large.bin" }] });
+      const driveSpace = (await client.listSpaces()).find(
+        (space) => space.id === "drive"
+      );
+      expect(driveSpace).toMatchObject({
+        id: "drive",
+        sourcePath: expect.any(String),
+      });
+      expect(await realpath(driveSpace!.sourcePath!)).toBe(await realpath(source));
+
+      const cliId = await run(["id"], {
+        ...process.env,
+        SYNCH_DATA_DIR: node,
+      });
+      expect(cliId.stdout).toBe(id.stdout);
+
+      const firstToken = await readFile(join(node, "control.token"));
+      await client.run({ daemonStop: {} });
+      // DaemonStop answers before the daemon lets go of its data directory.
+      await daemon.exited;
+      daemon = runDaemon(node);
+      await daemon.ready;
+      const secondToken = await readFile(join(node, "control.token"));
+      expect(secondToken).not.toEqual(firstToken);
+      const restartedId = await client.run({ id: {} });
+      expect(restartedId.lines).toContain(
+        id.lines.find((line) => line.startsWith("origin:"))
+      );
+    } finally {
+      client?.close();
+      await run(["daemon", "stop", "--data-dir", node]).catch(() => undefined);
+      await daemon?.exited;
+      await rm(root, { force: true, recursive: true });
     }
-  );
+  });
 });
 
 async function startServer(
@@ -727,21 +764,26 @@ async function* chunks(...values: string[]) {
   for (const value of values) yield Buffer.from(value);
 }
 
-function daemonPidFrom(output: string) {
-  const pid = Number(output.match(/daemon started \(pid (\d+)\)/)?.[1] ?? 0);
-  return pid > 0 ? pid : undefined;
-}
-
-async function waitForProcessExit(pid: number) {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    try {
-      process.kill(pid, 0);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
-      throw error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error(`synch daemon ${pid} did not exit`);
+/**
+ * Runs the daemon in the foreground, as `synch daemon start` does in the
+ * background: `ready` once it says its control socket is, `exited` once it is
+ * gone and has let go of its data directory.
+ */
+function runDaemon(dataDir: string) {
+  const child = spawn(realSynchBinary, ["daemon", "run", "--data-dir", dataDir], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const exited = once(child, "exit");
+  const ready = new Promise<void>((resolve, reject) => {
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+      if (output.includes("control ready:")) resolve();
+    });
+    exited.then(
+      () => reject(new Error(`synch daemon exited before it was ready:\n${output}`)),
+      reject
+    );
+  });
+  return { ready, exited };
 }

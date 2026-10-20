@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Central Icons (commercially licensed): IconPin, round-filled-radius-2-stroke-2.
+    Not for redistribution; see ui/icons/IconSources.kt. Tinted in code.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M10.8307 20.2451L7.99999 17.4144L4.7071 20.7072C4.31657 21.0978 3.68341 21.0978 3.29288 20.7072C2.90236 20.3167 2.90236 19.6836 3.29288 19.293L6.58578 16.0001L3.75508 13.1694C2.11787 11.5322 2.87378 8.73615 5.11292 8.1469L10.3703 6.76337C10.6485 6.69018 10.8816 6.50076 11.0103 6.24351L12.3646 3.53483C13.2804 1.70333 15.7213 1.30723 17.1692 2.75515L21.245 6.83092C22.6929 8.27885 22.2968 10.7198 20.4653 11.6355L17.7566 12.9899C17.4994 13.1185 17.31 13.3516 17.2368 13.6298L15.8532 18.8872C15.264 21.1264 12.4679 21.8823 10.8307 20.2451Z"
+        android:fillColor="#FF000000" />
+</vector>

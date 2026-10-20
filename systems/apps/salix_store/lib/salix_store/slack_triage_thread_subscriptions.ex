@@ -147,7 +147,8 @@ defmodule SalixStore.SlackTriageThreadSubscriptions do
     """
   end
 
-  defp validate_scope(scope) do
+  @doc false
+  def validate_scope(scope) do
     if Enum.sort(Map.keys(scope)) == Enum.sort(@scope_keys) and
          Ids.valid_tenant_id?(scope["tenant_id"]) and
          Ids.valid_group_id_for_tenant?(scope["group_id"], scope["tenant_id"]) and
@@ -164,7 +165,8 @@ defmodule SalixStore.SlackTriageThreadSubscriptions do
     end
   end
 
-  defp validate_provenance(%{"obligation_id" => obligation_id} = provenance) do
+  @doc false
+  def validate_provenance(%{"obligation_id" => obligation_id} = provenance) do
     message_id = provenance["message_id"]
     provider_message_ref = provenance["provider_message_ref"]
 
@@ -188,7 +190,7 @@ defmodule SalixStore.SlackTriageThreadSubscriptions do
        else: {:error, :invalid}
   end
 
-  defp validate_provenance(_provenance), do: {:error, :invalid}
+  def validate_provenance(_provenance), do: {:error, :invalid}
 
   defp values(scope), do: Enum.map(@scope_keys, &Map.fetch!(scope, &1))
 

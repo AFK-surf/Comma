@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Central Icons (commercially licensed): IconCircleDashed, round-outlined-radius-2-stroke-2.
+    Not for redistribution; see ui/icons/IconSources.kt. Tinted in code.
+    The dash pattern (3 on, 4 off) is baked into arcs: VectorDrawable has no dash array.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M20.9833,11.4517A9,9 0,0 1,20.5046,14.9448M18.4123,18.3153A9,9 0,0 1,15.993,20.0657M12.1372,20.999A9,9 0,0 1,9.1852,20.5485M5.7832,18.5078A9,9 0,0 1,3.9961,16.1155M3.0042,12.2743A9,9 0,0 1,3.4096,9.3158M5.3982,5.8831A9,9 0,0 1,7.763,4.0597M11.5886,3.0094A9,9 0,0 1,14.553,3.3697M18.0156,5.3058A9,9 0,0 1,19.8748,7.6425"
+        android:strokeColor="#FF000000" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+</vector>

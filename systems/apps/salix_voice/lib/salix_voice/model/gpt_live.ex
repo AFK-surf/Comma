@@ -129,7 +129,7 @@ defmodule SalixVoice.Model.GptLive do
 
   @impl WebSockex
   def handle_connect(_conn, state) do
-    send(self(), :send_session_start)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :send_session_start)
     {:ok, state}
   end
 
@@ -162,7 +162,7 @@ defmodule SalixVoice.Model.GptLive do
   def handle_cast(:close, %{closing?: true} = state), do: {:ok, state}
 
   def handle_cast(:close, state) do
-    Process.send_after(self(), :close_timeout, @close_timeout_ms)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :close_timeout, @close_timeout_ms)
     {:reply, text(%{"type" => "session.close"}), %{state | closing?: true}}
   end
 
@@ -303,7 +303,8 @@ defmodule SalixVoice.Model.GptLive do
 
   # -- Helpers ----------------------------------------------------------------
 
-  defp notify(state, event), do: send(state.owner, {:voice_model, state.ref, event})
+  defp notify(state, event),
+    do: SystemsRuntime.Proc.send(state.owner, {:voice_model, state.ref, event})
 
   defp text(map), do: {:text, Jason.encode!(map)}
 

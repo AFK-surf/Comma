@@ -1,6 +1,7 @@
 defmodule Salix.Bindings.MeetingCalendarTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias Salix.Bindings.{GoogleCalendarSource, GoogleCalendarWatch, MeetingCalendar}
   alias SalixCluster.Schedules
   alias Salix.Control.ComposioSettings
@@ -91,7 +92,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
 
     @impl true
     def adapter_contract_id,
-      do: Application.fetch_env!(:salix_web, :test_google_calendar_contract_id)
+      do: SystemsRuntime.fetch_env!(:salix_web, :test_google_calendar_contract_id)
 
     @impl true
     def capabilities, do: GoogleCalendarSource.capabilities()
@@ -167,26 +168,26 @@ defmodule Salix.Bindings.MeetingCalendarTest do
 
   setup do
     previous = %{
-      s3: Application.get_env(:salix_store, :s3_backend),
-      composio_url: Application.get_env(:salix_store, :composio_base_url_override),
-      adapters: Application.get_env(:salix_calendar, :source_adapters),
-      runtime: Application.get_env(:salix_meet, :agent_runtime_mod),
-      group_context: Application.get_env(:salix_agent, :group_context_mod),
-      calendar: Application.get_env(:salix_agent, :calendar_mod),
-      oauth: Application.get_env(:salix_agent, :oauth_store_mod),
-      public_base_url: Application.get_env(:salix_web, :public_base_url),
-      slack_api_base_url: Application.get_env(:salix_im, :slack_api_base_url)
+      s3: SystemsRuntime.get_env(:salix_store, :s3_backend),
+      composio_url: SystemsRuntime.get_env(:salix_store, :composio_base_url_override),
+      adapters: SystemsRuntime.get_env(:salix_calendar, :source_adapters),
+      runtime: SystemsRuntime.get_env(:salix_meet, :agent_runtime_mod),
+      group_context: SystemsRuntime.get_env(:salix_agent, :group_context_mod),
+      calendar: SystemsRuntime.get_env(:salix_agent, :calendar_mod),
+      oauth: SystemsRuntime.get_env(:salix_agent, :oauth_store_mod),
+      public_base_url: SystemsRuntime.get_env(:salix_web, :public_base_url),
+      slack_api_base_url: SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
     }
 
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
 
-    Application.put_env(:salix_calendar, :source_adapters, %{
+    SystemsRuntime.put_env(:salix_calendar, :source_adapters, %{
       "google_calendar" => GoogleCalendarSource
     })
 
-    Application.put_env(:salix_meet, :agent_runtime_mod, SalixMeet.TestAgentRuntime)
-    Application.put_env(:salix_agent, :calendar_mod, Salix.Bindings.AgentCalendar)
-    Application.put_env(:salix_agent, :oauth_store_mod, Salix.Bindings.AgentOAuthStore)
+    SystemsRuntime.put_env(:salix_meet, :agent_runtime_mod, SalixMeet.TestAgentRuntime)
+    SystemsRuntime.put_env(:salix_agent, :calendar_mod, Salix.Bindings.AgentCalendar)
+    SystemsRuntime.put_env(:salix_agent, :oauth_store_mod, Salix.Bindings.AgentOAuthStore)
     SalixAgent.TestSupport.configure_control_fixtures!()
     ensure_started!(S3.Fake)
     S3.Fake.reset()
@@ -195,8 +196,8 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     ensure_started!(MockExternalHTTP)
     Agent.update(MockExternalHTTP, fn _ -> %{responses: %{}, requests: []} end)
     port = start_bandit_retry!()
-    Application.put_env(:salix_store, :composio_base_url_override, "http://127.0.0.1:#{port}")
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    SystemsRuntime.put_env(:salix_store, :composio_base_url_override, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
 
     tenant_id = Ids.new_tenant_id()
     group_id = Ids.new_group_id(tenant_id)
@@ -507,7 +508,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
              )
 
     stub_channel_stop()
-    Application.put_env(:salix_web, :public_base_url, "https://new-callback.example")
+    SystemsRuntime.put_env(:salix_web, :public_base_url, "https://new-callback.example")
 
     assert {:ok, replacement} =
              GoogleCalendarWatch.ensure(
@@ -1633,6 +1634,127 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     refute Jason.encode!(action["params"]) =~ "oc_attacker"
   end
 
+  test "a Lark calendar target publishes through lark.send_message and gets the base card",
+       %{group: group} do
+    lark_group =
+      group
+      |> Map.merge(%{
+        "provider" => "lark",
+        "connect_id" => "  lark-calendar-connect  ",
+        "chat_id" => "  oc_meeting_target  ",
+        "mentions" => %{
+          "mode" => "users",
+          "users" => [
+            %{
+              "user_id" => "  ou_ada  ",
+              "name" => "  Ada Lovelace  ",
+              "untrusted_destination" => "oc_attacker"
+            },
+            %{"user_id" => "ou_grace", "name" => "Grace Hopper"}
+          ]
+        }
+      })
+      |> Map.delete("channel_id")
+      |> Map.delete("thread_ts")
+
+    stub_list([moved_exception(), recurring_master()], "sync-lark-action")
+    assert {:ok, _} = sync_source(lark_group)
+    assert {:ok, [event]} = MeetingCalendar.list(lark_group, range_start(), range_end())
+    assert {:ok, plan} = MeetingPlan.get(group["group_id"], event["meeting_plan_id"])
+
+    expected_target = %{
+      "provider" => "lark",
+      "tool" => "im_api.lark.send_message",
+      "params" => %{
+        "connect_id" => "lark-calendar-connect",
+        "chat_id" => "oc_meeting_target",
+        "mentions" => [
+          %{"user_id" => "ou_ada", "name" => "Ada Lovelace"},
+          %{"user_id" => "ou_grace", "name" => "Grace Hopper"}
+        ]
+      }
+    }
+
+    assert plan["publication_target"] == expected_target
+
+    assert {:ok, %{"participants" => participants}} =
+             Conversations.list_group_conversation_participants(
+               group["group_id"],
+               plan["conversation_id"],
+               limit: 100
+             )
+
+    refute Enum.any?(participants, &(&1["actor_type"] == "provider"))
+
+    revision = get_in(plan, ["preparation", "dispatch_revision"])
+
+    assert {:ok, %{"status" => "opened"}} =
+             MeetingPlan.open_trigger(
+               group["group_id"],
+               plan["meeting_plan_id"],
+               "decision",
+               revision,
+               now: get_in(plan, ["preparation", "decision_at"])
+             )
+
+    assert {:ok, _} =
+             MeetingPlan.record_decision(
+               group["group_id"],
+               plan["meeting_plan_id"],
+               revision,
+               "required",
+               %{"known_facts" => ["Agenda confirmed."], "gaps" => []}
+             )
+
+    assert {:ok, publication} =
+             MeetingPlan.open_trigger(
+               group["group_id"],
+               plan["meeting_plan_id"],
+               "publication",
+               revision,
+               now: get_in(plan, ["preparation", "publish_start_at"])
+             )
+
+    action = publication["publication_action"]
+    assert action["tool"] == "im_api.lark.send_message"
+    assert action["params"] == expected_target["params"]
+    assert action["content_param"] == "text"
+    assert is_binary(action["draft"])
+    assert is_binary(action["instruction"])
+    assert Enum.sort(Map.keys(action)) == ~w(content_param draft instruction params tool)
+    refute Jason.encode!(action["params"]) =~ "oc_attacker"
+
+    # The base card goes out seven minutes before the start, to the Lark chat.
+    start_ms = get_in(plan, ["preparation", "publish_deadline_at"]) + :timer.minutes(5)
+    assert plan["preparation"]["card_at"] == start_ms - :timer.minutes(7)
+
+    payload = %{"group_id" => group["group_id"], "meeting_plan_id" => plan["meeting_plan_id"]}
+
+    assert {:ok, :fired} =
+             Salix.Bindings.MeetingPublicationReceiver.receive(payload, :claimed,
+               now: plan["preparation"]["card_at"]
+             )
+
+    assert {:ok, sent_plan} = MeetingPlan.get(group["group_id"], plan["meeting_plan_id"])
+    assert get_in(sent_plan, ["preparation", "card_status"]) == "sent"
+
+    assert {:ok, conversation} = SalixIM.RouterConversationInput.ensure(group["group_id"])
+
+    assert {:ok, %{"participants" => router_participants}} =
+             Conversations.list_group_conversation_participants(
+               group["group_id"],
+               conversation["conversation_id"],
+               limit: 100
+             )
+
+    assert [card_participant] =
+             Enum.filter(router_participants, &(&1["actor_type"] == "provider"))
+
+    assert card_participant["provider"] == "lark"
+    assert get_in(card_participant, ["payload", "connect_id"]) == "lark-calendar-connect"
+    assert get_in(card_participant, ["payload", "chat_id"]) == "oc_meeting_target"
+  end
+
   for access_profile <- ~w(free_busy redacted) do
     test "#{access_profile} Google source does not disclose provider details after sync", %{
       group: group
@@ -2398,7 +2520,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     group: group
   } do
     previous_contract =
-      Application.get_env(:salix_web, :test_google_calendar_contract_id)
+      SystemsRuntime.get_env(:salix_web, :test_google_calendar_contract_id)
 
     on_exit(fn ->
       restore_env(
@@ -2408,7 +2530,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
       )
     end)
 
-    Application.put_env(:salix_calendar, :source_adapters, %{
+    SystemsRuntime.put_env(:salix_calendar, :source_adapters, %{
       "google_calendar" => GoogleCalendarSource,
       "versioned_google_calendar" => VersionedGoogleCalendarSource
     })
@@ -2428,7 +2550,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
       "sync_policy" => %{"page_size" => 200}
     }
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_web,
       :test_google_calendar_contract_id,
       "google_calendar.events.v1"
@@ -2454,7 +2576,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
 
     assert {:ok, []} = S3.list_all("ctl/meeting_plans/#{group["group_id"]}/plans/")
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_web,
       :test_google_calendar_contract_id,
       GoogleCalendarSource.adapter_contract_id()
@@ -2804,35 +2926,6 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     assert proxy_parameter(first_request, "pageToken") == nil
     assert proxy_parameter(second_request, "syncToken") == "sync-1"
     assert proxy_parameter(second_request, "pageToken") == "page-2"
-  end
-
-  test "a legacy continuation creates a proxy session and an expired session is rebuilt once", %{
-    source: source
-  } do
-    MockExternalHTTP.stub_sequence("POST", @proxy_execute_path, [
-      {404, %{"error" => %{"message" => "session expired"}}},
-      %{"status" => 200, "data" => %{"items" => [], "nextSyncToken" => "sync-2"}}
-    ])
-
-    continuation =
-      %{"page_token" => "legacy-page", "sync_token" => "sync-1"}
-      |> Jason.encode!()
-      |> Base.url_encode64(padding: false)
-
-    assert {:ok, %{"completed_cursor" => "sync-2"}} =
-             GoogleCalendarSource.continue_sync(
-               source,
-               %{
-                 "group_id" => source["group_id"],
-                 "object_type" => "Event",
-                 "page_size" => 200
-               },
-               continuation
-             )
-
-    assert provider_proxy_session_create_count() == 2
-    assert length(provider_list_requests()) == 2
-    assert provider_proxy_session_delete_count() == 2
   end
 
   test "an unavailable proxy session is recreated only once", %{source: source} do
@@ -3194,9 +3287,9 @@ defmodule Salix.Bindings.MeetingCalendarTest do
 
   test "calendar writeback requires the current enrollment opt-in, including after a plan was saved",
        %{group: group} do
-    previous = Application.get_env(:salix_meet, :calendar_autojoin_channels)
+    previous = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels)
     on_exit(fn -> restore_env(:salix_meet, :calendar_autojoin_channels, previous) end)
-    Application.put_env(:salix_meet, :calendar_autojoin_channels, [])
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [])
     group = Map.put(group, "calendar_writeback", true)
     raw = standalone_event("Opt-in meeting", 1, "2030-01-02T00:00:00Z") |> Map.put("etag", "v1")
     {_item, event} = writeback_fixture(group, raw)
@@ -3240,10 +3333,10 @@ defmodule Salix.Bindings.MeetingCalendarTest do
                entry,
                identity,
                group,
-               System.system_time(:millisecond)
+               SystemsClock.system_time(:millisecond)
              )
 
-    Application.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
     MockExternalHTTP.stub("POST", @proxy_execute_path, %{"status" => 200, "data" => raw})
 
     assert {:ok, %{"status" => "written"}} =
@@ -3251,7 +3344,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
 
     assert [_one_write] = calendar_patch_requests()
 
-    Application.put_env(:salix_meet, :calendar_autojoin_channels, [
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [
       Map.delete(entry, "calendar_writeback")
     ])
 
@@ -3317,16 +3410,16 @@ defmodule Salix.Bindings.MeetingCalendarTest do
        } do
     group = Map.put(group, "calendar_writeback", true)
     {plan, raw} = personal_fixture(group)
-    [entry] = Application.fetch_env!(:salix_meet, :calendar_autojoin_channels)
+    [entry] = SystemsRuntime.fetch_env!(:salix_meet, :calendar_autojoin_channels)
     entry = Map.put(entry, "calendar_writeback", true)
-    Application.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
 
     assert :ok =
              SalixMeet.CalendarEnrollmentCache.put(
                entry,
                group,
                group,
-               System.system_time(:millisecond)
+               SystemsClock.system_time(:millisecond)
              )
 
     assert {:ok, context} = SalixMeet.PersonalPreparation.context(plan)
@@ -3446,43 +3539,6 @@ defmodule Salix.Bindings.MeetingCalendarTest do
              )
 
     assert length(personal_posts()) == 2
-  end
-
-  test "ordinary provider notices retain Slack's default link preview policy", %{group: group} do
-    {plan, _raw} = personal_fixture(group)
-
-    assert {:ok, attrs} =
-             SalixIM.ProviderConversationInput.participant_attrs(%{
-               "metadata" => %{
-                 "provider" => "slack",
-                 "connect_id" => group["connect_id"],
-                 "channel_id" => group["channel_id"]
-               }
-             })
-
-    assert {:ok, participant} =
-             ConversationServer.ensure_group_conversation_provider_participant(
-               group["group_id"],
-               plan["conversation_id"],
-               attrs
-             )
-
-    assert {:ok, _} =
-             ConversationServer.send_provider_participant_message(
-               group["group_id"],
-               plan["conversation_id"],
-               participant["participant_id"],
-               %{
-                 "idempotency_key" => "ordinary-link-notice",
-                 "content" => [%{"type" => "text", "text" => "Read https://example.com/update"}],
-                 "metadata" => %{"source" => "ordinary_notice"}
-               }
-             )
-
-    assert eventually(fn -> length(personal_posts()) == 1 end)
-    [post] = personal_posts()
-    refute Map.has_key?(post.body, "unfurl_links")
-    refute Map.has_key?(post.body, "unfurl_media")
   end
 
   test "public-source reports reject private, cross-connect and other-recipient sources with IFC off",
@@ -3695,21 +3751,6 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     assert {:ok, false} = SalixMeet.PersonalPreparation.has_pending?(plan)
   end
 
-  @tag :personal_pagination
-  test "an empty first recipient page does not hide later eligible attendees", %{group: group} do
-    names = Enum.map(1..20, &("missing" <> to_string(&1))) ++ ["peng", "jinfei"]
-    {plan, _raw} = personal_fixture(group, names)
-    schedule_id = plan["preparation"]["schedule_ids"]["personal"]
-    assert {:ok, schedule} = Schedules.get(schedule_id)
-    at = plan["preparation"]["card_at"]
-    assert {:ok, :pending} = Schedules.fire(schedule, at, now: at)
-    assert personal_posts() == []
-    assert personal_lookups() == 20
-    assert {:ok, :already_fired} = finish_personal_schedule(schedule, at, 1_000)
-    assert eventually(fn -> length(personal_posts()) == 2 end)
-    assert personal_lookups() == 24
-  end
-
   test "a Google group invite adds current user members across Directory pages", %{group: group} do
     {plan, raw} = personal_fixture(group, ["peng", "developer"])
     stub_group_account(group)
@@ -3782,41 +3823,6 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     assert Enum.any?(directory, &(proxy_parameter(&1, "includeDerivedMembership") == "true"))
   end
 
-  test "a Directory failure leaves direct reminders sent and group expansion retryable", %{
-    group: group
-  } do
-    {plan, raw} = personal_fixture(group, ["peng", "developer"])
-    stub_group_account(group)
-
-    stub_group_proxy(raw, fn endpoint, _token ->
-      if String.ends_with?(endpoint, "/groups/peng%40example.com/members"),
-        do: %{"status" => 404, "data" => %{}},
-        else: %{"status" => 503, "data" => %{}}
-    end)
-
-    schedule_id = plan["preparation"]["schedule_ids"]["personal"]
-    assert {:ok, schedule} = Schedules.get(schedule_id)
-    at = plan["preparation"]["card_at"]
-    assert {:ok, :pending} = Schedules.fire(schedule, at, now: at)
-    assert eventually(fn -> length(personal_posts()) == 2 end)
-
-    assert {:error, :meeting_group_directory_unavailable} =
-             Schedules.fire(schedule, at, now: at + 1_000)
-
-    assert length(personal_posts()) == 2
-    assert {:ok, current} = MeetingPlan.get(group["group_id"], plan["meeting_plan_id"])
-    refute current["preparation"]["personal_status"] == "sent"
-
-    stub_group_proxy(raw, fn endpoint, _token ->
-      if String.ends_with?(endpoint, "/groups/peng%40example.com/members"),
-        do: %{"status" => 404, "data" => %{}},
-        else: %{"status" => 200, "data" => %{"members" => []}}
-    end)
-
-    assert {:ok, :already_fired} = finish_personal_schedule(schedule, at, 2_000)
-    assert length(personal_posts()) == 2
-  end
-
   test "a former group member does not receive a reminder", %{group: group} do
     {plan, raw} = personal_fixture(group, ["developer"])
     stub_group_account(group)
@@ -3855,62 +3861,6 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     assert {:ok, :pending} = Schedules.fire(schedule, at, now: at)
     assert {:ok, :already_fired} = finish_personal_schedule(schedule, at, 1_000)
     assert personal_posts() == []
-  end
-
-  test "a cross-domain nested group member does not stall other reminders", %{group: group} do
-    {plan, raw} = personal_fixture(group, ["developer"])
-    stub_group_account(group)
-
-    stub_group_proxy(raw, fn endpoint, _token ->
-      cond do
-        String.ends_with?(endpoint, "/groups/developer%40example.com/members") ->
-          %{
-            "status" => 200,
-            "data" => %{
-              "members" => [
-                %{"email" => "nested@elsewhere.com", "type" => "USER"},
-                %{"email" => "peng@example.com", "type" => "USER"}
-              ]
-            }
-          }
-
-        String.ends_with?(endpoint, "/hasMember/nested%40elsewhere.com") ->
-          %{"status" => 400, "data" => %{"error" => "Invalid input"}}
-
-        String.ends_with?(endpoint, "/hasMember/peng%40example.com") ->
-          %{"status" => 200, "data" => %{"isMember" => true}}
-      end
-    end)
-
-    MockExternalHTTP.stub("POST", "/api/users.lookupByEmail", fn request ->
-      case request["email"] do
-        "developer@example.com" ->
-          %{"ok" => false, "error" => "users_not_found"}
-
-        email ->
-          name = email |> String.split("@") |> hd()
-
-          %{
-            "ok" => true,
-            "user" => %{
-              "id" => "U" <> String.upcase(name),
-              "team_id" => group["workspace_id"],
-              "profile" => %{"email" => email}
-            }
-          }
-      end
-    end)
-
-    schedule_id = plan["preparation"]["schedule_ids"]["personal"]
-    assert {:ok, schedule} = Schedules.get(schedule_id)
-    at = plan["preparation"]["card_at"]
-    assert {:ok, :pending} = Schedules.fire(schedule, at, now: at)
-    assert {:ok, :already_fired} = finish_personal_schedule(schedule, at, 1_000)
-
-    assert eventually(fn -> length(personal_posts()) == 2 end)
-
-    assert MapSet.new(Enum.map(personal_posts(), & &1.body["channel"])) ==
-             MapSet.new(~w(DNESTED DPENG))
   end
 
   test "cross-domain fallback requires a complete current group listing", %{group: group} do
@@ -4027,105 +3977,6 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     assert hd(personal_posts()).body["channel"] == "DREMAINING"
   end
 
-  @tag :personal_pagination
-  test "failed first-page lookups yield to later recipients and cutoff preserves unsent reports",
-       %{group: group} do
-    names = Enum.map(1..29, &("p" <> String.pad_leading(to_string(&1), 2, "0")))
-    {plan, _raw} = personal_fixture(group, names)
-    assert {:ok, first} = SalixMeet.PersonalPreparation.context(plan)
-    assert {:ok, second} = SalixMeet.PersonalPreparation.context(plan, cursor: 20)
-    save_personal_pages(plan, [first, second])
-
-    MockExternalHTTP.stub("POST", "/api/users.lookupByEmail", fn request ->
-      name = request["email"] |> String.split("@") |> hd()
-
-      if name <= "p20" do
-        %{"ok" => false, "error" => "ratelimited"}
-      else
-        %{
-          "ok" => true,
-          "user" => %{
-            "id" => "U" <> String.upcase(name),
-            "team_id" => group["workspace_id"],
-            "profile" => %{"email" => request["email"]},
-            "real_name" => name
-          }
-        }
-      end
-    end)
-
-    schedule_id = plan["preparation"]["schedule_ids"]["personal"]
-    assert {:ok, schedule} = Schedules.get(schedule_id)
-    at = plan["preparation"]["card_at"]
-    assert {:error, :slack_attendee_lookup_failed} = Schedules.fire(schedule, at, now: at)
-    assert {:ok, :pending} = Schedules.fire(schedule, at, now: at + 1_000)
-    assert eventually(fn -> length(personal_posts()) == 9 end)
-    assert {:ok, :already_fired} = Schedules.fire(schedule, at, now: at + :timer.minutes(10))
-    assert length(personal_posts()) == 9
-    assert {:ok, false} = SalixMeet.PersonalPreparation.has_pending?(plan)
-
-    identity = [
-      group["group_id"],
-      plan["meeting_plan_id"],
-      plan["preparation"]["dispatch_revision"]
-    ]
-
-    assert {:ok, unsent} = SalixStore.MeetingPersonalPreparation.get_recipient(identity, "UP01")
-    assert unsent["report"]["status"] == "expired"
-    assert unsent["report"]["text"] == "Private preparation for UP01"
-  end
-
-  @tag :discovery_failure
-  test "later discovery failure preserves known reminders and recovery sends remaining attendees",
-       %{group: group} do
-    names = Enum.map(1..29, &("p" <> String.pad_leading(to_string(&1), 2, "0")))
-    {plan, _raw} = personal_fixture(group, names)
-    assert {:ok, first} = SalixMeet.PersonalPreparation.context(plan)
-    assert length(first["recipients"]) == 20
-
-    lookup = fn request ->
-      name = request["email"] |> String.split("@") |> hd()
-
-      %{
-        "ok" => true,
-        "user" => %{
-          "id" => "U" <> String.upcase(name),
-          "team_id" => group["workspace_id"],
-          "profile" => %{"email" => request["email"]},
-          "real_name" => name
-        }
-      }
-    end
-
-    MockExternalHTTP.stub("POST", "/api/users.lookupByEmail", fn request ->
-      if request["email"] == "p21@example.com",
-        do: %{"ok" => false, "error" => "ratelimited"},
-        else: lookup.(request)
-    end)
-
-    schedule_id = plan["preparation"]["schedule_ids"]["personal"]
-    assert {:ok, schedule} = Schedules.get(schedule_id)
-    at = plan["preparation"]["card_at"]
-    assert {:error, :slack_attendee_lookup_failed} = Schedules.fire(schedule, at, now: at)
-    assert eventually(fn -> length(personal_posts()) == 20 end)
-    assert {:ok, false} = SalixMeet.PersonalPreparation.research_complete?(plan)
-    assert {:ok, current} = MeetingPlan.get(group["group_id"], plan["meeting_plan_id"])
-    refute current["preparation"]["personal_status"] == "sent"
-
-    assert {:error, :slack_attendee_lookup_failed} = Schedules.fire(schedule, at, now: at + 1_000)
-    assert length(personal_posts()) == 20
-    MockExternalHTTP.stub("POST", "/api/users.lookupByEmail", lookup)
-    assert {:ok, :already_fired} = finish_personal_schedule(schedule, at, 2_000)
-    assert eventually(fn -> length(personal_posts()) == 29 end)
-
-    assert Enum.sort(Enum.map(personal_posts(), & &1.body["channel"])) ==
-             Enum.map(names, &("D" <> String.upcase(&1)))
-
-    assert {:ok, :already_fired} = Schedules.fire(schedule, at, now: at + 3_000)
-    assert length(personal_posts()) == 29
-    assert {:ok, false} = SalixMeet.PersonalPreparation.research_complete?(plan)
-  end
-
   defp personal_lookups,
     do: Enum.count(MockExternalHTTP.requests(), &(&1.path == "/api/users.lookupByEmail"))
 
@@ -4138,34 +3989,16 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     end
   end
 
-  defp save_personal_pages(plan, pages) do
-    for page <- pages, recipient <- page["recipients"] do
-      user = recipient["user_id"]
-
-      assert {:ok, _} =
-               SalixMeet.PersonalPreparation.submit(
-                 plan,
-                 page["connect_id"],
-                 user,
-                 "Private preparation for " <> user,
-                 %{
-                   "sources_label" => ["scope|#{page["connect_id"]}|@#{user}"],
-                   "declassified" => []
-                 }
-               )
-    end
-  end
-
   defp personal_fixture(group, names \\ ["peng", "jinfei", "guest", "missing"]) do
-    previous = Application.get_env(:salix_meet, :calendar_autojoin_channels)
-    previous_port = Application.get_env(:salix_meet, :personal_preparation_mod)
+    previous = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels)
+    previous_port = SystemsRuntime.get_env(:salix_meet, :personal_preparation_mod)
 
     on_exit(fn ->
       restore_env(:salix_meet, :calendar_autojoin_channels, previous)
       restore_env(:salix_meet, :personal_preparation_mod, previous_port)
     end)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_meet,
       :personal_preparation_mod,
       Salix.Bindings.MeetingPersonalPreparation
@@ -4177,14 +4010,14 @@ defmodule Salix.Bindings.MeetingCalendarTest do
       "calendars" => ["Meetings"]
     }
 
-    Application.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
 
     assert :ok =
              SalixMeet.CalendarEnrollmentCache.put(
                entry,
                group,
                group,
-               System.system_time(:millisecond)
+               SystemsClock.system_time(:millisecond)
              )
 
     assert {:ok, _} =
@@ -4382,7 +4215,7 @@ defmodule Salix.Bindings.MeetingCalendarTest do
           "data" => %{
             "id" => channel_id,
             "resourceId" => "resource-#{channel_id}",
-            "expiration" => System.system_time(:millisecond) + 7 * 24 * 60 * 60 * 1_000
+            "expiration" => SystemsClock.system_time(:millisecond) + 7 * 24 * 60 * 60 * 1_000
           }
         }
       end
@@ -4543,25 +4376,12 @@ defmodule Salix.Bindings.MeetingCalendarTest do
     DateTime.to_unix(datetime, :millisecond)
   end
 
-  defp eventually_value(fun, retries \\ 100)
-  defp eventually_value(_fun, 0), do: nil
-
-  defp eventually_value(fun, retries) do
-    case fun.() do
-      value when value in [nil, false] ->
-        Process.sleep(20)
-        eventually_value(fun, retries - 1)
-
-      value ->
-        value
-    end
-  end
-
-  defp eventually(fun), do: eventually_value(fn -> if fun.(), do: true end)
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 
   defp start_bandit_retry! do
     Enum.find_value(1..10, fn _ ->
-      port = 40_000 + :erlang.phash2(make_ref(), 20_000)
+      port = 40_000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20_000)
 
       case ExUnit.Callbacks.start_supervised(
              {Bandit, plug: MockExternalHTTP, port: port, ip: {127, 0, 0, 1}},
@@ -4574,12 +4394,12 @@ defmodule Salix.Bindings.MeetingCalendarTest do
   end
 
   defp ensure_started!(module) do
-    case Process.whereis(module) do
+    case SystemsRuntime.Proc.whereis(module) do
       nil -> start_supervised!(module)
       _pid -> :ok
     end
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

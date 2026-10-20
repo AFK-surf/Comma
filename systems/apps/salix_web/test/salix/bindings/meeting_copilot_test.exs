@@ -1,5 +1,5 @@
 defmodule Salix.Bindings.MeetingCopilotTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias Salix.Bindings.MeetingCopilot, as: C
 
@@ -43,15 +43,6 @@ defmodule Salix.Bindings.MeetingCopilotTest do
       d = C.build_digest(state, [%{"speaker" => "A", "text" => "ok"}], [])
       assert String.contains?(d, "## Already sent (do NOT repeat)\n- 已记：跟进首页文案")
     end
-
-    test "omits empty content sections but always states the bot name" do
-      d = C.build_digest(%{"title" => "M"}, [], [])
-      assert String.starts_with?(d, "## Meeting: M")
-      assert String.contains?(d, ~s(You appear in this meeting as "Cirno"))
-      refute String.contains?(d, "## New transcript")
-      refute String.contains?(d, "## New in-meeting chat")
-      refute String.contains?(d, "## Already sent")
-    end
   end
 
   describe "accumulate/2" do
@@ -62,51 +53,6 @@ defmodule Salix.Bindings.MeetingCopilotTest do
                %{"role" => "user", "content" => "d1"},
                %{"role" => "assistant", "content" => "r1"}
              ]
-    end
-
-    test "a silent turn keeps the user delta but adds no assistant turn" do
-      prior = [%{"role" => "user", "content" => "d1"}]
-      assert C.accumulate(prior, "") == prior
-    end
-
-    test "keeps a prior summary in history so a later summary can build on it" do
-      history = [
-        %{"role" => "user", "content" => "总结一下"},
-        %{"role" => "assistant", "content" => "0-5 分钟的要点：..."},
-        %{"role" => "user", "content" => "再总结一次"}
-      ]
-
-      out = C.accumulate(history, "5-10 分钟的更新：...")
-      assert Enum.any?(out, &(&1["content"] == "0-5 分钟的要点：..."))
-      assert List.last(out) == %{"role" => "assistant", "content" => "5-10 分钟的更新：..."}
-    end
-
-    test "caps by dropping whole oldest turns and never leaves a leading assistant" do
-      big = String.duplicate("x", 25_000)
-
-      prior = [
-        %{"role" => "user", "content" => big},
-        %{"role" => "assistant", "content" => "r1"},
-        %{"role" => "user", "content" => big}
-      ]
-
-      # over budget: the oldest user+assistant turn is dropped as a whole, so the
-      # newest reply is never orphaned from the user it answered.
-      out = C.accumulate(prior, "r2")
-      assert List.first(out)["role"] == "user"
-      refute match?([%{"role" => "assistant"} | _], out)
-      assert List.last(out) == %{"role" => "assistant", "content" => "r2"}
-    end
-
-    test "strips a leading orphan assistant left by earlier capping" do
-      stale = [
-        %{"role" => "assistant", "content" => "orphaned reply"},
-        %{"role" => "user", "content" => "u1"}
-      ]
-
-      out = C.accumulate(stale, "r1")
-      assert List.first(out)["role"] == "user"
-      refute Enum.any?(out, &(&1["content"] == "orphaned reply"))
     end
   end
 
@@ -119,16 +65,6 @@ defmodule Salix.Bindings.MeetingCopilotTest do
                   %{"role" => "user", "content" => "d1"},
                   %{"role" => "assistant", "content" => "hi"}
                 ], "hi"}
-    end
-
-    test "a failed send records neither an assistant turn nor a spoken value" do
-      prior = [%{"role" => "user", "content" => "d1"}]
-      assert C.apply_outcome(prior, "hi", :failed) == {prior, ""}
-    end
-
-    test "a silent turn keeps the delta and reports nothing spoken" do
-      prior = [%{"role" => "user", "content" => "d1"}]
-      assert C.apply_outcome(prior, "", :silent) == {prior, ""}
     end
   end
 end

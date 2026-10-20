@@ -25,13 +25,22 @@ theorem restart_saved_capability_ordinary {state context record output : Term} {
 syntax "solve_restart_resume_context " ident : tactic
 macro_rules
   | `(tactic| solve_restart_resume_context $events:ident) => `(tactic|
+    -- Match each lemma at reducible transparency, so a context of another shape fails at once.
     (first
        | assumption
-       | exact RestartContextReady.capture (by solve_restart_resume_context $events) (by assumption)
-       | exact RestartContextReady.add_items (by solve_restart_resume_context $events)
-           (by first | assumption | exact $events _ _ rfl) (by decide)
-       | exact RestartContextReady.put_other (by solve_restart_resume_context $events) (by simp +decide; done)
-       | exact RestartContextReady.add_other (by solve_restart_resume_context $events) (by simp +decide; done)
+       | (with_reducible refine RestartContextReady.capture ?_ ?_
+          · solve_restart_resume_context $events
+          · assumption)
+       | (with_reducible refine RestartContextReady.add_items ?_ ?_ ?_
+          · solve_restart_resume_context $events
+          · first | assumption | exact $events _ _ rfl
+          · decide)
+       | (with_reducible refine RestartContextReady.put_other ?_ ?_
+          · solve_restart_resume_context $events
+          · simp +decide; done)
+       | (with_reducible refine RestartContextReady.add_other ?_ ?_
+          · solve_restart_resume_context $events
+          · simp +decide; done)
        | (split <;> solve_restart_resume_context $events)))
 
 theorem restart_resume_ordinary {state context observation output : Term} {name : String}

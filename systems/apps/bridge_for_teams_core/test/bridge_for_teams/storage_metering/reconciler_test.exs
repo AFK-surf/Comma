@@ -1,12 +1,15 @@
 defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
+  require SystemsRuntime.Proc
+
   use BridgeForTeams.DataCase, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{Orgs, Projects}
   alias BridgeForTeams.Schema.StorageMeteringScan
   alias BridgeForTeams.StorageMetering.Reconciler
 
   setup do
-    n = System.unique_integer([:positive])
+    n = SystemsRuntime.Proc.unique_integer([:positive])
     {:ok, org} = Orgs.create_org(%{"name" => "Metering #{n}", "slug" => "metering-#{n}"})
 
     projects =
@@ -24,15 +27,15 @@ defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
   end
 
   test "keyset cursor reaches projects beyond one bounded page", %{projects: projects} do
-    parent = self()
-    now_ms = System.system_time(:millisecond)
+    parent = SystemsRuntime.Proc.self()
+    now_ms = SystemsClock.system_time(:millisecond)
 
     opts = [
       limit: 2,
       now_ms: now_ms,
       list_fun: fn _prefix, _opts -> {:ok, [%{size: 10}]} end,
       metering_fun: fn fact ->
-        send(parent, {:metered, fact.owner_snapshot["project_id"]})
+        SystemsRuntime.Proc.send(parent, {:metered, fact.owner_snapshot["project_id"]})
         {:ok, :charged}
       end
     ]
@@ -57,8 +60,8 @@ defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
   test "metering failure does not advance the checkpoint and retry reuses the stable key", %{
     projects: [_project | _]
   } do
-    parent = self()
-    now_ms = System.system_time(:millisecond)
+    parent = SystemsRuntime.Proc.self()
+    now_ms = SystemsClock.system_time(:millisecond)
 
     failed =
       Reconciler.run_once(
@@ -66,7 +69,7 @@ defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
         now_ms: now_ms,
         list_fun: fn _prefix, _opts -> {:ok, [%{size: 10}]} end,
         metering_fun: fn fact ->
-          send(parent, {:failed_key, fact.source_key})
+          SystemsRuntime.Proc.send(parent, {:failed_key, fact.source_key})
           {:error, :billing_unavailable}
         end
       )
@@ -84,7 +87,7 @@ defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
         now_ms: now_ms + 60_000,
         list_fun: fn _prefix, _opts -> {:ok, [%{size: 10}]} end,
         metering_fun: fn fact ->
-          send(parent, {:retried_key, fact.source_key})
+          SystemsRuntime.Proc.send(parent, {:retried_key, fact.source_key})
           {:ok, :charged}
         end
       )
@@ -98,11 +101,11 @@ defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
   end
 
   test "a second worker cannot sample a claimed page", %{projects: [_ | _]} do
-    parent = self()
-    now_ms = System.system_time(:millisecond)
+    parent = SystemsRuntime.Proc.self()
+    now_ms = SystemsClock.system_time(:millisecond)
 
     first =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Reconciler.run_once(
           limit: 1,
           now_ms: now_ms,
@@ -111,9 +114,12 @@ defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
             if Process.get(:storage_list_released) do
               {:ok, [%{size: 10}]}
             else
-              send(parent, {:storage_list_blocked, self()})
+              SystemsRuntime.Proc.send(
+                parent,
+                {:storage_list_blocked, SystemsRuntime.Proc.self()}
+              )
 
-              receive do
+              SystemsRuntime.Proc.receive do
                 :release_storage_list ->
                   Process.put(:storage_list_released, true)
                   {:ok, [%{size: 10}]}
@@ -124,7 +130,7 @@ defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
         )
       end)
 
-    assert_receive {:storage_list_blocked, blocked_pid}
+    settle_receive({:storage_list_blocked, blocked_pid})
 
     assert %{claimed: false, sampled: 0} =
              Reconciler.run_once(
@@ -137,16 +143,16 @@ defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
                metering_fun: fn _fact -> {:ok, :charged} end
              )
 
-    send(blocked_pid, :release_storage_list)
-    assert %{claimed: true, failed: 0} = Task.await(first, 5_000)
+    SystemsRuntime.Proc.send(blocked_pid, :release_storage_list)
+    assert %{claimed: true, failed: 0} = settled_await(first)
   end
 
   test "retry only meters scopes whose generation checkpoint is still missing", %{
     projects: [_ | _]
   } do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
     {:ok, attempts} = Agent.start_link(fn -> 0 end)
-    now_ms = System.system_time(:millisecond)
+    now_ms = SystemsClock.system_time(:millisecond)
 
     first =
       Reconciler.run_once(
@@ -155,7 +161,7 @@ defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
         list_fun: fn _prefix, _opts -> {:ok, [%{size: 10}]} end,
         metering_fun: fn fact ->
           attempt = Agent.get_and_update(attempts, &{&1 + 1, &1 + 1})
-          send(parent, {:first_attempt, fact.source_key})
+          SystemsRuntime.Proc.send(parent, {:first_attempt, fact.source_key})
           if attempt == 2, do: {:error, :billing_unavailable}, else: {:ok, :charged}
         end
       )
@@ -169,7 +175,7 @@ defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
         now_ms: now_ms + 60_000,
         list_fun: fn _prefix, _opts -> {:ok, [%{size: 10}]} end,
         metering_fun: fn fact ->
-          send(parent, {:second_attempt, fact.source_key})
+          SystemsRuntime.Proc.send(parent, {:second_attempt, fact.source_key})
           {:ok, :charged}
         end
       )
@@ -181,29 +187,32 @@ defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
   end
 
   test "kill after billing success is recovered with the same source key", %{projects: [_ | _]} do
-    parent = self()
-    now_ms = System.system_time(:millisecond)
+    parent = SystemsRuntime.Proc.self()
+    now_ms = SystemsClock.system_time(:millisecond)
 
     first =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Reconciler.run_once(
           limit: 1,
           now_ms: now_ms,
           lease_ttl_ms: 10,
           list_fun: fn _prefix, _opts -> {:ok, [%{size: 10}]} end,
           metering_fun: fn fact ->
-            send(parent, {:charged_before_kill, fact.source_key, self()})
+            SystemsRuntime.Proc.send(
+              parent,
+              {:charged_before_kill, fact.source_key, SystemsRuntime.Proc.self()}
+            )
 
-            receive do
+            SystemsRuntime.Proc.receive do
               :never -> {:ok, :charged}
             end
           end
         )
       end)
 
-    assert_receive {:charged_before_kill, source_key, blocked_pid}
+    settle_receive({:charged_before_kill, source_key, blocked_pid})
     assert blocked_pid == first.pid
-    _ = Task.shutdown(first, :brutal_kill)
+    _ = SystemsRuntime.Task.shutdown(first, :brutal_kill)
 
     recovered =
       Reconciler.run_once(
@@ -212,17 +221,17 @@ defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
         lease_ttl_ms: 10,
         list_fun: fn _prefix, _opts -> {:ok, [%{size: 10}]} end,
         metering_fun: fn fact ->
-          send(parent, {:recovered_key, fact.source_key})
+          SystemsRuntime.Proc.send(parent, {:recovered_key, fact.source_key})
           {:ok, :idempotent}
         end
       )
 
     assert recovered.claimed
-    assert_receive {:recovered_key, ^source_key}
+    settle_receive({:recovered_key, ^source_key})
   end
 
   defp drain_metered_projects(acc \\ MapSet.new()) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:metered, project_id} -> drain_metered_projects(MapSet.put(acc, project_id))
     after
       0 -> acc
@@ -230,7 +239,7 @@ defmodule BridgeForTeams.StorageMetering.ReconcilerTest do
   end
 
   defp drain_keys(tag, acc \\ MapSet.new()) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {^tag, key} -> drain_keys(tag, MapSet.put(acc, key))
     after
       0 -> acc

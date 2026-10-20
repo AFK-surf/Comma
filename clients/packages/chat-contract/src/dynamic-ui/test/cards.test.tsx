@@ -48,7 +48,6 @@ const layoutsFor = (kind: string, data: unknown, variant?: string) =>
   new Set(seeds.map((seed) => layoutOf(kind, data, seed, variant)));
 
 afterEach(() => {
-  vi.useRealTimers();
   document.body.replaceChildren();
 });
 
@@ -203,6 +202,83 @@ describe("card content", () => {
     expect(clean!.textContent).not.toContain("·");
     expect(blocked!.textContent).toContain("3 failed checks · review required");
     expect(blocked!.textContent).toContain("Blockedcommaboard #2240 · 2h");
+  });
+
+  it("drops feed filters that match no item and shows every item without a choice", () => {
+    const items = [
+      { source: "Figma", title: "Agent ready", tags: ["Review"], filterKeys: ["all"] },
+      { source: "Chat", title: "Welcome", filterKeys: ["all", "unread"] },
+    ];
+    const filters = [
+      { key: "all", label: "All" },
+      { key: "unread", label: "Unread" },
+      { key: "flagged", label: "Flagged" },
+    ];
+    const { target } = show("feed", { title: "Inbox", items, filters }, "block-1");
+    expect(
+      [...target.querySelectorAll("[role=group] button")].map((b) => b.textContent)
+    ).toEqual(["All", "Unread"]);
+    expect(target.querySelectorAll("li")).toHaveLength(2);
+    expect(target.querySelector(".wc-badge")?.textContent).toBe("Review");
+
+    // "Unread" matches nothing here, so only "All" is left: no control shows,
+    // and even the item "All" would hide stays visible.
+    const flagged = { source: "Mail", title: "Invoice", filterKeys: ["flagged"] };
+    const one = show(
+      "feed",
+      { title: "Inbox", items: [items[0], flagged], filters: filters.slice(0, 2) },
+      "block-2"
+    ).target;
+    expect(one.querySelector("[role=group]")).toBeNull();
+    expect(one.querySelectorAll("li")).toHaveLength(2);
+  });
+
+  it("shows ISO times on the viewer's clock and keeps a label that is not one", () => {
+    vi.setSystemTime(Date.parse("2026-10-05T04:00:00Z"));
+    const data = {
+      title: "Open pull requests",
+      source: "GitHub",
+      observedAt: "2026-10-05T03:17:00Z",
+      items: [
+        {
+          source: "#2427",
+          title: "Refresh usage after payment",
+          at: "2026-10-04T10:15:00Z",
+        },
+        // Not an ISO time with an offset, so the label stands.
+        {
+          source: "#2424",
+          title: "Recover proactive tasks",
+          at: "10:15 UTC",
+          time: "2 小时前",
+        },
+      ],
+    };
+    const shown = (timeZone: string) => {
+      const target = document.createElement("section");
+      document.body.append(target);
+      const engine = cardEngine({
+        seed: "block-1",
+        locale: "zh-CN",
+        timeZone,
+        copy: {},
+        icons: {},
+        state: {},
+        send: () => {},
+      });
+      target.replaceChildren(engine.mount(target, { kind: "feed", data }, "card"));
+      return target;
+    };
+
+    const shanghai = shown("Asia/Shanghai");
+    expect(shanghai.querySelector("footer")?.textContent).toContain("GitHub · 11:17");
+    const [earlier, labeled] = [...shanghai.querySelectorAll("li")];
+    expect(earlier!.textContent).toContain("#2427 · 10/4 18:15");
+    expect(labeled!.textContent).toContain("#2424 · 2 小时前");
+    // The same moment is yesterday in New York, so it carries its date.
+    expect(shown("America/New_York").querySelector("footer")?.textContent).toContain(
+      "GitHub · 10/4 23:17"
+    );
   });
 
   it("names the entry it cannot read instead of calling the list missing", () => {
@@ -456,7 +532,6 @@ describe("timer card", () => {
   };
 
   it("keeps a paused remaining duration static", () => {
-    vi.useFakeTimers();
     vi.setSystemTime(start);
     const { target, engine } = show(
       "timer",
@@ -477,7 +552,6 @@ describe("timer card", () => {
   });
 
   it("counts down on its own clock and releases the clock at zero", () => {
-    vi.useFakeTimers();
     vi.setSystemTime(start);
     const { target } = show("timer", running, "block-1", "countdown");
     const shown = () => target.querySelector("time")?.textContent;
@@ -492,7 +566,6 @@ describe("timer card", () => {
   });
 
   it("releases the clock when an update replaces the card", () => {
-    vi.useFakeTimers();
     vi.setSystemTime(start);
     const { target } = show(
       "timer",

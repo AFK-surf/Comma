@@ -40,7 +40,7 @@ defmodule SalixAgent.Observability do
     end
   end
 
-  defp impl, do: Application.get_env(:salix_agent, :agent_observability_mod, __MODULE__.Noop)
+  defp impl, do: SystemsRuntime.get_env(:salix_agent, :agent_observability_mod, __MODULE__.Noop)
 
   defp safe_call(function, fact) do
     apply(impl(), function, [fact])

@@ -108,9 +108,11 @@ defmodule SalixWeb.EnvDispatch do
 
   @public_device_fields ~w(device_id environment_id alias name description capabilities os arch status connected_at disconnected_at updated_at environments connector_health connector_health_updated_at device_runtimes)
 
-  def create_device_install(agent_id, name) do
+  def create_device_install(agent_id, name, requester \\ nil) do
     with {:ok, %{"role" => "router"} = agent} <- SalixAgent.Control.get_record(agent_id) do
-      SalixEnv.DeviceInstall.create_command(agent["tenant_id"], agent["group_id"], name)
+      SalixEnv.DeviceInstall.create_command(agent["tenant_id"], agent["group_id"], name,
+        requester: requester
+      )
     else
       _ -> {:error, :forbidden}
     end
@@ -176,9 +178,10 @@ defmodule SalixWeb.EnvDispatch do
           %{"command" => command, "timeout" => opts["timeout"] || 120}
           |> put_present("working_dir", opts["working_dir"])
           |> put_present("env", opts["env"])
+          |> put_present("shell", opts["shell"])
 
         if is_nil(target[:exec_ready_deadline]) or
-             target.exec_ready_deadline > System.monotonic_time(:millisecond) do
+             target.exec_ready_deadline > SystemsClock.monotonic_time(:millisecond) do
           if target.cloud_vm? do
             Connector.Live.dispatch(
               target.connector_run_id,
@@ -362,6 +365,23 @@ defmodule SalixWeb.EnvDispatch do
     end)
   end
 
+  @doc """
+  Open a `lan_tcp_dial` tunnel on the target's connector for `relay`. Like
+  `request/4`, the target must allow operations.
+  """
+  def open_tunnel(agent_id, environment_ref, id, params, relay) do
+    with_vm_operation(agent_id, environment_ref, "lan_tcp_dial", fn target ->
+      message = Protocol.request("lan_tcp_dial", params, id)
+
+      Connector.Live.open_tunnel(
+        target.connector_run_id,
+        message,
+        relay,
+        Protocol.timeout("lan_tcp_dial", params)
+      )
+    end)
+  end
+
   defp prepare_operation(agent_id, ref, kind, opts) do
     result = prepare_target(agent_id, ref, kind, true)
 
@@ -392,7 +412,7 @@ defmodule SalixWeb.EnvDispatch do
 
   defp await_exec_target(agent_id, ref, kind, original) do
     budget = SalixAgent.Tools.AsyncPolicy.exec_readiness_timeout_ms()
-    deadline = System.monotonic_time(:millisecond) + budget
+    deadline = SystemsClock.monotonic_time(:millisecond) + budget
 
     with {:ok, scope} <- agent_scope(agent_id),
          {:ok, {:device_environment, device, environment}} <- ExecutionTarget.environment(ref),
@@ -405,7 +425,7 @@ defmodule SalixWeb.EnvDispatch do
              scope.group_id,
              scope.tenant_id,
              device,
-             System.system_time(:millisecond) + budget
+             SystemsClock.system_time(:millisecond) + budget
            ) do
       await_exec_admission(agent_id, ref, kind, scope.group_id, deadline)
     else
@@ -414,24 +434,45 @@ defmodule SalixWeb.EnvDispatch do
   end
 
   defp await_exec_admission(agent_id, ref, kind, group, deadline) do
-    remaining = deadline - System.monotonic_time(:millisecond)
+    remaining = deadline - SystemsClock.monotonic_time(:millisecond)
 
-    if remaining <= 0 do
-      {:error, :timeout}
-    else
-      case prepare_target(agent_id, ref, kind, false) do
-        {:ok, resolved, operation_id} ->
-          {:ok, put_in(resolved, [:target, :exec_ready_deadline], deadline), operation_id}
+    cond do
+      remaining <= 0 ->
+        {:error, :timeout}
 
-        error ->
-          if waking_result?(error) or pending_exec_connection?(error, group) do
-            Process.sleep(min(remaining, 1_000))
-            await_exec_admission(agent_id, ref, kind, group, deadline)
-          else
-            error
-          end
-      end
+      # A Connector can attach before the VM is marked ready, and maintenance
+      # may still be published in between. The retained exec is admitted only
+      # once the VM is ready, so that admission sees it.
+      vm_creating?(group) ->
+        _ = SalixWeb.CloudVM.RuntimeLifecycle.wake(group)
+        SystemsClock.sleep(min(remaining, 1_000))
+        await_exec_admission(agent_id, ref, kind, group, deadline)
+
+      true ->
+        admit_exec(agent_id, ref, kind, group, deadline, remaining)
     end
+  end
+
+  defp admit_exec(agent_id, ref, kind, group, deadline, remaining) do
+    case prepare_target(agent_id, ref, kind, false) do
+      {:ok, resolved, operation_id} ->
+        {:ok, put_in(resolved, [:target, :exec_ready_deadline], deadline), operation_id}
+
+      error ->
+        if waking_result?(error) or pending_exec_connection?(error, group) do
+          SystemsClock.sleep(min(remaining, 1_000))
+          await_exec_admission(agent_id, ref, kind, group, deadline)
+        else
+          error
+        end
+    end
+  end
+
+  defp vm_creating?(group) do
+    match?(
+      {:ok, %{"status" => "creating"}},
+      SalixWeb.ComputeProviders.Cloudflare.get_record(group)
+    )
   end
 
   defp pending_exec_connection?({:error, :no_environment}, group) do
@@ -663,8 +704,8 @@ defmodule SalixWeb.EnvDispatch do
   end
 
   defp request_cloud_vm_start(agent_id, group_id, environment_id) do
-    with {:ok, %{"group_id" => ^group_id, "vm" => %{"enabled" => true}} = agent} <-
-           SalixAgent.Control.get_record(agent_id),
+    with {:ok, %{"group_id" => ^group_id} = agent} <- SalixAgent.Control.get_record(agent_id),
+         true <- SalixAgent.CloudVM.allowed?(agent),
          {:ok, %{"status" => "creating"}} <-
            SalixWeb.ComputeProviders.Cloudflare.ensure_provisioning(agent) do
       {:error, {:vm_waking, %{"retry_after_ms" => 1_000, "env_id" => environment_id}}}
@@ -779,7 +820,6 @@ defmodule SalixWeb.EnvDispatch do
       "os" => rec["os"] || "",
       "arch" => rec["arch"] || "",
       "capabilities" => capabilities,
-      "agent_runtimes" => external_agent_runtimes(rec["device_runtimes"]),
       "risk" => env["risk"] || "remote-connector",
       "shares_user_files" => Map.get(env, "shares_user_files", true),
       "requires_permission" => Map.get(env, "requires_permission", false),
@@ -799,9 +839,8 @@ defmodule SalixWeb.EnvDispatch do
   # Registry row. Project only this Group's VM; never probe or create a Device.
   defp cloud_vm_device(group_id, tenant_id, agent_id) do
     case SalixWeb.ComputeProviders.Cloudflare.get_record(group_id) do
-      {:ok,
-       %{"provider" => "cloudflare", "tenant_id" => ^tenant_id, "device_id" => device_id} = rec}
-      when is_binary(device_id) ->
+      {:ok, %{"provider" => provider, "tenant_id" => ^tenant_id, "device_id" => device_id} = rec}
+      when provider in ["cloudflare", "agent_vmm"] and is_binary(device_id) ->
         status = if rec["status"] in ~w(archived waking), do: rec["status"], else: "disconnected"
         env_id = SalixStore.RuntimeIds.device_environment_id(device_id, "connector", "default")
 
@@ -810,7 +849,7 @@ defmodule SalixWeb.EnvDispatch do
           "environment_id" => env_id,
           "alias" => "cloud-vm",
           "name" => "Cloud Workspace",
-          "description" => "Group Cloudflare VM; run a command to wake an archived VM",
+          "description" => "Group Cloud VM; run a command to wake a sleeping VM",
           "status" => status,
           "capabilities" => %{},
           "environments" => [
@@ -827,39 +866,34 @@ defmodule SalixWeb.EnvDispatch do
         }
 
       {:error, :not_found} ->
-        case SalixAgent.Control.get_record(agent_id) do
-          {:ok,
-           %{
-             "group_id" => ^group_id,
-             "tenant_id" => ^tenant_id,
-             "vm" => %{"enabled" => true}
-           }} ->
-            device_id = SalixStore.RuntimeIds.cloud_vm_device_id(group_id)
+        with {:ok, %{"group_id" => ^group_id, "tenant_id" => ^tenant_id} = agent} <-
+               SalixAgent.Control.get_record(agent_id),
+             true <- SalixAgent.CloudVM.allowed?(agent) do
+          device_id = SalixStore.RuntimeIds.cloud_vm_device_id(group_id)
 
-            env_id =
-              SalixStore.RuntimeIds.device_environment_id(device_id, "connector", "default")
+          env_id =
+            SalixStore.RuntimeIds.device_environment_id(device_id, "connector", "default")
 
-            %{
-              "device_id" => device_id,
-              "environment_id" => env_id,
-              "alias" => "cloud-vm",
-              "name" => "Cloud Workspace",
-              "status" => "disconnected",
-              "environments" => [
-                %{
-                  "environment_id" => env_id,
-                  "environment_provider" => "connector",
-                  "environment_runtime_id" => "default",
-                  "device_id" => device_id,
-                  "alias" => "cloud-vm",
-                  "name" => "Cloud Workspace",
-                  "status" => "disconnected"
-                }
-              ]
-            }
-
-          _ ->
-            nil
+          %{
+            "device_id" => device_id,
+            "environment_id" => env_id,
+            "alias" => "cloud-vm",
+            "name" => "Cloud Workspace",
+            "status" => "disconnected",
+            "environments" => [
+              %{
+                "environment_id" => env_id,
+                "environment_provider" => "connector",
+                "environment_runtime_id" => "default",
+                "device_id" => device_id,
+                "alias" => "cloud-vm",
+                "name" => "Cloud Workspace",
+                "status" => "disconnected"
+              }
+            ]
+          }
+        else
+          _ -> nil
         end
 
       _ ->
@@ -968,13 +1002,6 @@ defmodule SalixWeb.EnvDispatch do
   end
 
   defp public_device(device), do: Map.take(device, @public_device_fields)
-
-  defp external_agent_runtimes(runtimes) do
-    runtimes
-    |> List.wrap()
-    |> Enum.filter(&SalixStore.RuntimeIds.external_runtime_provider?(&1["provider"]))
-    |> Enum.map(&Map.merge(&1, %{"id" => &1["device_runtime_id"], "kind" => "external"}))
-  end
 
   defp put_persistence_scope(entry) do
     if cloud_vm_entry?(entry) do

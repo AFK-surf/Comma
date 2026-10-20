@@ -25,6 +25,9 @@ def activityTransition (state event : Term) : KernelM Term := do
   | some name => write state [("activity_status", a name)]
   | none => inspectedError "invalid internal session activity status " status
 
+/-- A Session's model choice is a map; anything else is no choice. -/
+def sessionModel (value : Term) : Term := if value.isMap then value else nil
+
 def metadataCreated (state event : Term) : KernelM Term := do
   let name := (event.get (b "name")).default ((← field state "name").default (b "Default"))
   let hidden := event.get (b "hidden")
@@ -38,10 +41,11 @@ def metadataCreated (state event : Term) : KernelM Term := do
   let origin := (event.get (b "task_origin")).default (← field state "task_origin")
   let source := (event.get (b "source_session_id")).default (← field state "source_session_id")
   let schedule := (event.get (b "source_schedule_id")).default (← field state "source_schedule_id")
+  let model := (sessionModel (event.get (b "model"))).default (state.get (a "model"))
   write state [("name", name), ("hidden", hidden), ("created_at", created),
     ("last_activity_at", activity), ("activity_status_updated_at", activityAt),
     ("platform", platform), ("billing_context", billing), ("task_origin", origin),
-    ("source_session_id", source), ("source_schedule_id", schedule)]
+    ("source_session_id", source), ("source_schedule_id", schedule), ("model", model)]
 
 /-- The Conversation owner supplies the floor for the current Router binding. -/
 def conversationSourceBefore (previous next : Term) : Term :=
@@ -89,7 +93,10 @@ def metadataUpdate (state event : Term) : KernelM Term := do
   let hidden := event.get (b "hidden")
   let hidden ← if hidden.isBoolean then pure hidden else field state "hidden"
   let activity := (event.get (b "updated_at")).default (← field state "last_activity_at")
-  write state [("name", name), ("hidden", hidden), ("last_activity_at", activity)]
+  -- A present `model` replaces the choice; nil clears it to the Agent default.
+  let model ← if event.has (b "model") then pure (sessionModel (event.get (b "model")))
+    else pure (state.get (a "model"))
+  write state [("name", name), ("hidden", hidden), ("last_activity_at", activity), ("model", model)]
 
 def compactionFailure (state event : Term) : KernelM Term := do
   let failure := select event ["category", "retryable", "reason", "attempts", "live_context_watermark",

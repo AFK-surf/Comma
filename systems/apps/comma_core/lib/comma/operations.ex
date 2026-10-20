@@ -202,7 +202,7 @@ defmodule Comma.Operations do
         status: status,
         metadata: metadata,
         next_attempt_at: nil,
-        finished_at: DateTime.utc_now()
+        finished_at: SystemsClock.utc_now()
       )
     )
     |> Repo.update!()
@@ -247,7 +247,7 @@ defmodule Comma.Operations do
   end
 
   defp supersede_older(repo, operation) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     {count, _} =
       repo.update_all(
@@ -302,11 +302,11 @@ defmodule Comma.Operations do
   defp bounded_scalar?(_value), do: false
 
   defp due?(nil), do: true
-  defp due?(%DateTime{} = at), do: DateTime.compare(at, DateTime.utc_now()) != :gt
+  defp due?(%DateTime{} = at), do: DateTime.compare(at, SystemsClock.utc_now()) != :gt
 
   defp orphaned?(operation) do
-    timeout_ms = Application.fetch_env!(:comma_core, :operation_claim_timeout_ms)
-    DateTime.diff(DateTime.utc_now(), operation.updated_at, :millisecond) >= timeout_ms
+    timeout_ms = SystemsRuntime.fetch_env!(:comma_core, :operation_claim_timeout_ms)
+    DateTime.diff(SystemsClock.utc_now(), operation.updated_at, :millisecond) >= timeout_ms
   end
 
   defp fetch_attr!(attrs, key) do
@@ -326,7 +326,7 @@ defmodule Comma.Operations do
   defp finalize_transaction({:error, reason}), do: {:error, reason}
 
   defp emit_transition(operation, status) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:comma, :operation, :transition],
       %{attempt: operation.attempt},
       %{status: status}

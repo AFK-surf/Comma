@@ -53,14 +53,14 @@ defmodule SalixAgent.RecommendationPolicy do
   end
 
   defp adapter_allows_disclosure?(ctx, name) do
-    case Application.get_env(:salix_agent, :recommendation_adapter_mod) do
+    case SystemsRuntime.get_env(:salix_agent, :recommendation_adapter_mod) do
       nil -> false
       module -> module.authorize_disclosure(ctx, name) == :ok
     end
   end
 
   defp adapter_allows?(ctx, name, args) do
-    case Application.get_env(:salix_agent, :recommendation_adapter_mod) do
+    case SystemsRuntime.get_env(:salix_agent, :recommendation_adapter_mod) do
       nil -> false
       module -> module.authorize_tool(ctx, name, args) == :ok
     end

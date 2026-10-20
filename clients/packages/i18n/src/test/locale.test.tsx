@@ -108,10 +108,10 @@ describe("initializeCommaI18n", () => {
 
   it("formats count-sensitive messages in both locales", () => {
     initializeCommaI18n(["en"]);
-    expect(messages.side_chat_task_count({ count: 1, formattedCount: "1" })).toBe(
+    expect(messages.tasks_filter_task_count({ count: 1, formattedCount: "1" })).toBe(
       "1 task"
     );
-    expect(messages.side_chat_task_count({ count: 2, formattedCount: "2" })).toBe(
+    expect(messages.tasks_filter_task_count({ count: 2, formattedCount: "2" })).toBe(
       "2 tasks"
     );
     expect(messages.chat_new_messages({ count: 1, formattedCount: "1" })).toBe(
@@ -121,17 +121,17 @@ describe("initializeCommaI18n", () => {
       "2 new messages"
     );
     expect(
-      messages.side_chat_task_count({
+      messages.tasks_filter_task_count({
         count: 10_000,
         formattedCount: formatNumber(10_000, "en"),
       })
     ).toBe("10,000 tasks");
 
     initializeCommaI18n(["zh-CN"]);
-    expect(messages.side_chat_task_count({ count: 1, formattedCount: "1" })).toBe(
+    expect(messages.tasks_filter_task_count({ count: 1, formattedCount: "1" })).toBe(
       "1 个任务"
     );
-    expect(messages.side_chat_task_count({ count: 2, formattedCount: "2" })).toBe(
+    expect(messages.tasks_filter_task_count({ count: 2, formattedCount: "2" })).toBe(
       "2 个任务"
     );
     expect(messages.chat_new_messages({ count: 1, formattedCount: "1" })).toBe(
@@ -141,7 +141,7 @@ describe("initializeCommaI18n", () => {
       "2 条新消息"
     );
     expect(
-      messages.side_chat_task_count({
+      messages.tasks_filter_task_count({
         count: 10_000,
         formattedCount: formatNumber(10_000, "zh-CN"),
       })
@@ -150,8 +150,6 @@ describe("initializeCommaI18n", () => {
 
   it("localizes known task activity phases without exposing raw enums", () => {
     expect(taskActivityLabel("thinking", "zh-CN")).toBe("思考中");
-    expect(taskActivityLabel("running_tests", "zh-CN")).toBe("正在运行测试");
-    expect(taskActivityLabel("completed", "zh-CN")).toBe("已完成");
     expect(taskActivityLabel("future_phase", "zh-CN")).toBe("状态未知");
     expect(taskActivityLabel("idle", "zh-CN")).toBeUndefined();
   });

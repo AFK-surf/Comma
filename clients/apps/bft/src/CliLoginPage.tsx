@@ -1,4 +1,6 @@
-import { Button, Checkbox, InputField } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Checkbox } from "@comma/ui/components/checkbox";
+import { InputField } from "@comma/ui/components/input";
 import { useEffect, useState, type FormEvent } from "react";
 import {
   BftUnauthenticatedError,

@@ -86,6 +86,17 @@ defmodule SalixCluster.ConversationPlacement do
     :exit, _reason -> :ok
   end
 
+  @doc "Ring key that places a group collection, conversation, or participant owner."
+  @spec placement_key(tuple()) :: String.t()
+  def placement_key({:conversation_group, group_id}), do: group_owner_key(group_id)
+
+  def placement_key({:conversation, group_id, conversation_id}),
+    do: owner_key(group_id, conversation_id)
+
+  # Participant owners run beside their conversation owner.
+  def placement_key({:conversation_participant, group_id, conversation_id, _participant_id}),
+    do: owner_key(group_id, conversation_id)
+
   defp owner_key(group_id, conversation_id), do: group_id <> ":" <> conversation_id
   defp group_owner_key(group_id), do: "conversation-group:" <> group_id
 end

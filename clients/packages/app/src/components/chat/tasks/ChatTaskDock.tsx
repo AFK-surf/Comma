@@ -1,10 +1,12 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import { memo, useCallback, type RefObject } from "react";
-import type { CommaApiClient } from "../../../api";
-import { useTaskArchiveForApi } from "../../tasks/useTaskArchive";
+import { useTaskArchive } from "../../tasks/useTaskArchive";
 import { ChatTaskPanel, type ChatTaskOpenTarget } from "./ChatTaskPanel";
-import { dismissPanelTask } from "./chatTaskPanelDismissals";
-import type { ChatMessage } from "../model/conversationChannel";
+import {
+  usePanelTaskDismissal,
+  useRefreshPanelDismissalsWhenAttended,
+} from "./chatTaskPanelDismissals";
+import type { ChatMessage } from "@comma/core/chat";
 import type { InlineTaskLinkAdapter } from "../thread/inline/MessageInlineElements";
 import { useChatCreatedTasks, type ChatCreatedTask } from "./useChatCreatedTasks";
 
@@ -19,14 +21,12 @@ import { useChatCreatedTasks, type ChatCreatedTask } from "./useChatCreatedTasks
  * everything but the panel.
  */
 export const ChatTaskDock = memo(function ChatTaskDock({
-  api,
   groupId,
   messages,
   revealTurnHandle,
   taskLinkAdapter,
   workspaceId,
 }: {
-  api?: CommaApiClient | undefined;
   groupId: string;
   messages: readonly ChatMessage[];
   revealTurnHandle: RefObject<
@@ -37,8 +37,11 @@ export const ChatTaskDock = memo(function ChatTaskDock({
   workspaceId: string;
 }) {
   const copy = useCommaMessages();
-  const items = useChatCreatedTasks({ api, groupId, messages });
-  const archive = useTaskArchiveForApi(api);
+  const items = useChatCreatedTasks({ groupId, messages });
+  const archive = useTaskArchive();
+  const dismissPanelTask = usePanelTaskDismissal();
+  // A Dismiss made on another device clears its row here once the reader is back.
+  useRefreshPanelDismissalsWhenAttended();
 
   const handleArchive = useCallback(
     (task: ChatCreatedTask) =>
@@ -48,9 +51,10 @@ export const ChatTaskDock = memo(function ChatTaskDock({
       ),
     [archive, groupId]
   );
-  const handleDismiss = useCallback((task: ChatCreatedTask) => {
-    dismissPanelTask(task.conversationId);
-  }, []);
+  const handleDismiss = useCallback(
+    (task: ChatCreatedTask) => dismissPanelTask(task.conversationId, task.version),
+    [dismissPanelTask]
+  );
   const handleOpen = useCallback(
     (task: ChatCreatedTask, target: ChatTaskOpenTarget) => {
       const title = task.title || copy.chat_ref_task();
@@ -73,9 +77,10 @@ export const ChatTaskDock = memo(function ChatTaskDock({
       if (task.turnKey !== undefined) {
         revealTurnHandle.current?.(task.turnKey, task.messageId);
       }
-      if (task.statusBucket !== "in_progress") dismissPanelTask(task.conversationId);
+      if (task.statusBucket !== "in_progress")
+        dismissPanelTask(task.conversationId, task.version);
     },
-    [revealTurnHandle]
+    [dismissPanelTask, revealTurnHandle]
   );
 
   return (

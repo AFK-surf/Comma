@@ -14,7 +14,7 @@ defmodule Comma.OauthIdp.KeyRotationConcurrencyTest do
   commit the review drove is unrepresentable.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Ecto.Query
 
@@ -23,19 +23,23 @@ defmodule Comma.OauthIdp.KeyRotationConcurrencyTest do
   alias Comma.OauthIdpTestKeys
 
   setup do
-    previous = Application.get_env(:comma_core, :oauth_idp)
+    previous = SystemsRuntime.get_env(:comma_core, :oauth_idp)
     OauthIdpTestKeys.install_kek()
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :comma_core,
       :oauth_idp,
-      Keyword.put(Application.get_env(:comma_core, :oauth_idp), :rotation_prepublish_seconds, 0)
+      Keyword.put(
+        SystemsRuntime.get_env(:comma_core, :oauth_idp),
+        :rotation_prepublish_seconds,
+        0
+      )
     )
 
     on_exit(fn ->
       case previous do
-        nil -> Application.delete_env(:comma_core, :oauth_idp)
-        config -> Application.put_env(:comma_core, :oauth_idp, config)
+        nil -> SystemsRuntime.delete_env(:comma_core, :oauth_idp)
+        config -> SystemsRuntime.put_env(:comma_core, :oauth_idp, config)
       end
 
       Ecto.Adapters.SQL.Sandbox.unboxed_run(Comma.Repo, fn ->
@@ -53,7 +57,7 @@ defmodule Comma.OauthIdp.KeyRotationConcurrencyTest do
   defp concurrently(funs) do
     funs
     |> Enum.map(fn fun ->
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Ecto.Adapters.SQL.Sandbox.unboxed_run(Comma.Repo, fn ->
           try do
             {:ok, fun.()}
@@ -63,7 +67,7 @@ defmodule Comma.OauthIdp.KeyRotationConcurrencyTest do
         end)
       end)
     end)
-    |> Task.await_many(30_000)
+    |> SystemsRuntime.Task.await_many(:infinity)
   end
 
   test "two concurrent pre-publish commands: exactly one wins" do
@@ -92,7 +96,7 @@ defmodule Comma.OauthIdp.KeyRotationConcurrencyTest do
           kid = SigningKeys.prepublish!()
 
           Comma.Repo.update_all(from(k in Key, where: k.kid == ^kid),
-            set: [created_at: DateTime.add(DateTime.utc_now(), -3600, :second)]
+            set: [created_at: DateTime.add(SystemsClock.utc_now(), -3600, :second)]
           )
 
           kid

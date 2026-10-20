@@ -23,7 +23,7 @@ defmodule SalixAgent.SystemPromptDump do
   }
 
   @roles ~w(router worker meeting)
-  @runtime_kinds [:internal, :external, :script]
+  @runtime_kinds [:internal, :script]
 
   @type option ::
           {:role, String.t()}
@@ -88,7 +88,6 @@ defmodule SalixAgent.SystemPromptDump do
     |> String.trim()
     |> case do
       "internal" -> :internal
-      "external" -> :external
       "script" -> :script
       _ -> invalid_runtime_kind!()
     end

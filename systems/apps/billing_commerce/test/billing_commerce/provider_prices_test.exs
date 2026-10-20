@@ -1,5 +1,5 @@
 defmodule BillingCommerce.ProviderPricesTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias BillingCommerce.{PackageCatalog, ProviderPrices}
 

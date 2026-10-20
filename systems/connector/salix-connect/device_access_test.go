@@ -60,7 +60,7 @@ func TestDeviceReadOnlyDiscoversWithoutExecutingAndReadsFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	entries := c.metadata().Capabilities["agent_runtimes"].([]map[string]any)
 	if len(entries) != 1 || entries[0]["provider"] != "codex" || entries[0]["readiness_issue"] != "permission_required" {
 		t.Fatalf("inventory = %#v", entries)
@@ -92,7 +92,7 @@ func TestStandaloneDeviceAccessSurvivesRestart(t *testing.T) {
 	if err := c.setCurrentScope(""); err != nil {
 		t.Fatal(err)
 	}
-	c.closeExternalRuntimes()
+	c.closeRuntimes()
 	c, err = newConnector(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -103,12 +103,12 @@ func TestStandaloneDeviceAccessSurvivesRestart(t *testing.T) {
 	if err := c.setCurrentScope(scopeLocalFileRead); err != nil {
 		t.Fatal(err)
 	}
-	c.closeExternalRuntimes()
+	c.closeRuntimes()
 	c, err = newConnector(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	if c.currentScope() != scopeLocalFileRead {
 		t.Fatal("lost revoked permission")
 	}
@@ -119,7 +119,7 @@ func TestDeviceReadOnlyRejectsNativeRecoveryAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	_, leave, admitted := c.deviceRuntimeAdmission(context.Background())
 	leave()
 	if admitted {
@@ -155,16 +155,16 @@ func TestDeviceInstallRetryUsesRuntimeStateLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.closeExternalRuntimes()
+	defer first.closeRuntimes()
 	second, err := newConnector(cfg)
 	if err == nil {
-		second.closeExternalRuntimes()
+		second.closeRuntimes()
 		t.Fatal("a second Connector acquired the same device runtime state")
 	}
-	first.closeExternalRuntimes()
+	first.closeRuntimes()
 	recovered, err := newConnector(cfg)
 	if err != nil {
 		t.Fatalf("could not recover after the owner exited: %v", err)
 	}
-	recovered.closeExternalRuntimes()
+	recovered.closeRuntimes()
 }

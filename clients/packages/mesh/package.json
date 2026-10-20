@@ -1,0 +1,24 @@
+{
+  "name": "@comma/mesh",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./station-native": {
+      "types": "./src/station-native.ts",
+      "default": "./src/station-native.ts"
+    },
+    "./testing": {
+      "types": "./src/memory.ts",
+      "default": "./src/memory.ts"
+    }
+  },
+  "devDependencies": {
+    "prettier": "^3.8.4",
+    "typescript": "^6.0.3"
+  }
+}

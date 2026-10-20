@@ -1,7 +1,7 @@
 defmodule BridgeForTeams.Onboarding do
   @moduledoc """
-  First-run onboarding for the dashboard: the welcome modal, the floating
-  quick-setup checklist, and the guided tour.
+  First-run onboarding for the dashboard: the quick-setup checklist on the
+  React Overview.
 
   The flow has three steps — create an Agent Swarm, configure an org OAuth
   client, connect a third-party account. Org owners/admins get all three;
@@ -26,8 +26,8 @@ defmodule BridgeForTeams.Onboarding do
   skipping is waiving the step, not postponing it. Likewise, dismissing the
   checklist ends onboarding for good; there is no resume entry point.
 
-  Everything else on the row is UI state (seen/dismissed/collapsed/celebrated,
-  the tour's active step, and the member→admin OAuth reminder).
+  Everything else on the row is UI state (dismissed/celebrated and the
+  member→admin OAuth reminder).
   """
   import Ecto.Query
 
@@ -57,10 +57,8 @@ defmodule BridgeForTeams.Onboarding do
   Derive the full onboarding picture for a user in an org.
 
   Returns a map with the stored `:state`, the role's `:steps`, a `:done` map
-  keyed by step, the effective `:active_step` (the stored one, advanced past
-  steps that are already done), progress counts, and `:first_project` (the
-  user's own Agent Swarm when they created one, else the first one they can
-  see) for tour navigation.
+  keyed by step, progress counts, and `:first_project` (the user's own Agent
+  Swarm when they created one, else the first one they can see).
 
   Options: `:refresh_oauth` — drop the cached OAuth-configured answer first;
   `:state` — reuse an already-fetched state row.
@@ -89,7 +87,6 @@ defmodule BridgeForTeams.Onboarding do
       steps: steps,
       done: done,
       oauth_configured: oauth_configured,
-      active_step: effective_active_step(state.active_step, steps, done),
       first_project: first_project(projects, user_id),
       done_count: done_count,
       total: length(steps),
@@ -97,49 +94,17 @@ defmodule BridgeForTeams.Onboarding do
     }
   end
 
-  # The stored active step may point at a step that has since been completed
-  # (completion is derived, not evented) — advance to the next undone step so
-  # the tour flows through the checklist without extra writes.
-  defp effective_active_step(nil, _steps, _done), do: nil
-
-  defp effective_active_step(step, steps, done) do
-    if step in steps and not done[step] do
-      step
-    else
-      steps
-      |> Enum.drop_while(&(&1 != step))
-      |> Enum.concat(steps)
-      |> Enum.reject(&done[&1])
-      |> List.first()
-    end
-  end
-
   defp first_project(projects, user_id) do
     Enum.find(projects, &(&1.created_by_user_id == user_id)) || List.first(projects)
   end
 
-  @doc "The first undone step for a role, given a snapshot-style done map."
-  @spec first_undone([String.t()], map()) :: String.t() | nil
-  def first_undone(steps, done), do: Enum.find(steps, &(!done[&1]))
-
   # ---- UI state writes ----
-
-  @doc "Record that the welcome modal was answered. `active_step` starts the tour."
-  @spec mark_welcome_seen(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
-          {:ok, MemberOnboardingState.t()} | {:error, Ecto.Changeset.t()}
-  def mark_welcome_seen(org_id, user_id, opts \\ []) do
-    upsert(org_id, user_id, %{
-      welcome_seen_at: now(),
-      collapsed: Keyword.get(opts, :collapsed, false),
-      active_step: Keyword.get(opts, :active_step)
-    })
-  end
 
   @doc "Skip the whole checklist for good — onboarding is over and never shows again."
   @spec dismiss(Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, MemberOnboardingState.t()} | {:error, Ecto.Changeset.t()}
   def dismiss(org_id, user_id) do
-    upsert(org_id, user_id, %{dismissed_at: now(), active_step: nil})
+    upsert(org_id, user_id, %{dismissed_at: now()})
   end
 
   @doc """
@@ -153,32 +118,11 @@ defmodule BridgeForTeams.Onboarding do
     upsert(org_id, user_id, %{skipped_steps: Enum.uniq([step | state.skipped_steps || []])})
   end
 
-  @doc "Expand the checklist again, pointing the tour at `active_step`."
-  @spec resume(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
-          {:ok, MemberOnboardingState.t()} | {:error, Ecto.Changeset.t()}
-  def resume(org_id, user_id, active_step) do
-    upsert(org_id, user_id, %{dismissed_at: nil, collapsed: false, active_step: active_step})
-  end
-
-  @doc "Collapse/expand the floating checklist."
-  @spec set_collapsed(Ecto.UUID.t(), Ecto.UUID.t(), boolean()) ::
-          {:ok, MemberOnboardingState.t()} | {:error, Ecto.Changeset.t()}
-  def set_collapsed(org_id, user_id, collapsed) when is_boolean(collapsed) do
-    upsert(org_id, user_id, %{collapsed: collapsed})
-  end
-
-  @doc "Point the guided tour at a step (nil exits the tour)."
-  @spec set_active_step(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
-          {:ok, MemberOnboardingState.t()} | {:error, Ecto.Changeset.t()}
-  def set_active_step(org_id, user_id, step) do
-    upsert(org_id, user_id, %{active_step: step})
-  end
-
   @doc "Acknowledge the all-done card; the checklist never shows again."
   @spec celebrate(Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, MemberOnboardingState.t()} | {:error, Ecto.Changeset.t()}
   def celebrate(org_id, user_id) do
-    upsert(org_id, user_id, %{celebrated_at: now(), active_step: nil})
+    upsert(org_id, user_id, %{celebrated_at: now()})
   end
 
   @doc "Cache that the user has a connected account (connect step done)."
@@ -304,5 +248,5 @@ defmodule BridgeForTeams.Onboarding do
     end
   end
 
-  defp now, do: DateTime.utc_now()
+  defp now, do: SystemsClock.utc_now()
 end

@@ -1,11 +1,13 @@
 defmodule Salix.RemoteShell.Registration do
+  require SystemsClock
+
   @moduledoc "One invitation for automatic public-key submission and session-owned registration."
   alias Salix.RemoteShell.Registrations
   @salt "comma-temporary-shell-registration-v1"
 
   def prepare(handle, scope, controller, seconds) do
-    id = Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
-    expires = System.system_time(:second) + seconds
+    id = Base.url_encode64(SystemsRuntime.Proc.random_bytes(24), padding: false)
+    expires = SystemsClock.system_time(:second) + seconds
 
     with :ok <- Registrations.create(id, expires) do
       ticket =
@@ -26,7 +28,7 @@ defmodule Salix.RemoteShell.Registration do
            Phoenix.Token.verify(signing_key(handle), @salt, ticket, max_age: 3600),
          true <- group == handle.group_id and (is_nil(scope) or owner == scope),
          true <- is_binary(id) and byte_size(id) == 32,
-         true <- is_integer(expires) and expires > System.system_time(:second) do
+         true <- is_integer(expires) and expires > SystemsClock.system_time(:second) do
       {:ok, %{id: id, controller: controller, expires_at: expires}}
     else
       _ -> {:error, :expired_or_foreign_registration}
@@ -64,8 +66,8 @@ defmodule Salix.RemoteShell.Registration do
       Registrations.subscribe(invitation.id)
 
       deadline =
-        System.monotonic_time(:millisecond) +
-          min(seconds, invitation.expires_at - System.system_time(:second)) * 1000
+        SystemsClock.monotonic_time(:millisecond) +
+          min(seconds, invitation.expires_at - SystemsClock.system_time(:second)) * 1000
 
       try do
         wait_loop(handle, scope, ticket, invitation, deadline, fresh_handle, register, cleanup)
@@ -78,7 +80,7 @@ defmodule Salix.RemoteShell.Registration do
   def wait(_, _, _, _, _, _, _), do: {:error, :invalid_arguments}
 
   defp wait_loop(handle, scope, ticket, invitation, deadline, fresh_handle, register, cleanup) do
-    owner = Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+    owner = Base.url_encode64(SystemsRuntime.Proc.random_bytes(12), padding: false)
 
     with {:ok, current} <- fresh_handle.(),
          {:ok, _} <- verify(current, scope, ticket),
@@ -104,12 +106,12 @@ defmodule Salix.RemoteShell.Registration do
           )
 
         _ ->
-          remaining = deadline - System.monotonic_time(:millisecond)
+          remaining = deadline - SystemsClock.monotonic_time(:millisecond)
 
           if remaining <= 0 do
             {:ok, %{status: "waiting", request: ticket, expires_at: invitation.expires_at}}
           else
-            receive do
+            SystemsClock.vreceive do
               {:remote_shell_registration, id} when id == invitation.id -> :ok
             after
               remaining -> :ok
@@ -177,7 +179,7 @@ defmodule Salix.RemoteShell.Registration do
       Registrations.notify(invitation.id)
 
       cond do
-        (row["claim_expires_at"] || 0) > System.system_time(:second) ->
+        (row["claim_expires_at"] || 0) > SystemsClock.system_time(:second) ->
           {:error, :registration_in_progress}
 
         is_binary(row["device_key"]) ->

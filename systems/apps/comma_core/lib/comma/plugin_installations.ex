@@ -21,7 +21,7 @@ defmodule Comma.PluginInstallations do
   end
 
   def mark_installed(workspace_id, plugin_id) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     %PluginInstallation{
       workspace_id: workspace_id,

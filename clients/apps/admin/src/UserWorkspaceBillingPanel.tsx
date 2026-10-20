@@ -1,833 +1,447 @@
-import { Button, InputField, ModelIcon } from "@comma/ui";
-import { useEffect, useState } from "react";
-import {
-  createIdempotencyKey,
-  isAdminAccessDenied,
-  isAdminSessionRejection,
-  type AdminApi,
-  type AdminManualGrantResult,
-  type AdminPackageVersion,
-  type AdminRedeemTarget,
-  type AdminUser,
-  type AdminWorkspaceAgentModel,
-  type AdminWorkspaceAgentModels,
-  type AdminWorkspaceAgentRole,
-  type AdminWorkspaceBilling,
-} from "./adminApi";
+import { Button } from "@comma/ui/components/Button";
+import { InputField } from "@comma/ui/components/input";
+import { ModelIcon } from "@comma/ui/components/model-icons/ModelIcon";
+import type { AdminWorkspaceBilling } from "./adminApi";
+import { confirmationBusy } from "./adminModel";
+import { useAdminCommand, useAdminState } from "./adminRuntime";
 import {
   AdminConfirmationDialog,
   AdminNotice,
+  AdminDrawer,
+  AdminRow,
+  AdminSection,
   AdminState,
+  CopyableId,
   DetailList,
   NativeField,
-  ReasonField,
   StatusBadge,
   displayText,
   formatEpoch,
   formatIso,
 } from "./adminUi";
+import {
+  CURRENT_CHOICE,
+  agentModelKey,
+  canApplyCredits,
+  changeWorkspaceAgentModelForm,
+  formatCredits,
+  issueCreditsForm,
+  packageVersionKey,
+  platformModelName,
+  roleLabel,
+  type ChangeWorkspaceAgentModelModel,
+  type IssueCreditsModel,
+  type UserWorkspaceBillingModel,
+  type WorkspaceAgentModelsModel,
+  type WorkspaceSections,
+} from "./UserWorkspaceBillingModel";
 import { WorkspaceCloudVmSection } from "./WorkspaceCloudVmSection";
 import { WorkspaceSignalSection } from "./WorkspaceSignalSection";
-import { adminErrorMessage, guardedAdminCommand } from "./adminErrors";
+import { messages } from "@comma/i18n";
 
-type WorkspaceBillingState =
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "ready"; overview: AdminWorkspaceBilling };
-
+/** A User's default Workspace: its identifiers, credits, agent models, Cloud VM and Signal number. */
 export function UserWorkspaceBillingPanel({
-  api,
-  onAccessDenied,
-  onApplyRedeemCode,
-  onBack,
+  model,
   onEnsureWorkspace,
-  user,
 }: {
-  api: AdminApi;
-  onAccessDenied: () => void;
-  onApplyRedeemCode: (target: AdminRedeemTarget) => void;
-  onBack: () => void;
+  model: UserWorkspaceBillingModel;
   onEnsureWorkspace: () => void;
-  user: AdminUser;
 }) {
-  const [revision, setRevision] = useState(0);
-  const [issueCreditsOpen, setIssueCreditsOpen] = useState(false);
-  const [notice, setNotice] = useState<string>();
-  const [state, setState] = useState<WorkspaceBillingState>({
-    status: "loading",
-  });
-
-  useEffect(() => {
-    const request = new AbortController();
-    setState({ status: "loading" });
-
-    void api
-      .getUserWorkspaceBilling(user.id, { signal: request.signal })
-      .then((overview) => {
-        if (!request.signal.aborted) {
-          setState({ status: "ready", overview });
-        }
-      })
-      .catch((error: unknown) => {
-        if (request.signal.aborted || isAdminSessionRejection(error)) return;
-        if (isAdminAccessDenied(error)) {
-          onAccessDenied();
-          return;
-        }
-        setState({
-          status: "error",
-          message: adminErrorMessage(
-            error,
-            "Unable to load Workspace and Billing state."
-          ),
-        });
-      });
-
-    return () => request.abort();
-  }, [api, onAccessDenied, revision, user.id]);
-
-  if (
-    issueCreditsOpen &&
-    state.status === "ready" &&
-    state.overview.workspace?.status === "ready" &&
-    state.overview.billing?.account_status === "active"
-  ) {
-    return (
-      <IssueCreditsPanel
-        api={api}
-        onAccessDenied={onAccessDenied}
-        onClose={() => setIssueCreditsOpen(false)}
-        onIssued={(selected, result) => {
-          setIssueCreditsOpen(false);
-          setNotice(
-            result.idempotent
-              ? `The ${formatCredits(selected.grant_credits)} credit grant already existed.`
-              : `Issued ${formatCredits(selected.grant_credits)} credits.`
-          );
-          setRevision((current) => current + 1);
-        }}
-        userId={user.id}
-        workspaceId={state.overview.workspace.id}
-        workspaceName={state.overview.workspace.name}
-      />
-    );
-  }
+  const run = useAdminCommand();
+  const { issueCredits, notice, overview, sections } = useAdminState(model.state);
 
   return (
-    <section className="admin-command-section">
-      <div className="admin-command-section-header">
-        <div>
-          <p>User task</p>
-          <h3>Workspace & billing</h3>
-        </div>
-        <Button hierarchy="link-gray" onPress={onBack} size="sm">
-          Back
-        </Button>
-      </div>
-
-      {state.status === "loading" ? (
+    <>
+      {overview.status === "loading" ? (
+        <AdminState title={messages.admin_loading_workspace()} />
+      ) : overview.status === "error" ? (
         <AdminState
-          message="Reading the managed Workspace and its Billing projection."
-          title="Loading Workspace & billing…"
-        />
-      ) : state.status === "error" ? (
-        <AdminState
-          message={state.message}
-          onAction={() => setRevision((current) => current + 1)}
-          title="Workspace & billing couldn’t be loaded"
+          message={overview.message}
+          onAction={() => run(model.reload)}
+          title={messages.admin_workspace_load_failed()}
           tone="error"
         />
       ) : (
         <>
           {notice ? (
-            <AdminNotice message={notice} onDismiss={() => setNotice(undefined)} />
+            <AdminNotice message={notice} onDismiss={() => run(model.dismissNotice)} />
           ) : null}
           <WorkspaceBillingContent
-            api={api}
-            onAccessDenied={onAccessDenied}
-            onApplyRedeemCode={onApplyRedeemCode}
+            model={model}
             onEnsureWorkspace={onEnsureWorkspace}
-            onIssueCredits={() => setIssueCreditsOpen(true)}
-            onRefresh={() => setRevision((current) => current + 1)}
-            overview={state.overview}
-            userId={user.id}
+            overview={overview.value}
+            sections={sections}
           />
         </>
       )}
-    </section>
+      {issueCredits ? <IssueCreditsPanel model={issueCredits} /> : null}
+    </>
   );
 }
 
 function WorkspaceBillingContent({
-  api,
-  onAccessDenied,
-  onApplyRedeemCode,
+  model,
   onEnsureWorkspace,
-  onIssueCredits,
-  onRefresh,
   overview,
-  userId,
+  sections,
 }: {
-  api: AdminApi;
-  onAccessDenied: () => void;
-  onApplyRedeemCode: (target: AdminRedeemTarget) => void;
+  model: UserWorkspaceBillingModel;
   onEnsureWorkspace: () => void;
-  onIssueCredits: () => void;
-  onRefresh: () => void;
   overview: AdminWorkspaceBilling;
-  userId: string;
+  sections: WorkspaceSections | undefined;
 }) {
+  const run = useAdminCommand();
+
   if (!overview.workspace) {
     return (
       <AdminState
-        actionLabel="Ensure default Workspace"
-        message="This User does not have a managed default Workspace yet."
+        actionLabel={messages.admin_task_workspace()}
+        message={messages.admin_no_workspace_body()}
         onAction={onEnsureWorkspace}
-        title="No default Workspace"
+        title={messages.admin_no_workspace()}
       />
     );
   }
 
   const workspace = overview.workspace;
   const billing = overview.billing;
-  const canApply = workspace.status === "ready" && billing?.account_status === "active";
+  const canApply = canApplyCredits(overview);
+  const ready = workspace.status === "ready";
 
   return (
     <>
-      <DetailList
-        items={[
-          { label: "Workspace", value: displayText(workspace.name) },
-          { label: "Workspace ID", value: workspace.id },
-          {
-            label: "Workspace status",
-            value: <StatusBadge status={workspace.status} />,
-          },
-          { label: "Tenant ID", value: workspace.tenant_id },
-          { label: "Agent group ID", value: workspace.group_id },
-          { label: "Billing account", value: workspace.billing_account_id },
-          { label: "Created", value: formatEpoch(workspace.created_at) },
-          { label: "Updated", value: formatEpoch(workspace.updated_at) },
-        ]}
-      />
-
-      {workspace.cloud_vm ? (
-        <WorkspaceCloudVmSection
-          api={api}
-          current={workspace.cloud_vm}
-          key={`${workspace.id}:${workspace.cloud_vm.enabled}:${workspace.cloud_vm.convergence_status}`}
-          onAccessDenied={onAccessDenied}
-          ready={workspace.status === "ready"}
-          userId={userId}
+      <AdminSection
+        action={
+          <Button hierarchy="link-gray" onPress={() => run(model.reload)} size="sm">
+            {messages.admin_refresh()}
+          </Button>
+        }
+        title={messages.admin_workspace()}
+      >
+        <AdminRow
+          description={messages.admin_default_workspace()}
+          title={displayText(workspace.name)}
+        >
+          <StatusBadge status={workspace.status} />
+        </AdminRow>
+        <DetailList
+          items={[
+            {
+              label: messages.admin_workspace_id(),
+              value: <CopyableId value={workspace.id} />,
+            },
+            {
+              label: messages.admin_tenant_id(),
+              value: <CopyableId value={workspace.tenant_id} />,
+            },
+            {
+              label: messages.admin_agent_group_id(),
+              value: <CopyableId value={workspace.group_id} />,
+            },
+            {
+              label: messages.admin_billing_account(),
+              value: <CopyableId value={workspace.billing_account_id} />,
+            },
+            {
+              label: messages.admin_created(),
+              value: formatEpoch(workspace.created_at),
+            },
+          ]}
         />
+      </AdminSection>
+
+      {ready && sections?.agentModels ? (
+        <WorkspaceAgentModelsSection model={sections.agentModels} />
       ) : null}
 
-      {workspace.status === "ready" ? (
-        <>
-          <WorkspaceAgentModelsSection
-            api={api}
-            onAccessDenied={onAccessDenied}
-            userId={userId}
-            workspaceId={workspace.id}
-          />
-          <WorkspaceSignalSection
-            api={api}
-            key={workspace.id}
-            onAccessDenied={onAccessDenied}
-            userId={userId}
-          />
-        </>
-      ) : (
-        <p className="admin-drawer-note">
-          Agent models become available when the Workspace is ready.
-        </p>
-      )}
+      {sections?.cloudVm || (ready && sections?.signal) ? (
+        <AdminSection title={messages.admin_runtime()}>
+          {sections?.cloudVm ? (
+            <WorkspaceCloudVmSection model={sections.cloudVm} />
+          ) : null}
+          {ready && sections?.signal ? (
+            <WorkspaceSignalSection model={sections.signal} />
+          ) : null}
+        </AdminSection>
+      ) : null}
 
       {!billing ? (
-        <AdminNotice
-          message="The Billing projection is unavailable for this Workspace."
-          tone="error"
-        />
+        <AdminNotice message={messages.admin_billing_unavailable()} tone="error" />
       ) : billing.account_status === "missing" ? (
-        <AdminNotice
-          message="The Workspace exists, but its Billing account has not converged yet."
-          tone="error"
-        />
+        <AdminNotice message={messages.admin_billing_missing()} tone="error" />
       ) : billing.account_status === "identity_mismatch" ? (
-        <AdminNotice
-          message="The Billing account does not belong to this Workspace. No credits or grants were read."
-          tone="error"
-        />
+        <AdminNotice message={messages.admin_billing_mismatch()} tone="error" />
       ) : billing.account_status === "inactive" ? (
-        <AdminNotice
-          message="The Billing account is inactive. Redeem-code application is unavailable."
-          tone="error"
-        />
+        <AdminNotice message={messages.admin_billing_inactive()} tone="error" />
       ) : null}
 
       {billing ? (
-        <>
-          <div className="admin-workspace-billing-summary">
-            <div>
-              <span>Billing status</span>
-              <StatusBadge status={billing.account_status} />
-            </div>
-            <div>
-              <span>Current credits</span>
-              <strong className="admin-tabular-value">
-                {formatCredits(billing.current_credits)}
-              </strong>
-            </div>
-            <div>
-              <span>Active grants</span>
-              <strong className="admin-tabular-value">
-                {billing.active_grants.length}
-                {billing.has_more ? "+" : ""}
-              </strong>
-            </div>
-          </div>
-
-          {billing.active_grants.length ? (
-            <section
-              aria-labelledby="active-grants-title"
-              className="admin-grant-section"
+        <AdminSection
+          action={
+            <Button
+              hierarchy="secondary-gray"
+              isDisabled={!canApply}
+              onPress={() => run(model.applyRedeemCode)}
+              size="sm"
             >
-              <div className="admin-drawer-section-header">
-                <div>
-                  <h3 id="active-grants-title">Active grants</h3>
-                  <p>Usable now, ordered by expiration</p>
-                </div>
-              </div>
-              <div className="admin-grant-list">
-                {billing.active_grants.map((grant) => (
-                  <article className="admin-grant-card" key={grant.id}>
-                    <header>
-                      <div>
-                        <h4>
-                          {displayText(grant.package_code)}@
-                          {displayText(grant.package_version)}
-                        </h4>
-                        <p>{humanize(grant.source_type)}</p>
-                      </div>
-                      <strong className="admin-tabular-value">
-                        {formatCredits(grant.remaining_credits)}
-                      </strong>
-                    </header>
-                    <dl>
-                      <div>
-                        <dt>Valid from</dt>
-                        <dd>{formatIso(grant.valid_from)}</dd>
-                      </div>
-                      <div>
-                        <dt>Expires</dt>
-                        <dd>{formatIso(grant.expires_at)}</dd>
-                      </div>
-                      <div>
-                        <dt>Grant ID</dt>
-                        <dd>{grant.id}</dd>
-                      </div>
-                      <div>
-                        <dt>Source ID</dt>
-                        <dd>{displayText(grant.source_id)}</dd>
-                      </div>
-                    </dl>
-                  </article>
-                ))}
-              </div>
-              {billing.has_more ? (
-                <p className="admin-bounded-caption">
-                  Showing the first 50 active grants. Use Billing observability for
-                  aggregate investigation.
-                </p>
-              ) : null}
-            </section>
-          ) : (
-            <p className="admin-drawer-note">
-              This Billing account has no currently usable credit grants.
-            </p>
-          )}
-        </>
-      ) : null}
-
-      <div className="admin-command-actions">
-        <Button hierarchy="secondary-gray" onPress={onRefresh}>
-          Refresh
-        </Button>
-        <Button
-          hierarchy="secondary-gray"
-          isDisabled={!canApply}
-          onPress={() =>
-            onApplyRedeemCode({
-              billingAccountId: workspace.billing_account_id,
-              productOwnerId: workspace.id,
-              productOwnerType: "workspace",
-              ...(workspace.name ? { workspaceName: workspace.name } : {}),
-            })
+              {messages.admin_apply_redeem_code()}
+            </Button>
           }
+          title={messages.admin_credits()}
         >
-          Apply redeem code
-        </Button>
-        <Button isDisabled={!canApply} onPress={onIssueCredits}>
-          Issue credits
-        </Button>
-      </div>
+          <AdminRow
+            description={
+              billing.has_more
+                ? messages.admin_active_grants_more({
+                    count: billing.active_grants.length,
+                  })
+                : billing.active_grants.length === 1
+                  ? messages.admin_active_grants_one()
+                  : messages.admin_active_grants({
+                      count: billing.active_grants.length,
+                    })
+            }
+            title={messages.admin_balance()}
+          >
+            <StatusBadge status={billing.account_status} />
+            <strong className="admin-row-value admin-tabular-value">
+              {formatCredits(billing.current_credits)}
+            </strong>
+          </AdminRow>
+          {billing.active_grants.map((grant) => (
+            <AdminRow
+              description={messages.admin_grant_detail({
+                id: grant.id,
+                source: humanize(grant.source_type),
+                time: formatIso(grant.expires_at),
+              })}
+              key={grant.id}
+              title={`${displayText(grant.package_code)}@${displayText(grant.package_version)}`}
+            >
+              <span className="admin-row-value admin-tabular-value">
+                {formatCredits(grant.remaining_credits)}
+              </span>
+            </AdminRow>
+          ))}
+          {billing.has_more ? (
+            <AdminRow title={messages.admin_grants_first_50()} />
+          ) : null}
+        </AdminSection>
+      ) : null}
     </>
   );
 }
 
-type WorkspaceAgentModelsState =
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "ready"; overview: AdminWorkspaceAgentModels };
-
-function WorkspaceAgentModelsSection({
-  api,
-  onAccessDenied,
-  userId,
-  workspaceId,
-}: {
-  api: AdminApi;
-  onAccessDenied: () => void;
-  userId: string;
-  workspaceId: string;
-}) {
-  const [editingRole, setEditingRole] = useState<AdminWorkspaceAgentRole>();
-  const [notice, setNotice] = useState<string>();
-  const [revision, setRevision] = useState(0);
-  const [state, setState] = useState<WorkspaceAgentModelsState>({
-    status: "loading",
-  });
-  const reload = () => {
-    setState({ status: "loading" });
-    setRevision((current) => current + 1);
-  };
-
-  useEffect(() => {
-    const request = new AbortController();
-
-    void api
-      .getUserWorkspaceAgentModels(userId, { signal: request.signal })
-      .then((overview) => {
-        if (!request.signal.aborted) {
-          setState({ status: "ready", overview });
-        }
-      })
-      .catch((error: unknown) => {
-        if (request.signal.aborted || isAdminSessionRejection(error)) return;
-        if (isAdminAccessDenied(error)) {
-          onAccessDenied();
-          return;
-        }
-        setState({
-          status: "error",
-          message: adminErrorMessage(
-            error,
-            "Unable to load the Workspace agent models."
-          ),
-        });
-      });
-
-    return () => request.abort();
-  }, [api, onAccessDenied, revision, userId]);
-
-  if (editingRole && state.status === "ready") {
-    return (
-      <ChangeWorkspaceAgentModelPanel
-        api={api}
-        current={state.overview.agents[editingRole]}
-        models={state.overview}
-        onAccessDenied={onAccessDenied}
-        onChanged={(changed) => {
-          setState((current) =>
-            current.status === "ready"
-              ? {
-                  status: "ready",
-                  overview: {
-                    ...current.overview,
-                    agents: {
-                      ...current.overview.agents,
-                      [editingRole]: changed,
-                    },
-                  },
-                }
-              : current
-          );
-          setEditingRole(undefined);
-          setNotice(
-            `${roleLabel(changed.role)} model changed to ${changed.template_name} — ${changed.model}.`
-          );
-          setRevision((current) => current + 1);
-        }}
-        onClose={() => setEditingRole(undefined)}
-        role={editingRole}
-        userId={userId}
-        workspaceId={workspaceId}
-      />
-    );
-  }
+function WorkspaceAgentModelsSection({ model }: { model: WorkspaceAgentModelsModel }) {
+  const run = useAdminCommand();
+  const { editing, models, notice } = useAdminState(model.state);
 
   return (
-    <section
-      aria-labelledby="workspace-agent-models-title"
-      className="admin-agent-models"
-    >
-      <div className="admin-drawer-section-header">
-        <div>
-          <h3 id="workspace-agent-models-title">Agent models</h3>
-          <p>Effective Router and Worker assignments for this Workspace</p>
-        </div>
-        <Button
-          hierarchy="link-gray"
-          isDisabled={state.status === "loading"}
-          onPress={reload}
-          size="sm"
-        >
-          Refresh models
-        </Button>
-      </div>
-
+    <>
       {notice ? (
-        <AdminNotice message={notice} onDismiss={() => setNotice(undefined)} />
+        <AdminNotice message={notice} onDismiss={() => run(model.dismissNotice)} />
       ) : null}
-
-      {state.status === "loading" ? (
-        <AdminState
-          message="Reading the effective Router and Worker assignments."
-          title="Loading agent models…"
-        />
-      ) : state.status === "error" ? (
-        <AdminState
-          message={state.message}
-          onAction={reload}
-          title="Agent models couldn’t be loaded"
-          tone="error"
-        />
-      ) : (
-        <div className="admin-agent-model-list">
-          {(["router", "worker"] as const).map((role) => {
-            const agent = state.overview.agents[role];
-
-            return (
-              <article className="admin-agent-model-card" key={role}>
-                <div>
-                  <span>{roleLabel(role)}</span>
-                  <strong>{agent.model}</strong>
-                  <p>
-                    {agent.template_name} · {agent.provider}
-                  </p>
-                  <p>Agent {agent.agent_id}</p>
-                </div>
-                <Button
-                  hierarchy="secondary-gray"
-                  isDisabled={state.overview.available_models.length === 0}
-                  onPress={() => setEditingRole(role)}
-                  size="sm"
+      <AdminSection
+        action={
+          <Button
+            hierarchy="link-gray"
+            isDisabled={models.status === "loading"}
+            onPress={() => run(model.reload)}
+            size="sm"
+          >
+            {messages.admin_refresh()}
+          </Button>
+        }
+        title={messages.admin_agent_models()}
+      >
+        {models.status === "loading" ? (
+          <AdminRow title={messages.admin_loading_agent_models()} />
+        ) : models.status === "error" ? (
+          <AdminRow
+            description={models.message}
+            title={messages.admin_agent_models_failed()}
+          >
+            <Button
+              hierarchy="secondary-gray"
+              onPress={() => run(model.reload)}
+              size="sm"
+            >
+              {messages.admin_retry()}
+            </Button>
+          </AdminRow>
+        ) : (
+          <>
+            {(["router", "worker"] as const).map((role) => {
+              const agent = models.value.agents[role];
+              if (!agent) return null;
+              return (
+                <AdminRow
+                  description={[
+                    agent.model_display_name || agent.model,
+                    agent.source === "platform_default"
+                      ? messages.admin_platform_default()
+                      : null,
+                    agent.provider,
+                    agent.agent_id,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                  key={role}
+                  title={roleLabel(role)}
                 >
-                  Change {roleLabel(role)} model
-                </Button>
-              </article>
-            );
-          })}
-          {state.overview.available_models.length === 0 ? (
-            <p className="admin-bounded-caption">
-              No visible model templates are currently available for assignment.
-            </p>
-          ) : null}
-        </div>
-      )}
-    </section>
+                  <code className="admin-row-value">{agent.model}</code>
+                  <Button
+                    aria-label={messages.admin_change_role_model({
+                      role: roleLabel(role),
+                    })}
+                    hierarchy="secondary-gray"
+                    onPress={() => run(model.edit(role))}
+                    size="sm"
+                  >
+                    {messages.admin_change()}
+                  </Button>
+                </AdminRow>
+              );
+            })}
+          </>
+        )}
+      </AdminSection>
+      {editing ? <ChangeWorkspaceAgentModelPanel model={editing} /> : null}
+    </>
   );
 }
 
 function ChangeWorkspaceAgentModelPanel({
-  api,
-  current,
-  models,
-  onAccessDenied,
-  onChanged,
-  onClose,
-  role,
-  userId,
-  workspaceId,
+  model,
 }: {
-  api: AdminApi;
-  current: AdminWorkspaceAgentModel;
-  models: AdminWorkspaceAgentModels;
-  onAccessDenied: () => void;
-  onChanged: (changed: AdminWorkspaceAgentModel) => void;
-  onClose: () => void;
-  role: AdminWorkspaceAgentRole;
-  userId: string;
-  workspaceId: string;
+  model: ChangeWorkspaceAgentModelModel;
 }) {
-  const [commandBusy, setCommandBusy] = useState(false);
-  const [confirmationOpen, setConfirmationOpen] = useState(false);
-  const [reason, setReason] = useState("");
-  const [templateId, setTemplateId] = useState(() =>
-    current.source === "platform_default" ? "" : current.template_id
-  );
-  const [idempotencyKey] = useState(() =>
-    createIdempotencyKey(`workspace-${role}-model`)
-  );
+  const run = useAdminCommand();
+  const state = useAdminState(model.state);
+  const commandBusy = useAdminState(model.confirmation.state, confirmationBusy);
+  const { current, models, role, workspaceId } = model;
+  const { choice } = state;
+  const { canReview } = changeWorkspaceAgentModelForm(model, state);
+  const currentKey = agentModelKey(current);
+  const currentName = current.model_display_name || current.model;
   const label = roleLabel(role);
-  const selected = models.available_models.find(
-    (model) => model.template_id === templateId
-  );
-  const expected = `workspace-agent-model:${userId}:${role}:${templateId || "default"}`;
 
   return (
-    <section
-      aria-label={`Change ${label} model`}
-      className="admin-command-section admin-agent-model-command"
+    <AdminDrawer
+      eyebrow={messages.admin_workspace()}
+      isDismissable={!commandBusy}
+      onClose={() => run(model.close)}
+      title={messages.admin_change_role_model({ role: label })}
     >
-      <div className="admin-command-section-header">
-        <div>
-          <p>Workspace agent command</p>
-          <h3>Change {label} model</h3>
-        </div>
-        <Button
-          hierarchy="link-gray"
-          isDisabled={commandBusy}
-          onPress={onClose}
-          size="sm"
-        >
-          Back
-        </Button>
-      </div>
       <form
+        aria-label={messages.admin_change_role_model({ role: label })}
         className="admin-command-form"
         onSubmit={(event) => {
           event.preventDefault();
-          setConfirmationOpen(true);
+          run(model.review);
         }}
       >
         <DetailList
           items={[
-            { label: "Workspace ID", value: workspaceId },
-            { label: "Agent", value: label },
-            { label: "Current model", value: current.model },
-            { label: "Current template", value: current.template_name },
+            { label: messages.admin_workspace_id(), value: workspaceId },
+            { label: messages.admin_current_model(), value: current.model },
           ]}
         />
-        <NativeField label={`${label} model`}>
+        <NativeField label={messages.admin_role_model({ role: label })}>
           <ModelIcon
             brand={
-              templateId === ""
+              choice === "default"
                 ? models.platform_defaults?.[role]?.model_icon
-                : selected?.model_icon
+                : current.model_icon
             }
           />
           <select
             disabled={commandBusy}
-            onChange={(event) => setTemplateId(event.target.value)}
-            value={templateId}
+            onChange={(event) => run(model.setChoice(event.target.value))}
+            value={choice}
           >
-            <optgroup label="Platform billing">
-              <option value="">
-                Default (
-                {models.platform_defaults?.[role]?.model_display_name ||
-                  models.platform_defaults?.[role]?.model ||
-                  "unavailable"}
-                )
+            <option value="default">
+              {messages.admin_default_model({
+                model: platformModelName(models, role),
+              })}
+            </option>
+            {currentKey === "default" ? null : (
+              <option
+                disabled={currentKey === undefined}
+                value={currentKey ?? CURRENT_CHOICE}
+              >
+                {messages.admin_current_choice({ model: currentName })}
               </option>
-              {models.available_models
-                .filter((model) => model.scope === "global" && !model.account_pool)
-                .map((model) => (
-                  <option key={model.template_id} value={model.template_id}>
-                    {model.model_display_name || model.model}
-                    {model.name &&
-                    model.name !== (model.model_display_name || model.model)
-                      ? ` — ${model.name}`
-                      : ""}
-                  </option>
-                ))}
-              {current.source !== "platform_default" &&
-              !models.available_models.some(
-                (model) => model.template_id === current.template_id
-              ) ? (
-                <option disabled value={current.template_id}>
-                  {current.model_display_name || current.model} (current choice)
-                </option>
-              ) : null}
-            </optgroup>
-            {models.available_models.some(
-              (model) => model.scope === "tenant" || model.account_pool
-            ) ? (
-              <optgroup label="BYOK">
-                {models.available_models
-                  .filter((model) => model.scope === "tenant" || model.account_pool)
-                  .map((model) => (
-                    <option key={model.template_id} value={model.template_id}>
-                      {model.model_display_name || model.model}
-                      {model.name &&
-                      model.name !== (model.model_display_name || model.model)
-                        ? ` — ${model.name}`
-                        : ""}
-                    </option>
-                  ))}
-              </optgroup>
-            ) : null}
+            )}
           </select>
         </NativeField>
-        <ReasonField onChange={setReason} value={reason} />
         <div className="admin-command-actions">
-          <Button hierarchy="secondary-gray" onPress={onClose}>
-            Cancel
+          <Button hierarchy="secondary-gray" onPress={() => run(model.close)}>
+            {messages.admin_cancel()}
           </Button>
-          <Button
-            isDisabled={
-              (templateId !== "" && !selected) ||
-              templateId ===
-                (current.source === "platform_default" ? "" : current.template_id) ||
-              reason.trim().length < 3
-            }
-            type="submit"
-          >
-            Review command
+          <Button isDisabled={!canReview} type="submit">
+            {messages.admin_change_model_action()}
           </Button>
         </div>
       </form>
 
-      <AdminConfirmationDialog
-        expected={expected}
-        isOpen={confirmationOpen}
-        onBusyChange={setCommandBusy}
-        onConfirm={async () => {
-          if (templateId !== "" && !selected) {
-            throw new Error("Select an available model template.");
-          }
-          const changed = await guardedAdminCommand(
-            api.updateUserWorkspaceAgentModel(userId, role, {
-              confirmation: expected,
-              idempotencyKey,
-              reason: reason.trim(),
-              templateId: templateId || null,
-            }),
-            onAccessDenied
-          );
-          onChanged(changed);
-        }}
-        onOpenChange={setConfirmationOpen}
-        title={`Change ${label} model?`}
-      />
-    </section>
+      <AdminConfirmationDialog confirmation={model.confirmation} />
+    </AdminDrawer>
   );
 }
 
-function IssueCreditsPanel({
-  api,
-  onAccessDenied,
-  onClose,
-  onIssued,
-  userId,
-  workspaceId,
-  workspaceName,
-}: {
-  api: AdminApi;
-  onAccessDenied: () => void;
-  onClose: () => void;
-  onIssued: (selected: AdminPackageVersion, result: AdminManualGrantResult) => void;
-  userId: string;
-  workspaceId: string;
-  workspaceName?: string | null;
-}) {
-  const [commandBusy, setCommandBusy] = useState(false);
-  const [confirmationOpen, setConfirmationOpen] = useState(false);
-  const [expiresAt, setExpiresAt] = useState(defaultExpiryInput);
-  const [packageKey, setPackageKey] = useState("");
-  const [reason, setReason] = useState("");
-  const [idempotencyKey] = useState(() => createIdempotencyKey("issue-credits"));
-  const [state, setState] = useState<
-    | { status: "loading" }
-    | { status: "error"; message: string }
-    | { status: "ready"; packages: AdminPackageVersion[] }
-  >({ status: "loading" });
-
-  useEffect(() => {
-    const request = new AbortController();
-
-    void api
-      .listPackageVersions({ signal: request.signal })
-      .then((packages) => {
-        if (request.signal.aborted) return;
-        setState({ status: "ready", packages });
-        setPackageKey((current) => current || packageVersionKey(packages[0]));
-      })
-      .catch((error: unknown) => {
-        if (request.signal.aborted || isAdminSessionRejection(error)) return;
-        if (isAdminAccessDenied(error)) {
-          onAccessDenied();
-          return;
-        }
-        setState({
-          status: "error",
-          message: adminErrorMessage(error, "Unable to load issuable packages."),
-        });
-      });
-
-    return () => request.abort();
-  }, [api, onAccessDenied]);
-
-  const selected =
-    state.status === "ready"
-      ? state.packages.find((item) => packageVersionKey(item) === packageKey)
-      : undefined;
-  const expected = selected
-    ? `issue-workspace-credits:${workspaceId}:${selected.package_code}:${selected.version}`
-    : `issue-workspace-credits:${workspaceId}:missing:missing`;
-  const expiry = parseFutureExpiry(expiresAt);
+function IssueCreditsPanel({ model }: { model: IssueCreditsModel }) {
+  const run = useAdminCommand();
+  const state = useAdminState(model.state);
+  const commandBusy = useAdminState(model.confirmation.state, confirmationBusy);
+  const { expiresAt, packageKey, packages } = state;
+  const { canReview, selected } = issueCreditsForm(state);
+  const { workspaceId, workspaceName } = model;
 
   return (
-    <section aria-label="Issue Workspace credits" className="admin-command-section">
-      <div className="admin-command-section-header">
-        <div>
-          <p>Billing grant command</p>
-          <h3>Issue Workspace credits</h3>
-        </div>
-        <Button
-          hierarchy="link-gray"
-          isDisabled={commandBusy}
-          onPress={onClose}
-          size="sm"
-        >
-          Back
-        </Button>
-      </div>
-      {state.status === "loading" ? (
+    <AdminDrawer
+      eyebrow={messages.admin_workspace()}
+      isDismissable={!commandBusy}
+      onClose={() => run(model.close)}
+      title={messages.admin_issue_credits()}
+    >
+      {packages.status === "loading" ? (
+        <AdminState title={messages.admin_loading_packages()} />
+      ) : packages.status === "error" ? (
         <AdminState
-          message="Loading the current issuable package catalog."
-          title="Loading packages…"
-        />
-      ) : state.status === "error" ? (
-        <AdminState
-          message={state.message}
-          title="Packages couldn’t be loaded"
+          message={packages.message}
+          title={messages.admin_packages_failed()}
           tone="error"
         />
-      ) : state.packages.length === 0 ? (
+      ) : packages.value.length === 0 ? (
         <AdminState
-          message="There are no currently issuable Comma package versions."
-          title="No issuable packages"
+          message={messages.admin_no_packages_body()}
+          title={messages.admin_no_packages()}
         />
       ) : (
         <form
+          aria-label={messages.admin_issue_workspace_credits()}
           className="admin-command-form"
           onSubmit={(event) => {
             event.preventDefault();
-            setConfirmationOpen(true);
+            run(model.review);
           }}
         >
           <DetailList
             items={[
-              { label: "Target Workspace", value: workspaceName || workspaceId },
-              { label: "Workspace ID", value: workspaceId },
+              {
+                label: messages.admin_workspace(),
+                value: workspaceName || workspaceId,
+              },
+              { label: messages.admin_workspace_id(), value: workspaceId },
             ]}
           />
-          <NativeField label="Package version">
+          <NativeField label={messages.admin_package_version()}>
             <select
-              onChange={(event) => setPackageKey(event.target.value)}
+              onChange={(event) => run(model.setPackage(event.target.value))}
               value={packageKey}
             >
-              {state.packages.map((item) => (
+              {packages.value.map((item) => (
                 <option key={item.id} value={packageVersionKey(item)}>
                   {item.package_name || item.package_code} · {item.version} ·{" "}
                   {formatCredits(item.grant_credits)} credits
@@ -836,9 +450,9 @@ function IssueCreditsPanel({
             </select>
           </NativeField>
           <InputField
-            hint="Required. Credits remain a bounded grant lot and expire at this time."
-            label="Expires at"
-            onChange={(event) => setExpiresAt(event.target.value)}
+            hint={messages.admin_expiry_hint()}
+            label={messages.admin_expires_at()}
+            onChange={(event) => run(model.setExpiresAt(event.target.value))}
             required
             type="datetime-local"
             value={expiresAt}
@@ -847,84 +461,32 @@ function IssueCreditsPanel({
             <DetailList
               items={[
                 {
-                  label: "Credits",
+                  label: messages.admin_credits(),
                   value: formatCredits(selected.grant_credits),
                 },
                 {
-                  label: "Package",
+                  label: messages.admin_package(),
                   value: `${selected.package_code}@${selected.version}`,
                 },
               ]}
             />
           ) : null}
-          <ReasonField onChange={setReason} value={reason} />
           <div className="admin-command-actions">
-            <Button hierarchy="secondary-gray" onPress={onClose}>
-              Cancel
+            <Button hierarchy="secondary-gray" onPress={() => run(model.close)}>
+              {messages.admin_cancel()}
             </Button>
-            <Button
-              isDisabled={!selected || !expiry || reason.trim().length < 3}
-              type="submit"
-            >
-              Review command
+            <Button isDisabled={!canReview} type="submit">
+              {messages.admin_issue_credits_action()}
             </Button>
           </div>
         </form>
       )}
 
-      <AdminConfirmationDialog
-        expected={expected}
-        isOpen={confirmationOpen}
-        onBusyChange={setCommandBusy}
-        onConfirm={async () => {
-          if (!selected || !expiry) {
-            throw new Error("Select an issuable package and a future expiry.");
-          }
-          const result = await guardedAdminCommand(
-            api.issueUserWorkspaceCredits(userId, {
-              confirmation: expected,
-              expiresAt: expiry,
-              idempotencyKey,
-              packageCode: selected.package_code,
-              packageVersion: selected.version,
-              reason: reason.trim(),
-            }),
-            onAccessDenied
-          );
-          onIssued(selected, result);
-        }}
-        onOpenChange={setConfirmationOpen}
-        title="Issue these credits?"
-      />
-    </section>
+      <AdminConfirmationDialog confirmation={model.confirmation} />
+    </AdminDrawer>
   );
-}
-
-function formatCredits(value: number) {
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
-}
-
-function packageVersionKey(item: AdminPackageVersion | undefined) {
-  return item ? `${item.package_code}:${item.version}` : "";
-}
-
-function defaultExpiryInput() {
-  const value = new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000);
-  const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 16);
-}
-
-function parseFutureExpiry(value: string) {
-  const timestamp = new Date(value);
-  return Number.isFinite(timestamp.getTime()) && timestamp.getTime() > Date.now()
-    ? timestamp.toISOString()
-    : undefined;
 }
 
 function humanize(value: string) {
   return value.replaceAll("_", " ");
-}
-
-function roleLabel(role: AdminWorkspaceAgentRole) {
-  return role === "router" ? "Router" : "Worker";
 }

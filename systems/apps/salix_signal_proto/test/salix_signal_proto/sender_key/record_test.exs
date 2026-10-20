@@ -2,7 +2,7 @@ defmodule SalixSignalProto.SenderKey.RecordTest do
   # Level 1 vectors of CRS-09c (vectors/CRS-09): distribution messages,
   # sender key messages from a fixed chain, the receiver state machine and
   # the forward jump limit.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.SenderKey.{Message, Record}
   alias SalixSignalProto.Test.Vectors

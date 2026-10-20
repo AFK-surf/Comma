@@ -18,7 +18,7 @@ defmodule BridgeForTeams.Environments do
   import Ecto.Query
   require Logger
 
-  alias BridgeForTeams.{EnvironmentRuntimeObserver, Repo, RuntimeAuth, Telemetry}
+  alias BridgeForTeams.{Repo, RuntimeAuth, Telemetry}
   alias BridgeForTeams.Auth.Sessions
   alias BridgeForTeams.Observability
   alias BridgeForTeams.Salix.Client
@@ -88,7 +88,7 @@ defmodule BridgeForTeams.Environments do
           {:ok, MacMiniProvisioner.t()} | {:error, Ecto.Changeset.t() | :not_found}
   def register_mac_mini_provisioner(org_id, attrs, opts \\ []) do
     observe_runner(:runner_heartbeat, fn ->
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       attrs =
         attrs
@@ -133,7 +133,7 @@ defmodule BridgeForTeams.Environments do
           unhealthy: [MacMiniProvisioner.t()]
         }
   def mac_mini_health_summary(org_id, opts \\ []) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     online_since = DateTime.add(now, -@mac_mini_online_ttl_seconds, :second)
     lost_since = DateTime.add(now, -@mac_mini_recently_lost_ttl_seconds, :second)
     limit = Keyword.get(opts, :attention_limit, 5)
@@ -167,7 +167,7 @@ defmodule BridgeForTeams.Environments do
   @doc "List org-scoped runners in dashboard order."
   @spec list_mac_mini_provisioners(Ecto.UUID.t()) :: [MacMiniProvisioner.t()]
   def list_mac_mini_provisioners(org_id) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     Repo.all(
       from(p in MacMiniProvisioner,
@@ -185,7 +185,7 @@ defmodule BridgeForTeams.Environments do
           total_count: non_neg_integer()
         }
   def page_mac_mini_provisioners(org_id, opts \\ []) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     page_limit = mac_mini_page_limit(opts)
 
     base_query =
@@ -300,7 +300,7 @@ defmodule BridgeForTeams.Environments do
           {:ok, MacMiniProvisioner.t()} | {:error, term()}
   def heartbeat_mac_mini_provisioner(org_id, provisioner_id, attrs, opts \\ []) do
     observe_runner(:runner_heartbeat, fn ->
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       attrs =
         attrs
@@ -330,7 +330,7 @@ defmodule BridgeForTeams.Environments do
   """
   @spec effective_mac_mini_provisioner_status(MacMiniProvisioner.t()) :: String.t()
   def effective_mac_mini_provisioner_status(%MacMiniProvisioner{} = provisioner) do
-    effective_mac_mini_provisioner_status(provisioner, DateTime.utc_now())
+    effective_mac_mini_provisioner_status(provisioner, SystemsClock.utc_now())
   end
 
   @spec effective_mac_mini_provisioner_status(MacMiniProvisioner.t(), DateTime.t()) :: String.t()
@@ -472,7 +472,7 @@ defmodule BridgeForTeams.Environments do
       |> max(1)
       |> min(@max_provision_reconcile_limit)
 
-    now = Keyword.get(opts, :now, DateTime.utc_now())
+    now = Keyword.get(opts, :now, SystemsClock.utc_now())
     attach_timeout_ms = Keyword.get(opts, :attach_timeout_ms, @default_attach_timeout_ms)
 
     requests = active_provision_requests(limit)
@@ -683,7 +683,7 @@ defmodule BridgeForTeams.Environments do
   end
 
   defp observe_runner(operation, fun) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     try do
       result = fun.()
@@ -691,13 +691,13 @@ defmodule BridgeForTeams.Environments do
       Telemetry.emit_operation(
         operation,
         runner_outcome(result),
-        System.monotonic_time() - started
+        SystemsClock.monotonic_time() - started
       )
 
       result
     rescue
       exception ->
-        Telemetry.emit_operation(operation, "error", System.monotonic_time() - started)
+        Telemetry.emit_operation(operation, "error", SystemsClock.monotonic_time() - started)
         reraise exception, __STACKTRACE__
     end
   end
@@ -1050,7 +1050,7 @@ defmodule BridgeForTeams.Environments do
              resource_id: runtime_auth_resource_id(device_runtime_id, project.id),
              resource_label: "Codex runtime",
              result: "ok",
-             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+             request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
              metadata:
                metadata
                |> Map.merge(
@@ -1089,7 +1089,7 @@ defmodule BridgeForTeams.Environments do
                resource_label: "Codex runtime",
                result: "failed",
                reason: reason,
-               request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+               request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
                surface: "runtime_auth",
                metadata:
                  metadata
@@ -1308,7 +1308,7 @@ defmodule BridgeForTeams.Environments do
              resource_id: resource_id,
              resource_label: resource_label,
              result: "ok",
-             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+             request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
              metadata: Map.merge(%{"project_id" => project.id}, metadata)
            }) do
         {:ok, _audit} ->
@@ -1398,7 +1398,7 @@ defmodule BridgeForTeams.Environments do
            resource_label: resource_label,
            result: "failed",
            reason: reason,
-           request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+           request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
            surface: "device",
            metadata: metadata
          }) do
@@ -1611,7 +1611,7 @@ defmodule BridgeForTeams.Environments do
 
   defp with_effective_mac_mini_status(
          %MacMiniProvisioner{} = provisioner,
-         now \\ DateTime.utc_now()
+         now \\ SystemsClock.utc_now()
        ) do
     %{
       provisioner
@@ -1809,10 +1809,6 @@ defmodule BridgeForTeams.Environments do
 
     if is_binary(connector_run_id) and connector_run_id != "" do
       latest = latest_environment_runtime_event(project.org_id, connector_run_id)
-      # Keep this product read path bounded to the env registry result. Agent
-      # runtime observation is queued to a separate actor so a slow Salix agent
-      # projection cannot make device/runtime listing unusable.
-      _ = EnvironmentRuntimeObserver.observe_agent_runtime(project, record, source)
       maybe_record_environment_runtime_event(project, record, latest, source)
     else
       :unchanged
@@ -1981,7 +1977,7 @@ defmodule BridgeForTeams.Environments do
   defp environment_runtime_occurred_at(record) do
     case record["updated_at"] || record["disconnected_at"] || record["registered_at"] do
       timestamp when not is_nil(timestamp) -> timestamp_to_datetime(timestamp)
-      _ -> DateTime.utc_now()
+      _ -> SystemsClock.utc_now()
     end
   end
 
@@ -2001,12 +1997,12 @@ defmodule BridgeForTeams.Environments do
       _ ->
         case DateTime.from_iso8601(timestamp) do
           {:ok, datetime, _offset} -> datetime
-          _ -> DateTime.utc_now()
+          _ -> SystemsClock.utc_now()
         end
     end
   end
 
-  defp timestamp_to_datetime(_timestamp), do: DateTime.utc_now()
+  defp timestamp_to_datetime(_timestamp), do: SystemsClock.utc_now()
 
   defp environment_runtime_label(record) do
     nonblank(
@@ -2335,9 +2331,9 @@ defmodule BridgeForTeams.Environments do
   end
 
   defp claim_device_projection_scan(opts) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     lease_ms = Keyword.get(opts, :projection_lease_ms, @default_device_projection_lease_ms)
-    token = Ecto.UUID.generate()
+    token = SystemsRuntime.Proc.uuid()
 
     Repo.transaction(fn ->
       Repo.insert_all(
@@ -2425,7 +2421,7 @@ defmodule BridgeForTeams.Environments do
 
   defp renew_device_projection_claim(claim, opts) do
     lease_ms = Keyword.get(opts, :projection_lease_ms, @default_device_projection_lease_ms)
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     case Repo.update_all(
            from(s in ProjectDeviceProjectionScan,
@@ -2522,7 +2518,7 @@ defmodule BridgeForTeams.Environments do
          %{records: records, next_cursor: next_cursor}
        )
        when is_list(records) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     Repo.transaction(fn ->
       scan =
@@ -2632,7 +2628,7 @@ defmodule BridgeForTeams.Environments do
         lease_token: nil,
         lease_expires_at: nil,
         last_error: error_class,
-        updated_at: DateTime.utc_now()
+        updated_at: SystemsClock.timestamp(:utc_datetime_usec)
       ]
     )
 
@@ -2791,7 +2787,7 @@ defmodule BridgeForTeams.Environments do
       summary: provision_event_summary(request, lifecycle),
       evidence: provision_evidence(request, opts),
       correlation_id: "#{request.id}:#{lifecycle}",
-      occurred_at: request.updated_at || DateTime.utc_now()
+      occurred_at: request.updated_at || SystemsClock.utc_now()
     }
     |> compact_provision_attrs()
   end

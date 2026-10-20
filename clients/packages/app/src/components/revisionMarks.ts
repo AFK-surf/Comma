@@ -1,136 +1,79 @@
-import { useSyncExternalStore } from "react";
+import { useCall, useTopic } from "@comma/core-client";
+import type { MarkKind } from "@comma/core/contract";
+import { useCallback, useEffect, useMemo } from "react";
 
 /**
- * A renderer-local map of id → projection revision, persisted in localStorage
- * so it is shared across this origin's windows and safe to lose. The
- * needs-review "seen" marks and the Inbox "deleted" / "unread" marks are all
- * one of these: a mark records the projection `updatedAt` at which something
- * happened. Seen and deleted marks outgrow themselves on a newer revision.
- * Unread marks stay until `unmark`.
+ * The reader's marks on this device, as the core keeps them for the account: id → the projection revision
+ * (`updatedAt`) at which something happened. The needs-review "seen" marks and the Inbox "deleted" / "unread" marks
+ * are all one of these. Seen and deleted marks outgrow themselves on a newer revision; unread marks stay until
+ * unmarked.
  */
 export type RevisionMarks = ReadonlyMap<string, number>;
 
-export interface RevisionMarksStore {
-  /** Records marks; a mark never moves backwards. */
-  mark(entries: Iterable<readonly [id: string, revision: number]>): void;
-  read(): RevisionMarks;
-  subscribe(listener: () => void): () => void;
-  /** Drops marks. A missing id is a no-op. */
-  unmark(ids: Iterable<string>): void;
-}
+const EMPTY: RevisionMarks = new Map();
 
-export function createRevisionMarksStore({
-  changedEvent,
-  maxMarks,
-  persist,
-  storageKey,
-}: {
-  /** Window event that fans a write out to this window's subscribers. */
-  changedEvent: string;
-  /** Oldest marks are evicted past this; a stale mark only re-shows a row. */
-  maxMarks: number;
-  /**
-   * Writes the serialized marks under `storageKey`. The caller owns this call
-   * so the foundation check can audit every localStorage write against a
-   * literal key; a throw (blocked storage) is absorbed here.
-   */
-  persist: (raw: string) => void;
-  storageKey: string;
-}): RevisionMarksStore {
-  let cache: { marks: RevisionMarks; raw: string | null } | undefined;
-
-  const readRaw = (): string | null => {
+/**
+ * Marks this window kept in localStorage before the core kept them: handed to the core once, then dropped.
+ */
+function useLegacyMarks(kind: MarkKind, legacyKey: string) {
+  const call = useCall();
+  useEffect(() => {
+    let raw: string | null = null;
     try {
-      return globalThis.localStorage?.getItem(storageKey) ?? null;
+      raw = globalThis.localStorage?.getItem(legacyKey) ?? null;
     } catch {
-      return null;
+      return;
     }
-  };
-
-  const read = (): RevisionMarks => {
-    const raw = readRaw();
-    if (cache && cache.raw === raw) return cache.marks;
-    const marks = new Map<string, number>();
-    if (raw !== null) {
-      try {
-        const parsed: unknown = JSON.parse(raw);
-        if (parsed !== null && typeof parsed === "object") {
-          for (const [id, revision] of Object.entries(parsed)) {
-            if (typeof revision === "number" && Number.isFinite(revision)) {
-              marks.set(id, revision);
-            }
-          }
+    if (raw === null) return;
+    let entries: [string, number][] = [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed !== null && typeof parsed === "object")
+        entries = Object.entries(parsed).filter(
+          (entry): entry is [string, number] =>
+            typeof entry[1] === "number" && Number.isFinite(entry[1])
+        );
+    } catch {
+      // A corrupted payload carries no marks.
+    }
+    void call("marks.mark", { kind, entries: entries.slice(0, 1000) }).then(
+      () => {
+        try {
+          globalThis.localStorage?.removeItem(legacyKey);
+        } catch {
+          // Blocked storage: handed over again next time, which changes nothing.
         }
-      } catch {
-        // A corrupted payload reads as no marks and is replaced on next write.
-      }
-    }
-    cache = { marks, raw };
-    return marks;
-  };
-
-  const commit = (next: Map<string, number>) => {
-    const raw = JSON.stringify(Object.fromEntries(next));
-    try {
-      persist(raw);
-    } catch {
-      // A blocked write still applies for this session via the cache.
-    }
-    cache = { marks: next, raw };
-    globalThis.window?.dispatchEvent(new CustomEvent(changedEvent));
-  };
-
-  const mark = (entries: Iterable<readonly [string, number]>) => {
-    const current = read();
-    let next: Map<string, number> | undefined;
-    for (const [id, revision] of entries) {
-      const existing = (next ?? current).get(id);
-      if (existing !== undefined && existing >= revision) continue;
-      next ??= new Map(current);
-      next.set(id, revision);
-    }
-    if (!next) return;
-    if (next.size > maxMarks) {
-      const evictions = [...next.entries()]
-        .toSorted(([, left], [, right]) => left - right)
-        .slice(0, next.size - maxMarks);
-      for (const [evictedId] of evictions) next.delete(evictedId);
-    }
-    commit(next);
-  };
-
-  const unmark = (ids: Iterable<string>) => {
-    const current = read();
-    let next: Map<string, number> | undefined;
-    for (const id of ids) {
-      if (!(next ?? current).has(id)) continue;
-      next ??= new Map(current);
-      next.delete(id);
-    }
-    if (!next) return;
-    commit(next);
-  };
-
-  const subscribe = (listener: () => void) => {
-    if (!globalThis.window) {
-      return () => undefined;
-    }
-
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === storageKey) listener();
-    };
-    window.addEventListener(changedEvent, listener);
-    window.addEventListener("storage", handleStorage);
-    return () => {
-      window.removeEventListener(changedEvent, listener);
-      window.removeEventListener("storage", handleStorage);
-    };
-  };
-
-  return { mark, read, subscribe, unmark };
+      },
+      () => undefined
+    );
+  }, [call, kind, legacyKey]);
 }
 
-/** Subscribes a component to a store's marks. */
-export function useRevisionMarks(store: RevisionMarksStore): RevisionMarks {
-  return useSyncExternalStore(store.subscribe, store.read, store.read);
+/** Subscribes a component to one kind of marks. */
+export function useRevisionMarks(kind: MarkKind, legacyKey: string): RevisionMarks {
+  useLegacyMarks(kind, legacyKey);
+  const { value } = useTopic({ topic: "marks", kind });
+  const marks = value?.marks;
+  return useMemo(() => (marks ? new Map(Object.entries(marks)) : EMPTY), [marks]);
+}
+
+/** Records marks (a mark never moves backwards) and drops them. */
+export function useRevisionMarkWriter(kind: MarkKind) {
+  const call = useCall();
+  const mark = useCallback(
+    (entries: Iterable<readonly [id: string, revision: number]>) =>
+      void call("marks.mark", {
+        kind,
+        entries: [...entries].map(
+          ([id, revision]) => [id, revision] as [string, number]
+        ),
+      }).catch(() => undefined),
+    [call, kind]
+  );
+  const unmark = useCallback(
+    (ids: Iterable<string>) =>
+      void call("marks.unmark", { kind, ids: [...ids] }).catch(() => undefined),
+    [call, kind]
+  );
+  return useMemo(() => ({ mark, unmark }), [mark, unmark]);
 }

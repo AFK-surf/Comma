@@ -236,7 +236,7 @@ defmodule AlertRouter.Workers.ReconcileTimeline do
   end
 
   defp client do
-    Application.get_env(:alert_router, :slack, [])
+    SystemsRuntime.get_env(:alert_router, :slack, [])
     |> Keyword.get(:client, AlertRouter.Slack.ReqClient)
   end
 

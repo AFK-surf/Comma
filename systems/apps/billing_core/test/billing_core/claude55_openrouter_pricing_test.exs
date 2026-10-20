@@ -1,5 +1,5 @@
 defmodule BillingCore.Claude55OpenRouterPricingTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   Code.require_file(
     "../../priv/repo/migrations/20260930000007_seed_claude_55_openrouter_pricing.exs",

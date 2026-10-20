@@ -1,7 +1,7 @@
 import { useRouterState } from "@tanstack/react-router";
 import { useLayoutEffect } from "react";
 import { showsProductRouteOutlet } from "../productShellPaths";
-import { useChatApi, useChatRegistry, useHomeConversationTarget } from "./ChatProvider";
+import { useChatRegistry, useHomeConversationTarget } from "./ChatProvider";
 import { useWorkspaceChat } from "./useWorkspaceChat";
 
 // The Comma assistant sidebar card is route-independent, but the Home
@@ -23,13 +23,12 @@ export function HomeConversationTargetBootstrap() {
 }
 
 function ResolveHomeConversationTarget() {
-  const api = useChatApi();
   const registry = useChatRegistry();
   // Background resolution must not rescope the visible route: activating the
   // resolved default Workspace would rip a multi-Workspace user's selected
   // Workspace out from under /tasks and every other active-Workspace
   // subscriber. Only the identifiers are remembered here.
-  const { state } = useWorkspaceChat({ activateWorkspace: false, api });
+  const { state } = useWorkspaceChat({ activateWorkspace: false });
 
   useLayoutEffect(() => {
     if (state.status !== "ready") return;

@@ -11,9 +11,10 @@ import {
   downloadMediaSource,
   type ChatPanelMediaDownloadCapability,
   type ChatPanelMessage,
-} from "@comma/ui";
+} from "@comma/ui/components/chat-panel";
 import { StrictMode, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { fixtureSearch } from "../../../support/search";
 
 const mediaArtwork =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='960' height='540' viewBox='0 0 960 540'%3E%3Crect width='960' height='540' fill='%230f40f2'/%3E%3Ccircle cx='720' cy='180' r='210' fill='%231a1b1e'/%3E%3Ctext x='56' y='440' fill='white' font-size='64' font-family='sans-serif'%3EGenerated media%3C/text%3E%3C/svg%3E";
@@ -28,10 +29,7 @@ const videoSource = new URL(
 function ChatPanelMediaFixture() {
   const [copyCount, setCopyCount] = useState(0);
   const [sourceRevision, setSourceRevision] = useState(0);
-  const fixtureParameters = useMemo(
-    () => new URLSearchParams(window.location.search),
-    []
-  );
+  const fixtureParameters = useMemo(() => new URLSearchParams(fixtureSearch()), []);
   const crossOriginAudioSource = fixtureParameters.get("crossOriginAudio");
   const downloadEndpoint = fixtureParameters.get("downloadEndpoint");
   const configuredDownloadFailures = Number.parseInt(

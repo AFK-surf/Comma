@@ -63,14 +63,15 @@ defmodule SalixStore.OAuthAppsCutover do
 
   defp cutover_timeout_ms,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :salix_store,
         :oauth_apps_cutover_timeout_ms,
         @default_cutover_timeout_ms
       )
 
   defp cutover_max_objects,
-    do: Application.get_env(:salix_store, :oauth_apps_cutover_max_objects, @default_max_objects)
+    do:
+      SystemsRuntime.get_env(:salix_store, :oauth_apps_cutover_max_objects, @default_max_objects)
 
   @spec run() :: :ok | {:error, term()}
   # EVERYTHING `run/0` does — the three-state marker read, the S3 enumeration,
@@ -82,9 +83,9 @@ defmodule SalixStore.OAuthAppsCutover do
   # killed transaction rolls back to zero rows and no marker.
   def run do
     budget_ms = cutover_timeout_ms()
-    task = Task.async(fn -> guarded_run(budget_ms) end)
+    task = SystemsRuntime.Task.async(fn -> guarded_run(budget_ms) end)
 
-    case Task.yield(task, budget_ms) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, budget_ms) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
       {:exit, reason} -> {:error, {:cutover_crashed, reason}}
       nil -> {:error, {:budget_exceeded, budget_ms}}
@@ -92,7 +93,7 @@ defmodule SalixStore.OAuthAppsCutover do
   end
 
   defp guarded_run(budget_ms) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
 
     case marker_status() do
       :present ->
@@ -118,7 +119,7 @@ defmodule SalixStore.OAuthAppsCutover do
     # enumeration.
     with {:ok, scoped} <- enumerate_provider_apps(),
          :ok <- check_preflight_bound(scoped) do
-      remaining_ms = max(budget_ms - (System.monotonic_time(:millisecond) - started), 1)
+      remaining_ms = max(budget_ms - (SystemsClock.monotonic_time(:millisecond) - started), 1)
 
       case Repo.transaction(fn -> import_verify_mark(scoped, remaining_ms) end,
              timeout: remaining_ms
@@ -374,7 +375,7 @@ defmodule SalixStore.OAuthAppsCutover do
   end
 
   defp mark!(evidence, timeout_ms) when is_map(evidence) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     case Repo.query(
            "INSERT INTO salix_cutover_markers (name, completed_at, evidence) VALUES ($1, $2, $3) ON CONFLICT (name) DO NOTHING",

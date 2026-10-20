@@ -1,16 +1,10 @@
-import { Badge, Button, InputField, PlusIcon, ScrollArea } from "@comma/ui";
-import { useEffect, useMemo, useState } from "react";
-import {
-  AdminApiError,
-  createIdempotencyKey,
-  isAdminAccessDenied,
-  isAdminSessionRejection,
-  type AdminApi,
-  type AdminOauthClient,
-  type AdminOauthClientCreation,
-  type AdminOauthClientSecret,
-} from "./adminApi";
-import { adminErrorMessage, guardedAdminCommand } from "./adminErrors";
+import { Badge } from "@comma/ui/components/Badge";
+import { Button } from "@comma/ui/components/Button";
+import { InputField } from "@comma/ui/components/input";
+import { PlusIcon } from "@comma/ui/components/icons";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { confirmationBusy } from "./adminModel";
+import { useAdminCommand, useAdminState } from "./adminRuntime";
 import {
   AdminConfirmationDialog,
   AdminDrawer,
@@ -19,101 +13,32 @@ import {
   AdminState,
   DetailList,
   NativeField,
-  ReasonField,
   StatusBadge,
   formatIso,
 } from "./adminUi";
+import {
+  createClientForm,
+  type CatalogOauthClient,
+  type CatalogState,
+  type ClientDetailsModel,
+  type CreateClientModel,
+  type OAuthClientsModel,
+  type OauthClientType,
+  type ShownSecret,
+} from "./OAuthClientsModel";
+import { messages } from "@comma/i18n";
 
 const oauthClientLimit = 200;
 
-export type CatalogOauthClient = AdminOauthClient & { client_secret?: never };
-
-type CatalogState =
-  | { status: "loading" }
-  | { status: "error"; message: string; title: string }
-  | { status: "ready"; clients: CatalogOauthClient[] };
-
-type ClientDrawer = { kind: "client"; client: CatalogOauthClient } | { kind: "create" };
-
-type LifecycleAction = "disable" | "enable" | "rotate";
-
-interface PendingCommand {
-  action: LifecycleAction;
-  confirmation: string;
-  idempotencyKey: string;
-}
-
-interface OneTimeSecret {
-  client: CatalogOauthClient;
-  kind: "created" | "rotated";
-  value: string;
-}
-
-export function OAuthClientsView({
-  api,
-  onAccessDenied,
-}: {
-  api: AdminApi;
-  onAccessDenied: () => void;
-}) {
-  const [drawer, setDrawer] = useState<ClientDrawer>();
-  const [notice, setNotice] = useState<string>();
-  const [revision, setRevision] = useState(0);
-  const [state, setState] = useState<CatalogState>({ status: "loading" });
-
-  useEffect(() => {
-    const request = new AbortController();
-    setState({ status: "loading" });
-
-    void api
-      .listOauthClients({ signal: request.signal })
-      .then((clients) => {
-        if (!request.signal.aborted) {
-          setState({ status: "ready", clients: clients.map(withoutOauthClientSecret) });
-        }
-      })
-      .catch((error: unknown) => {
-        if (request.signal.aborted || isAdminSessionRejection(error)) return;
-        if (isAdminAccessDenied(error)) {
-          onAccessDenied();
-          return;
-        }
-
-        setState({
-          status: "error",
-          message:
-            error instanceof AdminApiError && error.status === 404
-              ? "Enable the Comma OAuth IdP before registering clients."
-              : adminErrorMessage(error, "Unable to load OAuth clients."),
-          title:
-            error instanceof AdminApiError && error.status === 404
-              ? "OAuth IdP isn’t enabled"
-              : "OAuth clients couldn’t be loaded",
-        });
-      });
-
-    return () => request.abort();
-  }, [api, onAccessDenied, revision]);
-
-  const completed = (client: CatalogOauthClient, message: string) => {
-    setNotice(message);
-    setState((current) => {
-      if (current.status !== "ready") return current;
-      const exists = current.clients.some((entry) => entry.id === client.id);
-      return {
-        status: "ready",
-        clients: exists
-          ? current.clients.map((entry) => (entry.id === client.id ? client : entry))
-          : [client, ...current.clients],
-      };
-    });
-  };
-
+export function OAuthClientsView({ model }: { model: OAuthClientsModel }) {
+  const run = useAdminCommand();
+  const { catalog: state, drawer, notice } = useAdminState(model.state);
   const ready = state.status === "ready" ? state : undefined;
+  const close = () => run(model.closeDrawer);
 
   return (
     <section
-      aria-label="OAuth clients"
+      aria-label={messages.admin_section_oauth()}
       className="admin-workspace"
       data-testid="admin-oauth-clients"
     >
@@ -122,62 +47,47 @@ export function OAuthClientsView({
           <Button
             iconLeading={<PlusIcon />}
             isDisabled={!ready}
-            onPress={() => setDrawer({ kind: "create" })}
+            onPress={() => run(model.openCreate)}
           >
-            New client
+            {messages.admin_new_client()}
           </Button>
         }
-        description="Register and control the applications that use Comma as an OpenID Connect provider."
-        eyebrow="Identity provider"
-        title="OAuth clients"
+        description={messages.admin_oauth_description()}
+        title={messages.admin_section_oauth()}
       />
 
       {notice ? (
-        <AdminNotice message={notice} onDismiss={() => setNotice(undefined)} />
+        <AdminNotice message={notice} onDismiss={() => run(model.dismissNotice)} />
       ) : null}
 
       <div className="admin-table-card">
         <div className="admin-table-card-header">
           <div>
-            <h2>Registered clients</h2>
-            <p>Secrets are never returned by this bounded Admin query</p>
+            <h2>{messages.admin_registered_clients()}</h2>
+            <p>{messages.admin_client_secret_note()}</p>
           </div>
           <Button
             hierarchy="secondary-gray"
-            onPress={() => setRevision((current) => current + 1)}
+            onPress={() => run(model.reload)}
             size="sm"
           >
-            Refresh
+            {messages.admin_refresh()}
           </Button>
         </div>
 
         <ClientCatalog
-          onRetry={() => setRevision((current) => current + 1)}
-          onSelect={(client) => setDrawer({ kind: "client", client })}
+          onRetry={() => run(model.reload)}
+          onSelect={(client) => run(model.openClient(client))}
           state={state}
         />
       </div>
 
       {drawer?.kind === "create" && ready ? (
-        <CreateClientDrawer
-          api={api}
-          onAccessDenied={onAccessDenied}
-          onClose={() => setDrawer(undefined)}
-          onCreated={(client) => completed(client, `Created ${client.name}.`)}
-        />
+        <CreateClientDrawer model={drawer.model} onClose={close} />
       ) : null}
 
       {drawer?.kind === "client" ? (
-        <ClientDetailsDrawer
-          api={api}
-          client={drawer.client}
-          onAccessDenied={onAccessDenied}
-          onChanged={(client, message) => {
-            setDrawer({ kind: "client", client });
-            completed(client, message);
-          }}
-          onClose={() => setDrawer(undefined)}
-        />
+        <ClientDetailsDrawer model={drawer.model} onClose={close} />
       ) : null}
     </section>
   );
@@ -195,8 +105,8 @@ function ClientCatalog({
   if (state.status === "loading") {
     return (
       <AdminState
-        message="Fetching the registered client projections."
-        title="Loading OAuth clients…"
+        message={messages.admin_loading_oauth_body()}
+        title={messages.admin_loading_oauth()}
       />
     );
   }
@@ -213,8 +123,8 @@ function ClientCatalog({
   if (state.clients.length === 0) {
     return (
       <AdminState
-        message="Register the first approved application that will use Comma for sign-in."
-        title="No OAuth clients"
+        message={messages.admin_oauth_none_body()}
+        title={messages.admin_oauth_none()}
       />
     );
   }
@@ -229,15 +139,15 @@ function ClientCatalog({
         scrollbarVisibility="hover"
         viewportClassName="admin-table-viewport"
       >
-        <table aria-label="OAuth clients" className="admin-data-table">
+        <table aria-label={messages.admin_section_oauth()} className="admin-data-table">
           <thead>
             <tr>
-              <th scope="col">Client</th>
-              <th scope="col">Type</th>
-              <th scope="col">Status</th>
-              <th scope="col">Redirect URIs</th>
-              <th scope="col">Created</th>
-              <th aria-label="Manage client" scope="col" />
+              <th scope="col">{messages.admin_column_client()}</th>
+              <th scope="col">{messages.admin_column_type()}</th>
+              <th scope="col">{messages.admin_column_status()}</th>
+              <th scope="col">{messages.admin_column_redirects()}</th>
+              <th scope="col">{messages.admin_column_created()}</th>
+              <th aria-label={messages.admin_manage_client()} scope="col" />
             </tr>
           </thead>
           <tbody>
@@ -249,7 +159,11 @@ function ClientCatalog({
                     <span>{client.id}</span>
                   </div>
                 </th>
-                <td>{client.confidential ? "Confidential" : "Public (PKCE)"}</td>
+                <td>
+                  {client.confidential
+                    ? messages.admin_confidential()
+                    : messages.admin_public_pkce()}
+                </td>
                 <td>
                   <StatusBadge status={clientStatus(client)} />
                 </td>
@@ -261,7 +175,7 @@ function ClientCatalog({
                     onPress={() => onSelect(client)}
                     size="sm"
                   >
-                    Manage
+                    {messages.admin_manage()}
                   </Button>
                 </td>
               </tr>
@@ -279,229 +193,180 @@ function ClientCatalog({
 }
 
 function CreateClientDrawer({
-  api,
-  onAccessDenied,
+  model,
   onClose,
-  onCreated,
 }: {
-  api: AdminApi;
-  onAccessDenied: () => void;
+  model: CreateClientModel;
   onClose: () => void;
-  onCreated: (client: CatalogOauthClient) => void;
 }) {
-  const [clientType, setClientType] = useState<"confidential" | "public">(
-    "confidential"
-  );
-  const [commandBusy, setCommandBusy] = useState(false);
-  const [confirmationOpen, setConfirmationOpen] = useState(false);
-  const [created, setCreated] = useState<AdminOauthClientCreation>();
-  const [idempotencyKey] = useState(() => createIdempotencyKey("create-oauth-client"));
-  const [name, setName] = useState("");
-  const [reason, setReason] = useState("");
-  const [redirectText, setRedirectText] = useState("");
-  const redirectUris = useMemo(() => parseRedirectUris(redirectText), [redirectText]);
-  const normalizedName = name.trim().replace(/\s+/g, " ");
-  const expected = `create-oauth-client:${normalizedName}`;
+  const run = useAdminCommand();
+  const state = useAdminState(model.state);
+  const commandBusy = useAdminState(model.confirmation.state, confirmationBusy);
+  const { clientType, created, name, redirectText, secret } = state;
+  const { formReady } = createClientForm(state);
+
+  if (secret) {
+    return (
+      <ClientSecretDrawer
+        onClear={onClose}
+        onCopy={() => run(model.copySecret)}
+        shown={secret}
+      />
+    );
+  }
 
   if (created) {
-    const client = withoutOauthClientSecret(created);
-
-    if ("client_secret" in created) {
-      return (
-        <ClientSecretDrawer
-          secret={{ client, kind: "created", value: created.client_secret }}
-          onClear={onClose}
-        />
-      );
-    }
-
     return (
       <AdminDrawer
-        eyebrow="OAuth client command"
+        eyebrow={messages.admin_section_oauth()}
         onClose={onClose}
-        title="Client created"
+        title={messages.admin_client_created()}
       >
         <section
-          aria-label="Created public OAuth client"
+          aria-label={messages.admin_created_public_region()}
           className="admin-command-section"
         >
           <Badge color="success" size="sm" type="pill-color">
-            Active
+            {messages.admin_badge_active()}
           </Badge>
           <div>
             <h3>{created.name}</h3>
-            <p className="admin-drawer-note">
-              This public client authenticates with PKCE and has no client secret.
-            </p>
+            <p className="admin-drawer-note">{messages.admin_public_client_note()}</p>
           </div>
           <DetailList
             items={[
-              { label: "Client ID", value: created.id },
-              { label: "Type", value: "Public (PKCE)" },
+              { label: messages.admin_client_id(), value: created.id },
+              { label: messages.admin_type(), value: messages.admin_public_pkce() },
             ]}
           />
           <div className="admin-command-actions">
-            <Button onPress={onClose}>Done</Button>
+            <Button onPress={onClose}>{messages.admin_done()}</Button>
           </div>
         </section>
       </AdminDrawer>
     );
   }
 
-  const formReady =
-    normalizedName.length >= 3 &&
-    normalizedName.length <= 64 &&
-    redirectUris.length >= 1 &&
-    redirectUris.length <= 8 &&
-    reason.trim().length >= 3;
-
   return (
     <AdminDrawer
-      eyebrow="OAuth client command"
+      eyebrow={messages.admin_section_oauth()}
       isDismissable={!commandBusy}
       onClose={onClose}
-      title="New OAuth client"
+      title={messages.admin_new_oauth_client()}
     >
       <form
         className="admin-command-form"
         onSubmit={(event) => {
           event.preventDefault();
-          setConfirmationOpen(true);
+          run(model.review);
         }}
       >
         <InputField
-          label="Client name"
+          label={messages.admin_client_name()}
           maxLength={64}
           minLength={3}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => run(model.setField("name", event.target.value))}
           required
           value={name}
         />
         <NativeField
-          hint="One exact URI per line; 1–8 HTTPS URIs. Literal loopback HTTP is allowed for native development."
-          label="Redirect URIs"
+          hint={messages.admin_redirects_hint()}
+          label={messages.admin_column_redirects()}
         >
           <textarea
             maxLength={4_096}
-            onChange={(event) => setRedirectText(event.target.value)}
+            onChange={(event) =>
+              run(model.setField("redirectText", event.target.value))
+            }
             required
             rows={5}
             value={redirectText}
           />
         </NativeField>
         <NativeField
-          hint="Confidential clients receive a one-time secret; public clients use PKCE only."
-          label="Client type"
+          hint={messages.admin_client_type_hint()}
+          label={messages.admin_client_type()}
         >
           <select
             onChange={(event) =>
-              setClientType(event.target.value as "confidential" | "public")
+              run(model.setClientType(event.target.value as OauthClientType))
             }
             value={clientType}
           >
-            <option value="confidential">Confidential</option>
-            <option value="public">Public (PKCE)</option>
+            <option value="confidential">{messages.admin_confidential()}</option>
+            <option value="public">{messages.admin_public_pkce()}</option>
           </select>
         </NativeField>
-        <ReasonField onChange={setReason} value={reason} />
         <div className="admin-command-actions">
           <Button hierarchy="secondary-gray" onPress={onClose}>
-            Cancel
+            {messages.admin_cancel()}
           </Button>
           <Button isDisabled={!formReady} type="submit">
-            Review command
+            {messages.admin_review_command()}
           </Button>
         </div>
       </form>
 
-      <AdminConfirmationDialog
-        expected={expected}
-        isOpen={confirmationOpen}
-        onBusyChange={setCommandBusy}
-        onConfirm={async () => {
-          const result = await guardedAdminCommand(
-            api.createOauthClient({
-              confidential: clientType === "confidential",
-              confirmation: expected,
-              idempotencyKey,
-              name: normalizedName,
-              reason: reason.trim(),
-              redirectUris,
-            }),
-            onAccessDenied
-          );
-          const client = withoutOauthClientSecret(result);
-          onCreated(client);
-          setCreated(result);
-        }}
-        onOpenChange={setConfirmationOpen}
-        title="Create this OAuth client?"
-      />
+      <AdminConfirmationDialog confirmation={model.confirmation} />
     </AdminDrawer>
   );
 }
 
 function ClientDetailsDrawer({
-  api,
-  client,
-  onAccessDenied,
-  onChanged,
+  model,
   onClose,
 }: {
-  api: AdminApi;
-  client: CatalogOauthClient;
-  onAccessDenied: () => void;
-  onChanged: (client: CatalogOauthClient, message: string) => void;
+  model: ClientDetailsModel;
   onClose: () => void;
 }) {
-  const [commandBusy, setCommandBusy] = useState(false);
-  const [pending, setPending] = useState<PendingCommand>();
-  const [reason, setReason] = useState("");
-  const [secret, setSecret] = useState<OneTimeSecret>();
+  const run = useAdminCommand();
+  const { client, secret } = useAdminState(model.state);
+  const commandBusy = useAdminState(model.confirmation.state, confirmationBusy);
 
   if (secret) {
-    return <ClientSecretDrawer onClear={() => setSecret(undefined)} secret={secret} />;
+    return (
+      <ClientSecretDrawer
+        onClear={() => run(model.clearSecret)}
+        onCopy={() => run(model.copySecret)}
+        shown={secret}
+      />
+    );
   }
 
-  const beginCommand = (action: LifecycleAction) => {
-    const slug =
-      action === "rotate" ? "rotate-oauth-client-secret" : `${action}-oauth-client`;
-    setPending({
-      action,
-      confirmation: `${slug}:${client.id}`,
-      idempotencyKey: createIdempotencyKey(slug),
-    });
-  };
   const status = clientStatus(client);
 
   return (
     <AdminDrawer
-      eyebrow="OAuth client"
+      eyebrow={messages.admin_section_oauth()}
       isDismissable={!commandBusy}
       onClose={onClose}
-      title="Manage OAuth client"
+      title={messages.admin_manage_oauth_client()}
     >
       <div className="admin-drawer-summary">
         <div>
           <h3>{client.name}</h3>
-          <p>{client.confidential ? "Confidential client" : "Public PKCE client"}</p>
+          <p>
+            {client.confidential
+              ? messages.admin_confidential_client()
+              : messages.admin_public_client()}
+          </p>
         </div>
         <StatusBadge status={status} />
       </div>
 
       <DetailList
         items={[
-          { label: "Client ID", value: client.id },
-          { label: "Created", value: formatIso(client.created_at) },
-          { label: "Disabled", value: formatIso(client.disabled_at) },
+          { label: messages.admin_client_id(), value: client.id },
+          { label: messages.admin_created(), value: formatIso(client.created_at) },
+          { label: messages.admin_disabled_at(), value: formatIso(client.disabled_at) },
         ]}
       />
 
       <section className="admin-drawer-section">
         <div className="admin-drawer-section-header">
           <div>
-            <h3>Redirect URIs</h3>
-            <p>Authorization responses must match one of these exact values.</p>
+            <h3>{messages.admin_column_redirects()}</h3>
+            <p>{messages.admin_redirects_note()}</p>
           </div>
         </div>
         <ul className="admin-uri-list">
@@ -516,179 +381,97 @@ function ClientDetailsDrawer({
       <section className="admin-command-section">
         <div className="admin-command-section-header">
           <div>
-            <p>Audited lifecycle</p>
-            <h3>Client credentials and access</h3>
+            <h3>{messages.admin_credentials_access()}</h3>
           </div>
         </div>
-        <ReasonField onChange={setReason} value={reason} />
         <div className="admin-command-actions admin-command-actions-split">
           {client.confidential ? (
             <Button
               hierarchy="secondary-gray"
-              isDisabled={reason.trim().length < 3}
-              onPress={() => beginCommand("rotate")}
+              onPress={() => run(model.review("rotate"))}
             >
-              Rotate secret
+              {messages.admin_rotate_secret()}
             </Button>
           ) : (
             <span />
           )}
           {client.disabled_at ? (
-            <Button
-              isDisabled={reason.trim().length < 3}
-              onPress={() => beginCommand("enable")}
-            >
-              Enable client
+            <Button onPress={() => run(model.review("enable"))}>
+              {messages.admin_enable_client()}
             </Button>
           ) : (
             <Button
               hierarchy="destructive"
-              isDisabled={reason.trim().length < 3}
-              onPress={() => beginCommand("disable")}
+              onPress={() => run(model.review("disable"))}
             >
-              Disable client
+              {messages.admin_disable_client()}
             </Button>
           )}
         </div>
       </section>
 
-      <AdminConfirmationDialog
-        destructive={pending?.action === "disable"}
-        expected={pending?.confirmation ?? ""}
-        isOpen={pending !== undefined}
-        onBusyChange={setCommandBusy}
-        onConfirm={async () => {
-          if (!pending) return;
-          const metadata = {
-            confirmation: pending.confirmation,
-            idempotencyKey: pending.idempotencyKey,
-            reason: reason.trim(),
-          };
-
-          if (pending.action === "rotate") {
-            const result = await guardedAdminCommand(
-              api.rotateOauthClientSecret(client.id, metadata),
-              onAccessDenied
-            );
-            const updated = withoutOauthClientSecret(result);
-            onChanged(updated, `Rotated the secret for ${client.name}.`);
-            setReason("");
-            setSecret({
-              client: updated,
-              kind: "rotated",
-              value: result.client_secret,
-            });
-            return;
-          }
-
-          const updated = await guardedAdminCommand(
-            pending.action === "disable"
-              ? api.disableOauthClient(client.id, metadata)
-              : api.enableOauthClient(client.id, metadata),
-            onAccessDenied
-          );
-          const catalogClient = withoutOauthClientSecret(updated);
-          onChanged(
-            catalogClient,
-            `${pending.action === "disable" ? "Disabled" : "Enabled"} ${client.name}.`
-          );
-          setReason("");
-        }}
-        onOpenChange={(open) => {
-          if (!open) setPending(undefined);
-        }}
-        title={lifecycleTitle(pending?.action)}
-      />
+      <AdminConfirmationDialog confirmation={model.confirmation} />
     </AdminDrawer>
   );
 }
 
 function ClientSecretDrawer({
   onClear,
-  secret,
+  onCopy,
+  shown,
 }: {
   onClear: () => void;
-  secret: OneTimeSecret;
+  onCopy: () => void;
+  shown: ShownSecret;
 }) {
-  const [copied, setCopied] = useState(false);
+  const { copied, secret } = shown;
 
   return (
     <AdminDrawer
-      eyebrow="OAuth client command"
+      eyebrow={messages.admin_section_oauth()}
       isDismissable={false}
       onClose={onClear}
-      title={`Client secret ${secret.kind}`}
+      title={
+        secret.kind === "created"
+          ? messages.admin_secret_created_title()
+          : messages.admin_secret_rotated_title()
+      }
     >
-      <section aria-label="One-time OAuth client secret" className="admin-secret-panel">
+      <section
+        aria-label={messages.admin_oauth_secret_region()}
+        className="admin-secret-panel"
+      >
         <Badge color="warning" size="sm" type="pill-color">
-          Shown once
+          {messages.admin_shown_once()}
         </Badge>
         <div>
           <h3>{secret.client.name}</h3>
-          <p>
-            Copy the secret now. It cannot be recovered after this panel is cleared;
-            rotate it to issue another one.
-          </p>
+          <p>{messages.admin_secret_body()}</p>
         </div>
         <code>{secret.value}</code>
         <DetailList
           items={[
-            { label: "Client ID", value: secret.client.id },
-            { label: "Type", value: "Confidential" },
+            { label: messages.admin_client_id(), value: secret.client.id },
+            { label: messages.admin_type(), value: messages.admin_confidential() },
           ]}
         />
         <div className="admin-command-actions">
-          <Button
-            hierarchy="secondary-gray"
-            onPress={() => {
-              void navigator.clipboard
-                .writeText(secret.value)
-                .then(() => setCopied(true));
-            }}
-          >
-            {copied ? "Copied" : "Copy secret"}
+          <Button hierarchy="secondary-gray" onPress={onCopy}>
+            {copied ? messages.admin_copied() : messages.admin_copy_secret()}
           </Button>
-          <Button onPress={onClear}>Done and clear</Button>
+          <Button onPress={onClear}>{messages.admin_done_and_clear()}</Button>
         </div>
       </section>
     </AdminDrawer>
   );
 }
 
-export function withoutOauthClientSecret(
-  client: AdminOauthClient | AdminOauthClientCreation | AdminOauthClientSecret
-): CatalogOauthClient {
-  const catalogClient: Record<string, unknown> = { ...client };
-  delete catalogClient.client_secret;
-  return catalogClient as CatalogOauthClient;
-}
-
-function parseRedirectUris(value: string) {
-  return value
-    .split(/\r?\n/)
-    .map((uri) => uri.trim())
-    .filter(Boolean);
-}
-
 function clientStatus(client: CatalogOauthClient) {
   return client.disabled_at ? "disabled" : "active";
 }
 
-function redirectUriSummary(uris: string[]) {
+function redirectUriSummary(uris: ReadonlyArray<string>) {
   if (uris.length === 0) return "—";
   if (uris.length === 1) return uris[0];
   return `${uris[0]} +${uris.length - 1}`;
-}
-
-function lifecycleTitle(action: LifecycleAction | undefined) {
-  switch (action) {
-    case "rotate":
-      return "Rotate this client secret?";
-    case "disable":
-      return "Disable this OAuth client?";
-    case "enable":
-      return "Enable this OAuth client?";
-    default:
-      return "Confirm OAuth client command";
-  }
 }

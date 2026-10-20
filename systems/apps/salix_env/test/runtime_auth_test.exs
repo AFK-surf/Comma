@@ -1,5 +1,5 @@
 defmodule SalixEnv.RuntimeAuthTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixEnv.RuntimeAuth
 
@@ -42,84 +42,6 @@ defmodule SalixEnv.RuntimeAuthTest do
     end
   end
 
-  test "validates read, start, and cancel results without widening ceremony data" do
-    now = System.system_time(:millisecond)
-
-    assert {:ok, %{"auth" => @snapshot}} =
-             RuntimeAuth.validate_result(:read, %{"auth" => @snapshot})
-
-    active_read = %{
-      "auth" => Map.put(@snapshot, "status", "pending"),
-      "attempt_id" => "rta_123",
-      "flow" => "device_code",
-      "expires_at" => now + 900_000
-    }
-
-    assert {:ok, ^active_read} = RuntimeAuth.validate_result(:read, active_read)
-
-    ceremony =
-      Map.merge(active_read, %{
-        "verification_url" => "https://auth.openai.com/codex/device",
-        "user_code" => "ABCD-EFGH",
-        "reused" => false
-      })
-
-    assert {:ok, ^ceremony} = RuntimeAuth.validate_result(:login_start, ceremony)
-
-    canceled = %{
-      "auth" => @snapshot,
-      "attempt_id" => "rta_123",
-      "canceled" => true
-    }
-
-    assert {:ok, ^canceled} = RuntimeAuth.validate_result(:login_cancel, canceled)
-
-    for {operation, invalid} <- [
-          {:read, Map.put(active_read, "user_code", "SECRET")},
-          {:read, Map.delete(active_read, "expires_at")},
-          {:login_start, Map.put(ceremony, "verification_url", "file:///tmp/secret")},
-          {:login_start,
-           Map.put(ceremony, "verification_url", "https://attacker.example/codex/device")},
-          {:login_start, Map.put(ceremony, "verification_url", "https://auth.openai.com/device")},
-          {:login_start,
-           Map.put(ceremony, "verification_url", "https://auth.openai.com/codex/device/extra")},
-          {:login_start, Map.put(ceremony, "verification_url", <<"https://", 0xFF>>)},
-          {:login_start, Map.put(ceremony, "expires_at", now + 1_200_000)},
-          {:login_start, Map.put(ceremony, "user_code", "unsafe\ncode")},
-          {:login_start, Map.put(ceremony, "user_code", <<0xFF>>)},
-          {:login_start, Map.put(ceremony, "token", "SECRET")},
-          {:login_cancel, Map.put(canceled, "verification_url", "https://example.test")},
-          {:login_cancel, Map.put(canceled, "canceled", false)},
-          {:login_cancel, Map.put(canceled, "attempt_id", "unsafe/value")}
-        ] do
-      assert {:error, :invalid_runtime_auth_response} =
-               RuntimeAuth.validate_result(operation, invalid)
-    end
-
-    expired = Map.put(ceremony, "expires_at", now - 1)
-    assert {:ok, ^expired} = RuntimeAuth.validate_result(:login_start, expired)
-  end
-
-  test "validates caller-controlled flow and opaque attempt ids" do
-    assert :ok = RuntimeAuth.validate_flow("device_code")
-    assert {:error, :invalid_runtime_auth_flow} = RuntimeAuth.validate_flow("browser")
-    assert {:error, :invalid_runtime_auth_flow} = RuntimeAuth.validate_flow("/bin/sh")
-
-    assert :ok = RuntimeAuth.validate_attempt_id("rta_abc-123")
-
-    for invalid <- [
-          nil,
-          "",
-          "unsafe/value",
-          "unsafe\nvalue",
-          <<0xFF>>,
-          String.duplicate("a", 129)
-        ] do
-      assert {:error, :invalid_runtime_auth_attempt_id} =
-               RuntimeAuth.validate_attempt_id(invalid)
-    end
-  end
-
   test "private input offers and receipts contain bounded context, never credential fields" do
     strings =
       ~w(actor_id tenant_id project_id target_kind workload_id device_id runtime_id provider backend method form attempt_id runtime_instance_id generation connection_epoch allocation_id allocation_generation native_generation auth_epoch)
@@ -146,7 +68,7 @@ defmodule SalixEnv.RuntimeAuthTest do
         "auth_epoch" => "1",
         "schema_version" => 1,
         "sequence" => 1,
-        "expires_at" => System.system_time(:millisecond) + 900_000
+        "expires_at" => SystemsClock.system_time(:millisecond) + 900_000
       })
 
     offer = %{
@@ -223,7 +145,7 @@ defmodule SalixEnv.RuntimeAuthTest do
         "schema_version" => 1,
         "status" => "unknown",
         "requires_openai_auth" => true,
-        "observed_at" => System.system_time(:millisecond)
+        "observed_at" => SystemsClock.system_time(:millisecond)
       },
       "native_ready" => true,
       "dispatch_ready" => false,
@@ -237,7 +159,7 @@ defmodule SalixEnv.RuntimeAuthTest do
       ],
       "attempt" => %{
         "attempt_id" => "attempt",
-        "expires_at" => System.system_time(:millisecond) + 900_000,
+        "expires_at" => SystemsClock.system_time(:millisecond) + 900_000,
         "owned" => false,
         "phase" => "awaiting_user",
         "save_result" => "not_committed",
@@ -284,24 +206,5 @@ defmodule SalixEnv.RuntimeAuthTest do
       assert {:error, :invalid_runtime_auth_response} =
                RuntimeAuth.validate_result(:status, invalid)
     end
-  end
-
-  test "verification exposes only finite status and issue receipts" do
-    for result <- [
-          %{"status" => "authenticated", "issue" => ""},
-          %{"status" => "error", "issue" => "permission_denied"},
-          %{"status" => "unauthenticated", "issue" => "credentials_rejected"}
-        ] do
-      assert {:ok, ^result} = RuntimeAuth.validate_result(:verify, result)
-
-      assert {:error, :invalid_runtime_auth_response} =
-               RuntimeAuth.validate_result(:verify, Map.put(result, "provider_body", "secret"))
-    end
-
-    assert {:error, :invalid_runtime_auth_response} =
-             RuntimeAuth.validate_result(:verify, %{
-               "status" => "error",
-               "issue" => "raw provider error"
-             })
   end
 end

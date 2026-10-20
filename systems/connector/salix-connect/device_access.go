@@ -130,14 +130,6 @@ func (c *connector) refreshDeviceRuntimes() {
 		_, _ = c.runtimeInventory.probe(ctx, "", "", "operator")
 	}
 	_ = c.publishCachedMetadata()
-	if c.currentScope() == "" {
-		c.sendMu.Lock()
-		transport := c.activeTransport
-		c.sendMu.Unlock()
-		if transport != nil {
-			c.catchUpExternalRuntimeInputs(ctx, transport)
-		}
-	}
 }
 
 func (c *connector) methodDeviceAccess(params map[string]any) (any, error) {

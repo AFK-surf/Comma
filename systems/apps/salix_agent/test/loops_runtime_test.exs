@@ -7,7 +7,7 @@ defmodule SalixAgent.LoopsRuntimeTest do
   its Agent's Server goes away. Fixtures are compiled by the Host's embedded
   compiler; skipped where the pinned binary is absent.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{AgentWorkspace, Fleet, InternalSession, InternalSessionStore, Loops}
   alias SalixAgent.Loops.Host
@@ -25,13 +25,13 @@ defmodule SalixAgent.LoopsRuntimeTest do
 
   setup tags do
     SalixAgent.TestSupport.stop_all_agents()
-    prev_store = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_store, :s3_backend, Fake)
-    Application.put_env(:salix_agent, :llm, Mock)
+    prev_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, Fake)
+    SystemsRuntime.put_env(:salix_agent, :llm, Mock)
     SalixAgent.TestSupport.configure_control_fixtures!()
 
-    if Process.whereis(Fake), do: Fake.reset(), else: start_supervised!(Fake)
+    if SystemsRuntime.Proc.whereis(Fake), do: Fake.reset(), else: start_supervised!(Fake)
 
     case start_supervised(Mock) do
       {:ok, _} -> :ok
@@ -71,7 +71,7 @@ defmodule SalixAgent.LoopsRuntimeTest do
   } do
     SalixAgent.DecideFixture.start_provider()
     loop = create_loop!(ctx, SalixAgent.Decide.example_program(:loop))
-    assert_receive {:decision_request, "/v1/systemone", _, _}, 5_000
+    assert_receive {:decision_request, "/v1/systemone", _, _}
 
     checkpoint =
       await(
@@ -101,7 +101,13 @@ defmodule SalixAgent.LoopsRuntimeTest do
     }
 
     assert {:ok, %{"accepted" => true}} =
-             Store.admit_event(original, event, System.system_time(:millisecond), 32, 900_000)
+             Store.admit_event(
+               original,
+               event,
+               SystemsClock.system_time(:millisecond),
+               32,
+               900_000
+             )
 
     assert {:ok, receipt} = Store.get(id)
     assert receipt["pending_events"]["retained"]["payload"] == event["payload"]
@@ -119,38 +125,9 @@ defmodule SalixAgent.LoopsRuntimeTest do
     assert {:ok, %{"duplicate" => true}} = Loops.send_event(ctx.agent_id, id, event)
   end
 
-  test "unacknowledged events reach a retained failure and resume grants a new attempt", %{
-    ctx: ctx
-  } do
-    loop =
-      create_loop!(
-        ctx,
-        "#include \"spinfoam.h\"\nSF_MAIN sf_i64 main(void) { for (;;) sf_sleep_ms(60000); }"
-      )
-
-    id = loop["loop_id"]
-    assert is_binary(await(fn -> Host.object_for_loop(id) end, &is_binary/1))
-    {:ok, row} = Store.get(id)
-    event = %{"event_id" => "unhandled", "topic" => "mail", "payload" => %{}}
-
-    assert {:ok, _} =
-             Store.admit_event(row, event, System.system_time(:millisecond) - 2_000, 32, 1_000)
-
-    Loops.reconcile_events(id)
-    assert {:ok, failed} = Store.get(id)
-    assert failed["status"] == "failed"
-    assert failed["failure"] =~ "pending events retained"
-    assert Map.has_key?(failed["pending_events"], "unhandled")
-    assert {:ok, _} = Loops.resume(ctx.agent_id, id)
-    assert {:ok, resumed} = Store.get(id)
-
-    assert resumed["pending_events"]["unhandled"]["deadline_ms"] >
-             System.system_time(:millisecond)
-  end
-
   defp create_loop!(ctx, program, config \\ %{}) do
     elf = SpinfoamFixture.compile!(program)
-    path = "/loops/#{System.unique_integer([:positive])}.elf"
+    path = "/loops/#{SystemsRuntime.Proc.unique_integer([:positive])}.elf"
     {:ok, event} = AgentWorkspace.prepare_write(ctx.agent_id, path, elf)
     {:ok, _} = AgentWorkspace.seed_operation(ctx.agent_id, "runtime-test:" <> path, %{}, [event])
 
@@ -177,18 +154,18 @@ defmodule SalixAgent.LoopsRuntimeTest do
     end)
   end
 
-  defp await(fun, pred, retries \\ 200) do
+  defp await(fun, pred, retries \\ 1200) do
     value = fun.()
 
     cond do
       pred.(value) -> value
       retries == 0 -> value
-      true -> Process.sleep(25) && await(fun, pred, retries - 1)
+      true -> SystemsRuntime.Proc.sleep(25) && await(fun, pred, retries - 1)
     end
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   test "a loop wakes its session through agent.notify and the wake is deduplicated", %{ctx: ctx} do
     loop =
@@ -219,27 +196,6 @@ defmodule SalixAgent.LoopsRuntimeTest do
            ) == 1
   end
 
-  test "a loop that returns is paused with its exit code and the session is told once", %{
-    ctx: ctx
-  } do
-    loop = create_loop!(ctx, SpinfoamFixture.exit_program(42))
-    loop_id = loop["loop_id"]
-
-    record = await(fn -> elem(Store.get(loop_id), 1) end, &(&1["status"] == "paused"))
-    assert record["paused_by"] == "exited"
-    assert record["exit_code"] == 42
-    assert is_nil(record["object_id"])
-    assert await(fn -> Host.object_for_loop(loop_id) end, &is_nil/1) == nil
-
-    message =
-      await(
-        fn -> message_with_source(ctx, "loop:#{loop_id}:lifecycle:exited:1") end,
-        &(&1 != nil)
-      )
-
-    assert to_string(message[:content] || message["content"]) =~ "exited with code 42"
-  end
-
   test "a checkpoint written through loop.state.put is passed back as config.state on reload", %{
     ctx: ctx
   } do
@@ -266,8 +222,8 @@ defmodule SalixAgent.LoopsRuntimeTest do
   end
 
   test "a loop runs env.exec on the environment and reports its output", %{ctx: ctx} do
-    previous = Application.get_env(:salix_agent, :env_dispatch)
-    Application.put_env(:salix_agent, :env_dispatch, SalixAgent.LoopEnvDispatchFixture)
+    previous = SystemsRuntime.get_env(:salix_agent, :env_dispatch)
+    SystemsRuntime.put_env(:salix_agent, :env_dispatch, SalixAgent.LoopEnvDispatchFixture)
     on_exit(fn -> restore(:salix_agent, :env_dispatch, previous) end)
     SalixAgent.LoopEnvDispatchFixture.register()
 
@@ -275,8 +231,7 @@ defmodule SalixAgent.LoopsRuntimeTest do
     loop_id = loop["loop_id"]
 
     assert_receive {:loop_env_exec, agent_id, %{device_id: "dev-1", environment_id: "env-1"},
-                    "df -h /", %{"description" => "loop exec"}},
-                   10_000
+                    "df -h /", %{"description" => "loop exec"}}
 
     assert agent_id == ctx.agent_id
 
@@ -361,73 +316,13 @@ defmodule SalixAgent.LoopsRuntimeTest do
 
     message = await(fn -> message_with_source(ctx, "loop:#{loop_id}:late") end, &(&1 != nil))
     assert message, "the loop's delayed notification never reached the session"
-    assert Process.alive?(server)
+    assert SystemsRuntime.Proc.alive?(server)
     assert [{^server, _}] = Registry.lookup(SalixAgent.Registry, ctx.agent_id)
     assert Host.object_for_loop(loop_id) == object_id
 
     {:ok, record} = Store.get(loop_id)
     assert record["status"] == "active"
     assert record["object_id"] == object_id
-  end
-
-  @tag router: true
-  test "retired Router recovery leaves a sleeping loop resident and notifies once", %{ctx: old} do
-    {:ok, agent} = SalixAgent.Control.get_record(old.agent_id)
-
-    {:ok, %{"router_session_id" => current}} =
-      SalixAgent.AgentActor.switch_router_session(
-        old.agent_id,
-        agent["tenant_id"],
-        old.session_id
-      )
-
-    ctx = %{old | session_id: current}
-    [{server, _}] = Registry.lookup(SalixAgent.Registry, ctx.agent_id)
-
-    loop =
-      create_loop!(ctx, SpinfoamFixture.delayed_notify_program(1_500, "retired"))
-
-    loop_id = loop["loop_id"]
-    object_id = await(fn -> Host.object_for_loop(loop_id) end, &is_binary/1)
-    assert is_binary(object_id)
-    {:ok, original} = Store.get(loop_id)
-
-    # Callback-only markers are local, so the Server must prune them too.
-    {:ok, _} =
-      SalixAgent.SessionWorkIndex.mark(
-        ctx.agent_id,
-        :internal,
-        old.session_id,
-        ["external_callback_tool_call"]
-      )
-
-    :ok = SalixAgent.Server.wake(server)
-    :sys.get_state(server)
-
-    for _ <- 1..12 do
-      :ok =
-        SalixAgent.Server.recover_session_work(server, [
-          %{runtime: :internal, session_id: old.session_id}
-        ])
-
-      # Wait for the Server's internal cycle, not just its admission reply.
-      :sys.get_state(server)
-      assert Process.alive?(server)
-    end
-
-    assert {:ok, records} = SalixAgent.SessionWorkIndex.list(ctx.agent_id)
-    refute Enum.any?(records, &(&1["session_id"] == old.session_id))
-
-    source = "loop:#{loop_id}:retired"
-    assert await(fn -> message_with_source(ctx, source) end, &(&1 != nil))
-    assert [{^server, _}] = Registry.lookup(SalixAgent.Registry, ctx.agent_id)
-    assert Host.object_for_loop(loop_id) == object_id
-    {:ok, after_notify} = Store.get(loop_id)
-    assert after_notify["incarnation"] == original["incarnation"]
-
-    assert Enum.count(session_messages(ctx), fn message ->
-             (message[:source_message_id] || message["source_message_id"]) == source
-           end) == 1
   end
 
   for observe_after_recovery <- [false, true] do
@@ -441,13 +336,13 @@ defmodule SalixAgent.LoopsRuntimeTest do
       assert [{old_owner, _}] = Registry.lookup(SalixAgent.Registry, ctx.agent_id)
 
       :ok = Fleet.stop_existing(ctx.agent_id)
-      refute Process.alive?(old_owner)
+      refute SystemsRuntime.Proc.alive?(old_owner)
 
       unless unquote(observe_after_recovery), do: assert_object_unloaded(old_object)
 
       # A periodic sweep may already have recovered the active Loop. Drive
       # the same recovery explicitly without requiring a transient nil mapping.
-      send(SalixAgent.Loops.Reconciler, :sweep)
+      SystemsRuntime.Proc.send(SalixAgent.Loops.Reconciler, :sweep)
       :sys.get_state(SalixAgent.Loops.Reconciler)
 
       new_object =

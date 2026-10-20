@@ -28,7 +28,7 @@ defmodule SalixStore.StorageSnapshot do
       sampled = Enum.take(objects, max_objects)
       truncated? = length(objects) > max_objects
       bytes = Enum.reduce(sampled, 0, &(&1.size + &2))
-      now_ms = Map.get(attrs, :now, System.system_time(:millisecond))
+      now_ms = Map.get(attrs, :now, SystemsClock.system_time(:millisecond))
       source_key = Map.get(attrs, :source_key) || source_key(prefix, now_ms)
 
       tier = resolve_tier(attrs, prefix, sampled, now_ms)
@@ -79,7 +79,7 @@ defmodule SalixStore.StorageSnapshot do
 
       lookup_fun =
           Map.get(attrs, :tier_lookup_fun) ||
-            Application.get_env(:salix_store, :storage_tier_lookup_fun) ->
+            SystemsRuntime.get_env(:salix_store, :storage_tier_lookup_fun) ->
         lookup_tier(attrs, prefix, sampled, now_ms, lookup_fun)
 
       true ->
@@ -96,14 +96,14 @@ defmodule SalixStore.StorageSnapshot do
     timeout = Map.get(attrs, :tier_lookup_timeout_ms, @default_tier_lookup_timeout_ms)
 
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         case Function.info(lookup_fun, :arity) do
           {:arity, 2} -> lookup_fun.(prefix, sampled)
           {:arity, 1} -> lookup_fun.(prefix)
         end
       end)
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, timeout) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, {:ok, result}} ->
         tier_result = normalize_tier_result(result)
         tier_cache_put(cache_key(attrs, prefix), tier_result, now_ms, attrs)
@@ -168,7 +168,7 @@ defmodule SalixStore.StorageSnapshot do
   defp tier_cache_get(key, now_ms) do
     ensure_tier_cache!()
 
-    case :ets.lookup(@tier_cache, key) do
+    case SystemsRuntime.ETS.lookup(@tier_cache, key) do
       [{^key, value, expires_at}] when expires_at > now_ms -> value
       _ -> nil
     end
@@ -179,14 +179,17 @@ defmodule SalixStore.StorageSnapshot do
   defp tier_cache_put(key, value, now_ms, attrs) do
     ensure_tier_cache!()
     ttl = Map.get(attrs, :tier_cache_ttl_ms, @default_tier_cache_ttl_ms)
-    true = :ets.insert(@tier_cache, {key, value, now_ms + ttl})
+    true = SystemsRuntime.ETS.insert(@tier_cache, {key, value, now_ms + ttl})
     :ok
   end
 
   defp ensure_tier_cache! do
-    case :ets.info(@tier_cache) do
-      :undefined -> :ets.new(@tier_cache, [:named_table, :public, read_concurrency: true])
-      _ -> @tier_cache
+    case SystemsRuntime.ETS.info(@tier_cache) do
+      :undefined ->
+        SystemsRuntime.ETS.new(@tier_cache, [:named_table, :public, read_concurrency: true])
+
+      _ ->
+        @tier_cache
     end
   end
 
@@ -211,7 +214,7 @@ defmodule SalixStore.StorageSnapshot do
   end
 
   defp call_metering(fun, args) do
-    case Application.get_env(:salix_store, :storage_metering_mod) do
+    case SystemsRuntime.get_env(:salix_store, :storage_metering_mod) do
       nil ->
         :ok
 

@@ -101,7 +101,9 @@ const config: ForgeConfig = {
     // locates the executable, which comes after this hook.
     preStart: async () => {
       if (process.platform !== "darwin") return;
-      process.env.ELECTRON_OVERRIDE_DIST_PATH = prepareDevElectronBundle().distDir;
+      process.env.ELECTRON_OVERRIDE_DIST_PATH = (
+        await prepareDevElectronBundle()
+      ).distDir;
       // A checkout that never ran build:native would otherwise start without
       // the Node-API addons and degrade "Open in" to "Could not load apps".
       ensureDevNativeAddons();
@@ -126,7 +128,11 @@ const config: ForgeConfig = {
         "Comma records meeting audio playing on this Mac so it can transcribe and summarize it.",
       NSScreenCaptureUsageDescription:
         "Comma lists the apps playing audio so a recording can be scoped to one of them.",
+      // Signing in with a passkey from a phone checks that the phone is near.
+      NSBluetoothAlwaysUsageDescription:
+        "Comma uses Bluetooth to check that your phone is nearby when you sign in to a website with a passkey from your phone.",
     },
+    // Production includes a layered .icon; Dev and Staging use their detailed ICNS.
     icon: channelIconBasePath,
     protocols: [
       {
@@ -197,8 +203,13 @@ const config: ForgeConfig = {
           target: "main",
         },
         {
-          entry: "src/utility.ts",
-          config: "vite.utility.config.ts",
+          entry: "src/browser-page-preload.ts",
+          config: "vite.preload.config.ts",
+          target: "main",
+        },
+        {
+          entry: "src/core.ts",
+          config: "vite.core.config.ts",
           target: "main",
         },
       ],

@@ -258,7 +258,7 @@ defmodule BillingCommerce.ProviderCustomers do
   end
 
   defp repo(attrs),
-    do: attrs[:repo] || attrs["repo"] || Application.fetch_env!(:billing_commerce, :repo)
+    do: attrs[:repo] || attrs["repo"] || SystemsRuntime.fetch_env!(:billing_commerce, :repo)
 
   defp sql(attrs), do: attrs[:sql_runner] || attrs["sql_runner"] || Ecto.Adapters.SQL
 
@@ -276,6 +276,6 @@ defmodule BillingCommerce.ProviderCustomers do
   defp decode_json(value), do: value || %{}
 
   defp id(prefix) do
-    prefix <> "_" <> Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    prefix <> "_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(16), padding: false)
   end
 end

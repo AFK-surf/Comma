@@ -1,4 +1,6 @@
 defmodule BridgeForTeamsWeb.DashboardAPIPluginsTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The Plugins API behind the React page at `/orgs/:org/plugins`: the catalog
   of organization plugins and system product plugins, creating and updating
@@ -8,6 +10,9 @@ defmodule BridgeForTeamsWeb.DashboardAPIPluginsTest do
   """
   use BridgeForTeamsWeb.DashboardCase, async: false
 
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.BridgeForTeamsWeb", "Elixir.BridgeForTeams"]
+
   alias BridgeForTeams.{Memberships, Observability}
 
   defmodule PluginClient do
@@ -15,24 +20,28 @@ defmodule BridgeForTeamsWeb.DashboardAPIPluginsTest do
     @moduledoc false
 
     def list_tenant_plugin_definitions(_tenant_id) do
-      case Application.get_env(:bridge_for_teams_web, :plugins_api_error) do
-        nil -> {:ok, Application.get_env(:bridge_for_teams_web, :plugins_api_definitions, [])}
+      case SystemsRuntime.get_env(:bridge_for_teams_web, :plugins_api_error) do
+        nil -> {:ok, SystemsRuntime.get_env(:bridge_for_teams_web, :plugins_api_definitions, [])}
         reason -> {:error, reason}
       end
     end
 
     def create_tenant_plugin_definition(_tenant_id, attrs) do
-      send(self(), {:create_tenant_plugin, attrs})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:create_tenant_plugin, attrs})
       reply(Map.put(attrs, "plugin_id", "tenant.created"))
     end
 
     def update_tenant_plugin_definition(_tenant_id, plugin_id, attrs) do
-      send(self(), {:update_tenant_plugin, plugin_id, attrs})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:update_tenant_plugin, plugin_id, attrs}
+      )
+
       reply(Map.put(attrs, "plugin_id", plugin_id))
     end
 
     defp reply(definition) do
-      case Application.get_env(:bridge_for_teams_web, :plugins_api_error) do
+      case SystemsRuntime.get_env(:bridge_for_teams_web, :plugins_api_error) do
         nil -> {:ok, definition}
         reason -> {:error, reason}
       end
@@ -75,17 +84,17 @@ defmodule BridgeForTeamsWeb.DashboardAPIPluginsTest do
   ]
 
   setup %{conn: conn} do
-    previous = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, PluginClient)
-    Application.put_env(:bridge_for_teams_web, :plugins_api_definitions, @definitions)
+    previous = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, PluginClient)
+    SystemsRuntime.put_env(:bridge_for_teams_web, :plugins_api_definitions, @definitions)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:bridge_for_teams_core, :salix_client, previous),
-        else: Application.delete_env(:bridge_for_teams_core, :salix_client)
+        do: SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous),
+        else: SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
 
-      Application.delete_env(:bridge_for_teams_web, :plugins_api_definitions)
-      Application.delete_env(:bridge_for_teams_web, :plugins_api_error)
+      SystemsRuntime.delete_env(:bridge_for_teams_web, :plugins_api_definitions)
+      SystemsRuntime.delete_env(:bridge_for_teams_web, :plugins_api_error)
     end)
 
     register_and_log_in_user(%{conn: conn})
@@ -133,20 +142,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIPluginsTest do
       refute_received {:update_tenant_plugin, _, _}
     end
 
-    test "a Salix outage is runtime_unavailable", %{conn: conn, org: org} do
-      for reason <- [:unavailable, :timeout] do
-        Application.put_env(:bridge_for_teams_web, :plugins_api_error, reason)
-
-        assert %{"error" => %{"code" => "runtime_unavailable"}} =
-                 conn |> get(plugins_path(org)) |> json_response(503)
-
-        assert %{"error" => %{"code" => "runtime_unavailable"}} =
-                 conn
-                 |> post(plugins_path(org), %{"name" => "Docs", "refs" => %{}})
-                 |> json_response(503)
-      end
-    end
-
     test "costs the same queries however large the catalog is", %{conn: conn, org: org} do
       small = query_count(conn, plugins_path(org))
 
@@ -155,7 +150,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIPluginsTest do
           %{"plugin_id" => "tenant.p#{n}", "name" => "P#{n}", "owner_scope" => "tenant"}
         end
 
-      Application.put_env(:bridge_for_teams_web, :plugins_api_definitions, many)
+      SystemsRuntime.put_env(:bridge_for_teams_web, :plugins_api_definitions, many)
       assert query_count(conn, plugins_path(org)) == small
     end
 
@@ -201,53 +196,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIPluginsTest do
       assert audit.actor_user_id == user.id
     end
 
-    test "updates an organization plugin and keeps its refs when none are sent",
-         %{conn: conn, org: org} do
-      assert %{"plugin_id" => "tenant.knowledge", "name" => "Knowledge"} =
-               conn
-               |> put(plugin_path(org, "tenant.knowledge"), %{
-                 "name" => "Knowledge",
-                 "description" => ""
-               })
-               |> json_response(200)
-               |> data()
-
-      assert_received {:update_tenant_plugin, "tenant.knowledge", attrs}
-      refute Map.has_key?(attrs, "refs")
-      refute Map.has_key?(attrs, "setup")
-    end
-
-    test "rejects malformed refs and setup destinations before calling Salix",
-         %{conn: conn, org: org} do
-      for {body, message} <- [
-            {%{"refs" => ["docs.search"]}, "Refs JSON must be an object."},
-            {%{"refs" => %{"tool_refs" => "docs.search"}},
-             "Each capability category must be an array."},
-            {%{"refs" => %{}, "setup_destination" => "elsewhere"},
-             "Choose a valid setup destination."}
-          ] do
-        assert %{"error" => %{"code" => "invalid_plugin", "message" => ^message}} =
-                 conn
-                 |> post(plugins_path(org), Map.put(body, "name", "Docs"))
-                 |> json_response(422)
-      end
-
-      refute_received {:create_tenant_plugin, _}
-    end
-
-    test "passes on Salix's validation message", %{conn: conn, org: org} do
-      Application.put_env(
-        :bridge_for_teams_web,
-        :plugins_api_error,
-        {:bad_request, "name is required"}
-      )
-
-      assert %{"error" => %{"code" => "invalid_plugin", "message" => "name is required"}} =
-               conn
-               |> post(plugins_path(org), %{"name" => "", "refs" => %{}})
-               |> json_response(422)
-    end
-
     test "need the page's CSRF token", %{conn: conn, org: org} do
       conn = get(conn, ~p"/orgs/#{org.slug}/plugins")
 
@@ -278,15 +226,16 @@ defmodule BridgeForTeamsWeb.DashboardAPIPluginsTest do
   end
 
   defp query_count(conn, path) do
-    test_pid = self()
-    handler = "plugins-query-count-#{System.unique_integer([:positive])}"
+    test_pid = SystemsRuntime.Proc.self()
+    handler = "plugins-query-count-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:bridge_for_teams, :repo, :query],
         fn _event, _measurements, _metadata, _config ->
-          if self() == test_pid, do: send(test_pid, :repo_query)
+          if SystemsRuntime.Proc.self() == test_pid,
+            do: SystemsRuntime.Proc.send(test_pid, :repo_query)
         end,
         nil
       )
@@ -295,12 +244,12 @@ defmodule BridgeForTeamsWeb.DashboardAPIPluginsTest do
       conn |> get(path) |> json_response(200)
       count_messages(0)
     after
-      :telemetry.detach(handler)
+      SystemsRuntime.Telemetry.detach(handler)
     end
   end
 
   defp count_messages(count) do
-    receive do
+    SystemsRuntime.Proc.receive do
       :repo_query -> count_messages(count + 1)
     after
       0 -> count

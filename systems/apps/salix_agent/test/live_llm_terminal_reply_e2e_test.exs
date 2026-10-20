@@ -1,10 +1,12 @@
 defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Real-model delivery and explicit completion of Router replies. Only the LLM
   crosses a network boundary; Telegram delivery is captured locally. Opt in
   with --include live_llm and the standard LiveLlmTestSupport credentials.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.LiveLlmTestSupport, as: Live
   alias SalixAgent.HistoricalTelegramReplyFixture, as: HistoricalReply
@@ -40,12 +42,12 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
     def provider_manual(_), do: {:error, :unsupported}
     @impl true
     def call_api(agent, "telegram", "telegram.send_message", args) do
-      send(
-        Application.fetch_env!(:salix_agent, :live_llm_test_capture_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :live_llm_test_capture_pid),
         {:terminal_telegram_send, agent, args}
       )
 
-      {:ok, %{"message_id" => 42, "date" => System.system_time(:second)}}
+      {:ok, %{"message_id" => 42, "date" => SystemsClock.system_time(:second)}}
     end
   end
 
@@ -53,8 +55,8 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
     @behaviour SalixAgent.LLMMetering
     @impl true
     def before_llm_call(fact) do
-      send(
-        Application.fetch_env!(:salix_agent, :live_llm_test_capture_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :live_llm_test_capture_pid),
         {:terminal_llm_request, fact.agent_id}
       )
 
@@ -77,8 +79,8 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
 
     @impl true
     def request(scope, type, args, _call_id) do
-      send(
-        Application.fetch_env!(:salix_agent, :live_llm_test_capture_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :live_llm_test_capture_pid),
         {:terminal_native_prompt, scope, type, args}
       )
 
@@ -93,10 +95,10 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
   setup do
     SalixAgent.TestSupport.stop_all_agents()
     restore = Live.install_runtime!()
-    previous_metering = Application.get_env(:salix_agent, :llm_metering_mod)
-    previous_interaction = Application.get_env(:salix_agent, :telegram_interaction_mod)
-    Application.put_env(:salix_agent, :im_provider_mod, TelegramCapture)
-    Application.put_env(:salix_agent, :llm_metering_mod, Metering)
+    previous_metering = SystemsRuntime.get_env(:salix_agent, :llm_metering_mod)
+    previous_interaction = SystemsRuntime.get_env(:salix_agent, :telegram_interaction_mod)
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, TelegramCapture)
+    SystemsRuntime.put_env(:salix_agent, :llm_metering_mod, Metering)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
@@ -179,7 +181,7 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
         )
 
       Live.await_session_settled!(agent_id, session_id, 90_000)
-      assert_receive {:terminal_telegram_send, ^agent_id, args}, 1_000
+      assert_receive {:terminal_telegram_send, ^agent_id, args}
       assert String.trim(args["params"]["text"]) == expected
       refute_receive {:terminal_telegram_send, ^agent_id, _}, 100
 
@@ -270,7 +272,7 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
 
   test "native choices and ordinary replies settle once with background context",
        %{llm: llm} do
-    Application.put_env(:salix_agent, :telegram_interaction_mod, NativeCapture)
+    SystemsRuntime.put_env(:salix_agent, :telegram_interaction_mod, NativeCapture)
     agent_id = SalixAgent.TestSupport.new_agent_id()
     Live.configure!(agent_id, llm, %{"role" => "router"})
     {:ok, agent} = SalixAgent.Control.get(agent_id)
@@ -322,7 +324,7 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
       assert settled.wait == nil
 
       if source == "native-question" do
-        assert_receive {:terminal_native_prompt, scope, "question", args}, 1000
+        assert_receive {:terminal_native_prompt, scope, "question", args}
         assert scope["chat_id"] == "42"
         assert scope["source_message_id"] == source
         assert scope["context_source_message_ids"] == ["meeting-context", source]
@@ -339,7 +341,7 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
 
         refute_receive {:terminal_telegram_send, ^agent_id, _}, 100
       else
-        assert_receive {:terminal_telegram_send, ^agent_id, args}, 1000
+        assert_receive {:terminal_telegram_send, ^agent_id, args}
         assert to_string(args["params"]["chat_id"]) == "42"
         assert args["params"]["text"] =~ expected_text
 
@@ -376,7 +378,7 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
     # Replay the old user-visible mistake through the normal runtime, so the
     # real model sees an acknowledged earlier answer, not an instruction to
     # call a particular tool or a newly inserted user claim about capability.
-    Application.put_env(:salix_agent, :llm, HistoricalReply)
+    SystemsRuntime.put_env(:salix_agent, :llm, HistoricalReply)
     deliver_native_message!(group, agent, "before-native-support", "能不能发一个带按钮的问题？")
 
     for {id, args} <- [
@@ -394,23 +396,23 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
              "final_outcome" => "done"
            }}
         ] do
-      assert_receive {:historical_reply_request, pid}, 5_000
+      assert_receive {:historical_reply_request, pid}
       HistoricalReply.respond(pid, id, args)
     end
 
-    assert_receive {:historical_reply_request, pid}, 5_000
+    assert_receive {:historical_reply_request, pid}
 
     HistoricalReply.finish(pid)
 
     session_id = Live.router_session_id!(agent_id)
     prior = Live.await_session_settled!(agent_id, session_id, 10_000)
     refute prior.system_prompt =~ "question.request"
-    assert_receive {:terminal_telegram_send, ^agent_id, old_reply}, 1_000
+    assert_receive {:terminal_telegram_send, ^agent_id, old_reply}
     assert old_reply["params"]["text"] =~ "无法"
     drain_requests(agent_id, 0)
 
-    Application.put_env(:salix_agent, :llm, SalixLlm.Provider)
-    Application.put_env(:salix_agent, :telegram_interaction_mod, NativeCapture)
+    SystemsRuntime.put_env(:salix_agent, :llm, SalixLlm.Provider)
+    SystemsRuntime.put_env(:salix_agent, :telegram_interaction_mod, NativeCapture)
     assert {:ok, _} = SalixAgent.Control.configure(agent_id, %{"disabled_tools" => []})
 
     deliver_native_message!(
@@ -421,7 +423,7 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
     )
 
     settled = Live.await_session_settled!(agent_id, session_id, 90_000)
-    assert_receive {:terminal_native_prompt, scope, "question", args}, 1_000
+    assert_receive {:terminal_native_prompt, scope, "question", args}
     assert scope["source_message_id"] == "native-current-request"
     assert scope["chat_id"] == "42"
     assert args["locale"] == "zh-CN"
@@ -441,7 +443,7 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
   @tag :location_city
   test "weather asks for a city while an explicit location request uses dialogue locale",
        %{llm: llm} do
-    Application.put_env(:salix_agent, :telegram_interaction_mod, NativeCapture)
+    SystemsRuntime.put_env(:salix_agent, :telegram_interaction_mod, NativeCapture)
 
     for {name, message} <- [
           {"weather", "我今天的天气如何？"},
@@ -460,11 +462,11 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
       assert settled.wait == nil
 
       if name == "location" do
-        assert_receive {:terminal_native_prompt, scope, "location", args}, 1_000
+        assert_receive {:terminal_native_prompt, scope, "location", args}
         assert scope["source_message_id"] == name
         assert args["locale"] == "zh-CN"
       else
-        receive do
+        SystemsRuntime.Proc.receive do
           {:terminal_native_prompt, scope, "question", args} ->
             assert scope["source_message_id"] == name
             assert args["locale"] == "zh-CN"
@@ -521,7 +523,7 @@ defmodule SalixAgent.LiveLlmTerminalReplyE2eTest do
   end
 
   defp drain_requests(agent, count) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:terminal_llm_request, ^agent} -> drain_requests(agent, count + 1)
     after
       0 -> count

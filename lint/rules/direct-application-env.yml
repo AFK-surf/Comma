@@ -1,0 +1,32 @@
+id: direct-application-env
+language: elixir
+severity: error
+message: "Application.$F reads or writes the node's configuration, which a test cannot bind for itself. Call SystemsRuntime.$F instead."
+note: |
+  Application.get_env/2,3      -> SystemsRuntime.get_env/2,3
+  Application.fetch_env/2      -> SystemsRuntime.fetch_env/2
+  Application.fetch_env!/2     -> SystemsRuntime.fetch_env!/2
+  Application.put_env/3,4      -> SystemsRuntime.put_env/3,4
+  Application.delete_env/2,3   -> SystemsRuntime.delete_env/2,3
+  A capture is a call too: write &SystemsRuntime.get_env/2, not &Application.get_env/2.
+  Without a test binding each is the Application function of the same name.
+  See docs/testing.md#deterministic-runtime.
+rule:
+  any:
+    - pattern: Application.$F($$$)
+    - pattern: "&Application.$F/$A"
+constraints:
+  F: { regex: '^(get_env|fetch_env|fetch_env!|put_env|delete_env)$' }
+files:
+  - systems/apps/*/lib/**/*.ex
+  - systems/apps/*/lib/**/*.exs
+  - systems/apps/*/test/**/*.ex
+  - systems/apps/*/test/**/*.exs
+ignores:
+  # The runtime itself and the apps below it
+  # (`@harness` in systems/apps/systems_runtime/lib/systems_runtime.ex).
+  - systems/apps/systems_runtime/**
+  - systems/apps/systems_clock/**
+  - systems/apps/systems_sim/**
+  - systems/apps/systems_observability/**
+  - systems/apps/comma_log/**

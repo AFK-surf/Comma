@@ -1,4 +1,5 @@
 import VerifiedKernelProofs.Session.WorkKernelHistory
+import VerifiedKernelProofs.Session.WorkPhysicalFence
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data
@@ -35,13 +36,13 @@ theorem rebuild_refs_scope {state next : Term} {journal rest : List Term}
   repeat
     fail_if_success (head_is call [write]; change write _ _ _ = .ok (next, rest) at call)
     obtain ⟨_, _, _, call⟩ := bind_ok call
-  exact ⟨write_field_frame call rfl, write_field_frame call rfl⟩
+  exact ⟨write_field_frame call (by keys_absent), write_field_frame call (by keys_absent)⟩
 
 theorem fork_finish_scope {source attrs next : Term} {owner session : ByteArray} {copy : Bool}
-    {messages facts results remapped clamped journal rest : List Term}
+    {messages facts results journal rest : List Term}
     {lastSeq lastAck forkThrough nextId created : Term}
     (owned : source.get (a "agent_id") = .binary owner)
-    (call : forkFinish source (.binary session) attrs copy messages facts results remapped clamped
+    (call : forkFinish source (.binary session) attrs copy messages facts results
       lastSeq lastAck forkThrough nextId created journal = .ok (next, rest)) :
     next.get (a "agent_id") = .binary owner ∧ next.get (a "session_id") = .binary session := by
   cases copy <;> unfold forkFinish at call <;> simp only [Bool.false_eq_true, ↓reduceIte] at call
@@ -64,7 +65,7 @@ theorem current_fork_scope {source attrs maxId next : Term} {owner session : Byt
   rw [current_fork_factor] at call
   unfold forkSelection at call
   repeat' first
-    | exact fork_finish_scope owned call
+    | (head_is call [forkFinish]; exact fork_finish_scope owned call)
     | (obtain ⟨_, _, _, call⟩ := bind_ok call)
     | split at call
     | dsimp only at call

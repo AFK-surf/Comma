@@ -6,6 +6,8 @@ defmodule SalixIM.ConversationServer do
   modeled in `tla/salix/SlackTaskThreadDeliveryFence.tla`.
   """
 
+  require SystemsRuntime.Proc, as: Proc
+
   alias SalixIM.SourceRefProtection
   alias SalixStore.{CasRecord, Crypto, Ids, Keys, S3}
 
@@ -46,6 +48,15 @@ defmodule SalixIM.ConversationServer do
   @doc false
   def repair_display_projection(group_id, conversation_id),
     do: call(group_id, conversation_id, :repair_display_projection)
+
+  @doc false
+  def repair_task_activity_projection(group_id, conversation_id),
+    do: call(group_id, conversation_id, :repair_task_activity_projection, wake_on_recovery: false)
+
+  def list_group_activity_tasks(group_id) do
+    with :ok <- call_group(group_id, :activity_tasks),
+         do: SalixIM.Conversations.list_group_activity_tasks(group_id)
+  end
 
   def create_group_conversation(group_id, attrs) when is_map(attrs) do
     with :ok <- SalixIM.TaskArchive.ordinary_update(%{}, attrs),
@@ -121,6 +132,13 @@ defmodule SalixIM.ConversationServer do
   def set_task_archived(_, _, _, _),
     do: {:error, {:bad_request, "expected_updated_at must be a positive integer"}}
 
+  def set_task_status(group_id, conversation_id, status, version, user_id)
+      when is_integer(version) and version > 0 and is_binary(user_id) and user_id != "",
+      do: call(group_id, conversation_id, {:set_task_status, status, version, user_id})
+
+  def set_task_status(_group_id, _conversation_id, _status, _version, _user_id),
+    do: {:error, {:bad_request, "expected_updated_at must be a positive integer"}}
+
   def accept_task_review(group_id, conversation_id, review_version)
       when is_integer(review_version) and review_version > 0,
       do: call(group_id, conversation_id, {:accept_task_review, review_version})
@@ -161,6 +179,25 @@ defmodule SalixIM.ConversationServer do
       )
     end
   end
+
+  # Product state that clients render beside an earlier Message, such as the
+  # current status of a card. Hidden from Agents and from clients that do not
+  # know the event type. Setup cards use the highest offer revision, not the
+  # latest Message sequence, because an older publisher may finish later.
+  @product_event_types ~w(device_setup_offer.updated)
+
+  def append_product_event(group_id, conversation_id, event_type, data, idempotency_key)
+      when event_type in @product_event_types and is_map(data) and is_binary(idempotency_key) and
+             idempotency_key != "",
+      do:
+        call(
+          group_id,
+          conversation_id,
+          {:append_product_event, event_type, data, idempotency_key}
+        )
+
+  def append_product_event(_group_id, _conversation_id, _event_type, _data, _key),
+    do: {:error, {:bad_request, "unsupported product event"}}
 
   def append_platform_message(
         group_id,
@@ -533,6 +570,26 @@ defmodule SalixIM.ConversationServer do
           {:notify_task_schedule, schedule_id, scheduled_for_ms, opts}
         )
 
+  @doc """
+  A wake or lifecycle notice of the Task's Background Loop
+  (`SalixIM.TaskLoop`), appended as private input to its Worker.
+  """
+  def task_loop_wake(group_id, conversation_id, loop, payload, source_id),
+    do: call(group_id, conversation_id, {:task_loop_wake, loop, payload, source_id})
+
+  @doc "Reopen an ended Loop Task with the command for its new Loop request."
+  def restart_task_loop(group_id, conversation_id, request, command, router_id, source, human_at),
+    do:
+      call(
+        group_id,
+        conversation_id,
+        {:restart_task_loop, request, command, router_id, source, human_at}
+      )
+
+  @doc "The Task's Loop ended (`fact`: `ended_reason` and the Loop's limits)."
+  def task_loop_ended(group_id, conversation_id, loop, fact) when is_map(loop) and is_map(fact),
+    do: call(group_id, conversation_id, {:task_loop_ended, loop, fact})
+
   def replace_task_schedule(group_id, conversation_id, current, replacement)
       when is_map(current) and is_map(replacement),
       do: call(group_id, conversation_id, {:replace_task_schedule, current, replacement})
@@ -553,18 +610,20 @@ defmodule SalixIM.ConversationServer do
   def dismiss_group_conversation_activity_surface(group_id, conversation_id),
     do: call(group_id, conversation_id, :dismiss_group_conversation_activity_surface)
 
-  def subscribe_group_conversation(group_id, conversation_id, subscriber) when is_pid(subscriber),
-    do: call(group_id, conversation_id, {:subscribe, subscriber})
+  def subscribe_group_conversation(group_id, conversation_id, subscriber)
+      when Proc.is_process(subscriber),
+      do: call(group_id, conversation_id, {:subscribe, subscriber})
 
   def subscribe_group_conversation_list(group_id, kind, subscriber)
-      when kind in ["agent_task", "user_chat"] and is_pid(subscriber) do
+      when kind in ["agent_task", "user_chat"] and Proc.is_process(subscriber) do
     with {:ok, group_id} <- require_group_id(group_id),
          {:ok, pid} <- SalixIM.ConversationPlacement.ensure_group_started(group_id) do
       SalixIM.ConversationGroupActor.subscribe_conversation_list(pid, kind, subscriber)
     end
   end
 
-  def subscribe_group_conversation_mutations(group_id, subscriber) when is_pid(subscriber) do
+  def subscribe_group_conversation_mutations(group_id, subscriber)
+      when Proc.is_process(subscriber) do
     with {:ok, group_id} <- require_group_id(group_id),
          {:ok, pid} <- SalixIM.ConversationPlacement.ensure_group_started(group_id) do
       SalixIM.ConversationGroupActor.subscribe_conversation_mutations(pid, subscriber)
@@ -603,7 +662,7 @@ defmodule SalixIM.ConversationServer do
         participant_id,
         subscriber
       )
-      when is_pid(subscriber) do
+      when Proc.is_process(subscriber) do
     with {:ok, participant_id} <- require_participant_id(participant_id) do
       call_participant_realtime(
         group_id,
@@ -661,6 +720,9 @@ defmodule SalixIM.ConversationServer do
 
   defp call_group_owner(pid, group_id, {:router_read_hint, agent_id}),
     do: call_external_owner(pid, group_id, {:router_read_hint, agent_id})
+
+  defp call_group_owner(pid, group_id, :activity_tasks),
+    do: call_external_owner(pid, group_id, :activity_tasks)
 
   defp call_group_owner(pid, group_id, {:pin, conversation_id, tenant_id}) do
     with {:ok, conversation_id} <- require_conversation_id(conversation_id) do
@@ -783,7 +845,7 @@ defmodule SalixIM.ConversationServer do
   end
 
   defp call_external_owner(pid, owner_ref, command) do
-    GenServer.call(pid, command, @owner_call_timeout_ms)
+    SystemsRuntime.Server.call(pid, command, @owner_call_timeout_ms)
   catch
     :exit, {:timeout, _} ->
       {:error, {:owner_unreachable, owner_ref, :timeout}}
@@ -843,7 +905,7 @@ defmodule SalixIM.ConversationServer do
     end
   end
 
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 
   defp require_nonblank(value, field) do
     if trim(value) == "", do: {:error, {:bad_request, field <> " is required"}}, else: :ok

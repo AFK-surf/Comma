@@ -10,6 +10,7 @@ import {
   CommandPaletteHighlight,
   type CommandPaletteGroup,
 } from "../CommandPalette";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 type TestValue = "archive-task" | "open-settings";
 
@@ -43,20 +44,15 @@ const groups: readonly CommandPaletteGroup<TestValue>[] = [
   { id: "actions", heading: "Actions", items: [settingsItem] },
 ];
 
-const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
-
 beforeEach(() => {
-  HTMLElement.prototype.scrollIntoView = vi.fn();
+  stubProperty(HTMLElement.prototype, "scrollIntoView", {
+    value: vi.fn(),
+    writable: true,
+  });
 });
 
 afterEach(() => {
-  vi.useRealTimers();
   vi.unstubAllGlobals();
-  if (originalScrollIntoView) {
-    HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
-  } else {
-    Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
-  }
 });
 
 describe("CommandPalette", () => {
@@ -236,7 +232,6 @@ describe("CommandPalette", () => {
       "open-settings"
     );
 
-    vi.useFakeTimers();
     fireEvent.pointerMove(archiveOption, { pointerType: "mouse" });
 
     expect(onActiveValueChange).toHaveBeenCalledOnce();

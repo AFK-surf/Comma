@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
 import { startChatSmokeStub } from "../../../e2e/p0/chat-stub";
+import { installVirtualTime } from "../../../e2e/helpers/virtual-time";
 
 const cases = [
   {
@@ -104,8 +105,6 @@ test("an identical new paragraph still reveals while the earlier occurrence rema
 test("a late link in a long paragraph preserves the active tail instead of snapping it clear", async ({
   page,
 }, info) => {
-  const clockStart = Date.now();
-  await page.clock.install({ time: clockStart });
   const settled = `Opening [label][ref]. ${"A long paragraph retains its reading position. ".repeat(150)}`;
   const arriving = `${settled} Newly arriving tail`;
   const finalText = `${arriving}\n\n[ref]: http://127.0.0.1/guide`;
@@ -114,30 +113,29 @@ test("a late link in a long paragraph preserves the active tail instead of snapp
     assistantReply: finalText,
     streamAssistantReply: true,
   });
+  // Range identity must not depend on whether the CI worker observes it
+  // before the 150ms reveal expires. Step frames, not wall-clock latency.
+  const time = await installVirtualTime(page);
   try {
     const { draft } = await openDraft(page, stub);
-    await expect(draft).toContainText("Opening [label][ref]");
-    // Range identity must not depend on whether the CI worker observes it
-    // before the 150ms reveal expires. Advance frames, not wall-clock latency.
-    await page.clock.pauseAt(clockStart + 60_000);
+    await time.advanceUntil(() =>
+      document
+        .querySelector('[data-testid="chat-assistant-draft"]')
+        ?.textContent?.includes("Opening [label][ref]")
+    );
     stub.updateStreamingDraft(arriving);
-    await expect
-      .poll(
-        async () => {
-          await page.clock.runFor(1);
-          return draft.textContent();
-        },
-        { intervals: [5] }
-      )
-      .toContain("Newly arriving tail");
-    const probe = await draft.evaluateHandle((article) => {
+    await time.advanceUntil(() =>
+      document
+        .querySelector('[data-testid="chat-assistant-draft"]')
+        ?.textContent?.includes("Newly arriving tail")
+    );
+    await draft.evaluate((article) => {
       const ranges = () =>
         [...CSS.highlights.values()].flatMap((h) =>
           [...h].filter((r) => article.contains(r.startContainer))
         );
       const original = new Set(ranges());
       let after: { active: number; retained: number } | undefined;
-      let frame = 0;
       const sample = () => {
         if (article.querySelector('a[href="http://127.0.0.1/guide"]')) {
           const current = ranges();
@@ -145,36 +143,42 @@ test("a late link in a long paragraph preserves the active tail instead of snapp
             active: current.length,
             retained: current.filter((range) => original.has(range)).length,
           };
-        } else frame = requestAnimationFrame(sample);
+        } else requestAnimationFrame(sample);
       };
-      frame = requestAnimationFrame(sample);
-      return {
-        read: () => ({ before: original.size, after }),
-        stop: () => cancelAnimationFrame(frame),
-      };
+      requestAnimationFrame(sample);
+      Object.assign(window, {
+        lateLinkProbe: { read: () => ({ before: original.size, after }) },
+      });
     });
-    expect((await probe.evaluate((p) => p.read())).before).toBeGreaterThan(0);
+    const read = () =>
+      page.evaluate(() =>
+        (
+          window as unknown as {
+            lateLinkProbe: {
+              read(): {
+                before: number;
+                after?: { active: number; retained: number };
+              };
+            };
+          }
+        ).lateLinkProbe.read()
+      );
+    expect((await read()).before).toBeGreaterThan(0);
     stub.updateStreamingDraft(finalText);
-    await expect
-      .poll(
-        async () => {
-          await page.clock.runFor(1);
-          return probe.evaluate((p) => p.read().after);
-        },
-        { intervals: [5] }
-      )
-      .toBeDefined();
-    const result = await probe.evaluate((p) => {
-      p.stop();
-      return p.read();
-    });
+    await time.advanceUntil(
+      () =>
+        (
+          window as unknown as { lateLinkProbe: { read(): { after?: unknown } } }
+        ).lateLinkProbe.read().after !== undefined
+    );
+    const result = await read();
     await info.attach("long-root-active-tail", {
       body: JSON.stringify(result, null, 2),
       contentType: "application/json",
     });
     expect(result.after!.active).toBeGreaterThan(0);
     expect(result.after!.retained).toBe(result.before);
-    await page.clock.runFor(300);
+    await time.advance(300);
     expect(
       await draft.evaluate(
         (article) =>
@@ -183,7 +187,6 @@ test("a late link in a long paragraph preserves the active tail instead of snapp
           ).length
       )
     ).toBe(0);
-    await probe.dispose();
   } finally {
     await stub.close();
   }

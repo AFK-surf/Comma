@@ -33,7 +33,7 @@ defmodule SalixIM.TestSupport.LegacyCallbackReceipts do
           authority,
           verified,
           endpoint_revision,
-          Keyword.get(opts, :created_at, System.system_time(:millisecond))
+          Keyword.get(opts, :created_at, SystemsClock.system_time(:millisecond))
         )
 
       key = Keys.ctl_im_slack_event_receipt(receipt["connect_id"], receipt["event_id"])

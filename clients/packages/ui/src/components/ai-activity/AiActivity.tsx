@@ -11,6 +11,7 @@ import {
   type TransitionEvent,
 } from "react";
 import { Button as AriaButton } from "react-aria-components";
+import { uiClock, type CancelUiTimer } from "../../clock";
 import { Collapse, CollapseContent } from "../collapse";
 import { ChevronDownSmallIcon, CircleXIcon } from "../icons";
 import { ScrollArea } from "../scroll-area";
@@ -282,24 +283,24 @@ function ActivityText({
   useEffect(() => {
     if (outgoing == null) return;
     const expectedCurrentKey = current.key;
-    let playFrame: number | undefined;
-    let settleTimer: number | undefined;
-    const paintFrame = window.requestAnimationFrame(() => {
-      playFrame = window.requestAnimationFrame(() => {
+    let playFrame: CancelUiTimer | undefined;
+    let settleTimer: CancelUiTimer | undefined;
+    const paintFrame = uiClock.frame(() => {
+      playFrame = uiClock.frame(() => {
         if (currentRef.current.key !== expectedCurrentKey) return;
         textRef.current
           ?.closest<HTMLElement>(".comma-ai-activity-summary-shell")
           ?.style.setProperty("--ai-activity-chevron-shift", "0px");
         setPlaying(true);
-        settleTimer = window.setTimeout(() => {
+        settleTimer = uiClock.after(activityTextSwapFallbackMs, () => {
           settleCurrentSwap(expectedCurrentKey);
-        }, activityTextSwapFallbackMs);
+        });
       });
     });
     return () => {
-      window.cancelAnimationFrame(paintFrame);
-      if (playFrame != null) window.cancelAnimationFrame(playFrame);
-      if (settleTimer != null) window.clearTimeout(settleTimer);
+      paintFrame();
+      if (playFrame != null) playFrame();
+      if (settleTimer != null) settleTimer();
     };
   }, [current.key, outgoing, settleCurrentSwap]);
 
@@ -364,14 +365,14 @@ function ActivityEventRow({
     }
 
     setTargetHeight(content.getBoundingClientRect().height);
-    let playFrame: number | undefined;
-    const paintFrame = window.requestAnimationFrame(() => {
-      playFrame = window.requestAnimationFrame(() => setEntered(true));
+    let playFrame: CancelUiTimer | undefined;
+    const paintFrame = uiClock.frame(() => {
+      playFrame = uiClock.frame(() => setEntered(true));
     });
 
     return () => {
-      window.cancelAnimationFrame(paintFrame);
-      if (playFrame != null) window.cancelAnimationFrame(playFrame);
+      paintFrame();
+      if (playFrame != null) playFrame();
     };
   }, [animateEntry]);
 
@@ -456,7 +457,7 @@ export function AiActivity({
   const historyId = useId();
   const summaryId = `${historyId}-summary`;
   const disclosureRef = useRef<HTMLButtonElement>(null);
-  const panelHeightFrame = useRef<number | null>(null);
+  const panelHeightFrame = useRef<CancelUiTimer | null>(null);
   const panelShellRef = useRef<HTMLDivElement>(null);
   const panelWasInitialized = useRef(false);
   const initialEventIds = useRef<ReadonlySet<string> | null>(null);
@@ -519,7 +520,7 @@ export function AiActivity({
     previousExpanded.current = expanded;
 
     if (panelHeightFrame.current != null) {
-      window.cancelAnimationFrame(panelHeightFrame.current);
+      panelHeightFrame.current();
       panelHeightFrame.current = null;
     }
 
@@ -530,7 +531,7 @@ export function AiActivity({
 
     const currentHeight = panelShell.getBoundingClientRect().height;
     panelShell.style.height = `${currentHeight}px`;
-    panelHeightFrame.current = window.requestAnimationFrame(() => {
+    panelHeightFrame.current = uiClock.frame(() => {
       panelHeightFrame.current = null;
       panelShell.style.height = expanded ? `${panelShell.scrollHeight}px` : "0px";
     });
@@ -539,7 +540,7 @@ export function AiActivity({
   useEffect(
     () => () => {
       if (panelHeightFrame.current != null) {
-        window.cancelAnimationFrame(panelHeightFrame.current);
+        panelHeightFrame.current();
       }
     },
     []

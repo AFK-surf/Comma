@@ -3,7 +3,7 @@ defmodule SalixSignalProto.Session.DerivationTest do
   # §4, §7) against the CRS-04 vectors hkdf-uses.json, chain-step.json,
   # root-step.json, pqxdh-initiator.json, signal-message-encode.json and
   # address-binding.json.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.{Address, Keys}
   alias SalixSignalProto.Session.{Kdf, Message, PreKeyMessage, Pqxdh}

@@ -226,7 +226,7 @@ defmodule SalixSignal.Profiles do
     with {:ok, %{} = form} <- Response.json(response),
          {:ok, parts} <- form_parts(form) do
       encrypted = Profile.encrypt(profile_key, image)
-      boundary = "salix-" <> Base.encode16(:crypto.strong_rand_bytes(12), case: :lower)
+      boundary = "salix-" <> Base.encode16(SystemsRuntime.Proc.random_bytes(12), case: :lower)
       body = multipart(boundary, parts, encrypted)
 
       http_opts =
@@ -309,7 +309,7 @@ defmodule SalixSignal.Profiles do
       {%{server_params: params, now: now}, {:aci, uuid}, <<_::binary-size(32)>> = key}
       when is_integer(now) ->
         with {:ok, server} <- server_params(params) do
-          randomness = opts[:credential_randomness] || :crypto.strong_rand_bytes(32)
+          randomness = opts[:credential_randomness] || SystemsRuntime.Proc.random_bytes(32)
           {context, request} = ProfileKeyCredential.request(uuid, key, randomness)
           {:ok, %{server: server, context: context, request: request, now: now}}
         end

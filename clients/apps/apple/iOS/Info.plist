@@ -36,8 +36,12 @@
 	<string>$(COMMA_PUSH_ENVIRONMENT)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Take photos to send in your chat or to use as your profile photo.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Talk with Comma in a voice call.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Choose images to send in your chat.</string>
+	<string>Show your recent photos so you can send them in your chat.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
@@ -47,6 +51,7 @@
 	</dict>
 	<key>UIBackgroundModes</key>
 	<array>
+		<string>audio</string>
 		<string>remote-notification</string>
 	</array>
 	<key>UILaunchScreen</key>

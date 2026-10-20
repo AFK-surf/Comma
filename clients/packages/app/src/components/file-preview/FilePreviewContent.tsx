@@ -1,5 +1,6 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { ChatPanelAudio, ChatPanelVideo, MarkdownStream } from "@comma/ui";
+import { ChatPanelAudio, ChatPanelVideo } from "@comma/ui/components/chat-panel";
+import { MarkdownStream } from "@comma/ui/components/markdown-stream";
 import { useEffect, useMemo, useState } from "react";
 import DOMPurify from "dompurify";
 import { FilePreviewLoading } from "./FilePreviewLoading";
@@ -136,7 +137,7 @@ function TextPreview({
 }
 
 // Blob identity owns decoder lifetime; Drive can replace bytes under one file id.
-// tla/file-actions/FilePreviewSelection.tla: Select/Close retire the old decoder.
+// Select/Close retire the old decoder.
 const blobKeys = new WeakMap<Blob, number>();
 let nextBlobKey = 0;
 function blobKey(blob: Blob) {
@@ -153,6 +154,7 @@ export function FilePreviewContent({
   fileName,
   mimeType,
   blob,
+  mediaUrl,
   error,
   placeholder,
   onOpenBrowser,
@@ -160,11 +162,16 @@ export function FilePreviewContent({
   fileName: string;
   mimeType?: string | undefined;
   blob?: Blob | undefined;
+  /** A CORS-enabled URL serving audio or video in ranges; plays without the whole file. */
+  mediaUrl?: string | undefined;
   error?: string | undefined;
   placeholder?: string | undefined;
   onOpenBrowser: (url: string) => void;
 }) {
   if (error) return <p role="alert">{error}</p>;
+  const kind = filePreviewKind(fileName, mimeType || blob?.type);
+  if (mediaUrl && (kind === "audio" || kind === "video"))
+    return <MediaPreview crossOrigin fileName={fileName} kind={kind} url={mediaUrl} />;
   if (!blob)
     return placeholder === undefined ? <FilePreviewLoading /> : <p>{placeholder}</p>;
   return (
@@ -204,16 +211,31 @@ function LoadedFilePreview({
         src={url}
       />
     );
-  if (kind === "audio") return <ChatPanelAudio className="w-full" src={url} />;
-  if (kind === "video")
-    return (
-      <ChatPanelVideo
-        className="w-full max-w-full"
-        src={url}
-        poster=""
-        alt={fileName}
-        previewTitle={fileName}
-      />
-    );
+  if (kind === "audio" || kind === "video")
+    return <MediaPreview fileName={fileName} kind={kind} url={url} />;
   return <p>{messages.file_preview_unavailable()}</p>;
+}
+
+function MediaPreview({
+  crossOrigin = false,
+  fileName,
+  kind,
+  url,
+}: {
+  crossOrigin?: boolean;
+  fileName: string;
+  kind: "audio" | "video";
+  url: string;
+}) {
+  if (kind === "audio") return <ChatPanelAudio className="w-full" src={url} />;
+  return (
+    <ChatPanelVideo
+      className="w-full max-w-full"
+      crossOrigin={crossOrigin ? "anonymous" : undefined}
+      src={url}
+      poster=""
+      alt={fileName}
+      previewTitle={fileName}
+    />
+  );
 }

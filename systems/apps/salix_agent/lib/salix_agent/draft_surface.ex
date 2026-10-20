@@ -7,16 +7,17 @@ defmodule SalixAgent.DraftSurface do
   to the agent owner and decides whether the embedded scope belongs to it.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   @table __MODULE__
   @stale_after_ms 10 * 60_000
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
   def init(_opts) do
-    _ = :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+    _ = SystemsRuntime.ETS.new(@table, [:named_table, :public, :set, read_concurrency: true])
     {:ok, %{}}
   end
 
@@ -27,7 +28,7 @@ defmodule SalixAgent.DraftSurface do
 
     if SalixAgent.VisibleReplyScope.valid_activation_scope?(scope) do
       revision = next_revision(agent_id, session_id, response_key)
-      now = System.system_time(:millisecond)
+      now = SystemsClock.system_time(:millisecond)
 
       draft = %{
         "agent_group_id" => scope["agent_group_id"],
@@ -41,7 +42,7 @@ defmodule SalixAgent.DraftSurface do
         "updated_at" => now
       }
 
-      :ets.insert(@table, {{agent_id, session_id}, draft, monotonic_ms()})
+      SystemsRuntime.ETS.insert(@table, {{agent_id, session_id}, draft, monotonic_ms()})
       :changed
     else
       :unchanged
@@ -57,7 +58,7 @@ defmodule SalixAgent.DraftSurface do
     case get(agent_id, session_id) do
       %{"response_key" => response_key} ->
         if response_key == scope["response_identity"] do
-          :ets.delete(@table, {agent_id, session_id})
+          SystemsRuntime.ETS.delete(@table, {agent_id, session_id})
           :changed
         else
           :unchanged
@@ -73,12 +74,12 @@ defmodule SalixAgent.DraftSurface do
   def clear(_agent_id, _session_id, _scope), do: :unchanged
 
   def get(agent_id, session_id) when is_binary(agent_id) and is_binary(session_id) do
-    case :ets.lookup(@table, {agent_id, session_id}) do
+    case SystemsRuntime.ETS.lookup(@table, {agent_id, session_id}) do
       [{{^agent_id, ^session_id}, draft, recorded_at}] ->
         if monotonic_ms() - recorded_at <= @stale_after_ms do
           draft
         else
-          :ets.delete(@table, {agent_id, session_id})
+          SystemsRuntime.ETS.delete(@table, {agent_id, session_id})
           nil
         end
 
@@ -101,5 +102,5 @@ defmodule SalixAgent.DraftSurface do
     end
   end
 
-  defp monotonic_ms, do: System.monotonic_time(:millisecond)
+  defp monotonic_ms, do: SystemsClock.monotonic_time(:millisecond)
 end

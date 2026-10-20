@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ScrollArea } from "@comma/ui";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
 
 export function SessionJson({ value }: { value: unknown }) {
   return (

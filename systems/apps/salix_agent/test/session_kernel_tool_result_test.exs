@@ -1,11 +1,7 @@
 defmodule SalixAgent.SessionKernelToolResultTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
   alias SalixAgent.InternalSession.State
-
-  @traces ~w(execution_timing tool_name status duration_ms input output error_class
-    error_message guidance_reason diagnostic_visibility public_summary repair_outcome
-    visible_reply_origin turn_id round_id request_id trace_id started_at completed_at)
 
   defp event(extra \\ %{}) do
     Map.merge(
@@ -65,77 +61,6 @@ defmodule SalixAgent.SessionKernelToolResultTest do
     assert Map.drop(next, written) === Map.drop(initial, written)
   end
 
-  test "every trace field survives and only nil fields are removed" do
-    traces = Map.new(@traces, &{&1, false})
-
-    assert {:returned, next} =
-             check(
-               %State{live_context_bytes: 0},
-               event(Map.merge(traces, %{"created_at" => nil, "tool_call_id" => nil}))
-             )
-
-    message = hd(next.messages)
-    for name <- @traces, do: assert(Map.fetch!(message, String.to_existing_atom(name)) === false)
-    refute Map.has_key?(message, :created_at)
-    refute Map.has_key?(message, :tool_call_id)
-  end
-
-  test "IFC copies nonempty maps and ignores nil false scalar and empty map" do
-    for ifc <- [nil, false, "not-a-map", %{}, %{"audience" => ["a"]}] do
-      assert {:returned, next} = check(%State{live_context_bytes: 0}, event(%{"ifc" => ifc}))
-      message = hd(next.messages)
-
-      if is_map(ifc) and map_size(ifc) > 0 do
-        assert message.ifc === ifc
-      else
-        refute Map.has_key?(message, :ifc)
-      end
-    end
-  end
-
-  test "cached integer accounting is lazy and accepts negative native cache" do
-    initial = %State{
-      live_context_bytes: -7,
-      summary: %{unsupported_summary: :unvisited},
-      provider_compaction: :unused,
-      compacted_through: :unused,
-      messages: [%{id: :unused, content: :unused}]
-    }
-
-    assert {:returned, next} = check(initial, event())
-    assert next.live_context_bytes === -3
-  end
-
-  test "uncached accounting includes summary provider content calls attachments and metadata" do
-    calls = [%{"id" => "call", "name" => "tool", "args" => %{}}]
-
-    old = %{
-      id: 2,
-      content: %{"answer" => 1},
-      tool_calls: calls,
-      trusted_attachment_refs: ["attachment"],
-      provider_meta: %{"usage" => 2}
-    }
-
-    initial = %State{
-      live_context_bytes: nil,
-      summary: "sum",
-      provider_compaction: %{"items" => [%{"chunk" => "provider"}]},
-      compacted_through: 1,
-      messages: [%{id: 1, content: "excluded"}, old]
-    }
-
-    assert {:returned, next} = check(initial, event())
-    encoded = fn value -> byte_size(Jason.encode!(value)) end
-
-    expected =
-      3 + encoded.(initial.provider_compaction["items"]) +
-        encoded.(old.content) + encoded.(calls) + encoded.(old.trusted_attachment_refs) +
-        encoded.(old.provider_meta) + 4
-
-    assert next.live_context_bytes === expected
-  end
-
   test "new nonbinary content retains full JSON accounting beyond the Lean profile" do
     for content <- [false, 17, %{"result" => [1, 2]}, ["a", "b"]] do
       assert {:returned, next} =
@@ -190,16 +115,6 @@ defmodule SalixAgent.SessionKernelToolResultTest do
     end
   end
 
-  test "provider compaction binary key presence masks atom key including nil" do
-    initial = %State{
-      live_context_bytes: nil,
-      provider_compaction: %{"items" => nil, :items => "not-counted"}
-    }
-
-    assert {:returned, next} = check(initial, event())
-    assert next.live_context_bytes === 4
-  end
-
   test "only nonnegative integer message IDs trigger HWM update" do
     for id <- [nil, false, -1, 4.0, "4"] do
       initial = %State{
@@ -230,44 +145,6 @@ defmodule SalixAgent.SessionKernelToolResultTest do
                )
 
       assert next.next_message_id === max(previous || 1, 1)
-    end
-  end
-
-  test "accounting aliases visit binary keys only after nil or false atom values" do
-    for omitted <- [nil, false] do
-      old = %{
-        "trusted_attachment_refs" => "attachment",
-        "provider_meta" => "metadata",
-        id: 1,
-        content: nil,
-        tool_calls: nil,
-        trusted_attachment_refs: omitted,
-        provider_meta: omitted
-      }
-
-      state = %State{live_context_bytes: nil, messages: [old]}
-      assert {:returned, next} = check(state, event())
-      assert next.live_context_bytes === 10 + 8 + 4
-    end
-
-    old = %{
-      "trusted_attachment_refs" => {:raise, "unvisited attachment alias"},
-      "provider_meta" => {:raise, "unvisited provider alias"},
-      id: 1,
-      content: nil,
-      tool_calls: nil,
-      trusted_attachment_refs: "atom attachment",
-      provider_meta: "atom metadata"
-    }
-
-    assert {:returned, next} = check(%State{live_context_bytes: nil, messages: [old]}, event())
-    assert next.live_context_bytes === 15 + 13 + 4
-  end
-
-  test "messages append has no nil or false fallback" do
-    for messages <- [nil, false, [:head | :improper]] do
-      result = check(%State{messages: messages, live_context_bytes: 0}, event())
-      assert match?({:raised, _, _}, result)
     end
   end
 

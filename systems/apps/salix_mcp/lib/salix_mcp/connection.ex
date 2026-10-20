@@ -1,7 +1,11 @@
 defmodule SalixMCP.Connection do
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
   @moduledoc false
 
-  use GenServer
+  use SystemsRuntime.Server
 
   alias SalixMCP.{Config, ExecutionPolicy, JSONRPC, RemoteClient}
   alias SalixEnv.Connector.Live, as: ConnectorLive
@@ -21,13 +25,13 @@ defmodule SalixMCP.Connection do
 
   def start_link(opts) do
     binding = Keyword.fetch!(opts, :binding)
-    GenServer.start_link(__MODULE__, opts, name: via(binding))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: via(binding))
   end
 
   def ensure_started(binding, definition) do
-    case Registry.lookup(SalixMCP.ConnectionRegistry, key(binding)) do
-      [{pid, _}] when is_pid(pid) ->
-        if Process.alive?(pid) do
+    case SystemsRuntime.Registry.lookup(SalixMCP.ConnectionRegistry, key(binding)) do
+      [{pid, _}] when SystemsRuntime.Proc.is_process(pid) ->
+        if SystemsRuntime.Proc.alive?(pid) do
           {:ok, pid}
         else
           start_connection(binding, definition)
@@ -42,15 +46,15 @@ defmodule SalixMCP.Connection do
   end
 
   defp start_connection(binding, definition) do
-    case DynamicSupervisor.start_child(
+    case SystemsRuntime.DynamicSupervisor.start_child(
            SalixMCP.ConnectionSupervisor,
            {__MODULE__, binding: binding, definition: definition}
          ) do
       {:ok, pid} ->
         {:ok, pid}
 
-      {:error, {:already_started, pid}} when is_pid(pid) ->
-        if Process.alive?(pid), do: {:ok, pid}, else: {:error, :disconnected}
+      {:error, {:already_started, pid}} when SystemsRuntime.Proc.is_process(pid) ->
+        if SystemsRuntime.Proc.alive?(pid), do: {:ok, pid}, else: {:error, :disconnected}
 
       other ->
         other
@@ -58,9 +62,9 @@ defmodule SalixMCP.Connection do
   end
 
   def stop(binding) do
-    case Registry.lookup(SalixMCP.ConnectionRegistry, key(binding)) do
+    case SystemsRuntime.Registry.lookup(SalixMCP.ConnectionRegistry, key(binding)) do
       [{pid, _}] ->
-        GenServer.stop(pid, :normal, 5_000)
+        SystemsRuntime.Server.stop(pid, :normal, 5_000)
 
       [] ->
         :ok
@@ -80,9 +84,12 @@ defmodule SalixMCP.Connection do
   end
 
   def cancel_request(binding, _definition, request_id, reason) do
-    case Registry.lookup(SalixMCP.ConnectionRegistry, key(binding)) do
+    case SystemsRuntime.Registry.lookup(SalixMCP.ConnectionRegistry, key(binding)) do
       [{pid, _}] ->
-        send(pid, {:mcp_cancel_request, to_string(request_id), to_string(reason || "")})
+        SystemsRuntime.Proc.send(
+          pid,
+          {:mcp_cancel_request, to_string(request_id), to_string(reason || "")}
+        )
 
       [] ->
         :ok
@@ -104,7 +111,7 @@ defmodule SalixMCP.Connection do
   end
 
   defp safe_call(pid, request, timeout) do
-    GenServer.call(pid, request, timeout)
+    SystemsRuntime.Server.call(pid, request, timeout)
   catch
     :exit, {:noproc, _} -> {:error, :disconnected}
     :exit, {:normal, _} -> {:error, :disconnected}
@@ -260,16 +267,17 @@ defmodule SalixMCP.Connection do
 
   defp close_port(_port), do: :ok
 
-  defp stop_sse_task(pid) when is_pid(pid) do
-    Process.exit(pid, :kill)
+  defp stop_sse_task(pid) when SystemsRuntime.Proc.is_process(pid) do
+    SystemsRuntime.Proc.exit(pid, :kill)
   catch
     _, _ -> :ok
   end
 
   defp stop_sse_task(_pid), do: :ok
 
-  defp ensure_transport(%{config: nil, mode: :sse, sse_task: pid} = state) when is_pid(pid),
-    do: {:ok, state}
+  defp ensure_transport(%{config: nil, mode: :sse, sse_task: pid} = state)
+       when SystemsRuntime.Proc.is_process(pid),
+       do: {:ok, state}
 
   defp ensure_transport(%{config: nil} = state) do
     with {:ok, config} <- Config.resolve(state.definition, state.binding) do
@@ -419,7 +427,7 @@ defmodule SalixMCP.Connection do
   end
 
   defp start_sse_stream(state, config) do
-    {:ok, pid} = RemoteClient.start_sse(config, self())
+    {:ok, pid} = RemoteClient.start_sse(config, SystemsRuntime.Proc.self())
     {:ok, %{state | sse_task: pid, sse_endpoint: nil}}
   end
 
@@ -441,7 +449,8 @@ defmodule SalixMCP.Connection do
   end
 
   defp do_request(%{mode: :remote} = state, method, params, timeout, opts) do
-    with {:ok, config} <- request_config(state) do
+    with {:ok, config} <- request_config(state),
+         :ok <- Config.allow_request(config, method, params) do
       if method == "initialize" do
         case RemoteClient.initialize(config) do
           {:ok, result, headers} ->
@@ -457,7 +466,7 @@ defmodule SalixMCP.Connection do
               request_id(
                 method,
                 opts,
-                "mcp-" <> (:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower))
+                "mcp-" <> (SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower))
               )
 
             params = request_params(method, params, opts)
@@ -490,13 +499,14 @@ defmodule SalixMCP.Connection do
     params = request_params(method, params, opts)
     msg = JSONRPC.request(id, method, params)
 
-    with {:ok, state} <- ensure_sse_endpoint(state, System.monotonic_time(:millisecond) + timeout),
+    with {:ok, state} <-
+           ensure_sse_endpoint(state, SystemsClock.monotonic_time(:millisecond) + timeout),
          {:ok, config} <- request_config(state),
          :ok <- RemoteClient.sse_post(config, state.sse_endpoint, msg, timeout) do
       wait_sse_response(
         %{state | next_id: state.next_id + 1},
         id,
-        System.monotonic_time(:millisecond) + timeout,
+        SystemsClock.monotonic_time(:millisecond) + timeout,
         opts
       )
     else
@@ -514,7 +524,7 @@ defmodule SalixMCP.Connection do
     wait_stdio_response(
       %{state | next_id: state.next_id + 1},
       id,
-      System.monotonic_time(:millisecond) + timeout,
+      SystemsClock.monotonic_time(:millisecond) + timeout,
       opts
     )
   rescue
@@ -535,7 +545,7 @@ defmodule SalixMCP.Connection do
           wait_device_response(
             %{state | next_id: state.next_id + 1},
             id,
-            System.monotonic_time(:millisecond) + timeout,
+            SystemsClock.monotonic_time(:millisecond) + timeout,
             opts
           )
         else
@@ -604,7 +614,7 @@ defmodule SalixMCP.Connection do
 
   defp remote_request_with_cancel(state, config, id, method, params, timeout, opts) do
     task =
-      Task.Supervisor.async_nolink(SalixMCP.TaskSupervisor, fn ->
+      SystemsRuntime.TaskSupervisor.async_nolink(SalixMCP.TaskSupervisor, fn ->
         RemoteClient.request(config, method, params, state.remote_headers, timeout,
           request_id: id,
           progress_callback: &maybe_emit_progress(&1, opts)
@@ -615,7 +625,7 @@ defmodule SalixMCP.Connection do
       state,
       id,
       task,
-      System.monotonic_time(:millisecond) + timeout,
+      SystemsClock.monotonic_time(:millisecond) + timeout,
       fn reason ->
         RemoteClient.notify(
           config,
@@ -629,7 +639,7 @@ defmodule SalixMCP.Connection do
 
   defp device_remote_request_with_cancel(state, config, id, msg, timeout, opts) do
     task =
-      Task.Supervisor.async_nolink(SalixMCP.TaskSupervisor, fn ->
+      SystemsRuntime.TaskSupervisor.async_nolink(SalixMCP.TaskSupervisor, fn ->
         device_http_jsonrpc(state, config, msg, timeout, opts)
       end)
 
@@ -637,7 +647,7 @@ defmodule SalixMCP.Connection do
       state,
       id,
       task,
-      System.monotonic_time(:millisecond) + timeout,
+      SystemsClock.monotonic_time(:millisecond) + timeout,
       fn reason ->
         device_http_jsonrpc(
           state,
@@ -650,13 +660,13 @@ defmodule SalixMCP.Connection do
   end
 
   defp wait_request_task_with_cancel(_state, id, task, deadline, cancel_fun) do
-    if System.monotonic_time(:millisecond) >= deadline do
-      Task.shutdown(task, :brutal_kill)
+    if SystemsClock.monotonic_time(:millisecond) >= deadline do
+      SystemsRuntime.Task.shutdown(task, :brutal_kill)
       {:error, :timeout}
     else
-      receive do
+      SystemsClock.vreceive do
         {ref, result} when ref == task.ref ->
-          Process.demonitor(task.ref, [:flush])
+          SystemsRuntime.Proc.demonitor(task.ref, [:flush])
           result
 
         {:DOWN, ref, :process, _pid, reason} when ref == task.ref ->
@@ -665,7 +675,7 @@ defmodule SalixMCP.Connection do
         {:mcp_cancel_request, request_id, reason} ->
           if same_request_id?(request_id, id) do
             _ = cancel_fun.(reason)
-            Task.shutdown(task, :brutal_kill)
+            SystemsRuntime.Task.shutdown(task, :brutal_kill)
             {:error, :cancelled}
           else
             wait_request_task_with_cancel(nil, id, task, deadline, cancel_fun)
@@ -720,7 +730,7 @@ defmodule SalixMCP.Connection do
   end
 
   defp receive_cancel(id, state) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:mcp_cancel_request, request_id, reason} ->
         if same_request_id?(request_id, id) do
           _ = send_cancel_notification(state, id, reason)
@@ -798,7 +808,7 @@ defmodule SalixMCP.Connection do
   defp progress_payload(params) do
     params
     |> Map.take(["progressToken", "progress_token", "progress", "total", "message"])
-    |> Map.put("received_at", System.system_time(:millisecond))
+    |> Map.put("received_at", SystemsClock.system_time(:millisecond))
   end
 
   defp do_notify(%{mode: :remote} = state, method, params) do
@@ -813,7 +823,7 @@ defmodule SalixMCP.Connection do
   end
 
   defp do_notify(%{mode: :sse} = state, method, params) do
-    case ensure_sse_endpoint(state, System.monotonic_time(:millisecond) + @request_timeout) do
+    case ensure_sse_endpoint(state, SystemsClock.monotonic_time(:millisecond) + @request_timeout) do
       {:ok, state} ->
         with {:ok, config} <- request_config(state) do
           case RemoteClient.sse_post(
@@ -872,10 +882,10 @@ defmodule SalixMCP.Connection do
     do: {:error, :disconnected, state}
 
   defp ensure_sse_endpoint(state, deadline) do
-    if System.monotonic_time(:millisecond) >= deadline do
+    if SystemsClock.monotonic_time(:millisecond) >= deadline do
       {:error, :timeout, state}
     else
-      receive do
+      SystemsClock.vreceive do
         {:mcp_sse_endpoint, pid, endpoint} when pid == state.sse_task ->
           {:ok, %{state | sse_endpoint: endpoint}}
 
@@ -911,10 +921,10 @@ defmodule SalixMCP.Connection do
         end
 
       :pending ->
-        if System.monotonic_time(:millisecond) >= deadline do
+        if SystemsClock.monotonic_time(:millisecond) >= deadline do
           {:error, :timeout, state}
         else
-          receive do
+          SystemsClock.vreceive do
             {:mcp_sse_response, pid, response} when pid == state.sse_task ->
               maybe_emit_progress(response, opts)
 
@@ -1007,10 +1017,10 @@ defmodule SalixMCP.Connection do
         end
 
       :pending ->
-        if System.monotonic_time(:millisecond) >= deadline do
+        if SystemsClock.monotonic_time(:millisecond) >= deadline do
           {:error, :timeout, state}
         else
-          receive do
+          SystemsClock.vreceive do
             {port, {:data, {:eol, line}}} when port == state.port ->
               maybe_emit_progress(line, opts)
 
@@ -1059,7 +1069,7 @@ defmodule SalixMCP.Connection do
             end
 
           :pending ->
-            if System.monotonic_time(:millisecond) >= deadline do
+            if SystemsClock.monotonic_time(:millisecond) >= deadline do
               {:error, device_timeout_reason(state),
                %{state | buffer: buffer, device_offset: next_offset}}
             else
@@ -1161,7 +1171,7 @@ defmodule SalixMCP.Connection do
           |> Map.put("last_error", %{"reason" => "MCP discovery changed; refresh discovery"})
           |> Map.put(
             "discovery_revision",
-            "changed:" <> Integer.to_string(System.system_time(:millisecond))
+            "changed:" <> Integer.to_string(SystemsClock.system_time(:millisecond))
           )
         end
       )
@@ -1345,7 +1355,9 @@ defmodule SalixMCP.Connection do
     unset_parent_env ++ set_desired_env
   end
 
-  defp via(binding), do: {:via, Registry, {SalixMCP.ConnectionRegistry, key(binding)}}
+  defp via(binding),
+    do: {:via, SystemsRuntime.Registry, {SalixMCP.ConnectionRegistry, key(binding)}}
+
   defp key(binding), do: {binding["group_id"], binding["binding_id"]}
 
   defp nonempty(nil), do: ""

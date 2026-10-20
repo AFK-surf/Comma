@@ -36,7 +36,7 @@ defmodule SalixWeb.Dashboard.SignalRegisterLive do
        active_nav: :signal,
        page_title: "Register Signal number",
        breadcrumbs: [{"Signal", "/dash/signal"}, {"Register a number", nil}],
-       options: Application.get_env(:salix_web, :signal_registration, []),
+       options: SystemsRuntime.get_env(:salix_web, :signal_registration, []),
        form: %{
          "number" => "",
          "environment" => "production",

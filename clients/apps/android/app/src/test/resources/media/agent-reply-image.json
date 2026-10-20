@@ -1,0 +1,14 @@
+{
+  "type": "image",
+  "file_name": "p3b-flight-test-three.png",
+  "file_ref": {
+    "environment_id": "vfs",
+    "path": "/artifacts/p3b-flight-test-three.png"
+  },
+  "blob_ref": {
+    "kind": "blob",
+    "uuid": "53a5678f08516aaa24a0c6de087080e9",
+    "hash": "5f7424eaa733faaf65b61e05ab1dc9f7f229454f5a657d8a965cf82949d824cf",
+    "size": 70260
+  }
+}

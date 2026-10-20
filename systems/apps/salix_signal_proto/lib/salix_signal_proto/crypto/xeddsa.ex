@@ -42,7 +42,7 @@ defmodule SalixSignalProto.Crypto.XEdDSA do
 
   @doc "Signs `message` with deployed XEd25519 (CRS-03 section 5.2)."
   @spec sign(private_key(), binary(), <<_::512>>) :: signature()
-  def sign(private_key, message, random \\ :crypto.strong_rand_bytes(64))
+  def sign(private_key, message, random \\ SystemsRuntime.Proc.random_bytes(64))
 
   def sign(<<_::binary-size(32)>> = private_key, message, <<_::binary-size(64)>> = random)
       when is_binary(message) do

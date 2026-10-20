@@ -1,9 +1,6 @@
 import { inlineMediaKindOf } from "../../../../../runtime-files/inlineMedia";
-import type {
-  ChatAttachment,
-  ChatImagePreviewRef,
-} from "../../../model/conversationChannel";
-import { MAX_ATTACHMENT_BYTES } from "../../../model/protocol";
+import type { ChatAttachment, ChatImagePreviewRef } from "@comma/core/chat";
+import { MAX_ATTACHMENT_BYTES } from "@comma/core/chat";
 
 export function agentBlobImagePreviewRef(
   attachment: ChatAttachment
@@ -18,9 +15,7 @@ export function agentBlobImagePreviewRef(
     return undefined;
   }
   const fileName =
-    attachment.fileName ??
-    attachment.title ??
-    attachment.workspacePath?.split("/").at(-1);
+    attachment.fileName ?? attachment.workspacePath?.split("/").at(-1) ?? "attachment";
   const mediaType = imagePreviewMediaType(attachment.mimeType, fileName);
   if (!fileName || !mediaType) return undefined;
   return {

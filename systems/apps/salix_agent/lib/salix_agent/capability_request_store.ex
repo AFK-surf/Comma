@@ -33,7 +33,7 @@ defmodule SalixAgent.CapabilityRequestStore do
   @spec impl() :: module()
   def impl,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :salix_agent,
         :capability_request_store_mod,
         SalixAgent.CapabilityRequests

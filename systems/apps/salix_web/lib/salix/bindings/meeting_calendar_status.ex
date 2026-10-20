@@ -1,4 +1,6 @@
 defmodule Salix.Bindings.MeetingCalendarStatus do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Bounded, read-only diagnostics for the durable calendar meeting projection.
 
@@ -158,10 +160,10 @@ defmodule Salix.Bindings.MeetingCalendarStatus do
   end
 
   defp runtime_status do
-    opts = Application.get_env(:salix_meet, :calendar_autojoin)
+    opts = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin)
     configured? = is_list(opts)
-    pid = Process.whereis(SalixMeet.CalendarAutojoin)
-    running? = is_pid(pid) and Process.alive?(pid)
+    pid = SystemsRuntime.Proc.whereis(SalixMeet.CalendarAutojoin)
+    running? = SystemsRuntime.Proc.is_process(pid) and SystemsRuntime.Proc.alive?(pid)
 
     scan_interval_ms =
       if configured?, do: Keyword.get(opts, :scan_interval_ms, 120_000), else: nil
@@ -186,7 +188,7 @@ defmodule Salix.Bindings.MeetingCalendarStatus do
   # driver. Expose the effective driver and the conflict so operators can see
   # in one read which runtime path joins actually take.
   defp effective_runtime_driver do
-    case Application.get_env(:salix_meet, :runtime_driver) do
+    case SystemsRuntime.get_env(:salix_meet, :runtime_driver) do
       SalixMeet.RuntimeDriver.HTTP -> "http"
       SalixMeet.RuntimeDriver.SalixConnect -> "connector"
       nil -> "none"
@@ -195,8 +197,8 @@ defmodule Salix.Bindings.MeetingCalendarStatus do
   end
 
   defp runtime_driver_conflict? do
-    url = Application.get_env(:salix_meet, :runtime_base_url)
-    mode = Application.get_env(:salix_meet, :runtime_driver_mode)
+    url = SystemsRuntime.get_env(:salix_meet, :runtime_base_url)
+    mode = SystemsRuntime.get_env(:salix_meet, :runtime_driver_mode)
 
     is_binary(url) and String.trim(url) != "" and is_binary(mode) and
       String.trim(mode) == "connector"
@@ -208,7 +210,7 @@ defmodule Salix.Bindings.MeetingCalendarStatus do
 
     age_ms =
       if is_integer(updated_at),
-        do: max(System.system_time(:millisecond) - updated_at, 0),
+        do: max(SystemsClock.system_time(:millisecond) - updated_at, 0),
         else: nil
 
     projection

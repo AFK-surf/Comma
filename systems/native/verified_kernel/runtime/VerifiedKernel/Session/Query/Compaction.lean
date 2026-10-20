@@ -2,6 +2,7 @@ import VerifiedKernel.Session.Ops
 import VerifiedKernel.Session.Kernel
 import VerifiedKernel.Session.Query.StateCore
 import VerifiedKernel.Session.Query.State
+import VerifiedKernel.Session.Query.Reply
 
 /-! Queries ported from SalixAgent.Compaction, ContextProviders, Waits, TurnOutcome, and SessionHistory. See the README query catalog. -/
 
@@ -46,10 +47,27 @@ def listItems (value : Term) : List Term :=
 
 /-! ### `Compaction.live_messages/1` -/
 
-/-- `Compaction.historical_project_knowledge?/1`. -/
-def historicalProjectKnowledge (message : Term) : KernelM Bool := do
+/-- `Compaction.project_knowledge?/1`. -/
+def projectKnowledge (message : Term) : KernelM Bool := do
   if (← messageRole message) != b "runtime" then return false
   return (← pick message "type") == b "project_knowledge"
+
+/-- One step of `firstKnowledge`: the state is `(seen, kept)`, newest first. A project
+knowledge block whose content an earlier block already holds is a duplicate. -/
+def knowledgeStep (st : List Term × List Term) (message : Term) :
+    KernelM (List Term × List Term) := do
+  if ← projectKnowledge message then
+    let content ← pick message "content"
+    if st.1.contains content then return st
+    return (content :: st.1, message :: st.2)
+  return (st.1, message :: st.2)
+
+/-- The messages in order, with each project knowledge block kept only where its
+content first appears. Every message stays where it was committed: the decision
+for a message reads only earlier messages, so a later message never changes how
+an earlier one renders. -/
+def firstKnowledge (messages : List Term) : KernelM (List Term) := do
+  return (← messages.foldlM knowledgeStep ([], [])).2.reverse
 
 /-- The atom-keyed fields `model_message/1` copies out of a runtime message, in order. -/
 def runtimeModelFields : List String :=
@@ -85,49 +103,28 @@ def modelMessage (message : Term) : KernelM Term := do
     return message
   | _ => return message
 
-/-- `Compaction.live_messages/1`: the masked window after the watermark, without
-runtime events and historical project knowledge, projected for the model. -/
+/-- `Compaction.live_messages/1`: the stored window after the watermark, without
+runtime events and with duplicate project knowledge left out, projected for the model. -/
 def liveMessages (state : Term) : KernelM Term := do
   let watermark := (← field state "compacted_through").default (i 0)
-  let masked ← asList (← maskedMessages state)
-  let kept ← masked.filterM (fun message => do
+  let stored ← asList ((← field state "messages").default (list []))
+  let kept ← stored.filterM (fun message => do
     greater ((message.get (a "id")).default (i 0)) watermark)
   let kept ← kept.filterM (fun message => do return (← messageRole message) != b "event")
-  let kept ← kept.filterM (fun message => do return !(← historicalProjectKnowledge message))
-  return list (← kept.mapM modelMessage)
+  return list (← (← firstKnowledge kept).mapM modelMessage)
 
-/-- `Compaction.request_live_messages/1`: `live_messages/1` with the current
-activation's project knowledge still in place. A knowledge block is retrieved
-for the activation that asked the question, so it is hidden once a later user
-input (one that wakes the session) starts a new activation, and the compaction
-summary never sees it. Until then it stays exactly where it was committed:
-re-rendering it at the tail of every round moved it each time and broke the
-provider's cached prefix at its old position, and a later round that retrieves
-the same facts again is a duplicate, so only the first block with a given
-content renders. -/
+/-- `Compaction.request_live_messages/1`: `live_messages/1` for the provider request.
+History is append-only: a project knowledge block stays where it was committed for
+every later request, and a later block with the same content is a duplicate. -/
 def requestLiveMessages (state : Term) : KernelM Term := do
   -- `ProjectKnowledgeContext.prepare/3` also asks this of a bare message map,
   -- so the state fields are read with defaults rather than fetched.
   let watermark := (state.get (a "compacted_through")).default (i 0)
-  let masked ← if (state.get (a "redactions")).truthy then asList (← maskedMessages state)
-    else pure (listItems ((state.get (a "messages")).default (list [])))
-  let kept ← masked.filterM (fun message => do
+  let stored := listItems ((state.get (a "messages")).default (list []))
+  let kept ← stored.filterM (fun message => do
     greater ((message.get (a "id")).default (i 0)) watermark)
   let kept ← kept.filterM (fun message => do return (← messageRole message) != b "event")
-  let boundary ← kept.foldlM (fun latest message => do
-    if (← messageRole message) != b "user" then return latest
-    if (← pick message "no_wake") == a "true" then return latest
-    maximum (compactionMessageId message) latest) (i 0)
-  let mut seen : List Term := []
-  let mut current : List Term := []
-  for message in kept do
-    if ← historicalProjectKnowledge message then
-      if !(← greater (compactionMessageId message) boundary) then continue
-      let content ← pick message "content"
-      if seen.contains content then continue
-      seen := content :: seen
-    current := message :: current
-  return list (← current.reverse.mapM modelMessage)
+  return list (← (← firstKnowledge kept).mapM modelMessage)
 
 /-! ### `Compaction.context/1` prefix -/
 
@@ -352,10 +349,89 @@ def failureEvents (state args : Term) : KernelM Term := do
       (b "category", category), (b "reason", reason), (b "compacted_through", watermark),
       (b "summary_sequence", sequence), (b "created_at", i now)]]
 
+/-- The text a message or send carries: a non-empty string, or the non-empty
+text blocks of a content list joined by newlines. -/
+def conversationText (content : Term) : Option ByteArray :=
+  match content with
+  | .binary bytes => if bytes.size > 0 then some bytes else none
+  | .list blocks =>
+    let texts := blocks.filterMap (fun block =>
+      if both block "type" == b "text" then
+        match both block "text" with
+        | .binary bytes => if bytes.size > 0 then some bytes else none
+        | _ => none
+      else none)
+    match texts with
+    | [] => none
+    | first :: rest => some (rest.foldl (fun acc text => acc ++ "\n".toUTF8 ++ text) first)
+  | _ => none
+
+/-- Message-sending tools: what a person or another Agent actually receives
+from this Session. Raw assistant text is private and never counts. -/
+def conversationSendTool (tool : Term) : Bool :=
+  match tool with
+  | .binary bytes =>
+    match String.fromUTF8? bytes with
+    | some name =>
+      name == "im_api.internal.task.create" ||
+        (name.startsWith "im_api." &&
+          ["send_message", "send_text", "send_dm", "reply_message", "reply_text",
+            "post_message", "post_channel_message", "say"].any
+            (fun suffix => name.endsWith ("." ++ suffix)))
+    | none => false
+  | _ => false
+
+/-- The outbound entry of one tool call, if it sends text. `end_turn` carries
+its final send in `reply`. -/
+def conversationSend (call : Term) : KernelM (Option Term) := do
+  let name ← stringChars (both call "name")
+  let args := ReplyQuery.decodeArgs (both call "args")
+  let (target, params) ← if name == b "end_turn" then
+      let reply := ReplyQuery.decodeArgs (both args "reply")
+      pure (← stringChars (both reply "tool"), ReplyQuery.decodeArgs (both reply "params"))
+    else do
+      let tool ← ReplyQuery.targetTool call
+      pure (tool, if name == b "call" then ReplyQuery.decodeArgs (both args "params") else args)
+  if !conversationSendTool target then return none
+  let text := (conversationText (both params "text")).orElse (fun _ =>
+    (conversationText (both params "content")).orElse (fun _ => conversationText (both params "message")))
+  return text.map (fun text =>
+    .map [(b "direction", b "out"), (b "tool", target), (b "text", .binary text)])
+
+/-- `Compaction.request_conversation_tail/2`: the newest `limit` entries of the
+visible conversation in `request_live_messages/1`. An inbound entry is a
+user-role message with text, from a person or another Agent (`from` is its
+trusted origin's `source_actor_type`). An outbound entry is the text of a
+message-sending tool call. Raw assistant text, tool results and runtime
+messages are left out, so a caller such as the Condensed Workspace check
+exports exactly what people and Agents exchanged. A limit that is not a
+non-negative integer fails. -/
+def requestConversationTail (state limit : Term) : KernelM Term := do
+  let n ← match limit with
+    | .integer n => if n >= 0 then pure n.toNat else fail "function_clause"
+    | _ => fail "function_clause"
+  let messages := listItems (← requestLiveMessages state)
+  let entries ← messages.foldlM (init := ([] : List Term)) (fun acc message => do
+    let role ← messageRole message
+    if role == b "user" then
+      match conversationText (both message "content") with
+      | some text =>
+        let actor := both (both message "trusted_origin") "source_actor_type"
+        let actor := if actor.isBinary && actor != b "" then actor else b "user"
+        return acc ++ [.map [(b "direction", b "in"), (b "from", actor), (b "text", .binary text)]]
+      | none => return acc
+    else if role == b "assistant" then
+      let calls := listItems (both message "tool_calls")
+      let sends ← calls.filterMapM conversationSend
+      return acc ++ sends
+    else return acc)
+  return list (entries.drop (entries.length - n))
+
 /-- Name → operation. Names match the Elixir functions they replace. -/
 def table : OpTable :=
   [("compaction_live_messages", query liveMessages),
    ("request_live_messages", query requestLiveMessages),
+   ("request_conversation_tail", requestConversationTail),
    ("compaction_admission", admission),
    ("compaction_failure_events", failureEvents),
    ("compaction_snapshot", snapshot),

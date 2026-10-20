@@ -8,30 +8,66 @@ defmodule CommaWeb.Application do
     :ok = CommaWeb.ClientSurface.validate_configuration!()
     register_notifier(CommaWeb.PubSubNotifier)
     register_im_notifier()
-    Application.put_env(:salix_im, :wechat_command_handler, CommaWeb.WeChatCommands)
-    Application.put_env(:comma_core, :salix_client, CommaWeb.SalixClient)
-    Application.put_env(:salix_agent, :agent_management_ports, CommaWeb.AgentManagement)
+    SystemsRuntime.put_env(:salix_im, :product_activity_observer, Comma.Analytics)
+    SystemsRuntime.put_env(:salix_im, :wechat_command_handler, CommaWeb.WeChatCommands)
+    SystemsRuntime.put_env(:comma_core, :salix_client, CommaWeb.SalixClient)
+    SystemsRuntime.put_env(:salix_agent, :agent_management_ports, CommaWeb.AgentManagement)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :telegram_interaction_mod,
       CommaWeb.AgentTelegramInteraction
     )
 
-    Application.put_env(:salix_agent, :recommendation_adapter_mod, CommaWeb.RecommendationRuntime)
-    Application.put_env(:salix_agent, :proactive_mail_adapter, CommaWeb.ProactiveMail)
-    Application.put_env(:salix_agent, :proactive_adapter, CommaWeb.Proactive)
-    Application.put_env(:salix_im, :task_status_personal_adapter, CommaWeb.TelegramTaskCards)
-    Application.put_env(:salix_im, :task_status_observer, CommaWeb.ProactiveTask)
-    Application.put_env(:salix_agent, :loop_authorization_adapter, CommaWeb.ProactiveWatch)
-    Application.put_env(:comma_core, :recommendation_runtime_mod, CommaWeb.RecommendationRuntime)
-    Application.put_env(:salix_web, :comma_oauth_commit_mod, CommaWeb.OAuthCommit)
-    Application.put_env(:salix_web, :composio_signal_mod, CommaWeb.MemberSourceTriggers)
+    SystemsRuntime.put_env(
+      :salix_agent,
+      :recommendation_adapter_mod,
+      CommaWeb.RecommendationRuntime
+    )
+
+    SystemsRuntime.put_env(:salix_agent, :proactive_mail_adapter, CommaWeb.ProactiveMail)
+    SystemsRuntime.put_env(:salix_agent, :proactive_adapter, CommaWeb.Proactive)
+    SystemsRuntime.put_env(:salix_im, :task_status_personal_adapter, CommaWeb.TelegramTaskCards)
+    SystemsRuntime.put_env(:salix_im, :linear_agent_session_adapter, CommaWeb.LinearAgentSession)
+
+    SystemsRuntime.put_env(
+      :salix_im,
+      :origin_provider_participants_adapter,
+      CommaWeb.LinearAgentSession
+    )
+
+    SystemsRuntime.put_env(:salix_im, :task_status_observer, CommaWeb.ProactiveTask)
+    SystemsRuntime.put_env(:salix_env, :device_connect_observer, CommaWeb.DeviceSetupOffers)
+    SystemsRuntime.put_env(:salix_agent, :loop_authorization_adapter, CommaWeb.ProactiveWatch)
+    SystemsRuntime.put_env(:salix_agent, :stations, CommaWeb.Stations)
+    SystemsRuntime.put_env(:salix_env, :station_install, CommaWeb.Stations.DeviceInstall)
+    SystemsRuntime.put_env(:salix_web, :station_control_plane, CommaWeb.Stations.CloudStation)
+    SalixStore.StationMembers.register(Comma.Stations.Members)
+
+    unless SystemsRuntime.get_env(:comma_web, :station_directory),
+      do:
+        SystemsRuntime.put_env(
+          :comma_web,
+          :station_directory,
+          CommaWeb.Stations.GroupDirectory
+        )
+
+    SystemsRuntime.put_env(
+      :comma_core,
+      :recommendation_runtime_mod,
+      CommaWeb.RecommendationRuntime
+    )
+
+    SystemsRuntime.put_env(:salix_web, :comma_oauth_commit_mod, CommaWeb.OAuthCommit)
+    SystemsRuntime.put_env(:salix_web, :composio_signal_mod, CommaWeb.MemberSourceTriggers)
 
     children =
       maybe_pubsub_child(pubsub_server()) ++
+        [CommaWeb.StationPresence, CommaWeb.StationReleases] ++
+        [{SystemsRuntime.TaskSupervisor, name: CommaWeb.LinearAgent.TaskSupervisor}] ++
         CommaWeb.TelegramOIDC.child_specs() ++
         CommaWeb.IMessageRuntime.child_specs() ++
+        CommaWeb.IMessagePhotonRuntime.child_specs() ++
         CommaWeb.NativePushListener.child_specs() ++
         [
           {Bandit,
@@ -45,11 +81,14 @@ defmodule CommaWeb.Application do
            thousand_island_options: [supervisor_options: [name: CommaWeb.HTTPServer]]}
         ]
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: CommaWeb.Supervisor)
+    SystemsRuntime.Supervisor.start_link(children,
+      strategy: :one_for_one,
+      name: CommaWeb.Supervisor
+    )
   end
 
   defp maybe_pubsub_child(name) when is_atom(name) do
-    if Process.whereis(name) do
+    if SystemsRuntime.Proc.whereis(name) do
       []
     else
       [{Phoenix.PubSub, name: name}]
@@ -59,27 +98,27 @@ defmodule CommaWeb.Application do
   defp maybe_pubsub_child(_name), do: []
 
   defp pubsub_server do
-    Application.get_env(:comma_core, :pubsub_server, CommaWeb.PubSub)
+    SystemsRuntime.get_env(:comma_core, :pubsub_server, CommaWeb.PubSub)
   end
 
   defp register_notifier(module) do
     notifiers =
       :salix_agent
-      |> Application.get_env(:notifiers, [])
+      |> SystemsRuntime.get_env(:notifiers, [])
       |> List.wrap()
       |> Kernel.++([module])
       |> Enum.uniq()
 
-    Application.put_env(:salix_agent, :notifiers, notifiers)
+    SystemsRuntime.put_env(:salix_agent, :notifiers, notifiers)
   end
 
   def register_im_notifier(module \\ CommaWeb.IMNotifier) do
-    Application.put_env(:salix_im, :conversation_notifier, &module.notify/2)
+    SystemsRuntime.put_env(:salix_im, :conversation_notifier, &module.notify/2)
   end
 
   def port do
     cond do
-      v = Application.get_env(:comma_web, :port) -> v
+      v = SystemsRuntime.get_env(:comma_web, :port) -> v
       v = System.get_env("COMMA_WEB_HTTP_PORT") -> String.to_integer(v)
       true -> 4200
     end

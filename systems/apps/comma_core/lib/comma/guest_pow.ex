@@ -18,11 +18,11 @@ defmodule Comma.GuestPow do
 
   @spec issue(pos_integer()) :: {:ok, map()} | {:error, :guest_mode_unavailable}
   def issue(difficulty) when is_integer(difficulty) and difficulty > 0 do
-    expires_at = System.system_time(:second) + @ttl_seconds
+    expires_at = SystemsClock.system_time(:second) + @ttl_seconds
 
     payload =
       %{
-        "i" => Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false),
+        "i" => Base.url_encode64(SystemsRuntime.Proc.random_bytes(16), padding: false),
         "d" => difficulty,
         "e" => expires_at
       }
@@ -55,7 +55,7 @@ defmodule Comma.GuestPow do
          {:ok, %{"i" => id, "d" => difficulty, "e" => expires_at}} <- Jason.decode(json),
          true <- is_binary(id) and is_integer(difficulty) and is_integer(expires_at),
          true <- difficulty >= min_difficulty,
-         true <- expires_at > System.system_time(:second),
+         true <- expires_at > SystemsClock.system_time(:second),
          true <- leading_zero_bits(:crypto.hash(:sha256, challenge <> ":" <> nonce)) >= difficulty do
       {:ok, id}
     else
@@ -71,7 +71,7 @@ defmodule Comma.GuestPow do
   def leading_zero_bits(_digest), do: 0
 
   defp mac(payload) do
-    case Application.get_env(:comma_core, :auth, [])[:secret] do
+    case SystemsRuntime.get_env(:comma_core, :auth, [])[:secret] do
       secret when is_binary(secret) and secret != "" ->
         {:ok,
          :crypto.mac(:hmac, :sha256, secret, "guest_pow:" <> payload)

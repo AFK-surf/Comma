@@ -1,0 +1,13 @@
+id: ts-test-dev-server
+valid:
+  - |
+    import type { UserConfig } from "vite";
+  - |
+    const command = "pnpm --filter @comma/web exec vite build --outDir out && pnpm --filter @comma/web exec vite preview --outDir out --port 4175";
+  - |
+    const command = "pnpm exec vite preview --outDir storybook-static --host 127.0.0.1";
+invalid:
+  - |
+    const command = "pnpm --filter @comma/website exec vite --host 127.0.0.1 --port 4188 --strictPort";
+  - |
+    const command = "vite --host 127.0.0.1 --port 4176";

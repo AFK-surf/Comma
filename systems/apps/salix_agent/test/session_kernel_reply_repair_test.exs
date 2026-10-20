@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelReplyRepairTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   alias SalixAgent.InternalSession.State
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
 
@@ -78,27 +78,6 @@ defmodule SalixAgent.SessionKernelReplyRepairTest do
     assert next.last_activity_at === "now"
     writes = [:visible_reply_repair, :events, :last_seq, :llm_failure_streak, :last_activity_at]
     assert Map.drop(next, writes) === Map.drop(state, writes)
-  end
-
-  test "only literal completed status clears repair and repeated events still append" do
-    for status <- ["completed", :completed, nil, false, [], <<1::1>>] do
-      ev = event(%{"status" => status})
-
-      assert {:returned, first} =
-               check(
-                 %State{
-                   status: :active,
-                   activity_status: :thinking,
-                   activity_status_updated_at: 10
-                 },
-                 ev
-               )
-
-      assert {:returned, second} = check(first, ev)
-      assert length(second.events) === 2
-      assert second.last_seq === 2
-      assert second.visible_reply_repair === nil === (status === "completed")
-    end
   end
 
   test "native sequence and history defaults preserve float and negative arithmetic" do

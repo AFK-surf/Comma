@@ -1,4 +1,6 @@
 defmodule SalixAgent.HistoricalTelegramReplyFixture do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Deterministic provider for replaying an old Telegram reply through the real
   runtime before switching to the live model. Owns the provider response format;
@@ -8,12 +10,12 @@ defmodule SalixAgent.HistoricalTelegramReplyFixture do
 
   @impl true
   def complete(_messages, _tools) do
-    send(
-      Application.fetch_env!(:salix_agent, :live_llm_test_capture_pid),
-      {:historical_reply_request, self()}
+    SystemsRuntime.Proc.send(
+      SystemsRuntime.fetch_env!(:salix_agent, :live_llm_test_capture_pid),
+      {:historical_reply_request, SystemsRuntime.Proc.self()}
     )
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {:historical_reply, response} -> response
     after
       5_000 -> raise "timed out replaying the earlier Telegram response"
@@ -21,11 +23,14 @@ defmodule SalixAgent.HistoricalTelegramReplyFixture do
   end
 
   def respond(pid, id, args) do
-    send(pid, {:historical_reply, {:assistant, "", [%{id: id, name: "call", args: args}]}})
+    SystemsRuntime.Proc.send(
+      pid,
+      {:historical_reply, {:assistant, "", [%{id: id, name: "call", args: args}]}}
+    )
   end
 
   def finish(pid) do
-    send(
+    SystemsRuntime.Proc.send(
       pid,
       {:historical_reply,
        {:assistant, "", [%{id: "historical-end", name: "end_turn", args: %{"outcome" => "done"}}]}}

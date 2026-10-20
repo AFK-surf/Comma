@@ -8,7 +8,7 @@ defmodule Comma.Accounts.SSHIdentitiesTest do
   end
 
   test "enrollment binds the verified code to a connection and supports revocation" do
-    attrs = %{"email" => "ssh-#{System.unique_integer([:positive])}@example.com"}
+    attrs = %{"email" => "ssh-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"}
     {:ok, challenge} = Comma.AuthChallenges.request_ssh_enrollment(attrs, "connection-a")
 
     assert {:error, :invalid_verification_code} =
@@ -20,7 +20,7 @@ defmodule Comma.Accounts.SSHIdentitiesTest do
 
     {:ok, challenge} =
       Comma.AuthChallenges.request_ssh_enrollment(
-        %{"email" => "other-#{System.unique_integer([:positive])}@example.com"},
+        %{"email" => "other-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"},
         "connection-a"
       )
 
@@ -38,7 +38,7 @@ defmodule Comma.Accounts.SSHIdentitiesTest do
                "connection-a"
              )
 
-    key = :crypto.strong_rand_bytes(64)
+    key = SystemsRuntime.Proc.random_bytes(64)
     assert {:ok, identity} = SSHIdentities.enroll(user, key)
     assert {:ok, token} = SSHIdentities.login(key)
     assert {:ok, _, session} = Comma.Accounts.resolve_session(token)
@@ -52,7 +52,7 @@ defmodule Comma.Accounts.SSHIdentitiesTest do
   test "a regular login code cannot enroll a key and one key cannot change accounts" do
     {:ok, challenge} =
       Comma.AuthChallenges.request_email_login(%{
-        "email" => "regular-#{System.unique_integer([:positive])}@example.com"
+        "email" => "regular-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"
       })
 
     assert {:error, :invalid_verification_code} =
@@ -64,20 +64,20 @@ defmodule Comma.Accounts.SSHIdentitiesTest do
 
     {:ok, a} =
       Comma.Accounts.get_or_create_user_by_email(
-        "a-#{System.unique_integer([:positive])}@example.com"
+        "a-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"
       )
 
     {:ok, b} =
       Comma.Accounts.get_or_create_user_by_email(
-        "b-#{System.unique_integer([:positive])}@example.com"
+        "b-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"
       )
 
-    key = :crypto.strong_rand_bytes(64)
+    key = SystemsRuntime.Proc.random_bytes(64)
     {:ok, identity} = SSHIdentities.enroll(a, key)
     assert {:error, :key_conflict} = SSHIdentities.enroll(b, key)
     assert {:error, :not_found} = SSHIdentities.revoke(b["id"], identity.id)
     assert {:ok, _} = SSHIdentities.login(key)
-    assert {:ok, _} = SSHIdentities.enroll(a, :crypto.strong_rand_bytes(64))
+    assert {:ok, _} = SSHIdentities.enroll(a, SystemsRuntime.Proc.random_bytes(64))
     assert length(SSHIdentities.list(a["id"])) == 2
   end
 

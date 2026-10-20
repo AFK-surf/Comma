@@ -1,6 +1,10 @@
 defmodule BridgeForTeams.TriageDelegation do
   @moduledoc """
-  Creates the canonical Task for a verified Triage-selected Worker.
+  Creates the canonical Task for a verified Triage-selected Worker: the swarm's
+  Task agent (`SalixAgent.TaskAgent`). The Task names no place and no model,
+  so it runs at the swarm's default place and default Task model. A decision
+  made before Workers were retired names an active Worker of the swarm; its
+  Task still goes to that Worker.
 
   Preparation validates the current project, Router and selected Worker.
   The caller checks source freshness again before commit creates the Task.
@@ -105,21 +109,9 @@ defmodule BridgeForTeams.TriageDelegation do
         request_id: request_id
       }) do
     with {:ok, {project, router}} <- current_authority(identity),
-         :ok <-
-           authorize_target(
-             %{payload: %{"product_identity" => identity}},
-             router.salix_agent_id,
-             worker_id
-           ),
-         {:ok, worker} <- Agents.get_project_agent(project.id, worker_id),
+         {:ok, target} <- target(project, router.salix_agent_id, worker_id),
          {:ok, %{"conversation_id" => conversation_id}} <-
-           BridgeForTeams.Conversations.create_project_task_conversation(
-             project,
-             router,
-             worker,
-             attrs,
-             request_id: request_id
-           ) do
+           create_task(project, router, target, attrs, request_id) do
       {:ok,
        %{
          "disposition" => "created",
@@ -163,20 +155,19 @@ defmodule BridgeForTeams.TriageDelegation do
 
   def commit(_prepared), do: {:error, :invalid_delegation, false}
 
-  @doc "Rechecks current product authority for the Router's chosen canonical Worker."
+  @doc """
+  Rechecks current product authority for the chosen canonical Worker: the
+  swarm's Task agent, or an active Worker a decision named before Workers were
+  retired.
+  """
   def authorize_target(%{payload: payload}, router_agent_id, worker_agent_id)
       when is_map(payload) and is_binary(router_agent_id) and is_binary(worker_agent_id) do
     with {:ok, {project, router}} <- current_authority(payload["product_identity"]),
          true <- router.salix_agent_id == router_agent_id,
-         true <- Ids.valid_agent_id_for_group?(worker_agent_id, project.salix_group_id),
-         {:ok, %Agent{role: "worker"} = worker} <-
-           Agents.get_project_agent(project.id, worker_agent_id),
-         true <- Agent.active?(worker),
-         true <- worker.salix_agent_id == worker_agent_id do
+         {:ok, _target} <- target(project, router_agent_id, worker_agent_id) do
       :ok
     else
       {:error, _reason, _retryable?} = error -> error
-      {:error, reason} -> {:error, reason, retryable?(reason)}
       _changed -> {:error, :delegation_authority_changed, false}
     end
   rescue
@@ -187,6 +178,51 @@ defmodule BridgeForTeams.TriageDelegation do
 
   def authorize_target(_claim, _router_agent_id, _worker_agent_id),
     do: {:error, :invalid_delegation, false}
+
+  defp target(project, _router_agent_id, worker_agent_id) do
+    with true <- Ids.valid_agent_id_for_group?(worker_agent_id, project.salix_group_id),
+         {:ok, task_agent} <- BridgeForTeams.TriageContext.task_agent(project) do
+      if task_agent["agent_id"] == worker_agent_id,
+        do: {:ok, :task_agent},
+        else: legacy_worker(project, worker_agent_id)
+    else
+      false -> {:error, :delegation_authority_changed, false}
+      {:error, reason} -> {:error, reason, retryable?(reason)}
+    end
+  end
+
+  defp legacy_worker(project, worker_agent_id) do
+    with {:ok, %Agent{role: "worker"} = worker} <-
+           Agents.get_project_agent(project.id, worker_agent_id),
+         true <- Agent.active?(worker),
+         true <- worker.salix_agent_id == worker_agent_id do
+      {:ok, worker}
+    else
+      {:error, reason} when reason in [:unavailable, :timeout] -> {:error, reason, true}
+      _changed -> {:error, :delegation_authority_changed, false}
+    end
+  end
+
+  # The Task names no place and no model: Salix runs it on the swarm's Task
+  # agent at the swarm's default place and default Task model.
+  defp create_task(project, router, :task_agent, attrs, request_id),
+    do:
+      BridgeForTeams.Conversations.create_project_task_conversation(
+        project,
+        router,
+        attrs,
+        request_id: request_id
+      )
+
+  defp create_task(project, router, %Agent{} = worker, attrs, request_id),
+    do:
+      BridgeForTeams.Conversations.create_project_task_conversation(
+        project,
+        router,
+        worker,
+        attrs,
+        request_id: request_id
+      )
 
   defp delegation_index(payload, obligation_id, delegation, request_id) do
     with delegations when is_list(delegations) <- payload["delegations"],
@@ -257,6 +293,10 @@ defmodule BridgeForTeams.TriageDelegation do
   defp normalize_commit_result(_result, _request_id),
     do: {:error, :invalid_delegation_router_response, false}
 
+  # A default station that is not connected now may be again: the Task is
+  # asked for again, as when Salix is unavailable.
+  defp retryable?({:runs_on, :device_offline, _source}), do: true
+
   defp retryable?(reason),
     do:
       reason in [:timeout, :unavailable, :delegation_router_unavailable, :task_create_unavailable]
@@ -316,7 +356,7 @@ defmodule BridgeForTeams.TriageDelegation do
       |> Enum.map(&Map.take(&1, ~w(actor_kind message_ts excerpt)))
 
     """
-    Product-authored Triage investigation handoff. This is an already assigned investigation, not a new human chat request. Discover the available agents with agent.list and choose an existing suitable Worker in this project.
+    Product-authored Triage investigation handoff. This is an already assigned investigation, not a new human chat request. Name no agent_id: the Task runs on this swarm's Task agent at the swarm's default place and model.
 
     triage_delegation_ref: #{request_id}
     Assigned task: #{String.trim(delegation["task"])}

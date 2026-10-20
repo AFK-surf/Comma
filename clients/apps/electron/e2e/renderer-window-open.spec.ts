@@ -1,14 +1,5 @@
-import { _electron as electron, expect, test } from "@playwright/test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import {
-  findElectronWindowByNativeId,
-  findElectronWindowByNativeRole,
-} from "../src/test-support/electron-native-window";
-
-const electronAppDir = resolve(process.cwd(), "apps/electron");
-const electronMain = resolve(electronAppDir, ".vite/build/main.js");
+import { expect, test } from "./electron-test";
+import { findElectronWindowByNativeId } from "../src/test-support/electron-native-window";
 
 // S3: the windows.* capability lets a renderer open further product windows at
 // runtime. Each new window reuses the main-window surface but gets a distinct
@@ -18,25 +9,10 @@ const electronMain = resolve(electronAppDir, ".vite/build/main.js");
 // main window. Mutation that turns it red: reuse the boot main window id for
 // dynamic windows so the second window's identity is not distinct.
 test.describe("renderer window open", () => {
-  let userDataDir: string;
-
-  test.beforeEach(async () => {
-    userDataDir = await mkdtemp(join(tmpdir(), "comma-window-open-e2e-"));
-  });
-
-  test.afterEach(async () => {
-    await rm(userDataDir, { force: true, recursive: true });
-  });
-
-  test("commaNative.windows.create opens a second window with a distinct identity", async () => {
-    const app = await electron.launch({
-      args: [electronMain, `--user-data-dir=${userDataDir}`],
-      cwd: electronAppDir,
-      env: { ...process.env, NODE_ENV: "test" },
-    });
-    try {
-      const mainWindow = await findElectronWindowByNativeRole(app, "main-window");
-      await mainWindow.waitForLoadState("domcontentloaded");
+  test(
+    "commaNative.windows.create opens a second window with a distinct identity",
+    { tag: "@shared-app" },
+    async ({ sharedElectron: { app, mainWindow } }) => {
       const mainIdentity = await mainWindow.evaluate(
         () =>
           (window as unknown as { commaNative?: { self?: unknown } }).commaNative?.self
@@ -67,8 +43,6 @@ test.describe("renderer window open", () => {
       expect(secondIdentity?.role).toBe("main-window");
       expect(secondIdentity?.windowId).toMatch(/^win_dynamic_/);
       expect(secondIdentity?.windowId).not.toBe("win_main");
-    } finally {
-      await app.close();
     }
-  });
+  );
 });

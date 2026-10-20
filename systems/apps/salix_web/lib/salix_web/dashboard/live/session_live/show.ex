@@ -141,12 +141,11 @@ defmodule SalixWeb.Dashboard.SessionLive.Show do
         assign(socket, timeline: nil)
 
       result ->
-        internal? = Control.runtime_kind(socket.assigns.agent) != "external"
-        assign(socket, timeline: shape_timeline(AgentTelemetry.rows(result), internal?))
+        assign(socket, timeline: shape_timeline(AgentTelemetry.rows(result)))
     end
   end
 
-  defp shape_timeline(rows, internal?) do
+  defp shape_timeline(rows) do
     {run_rows, call_rows} = Enum.split_with(rows, &(&1["event_kind"] == "run"))
     finishes = Map.new(run_rows, &{&1["round_id"], &1})
 
@@ -172,8 +171,7 @@ defmodule SalixWeb.Dashboard.SessionLive.Show do
     tool_rows = Enum.filter(call_rows, &(&1["event_kind"] == "tool"))
 
     %{
-      internal?: internal?,
-      stale?: internal? and stale?(last_at),
+      stale?: stale?(last_at),
       groups: groups,
       rounds: run_rows |> Enum.map(& &1["round_id"]) |> Enum.uniq() |> length(),
       model_ms: llm_rows |> Enum.map(&AgentTelemetry.num(&1["duration_ms"])) |> Enum.sum(),
@@ -194,7 +192,7 @@ defmodule SalixWeb.Dashboard.SessionLive.Show do
       if row["event_kind"] == "tool" and row["args_fingerprint"] != nil and
            row["result_fingerprint"] != nil,
          do: {row["name"], row["args_fingerprint"], row["result_fingerprint"]},
-         else: make_ref()
+         else: SystemsRuntime.Proc.make_ref()
     end)
     |> Enum.map(fn [first | _] = chunk -> Map.put(first, "repeat", length(chunk)) end)
   end
@@ -204,7 +202,8 @@ defmodule SalixWeb.Dashboard.SessionLive.Show do
   defp stale?(last_at) do
     case NaiveDateTime.from_iso8601(String.replace(last_at, " ", "T")) do
       {:ok, naive} ->
-        NaiveDateTime.diff(NaiveDateTime.utc_now(), naive, :second) > @timeline_grace_seconds
+        NaiveDateTime.diff(DateTime.to_naive(SystemsClock.utc_now()), naive, :second) >
+          @timeline_grace_seconds
 
       _ ->
         false
@@ -228,14 +227,14 @@ defmodule SalixWeb.Dashboard.SessionLive.Show do
         content: content,
         session_id: socket.assigns.session_id,
         role: "user",
-        created_at: System.system_time(:second)
+        created_at: SystemsClock.system_time(:second)
       }
 
       opts = [
         source_message_id:
           "dashboard:session-message:" <>
             socket.assigns.session_id <>
-            ":" <> Integer.to_string(System.unique_integer([:positive]))
+            ":" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
       ]
 
       case SalixAgent.deliver(socket.assigns.agent_id, payload, opts) do
@@ -426,10 +425,6 @@ defmodule SalixWeb.Dashboard.SessionLive.Show do
               <.timeline_stat label="Tokens" value={AgentTelemetry.fmt_tokens(@timeline.tokens)} />
               <.timeline_stat label="Errors" value={@timeline.errors} alert={@timeline.errors > 0} />
             </div>
-
-            <p :if={!@timeline.internal?} class="mb-2 text-xs text-neutral-400">
-              External session — rounds here don't report endings.
-            </p>
 
             <div class="overflow-x-auto">
               <table class="w-full text-sm">
@@ -658,14 +653,11 @@ defmodule SalixWeb.Dashboard.SessionLive.Show do
     <span :if={@finish && unnamed_finish?(@finish["status"])} class="text-neutral-500">
       ended as {@finish["status"]} after {AgentTelemetry.fmt_ms(@finish["duration_ms"])}
     </span>
-    <span :if={is_nil(@finish) and @timeline.internal? and @timeline.stale?} class="text-amber-600">
+    <span :if={is_nil(@finish) and @timeline.stale?} class="text-amber-600">
       no finish record — last activity {AgentTelemetry.ch_time_ago(@timeline.last_at)}
     </span>
-    <span :if={is_nil(@finish) and @timeline.internal? and not @timeline.stale?} class="text-neutral-400">
+    <span :if={is_nil(@finish) and not @timeline.stale?} class="text-neutral-400">
       no finish record yet
-    </span>
-    <span :if={is_nil(@finish) and not @timeline.internal?} class="text-neutral-400">
-      external — no ending reported
     </span>
     """
   end

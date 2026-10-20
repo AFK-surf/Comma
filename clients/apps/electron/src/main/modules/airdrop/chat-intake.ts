@@ -1,16 +1,19 @@
-import { randomUUID } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
-import { chatAttachmentUploadLimit } from "@comma/chat-contract";
-import type { ChatCoordinator, ChatAttachmentIntakeOutcome } from "../chat";
+import type { ChatAttachmentIntakeOutcome, MainChat, MainChatReceived } from "../chat";
 import type { LocalFilePickerService } from "../local-files";
 import type { AirDropIntake, AirDropOffer } from ".";
 import type { AirDropReception } from "./reception";
 
+/**
+ * An AirDrop offer for a window's chat. The core decides where the files go and whether they can (`MainChat.receive`):
+ * the draft of the conversation the window shows, held while the person changes conversation, and the room that draft
+ * has. Main asks the person, receives the files, keeps them on this Mac and registers the ones the core can attach.
+ */
 export async function approveAirDropForChat(options: {
   offer: AirDropOffer;
   signal: AbortSignal;
   surfaceId?: string | undefined;
-  chat: ChatCoordinator;
+  chat: MainChat;
   picker: Pick<LocalFilePickerService, "importForChat">;
   reception: Pick<
     AirDropReception,
@@ -18,11 +21,11 @@ export async function approveAirDropForChat(options: {
   >;
 }): Promise<AirDropIntake | undefined> {
   const { offer, signal, chat, picker, reception } = options;
-  const selected = options.surfaceId
-    ? chat.incomingAttachmentTarget(options.surfaceId)
-    : undefined;
+  const received: MainChatReceived = options.surfaceId
+    ? await chat.receive(options.surfaceId, offer.files)
+    : { refused: "no_chat" };
   const presentation = {
-    ...(selected ? { chatTitle: selected.title } : {}),
+    ...(received.title !== undefined ? { chatTitle: received.title } : {}),
     files: offer.files,
     linkCount: offer.linkCount,
     requestId: offer.requestId,
@@ -30,64 +33,34 @@ export async function approveAirDropForChat(options: {
     ...(options.surfaceId ? { surfaceId: options.surfaceId } : {}),
   };
   // Nothing can be attached: decline now instead of holding the sender.
-  if (!selected) {
-    reception.refuse(presentation, "no_chat");
+  if (received.refused !== undefined) {
+    reception.refuse(presentation, received.refused);
     return undefined;
   }
-  if (offer.files.some((file) => file.isDirectory)) {
-    reception.refuse(presentation, "directory");
-    return undefined;
-  }
-  // Keep the exact conversation alive even if the user changes views during upload.
-  const { title: _title, ...original } = selected;
-  const target = {
-    ...original,
-    subscriberId: `airdrop:${offer.requestId}`,
-    leaseId: randomUUID(),
-  };
-  chat.retain(target);
-  let claim: ReturnType<ChatCoordinator["claimAttachmentIntake"]>;
-  try {
-    claim = chat.claimAttachmentIntake(target);
-  } catch (error) {
-    chat.release(target);
-    throw error;
-  }
+  const { intake, workspaceId } = received;
   let settled = false;
   const finish = (outcome: ChatAttachmentIntakeOutcome) => {
     if (settled) return;
     settled = true;
     signal.removeEventListener("abort", abort);
-    claim.settle(outcome);
-    claim.releaseIfUnused();
-    try {
-      chat.release(target);
-    } catch {
-      /* The session may have ended. */
-    }
+    void intake.settle(outcome);
   };
   const abort = () => finish({ cancelled: true, errorCount: 0 });
   signal.addEventListener("abort", abort, { once: true });
+  // Each step asks the core first (`refresh`); file registrations in between check its last answer synchronously.
   const assertCurrent = () => {
     if (settled || signal.aborted)
       throw new Error("AirDrop attachment intake is no longer active.");
-    const current = chat.incomingAttachmentTarget(selected.surfaceId);
-    if (
-      !current ||
-      current.subscriberId !== original.subscriberId ||
-      current.leaseId !== original.leaseId ||
-      current.workspaceId !== original.workspaceId
-    ) {
-      throw new Error("The destination chat changed during AirDrop reception.");
-    }
-    claim.assertCurrent();
+    intake.assertCurrent();
   };
   try {
+    await intake.refresh();
     assertCurrent();
     if (!(await reception.confirm(presentation, signal))) {
       finish({ cancelled: true, errorCount: 0 });
       return undefined;
     }
+    await intake.refresh();
     assertCurrent();
   } catch (error) {
     finish({ cancelled: true, errorCount: 0 });
@@ -96,56 +69,49 @@ export async function approveAirDropForChat(options: {
   }
 
   return {
-    async complete(received) {
+    async complete(receivedPaths) {
       // A sender's package, such as a Live Photo's .pvt bundle, arrives as a
       // directory that only the picker's local-file route cannot attach. The
       // helper publishes its members beside it, so a bundle left empty is
       // spent; one with contents stays on this Mac for Show in Finder.
       const paths: string[] = [];
       const folders: string[] = [];
-      for (const path of received) {
+      for (const path of receivedPaths) {
         if (!(await stat(path)).isDirectory()) paths.push(path);
         else if ((await readdir(path)).length > 0) folders.push(path);
       }
       reception.received(offer.requestId, [...paths, ...folders]);
       try {
+        const room = await intake.refresh();
         assertCurrent();
-        const state = chat
-          .state()
-          .sessions.find(
-            (entry) =>
-              entry.workspaceId === target.workspaceId &&
-              entry.groupId === target.groupId &&
-              entry.conversationId === target.conversationId
-          )?.state;
-        if (!state) throw new Error("The destination chat is no longer available.");
-        const local = state.draftAttachments.filter((file) =>
-          file.id.startsWith("lfi1_")
-        );
         const picked = await picker.importForChat(paths, {
-          workspaceId: target.workspaceId,
+          workspaceId,
           assertLocalFileRegistrationAllowed: assertCurrent,
-          maxFiles: Math.max(0, 50 - local.length),
-          maxTotalSize: Math.max(
-            0,
-            1024 * 1024 * 1024 - local.reduce((sum, file) => sum + file.size, 0)
-          ),
-          maxUploadFiles: Math.max(
-            0,
-            chatAttachmentUploadLimit - (state.draftAttachments.length - local.length)
-          ),
+          localFileIntakeId: intake.intakeId,
+          ...room,
         });
+        await intake.refresh();
         assertCurrent();
-        for (const item of picked.items) {
-          if (item.kind === "upload")
-            chat.attach({
-              ...target,
-              bytes: new Uint8Array(item.bytes),
-              name: item.name,
-              size: item.size,
-            });
-          else chat.attachLocalFiles({ ...target, files: [item.file] });
-        }
+        await intake.attach(
+          picked.items.map((item) =>
+            item.kind === "upload"
+              ? {
+                  kind: "upload" as const,
+                  bytes: new Uint8Array(item.bytes),
+                  name: item.name,
+                  size: item.size,
+                }
+              : {
+                  kind: "local_file" as const,
+                  file: {
+                    localFileRef: item.file.localFileRef,
+                    mediaType: item.file.mediaType,
+                    name: item.file.name,
+                    size: item.file.size,
+                  },
+                }
+          )
+        );
         finish({
           cancelled: false,
           errorCount: picked.errors.length,

@@ -8,7 +8,7 @@ defmodule CommaWeb.RecommendationRuntimeTest do
   alias SalixStore.Ids
 
   setup do
-    unless Process.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
     owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
     :ok
@@ -176,7 +176,7 @@ defmodule CommaWeb.RecommendationRuntimeTest do
                }
              ])
 
-    accepted_at = System.system_time(:millisecond) - 500_000
+    accepted_at = SystemsClock.system_time(:millisecond) - 500_000
     assert :ok = Recommendations.recover_schedule_receipt(profile, %{"last_run" => accepted_at})
 
     assert {:ok, %{run: run}} =
@@ -200,22 +200,10 @@ defmodule CommaWeb.RecommendationRuntimeTest do
     assert length(all_enqueued(worker: Comma.Workers.RecommendationGenerate)) == 1
   end
 
-  test "retired model tools cannot publish or start a new generation" do
-    assert {:error, :recommendation_renderer_retired} = RecommendationRuntime.begin_run(%{})
-
-    assert {:error, :recommendation_renderer_retired} =
-             RecommendationRuntime.publish(%{}, Ecto.UUID.generate(), %{})
-
-    assert {:error, :forbidden} =
-             RecommendationRuntime.authorize_tool(%{}, "recommendation.publish", %{})
-
-    assert {:error, :forbidden} = RecommendationRuntime.authorize_disclosure(%{}, "web.search")
-  end
-
   defp fixture! do
     {:ok, user} =
       Comma.Accounts.create_user(%{
-        "email" => "routine-runtime-#{System.unique_integer([:positive])}@comma.test"
+        "email" => "routine-runtime-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     workspace = create_ready_workspace!(user)

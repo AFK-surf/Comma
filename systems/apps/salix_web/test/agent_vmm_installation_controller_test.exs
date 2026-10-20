@@ -1,5 +1,5 @@
 defmodule SalixWeb.AgentVMMInstallationControllerTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Plug.Conn
   import Plug.Test
@@ -27,27 +27,30 @@ defmodule SalixWeb.AgentVMMInstallationControllerTest do
         pool_id: pool.id
       })
 
-    previous = Application.get_env(:salix_store, :agent_vmm_install_material)
-    previous_control = Application.get_env(:salix_web, :agent_vmm_gateway_control_secret)
-    previous_receipt = Application.get_env(:salix_store, :personal_mesh_registry_receipt_signer)
-    previous_managed = Application.get_env(:salix_store, :agent_vmm_managed_trust_signing)
+    previous = SystemsRuntime.get_env(:salix_store, :agent_vmm_install_material)
+    previous_control = SystemsRuntime.get_env(:salix_web, :agent_vmm_gateway_control_secret)
 
-    Application.put_env(
+    previous_receipt =
+      SystemsRuntime.get_env(:salix_store, :personal_mesh_registry_receipt_signer)
+
+    previous_managed = SystemsRuntime.get_env(:salix_store, :agent_vmm_managed_trust_signing)
+
+    SystemsRuntime.put_env(
       :salix_store,
       :agent_vmm_install_material,
       AgentVMMInstallMaterialFixtures.catalog()
     )
 
-    Application.put_env(:salix_web, :agent_vmm_gateway_control_secret, @control_secret)
+    SystemsRuntime.put_env(:salix_web, :agent_vmm_gateway_control_secret, @control_secret)
     {_receipt_public, receipt_private} = keypair()
 
-    Application.put_env(:salix_store, :personal_mesh_registry_receipt_signer, fn payload ->
+    SystemsRuntime.put_env(:salix_store, :personal_mesh_registry_receipt_signer, fn payload ->
       {"registry-key", sign(payload, receipt_private)}
     end)
 
     {managed_public, managed_private} = keypair()
 
-    Application.put_env(:salix_store, :agent_vmm_managed_trust_signing, %{
+    SystemsRuntime.put_env(:salix_store, :agent_vmm_managed_trust_signing, %{
       authority_prefix: "salix-managed",
       key_id: "managed-key",
       key_revision: 1,
@@ -256,7 +259,7 @@ defmodule SalixWeb.AgentVMMInstallationControllerTest do
 
   defp encode_json(value), do: value |> Jason.encode!() |> Base.encode64()
 
-  defp keypair, do: :crypto.generate_key(:ecdh, :secp256r1)
+  defp keypair, do: SystemsRuntime.Proc.generate_key(:ecdh, :secp256r1)
 
   defp compress_public_key(<<4, x::binary-size(32), y::binary-size(32)>>) do
     prefix = if rem(:binary.decode_unsigned(y), 2) == 0, do: 2, else: 3
@@ -264,7 +267,7 @@ defmodule SalixWeb.AgentVMMInstallationControllerTest do
   end
 
   defp sign(payload, private) do
-    der = :crypto.sign(:ecdsa, :sha256, payload, [private, :secp256r1])
+    der = SystemsRuntime.Proc.sign(:ecdsa, :sha256, payload, [private, :secp256r1])
     <<0x30, _size, 0x02, r_size, rest::binary>> = der
     <<r::binary-size(^r_size), 0x02, s_size, s::binary-size(s_size)>> = rest
     r = pad32(r)
@@ -276,7 +279,7 @@ defmodule SalixWeb.AgentVMMInstallationControllerTest do
   defp pad32(<<0, rest::binary>>), do: pad32(rest)
   defp pad32(value), do: :binary.copy(<<0>>, 32 - byte_size(value)) <> value
 
-  defp put_or_delete(app, key, nil), do: Application.delete_env(app, key)
+  defp put_or_delete(app, key, nil), do: SystemsRuntime.delete_env(app, key)
 
-  defp put_or_delete(app, key, value), do: Application.put_env(app, key, value)
+  defp put_or_delete(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

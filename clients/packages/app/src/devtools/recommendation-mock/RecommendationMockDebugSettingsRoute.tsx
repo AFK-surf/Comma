@@ -1,17 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCall, useTopic } from "@comma/core-client";
+import { useState } from "react";
 import { useCommaMessages } from "@comma/i18n/react";
-import type { SettingsCategoryDefinition } from "@comma/ui";
-import { z } from "zod";
+import type { SettingsCategoryDefinition } from "@comma/ui/components/settings";
 import { AppSettingsRoute } from "../../components/AppSettingsRoute";
 import { useCommaAuth } from "../../components/auth-context";
-
-const recommendationMockDebugSchema = z.object({
-  available: z.boolean(),
-  enabled: z.boolean(),
-  syncError: z.boolean().optional(),
-});
-
-type CommaRecommendationMockDebug = z.output<typeof recommendationMockDebugSchema>;
 
 export function RecommendationMockDebugSettingsRoute() {
   const auth = useCommaAuth();
@@ -26,75 +18,24 @@ export function RecommendationMockDebugSettingsRoute() {
 
 function LocalRecommendationMockDebugSettingsRoute() {
   const m = useCommaMessages();
-  const auth = useCommaAuth();
-  const { api } = auth;
-  const debugApi = useMemo(() => {
-    const request = async (
-      method: "GET" | "PATCH",
-      enabled?: boolean,
-      workspaceId?: string,
-      signal?: AbortSignal
-    ) => {
-      const headers: Record<string, string> = { accept: "application/json" };
-      if (enabled !== undefined) headers["content-type"] = "application/json";
-      auth.sessionTransport?.applyHeaders(headers);
-      const init: RequestInit = {
-        credentials: auth.sessionTransport?.credentials ?? "include",
-        headers,
-        method,
-        signal: signal ?? auth.sessionTransport?.signal,
-      };
-      if (enabled !== undefined) init.body = JSON.stringify({ enabled, workspaceId });
-      const response = await fetch(
-        `${auth.apiBaseUrl.replace(/\/+$/, "")}/v1/debug/recommendation-mock`,
-        init
-      );
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 409) {
-          auth.sessionTransport?.reportSessionRejection(response.status);
-        }
-        throw new Error(
-          `Recommendation mock debug request failed (${response.status})`
-        );
-      }
-      return recommendationMockDebugSchema.parse(await response.json());
-    };
-
-    return {
-      get: (signal?: AbortSignal) => request("GET", undefined, undefined, signal),
-      update: (enabled: boolean, workspaceId?: string) =>
-        request("PATCH", enabled, workspaceId),
-    };
-  }, [auth.apiBaseUrl, auth.sessionTransport]);
-  const [status, setStatus] = useState<CommaRecommendationMockDebug>();
-  const [pending, setPending] = useState(false);
+  const call = useCall();
+  const { value: shown } = useTopic({ topic: "recommendationMock" }, { lingerMs: 0 });
+  const status = shown?.status === "ready" ? shown : undefined;
+  const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string>();
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setPending(true);
-    void debugApi
-      .get(controller.signal)
-      .then(setStatus)
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setMessage(m.settings_debug_recommendation_mock_unavailable());
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setPending(false);
-      });
-    return () => controller.abort();
-  }, [debugApi, m]);
+  const pending = busy || shown === null || shown === undefined;
+  const shownMessage =
+    message ??
+    (shown?.status === "failed"
+      ? m.settings_debug_recommendation_mock_unavailable()
+      : undefined);
 
   const updateEnabled = async (enabled: boolean) => {
     if (pending) return;
-    setPending(true);
+    setBusy(true);
     setMessage(undefined);
     try {
-      const [workspace] = await api.listWorkspaces();
-      const next = await debugApi.update(enabled, workspace?.id);
-      setStatus(next);
+      const next = await call("recommendationMock.set", { enabled });
       setMessage(
         next.syncError
           ? m.settings_debug_recommendation_mock_sync_failed()
@@ -105,23 +46,21 @@ function LocalRecommendationMockDebugSettingsRoute() {
     } catch {
       setMessage(m.settings_debug_recommendation_mock_save_failed());
     } finally {
-      setPending(false);
+      setBusy(false);
     }
   };
 
   const refreshRecommendations = async () => {
     if (pending || !status?.enabled) return;
-    setPending(true);
+    setBusy(true);
     setMessage(undefined);
     try {
-      const [workspace] = await api.listWorkspaces();
-      if (!workspace) throw new Error("workspace unavailable");
-      await api.refreshRecommendations(workspace.id);
+      await call("recommendationMock.refresh", {});
       setMessage(m.settings_debug_recommendation_mock_refresh_started());
     } catch {
       setMessage(m.settings_debug_recommendation_mock_refresh_failed());
     } finally {
-      setPending(false);
+      setBusy(false);
     }
   };
 
@@ -137,7 +76,8 @@ function LocalRecommendationMockDebugSettingsRoute() {
           {
             id: "debug.recommendations.mock",
             title: m.settings_debug_recommendation_mock(),
-            description: message ?? m.settings_debug_recommendation_mock_description(),
+            description:
+              shownMessage ?? m.settings_debug_recommendation_mock_description(),
             keywords: ["mock", "routines", "MCP", "OAuth", "调试"],
             control: {
               type: "toggle",

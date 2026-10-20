@@ -1,4 +1,8 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import {
+  installVirtualTime,
+  type VirtualTime,
+} from "../../../e2e/helpers/virtual-time";
 
 const TOOLBAR_STORY =
   "/iframe.html?id=app-components-right-sidebar--browser-toolbar-history&viewMode=story";
@@ -14,32 +18,37 @@ const readMotion = (glyph: Locator, property: "rotate" | "translate") =>
     property
   );
 
-const waitForRotationToRetire = async (glyph: Locator): Promise<void> => {
-  await expect
-    .poll(() =>
-      glyph.evaluate(
-        (element) =>
-          element
-            .getAnimations()
-            .filter(
-              (animation) =>
-                animation instanceof CSSTransition &&
-                animation.transitionProperty === "rotate"
-            ).length
-      )
-    )
-    .toBe(0);
+/**
+ * Opens the loading browser toolbar, then stops the page clock. The story's
+ * play step runs on real timers, so the clock starts after it.
+ */
+const openBrowserStory = async (page: Page): Promise<VirtualTime> => {
+  await page.goto(BROWSER_STORY);
+  await expect(page.getByRole("button", { name: "Stop loading" })).toBeVisible();
+  return installVirtualTime(page);
+};
 
-  // A retired transition can still have a queued transitionend. Animation events
-  // run before RAF callbacks, so drain that frame before observing a new press.
-  await glyph.evaluate(
-    () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+/** Steps until the reload glyph has no rotate transition left. */
+const stepUntilRotationRetires = async (time: VirtualTime): Promise<void> => {
+  await time.advanceUntil(
+    () =>
+      !document
+        .querySelector(".comma-right-sidebar-browser-reload .comma-icon-press-refresh")
+        ?.getAnimations()
+        .some(
+          (animation) =>
+            animation instanceof CSSTransition &&
+            animation.transitionProperty === "rotate"
+        )
   );
+  // A retired transition's transitionend runs with the next rendered frame.
+  await time.advanceFrames(1);
 };
 
 /** Presses and holds, so the glyph has arrived rather than being mid-flight. */
 const readWhileHeld = async (
   page: Page,
+  time: VirtualTime,
   button: Locator,
   glyph: Locator,
   property: "rotate" | "translate"
@@ -48,7 +57,7 @@ const readWhileHeld = async (
   if (!box) throw new Error("Navigation button did not render");
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  await page.waitForTimeout(200);
+  await time.advance(200);
   const held = await readMotion(glyph, property);
   await page.mouse.up();
   return held;
@@ -57,6 +66,7 @@ const readWhileHeld = async (
 test("navigation arrows travel along the axis their own glyph points", async ({
   page,
 }) => {
+  const time = await installVirtualTime(page);
   await page.goto(TOOLBAR_STORY);
 
   const back = page.getByRole("button", { name: "Back" });
@@ -74,12 +84,14 @@ test("navigation arrows travel along the axis their own glyph points", async ({
 
   const backHeld = await readWhileHeld(
     page,
+    time,
     back,
     back.locator(".comma-icon-press-back"),
     "translate"
   );
   const forwardHeld = await readWhileHeld(
     page,
+    time,
     forward,
     forward.locator(".comma-icon-press-forward"),
     "translate"
@@ -90,13 +102,14 @@ test("navigation arrows travel along the axis their own glyph points", async ({
   expect(forwardHeld).toBeCloseTo(shift, 1);
 
   // And both come home once the press ends.
-  await expect
-    .poll(() => readMotion(back.locator(".comma-icon-press-back"), "translate"))
-    .toBe(0);
+  await time.advanceUntil(
+    () => document.querySelector(".comma-icon-press-back")?.getAnimations().length === 0
+  );
+  expect(await readMotion(back.locator(".comma-icon-press-back"), "translate")).toBe(0);
 });
 
 test("reload finishes its turn before the stop X takes over", async ({ page }) => {
-  await page.goto(BROWSER_STORY);
+  const time = await openBrowserStory(page);
 
   // The story's play step leaves the toolbar loading before its motion may have
   // ended. Stop loading, then retire its rotation before capturing a new click.
@@ -106,8 +119,8 @@ test("reload finishes its turn before the stop X takes over", async ({ page }) =
   const glyph = page.locator(
     ".comma-right-sidebar-browser-reload .comma-icon-press-refresh"
   );
-  await expect.poll(() => readMotion(glyph, "rotate")).toBe(0);
-  await waitForRotationToRetire(glyph);
+  await stepUntilRotationRetires(time);
+  expect(await readMotion(glyph, "rotate")).toBe(0);
 
   const sweep = await page.evaluate(
     () =>
@@ -119,9 +132,7 @@ test("reload finishes its turn before the stop X takes over", async ({ page }) =
   );
   expect(sweep).toBeGreaterThan(0);
 
-  // Capture the actual phase endings and handoff during an uncontrolled click.
-  // Recoil geometry is checked separately on the real, paused CSS transition;
-  // wall-clock samples can miss that short interval on a busy renderer.
+  // Capture the actual phase endings and handoff of a click.
   await page.evaluate(() => {
     const button = document.querySelector<HTMLButtonElement>(
       'button[aria-label="Reload"]'
@@ -148,7 +159,7 @@ test("reload finishes its turn before the stop X takes over", async ({ page }) =
 
   // As fast a click as a person can make — far shorter than the sweep.
   await reload.click();
-  await page.waitForFunction(() => {
+  await time.advanceUntil(() => {
     const capture = (
       window as unknown as {
         commaReloadPressMotion: { rotateEnds: unknown[]; swaps: unknown[] };
@@ -186,11 +197,11 @@ for (const phase of ["travel", "recoil"] as const) {
     test(`reload waits for ${phase} beyond its watchdog (${settlement})`, async ({
       page,
     }) => {
-      await page.goto(BROWSER_STORY);
+      const time = await openBrowserStory(page);
       await page.getByRole("button", { name: "Stop loading" }).click();
       const reload = page.locator(".comma-right-sidebar-browser-reload");
       const glyph = reload.locator(".comma-icon-press-refresh");
-      await waitForRotationToRetire(glyph);
+      await stepUntilRotationRetires(time);
 
       await glyph.evaluate(
         (element, { pausedPhase, dropEvents }) => {
@@ -221,7 +232,7 @@ for (const phase of ["travel", "recoil"] as const) {
       );
 
       await reload.click();
-      await page.waitForFunction(() =>
+      await time.advanceUntil(() =>
         Boolean(
           (window as unknown as { pausedReloadMotion?: Animation }).pausedReloadMotion
         )
@@ -234,9 +245,9 @@ for (const phase of ["travel", "recoil"] as const) {
         animation.currentTime = duration * (pausedPhase === "travel" ? 0.5 : 0.8);
       }, phase);
 
-      // Intentionally outlive the wall-clock watchdog while the real CSS
-      // transition is unfinished. Elapsed time must not hand the glyph off.
-      await page.waitForTimeout(350);
+      // Outlive the watchdog while the real CSS transition is unfinished.
+      // Elapsed time must not hand the glyph off.
+      await time.advance(350);
       if (phase === "travel")
         expect(await reload.getAttribute("data-press-held")).not.toBeNull();
       expect(await glyph.locator("..").getAttribute("data-visible")).toBe("true");
@@ -249,7 +260,13 @@ for (const phase of ["travel", "recoil"] as const) {
         if (completion === "finish") animation.play();
         else animation.cancel();
       }, settlement);
-      await expect(glyph.locator("..")).toHaveAttribute("data-visible", "false");
+      // The settled phase hands off, through its recoil, to the stop X.
+      await time.advanceUntil(
+        () =>
+          document.querySelector<HTMLElement>(
+            ".comma-right-sidebar-browser-reload .comma-icon-press-refresh"
+          )?.parentElement?.dataset.visible === "false"
+      );
       expect(await readMotion(glyph, "rotate")).toBeCloseTo(0, 1);
     });
   }
@@ -258,17 +275,15 @@ for (const phase of ["travel", "recoil"] as const) {
 test("keyboard reload swaps immediately without starting pointer motion", async ({
   page,
 }) => {
-  await page.goto(BROWSER_STORY);
-
+  const time = await openBrowserStory(page);
   await page.getByRole("button", { name: "Stop loading" }).click();
   const reload = page.getByRole("button", { name: "Reload" });
   await expect(reload).toBeVisible();
   const glyph = page.locator(
     ".comma-right-sidebar-browser-reload .comma-icon-press-refresh"
   );
-  await expect.poll(() => readMotion(glyph, "rotate")).toBe(0);
-
-  await waitForRotationToRetire(glyph);
+  await stepUntilRotationRetires(time);
+  expect(await readMotion(glyph, "rotate")).toBe(0);
   await reload.focus();
   await page.keyboard.down("Space");
 

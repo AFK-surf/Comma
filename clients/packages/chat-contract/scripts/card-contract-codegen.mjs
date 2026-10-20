@@ -24,6 +24,7 @@ function manualLines(kinds, frameKeys) {
   for (const schema of schemas) collectTitled(schema, titled);
   const lines = [
     "Fields are text unless a type follows the name. ? marks an optional field.",
+    "Card text holds no clock time or time zone. Pass a moment in an ISO time field, such as observedAt: 2026-10-05T03:17:00Z. The card shows it in the viewer's time zone.",
     `Every kind accepts ${object(schemas[0], frameKeys)}.`,
     ...legend
       .filter((name) => titled.has(name))

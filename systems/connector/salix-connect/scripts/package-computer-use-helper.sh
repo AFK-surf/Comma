@@ -25,6 +25,8 @@ hardened_runtime="0"
 timestamp="0"
 sign_only="0"
 stop_running="0"
+build_only="0"
+package_only="0"
 arch_args=()
 
 usage() {
@@ -46,6 +48,8 @@ Options:
   --archive-root PATH      Root used for the archive entry.
   --stop-running           Stop an existing helper before replacing the app.
   --sign-only              Sign an existing app without rebuilding it.
+  --build-only             Build Swift outputs without replacing the app.
+  --package-only           Package existing Swift outputs without compiling.
 USAGE
 }
 
@@ -107,6 +111,14 @@ while [ "$#" -gt 0 ]; do
       stop_running="1"
       shift
       ;;
+    --build-only)
+      build_only="1"
+      shift
+      ;;
+    --package-only)
+      package_only="1"
+      shift
+      ;;
     --sign-only)
       sign_only="1"
       shift
@@ -122,6 +134,11 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ "$((build_only + package_only + sign_only))" -gt 1 ]; then
+  echo "Select only one of --build-only, --package-only, or --sign-only." >&2
+  exit 1
+fi
 
 if [ "$(uname -s)" != "Darwin" ]; then
   echo "CommaComputerUse packaging requires macOS." >&2
@@ -238,26 +255,29 @@ build_app() {
     build_args+=("${arch_args[@]}")
   fi
 
-  swift package --package-path "$package_dir" resolve
-  local permission_flow="$package_dir/.build/checkouts/PermissionFlow"
-  local header_patch="$connector_dir/native/macos/patches/permission-flow-stable-header.patch"
-  # Keep the pinned dependency's header width stable across Settings focus changes.
-  if ! git -C "$permission_flow" apply --reverse --check "$header_patch" 2>/dev/null; then
-    git -C "$permission_flow" apply "$header_patch"
+  if [ "$package_only" = "0" ]; then
+    swift package --package-path "$package_dir" resolve
+    local permission_flow="$package_dir/.build/checkouts/PermissionFlow"
+    local header_patch="$connector_dir/native/macos/patches/permission-flow-stable-header.patch"
+    # Keep the pinned dependency's header width stable across Settings focus changes.
+    if ! git -C "$permission_flow" apply --reverse --check "$header_patch" 2>/dev/null; then
+      git -C "$permission_flow" apply "$header_patch"
+    fi
+    local resources_patch="$connector_dir/native/macos/patches/permission-flow-resource-bundle.patch"
+    if ! git -C "$permission_flow" apply --reverse --check "$resources_patch" 2>/dev/null; then
+      git -C "$permission_flow" apply "$resources_patch"
+    fi
+    local drag_card_patch="$connector_dir/native/macos/patches/permission-flow-drag-card-resource.patch"
+    if ! git -C "$permission_flow" apply --reverse --check "$drag_card_patch" 2>/dev/null; then
+      git -C "$permission_flow" apply "$drag_card_patch"
+    fi
+    local display_name_patch="$connector_dir/native/macos/patches/permission-flow-display-name.patch"
+    if ! git -C "$permission_flow" apply --reverse --check "$display_name_patch" 2>/dev/null; then
+      git -C "$permission_flow" apply "$display_name_patch"
+    fi
+    swift build "${build_args[@]}"
   fi
-  local resources_patch="$connector_dir/native/macos/patches/permission-flow-resource-bundle.patch"
-  if ! git -C "$permission_flow" apply --reverse --check "$resources_patch" 2>/dev/null; then
-    git -C "$permission_flow" apply "$resources_patch"
-  fi
-  local drag_card_patch="$connector_dir/native/macos/patches/permission-flow-drag-card-resource.patch"
-  if ! git -C "$permission_flow" apply --reverse --check "$drag_card_patch" 2>/dev/null; then
-    git -C "$permission_flow" apply "$drag_card_patch"
-  fi
-  local display_name_patch="$connector_dir/native/macos/patches/permission-flow-display-name.patch"
-  if ! git -C "$permission_flow" apply --reverse --check "$display_name_patch" 2>/dev/null; then
-    git -C "$permission_flow" apply "$display_name_patch"
-  fi
-  swift build "${build_args[@]}"
+  [ "$build_only" = "1" ] && return 0
   bin_dir="$(swift build "${build_args[@]}" --show-bin-path)"
   binary_path="$bin_dir/$product"
 
@@ -295,6 +315,8 @@ build_app() {
 if [ "$sign_only" = "0" ]; then
   build_app
 fi
+
+[ "$build_only" = "1" ] && exit 0
 
 sign_app
 

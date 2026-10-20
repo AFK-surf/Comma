@@ -41,7 +41,7 @@ defmodule CommaWeb.TelegramMiniAppAuth do
   def complete(_params, _cookie_token), do: {:error, :invalid_telegram_miniapp_login}
 
   @doc false
-  def verify_launch_data(init_data, bot_token, now \\ System.system_time(:second))
+  def verify_launch_data(init_data, bot_token, now \\ SystemsClock.system_time(:second))
 
   def verify_launch_data(init_data, bot_token, now)
       when is_binary(init_data) and is_binary(bot_token) and is_integer(now) and

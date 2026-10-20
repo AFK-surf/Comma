@@ -5,14 +5,15 @@ import {
   useEffect,
   useRef,
 } from "react";
+import { uiClock, type CancelUiTimer } from "../../clock";
 
 const keyboardFocusMotionAttribute = "keyboardFocusMotion";
 
 export const useKeyboardFocusMotion = () => {
-  const animationFramesRef = useRef<number[]>([]);
+  const animationFramesRef = useRef<CancelUiTimer[]>([]);
 
   const cancelScheduledReset = useCallback(() => {
-    for (const frame of animationFramesRef.current) cancelAnimationFrame(frame);
+    for (const frame of animationFramesRef.current) frame();
     animationFramesRef.current = [];
   }, []);
 
@@ -39,8 +40,8 @@ export const useKeyboardFocusMotion = () => {
       if (owner.dataset[keyboardFocusMotionAttribute] !== "instant") return;
 
       cancelScheduledReset();
-      const firstFrame = requestAnimationFrame(() => {
-        const secondFrame = requestAnimationFrame(() => {
+      const firstFrame = uiClock.frame(() => {
+        const secondFrame = uiClock.frame(() => {
           delete owner.dataset[keyboardFocusMotionAttribute];
           animationFramesRef.current = [];
         });

@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
 import { startChatSmokeStub } from "../../../e2e/p0/chat-stub";
+import { installVirtualTime } from "../../../e2e/helpers/virtual-time";
 
 function animationState(element: Element) {
   return element.getAnimations()[0]?.playState;
@@ -161,11 +162,21 @@ test("Greeting previews fold and reveal Tasks before pointer release", async ({
       token: "comma_sess_home_live_fold",
     });
     await installBriefing(page);
+    // Grab the seam before Tasks' fold transition has moved. The drag may not
+    // keep the chat width of that frame as its bound. The clock starts before
+    // the page loads: a fold frame the page requested on real time would end
+    // the Tasks fold before its transition starts.
+    const time = await installVirtualTime(page);
     await page.goto("/");
     const layout = page.getByTestId("home-responsive-layout");
     const greet = page.getByTestId("home-greet-rail");
     const tasks = page.getByTestId("home-tasks-rail");
     const handle = page.getByTestId("home-greet-rail-handle");
+    await time.advanceUntil(
+      () =>
+        document.querySelector('[data-testid="home-greet-rail-handle"]') !== null &&
+        document.querySelector("[data-fold-moving]") === null
+    );
     await expect(handle).toBeVisible();
 
     // This route fits Tasks beside a 260px Greeting, but not beside its initial
@@ -174,16 +185,27 @@ test("Greeting previews fold and reveal Tasks before pointer release", async ({
       (element) => window.innerWidth - element.getBoundingClientRect().width + 961
     );
     await page.setViewportSize({ width: Math.round(windowWidth), height: 960 });
-    await expect(tasks).toHaveAttribute("data-folded", "true");
+    await time.advanceUntil(
+      () =>
+        document
+          .querySelector('[data-testid="home-tasks-rail"]')
+          ?.getAttribute("data-folded") === "true"
+    );
     await expect(greet).toHaveAttribute("data-folded", "false");
+    expect(
+      await layout.evaluate((element) =>
+        getComputedStyle(element).getPropertyValue("--comma-home-tasks-fold")
+      )
+    ).toBe("0");
     const width = () =>
       greet.evaluate((element) => Math.round(element.getBoundingClientRect().width));
-    await expect.poll(width).toBe(300);
+    expect(await width()).toBe(300);
     const box = (await handle.boundingBox())!;
     const x = box.x + box.width / 2;
     const y = box.y + 100;
     await page.mouse.move(x, y);
     await page.mouse.down();
+    await time.release();
     const cursorOverlay = page.getByTestId("home-rail-resize-cursor-overlay");
     await page.mouse.move(x - 4, y);
     await expect(cursorOverlay).toBeVisible();
@@ -512,6 +534,12 @@ test("Home folds preserve content layout and scroll through expansion and revers
       token: "comma_sess_home_fold_layout",
     });
     await installBriefing(page, 12);
+    // A reader's fold is a spring stepped on frame callbacks, and a frame more
+    // than 100 ms after the last lands it at rest. On real time a loaded
+    // machine skips the frames this test holds the folds at, so every frame
+    // and animation runs on the test clock. It starts before the page loads:
+    // a frame the page requested on real time would stay there.
+    const time = await installVirtualTime(page);
     await page.goto("/");
     await expect(
       page.getByRole("heading", { name: /^Good (morning|afternoon|evening)/ })
@@ -519,6 +547,20 @@ test("Home folds preserve content layout and scroll through expansion and revers
     await expect(page.getByTestId("home-tasks-card-stack").locator("li")).toHaveCount(
       24
     );
+    const settled = () =>
+      time.advanceUntil(
+        () =>
+          document.querySelector("[data-fold-moving]") === null &&
+          document
+            .querySelector('[data-testid="home-responsive-layout"]')!
+            .getAnimations({ subtree: true })
+            .every(
+              (animation) =>
+                !(animation instanceof CSSTransition) ||
+                animation.playState === "finished"
+            )
+      );
+    await settled();
 
     for (const name of ["greet", "tasks"] as const) {
       await expect
@@ -540,13 +582,13 @@ test("Home folds preserve content layout and scroll through expansion and revers
     const lastProgress = progress.last();
     await expect.poll(() => firstProgress.evaluate(animationState)).toBe("running");
     await expect.poll(() => lastProgress.evaluate(animationState)).toBe("paused");
-    const pausedPhase = await lastProgress.evaluate(async (element) => {
-      const animation = element.getAnimations()[0]!;
-      const before = animation.currentTime;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      return { before, after: animation.currentTime };
-    });
-    expect(pausedPhase.after).toBe(pausedPhase.before);
+    const pausedBefore = await lastProgress.evaluate(
+      (element) => element.getAnimations()[0]!.currentTime
+    );
+    await time.advance(100);
+    expect(
+      await lastProgress.evaluate((element) => element.getAnimations()[0]!.currentTime)
+    ).toBe(pausedBefore);
     const taskViewport = taskRail.locator('[data-slot="scroll-area-viewport"]').first();
     // Put a clipped card exactly on the scrollport edge. Threshold zero can
     // report this contact without another callback when its visible area grows.
@@ -554,6 +596,8 @@ test("Home folds preserve content layout and scroll through expansion and revers
       const item = element.closest("li")!;
       const viewport = item.closest('[data-slot="scroll-area-viewport"]')!;
       const edge = viewport.getBoundingClientRect().top + viewport.clientHeight;
+      // Pinned at once: the card's reflow motion would ease it there.
+      item.style.transition = "none";
       item.style.transform = `translateY(${edge - item.getBoundingClientRect().top}px)`;
       return new Promise<{ intersects: boolean; ratio: number }>((resolve) => {
         const observer = new IntersectionObserver(([entry]) => {
@@ -573,6 +617,7 @@ test("Home folds preserve content layout and scroll through expansion and revers
     await expect.poll(() => lastProgress.evaluate(animationState)).toBe("running");
     await lastProgress.evaluate((element) => {
       element.closest("li")!.style.removeProperty("transform");
+      element.closest("li")!.style.removeProperty("transition");
     });
     await taskViewport.evaluate((element) => {
       element.scrollTop = element.scrollHeight;
@@ -581,19 +626,15 @@ test("Home folds preserve content layout and scroll through expansion and revers
     await expect.poll(() => firstProgress.evaluate(animationState)).toBe("paused");
     const taskHandle = page.getByTestId("home-tasks-rail-handle");
     await taskHandle.click();
-    await expect
-      .poll(() =>
-        progress.evaluateAll(
-          (elements) =>
-            elements.filter(
-              (element) => element.getAnimations()[0]?.playState === "running"
-            ).length
-        )
+    await settled();
+    expect(
+      await progress.evaluateAll(
+        (elements) =>
+          elements.filter(
+            (element) => element.getAnimations()[0]?.playState === "running"
+          ).length
       )
-      .toBe(0);
-    await taskRail.evaluate((element) =>
-      Promise.all(element.getAnimations().map((animation) => animation.finished))
-    );
+    ).toBe(0);
     await expect(
       page.getByRole("complementary", { name: "Tasks", exact: true })
     ).toHaveCount(0);
@@ -607,6 +648,7 @@ test("Home folds preserve content layout and scroll through expansion and revers
         })
     ).toBe(false);
     await taskHandle.click();
+    await settled();
     await expect.poll(() => lastProgress.evaluate(animationState)).toBe("running");
     await taskViewport.evaluate((element) => {
       element.scrollTop = 0;
@@ -614,19 +656,21 @@ test("Home folds preserve content layout and scroll through expansion and revers
     // Replacing the status page mounts a fresh stack. Its visibility behavior
     // must match the initial stack, including cards outside the scrollport.
     const statuses = taskRail.locator('status-indicator [role="radio"]');
-    await statuses.nth(0).click();
+    // Segment 1 is Needs Review, empty here; segment 0 is In progress.
+    await statuses.nth(1).click();
     await expect(page.getByTestId("home-tasks-card-stack").locator("li")).toHaveCount(
       0
     );
-    await statuses.nth(1).click();
+    await statuses.nth(0).click();
     await expect(page.getByTestId("home-tasks-card-stack").locator("li")).toHaveCount(
       24
     );
+    await settled();
     await expect.poll(() => firstProgress.evaluate(animationState)).toBe("running");
     await expect.poll(() => lastProgress.evaluate(animationState)).toBe("paused");
 
-    // Freeze a real exit while a card is still visible. Pointer input must
-    // not reach that card, and must work again after reversing the fold.
+    // Hold a real exit while a card is still visible. Pointer input must not
+    // reach that card, and must work again after reversing the fold.
     const firstCard = taskRail.getByTestId("home-task-card").first();
     const inputProbe = await firstCard.evaluateHandle((element) => {
       const events: string[] = [];
@@ -645,16 +689,8 @@ test("Home folds preserve content layout and scroll through expansion and revers
       return { events, stop: () => controller.abort() };
     });
     await taskHandle.click();
-    const layout = page.getByTestId("home-responsive-layout");
-    await layout.evaluate((element) => {
-      for (const animation of element.getAnimations({ subtree: true })) {
-        if (animation instanceof CSSTransition) {
-          animation.pause();
-          // Freeze early enough to leave a clickable slice of the 300px rail.
-          animation.currentTime = 24;
-        }
-      }
-    });
+    // Two frames into the spring: the 300px rail has only begun to close.
+    await time.advanceFrames(2);
     const railBox = (await taskRail.boundingBox())!;
     const cardBox = (await firstCard.boundingBox())!;
     const left = Math.max(railBox.x, cardBox.x);
@@ -669,13 +705,7 @@ test("Home folds preserve content layout and scroll through expansion and revers
     await page.mouse.up();
     expect(await inputProbe.evaluate((probe) => probe.events)).toEqual([]);
     await taskHandle.evaluate((element) => (element as HTMLButtonElement).click());
-    await layout.evaluate((element) => {
-      for (const animation of element.getAnimations({ subtree: true })) {
-        if (animation instanceof CSSTransition && animation.playState === "paused") {
-          animation.play();
-        }
-      }
-    });
+    await settled();
     await firstCard.click();
     expect(await inputProbe.evaluate((probe) => probe.events)).toEqual([
       "pointerdown",
@@ -690,58 +720,92 @@ test("Home folds preserve content layout and scroll through expansion and revers
     const samples = [];
     for (const name of ["greet", "tasks"] as const) {
       for (const reverse of [false, true]) {
-        const result = await page.evaluate(
-          async ({ name: railName, reverse: interruptFold }) => {
-            const rail = document.querySelector<HTMLElement>(
-              `[data-testid="home-${railName}-rail"]`
+        const rail = page.getByTestId(`home-${name}-rail`);
+        const handle = page.getByTestId(`home-${name}-rail-handle`);
+        const { initialScroll, initialWidth } = await rail.evaluate((element) => {
+          const viewport = element.querySelector<HTMLElement>(
+            '[data-slot="scroll-area-viewport"]'
+          )!;
+          viewport.scrollTop = 100;
+          return {
+            initialScroll: viewport.scrollTop,
+            initialWidth: element.querySelector<HTMLElement>(
+              ".comma-home-rail-surface"
+            )!.offsetWidth,
+          };
+        });
+        await rail.evaluate((element) => {
+          (window as Window & { foldSurface?: Element }).foldSurface =
+            element.querySelector(".comma-home-rail-surface")!;
+        });
+        const frames: { step: number; contentWidth: number; railWidth: number }[] = [];
+        // 22 frames of 16 ms; an interrupted fold turns back three frames in.
+        // The spring writes the layout's fold property once per step (and once
+        // as it starts); each write is read in the page right after it.
+        const sample = async (interrupt: boolean) => {
+          await rail.evaluate((element, turnBack) => {
+            const railHandle = document.querySelector<HTMLButtonElement>(
+              `[data-testid="${element.dataset.testid}-handle"]`
             )!;
-            const surface = rail.querySelector<HTMLElement>(
+            const surface = element.querySelector<HTMLElement>(
               ".comma-home-rail-surface"
             )!;
-            const viewport = rail.querySelector<HTMLElement>(
-              '[data-slot="scroll-area-viewport"]'
-            )!;
-            const handle = document.querySelector<HTMLButtonElement>(
-              `[data-testid="home-${railName}-rail-handle"]`
-            )!;
-            viewport.scrollTop = 100;
-            const initialScroll = viewport.scrollTop;
-            const initialWidth = surface.offsetWidth;
-            const frames: { time: number; contentWidth: number; railWidth: number }[] =
+            const record: { step: number; contentWidth: number; railWidth: number }[] =
               [];
-            const sample = async (interrupt: boolean) => {
-              const start = performance.now();
-              let reversed = false;
-              handle.click();
-              while (performance.now() - start < 350) {
-                await new Promise(requestAnimationFrame);
-                const elapsed = performance.now() - start;
-                frames.push({
-                  time: elapsed,
-                  contentWidth: surface.offsetWidth,
-                  railWidth: rail.getBoundingClientRect().width,
-                });
-                if (interrupt && !reversed && elapsed >= 48) {
-                  handle.click();
-                  reversed = true;
-                }
+            const steps = new MutationObserver(() => {
+              record.push({
+                step: record.length,
+                contentWidth: surface.offsetWidth,
+                railWidth: element.getBoundingClientRect().width,
+              });
+              if (turnBack && record.length === 4) railHandle.click();
+            });
+            steps.observe(element.parentElement!, {
+              attributeFilter: ["style"],
+            });
+            (
+              window as Window & {
+                foldSteps?: { record: typeof record; steps: MutationObserver };
               }
-            };
-            await sample(interruptFold);
-            if (!interruptFold) await sample(false);
-            return {
-              initialWidth,
-              initialScroll,
-              frames,
-              finalScroll: viewport.scrollTop,
-              sameSurface: rail.querySelector(".comma-home-rail-surface") === surface,
-              expanded: handle.getAttribute("aria-expanded"),
-              folded: rail.dataset.folded,
-            };
-          },
-          { name, reverse }
-        );
-        samples.push({ name, reverse, ...result });
+            ).foldSteps = { record, steps };
+            railHandle.click();
+          }, interrupt);
+          await time.advanceFrames(22);
+          frames.push(
+            ...(await page.evaluate(() => {
+              const { record, steps } = (
+                window as Window & {
+                  foldSteps?: {
+                    record: { step: number; contentWidth: number; railWidth: number }[];
+                    steps: MutationObserver;
+                  };
+                }
+              ).foldSteps!;
+              steps.disconnect();
+              return record;
+            }))
+          );
+        };
+        await sample(reverse);
+        if (!reverse) await sample(false);
+        await settled();
+        samples.push({
+          name,
+          reverse,
+          initialWidth,
+          initialScroll,
+          frames,
+          ...(await rail.evaluate((element) => ({
+            finalScroll: element.querySelector<HTMLElement>(
+              '[data-slot="scroll-area-viewport"]'
+            )!.scrollTop,
+            sameSurface:
+              element.querySelector(".comma-home-rail-surface") ===
+              (window as Window & { foldSurface?: Element }).foldSurface,
+            folded: element.dataset.folded,
+          }))),
+          expanded: await handle.getAttribute("aria-expanded"),
+        });
       }
     }
     const after = await cdp.send("Performance.getMetrics");
@@ -939,6 +1003,16 @@ test("expanded Home indicators hint on region entry without renewing on content 
         (element) => getComputedStyle(element, "::after").height
       );
       await page.clock.runFor(2900);
+      // Content replaced under the mouse (the briefing loads, a list refreshes)
+      // makes the browser fire pointerenter on the rail again. It is not a visit.
+      await rail.evaluate((element, bounds) => {
+        const cover = document.createElement("div");
+        cover.dataset.testid = "rail-content-cover";
+        cover.style.cssText = `position:fixed;left:${bounds.x}px;top:${bounds.y}px;width:${bounds.width}px;height:${bounds.height}px`;
+        element.append(cover);
+      }, box);
+      await page.mouse.move(box.x + box.width / 2 + 5, box.y + 120);
+      await page.getByTestId("rail-content-cover").evaluate((cover) => cover.remove());
       await page.mouse.move(box.x + box.width / 2 + 10, box.y + 150);
       await expect.poll(opacity).toBe("1");
       await page.clock.runFor(100);

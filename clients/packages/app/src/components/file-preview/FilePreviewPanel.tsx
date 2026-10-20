@@ -1,15 +1,15 @@
-import type { AttachmentUploadInput } from "../chat/model/conversationChannel";
+import type { AttachmentUploadInput } from "@comma/core/chat";
 import { mediaElementSource, useMediaContextMenu } from "./useMediaContextMenu";
 import {
   ChatPanelFileOpenInMenu,
-  DownloadIcon,
-  ScrollArea,
-  Tooltip,
-  cx,
   useChatPanelMediaDownloadController,
   type ChatPanelMediaDownloadAction,
   type ChatPanelFileOpenInAction,
-} from "@comma/ui";
+} from "@comma/ui/components/chat-panel";
+import { DownloadIcon } from "@comma/ui/components/icons";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { Tooltip } from "@comma/ui/components/tooltip";
+import { cx } from "@comma/ui/components/utils";
 import { useCommaMessages } from "@comma/i18n/react";
 import { useId, type ReactNode } from "react";
 import { ShellIconButtonControl } from "../ShellIconButton";
@@ -90,6 +90,7 @@ export function FilePreviewPanel({
   fileName,
   mimeType,
   blob,
+  mediaUrl,
   error,
   placeholder,
   panelId,
@@ -104,6 +105,7 @@ export function FilePreviewPanel({
   fileName: string;
   mimeType?: string | undefined;
   blob?: Blob | undefined;
+  mediaUrl?: string | undefined;
   error?: string | undefined;
   placeholder?: string | undefined;
   panelId: string;
@@ -172,6 +174,7 @@ export function FilePreviewPanel({
               fileName={fileName}
               mimeType={mimeType}
               blob={blob}
+              mediaUrl={mediaUrl}
               error={error}
               placeholder={placeholder}
               onOpenBrowser={onOpenBrowser}

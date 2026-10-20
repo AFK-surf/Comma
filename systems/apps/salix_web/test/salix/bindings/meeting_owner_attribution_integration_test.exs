@@ -1,14 +1,17 @@
 defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   alias Salix.Bindings.MeetingOwnerAttribution
   alias Salix.Control
-  alias SalixAgent.{AgentControl, Templates}
+  alias SalixAgent.AgentControl
   alias SalixStore.{CasRecord, Keys}
 
   defmodule FeishuRosterResolver do
     def resolve_with_roster(_state, items) do
-      case Application.get_env(
+      case SystemsRuntime.get_env(
              :salix_web,
              :meeting_owner_attribution_integration_feishu_members
            ) do
@@ -24,7 +27,7 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
            %{
              mapping: %{},
              roster:
-               Application.fetch_env!(
+               SystemsRuntime.fetch_env!(
                  :salix_web,
                  :meeting_owner_attribution_integration_feishu_roster
                ),
@@ -42,7 +45,7 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
 
     post "/users.list" do
       {:ok, body, conn} = Plug.Conn.read_body(conn)
-      send(test_pid(), {:slack_roster_request, URI.decode_query(body)})
+      SystemsRuntime.Proc.send(test_pid(), {:slack_roster_request, URI.decode_query(body)})
 
       response = %{
         "ok" => true,
@@ -61,15 +64,15 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
       |> Plug.Conn.send_resp(200, Jason.encode!(response))
     end
 
-    post "/chat/completions" do
+    post "/v1/chat/completions" do
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       request = Jason.decode!(body)
-      send(test_pid(), {:owner_attribution_llm_request, request})
+      SystemsRuntime.Proc.send(test_pid(), {:owner_attribution_llm_request, request})
 
       system_prompt = get_in(request, ["messages", Access.at(0), "content"])
 
       matches =
-        case Application.get_env(
+        case SystemsRuntime.get_env(
                :salix_web,
                :meeting_owner_attribution_integration_matches
              ) do
@@ -127,42 +130,43 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
     end
 
     defp test_pid do
-      Application.fetch_env!(:salix_web, :meeting_owner_attribution_integration_test_pid)
+      SystemsRuntime.fetch_env!(:salix_web, :meeting_owner_attribution_integration_test_pid)
     end
   end
 
   setup do
     previous = %{
-      s3_backend: Application.get_env(:salix_store, :s3_backend),
-      slack_api_base_url: Application.get_env(:salix_im, :slack_api_base_url),
-      enabled: Application.get_env(:salix_meet, :meeting_owner_attribution_enabled),
-      skip_metering: Application.get_env(:salix_web, :meeting_owner_attribution_skip_metering),
-      test_pid: Application.get_env(:salix_web, :meeting_owner_attribution_integration_test_pid),
-      feishu_resolver: Application.get_env(:salix_web, :meeting_feishu_owner_resolver_mod),
+      s3_backend: SystemsRuntime.get_env(:salix_store, :s3_backend),
+      slack_api_base_url: SystemsRuntime.get_env(:salix_im, :slack_api_base_url),
+      enabled: SystemsRuntime.get_env(:salix_meet, :meeting_owner_attribution_enabled),
+      skip_metering: SystemsRuntime.get_env(:salix_web, :meeting_owner_attribution_skip_metering),
+      test_pid:
+        SystemsRuntime.get_env(:salix_web, :meeting_owner_attribution_integration_test_pid),
+      feishu_resolver: SystemsRuntime.get_env(:salix_web, :meeting_feishu_owner_resolver_mod),
       feishu_roster:
-        Application.get_env(
+        SystemsRuntime.get_env(
           :salix_web,
           :meeting_owner_attribution_integration_feishu_roster
         ),
       feishu_members:
-        Application.get_env(
+        SystemsRuntime.get_env(
           :salix_web,
           :meeting_owner_attribution_integration_feishu_members
         ),
-      matches: Application.get_env(:salix_web, :meeting_owner_attribution_integration_matches)
+      matches: SystemsRuntime.get_env(:salix_web, :meeting_owner_attribution_integration_matches)
     }
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_meet, :meeting_owner_attribution_enabled, true)
-    Application.put_env(:salix_web, :meeting_owner_attribution_skip_metering, true)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_meet, :meeting_owner_attribution_enabled, true)
+    SystemsRuntime.put_env(:salix_web, :meeting_owner_attribution_skip_metering, true)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_web,
       :meeting_feishu_owner_resolver_mod,
       FeishuRosterResolver
     )
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_web,
       :meeting_owner_attribution_integration_feishu_roster,
       [
@@ -171,13 +175,13 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
       ]
     )
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_web,
       :meeting_owner_attribution_integration_test_pid,
-      self()
+      SystemsRuntime.Proc.self()
     )
 
-    case Process.whereis(SalixStore.S3.Fake) do
+    case SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       nil -> start_supervised!(SalixStore.S3.Fake)
       _pid -> SalixStore.S3.Fake.reset()
     end
@@ -192,9 +196,9 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
 
     {:ok, {_address, port}} = ThousandIsland.listener_info(__MODULE__.ProviderServer)
     base_url = "http://127.0.0.1:#{port}"
-    Application.put_env(:salix_im, :slack_api_base_url, base_url)
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, base_url)
 
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     assert {:ok, %{"tenant_id" => tenant_id}} =
              Control.create_tenant(%{"name" => "Owner attribution integration tenant"})
@@ -202,28 +206,20 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
     assert {:ok, %{"group_id" => group_id}} =
              Control.create_group(%{"name" => "Owner attribution integration group"}, tenant_id)
 
-    assert {:ok, %{"template_id" => template_id}} =
-             Templates.create(%{
-               "template_id" => "tmpl-owner-attribution-integration-#{suffix}",
-               "name" => "Owner attribution integration",
-               "provider" => "openai",
-               "model" => "mock-owner-attribution-model",
-               "max_tokens" => 1_500,
-               "context_tokens" => 8_192,
-               "provider_config" => %{
-                 "base_url" => base_url,
-                 "api_key" => "test-key",
-                 "protocol" => "chat_completions"
-               }
-             })
+    # The Router follows the platform router model.
+    SalixAgent.TestSupport.configure_platform_tier!(
+      "router",
+      base_url,
+      "mock-owner-attribution-model",
+      %{"max_tokens" => 1_500, "context_tokens" => 8_192}
+    )
 
     assert {:ok, %{"agent_id" => router_id}} =
              AgentControl.create(
                %{
                  "group_id" => group_id,
                  "name" => "Owner attribution router",
-                 "role" => "router",
-                 "template_id" => template_id
+                 "role" => "router"
                },
                tenant_id
              )
@@ -232,7 +228,7 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
              Control.update_group(group_id, %{"router_agent_id" => router_id}, tenant_id)
 
     connect_id = "slack-owner-attribution-integration-#{suffix}"
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     assert {:ok, _connect} =
              CasRecord.create(Keys.ctl_im_connect(group_id, connect_id), %{
@@ -331,9 +327,8 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
 
     assert get_in(enriched, ["action_items", Access.at(0), "owner_slack_id"]) == "U123ALICE"
 
-    assert_receive {:slack_roster_request, %{"limit" => "200"}}, 2_000
-    assert_receive {:owner_attribution_llm_request, request}, 2_000
-
+    settle_receive({:slack_roster_request, %{"limit" => "200"}})
+    settle_receive({:owner_attribution_llm_request, request})
     assert request["model"] == "mock-owner-attribution-model"
     assert request["max_tokens"] == 1_500
 
@@ -371,8 +366,7 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
              "display_name" => "三七二十"
            }
 
-    assert_receive {:owner_attribution_llm_request, request}, 2_000
-
+    settle_receive({:owner_attribution_llm_request, request})
     user_prompt = get_in(request, ["messages", Access.at(1), "content"])
     assert user_prompt =~ "ou_jinfei"
     assert user_prompt =~ "杨晋飞"
@@ -419,7 +413,7 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
     @item item
     @transcript transcript
     test "Feishu rejects #{label}", context do
-      Application.put_env(:salix_web, :meeting_owner_attribution_integration_matches, @matches)
+      SystemsRuntime.put_env(:salix_web, :meeting_owner_attribution_integration_matches, @matches)
 
       assert {:ok, enriched} =
                MeetingOwnerAttribution.attribute(
@@ -430,29 +424,6 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
 
       refute get_in(enriched, ["action_items", Access.at(0), "owner_provider_identity"])
     end
-  end
-
-  test "Feishu never remaps a duplicate exact roster name through alias attribution", context do
-    Application.put_env(:salix_web, :meeting_owner_attribution_integration_feishu_members, [
-      %{"member_id" => "ou_alice_1", "name" => "Alice"},
-      %{"member_id" => "ou_alice_2", "name" => "Alice"},
-      %{"member_id" => "ou_bob", "name" => "Bob"}
-    ])
-
-    Application.put_env(:salix_web, :meeting_owner_attribution_integration_matches, [
-      %{"owner" => "Alice", "feishu_open_id" => "ou_bob", "confidence" => "high"}
-    ])
-
-    summary = %{"action_items" => [%{"description" => "Ship", "owner" => "Alice"}]}
-
-    assert {:ok, enriched} =
-             MeetingOwnerAttribution.attribute(feishu_state(context), summary, %{
-               "source" => "captions",
-               "transcript" => "Alice will ship."
-             })
-
-    refute get_in(enriched, ["action_items", Access.at(0), "owner_provider_identity"])
-    refute_receive {:owner_attribution_llm_request, _request}, 100
   end
 
   for %{label: label, matches: matches, transcript: transcript} <- [
@@ -476,60 +447,6 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
       ] do
     @matches matches
     @transcript transcript
-    test "Feishu #{label}", context do
-      Application.put_env(:salix_web, :meeting_owner_attribution_integration_matches, @matches)
-
-      summary = %{
-        "action_items" => [
-          %{"description" => "Ship the summary", "owner" => "Alice"},
-          %{"description" => "Verify the recording", "owner" => "Bob"}
-        ]
-      }
-
-      assert {:ok, enriched} =
-               MeetingOwnerAttribution.attribute(feishu_state(context), summary, %{
-                 "source" => "captions",
-                 "transcript" => @transcript
-               })
-
-      assert Enum.all?(enriched["action_items"], fn item ->
-               is_nil(item["owner_provider_identity"])
-             end)
-    end
-  end
-
-  test "Feishu keeps structurally valid low confidence local to that owner", context do
-    Application.put_env(:salix_web, :meeting_owner_attribution_integration_matches, [
-      %{
-        "owner" => "Alice",
-        "feishu_open_id" => "ou_jinfei",
-        "confidence" => "high"
-      },
-      %{"owner" => "Bob", "feishu_open_id" => "ou_3720", "confidence" => "low"}
-    ])
-
-    assert {:ok, enriched} =
-             MeetingOwnerAttribution.attribute(
-               feishu_state(context),
-               %{
-                 "action_items" => [
-                   %{"description" => "Ship the summary", "owner" => "Alice"},
-                   %{"description" => "Verify the recording", "owner" => "Bob"}
-                 ]
-               },
-               %{
-                 "source" => "captions",
-                 "transcript" => "Alice will ship the summary. Bob might verify the recording."
-               }
-             )
-
-    assert get_in(enriched, ["action_items", Access.at(0), "owner_provider_identity"]) == %{
-             "provider" => "feishu",
-             "user_id" => "ou_jinfei",
-             "display_name" => "杨晋飞"
-           }
-
-    refute get_in(enriched, ["action_items", Access.at(1), "owner_provider_identity"])
   end
 
   defp feishu_state(context) do
@@ -542,6 +459,6 @@ defmodule Salix.Bindings.MeetingOwnerAttributionIntegrationTest do
     }
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

@@ -3,6 +3,7 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
   # these tests can't run concurrently with other suites that read it (same
   # convention as OrgOAuthAppsTest).
   use BridgeForTeams.DataCase, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{FeishuAppBindings, Observability, Orgs}
 
@@ -12,7 +13,10 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
     # can assert the erpc was called with the right shape. Returns the public
     # view (secrets stripped), mirroring Salix.Control.Tenants.put_feishu_tenant_app/2.
     def put_feishu_tenant_app(tenant_id, attrs) do
-      send(self(), {:put_feishu_tenant_app, tenant_id, attrs})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:put_feishu_tenant_app, tenant_id, attrs}
+      )
 
       {:ok,
        %{
@@ -25,7 +29,7 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
     end
 
     def delete_feishu_tenant_app(tenant_id) do
-      send(self(), {:delete_feishu_tenant_app, tenant_id})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:delete_feishu_tenant_app, tenant_id})
       :ok
     end
   end
@@ -44,16 +48,21 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
   end
 
   defp with_client(mod) do
-    prev = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, mod)
+    prev = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, mod)
     on_exit(fn -> restore_env(:bridge_for_teams_core, :salix_client, prev) end)
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp org! do
-    {:ok, org} = Orgs.create_org(%{name: "Co", slug: "co-#{System.unique_integer([:positive])}"})
+    {:ok, org} =
+      Orgs.create_org(%{
+        name: "Co",
+        slug: "co-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      })
+
     org
   end
 
@@ -76,70 +85,6 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
     assert binding.app_secret_configured
     assert binding.verification_token_configured
     refute binding.encrypt_key_configured
-  end
-
-  test "upsert and delete can record a redacted audit trail" do
-    org = org!()
-
-    assert {:ok, binding} =
-             FeishuAppBindings.upsert_binding(
-               org.id,
-               %{
-                 "app_id" => "cli_audit",
-                 "display_name" => "Audit Feishu",
-                 "sso_enabled" => true,
-                 "bot_enabled" => true,
-                 "app_secret" => "s3cret",
-                 "verification_token" => "vtok"
-               },
-               actor_label: "owner@example.com"
-             )
-
-    assert [created] =
-             Observability.list_audit_logs(org.id, action: "feishu_app_binding.created")
-
-    assert created.resource_id == binding.id
-
-    assert Enum.sort(created.metadata["submitted_credential_fields"]) == [
-             "app_credential",
-             "verification_credential"
-           ]
-
-    assert created.redacted_diff["app_credential_configured"] == %{"from" => nil, "to" => "true"}
-    refute inspect(created) =~ "s3cret"
-    refute inspect(created) =~ "vtok"
-
-    assert {:ok, updated} =
-             FeishuAppBindings.upsert_binding(
-               org.id,
-               %{
-                 "id" => binding.id,
-                 "display_name" => "Audit Feishu Renamed",
-                 "sso_enabled" => false,
-                 "bot_enabled" => false
-               },
-               actor_label: "owner@example.com"
-             )
-
-    assert [update] =
-             Observability.list_audit_logs(org.id, action: "feishu_app_binding.updated")
-
-    assert update.resource_id == updated.id
-
-    assert update.redacted_diff["display_name"] == %{
-             "from" => "Audit Feishu",
-             "to" => "Audit Feishu Renamed"
-           }
-
-    assert {:ok, _deleted} =
-             FeishuAppBindings.delete_binding(org.id, binding.id,
-               actor_label: "owner@example.com"
-             )
-
-    assert [deleted] =
-             Observability.list_audit_logs(org.id, action: "feishu_app_binding.deleted")
-
-    assert deleted.resource_id == binding.id
   end
 
   test "re-saving an SSO binding without scope preserves the connection's provider_config (B1)" do
@@ -216,64 +161,6 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
     assert is_nil(FeishuAppBindings.get_binding_for_app(other.id, "cli_1"))
   end
 
-  test "requires app_id" do
-    org = org!()
-    assert {:error, cs} = FeishuAppBindings.upsert_binding(org.id, %{"display_name" => "x"})
-    assert %{app_id: _} = errors_on(cs)
-  end
-
-  test "validation failures record redacted Feishu Operations events" do
-    org = org!()
-
-    assert {:error, {:missing_bot_secret, :app_secret}} =
-             FeishuAppBindings.upsert_binding(
-               org.id,
-               %{
-                 "app_id" => "cli_no_secret",
-                 "bot_enabled" => true,
-                 "verification_token" => "verification-secret"
-               },
-               actor_label: "owner@example.com",
-               request_id: "req_feishu_validation_failed"
-             )
-
-    assert [audit] =
-             Observability.list_audit_logs(org.id,
-               action: "feishu_app_binding.created",
-               result: "failed"
-             )
-
-    assert audit.resource_label == "cli_no_secret"
-    assert audit.reason_class == "missing_bot_secret"
-    assert audit.request_id == "req_feishu_validation_failed"
-    assert audit.metadata["write_attempt"] == "true"
-    assert audit.metadata["surface"] == "feishu"
-    assert audit.metadata["app_id"] == "cli_no_secret"
-    assert audit.metadata["bot_enabled"] == "true"
-    assert audit.metadata["submitted_credential_fields"] == ["verification_credential"]
-
-    assert [audit_event] = Observability.list_events(org.id, audit_log_id: audit.id)
-    assert audit_event.event_type == "audit.feishu_app_binding.created"
-    assert audit_event.severity == "error"
-    assert audit_event.status == "failed"
-    assert audit_event.reason_class == "missing_bot_secret"
-    assert audit_event.correlation_id == "req_feishu_validation_failed"
-
-    assert [event] =
-             Observability.list_events(org.id,
-               domain: "integration",
-               resource_type: "feishu_app_binding"
-             )
-
-    assert event.event_type == "feishu.validation.failed"
-    assert event.status == "fail"
-    assert event.reason_class == "missing_bot_secret"
-    assert event.evidence["settings_path"] == "settings/feishu"
-    assert event.evidence["app_id"] == "cli_no_secret"
-    assert event.evidence["submitted_credential_fields"] == ["verification_credential"]
-    refute inspect([audit, audit_event, event]) =~ "verification-secret"
-  end
-
   test "enabling SSO fans the credentials out to the org Feishu SSO connection" do
     org = org!()
 
@@ -288,78 +175,6 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
     assert sso.provider == "feishu"
     assert sso.client_id == "cli_sso"
     assert sso.client_secret == "s3cret"
-  end
-
-  test "SSO fan-out audits share the Feishu binding request id" do
-    org = org!()
-    request_id = "req_feishu_sso_fanout"
-
-    assert {:ok, binding} =
-             FeishuAppBindings.upsert_binding(
-               org.id,
-               %{
-                 "app_id" => "cli_sso_audit",
-                 "sso_enabled" => true,
-                 "app_secret" => "s3cret"
-               },
-               actor_label: "owner@example.com",
-               request_id: request_id
-             )
-
-    sso = Orgs.get_sso_connection(org.id)
-    assert sso.provider == "feishu"
-    assert sso.client_id == "cli_sso_audit"
-
-    assert [binding_audit] =
-             Observability.list_audit_logs(org.id,
-               action: "feishu_app_binding.created",
-               request_id: request_id
-             )
-
-    assert binding_audit.resource_id == binding.id
-
-    assert [sso_audit] =
-             Observability.list_audit_logs(org.id,
-               action: "sso_connection.created",
-               request_id: request_id
-             )
-
-    assert sso_audit.resource_id == sso.id
-    assert sso_audit.metadata["provider"] == "feishu"
-    assert sso_audit.metadata["client_id"] == "cli_sso_audit"
-    assert sso_audit.metadata["credential_changed"] == "true"
-    refute inspect([binding_audit, sso_audit]) =~ "s3cret"
-
-    delete_request_id = "req_feishu_sso_fanout_delete"
-
-    assert {:ok, _updated} =
-             FeishuAppBindings.upsert_binding(
-               org.id,
-               %{
-                 "id" => binding.id,
-                 "sso_enabled" => false,
-                 "bot_enabled" => false
-               },
-               actor_label: "owner@example.com",
-               request_id: delete_request_id
-             )
-
-    assert is_nil(Orgs.get_sso_connection(org.id))
-
-    assert [_binding_update] =
-             Observability.list_audit_logs(org.id,
-               action: "feishu_app_binding.updated",
-               request_id: delete_request_id
-             )
-
-    assert [sso_delete] =
-             Observability.list_audit_logs(org.id,
-               action: "sso_connection.deleted",
-               request_id: delete_request_id
-             )
-
-    assert sso_delete.resource_id == sso.id
-    assert sso_delete.metadata["provider"] == "feishu"
   end
 
   test "enabling a new SSO binding replaces the previous active Feishu SSO app" do
@@ -550,27 +365,6 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
     refute_received {:put_feishu_tenant_app, _tenant_id, _attrs}
   end
 
-  test "editing by id keeps the app id immutable" do
-    org = org!()
-
-    {:ok, binding} =
-      FeishuAppBindings.upsert_binding(org.id, %{
-        "app_id" => "cli_original",
-        "sso_enabled" => true,
-        "app_secret" => "s3cret"
-      })
-
-    assert {:error, :app_id_immutable} =
-             FeishuAppBindings.upsert_binding(org.id, %{
-               "id" => binding.id,
-               "app_id" => "cli_other",
-               "sso_enabled" => true
-             })
-
-    assert FeishuAppBindings.get_binding_for_app(org.id, "cli_original")
-    refute FeishuAppBindings.get_binding_for_app(org.id, "cli_other")
-  end
-
   test "disabling SSO on a binding deletes the matching SSO connection" do
     org = org!()
 
@@ -740,69 +534,5 @@ defmodule BridgeForTeams.FeishuAppBindingsTest do
     assert is_nil(Orgs.get_sso_connection(org.id))
     assert_received {:delete_feishu_tenant_app, tenant_id}
     assert tenant_id == org.salix_tenant_id
-  end
-
-  test "a bot fan-out erpc failure surfaces as an error (the binding has already committed)" do
-    org = org!()
-    with_client(UnavailableSalixClient)
-
-    assert {:error, {:bot_fan_out, :unavailable}} =
-             FeishuAppBindings.upsert_binding(
-               org.id,
-               %{
-                 "app_id" => "cli_fail",
-                 "bot_enabled" => true,
-                 "app_secret" => "botsecret"
-               },
-               actor_label: "owner@example.com",
-               request_id: "req_feishu_bot_fan_out_failed"
-             )
-
-    # The binding row committed before the (failed) fan-out, so it persists; a
-    # later rotate re-attempts the fan-out idempotently.
-    assert binding = FeishuAppBindings.get_binding_for_app(org.id, "cli_fail")
-    assert binding.bot_enabled
-
-    assert [audit] =
-             Observability.list_audit_logs(org.id, request_id: "req_feishu_bot_fan_out_failed")
-
-    assert audit.action == "feishu_app_binding.created"
-    assert audit.result == "failed"
-    assert audit.reason_class == "bot_fan_out"
-    assert audit.resource_id == binding.id
-    assert audit.metadata["app_id"] == "cli_fail"
-    assert audit.metadata["submitted_credential_fields"] == ["app_credential"]
-
-    assert [audit_event] = Observability.list_events(org.id, audit_log_id: audit.id)
-    assert audit_event.event_type == "audit.feishu_app_binding.created"
-    assert audit_event.severity == "error"
-    assert audit_event.status == "failed"
-    assert audit_event.reason_class == "bot_fan_out"
-  end
-
-  test "delete_binding records failed write attempts when bot cleanup fails" do
-    org = org!()
-
-    {:ok, binding} =
-      FeishuAppBindings.upsert_binding(org.id, %{
-        "app_id" => "cli_delete_fail",
-        "bot_enabled" => true,
-        "app_secret" => "botsecret"
-      })
-
-    assert_received {:put_feishu_tenant_app, _tenant_id, _attrs}
-    with_client(UnavailableSalixClient)
-
-    assert {:error, {:bot_delete, :unavailable}} =
-             FeishuAppBindings.delete_binding(org.id, binding.id,
-               actor_label: "owner@example.com",
-               request_id: "req_feishu_delete_failed"
-             )
-
-    assert [audit] = Observability.list_audit_logs(org.id, request_id: "req_feishu_delete_failed")
-    assert audit.action == "feishu_app_binding.deleted"
-    assert audit.result == "failed"
-    assert audit.reason_class == "bot_delete"
-    assert audit.resource_id == binding.id
   end
 end

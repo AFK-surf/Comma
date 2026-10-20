@@ -129,6 +129,38 @@ defmodule SalixMeet.Store do
   end
 
   @doc """
+  Renew leadership that `node` claimed at `epoch`. Other writers (the join
+  outbox, delivery) also CAS this object, so the leader's ETag can be stale
+  while it still leads. Renewal re-reads the object and continues only while
+  `node` still holds `epoch`: a claim by any other node changes the epoch and
+  makes the renewal `{:error, :lost}`. A write that lands between the read and
+  the renewal CAS is retried, at most `:retries` times.
+  """
+  @spec renew_leader(String.t(), String.t(), non_neg_integer(), keyword()) ::
+          result() | {:error, :lost}
+  def renew_leader(id, node, epoch, opts \\ []) do
+    do_renew_leader(id, node, epoch, opts, Keyword.get(opts, :retries, 8))
+  end
+
+  defp do_renew_leader(_id, _node, _epoch, _opts, 0), do: {:error, :lost}
+
+  defp do_renew_leader(id, node, epoch, opts, retries) do
+    with {:ok, doc, etag} <- get(id) do
+      if doc["leader_node"] == node and doc["epoch"] == epoch do
+        now = opts[:now] || now_ms()
+        ttl = opts[:ttl_ms] || @default_ttl
+
+        case cas_lead(id, doc, node, etag, now, ttl) do
+          {:error, :lost} -> do_renew_leader(id, node, epoch, opts, retries - 1)
+          other -> other
+        end
+      else
+        {:error, :lost}
+      end
+    end
+  end
+
+  @doc """
   Stamp `join_requested_at` exactly once via CAS. If it is already set the call
   is an idempotent no-op returning the unchanged doc — join-at-most-once. A lost
   CAS returns `{:error, :lost}`.
@@ -522,7 +554,7 @@ defmodule SalixMeet.Store do
           {:error, :probe_held}
 
         true ->
-          generation = SalixStore.Crypto.hex(:crypto.strong_rand_bytes(12))
+          generation = SalixStore.Crypto.hex(SystemsRuntime.Proc.random_bytes(12))
 
           next_state =
             Map.put(state, "watchdog_probe", %{
@@ -646,6 +678,9 @@ defmodule SalixMeet.Store do
 
       "feishu" ->
         stringify(state["feishu_ref"] || %{}) |> map_size() > 0
+
+      "lark" ->
+        stringify(state["lark_ref"] || %{}) |> map_size() > 0
 
       _other ->
         false
@@ -1499,7 +1534,7 @@ defmodule SalixMeet.Store do
   defp project_existing(_doc), do: {:ok, :unscoped}
 
   defp stale?(doc, now), do: is_nil(doc["lease_until"]) or doc["lease_until"] <= now
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
   defp integer_or_zero(value) when is_integer(value), do: value
   defp integer_or_zero(_value), do: 0
   defp maybe_put_continuation_token(opts, nil), do: opts

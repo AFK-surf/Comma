@@ -6,7 +6,7 @@ defmodule SalixIM.TriageRouterHandoffBoundaryTest do
   No Worker runs and no Slack participant is created.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{AgentActor, InternalSessionStore}
   alias SalixAgent.TestSupport.SessionData
@@ -16,14 +16,22 @@ defmodule SalixIM.TriageRouterHandoffBoundaryTest do
 
   defmodule TargetAuthority do
     def authorize_target(original, router, worker) do
-      send(self(), {:authorized_target, original.obligation_id, router, worker})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:authorized_target, original.obligation_id, router, worker}
+      )
+
       Process.get(:triage_target_authority, :ok)
     end
   end
 
   defmodule SourceFreshness do
     def check(original, _opts) do
-      send(self(), {:checked_source, original.obligation_id})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:checked_source, original.obligation_id}
+      )
+
       Process.get(:triage_source_freshness, {:ok, %{status: :fresh}})
     end
   end
@@ -67,8 +75,8 @@ defmodule SalixIM.TriageRouterHandoffBoundaryTest do
 
     previous =
       Enum.map(overrides, fn {app, key, value} ->
-        old = Application.fetch_env(app, key)
-        Application.put_env(app, key, value)
+        old = SystemsRuntime.fetch_env(app, key)
+        SystemsRuntime.put_env(app, key, value)
         {app, key, old}
       end)
 
@@ -79,8 +87,8 @@ defmodule SalixIM.TriageRouterHandoffBoundaryTest do
       after
         for {app, key, old} <- previous do
           case old do
-            {:ok, value} -> Application.put_env(app, key, value)
-            :error -> Application.delete_env(app, key)
+            {:ok, value} -> SystemsRuntime.put_env(app, key, value)
+            :error -> SystemsRuntime.delete_env(app, key)
           end
         end
       end
@@ -306,310 +314,15 @@ defmodule SalixIM.TriageRouterHandoffBoundaryTest do
     assert {:ok, nil} = DelegationAuthorization.prepare(scope, %{}, %{}, opts)
   end
 
-  test "a mirrored self reply preserves the same decision's Worker Task admission", %{
-    router: router
-  } do
-    group_id = router["group_id"]
-    router_id = router["agent_id"]
-
-    worker =
-      SalixAgent.TestSupport.create_control_agent_in_group!(router["tenant_id"], group_id, %{
-        "role" => "worker"
-      })
-
-    connect = %{"tenant_id" => router["tenant_id"], "workspace_id" => "T1"}
-
-    root_message = %{
-      "type" => "message",
-      "channel" => "C1",
-      "ts" => "100.000001",
-      "bot_id" => "B_ALERT",
-      "text" => "Runtime failed; investigate the source."
-    }
-
-    reply_message = %{
-      "type" => "message",
-      "channel" => "C1",
-      "ts" => "101.000001",
-      "thread_ts" => "100.000001",
-      "bot_id" => "B_SELF",
-      "user" => "U_SELF",
-      "text" => "The alert identifies one failed session."
-    }
-
-    assert {:ok, root} =
-             SalixIM.SlackMessageMirror.Row.from_event(connect, %{"event" => root_message})
-
-    assert {:ok, reply} =
-             SalixIM.SlackMessageMirror.Row.from_event(connect, %{"event" => reply_message})
-
-    assert reply["actor_kind"] == "bot" and reply["actor_id"] == "U_SELF"
-
-    target = %{
-      "connect_id" => "connect-1",
-      "connect_generation" => "generation-1",
-      "workspace_id" => "T1",
-      "channel_id" => "C1",
-      "thread_ts" => "100.000001"
-    }
-
-    {namespace, obligation, _project} =
-      seed_original!(router, %{
-        "target" => target,
-        "target_cutoff" => %{"event_message_timestamps" => [root["message_ts"]]},
-        "source_authority" => [
-          %{"message_ts_us" => root["message_ts_us"], "observed_version" => root["version"]}
-        ],
-        "communication" => %{
-          "kind" => "reply",
-          "text" => reply["text"],
-          "source_refs" => ["source-A"]
-        }
-      })
-
-    Process.put(
-      :mirrored_authority,
-      Map.merge(target, %{
-        "triage_enabled" => true,
-        "approved_channel_id" => "C1",
-        "bot_id" => "B_SELF",
-        "bot_user_id" => "U_SELF"
-      })
-    )
-
-    Process.put(:mirrored_messages, [root, reply])
-    ref = "triage-delegation:#{obligation}:0"
-    scope = %{group_id: group_id, agent_id: router_id}
-
-    params = %{
-      "triage_delegation_ref" => ref,
-      "agent_id" => worker["agent_id"]
-    }
-
-    origin = %{
-      "provider" => "slack",
-      "source_actor_type" => "provider_system",
-      "source_message_id" => ref,
-      "agent_group_id" => group_id,
-      "triage_delegation" => %{
-        "schema" => "comma.triage-delegation-origin.v1",
-        "namespace_key" => TriageKeys.namespace_key(namespace),
-        "obligation_id" => obligation,
-        "index" => 0,
-        "request_id" => ref,
-        "router_agent_id" => router_id,
-        "group_id" => group_id
-      }
-    }
-
-    context = %{trusted_origin: origin, source_message_ids: [ref]}
-
-    opts = [
-      authority_port: TargetAuthority,
-      freshness_opts: [
-        provider_connects: MirroredSource,
-        route_owner: MirroredSource,
-        clickhouse_reader: MirroredSource
-      ]
-    ]
-
-    assert {:ok, authorized} = DelegationAuthorization.prepare(scope, context, params, opts)
-
-    attrs = %{
-      "client_request_id" => authorized.request_id,
-      "title" => "Investigate the alert",
-      "content" => "Read the original alert and investigate.",
-      "source_refs" => authorized.source_refs,
-      "conversation_metadata" => %{"source" => "bft_triage"}
-    }
-
-    assert {:ok, conversation_id} =
-             ConversationServer.reserve_task_conversation_id(
-               group_id,
-               router_id,
-               worker["agent_id"],
-               attrs
-             )
-
-    assert {:ok, %{"conversation_id" => ^conversation_id}} =
-             TaskConversationInput.create_with_id(
-               group_id,
-               conversation_id,
-               router_id,
-               worker["agent_id"],
-               Map.merge(attrs, %{
-                 "schedule" => %{"schedule_id" => nil, "command" => attrs["content"]},
-                 "initial_message_attrs" => %{
-                   "kind" => "message",
-                   "actor_type" => "agent",
-                   "agent_id" => router_id,
-                   "content" => attrs["content"],
-                   "metadata" => %{"message_type" => "task_command"},
-                   "client_request_id" => "delegate-task-" <> conversation_id
-                 }
-               })
-             )
-
-    assert_single_task_trace!(group_id, conversation_id, attrs)
-
-    # Later human input still invalidates the frozen decision, even after our reply.
-    assert {:ok, human} =
-             SalixIM.SlackMessageMirror.Row.from_event(connect, %{
-               "event" => %{
-                 "type" => "message",
-                 "channel" => "C1",
-                 "ts" => "102.000001",
-                 "thread_ts" => "100.000001",
-                 "user" => "U_HUMAN",
-                 "text" => "Already resolved."
-               }
-             })
-
-    Process.put(:mirrored_messages, [root, reply, human])
-
-    assert {:error, "triage_delegation_source_stale: new_source_message"} =
-             DelegationAuthorization.prepare(scope, context, params, opts)
-
-    assert_single_task_trace!(group_id, conversation_id, attrs)
-  end
-
-  test "source history reads the canonical Task result without reserving work or inferring delivery",
-       %{router: router} do
-    group = router["group_id"]
-
-    target = %{
-      "connect_id" => "C_CONTEXT_CONNECT",
-      "connect_generation" => SalixStore.ULID.generate(),
-      "workspace_id" => "T_CONTEXT",
-      "channel_id" => "C_CONTEXT",
-      "thread_ts" => "100.000001"
-    }
-
-    {_namespace, obligation, project} = seed_original!(router, %{"target" => target})
-
-    worker =
-      SalixAgent.TestSupport.create_control_agent_in_group!(router["tenant_id"], group, %{
-        "role" => "worker"
-      })
-
-    attrs = %{
-      "client_request_id" => "triage-delegation:#{obligation}:0",
-      "title" => "Investigate the missing result",
-      "content" => "Read the exact source and delivery records.",
-      "source_refs" => %{"triage_obligation_id" => obligation}
-    }
-
-    assert %{availability: "not_created"} = SalixIM.Triage.TaskContext.read(group, obligation, 0)
-
-    assert {:ok, conversation} =
-             ConversationServer.reserve_task_conversation_id(
-               group,
-               router["agent_id"],
-               worker["agent_id"],
-               attrs
-             )
-
-    assert %{availability: "reserved_task_unavailable"} =
-             SalixIM.Triage.TaskContext.read(group, obligation, 0)
-
-    assert {:ok, _} =
-             TaskConversationInput.create_with_id(
-               group,
-               conversation,
-               router["agent_id"],
-               worker["agent_id"],
-               Map.merge(attrs, %{
-                 "schedule" => %{"schedule_id" => nil, "command" => attrs["content"]},
-                 "initial_message_attrs" => %{
-                   "kind" => "message",
-                   "actor_type" => "agent",
-                   "agent_id" => router["agent_id"],
-                   "content" => attrs["content"],
-                   "metadata" => %{"message_type" => "task_command"}
-                 }
-               })
-             )
-
-    for n <- 1..5 do
-      assert {:ok, _} =
-               ConversationServer.append_group_conversation_agent_message(
-                 group,
-                 conversation,
-                 worker["agent_id"],
-                 %{
-                   "kind" => "message",
-                   "content" => "Observed delivery record #{n}: " <> String.duplicate("证据", 500),
-                   "mentions" => %{"participant_ids" => []}
-                 }
-               )
-    end
-
-    assert %{availability: "available", conversation_id: ^conversation, recent_messages: messages} =
-             SalixIM.Triage.TaskContext.read(group, obligation, 0)
-
-    assert length(messages) == 3
-
-    assert Enum.map(messages, &String.slice(&1.text_excerpt, 0, 27)) ==
-             Enum.map(3..5, &"Observed delivery record #{&1}:")
-
-    assert Enum.all?(
-             messages,
-             &(byte_size(&1.text_excerpt) <= 2_048 and String.valid?(&1.text_excerpt))
-           )
-
-    assert Enum.all?(messages, &(&1.agent_id == worker["agent_id"]))
-
-    assert {:ok, %{outcomes: [outcome]}} =
-             ReadModel.product_activity(project, group, "product-router",
-               limit: 3,
-               context_limit: 0,
-               target: target,
-               include_task_context: true
-             )
-
-    assert [%{task_context: %{conversation_id: ^conversation, recent_messages: ^messages}}] =
-             outcome.delegations
-
-    refute Map.has_key?(hd(outcome.delegations).task_context, :delivered)
-
-    assert {:ok, %{outcomes: [ordinary]}} =
-             ReadModel.product_activity(project, group, "product-router",
-               limit: 3,
-               context_limit: 0,
-               target: target
-             )
-
-    refute Map.has_key?(hd(ordinary.delegations), :task_context)
-
-    assert {:error, :invalid_triage_product_activity} =
-             ReadModel.product_activity(project, group, "product-router",
-               limit: 20,
-               target: target,
-               include_task_context: true
-             )
-
-    assert {:error, :invalid_triage_product_activity} =
-             ReadModel.product_activity(project, group, "product-router",
-               limit: 3,
-               include_task_context: true
-             )
-
-    assert {:ok, all_messages} =
-             Conversations.list_group_conversation_messages(group, conversation, limit: 10)
-
-    assert length(all_messages) == 6
-    assert length(tasks(group)) == 1
-  end
-
   test "product investigation protects the public sink and retains stale settlement across restart",
        %{router: router} do
-    previous = Application.fetch_env(:salix_im, :triage_delegation_mod)
-    Application.put_env(:salix_im, :triage_delegation_mod, TargetAuthority)
+    previous = SystemsRuntime.fetch_env(:salix_im, :triage_delegation_mod)
+    SystemsRuntime.put_env(:salix_im, :triage_delegation_mod, TargetAuthority)
 
     on_exit(fn ->
       case previous do
-        {:ok, value} -> Application.put_env(:salix_im, :triage_delegation_mod, value)
-        :error -> Application.delete_env(:salix_im, :triage_delegation_mod)
+        {:ok, value} -> SystemsRuntime.put_env(:salix_im, :triage_delegation_mod, value)
+        :error -> SystemsRuntime.delete_env(:salix_im, :triage_delegation_mod)
       end
     end)
 

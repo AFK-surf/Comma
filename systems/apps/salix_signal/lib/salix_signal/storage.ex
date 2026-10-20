@@ -82,7 +82,7 @@ defmodule SalixSignal.Storage do
   @spec create_account(map()) :: {:ok, String.t()} | {:error, term()}
   def create_account(attrs) do
     with {:ok, keys} <- Cipher.keys() do
-      id = Ecto.UUID.generate()
+      id = SystemsRuntime.Proc.uuid()
       record = account_record(attrs)
       {scope, organization_id} = scope_columns(Map.get(attrs, :scope, :platform))
       pre_keys = Map.get(attrs, :pre_keys, %{})
@@ -488,7 +488,7 @@ defmodule SalixSignal.Storage do
   """
   @spec prune(String.t(), pos_integer(), DateTime.t()) ::
           {:ok, non_neg_integer()} | {:error, :fenced}
-  def prune(id, epoch, now \\ DateTime.utc_now()) do
+  def prune(id, epoch, now \\ SystemsClock.utc_now()) do
     uuid = dump(id)
 
     fenced(uuid, epoch, fn ->

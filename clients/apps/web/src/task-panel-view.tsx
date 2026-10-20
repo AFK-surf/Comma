@@ -1,18 +1,18 @@
 import { StrictMode } from "react";
+import { CoreProvider, type CoreClient } from "@comma/core-client";
 import { createRoot } from "react-dom/client";
 import {
   CommaClientSettingsI18nProvider,
   CommaSessionHostProvider,
   CommaWebClientSettingsProvider,
   TaskPanelApp,
-  createWebSessionHostControllerFromAdapter,
+  createCoreSessionHostController,
   readWebCommaClientSettings,
 } from "@comma/app/task-panel";
 import { initializeCommaI18n, resolveLocalePreference } from "@comma/i18n";
 import "@comma/app/styles.css";
 
 import type { TaskPanelHost } from "@comma/app/task-panel";
-import type { WebCookieSessionAdapter } from "@comma/app/task-panel-session";
 
 /** The subset of `Telegram.WebApp` that the Task panel uses. */
 export type TelegramApp = {
@@ -35,7 +35,8 @@ export type TaskPanelTarget = {
 };
 
 export function renderTaskPanel(
-  lifecycle: WebCookieSessionAdapter,
+  core: CoreClient,
+  apiBaseUrl: string,
   target: TaskPanelTarget,
   result: "browser" | "signed_in" | "account_mismatch" | "failed",
   telegram?: TelegramApp
@@ -45,7 +46,8 @@ export function renderTaskPanel(
   const initialSettings = readWebCommaClientSettings();
   const locale = resolveLocalePreference(initialSettings.localePreference);
   initializeCommaI18n([locale]);
-  const controller = createWebSessionHostControllerFromAdapter(lifecycle, locale);
+  const controller = createCoreSessionHostController({ apiBaseUrl, core, locale });
+  import.meta.hot?.dispose(() => controller.dispose?.());
   const rootView = createRoot(root);
   const supports = (version: string) => telegram?.isVersionAtLeast?.(version) === true;
   let showingPanel = false;
@@ -78,7 +80,9 @@ export function renderTaskPanel(
         <CommaWebClientSettingsProvider initialSettings={initialSettings}>
           <CommaClientSettingsI18nProvider>
             <CommaSessionHostProvider controller={controller}>
-              <TaskPanelApp host={host} target={target} />
+              <CoreProvider client={core}>
+                <TaskPanelApp host={host} target={target} />
+              </CoreProvider>
             </CommaSessionHostProvider>
           </CommaClientSettingsI18nProvider>
         </CommaWebClientSettingsProvider>

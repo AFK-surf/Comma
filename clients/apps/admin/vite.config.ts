@@ -59,15 +59,9 @@ export function createAdminViteConfig(environment: {
     },
     resolve: {
       alias: {
-        "@comma/app/auth/styles.css": resolve("../../packages/app/src/auth/styles.css"),
-        "@comma/app/auth": resolve("../../packages/app/src/auth/index.ts"),
         "@comma/config": resolve("../../packages/config/src/index.ts"),
-        "@comma/native-bridge": resolve("../../packages/native-bridge/src/index.ts"),
-        "@comma/session-contract": resolve(
-          "../../packages/session-contract/src/index.ts"
-        ),
         "@comma/ui/styles.css": resolve("../../packages/ui/src/styles.css"),
-        "@comma/ui": resolve("../../packages/ui/src/index.ts"),
+        "@comma/ui": resolve("../../packages/ui/src"),
       },
     },
     plugins: [

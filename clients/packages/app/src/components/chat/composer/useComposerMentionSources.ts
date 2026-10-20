@@ -1,30 +1,31 @@
 import { useDriveCatalogMentions } from "../../drive/useDriveCatalogMentions";
-import {
-  readTaskSummary,
-  requestTaskSummary,
-  subscribeTaskSummaries,
-} from "../../tasks/taskArchiveState";
+import { useTaskSummaries } from "../../tasks/useTaskArchive";
 import { useProductInboxSnapshot } from "../../../product-inbox";
-import { getDriveBackend } from "../../drive/driveBackend";
+import { driveNodeAvailable, ensureDriveFileBlob } from "../../drive/driveBackend";
 import {
   getDriveStore,
+  useDriveSnapshot,
   type DriveFile,
   type DriveSnapshot,
 } from "../../drive/driveStore";
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { taskStatusBucket, type TaskStatusBucket } from "@comma/ui";
+import { useCallback, useMemo, useState } from "react";
+import {
+  taskStatusBucket,
+  type TaskStatusBucket,
+} from "@comma/ui/components/task-workspace";
 import type {
   RecommendationDocumentPart,
   RecommendationEnvelope,
   RecommendationSource,
 } from "@comma/recommendation-contract";
-import type { CommaApiClient, CommaConversation, CommaPlugin } from "../../../api";
+import { useCall, useTopic } from "@comma/core-client";
+import type { MentionTask } from "@comma/core/contract";
 import { useOnboardingAhead } from "../../onboarding/useOnboardingAhead";
 
 /**
- * Tasks, routines, and plugins use a short per-scope cache. Drive queries
- * Main's shared metadata index only while the menu is open. Loading sources
- * keep their searching row visible.
+ * Tasks, routines, and plugins come from the client core, which keeps them
+ * fresh. Drive queries Main's shared metadata index only while the menu is
+ * open. Loading sources keep their searching row visible.
  */
 export interface ComposerTaskMentionItem {
   conversationId: string;
@@ -38,6 +39,15 @@ export type ComposerRoutineMentionItem = {
   label: string;
   source?: RecommendationSource | undefined;
 } & ({ kind: "link"; href: string } | { kind: "task"; conversationId: string });
+
+/** A model the workspace can run, named in the Router chat to start a Task with it. */
+export interface ComposerModelMentionItem {
+  id: string;
+  name: string;
+  vendor: string;
+  /** The thinking efforts it takes; none: it has only its default. */
+  efforts: readonly string[];
+}
 
 export interface ComposerPluginMentionItem {
   brand?: string | null | undefined;
@@ -72,169 +82,34 @@ export interface MentionSourceState<Item> {
 export interface ComposerMentionSources {
   drive: MentionSourceState<ComposerDriveMentionItem> & {
     error?: string | undefined;
+    /** The items already match the menu's query (the core searched for it). */
+    prefiltered?: boolean | undefined;
+    /** What the "@" menu asks for while it is open; null once it closed. */
     onMenuQueryChange?: ((query: string | null) => void) | undefined;
     retry?: (() => void) | undefined;
     browse?: ReturnType<typeof useDriveCatalogMentions>["browse"] | undefined;
   };
+  /** Models a Task can run with: in the Router chat only (`models`), read once the menu first opens. */
+  models: MentionSourceState<ComposerModelMentionItem>;
   plugins: MentionSourceState<ComposerPluginMentionItem>;
   routines: MentionSourceState<ComposerRoutineMentionItem>;
   tasks: MentionSourceState<ComposerTaskMentionItem>;
 }
 
-const CACHE_TTL_MS = 60 * 1000;
-
-type CacheEntry<Value> =
-  | { state: "loading"; promise: Promise<Value> }
-  | { state: "ready"; fetchedAt: number; value: Value };
-
-let cachesByApi = new WeakMap<CommaApiClient, Map<string, CacheEntry<unknown>>>();
-
-export function resetComposerMentionSourcesCacheForTest() {
-  cachesByApi = new WeakMap();
-}
-
-function loadCached<Value>(
-  api: CommaApiClient,
-  key: string,
-  fetch: () => Promise<Value>,
-  empty: Value
-): Promise<Value> {
-  let cache = cachesByApi.get(api);
-  if (!cache) {
-    cache = new Map();
-    cachesByApi.set(api, cache);
-  }
-
-  const cached = cache.get(key) as CacheEntry<Value> | undefined;
-  if (cached?.state === "ready" && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-    return Promise.resolve(cached.value);
-  }
-  if (cached?.state === "loading") {
-    return cached.promise;
-  }
-
-  const promise = fetch().then(
-    (value) => {
-      cache.set(key, { fetchedAt: Date.now(), state: "ready", value });
-      return value;
-    },
-    () => {
-      // A failed source degrades to an empty section; the next menu open
-      // retries because the failure is never cached.
-      cache.delete(key);
-      return empty;
-    }
-  );
-  cache.set(key, { promise, state: "loading" });
-  while (cache.size > 128) cache.delete(cache.keys().next().value!);
-  return promise;
-}
-
-function readyCached<Value>(api: CommaApiClient, key: string): Value | undefined {
-  const cached = cachesByApi.get(api)?.get(key) as CacheEntry<Value> | undefined;
-  return cached?.state === "ready" && Date.now() - cached.fetchedAt < CACHE_TTL_MS
-    ? cached.value
-    : undefined;
-}
-
 const EMPTY_ITEMS: never[] = [];
 
-interface ScopedMentionSourceState<Item> {
-  api: CommaApiClient | undefined;
-  key: string | undefined;
-  value: MentionSourceState<Item>;
-}
-
-function mentionSourceStateForScope<Item>(
-  api: CommaApiClient | undefined,
-  key: string | undefined
-): ScopedMentionSourceState<Item> {
-  const cached = api && key ? readyCached<Item[]>(api, key) : undefined;
-  return {
-    api,
-    key,
-    value: cached
-      ? { items: cached, status: "ready" }
-      : { items: EMPTY_ITEMS, status: api && key ? "loading" : "ready" },
-  };
-}
-
-function useMentionSource<Item>(
-  api: CommaApiClient | undefined,
-  key: string | undefined,
-  fetch: () => Promise<Item[]>
-): MentionSourceState<Item> {
-  const [state, setState] = useState<ScopedMentionSourceState<Item>>(() =>
-    mentionSourceStateForScope<Item>(api, key)
-  );
-  const visibleState =
-    state.api === api && state.key === key
-      ? state
-      : mentionSourceStateForScope<Item>(api, key);
-
-  useEffect(() => {
-    if (!api || !key) {
-      setState({
-        api,
-        key,
-        value: { items: EMPTY_ITEMS, status: "ready" },
-      });
-      return undefined;
-    }
-
-    const cached = readyCached<Item[]>(api, key);
-    if (cached) {
-      setState((current) =>
-        current.api === api &&
-        current.key === key &&
-        current.value.items === cached &&
-        current.value.status === "ready"
-          ? current
-          : { api, key, value: { items: cached, status: "ready" } }
-      );
-      return undefined;
-    }
-
-    let cancelled = false;
-    setState({
-      api,
-      key,
-      value: { items: EMPTY_ITEMS, status: "loading" },
-    });
-    void loadCached(api, key, fetch, EMPTY_ITEMS as Item[]).then((items) => {
-      if (!cancelled) {
-        setState({ api, key, value: { items, status: "ready" } });
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-    // The key encodes every fetch input; fetch identity is deliberately loose.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, key]);
-
-  return visibleState.value;
-}
-
 function taskItems(
-  conversations: CommaConversation[],
+  tasks: readonly MentionTask[],
   excludeConversationId: string | undefined
 ): ComposerTaskMentionItem[] {
-  return conversations
-    .filter(
-      (conversation) =>
-        conversation.kind === "agent_task" &&
-        conversation.status !== "archived" &&
-        conversation.id !== excludeConversationId &&
-        conversation.title.trim().length > 0
-    )
-    .map((conversation) => ({
-      conversationId: conversation.id,
-      statusBucket: taskStatusBucket(conversation.status),
-      title: conversation.title,
-      updatedAt: conversation.updated_at ?? 0,
-    }))
-    .toSorted((a, b) => b.updatedAt - a.updatedAt);
+  return tasks
+    .filter((task) => task.id !== excludeConversationId)
+    .map((task) => ({
+      conversationId: task.id,
+      statusBucket: taskStatusBucket(task.status),
+      title: task.title,
+      updatedAt: task.updatedAt,
+    }));
 }
 
 function collectRoutineParts(
@@ -320,22 +195,18 @@ const driveLocationLabel = (spaceName: string, folderPath: string | undefined) =
 
 /**
  * The Drive files the composer can hand to an upload, newest first — the
- * menu's short list is the head of this. With a node every file reads
- * through it; without one only a file whose bytes are already here can be
- * attached, so the demo store's unsynced rows stay out of the list.
+ * menu's short list is the head of this. Each reads its bytes through the core.
  */
 export function driveMentionItems(
   snapshot: Pick<DriveSnapshot, "files" | "spaces">,
-  readFile: ((file: DriveFile) => Promise<Blob>) | undefined
+  readFile: (file: DriveFile) => Promise<Blob>
 ): ComposerDriveMentionItem[] {
   const spaceNames = new Map(snapshot.spaces.map((space) => [space.id, space.name]));
   return snapshot.files.toSorted(compareDriveRecency).flatMap((file) => {
     const spaceName = spaceNames.get(file.spaceId);
     if (spaceName === undefined) return [];
     const location = driveLocationLabel(spaceName, file.folderPath);
-    if (readFile) return [{ file, location, read: () => readFile(file) }];
-    const { blob } = file;
-    return blob ? [{ file, location, read: () => Promise.resolve(blob) }] : [];
+    return [{ file, location, read: () => readFile(file) }];
   });
 }
 
@@ -359,148 +230,184 @@ export function driveMentionSections(
 
 function useDriveMentionSource(enabled: boolean): ComposerMentionSources["drive"] {
   const store = getDriveStore();
-  const backend = enabled ? getDriveBackend() : undefined;
-  const catalog = useDriveCatalogMentions(store, backend);
-  const snapshot = useSyncExternalStore(
-    store.subscribe,
-    store.getSnapshot,
-    store.getSnapshot
-  );
+  const call = useCall();
+  // With this device's node, the core searches its index; without one (the web), the Drive the core reads for it.
+  const node = driveNodeAvailable();
+  const catalog = useDriveCatalogMentions(store, enabled && node);
+  // The web reads Drive once the "@" menu first opens, not for every composer shown.
+  const [asked, setAsked] = useState(false);
+  const onMenuQueryChange = useCallback((query: string | null) => {
+    if (query !== null) setAsked(true);
+  }, []);
+  const snapshot = useDriveSnapshot(store, enabled && !node && asked);
   return useMemo(
     () =>
-      backend
-        ? catalog
+      node
+        ? { ...catalog, prefiltered: true }
         : {
-            items: enabled ? driveMentionItems(snapshot, undefined) : EMPTY_ITEMS,
+            items:
+              enabled && asked
+                ? driveMentionItems(snapshot, (file) =>
+                    ensureDriveFileBlob(store, call, file)
+                  )
+                : EMPTY_ITEMS,
             status: "ready" as const,
+            onMenuQueryChange,
           },
-    [backend, catalog, enabled, snapshot]
+    [asked, call, catalog, enabled, node, onMenuQueryChange, snapshot, store]
   );
 }
 
 export function useComposerMentionSources({
-  api,
   enabled = true,
   excludeConversationId,
   groupId,
+  models: modelsShown = false,
   workspaceId,
 }: {
-  api: CommaApiClient | undefined;
   enabled?: boolean;
   excludeConversationId?: string | undefined;
   groupId: string | undefined;
+  /** The Router chat: a model named there starts a Task with it. */
+  models?: boolean;
   workspaceId: string | undefined;
 }): ComposerMentionSources {
   const projection = useProductInboxSnapshot();
-  const subscribeSummaries = useCallback(
-    (listener: () => void) => (api ? subscribeTaskSummaries(api, listener) : () => {}),
-    [api]
+  // The Group's Tasks as the core keeps them (null while it reads them). Let go at
+  // once, so a later showing finds out whether they are a minute old.
+  const { value: groupTasks } = useTopic(
+    enabled && groupId ? { topic: "mentionTasks", group: groupId } : null,
+    { lingerMs: 0 }
   );
-  // Each source needs its client method to exist: reduced clients (embedded
-  // surfaces, partial test stubs) simply lose that section instead of
-  // throwing, and the panel degrades to whatever sources remain.
-  const tasksKey =
-    enabled && groupId && typeof api?.listConversations === "function"
-      ? `tasks ${groupId} ${projection?.snapshot.lastSyncedAt ?? 0}`
-      : undefined;
   // Reading the Routines creates them: while the first-launch onboarding is
   // ahead they wait for its apps step, which starts them with every app it
   // connected.
   const onboardingAhead = useOnboardingAhead();
-  const routinesKey =
-    enabled &&
-    !onboardingAhead &&
-    workspaceId &&
-    typeof api?.getRecommendations === "function"
-      ? `routines ${workspaceId}`
-      : undefined;
-  const pluginsKey =
-    enabled && workspaceId && typeof api?.listWorkspacePlugins === "function"
-      ? `plugins ${workspaceId}`
-      : undefined;
+  const routinesShown = enabled && !onboardingAhead && !!workspaceId;
 
-  const rawTasks = useMentionSource<CommaConversation>(api, tasksKey, () =>
-    api!.listConversations(groupId!)
+  // The briefing as the core reads it, once per showing of the list.
+  const { value: briefing } = useTopic(
+    routinesShown
+      ? { topic: "recommendations", workspace: workspaceId, reads: "once" }
+      : null
   );
-  const routines = useMentionSource<ComposerRoutineMentionItem>(api, routinesKey, () =>
-    api!.getRecommendations(workspaceId!).then(routineItems)
+  const routines = useMemo<MentionSourceState<ComposerRoutineMentionItem>>(
+    () =>
+      !routinesShown
+        ? { items: EMPTY_ITEMS, status: "ready" }
+        : briefing?.envelope
+          ? { items: routineItems(briefing.envelope), status: "ready" }
+          : briefing?.failure
+            ? { items: EMPTY_ITEMS, status: "ready" }
+            : { items: EMPTY_ITEMS, status: "loading" },
+    [briefing, routinesShown]
   );
-  const rawPlugins = useMentionSource<CommaPlugin>(api, pluginsKey, () =>
-    api!.listWorkspacePlugins(workspaceId!)
+  // The workspace's plugins as the client core keeps them.
+  const { value: catalog } = useTopic(
+    enabled && workspaceId ? { topic: "plugins", workspace: workspaceId } : null
   );
-  const drive = useDriveMentionSource(enabled);
+  const driveSource = useDriveMentionSource(enabled);
+  // The workspace's models are read once the "@" menu first opens here (the
+  // Settings page's read: three requests).
+  const [modelsAsked, setModelsAsked] = useState(false);
+  const askModels = modelsShown && !modelsAsked;
+  const driveQuery = driveSource.onMenuQueryChange;
+  const onMenuQueryChange = useCallback(
+    (query: string | null) => {
+      driveQuery?.(query);
+      if (query !== null && askModels) setModelsAsked(true);
+    },
+    [askModels, driveQuery]
+  );
+  const drive = useMemo(
+    () => ({ ...driveSource, onMenuQueryChange }),
+    [driveSource, onMenuQueryChange]
+  );
+  const { value: shownModels } = useTopic(
+    enabled && modelsShown && modelsAsked && workspaceId
+      ? { topic: "models", prefer: workspaceId }
+      : null
+  );
+  const models = useMemo<MentionSourceState<ComposerModelMentionItem>>(
+    () =>
+      !modelsShown || !modelsAsked
+        ? { items: EMPTY_ITEMS, status: "ready" }
+        : shownModels?.catalog
+          ? {
+              items: shownModels.models
+                .filter((model) => model.serving.length > 0)
+                .map((model) => ({
+                  id: model.id,
+                  name: model.name,
+                  vendor: model.vendor,
+                  efforts: model.efforts,
+                })),
+              status: "ready",
+            }
+          : { items: EMPTY_ITEMS, status: shownModels?.error ? "ready" : "loading" },
+    [modelsAsked, modelsShown, shownModels]
+  );
 
   const tasks = useMemo<MentionSourceState<ComposerTaskMentionItem>>(
-    () => ({
-      items: taskItems(
-        rawTasks.items.filter(
-          (task) =>
-            !projection?.snapshot.items.some(
-              (item) =>
-                item.conversationId === task.id &&
-                item.groupId === groupId &&
-                item.status === "archived"
-            )
-        ),
-        excludeConversationId
-      ),
-      status: rawTasks.status,
-    }),
-    [excludeConversationId, rawTasks, projection, groupId]
+    () =>
+      !enabled || !groupId
+        ? { items: EMPTY_ITEMS, status: "ready" }
+        : groupTasks
+          ? {
+              items: taskItems(
+                groupTasks.filter(
+                  (task) =>
+                    !projection?.items.some(
+                      (item) =>
+                        item.conversationId === task.id &&
+                        item.groupId === groupId &&
+                        item.status === "archived"
+                    )
+                ),
+                excludeConversationId
+              ),
+              status: "ready",
+            }
+          : { items: EMPTY_ITEMS, status: "loading" },
+    [enabled, excludeConversationId, groupTasks, projection, groupId]
   );
   const plugins = useMemo<MentionSourceState<ComposerPluginMentionItem>>(
     () => ({
-      items: rawPlugins.items
-        .filter((plugin) => plugin.installed)
-        .map((plugin) => ({
-          brand: plugin.brand,
-          id: plugin.id,
-          name: plugin.name,
-          summary: plugin.summary,
-        })),
-      status: rawPlugins.status,
+      items:
+        catalog?.status === "ready"
+          ? catalog.plugins
+              .filter((plugin) => plugin.installed)
+              .map((plugin) => ({
+                brand: plugin.brand,
+                id: plugin.id,
+                name: plugin.name,
+                summary: plugin.summary,
+              }))
+          : [],
+      status: catalog?.status === "loading" ? "loading" : "ready",
     }),
-    [rawPlugins]
+    [catalog]
   );
 
-  useEffect(() => {
-    if (!api || !groupId) return undefined;
-    const request = () => {
-      for (const item of routines.items)
-        if (item.kind === "task") requestTaskSummary(api, groupId, item.conversationId);
-    };
-    request();
-    // An owner read marks cached facts stale without rendering the composer;
-    // ask again once it has.
-    return subscribeTaskSummaries(api, request);
-  }, [api, groupId, routines.items]);
-  // Read as one key, so the conversation renders again only when a routine's
-  // Task changes whether it is shown, not on every change to the cache.
-  const readHiddenRoutines = () =>
-    routines.items
-      .filter((item) => {
-        if (item.kind !== "task") return false;
-        const canonical =
-          api && groupId
-            ? readTaskSummary(api, groupId, item.conversationId)
-            : undefined;
-        const live = projection?.snapshot.items.find(
-          (task) =>
-            task.groupId === groupId && task.conversationId === item.conversationId
-        );
-        const status =
-          live && (live.archiveVersion ?? 0) >= (canonical?.updated_at ?? 0)
-            ? live.status
-            : canonical?.status;
-        return status === undefined || status === "archived";
-      })
-      .map((item) => item.id)
-      .join("\u0000");
-  const hiddenRoutines = useSyncExternalStore(
-    subscribeSummaries,
-    readHiddenRoutines,
-    readHiddenRoutines
+  // A routine's Task shows only while the core knows it is not archived.
+  const routineTasks = useTaskSummaries(
+    groupId ?? "",
+    useMemo(
+      () =>
+        routines.items.flatMap((item) =>
+          item.kind === "task" ? [item.conversationId] : []
+        ),
+      [routines.items]
+    )
   );
+  const hiddenRoutines = routines.items
+    .filter((item) => {
+      if (item.kind !== "task") return false;
+      const status = routineTasks.get(item.conversationId)?.status;
+      return status === undefined || status === "archived";
+    })
+    .map((item) => item.id)
+    .join("\u0000");
   const visibleRoutines = useMemo(() => {
     const hidden = new Set(hiddenRoutines.split("\u0000"));
     return {
@@ -509,7 +416,7 @@ export function useComposerMentionSources({
     };
   }, [routines, hiddenRoutines]);
   return useMemo(
-    () => ({ drive, plugins, routines: visibleRoutines, tasks }),
-    [drive, plugins, visibleRoutines, tasks]
+    () => ({ drive, models, plugins, routines: visibleRoutines, tasks }),
+    [drive, models, plugins, visibleRoutines, tasks]
   );
 }

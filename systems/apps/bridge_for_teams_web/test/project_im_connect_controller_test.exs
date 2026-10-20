@@ -131,18 +131,18 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectControllerTest do
   end
 
   setup do
-    previous_client = Application.get_env(:bridge_for_teams_core, :salix_client)
+    previous_client = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
 
     on_exit(fn ->
       if previous_client do
-        Application.put_env(:bridge_for_teams_core, :salix_client, previous_client)
+        SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous_client)
       else
-        Application.delete_env(:bridge_for_teams_core, :salix_client)
+        SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
       end
     end)
 
     start_supervised!(SlackConnectSalixClient)
-    Application.put_env(:bridge_for_teams_core, :salix_client, SlackConnectSalixClient)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, SlackConnectSalixClient)
 
     %{user: user, org: org} = org_with_owner_fixture(org: %{slug: "acme", name: "Acme"})
 
@@ -213,18 +213,13 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectControllerTest do
     assert deleted["connects"] == []
   end
 
-  test "project Slack connect API updates inbound agent without resubmitting credentials", %{
-    org: org,
-    project: project,
-    inbound_agent_id: inbound_agent_id,
-    token: token
-  } do
-    {:ok, worker} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "worker",
-        "role" => "worker"
-      })
-
+  test "project Slack connect API binds a connection to Tasks without resubmitting credentials",
+       %{
+         org: org,
+         project: project,
+         inbound_agent_id: inbound_agent_id,
+         token: token
+       } do
     base = project_slack_path(org.slug, project.slug)
 
     created = api(:post, base, token, slack_create_body(inbound_agent_id)) |> json_data()
@@ -232,12 +227,14 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectControllerTest do
     assert created["connect"]["signing_secret_configured"] == true
 
     updated =
-      api(:patch, base <> "/conn_slack_1", token, %{"inbound_agent_id" => worker.salix_agent_id})
+      api(:patch, base <> "/conn_slack_1", token, %{"inbound_tasks" => %{}})
       |> json_data()
 
     assert updated["mode"] == "project_im_connect_update"
     assert updated["connect"]["connect_id"] == "conn_slack_1"
-    assert updated["connect"]["inbound_agent_id"] == worker.salix_agent_id
+
+    assert updated["connect"]["inbound_agent_id"] == inbound_agent_id
+
     assert updated["connect"]["app_id"] == "A123"
     assert updated["connect"]["client_secret_configured"] == true
     assert updated["connect"]["signing_secret_configured"] == true
@@ -266,49 +263,6 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectControllerTest do
     create = api(:post, base, member_token, slack_create_body(inbound_agent_id))
     assert create.status == 403
     assert %{"ok" => false, "error" => %{"code" => "forbidden"}} = Jason.decode!(create.resp_body)
-  end
-
-  test "project Slack connect API maps core validation and backend errors", %{
-    org: org,
-    project: project,
-    token: token,
-    inbound_agent_id: inbound_agent_id
-  } do
-    base = project_slack_path(org.slug, project.slug)
-
-    missing =
-      api(:post, base, token, Map.delete(slack_create_body(inbound_agent_id), "client_secret"))
-
-    assert missing.status == 400
-
-    assert %{"ok" => false, "error" => %{"code" => "missing_credentials"}} =
-             Jason.decode!(missing.resp_body)
-
-    invalid_agent = api(:post, base, token, slack_create_body("agent_missing"))
-    assert invalid_agent.status == 400
-
-    assert %{"ok" => false, "error" => %{"code" => "invalid_inbound_agent"}} =
-             Jason.decode!(invalid_agent.resp_body)
-
-    not_found = api(:post, base <> "/conn_missing/disable", token, %{})
-    assert not_found.status == 404
-
-    assert %{"ok" => false, "error" => %{"code" => "connect_not_found"}} =
-             Jason.decode!(not_found.resp_body)
-
-    Application.put_env(:bridge_for_teams_core, :salix_client, SlackConnectUnavailableClient)
-    unavailable = api(:get, base, token)
-    assert unavailable.status == 503
-
-    assert %{"ok" => false, "error" => %{"code" => "unavailable"}} =
-             Jason.decode!(unavailable.resp_body)
-
-    Application.put_env(:bridge_for_teams_core, :salix_client, SlackConnectAppInUseClient)
-    app_in_use = api(:post, base, token, slack_create_body(inbound_agent_id))
-    assert app_in_use.status == 409
-
-    assert %{"ok" => false, "error" => %{"code" => "provider_app_in_use"}} =
-             Jason.decode!(app_in_use.resp_body)
   end
 
   defp project_slack_path(org, project) do

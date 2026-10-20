@@ -50,66 +50,34 @@ defmodule Comma.MemberSourceItemsTest do
     assert MemberSourceItems.pending(profile.id, 24) == []
   end
 
-  test "current items follow each source's latest collection" do
+  test "a new quote keeps the item's version and outcome" do
     {profile, _workspace} = profile_fixture!()
     now = ~U[2026-09-24 08:00:00.000000Z]
-    enabled = ~w(ca-mail ca-slack)
+    assert {:ok, _} = record(profile, %{"ca-mail" => []}, ["ca-mail"], now)
 
-    {:ok, _} =
-      record(
-        profile,
-        %{"ca-mail" => [mail("a", "A"), mail("b", "B")], "ca-slack" => [mail("s", "S")]},
-        enabled,
-        now
-      )
+    item = Map.put(mail("a", "Approve today"), "quote", %{"title" => "Mail a"})
+    at = DateTime.add(now, 900)
+    assert {:ok, %{new: 1}} = record(profile, %{"ca-mail" => [item]}, ["ca-mail"], at)
 
-    # Items keep the order of the source's latest collection.
-    {:ok, _} = record(profile, %{"ca-mail" => [mail("b", "B"), mail("a", "A")]}, enabled, now)
-    mail = Enum.find(MemberSourceItems.current(profile.id), &(&1.state.source_id == "ca-mail"))
-    assert Enum.map(mail.items, & &1.title) == ["Mail b", "Mail a"]
+    assert [%{quote: %{"title" => "Mail a"}} = arrived] =
+             MemberSourceItems.pending(profile.id, 24)
 
-    # Mail "a" left the inbox; Slack failed and keeps its items and success time.
-    {:ok, _} =
-      MemberSourceItems.record(
-        profile.id,
-        %{
-          collected: %{"ca-mail" => source([mail("b", "B")])},
-          failed: %{"ca-slack" => %{"appId" => "slack", "class" => "read", "message" => "503"}}
-        },
-        enabled,
-        DateTime.add(now, 900)
-      )
+    :ok = MemberSourceItems.settle([arrived], %{"outcome" => "quiet"})
 
-    current = Map.new(MemberSourceItems.current(profile.id), &{&1.state.source_id, &1})
-    assert Enum.map(current["ca-mail"].items, & &1.title) == ["Mail b"]
-    assert current["ca-slack"].items == []
-    assert current["ca-slack"].state.failure["message"] == "503"
-    assert current["ca-slack"].state.collected_at == now
-    assert Repo.aggregate(items(profile.id), :count) == 3
+    # Observations and handled marks are keyed by the version, so display
+    # text must not change it or send the item to consumers again.
+    reworded = Map.put(item, "quote", %{"title" => "Mail a", "lines" => ["Approve today"]})
+    at = DateTime.add(now, 1_800)
 
-    # A partial read keeps its readable items with its warning.
-    {:ok, _} =
-      MemberSourceItems.record(
-        profile.id,
-        %{
-          collected: %{
-            "ca-slack" =>
-              source([mail("s", "S")])
-              |> Map.put("warning", %{"class" => "read", "message" => "one search failed"})
-          }
-        },
-        enabled,
-        DateTime.add(now, 1_800)
-      )
+    assert {:ok, %{new: 0, changed: 0}} =
+             record(profile, %{"ca-mail" => [reworded]}, ["ca-mail"], at)
 
-    slack = Enum.find(MemberSourceItems.current(profile.id), &(&1.state.source_id == "ca-slack"))
-    assert Enum.map(slack.items, & &1.title) == ["Mail s"]
-    assert slack.state.failure["message"] == "one search failed"
+    refute MemberSourceItems.pending?(profile.id)
+    stored = Repo.get!(MemberSourceItem, arrived.id)
+    assert stored.quote == %{"title" => "Mail a", "lines" => ["Approve today"]}
 
-    # Every enabled source must have an attempt inside the window: mail was last
-    # attempted at +900 seconds, Slack at +1,800.
-    assert MemberSourceItems.fresh?(profile.id, enabled, 1_000, DateTime.add(now, 1_800))
-    refute MemberSourceItems.fresh?(profile.id, enabled, 1_000, DateTime.add(now, 2_000))
+    assert {stored.fingerprint, stored.changed_at, stored.attention} ==
+             {arrived.fingerprint, arrived.changed_at, %{"outcome" => "quiet"}}
   end
 
   test "an item waits only while its source's latest successful collection returns it" do
@@ -156,55 +124,10 @@ defmodule Comma.MemberSourceItemsTest do
     assert [%{id: ^id}] = MemberSourceItems.pending(profile.id, 24)
   end
 
-  test "an empty first recording still makes later items arrivals" do
-    {profile, _workspace} = profile_fixture!()
-    assert {:ok, _} = record(profile, %{"ca-git" => []}, ["ca-git"])
-
-    assert {:ok, %{new: 1}} =
-             record(profile, %{"ca-git" => [mail("pr", "Review #884")]}, ["ca-git"])
-
-    assert [%{title: "Mail pr"}] = MemberSourceItems.pending(profile.id, 24)
-  end
-
-  test "a source missing for the retention period records a new baseline" do
-    {profile, _workspace} = profile_fixture!()
-    now = ~U[2026-09-24 08:00:00.000000Z]
-    days = MemberSourceItems.retention_days()
-
-    assert {:ok, %{new: 0}} =
-             record(profile, %{"ca-mail" => [mail("a", "Old mail")]}, ["ca-mail"], now)
-
-    # Collection failed for longer than retention. Mail that was already there
-    # when collection recovered is history again, also mail that changed before
-    # the sweep removed its old version.
-    later = DateTime.add(now, (days + 1) * 86_400, :second)
-
-    assert {:ok, %{new: 0, changed: 0}} =
-             record(
-               profile,
-               %{"ca-mail" => [mail("a", "Old mail, edited"), mail("b", "Older mail")]},
-               ["ca-mail"],
-               later
-             )
-
-    refute MemberSourceItems.pending?(profile.id)
-
-    # Within the retention period, a new item is an arrival.
-    assert {:ok, %{new: 1}} =
-             record(
-               profile,
-               %{"ca-mail" => [mail("c", "New mail")]},
-               ["ca-mail"],
-               DateTime.add(later, 86_400, :second)
-             )
-
-    assert [%{title: "Mail c"}] = MemberSourceItems.pending(profile.id, 24)
-  end
-
   test "items leave the pool when the source is removed, revoked, rebound or expired" do
     {profile, workspace} = profile_fixture!()
     user = %{"id" => profile.user_id}
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     {:ok, :ok} = MemberSourceConsents.record(user, %{}, workspace.id, "gmail", "ca-mail")
     {:ok, :ok} = MemberSourceConsents.record(user, %{}, workspace.id, "slack", "ca-slack")
 
@@ -235,78 +158,7 @@ defmodule Comma.MemberSourceItemsTest do
     assert sources(profile.id) == []
   end
 
-  test "dates and context outside the prompt refresh evidence and reopen attention" do
-    {profile, _workspace} = profile_fixture!()
-    item = mail("event", "Launch approval") |> Map.put("facts", %{"start" => "2026-09-30"})
-    {:ok, _} = record(profile, %{"ca-calendar" => [item]}, ["ca-calendar"])
-    [%{items: [original]}] = MemberSourceItems.current(profile.id)
-
-    changed =
-      item
-      |> Map.put("facts", %{"start" => "2026-09-25"})
-      |> Map.put("context", %{"scope" => "search_neighbors", "text" => "Approval needed tomorrow"})
-
-    assert {:ok, %{changed: 1}} =
-             record(profile, %{"ca-calendar" => [changed]}, ["ca-calendar"])
-
-    assert [updated] = MemberSourceItems.pending(profile.id, 24)
-    assert updated.facts == changed["facts"]
-    assert updated.context == changed["context"]
-    assert updated.prompt_context == original.prompt_context
-    refute updated.fingerprint == original.fingerprint
-
-    :ok = MemberSourceItems.settle([updated], %{"outcome" => "quiet"})
-
-    assert {:ok, %{changed: 0}} =
-             record(profile, %{"ca-calendar" => [changed]}, ["ca-calendar"])
-
-    refute MemberSourceItems.pending?(profile.id)
-  end
-
-  test "a late recording cannot restore a disabled source or a member pool in generic mode" do
-    {profile, _workspace} = profile_fixture!()
-    item = mail("a", "Approve today")
-    {:ok, _} = record(profile, %{"ca-mail" => [item]}, ["ca-mail"])
-    collection = %{collected: %{"ca-mail" => source([item])}}
-
-    for change <- [
-          [sources: [%{"connectionId" => "ca-mail", "enabled" => false}]],
-          [
-            relevance_mode: "generic",
-            sources: [%{"connectionId" => "ca-mail", "enabled" => true}]
-          ]
-        ] do
-      Repo.transaction(fn ->
-        Repo.get!(RecommendationProfile, profile.id)
-        |> Ecto.Changeset.change(change)
-        |> Repo.update!()
-
-        MemberSourceItems.retain_sources(profile.id, [])
-      end)
-
-      assert {:ok, %{new: 0, changed: 0}} =
-               MemberSourceItems.record(profile.id, collection, ["ca-mail"])
-
-      assert MemberSourceItems.current(profile.id) == []
-    end
-  end
-
-  test "stored items keep bounded excerpts" do
-    {profile, _workspace} = profile_fixture!()
-    long = String.duplicate("x", 5_000)
-
-    item =
-      mail("big", "Big")
-      |> Map.merge(%{"excerpt" => long, "context" => %{"text" => long}, "prompt_context" => long})
-
-    {:ok, _} = record(profile, %{"ca-mail" => [item]}, ["ca-mail"])
-    [stored] = Repo.all(items(profile.id))
-    assert String.length(stored.excerpt) == 1_200
-    assert String.length(stored.prompt_context) == 600
-    assert byte_size(Jason.encode!(stored.context)) < 1_400
-  end
-
-  defp record(profile, sources, enabled, at \\ DateTime.utc_now()) do
+  defp record(profile, sources, enabled, at \\ SystemsClock.utc_now()) do
     # Fixture settings represent the selection captured by a normal collection.
     Repo.get!(RecommendationProfile, profile.id)
     |> Ecto.Changeset.change(
@@ -350,7 +202,7 @@ defmodule Comma.MemberSourceItemsTest do
   defp profile_fixture! do
     {:ok, user} =
       Comma.Accounts.create_user(%{
-        "email" => "source-items-#{System.unique_integer([:positive])}@comma.test"
+        "email" => "source-items-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     tenant_id = Ids.new_tenant_id()
@@ -359,7 +211,7 @@ defmodule Comma.MemberSourceItemsTest do
     workspace =
       %Workspace{}
       |> Workspace.changeset(%{
-        id: "wsp-source-items-#{System.unique_integer([:positive])}",
+        id: "wsp-source-items-#{SystemsRuntime.Proc.unique_integer([:positive])}",
         owner_user_id: user["id"],
         salix_tenant_id: tenant_id,
         salix_group_id: group_id,

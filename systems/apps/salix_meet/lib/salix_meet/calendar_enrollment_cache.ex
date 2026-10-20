@@ -85,7 +85,7 @@ defmodule SalixMeet.CalendarEnrollmentCache do
 
   defp valid_identity?(identity) do
     Enum.all?(["connect_id", "tenant_id", "group_id", "provider"], &(trim(identity[&1]) != "")) and
-      identity["provider"] in ["slack", "feishu"]
+      identity["provider"] in ["slack", "feishu", "lark"]
   end
 
   defp valid_group?(group, identity) when is_map(group) do
@@ -105,6 +105,11 @@ defmodule SalixMeet.CalendarEnrollmentCache do
        do: trim(group["channel_id"]) != ""
 
   defp valid_target?(%{"provider" => "feishu", "mode" => "notify"} = group) do
+    trim(group["chat_id"]) != "" and valid_calendar?(group["create_calendar"]) and
+      valid_mentions?(group["mentions"])
+  end
+
+  defp valid_target?(%{"provider" => "lark", "mode" => "notify"} = group) do
     trim(group["chat_id"]) != "" and valid_calendar?(group["create_calendar"]) and
       valid_mentions?(group["mentions"])
   end
@@ -164,7 +169,7 @@ defmodule SalixMeet.CalendarEnrollmentCache do
         )
       )
 
-    if base["provider"] == "feishu" do
+    if base["provider"] in ["feishu", "lark"] do
       base
       |> Map.put("chat_id", trim(group["chat_id"]))
       |> Map.put("create_calendar", persistable_create_calendar(group["create_calendar"]))

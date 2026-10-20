@@ -19,15 +19,17 @@ defmodule SalixAgent.Application do
     _ = SalixAgent.SessionResidency.create_table()
     # Skill projections must outlive the tasks that build round configurations.
     _ = SalixAgent.SkillProjection.create_table()
+    # miIO and other LAN codec sessions outlive the tool calls that open them.
+    _ = SalixAgent.LanCodec.create_table()
 
     fleet_max_restarts =
-      Application.get_env(:salix_agent, :fleet_supervisor_max_restarts, 3)
+      SystemsRuntime.get_env(:salix_agent, :fleet_supervisor_max_restarts, 3)
 
     fleet_max_seconds =
-      Application.get_env(:salix_agent, :fleet_supervisor_max_seconds, 5)
+      SystemsRuntime.get_env(:salix_agent, :fleet_supervisor_max_seconds, 5)
 
     children = [
-      {Registry,
+      {SystemsRuntime.Registry,
        keys: :unique, name: SalixAgent.Registry, partitions: System.schedulers_online()},
       # Node-local mirror of the fenced root-head ownership; must exist before
       # any Server claims or session actor commits.
@@ -37,18 +39,17 @@ defmodule SalixAgent.Application do
       SalixAgent.RoundConfigPrewarm,
       # Core ownership/recovery work never shares admission with user-selected
       # providers, runtimes, or tools.
-      {Task.Supervisor, name: SalixAgent.TaskSup},
-      {Task.Supervisor, name: SalixAgent.WaitTimerTasks, max_children: 256},
-      {Task.Supervisor,
+      {SystemsRuntime.TaskSupervisor, name: SalixAgent.TaskSup},
+      {SystemsRuntime.TaskSupervisor, name: SalixAgent.WaitTimerTasks, max_children: 256},
+      {SystemsRuntime.TaskSupervisor,
        name: SalixAgent.AgentReplyTaskSup,
-       max_children: Application.get_env(:salix_agent, :agent_reply_task_limit, 64)},
-      {Task.Supervisor,
+       max_children: SystemsRuntime.get_env(:salix_agent, :agent_reply_task_limit, 64)},
+      {SystemsRuntime.TaskSupervisor,
        name: SalixAgent.AgentStageTaskSup,
-       max_children: Application.get_env(:salix_agent, :agent_stage_task_limit, 64)},
+       max_children: SystemsRuntime.get_env(:salix_agent, :agent_stage_task_limit, 64)},
       SalixAgent.DependencySupervisor,
       SalixAgent.Decide.Limits,
       SalixAgent.DependencyRunner,
-      SalixAgent.ExternalWorkerOperationReconciler,
       # Reactive domain recovery requested by the cluster lease holder. It has
       # no ticker or lease of its own and keeps slow SessionActor wakes off the
       # shared Recovery cadence.
@@ -58,10 +59,11 @@ defmodule SalixAgent.Application do
       SalixAgent.RouterRequestMonitor,
       SalixAgent.DraftSurface,
       SalixAgent.ExecutionSurface,
-      {DynamicSupervisor, name: SalixAgent.Browser.Supervisor, strategy: :one_for_one},
+      {SystemsRuntime.DynamicSupervisor,
+       name: SalixAgent.Browser.Supervisor, strategy: :one_for_one},
       SalixAgent.SubscriptionWorker,
-      SalixAgent.SubscriptionQuotaWorker,
-      SalixAgent.PreparedBlobCleanup,
+      background(SalixAgent.SubscriptionQuotaWorker, :subscription_quota_worker),
+      background(SalixAgent.PreparedBlobCleanup, :prepared_blob_cleanup),
       # Background Loops: the node's spinfoam child, the build artifact
       # handoff, and the reconciler that follows Agent placement.
       SalixAgent.Loops.Host,
@@ -69,9 +71,14 @@ defmodule SalixAgent.Application do
       # Outbound SSH sessions (ssh.* tools) are supervised by their session
       # actors; this registry only names them. SSH over Tailcat goes through
       # one gateway process per node, started on first use.
-      {Registry, keys: :unique, name: SalixAgent.SSH.Registry},
+      {SystemsRuntime.Registry, keys: :unique, name: SalixAgent.SSH.Registry},
       SalixAgent.SSH.TailcatGateway,
-      {DynamicSupervisor,
+      # A Group's tailnet node runs in this node's gateway while this node
+      # holds the Group's tailnet lease; its owner process holds the lease.
+      {SystemsRuntime.Registry, keys: :unique, name: SalixAgent.Tailnet.Registry},
+      SalixAgent.Tailnet.Gateway,
+      {SystemsRuntime.DynamicSupervisor, name: SalixAgent.Tailnet.Owners, strategy: :one_for_one},
+      {SystemsRuntime.DynamicSupervisor,
        name: SalixAgent.FleetSup,
        strategy: :one_for_one,
        max_restarts: fleet_max_restarts,
@@ -79,6 +86,16 @@ defmodule SalixAgent.Application do
     ]
 
     opts = [strategy: :one_for_one, name: SalixAgent.Supervisor]
-    Supervisor.start_link(children ++ SalixAgent.SessionHistory.Supervisor.children(), opts)
+
+    SystemsRuntime.Supervisor.start_link(
+      List.flatten(children) ++ SalixAgent.SessionHistory.Supervisor.children(),
+      opts
+    )
   end
+
+  # A worker that does its work on a timer starts unless its switch is off.
+  # The test configuration turns each one off: a test calls the worker's work
+  # itself, or starts the worker under its own supervisor.
+  defp background(child, switch),
+    do: if(SystemsRuntime.get_env(:salix_agent, switch, true), do: [child], else: [])
 end

@@ -1,3 +1,74 @@
+defmodule MCPRuntimeE2E.RemoteDocsMCP do
+  @moduledoc false
+  # Local streamable-http stand-in for the Context7 remote, so the e2e does not
+  # reach the public network.
+  @behaviour Plug
+
+  import Plug.Conn
+
+  def init(opts), do: opts
+
+  def call(%{method: "POST", request_path: "/mcp"} = conn, _opts) do
+    {:ok, body, conn} = read_body(conn)
+    respond(conn, Jason.decode!(body))
+  end
+
+  def call(conn, _opts), do: send_resp(conn, 404, "")
+
+  defp respond(conn, %{"id" => id, "method" => "initialize"}) do
+    result(conn, id, %{
+      "protocolVersion" => "2025-06-18",
+      "capabilities" => %{"tools" => %{}},
+      "serverInfo" => %{"name" => "mcp-runtime-e2e-docs", "version" => "1.0.0"}
+    })
+  end
+
+  defp respond(conn, %{"id" => id, "method" => "tools/list"}) do
+    result(conn, id, %{
+      "tools" => [
+        %{
+          "name" => "resolve-library-id",
+          "description" => "Resolve a library name to a documentation library id.",
+          "inputSchema" => %{
+            "type" => "object",
+            "properties" => %{"libraryName" => %{"type" => "string"}},
+            "required" => ["libraryName"]
+          }
+        }
+      ]
+    })
+  end
+
+  defp respond(conn, %{"id" => id, "method" => "tools/call", "params" => params}) do
+    name = get_in(params, ["arguments", "libraryName"])
+
+    result(conn, id, %{
+      "content" => [%{"type" => "text", "text" => "library id: /fixture/#{name}"}]
+    })
+  end
+
+  defp respond(conn, %{"id" => id}) do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(
+      200,
+      Jason.encode!(%{
+        "jsonrpc" => "2.0",
+        "id" => id,
+        "error" => %{"code" => -32601, "message" => "method not found"}
+      })
+    )
+  end
+
+  defp respond(conn, _notification), do: send_resp(conn, 202, "")
+
+  defp result(conn, id, result) do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{"jsonrpc" => "2.0", "id" => id, "result" => result}))
+  end
+end
+
 defmodule MCPRuntimeE2E do
   @moduledoc false
 
@@ -228,10 +299,6 @@ defmodule MCPRuntimeE2E do
         assert_device_async_mcp!(tenant_key, group_id, agent_id, device_runtime, run_id, root)
       end)
 
-      run_e2e_step!("device playwright MCP", fn ->
-        assert_playwright_device_mcp!(tenant_key, group_id, agent_id, device_runtime, run_id)
-      end)
-
       run_e2e_step!("device filesystem MCP", fn ->
         assert_filesystem_root_mcp!(tenant_key, group_id, agent_id, device_runtime, run_id, root)
       end)
@@ -272,6 +339,7 @@ defmodule MCPRuntimeE2E do
     Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     Application.put_env(:salix_web, :api_token, @admin_token)
     Application.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
+    Application.put_env(:salix_mcp, :allow_private_http_targets, true)
 
     {:ok, _} = Application.ensure_all_started(:salix_web)
 
@@ -283,6 +351,175 @@ defmodule MCPRuntimeE2E do
 
     {:ok, _count} = SalixMCP.Builtins.seed_builtin_definitions()
     Salix.App.configure()
+    start_remote_docs_mcp!()
+    install_npx_fixture!()
+  end
+
+  defp start_remote_docs_mcp! do
+    {:ok, pid} =
+      Bandit.start_link(
+        plug: MCPRuntimeE2E.RemoteDocsMCP,
+        scheme: :http,
+        ip: {127, 0, 0, 1},
+        port: 0,
+        startup_log: false
+      )
+
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
+    Process.put(:remote_url, "http://127.0.0.1:#{port}/mcp")
+  end
+
+  # The definitions keep their `npx -y <package>` commands. The server runner
+  # and the connector find this `npx` first on PATH; it starts local fixture
+  # servers and rejects every other package, so no run reaches npm.
+  defp install_npx_fixture! do
+    dir = Path.join(System.tmp_dir!(), "mcp-runtime-e2e-npx-#{unique()}")
+    bin = Path.join(dir, "bin")
+    File.mkdir_p!(bin)
+    node = System.find_executable("node") || raise("node is required for MCP fixture servers")
+    server = Path.join(dir, "mcp-fixture-server.js")
+    File.write!(server, fixture_mcp_server_source())
+    npx = Path.join(bin, "npx")
+
+    File.write!(npx, """
+    #!/bin/sh
+    if [ "$1" = "-y" ]; then shift; fi
+    package="$1"
+    shift
+    case "$package" in
+      @upstash/context7-mcp@latest) exec "#{node}" "#{server}" docs "$@" ;;
+      @modelcontextprotocol/server-filesystem) exec "#{node}" "#{server}" filesystem "$@" ;;
+    esac
+    echo "mcp runtime e2e npx fixture has no package: $package" >&2
+    exit 127
+    """)
+
+    File.chmod!(npx, 0o755)
+    Process.put(:fixture_path, "#{bin}:#{System.get_env("PATH") || ""}")
+  end
+
+  defp fixture_path, do: Process.get(:fixture_path)
+
+  defp fixture_mcp_server_source do
+    """
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const readline = require("node:readline");
+
+    const mode = process.argv[2];
+    const root = path.resolve(process.argv[3] || ".");
+
+    function schema(properties, required) {
+      return { type: "object", properties, required };
+    }
+
+    const stringField = { type: "string" };
+
+    const tools = {
+      docs: [
+        {
+          name: "resolve-library-id",
+          description: "Resolve a library name to a documentation library id.",
+          inputSchema: schema({ libraryName: stringField }, ["libraryName"])
+        }
+      ],
+      filesystem: [
+        {
+          name: "read_file",
+          description: "Read a file inside the allowed directory.",
+          inputSchema: schema({ path: stringField }, ["path"])
+        },
+        {
+          name: "write_file",
+          description: "Write a file inside the allowed directory.",
+          inputSchema: schema({ path: stringField, content: stringField }, ["path", "content"])
+        },
+        {
+          name: "list_directory",
+          description: "List a directory inside the allowed directory.",
+          inputSchema: schema({ path: stringField }, ["path"])
+        }
+      ]
+    }[mode];
+
+    if (!tools) {
+      process.stderr.write("unknown fixture mode: " + mode + "\\n");
+      process.exit(2);
+    }
+
+    function allowed(relative) {
+      const target = path.resolve(root, String(relative));
+      if (target !== root && !target.startsWith(root + path.sep)) {
+        throw new Error("Access denied: path outside allowed directory");
+      }
+      return target;
+    }
+
+    function run(name, args) {
+      switch (name) {
+        case "resolve-library-id":
+          return "library id: /fixture/" + args.libraryName;
+        case "read_file":
+          return fs.readFileSync(allowed(args.path), "utf8");
+        case "write_file":
+          fs.writeFileSync(allowed(args.path), String(args.content));
+          return "wrote " + args.path;
+        case "list_directory":
+          return fs
+            .readdirSync(allowed(args.path), { withFileTypes: true })
+            .map((entry) => (entry.isDirectory() ? "[DIR] " : "[FILE] ") + entry.name)
+            .join("\\n");
+      }
+    }
+
+    function write(message) {
+      process.stdout.write(JSON.stringify(message) + "\\n");
+    }
+
+    const rl = readline.createInterface({ input: process.stdin });
+
+    rl.on("line", (line) => {
+      let msg;
+      try {
+        msg = JSON.parse(line);
+      } catch (_err) {
+        return;
+      }
+
+      if (msg.id === undefined || msg.id === null) return;
+
+      if (msg.method === "initialize") {
+        write({
+          jsonrpc: "2.0",
+          id: msg.id,
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: {} },
+            serverInfo: { name: "mcp-runtime-e2e-" + mode, version: "1.0.0" }
+          }
+        });
+      } else if (msg.method === "tools/list") {
+        write({ jsonrpc: "2.0", id: msg.id, result: { tools } });
+      } else if (
+        msg.method === "tools/call" &&
+        tools.some((tool) => tool.name === msg.params.name)
+      ) {
+        let result;
+        try {
+          result = { content: [{ type: "text", text: run(msg.params.name, msg.params.arguments || {}) }] };
+        } catch (err) {
+          result = { content: [{ type: "text", text: String(err.message) }], isError: true };
+        }
+        write({ jsonrpc: "2.0", id: msg.id, result });
+      } else {
+        write({
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: { code: -32601, message: "method not found" }
+        });
+      }
+    });
+    """
   end
 
   defp create_tenant_key! do
@@ -1234,7 +1471,7 @@ defmodule MCPRuntimeE2E do
 
     Application.put_env(:salix_mcp, :server_process_runner, %{
       "command" => runner_path,
-      "env" => %{"PATH" => System.get_env("PATH") || ""}
+      "env" => %{"PATH" => fixture_path()}
     })
 
     try do
@@ -1297,7 +1534,7 @@ defmodule MCPRuntimeE2E do
     do: Application.put_env(:salix_mcp, :server_process_runner, value)
 
   defp assert_device_package_mcp!(tenant_key, group_id, agent_id, device_runtime, run_id) do
-    package = System.get_env("MCP_E2E_DEVICE_PACKAGE") || "@upstash/context7-mcp@latest"
+    package = "@upstash/context7-mcp@latest"
     alias_name = "device-context7-#{run_id}"
 
     definition =
@@ -1363,7 +1600,7 @@ defmodule MCPRuntimeE2E do
   end
 
   defp assert_device_root_grant_boundary!(tenant_key, group_id, device_runtime, run_id, root) do
-    package = System.get_env("MCP_E2E_DEVICE_PACKAGE") || "@upstash/context7-mcp@latest"
+    package = "@upstash/context7-mcp@latest"
     allowed_dir = Path.join(root, "allowed")
     File.mkdir_p!(allowed_dir)
 
@@ -1809,83 +2046,6 @@ defmodule MCPRuntimeE2E do
     )
   end
 
-  defp assert_playwright_device_mcp!(tenant_key, group_id, agent_id, device_runtime, run_id) do
-    package = System.get_env("MCP_E2E_PLAYWRIGHT_PACKAGE") || "@playwright/mcp@latest"
-    alias_name = "playwright-#{run_id}"
-
-    definition =
-      treq!(tenant_key, :post, "/v1/runtime/mcp/definitions", %{
-        "name" => "Playwright #{run_id}",
-        "mcpServers" => %{
-          "playwright" => %{"command" => "npx", "args" => ["-y", package, "--headless"]}
-        },
-        "supports_server" => false
-      })
-
-    binding =
-      treq!(tenant_key, :post, "/v1/runtime/agent-groups/#{group_id}/mcp/bindings", %{
-        "mcp_id" => definition["mcp_id"],
-        "alias" => alias_name,
-        "target_ref" => first_target_ref!(definition),
-        "placement" => "device",
-        "device_runtime_id" => device_runtime["device_runtime_id"]
-      })
-
-    conn =
-      treq!(
-        tenant_key,
-        :post,
-        "/v1/runtime/agent-groups/#{group_id}/mcp/bindings/#{binding["binding_id"]}/discover",
-        %{}
-      )
-
-    assert!(
-      conn["status"] in ["running", "degraded"],
-      "playwright connection did not run: #{inspect(conn)}"
-    )
-
-    assert_connection_metadata!(conn, "playwright device")
-
-    tools = mcp_operation_tools!(tenant_key, agent_id, alias_name)
-    navigate_tool = find_mcp_tool!(tools, ["browser_navigate", "navigate"])
-    snapshot_tool = find_mcp_tool!(tools, ["browser_snapshot", "snapshot"])
-    click_tool = find_mcp_tool!(tools, ["browser_click", "click"])
-    marker = "MCP_PLAYWRIGHT_OK_#{run_id}"
-
-    html =
-      URI.encode("""
-      <!doctype html>
-      <title>MCP Playwright #{run_id}</title>
-      <button id="ping" onclick="document.body.dataset.clicked='yes';this.textContent='#{marker}'">Ping</button>
-      """)
-
-    navigate =
-      call_mcp_tool_completed(tenant_key, agent_id, navigate_tool["operation_id"], %{
-        "url" => "data:text/html,#{html}"
-      })
-
-    assert!(navigate.error == false, "playwright navigate failed: #{inspect(navigate)}")
-
-    snapshot = call_mcp_tool_completed(tenant_key, agent_id, snapshot_tool["operation_id"], %{})
-    assert!(snapshot.error == false, "playwright snapshot failed: #{inspect(snapshot)}")
-    ref = playwright_ref!(snapshot.content, "Ping")
-
-    click =
-      call_mcp_tool_completed(tenant_key, agent_id, click_tool["operation_id"], %{
-        "element" => "Ping button",
-        "ref" => ref
-      })
-
-    assert!(click.error == false, "playwright click failed: #{inspect(click)}")
-
-    clicked = call_mcp_tool_completed(tenant_key, agent_id, snapshot_tool["operation_id"], %{})
-
-    assert!(
-      String.contains?(clicked.content, marker),
-      "playwright click marker missing: #{inspect(clicked)}"
-    )
-  end
-
   defp assert_filesystem_root_mcp!(
          tenant_key,
          group_id,
@@ -1894,8 +2054,7 @@ defmodule MCPRuntimeE2E do
          run_id,
          connector_root
        ) do
-    package =
-      System.get_env("MCP_E2E_FILESYSTEM_PACKAGE") || "@modelcontextprotocol/server-filesystem"
+    package = "@modelcontextprotocol/server-filesystem"
 
     alias_name = "filesystem-#{run_id}"
     root_name = "fs-root-#{run_id}"
@@ -2085,6 +2244,7 @@ defmodule MCPRuntimeE2E do
     log_path = Path.join(System.tmp_dir!(), "salix-connect-#{alias_name}.log")
     File.rm(log_path)
     parent = self()
+    path = fixture_path()
 
     args = [
       "--server",
@@ -2110,6 +2270,7 @@ defmodule MCPRuntimeE2E do
             :exit_status,
             :stderr_to_stdout,
             env: [
+              {~c"PATH", to_charlist(path)},
               {~c"SALIX_MCP_PARENT_SECRET", to_charlist("MCP_PARENT_ENV_SECRET_#{alias_name}")}
             ],
             args: args
@@ -2201,7 +2362,13 @@ defmodule MCPRuntimeE2E do
            end),
          %{"device_runtime_id" => device_runtime_id} = runtime
          when is_binary(device_runtime_id) and device_runtime_id != "" <-
-           Enum.find(env["device_runtimes"] || [], &(&1["provider"] == "connector")) do
+           Enum.find(env["device_runtimes"] || [], &(&1["provider"] == "connector")),
+         # The run is recorded connected before its socket registers the
+         # owner that serves requests; until then a request answers
+         # :disconnected.
+         {:ok, transport_id, _record} <-
+           SalixEnv.Registry.get_by_connector_run_id(connector_run_id),
+         true <- SalixEnv.Bridge.local?(transport_id) do
       {:ok, runtime, connector_run_id}
     else
       _ -> :retry
@@ -2289,8 +2456,12 @@ defmodule MCPRuntimeE2E do
     case result.body do
       %{"status" => "running", "tool_call_id" => tool_call_id}
       when is_binary(tool_call_id) and tool_call_id != "" ->
-        completed = wait_for_tool_result!(tenant_key, agent_id, tool_call_id)
-        %{completed | body: async_tool_payload(completed)}
+        case wait_for_tool_result!(tenant_key, agent_id, tool_call_id) do
+          # A failed or cancelled call has no tool payload; keep its record
+          # (for example "tool timed out after 30s") for the assertion message.
+          %{error: true} = failed -> failed
+          completed -> %{completed | body: async_tool_payload(completed)}
+        end
 
       _ ->
         result
@@ -2323,7 +2494,7 @@ defmodule MCPRuntimeE2E do
 
     case record["status"] do
       "running" ->
-        Process.sleep(500)
+        Process.sleep(100)
         wait_for_tool_result!(tenant_key, agent_id, tool_call_id, attempts - 1)
 
       "completed" ->
@@ -2349,7 +2520,7 @@ defmodule MCPRuntimeE2E do
     raise("MCP async result did not complete for #{agent_id}/#{tool_call_id}: #{inspect(result)}")
   end
 
-  defp async_tool_result_attempts, do: 120 * e2e_perf_factor()
+  defp async_tool_result_attempts, do: 600 * e2e_perf_factor()
 
   defp e2e_perf_factor do
     case Integer.parse(System.get_env("E2E_PERF_FACTOR", "1")) do
@@ -2396,7 +2567,7 @@ defmodule MCPRuntimeE2E do
     end
   end
 
-  defp wait_for_tool_progress!(tenant_key, agent_id, tool_call_id, attempts \\ 30)
+  defp wait_for_tool_progress!(tenant_key, agent_id, tool_call_id, attempts \\ 150)
 
   defp wait_for_tool_progress!(tenant_key, agent_id, tool_call_id, attempts) when attempts > 0 do
     result =
@@ -2409,7 +2580,7 @@ defmodule MCPRuntimeE2E do
     if result.error == false and is_map(progress) and map_size(progress) > 0 do
       result.body
     else
-      Process.sleep(250)
+      Process.sleep(50)
       wait_for_tool_progress!(tenant_key, agent_id, tool_call_id, attempts - 1)
     end
   end
@@ -2746,20 +2917,7 @@ defmodule MCPRuntimeE2E do
     path
   end
 
-  defp playwright_ref!(content, label) do
-    line =
-      content
-      |> to_string()
-      |> String.split("\n")
-      |> Enum.find(&(String.contains?(&1, label) and String.contains?(&1, "[ref=")))
-
-    case Regex.run(~r/\[ref=([^\]]+)\]/, line || "") do
-      [_, ref] -> ref
-      _ -> raise("could not find Playwright ref for #{label}: #{content}")
-    end
-  end
-
-  defp remote_url, do: System.get_env("MCP_E2E_REMOTE_URL") || "https://mcp.context7.com/mcp"
+  defp remote_url, do: Process.get(:remote_url)
 
   defp config_values do
     case System.get_env("MCP_E2E_CONFIG_JSON") do

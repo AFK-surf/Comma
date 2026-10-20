@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelTerminalTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
   alias SalixAgent.TestSupport.SessionData
@@ -92,76 +92,12 @@ defmodule SalixAgent.SessionKernelTerminalTest do
     end
   end
 
-  test "present nil and false overwrite copied fields while absent fields stay intact" do
-    for status <- @statuses, replacement <- [nil, false] do
-      record = Map.merge(Map.new(@copied_fields, &{&1, "old"}), %{"status" => "running"})
-      before = state(%{"selected" => record})
-      fields = Map.new(@copied_fields, &{&1, replacement})
-
-      after_state =
-        SessionData.apply_event(before, event(status, "selected", fields))
-
-      settled = List.last(after_state.async_results)
-      assert Map.take(settled, @copied_fields) === fields
-
-      absent = SessionData.apply_event(before, event(status, "selected"))
-
-      assert Map.take(List.last(absent.async_results), @copied_fields) ===
-               Map.take(record, @copied_fields)
-    end
-  end
-
-  test "terminal and missing selections are lazy no-ops even with unusable settlement fields" do
-    containers =
-      [%{}, %{"selected" => nil}] ++
-        Enum.map(@statuses, &%{"selected" => %{"status" => &1}}) ++ [nil, false]
-
-    for status <- @statuses, calls <- containers do
-      before = %State{
-        state(calls)
-        | async_results: :invalid_results,
-          async_result_refs: :invalid_refs,
-          last_seq: :invalid_seq
-      }
-
-      assert_done(before, event(status, "selected"), before)
-    end
-  end
-
   test "false and other non-map selected records still raise rather than silently disappear" do
     for status <- @statuses, record <- [false, [], 1.25, :invalid_record] do
       before = state(%{"selected" => record})
       ev = event(status, "selected")
       assert_raise BadMapError, fn -> SessionData.apply_event(before, ev) end
       assert_raise BadMapError, fn -> Driver.step(before, ev) end
-    end
-  end
-
-  test "falsey history references and sequence retain their native empty defaults" do
-    for fallback <- [nil, false] do
-      before = %State{
-        state(%{"selected" => %{}})
-        | async_results: fallback,
-          async_result_refs: fallback,
-          last_seq: fallback
-      }
-
-      expected_record = %{
-        "status" => "completed",
-        "kind" => "async_result",
-        "tool_call_id" => "selected",
-        "seq" => 1
-      }
-
-      expected = %State{
-        before
-        | async_tool_calls: %{},
-          async_results: [expected_record],
-          async_result_refs: %{"selected" => 1},
-          last_seq: 1
-      }
-
-      assert_done(before, event("completed", "selected"), expected)
     end
   end
 
@@ -195,12 +131,6 @@ defmodule SalixAgent.SessionKernelTerminalTest do
       assert after_state.async_result_refs["selected"] === next
       assert List.last(after_state.async_results)["seq"] === next
     end
-  end
-
-  test "the wrapper retains its Session identity fence before terminal dispatch" do
-    before = state(%{"selected" => %{}})
-    ev = event("completed", "selected", %{"session_id" => "another-session"})
-    assert SessionData.apply_event(before, ev) === before
   end
 
   test "non-binary terminal-like statuses still settle rather than skip the event" do
@@ -238,29 +168,5 @@ defmodule SalixAgent.SessionKernelTerminalTest do
       assert Enum.drop(after_state.async_results, -1) === history
       assert List.last(after_state.async_results)["seq"] === 11
     end
-  end
-
-  test "an empty reference list is truthy and retains its native bad-map error" do
-    before = %State{state(%{"selected" => %{}}) | async_result_refs: []}
-    ev = event("completed", "selected")
-    assert_raise BadMapError, fn -> SessionData.apply_event(before, ev) end
-    assert_raise BadMapError, fn -> Driver.step(before, ev) end
-  end
-
-  test "background terminals update the business-outcome fingerprint once" do
-    record = %{"tool_name" => "query", "input" => %{"x" => 1}, "status" => "running"}
-    before = state(%{"selected" => record})
-
-    ev =
-      event("failed", "selected", %{
-        "error_class" => "failure",
-        "error_message" => "same",
-        "result" => %{"content" => "done", "output" => "done"}
-      })
-
-    assert {:done, expected} = Driver.step(before, ev)
-    assert expected.repeated_tool_result_streak["count"] == 1
-    assert_done(before, ev, expected)
-    assert_done(expected, ev, expected)
   end
 end

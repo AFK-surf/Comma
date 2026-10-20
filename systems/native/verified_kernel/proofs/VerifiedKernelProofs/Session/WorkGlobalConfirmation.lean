@@ -1,4 +1,5 @@
 import VerifiedKernelProofs.Session.WorkStoreExecution
+import VerifiedKernelProofs.Session.WorkCurrentConfirmation
 
 namespace VerifiedKernel.Session.WorkConservation.CurrentExecution
 open Data ArchivePublication CommandDriver

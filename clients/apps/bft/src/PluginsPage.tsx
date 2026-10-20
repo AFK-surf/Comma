@@ -1,4 +1,7 @@
-import { Dialog, Dropdown, ScrollArea, SearchIcon } from "@comma/ui";
+import { Dialog } from "@comma/ui/components/dialog";
+import { Dropdown } from "@comma/ui/components/dropdown";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { SearchIcon } from "@comma/ui/components/icons";
 import { useState } from "react";
 import {
   emptyPluginRefs,
@@ -27,7 +30,8 @@ const t = messages.plugins;
 // Dropdown ids cannot be empty; this one stands for "no setup link".
 const noDestination = "none";
 
-const pluginName = (plugin: BftPlugin) => plugin.name ?? plugin.plugin_id;
+export const pluginName = (plugin: Pick<BftPlugin, "name" | "plugin_id">) =>
+  plugin.name ?? plugin.plugin_id;
 
 // The details dialog links to at most this many Agent Swarms.
 const swarmLinkLimit = 5;
@@ -183,6 +187,7 @@ export function PluginsPage({
             ) : null}
             {open?.kind === "edit" ? (
               <PluginEditor
+                description={t.description}
                 onClose={() => setOpen(null)}
                 onSaved={(plugin) => {
                   setSaved((previous) => [
@@ -191,8 +196,11 @@ export function PluginsPage({
                   ]);
                   setOpen(null);
                 }}
-                org={org}
                 plugin={open.plugin}
+                save={(draft: BftPluginDraft) =>
+                  api.savePlugin(org, open.plugin?.plugin_id ?? null, draft)
+                }
+                title={open.plugin ? t.editTitle(pluginName(open.plugin)) : t.create}
               />
             ) : null}
           </>
@@ -339,6 +347,7 @@ function PluginDetails({
                 className="bft-link"
                 href={projectHref(org, project.id, "/plugins")}
                 key={project.id}
+                onClick={spaLinkClick}
               >
                 {project.name}
               </a>
@@ -355,18 +364,32 @@ function PluginDetails({
   );
 }
 
-function PluginEditor({
-  org,
+/** The plugin fields the editor shows and saves. */
+export type PluginEditorValue = Pick<
+  BftPlugin,
+  "plugin_id" | "name" | "description" | "setup_destination" | "refs"
+>;
+
+/**
+ * Creates or edits a plugin definition: its name, description, setup link and
+ * capability references. Organization and Agent Swarm plugins share it; `save`
+ * is the write.
+ */
+export function PluginEditor<T>({
   plugin,
+  title,
+  description: note,
+  save,
   onSaved,
   onClose,
 }: {
-  org: string;
-  plugin: BftPlugin | undefined;
-  onSaved: (plugin: BftPlugin) => void;
+  plugin: PluginEditorValue | undefined;
+  title: string;
+  description: string;
+  save: (draft: BftPluginDraft) => Promise<T>;
+  onSaved: (result: NoInfer<T>) => void;
   onClose: () => void;
 }) {
-  const api = useApi();
   const write = useWrite();
   const [name, setName] = useState(plugin?.name ?? "");
   const [description, setDescription] = useState(plugin?.description ?? "");
@@ -403,17 +426,17 @@ function PluginEditor({
       draft.refs[key] = parsed;
     }
     setInvalid(undefined);
-    write.run(() => api.savePlugin(org, plugin?.plugin_id ?? null, draft), onSaved);
+    write.run(() => save(draft), onSaved);
   };
 
   return (
     <FormDialog
-      description={t.description}
+      description={note}
       onClose={() => {
         if (!write.busy) onClose();
       }}
       onSubmit={submit}
-      title={plugin ? t.editTitle(pluginName(plugin)) : t.create}
+      title={title}
       wide
       write={invalid ? { ...write, error: invalid } : write}
     >

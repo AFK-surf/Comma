@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ConnectorService } from "../connector";
+import { ConnectorService, type ConnectorStation } from "../connector";
 import { getCommaReleaseConfig } from "../../release-config";
 
 vi.mock("electron", () => ({
@@ -14,9 +14,28 @@ vi.mock("electron", () => ({
 }));
 
 let tempDir = "";
+let stationDir = "";
+let station: ConnectorStation & { events: string[] };
 
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), "comma-connector-service-"));
+  stationDir = join(tempDir, "station-release");
+  await mkdir(join(stationDir, "mesh", "target", "release"), { recursive: true });
+  await writeFile(
+    join(stationDir, "mesh", "target", "release", "stillfail-station"),
+    "#!/bin/sh\n",
+    { mode: 0o755 }
+  );
+  await writeFile(join(stationDir, "VERSION"), "release-1\n");
+  const events: string[] = [];
+  station = {
+    data: join(tempDir, "station-data"),
+    dir: stationDir,
+    events,
+    instancesDir: join(tempDir, "station-data", "connector", "instances"),
+    release: async () => void events.push("release"),
+    resume: () => void events.push("resume"),
+  };
 });
 
 afterEach(async () => {
@@ -28,6 +47,7 @@ describe("ConnectorService", () => {
     const service = new ConnectorService({
       appBundleId: "surf.comma.desktop.test",
       platform: "linux",
+      station,
     });
 
     await expect(service.status()).resolves.toMatchObject({
@@ -39,20 +59,18 @@ describe("ConnectorService", () => {
     });
   });
 
-  it("writes config and installs a LaunchAgent before starting", async () => {
-    const binaryPath = join(tempDir, "salix-connect");
+  it("writes the static connection and has launchd run the station before starting", async () => {
     const configPath = join(tempDir, "connector.json");
     const plistPath = join(tempDir, "surf.comma.desktop.test.salix-connect.plist");
     const logDir = join(tempDir, "logs");
     const commands: string[] = [];
-    await writeFile(binaryPath, "#!/bin/sh\n");
-    await chmod(binaryPath, 0o755);
 
     const service = new ConnectorService({
       appBundleId: "surf.comma.desktop.test",
       runtimeNamespace: "@comma-staging",
-      binaryPath,
+      station,
       configPath,
+      legacyConfigPath: undefined,
       logDir,
       platform: "darwin",
       plistPath,
@@ -67,7 +85,7 @@ describe("ConnectorService", () => {
     });
 
     const status = await service.start({
-      server: "http://127.0.0.1:4200",
+      server: "https://api.comma.test",
       token: "connector-token",
       name: "dev machine",
       root: "/tmp/salix-root",
@@ -79,11 +97,11 @@ describe("ConnectorService", () => {
       installed: true,
       running: true,
       serviceLabel: "surf.comma.desktop.test.salix-connect",
-      server: "http://127.0.0.1:4200",
+      server: "https://api.comma.test",
       name: "dev machine",
       root: "/tmp/salix-root",
-      connectorBinaryHash: sha256("#!/bin/sh\n"),
-      configuredConnectorBinaryHash: sha256("#!/bin/sh\n"),
+      connectorBinaryHash: sha256("release-1\n"),
+      configuredConnectorBinaryHash: sha256("release-1\n"),
     });
     expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
       connector: { connector_token: "connector-token" },
@@ -95,9 +113,17 @@ describe("ConnectorService", () => {
     expect(await readFile(plistPath, "utf8")).toContain(
       "<string>surf.comma.desktop.test.salix-connect</string>"
     );
-    expect(await readFile(plistPath, "utf8")).toContain(
-      `<string>${binaryPath}</string>`
+    const plist = await readFile(plistPath, "utf8");
+    expect(plist).toContain(
+      `<string>${join(stationDir, "mesh", "target", "release", "stillfail-station")}</string>
+    <string>run</string>
+    <string>--app</string>
+    <string>${stationDir}</string>
+    <string>--data</string>
+    <string>${station.data}</string>`
     );
+    // One station per machine: the app's own gives the data directory over first.
+    expect(station.events).toEqual(["release"]);
     expect(commands).toContain(`launchctl bootstrap gui/501 ${plistPath}`);
     expect(commands).toContain(
       "launchctl kickstart -k gui/501/surf.comma.desktop.test.salix-connect"
@@ -105,7 +131,6 @@ describe("ConnectorService", () => {
   });
 
   it("opens the standalone permission window and reads permissions without a connector", async () => {
-    const binaryPath = join(tempDir, "salix-connect");
     const helperApp = join(
       tempDir,
       "native",
@@ -123,9 +148,10 @@ describe("ConnectorService", () => {
     }));
     const service = new ConnectorService({
       appBundleId: "surf.comma.desktop.test",
-      binaryPath,
+      computerUseHelperApp: helperApp,
       platform: "darwin",
       runCommand,
+      station,
     });
     await expect(service.openComputerUsePermissionFlow()).resolves.toEqual({
       ok: true,
@@ -193,17 +219,15 @@ describe("ConnectorService", () => {
     await expect(service.getPermissions()).resolves.toMatchObject({ ok: false });
   });
 
-  it("reports managed connector runtime status from the salix-connect status file", async () => {
-    const binaryPath = join(tempDir, "salix-connect");
+  it("reports the static connection's status from the station's status file", async () => {
     const configPath = join(tempDir, "connector.json");
     const plistPath = join(tempDir, "surf.comma.desktop.test.salix-connect.plist");
-    await writeFile(binaryPath, "#!/bin/sh\n");
-    await chmod(binaryPath, 0o755);
 
     const service = new ConnectorService({
       appBundleId: "surf.comma.desktop.test",
-      binaryPath,
+      station,
       configPath,
+      legacyConfigPath: undefined,
       platform: "darwin",
       plistPath,
       userId: 501,
@@ -216,7 +240,7 @@ describe("ConnectorService", () => {
     });
 
     await service.configure({
-      commaApiBaseUrl: "http://127.0.0.1:4200",
+      commaApiBaseUrl: "https://api.comma.test",
       commaSessionToken: "comma_sess_test",
       workspaceId: "wsp_1",
       name: "dev machine",
@@ -227,7 +251,7 @@ describe("ConnectorService", () => {
       JSON.stringify({
         mode: "managed",
         state: "connected",
-        server: "ws://127.0.0.1:4000",
+        server: "wss://salix.test",
         workspace_id: "wsp_1",
         env_id: "env_1",
         token_expires_at: 1800000000,
@@ -238,7 +262,7 @@ describe("ConnectorService", () => {
     await expect(service.status()).resolves.toMatchObject({
       mode: "managed",
       state: "connected",
-      server: "ws://127.0.0.1:4000",
+      server: "wss://salix.test",
       workspaceId: "wsp_1",
       envId: "env_1",
       tokenExpiresAt: 1800000000,
@@ -246,74 +270,95 @@ describe("ConnectorService", () => {
     });
   });
 
-  it("retires a legacy managed launch agent but leaves static configs alone", async () => {
-    const binaryPath = join(tempDir, "salix-connect");
-    const configPath = join(tempDir, "connector.json");
+  it("retires a legacy managed launch agent and moves a legacy static config onto the station", async () => {
+    const legacyConfigPath = join(tempDir, "connector.json");
+    const configPath = join(station.instancesDir, "static.json");
     const plistPath = join(tempDir, "surf.comma.desktop.test.salix-connect.plist");
     const commands: string[] = [];
-    await writeFile(binaryPath, "#!/bin/sh\n");
-    await chmod(binaryPath, 0o755);
     const service = new ConnectorService({
       appBundleId: "surf.comma.desktop.test",
-      binaryPath,
       configPath,
+      legacyConfigPath,
+      logDir: join(tempDir, "logs"),
       platform: "darwin",
       plistPath,
+      station,
       userId: 501,
       runCommand: vi.fn(async (command, args) => {
         commands.push(`${command} ${args.join(" ")}`);
         return { code: 0, stdout: "", stderr: "" };
       }),
     });
+    const legacy = (
+      connector: Record<string, unknown>,
+      comma?: Record<string, unknown>
+    ) =>
+      writeFile(
+        legacyConfigPath,
+        JSON.stringify({
+          ...(comma ? { comma } : {}),
+          connector: {
+            name: "machine",
+            root: "/tmp/salix-root",
+            reconnect: true,
+            ...connector,
+          },
+        })
+      );
 
-    await service.configure({
-      server: "ws://127.0.0.1:4000",
-      token: "salix_static_token",
-      name: "static machine",
-      root: "/tmp/salix-root",
+    await legacy({
+      server: "wss://salix.test",
+      connector_token: "salix_static_token",
     });
+    await writeFile(plistPath, "salix-connect");
     await expect(service.retireManagedLaunchAgent()).resolves.toBe(false);
-    await expect(readFile(configPath, "utf8")).resolves.toContain("salix_static_token");
-
-    await service.configure({
-      commaApiBaseUrl: "http://127.0.0.1:4200",
-      commaSessionToken: "comma_sess_test",
-      workspaceId: "wsp_1",
-      name: "managed machine",
-      root: "/tmp/salix-root",
+    await service.reconcileBundledConnector();
+    await expect(readFile(legacyConfigPath, "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
     });
+    await expect(readFile(configPath, "utf8")).resolves.toContain("salix_static_token");
+    await expect(readFile(plistPath, "utf8")).resolves.toContain(
+      "<string>run</string>"
+    );
+
+    await legacy(
+      {},
+      {
+        api_base_url: "https://api.comma.test",
+        session_token: "comma_sess_test",
+        workspace_id: "wsp_1",
+      }
+    );
     await writeFile(
-      `${configPath}.status.json`,
+      `${legacyConfigPath}.status.json`,
       JSON.stringify({ state: "connected" })
     );
     await expect(service.retireManagedLaunchAgent()).resolves.toBe(true);
     expect(commands.some((command) => command.startsWith("launchctl bootout"))).toBe(
       true
     );
-    await expect(readFile(configPath, "utf8")).rejects.toMatchObject({
+    await expect(readFile(legacyConfigPath, "utf8")).rejects.toMatchObject({
       code: "ENOENT",
     });
-    await expect(readFile(plistPath, "utf8")).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-    await expect(readFile(`${configPath}.status.json`, "utf8")).rejects.toMatchObject({
+    await expect(readFile(plistPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(`${legacyConfigPath}.status.json`, "utf8")
+    ).rejects.toMatchObject({
       code: "ENOENT",
     });
   });
 
-  it("restarts an installed service when the bundled connector hash changes", async () => {
-    const binaryPath = join(tempDir, "salix-connect");
+  it("restarts an installed service when the bundled station changes", async () => {
     const configPath = join(tempDir, "connector.json");
     const plistPath = join(tempDir, "surf.comma.desktop.test.salix-connect.plist");
     const logDir = join(tempDir, "logs");
     const commands: string[] = [];
-    await writeFile(binaryPath, "#!/bin/sh\n");
-    await chmod(binaryPath, 0o755);
 
     const service = new ConnectorService({
       appBundleId: "surf.comma.desktop.test",
-      binaryPath,
+      station,
       configPath,
+      legacyConfigPath: undefined,
       logDir,
       platform: "darwin",
       plistPath,
@@ -328,20 +373,20 @@ describe("ConnectorService", () => {
     });
 
     await service.start({
-      server: "http://127.0.0.1:4200",
+      server: "https://api.comma.test",
       token: "connector-token",
       name: "dev machine",
       root: "/tmp/salix-root",
     });
     commands.length = 0;
-    await writeFile(binaryPath, "#!/bin/sh\necho updated\n");
+    await writeFile(join(stationDir, "VERSION"), "release-2\n");
 
     const status = await service.reconcileBundledConnector();
 
     expect(status).toMatchObject({
       running: true,
-      connectorBinaryHash: sha256("#!/bin/sh\necho updated\n"),
-      configuredConnectorBinaryHash: sha256("#!/bin/sh\necho updated\n"),
+      connectorBinaryHash: sha256("release-2\n"),
+      configuredConnectorBinaryHash: sha256("release-2\n"),
     });
     expect(commands).toContain(`launchctl bootout gui/501 ${plistPath}`);
     expect(commands).toContain(`launchctl bootstrap gui/501 ${plistPath}`);

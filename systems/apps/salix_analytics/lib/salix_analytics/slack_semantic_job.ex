@@ -9,7 +9,7 @@ defmodule SalixAnalytics.SlackSemanticJob do
 
   @impl true
   def perform(%Oban.Job{args: args} = job) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = execute(args)
 
     operation =
@@ -101,9 +101,9 @@ defmodule SalixAnalytics.SlackSemanticJob do
   defp enqueue_text_continuation(error, _scope, _timestamp, _live), do: error
 
   defp report_completion(job) do
-    age = max(DateTime.diff(DateTime.utc_now(), job.inserted_at, :millisecond), 0) / 1000
+    age = max(DateTime.diff(SystemsClock.utc_now(), job.inserted_at, :millisecond), 0) / 1000
 
-    :telemetry.execute([:salix, :semantic_queue, :complete], %{age_seconds: age}, %{
+    SystemsRuntime.Telemetry.execute([:salix, :semantic_queue, :complete], %{age_seconds: age}, %{
       lane: if(job.args["live"], do: "live", else: "history"),
       kind: job.args["kind"]
     })

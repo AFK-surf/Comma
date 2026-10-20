@@ -81,7 +81,7 @@ defmodule Comma.Recommendations do
           auto_enable_new_sources: profile.auto_enable_new_sources,
           sources: sources,
           source_revision: profile.source_revision + if(selected_changed?, do: 1, else: 0),
-          sources_checked_at: DateTime.utc_now()
+          sources_checked_at: SystemsClock.utc_now()
         }
 
         attrs =
@@ -251,7 +251,6 @@ defmodule Comma.Recommendations do
   def get_runtime_profile_by_agent(_agent_id, _session_id), do: {:error, :not_found}
 
   def reserve_runtime(profile_id, attrs) when is_binary(profile_id) and is_map(attrs) do
-    # TLA anchor: RecommendationRuntimeConvergence.Reserve.
     Repo.transaction(fn ->
       profile =
         Repo.one!(
@@ -329,8 +328,7 @@ defmodule Comma.Recommendations do
   """
   def record_evidence(run_id, evidence, subjects, failure_ids)
       when is_binary(run_id) and is_map(evidence) and is_map(subjects) and is_list(failure_ids) do
-    # TLA anchor: RecommendationPublication.RecordEvidence. Publication cannot
-    # settle until the bounded source-id/URL evidence for this run is durable.
+    # Publication cannot settle until the bounded source-id/URL evidence for this run is durable.
     failure_ids =
       failure_ids
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
@@ -468,8 +466,7 @@ defmodule Comma.Recommendations do
         Repo.transaction(fn ->
           profile = locked_profile(workspace_id, user["id"])
 
-          # TLA anchor: RecommendationPublication.Request. The profile lock
-          # serializes refresh allocation; replacing the active run, including
+          # The profile lock serializes refresh allocation; replacing the active run, including
           # evidence cleanup, happens in this transaction before N+1 is inserted.
           with :ok <- require_enabled_sources(profile),
                :ok <- enforce_rate_limit(profile, trigger),
@@ -480,7 +477,7 @@ defmodule Comma.Recommendations do
                  |> Ecto.Changeset.change(%{
                    requested_generation: generation,
                    last_error: nil,
-                   last_requested_at: DateTime.utc_now()
+                   last_requested_at: SystemsClock.utc_now()
                  })
                  |> Repo.update(),
                {:ok, run} <-
@@ -566,13 +563,13 @@ defmodule Comma.Recommendations do
             run.status not in ~w(pending running) ->
               {:already_finished, public_envelope(profile)}
 
-            DateTime.diff(DateTime.utc_now(), run.inserted_at, :millisecond) >=
+            DateTime.diff(SystemsClock.utc_now(), run.inserted_at, :millisecond) >=
                 RecommendationBudgets.run_hard_cap_seconds() * 1_000 ->
               {:ok, envelope} = fail_if_active(run.id, :recommendation_run_timed_out)
               {:expired, envelope}
 
             current_run?(profile, run, snapshot) ->
-              now = DateTime.utc_now()
+              now = SystemsClock.utc_now()
 
               {:ok, updated_profile} =
                 profile
@@ -592,7 +589,7 @@ defmodule Comma.Recommendations do
               {:published, public_envelope(updated_profile)}
 
             true ->
-              {:ok, _run} = finish_run(run, "superseded", nil, DateTime.utc_now(), metrics)
+              {:ok, _run} = finish_run(run, "superseded", nil, SystemsClock.utc_now(), metrics)
               Telemetry.emit_recommendation_run(run.trigger, :superseded)
               {:superseded, public_envelope(profile)}
           end
@@ -616,7 +613,7 @@ defmodule Comma.Recommendations do
 
       if run.status in ~w(pending running) do
         message = reason |> inspect(limit: 3) |> String.slice(0, 240)
-        now = DateTime.utc_now()
+        now = SystemsClock.utc_now()
         {:ok, _run} = finish_run(run, "failed", message, now)
         Telemetry.emit_recommendation_run(run.trigger, :failed)
 
@@ -949,8 +946,7 @@ defmodule Comma.Recommendations do
           from(p in RecommendationProfile, where: p.id == ^profile.id, lock: "FOR UPDATE")
         )
 
-      # TLA anchor: RecommendationPublication.CrashOrDuplicate. A stable schedule
-      # delivery id maps retries to the original run instead of allocating a new
+      # A stable schedule delivery id maps retries to the original run instead of allocating a new
       # generation after a crash or duplicate delivery.
       existing =
         Repo.get_by(RecommendationRun,
@@ -983,7 +979,7 @@ defmodule Comma.Recommendations do
                  |> Ecto.Changeset.change(%{
                    requested_generation: generation,
                    last_error: nil,
-                   last_requested_at: DateTime.utc_now()
+                   last_requested_at: SystemsClock.utc_now()
                  })
                  |> Repo.update(),
                {:ok, run} <-
@@ -1076,7 +1072,7 @@ defmodule Comma.Recommendations do
     else
       case begin_schedule_occurrence(profile.id, profile.schedule_id, timestamp) do
         {:ok, %{run: %{"id" => run_id}}} ->
-          if System.system_time(:millisecond) - timestamp >=
+          if SystemsClock.system_time(:millisecond) - timestamp >=
                RecommendationBudgets.run_hard_cap_seconds() * 1_000 do
             case fail_if_active(run_id, :recommendation_run_timed_out) do
               {:ok, _} -> :ok
@@ -1124,7 +1120,7 @@ defmodule Comma.Recommendations do
     timezone = String.trim(value)
 
     if timezone != "" and String.length(timezone) <= 64 and
-         match?({:ok, _datetime}, DateTime.shift_zone(DateTime.utc_now(), timezone)) do
+         match?({:ok, _datetime}, DateTime.shift_zone(SystemsClock.utc_now(), timezone)) do
       {:ok, timezone}
     else
       :error
@@ -1167,11 +1163,10 @@ defmodule Comma.Recommendations do
     |> Enum.sort_by(& &1["connectionId"])
   end
 
-  # TLA anchor: RecommendationPublication.SourceChange and Request. Once the
-  # source revision or requested generation changes, older in-flight runs can
-  # no longer make progress and must stop presenting as active immediately.
+  # Once the source revision or requested generation changes, older in-flight runs can no longer
+  # make progress and must stop presenting as active immediately.
   defp supersede_active_runs(profile_id) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     {_count, run_ids} =
       from(run in RecommendationRun,
@@ -1211,7 +1206,7 @@ defmodule Comma.Recommendations do
   defp enforce_rate_limit(_profile, trigger) when trigger != "manual", do: :ok
 
   defp enforce_rate_limit(profile, "manual") do
-    cutoff = DateTime.add(DateTime.utc_now(), -1, :hour)
+    cutoff = DateTime.add(SystemsClock.utc_now(), -1, :hour)
 
     count =
       Repo.aggregate(
@@ -1299,7 +1294,7 @@ defmodule Comma.Recommendations do
   defp member_subjects_valid?(_profile, "generic", _subjects), do: true
 
   defp member_subjects_valid?(profile, "member", subjects) do
-    runtime = Application.get_env(:comma_core, :recommendation_runtime_mod)
+    runtime = SystemsRuntime.get_env(:comma_core, :recommendation_runtime_mod)
 
     is_atom(runtime) and function_exported?(runtime, :member_subjects_valid?, 2) and
       runtime.member_subjects_valid?(profile, subjects)
@@ -1416,6 +1411,9 @@ defmodule Comma.Recommendations do
       error == ":member_identity_required" ->
         "member_identity_required"
 
+      error == ":insufficient_credits" ->
+        "insufficient_credits"
+
       String.starts_with?(error, ":source_collection_failed") ->
         "source_collection_failed"
 
@@ -1453,7 +1451,7 @@ defmodule Comma.Recommendations do
       is_nil(inserted_at) ->
         :none
 
-      DateTime.diff(DateTime.utc_now(), inserted_at, :millisecond) >=
+      DateTime.diff(SystemsClock.utc_now(), inserted_at, :millisecond) >=
           RecommendationBudgets.run_hard_cap_seconds() * 1_000 ->
         :expired
 

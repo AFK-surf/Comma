@@ -33,14 +33,14 @@ const feishu = {
           salix_group_id: "g-1",
           connect_id: "c-1",
           disabled: false,
-          href: "/orgs/acme/projects/p-1/integrations",
+          href: "/orgs/acme/projects/p-1/connections?provider=feishu",
         },
       ],
     },
   ],
   apps_truncated: false,
   routes_status: "unavailable",
-  projects: [{ id: "p-1", name: "Support" }],
+  projects_shown: 1,
   projects_truncated: false,
   redirect_uri: "https://bft.example/auth/callback",
   scope_cards: [{ id: "sso", title: "SSO login", description: "d", json: "{}" }],
@@ -136,15 +136,21 @@ describe("settings writes", () => {
         error: {
           code: "default_model_not_allowed",
           message: "The default model must be one of the allowed models.",
-          details: { fields: ["default_template_id"] },
+          details: { fields: ["default_task_model"] },
         },
       })
     );
+    const sonnet = { kind: "catalog", model: "claude-sonnet-4-6" };
+    const opus = {
+      kind: "catalog",
+      model: "claude-opus-4-8",
+      reasoning_effort: "high",
+    };
     const error = await api
       .updateSettingsModels("acme", {
-        allowed_template_ids: ["t1"],
-        default_template_id: "t2",
-        default_router_template_id: null,
+        allowed_models: [sonnet],
+        default_task_model: opus,
+        default_router_model: null,
       })
       .catch((caught: unknown) => caught);
 
@@ -152,9 +158,9 @@ describe("settings writes", () => {
       method: "PUT",
       headers: { "x-csrf-token": "tok-1", "content-type": "application/json" },
       body: JSON.stringify({
-        allowed_template_ids: ["t1"],
-        default_template_id: "t2",
-        default_router_template_id: null,
+        allowed_models: [sonnet],
+        default_task_model: opus,
+        default_router_model: null,
       }),
     });
     // A list of field names shares the error's own message.
@@ -162,7 +168,7 @@ describe("settings writes", () => {
     expect(error).toMatchObject({
       code: "default_model_not_allowed",
       fields: {
-        default_template_id: "The default model must be one of the allowed models.",
+        default_task_model: "The default model must be one of the allowed models.",
       },
     });
   });
@@ -204,7 +210,7 @@ describe("settings writes", () => {
   });
 });
 
-describe("AI models: templates and organization accounts", () => {
+describe("AI models: organization accounts", () => {
   const account = {
     id: "a-1",
     version: "7",
@@ -268,41 +274,6 @@ describe("AI models: templates and organization accounts", () => {
       method: "POST",
       body: JSON.stringify({ version: "7", request_id: "req-123" }),
     });
-  });
-
-  it("unwraps the template list from every template write", async () => {
-    const template = {
-      template_id: "t-1",
-      name: "Team Codex",
-      model: "gpt-5.6-sol",
-      max_tokens: 8192,
-      subscription_provider: "gemini",
-    };
-    const { api, fetch } = apiReturning(
-      json(200, { ok: true, data: { templates: [template] } })
-    );
-    const saved = await api.saveModelTemplate("acme", "t-1", {
-      name: "Team Codex",
-      subscription_provider: "codex",
-      model: "gpt-5.6-sol",
-      model_display_name: null,
-      model_vendor: null,
-      max_tokens: "8192",
-    });
-
-    expect(fetch.mock.calls[0]?.[0]).toBe(
-      "/dashboard/api/v1/orgs/acme/settings/models/templates/t-1"
-    );
-    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ method: "PUT" });
-    // A provider this client does not know is not editable here.
-    expect(saved).toEqual([
-      {
-        ...template,
-        model_display_name: null,
-        model_vendor: null,
-        subscription_provider: null,
-      },
-    ]);
   });
 });
 

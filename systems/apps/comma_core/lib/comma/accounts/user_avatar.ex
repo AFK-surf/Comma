@@ -6,7 +6,10 @@ defmodule Comma.Accounts.UserAvatar do
   import Ecto.Changeset
 
   @primary_key {:id, :string, autogenerate: false}
-  @timestamps_opts [type: :utc_datetime_usec]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   schema "comma_user_avatars" do
     field(:user_id, :string)
@@ -49,6 +52,6 @@ defmodule Comma.Accounts.UserAvatar do
   end
 
   def new_id do
-    "avt_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+    "avt_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(12), padding: false)
   end
 end

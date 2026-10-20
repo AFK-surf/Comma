@@ -1,4 +1,8 @@
-import { Button, Checkbox, Dialog, Dropdown, ScrollArea } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Checkbox } from "@comma/ui/components/checkbox";
+import { Dialog } from "@comma/ui/components/dialog";
+import { Dropdown } from "@comma/ui/components/dropdown";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
 import { useRef, useState, type ReactNode } from "react";
 import type {
   BftMeetingConnect,
@@ -15,6 +19,7 @@ import { meetingsPaths, orgHref, projectHref } from "./navSpec";
 import { useApi, useResource, type Resource } from "./resource";
 import { navigate, type MeetingsView } from "./router";
 import {
+  EditableData,
   FormActions,
   FormSection,
   SaveButton,
@@ -168,12 +173,13 @@ export function MeetingsPage({
             project={project}
           />
         ) : (
-          <SettingsForm
-            key={project}
-            org={org}
-            overview={data as BftMeetingsOverview}
-            project={project}
-          />
+          // Newer settings (after cached ones) seed the form again until it
+          // is edited; another Agent Swarm starts it over.
+          <EditableData data={data as BftMeetingsOverview} key={project}>
+            {(overview) => (
+              <SettingsForm org={org} overview={overview} project={project} />
+            )}
+          </EditableData>
         )
       }
     </SettingsPage>

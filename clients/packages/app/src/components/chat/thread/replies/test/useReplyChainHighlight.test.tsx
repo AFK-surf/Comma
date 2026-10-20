@@ -1,15 +1,12 @@
 import { act, renderHook } from "@comma/test-utils/render";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   useReplyChainHighlight,
   type ReplyChainReveal,
 } from "../useReplyChainHighlight";
 
-afterEach(() => vi.useRealTimers());
-
 describe("reply chain highlight", () => {
   it("holds the clicked chain until arrival plus 200 ms, including when the pointer stays over the preview", () => {
-    vi.useFakeTimers();
     const { result } = renderHook(() => useReplyChainHighlight("conversation"));
     let reveal!: ReplyChainReveal;
     act(() => result.current.hover("A"));
@@ -35,7 +32,6 @@ describe("reply chain highlight", () => {
   });
 
   it("replaces a clicked chain without an older arrival, cancellation, or timeout clearing the new one", () => {
-    vi.useFakeTimers();
     const { result } = renderHook(() => useReplyChainHighlight("conversation"));
     let first!: ReplyChainReveal;
     let second!: ReplyChainReveal;
@@ -63,7 +59,6 @@ describe("reply chain highlight", () => {
   });
 
   it("releases a conversation's highlight and timer on navigation and unmount", () => {
-    vi.useFakeTimers();
     const { result, rerender, unmount } = renderHook(
       ({ scope }) => useReplyChainHighlight(scope),
       { initialProps: { scope: "first" } }

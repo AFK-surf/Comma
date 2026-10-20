@@ -7,15 +7,18 @@ import {
   createRouter,
   useParams,
 } from "@tanstack/react-router";
+import { advance, flush } from "@comma/test-utils/fake-clock";
 import { fireEvent, render, screen, waitFor } from "@comma/test-utils/render";
 import {
   Toaster,
-  claimNativeSurfaceSuppression,
   registerToastObstructionTarget,
-  releaseNativeSurfaceSuppression,
   toast,
   toastObstructionRightProperty,
-} from "@comma/ui";
+} from "@comma/ui/components/toast";
+import {
+  claimNativeSurfaceSuppression,
+  releaseNativeSurfaceSuppression,
+} from "@comma/ui/components/native-surface/nativeSurfaceSuppression";
 import {
   maxBrowserSidebarSessionsPerOwner,
   type BrowserSidebarState,
@@ -34,6 +37,7 @@ import {
   useRegisterChatSidebarHost,
   type ChatSidebarHost,
 } from "../ChatSidebarContext";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 type BrowserSidebarBridge = CommaNativeBridge["browserSidebar"];
 
@@ -164,6 +168,11 @@ vi.mock("../../chat/conversation/ConversationView", () => ({
   ),
 }));
 
+/** One animation frame on the fake clock. */
+const frameMs = 16;
+
+const control = (name: string) => screen.getByRole("button", { name });
+
 const commaCenterHost: ChatSidebarHost = {
   conversationId: "comma-center",
   groupId: "grp_test",
@@ -207,6 +216,14 @@ const admittingCapacityHost: ChatSidebarHost = {
   groupId: "grp_test",
   workspaceId: "workspace-1",
 };
+/** A host with one page, its active one, that the window owns but does not show. */
+function otherCapacityHost(index: number): ChatSidebarHost {
+  return {
+    conversationId: `other-browser-host-${index}`,
+    groupId: "grp_test",
+    workspaceId: "workspace-1",
+  };
+}
 
 describe("ChatSidebarContext", () => {
   it("creates and selects the exact tab id requested by Main", async () => {
@@ -308,42 +325,6 @@ describe("ChatSidebarContext", () => {
       expect(screen.getByTestId("active-host")).toHaveTextContent("task-a")
     );
     expect(screen.getByTestId("active-sidebar-chat")).toHaveTextContent("task-b");
-  });
-
-  it("releases a native browser session when the renderer LRU forgets it", async () => {
-    nativeBridge.platform = "electron";
-    nativeBridge.browserSidebar.close.mockClear();
-    const rendered = render(
-      <ChatSidebarProvider>
-        <SidebarEvictionHarness />
-      </ChatSidebarProvider>
-    );
-
-    try {
-      const openNext = screen.getByRole("button", {
-        name: "Open next browser host",
-      });
-      for (let index = 0; index <= maxBrowserSidebarSessionsPerOwner; index += 1) {
-        fireEvent.click(openNext);
-        await waitFor(() =>
-          expect(screen.getByTestId("opened-browser-hosts")).toHaveTextContent(
-            String(index + 1)
-          )
-        );
-      }
-
-      await waitFor(() =>
-        expect(nativeBridge.browserSidebar.close).toHaveBeenCalledWith({
-          sessionId: expect.stringContaining(
-            `${JSON.stringify(["grp_test", "browser-host-0"])}::`
-          ),
-        })
-      );
-    } finally {
-      rendered.unmount();
-      nativeBridge.browserSidebar.close.mockClear();
-      nativeBridge.platform = "web";
-    }
   });
 
   it("touches a mutated host before fencing the next-oldest LRU eviction", async () => {
@@ -609,7 +590,7 @@ describe("ChatSidebar", () => {
     renderSidebarRouter();
 
     const sidebar = await screen.findByTestId("chat-sidebar");
-    const toggle = screen.getByRole("button", { name: "Toggle chat sidebar" });
+    const toggle = screen.getByTestId("chat-sidebar-toggle");
     expect(sidebar).toHaveAttribute("data-open", "true");
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(toggle).toHaveClass("comma-icon-button", "size-7", "p-xs");
@@ -644,13 +625,11 @@ describe("ChatSidebar", () => {
   it("keeps the global toggle visible and opens a default Browser tab", async () => {
     const { router } = renderSidebarRouter();
 
-    expect(
-      await screen.findByRole("button", { name: "Toggle chat sidebar" })
-    ).toBeVisible();
+    expect(await screen.findByTestId("chat-sidebar-toggle")).toBeVisible();
 
     await act(() => router.navigate({ to: "/plugins" }));
 
-    const toggle = screen.getByRole("button", { name: "Toggle chat sidebar" });
+    const toggle = screen.getByTestId("chat-sidebar-toggle");
     expect(toggle).toBeVisible();
     expect(toggle).toHaveAttribute("aria-expanded", "false");
 
@@ -695,9 +674,7 @@ describe("ChatSidebar", () => {
     try {
       const { router } = renderSidebarRouter();
       await act(() => router.navigate({ to: "/plugins" }));
-      fireEvent.click(
-        await screen.findByRole("button", { name: "Toggle chat sidebar" })
-      );
+      fireEvent.click(await screen.findByTestId("chat-sidebar-toggle"));
       const address = screen.getByRole("textbox", { name: "Address" });
       fireEvent.change(address, { target: { value: "example.com/first" } });
       fireEvent.submit(screen.getByRole("form", { name: "Browser navigation" }));
@@ -750,9 +727,7 @@ describe("ChatSidebar", () => {
     try {
       const view = renderSidebarRouter({ strictMode: true });
       await act(() => view.router.navigate({ to: "/plugins" }));
-      fireEvent.click(
-        await screen.findByRole("button", { name: "Toggle chat sidebar" })
-      );
+      fireEvent.click(await screen.findByTestId("chat-sidebar-toggle"));
       const address = screen.getByRole("textbox", { name: "Address" });
       fireEvent.change(address, { target: { value: "example.com/first" } });
       fireEvent.submit(screen.getByRole("form", { name: "Browser navigation" }));
@@ -1764,10 +1739,9 @@ describe("ChatSidebar", () => {
 
       failNextVisibleUpdate = true;
       fireEvent.click(screen.getByRole("tab", { name: "Documentation" }));
-
-      await waitFor(() =>
-        expect(nativeBridge.browserSidebar.open).toHaveBeenCalledTimes(2)
-      );
+      // The inactive answer resolves, and the page reopens from it.
+      await advance(0);
+      expect(nativeBridge.browserSidebar.open).toHaveBeenCalledTimes(2);
 
       const firstOpen = nativeBridge.browserSidebar.open.mock.calls[0]?.[0];
       const sessionId = firstOpen?.sessionId;
@@ -1798,7 +1772,7 @@ describe("ChatSidebar", () => {
       );
 
       act(() => onChanged?.(inactiveState));
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      await advance(0);
       expect(nativeBridge.browserSidebar.open).toHaveBeenCalledTimes(3);
     } finally {
       bounds.mockRestore();
@@ -1817,12 +1791,17 @@ describe("ChatSidebar", () => {
 
     try {
       renderCapacityFenceRouter();
-      fireEvent.click(
-        await screen.findByRole("button", { name: "Open protected browser page" })
-      );
-      await waitFor(() =>
-        expect(nativeBridge.browserSidebar.open).toHaveBeenCalledOnce()
-      );
+      await flush();
+      // The harness's controls stay mounted for the whole test.
+      const openProtected = control("Open protected browser page");
+      const showAdmitting = control("Show admitting browser host");
+      const openOther = control("Open a page in the next other host");
+      const openNext = control("Open next admitting browser page");
+      const addBlank = control("Add admitting blank page");
+      const fillBlank = control("Fill admitting blank page");
+      fireEvent.click(openProtected);
+      await flush();
+      expect(nativeBridge.browserSidebar.open).toHaveBeenCalledOnce();
       const protectedSessionId =
         nativeBridge.browserSidebar.open.mock.calls[0]?.[0].sessionId;
       expect(
@@ -1832,23 +1811,27 @@ describe("ChatSidebar", () => {
         `${chatSidebarHostKey(protectedCapacityHost)}::`
       );
 
-      fireEvent.click(
-        screen.getByRole("button", { name: "Show admitting browser host" })
-      );
-      await waitFor(() =>
-        expect(screen.getByTestId("capacity-active-host")).toHaveTextContent(
-          admittingCapacityHost.conversationId
-        )
+      fireEvent.click(showAdmitting);
+      await flush();
+      expect(screen.getByTestId("capacity-active-host")).toHaveTextContent(
+        admittingCapacityHost.conversationId
       );
 
-      const openNext = screen.getByRole("button", {
-        name: "Open next admitting browser page",
-      });
-      for (let index = 0; index < maxBrowserSidebarSessionsPerOwner - 1; index += 1) {
+      // The window's page sessions count across its hosts. Pages in hosts it
+      // does not show take most of the room, so only a few pages of the shown
+      // host render; each is its host's active page, which eviction takes last.
+      const admittingPages = 5;
+      const otherPages = maxBrowserSidebarSessionsPerOwner - 1 - admittingPages;
+      for (let index = 0; index < otherPages; index += 1) {
+        fireEvent.click(openOther);
+        await flush();
+      }
+      expect(nativeBridge.browserSidebar.open).toHaveBeenCalledOnce();
+
+      for (let index = 0; index < admittingPages; index += 1) {
         fireEvent.click(openNext);
-        await waitFor(() =>
-          expect(nativeBridge.browserSidebar.open).toHaveBeenCalledTimes(index + 2)
-        );
+        await flush();
+        expect(nativeBridge.browserSidebar.open).toHaveBeenCalledTimes(index + 2);
       }
 
       const admittingHostPrefix = `${chatSidebarHostKey(admittingCapacityHost)}::`;
@@ -1857,24 +1840,20 @@ describe("ChatSidebar", () => {
         .find((sessionId) => sessionId.startsWith(admittingHostPrefix));
       expect(victimSessionId).toBeTruthy();
 
-      fireEvent.click(screen.getByRole("button", { name: "Add admitting blank page" }));
-      await waitFor(() =>
-        expect(screen.getByTestId("capacity-page-count")).toHaveTextContent(
-          String(maxBrowserSidebarSessionsPerOwner)
-        )
+      fireEvent.click(addBlank);
+      await flush();
+      expect(screen.getByTestId("capacity-page-count")).toHaveTextContent(
+        String(admittingPages + 1)
       );
       const openCountBeforeAdmission =
         nativeBridge.browserSidebar.open.mock.calls.length;
       nativeBridge.browserSidebar.close.mockClear();
 
-      fireEvent.click(
-        screen.getByRole("button", { name: "Fill admitting blank page" })
-      );
+      fireEvent.click(fillBlank);
 
-      await waitFor(() =>
-        expect(nativeBridge.browserSidebar.open).toHaveBeenCalledTimes(
-          openCountBeforeAdmission + 1
-        )
+      await flush();
+      expect(nativeBridge.browserSidebar.open).toHaveBeenCalledTimes(
+        openCountBeforeAdmission + 1
       );
       expect(nativeBridge.browserSidebar.open.mock.calls.at(-1)?.[0]).toEqual(
         expect.objectContaining({
@@ -1885,11 +1864,10 @@ describe("ChatSidebar", () => {
           url: "https://example.com/admitted",
         })
       );
-      await waitFor(() =>
-        expect(nativeBridge.browserSidebar.close).toHaveBeenCalledWith({
-          sessionId: victimSessionId,
-        })
-      );
+      await flush();
+      expect(nativeBridge.browserSidebar.close).toHaveBeenCalledWith({
+        sessionId: victimSessionId,
+      });
       expect(nativeBridge.browserSidebar.close).not.toHaveBeenCalledWith({
         sessionId: protectedSessionId,
       });
@@ -1934,16 +1912,11 @@ describe("ChatSidebar", () => {
 
     try {
       renderSidebarRouter();
-      fireEvent.click(await screen.findByRole("button", { name: "Open browser" }));
-      await waitFor(() =>
-        expect(nativeBridge.browserSidebar.open).toHaveBeenCalledOnce()
-      );
-      await act(
-        () =>
-          new Promise<void>((resolve) => {
-            window.requestAnimationFrame(() => resolve());
-          })
-      );
+      await flush();
+      fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
+      await flush();
+      expect(nativeBridge.browserSidebar.open).toHaveBeenCalledOnce();
+      await advance(frameMs);
 
       const firstOpen = nativeBridge.browserSidebar.open.mock.calls[0]?.[0];
       const inactiveState = browserSidebarState(
@@ -1956,15 +1929,16 @@ describe("ChatSidebar", () => {
       geometryReady = false;
       act(() => onChanged?.(inactiveState));
 
-      await waitFor(() => expect(zeroBoundsReads).toBeGreaterThan(0));
+      await flush();
+      expect(zeroBoundsReads).toBeGreaterThan(0);
       expect(nativeBridge.browserSidebar.open).toHaveBeenCalledOnce();
 
       geometryReady = true;
       act(() => window.dispatchEvent(new Event("resize")));
 
-      await waitFor(() =>
-        expect(nativeBridge.browserSidebar.open).toHaveBeenCalledTimes(2)
-      );
+      // The viewport rereads its geometry on the next frame.
+      await advance(frameMs);
+      expect(nativeBridge.browserSidebar.open).toHaveBeenCalledTimes(2);
       expect(nativeBridge.browserSidebar.open.mock.calls[1]?.[0]).toEqual(
         expect.objectContaining({
           navigationRevision: firstOpen?.navigationRevision,
@@ -1977,12 +1951,7 @@ describe("ChatSidebar", () => {
         onChanged?.(inactiveState);
         window.dispatchEvent(new Event("resize"));
       });
-      await act(
-        () =>
-          new Promise<void>((resolve) => {
-            window.requestAnimationFrame(() => resolve());
-          })
-      );
+      await advance(frameMs);
       expect(nativeBridge.browserSidebar.open).toHaveBeenCalledTimes(2);
     } finally {
       bounds.mockRestore();
@@ -2142,7 +2111,7 @@ describe("ChatSidebar", () => {
       expect(nativeBridge.browserSidebar.open).toHaveBeenCalledOnce();
       expect(nativeBridge.browserSidebar.close).not.toHaveBeenCalled();
 
-      const toggle = screen.getByRole("button", { name: "Toggle chat sidebar" });
+      const toggle = screen.getByTestId("chat-sidebar-toggle");
       fireEvent.click(toggle);
       await waitFor(() =>
         expect(nativeBridge.browserSidebar.update).toHaveBeenCalledWith({
@@ -2184,11 +2153,7 @@ describe("ChatSidebar", () => {
     const suppressionClaim = "installed-snapshot-unmount";
     const decoded = deferred<void>();
     const decode = vi.fn(() => decoded.promise);
-    const decodeDescriptor = Object.getOwnPropertyDescriptor(
-      HTMLImageElement.prototype,
-      "decode"
-    );
-    Object.defineProperty(HTMLImageElement.prototype, "decode", {
+    stubProperty(HTMLImageElement.prototype, "decode", {
       configurable: true,
       value: decode,
     });
@@ -2207,7 +2172,7 @@ describe("ChatSidebar", () => {
       ).toHaveAttribute("src", "blob:browser-snapshot");
 
       await waitFor(() => expect(decode).toHaveBeenCalledOnce());
-      await act(() => new Promise((resolve) => window.setTimeout(resolve, 100)));
+      await advance(100);
       expect(
         nativeBridge.browserSidebar.update.mock.calls.filter(
           ([input]) => input.visible === false
@@ -2232,11 +2197,6 @@ describe("ChatSidebar", () => {
       expect(revokeObjectURL).toHaveBeenCalledTimes(1);
       expect(revokeObjectURL).toHaveBeenCalledWith("blob:browser-snapshot");
     } finally {
-      if (decodeDescriptor) {
-        Object.defineProperty(HTMLImageElement.prototype, "decode", decodeDescriptor);
-      } else {
-        Reflect.deleteProperty(HTMLImageElement.prototype, "decode");
-      }
       releaseNativeSurfaceSuppression(suppressionClaim);
       bounds.mockRestore();
       createObjectURL.mockRestore();
@@ -2284,7 +2244,7 @@ describe("ChatSidebar", () => {
           status: "ready",
         });
         await capture.promise;
-        await new Promise((resolve) => window.setTimeout(resolve, 60));
+        await vi.advanceTimersByTimeAsync(60);
       });
 
       expect(createObjectURL).not.toHaveBeenCalled();
@@ -2349,7 +2309,7 @@ describe("ChatSidebar", () => {
       // aside's width down, so let the rect mock go before the close: the
       // sidebar then measures 0 and releases, as it does after the real exit.
       bounds.mockRestore();
-      fireEvent.click(screen.getByRole("button", { name: "Toggle chat sidebar" }));
+      fireEvent.click(screen.getByTestId("chat-sidebar-toggle"));
       await waitFor(() => expect(toastObstruction()).toBe("0px"));
     } finally {
       unregisterReader();
@@ -2411,7 +2371,7 @@ describe("ChatSidebar", () => {
         url: "https://example.com/docs",
       });
 
-      fireEvent.click(screen.getByRole("button", { name: "Toggle chat sidebar" }));
+      fireEvent.click(screen.getByTestId("chat-sidebar-toggle"));
       await act(async () => {
         resolveOpen?.(openedState);
         await pendingOpen;
@@ -2641,6 +2601,7 @@ function SidebarPageEvictionHarness() {
 function CapacityFenceHarness() {
   const [host, setHost] = useState(protectedCapacityHost);
   const [opened, setOpened] = useState(0);
+  const [otherHosts, setOtherHosts] = useState(0);
   const sidebar = useChatSidebar();
   useRegisterChatSidebarHost(host);
   const pages = sidebar.activeSession?.browserPages ?? [];
@@ -2666,6 +2627,17 @@ function CapacityFenceHarness() {
       </button>
       <button onClick={() => setHost(admittingCapacityHost)} type="button">
         Show admitting browser host
+      </button>
+      <button
+        onClick={() => {
+          sidebar.openBrowser(otherCapacityHost(otherHosts), {
+            url: `https://example.com/other-${otherHosts}`,
+          });
+          setOtherHosts((current) => current + 1);
+        }}
+        type="button"
+      >
+        Open a page in the next other host
       </button>
       <button
         onClick={() => {

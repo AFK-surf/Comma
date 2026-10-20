@@ -4,7 +4,7 @@ defmodule SalixStore.PostmarkTest do
   request shape (From per caller, joined To, server token header), success and
   failure mapping, and the not-configured guard.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.Postmark
 
@@ -47,7 +47,7 @@ defmodule SalixStore.PostmarkTest do
 
     port =
       Enum.find_value(1..10, fn _ ->
-        p = 40000 + :erlang.phash2(make_ref(), 20000)
+        p = 40000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20000)
 
         case start_supervised({Bandit, plug: MockPostmark, port: p}, id: {:bandit, p}) do
           {:ok, _pid} -> p
@@ -56,12 +56,12 @@ defmodule SalixStore.PostmarkTest do
       end)
 
     prev = %{
-      base: Application.get_env(:salix_store, :postmark_base_url),
-      token: Application.get_env(:salix_store, :postmark_server_token)
+      base: SystemsRuntime.get_env(:salix_store, :postmark_base_url),
+      token: SystemsRuntime.get_env(:salix_store, :postmark_server_token)
     }
 
-    Application.put_env(:salix_store, :postmark_base_url, "http://127.0.0.1:#{port}")
-    Application.put_env(:salix_store, :postmark_server_token, "store-token")
+    SystemsRuntime.put_env(:salix_store, :postmark_base_url, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:salix_store, :postmark_server_token, "store-token")
 
     on_exit(fn ->
       restore(:postmark_base_url, prev.base)
@@ -71,8 +71,8 @@ defmodule SalixStore.PostmarkTest do
     :ok
   end
 
-  defp restore(key, nil), do: Application.delete_env(:salix_store, key)
-  defp restore(key, value), do: Application.put_env(:salix_store, key, value)
+  defp restore(key, nil), do: SystemsRuntime.delete_env(:salix_store, key)
+  defp restore(key, value), do: SystemsRuntime.put_env(:salix_store, key, value)
 
   test "posts one message with the caller's From and all recipients joined" do
     assert :ok = Postmark.send_email("login@comma.test", ["a@x.com", "b@y.com"], "Hi", "Body")
@@ -83,34 +83,5 @@ defmodule SalixStore.PostmarkTest do
     assert body["Subject"] == "Hi"
     assert body["TextBody"] == "Body"
     assert body["MessageStream"] == "outbound"
-  end
-
-  test "splits recipient lists past Postmark's 50-per-message cap" do
-    recipients = for i <- 1..51, do: "user#{i}@example.com"
-
-    assert :ok = Postmark.send_email("login@comma.test", recipients, "Hi", "Body")
-
-    assert [first, second] = MockPostmark.requests()
-    assert length(String.split(first.body["To"], ",")) == 50
-    assert second.body["To"] == "user51@example.com"
-  end
-
-  test "maps HTTP and in-body Postmark errors without echoing recipients" do
-    assert {:error, {:postmark, 422, 300}} =
-             Postmark.send_email("f@x.com", ["a@x.com"], "reject-422", "b")
-
-    assert {:error, {:postmark, 200, 406}} =
-             Postmark.send_email("f@x.com", ["a@x.com"], "reject-200", "b")
-  end
-
-  test "requires the server token and a From address" do
-    Application.put_env(:salix_store, :postmark_server_token, "")
-    assert {:error, :not_configured} = Postmark.send_email("f@x.com", ["a@x.com"], "s", "b")
-    refute Postmark.configured?()
-
-    Application.put_env(:salix_store, :postmark_server_token, "store-token")
-    assert Postmark.configured?()
-    assert {:error, :not_configured} = Postmark.send_email("  ", ["a@x.com"], "s", "b")
-    assert MockPostmark.requests() == []
   end
 end

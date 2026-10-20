@@ -1,4 +1,6 @@
 defmodule SalixVoice.Model.Fake do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Test double for `SalixVoice.Model`.
 
@@ -15,27 +17,27 @@ defmodule SalixVoice.Model.Fake do
 
   @behaviour SalixVoice.Model
 
-  use GenServer
+  use SystemsRuntime.Server
 
   @impl SalixVoice.Model
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts)
 
   @impl SalixVoice.Model
-  def send_audio(pid, audio), do: GenServer.cast(pid, {:audio, audio})
+  def send_audio(pid, audio), do: SystemsRuntime.Server.cast(pid, {:audio, audio})
 
   @impl SalixVoice.Model
   def append(pid, kind, delegation_id, text),
-    do: GenServer.cast(pid, {:append, kind, delegation_id, text})
+    do: SystemsRuntime.Server.cast(pid, {:append, kind, delegation_id, text})
 
   @impl SalixVoice.Model
-  def close(pid), do: GenServer.cast(pid, :close)
+  def close(pid), do: SystemsRuntime.Server.cast(pid, :close)
 
   @doc "Deliver a normalized model event to the owning call."
-  def emit(pid, event), do: GenServer.cast(pid, {:emit, event})
+  def emit(pid, event), do: SystemsRuntime.Server.cast(pid, {:emit, event})
 
   @impl GenServer
   def init(opts) do
-    observer = opts[:observer] || Application.get_env(:salix_voice, :fake_model_observer)
+    observer = opts[:observer] || SystemsRuntime.get_env(:salix_voice, :fake_model_observer)
     state = %{opts: opts, observer: observer}
     notify(state, {:started, Map.drop(opts, [:settings])})
     {:ok, state}
@@ -43,15 +45,15 @@ defmodule SalixVoice.Model.Fake do
 
   @impl GenServer
   def handle_cast({:emit, event}, state) do
-    send(state.opts.owner, {:voice_model, state.opts.ref, event})
+    SystemsRuntime.Proc.send(state.opts.owner, {:voice_model, state.opts.ref, event})
     {:noreply, state}
   end
 
   def handle_cast(:close, state) do
     notify(state, :close)
-    seconds = Application.get_env(:salix_voice, :fake_model_seconds, 0)
+    seconds = SystemsRuntime.get_env(:salix_voice, :fake_model_seconds, 0)
 
-    send(
+    SystemsRuntime.Proc.send(
       state.opts.owner,
       {:voice_model, state.opts.ref, {:closed, "close_requested", %{"seconds" => seconds}}}
     )
@@ -64,13 +66,18 @@ defmodule SalixVoice.Model.Fake do
     {:noreply, state}
   end
 
-  defp notify(%{observer: observer}, command) when is_pid(observer),
-    do: send(observer, {:fake_model, self(), command})
+  defp notify(%{observer: observer}, command) when SystemsRuntime.Proc.is_process(observer),
+    do: SystemsRuntime.Proc.send(observer, {:fake_model, SystemsRuntime.Proc.self(), command})
 
   defp notify(%{observer: observer}, command) when is_atom(observer) and not is_nil(observer) do
-    case Process.whereis(observer) do
-      pid when is_pid(pid) -> send(pid, {:fake_model, self(), command})
-      _ -> :ok
+    systems_self = SystemsRuntime.Proc.self()
+
+    case SystemsRuntime.Proc.whereis(observer) do
+      pid when SystemsRuntime.Proc.is_process(pid) ->
+        SystemsRuntime.Proc.send(pid, {:fake_model, systems_self, command})
+
+      _ ->
+        :ok
     end
   end
 

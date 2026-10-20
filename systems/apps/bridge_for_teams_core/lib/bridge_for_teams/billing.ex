@@ -50,7 +50,7 @@ defmodule BridgeForTeams.Billing do
   @spec org_billing_summary(Ecto.UUID.t(), keyword() | map()) :: {:ok, map()} | {:error, term()}
   def org_billing_summary(org_id, opts \\ []) do
     with {:ok, %Organization{} = org} <- Orgs.get_org(org_id) do
-      at = opts[:at] || opts["at"] || DateTime.utc_now()
+      at = opts[:at] || opts["at"] || SystemsClock.utc_now()
 
       %{rows: [[credits]]} =
         Ecto.Adapters.SQL.query!(

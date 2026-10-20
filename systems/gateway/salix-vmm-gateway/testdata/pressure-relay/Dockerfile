@@ -1,5 +1,5 @@
-ARG EXTERNAL_IMAGE=node:24.19.0-bookworm-slim
-FROM ${EXTERNAL_IMAGE}
+ARG NODE_IMAGE=node:24.19.0-bookworm-slim
+FROM ${NODE_IMAGE}
 ARG PI_TARBALL
 ARG PI_INTEGRITY
 RUN node -e 'const fs=require("fs"),crypto=require("crypto");(async()=>{const response=await fetch(process.env.PI_TARBALL);if(!response.ok)throw Error("Pi download failed");const data=Buffer.from(await response.arrayBuffer());if("sha512-"+crypto.createHash("sha512").update(data).digest("base64")!==process.env.PI_INTEGRITY)throw Error("Pi lock integrity mismatch");fs.writeFileSync("/tmp/pi.tgz",data)})().catch(e=>{console.error(e);process.exit(1)})' \

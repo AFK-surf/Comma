@@ -4,7 +4,7 @@ import {
   getNativeBridge,
   type FilesSaveDownloadResult,
 } from "@comma/native-bridge";
-import { toast } from "@comma/ui";
+import { toast } from "@comma/ui/components/toast";
 
 export function canCopyFile() {
   const bridge = getNativeBridge();

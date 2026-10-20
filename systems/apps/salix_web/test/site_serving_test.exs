@@ -15,7 +15,10 @@ defmodule SalixWeb.SiteServingTest do
     * tenant API URLs flipping to the subdomain form when a sites domain is
       configured
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   alias SalixAgent.SiteId
   alias SalixAgent.AgentWorkspace
@@ -27,10 +30,13 @@ defmodule SalixWeb.SiteServingTest do
 
     @impl true
     def authorize_write(attrs) do
-      send(Application.fetch_env!(:salix_web, :site_storage_authorization_test_pid), {
-        :site_storage_authorize,
-        attrs
-      })
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_web, :site_storage_authorization_test_pid),
+        {
+          :site_storage_authorize,
+          attrs
+        }
+      )
 
       {:error, {:billing_unavailable, %{allowed?: false, reason: "insufficient_credits"}}}
     end
@@ -41,10 +47,13 @@ defmodule SalixWeb.SiteServingTest do
 
     @impl true
     def authorize_write(attrs) do
-      send(Application.fetch_env!(:salix_web, :site_storage_authorization_test_pid), {
-        :site_storage_authorize,
-        attrs
-      })
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_web, :site_storage_authorization_test_pid),
+        {
+          :site_storage_authorize,
+          attrs
+        }
+      )
 
       :ok
     end
@@ -57,12 +66,12 @@ defmodule SalixWeb.SiteServingTest do
     plug(:match)
     plug(:dispatch)
 
-    post "/chat/completions" do
+    post "/v1/chat/completions" do
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       req = Jason.decode!(body)
 
-      if pid = :persistent_term.get({__MODULE__, :test_pid}, nil) do
-        send(pid, {:provider_request, req})
+      if pid = SystemsRuntime.PersistentTerm.get({__MODULE__, :test_pid}, nil) do
+        SystemsRuntime.Proc.send(pid, {:provider_request, req})
       end
 
       if req["stream"] == true do
@@ -146,8 +155,8 @@ defmodule SalixWeb.SiteServingTest do
 
     @impl true
     def before_llm_call(fact) do
-      send(
-        Application.fetch_env!(:salix_web, :site_llm_metering_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_web, :site_llm_metering_test_pid),
         {:site_meter_before, fact}
       )
 
@@ -156,8 +165,8 @@ defmodule SalixWeb.SiteServingTest do
 
     @impl true
     def after_llm_call(fact) do
-      send(
-        Application.fetch_env!(:salix_web, :site_llm_metering_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_web, :site_llm_metering_test_pid),
         {:site_meter_after, fact}
       )
 
@@ -168,33 +177,39 @@ defmodule SalixWeb.SiteServingTest do
   setup do
     Salix.App.configure()
     SalixAgent.TestSupport.stop_all_agents()
-    prev = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
 
-    prev_domain = Application.get_env(:salix_agent, :sites_domain)
-    prev_port = Application.get_env(:salix_agent, :sites_port)
-    prev_metering = Application.get_env(:salix_agent, :llm_metering_mod)
-    prev_metering_pid = Application.get_env(:salix_web, :site_llm_metering_test_pid)
-    prev_storage_authorization = Application.get_env(:salix_agent, :storage_authorization_mod)
+    prev_domain = SystemsRuntime.get_env(:salix_agent, :sites_domain)
+    prev_port = SystemsRuntime.get_env(:salix_agent, :sites_port)
+    prev_metering = SystemsRuntime.get_env(:salix_agent, :llm_metering_mod)
+    prev_metering_pid = SystemsRuntime.get_env(:salix_web, :site_llm_metering_test_pid)
+    prev_storage_authorization = SystemsRuntime.get_env(:salix_agent, :storage_authorization_mod)
 
     prev_storage_authorization_pid =
-      Application.get_env(:salix_web, :site_storage_authorization_test_pid)
+      SystemsRuntime.get_env(:salix_web, :site_storage_authorization_test_pid)
 
-    Application.put_env(:salix_agent, :sites_domain, @domain)
+    SystemsRuntime.put_env(:salix_agent, :sites_domain, @domain)
     # Pin the port off: URL assertions here stay port-less; the sites_port
     # suffix behavior is covered by SiteIdTest.
-    Application.put_env(:salix_agent, :sites_port, nil)
-    Application.put_env(:salix_agent, :llm_metering_mod, MeteringFake)
-    Application.put_env(:salix_web, :site_llm_metering_test_pid, self())
-    Application.put_env(:salix_web, :site_storage_authorization_test_pid, self())
-    :persistent_term.put({MockProvider, :test_pid}, self())
+    SystemsRuntime.put_env(:salix_agent, :sites_port, nil)
+    SystemsRuntime.put_env(:salix_agent, :llm_metering_mod, MeteringFake)
+    SystemsRuntime.put_env(:salix_web, :site_llm_metering_test_pid, SystemsRuntime.Proc.self())
+
+    SystemsRuntime.put_env(
+      :salix_web,
+      :site_storage_authorization_test_pid,
+      SystemsRuntime.Proc.self()
+    )
+
+    SystemsRuntime.PersistentTerm.put({MockProvider, :test_pid}, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev)
-      Application.put_env(:salix_agent, :sites_domain, prev_domain)
-      Application.put_env(:salix_agent, :sites_port, prev_port)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
+      SystemsRuntime.put_env(:salix_agent, :sites_domain, prev_domain)
+      SystemsRuntime.put_env(:salix_agent, :sites_port, prev_port)
       restore_env(:salix_agent, :llm_metering_mod, prev_metering)
       restore_env(:salix_web, :site_llm_metering_test_pid, prev_metering_pid)
       restore_env(:salix_agent, :storage_authorization_mod, prev_storage_authorization)
@@ -205,7 +220,7 @@ defmodule SalixWeb.SiteServingTest do
         prev_storage_authorization_pid
       )
 
-      :persistent_term.erase({MockProvider, :test_pid})
+      SystemsRuntime.PersistentTerm.erase({MockProvider, :test_pid})
     end)
 
     {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Site serving"})
@@ -265,7 +280,8 @@ defmodule SalixWeb.SiteServingTest do
              )
   end
 
-  defp unique_operation_suffix, do: System.unique_integer([:positive]) |> Integer.to_string()
+  defp unique_operation_suffix,
+    do: SystemsRuntime.Proc.unique_integer([:positive]) |> Integer.to_string()
 
   defp site_host(site, encoded), do: "#{site}-#{encoded}.#{@domain}"
 
@@ -372,24 +388,24 @@ defmodule SalixWeb.SiteServingTest do
       {"/.salix/websites/docs/index.html", "<html><body>instrumented</body></html>"}
     ])
 
-    handler = {__MODULE__, make_ref()}
-    parent = self()
+    handler = {__MODULE__, SystemsRuntime.Proc.make_ref()}
+    parent = SystemsRuntime.Proc.self()
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:comma_system, :http, :stop],
         fn event, measurements, metadata, _ ->
-          send(parent, {event, measurements, metadata})
+          SystemsRuntime.Proc.send(parent, {event, measurements, metadata})
         end,
         nil
       )
 
-    on_exit(fn -> :telemetry.detach(handler) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler) end)
 
     assert request("GET", site_host("docs", encoded), "/").status == 200
 
-    assert_receive {[:comma_system, :http, :stop], %{duration: duration}, metadata}
+    settle_receive({[:comma_system, :http, :stop], %{duration: duration}, metadata})
     assert duration >= 0
     assert metadata.route == "/_site/content"
     assert metadata.endpoint == :salix_api
@@ -489,7 +505,7 @@ defmodule SalixWeb.SiteServingTest do
   test "If-Modified-Since returns 304 for byte-stable assets", %{agent: a, encoded: e} do
     write_files!(a, [{"/.salix/websites/docs/app.css", "body { color: red; }"}])
     docs = site_host("docs", e)
-    now = System.os_time(:second)
+    now = SystemsClock.system_time(:second)
 
     resp = request("GET", docs, "/app.css", [{"If-Modified-Since", http_date(now + 60)}])
     assert resp.status == 304
@@ -502,7 +518,7 @@ defmodule SalixWeb.SiteServingTest do
   test "same-URL asset updates revalidate by content hash", %{agent: a, encoded: e} do
     path = "/.salix/websites/docs/app.css"
     docs = site_host("docs", e)
-    modified_at = System.os_time(:second)
+    modified_at = SystemsClock.system_time(:second)
 
     write_file_at!(a, path, "body { color: red; }", modified_at)
     first = request("GET", docs, "/app.css")
@@ -801,7 +817,7 @@ defmodule SalixWeb.SiteServingTest do
 
     docs = site_host("docs", e)
     json = [{"Content-Type", "application/json"}]
-    Application.put_env(:salix_agent, :storage_authorization_mod, DenyingStorageAuthorizer)
+    SystemsRuntime.put_env(:salix_agent, :storage_authorization_mod, DenyingStorageAuthorizer)
 
     resp =
       request(
@@ -815,19 +831,21 @@ defmodule SalixWeb.SiteServingTest do
     assert resp.status == 402
     assert resp.body =~ "Billing unavailable"
 
-    assert_receive {:site_storage_authorize,
-                    %{
-                      agent_id: ^a,
-                      events: [%{"type" => "site_doc_namespace_write"}],
-                      billing_context: %{"billing_account_id" => "ba_site_docs_zero"}
-                    }}
+    settle_receive(
+      {:site_storage_authorize,
+       %{
+         agent_id: ^a,
+         events: [%{"type" => "site_doc_namespace_write"}],
+         billing_context: %{"billing_account_id" => "ba_site_docs_zero"}
+       }}
+    )
 
     assert {:error, :not_found} = SalixStore.S3.head(SalixStore.Keys.site_doc_namespaces(a))
 
     assert {:error, :not_found} =
              SalixStore.S3.head(SalixStore.Keys.site_doc(a, "docs", "public/blocked"))
 
-    Application.put_env(:salix_agent, :storage_authorization_mod, AllowingStorageAuthorizer)
+    SystemsRuntime.put_env(:salix_agent, :storage_authorization_mod, AllowingStorageAuthorizer)
 
     assert request(
              "PUT",
@@ -837,18 +855,20 @@ defmodule SalixWeb.SiteServingTest do
              Jason.encode!(%{"value" => 2})
            ).status == 200
 
-    Application.put_env(:salix_agent, :storage_authorization_mod, DenyingStorageAuthorizer)
+    SystemsRuntime.put_env(:salix_agent, :storage_authorization_mod, DenyingStorageAuthorizer)
     resp = request("DELETE", docs, "/_api/documents/public/deletable")
 
     assert resp.status == 402
     assert resp.body =~ "Billing unavailable"
 
-    assert_receive {:site_storage_authorize,
-                    %{
-                      agent_id: ^a,
-                      events: [%{"type" => "site_doc_delete"}],
-                      billing_context: %{"billing_account_id" => "ba_site_docs_zero"}
-                    }}
+    settle_receive(
+      {:site_storage_authorize,
+       %{
+         agent_id: ^a,
+         events: [%{"type" => "site_doc_delete"}],
+         billing_context: %{"billing_account_id" => "ba_site_docs_zero"}
+       }}
+    )
 
     assert {:ok, _} = SalixStore.S3.head(SalixStore.Keys.site_doc(a, "docs", "public/deletable"))
   end
@@ -905,19 +925,13 @@ defmodule SalixWeb.SiteServingTest do
 
     {:ok, {_addr, port}} = ThousandIsland.listener_info(__MODULE__.MockServer)
 
-    {:ok, tmpl} =
-      SalixAgent.Templates.create(%{
-        "name" => "mock-tmpl",
-        "model" => "mock-model",
-        "max_tokens" => 50,
-        "provider_config" => %{
-          "protocol" => "",
-          "base_url" => "http://127.0.0.1:#{port}",
-          "api_key" => "k"
-        }
-      })
-
-    {:ok, _} = SalixAgent.Control.configure(a, %{"template_id" => tmpl["template_id"]})
+    # The Agent follows the platform model of its role.
+    SalixAgent.TestSupport.configure_platform_tier!(
+      "worker",
+      "http://127.0.0.1:#{port}",
+      "mock-model",
+      %{"max_tokens" => 50}
+    )
 
     write_files!(a, [
       {"/.salix/websites/docs/index.html", "<html>ok</html>"},
@@ -925,7 +939,7 @@ defmodule SalixWeb.SiteServingTest do
     ])
   end
 
-  test "LLM proxy: model forced from template, max_tokens clamped, billing recorded", %{
+  test "LLM proxy: model forced from the agent model, max_tokens clamped, billing recorded", %{
     agent: a,
     encoded: e
   } do
@@ -957,8 +971,8 @@ defmodule SalixWeb.SiteServingTest do
     resp = request("POST", docs, "/_api/llm/chat", json, body)
     assert resp.status == 200
 
-    # The provider saw the template model and the template-clamped max_tokens.
-    assert_receive {:provider_request, provider_req}, 2_000
+    # The provider saw the agent model and its clamped max_tokens.
+    settle_receive({:provider_request, provider_req})
     assert provider_req["model"] == "mock-model"
     assert provider_req["max_tokens"] == 50
     assert provider_req["prompt_cache_key"] == a
@@ -987,29 +1001,33 @@ defmodule SalixWeb.SiteServingTest do
              }
            }
 
-    assert_receive {:site_meter_before,
-                    %{
-                      entrypoint: "site_llm",
-                      salix_agent_id: ^a,
-                      billing_account_id: "ba_site",
-                      group_id: group_id
-                    }}
+    settle_receive(
+      {:site_meter_before,
+       %{
+         entrypoint: "site_llm",
+         salix_agent_id: ^a,
+         billing_account_id: "ba_site",
+         group_id: group_id
+       }}
+    )
 
     assert group_id == agent["group_id"]
 
-    assert_receive {:site_meter_after,
-                    %{
-                      status: "ok",
-                      entrypoint: "site_llm",
-                      billing_account_id: "ba_site",
-                      model: "mock-model",
-                      usage: %{
-                        "prompt_tokens" => 10,
-                        "completion_tokens" => 5,
-                        "total_tokens" => 15,
-                        "cache_read_input_tokens" => 4
-                      }
-                    }}
+    settle_receive(
+      {:site_meter_after,
+       %{
+         status: "ok",
+         entrypoint: "site_llm",
+         billing_account_id: "ba_site",
+         model: "mock-model",
+         usage: %{
+           "prompt_tokens" => 10,
+           "completion_tokens" => 5,
+           "total_tokens" => 15,
+           "cache_read_input_tokens" => 4
+         }
+       }}
+    )
 
     # Validation: messages required.
     resp = request("POST", docs, "/_api/llm/chat", json, Jason.encode!(%{"messages" => []}))
@@ -1093,16 +1111,18 @@ defmodule SalixWeb.SiteServingTest do
 
     assert Enum.join(deltas, "") == "Hello"
 
-    assert_receive {:site_meter_after,
-                    %{
-                      status: "ok",
-                      usage: %{
-                        "prompt_tokens" => 7,
-                        "completion_tokens" => 2
-                      }
-                    }}
+    settle_receive(
+      {:site_meter_after,
+       %{
+         status: "ok",
+         usage: %{
+           "prompt_tokens" => 7,
+           "completion_tokens" => 2
+         }
+       }}
+    )
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

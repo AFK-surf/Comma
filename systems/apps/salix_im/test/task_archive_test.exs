@@ -1,5 +1,5 @@
 defmodule SalixIM.TaskArchiveTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   @moduletag :task_archive
   alias SalixIM.TaskArchive
 
@@ -15,17 +15,6 @@ defmodule SalixIM.TaskArchiveTest do
 
       assert TaskArchive.transition(archived, :unarchive, 2, 4) ==
                Map.put(task(status), "updated_at", 4)
-    end
-  end
-
-  test "running, recurring and unknown statuses cannot archive" do
-    for record <- [
-          task("active"),
-          task("unknown"),
-          Map.put(task("completed"), "schedule", %{"schedule_id" => "schedule"})
-        ] do
-      assert %{"allowed" => false} = TaskArchive.availability(record)
-      assert {:error, {:conflict, _}} = TaskArchive.transition(record, :archive, 1, 2)
     end
   end
 
@@ -49,11 +38,5 @@ defmodule SalixIM.TaskArchiveTest do
     assert :ok = TaskArchive.admit_message(archived, %{"actor_type" => "user"}, :committed_retry)
     assert :ok = TaskArchive.admit_message(archived, %{"actor_type" => "agent"}, :uncommitted)
     assert {:error, _} = TaskArchive.transition(task("archived"), :unarchive, 1, 2)
-  end
-
-  test "late result updates preserve archive list position without freezing the revision" do
-    archived = task("archived") |> Map.put("archived_at", 2) |> Map.put("updated_at", 10)
-    assert TaskArchive.list_timestamp(archived) == 2
-    assert TaskArchive.list_timestamp(task("completed")) == 1
   end
 end

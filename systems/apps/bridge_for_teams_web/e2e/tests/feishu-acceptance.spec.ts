@@ -3,7 +3,7 @@ import { test, expect, type Page } from "@playwright/test";
 // End-to-end acceptance of the Feishu binding bot half against the
 // REAL running dashboard (:4101) + Salix in the same BEAM. Auth via the guarded
 // /dev/login bypass. Drives the Settings API, the React Agent Swarms list and
-// the actual LiveView project UI (not LiveViewTest).
+// the React Connections page of the new Agent Swarm.
 const EMAIL = process.env.E2E_USER_EMAIL || "e2e@example.com";
 const ORG_SLUG = "e2e";
 
@@ -22,17 +22,6 @@ async function login(page: Page) {
   );
   await expect(page).toHaveURL(new RegExp(`${SPA_PAGE}$`));
   await expect(page.locator('meta[name="csrf-token"]')).toHaveCount(1);
-}
-
-async function gotoDashboard(page: Page, path: string) {
-  await page.goto(path);
-  await expectLiveViewConnected(page);
-}
-
-async function expectLiveViewConnected(page: Page) {
-  const liveViewRoot = page.locator("[data-phx-main]").first();
-  await expect(liveViewRoot).toBeVisible();
-  await expect(liveViewRoot).toHaveClass(/(^|\s)phx-connected(\s|$)/);
 }
 
 test("Feishu bot-half: register a bot binding, then the project card offers it", async ({
@@ -77,8 +66,8 @@ test("Feishu bot-half: register a bot binding, then the project card offers it",
     }),
   );
 
-  // (2) New project → integrations: the provider list opens focused Feishu setup
-  // with a binding select (no credential inputs, no "no bot binding" prompt).
+  // (2) New project → Connections: the Feishu section offers the org's bot app
+  // in its app picker (no credential inputs, no "no bot app" prompt).
   await page.goto(`/orgs/${ORG_SLUG}/projects`);
   const projName = `feishu-acc-${uniq()}`;
   await page.getByRole("button", { name: "New Agent Swarm" }).click();
@@ -90,26 +79,48 @@ test("Feishu bot-half: register a bot binding, then the project card offers it",
   await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+$/);
   const projId = page.url().match(/projects\/([0-9a-f-]+)/)![1];
 
-  await gotoDashboard(
-    page,
-    `/orgs/${ORG_SLUG}/projects/${projId}/integrations`,
+  await page.goto(
+    `/orgs/${ORG_SLUG}/projects/${projId}/connections?provider=feishu`,
   );
-  await page
-    .locator("#integration-provider-feishu")
-    .getByRole("button", { name: "Configure" })
-    .click();
-  const connectForm = page.locator(
-    "#integration-setup-panel #create-feishu-connect-form",
-  );
-  await expect(connectForm).toBeVisible();
-  const appSelect = connectForm.locator(
-    'select[name="feishu_connect[app_id]"]',
-  );
-  await expect(appSelect).toBeVisible();
+  const feishu = page
+    .getByRole("main")
+    .getByRole("region", { name: "Feishu", exact: true });
+  // The route note also says "Connect a Feishu app above."
+  // Swarm creation returns before its group finishes provisioning. Exercise
+  // the offered retry while it prepares, then require the actual app picker.
+  await expect(async () => {
+    const messaging = page.getByRole("region", {
+      name: "Messaging",
+      exact: true,
+    });
+    if (
+      await messaging
+        .getByText("Agent Swarm is still preparing. Retry shortly.")
+        .isVisible()
+    ) {
+      await messaging
+        .getByRole("button", { name: "Retry", exact: true })
+        .click();
+    }
+    await expect(
+      feishu.getByRole("heading", {
+        name: "Connect a Feishu app",
+        exact: true,
+      }),
+    ).toBeVisible({ timeout: 1_000 });
+    // A second without the heading only sends the block round again.
+  }).toPass();
   await expect(
-    connectForm.locator('input[name="feishu_connect[app_secret]"]'),
+    feishu.getByText(
+      "No organization Feishu app has the group bot enabled yet.",
+    ),
   ).toHaveCount(0);
+  // The seeded org may hold other apps; this one is among the choices.
+  await feishu.getByRole("button", { name: /Feishu app$/ }).click();
   await expect(
-    page.getByText("No org Feishu app has bot enabled yet"),
-  ).toHaveCount(0);
+    page.getByRole("option", { name: "E2E Bot App" }).first(),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  // Salix sources the secrets from the org app: nothing secret is asked here.
+  await expect(feishu.locator('input[type="password"]')).toHaveCount(0);
 });

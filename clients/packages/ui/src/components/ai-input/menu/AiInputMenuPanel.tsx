@@ -64,6 +64,8 @@ export interface AiInputMenuPanelProps {
   noResultsLabel: string;
   onHoverItem: (index: number) => void;
   onSelectItem: (item: AiInputMenuItem) => void;
+  /** Opens a row's own second level (`AiInputMenuItem.browse`) from its chevron. */
+  onOpenItemBrowse?: ((item: AiInputMenuItem) => void) | undefined;
   optionId: (itemId: string | undefined) => string | undefined;
   /** The panel's root, so the editor can tell a blur into the panel from one out of it. */
   panelRef?: Ref<HTMLDivElement> | undefined;
@@ -89,6 +91,7 @@ export const AiInputMenuPanel = ({
   noResultsLabel,
   onHoverItem,
   onSelectItem,
+  onOpenItemBrowse,
   optionId,
   panelRef,
   resetKey,
@@ -264,6 +267,20 @@ export const AiInputMenuPanel = ({
                         ) : null}
                         {item.browseGroupId ? (
                           <span aria-hidden className={aiInputMenuItemChevron}>
+                            <ChevronRightSmallIcon />
+                          </span>
+                        ) : item.browse ? (
+                          // The row picks itself; its chevron steps into its choices.
+                          <span
+                            aria-hidden
+                            className={aiInputMenuItemChevron}
+                            data-testid="ai-input-menu-item-browse"
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              onOpenItemBrowse?.(item);
+                            }}
+                          >
                             <ChevronRightSmallIcon />
                           </span>
                         ) : null}

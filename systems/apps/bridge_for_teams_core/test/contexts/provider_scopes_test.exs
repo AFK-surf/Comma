@@ -5,7 +5,7 @@ defmodule BridgeForTeams.ProviderScopesTest do
   requests a scope that can send mail, and non-Google providers keep their
   adapter defaults.
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias BridgeForTeams.ProviderScopes
 

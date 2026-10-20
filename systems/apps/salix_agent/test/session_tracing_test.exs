@@ -1,5 +1,7 @@
 defmodule SalixAgent.SessionTracingTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  require SystemsClock
+  use SalixAgent.TestSupport.Settle
   require Record
   require OpenTelemetry.Tracer, as: Tracer
 
@@ -13,16 +15,16 @@ defmodule SalixAgent.SessionTracingTest do
   @session "ses1_0000000000000000900"
 
   setup do
-    old_backend = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
+    old_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
     start_supervised!(S3.Fake)
-    :ok = :otel_batch_processor.set_exporter(:otel_exporter_pid, self())
+    :ok = :otel_batch_processor.set_exporter(:otel_exporter_pid, SystemsRuntime.Proc.self())
     :ok = :otel_tracer_provider.force_flush()
 
     on_exit(fn ->
       if old_backend,
-        do: Application.put_env(:salix_store, :s3_backend, old_backend),
-        else: Application.delete_env(:salix_store, :s3_backend)
+        do: SystemsRuntime.put_env(:salix_store, :s3_backend, old_backend),
+        else: SystemsRuntime.delete_env(:salix_store, :s3_backend)
     end)
 
     :ok
@@ -92,13 +94,13 @@ defmodule SalixAgent.SessionTracingTest do
           captured = Context.capture()
 
           task =
-            Task.async(fn ->
+            SystemsRuntime.Task.async(fn ->
               Context.run(captured, fn ->
                 SalixAgent.RoundConfig.build_round_config(@agent, "worker", %{})
               end)
             end)
 
-          assert {:error, :not_found} = Task.await(task)
+          assert {:error, :not_found} = SystemsRuntime.Task.await(task, :infinity)
           {OpenTelemetry.Span.trace_id(parent), OpenTelemetry.Span.span_id(parent)}
         end
       end)
@@ -113,7 +115,7 @@ defmodule SalixAgent.SessionTracingTest do
   # Selective receive leaves child spans in the mailbox when the parent is
   # requested first (export order need not match start order).
   defp receive_span(trace_id, name) do
-    receive do
+    SystemsClock.vreceive do
       {:span, span(trace_id: ^trace_id, name: ^name) = exported} -> exported
     after
       1_000 -> flunk("missing exported #{name}")

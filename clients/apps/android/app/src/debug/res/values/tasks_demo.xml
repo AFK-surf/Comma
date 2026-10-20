@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="tasks_demo_title">任务演示</string>
+    <string name="tasks_demo_tab_chat">聊天卡片</string>
+    <string name="tasks_demo_tab_panel">会话任务</string>
+    <string name="tasks_demo_tab_list">任务列表</string>
+    <string name="tasks_demo_tab_detail">任务详情</string>
+    <string name="tasks_demo_user_message">帮我处理一下这个</string>
+    <string name="tasks_demo_agent_message">好的，我建了一个任务：</string>
+    <string name="tasks_demo_panel_hint">点输入框上方的胶囊，打开本会话的任务面板。面板先到半屏，可以往上拖到全屏，往下拖关闭。</string>
+    <string name="tasks_demo_composer_placeholder">发消息…</string>
+
+    <style name="Theme.TasksDemo" parent="Theme.Chat">
+        <item name="android:windowBackground">@color/token_bg_primary</item>
+    </style>
+</resources>

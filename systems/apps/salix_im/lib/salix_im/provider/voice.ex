@@ -117,7 +117,7 @@ defmodule SalixIM.Provider.Voice do
       {:ok, pid} ->
         try do
           pid
-          |> GenServer.call({:voice_provider, op, request}, @call_timeout_ms)
+          |> SystemsRuntime.Server.call({:voice_provider, op, request}, @call_timeout_ms)
           |> result(call_id)
         catch
           :exit, {:timeout, _} ->

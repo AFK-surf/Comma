@@ -10,7 +10,7 @@ theorem queueAppend_format {s e t : Term} {j r : List Term}
     (h : queueAppend s e j = .ok (t, r)) : t.get (a "storage_format") = s.get (a "storage_format") := by
   unfold queueAppend at h
   repeat' first
-    | exact write_field_frame h rfl
+    | exact write_field_frame h (by keys_absent)
     | (have same := pure_ok h; subst t; rfl)
     | (exact (fail_ok h).elim)
     | split at h
@@ -21,7 +21,7 @@ theorem pruneResultRefs_format {s t : Term} {j r : List Term}
     (h : pruneResultRefs s j = .ok (t, r)) : t.get (a "storage_format") = s.get (a "storage_format") := by
   unfold pruneResultRefs at h
   repeat' first
-    | exact write_field_frame h rfl
+    | exact write_field_frame h (by keys_absent)
     | (have same := pure_ok h; subst t; rfl)
     | split at h
     | (obtain ⟨_, _, _, h⟩ := bind_ok h)
@@ -31,14 +31,14 @@ theorem queueConsume_format {s e t : Term} {j r : List Term}
   unfold queueConsume at h
   iterate 4 obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨_, _, written, pruned⟩ := bind_ok h
-  exact (pruneResultRefs_format pruned).trans (write_field_frame written rfl)
+  exact (pruneResultRefs_format pruned).trans (write_field_frame written (by keys_absent))
 
 theorem queueAck_format {s e t : Term} {j r : List Term}
     (h : queueAck s e j = .ok (t, r)) : t.get (a "storage_format") = s.get (a "storage_format") := by
   unfold queueAck at h
   iterate 6 obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨_, _, written, pruned⟩ := bind_ok h
-  exact (pruneResultRefs_format pruned).trans (write_field_frame written rfl)
+  exact (pruneResultRefs_format pruned).trans (write_field_frame written (by keys_absent))
 
 theorem sessionEvent_format {s e t : Term} {j r : List Term}
     (h : sessionEvent s e j = .ok (t, r)) : t.get (a "storage_format") = s.get (a "storage_format") :=

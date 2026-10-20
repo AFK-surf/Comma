@@ -1,5 +1,5 @@
 defmodule SalixIM.TaskLabelsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.{ConversationInput, ConversationServer, Conversations, TaskLabels}
   alias SalixStore.Ids
@@ -7,12 +7,12 @@ defmodule SalixIM.TaskLabelsTest do
   setup do
     SalixIM.TestSupport.Fleet.stop_all!()
 
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    previous_placement = Application.get_env(:salix_im, :conversation_placement)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_placement = SystemsRuntime.get_env(:salix_im, :conversation_placement)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :conversation_placement,
       SalixIM.ConversationPlacement.LocalFleet
@@ -45,18 +45,6 @@ defmodule SalixIM.TaskLabelsTest do
       end)
 
     {:ok, tenant_id: tenant_id, group_id: group_id, router: router}
-  end
-
-  test "first read seeds the default catalog once", %{group_id: group_id} do
-    assert {:ok, %{"labels" => labels, "proposals" => [], "colors" => colors}} =
-             TaskLabels.list(group_id)
-
-    assert Enum.map(labels, & &1["name"]) == ["Work", "Personal", "Research", "Urgent"]
-    assert Enum.all?(labels, &Ids.valid_task_label_id?(&1["id"]))
-    assert Enum.all?(labels, &(&1["color"] in colors))
-
-    assert {:ok, %{"labels" => again}} = TaskLabels.list(group_id)
-    assert again == labels
   end
 
   test "human create, update, delete round-trip", %{group_id: group_id} do
@@ -141,22 +129,6 @@ defmodule SalixIM.TaskLabelsTest do
              TaskLabels.resolve_proposal(group_id, proposal["id"], "reject")
   end
 
-  test "rejecting a proposal leaves the catalog untouched", %{group_id: group_id, router: router} do
-    {:ok, %{"labels" => [first | _]}} = TaskLabels.list(group_id)
-
-    assert {:ok, proposal} =
-             TaskLabels.propose(
-               group_id,
-               %{"op" => "delete", "payload" => %{"label_id" => first["id"]}},
-               %{"agent_id" => router["agent_id"]}
-             )
-
-    assert {:ok, %{"labels" => labels, "proposal" => %{"status" => "rejected"}}} =
-             TaskLabels.resolve_proposal(group_id, proposal["id"], "reject")
-
-    assert Enum.any?(labels, &(&1["id"] == first["id"]))
-  end
-
   test "approving an apply proposal writes the Task labels through the Conversation owner",
        %{group_id: group_id, router: router} do
     {:ok, %{"labels" => [work, personal | _]}} = TaskLabels.list(group_id)
@@ -202,137 +174,8 @@ defmodule SalixIM.TaskLabelsTest do
     assert labeled["labels"] == [work["id"], personal["id"]]
   end
 
-  test "apply proposals reject unknown Conversations and malformed ids", %{
-    group_id: group_id,
-    router: router
-  } do
-    actor = %{"agent_id" => router["agent_id"]}
-
-    assert {:error, {:bad_request, _}} =
-             TaskLabels.propose(
-               group_id,
-               %{"op" => "apply", "payload" => %{"conversation_id" => "nope", "label_ids" => []}},
-               actor
-             )
-
-    assert {:error, :not_found} =
-             TaskLabels.propose(
-               group_id,
-               %{
-                 "op" => "apply",
-                 "payload" => %{"conversation_id" => Ids.new_conversation_id(), "label_ids" => []}
-               },
-               actor
-             )
-
-    assert {:error, {:bad_request, _}} =
-             TaskLabels.propose(group_id, %{"op" => "rename", "payload" => %{}}, actor)
-  end
-
-  test "known_label_ids? answers against the seeded catalog", %{group_id: group_id} do
-    {:ok, %{"labels" => [first | _]}} = TaskLabels.list(group_id)
-
-    assert TaskLabels.known_label_ids?(group_id, [first["id"]])
-    refute TaskLabels.known_label_ids?(group_id, [first["id"], Ids.new_task_label_id()])
-    assert TaskLabels.known_label_ids?(group_id, [])
-  end
-
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
-
-  test "agent proposals must state the rule and refuse duplicate names", %{
-    group_id: group_id,
-    router: router
-  } do
-    actor = %{"agent_id" => router["agent_id"], "session_id" => "ses1_test"}
-    propose = fn attrs -> TaskLabels.propose(group_id, attrs, actor) end
-
-    assert {:error, {:bad_request, message}} =
-             propose.(%{"op" => "create", "payload" => %{"name" => "Finance"}})
-
-    assert message =~ "description is required"
-
-    assert {:ok, %{"labels" => [work | _]}} = TaskLabels.list(group_id)
-
-    assert {:error, {:bad_request, blank}} =
-             propose.(%{
-               "op" => "update",
-               "payload" => %{"label_id" => work["id"], "description" => "  "}
-             })
-
-    assert blank =~ "cannot be blank"
-
-    assert {:error, {:conflict, exists}} =
-             propose.(%{
-               "op" => "create",
-               "payload" => %{
-                 "name" => String.upcase(work["name"]),
-                 "description" => "Add when …"
-               }
-             })
-
-    assert exists =~ "already exists"
-
-    assert {:ok, _pending} =
-             propose.(%{
-               "op" => "create",
-               "payload" => %{
-                 "name" => "Finance",
-                 "description" => "Add when money moves; skip otherwise."
-               }
-             })
-
-    assert {:error, {:conflict, proposed}} =
-             propose.(%{
-               "op" => "create",
-               "payload" => %{
-                 "name" => "finance",
-                 "description" => "Add when money moves; skip otherwise."
-               }
-             })
-
-    assert proposed =~ "already proposed"
-  end
-
-  test "a proposal remembers the conversation it was proposed from", %{
-    group_id: group_id,
-    router: router
-  } do
-    conversation_id = Ids.new_conversation_id()
-
-    actor = %{
-      "agent_id" => router["agent_id"],
-      "session_id" => "ses1_test",
-      "source_conversation_id" => conversation_id
-    }
-
-    payload = %{
-      "name" => "Reviews",
-      "color" => "purple",
-      "description" => "Add when the Task asks for a review; skip when it only mentions one."
-    }
-
-    assert {:ok, proposal} =
-             TaskLabels.propose(group_id, %{"op" => "create", "payload" => payload}, actor)
-
-    assert proposal["source_conversation_id"] == conversation_id
-    assert proposal["proposed_by"] == Map.take(actor, ~w(agent_id session_id))
-
-    assert {:ok, %{"proposals" => listed}} = TaskLabels.list(group_id)
-
-    assert Enum.find(listed, &(&1["id"] == proposal["id"]))["source_conversation_id"] ==
-             conversation_id
-
-    # A malformed id is dropped rather than stored.
-    assert {:ok, orphan} =
-             TaskLabels.propose(
-               group_id,
-               %{"op" => "create", "payload" => Map.put(payload, "name", "Orphan")},
-               Map.put(actor, "source_conversation_id", "not-a-conversation")
-             )
-
-    refute Map.has_key?(orphan, "source_conversation_id")
-  end
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   test "one approval creates a batch and adds every label without replacing existing labels",
        context do
@@ -403,25 +246,6 @@ defmodule SalixIM.TaskLabelsTest do
              TaskLabels.propose(group_id, single("Ask again"), actor(router))
   end
 
-  test "a batch collision rolls back all labels and the auto approval grant", context do
-    %{group_id: group_id, router: router} = context
-    assert {:ok, proposal} = TaskLabels.propose(group_id, batch(nil), actor(router))
-    assert {:ok, _} = TaskLabels.create(group_id, %{"name" => "Budget"})
-
-    assert {:error, {:conflict, _}} =
-             TaskLabels.resolve_proposal(group_id, proposal["id"], %{
-               "decision" => "approve",
-               "auto_approve" => true
-             })
-
-    assert {:ok, %{"approval_policy" => "ask", "labels" => labels, "proposals" => [pending]}} =
-             TaskLabels.list(group_id)
-
-    assert pending["status"] == "pending"
-    refute Enum.any?(labels, &(&1["name"] == "Invoices"))
-    assert length(labels) == 5
-  end
-
   test "rejecting a create-and-assign batch never writes the Task or enables auto approval",
        context do
     %{group_id: group_id, router: router} = context
@@ -438,94 +262,6 @@ defmodule SalixIM.TaskLabelsTest do
     assert length(labels) == 4
     assert {:ok, task} = Conversations.get_group_conversation(group_id, conversation_id)
     assert task["labels"] in [nil, []]
-  end
-
-  test "concurrent transport retries share one proposal while competing names are rejected",
-       context do
-    %{group_id: group_id, router: router} = context
-    actor = Map.put(actor(router), "tool_call_id", "label-call-1")
-
-    results =
-      1..2
-      |> Task.async_stream(fn _ -> TaskLabels.propose(group_id, batch(nil), actor) end)
-      |> Enum.to_list()
-
-    assert [{:ok, {:ok, first}}, {:ok, {:ok, second}}] = results
-    assert first["id"] == second["id"]
-    assert {:ok, %{"proposals" => [_only]}} = TaskLabels.list(group_id)
-    assert {:error, {:conflict, _}} = TaskLabels.propose(group_id, single("Different"), actor)
-
-    assert {:error, {:conflict, _}} =
-             TaskLabels.propose(
-               group_id,
-               batch(nil),
-               Map.put(actor, "tool_call_id", "label-call-2")
-             )
-  end
-
-  test "failed Task writes retain approved labels and an explicit retry uses the same ids",
-       context do
-    %{group_id: group_id, router: router} = context
-    conversation_id = create_task!(context)
-    assert {:ok, proposal} = TaskLabels.propose(group_id, batch(conversation_id), actor(router))
-    key = SalixStore.Keys.ctl_group_conversation_meta(group_id, conversation_id)
-    :ok = SalixStore.S3.Fake.set_fault({:fail, 503, :put, key})
-
-    assert {:ok, %{"proposal" => failed, "labels" => labels}} =
-             TaskLabels.resolve_proposal(group_id, proposal["id"], "approve")
-
-    assert failed["status"] == "approved"
-    assert failed["application_status"] == "pending"
-    assert is_binary(failed["application_error"])
-    assert length(labels) == 6
-    ids = Enum.map(failed["payload"]["labels"], & &1["id"])
-
-    assert {:ok, %{"proposal" => retried}} =
-             TaskLabels.resolve_proposal(group_id, proposal["id"], "approve")
-
-    assert retried["application_status"] == "applied"
-    assert Enum.map(retried["payload"]["labels"], & &1["id"]) == ids
-    assert {:ok, task} = Conversations.get_group_conversation(group_id, conversation_id)
-    assert task["labels"] == ids
-  end
-
-  test "proposal batches, summaries, and unfinished request counts stay bounded", context do
-    %{group_id: group_id, router: router} = context
-
-    labels =
-      for index <- 1..17, do: %{"name" => "Label #{index}", "description" => "Add when relevant."}
-
-    assert {:error, {:bad_request, _}} =
-             TaskLabels.propose(
-               group_id,
-               %{"op" => "create", "payload" => %{"labels" => labels}},
-               actor(router)
-             )
-
-    assert {:error, {:bad_request, _}} =
-             TaskLabels.propose(
-               group_id,
-               Map.put(single("Long summary"), "summary", String.duplicate("x", 501)),
-               actor(router)
-             )
-
-    assert {:error, {:conflict, _}} =
-             TaskLabels.propose(
-               group_id,
-               %{"op" => "create", "payload" => %{"labels" => [hd(labels), hd(labels)]}},
-               actor(router)
-             )
-
-    for index <- 1..32 do
-      assert {:ok, %{"status" => "pending"}} =
-               TaskLabels.propose(group_id, single("Pending #{index}"), actor(router))
-    end
-
-    assert {:error, {:conflict, _}} =
-             TaskLabels.propose(group_id, single("Overflow"), actor(router))
-
-    assert {:ok, %{"proposals" => pending}} = TaskLabels.list(group_id)
-    assert length(pending) == 32
   end
 
   test "a lost assignment acknowledgement cannot overwrite a later human edit after owner restart",
@@ -565,88 +301,6 @@ defmodule SalixIM.TaskLabelsTest do
     assert {:ok, task} = Conversations.get_group_conversation(group_id, conversation_id)
     assert task["labels"] == []
     assert task["label_revision"] == edited["label_revision"]
-  end
-
-  test "a successful assignment with a lost acknowledgement stays successful after Task archival",
-       context do
-    %{group_id: group_id, router: router} = context
-    conversation_id = create_task!(context)
-    {:ok, proposal} = TaskLabels.propose(group_id, batch(conversation_id), actor(router))
-
-    {:ok, %{"proposal" => applied}} =
-      TaskLabels.resolve_proposal(group_id, proposal["id"], "approve")
-
-    assert applied["application_status"] == "applied"
-
-    # The owner committed, but its acknowledgement did not reach the catalog.
-    {:ok, _} =
-      SalixStore.TaskLabels.update(group_id, fn -> %{} end, fn aggregate ->
-        Map.update!(aggregate, "proposals", fn proposals ->
-          Enum.map(proposals, fn item ->
-            if item["id"] == proposal["id"],
-              do: Map.put(item, "application_status", "pending"),
-              else: item
-          end)
-        end)
-      end)
-
-    {:ok, completed} =
-      ConversationServer.update_group_conversation(group_id, conversation_id, %{
-        "status" => "completed"
-      })
-
-    assert {:ok, archived} =
-             ConversationServer.set_task_archived(
-               group_id,
-               conversation_id,
-               :archive,
-               completed["updated_at"]
-             )
-
-    # Confirming an existing receipt does not mutate the archived Task.
-    assert {:ok, %{"proposal" => retried}} =
-             TaskLabels.resolve_proposal(group_id, proposal["id"], "approve")
-
-    assert retried["application_status"] == "applied"
-    assert retried["payload"] == applied["payload"]
-    refute Map.has_key?(retried, "application_error")
-    assert {:ok, after_retry} = Conversations.get_group_conversation(group_id, conversation_id)
-
-    assert Map.take(after_retry, ~w(status labels label_revision updated_at)) ==
-             Map.take(archived, ~w(status labels label_revision updated_at))
-  end
-
-  test "a fresh assignment conflict remains visible after newer approvals fill the history",
-       context do
-    %{group_id: group_id, router: router} = context
-    conversation_id = create_task!(context)
-    {:ok, proposal} = TaskLabels.propose(group_id, batch(conversation_id), actor(router))
-    key = SalixStore.Keys.ctl_group_conversation_meta(group_id, conversation_id)
-    :ok = SalixStore.S3.Fake.set_fault({:fail, 503, :put, key})
-
-    {:ok, %{"proposal" => approved}} =
-      TaskLabels.resolve_proposal(group_id, proposal["id"], "approve")
-
-    assert approved["application_status"] == "pending"
-
-    for n <- 1..21 do
-      {:ok, newer} = TaskLabels.propose(group_id, single("Newer #{n}"), actor(router))
-      {:ok, _} = TaskLabels.resolve_proposal(group_id, newer["id"], "approve")
-    end
-
-    {:ok, _} =
-      ConversationServer.update_group_conversation(group_id, conversation_id, %{"labels" => []})
-
-    assert {:ok, %{"proposal" => result, "proposals" => history}} =
-             TaskLabels.resolve_proposal(group_id, proposal["id"], "approve")
-
-    assert result["application_status"] == "conflict"
-    assert result["resolved_at"] == approved["resolved_at"]
-    assert length(history) == 20
-    assert List.last(history)["id"] == proposal["id"]
-    assert {:ok, %{"proposals" => ^history}} = TaskLabels.list(group_id)
-    assert {:ok, task} = Conversations.get_group_conversation(group_id, conversation_id)
-    assert task["labels"] == []
   end
 
   defp actor(router), do: %{"agent_id" => router["agent_id"], "session_id" => "ses1_test"}

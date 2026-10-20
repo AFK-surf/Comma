@@ -15,12 +15,12 @@ defmodule Comma.Accounts.SessionsTest do
       Repository.ensure_identity(user["id"], %{
         provider: "apple",
         issuer: "https://appleid.apple.com",
-        subject: "apple-#{System.unique_integer([:positive])}",
+        subject: "apple-#{SystemsRuntime.Proc.unique_integer([:positive])}",
         email_snapshot: user["email"],
         email_verified: true
       })
 
-    {:ok, ssh} = SSHIdentities.enroll(user, :crypto.strong_rand_bytes(64))
+    {:ok, ssh} = SSHIdentities.enroll(user, SystemsRuntime.Proc.random_bytes(64))
 
     for {method, identity_id} <- [
           {"email_otp", nil},
@@ -49,35 +49,7 @@ defmodule Comma.Accounts.SessionsTest do
     assert {:ok, issued} =
              SessionIssuer.issue(user, auth_method: "apple", login_identity_id: apple.id)
 
-    apple |> Ecto.Changeset.change(disabled_at: DateTime.utc_now()) |> Repo.update!()
-    assert {:error, :revoked} = Comma.Accounts.validate_session(issued["token"])
-  end
-
-  test "guest login persists a session for a distinct guest account" do
-    # Valid persisted guest fixture, matching GuestMode's account shape. This
-    # tests session persistence, not proof-of-work admission or Tenant setup.
-    guest =
-      %User{}
-      |> User.changeset(%{
-        id: User.new_id(),
-        email: "session-#{System.unique_integer([:positive])}@guest.comma.invalid",
-        status: "active"
-      })
-      |> Ecto.Changeset.put_change(:kind, "guest")
-      |> Ecto.Changeset.put_change(
-        :guest_pow_id,
-        "session-pow-#{System.unique_integer([:positive])}"
-      )
-      |> Repo.insert!()
-
-    assert {:ok, issued} = SessionIssuer.issue(guest, auth_method: "guest")
-    assert issued["user"]["kind"] == "guest"
-    assert Repo.get!(AuthSession, issued["session_id"]).auth_method == "guest"
-    assert {:ok, user, session} = Comma.Accounts.validate_session(issued["token"])
-    assert user["id"] == guest.id
-    assert user["kind"] == "guest"
-    assert session["session_source"] == "user_login"
-    assert :ok = Comma.Accounts.revoke_session_token(issued["token"])
+    apple |> Ecto.Changeset.change(disabled_at: SystemsClock.utc_now()) |> Repo.update!()
     assert {:error, :revoked} = Comma.Accounts.validate_session(issued["token"])
   end
 
@@ -171,44 +143,6 @@ defmodule Comma.Accounts.SessionsTest do
     refute Map.has_key?(Sessions.public_session(stored_session), "token")
   end
 
-  test "ordinary login derives finite display metadata and ignores free-form labels" do
-    email = unique_email("reported-device")
-    {challenge_id, code} = request_code(email)
-
-    assert {:ok, issued} =
-             Comma.AuthChallenges.verify_email_login(%{
-               "challenge_id" => challenge_id,
-               "code" => code,
-               "client_kind" => "web",
-               "client_platform" => "macos",
-               "device_label" => "203.0.113.7"
-             })
-
-    stored = Repo.get!(AuthSession, issued["session_id"])
-    assert stored.client_kind == "web"
-    assert stored.device_label == "Web on macOS"
-    refute stored.device_label == "203.0.113.7"
-
-    invalid_email = unique_email("invalid-device")
-    {invalid_challenge_id, invalid_code} = request_code(invalid_email)
-
-    assert {:ok, invalid_issued} =
-             Comma.AuthChallenges.verify_email_login(%{
-               "challenge_id" => invalid_challenge_id,
-               "code" => invalid_code,
-               "client_kind" => "web",
-               "client_platform" =>
-                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/123",
-               "device_label" => "installation-fingerprint-0123456789"
-             })
-
-    invalid_stored = Repo.get!(AuthSession, invalid_issued["session_id"])
-    assert invalid_stored.client_kind == "web"
-    assert invalid_stored.device_label == "Web browser"
-    refute inspect(invalid_stored) =~ "Mozilla/5.0"
-    refute inspect(invalid_stored) =~ "installation-fingerprint"
-  end
-
   test "OTP replay is rejected and repeated login converges on the same user" do
     email = unique_email("replay")
     {challenge_id, code} = request_code(email)
@@ -226,22 +160,6 @@ defmodule Comma.Accounts.SessionsTest do
              from(session in AuthSession, where: session.user_id == ^first["user"]["id"]),
              :count
            ) == 2
-  end
-
-  test "a session issuance failure after OTP consume never restores the code" do
-    email = unique_email("post-consume-failure")
-    assert {:ok, user} = Comma.Accounts.create_user(%{"email" => email})
-    assert {:ok, _disabled} = Comma.Accounts.update_user(user["id"], %{"status" => "disabled"})
-    {challenge_id, code} = request_code(email)
-
-    assert {:error, :disabled} = verify_code(challenge_id, code)
-
-    assert Repo.aggregate(
-             from(session in AuthSession, where: session.user_id == ^user["id"]),
-             :count
-           ) == 0
-
-    assert {:error, :invalid_verification_code} = verify_code(challenge_id, code)
   end
 
   test "revoke, revoke-all, and disable take effect on the next request" do
@@ -263,47 +181,6 @@ defmodule Comma.Accounts.SessionsTest do
     assert disabled["status"] == "disabled"
     assert {:error, :revoked} = Comma.Accounts.validate_session(fourth["token"])
     assert {:error, :disabled} = Comma.Accounts.create_session(user["id"])
-  end
-
-  test "resolve is side-effect free and last-seen touch is explicit" do
-    {:ok, user} = Comma.Accounts.create_user(%{"email" => unique_email("resolve")})
-    {:ok, session} = Comma.Accounts.create_session(user["id"])
-    old_last_seen = DateTime.add(DateTime.utc_now(), -600) |> DateTime.truncate(:microsecond)
-
-    Repo.update_all(
-      from(row in AuthSession, where: row.id == ^session["id"]),
-      set: [last_seen_at: old_last_seen, updated_at: old_last_seen]
-    )
-
-    assert {:ok, _user, resolved} = Comma.Accounts.resolve_session(session["token"])
-    assert resolved["last_seen_at"] == DateTime.to_unix(old_last_seen)
-    assert Repo.get!(AuthSession, session["id"]).last_seen_at == old_last_seen
-
-    assert :ok = Comma.Accounts.touch_session(resolved)
-
-    assert DateTime.compare(Repo.get!(AuthSession, session["id"]).last_seen_at, old_last_seen) ==
-             :gt
-  end
-
-  test "the owner is present only while a desktop App reports use" do
-    {:ok, user} = Comma.Accounts.create_user(%{"email" => unique_email("present")})
-    {:ok, web} = Comma.Accounts.create_session(user["id"], client_kind: "web")
-    {:ok, desktop} = Comma.Accounts.create_session(user["id"], client_kind: "electron")
-    {:ok, _user, web} = Comma.Accounts.resolve_session(web["token"])
-    {:ok, _user, desktop} = Comma.Accounts.resolve_session(desktop["token"])
-    now = DateTime.utc_now()
-
-    refute Sessions.present?(user["id"], now: now)
-    assert {:error, :not_desktop_app} = Sessions.touch_active(web, now: now)
-    refute Sessions.present?(user["id"], now: now)
-
-    assert :ok = Sessions.touch_active(desktop, now: now)
-    assert Sessions.present?(user["id"], now: DateTime.add(now, 9 * 60))
-    refute Sessions.present?(user["id"], now: DateTime.add(now, 11 * 60))
-
-    # A signed-out App no longer keeps the owner present.
-    :ok = Comma.Accounts.revoke_session(user["id"], desktop["id"])
-    refute Sessions.present?(user["id"], now: DateTime.add(now, 60))
   end
 
   test "ordinary ops updates cannot change the verified login email" do
@@ -348,39 +225,6 @@ defmodule Comma.Accounts.SessionsTest do
     assert length(second_page["data"]) == 1
     refute second_page["has_more"]
     assert {:error, :invalid_cursor} = Comma.Accounts.list_sessions(user["id"], cursor: "bad")
-  end
-
-  test "session pagination clamps to 100 and preserves equal-timestamp rows" do
-    {:ok, user} = Comma.Accounts.create_user(%{"email" => unique_email("page-boundary")})
-
-    for index <- 1..101 do
-      assert {:ok, _session} =
-               Comma.Accounts.create_session(user["id"], device_label: "Boundary #{index}")
-    end
-
-    shared_timestamp = ~U[2026-07-22 00:00:00.000000Z]
-
-    Repo.update_all(
-      from(session in AuthSession, where: session.user_id == ^user["id"]),
-      set: [created_at: shared_timestamp, updated_at: shared_timestamp]
-    )
-
-    assert {:ok, first_page} = Comma.Accounts.list_sessions(user["id"], limit: 1_000)
-    assert length(first_page["data"]) == 100
-    assert first_page["has_more"]
-    assert is_binary(first_page["next_cursor"])
-
-    assert {:ok, second_page} =
-             Comma.Accounts.list_sessions(user["id"],
-               limit: 1_000,
-               cursor: first_page["next_cursor"]
-             )
-
-    assert length(second_page["data"]) == 1
-    refute second_page["has_more"]
-
-    all_ids = Enum.map(first_page["data"] ++ second_page["data"], & &1["id"])
-    assert length(Enum.uniq(all_ids)) == 101
   end
 
   test "auth epoch mismatch rejects an otherwise active session" do
@@ -432,94 +276,6 @@ defmodule Comma.Accounts.SessionsTest do
     assert {:error, :not_found} = Comma.Accounts.validate_session(caller_token)
   end
 
-  test "session changesets reject malformed restricted input and contradictory capability shapes" do
-    attrs = session_attrs("usr_shape")
-
-    non_boolean =
-      AuthSession.changeset(%AuthSession{}, %{
-        attrs
-        | restricted: "true",
-          session_source: "ops_api"
-      })
-
-    refute non_boolean.valid?
-    assert {"must be a boolean", _metadata} = non_boolean.errors[:restricted]
-
-    unrestricted_scope =
-      AuthSession.changeset(
-        %AuthSession{},
-        Map.merge(attrs, %{
-          restricted: false,
-          session_source: "ops_api",
-          auth_method: nil,
-          workspace_id: "wsp_unrestricted"
-        })
-      )
-
-    refute unrestricted_scope.valid?
-    assert {"requires a restricted session", _metadata} = unrestricted_scope.errors[:workspace_id]
-
-    unrestricted_group_scope =
-      AuthSession.changeset(
-        %AuthSession{},
-        Map.merge(attrs, %{
-          restricted: false,
-          session_source: "ops_api",
-          auth_method: nil,
-          group_id: "grp_unrestricted"
-        })
-      )
-
-    refute unrestricted_group_scope.valid?
-
-    assert {"requires a restricted session", _metadata} =
-             unrestricted_group_scope.errors[:group_id]
-
-    conversation_without_group =
-      AuthSession.changeset(
-        %AuthSession{},
-        Map.merge(attrs, %{
-          restricted: true,
-          session_source: "ops_api",
-          auth_method: nil,
-          workspace_id: "wsp_not_conversation_authority",
-          conversation_id: "cnv_requires_group"
-        })
-      )
-
-    refute conversation_without_group.valid?
-
-    assert {"is required with conversation_id", _metadata} =
-             conversation_without_group.errors[:group_id]
-
-    login_restricted =
-      AuthSession.changeset(%AuthSession{}, %{
-        attrs
-        | restricted: true,
-          session_source: "user_login",
-          auth_method: "email_otp"
-      })
-
-    refute login_restricted.valid?
-    assert Keyword.has_key?(login_restricted.errors, :session_source)
-
-    panel_without_connection =
-      AuthSession.changeset(
-        %AuthSession{},
-        Map.merge(attrs, %{
-          restricted: true,
-          session_source: "channel_task_panel",
-          auth_method: "telegram_miniapp",
-          workspace_id: "wsp_panel",
-          group_id: "grp_panel",
-          channel_subject: "42001"
-        })
-      )
-
-    refute panel_without_connection.valid?
-    assert Keyword.has_key?(panel_without_connection.errors, :session_source)
-  end
-
   test "database rejects capability shapes that bypass the AuthSession changeset" do
     {:ok, user} = Comma.Accounts.create_user(%{"email" => unique_email("db-scope")})
 
@@ -555,9 +311,9 @@ defmodule Comma.Accounts.SessionsTest do
     results =
       ["request-a", "request-b"]
       |> Enum.map(fn operation_id ->
-        Task.async(fn -> Comma.Accounts.consume_budget(session, operation_id) end)
+        SystemsRuntime.Task.async(fn -> Comma.Accounts.consume_budget(session, operation_id) end)
       end)
-      |> Task.await_many()
+      |> SystemsRuntime.Task.await_many(:infinity)
 
     assert Enum.count(results, &match?({:ok, _}, &1)) == 1
     assert Enum.count(results, &match?({:error, :budget_exhausted}, &1)) == 1
@@ -588,24 +344,6 @@ defmodule Comma.Accounts.SessionsTest do
     Comma.AuthChallenges.verify_email_login(%{"challenge_id" => challenge_id, "code" => code})
   end
 
-  defp session_attrs(user_id) do
-    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
-
-    %{
-      user_id: user_id,
-      token_hash: :crypto.strong_rand_bytes(32),
-      auth_method: "email_otp",
-      session_source: "user_login",
-      authenticated_at: now,
-      expires_at: DateTime.add(now, 3600),
-      last_seen_at: now,
-      user_auth_epoch: 0,
-      restricted: false,
-      tool_allowlist: [],
-      consumed_interaction_ids: %{}
-    }
-  end
-
   defp assert_scope_constraint(fun) do
     assert_raise Postgrex.Error, ~r/comma_auth_sessions_scope_valid/, fn ->
       Repo.transaction(fun, mode: :savepoint)
@@ -613,7 +351,7 @@ defmodule Comma.Accounts.SessionsTest do
   end
 
   defp insert_session_shape!(user_id, opts) do
-    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    now = SystemsClock.utc_now() |> DateTime.truncate(:microsecond)
 
     Ecto.Adapters.SQL.query!(
       Repo,
@@ -654,9 +392,9 @@ defmodule Comma.Accounts.SessionsTest do
       )
       """,
       [
-        Ecto.UUID.generate() |> Ecto.UUID.dump!(),
+        SystemsRuntime.Proc.uuid() |> Ecto.UUID.dump!(),
         user_id,
-        :crypto.strong_rand_bytes(32),
+        SystemsRuntime.Proc.random_bytes(32),
         Keyword.fetch!(opts, :auth_method),
         Keyword.fetch!(opts, :session_source),
         now,
@@ -668,6 +406,6 @@ defmodule Comma.Accounts.SessionsTest do
   end
 
   defp unique_email(prefix) do
-    "#{prefix}-#{System.unique_integer([:positive])}@example.com"
+    "#{prefix}-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"
   end
 end

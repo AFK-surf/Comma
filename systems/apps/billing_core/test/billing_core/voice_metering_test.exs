@@ -1,6 +1,9 @@
 defmodule BillingCore.VoiceMeteringTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
+  use SystemsClock.Case, async: false
+
+  use SystemsClock.Test, scope: ["Elixir.SalixStore", "Elixir.BillingCore"]
   alias BillingCore.VoiceMetering
 
   defmodule Repo do
@@ -18,7 +21,10 @@ defmodule BillingCore.VoiceMeteringTest do
   # No voice pricing rows exist, so the engine stores the charge as pending.
   defmodule UnpricedSQL do
     def query!(_repo, query, params, _opts \\ []) do
-      send(Application.fetch_env!(:billing_core, :voice_metering_test_pid), {:sql, query, params})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:billing_core, :voice_metering_test_pid),
+        {:sql, query, params}
+      )
 
       cond do
         query =~ "INSERT INTO billing_accounts" -> %{rows: [[List.first(params)]], num_rows: 1}
@@ -30,8 +36,8 @@ defmodule BillingCore.VoiceMeteringTest do
   end
 
   setup do
-    Application.put_env(:billing_core, :voice_metering_test_pid, self())
-    on_exit(fn -> Application.delete_env(:billing_core, :voice_metering_test_pid) end)
+    SystemsRuntime.put_env(:billing_core, :voice_metering_test_pid, SystemsRuntime.Proc.self())
+    on_exit(fn -> SystemsRuntime.delete_env(:billing_core, :voice_metering_test_pid) end)
     :ok
   end
 
@@ -102,7 +108,7 @@ defmodule BillingCore.VoiceMeteringTest do
   end
 
   defp collect(acc \\ []) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:sql, query, params} -> collect([{query, params} | acc])
     after
       0 -> Enum.reverse(acc)

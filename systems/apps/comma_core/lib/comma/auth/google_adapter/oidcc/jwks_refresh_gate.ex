@@ -7,7 +7,7 @@ defmodule Comma.Auth.GoogleAdapter.Oidcc.JwksRefreshGate do
   provider JWKS after at most one network refresh.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   alias Oidcc.ProviderConfiguration.Worker
 
@@ -17,13 +17,13 @@ defmodule Comma.Auth.GoogleAdapter.Oidcc.JwksRefreshGate do
 
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: name)
   end
 
   @spec refresh(GenServer.server(), binary(), GenServer.server()) :: refresh_result()
   def refresh(provider, kid, server \\ __MODULE__)
       when is_binary(kid) and kid != "" do
-    GenServer.call(server, {:refresh, provider, kid})
+    SystemsRuntime.Server.call(server, {:refresh, provider, kid})
   catch
     :exit, _reason -> {:error, :google_provider_unavailable}
   end
@@ -32,7 +32,7 @@ defmodule Comma.Auth.GoogleAdapter.Oidcc.JwksRefreshGate do
   def init(opts) do
     {:ok,
      %{
-       clock: Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end),
+       clock: Keyword.get(opts, :clock, fn -> SystemsClock.monotonic_time(:millisecond) end),
        cooldown_ms: cooldown_ms(opts),
        next_refresh_at: nil
      }}

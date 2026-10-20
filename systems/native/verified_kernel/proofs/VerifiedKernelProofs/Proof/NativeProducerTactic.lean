@@ -39,12 +39,21 @@ elab "head_assumption" : tactic => withMainContext do
   let type ← instantiateMVars (← goal.getType)
   let some (_, lhs, _) := type.eq? | throwError "expected an equation"
   let .const head _ := (zetaHead lhs).getAppFn | throwError "expected a named head"
+  let lhsArgs := (zetaHead lhs).getAppArgs
   let mut candidates := #[]
   for decl in (← getLCtx).decls.toArray.reverse do
     let some decl := decl | continue
     if decl.isImplementationDetail then continue
     let some (_, declLhs, _) := (← instantiateMVars decl.type).eq? | continue
-    if (zetaHead declLhs).getAppFn.isConstOf head then candidates := candidates.push decl
+    let declHead := zetaHead declLhs
+    unless declHead.getAppFn.isConstOf head do continue
+    -- A hypothesis with another literal in the same argument (another query name, say) cannot
+    -- match. Skip it before `isDefEq` unfolds both sides to find that out.
+    let literalClash := (lhsArgs.zip declHead.getAppArgs).any fun (goalArg, declArg) =>
+      match goalArg.consumeMData, declArg.consumeMData with
+      | .lit goalLit, .lit declLit => goalLit != declLit
+      | _, _ => false
+    unless literalClash do candidates := candidates.push decl
   for mode in [TransparencyMode.instances, .default] do
     for decl in candidates do
       if ← withTransparency mode (isDefEq decl.type type) then

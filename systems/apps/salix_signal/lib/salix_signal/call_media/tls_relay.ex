@@ -19,7 +19,7 @@ defmodule SalixSignal.CallMedia.TLSRelay do
   waits are bounded. Status reports exclude TURN packets and call data.
   """
 
-  use GenServer, restart: :temporary
+  use SystemsRuntime.Server, restart: :temporary
   require Logger
 
   @loopback {127, 0, 0, 1}
@@ -44,9 +44,9 @@ defmodule SalixSignal.CallMedia.TLSRelay do
         {:error, :turn_tls_unavailable}
 
       {server, host, port} ->
-        case start([owner: self(), host: host, port: port] ++ opts) do
+        case start([owner: SystemsRuntime.Proc.self(), host: host, port: port] ++ opts) do
           {:ok, relay} ->
-            local = %{server | urls: [GenServer.call(relay, :url)]}
+            local = %{server | urls: [SystemsRuntime.Server.call(relay, :url)]}
             {:ok, [local], relay}
 
           {:error, _reason} ->
@@ -56,12 +56,12 @@ defmodule SalixSignal.CallMedia.TLSRelay do
     end
   end
 
-  def start(opts), do: GenServer.start(__MODULE__, opts)
+  def start(opts), do: SystemsRuntime.Server.start(__MODULE__, opts)
 
   def stop(nil), do: :ok
 
   def stop(pid) do
-    GenServer.stop(pid, :normal)
+    SystemsRuntime.Server.stop(pid, :normal)
   catch
     :exit, _ -> :ok
   end
@@ -94,7 +94,7 @@ defmodule SalixSignal.CallMedia.TLSRelay do
                port: port,
                peer: nil,
                buffer: <<>>,
-               owner: Process.monitor(Keyword.fetch!(opts, :owner))
+               owner: SystemsRuntime.Proc.monitor(Keyword.fetch!(opts, :owner))
              }}
 
           {:error, reason} ->
@@ -162,7 +162,7 @@ defmodule SalixSignal.CallMedia.TLSRelay do
     do: status |> Map.put(:state, :redacted) |> Map.put(:message, :redacted)
 
   defp drain(state, 0) do
-    send(self(), :drain)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :drain)
     {:noreply, state}
   end
 

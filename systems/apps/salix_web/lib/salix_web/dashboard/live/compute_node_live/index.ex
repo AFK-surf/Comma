@@ -55,7 +55,7 @@ defmodule SalixWeb.Dashboard.ComputeNodeLive.Index do
         summary: summary,
         nodes: page.nodes,
         next_cursor: next_cursor,
-        read_at: DateTime.utc_now(),
+        read_at: SystemsClock.utc_now(),
         read_error: nil
       )
     else

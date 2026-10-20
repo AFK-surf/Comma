@@ -2,7 +2,7 @@ defmodule SalixSignalProto.Group.KeysTest do
   # Level 1 vectors of CRS-09a sections 3 to 9 (vectors/CRS-09): generator
   # derivation, group keys, UID and profile key ciphertexts, profile key
   # values and attribute blobs.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.Crypto.Ristretto255, as: R
   alias SalixSignalProto.Group.{Blob, Elligator, Generators, Params, ProfileKey, Uid}

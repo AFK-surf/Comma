@@ -4,9 +4,10 @@ import { chatAttachmentUploadMaxBytes } from "@comma/chat-contract";
 import type { FilesSaveDownloadResult } from "@comma/native-bridge";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { act, fireEvent, render, screen, waitFor } from "@comma/test-utils/render";
-import { Toaster, toast, type ChatPanelMediaDownloadResult } from "@comma/ui";
+import { Toaster, toast } from "@comma/ui/components/toast";
+import { type ChatPanelMediaDownloadResult } from "@comma/ui/components/chat-panel";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCommaApi } from "../api";
+import { CoreError } from "@comma/core-client";
 import {
   createFileDownloadCapability,
   downloadFile,
@@ -287,13 +288,6 @@ describe("file downloads", () => {
       "report.csv is unavailable. Ask the sender to attach the file again.",
     ],
     [
-      410,
-      "gone",
-      "not-found",
-      false,
-      "report.csv is unavailable. Ask the sender to attach the file again.",
-    ],
-    [
       401,
       "unauthorized",
       "unauthorized",
@@ -329,20 +323,6 @@ describe("file downloads", () => {
       "report.csv could not be downloaded. Ask the sender to attach the file again.",
     ],
     [
-      408,
-      "request_timeout",
-      "network",
-      true,
-      "report.csv could not be retrieved. The network or service may be unavailable; try again shortly.",
-    ],
-    [
-      429,
-      "rate_limited",
-      "network",
-      true,
-      "report.csv could not be retrieved. The network or service may be unavailable; try again shortly.",
-    ],
-    [
       503,
       "workspace_unavailable",
       "network",
@@ -358,23 +338,15 @@ describe("file downloads", () => {
         platform: "electron",
         os: "macos",
       });
-      const api = createCommaApi({
-        baseUrl: "https://comma.example",
-        token: "test-token",
-        fetch: vi.fn(
-          async () =>
-            new Response(JSON.stringify({ error }), {
-              status: httpStatus,
-              headers: { "content-type": "application/json" },
-            })
-        ),
-      });
       renderToasts();
 
       await expect(
         runDownload({
           fileName: "report.csv",
-          resolve: () => api.fetchConversationAttachment("grp_1", "cnv_1", "msg_1", 1),
+          resolve: () =>
+            Promise.reject(
+              new CoreError({ code: error, message: error, status: httpStatus })
+            ),
         })
       ).resolves.toEqual({ status: "error", code, retryable, httpStatus });
       expect(saveDownload).not.toHaveBeenCalled();

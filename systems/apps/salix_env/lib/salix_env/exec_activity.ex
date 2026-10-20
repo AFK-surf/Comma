@@ -13,11 +13,12 @@ defmodule SalixEnv.ExecActivity do
   seen since boot.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   @table __MODULE__
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @doc """
   Record the latest exec description for a connector run (all nodes, best
@@ -27,7 +28,7 @@ defmodule SalixEnv.ExecActivity do
   def record(connector_run_id, description)
       when is_binary(connector_run_id) and connector_run_id != "" and
              is_binary(description) and description != "" do
-    entry = %{"description" => description, "at" => System.system_time(:millisecond)}
+    entry = %{"description" => description, "at" => SystemsClock.system_time(:millisecond)}
     put(connector_run_id, entry)
     Enum.each(Node.list(), &:erpc.cast(&1, __MODULE__, :put, [connector_run_id, entry]))
     entry
@@ -38,9 +39,9 @@ defmodule SalixEnv.ExecActivity do
   @doc false
   def put(connector_run_id, %{"at" => at} = entry) do
     # Casts can arrive out of order; never let an older entry win.
-    case :ets.lookup(@table, connector_run_id) do
+    case SystemsRuntime.ETS.lookup(@table, connector_run_id) do
       [{_id, %{"at" => existing}}] when existing > at -> :ok
-      _ -> :ets.insert(@table, {connector_run_id, entry}) && :ok
+      _ -> SystemsRuntime.ETS.insert(@table, {connector_run_id, entry}) && :ok
     end
   rescue
     ArgumentError -> :ok
@@ -49,7 +50,7 @@ defmodule SalixEnv.ExecActivity do
   @doc "The latest exec entry for a connector run, or nil."
   @spec get(String.t()) :: map() | nil
   def get(connector_run_id) do
-    case :ets.lookup(@table, connector_run_id) do
+    case SystemsRuntime.ETS.lookup(@table, connector_run_id) do
       [{_id, entry}] -> entry
       [] -> nil
     end
@@ -59,7 +60,7 @@ defmodule SalixEnv.ExecActivity do
 
   @impl true
   def init(_opts) do
-    :ets.new(@table, [:named_table, :set, :public, read_concurrency: true])
+    SystemsRuntime.ETS.new(@table, [:named_table, :set, :public, read_concurrency: true])
     {:ok, %{}}
   end
 end

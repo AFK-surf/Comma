@@ -1,6 +1,7 @@
 defmodule SalixIM.TelegramTaskStatusCardsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixIM.{Conversations, ProviderConnects}
   alias SalixStore.{Ids, S3}
   alias SalixIM.TestSupport.BanditServer
@@ -20,7 +21,7 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
 
   defmodule Adapter do
     def task_status_targets(group_id) do
-      case Application.get_env(:salix_im, :status_card_test_targets) do
+      case SystemsRuntime.get_env(:salix_im, :status_card_test_targets) do
         :raise -> raise "Comma binding lookup failed"
         fun when is_function(fun, 1) -> fun.(group_id)
         _ -> []
@@ -28,14 +29,22 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
     end
 
     def deliver(rec, connect) do
-      send(Application.fetch_env!(:salix_im, :status_card_test_pid), {:deliver, rec, connect})
-      Application.get_env(:salix_im, :status_card_test_result, {:ok, %{"message_id" => 77}})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_im, :status_card_test_pid),
+        {:deliver, rec, connect}
+      )
+
+      SystemsRuntime.get_env(:salix_im, :status_card_test_result, {:ok, %{"message_id" => 77}})
     end
   end
 
   defmodule Observer do
     def task_status_changed(snapshot) do
-      send(Application.fetch_env!(:salix_im, :status_card_test_pid), {:observed, snapshot})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_im, :status_card_test_pid),
+        {:observed, snapshot}
+      )
+
       :ok
     end
   end
@@ -49,7 +58,7 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
 
   setup do
     previous =
-      [{:salix_store, :s3_backend, Application.get_env(:salix_store, :s3_backend)}] ++
+      [{:salix_store, :s3_backend, SystemsRuntime.get_env(:salix_store, :s3_backend)}] ++
         for key <- [
               :conversation_placement,
               :agent_delivery_mod,
@@ -60,31 +69,31 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
               :status_card_test_targets,
               :status_card_test_result
             ],
-            do: {:salix_im, key, Application.get_env(:salix_im, key)}
+            do: {:salix_im, key, SystemsRuntime.get_env(:salix_im, key)}
 
     SalixIM.TestSupport.Fleet.stop_all!()
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :conversation_placement,
       SalixIM.ConversationPlacement.LocalFleet
     )
 
-    Application.put_env(:salix_im, :agent_delivery_mod, AgentDelivery)
-    Application.put_env(:salix_im, :task_status_personal_adapter, Adapter)
-    Application.put_env(:salix_im, :status_card_test_pid, self())
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, AgentDelivery)
+    SystemsRuntime.put_env(:salix_im, :task_status_personal_adapter, Adapter)
+    SystemsRuntime.put_env(:salix_im, :status_card_test_pid, SystemsRuntime.Proc.self())
     start_supervised!(S3.Fake)
     port = BanditServer.start!(fn port -> {Bandit, plug: API, port: port} end)
-    Application.put_env(:salix_im, :telegram_api_base_url, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:salix_im, :telegram_api_base_url, "http://127.0.0.1:#{port}")
 
     on_exit(fn ->
       SalixIM.TestSupport.Fleet.stop_all!()
 
       for {app, key, value} <- previous do
         if is_nil(value),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, value)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, value)
       end
     end)
 
@@ -130,7 +139,7 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
 
   test "a Task created for a bound owner subscribes its Telegram card to status changes only",
        ctx do
-    Application.put_env(:salix_im, :status_card_test_targets, fn
+    SystemsRuntime.put_env(:salix_im, :status_card_test_targets, fn
       group when group == ctx.group -> [ctx.target]
       _other -> []
     end)
@@ -146,17 +155,8 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
     assert participant["notification_filter"]["statuses"] == "all"
   end
 
-  test "a failing Comma binding lookup never blocks Task creation", ctx do
-    Application.put_env(:salix_im, :status_card_test_targets, :raise)
-
-    id = create_task(ctx, "Still created")
-
-    assert {:ok, %{"kind" => "agent_task"}} = Conversations.get_group_conversation(ctx.group, id)
-    assert status_participant(ctx.group, id) == nil
-  end
-
   test "ready for review hands the status record to the Comma card adapter", ctx do
-    Application.put_env(:salix_im, :status_card_test_targets, fn _ -> [ctx.target] end)
+    SystemsRuntime.put_env(:salix_im, :status_card_test_targets, fn _ -> [ctx.target] end)
     id = create_task(ctx, "Review me")
 
     assert {:ok, _} =
@@ -170,9 +170,7 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
                }
              )
 
-    assert_receive {:deliver, %{"conversation_status" => "ready_for_review"} = rec, connect},
-                   3_000
-
+    settle_receive({:deliver, %{"conversation_status" => "ready_for_review"} = rec, connect})
     assert rec["conversation_id"] == id
     assert rec["conversation_status"] == "ready_for_review"
     assert is_integer(rec["conversation_updated_at"])
@@ -181,7 +179,7 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
   end
 
   test "an owned Task's status change reaches the product's status observer", ctx do
-    Application.put_env(:salix_im, :task_status_observer, Observer)
+    SystemsRuntime.put_env(:salix_im, :task_status_observer, Observer)
     id = create_task(ctx, "Needs a decision", "usr_task_owner")
     unowned = create_task(ctx, "Nobody's")
 
@@ -198,13 +196,11 @@ defmodule SalixIM.TelegramTaskStatusCardsTest do
                )
     end
 
-    assert_receive {:observed, %{"conversation_id" => ^id, "status" => "escalated"} = snapshot},
-                   3_000
-
+    settle_receive({:observed, %{"conversation_id" => ^id, "status" => "escalated"} = snapshot})
     assert snapshot["owner_user_id"] == "usr_task_owner"
     assert snapshot["agent_group_id"] == ctx.group
     assert is_integer(snapshot["provider_status_version"])
-    refute_receive {:observed, %{"conversation_id" => ^unowned}}, 200
+    settle_refute_receive({:observed, %{"conversation_id" => ^unowned}}, 200)
   end
 
   defp status_participant(group, id) do

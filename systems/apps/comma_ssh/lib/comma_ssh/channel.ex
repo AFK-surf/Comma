@@ -3,10 +3,10 @@ defmodule CommaSSH.Channel do
   @behaviour :ssh_server_channel
   @impl true
   def init(_) do
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
     Process.flag(:sensitive, true)
     {model, _} = CommaSSH.Model.init(%{})
-    Process.send_after(self(), :check, 30_000)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :check, 30_000)
 
     {:ok,
      %{
@@ -34,25 +34,26 @@ defmodule CommaSSH.Channel do
   end
 
   def handle_msg(:done, state) do
-    if state.pending, do: Process.cancel_timer(state.pending)
+    if state.pending, do: SystemsClock.cancel_timer(state.pending)
     {model, []} = CommaSSH.Model.update(:ready, state.model)
     {:ok, schedule(%{state | pending: nil, model: model})}
   end
 
   def handle_msg(:check, %{started: true, pending: nil} = state) do
-    Process.send_after(self(), :check, 30_000)
-    GenServer.cast(state.backend, :check)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :check, 30_000)
+    SystemsRuntime.Server.cast(state.backend, :check)
 
     {:ok,
      schedule(%{
        state
-       | pending: :erlang.start_timer(20_000, self(), :operation_timeout),
+       | pending:
+           SystemsClock.start_timer(20_000, SystemsRuntime.Proc.self(), :operation_timeout),
          model: %{state.model | busy: true}
      })}
   end
 
   def handle_msg(:check, state) do
-    Process.send_after(self(), :check, 1_000)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :check, 1_000)
     {:ok, state}
   end
 
@@ -108,14 +109,17 @@ defmodule CommaSSH.Channel do
       {:ok, context} ->
         reply(state, wants_reply, :success)
         :ok = send_bytes(state, CommaTUI.Screen.enter())
-        {:ok, backend} = CommaSSH.Session.start_link(Map.put(context, :ui, self()))
+
+        {:ok, backend} =
+          CommaSSH.Session.start_link(Map.put(context, :ui, SystemsRuntime.Proc.self()))
 
         {:ok,
          schedule(%{
            state
            | backend: backend,
              started: true,
-             pending: :erlang.start_timer(20_000, self(), :operation_timeout)
+             pending:
+               SystemsClock.start_timer(20_000, SystemsRuntime.Proc.self(), :operation_timeout)
          })}
 
       _ ->
@@ -148,13 +152,18 @@ defmodule CommaSSH.Channel do
               {:halt, stop(next, 0)}
 
             effects != [] and next.pending == nil ->
-              Enum.each(effects, &GenServer.cast(next.backend, &1))
+              Enum.each(effects, &SystemsRuntime.Server.cast(next.backend, &1))
 
               {:cont,
                {:ok,
                 schedule(%{
                   next
-                  | pending: :erlang.start_timer(20_000, self(), :operation_timeout)
+                  | pending:
+                      SystemsClock.start_timer(
+                        20_000,
+                        SystemsRuntime.Proc.self(),
+                        :operation_timeout
+                      )
                 })}}
 
             true ->
@@ -180,10 +189,10 @@ defmodule CommaSSH.Channel do
   @impl true
   def terminate(_, state) do
     try do
-      if state.backend && Process.alive?(state.backend),
-        do: GenServer.stop(state.backend, :normal, 2_000)
+      if state.backend && SystemsRuntime.Proc.alive?(state.backend),
+        do: SystemsRuntime.Server.stop(state.backend, :normal, 2_000)
     catch
-      :exit, _ -> if state.backend, do: Process.exit(state.backend, :kill)
+      :exit, _ -> if state.backend, do: SystemsRuntime.Proc.exit(state.backend, :kill)
     end
 
     :ok
@@ -213,8 +222,8 @@ defmodule CommaSSH.Channel do
   end
 
   defp schedule(%{render: nil} = state),
-    do: %{state | render: Process.send_after(self(), :render, 50)}
+    do: %{state | render: SystemsClock.send_after(SystemsRuntime.Proc.self(), :render, 50)}
 
   defp schedule(state), do: state
-  defp queue_ok?, do: elem(Process.info(self(), :message_queue_len), 1) < 256
+  defp queue_ok?, do: elem(Process.info(SystemsRuntime.Proc.self(), :message_queue_len), 1) < 256
 end

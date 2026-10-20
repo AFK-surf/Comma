@@ -1,8 +1,5 @@
-import {
-  WebCookieSessionAdapter,
-  createBrowserSessionHostPorts,
-  defaultApiBaseUrl,
-} from "@comma/app/task-panel-session";
+import { defaultApiBaseUrl } from "@comma/app/task-panel-session";
+import { connectWebCore } from "./connect-core";
 
 import type { TelegramApp } from "./task-panel-view";
 
@@ -16,25 +13,24 @@ const target = {
 const viewReady = import("./task-panel-view").catch(() => undefined);
 
 async function start() {
-  const lifecycle = new WebCookieSessionAdapter({
-    baseUrl: defaultApiBaseUrl(),
-    ports: createBrowserSessionHostPorts({
-      read: (key) => localStorage.getItem(key),
-      write: (key, value) => localStorage.setItem(key, value),
-    }),
-  });
+  // The client core runs the session: a Telegram launch signs in through it, before the view loads.
+  const apiBaseUrl = defaultApiBaseUrl();
+  const { core, dispose } = connectWebCore(apiBaseUrl);
+  import.meta.hot?.dispose(dispose);
   const telegram = await (
     window as Window & { commaTelegramReady?: Promise<TelegramApp | undefined> }
   ).commaTelegramReady;
   telegram?.ready?.();
   const result = telegram?.initData
-    ? await lifecycle.exchangeTelegramLaunch({
-        initData: telegram.initData,
-        groupId: target.groupId,
-      })
+    ? ((await core
+        .call("session.telegram", {
+          initData: telegram.initData,
+          groupId: target.groupId,
+        })
+        .catch(() => "failed")) as "signed_in" | "failed" | "account_mismatch")
     : "browser";
   const view = await viewReady;
-  if (view) view.renderTaskPanel(lifecycle, target, result, telegram);
+  if (view) view.renderTaskPanel(core, apiBaseUrl, target, result, telegram);
   else showLoadFailure();
 }
 

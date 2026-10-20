@@ -15,7 +15,6 @@ alias BridgeForTeams.Schema.{
 
 alias BridgeForTeams.{
   Accounts,
-  Agents,
   Environments,
   Memberships,
   Onboarding,
@@ -25,10 +24,14 @@ alias BridgeForTeams.{
 }
 
 alias BridgeForTeams.Salix.Reconciler
-alias SalixAgent.{AgentRuntimeConfig, ExternalSessionActor, ExternalSessionStore, SkillStore}
+alias SalixAgent.{AccountPool, AgentRuntimeConfig, PlatformModels, SkillStore}
 alias SalixCluster.TaskSchedules
 alias SalixIM.{ConversationServer, Conversations}
-alias SalixStore.{Ids, Keys, RuntimeIds, S3}
+
+# The seed drains the reconcile outbox itself and then reads what it projected.
+# The background Reconciler takes rows with SKIP LOCKED, so while it holds one
+# a drain here sees none and the read finds nothing. Stop it for the seed.
+:ok = Supervisor.terminate_child(BridgeForTeams.Supervisor, Reconciler)
 
 email = System.get_env("E2E_USER_EMAIL", "e2e@example.com")
 
@@ -54,9 +57,8 @@ org =
 
 {:ok, _membership} = Memberships.put_org_member(org.id, user.id, "owner")
 
-# The dashboard suite predates onboarding: mark the welcome modal seen and the
-# checklist dismissed so their overlays don't intercept clicks in existing flows.
-{:ok, _} = Onboarding.mark_welcome_seen(org.id, user.id)
+# The dashboard suite predates onboarding: dismiss the quick-setup checklist so
+# it doesn't intercept clicks in existing flows.
 {:ok, _} = Onboarding.dismiss(org.id, user.id)
 
 # The e2e user skips first-run onboarding so the existing Playwright flows land
@@ -125,9 +127,10 @@ runner_attrs = %{
   capacity: 4,
   current_connector_count: 2,
   # The E2E runner is a seeded dashboard fixture, not a running heartbeat
-  # process. Keep it fresh for the full browser run so project-device creation
-  # exercises the user path instead of racing the production 45s online TTL.
-  last_seen_at: DateTime.utc_now() |> DateTime.add(10, :minute)
+  # process. Keep it fresh for longer than any CI job can run, so
+  # project-device creation never depends on how long earlier tests took
+  # (ten minutes was not: a test that hung until its limit left it offline).
+  last_seen_at: DateTime.utc_now() |> DateTime.add(1, :day)
 }
 
 runner =
@@ -173,8 +176,8 @@ for index <- 0..4 do
     )
 end
 
-# A stable project with two connected Codex runtimes exercises the real external
-# agent rebind path. These records are create-once so repeated seed runs do not
+# A stable project with two connected Comma stations exercises the real
+# station-bound Worker create and rebind paths. These records are create-once so repeated seed runs do not
 # grow the registry history that the page now avoids scanning on initial load.
 runtime_project =
   Enum.find(Projects.list_projects(org.id), &(&1.slug == "e2e-external-runtime")) ||
@@ -230,8 +233,6 @@ runtime_fixtures =
 
     env_id = "env_e2e_external_runtime_#{fixture_key}_#{suffix}"
     device_id = "device-e2e-external-runtime-#{fixture_key}-#{suffix}"
-    runtime_id = "runtime-e2e-codex-#{suffix}"
-    device_runtime_id = RuntimeIds.device_runtime_id(device_id, "codex", runtime_id)
 
     case SalixEnv.Registry.connect(
            "nonode@nohost",
@@ -240,39 +241,27 @@ runtime_fixtures =
              "group_id" => runtime_project.salix_group_id,
              "device_id" => device_id,
              "connector_id" => "connector-e2e-external-runtime-#{fixture_key}-#{suffix}",
-             "name" => "E2E Runtime #{String.upcase(suffix)}",
-             "agent_runtimes" => [
-               %{
-                 "kind" => "external",
-                 "provider" => "codex",
-                 "runtime_id" => runtime_id,
-                 "device_runtime_id" => device_runtime_id,
-                 "command" => "/usr/local/bin/codex",
-                 "version" => "codex-e2e-#{suffix}",
-                 "status" => "available",
-                 "version_detected" => true,
-                 "ready" => true,
-                 "auth_ready" => true,
-                 "native_server_startable" => true,
-                 "readiness_checked_at" => System.system_time(:millisecond),
-                 "readiness_valid_until" => System.system_time(:millisecond) + 1_200_000
-               }
-             ]
+             "name" => "E2E Runtime #{String.upcase(suffix)}"
            },
            transport_id: env_id,
            now: System.system_time(:millisecond) + :timer.minutes(10)
          ) do
-      {:ok, ^env_id, _record} -> :ok
-      {:error, reason} -> raise "could not seed runtime #{suffix}: #{inspect(reason)}"
+      {:ok, ^env_id, record} ->
+        # A Comma station that takes Tasks and runs Codex.
+        {:ok, _} =
+          SalixEnv.Registry.update_meta(
+            record["connector_run_id"],
+            &Map.put(&1, "capabilities", %{
+              "tasks" => 2,
+              "task_models" => %{"codex" => ["gpt-5.5"]}
+            })
+          )
+
+      {:error, reason} ->
+        raise "could not seed station #{suffix}: #{inspect(reason)}"
     end
 
-    %{
-      "kind" => "external",
-      "provider" => "codex",
-      "device_id" => device_id,
-      "runtime_id" => runtime_id,
-      "device_runtime_id" => device_runtime_id
-    }
+    %{"kind" => "station", "device_id" => device_id, "runtime" => "codex"}
   end
 
 runtime_device_ids = MapSet.new(runtime_fixtures, & &1["device_id"])
@@ -299,17 +288,8 @@ unless projection_converged do
   raise "e2e runtime fixture projection did not converge"
 end
 
-runtime_agent =
-  Enum.find(Agents.list_agents(runtime_project.id), &(&1.salix["name"] == "e2e-external-worker")) ||
-    case Agents.create_agent(runtime_project.id, %{
-           "name" => "e2e-external-worker",
-           "role" => "worker",
-           "runtime_config" => hd(runtime_fixtures)
-         }) do
-      {:ok, agent} -> agent
-      {:error, reason} -> raise "could not seed external agent: #{inspect(reason)}"
-    end
-
+# Provision what the seed created (the swarms' groups and Routers) before
+# reading them.
 Enum.reduce_while(1..100, :ok, fn _, :ok ->
   case Reconciler.drain_once() do
     {:ok, 0} -> {:halt, :ok}
@@ -318,21 +298,15 @@ Enum.reduce_while(1..100, :ok, fn _, :ok ->
   end
 end)
 
-case SalixAgent.Control.get(runtime_agent.salix_agent_id, org.salix_tenant_id) do
-  {:ok, %{"runtime_config" => %{"kind" => "external", "provider" => "codex"}}} ->
-    :ok
+# Workers are retired: the swarm's Tasks run on its Task agent, which Salix
+# owns. It is the non-Router Agent of the fixtures below.
+{:ok, task_agent_id} =
+  SalixAgent.TaskAgent.ensure(%{
+    tenant_id: org.salix_tenant_id,
+    group_id: runtime_project.salix_group_id
+  })
 
-  {:ok, _agent} ->
-    {:ok, _agent} =
-      SalixAgent.Control.configure(
-        runtime_agent.salix_agent_id,
-        %{"runtime_config" => hd(runtime_fixtures)},
-        org.salix_tenant_id
-      )
-
-  {:error, reason} ->
-    raise "could not load seeded external agent projection: #{inspect(reason)}"
-end
+runtime_agent = %{salix_agent_id: task_agent_id}
 
 # Keep one stable one-shot Task for the dashboard Schedule lifecycle E2E. The
 # browser turns this same conversation into a scheduled Task and back again;
@@ -442,100 +416,14 @@ task_conversation =
     limit: 100
   )
 
-task_worker_participant =
+# The dashboard E2E finds the Task agent among the task's participants.
+_ =
   Enum.find(
     task_participants,
     &(&1["actor_type"] == "agent" and
         &1["agent_id"] == runtime_agent.salix_agent_id)
   ) ||
     raise "seeded Task Schedule conversation has no worker participant"
-
-# Seed a stable worker session so the dashboard E2E follows both participant
-# routes: its name opens the Agent and its action opens this session activity.
-task_session_id = get_in(task_worker_participant, ["payload", "session_id"])
-
-unless Ids.valid_session_id?(task_session_id) do
-  raise "seeded Task Schedule worker participant has no canonical session"
-end
-
-task_session_key =
-  Keys.agent_external_runtime_session(runtime_agent.salix_agent_id, task_session_id)
-
-task_session_prefix =
-  Keys.agent_external_runtime_session_prefix(runtime_agent.salix_agent_id, task_session_id)
-
-case Registry.lookup(
-       SalixAgent.Registry,
-       ExternalSessionActor.key(runtime_agent.salix_agent_id, task_session_id)
-     ) do
-  [{pid, _}] -> GenServer.stop(pid, :normal)
-  [] -> :ok
-end
-
-:ok = S3.delete(task_session_key)
-
-case S3.list_all(task_session_prefix) do
-  {:ok, segment_objects} ->
-    Enum.each(segment_objects, fn %{key: key} ->
-      :ok = S3.delete(key)
-    end)
-
-  {:error, reason} ->
-    raise "could not reset Task session records: #{inspect(reason)}"
-end
-
-{:ok, task_session_actor} =
-  ExternalSessionActor.start_link(
-    agent_id: runtime_agent.salix_agent_id,
-    session_id: task_session_id,
-    process_on_init: false
-  )
-
-try do
-  {:ok, :committed} =
-    ExternalSessionActor.stage_delivery(task_session_actor, %{
-      "source_message_id" => "e2e-task-session-bootstrap",
-      "payload" => %{
-        "session_id" => task_session_id,
-        "role" => "user",
-        "content" => task_command,
-        "no_wake" => true
-      }
-    })
-
-  {:ok, %{"input_message_queue" => queue_snapshot}} =
-    ExternalSessionStore.get_session_record(runtime_agent.salix_agent_id, task_session_id)
-
-  {:ok, %{"runtime_config" => runtime_config}} =
-    SalixAgent.Control.get(runtime_agent.salix_agent_id, org.salix_tenant_id)
-
-  {:ok, binding} =
-    ExternalSessionActor.begin_session(task_session_actor, org.salix_tenant_id, runtime_config)
-
-  token_hash = get_in(binding, ["runtime_capability", "token_hash"])
-
-  {:ok, :accepted, _state} =
-    ExternalSessionActor.accept_session(task_session_actor, %{
-      "token_hash" => token_hash,
-      "queue_snapshot" => queue_snapshot
-    })
-
-  {:ok, _state, %{"type" => "runtime.event"}} =
-    ExternalSessionActor.append_event(task_session_actor, %{
-      "token_hash" => token_hash,
-      "event" => %{
-        "provider" => "codex",
-        "type" => "operation",
-        "name" => "commandExecution",
-        "input" => %{"command" => "mix test"},
-        "output" => "7 tests, 0 failures",
-        "status" => "completed",
-        "duration_ms" => 900
-      }
-    })
-after
-  GenServer.stop(task_session_actor, :normal)
-end
 
 if task_conversation["message_count"] == 0 do
   {:ok, _message} =
@@ -554,23 +442,25 @@ if task_conversation["message_count"] == 0 do
     )
 end
 
-# The Triage test archives this Worker. Keep it separate from runtime fixtures.
-Enum.find(Agents.list_agents(runtime_project.id), &(&1.salix["name"] == "e2e-triage-worker")) ||
-  case Agents.create_agent(runtime_project.id, %{
-         "name" => "e2e-triage-worker",
-         "role" => "worker"
-       }) do
-    {:ok, agent} -> agent
-    {:error, reason} -> raise "Cannot create Triage Worker: #{inspect(reason)}"
-  end
+# Agents that follow the platform default run their role's platform model
+# tier; both tiers are configured. Nothing calls the model: the suite never
+# runs an Agent turn.
+unless Enum.all?(PlatformModels.agent_tiers(), &PlatformModels.configured?/1) do
+  {:ok, profile} =
+    AccountPool.create(AccountPool.platform_tenant(), %{
+      "credential_kind" => "provider_api_key",
+      "source" => "custom",
+      "api_key" => "sk-e2e-platform-0123456789",
+      "base_url" => "http://127.0.0.1:1/v1",
+      "protocol" => "chat_completions",
+      "models" => ["e2e-platform-model"]
+    })
 
-Enum.reduce_while(1..100, :ok, fn _, :ok ->
-  case Reconciler.drain_once() do
-    {:ok, 0} -> {:halt, :ok}
-    {:ok, _count} -> {:cont, :ok}
-    {:error, reason} -> raise "Cannot reconcile Triage Worker: #{inspect(reason)}"
-  end
-end)
+  entry = %{"profile_id" => profile["id"], "model" => "e2e-platform-model"}
+
+  {:ok, _} =
+    PlatformModels.put(%{"tiers" => %{"router" => entry, "worker" => entry}})
+end
 
 IO.puts(
   "e2e seeded: user=#{user.id} email=#{email} org=#{org.id} slug=#{org.slug} invite_prefix=#{invite_prefix}"

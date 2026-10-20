@@ -1,5 +1,6 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { CreatedSecretPanel, Dialog } from "@comma/ui";
+import { CreatedSecretPanel } from "@comma/ui/components/settings";
+import { Dialog } from "@comma/ui/components/dialog";
 import { useState } from "react";
 
 const E164 = /^\+[1-9]\d{6,14}$/;

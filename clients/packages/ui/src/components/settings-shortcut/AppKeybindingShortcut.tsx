@@ -6,6 +6,7 @@ import {
   type FocusEvent,
   type KeyboardEvent,
 } from "react";
+import { uiClock, type CancelUiTimer } from "../../clock";
 import { CircleMinusIcon } from "../icons";
 import { cx } from "../utils";
 import {
@@ -73,7 +74,7 @@ export const AppKeybindingShortcut = ({
 }: AppKeybindingShortcutProps) => {
   const [capture, setCapture] = useState<CaptureState>({ kind: "idle" });
   const controlRef = useRef<HTMLButtonElement>(null);
-  const sequenceTimerRef = useRef<number | undefined>(undefined);
+  const sequenceTimerRef = useRef<CancelUiTimer | undefined>(undefined);
   const recording = capture.kind !== "idle" && !disabled;
   const keycaps =
     capture.kind === "idle"
@@ -103,7 +104,7 @@ export const AppKeybindingShortcut = ({
   useEffect(
     () => () => {
       if (sequenceTimerRef.current !== undefined) {
-        window.clearTimeout(sequenceTimerRef.current);
+        sequenceTimerRef.current();
       }
     },
     []
@@ -111,7 +112,7 @@ export const AppKeybindingShortcut = ({
 
   const clearSequenceTimer = () => {
     if (sequenceTimerRef.current !== undefined) {
-      window.clearTimeout(sequenceTimerRef.current);
+      sequenceTimerRef.current();
       sequenceTimerRef.current = undefined;
     }
   };
@@ -220,9 +221,12 @@ export const AppKeybindingShortcut = ({
         keycaps: labels,
         sequence: nextSequence,
       });
-      sequenceTimerRef.current = window.setTimeout(() => {
-        commitBinding(binding);
-      }, APP_KEYBINDING_SEQUENCE_TIMEOUT_MS);
+      sequenceTimerRef.current = uiClock.after(
+        APP_KEYBINDING_SEQUENCE_TIMEOUT_MS,
+        () => {
+          commitBinding(binding);
+        }
+      );
       return;
     }
 

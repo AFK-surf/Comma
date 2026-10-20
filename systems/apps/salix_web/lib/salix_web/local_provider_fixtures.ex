@@ -524,7 +524,7 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
     end
 
     def calendar_event(event_id) do
-      starts_at = DateTime.add(DateTime.utc_now(), 5 * 60 * 60, :second)
+      starts_at = DateTime.add(SystemsClock.utc_now(), 5 * 60 * 60, :second)
       ends_at = DateTime.add(starts_at, 45 * 60, :second)
 
       %{
@@ -544,7 +544,7 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
           %{"email" => "a@comma.local"},
           %{"email" => "b@comma.local"}
         ],
-        "updated" => iso(DateTime.utc_now())
+        "updated" => iso(SystemsClock.utc_now())
       }
     end
 
@@ -732,6 +732,20 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
       ]
     end
 
+    def mcp_recommendation_items("lark") do
+      [
+        mcp_item(
+          "lark-launch-thread",
+          "Reply to the launch planning thread",
+          "Reply to ",
+          "the launch planning thread",
+          "https://example.larksuite.com/messenger/thread/launch-planning",
+          "Three launch items still need an owner.",
+          "Open the Lark launch planning thread and draft a reply."
+        )
+      ]
+    end
+
     def mcp_recommendation_items(_source) do
       [
         mcp_item(
@@ -761,17 +775,17 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
 
     # ---- time helpers ----
 
-    defp hours_ago(hours), do: DateTime.add(DateTime.utc_now(), -hours * 60 * 60, :second)
+    defp hours_ago(hours), do: DateTime.add(SystemsClock.utc_now(), -hours * 60 * 60, :second)
 
     # A Slack permalink embeds its message ts, and the link is the message's
     # identity. These messages keep one timestamp per node boot, so reads agree
     # on the link instead of seeing a new message on every read.
     defp hours_before_boot(hours) do
       boot =
-        case :persistent_term.get({__MODULE__, :boot}, nil) do
+        case SystemsRuntime.PersistentTerm.get({__MODULE__, :boot}, nil) do
           nil ->
-            now = DateTime.utc_now()
-            :persistent_term.put({__MODULE__, :boot}, now)
+            now = SystemsClock.utc_now()
+            SystemsRuntime.PersistentTerm.put({__MODULE__, :boot}, now)
             now
 
           boot ->
@@ -781,7 +795,7 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
       DateTime.add(boot, -hours * 60 * 60, :second)
     end
 
-    defp days_ago(days), do: DateTime.add(DateTime.utc_now(), -days * 24 * 60 * 60, :second)
+    defp days_ago(days), do: DateTime.add(SystemsClock.utc_now(), -days * 24 * 60 * 60, :second)
     defp iso(datetime), do: DateTime.to_iso8601(datetime)
   end
 end

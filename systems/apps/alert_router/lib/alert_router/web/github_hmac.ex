@@ -9,7 +9,7 @@ defmodule AlertRouter.Web.GitHubHMAC do
 
   @spec verify(Plug.Conn.t(), binary()) :: {:ok, binary()} | {:error, term()}
   def verify(conn, raw_body) when is_binary(raw_body) do
-    config = Application.get_env(:alert_router, :github_webhook, [])
+    config = SystemsRuntime.get_env(:alert_router, :github_webhook, [])
 
     with secret when is_binary(secret) and byte_size(secret) >= 32 <- config[:secret],
          {:ok, event} <- one_header(conn, config[:event_header]),

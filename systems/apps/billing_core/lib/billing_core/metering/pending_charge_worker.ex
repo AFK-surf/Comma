@@ -3,7 +3,7 @@ defmodule BillingCore.Metering.PendingChargeWorker do
   Periodically retries pending meter charges after pricing or normalization fixes.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -12,14 +12,14 @@ defmodule BillingCore.Metering.PendingChargeWorker do
   @default_stuck_sweep_threshold 5
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
   end
 
   def run_once(opts \\ []) do
     BillingCore.Metering.PricingBackfill.run(%{
-      repo: opts[:repo] || Application.fetch_env!(:billing_core, :repo),
+      repo: opts[:repo] || SystemsRuntime.fetch_env!(:billing_core, :repo),
       sql_runner: opts[:sql_runner] || Ecto.Adapters.SQL,
-      now: opts[:now] || DateTime.utc_now(),
+      now: opts[:now] || SystemsClock.utc_now(),
       limit: opts[:limit] || @default_limit
     })
   end
@@ -41,7 +41,7 @@ defmodule BillingCore.Metering.PendingChargeWorker do
     }
 
     if state.enabled do
-      Process.send_after(self(), :run, state.interval_ms)
+      SystemsClock.send_after(SystemsRuntime.Proc.self(), :run, state.interval_ms)
     else
       Logger.warning("billing pending charge worker disabled")
     end
@@ -52,12 +52,15 @@ defmodule BillingCore.Metering.PendingChargeWorker do
   @impl true
   def handle_info(:run, state) do
     state = run_safely(state)
-    if state.enabled, do: Process.send_after(self(), :run, state.interval_ms)
+
+    if state.enabled,
+      do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :run, state.interval_ms)
+
     {:noreply, state}
   end
 
   defp run_safely(state) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     case state.run.(limit: state.limit) do
       %{charged_count: charged, pending_count: pending, expired_count: expired} = summary ->
@@ -76,7 +79,7 @@ defmodule BillingCore.Metering.PendingChargeWorker do
           :pending_charge,
           "system",
           :ok,
-          System.monotonic_time() - started
+          SystemsClock.monotonic_time() - started
         )
 
         update_stuck_sweeps(state, summary)
@@ -86,7 +89,7 @@ defmodule BillingCore.Metering.PendingChargeWorker do
           :pending_charge,
           "system",
           :error,
-          System.monotonic_time() - started
+          SystemsClock.monotonic_time() - started
         )
 
         Logger.warning("billing pending charge replay failed: #{inspect(reason)}")
@@ -125,7 +128,7 @@ defmodule BillingCore.Metering.PendingChargeWorker do
 
   defp config(key, default) do
     :billing_core
-    |> Application.get_env(:pending_charge_worker, [])
+    |> SystemsRuntime.get_env(:pending_charge_worker, [])
     |> Keyword.get(key, default)
   end
 end

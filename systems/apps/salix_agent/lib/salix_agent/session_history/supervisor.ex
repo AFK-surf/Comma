@@ -1,7 +1,9 @@
 defmodule SalixAgent.SessionHistory.Supervisor do
   @moduledoc "Search-only pools and maintenance. No Session work runs under this supervisor."
   use Supervisor
-  def start_link(opts), do: Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
+
+  def start_link(opts),
+    do: SystemsRuntime.Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
 
   def init(_) do
     opts =
@@ -25,8 +27,8 @@ defmodule SalixAgent.SessionHistory.Supervisor do
   end
 
   def children do
-    if Application.get_env(:salix_store, :start_repo, false) and
-         Application.get_env(:salix_agent, :session_history_enabled, true),
+    if SystemsRuntime.get_env(:salix_store, :start_repo, false) and
+         SystemsRuntime.get_env(:salix_agent, :session_history_enabled, true),
        do: [Supervisor.child_spec(__MODULE__, restart: :temporary)],
        else: []
   end

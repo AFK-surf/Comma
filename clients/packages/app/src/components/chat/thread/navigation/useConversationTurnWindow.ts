@@ -1,4 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import {
   CONVERSATION_TURN_WINDOW,
   expandWindowStart,
@@ -38,15 +39,14 @@ export function useConversationTurnWindow({
   const pendingRef = useRef(false);
   const loadArmedRef = useRef(true);
   const restoreRef = useRef<ScrollRestore | null>(null);
-  const restoreFrameRef = useRef<number | null>(null);
+  const restoreFrameRef = useRef<CancelUiTimer | null>(null);
   const previousTailKeyRef = useRef<string | undefined>(undefined);
   const revealSequenceRef = useRef(0);
   const [revealRequest, setRevealRequest] = useState<RevealRequest | null>(null);
 
   useLayoutEffect(
     () => () => {
-      if (restoreFrameRef.current !== null)
-        cancelAnimationFrame(restoreFrameRef.current);
+      if (restoreFrameRef.current !== null) restoreFrameRef.current();
     },
     []
   );
@@ -251,13 +251,12 @@ export function useConversationTurnWindow({
             viewport.scrollHeight
           );
       const restoredTop = viewport.scrollTop;
-      if (restoreFrameRef.current !== null)
-        cancelAnimationFrame(restoreFrameRef.current);
+      if (restoreFrameRef.current !== null) restoreFrameRef.current();
       // Markdown children can finish their initial layout after this parent
       // effect. Reconcile once before paint, preserving any reader movement.
       // Explicit reply navigation owns its own target reconciliation.
       if (!revealRequest)
-        restoreFrameRef.current = requestAnimationFrame(() => {
+        restoreFrameRef.current = uiClock.frame(() => {
           restoreFrameRef.current = null;
           if (restore.anchor?.isConnected) {
             const readerMovement = viewport.scrollTop - restoredTop;

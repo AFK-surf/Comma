@@ -1,7 +1,7 @@
 defmodule SalixSignalProto.Crypto.MlKem1024Test do
   # FIPS 203 ML-KEM-1024, the KEM of the contact discovery channel (CRS-11
   # §4.2), against the public C2SP CCTV intermediate values.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.Crypto.{Kyber1024, MlKem1024}
   alias SalixSignalProto.Test.Vectors
@@ -19,8 +19,8 @@ defmodule SalixSignalProto.Crypto.MlKem1024Test do
   end
 
   test "keys round-trip; a changed ciphertext yields the implicit-rejection secret" do
-    {ek, dk} = MlKem1024.keypair(:crypto.strong_rand_bytes(64))
-    {:ok, {secret, c}} = MlKem1024.encapsulate(ek, :crypto.strong_rand_bytes(32))
+    {ek, dk} = MlKem1024.keypair(SystemsRuntime.Proc.random_bytes(64))
+    {:ok, {secret, c}} = MlKem1024.encapsulate(ek, SystemsRuntime.Proc.random_bytes(32))
     assert MlKem1024.decapsulate(dk, c) == {:ok, secret}
 
     <<first, rest::binary>> = c

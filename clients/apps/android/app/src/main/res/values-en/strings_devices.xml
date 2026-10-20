@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="devices_section">Your devices</string>
+    <string name="devices_failed">Could not load your devices. Tap to retry.</string>
+    <string name="devices_online">Online</string>
+    <string name="devices_offline">Offline</string>
+    <string name="devices_add">Add device</string>
+
+    <string name="devices_add_bluetooth_title">Turn on Bluetooth</string>
+    <string name="devices_add_permission_title">Use Bluetooth</string>
+    <string name="devices_add_bluetooth_permission">Comma uses Bluetooth to find your device and set it up. It is only used while you add a device.</string>
+    <string name="devices_add_bluetooth_off">Bluetooth is off. Turn it on to find your device.</string>
+    <string name="devices_add_allow_bluetooth">Allow Bluetooth</string>
+    <string name="devices_add_turn_on_bluetooth">Turn on Bluetooth</string>
+
+    <string name="devices_add_scan_title">Looking for your device</string>
+    <string name="devices_add_scan_body">Plug in your Comma device. A new device with a screen says “Hello” on it. To set up a device again, hold its button for 3 seconds, then let go.</string>
+    <string name="devices_add_found">Nearby</string>
+    <string name="devices_add_scanning">Searching…</string>
+    <string name="devices_add_scan_quiet">No devices found yet. Keep the device close to your phone and make sure it is in pairing mode. A device with a screen says “Hello” or “Pairing mode”.</string>
+
+    <string name="devices_add_connecting_title">Connecting to %1$s</string>
+    <string name="devices_add_connecting_body">Keep your phone close to %1$s.</string>
+    <string name="devices_add_code_title">Pair with %1$s</string>
+    <string name="devices_add_code_body">If %1$s shows a 6-digit code, your phone asks for it in a pairing request. If the request shows up as a notification, tap Pair &amp; connect, then type the code. A device without a screen pairs on its own; accept the request if your phone shows one.</string>
+
+    <string name="devices_add_wifi_title">Choose Wi-Fi</string>
+    <string name="devices_add_wifi_body">Pick the network %1$s should use at home.</string>
+    <string name="devices_add_wifi_networks">Wi-Fi networks</string>
+    <string name="devices_add_wifi_band">Only 2.4 GHz networks are shown.</string>
+    <string name="devices_add_wifi_scanning">Searching for networks…</string>
+    <string name="devices_add_wifi_rescan">Search again</string>
+    <string name="devices_add_wifi_scan_failed">Could not search for networks. Try again.</string>
+    <string name="devices_add_wifi_strong">Strong signal</string>
+    <string name="devices_add_wifi_good">Good signal</string>
+    <string name="devices_add_wifi_weak">Weak signal</string>
+    <string name="devices_add_wifi_secured">Secured</string>
+    <string name="devices_add_wifi_open">Open</string>
+    <string name="devices_add_wifi_password_description">Enter the Wi-Fi password.</string>
+    <string name="devices_add_wifi_join">Join</string>
+    <string name="devices_add_wifi_wrong_password">Wrong password for “%1$s”. Try again.</string>
+    <string name="devices_add_wifi_not_found">Could not find “%1$s”. Make sure it is a 2.4 GHz network in range.</string>
+    <string name="devices_add_wifi_timeout">“%1$s” did not answer. Try again.</string>
+    <string name="devices_add_wifi_failed">Could not join “%1$s”. Try again.</string>
+    <string name="devices_add_name">Name</string>
+    <string name="devices_add_name_description">How this device appears in Comma.</string>
+
+    <string name="devices_add_setup_title">Setting up %1$s</string>
+    <string name="devices_add_setup_body">Keep your phone close until this finishes.</string>
+    <string name="devices_add_setup_wifi">Join “%1$s”</string>
+    <string name="devices_add_setup_credentials">Create its access</string>
+    <string name="devices_add_setup_save">Save on the device</string>
+    <string name="devices_add_setup_online">Connect to Comma</string>
+    <string name="devices_add_setup_done">Done</string>
+    <string name="devices_add_setup_working">Working…</string>
+    <string name="devices_add_setup_waiting">Waiting</string>
+
+    <string name="devices_add_done_title">Pairing complete</string>
+    <string name="devices_add_done_body">%1$s is online. You can find it under Devices.</string>
+    <string name="devices_add_almost_title">Almost done</string>
+    <string name="devices_add_almost_body">%1$s saved its settings but is not online yet. This can take a minute; check back under Devices.</string>
+    <string name="devices_add_finish">Done</string>
+    <string name="devices_add_failed_title">Could not add the device</string>
+    <string name="devices_add_try_again">Try again</string>
+
+    <string name="devices_problem_connect">Could not connect. Keep the device close and make sure it is still in pairing mode.</string>
+    <string name="devices_problem_pairing">Pairing did not finish. If the device showed a code, check it and try again.</string>
+    <string name="devices_problem_disconnected">The connection to the device dropped.</string>
+    <string name="devices_problem_timeout">The device stopped responding.</string>
+    <string name="devices_problem_rejected">The device did not accept its settings.</string>
+    <string name="devices_problem_save">The device could not save its settings.</string>
+    <string name="devices_problem_not_online">The device did not come online. Check that the Wi-Fi network has internet access.</string>
+    <string name="devices_problem_network">Could not reach Comma. Check your connection.</string>
+    <string name="devices_problem_server">Comma could not create the device’s access. Try again later.</string>
+    <string name="devices_problem_forbidden">Your account cannot add devices to this workspace.</string>
+    <string name="devices_problem_limit">This workspace has too many voice keys. Remove a device first.</string>
+
+    <string name="devices_problem_connector_rejected">Comma refused the device’s access. Hold its button for 3 seconds and set it up again.</string>
+    <string name="devices_problem_storage">This phone could not store the device’s access, so setup stopped. Try again.</string>
+
+    <string name="devices_status">Status</string>
+    <string name="devices_kind">Type</string>
+    <string name="devices_kind_comma">Comma device</string>
+    <string name="devices_kind_computer">Computer</string>
+    <string name="devices_remove">Remove device</string>
+    <string name="devices_remove_description">Revokes its access to Comma.</string>
+    <string name="devices_removing">Removing…</string>
+    <string name="devices_remove_title">Remove %1$s?</string>
+    <string name="devices_remove_message">%1$s loses its access to Comma. Then reset it: hold its button for 10 seconds until it restarts.</string>
+    <string name="devices_remove_elsewhere">It was set up from another phone, so it can still reconnect until you reset it.</string>
+    <string name="devices_remove_failed">Could not remove the device. Please try again.</string>
+    <string name="devices_removed">Device removed. Hold its button for 10 seconds to reset it.</string>
+    <string name="devices_access">Allow operations</string>
+    <string name="devices_access_description">Lets Comma act through this device. Off keeps it read-only.</string>
+    <string name="devices_access_offline">Device is offline.</string>
+    <string name="devices_access_confirm_title">Allow operations?</string>
+    <string name="devices_access_confirm_message">Comma will be able to send requests on your local network through this device.</string>
+    <string name="devices_access_allow">Allow</string>
+    <string name="devices_access_unconfirmed">The device didn’t confirm the change. Try again.</string>
+    <string name="devices_access_timeout">The device didn’t answer in time. Try again.</string>
+    <string name="devices_access_forbidden">Your account can’t change this device’s access.</string>
+    <string name="devices_access_not_found">This device is no longer in your workspace.</string>
+    <string name="devices_access_server">Comma couldn’t change the device’s access. Try again later.</string>
+    <string name="devices_password_show">Show password</string>
+    <string name="devices_password_hide">Hide password</string>
+</resources>

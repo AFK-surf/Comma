@@ -736,18 +736,44 @@ defmodule SalixIM.Provider.OperationRegistry do
     }
   ]
 
+  @feishu_message_format %{
+    "type" => "string",
+    "enum" => ["markdown", "text"],
+    "description" =>
+      "Optional format. Defaults to markdown, rendered as a Feishu post. Use text for literal plain text."
+  }
+
   @feishu_operations [
+    %{
+      "name" => "feishu.post_task_card",
+      "method" => "POST /im/v1/messages/:message_id/reply + PATCH /im/v1/messages/:message_id",
+      "safety" => "write",
+      "description" =>
+        "Publish one native Feishu Task card after im_api.internal.task.create. The card replies to the source message. The dedicated Conversation participant keeps the same card synchronized with authoritative Task status and public progress.",
+      "required_params" => ["conversation_id", "chat_id", "message_id"],
+      "parameters" => %{
+        "conversation_id" => "Task conversation_id returned by im_api.internal.task.create.",
+        "chat_id" => "Feishu chat_id from the source context.",
+        "message_id" =>
+          "Source message to reply to: the source root_message_id when the source is in a thread, otherwise the source message_id.",
+        "chat_type" =>
+          "Source chat type, group or p2p. Defaults to group, which replies in a thread."
+      }
+    },
     %{
       "name" => "feishu.send_text",
       "task_payload_params" => ["text"],
       "method" => "POST /im/v1/messages",
       "safety" => "write",
-      "description" => "Send text to an explicit Feishu chat or user ID.",
+      "description" =>
+        "Send standard Markdown to an explicit Feishu chat or user ID as a native post.",
       "required_params" => ["receive_id", "text"],
       "parameters" => %{
         "receive_id" => "Required chat/user/open ID.",
         "receive_id_type" => "Optional; defaults to chat_id.",
-        "text" => "Required message text.",
+        "text" =>
+          "Required standard Markdown. External images become labeled links. Use mentions for resolved Feishu people. Body at-tags are literal.",
+        "format" => @feishu_message_format,
         "mentions" =>
           "Optional list of {user_id, name} entries. Resolve named people with list_chat_members or directory tools before sending.",
         "mention_all" =>
@@ -759,11 +785,13 @@ defmodule SalixIM.Provider.OperationRegistry do
       "method" => "POST /im/v1/messages/:message_id/reply",
       "safety" => "write",
       "description" =>
-        "Reply to an explicit Feishu message. For a top-level group @mention, pass reply_in_thread=true and source chat_id so later replies in the created thread can continue without another mention.",
+        "Reply with standard Markdown as a native post. For a top-level group @mention, pass reply_in_thread=true and source chat_id so later replies in the created thread can continue without another mention.",
       "required_params" => ["message_id", "text"],
       "parameters" => %{
         "message_id" => "Required source Feishu message ID.",
-        "text" => "Required message text.",
+        "text" =>
+          "Required standard Markdown. External images become labeled links. Use mentions for resolved Feishu people. Body at-tags are literal.",
+        "format" => @feishu_message_format,
         "reply_in_thread" =>
           "Optional boolean; defaults to true when chat_type=group and thread_id is absent.",
         "chat_id" => "Source chat ID, required to remember participation in a created thread.",
@@ -811,6 +839,28 @@ defmodule SalixIM.Provider.OperationRegistry do
         "sort_type" => "Optional ByCreateTimeAsc or ByCreateTimeDesc.",
         "page_size" => "Optional page size, default and max 50.",
         "page_token" => "Optional Feishu page token returned by the prior call."
+      }
+    },
+    %{
+      "name" => "feishu.search_messages",
+      "method" => "local Feishu message index",
+      "safety" => "read",
+      "description" =>
+        "One page of indexed Feishu messages from chats this app can read, matching query, newest first, including thread replies. Required query. count default 30, max 200. Continue by passing response_metadata.next_cursor back as cursor. sort is timestamp only (default desc). Matching is case-insensitive substring on message text and content. Juxtaposed terms AND; OR combines AND-groups; -term and -\"phrase\" exclude. Modifiers: from:ou_… (sender open_id) or from:cli_… (app), in:oc_… (chat id), after:YYYY-MM-DD, before:YYYY-MM-DD, has:file, quoted phrases. in: must be a chat id; resolve names with feishu.list_chats. Unsupported syntax errors rather than being ignored. Messages have the same shape as feishu.get_chat_history; attachments are metadata only, fetch bytes with feishu.fetch_message_resource. Sender ids are opaque; resolve with feishu.get_user before naming a person. stale=true means this copy may lag a later change. incomplete.reason=not_synced means older history is not indexed yet, not that there were no matches.",
+      "required_params" => ["query"],
+      "parameters" => %{
+        "query" =>
+          "Required search string. Case-insensitive. Terms AND; OR combines AND-groups; -term / -\"phrase\" exclude. Modifiers: from:ou_… / from:cli_…, in:oc_…, after:YYYY-MM-DD, before:YYYY-MM-DD, has:file.",
+        "thread_id" => "Optional. Narrow to one thread.",
+        "count" => "Optional page size, default 30, max 200.",
+        "cursor" =>
+          "Pass response_metadata.next_cursor from the previous page unchanged. Omit on the first page.",
+        "sort" => "Optional. Only timestamp is supported.",
+        "sort_dir" => "Optional asc or desc. Default desc."
+      },
+      "example_params" => %{
+        "query" => "in:oc_0123456789abcdef after:2026-01-01 deploy",
+        "count" => 30
       }
     },
     %{
@@ -871,9 +921,15 @@ defmodule SalixIM.Provider.OperationRegistry do
       "name" => "feishu.update_message",
       "method" => "PUT /im/v1/messages/:message_id",
       "safety" => "write",
-      "description" => "Update a text message authored by this connected Feishu bot.",
+      "description" =>
+        "Update a text or post message authored by this connected Feishu bot. Standard Markdown renders as a native post.",
       "required_params" => ["message_id", "text"],
-      "parameters" => %{"message_id" => "Bot-authored message ID.", "text" => "Replacement text."}
+      "parameters" => %{
+        "message_id" => "Bot-authored message ID.",
+        "text" =>
+          "Replacement standard Markdown. External images become labeled links. Body at-tags are literal.",
+        "format" => @feishu_message_format
+      }
     },
     %{
       "name" => "feishu.delete_message",
@@ -1071,12 +1127,446 @@ defmodule SalixIM.Provider.OperationRegistry do
     }
   ]
 
+  @feishu_doc_param "Required Feishu document URL (/docx/ or /wiki/) or token. A bare wiki token needs doc_type=wiki."
+  @feishu_doc_type_param "Optional docx (default) or wiki; only needed when doc is a bare wiki node token."
+
+  # Cloud documents through the connect's tenant app. Workers hold every one
+  # of these and of the Minutes operations below; see `SalixIM.Provider`.
+  @feishu_document_operations [
+    %{
+      "name" => "feishu.fetch_doc",
+      "method" => "POST /docs_ai/v1/documents/:token/fetch",
+      "safety" => "read",
+      "description" =>
+        "Read a Feishu document (Docx, or a Docx page in a wiki) that is shared with a chat containing this bot, shared with the app, or open by link inside the tenant. Returns Markdown by default with unresolved comments in reference_map. For large documents read the outline first, then one section, range, or keyword match. Use detail=with-ids before editing, so block IDs can target feishu.update_doc.",
+      "required_params" => ["doc"],
+      "parameters" => %{
+        "doc" => @feishu_doc_param,
+        "doc_type" => @feishu_doc_type_param,
+        "format" => "Optional markdown (default) or xml. xml keeps every Feishu block type.",
+        "detail" =>
+          "Optional simple (default), with-ids (block IDs for editing and #block_id links), or full (also styles).",
+        "scope" =>
+          "Optional full (default), outline (headings only), section (one heading's section; needs start_block_id), range (start_block_id and/or end_block_id), or keyword (needs keyword; '|' separates alternatives).",
+        "start_block_id" => "Section anchor or range start block ID.",
+        "end_block_id" => "Range end block ID; -1 reads to the end.",
+        "keyword" => "Keyword for scope=keyword.",
+        "context_before" => "Optional top-level sibling blocks to add before each match.",
+        "context_after" => "Optional top-level sibling blocks to add after each match.",
+        "max_depth" =>
+          "Optional heading level cap for outline, or subtree depth for other scopes.",
+        "revision_id" => "Optional historical revision; omit for the latest."
+      },
+      "example_params" => %{"doc" => "https://example.feishu.cn/docx/AbCdEfGhIjKlMnOpQrStUvWx"}
+    },
+    %{
+      "name" => "feishu.list_doc_comments",
+      "method" => "GET /drive/v1/files/:token/comments",
+      "safety" => "read",
+      "description" => "List one page of comments and replies on a Feishu document.",
+      "required_params" => ["doc"],
+      "parameters" => %{
+        "doc" => @feishu_doc_param,
+        "doc_type" => @feishu_doc_type_param,
+        "is_solved" => "Optional boolean filter.",
+        "page_size" => "Optional page size, max 50.",
+        "page_token" => "Optional token from the previous page."
+      }
+    },
+    %{
+      "name" => "feishu.list_doc_members",
+      "method" =>
+        "GET /drive/v1/permissions/:token/members + GET /drive/v2/permissions/:token/public",
+      "safety" => "read",
+      "description" =>
+        "List a Feishu document's collaborators and its link-sharing setting. Feishu requires share permission on the document for this read.",
+      "required_params" => ["doc"],
+      "parameters" => %{"doc" => @feishu_doc_param, "doc_type" => @feishu_doc_type_param}
+    },
+    %{
+      "name" => "feishu.fetch_doc_media",
+      "method" => "GET /drive/v1/medias/:file_token/download",
+      "safety" => "media",
+      "description" =>
+        "Stage one image or attachment embedded in a Feishu document into the agent workspace. Take file_token from the token attribute of an <img> or <source> in feishu.fetch_doc content.",
+      "required_params" => ["doc", "file_token"],
+      "parameters" => %{
+        "doc" => @feishu_doc_param,
+        "doc_type" => @feishu_doc_type_param,
+        "file_token" => "Required media token from the document content."
+      }
+    },
+    %{
+      "name" => "feishu.list_wiki_spaces",
+      "method" => "GET /wiki/v2/spaces",
+      "safety" => "read",
+      "description" => "List one page of the wiki spaces this app can see.",
+      "required_params" => [],
+      "parameters" => %{
+        "page_size" => "Optional page size, max 50.",
+        "page_token" => "Optional token from the previous page."
+      }
+    },
+    %{
+      "name" => "feishu.list_wiki_nodes",
+      "method" => "GET /wiki/v2/spaces/:space_id/nodes",
+      "safety" => "read",
+      "description" =>
+        "List one page of wiki nodes under a space root or a parent node. A docx node's node_token is a wiki document token for the other document operations.",
+      "required_params" => ["space_id"],
+      "parameters" => %{
+        "space_id" => "Required wiki space ID.",
+        "parent_node_token" => "Optional parent node; omit for the space root.",
+        "page_size" => "Optional page size, max 50.",
+        "page_token" => "Optional token from the previous page."
+      }
+    },
+    %{
+      "name" => "feishu.create_doc",
+      "method" => "POST /docs_ai/v1/documents",
+      "safety" => "write",
+      "description" =>
+        "Create a Feishu document from Markdown or Feishu XML. Without parent, the document is in this app's own space, its link stays closed, and only the share target can open it: pass share_chat_id (usually the source chat) or share_user_id, otherwise nobody can open it. With parent, it is created in that folder (only folders this app created) or under that wiki node and inherits its readers. Returns the document URL.",
+      "required_params" => [],
+      "parameters" => %{
+        "title" => "Document title. title or content is required.",
+        "content" => "Document body in the given format.",
+        "format" => "Optional markdown (default) or xml.",
+        "parent" => "Optional folder or wiki node URL, or a token with parent_type.",
+        "parent_type" => "folder or wiki; required when parent is a bare token.",
+        "share_chat_id" => "Optional Feishu chat_id whose members get access.",
+        "share_user_id" => "Optional open_id of one person who gets access.",
+        "share_perm" => "Optional view, edit (default), or full_access for the share target."
+      },
+      "example_params" => %{
+        "title" => "Weekly report",
+        "content" => "## Summary\n\n- Item",
+        "share_chat_id" => "oc_example"
+      }
+    },
+    %{
+      "name" => "feishu.update_doc",
+      "method" => "PUT /docs_ai/v1/documents/:token",
+      "safety" => "write",
+      "description" =>
+        "Edit a Feishu document. First read it with feishu.fetch_doc detail=with-ids (a section, range, or keyword scope for large documents). Commands: str_replace (inline text; pattern + content, empty content deletes), block_replace (block_id, or start_block_id + end_block_id of siblings; content), block_insert_after (block_id; -1 is the end, 0 the start; content), append (content at the end), block_delete (block_id or a sibling range), block_move_after and block_copy_insert_after (block_id + src_block_ids), overwrite (replace everything; loses comments and images, use only on request). Every write changes block IDs: fetch again before the next edit. Check warnings even on success.",
+      "required_params" => ["doc", "command"],
+      "parameters" => %{
+        "doc" => @feishu_doc_param,
+        "doc_type" => @feishu_doc_type_param,
+        "command" =>
+          "Required: str_replace, block_replace, block_insert_after, append, block_delete, block_move_after, block_copy_insert_after, or overwrite.",
+        "format" =>
+          "Optional markdown (default) or xml for content. In markdown, escape literal Markdown characters such as \\*, \\_, \\[ and \\< ; fetched Markdown is already escaped.",
+        "content" => "New content for content commands.",
+        "pattern" => "Inline text to find for str_replace, in the fetched (escaped) form.",
+        "block_id" => "Target block ID.",
+        "start_block_id" => "First block of a sibling range; 0 is the document start.",
+        "end_block_id" => "Last block of a sibling range; -1 is the document end.",
+        "src_block_ids" => "Comma-separated source block IDs, or a list.",
+        "revision_id" => "Optional base revision; omit for the latest."
+      },
+      "example_params" => %{
+        "doc" => "https://example.feishu.cn/docx/AbCdEfGhIjKlMnOpQrStUvWx",
+        "command" => "block_insert_after",
+        "block_id" => "doxcnHeading",
+        "content" => "New paragraph."
+      }
+    },
+    %{
+      "name" => "feishu.insert_doc_media",
+      "method" =>
+        "POST /docx/v1/documents/:id/blocks/:id/children + POST /drive/v1/medias/upload_all + PATCH blocks/batch_update",
+      "safety" => "media",
+      "description" =>
+        "Append an image or file from the agent workspace (at most 20 MB) to the end of a Feishu document. Move it afterwards with feishu.update_doc block_move_after.",
+      "required_params" => ["doc", "path"],
+      "parameters" => %{
+        "doc" => @feishu_doc_param,
+        "doc_type" => @feishu_doc_type_param,
+        "path" => "Required agent VFS path.",
+        "media_type" => "Optional image or file; inferred from the file extension.",
+        "caption" => "Optional image caption."
+      }
+    },
+    %{
+      "name" => "feishu.add_doc_comment",
+      "method" => "POST /drive/v1/files/:token/new_comments",
+      "safety" => "write",
+      "description" =>
+        "Add a comment to a Feishu document, on one block when block_id is given, otherwise on the whole document.",
+      "required_params" => ["doc", "text"],
+      "parameters" => %{
+        "doc" => @feishu_doc_param,
+        "doc_type" => @feishu_doc_type_param,
+        "text" => "Required comment text.",
+        "block_id" => "Optional block ID from feishu.fetch_doc detail=with-ids."
+      }
+    },
+    %{
+      "name" => "feishu.reply_doc_comment",
+      "method" => "POST /drive/v1/files/:token/comments/:comment_id/replies",
+      "safety" => "write",
+      "description" => "Reply to an existing comment on a Feishu document.",
+      "required_params" => ["doc", "comment_id", "text"],
+      "parameters" => %{
+        "doc" => @feishu_doc_param,
+        "doc_type" => @feishu_doc_type_param,
+        "comment_id" => "Required comment ID.",
+        "text" => "Required reply text."
+      }
+    },
+    %{
+      "name" => "feishu.resolve_doc_comment",
+      "method" => "PATCH /drive/v1/files/:token/comments/:comment_id",
+      "safety" => "write",
+      "description" => "Mark a Feishu document comment solved, or reopen it with solved=false.",
+      "required_params" => ["doc", "comment_id"],
+      "parameters" => %{
+        "doc" => @feishu_doc_param,
+        "doc_type" => @feishu_doc_type_param,
+        "comment_id" => "Required comment ID.",
+        "solved" => "Optional boolean; defaults to true."
+      }
+    },
+    %{
+      "name" => "feishu.share_doc",
+      "method" => "POST /drive/v1/permissions/:token/members",
+      "safety" => "admin",
+      "description" =>
+        "Give a chat, a person, or a department access to a Feishu document. Everyone in that audience can then read the whole document; share only where the document's content may go. Needs full access on the document.",
+      "required_params" => ["doc", "member_type", "member_id"],
+      "parameters" => %{
+        "doc" => @feishu_doc_param,
+        "doc_type" => @feishu_doc_type_param,
+        "member_type" => "Required chat, user, or department.",
+        "member_id" => "Required chat_id, open_id, or open_department_id.",
+        "perm" => "Optional view (default), edit, or full_access."
+      }
+    },
+    %{
+      "name" => "feishu.remove_doc_member",
+      "method" => "DELETE /drive/v1/permissions/:token/members/:member_id",
+      "safety" => "admin",
+      "description" => "Remove one collaborator from a Feishu document.",
+      "required_params" => ["doc", "member_type", "member_id"],
+      "parameters" => %{
+        "doc" => @feishu_doc_param,
+        "doc_type" => @feishu_doc_type_param,
+        "member_type" => "Required chat, user, or department.",
+        "member_id" => "Required chat_id, open_id, or open_department_id."
+      }
+    },
+    %{
+      "name" => "feishu.update_doc_link_share",
+      "method" => "PATCH /drive/v2/permissions/:token/public",
+      "safety" => "admin",
+      "description" =>
+        "Set who can open a Feishu document by link: closed, tenant_readable, or tenant_editable. Internet-wide links are not available here.",
+      "required_params" => ["doc", "link_share_entity"],
+      "parameters" => %{
+        "doc" => @feishu_doc_param,
+        "doc_type" => @feishu_doc_type_param,
+        "link_share_entity" => "Required closed, tenant_readable, or tenant_editable."
+      }
+    },
+    %{
+      "name" => "feishu.delete_doc",
+      "method" => "DELETE /drive/v1/files/:token",
+      "safety" => "destructive",
+      "description" =>
+        "Move a Feishu Docx document to the trash. Only for documents the user asked to delete; this app must own the document or have full access. Wiki pages are not deleted here.",
+      "required_params" => ["doc"],
+      "parameters" => %{"doc" => "Required Docx document URL or token."}
+    }
+  ]
+
+  @feishu_minute_param "Required Feishu Minutes link (/minutes/<token>) or minute token."
+
+  # Minutes (妙记) as the bot. Feishu offers Minutes edits only to a user
+  # identity, so these are reads plus an access request to the owner.
+  @feishu_minutes_operations [
+    %{
+      "name" => "feishu.get_minute",
+      "method" => "GET /minutes/v1/minutes/:token + GET /minutes/v1/minutes/:token/artifacts",
+      "safety" => "read",
+      "description" =>
+        "Read one Feishu Minutes recording (妙记) that is shared with a chat containing this bot, shared with the app, or open by link inside the tenant: title, owner, times, and the AI summary, todos, chapters, keywords, or transcript named in include. A long transcript is staged in the agent workspace. If Feishu is still processing the recording, try again later instead of reporting it empty.",
+      "required_params" => ["minute"],
+      "parameters" => %{
+        "minute" => @feishu_minute_param,
+        "include" =>
+          "Optional list (or comma-separated string) of summary, todos, chapters, keywords, transcript. Omit for details only."
+      },
+      "example_params" => %{
+        "minute" => "https://example.feishu.cn/minutes/obcnexampleminute1",
+        "include" => ["summary", "todos"]
+      }
+    },
+    %{
+      "name" => "feishu.list_minutes",
+      "method" => "POST /minutes/v1/minutes/search",
+      "safety" => "read",
+      "description" =>
+        "Search one page of Feishu Minutes recordings this app can see, newest first. Pass at least one filter. Not finding a recording does not prove it does not exist; it may not be shared with the bot.",
+      "required_params" => [],
+      "parameters" => %{
+        "query" => "Optional keyword, at most 50 characters.",
+        "owner_ids" => "Optional list of owner open_ids (any of them).",
+        "participant_ids" => "Optional list of participant open_ids (any of them).",
+        "start" => "Optional earliest creation time: RFC 3339 or YYYY-MM-DD.",
+        "end" => "Optional latest creation time: RFC 3339 or YYYY-MM-DD.",
+        "page_size" => "Optional page size, max 30.",
+        "page_token" => "Optional token from the previous page."
+      }
+    },
+    %{
+      "name" => "feishu.fetch_minute_media",
+      "method" => "GET /minutes/v1/minutes/:token/media",
+      "safety" => "media",
+      "description" =>
+        "Stage the audio or video file of a Feishu Minutes recording into the agent workspace (staging limit 100 MB). Prefer feishu.get_minute with include=transcript when text is enough.",
+      "required_params" => ["minute"],
+      "parameters" => %{"minute" => @feishu_minute_param}
+    },
+    %{
+      "name" => "feishu.request_minute_access",
+      "method" => "POST /minutes/v1/minutes/:token/permissions/apply",
+      "safety" => "write",
+      "description" =>
+        "Send the recording's owner a request to give this app access. Feishu notifies the owner. Call it only when the user agrees, and only once per recording.",
+      "required_params" => ["minute"],
+      "parameters" => %{
+        "minute" => @feishu_minute_param,
+        "perm" => "Optional view (default) or edit."
+      }
+    }
+  ]
+
+  @feishu_account_param "Optional signed-in Feishu account (alias or open_id from feishu.list_accounts) to read as that person instead of as the bot."
+  @feishu_meeting_account_param "Optional signed-in Feishu account (alias or open_id from feishu.list_accounts). Omit to use every signed-in account."
+
+  # Reads that can run as a signed-in person when the request names an
+  # `account` (`SalixIM.Provider.Feishu.Meetings.as_account/3`).
+  @feishu_account_apis ~w(feishu.fetch_doc feishu.list_doc_comments feishu.fetch_doc_media
+                          feishu.get_minute feishu.list_minutes feishu.fetch_minute_media)
+
+  @feishu_document_operations Enum.map(@feishu_document_operations, fn operation ->
+                                if operation["name"] in @feishu_account_apis,
+                                  do:
+                                    put_in(
+                                      operation,
+                                      ["parameters", "account"],
+                                      @feishu_account_param
+                                    ),
+                                  else: operation
+                              end)
+
+  @feishu_minutes_operations Enum.map(@feishu_minutes_operations, fn operation ->
+                               if operation["name"] in @feishu_account_apis,
+                                 do:
+                                   put_in(
+                                     operation,
+                                     ["parameters", "account"],
+                                     @feishu_account_param
+                                   ),
+                                 else: operation
+                             end)
+
+  # Meetings as a person who signed in for the Group
+  # (`SalixIM.Provider.Feishu.Meetings`): Feishu shows a meeting, its notes
+  # and its recording only to people.
+  @feishu_meeting_operations [
+    %{
+      "name" => "feishu.list_accounts",
+      "method" => "OAuth Bindings of provider feishu",
+      "safety" => "read",
+      "description" =>
+        "List the Feishu people who signed in for this Agent Swarm: alias, open_id, name and status. The bot reads meetings, meeting notes, recordings and documents as one of them.",
+      "required_params" => [],
+      "parameters" => %{}
+    },
+    %{
+      "name" => "feishu.search_meetings",
+      "method" => "POST /vc/v1/meetings/search",
+      "safety" => "read",
+      "description" =>
+        "Search finished Feishu meetings, newest first, as the signed-in accounts: each meeting the account took part in or can see, with meeting id, topic and times, and the account that found it. Pass at least one filter. For a recurring meeting such as a daily stand-up, search its topic with start and end. next_pages names a page_token per account; pass it with that account.",
+      "required_params" => [],
+      "parameters" => %{
+        "account" => @feishu_meeting_account_param,
+        "query" => "Optional keyword or 9-digit meeting number, at most 50 characters.",
+        "organizer_ids" => "Optional list of organizer open_ids (any of them).",
+        "participant_ids" => "Optional list of participant open_ids (any of them).",
+        "start" => "Optional earliest start time: RFC 3339 or YYYY-MM-DD.",
+        "end" => "Optional latest start time: RFC 3339 or YYYY-MM-DD.",
+        "page_size" => "Optional, at most 30.",
+        "page_token" => "Optional page_token from next_pages, with its account."
+      }
+    },
+    %{
+      "name" => "feishu.get_meeting",
+      "method" => "GET /vc/v1/meetings/:meeting_id + GET /vc/v1/meetings/:meeting_id/recording",
+      "safety" => "read",
+      "description" =>
+        "Read one finished Feishu meeting as a signed-in account: topic, times, host and participants, its note_id (AI meeting notes) and the minute_token of its recording. Read the notes with feishu.get_note and the recording with feishu.get_minute, passing the same account.",
+      "required_params" => ["meeting_id"],
+      "parameters" => %{
+        "meeting_id" =>
+          "The meeting id from feishu.search_meetings (a long number, not the 9-digit meeting number).",
+        "account" => @feishu_meeting_account_param
+      }
+    },
+    %{
+      "name" => "feishu.get_note",
+      "method" => "GET /vc/v1/notes/:note_id + GET /vc/v1/notes/:note_id/unified_note_transcript",
+      "safety" => "read",
+      "description" =>
+        "Read the AI meeting notes of a Feishu meeting as a signed-in account: note_doc_token (the notes document), verbatim_doc_token (the transcript document) and shared_doc_tokens. Read each document with feishu.fetch_doc, passing its token and the same account. A unified note (display_type unified) has no transcript document: pass include_transcript=true to get its transcript.",
+      "required_params" => ["note_id"],
+      "parameters" => %{
+        "note_id" => "The note_id from feishu.get_meeting.",
+        "include_transcript" =>
+          "Optional true: for a unified note, read its whole transcript as Markdown (a long one is put in your workspace).",
+        "locale" => "Optional transcript language, such as zh_cn (default) or en_us.",
+        "account" => @feishu_meeting_account_param
+      }
+    }
+  ]
+
+  @feishu_operations @feishu_operations ++
+                       @feishu_document_operations ++
+                       @feishu_minutes_operations ++ @feishu_meeting_operations
+
   @slack_by_name Map.new(@slack_operations, &{&1["name"], &1})
   @feishu_by_name Map.new(@feishu_operations, &{&1["name"], &1})
 
   def api_names("slack"), do: Enum.map(@slack_operations, & &1["name"])
   def api_names("feishu"), do: Enum.map(@feishu_operations, & &1["name"])
   def api_names(_provider), do: []
+
+  @doc "Operations a worker holds for a provider besides its reads, whatever their safety class."
+  def worker_api_names("feishu"),
+    do:
+      Enum.map(
+        @feishu_document_operations ++ @feishu_minutes_operations ++ @feishu_meeting_operations,
+        & &1["name"]
+      )
+
+  # Lark describes its operations in its own manual, which names the ones a
+  # Worker holds besides the reads.
+  def worker_api_names("lark"), do: SalixIM.Provider.Lark.Manual.worker_api_names()
+
+  def worker_api_names(_provider), do: nil
+
+  @doc "The Feishu Minutes operation names."
+  def feishu_minutes_api_names, do: Enum.map(@feishu_minutes_operations, & &1["name"])
+
+  @doc "The Feishu meeting operation names, read as a signed-in person."
+  def feishu_meeting_api_names, do: Enum.map(@feishu_meeting_operations, & &1["name"])
+
+  @doc "The Feishu reads that take an optional `account` to run as a signed-in person."
+  def feishu_account_api_names, do: @feishu_account_apis
 
   def manual_api_entries("slack"), do: Enum.map(@slack_operations, &manual_entry/1)
   def manual_api_entries("feishu"), do: Enum.map(@feishu_operations, &manual_entry/1)
@@ -1103,6 +1593,18 @@ defmodule SalixIM.Provider.OperationRegistry do
 
       :error ->
         {:error, :unsupported}
+    end
+  end
+
+  def metadata("lark", api), do: SalixIM.Provider.Lark.Manual.metadata(api)
+
+  # The other providers describe their operations only in their manual.
+  def metadata(provider, api) when provider in ~w(wechat telegram imessage voice signal qq) do
+    with {:ok, %{"apis" => apis}} <- SalixIM.Provider.Manuals.manual(provider),
+         %{} = operation <- Enum.find(apis, &(&1["name"] == api)) do
+      {:ok, %{"method" => operation["method"], "safety" => operation["safety"]}}
+    else
+      _ -> {:error, :unsupported}
     end
   end
 

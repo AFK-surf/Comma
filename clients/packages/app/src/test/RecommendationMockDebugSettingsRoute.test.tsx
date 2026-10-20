@@ -2,20 +2,20 @@ import userEvent from "@testing-library/user-event";
 import { CommaI18nProvider } from "@comma/i18n/react";
 import { render, screen, waitFor } from "@comma/test-utils/render";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createCommaApi, type CommaApiSessionTransport } from "../api";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CommaApiSessionTransport } from "../session/controller";
 import {
   CommaAuthContext,
   type CommaAuthContextValue,
 } from "../components/auth-context";
 import { CommaAppearanceProvider } from "../components/commaAppearance";
 import { CommaWebClientSettingsProvider } from "../components/commaClientSettings";
-import { CommaSideChatShortcutProvider } from "../components/commaSideChatShortcut";
 import { RouterIdentityProvider } from "../components/router-identity/RouterIdentityProvider";
 import { CommaAppShortcutsProvider } from "../components/shortcuts/commaAppShortcuts";
 import { RecommendationMockDebugSettingsRoute } from "../devtools/recommendation-mock/RecommendationMockDebugSettingsRoute";
 
-const auth = (audience = "http://127.0.0.1:4200"): CommaAuthContextValue => {
+const auth = (audience = "http://127.0.0.1"): CommaAuthContextValue => {
   const sessionController = new AbortController();
   const sessionTransport: CommaApiSessionTransport = {
     applyHeaders: (headers) => {
@@ -26,11 +26,6 @@ const auth = (audience = "http://127.0.0.1:4200"): CommaAuthContextValue => {
     signal: sessionController.signal,
   };
   return {
-    api: createCommaApi({
-      baseUrl: "https://api.example",
-      sessionTransport,
-      token: "",
-    }),
     apiBaseUrl: "https://api.example",
     authenticated: true,
     productLease: {
@@ -47,42 +42,38 @@ const auth = (audience = "http://127.0.0.1:4200"): CommaAuthContextValue => {
   };
 };
 
-const renderRoute = (audience?: string) =>
+const renderRoute = (core: ReturnType<typeof createScriptedCore>, audience?: string) =>
   render(
-    <CommaWebClientSettingsProvider>
-      <CommaAuthContext.Provider value={auth(audience)}>
-        <RouterIdentityProvider>
-          <CommaAppearanceProvider>
-            <CommaSideChatShortcutProvider>
+    core.wrap(
+      <CommaWebClientSettingsProvider>
+        <CommaAuthContext.Provider value={auth(audience)}>
+          <RouterIdentityProvider>
+            <CommaAppearanceProvider>
               <CommaAppShortcutsProvider>
                 <CommaI18nProvider>
                   <RecommendationMockDebugSettingsRoute />
                 </CommaI18nProvider>
               </CommaAppShortcutsProvider>
-            </CommaSideChatShortcutProvider>
-          </CommaAppearanceProvider>
-        </RouterIdentityProvider>
-      </CommaAuthContext.Provider>
-    </CommaWebClientSettingsProvider>
+            </CommaAppearanceProvider>
+          </RouterIdentityProvider>
+        </CommaAuthContext.Provider>
+      </CommaWebClientSettingsProvider>
+    )
   );
 
 describe("RecommendationMockDebugSettingsRoute", () => {
   beforeEach(() => {
-    installNativeBridgeMock({
-      platform: "electron",
-      sideChat: { updateShortcut: vi.fn(async (shortcut) => shortcut) },
-    });
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
+    installNativeBridgeMock({ platform: "electron" });
   });
 
   it("keeps remote-backend settings usable without probing the local mock endpoint", async () => {
-    const fetch = vi.fn(async () => new Response("unauthorized", { status: 401 }));
-    vi.stubGlobal("fetch", fetch);
+    const subscribed: unknown[] = [];
+    const core = createScriptedCore({
+      owns: (name) => name.startsWith("recommendationMock"),
+      onSubscribe: (topic) => subscribed.push(topic.topic),
+    });
 
-    renderRoute("https://salix-staging.comma.surf");
+    renderRoute(core, "https://salix-staging.comma.surf");
     await userEvent.click(screen.getByRole("button", { name: "Debug" }));
     expect(
       screen.getByRole("switch", { name: "Show Session history" })
@@ -90,38 +81,27 @@ describe("RecommendationMockDebugSettingsRoute", () => {
     expect(
       screen.queryByRole("switch", { name: "Use local routine mock" })
     ).not.toBeInTheDocument();
-    expect(fetch).not.toHaveBeenCalled();
+    expect(subscribed).not.toContain("recommendationMock");
+    expect(core.sentTo("recommendationMock.set")).toEqual([]);
   });
 
   it("adds the dev-only mock controls to the shared Debug category and toggles the backend mock live", async () => {
-    const requests: Array<{ body?: unknown; method: string; url: string }> = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
-        const url = String(input);
-        const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
-        requests.push({ body, method: init.method ?? "GET", url });
+    let status = { available: true, enabled: false };
+    const core = createScriptedCore({
+      owns: (name) => name.startsWith("recommendationMock"),
+      values: (topic) =>
+        topic.topic === "recommendationMock"
+          ? { status: "ready", ...status }
+          : undefined,
+      calls: (name, params) => {
+        if (name !== "recommendationMock.set") return null;
+        status = { available: true, enabled: (params as { enabled: boolean }).enabled };
+        core.changed("recommendationMock");
+        return status;
+      },
+    });
 
-        if (url.endsWith("/v1/comma/workspaces")) {
-          return new Response(
-            JSON.stringify({
-              data: [{ group_id: "grp-1", id: "wsp-1", name: "Comma" }],
-            }),
-            {
-              headers: { "content-type": "application/json" },
-              status: 200,
-            }
-          );
-        }
-
-        return new Response(
-          JSON.stringify({ available: true, enabled: body?.enabled ?? false }),
-          { headers: { "content-type": "application/json" }, status: 200 }
-        );
-      })
-    );
-
-    renderRoute();
+    renderRoute(core);
     expect(screen.getAllByRole("button", { name: "Debug" })).toHaveLength(1);
     await userEvent.click(screen.getByRole("button", { name: "Debug" }));
     expect(
@@ -135,24 +115,9 @@ describe("RecommendationMockDebugSettingsRoute", () => {
     await userEvent.click(toggle);
 
     await waitFor(() =>
-      expect(requests).toEqual([
-        {
-          body: undefined,
-          method: "GET",
-          url: "https://api.example/v1/debug/recommendation-mock",
-        },
-        {
-          body: undefined,
-          method: "GET",
-          url: "https://api.example/v1/comma/workspaces",
-        },
-        {
-          body: { enabled: true, workspaceId: "wsp-1" },
-          method: "PATCH",
-          url: "https://api.example/v1/debug/recommendation-mock",
-        },
-      ])
+      expect(core.sentTo("recommendationMock.set")).toEqual([{ enabled: true }])
     );
-    expect(toggle).toBeChecked();
+    expect(await screen.findByText(/^Local mock enabled\./)).toBeInTheDocument();
+    await waitFor(() => expect(toggle).toBeChecked());
   });
 });

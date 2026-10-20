@@ -1,16 +1,32 @@
-import { useCommaMessages } from "@comma/i18n/react";
-import { AiActivity, CommaLogoAnimation } from "@comma/ui";
-import { useLayoutEffect, useMemo, useState, type CSSProperties } from "react";
-import type {
-  ChatActivity,
-  ChatParticipantStatus,
-} from "../../model/conversationChannel";
+import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import type { CommaLocale } from "@comma/i18n";
+import { AiActivity } from "@comma/ui/components/ai-activity";
+import { CommaLogoAnimation } from "@comma/ui/components/comma-mascot";
+import { HoverPanel } from "@comma/ui/components/hover-card";
+import { uiClock } from "@comma/ui/clock";
+import {
+  cloneElement,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import type { ChatActivity, ChatParticipantStatus } from "@comma/core/chat";
+import { FocusComputerUseScreen } from "../../../remote-screen/WorkerComputerUseScreen";
 import { useRouterDisplayName } from "../../../router-identity/RouterIdentityProvider";
 import { routerDisplayName } from "../../../router-identity/routerDisplayName";
 import { withRouterNameSpacing } from "../../../router-identity/routerNameSpacing";
+import type { ActivityFocus, ActivityFocusTask } from "./activityFocus";
+import {
+  ActivityFocusCard,
+  activityFocusCardLabel,
+  titledTasks,
+  type TaskLink,
+} from "./ActivityFocusCard";
 import { participantStatusLabel } from "./participantStatusLabel";
 import { toolActivityLabel } from "./toolActivityLabel";
-import { workerMeshGradientStyle } from "./workerAvatar";
+import { WorkerModelMark } from "./WorkerModelMark";
 import wechatActivityLogo from "../../assets/wechat-activity.svg";
 import telegramActivityLogo from "../../assets/telegram-activity.svg";
 import signalActivityLogo from "../../assets/signal-activity.svg";
@@ -35,7 +51,9 @@ export function ParticipantStatusSlot({
   streaming = false,
   replyTimedOut = false,
   hasResponse = false,
-  toolPresentation = "inline",
+  focus,
+  taskLink,
+  workerVendor,
 }: {
   activity?: ChatActivity | undefined;
   participantStatus: ChatParticipantStatus | undefined;
@@ -47,15 +65,23 @@ export function ParticipantStatusSlot({
   replyTimedOut?: boolean | undefined;
   /** A reply ends local waiting, not the Participant's ongoing work. */
   hasResponse?: boolean | undefined;
-  /** Side Chat keeps the current tool execution in its own transcript bubble. */
-  toolPresentation?: "inline" | "bubble";
+  /** The Tasks behind the Router's work, or this chat's Workers while the Router is idle. */
+  focus?: ActivityFocus | undefined;
+  /**
+   * This surface's link to a Task, as its Task chips use: a route link on Home.
+   * The bubble becomes the link to the Task its line names.
+   */
+  taskLink?: TaskLink | undefined;
+  /** In a Task: the maker of the model its Worker runs, whose mark stands for the Worker. */
+  workerVendor?: string | undefined;
 }) {
   const messages = useCommaMessages();
+  const locale = useCommaLocale();
   const routerName = useRouterDisplayName();
   const generationFailed = messages.chat_generation_failed();
-  const participant = participantPresentation(participantStatus, messages);
+  const participant = participantPresentation(participantStatus, messages, locale);
   const taskPresentations = participantStatuses?.flatMap((taskParticipant) => {
-    const presentation = participantPresentation(taskParticipant, messages);
+    const presentation = participantPresentation(taskParticipant, messages, locale);
     return presentation
       ? [
           {
@@ -77,7 +103,29 @@ export function ParticipantStatusSlot({
   // Participant snapshot from the preceding turn cannot cancel that feedback.
   // Participant snapshots precede their Activity frames on the same feed.
   // A stopped owner therefore also hides a retained running presentation.
+  // Activity frames reach this chat only for its own input. While the owner
+  // answers another Conversation, such as a Worker's report in a Task, a
+  // retained frame is from an earlier round. A wait outlives the frame that
+  // started it, so the Participant's structured wait words the whole wait.
+  const routerActive =
+    participantStatus?.state === "active" && participantStatus.loopWake !== true;
+  const answersOtherConversation =
+    routerActive && (participantStatus.workingConversationIds?.length ?? 0) > 0;
+  const routerFocus =
+    routerActive && focus && focus.mode !== "working" ? focus : undefined;
+  const routerFocusLabel = routerFocus
+    ? focusLabel(messages, routerFocus)
+    : routerActive && participantStatus.waiting
+      ? messages.chat_tool_wait()
+      : undefined;
+  const workerFocus =
+    !routerActive && participantStatus?.state !== "error" && focus?.mode === "working"
+      ? focus
+      : undefined;
+  const workerFocusLabel = workerFocus ? focusLabel(messages, workerFocus) : undefined;
   const liveActivity =
+    !answersOtherConversation &&
+    routerFocusLabel === undefined &&
     activity?.status === "running" &&
     participantStatus?.state !== "stopped" &&
     participantStatus?.loopWake !== true;
@@ -90,10 +138,6 @@ export function ParticipantStatusSlot({
         toolActivityLabel(messages, activity.toolName, "running") ||
         messages.chat_activity_working()
       : undefined;
-  const liveToolSummary =
-    toolPresentation === "bubble" && !participantStatuses
-      ? liveExecutionSummary
-      : undefined;
   // A source-bound Activity can end with the first send. The Participant
   // remains the authority for work that continues after that reply.
   const ongoingWork =
@@ -101,12 +145,13 @@ export function ParticipantStatusSlot({
     !streaming &&
     participantStatus?.state === "active" &&
     participantStatus.loopWake !== true;
-  const fallbackSummary = hasResponse
-    ? messages.chat_activity_working()
-    : messages.chat_activity_thinking();
-  const activeSummary = liveToolSummary
-    ? liveToolSummary
-    : streaming || (!hasResponse && liveActivity && activity.phase === "messaging")
+  const fallbackSummary =
+    routerFocusLabel ??
+    (hasResponse
+      ? messages.chat_activity_working()
+      : messages.chat_activity_thinking());
+  const activeSummary =
+    streaming || (!hasResponse && liveActivity && activity.phase === "messaging")
       ? messages.chat_activity_typing()
       : liveExecutionSummary
         ? liveExecutionSummary
@@ -119,7 +164,7 @@ export function ParticipantStatusSlot({
     toolActivityLabel(messages, activity?.toolName, "failed") ??
     messages.chat_tool_failed();
   const presentation: SlotPresentation | undefined =
-    optimisticThinking && !hasResponse && !liveToolSummary
+    optimisticThinking && !hasResponse
       ? {
           actorRole: "router",
           key: "optimistic-thinking",
@@ -129,7 +174,7 @@ export function ParticipantStatusSlot({
       : ((participant?.state === "error" ? participant : undefined) ??
         failedTurnPresentation(activity, generationFailed, executionFailed) ??
         (ongoingWork ||
-        ((!hasResponse || liveToolSummary) &&
+        (!hasResponse &&
           (streaming ||
             liveActivity ||
             (participant?.state === "active" && participantStatus?.loopWake !== true)))
@@ -146,7 +191,14 @@ export function ParticipantStatusSlot({
                 label: messages.chat_timeout(),
                 state: "waiting",
               }
-            : undefined));
+            : workerFocusLabel
+              ? {
+                  actorRole: "worker",
+                  key: "task-workers",
+                  label: workerFocusLabel,
+                  state: "active",
+                }
+              : undefined));
 
   const requestedPresentations: SlotPresentation[] = taskPresentations
     ? taskPresentations.toSorted(
@@ -162,8 +214,7 @@ export function ParticipantStatusSlot({
     requestedPresentations,
     handingOffToBubble ||
       participantStatus?.state === "stopped" ||
-      participantStatus?.loopWake === true ||
-      (toolPresentation === "bubble" && activity?.phase === "execution")
+      participantStatus?.loopWake === true
   );
   const active = presentations.filter((item) => item.state === "active");
   const errors = presentations.filter((item) => item.state === "error");
@@ -198,20 +249,34 @@ export function ParticipantStatusSlot({
         : errors.map((item) => `${item.name} · ${item.label}`).join("; ")
       : (presentations[0]?.label ?? "");
   const visible = presentations.length > 0;
-  const toolBubble = Boolean(
-    !workingProvider && liveToolSummary && presentation?.state === "active"
-  );
-  const thinkingBubble = !toolBubble && errors.length === 0;
-  const detail = presentations
-    .map((item) => (item.name ? `${item.name} · ${item.label}` : item.label))
-    .join("\n");
+  const thinkingBubble = errors.length === 0;
+  // Avatars and the detail card belong to the Task work that the line names,
+  // never to typing or local send feedback.
+  const lead = presentations[0];
+  const markedFocus =
+    lead?.key === "task-workers"
+      ? workerFocus
+      : routerFocusLabel !== undefined && lead?.label === routerFocusLabel
+        ? routerFocus
+        : undefined;
+  const cardFocus =
+    thinkingBubble &&
+    !taskPresentations &&
+    markedFocus?.tasks.some((task) => task.title)
+      ? markedFocus
+      : undefined;
+  // A Worker at work may drive a computer; each one's screen shows beside the chat.
+  const screenTasks = focus?.tasks.filter((task) => task.worker) ?? [];
+  const detail = cardFocus
+    ? ""
+    : presentations
+        .map((item) => (item.name ? `${item.name} · ${item.label}` : item.label))
+        .join("\n");
 
   return (
     <div
       className="comma-chat-activity-slot"
       data-active={visible ? "true" : "false"}
-      data-presentation={toolBubble ? "tool-call" : undefined}
-      data-tool-name={toolBubble ? activity?.toolName?.trim() : undefined}
       data-reserve-space={reserveSpace ? "true" : "false"}
       data-state={
         errors.length
@@ -243,12 +308,7 @@ export function ParticipantStatusSlot({
                 "data-actor-role": item.actorRole ?? (isRouter ? "router" : undefined),
                 className:
                   "comma-chat-assistant-source-avatar comma-chat-activity-avatar",
-                style: {
-                  ...(!isRouter
-                    ? workerMeshGradientStyle(item.actorId ?? item.key)
-                    : {}),
-                  "--comma-status-index": index,
-                } as CSSProperties,
+                style: { "--comma-status-index": index } as CSSProperties,
               };
               return isRouter ? (
                 <span
@@ -259,18 +319,25 @@ export function ParticipantStatusSlot({
                   <CommaLogoAnimation />
                 </span>
               ) : (
-                <span key={avatarKey} {...avatarProps} />
+                <WorkerModelMark
+                  key={avatarKey}
+                  {...avatarProps}
+                  vendor={workerVendor}
+                />
               );
             })}
           </div>
         ) : null}
-        <div
-          data-working-provider={workingProvider}
+        <ActivityBubble
+          cardFocus={cardFocus}
+          label={summary}
           className={
             thinkingBubble
               ? "comma-chat-thinking-bubble"
               : "comma-chat-activity-content"
           }
+          taskLink={taskLink}
+          workingProvider={workingProvider}
         >
           {thinkingBubble && !taskPresentations ? (
             workingProvider ? (
@@ -292,13 +359,25 @@ export function ParticipantStatusSlot({
                 </span>
               </span>
             ) : (
-              <span
-                className="comma-chat-thinking-logo"
-                data-participant-key={presentations[0]?.key}
-                aria-hidden
-              >
-                <CommaLogoAnimation paused={!visible || active.length === 0} />
-              </span>
+              <>
+                {markedFocus?.mode !== "working" ? (
+                  <span
+                    className="comma-chat-thinking-logo"
+                    data-participant-key={presentations[0]?.key}
+                    aria-hidden
+                  >
+                    <CommaLogoAnimation paused={!visible || active.length === 0} />
+                  </span>
+                ) : null}
+                {focusWorkers(markedFocus).map((worker) => (
+                  <WorkerModelMark
+                    key={worker.avatarId}
+                    className="comma-chat-thinking-worker"
+                    data-worker-avatar={worker.avatarId}
+                    vendor={worker.vendor}
+                  />
+                ))}
+              </>
             )
           ) : null}
           <AiActivity
@@ -311,10 +390,122 @@ export function ParticipantStatusSlot({
             status={errors.length ? "failed" : active.length ? "running" : "complete"}
             summary={summary}
           />
-        </div>
+        </ActivityBubble>
       </div>
+      {focus
+        ? screenTasks.map((task) => (
+            <FocusComputerUseScreen
+              conversationId={task.conversationId}
+              groupId={focus.groupId}
+              key={task.conversationId}
+              participantId={task.worker!.participantId}
+            />
+          ))
+        : null}
     </div>
   );
+}
+
+/**
+ * The status bubble. With Task work to show, it is this surface's link to the
+ * Task that its line names, like a Task chip in the transcript. Hovering or
+ * focusing it opens the card, whose rows open each Task.
+ */
+function ActivityBubble({
+  cardFocus,
+  children,
+  className,
+  label,
+  taskLink,
+  workingProvider,
+}: {
+  cardFocus: ActivityFocus | undefined;
+  children: ReactNode;
+  className: string;
+  /** Browsers do not name a link or button from the live status region inside it. */
+  label: string;
+  taskLink: TaskLink | undefined;
+  workingProvider: ChatParticipantStatus["workingProvider"];
+}) {
+  const messages = useCommaMessages();
+  const named = cardFocus && titledTasks(cardFocus)[0];
+  const link = named && taskLink?.(named);
+  if (!cardFocus || !link) {
+    return (
+      <div data-working-provider={workingProvider} className={className}>
+        {children}
+      </div>
+    );
+  }
+  return (
+    <HoverPanel
+      content={<ActivityFocusCard focus={cardFocus} taskLink={taskLink!} />}
+      label={activityFocusCardLabel(messages, cardFocus)}
+    >
+      {cloneElement(link, {
+        "aria-label": label,
+        className: [className, link.props.className].filter(Boolean).join(" "),
+        "data-interactive": "true",
+        "data-working-provider": workingProvider,
+        children,
+      } as Partial<typeof link.props>)}
+    </HoverPanel>
+  );
+}
+
+// At most two Worker avatars sit beside the Router mark, as in the channel capsule.
+function focusWorkers(focus: ActivityFocus | undefined) {
+  const workers = new Map<string, NonNullable<ActivityFocusTask["worker"]>>();
+  for (const task of focus ? titledTasks(focus) : []) {
+    if (task.worker && !workers.has(task.worker.avatarId)) {
+      workers.set(task.worker.avatarId, task.worker);
+    }
+  }
+  return [...workers.values()].slice(0, 2);
+}
+
+/**
+ * The line for Task work, in the reader's language. A Task without a resolved
+ * title has no line yet: the caller keeps its generic copy. Worker names stay
+ * out of the line: the avatars stand for them and the card names them.
+ */
+function focusLabel(
+  messages: ReturnType<typeof useCommaMessages>,
+  focus: ActivityFocus
+): string | undefined {
+  // A Task without a title is one this reader cannot see yet: it is not named
+  // or counted, and the card does not list it either.
+  const titled = titledTasks(focus);
+  const [first] = titled;
+  const count = titled.length;
+  const title = first?.title ? clippedTaskTitle(first.title) : undefined;
+  switch (focus.mode) {
+    case "following":
+      if (!title) return undefined;
+      return count > 1
+        ? messages.chat_activity_following_tasks({ count })
+        : messages.chat_activity_following_task({ title });
+    case "waiting":
+      if (!title) return messages.chat_tool_wait();
+      return count > 1
+        ? messages.chat_activity_waiting_tasks({ count })
+        : messages.chat_activity_waiting_task({ title });
+    case "working":
+      if (!title) return undefined;
+      return count > 1
+        ? messages.chat_activity_worker_tasks({ count })
+        : messages.chat_activity_worker_task({ title });
+  }
+}
+
+// The Router writes Task titles. A long one must not stretch the status bubble.
+const TASK_TITLE_MAX_CHARACTERS = 40;
+
+function clippedTaskTitle(title: string) {
+  const characters = Array.from(title.replace(/\s+/g, " ").trim());
+  return characters.length > TASK_TITLE_MAX_CHARACTERS
+    ? `${characters.slice(0, TASK_TITLE_MAX_CHARACTERS - 1).join("")}…`
+    : characters.join("");
 }
 
 // One trailing timer per shared status slot, not one per participant. Preserve
@@ -335,8 +526,8 @@ function useThinkingContinuity(items: SlotPresentation[], immediateHide: boolean
       setRetained(stable);
       return;
     }
-    const timer = setTimeout(() => setRetained(stable), 180);
-    return () => clearTimeout(timer);
+    const timer = uiClock.after(180, () => setRetained(stable));
+    return () => timer();
   }, [stable, hold]);
   return stable.length || !hold ? stable : retained;
 }
@@ -373,10 +564,11 @@ function failedTurnPresentation(
 // stable issue code, never from the runtime's own status text.
 function participantPresentation(
   participantStatus: ChatParticipantStatus | undefined,
-  messages: ReturnType<typeof useCommaMessages>
+  messages: ReturnType<typeof useCommaMessages>,
+  locale: CommaLocale
 ): SlotPresentation | undefined {
   const label =
-    participantStatus && participantStatusLabel(messages, participantStatus);
+    participantStatus && participantStatusLabel(messages, participantStatus, locale);
   if (!participantStatus || label === undefined) {
     return undefined;
   }

@@ -267,7 +267,12 @@ defmodule SalixAgent.DriveMount do
   defp spool(stream, fun) do
     dir = Path.join(System.tmp_dir!(), "salix-drive-spool")
     File.mkdir_p!(dir)
-    spooled = Path.join(dir, "#{System.unique_integer([:positive])}-#{:erlang.phash2(self())}")
+
+    spooled =
+      Path.join(
+        dir,
+        "#{SystemsRuntime.Proc.unique_integer([:positive])}-#{:erlang.phash2(SystemsRuntime.Proc.self())}"
+      )
 
     try do
       size =

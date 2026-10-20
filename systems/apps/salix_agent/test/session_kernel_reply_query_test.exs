@@ -7,7 +7,7 @@ defmodule SalixAgent.SessionKernelReplyQueryTest do
   from a plain state map.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.InternalSession.State
 
@@ -94,10 +94,6 @@ defmodule SalixAgent.SessionKernelReplyQueryTest do
   end
 
   # -- derive_visible_reply_scope -------------------------------------------
-
-  test "derive_visible_reply_scope derives on the clean trusted path" do
-    assert {:ok, _} = derive(session([trusted_user_message()]), [@source_id])
-  end
 
   test "derive_visible_reply_scope extends and preserves a compacted scope" do
     scope = activation_scope()

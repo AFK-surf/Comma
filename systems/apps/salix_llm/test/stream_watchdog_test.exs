@@ -9,7 +9,7 @@ defmodule SalixLlm.StreamWatchdogTest do
   crosses the Task boundary, a followed redirect starts a fresh accumulator,
   and a failure hands back the response accumulated so far.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import ExUnit.CaptureLog
   require Logger
@@ -65,19 +65,19 @@ defmodule SalixLlm.StreamWatchdogTest do
 
     defp stream(conn, {:stall_after, first, hold_ms, rest}) do
       conn = write(conn, first)
-      Process.sleep(hold_ms)
+      SystemsRuntime.Proc.sleep(hold_ms)
       Enum.reduce(rest, conn, &write(&2, &1))
     end
 
     defp stream(conn, {:stall_before_first, hold_ms, chunks}) do
-      Process.sleep(hold_ms)
+      SystemsRuntime.Proc.sleep(hold_ms)
       Enum.reduce(chunks, conn, &write(&2, &1))
     end
 
     defp stream(conn, {:trickle, chunks, gap_ms}) do
       Enum.reduce(chunks, conn, fn piece, conn ->
         conn = write(conn, piece)
-        Process.sleep(gap_ms)
+        SystemsRuntime.Proc.sleep(gap_ms)
         conn
       end)
     end
@@ -96,12 +96,12 @@ defmodule SalixLlm.StreamWatchdogTest do
 
   setup do
     previous = %{
-      idle: Application.get_env(:salix_agent, :llm_stream_idle_timeout_ms),
-      first: Application.get_env(:salix_agent, :llm_stream_first_event_timeout_ms)
+      idle: SystemsRuntime.get_env(:salix_agent, :llm_stream_idle_timeout_ms),
+      first: SystemsRuntime.get_env(:salix_agent, :llm_stream_first_event_timeout_ms)
     }
 
-    Application.put_env(:salix_agent, :llm_stream_idle_timeout_ms, @idle_ms)
-    Application.put_env(:salix_agent, :llm_stream_first_event_timeout_ms, @first_event_ms)
+    SystemsRuntime.put_env(:salix_agent, :llm_stream_idle_timeout_ms, @idle_ms)
+    SystemsRuntime.put_env(:salix_agent, :llm_stream_first_event_timeout_ms, @first_event_ms)
 
     on_exit(fn ->
       restore(:llm_stream_idle_timeout_ms, previous.idle)
@@ -110,9 +110,15 @@ defmodule SalixLlm.StreamWatchdogTest do
 
     start_supervised!(StallServer)
 
+    # The stalling handlers sleep for seconds after the client gives up. Stop
+    # them with the server instead of waiting for them at every test's exit.
     bandit =
       start_supervised!(
-        {Bandit, plug: StallServer, port: 0, startup_log: false},
+        {Bandit,
+         plug: StallServer,
+         port: 0,
+         startup_log: false,
+         thousand_island_options: [shutdown_timeout: 0]},
         id: :stream_watchdog_mock_server
       )
 
@@ -120,8 +126,8 @@ defmodule SalixLlm.StreamWatchdogTest do
     {:ok, base: "http://127.0.0.1:#{port}"}
   end
 
-  defp restore(key, nil), do: Application.delete_env(:salix_agent, key)
-  defp restore(key, value), do: Application.put_env(:salix_agent, key, value)
+  defp restore(key, nil), do: SystemsRuntime.delete_env(:salix_agent, key)
+  defp restore(key, value), do: SystemsRuntime.put_env(:salix_agent, key, value)
 
   defp anthropic(base),
     do: %{"protocol" => "anthropic", "base_url" => base, "api_key" => "k", "model" => "claude-x"}
@@ -206,31 +212,6 @@ defmodule SalixLlm.StreamWatchdogTest do
     assert links() == links_before
   end
 
-  test "the first event gets the longer time-to-first-token allowance", %{base: base} do
-    StallServer.stall_before_first("/v1/messages", 5_000, [@anthropic_start, @anthropic_end])
-    {_rec, on_delta} = recorder()
-
-    {{result, elapsed}, log} =
-      with_log(fn ->
-        timed(fn ->
-          Provider.complete_stream(
-            [%{role: "user", content: "hi"}],
-            [],
-            on_delta,
-            anthropic(base)
-          )
-        end)
-      end)
-
-    reason = assert_stalled(result, "anthropic", :first_event)
-    assert reason =~ "timeout_ms: #{@first_event_ms}"
-    assert log =~ "llm stream stalled: no first event for #{@first_event_ms}ms"
-
-    # Headers arrived immediately, yet the wait ran past the idle allowance:
-    # only body events start the idle clock.
-    assert elapsed >= @first_event_ms
-  end
-
   test "events of any kind reset the idle clock", %{base: base} do
     # Every gap is shorter than the idle allowance but the whole stream is not,
     # and the first chunks carry no text delta at all.
@@ -261,8 +242,72 @@ defmodule SalixLlm.StreamWatchdogTest do
     assert elapsed > @idle_ms
   end
 
+  test "SSE comment keep-alives are not events in either phase", %{base: base} do
+    # A provider that keeps a queued request open with `: keep-alive` comments
+    # and never starts it. Every gap is shorter than the idle allowance, and
+    # one comment is split across two chunks.
+    gap = div(@idle_ms, 3)
+    keep_alives = List.duplicate(": keep-alive\n\n", 2 * div(@first_event_ms, gap))
+
+    StallServer.trickle("/v1/messages", [": keep", "-alive\n\n" | keep_alives], gap)
+    {_rec, on_delta} = recorder()
+
+    {{result, elapsed}, log} =
+      with_log(fn ->
+        timed(fn ->
+          Provider.complete_stream(
+            [%{role: "user", content: "hi"}],
+            [],
+            on_delta,
+            anthropic(base)
+          )
+        end)
+      end)
+
+    reason = assert_stalled(result, "anthropic", :first_event)
+    assert reason =~ "timeout_ms: #{@first_event_ms}"
+    assert log =~ "llm stream stalled: no first event for #{@first_event_ms}ms"
+    assert elapsed >= @first_event_ms
+
+    # Once the stream has started, comments do not extend the idle allowance.
+    StallServer.trickle(
+      "/v1/messages",
+      [@anthropic_start <> @anthropic_hello | keep_alives] ++ [@anthropic_world, @anthropic_end],
+      gap
+    )
+
+    {rec, on_delta} = recorder()
+
+    {{result, elapsed}, _log} =
+      with_log(fn ->
+        timed(fn ->
+          Provider.complete_stream(
+            [%{role: "user", content: "hi"}],
+            [],
+            on_delta,
+            anthropic(base)
+          )
+        end)
+      end)
+
+    reason = assert_stalled(result, "anthropic", :streaming)
+    assert reason =~ "timeout_ms: #{@idle_ms}"
+    assert elapsed >= @idle_ms
+    assert elapsed < @first_event_ms
+    assert deltas(rec) == ["Hello"]
+  end
+
+  test "an SSE line split across chunks keeps its kind" do
+    assert StreamWatchdog.sse_events(": keep", :line_start) == {false, :comment}
+    assert StreamWatchdog.sse_events("-alive\n\n", :comment) == {false, :line_start}
+    assert StreamWatchdog.sse_events("da", :line_start) == {true, :field}
+    assert StreamWatchdog.sse_events("ta: {}\r\n\r\n: ping", :field) == {true, :comment}
+    assert StreamWatchdog.sse_events("\n", :comment) == {false, :line_start}
+    assert StreamWatchdog.sse_events("{\"error\":{}}", :line_start) == {true, :field}
+  end
+
   test ":infinity disables the idle check", %{base: base} do
-    Application.put_env(:salix_agent, :llm_stream_idle_timeout_ms, :infinity)
+    SystemsRuntime.put_env(:salix_agent, :llm_stream_idle_timeout_ms, :infinity)
 
     StallServer.stall_after("/v1/messages", @anthropic_start <> @anthropic_hello, @idle_ms * 3, [
       @anthropic_world,
@@ -345,10 +390,10 @@ defmodule SalixLlm.StreamWatchdogTest do
 
   test "the into: function runs in the caller and its state reaches the response", %{base: base} do
     StallServer.trickle("/v1/messages", ["one\n", "two\n"], 1)
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     into = fn {:data, data}, {req, resp} ->
-      send(owner, {:into_ran_in, self()})
+      SystemsRuntime.Proc.send(owner, {:into_ran_in, SystemsRuntime.Proc.self()})
       seen = Req.Response.get_private(resp, :seen, [])
       {:cont, {req, Req.Response.put_private(resp, :seen, seen ++ [data])}}
     end
@@ -412,12 +457,17 @@ defmodule SalixLlm.StreamWatchdogTest do
   end
 
   test "the relay carries the caller's observability context across the Task boundary" do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     # A custom adapter stands in for the provider and reports what the relay
     # process sees; without propagation it would run as surface "system".
     adapter = fn request ->
-      send(owner, {:relay_context, self(), SystemsObservability.Context.current_surface()})
+      SystemsRuntime.Proc.send(
+        owner,
+        {:relay_context, SystemsRuntime.Proc.self(),
+         SystemsObservability.Context.current_surface()}
+      )
+
       {request, Req.Response.new(status: 200, body: "")}
     end
 
@@ -527,11 +577,11 @@ defmodule SalixLlm.StreamWatchdogTest do
   end
 
   test "a connection error after data preserves the partial response and records the interruption" do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
     private = "private-partial-response"
 
     into = fn {:data, data}, {req, resp} ->
-      send(owner, {:received, data})
+      SystemsRuntime.Proc.send(owner, {:received, data})
       {:cont, {req, Req.Response.put_private(resp, :observed_usage, 42)}}
     end
 
@@ -564,7 +614,7 @@ defmodule SalixLlm.StreamWatchdogTest do
   end
 
   defp links do
-    {:links, links} = Process.info(self(), :links)
+    {:links, links} = Process.info(SystemsRuntime.Proc.self(), :links)
     Enum.sort(links)
   end
 end

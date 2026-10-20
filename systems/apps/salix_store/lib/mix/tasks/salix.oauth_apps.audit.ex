@@ -34,7 +34,7 @@ defmodule Mix.Tasks.Salix.OauthApps.Audit do
       :absent ->
         Mix.shell().info("cutover marker: absent (pre-cutover preflight)")
 
-        bound = Application.get_env(:salix_store, :oauth_apps_cutover_max_objects, 500)
+        bound = SystemsRuntime.get_env(:salix_store, :oauth_apps_cutover_max_objects, 500)
 
         case SalixStore.OAuthAppsCutover.importable_count() do
           {:ok, %{"provider_apps" => provider}} when provider > bound ->

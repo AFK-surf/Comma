@@ -1,13 +1,13 @@
 defmodule AlertRouter.RoutesTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias AlertRouter.Routes
 
   import AlertRouter.TestFixtures
 
   setup do
-    previous = Application.fetch_env!(:alert_router, :slack)
-    on_exit(fn -> Application.put_env(:alert_router, :slack, previous) end)
+    previous = SystemsRuntime.fetch_env!(:alert_router, :slack)
+    on_exit(fn -> SystemsRuntime.put_env(:alert_router, :slack, previous) end)
     :ok
   end
 
@@ -28,10 +28,10 @@ defmodule AlertRouter.RoutesTest do
   end
 
   test "live delivery rejects a missing, private, or malformed destination" do
-    slack = Application.fetch_env!(:alert_router, :slack)
+    slack = SystemsRuntime.fetch_env!(:alert_router, :slack)
 
     for channel_id <- [nil, "", "GPRIVATE", "Cbad-channel"] do
-      Application.put_env(
+      SystemsRuntime.put_env(
         :alert_router,
         :slack,
         Keyword.put(slack, :routes, %{"live" => channel_id})
@@ -43,9 +43,9 @@ defmodule AlertRouter.RoutesTest do
   end
 
   test "shadow remains pinned to xp-test" do
-    slack = Application.fetch_env!(:alert_router, :slack)
+    slack = SystemsRuntime.fetch_env!(:alert_router, :slack)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :alert_router,
       :slack,
       Keyword.put(slack, :routes, %{"shadow" => "C0BJ1699HSN"})

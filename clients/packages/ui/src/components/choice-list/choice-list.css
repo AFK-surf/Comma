@@ -1,0 +1,128 @@
+/* ChoiceList: one bordered row per option, the whole row its native input's label.
+   A picked row only turns gray; the radio or box carries the brand color.
+   Selection, hover and focus change instantly: no transitions. */
+.comma-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.comma-choice-list-option {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: var(--spacing-lg);
+  padding: var(--spacing-lg);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-popup-secondary);
+  box-shadow: inset 0 0 0 var(--border-width-default) var(--color-border-primary);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .comma-choice-list-option:hover {
+    background: var(--color-bg-secondary);
+  }
+}
+
+.comma-choice-list-option[data-checked="true"] {
+  background: var(--color-bg-quaternary);
+}
+
+/* The native input fills its row: the whole row is the target, the browser keeps state and keys. */
+.comma-choice-list-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+/* Keyboard focus: a dark two-pixel ring and a soft outer one, never the brand color. */
+.comma-choice-list-option:has(.comma-choice-list-input:focus-visible),
+.comma-choice-list-row:focus-within {
+  box-shadow:
+    inset 0 0 0 2px var(--color-fg-secondary),
+    0 0 0 3px var(--color-border-primary);
+}
+
+/* The 16px control sits on the first 20px line. */
+.comma-choice-list-indicator {
+  margin-block-start: var(--spacing-xxs);
+  pointer-events: none;
+}
+
+.comma-choice-list-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+}
+
+.comma-choice-list-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-xxs) var(--spacing-md);
+  font-weight: var(--font-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.comma-choice-list-description {
+  color: var(--color-text-tertiary);
+  text-wrap: pretty;
+}
+
+.comma-choice-list-key {
+  display: inline-grid;
+  min-width: var(--spacing-2xl);
+  height: var(--spacing-2xl);
+  place-items: center;
+  padding-inline: var(--spacing-xs);
+  border-radius: var(--radius-xs);
+  background: var(--color-bg-secondary);
+  box-shadow: inset 0 0 0 var(--border-width-default) var(--color-border-menu-primary);
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1;
+  visibility: hidden;
+}
+
+.comma-choice-list[data-shortcuts="on"] .comma-choice-list-key {
+  visibility: visible;
+}
+
+@media (hover: hover) {
+  .comma-choice-list-option:hover .comma-choice-list-key {
+    visibility: visible;
+  }
+}
+
+/* A free-answer row: the first line is one 32px box (its trailing xs button's height), so the control, its label
+   and the field share one center, and the row stands as tall as an option's (44px); what it holds (e.g. images)
+   goes under the field. */
+.comma-choice-list-row {
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "indicator label field action"
+    ". extra extra extra";
+  padding: var(--spacing-sm) var(--spacing-sm) var(--spacing-sm) var(--spacing-lg);
+  cursor: text;
+}
+
+.comma-choice-list-row > .comma-choice-list-indicator {
+  grid-area: indicator;
+  margin-block-start: var(--spacing-md);
+}
+
+@media (forced-colors: active) {
+  .comma-choice-list-option:has(.comma-choice-list-input:focus-visible),
+  .comma-choice-list-row:focus-within {
+    outline: 2px solid Highlight;
+  }
+}

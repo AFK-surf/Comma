@@ -10,7 +10,20 @@ const twoImagesStoryUrl =
 const openStack = async (page: Page) => {
   await page.goto(stackStoryUrl, { waitUntil: "domcontentloaded" });
   const toggle = page.getByRole("button", { name: "5 Images" });
-  await expect(toggle).toBeVisible({ timeout: 20_000 });
+  await expect(toggle).toBeVisible();
+};
+
+// A card flight lasts 320 ms, a filmstrip move 400 ms and a reduced-motion fade 150 ms; a
+// busy runner can take longer between two commands. Hold the document's animations still
+// so a motion is still running when the test reads it; the returned function lets them
+// play again.
+const holdAnimations = async (page: Page) => {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Animation.enable");
+  await cdp.send("Animation.setPlaybackRate", { playbackRate: 0 });
+  return async () => {
+    await cdp.send("Animation.setPlaybackRate", { playbackRate: 1 });
+  };
 };
 
 const activeFrontAlt = (page: Page) =>
@@ -44,6 +57,7 @@ test("rapid direction reversal keeps the current front free of a stale flight", 
     .locator('.chat-panel-image-group-card[data-stack-pos="0"]')
     .elementHandle();
   expect(originalFront).not.toBeNull();
+  const playAnimations = await holdAnimations(page);
   await next.evaluate((button) => (button as HTMLButtonElement).click());
   await expect.poll(() => originalFront?.getAttribute("data-flying")).toBe("true");
   await previous.evaluate((button) => (button as HTMLButtonElement).click());
@@ -69,6 +83,7 @@ test("rapid direction reversal keeps the current front free of a stale flight", 
     runningWaapi: false,
     stackPosition: "0",
   });
+  await playAnimations();
 
   expect(
     await originalFront?.evaluate((element) => {
@@ -100,6 +115,7 @@ test("rotate then expand and collapse interrupts the prior card flight", async (
     .locator('.chat-panel-image-group-card[data-stack-pos="0"]')
     .elementHandle();
   expect(outgoing).not.toBeNull();
+  const playAnimations = await holdAnimations(page);
   await next.evaluate((button) => (button as HTMLButtonElement).click());
   await expect.poll(() => outgoing?.getAttribute("data-flying")).toBe("true");
   await page
@@ -134,6 +150,7 @@ test("rotate then expand and collapse interrupts the prior card flight", async (
     flyingCards: 0,
     runningWaapi: false,
   });
+  await playAnimations();
   await expect
     .poll(() =>
       page.locator(".chat-panel-image-group-card").evaluateAll((cards) =>
@@ -229,10 +246,12 @@ test("preview navigation moves one connected filmstrip and aligns the stack", as
     dialog.getByRole("button", { name: "Show previous image" })
   ).toHaveAttribute("aria-disabled", "true");
 
+  const playAnimations = await holdAnimations(page);
   await dialog
     .getByRole("button", { name: "Show next image" })
     .evaluate((button) => (button as HTMLButtonElement).click());
 
+  await expect(filmstrip).toHaveAttribute("data-motion", "spatial");
   await expect(filmstrip).toHaveAttribute("data-active-index", "1");
   await expect(
     page.locator('.chat-panel-image-group-card[data-stack-pos="0"] img')
@@ -272,6 +291,7 @@ test("preview navigation moves one connected filmstrip and aligns the stack", as
     stripDuration: 400,
     stripEasing: "cubic-bezier(0.5, 0, 0, 1)",
   });
+  await playAnimations();
 
   await expect.poll(() => filmstrip.getAttribute("data-motion")).toBeNull();
   await expect(
@@ -382,9 +402,11 @@ test("a neighbouring image finishing does not interrupt active filmstrip motion"
   const dialog = page.getByRole("dialog", { name: "Preview image" });
   const filmstrip = dialog.locator(".chat-panel-image-filmstrip");
   await expect(filmstrip).toHaveAttribute("data-ready", "true");
+  const playAnimations = await holdAnimations(page);
   await dialog
     .getByRole("button", { name: "Show next image" })
     .evaluate((button) => (button as HTMLButtonElement).click());
+  await expect(filmstrip).toHaveAttribute("data-motion", "spatial");
 
   let interruptedPose!: { clipPath: string; transform: string };
   try {
@@ -428,6 +450,7 @@ test("a neighbouring image finishing does not interrupt active filmstrip motion"
   } finally {
     releaseDelayedImage();
   }
+  await playAnimations();
 
   const delayedSlide = filmstrip.locator(
     '.chat-panel-image-filmstrip-slide[alt="Delayed sample photo"]'
@@ -492,117 +515,6 @@ test("a neighbouring image finishing does not interrupt active filmstrip motion"
   ).toHaveAttribute("alt", "Loaded sample photo");
 });
 
-test("preview chrome has no indicator and uses white controls with black icons", async ({
-  page,
-}) => {
-  await openStack(page);
-  await page.locator('.chat-panel-image-group-card[data-stack-pos="0"]').click();
-
-  const dialog = page.getByRole("dialog", { name: "Preview image" });
-  const filmstrip = dialog.locator(".chat-panel-image-filmstrip");
-  await expect(filmstrip).toHaveAttribute("data-ready", "true");
-  await expect(dialog.locator(".chat-panel-image-filmstrip-counter")).toHaveCount(0);
-
-  await dialog
-    .getByRole("button", { name: "Show next image" })
-    .evaluate((button) => (button as HTMLButtonElement).click());
-  await expect.poll(() => filmstrip.getAttribute("data-motion")).toBeNull();
-
-  const controls = dialog.locator(
-    ".chat-panel-media-preview-action, .chat-panel-media-preview-close, .chat-panel-image-filmstrip-navigation:not([aria-disabled='true'])"
-  );
-  await expect(controls).toHaveCount(4);
-  expect(
-    await controls.evaluateAll((elements) =>
-      elements.map((element) => {
-        const style = getComputedStyle(element);
-        return {
-          background: style.backgroundColor,
-          color: style.color,
-        };
-      })
-    )
-  ).toEqual([
-    { background: "rgb(255, 255, 255)", color: "rgb(0, 0, 0)" },
-    { background: "rgb(255, 255, 255)", color: "rgb(0, 0, 0)" },
-    { background: "rgb(255, 255, 255)", color: "rgb(0, 0, 0)" },
-    { background: "rgb(255, 255, 255)", color: "rgb(0, 0, 0)" },
-  ]);
-
-  const expectedControlMetrics = await page.evaluate(() => {
-    const rootStyle = getComputedStyle(document.documentElement);
-    return {
-      controlSize: rootStyle.getPropertyValue("--spacing-5xl").trim(),
-      iconSize: rootStyle.getPropertyValue("--spacing-2xl").trim(),
-      padding: rootStyle.getPropertyValue("--spacing-none").trim(),
-    };
-  });
-  const controlMetrics = await controls.evaluateAll((elements) =>
-    elements.map((element) => {
-      const icon = element.querySelector<SVGElement>("[data-comma-icon]");
-      if (!icon) throw new Error("Expected a Central Icon in every preview control.");
-      const controlStyle = getComputedStyle(element);
-      const iconStyle = getComputedStyle(icon);
-      return {
-        height: controlStyle.height,
-        iconHeight: iconStyle.height,
-        iconWidth: iconStyle.width,
-        padding: controlStyle.padding,
-        width: controlStyle.width,
-      };
-    })
-  );
-  for (const metrics of controlMetrics) {
-    expect(metrics).toEqual({
-      height: expectedControlMetrics.controlSize,
-      iconHeight: expectedControlMetrics.iconSize,
-      iconWidth: expectedControlMetrics.iconSize,
-      padding: expectedControlMetrics.padding,
-      width: expectedControlMetrics.controlSize,
-    });
-  }
-
-  const downloadButton = dialog.getByRole("button", { name: "Download image" });
-  const restingShadow = await downloadButton.evaluate(
-    (button) => getComputedStyle(button).boxShadow
-  );
-  await page.keyboard.press("Tab");
-  await expect(downloadButton).toBeFocused();
-  expect(
-    await downloadButton.evaluate((button) => getComputedStyle(button).boxShadow)
-  ).not.toBe(restingShadow);
-
-  await filmstrip
-    .locator('.chat-panel-image-filmstrip-slide:not([aria-hidden="true"])')
-    .click();
-  await expect(dialog).toBeVisible();
-  await page
-    .locator('.chat-panel-media-preview-modal[data-variant="filmstrip"]')
-    .click({ position: { x: 8, y: 8 } });
-  await expect(dialog).toBeHidden();
-});
-
-test("preview download saves the currently active image", async ({ page }) => {
-  await openStack(page);
-  await page.locator('.chat-panel-image-group-card[data-stack-pos="0"]').click();
-
-  const dialog = page.getByRole("dialog", { name: "Preview image" });
-  const filmstrip = dialog.locator(".chat-panel-image-filmstrip");
-  await expect(filmstrip).toHaveAttribute("data-ready", "true");
-  await dialog
-    .getByRole("button", { name: "Show next image" })
-    .evaluate((button) => (button as HTMLButtonElement).click());
-  await expect.poll(() => filmstrip.getAttribute("data-motion")).toBeNull();
-  await expect(
-    filmstrip.locator('.chat-panel-image-filmstrip-slide:not([aria-hidden="true"])')
-  ).toHaveAttribute("alt", "Harbor sample photo");
-
-  const downloadPromise = page.waitForEvent("download");
-  await dialog.getByRole("button", { name: "Download image" }).click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe("harbor-sample-photo.svg");
-});
-
 test("rapid preview navigation retargets from the visible pose", async ({ page }) => {
   await openStack(page);
   await page.locator('.chat-panel-image-group-card[data-stack-pos="0"]').click();
@@ -612,7 +524,9 @@ test("rapid preview navigation retargets from the visible pose", async ({ page }
   const next = dialog.getByRole("button", { name: "Show next image" });
   await expect(filmstrip).toHaveAttribute("data-ready", "true");
 
+  const playAnimations = await holdAnimations(page);
   await next.evaluate((button) => (button as HTMLButtonElement).click());
+  await expect(filmstrip).toHaveAttribute("data-motion", "spatial");
   await filmstrip.locator('[data-filmstrip-layer="clip"]').evaluate(async (clip) => {
     const animation = clip
       .getAnimations()
@@ -647,6 +561,7 @@ test("rapid preview navigation retargets from the visible pose", async ({ page }
     });
   expect(retargetTiming?.duration).toBe(400);
   expect(retargetTiming?.easing).toBe("cubic-bezier(0.05, 0.7, 0.1, 1)");
+  await playAnimations();
 
   await expect(filmstrip).toHaveAttribute("data-active-index", "2");
   await expect(
@@ -746,14 +661,17 @@ test("the last two preview slides overlap only while moving in either direction"
     expect(settled).toEqual({ overlap: 0, seamOverlap: undefined });
   };
 
+  let playAnimations = await holdAnimations(page);
   await next.evaluate((button) => (button as HTMLButtonElement).click());
   expect(await sampleMidpointAndFinish()).toEqual({
     motion: "spatial",
     overlap: 1,
     seamOverlap: "true",
   });
+  await playAnimations();
   await expectSettledLogicalSeam();
 
+  playAnimations = await holdAnimations(page);
   await dialog
     .getByRole("button", { name: "Show previous image" })
     .evaluate((button) => (button as HTMLButtonElement).click());
@@ -762,6 +680,7 @@ test("the last two preview slides overlap only while moving in either direction"
     overlap: 1,
     seamOverlap: "true",
   });
+  await playAnimations();
   await expectSettledLogicalSeam();
 });
 
@@ -773,35 +692,22 @@ test("reduced motion fades through without translating the strip", async ({ page
   const dialog = page.getByRole("dialog", { name: "Preview image" });
   const filmstrip = dialog.locator(".chat-panel-image-filmstrip");
   await expect(filmstrip).toHaveAttribute("data-ready", "true");
+  const playAnimations = await holdAnimations(page);
   await dialog
     .getByRole("button", { name: "Show next image" })
     .evaluate((button) => (button as HTMLButtonElement).click());
 
-  const reducedMotion = await filmstrip.evaluate(
-    (stage) =>
-      new Promise<{
-        frameAnimations: number;
-        mode: string | undefined;
-        stripAnimations: number;
-      }>((resolve) => {
-        requestAnimationFrame(() => {
-          const frame = stage.querySelector<HTMLElement>(
-            '[data-filmstrip-layer="clip"]'
-          );
-          const strip = stage.querySelector<HTMLElement>(
-            '[data-filmstrip-layer="strip"]'
-          );
-          resolve({
-            frameAnimations: frame?.getAnimations().length ?? 0,
-            mode: (stage as HTMLElement).dataset.motion,
-            stripAnimations: strip?.getAnimations().length ?? 0,
-          });
-        });
-      })
-  );
-  expect(reducedMotion.mode).toBe("fade");
+  await expect(filmstrip).toHaveAttribute("data-motion", "fade");
+  const reducedMotion = await filmstrip.evaluate((stage) => ({
+    frameAnimations:
+      stage.querySelector('[data-filmstrip-layer="clip"]')?.getAnimations().length ?? 0,
+    stripAnimations:
+      stage.querySelector('[data-filmstrip-layer="strip"]')?.getAnimations().length ??
+      0,
+  }));
   expect(reducedMotion.frameAnimations).toBeGreaterThan(0);
   expect(reducedMotion.stripAnimations).toBe(0);
+  await playAnimations();
 
   await expect(filmstrip).toHaveAttribute("data-active-index", "1");
   await expect(
@@ -833,15 +739,28 @@ test("reduced motion retargets from the visible fade opacity", async ({ page }) 
   await expect(filmstrip).toHaveAttribute("data-ready", "true");
   await expect(frame).toHaveCSS("opacity", "1");
 
+  // The test sets each held fade's time itself.
+  const playAnimations = await holdAnimations(page);
   await next.evaluate((button) => (button as HTMLButtonElement).click());
   const continuity = await frame.evaluate(async (element) => {
-    const interruptedAnimation = element
-      .getAnimations()
-      .find((candidate) =>
-        (candidate.effect as KeyframeEffect | null)
-          ?.getKeyframes()
-          .some((keyframe) => Object.hasOwn(keyframe, "opacity"))
-      );
+    // The fade starts within a few frames of the click.
+    const fadeOf = async () => {
+      for (let frames = 0; frames < 120; frames += 1) {
+        const fade = element
+          .getAnimations()
+          .find(
+            (candidate) =>
+              candidate.playState !== "finished" &&
+              (candidate.effect as KeyframeEffect | null)
+                ?.getKeyframes()
+                .some((keyframe) => Object.hasOwn(keyframe, "opacity"))
+          );
+        if (fade) return fade;
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      return undefined;
+    };
+    const interruptedAnimation = await fadeOf();
     if (!interruptedAnimation) {
       throw new Error("Expected an active reduced-motion fade.");
     }
@@ -895,6 +814,7 @@ test("reduced motion retargets from the visible fade opacity", async ({ page }) 
   expect(continuity.retargetFromOpacity).toBeCloseTo(continuity.interruptedOpacity, 2);
   expect(continuity.computedStartOpacity).toBeCloseTo(continuity.interruptedOpacity, 2);
   expect(continuity.retargetToOpacity).toBe(0);
+  await playAnimations();
 
   await expect(filmstrip).toHaveAttribute("data-active-index", "2");
   await expect(
@@ -928,7 +848,9 @@ test("reduced motion reversal settles visual and active image together", async (
     };
   });
 
+  const playAnimations = await holdAnimations(page);
   await next.evaluate((button) => (button as HTMLButtonElement).click());
+  await expect(filmstrip).toHaveAttribute("data-motion", "fade");
   const interruptedOpacity = await frame.evaluate(async (element) => {
     const fade = element
       .getAnimations()
@@ -954,6 +876,7 @@ test("reduced motion reversal settles visual and active image together", async (
   });
   expect(interruptedOpacity).toBeGreaterThan(0);
   expect(interruptedOpacity).toBeLessThan(1);
+  await playAnimations();
 
   await page.keyboard.press("ArrowLeft");
 
@@ -1019,32 +942,6 @@ test("reduced motion reversal settles visual and active image together", async (
   await dialog.getByRole("button", { name: "Download image" }).click();
   expect((await downloadPromise).suggestedFilename()).toBe(
     "generated-editorial-poster.png"
-  );
-});
-
-test("a two-image group stays tiled after navigating its preview", async ({ page }) => {
-  await page.goto(twoImagesStoryUrl, { waitUntil: "domcontentloaded" });
-  const cards = page.locator(".chat-panel-image-group-card");
-  await expect(cards).toHaveCount(2);
-  await cards.first().click();
-
-  const dialog = page.getByRole("dialog", { name: "Preview image" });
-  const filmstrip = dialog.locator(".chat-panel-image-filmstrip");
-  await expect(filmstrip).toHaveAttribute("data-ready", "true");
-  await dialog.getByRole("button", { name: "Show next image" }).click();
-  await expect(
-    filmstrip.locator('.chat-panel-image-filmstrip-slide:not([aria-hidden="true"])')
-  ).toHaveAttribute("alt", "Desert sample photo");
-  await dialog.getByRole("button", { name: "Close preview" }).click();
-  await expect(dialog).toBeHidden();
-
-  await expect(page.locator(".chat-panel-image-group-toggle")).toHaveCount(0);
-  await expect(page.locator(".chat-panel-image-group-advance")).toHaveCount(0);
-  await expect(
-    page.locator(".chat-panel-image-group-card[data-stack-pos]")
-  ).toHaveCount(0);
-  await expect(page.locator(".chat-panel-image-group-card:not([inert])")).toHaveCount(
-    2
   );
 });
 

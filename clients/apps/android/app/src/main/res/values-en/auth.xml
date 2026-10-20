@@ -1,0 +1,63 @@
+<resources>
+    <string name="auth_welcome_title">Welcome to Comma</string>
+    <string name="auth_welcome_subtitle">Work anywhere with your agents</string>
+    <string name="auth_email">Email</string>
+    <string name="auth_email_placeholder">Your email address</string>
+    <string name="auth_continue_email">Continue with email</string>
+    <string name="auth_check_email_title">Check your email</string>
+    <string name="auth_code_sent_to">Enter the code sent to</string>
+    <string name="auth_change">Edit</string>
+    <string name="auth_change_email">Use a different email</string>
+    <string name="auth_code">6-digit verification code</string>
+    <string name="auth_code_not_received">Didn’t receive the code?</string>
+    <string name="auth_resend">Resend</string>
+    <plurals name="auth_resend_countdown">
+        <item quantity="one">Resend in %1$ds</item>
+        <item quantity="other">Resend in %1$ds</item>
+    </plurals>
+    <plurals name="auth_resend_seconds">
+        <item quantity="one">Resend in %1$d second</item>
+        <item quantity="other">Resend in %1$d seconds</item>
+    </plurals>
+    <plurals name="auth_retry_seconds">
+        <item quantity="one">Retry in %1$d second</item>
+        <item quantity="other">Retry in %1$d seconds</item>
+    </plurals>
+    <string name="auth_login">Sign in</string>
+    <string name="auth_busy">Please wait</string>
+    <string name="auth_switch_account">Switch account</string>
+    <string name="auth_logout">Sign out</string>
+    <string name="auth_retry">Retry</string>
+    <string name="auth_connecting_title">Connecting</string>
+    <string name="auth_checking">Checking your session…</string>
+    <string name="auth_connecting">Connecting to your workspace…</string>
+    <string name="auth_provisioning">Preparing your workspace…</string>
+    <string name="auth_connected">Connected to %1$s</string>
+    <string name="auth_connected_description">Your workspace is ready.</string>
+    <string name="auth_main_chat">Main chat id: %1$s</string>
+    <string name="auth_unconfigured_title">Sign-in unavailable</string>
+    <string name="auth_unconfigured">The server address has not been configured.</string>
+    <string name="auth_retry_title">Can’t connect right now</string>
+    <string name="auth_storage_title">Can’t read your session</string>
+    <string name="auth_network_error">Check your network connection and try again.</string>
+    <string name="auth_service_unavailable">The service is temporarily unavailable. Please try again later.</string>
+    <string name="auth_rate_limited">Too many requests. Wait for the countdown to finish.</string>
+    <string name="auth_invalid_code">The code is incorrect or has expired. Try again or request a new code.</string>
+    <string name="auth_server_error">Unable to finish connecting. Please try again.</string>
+    <string name="auth_storage_error">Unable to read or save your session. Retry, or switch accounts to sign in again.</string>
+    <string name="auth_no_workspace">No workspace is available yet. Please try again later.</string>
+    <string name="auth_invalid_email">Enter a valid email address</string>
+    <!-- Google sign-in. The button text is the "Continue with Google" call to action from Google's branding guidelines. -->
+    <string name="auth_continue_google">Continue with Google</string>
+    <string name="auth_google_busy">Signing in with Google</string>
+    <string name="auth_or">or</string>
+    <string name="auth_google_link_sent_to">To link your Google account, enter the code sent to</string>
+    <string name="auth_back">Back</string>
+    <string name="auth_back_to_sign_in">Back to sign-in options</string>
+    <string name="auth_account_disabled">This account has been disabled.</string>
+    <string name="auth_google_not_configured">Google sign-in isn\'t available yet. Please continue with email for now.</string>
+    <string name="auth_google_no_account">There\'s no Google account on this device. Add one in Settings, or continue with email.</string>
+    <string name="auth_google_unavailable">Google sign-in needs Google Play services, which this device doesn\'t have. Continue with email instead.</string>
+    <string name="auth_google_rejected">Couldn\'t verify your Google account. Try again, or continue with email.</string>
+    <string name="auth_google_conflict">This Google account can\'t be used to sign in. Continue with email instead.</string>
+</resources>

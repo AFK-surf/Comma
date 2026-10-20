@@ -3,8 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  defaultSideChatDebugSettings,
-  defaultSideChatShortcut,
   onboardingHandoffEvent,
   onboardingWindowChangedEvent,
   type NativeCommandResult,
@@ -27,7 +25,6 @@ import {
   registerNativeBridgeHandlersFromContext,
   type ElectronMainRuntimeDeps,
 } from "../modules/electron-main.module";
-import { openTestLocalDataRepository } from "./support/test-local-data-repository";
 
 type Handler = (
   event: unknown,
@@ -59,6 +56,7 @@ describe("Electron onboarding window surface isolation", () => {
     const context = await createTestContext({
       ipcMain: {
         handle: (channel, handler) => handlers.set(channel, handler as Handler),
+        removeHandler: (channel) => handlers.delete(channel),
       },
       onboardingWindow,
       openExternalUrl,
@@ -67,9 +65,9 @@ describe("Electron onboarding window surface isolation", () => {
       sender: { id: 401 },
       senderFrame: { url: "assets://./#/onboarding" },
     };
-    const sideChat = {
-      sender: { id: 402 },
-      senderFrame: { url: "assets://./#/side-chat" },
+    const meetingRecorder = {
+      sender: { id: 405 },
+      senderFrame: { url: "assets://./#/meeting-recorder" },
     };
     const main = { sender: { id: 403 }, senderFrame: { url: "assets://./#/" } };
     const invoke = (channel: string, event: unknown, input?: unknown) => {
@@ -82,9 +80,7 @@ describe("Electron onboarding window surface isolation", () => {
     try {
       for (const [id, role, webContentsId] of [
         ["win_onboarding", "onboarding-window", 401],
-        ["win_side_chat", "side-chat-window", 402],
         ["win_main", "main-window", 403],
-        ["win_side_chat_test", "side-chat-test-window", 404],
         ["win_meeting_recorder", "meeting-recorder-window", 405],
       ] as const) {
         context.webContentsRegistry.registerWindow({
@@ -117,21 +113,17 @@ describe("Electron onboarding window surface isolation", () => {
       ).resolves.toMatchObject({ ok: true });
       expect(onboardingWindow.closeWindow).toHaveBeenCalledExactlyOnceWith({});
 
-      // Main records its completion; opening a URL grants no model account
-      // authorization, which shares no permission with it.
+      // Main records its completion; the onboarding window may do nothing else.
       for (const [channel, input] of [
         [
           "comma:app-preferences:update",
           { clientSettings: { onboardingCompletedUserIds: ["usr_1"] } },
         ],
         ["comma:app-preferences:initialize-client-settings", undefined],
-        ["comma:tokendance-authorization:save", undefined],
-        ["comma:subscription-authorization:start", undefined],
         ["comma:onboarding:present-window", undefined],
-        ["comma:session:sign-out", undefined],
         ["comma:windows:create", { route: "/" }],
         ["comma:clipboard:read-text", undefined],
-        ["comma:chat:state", undefined],
+        ["comma:chat:pick-attachments", undefined],
       ] as const) {
         await expect(invoke(channel, onboarding, input)).resolves.toEqual(forbidden);
       }
@@ -139,13 +131,13 @@ describe("Electron onboarding window surface isolation", () => {
         "comma:onboarding:present-window",
         "comma:onboarding:close-window",
       ]) {
-        await expect(invoke(channel, sideChat)).resolves.toEqual(forbidden);
+        await expect(invoke(channel, meetingRecorder)).resolves.toEqual(forbidden);
       }
 
       // The main window stands its product down while the window is open.
       // Every window that shows the Router's name reads the name again once
       // it closes; only the main window's Home takes the hand-off.
-      for (const event of [main, sideChat, onboarding]) {
+      for (const event of [main, onboarding]) {
         await expect(invoke("comma:onboarding:window", event)).resolves.toEqual({
           ok: true,
           value: { open: true },
@@ -156,8 +148,6 @@ describe("Electron onboarding window surface isolation", () => {
       expect(delivered.get(onboardingWindowChangedEvent.channel)?.toSorted()).toEqual([
         "win_main",
         "win_onboarding",
-        "win_side_chat",
-        "win_side_chat_test",
       ]);
       expect(delivered.get(onboardingHandoffEvent.channel)).toEqual(["win_main"]);
 
@@ -200,12 +190,9 @@ function createTestContext(overrides: Partial<ElectronMainRuntimeDeps> = {}) {
     authApiBaseUrl: "https://salix.test",
     devServerUrl: undefined,
     getOperatingSystem: () => "macos",
-    ipcMain: { handle: vi.fn() },
+    ipcMain: { handle: vi.fn(), removeHandler: vi.fn() },
     isDevelopment: false,
-    localDataDatabasePath: join(root, "comma.sqlite"),
-    localDataFileStorePath: join(root, "blobs"),
     localFileIndexRoot: join(root, "local-file-index"),
-    openLocalDataRepository: openTestLocalDataRepository,
     notch: {
       close: vi.fn(async () => ({ type: "ack", payload: { method: "close" } })),
       hide: vi.fn(async () => ({ type: "ack", payload: { method: "hide" } })),
@@ -228,21 +215,6 @@ function createTestContext(overrides: Partial<ElectronMainRuntimeDeps> = {}) {
     writeClipboardImage: vi.fn(() => true),
     writeClipboardText: vi.fn(),
     secureSessionFilePath: join(root, "secure-session.bin"),
-    sideChat: {
-      close: vi.fn(() => ({ revision: 0 })),
-      closeTestWindow: vi.fn(() => ({ revision: 0 })),
-      debugSettings: vi.fn(() => defaultSideChatDebugSettings),
-      finishInteractiveProgress: vi.fn(() => ({ revision: 0 })),
-      openSettings: vi.fn(() => ({ revision: 0 })),
-      openTestWindow: vi.fn(() => ({ revision: 0 })),
-      presentation: vi.fn(),
-      resetDebugSettings: vi.fn(() => defaultSideChatDebugSettings),
-      setContentSize: vi.fn(() => ({ revision: 0 })),
-      setInteractiveProgress: vi.fn(() => ({ revision: 0 })),
-      updateDebugSettings: vi.fn(() => defaultSideChatDebugSettings),
-      setEnabled: vi.fn(),
-      updateShortcut: vi.fn(() => defaultSideChatShortcut),
-    },
     windowAppearance: { setResolvedTheme: vi.fn((theme) => theme) },
     ...overrides,
   });

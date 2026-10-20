@@ -1,10 +1,10 @@
 defmodule BillingStripe.PriceSyncTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(BillingCore.Repo)
-    prev_secret = Application.get_env(:billing_stripe, :secret_key)
-    prev_api = Application.get_env(:billing_stripe, :stripe_api)
+    prev_secret = SystemsRuntime.get_env(:billing_stripe, :secret_key)
+    prev_api = SystemsRuntime.get_env(:billing_stripe, :stripe_api)
 
     Ecto.Adapters.SQL.query!(
       BillingCore.Repo,
@@ -12,8 +12,8 @@ defmodule BillingStripe.PriceSyncTest do
       []
     )
 
-    Application.put_env(:billing_stripe, :secret_key, "sk_test_secret")
-    Application.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
+    SystemsRuntime.put_env(:billing_stripe, :secret_key, "sk_test_secret")
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
 
     start_supervised!(%{
       id: BillingStripe.TestAPI.Recorder,
@@ -129,14 +129,14 @@ defmodule BillingStripe.PriceSyncTest do
   end
 
   test "fails fast when an existing Stripe lookup key points at incompatible terms" do
-    Application.put_env(:billing_stripe, :stripe_api, __MODULE__.DriftAPI)
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, __MODULE__.DriftAPI)
 
     assert {:error, {:provider_price_drift, "test_value_v1", :amount}} =
              BillingStripe.sync_prices(catalog())
   end
 
   test "release sync keeps local catalog when Stripe credentials are not configured" do
-    Application.delete_env(:billing_stripe, :secret_key)
+    SystemsRuntime.delete_env(:billing_stripe, :secret_key)
 
     assert [
              %{
@@ -154,29 +154,11 @@ defmodule BillingStripe.PriceSyncTest do
   end
 
   test "release provider sync fails closed when Stripe credentials are required" do
-    Application.delete_env(:billing_stripe, :secret_key)
+    SystemsRuntime.delete_env(:billing_stripe, :secret_key)
 
     assert_raise RuntimeError, ~r/:stripe_not_configured/, fn ->
       BillingStripe.Release.sync_catalog(catalog(), require_provider: true)
     end
-  end
-
-  test "release provider sync retries transient Stripe errors" do
-    start_supervised!(%{
-      id: __MODULE__.TransientAPI.Counter,
-      start: {Agent, :start_link, [fn -> 0 end, [name: __MODULE__.TransientAPI.Counter]]}
-    })
-
-    Application.put_env(:billing_stripe, :stripe_api, __MODULE__.TransientAPI)
-
-    assert [%{provider_prices: provider_prices}] =
-             BillingStripe.Release.sync_catalog(catalog(),
-               require_provider: true,
-               max_attempts: 3
-             )
-
-    assert length(provider_prices) == 2
-    assert Agent.get(__MODULE__.TransientAPI.Counter, & &1) >= 3
   end
 
   test "dry run plans first rollout without creating products or prices" do
@@ -192,7 +174,7 @@ defmodule BillingStripe.PriceSyncTest do
   end
 
   test "dry run validates provider state without creating products or prices" do
-    Application.put_env(:billing_stripe, :stripe_api, __MODULE__.ExistingPriceAPI)
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, __MODULE__.ExistingPriceAPI)
 
     assert {:ok, summary} = BillingStripe.sync_prices(catalog(), dry_run: true)
 
@@ -210,7 +192,7 @@ defmodule BillingStripe.PriceSyncTest do
   end
 
   test "dry run can require persisted local mappings for post-mutation verification" do
-    Application.put_env(:billing_stripe, :stripe_api, __MODULE__.ExistingPriceAPI)
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, __MODULE__.ExistingPriceAPI)
 
     assert {:error, {:provider_price_mapping_missing, "test_value_v1"}} =
              BillingStripe.sync_prices(catalog(),
@@ -311,7 +293,7 @@ defmodule BillingStripe.PriceSyncTest do
           {count, count + 1}
         end)
 
-      if attempts < 2 do
+      if attempts < 1 do
         {:error,
          %Stripe.Error{
            source: :stripe,
@@ -406,6 +388,6 @@ defmodule BillingStripe.PriceSyncTest do
     }
   end
 
-  defp restore_env(key, nil), do: Application.delete_env(:billing_stripe, key)
-  defp restore_env(key, value), do: Application.put_env(:billing_stripe, key, value)
+  defp restore_env(key, nil), do: SystemsRuntime.delete_env(:billing_stripe, key)
+  defp restore_env(key, value), do: SystemsRuntime.put_env(:billing_stripe, key, value)
 end

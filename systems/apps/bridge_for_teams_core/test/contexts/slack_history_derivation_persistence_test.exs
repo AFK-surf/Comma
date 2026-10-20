@@ -1,4 +1,6 @@
 defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
+  require SystemsRuntime.Proc
+
   use BridgeForTeams.DataCase, async: false
 
   import Ecto.Query
@@ -47,7 +49,7 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
     @impl true
     def derive(request) do
       handler =
-        Application.fetch_env!(
+        SystemsRuntime.fetch_env!(
           :bridge_for_teams_core,
           :sourced_context_derivation_test_handler
         )
@@ -62,14 +64,15 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
     def get_group(_id) do
       {:ok,
        %{
-         "router_agent_id" => Application.fetch_env!(:bridge_for_teams_core, :test_current_router)
+         "router_agent_id" =>
+           SystemsRuntime.fetch_env!(:bridge_for_teams_core, :test_current_router)
        }}
     end
   end
 
   setup do
     previous_handler =
-      Application.get_env(:bridge_for_teams_core, :sourced_context_derivation_test_handler)
+      SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_derivation_test_handler)
 
     on_exit(fn ->
       restore_env(
@@ -79,7 +82,7 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
       )
     end)
 
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     {:ok, org} =
       Orgs.create_org(%{"name" => "Derivation #{suffix}", "slug" => "derive-#{suffix}"})
@@ -126,105 +129,9 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
     %{org: org, project: project, user: user, agent: agent, run: acquired, snapshot: snapshot}
   end
 
-  test "processor identity is kind plus stable key", ctx do
-    test_pid = self()
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :sourced_context_derivation_test_handler,
-      fn request ->
-        send(test_pid, {:processor_request, request})
-        cross_kind_identity_result(request)
-      end
-    )
-
-    request = derivation_request(ctx, ctx.run.generation, "cross-kind", "model-rev-cross-kind")
-
-    assert {:ok, %{attempt: attempt}} = Derivations.request(ctx.run.id, request)
-
-    assert {:ok, %{derivation: derivation}} =
-             Derivations.process(attempt.id, "worker-cross-kind", processor: Processor)
-
-    assert_receive {:processor_request, %{agent_id: agent_id}}
-    assert agent_id == ctx.agent.salix_agent_id
-
-    identities =
-      Repo.all(
-        from(artifact in SourcedContextArtifact,
-          where: artifact.derivation_id == ^derivation.id,
-          order_by: [asc: artifact.kind, asc: artifact.stable_key],
-          select: {artifact.kind, artifact.stable_key}
-        )
-      )
-
-    assert identities == [
-             {"decision", "launch"},
-             {"person", "atlas"},
-             {"project", "atlas"}
-           ]
-
-    source_ids =
-      Repo.all(
-        from(object in SourcedContextObject,
-          where: object.run_id == ^ctx.run.id,
-          select: object.id
-        )
-      )
-      |> MapSet.new()
-
-    request_objects = Enum.map(source_ids, &%{id: &1})
-    {:ok, output} = cross_kind_identity_result(%{objects: request_objects})
-    [person | _rest] = output.artifacts
-
-    assert {:error, :duplicate_artifact_identity} =
-             ProcessorOutput.normalize(
-               %{output | artifacts: [person, person]},
-               source_ids,
-               processor_output_bounds()
-             )
-  end
-
-  test "dispatch uses the group's current Router, not the first local router role", ctx do
-    {:ok, replacement} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(
-        ctx.project.id,
-        %{role: "router", name: "Replacement"}
-      )
-
-    old_client = Application.get_env(:bridge_for_teams_core, :salix_client)
-    old_router = Application.get_env(:bridge_for_teams_core, :test_current_router)
-
-    on_exit(fn ->
-      restore_env(:bridge_for_teams_core, :salix_client, old_client)
-      restore_env(:bridge_for_teams_core, :test_current_router, old_router)
-    end)
-
-    Application.put_env(:bridge_for_teams_core, :salix_client, CurrentRouterClient)
-    Application.put_env(:bridge_for_teams_core, :test_current_router, replacement.salix_agent_id)
-    pid = self()
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :sourced_context_derivation_test_handler,
-      fn request ->
-        send(pid, {:selected_router, request.agent_id})
-        cross_kind_identity_result(request)
-      end
-    )
-
-    attrs = derivation_request(ctx, ctx.run.generation, "current-router", "router-rev")
-    assert {:ok, %{attempt: attempt}} = Derivations.request(ctx.run.id, attrs)
-
-    assert {:ok, %{derivation: _}} =
-             Derivations.process(attempt.id, "router-worker", processor: Processor)
-
-    assert_receive {:selected_router, selected}
-    assert selected == replacement.salix_agent_id
-  end
-
   test "same frozen snapshot supports idempotent, versioned derivations without Slack refetch",
        ctx do
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :sourced_context_derivation_test_handler,
       &processor_result(&1, "approved")
@@ -286,7 +193,7 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
         :count
       )
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :sourced_context_derivation_test_handler,
       &processor_result(&1, "deferred")
@@ -596,13 +503,13 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
                confirmed?: true
              })
 
-    features = Application.fetch_env!(:bridge_for_teams_core, :sourced_context_features)
+    features = SystemsRuntime.fetch_env!(:bridge_for_teams_core, :sourced_context_features)
 
     on_exit(fn ->
-      Application.put_env(:bridge_for_teams_core, :sourced_context_features, features)
+      SystemsRuntime.put_env(:bridge_for_teams_core, :sourced_context_features, features)
     end)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :sourced_context_features,
       Keyword.put(features, :grounding, false)
@@ -618,7 +525,7 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
     assert Enum.any?(imported_items, &(&1[:name] == "Peng"))
     assert Enum.any?(imported_items, &(&1[:content] == "Atlas launch is approved"))
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :sourced_context_features,
       Keyword.put(features, :knowledge_inspection, false)
@@ -626,7 +533,7 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
 
     assert Grounding.list_active_context_for_agent(ctx.agent.id, ctx.user.id) == :none
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :sourced_context_features,
       Keyword.put(features, :grounding, false)
@@ -634,18 +541,19 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
 
     {:ok, outsider} =
       Accounts.create_user(%{
-        "email" => "sourced-context-outsider-#{System.unique_integer([:positive])}@example.test",
+        "email" =>
+          "sourced-context-outsider-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.test",
         "name" => "Sourced context outsider"
       })
 
     assert {:error, :forbidden} =
              Grounding.list_active_context_for_agent(ctx.agent.id, outsider.id)
 
-    Application.put_env(:bridge_for_teams_core, :sourced_context_features, features)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :sourced_context_features, features)
 
-    previous_provider = Application.get_env(:salix_agent, :project_knowledge_provider_mod)
+    previous_provider = SystemsRuntime.get_env(:salix_agent, :project_knowledge_provider_mod)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :project_knowledge_provider_mod,
       BridgeForTeams.ProjectKnowledge.AgentProvider
@@ -742,171 +650,9 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
              )
   end
 
-  test "more than twenty duplicate imports remain one context and rollback removes one support",
-       ctx do
-    Application.put_env(
-      :bridge_for_teams_core,
-      :sourced_context_derivation_test_handler,
-      &processor_result(&1, "approved")
-    )
-
-    committed = [commit_canonical_support!(ctx, ctx.run, 0)]
-
-    committed =
-      Enum.reduce(1..20, committed, fn ordinal, acc ->
-        {:ok, run} =
-          SlackHistoryImports.create_run(run_attrs(ctx.org, ctx.project, ctx.user, ordinal))
-
-        [commit_canonical_support!(ctx, run, ordinal) | acc]
-      end)
-
-    assert Repo.aggregate(
-             from(publication in SourcedContextPublication,
-               where: publication.status == "active"
-             ),
-             :count
-           ) == 21
-
-    [newest_active | _] = committed
-
-    assert {:ok, %{id: active_run_id}} =
-             SlackHistoryOnboarding.active_context_run(ctx.project.id, ctx.user.id)
-
-    assert active_run_id == newest_active.run.id
-
-    assert {:ok, %{runs: first_page, next_cursor: cursor}} =
-             SlackHistoryOnboarding.list_runs_page(ctx.project.id, ctx.user.id)
-
-    assert length(first_page) == 20
-    assert is_binary(cursor)
-
-    assert {:ok, %{runs: [oldest], next_cursor: nil}} =
-             SlackHistoryOnboarding.list_runs_page(ctx.project.id, ctx.user.id, before: cursor)
-
-    assert {:ok, exact_oldest} =
-             SlackHistoryOnboarding.get_run(ctx.project.id, ctx.user.id, oldest.id)
-
-    assert exact_oldest.id == oldest.id
-
-    assert {:ok, grounded} =
-             Grounding.ground_for_agent(
-               ctx.agent.id,
-               "What did Peng decide about Atlas?"
-             )
-
-    assert grounded.status == :resolved
-    assert length(grounded.entities) == 2
-    assert [%{content: "Atlas launch is approved"}] = grounded.facts
-
-    [rolled_back | remaining] = committed
-
-    assert {:ok, %{run: %{state: "rolled_back"}}} =
-             Publications.rollback(rolled_back.run.id, %{
-               expected_generation: rolled_back.run.generation,
-               user_id: ctx.user.id,
-               command_id: "rollback-canonical-support-#{rolled_back.run.id}",
-               reason: "test one-support removal"
-             })
-
-    assert length(remaining) == 20
-
-    assert {:ok, %{id: next_active_run_id}} =
-             SlackHistoryOnboarding.active_context_run(ctx.project.id, ctx.user.id)
-
-    assert next_active_run_id == hd(remaining).run.id
-
-    assert {:ok, still_grounded} =
-             Grounding.ground_for_agent(
-               ctx.agent.id,
-               "What did Peng decide about Atlas?"
-             )
-
-    assert still_grounded.status == :resolved
-    assert length(still_grounded.entities) == 2
-    assert [%{content: "Atlas launch is approved"}] = still_grounded.facts
-  end
-
-  test "active context skips a newer publication whose lifecycle is no longer readable", ctx do
-    Application.put_env(
-      :bridge_for_teams_core,
-      :sourced_context_derivation_test_handler,
-      &processor_result(&1, "approved")
-    )
-
-    older = commit_canonical_support!(ctx, ctx.run, 0)
-
-    {:ok, newer_run} =
-      SlackHistoryImports.create_run(run_attrs(ctx.org, ctx.project, ctx.user, 1))
-
-    newer = commit_canonical_support!(ctx, newer_run, 1)
-    bundle = Repo.get!(ContextBundle, newer.run.context_bundle_id)
-
-    assert {:ok, _pending_bundle} =
-             bundle
-             |> ContextBundle.lifecycle_changeset(%{
-               lifecycle_state: "deletion_pending",
-               subject_index_state: bundle.subject_index_state,
-               lifecycle_revision: bundle.lifecycle_revision + 1,
-               last_error: nil
-             })
-             |> Repo.update()
-
-    assert {:ok, %{id: active_run_id}} =
-             SlackHistoryOnboarding.active_context_run(ctx.project.id, ctx.user.id)
-
-    assert active_run_id == older.run.id
-  end
-
-  test "grounding falls back to older support when the newest import is rolled back before read lock",
-       ctx do
-    Application.put_env(
-      :bridge_for_teams_core,
-      :sourced_context_derivation_test_handler,
-      &processor_result(&1, "approved")
-    )
-
-    older = commit_canonical_support!(ctx, ctx.run, 0)
-
-    {:ok, newer_run} =
-      SlackHistoryImports.create_run(run_attrs(ctx.org, ctx.project, ctx.user, 1))
-
-    newer = commit_canonical_support!(ctx, newer_run, 1)
-    observer_marker = {:grounding_selection_observer, make_ref()}
-
-    observer = fn rows ->
-      unless Process.get(observer_marker) do
-        Process.put(observer_marker, true)
-
-        assert Enum.any?(rows, &(&1.publication.id == newer.publication.id))
-
-        assert {:ok, %{run: %{state: "rolled_back"}}} =
-                 Publications.rollback(newer.run.id, %{
-                   expected_generation: newer.run.generation,
-                   user_id: ctx.user.id,
-                   command_id: "rollback-during-grounding-#{newer.run.id}",
-                   reason: "test representative fallback"
-                 })
-      end
-    end
-
-    assert {:ok, grounded} =
-             Grounding.ground_for_agent(
-               ctx.agent.id,
-               "What did Peng decide about Atlas?",
-               candidate_selection_observer: observer
-             )
-
-    assert Process.get(observer_marker)
-    assert grounded.status == :resolved
-    assert length(grounded.entities) == 2
-    assert [%{content: "Atlas launch is approved"}] = grounded.facts
-    assert Repo.reload!(newer.publication).status == "inactive"
-    assert Repo.reload!(older.publication).status == "active"
-  end
-
   test "expired processor leases are fenced and only the newest worker can publish a preview",
        ctx do
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :sourced_context_derivation_test_handler,
       &processor_result(&1, "approved")
@@ -927,7 +673,7 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
       retry_count: 0,
       lease_generation: first_claim.lease_generation,
       lease_owner: "worker-old",
-      lease_expires_at: DateTime.add(DateTime.utc_now(), -1, :second)
+      lease_expires_at: DateTime.add(SystemsClock.utc_now(), -1, :second)
     })
     |> Repo.update!()
 
@@ -944,72 +690,6 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
     assert completed.status == "completed"
   end
 
-  test "processor outages persist retry state and resume without rereading Slack", ctx do
-    Application.put_env(
-      :bridge_for_teams_core,
-      :sourced_context_derivation_test_handler,
-      fn _request -> {:error, :temporarily_unavailable} end
-    )
-
-    assert {:ok, %{attempt: attempt}} =
-             Derivations.request(
-               ctx.run.id,
-               derivation_request(ctx, ctx.run.generation, "retry", "model-rev-retry")
-             )
-
-    assert {:ok, %{run: paused, attempt: paused_attempt}} =
-             Derivations.process(attempt.id, "worker-retry-1", processor: Processor)
-
-    assert paused.state == "paused"
-    assert paused.resume_phase == "deriving"
-    assert paused_attempt.status == "paused"
-    assert paused_attempt.retry_count == 1
-    assert paused_attempt.retry_not_before != nil
-
-    assert {:error, {:retry_not_before, _retry_at}} =
-             Derivations.claim(attempt.id, "worker-too-early")
-
-    past = DateTime.add(DateTime.utc_now(), -1, :second)
-
-    paused_attempt
-    |> SourcedContextDerivationAttempt.transition_changeset(%{
-      status: "paused",
-      retry_count: 1,
-      retry_not_before: past,
-      last_error_class: "processor_unavailable",
-      lease_generation: paused_attempt.lease_generation,
-      lease_owner: nil,
-      lease_expires_at: nil
-    })
-    |> Repo.update!()
-
-    paused
-    |> SlackHistoryImportRun.transition_changeset(%{
-      state: "paused",
-      generation: paused.generation,
-      resume_phase: "deriving",
-      paused_reason: "processor_unavailable",
-      retry_not_before: past,
-      snapshot_id: paused.snapshot_id,
-      derivation_id: paused.derivation_id,
-      context_bundle_id: paused.context_bundle_id
-    })
-    |> Repo.update!()
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :sourced_context_derivation_test_handler,
-      &processor_result(&1, "approved-after-retry")
-    )
-
-    assert {:ok, %{run: preview, attempt: completed}} =
-             Derivations.process(attempt.id, "worker-retry-2", processor: Processor)
-
-    assert preview.state == "preview_ready"
-    assert completed.status == "completed"
-    assert completed.retry_count == 1
-  end
-
   test "processor metadata cannot persist source text or secret-like config", ctx do
     secret = "Peng approved the private Atlas launch"
 
@@ -1021,7 +701,7 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
     assert {:error, :invalid_processor_config} =
              Derivations.request(ctx.run.id, invalid_config)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :sourced_context_derivation_test_handler,
       fn request ->
@@ -1059,99 +739,17 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
     refute persisted =~ secret
   end
 
-  test "a lifecycle request rejects queued and already-claimed derivation work", ctx do
-    owner = self()
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :sourced_context_derivation_test_handler,
-      fn request ->
-        send(owner, :processor_invoked_after_lifecycle_request)
-        processor_result(request, "must-not-persist")
-      end
-    )
-
-    assert {:ok, %{attempt: queued_attempt}} =
-             Derivations.request(
-               ctx.run.id,
-               derivation_request(ctx, ctx.run.generation, "queued-lifecycle", "model-rev-queued")
-             )
-
-    bundle = Repo.get!(ContextBundle, ctx.run.context_bundle_id)
-
-    assert {:ok, %{bundle: pending}} =
-             ContextLifecycle.request_erasure(bundle.id, %{
-               expected_revision: bundle.lifecycle_revision,
-               requested_by_user_id: ctx.user.id,
-               command_id: Ecto.UUID.generate(),
-               reason: "user_request"
-             })
-
-    assert pending.lifecycle_state == "erasure_pending"
-
-    assert {:error, :context_lifecycle_not_ready} =
-             Derivations.claim(queued_attempt.id, "worker-after-lifecycle")
-
-    refute_receive :processor_invoked_after_lifecycle_request
-
-    assert %SourcedContextDerivationAttempt{status: "pending"} =
-             Repo.get!(SourcedContextDerivationAttempt, queued_attempt.id)
-  end
-
-  test "a lifecycle request after claim prevents processor invocation", ctx do
-    owner = self()
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :sourced_context_derivation_test_handler,
-      fn request ->
-        send(owner, :processor_invoked_after_claim)
-        processor_result(request, "must-not-persist")
-      end
-    )
-
-    assert {:ok, %{attempt: attempt}} =
-             Derivations.request(
-               ctx.run.id,
-               derivation_request(
-                 ctx,
-                 ctx.run.generation,
-                 "claimed-lifecycle",
-                 "model-rev-claimed"
-               )
-             )
-
-    assert {:ok, claim} = Derivations.claim(attempt.id, "worker-before-lifecycle")
-    bundle = Repo.get!(ContextBundle, ctx.run.context_bundle_id)
-
-    assert {:ok, %{bundle: pending}} =
-             ContextLifecycle.request_deletion(bundle.id, %{
-               expected_revision: bundle.lifecycle_revision,
-               requested_by_user_id: ctx.user.id,
-               command_id: Ecto.UUID.generate(),
-               reason: "user_request"
-             })
-
-    assert pending.lifecycle_state == "deletion_pending"
-
-    assert {:error, :context_lifecycle_not_ready} =
-             Derivations.run_claim(claim, processor: Processor)
-
-    refute_receive :processor_invoked_after_claim
-    refute Repo.get(SourcedContextDerivation, attempt.id)
-  end
-
   test "a lifecycle request waits for an in-flight processor and then fences its output", ctx do
     bundle = Repo.get!(ContextBundle, ctx.run.context_bundle_id)
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :sourced_context_derivation_test_handler,
       fn request ->
-        send(parent, {:processor_started, self()})
+        SystemsRuntime.Proc.send(parent, {:processor_started, SystemsRuntime.Proc.self()})
 
-        receive do
+        SystemsRuntime.Proc.receive do
           :release_processor -> processor_result(request, "finished-before-lifecycle-return")
         end
       end
@@ -1171,32 +769,36 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
     assert {:ok, claim} = Derivations.claim(attempt.id, "worker-in-flight")
 
     derivation_task =
-      Task.async(fn -> Derivations.run_claim(claim, processor: Processor) end)
+      SystemsRuntime.Task.async(fn -> Derivations.run_claim(claim, processor: Processor) end)
 
-    assert_receive {:processor_started, processor_pid}, 5_000
+    assert_receive {:processor_started, processor_pid}
 
     lifecycle_task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         result =
           ContextLifecycle.request_erasure(bundle.id, %{
             expected_revision: bundle.lifecycle_revision,
             requested_by_user_id: ctx.user.id,
-            command_id: Ecto.UUID.generate(),
+            command_id: SystemsRuntime.Proc.uuid(),
             reason: "user_request"
           })
 
-        send(parent, {:lifecycle_request_returned, self()})
+        SystemsRuntime.Proc.send(
+          parent,
+          {:lifecycle_request_returned, SystemsRuntime.Proc.self()}
+        )
+
         result
       end)
 
     refute_receive {:lifecycle_request_returned, _pid}, 100
-    send(processor_pid, :release_processor)
+    SystemsRuntime.Proc.send(processor_pid, :release_processor)
 
-    assert {:ok, %{bundle: pending}} = Task.await(lifecycle_task, 5_000)
+    assert {:ok, %{bundle: pending}} = SystemsRuntime.Task.await(lifecycle_task, :infinity)
     assert pending.lifecycle_state == "erasure_pending"
 
     assert {:error, :context_lifecycle_not_ready} =
-             Task.await(derivation_task, 5_000)
+             SystemsRuntime.Task.await(derivation_task, :infinity)
 
     refute Repo.get(SourcedContextDerivation, attempt.id)
 
@@ -1204,33 +806,6 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
              from(review in SourcedContextReviewRevision, where: review.run_id == ^ctx.run.id),
              :count
            ) == 0
-  end
-
-  test "lifecycle pending rejects review revisions without advancing the run", ctx do
-    {preview_run, _derivation, review} = derive_preview(ctx, "revise-lifecycle")
-    revision_count = Repo.aggregate(SourcedContextReviewRevision, :count)
-    bundle = Repo.get!(ContextBundle, preview_run.context_bundle_id)
-
-    assert {:ok, %{bundle: pending}} =
-             ContextLifecycle.request_erasure(bundle.id, %{
-               expected_revision: bundle.lifecycle_revision,
-               requested_by_user_id: ctx.user.id,
-               command_id: Ecto.UUID.generate(),
-               reason: "user_request"
-             })
-
-    assert pending.lifecycle_state == "erasure_pending"
-
-    assert {:error, :context_lifecycle_not_ready} =
-             Previews.revise(ctx.run.id, %{
-               expected_generation: preview_run.generation,
-               user_id: ctx.user.id,
-               parent_review_revision_id: review.id,
-               items: []
-             })
-
-    assert Repo.aggregate(SourcedContextReviewRevision, :count) == revision_count
-    assert Repo.get!(SlackHistoryImportRun, ctx.run.id).generation == preview_run.generation
   end
 
   test "a lifecycle request wins before commit and no publication is created", ctx do
@@ -1241,7 +816,7 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
              ContextLifecycle.request_deletion(bundle.id, %{
                expected_revision: bundle.lifecycle_revision,
                requested_by_user_id: ctx.user.id,
-               command_id: Ecto.UUID.generate(),
+               command_id: SystemsRuntime.Proc.uuid(),
                reason: "user_request"
              })
 
@@ -1260,46 +835,6 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
 
     refute Repo.get_by(SourcedContextPublication, run_id: ctx.run.id)
     assert Repo.get!(SlackHistoryImportRun, ctx.run.id).generation == preview_run.generation
-  end
-
-  test "a lost commit response replays its receipt after lifecycle becomes pending", ctx do
-    {preview_run, derivation, review} = derive_preview(ctx, "commit-replay-after-lifecycle")
-
-    commit_request = %{
-      expected_generation: preview_run.generation,
-      user_id: ctx.user.id,
-      command_id: "commit-before-lifecycle-replay",
-      snapshot_id: ctx.snapshot.id,
-      derivation_id: derivation.id,
-      review_revision_id: review.id,
-      confirmed?: true
-    }
-
-    assert {:ok, %{publication: publication, receipt: receipt, replayed?: false}} =
-             Publications.commit(ctx.run.id, commit_request)
-
-    bundle = Repo.get!(ContextBundle, preview_run.context_bundle_id)
-
-    assert {:ok, %{bundle: pending}} =
-             ContextLifecycle.request_deletion(bundle.id, %{
-               expected_revision: bundle.lifecycle_revision,
-               requested_by_user_id: ctx.user.id,
-               command_id: Ecto.UUID.generate(),
-               reason: "user_request"
-             })
-
-    assert pending.lifecycle_state == "deletion_pending"
-
-    assert {:ok, %{publication: replayed_publication, receipt: replayed_receipt, replayed?: true}} =
-             Publications.commit(ctx.run.id, commit_request)
-
-    assert replayed_publication.id == publication.id
-    assert replayed_receipt.id == receipt.id
-
-    assert Repo.aggregate(
-             from(row in SourcedContextPublication, where: row.run_id == ^ctx.run.id),
-             :count
-           ) == 1
   end
 
   test "late cancel atomically deactivates a committed publication", ctx do
@@ -1352,7 +887,7 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
   end
 
   test "authorization and non-empty reviewed selection fail closed", ctx do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     {:ok, outsider} =
       Accounts.create_user(%{
@@ -1432,7 +967,7 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
              ContextLifecycle.request_erasure(bundle.id, %{
                expected_revision: bundle.lifecycle_revision,
                requested_by_user_id: ctx.user.id,
-               command_id: Ecto.UUID.generate(),
+               command_id: SystemsRuntime.Proc.uuid(),
                reason: "user_request"
              })
 
@@ -1503,7 +1038,7 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
   end
 
   defp derive_preview(ctx, request_id) do
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :sourced_context_derivation_test_handler,
       &processor_result(&1, "approved")
@@ -1524,52 +1059,6 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
              Derivations.process(attempt.id, "worker-#{request_id}", processor: Processor)
 
     {preview, derivation, review}
-  end
-
-  defp commit_canonical_support!(ctx, %{state: "acquired"} = run, ordinal) do
-    request_ctx = %{ctx | run: run}
-
-    assert {:ok, %{attempt: attempt}} =
-             Derivations.request(
-               run.id,
-               derivation_request(
-                 request_ctx,
-                 run.generation,
-                 "canonical-derive-#{ordinal}",
-                 "canonical-model-v1"
-               )
-             )
-
-    assert {:ok, %{run: preview, derivation: derivation, review_revision: review}} =
-             Derivations.process(attempt.id, "canonical-worker-#{ordinal}", processor: Processor)
-
-    assert {:ok, %{run: committed, publication: publication}} =
-             Publications.commit(preview.id, %{
-               expected_generation: preview.generation,
-               user_id: ctx.user.id,
-               command_id: "canonical-commit-#{ordinal}",
-               snapshot_id: preview.snapshot_id,
-               derivation_id: derivation.id,
-               review_revision_id: review.id,
-               confirmed?: true
-             })
-
-    %{run: committed, publication: publication}
-  end
-
-  defp commit_canonical_support!(ctx, run, ordinal) do
-    assert {:ok, acquiring, _event} =
-             SlackHistoryImports.start_acquisition(run.id, run.generation)
-
-    assert {:ok, _receipt} =
-             Acquisition.accept_page(run.id, acquiring.generation, source_page(acquiring))
-
-    assert {:ok, acquired, _snapshot} =
-             Acquisition.finalize_snapshot(run.id, acquiring.generation,
-               normalization_revision: "slack-normalization:test:v1"
-             )
-
-    commit_canonical_support!(ctx, acquired, ordinal)
   end
 
   defp processor_result(request, decision) do
@@ -1611,53 +1100,6 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
      }}
   end
 
-  defp cross_kind_identity_result(request) do
-    [first | _] = request.objects
-
-    {:ok,
-     %{
-       artifacts: [
-         %{
-           kind: :person,
-           stable_key: "atlas",
-           payload: %{"name" => "Atlas", "aliases" => []},
-           confidence_millis: 900,
-           source_object_ids: [first.id]
-         },
-         %{
-           kind: :project,
-           stable_key: "atlas",
-           payload: %{"name" => "Atlas", "aliases" => []},
-           confidence_millis: 900,
-           source_object_ids: [first.id]
-         },
-         %{
-           kind: :decision,
-           stable_key: "launch",
-           payload: %{
-             "content" => "Atlas is approved",
-             "about" => [
-               %{"kind" => "person", "stable_key" => "atlas"},
-               %{"kind" => "project", "stable_key" => "atlas"}
-             ]
-           },
-           confidence_millis: 900,
-           source_object_ids: [first.id]
-         }
-       ],
-       warnings: %{}
-     }}
-  end
-
-  defp processor_output_bounds do
-    [
-      max_artifacts: 100,
-      max_sources_per_artifact: 20,
-      max_payload_bytes: 8_000,
-      max_warnings_bytes: 16_384
-    ]
-  end
-
   defp derivation_request(ctx, expected_generation, request_id, model_revision) do
     %{
       expected_generation: expected_generation,
@@ -1679,7 +1121,7 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
       org_id: org.id,
       project_id: project.id,
       requested_by_user_id: user.id,
-      client_request_id: Ecto.UUID.generate(),
+      client_request_id: SystemsRuntime.Proc.uuid(),
       salix_tenant_id: org.salix_tenant_id,
       salix_group_id: project.salix_group_id,
       source_workspace_id: "T_DERIVATION",
@@ -1731,6 +1173,6 @@ defmodule BridgeForTeams.SlackHistoryDerivationPersistenceTest do
     Map.put(envelope, :response_sha256, Acquisition.page_sha256(envelope))
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

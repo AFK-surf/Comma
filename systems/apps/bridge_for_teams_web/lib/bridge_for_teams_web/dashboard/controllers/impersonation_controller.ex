@@ -125,7 +125,7 @@ defmodule BridgeForTeamsWeb.Dashboard.ImpersonationController do
 
   defp impersonator_org_slug do
     :bridge_for_teams_web
-    |> Application.get_env(:impersonator_org_slug)
+    |> SystemsRuntime.get_env(:impersonator_org_slug)
     |> case do
       slug when is_binary(slug) -> String.trim(slug)
       _ -> nil
@@ -237,7 +237,7 @@ defmodule BridgeForTeamsWeb.Dashboard.ImpersonationController do
   defp request_id do
     case Logger.metadata()[:request_id] do
       request_id when is_binary(request_id) and request_id != "" -> request_id
-      _ -> Ecto.UUID.generate()
+      _ -> SystemsRuntime.Proc.uuid()
     end
   end
 end

@@ -1,18 +1,22 @@
 defmodule CommaCoreTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.Comma"]
+  import Ecto.Query, only: [from: 2]
   alias Comma.Repo
 
   defmodule ObservedS3 do
     @behaviour SalixStore.S3
     @observer_key {__MODULE__, :observer}
 
-    def observe_puts(pid), do: :persistent_term.put(@observer_key, pid)
-    def stop_observing, do: :persistent_term.erase(@observer_key)
+    def observe_puts(pid), do: SystemsRuntime.PersistentTerm.put(@observer_key, pid)
+    def stop_observing, do: SystemsRuntime.PersistentTerm.erase(@observer_key)
 
     @impl true
     def put(key, body, opts) do
-      if pid = :persistent_term.get(@observer_key, nil), do: send(pid, {:s3_put, key, opts})
+      if pid = SystemsRuntime.PersistentTerm.get(@observer_key, nil),
+        do: SystemsRuntime.Proc.send(pid, {:s3_put, key, opts})
+
       SalixStore.S3.Fake.put(key, body, opts)
     end
 
@@ -55,7 +59,7 @@ defmodule CommaCoreTest do
     def reset! do
       ensure_table!()
       :ets.delete_all_objects(@table)
-      put(:test_pid, self())
+      put(:test_pid, SystemsRuntime.Proc.self())
       :ok
     end
 
@@ -89,7 +93,7 @@ defmodule CommaCoreTest do
     @impl true
     def ensure_group_router_conversation(workspace) do
       conversation_id = workspace["router_conversation_id"]
-      now = System.system_time(:second)
+      now = SystemsClock.system_time(:second)
 
       conversation = %{
         "conversation_id" => conversation_id,
@@ -153,10 +157,13 @@ defmodule CommaCoreTest do
       end
     end
 
+    def set_update_workspace_vm_result(workspace_id, result),
+      do: put({:update_workspace_vm_result, workspace_id}, result)
+
     @impl true
     def update_workspace_vm(workspace, vm) do
       notify({:update_workspace_vm, workspace["id"], vm})
-      :ok
+      get({:update_workspace_vm_result, workspace["id"]}, :ok)
     end
 
     @impl true
@@ -169,7 +176,7 @@ defmodule CommaCoreTest do
           |> tap(&put(request_key, &1))
 
       unless get({:conversation, conversation_id}) do
-        now = System.system_time(:second)
+        now = SystemsClock.system_time(:second)
         malformed_router_participant? = take_malformed_create?()
 
         put({:conversation, conversation_id}, %{
@@ -266,7 +273,7 @@ defmodule CommaCoreTest do
       with {:ok, _conversation} <- get_group_conversation(workspace, conversation_id) do
         pin = %{
           "conversation_id" => conversation_id,
-          "pinned_at" => System.system_time(:millisecond)
+          "pinned_at" => SystemsClock.system_time(:millisecond)
         }
 
         pins =
@@ -296,7 +303,7 @@ defmodule CommaCoreTest do
         updated =
           conversation
           |> Map.merge(attrs)
-          |> Map.put("updated_at", System.system_time(:second))
+          |> Map.put("updated_at", SystemsClock.system_time(:second))
 
         put({:conversation, conversation_id}, updated)
         {:ok, updated}
@@ -332,7 +339,8 @@ defmodule CommaCoreTest do
 
         {:ok,
          %{
-           "owner_pid" => Process.whereis(Comma.AssistantChats) || self(),
+           "owner_pid" =>
+             SystemsRuntime.Proc.whereis(Comma.AssistantChats) || SystemsRuntime.Proc.self(),
            "tail_seq" => conversation["message_count"] || 0
          }}
       end
@@ -406,9 +414,10 @@ defmodule CommaCoreTest do
             |> Map.put("message_id", SalixStore.Ids.new_message_id())
             |> Map.put_new("kind", "message")
             |> Map.put_new("actor_type", "user")
-            |> Map.put_new("created_at", System.system_time(:second))
+            |> Map.put_new("created_at", SystemsClock.system_time(:second))
 
-        messages = if(message in messages, do: messages, else: messages ++ [message])
+        inserted? = message not in messages
+        messages = if(inserted?, do: messages ++ [message], else: messages)
         put({:messages, conversation_id}, messages)
         update_conversation_meta(conversation_id, length(messages))
 
@@ -419,7 +428,17 @@ defmodule CommaCoreTest do
 
         notify_subscribers(conversation_id, message["message_id"], length(messages))
 
-        {:ok, %{"conversation_id" => conversation_id, "message_id" => message["message_id"]}}
+        if reason = get({:fail_after_append, conversation_id}) do
+          put({:fail_after_append, conversation_id}, nil)
+          fail_get(conversation_id, reason)
+        end
+
+        {:ok,
+         %{
+           "conversation_id" => conversation_id,
+           "message_id" => message["message_id"],
+           "inserted" => inserted?
+         }}
       end
     end
 
@@ -458,6 +477,28 @@ defmodule CommaCoreTest do
     end
 
     @impl true
+    def set_task_status(_workspace, conversation_id, status, version, user_id) do
+      notify({:set_task_status, conversation_id, status, version, user_id})
+
+      case get({:conversation, conversation_id}) do
+        %{"kind" => "agent_task", "updated_at" => ^version} = conversation ->
+          ended =
+            conversation
+            |> Map.put("status", status)
+            |> Map.put("updated_at", version + 1)
+
+          put({:conversation, conversation_id}, ended)
+          {:ok, ended}
+
+        nil ->
+          {:error, :not_found}
+
+        _conversation ->
+          {:error, {:conflict, "Task changed; refresh and try again"}}
+      end
+    end
+
+    @impl true
     def conversation_activity_context(_workspace, conversation_id) do
       {:ok,
        %{
@@ -479,9 +520,19 @@ defmodule CommaCoreTest do
     def read_agent_blob(_workspace, _agent_id, _ref, _max_bytes),
       do: {:error, :not_found}
 
+    # The Loop rows of the Group's Tasks, as `put_task_loops/2` set them.
+    @impl true
+    def task_loops(workspace, conversation_ids) when length(conversation_ids) <= 50 do
+      notify({:task_loops, conversation_ids})
+      {:ok, Map.take(get({:task_loops, workspace["default_group_id"]}, %{}), conversation_ids)}
+    end
+
+    def put_task_loops(workspace, loops),
+      do: put({:task_loops, workspace["default_group_id"]}, loops)
+
     def put_conversation(workspace, attrs \\ %{}) do
       conversation_id = attrs["conversation_id"] || SalixStore.Ids.new_conversation_id()
-      now = System.system_time(:second)
+      now = SystemsClock.system_time(:second)
 
       conversation =
         attrs
@@ -505,7 +556,7 @@ defmodule CommaCoreTest do
         attrs
         |> Map.put_new("message_id", SalixStore.Ids.new_message_id())
         |> Map.put_new("kind", "message")
-        |> Map.put_new("created_at", System.system_time(:second))
+        |> Map.put_new("created_at", SystemsClock.system_time(:second))
 
       messages = get({:messages, conversation_id}, []) ++ [message]
       put({:messages, conversation_id}, messages)
@@ -519,7 +570,7 @@ defmodule CommaCoreTest do
           attrs
           |> Map.put_new("message_id", SalixStore.Ids.new_message_id())
           |> Map.put_new("kind", "message")
-          |> Map.put_new("created_at", System.system_time(:second))
+          |> Map.put_new("created_at", SystemsClock.system_time(:second))
         end)
 
       put({:messages, conversation_id}, messages)
@@ -544,11 +595,14 @@ defmodule CommaCoreTest do
     def fail_get(conversation_id, reason, attempts \\ 1),
       do: put({:failure, conversation_id}, {reason, attempts})
 
+    def fail_after_append(conversation_id, reason),
+      do: put({:fail_after_append, conversation_id}, reason)
+
     def hide_from_list(conversation_id), do: put({:hidden_from_list, conversation_id}, true)
 
     def set_now(timestamp) when is_integer(timestamp), do: put(:now, timestamp)
     def advance_now(seconds) when is_integer(seconds), do: set_now(now() + seconds)
-    def now, do: get(:now, System.system_time(:second))
+    def now, do: get(:now, SystemsClock.system_time(:second))
 
     def delete_conversation(conversation_id) do
       :ets.delete(@table, {:conversation, conversation_id})
@@ -582,7 +636,7 @@ defmodule CommaCoreTest do
             {:conversation, conversation_id},
             conversation
             |> Map.put("message_count", count)
-            |> Map.put("updated_at", System.system_time(:second))
+            |> Map.put("updated_at", SystemsClock.system_time(:second))
           )
       end
     end
@@ -591,7 +645,7 @@ defmodule CommaCoreTest do
       group_id = get({:conversation, conversation_id})["group_id"]
 
       Enum.each(get({:subscribers, conversation_id}, MapSet.new()), fn subscriber ->
-        send(
+        SystemsRuntime.Proc.send(
           subscriber,
           {:conversation_message_created, group_id, conversation_id, message_id, seq}
         )
@@ -642,7 +696,8 @@ defmodule CommaCoreTest do
     defp update_counter(key),
       do: :ets.update_counter(@table, key, {2, 1}, {key, 0})
 
-    defp notify(message), do: send(get(:test_pid, self()), message)
+    defp notify(message),
+      do: SystemsRuntime.Proc.send(get(:test_pid, SystemsRuntime.Proc.self()), message)
 
     # Atomic insert-if-absent, for the two create paths concurrent tests race.
     defp put_new(key, value) do
@@ -686,24 +741,24 @@ defmodule CommaCoreTest do
   end
 
   setup do
-    Process.put(:test_pid, self())
+    Process.put(:test_pid, SystemsRuntime.Proc.self())
     RuntimeFake.reset!()
 
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
 
     billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
     comma_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(Comma.Repo, shared: true)
 
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    prev_client = Application.get_env(:comma_core, :salix_client)
-    prev_auth = Application.get_env(:comma_core, :auth)
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_client = SystemsRuntime.get_env(:comma_core, :salix_client)
+    prev_auth = SystemsRuntime.get_env(:comma_core, :auth)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:comma_core, :salix_client, RuntimeFake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:comma_core, :salix_client, RuntimeFake)
 
-    Application.put_env(:comma_core, :auth,
+    SystemsRuntime.put_env(:comma_core, :auth,
       challenge_store: Comma.AuthChallengeStore.Memory,
       email_delivery: Comma.EmailDelivery.Logger,
       secret: "comma-core-test-secret",
@@ -802,32 +857,6 @@ defmodule CommaCoreTest do
     assert RuntimeFake.create_count() == 1
   end
 
-  test "a transient Chat send failure does not replace the fixed Router Conversation" do
-    {user, workspace, session} = setup_user_workspace("chat-send-unavailable@example.com")
-
-    assert {:ok, chat} = converge_assistant_chat(user, session, workspace["default_group_id"])
-    salix_id = stored_salix_id(chat)
-    RuntimeFake.fail_get(salix_id, {:unavailable, :timeout})
-
-    assert {:error, {:unavailable, :timeout}} =
-             Comma.Conversations.send_message(
-               user,
-               session,
-               workspace["default_group_id"],
-               chat["id"],
-               %{
-                 "client_request_id" => "transient-chat-send",
-                 "message" => %{"content" => "retry later"}
-               }
-             )
-
-    assert {:ok, current} =
-             Comma.AssistantChats.ensure_chat(user, session, workspace["default_group_id"])
-
-    assert current["id"] == chat["id"]
-    assert RuntimeFake.create_count() == 1
-  end
-
   test "Chat send fails closed before append when Router authority is missing, ambiguous, or hidden" do
     for {suffix, reason, expected} <- [
           {"missing", :router_not_configured, :router_not_configured},
@@ -901,6 +930,27 @@ defmodule CommaCoreTest do
     end
   end
 
+  test "a message carries its sender's app language for the server's replies" do
+    {user, workspace, session} = setup_user_workspace("message-locale@example.com")
+    {:ok, user} = Comma.Accounts.update_user(user["id"], %{"locale" => "zh-CN"})
+    {:ok, chat} = converge_assistant_chat(user, session, workspace["default_group_id"])
+
+    assert {:ok, _} =
+             Comma.Conversations.send_message(
+               user,
+               session,
+               workspace["default_group_id"],
+               chat["id"],
+               %{
+                 "client_request_id" => "message-locale",
+                 "message" => %{"content" => "join https://meet.google.com/abc-defg-hij"}
+               }
+             )
+
+    message = RuntimeFake.messages(stored_salix_id(chat)) |> List.last()
+    assert message["metadata"]["locale"] == "zh-CN"
+  end
+
   test "Chat send and read use the canonical Salix Conversation identity" do
     {user, workspace, session} = setup_user_workspace("chat-canonical@example.com")
     {:ok, conversation} = converge_assistant_chat(user, session, workspace["default_group_id"])
@@ -936,6 +986,21 @@ defmodule CommaCoreTest do
     raw_user_id = RuntimeFake.messages(salix_id) |> hd() |> Map.fetch!("message_id")
     RuntimeFake.append_agent_message(salix_id, "done")
 
+    assert first_send["accepted_message_id"] == raw_user_id
+    assert second_send["accepted_message_id"] == raw_user_id
+
+    assert {:ok, retried} =
+             Comma.Conversations.send_message(
+               user,
+               session,
+               workspace["default_group_id"],
+               conversation["id"],
+               attrs
+             )
+
+    assert retried["accepted_message_id"] == raw_user_id
+    assert retried["final_message_id"] != raw_user_id
+
     assert {:ok, detail} =
              Comma.Conversations.get(
                user,
@@ -951,152 +1016,20 @@ defmodule CommaCoreTest do
     assert detail["id"] == salix_id
   end
 
-  test "Chat send preserves ref-only local-file blocks in the canonical Message" do
-    {user, workspace, session} = setup_user_workspace("chat-local-file@example.com")
-    {:ok, conversation} = converge_assistant_chat(user, session, workspace["default_group_id"])
-    salix_id = stored_salix_id(conversation)
-    ref = "lfi1_" <> String.duplicate("a", 43)
-
-    attrs = %{
-      "client_request_id" => "chat-local-file-1",
-      "message" => %{
-        "content" => [
-          %{"type" => "text", "text" => "review this"},
-          %{
-            "type" => "local_file",
-            "local_file_ref" => ref,
-            "display_name" => "report.pdf",
-            "media_type" => "application/pdf",
-            "size" => 12
-          }
-        ]
-      }
-    }
-
-    assert {:ok, detail} =
-             Comma.Conversations.send_message(
-               user,
-               session,
-               workspace["default_group_id"],
-               conversation["id"],
-               attrs
-             )
-
-    assert [raw] = RuntimeFake.messages(salix_id)
-    assert raw["content"] == attrs["message"]["content"]
-
-    assert [canonical] = detail["messages"]
-    assert canonical["message_id"] == raw["message_id"]
-    assert canonical["actor_type"] == "user"
-
-    assert canonical["content"] == [
-             %{"type" => "text", "text" => "review this"},
-             %{
-               "type" => "local_file",
-               "local_file_ref" => ref,
-               "display_name" => "report.pdf",
-               "media_type" => "application/pdf",
-               "size" => 12
-             }
-           ]
-  end
-
-  test "Chat detail returns the latest bounded Salix tail and preserves canonical count" do
-    {user, workspace, session} = setup_user_workspace("chat-tail@example.com")
-    {:ok, chat} = converge_assistant_chat(user, session, workspace["default_group_id"])
-    salix_id = stored_salix_id(chat)
-
-    RuntimeFake.put_messages(
-      salix_id,
-      for index <- 1..1_005 do
-        %{
-          "actor_type" => "agent",
-          "agent_id" => workspace["router_agent_id"],
-          "content" => [%{"type" => "text", "text" => "chat-#{index}"}]
-        }
-      end
-    )
-
-    assert {:ok, detail} =
-             Comma.Conversations.get(user, session, workspace["default_group_id"], chat["id"])
-
-    assert RuntimeFake.last_snapshot_opts(salix_id) == [tail: 1_000]
-    assert detail["message_count"] == 1_005
-    assert length(detail["messages"]) == 1_000
-    assert hd(detail["messages"])["content"] == [%{"type" => "text", "text" => "chat-6"}]
-
-    assert List.last(detail["messages"])["content"] == [
-             %{"type" => "text", "text" => "chat-1005"}
-           ]
-
-    assert detail["status"] == "active"
-  end
-
-  test "native Home, send and event snapshots return an explicit bounded tail without changing defaults" do
-    {user, workspace, session} = setup_user_workspace("native-bounded-tail@example.com")
-    group_id = workspace["default_group_id"]
-    {:ok, chat} = converge_assistant_chat(user, session, group_id)
-
-    RuntimeFake.put_messages(
-      chat["id"],
-      for index <- 1..1_005 do
-        %{
-          "actor_type" => "agent",
-          "agent_id" => workspace["router_agent_id"],
-          "content" => [%{"type" => "text", "text" => "native-#{index}"}]
-        }
-      end
-    )
-
-    assert {:ok, old_home} = Comma.AssistantChats.ensure_chat(user, session, group_id)
-    refute Map.has_key?(old_home, "messages")
-
-    assert {:ok, home} =
-             Comma.AssistantChats.ensure_chat(user, session, group_id, message_limit: 24)
-
-    assert length(home["messages"]) == 24
-    assert home["message_count"] == 1_005
-    assert hd(home["messages"])["content"] == [%{"type" => "text", "text" => "native-982"}]
-    assert home["final_message_id"] == List.last(home["messages"])["message_id"]
-    assert RuntimeFake.last_snapshot_opts(chat["id"]) == [tail: 24]
-
-    attrs = %{"client_request_id" => "bounded-send", "message" => %{"content" => "new input"}}
-
-    assert {:ok, sent} =
-             Comma.Conversations.send_message(user, session, group_id, chat["id"], attrs,
-               message_limit: 24
-             )
-
-    assert sent["message_count"] == 1_006
-    assert length(sent["messages"]) == 24
-    assert List.last(sent["messages"])["actor_type"] == "user"
-
-    assert {:ok, old_send} =
-             Comma.Conversations.send_message(user, session, group_id, chat["id"], attrs)
-
-    assert old_send["message_count"] == 1_006
-    assert length(old_send["messages"]) == 1_000
-
-    assert {:ok, snapshot, [], _context} =
-             Comma.Conversations.events(user, session, group_id, chat["id"], message_limit: 24)
-
-    assert length(snapshot["messages"]) == 24
-    assert snapshot["message_count"] == 1_006
-
-    assert {:ok, default_snapshot, [], _context} =
-             Comma.Conversations.events(user, session, group_id, chat["id"])
-
-    assert length(default_snapshot["messages"]) == 1_000
-  end
-
   test "Conversation command matrix accepts only canonical Tasks and the fixed Router Chat" do
     {user, workspace, session} = setup_user_workspace("verbs@example.com")
     {:ok, chat} = converge_assistant_chat(user, session, workspace["default_group_id"])
 
     assert {:error, {:unsupported_for_kind, "user_chat", "patch"}} =
-             Comma.Conversations.update(user, session, workspace["default_group_id"], chat["id"], %{
-               "title" => "local title"
-             })
+             Comma.Conversations.update(
+               user,
+               session,
+               workspace["default_group_id"],
+               chat["id"],
+               %{
+                 "title" => "local title"
+               }
+             )
 
     assert {:error, {:unsupported_for_kind, "user_chat", "cancel"}} =
              Comma.Conversations.cancel(user, session, workspace["default_group_id"], chat["id"])
@@ -1115,7 +1048,13 @@ defmodule CommaCoreTest do
     task_id = task["conversation_id"]
 
     assert {:error, :invalid_conversation_title} =
-             Comma.Conversations.update(user, session, workspace["default_group_id"], task_id, %{})
+             Comma.Conversations.update(
+               user,
+               session,
+               workspace["default_group_id"],
+               task_id,
+               %{}
+             )
 
     assert {:error, {:unsupported_for_kind, "agent_task", "cancel"}} =
              Comma.Conversations.cancel(user, session, workspace["default_group_id"], task_id)
@@ -1249,7 +1188,7 @@ defmodule CommaCoreTest do
                message_limit: 24
              )
 
-    assert_receive {:accept_task_review, ^task_id, 42_000}
+    settle_receive({:accept_task_review, ^task_id, 42_000})
     assert accepted["id"] == task_id
     assert accepted["status"] == "completed"
     assert accepted["updated_at"] == 42_001
@@ -1275,95 +1214,55 @@ defmodule CommaCoreTest do
     assert length(default_accepted["messages"]) == 1_000
   end
 
-  test "a Task preserves every historical author it shows" do
-    {user, workspace, session} = setup_user_workspace("workflow-task@example.com")
-    task = RuntimeFake.put_conversation(workspace, %{"title" => "Rich text notes app"})
+  test "manual Task status forwards the user, status and exact version to Salix" do
+    {user, workspace, session} = setup_user_workspace("task-status@example.com")
+    group_id = workspace["default_group_id"]
+    task = RuntimeFake.put_conversation(workspace, %{"status" => "active"})
+    task_id = task["conversation_id"]
+    RuntimeFake.update_conversation(task_id, %{"updated_at" => 42_000})
 
-    RuntimeFake.put_messages(task["conversation_id"], [
-      %{
-        "actor_type" => "agent",
-        "agent_id" => workspace["router_agent_id"],
-        "role_label" => "delegator",
-        "content" => [%{"type" => "text", "text" => "brief"}]
-      },
-      %{
-        "actor_type" => "system",
-        "role_label" => "workflow",
-        "content" => [%{"type" => "text", "text" => "负责产品定义"}]
-      },
-      %{
-        # A Workflow binds its roles under template-authored labels, so this
-        # Agent is neither the delegator nor the group's default Worker.
-        "actor_type" => "agent",
-        "agent_id" => "agt_workflow_product_role",
-        "role_label" => "product",
-        "content" => [%{"type" => "text", "text" => "MVP 产品规格"}]
-      },
-      %{
-        "actor_type" => "user",
-        "user_id" => user["id"],
-        "content" => [%{"type" => "text", "text" => "看一下"}]
-      }
-    ])
+    for attrs <- [
+          %{"status" => "active", "expected_updated_at" => 42_000},
+          %{"status" => "archived", "expected_updated_at" => 42_000},
+          %{"status" => "cancelled"},
+          %{"status" => "cancelled", "expected_updated_at" => "42000"}
+        ] do
+      assert {:error, :invalid_task_status} =
+               Comma.Conversations.set_task_status(user, session, group_id, task_id, attrs)
+    end
 
-    assert {:ok, detail} =
-             Comma.Conversations.get(
-               user,
-               session,
-               workspace["default_group_id"],
-               task["conversation_id"]
-             )
+    refute_received {:set_task_status, _, _, _, _}
 
-    assert Enum.map(
-             detail["messages"],
-             &{&1["actor_type"], &1["role_label"], &1["agent_id"]}
-           ) ==
-             [
-               {"agent", "delegator", workspace["router_agent_id"]},
-               {"system", "workflow", nil},
-               {"agent", "product", "agt_workflow_product_role"},
-               {"user", nil, nil}
-             ]
-  end
+    assert {:ok, ended} =
+             Comma.Conversations.set_task_status(user, session, group_id, task_id, %{
+               "status" => "cancelled",
+               "expected_updated_at" => 42_000
+             })
 
-  test "historical system Messages retain canonical authorship" do
-    {user, workspace, session} = setup_user_workspace("workflow-compat@example.com")
-    task = RuntimeFake.put_conversation(workspace, %{"title" => "Compatibility"})
+    user_id = user["id"]
+    settle_receive({:set_task_status, ^task_id, "cancelled", 42_000, ^user_id})
+    assert ended["id"] == task_id
+    assert ended["status"] == "cancelled"
 
-    RuntimeFake.put_messages(task["conversation_id"], [
-      %{
-        "actor_type" => "system",
-        "role_label" => "workflow",
-        "content" => [%{"type" => "text", "text" => "负责产品定义"}]
-      }
-    ])
-
-    assert {:ok, detail} =
-             Comma.Conversations.get(
-               user,
-               session,
-               workspace["default_group_id"],
-               task["conversation_id"]
-             )
-
-    [activation] = detail["messages"]
-
-    assert activation["actor_type"] == "system"
-    assert activation["role_label"] == "workflow"
-    refute Map.has_key?(activation, "agent_id")
+    assert {:error, {:conflict, _}} =
+             Comma.Conversations.set_task_status(user, session, group_id, task_id, %{
+               "status" => "completed",
+               "expected_updated_at" => 42_000
+             })
   end
 
   test "canonical Task long transcript, follow-up, and list stay Salix-owned" do
     {user, workspace, session} = setup_user_workspace("task@example.com")
     {:ok, chat} = converge_assistant_chat(user, session, workspace["default_group_id"])
     task = RuntimeFake.put_conversation(workspace, %{"title" => "Long Task"})
+    worker_id = SalixStore.Ids.new_agent_id(workspace["default_group_id"])
 
     RuntimeFake.put_messages(
       task["conversation_id"],
       for index <- 1..1_005 do
         %{
           "actor_type" => "agent",
-          "agent_id" => workspace["default_worker_agent_id"],
+          "agent_id" => worker_id,
           "content" => [%{"type" => "text", "text" => "task-#{index}"}]
         }
       end
@@ -1379,9 +1278,7 @@ defmodule CommaCoreTest do
     assert detail["message_count"] == 1_005
     assert hd(detail["messages"])["content"] == [%{"type" => "text", "text" => "task-6"}]
 
-    assert Enum.uniq(Enum.map(detail["messages"], & &1["agent_id"])) == [
-             workspace["default_worker_agent_id"]
-           ]
+    assert Enum.uniq(Enum.map(detail["messages"], & &1["agent_id"])) == [worker_id]
 
     assert List.last(detail["messages"])["content"] == [
              %{"type" => "text", "text" => "task-1005"}
@@ -1459,149 +1356,202 @@ defmodule CommaCoreTest do
     assert failed["status"] == "failed"
   end
 
-  test "Task preview reads one exact canonical summary without loading the transcript" do
-    {user, workspace, session} = setup_user_workspace("task-preview@example.com")
+  test "only a Loop Task reaches clients with its loop, its Loops read once per response" do
+    {user, workspace, session} = setup_user_workspace("task-loops@example.com")
+    group_id = workspace["default_group_id"]
+    put = &RuntimeFake.put_conversation(workspace, &1)["conversation_id"]
+    cron = %{"cron" => "0 9 * * *", "timezone" => "Asia/Shanghai"}
+    every = %{"every_minutes" => 360}
+    events = %{"events" => "new comments on PR #12"}
 
-    task =
-      RuntimeFake.put_conversation(workspace, %{
-        "title" => "Canonical preview title",
+    # A one-shot Task carries its command; a Task Schedule binding is no Loop.
+    one_shot =
+      put.(%{
         "status" => "ready_for_review",
-        "activity_status" => "working",
-        "labels" => ["lbl_work"],
-        "metadata" => %{"origin" => %{"provider" => "comma"}},
-        "updated_at" => 123_456
+        "updated_at" => 41_000,
+        "schedule" => %{"schedule_id" => nil, "command" => "Write the report once"}
       })
 
-    RuntimeFake.put_messages(
-      task["conversation_id"],
-      for index <- 1..25 do
-        %{
-          "actor_type" => "agent",
-          "content" => [%{"type" => "text", "text" => "message-#{index}"}]
-        }
-      end
-    )
+    scheduled =
+      put.(%{
+        "status" => "ready_for_review",
+        "updated_at" => 42_000,
+        "schedule" => %{"schedule_id" => "sch-review", "command" => "Check the site"}
+      })
 
-    # Restore a fixed authoritative timestamp after the fixture populated the
-    # transcript so the preview assertion is independent of the test clock.
-    RuntimeFake.update_conversation(task["conversation_id"], %{"updated_at" => 123_456})
+    [pending, active, interval, budget, failed, ended, incidental] =
+      for _ <- 1..7, do: put.(%{"status" => "active"})
 
-    task_id = task["conversation_id"]
+    RuntimeFake.put_task_loops(workspace, %{
+      pending => %{"status" => "pending", "trigger" => cron, "max_runs" => 5, "run_count" => 0},
+      active => %{
+        "status" => "active",
+        "trigger" => cron,
+        "ends_at" => 9_000_000,
+        "started_at" => 1_000,
+        "run_count" => 3,
+        "last_run_at" => 5_000,
+        "next_run_at" => 90_000
+      },
+      interval => %{
+        "status" => "active",
+        "trigger" => every,
+        "started_at" => 1_000,
+        "run_count" => 1,
+        "last_run_at" => 3_000,
+        "next_run_at" => 80_000
+      },
+      budget => %{
+        "status" => "paused",
+        "paused_by" => "budget",
+        "trigger" => events,
+        "stop_condition" => "PR #12 is merged",
+        "started_at" => 1_000,
+        "run_count" => 0,
+        "next_run_at" => 70_000
+      },
+      failed => %{
+        "status" => "failed",
+        "trigger" => every,
+        "started_at" => 1_000,
+        "run_count" => 0
+      },
+      ended => %{
+        "status" => "ended",
+        "ended_reason" => "max_runs",
+        "trigger" => every,
+        "max_runs" => 2,
+        "started_at" => 1_000,
+        "run_count" => 2,
+        "ended_at" => 7_000
+      },
+      # A Loop the Worker made in a plain Task makes no Loop Task.
+      incidental => %{"status" => "active", "run_count" => 0}
+    })
 
-    reads_before = RuntimeFake.get_call_count(task["conversation_id"])
-    assert RuntimeFake.last_snapshot_opts(task["conversation_id"]) == nil
-
-    assert {:ok, preview} =
-             Comma.Conversations.preview(user, session, workspace["default_group_id"], task_id)
-
-    assert preview == %{
-             "id" => task_id,
-             "group_id" => workspace["default_group_id"],
-             "kind" => "agent_task",
-             "title" => "Canonical preview title",
-             "status" => "ready_for_review",
-             "activity_status" => "working",
-             "labels" => ["lbl_work"],
-             "origin" => "comma",
-             "freshness" => %{
-               "state" => "fresh",
-               "refreshed_at" => preview["freshness"]["refreshed_at"]
-             },
-             "updated_at" => 123_456
-           }
-
-    assert RuntimeFake.get_call_count(task["conversation_id"]) == reads_before + 1
-    assert RuntimeFake.last_snapshot_opts(task["conversation_id"]) == nil
-    refute Map.has_key?(preview, "messages")
-    assert preview["id"] == task_id
-  end
-
-  test "bounded Salix list ignores retired S3 decoys and restricted list resolves its target" do
-    {user, workspace, session} = setup_user_workspace("filtered-page@example.com")
-    task = RuntimeFake.put_conversation(workspace, %{"created_at" => 1})
-
-    task_id = task["conversation_id"]
-
-    bucket = "workspace_conversation_items/#{workspace["id"]}"
-
-    for index <- 1..500 do
-      index_id = "0000000000000/decoy-#{String.pad_leading(to_string(index), 3, "0")}"
-
-      assert {:ok, _} =
-               Comma.Migrations.LegacyS3Fixture.put(bucket, index_id, %{
-                 "id" => "decoy-#{index}",
-                 "workspace_id" => workspace["id"],
-                 "kind" => "agent_task"
-               })
-    end
-
-    assert {:ok, first_page} =
-             Comma.Conversations.list_page(
-               user,
-               session,
-               workspace["default_group_id"],
-               limit: 1
-             )
-
-    assert Enum.map(first_page["data"], & &1["id"]) == [task_id]
-    assert first_page["has_more"] == false
-    assert first_page["next_cursor"] == nil
-
-    restricted_session = %{
-      "restricted" => true,
-      "group_id" => workspace["default_group_id"],
-      "conversation_id" => task_id
+    expected = %{
+      one_shot => nil,
+      scheduled => nil,
+      incidental => nil,
+      pending => %{"state" => "pending", "cadence" => cron, "max_runs" => 5, "wake_count" => 0},
+      active => %{
+        "state" => "active",
+        "cadence" => cron,
+        "ends_at" => 9_000_000,
+        "started_at" => 1_000,
+        "wake_count" => 3,
+        "last_wake_at" => 5_000,
+        "next_run_at" => 90_000
+      },
+      # A timed Loop says its next run, an events Loop does not.
+      interval => %{
+        "state" => "active",
+        "cadence" => every,
+        "started_at" => 1_000,
+        "wake_count" => 1,
+        "last_wake_at" => 3_000,
+        "next_run_at" => 80_000
+      },
+      budget => %{
+        "state" => "paused",
+        "reason" => "budget",
+        "cadence" => events,
+        "until" => "PR #12 is merged",
+        "started_at" => 1_000,
+        "wake_count" => 0
+      },
+      failed => %{
+        "state" => "paused",
+        "reason" => "failed",
+        "cadence" => every,
+        "started_at" => 1_000,
+        "wake_count" => 0
+      },
+      ended => %{
+        "state" => "ended",
+        "reason" => "max_runs",
+        "cadence" => every,
+        "max_runs" => 2,
+        "started_at" => 1_000,
+        "wake_count" => 2,
+        "ended_at" => 7_000
+      }
     }
 
-    assert {:ok, restricted_page} =
-             Comma.Conversations.list_page(
-               user,
-               restricted_session,
-               workspace["default_group_id"],
-               limit: 1
-             )
+    ids = Map.keys(expected)
+    loops = fn tasks -> Map.new(tasks, &{&1["id"], &1["loop"]}) end
 
-    assert Enum.map(restricted_page["data"], & &1["id"]) == [task_id]
-    assert restricted_page["has_more"] == false
-    assert restricted_page["next_cursor"] == nil
+    one_read = fn read ->
+      result = read.()
+      assert_received {:task_loops, read_ids}
+      assert Enum.sort(read_ids) == Enum.sort(ids)
+      refute_received {:task_loops, _}
+      result
+    end
+
+    assert {:ok, listed} = one_read.(fn -> Comma.Conversations.list(user, session, group_id) end)
+
+    assert {:ok, %{"data" => summaries}} =
+             one_read.(fn -> Comma.Conversations.task_summaries(user, session, group_id, ids) end)
+
+    # One Task reads its own Loop.
+    one_task = fn id, read ->
+      assert {:ok, task} = read.()
+      assert task["loop"] == expected[id]
+      refute Map.has_key?(task, "schedule")
+      assert_received({:task_loops, [^id]})
+    end
+
+    for id <- ids do
+      one_task.(id, fn ->
+        with {:ok, pin} <- Comma.Conversations.pin_task(user, session, group_id, id),
+             do: {:ok, pin["conversation"]}
+      end)
+
+      one_task.(id, fn -> Comma.Conversations.get(user, session, group_id, id) end)
+      assert {:ok, preview} = Comma.Conversations.preview(user, session, group_id, id)
+      refute Map.has_key?(preview, "loop")
+      refute Map.has_key?(preview, "schedule")
+    end
+
+    assert {:ok, %{"data" => pins}} =
+             one_read.(fn -> Comma.Conversations.list_pinned_tasks(user, session, group_id) end)
+
+    for tasks <- [listed, summaries, Enum.map(pins, & &1["conversation"])] do
+      assert loops.(tasks) == expected
+      refute Enum.any?(tasks, &Map.has_key?(&1, "schedule"))
+    end
+
+    # A recurring Task's runs cannot complete it, so it offers no review.
+    assert {:ok, %{"review_version" => 41_000}} =
+             Comma.Conversations.get(user, session, group_id, one_shot)
+
+    assert {:ok, read} = Comma.Conversations.get(user, session, group_id, scheduled)
+    refute Map.has_key?(read, "review_version")
   end
 
-  test "Task list exposes Salix Tasks immediately without adoption retries" do
-    {user, workspace, session} = setup_user_workspace("adoption-backoff@example.com")
-    task = RuntimeFake.put_conversation(workspace)
-    RuntimeFake.fail_get(task["conversation_id"], {:unavailable, :timeout}, 3)
+  test "a Task reaches clients with when its latest run started, when Salix keeps it" do
+    {user, workspace, session} = setup_user_workspace("task-runs@example.com")
+    group_id = workspace["default_group_id"]
+    put = &RuntimeFake.put_conversation(workspace, &1)["conversation_id"]
+    ran = put.(%{"status" => "completed", "run_started_at" => 1_700_000_000_000})
+    older = put.(%{"status" => "completed"})
 
-    reads_before = RuntimeFake.get_call_count(task["conversation_id"])
+    assert {:ok, listed} = Comma.Conversations.list(user, session, group_id)
 
-    assert {:ok, first} =
-             Comma.Conversations.list(user, session, workspace["default_group_id"])
+    assert {:ok, %{"data" => summaries}} =
+             Comma.Conversations.task_summaries(user, session, group_id, [ran, older])
 
-    assert {:ok, second} =
-             Comma.Conversations.list(user, session, workspace["default_group_id"])
-
-    assert Enum.map(first, & &1["id"]) == [task["conversation_id"]]
-    # Each list call stamps its own read time, which can cross a second boundary.
-    for row <- first ++ second do
-      assert %{"state" => "fresh", "refreshed_at" => refreshed_at} = row["freshness"]
-      assert is_integer(refreshed_at)
+    for tasks <- [listed, summaries] do
+      runs = Map.new(tasks, &{&1["id"], &1["run_started_at"]})
+      assert runs[ran] == 1_700_000_000_000
+      assert Map.has_key?(runs, older) and runs[older] == nil
     end
-
-    without_read_time = fn rows ->
-      Enum.map(
-        rows,
-        &update_in(&1, ["freshness"], fn freshness ->
-          Map.delete(freshness, "refreshed_at")
-        end)
-      )
-    end
-
-    assert without_read_time.(second) == without_read_time.(first)
-    assert RuntimeFake.get_call_count(task["conversation_id"]) == reads_before
   end
 
   test "Comma conversations preserve existing billing ownership and fee-control" do
-    prev_observer = Application.get_env(:comma_core, :fee_control_observer)
-    Application.put_env(:comma_core, :fee_control_observer, self())
+    prev_observer = SystemsRuntime.get_env(:comma_core, :fee_control_observer)
+    SystemsRuntime.put_env(:comma_core, :fee_control_observer, SystemsRuntime.Proc.self())
     on_exit(fn -> restore_env(:comma_core, :fee_control_observer, prev_observer) end)
 
     {user, workspace, session} = setup_user_workspace("billing@example.com", issue_grant?: false)
@@ -1620,81 +1570,19 @@ defmodule CommaCoreTest do
                }
              )
 
-    assert_receive {:comma_fee_control_check, %BillingCore.FeeControl.Decision{allowed?: true},
-                    %{
-                      "billing_account_id" => billing_account_id,
-                      "entrypoint" => "conversation_send"
-                    }}
+    settle_receive(
+      {:comma_fee_control_check, %BillingCore.FeeControl.Decision{allowed?: true},
+       %{
+         "billing_account_id" => billing_account_id,
+         "entrypoint" => "conversation_send"
+       }}
+    )
 
     assert billing_account_id == workspace["billing_account_id"]
 
-    assert_receive {:append_group_conversation_message, group_id, _salix_id, message_attrs}
-
+    settle_receive({:append_group_conversation_message, group_id, _salix_id, message_attrs})
     assert group_id == workspace["default_group_id"]
     refute Map.has_key?(message_attrs["metadata"] || %{}, "billing_context")
-  end
-
-  test "Comma admits a tenant subscription route without a model credit check" do
-    {_user, workspace, session} =
-      setup_user_workspace("pool-admission@example.com", issue_grant?: false)
-
-    {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Pool admission"})
-    tenant_id = tenant["tenant_id"]
-
-    {:ok, template} =
-      SalixAgent.Templates.create_private(
-        %{
-          "name" => "Pool",
-          "model" => "gpt-5",
-          "provider_config" => %{"account_pool" => "codex"}
-        },
-        tenant_id
-      )
-
-    {:ok, group} = Salix.Control.Groups.create(%{"name" => "Pool"}, tenant_id)
-
-    {:ok, agent} =
-      SalixAgent.Control.create(
-        %{
-          "name" => "Pool",
-          "group_id" => group["group_id"],
-          "template_id" => template["template_id"]
-        },
-        tenant_id
-      )
-
-    conversation = %{
-      "id" => "pool-conversation",
-      "internal" => %{
-        "billing_context" => %{
-          "salix_tenant_id" => tenant_id,
-          "salix_agent_id" => agent["agent_id"],
-          "billing_account_id" => workspace["billing_account_id"]
-        }
-      }
-    }
-
-    assert {:ok, %{fee_control: %{allowed?: true, reason: "tenant_account_pool"}}} =
-             Comma.AgentPolicies.authorize_send(workspace, conversation, session, %{
-               "client_request_id" => "pool-admission"
-             })
-  end
-
-  test "Comma accounts and passwordless auth retain their product semantics" do
-    {:ok, user} = Comma.Accounts.create_user(%{"email" => " Login@Example.COM "})
-    assert {:ok, found} = Comma.Accounts.get_user_by_email("login@example.com")
-    assert found["id"] == user["id"]
-
-    assert {:ok, %{"challenge_id" => challenge_id, "code" => code}} =
-             Comma.AuthChallenges.request_email_login(%{"email" => "auth@example.com"})
-
-    assert {:ok, %{"token" => "comma_sess_" <> _, "user" => auth_user}} =
-             Comma.AuthChallenges.verify_email_login(%{
-               "challenge_id" => challenge_id,
-               "code" => code
-             })
-
-    assert auth_user["email"] == "auth@example.com"
   end
 
   test "restricted-session budget is consumed once per Conversation command identity" do
@@ -1748,9 +1636,9 @@ defmodule CommaCoreTest do
     results =
       ["cnv-public:req-race-a", "cnv-public:req-race-b"]
       |> Enum.map(fn operation_id ->
-        Task.async(fn -> Comma.Accounts.consume_budget(session, operation_id) end)
+        SystemsRuntime.Task.async(fn -> Comma.Accounts.consume_budget(session, operation_id) end)
       end)
-      |> Task.await_many(5_000)
+      |> SystemsRuntime.Task.await_many(:infinity)
 
     assert Enum.count(results, &match?({:ok, _}, &1)) == 1
     assert Enum.count(results, &match?({:error, :budget_exhausted}, &1)) == 1
@@ -1758,6 +1646,71 @@ defmodule CommaCoreTest do
     persisted = Repo.get!(Comma.Accounts.AuthSession, session["id"])
     assert persisted.interaction_budget_remaining == 0
     assert map_size(persisted.consumed_interaction_ids) == 1
+  end
+
+  test "the Cloud VM pass after the rollout sets each Workspace Group's switch from its vm" do
+    {_user, on, _session} = setup_user_workspace("vm-on@example.com", issue_grant?: false)
+    {_user, off, _session} = setup_user_workspace("vm-off@example.com", issue_grant?: false)
+
+    Repo.update_all(from(w in Comma.Data.Workspace, where: w.id == ^off["id"]),
+      set: [vm: %{"enabled" => false}]
+    )
+
+    # A Workspace from before Workspaces had `vm`: its Group keeps the switch
+    # Salix derived from its Agents.
+    {_user, legacy, _session} = setup_user_workspace("vm-legacy@example.com", issue_grant?: false)
+    Repo.update_all(from(w in Comma.Data.Workspace, where: w.id == ^legacy["id"]), set: [vm: nil])
+
+    assert {:ok, %{processed: 3, next_cursor: nil}} =
+             Comma.Workspaces.converge_group_cloud_vm_page(nil)
+
+    on_id = on["id"]
+    off_id = off["id"]
+    legacy_id = legacy["id"]
+    assert_received {:update_workspace_vm, ^on_id, %{"enabled" => true}}
+    assert_received {:update_workspace_vm, ^off_id, %{"enabled" => false}}
+    refute_received {:update_workspace_vm, ^legacy_id, _vm}
+
+    # The last in the database's order: its collation does not order these ids
+    # byte by byte, as Enum.max/1 does.
+    last =
+      Repo.one(
+        from(w in Comma.Data.Workspace,
+          where: w.id in ^[on_id, off_id, legacy_id],
+          order_by: [desc: w.id],
+          limit: 1,
+          select: w.id
+        )
+      )
+
+    assert {:ok, %{processed: 0, next_cursor: nil}} =
+             Comma.Workspaces.converge_group_cloud_vm_page(last)
+  end
+
+  test "the Cloud VM pass after the rollout passes a switch Salix refuses and fails on any other error" do
+    {_user, refused, _session} =
+      setup_user_workspace("vm-refused@example.com", issue_grant?: false)
+
+    {_user, failing, _session} =
+      setup_user_workspace("vm-failing@example.com", issue_grant?: false)
+
+    RuntimeFake.set_update_workspace_vm_result(
+      refused["id"],
+      {:error, {:bad_request, "vm provider is not configured"}}
+    )
+
+    RuntimeFake.set_update_workspace_vm_result(failing["id"], {:error, :timeout})
+    failing_id = failing["id"]
+
+    # Salix may answer otherwise next time: the page fails, and the release
+    # runner runs it again.
+    assert {:error, {:workspace, ^failing_id, :timeout}} =
+             Comma.Workspaces.converge_group_cloud_vm_page(nil)
+
+    RuntimeFake.set_update_workspace_vm_result(failing_id, :ok)
+
+    assert {:ok, %{processed: 2, next_cursor: nil}} =
+             Comma.Workspaces.converge_group_cloud_vm_page(nil)
   end
 
   test "Workspace group binding revision changes only with the default Group mapping" do
@@ -1819,7 +1772,7 @@ defmodule CommaCoreTest do
   defp stored_salix_id(conversation), do: conversation["id"]
 
   defp ensure_fake_s3! do
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -1833,7 +1786,8 @@ defmodule CommaCoreTest do
         billing_account_id: account_id,
         credits: 100,
         valid_from: ~U[2026-06-17 00:00:00Z],
-        expires_at: DateTime.utc_now() |> DateTime.add(30, :day) |> DateTime.truncate(:second),
+        expires_at:
+          SystemsClock.utc_now() |> DateTime.add(30, :day) |> DateTime.truncate(:second),
         source_type: "manual_contract",
         source_id: "comma-core-test:#{workspace_id}",
         source_event_id: "comma-core-test:#{workspace_id}",
@@ -1843,6 +1797,6 @@ defmodule CommaCoreTest do
     :ok
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

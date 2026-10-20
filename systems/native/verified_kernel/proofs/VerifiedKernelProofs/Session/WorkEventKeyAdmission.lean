@@ -1,4 +1,5 @@
-import VerifiedKernelProofs.Session.WorkRawOrdinary
+import VerifiedKernelProofs.Session.WorkEnumeration
+import VerifiedKernelProofs.Session.WorkOrdinaryKinds
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

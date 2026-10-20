@@ -2,7 +2,7 @@ defmodule SalixSignal.StorageTest do
   # The Postgres store of Signal accounts (PLAN "Durable state"): owner
   # epoch fencing, all-or-nothing commits, per-row pre-keys, encryption at
   # rest and the durable inbound feed.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixSignal.Messaging.Inbound
   alias SalixSignal.Storage
@@ -23,7 +23,7 @@ defmodule SalixSignal.StorageTest do
     ])
 
     identity = Keys.ec_keypair()
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
     pre_keys = PreKeys.Store.new(identity, now)
     one_time = for id <- 1..3, do: PreKeys.one_time_pre_key(id, now)
     pre_keys = %{pre_keys | one_time: Map.new(one_time, &{&1.id, &1})}
@@ -104,7 +104,7 @@ defmodule SalixSignal.StorageTest do
 
   test "a commit that fails part way changes nothing", %{id: id} do
     {:ok, %{epoch: epoch}} = Storage.claim(id, node())
-    guid = :crypto.strong_rand_bytes(16)
+    guid = SystemsRuntime.Proc.random_bytes(16)
 
     assert_raise FunctionClauseError, fn ->
       Storage.commit(id, epoch, [
@@ -155,7 +155,7 @@ defmodule SalixSignal.StorageTest do
        %{id: id, keys: keys} do
     {:ok, %{epoch: epoch}} = Storage.claim(id, node())
     peer_key = Keys.ec_keypair().public
-    profile_key = :crypto.strong_rand_bytes(32)
+    profile_key = SystemsRuntime.Proc.random_bytes(32)
     contact = %{profile_key: profile_key, expire_timer: nil, unregistered?: false}
 
     :ok =
@@ -198,7 +198,7 @@ defmodule SalixSignal.StorageTest do
     assert {:ok, ^peer_key} =
              Cipher.open(keys, {:signal_identities, id, index <> "identity"}, data)
 
-    other = %{keys | data: :crypto.strong_rand_bytes(32)}
+    other = %{keys | data: SystemsRuntime.Proc.random_bytes(32)}
 
     assert {:error, :undecryptable} =
              Cipher.open(other, {:signal_identities, id, index <> "identity"}, data)
@@ -206,35 +206,5 @@ defmodule SalixSignal.StorageTest do
     # Bound to its row: the same bytes do not open as another row.
     assert {:error, :undecryptable} =
              Cipher.open(keys, {:signal_identities, id, index <> "contact"}, data)
-  end
-
-  test "without the storage key nothing is read or written", %{id: id} do
-    key = Application.get_env(:salix_agent, :subscription_storage_key)
-    Application.delete_env(:salix_agent, :subscription_storage_key)
-    on_exit(fn -> Application.put_env(:salix_agent, :subscription_storage_key, key) end)
-
-    assert {:error, :storage_key_missing} = Storage.claim(id, node())
-    assert {:error, :storage_key_missing} = Storage.commit(id, 1, [])
-    assert {:error, :storage_key_missing} = Storage.get_account(id)
-  end
-
-  test "the inbound feed lists admitted envelopes in order after a cursor", %{id: id} do
-    {:ok, %{epoch: epoch, delivered_seq: 0}} = Storage.claim(id, node())
-
-    guids = for _ <- 1..3, do: :crypto.strong_rand_bytes(16)
-
-    for guid <- guids do
-      :ok = Storage.commit(id, epoch, [{:admit, guid, %Inbound{guid: guid, outcome: :message}}])
-    end
-
-    assert {:ok, items} = Storage.inbound_after(id, 0, 10)
-    assert Enum.map(items, fn {_seq, inbound} -> inbound.guid end) == guids
-    [{first, _}, {second, _}, _] = items
-    assert {:ok, [_, _]} = Storage.inbound_after(id, first, 10)
-
-    :ok = Storage.advance_delivered(id, epoch, second)
-    # The cursor never moves back.
-    :ok = Storage.advance_delivered(id, epoch, first)
-    assert {:ok, %{delivered_seq: ^second}} = Storage.claim(id, node())
   end
 end

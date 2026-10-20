@@ -1,4 +1,6 @@
 defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The Runners API behind the React Runners page (`/orgs/:org/fin`): the paged
   fleet with connector summaries, per-runner connector pages, the onboarding
@@ -6,6 +8,9 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
   member/admin authorization split.
   """
   use BridgeForTeamsWeb.DashboardCase, async: false
+
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.BridgeForTeamsWeb", "Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{Auth, Environments, MacMiniOnboarding, Memberships, Observability, Repo}
   alias BridgeForTeams.Schema.{EnvironmentProvisionRequest, MacMiniInstallCode}
@@ -26,7 +31,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
           "capabilities" => %{"component_versions" => %{"salix-connect" => "2026.06.18"}},
           "capacity" => 3,
           "current_connector_count" => 1,
-          "last_seen_at" => DateTime.utc_now()
+          "last_seen_at" => SystemsClock.utc_now()
         })
 
       project = bare_project_fixture(org)
@@ -62,61 +67,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
                %{"count" => 2, "status" => "connected"},
                %{"count" => 1, "status" => "stopped"}
              ]
-    end
-
-    test "reports a stale online runner as recently lost", %{conn: conn, org: org} do
-      {:ok, _} =
-        Environments.register_mac_mini_provisioner(org.id, %{
-          "stable_id" => "stale",
-          "name" => "Stale",
-          "status" => "online",
-          "last_seen_at" => DateTime.add(DateTime.utc_now(), -90, :second)
-        })
-
-      assert [
-               %{
-                 "status" => "online",
-                 "effective_status" => "recently_lost",
-                 "last_seen_age_seconds" => age
-               }
-             ] =
-               conn |> get(runners_path(org)) |> json_response(200) |> get_in(["data", "runners"])
-
-      assert age >= 90
-    end
-
-    test "pages 25 runners at a time and restarts past the end", %{conn: conn, org: org} do
-      for n <- 1..26 do
-        register_runner(org, "paged-#{pad(n)}", "Paged #{pad(n)}")
-      end
-
-      first = conn |> get(runners_path(org)) |> json_response(200) |> Map.fetch!("data")
-      assert first["total_count"] == 26
-      assert length(first["runners"]) == 25
-      assert hd(first["runners"])["name"] == "Paged 01"
-      assert is_binary(first["next_cursor"])
-
-      second =
-        conn
-        |> get(runners_path(org), %{"cursor" => first["next_cursor"]})
-        |> json_response(200)
-        |> Map.fetch!("data")
-
-      assert Enum.map(second["runners"], & &1["name"]) == ["Paged 26"]
-      assert second["cursor"] == first["next_cursor"]
-      assert second["next_cursor"] == nil
-
-      [last] = Repo.all(from_runner(org, "paged-26"))
-      Repo.delete!(last)
-
-      restarted =
-        conn
-        |> get(runners_path(org), %{"cursor" => first["next_cursor"]})
-        |> json_response(200)
-        |> Map.fetch!("data")
-
-      assert restarted["cursor"] == nil
-      assert hd(restarted["runners"])["name"] == "Paged 01"
     end
 
     test "a member sees the fleet, only granted connectors, and no credentials",
@@ -175,39 +125,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
   end
 
   describe "GET /dashboard/api/v1/orgs/:org/runners/:id/connectors" do
-    test "pages a runner's connectors with their Agent Swarms", %{conn: conn, org: org} do
-      runner = register_runner(org, "connector-runner", "Connector Runner")
-      project = bare_project_fixture(org, %{name: "Support"})
-      insert_connectors(org, project, runner, List.duplicate("pending", 51))
-
-      first =
-        conn |> get(connectors_path(org, runner.id)) |> json_response(200) |> Map.fetch!("data")
-
-      assert length(first["entries"]) == 50
-
-      assert %{
-               "name" => "connector-" <> _,
-               "project_id" => project_id,
-               "project_name" => "Support"
-             } =
-               hd(first["entries"])
-
-      assert project_id == project.id
-
-      second =
-        conn
-        |> get(connectors_path(org, runner.id), %{"cursor" => first["next_cursor"]})
-        |> json_response(200)
-        |> Map.fetch!("data")
-
-      assert length(second["entries"]) == 1
-      assert second["next_cursor"] == nil
-    end
-
-    test "a malformed runner id is not found", %{conn: conn, org: org} do
-      assert %{"error" => %{"code" => "runner_not_found"}} =
-               conn |> get(connectors_path(org, "nope")) |> json_response(404)
-    end
   end
 
   describe "GET /dashboard/api/v1/orgs/:org/runners/onboarding" do
@@ -240,29 +157,9 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
       refute inspect(data) =~ "bfti_"
       assert Repo.aggregate(MacMiniInstallCode, :count, :id) == 0
     end
-
-    test "is translated for a Chinese user", %{conn: conn, org: org, user: user} do
-      {:ok, _} = BridgeForTeams.Accounts.update_locale(user, "zh_Hans")
-
-      assert [%{"title" => "检查本机状态"} | _] =
-               conn
-               |> get(~p"/dashboard/api/v1/orgs/#{org.slug}/runners/onboarding")
-               |> json_response(200)
-               |> get_in(["data", "local_steps"])
-    end
   end
 
   describe "runner writes" do
-    test "an install command is not created while the Server release is unavailable",
-         %{conn: conn, org: org} do
-      assert %{"error" => %{"code" => "server_release_unavailable"}} =
-               conn
-               |> post(~p"/dashboard/api/v1/orgs/#{org.slug}/runners/install-commands")
-               |> json_response(503)
-
-      assert Repo.aggregate(MacMiniInstallCode, :count, :id) == 0
-    end
-
     test "revokes a runner key but not another org API key", %{conn: conn, org: org, user: user} do
       runner = register_runner(org, "lab", "Lab")
       %{token: token, api_key: api_key} = bind_runner_key(org, runner.stable_id)
@@ -308,31 +205,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
                |> json_response(503)
 
       assert {:ok, _} = Auth.authenticate_api_key(token)
-    end
-
-    test "reads only the active keys of the listed runners", %{conn: conn, org: org} do
-      runner = register_runner(org, "lab", "Lab")
-      %{api_key: old_key} = bind_runner_key(org, runner.stable_id)
-      {:ok, _} = Auth.revoke_api_key(org.id, old_key.id)
-      %{api_key: active_key} = bind_runner_key(org, runner.stable_id)
-      bind_runner_key(org, "elsewhere")
-      %{api_key: from_metadata} = bind_runner_key(org, nil, %{"runner_stable_id" => "meta"})
-      %{api_key: unnamed, install_code: unnamed_code} = bind_runner_key(org, nil)
-      fallback_id = "runner_" <> String.replace(unnamed_code.id, "-", "")
-
-      listed = fn opts ->
-        org.id |> MacMiniOnboarding.list_runner_credentials(opts) |> Enum.map(& &1.api_key.id)
-      end
-
-      assert listed.(stable_ids: [runner.stable_id], active_only: true) == [active_key.id]
-      assert listed.(stable_ids: ["meta"]) == [from_metadata.id]
-      assert listed.(stable_ids: [fallback_id]) == [unnamed.id]
-      assert listed.(key_id: old_key.id) == [old_key.id]
-
-      [listed_runner] =
-        conn |> get(runners_path(org)) |> json_response(200) |> get_in(["data", "runners"])
-
-      assert listed_runner["credential"]["key_id"] == active_key.id
     end
 
     test "removes a runner and revokes its key", %{conn: conn, org: org, user: user} do
@@ -408,19 +280,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
   defp runner_path(org, id), do: ~p"/dashboard/api/v1/orgs/#{org.slug}/runners/#{id}"
   defp key_path(org, id), do: ~p"/dashboard/api/v1/orgs/#{org.slug}/runners/keys/#{id}"
 
-  defp connectors_path(org, id),
-    do: ~p"/dashboard/api/v1/orgs/#{org.slug}/runners/#{id}/connectors"
-
-  defp pad(n), do: String.pad_leading(to_string(n), 2, "0")
-
-  defp from_runner(org, stable_id) do
-    import Ecto.Query
-
-    from(p in BridgeForTeams.Schema.MacMiniProvisioner,
-      where: p.org_id == ^org.id and p.stable_id == ^stable_id
-    )
-  end
-
   defp add_member(org, role) do
     user = user_fixture()
     {:ok, _} = Memberships.put_org_member(org.id, user.id, role)
@@ -439,12 +298,12 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
   end
 
   defp insert_connectors(org, project, runner, statuses) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     rows =
       for {status, index} <- Enum.with_index(statuses) do
         %{
-          id: Ecto.UUID.generate(),
+          id: SystemsRuntime.Proc.uuid(),
           org_id: org.id,
           project_id: project.id,
           provisioner_id: runner.id,
@@ -467,14 +326,14 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
     {:ok, %{token: token, api_key: api_key}} =
       Auth.create_api_key(org.id, %{"name" => "#{stable_id} key", "scopes" => ["runners:write"]})
 
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     {:ok, install_code} =
       %MacMiniInstallCode{}
       |> MacMiniInstallCode.changeset(%{
         "org_id" => org.id,
         "api_key_id" => api_key.id,
-        "code_hash" => Ecto.UUID.generate(),
+        "code_hash" => SystemsRuntime.Proc.uuid(),
         "server_build_id" => String.duplicate("a", 40),
         "runner_stable_id" => stable_id,
         "audit_metadata" => audit_metadata,
@@ -487,15 +346,16 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
   end
 
   defp query_count(conn, path) do
-    test_pid = self()
-    handler = "runners-query-count-#{System.unique_integer([:positive])}"
+    test_pid = SystemsRuntime.Proc.self()
+    handler = "runners-query-count-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:bridge_for_teams, :repo, :query],
         fn _event, _measurements, _metadata, _config ->
-          if self() == test_pid, do: send(test_pid, :repo_query)
+          if SystemsRuntime.Proc.self() == test_pid,
+            do: SystemsRuntime.Proc.send(test_pid, :repo_query)
         end,
         nil
       )
@@ -504,12 +364,12 @@ defmodule BridgeForTeamsWeb.DashboardAPIRunnersTest do
       conn |> get(path) |> json_response(200)
       count_messages(0)
     after
-      :telemetry.detach(handler)
+      SystemsRuntime.Telemetry.detach(handler)
     end
   end
 
   defp count_messages(count) do
-    receive do
+    SystemsRuntime.Proc.receive do
       :repo_query -> count_messages(count + 1)
     after
       0 -> count

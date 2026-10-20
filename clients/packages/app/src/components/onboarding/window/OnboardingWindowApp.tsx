@@ -1,5 +1,5 @@
 import { getNativeBridge } from "@comma/native-bridge";
-import { Toaster } from "@comma/ui";
+import { Toaster } from "@comma/ui/components/toast";
 import {
   RouterProvider,
   createMemoryHistory,
@@ -7,13 +7,10 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { CommaAuthGate, useCommaAuth } from "../../AuthGate";
+import { useState } from "react";
+import { CommaAuthGate } from "../../AuthGate";
 import { CommaAppearanceProvider } from "../../commaAppearance";
-import {
-  PluginInstallProvider,
-  usePluginInstall,
-} from "../../plugins/PluginInstallProvider";
+import { PluginNotices } from "../../plugins/pluginInstall";
 import { RouterIdentityProvider } from "../../router-identity/RouterIdentityProvider";
 import { OnboardingExperience } from "../OnboardingExperience";
 
@@ -66,41 +63,24 @@ function OnboardingWindowSession() {
 }
 
 function OnboardingWindowExperience() {
-  const { api, sessionSignal } = useCommaAuth();
-
   return (
     <RouterIdentityProvider>
-      <PluginInstallProvider api={api} sessionSignal={sessionSignal}>
-        <OnboardingWindowFlow />
-      </PluginInstallProvider>
+      <PluginNotices />
+      <OnboardingWindowFlow />
     </RouterIdentityProvider>
   );
 }
 
 /**
  * Main records the completion when the window asks to close. An app still
- * being authorized in the browser goes with that request to the main window,
- * which verifies it from then on.
+ * being authorized in the browser goes on in the client core, which no window
+ * owns.
  */
 function OnboardingWindowFlow() {
-  const { authorization } = usePluginInstall();
-  const latestAuthorization = useRef(authorization);
-  useEffect(() => {
-    latestAuthorization.current = authorization;
-  });
-  const exited = useCallback(() => {
-    const pluginAuthorization = latestAuthorization.current;
-    void getNativeBridge()
-      .onboarding.closeWindow(pluginAuthorization ? { pluginAuthorization } : {})
-      .catch((error: unknown) => {
-        console.error("[onboarding] window close handoff failed", error);
-      });
-  }, []);
-
   return (
     <OnboardingExperience
       onComplete={recordedByMain}
-      onExited={exited}
+      onExited={exitWindow}
       presentation="window"
     />
   );
@@ -109,3 +89,11 @@ function OnboardingWindowFlow() {
 // Main records the completion, for the user it presented the window to, when
 // the window asks to close.
 function recordedByMain() {}
+
+function exitWindow() {
+  void getNativeBridge()
+    .onboarding.closeWindow({})
+    .catch((error: unknown) => {
+      console.error("[onboarding] window close handoff failed", error);
+    });
+}

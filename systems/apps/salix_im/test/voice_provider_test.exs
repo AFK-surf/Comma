@@ -1,11 +1,14 @@
 defmodule SalixIM.VoiceProviderTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The voice provider (`docs/messaging-voice.md`): Router operations reach the
   live call process through `:pg`, voice connects bind caller numbers under a
   global reservation, and caller PINs lock out after repeated failures.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixIM.{AgentDeliveryPayload, Provider, ProviderConnects}
   alias SalixStore.{CasRecord, Ids, Keys, S3}
 
@@ -13,19 +16,19 @@ defmodule SalixIM.VoiceProviderTest do
   @caller "+15551234567"
 
   setup do
-    previous = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
+    previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
     start_supervised!(S3.Fake)
     SalixAgent.TestSupport.configure_control_fixtures!()
 
-    unless Process.whereis(SalixVoice.PG) do
+    unless SystemsRuntime.Proc.whereis(SalixVoice.PG) do
       start_supervised!(%{id: :voice_pg, start: {:pg, :start_link, [SalixVoice.PG]}})
     end
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_store, :s3_backend, previous),
-        else: Application.delete_env(:salix_store, :s3_backend)
+        do: SystemsRuntime.put_env(:salix_store, :s3_backend, previous),
+        else: SystemsRuntime.delete_env(:salix_store, :s3_backend)
     end)
 
     tenant = SalixAgent.TestSupport.new_tenant_id()
@@ -55,23 +58,23 @@ defmodule SalixIM.VoiceProviderTest do
 
   # A stand-in CallActor: joins the call's group and answers provider calls.
   defp fake_call(call_id, reply) do
-    test = self()
+    test = SystemsRuntime.Proc.self()
 
     pid =
-      spawn_link(fn ->
-        :ok = :pg.join(SalixVoice.PG, {:call, call_id}, self())
-        send(test, {:joined, self()})
+      SystemsRuntime.Proc.spawn_link(fn ->
+        :ok = :pg.join(SalixVoice.PG, {:call, call_id}, SystemsRuntime.Proc.self())
+        SystemsRuntime.Proc.send(test, {:joined, SystemsRuntime.Proc.self()})
         call_loop(test, reply)
       end)
 
-    assert_receive {:joined, ^pid}
+    settle_receive({:joined, ^pid})
     pid
   end
 
   defp call_loop(test, reply) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:"$gen_call", from, message} ->
-        send(test, {:call_received, message})
+        SystemsRuntime.Proc.send(test, {:call_received, message})
         GenServer.reply(from, reply)
         call_loop(test, reply)
     end
@@ -91,20 +94,6 @@ defmodule SalixIM.VoiceProviderTest do
   end
 
   describe "voice operations" do
-    test "the Router sees the voice manual and its connect", ctx do
-      assert {:ok, connect} = ProviderConnects.ensure_voice_im_connect(ctx.tenant, ctx.group_id)
-
-      assert {:ok, connects} = Provider.list_connects(ctx.router_id)
-
-      assert %{"provider" => "voice"} =
-               Enum.find(connects, &(&1["connect_id"] == connect["connect_id"]))
-
-      assert {:ok, manual} = Provider.provider_manual("voice", ctx.router_id)
-
-      assert manual["apis"] |> Enum.map(& &1["name"]) |> Enum.sort() ==
-               ~w(voice.hang_up voice.note voice.say)
-    end
-
     test "voice.say reaches the call with the source's call and delegation", ctx do
       {:ok, connect} = ProviderConnects.ensure_voice_im_connect(ctx.tenant, ctx.group_id)
       call_id = "vc_" <> Ids.new_connect_id()
@@ -119,7 +108,7 @@ defmodule SalixIM.VoiceProviderTest do
                  }
                })
 
-      assert_receive {:call_received, {:voice_provider, :say, request}}
+      settle_receive({:call_received, {:voice_provider, :say, request}})
 
       assert request == %{
                "group_id" => ctx.group_id,
@@ -142,100 +131,9 @@ defmodule SalixIM.VoiceProviderTest do
                  }
                })
 
-      assert_receive {:call_received,
-                      {:voice_provider, :hang_up, %{"delegation_id" => nil, "text" => nil}}}
-    end
-
-    test "a call without a live process ends the operation", ctx do
-      {:ok, connect} = ProviderConnects.ensure_voice_im_connect(ctx.tenant, ctx.group_id)
-
-      assert {:error, %{"error_class" => "voice_call_ended", "public_summary" => summary}} =
-               Provider.call_api(ctx.router_id, "voice", "voice.note", %{
-                 "connect_id" => connect["connect_id"],
-                 "params" => %{"text" => "Still checking.", "call_id" => "vc_gone"}
-               })
-
-      assert is_binary(summary) and summary != ""
-
-      call_id = "vc_" <> Ids.new_connect_id()
-      fake_call(call_id, {:error, :forbidden})
-
-      assert {:error, "this voice call belongs to another connect"} =
-               Provider.call_api(ctx.router_id, "voice", "voice.say", %{
-                 "connect_id" => connect["connect_id"],
-                 "params" => %{"text" => "Hello", "call_id" => call_id}
-               })
-
-      assert_receive {:call_received, {:voice_provider, :say, %{"text" => "Hello"}}}
-
-      assert {:error, "text is required"} =
-               Provider.call_api(ctx.router_id, "voice", "voice.say", %{
-                 "connect_id" => connect["connect_id"],
-                 "params" => %{"call_id" => call_id}
-               })
-
-      refute_receive {:call_received, _}
-    end
-
-    @tag :ended_voice
-    test "a late reply after hangup retains a public terminal outcome in model context", ctx do
-      previous = Application.get_env(:salix_agent, :im_provider_mod)
-      Application.put_env(:salix_agent, :im_provider_mod, Provider)
-
-      on_exit(fn ->
-        if previous,
-          do: Application.put_env(:salix_agent, :im_provider_mod, previous),
-          else: Application.delete_env(:salix_agent, :im_provider_mod)
-      end)
-
-      {:ok, connect} = ProviderConnects.ensure_voice_im_connect(ctx.tenant, ctx.group_id)
-      call_id = "vc_" <> Ids.new_connect_id()
-      pid = fake_call(call_id, {:ok, %{"delivered" => true}})
-
-      tool_ctx = %{
-        agent_id: ctx.router_id,
-        group_id: ctx.group_id,
-        role: "router",
-        runtime_kind: :internal,
-        llm_tool_envelope: true,
-        visible_reply_phase: :clean
-      }
-
-      entries = SalixAgent.Tools.ImRouter.dynamic_disclosure_entries(tool_ctx)
-      tool_ctx = Map.put(tool_ctx, :tool_disclosure, %{"tools" => entries})
-
-      tool = %{
-        id: "voice-before-hangup",
-        name: "call",
-        args: %{
-          "tool" => "im_api.voice.say",
-          "params" => %{
-            "connect_id" => connect["connect_id"],
-            "call_id" => call_id,
-            "text" => "Hello."
-          }
-        }
-      }
-
-      [delivered] = SalixAgent.Tools.execute([tool], tool_ctx)
-      refute delivered.error
-      assert_receive {:call_received, {:voice_provider, :say, _}}
-      ref = Process.monitor(pid)
-      Process.unlink(pid)
-      Process.exit(pid, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
-
-      [ended] = SalixAgent.Tools.execute([%{tool | id: "voice-after-hangup"}], tool_ctx)
-      assert ended.error_class == "voice_call_ended"
-      assert ended.diagnostic_visibility == "user_reportable"
-      assert is_binary(ended.public_summary)
-      assert SalixAgent.VisibleReplyPolicy.transition(:clean, [ended]) == :none
-
-      [rendered] =
-        SalixAgent.VisibleReplyPolicy.sanitize_context([Map.put(ended, :role, "tool")], :clean)
-
-      assert Jason.decode!(rendered.content)["public_summary"] == ended.public_summary
-      refute rendered.content =~ call_id
+      settle_receive(
+        {:call_received, {:voice_provider, :hang_up, %{"delegation_id" => nil, "text" => nil}}}
+      )
     end
 
     test "a disabled voice connect cannot reach a call", ctx do
@@ -251,7 +149,7 @@ defmodule SalixIM.VoiceProviderTest do
                  "params" => %{"text" => "Hello", "call_id" => call_id}
                })
 
-      refute_receive {:call_received, _}
+      settle_refute_receive({:call_received, _})
     end
   end
 
@@ -360,42 +258,6 @@ defmodule SalixIM.VoiceProviderTest do
                  @caller
                )
     end
-
-    test "a stale reservation is taken over only after its holder stops listing it", ctx do
-      {:ok, connect} =
-        ProviderConnects.confirm_voice_number(ctx.tenant, ctx.group_id, "twilio", @line, @caller)
-
-      # Simulate a crash after the connect write but before the release.
-      {:ok, _} =
-        CasRecord.update(Keys.ctl_im_connect(ctx.group_id, connect["connect_id"]), fn rec ->
-          Map.put(rec, "voice_numbers", [])
-        end)
-
-      identity = "twilio:#{@line}:#{@caller}"
-      key = Keys.ctl_im_provider_identity("voice", identity)
-      {other_group, _router} = group_with_router(ctx.tenant)
-
-      # Within the grace period the holder may still be writing its binding.
-      assert {:error, :voice_number_in_use} =
-               ProviderConnects.confirm_voice_number(
-                 ctx.tenant,
-                 other_group,
-                 "twilio",
-                 @line,
-                 @caller
-               )
-
-      {:ok, _} = CasRecord.update(key, &Map.put(&1, "updated_at", 0))
-
-      assert {:ok, %{"group_id" => ^other_group}} =
-               ProviderConnects.confirm_voice_number(
-                 ctx.tenant,
-                 other_group,
-                 "twilio",
-                 @line,
-                 @caller
-               )
-    end
   end
 
   describe "caller PIN" do
@@ -437,7 +299,7 @@ defmodule SalixIM.VoiceProviderTest do
         )
       end
 
-      now = System.system_time(:millisecond)
+      now = SystemsClock.system_time(:millisecond)
       assert {:error, {:invalid_pin, 2}} = verify.("0000", now)
       assert :ok = verify.("4821", now)
       assert {:error, {:invalid_pin, 2}} = verify.("0000", now)

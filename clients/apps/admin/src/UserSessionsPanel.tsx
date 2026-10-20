@@ -1,418 +1,277 @@
-import { Badge, Button, ScrollArea } from "@comma/ui";
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
-import {
-  AdminApiError,
-  createIdempotencyKey,
-  isAdminAccessDenied,
-  isAdminSessionRejection,
-  type AdminApi,
-  type AdminSession,
-  type AdminUser,
-} from "./adminApi";
+import { Button } from "@comma/ui/components/Button";
+import { Dropdown } from "@comma/ui/components/dropdown";
+import type { AdminSession, AdminSessionFilters } from "./adminApi";
+import { useAdminCommand, useAdminState } from "./adminRuntime";
 import {
   AdminConfirmationDialog,
   AdminNotice,
+  AdminRow,
+  AdminSection,
   AdminState,
   StatusBadge,
   formatEpoch,
+  pageLocale,
 } from "./adminUi";
-import { adminErrorMessage, guardedAdminCommand } from "./adminErrors";
+import {
+  defaultSessionFilters,
+  sessionDeviceLabel,
+  sessionStatus,
+  type UserSessionsModel,
+} from "./UserSessionsModel";
+import { messages } from "@comma/i18n";
 
-const sessionPageSize = 50;
-
-type SessionsState =
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | {
-      status: "ready";
-      hasMore: boolean;
-      loadMoreError?: string;
-      loadingMore: boolean;
-      nextCursor?: string;
-      sessions: AdminSession[];
-    };
-
-type PendingCommand =
-  | { idempotencyKey: string; kind: "all" }
-  | { idempotencyKey: string; kind: "single"; session: AdminSession };
-
-export function UserSessionsPanel({
-  api,
-  onAccessDenied,
-  onBack,
-  user,
-}: {
-  api: AdminApi;
-  onAccessDenied: () => void;
-  onBack: () => void;
-  user: AdminUser;
-}) {
-  const [notice, setNotice] = useState<string>();
-  const [pending, setPending] = useState<PendingCommand>();
-  const [reason, setReason] = useState("");
-  const [revision, setRevision] = useState(0);
-  const [state, setState] = useState<SessionsState>({ status: "loading" });
-  const reasonHintId = useId();
-  const reasonId = useId();
-
-  useEffect(() => {
-    const request = new AbortController();
-    setState({ status: "loading" });
-
-    void api
-      .listUserSessions(user.id, {
-        limit: sessionPageSize,
-        signal: request.signal,
-      })
-      .then((page) => {
-        if (request.signal.aborted) return;
-        setState({
-          status: "ready",
-          hasMore: page.hasMore,
-          loadingMore: false,
-          ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
-          sessions: page.data,
-        });
-      })
-      .catch((error: unknown) => {
-        if (request.signal.aborted || isAdminSessionRejection(error)) return;
-        if (isAdminAccessDenied(error)) {
-          onAccessDenied();
-          return;
-        }
-        setState({
-          status: "error",
-          message: adminErrorMessage(error, "Unable to load Sessions."),
-        });
-      });
-
-    return () => request.abort();
-  }, [api, onAccessDenied, revision, user.id]);
-
-  const loadMore = useCallback(async () => {
-    if (
-      state.status !== "ready" ||
-      state.loadingMore ||
-      !state.hasMore ||
-      !state.nextCursor
-    ) {
-      return;
-    }
-
-    const cursor = state.nextCursor;
-    setState({
-      status: "ready",
-      hasMore: state.hasMore,
-      loadingMore: true,
-      nextCursor: state.nextCursor,
-      sessions: state.sessions,
-    });
-
-    try {
-      const page = await api.listUserSessions(user.id, {
-        cursor,
-        limit: sessionPageSize,
-      });
-      setState((current) => {
-        if (current.status !== "ready" || current.nextCursor !== cursor) {
-          return current;
-        }
-        return {
-          status: "ready",
-          hasMore: page.hasMore,
-          loadingMore: false,
-          ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
-          sessions: [...current.sessions, ...page.data],
-        };
-      });
-    } catch (error) {
-      if (isAdminSessionRejection(error)) return;
-      if (isAdminAccessDenied(error)) {
-        onAccessDenied();
-        return;
-      }
-      if (error instanceof AdminApiError && error.code === "invalid_cursor") {
-        setRevision((current) => current + 1);
-        return;
-      }
-      setState((current) =>
-        current.status === "ready"
-          ? {
-              ...current,
-              loadMoreError: adminErrorMessage(error, "Unable to load more Sessions."),
-              loadingMore: false,
-            }
-          : current
-      );
-    }
-  }, [api, onAccessDenied, state, user.id]);
-
-  const activeCount = useMemo(
-    () =>
-      state.status === "ready"
-        ? state.sessions.filter((session) => sessionStatus(session) === "active").length
-        : 0,
-    [state]
-  );
-  const canRevokeAll = activeCount > 0 || (state.status === "ready" && state.hasMore);
-  const reasonReady = reason.trim().length >= 3;
-
-  const complete = (message: string) => {
-    setNotice(message);
-    setPending(undefined);
-    setReason("");
-    setRevision((current) => current + 1);
-  };
-
-  const execute = async () => {
-    if (!pending) return;
-    const metadata = {
-      confirmation:
-        pending.kind === "single"
-          ? `revoke-session:${pending.session.id}`
-          : `revoke-all-sessions:${user.id}`,
-      idempotencyKey: pending.idempotencyKey,
-      reason: reason.trim(),
-    };
-
-    if (pending.kind === "single") {
-      await guardedAdminCommand(
-        api.revokeUserSession(user.id, pending.session.id, metadata),
-        onAccessDenied
-      );
-      complete(`Revoked ${sessionDeviceLabel(pending.session)}.`);
-      return;
-    }
-
-    const result = await guardedAdminCommand(
-      api.revokeAllUserSessions(user.id, metadata),
-      onAccessDenied
-    );
-    complete(
-      `Revoked ${result.revoked_count} active Session${result.revoked_count === 1 ? "" : "s"}.`
-    );
-  };
+export function UserSessionsPanel({ model }: { model: UserSessionsModel }) {
+  const run = useAdminCommand();
+  const { filters, list: state, notice } = useAdminState(model.state);
+  const filtered = filters.status !== "all" || filters.clientKind !== "all";
 
   return (
-    <section className="admin-command-section" data-testid="admin-user-sessions">
-      <div className="admin-command-section-header">
-        <div>
-          <p>User task</p>
-          <h3>Sessions &amp; devices</h3>
-        </div>
-        <Button hierarchy="link-gray" onPress={onBack} size="sm">
-          Back
-        </Button>
-      </div>
-
-      <p className="admin-command-explainer">
-        Device names are coarse labels derived by Comma from a reported client type and
-        platform. Comma does not expose a hardware fingerprint, raw User-Agent, IP
-        address, or Session secret here.
-      </p>
-
+    <div className="admin-page-sections" data-testid="admin-user-sessions">
       {notice ? (
-        <AdminNotice message={notice} onDismiss={() => setNotice(undefined)} />
+        <AdminNotice message={notice} onDismiss={() => run(model.dismissNotice)} />
       ) : null}
 
-      {state.status === "loading" ? (
-        <AdminState
-          message="Reading the first bounded page."
-          title="Loading Sessions…"
-        />
-      ) : state.status === "error" ? (
-        <AdminState
-          message={state.message}
-          onAction={() => setRevision((current) => current + 1)}
-          title="Sessions couldn’t be loaded"
-          tone="error"
-        />
-      ) : state.sessions.length === 0 ? (
-        <AdminState
-          message="This account has no recorded Comma Sessions."
-          title="No Sessions"
-        />
-      ) : (
-        <>
-          <ScrollArea
-            className="admin-session-list-scroll"
-            contentClassName="admin-session-list"
-            edgeEffect="none"
-            orientation="vertical"
-            scrollbarVisibility="hover"
-            viewportClassName="admin-session-list-viewport"
-          >
+      <AdminSection
+        action={<SessionFilters filters={filters} model={model} />}
+        title={messages.admin_sessions()}
+      >
+        <p className="admin-section-note admin-session-note">
+          {messages.admin_sessions_active_note()}
+        </p>
+        {state.status === "loading" ? (
+          <AdminState title="Loading Sessions…" />
+        ) : state.status === "error" ? (
+          <AdminState
+            message={state.message}
+            onAction={() => run(model.reload)}
+            title={messages.admin_sessions_load_failed()}
+            tone="error"
+          />
+        ) : (
+          <>
+            {state.sessions.length === 0 ? (
+              filtered ? (
+                <AdminState
+                  actionLabel={messages.admin_sessions_show_all()}
+                  message={messages.admin_sessions_none_filtered_body()}
+                  onAction={() =>
+                    run(
+                      model.setFilters({
+                        ...defaultSessionFilters,
+                        clientKind: "all",
+                        status: "all",
+                      })
+                    )
+                  }
+                  title={messages.admin_sessions_none_filtered()}
+                />
+              ) : (
+                <AdminState
+                  message={messages.admin_sessions_none_body()}
+                  title={messages.admin_sessions_none()}
+                />
+              )
+            ) : null}
             {state.sessions.map((session) => {
-              const status = sessionStatus(session);
+              const status = sessionStatus(session, state.now);
               return (
                 <article className="admin-session-card" key={session.id}>
                   <header>
                     <div>
                       <h4>{sessionDeviceLabel(session)}</h4>
                       <p>
-                        Reported {clientKindLabel(session.client_kind)} ·{" "}
-                        {authMethodLabel(session)}
+                        {messages.admin_session_last_used({
+                          time: relativeLastSeen(session.last_seen_at, state.now),
+                        })}
+                      </p>
+                      <p>
+                        {messages.admin_session_reported({
+                          client: clientKindLabel(session.client_kind),
+                          kind: session.restricted
+                            ? messages.admin_session_restricted()
+                            : messages.admin_session_full(),
+                          method: authMethodLabel(session),
+                        })}
                       </p>
                     </div>
                     <StatusBadge status={status} />
-                  </header>
-                  <dl>
-                    <div>
-                      <dt>Authenticated</dt>
-                      <dd>{formatEpoch(session.authenticated_at)}</dd>
-                    </div>
-                    <div>
-                      <dt>Last seen</dt>
-                      <dd>{formatEpoch(session.last_seen_at)}</dd>
-                    </div>
-                    <div>
-                      <dt>Expires</dt>
-                      <dd>{formatEpoch(session.expires_at)}</dd>
-                    </div>
-                    <div>
-                      <dt>Session ID</dt>
-                      <dd>{session.id}</dd>
-                    </div>
-                  </dl>
-                  <footer>
-                    <Badge color="gray" size="sm" type="pill-color">
-                      {session.restricted ? "Restricted" : "Full Session"}
-                    </Badge>
                     <Button
                       hierarchy="secondary-gray"
-                      isDisabled={status !== "active" || !reasonReady}
-                      onPress={() =>
-                        setPending({
-                          idempotencyKey: createIdempotencyKey("revoke-session"),
-                          kind: "single",
-                          session,
-                        })
-                      }
+                      isDisabled={status !== "active"}
+                      onPress={() => run(model.reviewRevoke(session))}
                       size="sm"
                     >
-                      Revoke
+                      {messages.admin_revoke()}
                     </Button>
-                  </footer>
+                  </header>
+                  <details className="admin-session-details">
+                    <summary>{messages.admin_session_details()}</summary>
+                    <dl>
+                      <div>
+                        <dt>{messages.admin_authenticated()}</dt>
+                        <dd>{formatEpoch(session.authenticated_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>{messages.admin_last_seen()}</dt>
+                        <dd>{formatEpoch(session.last_seen_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>{messages.admin_expires()}</dt>
+                        <dd>{formatEpoch(session.expires_at)}</dd>
+                      </div>
+                      {session.revoked_at ? (
+                        <div>
+                          <dt>{messages.admin_session_revoked_at()}</dt>
+                          <dd>{formatEpoch(session.revoked_at)}</dd>
+                        </div>
+                      ) : null}
+                      <div>
+                        <dt>{messages.admin_session_id()}</dt>
+                        <dd>{session.id}</dd>
+                      </div>
+                    </dl>
+                  </details>
                 </article>
               );
             })}
-          </ScrollArea>
-
-          <div className="admin-table-footer admin-session-list-footer">
-            <span>
-              {state.sessions.length} loaded · {activeCount} active
-            </span>
-            {state.hasMore ? (
-              <Button
-                hierarchy="secondary-gray"
-                isDisabled={state.loadingMore}
-                onPress={() => void loadMore()}
-                size="sm"
+            {state.hasMore || state.loadMoreError ? (
+              <AdminRow
+                description={state.loadMoreError}
+                title={messages.admin_loaded_count({ count: state.sessions.length })}
               >
-                {state.loadingMore ? "Loading…" : "Load more"}
-              </Button>
+                {state.hasMore ? (
+                  <Button
+                    hierarchy="secondary-gray"
+                    isDisabled={state.loadingMore}
+                    onPress={() => run(model.loadMore)}
+                    size="sm"
+                  >
+                    {state.loadingMore
+                      ? messages.admin_loading()
+                      : messages.admin_load_more()}
+                  </Button>
+                ) : null}
+              </AdminRow>
             ) : null}
-          </div>
-          {state.loadMoreError ? (
-            <AdminNotice message={state.loadMoreError} tone="error" />
-          ) : null}
-        </>
-      )}
+          </>
+        )}
+      </AdminSection>
 
-      <div className="admin-native-field">
-        <label htmlFor={reasonId}>Reason</label>
-        <textarea
-          aria-describedby={reasonHintId}
-          id={reasonId}
-          maxLength={500}
-          minLength={3}
-          onChange={(event) => setReason(event.target.value)}
-          placeholder="Why should these Sessions be revoked?"
-          required
-          rows={3}
-          value={reason}
-        />
-        <small id={reasonHintId}>
-          Required and stored in the durable Admin audit event.
-        </small>
-      </div>
-
-      <section className="admin-danger-zone">
-        <div>
-          <h3>Revoke all active Sessions</h3>
-          <p>
-            This includes this account’s Web, Desktop, API, and support Sessions.
-            Managing your own account may sign this Admin out.
-          </p>
-        </div>
-        <Button
-          hierarchy="destructive"
-          isDisabled={!reasonReady || !canRevokeAll}
-          onPress={() =>
-            setPending({
-              idempotencyKey: createIdempotencyKey("revoke-all-sessions"),
-              kind: "all",
-            })
-          }
+      <AdminSection title={messages.admin_sign_out_everywhere()}>
+        <AdminRow
+          description={messages.admin_revoke_all_body()}
+          title={messages.admin_revoke_all_title()}
         >
-          Revoke all
-        </Button>
-      </section>
+          <Button
+            hierarchy="destructive"
+            isDisabled={state.status === "loading"}
+            onPress={() => run(model.reviewRevokeAll)}
+            size="sm"
+          >
+            {messages.admin_revoke_all()}
+          </Button>
+        </AdminRow>
+      </AdminSection>
 
-      <AdminConfirmationDialog
-        destructive
-        expected={
-          pending?.kind === "single"
-            ? `revoke-session:${pending.session.id}`
-            : `revoke-all-sessions:${user.id}`
-        }
-        isOpen={Boolean(pending)}
-        onConfirm={execute}
-        onOpenChange={(open) => {
-          if (!open) setPending(undefined);
-        }}
-        title={
-          pending?.kind === "single" ? "Revoke this Session?" : "Revoke all Sessions?"
-        }
-      />
-    </section>
+      <AdminConfirmationDialog confirmation={model.confirmation} />
+    </div>
   );
 }
 
-function sessionStatus(session: AdminSession) {
-  if (session.revoked_at) return "revoked";
-  if (session.expires_at <= Math.floor(Date.now() / 1_000)) return "expired";
-  return "active";
+function SessionFilters({
+  filters,
+  model,
+}: {
+  filters: AdminSessionFilters;
+  model: UserSessionsModel;
+}) {
+  const run = useAdminCommand();
+  const change = (next: Partial<AdminSessionFilters>) =>
+    run(model.setFilters({ ...filters, ...next }));
+  return (
+    <fieldset
+      aria-label={messages.admin_sessions_filters()}
+      className="admin-filter-form admin-session-filters"
+    >
+      <Dropdown
+        ariaLabel={messages.admin_sessions_filter_status()}
+        className="admin-filter-dropdown"
+        items={[
+          { id: "active", label: messages.admin_state_active() },
+          { id: "expired", label: messages.admin_state_expired() },
+          { id: "revoked", label: messages.admin_state_revoked() },
+          { id: "all", label: messages.admin_sessions_status_all() },
+        ]}
+        onChange={(id) => change({ status: id as AdminSessionFilters["status"] })}
+        size="sm"
+        value={filters.status}
+      />
+      <Dropdown
+        ariaLabel={messages.admin_sessions_filter_client()}
+        className="admin-filter-dropdown"
+        items={[
+          { id: "all", label: messages.admin_sessions_client_all() },
+          ...clientKinds.map((kind) => ({
+            id: kind,
+            label:
+              kind === "unknown"
+                ? messages.admin_state_unknown()
+                : clientKindLabel(kind),
+          })),
+        ]}
+        onChange={(id) =>
+          change({ clientKind: id as AdminSessionFilters["clientKind"] })
+        }
+        size="sm"
+        value={filters.clientKind}
+      />
+      <Dropdown
+        ariaLabel={messages.admin_sessions_sort()}
+        className="admin-filter-dropdown"
+        items={[
+          { id: "last_seen_at", label: messages.admin_sessions_sort_last_seen() },
+          { id: "created_at", label: messages.admin_sessions_sort_created() },
+        ]}
+        onChange={(id) => change({ sort: id as AdminSessionFilters["sort"] })}
+        size="sm"
+        value={filters.sort}
+      />
+    </fieldset>
+  );
 }
 
-function sessionDeviceLabel(session: AdminSession) {
-  if (session.device_label?.trim()) return session.device_label.trim();
-  switch (session.client_kind) {
-    case "web":
-      return "Web browser";
-    case "electron":
-      return "Comma Desktop";
-    case "android":
-      return "Comma Android app";
-    case "ios":
-      return "Comma on iPhone";
-    case "watch":
-      return "Comma on Apple Watch";
-    case "api":
-      return "API client";
-    case "ssh":
-      return "Comma SSH";
-    default:
-      return "Unknown client";
-  }
+const clientKinds = [
+  "electron",
+  "web",
+  "android",
+  "ios",
+  "watch",
+  "api",
+  "ssh",
+  "unknown",
+] as const satisfies ReadonlyArray<AdminSessionFilters["clientKind"]>;
+
+function relativeLastSeen(value: number | null | undefined, now: number) {
+  if (!value) return messages.admin_state_unknown();
+  const elapsed = Math.max(0, now - value);
+  const [unit, seconds] =
+    elapsed < 3600
+      ? (["minute", 60] as const)
+      : elapsed < 86400
+        ? (["hour", 3600] as const)
+        : (["day", 86400] as const);
+  return new Intl.RelativeTimeFormat(pageLocale(), { numeric: "auto" }).format(
+    -Math.floor(elapsed / seconds),
+    unit
+  );
 }
 
 function clientKindLabel(clientKind: AdminSession["client_kind"]) {
   switch (clientKind) {
     case "web":
-      return "Web";
+      return messages.admin_client_web();
     case "electron":
-      return "Desktop";
+      return messages.admin_client_desktop();
     case "android":
       return "Android";
     case "ios":
@@ -424,23 +283,27 @@ function clientKindLabel(clientKind: AdminSession["client_kind"]) {
     case "ssh":
       return "SSH";
     default:
-      return "unknown client";
+      return messages.admin_client_unknown();
   }
 }
 
 function authMethodLabel(session: AdminSession) {
   switch (session.auth_method) {
+    case "review_code":
+      return messages.admin_review_login_code();
     case "email_otp":
-      return "Email OTP";
+      return messages.admin_login_email_otp();
     case "google":
       return "Google";
     case "apple":
       return "Apple";
     case "watch_pairing":
-      return "Paired Watch";
+      return messages.admin_auth_paired_watch();
     case "ssh_public_key":
-      return "SSH public key";
+      return messages.admin_auth_ssh();
     default:
-      return session.restricted ? "Support-issued" : "Ops-issued";
+      return session.restricted
+        ? messages.admin_auth_support()
+        : messages.admin_auth_ops();
   }
 }

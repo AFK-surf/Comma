@@ -1,28 +1,13 @@
-import { _electron as electron, expect, test } from "@playwright/test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { findElectronWindowByNativeRole } from "../src/test-support/electron-native-window";
-
-const electronAppDir = resolve(process.cwd(), "apps/electron");
-const electronMain = resolve(electronAppDir, ".vite/build/main.js");
+import { expect, test } from "./electron-test";
 
 /** A 4×4 red PNG: small enough to inline, real enough for nativeImage to decode. */
 const redSquarePng =
   "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGO4o6YGRwzEcQDsoxKBT+rXhgAAAABJRU5ErkJggg==";
 
-test("copied images reach the clipboard through Main, not the renderer", async () => {
-  const userDataDir = await mkdtemp(join(tmpdir(), "comma-clipboard-image-e2e-"));
-  const { ELECTRON_RUN_AS_NODE: _electronRunAsNode, ...hostEnv } = process.env;
-  const app = await electron.launch({
-    args: [electronMain, `--user-data-dir=${userDataDir}`],
-    cwd: electronAppDir,
-    env: { ...hostEnv, NODE_ENV: "test" },
-  });
-
-  try {
-    const mainWindow = await findElectronWindowByNativeRole(app, "main-window");
-    await mainWindow.waitForLoadState("domcontentloaded");
+test(
+  "copied images reach the clipboard through Main, not the renderer",
+  { tag: "@shared-app" },
+  async ({ sharedElectron: { app, mainWindow } }) => {
     await app.evaluate(({ clipboard }) => clipboard.clear());
 
     const outcome = await mainWindow.evaluate(async (base64: string) => {
@@ -67,8 +52,5 @@ test("copied images reach the clipboard through Main, not the renderer", async (
       return { empty: image.isEmpty(), size: image.getSize() };
     });
     expect(copied).toEqual({ empty: false, size: { height: 4, width: 4 } });
-  } finally {
-    await app.close();
-    await rm(userDataDir, { force: true, recursive: true });
   }
-});
+);

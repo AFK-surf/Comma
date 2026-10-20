@@ -12,7 +12,11 @@ defmodule BridgeForTeams.Schema.UserOnboarding do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   @statuses ~w(in_progress completed skipped)
   # Rows written before the fourth "tasks" step was retired may still store

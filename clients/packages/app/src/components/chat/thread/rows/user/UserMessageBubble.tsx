@@ -1,12 +1,24 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { ChevronDownSmallIcon, isReducedMotionEnabled } from "@comma/ui";
-import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronDownSmallIcon } from "@comma/ui/components/icons";
+import { isReducedMotionEnabled } from "@comma/ui/tokens";
+import {
+  useCallback,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { animateOutgoingBubble } from "../../../motion/outgoingBubbleMotion";
 import { getMessagePlatformBubbleStyle } from "../../../MessagePlatformBadge";
 import type { OutgoingPresentation } from "../../outgoing/outgoingPresentation";
 import {
-  measureUserBubble,
   observeUserBubble,
+  readUserBubble,
+  revealUserBubbleTail,
+  setUserBubbleExpandedSize,
+  splitLongUserText,
   userBubbleOverflows,
 } from "./userBubbleMeasurement";
 
@@ -24,19 +36,19 @@ export type UserBubbleOutgoingPresentation = Pick<OutgoingPresentation, "turnKey
 };
 
 export function UserMessageBubble({
-  content: mentionContent,
   onAnchorOutgoingTurn,
   onOutgoingAnimationComplete,
   outgoingPresentation,
   platform,
+  renderContent,
   text,
 }: {
-  /** Mention- and URL-aware content; plain text renders when absent. */
-  content?: ReactNode | undefined;
   onAnchorOutgoingTurn?: ((turnKey: string) => void) | undefined;
   onOutgoingAnimationComplete?: ((launchId: number) => void) | undefined;
   outgoingPresentation?: UserBubbleOutgoingPresentation | undefined;
   platform?: string | undefined;
+  /** Mention- and URL-aware content for a part of `text`; plain text renders when absent. */
+  renderContent?: ((text: string) => ReactNode | undefined) | undefined;
   text: string;
 }) {
   const messagesApi = useCommaMessages();
@@ -45,6 +57,25 @@ export function UserMessageBubble({
   const bubbleElementRef = useRef<HTMLDivElement | null>(null);
   const contentElementRef = useRef<HTMLDivElement | null>(null);
   const remProbeRef = useRef<HTMLDivElement | null>(null);
+  const tailElementRef = useRef<HTMLSpanElement | null>(null);
+  // A deferred tail stays plain text until it can be seen: the collapsed
+  // bubble clips it, and mention and link parsing would cost the send.
+  const [tailRevealed, setTailRevealed] = useState(false);
+  const parts = useMemo(() => splitLongUserText(text), [text]);
+  const head = useMemo(
+    () => renderUserText(parts ? parts.head : text, renderContent),
+    [parts, renderContent, text]
+  );
+  const tail = useMemo(
+    () =>
+      parts && (tailRevealed ? renderUserText(parts.tail, renderContent) : parts.tail),
+    [parts, renderContent, tailRevealed]
+  );
+  const revealTail = useCallback(() => {
+    const revealed = revealUserBubbleTail(tailElementRef.current);
+    if (revealed) setTailRevealed(true);
+    return revealed;
+  }, []);
   const onAnchorOutgoingTurnRef = useRef(onAnchorOutgoingTurn);
   const onOutgoingAnimationCompleteRef = useRef(onOutgoingAnimationComplete);
   const activePresentationRef = useRef<
@@ -77,16 +108,24 @@ export function UserMessageBubble({
     const content = contentElementRef.current;
     if (!bubble || !content) return;
 
-    const measure = () => {
-      const nextOverflowing = measureUserBubble(bubble, content);
-      setOverflowing((current) =>
-        current === nextOverflowing ? current : nextOverflowing
-      );
-      if (!nextOverflowing) setExpanded(false);
-      setMeasuredText(text);
+    const read = () => {
+      const measured = readUserBubble(bubble, content);
+      return () => {
+        if (measured.expandedBlockSize !== undefined)
+          setUserBubbleExpandedSize(content, measured.expandedBlockSize);
+        let nextOverflowing = measured.overflowing;
+        // The deferred tail is measured only when the head alone fits.
+        if (!nextOverflowing && revealTail())
+          nextOverflowing = readUserBubble(bubble, content).overflowing;
+        setOverflowing((current) =>
+          current === nextOverflowing ? current : nextOverflowing
+        );
+        if (!nextOverflowing) setExpanded(false);
+        setMeasuredText(text);
+      };
     };
-    return observeUserBubble(content, remProbeRef.current, measure);
-  }, [text]);
+    return observeUserBubble(content, remProbeRef.current, read);
+  }, [revealTail, text]);
 
   useLayoutEffect(() => {
     const slot = slotElementRef.current;
@@ -119,6 +158,10 @@ export function UserMessageBubble({
       return;
     }
 
+    // The prepared layout can differ from the one anchored above: deciding to scroll
+    // adds the latest turn's reserve. Anchor again in it, so the flight measures where
+    // it lands.
+    onAnchorOutgoingTurnRef.current?.(outgoingTurnKey);
     const target = bubble.getBoundingClientRect();
     if (target.width <= 0 || target.height <= 0) {
       onOutgoingAnimationCompleteRef.current?.(outgoingLaunchId);
@@ -184,7 +227,12 @@ export function UserMessageBubble({
           id={contentId}
           ref={contentElementRef}
         >
-          {mentionContent ?? text}
+          {head}
+          {parts === undefined ? null : (
+            <span className="comma-chat-user-bubble-tail" ref={tailElementRef}>
+              {tail}
+            </span>
+          )}
         </div>
         <div
           aria-hidden
@@ -205,7 +253,14 @@ export function UserMessageBubble({
                 }
                 className="comma-chat-user-bubble-toggle"
                 data-no-press-feedback
-                onClick={() => setExpanded((current) => !current)}
+                onClick={() => {
+                  const content = contentElementRef.current;
+                  if (!expanded && content) {
+                    revealTail();
+                    setUserBubbleExpandedSize(content);
+                  }
+                  setExpanded((current) => !current);
+                }}
                 type="button"
               >
                 <ChevronDownSmallIcon aria-hidden />
@@ -216,4 +271,11 @@ export function UserMessageBubble({
       </div>
     </div>
   );
+}
+
+function renderUserText(
+  text: string,
+  renderContent: ((text: string) => ReactNode | undefined) | undefined
+) {
+  return renderContent?.(text) ?? text;
 }

@@ -12,6 +12,9 @@ defmodule Comma.DataCase do
     end
   end
 
+  # A synchronous test stops what it leaves running when it ends.
+  setup {SystemsClock.Case, :isolate}
+
   setup tags do
     if tags[:sandbox] == false do
       :ok

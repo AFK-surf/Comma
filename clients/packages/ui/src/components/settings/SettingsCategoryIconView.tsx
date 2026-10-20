@@ -1,3 +1,4 @@
+import type { ReactElement } from "react";
 import {
   ApiConnectionIcon,
   ArchiveIcon,
@@ -17,13 +18,23 @@ import {
   TagLabelIcon,
   VideoIcon,
   WindowCursorIcon,
+  type IconProps,
 } from "../icons";
+import { TailscaleProviderLogo } from "../provider-brand-logos/TailscaleProviderLogo";
 import type { SettingsCategoryIcon } from "./settingsRegistry";
 
 export interface SettingsCategoryIconViewProps {
   className?: string;
   icon: SettingsCategoryIcon;
 }
+
+/** Central Icons has no Tailscale glyph; its brand mark sits in the glyph slot. */
+const TailscaleIcon = ({ className }: IconProps) => (
+  <TailscaleProviderLogo
+    data-comma-icon=""
+    {...(className !== undefined ? { className } : {})}
+  />
+);
 
 const iconComponents = {
   general: SettingsIcon,
@@ -42,10 +53,11 @@ const iconComponents = {
   "keyboard-shortcuts": CmdIcon,
   "usage-billing": CreditCard2Icon,
   devices: DevicesIcon,
+  tailscale: TailscaleIcon,
   "computer-use": WindowCursorIcon,
   "models-api-keys": ApiConnectionIcon,
   debug: BugIcon,
-} satisfies Record<SettingsCategoryIcon, typeof SettingsIcon>;
+} satisfies Record<SettingsCategoryIcon, (props: IconProps) => ReactElement>;
 
 export const SettingsCategoryIconView = ({
   className,

@@ -1,19 +1,19 @@
 defmodule SalixAgent.AgentManagementControlTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.Control
   alias SalixStore.{Ids, Keys, S3}
 
   setup do
-    old = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
+    old = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
     start_supervised!(S3.Fake)
     tenant = SalixAgent.TestSupport.new_tenant_id()
     group = Ids.new_group_id(tenant)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, old)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, old)
     end)
 
     %{tenant: tenant, group: group}
@@ -44,7 +44,7 @@ defmodule SalixAgent.AgentManagementControlTest do
     Enum.each(1..3, fn _ -> worker(ctx) end)
 
     assert {:ok, %{items: [], next_cursor: cursor}} =
-             Control.page_workers(ctx.tenant, ctx.group, limit: 1, runtime_source: "connected")
+             Control.page_workers(ctx.tenant, ctx.group, limit: 1, runtime_source: "station")
 
     assert is_binary(cursor)
 
@@ -54,7 +54,7 @@ defmodule SalixAgent.AgentManagementControlTest do
     assert {:error, :invalid_cursor} =
              Control.page_workers(ctx.tenant, Ids.new_group_id(ctx.tenant),
                cursor: cursor,
-               runtime_source: "connected"
+               runtime_source: "station"
              )
   end
 

@@ -1,11 +1,11 @@
 defmodule BillingStripe.FinancialLifecycleTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias BillingStripe.Webhooks
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(BillingCore.Repo)
-    Application.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
 
     for key <- [
           :test_payment_intents,
@@ -17,7 +17,7 @@ defmodule BillingStripe.FinancialLifecycleTest do
           :test_checkout_session_pages,
           :test_checkout_sessions
         ] do
-      Application.delete_env(:billing_stripe, key)
+      SystemsRuntime.delete_env(:billing_stripe, key)
     end
 
     start_supervised!(%{
@@ -38,7 +38,7 @@ defmodule BillingStripe.FinancialLifecycleTest do
             :test_checkout_session_pages,
             :test_checkout_sessions
           ] do
-        Application.delete_env(:billing_stripe, key)
+        SystemsRuntime.delete_env(:billing_stripe, key)
       end
     end)
 
@@ -484,10 +484,10 @@ defmodule BillingStripe.FinancialLifecycleTest do
 
   defp put_provider(key, id, value),
     do:
-      Application.put_env(
+      SystemsRuntime.put_env(
         :billing_stripe,
         key,
-        Map.put(Application.get_env(:billing_stripe, key, %{}), id, value)
+        Map.put(SystemsRuntime.get_env(:billing_stripe, key, %{}), id, value)
       )
 
   defp price(key) do
@@ -511,7 +511,7 @@ defmodule BillingStripe.FinancialLifecycleTest do
   end
 
   defp current_period do
-    starts = DateTime.utc_now() |> DateTime.add(-1, :day) |> DateTime.truncate(:second)
+    starts = SystemsClock.utc_now() |> DateTime.add(-1, :day) |> DateTime.truncate(:second)
     {starts, DateTime.add(starts, 30, :day)}
   end
 

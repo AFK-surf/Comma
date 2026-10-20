@@ -10,7 +10,7 @@ defmodule SalixIM.IMIdentityAuditTest do
   the observed etag under an explicit no-writer gate, and a `changed`
   result fails the operator procedure.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import ExUnit.CaptureIO
 
@@ -42,8 +42,8 @@ defmodule SalixIM.IMIdentityAuditTest do
   end
 
   setup do
-    prev_s3 = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     SalixAgent.TestSupport.configure_control_fixtures!()
 
@@ -52,8 +52,8 @@ defmodule SalixIM.IMIdentityAuditTest do
 
     on_exit(fn ->
       case prev_s3 do
-        nil -> Application.delete_env(:salix_store, :s3_backend)
-        value -> Application.put_env(:salix_store, :s3_backend, value)
+        nil -> SystemsRuntime.delete_env(:salix_store, :s3_backend)
+        value -> SystemsRuntime.put_env(:salix_store, :s3_backend, value)
       end
     end)
 
@@ -123,13 +123,13 @@ defmodule SalixIM.IMIdentityAuditTest do
     :ok = :gen_tcp.close(socket)
 
     start_supervised!({Bandit, plug: MockSlackAuthAPI, port: port})
-    previous_base = Application.get_env(:salix_im, :slack_api_base_url)
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    previous_base = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
 
     on_exit(fn ->
       case previous_base do
-        nil -> Application.delete_env(:salix_im, :slack_api_base_url)
-        value -> Application.put_env(:salix_im, :slack_api_base_url, value)
+        nil -> SystemsRuntime.delete_env(:salix_im, :slack_api_base_url)
+        value -> SystemsRuntime.put_env(:salix_im, :slack_api_base_url, value)
       end
     end)
 
@@ -463,13 +463,13 @@ defmodule SalixIM.IMIdentityAuditTest do
     :ok = :gen_tcp.close(socket)
 
     start_supervised!({Bandit, plug: MockSlackAuthAPI, port: port})
-    prev_base = Application.get_env(:salix_im, :slack_api_base_url)
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    prev_base = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
 
     on_exit(fn ->
       case prev_base do
-        nil -> Application.delete_env(:salix_im, :slack_api_base_url)
-        value -> Application.put_env(:salix_im, :slack_api_base_url, value)
+        nil -> SystemsRuntime.delete_env(:salix_im, :slack_api_base_url)
+        value -> SystemsRuntime.put_env(:salix_im, :slack_api_base_url, value)
       end
     end)
 
@@ -538,13 +538,13 @@ defmodule SalixIM.IMIdentityAuditTest do
     :ok = :gen_tcp.close(socket)
 
     start_supervised!({Bandit, plug: MockSlackAuthAPI, port: port})
-    prev_base = Application.get_env(:salix_im, :slack_api_base_url)
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    prev_base = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
 
     on_exit(fn ->
       case prev_base do
-        nil -> Application.delete_env(:salix_im, :slack_api_base_url)
-        value -> Application.put_env(:salix_im, :slack_api_base_url, value)
+        nil -> SystemsRuntime.delete_env(:salix_im, :slack_api_base_url)
+        value -> SystemsRuntime.put_env(:salix_im, :slack_api_base_url, value)
       end
     end)
 
@@ -646,20 +646,20 @@ defmodule SalixIM.IMIdentityAuditTest do
       :ok = :gen_tcp.close(socket)
 
       start_supervised!({Bandit, plug: MockSlackAuthAPI, port: port})
-      prev_base = Application.get_env(:salix_im, :slack_api_base_url)
-      Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+      prev_base = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+      SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
 
-      prev_page = Application.fetch_env(:salix_im, :identity_scan_page_size)
+      prev_page = SystemsRuntime.fetch_env(:salix_im, :identity_scan_page_size)
 
       on_exit(fn ->
         case prev_base do
-          nil -> Application.delete_env(:salix_im, :slack_api_base_url)
-          value -> Application.put_env(:salix_im, :slack_api_base_url, value)
+          nil -> SystemsRuntime.delete_env(:salix_im, :slack_api_base_url)
+          value -> SystemsRuntime.put_env(:salix_im, :slack_api_base_url, value)
         end
 
         case prev_page do
-          {:ok, value} -> Application.put_env(:salix_im, :identity_scan_page_size, value)
-          :error -> Application.delete_env(:salix_im, :identity_scan_page_size)
+          {:ok, value} -> SystemsRuntime.put_env(:salix_im, :identity_scan_page_size, value)
+          :error -> SystemsRuntime.delete_env(:salix_im, :identity_scan_page_size)
         end
       end)
 
@@ -711,7 +711,7 @@ defmodule SalixIM.IMIdentityAuditTest do
 
         :list ->
           # Page 1 carries the answer; the page-2 LIST faults.
-          Application.put_env(:salix_im, :identity_scan_page_size, 1)
+          SystemsRuntime.put_env(:salix_im, :identity_scan_page_size, 1)
           SalixStore.S3.Fake.set_fault({:delay, 0, :list, :any})
           SalixStore.S3.Fake.set_fault({:fail, 503, :list, :any})
       end
@@ -755,21 +755,21 @@ defmodule SalixIM.IMIdentityAuditTest do
     :ok = :gen_tcp.close(socket)
 
     start_supervised!({Bandit, plug: MockSlackAuthAPI, port: port})
-    prev_base = Application.get_env(:salix_im, :slack_api_base_url)
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    prev_base = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
 
-    prev_cap = Application.fetch_env(:salix_im, :identity_scan_max_concurrency)
-    Application.put_env(:salix_im, :identity_scan_max_concurrency, 0)
+    prev_cap = SystemsRuntime.fetch_env(:salix_im, :identity_scan_max_concurrency)
+    SystemsRuntime.put_env(:salix_im, :identity_scan_max_concurrency, 0)
 
     on_exit(fn ->
       case prev_base do
-        nil -> Application.delete_env(:salix_im, :slack_api_base_url)
-        value -> Application.put_env(:salix_im, :slack_api_base_url, value)
+        nil -> SystemsRuntime.delete_env(:salix_im, :slack_api_base_url)
+        value -> SystemsRuntime.put_env(:salix_im, :slack_api_base_url, value)
       end
 
       case prev_cap do
-        {:ok, value} -> Application.put_env(:salix_im, :identity_scan_max_concurrency, value)
-        :error -> Application.delete_env(:salix_im, :identity_scan_max_concurrency)
+        {:ok, value} -> SystemsRuntime.put_env(:salix_im, :identity_scan_max_concurrency, value)
+        :error -> SystemsRuntime.delete_env(:salix_im, :identity_scan_max_concurrency)
       end
     end)
 
@@ -878,13 +878,13 @@ defmodule SalixIM.IMIdentityAuditTest do
     :ok = :gen_tcp.close(socket)
 
     start_supervised!({Bandit, plug: MockSlackAuthAPI, port: port})
-    prev_base = Application.get_env(:salix_im, :slack_api_base_url)
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    prev_base = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
 
     on_exit(fn ->
       case prev_base do
-        nil -> Application.delete_env(:salix_im, :slack_api_base_url)
-        value -> Application.put_env(:salix_im, :slack_api_base_url, value)
+        nil -> SystemsRuntime.delete_env(:salix_im, :slack_api_base_url)
+        value -> SystemsRuntime.put_env(:salix_im, :slack_api_base_url, value)
       end
     end)
 

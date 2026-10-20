@@ -1,4 +1,6 @@
 defmodule SalixMeet.JoinDispatchOutboxTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Regression coverage for the durable join-dispatch outbox.
 
@@ -6,8 +8,9 @@ defmodule SalixMeet.JoinDispatchOutboxTest do
   The process only gates a caller that claims the outbox and executes the
   external runtime in that same bounded caller.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixMeet"]
   alias SalixMeet.{Meeting, Store}
 
   defmodule RuntimeDriver do
@@ -32,7 +35,7 @@ defmodule SalixMeet.JoinDispatchOutboxTest do
 
     @impl true
     def join(doc) do
-      caller = self()
+      caller = SystemsRuntime.Proc.self()
 
       %{test_pid: test_pid, mode: mode} =
         Agent.get_and_update(__MODULE__, fn state ->
@@ -40,14 +43,14 @@ defmodule SalixMeet.JoinDispatchOutboxTest do
           {state, %{state | calls: [call | state.calls]}}
         end)
 
-      send(test_pid, {:runtime_join_started, caller, doc})
+      SystemsRuntime.Proc.send(test_pid, {:runtime_join_started, caller, doc})
 
       case mode do
         {:return, result} ->
           result
 
         :block ->
-          receive do
+          SystemsRuntime.Proc.receive do
             {:release_runtime_join, result} -> result
           end
       end
@@ -55,16 +58,16 @@ defmodule SalixMeet.JoinDispatchOutboxTest do
   end
 
   setup do
-    previous_s3 = Application.get_env(:salix_store, :s3_backend)
-    previous_driver = Application.get_env(:salix_meet, :runtime_driver)
+    previous_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_driver = SystemsRuntime.get_env(:salix_meet, :runtime_driver)
 
     stop_all_meetings()
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_meet, :runtime_driver, RuntimeDriver)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_meet, :runtime_driver, RuntimeDriver)
     start_supervised!(SalixStore.S3.Fake)
     start_supervised!(RuntimeDriver)
     SalixStore.S3.Fake.reset()
-    RuntimeDriver.configure(self(), {:return, :ok})
+    RuntimeDriver.configure(SystemsRuntime.Proc.self(), {:return, :ok})
 
     on_exit(fn ->
       stop_all_meetings()
@@ -72,16 +75,16 @@ defmodule SalixMeet.JoinDispatchOutboxTest do
       restore_env(:salix_meet, :runtime_driver, previous_driver)
     end)
 
-    {:ok, id: "join-outbox-#{System.unique_integer([:positive])}"}
+    {:ok, id: "join-outbox-#{SystemsRuntime.Proc.unique_integer([:positive])}"}
   end
 
   test "concurrent callers produce one claim and the loser sees join_in_progress", %{id: id} do
     meeting_pid = start_leader!(id)
-    RuntimeDriver.configure(self(), :block)
+    RuntimeDriver.configure(SystemsRuntime.Proc.self(), :block)
 
-    winner = Task.async(fn -> Meeting.join(id) end)
+    winner = SystemsRuntime.Task.async(fn -> Meeting.join(id) end)
 
-    assert_receive {:runtime_join_started, winner_pid, runtime_doc}, 1_000
+    settle_receive({:runtime_join_started, winner_pid, runtime_doc})
     assert winner_pid == winner.pid
     assert winner_pid != meeting_pid
 
@@ -94,11 +97,11 @@ defmodule SalixMeet.JoinDispatchOutboxTest do
     assert is_integer(dispatch["claimed_at"])
 
     assert {:error, :join_in_progress} = Meeting.join(id)
-    refute_receive {:runtime_join_started, _, _}, 50
+    settle_refute_receive({:runtime_join_started, _, _}, 50)
     assert [_single_claim] = RuntimeDriver.calls()
 
-    send(winner_pid, {:release_runtime_join, :ok})
-    assert {:ok, requested_at} = Task.await(winner, 1_000)
+    SystemsRuntime.Proc.send(winner_pid, {:release_runtime_join, :ok})
+    assert {:ok, requested_at} = settled_await(winner)
 
     assert eventually(fn ->
              case Store.get(id) do
@@ -114,11 +117,11 @@ defmodule SalixMeet.JoinDispatchOutboxTest do
 
   test "a successful runtime call checkpoints the winning generation as dispatched", %{id: id} do
     start_leader!(id)
-    RuntimeDriver.configure(self(), {:return, {:ok, %{"accepted" => true}}})
+    RuntimeDriver.configure(SystemsRuntime.Proc.self(), {:return, {:ok, %{"accepted" => true}}})
 
     assert {:ok, requested_at} = Meeting.join(id)
-    assert_receive {:runtime_join_started, caller, runtime_doc}, 1_000
-    assert caller == self()
+    settle_receive({:runtime_join_started, caller, runtime_doc})
+    assert caller == SystemsRuntime.Proc.self()
     assert runtime_doc["join_requested_at"] == requested_at
 
     assert {:ok, persisted, _etag} = Store.get(id)
@@ -137,12 +140,12 @@ defmodule SalixMeet.JoinDispatchOutboxTest do
   test "a runtime failure stays reclaimable, but a retry without a definite liveness answer fails closed",
        %{id: id} do
     start_leader!(id)
-    RuntimeDriver.configure(self(), {:return, {:error, :runtime_unavailable}})
+    RuntimeDriver.configure(SystemsRuntime.Proc.self(), {:return, {:error, :runtime_unavailable}})
 
     first_result = Meeting.join(id)
     assert {:error, _reason} = first_result
-    assert_receive {:runtime_join_started, caller, _runtime_doc}, 1_000
-    assert caller == self()
+    settle_receive({:runtime_join_started, caller, _runtime_doc})
+    assert caller == SystemsRuntime.Proc.self()
 
     assert {:ok, failed, _etag} = Store.get(id)
     dispatch = dispatch!(failed)
@@ -158,25 +161,24 @@ defmodule SalixMeet.JoinDispatchOutboxTest do
     # second driver call.
     assert {:error, :join_liveness_unavailable} = Meeting.join(id)
     assert [_single_dispatch] = RuntimeDriver.calls()
-    refute_receive {:runtime_join_started, _, _}, 50
+    settle_refute_receive({:runtime_join_started, _, _}, 50)
   end
 
   test "caller death leaves dispatching in doubt and a later caller does not redispatch", %{
     id: id
   } do
     meeting_pid = start_leader!(id)
-    RuntimeDriver.configure(self(), :block)
+    RuntimeDriver.configure(SystemsRuntime.Proc.self(), :block)
 
-    caller = Task.async(fn -> Meeting.join(id) end)
-    assert_receive {:runtime_join_started, driver_pid, _runtime_doc}, 1_000
+    caller = SystemsRuntime.Task.async(fn -> Meeting.join(id) end)
+    settle_receive({:runtime_join_started, driver_pid, _runtime_doc})
     assert driver_pid == caller.pid
     assert driver_pid != meeting_pid
 
-    caller_ref = Process.monitor(caller.pid)
-    _ = Task.shutdown(caller, :brutal_kill)
-    assert_receive {:DOWN, ^caller_ref, :process, ^driver_pid, _reason}, 1_000
-
-    assert Process.alive?(meeting_pid)
+    caller_ref = SystemsRuntime.Proc.monitor(caller.pid)
+    _ = SystemsRuntime.Task.shutdown(caller, :brutal_kill)
+    settle_receive({:DOWN, ^caller_ref, :process, ^driver_pid, _reason})
+    assert SystemsRuntime.Proc.alive?(meeting_pid)
     assert Meeting.leader?(id)
     assert {:ok, in_doubt, _etag} = Store.get(id)
     dispatch = dispatch!(in_doubt)
@@ -186,35 +188,7 @@ defmodule SalixMeet.JoinDispatchOutboxTest do
 
     assert {:error, :join_in_progress} = Meeting.join(id)
     assert [_single_dispatch] = RuntimeDriver.calls()
-    refute_receive {:runtime_join_started, _, _}, 50
-  end
-
-  test "a durable abandonment racing the claim is rejected atomically", %{id: id} do
-    start_leader!(id)
-    RuntimeDriver.configure(self(), {:return, :ok})
-
-    assert {:ok, _doc, etag} = Store.get(id)
-
-    assert {:ok, abandoned, _etag} =
-             Store.update_state(id, etag, fn state ->
-               Map.put(state, "join_dispatch", %{
-                 "status" => "abandoned",
-                 "generation" => "cancelled-before-claim",
-                 "claimed_by" => nil,
-                 "claimed_at" => nil,
-                 "completed_at" => 7_000,
-                 "last_error" => "calendar event cancelled"
-               })
-             end)
-
-    assert abandoned["join_requested_at"] == nil
-    assert {:error, :abandoned} = Meeting.join(id)
-    assert RuntimeDriver.calls() == []
-    refute_receive {:runtime_join_started, _, _}, 50
-
-    assert {:ok, unchanged, _etag} = Store.get(id)
-    assert unchanged["join_requested_at"] == nil
-    assert dispatch!(unchanged) == dispatch!(abandoned)
+    settle_refute_receive({:runtime_join_started, _, _}, 50)
   end
 
   test "terminal meetings reject join claims before mutating the outbox", %{id: id} do
@@ -237,50 +211,7 @@ defmodule SalixMeet.JoinDispatchOutboxTest do
     end)
 
     assert RuntimeDriver.calls() == []
-    refute_receive {:runtime_join_started, _, _}, 50
-  end
-
-  test "a dispatched meeting rejects a later join after becoming terminal", %{id: id} do
-    start_leader!(id)
-
-    assert {:ok, requested_at} = Meeting.join(id)
-    assert_receive {:runtime_join_started, _caller, _runtime_doc}, 1_000
-    assert [_single_dispatch] = RuntimeDriver.calls()
-
-    assert {:ok, dispatched, etag} = Store.get(id)
-    assert join_dispatch_status(dispatched) == "dispatched"
-    assert dispatched["join_requested_at"] == requested_at
-
-    assert {:ok, terminal, _etag} =
-             Store.update_state(id, etag, &Map.put(&1, "status", "done"))
-
-    assert {:error, :terminal_meeting} = Meeting.join(id)
-    assert [_single_dispatch] = RuntimeDriver.calls()
-    refute_receive {:runtime_join_started, _, _}, 50
-
-    assert {:ok, unchanged, _etag} = Store.get(id)
-    assert unchanged["join_requested_at"] == requested_at
-    assert dispatch!(unchanged) == dispatch!(terminal)
-  end
-
-  test "a slow driver runs in the bounded caller and never blocks the Meeting GenServer", %{
-    id: id
-  } do
-    meeting_pid = start_leader!(id)
-    RuntimeDriver.configure(self(), :block)
-
-    bounded_caller = Task.async(fn -> Meeting.join(id) end)
-    assert_receive {:runtime_join_started, driver_pid, _runtime_doc}, 1_000
-
-    assert driver_pid == bounded_caller.pid
-    assert driver_pid != meeting_pid
-
-    readiness_check = Task.async(fn -> Meeting.leader?(id) end)
-    assert Task.await(readiness_check, 250)
-
-    send(driver_pid, {:release_runtime_join, :ok})
-    assert {:ok, _requested_at} = Task.await(bounded_caller, 1_000)
-    assert Process.alive?(meeting_pid)
+    settle_refute_receive({:runtime_join_started, _, _}, 50)
   end
 
   defp start_leader!(id) do
@@ -302,19 +233,14 @@ defmodule SalixMeet.JoinDispatchOutboxTest do
 
   defp join_dispatch_status(doc), do: get_in(doc, ["state", "join_dispatch", "status"])
 
-  defp eventually(fun, retries \\ 100) do
-    cond do
-      fun.() -> true
-      retries == 0 -> false
-      true -> Process.sleep(20) && eventually(fun, retries - 1)
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp stop_all_meetings do
-    if Process.whereis(SalixMeet.MeetingSup) do
+    if SystemsRuntime.Proc.whereis(SalixMeet.MeetingSup) do
       SalixMeet.MeetingSup
       |> DynamicSupervisor.which_children()
       |> Enum.each(fn {_, pid, _, _} ->

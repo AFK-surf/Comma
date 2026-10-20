@@ -5,7 +5,7 @@ defmodule SalixLlm.StreamingTest do
   chunk-split lines, and the final reassembled result equals what
   `SalixLlm.Stream.decode/1` produces for the full body.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixLlm.{MockSSEServer, Stream, Streaming}
 
@@ -37,13 +37,13 @@ defmodule SalixLlm.StreamingTest do
   test "a kernel-built round request preserves the stored prompt and streamed output", %{
     llm_opts: opts
   } do
-    previous = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_agent, :llm, SalixLlm.Provider)
+    previous = SystemsRuntime.get_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_agent, :llm, SalixLlm.Provider)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_agent, :llm, previous),
-        else: Application.delete_env(:salix_agent, :llm)
+        do: SystemsRuntime.put_env(:salix_agent, :llm, previous),
+        else: SystemsRuntime.delete_env(:salix_agent, :llm)
     end)
 
     session =
@@ -60,7 +60,6 @@ defmodule SalixLlm.StreamingTest do
     config = %{
       "role" => "worker",
       "canonical_router" => false,
-      "disclosure" => %{},
       "protocol" => protocol,
       "cfg" => cfg,
       "tools" => [echo_tool_spec()],
@@ -336,7 +335,7 @@ defmodule SalixLlm.StreamingTest do
   # Bind Bandit on a random port, retrying on collisions across suites.
   defp start_bandit_retry!(spec_fun) do
     Enum.find_value(1..10, fn _ ->
-      p = 40000 + :erlang.phash2(make_ref(), 20000)
+      p = 40000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20000)
 
       case ExUnit.Callbacks.start_supervised(spec_fun.(p), id: {:bandit_retry, p}) do
         {:ok, _pid} -> p

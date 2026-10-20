@@ -1,6 +1,6 @@
 import { formatNumber, type CommaLocale } from "@comma/i18n";
 import { useCommaMessages } from "@comma/i18n/react";
-import { ScrollArea, type ScrollEdgeMask } from "@comma/ui";
+import { ScrollArea, type ScrollEdgeMask } from "@comma/ui/components/scroll-area";
 import type { ReactNode } from "react";
 import type { useStickToBottom } from "./useStickToBottom";
 import type { MeasuredThreadResize } from "./useMeasuredThreadResize";
@@ -28,13 +28,13 @@ export function ThreadScrollViewport({
   },
   freezeContentInlineSizeOnWindowResize,
   locale,
+  overlay,
   resize: {
     handleMeasuredContentResize,
     handleMeasuredViewportResize,
     handleThreadMetrics,
   },
   scrollbar: { hasThreadOverflow, scrollEnabled, updateScrollEnabled },
-  showsEmptyCard,
 }: {
   children: ReactNode;
   contentResizeTarget: HTMLElement | null;
@@ -51,16 +51,14 @@ export function ThreadScrollViewport({
   >;
   freezeContentInlineSizeOnWindowResize: boolean;
   locale: CommaLocale;
+  /** A layer over the transcript, such as an open reply thread. */
+  overlay?: ReactNode;
   resize: MeasuredThreadResize;
   scrollbar: ThreadScrollbar;
-  showsEmptyCard: boolean;
 }) {
   const messagesApi = useCommaMessages();
   return (
-    <div
-      className="comma-chat-thread-zone"
-      data-empty-card={showsEmptyCard ? "true" : undefined}
-    >
+    <div className="comma-chat-thread-zone">
       <ScrollArea
         ref={scrollRootRef}
         className="min-h-0 flex-1"
@@ -68,9 +66,7 @@ export function ThreadScrollViewport({
         // The latest turn keeps resizing inside a shell whose own size is
         // pinned by its reserve, so the shared observer has to watch it too.
         contentResizeTarget={contentResizeTarget}
-        // Even a zero-length fade clips shadows at the viewport boundary.
-        // The floating empty card needs the visible overflow allowed by its CSS.
-        edgeEffect={showsEmptyCard ? "none" : "mask"}
+        edgeEffect="mask"
         edgeMask={edgeMask}
         freezeContentInlineSizeOnWindowResize={freezeContentInlineSizeOnWindowResize}
         onContentResize={handleMeasuredContentResize}
@@ -148,6 +144,8 @@ export function ThreadScrollViewport({
       >
         {children}
       </ScrollArea>
+
+      {overlay}
 
       {unseenCount > 0 ? (
         <button className="comma-chat-new-pill" onClick={scrollToBottom} type="button">

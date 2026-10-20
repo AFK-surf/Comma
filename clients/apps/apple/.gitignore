@@ -3,3 +3,6 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 Local.xcconfig
+Configuration/WatchVoiceProbe.local.xcconfig
+Vendor/
+e2e/*.xcodeproj/

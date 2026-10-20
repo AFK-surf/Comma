@@ -1,4 +1,6 @@
 defmodule SalixAgent.AgentRoleActor do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Node-local owner process for one agent's agent-level resources.
 
@@ -18,7 +20,7 @@ defmodule SalixAgent.AgentRoleActor do
   agents share this process; only a Router switches canonical sessions.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   alias SalixAgent.AgentActor.SessionDelivery
   alias SalixAgent.{AgentControl, InternalSessionActor, InternalSessionStore}
@@ -50,41 +52,42 @@ defmodule SalixAgent.AgentRoleActor do
 
   def start_link(opts) do
     agent_id = Keyword.fetch!(opts, :agent_id)
-    GenServer.start_link(__MODULE__, opts, name: SalixAgent.AgentActor.via(agent_id))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: SalixAgent.AgentActor.via(agent_id))
   end
 
   @doc false
   def stage_delivery(pid, entry, timeout)
-      when is_pid(pid) and is_map(entry) and
+      when SystemsRuntime.Proc.is_process(pid) and is_map(entry) and
              (timeout == :infinity or (is_integer(timeout) and timeout >= 0)) do
-    request_id = make_ref()
+    request_id = SystemsRuntime.Proc.make_ref()
     # The staged reply task continues this chain in another process; it
     # starts from the control records this process already read.
     read_scope = SalixStore.ReadScope.capture() || %{}
 
     try do
-      GenServer.call(pid, {:stage_delivery, request_id, entry, read_scope}, timeout)
+      SystemsClock.call(pid, {:stage_delivery, request_id, entry, read_scope}, timeout)
     catch
       :exit, reason ->
         # A timed-out GenServer.call only abandons its reply alias; it does not
         # retract the request already sitting in the actor mailbox. Give the
         # role actor the exact request identity so it can kill the tracked
         # staging task when that task has not already reached durability.
-        GenServer.cast(pid, {:cancel_stage_delivery, request_id})
+        SystemsRuntime.Server.cast(pid, {:cancel_stage_delivery, request_id})
         {:error, normalize_stage_call_exit(reason)}
     end
   end
 
   @doc false
   def commit_workspace_operation(pid, operation_id, result, events, timeout \\ :infinity)
-      when is_pid(pid) and is_binary(operation_id) and is_list(events) do
-    GenServer.call(pid, {:commit_workspace_operation, operation_id, result, events}, timeout)
+      when SystemsRuntime.Proc.is_process(pid) and is_binary(operation_id) and is_list(events) do
+    SystemsClock.call(pid, {:commit_workspace_operation, operation_id, result, events}, timeout)
   end
 
   @doc false
   def prepare_workspace_operation(pid, operation_id, result, events, opts, timeout \\ :infinity)
-      when is_pid(pid) and is_binary(operation_id) and is_list(events) and is_list(opts) do
-    GenServer.call(
+      when SystemsRuntime.Proc.is_process(pid) and is_binary(operation_id) and is_list(events) and
+             is_list(opts) do
+    SystemsClock.call(
       pid,
       {:prepare_workspace_operation, operation_id, result, events, opts},
       timeout
@@ -93,33 +96,33 @@ defmodule SalixAgent.AgentRoleActor do
 
   @doc false
   def commit_prepared_workspace_operation(pid, prepared, timeout \\ :infinity)
-      when is_pid(pid) do
-    GenServer.call(pid, {:commit_prepared_workspace_operation, prepared}, timeout)
+      when SystemsRuntime.Proc.is_process(pid) do
+    SystemsClock.call(pid, {:commit_prepared_workspace_operation, prepared}, timeout)
   end
 
   @doc false
-  def stop_runtime(pid, reason, timeout \\ :infinity) when is_pid(pid) do
-    GenServer.call(pid, {:stop_runtime, reason}, timeout)
+  def stop_runtime(pid, reason, timeout \\ :infinity) when SystemsRuntime.Proc.is_process(pid) do
+    SystemsClock.call(pid, {:stop_runtime, reason}, timeout)
   end
 
   @doc false
   def switch_canonical_session(pid, expected_session_id, timeout \\ :infinity)
-      when is_pid(pid) and is_binary(expected_session_id) do
-    GenServer.call(pid, {:switch_canonical_session, expected_session_id}, timeout)
+      when SystemsRuntime.Proc.is_process(pid) and is_binary(expected_session_id) do
+    SystemsClock.call(pid, {:switch_canonical_session, expected_session_id}, timeout)
   end
 
   @doc false
   def admit_canonical_session(pid, session_id, timeout \\ :infinity)
-      when is_pid(pid) and is_binary(session_id) do
-    GenServer.call(pid, {:admit_canonical_session, session_id}, timeout)
+      when SystemsRuntime.Proc.is_process(pid) and is_binary(session_id) do
+    SystemsClock.call(pid, {:admit_canonical_session, session_id}, timeout)
   catch
     :exit, reason -> {:error, {:router_owner_unavailable, reason}}
   end
 
   @doc false
   def ensure_canonical_session_started(pid, session_id, opts, timeout \\ :infinity)
-      when is_pid(pid) and is_binary(session_id) and is_list(opts) do
-    GenServer.call(pid, {:ensure_canonical_session_started, session_id, opts}, timeout)
+      when SystemsRuntime.Proc.is_process(pid) and is_binary(session_id) and is_list(opts) do
+    SystemsClock.call(pid, {:ensure_canonical_session_started, session_id, opts}, timeout)
   catch
     :exit, reason -> {:error, {:router_owner_unavailable, reason}}
   end
@@ -130,7 +133,8 @@ defmodule SalixAgent.AgentRoleActor do
     agent = Keyword.get(opts, :agent, %{})
     role = agent["role"]
 
-    if role == "router", do: SalixAgent.RouterRequestMonitor.register(agent_id, self())
+    if role == "router",
+      do: SalixAgent.RouterRequestMonitor.register(agent_id, SystemsRuntime.Proc.self())
 
     {:ok, %__MODULE__{agent_id: agent_id, agent: agent, role: role}}
   end
@@ -146,10 +150,18 @@ defmodule SalixAgent.AgentRoleActor do
   end
 
   def handle_call({:stage_delivery, request_id, entry, read_scope}, from, data) do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
+    # The stage task reads these fields, not the actor's queues and tasks.
+    stage_data = Map.take(data, [:agent_id, :agent, :role])
 
     data =
-      begin_stage_reply(data, request_id, from, fn -> stage(data, entry, owner) end, read_scope)
+      begin_stage_reply(
+        data,
+        request_id,
+        from,
+        fn -> stage(stage_data, entry, owner) end,
+        read_scope
+      )
 
     {:noreply, data}
   end
@@ -321,7 +333,7 @@ defmodule SalixAgent.AgentRoleActor do
 
     case start_stage_task(from, fun) do
       {:ok, pid} ->
-        monitor_ref = Process.monitor(pid)
+        monitor_ref = SystemsRuntime.Proc.monitor(pid)
         stage_tasks = Map.put(data.stage_tasks, request_id, {pid, monitor_ref})
         %{data | stage_tasks: stage_tasks}
 
@@ -336,12 +348,12 @@ defmodule SalixAgent.AgentRoleActor do
         {:ok, pid}
 
       {:error, reason} ->
-        GenServer.reply(from, {:error, {:agent_actor_reply_task_failed, reason}})
+        SystemsRuntime.Server.reply(from, {:error, {:agent_actor_reply_task_failed, reason}})
         :error
     end
   catch
     :exit, reason ->
-      GenServer.reply(from, {:error, {:agent_actor_reply_task_failed, reason}})
+      SystemsRuntime.Server.reply(from, {:error, {:agent_actor_reply_task_failed, reason}})
       :error
   end
 
@@ -358,7 +370,7 @@ defmodule SalixAgent.AgentRoleActor do
   defp cancel_stage_reply_and_await_down(data, request_id) do
     case Map.get(data.stage_tasks, request_id) do
       {pid, _monitor_ref} ->
-        if Process.alive?(pid), do: Process.exit(pid, :kill)
+        if SystemsRuntime.Proc.alive?(pid), do: SystemsRuntime.Proc.exit(pid, :kill)
         data
 
       nil ->
@@ -407,7 +419,7 @@ defmodule SalixAgent.AgentRoleActor do
   # Deterministic test seam for the canonical-read -> start-child boundary.
   # Production has no configured callback.
   defp run_session_start_test_barrier(agent_id, session_id) do
-    case Application.get_env(:salix_agent, :router_session_start_test_barrier) do
+    case SystemsRuntime.get_env(:salix_agent, :router_session_start_test_barrier) do
       fun when is_function(fun, 2) -> fun.(agent_id, session_id)
       _other -> :ok
     end
@@ -493,15 +505,15 @@ defmodule SalixAgent.AgentRoleActor do
 
     case rotate_canonical_session(data, expected_session_id) do
       {:ok, result, next_data} ->
-        GenServer.reply(from, {:ok, result})
+        SystemsRuntime.Server.reply(from, {:ok, result})
         next_data
 
       {:error, reason, next_data} ->
-        GenServer.reply(from, {:error, reason})
+        SystemsRuntime.Server.reply(from, {:error, reason})
         next_data
 
       {:error, reason} ->
-        GenServer.reply(from, {:error, reason})
+        SystemsRuntime.Server.reply(from, {:error, reason})
         data
     end
   end

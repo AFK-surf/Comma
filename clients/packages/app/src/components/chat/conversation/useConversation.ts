@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import type { ChatChannel } from "../../../runtime-chat/channel/ChatChannel";
+import type { ManualTaskStatus } from "@comma/chat-contract";
+import type {
+  ChatChannel,
+  ChatSendOptions,
+  QuestionCardAnswer,
+} from "../channel/ChatChannel";
 import { isStaleChatSessionError, useChatRegistry } from "../ChatProvider";
 import {
   idleConversationChannelState,
   type ChatImagePreviewRef,
-} from "../model/conversationChannel";
+} from "@comma/core/chat";
 import {
   createViewStateProjection,
   type ComposerDraftSource,
@@ -98,8 +103,12 @@ export function useConversation(
     () => ({
       acceptTaskReview: (reviewVersion: number) =>
         channel?.acceptTaskReview(reviewVersion),
-      attachFiles: (files: Parameters<ChatChannel["attachFiles"]>[0]) =>
-        channel?.attachFiles(files),
+      setTaskStatus: (status: ManualTaskStatus, expectedUpdatedAt: number) =>
+        channel?.setTaskStatus(status, expectedUpdatedAt),
+      attachFiles: (
+        files: Parameters<ChatChannel["attachFiles"]>[0],
+        questionMessageId?: string
+      ) => channel?.attachFiles(files, questionMessageId),
       transcodesImages: channel?.transcodesImages === true,
       ...(channel?.pickAttachments
         ? { pickAttachments: () => channel.pickAttachments?.() }
@@ -113,17 +122,15 @@ export function useConversation(
       clearPresentation: () => channel?.clearPresentation?.(),
       discard: (clientRequestId: string) => channel?.discard(clientRequestId),
       refresh: () => channel?.refresh(),
-      removeAttachment: (id: string) => channel?.removeAttachment(id),
+      readTaskActivity: () => channel?.readTaskActivity?.(),
+      removeAttachment: (id: string, questionMessageId?: string) =>
+        channel?.removeAttachment(id, questionMessageId),
       retry: (clientRequestId: string) => channel?.retry(clientRequestId),
-      retryAttachment: (id: string) => channel?.retryAttachment(id),
-      send: (
-        text: string,
-        options?: {
-          consumeDraft?: boolean;
-          replyToMessageId?: string;
-          skills?: { location: string }[];
-        }
-      ) => channel?.send(text, options),
+      retryAttachment: (id: string, questionMessageId?: string) =>
+        channel?.retryAttachment(id, questionMessageId),
+      answerQuestion: (answer: QuestionCardAnswer) =>
+        channel?.answerQuestion?.(answer) ?? Promise.resolve(undefined),
+      send: (text: string, options?: ChatSendOptions) => channel?.send(text, options),
       setDraft: (draft: string) => channel?.setDraft(draft),
     }),
     [channel]

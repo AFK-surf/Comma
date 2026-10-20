@@ -1,5 +1,5 @@
 defmodule Salix.Bindings.CalendarFeedIssuanceTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Bindings.{AgentCalendar, CalendarFeed}
   alias SalixCalendar.AgentAPI
@@ -117,10 +117,10 @@ defmodule Salix.Bindings.CalendarFeedIssuanceTest do
   end
 
   test "the sealed provider principal carries through the tool to a usable link", ctx do
-    previous_calendar = Application.get_env(:salix_agent, :calendar_mod)
-    previous_oauth = Application.get_env(:salix_agent, :oauth_store_mod)
-    Application.put_env(:salix_agent, :calendar_mod, AgentCalendar)
-    Application.put_env(:salix_agent, :oauth_store_mod, TestOAuthStore)
+    previous_calendar = SystemsRuntime.get_env(:salix_agent, :calendar_mod)
+    previous_oauth = SystemsRuntime.get_env(:salix_agent, :oauth_store_mod)
+    SystemsRuntime.put_env(:salix_agent, :calendar_mod, AgentCalendar)
+    SystemsRuntime.put_env(:salix_agent, :oauth_store_mod, TestOAuthStore)
     Process.put({TestOAuthStore, :context}, %{tenant: ctx.tenant_id, group_id: ctx.group_id})
 
     on_exit(fn ->
@@ -170,8 +170,8 @@ defmodule Salix.Bindings.CalendarFeedIssuanceTest do
              AgentCalendar.issue_feed_link(ctx.group_id, principal)
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp parse(url) do
     [_, tail] = String.split(url, "/v1/calendar/feeds/")

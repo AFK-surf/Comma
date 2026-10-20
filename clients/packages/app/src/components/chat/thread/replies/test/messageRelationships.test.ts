@@ -142,6 +142,45 @@ describe("message thread layout", () => {
     expect(replies.get("E")).toMatchObject({ targetId: "D", presentation: "line" });
   });
 
+  it("connects a member's reply to the message it answers, even before the owner names its root", () => {
+    const pendingReply: ChatMessage = {
+      ...message("R", "user", "B"),
+      role: "user",
+      source: "pending",
+      threadRootMessageId: undefined,
+    };
+    const messages = [
+      { ...message("A", "user"), role: "user" },
+      message("B", "router", "A", "A"),
+      pendingReply,
+    ];
+    const { replies } = messageRelationships(messages);
+    expect(replies.get("R")).toEqual({
+      messageId: "R",
+      targetId: "B",
+      sourceAnchorId: "R",
+      targetAnchorId: "B",
+      presentation: "line",
+      fromMember: true,
+    });
+  });
+
+  it("joins two Agent messages around a member's reply with one line", () => {
+    const messages = [
+      { ...message("A", "user"), role: "user" },
+      message("B", "router", "A", "A"),
+      { ...message("R", "user", "B", "A"), role: "user" },
+      message("C", "router", "R", "A"),
+    ];
+    const { replies } = messageRelationships(messages);
+    expect(replies.has("R")).toBe(false);
+    expect(replies.get("C")).toMatchObject({
+      targetId: "B",
+      targetAnchorId: "B",
+      presentation: "line",
+    });
+  });
+
   it("keeps the exact user anchor when adjacent user messages start different threads", () => {
     const { replies } = messageRelationships([
       { ...message("A", "user"), role: "user" },

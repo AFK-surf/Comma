@@ -1,4 +1,7 @@
-import { Button, Checkbox, Dropdown, Toggle } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Checkbox } from "@comma/ui/components/checkbox";
+import { Dropdown } from "@comma/ui/components/dropdown";
+import { Toggle } from "@comma/ui/components/toggle";
 import { useEffect, useRef, useState } from "react";
 import {
   BftApiError,
@@ -15,10 +18,8 @@ import { orgHref, triagePaths } from "./navSpec";
 import { useApi, useResource, type Resource } from "./resource";
 import { navigate, spaLinkClick, type TriageView } from "./router";
 import {
-  FormActions,
   FormDialog,
   FormSection,
-  SaveButton,
   SettingsPage,
   TextField,
   useWrite,
@@ -308,7 +309,7 @@ function Overview({
             monitoring={source ? monitoringActive(source) : false}
             org={org}
           />
-          <Worker agent={agent} org={org} />
+          <TriageTasks agent={agent} org={org} />
         </div>
       </div>
       {confirming && source ? (
@@ -637,126 +638,31 @@ function Evaluation({
   );
 }
 
-const unassigned = "none";
-const workerAnchor = "triage-worker-configuration";
-
 /**
- * The Worker for new Triage tasks of this Agent's Agent Swarm. The Agent
- * Swarm's Agents page links here with `#triage-worker-configuration`.
+ * Where this Agent's Triage Tasks run: its Agent Swarm's default place and
+ * default Task model, which the swarm's Settings change.
  */
-function Worker({ org, agent }: { org: string; agent: BftTriageAgent }) {
+function TriageTasks({ org, agent }: { org: string; agent: BftTriageAgent }) {
   const api = useApi();
-  const write = useWrite();
-  const [query, setQuery] = useState("");
-  const [search, setSearch] = useState("");
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [choice, setChoice] = useState<string | null>(null);
-  const [reload, setReload] = useState(0);
-  const [notice, setNotice] = useState<string>();
-  // The revision this page read first; a save against another one is refused.
-  const revision = useRef<number | null | undefined>(undefined);
-  const preview = choice === unassigned ? null : choice;
-  const [config] = useResource(
-    `triage-worker:${org}:${agent.id}:${search}:${cursor ?? ""}:${choice ?? ""}:${reload}`,
-    (signal) =>
-      api.triageWorker(org, agent.id, { query: search, preview, cursor }, signal)
+  const [settings] = useResource(`triage-tasks:${org}:${agent.id}`, (signal) =>
+    api.triageTaskSettings(org, agent.id, signal)
   );
-  const view = config.state === "ready" ? config.data : undefined;
-  if (view && revision.current === undefined) revision.current = view.revision;
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setSearch(query.trim());
-      setCursor(null);
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [query]);
-
-  useEffect(() => {
-    if (window.location.hash === `#${workerAnchor}`)
-      document.getElementById(workerAnchor)?.scrollIntoView({ block: "start" });
-  }, []);
-
-  const selected = choice ?? view?.worker_id ?? unassigned;
-  const options = [view?.worker, view?.preview, ...(view?.candidates ?? [])].filter(
-    (worker, index, all): worker is NonNullable<typeof worker> =>
-      !!worker && all.findIndex((other) => other?.id === worker.id) === index
-  );
-  const shown = selected === unassigned ? null : (view?.preview ?? view?.worker);
-
-  const save = () =>
-    write.run(
-      () =>
-        api
-          .saveTriageWorker(
-            org,
-            agent.id,
-            selected === unassigned ? null : selected,
-            revision.current ?? null
-          )
-          .finally(() => {
-            // Saved or refused, the page shows the current selection again.
-            revision.current = undefined;
-            setChoice(null);
-            setReload((value) => value + 1);
-          }),
-      setNotice
-    );
+  const view = settings.state === "ready" ? settings.data : undefined;
 
   return (
-    <FormSection description={t.workerHint} id={workerAnchor} title={t.workerTitle}>
-      {config.state === "loading" && !view ? (
+    <FormSection description={t.tasksHint} id="triage-tasks" title={t.tasksTitle}>
+      {settings.state === "loading" && !view ? (
         <Skeleton height={14} width="50%" />
-      ) : config.state === "error" ? (
-        <p className="bft-notice">{writeErrorMessage(config.error)}</p>
-      ) : view && !view.can_manage ? (
-        <p>{view.worker?.name ?? (view.worker_id ? view.worker_id : t.notAssigned)}</p>
+      ) : settings.state === "error" ? (
+        <p className="bft-notice">{writeErrorMessage(settings.error)}</p>
       ) : view ? (
         <>
-          <TextField label={t.findWorker} onChange={setQuery} value={query} />
-          <Dropdown
-            ariaLabel={t.workerTitle}
-            className="bft-form-field"
-            disabled={write.busy}
-            items={[
-              { id: unassigned, label: t.unassignedOption },
-              ...options.map((worker) => ({
-                id: worker.id,
-                label: worker.name ?? worker.id,
-              })),
-            ]}
-            onChange={(id) => {
-              setNotice(undefined);
-              setChoice(id);
-            }}
-            size="sm"
-            value={selected}
-          />
-          {view.next_cursor ? (
-            <button
-              className="bft-btn bft-btn-sm"
-              onClick={() => setCursor(view.next_cursor)}
-              type="button"
-            >
-              {t.moreWorkers}
-            </button>
-          ) : null}
-          <output className="bft-form-section-note" id="triage-worker-preview">
-            {shown === null
-              ? t.pausedWithoutWorker
-              : t.sentence(
-                  (t.availability as Record<string, string>)[shown?.status ?? "none"] ??
-                    t.availability.unavailable
-                )}{" "}
-            {t.existingTasksStay}
-          </output>
+          <a className="bft-link" href={view.settings_href} onClick={spaLinkClick}>
+            {t.tasksSettings}
+          </a>
           {view.tools_ready === false ? (
             <p className="bft-notice">{t.toolsDisabled}</p>
           ) : null}
-          {notice ? <output className="bft-form-section-note">{notice}</output> : null}
-          <FormActions write={{ ...write, saved: false }}>
-            <SaveButton busy={write.busy} onPress={save} />
-          </FormActions>
         </>
       ) : null}
     </FormSection>

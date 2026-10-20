@@ -1,13 +1,19 @@
 defmodule SalixIM.ConversationSource do
   @moduledoc "Ordered Conversation sources for Agent and provider Participants."
 
-  alias SalixIM.{ConversationDelivery, ConversationMessage, Conversations, GroupDirectory}
+  alias SalixIM.{
+    ConversationDelivery,
+    ConversationMessage,
+    Conversations,
+    GroupDirectory
+  }
+
   alias SalixStore.{CasRecord, Keys}
 
   @batch_size 32
 
   def notify(nil, source) do
-    Task.Supervisor.start_child(SalixIM.ConversationNotificationTasks, fn ->
+    SystemsRuntime.TaskSupervisor.start_child(SalixIM.ConversationNotificationTasks, fn ->
       SalixIM.ConversationServer.wake_participant(
         source.group_id,
         source.conversation_id,
@@ -34,7 +40,7 @@ defmodule SalixIM.ConversationSource do
 
     scope = SalixStore.ReadScope.capture()
 
-    Task.Supervisor.start_child(SalixIM.ConversationNotificationTasks, fn ->
+    SystemsRuntime.TaskSupervisor.start_child(SalixIM.ConversationNotificationTasks, fn ->
       SalixStore.ReadScope.run(scope || %{}, fn ->
         SalixIM.Ports.AgentDelivery.notify_conversation(agent_id, source)
       end)
@@ -53,15 +59,10 @@ defmodule SalixIM.ConversationSource do
 
   def sources(conversation, participants) do
     Enum.flat_map(participants, fn
-      %{"actor_type" => "agent", "agent_id" => agent, "participant_id" => id} ->
-        [
-          {agent,
-           %{
-             group_id: conversation["agent_group_id"],
-             conversation_id: conversation["conversation_id"],
-             participant_id: id
-           }}
-        ]
+      %{"actor_type" => "agent", "agent_id" => agent} = participant ->
+        if receives_messages?(participant),
+          do: [{agent, agent_source(conversation, participant)}],
+          else: []
 
       %{"actor_type" => "provider", "participant_id" => id} ->
         [
@@ -76,6 +77,27 @@ defmodule SalixIM.ConversationSource do
       _ ->
         []
     end)
+  end
+
+  @doc """
+  Whether an agent participant is delivered Messages at all. One that is not
+  (`notification_filter.messages` `none`, such as the Worker of a Task run by
+  another station's Session, `SalixIM.Ports.TaskStations`) has no source: it
+  is never notified, woken or recovered. A Worker of such a Task made before
+  (`payload.runs_on`) is not run by Salix either.
+  """
+  def receives_messages?(participant),
+    do:
+      get_in(participant, ["notification_filter", "messages"]) != "none" and
+        not match?(%{"runs_on" => %{}}, participant["payload"])
+
+  @doc "An agent participant's source."
+  def agent_source(conversation, %{"participant_id" => id}) do
+    %{
+      group_id: conversation["agent_group_id"],
+      conversation_id: conversation["conversation_id"],
+      participant_id: id
+    }
   end
 
   def prefetch(agent_id) do
@@ -116,7 +138,7 @@ defmodule SalixIM.ConversationSource do
          group: group,
          conversation: conversation,
          participant: participant,
-         messages: messages,
+         messages: if(is_list(messages), do: messages),
          start_seq: max(start, participant["source_start_seq"] || 0),
          session_id: session_id
        }}
@@ -196,7 +218,7 @@ defmodule SalixIM.ConversationSource do
         |> ConversationMessage.delivery_record(
           message,
           binding.participant,
-          System.system_time(:millisecond)
+          SystemsClock.system_time(:millisecond)
         )
         |> Map.merge(
           SalixIM.AgentDeliveryPayload.participant_delivery_defaults(
@@ -207,13 +229,16 @@ defmodule SalixIM.ConversationSource do
         )
         |> Map.merge(%{
           "participant_agent_id" => binding.agent["agent_id"],
-          "participant_payload" => %{"session_id" => binding.session_id}
+          "participant_payload" =>
+            (binding.participant["payload"] || %{})
+            |> Map.take(["session_model"])
+            |> Map.put("session_id", binding.session_id)
         })
 
       with {:ok, _agent_id, payload, opts} <- materialize(binding, message, record) do
         payload =
           payload
-          |> Map.put(:delivered_at_ms, System.system_time(:millisecond))
+          |> Map.put(:delivered_at_ms, SystemsClock.system_time(:millisecond))
           |> Map.put(:no_wake, opts[:no_wake] == true)
 
         {:ok,
@@ -248,7 +273,7 @@ defmodule SalixIM.ConversationSource do
         binding.conversation,
         message,
         binding.participant,
-        System.system_time(:millisecond)
+        SystemsClock.system_time(:millisecond)
       )
       |> Map.put("participant_agent_id", binding.agent["agent_id"])
       |> Map.put("participant_payload", %{"session_id" => binding.session_id})
@@ -292,7 +317,7 @@ defmodule SalixIM.ConversationSource do
           binding.conversation,
           original,
           binding.participant,
-          System.system_time(:millisecond)
+          SystemsClock.system_time(:millisecond)
         )
 
       record =
@@ -319,8 +344,8 @@ defmodule SalixIM.ConversationSource do
 
   defp materialize(binding, %{"agent_input" => input, "source_message_id" => source}, _record)
        when is_map(input) and is_binary(source) do
-    # Only the owner-only provider append can persist this field. Keep the
-    # established provider provenance and wake policy without reinterpreting it.
+    # Only owner-authored provider inputs and Task Loop wakes persist this field.
+    # Preserve their accepted provenance, source identity and wake policy.
     fields =
       ~w(content trusted_attachment_refs name billing_context provider_reply_obligation trusted_origin source_sent_at_ms role pre_deliveries no_wake)a
 

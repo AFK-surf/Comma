@@ -16,6 +16,8 @@ defmodule SalixMeet.RuntimeEvents do
 
   def terminal_statuses, do: @terminal_statuses
 
+  @max_local_artifact_bytes 200 * 1024 * 1024
+
   def artifact_root(meeting_id), do: "/meetings/" <> meeting_id
 
   def prepare(meeting_agent, event, origin_env_id \\ nil)
@@ -223,7 +225,7 @@ defmodule SalixMeet.RuntimeEvents do
   defp with_reason(update, _event), do: update
 
   defp joiner_status_notification_key(%{"type" => "status", "status" => status})
-       when status in ~w(waiting_room in_meeting left error),
+       when status in ~w(waiting_room in_meeting left error guest_fallback),
        do: status
 
   defp joiner_status_notification_key(_event), do: nil
@@ -239,6 +241,7 @@ defmodule SalixMeet.RuntimeEvents do
       "in_meeting" -> %{"status" => "active", "joined_at" => parse_timestamp(event["timestamp"])}
       "left" -> %{"status" => "processing", "left_at" => parse_timestamp(event["timestamp"])}
       "error" -> %{"status" => "failed", "error" => trim(event["message"])}
+      "guest_fallback" -> %{"joined_as" => "guest"}
       _ -> %{}
     end
     |> with_reason(event)
@@ -283,7 +286,7 @@ defmodule SalixMeet.RuntimeEvents do
     state
     |> merge_simple(
       update,
-      ~w(status error reason_code summary summary_status summary_error transcript_source artifact_root joined_at left_at)
+      ~w(status error reason_code summary summary_status summary_error transcript_source artifact_root joined_at left_at joined_as)
     )
     |> merge_artifacts(update["artifacts"])
     |> append_list("captions", update["captions"], event_key)
@@ -355,7 +358,7 @@ defmodule SalixMeet.RuntimeEvents do
 
   defp join_window_open?(state) do
     case state["end_at"] do
-      end_at when is_integer(end_at) -> System.system_time(:second) < end_at
+      end_at when is_integer(end_at) -> SystemsClock.system_time(:second) < end_at
       _ -> false
     end
   end
@@ -711,7 +714,7 @@ defmodule SalixMeet.RuntimeEvents do
 
     cond do
       source_ref != "" ->
-        case trim(origin_env_id) do
+        case remote_env(origin_env_id) do
           "" ->
             {:error, :no_origin_env}
 
@@ -740,17 +743,42 @@ defmodule SalixMeet.RuntimeEvents do
         end
 
       true ->
-        case trim(origin_env_id) do
-          "" ->
-            {:error, :no_origin_env}
+        case origin_env_id do
+          {:local, dir} ->
+            agent_id |> write_local_artifact(path, src_path, dir) |> with_meta(meta)
 
-          env_id ->
-            agent_id
-            |> AgentRuntime.stream_workspace_write(env_id, path, src_path)
-            |> with_meta(meta)
+          _ ->
+            case remote_env(origin_env_id) do
+              "" ->
+                {:error, :no_origin_env}
+
+              env_id ->
+                agent_id
+                |> AgentRuntime.stream_workspace_write(env_id, path, src_path)
+                |> with_meta(meta)
+            end
         end
     end
   end
+
+  defp write_local_artifact(agent_id, path, src_path, dir) when is_binary(dir) and dir != "" do
+    file = Path.expand(src_path)
+
+    with true <-
+           String.starts_with?(file, Path.expand(dir) <> "/") || {:error, :artifact_path_invalid},
+         {:ok, %File.Stat{type: :regular, size: size}} <- File.lstat(file),
+         true <- size <= @max_local_artifact_bytes || {:error, :artifact_too_large} do
+      AgentRuntime.prepare_workspace_write_stream(agent_id, path, File.stream!(file, 256 * 1024))
+    else
+      {:ok, %File.Stat{}} -> {:error, :artifact_path_invalid}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp write_local_artifact(_agent_id, _path, _src_path, _dir), do: {:error, :no_origin_env}
+
+  defp remote_env({:local, _dir}), do: ""
+  defp remote_env(origin_env_id), do: trim(origin_env_id)
 
   defp with_meta({:ok, event}, meta), do: {:ok, event, meta}
   defp with_meta({:error, _} = err, _meta), do: err
@@ -842,7 +870,7 @@ defmodule SalixMeet.RuntimeEvents do
     end
   end
 
-  defp now, do: System.system_time(:second)
+  defp now, do: SystemsClock.system_time(:second)
 
   defp sanitized_summary_or_nil(value) when is_map(value),
     do: OwnerAttributionSnapshot.sanitize_summary(value)

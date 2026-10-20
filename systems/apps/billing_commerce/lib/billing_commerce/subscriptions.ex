@@ -82,10 +82,10 @@ defmodule BillingCommerce.Subscriptions do
 
   @spec run_due_cycles(map()) :: {:ok, map()} | {:error, term()}
   def run_due_cycles(attrs \\ %{}) when is_map(attrs) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     repo = repo(attrs)
     sql = sql(attrs)
-    at = attrs[:at] || attrs["at"] || DateTime.utc_now()
+    at = attrs[:at] || attrs["at"] || SystemsClock.utc_now()
     limit = clamp_limit(attrs[:limit] || attrs["limit"] || 50)
     cycle_ids = attrs[:cycle_ids] || attrs["cycle_ids"]
 
@@ -117,7 +117,7 @@ defmodule BillingCommerce.Subscriptions do
         do: "error",
         else: "ok"
       ),
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     {:ok, %{processed: length(issued), cycles: issued}}
@@ -411,7 +411,7 @@ defmodule BillingCommerce.Subscriptions do
   defp project_subscription(%{subscription: subscription, cycles: cycles}) do
     Projection.emit(%{
       source_key: "subscription:#{subscription.id}:#{subscription.status}",
-      occurred_at: DateTime.utc_now(),
+      occurred_at: SystemsClock.utc_now(),
       surface: subscription.surface,
       billing_account_id: subscription.billing_account_id,
       product_owner_type: subscription.product_owner_type,
@@ -431,7 +431,7 @@ defmodule BillingCommerce.Subscriptions do
   defp project_purchase(%{purchase: purchase, grant: grant}) when not is_nil(grant) do
     Projection.emit(%{
       source_key: "purchase:#{purchase.id}:#{purchase.status}",
-      occurred_at: DateTime.utc_now(),
+      occurred_at: SystemsClock.utc_now(),
       surface: purchase.surface,
       billing_account_id: purchase.billing_account_id,
       product_owner_type: purchase.product_owner_type,
@@ -454,7 +454,7 @@ defmodule BillingCommerce.Subscriptions do
   defp project_cycle(%{cycle: cycle, grant: grant}) do
     Projection.emit(%{
       source_key: "subscription_cycle:#{cycle.id}:#{cycle.status}",
-      occurred_at: DateTime.utc_now(),
+      occurred_at: SystemsClock.utc_now(),
       surface: "unknown",
       billing_account_id: cycle.billing_account_id,
       product_owner_type: "unknown",
@@ -1120,7 +1120,7 @@ defmodule BillingCommerce.Subscriptions do
   end
 
   defp repo(attrs),
-    do: attrs[:repo] || attrs["repo"] || Application.fetch_env!(:billing_commerce, :repo)
+    do: attrs[:repo] || attrs["repo"] || SystemsRuntime.fetch_env!(:billing_commerce, :repo)
 
   defp sql(attrs), do: attrs[:sql_runner] || attrs["sql_runner"] || Ecto.Adapters.SQL
 
@@ -1132,5 +1132,5 @@ defmodule BillingCommerce.Subscriptions do
   end
 
   defp id(prefix),
-    do: prefix <> "_" <> (:crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower))
+    do: prefix <> "_" <> (SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower))
 end

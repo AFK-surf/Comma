@@ -18,10 +18,10 @@ defmodule AlertRouter.Slack.Interactions do
          "actions" => [action]
        })
        when is_map(action) and is_binary(channel) and is_binary(root) do
-    config = Application.get_env(:alert_router, :slack_progress, [])
+    config = SystemsRuntime.get_env(:alert_router, :slack_progress, [])
 
     if Progress.enabled?() and team == config[:team_id] and app == config[:app_id] and
-         Application.get_env(:alert_router, :mode) != :disabled and valid_user?(user) do
+         SystemsRuntime.get_env(:alert_router, :mode) != :disabled and valid_user?(user) do
       Repo.transaction(fn ->
         incident =
           Repo.one(
@@ -47,7 +47,7 @@ defmodule AlertRouter.Slack.Interactions do
             feedback = %{
               "outcome" => outcome,
               "author" => user,
-              "at" => DateTime.to_iso8601(DateTime.utc_now())
+              "at" => DateTime.to_iso8601(SystemsClock.utc_now())
             }
 
             updated = Progress.update_card(incident, %{feedback: feedback})

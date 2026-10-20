@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 export const chatProtocolVersion = 3 as const;
-export const sideChatMessageWindow = 200 as const;
 export const chatSurfaceProjectionLimit = 8 as const;
 export const chatAttachmentUploadLimit = 8 as const;
 export const chatAttachmentUploadMaxBytes = 10_000_000 as const;
@@ -62,6 +61,8 @@ export const chatAssistantDraftSchema = z.object({
   sourceMessageIds: z.array(z.string().min(1)).min(1),
   status: z.enum(["streaming", "completed"]),
   text: z.string(),
+  /** The text as the core parsed it so far (`@comma/core/markdown`'s tree): blocks still open are `loading`. */
+  markdown: z.array(z.json()).optional().meta({ "x-comma-native-omit": true }),
 });
 
 export const chatBoundWorkerSchema = z.object({
@@ -70,15 +71,57 @@ export const chatBoundWorkerSchema = z.object({
   name: z.string(),
 });
 
+/** Where a Task runs and the model it runs: what its panels show instead of its Agent. */
+export const chatTaskRunSchema = z.object({
+  place: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("salix") }),
+    z.object({ kind: z.literal("cloud_vm") }),
+    z.object({
+      kind: z.literal("station"),
+      deviceId: z.string().min(1),
+      name: z.string().optional(),
+    }),
+  ]),
+  model: z
+    .discriminatedUnion("kind", [
+      z.object({ kind: z.literal("platform") }),
+      z.object({ kind: z.literal("catalog"), name: z.string().min(1) }),
+      z.object({
+        kind: z.literal("runtime"),
+        provider: z.string().optional(),
+        name: z.string().optional(),
+      }),
+    ])
+    .optional(),
+  /**
+   * The maker of the model (`anthropic`, `openai`, …; `comma` for Comma's own), whose logo every client shows for
+   * the Task's Worker. Absent when the server has not said.
+   */
+  vendor: z.string().optional(),
+});
+export type ChatTaskRun = z.infer<typeof chatTaskRunSchema>;
+
 export const chatParticipantStatusSchema = z.object({
   workingProvider: z.enum(["wechat", "telegram", "signal"]).optional(),
   loopWake: z.boolean().optional(),
+  workingConversationIds: z.array(z.string().min(1)).optional(),
+  waiting: z.boolean().optional(),
   actorId: z.string().optional(),
   actorRole: z.enum(["router", "worker"]).optional(),
   conversationId: z.string().min(1),
   // Stable reason code published only alongside the error state; clients key
   // localized copy off it instead of showing the runtime's own English text.
   issue: z.string().min(1).optional(),
+  // What a member can fix after a funding stop: the provider source and their
+  // own Profile, or when their own subscription resets (Unix seconds).
+  issueDetail: z
+    .object({
+      source: z.string().min(1).optional(),
+      profileId: z.string().min(1).optional(),
+      profileName: z.string().min(1).optional(),
+      resetAt: z.number().positive().optional(),
+    })
+    .optional(),
   participantId: z.string().min(1),
   name: z.string().optional(),
   state: z.enum(["active", "error", "stopped"]),
@@ -87,8 +130,10 @@ export const chatParticipantStatusSchema = z.object({
 });
 
 export const chatConversationRefSchema = z.object({
+  activityStatus: z.string().optional(),
   conversationId: z.string(),
   kind: z.string().optional(),
+  status: z.string().optional(),
   title: z.string().optional(),
 });
 
@@ -115,12 +160,38 @@ export const chatAttachmentSchema = z.object({
   blockType: z.enum(["file", "image"]),
   blobRef: chatAgentBlobRefSchema.optional(),
   fileName: z.string().optional(),
+  /** Pixel size, when the block declares one: a list reserves the right shape before the image loads. */
+  height: z.number().int().min(1).optional(),
   localFileRef: z.string().optional(),
   mimeType: z.string().optional(),
   size: z.number().optional(),
   title: z.string().optional(),
+  /**
+   * A file still uploading with its message: the draft attachment it was, whose bytes the core still holds
+   * (`chat.readGroupImage`, source `draft-upload`). Absent once it uploaded.
+   */
+  uploadingId: z.string().optional(),
+  width: z.number().int().min(1).optional(),
   workspacePath: z.string().optional(),
 });
+
+/**
+ * An offer to set up a Comma device found near a phone, as the server keeps it. The offer a message shows is its
+ * latest revision: a later `device_setup_offer.updated` event replaces what the message itself carried.
+ */
+export const chatDeviceSetupOfferSchema = z.object({
+  expiresAt: z.number().int().min(1),
+  model: z.string().min(1),
+  name: z.string().min(1),
+  offerId: z.string().min(1),
+  reporterDeviceId: z.string().min(1),
+  revision: z.number().int().min(1).optional(),
+  /** Four hexadecimal digits, upper case: the end of the device's Bluetooth name. */
+  shortId: z.string().length(4),
+  status: z.string().min(1),
+});
+
+export type ChatDeviceSetupOffer = z.infer<typeof chatDeviceSetupOfferSchema>;
 
 const chatAgentImageBlobRefSchema = chatAgentBlobRefSchema.extend({
   size: z.number().int().positive().max(chatAttachmentUploadMaxBytes),
@@ -131,9 +202,45 @@ export const chatInlineTaskSchema = z.object({
   conversationId: z.string().optional(),
   freshness: z.enum(["fresh", "stale", "unknown"]).optional(),
   status: z.string().optional(),
+  /** The section `status` folds into on every client (`taskStatusBucket` in `@comma/i18n`). */
+  statusBucket: z
+    .enum(["in_progress", "needs_review", "done", "cancelled", "archived"])
+    .optional(),
   title: z.string().optional(),
   unavailable: z.boolean(),
   updatedAt: z.number().optional(),
+});
+
+/** One choice an Agent's question card offers. */
+export const chatQuestionChoiceSchema = z.object({
+  id: z.string().min(1).max(32),
+  label: z.string().min(1),
+  description: z.string().optional(),
+  /** What the answer says for the person when they pick it; the label when absent. */
+  reply: z.string().optional(),
+  recommended: z.boolean().optional(),
+});
+
+/**
+ * Where a question card stands, read by the core from the transcript: still open, being answered from this
+ * device (or that answer failed), answered on the card, skipped, answered by writing in the chat, or replaced by
+ * a later question before any answer.
+ */
+export const chatQuestionStateSchema = z.object({
+  status: z.enum([
+    "open",
+    "sending",
+    "failed",
+    "answered",
+    "skipped",
+    "replied",
+    "replaced",
+  ]),
+  /** The choices the answer picked, and its other text, when it was given on the card. */
+  choiceIds: z.array(z.string()).optional(),
+  other: z.string().optional(),
+  /** Why this device's answer was not sent. */
+  error: z.string().optional(),
 });
 
 export const chatMessagePartSchema = z.discriminatedUnion("kind", [
@@ -158,27 +265,168 @@ export const chatMessagePartSchema = z.discriminatedUnion("kind", [
     task: chatInlineTaskSchema,
     text: z.never().optional(),
   }),
+  z.object({
+    kind: z.literal("device-setup-offer"),
+    offer: chatDeviceSetupOfferSchema,
+    task: z.never().optional(),
+    text: z.never().optional(),
+  }),
+  z.object({
+    kind: z.literal("question"),
+    /** The Agent message that asks; the answer replies to it. */
+    messageId: z.string(),
+    prompt: z.string().min(1),
+    choices: z.array(chatQuestionChoiceSchema).min(2).max(6),
+    multiSelect: z.boolean(),
+    allowOther: z.boolean(),
+    state: chatQuestionStateSchema,
+    task: z.never().optional(),
+    text: z.never().optional(),
+  }),
+  z.object({
+    kind: z.literal("question-answer"),
+    questionMessageId: z.string(),
+    choiceIds: z.array(z.string()),
+    other: z.string().optional(),
+    skipped: z.boolean(),
+    task: z.never().optional(),
+    text: z.never().optional(),
+  }),
 ]);
+
+/** What a person's message says, read out of its wire text by the core (`decodeUserMessage`). */
+export const chatUserMessageDisplaySchema = z.object({
+  /** The person's own words: what Copy copies. */
+  body: z.string(),
+  quotes: z.array(z.string()),
+  /** Text attached as a block, such as a Routine item, and the app it came from. */
+  texts: z
+    .array(z.object({ source: z.string().optional(), text: z.string() }))
+    .optional(),
+  /** Workspace files the message's attachment list names. */
+  files: z.array(z.object({ name: z.string(), path: z.string() })),
+  /** The body is this command, shown as `/command`. */
+  command: z.string().optional(),
+});
+
+/** The milestones an Agent recorded with a message (`milestone` blocks), in order. */
+export const chatMessageMilestonesSchema = z.object({
+  titles: z.array(z.string()),
+  /** The message holds nothing else; no transcript shows it. */
+  standalone: z.boolean(),
+});
+
+export const chatTaskActivityEntrySchema = z.object({
+  title: z.string(),
+  /** When the Agent recorded it (its message's `createdAt`). */
+  at: z.number().optional(),
+  /** The transcript message to show for it: the Agent's result after it, else the last one before it. */
+  messageId: z.string().optional(),
+});
+
+export const chatTaskActivityGroupSchema = z.object({
+  /**
+   * What the milestones follow: the Task's brief, a later message of a person, a request the Router handed in, or
+   * a Loop Task's run. Absent for milestones recorded before any of them the transcript holds.
+   */
+  request: z
+    .object({
+      /** The request's message; a run has none. */
+      messageId: z.string().optional(),
+      kind: z.enum(["brief", "follow_up", "run"]),
+      /** A follow-up's first line, or the Router's for a request it handed in; empty for the brief and a run, which clients name themselves. */
+      text: z.string(),
+      /** When it was made; a run's wake time. */
+      at: z.number().optional(),
+    })
+    .optional(),
+  entries: z.array(chatTaskActivityEntrySchema),
+});
+
+/** A Task's milestones as its Activity, grouped by request or Loop run. `key` is its value, for keeping one object while it holds. */
+export const chatTaskActivitySchema = z.object({
+  key: z.string(),
+  groups: z.array(chatTaskActivityGroupSchema),
+  /**
+   * The Task's history before what the core holds, while the Activity does not have it yet: `reading` while
+   * `chatView.readTaskActivity` reads it, `unread` when a read stopped before the Task's first message (the next call
+   * goes on from there). Absent once read, and while nothing was asked.
+   */
+  earlier: z.enum(["reading", "unread"]).optional(),
+});
 
 export const chatMessageSchema = z
   .object({
     actorId: z.string().min(1).optional(),
     actorRole: z.enum(["router", "worker"]).optional(),
+    /** Who wrote the canonical message. A system message is a notice, not a reply. */
+    actorType: z.enum(["user", "agent", "system"]).optional(),
     attachments: z.array(chatAttachmentSchema),
     blocksKey: z.string().optional(),
+    /**
+     * The instructions a Task works from: the brief that opens it (`task_command`, or an older Task's request id
+     * `delegate-task-<task id>`) or a meeting's saved recording (`meeting_recording`).
+     */
+    brief: z.boolean().optional(),
     clientRequestId: z.string().optional(),
     createdAt: z.number().optional(),
     createdBy: z.string().optional(),
+    /**
+     * The Tasks a message announces, each once in order: its inline Task chips that can be opened, then its Task
+     * references. A person's mention of a Task is no creation; a person's Quick Chat message (`messageType`
+     * `quick_chat`) announces the Task it started, and always carries the field (empty when that Task is unavailable).
+     */
+    createdTasks: z
+      .array(
+        z.object({
+          conversationId: z.string(),
+          title: z.string().optional(),
+          updatedAt: z.number().optional(),
+        })
+      )
+      .optional(),
     delivery: chatMessageDeliverySchema,
+    /** A person's message as shown; absent on an agent's message and on one from another platform. */
+    display: chatUserMessageDisplaySchema.optional(),
     error: z.string().optional(),
     failureAction: z.enum(["billing"]).optional(),
     messageId: z.string(),
+    /**
+     * What the server says the message is for, e.g. `task_command` on the brief that opens a Task, or `quick_chat` on
+     * a person's words said to Quick Chat.
+     */
+    messageType: z.string().optional(),
+    /**
+     * An agent's message as the core parsed it (`@comma/core/markdown`'s tree): text as itself, any other node
+     * `[kind, attributes, children?]`, a Task chip or card `["comma-inline", { key }]` naming its part. Every client
+     * draws this; none parses a message itself.
+     */
+    markdown: z.array(z.json()).optional().meta({ "x-comma-native-omit": true }),
+    /**
+     * The agent speaking to the person in its own words, worth a notification while they are away (the Router in
+     * Home chat, or a Task's Router): `preview` is its text as plain words, empty when it sent files alone.
+     */
+    notice: z.object({ preview: z.string() }).optional(),
+    /**
+     * The milestones an Agent recorded with the message. A transcript never shows them; the Task's Activity
+     * (`ConversationProjection.taskActivity`) does.
+     */
+    milestones: chatMessageMilestonesSchema
+      .optional()
+      .meta({ "x-comma-native-omit": true }),
+    /**
+     * A Router's message that hands a Task a request made elsewhere, such as in Home; the server marks it
+     * (`metadata.task_request`). The Task's Activity starts a group at it.
+     */
+    routerRequest: z.literal(true).optional().meta({ "x-comma-native-omit": true }),
     replyToMessageId: z.string().optional(),
     threadRootMessageId: z.string().optional(),
     parts: z.array(chatMessagePartSchema).optional(),
     platformSource: z.string().min(1).max(64).optional(),
     refs: z.array(chatConversationRefSchema),
     role: z.string(),
+    /** The canonical message's place in its conversation; a pending send has none. */
+    seq: z.number().int().min(1).optional(),
     source: z.enum(["server", "pending"]),
     status: z.string().optional(),
     text: z.string(),
@@ -192,6 +440,15 @@ export const chatPendingSendSchema = z.object({
   failureAction: z.enum(["billing"]).optional(),
   skills: z.array(z.object({ location: z.string() })).optional(),
   replyToMessageId: z.string().optional(),
+  /** The question card this message answers. */
+  questionAnswer: z
+    .object({
+      questionMessageId: z.string(),
+      choiceIds: z.array(z.string()),
+      other: z.string().optional(),
+      skipped: z.boolean(),
+    })
+    .optional(),
   status: z.enum(["sending", "failed"]),
   text: z.string(),
 });
@@ -225,6 +482,25 @@ export const chatConversationSummarySchema = z.object({
   workspaceId: z.string(),
 });
 
+/**
+ * Where the conversation's next reply stands, as every client shows it (the core's `replyState`): the facts the
+ * typing bubble, the thinking line and the timeout notice each read.
+ */
+export const chatReplyStateSchema = z.object({
+  /** A reply is on its way: a send not yet answered, a wait not timed out, or a reply streaming in. */
+  coming: z.boolean(),
+  /** This client's own send waits for its first answer: the optimistic thinking line. */
+  thinking: z.boolean(),
+  /** The reply streams in. */
+  streaming: z.boolean(),
+  /** The agent works on this conversation. */
+  working: z.boolean(),
+  /** The agent stopped with an error. */
+  failed: z.boolean(),
+  /** The wait for the reply ran past its bound without one. */
+  timedOut: z.boolean(),
+});
+
 export const conversationProjectionSchema = z.object({
   activity: chatActivitySchema.optional(),
   assistantDraft: chatAssistantDraftSchema.optional(),
@@ -246,16 +522,39 @@ export const conversationProjectionSchema = z.object({
   conversation: chatConversationSummarySchema.optional(),
   draft: z.string(),
   draftAttachments: z.array(chatDraftAttachmentSchema),
+  /** Images added to a question card's other answer, by the question message: apart from the composer's draft. */
+  questionAttachments: z
+    .record(z.string(), z.array(chatDraftAttachmentSchema))
+    .optional(),
   errorKind: chatErrorKindSchema.optional(),
+  /**
+   * How much of the conversation's history the transcript holds. `ranges`: the seq ranges read, oldest first; what
+   * lies between two of them is a gap not read yet, which closes by itself. `hasOlder`: messages before the oldest
+   * one held can be read (`chatView.older`).
+   */
+  history: z
+    .object({
+      hasOlder: z.boolean(),
+      loadingOlder: z.boolean(),
+      ranges: z.array(z.tuple([z.number().int().min(1), z.number().int().min(1)])),
+    })
+    .optional(),
   lastBackoffMs: z.number(),
   messages: z.array(chatMessageSchema),
   pending: z.array(chatPendingSendSchema),
   participantStatus: chatParticipantStatusSchema.optional(),
   participantStatuses: z.array(chatParticipantStatusSchema).max(2).optional(),
   boundWorker: chatBoundWorkerSchema.optional(),
+  taskRun: chatTaskRunSchema.optional(),
+  reply: chatReplyStateSchema.optional(),
   serverMessages: z.array(chatMessageSchema),
   status: z.enum(["idle", "loading", "ready", "error"]),
   syncWarning: chatSyncWarningSchema.optional(),
+  /**
+   * A Task's Activity: its milestones by request or Loop run, read from the transcript the core holds and the history
+   * before it that `chatView.readTaskActivity` reads.
+   */
+  taskActivity: chatTaskActivitySchema.optional().meta({ "x-comma-native-omit": true }),
 });
 
 export const chatSurfaceProjectionSchema = z.object({
@@ -283,7 +582,6 @@ export const chatRuntimeSessionSchema = z.object({
 export const chatRuntimeSnapshotSchema = z.object({
   protocolVersion: z.literal(chatProtocolVersion),
   revision: z.number().int().nonnegative(),
-  sideChatSessionKey: z.string().optional(),
   sessions: z.array(chatRuntimeSessionSchema),
 });
 
@@ -329,6 +627,14 @@ export const chatLeasedTargetSchema = chatTargetSchema.extend(chatLeaseSchema.sh
 
 export const chatRetainInputSchema = chatLeasedTargetSchema;
 
+/** The statuses a user can end an in-progress or in-review Task with by hand. */
+export const manualTaskStatusSchema = z.enum(["completed", "cancelled"]);
+
+export const chatLeasedSetTaskStatusInputSchema = chatLeasedTargetSchema.extend({
+  expectedUpdatedAt: z.number().int().positive(),
+  status: manualTaskStatusSchema,
+});
+
 export const chatReleaseInputSchema = chatRetainInputSchema;
 
 export const chatSetDraftInputSchema = chatTargetSchema.extend({
@@ -356,6 +662,16 @@ export const chatSendInputSchema = chatTargetSchema.extend({
    * with ownership, so a non-owner can never acquire consumption authority.
    */
   consumeDraft: z.boolean().optional(),
+  /** Files that go with this message alone, apart from the draft: they upload, then the message lists them. */
+  files: z
+    .array(
+      z.object({
+        bytes: z.instanceof(Uint8Array),
+        name: z.string().min(1),
+        size: z.number().int().nonnegative(),
+      })
+    )
+    .optional(),
   skills: z.array(z.object({ location: z.string() })).optional(),
   replyToMessageId: z.string().optional(),
   surfaceId: z.string().min(1),
@@ -463,9 +779,11 @@ export const chatLeasedSetDraftInputSchema = chatSetDraftInputSchema.extend(
 export const chatLeasedBeginSendIntentInputSchema =
   chatBeginSendIntentInputSchema.extend(chatLeaseSchema.shape);
 
-export const chatLeasedSendInputSchema = chatSendInputSchema.extend(
-  chatLeaseSchema.shape
-);
+export const chatLeasedSendInputSchema = chatSendInputSchema.extend({
+  ...chatLeaseSchema.shape,
+  /** The request id the message is sent under, when the window must know it before the message shows. */
+  clientRequestId: z.string().min(8).max(128).optional(),
+});
 
 export const chatLeasedClientRequestInputSchema = chatClientRequestInputSchema.extend(
   chatLeaseSchema.shape
@@ -541,9 +859,19 @@ export const chatReadAgentBlobImageInputSchema = z
   })
   .strict();
 
+/** An image the core holds while it uploads, by its draft attachment id: shown before the server has it. */
+export const chatReadDraftUploadImageInputSchema = z
+  .object({
+    attachmentId: z.string().min(1).max(160),
+    groupId: z.string().min(1).max(160),
+    source: z.literal("draft-upload"),
+  })
+  .strict();
+
 export const chatReadGroupImageInputSchema = z.discriminatedUnion("source", [
   chatReadUploadedGroupImageInputSchema,
   chatReadAgentBlobImageInputSchema,
+  chatReadDraftUploadImageInputSchema,
 ]);
 
 export const chatGroupImagePreviewSchema = z.custom<Uint8Array>(
@@ -573,327 +901,87 @@ export const chatPickAttachmentsResultSchema = chatCommandReceiptSchema
   })
   .strict();
 
-export const sideChatSnapshotStatusSchema = z.enum([
-  "signed-out",
-  "resolving",
-  "ready",
-  "error",
-  "unavailable",
-]);
-
-export const sideChatFrameSchema = z.object({
-  height: z.number().nonnegative(),
-  width: z.number().nonnegative(),
-  x: z.number(),
-  y: z.number(),
-});
-
-export const sideChatPresentationPhaseSchema = z.enum([
-  "closed",
-  "opening",
-  "interactive",
-  "open",
-  "closing",
-]);
-
 /**
- * The native gesture partner owns reveal progress and screen placement, while
- * Electron owns the window, backdrop backing, and renderer. This snapshot is
- * the single hand-off point that keeps those three consumers in lockstep.
- * Frames use AppKit's global bottom-left coordinate space; Electron Main is
- * responsible for converting the window frame before applying BrowserWindow
- * bounds.
- */
-export const sideChatPresentationSchema = z.object({
-  availableContentHeight: z.number().nonnegative(),
-  contentFrame: sideChatFrameSchema,
-  displayId: z.number().int().nonnegative(),
-  kind: z.literal("side-chat.presentation"),
-  offsetX: z.number(),
-  phase: sideChatPresentationPhaseSchema,
-  progress: z.number().min(0).max(1),
-  protocolVersion: z.literal(chatProtocolVersion),
-  revision: z.number().int().nonnegative(),
-  screenFrame: sideChatFrameSchema,
-  windowFrame: sideChatFrameSchema,
-});
-
-export const sideChatContentSizeInputSchema = z.object({
-  height: z.number().finite().min(40).max(4_096),
-  // Omitted means the entire requested surface is visible (no resize reserve).
-  visualHeight: z.number().finite().min(40).max(4_096).optional(),
-  width: z.number().finite().min(120).max(1_024),
-});
-
-/**
- * Main-owned, ephemeral tuning values for the Electron Side Chat surface.
- * The ranges intentionally mirror the controls from the previous native
- * Debug settings tab. Motion constants are deliberately not part of this
- * contract because that tab never exposed them.
- */
-export const sideChatDebugSettingsValuesSchema = z.object({
-  allowsGroupBlending: z.boolean(),
-  allowsInPlaceFiltering: z.boolean(),
-  blurRadius: z.number().finite().min(0).max(90),
-  bottomFeather: z.number().finite().min(0).max(220),
-  bottomOffset: z.number().finite().min(-160).max(160),
-  closedExtraOffset: z.number().finite().min(0).max(260),
-  contentOffsetX: z.number().finite().min(-160).max(160),
-  contentOffsetY: z.number().finite().min(-160).max(160),
-  contentWidth: z.number().finite().min(260).max(620),
-  disablesOccludedBackdropBlurs: z.boolean(),
-  leftFeather: z.number().finite().min(0).max(220),
-  maskGamma: z.number().finite().min(0.2).max(3),
-  maxMaskAlpha: z.number().finite().min(0).max(1),
-  openXOffset: z.number().finite().min(-220).max(120),
-  rightFeather: z.number().finite().min(0).max(220),
-  showBackdrop: z.boolean(),
-  solidOutsetBottom: z.number().finite().min(-120).max(160),
-  solidOutsetLeft: z.number().finite().min(-120).max(160),
-  solidOutsetRight: z.number().finite().min(-120).max(160),
-  solidOutsetTop: z.number().finite().min(-120).max(160),
-  tintOpacity: z.number().finite().min(0).max(1),
-  topFeather: z.number().finite().min(0).max(220),
-  windowServerAware: z.boolean(),
-});
-
-export const sideChatGeometrySettingsSchema = sideChatDebugSettingsValuesSchema.pick({
-  bottomFeather: true,
-  bottomOffset: true,
-  closedExtraOffset: true,
-  contentOffsetX: true,
-  contentOffsetY: true,
-  contentWidth: true,
-  leftFeather: true,
-  openXOffset: true,
-  rightFeather: true,
-  solidOutsetBottom: true,
-  solidOutsetLeft: true,
-  solidOutsetRight: true,
-  solidOutsetTop: true,
-  topFeather: true,
-});
-
-export const sideChatInteractiveProgressInputSchema = z.object({
-  progress: z.number().finite().min(0).max(1),
-});
-
-export const sideChatInteractiveCompletionInputSchema = z.object({
-  shouldOpen: z.boolean(),
-});
-
-// Omitting keyCode unregisters the current hotkey; Main replays this cleared state.
-export const sideChatShortcutRegistrationInputSchema = z.object({
-  keyCode: z.number().int().nonnegative().max(127).optional(),
-  modifiers: z.number().int().nonnegative().max(65_535),
-});
-
-/**
- * One row of the macOS menu-bar menu, which the Side Chat helper draws so that
+ * One row of the macOS menu-bar menu, which the menu-bar helper draws so that
  * hovering it never waits on Electron Main. A shortcut is display text only;
  * the helper reports a chosen row by its opaque id and runs nothing itself.
+ * A meter is a usage row that cannot be chosen: its title, its detail at the
+ * right, and under them a bar filled to `fraction` when that is set.
  */
 export const statusMenuRowSchema = z.object({
   id: z.string().min(1).max(256).optional(),
-  kind: z.enum(["header", "item", "separator"]),
+  kind: z.enum(["header", "item", "separator", "meter"]),
   shortcut: z.string().min(1).max(64).optional(),
   title: z.string().max(1024).optional(),
+  // At the right: an item's status in a grey capsule ("Updated just now"), a
+  // meter's figure as grey text.
+  detail: z.string().min(1).max(128).optional(),
+  fraction: z.number().min(0).max(1).optional(),
+  // A meter that is nearly spent draws its bar red.
+  tone: z.enum(["normal", "critical"]).optional(),
 });
 
-/**
- * Deliberately smaller than ConversationProjection. Renderer-owned draft text,
- * local attachment paths, retry queues, cursors, and server caches must remain
- * in Electron Main and never cross into the native view helper.
- */
-export const sideChatConversationProjectionSchema = z.object({
-  assistantDraft: chatAssistantDraftSchema.optional(),
-  awaitingReply: z.boolean(),
-  errorKind: chatErrorKindSchema.optional(),
-  messages: z.array(chatMessageSchema).max(sideChatMessageWindow),
-});
-
-export const sideChatSessionSchema = z.object({
-  conversationId: z.string(),
-  groupId: z.string(),
-  revision: z.number().int().nonnegative(),
-  state: sideChatConversationProjectionSchema,
-  workspaceId: z.string(),
-});
-
-/**
- * The native helper is assigned exactly one target. Keep this projection
- * structurally single-session so an unrelated renderer conversation can never
- * cross the process boundary by accident.
- */
-export const sideChatRuntimeSnapshotSchema = z.object({
-  error: z.string().optional(),
-  protocolVersion: z.literal(chatProtocolVersion),
-  retryAt: z.number().optional(),
-  revision: z.number().int().nonnegative(),
-  session: sideChatSessionSchema.optional(),
-  sessionEpoch: z.number().int().nonnegative(),
-  status: sideChatSnapshotStatusSchema,
-});
-
-export const sideChatSnapshotEnvelopeSchema = z.object({
-  kind: z.literal("chat.snapshot"),
-  protocolVersion: z.literal(chatProtocolVersion),
-  snapshot: sideChatRuntimeSnapshotSchema,
-});
-
-const sideChatCommandEnvelopeShape = {
+const statusMenuEnvelopeShape = {
   protocolVersion: z.literal(chatProtocolVersion),
   requestId: z.string().min(1),
 } as const;
 
-const sideChatSessionCommandEnvelopeShape = {
-  ...sideChatCommandEnvelopeShape,
-  sessionEpoch: z.number().int().nonnegative(),
-} as const;
-
-const sideChatCommandVariants = [
-  z.object({
-    kind: z.literal("side-chat.ready"),
-    ...sideChatCommandEnvelopeShape,
-  }),
-  chatSubscriberInputSchema.extend({
-    kind: z.literal("chat.retain"),
-    ...sideChatSessionCommandEnvelopeShape,
-  }),
-  chatSubscriberInputSchema.extend({
-    kind: z.literal("chat.release"),
-    ...sideChatSessionCommandEnvelopeShape,
-  }),
-  chatSetDraftInputSchema.extend({
-    kind: z.literal("chat.set-draft"),
-    ...sideChatSessionCommandEnvelopeShape,
-  }),
-  chatSendInputSchema.extend({
-    kind: z.literal("chat.send"),
-    ...sideChatSessionCommandEnvelopeShape,
-  }),
-  chatTargetSchema.extend({
-    kind: z.literal("chat.refresh"),
-    ...sideChatSessionCommandEnvelopeShape,
-  }),
-  chatClientRequestInputSchema.extend({
-    kind: z.literal("chat.retry"),
-    ...sideChatSessionCommandEnvelopeShape,
-  }),
-  chatClientRequestInputSchema.extend({
-    kind: z.literal("chat.discard"),
-    ...sideChatSessionCommandEnvelopeShape,
-  }),
-] as const;
-
-export const sideChatCommandSchema = z.discriminatedUnion(
-  "kind",
-  sideChatCommandVariants
-);
-
-export const sideChatCommandResultSchema = z.object({
-  error: z.string().optional(),
-  kind: z.literal("command.result"),
-  ok: z.boolean(),
-  protocolVersion: z.literal(chatProtocolVersion),
-  requestId: z.string(),
-});
-
-export const sideChatProtocolErrorSchema = z.object({
-  error: z.string(),
-  expectedProtocolVersion: z.literal(chatProtocolVersion),
-  frameKind: z.string().optional(),
-  kind: z.literal("side-chat.protocol-error"),
-  protocolVersion: z.literal(chatProtocolVersion),
-  receivedProtocolVersion: z.number().int().optional(),
-});
-
-const sideChatSurfaceControlVariants = [
-  z.object({
-    kind: z.literal("side-chat.open"),
-    ...sideChatCommandEnvelopeShape,
-  }),
-  z.object({
-    kind: z.literal("side-chat.close"),
-    ...sideChatCommandEnvelopeShape,
-  }),
-  z.object({
-    kind: z.literal("side-chat.toggle"),
-    ...sideChatCommandEnvelopeShape,
-  }),
-  z.object({
-    kind: z.literal("side-chat.settings"),
-    ...sideChatCommandEnvelopeShape,
-  }),
-  sideChatContentSizeInputSchema.omit({ visualHeight: true }).extend({
-    debugSettings: sideChatGeometrySettingsSchema,
-    kind: z.literal("side-chat.layout"),
-    ...sideChatCommandEnvelopeShape,
-  }),
-  sideChatInteractiveProgressInputSchema.extend({
-    kind: z.literal("side-chat.interactive-progress"),
-    ...sideChatCommandEnvelopeShape,
-  }),
-  sideChatInteractiveCompletionInputSchema.extend({
-    kind: z.literal("side-chat.interactive-complete"),
-    ...sideChatCommandEnvelopeShape,
-  }),
-  sideChatShortcutRegistrationInputSchema.extend({
-    kind: z.literal("side-chat.shortcut"),
-    ...sideChatCommandEnvelopeShape,
-  }),
-  z.object({
-    kind: z.literal("side-chat.stop"),
-    ...sideChatCommandEnvelopeShape,
-  }),
-  // Off: the helper drops the edge gesture and the global shortcut, closes the
-  // surface, and ignores open requests until turned on again.
-  z.object({
-    enabled: z.boolean(),
-    kind: z.literal("side-chat.enabled"),
-    ...sideChatCommandEnvelopeShape,
-  }),
-] as const;
-
-export const sideChatSurfaceControlSchema = z.discriminatedUnion(
-  "kind",
-  sideChatSurfaceControlVariants
-);
-
 const statusMenuControlVariants = [
   z.object({
+    // When set, a left click on the item reports this id with status-menu.select
+    // instead of opening the menu, which opens on a right click or Control-click.
+    clickId: z.string().min(1).max(256).optional(),
+    // When set, the helper reports this id with status-menu.select each time the
+    // menu closes, after the id of the row chosen from it.
+    closeId: z.string().min(1).max(256).optional(),
+    // When set, the helper reports this id with status-menu.select each time the
+    // menu opens, and rows that arrive while it is open update the rows it shows
+    // in place where they can: Main says its times from then.
+    openId: z.string().min(1).max(256).optional(),
     iconPath: z.string().min(1).max(4096),
     kind: z.literal("status-menu.show"),
     rows: z.array(statusMenuRowSchema).max(64),
     toolTip: z.string().max(256),
     width: z.number().min(120).max(1200),
-    ...sideChatCommandEnvelopeShape,
+    ...statusMenuEnvelopeShape,
   }),
   z.object({
     kind: z.literal("status-menu.hide"),
-    ...sideChatCommandEnvelopeShape,
+    ...statusMenuEnvelopeShape,
   }),
 ] as const;
 
-export const statusMenuSelectSchema = z.object({
-  id: z.string().min(1).max(256),
-  kind: z.literal("status-menu.select"),
-  ...sideChatCommandEnvelopeShape,
-});
+/** Main to the menu-bar helper. */
+export const statusMenuHostFrameSchema = z.discriminatedUnion(
+  "kind",
+  statusMenuControlVariants
+);
 
-export const sideChatClientFrameSchema = z.discriminatedUnion("kind", [
-  ...sideChatCommandVariants,
-  sideChatPresentationSchema,
-  statusMenuSelectSchema,
-  sideChatCommandResultSchema,
-  sideChatProtocolErrorSchema,
-]);
-
-export const sideChatHostFrameSchema = z.discriminatedUnion("kind", [
-  sideChatSnapshotEnvelopeSchema,
-  ...sideChatSurfaceControlVariants,
-  ...statusMenuControlVariants,
-  sideChatCommandResultSchema,
+/** The menu-bar helper to Main: started, a chosen row, a command's result, or a frame it refused. */
+export const statusMenuClientFrameSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("status-menu.ready"),
+    ...statusMenuEnvelopeShape,
+  }),
+  z.object({
+    id: z.string().min(1).max(256),
+    kind: z.literal("status-menu.select"),
+    ...statusMenuEnvelopeShape,
+  }),
+  z.object({
+    error: z.string().optional(),
+    kind: z.literal("status-menu.result"),
+    ok: z.boolean(),
+    ...statusMenuEnvelopeShape,
+  }),
+  z.object({
+    error: z.string(),
+    expectedProtocolVersion: z.literal(chatProtocolVersion),
+    frameKind: z.string().optional(),
+    kind: z.literal("status-menu.protocol-error"),
+    protocolVersion: z.literal(chatProtocolVersion),
+    receivedProtocolVersion: z.number().int().optional(),
+  }),
 ]);
 
 export type StatusMenuRow = z.infer<typeof statusMenuRowSchema>;
@@ -901,10 +989,22 @@ export type ChatActivity = z.infer<typeof chatActivitySchema>;
 export type ChatAssistantDraft = z.infer<typeof chatAssistantDraftSchema>;
 export type ChatInlineTask = z.infer<typeof chatInlineTaskSchema>;
 export type ChatMessagePart = z.infer<typeof chatMessagePartSchema>;
+export type ChatMessageMilestones = z.infer<typeof chatMessageMilestonesSchema>;
+export type ChatTaskActivity = z.infer<typeof chatTaskActivitySchema>;
+export type ChatTaskActivityGroup = z.infer<typeof chatTaskActivityGroupSchema>;
+export type ChatTaskActivityEntry = z.infer<typeof chatTaskActivityEntrySchema>;
 export type ChatInlineMessagePart = Exclude<ChatMessagePart, { kind: "markdown" }>;
 export type ChatInlineMessagePartKind = ChatInlineMessagePart["kind"];
+export type ChatQuestionPart = Extract<ChatMessagePart, { kind: "question" }>;
+export type ChatQuestionAnswerPart = Extract<
+  ChatMessagePart,
+  { kind: "question-answer" }
+>;
+export type ChatQuestionChoice = z.infer<typeof chatQuestionChoiceSchema>;
+export type ChatQuestionState = z.infer<typeof chatQuestionStateSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ChatPendingSend = z.infer<typeof chatPendingSendSchema>;
+export type ChatReplyState = z.infer<typeof chatReplyStateSchema>;
 export type ConversationProjection = z.infer<typeof conversationProjectionSchema>;
 export type ChatSurfaceProjection = z.infer<typeof chatSurfaceProjectionSchema>;
 export type ChatRuntimeSession = z.infer<typeof chatRuntimeSessionSchema>;
@@ -915,6 +1015,10 @@ export type ChatTarget = z.infer<typeof chatTargetSchema>;
 export type ChatSubscriberInput = z.infer<typeof chatSubscriberInputSchema>;
 export type ChatLease = z.infer<typeof chatLeaseSchema>;
 export type ChatLeasedTarget = z.infer<typeof chatLeasedTargetSchema>;
+export type ManualTaskStatus = z.infer<typeof manualTaskStatusSchema>;
+export type ChatLeasedSetTaskStatusInput = z.infer<
+  typeof chatLeasedSetTaskStatusInputSchema
+>;
 export type ChatRetainInput = z.infer<typeof chatRetainInputSchema>;
 export type ChatReleaseInput = z.infer<typeof chatReleaseInputSchema>;
 export type ChatSetDraftInput = z.infer<typeof chatSetDraftInputSchema>;
@@ -957,35 +1061,8 @@ export type ChatBeginSendIntentReceipt = z.infer<
   typeof chatBeginSendIntentReceiptSchema
 >;
 export type ChatPickAttachmentsResult = z.infer<typeof chatPickAttachmentsResultSchema>;
-export type SideChatFrame = z.infer<typeof sideChatFrameSchema>;
-export type SideChatPresentationPhase = z.infer<typeof sideChatPresentationPhaseSchema>;
-export type SideChatPresentation = z.infer<typeof sideChatPresentationSchema>;
-export type SideChatContentSizeInput = z.infer<typeof sideChatContentSizeInputSchema>;
-export type SideChatDebugSettingsValues = z.infer<
-  typeof sideChatDebugSettingsValuesSchema
->;
-export type SideChatGeometrySettings = z.infer<typeof sideChatGeometrySettingsSchema>;
-export type SideChatInteractiveProgressInput = z.infer<
-  typeof sideChatInteractiveProgressInputSchema
->;
-export type SideChatInteractiveCompletionInput = z.infer<
-  typeof sideChatInteractiveCompletionInputSchema
->;
-export type SideChatShortcutRegistrationInput = z.infer<
-  typeof sideChatShortcutRegistrationInputSchema
->;
-export type SideChatConversationProjection = z.infer<
-  typeof sideChatConversationProjectionSchema
->;
-export type SideChatSession = z.infer<typeof sideChatSessionSchema>;
-export type SideChatRuntimeSnapshot = z.infer<typeof sideChatRuntimeSnapshotSchema>;
-export type SideChatSnapshotEnvelope = z.infer<typeof sideChatSnapshotEnvelopeSchema>;
-export type SideChatCommand = z.infer<typeof sideChatCommandSchema>;
-export type SideChatCommandResult = z.infer<typeof sideChatCommandResultSchema>;
-export type SideChatProtocolError = z.infer<typeof sideChatProtocolErrorSchema>;
-export type SideChatSurfaceControl = z.infer<typeof sideChatSurfaceControlSchema>;
-export type SideChatClientFrame = z.infer<typeof sideChatClientFrameSchema>;
-export type SideChatHostFrame = z.infer<typeof sideChatHostFrameSchema>;
+export type StatusMenuHostFrame = z.infer<typeof statusMenuHostFrameSchema>;
+export type StatusMenuClientFrame = z.infer<typeof statusMenuClientFrameSchema>;
 
 export const emptyChatRuntimeSnapshot: ChatRuntimeSnapshot = {
   protocolVersion: chatProtocolVersion,

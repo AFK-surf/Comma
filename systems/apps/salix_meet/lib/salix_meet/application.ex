@@ -16,25 +16,25 @@ defmodule SalixMeet.Application do
 
     children =
       [
-        {Registry, keys: :unique, name: SalixMeet.Registry},
+        {SystemsRuntime.Registry, keys: :unique, name: SalixMeet.Registry},
         # Bounded reads run here with `async_nolink/2`, so a crashing read is a
         # typed `{:exit, _}` for the caller instead of a linked kill.
-        {Task.Supervisor, name: SalixMeet.TaskSupervisor},
-        {DynamicSupervisor, name: SalixMeet.MeetingSup, strategy: :one_for_one}
+        {SystemsRuntime.TaskSupervisor, name: SalixMeet.TaskSupervisor},
+        {SystemsRuntime.DynamicSupervisor, name: SalixMeet.MeetingSup, strategy: :one_for_one}
       ] ++ projection_auditor_child() ++ delivery_child()
 
     opts = [strategy: :one_for_one, name: SalixMeet.Supervisor]
-    Supervisor.start_link(children, opts)
+    SystemsRuntime.Supervisor.start_link(children, opts)
   end
 
   @doc "Start (or resume) the meeting process for `id`."
   def start_meeting(id, opts \\ []) do
     spec = {SalixMeet.Meeting, [id: id] ++ opts}
-    DynamicSupervisor.start_child(SalixMeet.MeetingSup, spec)
+    SystemsRuntime.DynamicSupervisor.start_child(SalixMeet.MeetingSup, spec)
   end
 
   defp delivery_child do
-    case Application.get_env(:salix_meet, :delivery) do
+    case SystemsRuntime.get_env(:salix_meet, :delivery) do
       opts when is_list(opts) -> [{SalixMeet.Delivery, opts}]
       _ -> []
     end
@@ -45,8 +45,8 @@ defmodule SalixMeet.Application do
   # runtime_url is silently disabling the connector driver — every calendar
   # join then targets the HTTP runtime instead. Warn loudly at boot.
   defp warn_runtime_driver_conflict do
-    url = Application.get_env(:salix_meet, :runtime_base_url)
-    mode = Application.get_env(:salix_meet, :runtime_driver_mode)
+    url = SystemsRuntime.get_env(:salix_meet, :runtime_base_url)
+    mode = SystemsRuntime.get_env(:salix_meet, :runtime_driver_mode)
 
     if is_binary(url) and String.trim(url) != "" and is_binary(mode) and
          String.trim(mode) == "connector" do
@@ -60,7 +60,7 @@ defmodule SalixMeet.Application do
   end
 
   defp projection_auditor_child do
-    case Application.get_env(:salix_meet, :meeting_group_projection_auditor) do
+    case SystemsRuntime.get_env(:salix_meet, :meeting_group_projection_auditor) do
       opts when is_list(opts) -> [{SalixMeet.MeetingGroupProjectionAuditor, opts}]
       _ -> []
     end

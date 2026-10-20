@@ -53,7 +53,7 @@ defmodule SalixAgent.VisibleReply do
 
   def cancel(_agent_id, _session_id, _scope), do: :ok
 
-  defp impl, do: Application.get_env(:salix_agent, :visible_reply_mod)
+  defp impl, do: SystemsRuntime.get_env(:salix_agent, :visible_reply_mod)
 
   defp safe_call(fun) do
     fun.()

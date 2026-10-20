@@ -12,95 +12,86 @@ defmodule Salix.Bindings.AgentManagement do
     end
   end
 
-  def connected_target(id, scope) do
-    case SalixWeb.CloudVM.RuntimeLifecycle.select_target(id, scope) do
-      {:ok, binding} -> {:ok, binding}
-      {:error, :target_not_found} -> {:error, :target_not_found}
-      {:error, :target_discovery_required} -> {:error, :target_discovery_required}
-      {:error, %{"error_class" => "billing_unavailable"}} = error -> error
-      {:error, {:bad_request, _}} -> {:error, :target_not_found}
-      _ -> {:error, :target_unavailable}
+  # BridgeForTeams answers the org's model governance; naming the module as a
+  # literal atom keeps Salix free of a runtime dependency on it.
+  @bft_models :"Elixir.BridgeForTeams.Models"
+
+  # A BridgeForTeams Worker takes the org default, or the catalog model the
+  # Router chose when the org allows it. The Worker stores the choice itself.
+  def internal_worker(scope, model, create) do
+    with {:ok, choice} <- org_choice(scope, model),
+         {:ok, attrs} <- worker_attrs(choice, scope.tenant_id),
+         do: create.(attrs)
+  end
+
+  defp worker_attrs(nil, _tenant_id), do: {:ok, %{}}
+
+  defp worker_attrs(choice, tenant_id) do
+    with {:ok, model} <- SalixAgent.ModelChoice.choose(choice, tenant_id),
+         do: {:ok, %{"model" => model}}
+  end
+
+  # A group outside BridgeForTeams, or a node without it, keeps the platform
+  # model and takes no Router choice.
+  defp org_choice(scope, model) do
+    with {:ok, project_id} <- project_id(scope),
+         true <- SystemsRuntime.Proc.ensure_loaded?(@bft_models) do
+      @bft_models.router_choice(project_id, model)
+    else
+      _no_org when is_nil(model) -> {:ok, nil}
+      _no_org -> {:error, :model_selection_unsupported}
     end
   end
 
-  def page_targets(caller, args) do
-    query = [caller["tenant_id"], caller["group_id"], args["kind"], args["provider"]]
+  def user_context(_scope), do: {:ok, SalixAgent.AgentManagement.Ports.no_user_context()}
 
-    with {:ok, cursor} <- target_cursor(args["cursor"], query),
-         {:ok, page} <- target_page(caller, args, cursor) do
-      next =
-        if page.next_cursor,
-          do: [query, page.next_cursor] |> Jason.encode!() |> Base.url_encode64(padding: false),
-          else: nil
+  # A BridgeForTeams Task's Worker Session may take its own model: a catalog
+  # or platform model inside Salix, or a model of the station's runtime when
+  # the Task runs on a station (a Worker bound to one, or a Task that names one).
+  # A catalog model must be one the org allows.
+  def session_model(scope, choice) do
+    kinds = if scope[:runs_on], do: ["runtime"], else: ["catalog", "platform"]
 
-      {:ok, %{items: page.items, next_cursor: next}}
+    with true <- choice["kind"] in kinds,
+         {:ok, choice} <- session_choice(scope, choice) do
+      SalixAgent.ModelChoice.choose(choice, scope.tenant_id)
+    else
+      false -> {:error, :invalid_model_configuration}
+      error -> error
     end
   end
 
-  defp target_page(caller, %{"kind" => "connected"} = args, cursor) do
-    SalixEnv.Control.page_external_runtime_targets(caller["tenant_id"], caller["group_id"],
-      limit: args["limit"],
-      cursor: cursor,
-      provider: args["provider"]
-    )
-  end
+  defp session_choice(scope, %{"kind" => "catalog"} = choice), do: org_choice(scope, choice)
+  defp session_choice(_scope, choice), do: {:ok, choice}
 
-  defp target_page(caller, %{"kind" => "compute", "provider" => provider} = args, cursor)
-       when provider in ~w(codex pi claude) do
-    scope = %{tenant_id: caller["tenant_id"], group_id: caller["group_id"]}
-
-    with {:ok, project} <- project_id(scope),
-         {:ok, page} <-
-           SalixStore.ExternalWorkerTargets.page(
-             %{
-               tenant_id: scope.tenant_id,
-               group_id: scope.group_id,
-               owner_type: "project",
-               owner_id: project,
-               provider: provider
-             },
-             limit: args["limit"],
-             cursor: cursor,
-             include_unavailable: true
-           ) do
-      {:ok,
-       %{
-         next_cursor: page.next_cursor,
-         items:
-           Enum.map(page.items, fn item ->
-             %{
-               "target" => %{
-                 "kind" => "compute",
-                 "workload_id" => item.workload_id,
-                 "selection_fence" => item.selection_fence
-               },
-               "runtime" => %{
-                 "kind" => "compute",
-                 "provider" => item.provider,
-                 "workload_id" => item.workload_id
-               },
-               "selectable" => item.selectable,
-               "reason" => item.reason
-             }
-           end)
-       }}
+  # A BridgeForTeams Router lists only the models the org lets it choose,
+  # checked as `org_choice/2` checks them. Other groups list every model.
+  def model_filter(scope) do
+    with {:ok, project_id} <- project_id(scope),
+         true <- SystemsRuntime.Proc.ensure_loaded?(@bft_models) do
+      @bft_models.router_model_filter(project_id)
+    else
+      {:error, :target_not_found} -> SalixAgent.AgentManagement.Ports.no_model_filter()
+      false -> SalixAgent.AgentManagement.Ports.no_model_filter()
+      error -> error
     end
   end
 
-  defp target_page(_, _, _), do: {:error, :invalid_arguments}
-
-  defp target_cursor(nil, _query), do: {:ok, nil}
-
-  defp target_cursor(cursor, query) when is_binary(cursor) and byte_size(cursor) <= 4096 do
-    with {:ok, bytes} <- Base.url_decode64(cursor, padding: false),
-         {:ok, [^query, token]} <- Jason.decode(bytes),
-         true <- is_binary(token),
-         do: {:ok, token},
-         else: (_ -> {:error, :invalid_cursor})
+  # A BridgeForTeams swarm without its own default Task model runs its org's
+  # default Task model. Other groups have no product default.
+  def default_task_model(scope) do
+    with {:ok, project_id} <- project_id(scope),
+         true <-
+           SystemsRuntime.Proc.ensure_loaded?(@bft_models) and
+             function_exported?(@bft_models, :default_task_model, 1) do
+      @bft_models.default_task_model(project_id)
+    else
+      {:error, :target_not_found} -> {:ok, nil}
+      false -> {:ok, nil}
+      error -> error
+    end
   end
 
-  defp target_cursor(_, _), do: {:error, :invalid_cursor}
-
-  def worker_template(scope),
-    do: SalixAgent.AgentDefaults.creation_template("worker", scope.tenant_id)
+  # A Task that names no Worker runs on the Group's Task agent.
+  def task_worker(scope), do: SalixAgent.TaskAgent.ensure(scope)
 end

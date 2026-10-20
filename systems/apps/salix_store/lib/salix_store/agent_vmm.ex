@@ -22,6 +22,7 @@ defmodule SalixStore.AgentVMM do
       field(:revision, :integer)
       field(:policy_revision, :integer)
       field(:desired_enabled, :boolean)
+      field(:authorization_expires_at, :utc_datetime_usec)
       field(:next_controller_sequence, :integer)
       field(:enrollment_token_hash, :binary)
       field(:credential_hash, :binary)
@@ -89,9 +90,26 @@ defmodule SalixStore.AgentVMM do
     end
   end
 
+  @doc """
+  The Agent VMM registrations bound to a Group: the Hosts (a BFT Project's
+  Mac mini Runners) installed for it and not revoked. The unique index on
+  `(tenant_id, group_id, device_id)` allows one per Host device, so a Group
+  can have several; at most `limit` ids are read.
+  """
+  def group_registration_ids(tenant_id, group_id, limit \\ 2)
+      when is_binary(tenant_id) and is_binary(group_id) and limit in 1..16 do
+    Repo.all(
+      from(r in Registration,
+        where: r.tenant_id == ^tenant_id and r.group_id == ^group_id and r.status != "revoked",
+        order_by: r.id,
+        limit: ^limit,
+        select: r.id
+      )
+    )
+  end
+
   def create_registration(attrs) when is_map(attrs) do
-    now = DateTime.utc_now()
-    limit = Application.get_env(:salix_store, :agent_vmm_registration_limit_per_tenant, 128)
+    now = SystemsClock.utc_now()
 
     desired_enabled = Map.get(attrs, :desired_enabled, false)
 
@@ -105,6 +123,7 @@ defmodule SalixStore.AgentVMM do
       policy_revision: 1,
       desired_enabled: desired_enabled,
       enrollment_token_hash: digest(attrs.enrollment_token),
+      authorization_expires_at: DateTime.add(now, 7 * 86_400, :second),
       created_at: now,
       updated_at: now
     }
@@ -113,16 +132,6 @@ defmodule SalixStore.AgentVMM do
       Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [
         "agent-vmm:" <> attrs.tenant_id
       ])
-
-      if Repo.aggregate(
-           from(r in Registration,
-             where: r.tenant_id == ^attrs.tenant_id and r.status != "revoked"
-           ),
-           :count
-         ) >=
-           limit do
-        Repo.rollback(:tenant_quota)
-      end
 
       enforce_multi_scope_gate!(attrs)
 
@@ -136,7 +145,11 @@ defmodule SalixStore.AgentVMM do
   end
 
   defp enforce_multi_scope_gate!(attrs) do
-    if not Application.get_env(:salix_store, :agent_vmm_multi_scope_registration_enabled, false) and
+    if not SystemsRuntime.get_env(
+         :salix_store,
+         :agent_vmm_multi_scope_registration_enabled,
+         false
+       ) and
          Repo.exists?(
            from(r in Registration,
              where:
@@ -165,7 +178,8 @@ defmodule SalixStore.AgentVMM do
         Repo.one(from(r in Registration, where: r.id == ^registration_id, lock: "FOR UPDATE")) ||
           Repo.rollback(:registration_not_found)
 
-      if registration.status == "revoked" or is_nil(registration.enrollment_token_hash) or
+      if authorization_expired?(registration) or registration.status == "revoked" or
+           is_nil(registration.enrollment_token_hash) or
            not secure_equal?(registration.enrollment_token_hash, digest(enrollment_token)) do
         Repo.rollback(:invalid_enrollment)
       end
@@ -201,7 +215,7 @@ defmodule SalixStore.AgentVMM do
             enrollment_token_hash: nil,
             status: "ready",
             desired_enabled: true,
-            updated_at: DateTime.utc_now()
+            updated_at: SystemsClock.timestamp(:utc_datetime_usec)
           ],
           inc: [revision: 1]
         )
@@ -215,15 +229,48 @@ defmodule SalixStore.AgentVMM do
 
   def authenticate_registration(registration_id, credential) when is_binary(credential) do
     case Repo.get(Registration, registration_id) do
-      %Registration{status: status, credential_hash: hash}
+      %Registration{status: status, credential_hash: hash} = registration
       when status != "revoked" and is_binary(hash) ->
-        if secure_equal?(hash, digest(credential)), do: :ok, else: {:error, :unauthorized}
+        if not authorization_expired?(registration) and
+             secure_equal?(hash, digest(credential)), do: :ok, else: {:error, :unauthorized}
 
       _ ->
         {:error, :unauthorized}
     end
   rescue
     _ -> {:error, :unavailable}
+  end
+
+  # The server clock owns the lease. Identity and login Session lifetime do not renew it.
+  def authorization_expired?(registration, now \\ SystemsClock.utc_now()) do
+    not match?(%DateTime{}, registration.authorization_expires_at) or
+      DateTime.compare(registration.authorization_expires_at, now) != :gt
+  end
+
+  defp renew_authorization!(registration, now) do
+    Repo.update_all(from(r in Registration, where: r.id == ^registration.id),
+      set: [authorization_expires_at: DateTime.add(now, 7 * 86_400, :second)]
+    )
+  end
+
+  def expire_authorizations(limit \\ 32, now \\ SystemsClock.utc_now()) when limit in 1..32 do
+    Repo.transaction(fn ->
+      registrations =
+        Repo.all(
+          from(r in Registration,
+            where: r.status != "revoked" and r.authorization_expires_at <= ^now,
+            order_by: [asc: r.authorization_expires_at, asc: r.id],
+            limit: ^limit,
+            lock: "FOR UPDATE SKIP LOCKED"
+          )
+        )
+
+      Enum.each(registrations, fn r ->
+        revoke_authority!(r, now)
+      end)
+
+      %{retired: length(registrations), more?: length(registrations) == limit}
+    end)
   end
 
   def configure_registration(id, expected_revision, enabled)
@@ -235,11 +282,12 @@ defmodule SalixStore.AgentVMM do
 
       Compute.lock_provider_bindings!(id)
 
-      if registration.revision != expected_revision or registration.status == "revoked" do
+      if registration.revision != expected_revision or registration.status == "revoked" or
+           authorization_expired?(registration) do
         Repo.rollback(:revision_conflict)
       end
 
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       if not enabled do
         fence_registration_bindings!(id, "disabled", now)
@@ -270,34 +318,33 @@ defmodule SalixStore.AgentVMM do
     Repo.transaction(fn ->
       registration = Repo.one!(from(r in Registration, where: r.id == ^id, lock: "FOR UPDATE"))
 
-      Compute.lock_provider_bindings!(id)
-
       if registration.tenant_id != tenant_id or registration.revision != expected_revision or
            registration.status == "revoked" do
         Repo.rollback(:revision_conflict)
       end
 
-      now = DateTime.utc_now()
-
-      {1, _} =
-        Repo.update_all(from(r in Registration, where: r.id == ^id),
-          set: [
-            status: "revoked",
-            desired_enabled: false,
-            credential_hash: nil,
-            enrollment_token_hash: nil,
-            updated_at: now
-          ],
-          inc: [revision: 1, policy_revision: 1]
-        )
-
-      fence_registration_bindings!(id, "revoked", now)
+      revoke_authority!(registration, SystemsClock.utc_now())
 
       audit!(tenant_id, "registration", id, "revoked", "succeeded", %{})
       Repo.get!(Registration, id)
     end)
   rescue
     _ -> {:error, :unavailable}
+  end
+
+  # Fence authority first. Child retirement is paged by the settlement worker;
+  # revocation does not wait for Host health or acquire Allocation -> Workload locks.
+  defp revoke_authority!(registration, now) do
+    Repo.update_all(from(r in Registration, where: r.id == ^registration.id),
+      set: [
+        status: "revoked",
+        desired_enabled: false,
+        credential_hash: nil,
+        enrollment_token_hash: nil,
+        updated_at: now
+      ],
+      inc: [revision: 1, policy_revision: 1]
+    )
   end
 
   defp fence_registration_bindings!(registration_id, status, now)
@@ -357,7 +404,8 @@ defmodule SalixStore.AgentVMM do
         registration =
           Repo.one!(from(r in Registration, where: r.id == ^registration_id, lock: "FOR UPDATE"))
 
-        if registration.status != "ready" or not registration.desired_enabled do
+        if authorization_expired?(registration) or registration.status != "ready" or
+             not registration.desired_enabled do
           Repo.rollback(:registration_inactive)
         end
 
@@ -417,7 +465,7 @@ defmodule SalixStore.AgentVMM do
 
         observed_allocations = Enum.reject(known_allocations, &(&1.status == "released"))
 
-        now = DateTime.utc_now()
+        now = SystemsClock.utc_now()
 
         case Compute.mark_provider_connections_lost("agent_vmm", registration_id) do
           {:ok, _} -> :ok
@@ -520,6 +568,8 @@ defmodule SalixStore.AgentVMM do
             Repo.rollback(:invalid_observation)
         end
 
+        renew_authorization!(registration, now)
+
         audit!(
           registration.tenant_id,
           "registration",
@@ -554,7 +604,7 @@ defmodule SalixStore.AgentVMM do
          now
        ) do
     environment_scope_enabled =
-      Application.get_env(:salix_store, :agent_vmm_environment_scoped_bindings_enabled, false)
+      SystemsRuntime.get_env(:salix_store, :agent_vmm_environment_scoped_bindings_enabled, false)
 
     scoped =
       from(b in Compute.ProviderBinding,
@@ -591,6 +641,76 @@ defmodule SalixStore.AgentVMM do
     Repo.update_all(scoped,
       set: [status: "available", observation: available_observation, updated_at: now],
       inc: [revision: 1]
+    )
+  end
+
+  @doc """
+  Give a new Environment-scoped binding the current connection of its Host.
+
+  A Host's hello makes every scoped binding of its registration available
+  (`update_registration_bindings/5`); a binding created later, such as a
+  Group's Cloud VM binding, takes the same facts from a binding the current
+  connection already made available. The caller holds the registration row
+  lock, which serializes this with the Host's hello. Without such a binding
+  it stays disabled until the Host's next hello.
+  """
+  def adopt_current_connection(
+        %Compute.ProviderBinding{provider: "agent_vmm", status: "disabled"} = binding,
+        %Compute.Environment{id: environment_id, generation: generation}
+      )
+      when binding.environment_id == environment_id do
+    available =
+      Repo.one(
+        from(b in Compute.ProviderBinding,
+          join: r in Registration,
+          on: r.id == b.provider_ref,
+          where:
+            b.provider == "agent_vmm" and b.provider_ref == ^binding.provider_ref and
+              b.id != ^binding.id and b.status == "available" and
+              not is_nil(b.environment_id) and r.status == "ready" and r.desired_enabled,
+          order_by: [desc: b.updated_at],
+          limit: 1,
+          select: b.observation
+        )
+      )
+
+    case available do
+      nil ->
+        binding
+
+      observation ->
+        Repo.update_all(from(b in Compute.ProviderBinding, where: b.id == ^binding.id),
+          set: [
+            status: "available",
+            observation: observation,
+            generation: generation,
+            updated_at: SystemsClock.utc_now()
+          ],
+          inc: [revision: 1]
+        )
+
+        Repo.get!(Compute.ProviderBinding, binding.id)
+    end
+  end
+
+  def adopt_current_connection(binding, _environment), do: binding
+
+  @doc """
+  Whether the Host of `registration_id` is connected to Salix now: its
+  registration is ready and enabled, and a binding of it is available. A
+  Host's hello makes its bindings available on that connection and its
+  disconnect makes them unavailable (`mark_connection_lost/3`), so this is
+  the connection that takes a command for the Host. One indexed read.
+  """
+  def connected?(registration_id) when is_binary(registration_id) do
+    Repo.exists?(
+      from(b in Compute.ProviderBinding,
+        join: r in Registration,
+        on: r.id == b.provider_ref,
+        where:
+          b.provider == "agent_vmm" and b.provider_ref == ^registration_id and
+            b.status == "available" and r.status == "ready" and r.desired_enabled
+      )
     )
   end
 
@@ -639,6 +759,10 @@ defmodule SalixStore.AgentVMM do
             Map.get(binding.observation, "connection_epoch") == connection_epoch
         end)
 
+      if authorization_expired?(registration) or registration.status != "ready" or
+           not registration.desired_enabled,
+         do: Repo.rollback(:registration_inactive)
+
       if not current?, do: Repo.rollback(:stale_connection)
 
       case settle_observation_locked(
@@ -646,7 +770,7 @@ defmodule SalixStore.AgentVMM do
              gateway_instance_id,
              connection_epoch,
              observation,
-             DateTime.utc_now(),
+             SystemsClock.utc_now(),
              false
            ) do
         {:ok, _changed?} ->
@@ -689,6 +813,7 @@ defmodule SalixStore.AgentVMM do
       cond do
         current == nil ->
           {1, _} = Repo.insert_all(RegistrationObservation, [attrs])
+          renew_authorization!(registration, received_at)
           {:ok, true}
 
         current.gateway_instance_id == gateway_instance_id and
@@ -700,6 +825,7 @@ defmodule SalixStore.AgentVMM do
               set: Map.to_list(Map.delete(attrs, :registration_id))
             )
 
+          renew_authorization!(registration, received_at)
           {:ok, true}
 
         replace_fence? and
@@ -711,6 +837,7 @@ defmodule SalixStore.AgentVMM do
               set: Map.to_list(Map.delete(attrs, :registration_id))
             )
 
+          renew_authorization!(registration, received_at)
           {:ok, true}
 
         true ->
@@ -1004,7 +1131,7 @@ defmodule SalixStore.AgentVMM do
 
   def claim_registration_command(registration_id, gateway_instance_id, connection_epoch)
       when is_binary(connection_epoch) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     Repo.transaction(fn ->
       registration =
@@ -1014,6 +1141,9 @@ defmodule SalixStore.AgentVMM do
             lock: "FOR UPDATE"
           )
         )
+
+      if registration.status == "revoked" or authorization_expired?(registration, now),
+        do: Repo.rollback(:unauthorized)
 
       if not is_integer(registration.next_controller_sequence) or
            registration.next_controller_sequence < 1 do
@@ -1035,24 +1165,32 @@ defmodule SalixStore.AgentVMM do
             on: e.id == a.environment_id,
             where:
               b.provider == "agent_vmm" and b.provider_ref == ^registration_id and
-                b.status == "available" and r.status == "ready" and r.desired_enabled == true and
-                ((c.kind != "allocation.release" and not is_nil(w.id) and
-                    w.allocation_id == a.id and
-                    w.desired_state == "ready" and
-                    fragment("(?->>'workload_generation')::bigint", c.payload) == w.generation and
-                    e.desired_state == "ready" and e.generation == a.generation) or
-                   (c.kind == "allocation.release" and is_nil(c.workload_id) and
-                      c.release_incarnation ==
-                        fragment("'allocation.release:' || ? || ':' || ?", a.id, a.generation) and
+                ((b.status == "available" and r.status == "ready" and r.desired_enabled == true and
+                    fragment("?->>'admission'", b.observation) == "accepting" and
+                    a.status != "released" and
+                    ((c.kind not in ["allocation.release", "allocation.dispose"] and
+                        not is_nil(w.id) and
+                        w.allocation_id == a.id and w.desired_state == "ready" and
+                        fragment("(?->>'workload_generation')::bigint", c.payload) == w.generation and
+                        e.desired_state == "ready" and e.generation == a.generation) or
+                       (c.kind == "allocation.release" and is_nil(c.workload_id) and
+                          c.release_incarnation ==
+                            fragment("'allocation.release:' || ? || ':' || ?", a.id, a.generation) and
+                          e.generation >= a.generation and
+                          (a.status == "draining" or
+                             (a.status == "ready" and
+                                fragment("?->>'allocation_state'", a.provider_observation) ==
+                                  "retained"))))) or
+                   (c.kind == "allocation.dispose" and not is_nil(w.id) and
+                      w.allocation_id == a.id and
+                      w.desired_state == "draining" and w.generation == a.generation and
                       e.generation >= a.generation and
-                      (a.status == "draining" or
-                         (a.status == "ready" and
-                            fragment("?->>'allocation_state'", a.provider_observation) ==
-                              "retained")))) and
+                      fragment("?->>'request_id'", w.deletion) == c.operation_id and
+                      fragment("?->>'registration_id'", w.deletion) == b.provider_ref and
+                      fragment("?->>'phase'", w.deletion) == "cleaning" and
+                      b.status != "revoked" and r.status != "revoked")) and
                 fragment("?->>'gateway_instance_id'", b.observation) == ^gateway_instance_id and
                 fragment("?->>'connection_epoch'", b.observation) == ^connection_epoch and
-                fragment("?->>'admission'", b.observation) == "accepting" and
-                a.status != "released" and
                 c.status == "pending" and c.deadline_at > ^now and
                 c.target_generation == a.generation and c.target_revision == a.revision,
             order_by: [asc: c.created_at, asc: c.id],
@@ -1139,7 +1277,7 @@ defmodule SalixStore.AgentVMM do
 
         if is_nil(command), do: Repo.rollback(:stale_command)
 
-        settled_at = DateTime.utc_now()
+        settled_at = SystemsClock.utc_now()
 
         retry_at =
           if command.kind == "allocation.release" and status in ["failed", "unknown_outcome"],
@@ -1221,6 +1359,10 @@ defmodule SalixStore.AgentVMM do
   end
 
   defp apply_command_result(command, "succeeded", evidence, _epoch)
+       when command.kind == "allocation.dispose",
+       do: SalixStore.ComputeWorkloadDeletion.complete(command, evidence)
+
+  defp apply_command_result(command, "succeeded", evidence, _epoch)
        when command.kind == "allocation.release" do
     allocation = get_in(evidence, ["result", "allocation"]) || %{}
 
@@ -1254,7 +1396,7 @@ defmodule SalixStore.AgentVMM do
 
     if Map.get(session, "allocationId") != command.allocation_id or
          integer_field(session, "allocationGeneration") != generation or
-         expires_unix_millis <= System.system_time(:millisecond) or
+         expires_unix_millis <= SystemsClock.system_time(:millisecond) or
          not is_binary(Map.get(session, "tunnelNonce")) or Map.get(session, "tunnelNonce") == "" do
       {:error, :invalid_host_result}
     else
@@ -1299,7 +1441,7 @@ defmodule SalixStore.AgentVMM do
     else
       with {:ok, session_expires_at} <-
              DateTime.from_unix(expires_unix_millis, :millisecond),
-           :gt <- DateTime.compare(session_expires_at, DateTime.utc_now()) do
+           :gt <- DateTime.compare(session_expires_at, SystemsClock.utc_now()) do
         session_expires_at = DateTime.add(session_expires_at, 0, :microsecond)
 
         Repo.transaction(fn ->
@@ -1308,8 +1450,12 @@ defmodule SalixStore.AgentVMM do
               from(a in Compute.Allocation,
                 join: b in Compute.ProviderBinding,
                 on: b.id == a.provider_binding_id,
+                join: registration in Registration,
+                on: registration.id == b.provider_ref,
                 where:
-                  a.id == ^allocation_id and a.generation == ^generation and
+                  registration.status != "revoked" and
+                    registration.authorization_expires_at > ^SystemsClock.utc_now() and
+                    a.id == ^allocation_id and a.generation == ^generation and
                     b.provider == "agent_vmm" and
                     b.provider_ref == ^registration_id and
                     fragment("?->>'gateway_instance_id'", b.observation) == ^gateway_instance_id and
@@ -1338,7 +1484,7 @@ defmodule SalixStore.AgentVMM do
             Repo.rollback(:stale_session)
           end
 
-          now = DateTime.utc_now()
+          now = SystemsClock.utc_now()
           id = Enum.join([registration_id, runtime_id, generation], ":")
 
           Repo.insert_all(
@@ -1411,7 +1557,7 @@ defmodule SalixStore.AgentVMM do
          allocation_generation,
          require_runtime_ready?
        ) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     case Repo.one(
            from(s in Session,
@@ -1423,6 +1569,8 @@ defmodule SalixStore.AgentVMM do
              on: a.id == s.allocation_id,
              join: b in Compute.ProviderBinding,
              on: b.id == a.provider_binding_id,
+             join: registration in Registration,
+             on: registration.id == b.provider_ref,
              join: e in Compute.Environment,
              on: e.id == w.environment_id,
              where:
@@ -1435,6 +1583,7 @@ defmodule SalixStore.AgentVMM do
                  w.desired_state == "ready" and e.desired_state == "ready" and
                  r.generation == w.generation and a.generation == e.generation and
                  b.provider == "agent_vmm" and b.status != "revoked" and
+                 registration.status != "revoked" and registration.authorization_expires_at > ^now and
                  s.registration_id == b.provider_ref and
                  s.connection_epoch == fragment("?->>'connection_epoch'", b.observation) and
                  s.gateway_instance_id == fragment("?->>'gateway_instance_id'", b.observation)
@@ -1457,8 +1606,9 @@ defmodule SalixStore.AgentVMM do
   end
 
   @doc "Resolve the current provider host session before Runtime Agent catch-up."
-  def current_host_session_for_workload(workload_id) when is_binary(workload_id) do
-    current_session_for_workload(workload_id, false)
+  def current_host_session_for_workload(workload_id, settlement \\ false)
+      when is_binary(workload_id) do
+    current_session_for_workload(workload_id, false, settlement)
   end
 
   @doc "Fence a vanished gateway session so reconciliation opens a fresh Host tunnel."
@@ -1495,7 +1645,7 @@ defmodule SalixStore.AgentVMM do
             )
           )
 
-        now = DateTime.utc_now()
+        now = SystemsClock.utc_now()
 
         Repo.update_all(from(s in Session, where: s.id == ^session.id),
           set: [status: "stale", updated_at: now]
@@ -1517,8 +1667,8 @@ defmodule SalixStore.AgentVMM do
     _ -> {:error, :unavailable}
   end
 
-  defp current_session_for_workload(workload_id, require_runtime_ready?) do
-    now = DateTime.utc_now()
+  defp current_session_for_workload(workload_id, require_runtime_ready?, settlement \\ false) do
+    now = SystemsClock.utc_now()
 
     case Repo.one(
            from(s in Session,
@@ -1530,6 +1680,8 @@ defmodule SalixStore.AgentVMM do
              on: a.id == s.allocation_id,
              join: b in Compute.ProviderBinding,
              on: b.id == a.provider_binding_id,
+             join: registration in Registration,
+             on: registration.id == b.provider_ref,
              join: e in Compute.Environment,
              on: e.id == w.environment_id,
              where:
@@ -1537,9 +1689,13 @@ defmodule SalixStore.AgentVMM do
                  s.status == "ready" and s.expires_at > ^now and
                  s.allocation_generation == a.generation and
                  a.status == "ready" and
-                 w.desired_state == "ready" and e.desired_state == "ready" and
+                 (w.desired_state == "ready" or
+                    (^settlement and w.desired_state == "draining" and
+                       fragment("?->>'phase'", w.deletion) == "settling_work")) and
+                 e.desired_state == "ready" and
                  r.generation == w.generation and a.generation == e.generation and
                  b.provider == "agent_vmm" and b.status != "revoked" and
+                 registration.status != "revoked" and registration.authorization_expires_at > ^now and
                  s.registration_id == b.provider_ref and
                  s.connection_epoch == fragment("?->>'connection_epoch'", b.observation) and
                  s.gateway_instance_id == fragment("?->>'gateway_instance_id'", b.observation),
@@ -1608,7 +1764,7 @@ defmodule SalixStore.AgentVMM do
           end
         end)
 
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       Repo.update_all(
         from(o in RegistrationObservation,
@@ -1647,7 +1803,7 @@ defmodule SalixStore.AgentVMM do
   def mark_connection_lost(_, _, _), do: {:error, :invalid_epoch}
 
   @doc "Settle a bounded page of commands whose durable delivery or execution deadline elapsed."
-  def settle_expired_commands(limit \\ 32, now \\ DateTime.utc_now())
+  def settle_expired_commands(limit \\ 32, now \\ SystemsClock.utc_now())
       when limit in 1..32 and is_struct(now, DateTime) do
     Repo.transaction(fn ->
       commands =
@@ -1827,7 +1983,7 @@ defmodule SalixStore.AgentVMM do
         action: action,
         outcome: outcome,
         metadata: metadata,
-        created_at: DateTime.utc_now()
+        created_at: SystemsClock.timestamp(:utc_datetime_usec)
       }
     ])
   end

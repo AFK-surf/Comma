@@ -14,7 +14,7 @@ defmodule SalixSignal.Account.Keeper do
   `config :salix_signal, :account_keeper` (default true; tests turn it off).
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -22,12 +22,12 @@ defmodule SalixSignal.Account.Keeper do
 
   @page 500
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
   def init(opts) do
-    :net_kernel.monitor_nodes(true, node_type: :visible)
-    send(self(), :tick)
+    SystemsRuntime.Proc.monitor_nodes(true, node_type: :visible)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :tick)
 
     {:ok,
      %{
@@ -43,7 +43,7 @@ defmodule SalixSignal.Account.Keeper do
   # always has exactly one periodic timer.
   def handle_info(:tick, state) do
     state.reconcile.()
-    Process.send_after(self(), :tick, state.interval_ms)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, state.interval_ms)
     {:noreply, state}
   end
 
@@ -56,7 +56,15 @@ defmodule SalixSignal.Account.Keeper do
   def handle_info({event, _node, _info}, %{pending: nil} = state)
       when event in [:nodeup, :nodedown] do
     {:noreply,
-     %{state | pending: Process.send_after(self(), :reconcile, state.membership_delay_ms)}}
+     %{
+       state
+       | pending:
+           SystemsClock.send_after(
+             SystemsRuntime.Proc.self(),
+             :reconcile,
+             state.membership_delay_ms
+           )
+     }}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
@@ -83,7 +91,10 @@ defmodule SalixSignal.Account.Keeper do
       end
     end
 
-    running = Registry.select(SalixSignal.Account.Registry, [{{:"$1", :_, :_}, [], [:"$1"]}])
+    running =
+      SystemsRuntime.Registry.select(SalixSignal.Account.Registry, [
+        {{:"$1", :_, :_}, [], [:"$1"]}
+      ])
 
     for id <- running, not MapSet.member?(active_set, id) or Accounts.owner_node(id) != node() do
       Accounts.stop_local(id)

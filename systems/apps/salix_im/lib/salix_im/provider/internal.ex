@@ -1,8 +1,9 @@
 defmodule SalixIM.Provider.Internal do
+  require SystemsRuntime.Proc
+
   @moduledoc false
 
   import SalixIM.Provider.Util
-  require Logger
 
   alias SalixIM.{
     ConversationAttachments,
@@ -11,13 +12,14 @@ defmodule SalixIM.Provider.Internal do
     ConversationParticipantProjection,
     Conversations,
     GroupDirectory,
-    ProviderRecipientIdentity
+    ProviderRecipientIdentity,
+    TaskPlacement
   }
 
-  alias SalixIM.Ports.{AgentDelivery, TaskCreate, TaskSchedule}
+  alias SalixIM.Ports.{StationHostedTasks, TaskCreate, TaskSchedule}
   alias SalixIM.Provider.Feishu.MeetingActivationAuthorization
   alias SalixIM.Triage.DelegationAuthorization
-  alias SalixStore.{Ids, RuntimeIds}
+  alias SalixStore.Ids
 
   @delivery_filter_limit SalixIM.ConversationLimits.delivery_filter_limit()
   @inline_task_ref_limit SalixIM.ConversationLimits.inline_task_ref_limit()
@@ -90,6 +92,55 @@ defmodule SalixIM.Provider.Internal do
     end
   end
 
+  def call(
+        %{agent: %{"role" => "router"}} = scope,
+        "internal.task.update",
+        %{"loop" => loop} = params
+      )
+      when is_map(loop) do
+    context = SalixIM.Provider.current_tool_context()
+
+    with :ok <-
+           validate_param_keys(
+             params,
+             ~w(conversation_id command loop),
+             "im_api.internal.task.update"
+           ),
+         {:ok, id} <- required_string(params, "conversation_id"),
+         {:ok, command} <- required_string(params, "command"),
+         :ok <- authorize_task_update(scope),
+         :ok <- authorize_conversation_update(scope, id),
+         at when is_integer(at) <- human_turn_at(context),
+         {:ok, request} <-
+           SalixIM.TaskLoop.request(loop,
+             now: SystemsClock.system_time(:millisecond),
+             timezone: task_create_timezone(context, %{})
+           ),
+         :ok <- request_restarted_loop(scope, id, request, at),
+         {:ok, conversation} <-
+           SalixIM.ConversationServer.restart_task_loop(
+             scope.group_id,
+             id,
+             request,
+             command,
+             scope.agent_id,
+             context_value(context, "source_message_id"),
+             at
+           ) do
+      {:ok,
+       %{
+         "conversation_id" => id,
+         "conversation_kind" => "agent_task",
+         "status" => conversation["status"],
+         "loop" => SalixIM.TaskLoop.request_summary(request),
+         "updated" => true
+       }}
+    else
+      nil -> {:error, "A later user message must request the new Loop"}
+      {:error, reason} -> {:error, control_error(reason)}
+    end
+  end
+
   def call(%{agent: %{"role" => "router"}} = scope, "internal.task.update", params)
       when is_map(params) do
     with :ok <-
@@ -122,17 +173,22 @@ defmodule SalixIM.Provider.Internal do
   def call(%{agent: %{"role" => "router"}} = scope, "internal.task.list", params)
       when is_map(params) do
     with {:ok, opts} <- task_list_options(params),
-         {:ok, page} <- Conversations.list_group_conversations(scope.group_id, opts) do
-      tasks = Enum.map(page["data"], &task_list_entry/1)
+         {:ok, page} <- Conversations.list_group_conversations(scope.group_id, opts),
+         {:ok, loops} <- task_list_loops(scope.group_id, page["data"]) do
+      tasks = Enum.map(page["data"], &task_list_entry(&1, loops))
+      station_tasks = if opts[:cursor], do: [], else: station_task_entries(scope.group_id)
 
       {:ok,
        %{
          "tasks" => tasks,
          "count" => length(tasks),
          "has_more" => page["has_more"],
-         "next_action" => task_list_next_action(page["has_more"])
+         "next_action" => task_list_next_action(page["has_more"], station_tasks != [])
        }
-       |> maybe_put("next_cursor", page["next_cursor"])}
+       |> maybe_put("next_cursor", page["next_cursor"])
+       |> then(
+         &if(station_tasks == [], do: &1, else: Map.put(&1, "station_tasks", station_tasks))
+       )}
     else
       {:error, :not_found} -> {:error, "group not found"}
       {:error, reason} -> {:error, control_error(reason)}
@@ -268,40 +324,9 @@ defmodule SalixIM.Provider.Internal do
   end
 
   def call(scope, "internal.read_conversation", params) do
-    conversation_id = str(params["conversation_id"])
-    message_id = str(params["message_id"])
-    limit = int_or(params["limit"], 0)
-    after_seq = int_or(params["after_seq"], -1)
-    tail = int_or(params["tail"], 0)
-
-    opts =
-      []
-      |> then(&if(limit > 0, do: Keyword.put(&1, :limit, limit), else: &1))
-      |> then(&if(after_seq >= 0, do: Keyword.put(&1, :after_seq, after_seq), else: &1))
-      |> then(&if(tail > 0, do: Keyword.put(&1, :tail, tail), else: &1))
-
-    with {:ok, conversation} <- get_conversation(scope.group_id, conversation_id),
-         {:ok, participants} <-
-           list_conversation_participants(scope.group_id, conversation_id, []),
-         {:ok, messages} <-
-           read_conversation_messages(scope.group_id, conversation_id, message_id, opts),
-         {:ok, messages} <- ConversationAttachments.materialize_messages(scope.agent_id, messages),
-         {:ok, task_lifecycle} <- public_task_lifecycle(conversation) do
-      current = current_agent_participant(participants, scope.agent_id)
-
-      state = build_read_state(conversation["kind"], current, participants, messages)
-
-      result =
-        %{
-          "conversation_id" => conversation_id,
-          "state" => state,
-          "participants" => public_participants(participants),
-          "messages" => Enum.map(messages, &public_message/1)
-        }
-        |> put_present("task_lifecycle", task_lifecycle)
-        |> put_present("current_participant_id", current && current["participant_id"])
-
-      {:ok, result}
+    case {scope.agent["role"], StationHostedTasks.parse(str(params["conversation_id"]))} do
+      {"router", {station_id, thread}} -> read_station_task(scope, station_id, thread, params)
+      _conversation -> read_conversation(scope, params)
     end
   end
 
@@ -326,8 +351,7 @@ defmodule SalixIM.Provider.Internal do
 
     with {:ok, participant} <-
            get_conversation_participant(scope.group_id, conversation_id, participant_id),
-         {:ok, status} <- participant_status(scope.group_id, conversation_id, participant),
-         {:ok, status} <- maybe_put_device_id(status, participant, scope) do
+         {:ok, status} <- participant_status(scope.group_id, conversation_id, participant) do
       {:ok, status}
     else
       {:error, reason} when is_binary(reason) -> {:error, reason}
@@ -370,7 +394,12 @@ defmodule SalixIM.Provider.Internal do
            SalixIM.ConversationServer.update_group_conversation(
              scope.group_id,
              conversation_id,
-             Map.put(update, :router_agent_id, scope.agent_id)
+             update
+             |> Map.put(:router_agent_id, scope.agent_id)
+             |> Map.put(
+               :router_human_turn_at,
+               human_turn_at(SalixIM.Provider.current_tool_context())
+             )
            ) do
       {:ok,
        updated
@@ -419,6 +448,7 @@ defmodule SalixIM.Provider.Internal do
     content = to_string_safe(params["content"])
     title = to_string_safe(params["title"])
     schedule = params["schedule"]
+    origin_metadata = task_origin_metadata(scope, tool_context)
 
     with :ok <-
            if(Map.has_key?(params, "workflow"),
@@ -426,14 +456,23 @@ defmodule SalixIM.Provider.Internal do
              else: :ok
            ),
          :ok <- validate_task_create_params(content, schedule),
-         {:ok, target_agent_id} <- required_string(params, "agent_id"),
+         {:ok, loop} <- task_create_loop(params, schedule, tool_context, origin_metadata),
+         {:ok, target_agent_id} <- task_create_worker(scope, params),
          {:ok, labels} <-
            SalixIM.TaskLabels.validate_initial_labels(scope.group_id, params["label_ids"] || []),
          {:ok, triage} <- DelegationAuthorization.prepare(scope, tool_context, params),
-         {:ok, provenance_refs} <- task_create_provenance(scope, tool_context, schedule),
+         {:ok, provenance_refs} <-
+           task_create_provenance(scope, tool_context, schedule || loop),
          {:ok, trusted_origin} <- task_create_trusted_origin(scope, tool_context),
          {:ok, target_agent_id, public_target} <-
            task_create_target(scope, target_agent_id),
+         {:ok,
+          %{
+            params: params,
+            runs_on: runs_on,
+            session_model: session_model,
+            source: place_source
+          }} <- task_create_placement(scope, target_agent_id, params, is_map(loop)),
          {:ok, execution_refs} <-
            SalixIM.TaskExecution.prepare(scope, tool_context, params, target_agent_id) do
       session_id = context_value(tool_context, "session_id")
@@ -463,20 +502,34 @@ defmodule SalixIM.Provider.Internal do
               scope,
               tool_context,
               trusted_origin,
-              target_agent_id,
+              # A model choice and a place to run are part of the command; a
+              # plain command keeps its earlier identity.
+              # The Group's default place is not part of it either, as its
+              # default Task model is not: a create asked again after the
+              # default changed is the same Task.
+              task_create_target_identity(
+                target_agent_id,
+                session_model,
+                if(place_source == :default, do: nil, else: runs_on)
+              ),
               content,
               title,
-              schedule
+              # A Loop request is part of the command; it never comes with a
+              # schedule, so a Task without one keeps its earlier identity.
+              if(loop, do: %{"loop" => loop}, else: schedule)
             ),
           "origin_session_id" => session_id,
           "source_refs" => source_refs,
-          "conversation_metadata" => task_origin_metadata(scope, tool_context),
+          "conversation_metadata" => origin_metadata,
           "labels" => labels
         }
+        |> put_present("loop", loop)
         |> put_present(
           "owner_user_id",
           get_in(execution_refs, ["task_execution", "requester_id"])
         )
+        |> put_present("session_model", session_model)
+        |> put_present("runs_on", runs_on)
 
       attrs =
         if triage do
@@ -537,6 +590,71 @@ defmodule SalixIM.Provider.Internal do
     end
   end
 
+  # A new human request after the Task's Loop ended writes the Loop it asks
+  # for. A request repeated after a failed restart finds that Loop pending.
+  defp request_restarted_loop(scope, id, request, human_at) do
+    with {:ok, conversation} <- Conversations.get_group_conversation(scope.group_id, id),
+         :ok <- SalixIM.TaskLoop.restart_allowed(conversation, scope.agent_id, human_at),
+         {:ok, view} <- SalixIM.TaskLoop.get(scope.group_id, id) do
+      case view do
+        %{"trigger" => %{}, "status" => "pending"} ->
+          :ok
+
+        %{"trigger" => %{}, "status" => "ended", "ended_at" => ended_at}
+        when human_at > ended_at ->
+          with {:ok, _view} <-
+                 SalixIM.TaskLoop.request_loop(
+                   scope,
+                   conversation["task_worker_agent_id"],
+                   id,
+                   request
+                 ),
+               do: :ok
+
+        %{"trigger" => %{}, "status" => "ended"} ->
+          {:error, {:forbidden, "A later user message must request the new Loop"}}
+
+        %{"trigger" => %{}} ->
+          {:error, {:conflict, "End the current Loop before setting a new Loop"}}
+
+        _none ->
+          {:error, {:bad_request, "This Task has no Loop to restart"}}
+      end
+    end
+  end
+
+  # A Loop Task (`SalixIM.TaskLoop`): work that repeats or keeps watching
+  # something, run by one Background Loop in the Task. A cron cadence without
+  # a timezone takes the requester's device or source timezone.
+  defp task_create_loop(params, schedule, tool_context, origin_metadata) do
+    cond do
+      is_nil(params["loop"]) ->
+        {:ok, nil}
+
+      not is_nil(schedule) ->
+        {:error, "give either loop or schedule, not both; a Loop Task runs on its Loop"}
+
+      true ->
+        SalixIM.TaskLoop.request(params["loop"],
+          now: SystemsClock.system_time(:millisecond),
+          timezone: task_create_timezone(tool_context, origin_metadata)
+        )
+    end
+  end
+
+  defp task_create_timezone(tool_context, origin_metadata) do
+    case get_in(origin_metadata, ["origin", "client_timezone"]) do
+      zone when is_binary(zone) and zone != "" ->
+        zone
+
+      _none ->
+        case context_value(tool_context, "trusted_origin") do
+          origin when is_map(origin) -> str(stringify_value(origin)["source_timezone"])
+          _other -> ""
+        end
+    end
+  end
+
   defp task_create_provenance(scope, tool_context, schedule) do
     case MeetingActivationAuthorization.provenance_for_tool_context(
            scope.group_id,
@@ -594,6 +712,23 @@ defmodule SalixIM.Provider.Internal do
 
   defp list_of_strings(_values), do: nil
 
+  # When the human Message that started the current turn was sent, or nil when
+  # no human Message started it. Only the runtime seals the trusted origin; a
+  # model argument cannot claim one.
+  defp human_turn_at(tool_context) do
+    with origin when is_map(origin) <- context_value(tool_context, "trusted_origin"),
+         origin = stringify_value(origin),
+         source when is_binary(source) and source != "" <-
+           context_value(tool_context, "source_message_id"),
+         true <- origin["source_actor_type"] in ["user", "provider_user"],
+         ^source <- origin["source_message_id"],
+         sent_at when is_integer(sent_at) <- origin["source_sent_at_ms"] do
+      sent_at
+    else
+      _other -> nil
+    end
+  end
+
   defp task_create_trusted_origin(scope, tool_context) do
     case context_value(tool_context, "trusted_origin") do
       nil ->
@@ -618,6 +753,8 @@ defmodule SalixIM.Provider.Internal do
   # its provider on the trusted origin; a Comma client request arrives as an
   # `internal` origin whose parent user Message carries the client metadata
   # the product stamped on it. Both are display facts, never authorization.
+  # The requester's `client_timezone` lets Agent messages in the Task carry a
+  # local timezone (see `ConversationDelivery`).
   defp task_origin_metadata(scope, tool_context) do
     origin =
       case context_value(tool_context, "trusted_origin") do
@@ -651,6 +788,10 @@ defmodule SalixIM.Provider.Internal do
       %{"provider" => "comma"}
       |> put_present("client_kind", str(metadata["client_kind"]))
       |> put_present("client_platform", str(metadata["client_platform"]))
+      |> put_present(
+        "client_timezone",
+        Enum.find([str(metadata["client_timezone"]), str(origin["source_timezone"])], &(&1 != ""))
+      )
     else
       _other -> %{"provider" => "comma"}
     end
@@ -681,6 +822,38 @@ defmodule SalixIM.Provider.Internal do
 
       {:error, reason} ->
         {:error, "Task requires a valid group-local agent_id: #{inspect(reason)}"}
+    end
+  end
+
+  # A Router may leave the Worker out: the Group's Task agent takes the Task.
+  defp task_create_worker(scope, params) do
+    case params["agent_id"] do
+      nil ->
+        case TaskCreate.task_worker(%{tenant_id: scope.tenant_id, group_id: scope.group_id}) do
+          {:ok, agent_id} when is_binary(agent_id) -> {:ok, agent_id}
+          {:error, :task_worker_required} -> {:error, "agent_id is required"}
+          {:error, reason} -> {:error, "no Worker can take this Task: #{inspect(reason)}"}
+        end
+
+      _given ->
+        required_string(params, "agent_id")
+    end
+  end
+
+  defp task_create_target_identity(target_agent_id, nil, nil), do: target_agent_id
+
+  defp task_create_target_identity(target_agent_id, session_model, nil),
+    do: {target_agent_id, session_model}
+
+  defp task_create_target_identity(target_agent_id, session_model, runs_on),
+    do: {target_agent_id, session_model, runs_on}
+
+  # Where the Task runs and its Session's model (`SalixIM.TaskPlacement`).
+  defp task_create_placement(scope, target_agent_id, params, loop?) do
+    case TaskPlacement.resolve(scope, target_agent_id, params, loop?) do
+      {:ok, placement} -> {:ok, placement}
+      {:error, {:agent, reason}} -> {:error, reason}
+      {:error, refusal} -> {:error, TaskPlacement.message(refusal)}
     end
   end
 
@@ -769,7 +942,11 @@ defmodule SalixIM.Provider.Internal do
           do: Map.put(response, "schedule", result["schedule"]),
           else: response
 
-      {:ok, response}
+      loop =
+        if is_map(command.attrs["loop"]),
+          do: SalixIM.TaskLoop.request_summary(command.attrs["loop"])
+
+      {:ok, put_present(response, "loop", loop)}
     else
       {:error, "Task projection returned an invalid conversation_id"}
     end
@@ -914,6 +1091,122 @@ defmodule SalixIM.Provider.Internal do
     end
   end
 
+  # The Group's station-hosted Tasks (`SalixStore.StationTaskIndex`), for
+  # the first page of internal.task.list.
+  defp station_task_entries(group_id) do
+    group_id
+    |> SalixStore.StationTaskIndex.list_group(100)
+    |> Enum.map(fn row ->
+      %{
+        "task_id" => StationHostedTasks.ref(row.station_id, row.thread),
+        "title" => row.title,
+        "status" => row.status,
+        "hosted_on" => row.device_id,
+        "last_activity_at" => row.last_activity_at,
+        "runtime" => row.runtime,
+        "model" => row.model,
+        "labels" => row.labels || []
+      }
+    end)
+  end
+
+  defp read_station_task(scope, station_id, thread, params) do
+    opts = %{
+      "after" => max(int_or(params["after_seq"], 0), 0),
+      "limit" => int_or(params["limit"], 50)
+    }
+
+    case StationHostedTasks.read(scope, station_id, thread, opts) do
+      {:ok, answer} ->
+        {:ok,
+         %{
+           "conversation_id" => StationHostedTasks.ref(station_id, thread),
+           "hosted_on_station" => true,
+           "title" => answer["title"],
+           "through_seq" => answer["through"],
+           "messages" =>
+             Enum.map(List.wrap(answer["messages"]), fn m ->
+               Map.take(m, ~w(seq author_kind author text at declared))
+             end)
+         }}
+
+      {:error, reason} ->
+        {:error, station_task_error(reason)}
+    end
+  end
+
+  defp say_station_task(scope, conversation_id, params) do
+    content = params["content"]
+    key = str(params["request_id"])
+
+    with true <-
+           scope.agent["role"] == "router" ||
+             {:error, "only the Router writes in a Task a station hosts"},
+         {station_id, thread} <- StationHostedTasks.parse(conversation_id),
+         true <- (is_binary(content) and content != "") || {:error, "content is required"},
+         true <- key != "" || {:error, "request_id is required for a station-hosted Task"},
+         requester = scope.agent["name"] || "Router",
+         {:ok, %{"seq" => seq}} <-
+           StationHostedTasks.say(scope, station_id, thread, content, key, requester) do
+      {:ok, %{"conversation_id" => conversation_id, "seq" => seq, "hosted_on_station" => true}}
+    else
+      :error -> {:error, "unknown station-hosted Task"}
+      {:ok, _answer} -> {:error, "the station did not take the Message"}
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, station_task_error(reason)}
+    end
+  end
+
+  defp station_task_error(:device_offline),
+    do: "the station hosting this Task is offline; it can be read and written in once it is back"
+
+  defp station_task_error(:not_found), do: "unknown station-hosted Task"
+
+  defp station_task_error(:ifc_enforced),
+    do:
+      "this Group enforces information-flow checks, and what a station says of its own Task carries no label: the Router cannot read or write in it here"
+
+  defp station_task_error({:station_refused, why}), do: "the station refused: " <> why
+  defp station_task_error(reason), do: control_error(reason)
+
+  defp read_conversation(scope, params) do
+    conversation_id = str(params["conversation_id"])
+    message_id = str(params["message_id"])
+    limit = int_or(params["limit"], 0)
+    after_seq = int_or(params["after_seq"], -1)
+    tail = int_or(params["tail"], 0)
+
+    opts =
+      []
+      |> then(&if(limit > 0, do: Keyword.put(&1, :limit, limit), else: &1))
+      |> then(&if(after_seq >= 0, do: Keyword.put(&1, :after_seq, after_seq), else: &1))
+      |> then(&if(tail > 0, do: Keyword.put(&1, :tail, tail), else: &1))
+
+    with {:ok, conversation} <- get_conversation(scope.group_id, conversation_id),
+         {:ok, participants} <-
+           list_conversation_participants(scope.group_id, conversation_id, []),
+         {:ok, messages} <-
+           read_conversation_messages(scope.group_id, conversation_id, message_id, opts),
+         {:ok, messages} <- ConversationAttachments.materialize_messages(scope.agent_id, messages),
+         {:ok, task_lifecycle} <- public_task_lifecycle(conversation) do
+      current = current_agent_participant(participants, scope.agent_id)
+
+      state = build_read_state(conversation["kind"], current, participants, messages)
+
+      result =
+        %{
+          "conversation_id" => conversation_id,
+          "state" => state,
+          "participants" => public_participants(participants),
+          "messages" => Enum.map(messages, &public_message/1)
+        }
+        |> put_present("task_lifecycle", task_lifecycle)
+        |> put_present("current_participant_id", current && current["participant_id"])
+
+      {:ok, result}
+    end
+  end
+
   defp task_list_options(params) do
     with :ok <- validate_param_keys(params, ~w(cursor limit), "im_api.internal.task.list"),
          {:ok, limit} <- task_list_limit(params),
@@ -948,7 +1241,7 @@ defmodule SalixIM.Provider.Internal do
   defp maybe_put_keyword(opts, _key, nil), do: opts
   defp maybe_put_keyword(opts, key, value), do: Keyword.put(opts, key, value)
 
-  defp task_list_entry(conversation) do
+  defp task_list_entry(conversation, loops) do
     task_id = conversation["conversation_id"]
     kind = conversation["kind"]
 
@@ -957,6 +1250,21 @@ defmodule SalixIM.Provider.Internal do
     |> Map.put("task_id", task_id)
     |> Map.put("kind", kind)
     |> Map.put("task_ref", task_ref(task_id, kind))
+    |> put_present("loop", SalixIM.TaskLoop.summary(loops[task_id]))
+  end
+
+  # The Loops of the page's Tasks, one indexed read per 50 Tasks.
+  defp task_list_loops(group_id, conversations) do
+    conversations
+    |> Enum.filter(&(&1["kind"] == "agent_task"))
+    |> Enum.map(& &1["conversation_id"])
+    |> Enum.chunk_every(50)
+    |> Enum.reduce_while({:ok, %{}}, fn ids, {:ok, acc} ->
+      case SalixIM.Ports.TaskLoops.task_loops(group_id, ids) do
+        {:ok, loops} -> {:cont, {:ok, Map.merge(acc, loops)}}
+        {:error, reason} -> {:halt, {:error, {:task_loops, reason}}}
+      end
+    end)
   end
 
   defp task_ref(task_id, "agent_task") do
@@ -975,6 +1283,13 @@ defmodule SalixIM.Provider.Internal do
       "kind" => kind
     }
   end
+
+  defp task_list_next_action(has_more, true) do
+    task_list_next_action(has_more) <>
+      " station_tasks are Tasks a station of the Group hosts, as the station last reported them: read one with im_api.internal.read_conversation and write in it with im_api.internal.send_message, with its task_id as conversation_id. Neither works while that station is offline; say so instead of creating a replacement Task."
+  end
+
+  defp task_list_next_action(has_more, false), do: task_list_next_action(has_more)
 
   defp task_list_next_action(has_more) do
     base =
@@ -1136,31 +1451,16 @@ defmodule SalixIM.Provider.Internal do
              str(participant["participant_id"]),
              participant
            ) do
-      {:ok, Map.delete(status, "presentation_activity")}
+      {:ok, status |> Map.delete("presentation_activity") |> drop_home_display_hints()}
     end
   end
 
-  defp maybe_put_device_id(status, participant, scope) do
-    with {agent_id, session_id} <- ConversationParticipantActivity.session_ref(participant),
-         {:ok, session} <- AgentDelivery.get_session(agent_id, session_id, projection: :status),
-         true <- session["runtime_kind"] == "external",
-         true <- session["tenant_id"] == scope.tenant_id and session["group_id"] == scope.group_id,
-         provider <- session["provider"],
-         true <- RuntimeIds.external_runtime_provider?(provider),
-         device_id when is_binary(device_id) and device_id != "" <- session["device_id"],
-         runtime_id when is_binary(runtime_id) and runtime_id != "" <- session["runtime_id"],
-         expected_id = RuntimeIds.device_runtime_id(device_id, provider, runtime_id),
-         true <- session["device_runtime_id"] == expected_id do
-      {:ok, Map.put(status, "device_id", device_id)}
-    else
-      relation when relation in [nil, false, {:error, :not_found}] ->
-        {:ok, status}
+  # These hints are for the owner's Home display. Agents query a Participant's
+  # progress, not the other Conversations that its shared Session answers.
+  defp drop_home_display_hints(%{"activity" => %{} = activity} = status),
+    do: %{status | "activity" => Map.drop(activity, ["working_conversation_ids", "waiting"])}
 
-      _relation_error ->
-        Logger.warning("participant device relation lookup failed")
-        {:ok, status}
-    end
-  end
+  defp drop_home_display_hints(status), do: status
 
   defp participant_status_error(:participant_status_unavailable),
     do: "participant status is unavailable"
@@ -1393,6 +1693,9 @@ defmodule SalixIM.Provider.Internal do
         "" ->
           {:error, "conversation_id is required"}
 
+        "station:" <> _ = conversation_id ->
+          say_station_task(scope, conversation_id, params)
+
         conversation_id ->
           case SalixIM.SendTiming.measure("im_send_conversation", fn ->
                  Conversations.get_group_conversation(scope.group_id, conversation_id)
@@ -1444,7 +1747,8 @@ defmodule SalixIM.Provider.Internal do
     conversation_id = conversation["conversation_id"]
     client_request_id = internal_send_client_request_id(scope, conversation_id, request_id)
 
-    with {:ok, content} <-
+    with {:ok, content} <- SalixIM.ConversationQuestion.normalize_agent_content(content),
+         {:ok, content} <-
            SalixIM.SendTiming.measure("im_send_attachments", fn ->
              ConversationAttachments.bind_sender_files(scope.agent_id, content)
            end) do
@@ -1463,8 +1767,10 @@ defmodule SalixIM.Provider.Internal do
           end)
         end)
         |> put_activation_provenance_metadata(activation_provenance)
+        |> put_requester_timezone()
         |> put_delivery_filter(delivery_filter)
         |> put_mentions(mentions)
+        |> put_task_request(conversation, reply_to_message_id)
         |> put_egress_archive_broker()
 
       SalixIM.ConversationServer.append_group_conversation_agent_message(
@@ -1532,6 +1838,46 @@ defmodule SalixIM.Provider.Internal do
 
   defp put_activation_provenance_metadata(attrs, _provenance), do: attrs
 
+  # The timezone of the human request this turn serves, from the delivery that
+  # woke the Agent. A reused Task then gets the current requester's timezone.
+  # A display hint, never authority; Agent parameters cannot set it.
+  defp put_requester_timezone(attrs) do
+    with origin when is_map(origin) <-
+           context_value(SalixIM.Provider.current_tool_context(), "trusted_origin"),
+         zone when zone != "" <- str(stringify_value(origin)["source_timezone"]) do
+      put_message_metadata(attrs, "requester_timezone", zone)
+    else
+      _other -> attrs
+    end
+  end
+
+  # A Message that hands a Task a request made elsewhere, such as a person's
+  # Message in Home: the delivery that woke the Agent came from no Message of
+  # this Task, it replies to nothing, and it reaches the Task's Participants.
+  # The Task's Activity starts a group at it. A Message without a waking
+  # delivery (a timer, the Agent's own follow-up) hands in nothing.
+  defp put_task_request(
+         %{"content" => content} = attrs,
+         %{"kind" => "agent_task", "conversation_id" => conversation_id},
+         nil
+       )
+       when is_list(content) do
+    sources = tool_context_source_message_ids(SalixIM.Provider.current_tool_context())
+
+    handed_in? =
+      sources != [] and
+        Enum.all?(
+          sources,
+          &match?({:error, _}, SalixIM.ConversationSourceIdentity.message_id(&1, conversation_id))
+        ) and
+        attrs["delivery_filter"] != %{"participant_ids" => []} and
+        not Enum.all?(content, &match?(%{"type" => "milestone"}, &1))
+
+    if handed_in?, do: put_message_metadata(attrs, "task_request", true), else: attrs
+  end
+
+  defp put_task_request(attrs, _conversation, _reply_to_message_id), do: attrs
+
   defp put_delivery_filter(attrs, nil), do: attrs
   defp put_delivery_filter(attrs, filter), do: Map.put(attrs, "delivery_filter", filter)
   defp put_mentions(attrs, nil), do: attrs
@@ -1539,7 +1885,8 @@ defmodule SalixIM.Provider.Internal do
 
   defp put_egress_archive_broker(attrs) do
     case SalixIM.Provider.current_tool_context()[@egress_archive_broker_key] do
-      {pid, token} = broker when is_pid(pid) and is_reference(token) ->
+      {pid, token} = broker
+      when SystemsRuntime.Proc.is_process(pid) and SystemsRuntime.Proc.is_ref(token) ->
         Map.put(attrs, @egress_archive_broker_key, broker)
 
       _missing ->

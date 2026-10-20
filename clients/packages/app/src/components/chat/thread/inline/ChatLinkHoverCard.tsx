@@ -1,14 +1,5 @@
-import { HoverCard } from "@comma/ui";
-import {
-  isValidElement,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactElement,
-  type ReactNode,
-} from "react";
-import type { CommaApiClient, CommaRecommendationLinkPreview } from "../../../../api";
+import { HoverCard } from "@comma/ui/components/hover-card";
+import { isValidElement, useMemo, type ReactElement, type ReactNode } from "react";
 import {
   describeLinkDestination,
   LinkPreviewCard,
@@ -16,14 +7,11 @@ import {
   LinkProviderIcon,
   providerFromHref,
 } from "../../../links/linkPreviewCards";
-import {
-  hasRecommendationLinkPreview,
-  loadRecommendationLinkPreview,
-  peekRecommendationLinkPreview,
-} from "../../../recommendations/linkPreviewCache";
+import { useLinkPreview } from "../../../links/useLinkPreview";
 
 /**
- * Hovering an external chat message link previews where it goes. A link the
+ * Hovering an external chat message link, or a link inside a widget card,
+ * previews where it goes. A link the
  * server can read opens on the rich card's skeleton and settles into the card
  * itself; every other link shows the generic destination tile (provider mark,
  * the link's own label, app · host/path). The fetch is lazy — nothing loads
@@ -31,54 +19,26 @@ import {
  */
 export function ChatLinkHoverCard({
   anchor,
-  api,
   href,
+  label: givenLabel,
+  open: hoverOpen,
   workspaceId,
 }: {
   anchor: ReactElement;
-  api: CommaApiClient;
   href: string;
+  /** The link's visible text when `anchor` does not carry it. */
+  label?: string | undefined;
+  /** Set when the hover happens where `anchor` cannot see it (see HoverCard). */
+  open?: boolean | undefined;
   workspaceId: string;
 }) {
-  const [preview, setPreview] = useState<CommaRecommendationLinkPreview | "loading">();
-  const requestGeneration = useRef(0);
+  // Read lazily: nothing loads until the card first opens.
+  const [preview, handleOpenChange] = useLinkPreview({ workspaceId, href });
   const source = useMemo(() => providerFromHref(href), [href]);
-  const label = useMemo(() => anchorLabel(anchor, href), [anchor, href]);
-
-  // MarkdownStream only invokes the link decorator once the stream is final
-  // (see MarkdownStreamLinkDecorator's finality guarantee), so `href` never
-  // changes over this card's lifetime. The reset below is therefore only
-  // reachable via api/workspace swaps — the href dependency is kept as
-  // harmless belt-and-braces should that contract ever loosen.
-  useEffect(() => {
-    requestGeneration.current += 1;
-    setPreview(undefined);
-    return () => {
-      requestGeneration.current += 1;
-    };
-  }, [api, href, workspaceId]);
-
-  const handleOpenChange = (open: boolean) => {
-    if (!open || preview !== undefined || !hasRecommendationLinkPreview(href)) return;
-    // A settled answer renders at once: no skeleton flash, no request.
-    const cached = peekRecommendationLinkPreview(api, workspaceId, { href });
-    if (cached === "missing") return;
-    if (cached) {
-      setPreview(cached);
-      return;
-    }
-    const generation = ++requestGeneration.current;
-    setPreview("loading");
-    void loadRecommendationLinkPreview(api, workspaceId, { href }).then(
-      (next) => {
-        if (requestGeneration.current === generation) setPreview(next);
-      },
-      () => {
-        // Unavailable: the generic card is the complete answer.
-        if (requestGeneration.current === generation) setPreview(undefined);
-      }
-    );
-  };
+  const label = useMemo(
+    () => givenLabel?.trim() || anchorLabel(anchor, href),
+    [anchor, givenLabel, href]
+  );
 
   const destination = describeLinkDestination(href);
   return (
@@ -111,6 +71,7 @@ export function ChatLinkHoverCard({
         )
       }
       onOpenChange={handleOpenChange}
+      open={hoverOpen}
       placement="bottom start"
     >
       {anchor}

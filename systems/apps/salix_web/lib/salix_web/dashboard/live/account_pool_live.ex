@@ -572,7 +572,7 @@ defmodule SalixWeb.Dashboard.AccountPoolLive do
   defp relative(value, direction) do
     case DateTime.from_iso8601(value || "") do
       {:ok, at, _} ->
-        seconds = DateTime.diff(at, DateTime.utc_now())
+        seconds = DateTime.diff(at, SystemsClock.utc_now())
         n = abs(seconds)
 
         duration =

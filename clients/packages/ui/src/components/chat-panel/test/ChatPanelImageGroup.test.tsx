@@ -93,6 +93,19 @@ describe("ChatPanelImageGroup", () => {
     }
   });
 
+  it("lets a lone image keep its own ratio instead of the 3:4 card", () => {
+    const { container, rerender } = render(
+      <ChatPanelImageGroup images={sampleImages(1)} />
+    );
+    const cards = () =>
+      container.querySelector<HTMLElement>(".chat-panel-image-group-cards");
+
+    expect(cards()).toHaveAttribute("data-single", "true");
+
+    rerender(<ChatPanelImageGroup images={sampleImages(2)} />);
+    expect(cards()).not.toHaveAttribute("data-single");
+  });
+
   it("stacks more than three images behind an expand pill", () => {
     const { container } = render(<ChatPanelImageGroup images={sampleImages(5)} />);
 

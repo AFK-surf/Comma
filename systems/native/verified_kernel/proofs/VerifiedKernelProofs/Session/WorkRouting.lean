@@ -10,7 +10,7 @@ theorem queueAppend_session {s e t : Term} {j r : List Term}
     (h : queueAppend s e j = .ok (t, r)) : t.get (a "session_id") = s.get (a "session_id") := by
   unfold queueAppend at h
   repeat' first
-    | exact write_field_frame h rfl
+    | exact write_field_frame h (by keys_absent)
     | (have same := pure_ok h; subst t; rfl)
     | (exact (fail_ok h).elim)
     | split at h
@@ -21,7 +21,7 @@ theorem pruneResultRefs_session {s t : Term} {j r : List Term}
     (h : pruneResultRefs s j = .ok (t, r)) : t.get (a "session_id") = s.get (a "session_id") := by
   unfold pruneResultRefs at h
   repeat' first
-    | exact write_field_frame h rfl
+    | exact write_field_frame h (by keys_absent)
     | (have same := pure_ok h; subst t; rfl)
     | split at h
     | (obtain ⟨_, _, _, h⟩ := bind_ok h)
@@ -31,14 +31,14 @@ theorem queueConsume_session {s e t : Term} {j r : List Term}
   unfold queueConsume at h
   iterate 4 obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨_, _, written, pruned⟩ := bind_ok h
-  exact (pruneResultRefs_session pruned).trans (write_field_frame written rfl)
+  exact (pruneResultRefs_session pruned).trans (write_field_frame written (by keys_absent))
 
 theorem queueAck_session {s e t : Term} {j r : List Term}
     (h : queueAck s e j = .ok (t, r)) : t.get (a "session_id") = s.get (a "session_id") := by
   unfold queueAck at h
   iterate 6 obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨_, _, written, pruned⟩ := bind_ok h
-  exact (pruneResultRefs_session pruned).trans (write_field_frame written rfl)
+  exact (pruneResultRefs_session pruned).trans (write_field_frame written (by keys_absent))
 
 theorem sessionEvent_session {s e t : Term} {j r : List Term}
     (h : sessionEvent s e j = .ok (t, r)) : t.get (a "session_id") = s.get (a "session_id") :=

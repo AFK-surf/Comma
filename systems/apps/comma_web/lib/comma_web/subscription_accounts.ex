@@ -30,11 +30,12 @@ defmodule CommaWeb.SubscriptionAccounts do
     if (not Map.has_key?(attrs, "disabled") or is_boolean(attrs["disabled"])) and
          (not Map.has_key?(attrs, "credentials") or is_map(attrs["credentials"])) and
          (not Map.has_key?(attrs, "name") or is_binary(attrs["name"])) and
-         (not Map.has_key?(attrs, "api_key") or is_binary(attrs["api_key"])) do
+         (not Map.has_key?(attrs, "api_key") or is_binary(attrs["api_key"])) and
+         (not Map.has_key?(attrs, "disabled_models") or is_list(attrs["disabled_models"])) do
       AccountPool.update(
         tenant,
         id,
-        Map.take(attrs, ~w(version disabled credentials name api_key))
+        Map.take(attrs, ~w(version disabled credentials name api_key disabled_models))
       )
     else
       {:error, :invalid_input}
@@ -44,7 +45,7 @@ defmodule CommaWeb.SubscriptionAccounts do
   def update(_, _, _), do: {:error, :invalid_input}
 
   def begin_oauth(tenant, %{"provider" => provider} = attrs) do
-    if AccountPool.provider?(provider) and
+    if AccountPool.sign_in?(provider) and
          (not Map.has_key?(attrs, "account_id") or
             (is_binary(attrs["account_id"]) and is_binary(attrs["version"]))) do
       AccountPool.begin_oauth(tenant, Map.take(attrs, ~w(provider account_id version mode)))

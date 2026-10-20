@@ -9,7 +9,7 @@ defmodule SalixAgent.Tools.ImRouter do
 
   Provider API contracts, including required params, come from the configured IM
   provider seam:
-  `Application.get_env(:salix_agent, :im_provider_mod)` — a module implementing
+  `SystemsRuntime.get_env(:salix_agent, :im_provider_mod)` — a module implementing
   the `@behaviour` defined here (`c:list_connects/1`, `c:provider_manual/1`,
   `c:call_api/4`). No seam configured ⇒ every tool raises willow's
   tool-unavailable wording (`"control db is required"`, willow's
@@ -118,7 +118,7 @@ defmodule SalixAgent.Tools.ImRouter do
 
   @doc false
   def internal_read_disclosure_entries(ctx) do
-    mod = Application.get_env(:salix_agent, :im_provider_mod)
+    mod = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
 
     if is_nil(mod) do
       []
@@ -136,14 +136,14 @@ defmodule SalixAgent.Tools.ImRouter do
 
   @doc false
   def dynamic_disclosure_entries(ctx) do
-    mod = Application.get_env(:salix_agent, :im_provider_mod)
+    mod = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
     agent_id = ctx_agent_id(ctx)
 
     cond do
       is_nil(mod) or agent_id == "" ->
         []
 
-      Code.ensure_loaded?(mod) && function_exported?(mod, :discovery_catalog, 2) ->
+      SystemsRuntime.Proc.ensure_loaded?(mod) && function_exported?(mod, :discovery_catalog, 2) ->
         case mod.discovery_catalog(agent_id, discovery_context(ctx)) do
           {:ok, %{connects: connects, manuals: manuals}} ->
             connects
@@ -221,7 +221,7 @@ defmodule SalixAgent.Tools.ImRouter do
   # keeps the full manual: the seam rejects role-ineligible dispatch itself.
   defp discovery_manual(mod, provider, ctx) do
     cond do
-      Code.ensure_loaded?(mod) && function_exported?(mod, :provider_manual, 3) ->
+      SystemsRuntime.Proc.ensure_loaded?(mod) && function_exported?(mod, :provider_manual, 3) ->
         mod.provider_manual(provider, ctx_agent_id(ctx), discovery_context(ctx))
 
       function_exported?(mod, :provider_manual, 2) ->
@@ -233,7 +233,7 @@ defmodule SalixAgent.Tools.ImRouter do
   end
 
   defp discovery_connects(mod, ctx) do
-    if Code.ensure_loaded?(mod) && function_exported?(mod, :list_connects, 2),
+    if SystemsRuntime.Proc.ensure_loaded?(mod) && function_exported?(mod, :list_connects, 2),
       do: mod.list_connects(ctx_agent_id(ctx), discovery_context(ctx)),
       else: mod.list_connects(ctx_agent_id(ctx))
   end
@@ -514,11 +514,6 @@ defmodule SalixAgent.Tools.ImRouter do
             "tool" => op_id,
             "params" => example_params(contract)
           }
-        },
-        "external_runtime" => %{
-          "method" => "POST",
-          "path" => "/tool/" <> op_id,
-          "body" => example_params(contract)
         },
         "script" => %{
           "call" =>
@@ -911,8 +906,7 @@ defmodule SalixAgent.Tools.ImRouter do
 
       {:tool_failure, diagnostic, error_class, "user_reportable", public_summary, []}
     else
-      # A stable code keeps its closed facts after repair removes the
-      # diagnostic text (`FailureOutcome.lean`). A map without a code keeps
+      # A stable code becomes the error class. A map without a code keeps
       # the generic tool error class.
       case failure_code(failure) do
         nil ->
@@ -1207,8 +1201,7 @@ defmodule SalixAgent.Tools.ImRouter do
 
   defp ctx_runtime_kind(ctx) when is_map(ctx) do
     case Map.get(ctx, :runtime_kind, Map.get(ctx, "runtime_kind", :internal)) do
-      kind when kind in [:internal, :external, :script] -> kind
-      "external" -> :external
+      kind when kind in [:internal, :script] -> kind
       "script" -> :script
       _internal_or_unknown -> :internal
     end
@@ -1222,7 +1215,7 @@ defmodule SalixAgent.Tools.ImRouter do
   # ---- seam + helpers ----
 
   defp seam! do
-    Application.get_env(:salix_agent, :im_provider_mod) ||
+    SystemsRuntime.get_env(:salix_agent, :im_provider_mod) ||
       raise "control db is required"
   end
 

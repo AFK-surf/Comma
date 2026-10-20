@@ -53,7 +53,12 @@ defmodule SalixSignalProto.Crypto.Kyber1024 do
 
   @doc "Generates a key pair from fresh random seeds."
   @spec keypair() :: {encapsulation_key(), decapsulation_key()}
-  def keypair, do: keypair_from_seed(:crypto.strong_rand_bytes(32), :crypto.strong_rand_bytes(32))
+  def keypair,
+    do:
+      keypair_from_seed(
+        SystemsRuntime.Proc.random_bytes(32),
+        SystemsRuntime.Proc.random_bytes(32)
+      )
 
   @doc """
   Encapsulates to `encapsulation_key` with the 32-byte random input `m`
@@ -62,7 +67,7 @@ defmodule SalixSignalProto.Crypto.Kyber1024 do
   """
   @spec encapsulate(binary(), <<_::256>>) ::
           {:ok, {shared_secret(), ciphertext()}} | {:error, :invalid_encapsulation_key}
-  def encapsulate(encapsulation_key, m \\ :crypto.strong_rand_bytes(32))
+  def encapsulate(encapsulation_key, m \\ SystemsRuntime.Proc.random_bytes(32))
 
   def encapsulate(<<_::binary-size(@ek_bytes)>> = ek, <<_::binary-size(32)>> = m) do
     m = h(m)

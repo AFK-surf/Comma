@@ -1,14 +1,18 @@
 defmodule SalixWeb.ConnectorTaskAdmission do
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
   @moduledoc false
 
   @key {__MODULE__, :counters}
-  @lanes [:control, :request, :stream, :external_event]
+  @lanes [:control, :request, :stream]
 
   def initialize do
-    case :persistent_term.get(@key, nil) do
+    case SystemsRuntime.PersistentTerm.get(@key, nil) do
       nil ->
-        counters = Map.new(@lanes, &{&1, :atomics.new(1, signed: false)})
-        :persistent_term.put(@key, counters)
+        counters = Map.new(@lanes, &{&1, SystemsRuntime.Atomics.new(1, signed: false)})
+        SystemsRuntime.PersistentTerm.put(@key, counters)
 
       counters ->
         missing = @lanes -- Map.keys(counters)
@@ -16,24 +20,24 @@ defmodule SalixWeb.ConnectorTaskAdmission do
         if missing != [] do
           counters =
             Enum.reduce(missing, counters, fn lane, acc ->
-              Map.put(acc, lane, :atomics.new(1, signed: false))
+              Map.put(acc, lane, SystemsRuntime.Atomics.new(1, signed: false))
             end)
 
-          :persistent_term.put(@key, counters)
+          SystemsRuntime.PersistentTerm.put(@key, counters)
         end
     end
 
     :ok
   end
 
-  def acquire(lane, owner) when lane in @lanes and is_pid(owner) do
+  def acquire(lane, owner) when lane in @lanes and SystemsRuntime.Proc.is_process(owner) do
     counter = counter(lane)
 
     case increment_below(counter, limit(lane)) do
       :ok ->
         {:ok,
-         spawn(fn ->
-           lease_loop(counter, lane, owner, Process.monitor(owner), nil)
+         SystemsRuntime.Proc.spawn(fn ->
+           lease_loop(counter, lane, owner, SystemsRuntime.Proc.monitor(owner), nil)
          end)}
 
       :full ->
@@ -41,53 +45,56 @@ defmodule SalixWeb.ConnectorTaskAdmission do
     end
   end
 
-  def track(lease, pid) when is_pid(lease) and is_pid(pid) do
-    ref = make_ref()
-    monitor = Process.monitor(lease)
-    send(lease, {:track, pid, self(), ref})
+  def track(lease, pid)
+      when SystemsRuntime.Proc.is_process(lease) and SystemsRuntime.Proc.is_process(pid) do
+    ref = SystemsRuntime.Proc.make_ref()
+    monitor = SystemsRuntime.Proc.monitor(lease)
+    SystemsRuntime.Proc.send(lease, {:track, pid, SystemsRuntime.Proc.self(), ref})
 
-    receive do
+    SystemsClock.vreceive do
       {:connector_task_admission_tracked, ^ref} ->
-        Process.demonitor(monitor, [:flush])
+        SystemsRuntime.Proc.demonitor(monitor, [:flush])
         :ok
 
       {:DOWN, ^monitor, :process, ^lease, _reason} ->
-        Process.exit(pid, :kill)
+        SystemsRuntime.Proc.exit(pid, :kill)
         {:error, :lease_closed}
     after
       1_000 ->
-        Process.demonitor(monitor, [:flush])
-        Process.exit(pid, :kill)
-        send(lease, :release)
+        SystemsRuntime.Proc.demonitor(monitor, [:flush])
+        SystemsRuntime.Proc.exit(pid, :kill)
+        SystemsRuntime.Proc.send(lease, :release)
         {:error, :track_timeout}
     end
   end
 
-  def track(_lease, pid) when is_pid(pid) do
-    Process.exit(pid, :kill)
+  def track(_lease, pid) when SystemsRuntime.Proc.is_process(pid) do
+    SystemsRuntime.Proc.exit(pid, :kill)
     {:error, :invalid_lease}
   end
 
   def track(_lease, _pid), do: {:error, :invalid_task}
 
-  def release(lease) when is_pid(lease), do: send(lease, :release)
+  def release(lease) when SystemsRuntime.Proc.is_process(lease),
+    do: SystemsRuntime.Proc.send(lease, :release)
+
   def release(_lease), do: :ok
 
-  def count(lane) when lane in @lanes, do: :atomics.get(counter(lane), 1)
+  def count(lane) when lane in @lanes, do: SystemsRuntime.Atomics.get(counter(lane), 1)
 
   defp counter(lane) do
     initialize()
-    :persistent_term.get(@key) |> Map.fetch!(lane)
+    SystemsRuntime.PersistentTerm.get(@key) |> Map.fetch!(lane)
   end
 
   defp increment_below(counter, limit) do
-    current = :atomics.get(counter, 1)
+    current = SystemsRuntime.Atomics.get(counter, 1)
 
     cond do
       current >= limit ->
         :full
 
-      :atomics.compare_exchange(counter, 1, current, current + 1) == :ok ->
+      SystemsRuntime.Atomics.compare_exchange(counter, 1, current, current + 1) == :ok ->
         :ok
 
       true ->
@@ -96,27 +103,22 @@ defmodule SalixWeb.ConnectorTaskAdmission do
   end
 
   defp lease_loop(counter, lane, owner, owner_monitor, tracked) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:track, pid, from, ref} ->
-        send(from, {:connector_task_admission_tracked, ref})
+        SystemsRuntime.Proc.send(from, {:connector_task_admission_tracked, ref})
         lease_loop(counter, lane, owner, owner_monitor, pid)
 
       :release ->
         decrement(counter, lane, owner)
 
       {:DOWN, ^owner_monitor, :process, _owner, _reason} ->
-        if is_pid(tracked), do: Process.exit(tracked, :kill)
+        if SystemsRuntime.Proc.is_process(tracked), do: SystemsRuntime.Proc.exit(tracked, :kill)
         decrement(counter, lane, owner)
     end
   end
 
-  defp decrement(counter, lane, owner) do
-    :atomics.sub(counter, 1, 1)
-
-    if lane == :external_event do
-      send(owner, {:connector_task_admission_released, lane})
-    end
-
+  defp decrement(counter, _lane, _owner) do
+    SystemsRuntime.Atomics.sub(counter, 1, 1)
     :ok
   end
 
@@ -129,11 +131,8 @@ defmodule SalixWeb.ConnectorTaskAdmission do
   defp limit(:stream),
     do: configured_limit(:connector_stream_task_limit, 32)
 
-  defp limit(:external_event),
-    do: configured_limit(:connector_external_event_task_limit, 64)
-
   defp configured_limit(key, fallback) do
-    case Application.get_env(:salix_web, key, fallback) do
+    case SystemsRuntime.get_env(:salix_web, key, fallback) do
       value when is_integer(value) and value > 0 -> value
       _invalid -> fallback
     end

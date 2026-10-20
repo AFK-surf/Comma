@@ -178,8 +178,8 @@ defmodule BillingStripe.Payments do
       get_in(line, ["pricing", "price_details", "price"]) ||
         get_in(line, ["price", "id"]) || if(is_binary(line["price"]), do: line["price"])
 
-  defp api, do: Application.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
+  defp api, do: SystemsRuntime.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
 
   defp opts,
-    do: [api_key: Application.fetch_env!(:billing_stripe, :secret_key), response_as: :map]
+    do: [api_key: SystemsRuntime.fetch_env!(:billing_stripe, :secret_key), response_as: :map]
 end

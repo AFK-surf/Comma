@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Central Icons (commercially licensed): IconEmail2Unread, round-outlined-radius-2-stroke-2.
+    Not for redistribution; see ui/icons/IconSources.kt. Tinted in code.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M3.28809 8.64404L11.1055 12.5528C11.6685 12.8343 12.3313 12.8343 12.8943 12.5528L20.4472 8.77639C20.786 8.607 21 8.26074 21 7.88196V7C21 5.89543 20.1046 5 19 5H5C3.89543 5 3 5.89543 3 7V17C3 18.1046 3.89543 19 5 19H11"
+        android:strokeColor="#FF000000" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M16.0,17.5A3.5,3.5 0 1,0 23.0,17.5A3.5,3.5 0 1,0 16.0,17.5Z"
+        android:fillColor="#FF000000" />
+</vector>

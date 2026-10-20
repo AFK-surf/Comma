@@ -107,7 +107,8 @@ defmodule SalixStore.TenantConfigs do
     }
   end
 
-  defp to_record(%Row{} = row) do
+  @doc false
+  def to_record(%Row{} = row) do
     %{
       "tenant_id" => row.tenant_id,
       "name" => row.name,
@@ -116,7 +117,8 @@ defmodule SalixStore.TenantConfigs do
     }
   end
 
-  defp from_record(record) do
+  @doc false
+  def from_record(record) do
     %Row{
       tenant_id: record["tenant_id"],
       name: record["name"],

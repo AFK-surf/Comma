@@ -35,13 +35,13 @@ defmodule SystemsObservability.BanditInstrumentation do
     if handler_attached?(@handler_id) do
       {:error, :already_exists}
     else
-      :telemetry.detach(@upstream_id)
+      SystemsRuntime.Telemetry.detach(@upstream_id)
 
       with :ok <- OpentelemetryBandit.setup(handler_id: @upstream_handler) do
         result =
           case upstream_config() do
             {:ok, config} ->
-              :telemetry.attach_many(
+              SystemsRuntime.Telemetry.attach_many(
                 @handler_id,
                 @events,
                 &__MODULE__.handle_event/4,
@@ -54,7 +54,7 @@ defmodule SystemsObservability.BanditInstrumentation do
 
         # Never leave the content-bearing upstream handler installed, including
         # when config discovery or safe-handler registration fails.
-        :telemetry.detach(@upstream_id)
+        SystemsRuntime.Telemetry.detach(@upstream_id)
         result
       end
     end
@@ -115,20 +115,23 @@ defmodule SystemsObservability.BanditInstrumentation do
   def sanitize(_event, metadata), do: metadata
 
   defp upstream_config do
-    case Enum.find(:telemetry.list_handlers([:bandit, :request, :start]), fn handler ->
-           handler.id == @upstream_id
-         end) do
+    case Enum.find(
+           SystemsRuntime.Telemetry.list_handlers([:bandit, :request, :start]),
+           fn handler ->
+             handler.id == @upstream_id
+           end
+         ) do
       %{config: config} -> {:ok, config}
       nil -> {:error, :upstream_handler_not_found}
     end
   end
 
   defp handler_attached?(id) do
-    Enum.any?(:telemetry.list_handlers([:bandit, :request, :start]), &(&1.id == id))
+    Enum.any?(SystemsRuntime.Telemetry.list_handlers([:bandit, :request, :start]), &(&1.id == id))
   end
 
   defp handler_failure do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:systems_observability, :handler, :failure],
       %{},
       %{reason: "invalid_measurement"}

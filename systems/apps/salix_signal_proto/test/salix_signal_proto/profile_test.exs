@@ -1,7 +1,7 @@
 defmodule SalixSignalProto.ProfileTest do
   # Level 1: CRS-08 vectors for the profile key derivations and the
   # encrypted profile fields.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.Profile

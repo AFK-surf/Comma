@@ -14,5 +14,5 @@ defmodule SalixAgent.MeetingActivationProvenance do
     end
   end
 
-  defp impl, do: Application.get_env(:salix_agent, :meeting_activation_provenance_mod)
+  defp impl, do: SystemsRuntime.get_env(:salix_agent, :meeting_activation_provenance_mod)
 end

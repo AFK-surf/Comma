@@ -1,7 +1,10 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Button } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
 import { useCallback } from "react";
-import type { CommaTaskLabelCatalog, CommaTaskLabelProposal } from "../../api";
+import type {
+  CommaTaskLabelCatalog,
+  CommaTaskLabelProposal,
+} from "@comma/core/api-schemas";
 import { taskLabelProposalLabels } from "./taskLabelProposal";
 
 export type LabelProposalDecision = "approve" | "reject";

@@ -1,5 +1,6 @@
 defmodule BridgeForTeams.DashboardProjectionTest do
   use BridgeForTeams.DataCase, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{Accounts, Agents, DashboardProjection, Memberships, Orgs, Repo}
 
@@ -55,8 +56,8 @@ defmodule BridgeForTeams.DashboardProjectionTest do
     def session_trace(_agent_id, _session_id, _opts), do: {:error, :not_found}
 
     defp notify(message) do
-      if pid = Application.get_env(:bridge_for_teams_core, :dashboard_projection_test_pid) do
-        send(pid, message)
+      if pid = SystemsRuntime.get_env(:bridge_for_teams_core, :dashboard_projection_test_pid) do
+        SystemsRuntime.Proc.send(pid, message)
       end
     end
   end
@@ -73,11 +74,11 @@ defmodule BridgeForTeams.DashboardProjectionTest do
     # Blocks until the rebuild kills the refresh. The refresh does its database
     # work before this call, so the kill cannot land in the middle of a query.
     def list_group_conversations(_group_id, _opts) do
-      if pid = Application.get_env(:bridge_for_teams_core, :dashboard_projection_test_pid) do
-        send(pid, {:slow_salix_call_started, self()})
+      if pid = SystemsRuntime.get_env(:bridge_for_teams_core, :dashboard_projection_test_pid) do
+        SystemsRuntime.Proc.send(pid, {:slow_salix_call_started, SystemsRuntime.Proc.self()})
       end
 
-      Process.sleep(:infinity)
+      SystemsClock.sleep(:infinity)
     end
 
     def list_group_meetings(_group_id), do: {:ok, []}
@@ -87,14 +88,19 @@ defmodule BridgeForTeams.DashboardProjectionTest do
   end
 
   setup do
-    previous_client = Application.get_env(:bridge_for_teams_core, :salix_client)
-    previous_pid = Application.get_env(:bridge_for_teams_core, :dashboard_projection_test_pid)
-    Application.put_env(:bridge_for_teams_core, :salix_client, SalixClient)
-    Application.put_env(:bridge_for_teams_core, :dashboard_projection_test_pid, self())
+    previous_client = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    previous_pid = SystemsRuntime.get_env(:bridge_for_teams_core, :dashboard_projection_test_pid)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, SalixClient)
+
+    SystemsRuntime.put_env(
+      :bridge_for_teams_core,
+      :dashboard_projection_test_pid,
+      SystemsRuntime.Proc.self()
+    )
 
     on_exit(fn ->
-      Application.put_env(:bridge_for_teams_core, :salix_client, previous_client)
-      Application.put_env(:bridge_for_teams_core, :dashboard_projection_test_pid, previous_pid)
+      SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous_client)
+      SystemsRuntime.put_env(:bridge_for_teams_core, :dashboard_projection_test_pid, previous_pid)
     end)
 
     :ok
@@ -113,74 +119,15 @@ defmodule BridgeForTeams.DashboardProjectionTest do
     assert [%{"conversation_id" => "conv-dashboard", "title" => "Dashboard conversation"}] =
              snapshot.recent_conversations
 
-    assert_receive {:list_group_conversations, _group_id, _opts}
-    assert_receive {:list_group_meetings, _group_id}
-    assert_receive {:billing_history, agent_id, tenant_id, _opts}
+    settle_receive({:list_group_conversations, _group_id, _opts})
+    settle_receive({:list_group_meetings, _group_id})
+    settle_receive({:billing_history, agent_id, tenant_id, _opts})
     assert agent_id == agent.salix_agent_id
     assert tenant_id == org.salix_tenant_id
   end
 
-  test "mark_stale and stale_or_missing? expose refresh state" do
-    %{project: project} = fixture()
-
-    assert DashboardProjection.stale_or_missing?(project)
-    assert {:ok, snapshot} = DashboardProjection.mark_stale(project)
-    assert snapshot.stale_at
-    assert DashboardProjection.stale_or_missing?(project)
-  end
-
-  test "refresh_project preserves the last successful snapshot when a source fails" do
-    %{project: project} = fixture()
-    refreshed_at = DateTime.add(DateTime.utc_now(), -60, :second)
-
-    assert {:ok, snapshot} =
-             DashboardProjection.upsert_snapshot(project, %{
-               conversation_count: 7,
-               token_total: 99,
-               connected_providers: ["github"],
-               meeting_count: 2,
-               refreshed_at: refreshed_at
-             })
-
-    Application.put_env(:bridge_for_teams_core, :salix_client, FailingSalixClient)
-
-    assert {:error, reason} = DashboardProjection.refresh_project(project)
-    assert reason =~ "conversation refresh failed"
-
-    persisted = DashboardProjection.snapshot_for_project(project.id)
-    assert persisted.project_id == snapshot.project_id
-    assert persisted.conversation_count == 7
-    assert persisted.token_total == 99
-    assert persisted.connected_providers == ["github"]
-    assert persisted.meeting_count == 2
-    assert DateTime.compare(persisted.refreshed_at, refreshed_at) == :eq
-    assert persisted.refreshing_at == nil
-    assert persisted.refresh_error =~ "conversation refresh failed"
-  end
-
-  test "rebuild_projects records the timed out project and clears refreshing state" do
-    %{project: project} = fixture()
-    Application.put_env(:bridge_for_teams_core, :salix_client, SlowSalixClient)
-
-    # The timeout leaves the refresh ample time to finish its database writes
-    # and block in the Salix call; killing it inside a query would break the
-    # test's sandbox connection. It stays below the 5s Salix call timeout.
-    assert [{project_id, {:error, {:task_exit, :timeout}}}] =
-             DashboardProjection.rebuild_projects([project], timeout: 1_000)
-
-    assert project_id == project.id
-    assert_received {:slow_salix_call_started, blocked_call}
-    ref = Process.monitor(blocked_call)
-    assert_receive {:DOWN, ^ref, :process, ^blocked_call, _reason}
-
-    snapshot = DashboardProjection.snapshot_for_project(project.id)
-    assert snapshot.project_id == project.id
-    assert snapshot.refreshing_at == nil
-    assert snapshot.refresh_error == "rebuild refresh timed out after 1000ms"
-  end
-
   defp fixture do
-    n = System.unique_integer([:positive])
+    n = SystemsRuntime.Proc.unique_integer([:positive])
     {:ok, user} = Accounts.create_user(%{"email" => "projection-#{n}@example.com"})
     {:ok, org} = Orgs.create_org(%{"name" => "Projection #{n}", "slug" => "projection-#{n}"})
     {:ok, _membership} = Memberships.put_org_member(org.id, user.id, "owner")

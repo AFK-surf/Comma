@@ -7,19 +7,19 @@ defmodule Comma.SchemaReadiness do
   handlers never perform migrations or query schema state themselves.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   @name __MODULE__
   @retry_ms 1_000
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: @name)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: @name)
   end
 
   def ready? do
-    case Process.whereis(@name) do
+    case SystemsRuntime.Proc.whereis(@name) do
       nil -> false
-      pid -> GenServer.call(pid, :ready?)
+      pid -> SystemsRuntime.Server.call(pid, :ready?)
     end
   catch
     :exit, _reason -> false
@@ -40,7 +40,7 @@ defmodule Comma.SchemaReadiness do
 
   defp check(state) do
     ready? = Comma.Schema.ready?(state.repo)
-    unless ready?, do: Process.send_after(self(), :recheck, @retry_ms)
+    unless ready?, do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :recheck, @retry_ms)
     %{state | ready?: ready?}
   end
 end

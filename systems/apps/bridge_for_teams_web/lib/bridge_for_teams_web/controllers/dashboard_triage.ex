@@ -32,8 +32,8 @@ defmodule BridgeForTeamsWeb.DashboardTriage do
   def overview(org) do
     [agents, posture] =
       [fn -> Triage.router_agents(org) end, fn -> Triage.connect_posture(org) end]
-      |> Enum.map(&Task.async(fn -> safely(&1) end))
-      |> Task.await_many(:infinity)
+      |> Enum.map(&SystemsRuntime.Task.async(fn -> safely(&1) end))
+      |> SystemsRuntime.Task.await_many(:infinity)
 
     {:ok,
      %{
@@ -300,107 +300,37 @@ defmodule BridgeForTeamsWeb.DashboardTriage do
          reason: reason_text(reason)
        ), %{}}
 
-  # ---- Worker for Triage ----
+  # ---- Where Triage Tasks run ----
 
-  @doc "The Worker for new Triage tasks, one 20-row page of candidates and a preview."
+  @doc """
+  Where the selected Agent's Triage Tasks run: on its swarm's Task agent, at
+  the swarm's default place and default Task model, which swarm Settings set
+  (`settings_href`). `tools_ready` says whether the swarm's plugins allow the
+  Triage tools those Tasks use; nil when Salix cannot say.
+  """
   def worker(org, user, params) do
-    opts = [
-      filter: String.slice(text(params["query"]), 0, 128),
-      inspect_worker_id: blank_to_nil(params["preview"]),
-      cursor: blank_to_nil(params["cursor"])
-    ]
-
     with {:ok, agent, _roster} <- agent(org, params) do
-      case Triage.worker_configuration(org, agent, user.id, opts) do
-        {:ok, view} ->
-          binding = view["binding"] || %{}
-
+      case Triage.task_settings(org, agent, user.id) do
+        {:ok, %{project: project, tools_ready: tools_ready}} ->
           {:ok,
            %{
-             "can_manage" => view["can_manage"] == true,
-             "worker_id" => binding["worker_agent_id"],
-             "revision" => binding["revision"],
-             "worker" => public_worker(view["worker"]),
-             "preview" => public_worker(view["preview_worker"]),
-             "candidates" => for(worker <- view["candidates"] || [], do: public_worker(worker)),
-             "next_cursor" => view["next_cursor"],
-             "tools_ready" =>
-               case view["capabilities"] do
-                 %{} = tools -> Enum.all?(tools, fn {_tool, enabled} -> enabled == true end)
-                 _ -> nil
-               end
+             "settings_href" => "/orgs/#{org.slug}/projects/#{project.id}/settings",
+             "tools_ready" => tools_ready
            }}
-
-        _error ->
-          {:error, 503, "runtime_unavailable", gettext("Worker configuration is unavailable."),
-           %{}}
-      end
-    end
-  end
-
-  @doc "Saves the Worker (`worker_id`, or null to pause) against the `revision` read."
-  def save_worker(org, user, params) do
-    with {:ok, agent, _roster} <- agent(org, params) do
-      case Triage.configure_worker(
-             org,
-             agent,
-             user.id,
-             blank_to_nil(params["worker_id"]),
-             params["revision"]
-           ) do
-        {:ok, %{"audit_recorded" => true}} ->
-          {:ok,
-           %{
-             "notice" => gettext("Triage Worker updated. Existing assignments keep their Worker.")
-           }}
-
-        {:ok, _result} ->
-          {:ok,
-           %{
-             "notice" =>
-               gettext(
-                 "Worker updated. The audit attempt is saved, but the audit completion could not be written."
-               )
-           }}
-
-        {:error, :triage_worker_conflict} ->
-          {:error, 409, "worker_conflict",
-           gettext(
-             "The Worker selection changed in another session. Review the current selection before saving again."
-           ), %{}}
-
-        {:error, :triage_worker_unavailable} ->
-          {:error, 422, "worker_unavailable",
-           gettext(
-             "This Worker is unavailable. Choose an active Worker in this Swarm with a ready runtime."
-           ), %{}}
 
         {:error, :forbidden} ->
-          {:error, 403, "forbidden",
-           gettext("Only project administrators can change the Triage Worker."), %{}}
-
-        {:error, :audit_unavailable} ->
-          {:error, 503, "audit_unavailable",
-           gettext("The audit record could not be saved. The Worker selection was not changed."),
-           %{}}
-
-        _unconfirmed ->
-          {:error, 503, "unconfirmed",
-           gettext(
-             "Worker change was not confirmed. Check the current selection and availability before retrying."
-           ), %{}}
+          {:error, 403, "forbidden", gettext("You cannot read this Agent Swarm."), %{}}
       end
     end
   end
 
-  defp public_worker(%{"agent_id" => id} = worker),
-    do: %{
-      "id" => id,
-      "name" => worker["name"],
-      "status" => get_in(worker, ["availability", "status"])
-    }
-
-  defp public_worker(_worker), do: nil
+  @doc "Triage chooses no Worker any more: saving one answers 410."
+  def save_worker(_org, _user, _params),
+    do:
+      {:error, 410, "workers_retired",
+       gettext(
+         "Triage Tasks run at the Agent Swarm's default place and model. Set them in the swarm's Settings."
+       ), %{}}
 
   # ---- Timeline ----
 
@@ -721,7 +651,8 @@ defmodule BridgeForTeamsWeb.DashboardTriage do
   # sources, so one Agent's page cannot open another Agent's messages.
   defp reveal_source(org, agent, _roster, _nav) do
     since =
-      div(System.system_time(:millisecond) - @window_ms, @window_quantum_ms) * @window_quantum_ms
+      div(SystemsClock.system_time(:millisecond) - @window_ms, @window_quantum_ms) *
+        @window_quantum_ms
 
     with {:ok, %{connects: connects}} <- safely(fn -> Triage.connect_posture(org) end),
          {:ok, %{receipts: receipts}} <- safely(fn -> Triage.recent_window(org, since) end) do
@@ -972,8 +903,8 @@ defmodule BridgeForTeamsWeb.DashboardTriage do
           fn -> ProjectKnowledge.list_for_agent(agent.agent_id) end,
           fn -> Grounding.list_active_context_for_agent(agent.agent_id, user.id) end
         ]
-        |> Enum.map(&Task.async(fn -> safely(&1) end))
-        |> Task.await_many(:infinity)
+        |> Enum.map(&SystemsRuntime.Task.async(fn -> safely(&1) end))
+        |> SystemsRuntime.Task.await_many(:infinity)
 
       {:ok,
        knowledge

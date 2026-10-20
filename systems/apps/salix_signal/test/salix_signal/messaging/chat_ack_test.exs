@@ -3,7 +3,7 @@ defmodule SalixSignal.Messaging.ChatAckTest do
   # §5.3): an envelope pushed over the socket is answered only after its
   # outcome is committed, and a fenced (stale) owner leaves it unanswered so
   # the service keeps it queued.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   # Upper bounds on a loaded machine, not expectations: a TLS connect and
   # upgrade (the chat client's own connect timeout is 10 s), and any other
@@ -25,12 +25,16 @@ defmodule SalixSignal.Messaging.ChatAckTest do
 
   setup %{chain: chain} do
     {:ok, upgrades} = Agent.start_link(fn -> [] end)
-    server = start_supervised!({Bandit, FakeChat.bandit_options(self(), chain, upgrades)})
+
+    server =
+      start_supervised!(
+        {Bandit, FakeChat.bandit_options(SystemsRuntime.Proc.self(), chain, upgrades)}
+      )
 
     chat =
       start_supervised!(
         {Chat,
-         owner: self(),
+         owner: SystemsRuntime.Proc.self(),
          host: "localhost",
          port: FakeChat.port(server),
          roots: [chain.root],
@@ -65,7 +69,7 @@ defmodule SalixSignal.Messaging.ChatAckTest do
         headers: [{"X-Signal-Timestamp", "1758790000500"}]
       }
 
-      send(socket, {:send, Frame.encode_request(request)})
+      SystemsRuntime.Proc.send(socket, {:send, Frame.encode_request(request)})
       id
     end)
   end

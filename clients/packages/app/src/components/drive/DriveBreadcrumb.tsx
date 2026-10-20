@@ -1,5 +1,6 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { ChevronRightSmallIcon, cx } from "@comma/ui";
+import { ChevronRightSmallIcon } from "@comma/ui/components/icons";
+import { cx } from "@comma/ui/components/utils";
 
 /**
  * Where the list is inside the space: the space, then each folder entered.

@@ -8,7 +8,7 @@ defmodule SalixAnalytics.EventArchiveEndToEndTest do
   until the day someone actually needs to read it.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAnalytics.EventArchive
   alias SalixAnalytics.EventArchive.{Completeness, Item, Recipients, Sequence, Worker}
@@ -28,15 +28,18 @@ defmodule SalixAnalytics.EventArchiveEndToEndTest do
 
   setup do
     directory =
-      Path.join(System.tmp_dir!(), "salix_archive_e2e_#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "salix_archive_e2e_#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(directory)
 
     {recipient, identity} = Age.generate_keypair()
 
-    previous = Application.get_env(:salix_analytics, :event_archive)
+    previous = SystemsRuntime.get_env(:salix_analytics, :event_archive)
 
-    Application.put_env(:salix_analytics, :event_archive,
+    SystemsRuntime.put_env(:salix_analytics, :event_archive,
       enabled: true,
       recipients: [%{key_id: "e2e", public_key: recipient}]
     )
@@ -52,8 +55,8 @@ defmodule SalixAnalytics.EventArchiveEndToEndTest do
       File.rm_rf(directory)
 
       if previous,
-        do: Application.put_env(:salix_analytics, :event_archive, previous),
-        else: Application.delete_env(:salix_analytics, :event_archive)
+        do: SystemsRuntime.put_env(:salix_analytics, :event_archive, previous),
+        else: SystemsRuntime.delete_env(:salix_analytics, :event_archive)
 
       Recipients.reset()
     end)

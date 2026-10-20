@@ -9,35 +9,35 @@ open Data Provider
 @[inline] def dropField (m : Term) (key : String) : Term :=
   removeKey (removeKey m (a key)) (b key)
 
-private def deviceImage (block : Term) : Bool :=
+def deviceImage (block : Term) : Bool :=
   let ref := get block "file_ref"
   get block "type" == b "image" &&
     nonempty (get ref "device_id") && nonempty (get ref "environment_id") &&
     get ref "environment_id" != b "vfs" && nonempty (get ref "path")
 
-private def path (block : Term) : Term :=
+def path (block : Term) : Term :=
   let direct := get block "path"
   let ref := get block "file_ref"
   if direct.isBinary then direct
   else if get ref "environment_id" == b "vfs" || deviceImage block then get ref "path" else nil
 
-private def refKey (block : Term) : Term :=
+def refKey (block : Term) : Term :=
   if member (get block "type") ["image", "file"] && nonempty (path block) then
     if deviceImage block then
       .tuple [get block "type", path block, get (get block "file_ref") "device_id", get (get block "file_ref") "environment_id"]
     else .tuple [get block "type", path block]
   else nil
 
-private def nativeRef (block : Term) : Bool :=
+def nativeRef (block : Term) : Bool :=
   if get block "type" == b "image" then get (get block "file_ref") "environment_id" == b "vfs" || deviceImage block
   else get block "type" == b "file" && (path block).isBinary
 
-private def direct (content : Term) : Option (List Term) := do
+def direct (content : Term) : Option (List Term) := do
   if !(bytes content)[0]?.any (· == 91) then none else
   let .list blocks ← decode content | none
   return blocks
 
-private def canonical (content : Term) : Option (List Term × Term) := do
+def canonical (content : Term) : Option (List Term × Term) := do
   let record ← decode content
   let result := get record "result"
   let id := get record "tool_call_id"
@@ -48,13 +48,16 @@ private def canonical (content : Term) : Option (List Term × Term) := do
     ![nil, a "false"].contains (get result "error") then none else
   return (← direct (get result "content"), name)
 
-private def toolSource (name : Term) (blocks : List Term) : Term :=
+def toolSource (name : Term) (blocks : List Term) : Term :=
   if member name ["im_api.feishu.fetch_message_resource", "im_api.slack.fetch_file"] then a "provider_attachment"
   else if name == b "env.computer_use" && !blocks.isEmpty && blocks.all deviceImage then a "image_read"
-  else if name == b "fs.read_file" && blocks.all (fun v => get v "type" == b "image") then a "image_read"
+  -- A workspace image the tool itself wrote: a file read, or a LAN body
+  -- (camera snapshot) that device.lan_request stored.
+  else if member name ["fs.read_file", "device.lan_request"] && blocks.all (fun v => get v "type" == b "image") then
+    a "image_read"
   else nil
 
-private def runtimeSource (m : Term) : KernelM (Option (List Term × Term)) := do
+def runtimeSource (m : Term) : KernelM (Option (List Term × Term)) := do
   -- The notification names a stored result. Its content cannot authorize a VFS read.
   let id := Provider.field m "source_tool_call_id"
   let seq := Provider.field m "result_seq"
@@ -107,10 +110,10 @@ def source (m : Term) : KernelM Term := do
 -- does not reach the model at all. Nothing here decides whether the model can
 -- accept an image; that is the template's `supports_images`, checked by the host
 -- when a tool read asks for the bytes.
-private def announced (block : Term) : Term :=
+def announced (block : Term) : Term :=
   if get block "type" == b "image" then putField block "type" (b "file") else block
 
-private def readBatch (requests : List Term) : KernelM (List Term) := do
+def readBatch (requests : List Term) : KernelM (List Term) := do
   if requests.isEmpty then return []
   let values ← asList (← observe (.tuple [a "request_batch", list requests]))
   if values.length != requests.length then fail "schema" [b "attachment batch result count mismatch"]
@@ -118,7 +121,7 @@ private def readBatch (requests : List Term) : KernelM (List Term) := do
 
 -- Each source can request one authoritative result record, but never image bytes.
 -- A request that `prefetched` answers takes that answer; the others are read here.
-private def sources (messages : List Term) (prefetched : List (Term × Term)) : KernelM (List Term) := do
+def sources (messages : List Term) (prefetched : List (Term × Term)) : KernelM (List Term) := do
   let lookup := fun request => (prefetched.find? (·.1 == request)).map Prod.snd
   let pending := messages.map (fun message => source message [])
   let requests := pending.filterMap fun result =>
@@ -143,7 +146,7 @@ private def sources (messages : List Term) (prefetched : List (Term × Term)) : 
       | .error signal => throw signal
   return values.reverse
 
-private def candidate (enabled : Bool) (watermark message : Term) : Bool :=
+def candidate (enabled : Bool) (watermark message : Term) : Bool :=
   let id := Provider.field message "id"
   enabled && member (Provider.field message "role") ["user", "tool", "runtime"] &&
     (!watermark.isInteger || (id.isInteger && integerValue id > integerValue watermark))

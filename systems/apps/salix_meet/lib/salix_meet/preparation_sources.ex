@@ -210,7 +210,7 @@ defmodule SalixMeet.PreparationSources do
   end
 
   defp download_text(token, url) do
-    deadline = System.monotonic_time(:millisecond) + 15_000
+    deadline = SystemsClock.monotonic_time(:millisecond) + 15_000
 
     result =
       API.stream_file(
@@ -229,7 +229,7 @@ defmodule SalixMeet.PreparationSources do
                   :meeting_shared_source_too_large
                 )}}
 
-            resp.status != 200 or System.monotonic_time(:millisecond) >= deadline ->
+            resp.status != 200 or SystemsClock.monotonic_time(:millisecond) >= deadline ->
               {:halt,
                {req,
                 Req.Response.put_private(

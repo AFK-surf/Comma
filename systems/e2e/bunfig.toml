@@ -1,0 +1,3 @@
+[test]
+# Tests do not use the real network (docs/testing.md#no-real-network).
+preload = ["../../scripts/test-network-guard.mjs"]

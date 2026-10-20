@@ -20,7 +20,7 @@ defmodule SalixIM.Ports.SlackTriageReplyDelivery do
     do: impl().find_message(tenant, connect, channel_id, thread_ts, operation_ref)
 
   defp impl do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :salix_im,
       :slack_triage_reply_delivery_mod,
       __MODULE__.Production

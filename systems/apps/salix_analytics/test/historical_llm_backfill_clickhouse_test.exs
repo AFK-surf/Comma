@@ -12,7 +12,7 @@ defmodule SalixAnalytics.HistoricalLLMBackfillClickHouseTest do
   Covers both generations, all three eligible provider spellings
   (`unknown`/empty/NULL), and two controls that must be left alone.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias BillingCore.Metering.HistoricalLLMBackfill
   alias SalixAnalytics.Migrations
@@ -38,12 +38,12 @@ defmodule SalixAnalytics.HistoricalLLMBackfillClickHouseTest do
   setup do
     Application.ensure_all_started(:req)
 
-    database = "salix_backfill_test_#{System.unique_integer([:positive])}"
-    prev = Application.get_env(:salix_analytics, :clickhouse)
+    database = "salix_backfill_test_#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    prev = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
     clickhouse_query!("DROP DATABASE IF EXISTS #{database}")
 
-    Application.put_env(:salix_analytics, :clickhouse,
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
       base_url: @clickhouse_url,
       table: "#{database}.events"
     )
@@ -51,7 +51,10 @@ defmodule SalixAnalytics.HistoricalLLMBackfillClickHouseTest do
     {:ok, _versions} = Migrations.migrate()
 
     on_exit(fn ->
-      Application.put_env(:salix_analytics, :clickhouse, prev)
+      if prev,
+        do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, prev),
+        else: SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
+
       clickhouse_query!("DROP DATABASE IF EXISTS #{database}")
     end)
 
@@ -61,7 +64,7 @@ defmodule SalixAnalytics.HistoricalLLMBackfillClickHouseTest do
   test "repairs unknown providers in both generations and leaves controls alone", %{
     database: database
   } do
-    recent = DateTime.utc_now() |> DateTime.add(-2 * 86_400, :second) |> DateTime.to_iso8601()
+    recent = SystemsClock.utc_now() |> DateTime.add(-2 * 86_400, :second) |> DateTime.to_iso8601()
     ancient = "2020-01-01T00:00:00Z"
 
     rows = [
@@ -129,7 +132,7 @@ defmodule SalixAnalytics.HistoricalLLMBackfillClickHouseTest do
       if pending == "0" do
         {:halt, :ok}
       else
-        Process.sleep(250)
+        SystemsRuntime.Proc.sleep(250)
         {:cont, :timeout}
       end
     end)

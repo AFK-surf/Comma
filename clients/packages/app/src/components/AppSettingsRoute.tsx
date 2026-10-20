@@ -1,7 +1,6 @@
 import { useBrowserSettingsCategory } from "./chat/useBrowserSettingsCategory";
 import { useAirDropNameSetting } from "./useAirDropNameSetting";
 import { useProactiveSetting } from "./recommendations/useProactiveSetting";
-import { useComputeNodeCategory } from "./useComputeNodeCategory";
 import { useComputerUsePermissions } from "./useComputerUsePermissions";
 import { useWeChatIntegration } from "./useWeChatIntegration";
 import { useModelsCategory } from "./models/useModelsCategory";
@@ -9,42 +8,47 @@ import { useArchivedTasksCategory } from "./tasks/useArchivedTasksCategory";
 import { useSharedTasksCategory } from "./tasks/useSharedTasksCategory";
 import { useDeviceSettingsCategory } from "./devices/useDeviceSettingsCategory";
 import { useTaskLabelsCategory } from "./tasks/useTaskLabelsCategory";
+import { useCondensedWorkspaceCategory } from "./condensed-workspace/useCondensedWorkspaceCategory";
 import { useRouterApiKeysCategory } from "./inbound-api/useRouterApiKeysCategory";
 import { useVoiceSettingsCategory } from "./voice/useVoiceSettingsCategory";
 import { useSignalIntegration } from "./signal/useSignalIntegration";
+import { useIMessageIntegration } from "./imessage/useIMessageIntegration";
+import { useTailscaleCategory } from "./tailscale/useTailscaleCategory";
+import { useLinearIntegration } from "./linear/useLinearIntegration";
 import { supportedLocales, type CommaLocale } from "@comma/i18n";
 import {
   getNativeBridge,
   notchSideWidthRange,
-  type SideChatShortcut,
+  type GlobalShortcut,
 } from "@comma/native-bridge";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getActiveCommaConfig } from "@comma/config";
+import { useCall, useTopic } from "@comma/core-client";
 import { useCommaI18n, useCommaMessages } from "@comma/i18n/react";
+import { Button } from "@comma/ui/components/Button";
+import { ChevronRightSmallIcon, VolumeFullIcon } from "@comma/ui/components/icons";
 import {
-  Button,
-  ChevronRightSmallIcon,
   createSettingsRegistry,
-  Dialog,
-  fontFamily as fontFamilyTokens,
   NotchWidthSetting,
   SettingsDialog,
-  TelegramProviderLogo,
-  toast,
-  Tooltip,
-  VolumeFullIcon,
-  type AppKeybinding,
-  type DropdownItem,
   type SettingsCategoryDefinition,
   type SettingsCategoryGroupDefinition,
+} from "@comma/ui/components/settings";
+import { Dialog } from "@comma/ui/components/dialog";
+import { fontFamily as fontFamilyTokens } from "@comma/ui/tokens";
+import { TelegramProviderLogo } from "@comma/ui/components/provider-brand-logos";
+import { toast } from "@comma/ui/components/toast";
+import { Tooltip } from "@comma/ui/components/tooltip";
+import { type AppKeybinding } from "@comma/ui/components/settings-shortcut";
+import { type DropdownItem } from "@comma/ui/components/dropdown";
+import {
   type SettingsControl,
   type SettingsPanelItem,
-} from "@comma/ui";
+} from "@comma/ui/components/settings-panel";
 import {
   type CommaRecommendationEnvelope,
   type CommaRecommendationSettingsPatch,
-  type CommaTelegramIntegrationState,
-  type CommaUserProfile,
-} from "../api";
+} from "@comma/core/api-schemas";
 import { ThemePicker } from "./commaCustomThemeStudio";
 import {
   commaFontFamilyStack,
@@ -52,19 +56,19 @@ import {
   type CommaFontSizePreference,
 } from "./commaAppearance";
 import { useLocalFontFamilies } from "./localFontFamilies";
-import { useCommaSideChatShortcut } from "./commaSideChatShortcut";
 import { useCommaAppPreferences } from "./commaAppPreferences";
 import { isLabelProposalPolicy } from "./tasks/labelProposalPolicy";
+import {
+  isReplyStyle,
+  useRouterReplyStyle,
+} from "./router-identity/useRouterReplyStyle";
 import {
   useCommaClientSettings,
   useCommaClientSettingsPending,
 } from "./commaClientSettings";
 import { playNotificationSound } from "./notifications/notificationSound";
 import { ShellIconButtonControl } from "./ShellIconButton";
-import { isElectronSideChatRuntime } from "../runtime-side-chat/nativeSideChat";
-import { driveSynchronicityAvailable } from "./drive/driveSynchronicityBackend";
 import { useCommaAuth } from "./auth-context";
-import { useOptionalChatActionRegistry } from "./chat/ChatProvider";
 import { UserAvatar } from "./UserAvatar";
 import { LinkProviderIcon } from "./links/linkPreviewCards";
 import { useProfileAvatarUrl } from "./useProfileAvatarUrl";
@@ -80,16 +84,15 @@ import {
 } from "./shortcuts/appShortcutRegistry";
 import { useCommaAppShortcuts } from "./shortcuts/commaAppShortcuts";
 import {
-  appBindingConflictsWithSideChatShortcut,
-  findAppShortcutConflictForSideChat,
-  sameGlobalShortcut,
-} from "./shortcuts/sideChatShortcutConflict";
-import { readActiveWorkspaceId } from "./activeWorkspace";
+  appBindingConflictsWithGlobalShortcut,
+  findAppShortcutConflictForGlobalShortcut,
+} from "./shortcuts/globalShortcutConflict";
+import { useWorkspacePreference } from "./activeWorkspace";
 import { useUsageBillingCategory } from "./billing/useUsageBillingCategory";
 import {
   openNativePlatformExternalUrl,
   openNativePlatformExternalUrlFromUserAction,
-} from "../runtime-chat/nativePlatformActions";
+} from "../nativePlatformActions";
 
 const fontSizePreferences = ["small", "default", "large"] as const;
 // Font menu keys. The prefix keeps a family named "default" apart from Comma's own.
@@ -97,10 +100,6 @@ const defaultFontFamilyKey = "default";
 const fontFamilyKeyPrefix = "family:";
 // Initial source discovery is one provider listing with an 8-second transport
 // budget; wait it out here instead of reporting a load failure early.
-const recommendationSourcePollAttempts = 15;
-const recommendationSourcePollDelayMs = 800;
-const telegramConnectPollAttempts = 200;
-const telegramConnectPollDelayMs = 1_500;
 
 function deviceTimeZone() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -108,25 +107,6 @@ function deviceTimeZone() {
 
 function formatDeliveryTime(hour: number, minute: number) {
   return `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`;
-}
-
-function abortableDelay(milliseconds: number, signal: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new DOMException("Aborted", "AbortError"));
-      return;
-    }
-    let timeout: number;
-    const onAbort = () => {
-      window.clearTimeout(timeout);
-      reject(new DOMException("Aborted", "AbortError"));
-    };
-    timeout = window.setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, milliseconds);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 function isLocale(value: string): value is CommaLocale {
@@ -147,6 +127,7 @@ const guestSettingsCategoryIds = new Set([
 ]);
 const guestHiddenSettingsSectionIds = new Set([
   "general.permissions",
+  "general.tone",
   "general.airdrop",
   // A guest Session has no onboarding to replay.
   "general.onboarding",
@@ -184,23 +165,22 @@ function guestSettingsGroups(
   });
 }
 
-// Read from the hash rather than the router: this route also renders in the
-// Side Chat settings window and in unit tests, neither of which has a
-// RouterProvider above it.
-function readLinkedSettingsCategory(): string | undefined {
+// Read from the hash rather than the router: this route also renders in unit
+// tests, which have no RouterProvider above it.
+function readLinkedSettingsParam(name: "category" | "profile"): string | undefined {
   if (typeof window === "undefined") return undefined;
   const hash = window.location.hash;
   const queryStart = hash.indexOf("?");
   if (queryStart < 0) return undefined;
-  const category = new URLSearchParams(hash.slice(queryStart + 1)).get("category");
-  return category ? category : undefined;
+  const value = new URLSearchParams(hash.slice(queryStart + 1)).get(name);
+  return value ? value : undefined;
 }
 
-function useLinkedSettingsCategory(): string | undefined {
-  const [category, setCategory] = useState(readLinkedSettingsCategory);
+function useLinkedSettingsParam(name: "category" | "profile"): string | undefined {
+  const [value, setValue] = useState(() => readLinkedSettingsParam(name));
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
-    const sync = () => setCategory(readLinkedSettingsCategory());
+    const sync = () => setValue(readLinkedSettingsParam(name));
     sync();
     window.addEventListener("hashchange", sync);
     window.addEventListener("popstate", sync);
@@ -208,8 +188,8 @@ function useLinkedSettingsCategory(): string | undefined {
       window.removeEventListener("hashchange", sync);
       window.removeEventListener("popstate", sync);
     };
-  }, []);
-  return category;
+  }, [name]);
+  return value;
 }
 
 export function AppSettingsRoute({
@@ -220,7 +200,10 @@ export function AppSettingsRoute({
   // `/#/settings?category=<id>` opens Settings on that category (the Routines
   // menu links straight to Routines). Local state still owns the
   // selection afterwards, so clicking another category does not fight the URL.
-  const linkedCategoryId = useLinkedSettingsCategory();
+  const linkedCategoryId = useLinkedSettingsParam("category");
+  // `&profile=<id>` with the models category opens that Profile, as a funding
+  // stop's fix does for the key that ran out.
+  const linkedProfileId = useLinkedSettingsParam("profile");
   const [selectedCategoryId, setActiveCategoryId] = useState(
     () => linkedCategoryId ?? "general"
   );
@@ -238,7 +221,9 @@ export function AppSettingsRoute({
   const activeCategoryId =
     guest && !guestSettingsCategoryIds.has(selectedCategoryId)
       ? "general"
-      : selectedCategoryId;
+      : selectedCategoryId === "compute-node"
+        ? "devices"
+        : selectedCategoryId;
   const [guestDiscardOpen, setGuestDiscardOpen] = useState(false);
   const [guestSignUpPending, setGuestSignUpPending] = useState(false);
   const beginGuestSignUp = () => {
@@ -257,76 +242,127 @@ export function AppSettingsRoute({
   const commandPalette = useOptionalCommandPalette();
   const claimPaletteHost = commandPalette?.claimPaletteHost;
   useEffect(() => claimPaletteHost?.(), [claimPaletteHost]);
-  // Settings is an overlay on the product session, so it reads and writes
-  // through that session's API and shares its caches: a label renamed here is
-  // the name every page shows, and the labels the pages already read show at
-  // once. A render without a product session uses the signed-in client.
-  const api = useOptionalChatActionRegistry()?.api ?? auth.api;
-  const browserCategory = useBrowserSettingsCategory(api);
-  const models = useModelsCategory(api, activeCategoryId === "models");
-  const devicesCategory = useDeviceSettingsCategory(
-    api,
-    activeCategoryId === "devices"
-  );
+  const browserCategory = useBrowserSettingsCategory();
+  const models = useModelsCategory(activeCategoryId === "models");
+  const openLinkedProfile = useRef(models.openProfile);
+  openLinkedProfile.current = models.openProfile;
+  useEffect(() => {
+    if (linkedCategoryId === "models" && linkedProfileId) {
+      openLinkedProfile.current(linkedProfileId);
+    }
+  }, [linkedCategoryId, linkedProfileId]);
+  const devicesCategory = useDeviceSettingsCategory(activeCategoryId === "devices");
   const archivedTasksCategory = useArchivedTasksCategory(
-    api,
     activeCategoryId === "archived-tasks"
   );
   const sharedTasksCategory = useSharedTasksCategory(
-    api,
     activeCategoryId === "shared-tasks"
   );
   const { category: taskLabelsCategory, approvalPolicy: labelProposalPolicy } =
     useTaskLabelsCategory(
-      api,
       activeCategoryId === "labels",
       activeCategoryId === "general" && !guest
     );
+  const replyStyle = useRouterReplyStyle(activeCategoryId === "general" && !guest);
+  const condensedWorkspaceCategory = useCondensedWorkspaceCategory(
+    activeCategoryId === "condensed-workspace"
+  );
   const routerApiKeysCategory = useRouterApiKeysCategory(
-    api,
     activeCategoryId === "inbound-api"
   );
-  const voiceCategory = useVoiceSettingsCategory(api, activeCategoryId === "voice");
+  const voiceCategory = useVoiceSettingsCategory(activeCategoryId === "voice");
   const usageBillingCategory = useUsageBillingCategory(
-    api,
     activeCategoryId === "usage-billing"
   );
-  const proactive = useProactiveSetting(api, activeCategoryId === "recommendations");
-  const [profile, setProfile] = useState<CommaUserProfile>();
+  const proactive = useProactiveSetting(activeCategoryId === "recommendations");
+  // The account's profile as the core keeps it, read while Profile shows.
+  const { value: profileShown } = useTopic(
+    activeCategoryId === "profile" && !guest ? { topic: "profile" } : null
+  );
+  const profile = profileShown?.profile ?? undefined;
   const [name, setName] = useState(auth.userDisplayName ?? "");
   const [nameDialogOpen, setNameDialogOpen] = useState(false);
   const [notificationPermissionDialogOpen, setNotificationPermissionDialogOpen] =
     useState(false);
   const [keepAwakeApprovalDialogOpen, setKeepAwakeApprovalDialogOpen] = useState(false);
-  const [profileLoading, setProfileLoading] = useState(false);
-  const [avatarPending, setAvatarPending] = useState(false);
-  const [namePending, setNamePending] = useState(false);
+  const profileLoading =
+    activeCategoryId === "profile" &&
+    !guest &&
+    profileShown?.status !== "ready" &&
+    profileShown?.status !== "error";
   const [avatarError, setAvatarError] = useState<string>();
   const [avatarCropFile, setAvatarCropFile] = useState<File>();
   const [nameError, setNameError] = useState<string>();
-  const [recommendationWorkspaceId, setRecommendationWorkspaceId] = useState<string>();
-  const [recommendations, setRecommendations] = useState<CommaRecommendationEnvelope>();
-  const [recommendationsPending, setRecommendationsPending] = useState(false);
-  const [recommendationsError, setRecommendationsError] = useState(false);
+  // The core reads the briefing's settings while Routines shows; the first read waits out source discovery.
+  const recommendationPreference = useWorkspacePreference();
+  const recommendationLocale = useCommaI18n().locale;
+  const { value: recommendationShown } = useTopic(
+    activeCategoryId === "recommendations" && recommendationPreference !== undefined
+      ? {
+          topic: "recommendations",
+          workspace: recommendationPreference,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          locale: recommendationLocale,
+        }
+      : null
+  );
+  const recommendationWorkspaceId = recommendationShown?.workspace ?? undefined;
+  const recommendations: CommaRecommendationEnvelope | undefined =
+    recommendationShown?.envelope && !recommendationShown.discovering
+      ? recommendationShown.envelope
+      : undefined;
+  const [recommendationsSaving, setRecommendationsSaving] = useState(false);
+  const recommendationsPending =
+    recommendationsSaving ||
+    (activeCategoryId === "recommendations" &&
+      !recommendations &&
+      recommendationShown?.failure !== "unavailable");
+  const recommendationsError = recommendationShown?.failure === "unavailable";
   const [recommendationsSaveError, setRecommendationsSaveError] = useState(false);
-  const [telegramWorkspaceId, setTelegramWorkspaceId] = useState<string>();
+  // Telegram, and the account's one workspace that WeChat and Signal show too: the core reads them while Channels shows.
+  const call = useCall();
+  const { value: telegram } = useTopic(
+    activeCategoryId === "channels" ? { topic: "telegram" } : null
+  );
+  useEffect(() => {
+    if (activeCategoryId === "channels")
+      void call("telegram.refresh", {}).catch(() => undefined);
+  }, [activeCategoryId, call]);
+  const telegramWorkspaceId = telegram?.workspace ?? undefined;
+  const telegramIntegration = telegram?.state ?? undefined;
+  const telegramAttempt = telegram?.attempt ?? undefined;
+  const telegramPending = telegram?.busy ?? false;
   const wechatItem = useWeChatIntegration(
-    api,
     telegramWorkspaceId,
     activeCategoryId === "channels"
   );
   const signalChannel = useSignalIntegration(
-    api,
     telegramWorkspaceId,
     activeCategoryId === "channels"
   );
+  const linearChannel = useLinearIntegration(
+    telegramWorkspaceId,
+    activeCategoryId === "channels"
+  );
+  // Shown only where the server has Photon iMessage set up.
+  const imessageItem = useIMessageIntegration(
+    telegramWorkspaceId,
+    activeCategoryId === "channels"
+  );
+  const tailscaleCategory = useTailscaleCategory(activeCategoryId === "tailscale");
+  const channelsOverlay =
+    signalChannel.overlay || linearChannel.overlay ? (
+      <>
+        {signalChannel.overlay}
+        {linearChannel.overlay}
+      </>
+    ) : null;
   const [telegramReconnectOpen, setTelegramReconnectOpen] = useState(false);
-  const [telegramIntegration, setTelegramIntegration] =
-    useState<CommaTelegramIntegrationState>();
-  const [telegramPending, setTelegramPending] = useState(false);
-  const [telegramError, setTelegramError] = useState(false);
-  const [telegramAttempt, setTelegramAttempt] = useState<{ state: string }>();
-  const telegramActionController = useRef<AbortController | undefined>(undefined);
+  // What failed in this window rather than in the core: a blocked login window, a bot link that would not open.
+  const [telegramFailedHere, setTelegramFailedHere] = useState(false);
+  const telegramError = (telegram?.error ?? false) || telegramFailedHere;
+  // The login window this window opened: a login whose window was closed is cancelled.
+  const telegramLoginWindow = useRef<Window | undefined>(undefined);
   const fileInput = useRef<HTMLInputElement>(null);
   const avatarRevision = profile
     ? (profile.avatar_id ?? undefined)
@@ -365,12 +401,6 @@ export function AppSettingsRoute({
     ];
   }, [fontFamily, localFonts.families, m]);
   const {
-    registrationFailed: sideChatShortcutRegistrationFailed,
-    registrationPending: sideChatShortcutRegistrationPending,
-    setShortcut: setSideChatShortcut,
-    shortcut: sideChatShortcut,
-  } = useCommaSideChatShortcut();
-  const {
     bindings: appShortcutBindings,
     conflictFor,
     defaultBindings: defaultAppShortcutBindings,
@@ -381,17 +411,13 @@ export function AppSettingsRoute({
   const [shortcutConflicts, setShortcutConflicts] = useState<
     Partial<Record<AppShortcutId, true>>
   >({});
-  const [sideChatShortcutConflict, setSideChatShortcutConflict] = useState(false);
-  const electronRuntime = isElectronSideChatRuntime();
+  const electronRuntime = getNativeBridge().platform === "electron";
   const [openCommaShortcutError, setOpenCommaShortcutError] = useState<
     "conflict" | "registration"
   >();
   const [openCommaShortcutPending, setOpenCommaShortcutPending] = useState(false);
-  const setOpenCommaShortcut = async (shortcut: SideChatShortcut | null) => {
-    if (
-      findAppShortcutConflictForSideChat(appShortcutBindings, shortcut) ||
-      sameGlobalShortcut(shortcut, sideChatShortcut)
-    ) {
+  const setOpenCommaShortcut = async (shortcut: GlobalShortcut | null) => {
+    if (findAppShortcutConflictForGlobalShortcut(appShortcutBindings, shortcut)) {
       setOpenCommaShortcutError("conflict");
       return;
     }
@@ -408,10 +434,6 @@ export function AppSettingsRoute({
       setOpenCommaShortcutPending(false);
     }
   };
-  const computeNodeCategory = useComputeNodeCategory(
-    api,
-    activeCategoryId === "compute-node"
-  );
   const computerUse = useComputerUsePermissions(activeCategoryId === "computer-use");
   // In a browser, the desktop app's controls stay live and offer the Mac app.
   const desktopOnly = needsDesktopApp();
@@ -424,11 +446,8 @@ export function AppSettingsRoute({
           ? m.settings_computer_use_granted()
           : m.settings_computer_use_missing();
 
-  // The web client shows no Drive, so it offers no shortcut to it.
   const settingsShortcutDefinitions = appShortcutDefinitions.filter(
-    (definition) =>
-      (definition.id !== "go-drive" || driveSynchronicityAvailable()) &&
-      !(guest && guestHiddenShortcutIds.has(definition.id))
+    (definition) => !(guest && guestHiddenShortcutIds.has(definition.id))
   );
   const generalShortcutCopy: Record<
     AppShortcutId,
@@ -517,278 +536,60 @@ export function AppSettingsRoute({
     });
   };
 
+  // The name field starts from the account's name once it is read.
+  const profileName = profile?.name;
   useEffect(() => {
-    if (activeCategoryId !== "profile" || profile || guest) return;
-    const controller = new AbortController();
-    setProfileLoading(true);
-    setAvatarError(undefined);
-    setNameError(undefined);
-
-    void api
-      .getProfile({ signal: controller.signal })
-      .then((next) => {
-        setProfile(next);
-        setName(next.name ?? "");
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          const message = m.settings_profile_load_failed();
-          setAvatarError(message);
-          setNameError(message);
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setProfileLoading(false);
-      });
-
-    return () => controller.abort();
-  }, [activeCategoryId, api, guest, m, profile]);
+    if (profileName !== undefined) setName(profileName ?? "");
+  }, [profileName]);
+  const profileLoadFailed =
+    activeCategoryId === "profile" && profileShown?.status === "error";
+  const avatarMessage =
+    avatarError ?? (profileLoadFailed ? m.settings_profile_load_failed() : undefined);
+  const nameMessage =
+    nameError ?? (profileLoadFailed ? m.settings_profile_load_failed() : undefined);
 
   useEffect(() => {
-    if (activeCategoryId !== "recommendations") {
-      return;
-    }
-    // The Settings route can be the first recommendations surface opened in a
-    // session. Report the resolved app locale on every category activation so
-    // this path reconciles the durable renderer just like the Home rail does.
-    const controller = new AbortController();
-    setRecommendationsPending(true);
-    setRecommendationsError(false);
-    setRecommendationsSaveError(false);
+    if (activeCategoryId !== "channels") setTelegramReconnectOpen(false);
+    setTelegramFailedHere(false);
+  }, [activeCategoryId]);
 
-    void api
-      .listWorkspaces({ signal: controller.signal })
-      .then(async (workspaces) => {
-        const preferredWorkspaceId = readActiveWorkspaceId();
-        const workspace =
-          workspaces.find((candidate) => candidate.id === preferredWorkspaceId) ??
-          workspaces[0];
-        if (!workspace) throw new Error("workspace unavailable");
-        let envelope = await api.getRecommendations(workspace.id, {
-          signal: controller.signal,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        });
-
-        // The first read creates the projection and enqueues bounded source
-        // discovery. Keep this screen in its honest loading state until that
-        // initial discovery finishes instead of rendering a false empty state;
-        // a discovery that outlasts these checks is still discovering, not a
-        // failed load.
-        for (
-          let attempt = 0;
-          !envelope.settings.sourcesCheckedAt &&
-          attempt < recommendationSourcePollAttempts;
-          attempt += 1
-        ) {
-          await abortableDelay(recommendationSourcePollDelayMs, controller.signal);
-          envelope = await api.getRecommendations(workspace.id, {
-            signal: controller.signal,
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          });
-        }
-
-        if (!controller.signal.aborted) {
-          setRecommendationWorkspaceId(workspace.id);
-          setRecommendations(envelope);
-        }
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setRecommendationsError(true);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setRecommendationsPending(false);
-      });
-
-    return () => controller.abort();
-  }, [activeCategoryId, api]);
-
+  // Each time the core has read the login, see whether its window was closed.
+  const telegramChecks = telegram?.checks ?? 0;
   useEffect(() => {
-    if (activeCategoryId !== "channels") return;
-    const controller = new AbortController();
-    setTelegramError(false);
-
-    setTelegramWorkspaceId(undefined);
-    setTelegramReconnectOpen(false);
-    setTelegramIntegration(undefined);
-    setTelegramAttempt(undefined);
-    setTelegramPending(false);
-
-    void api
-      .listWorkspaces({ signal: controller.signal })
-      .then((workspaces) => {
-        if (controller.signal.aborted) return;
-        // Comma v1 owns exactly one workspace per account. Do not turn invalid
-        // account data or a navigation hint into a user-facing scope choice.
-        if (workspaces.length !== 1) {
-          setTelegramError(true);
-          return;
-        }
-        setTelegramWorkspaceId(workspaces[0]?.id);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setTelegramError(true);
-      });
-
-    return () => controller.abort();
-  }, [activeCategoryId, api]);
-
-  useEffect(() => {
-    if (activeCategoryId !== "channels" || !telegramWorkspaceId) return;
-    const controller = new AbortController();
-    setTelegramPending(true);
-    setTelegramError(false);
-    setTelegramIntegration(undefined);
-    setTelegramAttempt(undefined);
-
-    void api
-      .getTelegramIntegration(telegramWorkspaceId, { signal: controller.signal })
-      .then((state) => {
-        if (!controller.signal.aborted) setTelegramIntegration(state);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setTelegramError(true);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setTelegramPending(false);
-      });
-
-    return () => {
-      controller.abort();
-      // Reads and user actions belong to this workspace view. Cancellation
-      // fences late UI completions; it cannot undo a server-side mutation.
-      telegramActionController.current?.abort();
-      telegramActionController.current = undefined;
-    };
-  }, [activeCategoryId, api, telegramWorkspaceId]);
-
-  const pollTelegramIntegrationUntilLinked = async (
-    workspaceId: string,
-    controller: AbortController,
-    previousLink: CommaTelegramIntegrationState["link"],
-    popup?: Window
-  ) => {
-    for (let attempt = 0; attempt < telegramConnectPollAttempts; attempt += 1) {
-      const state = await api.getTelegramIntegration(workspaceId, {
-        signal: controller.signal,
-      });
-      if (controller.signal.aborted) return false;
-      setTelegramIntegration(state);
-      if (
-        state.link &&
-        state.connection_active !== false &&
-        (!previousLink ||
-          state.link.connection_id !== previousLink.connection_id ||
-          state.link.telegram_user_id !== previousLink.telegram_user_id ||
-          state.link.updated_at !== previousLink.updated_at)
-      ) {
-        setTelegramAttempt(undefined);
-        return true;
-      }
-      if (popup?.closed) throw new Error("Telegram authorization window was closed");
-      await abortableDelay(telegramConnectPollDelayMs, controller.signal);
-    }
-    return false;
-  };
+    if (!telegramAttempt || !telegramLoginWindow.current?.closed) return;
+    telegramLoginWindow.current = undefined;
+    void call("telegram.cancel", { closed: true }).catch(() => undefined);
+  }, [call, telegramAttempt, telegramChecks]);
 
   const connectTelegram = async () => {
     if (!telegramWorkspaceId || telegramPending) return;
-    telegramActionController.current?.abort();
-    const controller = new AbortController();
-    telegramActionController.current = controller;
-    setTelegramPending(true);
-    setTelegramError(false);
-    let attemptState: string | undefined;
-    let popup: Window | undefined;
-
+    setTelegramFailedHere(false);
     try {
-      popup = await openNativePlatformExternalUrlFromUserAction(async () => {
-        const attempt = await api.startTelegramConnect(telegramWorkspaceId);
-        controller.signal.throwIfAborted();
-        const state = new URL(attempt.authorization_url).searchParams.get("state");
-        if (!state) throw new Error("Telegram login state is missing");
-        attemptState = state;
-        setTelegramAttempt({ state });
-        return attempt.authorization_url;
+      const popup = await openNativePlatformExternalUrlFromUserAction(async () => {
+        const attempt = await call("telegram.connect", {
+          environment: getActiveCommaConfig().channel,
+        });
+        return attempt.authorizationUrl;
       });
-
-      controller.signal.throwIfAborted();
-      const linked = await pollTelegramIntegrationUntilLinked(
-        telegramWorkspaceId,
-        controller,
-        telegramIntegration?.link ?? null,
-        popup
-      );
-      if (!linked && !controller.signal.aborted) setTelegramError(true);
+      telegramLoginWindow.current = popup ?? undefined;
     } catch {
-      if (!controller.signal.aborted) {
-        setTelegramError(true);
-        if (popup?.closed && attemptState) {
-          try {
-            await api.cancelTelegramConnect(telegramWorkspaceId, {
-              state: attemptState,
-            });
-            if (!controller.signal.aborted) setTelegramAttempt(undefined);
-          } catch {
-            // Keep explicit cancellation available if revocation was not confirmed.
-          }
-        }
-      }
-    } finally {
-      if (!controller.signal.aborted) setTelegramPending(false);
-      if (telegramActionController.current === controller)
-        telegramActionController.current = undefined;
+      // A blocked window never reached the core: say so here. A refused start the core says itself.
+      setTelegramFailedHere(true);
     }
   };
 
-  const cancelTelegramConnect = async () => {
-    if (!telegramWorkspaceId || !telegramAttempt) return;
-    telegramActionController.current?.abort();
-    const controller = new AbortController();
-    telegramActionController.current = controller;
-    setTelegramPending(true);
-    setTelegramError(false);
-    try {
-      await api.cancelTelegramConnect(telegramWorkspaceId, telegramAttempt);
-      const state = await api.getTelegramIntegration(telegramWorkspaceId, {
-        signal: controller.signal,
-      });
-      controller.signal.throwIfAborted();
-      setTelegramIntegration(state);
-      setTelegramAttempt(undefined);
-    } catch {
-      if (!controller.signal.aborted) setTelegramError(true);
-    } finally {
-      if (!controller.signal.aborted) setTelegramPending(false);
-    }
+  const cancelTelegramConnect = () => {
+    telegramLoginWindow.current = undefined;
+    void call("telegram.cancel", {}).catch(() => undefined);
   };
 
-  const disconnectTelegram = async () => {
+  const disconnectTelegram = () => {
     if (!telegramWorkspaceId || telegramPending) return;
-    telegramActionController.current?.abort();
-    const controller = new AbortController();
-    telegramActionController.current = controller;
-    setTelegramPending(true);
-    setTelegramError(false);
-    try {
-      await api.disconnectTelegram(telegramWorkspaceId);
-      controller.signal.throwIfAborted();
-      const state = await api.getTelegramIntegration(telegramWorkspaceId, {
-        signal: controller.signal,
-      });
-      controller.signal.throwIfAborted();
-      setTelegramIntegration(state);
-      setTelegramAttempt(undefined);
-    } catch {
-      if (!controller.signal.aborted) setTelegramError(true);
-    } finally {
-      if (!controller.signal.aborted) setTelegramPending(false);
-      if (telegramActionController.current === controller) {
-        telegramActionController.current = undefined;
-      }
-    }
+    void call("telegram.disconnect", {}).catch(() => undefined);
   };
 
-  function telegramConnectionDescription(): string {
+  // A card that works needs no subtitle; one shows only to report trouble or progress.
+  function telegramConnectionDescription(): string | undefined {
     if (telegramError) return m.settings_telegram_action_failed();
     if (!telegramIntegration && !telegramAttempt) return m.settings_telegram_loading();
     if (telegramPending || telegramAttempt) return m.settings_telegram_connecting();
@@ -798,9 +599,10 @@ export function AppSettingsRoute({
       return m.settings_telegram_repair_required();
 
     return telegramIntegration?.configured
-      ? m.settings_telegram_description()
+      ? undefined
       : m.settings_telegram_unavailable();
   }
+  const telegramDescription = telegramConnectionDescription();
 
   const recommendationDeliveryTime = recommendations
     ? formatDeliveryTime(
@@ -824,18 +626,19 @@ export function AppSettingsRoute({
     patch: CommaRecommendationSettingsPatch
   ) => {
     if (!recommendationWorkspaceId || recommendationsPending) return;
-    setRecommendationsPending(true);
+    setRecommendationsSaving(true);
     setRecommendationsSaveError(false);
     try {
-      setRecommendations(
-        await api.updateRecommendationSettings(recommendationWorkspaceId, patch)
-      );
+      await call("recommendations.updateSettings", {
+        workspace: recommendationWorkspaceId,
+        patch,
+      });
     } catch {
       // The controls keep reading the last envelope, which the refused write
       // did not change; the schedule row says the save failed.
       setRecommendationsSaveError(true);
     } finally {
-      setRecommendationsPending(false);
+      setRecommendationsSaving(false);
     }
   };
 
@@ -864,21 +667,14 @@ export function AppSettingsRoute({
     schedule: { ...settings.schedule, ...schedule, timezone: deviceTimeZone() },
   });
 
-  const publishProfile = (next: CommaUserProfile) => {
-    setProfile(next);
-    setName(next.name ?? "");
-    auth.publishProfile?.(next);
-  };
-
-  const runAvatarOperation = async (operation: () => Promise<CommaUserProfile>) => {
-    setAvatarPending(true);
+  // The core shows a new or removed avatar at once and puts the saved one back
+  // when the server refuses the change; this only says it failed.
+  const runAvatarOperation = async (operation: () => Promise<unknown>) => {
     setAvatarError(undefined);
     try {
-      publishProfile(await operation());
+      await operation();
     } catch {
       setAvatarError(m.settings_profile_save_failed());
-    } finally {
-      setAvatarPending(false);
     }
   };
 
@@ -892,11 +688,12 @@ export function AppSettingsRoute({
     setAvatarCropFile(file);
   };
 
-  // Close the crop dialog only after the upload settles: while it runs the
-  // Choose image button is disabled, and focus could not return to it.
   const uploadAvatar = async (file: File) => {
-    await runAvatarOperation(() => api.uploadAvatar(file));
+    const bytes = new Uint8Array(await file.arrayBuffer());
     setAvatarCropFile(undefined);
+    await runAvatarOperation(() =>
+      call("profile.uploadAvatar", { bytes, type: file.type, name: file.name })
+    );
   };
 
   // The language belongs to the account, so every device and server-written
@@ -904,7 +701,7 @@ export function AppSettingsRoute({
   const saveLocale = async (next: CommaLocale) => {
     if (next === locale) return;
     try {
-      publishProfile(await api.updateProfile({ locale: next }));
+      await call("profile.update", { locale: next });
       setLocalePreference(next);
     } catch {
       toast.error(m.settings_profile_save_failed());
@@ -915,15 +712,13 @@ export function AppSettingsRoute({
     const nextName = name.trim();
     if (!nextName || nextName.length > 64) return;
 
-    setNamePending(true);
-    setNameError(undefined);
+    // The core shows the new name at once and the saved one again if the server
+    // refuses it; the dialog is done once it is asked for.
+    setNameDialogOpen(false);
     try {
-      publishProfile(await api.updateProfile({ name: nextName }));
-      setNameDialogOpen(false);
+      await call("profile.update", { name: nextName });
     } catch {
-      setNameError(m.settings_profile_save_failed());
-    } finally {
-      setNamePending(false);
+      toast.error(m.settings_profile_save_failed());
     }
   };
 
@@ -1008,7 +803,7 @@ export function AppSettingsRoute({
                 onPress: () => {
                   void openNativePlatformExternalUrl(
                     `https://t.me/${botUsername}`
-                  ).catch(() => setTelegramError(true));
+                  ).catch(() => setTelegramFailedHere(true));
                 },
               }
             : {}),
@@ -1027,7 +822,6 @@ export function AppSettingsRoute({
   };
 
   const closeNameDialog = () => {
-    if (namePending) return;
     setName(profile?.name ?? auth.userDisplayName ?? "");
     setNameError(undefined);
     setNameDialogOpen(false);
@@ -1105,6 +899,56 @@ export function AppSettingsRoute({
     setKeepAwakeApprovalDialogOpen(false);
     void updateAppPreferences({ keepAwakeWhenLidClosed: false });
   };
+  const computerUseCategory: SettingsCategoryDefinition = {
+    id: "computer-use",
+    icon: "computer-use",
+    label: m.settings_computer_use(),
+    sections: [
+      {
+        id: "computer-use.access",
+        title: m.settings_access(),
+        items: [
+          {
+            id: "computer-use.accessibility",
+            title: m.settings_computer_use_accessibility(),
+            description: permissionStatus(computerUse.permissions?.accessibility),
+          },
+          {
+            id: "computer-use.screen-recording",
+            title: m.settings_computer_use_screen_recording(),
+            description: permissionStatus(computerUse.permissions?.screenRecording),
+          },
+          {
+            id: "computer-use.permissions",
+            title: m.settings_computer_use_permissions(),
+            description: m.settings_computer_use_permissions_description(),
+            control: {
+              type: "button",
+              label: m.settings_computer_use_manage(),
+              disabled: !desktopOnly && (!computerUse.available || computerUse.pending),
+              onPress: desktopOnly
+                ? () => requestDesktopApp("computer-use")
+                : computerUse.open,
+            },
+          },
+          {
+            id: "computer-use.refresh",
+            title: m.settings_computer_use_status(),
+            description:
+              computerUse.error ?? m.settings_computer_use_refresh_description(),
+            control: {
+              type: "button",
+              label: m.settings_computer_use_refresh(),
+              disabled: !desktopOnly && (!computerUse.available || computerUse.pending),
+              onPress: desktopOnly
+                ? () => requestDesktopApp("computer-use")
+                : computerUse.refresh,
+            },
+          },
+        ],
+      },
+    ],
+  };
   const accountRegistry = createSettingsRegistry({
     groups: [
       {
@@ -1140,6 +984,35 @@ export function AppSettingsRoute({
                       onChange: (value) => {
                         if (isLabelProposalPolicy(value))
                           labelProposalPolicy.set(value);
+                      },
+                    },
+                  },
+                ],
+              },
+              {
+                id: "general.tone",
+                title: m.settings_tone(),
+                items: [
+                  {
+                    id: "replies.style",
+                    title: m.settings_reply_style(),
+                    description: replyStyle.error
+                      ? m.settings_reply_style_failed()
+                      : m.settings_reply_style_description(),
+                    keywords: ["tone", "style", "concise", "语气", "风格", "简洁"],
+                    control: {
+                      type: "dropdown",
+                      ariaLabel: m.settings_reply_style(),
+                      // Empty until the Router is read.
+                      value: replyStyle.value ?? "",
+                      disabled: replyStyle.disabled,
+                      placeholder: m.settings_reply_style_default(),
+                      items: [
+                        { id: "default", label: m.settings_reply_style_default() },
+                        { id: "concise", label: m.settings_reply_style_concise() },
+                      ],
+                      onChange: (value) => {
+                        if (isReplyStyle(value)) replyStyle.set(value);
                       },
                     },
                   },
@@ -1219,66 +1092,77 @@ export function AppSettingsRoute({
                       },
                     },
                   },
-                  {
-                    id: "app.dock",
-                    title: m.settings_show_in_dock(),
-                    description: m.settings_show_in_dock_description(),
-                    control: {
-                      type: "toggle",
-                      checked: appPreferences?.showInDock ?? false,
-                      disabled:
-                        !desktopOnly &&
-                        (!appPreferencesAvailability.showInDock ||
-                          !appPreferences ||
-                          appPreferencesPending),
-                      onChange: (event) => {
-                        if (desktopOnly) return requestDesktopApp("dock");
-                        void updateAppPreferences({
-                          showInDock: event.target.checked,
-                        });
-                      },
-                    },
-                  },
-                  ...(appPreferencesAvailability.sideChat
+                  // The Dock is macOS's: a desktop app elsewhere (Windows) has
+                  // none to show the row for; the web shows it to offer the app.
+                  ...(desktopOnly || appPreferencesAvailability.showInDock
                     ? [
                         {
-                          id: "app.side-chat",
-                          title: m.settings_side_chat(),
-                          description: m.settings_side_chat_description(),
-                          keywords: ["side chat", "侧边聊天"],
+                          id: "app.dock",
+                          title: m.settings_show_in_dock(),
+                          description: m.settings_show_in_dock_description(),
                           control: {
                             type: "toggle" as const,
-                            checked: appPreferences?.sideChatEnabled ?? false,
-                            disabled: !appPreferences || appPreferencesPending,
+                            checked: appPreferences?.showInDock ?? false,
+                            disabled:
+                              !desktopOnly &&
+                              (!appPreferences || appPreferencesPending),
                             onChange: (event: { target: { checked: boolean } }) => {
+                              if (desktopOnly) return requestDesktopApp("dock");
                               void updateAppPreferences({
-                                sideChatEnabled: event.target.checked,
+                                showInDock: event.target.checked,
                               });
                             },
                           },
                         },
                       ]
                     : []),
-                  {
-                    id: "app.keep-awake-lid-closed",
-                    title: m.settings_keep_awake_lid_closed(),
-                    description: keepAwakeDescription,
-                    keywords: ["sleep", "caffeinate", "休眠", "合盖"],
-                    control: {
-                      type: "toggle",
-                      checked: keepAwakeApprovalDialogOpen || keepAwakeOn,
-                      disabled:
-                        !desktopOnly &&
-                        (!appPreferencesAvailability.keepAwakeWhenLidClosed ||
-                          !appPreferences ||
-                          keepAwakeStatus === "unavailable" ||
-                          appPreferencesPending),
-                      onChange: (event) => {
-                        if (desktopOnly) return requestDesktopApp("keep-awake");
-                        void handleKeepAwakeChange(event);
-                      },
-                    },
-                  },
+                  // Where this Mac can run Quick Chat (macOS 26): off, its
+                  // helper stops and takes neither ⌘ nor the microphone.
+                  ...(appPreferences?.quickChatSupported
+                    ? [
+                        {
+                          id: "app.quick-chat",
+                          title: m.settings_quick_chat(),
+                          description: m.settings_quick_chat_enabled_description(),
+                          keywords: ["quick chat", "voice", "dictation", "语音"],
+                          control: {
+                            type: "toggle" as const,
+                            checked: appPreferences.quickChatEnabled,
+                            disabled: appPreferencesPending,
+                            onChange: (event: { target: { checked: boolean } }) => {
+                              void updateAppPreferences({
+                                quickChatEnabled: event.target.checked,
+                              });
+                            },
+                          },
+                        },
+                      ]
+                    : []),
+                  // Keeping a closed lid awake is the macOS app's (its sleep
+                  // guard); a desktop app elsewhere has no such row.
+                  ...(desktopOnly || appPreferencesAvailability.keepAwakeWhenLidClosed
+                    ? [
+                        {
+                          id: "app.keep-awake-lid-closed",
+                          title: m.settings_keep_awake_lid_closed(),
+                          description: keepAwakeDescription,
+                          keywords: ["sleep", "caffeinate", "休眠", "合盖"],
+                          control: {
+                            type: "toggle" as const,
+                            checked: keepAwakeApprovalDialogOpen || keepAwakeOn,
+                            disabled:
+                              !desktopOnly &&
+                              (!appPreferences ||
+                                keepAwakeStatus === "unavailable" ||
+                                appPreferencesPending),
+                            onChange: (event: { target: { checked: boolean } }) => {
+                              if (desktopOnly) return requestDesktopApp("keep-awake");
+                              void handleKeepAwakeChange(event);
+                            },
+                          },
+                        },
+                      ]
+                    : []),
                 ],
               },
               // AirDrop reception exists only in the macOS desktop app.
@@ -1375,7 +1259,7 @@ export function AppSettingsRoute({
                     id: "account.avatar",
                     title: m.settings_profile_avatar(),
                     description: m.settings_profile_avatar_help(),
-                    ...(avatarError ? { errorMessage: avatarError } : {}),
+                    ...(avatarMessage ? { errorMessage: avatarMessage } : {}),
                     control: {
                       type: "custom",
                       content: (
@@ -1383,13 +1267,13 @@ export function AppSettingsRoute({
                           <div className="flex items-center">
                             <Button
                               aria-label={m.settings_profile_choose_avatar()}
-                              {...(avatarError
+                              {...(avatarMessage
                                 ? {
                                     "aria-describedby": "settings-error-account.avatar",
                                   }
                                 : {})}
                               className="size-10 rounded-full p-0 [&>span]:p-0"
-                              disabled={profileLoading || avatarPending}
+                              disabled={profileLoading}
                               hierarchy="link-gray"
                               onPress={() => fileInput.current?.click()}
                               size="md"
@@ -1660,25 +1544,20 @@ export function AppSettingsRoute({
             titleAction: (
               <Button
                 className="h-auto px-lg py-xs"
-                disabled={appShortcutsAreDefault || sideChatShortcutRegistrationPending}
+                disabled={appShortcutsAreDefault}
                 hierarchy="secondary-gray"
                 onPress={() => {
-                  const sideChatConflict = electronRuntime
-                    ? (findAppShortcutConflictForSideChat(
-                        defaultAppShortcutBindings,
-                        sideChatShortcut
-                      ) ??
-                      findAppShortcutConflictForSideChat(
+                  const openCommaConflict = electronRuntime
+                    ? findAppShortcutConflictForGlobalShortcut(
                         defaultAppShortcutBindings,
                         clientSettings.settings.openCommaShortcut
-                      ))
+                      )
                     : undefined;
-                  if (sideChatConflict) {
-                    setShortcutConflicts({ [sideChatConflict]: true });
+                  if (openCommaConflict) {
+                    setShortcutConflicts({ [openCommaConflict]: true });
                     return;
                   }
                   setShortcutConflicts({});
-                  setSideChatShortcutConflict(false);
                   resetAppShortcuts();
                 }}
                 size="sm"
@@ -1700,12 +1579,10 @@ export function AppSettingsRoute({
                     control: {
                       type: "keybinding" as const,
                       value: appShortcutBindings[definition.id],
-                      disabled: electronRuntime && sideChatShortcutRegistrationPending,
                       recordingLabel: m.settings_press_shortcut(),
                       onClear: () => {
                         setShortcutConflicts({});
                         setAppShortcutBinding(definition.id, null);
-                        setSideChatShortcutConflict(false);
                       },
                       ...(shortcutConflicts[definition.id]
                         ? {
@@ -1713,25 +1590,20 @@ export function AppSettingsRoute({
                           }
                         : {}),
                       onChange: (binding: AppKeybinding) => {
-                        const conflictsWithSideChat =
+                        const conflictsWithOpenComma =
                           electronRuntime &&
-                          (appBindingConflictsWithSideChatShortcut(
+                          appBindingConflictsWithGlobalShortcut(
                             binding,
-                            sideChatShortcut
-                          ) ||
-                            appBindingConflictsWithSideChatShortcut(
-                              binding,
-                              clientSettings.settings.openCommaShortcut
-                            ));
-                        const conflict =
-                          conflictFor(definition.id, binding) ??
-                          (conflictsWithSideChat ? "side-chat" : undefined);
-                        if (conflict) {
+                            clientSettings.settings.openCommaShortcut
+                          );
+                        if (
+                          conflictFor(definition.id, binding) ||
+                          conflictsWithOpenComma
+                        ) {
                           setShortcutConflicts({ [definition.id]: true });
                           return;
                         }
                         setShortcutConflicts({});
-                        setSideChatShortcutConflict(false);
                         setAppShortcutBinding(definition.id, binding);
                       },
                     },
@@ -1769,54 +1641,24 @@ export function AppSettingsRoute({
                         }
                       : {}),
                   },
-                  ...(electronRuntime
+                  // Where Quick Chat is on (macOS 26): ⌘ held alone, which no
+                  // setting changes; the App settings turn it off.
+                  ...(appPreferences?.quickChatSupported &&
+                  appPreferences.quickChatEnabled
                     ? [
                         {
-                          id: "keyboard.open-side-chat",
-                          title: m.settings_open_side_chat(),
-                          description: m.settings_open_side_chat_description(),
-                          keywords: ["side chat", "hotkey", "shortcut", "侧边聊天"],
-                          control: {
-                            type: "shortcut" as const,
-                            value: sideChatShortcut,
-                            onClear: () => {
-                              setSideChatShortcutConflict(false);
-                              return setSideChatShortcut(null);
-                            },
-                            // Side Chat turned off in General takes no chord.
-                            disabled:
-                              sideChatShortcutRegistrationPending ||
-                              appPreferences?.sideChatEnabled === false,
-                            ...(sideChatShortcutConflict
-                              ? {
-                                  errorMessage: m.settings_shortcut_conflict(),
-                                }
-                              : sideChatShortcutRegistrationFailed
-                                ? {
-                                    errorMessage:
-                                      m.settings_shortcut_registration_failed(),
-                                  }
-                                : {}),
-                            recordingLabel: m.settings_press_shortcut(),
-                            onChange: (shortcut: SideChatShortcut) => {
-                              if (
-                                findAppShortcutConflictForSideChat(
-                                  appShortcutBindings,
-                                  shortcut
-                                ) ||
-                                sameGlobalShortcut(
-                                  shortcut,
-                                  clientSettings.settings.openCommaShortcut
-                                )
-                              ) {
-                                setSideChatShortcutConflict(true);
-                                return;
-                              }
-                              setSideChatShortcutConflict(false);
-                              setShortcutConflicts({});
-                              return setSideChatShortcut(shortcut);
-                            },
-                          },
+                          id: "keyboard.quick-chat",
+                          title: m.settings_quick_chat(),
+                          description: m.settings_quick_chat_description(),
+                          keywords: [
+                            "voice",
+                            "dictation",
+                            "hotkey",
+                            "shortcut",
+                            "语音",
+                            "快捷键",
+                          ],
+                          control: { type: "keycaps" as const, keys: ["⌘"] },
                         },
                       ]
                     : []),
@@ -1861,22 +1703,27 @@ export function AppSettingsRoute({
                       },
                     },
                   },
-                  {
-                    id: "meeting.hide",
-                    title: m.settings_meeting_hide(),
-                    description: m.settings_meeting_hide_description(),
-                    control: {
-                      type: "toggle",
-                      checked: clientSettings.settings.meetingHideRecorder,
-                      disabled: clientSettingsPending,
-                      onChange: (event) => {
-                        if (desktopOnly) return requestDesktopApp("meeting");
-                        void clientSettings.update({
-                          meetingHideRecorder: event.target.checked,
-                        });
-                      },
-                    },
-                  },
+                  // The recorder's notch is the macOS app's; Windows' has none to hide.
+                  ...(desktopOnly || appPreferencesAvailability.showInNotch
+                    ? [
+                        {
+                          id: "meeting.hide",
+                          title: m.settings_meeting_hide(),
+                          description: m.settings_meeting_hide_description(),
+                          control: {
+                            type: "toggle" as const,
+                            checked: clientSettings.settings.meetingHideRecorder,
+                            disabled: clientSettingsPending,
+                            onChange: (event: { target: { checked: boolean } }) => {
+                              if (desktopOnly) return requestDesktopApp("meeting");
+                              void clientSettings.update({
+                                meetingHideRecorder: event.target.checked,
+                              });
+                            },
+                          },
+                        },
+                      ]
+                    : []),
                   {
                     id: "meeting.summary",
                     title: m.settings_meeting_summary(),
@@ -1926,7 +1773,7 @@ export function AppSettingsRoute({
                     },
                   },
                   // Proactive messages judge the member's own items, so they
-                  // need "Only my work". Only the workspace owner has them.
+                  // need "Only matters involving me". Only the workspace owner has them.
                   ...(proactive.setting.kind === "owner-only"
                     ? []
                     : [
@@ -2093,8 +1940,18 @@ export function AppSettingsRoute({
             id: "channels",
             icon: "channels",
             label: m.settings_channels(),
-            keywords: ["telegram", "tg", "wechat", "微信", "ClawBot", "signal", "消息"],
-            ...(signalChannel.overlay ? { overlay: signalChannel.overlay } : {}),
+            keywords: [
+              "telegram",
+              "tg",
+              "wechat",
+              "微信",
+              "ClawBot",
+              "signal",
+              "imessage",
+              "linear",
+              "消息",
+            ],
+            ...(channelsOverlay ? { overlay: channelsOverlay } : {}),
             sections: [
               {
                 id: "telegram.account",
@@ -2111,7 +1968,9 @@ export function AppSettingsRoute({
                     ],
                     icon: <TelegramProviderLogo />,
                     integration: telegramConnectionDetails(),
-                    description: telegramConnectionDescription(),
+                    ...(telegramDescription
+                      ? { description: telegramDescription }
+                      : {}),
                     descriptionLoading:
                       !telegramError &&
                       ((!telegramIntegration && !telegramAttempt) ||
@@ -2123,10 +1982,17 @@ export function AppSettingsRoute({
               },
               { id: "wechat.account", title: "", items: [wechatItem] },
               { id: "signal.account", title: "", items: [signalChannel.item] },
+              ...(imessageItem
+                ? [{ id: "imessage.account", title: "", items: [imessageItem] }]
+                : []),
+              { id: "linear.account", title: "", items: [linearChannel.item] },
             ],
           },
           browserCategory,
           taskLabelsCategory,
+          ...(clientSettings.settings.condensedWorkspaceSettingsVisible
+            ? [condensedWorkspaceCategory]
+            : []),
           models.category,
         ],
       },
@@ -2137,64 +2003,11 @@ export function AppSettingsRoute({
           routerApiKeysCategory,
           voiceCategory,
           devicesCategory,
-          {
-            id: "computer-use",
-            icon: "computer-use",
-            label: m.settings_computer_use(),
-            sections: [
-              {
-                id: "computer-use.access",
-                title: m.settings_access(),
-                items: [
-                  {
-                    id: "computer-use.accessibility",
-                    title: m.settings_computer_use_accessibility(),
-                    description: permissionStatus(
-                      computerUse.permissions?.accessibility
-                    ),
-                  },
-                  {
-                    id: "computer-use.screen-recording",
-                    title: m.settings_computer_use_screen_recording(),
-                    description: permissionStatus(
-                      computerUse.permissions?.screenRecording
-                    ),
-                  },
-                  {
-                    id: "computer-use.permissions",
-                    title: m.settings_computer_use_permissions(),
-                    description: m.settings_computer_use_permissions_description(),
-                    control: {
-                      type: "button",
-                      label: m.settings_computer_use_manage(),
-                      disabled:
-                        !desktopOnly && (!computerUse.available || computerUse.pending),
-                      onPress: desktopOnly
-                        ? () => requestDesktopApp("computer-use")
-                        : computerUse.open,
-                    },
-                  },
-                  {
-                    id: "computer-use.refresh",
-                    title: m.settings_computer_use_status(),
-                    description:
-                      computerUse.error ??
-                      m.settings_computer_use_refresh_description(),
-                    control: {
-                      type: "button",
-                      label: m.settings_computer_use_refresh(),
-                      disabled:
-                        !desktopOnly && (!computerUse.available || computerUse.pending),
-                      onPress: desktopOnly
-                        ? () => requestDesktopApp("computer-use")
-                        : computerUse.refresh,
-                    },
-                  },
-                ],
-              },
-            ],
-          },
-          computeNodeCategory,
+          tailscaleCategory,
+          // Computer Use is the macOS app's (its helper): a desktop app
+          // elsewhere (Windows) has nothing to grant; the web offers the app.
+          ...(desktopOnly || computerUse.available ? [computerUseCategory] : []),
+
           {
             id: "debug",
             icon: "debug",
@@ -2215,6 +2028,47 @@ export function AppSettingsRoute({
                       onChange: (event) =>
                         void clientSettings.update({
                           sessionHistoryEnabled: event.target.checked,
+                        }),
+                    },
+                  },
+                ],
+              },
+              {
+                id: "debug.computer-use-screen",
+                title: m.settings_debug_computer_use_screen_title(),
+                items: [
+                  {
+                    id: "debug.computer-use-screen.enabled",
+                    title: m.settings_debug_computer_use_screen(),
+                    description: m.settings_debug_computer_use_screen_description(),
+                    control: {
+                      type: "toggle",
+                      checked: clientSettings.settings.computerUseScreenEnabled,
+                      disabled: clientSettingsPending,
+                      onChange: (event) =>
+                        void clientSettings.update({
+                          computerUseScreenEnabled: event.target.checked,
+                        }),
+                    },
+                  },
+                ],
+              },
+              {
+                id: "debug.condensed-workspace",
+                title: m.settings_condensed_workspace(),
+                items: [
+                  {
+                    id: "debug.condensed-workspace.visible",
+                    title: m.settings_debug_condensed_workspace(),
+                    description: m.settings_debug_condensed_workspace_description(),
+                    control: {
+                      type: "toggle",
+                      checked:
+                        clientSettings.settings.condensedWorkspaceSettingsVisible,
+                      disabled: clientSettingsPending,
+                      onChange: (event) =>
+                        void clientSettings.update({
+                          condensedWorkspaceSettingsVisible: event.target.checked,
                         }),
                     },
                   },
@@ -2414,13 +2268,12 @@ export function AppSettingsRoute({
             {
               label: m.settings_profile_cancel(),
               hierarchy: "secondary-gray",
-              disabled: namePending,
               onPress: closeNameDialog,
             },
             {
               label: m.settings_profile_save(),
               hierarchy: "primary",
-              disabled: namePending || !normalizedName || nameInvalid || nameUnchanged,
+              disabled: !normalizedName || nameInvalid || nameUnchanged,
               onPress: () => void saveName(),
             },
           ]}
@@ -2428,9 +2281,8 @@ export function AppSettingsRoute({
           input={{
             "aria-label": m.settings_profile_name(),
             autoFocus: true,
-            disabled: namePending,
-            ...(nameError
-              ? { errorMessage: nameError }
+            ...(nameMessage
+              ? { errorMessage: nameMessage }
               : nameInvalid
                 ? { errorMessage: m.settings_profile_name_too_long() }
                 : {}),
@@ -2441,7 +2293,7 @@ export function AppSettingsRoute({
             },
             value: name,
           }}
-          isDismissable={!namePending}
+          isDismissable
           isOpen
           onOpenChange={(open) => {
             if (!open) closeNameDialog();

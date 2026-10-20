@@ -1,4 +1,4 @@
-import type { SessionHistoryRecord } from "../../../../runtime-chat/sessionHistoryBridge";
+import type { SessionHistoryRecord } from "../useSessionHistory";
 import { sessionHistoryEntries } from "../model/sessionHistoryEntries";
 import type {
   SessionItemKind,
@@ -138,6 +138,8 @@ export function sessionTimelineAxis(model: ReturnType<typeof sessionTimeline>) {
       folds: gaps.map((gap) => ({ ...gap, left: 0.5, right: 0.5 })),
       position: (_time: number) => 0.5,
       timeAt: (_fraction: number) => model.end,
+      folded: (_time: number) => 0,
+      duration: 0,
     };
   const scale = 1 / activeDuration;
   let foldedDuration = 0;
@@ -148,7 +150,9 @@ export function sessionTimelineAxis(model: ReturnType<typeof sessionTimeline>) {
     removedThrough.push(foldedDuration);
     return { ...gap, left, right: left };
   });
-  const position = (time: number) => {
+  // Active time before a moment. Unlike `position`, it does not depend on the
+  // window's end, so appending a record leaves it unchanged for earlier spans.
+  const folded = (time: number) => {
     // Each bar asks for both edges. Locate the first fold that has not ended
     // instead of scanning all earlier quiet intervals for every edge.
     let from = 0,
@@ -159,10 +163,14 @@ export function sessionTimelineAxis(model: ReturnType<typeof sessionTimeline>) {
       else to = middle;
     }
     const gap = folds[from];
-    if (gap && time >= gap.start && time <= gap.end) return gap.left;
     const removed = removedThrough[from - 1] ?? 0;
-    return (time - model.start - removed) * scale;
+    return (
+      (gap && time >= gap.start && time <= gap.end ? gap.start : time) -
+      model.start -
+      removed
+    );
   };
+  const position = (time: number) => folded(time) * scale;
   const timeAt = (fraction: number) => {
     let from = 0,
       to = folds.length;
@@ -178,7 +186,7 @@ export function sessionTimelineAxis(model: ReturnType<typeof sessionTimeline>) {
     const removed = removedThrough[from - 1] ?? 0;
     return model.start + fraction / scale + removed;
   };
-  return { folds, position, timeAt };
+  return { folds, position, timeAt, folded, duration: activeDuration };
 }
 
 /** Project horizontal positions without changing the assigned vertical tracks. */
@@ -197,6 +205,16 @@ export function sessionTimelineBars(
       width: visibleWidth,
     };
   });
+}
+
+/** Origin and scale that place a span's active time on the painted window. */
+export function sessionTimelineScale(axis: ReturnType<typeof sessionZoomAxis>) {
+  return axis.duration > 0
+    ? {
+        origin: axis.from * axis.duration,
+        scale: 1 / ((axis.to - axis.from) * axis.duration),
+      }
+    : { origin: -0.5, scale: 1 };
 }
 
 /** Aggregate decoration by screen space, without changing the time axis or bars. */
@@ -245,6 +263,8 @@ export function sessionZoomAxis(
   return {
     from,
     to,
+    folded: base.folded,
+    duration: base.duration,
     position: (time: number) => (base.position(time) - from) / span,
     timeAt: (fraction: number) => base.timeAt(from + fraction * span),
     folds: base.folds

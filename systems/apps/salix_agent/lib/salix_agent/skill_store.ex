@@ -92,7 +92,7 @@ defmodule SalixAgent.SkillStore do
              "description" => description
            }),
          {:ok, entry} <- blob_entry(agent_id, "SKILL.md", content, media_type_for("SKILL.md")) do
-      now = System.os_time(:second)
+      now = SystemsClock.system_time(:second)
       name = if metadata["activation"] == "per-message", do: string(metadata["name"]), else: name
 
       description =
@@ -121,6 +121,67 @@ defmodule SalixAgent.SkillStore do
        }}
     end
   end
+
+  @doc """
+  Create a group-level editable skill from a skill folder imported from
+  another agent platform. `files` maps relative paths to bodies and must hold
+  `SKILL.md`; name and description come from its frontmatter, falling back to
+  `skill_id`.
+  """
+  @spec prepare_group_import(ctx(), String.t(), %{String.t() => binary()}) ::
+          {:ok, map()} | {:error, term()}
+  def prepare_group_import(ctx, skill_id, files) when is_map(files) do
+    with {:ok, group_id} <- required(ctx, :group_id),
+         {:ok, agent_id} <- required(ctx, :agent_id),
+         {:ok, skill_id} <- normalize_skill_id(skill_id),
+         {:ok, content} <- skill_md(files),
+         {:ok, metadata} <-
+           SalixAgent.SkillFrontmatter.metadata(content, %{
+             "name" => skill_id,
+             "description" => ""
+           }),
+         {:ok, entries} <- import_entries(agent_id, files) do
+      now = SystemsClock.system_time(:second)
+      name = metadata["name"] |> string() |> String.trim() |> nonblank(skill_id)
+
+      {:ok,
+       %{
+         "type" => "skill_create",
+         "scope" => %{"layer" => "group", "id" => group_id},
+         "skill" => %{
+           "skill_id" => skill_id,
+           "name" => name,
+           "normalized_name" => normalize_name(name),
+           "description" => string(metadata["description"]),
+           "activation" => metadata["activation"],
+           "origin" => "imported",
+           "created_by_agent_id" => agent_id,
+           "editable" => true,
+           "version" => 1,
+           "created_at" => now,
+           "updated_at" => now,
+           "files" => entries
+         }
+       }}
+    end
+  end
+
+  defp skill_md(%{"SKILL.md" => content}) when is_binary(content), do: {:ok, content}
+  defp skill_md(_files), do: {:error, "SKILL.md is required"}
+
+  defp import_entries(agent_id, files) do
+    Enum.reduce_while(files, {:ok, %{}}, fn {path, body}, {:ok, acc} ->
+      with {:ok, path} <- validate_relative_path(path),
+           {:ok, entry} <- blob_entry(agent_id, path, body, media_type_for(path)) do
+        {:cont, {:ok, Map.put(acc, path, entry)}}
+      else
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp nonblank("", fallback), do: fallback
+  defp nonblank(value, _fallback), do: value
 
   @doc "Delete a skill from the group layer."
   @spec prepare_group_delete(ctx(), String.t()) :: {:ok, map()} | {:error, term()}
@@ -169,7 +230,7 @@ defmodule SalixAgent.SkillStore do
          name <- copy_name(source_skill, attrs),
          {:ok, name} <- require_non_empty("name", name),
          {:ok, files} <- copy_files(agent_id, source_skill["files"] || %{}) do
-      now = System.os_time(:second)
+      now = SystemsClock.system_time(:second)
 
       # Stored files share immutable blobs. Local built-ins become durable
       # blobs only when the agent copies the skill.
@@ -286,7 +347,7 @@ defmodule SalixAgent.SkillStore do
 
   @doc "Read a local built-in file or a stored skill blob."
   @spec read_entry(String.t(), map()) :: {:ok, binary()} | {:error, term()}
-  def read_entry(_agent_id, %{"local_path" => path}), do: File.read(path)
+  def read_entry(_agent_id, %{"local_path" => path}), do: SystemsRuntime.FS.read(path)
   def read_entry(agent_id, %{"ref" => ref}), do: Blob.get(agent_id, ref)
   def read_entry(agent_id, %{ref: ref}), do: Blob.get(agent_id, ref)
   def read_entry(_agent_id, _entry), do: {:error, :not_found}
@@ -336,7 +397,7 @@ defmodule SalixAgent.SkillStore do
           {:ok, committed["result"]}
 
         :error ->
-          now = opts[:committed_at] || System.os_time(:second)
+          now = opts[:committed_at] || SystemsClock.system_time(:second)
 
           record = %{
             "operation_id" => operation_id,
@@ -444,7 +505,7 @@ defmodule SalixAgent.SkillStore do
          %State{} = state
        ) do
     update_skill(state, skill_id, fn skill ->
-      now = System.os_time(:second)
+      now = SystemsClock.system_time(:second)
       files = Map.put(skill["files"] || %{}, path, normalize_file_entry(entry))
 
       skill
@@ -460,7 +521,7 @@ defmodule SalixAgent.SkillStore do
          %State{} = state
        ) do
     update_skill(state, skill_id, fn skill ->
-      now = System.os_time(:second)
+      now = SystemsClock.system_time(:second)
 
       skill
       |> Map.put("files", Map.delete(skill["files"] || %{}, path))
@@ -808,7 +869,8 @@ defmodule SalixAgent.SkillStore do
       "hash" => string(entry["hash"] || entry[:hash]),
       "media_type" =>
         string(entry["media_type"] || entry[:media_type] || "application/octet-stream"),
-      "modified_at" => int(entry["modified_at"] || entry[:modified_at], System.os_time(:second))
+      "modified_at" =>
+        int(entry["modified_at"] || entry[:modified_at], SystemsClock.system_time(:second))
     }
   end
 
@@ -842,7 +904,7 @@ defmodule SalixAgent.SkillStore do
       "size" => ref.size,
       "hash" => ref.hash,
       "media_type" => media_type,
-      "modified_at" => System.os_time(:second)
+      "modified_at" => SystemsClock.system_time(:second)
     }
   end
 

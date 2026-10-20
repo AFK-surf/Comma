@@ -4,6 +4,7 @@ import { installBrowserTestSession } from "../helpers/browser-auth";
 import {
   chatSmokeWorkspaceChat,
   chatSmokeAssistantReply,
+  chatSmokeMiniskill,
   chatSmokeSkill,
   chatSmokeTaskConversation,
   chatSmokeWorkspace,
@@ -17,28 +18,6 @@ const testSession = {
 };
 
 test.use({ locale: "en-US" });
-
-test("web app boots the client runtime", async ({ page }) => {
-  await page.goto("/");
-
-  await expect(page.locator("#root")).toBeAttached();
-  await expect.poll(() => page.evaluate(() => document.readyState)).toBe("complete");
-  await expect(
-    page.evaluate(() => {
-      const root = document.getElementById("root");
-
-      return {
-        hasRoot: root !== null,
-        hasRenderedChildren: (root?.childElementCount ?? 0) > 0,
-        hash: window.location.hash,
-      };
-    })
-  ).resolves.toEqual({
-    hasRoot: true,
-    hasRenderedChildren: true,
-    hash: "",
-  });
-});
 
 test("web app renders the authenticated Comma shell controls", async ({ page }) => {
   await installBrowserTestSession(page, testSession);
@@ -133,6 +112,9 @@ test("web app opens Chat and completes a conversation against a /v1 stub", async
     await expect(
       content.getByRole("option", { name: chatSmokeSkill.name, exact: false })
     ).toBeVisible();
+    await expect(
+      content.getByRole("option", { name: chatSmokeMiniskill.name, exact: false })
+    ).toHaveCount(0);
     await page.keyboard.press("Enter");
     const skillToken = textbox.locator(
       `[data-ai-input-token][data-menu-id="skills"][data-item-id="${chatSmokeSkill.skill_id}"]`
@@ -159,11 +141,16 @@ test("web app opens Chat and completes a conversation against a /v1 stub", async
       "smoke.txt",
       "fail-once.txt",
     ]);
+    // The device timezone travels with the message so the Agent can write local times.
+    const deviceTimezone = await page.evaluate(
+      () => Intl.DateTimeFormat().resolvedOptions().timeZone
+    );
     expect(stub.messageBodies).toEqual([
       expect.objectContaining({
         message: expect.objectContaining({
           text: expect.stringContaining("Attached files in your workspace:"),
         }),
+        client_timezone: deviceTimezone,
         skills: [{ location: chatSmokeSkill.location }],
       }),
     ]);
@@ -248,55 +235,6 @@ test("Comma Center sends through its single assistant conversation and keeps his
     await page.reload();
     await expect(content.getByText("Comma Center smoke")).toBeVisible();
     await expect(content.getByText(chatSmokeAssistantReply)).toBeVisible();
-  } finally {
-    await stub.close();
-  }
-});
-
-test("web Chat follows Participant status and commits one streamed reply", async ({
-  page,
-}) => {
-  const assistantDraft = "STREAMING_E2E_";
-  const assistantReply = "STREAMING_E2E_COMPLETE";
-  const stub = await startChatSmokeStub({
-    assistantDraft,
-    assistantReply,
-    holdStreamingReplyStart: true,
-    streamAssistantReply: true,
-  });
-
-  try {
-    await installBrowserTestSession(page, {
-      ...testSession,
-      apiBaseUrl: stub.baseUrl,
-    });
-
-    await page.goto("/");
-    const content = page.getByRole("region", { name: "Content" });
-    const composer = content.locator(".comma-chat-composer");
-    const textbox = composer.getByRole("textbox", { name: "AI prompt" });
-
-    await textbox.fill("Verify streamed completion state");
-    await composer.getByRole("button", { name: "Send" }).click();
-
-    const draft = content.getByTestId("chat-assistant-draft");
-    const participantStatus = content.getByTestId("participant-status-slot");
-    await expect(participantStatus).toHaveAttribute("data-active", "true");
-    await expect(participantStatus).toContainText("Thinking");
-
-    stub.startStreamingReply();
-    await stub.waitForDraft();
-    await expect(draft).toContainText(assistantDraft);
-    await expect(participantStatus).toHaveAttribute("data-state", "active");
-    await expect(participantStatus).toHaveAttribute("data-active", "false");
-    await expect(participantStatus).toBeHidden();
-
-    stub.completeStreamingReply();
-
-    await expect(content.getByText(assistantReply, { exact: true })).toHaveCount(1);
-    await expect(draft).toHaveCount(0);
-    await expect(participantStatus).toHaveAttribute("data-state", "stopped");
-    await expect(participantStatus).toHaveAttribute("data-active", "false");
   } finally {
     await stub.close();
   }

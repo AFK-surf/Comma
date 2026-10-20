@@ -72,7 +72,7 @@ defmodule Salix.App.RouterInbox do
              | :unavailable}
   def post_message(%{"key_id" => key_id, "group_id" => key_group} = key, group_id, body)
       when is_map(body) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     result =
       with true <- key_group == group_id || {:error, :not_found},
@@ -92,7 +92,7 @@ defmodule Salix.App.RouterInbox do
   def emit(outcome), do: emit(outcome, 0)
 
   defp finish(result, started) do
-    duration = System.monotonic_time() - started
+    duration = SystemsClock.monotonic_time() - started
 
     outcome =
       case result do
@@ -109,7 +109,7 @@ defmodule Salix.App.RouterInbox do
   end
 
   defp emit(outcome, duration) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :router_inbox, :post_message, :stop],
       %{duration: duration, count: 1},
       %{outcome: outcome}
@@ -212,7 +212,7 @@ defmodule Salix.App.RouterInbox do
   defp invalid(field, reason), do: {:error, {:invalid_request, field, reason}}
 
   defp uuid do
-    <<a::32, b::16, c::16, d::16, e::48>> = :crypto.strong_rand_bytes(16)
+    <<a::32, b::16, c::16, d::16, e::48>> = SystemsRuntime.Proc.random_bytes(16)
 
     :io_lib.format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b", [a, b, c, d, e])
     |> IO.iodata_to_binary()
@@ -280,24 +280,38 @@ defmodule Salix.App.RouterInbox do
 
   defmodule RateLimit do
     @moduledoc """
-    Redis sliding-window limiter for post_message, per key and per group.
+    Redis sliding-window limiter for post_message, per key and per group,
+    whose window and connection the other ingress limits share (`admit/3`).
 
-    Redis unavailability lets the request through and counts the miss: the
-    key itself and the body ceiling already bound the abuse surface, and a
-    limiter outage must not become an ingress outage.
+    Redis unavailability lets a post_message request through and counts the
+    miss: the key itself and the body ceiling already bound the abuse
+    surface, and a limiter outage must not become an ingress outage.
     """
 
-    use Hammer,
-      backend: Hammer.Redis,
-      algorithm: :sliding_window,
-      prefix: "salix:router-inbox:v1",
-      timeout: 2_000
+    @prefix "salix:router-inbox:v1"
+    @timeout 2_000
+
+    # Hammer supervises the Redis connection; the window is
+    # SalixStore.RedisLimit's, on the application's clock.
+    use Hammer, backend: Hammer.Redis, prefix: @prefix, timeout: @timeout
 
     @window_ms 60_000
 
+    @doc """
+    Admits one request to `key` when fewer than `limit` were admitted in the
+    last `window_ms`: `{:allow, count}` or `{:deny, retry_after_ms}`. Hammer's
+    `hit/3` counts a window fixed to the clock's minutes or hours instead,
+    which admits twice the limit to a burst that spans its turn.
+    """
+    @spec admit(String.t(), pos_integer(), pos_integer()) ::
+            {:allow, pos_integer()} | {:deny, integer()}
+    def admit(key, window_ms, limit),
+      do:
+        SalixStore.RedisLimit.sliding_window(__MODULE__, @prefix, key, window_ms, limit, @timeout)
+
     @spec check(String.t(), String.t()) :: :ok | {:error, {:rate_limited, pos_integer()}}
     def check(key_id, group_id) do
-      limits = Application.get_env(:salix_web, :router_inbox_rate_limits, [])
+      limits = SystemsRuntime.get_env(:salix_web, :router_inbox_rate_limits, [])
       key_limit = Keyword.get(limits, :key_per_minute, 60)
       group_limit = Keyword.get(limits, :group_per_minute, 600)
 
@@ -310,7 +324,7 @@ defmodule Salix.App.RouterInbox do
     defp hit_bucket(_bucket, limit) when not is_integer(limit) or limit <= 0, do: :ok
 
     defp hit_bucket(bucket, limit) do
-      case hit(bucket, @window_ms, limit) do
+      case admit(bucket, @window_ms, limit) do
         {:allow, _count} ->
           :ok
 
@@ -328,7 +342,7 @@ defmodule Salix.App.RouterInbox do
     end
 
     defp emit_unavailable do
-      :telemetry.execute(
+      SystemsRuntime.Telemetry.execute(
         [:salix, :router_inbox, :rate_limit, :decision],
         %{count: 1},
         %{outcome: :unavailable}

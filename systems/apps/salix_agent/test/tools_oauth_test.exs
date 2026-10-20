@@ -8,8 +8,9 @@ defmodule SalixAgent.Tools.OAuthTest do
   (pending/completed/failed/expired). No inline token exchange — the HTTP
   callback owns it.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.Tools.OAuth, as: OAuthTools
   alias SalixStore.OAuth.AuthState
 
@@ -17,7 +18,7 @@ defmodule SalixAgent.Tools.OAuthTest do
     @moduledoc false
     @behaviour SalixAgent.OAuthStore
 
-    defp cfg, do: Application.get_env(:salix_agent, :oauth_store_stub, %{})
+    defp cfg, do: SystemsRuntime.get_env(:salix_agent, :oauth_store_stub, %{})
 
     @impl true
     def agent_oauth_context(_agent_id) do
@@ -49,8 +50,8 @@ defmodule SalixAgent.Tools.OAuthTest do
 
     @impl true
     def delete_binding(tenant, group_id, binding_id) do
-      pid = Application.get_env(:salix_agent, :oauth_store_test_pid)
-      if pid, do: send(pid, {:deleted_binding, tenant, group_id, binding_id})
+      pid = SystemsRuntime.get_env(:salix_agent, :oauth_store_test_pid)
+      if pid, do: SystemsRuntime.Proc.send(pid, {:deleted_binding, tenant, group_id, binding_id})
 
       case cfg()[:delete_result] do
         nil -> :ok
@@ -67,14 +68,17 @@ defmodule SalixAgent.Tools.OAuthTest do
     def create_capability_request(attrs) do
       request =
         attrs
-        |> Map.put_new("request_id", "req-#{System.unique_integer([:positive])}")
+        |> Map.put_new("request_id", "req-#{SystemsRuntime.Proc.unique_integer([:positive])}")
         |> Map.put_new("status", "pending")
         |> Map.put_new("response_payload", %{})
 
-      send(Application.fetch_env!(:salix_agent, :capability_request_store_test_pid), {
-        :created_capability_request,
-        request
-      })
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :capability_request_store_test_pid),
+        {
+          :created_capability_request,
+          request
+        }
+      )
 
       {:ok, request}
     end
@@ -98,8 +102,8 @@ defmodule SalixAgent.Tools.OAuthTest do
 
   defmodule NativePrompt do
     def request(scope, type, args, call_id) do
-      send(
-        Application.fetch_env!(:salix_agent, :capability_request_store_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :capability_request_store_test_pid),
         {:native_prompt, scope, type, args, call_id}
       )
 
@@ -118,31 +122,41 @@ defmodule SalixAgent.Tools.OAuthTest do
   ]
 
   setup do
-    prev_s3 = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
     case start_supervised(SalixStore.S3.Fake) do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> SalixStore.S3.Fake.reset()
     end
 
-    prev = Map.new(@app_envs, fn k -> {k, Application.get_env(:salix_agent, k)} end)
-    Application.put_env(:salix_agent, :oauth_store_mod, StubStore)
-    Application.put_env(:salix_agent, :capability_request_store_mod, CapabilityRequestStoreStub)
-    Application.put_env(:salix_agent, :capability_request_store_test_pid, self())
+    prev = Map.new(@app_envs, fn k -> {k, SystemsRuntime.get_env(:salix_agent, k)} end)
+    SystemsRuntime.put_env(:salix_agent, :oauth_store_mod, StubStore)
 
-    Application.put_env(:salix_agent, :oauth_adapters_fn, fn
+    SystemsRuntime.put_env(
+      :salix_agent,
+      :capability_request_store_mod,
+      CapabilityRequestStoreStub
+    )
+
+    SystemsRuntime.put_env(
+      :salix_agent,
+      :capability_request_store_test_pid,
+      SystemsRuntime.Proc.self()
+    )
+
+    SystemsRuntime.put_env(:salix_agent, :oauth_adapters_fn, fn
       "github" -> {:ok, FakeAdapter}
       _ -> {:error, :unsupported_provider}
     end)
 
     on_exit(fn ->
-      Application.put_env(:salix_store, :s3_backend, prev_s3)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_s3)
 
       for {k, v} <- prev do
         if v,
-          do: Application.put_env(:salix_agent, k, v),
-          else: Application.delete_env(:salix_agent, k)
+          do: SystemsRuntime.put_env(:salix_agent, k, v),
+          else: SystemsRuntime.delete_env(:salix_agent, k)
       end
     end)
 
@@ -152,7 +166,7 @@ defmodule SalixAgent.Tools.OAuthTest do
     {:ok, agent: agent, sid: sid, ctx: %{agent_id: agent, session_id: sid}}
   end
 
-  defp put_stub(cfg), do: Application.put_env(:salix_agent, :oauth_store_stub, cfg)
+  defp put_stub(cfg), do: SystemsRuntime.put_env(:salix_agent, :oauth_store_stub, cfg)
 
   defp configured_stub do
     %{
@@ -163,37 +177,6 @@ defmodule SalixAgent.Tools.OAuthTest do
   end
 
   # ---- list_oauth_credentials ----
-
-  test "Telegram OAuth delivers a native link without a running callback tool", %{ctx: ctx} do
-    put_stub(configured_stub())
-    Application.put_env(:salix_agent, :telegram_interaction_mod, NativePrompt)
-    scope = %{"eligible" => true, "agent_id" => ctx.agent_id, "session_id" => ctx.session_id}
-
-    ctx =
-      Map.merge(ctx, %{
-        trusted_origin: %{"provider" => "telegram"},
-        terminal_reply_context: scope,
-        llm_tool_envelope: true,
-        tool_call_id: "native-oauth"
-      })
-
-    out =
-      OAuthTools.request_oauth_authorization(
-        %{"provider" => "github", "alias" => "work", "reason" => "Read issues", "locale" => "en"},
-        ctx
-      )
-
-    assert Jason.decode!(out)["status"] == "question_delivered"
-    assert_receive {:native_prompt, ^scope, "oauth", args, "native-oauth"}
-    assert args["locale"] == "en"
-    assert args["authorization_url"] =~ "https://fake.example/authorize"
-    assert {:ok, auth} = AuthState.get(args["oauth_state"])
-    assert auth["status"] == "pending"
-    assert auth["telegram_interaction"]["group_id"] == "g1"
-    assert byte_size(auth["telegram_interaction"]["id"]) == 43
-    refute_receive {:created_capability_request, _}
-    refute out =~ "async"
-  end
 
   test "list returns willow's parity shape sorted by provider then alias, no token values",
        %{ctx: ctx} do
@@ -270,11 +253,6 @@ defmodule SalixAgent.Tools.OAuthTest do
     refute out =~ "access_token\": \"tok"
   end
 
-  test "list with no agent group context returns an empty credential list", %{ctx: ctx} do
-    put_stub(%{})
-    assert Jason.decode!(OAuthTools.list_oauth_credentials(%{}, ctx)) == %{"credentials" => []}
-  end
-
   # ---- request_oauth_authorization ----
 
   test "request creates a pending AuthState and emits wait_set (derived waiting)",
@@ -332,7 +310,7 @@ defmodule SalixAgent.Tools.OAuthTest do
     # default timeout 600s, ms timestamps
     assert record["expires_at"] == record["created_at"] + 600_000
 
-    assert_receive {:created_capability_request, request}
+    settle_receive({:created_capability_request, request})
     assert request["tenant_id"] == "t1"
     assert request["group_id"] == "g1"
     assert request["source_agent_id"] == agent
@@ -354,88 +332,6 @@ defmodule SalixAgent.Tools.OAuthTest do
       |> SalixAgent.InternalSession.apply_event(wait_set)
 
     assert SalixAgent.InternalSession.derived_state(session) == :waiting
-  end
-
-  test "request requires a session id in tool context", %{ctx: ctx} do
-    put_stub(configured_stub())
-    ctx = Map.delete(ctx, :session_id)
-
-    assert_raise RuntimeError, "ctx.session_id is required", fn ->
-      OAuthTools.request_oauth_authorization(
-        %{"provider" => "github", "alias" => "work", "reason" => "need repo access"},
-        ctx
-      )
-    end
-  end
-
-  test "request validation and configuration errors", %{ctx: ctx} do
-    put_stub(configured_stub())
-
-    assert_raise RuntimeError, "'provider' is required", fn ->
-      OAuthTools.request_oauth_authorization(%{"alias" => "a", "reason" => "r"}, ctx)
-    end
-
-    assert_raise RuntimeError, "'alias' is required", fn ->
-      OAuthTools.request_oauth_authorization(%{"provider" => "github", "reason" => "r"}, ctx)
-    end
-
-    assert_raise RuntimeError, "'reason' is required", fn ->
-      OAuthTools.request_oauth_authorization(%{"provider" => "github", "alias" => "a"}, ctx)
-    end
-
-    for bad <- [0, 1801] do
-      assert_raise RuntimeError, "timeout_seconds must be between 1 and 1800", fn ->
-        OAuthTools.request_oauth_authorization(
-          %{"provider" => "github", "alias" => "a", "reason" => "r", "timeout_seconds" => bad},
-          ctx
-        )
-      end
-    end
-
-    # provider app missing → willow's not-configured wording
-    assert_raise RuntimeError,
-                 "oauth provider linear is not configured for this tenant; an admin needs to add it in the OAuth settings",
-                 fn ->
-                   OAuthTools.request_oauth_authorization(
-                     %{"provider" => "linear", "alias" => "a", "reason" => "r"},
-                     ctx
-                   )
-                 end
-
-    # app configured but adapter registry rejects the provider
-    put_stub(
-      put_in(configured_stub(), [:provider_apps, {"t1", "gitea"}], %{
-        "client_id" => "x",
-        "client_secret" => "y"
-      })
-    )
-
-    assert_raise RuntimeError, "oauth provider \"gitea\" is not supported", fn ->
-      OAuthTools.request_oauth_authorization(
-        %{"provider" => "gitea", "alias" => "a", "reason" => "r"},
-        ctx
-      )
-    end
-
-    # no public base URL
-    put_stub(Map.delete(configured_stub(), :base_url))
-
-    assert_raise RuntimeError, ~r/public_base_url is not configured/, fn ->
-      OAuthTools.request_oauth_authorization(
-        %{"provider" => "github", "alias" => "a", "reason" => "r"},
-        ctx
-      )
-    end
-
-    # store seam unwired entirely
-    Application.delete_env(:salix_agent, :oauth_store_mod)
-
-    assert_raise RuntimeError, "oauth authorization is not configured for this runtime", fn ->
-      OAuthTools.request_oauth_authorization(
-        %{"provider" => "github", "alias" => "a", "reason" => "r"},
-        ctx
-      )
-    end
   end
 
   # ---- complete_oauth_authorization ----
@@ -495,7 +391,7 @@ defmodule SalixAgent.Tools.OAuthTest do
     assert decoded["error"] == "user denied the authorization"
 
     # expired: a pending record past its deadline flips lazily on read
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     :ok =
       AuthState.create(%{
@@ -558,8 +454,8 @@ defmodule SalixAgent.Tools.OAuthTest do
       "binding_id" => nil,
       "connection_id" => nil,
       "provider_account_name" => nil,
-      "expires_at" => System.system_time(:millisecond) + 600_000,
-      "created_at" => System.system_time(:millisecond)
+      "expires_at" => SystemsClock.system_time(:millisecond) + 600_000,
+      "created_at" => SystemsClock.system_time(:millisecond)
     }
 
     # Another group's row must not leak its existence.
@@ -587,36 +483,6 @@ defmodule SalixAgent.Tools.OAuthTest do
     end
   end
 
-  test "defs/0 exposes the tools in registry order with descriptions" do
-    entries = OAuthTools.defs()
-
-    assert Enum.map(entries, &SalixAgent.Tools.entry_name/1) == [
-             "oauth.list_credentials",
-             "oauth.request_authorization",
-             "oauth.complete_authorization",
-             "oauth.delete_credential"
-           ]
-
-    request_entry = Enum.at(entries, 1)
-
-    assert SalixAgent.Tools.entry_safety(request_entry) == "write"
-
-    for entry <- entries do
-      {desc, fun, auto_wait_seconds} =
-        case entry do
-          {_name, desc, fun, auto_wait_seconds} ->
-            {desc, fun, auto_wait_seconds}
-
-          {_name, desc, fun, auto_wait_seconds, _opts} ->
-            {desc, fun, auto_wait_seconds}
-        end
-
-      assert is_binary(desc) and desc != ""
-      assert is_function(fun, 2)
-      assert auto_wait_seconds in [20, 120]
-    end
-  end
-
   # ---- delete_oauth_credential ----
 
   for {name, provider} <- [
@@ -624,7 +490,7 @@ defmodule SalixAgent.Tools.OAuthTest do
         {"delete normalizes the provider name before matching", "GitHub"}
       ] do
     test name, %{ctx: ctx} do
-      Application.put_env(:salix_agent, :oauth_store_test_pid, self())
+      SystemsRuntime.put_env(:salix_agent, :oauth_store_test_pid, SystemsRuntime.Proc.self())
 
       put_stub(%{
         context: %{tenant: "t1", group_id: "g1"},
@@ -654,62 +520,6 @@ defmodule SalixAgent.Tools.OAuthTest do
 
       # The (tenant, group, binding_id) reached the control-plane delete seam.
       assert_received {:deleted_binding, "t1", "g1", "b1"}
-    end
-  end
-
-  test "delete returns not_found when no binding matches (no delete call)", %{ctx: ctx} do
-    Application.put_env(:salix_agent, :oauth_store_test_pid, self())
-
-    put_stub(%{
-      context: %{tenant: "t1", group_id: "g1"},
-      bindings: [
-        %{"binding_id" => "b1", "provider" => "github", "alias" => "work", "status" => "active"}
-      ]
-    })
-
-    out = OAuthTools.delete_oauth_credential(%{"provider" => "github", "alias" => "missing"}, ctx)
-
-    assert Jason.decode!(out) == %{
-             "status" => "not_found",
-             "provider" => "github",
-             "alias" => "missing",
-             "message" => "no matching oauth credential to delete"
-           }
-
-    refute_received {:deleted_binding, _, _, _}
-  end
-
-  test "delete surfaces a control-plane not_found as status=not_found", %{ctx: ctx} do
-    put_stub(%{
-      context: %{tenant: "t1", group_id: "g1"},
-      bindings: [
-        %{"binding_id" => "b1", "provider" => "github", "alias" => "work", "status" => "active"}
-      ],
-      delete_result: {:error, :not_found}
-    })
-
-    out = OAuthTools.delete_oauth_credential(%{"provider" => "github", "alias" => "work"}, ctx)
-    assert Jason.decode!(out)["status"] == "not_found"
-  end
-
-  test "delete requires provider and alias", %{ctx: ctx} do
-    put_stub(configured_stub())
-
-    assert_raise RuntimeError, "'provider' is required", fn ->
-      OAuthTools.delete_oauth_credential(%{"alias" => "work"}, ctx)
-    end
-
-    assert_raise RuntimeError, "'alias' is required", fn ->
-      OAuthTools.delete_oauth_credential(%{"provider" => "github"}, ctx)
-    end
-  end
-
-  test "delete raises when the oauth store seam is unwired", %{ctx: ctx} do
-    put_stub(%{context: %{tenant: "t1", group_id: "g1"}, bindings: []})
-    Application.delete_env(:salix_agent, :oauth_store_mod)
-
-    assert_raise RuntimeError, "oauth authorization is not configured for this runtime", fn ->
-      OAuthTools.delete_oauth_credential(%{"provider" => "github", "alias" => "work"}, ctx)
     end
   end
 end

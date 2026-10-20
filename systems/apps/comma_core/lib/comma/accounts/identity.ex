@@ -10,7 +10,10 @@ defmodule Comma.Accounts.Identity do
 
   @primary_key {:id, Ecto.UUID, autogenerate: true}
   @foreign_key_type :string
-  @timestamps_opts [type: :utc_datetime_usec]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t() | nil,

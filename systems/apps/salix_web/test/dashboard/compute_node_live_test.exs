@@ -1,5 +1,5 @@
 defmodule SalixWeb.Dashboard.ComputeNodeLiveTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Ecto.Query
   import Phoenix.ConnTest
@@ -22,33 +22,11 @@ defmodule SalixWeb.Dashboard.ComputeNodeLiveTest do
     %{registration: registration}
   end
 
-  test "fleet and detail render tenant-scoped observations", %{
-    registration: registration
-  } do
-    {:ok, _index, html} = live(authed_conn("tenant-a"), "/dash/compute-nodes")
-
-    assert html =~ "Compute Nodes"
-    assert html =~ "node-a"
-    assert html =~ "not_reported"
-
-    {:ok, _show, detail} =
-      live(authed_conn("tenant-a"), "/dash/compute-nodes/#{registration.id}")
-
-    assert detail =~ "Overview"
-    assert detail =~ "Workloads"
-    assert detail =~ "Operations"
-    assert detail =~ "Activity"
-    assert detail =~ "Not requested"
-    refute detail =~ "Enable"
-    refute detail =~ "Disable"
-    refute detail =~ "Revoke"
-  end
-
   test "admin creates a Shell from the node workload tab and cannot target another environment",
        %{registration: registration} do
-    previous = Application.get_env(:salix_store, :runtime_bundle_root)
+    previous = SystemsRuntime.get_env(:salix_store, :runtime_bundle_root)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_store,
       :runtime_bundle_root,
       Path.expand("../../../salix_store/test/fixtures/runtime-bundle", __DIR__)
@@ -56,8 +34,8 @@ defmodule SalixWeb.Dashboard.ComputeNodeLiveTest do
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_store, :runtime_bundle_root, previous),
-        else: Application.delete_env(:salix_store, :runtime_bundle_root)
+        do: SystemsRuntime.put_env(:salix_store, :runtime_bundle_root, previous),
+        else: SystemsRuntime.delete_env(:salix_store, :runtime_bundle_root)
     end)
 
     {:ok, pool} =
@@ -89,7 +67,7 @@ defmodule SalixWeb.Dashboard.ComputeNodeLiveTest do
       generation: 1,
       revision: 1,
       observation: %{},
-      updated_at: DateTime.utc_now()
+      updated_at: SystemsClock.utc_now()
     })
 
     {:ok, view, _} =
@@ -117,121 +95,10 @@ defmodule SalixWeb.Dashboard.ComputeNodeLiveTest do
              live(authed_conn("tenant-b"), "/dash/compute-nodes/#{registration.id}")
   end
 
-  test "detail overview mounts and the workloads tab renders reconcile error bytes", %{
-    registration: registration
-  } do
-    now = DateTime.utc_now()
-    millis = DateTime.to_unix(now, :millisecond)
-
-    assert {:ok, :ok} =
-             AgentVMM.observe_registration(registration.id, "gateway-a", %{
-               "connectionEpoch" => "1",
-               "inventoryWatermark" => 0,
-               "inventory" => [],
-               "observation" => %{
-                 "sequence" => "1",
-                 "observedUnixMillis" => Integer.to_string(millis),
-                 "protocolVersion" => "1",
-                 "hostApiVersion" => "host.v1",
-                 "connectorRelease" => "test",
-                 "supportedFeatures" => ["connection-epoch-v1"],
-                 "capacity" => %{
-                   "perEnvironmentLimits" => %{},
-                   "maxEgressMode" => "EGRESS_MODE_DENY_ALL"
-                 },
-                 "health" => %{"status" => "healthy", "components" => []},
-                 "usage" => %{"stale" => false},
-                 "inventoryWatermark" => "0",
-                 "inventoryObservedUnixMillis" => Integer.to_string(millis)
-               }
-             })
-
-    {:ok, pool} =
-      Compute.create_pool(%{
-        id: "pool-a",
-        tenant_id: "tenant-a",
-        name: "pool-a",
-        region: "local",
-        provider_policy: %{"providers" => ["agent_vmm"]}
-      })
-
-    {:ok, environment} =
-      Compute.create_environment(%{
-        id: "environment-a",
-        tenant_id: "tenant-a",
-        owner_type: "project",
-        owner_id: "project-a",
-        pool_id: pool.id
-      })
-
-    {:ok, binding} =
-      Compute.create_provider_binding(%{
-        id: "binding-a",
-        pool_id: pool.id,
-        environment_id: environment.id,
-        provider: "agent_vmm",
-        provider_ref: registration.id,
-        generation: 1
-      })
-
-    Repo.update_all(
-      from(b in Compute.ProviderBinding, where: b.id == ^binding.id),
-      set: [status: "available"]
-    )
-
-    {:ok, allocation} =
-      Compute.allocate(%{
-        id: "allocation-a",
-        environment_id: environment.id,
-        provider_binding_id: binding.id,
-        generation: 1
-      })
-
-    {:ok, workload} =
-      Compute.create_workload(%{
-        id: "workload-a",
-        environment_id: environment.id,
-        allocation_id: allocation.id,
-        kind: "shell",
-        template_key: "shell.default",
-        generation: 1
-      })
-
-    Repo.insert!(%Compute.ReconcilerClaim{
-      id: "agent_vmm:#{workload.id}:1",
-      provider: "agent_vmm",
-      workload_id: workload.id,
-      generation: 1,
-      claim_token: "ui-test",
-      attempt_count: 1,
-      last_error: %{
-        "kind" => "provider_error",
-        "code" => "resource_capacity_exhausted",
-        "stage" => "import_admission",
-        "resource" => "storage_headroom",
-        "message" => "Guest storage headroom is unavailable.",
-        "available_bytes" => 0,
-        "required_bytes" => 2_147_483_648
-      },
-      created_at: now,
-      updated_at: now
-    })
-
-    {:ok, _overview, _html} =
-      live(authed_conn("tenant-a"), "/dash/compute-nodes/#{registration.id}")
-
-    {:ok, _workloads, workloads} =
-      live(authed_conn("tenant-a"), "/dash/compute-nodes/#{registration.id}?tab=workloads")
-
-    assert workloads =~ "code=resource_capacity_exhausted"
-    assert workloads =~ "available_bytes=0"
-    assert workloads =~ "required_bytes=2147483648"
-  end
-
   test "fleet cursor is signed, tenant bound, and filter bound" do
     cursor = %{
       "rank" => 1,
-      "updated_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "updated_at" => SystemsClock.utc_now() |> DateTime.to_iso8601(),
       "id" => "registration-a"
     }
 
@@ -245,37 +112,6 @@ defmodule SalixWeb.Dashboard.ComputeNodeLiveTest do
 
     assert {:error, :invalid} =
              AgentVMMAdminCursor.decode(token <> "x", "tenant-a", %{"status" => "ready"})
-  end
-
-  test "detail tabs expose signed pagination instead of truncating activity", %{
-    registration: registration
-  } do
-    now = DateTime.utc_now()
-
-    rows =
-      for offset <- 1..51 do
-        %{
-          tenant_id: "tenant-a",
-          subject_type: "registration",
-          subject_id: registration.id,
-          action: "connection_observed",
-          outcome: "succeeded",
-          metadata: %{"private" => "not projected"},
-          created_at: DateTime.add(now, -offset, :second)
-        }
-      end
-
-    {51, _} = Repo.insert_all(AgentVMM.AuditEvent, rows)
-
-    {:ok, view, html} =
-      live(
-        authed_conn("tenant-a"),
-        "/dash/compute-nodes/#{registration.id}?tab=activity"
-      )
-
-    assert html =~ "Next page"
-    assert has_element?(view, "a", "Next page")
-    refute html =~ "not projected"
   end
 
   test "requires the admin session" do

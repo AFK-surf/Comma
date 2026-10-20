@@ -403,13 +403,13 @@ defmodule SalixIM.Triage.Ledger do
   @doc "A fresh pinned identity for one late observation, stable across retries."
   @spec late_observation() :: %{observation_id: String.t(), created_at: integer()}
   def late_observation,
-    do: %{observation_id: ULID.generate(), created_at: System.system_time(:millisecond)}
+    do: %{observation_id: ULID.generate(), created_at: SystemsClock.system_time(:millisecond)}
 
   defp late_observation(%{observation_id: observation_id, created_at: created_at})
        when is_binary(observation_id) and observation_id != "" and is_integer(created_at),
        do: {observation_id, created_at}
 
-  defp late_observation(_unpinned), do: {ULID.generate(), System.system_time(:millisecond)}
+  defp late_observation(_unpinned), do: {ULID.generate(), SystemsClock.system_time(:millisecond)}
 
   defp valid_replay_ledger_ref?("ledger://run/authoritative", _run_key, %{
          "bucket" => "bucket://run/scope"

@@ -6,16 +6,154 @@ defmodule Salix.Control.PluginSetup do
   alias SalixMCP.{Gateway, Store}
 
   @setup_type "integration"
-  @connection_kinds ~w(native_mcp_oauth managed_oauth composio im_connect)
+  @connection_kinds ~w(native_mcp_oauth managed_oauth composio im_connect mcp_api_key)
+
+  def credential_setup(definition, connection_id \\ nil) do
+    with {:ok, setup} <- contract(definition),
+         %{"kind" => "mcp_api_key"} = connection <-
+           Enum.find(
+             setup.connections,
+             &(&1["id"] == (connection_id || credential_connection_id(setup)))
+           ) do
+      %{
+        "key" => connection["config_key"],
+        "label" => connection["credential_label"],
+        "helpUrl" => connection["help_url"]
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp credential_connection_id(setup) do
+    case Enum.find(setup.connections, &(&1["kind"] == "mcp_api_key")) do
+      nil -> setup.default_connection
+      connection -> connection["id"]
+    end
+  end
+
+  def configure_credentials(
+        tenant_id,
+        group_id,
+        definition,
+        values,
+        connection_id \\ nil,
+        opts \\ []
+      ) do
+    with %{"key" => key} <- credential_setup(definition, connection_id),
+         {:ok, value} <- credential_value(values, key),
+         config <- credential_config(definition, key, value, opts),
+         definition <- credential_definition(definition, config),
+         {:ok, %{"bindings" => [binding]}} <-
+           prepare(tenant_id, group_id, definition, connection_id),
+         {:ok, binding} <-
+           Gateway.update_binding(tenant_id, group_id, binding["binding_id"], %{
+             "config_values" => config,
+             "enabled" => true
+           }),
+         {:ok, connection} <- Gateway.refresh_binding(tenant_id, group_id, binding["binding_id"]) do
+      case connection["status"] do
+        "running" ->
+          :ok
+
+        status when status in ~w(auth_failed not_authorized reauthorization_required) ->
+          {:error, :plugin_credential_rejected}
+
+        _ ->
+          {:error, :plugin_connection_unavailable}
+      end
+    else
+      nil -> {:error, {:bad_request, "plugin does not accept credentials"}}
+      {:error, _} = error -> error
+      _ -> {:error, {:bad_request, "plugin credential setup is invalid"}}
+    end
+  end
+
+  defp credential_config(%{"plugin_id" => "x-twitter"}, key, value, opts) do
+    if Keyword.get(opts, :app_only, false),
+      do: %{key => value, "X_AUTH_MODE" => "app_only"},
+      else: %{key => value}
+  end
+
+  defp credential_config(_definition, key, value, _opts), do: %{key => value}
+
+  # The first refresh must already use Comma's explicit credential selection.
+  defp credential_definition(definition, %{"X_AUTH_MODE" => "app_only"} = config) do
+    update_in(definition, ["setup", "mcps"], fn mcps ->
+      Enum.map(mcps, &Map.put(&1, "config_values", config))
+    end)
+  end
+
+  defp credential_definition(definition, _config), do: definition
+
+  def disconnect_credentials(tenant_id, group_id, definition, connection_id) do
+    with %{"key" => key} <- credential_setup(definition, connection_id),
+         {:ok, %{"bindings" => [binding]}} <-
+           prepare(tenant_id, group_id, definition, connection_id) do
+      if definition["plugin_id"] == "x-twitter" do
+        with {:ok, current} <- Store.get_binding(tenant_id, group_id, binding["binding_id"]),
+             {:ok, _} <-
+               Gateway.update_binding(tenant_id, group_id, binding["binding_id"], %{
+                 "config_values" => Map.delete(current["config_values"] || %{}, key)
+               }),
+             do: :ok
+      else
+        Gateway.delete_binding(tenant_id, group_id, binding["binding_id"])
+      end
+    else
+      nil -> {:error, {:bad_request, "plugin does not accept credentials"}}
+      {:error, _} = error -> error
+      _ -> {:error, {:bad_request, "plugin credential setup is invalid"}}
+    end
+  end
+
+  defp credential_value(values, key) when is_map(values) and map_size(values) == 1 do
+    value = values[key]
+
+    if is_binary(value) and byte_size(value) <= 4096 and
+         Regex.match?(~r/\A[^\s]+\z/u, String.trim(value)) do
+      {:ok, String.trim(value)}
+    else
+      {:error, {:bad_request, "enter a valid App-only Bearer Token"}}
+    end
+  end
+
+  defp credential_value(_, _),
+    do: {:error, {:bad_request, "enter the required plugin credential"}}
 
   def resolve_statuses(definitions, tenant_id, group_id) do
     if Enum.any?(definitions, &match?({:ok, _setup}, contract(&1))) do
-      oauth_bindings = OAuthBindings.list(group_id)
+      oauth_bindings = oauth_bindings_for_status(definitions, group_id)
       mcp_bindings = Store.list_group_bindings(tenant_id, group_id, include_disabled: true)
       im_connects = group_im_connects(group_id)
       Enum.map(definitions, &put_status(&1, oauth_bindings, mcp_bindings, im_connects))
     else
       definitions
+    end
+  end
+
+  defp oauth_bindings_for_status(definitions, group_id) do
+    bindings = OAuthBindings.list(group_id)
+
+    if Enum.any?(definitions, &(&1["plugin_id"] == "x-twitter")) do
+      others = Enum.reject(bindings, &(&1["provider"] == "x"))
+
+      case OAuthBindings.select_provider_record(group_id, "x", "x") do
+        {:error, :not_found} ->
+          others
+
+        {:ok, binding} ->
+          detail =
+            Enum.find(bindings, &(&1["binding_id"] == binding["binding_id"])) ||
+              Map.put(binding, "status", "reauthorization_required")
+
+          [detail | others]
+
+        {:error, _} ->
+          [%{"provider" => "x", "alias" => "x", "status" => "unknown"} | others]
+      end
+    else
+      bindings
     end
   end
 
@@ -25,6 +163,7 @@ defmodule Salix.Control.PluginSetup do
     with {:ok, setup} <- contract(definition),
          {:ok, _group} <- Groups.get(group_id, tenant_id),
          {:ok, connection} <- select_connection(setup, connection_id),
+         {:ok, connection} <- selected_oauth_connection(connection, group_id),
          {:ok, bindings} <- ensure_dependent_bindings(tenant_id, group_id, setup, connection) do
       {:ok, %{"connection" => connection, "bindings" => bindings}}
     end
@@ -32,6 +171,26 @@ defmodule Salix.Control.PluginSetup do
 
   def prepare(_tenant_id, _group_id, _definition, _connection_id),
     do: {:error, {:bad_request, "plugin setup is limited to system plugins"}}
+
+  defp selected_oauth_connection(%{"id" => "x-managed"} = connection, group_id) do
+    case OAuthBindings.select_provider_record(group_id, "x", "x") do
+      {:ok, binding} ->
+        {:ok, Map.put(connection, "alias", binding["alias"])}
+
+      {:error, :not_found} ->
+        {:ok, connection}
+
+      {:error, :ambiguous_oauth_accounts} ->
+        {:error,
+         {:bad_request,
+          "Multiple X accounts are connected. Give the intended account the alias x."}}
+
+      {:error, _} ->
+        {:error, {:precondition_failed, "Cannot read the X OAuth connection. Retry the request."}}
+    end
+  end
+
+  defp selected_oauth_connection(connection, _group_id), do: {:ok, connection}
 
   defp ensure_dependent_bindings(tenant_id, group_id, setup, connection) do
     setup.mcps
@@ -56,6 +215,11 @@ defmodule Salix.Control.PluginSetup do
     by_definition = Enum.find(bindings, &(&1["mcp_id"] == mcp["mcp_id"]))
 
     cond do
+      same_mcp?(by_alias, mcp) and mcp["mcp_id"] != "mcp1_0000000000000000009" and
+        connection["kind"] == "mcp_api_key" and
+          not auth_matches?(by_alias, mcp, connection) ->
+        {:error, {:conflict, "MCP binding uses another authentication method"}}
+
       managed?(by_alias, mcp, connection) ->
         {:ok, by_alias}
 
@@ -76,6 +240,12 @@ defmodule Salix.Control.PluginSetup do
       true ->
         Gateway.create_binding(tenant_id, group_id, binding_attrs(mcp, connection))
     end
+  end
+
+  defp binding_attrs(%{"mcp_id" => "mcp1_0000000000000000009"} = mcp, _connection) do
+    mcp
+    |> Map.take(~w(mcp_id alias target_ref placement config_values))
+    |> Map.put("oauth_binding_refs", %{})
   end
 
   defp binding_attrs(mcp, %{"kind" => "managed_oauth"} = connection) do
@@ -99,12 +269,23 @@ defmodule Salix.Control.PluginSetup do
       else: Map.put(attrs, "oauth_binding_refs", %{})
   end
 
+  defp binding_attrs(mcp, %{"kind" => "mcp_api_key"}) do
+    mcp
+    |> Map.take(~w(mcp_id alias target_ref placement))
+    |> Map.put("oauth_binding_refs", %{})
+  end
+
   defp managed?(binding, mcp, connection) when is_map(binding) do
     binding["mcp_id"] == mcp["mcp_id"] and binding["target_ref"] == mcp["target_ref"] and
       binding["placement"] == mcp["placement"] and auth_matches?(binding, mcp, connection)
   end
 
   defp managed?(_binding, _mcp, _connection), do: false
+
+  defp auth_matches?(binding, %{"mcp_id" => "mcp1_0000000000000000009"} = mcp, _connection),
+    do:
+      binding["oauth_binding_refs"] in [nil, %{}] and
+        not Map.has_key?(mcp, "config_values")
 
   defp auth_matches?(binding, mcp, %{"kind" => "native_mcp_oauth"}) do
     length(mcp_auth_refs(mcp)) > 1 or binding["oauth_binding_refs"] in [nil, %{}]
@@ -117,6 +298,11 @@ defmodule Salix.Control.PluginSetup do
       normalize_scopes(ref["scopes"]) == normalize_scopes(connection["scopes"])
   end
 
+  defp auth_matches?(binding, _mcp, %{"kind" => "mcp_api_key"}),
+    do:
+      binding["oauth_binding_refs"] in [nil, %{}] and
+        not present?(binding["remote_oauth_binding_id"])
+
   defp same_mcp?(binding, mcp) when is_map(binding) do
     binding["mcp_id"] == mcp["mcp_id"] and binding["target_ref"] == mcp["target_ref"] and
       binding["placement"] == mcp["placement"]
@@ -128,6 +314,18 @@ defmodule Salix.Control.PluginSetup do
     with {:ok, setup} <- contract(definition) do
       connections =
         Enum.map(setup.connections, fn connection ->
+          connection =
+            case connection do
+              %{"id" => "x-managed"} ->
+                case Enum.find(oauth_bindings, &(&1["provider"] == "x")) do
+                  nil -> connection
+                  oauth -> Map.put(connection, "alias", oauth["alias"])
+                end
+
+              _ ->
+                connection
+            end
+
           Map.put(
             connection,
             "state",
@@ -177,6 +375,26 @@ defmodule Salix.Control.PluginSetup do
 
   defp connection_state(%{"kind" => "composio"}, _mcps, _oauth, _bindings, _im_connects),
     do: "external"
+
+  defp connection_state(%{"id" => id, "kind" => "mcp_api_key"}, mcps, _oauth, bindings, _) do
+    mcp = Enum.find(mcps, &(id in mcp_auth_refs(&1)))
+    binding = mcp && Enum.find(bindings, &same_mcp?(&1, mcp))
+
+    cond do
+      is_nil(binding) ->
+        "not_connected"
+
+      binding["enabled"] == false ->
+        "disabled"
+
+      get_in(binding, ["connection", "status"]) == "running" and
+          binding["config_configured"] == true ->
+        "connected"
+
+      true ->
+        "not_connected"
+    end
+  end
 
   defp connection_state(
          %{"id" => id, "kind" => "native_mcp_oauth"},
@@ -244,6 +462,12 @@ defmodule Salix.Control.PluginSetup do
 
   defp active_auth_state(nil, _mcp, _connections), do: nil
 
+  defp active_auth_state(_binding, %{"mcp_id" => "mcp1_0000000000000000009"}, connections) do
+    oauth = Enum.find(connections, &(&1["id"] == "x-managed"))
+    api_key = Enum.find(connections, &(&1["id"] == "x-api-key"))
+    if oauth["state"] != "not_connected", do: oauth["state"], else: api_key["state"]
+  end
+
   defp active_auth_state(binding, mcp, connections) do
     refs = binding["oauth_binding_refs"] || %{}
 
@@ -258,6 +482,9 @@ defmodule Salix.Control.PluginSetup do
         %{"kind" => "managed_oauth"} = connection ->
           ref = refs[connection["credential_env_var"]] || %{}
           ref["provider"] == connection["provider"] and ref["alias"] == connection["alias"]
+
+        %{"kind" => "mcp_api_key"} ->
+          binding["config_configured"] == true
 
         _connection ->
           false
@@ -327,6 +554,9 @@ defmodule Salix.Control.PluginSetup do
   defp connection_fields_valid?(%{"kind" => "composio"} = c), do: present?(c["toolkit"])
   defp connection_fields_valid?(%{"kind" => "im_connect"} = c), do: present?(c["provider"])
 
+  defp connection_fields_valid?(%{"kind" => "mcp_api_key"} = c),
+    do: present?(c["config_key"]) and present?(c["credential_label"]) and present?(c["help_url"])
+
   defp validate_mcps([], _connections), do: :ok
 
   defp validate_mcps(mcps, connections) when is_list(mcps) and mcps != [] do
@@ -343,6 +573,10 @@ defmodule Salix.Control.PluginSetup do
               case by_id[auth_ref] do
                 %{"kind" => "native_mcp_oauth"} ->
                   true
+
+                %{"kind" => "mcp_api_key"} ->
+                  mcp["placement"] == "server" and
+                    (length(auth_refs) == 1 or mcp["mcp_id"] == "mcp1_0000000000000000009")
 
                 %{"kind" => "managed_oauth"} = connection ->
                   present?(connection["credential_env_var"])
@@ -372,6 +606,7 @@ defmodule Salix.Control.PluginSetup do
 
   defp oauth_state(nil, _required_scopes), do: "not_connected"
   defp oauth_state(%{"enabled" => false}, _required_scopes), do: "disabled"
+  defp oauth_state(%{"status" => "unknown"}, _required_scopes), do: "unknown"
 
   defp oauth_state(%{"status" => "active"} = binding, required_scopes) do
     if scopes_satisfied?(binding["scopes"], required_scopes),

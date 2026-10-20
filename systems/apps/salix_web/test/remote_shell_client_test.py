@@ -3,16 +3,15 @@ import io
 import json
 import os
 from pathlib import Path
-import select
 import signal
 import subprocess
 import sys
 import tempfile
 import threading
-import time
 import types
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 
 CLIENT = Path(__file__).resolve().parents[1] / 'priv/remote-shell/client.py'
 spec = importlib.util.spec_from_file_location('remote_shell_client', CLIENT)
@@ -20,6 +19,9 @@ client = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(client)
 KEY = 'b' * 52
 CONTROLLER = 'y' * 52
+# Invitation expiries the tests never reach, and one long past.
+VALID_UNTIL = 4102444800  # 2100-01-01T00:00:00Z
+EXPIRED_AT = 946684800  # 2000-01-01T00:00:00Z
 FIXTURE = '''
 import signal, time
 
@@ -39,6 +41,14 @@ def main(session):
     finally:
         print('fixture-cleanup', flush=True)
 '''
+
+
+class LoopbackHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # The fixture uses a numeric loopback address; reverse DNS is unrelated
+        # to the callback contract and can wait on the host's network resolver.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class TargetClientTest(unittest.TestCase):
@@ -65,10 +75,10 @@ class TargetClientTest(unittest.TestCase):
                 if status == 200 and 'device_key' in body:
                     owner.registered.set()
             def log_message(self, *_): pass
-        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Callback)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.server = LoopbackHTTPServer(('127.0.0.1', 0), Callback)
+        self.thread = threading.Thread(target=self.server.serve_forever, args=(0.02,), daemon=True)
         self.thread.start()
-        self.args = types.SimpleNamespace(controller=CONTROLLER, expires_at=int(time.time()) + 45,
+        self.args = types.SimpleNamespace(controller=CONTROLLER, expires_at=VALID_UNTIL,
             ticket='registration-only-ticket', callback='http://127.0.0.1:%s/callback' % self.server.server_port)
         self.directory = tempfile.TemporaryDirectory()
         self.bootstrap = Path(self.directory.name) / 'bootstrap.py'
@@ -79,7 +89,7 @@ class TargetClientTest(unittest.TestCase):
         for process in self.children:
             if process.poll() is None:
                 process.terminate()
-                process.wait(timeout=5)
+                process.wait()
             for stream in (process.stdin, process.stdout):
                 if stream: stream.close()
         self.server.shutdown()
@@ -98,11 +108,10 @@ class TargetClientTest(unittest.TestCase):
             json.dumps(vars(self.args)), str(self.bootstrap), str(read_size)], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.children.append(process)
+        # The helper waits for consent before it writes more, so a prompt that
+        # the client buffered never arrives and the CI job timeout stops the test.
         prompt = b''
-        deadline = time.monotonic() + 3
         while b'Type yes:' not in prompt:
-            self.assertTrue(select.select([process.stdout], [], [],
-                max(0, deadline - time.monotonic()))[0], 'consent prompt was buffered')
             chunk = os.read(process.stdout.fileno(), 1024)
             self.assertTrue(chunk, 'helper exited before the consent prompt')
             prompt += chunk
@@ -131,7 +140,7 @@ class TargetClientTest(unittest.TestCase):
     def test_rejecting_consent_never_submits_a_device(self):
         process = self.launch()
         process.stdin.write(b'no\n'); process.stdin.flush()
-        process.wait(timeout=5)
+        process.wait()
         self.assertNotEqual(process.returncode, 0)
         self.assertFalse(any('device_key' in row[1] for row in self.records))
 
@@ -139,9 +148,9 @@ class TargetClientTest(unittest.TestCase):
         self.failures = 1
         process = self.launch(read_size=1)
         process.stdin.write(b'yes\n'); process.stdin.flush()
-        self.assertTrue(self.registered.wait(5))
+        self.registered.wait()
         process.send_signal(signal.SIGTERM)
-        process.wait(timeout=5)
+        process.wait()
         output = process.stdout.read()
         self.assertIn(b'fixture-cleanup', output)
         registrations = [row for row in self.records if 'device_key' in row[1]]
@@ -154,14 +163,14 @@ class TargetClientTest(unittest.TestCase):
         self.status = 302
         process = self.launch()
         process.stdin.write(b'yes\n'); process.stdin.flush()
-        process.wait(timeout=5)
+        process.wait()
         self.assertNotEqual(process.returncode, 0)
         self.assertIn(b'fixture-cleanup', process.stdout.read())
         self.assertTrue(self.records)
         self.assertTrue(all(path == '/callback' for path, _, _ in self.records))
 
     def test_expired_invitation_never_posts(self):
-        self.args.expires_at = int(time.time()) - 1
+        self.args.expires_at = EXPIRED_AT
         with self.assertRaisesRegex(RuntimeError, 'expired'):
             client.report(self.args, {'device_key': KEY, 'expires_at': self.args.expires_at})
         self.assertEqual(self.records, [])

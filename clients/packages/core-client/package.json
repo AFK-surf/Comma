@@ -1,0 +1,14 @@
+{
+  "name": "@comma/core-client",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.tsx"
+  },
+  "dependencies": {
+    "@comma/core": "workspace:*",
+    "@comma/core-kernel": "workspace:*",
+    "react": "^19.2.7"
+  }
+}

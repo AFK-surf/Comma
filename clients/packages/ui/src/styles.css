@@ -13,6 +13,7 @@
 @import "./components/command-palette/command-palette.css";
 @import "./components/hover-card/hover-card.css";
 @import "./components/inline-task/inline-task.css";
+@import "./components/choice-list/choice-list.css";
 @import "./components/selection-action-bar/selection-action-bar.css";
 @import "./components/side-chat/side-chat.css";
 @import "./components/chat-panel/chat-panel-media.css";
@@ -22,9 +23,11 @@
 @import "./components/comma-mascot/comma-logo-animation.css";
 @import "./components/settings-shortcut/settings-shortcut.css";
 @import "./components/settings/DeviceSettings.css";
+@import "./components/settings/DeviceSettingsContent.css";
 @import "./components/settings/NotchWidthSetting.css";
 @import "./components/settings/CreatedSecretPanel.css";
 @import "./components/home-tasks/home-tasks.css";
+@import "./components/task-board/task-board.css";
 @import "./components/right-sidebar/right-sidebar-browser-toolbar.css";
 @import "./components/right-sidebar/right-sidebar-tabs.css";
 /* Composed onto elements the sheets above already style — keep it last. */
@@ -555,10 +558,19 @@
   }
 }
 
+/* The placeholder stays on one line and ends in an ellipsis where it does not
+   fit, so an empty composer keeps its single-line height (the compact Side
+   Chat pill would otherwise grow into its multiline layout). */
+.ai-input-rich-editor[data-empty="true"] {
+  overflow-x: hidden;
+  text-overflow: ellipsis;
+}
+
 .ai-input-rich-editor[data-empty="true"]::before {
   pointer-events: none;
   color: var(--color-ai-input-panel-text-placeholder);
   content: attr(data-placeholder);
+  white-space: nowrap;
 }
 
 .ai-input-rich-token-tooltip-text {
@@ -860,6 +872,12 @@
     overscroll-behavior: contain;
   }
 
+  /* Focus only lets the keyboard scroll the area; the browser's default ring
+     would outline a whole rail or thread in the system accent color. */
+  .comma-scroll-area__viewport:focus {
+    outline: none;
+  }
+
   /* Armed by `syncEdgeTransition` once an edge state has held: the first state
      of an area lands with its content instead of easing in after it. */
   .comma-scroll-area__viewport[data-edge-transition="true"] {
@@ -886,10 +904,20 @@
     overscroll-behavior: auto;
   }
 
+  /* The content is the containing block of every absolutely positioned
+     descendant that has no positioned ancestor of its own, so such a box
+     scrolls with the content it belongs to. The root is positioned too, for
+     the scrollbars and edge layers; a descendant that resolved against it
+     stayed put while the viewport scrolled (react-aria's visually hidden
+     radio input), and focusing it then scrolled the root's overflow-hidden
+     box to reveal it. Overlays pinned to the area go beside it, not inside. */
+  .comma-scroll-area__content {
+    position: relative;
+  }
+
   .comma-scroll-area[data-freeze-content-inline-size="true"]
     > .comma-scroll-area__viewport
     > .comma-scroll-area__content {
-    position: relative;
     inset-inline-start: 50%;
     inline-size: var(--scroll-area-resize-content-inline-size);
     max-inline-size: none;
@@ -1249,28 +1277,20 @@
     width: 100%;
   }
 
-  .markdown-stream > .markdown-renderer > .node-slot + .node-slot,
-  .markdown-stream > .markdown-renderer + .markdown-renderer > .node-slot:first-child {
+  /* Every root is a sibling slot of one renderer (markdown-stream/GUIDE.md). */
+  .markdown-stream > .markdown-renderer > .node-slot + .node-slot {
     margin-top: var(--spacing-lg);
   }
 
   .markdown-stream
     > .markdown-renderer
-    > .node-slot[data-node-type="code_block"]:not(:first-child),
-  .markdown-stream
-    > .markdown-renderer
-    + .markdown-renderer
-    > .node-slot:first-child[data-node-type="code_block"] {
+    > .node-slot[data-node-type="code_block"]:not(:first-child) {
     margin-top: var(--spacing-xl);
   }
 
   .markdown-stream
     > .markdown-renderer
-    > .node-slot[data-node-type="heading"]:not(:first-child),
-  .markdown-stream
-    > .markdown-renderer
-    + .markdown-renderer
-    > .node-slot:first-child[data-node-type="heading"] {
+    > .node-slot[data-node-type="heading"]:not(:first-child) {
     margin-top: var(--spacing-2xl);
   }
 
@@ -1283,11 +1303,7 @@
 
   .markdown-stream
     > .markdown-renderer
-    > .node-slot[data-node-type="thematic_break"]:not(:first-child),
-  .markdown-stream
-    > .markdown-renderer
-    + .markdown-renderer
-    > .node-slot:first-child[data-node-type="thematic_break"] {
+    > .node-slot[data-node-type="thematic_break"]:not(:first-child) {
     margin-top: var(--spacing-4xl);
   }
 
@@ -1295,13 +1311,6 @@
     > .markdown-renderer
     > .node-slot[data-node-type="thematic_break"]
     + .node-slot {
-    margin-top: var(--spacing-4xl);
-  }
-
-  .markdown-stream
-    > .markdown-renderer:has(> .node-slot:last-child[data-node-type="thematic_break"])
-    + .markdown-renderer
-    > .node-slot:first-child {
     margin-top: var(--spacing-4xl);
   }
 
@@ -2212,6 +2221,9 @@
   [data-sonner-toaster].comma-sonner-toaster[data-x-position="right"]
     [data-sonner-toast].comma-sonner-toast
     > [data-content] {
+    /* sonner >= 2.0.8 grows the content to fill the row; keep it at the
+       card's width so the auto margin can push it right. */
+    flex: 0 1 auto;
     max-width: 100%;
     margin-left: auto;
   }

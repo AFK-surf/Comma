@@ -37,18 +37,18 @@ theorem rebuild_refs_history {state next : Term} {journal rest : List Term}
   repeat
     fail_if_success (head_is call [write]; change write _ _ _ = .ok (next, rest) at call)
     obtain ⟨_, _, _, call⟩ := bind_ok call
-  have messages := write_field_frame (key := "messages") call rfl
-  have facts := write_field_frame (key := "events") call rfl
-  have results := write_field_frame (key := "async_results") call rfl
-  have last := write_field_frame (key := "last_seq") call rfl
+  have messages := write_field_frame (key := "messages") call (by keys_absent)
+  have facts := write_field_frame (key := "events") call (by keys_absent)
+  have results := write_field_frame (key := "async_results") call (by keys_absent)
+  have last := write_field_frame (key := "last_seq") call (by keys_absent)
   simpa only [SeqSorted, HistoryNumbers, lastSeq, messages, facts, results, last] using history
 
 theorem fork_finish_history {source session attrs next : Term} {copy : Bool}
-    {messages facts results remapped clamped journal rest : List Term} {n : Int}
+    {messages facts results journal rest : List Term} {n : Int}
     {lastAck forkThrough nextId created : Term}
     (messageStamps : ForkStamps (a "seq") messages n)
     (factStamps : ForkStamps (b "seq") facts n) (resultStamps : ForkStamps (b "seq") results n)
-    (call : forkFinish source session attrs copy messages facts results remapped clamped
+    (call : forkFinish source session attrs copy messages facts results
       (i n) lastAck forkThrough nextId created journal = .ok (next, rest)) : SeqSorted next ∧ HistoryNumbers next := by
   cases copy <;> unfold forkFinish at call <;> simp only [Bool.false_eq_true, ↓reduceIte] at call
   all_goals repeat
@@ -79,7 +79,7 @@ theorem current_fork_history {source session attrs maxId next : Term} {journal r
     obtain ⟨remapped, _, remappedCall, call⟩ := bind_ok call
     have stamps := remap_runtime_stamps messageStamps remappedCall
     repeat' first
-      | exact fork_finish_history stamps factStamps resultStamps call
+      | (head_is call [forkFinish]; exact fork_finish_history stamps factStamps resultStamps call)
       | (obtain ⟨_, _, _, call⟩ := bind_ok call)
       | split at call
       | dsimp only at call

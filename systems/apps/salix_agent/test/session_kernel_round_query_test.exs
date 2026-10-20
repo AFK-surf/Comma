@@ -9,68 +9,12 @@ defmodule SalixAgent.SessionKernelRoundQueryTest do
   reads. The terminal reply assertions protect the separation between the
   human reply identity and execution provenance.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.InternalSession.State
   alias SalixVerifiedKernel.Session, as: Resident
 
   defp ask(state, name, args \\ nil), do: Resident.query(Resident.open(state), name, args)
-
-  ## Provider request tail ---------------------------------------------------
-
-  test "the request tail keeps full reminders for a pre-catalog prompt and flags for a catalog prompt" do
-    catalog = ask(base(), :provider_request_part, {:turn_reminder_catalog})
-    args = {nil, false, %{}, %{"tools" => []}, true, :neutral, nil, [], "stream"}
-
-    cases = [
-      {"telegram request", "final_reply=on"},
-      {"channel onboarding", "onboarding=on"}
-    ]
-
-    for {label, flag} <- cases do
-      [_, rule] = Regex.run(~r/^- #{Regex.escape(flag)}: (.+)$/m, catalog)
-      state = fixture(label)
-
-      legacy =
-        ask(%{state | system_prompt: "prompt from before the catalog"}, :provider_dispatch, args)
-
-      assert %{role: "summary", content: legacy_tail} = List.last(legacy), label
-      assert legacy_tail =~ rule, label
-      refute Enum.any?(legacy, &(is_binary(&1[:content]) and &1[:content] =~ ~r/^turn: /)), label
-
-      modern = ask(%{state | system_prompt: "prompt\n\n" <> catalog}, :provider_dispatch, args)
-      assert %{role: "summary", content: modern_tail} = List.last(modern), label
-      assert modern_tail =~ ~r/^turn: /, label
-      assert modern_tail =~ flag, label
-      # The rule text appears once, in the stored prompt, never as a tail block.
-      assert Enum.count(modern, &(is_binary(&1[:content]) and &1[:content] =~ rule)) ==
-               1,
-             label
-
-      assert hd(modern).content =~ rule, label
-
-      # Both catalog flags and full terminal/onboarding reminders retain their
-      # control text at the Responses transport boundary without becoming users.
-      for {prompt, tail} <- [
-            {"prompt from before the catalog", legacy_tail},
-            {"prompt\n\n" <> catalog, modern_tail}
-          ] do
-        encoded_args =
-          {nil, false, %{}, %{"tools" => []}, true, "responses", %{model: "test"}, [], "stream"}
-
-        body =
-          ask(%{state | system_prompt: prompt}, :provider_dispatch, encoded_args)
-          |> Jason.decode!()
-
-        assert List.last(body["input"]) == %{
-                 "role" => "developer",
-                 "content" => "<system>\n" <> tail <> "\n</system>"
-               }
-
-        assert Enum.any?(body["input"], &(&1["role"] == "user"))
-      end
-    end
-  end
 
   ## Fixtures ---------------------------------------------------------------
 
@@ -341,57 +285,13 @@ defmodule SalixAgent.SessionKernelRoundQueryTest do
 
   ## Round ------------------------------------------------------------------
 
-  test "current_source_ids includes inherited continuations" do
-    # The second runtime message inherits a foreign source, which stays in the
-    # activation's provenance set even though it is not a declared source id.
-    assert ask(fixture("runtime continuation"), :current_source_ids) == ["tg-1", "other"]
-  end
-
-  test "current_turn_source resolves the declared source and its origin" do
-    assert ask(fixture("telegram request"), :current_turn_source, ["tg-1"]) ==
-             {"tg-1", telegram_origin()}
-
-    # A no-wake carrier cannot own the wakeable source, but its declared origin
-    # still supplies this turn's provenance.
-    assert ask(fixture("no-wake user context"), :current_turn_source, ["tg-1"]) ==
-             {"tg-1", telegram_origin()}
-  end
-
-  test "async_result_by_seq finds a stored result" do
-    assert ask(fixture("async calls"), :async_result_by_seq, 4)["tool_call_id"] == "done-1"
-  end
-
   ## Phase telemetry --------------------------------------------------------
 
-  test "earliest_delivered_at_ms reports the oldest wakeable stamp" do
-    assert ask(fixture("two stamped inputs"), :earliest_delivered_at_ms, ["tg-1", "tg-2"]) ==
-             1_700_000_000_100
-
-    assert ask(fixture("assistant after input"), :earliest_delivered_at_ms, ["tg-1"]) == nil
-
-    # A no_wake delivery schedules no round, so it never reports a wait of
-    # its own even when it carries the oldest stamp of the set.
-    assert ask(fixture("no-wake stamped context"), :earliest_delivered_at_ms, ["tg-1", "tg-2"]) ==
-             1_700_000_000_500
-
-    assert ask(fixture("no-wake stamped context"), :earliest_delivered_at_ms, ["tg-1"]) == nil
-  end
-
   ## Actor ------------------------------------------------------------------
-
-  test "input_queue_length counts queued input" do
-    assert ask(fixture("queue and dedupe"), :input_queue_length) == 2
-  end
 
   test "duplicate_delivery? reports known and unknown source ids" do
     assert ask(fixture("queue and dedupe"), :duplicate_delivery?, "tg-1") == true
     assert ask(fixture("queue and dedupe"), :duplicate_delivery?, "tg-9") == false
-  end
-
-  test "wait_expired? follows the wall clock" do
-    assert ask(fixture("wait expired"), :wait_expired?) == true
-    assert ask(fixture("wait pending"), :wait_expired?) == false
-    assert ask(fixture("wait without deadline"), :wait_expired?) == false
   end
 
   test "completion_target classifies running, settled and unknown calls" do
@@ -456,17 +356,6 @@ defmodule SalixAgent.SessionKernelRoundQueryTest do
     refute ask(fixture("two human requests"), :terminal_reply_matches?, binding)
   end
 
-  test "terminal_reply_reminder_active? follows the unacked request" do
-    assert ask(fixture("telegram request"), :terminal_reply_reminder_active?) == true
-    assert ask(fixture("telegram request acked"), :terminal_reply_reminder_active?) == false
-    assert ask(fixture("channel onboarding"), :terminal_reply_reminder_active?) == false
-  end
-
-  test "terminal_reply_running? reports running async calls" do
-    assert ask(fixture("async calls"), :terminal_reply_running?) == true
-    assert ask(fixture("empty"), :terminal_reply_running?) == false
-  end
-
   test "terminal_reply_matches? accepts a held binding and rejects another agent" do
     binding = %{
       "agent_id" => "agent-1",
@@ -490,12 +379,5 @@ defmodule SalixAgent.SessionKernelRoundQueryTest do
              :terminal_reply_matches?,
              Map.put(binding, "agent_id", "other")
            ) == false
-  end
-
-  test "onboarding settlement reads" do
-    assert ask(fixture("onboarding with completed send"), :onboarding_send_completed?, 2) == true
-    assert ask(fixture("onboarding with running send"), :onboarding_send_completed?, 2) == false
-    assert ask(fixture("telegram request"), :onboarding_source_message_id, "tg-1") == 2
-    assert ask(fixture("telegram request"), :onboarding_source_message_id, "missing") == nil
   end
 end

@@ -1,5 +1,5 @@
 defmodule Comma.ReleasePlanTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   defp facts(overrides \\ %{}) do
     steps = Comma.ReleaseManifestV2.manifest()["steps"]

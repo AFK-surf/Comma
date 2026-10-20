@@ -74,7 +74,7 @@ defmodule Salix.Bindings.MeetingPersonalPublication do
   end
 
   defp defer(plan, recipient, reason, opts) do
-    retry_at = Keyword.get(opts, :now, System.system_time(:millisecond)) + @retry_delay_ms
+    retry_at = Keyword.get(opts, :now, SystemsClock.system_time(:millisecond)) + @retry_delay_ms
     PersonalPreparation.defer(plan, recipient["user_id"], retry_at, reason)
   end
 

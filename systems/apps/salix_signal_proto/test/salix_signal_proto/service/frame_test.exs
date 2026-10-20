@@ -1,5 +1,5 @@
 defmodule SalixSignalProto.Service.FrameTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.Service.Frame

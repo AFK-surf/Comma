@@ -1,28 +1,31 @@
 defmodule SalixWeb.LLMProxy do
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
   @moduledoc false
 
   alias Salix.Control.Groups
-  alias SalixAgent.{Control, LLMMetering, Templates}
+  alias SalixAgent.{AgentModel, Control, LLMMetering, ModelChoice}
 
   @transport_timeout_grace_ms 1_000
 
-  @doc "Resolve an existing current Router and its actual template; never fall back."
+  @doc "Resolve an existing current Router and the model it runs; never fall back."
   def resolve_project_router_llm(agent_id) do
     with {:ok, agent} <- Control.get(agent_id),
          {:ok, group} <- Groups.get(agent["group_id"], agent["tenant_id"]),
          true <- group["router_agent_id"] == agent_id,
-         {:ok, template_id, _source} <- Templates.resolve_template_id_for_record(agent),
-         {:ok, llm} when is_map(llm) <-
-           Templates.resolve_llm_for_template(template_id, agent["tenant_id"]) do
-      {:ok, Map.put(llm, "template_id", template_id)}
+         {:ok, choice, _source} <- AgentModel.choice(agent),
+         {:ok, llm} when is_map(llm) <- ModelChoice.resolve_llm(choice, agent["tenant_id"]) do
+      {:ok, Map.put(llm, "model_choice", choice)}
     else
-      _ -> {:error, :project_router_template_unavailable}
+      _ -> {:error, :project_router_model_unavailable}
     end
   end
 
   @spec resolve_llm(String.t()) :: {:ok, map() | nil} | {:error, term()}
   def resolve_llm(agent_id) do
-    case Templates.resolve_llm_for_agent(agent_id) do
+    case AgentModel.resolve_llm_for_agent(agent_id) do
       {:ok, llm} when is_map(llm) -> {:ok, llm}
       {:error, _} = error -> error
       _ -> default_llm()
@@ -30,7 +33,7 @@ defmodule SalixWeb.LLMProxy do
   end
 
   defp default_llm do
-    case Application.get_env(:comma_core, :default_agent_template) do
+    case SystemsRuntime.get_env(:comma_core, :default_agent_template) do
       tmpl when is_map(tmpl) ->
         llm =
           (tmpl["provider_config"] || %{})
@@ -116,7 +119,7 @@ defmodule SalixWeb.LLMProxy do
   end
 
   defp metering_preflight_before_deadline(agent_id, llm, opts, deadline) do
-    case deadline - System.monotonic_time(:millisecond) do
+    case deadline - SystemsClock.monotonic_time(:millisecond) do
       remaining when remaining > 0 ->
         run_provider_call(
           fn ->
@@ -136,7 +139,7 @@ defmodule SalixWeb.LLMProxy do
   end
 
   defp finish_metered(ctx, call) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
     result = safe_provider_call(call)
 
     {usage, status, reason} =
@@ -154,29 +157,29 @@ defmodule SalixWeb.LLMProxy do
   @doc false
   def run_provider_call(call, timeout_ms)
       when is_function(call, 0) and is_integer(timeout_ms) and timeout_ms > 0 do
-    parent = self()
-    result_ref = make_ref()
+    parent = SystemsRuntime.Proc.self()
+    result_ref = SystemsRuntime.Proc.make_ref()
 
     {pid, monitor_ref} =
       spawn_monitor(fn ->
         result = safe_provider_call(call)
-        send(parent, {result_ref, self(), result})
+        SystemsRuntime.Proc.send(parent, {result_ref, SystemsRuntime.Proc.self(), result})
       end)
 
-    receive do
+    SystemsClock.vreceive do
       {^result_ref, ^pid, result} ->
-        Process.demonitor(monitor_ref, [:flush])
+        SystemsRuntime.Proc.demonitor(monitor_ref, [:flush])
         result
 
       {:DOWN, ^monitor_ref, :process, ^pid, reason} ->
-        receive do
+        SystemsRuntime.Proc.receive do
           {^result_ref, ^pid, result} -> result
         after
           0 -> {:error, {:provider_exit, reason}}
         end
     after
       timeout_ms ->
-        Process.exit(pid, :kill)
+        SystemsRuntime.Proc.exit(pid, :kill)
         await_provider_down(monitor_ref, pid)
         flush_provider_result(result_ref, pid)
         {:error, :provider_timeout}
@@ -187,15 +190,15 @@ defmodule SalixWeb.LLMProxy do
     do: safe_provider_call(call)
 
   defp await_provider_down(monitor_ref, pid) do
-    receive do
+    SystemsClock.vreceive do
       {:DOWN, ^monitor_ref, :process, ^pid, _reason} -> :ok
     after
-      1_000 -> Process.demonitor(monitor_ref, [:flush])
+      1_000 -> SystemsRuntime.Proc.demonitor(monitor_ref, [:flush])
     end
   end
 
   defp flush_provider_result(result_ref, pid) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {^result_ref, ^pid, _result} -> :ok
     after
       0 -> :ok
@@ -238,7 +241,7 @@ defmodule SalixWeb.LLMProxy do
   defp provider_timeout(opts) do
     case opts[:provider_deadline_ms] do
       deadline when is_integer(deadline) ->
-        case deadline - System.monotonic_time(:millisecond) do
+        case deadline - SystemsClock.monotonic_time(:millisecond) do
           remaining when remaining > 0 -> remaining
           _ -> :expired
         end
@@ -279,7 +282,7 @@ defmodule SalixWeb.LLMProxy do
       provider: llm["provider"] || infer_provider_type(llm["base_url"]),
       credential_scope: llm["credential_scope"],
       model: llm["model"],
-      started_at_ms: System.system_time(:millisecond)
+      started_at_ms: SystemsClock.system_time(:millisecond)
     }
     |> Map.merge(billing_owner(agent_id))
     |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
@@ -310,8 +313,8 @@ defmodule SalixWeb.LLMProxy do
     ctx
     |> Map.merge(%{
       status: status,
-      duration_ms: System.monotonic_time(:millisecond) - started,
-      completed_at_ms: System.system_time(:millisecond),
+      duration_ms: SystemsClock.monotonic_time(:millisecond) - started,
+      completed_at_ms: SystemsClock.system_time(:millisecond),
       response_kind: "site_proxy",
       usage: normalize_usage(usage),
       error: if(reason, do: inspect(reason))

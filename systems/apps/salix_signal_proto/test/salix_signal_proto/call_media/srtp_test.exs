@@ -1,5 +1,5 @@
 defmodule SalixSignalProto.CallMedia.SrtpTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.CallMedia.{Rtp, Srtp}
   alias SalixSignalProto.Test.Vectors
@@ -117,8 +117,8 @@ defmodule SalixSignalProto.CallMedia.SrtpTest do
 
   describe "receive rules" do
     setup do
-      key = :crypto.strong_rand_bytes(32)
-      salt = :crypto.strong_rand_bytes(12)
+      key = SystemsRuntime.Proc.random_bytes(32)
+      salt = SystemsRuntime.Proc.random_bytes(12)
       {:ok, tx: Srtp.new(key, salt), rx: Srtp.new(key, salt)}
     end
 
@@ -189,7 +189,7 @@ defmodule SalixSignalProto.CallMedia.SrtpTest do
     end
 
     test "a wrong key never opens a packet", %{tx: tx} do
-      other = Srtp.new(:crypto.strong_rand_bytes(32), :crypto.strong_rand_bytes(12))
+      other = Srtp.new(SystemsRuntime.Proc.random_bytes(32), SystemsRuntime.Proc.random_bytes(12))
       {:ok, packet, tx} = Srtp.protect(tx, rtp(1))
       {:ok, rtcp, _tx} = Srtp.protect_rtcp(tx, <<0x80, 201, 0, 1, 2002::32>>)
       assert {:error, :authentication} = Srtp.unprotect(other, packet)

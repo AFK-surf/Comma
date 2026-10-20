@@ -636,7 +636,7 @@ defmodule SalixStore.AgentVMMAdminProjection do
 
         DateTime.compare(
           observation.received_at,
-          DateTime.add(DateTime.utc_now(), -@observation_freshness_seconds, :second)
+          DateTime.add(SystemsClock.utc_now(), -@observation_freshness_seconds, :second)
         ) == :lt ->
           "stale"
 
@@ -864,7 +864,7 @@ defmodule SalixStore.AgentVMMAdminProjection do
   end
 
   defp stale_observation_registrations do
-    deadline = DateTime.add(DateTime.utc_now(), -@observation_freshness_seconds, :second)
+    deadline = DateTime.add(SystemsClock.utc_now(), -@observation_freshness_seconds, :second)
 
     from(o in AgentVMM.RegistrationObservation,
       join: r in AgentVMM.Registration,
@@ -875,7 +875,7 @@ defmodule SalixStore.AgentVMMAdminProjection do
   end
 
   defp connected_observation_registrations do
-    deadline = DateTime.add(DateTime.utc_now(), -@observation_freshness_seconds, :second)
+    deadline = DateTime.add(SystemsClock.utc_now(), -@observation_freshness_seconds, :second)
 
     from(o in AgentVMM.RegistrationObservation,
       join: r in AgentVMM.Registration,

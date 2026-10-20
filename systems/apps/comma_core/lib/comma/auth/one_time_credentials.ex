@@ -9,9 +9,9 @@ defmodule Comma.Auth.OneTimeCredentials do
   """
 
   def issue(purpose, context, ttl_seconds, peer) do
-    id = purpose <> "_" <> Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
-    secret = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
-    expires_at = System.system_time(:second) + ttl_seconds
+    id = purpose <> "_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(24), padding: false)
+    secret = Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
+    expires_at = SystemsClock.system_time(:second) + ttl_seconds
 
     challenge =
       Map.merge(context, %{
@@ -43,7 +43,7 @@ defmodule Comma.Auth.OneTimeCredentials do
     with true <- String.starts_with?(id, purpose <> "_") and secret != "",
          {:ok, challenge} <- store().verify(id, digest(id, secret), 3),
          true <- challenge["purpose"] == purpose,
-         true <- challenge["expires_at"] > System.system_time(:second) do
+         true <- challenge["expires_at"] > SystemsClock.system_time(:second) do
       {:ok, challenge}
     else
       {:error, reason} when reason in [:not_found, :invalid_code, :too_many_attempts] ->
@@ -63,7 +63,7 @@ defmodule Comma.Auth.OneTimeCredentials do
     do: :crypto.hash(:sha256, id <> ":" <> secret) |> Base.encode16(case: :lower)
 
   defp fingerprint(purpose, peer) do
-    case Application.get_env(:comma_core, :auth, [])[:rate_limit_secret] do
+    case SystemsRuntime.get_env(:comma_core, :auth, [])[:rate_limit_secret] do
       secret when is_binary(secret) and secret != "" ->
         {:ok, :crypto.mac(:hmac, :sha256, secret, purpose <> ":" <> peer) |> Base.encode16()}
 
@@ -74,6 +74,6 @@ defmodule Comma.Auth.OneTimeCredentials do
 
   defp store,
     do:
-      Application.get_env(:comma_core, :auth, [])[:challenge_store] ||
+      SystemsRuntime.get_env(:comma_core, :auth, [])[:challenge_store] ||
         Comma.AuthChallengeStore.Redis
 end

@@ -55,7 +55,7 @@ defmodule Comma.WatchPairing do
           )
 
         user = Repo.get(User, grant["user_id"])
-        now = DateTime.utc_now()
+        now = SystemsClock.utc_now()
 
         if parent == nil or user == nil or parent.revoked_at != nil or
              DateTime.compare(parent.expires_at, now) != :gt or user.status != "active" or

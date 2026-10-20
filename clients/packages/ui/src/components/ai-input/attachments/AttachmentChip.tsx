@@ -1,6 +1,12 @@
 import { useCommaMessages } from "@comma/i18n/react";
+import { Button as AriaButton } from "react-aria-components";
 import { HoverCard } from "../../hover-card";
-import { CloseQuoteIcon, FileIcon } from "../../icons";
+import {
+  ChevronRightSmallIcon,
+  CloseQuoteIcon,
+  FileIcon,
+  FileTextIcon,
+} from "../../icons";
 import { cx } from "../../utils";
 import {
   aiInputAttachment,
@@ -9,6 +15,9 @@ import {
   aiInputQuotePreview,
   aiInputQuotePreviewText,
   aiInputQuotePreviewTitle,
+  aiInputSnippetAttachment,
+  aiInputSnippetExpand,
+  aiInputSnippetIconSurface,
 } from "../styles";
 import {
   AttachmentRemoveButton,
@@ -26,12 +35,12 @@ const FileAttachment = ({ attachment, onRemove }: AttachmentTileProps) => (
   <div
     className={cx(
       aiInputAttachment,
-      "flex w-[150px] items-start gap-sm rounded-md bg-popup-primary p-sm shadow-[inset_0_0_0_var(--border-width-0-5)_var(--color-border-primary)]"
+      "flex w-[150px] items-start gap-sm rounded-xl bg-popup-primary p-sm shadow-[inset_0_0_0_var(--border-width-0-5)_var(--color-border-primary)]"
     )}
     data-slot="file-attachment"
   >
     <div
-      className="flex w-9 self-stretch shrink-0 items-center justify-center rounded-xs bg-panel-bg-file text-ai-input-header-text-secondary"
+      className="flex w-9 self-stretch shrink-0 items-center justify-center rounded-sm bg-panel-bg-file text-ai-input-header-text-secondary"
       data-slot="file-icon-surface"
     >
       <FileIcon className="size-5" />
@@ -90,6 +99,45 @@ const QuoteAttachment = ({ attachment, onRemove }: AttachmentTileProps) => {
   );
 };
 
+/**
+ * A block of text staged for the next message in place of the prompt, such as
+ * a Routine row. "Show in text field" hands the text to the prompt, where it
+ * can be edited, and the tile goes away.
+ */
+const SnippetAttachment = ({ attachment, onRemove }: AttachmentTileProps) => {
+  const messages = useCommaMessages();
+
+  return (
+    <div
+      className={cx(aiInputAttachment, aiInputSnippetAttachment)}
+      data-slot="snippet-attachment"
+    >
+      <div className={aiInputSnippetIconSurface} data-slot="snippet-icon-surface">
+        {attachment.icon ?? <FileTextIcon />}
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col text-xs leading-[var(--text-xs--line-height)]">
+        {/* Like the file chip's name, the title clears the inset close control. */}
+        <span className="truncate pr-xl text-ai-input-panel-text-attachment-primary">
+          {attachment.name}
+        </span>
+        {attachment.onExpand ? (
+          <AriaButton
+            aria-label={messages.ui_ai_show_in_text_field_named({
+              name: attachment.name,
+            })}
+            className={aiInputSnippetExpand}
+            onPress={attachment.onExpand}
+          >
+            <span className="truncate">{messages.ui_ai_show_in_text_field()}</span>
+            <ChevronRightSmallIcon className="size-4 shrink-0" />
+          </AriaButton>
+        ) : null}
+      </div>
+      <AttachmentRemoveButton attachment={attachment} onRemove={onRemove} />
+    </div>
+  );
+};
+
 export const AttachmentChip = ({
   attachment,
   onPreview,
@@ -97,6 +145,8 @@ export const AttachmentChip = ({
 }: ImageAttachmentProps) =>
   attachment.type === "quote" ? (
     <QuoteAttachment attachment={attachment} onRemove={onRemove} />
+  ) : attachment.type === "snippet" ? (
+    <SnippetAttachment attachment={attachment} onRemove={onRemove} />
   ) : attachment.type === "image" ? (
     <ImageAttachment
       attachment={attachment}

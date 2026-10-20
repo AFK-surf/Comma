@@ -34,6 +34,7 @@ defmodule SalixWeb.MixProject do
       {:salix_im, in_umbrella: true},
       {:salix_mcp, in_umbrella: true},
       {:salix_meet, in_umbrella: true},
+      {:salix_meet_native, in_umbrella: true},
       {:salix_calendar, in_umbrella: true},
       {:salix_env, in_umbrella: true},
       {:salix_cluster, in_umbrella: true},
@@ -49,6 +50,7 @@ defmodule SalixWeb.MixProject do
       # (SalixAnalytics.TrajectoryEvalQueries).
       {:salix_analytics, in_umbrella: true},
       {:systems_observability, in_umbrella: true},
+      {:systems_clock, in_umbrella: true},
       {:bandit, "~> 1.5"},
       {:plug, "~> 1.16"},
       {:websock_adapter, "~> 0.5"},

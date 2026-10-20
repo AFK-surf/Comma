@@ -1,11 +1,7 @@
 import "@comma/app/styles.css";
-import { showTaskWindowBoot } from "./taskWindowBoot";
+import { showMainWindowBoot } from "./mainWindowBoot";
 
-// TaskWindowEntrance.tla: hydrate only after the source-to-dialog transition.
-// Application module evaluation must not compete with the entrance for frames.
-const entrance = showTaskWindowBoot();
-if (entrance) {
-  void entrance.then(() => import("./renderComma"));
-} else {
-  void import("./renderComma");
-}
+// The boot paints before any application module loads.
+showMainWindowBoot();
+
+void import("./renderComma");

@@ -13,6 +13,10 @@ defmodule Comma.Data.PluginInstallAttempt do
     field(:initiator_user_id, :string)
     field(:operation_data, :map)
     field(:expires_at, :utc_datetime_usec)
-    timestamps(type: :utc_datetime_usec)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 end

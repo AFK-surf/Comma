@@ -1,3 +1,5 @@
+import { uiClock } from "@comma/ui/clock";
+
 /**
  * How long a requested image preview may stay unresolved before the message
  * stops waiting for it. The image group reveals only once every preview has
@@ -15,7 +17,7 @@ export function schedulePreviewSettleDeadline(
   keys: string[],
   onExpired: (expired: string[]) => void
 ) {
-  const now = Date.now();
+  const now = uiClock.now();
   const stale = Array.from(since.keys()).filter((key) => !keys.includes(key));
   for (const key of stale) since.delete(key);
   for (const key of keys) {
@@ -23,16 +25,15 @@ export function schedulePreviewSettleDeadline(
   }
   if (keys.length === 0) return undefined;
   const earliest = Math.min(...keys.map((key) => since.get(key) ?? now));
-  const timer = setTimeout(
+  return uiClock.after(
+    Math.max(0, earliest + CHAT_IMAGE_PREVIEW_SETTLE_DEADLINE_MS - now),
     () => {
-      const expiredBefore = Date.now() - CHAT_IMAGE_PREVIEW_SETTLE_DEADLINE_MS;
+      const expiredBefore = uiClock.now() - CHAT_IMAGE_PREVIEW_SETTLE_DEADLINE_MS;
       const expired = keys.filter(
         (key) => (since.get(key) ?? Number.POSITIVE_INFINITY) <= expiredBefore
       );
       if (expired.length === 0) return;
       onExpired(expired);
-    },
-    Math.max(0, earliest + CHAT_IMAGE_PREVIEW_SETTLE_DEADLINE_MS - now)
+    }
   );
-  return () => clearTimeout(timer);
 }

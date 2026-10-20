@@ -259,7 +259,12 @@ defmodule SalixSignalProto.SealedSender.Certificate do
   it only in test servers; the Signal service issues real certificates.
   """
   @spec issue_server(non_neg_integer(), Keys.ec_public(), <<_::256>>, <<_::512>>) :: binary()
-  def issue_server(key_id, server_public, root_private, random \\ :crypto.strong_rand_bytes(64)) do
+  def issue_server(
+        key_id,
+        server_public,
+        root_private,
+        random \\ SystemsRuntime.Proc.random_bytes(64)
+      ) do
     body =
       Wire.ServerCertificateBody.encode(%Wire.ServerCertificateBody{
         key_id: key_id,
@@ -279,7 +284,7 @@ defmodule SalixSignalProto.SealedSender.Certificate do
   (`{:reference, key_id}`). For test servers only.
   """
   @spec issue_sender(map(), <<_::256>>, <<_::512>>) :: binary()
-  def issue_sender(fields, server_private, random \\ :crypto.strong_rand_bytes(64)) do
+  def issue_sender(fields, server_private, random \\ SystemsRuntime.Proc.random_bytes(64)) do
     {signer, signer_key_id} =
       case fields.signer do
         {:embedded, bytes} -> {bytes, nil}

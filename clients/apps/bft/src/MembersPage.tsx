@@ -1,4 +1,8 @@
-import { Button, Dialog, Dropdown, InputField, ScrollArea } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Dialog } from "@comma/ui/components/dialog";
+import { Dropdown } from "@comma/ui/components/dropdown";
+import { InputField } from "@comma/ui/components/input";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
 import { useState } from "react";
 import type { BftMember, BftMembers, BftOrgRole } from "./api";
 import { ConfirmDialog, DialogError, writeErrorMessage } from "./dialogs";

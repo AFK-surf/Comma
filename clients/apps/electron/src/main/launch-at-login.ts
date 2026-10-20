@@ -20,8 +20,8 @@ export function resolveLaunchAtLoginReadback(
   os: CommaOperatingSystem,
   settings: LoginItemSettingsReadback
 ): LaunchAtLoginReadback {
-  // Modeled in tla/app-preferences/AppPreferences.tla: native read-back, not
-  // the requested value, is the authoritative externally owned state.
+  // Native read-back, not the requested value, is the authoritative
+  // externally owned state.
   if (os === "macos") {
     if (settings.status) {
       return {

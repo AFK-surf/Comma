@@ -123,7 +123,9 @@ defmodule Comma.ProfileAvatar do
         from(avatar in UserAvatar,
           where: avatar.id == ^old_avatar_id and avatar.user_id == ^user_id
         )
-        |> Repo.update_all(set: [status: "cleanup", updated_at: DateTime.utc_now()])
+        |> Repo.update_all(
+          set: [status: "cleanup", updated_at: SystemsClock.timestamp(:utc_datetime_usec)]
+        )
       end
 
       case Repo.update(Ecto.Changeset.change(user, avatar_id: nil)) do
@@ -173,7 +175,7 @@ defmodule Comma.ProfileAvatar do
   defp insert_pending(user_id, content_type, byte_size) do
     if Repo.exists?(from(user in User, where: user.id == ^user_id)) do
       id = UserAvatar.new_id()
-      upload_token = Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+      upload_token = Base.url_encode64(SystemsRuntime.Proc.random_bytes(18), padding: false)
       extension = extension(content_type)
 
       %UserAvatar{}
@@ -185,7 +187,7 @@ defmodule Comma.ProfileAvatar do
         byte_size: byte_size,
         status: "pending",
         upload_token: upload_token,
-        upload_deadline_at: DateTime.add(DateTime.utc_now(), @upload_lease_seconds, :second)
+        upload_deadline_at: DateTime.add(SystemsClock.utc_now(), @upload_lease_seconds, :second)
       })
       |> Repo.insert()
     else
@@ -203,7 +205,10 @@ defmodule Comma.ProfileAvatar do
                 row.upload_token == ^avatar.upload_token
           )
           |> Repo.update_all(
-            set: [upload_session_url: session_url, updated_at: DateTime.utc_now()]
+            set: [
+              upload_session_url: session_url,
+              updated_at: SystemsClock.timestamp(:utc_datetime_usec)
+            ]
           )
 
         case persisted do
@@ -250,15 +255,14 @@ defmodule Comma.ProfileAvatar do
   end
 
   defp activate(avatar) do
-    # Modeled by Activate in tla/profile_avatar/ProfileAvatar.tla. The locked
-    # pending row is the fence against stale-pending cleanup claiming the key.
+    # The locked pending row is the fence against stale-pending cleanup claiming the key.
     Repo.transaction(fn ->
       user = Repo.one(from(row in User, where: row.id == ^avatar.user_id, lock: "FOR UPDATE"))
       pending = Repo.one(from(row in UserAvatar, where: row.id == ^avatar.id, lock: "FOR UPDATE"))
 
       if is_nil(user) or is_nil(pending) or pending.status != "pending" or
            pending.upload_token != avatar.upload_token or
-           DateTime.compare(pending.upload_deadline_at, DateTime.utc_now()) != :gt do
+           DateTime.compare(pending.upload_deadline_at, SystemsClock.utc_now()) != :gt do
         Repo.rollback(:avatar_activation_conflict)
       end
 
@@ -266,7 +270,9 @@ defmodule Comma.ProfileAvatar do
 
       if is_binary(old_avatar_id) do
         from(row in UserAvatar, where: row.id == ^old_avatar_id and row.user_id == ^user.id)
-        |> Repo.update_all(set: [status: "cleanup", updated_at: DateTime.utc_now()])
+        |> Repo.update_all(
+          set: [status: "cleanup", updated_at: SystemsClock.timestamp(:utc_datetime_usec)]
+        )
       end
 
       with {:ok, _active} <-
@@ -303,7 +309,7 @@ defmodule Comma.ProfileAvatar do
         status: "cleanup",
         upload_token: nil,
         upload_deadline_at: nil,
-        updated_at: DateTime.utc_now()
+        updated_at: SystemsClock.timestamp(:utc_datetime_usec)
       ]
     )
 

@@ -199,7 +199,8 @@ defmodule VMLifecycleE2E do
       surface: "comma",
       user: user,
       workspace: workspace,
-      agent_id: workspace["default_worker_agent_id"],
+      # A new Workspace has no Worker; its Router carries the Workspace VM.
+      agent_id: workspace["router_agent_id"],
       group_id: workspace["default_group_id"]
     }
   end

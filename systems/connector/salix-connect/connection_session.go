@@ -55,6 +55,7 @@ type connectionSession struct {
 	pendingMu     sync.Mutex
 	pendingWrites map[string]*pendingWrite
 	pendingAcks   map[string]chan string
+	tunnels       map[string]*lanTunnel
 	closeOnce     sync.Once
 }
 
@@ -174,8 +175,7 @@ func (s *connectionSession) send(m message) error {
 }
 
 func (s *connectionSession) sendRequestReply(m message, beforeWrite func()) error {
-	// Request admission must be released before reply visibility; the bounded
-	// ordering is modeled in tla/connector/ConnectorRequestAdmission.tla.
+	// Request admission must be released before reply visibility.
 	if s.sendReply == nil {
 		beforeWrite()
 		return s.sendCtx(s.ctx, m)
@@ -183,8 +183,16 @@ func (s *connectionSession) sendRequestReply(m message, beforeWrite func()) erro
 	return s.sendReply(s.ctx, m, beforeWrite)
 }
 
-func (s *connectionSession) newRequestAdmissionRelease() func() {
-	return sync.OnceFunc(func() { <-s.connector.requestSlots })
+// newRequestAdmissionRelease frees a request's slot once, after its `after`
+// callback: what a request still does once its slot is free is invisible to
+// whoever waits for the slots.
+func (s *connectionSession) newRequestAdmissionRelease(after func()) func() {
+	return sync.OnceFunc(func() {
+		if after != nil {
+			after()
+		}
+		<-s.connector.requestSlots
+	})
 }
 
 func (s *connectionSession) close(reason error) {
@@ -234,11 +242,9 @@ func (s *connectionSession) startRequest(msg message, after func()) bool {
 	switch binding {
 	case requestExecute:
 		go func() {
-			releaseAdmission := s.newRequestAdmissionRelease()
+			defer s.requestFinished(msg)
+			releaseAdmission := s.newRequestAdmissionRelease(after)
 			defer releaseAdmission()
-			if after != nil {
-				defer after()
-			}
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					s.connector.completeRequestOperation(msg.ID, msg.Method, message{
@@ -258,7 +264,7 @@ func (s *connectionSession) startRequest(msg message, after func()) bool {
 		return true
 	case requestReply:
 		go func() {
-			releaseAdmission := s.newRequestAdmissionRelease()
+			releaseAdmission := s.newRequestAdmissionRelease(nil)
 			defer releaseAdmission()
 			_ = s.sendRequestReply(reply, releaseAdmission)
 		}()
@@ -268,12 +274,21 @@ func (s *connectionSession) startRequest(msg message, after func()) bool {
 	}
 }
 
+// requestFinished runs after a request's goroutine, its `after` callback
+// included, has finished. A request is not part of the session's drain: a
+// blocked one must not hold a replacement connection back.
+func (s *connectionSession) requestFinished(msg message) {
+	if s.connector.afterRequestFinished != nil {
+		s.connector.afterRequestFinished(msg)
+	}
+}
+
 func (s *connectionSession) startRequestReply(reply message) bool {
 	if !s.admitRequest() {
 		return false
 	}
 	go func() {
-		releaseAdmission := s.newRequestAdmissionRelease()
+		releaseAdmission := s.newRequestAdmissionRelease(nil)
 		defer releaseAdmission()
 		_ = s.sendRequestReply(reply, releaseAdmission)
 	}()
@@ -285,11 +300,9 @@ func (s *connectionSession) startConnectionRequest(msg message, after func()) bo
 		return false
 	}
 	go func() {
-		releaseAdmission := s.newRequestAdmissionRelease()
+		defer s.requestFinished(msg)
+		releaseAdmission := s.newRequestAdmissionRelease(after)
 		defer releaseAdmission()
-		if after != nil {
-			defer after()
-		}
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				_ = s.sendRequestReply(message{
@@ -323,6 +336,10 @@ func (s *connectionSession) admitRequest() bool {
 }
 
 func (s *connectionSession) startStream(msg message, after func()) bool {
+	// Tunnel bytes must keep socket order, so they never take a stream task.
+	if s.routeTunnelFrame(msg) {
+		return true
+	}
 	if !s.admit(s.streamSlots) {
 		return false
 	}
@@ -385,7 +402,7 @@ func requestTimeout(msg message) time.Duration {
 	switch msg.Method {
 	case "exec":
 		seconds = intParam(msg.Params, "timeout", 0)
-	case "http_request":
+	case "http_request", "lan_http_request":
 		seconds = intParam(msg.Params, "timeout_seconds", 0)
 	case "process_tail":
 		seconds = intParam(msg.Params, "wait_seconds", 0)

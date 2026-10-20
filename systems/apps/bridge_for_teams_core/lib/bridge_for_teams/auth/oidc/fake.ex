@@ -50,8 +50,10 @@ defmodule BridgeForTeams.Auth.OIDC.Fake do
   def authorize_url(sso, opts) do
     issuer = Map.get(sso, :issuer) || Map.get(sso, "issuer") || "https://idp.test"
     client_id = Map.get(sso, :client_id) || Map.get(sso, "client_id") || "fake-client"
-    state = "fake-state-" <> Integer.to_string(System.unique_integer([:positive]))
-    code_verifier = "fake-verifier-" <> Integer.to_string(System.unique_integer([:positive]))
+    state = "fake-state-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
+
+    code_verifier =
+      "fake-verifier-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
 
     query =
       URI.encode_query(%{

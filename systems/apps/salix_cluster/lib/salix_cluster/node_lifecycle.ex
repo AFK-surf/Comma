@@ -47,16 +47,16 @@ defmodule SalixCluster.NodeLifecycle do
   @doc "Reset all local flags. Intended for tests."
   @spec reset() :: :ok
   def reset do
-    :persistent_term.erase(@key)
+    SystemsRuntime.PersistentTerm.erase(@key)
     :ok
   end
 
-  defp state, do: :persistent_term.get(@key, %{})
+  defp state, do: SystemsRuntime.PersistentTerm.get(@key, %{})
 
   defp update(fun) do
-    :persistent_term.put(@key, fun.(state()))
+    SystemsRuntime.PersistentTerm.put(@key, fun.(state()))
     :ok
   end
 
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 end

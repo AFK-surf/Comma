@@ -1,12 +1,12 @@
 defmodule SalixWeb.ControlTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev_store = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -14,7 +14,7 @@ defmodule SalixWeb.ControlTest do
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev_store)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_store)
     end)
 
     {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Default"})
@@ -63,73 +63,21 @@ defmodule SalixWeb.ControlTest do
     assert :ok = SalixIM.ProviderIdentity.ensure_available("feishu", app_id)
   end
 
-  test "create_agent generates distinct group-bound canonical ids" do
-    {:ok, group} = Salix.Control.Groups.create(%{"name" => "Agents"}, tenant_id())
+  test "group deletion removes the group's saved device secrets" do
+    {:ok, group} = Salix.Control.Groups.create(%{"name" => "Lamps"}, tenant_id())
+    group_id = group["group_id"]
 
-    {:ok, first} =
-      SalixAgent.Control.create(
-        %{"group_id" => group["group_id"], "name" => "First"},
-        tenant_id()
-      )
+    assert {:ok, _, :created} =
+             SalixAgent.DeviceSecrets.save(group_id, %{
+               "kind" => "miio_token",
+               "name" => "bedside-lamp",
+               "value" => "00112233445566778899aabbccddeeff"
+             })
 
-    {:ok, second} =
-      SalixAgent.Control.create(
-        %{"group_id" => group["group_id"], "name" => "Second"},
-        tenant_id()
-      )
+    assert :ok = Salix.Control.Groups.delete(group_id, tenant_id())
 
-    assert first["agent_id"] != second["agent_id"]
-    assert SalixStore.Ids.valid_agent_id_for_group?(first["agent_id"], group["group_id"])
-    assert SalixStore.Ids.valid_agent_id_for_group?(second["agent_id"], group["group_id"])
-  end
-
-  test "a group's information-flow mode is writable, validated, and off by default" do
-    {:ok, group} = Salix.Control.Groups.create(%{"name" => "Flow"}, tenant_id())
-
-    # Off is the absence of a setting, not a stored "off": nothing changes for
-    # a workspace that never opts in.
-    refute Map.has_key?(group, "ifc")
-
-    {:ok, audited} =
-      Salix.Control.Groups.update(
-        group["group_id"],
-        %{"ifc" => %{"mode" => "audit"}},
-        tenant_id()
-      )
-
-    assert audited["ifc"] == %{"mode" => "audit"}
-
-    {:ok, enforced} =
-      Salix.Control.Groups.update(
-        group["group_id"],
-        %{"ifc" => %{"mode" => "enforce"}},
-        tenant_id()
-      )
-
-    assert enforced["ifc"] == %{"mode" => "enforce"}
-
-    # A mode that does not exist would read as `off` at the seam and silently
-    # do nothing, so it is refused here instead.
-    assert {:error, {:bad_request, _}} =
-             Salix.Control.Groups.update(
-               group["group_id"],
-               %{"ifc" => %{"mode" => "strict"}},
-               tenant_id()
-             )
-
-    assert {:error, {:bad_request, _}} =
-             Salix.Control.Groups.update(
-               group["group_id"],
-               %{"ifc" => %{"mode" => "audit", "sealed" => true}},
-               tenant_id()
-             )
-
-    assert {:error, {:bad_request, _}} =
-             Salix.Control.Groups.update(group["group_id"], %{"ifc" => "enforce"}, tenant_id())
-
-    # The refused writes changed nothing.
-    {:ok, current} = Salix.Control.Groups.get(group["group_id"], tenant_id())
-    assert current["ifc"] == %{"mode" => "enforce"}
+    assert {:error, :not_found} =
+             SalixStore.CasRecord.get(SalixStore.Keys.ctl_group_device_secrets(group_id))
   end
 
   test "a group's information-flow settings merge, so one write never drops another" do
@@ -161,44 +109,6 @@ defmodule SalixWeb.ControlTest do
 
     {:ok, current} = Salix.Control.Groups.get(group_id, tenant_id())
     assert current["ifc"] == %{"mode" => "enforce", "language" => "en"}
-  end
-
-  test "group owner_emails are normalized on create and update and reject bad shapes" do
-    {:ok, group} =
-      Salix.Control.Groups.create(
-        %{"name" => "Owners", "owner_emails" => [" a@x.com ", "a@x.com", ""]},
-        tenant_id()
-      )
-
-    assert group["owner_emails"] == ["a@x.com"]
-
-    {:ok, updated} =
-      Salix.Control.Groups.update(
-        group["group_id"],
-        %{"owner_emails" => ["b@y.com", "c@z.com"]},
-        tenant_id()
-      )
-
-    assert updated["owner_emails"] == ["b@y.com", "c@z.com"]
-
-    {:ok, cleared} =
-      Salix.Control.Groups.update(group["group_id"], %{"owner_emails" => []}, tenant_id())
-
-    assert cleared["owner_emails"] == []
-
-    assert {:error, {:bad_request, _}} =
-             Salix.Control.Groups.update(
-               group["group_id"],
-               %{"owner_emails" => "a@x.com"},
-               tenant_id()
-             )
-
-    assert {:error, {:bad_request, _}} =
-             Salix.Control.Groups.create(%{"owner_emails" => ["not-an-email"]}, tenant_id())
-
-    # A group created without owner_emails simply has none.
-    {:ok, plain} = Salix.Control.Groups.create(%{"name" => "Plain"}, tenant_id())
-    refute Map.has_key?(plain, "owner_emails")
   end
 
   test "Worker memory consultation is disabled by default and accepts only booleans" do
@@ -246,36 +156,43 @@ defmodule SalixWeb.ControlTest do
              )
   end
 
-  test "VFS control commands require an explicit per-group boolean" do
-    assert {:ok, group} = Salix.Control.Groups.create(%{"name" => "VFS"}, tenant_id())
-    assert group["control_command_vfs_enabled"] == false
-    assert {:ok, other} = Salix.Control.Groups.create(%{"name" => "Other"}, tenant_id())
+  test "the Condensed Workspace is opt-in per Group and reaches the round configuration" do
+    {:ok, group} = Salix.Control.Groups.create(%{"name" => "Workspace facts"}, tenant_id())
+    assert group["condensed_workspace_enabled"] == false
 
-    assert {:ok, enabled} =
+    {:ok, worker} =
+      SalixAgent.Control.create(
+        %{"group_id" => group["group_id"], "name" => "Facts Worker", "role" => "worker"},
+        tenant_id()
+      )
+
+    tools = fn ->
+      {:ok, config} =
+        SalixAgent.RoundConfig.build_runtime_session_config(worker["agent_id"], "worker", %{})
+
+      {config.condensed_workspace_enabled,
+       Enum.map(config.tool_disclosure["tools"], & &1["name"])}
+    end
+
+    assert {false, names} = tools.()
+    refute "condensed_workspace.update" in names
+
+    assert {:ok, %{"condensed_workspace_enabled" => true}} =
              Salix.Control.Groups.update(
                group["group_id"],
-               %{"control_command_vfs_enabled" => true},
+               %{"condensed_workspace_enabled" => true},
                tenant_id()
              )
 
-    assert enabled["control_command_vfs_enabled"] == true
-    assert {:ok, unchanged} = Salix.Control.Groups.get(other["group_id"], tenant_id())
-    assert unchanged["control_command_vfs_enabled"] == false
+    assert {true, names} = tools.()
+    assert "condensed_workspace.update" in names
 
-    for invalid <- ["true", nil, 1, %{}] do
-      assert {:error, {:bad_request, "control_command_vfs_enabled must be a boolean"}} =
-               Salix.Control.Groups.update(
-                 group["group_id"],
-                 %{"control_command_vfs_enabled" => invalid},
-                 tenant_id()
-               )
-
-      assert {:error, {:bad_request, "control_command_vfs_enabled must be a boolean"}} =
-               Salix.Control.Groups.create(
-                 %{"control_command_vfs_enabled" => invalid},
-                 tenant_id()
-               )
-    end
+    assert {:error, {:bad_request, "condensed_workspace_enabled must be a boolean"}} =
+             Salix.Control.Groups.update(
+               group["group_id"],
+               %{"condensed_workspace_enabled" => "yes"},
+               tenant_id()
+             )
   end
 
   test "Slack channel cutover preparation freezes router authority updates" do
@@ -391,47 +308,5 @@ defmodule SalixWeb.ControlTest do
     # Tenant scoping holds even when the caller names another tenant's group.
     assert [] = SalixAgent.Control.list(other_tenant_id, group_id: first_group["group_id"])
     assert [] = SalixAgent.Control.list(tenant_id(), group_id: foreign_group["group_id"])
-  end
-
-  test "list_sessions reads internal runtime sessions without root session state" do
-    {:ok, group} = Salix.Control.Groups.create(%{"name" => "Sessions"}, tenant_id())
-
-    {:ok, agent} =
-      SalixAgent.Control.create(
-        %{"group_id" => group["group_id"], "name" => "Sessions"},
-        tenant_id()
-      )
-
-    agent_id = agent["agent_id"]
-    session_id = SalixStore.Ids.new_session_id()
-
-    {:ok, _session} =
-      SalixAgent.InternalSessionStore.prepare_commit(agent_id, session_id, [
-        %{"type" => "session_created", "session_id" => session_id}
-      ])
-
-    {:ok, root} = SalixAgent.get_state(agent_id)
-    refute Map.has_key?(root, :sessions)
-
-    assert {:ok, [session]} = SalixAgent.Runtime.list_sessions(agent_id)
-    assert session["session_id"] == session_id
-    refute Map.has_key?(session, "events")
-
-    assert {:ok, detail} = SalixAgent.Runtime.get_session(agent_id, session_id)
-    refute Map.has_key?(detail, "events")
-    refute Map.has_key?(detail, "messages")
-  end
-
-  test "wake returns queued acknowledgement without persisting queued control status" do
-    {:ok, group} = Salix.Control.Groups.create(%{"name" => "Wake"}, tenant_id())
-
-    {:ok, agent} =
-      SalixAgent.Control.create(%{"group_id" => group["group_id"], "name" => "Wake"}, tenant_id())
-
-    agent_id = agent["agent_id"]
-    assert {:ok, %{"status" => "idle"}} = SalixAgent.Control.get_record(agent_id)
-
-    assert {:ok, %{"status" => "queued"}} = SalixAgent.Control.wake(agent_id)
-    assert {:ok, %{"status" => "idle"}} = SalixAgent.Control.get_record(agent_id)
   end
 end

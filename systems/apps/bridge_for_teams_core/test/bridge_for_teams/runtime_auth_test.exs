@@ -1,10 +1,10 @@
 defmodule BridgeForTeams.RuntimeAuthTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias BridgeForTeams.RuntimeAuth
 
   test "accepts only the official bounded Codex device-code ceremony" do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     ceremony = %{
       "attempt_id" => "rta_project",

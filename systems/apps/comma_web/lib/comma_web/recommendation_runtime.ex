@@ -100,7 +100,7 @@ defmodule CommaWeb.RecommendationRuntime do
   end
 
   def generate(run_id) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
 
     result =
       with {:ok, %{run: run, profile: profile}} <- Recommendations.run_context(run_id),
@@ -171,7 +171,7 @@ defmodule CommaWeb.RecommendationRuntime do
                 "runId" => run_id,
                 "locale" => locale,
                 "outcome" => to_string(outcome),
-                "durationMs" => System.monotonic_time(:millisecond) - started,
+                "durationMs" => SystemsClock.monotonic_time(:millisecond) - started,
                 "sourceCount" => length(collection.facts),
                 "sourceCollectionMs" => collection.duration_ms,
                 "sourceFailureCount" => length(collection.failures)
@@ -195,7 +195,7 @@ defmodule CommaWeb.RecommendationRuntime do
               "runId" => run_id,
               "outcome" => "failed",
               "reason" => reason |> inspect(limit: 3) |> String.slice(0, 240),
-              "durationMs" => System.monotonic_time(:millisecond) - started
+              "durationMs" => SystemsClock.monotonic_time(:millisecond) - started
             })
         )
 
@@ -261,16 +261,16 @@ defmodule CommaWeb.RecommendationRuntime do
          Comma.RecommendationMemberSelection.candidates(context) == [] do
       {:ok, %{"selected" => []}, %{"inputBytes" => 0, "modelDurationMs" => 0}}
     else
-      with {:ok, template_id} <-
+      with {:ok, model} <-
              stage(
-               template_id(RecommendationRenderer.agent_id(workspace, run)),
+               model(RecommendationRenderer.agent_id(workspace, run)),
                :model_configuration_unavailable
              ),
            remaining = min(remaining, RecommendationGenerate.remaining_ms(run)),
            true <- remaining > 0 do
         RecommendationRenderer.render(
           workspace,
-          template_id,
+          model,
           profile,
           run,
           collection,
@@ -350,33 +350,15 @@ defmodule CommaWeb.RecommendationRuntime do
   def authorize_disclosure(_ctx, _name), do: {:error, :forbidden}
 
   @doc """
-  The model template of a Routine or proactive judgment. A configured template
-  is chosen for this task alone. Otherwise the request uses the template of the
-  Agent it runs as.
+  The model of a Routine or proactive judgment: the model choice of the Agent
+  it runs as (`SalixAgent.AgentModel`).
   """
-  def template_id(agent_id) do
-    case Application.get_env(:comma_web, :recommendation_template_id) do
-      template_id when is_binary(template_id) and template_id != "" -> {:ok, template_id}
-      _ -> agent_template_id(agent_id)
-    end
-  end
-
-  defp agent_template_id(agent_id) do
-    if local_recommendation_mock_enabled?() do
-      CommaWeb.SalixClient.ensure_default_agent_template()
+  def model(agent_id) do
+    with {:ok, record} <- AgentControl.get_record(agent_id),
+         {:ok, choice, _source} <- SalixAgent.AgentModel.choice(record) do
+      {:ok, choice}
     else
-      with {:ok, record} <- AgentControl.get_record(agent_id),
-           {:ok, template_id, _source} <-
-             SalixAgent.Templates.resolve_template_id_for_record(record) do
-        {:ok, template_id}
-      else
-        _ -> {:error, :recommendation_template_unavailable}
-      end
+      _ -> {:error, :recommendation_model_unavailable}
     end
-  end
-
-  defp local_recommendation_mock_enabled? do
-    function_exported?(SalixWeb.LocalOAuthMock, :enabled?, 0) and
-      SalixWeb.LocalOAuthMock.enabled?()
   end
 end

@@ -1,10 +1,11 @@
+import { uiClock } from "@comma/ui/clock";
 import {
   defaultRangeExtractor,
   useVirtualizer,
   type Virtualizer,
   type Rect,
 } from "@tanstack/react-virtual";
-import { ScrollArea } from "@comma/ui";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
 import {
   useCallback,
   useMemo,
@@ -13,7 +14,7 @@ import {
   useLayoutEffect,
   type ReactNode,
 } from "react";
-import type { ProductInboxItem } from "@comma/native-bridge";
+import type { ProductInboxItem } from "@comma/core-client";
 import type { TaskReviewSeenMarks } from "../tasks/taskReviewAttention";
 import { InboxRow, type InboxGroupModel } from "./InboxGroup";
 import { isInboxItemUnread, type InboxUnreadMarks } from "./inboxDeletion";
@@ -114,7 +115,7 @@ export function InboxList({
     ),
   });
   useLayoutEffect(() => virtualizer.measure(), [rowHeight, virtualizer]);
-  const minute = Math.floor(Date.now() / 60_000);
+  const minute = Math.floor(uiClock.now() / 60_000);
   return (
     <ScrollArea
       ref={viewport}
@@ -184,6 +185,7 @@ export function InboxList({
                 status={item.status}
                 freshness={item.freshness}
                 updatedAt={item.updatedAt}
+                loop={item.loop}
                 selected={item.conversationId === selectedConversationId}
                 unread={isInboxItemUnread(seenMarks, unreadMarks, item)}
                 minute={minute}

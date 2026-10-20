@@ -244,6 +244,14 @@ const longMentionMenuRegistration: AiInputMenuRegistration = {
   ],
 };
 
+/**
+ * Waits for the panel's enter transition to end (it fades in from opacity 0): a fixed deadline would fail when the
+ * browser paints late.
+ */
+const entered = async (panel: HTMLElement) => {
+  await Promise.all(panel.getAnimations().map((animation) => animation.finished));
+};
+
 const typeMentionTrigger = async (editor: HTMLElement, text: string) => {
   await userEvent.click(editor);
   await userEvent.keyboard(text);
@@ -330,6 +338,8 @@ const expectPreviewWidthToken = (canvasElement: HTMLElement) => {
 };
 
 const meta = {
+  // Asserts computed visibility, drops files and draws the voice waveform on a canvas.
+  tags: ["browser"],
   title: "App components/AI Input",
   component: AiInput,
   parameters: {
@@ -544,9 +554,8 @@ export const MentionMenu: Story = {
     await typeMentionTrigger(editor, "@");
 
     const panel = await canvas.findByRole("listbox", { name: "Mentions" });
-    // The panel fades in from opacity 0; visibility settles with the enter
-    // transition, so these assertions wait it out.
-    await waitFor(() => expect(panel).toBeVisible());
+    await entered(panel);
+    expect(panel).toBeVisible();
     expect(canvas.getByText("Add")).toBeVisible();
     expect(canvas.getByText("Tasks")).toBeVisible();
     expect(canvas.getByText("Routines")).toBeVisible();
@@ -723,7 +732,8 @@ export const MentionMenuDrive: Story = {
     await typeMentionTrigger(editor, "@");
 
     const panel = await canvas.findByRole("listbox", { name: "Mentions" });
-    await waitFor(() => expect(panel).toBeVisible());
+    await entered(panel);
+    expect(panel).toBeVisible();
     // Five newest files, then the door to the rest.
     expect(
       canvas.getByRole("option", { name: "home-v4.fig Design / handoff" })
@@ -991,7 +1001,10 @@ export const DropTarget: Story = {
     expect(overlay).toHaveTextContent("Docs, images, videos and more");
     expect(shell.className).toMatch(/shadow-xs/);
     expect(shell.className).not.toMatch(/shadow-focus-brand/);
-    expect(textarea).toHaveAttribute("placeholder", "Do anything");
+    expect(textarea).toHaveAttribute(
+      "placeholder",
+      "Type / for commands, @ for context"
+    );
     expect(canvas.getByRole("button", { name: "Add attachment" })).toBeDisabled();
     expect(canvas.getByRole("button", { name: "Full-access" })).toBeDisabled();
     expect(canvas.getByRole("button", { name: "Voice input" })).toBeDisabled();

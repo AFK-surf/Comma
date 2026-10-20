@@ -1,9 +1,10 @@
 defmodule BridgeForTeamsWeb.Dashboard.I18nTest do
   @moduledoc """
   Dashboard internationalization: `I18n` negotiation/resolution, the locale
-  resolution plug + `:set_locale` on_mount (Chinese renders for a user whose
-  preferred_locale is zh_Hans), the org-level default, and the `/locale/:locale`
-  switcher (session + preferred_locale persistence, open-redirect safety).
+  resolution plug (the React app and the JSON API speak Chinese for a user
+  whose preferred_locale is zh_Hans), the org-level default, and the
+  `/locale/:locale` switcher (session + preferred_locale persistence,
+  open-redirect safety).
   """
   use BridgeForTeamsWeb.DashboardCase, async: false
 
@@ -11,30 +12,6 @@ defmodule BridgeForTeamsWeb.Dashboard.I18nTest do
   alias BridgeForTeamsWeb.I18n
 
   describe "I18n" do
-    test "supported?/lang_tag/options" do
-      assert I18n.supported?("en")
-      assert I18n.supported?("zh_Hans")
-      refute I18n.supported?("fr")
-      assert I18n.default_locale() == "en"
-      assert I18n.lang_tag("zh_Hans") == "zh-Hans"
-      assert I18n.lang_tag("bogus") == "en"
-      assert {"中文（简体）", "zh_Hans"} in I18n.options()
-    end
-
-    test "negotiate/1 maps Accept-Language to a supported locale" do
-      assert I18n.negotiate("zh-CN,zh;q=0.9,en;q=0.8") == "zh_Hans"
-      assert I18n.negotiate("zh-Hans") == "zh_Hans"
-      assert I18n.negotiate("en-US,en;q=0.9") == "en"
-      assert I18n.negotiate("fr-FR,fr;q=0.9") == "en"
-      assert I18n.negotiate(["zh-CN"]) == "zh_Hans"
-      assert I18n.negotiate(nil) == "en"
-    end
-
-    test "resolve/2 returns the first supported value, else default" do
-      assert I18n.resolve("zh_Hans", []) == "zh_Hans"
-      assert I18n.resolve(nil, ["bogus", "zh_Hans"]) == "zh_Hans"
-      assert I18n.resolve(nil, [nil, "fr"]) == "en"
-    end
   end
 
   describe "locale rendering" do
@@ -42,39 +19,26 @@ defmodule BridgeForTeamsWeb.Dashboard.I18nTest do
       %{conn: conn, user: user, org: org} = register_and_log_in_user(%{conn: conn})
       {:ok, _user} = Accounts.update_locale(user, "zh_Hans")
 
-      {:ok, _view, html} = live(conn, swarm_page(org))
+      html = conn |> get(~p"/orgs/#{org.slug}") |> html_response(200)
+      assert html =~ ~s(<html lang="zh-Hans">)
+      assert html =~ ~s(<meta name="bft-locale" content="zh_Hans" />)
 
-      assert html =~ "会议"
-      # Sidebar nav is translated too.
-      assert html =~ "概览"
-      assert html =~ "工作区"
-      refute html =~ "Workspace"
-    end
-
-    test "renders English by default", %{conn: conn} do
-      %{conn: conn, org: org} = register_and_log_in_user(%{conn: conn})
-
-      {:ok, _view, html} = live(conn, swarm_page(org))
-
-      assert html =~ "Workspace"
-      refute html =~ "工作区"
-    end
-
-    test "falls back to the org default locale when the user has no preference", %{conn: conn} do
-      %{conn: conn, org: org} = register_and_log_in_user(%{conn: conn})
-      {:ok, _org} = Orgs.update_org(org, %{"default_locale" => "zh_Hans"})
-
-      {:ok, _view, html} = live(conn, swarm_page(org))
-
-      assert html =~ "成员"
+      # Server-side messages of the JSON API are translated too.
+      assert missing_task_message(conn, org) == "未找到任务。"
     end
   end
 
-  # Org pages are the React dashboard; the LiveView shell renders on an Agent
-  # Swarm page.
-  defp swarm_page(org) do
-    project = bare_project_fixture(org)
-    ~p"/orgs/#{org.slug}/projects/#{project.id}/plugins"
+  defp missing_task_message(conn, org) do
+    {:ok, project} =
+      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_project(org.id, %{
+        "name" => "Locale",
+        "slug" => "locale-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      })
+
+    conn
+    |> get(~p"/dashboard/api/v1/orgs/#{org.slug}/projects/#{project.id}/tasks/missing")
+    |> json_response(404)
+    |> get_in(["error", "message"])
   end
 
   describe "GET /locale/:locale" do

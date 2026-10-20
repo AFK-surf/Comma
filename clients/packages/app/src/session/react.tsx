@@ -47,5 +47,5 @@ export type {
   SessionHostController,
   SessionLifecycleController,
   SessionLoginChallenge,
+  SessionLoginTiming,
 } from "./controller";
-export type { WebSessionHostPorts } from "./web/coordination-ports";

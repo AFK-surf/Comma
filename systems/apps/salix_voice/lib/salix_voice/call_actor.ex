@@ -1,4 +1,6 @@
 defmodule SalixVoice.CallActor do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   One live voice call (docs/messaging-voice.md).
 
@@ -31,9 +33,10 @@ defmodule SalixVoice.CallActor do
   listed in `SalixVoice`.
   """
 
-  use GenServer, restart: :temporary
+  use SystemsRuntime.Server, restart: :temporary
 
   require Logger
+  require SystemsClock
 
   alias SalixVoice.{Profile, Speech, Transcript}
 
@@ -42,7 +45,8 @@ defmodule SalixVoice.CallActor do
   # OpenAI key is dropped once the model has started.
   @model_setting_fields ~w(gpt_live_url gpt_live_model gpt_live_voice openai_api_key)
   @prebuffer_ms 2_000
-  @max_say_chars 20_000
+  # The same bound as the `voice.*` tools (`SalixIM.Provider.Voice`), which check it first.
+  @max_say_bytes 16_000
 
   @default_timers %{
     attach_twilio_ms: 20_000,
@@ -77,7 +81,7 @@ defmodule SalixVoice.CallActor do
   words without adding facts. Never invent results.\
   """
 
-  def start_link(args), do: GenServer.start_link(__MODULE__, args)
+  def start_link(args), do: SystemsRuntime.Server.start_link(__MODULE__, args)
 
   @doc "The GPT-Live session instructions every call starts with."
   def instructions, do: @instructions
@@ -86,9 +90,11 @@ defmodule SalixVoice.CallActor do
 
   @impl GenServer
   def init(args) do
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
 
-    timers = Map.merge(@default_timers, Map.new(Application.get_env(:salix_voice, :timers, [])))
+    timers =
+      Map.merge(@default_timers, Map.new(SystemsRuntime.get_env(:salix_voice, :timers, [])))
+
     settings = args.settings
     max_call_ms = timers.max_call_ms || settings["max_call_seconds"] * 1000
 
@@ -116,7 +122,7 @@ defmodule SalixVoice.CallActor do
       attached_mono: nil,
       model_mod: SalixVoice.Model.impl(),
       model_pid: nil,
-      model_ref: make_ref(),
+      model_ref: SystemsRuntime.Proc.make_ref(),
       model_started_mono: nil,
       greeted: false,
       instructions: @instructions,
@@ -140,10 +146,12 @@ defmodule SalixVoice.CallActor do
       group_monitor: nil
     }
 
-    :ok = :pg.join(@pg, {:call, state.call_id}, self())
-    :ok = :pg.join(@pg, :calls, self())
-    :ok = :pg.join(@pg, {:group_call, state.group_id}, self())
-    if state.key_id, do: :ok = :pg.join(@pg, {:voice_key, state.key_id}, self())
+    :ok = :pg.join(@pg, {:call, state.call_id}, SystemsRuntime.Proc.self())
+    :ok = :pg.join(@pg, :calls, SystemsRuntime.Proc.self())
+    :ok = :pg.join(@pg, {:group_call, state.group_id}, SystemsRuntime.Proc.self())
+
+    if state.key_id,
+      do: :ok = :pg.join(@pg, {:voice_key, state.key_id}, SystemsRuntime.Proc.self())
 
     # A remote join reaches this node's `:pg` asynchronously, so a call of the
     # same Group admitted on another node at about the same time (or seen
@@ -167,12 +175,12 @@ defmodule SalixVoice.CallActor do
 
   @impl GenServer
   def handle_continue(:start_profile, state) do
-    profile = Application.get_env(:salix_voice, :profile_mod, Profile)
+    profile = SystemsRuntime.get_env(:salix_voice, :profile_mod, Profile)
     group_id = state.group_id
-    deadline_ms = System.monotonic_time(:millisecond) + state.timers.profile_ms
+    deadline_ms = SystemsClock.monotonic_time(:millisecond) + state.timers.profile_ms
 
     task =
-      Task.Supervisor.async_nolink(SalixVoice.TaskSupervisor, fn ->
+      SystemsRuntime.TaskSupervisor.async_nolink(SalixVoice.TaskSupervisor, fn ->
         profile.resolve(group_id, deadline_ms)
       end)
 
@@ -189,7 +197,7 @@ defmodule SalixVoice.CallActor do
 
   defp start_model(%{phase: :live, model_pid: nil} = state) do
     opts = %{
-      owner: self(),
+      owner: SystemsRuntime.Proc.self(),
       ref: state.model_ref,
       audio_format: state.audio_format,
       instructions: state.instructions,
@@ -241,7 +249,7 @@ defmodule SalixVoice.CallActor do
   defp apply_profile(state, _result), do: {"error", state}
 
   defp stop_profile(%{profile_task: {task, _started}} = state) do
-    Task.shutdown(task, :brutal_kill)
+    SystemsRuntime.Task.shutdown(task, :brutal_kill)
     %{state | profile_task: nil}
   end
 
@@ -281,11 +289,16 @@ defmodule SalixVoice.CallActor do
 
       true ->
         state =
-          %{state | socket: socket, socket_ref: Process.monitor(socket), attached_mono: now()}
+          %{
+            state
+            | socket: socket,
+              socket_ref: SystemsRuntime.Proc.monitor(socket),
+              attached_mono: now()
+          }
           |> cancel(:attach)
           |> maybe_greet()
 
-        {:reply, {:ok, self(), call_info(state)}, state}
+        {:reply, {:ok, SystemsRuntime.Proc.self(), call_info(state)}, state}
     end
   end
 
@@ -358,7 +371,7 @@ defmodule SalixVoice.CallActor do
   defp required_text(text) when is_binary(text) do
     case String.trim(text) do
       "" -> {:error, {:bad_request, "text is required"}}
-      text when byte_size(text) > @max_say_chars -> {:error, {:bad_request, "text is too long"}}
+      text when byte_size(text) > @max_say_bytes -> {:error, {:bad_request, "text is too long"}}
       text -> {:ok, text}
     end
   end
@@ -442,7 +455,11 @@ defmodule SalixVoice.CallActor do
         state |> end_call(:busy) |> noreply()
 
       true ->
-        send(pid, {:voice_busy_probe_reply, self(), busy_key(state)})
+        SystemsRuntime.Proc.send(
+          pid,
+          {:voice_busy_probe_reply, SystemsRuntime.Proc.self(), busy_key(state)}
+        )
+
         {:noreply, state}
     end
   end
@@ -517,7 +534,7 @@ defmodule SalixVoice.CallActor do
   end
 
   def handle_info({ref, result}, %{profile_task: {%Task{ref: ref}, _started}} = state) do
-    Process.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
     state |> profile_done(result) |> noreply()
   end
 
@@ -549,7 +566,9 @@ defmodule SalixVoice.CallActor do
   def handle_info(_message, state), do: {:noreply, state}
 
   # A timeout message sent just before the attach cancelled its timer is stale.
-  defp timer(%{socket: socket} = state, :attach_timeout) when is_pid(socket), do: state
+  defp timer(%{socket: socket} = state, :attach_timeout)
+       when SystemsRuntime.Proc.is_process(socket), do: state
+
   defp timer(state, :attach_timeout), do: end_call(state, :attach_timeout)
   defp timer(state, :max_duration), do: notice_then_end(state, :max_duration, max_notice())
   defp timer(state, :key_expired), do: notice_then_end(state, :revoked, revoked_notice())
@@ -568,7 +587,7 @@ defmodule SalixVoice.CallActor do
   defp timer(state, :model_close_wait), do: finalize(state)
 
   defp timer(%{profile_task: {task, _started}} = state, :profile_deadline) do
-    Task.shutdown(task, :brutal_kill)
+    SystemsRuntime.Task.shutdown(task, :brutal_kill)
     profile_done(state, {:error, "timeout"})
   end
 
@@ -578,14 +597,18 @@ defmodule SalixVoice.CallActor do
   # The carrier must keep sending input audio, including silence:
   # https://developers.openai.com/api/docs/guides/live-conversations#greet-before-the-caller-speaks
   defp maybe_greet(%{phase: :live, closing: nil, greeted: false} = state)
-       when is_integer(state.model_started_mono) and is_pid(state.socket) do
+       when is_integer(state.model_started_mono) and SystemsRuntime.Proc.is_process(state.socket) do
     append(state, :instructions, nil, state.greeting)
     %{state | greeted: true, call_started_task: enqueue_call_started(state)}
   end
 
   defp maybe_greet(state), do: state
 
-  defp model_event(state, {:started, _session_id}) do
+  defp model_event(state, {:started, session_id}) do
+    # The GPT-Live session id is what the provider needs to look into a call.
+    unless state.model_started_mono,
+      do: Logger.info("voice model started call=#{state.call_id} session=#{inspect(session_id)}")
+
     state = %{state | model_started_mono: state.model_started_mono || now()}
     state = state |> cancel(:model_start) |> maybe_greet()
 
@@ -624,16 +647,25 @@ defmodule SalixVoice.CallActor do
         created_mono: now(),
         status: :pending,
         timers: [
-          Process.send_after(
-            self(),
+          SystemsClock.send_after(
+            SystemsRuntime.Proc.self(),
             {:progress, id, :thinking},
             state.timers.progress_thinking_ms
           ),
-          Process.send_after(self(), {:progress, id, :apology}, state.timers.progress_apology_ms)
+          SystemsClock.send_after(
+            SystemsRuntime.Proc.self(),
+            {:progress, id, :apology},
+            state.timers.progress_apology_ms
+          )
         ]
       }
 
-      Process.send_after(self(), {:flush_delegation, id}, state.timers.delegation_settle_ms)
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
+        {:flush_delegation, id},
+        state.timers.delegation_settle_ms
+      )
+
       %{state | delegations: Map.put(state.delegations, id, delegation)}
     end
   end
@@ -722,7 +754,7 @@ defmodule SalixVoice.CallActor do
   end
 
   defp enqueue_delegation(state, id, caller_text, last_agent) do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     enqueue_router_input(
       state,
@@ -737,7 +769,7 @@ defmodule SalixVoice.CallActor do
   # The call-start input has no message_id, so a `voice.say` that answers it
   # names no delegation and speaks as session context.
   defp enqueue_call_started(state) do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     enqueue_router_input(
       state,
@@ -779,10 +811,10 @@ defmodule SalixVoice.CallActor do
 
   # Returns the task pid, or nil when the task could not start.
   defp enqueue_router_input(state, content, metadata, source_message_id, opts, on_result) do
-    ingress = Application.get_env(:salix_voice, :ingress_mod, SalixIM.ProviderConnects)
+    ingress = SystemsRuntime.get_env(:salix_voice, :ingress_mod, SalixIM.ProviderConnects)
     {before, opts} = Keyword.pop(opts, :before, fn -> :ok end)
 
-    Task.Supervisor.start_child(SalixVoice.TaskSupervisor, fn ->
+    SystemsRuntime.TaskSupervisor.start_child(SalixVoice.TaskSupervisor, fn ->
       before.()
 
       result =
@@ -809,13 +841,13 @@ defmodule SalixVoice.CallActor do
     :exit, _reason -> nil
   end
 
-  defp await_task(pid, timeout_ms) when is_pid(pid) do
-    ref = Process.monitor(pid)
+  defp await_task(pid, timeout_ms) when SystemsRuntime.Proc.is_process(pid) do
+    ref = SystemsRuntime.Proc.monitor(pid)
 
-    receive do
+    SystemsClock.vreceive do
       {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
     after
-      timeout_ms -> Process.demonitor(ref, [:flush])
+      timeout_ms -> SystemsRuntime.Proc.demonitor(ref, [:flush])
     end
   end
 
@@ -839,7 +871,7 @@ defmodule SalixVoice.CallActor do
       "chat_type" => "private",
       "from_user_id" => state.caller["value"],
       "from_username" => state.display_name || state.caller["value"],
-      "source_sent_at_ms" => System.system_time(:millisecond),
+      "source_sent_at_ms" => SystemsClock.system_time(:millisecond),
       "source_actor_type" => "provider_user"
     }
     |> Map.merge(caller_authority(state))
@@ -993,7 +1025,7 @@ defmodule SalixVoice.CallActor do
 
   defp finish_delegation(state, id, outcome) do
     delegation = Map.fetch!(state.delegations, id)
-    Enum.each(delegation.timers, &Process.cancel_timer/1)
+    Enum.each(delegation.timers, &SystemsClock.cancel_timer/1)
 
     SalixVoice.Telemetry.delegation_stop(now() - delegation.created_mono, outcome)
 
@@ -1034,13 +1066,13 @@ defmodule SalixVoice.CallActor do
     pending = Enum.count(state.delegations, fn {_id, d} -> d.status == :pending end)
 
     Enum.each(state.delegations, fn {_id, delegation} ->
-      Enum.each(delegation.timers, &Process.cancel_timer/1)
+      Enum.each(delegation.timers, &SystemsClock.cancel_timer/1)
     end)
 
     to_socket(state, {:voice_call, :end, reason})
     if state.group_monitor, do: :pg.demonitor(@pg, state.group_monitor)
-    _ = :pg.leave(@pg, {:group_call, state.group_id}, self())
-    if state.key_id, do: :pg.leave(@pg, {:voice_key, state.key_id}, self())
+    _ = :pg.leave(@pg, {:group_call, state.group_id}, SystemsRuntime.Proc.self())
+    if state.key_id, do: :pg.leave(@pg, {:voice_key, state.key_id}, SystemsRuntime.Proc.self())
 
     state = %{state | phase: :ending, end_reason: reason, ended_mono: now(), closing: nil}
     enqueue_call_ended(state, pending)
@@ -1066,8 +1098,8 @@ defmodule SalixVoice.CallActor do
 
     # A model that did not confirm its close within the wait is stopped, so
     # no session outlives its call.
-    if is_pid(state.model_pid) and not state.model_closed?,
-      do: Process.exit(state.model_pid, :kill)
+    if SystemsRuntime.Proc.is_process(state.model_pid) and not state.model_closed?,
+      do: SystemsRuntime.Proc.exit(state.model_pid, :kill)
 
     for {id, %{status: :pending}} <- state.delegations do
       SalixVoice.Telemetry.delegation_stop(
@@ -1085,10 +1117,11 @@ defmodule SalixVoice.CallActor do
     meter(state)
 
     # Leave synchronously so the call is gone from `:pg` before the actor stops.
-    _ = :pg.leave(@pg, {:call, state.call_id}, self())
-    _ = :pg.leave(@pg, :calls, self())
+    _ = :pg.leave(@pg, {:call, state.call_id}, SystemsRuntime.Proc.self())
+    _ = :pg.leave(@pg, :calls, SystemsRuntime.Proc.self())
 
-    for {from, ref} <- state.drain_waiters, do: send(from, {:voice_drained, ref, state.call_id})
+    for {from, ref} <- state.drain_waiters,
+        do: SystemsRuntime.Proc.send(from, {:voice_drained, ref, state.call_id})
 
     %{state | phase: :finalized, drain_waiters: []}
   end
@@ -1096,7 +1129,7 @@ defmodule SalixVoice.CallActor do
   defp finalize(state), do: state
 
   defp meter(state) do
-    case Application.get_env(:salix_voice, :metering_mod) do
+    case SystemsRuntime.get_env(:salix_voice, :metering_mod) do
       nil ->
         :ok
 
@@ -1105,9 +1138,9 @@ defmodule SalixVoice.CallActor do
 
         if Enum.any?(attrs.components, &(&1.quantity > 0)) do
           group_directory =
-            Application.get_env(:salix_voice, :group_directory_mod, SalixIM.GroupDirectory)
+            SystemsRuntime.get_env(:salix_voice, :group_directory_mod, SalixIM.GroupDirectory)
 
-          Task.Supervisor.start_child(SalixVoice.TaskSupervisor, fn ->
+          SystemsRuntime.TaskSupervisor.start_child(SalixVoice.TaskSupervisor, fn ->
             try do
               owner =
                 case group_directory.get_group(state.group_id) do
@@ -1169,7 +1202,7 @@ defmodule SalixVoice.CallActor do
         %{component: :model_seconds, meter_unit: :second, quantity: model_seconds},
         %{component: :carrier_seconds, meter_unit: :second, quantity: carrier_seconds}
       ],
-      metered_at: DateTime.utc_now()
+      metered_at: SystemsClock.utc_now()
     }
   end
 
@@ -1208,7 +1241,8 @@ defmodule SalixVoice.CallActor do
   defp noreply(%{phase: :finalized} = state), do: {:stop, :normal, state}
   defp noreply(state), do: {:noreply, state}
 
-  defp append(%{model_pid: pid} = state, kind, delegation_id, text) when is_pid(pid) do
+  defp append(%{model_pid: pid} = state, kind, delegation_id, text)
+       when SystemsRuntime.Proc.is_process(pid) do
     state.model_mod.append(pid, kind, delegation_id, text)
   catch
     _, _ -> :ok
@@ -1216,13 +1250,22 @@ defmodule SalixVoice.CallActor do
 
   defp append(_state, _kind, _delegation_id, _text), do: :ok
 
-  defp to_socket(%{socket: socket}, message) when is_pid(socket), do: send(socket, message)
+  defp to_socket(%{socket: socket}, message) when SystemsRuntime.Proc.is_process(socket),
+    do: SystemsRuntime.Proc.send(socket, message)
+
   defp to_socket(_state, _message), do: :ok
 
   defp busy_key(state), do: {state.started_at_ms, state.call_id}
 
   defp probe_busy(state, pids) do
-    for pid <- pids, pid != self(), do: send(pid, {:voice_busy_probe, self(), busy_key(state)})
+    for pid <- pids,
+        pid != SystemsRuntime.Proc.self(),
+        do:
+          SystemsRuntime.Proc.send(
+            pid,
+            {:voice_busy_probe, SystemsRuntime.Proc.self(), busy_key(state)}
+          )
+
     :ok
   end
 
@@ -1247,7 +1290,7 @@ defmodule SalixVoice.CallActor do
 
   defp schedule(state, name, ms, event) do
     state = cancel(state, name)
-    ref = Process.send_after(self(), {:timer, name, event}, max(ms, 0))
+    ref = SystemsClock.send_after(SystemsRuntime.Proc.self(), {:timer, name, event}, max(ms, 0))
     %{state | timer_refs: Map.put(state.timer_refs, name, ref)}
   end
 
@@ -1258,7 +1301,12 @@ defmodule SalixVoice.CallActor do
 
   defp schedule_expiry(state, expires_at_ms) when is_integer(expires_at_ms),
     do:
-      schedule(state, :key_expiry, expires_at_ms - System.system_time(:millisecond), :key_expired)
+      schedule(
+        state,
+        :key_expiry,
+        expires_at_ms - SystemsClock.system_time(:millisecond),
+        :key_expired
+      )
 
   defp schedule_expiry(state, _other), do: state
 
@@ -1268,20 +1316,20 @@ defmodule SalixVoice.CallActor do
         state
 
       {ref, refs} ->
-        Process.cancel_timer(ref)
+        SystemsClock.cancel_timer(ref)
         %{state | timer_refs: refs}
     end
   end
 
   defp cancel_all(state) do
-    Enum.each(state.timer_refs, fn {_name, ref} -> Process.cancel_timer(ref) end)
+    Enum.each(state.timer_refs, fn {_name, ref} -> SystemsClock.cancel_timer(ref) end)
     %{state | timer_refs: %{}}
   end
 
   defp clean_exit?(reason),
     do: reason in [:normal, :shutdown] or match?({:shutdown, _}, reason)
 
-  defp now, do: System.monotonic_time()
+  defp now, do: SystemsClock.monotonic_time()
 
   defp revoked_notice,
     do:

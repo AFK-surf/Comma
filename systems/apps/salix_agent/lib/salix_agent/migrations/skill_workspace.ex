@@ -107,7 +107,7 @@ defmodule SalixAgent.Migrations.SkillWorkspace do
                {:ok, skill_md} <- SkillStore.read_entry(agent_id, skill_md_entry),
                {:ok, skill_id, name} <- choose_identity(ctx, root, skill_md),
                description <- skill_description(skill_md),
-               now <- System.os_time(:second),
+               now <- SystemsClock.system_time(:second),
                event <- %{
                  "type" => "skill_create",
                  "mode" => "upsert",
@@ -188,7 +188,7 @@ defmodule SalixAgent.Migrations.SkillWorkspace do
     ref = entry["ref"] || entry[:ref]
     size = entry["size"] || entry[:size] || ref_value(ref, "size")
     hash = entry["hash"] || entry[:hash] || ref_value(ref, "hash")
-    modified_at = entry["modified_at"] || entry[:modified_at] || System.os_time(:second)
+    modified_at = entry["modified_at"] || entry[:modified_at] || SystemsClock.system_time(:second)
 
     with {:ok, ref} <- normalize_ref(ref),
          {:ok, size} <- normalize_size(size),

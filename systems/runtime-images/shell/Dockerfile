@@ -1,4 +1,4 @@
-ARG GO_IMAGE=golang:1.26.6-bookworm
+ARG GO_IMAGE=golang:1.26.9-bookworm
 ARG SHELL_IMAGE=alpine:3.23.5
 FROM ${GO_IMAGE} AS builder
 
@@ -9,7 +9,12 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o
 
 FROM ${SHELL_IMAGE}
 
-RUN apk add --no-cache \
+# Alpine keeps no package snapshots: a new packageSnapshot in
+# runtime-dependencies.lock.json rebuilds this layer with the current packages.
+ARG PACKAGE_SNAPSHOT
+RUN echo "packages as of ${PACKAGE_SNAPSHOT}" \
+    && apk upgrade --no-cache \
+    && apk add --no-cache \
       'libcrypto3>=3.5.8-r0' \
       'libssl3>=3.5.8-r0' \
     && addgroup -g 10001 runtime \

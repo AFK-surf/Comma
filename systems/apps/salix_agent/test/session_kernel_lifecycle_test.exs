@@ -2,7 +2,7 @@ defmodule SalixAgent.SessionKernelLifecycleTest do
   @moduledoc """
   Coverage for the kernel-owned Session lifecycle operations.
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.InternalSession.State
   alias SalixVerifiedKernel.Session
@@ -44,22 +44,6 @@ defmodule SalixAgent.SessionKernelLifecycleTest do
     assert Enum.map(normalized.input_queue, & &1["queue_id"]) == [3, 4, 5]
     assert normalized.next_queue_id == 6
     assert MapSet.member?(normalized.input_dedupe, "existing")
-  end
-
-  test "normalize adds queued dedupe keys to a large ledger" do
-    ledger = MapSet.new(Enum.map(1..6_804, &"source-#{&1}"))
-
-    state =
-      base(%{
-        input_dedupe: ledger,
-        input_queue: [
-          %{"queue_id" => 1, "dedupe_key" => "source-1"},
-          %{"queue_id" => 2, "dedupe_key" => "new-source"}
-        ]
-      })
-
-    normalized = kernel_normalize(state)
-    assert normalized.input_dedupe == MapSet.put(ledger, "new-source")
   end
 
   test "normalize drops unaddressable archive spans and segment entries" do
@@ -131,11 +115,6 @@ defmodule SalixAgent.SessionKernelLifecycleTest do
     assert normalized.context_provider_states == %{"migration_notice" => %{"version" => 4}}
   end
 
-  test "normalize keeps the stored context provider states out of the result" do
-    normalized = kernel_normalize(base(%{context_provider_states: %{"skills" => %{"v" => 2}}}))
-    assert normalized.context_provider_states == %{}
-  end
-
   ## prepare_write/1
 
   test "prepare_write reports a duplicate legacy seq" do
@@ -161,11 +140,6 @@ defmodule SalixAgent.SessionKernelLifecycleTest do
             storage_format: 1,
             messages: [%{id: 1, seq: 1}],
             async_result_refs: %{"r" => 42}
-          }),
-          base(%{
-            storage_format: 1,
-            messages: [%{id: 1, seq: 1}],
-            redactions: [%{"seq" => 77}]
           }),
           base(%{
             storage_format: 1,

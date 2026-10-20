@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Central Icons (commercially licensed): IconMagnifyingGlass, round-outlined-radius-2-stroke-2.
+    Not for redistribution; see ui/icons/IconSources.kt. Tinted in code.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M11 18C14.866 18 18 14.866 18 11C18 7.13401 14.866 4 11 4C7.13401 4 4 7.13401 4 11C4 14.866 7.13401 18 11 18Z"
+        android:strokeColor="#FF000000" android:strokeWidth="2" android:strokeLineCap="round" />
+    <path android:pathData="M20 20L16.05 16.05"
+        android:strokeColor="#FF000000" android:strokeWidth="2" android:strokeLineCap="round" />
+</vector>

@@ -1,11 +1,11 @@
-import { formatNumber, taskStatusBucketLabel } from "@comma/i18n";
+import { formatNumber, taskStatusBucketLabel, taskStatusLabel } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import { ChevronDownSmallIcon } from "@comma/ui/components/icons";
 import {
-  ChevronDownSmallIcon,
   TaskArchiveMenu,
-  taskStatusIcon,
   type TaskArchiveAction,
-} from "@comma/ui";
+} from "@comma/ui/components/task-workspace/TaskArchiveMenu";
+import { taskStatusIcon } from "@comma/ui/components/task-workspace";
 import {
   defaultRangeExtractor,
   useVirtualizer,
@@ -385,7 +385,9 @@ const ChatTaskRow = memo(function ChatTaskRow({
                   : "comma-chat-task-item-status comma-shiny-text"
               }
             >
-              {taskStatusBucketLabel(task.statusBucket, locale)}
+              {task.needsInput
+                ? taskStatusLabel("escalated", locale)
+                : taskStatusBucketLabel(task.statusBucket, locale)}
             </span>
           </AriaButton>
           {/* A Task announced before any user turn has no turn to jump to. */}

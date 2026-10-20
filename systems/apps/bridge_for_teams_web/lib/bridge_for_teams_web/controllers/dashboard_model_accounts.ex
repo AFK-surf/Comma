@@ -1,10 +1,10 @@
 defmodule BridgeForTeamsWeb.DashboardModelAccounts do
   @moduledoc """
-  The private templates and organization accounts sections of Settings → AI
-  models, for `DashboardAPIController`.
+  The organization accounts section of Settings → AI models, for
+  `DashboardAPIController`.
 
   Organization accounts are Codex and Claude subscriptions and Provider API
-  keys stored in Salix; private templates use them. `BridgeForTeams.Subscriptions`
+  keys stored in Salix; catalog model choices use them. `BridgeForTeams.Subscriptions`
   checks owner/admin again for every call and scopes it to the organization's
   Salix tenant, so no tenant or account scope comes from the browser.
 
@@ -19,57 +19,8 @@ defmodule BridgeForTeamsWeb.DashboardModelAccounts do
   alias BridgeForTeamsWeb.DashboardSettings
 
   @providers ~w(codex claude)
-  @template_fields ~w(template_id name model model_display_name model_vendor max_tokens
-                      subscription_provider)
-  @template_params ~w(name subscription_provider model model_display_name model_vendor max_tokens)
   @account_fields ~w(id version credential_kind provider name email status disabled quota
                      reset_attempt connection compatible_runtimes)
-
-  # ---- Private templates ----
-
-  def templates(org, user) do
-    case Subscriptions.templates(scope(org, user)) do
-      {:ok, templates} ->
-        {:ok, %{"templates" => Enum.map(templates, &Map.take(&1, @template_fields))}}
-
-      error ->
-        reply(error)
-    end
-  end
-
-  @doc "Create a template (`id` nil) or update one; returns the refreshed list."
-  def save_template(org, user, id, params) do
-    case Subscriptions.save_template(scope(org, user), id, Map.take(params, @template_params)) do
-      {:ok, _template} -> templates(org, user)
-      error -> reply(error)
-    end
-  end
-
-  def delete_template(org, user, id) do
-    case Subscriptions.delete_template(scope(org, user), id) do
-      :ok -> templates(org, user)
-      {:ok, _} -> templates(org, user)
-      error -> reply(error)
-    end
-  end
-
-  @doc "The models a connected subscription offers, for the template editor."
-  def discover_models(org, user, %{"subscription_provider" => provider})
-      when provider in @providers do
-    case Subscriptions.discover_models(scope(org, user), provider) do
-      {:ok, result} ->
-        {:ok,
-         %{
-           "models" => Enum.map(result["data"] || [], &Map.take(&1, ~w(id name vendor))),
-           "truncated" => result["truncated"] == true
-         }}
-
-      error ->
-        reply(error)
-    end
-  end
-
-  def discover_models(_org, _user, _params), do: reply({:error, :invalid_input})
 
   # ---- Organization accounts ----
 
@@ -219,11 +170,7 @@ defmodule BridgeForTeamsWeb.DashboardModelAccounts do
     %{
       "project" => Map.take(project, ~w(id name)),
       "workload_id" => workload,
-      "href" =>
-        if is_binary(workload) do
-          "/orgs/#{org.slug}/projects/#{project["id"]}/devices?" <>
-            URI.encode_query(%{"runtime_auth_target" => workload})
-        end
+      "href" => if(is_binary(workload), do: "/orgs/#{org.slug}/projects/#{project["id"]}/devices")
     }
   end
 
@@ -252,7 +199,7 @@ defmodule BridgeForTeamsWeb.DashboardModelAccounts do
       {:error, 503, "runtime_unavailable",
        gettext("The runtime is unavailable right now. Retry shortly."), %{}}
 
-  # Salix and template validation messages are passed on as they are.
+  # Salix validation messages are passed on as they are.
   defp reply({:error, {:bad_request, message}}) when is_binary(message),
     do: {:error, 422, "invalid", message, %{}}
 
@@ -304,13 +251,6 @@ defmodule BridgeForTeamsWeb.DashboardModelAccounts do
       {409,
        gettext(
          "This authorization expired or was already used. Start again and use the new link."
-       )}
-
-  defp message(:model_catalog_too_large),
-    do:
-      {422,
-       gettext(
-         "The model catalog exceeds the 100-template interactive limit. Contact a platform administrator."
        )}
 
   defp message(_reason),

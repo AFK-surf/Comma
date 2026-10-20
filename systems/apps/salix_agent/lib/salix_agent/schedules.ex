@@ -54,7 +54,6 @@ defmodule SalixAgent.Schedules do
           "updated_at" => now_ms,
           "last_run" => nil
         }
-        |> put_optional("template_id", nonblank(attrs["template_id"]))
         |> put_optional("reasoning_effort", nonblank(attrs["reasoning_effort"]))
 
       with {:ok, heartbeat} <- upsert(schedule_id, rec, now_ms) do
@@ -212,7 +211,6 @@ defmodule SalixAgent.Schedules do
       "prompt",
       "cron_expr",
       "timezone",
-      "template_id",
       "reasoning_effort",
       "status",
       "next_run_at",
@@ -248,7 +246,6 @@ defmodule SalixAgent.Schedules do
       "updated_at" => div(updated_ms, 1000)
     }
     |> put_optional("session_id", nonblank(rec["session_id"]))
-    |> put_optional("template_id", nonblank(rec["template_id"]))
     |> put_optional("reasoning_effort", nonblank(rec["reasoning_effort"]))
   end
 
@@ -340,5 +337,5 @@ defmodule SalixAgent.Schedules do
   defp put_optional(map, _key, nil), do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)
 
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 end

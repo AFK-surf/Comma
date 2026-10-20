@@ -1,16 +1,17 @@
-import { act, render, screen, waitFor } from "@comma/test-utils/render";
-import { toast } from "@comma/ui";
+import type { DriveValue } from "@comma/core/contract";
+import { useCall } from "@comma/core-client";
+import { render, screen, waitFor } from "@comma/test-utils/render";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import { toast } from "@comma/ui/components/toast";
 import { useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { DriveStore, useDriveSnapshot, type DriveFile } from "../driveStore";
-import type { DriveSynchronicityBackend } from "../driveSynchronicityBackend";
 import { useDriveFileReveal, type DriveRevealSearch } from "../useDriveFileReveal";
 
-const device = { current: true, id: "this-mac", label: "This Mac" };
 const space = { id: "comma-drive", name: "Drive" };
 const file: DriveFile = {
   contentsHash: "recording",
-  deviceId: device.id,
+  deviceId: "this-mac",
   folderPath: "recording",
   id: "synch:comma-drive:recording/take.wav",
   modifiedAt: 0,
@@ -19,20 +20,26 @@ const file: DriveFile = {
   spaceId: space.id,
 };
 
-function Harness({
-  backend,
-  search,
-  store,
-}: {
-  backend?: DriveSynchronicityBackend;
-  search: DriveRevealSearch;
-  store: DriveStore;
-}) {
+const drive = (files: DriveFile[]): DriveValue => ({
+  node: { status: "ready" },
+  devices: [{ current: true, id: "this-mac", label: "This Mac" }],
+  spaces: [{ id: "other", name: "Other" }, space],
+  files,
+  originDeviceId: "this-mac",
+  versionPolicy: "newest",
+  localSyncEnabled: false,
+  localSyncRoot: "/Drive",
+  syncHistory: [],
+  transfers: [],
+});
+
+function Harness({ search, store }: { search: DriveRevealSearch; store: DriveStore }) {
+  const call = useCall();
   const snapshot = useDriveSnapshot(store);
   const [folderPath, setFolderPath] = useState<readonly string[]>([]);
   const rootRef = useRef<HTMLDivElement>(null);
   useDriveFileReveal({
-    backend,
+    call,
     folderPath,
     rootRef,
     search,
@@ -59,58 +66,62 @@ function Harness({
   );
 }
 
-const seed = () =>
-  new DriveStore({
-    devices: [device, { current: false, id: "remote", label: "Remote" }],
-    spaces: [{ id: "other", name: "Other" }, space],
-    files: [],
-  });
-
 describe("Drive recording reveal", () => {
-  it("waits for the exact row, switches folder/device, and replays only on another request", async () => {
-    const store = seed();
-    store.setOriginDevice("remote");
-    const lookupFile = vi.fn(async () => ({ device, file, space }));
-    const backend = { lookupFile } as unknown as DriveSynchronicityBackend;
+  it("waits for the core to list the file, opens its folder, and replays only on another request", async () => {
+    let listed: DriveFile[] = [];
+    const core = createScriptedCore({
+      values: (topic) => (topic.topic === "drive" ? drive(listed) : undefined),
+      // The core finds the file and lists it, a while after it answered.
+      calls: (name) => {
+        if (name !== "drive.reveal") return null;
+        queueMicrotask(() => {
+          listed = [file];
+          core.changed("drive");
+        });
+        return { file: file.id };
+      },
+    });
+    const store = new DriveStore();
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
     const search = { path: "recording/take.wav", space: space.id, reveal: "1" };
-    const view = render(<Harness backend={backend} search={search} store={store} />);
+    const view = render(core.wrap(<Harness search={search} store={store} />));
     const row = await screen.findByTestId(`drive-file-${file.id}`);
     await waitFor(() => expect(row).toHaveAttribute("data-reveal-highlight", "true"));
     expect(row).toHaveFocus();
     expect(screen.getByTestId("folder")).toHaveTextContent("recording");
-    expect(store.getSnapshot().originDeviceId).toBe(device.id);
+    expect(store.getSnapshot().selectedSpaceId).toBe(space.id);
     expect(scroll).toHaveBeenCalledWith({
       block: "center",
       inline: "nearest",
       behavior: "instant",
     });
     expect(scroll).toHaveBeenCalledTimes(1);
-    act(() => store.setNodeStatus({ status: "ready" }));
-    expect(lookupFile).toHaveBeenCalledTimes(1);
+    core.changed("drive");
+    expect(core.sentTo("drive.reveal")).toEqual([
+      { path: "recording/take.wav", space: space.id },
+    ]);
     view.rerender(
-      <Harness backend={backend} search={{ ...search, reveal: "2" }} store={store} />
+      core.wrap(<Harness search={{ ...search, reveal: "2" }} store={store} />)
     );
     await waitFor(() => expect(scroll).toHaveBeenCalledTimes(2));
-    expect(row).not.toHaveAttribute("aria-selected");
     scroll.mockRestore();
   });
 
   it("announces a missing file instead of highlighting a stale row", async () => {
-    const store = seed();
-    store.revealFile({ device, file, space });
+    const core = createScriptedCore({
+      values: (topic) => (topic.topic === "drive" ? drive([file]) : undefined),
+      calls: () => {
+        throw Object.assign(new Error("Deleted"), { code: "not_found" });
+      },
+    });
     const error = vi.spyOn(toast, "error");
-    const backend = {
-      lookupFile: vi.fn(async () => {
-        throw new Error("Deleted");
-      }),
-    } as unknown as DriveSynchronicityBackend;
     render(
-      <Harness
-        backend={backend}
-        search={{ space: space.id, path: "recording/take.wav", reveal: "missing" }}
-        store={store}
-      />
+      core.wrap(
+        <Harness
+          search={{ space: space.id, path: "recording/take.wav", reveal: "missing" }}
+          store={new DriveStore()}
+        />
+      )
     );
     await waitFor(() =>
       expect(error).toHaveBeenCalledWith(

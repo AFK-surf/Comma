@@ -141,7 +141,7 @@ defmodule Comma.ReleasePlan do
   # manifest's required-version check still fails the plan if a salix step
   # exists but the database is absent, so this cannot mask a missing store.
   defp salix_ecto_status do
-    case Application.get_env(:salix_store, :ecto_repos, []) do
+    case SystemsRuntime.get_env(:salix_store, :ecto_repos, []) do
       [] ->
         []
 
@@ -184,7 +184,7 @@ defmodule Comma.ReleasePlan do
   defp catalog_current? do
     catalog = apply(Module.concat([Comma, Billing, PricingV1]), :catalog, [])
 
-    Enum.all?(Application.get_env(:billing_core, :ecto_repos, []), fn repo ->
+    Enum.all?(SystemsRuntime.get_env(:billing_core, :ecto_repos, []), fn repo ->
       {:ok, current, _started} =
         apply(Ecto.Migrator, :with_repo, [
           repo,

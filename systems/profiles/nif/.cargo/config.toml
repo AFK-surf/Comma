@@ -1,0 +1,3 @@
+# A NIF's symbols are the BEAM's: found when it loads the library, not when it is linked.
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]

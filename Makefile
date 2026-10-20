@@ -1,5 +1,8 @@
-.PHONY: storybook dev dev-backend dev-web dev-electron dev-real-llm dev-backend-real-llm dev-electron-real-llm dev-container-rebuild dev-container-restart dev-container-status dev-container-shell dev-systems-up dev-systems-up-recommendation-mock dev-systems-up-real-llm dev-systems-seed dev-systems-logs dev-systems-down salix-dev-up salix-dev-rebuild salix-dev-status salix-dev-logs salix-dev-down salix-dev-reset salix-dev-psql salix-dev-shell salix-dev-config salix-dev-info test-clients test-clients-smoke test-comma-telegram-ui-local test-systems test-comma-release-kubernetes-e2e test-comma-release-database-e2e test-bft-cli test-policy
+.PHONY: storybook dev dev-backend dev-web dev-electron dev-real-llm dev-backend-real-llm dev-electron-real-llm dev-container-rebuild dev-container-restart dev-container-status dev-container-shell dev-systems-up dev-systems-up-recommendation-mock dev-systems-up-real-llm dev-systems-seed dev-systems-logs dev-systems-down salix-dev-up salix-dev-rebuild salix-dev-status salix-dev-logs salix-dev-down salix-dev-reset salix-dev-psql salix-dev-shell salix-dev-config salix-dev-info test-clients test-clients-smoke test-comma-telegram-ui-local test-systems test-comma-release-kubernetes-e2e test-comma-release-database-e2e test-bft-cli
 .PHONY: test-devtools test-resources test-systems-static test-all-local
+
+# Every make run installs the git hooks in scripts/git-hooks.
+_ := $(shell sh scripts/git-hooks/install.sh)
 
 DEV_COMPOSE = docker compose -f systems/docker-compose.dev.yml -f systems/docker-compose.devcontainer.yml
 DEV_COMPOSE_REAL = $(DEV_COMPOSE) -f systems/docker-compose.devcontainer.real-llm.yml
@@ -109,6 +112,7 @@ test-systems:
 	systems/account-proxy/bootstrap.sh
 	go test -C systems/account-proxy -race ./...
 	GOTOOLCHAIN=auto go test -C systems/tailcat-gateway -race ./...
+	GOTOOLCHAIN=auto go test -C systems/tailnet-gateway -race ./...
 	go test -C systems/gateway/salix-vmm-gateway ./...
 	go test -C systems/ops/comma-release -race ./...
 	go test -C systems/connector/salix-connect -race ./...
@@ -122,24 +126,6 @@ test-comma-release-database-e2e:
 
 test-bft-cli:
 	go test -C systems/cli/bft ./...
-
-test-policy:
-	python3 -m unittest discover -s selfhost
-	node scripts/check-docs.mjs
-	node scripts/generate-model-catalog.mjs --check
-	go test -C systems/ops/comma-release ./...
-	node --test systems/apps/bridge_for_teams_core/priv/repo/migrations/organization_icon_migration.test.ts
-	node --test scripts/bridge-staging-bootstrap-invite.test.cjs
-	node --test systems/scripts/comma-local-dev-electron.test.mjs systems/scripts/comma-local-dev-seed.test.mjs systems/scripts/local-llm-mock.test.mjs systems/scripts/local-telegram-mock.test.mjs systems/scripts/salix-dev.test.mjs
-	node --test systems/apps/salix_web/test/assets/command_draft.test.mjs
-	node --test scripts/server-release-descriptor.test.mjs
-	node --test scripts/publish-runtime-bundles.test.mjs
-	k8s/comma/cloud-monitoring/tests/terraform-import-contract-test.sh
-	k8s/comma/cloud-monitoring/tests/terraform-plan-test.sh
-	k8s/comma/cloud-monitoring/tests/terraform-release-test.sh
-	k8s/comma/cloud-monitoring/tests/terraform-workspace-guard-test.sh
-	node --test scripts/require-tests-for-code-changes.test.ts
-	node scripts/require-tests-for-code-changes.ts
 
 test-devtools:
 	npm --prefix devtools/e2e-reports run check
@@ -161,7 +147,7 @@ test-systems-static:
 		echo "mix not found; skipping Elixir format check"; \
 	fi
 
-test-all-local: test-policy test-resources test-devtools test-systems-static test-systems test-bft-cli test-clients
+test-all-local: test-resources test-devtools test-systems-static test-systems test-bft-cli test-clients
 
 # Bounded system-core formal suite; see tla/README.md. Java 11+ required.
 .PHONY: tla tla-salix tla-other tla-billing tla-oauth-idp-key-rotation

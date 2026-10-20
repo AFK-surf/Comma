@@ -16,18 +16,19 @@ defmodule SalixEnv.Application do
     children = [
       SalixEnv.Transfer.Tokens,
       {SalixEnv.ComputeReconciler,
-       interval_ms: Application.get_env(:salix_env, :compute_reconcile_interval_ms, 5_000),
-       start_sweeper?: Application.get_env(:salix_env, :compute_reconciler_start_sweeper?, true)},
+       interval_ms: SystemsRuntime.get_env(:salix_env, :compute_reconcile_interval_ms, 5_000),
+       start_sweeper?:
+         SystemsRuntime.get_env(:salix_env, :compute_reconciler_start_sweeper?, true)},
       # Ephemeral per-node last-exec labels merged into device projections.
       SalixEnv.ExecActivity,
       # Per-node connector-socket directory: one entry per env_id whose
       # WebSocket is bridged on THIS node (SalixEnv.Bridge round trips through it).
-      {Registry, keys: :unique, name: SalixEnv.Bridge.registry()},
-      {Task.Supervisor,
+      {SystemsRuntime.Registry, keys: :unique, name: SalixEnv.Bridge.registry()},
+      {SystemsRuntime.TaskSupervisor,
        name: SalixEnv.ConnectorRemoteReadTaskSupervisor,
        max_children: connector_remote_read_stream_limit()},
-      {Registry, keys: :unique, name: SalixEnv.VM.Providers.Cloudflare.AttachmentRegistry},
-      SalixEnv.VM.Providers.Cloudflare.Attachments,
+      {SystemsRuntime.Registry,
+       keys: :unique, name: SalixEnv.VM.Providers.Cloudflare.WorkerRegistry},
       {Bandit,
        plug: SalixEnv.Transfer.Server,
        port: SalixEnv.Transfer.port(),
@@ -35,11 +36,14 @@ defmodule SalixEnv.Application do
        http_options: [log_exceptions_with_status_codes: [], log_protocol_errors: false]}
     ]
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: SalixEnv.Supervisor)
+    SystemsRuntime.Supervisor.start_link(children,
+      strategy: :one_for_one,
+      name: SalixEnv.Supervisor
+    )
   end
 
   defp connector_remote_read_stream_limit do
-    case Application.get_env(:salix_env, :connector_remote_read_stream_limit, 32) do
+    case SystemsRuntime.get_env(:salix_env, :connector_remote_read_stream_limit, 32) do
       value when is_integer(value) and value > 0 -> value
       _invalid -> 32
     end

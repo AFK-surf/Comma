@@ -100,8 +100,8 @@ model {
         link ../../../clients/apps/web/package.json 'package.json'
       }
 
-      comma_admin .depends_on comma_app '产品/Peer 依赖'
       comma_admin .depends_on comma_config '产品/Peer 依赖'
+      comma_admin .depends_on comma_i18n '产品/Peer 依赖'
       comma_admin .depends_on comma_ui '产品/Peer 依赖'
       comma_app .depends_on comma_chat-contract '产品/Peer 依赖'
       comma_app .depends_on comma_config '产品/Peer 依赖'

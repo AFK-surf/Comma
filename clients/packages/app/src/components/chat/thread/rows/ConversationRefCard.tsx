@@ -1,7 +1,11 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { ChevronRightSmallIcon, FileIcon, ListChecksIcon } from "@comma/ui";
+import {
+  ChevronRightSmallIcon,
+  FileIcon,
+  ListChecksIcon,
+} from "@comma/ui/components/icons";
 import { Link } from "@tanstack/react-router";
-import type { ChatConversationRef } from "../../model/conversationChannel";
+import type { ChatConversationRef } from "@comma/core/chat";
 
 export function ConversationRefCard({
   conversationRef,

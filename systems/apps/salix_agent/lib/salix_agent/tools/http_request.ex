@@ -34,6 +34,8 @@ defmodule SalixAgent.Tools.HttpRequest do
       archived arguments. A placeholder without an entry is an error.
     * `timeout_ms` — 1 000 to 60 000, default 20 000. The dispatcher deadline
       is derived from it (`SalixAgent.Tools.tool_timeout_ms/2`).
+    * `via_tailnet` — `true` sends the request to a device in the Group's
+      tailnet (`SalixAgent.Tailnet`) instead of the public internet.
 
   ## Response
 
@@ -65,6 +67,11 @@ defmodule SalixAgent.Tools.HttpRequest do
   rebinding) therefore cannot move the connection. `:salix_agent,
   :http_request_allow_private_hosts` (tests) lifts the address check; the
   connection is still pinned to the resolved address.
+
+  With `via_tailnet`, the Group's tailnet node resolves the host from its own
+  network map and dials it; it reaches only peers and approved subnet routes,
+  never the internet or the platform's network. HTTPS verifies the
+  certificate against the URL host as usual.
   """
 
   alias SalixAgent.Egress.Destination
@@ -117,11 +124,19 @@ defmodule SalixAgent.Tools.HttpRequest do
     uri = put_query(uri, query!(args, secrets))
     headers = headers!(args, secrets)
     {headers, body} = body!(args, headers)
-    addresses = resolve_destination!(uri.host)
 
-    started = System.monotonic_time(:millisecond)
-    result = perform(uri, addresses, method, headers, body, timeout_ms)
-    elapsed = System.monotonic_time(:millisecond) - started
+    connect =
+      if via_tailnet!(args) do
+        group_id = tailnet_group!(ctx)
+        fn scheme, timeout -> tailnet_connect(group_id, scheme, uri.host, uri.port, timeout) end
+      else
+        addresses = resolve_destination!(uri.host)
+        fn scheme, timeout -> connect(scheme, addresses, uri.host, uri.port, timeout) end
+      end
+
+    started = SystemsClock.monotonic_time(:millisecond)
+    result = perform(uri, connect, method, headers, body, timeout_ms)
+    elapsed = SystemsClock.monotonic_time(:millisecond) - started
 
     case result do
       {:ok, response} ->
@@ -152,12 +167,12 @@ defmodule SalixAgent.Tools.HttpRequest do
   # checked. The IP tuple is the address Mint connects to; the URL host is
   # only the `:hostname` (Host header, SNI, certificate check), so nothing
   # resolves the name a second time.
-  defp perform(uri, addresses, method, headers, body, timeout_ms) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
+  defp perform(uri, connect, method, headers, body, timeout_ms) do
+    deadline = SystemsClock.monotonic_time(:millisecond) + timeout_ms
     scheme = if uri.scheme == "https", do: :https, else: :http
     body = if is_nil(body) and method not in ["GET", "HEAD"], do: "", else: body
 
-    case connect(scheme, addresses, uri.host, uri.port, timeout_ms) do
+    case connect.(scheme, timeout_ms) do
       {:ok, conn} ->
         exchange =
           with {:ok, conn, ref} <-
@@ -200,6 +215,63 @@ defmodule SalixAgent.Tools.HttpRequest do
     end)
   end
 
+  # The tailnet node dials; Mint takes over the connected socket. HTTPS
+  # verifies the peer's certificate for the URL host.
+  defp tailnet_connect(group_id, scheme, host, port, timeout_ms) do
+    connect_timeout = min(timeout_ms, @connect_timeout_ms)
+
+    case SalixAgent.Tailnet.dial(group_id, host, port, connect_timeout) do
+      {:ok, socket, _reply} ->
+        with {:ok, socket} <- tls(scheme, socket, host, connect_timeout) do
+          Mint.HTTP.initiate(scheme, socket, host, port, mode: :passive)
+        end
+
+      {:error, %{"code" => code, "message" => message}} ->
+        raise "#{@tool}: #{code}: #{message}"
+    end
+  end
+
+  defp tls(:http, socket, _host, _timeout), do: {:ok, socket}
+
+  defp tls(:https, socket, host, timeout) do
+    options = [
+      verify: :verify_peer,
+      cacerts: :public_key.cacerts_get(),
+      depth: 4,
+      server_name_indication: String.to_charlist(host),
+      customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]
+    ]
+
+    case :ssl.connect(socket, options, timeout) do
+      {:ok, ssl} ->
+        {:ok, ssl}
+
+      {:error, reason} ->
+        :gen_tcp.close(socket)
+        {:error, %Mint.TransportError{reason: reason}}
+    end
+  end
+
+  defp via_tailnet!(args) do
+    case raw(args, "via_tailnet") do
+      nil -> false
+      value when is_boolean(value) -> value
+      _ -> raise "#{@tool}: via_tailnet must be a boolean"
+    end
+  end
+
+  defp tailnet_group!(ctx) do
+    case Map.get(ctx, :group_id) do
+      group when is_binary(group) and group != "" -> group
+      _ -> SalixStore.Ids.group_id_from_agent!(ctx.agent_id)
+    end
+  rescue
+    _ ->
+      reraise RuntimeError,
+              [message: "#{@tool}: via_tailnet requires the Agent's Group"],
+              __STACKTRACE__
+  end
+
   defp request_target(uri) do
     path = if uri.path in [nil, ""], do: "/", else: uri.path
     if uri.query in [nil, ""], do: path, else: path <> "?" <> uri.query
@@ -210,7 +282,7 @@ defmodule SalixAgent.Tools.HttpRequest do
   # Passive mode: read until `:done`, the deadline, or the body cap. A body
   # over the cap is cut there and the connection is closed unread.
   defp receive_response(conn, ref, deadline, acc) do
-    remaining = deadline - System.monotonic_time(:millisecond)
+    remaining = deadline - SystemsClock.monotonic_time(:millisecond)
 
     if remaining <= 0 do
       {:error, conn, %Mint.TransportError{reason: :timeout}}
@@ -510,7 +582,7 @@ defmodule SalixAgent.Tools.HttpRequest do
   @spec resolve_destination!(String.t()) :: [:inet.ip_address()]
   def resolve_destination!(host) when is_binary(host) do
     allow_private =
-      Application.get_env(:salix_agent, :http_request_allow_private_hosts, false) == true
+      SystemsRuntime.get_env(:salix_agent, :http_request_allow_private_hosts, false) == true
 
     case Destination.resolve(host, allow_private: allow_private) do
       {:ok, addresses} ->

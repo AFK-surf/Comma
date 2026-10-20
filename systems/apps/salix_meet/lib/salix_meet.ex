@@ -67,11 +67,12 @@ defmodule SalixMeet do
       # diagnostic the clause below exists to produce, so a broken index took
       # down the Triage freeze instead of failing typed.
       task =
-        Task.Supervisor.async_nolink(SalixMeet.TaskSupervisor, fn ->
+        SystemsRuntime.TaskSupervisor.async_nolink(SalixMeet.TaskSupervisor, fn ->
           Context.run(context, fn -> do_list_group_meetings_bounded(group_id, limit) end)
         end)
 
-      case Task.yield(task, deadline_ms) || Task.shutdown(task, :brutal_kill) do
+      case SystemsRuntime.Task.yield(task, deadline_ms) ||
+             SystemsRuntime.Task.shutdown(task, :brutal_kill) do
         {:ok, result} -> result
         {:exit, _reason} -> {:error, :unavailable}
         nil -> {:error, :timeout}
@@ -107,7 +108,7 @@ defmodule SalixMeet do
       context = Context.capture()
 
       task =
-        Task.Supervisor.async_nolink(SalixMeet.TaskSupervisor, fn ->
+        SystemsRuntime.TaskSupervisor.async_nolink(SalixMeet.TaskSupervisor, fn ->
           Context.run(context, fn ->
             do_get_group_meeting_bounded(
               group_id,
@@ -117,7 +118,8 @@ defmodule SalixMeet do
           end)
         end)
 
-      case Task.yield(task, deadline_ms) || Task.shutdown(task, :brutal_kill) do
+      case SystemsRuntime.Task.yield(task, deadline_ms) ||
+             SystemsRuntime.Task.shutdown(task, :brutal_kill) do
         {:ok, result} -> result
         {:exit, _reason} -> {:error, :unavailable}
         nil -> {:error, :timeout}
@@ -182,7 +184,7 @@ defmodule SalixMeet do
     context = Context.capture()
 
     meeting_ids
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn meeting_id ->
         Context.run(context, fn -> read_group_projected_meeting(meeting_id, group_id) end)
       end,

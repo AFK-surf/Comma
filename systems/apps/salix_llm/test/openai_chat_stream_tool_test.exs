@@ -5,7 +5,7 @@ defmodule SalixLlm.OpenAIChatStreamToolTest do
   fragments: the test reconstructs the complete JSON only to verify the adapter;
   it does not treat partial arguments as a user-visible draft.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.LLM.ReasoningDelta
   alias SalixLlm.{MockSSEServer, OpenAIChat}

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="canvas_grey">#FFF1F1F1</color>
+    <color name="comma_black">#FF191919</color>
+    <color name="comma_accent">#FFD71920</color>
+    <color name="ink">#FF111111</color>
+    <color name="ink_muted">#FF6B6B6B</color>
+    <color name="scrim">#66000000</color>
+    <!-- The drawer dims the page it slides over without hiding it: the parallax
+         behind the panel is part of the gesture, and 40% black buries it. -->
+    <color name="drawer_scrim">#2E000000</color>
+    <color name="hairline">#1A111111</color>
+    <color name="muted_grey">#FF6B6B6B</color>
+    <color name="hint_grey">#FF9C9C9C</color>
+    <color name="rule_grey">#FFD9D9D9</color>
+    <color name="card_white">#FFFFFFFF</color>
+    <!-- 建议 chip：白底压在 #F1F1F1 画布上几乎看不出边，靠一条发丝描边分开；按下只换填充。 -->
+    <color name="chip_stroke">#22111111</color>
+    <color name="chip_pressed">#FFEBEBEB</color>
+    <color name="status_off">#FFD71920</color>
+    <color name="on_black">#FFFFFFFF</color>
+    <color name="text_primary">#FF111111</color>
+    <color name="text_secondary">#FF8A8A8A</color>
+    <color name="bubble_user">#FF191919</color>
+    <color name="bubble_system">#FFE6E6E6</color>
+    <color name="bubble_code_user">#FF282828</color>
+    <color name="bubble_code_agent">#FFE6E6E6</color>
+    <color name="image_placeholder">#FFE8E8E8</color>
+    <color name="image_placeholder_failed">#FFD6D6D6</color>
+    <color name="image_failed_mark">#FF787878</color>
+    <color name="skeleton_base">#FFE3E3E3</color>
+    <color name="skeleton_sheen">#FFF8F8F8</color>
+
+    <!-- 代码块语法高亮。取自 ~/Desktop/Projects/rendered-editor 的 assets/theme.css 里
+         那组 apple-syntax 变量，来源是 Xcode 的 DVTUserInterfaceKit Default（Light）。 -->
+    <color name="syntax_keyword">#FF9B2393</color>
+    <color name="syntax_string">#FFC41A16</color>
+    <color name="syntax_comment">#FF5D6C79</color>
+    <color name="syntax_number">#FF1C00CF</color>
+    <color name="syntax_type">#FF1C464A</color>
+    <color name="syntax_function">#FF326D74</color>
+    <color name="syntax_constant">#FF326D74</color>
+    <color name="syntax_preprocessor">#FF643820</color>
+    <color name="syntax_attribute">#FF815F03</color>
+    <!-- Assistant error card fill: the error background token; a tint of it in dark mode, where the token is solid. -->
+    <color name="chat_error_card_bg">@color/token_bg_error_primary</color>
+</resources>

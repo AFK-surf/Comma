@@ -1,15 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import type { SettingsCategoryDefinition } from "@comma/ui";
+import type { SettingsCategoryDefinition } from "@comma/ui/components/settings";
 import { useNavigate } from "@tanstack/react-router";
-import type {
-  CommaApiClient,
-  CommaTaskLabelApprovalPolicy,
-  CommaTaskLabelCatalog,
-} from "../../api";
-import { useCommaAuth } from "../AuthGate";
+import { useCall, useTopic } from "@comma/core-client";
+import type { CommaTaskLabelApprovalPolicy } from "@comma/core/api-schemas";
 import { useProductInboxProjection } from "../../product-inbox";
-import { readActiveWorkspaceId, subscribeActiveWorkspace } from "../activeWorkspace";
+import { useActiveWorkspaceId } from "../activeWorkspace";
 import { useTaskLabelsCatalogStatus } from "../chat/tasks/labels/useTaskLabelsCatalog";
 import { useLabelProposalTitle } from "./LabelProposalList";
 import { TaskLabelsPage, type TaskLabelDraft } from "./TaskLabelsSettings";
@@ -20,20 +16,13 @@ import { TaskLabelsPage, type TaskLabelDraft } from "./TaskLabelsSettings";
  * person sit above the table. General Permissions shares this Group's catalog
  * and server-owned approval policy.
  */
-export function useTaskLabelsCategory(
-  api: CommaApiClient,
-  enabled: boolean,
-  policyEnabled = false
-) {
+export function useTaskLabelsCategory(enabled: boolean, policyEnabled = false) {
   const messages = useCommaMessages();
   const navigate = useNavigate();
   const locale = useCommaLocale();
-  const auth = useCommaAuth();
-  const [workspaceId, setWorkspaceId] = useState(readActiveWorkspaceId);
-  useEffect(() => subscribeActiveWorkspace(setWorkspaceId), []);
+  const workspaceId = useActiveWorkspaceId();
   const { result } = useProductInboxProjection({
     enabled: enabled || policyEnabled,
-    session: auth.productLease,
     ...(workspaceId ? { workspaceId } : {}),
   });
   const workspace = result?.workspaces?.find(
@@ -41,75 +30,64 @@ export function useTaskLabelsCategory(
   );
   const groupId = workspace?.group_id;
 
-  const { catalog, error, loading, refresh, replace } = useTaskLabelsCatalogStatus(
-    api,
+  const call = useCall();
+  const { catalog, error, loading, refresh } = useTaskLabelsCatalogStatus(
     groupId,
     enabled || policyEnabled
   );
   const [busy, setBusy] = useState<string>();
   const [saveError, setSaveError] = useState(false);
 
-  // Label usage counts come from the Task list the app already exposes; a
+  // Label usage counts come from the Task list (the core reads its first page again when the catalog changes); a
   // failed count read only hides the column, never the catalog.
-  const [counts, setCounts] = useState<Record<string, number>>();
-  useEffect(() => {
-    if (!enabled || !groupId) return undefined;
-    // The closure flag, not a ref, is what the cleanup flips: each effect run
-    // owns exactly one request and a superseded one simply drops its result.
-    let cancelled = false;
-    void api
-      .listConversations(groupId)
-      .then((tasks) => {
-        if (cancelled) return;
-        const next: Record<string, number> = {};
-        for (const task of tasks) {
-          for (const id of task.labels ?? []) next[id] = (next[id] ?? 0) + 1;
+  const { value: counts } = useTopic(
+    enabled && groupId
+      ? {
+          topic: "taskLabelCounts",
+          group: groupId,
+          key: String(catalog?.updated_at ?? ""),
         }
-        setCounts(next);
-      })
-      .catch(() => {
-        if (!cancelled) setCounts(undefined);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [api, enabled, groupId, catalog?.updated_at]);
-
-  const mutate = useCallback(
-    async (key: string, run: () => Promise<CommaTaskLabelCatalog>) => {
-      setBusy(key);
-      setSaveError(false);
-      try {
-        replace(await run());
-      } catch {
-        setSaveError(true);
-      } finally {
-        setBusy(undefined);
-      }
-    },
-    [replace]
+      : null
   );
+
+  const mutate = useCallback(async (key: string, run: () => Promise<unknown>) => {
+    setBusy(key);
+    setSaveError(false);
+    try {
+      await run();
+    } catch {
+      setSaveError(true);
+    } finally {
+      setBusy(undefined);
+    }
+  }, []);
 
   const onCreate = useCallback(
     (draft: TaskLabelDraft) => {
       if (!groupId) return;
-      void mutate("create", () => api.createTaskLabel(groupId, draft));
+      void mutate("create", () =>
+        call("taskLabels.create", { group: groupId, ...draft })
+      );
     },
-    [api, groupId, mutate]
+    [call, groupId, mutate]
   );
   const onUpdate = useCallback(
     (labelId: string, draft: Partial<TaskLabelDraft>) => {
       if (!groupId) return;
-      void mutate(labelId, () => api.updateTaskLabel(groupId, labelId, draft));
+      void mutate(labelId, () =>
+        call("taskLabels.update", { group: groupId, label: labelId, ...draft })
+      );
     },
-    [api, groupId, mutate]
+    [call, groupId, mutate]
   );
   const onDelete = useCallback(
     (labelId: string) => {
       if (!groupId) return;
-      void mutate(labelId, () => api.deleteTaskLabel(groupId, labelId));
+      void mutate(labelId, () =>
+        call("taskLabels.delete", { group: groupId, label: labelId })
+      );
     },
-    [api, groupId, mutate]
+    [call, groupId, mutate]
   );
   const onViewTasks = useCallback(
     (labelId: string) => {
@@ -121,10 +99,10 @@ export function useTaskLabelsCategory(
     (proposalId: string, decision: "approve" | "reject") => {
       if (!groupId) return;
       void mutate(proposalId, () =>
-        api.resolveTaskLabelProposal(groupId, proposalId, decision)
+        call("taskLabels.resolve", { group: groupId, proposal: proposalId, decision })
       );
     },
-    [api, groupId, mutate]
+    [call, groupId, mutate]
   );
 
   const pendingProposals = useMemo(
@@ -165,7 +143,7 @@ export function useTaskLabelsCategory(
       <TaskLabelsPage
         busy={busy}
         catalog={catalog}
-        counts={counts}
+        counts={counts ?? undefined}
         error={
           error
             ? messages.settings_labels_error()
@@ -201,7 +179,9 @@ export function useTaskLabelsCategory(
       error: error || saveError,
       set: (policy: CommaTaskLabelApprovalPolicy) => {
         if (!groupId) return;
-        void mutate("policy", () => api.setTaskLabelApprovalPolicy(groupId, policy));
+        void mutate("policy", () =>
+          call("taskLabels.setPolicy", { group: groupId, policy })
+        );
       },
     },
   };

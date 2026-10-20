@@ -26,6 +26,8 @@
   },
   "devDependencies": {
     "@inlang/paraglide-js": "2.21.0",
+    "@inlang/plugin-m-function-matcher": "2.2.6",
+    "@inlang/plugin-message-format": "4.4.0",
     "@tailwindcss/vite": "^4.3.2",
     "@tanstack/router-plugin": "^1.168.19",
     "@testing-library/jest-dom": "^6.9.1",

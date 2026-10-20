@@ -34,7 +34,11 @@ defmodule SalixWeb.MeetingRuntime do
     end
   end
 
-  @doc "Ingest a Meeting event from the Workload-scoped Compute carrier."
+  @doc """
+  Ingest a Meeting event from a server-side carrier: the Workload-scoped Compute
+  carrier (`origin_env_id` is its environment) or the in-node native runtime
+  (`{:local, recording_dir}`, which lets artifacts stream from that directory).
+  """
   def handle_compute_event(params, origin_env_id \\ nil) when is_map(params) do
     with %{"event" => event} when is_map(event) <- params,
          event <- stringify_keys(event),
@@ -79,7 +83,7 @@ defmodule SalixWeb.MeetingRuntime do
     with true <- event["type"] == "meeting_runtime_update",
          true <- event["status"] in @meeting_terminal_statuses,
          hash when is_binary(hash) and hash != "" <- state["llm_capability_hash"] do
-      _ = SalixAgent.ExternalAgentRuntime.revoke_runtime_capability_by_hash(hash)
+      _ = SalixAgent.MeetingLLMCapability.revoke_by_hash(hash)
       :ok
     else
       _ -> :ok

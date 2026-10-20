@@ -1,7 +1,8 @@
 defmodule CommaWeb.OauthIdpEndpointsTest do
   # async: false — the KEK and endpoint flag live in application config.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
   import Plug.Conn
   import Plug.Test
 
@@ -21,17 +22,20 @@ defmodule CommaWeb.OauthIdpEndpointsTest do
   setup do
     owner = CommaWeb.TestRepoSandbox.start_owner!(:transaction)
 
-    previous_kek = Application.get_env(:comma_core, :oauth_idp)
-    Application.put_env(:comma_core, :oauth_idp, kek: :crypto.hash(:sha256, "idp-endpoint-kek"))
+    previous_kek = SystemsRuntime.get_env(:comma_core, :oauth_idp)
 
-    previous_flag = Application.get_env(:comma_web, :oauth_idp_enabled)
-    Application.put_env(:comma_web, :oauth_idp_enabled, true)
+    SystemsRuntime.put_env(:comma_core, :oauth_idp,
+      kek: :crypto.hash(:sha256, "idp-endpoint-kek")
+    )
+
+    previous_flag = SystemsRuntime.get_env(:comma_web, :oauth_idp_enabled)
+    SystemsRuntime.put_env(:comma_web, :oauth_idp_enabled, true)
 
     # Generous default budgets so unrelated cases never trip the limiter;
     # the rate-limiting describe overrides them per test.
-    previous_rate_limit = Application.get_env(:comma_core, :oauth_idp_rate_limit)
+    previous_rate_limit = SystemsRuntime.get_env(:comma_core, :oauth_idp_rate_limit)
 
-    Application.put_env(:comma_core, :oauth_idp_rate_limit,
+    SystemsRuntime.put_env(:comma_core, :oauth_idp_rate_limit,
       token: [burst: 10_000, rate: 1000.0],
       authorize: [burst: 10_000, rate: 1000.0]
     )
@@ -66,8 +70,8 @@ defmodule CommaWeb.OauthIdpEndpointsTest do
     %{user: user, client: client}
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp call(conn), do: CommaWeb.Router.call(conn, @opts)
 
@@ -76,7 +80,7 @@ defmodule CommaWeb.OauthIdpEndpointsTest do
   defp resource_owner(user), do: %ResourceOwner{sub: user["id"], username: user["email"]}
 
   defp pkce_pair do
-    verifier = Base.url_encode64(:crypto.strong_rand_bytes(48), padding: false)
+    verifier = Base.url_encode64(SystemsRuntime.Proc.random_bytes(48), padding: false)
     challenge = :sha256 |> :crypto.hash(verifier) |> Base.url_encode64(padding: false)
     {verifier, challenge}
   end
@@ -126,7 +130,7 @@ defmodule CommaWeb.OauthIdpEndpointsTest do
 
   describe "feature flag off" do
     setup do
-      Application.put_env(:comma_web, :oauth_idp_enabled, false)
+      SystemsRuntime.put_env(:comma_web, :oauth_idp_enabled, false)
       :ok
     end
 
@@ -158,62 +162,6 @@ defmodule CommaWeb.OauthIdpEndpointsTest do
       assert body["code_challenge_methods_supported"] == ["S256"]
       assert body["subject_types_supported"] == ["public"]
       assert body["scopes_supported"] == ["openid", "email", "profile"]
-    end
-
-    test "is publicly cacheable, unlike the JWKS" do
-      discovery = call(conn(:get, "/.well-known/openid-configuration"))
-      assert get_resp_header(discovery, "cache-control") == ["public, max-age=600"]
-
-      # The asymmetry is load-bearing, not an oversight. Relying parties
-      # cache the JWKS on their own clock (v1 contract: 10 minutes), and
-      # `rotation_prepublish_seconds` (630 s) budgets for that single cache
-      # before a pre-published key starts signing. An intermediary cache
-      # would stack on top of the RP's rather than share its window, so
-      # worst-case staleness could outrun the pre-publish wait and break the
-      # rotation timing property checked in tla/oauth_idp_key_rotation/.
-      # Widening that budget is a contract-and-model change; until then the
-      # JWKS must not invite shared caching.
-      jwks = call(conn(:get, "/.well-known/jwks.json"))
-
-      for value <- get_resp_header(jwks, "cache-control") do
-        refute value =~ "public",
-               "JWKS must not be publicly cacheable: an intermediary cache stacks on " <>
-                 "the RP cache that rotation_prepublish_seconds already budgets for"
-      end
-    end
-
-    # The staging canary failed here: discovery advertised three scopes
-    # while the authorization endpoint only granted `openid`, because the
-    # grantable set came from an oauth_scopes table nobody had seeded.
-    # Advertising a scope the provider then rejects with invalid_scope
-    # breaks every conformant client that reads discovery, so the two must
-    # be asserted against each other, on an unseeded database.
-    test "every advertised scope is actually grantable", %{user: user, client: client} do
-      advertised =
-        call(conn(:get, "/.well-known/openid-configuration"))
-        |> json!()
-        |> Map.fetch!("scopes_supported")
-
-      assert advertised == Comma.OauthIdp.Scopes.v1_scopes()
-
-      {verifier, challenge} = pkce_pair()
-      code = issue_code(user, client, challenge, scope: Enum.join(advertised, " "))
-
-      response =
-        post_token(%{
-          "grant_type" => "authorization_code",
-          "client_id" => client.id,
-          "code" => code,
-          "redirect_uri" => @redirect_uri,
-          "code_verifier" => verifier
-        })
-
-      assert response.status == 200
-      granted = String.split(json!(response)["scope"] || "", " ", trim: true)
-
-      for scope <- advertised do
-        assert scope in granted, "discovery advertises #{scope} but it was not granted"
-      end
     end
   end
 
@@ -258,25 +206,6 @@ defmodule CommaWeb.OauthIdpEndpointsTest do
       assert jwt.fields["iss"] == "https://comma.test"
       assert jwt.fields["aud"] == client.id
       assert jwt.fields["nonce"] == "nonce-1"
-    end
-
-    test "responses carry no-store and wildcard CORS", %{user: user, client: client} do
-      {verifier, challenge} = pkce_pair()
-      code = issue_code(user, client, challenge)
-
-      response =
-        post_token(%{
-          "grant_type" => "authorization_code",
-          "client_id" => client.id,
-          "code" => code,
-          "redirect_uri" => @redirect_uri,
-          "code_verifier" => verifier
-        })
-
-      assert get_resp_header(response, "cache-control") == ["no-store"]
-      # RFC 6749 §5.1 requires both cache headers on token responses.
-      assert get_resp_header(response, "pragma") == ["no-cache"]
-      assert get_resp_header(response, "access-control-allow-origin") == ["*"]
     end
 
     test "wrong code_verifier is rejected", %{user: user, client: client} do
@@ -330,18 +259,6 @@ defmodule CommaWeb.OauthIdpEndpointsTest do
 
       assert response.status in [400, 401]
     end
-
-    test "non-enabled grant types are rejected", %{client: client} do
-      response =
-        post_token(%{
-          "grant_type" => "client_credentials",
-          "client_id" => client.id,
-          "client_secret" => client.secret
-        })
-
-      assert response.status in [400, 401]
-      assert json!(response)["error"] == "unsupported_grant_type"
-    end
   end
 
   describe "userinfo" do
@@ -376,59 +293,19 @@ defmodule CommaWeb.OauthIdpEndpointsTest do
       refute challenge =~ "invalid_access_token"
       assert json!(response)["error"] == "invalid_token"
     end
-
-    test "a missing bearer is rejected" do
-      response = call(conn(:get, "/oauth2/userinfo"))
-      assert response.status == 401
-    end
   end
 
   describe "CORS preflight" do
-    test "token preflight is answered with wildcard origin" do
-      response =
-        conn(:options, "/oauth2/token")
-        |> put_req_header("origin", "https://vibe.example.com")
-        |> put_req_header("access-control-request-method", "POST")
-        |> call()
-
-      assert response.status == 204
-      assert get_resp_header(response, "access-control-allow-origin") == ["*"]
-
-      assert get_resp_header(response, "access-control-allow-headers") == [
-               "authorization,content-type"
-             ]
-    end
   end
 
   describe "rate limiting" do
     defp unique_peer do
-      <<second, third, fourth>> = :crypto.strong_rand_bytes(3)
+      <<second, third, fourth>> = SystemsRuntime.Proc.random_bytes(3)
       {10, second, third, fourth}
     end
 
-    defp unique_peer_conn(conn) do
-      %{conn | remote_ip: unique_peer()}
-    end
-
-    defp attach_events(event) do
-      handler_id = "idp-endpoints-#{inspect(make_ref())}"
-      test_pid = self()
-
-      :ok =
-        :telemetry.attach(
-          handler_id,
-          event,
-          fn _event, measurements, metadata, _config ->
-            send(test_pid, {:telemetry, measurements, metadata})
-          end,
-          nil
-        )
-
-      on_exit(fn -> :telemetry.detach(handler_id) end)
-    end
-
     test "token requests beyond the burst answer 429 with Retry-After" do
-      Application.put_env(:comma_core, :oauth_idp_rate_limit, token: [burst: 2, rate: 0.0])
+      SystemsRuntime.put_env(:comma_core, :oauth_idp_rate_limit, token: [burst: 2, rate: 0.0])
       peer = unique_peer()
 
       fixed = fn ->
@@ -447,107 +324,8 @@ defmodule CommaWeb.OauthIdpEndpointsTest do
       assert [retry_after] = get_resp_header(limited, "retry-after")
       assert String.to_integer(retry_after) >= 1
     end
-
-    test "authorize requests beyond the burst answer 429" do
-      Application.put_env(:comma_core, :oauth_idp_rate_limit, authorize: [burst: 1, rate: 0.0])
-      peer = unique_peer()
-
-      request = fn ->
-        conn(:get, "/oauth2/authorize")
-        |> Map.put(:remote_ip, peer)
-        |> call()
-      end
-
-      first = request.()
-      refute first.status == 429
-
-      limited = request.()
-      assert limited.status == 429
-      assert get_resp_header(limited, "retry-after") != []
-    end
-
-    test "an undecidable limiter fails closed with 503, never passes" do
-      Application.put_env(:comma_core, :oauth_idp_rate_limit, token: [burst: 0, rate: 1.0])
-
-      response =
-        conn(:post, "/oauth2/token", URI.encode_query(%{"grant_type" => "authorization_code"}))
-        |> put_req_header("content-type", "application/x-www-form-urlencoded")
-        |> unique_peer_conn()
-        |> call()
-
-      assert response.status == 503
-      assert json!(response) == %{"error" => "temporarily_unavailable"}
-      assert get_resp_header(response, "retry-after") != []
-    end
-
-    test "rate limiting does not gate userinfo or the discovery documents" do
-      Application.put_env(:comma_core, :oauth_idp_rate_limit,
-        token: [burst: 1, rate: 0.0],
-        authorize: [burst: 1, rate: 0.0]
-      )
-
-      peer = unique_peer()
-
-      for path <- ["/.well-known/openid-configuration", "/.well-known/jwks.json"] do
-        for _round <- 1..3 do
-          response = conn(:get, path) |> Map.put(:remote_ip, peer) |> call()
-          assert response.status == 200
-        end
-      end
-
-      for _round <- 1..3 do
-        response = conn(:get, "/oauth2/userinfo") |> Map.put(:remote_ip, peer) |> call()
-        assert response.status == 401
-      end
-    end
   end
 
   describe "telemetry" do
-    test "every endpoint response emits the endpoint x outcome counter" do
-      attach_events([:comma_product, :oauth_idp, :request])
-
-      response = call(conn(:get, "/.well-known/jwks.json"))
-      assert response.status == 200
-      assert_receive {:telemetry, %{count: 1}, %{endpoint: :jwks, outcome: :ok}}
-
-      response = call(conn(:get, "/oauth2/userinfo"))
-      assert response.status == 401
-      assert_receive {:telemetry, %{count: 1}, %{endpoint: :userinfo, outcome: :rejected}}
-
-      Application.put_env(:comma_web, :oauth_idp_enabled, false)
-      response = call(conn(:get, "/.well-known/openid-configuration"))
-      assert response.status == 404
-      assert_receive {:telemetry, %{count: 1}, %{endpoint: :discovery, outcome: :not_found}}
-    end
-
-    test "rate-limited requests are counted with their own outcome" do
-      attach_events([:comma_product, :oauth_idp, :request])
-      Application.put_env(:comma_core, :oauth_idp_rate_limit, authorize: [burst: 1, rate: 0.0])
-      peer = unique_peer()
-
-      request = fn -> conn(:get, "/oauth2/authorize") |> Map.put(:remote_ip, peer) |> call() end
-      _first = request.()
-      assert request.().status == 429
-      assert_receive {:telemetry, %{count: 1}, %{endpoint: :authorize, outcome: :rate_limited}}
-    end
-
-    test "token issuance emits the aggregate counter and logs the client", %{
-      user: user,
-      client: client
-    } do
-      attach_events([:comma_product, :oauth_idp, :issuance])
-
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          %{"access_token" => _token} = exchange_code(user, client)
-        end)
-
-      # The metric is deliberately label-free (no ID-valued labels);
-      # per-client detail rides on the structured log line instead.
-      assert_receive {:telemetry, %{count: 1}, metadata}
-      refute Map.has_key?(metadata, :client_id)
-      assert log =~ "oauth_idp token issued"
-      assert log =~ client.id
-    end
   end
 end

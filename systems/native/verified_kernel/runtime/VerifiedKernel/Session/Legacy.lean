@@ -16,7 +16,7 @@ private def payloadOf (entry : Term) : Option Term :=
   match entry with | .tuple [_, value] => some value | _ => none
 
 /-- The ordered seq references `mapped!/2` resolves, in evaluation order. -/
-private def lookups (stamped : List (Term × Term)) (refs redactions : List Term) :
+private def lookups (stamped : List (Term × Term)) (refs : List Term) :
     KernelM (List Term) := do
   let messages ← stamped.foldlM (fun acc pair => do
     match pair.2 with
@@ -26,9 +26,7 @@ private def lookups (stamped : List (Term × Term)) (refs redactions : List Term
       let acc := if atomSeq.isInteger then acc ++ [atomSeq] else acc
       return if textSeq.isInteger then acc ++ [textSeq] else acc
     | _ => pure acc) []
-  let marked := redactions.filter (fun record =>
-    record.isMap && record.has (b "seq") && (record.get (b "seq")).isInteger)
-  return messages ++ refs ++ marked.map (fun record => record.get (b "seq"))
+  return messages ++ refs
 
 /-- `{:ok, state}` or `{:error, {:legacy_normalization_failed, reason}}`. -/
 def migrateFormat1 (state : Term) : KernelM Term := do
@@ -78,8 +76,7 @@ def migrateFormat1 (state : Term) : KernelM Term := do
     let seq ← alias record (a "seq") (b "seq")
     if seq.isInteger then put acc seq pair.1 else pure acc) empty
   let storedRefs ← entries ((← field state "async_result_refs").default empty)
-  let redactions ← asList ((← field state "redactions").default (list []))
-  let pending ← lookups stamped (storedRefs.map Prod.snd) redactions
+  let pending ← lookups stamped (storedRefs.map Prod.snd)
   match pending.find? (fun seq => !remap.has seq) with
   | some seq =>
     return .tuple [a "error", .tuple [a "legacy_normalization_failed",
@@ -104,10 +101,6 @@ def migrateFormat1 (state : Term) : KernelM Term := do
     | _ => fail "invalid_term") ([], [], [])
   let (msgs, facts, records) := split
   let refs := Term.map (storedRefs.map (fun pair => (pair.1, remap.get pair.2)))
-  let remapped ← redactions.mapM (fun record => do
-    if record.isMap && record.has (b "seq") && (record.get (b "seq")).isInteger then
-      put record (b "seq") (remap.get (record.get (b "seq")))
-    else pure record)
   let derived ← events.foldlM (fun acc fact => do
     if (← access fact (b "kind")) != b "session_compact_result" then return acc
     let owner ← access fact (b "source_message_id")
@@ -127,7 +120,7 @@ def migrateFormat1 (state : Term) : KernelM Term := do
   let next ← write state
     [("storage_format", i 3), ("messages", list msgs), ("events", list facts),
      ("async_results", list records), ("async_tool_calls", .map running),
-     ("async_result_refs", refs), ("redactions", list remapped),
+     ("async_result_refs", refs),
      ("last_seq", i (Int.ofNat ordered.length)),
      ("compacted_seq", i (Int.ofNat (first.length + results.length))),
      ("archived_through", i 0), ("archive_chunks", list []), ("segment_catalog", list []),

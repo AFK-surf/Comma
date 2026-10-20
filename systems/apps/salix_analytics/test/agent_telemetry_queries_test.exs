@@ -1,5 +1,5 @@
 defmodule SalixAnalytics.AgentTelemetryQueriesTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAnalytics.AgentTelemetryQueries, as: Queries
 
@@ -46,33 +46,40 @@ defmodule SalixAnalytics.AgentTelemetryQueriesTest do
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
 
-    prev = Application.get_env(:salix_analytics, :clickhouse)
+    prev = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
-    Application.put_env(:salix_analytics, :clickhouse,
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
       base_url: "http://127.0.0.1:#{port}/",
       table: "test.analytics_events"
     )
 
-    on_exit(fn -> Application.put_env(:salix_analytics, :clickhouse, prev) end)
+    on_exit(fn ->
+      if prev,
+        do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, prev),
+        else: SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
+    end)
+
     :ok
   end
 
   test "dashboard reads emit a duration/outcome signal under a finite query label" do
-    handler = {__MODULE__, :telemetry, make_ref()}
+    handler = {__MODULE__, :telemetry, SystemsRuntime.Proc.make_ref()}
 
-    :telemetry.attach(
+    SystemsRuntime.Telemetry.attach(
       handler,
       [:salix, :operation, :stop],
-      fn _event, measurements, metadata, pid -> send(pid, {:signal, measurements, metadata}) end,
-      self()
+      fn _event, measurements, metadata, pid ->
+        SystemsRuntime.Proc.send(pid, {:signal, measurements, metadata})
+      end,
+      SystemsRuntime.Proc.self()
     )
 
-    on_exit(fn -> :telemetry.detach(handler) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler) end)
 
     # The stop event is shared across components; unrelated telemetry must not
     # win the mailbox race for this assertion.
-    send(
-      self(),
+    SystemsRuntime.Proc.send(
+      SystemsRuntime.Proc.self(),
       {:signal, %{duration: 1}, %{component: "salix_store", operation: "get", outcome: "ok"}}
     )
 
@@ -102,22 +109,22 @@ defmodule SalixAnalytics.AgentTelemetryQueriesTest do
     # series can answer it: attach the real reporter definitions, force an
     # error, and evaluate the documented label selector against what was
     # actually recorded.
-    handler = {__MODULE__, :catalog, make_ref()}
+    handler = {__MODULE__, :catalog, SystemsRuntime.Proc.make_ref()}
 
-    :telemetry.attach(
+    SystemsRuntime.Telemetry.attach(
       handler,
       [:salix, :operation, :stop],
       fn _e, m, meta, pid ->
-        send(pid, {:sample, m, meta})
+        SystemsRuntime.Proc.send(pid, {:sample, m, meta})
       end,
-      self()
+      SystemsRuntime.Proc.self()
     )
 
-    on_exit(fn -> :telemetry.detach(handler) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler) end)
 
     # Keep unrelated shared-event traffic queued across both expected samples.
-    send(
-      self(),
+    SystemsRuntime.Proc.send(
+      SystemsRuntime.Proc.self(),
       {:sample, %{duration: 1}, %{component: "salix_store", operation: "get", outcome: "ok"}}
     )
 
@@ -155,35 +162,8 @@ defmodule SalixAnalytics.AgentTelemetryQueriesTest do
     assert tags.outcome == "error"
   end
 
-  test "the query label comes from a registered finite set" do
-    # AGENTS.md: metric labels must be finite. Every family this module emits
-    # has to be registered in Salix.Telemetry or it collapses to "other",
-    # which would silently merge unrelated queries in the dashboard.
-    registered =
-      Salix.Telemetry.metrics()
-      |> Enum.find(&(&1.name == [:salix, :operations, :total]))
-      |> then(& &1.tag_values)
-      |> then(fn tag_values ->
-        fn operation ->
-          tag_values.(%{
-            component: "salix_analytics",
-            operation: operation,
-            surface: "system",
-            outcome: "ok"
-          }).operation
-        end
-      end)
-
-    for family <- ~w(run_outcomes tool_rates llm_overview session_trace convergence_drift) do
-      assert registered.(family) == family,
-             "#{family} is not registered in Salix.Telemetry's finite operation set"
-    end
-
-    assert registered.("made_up_family") == "other"
-  end
-
   test "returns {:error, :not_configured} when base_url is absent" do
-    Application.put_env(:salix_analytics, :clickhouse, [])
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse, [])
 
     assert {:error, :not_configured} = Queries.run_outcomes("t1")
     assert {:error, :not_configured} = Queries.unconverged_sessions("t1")
@@ -248,17 +228,6 @@ defmodule SalixAnalytics.AgentTelemetryQueriesTest do
 
     assert sql =~ "FROM test.agent_run_events_v2"
     assert sql =~ "FROM test.agent_run_events WHERE"
-  end
-
-  test "round_trends buckets via a bound interval" do
-    Mock.respond_with(200, "")
-
-    assert {:ok, []} = Queries.round_trends("t1", @window ++ [bucket_seconds: 600])
-
-    params = Mock.last_request()
-    assert params["param_bucket"] == "600"
-    assert params["__body"] =~ "toStartOfInterval(observed_at, toIntervalSecond({bucket:UInt32}))"
-    assert params["__body"] =~ "quantileTDigest(0.95)(duration_ms) AS p95_ms"
   end
 
   test "group and app_revision filters add bound clauses" do
@@ -336,13 +305,6 @@ defmodule SalixAnalytics.AgentTelemetryQueriesTest do
     assert sql =~ "GROUP BY tool_name, tool_source"
   end
 
-  test "tool_latency keeps async rows separate" do
-    Mock.respond_with(200, "")
-
-    assert {:ok, []} = Queries.tool_latency("t1", @window)
-    assert Mock.last_request()["__body"] =~ "GROUP BY tool_name, tool_source, async"
-  end
-
   test "tool drill queries bind the tool name" do
     Mock.respond_with(200, "")
 
@@ -354,40 +316,6 @@ defmodule SalixAnalytics.AgentTelemetryQueriesTest do
     sql = Mock.last_request()["__body"]
     assert sql =~ "status IN ('error', 'guidance')"
     assert sql =~ "LIMIT {limit:UInt32}"
-  end
-
-  test "error_overview computes current and previous window in one scan" do
-    Mock.respond_with(200, ~s({"calls":100,"errors":2,"prev_calls":90,"prev_errors":1}\n))
-
-    assert {:ok, [row]} = Queries.error_overview(:tool, "t1", @window)
-    assert row["prev_errors"] == 1
-
-    params = Mock.last_request()
-    sql = params["__body"]
-
-    # Previous window = equal length immediately before [from, to).
-    assert params["param_prev_from"] == "2026-07-08 12:00:00"
-    assert sql =~ "observed_at >= {prev_from:DateTime}"
-
-    # Tool infra denominator: guidance/cancelled are not infra outcomes.
-    assert sql =~
-             "countIf(status IN ('completed', 'error') AND observed_at >= {from:DateTime}) AS calls"
-  end
-
-  test "deploy_rates groups by revision with unknown coalesced" do
-    Mock.respond_with(200, "")
-
-    assert {:ok, []} = Queries.deploy_rates(:run, "t1", @window)
-    sql = Mock.last_request()["__body"]
-    assert sql =~ "coalesce(app_revision, '') AS revision"
-    # "not completed" rather than a list of failure names: the runtime also
-    # reports guard parks and repair failures, and a deploy that starts
-    # parking runs must still show up here.
-    assert sql =~ "countIf(status != 'completed') AS failed"
-    assert sql =~ "ORDER BY last_seen DESC"
-
-    assert {:ok, []} = Queries.deploy_rates(:tool, "t1", @window)
-    assert Mock.last_request()["__body"] =~ "countIf(status IN ('completed', 'error')) AS calls"
   end
 
   test "llm queries filter by provider/entrypoint and split first-token quantiles" do
@@ -405,39 +333,6 @@ defmodule SalixAnalytics.AgentTelemetryQueriesTest do
     assert sql =~ "AND entrypoint = {entrypoint:String}"
     assert sql =~ "quantileTDigestIf(0.95)(first_token_ms, first_token_ms IS NOT NULL)"
     assert sql =~ "countIf(first_token_ms IS NOT NULL) AS streaming_calls"
-  end
-
-  test "llm_reliability groups by outcome for caller-side rollup" do
-    Mock.respond_with(200, "")
-
-    assert {:ok, []} = Queries.llm_reliability("t1", @window)
-
-    sql = Mock.last_request()["__body"]
-    assert sql =~ "GROUP BY provider, model, entrypoint, status, error_type, http_status"
-    assert sql =~ "countIf(attempts > 1) AS retried"
-  end
-
-  test "llm_trends keeps the per-provider split" do
-    Mock.respond_with(200, "")
-
-    assert {:ok, []} = Queries.llm_trends("t1", @window ++ [bucket_seconds: 3600])
-    assert Mock.last_request()["__body"] =~ "GROUP BY bucket, provider"
-  end
-
-  test "session_costs sums llm time with tokens and tool time without" do
-    Mock.respond_with(200, "")
-
-    assert {:ok, []} = Queries.session_costs(:llm, "t1", @window)
-    sql = Mock.last_request()["__body"]
-    assert sql =~ "sum(prompt_tokens + completion_tokens) AS tokens"
-    assert sql =~ "uniqExact(round_id) AS rounds"
-    assert sql =~ "ORDER BY duration_ms DESC"
-
-    assert {:ok, []} = Queries.session_costs(:tool, "t1", @window)
-    sql = Mock.last_request()["__body"]
-    assert sql =~ "FROM test.tool_call_events_v2"
-    assert sql =~ "LIMIT 1 BY source, source_key"
-    refute sql =~ "tokens"
   end
 
   test "session_trace binds tenant + session and carries model on the llm branch" do

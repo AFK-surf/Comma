@@ -30,6 +30,7 @@ defmodule SalixEnv.MixProject do
     [
       {:salix_store, in_umbrella: true},
       {:systems_observability, in_umbrella: true},
+      {:systems_clock, in_umbrella: true},
       {:bandit, "~> 1.5"},
       {:plug, "~> 1.16"},
       {:req, "~> 0.5"},

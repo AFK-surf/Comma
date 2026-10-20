@@ -1,7 +1,5 @@
-import { execFile, execFileSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
-  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -11,14 +9,15 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { crc32, deflateRawSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type HostCommand,
   type HostConfiguration,
+  type HostPreparationState,
   AgentVMMHostPreparation,
   resolveHostConfiguration,
 } from "../modules/compute-node/host-preparation";
@@ -37,26 +36,129 @@ afterEach(async () => {
   );
 });
 
-async function archiveFixture(symlinkTarget?: string) {
-  const directory = await temporary();
-  const helpers = join(directory, "Agent VMM Host.app", "Contents", "Helpers");
-  await mkdir(helpers, { recursive: true });
-  await writeFile(join(helpers, "agent-vmm-lifecycle"), "#!/bin/sh\nprintf '{}'\n", {
-    mode: 0o755,
-  });
-  await mkdir(join(helpers, "..", "MacOS"));
-  for (const executable of [
-    join(helpers, "agent-vmm"),
-    join(helpers, "agent-vmm-service-executor"),
-    join(helpers, "..", "MacOS", "agent-vmm-host"),
-  ]) {
-    await writeFile(executable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+// The plain fixture is zipped once per file; each test gets its own copy.
+let plainArchive: Buffer | undefined;
+function archiveFixture(
+  options: {
+    symlinkTarget?: string;
+    hostExecutable?: Buffer;
+    withoutLifecycle?: boolean;
+  } = {}
+) {
+  if (Object.keys(options).length === 0)
+    return Buffer.from((plainArchive ??= zipFixture({})));
+  return zipFixture(options);
+}
+
+const script = (body: string) => Buffer.from(`#!/bin/sh\n${body}\n`);
+
+interface BundleEntry {
+  name: string;
+  mode: number;
+  data?: Buffer;
+}
+
+/** The Host bundle's entries: directories, executables and symlinks. */
+function bundleEntries({
+  symlinkTarget,
+  hostExecutable,
+  withoutLifecycle,
+}: {
+  symlinkTarget?: string;
+  hostExecutable?: Buffer;
+  withoutLifecycle?: boolean;
+}) {
+  const app = "Agent VMM Host.app/Contents";
+  const entries: BundleEntry[] = [
+    { name: "Agent VMM Host.app/", mode: 0o40755 },
+    { name: `${app}/`, mode: 0o40755 },
+    { name: `${app}/Helpers/`, mode: 0o40755 },
+    ...(withoutLifecycle
+      ? []
+      : [
+          {
+            name: `${app}/Helpers/agent-vmm-lifecycle`,
+            mode: 0o100755,
+            data: script("printf '{}'"),
+          },
+        ]),
+    { name: `${app}/Helpers/agent-vmm`, mode: 0o100755, data: script("exit 0") },
+    {
+      name: `${app}/Helpers/agent-vmm-service-executor`,
+      mode: 0o100755,
+      data: script("exit 0"),
+    },
+    ...(symlinkTarget
+      ? [
+          {
+            name: `${app}/Helpers/outside`,
+            mode: 0o120755,
+            data: Buffer.from(symlinkTarget),
+          },
+        ]
+      : []),
+    { name: `${app}/MacOS/`, mode: 0o40755 },
+    {
+      name: `${app}/MacOS/agent-vmm-host`,
+      mode: 0o100755,
+      data: hostExecutable ?? script("exit 0"),
+    },
+  ];
+  return entries;
+}
+
+/** The Host bundle as `zip -ry` stores it: deflated files, Unix modes, symlinks. */
+function zipFixture(options: Parameters<typeof bundleEntries>[0]) {
+  return zipEntries(bundleEntries(options));
+}
+
+/** The Host bundle as unzipping it would leave it in `directory`. */
+async function writeBundle(directory: string) {
+  for (const { name, mode, data } of bundleEntries({})) {
+    const path = join(directory, name);
+    if (name.endsWith("/")) await mkdir(path, { recursive: true });
+    else await writeFile(path, data!, { mode: mode & 0o777 });
   }
-  if (symlinkTarget) await symlink(symlinkTarget, join(helpers, "outside"));
-  execFileSync("/usr/bin/zip", ["-qry", "host.zip", "Agent VMM Host.app"], {
-    cwd: directory,
-  });
-  return readFile(join(directory, "host.zip"));
+}
+
+/** A minimal zip writer, so building a fixture starts no `zip` process. */
+function zipEntries(entries: BundleEntry[]) {
+  const local: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const { name, mode, data = Buffer.alloc(0) } of entries) {
+    // Regular files are deflated; directories and symlink targets are stored.
+    const deflate = (mode & 0o170000) === 0o100000;
+    const body = deflate ? deflateRawSync(data) : data;
+    const nameBytes = Buffer.from(name);
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(0x0800, 6);
+    header.writeUInt16LE(deflate ? 8 : 0, 8);
+    header.writeUInt16LE(0x0021, 12);
+    header.writeUInt32LE(crc32(data), 14);
+    header.writeUInt32LE(body.length, 18);
+    header.writeUInt32LE(data.length, 22);
+    header.writeUInt16LE(nameBytes.length, 26);
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt16LE((3 << 8) | 20, 4);
+    header.copy(entry, 6, 4, 30);
+    entry.writeUInt32LE(mode * 0x10000, 38);
+    entry.writeUInt32LE(offset, 42);
+    local.push(header, nameBytes, body);
+    central.push(entry, nameBytes);
+    offset += header.length + nameBytes.length + body.length;
+  }
+  const directory = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, directory, end]);
 }
 
 function downloadResponse(bytes: Buffer) {
@@ -103,7 +205,7 @@ describe("Host preparation", () => {
       args[0] === "version" ? JSON.stringify({ release_id: artifact.release_id }) : ""
     );
     const preparation = new AgentVMMHostPreparation(config, run, fetcher);
-    const requestId = randomUUID();
+    const requestId = "11111111-1111-4111-8111-111111111111";
     const staged = await preparation.stageMaintenance(requestId, () => {}, artifact);
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(staged).toMatchObject({
@@ -141,7 +243,7 @@ describe("Host preparation", () => {
     ).toBe(true);
   });
 
-  it("keeps the preparation lock through maintenance execution and rejects a concurrent ordinary ensure", async () => {
+  it("keeps the preparation lock through maintenance execution and holds a concurrent ordinary ensure until it ends", async () => {
     vi.stubEnv("COMMA_R2_PUBLIC_BASE_URL", "https://example.test");
     const config = resolveHostConfiguration("prod", {}, await temporary());
     const bytes = await archiveFixture();
@@ -173,14 +275,22 @@ describe("Host preparation", () => {
     const maintenance = new AgentVMMHostPreparation(config, run, fetcher);
     const ordinary = new AgentVMMHostPreparation(config, run, fetcher);
     const pending = maintenance.stageMaintenance(
-      randomUUID(),
+      "22222222-2222-4222-8222-222222222222",
       () => {},
       artifact,
       execute
     );
     await entered;
+    let waiting!: Promise<void>;
+    let settled = false;
     try {
-      await expect(ordinary.ensure(() => {})).rejects.toThrow("Another Comma process");
+      waiting = ordinary
+        .ensure(() => {})
+        .finally(() => {
+          settled = true;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(settled).toBe(false);
       expect(fetcher).toHaveBeenCalledTimes(1);
       await expect(readFile(config.lifecyclePath)).rejects.toMatchObject({
         code: "ENOENT",
@@ -189,6 +299,10 @@ describe("Host preparation", () => {
       release();
     }
     const staged = await pending;
+    // After the lock is free, the ordinary ensure proceeds to its own download. Its default pin
+    // differs from this test's artifact, so it then stops at the pin check.
+    await expect(waiting).rejects.toThrow("does not match");
+    expect(fetcher).toHaveBeenCalledTimes(2);
     expect(execute).toHaveBeenCalledOnce();
     expect(execute).toHaveBeenCalledWith(staged);
     expect(staged.targetReleaseId).toBe(artifact.release_id);
@@ -246,35 +360,18 @@ describe("Host preparation", () => {
     ).toMatchObject({ uninstalled: true });
   });
 
-  it("extracts a compressed executable completely in the shipped Electron runtime", async () => {
-    const directory = await temporary();
-    const payload = Buffer.alloc(2 * 1024 * 1024);
-    for (let index = 0; index < payload.length; index++) payload[index] = index % 251;
-    await writeFile(join(directory, "executable"), payload);
-    execFileSync("/usr/bin/zip", ["-q", "host.zip", "executable"], { cwd: directory });
-    const require = createRequire(import.meta.url);
-    const extractModule = require.resolve("extract-zip");
-    const script = `require(${JSON.stringify(extractModule)})(process.argv[2], { dir: process.argv[3] }).catch(error => { console.error(error); process.exit(1); });`;
-    const entrypoint = join(directory, "extract.cjs");
-    await writeFile(entrypoint, script);
-    await promisify(execFile)(
-      require("electron") as string,
-      [entrypoint, join(directory, "host.zip"), join(directory, "output")],
-      {
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-        timeout: 15_000,
-      }
-    );
-    expect(await readFile(join(directory, "output", "executable"))).toEqual(payload);
-  }, 20_000);
-
   it("publishes a missing Host only after extraction and verification, then reuses it without downloading", async () => {
     const config = resolveHostConfiguration(
       "prod",
       { COMMA_VMM_DOWNLOAD_URL: "https://example.test/Host.zip" },
       await temporary()
     );
-    const fetcher = vi.fn(async () => downloadResponse(await archiveFixture()));
+    // A large deflated executable must arrive complete, not truncated.
+    const hostExecutable = Buffer.alloc(2 * 1024 * 1024);
+    for (let index = 0; index < hostExecutable.length; index++)
+      hostExecutable[index] = index % 251;
+    const bytes = await archiveFixture({ hostExecutable });
+    const fetcher = vi.fn(async () => downloadResponse(bytes));
     const verify = vi.fn(async (command: string, args: string[]) => {
       if (command === "/usr/bin/codesign") {
         expect(args.slice(0, 3)).toEqual(["--verify", "--deep", "--strict"]);
@@ -301,6 +398,11 @@ describe("Host preparation", () => {
       "ready",
     ]);
     expect(await readFile(config.lifecyclePath, "utf8")).toContain("#!/bin/sh");
+    expect(
+      (
+        await readFile(join(config.appPath, "Contents", "MacOS", "agent-vmm-host"))
+      ).equals(hostExecutable)
+    ).toBe(true);
     await preparation.ensure(() => {});
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(
@@ -344,15 +446,7 @@ describe("Host preparation", () => {
       await temporary()
     );
     const bytes = await archiveFixture();
-    const incompleteDirectory = await temporary();
-    const incompleteArchive = join(incompleteDirectory, "incomplete.zip");
-    await writeFile(incompleteArchive, bytes);
-    execFileSync("/usr/bin/zip", [
-      "-d",
-      incompleteArchive,
-      "Agent VMM Host.app/Contents/Helpers/agent-vmm-lifecycle",
-    ]);
-    const incomplete = await readFile(incompleteArchive);
+    const incomplete = archiveFixture({ withoutLifecycle: true });
     const fetcher = vi
       .fn()
       .mockResolvedValueOnce(downloadResponse(incomplete))
@@ -366,6 +460,32 @@ describe("Host preparation", () => {
     await preparation.ensure(() => {});
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(await readFile(config.lifecyclePath, "utf8")).toContain("#!/bin/sh");
+  });
+
+  it("keeps a failed attempt's error until the next attempt starts", async () => {
+    const config = resolveHostConfiguration(
+      "prod",
+      { COMMA_VMM_DOWNLOAD_URL: "https://example.test/Host.zip" },
+      await temporary()
+    );
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    const preparation = new AgentVMMHostPreparation(config, async () => "", fetcher);
+    await expect(preparation.ensure(() => {})).rejects.toThrow("HTTP 404");
+    expect(preparation.state()).toMatchObject({
+      phase: "failed",
+      error: "Host download failed (HTTP 404).",
+    });
+    const reports: HostPreparationState[] = [];
+    await expect(preparation.ensure((state) => reports.push(state))).rejects.toThrow(
+      "HTTP 503"
+    );
+    // The retry starts without the earlier error.
+    expect(reports[0]?.phase).toBe("checking");
+    expect(reports[0]).not.toHaveProperty("error");
+    expect(preparation.state().error).toBe("Host download failed (HTTP 503).");
   });
 
   it("refuses an HTTP redirect before requesting the insecure endpoint", async () => {
@@ -396,7 +516,7 @@ describe("Host preparation", () => {
       { COMMA_VMM_DOWNLOAD_URL: "https://example.test/Host.zip" },
       await temporary()
     );
-    const bytes = await archiveFixture(outside);
+    const bytes = await archiveFixture({ symlinkTarget: outside });
     const verify = vi.fn(async () => "");
     const preparation = new AgentVMMHostPreparation(config, verify, async () =>
       downloadResponse(bytes)
@@ -421,7 +541,7 @@ describe("Host preparation", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it("serializes preparation across owners of a shared directory without retrying in the background", async () => {
+  it("serializes preparation across owners of a shared directory: the second waits, then reuses the result", async () => {
     const config = resolveHostConfiguration(
       "prod",
       { COMMA_VMM_DOWNLOAD_URL: "https://example.test/Host.zip" },
@@ -446,11 +566,45 @@ describe("Host preparation", () => {
     const second = new AgentVMMHostPreparation(config, run, fetcher);
     const pending = first.ensure(() => {});
     await started;
-    await expect(second.ensure(() => {})).rejects.toThrow("Another Comma process");
+    const waiting = second.ensure(() => {});
     release();
     await pending;
-    await second.ensure(() => {});
+    await waiting;
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops waiting for another preparer at the download bound", async () => {
+    const config = resolveHostConfiguration(
+      "prod",
+      { COMMA_VMM_DOWNLOAD_URL: "https://example.test/Host.zip" },
+      await temporary()
+    );
+    await mkdir(config.directory, { recursive: true });
+    const holder = new DatabaseSync(join(config.directory, ".prepare.sqlite"));
+    holder.exec("BEGIN IMMEDIATE");
+    let now = 0;
+    const clock = {
+      now: () => now,
+      // Each wait moves the test clock a minute, so the bound arrives after a few polls.
+      setTimer: (_ms: number, run: () => void) => {
+        now += 60_000;
+        const timer = setTimeout(run, 0);
+        return () => clearTimeout(timer);
+      },
+    };
+    const fetcher = vi.fn();
+    const phases: HostPreparationState[] = [];
+    const waiting = new AgentVMMHostPreparation(config, async () => "", fetcher, clock);
+    try {
+      await expect(waiting.ensure((state) => phases.push(state))).rejects.toThrow(
+        "still preparing"
+      );
+      expect(now).toBeGreaterThanOrEqual(15 * 60_000);
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(phases.at(-1)).toMatchObject({ phase: "failed" });
+    } finally {
+      holder.close();
+    }
   });
 
   it("shares the downloaded Host across dev, staging and prod and permits registration", async () => {
@@ -512,7 +666,6 @@ describe("Host preparation", () => {
       { COMMA_VMM_SOURCE_PATH: join(home, "source") },
       home
     );
-    const bytes = await archiveFixture();
     let builds = 0;
     let runningBundle = "downloaded-host";
     let failUpdate = true;
@@ -523,8 +676,7 @@ describe("Host preparation", () => {
       if (command === "make") {
         builds++;
         const output = options!.env!.OUTPUT_DIRECTORY!;
-        await writeFile(join(output, "fixture.zip"), bytes);
-        execFileSync("/usr/bin/unzip", ["-oq", "fixture.zip"], { cwd: output });
+        await writeBundle(output);
       } else if (command === config.lifecyclePath && args[0] === "repair") {
         runningBundle = config.appPath;
       } else if (command === config.lifecyclePath && args[0] === "update") {
@@ -581,13 +733,14 @@ describe("Host preparation", () => {
       host: "absent",
       readability: "readable",
     });
-    await writeFile(helper, "#!/bin/sh\nexit 1\n");
-    await chmod(helper, 0o755);
+    // A helper that runs and fails. A system binary: macOS assesses a new
+    // executable on its first exec, which takes seconds on a busy Mac.
+    await symlink("/usr/bin/false", helper);
     expect(await new AgentVMMCommandAdapter(helper).observe()).toMatchObject({
       readability: "unreadable",
     });
     await expect(
-      runCommand("/bin/pwd", [], undefined, 1000, { cwd: directory })
+      runCommand("/bin/pwd", [], undefined, undefined, { cwd: directory })
     ).resolves.toBe(`${await realpath(directory)}\n`);
   });
 });

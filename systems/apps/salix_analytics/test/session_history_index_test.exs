@@ -1,13 +1,13 @@
 defmodule SalixAnalytics.SessionHistoryIndexTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   alias SalixAnalytics.SessionHistoryIndex, as: Index
   @url System.get_env("SESSION_HISTORY_CLICKHOUSE_URL", "http://127.0.0.1:8123")
   @moduletag :clickhouse
 
   setup do
-    database = "session_history_test_#{System.unique_integer([:positive])}"
-    cfg = Application.get_env(:salix_analytics, :clickhouse)
-    Application.put_env(:salix_analytics, :clickhouse, base_url: @url, database: database)
+    database = "session_history_test_#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    cfg = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse, base_url: @url, database: database)
     start_supervised!({Finch, name: SalixAgent.SessionHistory.HTTP})
     post!("CREATE DATABASE #{database}")
 
@@ -23,8 +23,8 @@ defmodule SalixAnalytics.SessionHistoryIndexTest do
       post!("DROP DATABASE #{database}")
 
       if cfg,
-        do: Application.put_env(:salix_analytics, :clickhouse, cfg),
-        else: Application.delete_env(:salix_analytics, :clickhouse)
+        do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, cfg),
+        else: SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
     end)
 
     :ok

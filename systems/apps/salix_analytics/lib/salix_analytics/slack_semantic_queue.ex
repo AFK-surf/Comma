@@ -6,7 +6,7 @@ defmodule SalixAnalytics.SlackSemanticQueue do
   tla/salix/SemanticIndexScheduling.tla. Atomic historical page insertion and
   the persisted channel cursor are modeled in tla/salix/SemanticHistoryPaging.tla.
   """
-  use GenServer
+  use SystemsRuntime.Server
   import Ecto.Query
   alias SalixAnalytics.SlackSemanticJob
   @capacity 1024
@@ -27,14 +27,21 @@ defmodule SalixAnalytics.SlackSemanticQueue do
     ]
   end
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
   def init(_opts) do
-    :ets.new(__MODULE__, [:named_table, :ordered_set, :public, write_concurrency: true])
-    :ets.insert(__MODULE__, [{:size, 0}, {:live, true, 0}])
-    send(self(), :refresh)
-    Process.send_after(self(), :prune, 60_000)
+    SystemsRuntime.ETS.new(__MODULE__, [
+      :named_table,
+      :ordered_set,
+      :public,
+      write_concurrency: true
+    ])
+
+    SystemsRuntime.ETS.insert(__MODULE__, [{:size, 0}, {:live, true, 0}])
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :refresh)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :prune, 60_000)
     {:ok, nil}
   end
 
@@ -60,15 +67,18 @@ defmodule SalixAnalytics.SlackSemanticQueue do
   end
 
   def offer(scope, timestamp) do
-    reserved = :ets.update_counter(__MODULE__, :size, {2, 1})
+    reserved = SystemsRuntime.ETS.update_counter(__MODULE__, :size, {2, 1})
 
     if reserved <= @capacity do
-      key = {System.unique_integer([:positive, :monotonic])}
-      :ets.insert(__MODULE__, {key, scope, timestamp})
-      if :ets.insert_new(__MODULE__, {:notified, true}), do: send(__MODULE__, :flush)
+      key = {SystemsRuntime.Proc.unique_integer([:positive, :monotonic])}
+      SystemsRuntime.ETS.insert(__MODULE__, {key, scope, timestamp})
+
+      if SystemsRuntime.ETS.insert_new(__MODULE__, {:notified, true}),
+        do: SystemsRuntime.Proc.send(__MODULE__, :flush)
+
       :ok
     else
-      :ets.update_counter(__MODULE__, :size, {2, -1})
+      SystemsRuntime.ETS.update_counter(__MODULE__, :size, {2, -1})
       observe("over_budget")
       {:error, :full}
     end
@@ -77,9 +87,9 @@ defmodule SalixAnalytics.SlackSemanticQueue do
   end
 
   def pending_live? do
-    [{:size, size}] = :ets.lookup(__MODULE__, :size)
-    [{:live, pending, checked}] = :ets.lookup(__MODULE__, :live)
-    size > 0 or pending or System.monotonic_time(:millisecond) - checked > 2500
+    [{:size, size}] = SystemsRuntime.ETS.lookup(__MODULE__, :size)
+    [{:live, pending, checked}] = SystemsRuntime.ETS.lookup(__MODULE__, :live)
+    size > 0 or pending or SystemsClock.monotonic_time(:millisecond) - checked > 2500
   rescue
     _ -> true
   end
@@ -192,17 +202,17 @@ defmodule SalixAnalytics.SlackSemanticQueue do
   def handle_info(:flush, state) do
     result =
       Enum.reduce_while(1..20, :ok, fn _, _ ->
-        case :ets.next(__MODULE__, :size) do
+        case SystemsRuntime.ETS.next(__MODULE__, :size) do
           :"$end_of_table" ->
             {:halt, :ok}
 
           key ->
-            [{^key, scope, timestamp}] = :ets.lookup(__MODULE__, key)
+            [{^key, scope, timestamp}] = SystemsRuntime.ETS.lookup(__MODULE__, key)
 
             case safe(fn -> enqueue(scope, timestamp, "text", true) end) do
               {:ok, _} ->
-                :ets.delete(__MODULE__, key)
-                :ets.update_counter(__MODULE__, :size, {2, -1})
+                SystemsRuntime.ETS.delete(__MODULE__, key)
+                SystemsRuntime.ETS.update_counter(__MODULE__, :size, {2, -1})
                 {:cont, :ok}
 
               _ ->
@@ -211,11 +221,16 @@ defmodule SalixAnalytics.SlackSemanticQueue do
         end
       end)
 
-    :ets.delete(__MODULE__, :notified)
-    [{:size, size}] = :ets.lookup(__MODULE__, :size)
+    SystemsRuntime.ETS.delete(__MODULE__, :notified)
+    [{:size, size}] = SystemsRuntime.ETS.lookup(__MODULE__, :size)
 
-    if size > 0 and :ets.insert_new(__MODULE__, {:notified, true}),
-      do: Process.send_after(self(), :flush, if(result == :ok, do: 1, else: 1000))
+    if size > 0 and SystemsRuntime.ETS.insert_new(__MODULE__, {:notified, true}),
+      do:
+        SystemsClock.send_after(
+          SystemsRuntime.Proc.self(),
+          :flush,
+          if(result == :ok, do: 1, else: 1000)
+        )
 
     if result == :error, do: observe("error")
     {:noreply, state}
@@ -227,10 +242,15 @@ defmodule SalixAnalytics.SlackSemanticQueue do
     end
 
     result = oldest(0)
-    :ets.insert(__MODULE__, {:live, result != nil, System.monotonic_time(:millisecond)})
+
+    SystemsRuntime.ETS.insert(
+      __MODULE__,
+      {:live, result != nil, SystemsClock.monotonic_time(:millisecond)}
+    )
+
     report_age(result, "live")
     report_age(oldest(9), "history")
-    Process.send_after(self(), :refresh, 1000)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :refresh, 1000)
     {:noreply, state}
   end
 
@@ -238,7 +258,7 @@ defmodule SalixAnalytics.SlackSemanticQueue do
     _ = SalixStore.SlackSearchWindows.prune()
 
     safe(fn ->
-      cutoff = DateTime.add(DateTime.utc_now(), -86_400)
+      cutoff = DateTime.add(SystemsClock.utc_now(), -86_400)
 
       ids =
         SalixStore.Repo.all(
@@ -260,7 +280,7 @@ defmodule SalixAnalytics.SlackSemanticQueue do
       )
     end)
 
-    Process.send_after(self(), :prune, 60_000)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :prune, 60_000)
     {:noreply, state}
   end
 
@@ -283,8 +303,13 @@ defmodule SalixAnalytics.SlackSemanticQueue do
 
   defp report_age(oldest, lane) do
     safe(fn ->
-      age = if oldest, do: max(DateTime.diff(DateTime.utc_now(), oldest, :second), 0), else: 0
-      :telemetry.execute([:salix, :semantic_queue, :backlog], %{age_seconds: age}, %{lane: lane})
+      age = if oldest, do: max(DateTime.diff(SystemsClock.utc_now(), oldest, :second), 0), else: 0
+
+      SystemsRuntime.Telemetry.execute(
+        [:salix, :semantic_queue, :backlog],
+        %{age_seconds: age},
+        %{lane: lane}
+      )
     end)
   end
 
@@ -300,7 +325,7 @@ defmodule SalixAnalytics.SlackSemanticQueue do
     do:
       SalixAnalytics.SlackSemanticIndex.observe(
         "slack_semantic_enqueue",
-        System.monotonic_time(),
+        SystemsClock.monotonic_time(),
         outcome
       )
 end

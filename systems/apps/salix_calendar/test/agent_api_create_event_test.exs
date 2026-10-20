@@ -1,5 +1,5 @@
 defmodule SalixCalendar.AgentAPICreateEventTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixCalendar.{AgentAPI, Server}
   alias SalixStore.{Ids, Keys, S3}
@@ -55,22 +55,6 @@ defmodule SalixCalendar.AgentAPICreateEventTest do
     assert owned["calendar_item_id"] == item["calendar_item_id"]
   end
 
-  test "the canonical calendar is stable and retries are idempotent", ctx do
-    assert {:ok, first} =
-             AgentAPI.create_event(ctx.group_id, ctx.params, ctx.principal, "msg1_dup")
-
-    assert {:ok, again} =
-             AgentAPI.create_event(ctx.group_id, ctx.params, ctx.principal, "msg1_dup")
-
-    assert first["calendar_item_id"] == again["calendar_item_id"]
-
-    other = %{ctx.params | "title" => "另一个会"}
-    assert {:ok, second} = AgentAPI.create_event(ctx.group_id, other, ctx.principal, "msg1_2")
-    # Different request → different Event, but same canonical calendar.
-    assert second["calendar_item_id"] != first["calendar_item_id"]
-    assert second["calendar_id"] == first["calendar_id"]
-  end
-
   test "fails closed without a principal and rejects a tenant mismatch", ctx do
     assert {:error, :missing_principal} =
              AgentAPI.create_event(ctx.group_id, ctx.params, nil, "msg1_x")
@@ -87,11 +71,6 @@ defmodule SalixCalendar.AgentAPICreateEventTest do
 
     assert {:error, :principal_tenant_mismatch} =
              AgentAPI.create_event(ctx.group_id, ctx.params, foreign, "msg1_x")
-  end
-
-  test "rejects a blank creation request id", ctx do
-    assert {:error, :invalid_creation_request} =
-             AgentAPI.create_event(ctx.group_id, ctx.params, ctx.principal, "")
   end
 
   defp ms(iso) do

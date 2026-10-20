@@ -3,7 +3,7 @@ defmodule SalixAgent.AppRevision do
 
   def value do
     [
-      Application.get_env(:salix_agent, :app_revision),
+      SystemsRuntime.get_env(:salix_agent, :app_revision),
       System.get_env("SALIX_APP_REVISION"),
       Application.spec(:salix_agent, :vsn)
     ]

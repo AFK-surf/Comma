@@ -1,5 +1,7 @@
 defmodule SalixIM.Migrations.ConversationParticipantStatesFlatTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle
 
   defmodule UnderfilledListBackend do
     defdelegate put(key, body, opts), to: SalixStore.S3.Fake
@@ -26,8 +28,8 @@ defmodule SalixIM.Migrations.ConversationParticipantStatesFlatTest do
   @participant_id "ptp1_1000000000000000004"
 
   setup do
-    previous = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     on_exit(fn -> restore(:salix_store, :s3_backend, previous) end)
   end
@@ -88,15 +90,15 @@ defmodule SalixIM.Migrations.ConversationParticipantStatesFlatTest do
       Release.migrate_conversation_participant_states()
     end
 
-    Application.put_env(:salix_store, :s3_backend, UnderfilledListBackend)
-    test_pid = self()
+    SystemsRuntime.put_env(:salix_store, :s3_backend, UnderfilledListBackend)
+    test_pid = SystemsRuntime.Proc.self()
 
     stats =
       Release.migrate_conversation_participant_states(
         confirm_no_writers: true,
         limit: 20,
         ensure_started: fn app ->
-          send(test_pid, {:started, app})
+          SystemsRuntime.Proc.send(test_pid, {:started, app})
           {:ok, []}
         end
       )
@@ -143,7 +145,7 @@ defmodule SalixIM.Migrations.ConversationParticipantStatesFlatTest do
   end
 
   test "fails closed when a truncated page contains no cursor-bearing object" do
-    Application.put_env(:salix_store, :s3_backend, TruncatedEmptyListBackend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, TruncatedEmptyListBackend)
 
     assert {:error, {:participant_state_migration_failed, stats}} =
              ConversationParticipantStatesFlat.run()
@@ -169,6 +171,6 @@ defmodule SalixIM.Migrations.ConversationParticipantStatesFlatTest do
     )
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

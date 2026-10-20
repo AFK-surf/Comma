@@ -208,7 +208,7 @@ defmodule SalixSignalProto.Keys do
   """
   @spec kem_encapsulate(binary(), <<_::256>>) ::
           {:ok, {<<_::256>>, kem_ciphertext()}} | {:error, :invalid_key}
-  def kem_encapsulate(public, m \\ :crypto.strong_rand_bytes(32)) when is_binary(public) do
+  def kem_encapsulate(public, m \\ SystemsRuntime.Proc.random_bytes(32)) when is_binary(public) do
     with {:ok, <<@kem_type, ek::binary>>} <- parse_kem_public(public),
          {:ok, {secret, c}} <- Kyber1024.encapsulate(ek, m) do
       {:ok, {secret, <<@kem_type>> <> c}}

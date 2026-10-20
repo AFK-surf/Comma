@@ -184,7 +184,7 @@ defmodule Salix.Bindings.MeetingCopilot do
     prior = copilot |> Map.get("prior_actions", []) |> List.wrap()
 
     copilot
-    |> Map.put("last_chat_at", System.system_time(:second))
+    |> Map.put("last_chat_at", SystemsClock.system_time(:second))
     |> Map.put("prior_actions", Enum.take([truncate(say, 160) | prior], @prior_actions_kept))
   end
 
@@ -247,7 +247,7 @@ defmodule Salix.Bindings.MeetingCopilot do
   defp cooldown_note(state) do
     case get_in(state, ["copilot", "last_chat_at"]) do
       ts when is_integer(ts) and ts > 0 ->
-        "You last spoke #{max(System.system_time(:second) - ts, 0)}s ago. " <>
+        "You last spoke #{max(SystemsClock.system_time(:second) - ts, 0)}s ago. " <>
           "Avoid speaking again unless the new content contains a materially new, explicit request."
 
       _ ->
@@ -281,7 +281,7 @@ defmodule Salix.Bindings.MeetingCopilot do
     opts = %{
       entrypoint: "meeting_copilot",
       actor_type: "system",
-      skip_metering: Application.get_env(:salix_web, :meeting_summary_skip_metering, false)
+      skip_metering: SystemsRuntime.get_env(:salix_web, :meeting_summary_skip_metering, false)
     }
 
     with {:ok, llm} when is_map(llm) <- LLMProxy.resolve_llm(agent_id),
@@ -324,7 +324,7 @@ defmodule Salix.Bindings.MeetingCopilot do
   defp trim(value), do: value |> to_string() |> String.trim()
 
   defp default_bot_name do
-    case Application.get_env(:salix_meet, :default_bot_name) do
+    case SystemsRuntime.get_env(:salix_meet, :default_bot_name) do
       value when is_binary(value) and value != "" -> value
       _ -> "Cirno"
     end

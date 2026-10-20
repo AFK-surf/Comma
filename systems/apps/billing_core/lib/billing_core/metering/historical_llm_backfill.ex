@@ -7,9 +7,9 @@ defmodule BillingCore.Metering.HistoricalLLMBackfill do
   @default_days 7
 
   def run(opts \\ []) do
-    repo = opts[:repo] || Application.fetch_env!(:billing_core, :repo)
+    repo = opts[:repo] || SystemsRuntime.fetch_env!(:billing_core, :repo)
     sql = opts[:sql_runner] || Ecto.Adapters.SQL
-    now = opts[:now] || DateTime.utc_now()
+    now = opts[:now] || SystemsClock.utc_now()
     days = min(opts[:days] || @default_days, @default_days)
     since = DateTime.add(now, -days * 86_400, :second)
 
@@ -143,7 +143,7 @@ defmodule BillingCore.Metering.HistoricalLLMBackfill do
   defp clickhouse_config(opts) do
     cfg =
       Keyword.merge(
-        Application.get_env(:salix_analytics, :clickhouse, []),
+        SystemsRuntime.get_env(:salix_analytics, :clickhouse, []),
         opts[:clickhouse_opts] || []
       )
 

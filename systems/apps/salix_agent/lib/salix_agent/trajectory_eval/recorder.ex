@@ -14,7 +14,7 @@ defmodule SalixAgent.TrajectoryEval.Recorder do
   def record(fact) when is_map(fact), do: safe_call(:record, fact)
 
   defp impl,
-    do: Application.get_env(:salix_agent, :trajectory_eval_recorder_mod, __MODULE__.Noop)
+    do: SystemsRuntime.get_env(:salix_agent, :trajectory_eval_recorder_mod, __MODULE__.Noop)
 
   defp safe_call(function, fact) do
     apply(impl(), function, [fact])

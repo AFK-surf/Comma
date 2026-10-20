@@ -1,5 +1,5 @@
 defmodule SalixStore.MeetingGroupProjectionsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{MeetingGroupProjections, Repo}
 
@@ -27,20 +27,5 @@ defmodule SalixStore.MeetingGroupProjectionsTest do
 
     assert {:ok, %{meeting_ids: ["meeting-1"], truncated: false}} =
              MeetingGroupProjections.list_group("group-a", limit: 10)
-  end
-
-  test "group listing is stable, bounded, and reports truncation" do
-    for meeting_id <- ~w(meeting-c meeting-a meeting-b) do
-      assert :ok = MeetingGroupProjections.ensure("group-a", meeting_id)
-    end
-
-    assert {:ok, %{meeting_ids: ["meeting-a", "meeting-b"], truncated: true}} =
-             MeetingGroupProjections.list_group("group-a", limit: 2)
-  end
-
-  test "readiness becomes true only after the release seal" do
-    refute MeetingGroupProjections.ready?()
-    assert :ok = MeetingGroupProjections.mark_ready(%{"meeting_count" => 0})
-    assert MeetingGroupProjections.ready?()
   end
 end

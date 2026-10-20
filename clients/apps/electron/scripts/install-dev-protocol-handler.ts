@@ -4,8 +4,6 @@ import { resolve } from "node:path";
 import { getCommaReleaseConfig } from "../src/release-config";
 import { prepareDevElectronBundle } from "./dev-electron-bundle";
 
-// A deep link must launch the same bundle `electron-forge start` runs.
-const electronExecutable = prepareDevElectronBundle().executablePath;
 const appRoot = resolve(import.meta.dirname, "..");
 const releaseConfig = getCommaReleaseConfig();
 const handlerName = `${releaseConfig.productName} URL Handler`;
@@ -36,10 +34,13 @@ function run(command: string, args: string[]) {
   }
 }
 
-mkdirSync(resolve(contentsPath, "MacOS"), { recursive: true });
-writeFileSync(
-  resolve(contentsPath, "Info.plist"),
-  `<?xml version="1.0" encoding="UTF-8"?>
+async function main() {
+  // A deep link must launch the same bundle `electron-forge start` runs.
+  const electronExecutable = (await prepareDevElectronBundle()).executablePath;
+  mkdirSync(resolve(contentsPath, "MacOS"), { recursive: true });
+  writeFileSync(
+    resolve(contentsPath, "Info.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -64,25 +65,31 @@ writeFileSync(
 </dict>
 </plist>
 `
-);
+  );
 
-run("xcrun", [
-  "swiftc",
-  "-framework",
-  "Cocoa",
-  "-framework",
-  "CoreServices",
-  sourcePath,
-  "-o",
-  executablePath,
-]);
-chmodSync(executablePath, 0o755);
+  run("xcrun", [
+    "swiftc",
+    "-framework",
+    "Cocoa",
+    "-framework",
+    "CoreServices",
+    sourcePath,
+    "-o",
+    executablePath,
+  ]);
+  chmodSync(executablePath, 0o755);
 
-const launchServices =
-  "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
-run(launchServices, ["-f", bundlePath]);
-run(executablePath, ["--install"]);
+  const launchServices =
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+  run(launchServices, ["-f", bundlePath]);
+  run(executablePath, ["--install"]);
 
-console.log(
-  `Registered ${releaseConfig.urlScheme}:// for ${releaseConfig.productName} development.`
-);
+  console.log(
+    `Registered ${releaseConfig.urlScheme}:// for ${releaseConfig.productName} development.`
+  );
+}
+
+main().catch((error: unknown) => {
+  console.error(error);
+  process.exitCode = 1;
+});

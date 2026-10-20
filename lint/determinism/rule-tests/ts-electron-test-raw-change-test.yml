@@ -1,0 +1,40 @@
+id: ts-electron-test-raw-change
+valid:
+  # Reads of Main's state are not changes.
+  - |
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.isVisible());
+  # A page's own objects have the same names: a renderer evaluate is not Main.
+  - |
+    await page.evaluate(() => document.querySelector("input")!.focus());
+  - |
+    await locator.evaluate((element) => (element as HTMLElement).click());
+  - |
+    await page.evaluate(({ selector }) => document.querySelector(selector)!.focus(), { selector });
+  # A fixture named after a module is not an evaluate.
+  - |
+    test("closes", async ({ app }) => {
+      await server.close();
+    });
+  - |
+    await hideElectronWindow(app, page);
+invalid:
+  - |
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.hide());
+  - |
+    await app.evaluate(({ app: main }) => main.focus({ steal: true }));
+  - |
+    await nativeWindow.evaluate((window) => {
+      window.show();
+    });
+  - |
+    await app.evaluate(({ BrowserWindow }, size) => {
+      BrowserWindow.getAllWindows()[0]!.setContentSize(size.width, size.height);
+    }, size);
+  - |
+    await windowHandle.evaluate((target) => target.setSize(1280, 800));
+  - |
+    await app.evaluate(({ nativeTheme }) => {
+      nativeTheme.themeSource = "dark";
+    });
+  - |
+    await app.evaluate(({ Menu }) => Menu.getApplicationMenu()!.getMenuItemById("x")!.click());

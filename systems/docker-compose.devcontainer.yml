@@ -12,7 +12,7 @@ services:
     image: comma-devcontainer:local
     build:
       context: ..
-      dockerfile: .devcontainer/Dockerfile
+      dockerfile: systems/devcontainer/Dockerfile
     init: true
     stdin_open: true
     tty: true
@@ -34,6 +34,8 @@ services:
       COMMA_REDIS_URL: redis://redis:6379/0
       COMMA_MAIL_HOST: mailpit
       COMMA_MAIL_PORT: "1025"
+      # Test runs may reach these services (docs/testing.md#no-real-network).
+      COMMA_TEST_NETWORK_ALLOW: minio,redis,mailpit,postgres,clickhouse,llm-mock,telegram-mock
       RELEASE_COOKIE: comma-dev-cookie
       SALIX_SNOWFLAKE_WORKER_ID: "0"
       SALIX_CONFIG_PATH: /etc/salix/config.json

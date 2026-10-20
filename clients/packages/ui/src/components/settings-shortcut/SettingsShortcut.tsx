@@ -1,4 +1,5 @@
 import { keycapSymbol } from "./SettingsShortcutKeycaps";
+import { appKeyModifierKeycaps, detectAppKeybindingPlatform } from "./appKeybinding";
 import {
   useEffect,
   useRef,
@@ -89,7 +90,9 @@ const shortcutParts = ({ key, modifiers }: SettingsShortcutValue) => [
   ...(modifiers.control ? ["Ctrl"] : []),
   ...(modifiers.alt ? ["Alt"] : []),
   ...(modifiers.shift ? ["Shift"] : []),
-  ...(modifiers.meta ? ["Cmd"] : []),
+  ...(modifiers.meta
+    ? [{ macos: "Cmd", windows: "Win", linux: "Super" }[detectAppKeybindingPlatform()]]
+    : []),
   keyText(key),
 ];
 
@@ -108,14 +111,16 @@ type ShortcutCaptureState =
       shortcut: SettingsShortcutValue;
     };
 
+// As this machine names them: ⌃⌥⇧⌘ on macOS, Ctrl Alt Shift Win elsewhere.
 const modifierKeycaps = (
   modifiers: SettingsShortcutValue["modifiers"]
-): ShortcutKeycap[] => [
-  ...(modifiers.control ? [{ id: "control", text: "⌃" }] : []),
-  ...(modifiers.alt ? [{ id: "alt", text: "⌥" }] : []),
-  ...(modifiers.shift ? [{ id: "shift", text: "⇧" }] : []),
-  ...(modifiers.meta ? [{ id: "meta", text: "⌘" }] : []),
-];
+): ShortcutKeycap[] => {
+  const ids = (["control", "alt", "shift", "meta"] as const).filter(
+    (id) => modifiers[id]
+  );
+  const texts = appKeyModifierKeycaps(modifiers);
+  return ids.map((id, index) => ({ id, text: texts[index]! }));
+};
 
 const shortcutKeycaps = ({ key, modifiers }: SettingsShortcutValue) => [
   ...modifierKeycaps(modifiers),

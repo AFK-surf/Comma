@@ -77,11 +77,7 @@ private def finalPlan (state ctx : Term) : KernelM Term := do
   let now := i (integerValue (← observe (a "time")) / 1000)
   let missing := getList ctx "missing_events" ++ getList ctx "external_events"
   let repair := missing ++ (if !missing.isEmpty && active then [idle] else [])
-  -- The runtime notification already owns a durable unknown/delivered receipt.
-  -- Repair its missing tool result, but do not turn that repair into new model work.
-  let notificationIds := (getList ctx "restarted").filterMap (fun call =>
-    if ((call.get (a "source_call")).get (b "runtime_failure_reply")).isMap then some (call.get (a "id")) else none)
-  let restarted := (getList ctx "restarted").filter (fun call => !notificationIds.contains (call.get (a "id")))
+  let restarted := getList ctx "restarted"
   let failedRefs := restarted.map (fun call => Term.map
     [(b "tool_call_id", call.get (a "id")), (b "reason", b "runtime_restarted")])
   let restartedIds ← joinIds (restarted.map (·.get (a "id")))
@@ -146,12 +142,8 @@ private def finalPlan (state ctx : Term) : KernelM Term := do
   let events := repair ++ missingNotice ++ externalNotice ++ getList ctx "recovered_events" ++ recoveredIdle ++
     getList ctx "failure_events" ++ getList ctx "capability_events" ++ asyncEvents ++ llmEvents
   let nextId := ctx.get (b "next_id")
-  let events := events.map (fun event =>
-    if event.get (b "type") == b "tool_result" && notificationIds.contains (event.get (b "tool_call_id")) then
-      event.put (b "no_wake") (a "true") else event)
-  let results := (getList ctx "policy_results").filter (fun result => !notificationIds.contains (valueOf result "id"))
   let events ← Presentation.recoveredCompletion state
-    (.tuple [list events, list results, i (max 0 (integerValue nextId - 1))])
+    (.tuple [list events, list (getList ctx "policy_results"), i (max 0 (integerValue nextId - 1))])
   return done (.tuple [events, nextId])
 
 private def next (state ctx : Term) : KernelM Term := do

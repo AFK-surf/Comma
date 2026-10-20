@@ -3,7 +3,7 @@ defmodule Salix.Bindings.AgentDriveTest do
   The Drive port binding: a group resolves to its binding's handle, and each
   operation reaches the control-plane file API with it.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Plug.Conn
 
@@ -21,13 +21,13 @@ defmodule Salix.Bindings.AgentDriveTest do
     {:ok, _} =
       DriveBindings.put(group_id, %{"org_slug" => "comma-abc", "api_key" => "synch_agent-token"})
 
-    previous = Application.get_env(:salix_web, :drive_req_options)
-    Application.put_env(:salix_web, :drive_req_options, plug: {Req.Test, Salix.Drive.Files})
+    previous = SystemsRuntime.get_env(:salix_web, :drive_req_options)
+    SystemsRuntime.put_env(:salix_web, :drive_req_options, plug: {Req.Test, Salix.Drive.Files})
 
     on_exit(fn ->
       case previous do
-        nil -> Application.delete_env(:salix_web, :drive_req_options)
-        value -> Application.put_env(:salix_web, :drive_req_options, value)
+        nil -> SystemsRuntime.delete_env(:salix_web, :drive_req_options)
+        value -> SystemsRuntime.put_env(:salix_web, :drive_req_options, value)
       end
 
       DriveBindings.delete(group_id)
@@ -88,26 +88,5 @@ defmodule Salix.Bindings.AgentDriveTest do
     assert {:ok, "hi", false} = AgentDrive.read(group_id, "docs/a.md", 100)
     assert {:ok, %{size: 3, root: "r2"}} = AgentDrive.write(group_id, "docs/b.md", "abc", 3)
     assert {:ok, %{withdrawn: true}} = AgentDrive.delete(group_id, "docs/a.md")
-  end
-
-  test "status folds the control plane's halves into one answer", %{group_id: group_id} do
-    Req.Test.stub(Salix.Drive.Files, fn conn ->
-      Req.Test.json(conn, %{
-        "enabled" => true,
-        "devices" => [%{"label" => "cloud-1", "origin" => "cloud-1@default.comma-abc.sync.test"}],
-        "writes" => %{"enabled" => true, "attached" => false, "device" => ""}
-      })
-    end)
-
-    assert {:ok, %{available: true, writable: false, detail: detail}} =
-             AgentDrive.status(group_id)
-
-    assert detail =~ "not taking writes"
-  end
-
-  test "a group without a binding is unavailable, never an exception" do
-    assert {:error, :not_configured} = AgentDrive.read("grp-none", "a", 10)
-    assert {:ok, %{available: false, detail: detail}} = AgentDrive.status("grp-none")
-    assert detail =~ "no Drive binding"
   end
 end

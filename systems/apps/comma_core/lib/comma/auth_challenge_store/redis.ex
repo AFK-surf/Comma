@@ -82,7 +82,8 @@ defmodule Comma.AuthChallengeStore.Redis do
     return fallback_seconds * 1000
   end
 
-  if redis.call("EXISTS", circuit_key) == 1 then
+  local challenge = cjson.decode(challenge_json)
+  if not challenge["review_user_id"] and redis.call("EXISTS", circuit_key) == 1 then
     return {"provider_unavailable", positive_ttl(circuit_key, 1)}
   end
 
@@ -192,6 +193,9 @@ defmodule Comma.AuthChallengeStore.Redis do
   end
 
   local challenge = cjson.decode(raw)
+  if challenge["review_user_id"] then
+    expected = ARGV[5] or ""
+  end
   local failures = tonumber(redis.call("GET", failure_window_key) or "0")
 
   if failures >= failure_limit then
@@ -399,7 +403,8 @@ defmodule Comma.AuthChallengeStore.Redis do
           code_hash,
           max_attempts,
           Map.fetch!(opts, :verification_failure_limit),
-          Map.fetch!(opts, :verification_failure_window_seconds)
+          Map.fetch!(opts, :verification_failure_window_seconds),
+          Map.get(opts, :review_candidate, "")
         ]
 
         case command(
@@ -472,7 +477,7 @@ defmodule Comma.AuthChallengeStore.Redis do
   defp decode_verify(other, _raw, _retry_ms), do: {:error, other}
 
   defp with_connection(operation, fun) do
-    case Process.whereis(@connection_name) do
+    case SystemsRuntime.Proc.whereis(@connection_name) do
       nil -> observe_failure(operation, {:error, :redis_unavailable})
       _pid -> fun.(@connection_name)
     end
@@ -492,12 +497,12 @@ defmodule Comma.AuthChallengeStore.Redis do
   defp redis_url do
     System.get_env("REDIS_URL") ||
       System.get_env("COMMA_REDIS_URL") ||
-      get_in(Application.get_env(:comma_core, :auth, []), [:redis_url]) ||
+      get_in(SystemsRuntime.get_env(:comma_core, :auth, []), [:redis_url]) ||
       "redis://127.0.0.1:6379/0"
   end
 
   defp observe_failure(operation, error) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:comma, :auth_challenge, :redis, :error],
       %{count: 1},
       %{operation: operation}
@@ -507,7 +512,7 @@ defmodule Comma.AuthChallengeStore.Redis do
   end
 
   defp prefix do
-    get_in(Application.get_env(:comma_core, :auth, []), [:redis_key_prefix]) || "comma:auth:v1"
+    get_in(SystemsRuntime.get_env(:comma_core, :auth, []), [:redis_key_prefix]) || "comma:auth:v1"
   end
 
   defp challenge_key(id), do: join("challenge", id)

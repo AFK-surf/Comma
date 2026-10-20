@@ -31,14 +31,6 @@ defmodule SalixAgent.TerminalReply do
 
   def source_scope_matches_context?(_scope, _ctx), do: false
 
-  def append_reminder(messages, session, role),
-    do:
-      InternalSession.query(
-        session,
-        :provider_request_part,
-        {:terminal_reminder, messages, request_authority?(session, role)}
-      )
-
   def request_authority?(session, role),
     do:
       role == "router" and

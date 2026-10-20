@@ -1,7 +1,7 @@
 defmodule SalixSignalProto.AccountKeysTest do
   # Account entropy pool, SVR key, registration lock and recovery password
   # (CRS-02 §7.1) against vectors/CRS-02/account-keys-derivations.json.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.AccountKeys
   alias SalixSignalProto.Test.Vectors

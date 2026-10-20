@@ -32,8 +32,7 @@ defmodule SalixCluster.Drain do
           handed_off: non_neg_integer(),
           failed: [{String.t(), term()}],
           agents: map(),
-          sessions: map(),
-          attachments: map()
+          sessions: map()
         }
 
   @doc """
@@ -70,7 +69,6 @@ defmodule SalixCluster.Drain do
         end
       end)
 
-    attachments = stop_all(Keyword.get(opts, :attachments_mod, cloudflare_attachments_mod()))
     drained = Enum.reverse(drained)
     failed = Enum.reverse(failed)
 
@@ -80,8 +78,7 @@ defmodule SalixCluster.Drain do
        handed_off: handed_off,
        failed: failed,
        agents: %{completed: length(drained), timeout: 0, error: length(failed)},
-       sessions: %{completed: session_count, timeout: 0, error: 0},
-       attachments: attachments
+       sessions: %{completed: session_count, timeout: 0, error: 0}
      }}
   end
 
@@ -89,7 +86,7 @@ defmodule SalixCluster.Drain do
   @spec local_agent_ids() :: [String.t()]
   def local_agent_ids do
     @registry
-    |> Registry.select([{{:"$1", :"$2", :"$3"}, [], [:"$1"]}])
+    |> SystemsRuntime.Registry.select([{{:"$1", :"$2", :"$3"}, [], [:"$1"]}])
     |> Enum.flat_map(&agent_id_from_registry_key/1)
     |> Enum.uniq()
   end
@@ -98,7 +95,7 @@ defmodule SalixCluster.Drain do
   @spec local_session_keys() :: [term()]
   def local_session_keys do
     @registry
-    |> Registry.select([{{:"$1", :"$2", :"$3"}, [], [:"$1"]}])
+    |> SystemsRuntime.Registry.select([{{:"$1", :"$2", :"$3"}, [], [:"$1"]}])
     |> Enum.filter(&session_registry_key?/1)
     |> Enum.uniq()
   end
@@ -134,16 +131,9 @@ defmodule SalixCluster.Drain do
   defp agent_id_from_registry_key({:internal_session, agent_id, _session_id})
        when is_binary(agent_id), do: [agent_id]
 
-  defp agent_id_from_registry_key({:external_session, agent_id, _session_id})
-       when is_binary(agent_id), do: [agent_id]
-
   defp agent_id_from_registry_key(_key), do: []
 
   defp session_registry_key?({:internal_session, agent_id, session_id})
-       when is_binary(agent_id) and is_binary(session_id),
-       do: true
-
-  defp session_registry_key?({:external_session, agent_id, session_id})
        when is_binary(agent_id) and is_binary(session_id),
        do: true
 
@@ -186,19 +176,4 @@ defmodule SalixCluster.Drain do
       Logger.warning("drain: handoff for #{agent_id} failed: #{inspect(reason)}")
       0
   end
-
-  defp stop_all(mod) do
-    case mod.stop_all() do
-      %{completed: _, timeout: _, error: _} = summary -> summary
-      :ok -> %{completed: 0, timeout: 0, error: 0, errors: []}
-      other -> %{completed: 0, timeout: 0, error: 1, errors: [other]}
-    end
-  catch
-    kind, reason ->
-      Logger.warning("drain: #{inspect(mod)} stop_all failed: #{inspect({kind, reason})}")
-      %{completed: 0, timeout: 0, error: 1, errors: [{kind, reason}]}
-  end
-
-  defp cloudflare_attachments_mod,
-    do: SalixEnv.VM.Providers.Cloudflare.Attachments
 end

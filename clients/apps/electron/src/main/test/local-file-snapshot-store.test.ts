@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import {
   lstat,
   mkdir,
@@ -19,6 +19,7 @@ import {
   chatImagePreviewMaxBytes,
 } from "@comma/chat-contract";
 import { sessionProductLease } from "@comma/session-contract";
+import { testEpoch } from "@comma/test-utils/test-clock";
 import {
   localFilesPickCapability,
   localFilesPreviewCapability,
@@ -36,8 +37,9 @@ import {
 import { sanitizeLocalFileDisplayName } from "../modules/local-files/snapshot-store";
 import {
   MainNativeSessionAdmissionGuard,
-  MainProductCredentialAuthority,
+  MainCredentialGate,
 } from "../modules/session";
+import { acceptVerified, beginInvalidation } from "../../test-support/session-gate";
 
 const TEST_OWNER_USER_ID = "user-preview";
 const temporaryDirectories: string[] = [];
@@ -142,13 +144,13 @@ describe("LocalFilePickerService", () => {
       registrar: { register: vi.fn(async () => undefined) },
       store,
     });
-    const authority = new MainProductCredentialAuthority({
+    const authority = new MainCredentialGate({
       authorityInstanceId: "authority-same-user-preview",
       trustedAudience: "https://api.comma.example",
     });
     const guard = new MainNativeSessionAdmissionGuard(authority);
     const openSession = (sessionId: string) => {
-      const state = authority.acceptVerifiedCredential({
+      const state = acceptVerified(authority, {
         audience: "https://api.comma.example",
         email: "preview@example.com",
         expiresAtEpochSeconds: 1_900_000_000,
@@ -270,6 +272,26 @@ describe("LocalFilePickerService", () => {
       expect(createPreviewImage).not.toHaveBeenCalled();
     }
   );
+
+  it("renders the client core's workspace image preview outside any native call, until its own signal ends", async () => {
+    const bytes = gifWithDimensions(640, 480);
+    const picker = new LocalFilePickerService({
+      registrar: { register: vi.fn(async () => undefined) },
+      store: {} as LocalFileSnapshotStore,
+    });
+    const core = new AbortController();
+    await expect(
+      picker.renderImagePreview({ bytes, mediaType: "image/gif" }, core.signal)
+    ).resolves.toEqual(bytes);
+    core.abort();
+    await expect(
+      picker.renderImagePreview({ bytes, mediaType: "image/gif" }, core.signal)
+    ).rejects.toBeDefined();
+    // Without its own signal, it is a native call's and needs one admitted.
+    await expect(
+      picker.renderImagePreview({ bytes, mediaType: "image/gif" })
+    ).rejects.toThrow("No native Session admission context is active.");
+  });
 
   it("rejects a passthrough source that overflows the preview transport bound", async () => {
     const bytes = Buffer.concat([
@@ -401,10 +423,12 @@ describe("LocalFilePickerService", () => {
 
   it("serializes the full preview lane and fails closed when its queue is full", async () => {
     const allowReads = deferred<void>();
+    const readStarted = deferred<void>();
     let activeReads = 0;
     let maxActiveReads = 0;
     const store = {
       readPreviewSource: vi.fn(async () => {
+        readStarted.resolve();
         activeReads += 1;
         maxActiveReads = Math.max(maxActiveReads, activeReads);
         await allowReads.promise;
@@ -428,7 +452,7 @@ describe("LocalFilePickerService", () => {
       admitted.preview(`lfi1_${String(index).padStart(43, "a")}`)
     );
 
-    await vi.waitFor(() => expect(store.readPreviewSource).toHaveBeenCalled());
+    await readStarted.promise;
     expect(maxActiveReads).toBe(1);
     allowReads.resolve();
     const results = await Promise.all(previews);
@@ -438,8 +462,12 @@ describe("LocalFilePickerService", () => {
 
   it("removes queued work and never decodes after the admitted Session is revoked", async () => {
     const source = deferred<{ bytes: Buffer; mediaType: string }>();
+    const readStarted = deferred<void>();
     const store = {
-      readPreviewSource: vi.fn(() => source.promise),
+      readPreviewSource: vi.fn(() => {
+        readStarted.resolve();
+        return source.promise;
+      }),
     } as unknown as LocalFileSnapshotStore;
     const createPreviewImage = vi.fn();
     const picker = new LocalFilePickerService({
@@ -450,7 +478,8 @@ describe("LocalFilePickerService", () => {
     const admitted = createAdmittedPicker(picker);
     const active = admitted.preview(`lfi1_${"x".repeat(43)}`);
     const queued = admitted.preview(`lfi1_${"y".repeat(43)}`);
-    await vi.waitFor(() => expect(store.readPreviewSource).toHaveBeenCalledOnce());
+    await readStarted.promise;
+    expect(store.readPreviewSource).toHaveBeenCalledOnce();
 
     admitted.invalidate();
     source.resolve({ bytes: pngWithDimensions(1, 1), mediaType: "image/png" });
@@ -572,7 +601,8 @@ describe("LocalFilePickerService", () => {
     expect(registrar.register).toHaveBeenCalledWith(
       "workspace-1",
       expect.objectContaining({ name: "second.txt" }),
-      expect.any(Function)
+      expect.any(Function),
+      undefined
     );
     expect(snapshot).toHaveBeenCalledOnce();
     expect(snapshot).toHaveBeenCalledWith(text, TEST_OWNER_USER_ID);
@@ -715,10 +745,14 @@ describe("LocalFilePickerService", () => {
       deviceId: string;
       localFileIndexVersion: 2;
     }>();
-    const resolveTarget = vi.fn(() => target.promise);
-    const fetchImplementation = vi.fn() as unknown as typeof fetch;
+    const targetRequested = deferred<void>();
+    const resolveTarget = vi.fn(() => {
+      targetRequested.resolve();
+      return target.promise;
+    });
+    const call = vi.fn(async () => null);
     const registrar = new LocalFileRouteRegistrationService({
-      fetch: fetchImplementation,
+      call,
       resolveTarget,
       store,
     });
@@ -739,7 +773,8 @@ describe("LocalFilePickerService", () => {
       maxUploadFiles: 8,
       workspaceId: "workspace-1",
     });
-    await vi.waitFor(() => expect(resolveTarget).toHaveBeenCalledOnce());
+    await targetRequested.promise;
+    expect(resolveTarget).toHaveBeenCalledOnce();
     allowed = false;
     target.resolve({
       connectorRunId: "run_delayed_target",
@@ -749,7 +784,7 @@ describe("LocalFilePickerService", () => {
 
     const result = await picking;
     expect(assertLocalFileRegistrationAllowed).toHaveBeenCalledTimes(2);
-    expect(fetchImplementation).not.toHaveBeenCalled();
+    expect(call).not.toHaveBeenCalled();
     expect(result.items).toEqual([]);
     expect(result.errors).toMatchObject([
       {
@@ -762,19 +797,21 @@ describe("LocalFilePickerService", () => {
     await expect(readDirectory(join(indexRoot, "objects"))).resolves.toEqual([]);
   });
 
-  it("rechecks a released Chat fence before an ambiguous registration retry", async () => {
+  it("keeps the bytes when the core cannot rule out that a route was made", async () => {
     const root = tempDirectory();
     const source = join(root, "retry-race.txt");
     await writeFile(source, "private bytes");
     const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
-    const firstResponse = deferred<Response>();
     let dispatchedRef = "";
-    const fetchImplementation = vi.fn((_input, init) => {
-      dispatchedRef = JSON.parse(String(init?.body)).local_file_ref;
-      return firstResponse.promise;
-    }) as typeof fetch;
+    const call = vi.fn(async (_name: string, params: unknown) => {
+      dispatchedRef = (params as { localFileRef: string }).localFileRef;
+      throw Object.assign(new Error("The selected file could not be registered."), {
+        code: "local_file_unavailable",
+        detail: { outcome: "ambiguous", retryable: true },
+      });
+    });
     const registrar = new LocalFileRouteRegistrationService({
-      fetch: fetchImplementation,
+      call,
       resolveTarget: v2RegistrationTarget("dev_retry_race"),
       store,
     });
@@ -783,25 +820,21 @@ describe("LocalFilePickerService", () => {
       registrar,
       store,
     });
-    let allowed = true;
-    const assertLocalFileRegistrationAllowed = vi.fn(() => {
-      if (!allowed) throw new Error("The retained Chat lease was released.");
-    });
 
-    const picking = createAdmittedPicker(picker).pickForChat({
-      assertLocalFileRegistrationAllowed,
+    const result = await createAdmittedPicker(picker).pickForChat({
+      assertLocalFileRegistrationAllowed: () => {},
+      localFileIntakeId: "intake-1",
       maxFiles: 50,
       maxTotalSize: 1024 * 1024 * 1024,
       maxUploadFiles: 8,
       workspaceId: "workspace-1",
     });
-    await vi.waitFor(() => expect(fetchImplementation).toHaveBeenCalledOnce());
-    allowed = false;
-    firstResponse.resolve(new Response(null, { status: 500 }));
 
-    const result = await picking;
-    expect(assertLocalFileRegistrationAllowed).toHaveBeenCalledTimes(3);
-    expect(fetchImplementation).toHaveBeenCalledOnce();
+    // The core checks the chat intake before each of its requests.
+    expect(call).toHaveBeenCalledWith(
+      "localFiles.register",
+      expect.objectContaining({ intakeId: "intake-1" })
+    );
     expect(result.items).toEqual([]);
     expect(result.errors).toMatchObject([
       {
@@ -859,18 +892,7 @@ describe("LocalFilePickerService", () => {
       localFileIndexVersion: 2 as const,
     }));
     const registrar = new LocalFileRouteRegistrationService({
-      fetch: ((_input: RequestInfo | URL, init?: RequestInit) => {
-        const body = JSON.parse(String(init?.body)) as { local_file_ref: string };
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              local_file_ref: body.local_file_ref,
-              state: "registered",
-            }),
-            { status: 201 }
-          )
-        );
-      }) as typeof fetch,
+      call: async () => null,
       resolveTarget,
       store,
     });
@@ -896,48 +918,6 @@ describe("LocalFilePickerService", () => {
     expect(result.items).toMatchObject([{ kind: "local_file" }]);
   });
 
-  it("requests a connector recycle when the server demands reconfiguration", async () => {
-    const root = tempDirectory();
-    const source = join(root, "needs-reissue.txt");
-    await writeFile(source, "private bytes");
-    const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
-    const onConnectorReconfigurationRequired = vi.fn();
-    const registrar = new LocalFileRouteRegistrationService({
-      fetch: (async () =>
-        new Response(
-          JSON.stringify({
-            action: "reissue_connector_token",
-            connector_token_endpoint:
-              "/v1/comma/workspaces/workspace-1/connector-token",
-            error: "connector_reconfiguration_required",
-            reason: "connector_owner_missing",
-          }),
-          { status: 409 }
-        )) as typeof fetch,
-      onConnectorReconfigurationRequired,
-      resolveTarget: v2RegistrationTarget("dev_reissue"),
-      store,
-    });
-    const picker = new LocalFilePickerService({
-      openDialog: async () => ({ canceled: false, filePaths: [source] }),
-      registrar,
-      store,
-    });
-
-    const result = await createAdmittedPicker(picker).pickForChat({
-      assertLocalFileRegistrationAllowed: () => {},
-      maxFiles: 50,
-      maxTotalSize: 1024 * 1024 * 1024,
-      maxUploadFiles: 8,
-      workspaceId: "workspace-1",
-    });
-
-    expect(onConnectorReconfigurationRequired).toHaveBeenCalledWith("workspace-1");
-    expect(result.errors).toMatchObject([
-      { errorClass: "connector_reconfiguration_required" },
-    ]);
-  });
-
   it("uploads an image without a Connector and names the regular-file failure", async () => {
     const root = tempDirectory();
     const image = join(root, "ready.jpg");
@@ -946,6 +926,7 @@ describe("LocalFilePickerService", () => {
     await writeFile(text, "local index bytes");
     const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
     const registrar = new LocalFileRouteRegistrationService({
+      call: async () => null,
       resolveTarget: async () => null,
       store,
     });
@@ -980,7 +961,7 @@ describe("LocalFilePickerService", () => {
     ]);
   });
 
-  it("registers only ref and exact V2 target facts under the admitted Main credential", async () => {
+  it("hands the core only the ref and exact V2 target facts, and keeps a registered snapshot", async () => {
     let now = 1_000;
     const root = tempDirectory();
     const source = join(root, "private-source.txt");
@@ -990,30 +971,20 @@ describe("LocalFilePickerService", () => {
       rootDir: join(root, "index"),
     });
     const snapshot = await store.snapshot(source, TEST_OWNER_USER_ID);
-    const requests: Array<{ body: unknown; headers: Headers; url: string }> = [];
+    const requests: unknown[] = [];
     const registrar = new LocalFileRouteRegistrationService({
-      fetch: vi.fn(async (input, init) => {
-        requests.push({
-          body: JSON.parse(String(init?.body)),
-          headers: new Headers(init?.headers),
-          url: String(input),
-        });
-        return new Response(
-          JSON.stringify({
-            local_file_ref: snapshot.localFileRef,
-            state: "registered",
-          }),
-          { status: 201 }
-        );
-      }) as typeof fetch,
+      call: vi.fn(async (name: string, params: unknown) => {
+        requests.push({ name, params });
+        return null;
+      }),
       resolveTarget: v2RegistrationTarget("dev_exact"),
       store,
     });
-    const authority = new MainProductCredentialAuthority({
+    const authority = new MainCredentialGate({
       authorityInstanceId: "authority-1",
       trustedAudience: "https://api.comma.example",
     });
-    const signedIn = authority.acceptVerifiedCredential({
+    const signedIn = acceptVerified(authority, {
       audience: "https://api.comma.example",
       email: "peng@example.com",
       expiresAtEpochSeconds: 1_900_000_000,
@@ -1038,89 +1009,20 @@ describe("LocalFilePickerService", () => {
       },
     });
 
-    expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({
-      body: {
-        connector_run_id: "run_exact_v2_reader",
-        local_file_index_version: 2,
-        local_file_ref: snapshot.localFileRef,
-        stable_device_id: "dev_exact",
+    expect(requests).toEqual([
+      {
+        name: "localFiles.register",
+        params: {
+          workspace: "workspace-1",
+          localFileRef: snapshot.localFileRef,
+          connectorRunId: "run_exact_v2_reader",
+          deviceId: "dev_exact",
+        },
       },
-      url: "https://api.comma.example/v1/comma/workspaces/workspace-1/local-file-refs",
-    });
-    expect(requests[0]?.headers.get("authorization")).toBe("Bearer main_secret");
-    expect(JSON.stringify(requests[0])).not.toContain(source);
-    expect(JSON.stringify(requests[0])).not.toContain(root);
+    ]);
+    expect(JSON.stringify(requests)).not.toContain(source);
+    expect(JSON.stringify(requests)).not.toContain(root);
 
-    now += 10_000;
-    expect(await store.cleanupExpiredDrafts({ ttlMs: 1 })).toBe(0);
-    expect((await store.readSnapshot(snapshot.localFileRef)).toString()).toBe(
-      "private bytes"
-    );
-  });
-
-  it("recovers an ambiguous registration response with the same idempotent request", async () => {
-    let now = 1_000;
-    const root = tempDirectory();
-    const source = join(root, "private-source.txt");
-    await writeFile(source, "private bytes");
-    const store = await LocalFileSnapshotStore.open({
-      now: () => now,
-      rootDir: join(root, "index"),
-    });
-    const snapshot = await store.snapshot(source, TEST_OWNER_USER_ID);
-    const requests: string[] = [];
-    const fetchImplementation = vi.fn(async (_input, init) => {
-      requests.push(String(init?.body));
-      if (requests.length === 1) {
-        // The server may have committed this idempotent binding even though
-        // the response was lost before Main observed it.
-        throw new TypeError("connection reset after request");
-      }
-      return new Response(
-        JSON.stringify({
-          local_file_ref: snapshot.localFileRef,
-          state: "registered",
-        }),
-        { status: 201 }
-      );
-    }) as typeof fetch;
-    const registrar = new LocalFileRouteRegistrationService({
-      fetch: fetchImplementation,
-      resolveTarget: v2RegistrationTarget("dev_exact"),
-      store,
-    });
-    const authority = new MainProductCredentialAuthority({
-      authorityInstanceId: "authority-ambiguous-registration",
-      trustedAudience: "https://api.comma.example",
-    });
-    const signedIn = authority.acceptVerifiedCredential({
-      audience: "https://api.comma.example",
-      email: "peng@example.com",
-      expiresAtEpochSeconds: 1_900_000_000,
-      sessionId: "session-ambiguous-registration",
-      token: "main_secret",
-      userId: "user-1",
-    });
-    const session = sessionProductLease(signedIn);
-    if (!session) throw new Error("Expected signed-in Session lease.");
-
-    await new MainNativeSessionAdmissionGuard(authority).run({
-      contract: localFilesPickCapability.contract,
-      handler: async () => {
-        await registrar.register("workspace-1", snapshot, () => {});
-        return { cancelled: false, errors: [], files: [snapshot] };
-      },
-      input: {
-        maxFiles: 50,
-        maxTotalSize: 1024 * 1024 * 1024,
-        session,
-        workspaceId: "workspace-1",
-      },
-    });
-
-    expect(fetchImplementation).toHaveBeenCalledTimes(2);
-    expect(requests[0]).toBe(requests[1]);
     now += 10_000;
     expect(await store.cleanupExpiredDrafts({ ttlMs: 1 })).toBe(0);
     expect((await store.readSnapshot(snapshot.localFileRef)).toString()).toBe(
@@ -1134,20 +1036,26 @@ describe("LocalFilePickerService", () => {
     await writeFile(source, "private bytes");
     const store = await LocalFileSnapshotStore.open({ rootDir: join(root, "index") });
     let rejectedRef = "";
-    const fetchImplementation = vi.fn(async (_input, init) => {
-      rejectedRef = JSON.parse(String(init?.body)).local_file_ref;
-      return new Response(
-        JSON.stringify({
-          action: "reissue_connector_token",
-          connector_token_endpoint: "/v1/comma/workspaces/workspace-1/connector-token",
-          error: "connector_reconfiguration_required",
-          reason: "connector_owner_missing",
-        }),
-        { status: 409 }
+    const call = vi.fn(async (_name: string, params: unknown) => {
+      rejectedRef = (params as { localFileRef: string }).localFileRef;
+      throw Object.assign(
+        new Error(
+          "Reconnect this workspace's Comma Connector with a newly issued token, then select the file again."
+        ),
+        {
+          code: "local_file_unavailable",
+          detail: {
+            outcome: "rejected",
+            retryable: true,
+            remediation: "reissue_connector_token",
+          },
+        }
       );
-    }) as typeof fetch;
+    });
+    const onConnectorReconfigurationRequired = vi.fn();
     const registrar = new LocalFileRouteRegistrationService({
-      fetch: fetchImplementation,
+      call,
+      onConnectorReconfigurationRequired,
       resolveTarget: v2RegistrationTarget("dev_ownerless"),
       store,
     });
@@ -1156,11 +1064,11 @@ describe("LocalFilePickerService", () => {
       registrar,
       store,
     });
-    const authority = new MainProductCredentialAuthority({
+    const authority = new MainCredentialGate({
       authorityInstanceId: "authority-ownerless-connector",
       trustedAudience: "https://api.comma.example",
     });
-    const signedIn = authority.acceptVerifiedCredential({
+    const signedIn = acceptVerified(authority, {
       audience: "https://api.comma.example",
       email: "peng@example.com",
       expiresAtEpochSeconds: 1_900_000_000,
@@ -1197,163 +1105,10 @@ describe("LocalFilePickerService", () => {
         retryable: true,
       },
     ]);
-    expect(fetchImplementation).toHaveBeenCalledOnce();
+    expect(call).toHaveBeenCalledOnce();
+    // The connector restarts with a new token, so the next selection succeeds.
+    expect(onConnectorReconfigurationRequired).toHaveBeenCalledWith("workspace-1");
     await expect(store.readSnapshot(rejectedRef)).rejects.toMatchObject({
-      errorClass: "local_file_unavailable",
-    });
-  });
-
-  it("retains bytes when an ambiguous attempt is followed by owner remediation", async () => {
-    for (const firstOutcome of ["network", "server-500"] as const) {
-      const root = tempDirectory();
-      const source = join(root, `${firstOutcome}.txt`);
-      await writeFile(source, "private bytes");
-      const store = await LocalFileSnapshotStore.open({
-        rootDir: join(root, "index"),
-      });
-      let ambiguousRef = "";
-      let attempt = 0;
-      const fetchImplementation = vi.fn(async (_input, init) => {
-        attempt += 1;
-        ambiguousRef = JSON.parse(String(init?.body)).local_file_ref;
-        if (attempt === 1) {
-          if (firstOutcome === "network") {
-            throw new TypeError("response lost after commit");
-          }
-          return new Response(null, { status: 500 });
-        }
-        return new Response(
-          JSON.stringify({
-            action: "reissue_connector_token",
-            connector_token_endpoint:
-              "/v1/comma/workspaces/workspace-1/connector-token",
-            error: "connector_reconfiguration_required",
-            reason: "connector_owner_missing",
-          }),
-          { status: 409 }
-        );
-      }) as typeof fetch;
-      const registrar = new LocalFileRouteRegistrationService({
-        fetch: fetchImplementation,
-        resolveTarget: v2RegistrationTarget("dev_ownerless"),
-        store,
-      });
-      const picker = new LocalFilePickerService({
-        openDialog: async () => ({ canceled: false, filePaths: [source] }),
-        registrar,
-        store,
-      });
-      const authority = new MainProductCredentialAuthority({
-        authorityInstanceId: `authority-sticky-${firstOutcome}`,
-        trustedAudience: "https://api.comma.example",
-      });
-      const signedIn = authority.acceptVerifiedCredential({
-        audience: "https://api.comma.example",
-        email: "peng@example.com",
-        expiresAtEpochSeconds: 1_900_000_000,
-        sessionId: `session-sticky-${firstOutcome}`,
-        token: "main_secret",
-        userId: "user-1",
-      });
-      const session = sessionProductLease(signedIn);
-      if (!session) throw new Error("Expected signed-in Session lease.");
-
-      const result = await new MainNativeSessionAdmissionGuard(authority).run({
-        contract: localFilesPickCapability.contract,
-        handler: () =>
-          picker.pick({
-            maxFiles: 50,
-            maxTotalSize: 1024 * 1024 * 1024,
-            session,
-            workspaceId: "workspace-1",
-          }),
-        input: {
-          maxFiles: 50,
-          maxTotalSize: 1024 * 1024 * 1024,
-          session,
-          workspaceId: "workspace-1",
-        },
-      });
-
-      expect(fetchImplementation).toHaveBeenCalledTimes(2);
-      expect(result.files).toEqual([]);
-      expect(result.errors).toEqual([
-        {
-          errorClass: "connector_reconfiguration_required",
-          message:
-            "Reconnect this workspace's Comma Connector with a newly issued token, then select the file again.",
-          retryable: true,
-        },
-      ]);
-      expect((await store.readSnapshot(ambiguousRef)).toString()).toBe("private bytes");
-    }
-  });
-
-  it("preserves the exact draft when every registration response is lost", async () => {
-    let now = 1_000;
-    const root = tempDirectory();
-    const source = join(root, "private-source.txt");
-    await writeFile(source, "private bytes");
-    const store = await LocalFileSnapshotStore.open({
-      now: () => now,
-      rootDir: join(root, "index"),
-    });
-    let ambiguousRef = "";
-    const fetchImplementation = vi.fn(async (_input, init) => {
-      ambiguousRef = JSON.parse(String(init?.body)).local_file_ref;
-      throw new TypeError("response lost after commit");
-    }) as typeof fetch;
-    const registrar = new LocalFileRouteRegistrationService({
-      fetch: fetchImplementation,
-      resolveTarget: v2RegistrationTarget("dev_exact"),
-      store,
-    });
-    const picker = new LocalFilePickerService({
-      openDialog: async () => ({ canceled: false, filePaths: [source] }),
-      registrar,
-      store,
-    });
-    const authority = new MainProductCredentialAuthority({
-      authorityInstanceId: "authority-double-response-loss",
-      trustedAudience: "https://api.comma.example",
-    });
-    const signedIn = authority.acceptVerifiedCredential({
-      audience: "https://api.comma.example",
-      email: "peng@example.com",
-      expiresAtEpochSeconds: 1_900_000_000,
-      sessionId: "session-double-response-loss",
-      token: "main_secret",
-      userId: "user-1",
-    });
-    const session = sessionProductLease(signedIn);
-    if (!session) throw new Error("Expected signed-in Session lease.");
-
-    const result = await new MainNativeSessionAdmissionGuard(authority).run({
-      contract: localFilesPickCapability.contract,
-      handler: () =>
-        picker.pick({
-          maxFiles: 50,
-          maxTotalSize: 1024 * 1024 * 1024,
-          session,
-          workspaceId: "workspace-1",
-        }),
-      input: {
-        maxFiles: 50,
-        maxTotalSize: 1024 * 1024 * 1024,
-        session,
-        workspaceId: "workspace-1",
-      },
-    });
-
-    expect(result.files).toEqual([]);
-    expect(result.errors).toMatchObject([{ errorClass: "local_file_unavailable" }]);
-    expect(fetchImplementation).toHaveBeenCalledTimes(2);
-    expect(ambiguousRef).toMatch(/^lfi1_[A-Za-z0-9_-]{43}$/);
-    expect((await store.readSnapshot(ambiguousRef)).toString()).toBe("private bytes");
-
-    now += 10_000;
-    expect(await store.cleanupExpiredSnapshots({ draftTtlMs: 1 })).toBe(1);
-    await expect(store.readSnapshot(ambiguousRef)).rejects.toMatchObject({
       errorClass: "local_file_unavailable",
     });
   });
@@ -1671,7 +1426,10 @@ describe("LocalFileSnapshotStore", () => {
 
     try {
       const snapshot = await store.snapshot(source, TEST_OWNER_USER_ID);
-      expect(await store.readSnapshot(snapshot.localFileRef)).toEqual(expected);
+      const copied = await store.readSnapshot(snapshot.localFileRef);
+      // Buffer#equals compares natively; structural equality walks every byte.
+      expect(copied.byteLength).toBe(expected.byteLength);
+      expect(copied.equals(expected)).toBe(true);
     } finally {
       writeSpy.mockRestore();
     }
@@ -2114,13 +1872,12 @@ describe("LocalFileSnapshotStore", () => {
   });
 
   it("reclaims only old strict-name crash artifacts with bounded startup scans", async () => {
-    const now = Date.now();
     const root = tempDirectory();
     const indexRoot = join(root, "index");
     const source = join(root, "source.txt");
     await writeFile(source, "retained");
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      now: () => testEpoch,
       rootDir: indexRoot,
     });
     const retained = await store.snapshot(source, TEST_OWNER_USER_ID);
@@ -2153,7 +1910,6 @@ describe("LocalFileSnapshotStore", () => {
   });
 
   it("seals cleanup admission before draining startup cleanup accepted by close", async () => {
-    const now = Date.now();
     const root = tempDirectory();
     const indexRoot = join(root, "index");
     const temporaryPaths = ["V", "W", "X"].map((character) =>
@@ -2169,7 +1925,7 @@ describe("LocalFileSnapshotStore", () => {
     });
     let blockedFirstCandidate = false;
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      now: () => testEpoch,
       rootDir: indexRoot,
       startupCleanupFileOperations: {
         lstat: async (path) => {
@@ -2275,17 +2031,18 @@ describe("LocalFileSnapshotStore", () => {
     });
     const cleanup = store.cleanupExpiredSnapshots({ draftTtlMs: 1 });
     await recordRead;
-    let closeSettled = false;
+    // The held cleanup removes the expired entry once released; a close that
+    // did not wait for it would settle while the entry is still there.
+    let entryLeftAtClose: boolean | undefined;
     const closing = store.close().finally(() => {
-      closeSettled = true;
+      entryLeftAtClose = existsSync(entryPath);
     });
 
     try {
-      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
-      expect(closeSettled).toBe(false);
       releaseRecordRead();
       expect(await cleanup).toBe(1);
       await closing;
+      expect(entryLeftAtClose).toBe(false);
       await expect(store.readSnapshot(snapshot.localFileRef)).rejects.toMatchObject({
         errorClass: "local_file_unavailable",
       });
@@ -2297,11 +2054,10 @@ describe("LocalFileSnapshotStore", () => {
   });
 
   it("drains later bounded startup windows without blocking and cancels cleanly", async () => {
-    const now = Date.now();
     const root = tempDirectory();
     const indexRoot = join(root, "index");
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      now: () => testEpoch,
       rootDir: indexRoot,
     });
     const temporaryNames = [
@@ -2353,6 +2109,7 @@ describe("LocalFileSnapshotStore", () => {
       return position < names.length ? { name: names[position] as string } : null;
     });
     const pendingYields = new Set<() => void>();
+    let yielded = deferred<void>();
     const yieldBetweenBatches = vi.fn(
       (signal: AbortSignal) =>
         new Promise<void>((resolveYield) => {
@@ -2365,6 +2122,7 @@ describe("LocalFileSnapshotStore", () => {
             resolveYield();
           };
           pendingYields.add(finish);
+          yielded.resolve();
           signal.addEventListener("abort", finish, { once: true });
           if (signal.aborted) finish();
         })
@@ -2377,8 +2135,10 @@ describe("LocalFileSnapshotStore", () => {
     try {
       expect(pendingYields.size).toBe(1);
       expect(readsByDirectory).toEqual(new Map());
+      yielded = deferred();
       [...pendingYields][0]?.();
-      await vi.waitFor(() => expect(pendingYields.size).toBe(1));
+      await yielded.promise;
+      expect(pendingYields.size).toBe(1);
       expect(readsByDirectory).toEqual(
         new Map([
           [join(indexRoot, "tmp"), 2],
@@ -2388,8 +2148,10 @@ describe("LocalFileSnapshotStore", () => {
       expect(await readFile(temporaryPaths[2] as string, "utf8")).toBe("old artifact");
       expect(await readFile(objectPaths[2] as string, "utf8")).toBe("old artifact");
 
+      yielded = deferred();
       [...pendingYields][0]?.();
-      await vi.waitFor(() => expect(pendingYields.size).toBe(1));
+      await yielded.promise;
+      expect(pendingYields.size).toBe(1);
       expect(readsByDirectory).toEqual(
         new Map([
           [join(indexRoot, "tmp"), 4],
@@ -2441,10 +2203,12 @@ describe("LocalFileSnapshotStore", () => {
         temporariesScanComplete: true,
       });
     let retryCleanup!: () => void;
+    const retrying = deferred<void>();
     const retryAfterError = vi.fn(
       () =>
         new Promise<void>((resolveRetry) => {
           retryCleanup = resolveRetry;
+          retrying.resolve();
         })
     );
     const cleanup = store.startStartupArtifactCleanup({
@@ -2453,13 +2217,15 @@ describe("LocalFileSnapshotStore", () => {
     });
 
     try {
-      await vi.waitFor(() => expect(cleanupSpy).toHaveBeenCalledOnce());
+      await retrying.promise;
+      expect(cleanupSpy).toHaveBeenCalledOnce();
       expect(retryAfterError).toHaveBeenCalledOnce();
       await Promise.resolve();
       expect(cleanupSpy).toHaveBeenCalledOnce();
 
       retryCleanup();
-      await vi.waitFor(() => expect(cleanupSpy).toHaveBeenCalledTimes(2));
+      await cleanup.finished;
+      expect(cleanupSpy).toHaveBeenCalledTimes(2);
       expect(cleanupSpy.mock.calls[1]?.[0]).toMatchObject({
         scanObjects: true,
         scanTemporaries: true,
@@ -2473,7 +2239,6 @@ describe("LocalFileSnapshotStore", () => {
   });
 
   it("retries transient per-entry startup cleanup failures after cursor advance", async () => {
-    const now = Date.now();
     const root = tempDirectory();
     const indexRoot = join(root, "index");
     const temporaryName = `${"L".repeat(43)}.1.1.object.tmp`;
@@ -2487,7 +2252,7 @@ describe("LocalFileSnapshotStore", () => {
     let failEntryProbeLstat = true;
     let failObjectRemove = true;
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      now: () => testEpoch,
       rootDir: indexRoot,
       startupCleanupFileOperations: {
         lstat: async (path) => {
@@ -2524,10 +2289,12 @@ describe("LocalFileSnapshotStore", () => {
     );
 
     let releaseRetry!: () => void;
+    const retrying = deferred<void>();
     const retryAfterError = vi.fn(
       () =>
         new Promise<void>((resolveRetry) => {
           releaseRetry = resolveRetry;
+          retrying.resolve();
         })
     );
     const cleanup = store.startStartupArtifactCleanup({
@@ -2537,7 +2304,8 @@ describe("LocalFileSnapshotStore", () => {
     });
 
     try {
-      await vi.waitFor(() => expect(retryAfterError).toHaveBeenCalledOnce());
+      await retrying.promise;
+      expect(retryAfterError).toHaveBeenCalledOnce();
       expect(failTemporaryLstat).toBe(false);
       expect(failEntryProbeLstat).toBe(false);
       expect(failObjectRemove).toBe(false);
@@ -2548,11 +2316,10 @@ describe("LocalFileSnapshotStore", () => {
       expect(retryAfterError).toHaveBeenCalledOnce();
 
       releaseRetry();
-      await vi.waitFor(async () => {
-        for (const path of [temporaryPath, entryProbeObjectPath, removeObjectPath]) {
-          await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
-        }
-      });
+      await cleanup.finished;
+      for (const path of [temporaryPath, entryProbeObjectPath, removeObjectPath]) {
+        await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
+      }
       expect(retryAfterError).toHaveBeenCalledOnce();
       await cleanup.close();
     } finally {
@@ -2562,13 +2329,12 @@ describe("LocalFileSnapshotStore", () => {
   });
 
   it("cancels a pending per-entry startup cleanup retry without replaying it", async () => {
-    const now = Date.now();
     const root = tempDirectory();
     const indexRoot = join(root, "index");
     const temporaryPath = join(indexRoot, "tmp", `${"P".repeat(43)}.1.1.entry.tmp`);
     let lstatAttempts = 0;
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      now: () => testEpoch,
       rootDir: indexRoot,
       startupCleanupFileOperations: {
         lstat: async (path) => {
@@ -2585,9 +2351,11 @@ describe("LocalFileSnapshotStore", () => {
     });
     await writeFile(temporaryPath, "old artifact", { mode: 0o600 });
     await utimes(temporaryPath, 0, 0);
+    const retrying = deferred<void>();
     const retryAfterError = vi.fn(
       (signal: AbortSignal) =>
         new Promise<void>((resolveRetry) => {
+          retrying.resolve();
           const finish = () => {
             signal.removeEventListener("abort", finish);
             resolveRetry();
@@ -2602,7 +2370,8 @@ describe("LocalFileSnapshotStore", () => {
     });
 
     try {
-      await vi.waitFor(() => expect(retryAfterError).toHaveBeenCalledOnce());
+      await retrying.promise;
+      expect(retryAfterError).toHaveBeenCalledOnce();
       expect(lstatAttempts).toBe(1);
       await cleanup.close();
       expect(lstatAttempts).toBe(1);
@@ -2614,7 +2383,6 @@ describe("LocalFileSnapshotStore", () => {
   });
 
   it("preserves every failed candidate across concurrent bounded cleanup calls", async () => {
-    const now = Date.now();
     const root = tempDirectory();
     const indexRoot = join(root, "index");
     const temporaryPaths = ["Q", "S"].map((character) =>
@@ -2631,7 +2399,7 @@ describe("LocalFileSnapshotStore", () => {
     });
     const failedPaths = new Set<string>();
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      now: () => testEpoch,
       rootDir: indexRoot,
       startupCleanupFileOperations: {
         lstat: async (path) => {
@@ -2670,8 +2438,9 @@ describe("LocalFileSnapshotStore", () => {
           scanObjects: false,
         }),
       ];
+      // The second call waits for the first's window (one scan per kind at a
+      // time), so it fails its candidate only after this releases the first.
       await firstFailureReached;
-      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
       releaseFailures();
       const initialResults = await Promise.all(initialCleanups);
       expect(initialResults).toHaveLength(2);
@@ -2697,7 +2466,6 @@ describe("LocalFileSnapshotStore", () => {
   });
 
   it("keeps scanning after a persistent per-entry startup cleanup failure", async () => {
-    const now = Date.now();
     const root = tempDirectory();
     const indexRoot = join(root, "index");
     const temporaryPaths = ["T", "U"].map((character) =>
@@ -2705,7 +2473,7 @@ describe("LocalFileSnapshotStore", () => {
     );
     let busyPath: string | undefined;
     const store = await LocalFileSnapshotStore.open({
-      now: () => now,
+      now: () => testEpoch,
       rootDir: indexRoot,
       startupCleanupFileOperations: {
         lstat: async (path) => {
@@ -2819,15 +2587,15 @@ function webpWithDimensions(width: number, height: number) {
 }
 
 function createAdmittedPicker(picker: LocalFilePickerService) {
-  const authority = new MainProductCredentialAuthority({
-    authorityInstanceId: `authority-preview-${Math.random()}`,
+  const authority = new MainCredentialGate({
+    authorityInstanceId: "authority-preview",
     trustedAudience: "https://api.comma.example",
   });
-  const signedIn = authority.acceptVerifiedCredential({
+  const signedIn = acceptVerified(authority, {
     audience: "https://api.comma.example",
     email: "preview@example.com",
     expiresAtEpochSeconds: 1_900_000_000,
-    sessionId: `session-preview-${Math.random()}`,
+    sessionId: "session-preview",
     token: "main_secret",
     userId: "user-preview",
   });
@@ -2836,7 +2604,7 @@ function createAdmittedPicker(picker: LocalFilePickerService) {
   const guard = new MainNativeSessionAdmissionGuard(authority);
   return {
     invalidate: () =>
-      authority.beginInvalidation({
+      beginInvalidation(authority, {
         authorityInstanceId: session.authorityInstanceId,
         expectedAudience: session.audience,
         expectedSessionId: session.sessionId,
@@ -2853,6 +2621,7 @@ function createAdmittedPicker(picker: LocalFilePickerService) {
     pickForChat: async (input: {
       sources?: import("@comma/chat-contract").ChatAttachmentSource[];
       assertLocalFileRegistrationAllowed: () => void;
+      localFileIntakeId?: string;
       maxFiles: number;
       maxTotalSize: number;
       maxUploadFiles: number;

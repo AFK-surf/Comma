@@ -13,7 +13,7 @@ defmodule SalixEnv.ComputeReconciler do
   # tla/salix/ComputeCapacityAction.tla. Other scheduling refinements have no
   # current standalone model; see tla/README.md.
 
-  use GenServer
+  use SystemsRuntime.Server
 
   import Ecto.Query
   require Logger
@@ -32,75 +32,9 @@ defmodule SalixEnv.ComputeReconciler do
   @concurrency 4
   @cursor_id "compute-reconciler-agent-vmm"
   @provider "agent_vmm"
-  # One release-owned row, three product templates. Selection adds no Host RPC
-  # or per-Workload timer. The existing fair cursor and four task slots bound work.
-  @runtime_update_due_sql """
-  ? = 'ready' AND EXISTS (
-    SELECT 1 FROM compute_runtime_release release
-    WHERE release.id = 1
-      AND release.templates->?->>'runtime_revision' <> ?
-      AND NOT (COALESCE(?->>'phase', '') = 'cancelled'
-        AND COALESCE(?->>'target_revision', '') = release.templates->?->>'runtime_revision')
-  )
-  """
-  @external_demand_sql """
-  EXISTS (
-    SELECT 1 FROM session_work_candidates swc
-    WHERE swc.workload_id = ?
-      AND (swc.due_at_ms IS NULL
-        OR swc.due_at_ms <= floor(extract(epoch FROM statement_timestamp()) * 1000)::bigint)
-  ) OR EXISTS (
-    SELECT 1 FROM compute_commands cc
-    WHERE cc.workload_id = ? AND cc.target_generation = ?
-      AND cc.status IN ('pending', 'admitted', 'executing', 'unknown_outcome')
-  ) OR EXISTS (
-    SELECT 1 FROM compute_runtime_inputs input
-    WHERE input.workload_id = ? AND input.generation = ?
-      AND input.status IN ('pending', 'in_flight')
-  )
-  """
-  @external_runtime_active_sql """
-  EXISTS (
-    SELECT 1 FROM compute_runtime_instances active_runtime
-    LEFT JOIN compute_reconciler_claims recovery
-      ON recovery.workload_id = active_runtime.workload_id
-      AND recovery.generation = active_runtime.generation
-      AND recovery.provider = 'agent_vmm'
-    WHERE active_runtime.workload_id = ?
-      AND active_runtime.generation = ?
-      AND ((active_runtime.status = 'connected'
-        AND active_runtime.readiness = 'ready'
-        AND active_runtime.connection_epoch = active_runtime.caught_up_epoch)
-        OR recovery.last_error->>'runtime_recovery_deadline' IS NOT NULL)
-  )
-  """
-  # Select each obsolete health projection once so its normal reconciliation
-  # removes the key. Container facts then decide whether idle cleanup is due.
-  @external_idle_cleanup_sql """
-  EXISTS (
-    SELECT 1
-    FROM (VALUES (?::jsonb)) AS observed(value)
-    WHERE jsonb_exists(observed.value, 'health')
-      OR (
-        observed.value->>'imported_reference' IS NOT NULL
-        AND (
-          NOT jsonb_exists(observed.value, 'current_container')
-          OR jsonb_typeof(observed.value->'current_container') IS DISTINCT FROM 'object'
-          OR observed.value->>'container_status' = 'running'
-          OR (
-            observed.value->'current_container' = '{}'::jsonb
-            AND observed.value->>'container_status' IS DISTINCT FROM 'absent'
-          )
-          OR (
-            observed.value->'current_container' <> '{}'::jsonb
-            AND (
-              observed.value->>'container_status' IS NULL
-              OR observed.value->>'container_status' NOT IN ('created', 'stopped')
-            )
-          )
-        )
-      )
-  )
+  @shell_observation_due_sql """
+  ? = 'available' AND (?->>'connection_epoch') IS NOT NULL
+  AND (?->>'runtime_verified_host_epoch') IS DISTINCT FROM (?->>'connection_epoch')
   """
   @runtime_ready_sql """
   NOT EXISTS (
@@ -135,7 +69,10 @@ defmodule SalixEnv.ComputeReconciler do
   """
 
   def start_link(opts \\ []),
-    do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+    do:
+      SystemsRuntime.Server.start_link(__MODULE__, opts,
+        name: Keyword.get(opts, :name, __MODULE__)
+      )
 
   @spec reconcile_workload(String.t(), pos_integer(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -149,7 +86,9 @@ defmodule SalixEnv.ComputeReconciler do
          :ok <- ensure_claim_current(workload, opts),
          %Compute.Allocation{} = allocation <-
            Repo.get(Compute.Allocation, workload.allocation_id),
-         true <- allocation.status != "released" || {:error, :allocation_released},
+         true <-
+           (allocation.status != "released" or not is_nil(workload.deletion)) ||
+             {:error, :allocation_released},
          %Compute.ProviderBinding{provider: provider} <-
            Repo.get(Compute.ProviderBinding, allocation.provider_binding_id),
          result <- reconcile_with_budget(provider, allocation, workload, opts) do
@@ -205,7 +144,7 @@ defmodule SalixEnv.ComputeReconciler do
 
     case deadline && DateTime.from_iso8601(deadline) do
       {:ok, expires, _} ->
-        if DateTime.compare(DateTime.utc_now(), expires) != :lt,
+        if DateTime.compare(SystemsClock.utc_now(), expires) != :lt,
           do:
             {:error,
              {:gateway_error,
@@ -221,6 +160,17 @@ defmodule SalixEnv.ComputeReconciler do
   end
 
   defp provider_budget(_, _, _, _), do: {:error, :unsupported_provider}
+
+  # A Group's Cloud VM on a Host follows its Group record (salix_web composes
+  # it above salix_env, as the Cloudflare one below).
+  defp reconcile_provider(
+         "agent_vmm",
+         allocation,
+         %{spec: %{"group_default" => true}} = workload,
+         opts
+       ),
+       do:
+         apply(SalixWeb.ComputeProviders.AgentVMMCloudVM, :reconcile, [allocation, workload, opts])
 
   defp reconcile_provider("agent_vmm", allocation, workload, opts),
     do: SalixEnv.ComputeProviders.AgentVMM.reconcile(allocation, workload, opts)
@@ -248,7 +198,7 @@ defmodule SalixEnv.ComputeReconciler do
           )
         )
 
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
       error = (claim && claim.last_error) || %{}
 
       {code, deadline_key} =
@@ -270,6 +220,15 @@ defmodule SalixEnv.ComputeReconciler do
         Repo.rollback(:recovery_changed)
       end
 
+      if claim.provider == "cloudflare" do
+        environment = Repo.get(Compute.Environment, workload.environment_id)
+
+        with %{owner_type: "group", owner_id: group} <- environment,
+             {:ok, %{"status" => "waking"}} <- Compute.group_workload(group) do
+          Repo.rollback(:restore_observation_required)
+        end
+      end
+
       Repo.update_all(from(c in Compute.ReconcilerClaim, where: c.id == ^claim.id),
         set: [
           last_error:
@@ -286,19 +245,97 @@ defmodule SalixEnv.ComputeReconciler do
     end)
   end
 
+  @doc "Open one explicit restore retry for the exact observed Group, target, wake, and budget."
+  def retry_group_restore(group_id, expected) when is_binary(group_id) and is_map(expected) do
+    case Compute.update_group_workload(group_id, fn current ->
+           workload = Repo.get!(Compute.Workload, current["workload_id"])
+
+           claim =
+             Repo.one(
+               from(c in Compute.ReconcilerClaim,
+                 where:
+                   c.provider == "cloudflare" and c.workload_id == ^workload.id and
+                     c.generation == ^workload.generation,
+                 lock: "FOR UPDATE"
+               )
+             )
+
+           now = SystemsClock.utc_now()
+           started = current["last_wake_at"]
+           error = (claim && claim.last_error) || %{}
+
+           identity = %{
+             "workload_id" => workload.id,
+             "generation" => workload.generation,
+             "wake_operation_id" => current["wake_operation_id"],
+             "restore_deadline_ms" => if(is_integer(started), do: started + 2_700_000),
+             "provider_resource_name" => current["provider_resource_name"],
+             "profile_key" => get_in(current, ["provider_spec", "profile_key"]),
+             "archive_operation" => get_in(current, ["archive", "operation"]),
+             "cloudflare_control" => current["cloudflare_control"],
+             "claim_error" => error
+           }
+
+           if (current["provider"] == "cloudflare" and current["status"] == "waking" and
+                 workload.desired_state == "ready" and identity == expected and
+                 is_binary(identity["wake_operation_id"]) and
+                 is_binary(identity["archive_operation"]) and is_integer(started) and
+                 started + 2_700_000 <= DateTime.to_unix(now, :millisecond) and
+                 error["kind"] == "action_required" and
+                 error["code"] in [
+                   "group_archive_restore_expired",
+                   "group_provider_recovery_expired"
+                 ] and
+                 not is_nil(claim) and
+                 get_in(current, ["cloudflare_control", "sealed"]) != true) &&
+                (is_nil(claim.lease_expires_at) or
+                   DateTime.compare(claim.lease_expires_at, now) != :gt) do
+             Repo.update_all(from(c in Compute.ReconcilerClaim, where: c.id == ^claim.id),
+               set: [last_error: %{}, next_retry_at: now, updated_at: now]
+             )
+
+             Map.put(current, "last_wake_at", DateTime.to_unix(now, :millisecond))
+           else
+             {:error, :recovery_changed}
+           end
+         end) do
+      {:ok, current, _previous} ->
+        {:ok,
+         %{
+           workload_id: current["workload_id"],
+           generation: expected["generation"],
+           retry: "scheduled"
+         }}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
   @doc "Request an archived Group wake, reopening only a recovery superseded by a later archive."
   def request_group_wake(group_id) when is_binary(group_id) do
     case Compute.update_group_workload(group_id, fn
            %{"provider" => "cloudflare", "status" => "archived"} = current ->
              case admit_archived_group_wake(current) do
-               :ok -> Map.put(current, "wake_requested_at", System.system_time(:millisecond))
-               {:error, _} = error -> error
+               :ok ->
+                 Map.put(current, "wake_requested_at", SystemsClock.system_time(:millisecond))
+
+               {:error, _} = error ->
+                 error
              end
 
            %{"provider" => "cloudflare", "status" => "ready"} = current ->
-             Map.put(current, "runtime_activity", Ecto.UUID.generate())
+             Map.put(current, "runtime_activity", SystemsRuntime.Proc.uuid())
 
            %{"provider" => "cloudflare", "status" => "waking"} = current ->
+             current
+
+           # A stopped container on a Host has no archive to restore: it starts again.
+           %{"provider" => "agent_vmm", "status" => "archived"} = current ->
+             Map.put(current, "wake_requested_at", SystemsClock.system_time(:millisecond))
+
+           %{"provider" => "agent_vmm", "status" => status} = current
+           when status in ["ready", "waking"] ->
              current
 
            _ ->
@@ -350,7 +387,7 @@ defmodule SalixEnv.ComputeReconciler do
 
       %{"kind" => "action_required", "code" => "group_transition_recovery_required"} ->
         if completed_archive_after_claim?(current, claim) do
-          now = DateTime.utc_now()
+          now = SystemsClock.utc_now()
 
           case Repo.update_all(from(c in Compute.ReconcilerClaim, where: c.id == ^claim.id),
                  set: [last_error: %{}, next_retry_at: now, updated_at: now]
@@ -379,7 +416,7 @@ defmodule SalixEnv.ComputeReconciler do
     is_integer(archived_at) and not is_nil(claim.updated_at) and
       DateTime.to_unix(claim.updated_at, :millisecond) < archived_at and
       (is_nil(claim.lease_expires_at) or
-         DateTime.compare(claim.lease_expires_at, DateTime.utc_now()) != :gt) and
+         DateTime.compare(claim.lease_expires_at, SystemsClock.utc_now()) != :gt) and
       is_binary(archive_operation) and
       archive_operation == last_operation["operation"] and
       last_operation["result"] == "archived"
@@ -387,6 +424,9 @@ defmodule SalixEnv.ComputeReconciler do
 
   # One durable recovery deadline per unfinished episode. Foreground callers
   # use the same claim as the sweeper; reconnects and claim renewal cannot reset it.
+  defp runtime_recovery_budget(%{deletion: deletion}, _allocation, _opts) when is_map(deletion),
+    do: :ok
+
   defp runtime_recovery_budget(%{runtime_update: %{"phase" => phase}}, _allocation, _opts)
        when phase not in ["complete", "cancelled"], do: :ok
 
@@ -413,7 +453,7 @@ defmodule SalixEnv.ComputeReconciler do
 
     if recovering do
       Repo.transaction(fn ->
-        now = DateTime.utc_now()
+        now = SystemsClock.utc_now()
         id = claim_id(workload.id, workload.generation)
 
         Repo.insert_all(
@@ -514,12 +554,12 @@ defmodule SalixEnv.ComputeReconciler do
 
   @doc "Wake the exact Workload after its Host Session commits. The sweep covers lost notifications."
   def host_session_ready(allocation_id, server \\ __MODULE__) when is_binary(allocation_id) do
-    GenServer.cast(server, {:host_session_ready, allocation_id})
+    SystemsRuntime.Server.cast(server, {:host_session_ready, allocation_id})
   end
 
   @impl true
   def init(opts) do
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
 
     state = %{
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
@@ -566,7 +606,7 @@ defmodule SalixEnv.ComputeReconciler do
   end
 
   def handle_info({ref, _result}, state) when is_reference(ref) do
-    Process.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
     {:noreply, finish_task(state, ref, nil)}
   end
 
@@ -580,8 +620,8 @@ defmodule SalixEnv.ComputeReconciler do
         {:noreply, state}
 
       task ->
-        Process.exit(task.pid, :kill)
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.exit(task.pid, :kill)
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         {:noreply, finish_task(state, ref, {:error, :reconcile_timeout})}
     end
   end
@@ -592,7 +632,7 @@ defmodule SalixEnv.ComputeReconciler do
 
   @impl true
   def terminate(_reason, state) do
-    Enum.each(state.tasks, fn {_ref, task} -> Process.exit(task.pid, :shutdown) end)
+    Enum.each(state.tasks, fn {_ref, task} -> SystemsRuntime.Proc.exit(task.pid, :shutdown) end)
     :ok
   end
 
@@ -600,14 +640,18 @@ defmodule SalixEnv.ComputeReconciler do
     context = SystemsObservability.Context.capture()
 
     task =
-      Task.async(fn -> SystemsObservability.Context.run(context, fn -> run_claim(claim) end) end)
+      SystemsRuntime.Task.async(fn ->
+        SystemsObservability.Context.run(context, fn -> run_claim(claim) end)
+      end)
 
     # Stop the local task before its provider-specific claim expires.
     # Cloudflare imports can use 45 minutes. Agent VMM keeps its existing budget.
     budget =
-      max(1, DateTime.diff(claim.lease_expires_at, DateTime.utc_now(), :millisecond) - 30_000)
+      max(1, DateTime.diff(claim.lease_expires_at, SystemsClock.utc_now(), :millisecond) - 30_000)
 
-    timer = Process.send_after(self(), {:claim_timeout, task.ref}, budget)
+    timer =
+      SystemsClock.send_after(SystemsRuntime.Proc.self(), {:claim_timeout, task.ref}, budget)
+
     entry = Map.merge(claim, %{pid: task.pid, timer: timer})
     %{state | tasks: Map.put(state.tasks, task.ref, entry)}
   end
@@ -618,7 +662,7 @@ defmodule SalixEnv.ComputeReconciler do
         state
 
       {task, tasks} ->
-        Process.cancel_timer(task.timer)
+        SystemsClock.cancel_timer(task.timer)
 
         if error do
           Logger.warning("Compute reconciliation interrupted",
@@ -635,19 +679,19 @@ defmodule SalixEnv.ComputeReconciler do
   end
 
   defp schedule_sweep(state, delay) do
-    if state.timer, do: Process.cancel_timer(state.timer)
-    %{state | timer: Process.send_after(self(), :sweep, delay)}
+    if state.timer, do: SystemsClock.cancel_timer(state.timer)
+    %{state | timer: SystemsClock.send_after(SystemsRuntime.Proc.self(), :sweep, delay)}
   end
 
   defp run_claim(%{workload: workload, claim_token: token}) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
     result = reconcile_workload(workload.id, workload.generation, claim_token: token)
 
     if match?({:error, _}, result) do
       Logger.warning("Compute reconciliation will retry or await action",
         workload_id: workload.id,
         stage: :provider_reconcile,
-        duration_ms: System.monotonic_time(:millisecond) - started,
+        duration_ms: SystemsClock.monotonic_time(:millisecond) - started,
         reason: reconcile_log_reason(result)
       )
     end
@@ -694,7 +738,7 @@ defmodule SalixEnv.ComputeReconciler do
         )
 
       if workload do
-        now = DateTime.utc_now()
+        now = SystemsClock.utc_now()
         id = claim_id(workload.id, workload.generation)
 
         claim =
@@ -776,7 +820,7 @@ defmodule SalixEnv.ComputeReconciler do
   end
 
   defp lock_or_create_cursor! do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     {_count, _} =
       Repo.insert_all(
@@ -805,7 +849,7 @@ defmodule SalixEnv.ComputeReconciler do
        do: %{tenant_id: tenant_id, updated_at: updated_at, workload_id: workload_id}
 
   defp high_watermark(_cursor) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     Repo.one(
       from(w in Compute.Workload,
@@ -817,7 +861,13 @@ defmodule SalixEnv.ComputeReconciler do
         on: e.id == w.environment_id,
         where:
           w.desired_state in ["ready", "draining", "stopped"] and
-            a.generation == e.generation and a.status != "released" and
+            ((a.generation == e.generation and a.status != "released") or
+               (a.generation <= e.generation and
+                  fragment(
+                    "?->>'phase' IS NOT NULL AND ?->>'phase' NOT IN ('complete', 'cloud_retired')",
+                    w.deletion,
+                    w.deletion
+                  ))) and
             ((b.provider == "cloudflare" and
                 fragment("?->>'group_default' = 'true'", w.spec) and
                 (w.desired_state == "stopped" or
@@ -831,18 +881,14 @@ defmodule SalixEnv.ComputeReconciler do
                      "billing_suspended"
                    ])) or
                (b.provider == "agent_vmm" and
-                  (fragment(
-                     @runtime_update_due_sql,
-                     w.desired_state,
-                     w.template_key,
-                     w.runtime_revision,
-                     w.runtime_update,
-                     w.runtime_update,
-                     w.template_key
-                   ) or
-                     w.observed_state != w.desired_state or
-                     (w.desired_state == "ready" and
-                        w.kind in ["external_worker", "meeting_runtime"] and
+                  fragment("?->>'group_default' = 'true'", w.spec) and
+                  (w.desired_state != "ready" or
+                     fragment("? #>> '{archive,wake_requested_at}' IS NOT NULL", w.spec) or
+                     w.observed_state in ["creating", "ready", "waking", "archiving"])) or
+               (b.provider == "agent_vmm" and
+                  fragment("COALESCE(?->>'group_default', '') <> 'true'", w.spec) and
+                  (w.observed_state != w.desired_state or
+                     (w.desired_state == "ready" and w.kind == "meeting_runtime" and
                         fragment(
                           @runtime_ready_sql,
                           w.id,
@@ -855,29 +901,14 @@ defmodule SalixEnv.ComputeReconciler do
                           b.observation,
                           a.provider_observation
                         )) or
-                     (w.desired_state == "ready" and w.kind == "external_worker" and
+                     (w.desired_state == "ready" and w.kind == "shell" and
                         fragment(
-                          @external_idle_cleanup_sql,
-                          a.provider_observation
-                        )) or
-                     (w.desired_state == "ready" and w.kind == "external_worker" and
-                        fragment(@external_runtime_active_sql, w.id, w.generation))) and
-                  (fragment(
-                     @runtime_update_due_sql,
-                     w.desired_state,
-                     w.template_key,
-                     w.runtime_revision,
-                     w.runtime_update,
-                     w.runtime_update,
-                     w.template_key
-                   ) or
-                     w.kind != "external_worker" or w.observed_state != w.desired_state or
-                     fragment(
-                       @external_idle_cleanup_sql,
-                       a.provider_observation
-                     ) or
-                     fragment(@external_demand_sql, w.id, w.id, w.generation, w.id, w.generation) or
-                     fragment(@external_runtime_active_sql, w.id, w.generation)) and
+                          @shell_observation_due_sql,
+                          b.status,
+                          b.observation,
+                          a.provider_observation,
+                          b.observation
+                        ))) and
                   b.provider == "agent_vmm")),
         order_by: [desc: e.tenant_id, desc: w.updated_at, desc: w.id],
         select: %{tenant_id: e.tenant_id, updated_at: w.updated_at, workload_id: w.id},
@@ -887,7 +918,7 @@ defmodule SalixEnv.ComputeReconciler do
   end
 
   defp candidate_query(cursor, watermark) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     after_cursor =
       case cursor do
@@ -932,7 +963,13 @@ defmodule SalixEnv.ComputeReconciler do
              )),
       where:
         w.desired_state in ["ready", "draining", "stopped"] and
-          a.generation == e.generation and a.status != "released" and
+          ((a.generation == e.generation and a.status != "released") or
+             (a.generation <= e.generation and
+                fragment(
+                  "?->>'phase' IS NOT NULL AND ?->>'phase' NOT IN ('complete', 'cloud_retired')",
+                  w.deletion,
+                  w.deletion
+                ))) and
           ((b.provider == "cloudflare" and
               fragment("?->>'group_default' = 'true'", w.spec) and
               (w.desired_state == "stopped" or
@@ -946,18 +983,14 @@ defmodule SalixEnv.ComputeReconciler do
                    "billing_suspended"
                  ])) or
              (b.provider == "agent_vmm" and
-                (fragment(
-                   @runtime_update_due_sql,
-                   w.desired_state,
-                   w.template_key,
-                   w.runtime_revision,
-                   w.runtime_update,
-                   w.runtime_update,
-                   w.template_key
-                 ) or
-                   w.observed_state != w.desired_state or
-                   (w.desired_state == "ready" and
-                      w.kind in ["external_worker", "meeting_runtime"] and
+                fragment("?->>'group_default' = 'true'", w.spec) and
+                (w.desired_state != "ready" or
+                   fragment("? #>> '{archive,wake_requested_at}' IS NOT NULL", w.spec) or
+                   w.observed_state in ["creating", "ready", "waking", "archiving"])) or
+             (b.provider == "agent_vmm" and
+                fragment("COALESCE(?->>'group_default', '') <> 'true'", w.spec) and
+                (w.observed_state != w.desired_state or
+                   (w.desired_state == "ready" and w.kind == "meeting_runtime" and
                       fragment(
                         @runtime_ready_sql,
                         w.id,
@@ -970,29 +1003,14 @@ defmodule SalixEnv.ComputeReconciler do
                         b.observation,
                         a.provider_observation
                       )) or
-                   (w.desired_state == "ready" and w.kind == "external_worker" and
+                   (w.desired_state == "ready" and w.kind == "shell" and
                       fragment(
-                        @external_idle_cleanup_sql,
-                        a.provider_observation
-                      )) or
-                   (w.desired_state == "ready" and w.kind == "external_worker" and
-                      fragment(@external_runtime_active_sql, w.id, w.generation))) and
-                (fragment(
-                   @runtime_update_due_sql,
-                   w.desired_state,
-                   w.template_key,
-                   w.runtime_revision,
-                   w.runtime_update,
-                   w.runtime_update,
-                   w.template_key
-                 ) or
-                   w.kind != "external_worker" or w.observed_state != w.desired_state or
-                   fragment(
-                     @external_idle_cleanup_sql,
-                     a.provider_observation
-                   ) or
-                   fragment(@external_demand_sql, w.id, w.id, w.generation, w.id, w.generation) or
-                   fragment(@external_runtime_active_sql, w.id, w.generation)) and
+                        @shell_observation_due_sql,
+                        b.status,
+                        b.observation,
+                        a.provider_observation,
+                        b.observation
+                      ))) and
                 b.provider == "agent_vmm")) and is_nil(claim.id),
       where: ^after_cursor,
       where: ^before_watermark,
@@ -1010,7 +1028,7 @@ defmodule SalixEnv.ComputeReconciler do
 
   defp claim_workloads!(selected) do
     # Acquiring or reacquiring a claim must not erase the last actionable cause.
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     claimed =
       Enum.map(selected, fn %{workload: workload, provider: provider} ->
@@ -1098,7 +1116,9 @@ defmodule SalixEnv.ComputeReconciler do
          {:error, {:gateway_error, %{"code" => "resource_capacity_exhausted"} = error}},
          claim_token
        ) do
-    if capacity_import_error?(error) do
+    # Storage headroom needs operator action. A busy import slot is transient
+    # concurrency on the Host, so it retries with the normal claim backoff.
+    if storage_headroom_error?(error) do
       park_action_required(workload, Map.put(error, "kind", "action_required"), claim_token)
     else
       retry_claim(
@@ -1115,9 +1135,19 @@ defmodule SalixEnv.ComputeReconciler do
               "capacity_wait_expired",
               "workload_update_action_required",
               "group_transition_recovery_required",
+              "group_archive_restore_expired",
               "group_provider_recovery_expired"
             ] do
     park_action_required(workload, Map.put(error, "kind", "action_required"), claim_token)
+  end
+
+  # A retired Runtime template is never placed again; retrying cannot help.
+  defp settle_claim(workload, {:error, :runtime_template_retired}, claim_token) do
+    park_action_required(
+      workload,
+      %{"kind" => "action_required", "code" => "runtime_template_retired"},
+      claim_token
+    )
   end
 
   defp settle_claim(workload, {:error, :invalid_connection_epoch}, claim_token) do
@@ -1133,7 +1163,7 @@ defmodule SalixEnv.ComputeReconciler do
   end
 
   defp retry_claim(workload, error, claim_token) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     claim =
       Repo.one(
@@ -1193,7 +1223,7 @@ defmodule SalixEnv.ComputeReconciler do
 
   defp park_action_required(workload, error, claim_token) do
     # Model anchor: ComputeCapacityAction.Attempt with unavailable capacity.
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     Repo.update_all(
       from(c in Compute.ReconcilerClaim,
@@ -1270,27 +1300,20 @@ defmodule SalixEnv.ComputeReconciler do
   defp claim_error(result),
     do: %{"kind" => "unknown", "result" => inspect(result, limit: 10, printable_limit: 512)}
 
-  defp capacity_import_error?(%{
+  defp storage_headroom_error?(%{
          "code" => "resource_capacity_exhausted",
          "stage" => "import_admission",
          "resource" => "storage_headroom"
        }),
        do: true
 
-  defp capacity_import_error?(%{
-         "code" => "resource_capacity_exhausted",
-         "stage" => "import_slot",
-         "resource" => "import_slot"
-       }),
-       do: true
-
-  defp capacity_import_error?(_), do: false
+  defp storage_headroom_error?(_), do: false
 
   defp claim_id(workload_id, generation),
     do: "#{@provider}:#{workload_id}:#{generation}"
 
   defp claim_token,
-    do: :crypto.strong_rand_bytes(24) |> Base.url_encode64(padding: false)
+    do: SystemsRuntime.Proc.random_bytes(24) |> Base.url_encode64(padding: false)
 
   defp cursor_key(%Compute.ReconcilerCursor{
          cursor_tenant_id: tenant_id,
@@ -1336,7 +1359,7 @@ defmodule SalixEnv.ComputeReconciler do
           high_watermark_tenant_id: watermark.tenant_id,
           high_watermark_updated_at: watermark.updated_at,
           high_watermark_workload_id: watermark.workload_id,
-          updated_at: DateTime.utc_now()
+          updated_at: SystemsClock.timestamp(:utc_datetime_usec)
         ]
       )
   end
@@ -1352,7 +1375,7 @@ defmodule SalixEnv.ComputeReconciler do
           high_watermark_tenant_id: nil,
           high_watermark_updated_at: nil,
           high_watermark_workload_id: nil,
-          updated_at: DateTime.utc_now()
+          updated_at: SystemsClock.timestamp(:utc_datetime_usec)
         ]
       )
   end
@@ -1388,7 +1411,7 @@ defmodule SalixEnv.ComputeReconciler do
   defp settle_result(_workload, {:error, _} = error, _claim_token), do: error
 
   defp claim_current?(workload, claim_token) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     Repo.exists?(
       from(c in Compute.ReconcilerClaim,

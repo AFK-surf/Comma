@@ -23,6 +23,9 @@ defmodule SalixAgent.ToolDisclosure do
 
   # Staging usage, 2026-09-19..26: >=100 calls OR >=20 distinct sessions.
   # 42 catalog tools plus the direct wait_for control cover 19,984/21,695 calls.
+  # Other IM provider operations (`im_api.*`) are left out: the model finds
+  # them with `im.provider_apis_list` and `help`. The Comma reply path,
+  # im_api.internal.send_message, stays: most activations send through it.
   # Selection affects presentation only, after session capability filtering.
   @common_tools ~w(
     composio.execute
@@ -37,23 +40,7 @@ defmodule SalixAgent.ToolDisclosure do
     help
     im.connects_list
     im.provider_apis_list
-    im_api.internal.read_conversation
     im_api.internal.send_message
-    im_api.internal.task.create
-    im_api.internal.triage.complete
-    im_api.internal.triage.read_context
-    im_api.internal.triage.read_memory
-    im_api.internal.triage.read_source
-    im_api.internal.update_conversation
-    im_api.slack.fetch_file
-    im_api.slack.get_channel_history
-    im_api.slack.get_thread_replies
-    im_api.slack.get_user_info
-    im_api.slack.post_channel_message
-    im_api.slack.post_task_card
-    im_api.slack.reply_message
-    im_api.slack.search
-    im_api.wechat.reply_text
     loop.get
     mcp.list
     memory.write
@@ -87,16 +74,6 @@ defmodule SalixAgent.ToolDisclosure do
     do: internal_llm_specs(role)
 
   @doc false
-  def external_specs(disclosure) when is_map(disclosure) do
-    disclosure
-    |> Map.fetch!("tools")
-    |> Enum.reject(&(&1["name"] in @internal_controls or &1["name"] in @internal_llm_envelope))
-    |> Enum.reject(&(&1["prompt_visibility"] == @hidden))
-    |> Enum.filter(& &1["callable"])
-    |> Enum.map(&entry_spec/1)
-  end
-
-  @doc false
   def prompt_section(disclosure, runtime_kind \\ :internal) when is_map(disclosure) do
     entries =
       disclosure
@@ -116,7 +93,7 @@ defmodule SalixAgent.ToolDisclosure do
                   "- #{entry["name"]}: #{entry["summary"]}",
                   restriction_line(entry),
                   manual_line(entry),
-                  "  schema: " <> Jason.encode!(entry["input_schema"] || %{}),
+                  "  schema: " <> Jason.encode!(entry_schema(entry) || %{}),
                   examples_line(entry, runtime_kind)
                 ]
 
@@ -174,9 +151,9 @@ defmodule SalixAgent.ToolDisclosure do
   # Placeholder examples generated from the schema (`"example path"`) say
   # nothing the schema does not; only authored examples are printed.
   defp examples_line(entry, runtime_kind) do
-    examples = entry["examples"] || %{}
+    examples = entry_examples(entry)
 
-    schema = entry["input_schema"] || %{}
+    schema = entry_schema(entry) || %{}
 
     if examples == %{} or examples == Tools.help_examples(entry["name"], schema) do
       nil
@@ -218,6 +195,7 @@ defmodule SalixAgent.ToolDisclosure do
         |> Enum.any?(&MapSet.member?(disabled_tools, &1))
       end)
       |> reject_disabled_memory_consultation(ctx)
+      |> reject_disabled_condensed_workspace(ctx)
       |> Enum.filter(&SalixAgent.PluginPolicy.allowed_tool?(ctx, &1["name"]))
       |> Enum.filter(&SalixAgent.RecommendationPolicy.allowed_disclosure?(ctx, &1))
       |> Enum.filter(&SalixAgent.GuestPolicy.allowed_disclosure?(ctx, &1))
@@ -234,10 +212,57 @@ defmodule SalixAgent.ToolDisclosure do
       |> Enum.sort_by(& &1["__order__"])
       |> Enum.map(&Map.drop(&1, ["__order__"]))
 
+    # The revision covers the full entries. The stored entries then omit
+    # what the registry already holds; see `entry_schema/1`.
     %{
       "revision" => revision(role, runtime_kind, tools),
-      "tools" => tools
+      "tools" => compact_registry_entries(tools)
     }
+  end
+
+  @doc """
+  The input schema of a disclosure entry. A registry tool's entry omits an
+  unchanged schema, and this reads it from the registry.
+  """
+  def entry_schema(%{"input_schema" => schema}) when is_map(schema), do: schema
+
+  def entry_schema(%{"name" => name}) do
+    case Tools.find_entry(to_string(name)) do
+      nil -> nil
+      entry -> Tools.entry_schema(entry)
+    end
+  end
+
+  def entry_schema(_entry), do: nil
+
+  @doc """
+  The help examples of a disclosure entry. A registry tool's entry omits its
+  generated examples, and this generates them again from the schema.
+  """
+  def entry_examples(%{"examples" => examples}) when is_map(examples), do: examples
+
+  def entry_examples(%{"name" => name} = entry) do
+    case entry_schema(entry) do
+      schema when is_map(schema) -> Tools.help_examples(to_string(name), schema)
+      _ -> %{}
+    end
+  end
+
+  def entry_examples(_entry), do: %{}
+
+  # Registry schemas and generated examples are most of a session's
+  # disclosure, and every session config, round snapshot and tool context
+  # copies it. An entry keeps them only when they differ from the registry.
+  defp compact_registry_entries(tools) do
+    registry_schemas = Map.new(Tools.registry(), &{Tools.entry_name(&1), Tools.entry_schema(&1)})
+
+    Enum.map(tools, fn entry ->
+      {registry?, entry} = Map.pop(entry, "__registry__")
+
+      if registry? and Map.fetch(registry_schemas, entry["name"]) == {:ok, entry["input_schema"]},
+        do: Map.drop(entry, ["input_schema", "examples"]),
+        else: entry
+    end)
   end
 
   @doc false
@@ -291,18 +316,13 @@ defmodule SalixAgent.ToolDisclosure do
 
   defp runtime_kind(ctx) when is_map(ctx) do
     case Map.get(ctx, :runtime_kind, Map.get(ctx, "runtime_kind", :internal)) do
-      kind when kind in [:internal, :external, :script] -> kind
-      "external" -> :external
+      kind when kind in [:internal, :script] -> kind
       "script" -> :script
       _internal_or_unknown -> :internal
     end
   end
 
   defp runtime_kind(_ctx), do: :internal
-
-  defp runtime_call_instruction(:external) do
-    "Call Salix business tools from the shell with `\"${SALIX_CLI:-salix}\" tool call <canonical_tool_name> --json '<JSON object>'`. The runtime supplies `SALIX_CLI` as an absolute executable path so login shells cannot discard the Connector-managed CLI from `PATH`; the fallback keeps non-external environments usable. The CLI routes the call with the current external runtime session's capability. If the target tool and valid parameters are already known, call it directly. Inspect an unfamiliar tool with `\"${SALIX_CLI:-salix}\" tool call help --json '{\"tool\":\"<canonical_tool_name>\"}'`."
-  end
 
   defp runtime_call_instruction(_runtime_kind) do
     "Call the session controls `wait_for` and `end_turn` directly. Call other business tools through the single outer LLM tool named `call`. In that outer call's arguments, set `tool` to the target canonical tool, for example `fs.read_file` or `help`, and set `params` to that target tool's JSON object parameters. If the target tool and valid parameters are already known, call it directly. To inspect a tool, call target tool `help` with params like {\"tool\":\"fs.read_file\"}."
@@ -311,9 +331,6 @@ defmodule SalixAgent.ToolDisclosure do
   defp runtime_examples(examples, runtime_kind) when is_map(examples) do
     key =
       cond do
-        runtime_kind == :external ->
-          "external_runtime"
-
         runtime_kind == :script ->
           "script"
 
@@ -326,8 +343,6 @@ defmodule SalixAgent.ToolDisclosure do
       example -> %{key => example}
     end
   end
-
-  defp runtime_examples(examples, _runtime_kind), do: examples
 
   defp all_candidates do
     registry_candidates =
@@ -378,7 +393,7 @@ defmodule SalixAgent.ToolDisclosure do
     else
       %{
         "name" => name,
-        "summary" => Tools.entry_description(entry),
+        "summary" => Tools.entry_summary(entry),
         "manual_available" => true,
         "input_schema" => schema,
         "manual" =>
@@ -420,7 +435,9 @@ defmodule SalixAgent.ToolDisclosure do
       "manual" => candidate["manual"] || candidate["summary"] || "",
       "examples" => candidate["examples"] || %{},
       "discovery_sources" => candidate["discovery_sources"] || [],
-      "__order__" => candidate["__order__"]
+      "__order__" => candidate["__order__"],
+      # Registry candidates carry the registry schema and generated examples.
+      "__registry__" => candidate["__source__"] == :registry
     }
     |> maybe_put_safety(candidate["safety"])
   end
@@ -467,6 +484,17 @@ defmodule SalixAgent.ToolDisclosure do
     end
   end
 
+  # The Condensed Workspace tool exists only while its Group flag is on. Unlike
+  # memory consultation, an absent flag also hides it: the feature is opt-in.
+  defp reject_disabled_condensed_workspace(candidates, ctx) do
+    if Map.get(ctx, :condensed_workspace_enabled, Map.get(ctx, "condensed_workspace_enabled")) ==
+         true do
+      candidates
+    else
+      Enum.reject(candidates, &(&1["name"] == SalixAgent.CondensedWorkspace.tool_name()))
+    end
+  end
+
   # ---- tenant-configuration capability gating ----
 
   # `oauth.*` and `composio.*` are integration surfaces a tenant explicitly
@@ -495,13 +523,14 @@ defmodule SalixAgent.ToolDisclosure do
 
     candidates
     |> maybe_reject_family("email.", fn -> owner_emails_configured?(ctx) end)
+    |> maybe_reject_family("station.", fn -> SalixAgent.Stations.offered?(ctx) end)
     |> maybe_reject_family("video.generate", fn -> video_configured?(ctx) end)
   end
 
   defp video_configured?(ctx) do
     agent = Map.get(ctx, :agent_id, Map.get(ctx, "agent_id"))
 
-    if is_nil(Application.get_env(:salix_agent, :media_resolver)) or
+    if is_nil(SystemsRuntime.get_env(:salix_agent, :media_resolver)) or
          not is_binary(agent) or agent == "" do
       true
     else
@@ -557,7 +586,7 @@ defmodule SalixAgent.ToolDisclosure do
     group = group_id(ctx)
 
     cond do
-      is_nil(Application.get_env(:salix_agent, :group_context_mod)) ->
+      is_nil(SystemsRuntime.get_env(:salix_agent, :group_context_mod)) ->
         true
 
       tenant == "" or group == "" ->
@@ -621,9 +650,16 @@ defmodule SalixAgent.ToolDisclosure do
 
   defp default_visibility(%{"name" => name}) when name in @common_tools, do: @manual
 
-  defp default_visibility(%{"name" => name, "__source__" => :dynamic}) do
-    dynamic_visibility(name)
-  end
+  # Other IM provider operations are not pre-disclosed. The model lists them
+  # with `im.provider_apis_list` and reads one with `help` before its first call.
+  defp default_visibility(%{"name" => "im_api." <> _operation}), do: @hidden
+
+  # Opt-in and Group-gated: an Agent that has the tool is expected to use it
+  # without a help round.
+  defp default_visibility(%{"name" => "condensed_workspace.update"}), do: @manual
+
+  # Other dynamic entries, such as MCP tools, have their own discovery tools.
+  defp default_visibility(%{"__source__" => :dynamic}), do: @hidden
 
   defp default_visibility(%{"name" => name}) do
     if Enum.any?(discovery_namespaces(), &String.starts_with?(name, &1 <> ".")),
@@ -633,56 +669,7 @@ defmodule SalixAgent.ToolDisclosure do
 
   @doc false
   def discovery_namespaces,
-    do: ~w(mcp_manager plugin calendar inbound_api ssh browser im_api.internal.label)
-
-  defp dynamic_visibility("im_api.internal.task." <> _operation), do: @manual
-  defp dynamic_visibility("im_api.internal.search_conversations"), do: @manual
-  defp dynamic_visibility("im_api.internal.read_conversation"), do: @manual
-  defp dynamic_visibility("im_api.internal.add_agent_participant"), do: @manual
-  defp dynamic_visibility("im_api.internal.update_conversation"), do: @manual
-  defp dynamic_visibility("im_api.internal.label." <> _operation), do: @hidden
-  defp dynamic_visibility("im_api.internal.send_message"), do: @manual
-  # Card publication is a standing Router obligation after every Slack-created
-  # Task, and a hidden operation's existence cannot be discovered without first
-  # reading the provider manual — so this one Slack operation stays visible.
-  defp dynamic_visibility("im_api.slack.post_task_card"), do: @summary
-  defp dynamic_visibility("im_api.telegram.open_task_topic"), do: @summary
-  # A live caller waits on every Router answer; reading the manual first would
-  # add a model round to each call's first reply.
-  defp dynamic_visibility("im_api.voice.say"), do: @summary
-  defp dynamic_visibility("mcp." <> _name), do: @hidden
-  defp dynamic_visibility(_name), do: @hidden
-
-  defp entry_spec(entry) do
-    case Tools.find_entry(entry["name"]) do
-      nil ->
-        %{
-          "name" => entry["name"],
-          "description" => entry["summary"] || entry["manual"] || "",
-          "input_schema" => entry["input_schema"] || %{"type" => "object"},
-          "auto_wait_timeout_seconds" =>
-            SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds()
-        }
-
-      _entry ->
-        spec_for!(entry["name"])
-    end
-  end
-
-  defp spec_for!(name) do
-    case Tools.find_entry(name) do
-      nil ->
-        raise "tool #{inspect(name)} missing from registry"
-
-      entry ->
-        %{
-          "name" => name,
-          "description" => Tools.entry_description(entry),
-          "input_schema" => Tools.entry_schema(entry),
-          "auto_wait_timeout_seconds" => Tools.entry_auto_wait_seconds(entry)
-        }
-    end
-  end
+    do: ~w(mcp_manager plugin calendar inbound_api ssh tailnet browser im_api.internal.label)
 
   defp wait_for_spec do
     entry = SalixAgent.Tools.AsyncOps.wait_for_def()

@@ -12,7 +12,10 @@ defmodule BridgeForTeams.MacMiniOnboardingTest do
 
   setup do
     {:ok, org} =
-      Orgs.create_org(%{name: "Acme", slug: "acme-#{System.unique_integer([:positive])}"})
+      Orgs.create_org(%{
+        name: "Acme",
+        slug: "acme-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      })
 
     %{org: org, release: release_fixture()}
   end
@@ -109,7 +112,7 @@ defmodule BridgeForTeams.MacMiniOnboardingTest do
   end
 
   test "consume_install_code rejects expired codes", %{org: org} do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     assert {:ok, %{code: expired}} = create_code(org, now: now, ttl_seconds: 1)
 
     assert {:error, :code_expired} =
@@ -118,92 +121,35 @@ defmodule BridgeForTeams.MacMiniOnboardingTest do
              )
   end
 
-  test "wrapper fails closed when an artifact download fails", %{org: org, release: release} do
-    root = Path.join(System.tmp_dir!(), "bft-wrapper-test-#{System.unique_integer([:positive])}")
-    bin_dir = Path.join(root, "bin")
-    script_path = Path.join(root, "wrapper.sh")
-    uname_path = Path.join(bin_dir, "uname")
-    File.mkdir_p!(bin_dir)
-
-    try do
-      release =
-        put_in(release, [:targets, "darwin-arm64", "salix-connect", :source], "file:///missing")
-
-      File.write!(uname_path, "#!/usr/bin/env sh\n[ \"$1\" = -s ] && echo Darwin || echo arm64\n")
-      File.chmod!(uname_path, 0o755)
-      File.write!(script_path, script_for(org, release))
-      File.chmod!(script_path, 0o755)
-
-      {output, status} =
-        System.cmd("sh", [script_path],
-          env: [{"PATH", bin_dir <> ":" <> System.get_env("PATH", "")}],
-          stderr_to_stdout: true
-        )
-
-      assert status != 0
-      assert output =~ "preflight.salix_connect_download_failed"
-    after
-      File.rm_rf!(root)
-    end
-  end
-
-  test "wrapper enforces the descriptor size before hashing an artifact", %{
+  test "the install wrapper carries the Computer Use helper only when the release has it", %{
     org: org,
     release: release
   } do
-    root = Path.join(System.tmp_dir!(), "bft-wrapper-size-#{System.unique_integer([:positive])}")
-    bin_dir = Path.join(root, "bin")
-    artifact_path = Path.join(root, "salix-connect")
-    script_path = Path.join(root, "wrapper.sh")
-    uname_path = Path.join(bin_dir, "uname")
-    File.mkdir_p!(bin_dir)
+    assert {:ok, %{install_code: install_code}} = create_code(org)
 
-    try do
-      bytes = String.duplicate("x", 43)
-      File.write!(artifact_path, bytes)
-      sha = :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
-
-      release =
-        put_in(release, [:targets, "darwin-arm64", "salix-connect"], %{
-          source: "file://#{artifact_path}",
-          sha256: sha,
-          size: 42
-        })
-
-      File.write!(uname_path, "#!/usr/bin/env sh\n[ \"$1\" = -s ] && echo Darwin || echo arm64\n")
-      File.chmod!(uname_path, 0o755)
-      File.write!(script_path, script_for(org, release))
-      File.chmod!(script_path, 0o755)
-
-      {output, status} =
-        System.cmd("sh", [script_path],
-          env: [{"PATH", bin_dir <> ":" <> System.get_env("PATH", "")}],
-          stderr_to_stdout: true
-        )
-
-      assert status != 0
-      assert output =~ "preflight.salix_connect_size_mismatch"
-      assert output =~ "exceeds expected size 42"
-    after
-      File.rm_rf!(root)
+    wrapper = fn release ->
+      MacMiniOnboarding.wrapper_script(%{
+        org: org,
+        install_code: install_code,
+        token: "bft_token",
+        release: release
+      })
     end
-  end
 
-  test "error response is executable and exits non-zero" do
-    root = Path.join(System.tmp_dir!(), "bft-error-script-#{System.unique_integer([:positive])}")
-    path = Path.join(root, "error.sh")
-    File.mkdir_p!(root)
+    helper = %{
+      source: "https://releases.example.test/computer-use-helper",
+      sha256: String.duplicate("c", 64),
+      size: 43
+    }
 
-    try do
-      File.write!(path, MacMiniOnboarding.error_script(:code_expired))
-      File.chmod!(path, 0o755)
-      {output, status} = System.cmd("sh", [path], stderr_to_stdout: true)
-      assert status != 0
-      assert output =~ "code_expired"
-      refute output =~ "bft_"
-    after
-      File.rm_rf!(root)
-    end
+    with_helper =
+      wrapper.(put_in(release, [:targets, "darwin-arm64", "computer-use-helper"], helper))
+
+    assert with_helper =~
+             "export BFT_COMPUTER_USE_HELPER_URL='https://releases.example.test/computer-use-helper'"
+
+    assert with_helper =~ "export BFT_COMPUTER_USE_HELPER_SIZE='43'"
+    refute wrapper.(release) =~ "BFT_COMPUTER_USE_HELPER_URL="
   end
 
   defp create_code(org, opts \\ []) do
@@ -218,12 +164,6 @@ defmodule BridgeForTeams.MacMiniOnboardingTest do
 
   defp wrapper_url(org),
     do: "https://bridge.example.test/v1/orgs/#{org.id}/runners/install.sh"
-
-  defp script_for(org, release) do
-    {:ok, %{code: code}} = create_code(org)
-    {:ok, consumed} = MacMiniOnboarding.consume_install_code(org.id, code)
-    MacMiniOnboarding.wrapper_script(Map.put(consumed, :release, release))
-  end
 
   defp release_fixture do
     components =

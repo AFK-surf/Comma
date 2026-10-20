@@ -1,0 +1,127 @@
+id: ts-test-deadline
+language: typescript
+severity: error
+message: "A test gives a wait a real-time deadline."
+note: |
+  The wait fails when the machine is slower than the number. Wait for the
+  state with no deadline of its own: the job's hang guard is the only bound.
+metadata:
+  category: deadline
+rule:
+  all:
+    - kind: pair
+    - has:
+        field: key
+        regex: "^(timeout|actionTimeout|navigationTimeout)$"
+    # Any deadline but 0 (no deadline): a number, or one a helper passes on
+    # (`{ timeout: Math.min(remainingMs, 250) }`, `{ timeout: timeoutMs }`).
+    - has:
+        field: value
+        not:
+          any:
+            - kind: number
+              regex: "^0+$"
+            - kind: undefined
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/test-support/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"
+  - "clients/apps/**/test/**/*.test.tsx"
+  - "clients/packages/**/test/**/*.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"
+---
+id: tsx-test-deadline
+language: tsx
+severity: error
+message: "A test gives a wait a real-time deadline."
+note: |
+  The wait fails when the machine is slower than the number. Wait for the
+  state with no deadline of its own: the job's hang guard is the only bound.
+metadata:
+  category: deadline
+rule:
+  all:
+    - kind: pair
+    - has:
+        field: key
+        regex: "^(timeout|actionTimeout|navigationTimeout)$"
+    # Any deadline but 0 (no deadline): a number, or one a helper passes on
+    # (`{ timeout: Math.min(remainingMs, 250) }`, `{ timeout: timeoutMs }`).
+    - has:
+        field: value
+        not:
+          any:
+            - kind: number
+              regex: "^0+$"
+            - kind: undefined
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/test-support/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"
+  - "clients/apps/**/test/**/*.test.tsx"
+  - "clients/packages/**/test/**/*.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"
+---
+id: tsx-test-deadline-browser
+language: tsx
+severity: error
+message: "A test gives a wait a real-time deadline."
+note: |
+  The wait fails when the machine is slower than the number. Wait for the
+  state with no deadline of its own: the job's hang guard is the only bound.
+metadata:
+  category: deadline
+rule:
+  all:
+    - kind: pair
+    - has:
+        field: key
+        regex: "^(timeout|actionTimeout|navigationTimeout)$"
+    # Any deadline but 0 (no deadline): a number, or one a helper passes on
+    # (`{ timeout: Math.min(remainingMs, 250) }`, `{ timeout: timeoutMs }`).
+    - has:
+        field: value
+        not:
+          any:
+            - kind: number
+              regex: "^0+$"
+            - kind: undefined
+files:
+  - "clients/apps/**/test/**/*.chromium.test.tsx"
+  - "clients/packages/**/test/**/*.chromium.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"

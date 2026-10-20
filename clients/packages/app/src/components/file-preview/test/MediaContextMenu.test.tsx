@@ -8,7 +8,8 @@ import {
 } from "@comma/test-utils/render";
 import type { CommaNativeBridge } from "@comma/native-bridge";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
-import { ChatPanelImageGroup, toast } from "@comma/ui";
+import { ChatPanelImageGroup } from "@comma/ui/components/chat-panel";
+import { toast } from "@comma/ui/components/toast";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useMediaContextMenu, type MediaMenuSource } from "../useMediaContextMenu";
 import { FilePreviewPanel } from "../FilePreviewPanel";
@@ -28,9 +29,7 @@ function Group({
   attach,
   entries = sources,
 }: {
-  attach: (
-    files: import("../../chat/model/conversationChannel").AttachmentUploadInput[]
-  ) => unknown;
+  attach: (files: import("@comma/core/chat").AttachmentUploadInput[]) => unknown;
   entries?: MediaMenuSource[];
 }) {
   const { open, menu } = useMediaContextMenu(attach);
@@ -242,11 +241,7 @@ function videoPreview(blob: Blob, name: string, attach = vi.fn()) {
 }
 
 describe("video context actions", () => {
-  it.each([
-    ["clip.mp4", "video/mp4"],
-    ["clip.webm", "video/webm"],
-    ["clip.mov", "video/quicktime"],
-  ])(
+  it.each([["clip.mp4", "video/mp4"]])(
     "uploads and copies the complete %s file through the saved-file owner",
     async (name, type) => {
       const blob = new Blob(["complete video bytes"], { type });

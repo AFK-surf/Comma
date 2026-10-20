@@ -1,16 +1,11 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 )
 
 func TestManagedRuntimeDiscoveryPreservesBrokenPublishedEntries(t *testing.T) {
@@ -145,7 +140,7 @@ func readinessWrapperForTest(t *testing.T, provider, body string) string {
 }
 
 func TestManagedPortableReadinessSelectsOnlyStartupFallback(t *testing.T) {
-	for _, provider := range []string{"claude", "pi"} {
+	for _, provider := range []string{"claude"} {
 		for _, mode := range []string{"usable", "missing-entry", "failed-version", "bootstrap-failure"} {
 			t.Run(provider+"/"+mode, func(t *testing.T) {
 				user, _ := harnessFallbackForTest(t, provider)
@@ -166,9 +161,6 @@ func TestManagedPortableReadinessSelectsOnlyStartupFallback(t *testing.T) {
 				}
 				runtime := portableRuntimeEntry(provider, identity, "native", []string{"stdio"})
 				wantIssue := ""
-				if provider == "pi" {
-					wantIssue = "verification_required"
-				}
 				if mode == "failed-version" {
 					wantIssue = "runtime_probe_failed"
 				}
@@ -180,12 +172,9 @@ func TestManagedPortableReadinessSelectsOnlyStartupFallback(t *testing.T) {
 				}
 				data, _ := os.ReadFile(marker)
 				if mode == "missing-entry" || mode == "bootstrap-failure" {
-					// One native selection and one final version observation.
-					want := 2
-					if provider == "claude" {
-						want = 3
-					} // auth status, initialize, version
-					if strings.Count(string(data), "called") != want {
+					// Auth status and initialize select the native candidate; one
+					// final version observation follows.
+					if strings.Count(string(data), "called") != 3 {
 						t.Fatalf("default attempts: %s", data)
 					}
 				} else if len(data) != 0 {
@@ -229,64 +218,16 @@ func TestManagedClaudeReadinessKeepsAuthAndConfigFailuresTerminal(t *testing.T) 
 	}
 }
 
-func TestPiReadinessPreservesReplyBeforeImmediateEOF(t *testing.T) {
-	_, _ = harnessFallbackForTest(t, "pi")
-	command := readinessWrapperForTest(t, "pi", "read request\nprintf '%s\\n' '{\"id\":\"readiness-state\",\"success\":false,\"error\":\"authentication required\"}'\nexit 0\n")
-	for attempt := 0; attempt < 40; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		_, startable, err := probePiRuntimeContext(ctx, command)
-		cancel()
-		var rejected *nativeControlRejection
-		if !startable || !errors.As(err, &rejected) || canRetryHarnessStartup(context.Background(), err) {
-			t.Fatalf("explicit rejection lost to EOF on attempt %d: startable=%v err=%v", attempt, startable, err)
-		}
-	}
-}
-
 func TestManagedPortableReadinessKeepsNativeRefusalTerminal(t *testing.T) {
-	for _, provider := range []string{"claude", "pi"} {
-		t.Run(provider, func(t *testing.T) {
-			_, log := harnessFallbackForTest(t, provider)
-			output := `{"id":"readiness-state","success":false,"error":"not supported"}`
-			auth := ""
-			if provider == "claude" {
-				auth = "if [ \"$1\" = \"auth\" ]; then echo '{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}'; exit 0; fi\n"
-				output = `{"type":"control_response","response":{"request_id":"salix-readiness","subtype":"error"}}`
-			}
-			command := readinessWrapperForTest(t, provider, "if [ \"$1\" = \"--version\" ]; then echo user; exit 0; fi\n"+auth+"read request\necho "+shellQuote(output)+"\nexit 0\n")
-			runtime := portableRuntimeEntry(provider, command, "native", []string{"stdio"})
-			if runtime["ready"] != false || runtime["readiness_issue"] == "verification_required" {
-				t.Fatalf("native refusal hidden: %#v", runtime)
-			}
-			if data, err := os.ReadFile(log); err == nil {
-				t.Fatalf("native refusal launched default: %s", data)
-			}
-		})
+	_, log := harnessFallbackForTest(t, "claude")
+	auth := "if [ \"$1\" = \"auth\" ]; then echo '{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}'; exit 0; fi\n"
+	output := `{"type":"control_response","response":{"request_id":"salix-readiness","subtype":"error"}}`
+	command := readinessWrapperForTest(t, "claude", "if [ \"$1\" = \"--version\" ]; then echo user; exit 0; fi\n"+auth+"read request\necho "+shellQuote(output)+"\nexit 0\n")
+	runtime := portableRuntimeEntry("claude", command, "native", []string{"stdio"})
+	if runtime["ready"] != false || runtime["readiness_issue"] == "verification_required" {
+		t.Fatalf("native refusal hidden: %#v", runtime)
 	}
-}
-
-func TestPiReadinessStopsFailedCandidateChildren(t *testing.T) {
-	_, _ = harnessFallbackForTest(t, "pi")
-	childFile := filepath.Join(t.TempDir(), "child.pid")
-	command := readinessWrapperForTest(t, "pi", "if [ \"$1\" = \"--version\" ]; then echo user; exit 0; fi\nsleep 300 &\necho $! > "+shellQuote(childFile)+"\nread request\necho '{\"id\":\"readiness-state\",\"success\":true,\"data\":{}}'\ncat > /dev/null\n")
-	runtime := portableRuntimeEntry("pi", command, "native", []string{"stdio"})
-	if runtime["readiness_issue"] != "verification_required" {
-		t.Fatalf("default did not initialize: %#v", runtime)
-	}
-	data, err := os.ReadFile(childFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	child, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer syscall.Kill(child, syscall.SIGKILL)
-	deadline := time.Now().Add(time.Second)
-	for syscall.Kill(child, 0) == nil && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if syscall.Kill(child, 0) == nil {
-		t.Fatal("readiness returned with a failed candidate child alive")
+	if data, err := os.ReadFile(log); err == nil {
+		t.Fatalf("native refusal launched default: %s", data)
 	}
 }

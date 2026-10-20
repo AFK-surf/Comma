@@ -15,7 +15,6 @@ import {
   generatedNativeEventIndex,
   generatedNativeEventManifest,
   generatedNativePreloadEventBindings,
-  generatedNativePreloadBindings,
   generatedNativeStateBindings,
   generatedNativeStateIndex,
   generatedNativeStateManifest,
@@ -41,19 +40,13 @@ import {
   recommendationMediaLoadResultSchema,
   surfacesStateContract,
   shellOpenExternalInputSchema,
-  sideChatOpenTestWindowInputSchema,
   synchronicityReadInputSchema,
   synchronicityReadMaxBytes,
   synchronicityWriteInputSchema,
   synchronicityWriteMaxBase64Characters,
-  defaultSideChatDebugSettings,
-  deriveSideChatDebugGeometry,
-  sideChatDebugSettingsPatchSchema,
-  sideChatDebugSettingsSchema,
   unavailableComputerUseBridge,
   unavailableConnectorBridge,
   unavailableNotchBridge,
-  unavailableUpdateBridge,
   validateNativeCapabilityFixtures,
   webNativeBridge,
   type CommaNativeBridge,
@@ -117,23 +110,6 @@ describe("app preference schemas", () => {
     expect(appPreferencesPatchSchema.parse({ systemNotifications: false })).toEqual({
       systemNotifications: false,
     });
-  });
-});
-
-describe("Side Chat test-window source contract", () => {
-  it("accepts finite positive screen-DIP geometry and rejects fabricated zero sizes", () => {
-    expect(
-      sideChatOpenTestWindowInputSchema.parse({
-        sourceFrame: { height: 30, width: 30, x: -118.5, y: 84.25 },
-      })
-    ).toEqual({
-      sourceFrame: { height: 30, width: 30, x: -118.5, y: 84.25 },
-    });
-    expect(
-      sideChatOpenTestWindowInputSchema.safeParse({
-        sourceFrame: { height: 30, width: 0, x: 0, y: 0 },
-      }).success
-    ).toBe(false);
   });
 });
 
@@ -515,7 +491,6 @@ describe("getNativeBridge", () => {
       notch: unavailableNotchBridge,
       connector: unavailableConnectorBridge,
       computerUse: unavailableComputerUseBridge,
-      updates: unavailableUpdateBridge,
     };
     globalThis.commaNative = nativeBridge;
 
@@ -590,33 +565,12 @@ describe("native bridge contracts", () => {
       .filter(({ sessionAdmission }) => sessionAdmission === "required")
       .map(({ id }) => id);
 
-    expect(lifecycleIds).toEqual([
-      "session.state",
-      "session.requestEmailLogin",
-      "session.verifyEmailLogin",
-      "session.signInWithGoogle",
-      "session.verifyGoogleLink",
-      "session.cancelAuthAttempt",
-      "session.reconcile",
-      "session.signOut",
-    ]);
+    // The client core runs the session; the only lifecycle leaf left is Main's view of it.
+    expect(lifecycleIds).toEqual(["session.state"]);
     expect(requiredIds).toEqual([
       "onboarding.presentWindow",
-      "subscriptionAuthorization.start",
-      "tokenDanceAuthorization.start",
-      "tokenDanceAuthorization.status",
-      "tokenDanceAuthorization.save",
-      "tokenDanceAuthorization.cancel",
-      "subscriptionAuthorization.status",
-      "subscriptionAuthorization.cancel",
       "localFiles.pick",
       "localFiles.preview",
-      "sessionHistory.state",
-      "sessionHistory.load",
-      "sessionHistory.retain",
-      "productInbox.state",
-      "productInbox.retain",
-      "productInbox.refresh",
       ...nativeCapabilityRegistry
         .filter(({ id }) => id.startsWith("chat."))
         .map(({ id }) => id),
@@ -687,24 +641,17 @@ describe("native bridge contracts", () => {
       "browserSidebar.openTabRequested",
       "surfaces.changed",
       "surfaces.windowFullScreen.changed",
+      "surfaces.windowMaximized.changed",
       "onboarding.window.changed",
       "onboarding.handoff",
       "notch.event",
       "session.state.changed",
-      "sessionHistory.state.changed",
-      "productInbox.state.changed",
-      "chat.state.changed",
-      "chat.drafts.changed",
       "messageNotifications.event",
-      "sideChat.presentation.changed",
-      "sideChat.debugSettings.changed",
       "computeNode.state.changed",
       "audioCapture.state.changed",
       "meetingPresence.state.changed",
-      "meetingRecorder.state.changed",
       "surfaces.windowResizeSettled",
       "airDrop.state.changed",
-      "driveCatalog.state.changed",
     ]);
     expect(generatedNativeEventManifest).toEqual([
       {
@@ -756,6 +703,12 @@ describe("native bridge contracts", () => {
         target: { type: "all" },
       },
       {
+        channel: "comma:surfaces:window-maximized-changed",
+        id: "surfaces.windowMaximized.changed",
+        permission: "surfaces.state.read",
+        target: { type: "all" },
+      },
+      {
         channel: "comma:onboarding:window-changed",
         id: "onboarding.window.changed",
         permission: "onboarding.window.read",
@@ -780,46 +733,10 @@ describe("native bridge contracts", () => {
         target: { type: "all" },
       },
       {
-        channel: "comma:session-history:state-changed",
-        id: "sessionHistory.state.changed",
-        permission: "session-history.read",
-        target: { type: "all" },
-      },
-      {
-        channel: "comma:product-inbox:state-changed",
-        id: "productInbox.state.changed",
-        permission: "product-inbox.state.read",
-        target: { type: "all" },
-      },
-      {
-        channel: "comma:chat:state-changed",
-        id: "chat.state.changed",
-        permission: "chat.state.read",
-        target: { type: "all" },
-      },
-      {
-        channel: "comma:chat:drafts-changed",
-        id: "chat.drafts.changed",
-        permission: "chat.state.read",
-        target: { type: "all" },
-      },
-      {
         channel: "comma:message-notifications:event",
         id: "messageNotifications.event",
         permission: "chat.state.read",
         target: { type: "window", windowId: "win_main" },
-      },
-      {
-        channel: "comma:side-chat:presentation-changed",
-        id: "sideChat.presentation.changed",
-        permission: "side-chat.state.read",
-        target: { type: "all" },
-      },
-      {
-        channel: "comma:side-chat:debug-settings-changed",
-        id: "sideChat.debugSettings.changed",
-        permission: "side-chat.debug-settings.read",
-        target: { type: "all" },
       },
       {
         channel: "comma:compute-node:state-changed",
@@ -840,12 +757,6 @@ describe("native bridge contracts", () => {
         target: { type: "all" },
       },
       {
-        channel: "comma:meeting-recorder:state-changed",
-        id: "meetingRecorder.state.changed",
-        permission: "meeting-recorder.read",
-        target: { type: "all" },
-      },
-      {
         channel: "comma:surfaces:window-resize-settled",
         id: "surfaces.windowResizeSettled",
         permission: "surfaces.state.read",
@@ -855,12 +766,6 @@ describe("native bridge contracts", () => {
         channel: "comma:airdrop:state-changed",
         id: "airDrop.state.changed",
         permission: "airdrop.read",
-        target: { type: "all" },
-      },
-      {
-        channel: "comma:drive-catalog:changed",
-        id: "driveCatalog.state.changed",
-        permission: "synchronicity.read",
         target: { type: "all" },
       },
     ]);
@@ -901,20 +806,13 @@ describe("native bridge contracts", () => {
       "connectorRuntime.state",
       "surfaces.state",
       "surfaces.windowFullScreen",
+      "surfaces.windowMaximized",
       "onboarding.window",
       "session.state",
-      "sessionHistory.state",
-      "productInbox.state",
-      "chat.state",
-      "chat.drafts",
-      "sideChat.presentation",
-      "sideChat.debugSettings",
       "computeNode.state",
       "audioCapture.state",
       "meetingPresence.state",
-      "meetingRecorder.state",
       "airDrop.state",
-      "driveCatalog.state",
     ]);
     expect(generatedNativeStateManifest).toEqual([
       {
@@ -1008,6 +906,24 @@ describe("native bridge contracts", () => {
         },
       },
       {
+        bridge: { method: "windowMaximized", namespace: "surfaces" },
+        get: {
+          channel: "comma:surfaces:window-maximized",
+          id: "surfaces.windowMaximized",
+          permission: "surfaces.state.read",
+          sessionAdmission: "local_only",
+          sessionAdmissionRationale:
+            "Reads the calling local window's maximized state without Session state.",
+        },
+        id: "surfaces.windowMaximized",
+        subscribe: {
+          channel: "comma:surfaces:window-maximized-changed",
+          id: "surfaces.windowMaximized.changed",
+          permission: "surfaces.state.read",
+          target: { type: "all" },
+        },
+      },
+      {
         bridge: { method: "window", namespace: "onboarding" },
         get: {
           channel: "comma:onboarding:window",
@@ -1039,109 +955,6 @@ describe("native bridge contracts", () => {
           channel: "comma:session:state-changed",
           id: "session.state.changed",
           permission: "session.state.read",
-          target: { type: "all" },
-        },
-      },
-      {
-        bridge: { method: "state", namespace: "sessionHistory" },
-        id: "sessionHistory.state",
-        get: {
-          channel: "comma:session-history:state",
-          id: "sessionHistory.state",
-          permission: "session-history.read",
-          sessionAdmission: "required",
-        },
-        subscribe: {
-          channel: "comma:session-history:state-changed",
-          id: "sessionHistory.state.changed",
-          permission: "session-history.read",
-          target: { type: "all" },
-        },
-      },
-      {
-        bridge: { method: "state", namespace: "productInbox" },
-        get: {
-          channel: "comma:product-inbox:state",
-          id: "productInbox.state",
-          permission: "product-inbox.state.read",
-          sessionAdmission: "required",
-          sessionAdmissionRationale: undefined,
-        },
-        id: "productInbox.state",
-        subscribe: {
-          channel: "comma:product-inbox:state-changed",
-          id: "productInbox.state.changed",
-          permission: "product-inbox.state.read",
-          target: { type: "all" },
-        },
-      },
-      {
-        bridge: { method: "state", namespace: "chat" },
-        get: {
-          channel: "comma:chat:state",
-          id: "chat.state",
-          permission: "chat.state.read",
-          sessionAdmission: "required",
-          sessionAdmissionRationale: undefined,
-        },
-        id: "chat.state",
-        subscribe: {
-          channel: "comma:chat:state-changed",
-          id: "chat.state.changed",
-          permission: "chat.state.read",
-          target: { type: "all" },
-        },
-      },
-      {
-        bridge: { method: "drafts", namespace: "chat" },
-        get: {
-          channel: "comma:chat:drafts",
-          id: "chat.drafts",
-          permission: "chat.state.read",
-          sessionAdmission: "required",
-          sessionAdmissionRationale: undefined,
-        },
-        id: "chat.drafts",
-        subscribe: {
-          channel: "comma:chat:drafts-changed",
-          id: "chat.drafts.changed",
-          permission: "chat.state.read",
-          target: { type: "all" },
-        },
-      },
-      {
-        bridge: { method: "presentation", namespace: "sideChat" },
-        get: {
-          channel: "comma:side-chat:presentation",
-          id: "sideChat.presentation",
-          permission: "side-chat.state.read",
-          sessionAdmission: "local_only",
-          sessionAdmissionRationale:
-            "Reads local Side Chat presentation geometry without Session state or authenticated transport.",
-        },
-        id: "sideChat.presentation",
-        subscribe: {
-          channel: "comma:side-chat:presentation-changed",
-          id: "sideChat.presentation.changed",
-          permission: "side-chat.state.read",
-          target: { type: "all" },
-        },
-      },
-      {
-        bridge: { method: "debugSettings", namespace: "sideChat" },
-        get: {
-          channel: "comma:side-chat:debug-settings",
-          id: "sideChat.debugSettings",
-          permission: "side-chat.debug-settings.read",
-          sessionAdmission: "local_only",
-          sessionAdmissionRationale:
-            "Reads local Side Chat debug settings without Session state or authenticated transport.",
-        },
-        id: "sideChat.debugSettings",
-        subscribe: {
-          channel: "comma:side-chat:debug-settings-changed",
-          id: "sideChat.debugSettings.changed",
-          permission: "side-chat.debug-settings.read",
           target: { type: "all" },
         },
       },
@@ -1200,24 +1013,6 @@ describe("native bridge contracts", () => {
         },
       },
       {
-        bridge: { method: "state", namespace: "meetingRecorder" },
-        get: {
-          channel: "comma:meeting-recorder:state",
-          id: "meetingRecorder.state",
-          permission: "meeting-recorder.read",
-          sessionAdmission: "local_only",
-          sessionAdmissionRationale:
-            "Controls only Main's current meeting presentation; Main admits capture and file operations against its current Session authority.",
-        },
-        id: "meetingRecorder.state",
-        subscribe: {
-          channel: "comma:meeting-recorder:state-changed",
-          id: "meetingRecorder.state.changed",
-          permission: "meeting-recorder.read",
-          target: { type: "all" },
-        },
-      },
-      {
         bridge: { method: "state", namespace: "airDrop" },
         get: {
           channel: "comma:airdrop:state",
@@ -1235,24 +1030,6 @@ describe("native bridge contracts", () => {
           target: { type: "all" },
         },
       },
-      {
-        bridge: { method: "state", namespace: "driveCatalog" },
-        get: {
-          channel: "comma:drive-catalog:state",
-          id: "driveCatalog.state",
-          permission: "synchronicity.read",
-          sessionAdmission: "local_only",
-          sessionAdmissionRationale:
-            "Reads the local Drive metadata query owner's refresh state.",
-        },
-        id: "driveCatalog.state",
-        subscribe: {
-          channel: "comma:drive-catalog:changed",
-          id: "driveCatalog.state.changed",
-          permission: "synchronicity.read",
-          target: { type: "all" },
-        },
-      },
     ]);
     expect(generatedNativeStateBindings.surfaces.state).toEqual({
       get: expect.objectContaining({ channel: "comma:surfaces:state" }),
@@ -1261,26 +1038,6 @@ describe("native bridge contracts", () => {
     expect(generatedNativeStateBindings.session.state).toEqual({
       get: expect.objectContaining({ channel: "comma:session:state" }),
       subscribe: expect.objectContaining({ channel: "comma:session:state-changed" }),
-    });
-    expect(generatedNativeStateBindings.productInbox.state).toEqual({
-      get: expect.objectContaining({ channel: "comma:product-inbox:state" }),
-      subscribe: expect.objectContaining({
-        channel: "comma:product-inbox:state-changed",
-      }),
-    });
-    expect(generatedNativeStateBindings.sideChat.presentation).toEqual({
-      get: expect.objectContaining({ channel: "comma:side-chat:presentation" }),
-      subscribe: expect.objectContaining({
-        channel: "comma:side-chat:presentation-changed",
-        target: { type: "all" },
-      }),
-    });
-    expect(generatedNativeStateBindings.sideChat.debugSettings).toEqual({
-      get: expect.objectContaining({ channel: "comma:side-chat:debug-settings" }),
-      subscribe: expect.objectContaining({
-        channel: "comma:side-chat:debug-settings-changed",
-        target: { type: "all" },
-      }),
     });
     expect(generatedNativeStateIndex["session.state"]).toEqual({
       artifacts: {
@@ -1306,31 +1063,6 @@ describe("native bridge contracts", () => {
         target: { type: "all" },
       },
     });
-  });
-
-  it("keeps Side Chat debug updates bounded and preserves the content position", () => {
-    expect(deriveSideChatDebugGeometry(defaultSideChatDebugSettings)).toEqual({
-      contentOriginX: 5,
-      contentOriginY: -9,
-      horizontalBackdropPadding: 159,
-      verticalBackdropPadding: 79,
-    });
-    expect(
-      sideChatDebugSettingsSchema.safeParse(defaultSideChatDebugSettings).success
-    ).toBe(true);
-    expect(sideChatDebugSettingsPatchSchema.safeParse({ blurRadius: 90 }).success).toBe(
-      true
-    );
-    expect(sideChatDebugSettingsPatchSchema.safeParse({ blurRadius: 91 }).success).toBe(
-      false
-    );
-    expect(sideChatDebugSettingsPatchSchema.safeParse({ tintOpacity: 0 }).success).toBe(
-      true
-    );
-    expect(
-      sideChatDebugSettingsPatchSchema.safeParse({ tintOpacity: 1.1 }).success
-    ).toBe(false);
-    expect(sideChatDebugSettingsPatchSchema.safeParse({}).success).toBe(false);
   });
 
   it("validates web fallbacks and mocks against their leaf schemas", () => {
@@ -1400,27 +1132,6 @@ describe("native bridge contracts", () => {
     });
   });
 
-  it("keeps lifecycle command inputs exact and bearer-free", () => {
-    const contract = generatedNativePreloadBindings.session.requestEmailLogin;
-    const input = {
-      email: "person@example.com",
-      expected: {
-        authorityInstanceId: "authority-1",
-        expectedSessionId: null,
-        generation: 2,
-      },
-    };
-
-    expect(contract.input.parse(input)).toEqual(input);
-    expect(
-      contract.input.safeParse({
-        ...input,
-        token: "comma_sess_secret",
-      }).success
-    ).toBe(false);
-    expect("proxyProbe" in generatedNativePreloadBindings.session).toBe(false);
-  });
-
   it("keeps Session state and local diagnostics free of credential fields", () => {
     const snapshot = {
       authority: {
@@ -1452,48 +1163,6 @@ describe("native bridge contracts", () => {
         token: "comma_sess_secret",
       }).success
     ).toBe(false);
-
-    expect(
-      generatedNativeCapabilityContracts.localDataStatus.output.parse({
-        available: true,
-        database: {
-          latestSchemaVersion: 2,
-          schemaVersion: 2,
-          status: "ready",
-        },
-        fileStore: {
-          diskUsage: 0,
-          missingReferences: 0,
-          status: "ready",
-          storedEntries: 0,
-        },
-        observability: {
-          jsonlEnabled: false,
-          location: "disabled",
-          redacted: true,
-          status: "disabled",
-        },
-      })
-    ).toEqual({
-      available: true,
-      database: {
-        latestSchemaVersion: 2,
-        schemaVersion: 2,
-        status: "ready",
-      },
-      fileStore: {
-        diskUsage: 0,
-        missingReferences: 0,
-        status: "ready",
-        storedEntries: 0,
-      },
-      observability: {
-        jsonlEnabled: false,
-        location: "disabled",
-        redacted: true,
-        status: "disabled",
-      },
-    });
   });
 });
 
@@ -1520,25 +1189,6 @@ describe("webNativeBridge golden fallbacks", () => {
       platform: { appVersion: "web", os: "unknown", platform: "web" },
       views: [],
       windows: [],
-    });
-  });
-
-  it("returns an empty product inbox refresh envelope through the web fallback", async () => {
-    await expect(
-      webNativeBridge.productInbox.refresh({
-        session: TEST_SESSION_PRODUCT_LEASE,
-      })
-    ).resolves.toEqual({
-      session: {
-        audience: "https://api.comma.test",
-        authorityInstanceId: "mock-electron-main",
-        generation: 1,
-        sessionId: "mock-session",
-      },
-      snapshot: {
-        items: [],
-        source: "unavailable",
-      },
     });
   });
 
@@ -1663,40 +1313,6 @@ describe("generated renderer bridge assembly", () => {
           ?.mock
       )
     );
-    await expect(
-      mockBridge.productInbox.refresh({ session: TEST_SESSION_PRODUCT_LEASE })
-    ).resolves.toEqual(
-      generatedNativeCapabilityContracts.productInboxRefresh.output.parse(
-        nativeCapabilityRegistry.find(
-          (capability) => capability.id === "productInbox.refresh"
-        )?.mock
-      )
-    );
-    await expect(
-      mockBridge.productInbox.state.get({
-        session: TEST_SESSION_PRODUCT_LEASE,
-      })
-    ).resolves.toEqual(
-      generatedNativeCapabilityContracts.productInboxState.output.parse(
-        nativeCapabilityRegistry.find(
-          (capability) => capability.id === "productInbox.state"
-        )?.mock
-      )
-    );
-    await expect(
-      mockBridge.sideChat.setInteractiveProgress({ progress: 0.42 })
-    ).resolves.toEqual({ revision: 0 });
-    await expect(
-      mockBridge.sideChat.finishInteractiveProgress({ shouldOpen: true })
-    ).resolves.toEqual({ revision: 0 });
-    await expect(
-      mockBridge.sideChat.openTestWindow({
-        sourceFrame: { height: 30, width: 30, x: 42, y: 84 },
-      })
-    ).resolves.toEqual({ revision: 0 });
-    await expect(mockBridge.sideChat.closeTestWindow()).resolves.toEqual({
-      revision: 0,
-    });
   });
 });
 

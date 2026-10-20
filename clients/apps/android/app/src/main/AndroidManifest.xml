@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Voice input in the composer; requested the first time the user dictates or holds to talk. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Communication mode, audio focus and call output selection. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Reply notifications; requested after the user first leaves a reply waiting. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Keeps receiving a pending reply for a bounded time after the user leaves the app. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Finding and setting up a Comma device from Settings › Devices; asked when adding one. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <application android:name=".CommaApplication" android:allowBackup="false" android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round" android:label="@string/app_name"
+        android:supportsRtl="true" android:theme="@style/Theme.Chat"
+        android:localeConfig="@xml/locales_config">
+        <provider android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup" tools:node="merge">
+            <meta-data android:name="androidx.work.WorkManagerInitializer" tools:node="remove" />
+        </provider>
+        <activity android:name=".MainActivity" android:exported="true"
+            android:windowSoftInputMode="adjustNothing">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- Hands the camera app a private file to write the composer's photo into. -->
+        <provider android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.composer.files"
+            android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/composer_file_paths" />
+        </provider>
+        <activity android:name=".media.viewer.ImageViewerActivity" android:exported="false"
+            android:label="@string/media_viewer_title"
+            android:theme="@style/Theme.Comma.MediaViewer" />
+        <activity android:name=".media.video.VideoPlayerActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
+            android:theme="@style/Theme.Comma.VideoPlayer" />
+        <!-- Opens downloaded attachments in other apps, one read grant per file. -->
+        <provider android:name=".media.file.MediaFileProvider"
+            android:authorities="${applicationId}.media.files"
+            android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/media_file_paths" />
+        </provider>
+        <activity android:name=".tasks.pages.TaskListActivity" android:exported="false"
+            android:theme="@style/Theme.Chat.Tasks" />
+        <activity android:name=".tasks.pages.TaskDetailActivity" android:exported="false"
+            android:theme="@style/Theme.Chat.Tasks" />
+        <activity android:name=".settings.SettingsActivity" android:exported="false"
+            android:windowSoftInputMode="adjustNothing" android:theme="@style/Theme.Comma.Settings" />
+        <service android:name=".notify.ReplyReceiverService" android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <service android:name=".voice.CallService" android:exported="false"
+            android:stopWithTask="false" android:foregroundServiceType="microphone" />
+        <!-- Lays out formulas in a process with no permissions, files or network of its own. -->
+        <service android:name=".chat.math.MathLayoutService" android:exported="false"
+            android:isolatedProcess="true" android:process=":math" />
+        <activity android:name=".auth.AuthActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" android:theme="@style/Theme.Comma.Auth" />
+    </application>
+</manifest>

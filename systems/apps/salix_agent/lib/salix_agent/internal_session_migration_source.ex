@@ -44,11 +44,7 @@ defmodule SalixAgent.InternalSessionMigrationSource do
 
   def current_records(session) do
     with {:ok, archived} <-
-           InternalSessionStore.archived_records(
-             InternalSession.agent_id(session),
-             session,
-             mask: false
-           ),
+           InternalSessionStore.archived_records(InternalSession.agent_id(session), session),
          all <- archived ++ InternalSessionStore.window_records_shaped(session),
          :ok <- complete(all, last_seq(session)),
          do: {:ok, all}

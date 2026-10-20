@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="chat_task_ref">任务</string>
+    <string name="chat_task_unavailable">任务不可用</string>
+    <string name="chat_interactive_unavailable">交互内容暂不可用</string>
+    <string name="chat_file">文件</string>
+    <string name="chat_send_not_ready">暂时无法发送，请稍后重试</string>
+    <string name="chat_paused">已离线 · 点此重试</string>
+    <string name="chat_account">账号</string>
+    <string name="chat_send_failed_note">未发送 · 点按重试</string>
+    <string name="chat_retry">重试</string>
+    <string name="chat_delete">删除</string>
+    <string name="chat_reply_error_title">回复出错了</string>
+    <!-- Between shown history and the newest messages while the messages in between load. -->
+    <string name="chat_history_gap">正在加载错过的消息…</string>
+    <string name="chat_reply_error_detail">请稍后再试。</string>
+    <string name="chat_send_failed_icon">发送失败，查看选项</string>
+    <string name="chat_session_retry">连接失败 · 点此重试</string>
+    <string name="chat_scroll_to_latest">回到最新消息</string>
+    <string name="chat_reply_copy">复制</string>
+    <!-- An Agent's question card under its message, and the receipt it closes into. -->
+    <string name="chat_question_recommended">推荐</string>
+    <string name="chat_question_multi">可多选</string>
+    <string name="chat_question_other">其他</string>
+    <string name="chat_question_other_placeholder">写下你的答案，或粘贴图片</string>
+    <string name="chat_question_add_image">添加图片</string>
+    <string name="chat_question_remove_image">移除 %1$s</string>
+    <string name="chat_question_uploading">正在上传</string>
+    <string name="chat_question_upload_failed">上传失败</string>
+    <string name="chat_question_skip">跳过</string>
+    <string name="chat_question_send">发送</string>
+    <string name="chat_question_pick_one">选一项，或在「其他」里写下答案。</string>
+    <string name="chat_question_pick_any">至少选一项，或在「其他」里写下答案。</string>
+    <string name="chat_question_other_empty">在「其他」里写下答案或添加图片，或者选上面的一项。</string>
+    <string name="chat_question_wait_upload">图片上传完成后会自动发送。</string>
+    <string name="chat_question_failed">发送失败，你的选择还在。</string>
+    <string name="chat_question_retry">重试</string>
+    <string name="chat_question_sending">发送中</string>
+    <string name="chat_question_replied">已在对话中回复</string>
+    <string name="chat_question_skipped">已跳过，由 Agent 判断</string>
+    <string name="chat_question_replaced">已被新的问题替代</string>
+</resources>

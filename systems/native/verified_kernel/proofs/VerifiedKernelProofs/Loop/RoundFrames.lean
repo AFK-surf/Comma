@@ -177,7 +177,7 @@ theorem pruneResultRefs_wait {s t : Term} {j r : List Term}
     (h : pruneResultRefs s j = .ok (t, r)) : t.get (a "wait") = s.get (a "wait") := by
   unfold pruneResultRefs at h
   repeat' first
-    | exact write_field_frame h rfl
+    | exact write_field_frame h (by keys_absent)
     | (have same := pure_ok h; subst t; rfl)
     | split at h
     | (obtain ⟨_, _, _, h⟩ := bind_ok h)
@@ -186,7 +186,7 @@ theorem sessionAck_wait {s e t : Term} {j r : List Term}
     (h : sessionAck s e j = .ok (t, r)) : t.get (a "wait") = s.get (a "wait") := by
   unfold sessionAck at h
   repeat' first
-    | exact write_field_frame h rfl
+    | exact write_field_frame h (by keys_absent)
     | (have same := pure_ok h; subst t; rfl)
     | split at h
     | (obtain ⟨_, _, _, h⟩ := bind_ok h)
@@ -282,13 +282,9 @@ theorem activationNext_yield_wait {state r : Term} :
     | (intro h; simp [a] at h)
     | (intro h; cases h)
 
-theorem lookup_yield_events :
-    lookupOp queryTable (a "provider_wait_yield_events") = some StateQuery.waitYieldEvents := rfl
-
 theorem queryAsk_yield_events (state x : Term) :
-    Loop.queryAsk state "provider_wait_yield_events" x = StateQuery.waitYieldEvents state x := by
-  unfold Loop.queryAsk
-  rw [lookup_yield_events]
+    Loop.queryAsk state "provider_wait_yield_events" x = StateQuery.waitYieldEvents state x :=
+  LoopProof.QueryAnswers.yield_events state x
 
 /-- `yield_not_repeated`: the loop's yield branch writes the answer of
 `provider_wait_yield_events`. After those events apply to the state that the

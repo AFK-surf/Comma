@@ -1,4 +1,6 @@
 defmodule SalixStore.ConvergenceWorkerColdImpl do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Worker-test consumer compiled to a real .beam under _build (test/support),
   so tests can :code.delete/:code.purge it and exercise the cold-BEAM path
@@ -19,6 +21,8 @@ defmodule SalixStore.ConvergenceWorkerColdImpl do
 end
 
 defmodule SalixStore.ConvergenceWorkerBlockingImpl do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Worker-test consumer whose record callback blocks on a test-owned gate
   process (`:convergence_blocking_gate`), so tests can make a pass
@@ -33,18 +37,18 @@ defmodule SalixStore.ConvergenceWorkerBlockingImpl do
   @impl true
   def marker_key, do: "ctl/test_worker_blocking_marker.json"
   @impl true
-  def reconcile_ms, do: 600
+  def reconcile_ms, do: 300
 
   @impl true
   def converge_record(_key) do
-    case Process.whereis(:convergence_blocking_gate) do
+    case SystemsRuntime.Proc.whereis(:convergence_blocking_gate) do
       nil ->
         :changed
 
       gate ->
-        send(gate, {:blocked, self()})
+        SystemsRuntime.Proc.send(gate, {:blocked, SystemsRuntime.Proc.self()})
 
-        receive do
+        SystemsRuntime.Proc.receive do
           :release -> :changed
         after
           5_000 -> :changed

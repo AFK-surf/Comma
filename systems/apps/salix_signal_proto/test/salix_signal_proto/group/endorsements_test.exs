@@ -1,7 +1,7 @@
 defmodule SalixSignalProto.Group.EndorsementsTest do
   # Level 1 vectors of CRS-09a section 15 (vectors/CRS-09): group send
   # endorsements, their combination, tokens and the expiration window.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.Group.{Endorsements, Params, ServerParams, Uid}
   alias SalixSignalProto.Test.Vectors

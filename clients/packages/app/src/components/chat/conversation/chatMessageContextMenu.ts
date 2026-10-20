@@ -1,6 +1,3 @@
-import { parseAttachmentsBlock, parseQuotedTextBlock } from "../model/protocol";
-import { stripBrowserElementInspectionContext } from "../../chat-sidebar/browserElementInspection";
-
 const CHAT_MESSAGE_ARTICLE_SELECTOR = [
   'article[data-slot="chat-assistant-output"]',
   "article.comma-chat-message-assistant",
@@ -242,7 +239,11 @@ function isUserMessageArticle(article: HTMLElement) {
 
 export function resolveChatMessageText(
   article: HTMLElement,
-  messages: readonly { messageId: string; text: string }[],
+  messages: readonly {
+    messageId: string;
+    text: string;
+    display?: { body: string } | undefined;
+  }[],
   assistantDraft?: { responseKey: string; text: string } | undefined
 ): string {
   const messageId = article.dataset.messageId;
@@ -250,10 +251,7 @@ export function resolveChatMessageText(
     const message = messages.find((item) => item.messageId === messageId);
     if (message) {
       return isUserMessageArticle(article)
-        ? parseQuotedTextBlock(
-            parseAttachmentsBlock(stripBrowserElementInspectionContext(message.text))
-              .body
-          ).body
+        ? (message.display?.body ?? message.text)
         : message.text;
     }
   }

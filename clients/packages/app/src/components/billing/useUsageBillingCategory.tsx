@@ -1,30 +1,32 @@
+import { uiClock } from "@comma/ui/clock";
 import type { ReactNode } from "react";
-import { LoadingIndicator } from "@comma/ui";
+import { getActiveCommaConfig } from "@comma/config";
+import {
+  useCall,
+  useTopic,
+  type BillingChangePreview,
+  type BillingPlan,
+  type BillingReturn,
+} from "@comma/core-client";
+import { LoadingIndicator } from "@comma/ui/components/LoadingIndicator";
 import { formatDate } from "@comma/i18n";
 import { useCommaI18n, useCommaMessages } from "@comma/i18n/react";
-import { Badge, Dialog } from "@comma/ui";
-import type { SettingsCategoryDefinition, SettingsPanelItem } from "@comma/ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type {
-  CommaApiClient,
-  CommaBillingPlan,
-  CommaBillingSummary,
-  CommaBillingChangePreview,
-  CommaWorkspace,
-} from "../../api";
-import { CommaApiError } from "../../api";
+import { Badge } from "@comma/ui/components/Badge";
+import { Dialog } from "@comma/ui/components/dialog";
+import type { SettingsCategoryDefinition } from "@comma/ui/components/settings";
+import type { SettingsPanelItem } from "@comma/ui/components/settings-panel";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   openNativePlatformExternalUrl,
   openNativePlatformExternalUrlFromUserAction,
-} from "../../runtime-chat/nativePlatformActions";
-import { readActiveWorkspaceId } from "../activeWorkspace";
+} from "../../nativePlatformActions";
+import { useWorkspacePreference } from "../activeWorkspace";
 import {
   BillingAllowanceMeter,
   type BillingPeriod,
   billingPeriods,
   BillingPeriodTabs,
   BillingRedeemForm,
-  creditAllowance,
   formatPrice,
   subscriptionActionLabel,
   subscriptionPlanDetail,
@@ -32,39 +34,49 @@ import {
   subscriptionStatusLabel,
 } from "./BillingSettings";
 
+/** Where Stripe sends the person back to. */
+function billingReturn(): BillingReturn {
+  const config = getActiveCommaConfig();
+  return { apiBase: config.apiBaseUrl, environment: config.channel };
+}
+
 /**
  * The Settings › Usage & billing category, as five cards of rows: status
  * first (which plan, how many credits, how much of this cycle is left), then
  * what is for sale (subscription plans, credit packs), then the redeem code.
  *
- * Billing state lives here rather than in a mounted component so every row
- * is a registry row; the catalog and summary load when the category opens.
+ * The core reads the plans and the workspace's balance while the category is
+ * open; the rows are what it says, and each action is one of its calls.
  */
-export function useUsageBillingCategory(
-  api: CommaApiClient,
-  enabled: boolean
-): SettingsCategoryDefinition {
+export function useUsageBillingCategory(enabled: boolean): SettingsCategoryDefinition {
   const m = useCommaMessages();
   const { locale } = useCommaI18n();
   const zh = locale === "zh-CN";
-  const [workspace, setWorkspace] = useState<CommaWorkspace>();
-  const [plans, setPlans] = useState<CommaBillingPlan[]>([]);
-  const [summary, setSummary] = useState<CommaBillingSummary>();
+  const call = useCall();
+  const prefer = useWorkspacePreference();
+  const { value: billing = { status: "loading" } } = useTopic(
+    enabled && prefer !== undefined ? { topic: "billing", prefer } : null
+  );
+  const ready = billing.status === "ready" ? billing : undefined;
+  const workspace = ready?.workspace;
+  const plans = ready?.plans ?? [];
+  const summary = ready?.summary;
+  const allowance = ready?.allowance ?? undefined;
   const [code, setCode] = useState("");
   const [pending, setPending] = useState<string>();
   // An error stays with the page whose action raised it.
   const [error, setError] = useState<{ key: string; message: string }>();
   const [notice, setNotice] = useState<string>();
   const [changeQuote, setChangeQuote] = useState<{
-    plan: CommaBillingPlan;
-    preview: CommaBillingChangePreview;
-    requestId: string;
+    plan: BillingPlan;
+    preview: BillingChangePreview;
+    request: string;
   }>();
   const [billingPeriod, setBillingPeriod] = useState<BillingPeriod>("month");
 
   const number = useMemo(() => new Intl.NumberFormat(locale), [locale]);
   const activeSubscription = summary?.active_subscription;
-  const isActivePlan = (plan: CommaBillingPlan) =>
+  const isActivePlan = (plan: BillingPlan) =>
     activeSubscription?.package_code === plan.package_code &&
     activeSubscription.package_version === plan.package_version;
   const activePlan = activeSubscription?.plan ?? undefined;
@@ -84,70 +96,57 @@ export function useUsageBillingCategory(
     (plan) => plan.mode === "subscription" && plan.billing_period === period
   );
   const creditPacks = plans.filter((plan) => plan.mode === "payment");
-  const allowance = useMemo(() => creditAllowance(summary, plans), [summary, plans]);
-  const loading = pending === "load";
+  const loading = enabled && billing.status === "loading";
   const opening = zh ? "正在打开…" : "Opening…";
 
-  const reload = useCallback(
-    async (signal?: AbortSignal) => {
-      const options = signal ? { signal } : {};
-      const [availablePlans, workspaces] = await Promise.all([
-        api.listBillingPlans(options),
-        api.listWorkspaces(options),
-      ]);
-      const activeId = readActiveWorkspaceId();
-      const selected = workspaces.find((item) => item.id === activeId) ?? workspaces[0];
-      if (!selected) throw new Error("workspace_missing");
-      if (signal?.aborted) return;
-      setWorkspace(selected);
-      setPlans(availablePlans);
-      const nextSummary = await api.getBillingSummary(selected.id, options);
-      if (signal?.aborted) return;
-      setSummary(nextSummary);
-      return { baseline: nextSummary, workspaceId: selected.id };
-    },
-    [api]
-  );
-
+  // A return from Stripe: the core reads the balance on a backoff, as the webhook can trail the browser.
+  const returns = useBillingReturn(enabled);
+  const workspaceId = workspace?.id;
   useEffect(() => {
-    if (!enabled) return;
-    const controller = new AbortController();
-    setPending("load");
-    setError(undefined);
-    void reload(controller.signal)
-      .then(async (loaded) => {
-        if (!controller.signal.aborted) setError(undefined);
-        if (!loaded || !shouldRefreshBillingReturn()) return;
-        const { baseline, workspaceId } = loaded;
+    if (returns === 0 || !workspaceId) return;
+    void call("billing.returned", { workspace: workspaceId }).catch(() => undefined);
+  }, [call, returns, workspaceId]);
 
-        // Stripe webhook delivery can trail the browser return by a few seconds.
-        // Keep this client refresh deliberately bounded: four summary reads over
-        // 4.2 seconds, independent of catalog/workspace cardinality.
-        for (const delayMs of [600, 1_200, 2_400]) {
-          await abortableDelay(delayMs, controller.signal);
-          const next = await api.getBillingSummary(workspaceId, {
-            signal: controller.signal,
-          });
-          if (controller.signal.aborted) return;
-          setSummary(next);
-          if (billingSummaryChanged(baseline, next)) return;
+  // Entering the page reads the plans and the balance again, as a topic start
+  // does: the menu-bar item can hold this topic, which then does not start
+  // (and read) as the page opens. A page that could read nothing tries again.
+  const enteredRead = useRef(false);
+  useEffect(() => {
+    if (!enabled) {
+      enteredRead.current = false;
+      return;
+    }
+    if (enteredRead.current || prefer === undefined) return;
+    enteredRead.current = true;
+    void call("billing.refresh", {}).catch(() => undefined);
+  }, [call, enabled, prefer]);
+
+  // Coming back to the window (from Stripe, or anywhere) reads the balance
+  // again, so a webhook that landed after that backoff still shows up.
+  useEffect(() => {
+    if (!enabled || !workspaceId || typeof window === "undefined") return;
+    const refresh = () => {
+      if (document.visibilityState === "hidden") return;
+      void call("billing.refresh", { workspace: workspaceId }).catch(() => undefined);
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [call, enabled, workspaceId]);
+
+  const loadError =
+    billing.status === "unavailable"
+      ? {
+          key: "load",
+          message: zh
+            ? "账单信息暂时无法加载，请稍后重试。"
+            : "Billing is temporarily unavailable. Try again shortly.",
         }
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setError({
-            key: "load",
-            message: zh
-              ? "账单信息暂时无法加载，请稍后重试。"
-              : "Billing is temporarily unavailable. Try again shortly.",
-          });
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setPending(undefined);
-      });
-    return () => controller.abort();
-  }, [api, enabled, reload, zh]);
+      : undefined;
+  const shownError = error ?? loadError;
 
   const run = async (key: string, action: () => Promise<void>) => {
     setPending(key);
@@ -162,24 +161,28 @@ export function useUsageBillingCategory(
     }
   };
 
-  const startCheckout = (plan: CommaBillingPlan) => {
+  const startCheckout = (plan: BillingPlan) => {
     if (!workspace) return;
     void run(plan.plan_key, async () => {
       await openNativePlatformExternalUrlFromUserAction(async () => {
-        const session = await api.createBillingCheckout(workspace.id, plan.plan_key);
+        const session = await call("billing.checkout", {
+          workspace: workspace.id,
+          plan: plan.plan_key,
+          return: billingReturn(),
+        });
         return session.url;
       });
     });
   };
 
-  const startSubscriptionChange = (plan: CommaBillingPlan) => {
+  const startSubscriptionChange = (plan: BillingPlan) => {
     if (!workspace) return;
     void run(plan.plan_key, async () => {
-      const preview = await api.previewBillingSubscriptionChange(
-        workspace.id,
-        plan.plan_key
-      );
-      setChangeQuote({ plan, preview, requestId: crypto.randomUUID() });
+      const quote = await call("billing.previewChange", {
+        workspace: workspace.id,
+        plan: plan.plan_key,
+      });
+      setChangeQuote({ plan, preview: quote.preview, request: quote.request });
     });
   };
 
@@ -187,13 +190,14 @@ export function useUsageBillingCategory(
     if (!workspace || !changeQuote) return;
     const quote = changeQuote;
     void run(quote.plan.plan_key, async () => {
-      const execute = async () =>
-        api.changeBillingSubscription(
-          workspace.id,
-          quote.plan.plan_key,
-          quote.preview,
-          quote.requestId
-        );
+      const execute = () =>
+        call("billing.change", {
+          workspace: workspace.id,
+          plan: quote.plan.plan_key,
+          preview: quote.preview,
+          request: quote.request,
+          return: billingReturn(),
+        });
       if (quote.preview.effect === "upgrade") {
         await openNativePlatformExternalUrlFromUserAction(async () => {
           const result = await execute();
@@ -204,14 +208,16 @@ export function useUsageBillingCategory(
         await execute();
       }
       setChangeQuote(undefined);
-      await reload();
     });
   };
 
   const openPortal = () => {
     if (!workspace) return;
     void run("portal", async () => {
-      const session = await api.createBillingPortal(workspace.id);
+      const session = await call("billing.portal", {
+        workspace: workspace.id,
+        return: billingReturn(),
+      });
       await openNativePlatformExternalUrl(session.url);
     });
   };
@@ -220,9 +226,7 @@ export function useUsageBillingCategory(
     const normalized = code.trim();
     if (!workspace || normalized.length < 3) return;
     void run("redeem", async () => {
-      await api.redeemBillingCode(workspace.id, normalized);
-      const next = await api.getBillingSummary(workspace.id);
-      setSummary(next);
+      await call("billing.redeem", { workspace: workspace.id, code: normalized });
       setCode("");
       setNotice(
         zh ? "兑换成功，credits 已到账。" : "Code redeemed. Your credits are ready."
@@ -235,7 +239,7 @@ export function useUsageBillingCategory(
     plans.filter((plan) => plan.mode === "subscription").map((plan) => plan.plan_key)
   );
   const errorFor = (owns: (key: string) => boolean) =>
-    error && owns(error.key) ? error.message : undefined;
+    shownError && owns(shownError.key) ? shownError.message : undefined;
   // An annual payment also creates monthly grants. Their expiry is not a renewal date.
   const subscriptionCreditExpiry = summary?.active_grants
     .filter((grant) => grant.source_type === "subscription_cycle" && grant.expires_at)
@@ -490,15 +494,14 @@ export function useUsageBillingCategory(
         onPress: () => {
           if (workspace)
             void run("portal", async () => {
-              await api.cancelBillingSubscriptionRenewal(workspace.id);
-              await reload();
+              await call("billing.cancelRenewal", { workspace: workspace.id });
             });
         },
       },
     });
   }
 
-  const nowUtc = new Date();
+  const nowUtc = new Date(uiClock.now());
   const estimatedPackEnd = new Date(
     Date.UTC(nowUtc.getUTCFullYear(), nowUtc.getUTCMonth() + 1, 0)
   )
@@ -643,69 +646,47 @@ function emptyRow(id: string, title: string, text: ReactNode): SettingsPanelItem
   };
 }
 
-function shouldRefreshBillingReturn(): boolean {
-  if (typeof window === "undefined") return false;
-  const queryStart = window.location.hash.indexOf("?");
+/**
+ * Counts billing returns while the category is open. Electron reports a return
+ * by moving the hash to `…&billing-return=<status>`; when Settings is already
+ * showing this category that is only a hashchange, so the category listens for
+ * it instead of reading the hash once on open. The parameter is removed once
+ * read, so the next return (even with the same status) changes the hash again.
+ */
+function useBillingReturn(enabled: boolean): number {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    if (!enabled || typeof window === "undefined") return;
+    const sync = () => {
+      if (consumeBillingReturn()) setCount((value) => value + 1);
+    };
+    sync();
+    window.addEventListener("hashchange", sync);
+    return () => window.removeEventListener("hashchange", sync);
+  }, [enabled]);
+  return count;
+}
+
+/** Removes `billing-return` from the hash; true when the return should refresh. */
+function consumeBillingReturn(): boolean {
+  const hash = window.location.hash;
+  const queryStart = hash.indexOf("?");
   if (queryStart < 0) return false;
-  const status = new URLSearchParams(window.location.hash.slice(queryStart + 1)).get(
-    "billing-return"
+  const params = new URLSearchParams(hash.slice(queryStart + 1));
+  const status = params.get("billing-return");
+  if (status === null) return false;
+  params.delete("billing-return");
+  const query = params.toString();
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `${hash.slice(0, queryStart)}${query ? `?${query}` : ""}`
   );
   return status === "success" || status === "portal" || status === "subscription";
 }
 
-function billingSummaryChanged(
-  baseline: CommaBillingSummary,
-  current: CommaBillingSummary
-): boolean {
-  return billingSummarySnapshot(baseline) !== billingSummarySnapshot(current);
-}
-
-function billingSummarySnapshot(summary: CommaBillingSummary): string {
-  return JSON.stringify({
-    activeGrants: summary.active_grants
-      .map((grant) => ({
-        expiresAt: grant.expires_at ?? null,
-        id: grant.id,
-        packageCode: grant.package_code,
-        packageVersion: grant.package_version,
-        remainingCredits: grant.remaining_credits,
-        sourceId: grant.source_id,
-        sourceType: grant.source_type,
-        validFrom: grant.valid_from,
-      }))
-      .toSorted((left, right) => left.id.localeCompare(right.id)),
-    activeSubscription: summary.active_subscription
-      ? {
-          packageCode: summary.active_subscription.package_code,
-          packageVersion: summary.active_subscription.package_version,
-          sourceId: summary.active_subscription.source_id,
-          status: summary.active_subscription.status,
-        }
-      : null,
-    currentCredits: summary.current_credits,
-  });
-}
-
-function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    const timer = window.setTimeout(resolve, delayMs);
-    signal.addEventListener(
-      "abort",
-      () => {
-        window.clearTimeout(timer);
-        reject(signal.reason);
-      },
-      { once: true }
-    );
-  });
-}
-
 function billingErrorMessage(reason: unknown, zh: boolean) {
-  const code = reason instanceof CommaApiError ? reason.body?.error : undefined;
+  const code = (reason as { code?: unknown } | null)?.code;
   const messages: Record<string, readonly [string, string]> = {
     redeem_code_not_found: [
       "兑换码不存在，请检查后重试。",
@@ -733,7 +714,10 @@ function billingErrorMessage(reason: unknown, zh: boolean) {
       "Plan changes are temporarily unavailable. Try again shortly.",
     ],
   };
-  const message = code ? messages[code] : undefined;
+  const message =
+    typeof code === "string" && Object.hasOwn(messages, code)
+      ? messages[code]
+      : undefined;
   if (message) return message[zh ? 0 : 1];
   return zh
     ? "操作失败，请检查后重试。"

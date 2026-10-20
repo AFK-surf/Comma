@@ -1,5 +1,5 @@
 defmodule CommaTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   test "BridgeForTeams subsystem starts billing apps before BFT apps" do
     assert [

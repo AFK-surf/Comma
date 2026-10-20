@@ -1,5 +1,5 @@
 defmodule SystemsObservability.DomainRuntimeMetricsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   @reporter Module.concat(__MODULE__, Reporter)
 
@@ -43,18 +43,20 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
   end
 
   test "semantic queue ages reach the shared scrape with finite labels" do
-    :telemetry.execute([:salix, :semantic_queue, :backlog], %{age_seconds: 12}, %{lane: "live"})
+    SystemsRuntime.Telemetry.execute([:salix, :semantic_queue, :backlog], %{age_seconds: 12}, %{
+      lane: "live"
+    })
 
-    :telemetry.execute([:salix, :semantic_queue, :complete], %{age_seconds: 2.5}, %{
+    SystemsRuntime.Telemetry.execute([:salix, :semantic_queue, :complete], %{age_seconds: 2.5}, %{
       lane: "live",
       kind: "text"
     })
 
-    :telemetry.execute([:salix, :semantic_queue, :backlog], %{age_seconds: 5}, %{
+    SystemsRuntime.Telemetry.execute([:salix, :semantic_queue, :backlog], %{age_seconds: 5}, %{
       lane: "tenant-secret"
     })
 
-    :telemetry.execute([:salix, :semantic_queue, :complete], %{age_seconds: 3}, %{
+    SystemsRuntime.Telemetry.execute([:salix, :semantic_queue, :complete], %{age_seconds: 3}, %{
       lane: "tenant-secret",
       kind: "private-file"
     })
@@ -117,14 +119,14 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
 
   test "Router post_message API admission and limiter outcomes are finite" do
     for outcome <- [:queued, :unauthorized, :rate_limited, "group-123?token=secret"] do
-      :telemetry.execute(
+      SystemsRuntime.Telemetry.execute(
         [:salix, :router_inbox, :post_message, :stop],
         %{duration: 1, count: 1},
         %{outcome: outcome}
       )
     end
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :router_inbox, :rate_limit, :decision],
       %{count: 1},
       %{outcome: :unavailable}
@@ -144,32 +146,32 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
     duration = System.convert_time_unit(3, :millisecond, :native)
     hostile = "group-123?token=secret"
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :vm, :record_actor, :cache],
       %{count: 1},
       %{outcome: :hit}
     )
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :vm, :record_actor, :persist],
       %{count: 1},
       %{outcome: :conflict}
     )
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :vm, :record_actor, :batch],
       %{count: 1, size: 9},
       %{outcome: :ok}
     )
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :vm, :record_actor, :queue],
       %{duration: duration},
       %{outcome: :ok}
     )
 
     for event <- [:cache, :persist, :batch] do
-      :telemetry.execute(
+      SystemsRuntime.Telemetry.execute(
         [:salix, :vm, :record_actor, event],
         %{count: 1, size: 1},
         %{outcome: hostile}
@@ -218,6 +220,8 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
 
     BridgeForTeams.Telemetry.emit_operation(:reconcile, "ok", duration)
     BridgeForTeams.Telemetry.emit_operation(:reconcile, "error", duration)
+    BridgeForTeams.Telemetry.emit_operation(:sso, "ok", duration)
+    BridgeForTeams.Telemetry.emit_operation(:sso, "error", duration, %{provider: "lark"})
 
     CommaProduct.Telemetry.emit_backlog_retry(:comma_external)
     CommaProduct.Telemetry.emit_backlog_terminal_failure(:comma_external)
@@ -348,12 +352,8 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
       )
     end
 
-    Enum.each([:ok, :failed], &Salix.Telemetry.emit_external_status_projection/1)
-
     Salix.Telemetry.emit_dependency_job(:llm, :timeout)
     Salix.Telemetry.emit_dependency_job_active(:llm, 2)
-    Salix.Telemetry.emit_connector_external_event(:completed)
-    Salix.Telemetry.emit_connector_external_event_queue_depth(3)
     Salix.Telemetry.emit_connector_pending_rpc(:caller_down)
     Salix.Telemetry.emit_connector_read_stream(:cancelled, :sprites)
     Salix.Telemetry.emit_connector_write_stream(:timeout, :cloudflare)
@@ -372,6 +372,8 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
     assert scrape =~ "bft_operations_total"
     assert scrape =~ ~s(operation="reconcile",outcome="ok",provider="other")
     assert scrape =~ ~s(operation="reconcile",outcome="error",provider="other")
+    assert scrape =~ ~s(operation="sso",outcome="ok",provider="feishu")
+    assert scrape =~ ~s(operation="sso",outcome="error",provider="lark")
     assert scrape =~ "bft_operations_duration_seconds_bucket"
 
     assert scrape =~
@@ -420,19 +422,9 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
              ~s(salix_vm_transitions_total{provider="cloudflare",state="ready",surface="comma"} 1)
 
     assert scrape =~
-             ~s(salix_external_status_projections_total{outcome="ok"} 1)
-
-    assert scrape =~ ~s(salix_external_status_projections_total{outcome="failed"} 1)
-
-    assert scrape =~
              ~s(salix_dependency_jobs_total{kind="llm",outcome="timeout"} 1)
 
     assert scrape =~ ~s(salix_dependency_jobs_active{kind="llm"} 2)
-
-    assert scrape =~
-             ~s(salix_connector_external_events_total{outcome="completed"} 1)
-
-    assert scrape =~ ~s(salix_connector_external_event_queue_depth 3)
 
     assert scrape =~
              ~s(salix_connector_pending_rpcs_total{outcome="caller_down",transport="websocket"} 1)
@@ -509,22 +501,20 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
     hostile = "tenant-123?token=secret/model/error boom"
     duration = System.convert_time_unit(1, :millisecond, :native)
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:bridge_for_teams, :operation, :stop],
       %{duration: duration},
       %{operation: hostile, provider: hostile, outcome: hostile}
     )
 
     Salix.Telemetry.emit_operation(hostile, hostile, hostile, hostile, duration)
-    Salix.Telemetry.emit_external_status_projection(hostile)
     Salix.Telemetry.emit_dependency_job(hostile, hostile)
     Salix.Telemetry.emit_dependency_job_active(hostile, 1)
-    Salix.Telemetry.emit_connector_external_event(hostile)
     Salix.Telemetry.emit_connector_pending_rpc(hostile, hostile)
     Salix.Telemetry.emit_connector_read_stream(hostile, hostile)
     Salix.Telemetry.emit_connector_write_stream(hostile, hostile)
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :runtime_probe, :stop],
       %{duration: duration},
       %{provider: hostile, trigger: hostile, outcome: hostile}
@@ -550,15 +540,9 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
              ~s(salix_operations_total{component="other",operation="other",outcome="other",surface="other"} 1)
 
     assert scrape =~
-             ~s(salix_external_status_projections_total{outcome="other"} 1)
-
-    assert scrape =~
              ~s(salix_dependency_jobs_total{kind="other",outcome="other"} 1)
 
     assert scrape =~ ~s(salix_dependency_jobs_active{kind="other"} 1)
-
-    assert scrape =~
-             ~s(salix_connector_external_events_total{outcome="other"} 1)
 
     assert scrape =~
              ~s(salix_connector_pending_rpcs_total{outcome="other",transport="other"} 1)
@@ -584,19 +568,19 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
     # name label is a REGISTERED whitelist (empty until a convergence user
     # PR lands), so any unregistered or hostile name normalizes to "other"
     # and can never mint a new series.
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :store, :convergence],
       %{converged: 3, unchanged: 0, skipped: 0, failed: 0},
       %{name: "some_unregistered_impl", outcome: "ok"}
     )
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :store, :convergence],
       %{converged: 0, unchanged: 0, skipped: 0, failed: 2},
       %{name: "some_unregistered_impl", outcome: "error"}
     )
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :store, :convergence],
       %{converged: 0, unchanged: 0, skipped: 0, failed: 0},
       %{name: "tenant-123?token=secret", outcome: "exploded badly"}
@@ -632,7 +616,7 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
     assert :created = SalixStore.S3.Settle.create_once(key, body, settle)
     assert :landed = SalixStore.S3.Settle.create_once(key, body, settle)
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :storage, :settlement],
       %{count: 1},
       %{mode: "tenant-42?token=secret", outcome: "exploded badly"}
@@ -654,19 +638,19 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
   end
 
   test "identity resolution events reach the scrape with finite provider/result tuples" do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :im, :identity_resolution],
       %{count: 1},
       %{provider: "slack", result: "fast_hit"}
     )
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :im, :identity_resolution],
       %{count: 1},
       %{provider: "slack", result: "fallback_miss"}
     )
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :im, :identity_resolution],
       %{count: 1},
       %{provider: "slack", result: "rejected"}
@@ -674,7 +658,7 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
 
     # Hostile/unregistered label values normalize to "other" — no new
     # series can be minted from caller-controlled data.
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :im, :identity_resolution],
       %{count: 1},
       %{provider: "tenant-42?x=y", result: "weird value"}
@@ -720,7 +704,7 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
              ~s(salix_store_convergence_converged_total{operation="other",outcome="ok"} 1)
 
     # Second pass past the interval: everything verifies already-correct.
-    future = System.system_time(:millisecond) + :timer.hours(2)
+    future = SystemsClock.system_time(:millisecond) + :timer.hours(2)
 
     assert {:ok, :complete} =
              SalixStore.Convergence.ensure(SalixStore.ConvergenceWorkerFastImpl, now: future)
@@ -793,29 +777,33 @@ defmodule SystemsObservability.DomainRuntimeMetricsTest do
   test "voice call ends, delegation latency and profile waits reach the scrape with finite labels" do
     second = System.convert_time_unit(1, :second, :native)
 
-    :telemetry.execute([:salix, :voice, :call, :stop], %{duration: 90 * second}, %{
+    SystemsRuntime.Telemetry.execute([:salix, :voice, :call, :stop], %{duration: 90 * second}, %{
       transport: "twilio",
       reason: "agent_hangup"
     })
 
-    :telemetry.execute([:salix, :voice, :call, :stop], %{duration: second}, %{
+    SystemsRuntime.Telemetry.execute([:salix, :voice, :call, :stop], %{duration: second}, %{
       transport: "+15551234567",
       reason: "vc_01SECRETCALLID"
     })
 
-    :telemetry.execute([:salix, :voice, :delegation, :stop], %{duration: 3 * second}, %{
-      outcome: "answered"
-    })
+    SystemsRuntime.Telemetry.execute(
+      [:salix, :voice, :delegation, :stop],
+      %{duration: 3 * second},
+      %{
+        outcome: "answered"
+      }
+    )
 
-    :telemetry.execute([:salix, :voice, :delegation, :stop], %{duration: second}, %{
+    SystemsRuntime.Telemetry.execute([:salix, :voice, :delegation, :stop], %{duration: second}, %{
       outcome: "caller said: my PIN is 1234"
     })
 
-    :telemetry.execute([:salix, :voice, :profile, :stop], %{duration: second}, %{
+    SystemsRuntime.Telemetry.execute([:salix, :voice, :profile, :stop], %{duration: second}, %{
       outcome: "timeout"
     })
 
-    :telemetry.execute([:salix, :voice, :profile, :stop], %{duration: second}, %{
+    SystemsRuntime.Telemetry.execute([:salix, :voice, :profile, :stop], %{duration: second}, %{
       outcome: "Speak Spanish"
     })
 

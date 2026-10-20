@@ -12,7 +12,7 @@ defmodule SystemsObservability.HTTPPlug do
     discard_request_state()
 
     state = %{
-      started: System.monotonic_time(),
+      started: SystemsClock.monotonic_time(),
       endpoint: Keyword.get(opts, :endpoint),
       route: safe_route(conn, opts),
       method: conn.method,
@@ -45,7 +45,7 @@ defmodule SystemsObservability.HTTPPlug do
         safe_detach(state.context_token)
 
         safe_execute(
-          %{duration: max(System.monotonic_time() - started, 0)},
+          %{duration: max(SystemsClock.monotonic_time() - started, 0)},
           %{
             endpoint: state.endpoint,
             route: state.route,
@@ -123,7 +123,7 @@ defmodule SystemsObservability.HTTPPlug do
   defp finite_status(_status), do: 500
 
   defp safe_execute(measurements, metadata) do
-    :telemetry.execute([:comma_system, :http, :stop], measurements, metadata)
+    SystemsRuntime.Telemetry.execute([:comma_system, :http, :stop], measurements, metadata)
   rescue
     _exception -> handler_failure()
   catch
@@ -146,7 +146,7 @@ defmodule SystemsObservability.HTTPPlug do
   end
 
   defp handler_failure do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:systems_observability, :handler, :failure],
       %{},
       %{reason: "invalid_measurement"}

@@ -1,5 +1,8 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Button, CircleInfoIcon, motionDuration } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { CircleInfoIcon } from "@comma/ui/components/icons";
+import { uiClock } from "@comma/ui/clock";
+import { motionDuration } from "@comma/ui/tokens";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { OnboardingSwap } from "./OnboardingCard";
 import { playKeysShake, playPartsEnter } from "./onboardingMotion";
@@ -111,22 +114,21 @@ export function OnboardingShortcut({
   useEffect(() => {
     const group = groupRef.current;
     if (!group || armed) return undefined;
-    const timer = window.setTimeout(() => {
+    const timer = uiClock.after(delay, () => {
       takeFocus(group);
       setArmed(true);
-    }, delay);
-    return () => window.clearTimeout(timer);
+    });
+    return () => timer();
   }, [armed, delay, takeFocus]);
 
   // The note that a wrong key was pressed leaves after a while; each wrong
   // key keeps it a while longer.
   useEffect(() => {
     if (!wrong.shown) return undefined;
-    const timer = window.setTimeout(
-      () => setWrong((current) => ({ ...current, shown: false })),
-      motionDuration.onboardingKeyHint
+    const timer = uiClock.after(motionDuration.onboardingKeyHint, () =>
+      setWrong((current) => ({ ...current, shown: false }))
     );
-    return () => window.clearTimeout(timer);
+    return () => timer();
   }, [wrong]);
 
   // Once done, keys going up still let go of their keys; nothing else counts.

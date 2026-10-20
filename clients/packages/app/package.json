@@ -11,25 +11,18 @@
     "./task-panel-session": "./src/task-panel-session.ts",
     "./task-panel": "./src/task-panel.ts",
     "./task-share": "./src/task-share.ts",
-    "./api": "./src/api/index.ts",
-    "./auth": "./src/auth/index.ts",
-    "./auth/styles.css": "./src/auth/styles.css",
-    "./chat-core": "./src/chat-core.ts",
-    "./chat-runtime": "./src/chat-runtime.ts",
-    "./styles.css": "./src/styles.css",
-    "./chat-coordinator": "./src/runtime-chat/coordinator/ChatCoordinator.ts",
-    "./host-runtime": "./src/runtime-chat/CommaAppRuntime.ts"
+    "./styles.css": "./src/styles.css"
   },
   "dependencies": {
     "@comma/chat-contract": "workspace:*",
     "@comma/config": "workspace:*",
+    "@comma/core": "workspace:*",
+    "@comma/core-client": "workspace:*",
     "@comma/i18n": "workspace:*",
     "@comma/layout-inspector": "workspace:*",
     "@comma/native-bridge": "workspace:*",
-    "@comma/product-inbox-runtime": "workspace:*",
     "@comma/recommendation-contract": "workspace:*",
     "@comma/session-contract": "workspace:*",
-    "@comma/session-history-runtime": "workspace:*",
     "@comma/ui": "workspace:*",
     "@tanstack/react-router": "^1.170.16",
     "@tanstack/react-virtual": "^3.14.12",
@@ -39,7 +32,8 @@
     "qrcode.react": "^4.2.0",
     "react": "^19.2.7",
     "react-aria-components": "^1.18.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@comma/analytics": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",

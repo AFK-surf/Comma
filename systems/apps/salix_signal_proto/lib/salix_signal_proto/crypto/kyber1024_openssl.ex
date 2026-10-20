@@ -57,7 +57,7 @@ defmodule SalixSignalProto.Crypto.Kyber1024Openssl do
           {:ok, {encapsulation_key(), decapsulation_key()}} | {:error, :unsupported}
   def generate_keypair do
     with :ok <- check_supported() do
-      {:ok, :crypto.generate_key(:mlkem1024, [])}
+      {:ok, SystemsRuntime.Proc.generate_key(:mlkem1024, [])}
     end
   end
 
@@ -68,7 +68,7 @@ defmodule SalixSignalProto.Crypto.Kyber1024Openssl do
     with :ok <- check_supported(),
          :ok <-
            check_size(decapsulation_key, @decapsulation_key_bytes, :invalid_decapsulation_key) do
-      {encapsulation_key, _} = :crypto.generate_key(:mlkem1024, [], decapsulation_key)
+      {encapsulation_key, _} = SystemsRuntime.Proc.generate_key(:mlkem1024, [], decapsulation_key)
       {:ok, encapsulation_key}
     end
   rescue

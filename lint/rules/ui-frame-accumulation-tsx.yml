@@ -1,0 +1,25 @@
+id: ui-frame-accumulation-tsx
+language: tsx
+severity: error
+message: "$A accumulates per frame: its value depends on when the frames fell."
+note: |
+  As ui-frame-accumulation, for TSX: compute each frame's state from the time
+  since the motion started (clients/packages/ui/src/motion).
+rule:
+  any:
+    - pattern: $A += $B * $DT
+    - pattern: $A -= $B * $DT
+    - pattern: $A += $DT * $B
+    - pattern: $A -= $DT * $B
+constraints:
+  DT:
+    {
+      regex: "^(dt|dtSeconds|delta|deltaSeconds|deltaMs|seconds|frameSeconds|elapsedSeconds)$",
+    }
+files:
+  - clients/packages/*/src/**/*.tsx
+  - clients/apps/*/src/**/*.tsx
+ignores:
+  - "**/test/**"
+  - "**/*.test.tsx"
+  - "**/*.stories.tsx"

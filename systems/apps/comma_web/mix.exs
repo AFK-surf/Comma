@@ -24,6 +24,7 @@ defmodule CommaWeb.MixProject do
 
   defp deps do
     [
+      {:systems_clock, in_umbrella: true},
       {:systems_observability, in_umbrella: true},
       {:billing_core, in_umbrella: true},
       {:billing_commerce, in_umbrella: true},

@@ -1,14 +1,13 @@
 import { CommaI18nProvider } from "@comma/i18n/react";
 import { initializeCommaI18n } from "@comma/i18n";
-import { render, screen } from "@comma/test-utils/render";
+import { render, screen, within } from "@comma/test-utils/render";
+import userEvent from "@testing-library/user-event";
+import { setInteractionModality } from "react-aria/private/interactions/useFocusVisible";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { ParticipantStatusSlot } from "../ActivityLine";
-import type {
-  ChatActivity,
-  ChatParticipantStatus,
-} from "../../../model/conversationChannel";
-import { workerMeshGradientStyle } from "../workerAvatar";
+import type { ActivityFocus, ActivityFocusTask } from "../activityFocus";
+import type { ChatActivity, ChatParticipantStatus } from "@comma/core/chat";
 
 beforeEach(() => {
   initializeCommaI18n(["en"]);
@@ -49,13 +48,15 @@ const reviewer = {
 
 function statusView(
   participants: ChatParticipantStatus[],
-  locale: "en" | "zh-CN" = "en"
+  locale: "en" | "zh-CN" = "en",
+  workerVendor?: string
 ) {
   return (
     <CommaI18nProvider locale={locale}>
       <ParticipantStatusSlot
         participantStatus={undefined}
         participantStatuses={participants}
+        workerVendor={workerVendor}
       />
     </CommaI18nProvider>
   );
@@ -79,8 +80,8 @@ function zhErrorView(issue: string, status: string) {
 }
 
 describe("Task activity summary", () => {
-  it("animates only the active Router avatar at a smaller size", () => {
-    const view = render(statusView([router, worker]));
+  it("animates only the active Router avatar, and shows the Worker by its model's maker", () => {
+    const view = render(statusView([router, worker], "en", "anthropic"));
     const routerAvatar = view.container.querySelector('[data-actor-role="router"]');
     const workerAvatar = view.container.querySelector('[data-actor-role="worker"]');
     const logo = routerAvatar?.querySelector('[data-slot="comma-logo-animation"]');
@@ -88,12 +89,10 @@ describe("Task activity summary", () => {
     // Real 16px sizing is asserted with the application CSS in Playwright.
     expect(routerAvatar).toHaveClass("comma-chat-assistant-router-mark");
     expect(logo).toHaveAttribute("data-paused", "false");
-    expect(workerAvatar?.querySelector("svg")).toBeNull();
-    expect(workerAvatar).toHaveStyle({
-      backgroundImage: workerMeshGradientStyle(worker.actorId!).backgroundImage,
-    });
+    expect(workerAvatar).toHaveAttribute("data-model-vendor", "anthropic");
+    expect(workerAvatar?.querySelector("img")).toBeInTheDocument();
 
-    view.rerender(statusView([{ ...router, updatedAt: 2 }, worker]));
+    view.rerender(statusView([{ ...router, updatedAt: 2 }, worker], "en", "anthropic"));
     expect(view.container.querySelector('[data-slot="comma-logo-animation"]')).toBe(
       logo
     );
@@ -111,19 +110,6 @@ describe("Task activity summary", () => {
     expect(view.container.querySelector(".comma-chat-activity-avatar")).toBeNull();
   });
 
-  it("uses the animated mark for the single-participant thinking row", () => {
-    const view = render(<ParticipantStatusSlot participantStatus={router} />);
-    expect(screen.getByText("Thinking")).toBeInTheDocument();
-    expect(screen.queryByText("is thinking...")).not.toBeInTheDocument();
-    expect(
-      view.container.querySelector('[data-slot="comma-logo-animation"]')
-    ).toBeInTheDocument();
-    expect(
-      view.container.querySelector(
-        '.comma-chat-thinking-bubble [data-slot="comma-logo-animation"]'
-      )
-    ).toBeInTheDocument();
-  });
   it.each([
     [[router], "Router is thinking"],
     [[worker], "Worker is thinking"],
@@ -155,9 +141,6 @@ describe("Task activity summary", () => {
     const avatar = view.container.querySelector(".comma-chat-activity-avatar");
     const activity = view.container.querySelector('[data-slot="ai-activity"]');
     const text = screen.getByText("Worker is thinking");
-    expect(avatar).toHaveStyle({
-      backgroundImage: workerMeshGradientStyle(worker.actorId!).backgroundImage,
-    });
 
     view.rerender(
       statusView([{ ...worker, status: "is executing a tool...", updatedAt: 2 }])
@@ -201,6 +184,19 @@ describe("Task activity summary", () => {
   });
 });
 
+const ownerSlotView = (
+  participantStatus: ChatParticipantStatus | undefined,
+  streaming = false
+) => (
+  <CommaI18nProvider locale="en">
+    <ParticipantStatusSlot
+      hasResponse
+      participantStatus={participantStatus}
+      streaming={streaming}
+    />
+  </CommaI18nProvider>
+);
+
 describe("ParticipantStatusSlot", () => {
   it("clears the channel when work stops and preserves localized channel copy", () => {
     const view = render(
@@ -222,75 +218,51 @@ describe("ParticipantStatusSlot", () => {
   });
 
   it("holds brief empty snapshots without remounting the thinking avatar", () => {
-    vi.useFakeTimers();
-    try {
-      const view = render(statusView([router]));
-      const slot = screen.getByTestId("participant-status-slot");
-      const avatar = view.container.querySelector(".comma-chat-activity-avatar");
-      view.rerender(statusView([]));
-      act(() => vi.advanceTimersByTime(100));
-      expect(slot).toHaveAttribute("data-active", "true");
-      view.rerender(statusView([router]));
-      expect(view.container.querySelector(".comma-chat-activity-avatar")).toBe(avatar);
-      act(() => vi.advanceTimersByTime(200));
-      expect(slot).toHaveAttribute("data-active", "true");
-      view.rerender(statusView([]));
-      act(() => vi.advanceTimersByTime(180));
-      expect(slot).toHaveAttribute("data-active", "false");
-      view.unmount();
-    } finally {
-      vi.useRealTimers();
-    }
+    const view = render(statusView([router]));
+    const slot = screen.getByTestId("participant-status-slot");
+    const avatar = view.container.querySelector(".comma-chat-activity-avatar");
+    view.rerender(statusView([]));
+    act(() => vi.advanceTimersByTime(100));
+    expect(slot).toHaveAttribute("data-active", "true");
+    view.rerender(statusView([router]));
+    expect(view.container.querySelector(".comma-chat-activity-avatar")).toBe(avatar);
+    act(() => vi.advanceTimersByTime(200));
+    expect(slot).toHaveAttribute("data-active", "true");
+    view.rerender(statusView([]));
+    act(() => vi.advanceTimersByTime(180));
+    expect(slot).toHaveAttribute("data-active", "false");
+    view.unmount();
   });
-  it.each(["en", "zh-CN"] as const)(
-    "keeps owner-backed work after a reply without exposing private status (%s)",
-    async (locale) => {
-      const status = { ...router, status: "is waiting: private implementation detail" };
-      const slotView = (
-        participantStatus: ChatParticipantStatus | undefined,
-        streaming = false
-      ) => (
-        <CommaI18nProvider locale={locale}>
-          <ParticipantStatusSlot
-            hasResponse
-            participantStatus={participantStatus}
-            streaming={streaming}
-          />
-        </CommaI18nProvider>
-      );
-      const view = render(slotView(status));
-      const slot = screen.getByTestId("participant-status-slot");
-      expect(slot).toHaveAttribute("data-active", "true");
-      expect(currentSummary(view.container)).toHaveTextContent(
-        locale === "en" ? "Working" : "正在处理"
-      );
-      expect(slot).not.toHaveTextContent("private implementation detail");
-      view.rerender(slotView({ ...status, state: "stopped" }));
-      expect(slot).toHaveAttribute("data-active", "false");
-      view.rerender(slotView(status, true));
-      expect(slot).toHaveAttribute("data-active", "false");
-      view.rerender(slotView({ ...status, state: "stopped" }));
-      expect(slot).toHaveAttribute("data-active", "false");
-      view.rerender(slotView(undefined));
-      expect(slot).toHaveAttribute("data-active", "false");
-      view.rerender(
-        slotView({
-          ...status,
-          issue: "runtime_observation_lost",
-          state: "error",
-          status: "error: runtime observation was lost",
-        })
-      );
-      const lost =
-        locale === "en"
-          ? "Lost connection to the computer while working. Check that it’s online."
-          : "运行中与电脑断开了连接，请确认电脑在线。";
-      await screen.findByText(lost);
-      expect(screen.getByRole("alert")).toHaveTextContent(lost);
-      expect(slot).not.toHaveTextContent("runtime observation");
-      expect(view.container.querySelector(".comma-chat-activity-avatar")).toBeNull();
-    }
-  );
+  it("keeps owner-backed work after a reply without exposing private status", async () => {
+    const status = { ...router, status: "is waiting: private implementation detail" };
+    const view = render(ownerSlotView(status));
+    const slot = screen.getByTestId("participant-status-slot");
+    expect(slot).toHaveAttribute("data-active", "true");
+    expect(currentSummary(view.container)).toHaveTextContent("Working");
+    expect(slot).not.toHaveTextContent("private implementation detail");
+    view.rerender(ownerSlotView({ ...status, state: "stopped" }));
+    expect(slot).toHaveAttribute("data-active", "false");
+    view.rerender(ownerSlotView(status, true));
+    expect(slot).toHaveAttribute("data-active", "false");
+    view.rerender(ownerSlotView({ ...status, state: "stopped" }));
+    expect(slot).toHaveAttribute("data-active", "false");
+    view.rerender(ownerSlotView(undefined));
+    expect(slot).toHaveAttribute("data-active", "false");
+    view.rerender(
+      ownerSlotView({
+        ...status,
+        issue: "runtime_observation_lost",
+        state: "error",
+        status: "error: runtime observation was lost",
+      })
+    );
+    const lost =
+      "Lost connection to the computer while working. Check that it’s online.";
+    await screen.findByText(lost);
+    expect(screen.getByRole("alert")).toHaveTextContent(lost);
+    expect(slot).not.toHaveTextContent("runtime observation");
+    expect(view.container.querySelector(".comma-chat-activity-avatar")).toBeNull();
+  });
 
   it("keeps a background Loop wake out of the previous chat reply", () => {
     const view = render(
@@ -317,59 +289,266 @@ describe("ParticipantStatusSlot", () => {
     expect(slot).toHaveAttribute("data-active", "false");
   });
 
-  it("keeps Side Chat tool execution separate and visible after prose, then retires it with the owner", () => {
-    const activity = {
+  describe("Task work", () => {
+    // The Home round that waited for the Worker left its tool frame behind.
+    const waitFrame: ChatActivity = {
       phase: "execution",
       status: "running",
-      summaryClass: "public" as const,
-      summary: "Working",
-      toolName: "calendar.list_items",
+      summaryClass: "public",
+      toolName: "wait_for",
     };
-    const view = render(
-      <ParticipantStatusSlot
-        activity={activity}
-        hasResponse
-        participantStatus={router}
-        toolPresentation="bubble"
-      />
-    );
-    const slot = screen.getByTestId("participant-status-slot");
-    expect(slot).toHaveAttribute("data-presentation", "tool-call");
-    expect(slot).toHaveAttribute("data-tool-name", "calendar.list_items");
-    expect(screen.getByRole("status")).toHaveTextContent("Checking your calendar");
+    const codex = {
+      active: true,
+      avatarId: "actor_codex",
+      name: "Codex Worker",
+      participantId: "ptp_codex",
+      vendor: "openai",
+    };
+    const weekly: ActivityFocusTask = {
+      conversationId: "task_weekly",
+      statusBucket: "in_progress",
+      title: "整理本周周报",
+      worker: codex,
+    };
+    const billing: ActivityFocusTask = {
+      conversationId: "task_billing",
+      statusBucket: "in_progress",
+      title: "核对 Q3 账单",
+      worker: {
+        ...codex,
+        avatarId: "actor_claude",
+        name: "Claude Worker",
+        vendor: "anthropic",
+      },
+    };
+    it.each(["en", "zh-CN"] as const)(
+      "names the Task and Worker that the Router follows up on (%s)",
+      async (locale) => {
+        const following = {
+          ...router,
+          workingConversationIds: [weekly.conversationId],
+        };
+        const view = render(
+          slotView(
+            {
+              activity: waitFrame,
+              participantStatus: following,
+              focus: focusOf("following", [weekly]),
+            },
+            locale
+          )
+        );
+        // The earlier round's tool frame is stale: it never shows.
+        expect(currentSummary(view.container)).toHaveTextContent(
+          locale === "en"
+            ? "Reviewing an update on “整理本周周报”"
+            : "正在处理「整理本周周报」的新进展"
+        );
+        const bubble = bubbleOf(view.container);
+        expect(bubble.querySelector(".comma-chat-thinking-logo")).not.toBeNull();
+        // The Worker shows as the mark of its model's maker.
+        expect(bubble.querySelectorAll("[data-worker-avatar]")).toHaveLength(1);
+        expect(bubble.querySelector("[data-worker-avatar]")).toHaveAttribute(
+          "data-model-vendor",
+          "openai"
+        );
 
-    view.rerender(
-      <ParticipantStatusSlot
-        activity={{ ...activity, toolName: undefined }}
-        hasResponse
-        participantStatus={router}
-        toolPresentation="bubble"
-      />
+        // Until this reader resolves the Task, the line stays generic.
+        view.rerender(
+          slotView(
+            {
+              activity: waitFrame,
+              participantStatus: following,
+              focus: focusOf("following", [{ conversationId: weekly.conversationId }]),
+            },
+            locale
+          )
+        );
+        await vi.waitFor(() =>
+          expect(currentSummary(view.container)).toHaveTextContent(
+            locale === "en" ? "Thinking" : "思考中"
+          )
+        );
+      }
     );
-    expect(slot).toHaveAttribute("data-presentation", "tool-call");
-    expect(screen.getByRole("status")).toHaveTextContent("Working");
 
-    view.rerender(
-      <ParticipantStatusSlot
-        activity={activity}
-        hasResponse
-        participantStatus={router}
-      />
-    );
-    // A first reply does not stop the active owner in full chat either.
-    expect(slot).toHaveAttribute("data-active", "true");
-    expect(slot).not.toHaveAttribute("data-presentation");
+    it("words the whole wait, also after its tool frame expires", async () => {
+      const waiting = {
+        ...router,
+        waiting: true,
+        status: "is waiting: private reason",
+      };
+      const view = render(slotView({ participantStatus: waiting }));
+      expect(currentSummary(view.container)).toHaveTextContent("正在等进展");
+      expect(view.container).not.toHaveTextContent("private reason");
 
-    view.rerender(
-      <ParticipantStatusSlot
-        activity={activity}
-        hasResponse
-        participantStatus={{ ...router, state: "stopped" }}
-        toolPresentation="bubble"
-      />
-    );
-    expect(slot).toHaveAttribute("data-active", "false");
-    expect(slot).not.toHaveAttribute("data-presentation");
+      view.rerender(slotView({ participantStatus: waiting, hasResponse: true }));
+      await vi.waitFor(() =>
+        expect(currentSummary(view.container)).toHaveTextContent("正在等进展")
+      );
+
+      view.rerender(
+        slotView({
+          participantStatus: waiting,
+          hasResponse: true,
+          focus: focusOf("waiting", [weekly]),
+        })
+      );
+      await vi.waitFor(() =>
+        expect(currentSummary(view.container)).toHaveTextContent(
+          "正在等「整理本周周报」完成"
+        )
+      );
+    });
+
+    it("counts several Tasks and shows at most two Worker avatars", () => {
+      const third = {
+        ...billing,
+        conversationId: "task_third",
+        worker: { ...codex, avatarId: "actor_third" },
+      };
+      const view = render(
+        slotView({
+          participantStatus: {
+            ...router,
+            workingConversationIds: ["task_weekly", "task_billing", "task_third"],
+          },
+          focus: focusOf("following", [weekly, billing, third]),
+        })
+      );
+      expect(currentSummary(view.container)).toHaveTextContent(
+        "正在处理 3 个任务的新进展"
+      );
+      expect(
+        bubbleOf(view.container).querySelectorAll("[data-worker-avatar]")
+      ).toHaveLength(2);
+    });
+
+    it("shows Workers that work while the Router is idle, never over an error", async () => {
+      const view = render(
+        slotView({
+          participantStatus: { ...router, state: "stopped", status: "" },
+          focus: focusOf("working", [weekly]),
+          hasResponse: true,
+        })
+      );
+      const slot = screen.getByTestId("participant-status-slot");
+      expect(slot).toHaveAttribute("data-active", "true");
+      expect(currentSummary(view.container)).toHaveTextContent(
+        "「整理本周周报」进行中"
+      );
+      const bubble = bubbleOf(view.container);
+      expect(bubble.querySelector(".comma-chat-thinking-logo")).toBeNull();
+      expect(bubble.querySelectorAll("[data-worker-avatar]")).toHaveLength(1);
+
+      view.rerender(
+        slotView({
+          participantStatus: {
+            ...router,
+            state: "error",
+            status: "error: runtime failed",
+            issue: "runtime_failed",
+          },
+          focus: focusOf("working", [weekly]),
+          hasResponse: true,
+        })
+      );
+      // The line swaps to the error notice; the outgoing text then leaves.
+      await vi.waitFor(() => expect(slot).not.toHaveTextContent("进行中"));
+    });
+
+    it("is the link to the Task its line names, with a card whose rows open each Task", async () => {
+      const opened = vi.fn();
+      // A Task link rendered as a button.
+      const taskLink = (task: ActivityFocusTask) => (
+        <button
+          type="button"
+          aria-label={`打开任务：${task.title}`}
+          onClick={() => opened(task.conversationId)}
+        />
+      );
+      const user = userEvent.setup();
+      setInteractionModality("pointer");
+      render(
+        slotView({
+          participantStatus: {
+            ...router,
+            workingConversationIds: [weekly.conversationId, billing.conversationId],
+          },
+          focus: focusOf("following", [weekly, billing]),
+          taskLink,
+        })
+      );
+      const bubble = screen.getByRole("button", {
+        name: "正在处理 2 个任务的新进展",
+      });
+      await user.hover(bubble);
+      const card = await screen.findByRole(
+        "dialog",
+        { name: "2 个任务" },
+        { timeout: 3_000 }
+      );
+      // A row names the Worker and the Task, and holds the status until a step loads.
+      const row = within(card).getByRole("button", { name: "打开任务：核对 Q3 账单" });
+      expect(row).toHaveTextContent("Claude Worker");
+      expect(row).toHaveTextContent("核对 Q3 账单");
+      expect(row).toHaveTextContent("进行中");
+      await user.hover(row);
+      await user.click(row);
+      expect(opened).toHaveBeenCalledExactlyOnceWith(billing.conversationId);
+
+      // The bubble itself opens the Task that its line names.
+      opened.mockClear();
+      await user.click(bubble);
+      expect(opened).toHaveBeenCalledExactlyOnceWith(weekly.conversationId);
+    });
+
+    it("lists only Tasks the reader can see and never fills a row with stand-in words", async () => {
+      const user = userEvent.setup();
+      setInteractionModality("pointer");
+      // Its feed has not answered yet, and its status is still loading.
+      const loading: ActivityFocusTask = {
+        ...billing,
+        worker: undefined,
+        statusBucket: undefined,
+      };
+      // Its feed answered: no Worker is bound yet.
+      const queued: ActivityFocusTask = {
+        ...weekly,
+        conversationId: "task_queued",
+        title: "排队中的任务",
+        worker: null,
+      };
+      render(
+        slotView({
+          participantStatus: {
+            ...router,
+            workingConversationIds: ["task_unseen", "task_billing", "task_queued"],
+          },
+          focus: focusOf("following", [
+            { conversationId: "task_unseen" },
+            loading,
+            queued,
+          ]),
+          taskLink: inertTaskLink,
+        })
+      );
+      // The Task without a title is neither counted in the bubble nor listed.
+      const bubble = screen.getByRole("button", { name: "正在处理 2 个任务的新进展" });
+      await user.hover(bubble);
+      const card = await screen.findByRole(
+        "dialog",
+        { name: "2 个任务" },
+        { timeout: 3_000 }
+      );
+      expect(within(card).getAllByRole("button")).toHaveLength(2);
+      expect(
+        within(card).getByRole("button", { name: "打开任务：核对 Q3 账单" })
+      ).not.toHaveTextContent("Worker");
+      expect(
+        within(card).getByRole("button", { name: "打开任务：排队中的任务" })
+      ).toHaveTextContent("还没有 Worker");
+    });
   });
 
   it("does not promote private tool copy and preserves public execution errors", () => {
@@ -385,7 +564,6 @@ describe("ParticipantStatusSlot", () => {
         activity={activity}
         hasResponse
         participantStatus={router}
-        toolPresentation="bubble"
       />
     );
     expect(screen.getByTestId("participant-status-slot")).toHaveAttribute(
@@ -405,13 +583,9 @@ describe("ParticipantStatusSlot", () => {
         }}
         hasResponse
         participantStatus={router}
-        toolPresentation="bubble"
       />
     );
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t check your calendar");
-    expect(screen.getByTestId("participant-status-slot")).not.toHaveAttribute(
-      "data-presentation"
-    );
   });
 
   it("keeps a silent acknowledged wait visible without inventing a runtime failure", async () => {
@@ -619,7 +793,9 @@ describe("ParticipantStatusSlot", () => {
 
     expect(screen.getByText("Generation failed")).toBeInTheDocument();
     expect(
-      screen.queryByText("Could not connect to the model. Try sending again.")
+      screen.queryByText(
+        "The model request failed, so work stopped. If this keeps happening, choose another model."
+      )
     ).not.toBeInTheDocument();
     const slot = screen.getByTestId("participant-status-slot");
     expect(slot).toHaveAttribute("data-active", "true");
@@ -655,7 +831,9 @@ describe("ParticipantStatusSlot", () => {
 
     expect(screen.getByText("The command failed")).toBeInTheDocument();
     expect(
-      screen.queryByText("Could not connect to the model. Try sending again.")
+      screen.queryByText(
+        "The model request failed, so work stopped. If this keeps happening, choose another model."
+      )
     ).not.toBeInTheDocument();
   });
 
@@ -709,6 +887,15 @@ describe("ParticipantStatusSlot", () => {
     );
     expect(currentSummary(send.container)).toHaveTextContent("正在发送飞书消息");
     send.unmount();
+    const larkSend = render(
+      slotView({
+        ...execution,
+        summary: "Working",
+        toolName: "im_api.lark.send_message",
+      })
+    );
+    expect(currentSummary(larkSend.container)).toHaveTextContent("正在发送 Lark 消息");
+    larkSend.unmount();
     const read = render(
       slotView({
         ...execution,
@@ -733,64 +920,45 @@ describe("ParticipantStatusSlot", () => {
     expect(currentSummary(invented.container)).toHaveTextContent("正在处理");
   });
 
-  it("keeps a canonical non-model error ahead of a failed presentation frame", () => {
-    render(
-      <ParticipantStatusSlot
-        activity={{
-          phase: "thinking",
-          responseKey: "rsp_repair",
-          sequence: 9,
-          status: "failed",
-          summaryClass: "generic",
-        }}
-        participantStatus={{
-          conversationId: "cnv_1",
-          issue: "visible_reply_repair_exhausted",
-          participantId: "ptp_1",
-          state: "error",
-          status: "error: the session could not produce a visible reply",
-          updatedAt: 1_780_000_000_475,
-        }}
-      />
-    );
-
-    expect(
-      screen.getByText("Couldn’t finish the reply. Try sending again.")
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText("error: the session could not produce a visible reply")
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText("Generation failed")).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("Could not connect to the model. Try sending again.")
-    ).not.toBeInTheDocument();
-  });
-
   // The durable half: the in-memory failure frame dies with an SSE reconnect
   // (the agent's activity surface drops the session on the terminal idle), so
   // the runtime also settles the session's own activity to error with a stable
   // reason code. That one survives a reload, and carries localized copy rather
   // than the runtime's English text.
-  it("localizes a durable model-connection failure from the Participant status", () => {
-    render(
-      <ParticipantStatusSlot
-        participantStatus={{
-          conversationId: "cnv_1",
-          issue: "model_connection_failed",
-          participantId: "ptp_1",
-          state: "error",
-          status: "error: the model could not be reached",
-          updatedAt: 1_780_000_000_600,
-        }}
-      />
-    );
-
-    expect(
-      screen.getByText("Could not connect to the model. Try sending again.")
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText("error: the model could not be reached")
-    ).not.toBeInTheDocument();
+  it("says when a model request failed and what started its round", () => {
+    // The line stays under the newest message, so it names the failure time
+    // and a background or voice call start instead of reading as that reply.
+    for (const [trigger, copy] of [
+      [undefined, "这次模型请求失败，已停止处理。如果反复出现，请换一个模型。"],
+      [
+        "background",
+        "后台任务的模型请求失败，已停止处理。如果反复出现，请换一个模型。",
+      ],
+      [
+        "voice_call",
+        "语音通话中的模型请求失败，已停止处理。如果反复出现，请换一个模型。",
+      ],
+    ] as const) {
+      const view = render(
+        <CommaI18nProvider locale="zh-CN">
+          <ParticipantStatusSlot
+            participantStatus={{
+              conversationId: "cnv_1",
+              issue: "model_connection_failed",
+              ...(trigger ? { issueDetail: { trigger } } : {}),
+              participantId: "ptp_1",
+              state: "error",
+              status: "error: the model request failed",
+              updatedAt: 1_791_244_815,
+            }}
+          />
+        </CommaI18nProvider>
+      );
+      const alert = view.getByRole("alert");
+      expect(alert).toHaveTextContent(new RegExp(`\\d{1,2}:\\d{2} · ${copy}$`));
+      expect(alert).not.toHaveTextContent("the model request failed");
+      view.unmount();
+    }
   });
 
   it("words runtime issues in the reader's language, never the runtime's text", () => {
@@ -872,6 +1040,25 @@ describe("ParticipantStatusSlot", () => {
     );
   });
 });
+
+const focusOf = (
+  mode: ActivityFocus["mode"],
+  tasks: ActivityFocusTask[]
+): ActivityFocus => ({ groupId: "group", mode, tasks });
+const slotView = (
+  props: Partial<Parameters<typeof ParticipantStatusSlot>[0]>,
+  locale: "en" | "zh-CN" = "zh-CN"
+) => (
+  <CommaI18nProvider locale={locale}>
+    <ParticipantStatusSlot participantStatus={undefined} {...props} />
+  </CommaI18nProvider>
+);
+// A surface link that only names its Task.
+const inertTaskLink = (task: ActivityFocusTask) => (
+  <button type="button" aria-label={`打开任务：${task.title}`} />
+);
+const bubbleOf = (container: HTMLElement) =>
+  container.querySelector<HTMLElement>(".comma-chat-thinking-bubble")!;
 
 function currentSummary(container: HTMLElement) {
   return container.querySelector(

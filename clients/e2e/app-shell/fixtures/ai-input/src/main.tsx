@@ -1,6 +1,6 @@
 import "@comma/ui/styles.css";
-import { nativePlatformClipboard } from "../../../../../packages/app/src/runtime-chat/nativePlatformActions";
-import { isAllowedAttachment } from "../../../../../packages/app/src/components/chat/model/protocol";
+import { nativePlatformClipboard } from "../../../../../packages/app/src/nativePlatformActions";
+import { isAllowedAttachment } from "@comma/core/chat";
 
 import {
   AiInput,
@@ -9,9 +9,10 @@ import {
   type AiInputMenuRegistration,
   type AiInputRichTokenSegment,
   type AiInputRichValue,
-} from "@comma/ui";
+} from "@comma/ui/components/ai-input";
 import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { fixtureSearch } from "../../../support/search";
 
 const quoteDetail =
   "圆橡皮，中间留出金属箍空隙。\n点 形状 → 铅笔 会得到一支完整的铅笔。";
@@ -52,8 +53,7 @@ const richMenus: AiInputMenuRegistration[] = [
 
 const mentionMenu = (
   onAddFiles: () => void,
-  routinesLoading: boolean,
-  routinesReady: boolean
+  routinesLoading: boolean
 ): AiInputMenuRegistration => ({
   id: "mentions",
   trigger: "@",
@@ -92,45 +92,9 @@ const mentionMenu = (
     // Toggled by specs to assert the indexing/searching state.
     ...(routinesLoading
       ? [{ id: "routines", label: "Routines", status: "loading" as const, items: [] }]
-      : routinesReady
-        ? [
-            {
-              id: "routines",
-              label: "Routines",
-              items: [
-                {
-                  id: "routine:daily-digest",
-                  label: "Daily digest",
-                  plainText: "https://example.test/daily-digest",
-                },
-              ],
-            },
-          ]
-        : []),
+      : []),
   ],
 });
-
-let plainClipboardText = "";
-const plainClipboard = {
-  async readText() {
-    return plainClipboardText;
-  },
-  async writeText(_text: string) {},
-};
-
-function restoredRichValue(revision: number) {
-  const token: AiInputRichTokenSegment = {
-    type: "token",
-    instanceId: "restored-alpha",
-    menuId: "skills",
-    itemId: "alpha",
-    trigger: "/",
-    label: "Alpha",
-    plainText: "/alpha",
-    data: { revision },
-  };
-  return createAiInputRichValue([token, { type: "text", text: " draft" }]);
-}
 
 function tokenRevision(token: AiInputRichTokenSegment) {
   const data = token.data;
@@ -165,18 +129,10 @@ declare global {
       };
       getMentionSnapshot: () => { addFilesPresses: number };
       setMentionRoutinesLoading: (loading: boolean) => void;
-      resolveMentionRoutines: () => void;
       loadAsyncMenus: () => void;
       resetAttachments: () => void;
-      restoreRichValue: (revision?: number) => void;
-      setPrimaryDisabled: (disabled: boolean) => void;
-      setPrimaryReadOnly: (readOnly: boolean) => void;
-      setPrimaryShowVoiceButton: (showVoiceButton: boolean) => void;
-      setPrimarySubmitPending: (submitPending: boolean) => void;
-      setPlainClipboardText: (text: string) => void;
       setRichDisabled: (disabled: boolean) => void;
       setValue: (value: string) => void;
-      updateRestoredTokenRevision: (revision: number) => void;
     };
   }
 }
@@ -202,10 +158,6 @@ function AiInputFixture() {
   const [lastRichSubmission, setLastRichSubmission] = useState<AiInputRichValue | null>(
     null
   );
-  const [primaryDisabled, setPrimaryDisabled] = useState(false);
-  const [primaryReadOnly, setPrimaryReadOnly] = useState(false);
-  const [primaryShowVoiceButton, setPrimaryShowVoiceButton] = useState(true);
-  const [primarySubmitPending, setPrimarySubmitPending] = useState(false);
   const [voiceLifecycle, setVoiceLifecycle] = useState({
     cancels: 0,
     confirms: 0,
@@ -214,11 +166,8 @@ function AiInputFixture() {
   const [richDisabled, setRichDisabled] = useState(false);
   const [addFilesPresses, setAddFilesPresses] = useState(0);
   const [mentionRoutinesLoading, setMentionRoutinesLoading] = useState(false);
-  const [mentionRoutinesReady, setMentionRoutinesReady] = useState(false);
   const [asyncMenus, setAsyncMenus] = useState<AiInputMenuRegistration[]>([]);
   const [asyncValue, setAsyncValue] = useState("review this");
-  const [overLimitValue, setOverLimitValue] = useState("1234567890");
-  const [plainMaxLengthValue, setPlainMaxLengthValue] = useState("12345");
 
   useEffect(() => {
     window.aiInputFixture = {
@@ -249,36 +198,12 @@ function AiInputFixture() {
       getVoiceSnapshot: () => voiceLifecycle,
       getMentionSnapshot: () => ({ addFilesPresses }),
       setMentionRoutinesLoading,
-      resolveMentionRoutines: () => {
-        setMentionRoutinesLoading(false);
-        setMentionRoutinesReady(true);
-      },
       loadAsyncMenus: () => setAsyncMenus(richMenus),
       resetAttachments: () => {
         setAttachments(initialAttachments);
       },
-      restoreRichValue: (revision = 1) => {
-        setRichValue(restoredRichValue(revision));
-        setLastRichSubmission(null);
-      },
-      setPrimaryDisabled,
-      setPrimaryReadOnly,
-      setPrimaryShowVoiceButton,
-      setPrimarySubmitPending,
-      setPlainClipboardText: (text) => {
-        plainClipboardText = text;
-      },
       setRichDisabled,
       setValue,
-      updateRestoredTokenRevision: (revision) => {
-        setRichValue((current) =>
-          createAiInputRichValue(
-            current.segments.map((segment) =>
-              segment.type === "token" ? { ...segment, data: { revision } } : segment
-            )
-          )
-        );
-      },
     };
 
     return () => {
@@ -291,11 +216,10 @@ function AiInputFixture() {
       ...richMenus,
       mentionMenu(
         () => setAddFilesPresses((current) => current + 1),
-        mentionRoutinesLoading,
-        mentionRoutinesReady
+        mentionRoutinesLoading
       ),
     ],
-    [mentionRoutinesLoading, mentionRoutinesReady]
+    [mentionRoutinesLoading]
   );
 
   return (
@@ -318,11 +242,10 @@ function AiInputFixture() {
                 );
               },
             }))}
-            richText={new URLSearchParams(window.location.search).has("rich")}
-            {...(new URLSearchParams(window.location.search).has("appClipboard")
+            richText={new URLSearchParams(fixtureSearch()).has("rich")}
+            {...(new URLSearchParams(fixtureSearch()).has("appClipboard")
               ? { clipboard: nativePlatformClipboard }
               : {})}
-            disabled={primaryDisabled}
             onAttachPress={() => {}}
             onAttachmentRemove={(attachment) => {
               setAttachments((current) =>
@@ -368,9 +291,6 @@ function AiInputFixture() {
                 presses: current.presses + 1,
               }));
             }}
-            readOnly={primaryReadOnly}
-            showVoiceButton={primaryShowVoiceButton}
-            submitPending={primarySubmitPending}
             value={value}
           />
         </div>
@@ -398,20 +318,6 @@ function AiInputFixture() {
           onValueChange={setAsyncValue}
           richText
           value={asyncValue}
-        />
-        <AiInput
-          aria-label="Over-limit rich prompt"
-          maxLength={5}
-          onValueChange={setOverLimitValue}
-          richText
-          value={overLimitValue}
-        />
-        <AiInput
-          aria-label="Max-length plain prompt"
-          clipboard={plainClipboard}
-          maxLength={5}
-          onValueChange={setPlainMaxLengthValue}
-          value={plainMaxLengthValue}
         />
       </section>
     </main>

@@ -1,4 +1,6 @@
 defmodule SalixAgent.InternalSessionActor do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Runtime owner for one internal agent session.
 
@@ -19,7 +21,7 @@ defmodule SalixAgent.InternalSessionActor do
   `tla/salix/SessionWakeNotification.tla`.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -70,6 +72,10 @@ defmodule SalixAgent.InternalSessionActor do
     session_retry_timer: nil,
     session_retry_attempt: 0,
     session_recovery: nil,
+    admission_retry_timer: nil,
+    # Model calls refused in a row because the Tenant's slots were taken;
+    # the wait before the next ask grows with it.
+    admission_refusals: 0,
     # Wall clock of the processing entry that led to the current
     # activation; handed to Round.run so the `activation` phase fact can
     # cover repair + activation read + materialization + config rebuild.
@@ -103,14 +109,17 @@ defmodule SalixAgent.InternalSessionActor do
     }
   end
 
+  # The actor names itself in `init/1`, after residency admits it: a `via`
+  # name would make it discoverable before then, and a command routed to it
+  # in that gap would be refused as if the actor were retiring.
   def start_link(opts) do
-    agent_id = Keyword.fetch!(opts, :agent_id)
-    session_id = Keyword.fetch!(opts, :session_id)
-    GenServer.start_link(__MODULE__, opts, name: via(agent_id, session_id))
+    _ = Keyword.fetch!(opts, :agent_id)
+    _ = Keyword.fetch!(opts, :session_id)
+    SystemsRuntime.Server.start_link(__MODULE__, opts)
   end
 
   def wake(agent_id, session_id) do
-    case Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
       [{pid, _}] ->
         SalixAgent.SessionResidency.cast(pid, :wake)
 
@@ -120,7 +129,7 @@ defmodule SalixAgent.InternalSessionActor do
   end
 
   def running?(agent_id, session_id),
-    do: Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) != []
+    do: SystemsRuntime.Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) != []
 
   @doc """
   Whether a resident actor here holds a revision it read from or committed
@@ -128,24 +137,27 @@ defmodule SalixAgent.InternalSessionActor do
   probe. A registered actor whose session is still being created is not.
   """
   def resident_durable?(agent_id, session_id) do
-    case Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
       [{_pid, %{durable: true}}] -> true
       _ -> false
     end
   end
 
   @doc false
-  def watch_source(agent_id, session_id, owner, source) when is_pid(owner) do
-    case Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
-      [{pid, _}] -> GenServer.cast(pid, {:watch_source, owner, source})
+  def watch_source(agent_id, session_id, owner, source)
+      when SystemsRuntime.Proc.is_process(owner) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
+      [{pid, _}] -> SystemsRuntime.Server.cast(pid, {:watch_source, owner, source})
       [] -> :ok
     end
   end
 
   @doc false
   def activity_snapshot(agent_id, session_id) do
-    case Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
-      [{pid, _}] when pid != self() ->
+    systems_self = SystemsRuntime.Proc.self()
+
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
+      [{pid, _}] when pid != systems_self ->
         case SalixAgent.SessionResidency.call(pid, :activity_snapshot, 5_000) do
           {:error, :session_actor_retiring} -> :not_resident
           result -> result
@@ -164,8 +176,10 @@ defmodule SalixAgent.InternalSessionActor do
 
   @doc false
   def source_progress(agent_id, session_id, participant_id) do
-    case Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
-      [{pid, _}] when pid != self() ->
+    systems_self = SystemsRuntime.Proc.self()
+
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
+      [{pid, _}] when pid != systems_self ->
         SalixAgent.SessionResidency.call(pid, {:source_progress, participant_id}, 1_000)
 
       _ ->
@@ -177,8 +191,10 @@ defmodule SalixAgent.InternalSessionActor do
   end
 
   def owner?(agent_id, session_id) when is_binary(agent_id) and is_binary(session_id) do
-    case Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
-      [{pid, _}] when pid == self() -> true
+    systems_self = SystemsRuntime.Proc.self()
+
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
+      [{pid, _}] when pid == systems_self -> true
       _ -> false
     end
   end
@@ -190,15 +206,15 @@ defmodule SalixAgent.InternalSessionActor do
   Used by the root Server's lease keep-alive gate.
   """
   @spec busy?(pid(), timeout()) :: boolean()
-  def busy?(pid, timeout \\ 100) when is_pid(pid) do
-    GenServer.call(pid, :busy?, timeout)
+  def busy?(pid, timeout \\ 100) when SystemsRuntime.Proc.is_process(pid) do
+    SystemsClock.call(pid, :busy?, timeout)
   catch
     :exit, {:timeout, _} -> true
     :exit, _ -> false
   end
 
   def run_round(pid, context, opts, timeout \\ :infinity)
-      when is_pid(pid) and is_map(context) and is_list(opts) do
+      when SystemsRuntime.Proc.is_process(pid) and is_map(context) and is_list(opts) do
     SalixAgent.SessionResidency.call(
       pid,
       {:run_round, SystemsObservability.Context.capture(), context, opts},
@@ -207,13 +223,15 @@ defmodule SalixAgent.InternalSessionActor do
   end
 
   def compact_session(pid, mode, context, opts, timeout \\ :infinity)
-      when is_pid(pid) and mode in [:compact, :maybe_compact] and is_map(context) and
+      when SystemsRuntime.Proc.is_process(pid) and mode in [:compact, :maybe_compact] and
+             is_map(context) and
              is_list(opts) do
     SalixAgent.SessionResidency.call(pid, {:compact_session, mode, context, opts}, timeout)
   end
 
   def commit_tool_results(pid, context, pending, results, timeout \\ :infinity)
-      when is_pid(pid) and is_map(context) and is_map(pending) and is_list(results) do
+      when SystemsRuntime.Proc.is_process(pid) and is_map(context) and is_map(pending) and
+             is_list(results) do
     SalixAgent.SessionResidency.call(
       pid,
       {:commit_tool_results, context, pending, results},
@@ -222,12 +240,13 @@ defmodule SalixAgent.InternalSessionActor do
   end
 
   def execute_tool(pid, tool_name, attrs, timeout \\ :infinity)
-      when is_pid(pid) and is_binary(tool_name) and is_map(attrs) do
+      when SystemsRuntime.Proc.is_process(pid) and is_binary(tool_name) and is_map(attrs) do
     SalixAgent.SessionResidency.call(pid, {:execute_tool, tool_name, attrs}, timeout)
   end
 
   def complete_async_tool_call(pid, tool_call_id, result, meta, timeout \\ :infinity)
-      when is_pid(pid) and is_binary(tool_call_id) and is_map(result) and is_map(meta) do
+      when SystemsRuntime.Proc.is_process(pid) and is_binary(tool_call_id) and is_map(result) and
+             is_map(meta) do
     SalixAgent.SessionResidency.call(
       pid,
       {:complete_async_tool_call, tool_call_id, result, meta},
@@ -236,7 +255,7 @@ defmodule SalixAgent.InternalSessionActor do
   end
 
   def update_async_tool_call_progress(pid, tool_call_id, progress, timeout \\ :infinity)
-      when is_pid(pid) and is_binary(tool_call_id) and is_map(progress) do
+      when SystemsRuntime.Proc.is_process(pid) and is_binary(tool_call_id) and is_map(progress) do
     SalixAgent.SessionResidency.call(
       pid,
       {:update_async_tool_call_progress, tool_call_id, progress},
@@ -244,7 +263,8 @@ defmodule SalixAgent.InternalSessionActor do
     )
   end
 
-  def stage_delivery(pid, entry, timeout \\ :infinity) when is_pid(pid) and is_map(entry) do
+  def stage_delivery(pid, entry, timeout \\ :infinity)
+      when SystemsRuntime.Proc.is_process(pid) and is_map(entry) do
     SalixAgent.SessionResidency.call(
       pid,
       {:stage_delivery, entry, SalixStore.ReadScope.capture()},
@@ -259,7 +279,8 @@ defmodule SalixAgent.InternalSessionActor do
     end)
   end
 
-  def stage_wait_timeout(pid, entry, timeout \\ :infinity) when is_pid(pid) and is_map(entry) do
+  def stage_wait_timeout(pid, entry, timeout \\ :infinity)
+      when SystemsRuntime.Proc.is_process(pid) and is_map(entry) do
     SalixAgent.SessionResidency.call(pid, {:stage_wait_timeout, entry}, timeout)
   end
 
@@ -270,7 +291,8 @@ defmodule SalixAgent.InternalSessionActor do
     end)
   end
 
-  def stage_control(pid, entry, timeout \\ :infinity) when is_pid(pid) and is_map(entry) do
+  def stage_control(pid, entry, timeout \\ :infinity)
+      when SystemsRuntime.Proc.is_process(pid) and is_map(entry) do
     SalixAgent.SessionResidency.call(pid, {:stage_control, entry}, timeout)
   end
 
@@ -283,7 +305,8 @@ defmodule SalixAgent.InternalSessionActor do
   end
 
   def fork_session(pid, source_session_id, target_session_id, attrs, timeout \\ :infinity)
-      when is_pid(pid) and is_binary(source_session_id) and is_binary(target_session_id) and
+      when SystemsRuntime.Proc.is_process(pid) and is_binary(source_session_id) and
+             is_binary(target_session_id) and
              is_map(attrs) do
     SalixAgent.SessionResidency.call(
       pid,
@@ -302,7 +325,7 @@ defmodule SalixAgent.InternalSessionActor do
   end
 
   def seed_session(pid, source_session, target_session_id, attrs, timeout \\ :infinity)
-      when is_pid(pid) and is_binary(target_session_id) and is_map(attrs) do
+      when SystemsRuntime.Proc.is_process(pid) and is_binary(target_session_id) and is_map(attrs) do
     SalixAgent.SessionResidency.call(
       pid,
       {:seed_session, source_session, target_session_id, attrs},
@@ -318,7 +341,8 @@ defmodule SalixAgent.InternalSessionActor do
     end)
   end
 
-  def seed_transcript(pid, event, timeout \\ :infinity) when is_pid(pid) and is_map(event) do
+  def seed_transcript(pid, event, timeout \\ :infinity)
+      when SystemsRuntime.Proc.is_process(pid) and is_map(event) do
     SalixAgent.SessionResidency.call(pid, {:seed_transcript, event}, timeout)
   end
 
@@ -332,12 +356,11 @@ defmodule SalixAgent.InternalSessionActor do
 
   def key(agent_id, session_id), do: {:internal_session, agent_id, session_id}
 
-  defp via(agent_id, session_id),
-    do: {:via, Registry, {SalixAgent.Registry, key(agent_id, session_id)}}
-
   defp with_session_owner(agent_id, session_id, fun) do
-    case Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
-      [{pid, _}] when pid == self() -> fun.()
+    systems_self = SystemsRuntime.Proc.self()
+
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key(agent_id, session_id)) do
+      [{pid, _}] when pid == systems_self -> fun.()
       _ -> {:error, :not_session_owner}
     end
   end
@@ -380,10 +403,10 @@ defmodule SalixAgent.InternalSessionActor do
   @impl true
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
+    agent_id = Keyword.fetch!(opts, :agent_id)
 
-    if SalixStore.Ids.valid_session_id?(session_id) do
-      agent_id = Keyword.fetch!(opts, :agent_id)
-
+    with true <- SalixStore.Ids.valid_session_id?(session_id) || :invalid_session_id,
+         :ok <- register_resident(agent_id, session_id) do
       data = %__MODULE__{
         agent_id: agent_id,
         session_id: session_id,
@@ -401,10 +424,24 @@ defmodule SalixAgent.InternalSessionActor do
       # command — see handle_continue. Doing it in a continue (not inline
       # here) keeps a mid-claim wait out of the shared FleetSup supervisor,
       # which blocks in start_child until init returns.
-      :ok = SalixAgent.SessionResidency.register(self())
       {:ok, data, {:continue, :bind_runtime_generation}}
     else
-      {:stop, :invalid_session_id}
+      reason -> {:stop, reason}
+    end
+  end
+
+  # Residency admits the actor before its name makes it discoverable, so a
+  # caller that finds it can always pin it.
+  defp register_resident(agent_id, session_id) do
+    :ok = SalixAgent.SessionResidency.register(SystemsRuntime.Proc.self())
+
+    case SystemsRuntime.Registry.register(SalixAgent.Registry, key(agent_id, session_id), nil) do
+      {:ok, _owner} ->
+        :ok
+
+      {:error, {:already_registered, pid}} ->
+        SalixAgent.SessionResidency.unregister(SystemsRuntime.Proc.self())
+        {:already_started, pid}
     end
   end
 
@@ -432,7 +469,7 @@ defmodule SalixAgent.InternalSessionActor do
     case SalixAgent.OwnershipCell.fetch(data.agent_id) do
       {:ok, epoch} ->
         _ =
-          Registry.update_value(
+          SystemsRuntime.Registry.update_value(
             SalixAgent.Registry,
             key(data.agent_id, data.session_id),
             fn
@@ -597,7 +634,7 @@ defmodule SalixAgent.InternalSessionActor do
   def handle_call({:source_progress, participant_id}, _from, data) do
     result =
       cond do
-        process_blocked?(data) ->
+        source_admission_blocked?(data) ->
           {:error, :source_busy}
 
         match?(%Revision{pending: nil}, data.revision) ->
@@ -827,7 +864,7 @@ defmodule SalixAgent.InternalSessionActor do
   # activation decision, the round configuration and the catalog; the read
   # scope serves those from one read.
   def handle_info({ref, result}, %{control_prefetch: %Task{ref: ref}} = data) do
-    Process.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
     noreply(%{data | control_prefetch: {:done, result}})
   end
 
@@ -850,6 +887,20 @@ defmodule SalixAgent.InternalSessionActor do
     data = %{data | session_retry_timer: nil}
     noreply(request_process(data))
   end
+
+  # Both the retry deadline and a released slot are hints. The normal
+  # processing path still checks ownership, recovery, and model admission.
+  def handle_info(
+        {event, token},
+        %{admission_retry_timer: {token, _timer_ref}} = data
+      )
+      when event in [:admission_retry, :dependency_capacity_available] do
+    noreply(data |> cancel_admission_retry() |> request_process())
+  end
+
+  def handle_info({event, _token}, data)
+      when event in [:admission_retry, :dependency_capacity_available],
+      do: noreply(data)
 
   # Another local process wrote this session through the store; the resident
   # revision is behind it, so the next processing entry reads.
@@ -917,14 +968,14 @@ defmodule SalixAgent.InternalSessionActor do
     # The owner closes admission before checking the mailbox. An admitted call
     # holds a pin; a cast is either queued or still pinned during enqueue.
     if SalixAgent.SessionResidency.eviction_allowed?() and idle?(data) and
-         SalixAgent.SessionResidency.close(self()) do
-      case Process.info(self(), :message_queue_len) do
+         SalixAgent.SessionResidency.close(SystemsRuntime.Proc.self()) do
+      case SystemsRuntime.Proc.info(SystemsRuntime.Proc.self(), :message_queue_len) do
         {:message_queue_len, 0} ->
           SalixAgent.SessionResidency.evicted()
           {:stop, :normal, data}
 
         _ ->
-          SalixAgent.SessionResidency.reopen(self())
+          SalixAgent.SessionResidency.reopen(SystemsRuntime.Proc.self())
           {:noreply, data}
       end
     else
@@ -950,8 +1001,16 @@ defmodule SalixAgent.InternalSessionActor do
     handle_dependency_event(data, token, :down, reason)
   end
 
-  def handle_info({ref, result}, data) when is_reference(ref) and is_map(result) do
-    Process.demonitor(ref, [:flush])
+  # A Condensed Workspace check that finished between rounds. The next
+  # round's activation reads it (`CondensedWorkspace.Decision.reminder/2`).
+  def handle_info({ref, %{condensed_workspace_check: _} = reply}, data)
+      when SystemsRuntime.Proc.is_ref(ref) do
+    SalixAgent.CondensedWorkspace.Decision.settle(ref, reply)
+    noreply(data)
+  end
+
+  def handle_info({ref, result}, data) when SystemsRuntime.Proc.is_ref(ref) and is_map(result) do
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
 
     case legacy_tool_owner(data, ref, :result) do
       nil ->
@@ -964,14 +1023,15 @@ defmodule SalixAgent.InternalSessionActor do
 
   # Model calls and summaries run as dependency jobs, which report through
   # their own messages; a monitor here belongs to a background tool.
-  def handle_info({:DOWN, ref, :process, _pid, reason}, data) when is_reference(ref),
-    do: handle_async_tool_down(ref, reason, data)
+  def handle_info({:DOWN, ref, :process, _pid, reason}, data)
+      when SystemsRuntime.Proc.is_ref(ref),
+      do: handle_async_tool_down(ref, reason, data)
 
   def handle_info(_message, data), do: noreply(data)
 
   @impl true
   def terminate(_reason, data) do
-    SalixAgent.SessionResidency.unregister(self())
+    SalixAgent.SessionResidency.unregister(SystemsRuntime.Proc.self())
     SalixAgent.RoundConfigCache.stop(data.round_config_cache)
     :ok
   end
@@ -1048,7 +1108,7 @@ defmodule SalixAgent.InternalSessionActor do
       dependency_matches?(data.pending_compaction, token, event) ->
         {:compaction, data.pending_compaction}
 
-      is_reference(token) and (event != :result or is_map(result)) and
+      SystemsRuntime.Proc.is_ref(token) and (event != :result or is_map(result)) and
           dependency_matches?(tool, token, event) ->
         {:tool, tool}
 
@@ -1068,7 +1128,7 @@ defmodule SalixAgent.InternalSessionActor do
   defp dependency_matches?(_pending, _token, _event), do: false
 
   defp live_dependency_event?(expected, token, event)
-       when is_reference(expected) and is_reference(token) do
+       when SystemsRuntime.Proc.is_ref(expected) and SystemsRuntime.Proc.is_ref(token) do
     case SalixVerifiedKernel.AgentLoop.dependency_step({:running, expected}, {token, event}) do
       {{:retained, ^expected}, command}
       when command in [:accept_result, :accept_timeout, :accept_down] ->
@@ -1118,7 +1178,7 @@ defmodule SalixAgent.InternalSessionActor do
     case SalixVerifiedKernel.AgentLoop.activation(
            is_map(data.pending_llm),
            is_map(data.pending_compaction),
-           match?({_token, _ref}, data.session_retry_timer)
+           not is_nil(data.session_retry_timer) or not is_nil(data.admission_retry_timer)
          ) do
       :pause ->
         data
@@ -1332,7 +1392,7 @@ defmodule SalixAgent.InternalSessionActor do
   # The yield events join the working revision without a store round trip;
   # the activation CAS that follows persists them with the materialization.
   defp effect(ctx, _state, driver, {:write, events}) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     case InternalSessionStore.write_revision(ctx.rev, events) do
       {:ok, revision} ->
@@ -1630,7 +1690,7 @@ defmodule SalixAgent.InternalSessionActor do
              continuation,
              ctx.prerequisite
            ) do
-      ctx = %{ctx | fence: task, gate: make_ref(), rev: prepared}
+      ctx = %{ctx | fence: task, gate: SystemsRuntime.Proc.make_ref(), rev: prepared}
       answer(%{ctx | prepared: prepared_activation(ctx, prepared)}, driver, :started)
     else
       _not_speculating -> answer(ctx, driver, :sequential)
@@ -1688,7 +1748,7 @@ defmodule SalixAgent.InternalSessionActor do
         llm[:visible_reply_scope]
       )
 
-    send(llm.pid, {:persistence_fence, gate, true})
+    SystemsRuntime.Proc.send(llm.pid, {:persistence_fence, gate, true})
     %{data | pending_llm: Map.delete(llm, :persistence_gate)}
   end
 
@@ -1778,13 +1838,19 @@ defmodule SalixAgent.InternalSessionActor do
     case Round.start(ctx.prep, request, facts) do
       # The speculative call waits for its activation's fence.
       {:ok, _context, {:llm_pending, pending}} when ctx.kind == :speculative ->
-        data = %{data | pending_llm: Map.put(pending, :persistence_gate, ctx.gate)}
+        pending = Map.put(pending, :persistence_gate, ctx.gate)
+        data = cancel_admission_retry(data)
+        data = %{data | pending_llm: pending, admission_refusals: 0}
         answer(%{ctx | data: data, prep: nil}, driver, :started)
 
       {:ok, context, {:llm_pending, pending}} ->
-        data = data |> retain(context) |> reset_session_retry()
+        data = data |> retain(context) |> reset_session_retry() |> cancel_admission_retry()
         notify_session_updated(data)
-        data = %{data | pending_llm: pending} |> stop_cancelled_pending_async_tools(context)
+
+        data =
+          %{data | pending_llm: pending, admission_refusals: 0}
+          |> stop_cancelled_pending_async_tools(context)
+
         answer(%{ctx | data: data, prep: nil, rev: context.revision}, driver, :started)
 
       {:error, {:dependency_saturated, :llm} = reason} ->
@@ -1792,7 +1858,11 @@ defmodule SalixAgent.InternalSessionActor do
           "internal session #{data.agent_id}/#{data.session_id} llm admission failed: #{inspect(reason)}"
         )
 
-        answer(%{ctx | prep: nil, result: {:error, reason}}, driver, {:error, unstarted(reason)})
+        answer(
+          %{ctx | data: refused_admission(data, ctx.kind), prep: nil, result: {:error, reason}},
+          driver,
+          {:error, unstarted(reason)}
+        )
 
       {:error, {:billing_unavailable, decision}} ->
         error = {:error, SalixAgent.BillingAvailability.error(decision)}
@@ -2069,7 +2139,8 @@ defmodule SalixAgent.InternalSessionActor do
   defp with_chost(ctx, chost), do: %{ctx | chost: chost, rev: chost.context[:revision]}
 
   defp summarize(ctx, driver, plan) do
-    dependency = fn -> Compaction.execute_prepared(plan) end
+    job_plan = Compaction.job_plan(plan)
+    dependency = fn -> Compaction.execute_prepared(job_plan) end
 
     case DependencyJob.start(:compaction, plan.tenant_id, dependency) do
       {:ok, job} ->
@@ -2125,7 +2196,7 @@ defmodule SalixAgent.InternalSessionActor do
       # a durably committed dependency failure is an ordinary failed_* result;
       # only a failed owner/store commit is returned as {:error, reason}.
       {{:reply, from}, _result} ->
-        GenServer.reply(from, result)
+        SystemsRuntime.Server.reply(from, result)
 
       {{:control, _entry}, {:ok, _context, _result}} ->
         notify_session_updated(data)
@@ -2254,7 +2325,7 @@ defmodule SalixAgent.InternalSessionActor do
     agent_id = data.agent_id
 
     task =
-      Task.Supervisor.async_nolink(SalixAgent.TaskSup, fn ->
+      SystemsRuntime.TaskSupervisor.async_nolink(SalixAgent.TaskSup, fn ->
         SalixAgent.Control.get_record(agent_id)
       end)
 
@@ -2273,7 +2344,8 @@ defmodule SalixAgent.InternalSessionActor do
   defp join_control_prefetch(%{control_prefetch: %Task{} = task} = data) do
     data = %{data | control_prefetch: nil}
 
-    case Task.yield(task, @control_prefetch_join_ms) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, @control_prefetch_join_ms) ||
+           SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> {control_prefetch_seed(data.agent_id, result), data}
       _late -> {%{}, data}
     end
@@ -2330,7 +2402,7 @@ defmodule SalixAgent.InternalSessionActor do
 
   defp resolve_round_config(data, projected, _previous) do
     context = round_config_context(projected)
-    miniskill_deadline = System.monotonic_time(:millisecond) + 1_000
+    miniskill_deadline = SystemsClock.monotonic_time(:millisecond) + 1_000
 
     case SalixAgent.RoundConfigCache.begin_round(
            data.round_config_cache,
@@ -2374,8 +2446,17 @@ defmodule SalixAgent.InternalSessionActor do
   end
 
   defp write_miniskills(ctx, %{miniskill_event: %{} = event}) do
+    session = ctx.rev.state
+
+    messages =
+      SalixAgent.MiniskillSelector.runtime_messages(
+        event,
+        InternalSession.session_id(session),
+        InternalSession.next_message_id(session)
+      )
+
     with {:ok, revision} <-
-           InternalSessionStore.write_revision(ctx.rev, [event]) do
+           InternalSessionStore.write_revision(ctx.rev, [event | messages]) do
       {:ok, %{ctx | rev: revision, data: retain(ctx.data, revision)}}
     else
       {:error, reason} -> {:error, reason, ctx}
@@ -2419,7 +2500,7 @@ defmodule SalixAgent.InternalSessionActor do
       "router_wait_yield",
       "salix",
       "ok",
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     Logger.info("router generic wait yielded to queued input",
@@ -2432,19 +2513,19 @@ defmodule SalixAgent.InternalSessionActor do
   defp cancel_llm_retry_timer(%{llm_retry_timer: nil} = data), do: data
 
   defp cancel_llm_retry_timer(%{llm_retry_timer: {_token, timer}} = data) do
-    Process.cancel_timer(timer)
+    SystemsClock.cancel_timer(timer)
     %{data | llm_retry_timer: nil}
   end
 
   defp schedule_llm_retry(data, retry_at) do
     data = cancel_llm_retry_timer(data)
-    token = make_ref()
+    token = SystemsRuntime.Proc.make_ref()
 
     timer =
-      Process.send_after(
-        self(),
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
         {:llm_retry, token},
-        max(0, retry_at - System.system_time(:millisecond))
+        max(0, retry_at - SystemsClock.system_time(:millisecond))
       )
 
     %{data | llm_retry_timer: {token, timer}}
@@ -2496,7 +2577,7 @@ defmodule SalixAgent.InternalSessionActor do
   defp reply_direct_round_waiter(%{direct_round_waiter: nil} = data, _result), do: data
 
   defp reply_direct_round_waiter(%{direct_round_waiter: from} = data, result) do
-    GenServer.reply(from, result)
+    SystemsRuntime.Server.reply(from, result)
     %{data | direct_round_waiter: nil}
   end
 
@@ -2511,9 +2592,9 @@ defmodule SalixAgent.InternalSessionActor do
 
   defp maybe_schedule_process(data) do
     data =
-      if map_size(data.source_waiters) > 0 and not process_blocked?(data) do
+      if map_size(data.source_waiters) > 0 and not source_admission_blocked?(data) do
         Enum.each(data.source_waiters, fn {{owner, source}, _} ->
-          send(owner, {:retry_conversation_source, source})
+          SystemsRuntime.Proc.send(owner, {:retry_conversation_source, source})
         end)
 
         %{data | source_waiters: %{}}
@@ -2528,7 +2609,7 @@ defmodule SalixAgent.InternalSessionActor do
     if process_blocked?(data) do
       data
     else
-      send(self(), :process)
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :process)
       %{data | process_scheduled: true}
     end
   end
@@ -2538,7 +2619,16 @@ defmodule SalixAgent.InternalSessionActor do
   defp process_blocked?(data) do
     is_map(data.pending_llm) or
       is_map(data.pending_compaction) or
-      not is_nil(data.session_retry_timer)
+      not is_nil(data.session_retry_timer) or not is_nil(data.admission_retry_timer)
+  end
+
+  # An in-flight model owns a prompt snapshot, not the input queue. Admit
+  # the bounded Conversation suffix while it runs so the next activation
+  # can materialize the accumulated reports. Compaction and an unresolved
+  # commit/recovery still defer admission to their existing retry path.
+  defp source_admission_blocked?(data) do
+    is_map(data.pending_compaction) or not is_nil(data.session_retry_timer) or
+      match?(%Revision{pending: pending} when not is_nil(pending), data.revision)
   end
 
   defp noreply(data) do
@@ -2554,6 +2644,8 @@ defmodule SalixAgent.InternalSessionActor do
   defp idle?(%{llm_retry_timer: timer}) when not is_nil(timer), do: false
 
   defp idle?(%{session_retry_timer: timer}) when not is_nil(timer), do: false
+
+  defp idle?(%{admission_retry_timer: timer}) when not is_nil(timer), do: false
 
   defp idle?(%{
          wake_pending: false,
@@ -2610,11 +2702,57 @@ defmodule SalixAgent.InternalSessionActor do
         do: cancel_session_retry_timer(data),
         else: reset_session_retry(data)
 
-    attempt = min(data.session_retry_attempt + 1, 32)
-    exponent = min(attempt - 1, 16)
-    delay_ms = min(@session_retry_max_ms, @session_retry_base_ms * Integer.pow(2, exponent))
-    token = make_ref()
-    timer_ref = Process.send_after(self(), {:session_retry, token}, delay_ms)
+    arm_session_retry(data, checkpoint, min(data.session_retry_attempt + 1, 32))
+  end
+
+  # The Tenant's slots are all taken. The speculative call of an overlapped
+  # activation is asked again once the activation is durable; after that
+  # call the session waits for a slot notification or a bounded retry.
+  # Capacity waits do not block durable input admission. A running model
+  # ends the refusal streak, independently of storage recovery.
+  defp refused_admission(data, :speculative), do: data
+
+  defp refused_admission(data, _kind) do
+    refusals = min(data.admission_refusals + 1, 32)
+    data = cancel_admission_retry(%{data | admission_refusals: refusals})
+    token = SystemsRuntime.Proc.make_ref()
+
+    timer_ref =
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
+        {:admission_retry, token},
+        retry_delay_ms(refusals)
+      )
+
+    # Registration checks capacity atomically, including a slot that became
+    # free after the failed dispatch. A full watch set retains the timer.
+    _ =
+      SalixAgent.DependencyAdmission.watch_capacity(
+        SalixStore.Ids.tenant_id_from_agent!(data.agent_id),
+        :llm,
+        token
+      )
+
+    %{data | admission_retry_timer: {token, timer_ref}}
+  end
+
+  defp cancel_admission_retry(%{admission_retry_timer: nil} = data), do: data
+
+  defp cancel_admission_retry(%{admission_retry_timer: {token, timer_ref}} = data) do
+    SystemsClock.cancel_timer(timer_ref)
+    SalixAgent.DependencyAdmission.cancel_capacity_watch(token)
+    %{data | admission_retry_timer: nil}
+  end
+
+  defp arm_session_retry(data, checkpoint, attempt) do
+    token = SystemsRuntime.Proc.make_ref()
+
+    timer_ref =
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
+        {:session_retry, token},
+        retry_delay_ms(attempt)
+      )
 
     %{
       data
@@ -2624,6 +2762,11 @@ defmodule SalixAgent.InternalSessionActor do
     }
   end
 
+  defp retry_delay_ms(attempt) do
+    exponent = min(attempt - 1, 16)
+    min(@session_retry_max_ms, @session_retry_base_ms * Integer.pow(2, exponent))
+  end
+
   defp reset_session_retry(data) do
     data = cancel_session_retry_timer(data)
     %{data | session_retry_attempt: 0, session_recovery: nil}
@@ -2631,7 +2774,7 @@ defmodule SalixAgent.InternalSessionActor do
 
   defp cancel_session_retry_timer(data) do
     case data.session_retry_timer do
-      {_token, timer_ref} -> Process.cancel_timer(timer_ref)
+      {_token, timer_ref} -> SystemsClock.cancel_timer(timer_ref)
       nil -> :ok
     end
 
@@ -2730,12 +2873,6 @@ defmodule SalixAgent.InternalSessionActor do
       "session_compact" ->
         stage_session_compact_control(entry)
 
-      "session_microcompact" ->
-        commit_session_microcompact_control(agent_id, session_id)
-
-      "session_emergency_compact" ->
-        commit_session_emergency_compact_control(agent_id, session_id)
-
       "session_log" ->
         commit_session_log_control(agent_id, session_id, entry, payload)
 
@@ -2756,52 +2893,11 @@ defmodule SalixAgent.InternalSessionActor do
   defp stage_session_compact_control(entry) do
     case inbound_source_message_id(entry) do
       source when is_binary(source) and source != "" ->
-        send(self(), {:run_session_compact, entry})
+        SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:run_session_compact, entry})
         {:ok, :committed}
 
       _ ->
         {:error, :missing_session_compact_source_message_id}
-    end
-  end
-
-  defp commit_session_microcompact_control(agent_id, session_id) do
-    with {:ok, session} <- InternalSessionStore.read(agent_id, session_id) do
-      # The predicate is role-gated and message ids advance monotonically,
-      # so the persisted id HWM expresses "every current tool message"
-      # WITHOUT discovering them — no archive decode inside the session
-      # actor, and no partial-cleanup failure mode to certify: the range
-      # covers archived and windowed tool messages alike, and the read
-      # side masks both tiers.
-      through = (InternalSession.next_message_id(session) || 1) - 1
-
-      if through <= 0 do
-        {:ok, :committed}
-      else
-        event = %{
-          "type" => "session_microcompact",
-          "session_id" => session_id,
-          "tool_messages_through" => through,
-          "new_content" => "[microcompacted]"
-        }
-
-        with {:ok, _session} <- InternalSessionStore.commit(agent_id, session_id, [event]) do
-          {:ok, :committed}
-        end
-      end
-    end
-  end
-
-  defp commit_session_emergency_compact_control(agent_id, session_id) do
-    with {:ok, session} <- InternalSessionStore.read(agent_id, session_id) do
-      # The role/size predicate is applied read-side to both archive and window
-      # records. Persisting one id HWM is O(1) and avoids an unbounded archive
-      # scan on the actor/control path.
-      through = max((InternalSession.next_message_id(session) || 1) - 1, 0)
-      event = SalixAgent.EmergencyCompact.event(session_id, through)
-
-      with {:ok, _session} <- InternalSessionStore.commit(agent_id, session_id, [event]) do
-        {:ok, :committed}
-      end
     end
   end
 
@@ -2909,7 +3005,7 @@ defmodule SalixAgent.InternalSessionActor do
   # The owner admits and commits a delivery against its resident revision and
   # retains the native revision that the commit returns, including first creation.
   defp admit_conversation(data, entry) do
-    if process_blocked?(data) do
+    if source_admission_blocked?(data) do
       {{:error, :source_busy}, data}
     else
       case owned_revision(data) do
@@ -2938,19 +3034,23 @@ defmodule SalixAgent.InternalSessionActor do
          ) do
       {{:ok, :staged, events}, staged, _} ->
         data = retain(data, staged)
-        data = %{data | activation_started_ms: SalixAgent.PhaseTelemetry.now_ms()}
 
-        # The kernel activates the admitted conversation on the fast path; an
-        # activation that needs the full path runs on the next processing
-        # entry.
-        case span(:salix_session_activation, fn ->
-               data |> driven(staged, :admission) |> run(:activate_fast)
-             end) do
-          {{:activation_error, reason}, ctx, _driver} ->
-            {{:error, reason}, forget(ctx.data)}
+        if process_blocked?(data) do
+          finish_conversation_admission(data, events)
+        else
+          data = %{data | activation_started_ms: SalixAgent.PhaseTelemetry.now_ms()}
 
-          step ->
-            finish_conversation_admission(conclude(step), events)
+          # Only an available loop activates the new input. Pending model
+          # completion must retain its original activation and source scope.
+          case span(:salix_session_activation, fn ->
+                 data |> driven(staged, :admission) |> run(:activate_fast)
+               end) do
+            {{:activation_error, reason}, ctx, _driver} ->
+              {{:error, reason}, forget(ctx.data)}
+
+            step ->
+              finish_conversation_admission(conclude(step), events)
+          end
         end
 
       {result, _revision, _} ->
@@ -3221,9 +3321,9 @@ defmodule SalixAgent.InternalSessionActor do
   #
   # Speculation only starts when no sibling settlement is close: no other
   # process-local tool of this actor still running or retained for retry,
-  # and nothing queued in the mailbox. Such a completion would land while the
-  # provider computes, making the speculative response stale before it can
-  # apply. The ordinary settlement path defers its activation the same way,
+  # and no work queued in the mailbox (`work_queued?/0`). Such a completion
+  # would land while the provider computes, making the speculative response
+  # stale before it can apply. The ordinary settlement path defers its activation the same way,
   # so one activation observes every result that has already arrived.
   #
   # A blocked session (a provider call or compaction in flight, or a session
@@ -3234,7 +3334,7 @@ defmodule SalixAgent.InternalSessionActor do
 
     with false <- process_blocked?(data),
          true <- speculate?,
-         {:message_queue_len, 0} <- Process.info(self(), :message_queue_len),
+         false <- work_queued?(),
          {:ok, written} <- InternalSessionStore.write_revision(revision, events) do
       prefetch_or_commit(data, pending, revision, written, events, prerequisite)
     else
@@ -3253,7 +3353,8 @@ defmodule SalixAgent.InternalSessionActor do
     data = %{data | activation_started_ms: SalixAgent.PhaseTelemetry.now_ms()}
 
     case data |> driven(written, :prefetch, fields) |> run(:activate_fast) do
-      {{:activation_error, reason}, %{gate: gate} = ctx, _driver} when is_reference(gate) ->
+      {{:activation_error, reason}, %{gate: gate} = ctx, _driver}
+      when SystemsRuntime.Proc.is_ref(gate) ->
         {:error, reason, ctx.data}
 
       {{ended, _}, ctx, _driver} when ended in [:fast_end, :activation_error] ->
@@ -3297,7 +3398,7 @@ defmodule SalixAgent.InternalSessionActor do
   # A scheduled wake is a coalesced hint for the work this callback is about
   # to process. Consume at most that one hint; keep real mailbox work ordered.
   defp take_scheduled_process(%{process_scheduled: true} = data) do
-    receive do
+    SystemsRuntime.Proc.receive do
       :process -> %{data | process_scheduled: false, wake_pending: true}
     after
       0 -> data
@@ -3326,7 +3427,7 @@ defmodule SalixAgent.InternalSessionActor do
   # dependency job releases its admission, and a result that already reached
   # the mailbox no longer matches any pending dependency.
   defp release_failed_prefetch(%{pending_llm: %{persistence_gate: gate, pid: pid} = llm} = data) do
-    send(pid, {:persistence_fence, gate, false})
+    SystemsRuntime.Proc.send(pid, {:persistence_fence, gate, false})
     :ok = DependencyJob.cancel(llm.dependency_job)
     %{data | pending_llm: nil}
   end
@@ -3465,8 +3566,8 @@ defmodule SalixAgent.InternalSessionActor do
           "retaining the terminal result for retry: #{inspect(reason)}"
       )
 
-      Process.send_after(
-        self(),
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
         {:retry_async_tool_commit, ref, pending, result, attempts + 1},
         @async_commit_retry_ms
       )
@@ -3486,29 +3587,55 @@ defmodule SalixAgent.InternalSessionActor do
          %{
            pending_llm: pending_llm,
            pending_compaction: pending_compaction,
-           session_retry_timer: session_retry_timer
+           session_retry_timer: session_retry_timer,
+           admission_retry_timer: admission_retry_timer
          } = data,
          _revision
        )
        when is_map(pending_llm) or is_map(pending_compaction) or
-              not is_nil(session_retry_timer),
+              not is_nil(session_retry_timer) or not is_nil(admission_retry_timer),
        do: request_process(data)
 
   # The overlapped activation left no revision to continue from.
   defp continue_after_async_settlement(data, nil), do: request_process(data)
 
   defp continue_after_async_settlement(data, committed_revision) do
-    case Process.info(self(), :message_queue_len) do
-      {:message_queue_len, 0} ->
-        data
-        |> Map.put(:wake_pending, false)
-        |> Map.put(:activation_started_ms, SalixAgent.PhaseTelemetry.now_ms())
-        |> process_session(committed_revision)
-
-      _queued_or_unavailable ->
-        request_process(data)
+    if work_queued?() do
+      request_process(data)
+    else
+      data
+      |> Map.put(:wake_pending, false)
+      |> Map.put(:activation_started_ms, SalixAgent.PhaseTelemetry.now_ms())
+      |> process_session(committed_revision)
     end
   end
+
+  # Mailbox entries that a settlement's next activation must observe. The
+  # root Server's lease keep-alive probes `busy?/2` on its own schedule, and
+  # `:sys.get_state/2` reads the state: neither changes what an activation
+  # sees, so one that arrives while a settlement runs does not change the
+  # path that settlement takes.
+  defp work_queued? do
+    case SystemsRuntime.Proc.info(SystemsRuntime.Proc.self(), :message_queue_len) do
+      {:message_queue_len, 0} ->
+        false
+
+      {:message_queue_len, _queued} ->
+        {:messages, messages} = SystemsRuntime.Proc.info(SystemsRuntime.Proc.self(), :messages)
+        not Enum.all?(messages, &observation?/1)
+
+      nil ->
+        true
+    end
+  end
+
+  defp observation?({:"$gen_call", _from, :busy?}), do: true
+  defp observation?({:system, _from, :get_state}), do: true
+
+  defp observation?({:"$gen_call", _from, {:"$systems_runtime_system", :get_state}}),
+    do: true
+
+  defp observation?(_message), do: false
 
   # A completion whose batch sibling is still settling in this actor is
   # queued without a wake: the auto-wait holds until the last sibling settles
@@ -3625,7 +3752,7 @@ defmodule SalixAgent.InternalSessionActor do
       "session_id" => session_id,
       "tool_call_id" => tool_call_id,
       "progress" => progress,
-      "updated_at" => System.system_time(:millisecond)
+      "updated_at" => SystemsClock.system_time(:millisecond)
     }
   end
 
@@ -3682,10 +3809,14 @@ defmodule SalixAgent.InternalSessionActor do
 
   defp mark_durable(data) do
     _ =
-      Registry.update_value(SalixAgent.Registry, key(data.agent_id, data.session_id), fn
-        value when is_map(value) -> Map.put(value, :durable, true)
-        _other -> %{durable: true}
-      end)
+      SystemsRuntime.Registry.update_value(
+        SalixAgent.Registry,
+        key(data.agent_id, data.session_id),
+        fn
+          value when is_map(value) -> Map.put(value, :durable, true)
+          _other -> %{durable: true}
+        end
+      )
 
     %{data | durable_marked: true}
   rescue
@@ -3751,7 +3882,7 @@ defmodule SalixAgent.InternalSessionActor do
 
       Enum.reduce(data.pending_async_tools, data, fn {ref, pending}, acc ->
         if async_tool_cancelled?(session, pending) do
-          Process.demonitor(ref, [:flush])
+          SystemsRuntime.Proc.demonitor(ref, [:flush])
           stop_pending_task(pending)
           cancel_async_visible_reply(data, pending)
           %{acc | pending_async_tools: Map.delete(acc.pending_async_tools, ref)}
@@ -3781,7 +3912,7 @@ defmodule SalixAgent.InternalSessionActor do
     pending_async_tools =
       Enum.reduce(data.pending_async_tools, data.pending_async_tools, fn {ref, pending}, acc ->
         if exact_async_tool_owner?(pending, data.session_id, tool_call_id) do
-          if is_reference(ref), do: Process.demonitor(ref, [:flush])
+          if SystemsRuntime.Proc.is_ref(ref), do: SystemsRuntime.Proc.demonitor(ref, [:flush])
           stop_pending_task(pending)
           Map.delete(acc, ref)
         else
@@ -3838,8 +3969,8 @@ defmodule SalixAgent.InternalSessionActor do
     DependencyJob.cancel(job)
   end
 
-  defp stop_pending_task(%{pid: pid}) when is_pid(pid) do
-    if Process.alive?(pid), do: Process.exit(pid, :kill)
+  defp stop_pending_task(%{pid: pid}) when SystemsRuntime.Proc.is_process(pid) do
+    if SystemsRuntime.Proc.alive?(pid), do: SystemsRuntime.Proc.exit(pid, :kill)
     :ok
   end
 

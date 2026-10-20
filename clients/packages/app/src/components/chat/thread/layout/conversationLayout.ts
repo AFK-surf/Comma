@@ -1,8 +1,9 @@
-import type { ChatAssistantDraft, ChatMessage } from "../../model/conversationChannel";
+import type { ChatAssistantDraft, ChatMessage } from "@comma/core/chat";
 import {
+  asksRouter,
   conversationMessageTurnKey as messageTurnKey,
   visibleReplyIdentityKey,
-} from "../../model/visibleReplyPresentation";
+} from "@comma/core/chat";
 import {
   conversationTimestampMessageIds,
   normalizeMessageTimestamp,
@@ -22,17 +23,22 @@ export type ConversationTurn = {
     | undefined;
 };
 
+/** The time a timestamp row above an entry shows; seconds or milliseconds. */
+export type EntryTimestamp = { createdAt: number };
+
 export type ConversationEntry =
   | {
       key: string;
       kind: "message";
       message: ChatMessage;
+      timestamp?: EntryTimestamp | undefined;
     }
   | {
       draft?: ChatAssistantDraft | undefined;
       key: string;
       kind: "assistant-response";
       message?: ChatMessage | undefined;
+      timestamp?: EntryTimestamp | undefined;
     };
 
 export type ConversationLayout = ReturnType<typeof buildConversationLayout>;
@@ -50,6 +56,33 @@ export function continuesTurnRole(
     last.message?.platformSource === first.message?.platformSource &&
     conversationEntryRole(last) === conversationEntryRole(first)
   );
+}
+
+/**
+ * The newest timestamp, when it heads messages the agent sent on its own, the
+ * user has asked nothing since, and `isNews` holds for one of the messages
+ * under it: its message's id, or the draft's id while a draft that opens a
+ * timestamp streams. Anything the user asks the Router, a Quick Chat
+ * included, retires it.
+ */
+export function newestAgentTimestampId(
+  turns: readonly ConversationTurn[],
+  draft: { id: string; timestamped: boolean } | undefined,
+  isNews: (id: string) => boolean
+) {
+  let news = draft ? isNews(draft.id) : false;
+  if (draft?.timestamped) return news ? draft.id : undefined;
+  for (let turnIndex = turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
+    const entries = turns[turnIndex]!.entries;
+    for (let entryIndex = entries.length - 1; entryIndex >= 0; entryIndex -= 1) {
+      const entry = entries[entryIndex]!;
+      if (entry.message && asksRouter(entry.message)) return undefined;
+      const id = entry.message?.messageId;
+      if (id !== undefined && isNews(id)) news = true;
+      if (entry.timestamp) return news ? id : undefined;
+    }
+  }
+  return undefined;
 }
 
 function conversationEntryRole(entry: ConversationEntry) {
@@ -90,31 +123,31 @@ export function buildConversationLayout(
   };
 
   for (const message of messages) {
+    const timestamp =
+      timestampMessageIds.has(message.messageId) &&
+      normalizeMessageTimestamp(message.createdAt) !== undefined
+        ? { createdAt: message.createdAt! }
+        : undefined;
     if (message.role === "user") {
       const turnKey = messageTurnKey(message);
+      const entry = { ...messageEntry(message), timestamp };
       let turn = turnsByKey.get(turnKey);
       if (turn) {
-        turn.entries.unshift(messageEntry(message));
+        turn.entries.unshift(entry);
       } else {
-        turn = { entries: [messageEntry(message)], key: turnKey };
+        turn = { entries: [entry], key: turnKey };
         turns.push(turn);
         turnsByKey.set(turnKey, turn);
       }
-      if (
-        timestampMessageIds.has(message.messageId) &&
-        normalizeMessageTimestamp(message.createdAt) !== undefined
-      ) {
-        turn.timestamp = {
-          createdAt: message.createdAt!,
-          messageId: message.messageId,
-        };
+      if (timestamp) {
+        turn.timestamp = { ...timestamp, messageId: message.messageId };
       }
       currentSequentialTurn = turn;
       continue;
     }
 
-    const responseEntry = canonicalResponseEntry(message);
-    appendSourceLessNonUser(responseEntry ?? messageEntry(message));
+    const entry = canonicalResponseEntry(message) ?? messageEntry(message);
+    appendSourceLessNonUser(timestamp ? { ...entry, timestamp } : entry);
   }
 
   const tailTurn = currentSequentialTurn ?? leadingNonUserTurn;
@@ -144,6 +177,7 @@ export function buildConversationLayout(
     : layout;
 }
 
+/** The turn a draft streams in: its source's, else the tail. */
 export function assistantDraftTurnIndex(
   layout: {
     tailTurnIndex: number;
@@ -162,7 +196,8 @@ export function appendAssistantDraft(
   layout: { turns: ConversationTurn[]; tailTurnIndex: number },
   draft: ChatAssistantDraft,
   responseSlotId: string,
-  ownerTurnIndex = layout.tailTurnIndex
+  ownerTurnIndex = layout.tailTurnIndex,
+  timestamp?: EntryTimestamp | undefined
 ) {
   const entry: ConversationEntry = {
     draft,
@@ -171,6 +206,7 @@ export function appendAssistantDraft(
       draft.sourceMessageIds
     )}`,
     kind: "assistant-response",
+    timestamp,
   };
   const turns = [...layout.turns];
   const owner = turns[ownerTurnIndex];

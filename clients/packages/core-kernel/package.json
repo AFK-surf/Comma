@@ -1,0 +1,17 @@
+{
+  "name": "@comma/core-kernel",
+  "private": true,
+  "version": "0.1.1",
+  "type": "module",
+  "description": "The domain-free base of the client core: Effect runner, keyed topics and deltas, sync scheduler, doing, protocol, single-writer SQLite, the UI's client and the web worker relay",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client/index.ts",
+    "./testing": "./src/testing.ts",
+    "./node-sql": "./src/node-sql.ts",
+    "./web-worker": "./src/worker/relay.ts"
+  },
+  "dependencies": {
+    "effect": "4.0.0"
+  }
+}

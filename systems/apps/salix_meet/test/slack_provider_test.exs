@@ -1,15 +1,18 @@
 defmodule SalixMeet.SlackProviderTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
-  alias SalixIM.Provider.Slack.API
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixMeet"]
+  require SystemsClock
+
   alias SalixMeet.{SlackThreadIndex, Store}
   alias SalixAgent.{AgentWorkspace, InternalSessionStore}
   alias SalixStore.{Crypto, Keys, S3}
 
   defmodule SummaryRequestRecorder do
     def request(state, request) do
-      send(
-        Application.fetch_env!(:salix_meet, :router_summary_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_meet, :router_summary_test_pid),
         {:router_summary_request, state, request}
       )
 
@@ -27,7 +30,7 @@ defmodule SalixMeet.SlackProviderTest do
         SalixStore.S3.Fake.set_fault(
           {:fail, 503, :put,
            SalixStore.Keys.meet_state(
-             Application.fetch_env!(:salix_meet, :blocked_write_meeting_id)
+             SystemsRuntime.fetch_env!(:salix_meet, :blocked_write_meeting_id)
            )}
         )
 
@@ -50,7 +53,7 @@ defmodule SalixMeet.SlackProviderTest do
     def publish(_meeting_agent, %{"meeting_id" => meeting_id}) do
       :ok =
         SalixStore.S3.Fake.set_fault_for(
-          self(),
+          SystemsRuntime.Proc.self(),
           {:fail, 503, :put, SalixStore.Keys.meet_state(meeting_id)}
         )
 
@@ -241,6 +244,115 @@ defmodule SalixMeet.SlackProviderTest do
     end
   end
 
+  defmodule RecordingLarkDirectDelivery do
+    @moduledoc false
+    @behaviour SalixIM.Ports.LarkDirectDelivery
+
+    use Agent
+
+    def start_link(_opts \\ []) do
+      Agent.start_link(fn -> %{records: %{}, failures: []} end, name: __MODULE__)
+    end
+
+    def reset, do: Agent.update(__MODULE__, fn _ -> %{records: %{}, failures: []} end)
+
+    def fail_next(reason),
+      do: Agent.update(__MODULE__, &update_in(&1.failures, fn xs -> xs ++ [reason] end))
+
+    def records do
+      Agent.get(__MODULE__, fn state ->
+        state.records |> Map.values() |> Enum.sort_by(& &1["operation_ref"])
+      end)
+    end
+
+    @impl true
+    def post_text(connect, target, text, mentions, operation_ref) do
+      deliver(operation_ref, %{
+        "kind" => "text",
+        "connect_id" => connect["connect_id"],
+        "target" => target,
+        "text" => text,
+        "mentions" => mentions
+      })
+    end
+
+    @impl true
+    def post_file(agent_id, connect, target, path, blob_ref, operation_ref) do
+      deliver(operation_ref, %{
+        "kind" => "file",
+        "agent_id" => agent_id,
+        "connect_id" => connect["connect_id"],
+        "target" => target,
+        "path" => path,
+        "blob_ref" => blob_ref
+      })
+    end
+
+    defp deliver(operation_ref, attrs) do
+      Agent.get_and_update(__MODULE__, fn state ->
+        case state.records[operation_ref] do
+          %{} = existing ->
+            status = %{"message_id" => existing["message_id"], "operation_ref" => operation_ref}
+
+            {{:ok, status},
+             put_in(state, [:records, operation_ref, "attempts"], existing["attempts"] + 1)}
+
+          nil ->
+            case state.failures do
+              [reason | failures] ->
+                {{:error, reason}, %{state | failures: failures}}
+
+              [] ->
+                record =
+                  attrs
+                  |> Map.merge(%{
+                    "operation_ref" => operation_ref,
+                    "message_id" =>
+                      ("om_" <> Base.encode16(:crypto.hash(:sha256, operation_ref), case: :lower))
+                      |> binary_part(0, 20),
+                    "attempts" => 1
+                  })
+
+                status = %{"message_id" => record["message_id"], "operation_ref" => operation_ref}
+                {{:ok, status}, put_in(state, [:records, operation_ref], record)}
+            end
+        end
+      end)
+    end
+  end
+
+  defmodule MockLarkAPI do
+    @moduledoc "The Lark OpenAPI as far as a thread read needs it: a token and one page of a thread."
+    import Plug.Conn
+
+    def init(opts), do: opts
+
+    def call(conn, _opts) do
+      conn = fetch_query_params(conn)
+
+      answer =
+        case {conn.method, conn.path_info} do
+          {"POST", ["open-apis", "auth", "v3", "tenant_access_token", "internal"]} ->
+            %{"code" => 0, "tenant_access_token" => "t-lark-meeting", "expire" => 7200}
+
+          {"GET", ["open-apis", "im", "v1", "messages"]} ->
+            items =
+              :salix_meet
+              |> SystemsRuntime.get_env(:lark_test_threads, %{})
+              |> Map.get(conn.params["container_id"], [])
+
+            %{"code" => 0, "data" => %{"items" => items, "has_more" => false}}
+
+          _other ->
+            %{"code" => 404, "msg" => "not found"}
+        end
+
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(answer))
+    end
+  end
+
   defmodule StreamEnvRecorder do
     use Agent
 
@@ -304,7 +416,7 @@ defmodule SalixMeet.SlackProviderTest do
 
     @impl true
     def stat_workspace(agent_id, path) do
-      case Application.get_env(:salix_meet, :artifact_read_fault) do
+      case SystemsRuntime.get_env(:salix_meet, :artifact_read_fault) do
         :stat_transient -> {:error, :transient_artifact_stat_failure}
         :stat_invalid -> {:ok, %{size: "invalid", hash: ""}}
         _ -> SalixMeet.TestAgentRuntime.stat_workspace(agent_id, path)
@@ -317,7 +429,7 @@ defmodule SalixMeet.SlackProviderTest do
 
     @impl true
     def stream_workspace_read(agent_id, path) do
-      case Application.get_env(:salix_meet, :artifact_read_fault) do
+      case SystemsRuntime.get_env(:salix_meet, :artifact_read_fault) do
         :stream_transient -> {:error, :transient_artifact_stream_failure}
         :stream_size_mismatch -> mismatch_stream_size(agent_id, path)
         :stream_raises_mid_body -> raising_mid_body_stream(agent_id, path)
@@ -345,8 +457,8 @@ defmodule SalixMeet.SlackProviderTest do
   defmodule FailOnceMeetingArtifactRuntime do
     @behaviour SalixMeet.Ports.AgentRuntime
 
-    def reset, do: Application.put_env(:salix_meet, :fail_once_artifact_calls, 0)
-    def calls, do: Application.get_env(:salix_meet, :fail_once_artifact_calls, 0)
+    def reset, do: SystemsRuntime.put_env(:salix_meet, :fail_once_artifact_calls, 0)
+    def calls, do: SystemsRuntime.get_env(:salix_meet, :fail_once_artifact_calls, 0)
 
     def ensure_agent(request), do: SalixMeet.TestAgentRuntime.ensure_agent(request)
     def verify_agent(request), do: SalixMeet.TestAgentRuntime.verify_agent(request)
@@ -366,7 +478,7 @@ defmodule SalixMeet.SlackProviderTest do
           _source_size
         ) do
       call = calls() + 1
-      Application.put_env(:salix_meet, :fail_once_artifact_calls, call)
+      SystemsRuntime.put_env(:salix_meet, :fail_once_artifact_calls, call)
 
       if call == 1 do
         {:error, :transient_reverse_stream_failure}
@@ -422,10 +534,10 @@ defmodule SalixMeet.SlackProviderTest do
 
     @impl true
     def summarize(_state) do
-      test_pid = Application.get_env(:salix_meet, :summary_test_pid)
-      send(test_pid, {:summarizing_started, self()})
+      test_pid = SystemsRuntime.get_env(:salix_meet, :summary_test_pid)
+      SystemsRuntime.Proc.send(test_pid, {:summarizing_started, SystemsRuntime.Proc.self()})
 
-      receive do
+      SystemsClock.vreceive do
         :finish -> {:ok, %{"title" => "Weekly Sync", "key_points" => ["One"]}}
       after
         5_000 -> :skip
@@ -438,19 +550,19 @@ defmodule SalixMeet.SlackProviderTest do
 
     @impl true
     def attribute(state, summary) do
-      test_pid = Application.fetch_env!(:salix_meet, :owner_attribution_test_pid)
+      test_pid = SystemsRuntime.fetch_env!(:salix_meet, :owner_attribution_test_pid)
 
       step =
-        case Application.get_env(:salix_meet, :owner_attribution_test_steps, []) do
+        case SystemsRuntime.get_env(:salix_meet, :owner_attribution_test_steps, []) do
           [next | rest] ->
-            Application.put_env(:salix_meet, :owner_attribution_test_steps, rest)
+            SystemsRuntime.put_env(:salix_meet, :owner_attribution_test_steps, rest)
             next
 
           [] ->
             :skip
         end
 
-      send(test_pid, {:owner_attribution_called, step, state, summary})
+      SystemsRuntime.Proc.send(test_pid, {:owner_attribution_called, step, state, summary})
 
       case step do
         :skip ->
@@ -489,12 +601,12 @@ defmodule SalixMeet.SlackProviderTest do
 
     @impl true
     def handoff(state, summary) do
-      test_pid = Application.get_env(:salix_meet, :activation_test_pid)
+      test_pid = SystemsRuntime.get_env(:salix_meet, :activation_test_pid)
 
       result =
-        case Application.get_env(:salix_meet, :activation_test_results, [:ok]) do
+        case SystemsRuntime.get_env(:salix_meet, :activation_test_results, [:ok]) do
           [next | rest] ->
-            Application.put_env(:salix_meet, :activation_test_results, rest)
+            SystemsRuntime.put_env(:salix_meet, :activation_test_results, rest)
             next
 
           [] ->
@@ -507,8 +619,12 @@ defmodule SalixMeet.SlackProviderTest do
           _ -> nil
         end
 
-      if is_pid(test_pid),
-        do: send(test_pid, {:activation_handoff, state, summary, result, published_at})
+      if SystemsRuntime.Proc.is_process(test_pid),
+        do:
+          SystemsRuntime.Proc.send(
+            test_pid,
+            {:activation_handoff, state, summary, result, published_at}
+          )
 
       result
     end
@@ -516,7 +632,7 @@ defmodule SalixMeet.SlackProviderTest do
 
   defmodule PreparationSearchReader do
     def search(scope, opts) do
-      send(self(), {:preparation_search, scope, opts})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:preparation_search, scope, opts})
       {:ok, %{messages: [], next_cursor: nil, has_more?: false}}
     end
   end
@@ -524,47 +640,51 @@ defmodule SalixMeet.SlackProviderTest do
   setup do
     # These fixtures exercise the retained synchronous adapter / downstream
     # publication contract. Router-owned generation has dedicated integration tests.
-    previous_router_summary = Application.get_env(:salix_meet, :router_summary_mod)
-    Application.delete_env(:salix_meet, :router_summary_mod)
+    previous_router_summary = SystemsRuntime.get_env(:salix_meet, :router_summary_mod)
+    SystemsRuntime.delete_env(:salix_meet, :router_summary_mod)
 
     on_exit(fn ->
       if previous_router_summary,
-        do: Application.put_env(:salix_meet, :router_summary_mod, previous_router_summary),
-        else: Application.delete_env(:salix_meet, :router_summary_mod)
+        do: SystemsRuntime.put_env(:salix_meet, :router_summary_mod, previous_router_summary),
+        else: SystemsRuntime.delete_env(:salix_meet, :router_summary_mod)
     end)
 
-    prev_s3 = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_handler = Application.get_env(:salix_im, :meeting_provider_handler)
-    prev_agent_delivery = Application.get_env(:salix_im, :agent_delivery_mod)
-    prev_provider = Application.get_env(:salix_meet, :provider_mod)
-    prev_driver = Application.get_env(:salix_meet, :runtime_driver)
-    prev_agent_runtime = Application.get_env(:salix_meet, :agent_runtime_mod)
-    prev_activation = Application.get_env(:salix_meet, :activation_mod)
-    prev_activation_pid = Application.get_env(:salix_meet, :activation_test_pid)
-    prev_activation_results = Application.get_env(:salix_meet, :activation_test_results)
-    prev_slack_api = Application.get_env(:salix_im, :slack_api_base_url)
-    prev_slack_files = Application.get_env(:salix_im, :slack_files_base_url)
-    prev_feishu_delivery = Application.get_env(:salix_im, :feishu_direct_delivery_mod)
+    prev_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_handler = SystemsRuntime.get_env(:salix_im, :meeting_provider_handler)
+    prev_agent_delivery = SystemsRuntime.get_env(:salix_im, :agent_delivery_mod)
+    prev_provider = SystemsRuntime.get_env(:salix_meet, :provider_mod)
+    prev_driver = SystemsRuntime.get_env(:salix_meet, :runtime_driver)
+    prev_agent_runtime = SystemsRuntime.get_env(:salix_meet, :agent_runtime_mod)
+    prev_activation = SystemsRuntime.get_env(:salix_meet, :activation_mod)
+    prev_activation_pid = SystemsRuntime.get_env(:salix_meet, :activation_test_pid)
+    prev_activation_results = SystemsRuntime.get_env(:salix_meet, :activation_test_results)
+    prev_slack_api = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    prev_slack_files = SystemsRuntime.get_env(:salix_im, :slack_files_base_url)
+    prev_feishu_delivery = SystemsRuntime.get_env(:salix_im, :feishu_direct_delivery_mod)
+    prev_lark_delivery = SystemsRuntime.get_env(:salix_im, :lark_direct_delivery_mod)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :meeting_provider_handler,
       &SalixMeet.SlackProvider.handle_event/2
     )
 
-    Application.put_env(:salix_im, :agent_delivery_mod, __MODULE__.AgentDelivery)
-    Application.put_env(:salix_meet, :provider_mod, SalixMeet.SlackProvider)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, __MODULE__.AgentDelivery)
+    SystemsRuntime.put_env(:salix_meet, :provider_mod, SalixMeet.SlackProvider)
     Code.ensure_loaded!(SalixMeet.SlackProvider)
-    Application.put_env(:salix_meet, :runtime_driver, __MODULE__.RuntimeDriver)
-    Application.put_env(:salix_meet, :agent_runtime_mod, SalixMeet.TestAgentRuntime)
-    Application.put_env(:salix_meet, :activation_test_results, [:ok])
+    SystemsRuntime.put_env(:salix_meet, :runtime_driver, __MODULE__.RuntimeDriver)
+    SystemsRuntime.put_env(:salix_meet, :agent_runtime_mod, SalixMeet.TestAgentRuntime)
+    SystemsRuntime.put_env(:salix_meet, :activation_test_results, [:ok])
 
     ensure_fake_s3_started!()
     stop_all_agents()
+    # A meeting an earlier test started renews its state object on a timer and
+    # would recreate it in this test's store.
+    stop_all_meetings()
     SalixStore.S3.Fake.reset()
     ensure_mock_llm_started!()
     ensure_runtime_driver_started!()
@@ -574,11 +694,15 @@ defmodule SalixMeet.SlackProviderTest do
     start_supervised!(RecordingFeishuDirectDelivery)
     RecordingFeishuDirectDelivery.reset()
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :feishu_direct_delivery_mod,
       RecordingFeishuDirectDelivery
     )
+
+    start_supervised!(RecordingLarkDirectDelivery)
+    RecordingLarkDirectDelivery.reset()
+    SystemsRuntime.put_env(:salix_im, :lark_direct_delivery_mod, RecordingLarkDirectDelivery)
 
     bandit =
       start_supervised!(
@@ -587,8 +711,8 @@ defmodule SalixMeet.SlackProviderTest do
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
     base = "http://127.0.0.1:#{port}"
-    Application.put_env(:salix_im, :slack_api_base_url, base <> "/api")
-    Application.put_env(:salix_im, :slack_files_base_url, base)
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, base <> "/api")
+    SystemsRuntime.put_env(:salix_im, :slack_files_base_url, base)
 
     MockSlack.respond("files.getUploadURLExternal", %{
       "ok" => true,
@@ -655,7 +779,7 @@ defmodule SalixMeet.SlackProviderTest do
 
     on_exit(fn ->
       stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev_s3)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_s3)
       restore_env(:salix_agent, :llm, prev_llm)
       restore_env(:salix_im, :meeting_provider_handler, prev_handler)
       restore_env(:salix_im, :agent_delivery_mod, prev_agent_delivery)
@@ -668,6 +792,7 @@ defmodule SalixMeet.SlackProviderTest do
       restore_env(:salix_im, :slack_api_base_url, prev_slack_api)
       restore_env(:salix_im, :slack_files_base_url, prev_slack_files)
       restore_env(:salix_im, :feishu_direct_delivery_mod, prev_feishu_delivery)
+      restore_env(:salix_im, :lark_direct_delivery_mod, prev_lark_delivery)
     end)
 
     tenant_id = SalixStore.Ids.new_tenant_id()
@@ -675,7 +800,14 @@ defmodule SalixMeet.SlackProviderTest do
     router_agent_id = SalixStore.Ids.new_agent_id(group_id)
 
     put_group!(tenant_id, group_id, router_agent_id)
-    put_router_template!()
+
+    # The Router follows the platform Router model.
+    SalixAgent.TestSupport.configure_platform_tier!(
+      "router",
+      "https://platform-model.example.test/v1",
+      "mock"
+    )
+
     put_router_agent!(tenant_id, group_id, router_agent_id)
     create_router_state!(router_agent_id)
 
@@ -684,9 +816,14 @@ defmodule SalixMeet.SlackProviderTest do
 
   describe "public meeting preparation source boundary" do
     setup %{tenant_id: tenant_id, group_id: group_id} do
-      previous_mirror = Application.get_env(:salix_im, :slack_message_mirror_mod)
-      previous_reader = Application.get_env(:salix_im, :slack_triage_clickhouse_reader_mod)
-      Application.put_env(:salix_im, :slack_message_mirror_mod, SalixIM.SlackMessageMirror.Noop)
+      previous_mirror = SystemsRuntime.get_env(:salix_im, :slack_message_mirror_mod)
+      previous_reader = SystemsRuntime.get_env(:salix_im, :slack_triage_clickhouse_reader_mod)
+
+      SystemsRuntime.put_env(
+        :salix_im,
+        :slack_message_mirror_mod,
+        SalixIM.SlackMessageMirror.Noop
+      )
 
       on_exit(fn ->
         restore_env(:salix_im, :slack_message_mirror_mod, previous_mirror)
@@ -821,51 +958,18 @@ defmodule SalixMeet.SlackProviderTest do
       assert length(MockSlack.requests("conversations.info")) == 2
     end
 
-    test "replies preserve the root and cursor while enforcing the page bound", %{
-      source_plan: plan
-    } do
-      MockSlack.respond("conversations.replies", %{
-        "ok" => true,
-        "messages" => [%{"ts" => "1787019001.000100", "text" => "REPLY"}],
-        "has_more" => true,
-        "response_metadata" => %{"next_cursor" => "next-replies-page"}
-      })
-
-      assert {:ok, result} =
-               SalixMeet.PreparationSources.read(plan, %{
-                 "operation" => "replies",
-                 "channel" => "CPUBLIC01",
-                 "ts" => "1787019000.000100",
-                 "cursor" => "previous-replies-page",
-                 "limit" => 999
-               })
-
-      assert result["next_cursor"] == "next-replies-page"
-      assert [%{params: params}] = MockSlack.requests("conversations.replies")
-
-      assert Map.take(params, ~w(channel ts cursor limit)) == %{
-               "channel" => "CPUBLIC01",
-               "ts" => "1787019000.000100",
-               "cursor" => "previous-replies-page",
-               "limit" => "30"
-             }
-
-      assert {:error, _} =
-               SalixMeet.PreparationSources.read(plan, %{
-                 "operation" => "replies",
-                 "channel" => "CPUBLIC01"
-               })
-
-      assert length(MockSlack.requests("conversations.replies")) == 1
-    end
-
     test "search fixes channel scope and permits matching qualifiers but rejects foreign channels",
          %{
            source_plan: plan,
            tenant_id: tenant_id
          } do
-      Application.put_env(:salix_im, :slack_message_mirror_mod, PreparationSearchReader)
-      Application.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, PreparationSearchReader)
+      SystemsRuntime.put_env(:salix_im, :slack_message_mirror_mod, PreparationSearchReader)
+
+      SystemsRuntime.put_env(
+        :salix_im,
+        :slack_triage_clickhouse_reader_mod,
+        PreparationSearchReader
+      )
 
       for query <- ["commitment", "in:CPUBLIC01 commitment"] do
         assert {:ok, result} =
@@ -892,31 +996,6 @@ defmodule SalixMeet.SlackProviderTest do
 
       refute_received {:preparation_search, _, _}
       assert MockSlack.requests("search.messages") == []
-    end
-
-    test "public transcript download preserves exact UTF-8 text and permalink", %{
-      source_plan: plan
-    } do
-      text = "[00:03:08] JINFEI: 这两天的需求记在 list 上。\n"
-      file = shared_preparation_file(byte_size(text))
-      MockSlack.respond("files.info", %{"ok" => true, "file" => file})
-      MockSlack.respond("canvas_download", text)
-
-      assert {:ok, result} =
-               SalixMeet.PreparationSources.read(plan, %{
-                 "operation" => "file",
-                 "channel" => "CPUBLIC01",
-                 "file_id" => "FTRANSCRIPT",
-                 "url" => "http://127.0.0.1:1/forged"
-               })
-
-      assert result["text"] == text
-      assert result["bytes"] == byte_size(text)
-      assert result["permalink"] == file["permalink"]
-      assert result["source_label"] == ["scope|meeting-public-sources|CPUBLIC01"]
-      assert [%{params: %{"file_id" => "FTRANSCRIPT"}}] = MockSlack.requests("canvas_download")
-      assert length(MockSlack.requests("files.info")) == 2
-      assert length(MockSlack.requests("conversations.info")) == 2
     end
 
     test "saved file provenance rechecks sharing even while its channel stays public", %{
@@ -993,47 +1072,6 @@ defmodule SalixMeet.SlackProviderTest do
 
       assert length(MockSlack.requests("canvas_download")) == 1
       assert length(MockSlack.requests("files.info")) == 2
-    end
-
-    test "transcript streaming enforces the actual byte cap when file size lies", %{
-      source_plan: plan
-    } do
-      cap = 256 * 1024
-      # shares.public is the other provider-owned membership representation.
-      file =
-        shared_preparation_file(1)
-        |> Map.delete("channels")
-        |> Map.put("shares", %{"public" => %{"CPUBLIC01" => [%{"ts" => "1787019000.000100"}]}})
-
-      MockSlack.respond("files.info", %{"ok" => true, "file" => file})
-      MockSlack.respond("canvas_download", String.duplicate("a", cap))
-      args = %{"operation" => "file", "channel" => "CPUBLIC01", "file_id" => "FTRANSCRIPT"}
-      assert {:ok, %{"bytes" => ^cap}} = SalixMeet.PreparationSources.read(plan, args)
-
-      MockSlack.respond("canvas_download", String.duplicate("a", cap + 1))
-
-      assert {:error, :meeting_shared_source_too_large} =
-               SalixMeet.PreparationSources.read(plan, args)
-
-      MockSlack.respond("files.info", %{"ok" => true, "file" => Map.put(file, "size", cap + 1)})
-      count = length(MockSlack.requests("canvas_download"))
-
-      assert {:error, :meeting_shared_source_too_large} =
-               SalixMeet.PreparationSources.read(plan, args)
-
-      assert length(MockSlack.requests("canvas_download")) == count
-    end
-
-    test "a text-mime attachment with invalid UTF-8 is refused", %{source_plan: plan} do
-      MockSlack.respond("files.info", %{"ok" => true, "file" => shared_preparation_file(2)})
-      MockSlack.respond("canvas_download", <<255, 254>>)
-
-      assert {:error, :meeting_shared_source_requires_text} =
-               SalixMeet.PreparationSources.read(plan, %{
-                 "operation" => "file",
-                 "channel" => "CPUBLIC01",
-                 "file_id" => "FTRANSCRIPT"
-               })
     end
   end
 
@@ -1174,129 +1212,6 @@ defmodule SalixMeet.SlackProviderTest do
     assert {:error, :not_found} = S3.get(Keys.meet_agent(group_id))
   end
 
-  test "Slack provider routes a full instant-meeting invitation through the source thread",
-       %{tenant_id: tenant_id, group_id: group_id, router_agent_id: router_agent_id} do
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-google-invite-join",
-        "app_id" => "A-google-invite-join",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "bot_user_id" => "UBOT",
-        "oauth_completed_at" => 1
-      })
-
-    meet_url = "https://meet.google.com/abc-defg-hij"
-
-    text =
-      """
-      To join the video meeting, click this link: <#{meet_url}|meet.google.com/abc-defg-hij>
-      Otherwise, to join by phone, dial <tel:+18728021835|+1 872-802-1835> and enter this PIN: 688 584 397#
-      To view more phone numbers, click this link: <https://tel.meet/abc-defg-hij?hs=5|tel.meet/abc-defg-hij?hs=5>
-
-      <@UBOT> join
-      """
-
-    envelope =
-      slack_envelope("Ev-google-invite-join", text, %{
-        "type" => "app_mention",
-        "ts" => "430.999",
-        "thread_ts" => "430.000",
-        "event_ts" => "430.999"
-      })
-      |> Map.put("api_app_id", "A-google-invite-join")
-
-    raw = Jason.encode!(envelope)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, "slack-secret"),
-               raw
-             )
-
-    assert eventually(fn -> length(RuntimeDriver.calls()) == 1 end)
-    assert [meeting_id] = meeting_ids()
-    assert [%{"id" => ^meeting_id, "state" => join_state}] = RuntimeDriver.calls()
-
-    source_ref = %{"channel_id" => "C1", "thread_ts" => "430.000"}
-    assert join_state["meet_url"] == meet_url
-    assert join_state["slack_ref"] == source_ref
-
-    assert {:ok, %{"state" => state}, _etag} = Store.get(meeting_id)
-    assert state["slack_ref"] == source_ref
-
-    assert {:ok, %{"meeting_id" => ^meeting_id}} =
-             SlackThreadIndex.fetch(connect, "C1", "430.000")
-
-    assert eventually(fn ->
-             with {:ok, meeting_agent} <- read_json(Keys.meet_agent(group_id)),
-                  {:ok, session} <-
-                    InternalSessionStore.read(
-                      meeting_agent["meeting_agent_id"],
-                      meeting_agent["meeting_session_id"]
-                    ) do
-               session
-               |> SalixAgent.InternalSession.get(:messages)
-               |> Enum.any?(&(to_string(&1.content) =~ meet_url))
-             else
-               _ -> false
-             end
-           end)
-
-    refute router_session_has?(router_agent_id, "Ev-google-invite-join")
-  end
-
-  test "Slack provider keeps full invitations fail-closed without an exact terminal bot command",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-google-invite-negative",
-        "app_id" => "A-google-invite-negative",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "bot_user_id" => "UBOT",
-        "oauth_completed_at" => 1
-      })
-
-    meet_url = "https://meet.google.com/abc-defg-hij"
-
-    invitation =
-      """
-      To join the video meeting, click this link: #{meet_url}
-      Otherwise, to join by phone, dial the conference number and enter the PIN.
-      """
-
-    cases = [
-      {"missing-command", invitation, %{"type" => "app_mention"}},
-      {"another-bot", invitation <> "\n<@UOTHER> join", %{"type" => "app_mention"}},
-      {"non-terminal-command", invitation <> "\n<@UBOT> join\nCopied context follows.",
-       %{"type" => "app_mention"}},
-      {"bot-authored", invitation <> "\n<@UBOT> join",
-       %{
-         "type" => "app_mention",
-         "subtype" => "bot_message",
-         "bot_id" => "BEXTERNAL",
-         "app_id" => "AEXTERNAL"
-       }},
-      {"full-message-negation", invitation <> "\nDo not join this meeting.\n<@UBOT> join",
-       %{"type" => "app_mention"}}
-    ]
-
-    Enum.each(cases, fn {name, text, overrides} ->
-      envelope = slack_envelope("Ev-google-invite-negative-#{name}", text, overrides)
-      assert :ignored = SalixMeet.SlackProvider.handle_event(connect, envelope), name
-    end)
-
-    assert RuntimeDriver.calls() == []
-    assert meeting_ids() == []
-  end
-
   test "Router-authorized Slack join does not depend on provider keyword matching",
        %{tenant_id: tenant_id, group_id: group_id} do
     connect =
@@ -1380,74 +1295,6 @@ defmodule SalixMeet.SlackProviderTest do
     assert meeting_ids() == []
   end
 
-  test "Slack provider rejects a terminal invitation command with multiple Meet URLs",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-google-invite-ambiguous",
-        "app_id" => "A-google-invite-ambiguous",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "bot_user_id" => "UBOT",
-        "oauth_completed_at" => 1
-      })
-
-    text =
-      """
-      Primary room: https://meet.google.com/abc-defg-hij
-      Backup room: https://meet.google.com/mno-pqrs-tuv
-
-      <@UBOT> join
-      """
-
-    envelope =
-      slack_envelope("Ev-google-invite-ambiguous", text, %{
-        "type" => "app_mention",
-        "ts" => "440.000",
-        "event_ts" => "440.000"
-      })
-
-    assert {:ok, :handled} = SalixMeet.SlackProvider.handle_event(connect, envelope)
-    assert RuntimeDriver.calls() == []
-    assert meeting_ids() == []
-  end
-
-  test "Slack provider accepts bare and punctuated Chinese join commands",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-chinese-join-intent",
-        "app_id" => "A-chinese-join-intent",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "bot_user_id" => "UBOT",
-        "oauth_completed_at" => 1
-      })
-
-    meet_url = "https://meet.google.com/abc-defg-hij"
-
-    for {suffix, command, ts} <- [
-          {"bare", "加入", "410.000"},
-          {"punctuated", "请加入！", "420.000"}
-        ] do
-      envelope =
-        slack_envelope("Ev-chinese-join-#{suffix}", "<@UBOT> #{command} #{meet_url}", %{
-          "type" => "app_mention",
-          "ts" => ts,
-          "event_ts" => ts
-        })
-
-      assert {:ok, :handled} = SalixMeet.SlackProvider.handle_event(connect, envelope)
-    end
-
-    assert length(meeting_ids()) == 2
-    assert length(RuntimeDriver.calls()) == 2
-  end
-
   test "Feishu provider accepts a real bot mention with one Meet URL and bypasses Router",
        %{tenant_id: tenant_id, group_id: group_id, router_agent_id: router_agent_id} do
     connect =
@@ -1528,77 +1375,6 @@ defmodule SalixMeet.SlackProviderTest do
     assert length(RuntimeDriver.calls()) == 1
   end
 
-  test "Feishu provider resumes native join after the joining notice initially fails",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_feishu_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "feishu-joining-notice-retry",
-        "app_id" => "cli_feishu_joining_notice_retry",
-        "bot_open_id" => "ou_bot"
-      })
-
-    RecordingFeishuDirectDelivery.fail_next({:http, 503})
-
-    envelope =
-      feishu_envelope(
-        "evt-feishu-joining-notice-retry",
-        "@_user_1 入会 https://meet.google.com/abc-defg-hij"
-      )
-
-    assert {:error, {:http, 503}} =
-             SalixMeet.FeishuProvider.handle_event(connect, envelope)
-
-    assert {:ok, [meeting_id]} = Store.list()
-    assert {:ok, first, _etag} = Store.get(meeting_id)
-    assert first["join_requested_at"] == nil
-    assert RuntimeDriver.calls() == []
-
-    assert {:ok, :handled} = SalixMeet.FeishuProvider.handle_event(connect, envelope)
-
-    assert {:ok, resumed, _etag} = Store.get(meeting_id)
-    assert is_integer(resumed["join_requested_at"])
-    assert [_join_call] = RuntimeDriver.calls()
-
-    assert [joining_notice] = RecordingFeishuDirectDelivery.records()
-    assert joining_notice["operation_ref"] == "meeting:#{meeting_id}:joining"
-    assert joining_notice["kind"] == "text"
-    assert joining_notice["target"]["chat_id"] == "oc_meeting"
-
-    assert {:ok, :handled} = SalixMeet.FeishuProvider.handle_event(connect, envelope)
-    assert [_join_call] = RuntimeDriver.calls()
-
-    expected_operation_ref = "meeting:#{meeting_id}:joining"
-
-    assert [%{"operation_ref" => ^expected_operation_ref, "attempts" => 2}] =
-             RecordingFeishuDirectDelivery.records()
-
-    assert SalixIM.RouterConversationProjection.get_group_router_conversation(group_id) ==
-             {:error, :not_found}
-  end
-
-  test "Feishu provider rejects a textual at-name that is not a mention entity",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_feishu_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "feishu-text-mention",
-        "app_id" => "cli_feishu_text",
-        "bot_open_id" => "ou_bot"
-      })
-
-    envelope =
-      feishu_envelope(
-        "evt-feishu-text",
-        "@jinfei-bft-test 入会 https://meet.google.com/abc-defg-hij",
-        %{"mentions" => []}
-      )
-
-    assert :ignored = SalixMeet.FeishuProvider.handle_event(connect, envelope)
-    assert RuntimeDriver.calls() == []
-    assert {:ok, []} = Store.list()
-  end
-
   test "Feishu provider requires explicit join intent even with a real mention and Meet URL",
        %{tenant_id: tenant_id, group_id: group_id} do
     connect =
@@ -1620,56 +1396,30 @@ defmodule SalixMeet.SlackProviderTest do
     assert {:ok, []} = Store.list()
   end
 
-  test "Feishu provider rejects negated join intent with a real mention and Meet URL",
+  test "Slack posts one best-effort thread notice per runtime join status",
        %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_feishu_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "feishu-negated-join-intent",
-        "app_id" => "cli_feishu_negated_join_intent",
-        "bot_open_id" => "ou_bot"
-      })
+    previous_notifier = SystemsRuntime.get_env(:salix_meet, :meeting_status_notifier_mod)
 
-    ["不要入会", "别加入会议", "don't join"]
-    |> Enum.with_index()
-    |> Enum.each(fn {intent, index} ->
-      envelope =
-        feishu_envelope(
-          "evt-feishu-negated-join-intent-#{index}",
-          "@_user_1 #{intent} https://meet.google.com/abc-defg-hij"
-        )
-
-      assert :ignored = SalixMeet.FeishuProvider.handle_event(connect, envelope)
-    end)
-
-    assert RuntimeDriver.calls() == []
-    assert {:ok, []} = Store.list()
-  end
-
-  test "Feishu status notification failure replays and sends one direct provider delivery",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    previous_notifier = Application.get_env(:salix_meet, :meeting_status_notifier_mod)
-    start_supervised!(FailOnceProviderStatusNotifier)
-
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_meet,
       :meeting_status_notifier_mod,
-      FailOnceProviderStatusNotifier
+      SalixMeet.ProviderDispatcher
     )
 
-    on_exit(fn ->
-      restore_env(:salix_meet, :meeting_status_notifier_mod, previous_notifier)
-    end)
+    on_exit(fn -> restore_env(:salix_meet, :meeting_status_notifier_mod, previous_notifier) end)
 
     connect =
-      seed_feishu_connect(group_id, %{
+      seed_slack_connect(group_id, %{
         "tenant_id" => tenant_id,
-        "connect_id" => "feishu-status-retry",
-        "app_id" => "cli_feishu_status_retry",
-        "bot_open_id" => "ou_bot"
+        "connect_id" => "slack-status-notice",
+        "app_id" => "A-meeting",
+        "signing_secret" => "slack-secret",
+        "workspace_id" => "T-meeting",
+        "bot_token" => "xoxb-meeting",
+        "oauth_completed_at" => 1
       })
 
-    meeting_id = "mtg-feishu-status-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-slack-status-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     assert {:ok, _doc, _etag} =
              Store.create_once(meeting_id,
@@ -1677,44 +1427,64 @@ defmodule SalixMeet.SlackProviderTest do
                  "tenant_id" => tenant_id,
                  "group_id" => group_id,
                  "meeting_id" => meeting_id,
-                 "provider" => "feishu",
+                 "provider" => "slack",
                  "connect_id" => connect["connect_id"],
                  "status" => "joining",
-                 "feishu_ref" => %{
-                   "chat_id" => "oc_meeting",
-                   "thread_id" => "omt_meeting",
-                   "root_message_id" => "om_root",
-                   "trigger_message_id" => "om_trigger"
-                 }
+                 "slack_ref" => %{"channel_id" => "C1", "thread_ts" => "700.000"}
+               }
+             )
+
+    apply_status = fn status, source_id ->
+      event = %{
+        "type" => "joiner_event",
+        "meeting_id" => meeting_id,
+        "joiner_event" => %{"type" => "status", "status" => status, "timestamp" => 1}
+      }
+
+      assert {:ok, prepared} = SalixMeet.RuntimeEvents.prepare(%{}, event)
+      SalixMeet.RuntimeEvents.apply(prepared, source_id)
+    end
+
+    for {status, n} <- Enum.with_index(~w(guest_fallback waiting_room in_meeting in_meeting)),
+        do: assert(:ok = apply_status.(status, "slack-status-#{n}"))
+
+    posts = MockSlack.requests("chat.postMessage")
+    assert Enum.map(posts, & &1.params["thread_ts"]) |> Enum.uniq() == ["700.000"]
+    assert [guest, waiting, joined] = Enum.map(posts, & &1.params["text"])
+    assert guest =~ "joining as a guest"
+    assert waiting =~ "Waiting for a host"
+    assert joined =~ "Joined the meeting"
+
+    assert {:ok, doc, _etag} = Store.get(meeting_id)
+    assert doc["state"]["joined_as"] == "guest"
+
+    MockSlack.respond("chat.postMessage", %{"ok" => false, "error" => "not_in_channel"})
+    assert :ok = apply_status.("left", "slack-status-left")
+
+    threadless = "mtg-slack-threadless-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    posted = length(MockSlack.requests("chat.postMessage"))
+
+    assert {:ok, _doc, _etag} =
+             Store.create_once(threadless,
+               state: %{
+                 "tenant_id" => tenant_id,
+                 "group_id" => group_id,
+                 "meeting_id" => threadless,
+                 "provider" => "slack",
+                 "connect_id" => connect["connect_id"],
+                 "status" => "joining"
                }
              )
 
     event = %{
       "type" => "joiner_event",
-      "meeting_id" => meeting_id,
-      "joiner_event" => %{"type" => "status", "status" => "waiting_room"}
+      "meeting_id" => threadless,
+      "joiner_event" => %{"type" => "status", "status" => "in_meeting", "timestamp" => 1}
     }
 
-    assert {:ok, first} = SalixMeet.RuntimeEvents.prepare(%{}, event)
-
-    assert {:error, {:meeting_status_notification_failed, _reason}} =
-             SalixMeet.RuntimeEvents.apply(first, "feishu-status-event")
-
-    assert {:ok, %{vfs_events: []} = second} = SalixMeet.RuntimeEvents.prepare(%{}, event)
-    assert :ok = SalixMeet.RuntimeEvents.apply(second, "feishu-status-event")
-    assert :ok = SalixMeet.RuntimeEvents.apply(second, "feishu-status-event")
-    assert FailOnceProviderStatusNotifier.calls() == 2
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    assert get_in(doc, ["state", "joiner_status_notifications", "waiting_room"]) == "queued"
-
-    assert [record] = RecordingFeishuDirectDelivery.records()
-    assert record["operation_ref"] == "meeting:#{meeting_id}:status:waiting_room"
-    assert record["kind"] == "text"
-    assert record["attempts"] == 1
-
-    assert SalixIM.RouterConversationProjection.get_group_router_conversation(group_id) ==
-             {:error, :not_found}
+    assert {:ok, prepared} = SalixMeet.RuntimeEvents.prepare(%{}, event)
+    assert :ok = SalixMeet.RuntimeEvents.apply(prepared, "slack-status-threadless")
+    assert length(MockSlack.requests("chat.postMessage")) == posted
   end
 
   test "Feishu terminal publication checkpoints summary and unavailable artifacts independently",
@@ -1728,7 +1498,7 @@ defmodule SalixMeet.SlackProviderTest do
       })
 
     assert {:ok, meeting_agent} = SalixMeet.Runtime.start_for_group(tenant_id, group_id)
-    meeting_id = "mtg-feishu-terminal-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-feishu-terminal-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     state = %{
       "tenant_id" => tenant_id,
@@ -1806,287 +1576,590 @@ defmodule SalixMeet.SlackProviderTest do
              {:error, :not_found}
   end
 
-  test "Feishu failed and cancelled meetings publish only their terminal notice",
+  test "a Lark join the Router authorized starts one meeting for the link of the message",
        %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :provider_mod, SalixMeet.ProviderDispatcher)
-
     connect =
-      seed_feishu_connect(group_id, %{
+      seed_lark_connect(group_id, %{
         "tenant_id" => tenant_id,
-        "connect_id" => "feishu-terminal-errors",
-        "app_id" => "cli_feishu_terminal_errors",
-        "bot_open_id" => "ou_bot"
+        "connect_id" => "lark-router-meeting"
       })
 
-    assert {:ok, meeting_agent} = SalixMeet.Runtime.start_for_group(tenant_id, group_id)
-
-    for {{status, error, expected_chat_type}, expected_delivery_count} <-
-          [
-            {"failed", "runtime unavailable", "p2p"},
-            {"cancelled", nil, "group"}
-          ]
-          |> Enum.with_index(1) do
-      meeting_id = "mtg-feishu-#{status}-#{System.unique_integer([:positive])}"
-
-      state = %{
-        "tenant_id" => tenant_id,
-        "group_id" => group_id,
-        "meeting_agent_id" => meeting_agent["meeting_agent_id"],
-        "meeting_session_id" => meeting_agent["meeting_session_id"],
-        "provider" => "feishu",
-        "connect_id" => connect["connect_id"],
-        "meeting_id" => meeting_id,
-        "status" => status,
-        "error" => error,
-        "title" => "Terminal meeting",
-        "summary" => %{
-          "title" => "Terminal meeting",
-          "action_items" => [%{"owner" => "Alice", "text" => "Must not be pinged"}]
-        },
-        "feishu_ref" => %{
-          "chat_id" => "oc_meeting",
-          "chat_type" => if(status == "failed", do: "p2p", else: "group"),
-          "thread_id" => "omt_meeting",
-          "root_message_id" => "om_root",
-          "trigger_message_id" => "om_trigger"
-        },
-        "artifacts" => %{},
-        "delivery" => %{}
+    source = %{
+      "provider" => "lark",
+      "connect_id" => connect["connect_id"],
+      "source_message_id" => "im_provider:lark:router-join",
+      "text" => "please take this one https://meet.google.com/abc-defg-hij",
+      "metadata" => %{
+        "chat_id" => "oc_router_meeting",
+        "chat_type" => "group",
+        "message_id" => "om_router_trigger",
+        "sender_open_id" => "ou_router_human",
+        "tenant_key" => "tenant-router"
       }
+    }
 
-      assert {:ok, _doc, _etag} = Store.create_once(meeting_id, state: state)
-      ensure_feishu_owner_snapshot_for_test!(meeting_id)
+    assert {:ok, %{"meeting_id" => meeting_id, "status" => "joining", "provider" => "lark"}} =
+             SalixMeet.ProviderDispatcher.join_from_router(connect, source, %{})
 
-      assert :published =
-               SalixMeet.Delivery.deliver_one(meeting_id,
-                 node: "feishu-terminal-#{status}",
-                 now: 1_000
-               )
+    assert [join_call] = RuntimeDriver.calls()
+    assert get_in(join_call, ["state", "meeting_id"]) == meeting_id
+    assert get_in(join_call, ["state", "meet_url"]) == "https://meet.google.com/abc-defg-hij"
 
-      assert {:ok, %{"state" => published}, _etag} = Store.get(meeting_id)
-      delivery = published["delivery"]
-      assert delivery["feishu_summary"] == "sent"
-      assert delivery["feishu_transcript"] == "not_applicable"
-      assert delivery["feishu_audio"] == "not_applicable"
-      refute Map.has_key?(delivery, "feishu_transcript_notice")
-      refute Map.has_key?(delivery, "feishu_audio_notice")
-      assert delivery["status"] == "published"
+    assert {:ok, %{"state" => state}, _etag} = Store.get(meeting_id)
+    assert state["provider"] == "lark"
+    assert state["source"]["sender_open_id"] == "ou_router_human"
 
-      records = RecordingFeishuDirectDelivery.records()
-      assert length(records) == expected_delivery_count
+    # The first message of a thread is its own root: the bot answers under it.
+    assert state["lark_ref"] == %{
+             "chat_id" => "oc_router_meeting",
+             "chat_type" => "group",
+             "thread_id" => "",
+             "root_message_id" => "om_router_trigger",
+             "trigger_message_id" => "om_router_trigger"
+           }
 
-      assert Enum.any?(
-               records,
-               &(get_in(&1, ["target", "chat_type"]) == expected_chat_type)
+    assert [notice] = RecordingLarkDirectDelivery.records()
+    assert notice["text"] =~ "Joining the Google Meet"
+    assert notice["target"]["chat_id"] == "oc_router_meeting"
+    assert notice["target"]["root_message_id"] == "om_router_trigger"
+
+    # The same request again joins nothing new and says nothing new.
+    assert {:ok, %{"meeting_id" => ^meeting_id, "status" => "already_active"}} =
+             SalixMeet.ProviderDispatcher.join_from_router(connect, source, %{})
+
+    conflicting_source = %{
+      source
+      | "source_message_id" => "im_provider:lark:router-join-conflict",
+        "text" => "join https://meet.google.com/xyz-abcd-efg"
+    }
+
+    assert {:error, :meeting_thread_has_different_meeting} =
+             SalixMeet.ProviderDispatcher.join_from_router(connect, conflicting_source, %{})
+
+    # A source of another provider is not this connect's to act on.
+    assert {:error, :meeting_source_connect_mismatch} =
+             SalixMeet.ProviderDispatcher.join_from_router(
+               connect,
+               %{source | "provider" => "feishu"},
+               %{}
              )
+
+    # The bot's notice opened a thread under the request. A person asks again
+    # inside it: the message now has a thread ID and names the request as its
+    # root. It is the same meeting, and the runtime is not asked again.
+    in_thread = fn id, text, root, thread ->
+      %{
+        source
+        | "source_message_id" => "im_provider:lark:" <> id,
+          "text" => text,
+          "metadata" =>
+            Map.merge(source["metadata"], %{
+              "message_id" => id,
+              "root_message_id" => root,
+              "message_thread_id" => thread
+            })
+      }
     end
 
-    records = RecordingFeishuDirectDelivery.records()
-    assert length(records) == 2
+    again =
+      in_thread.(
+        "om_again",
+        "join https://meet.google.com/abc-defg-hij",
+        "om_router_trigger",
+        "omt_router"
+      )
 
-    assert Enum.any?(
-             records,
-             &(get_in(&1, ["target", "chat_type"]) == "p2p")
-           )
+    assert {:ok, %{"meeting_id" => ^meeting_id, "status" => "already_active"}} =
+             SalixMeet.ProviderDispatcher.join_from_router(connect, again, %{})
 
-    assert SalixIM.RouterConversationProjection.get_group_router_conversation(group_id) ==
-             {:error, :not_found}
+    # Another link in that thread is still another meeting of the same thread.
+    other_link =
+      in_thread.(
+        "om_other_link",
+        "join https://meet.google.com/xyz-abcd-efg",
+        "om_router_trigger",
+        "omt_router"
+      )
+
+    assert {:error, :meeting_thread_has_different_meeting} =
+             SalixMeet.ProviderDispatcher.join_from_router(connect, other_link, %{})
+
+    assert length(RuntimeDriver.calls()) == 1
+    assert length(RecordingLarkDirectDelivery.records()) == 1
+
+    # Another thread of the chat, and the same thread on another connect, are
+    # meetings of their own.
+    elsewhere =
+      in_thread.(
+        "om_elsewhere",
+        "join https://meet.google.com/abc-defg-hij",
+        "om_other_root",
+        "omt_elsewhere"
+      )
+
+    assert {:ok, %{"meeting_id" => other_thread_meeting, "status" => "joining"}} =
+             SalixMeet.ProviderDispatcher.join_from_router(connect, elsewhere, %{})
+
+    refute other_thread_meeting == meeting_id
+
+    other_connect =
+      seed_lark_connect(group_id, %{
+        "tenant_id" => tenant_id,
+        "connect_id" => "lark-router-meeting-2"
+      })
+
+    assert {:ok, %{"meeting_id" => other_connect_meeting, "status" => "joining"}} =
+             SalixMeet.ProviderDispatcher.join_from_router(
+               other_connect,
+               %{again | "connect_id" => other_connect["connect_id"]},
+               %{}
+             )
+
+    refute other_connect_meeting in [meeting_id, other_thread_meeting]
+    assert length(RuntimeDriver.calls()) == 3
   end
 
-  test "Feishu delivery rechecks terminal status after blocked summary preparation",
+  test "a Lark join without a link reads the one link of the thread of the message",
        %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :provider_mod, SalixMeet.ProviderDispatcher)
-    Application.put_env(:salix_meet, :summary_mod, __MODULE__.ControllableSummary)
-    Application.put_env(:salix_meet, :summary_test_pid, self())
+    previous_base = SystemsRuntime.get_env(:salix_im, :lark_api_base_url)
+    previous_threads = SystemsRuntime.get_env(:salix_meet, :lark_test_threads)
+
+    lark =
+      start_supervised!(
+        {Bandit, plug: MockLarkAPI, ip: {127, 0, 0, 1}, port: 0, startup_log: false},
+        id: :mock_lark_api
+      )
+
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(lark)
+    SystemsRuntime.put_env(:salix_im, :lark_api_base_url, "http://127.0.0.1:#{port}/open-apis")
+    SalixIM.Provider.Lark.API.reset_token_cache()
 
     on_exit(fn ->
-      Application.delete_env(:salix_meet, :summary_mod)
-      Application.delete_env(:salix_meet, :summary_test_pid)
+      restore_env(:salix_im, :lark_api_base_url, previous_base)
+      restore_env(:salix_meet, :lark_test_threads, previous_threads)
+      SalixIM.Provider.Lark.API.reset_token_cache()
     end)
 
-    connect =
-      seed_feishu_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "feishu-terminal-transition",
-        "app_id" => "cli_feishu_terminal_transition",
-        "bot_open_id" => "ou_bot"
-      })
-
-    assert {:ok, meeting_agent} = SalixMeet.Runtime.start_for_group(tenant_id, group_id)
-
-    for {{status, error}, expected_delivery_count} <-
-          [{"failed", "runtime unavailable"}, {"cancelled", nil}]
-          |> Enum.with_index(1) do
-      meeting_id = "mtg-feishu-transition-#{status}-#{System.unique_integer([:positive])}"
-
-      state = %{
-        "tenant_id" => tenant_id,
-        "group_id" => group_id,
-        "meeting_agent_id" => meeting_agent["meeting_agent_id"],
-        "meeting_session_id" => meeting_agent["meeting_session_id"],
-        "provider" => "feishu",
-        "connect_id" => connect["connect_id"],
-        "meeting_id" => meeting_id,
-        "status" => "done",
-        "title" => "Terminal transition",
-        "feishu_ref" => %{
-          "chat_id" => "oc_meeting",
-          "thread_id" => "omt_meeting",
-          "root_message_id" => "om_root",
-          "trigger_message_id" => "om_trigger"
-        },
-        "artifacts" => %{},
-        "delivery" => %{}
+    thread_message = fn id, text ->
+      %{
+        "message_id" => id,
+        "chat_id" => "oc_thread_meeting",
+        "thread_id" => "omt_one",
+        "msg_type" => "text",
+        "create_time" => "1791900000000",
+        "sender" => %{"id" => "ou_alice", "sender_type" => "user"},
+        "body" => %{"content" => Jason.encode!(%{"text" => text})}
       }
-
-      assert {:ok, _doc, _etag} = Store.create_once(meeting_id, state: state)
-
-      delivery =
-        Task.async(fn ->
-          SalixMeet.Delivery.deliver_one(meeting_id,
-            node: "feishu-terminal-transition-#{status}",
-            now: 1_000
-          )
-        end)
-
-      assert_receive {:summarizing_started, worker}, 2_000
-
-      assert {:ok, _doc, _etag} =
-               Store.update_state_retrying(meeting_id, fn live ->
-                 live
-                 |> Map.put("status", status)
-                 |> Map.put("error", error)
-               end)
-
-      send(worker, :finish)
-      assert :published = Task.await(delivery, 5_000)
-
-      records = RecordingFeishuDirectDelivery.records()
-      assert length(records) == expected_delivery_count
     end
 
-    assert SalixIM.RouterConversationProjection.get_group_router_conversation(group_id) ==
-             {:error, :not_found}
-  end
+    SystemsRuntime.put_env(:salix_meet, :lark_test_threads, %{
+      "omt_one" => [
+        thread_message.("om_root", "Weekly sync at https://meet.google.com/abc-defg-hij"),
+        thread_message.("om_reply", "see you there")
+      ],
+      "omt_two" => [
+        thread_message.("om_a", "https://meet.google.com/abc-defg-hij"),
+        thread_message.("om_b", "or https://meet.google.com/xyz-abcd-efg")
+      ]
+    })
 
-  test "Feishu 15 MiB artifact replay reuses the staged blob after checkpoint loss",
-       %{tenant_id: tenant_id, group_id: group_id} do
     connect =
-      seed_feishu_connect(group_id, %{
+      seed_lark_connect(group_id, %{
         "tenant_id" => tenant_id,
-        "connect_id" => "feishu-large-artifact",
-        "app_id" => "cli_feishu_large_artifact",
-        "bot_open_id" => "ou_bot"
+        "connect_id" => "lark-thread-meeting"
       })
 
+    source = fn id, thread_id ->
+      %{
+        "provider" => "lark",
+        "connect_id" => connect["connect_id"],
+        "source_message_id" => "im_provider:lark:" <> id,
+        "text" => "please join",
+        "metadata" => %{
+          "chat_id" => "oc_thread_meeting",
+          "chat_type" => "group",
+          "message_id" => id,
+          "message_thread_id" => thread_id,
+          "root_message_id" => "om_root",
+          "sender_open_id" => "ou_alice"
+        }
+      }
+    end
+
+    # A link the request names must be the link of the thread.
+    assert {:error, :meet_url_not_in_current_source} =
+             SalixMeet.LarkProvider.join_from_router(connect, source.("om_ask", "omt_one"), %{
+               "meet_url" => "https://meet.google.com/xyz-abcd-efg"
+             })
+
+    assert {:error, :meeting_source_not_unique} =
+             SalixMeet.LarkProvider.join_from_router(connect, source.("om_ask2", "omt_two"), %{})
+
+    assert {:error, :meeting_source_not_unique} =
+             SalixMeet.LarkProvider.join_from_router(connect, source.("om_ask3", ""), %{})
+
+    assert RuntimeDriver.calls() == []
+
+    assert {:ok, %{"meeting_id" => meeting_id, "status" => "joining"}} =
+             SalixMeet.LarkProvider.join_from_router(connect, source.("om_ask", "omt_one"), %{})
+
+    assert {:ok, %{"state" => state}, _etag} = Store.get(meeting_id)
+    assert state["meet_url"] == "https://meet.google.com/abc-defg-hij"
+    assert state["lark_ref"]["thread_id"] == "omt_one"
+    assert state["lark_ref"]["root_message_id"] == "om_root"
+    assert state["lark_ref"]["trigger_message_id"] == "om_ask"
+  end
+
+  test "Lark gets one notice per runtime join status, in the thread of the meeting",
+       %{tenant_id: tenant_id, group_id: group_id} do
+    previous_notifier = SystemsRuntime.get_env(:salix_meet, :meeting_status_notifier_mod)
+
+    SystemsRuntime.put_env(
+      :salix_meet,
+      :meeting_status_notifier_mod,
+      SalixMeet.ProviderDispatcher
+    )
+
+    on_exit(fn -> restore_env(:salix_meet, :meeting_status_notifier_mod, previous_notifier) end)
+
+    connect =
+      seed_lark_connect(group_id, %{
+        "tenant_id" => tenant_id,
+        "connect_id" => "lark-status-notice"
+      })
+
+    meeting_id = "mtg-lark-status-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+    assert {:ok, _doc, _etag} =
+             Store.create_once(meeting_id,
+               state: %{
+                 "tenant_id" => tenant_id,
+                 "group_id" => group_id,
+                 "meeting_id" => meeting_id,
+                 "provider" => "lark",
+                 "connect_id" => connect["connect_id"],
+                 "status" => "joining",
+                 "lark_ref" => %{
+                   "chat_id" => "oc_status",
+                   "chat_type" => "group",
+                   "root_message_id" => "om_status_root",
+                   "trigger_message_id" => "om_status_root"
+                 }
+               }
+             )
+
+    apply_status = fn status, source_id ->
+      event = %{
+        "type" => "joiner_event",
+        "meeting_id" => meeting_id,
+        "joiner_event" => %{"type" => "status", "status" => status, "timestamp" => 1}
+      }
+
+      assert {:ok, prepared} = SalixMeet.RuntimeEvents.prepare(%{}, event)
+      SalixMeet.RuntimeEvents.apply(prepared, source_id)
+    end
+
+    for {status, n} <- Enum.with_index(~w(guest_fallback waiting_room in_meeting in_meeting)),
+        do: assert(:ok = apply_status.(status, "lark-status-#{n}"))
+
+    records = RecordingLarkDirectDelivery.records()
+    assert length(records) == 3
+    assert Enum.all?(records, &(&1["target"]["root_message_id"] == "om_status_root"))
+    texts = Enum.map(records, & &1["text"])
+    assert Enum.any?(texts, &(&1 =~ "joining as a guest"))
+    assert Enum.any?(texts, &(&1 =~ "waiting for a host"))
+    assert Enum.any?(texts, &(&1 =~ "Joined the Google Meet"))
+  end
+
+  test "Lark terminal publication checkpoints the summary and each missing file by itself",
+       %{tenant_id: tenant_id, group_id: group_id} do
+    connect =
+      seed_lark_connect(group_id, %{"tenant_id" => tenant_id, "connect_id" => "lark-terminal"})
+
     assert {:ok, meeting_agent} = SalixMeet.Runtime.start_for_group(tenant_id, group_id)
-    meeting_id = "mtg-feishu-large-#{System.unique_integer([:positive])}"
-    path = "/meetings/#{meeting_id}/transcript.txt"
-    seed_agent_vfs_stream!(meeting_agent["meeting_agent_id"], path, 15)
+    meeting_id = "mtg-lark-terminal-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     state = %{
       "tenant_id" => tenant_id,
       "group_id" => group_id,
       "meeting_agent_id" => meeting_agent["meeting_agent_id"],
       "meeting_session_id" => meeting_agent["meeting_session_id"],
-      "provider" => "feishu",
+      "provider" => "lark",
       "connect_id" => connect["connect_id"],
       "meeting_id" => meeting_id,
       "status" => "done",
-      "title" => "Large transcript",
-      "summary" => %{"title" => "Large transcript"},
-      "feishu_ref" => %{
+      "title" => "Project sync",
+      "summary" => %{
+        "title" => "Project sync",
+        "key_points" => ["The release plan is agreed"],
+        "action_items" => [
+          %{"owner" => "Alice", "text" => "Write the release notes"},
+          %{"owner" => "Bob", "text" => "Check the launch list"}
+        ]
+      },
+      "lark_ref" => %{
         "chat_id" => "oc_meeting",
+        "chat_type" => "group",
         "thread_id" => "omt_meeting",
         "root_message_id" => "om_root",
         "trigger_message_id" => "om_trigger"
       },
       "artifacts" => %{
-        "transcript" => %{"path" => path, "filename" => "transcript.txt"}
+        "transcript" => %{
+          "path" => "/meetings/#{meeting_id}/deleted-transcript.txt",
+          "filename" => "transcript.txt"
+        }
       },
       "delivery" => %{}
     }
 
     assert {:ok, _doc, _etag} = Store.create_once(meeting_id, state: state)
-    ensure_owner_snapshot_for_test!(meeting_id)
+    ensure_lark_owner_snapshot_for_test!(meeting_id)
     claim = claim_delivery_for_test!(meeting_id)
 
-    # Summary checkpoint and artifact-intent checkpoint both commit despite an
-    # ambiguous response. The next meeting-state write fails after Feishu has
-    # confirmed the file operation, reproducing the provider/checkpoint crash
-    # boundary.
-    :ok = S3.Fake.set_fault({:ambiguous_after, :put, Keys.meet_state(meeting_id)})
-    :ok = S3.Fake.set_fault({:ambiguous_after, :put, Keys.meet_state(meeting_id)})
-    :ok = S3.Fake.set_fault({:fail, 503, :put, Keys.meet_state(meeting_id)})
-
-    assert {:error, {:http, 503}} =
-             SalixMeet.FeishuProvider.publish(meeting_agent, %{
-               "kind" => "summary",
-               "meeting_id" => meeting_id,
-               "delivery_claim" => claim
-             })
-
-    assert {:ok, %{"state" => checkpoint_lost}, _etag} = Store.get(meeting_id)
-    assert get_in(checkpoint_lost, ["delivery", "feishu_summary"]) == "sent"
-    refute get_in(checkpoint_lost, ["delivery", "feishu_transcript"])
-
-    assert %{
-             "status" => "ready",
-             "source_agent_id" => source_agent_id,
-             "artifact" => %{"path" => ^path},
-             "blob_ref" => staged_blob_ref
-           } = get_in(checkpoint_lost, ["delivery", "feishu_transcript_intent"])
-
-    assert source_agent_id == meeting_agent["meeting_agent_id"]
-
-    assert [sent_before_replay] =
-             Enum.filter(RecordingFeishuDirectDelivery.records(), &(&1["kind"] == "file"))
-
-    assert sent_before_replay["agent_id"] == meeting_agent["meeting_agent_id"]
-    assert sent_before_replay["operation_ref"] == "meeting:#{meeting_id}:transcript"
-
-    assert {:ok, _} =
-             SalixAgent.AgentWorkspace.seed_operation(
-               meeting_agent["meeting_agent_id"],
-               "meeting-large-artifact-delete:#{System.unique_integer([:positive])}",
-               %{},
-               [SalixAgent.AgentWorkspace.prepare_delete(path)]
-             )
-
-    assert {:error, :not_found} =
-             SalixAgent.AgentWorkspace.entry(meeting_agent["meeting_agent_id"], path)
-
     assert {:ok, %{"published" => true}} =
-             SalixMeet.FeishuProvider.publish(meeting_agent, %{
+             SalixMeet.ProviderDispatcher.publish(meeting_agent, %{
                "kind" => "summary",
                "meeting_id" => meeting_id,
                "delivery_claim" => claim
              })
 
     assert {:ok, %{"state" => published}, _etag} = Store.get(meeting_id)
-    assert get_in(published, ["delivery", "feishu_transcript"]) == "sent"
+    delivery = published["delivery"]
+    assert delivery["lark_summary"] == "sent"
+    assert delivery["lark_transcript_notice"] == "sent"
+    assert delivery["lark_transcript"] == "missing"
+    assert delivery["lark_audio_notice"] == "sent"
+    assert delivery["lark_audio"] == "missing"
+    assert delivery["status"] == "published"
+    assert delivery["provider"] == "lark"
 
-    assert [file_record] =
-             Enum.filter(RecordingFeishuDirectDelivery.records(), &(&1["kind"] == "file"))
+    records = RecordingLarkDirectDelivery.records()
+    assert length(records) == 3
+    assert length(Enum.uniq_by(records, & &1["operation_ref"])) == 3
 
-    assert file_record["agent_id"] == meeting_agent["meeting_agent_id"]
-    assert file_record["message_id"] == sent_before_replay["message_id"]
-    assert file_record["attempts"] == 2
+    assert Enum.all?(records, fn record ->
+             record["connect_id"] == connect["connect_id"] and
+               get_in(record, ["target", "chat_id"]) == "oc_meeting" and
+               get_in(record, ["target", "root_message_id"]) == "om_root"
+           end)
+
+    # The summary mentions the owner the snapshot resolved, and asks about
+    # the one it did not.
+    summary = Enum.find(records, &(&1["operation_ref"] == "meeting:#{meeting_id}:summary"))
+    assert summary["text"] =~ "Meeting summary: Project sync"
+    assert summary["text"] =~ "Write the release notes; Owner: Alice"
+    assert summary["text"] =~ ~s(Action item #2: please confirm the owner "Bob")
+    refute summary["text"] =~ "Action item #1: please confirm"
+
+    assert summary["mentions"] == %{
+             "mode" => "users",
+             "users" => [%{"user_id" => "ou_alice", "name" => "Alice"}]
+           }
+
+    assert {:error, :fenced} =
+             SalixMeet.ProviderDispatcher.publish(meeting_agent, %{
+               "kind" => "summary",
+               "meeting_id" => meeting_id,
+               "delivery_claim" => claim
+             })
+
+    assert length(RecordingLarkDirectDelivery.records()) == 3
+    assert RecordingFeishuDirectDelivery.records() == []
 
     assert SalixIM.RouterConversationProjection.get_group_router_conversation(group_id) ==
              {:error, :not_found}
+  end
 
-    expected_size = 15 * 1024 * 1024
+  test "a Lark meeting the bot was removed from still delivers the captured transcript",
+       %{tenant_id: tenant_id, group_id: group_id} do
+    SystemsRuntime.put_env(:salix_meet, :provider_mod, SalixMeet.ProviderDispatcher)
+    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
 
-    assert {:ok, stream, ^expected_size, "transcript.txt"} =
-             SalixIM.Ports.AgentWorkspace.read_ref_stream(
-               meeting_agent["meeting_agent_id"],
-               staged_blob_ref,
-               "transcript.txt"
+    connect =
+      seed_lark_connect(group_id, %{
+        "tenant_id" => tenant_id,
+        "connect_id" => "lark-partial-removal"
+      })
+
+    id = "partial-removal-lark-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    path = "/meetings/#{id}/transcript.txt"
+
+    state = %{
+      "tenant_id" => tenant_id,
+      "group_id" => group_id,
+      "meeting_agent_id" => meeting_agent["meeting_agent_id"],
+      "meeting_session_id" => meeting_agent["meeting_session_id"],
+      "provider" => "lark",
+      "connect_id" => connect["connect_id"],
+      "meeting_id" => id,
+      "status" => "active",
+      "joined_at" => 123,
+      "title" => "Partial recording",
+      "lark_ref" => %{
+        "chat_id" => "oc_meeting",
+        "chat_type" => "group",
+        "thread_id" => "omt_meeting",
+        "root_message_id" => "om_root",
+        "trigger_message_id" => "om_trigger"
+      },
+      "artifacts" => %{}
+    }
+
+    assert {:ok, _, _} = Store.create_once(id, state: state)
+
+    observation = %{
+      "type" => "joiner_event",
+      "event_id" => "#{id}:ended",
+      "meeting_id" => id,
+      "joiner_event" => %{
+        "type" => "meeting_ended",
+        "reason_code" => "removed_from_meeting",
+        "timestamp" => 234
+      }
+    }
+
+    final = %{
+      "type" => "meeting_runtime_update",
+      "event_id" => "#{id}:final",
+      "meeting_id" => id,
+      "status" => "failed",
+      "reason_code" => "removed_from_meeting",
+      "error" => "recording close failed",
+      "artifacts" => [
+        %{
+          "kind" => "transcript",
+          "filename" => "transcript.txt",
+          "content_type" => "text/plain",
+          "data_b64" => Base.encode64("captured before removal")
+        }
+      ]
+    }
+
+    ingest = fn event ->
+      assert {:ok, _} = SalixMeet.Runtime.deliver_event(tenant_id, group_id, event)
+    end
+
+    ingest.(final)
+
+    assert eventually(fn ->
+             {:ok, doc, _} = Store.get(id)
+             get_in(doc, ["state", "artifacts", "transcript", "path"]) == path
+           end)
+
+    ingest.(observation)
+
+    assert eventually(fn ->
+             {:ok, doc, _} = Store.get(id)
+             doc["state"]["left_at"] == 234 and doc["state"]["status"] == "failed"
+           end)
+
+    assert :published = SalixMeet.Delivery.deliver_one(id, node: "partial-lark", now: 1_000)
+
+    assert {:ok, %{"state" => published}, _} = Store.get(id)
+    assert published["status"] == "failed"
+    assert published["reason_code"] == "removed_from_meeting"
+
+    ingest.(final)
+    ingest.(observation)
+    _ = SalixMeet.Delivery.deliver_one(id, node: "replay-lark", now: 1_001)
+
+    assert [file] = Enum.filter(RecordingLarkDirectDelivery.records(), &(&1["kind"] == "file"))
+    assert file["operation_ref"] == "meeting:#{id}:transcript"
+    assert file["target"]["chat_id"] == "oc_meeting"
+    assert file["target"]["root_message_id"] == "om_root"
+
+    assert Enum.any?(
+             RecordingLarkDirectDelivery.records(),
+             &String.contains?(&1["text"] || "", "removed from the meeting")
+           )
+
+    assert get_in(published, ["delivery", "lark_transcript"]) == "sent"
+  end
+
+  test "the Router's summary of a Lark meeting is published once in the Lark thread", c do
+    SystemsRuntime.put_env(:salix_meet, :provider_mod, SalixMeet.ProviderDispatcher)
+    SystemsRuntime.put_env(:salix_meet, :router_summary_mod, SummaryRequestRecorder)
+    SystemsRuntime.put_env(:salix_meet, :router_summary_test_pid, SystemsRuntime.Proc.self())
+    previous_summary = SystemsRuntime.get_env(:salix_meet, :summary_mod)
+    SystemsRuntime.put_env(:salix_meet, :summary_mod, SalixMeet.Ports.Summary.None)
+
+    on_exit(fn ->
+      SystemsRuntime.delete_env(:salix_meet, :router_summary_test_pid)
+      restore_env(:salix_meet, :summary_mod, previous_summary)
+    end)
+
+    connect =
+      seed_lark_connect(c.group_id, %{
+        "tenant_id" => c.tenant_id,
+        "connect_id" => "lark-router-summary"
+      })
+
+    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(c.tenant_id, c.group_id)
+    meeting_id = "mtg-lark-router-summary-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+
+    assert {:ok, _doc, _etag} =
+             Store.create_once(meeting_id,
+               state: %{
+                 "tenant_id" => c.tenant_id,
+                 "group_id" => c.group_id,
+                 "meeting_agent_id" => meeting_agent["meeting_agent_id"],
+                 "meeting_session_id" => meeting_agent["meeting_session_id"],
+                 "provider" => "lark",
+                 "connect_id" => connect["connect_id"],
+                 "meeting_id" => meeting_id,
+                 "status" => "done",
+                 "title" => "Weekly Sync",
+                 "lark_ref" => %{
+                   "chat_id" => "oc_summary",
+                   "chat_type" => "group",
+                   "root_message_id" => "om_summary_root",
+                   "trigger_message_id" => "om_summary_root"
+                 }
+               }
              )
 
-    assert Enum.reduce(stream, 0, fn chunk, total -> total + byte_size(chunk) end) ==
-             expected_size
+    assert :summary_waiting = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a")
+    settle_receive({:router_summary_request, requested, request})
+    assert requested["provider"] == "lark"
+    assert RecordingLarkDirectDelivery.records() == []
+
+    summary = %{
+      "title" => "Router-authored meeting",
+      "attendees" => [],
+      "timeline" => [],
+      "key_points" => ["Router checked the original materials."],
+      "action_items" => [],
+      "decisions" => [],
+      "open_questions" => [],
+      "blockers" => []
+    }
+
+    assert {:ok, _} =
+             SalixMeet.RouterSummary.submit(c.group_id, %{
+               "meeting_id" => meeting_id,
+               "request_id" => request["request_id"],
+               "summary" => summary
+             })
+
+    assert :published =
+             SalixMeet.Delivery.deliver_one(meeting_id,
+               node: "node-a",
+               now: SystemsClock.system_time(:millisecond) + 10_000
+             )
+
+    records = RecordingLarkDirectDelivery.records()
+    posted = Enum.find(records, &(&1["operation_ref"] == "meeting:#{meeting_id}:summary"))
+    assert posted["text"] =~ "Meeting summary: Router-authored meeting"
+    assert posted["text"] =~ "Router checked the original materials."
+    assert posted["target"]["chat_id"] == "oc_summary"
+    assert posted["target"]["root_message_id"] == "om_summary_root"
+
+    assert {:ok, %{"state" => saved}, _} = Store.get(meeting_id)
+    assert saved["summary"]["title"] == summary["title"]
+    assert saved["delivery"]["lark_summary"] == "sent"
+    assert :not_claimable = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a")
+    assert length(RecordingLarkDirectDelivery.records()) == length(records)
   end
 
   test "an ended Slack thread refuses rejoin while a new thread joins once",
@@ -2197,232 +2270,6 @@ defmodule SalixMeet.SlackProviderTest do
     assert Enum.map(RuntimeDriver.calls(), & &1["id"]) == [first_meeting_id, second_meeting_id]
   end
 
-  test "done, failed, and cancelled Slack threads all refuse same-thread rejoin",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-all-terminal-threads",
-        "app_id" => "A-meeting",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "oauth_completed_at" => 1
-      })
-
-    terminal_ids =
-      for {status, root_ts, reply_ts} <- [
-            {"done", "510.000", "510.001"},
-            {"failed", "520.000", "520.001"},
-            {"cancelled", "530.000", "530.001"}
-          ] do
-        meeting_id = "mtg-terminal-thread-#{status}"
-
-        state = %{
-          "tenant_id" => tenant_id,
-          "group_id" => group_id,
-          "meeting_id" => meeting_id,
-          "provider" => "slack",
-          "connect_id" => connect["connect_id"],
-          "status" => status,
-          "slack_ref" => %{"channel_id" => "C1", "thread_ts" => root_ts}
-        }
-
-        assert {:ok, _doc, _etag} = Store.create_once(meeting_id, state: state)
-        assert {:ok, _owner} = SlackThreadIndex.claim(state, "C1", root_ts, meeting_id)
-
-        envelope =
-          slack_envelope(
-            "Ev-terminal-thread-#{status}",
-            "please join https://meet.google.com/mno-pqrs-tuv",
-            %{
-              "thread_ts" => root_ts,
-              "ts" => reply_ts,
-              "event_ts" => reply_ts
-            }
-          )
-
-        assert {:ok, :handled} = SalixMeet.SlackProvider.handle_event(connect, envelope)
-        meeting_id
-      end
-
-    assert Enum.sort(meeting_ids()) == Enum.sort(terminal_ids)
-    assert RuntimeDriver.calls() == []
-  end
-
-  test "a terminal calendar-owned Slack thread cannot create a parallel manual meeting",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-calendar-thread",
-        "app_id" => "A-meeting",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "oauth_completed_at" => 1
-      })
-
-    meeting_id = "mtg-cal-terminal-thread"
-
-    state = %{
-      "tenant_id" => tenant_id,
-      "group_id" => group_id,
-      "meeting_id" => meeting_id,
-      "provider" => "slack",
-      "connect_id" => connect["connect_id"],
-      "status" => "done",
-      "slack_ref" => %{"channel_id" => "C1", "thread_ts" => "123.456"}
-    }
-
-    assert {:ok, _doc, _etag} = Store.create_once(meeting_id, state: state)
-
-    assert {:ok, _ownership} =
-             SlackThreadIndex.claim(state, "C1", "123.456", meeting_id)
-
-    envelope =
-      slack_envelope(
-        "Ev-calendar-thread-rejoin",
-        "please join https://meet.google.com/abc-defg-hij",
-        %{"thread_ts" => "123.456", "ts" => "789.123", "event_ts" => "789.123"}
-      )
-
-    raw = Jason.encode!(envelope)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, "slack-secret"),
-               raw
-             )
-
-    assert meeting_ids() == [meeting_id]
-    assert RuntimeDriver.calls() == []
-  end
-
-  test "an ended legacy calendar thread repairs ownership from bounded Slack metadata",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-legacy-calendar-thread",
-        "app_id" => "A-meeting",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "oauth_completed_at" => 1
-      })
-
-    meeting_id = "mtg-cal-legacy-terminal-thread"
-
-    state = %{
-      "tenant_id" => tenant_id,
-      "group_id" => group_id,
-      "meeting_id" => meeting_id,
-      "provider" => "slack",
-      "connect_id" => connect["connect_id"],
-      "status" => "done",
-      "slack_ref" => %{"channel_id" => "C1", "thread_ts" => "123.456"}
-    }
-
-    assert {:ok, _doc, _etag} = Store.create_once(meeting_id, state: state)
-    assert {:error, :not_found} = SlackThreadIndex.fetch(state, "C1", "123.456")
-
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{
-          "ts" => "123.456",
-          "user" => "UBOT",
-          "text" => "Calendar meeting https://meet.google.com/abc-defg-hij",
-          "metadata" => %{
-            "event_type" => "comma_calendar_meeting_root_test",
-            "event_payload" => %{"kind" => "calendar_root", "meeting_id" => meeting_id}
-          }
-        }
-      ],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    envelope =
-      slack_envelope(
-        "Ev-legacy-calendar-thread-rejoin",
-        "please join https://meet.google.com/mno-pqrs-tuv",
-        %{"thread_ts" => "123.456", "ts" => "789.123", "event_ts" => "789.123"}
-      )
-
-    raw = Jason.encode!(envelope)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, "slack-secret"),
-               raw
-             )
-
-    assert meeting_ids() == [meeting_id]
-    assert RuntimeDriver.calls() == []
-
-    assert {:ok, %{"meeting_id" => ^meeting_id}} =
-             SlackThreadIndex.fetch(state, "C1", "123.456")
-
-    assert %{"include_all_metadata" => "true", "limit" => "200"} =
-             MockSlack.last_request("conversations.replies").params
-  end
-
-  test "an orphan thread owner heals only the same deterministic Slack event",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-orphan-owner",
-        "app_id" => "A-meeting",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "oauth_completed_at" => 1
-      })
-
-    meet_url = "https://meet.google.com/abc-defg-hij"
-
-    same_event =
-      slack_envelope("Ev-orphan-same", "please join #{meet_url}", %{
-        "ts" => "610.000",
-        "event_ts" => "610.000"
-      })
-
-    same_id = deterministic_slack_meeting_id(connect, same_event, meet_url)
-    assert {:ok, _owner} = SlackThreadIndex.claim(connect, "C1", "610.000", same_id)
-    assert {:error, :not_found} = Store.get(same_id)
-
-    assert {:ok, :handled} = SalixMeet.SlackProvider.handle_event(connect, same_event)
-    assert {:ok, _healed, _etag} = Store.get(same_id)
-
-    orphan_owner_event =
-      slack_envelope("Ev-orphan-owner", "please join #{meet_url}", %{
-        "ts" => "620.000",
-        "event_ts" => "620.000"
-      })
-
-    orphan_owner_id = deterministic_slack_meeting_id(connect, orphan_owner_event, meet_url)
-    assert {:ok, _owner} = SlackThreadIndex.claim(connect, "C1", "620.000", orphan_owner_id)
-    assert {:error, :not_found} = Store.get(orphan_owner_id)
-
-    different_event =
-      slack_envelope(
-        "Ev-orphan-different",
-        "please join https://meet.google.com/mno-pqrs-tuv",
-        %{"ts" => "620.000", "event_ts" => "620.000"}
-      )
-
-    assert {:ok, :handled} = SalixMeet.SlackProvider.handle_event(connect, different_event)
-    assert {:error, :not_found} = Store.get(orphan_owner_id)
-    assert meeting_ids() == [same_id]
-    assert Enum.map(RuntimeDriver.calls(), & &1["id"]) == [same_id]
-  end
-
   test "non-meeting Slack provider events still go to the router",
        %{tenant_id: tenant_id, group_id: group_id, router_agent_id: router_agent_id} do
     SalixAgent.LLM.Mock.script([{:final, "router handled"}])
@@ -2459,263 +2306,12 @@ defmodule SalixMeet.SlackProviderTest do
     assert {:error, :not_found} = S3.get(Keys.meet_agent(group_id))
   end
 
-  test "unconfigured meeting runtime disables Slack meeting detection and falls through to router",
-       %{tenant_id: tenant_id, group_id: group_id, router_agent_id: router_agent_id} do
-    Application.delete_env(:salix_meet, :runtime_driver)
-    SalixAgent.LLM.Mock.script([{:final, "router handled"}])
-
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-no-runtime",
-        "app_id" => "A-no-runtime",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "oauth_completed_at" => 1
-      })
-
-    envelope =
-      slack_envelope(
-        "Ev-no-runtime-meeting-link",
-        "<@UBOT> please join https://meet.google.com/abc-defg-hij",
-        %{"type" => "app_mention"}
-      )
-      |> Map.put("api_app_id", "A-no-runtime")
-
-    raw = Jason.encode!(envelope)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, "slack-secret"),
-               raw
-             )
-
-    assert eventually(fn ->
-             router_session_has?(router_agent_id, "https://meet.google.com/abc-defg-hij")
-           end)
-
-    assert meeting_ids() == []
-    assert RuntimeDriver.calls() == []
-    assert {:error, :not_found} = S3.get(Keys.meet_agent(group_id))
-  end
-
-  test "an explicit Slack thread join returns a rate-limit error without Router fallback",
-       %{tenant_id: tenant_id, group_id: group_id, router_agent_id: router_agent_id} do
-    MockSlack.respond(
-      "conversations.replies",
-      {429, [{"retry-after", "7"}], %{"ok" => false, "error" => "ratelimited"}}
-    )
-
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-thread-error",
-        "app_id" => "A-thread-error",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "oauth_completed_at" => 1
-      })
-
-    # An explicit current-message join request reaches meeting-thread resolution,
-    # so the conversations.replies error path is exercised.
-    envelope =
-      slack_envelope("Ev-thread-error", "<@UBOT> please join", %{
-        "type" => "app_mention",
-        "thread_ts" => "123.456",
-        "ts" => "789.123",
-        "event_ts" => "789.123"
-      })
-      |> Map.put("api_app_id", "A-thread-error")
-
-    raw = Jason.encode!(envelope)
-
-    assert {:error, "rate limited by Slack, retry after 7s"} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, "slack-secret"),
-               raw
-             )
-
-    refute router_session_has?(router_agent_id, "please join")
-    assert length(MockSlack.requests("conversations.replies")) == 1
-    assert meeting_ids() == []
-    assert {:error, :not_found} = S3.get(Keys.meet_agent(group_id))
-  end
-
-  test "an unrelated app mention may preload Router context but does not join a historical Meet URL",
-       %{tenant_id: tenant_id, group_id: group_id, router_agent_id: router_agent_id} do
-    SalixAgent.LLM.Mock.script([{:final, "router handled"}])
-
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-thread-unrelated-mention",
-        "app_id" => "A-meeting",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "bot_user_id" => "UBOT",
-        "oauth_completed_at" => 1
-      })
-
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{
-          "ts" => "100.000",
-          "user" => "U2",
-          "text" => "room https://meet.google.com/abc-defg-hij"
-        }
-      ],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    envelope =
-      slack_envelope("Ev-thread-unrelated-mention", "<@UBOT> 挂了？", %{
-        "type" => "app_mention",
-        "thread_ts" => "100.000",
-        "ts" => "789.999",
-        "event_ts" => "789.999"
-      })
-
-    raw = Jason.encode!(envelope)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, "slack-secret"),
-               raw
-             )
-
-    assert eventually(fn -> router_session_has?(router_agent_id, "挂了？") end)
-    assert [request] = MockSlack.requests("conversations.replies")
-
-    assert request.params == %{
-             "channel" => "C1",
-             "include_all_metadata" => "true",
-             "inclusive" => "false",
-             "latest" => "789.999",
-             "limit" => "10",
-             "ts" => "100.000"
-           }
-
-    assert RuntimeDriver.calls() == []
-    assert meeting_ids() == []
-  end
-
-  test "a plain thread reply with no mention does not join a meeting from an earlier link in the thread",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-thread-repro",
-        "app_id" => "A-meeting",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "oauth_completed_at" => 1
-      })
-
-    # The thread already contains a Google Meet link somebody shared earlier.
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{
-          "ts" => "100.000",
-          "user" => "U2",
-          "text" => "here is the room https://meet.google.com/abc-defg-hij"
-        },
-        %{"ts" => "789.999", "user" => "U1", "text" => "thanks everyone"}
-      ],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    # A plain reply in that thread: NO @bot mention, NO Meet URL in the text.
-    # Nobody asked the bot to do anything, so it must not scan the thread and join.
-    envelope =
-      slack_envelope("Ev-thread-repro", "thanks everyone", %{
-        "thread_ts" => "100.000",
-        "ts" => "789.999",
-        "event_ts" => "789.999"
-      })
-
-    raw = Jason.encode!(envelope)
-
-    _ =
-      SalixIM.ProviderHTTP.handle_slack_event(
-        connect,
-        envelope,
-        sign_slack_body(raw, "slack-secret"),
-        raw
-      )
-
-    assert RuntimeDriver.calls() == []
-    assert meeting_ids() == []
-  end
-
-  test "an unmentioned reply in a bot-participating thread routes to the router without joining",
-       %{tenant_id: tenant_id, group_id: group_id, router_agent_id: router_agent_id} do
-    SalixAgent.LLM.Mock.script([{:final, "router handled"}])
-
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-thread-control",
-        "app_id" => "A-meeting",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "bot_user_id" => "UBOT",
-        "oauth_completed_at" => 1
-      })
-
-    # The bot participates in this thread (it authored a message). An unmentioned
-    # reply must still reach the router, but must NOT scan for or join a meeting —
-    # even though the thread history contains a Meet link.
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{
-          "ts" => "100.000",
-          "user" => "UBOT",
-          "text" => "here: https://meet.google.com/abc-defg-hij"
-        },
-        %{"ts" => "789.999", "user" => "U1", "text" => "thanks everyone"}
-      ],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    envelope =
-      slack_envelope("Ev-thread-control", "thanks everyone", %{
-        "thread_ts" => "100.000",
-        "ts" => "789.999",
-        "event_ts" => "789.999"
-      })
-
-    raw = Jason.encode!(envelope)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, "slack-secret"),
-               raw
-             )
-
-    # Reaches the router (bot-participating thread) but never joins a meeting.
-    assert eventually(fn -> router_session_has?(router_agent_id, "thanks everyone") end)
-    assert RuntimeDriver.calls() == []
-    assert meeting_ids() == []
-  end
-
   test "an explicit current-message @mention joins a Meet URL from the same thread",
        %{tenant_id: tenant_id, group_id: group_id} do
+    previous_source = SystemsRuntime.get_env(:salix_meet, :default_runtime_source)
+    SystemsRuntime.put_env(:salix_meet, :default_runtime_source, "native_runtime")
+    on_exit(fn -> restore_env(:salix_meet, :default_runtime_source, previous_source) end)
+
     connect =
       seed_slack_connect(group_id, %{
         "tenant_id" => tenant_id,
@@ -2760,65 +2356,13 @@ defmodule SalixMeet.SlackProviderTest do
 
     assert [%{"state" => join_state}] = RuntimeDriver.calls()
     assert join_state["meet_url"] == "https://meet.google.com/abc-defg-hij"
-  end
-
-  test "a 1:1 DM meeting request (a permalink to a thread that holds a meet link) still joins",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-dm-permalink",
-        "app_id" => "A-meeting",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-meeting",
-        "oauth_completed_at" => 1
-      })
-
-    # The permalink references a channel thread that holds the Meet link.
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{
-          "ts" => "1700000000.000100",
-          "user" => "U2",
-          "text" => "join here https://meet.google.com/abc-defg-hij"
-        }
-      ],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    # Slack delivers a 1:1 DM as type "message" with channel_type "im" — there is
-    # no @mention in a DM. A permalink meeting request sent this way must still be
-    # treated as explicitly addressed and join.
-    permalink = "https://acme.slack.com/archives/C0THREAD/p1700000000000100"
-
-    envelope =
-      slack_envelope("Ev-dm-permalink", "please join #{permalink}", %{
-        "channel" => "D0DIRECT",
-        "channel_type" => "im",
-        "ts" => "900.000",
-        "event_ts" => "900.000"
-      })
-
-    raw = Jason.encode!(envelope)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               envelope,
-               sign_slack_body(raw, "slack-secret"),
-               raw
-             )
-
-    assert [%{"state" => join_state}] = RuntimeDriver.calls()
-    assert join_state["meet_url"] == "https://meet.google.com/abc-defg-hij"
+    assert join_state["runtime_source"] == "native_runtime"
   end
 
   test "meeting runtime updates write Willow-style artifacts into the meeting agent VFS",
        %{tenant_id: tenant_id, group_id: group_id} do
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-runtime-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-runtime-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, _doc, _etag} =
       Store.create_once(meeting_id,
@@ -2913,192 +2457,12 @@ defmodule SalixMeet.SlackProviderTest do
     assert {:ok, []} = S3.list_all("ctl/bridge/")
   end
 
-  test "meeting runtime updates stream large artifacts by reference (src_path) into the VFS",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-stream-#{System.unique_integer([:positive])}"
-
-    {:ok, _doc, _etag} =
-      Store.create_once(meeting_id,
-        state: %{
-          "tenant_id" => tenant_id,
-          "group_id" => group_id,
-          "meeting_agent_id" => meeting_agent["meeting_agent_id"],
-          "meeting_session_id" => meeting_agent["meeting_session_id"],
-          "provider" => "slack",
-          "connect_id" => "slack-runtime",
-          "status" => "active",
-          "artifact_root" => "/meetings/#{meeting_id}",
-          "slack_ref" => %{"channel_id" => "C1", "thread_ts" => "111.222"}
-        }
-      )
-
-    audio_bytes = :binary.copy("opus-chunk", 200_000)
-
-    src_path =
-      Path.join(System.tmp_dir!(), "meet-audio-#{System.unique_integer([:positive])}.opus")
-
-    File.write!(src_path, audio_bytes)
-    on_exit(fn -> File.rm(src_path) end)
-
-    event = %{
-      "type" => "meeting_runtime_update",
-      "event_id" => "runtime-stream",
-      "meeting_id" => meeting_id,
-      "status" => "done",
-      "artifacts" => [
-        %{
-          "kind" => "audio",
-          "filename" => "audio.ogg",
-          "content_type" => "audio/ogg",
-          "src_path" => src_path
-        }
-      ]
-    }
-
-    assert {:ok, %{"status" => status}} =
-             SalixMeet.Runtime.deliver_event(tenant_id, group_id, event,
-               origin_env_id: "env_origin"
-             )
-
-    # Fresh scoped source id through a single ledger commit: deterministically
-    # created (staged-era two-layer timing slack removed, A2).
-    assert status == "created"
-
-    assert eventually(fn ->
-             {:ok, vfs} = AgentWorkspace.manifest(meeting_agent["meeting_agent_id"])
-             Map.has_key?(vfs, "/meetings/#{meeting_id}/audio.ogg")
-           end)
-
-    assert {:ok, ^audio_bytes} =
-             AgentWorkspace.read(
-               meeting_agent["meeting_agent_id"],
-               "/meetings/#{meeting_id}/audio.ogg"
-             )
-
-    {:ok, meeting_doc, _} = Store.get(meeting_id)
-    state = meeting_doc["state"]
-    assert state["artifacts"]["audio"]["path"] == "/meetings/#{meeting_id}/audio.ogg"
-    assert state["artifacts"]["audio"]["content_type"] == "audio/ogg"
-  end
-
-  test "a failing streamed artifact keeps the meeting event retryable without committing its receipt",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-stream-fail-#{System.unique_integer([:positive])}"
-
-    {:ok, _doc, _etag} =
-      Store.create_once(meeting_id,
-        state: %{
-          "tenant_id" => tenant_id,
-          "group_id" => group_id,
-          "meeting_agent_id" => meeting_agent["meeting_agent_id"],
-          "meeting_session_id" => meeting_agent["meeting_session_id"],
-          "provider" => "slack",
-          "connect_id" => "slack-runtime",
-          "status" => "active",
-          "artifact_root" => "/meetings/#{meeting_id}",
-          "slack_ref" => %{"channel_id" => "C1", "thread_ts" => "111.222"}
-        }
-      )
-
-    missing =
-      Path.join(System.tmp_dir!(), "meet-missing-#{System.unique_integer([:positive])}.opus")
-
-    event = %{
-      "type" => "meeting_runtime_update",
-      "event_id" => "runtime-stream-fail",
-      "meeting_id" => meeting_id,
-      "status" => "done",
-      "summary" => %{"title" => "Weekly Sync"},
-      "summary_status" => "ok",
-      "artifacts" => [
-        %{
-          "kind" => "transcript",
-          "content_type" => "text/plain",
-          "data_b64" => Base.encode64("hello transcript")
-        },
-        %{
-          "kind" => "audio",
-          "filename" => "audio.ogg",
-          "content_type" => "audio/ogg",
-          "src_path" => missing
-        }
-      ]
-    }
-
-    assert {:error, {:artifact_ingest_failed, "audio", %File.Error{reason: :enoent}}} =
-             SalixMeet.Runtime.deliver_event(tenant_id, group_id, event,
-               origin_env_id: "env_origin"
-             )
-
-    {:ok, meeting_doc, _} = Store.get(meeting_id)
-    state = meeting_doc["state"]
-    assert state["status"] == "active"
-    refute Map.has_key?(state, "artifacts")
-  end
-
-  test "old src_path transport without a trusted origin fails retryably instead of being acknowledged",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-no-origin-#{System.unique_integer([:positive])}"
-
-    {:ok, _doc, _etag} =
-      Store.create_once(meeting_id,
-        state: %{
-          "tenant_id" => tenant_id,
-          "group_id" => group_id,
-          "meeting_agent_id" => meeting_agent["meeting_agent_id"],
-          "meeting_session_id" => meeting_agent["meeting_session_id"],
-          "provider" => "slack",
-          "connect_id" => "slack-runtime",
-          "status" => "active",
-          "artifact_root" => "/meetings/#{meeting_id}",
-          "slack_ref" => %{"channel_id" => "C1", "thread_ts" => "111.222"}
-        }
-      )
-
-    src_path =
-      Path.join(System.tmp_dir!(), "meet-noorigin-#{System.unique_integer([:positive])}.opus")
-
-    File.write!(src_path, "should never be read without an origin env")
-    on_exit(fn -> File.rm(src_path) end)
-
-    event = %{
-      "type" => "meeting_runtime_update",
-      "event_id" => "runtime-no-origin",
-      "meeting_id" => meeting_id,
-      "status" => "done",
-      "artifacts" => [
-        %{
-          "kind" => "transcript",
-          "content_type" => "text/plain",
-          "data_b64" => Base.encode64("hello transcript")
-        },
-        %{
-          "kind" => "audio",
-          "filename" => "audio.ogg",
-          "content_type" => "audio/ogg",
-          "src_path" => src_path
-        }
-      ]
-    }
-
-    assert {:error, {:artifact_ingest_failed, "audio", :no_origin_env}} =
-             SalixMeet.Runtime.deliver_event(tenant_id, group_id, event)
-
-    {:ok, meeting_doc, _} = Store.get(meeting_id)
-    state = meeting_doc["state"]
-    assert state["status"] == "active"
-    refute Map.has_key?(state, "artifacts")
-  end
-
   test "opaque artifact ingest retries the exact event once and commits one durable artifact",
        %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :agent_runtime_mod, FailOnceMeetingArtifactRuntime)
+    SystemsRuntime.put_env(:salix_meet, :agent_runtime_mod, FailOnceMeetingArtifactRuntime)
     FailOnceMeetingArtifactRuntime.reset()
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-ref-retry-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-ref-retry-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, _doc, _etag} =
       Store.create_once(meeting_id,
@@ -3159,59 +2523,14 @@ defmodule SalixMeet.SlackProviderTest do
              )
   end
 
-  test "opaque artifact declarations over the server byte limit fail before streaming",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-ref-size-limit-#{System.unique_integer([:positive])}"
-
-    {:ok, _doc, _etag} =
-      Store.create_once(meeting_id,
-        state: %{
-          "tenant_id" => tenant_id,
-          "group_id" => group_id,
-          "meeting_agent_id" => meeting_agent["meeting_agent_id"],
-          "meeting_session_id" => meeting_agent["meeting_session_id"],
-          "provider" => "feishu",
-          "connect_id" => "feishu-runtime",
-          "status" => "active",
-          "artifact_root" => "/meetings/#{meeting_id}",
-          "feishu_ref" => %{"chat_id" => "oc1", "chat_type" => "group"}
-        }
-      )
-
-    event = %{
-      "type" => "meeting_runtime_update",
-      "event_id" => "runtime-ref-size-limit",
-      "meeting_id" => meeting_id,
-      "status" => "done",
-      "artifacts" => [
-        %{
-          "kind" => "audio",
-          "filename" => "audio.ogg",
-          "source_ref" => "mart_oversize",
-          "source_size" => 30 * 1024 * 1024 + 1
-        }
-      ]
-    }
-
-    assert {:error, :artifact_size_limit} =
-             SalixMeet.Runtime.deliver_event(tenant_id, group_id, event,
-               origin_env_id: "env_origin"
-             )
-
-    assert {:ok, meeting_doc, _} = Store.get(meeting_id)
-    assert meeting_doc["state"]["status"] == "active"
-    refute Map.has_key?(meeting_doc["state"], "artifacts")
-  end
-
   test "src_path reads from the exact authenticated origin env, never a group re-resolution",
        %{tenant_id: tenant_id, group_id: group_id} do
     start_supervised!(StreamEnvRecorder)
     StreamEnvRecorder.reset()
-    Application.put_env(:salix_meet, :agent_runtime_mod, RecordingAgentRuntime)
+    SystemsRuntime.put_env(:salix_meet, :agent_runtime_mod, RecordingAgentRuntime)
 
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-origin-env-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-origin-env-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, _doc, _etag} =
       Store.create_once(meeting_id,
@@ -3229,7 +2548,10 @@ defmodule SalixMeet.SlackProviderTest do
       )
 
     src_path =
-      Path.join(System.tmp_dir!(), "meet-origin-#{System.unique_integer([:positive])}.opus")
+      Path.join(
+        System.tmp_dir!(),
+        "meet-origin-#{SystemsRuntime.Proc.unique_integer([:positive])}.opus"
+      )
 
     File.write!(src_path, "audio")
     on_exit(fn -> File.rm(src_path) end)
@@ -3272,7 +2594,7 @@ defmodule SalixMeet.SlackProviderTest do
       })
 
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-outbound-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-outbound-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, _doc, _etag} =
       Store.create_once(meeting_id,
@@ -3376,7 +2698,7 @@ defmodule SalixMeet.SlackProviderTest do
       })
 
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-audio-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-audio-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, _doc, _etag} =
       Store.create_once(meeting_id,
@@ -3447,255 +2769,6 @@ defmodule SalixMeet.SlackProviderTest do
     refute access_req.params["user_ids"]
   end
 
-  test "an audio artifact above the full-read cap streams to Slack before Canvas publication",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-large-audio")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    path = "/meetings/#{meeting_id}/audio.ogg"
-    seed_agent_vfs_stream!(meeting_agent["meeting_agent_id"], path, 11)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "artifacts", %{
-                 "audio" => %{
-                   "path" => path,
-                   "filename" => "audio.ogg",
-                   "content_type" => "audio/ogg"
-                 }
-               })
-             end)
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    expected_size = 11 * 1024 * 1024
-
-    assert MockSlack.last_request("files.getUploadURLExternal").params["length"] ==
-             Integer.to_string(expected_size)
-
-    assert MockSlack.last_request("upload").params["size"] == expected_size
-    assert [_] = MockSlack.requests("canvases.create")
-
-    assert slack_block_text(MockSlack.last_request("chat.postMessage")) =~
-             "[Open canvas](https://w.slack.com/canvases/CAN1)"
-  end
-
-  test "a zero-byte audio artifact is abandoned without blocking Canvas publication",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-empty-audio")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    path = "/meetings/#{meeting_id}/audio.ogg"
-    seed_agent_vfs_stream!(meeting_agent["meeting_agent_id"], path, 0)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "artifacts", %{
-                 "audio" => %{
-                   "path" => path,
-                   "filename" => "audio.ogg",
-                   "content_type" => "audio/ogg"
-                 }
-               })
-             end)
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert MockSlack.requests("files.getUploadURLExternal") == []
-    assert MockSlack.requests("upload") == []
-    assert [_] = MockSlack.requests("canvases.create")
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    intent = get_in(doc, ["state", "delivery", "artifact_uploads", "audio"])
-    assert intent["status"] == "abandoned"
-    assert intent["failure_kind"] == "source_empty"
-    assert doc["state"]["delivery"]["published_at"]
-
-    notice = MockSlack.last_request("chat.postMessage")
-    assert slack_block_text(notice) =~ "[Open canvas](https://w.slack.com/canvases/CAN1)"
-    refute notice.params["text"] =~ "Recording:"
-  end
-
-  test "an invalid artifact source is abandoned without blocking Canvas publication",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :agent_runtime_mod, ArtifactReadFaultRuntime)
-    on_exit(fn -> Application.delete_env(:salix_meet, :artifact_read_fault) end)
-
-    Enum.each([:stat_invalid, :stream_size_mismatch], fn fault ->
-      Application.delete_env(:salix_meet, :artifact_read_fault)
-
-      connect =
-        seed_done_meeting_connect(
-          tenant_id,
-          group_id,
-          "slack-invalid-source-#{fault}"
-        )
-
-      {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-      meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-      seed_audio_artifact!(tenant_id, group_id, meeting_agent, meeting_id, "invalid audio")
-      Application.put_env(:salix_meet, :artifact_read_fault, fault)
-
-      assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-               publish_claimed_summary(meeting_agent, meeting_id)
-
-      assert {:ok, doc, _etag} = Store.get(meeting_id)
-      intent = get_in(doc, ["state", "delivery", "artifact_uploads", "audio"])
-      assert intent["status"] == "abandoned"
-      assert intent["failure_kind"] == "source_invalid"
-      assert doc["state"]["delivery"]["published_at"]
-    end)
-
-    assert MockSlack.requests("files.getUploadURLExternal") == []
-    assert MockSlack.requests("upload") == []
-    assert length(MockSlack.requests("canvases.create")) == 2
-  end
-
-  test "a permanent artifact upload rejection is abandoned without blocking Canvas",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-upload-rejected")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    seed_audio_artifact!(tenant_id, group_id, meeting_agent, meeting_id, "rejected audio")
-
-    MockSlack.respond("upload", {400, "invalid upload"})
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_] = MockSlack.requests("upload")
-    assert [_] = MockSlack.requests("canvases.create")
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    intent = get_in(doc, ["state", "delivery", "artifact_uploads", "audio"])
-    assert intent["status"] == "abandoned"
-    assert intent["failure_kind"] == "upload_rejected"
-    assert intent["attempt_count"] == 1
-    assert intent["last_error"] == "slack server error: 400"
-    assert doc["state"]["delivery"]["published_at"]
-  end
-
-  test "a transient artifact stream failure retries until the bounded degradation window",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-stream-degrades")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    seed_audio_artifact!(tenant_id, group_id, meeting_agent, meeting_id, "streaming audio")
-
-    Application.put_env(:salix_meet, :agent_runtime_mod, ArtifactReadFaultRuntime)
-    Application.put_env(:salix_meet, :artifact_read_fault, :stream_transient)
-    on_exit(fn -> Application.delete_env(:salix_meet, :artifact_read_fault) end)
-
-    assert {:error, {:artifact_upload_retryable, "audio", "source_unavailable"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert MockSlack.requests("files.getUploadURLExternal") == []
-    assert MockSlack.requests("canvases.create") == []
-
-    assert {:ok, retrying_doc, _etag} = Store.get(meeting_id)
-    retrying = get_in(retrying_doc, ["state", "delivery", "artifact_uploads", "audio"])
-    assert retrying["status"] == "retryable"
-    assert retrying["attempt_count"] == 1
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               state
-               |> put_in(["delivery", "artifact_uploads", "audio", "attempt_count"], 11)
-               |> put_in(
-                 ["delivery", "artifact_uploads", "audio", "started_at"],
-                 System.system_time(:second) - 301
-               )
-             end)
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_] = MockSlack.requests("canvases.create")
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    abandoned = get_in(final_doc, ["state", "delivery", "artifact_uploads", "audio"])
-    assert abandoned["status"] == "abandoned"
-    assert abandoned["failure_kind"] == "source_unavailable"
-    assert abandoned["attempt_count"] == 12
-  end
-
-  test "a mid-body artifact stream exception degrades without crashing Canvas delivery",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-stream-raises")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    seed_audio_artifact!(tenant_id, group_id, meeting_agent, meeting_id, "streaming audio")
-
-    Application.put_env(:salix_meet, :agent_runtime_mod, ArtifactReadFaultRuntime)
-    Application.put_env(:salix_meet, :artifact_read_fault, :stream_raises_mid_body)
-    on_exit(fn -> Application.delete_env(:salix_meet, :artifact_read_fault) end)
-
-    assert {:error, {:artifact_upload_retryable, "audio", "source_unavailable"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert {:ok, retrying_doc, _etag} = Store.get(meeting_id)
-    retrying = get_in(retrying_doc, ["state", "delivery", "artifact_uploads", "audio"])
-    assert retrying["status"] == "retryable"
-    assert retrying["attempt_count"] == 1
-    assert retrying["last_error"] =~ "artifact range read failed"
-    assert MockSlack.requests("canvases.create") == []
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               state
-               |> put_in(["delivery", "artifact_uploads", "audio", "attempt_count"], 11)
-               |> put_in(
-                 ["delivery", "artifact_uploads", "audio", "started_at"],
-                 System.system_time(:second) - 301
-               )
-             end)
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    abandoned = get_in(final_doc, ["state", "delivery", "artifact_uploads", "audio"])
-    assert abandoned["status"] == "abandoned"
-    assert abandoned["failure_kind"] == "source_unavailable"
-    assert abandoned["attempt_count"] == 12
-  end
-
-  test "an ambiguous artifact upload keeps the original ticket for reconciliation",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-upload-ambiguous")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    data = "ambiguous upload audio"
-    seed_audio_artifact!(tenant_id, group_id, meeting_agent, meeting_id, data)
-
-    MockSlack.respond("upload", {503, "service unavailable"})
-    MockSlack.respond("files.completeUploadExternal", %{"ok" => true, "files" => []})
-
-    assert {:error, {:artifact_completion_unknown, "audio", "FTRANSCRIPT"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert {:ok, unresolved_doc, _etag} = Store.get(meeting_id)
-    unresolved = get_in(unresolved_doc, ["state", "delivery", "artifact_uploads", "audio"])
-    assert unresolved["status"] == "completing"
-    assert unresolved["file_id"] == "FTRANSCRIPT"
-    refute unresolved["status"] == "abandoned"
-    assert MockSlack.requests("canvases.create") == []
-
-    MockSlack.respond(
-      "files.info",
-      artifact_or_canvas_files_info_response("FTRANSCRIPT", byte_size(data))
-    )
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_] = MockSlack.requests("files.getUploadURLExternal")
-    assert [_] = MockSlack.requests("upload")
-    assert [_] = MockSlack.requests("files.completeUploadExternal")
-    assert [_] = MockSlack.requests("canvases.create")
-  end
-
   test "a retried delivery reuses staged artifacts, Canvas, and message instead of duplicating them",
        %{tenant_id: tenant_id, group_id: group_id} do
     connect =
@@ -3710,7 +2783,7 @@ defmodule SalixMeet.SlackProviderTest do
       })
 
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-resume-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-resume-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, _doc, _etag} =
       Store.create_once(meeting_id,
@@ -3777,248 +2850,25 @@ defmodule SalixMeet.SlackProviderTest do
     refute doc["state"]["delivery"]["published_at"]
   end
 
-  test "a rate-limited Canvas access grant retries access without recreating or reposting",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-access-retry")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.access.set", fn _params ->
-      if length(MockSlack.requests("canvases.access.set")) == 1 do
-        %{"ok" => false, "error" => "ratelimited"}
-      else
-        %{"ok" => true}
-      end
-    end)
-
-    assert {:error, "ratelimited"} = publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_create] = MockSlack.requests("canvases.create")
-    assert [_summary] = MockSlack.requests("chat.postMessage")
-    assert [_access] = MockSlack.requests("canvases.access.set")
-
-    assert {:ok, after_rate_limit, _etag} = Store.get(meeting_id)
-    delivery = after_rate_limit["state"]["delivery"]
-    # Keep the standalone id inside the v4 intent until publication. The
-    # exact-body base worker adopts only provisional v2/v3 ids, so it cannot
-    # publish this Canvas prematurely during a rolling deploy.
-    refute delivery["canvas_id"]
-    canvas_create = delivery["canvas_create"]
-    assert canvas_create["schema_version"] == 4
-    assert canvas_create["status"] == "v4_ready"
-    assert canvas_create["canvas_id"] == "CAN1"
-
-    legacy_adoptable_id =
-      if canvas_create["schema_version"] in [2, 3], do: canvas_create["canvas_id"]
-
-    refute legacy_adoptable_id
-    assert delivery["summary_message_ts"] == "222.333"
-    assert delivery["summary_message_kind"] == "summary"
-    assert delivery["canvas_access"]["status"] == "v2_pending"
-    refute delivery["notes_delivery"]
-    refute delivery["activation"]
-    refute delivery["published_at"]
-
-    assert {:ok, _replacement_doc, _replacement_etag, replacement_claim} =
-             Store.claim_delivery(meeting_id, "replacement-node",
-               now: delivery["last_attempt_at"] + 1,
-               reclaim_after_ms: 0
-             )
-
-    assert replacement_claim == %{
-             "claim_node" => "replacement-node",
-             "attempt_count" => 2
-           }
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             SalixMeet.Runtime.publish(meeting_agent, %{
-               "provider" => "slack",
-               "kind" => "summary",
-               "meeting_id" => meeting_id,
-               "delivery_claim" => replacement_claim
-             })
-
-    assert [_create] = MockSlack.requests("canvases.create")
-    assert [_summary] = MockSlack.requests("chat.postMessage")
-    assert [_first, _second] = MockSlack.requests("canvases.access.set")
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    assert final_doc["state"]["delivery"]["canvas_access"]["status"] == "v2_granted"
-
-    assert final_doc["state"]["delivery"]["canvas_url"] ==
-             "https://w.slack.com/canvases/CAN1"
-
-    assert final_doc["state"]["delivery"]["published_at"]
-  end
-
-  test "an abandoned summary message post converges terminally instead of retrying forever",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-post-abandoned")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("chat.postMessage", %{"ok" => false, "error" => "not_in_channel"})
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    assert delivery["status"] == "failed_terminal"
-    assert delivery["failure_kind"] == "message_post_abandoned"
-    refute delivery["published_at"]
-
-    # The loop is closed: the next sweep does not reclaim the delivery and
-    # no further Slack post is attempted.
-    posts_after_terminal = length(MockSlack.requests("chat.postMessage"))
-
-    assert :not_claimable =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 2_000)
-
-    assert length(MockSlack.requests("chat.postMessage")) == posts_after_terminal
-  end
-
-  defp seed_gated_feishu_meeting(tenant_id, group_id, connect_id) do
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-#{connect_id}-#{System.unique_integer([:positive])}"
-    now_ms = System.system_time(:millisecond)
-
-    {:ok, _doc, _etag} =
-      Store.create_once(meeting_id,
-        state: %{
-          "tenant_id" => tenant_id,
-          "group_id" => group_id,
-          "meeting_agent_id" => meeting_agent["meeting_agent_id"],
-          "meeting_session_id" => meeting_agent["meeting_session_id"],
-          "provider" => "feishu",
-          "connect_id" => connect_id,
-          "status" => "done",
-          "title" => "Weekly Sync",
-          "summary" => %{"title" => "Weekly Sync", "key_points" => ["One"]},
-          "feishu_ref" => %{"chat_id" => "oc_1", "root_message_id" => "om_1"},
-          "delivery" => %{
-            "status" => "failed",
-            "attempt_count" => 12,
-            "first_failed_at" => now_ms - 25 * 60 * 60 * 1000,
-            "error" => "previous failure"
-          }
-        }
-      )
-
-    meeting_id
-  end
-
-  test "a disabled Feishu connect stays wait-and-catch-up even past the retry gates",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :provider_mod, SalixMeet.ProviderDispatcher)
-
-    seed_feishu_connect(group_id, %{
-      "tenant_id" => tenant_id,
-      "connect_id" => "feishu-gate-disabled",
-      "app_id" => "cli_disabled",
-      "bot_open_id" => "ou_bot",
-      "disabled_at" => 1
-    })
-
-    meeting_id = seed_gated_feishu_meeting(tenant_id, group_id, "feishu-gate-disabled")
-
-    # Both retry gates are exhausted, but disabled is the intentional
-    # wait-and-catch-up state: the delivery must stay retryable, never
-    # converge terminally. It settles as :blocked_waiting rather than
-    # :failed, so a connect nobody intends to re-enable cannot hold the
-    # delivery error-rate condition permanently breached.
-    assert :blocked_waiting = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a")
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    assert doc["state"]["delivery"]["status"] == "failed"
-    refute doc["state"]["delivery"]["failure_kind"]
-    assert is_integer(doc["state"]["delivery"]["next_attempt_at"])
-
-    # The wait is now backed off instead of re-claimed every sweep.
-    assert :not_claimable = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a")
-
-    # Past the backoff it resumes waiting — re-enabling the connect still
-    # catches up.
-    later = System.system_time(:millisecond) + 6 * 60 * 1000
-
-    assert :blocked_waiting =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: later)
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    assert doc["state"]["delivery"]["status"] == "failed"
-    refute doc["state"]["delivery"]["failure_kind"]
-  end
-
-  test "a failed blocked-state write reports an error instead of masking it as retained",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-blocked-write")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    Application.put_env(:salix_meet, :provider_mod, __MODULE__.DisabledConnectWriteFaultProvider)
-    Application.put_env(:salix_meet, :blocked_write_meeting_id, meeting_id)
-    on_exit(fn -> Application.delete_env(:salix_meet, :blocked_write_meeting_id) end)
-
-    # The provider reports the disabled-connect shape, but the checkpoint that
-    # would record that blocked state fails. The blocked outcome may only be
-    # reported once the blocked state is durable: otherwise `retained` would
-    # hide a storage fault behind a benign label, and the delivery would carry
-    # neither a backoff nor an error signal.
-    log =
-      ExUnit.CaptureLog.capture_log(fn ->
-        assert :failed = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a")
-      end)
-
-    _ = log
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    refute delivery["next_attempt_at"]
-    refute delivery["status"] == "published"
-  end
-
-  test "a deleted Feishu connect converges terminally instead of retrying forever",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :provider_mod, SalixMeet.ProviderDispatcher)
-
-    seed_feishu_connect(group_id, %{
-      "tenant_id" => tenant_id,
-      "connect_id" => "feishu-gate-deleted",
-      "app_id" => "cli_deleted",
-      "bot_open_id" => "ou_bot",
-      "deleted_at" => 1
-    })
-
-    meeting_id = seed_gated_feishu_meeting(tenant_id, group_id, "feishu-gate-deleted")
-
-    assert :terminal_failed = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a")
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    assert doc["state"]["delivery"]["status"] == "failed_terminal"
-    assert doc["state"]["delivery"]["failure_kind"] == "connect_deleted"
-
-    assert :not_claimable = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a")
-  end
-
   test "Router submission publishes one matching Slack message and Canvas", c do
-    Application.put_env(:salix_meet, :router_summary_mod, SummaryRequestRecorder)
-    Application.put_env(:salix_meet, :router_summary_test_pid, self())
-    previous_summary = Application.get_env(:salix_meet, :summary_mod)
-    Application.put_env(:salix_meet, :summary_mod, SalixMeet.Ports.Summary.None)
+    SystemsRuntime.put_env(:salix_meet, :router_summary_mod, SummaryRequestRecorder)
+    SystemsRuntime.put_env(:salix_meet, :router_summary_test_pid, SystemsRuntime.Proc.self())
+    previous_summary = SystemsRuntime.get_env(:salix_meet, :summary_mod)
+    SystemsRuntime.put_env(:salix_meet, :summary_mod, SalixMeet.Ports.Summary.None)
 
     on_exit(fn ->
-      Application.delete_env(:salix_meet, :router_summary_test_pid)
+      SystemsRuntime.delete_env(:salix_meet, :router_summary_test_pid)
 
       if previous_summary,
-        do: Application.put_env(:salix_meet, :summary_mod, previous_summary),
-        else: Application.delete_env(:salix_meet, :summary_mod)
+        do: SystemsRuntime.put_env(:salix_meet, :summary_mod, previous_summary),
+        else: SystemsRuntime.delete_env(:salix_meet, :summary_mod)
     end)
 
     connect = seed_done_meeting_connect(c.tenant_id, c.group_id, "slack-router-summary")
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(c.tenant_id, c.group_id)
     meeting_id = seed_done_meeting(c.tenant_id, c.group_id, meeting_agent, connect)
     assert :summary_waiting = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a")
-    assert_receive {:router_summary_request, _, request}
+    settle_receive({:router_summary_request, _, request})
     assert MockSlack.requests("chat.postMessage") == []
     assert MockSlack.requests("canvases.create") == []
 
@@ -4046,7 +2896,7 @@ defmodule SalixMeet.SlackProviderTest do
     assert :published =
              SalixMeet.Delivery.deliver_one(meeting_id,
                node: "node-a",
-               now: System.system_time(:millisecond) + 10_000
+               now: SystemsClock.system_time(:millisecond) + 10_000
              )
 
     assert [message] = MockSlack.requests("chat.postMessage")
@@ -4059,352 +2909,27 @@ defmodule SalixMeet.SlackProviderTest do
     assert length(MockSlack.requests("chat.postMessage")) == 1
   end
 
-  test "a watchdog-terminalized meeting posts the incomplete-record notice",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-watchdog-notice")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    {:ok, _doc, _etag} =
-      Store.update_state_retrying(meeting_id, fn state ->
-        state
-        |> Map.put("status", "failed")
-        |> Map.put("error", "meeting runtime lost before it reported completion")
-        |> Map.put("watchdog", %{"reason" => "runtime_lost", "terminalized_at" => 1})
-      end)
-
-    assert :published = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [notice] = MockSlack.requests("chat.postMessage")
-    assert to_string(notice.params["text"] || "") =~ "record is incomplete"
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    assert doc["state"]["delivery"]["published_at"]
-  end
-
-  test "a permanent Canvas access failure is terminal after preserving the shared link",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
-    Application.put_env(:salix_meet, :activation_test_pid, self())
-
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-access-terminal")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.access.set", %{"ok" => false, "error" => "missing_scope"})
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [summary] = MockSlack.requests("chat.postMessage")
-    assert slack_block_text(summary) =~ "[Open canvas](https://w.slack.com/canvases/CAN1)"
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    assert delivery["status"] == "failed_terminal"
-    assert delivery["failure_kind"] == "canvas_unavailable"
-    assert delivery["canvas_create"]["canvas_id"] == "CAN1"
-    assert delivery["canvas_access"]["status"] == "v2_abandoned"
-    assert delivery["summary_message_ts"] == "222.333"
-    assert delivery["summary_message_kind"] == "summary"
-    assert delivery["notes_delivery"]["status"] == "visible"
-    assert delivery["notes_delivery"]["surface"] == "canvas_link_message"
-    assert delivery["notes_delivery"]["kind"] == "summary"
-    assert delivery["activation"]["status"] == "queued"
-    refute delivery["canvas_id"]
-    refute delivery["published_at"]
-
-    assert_receive {:activation_handoff, state, summary, :ok, nil}, 2_000
-    assert state["meeting_id"] == meeting_id
-    assert summary["title"] == "Weekly Sync"
-    assert length(MockSlack.requests("chat.postMessage")) == 1
-  end
-
-  test "a permanent access failure preserves a rolling legacy summary pointer with no kind",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-access-legacy-kind")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "status" => "failed",
-                 "canvas_create" => %{
-                   "schema_version" => 2,
-                   "status" => "v2_ready",
-                   "canvas_id" => "CAN1"
-                 },
-                 "canvas_url" => "https://w.slack.com/canvases/CAN1",
-                 "summary_message_ts" => "111.legacy",
-                 "canvas_access" => %{
-                   "schema_version" => 2,
-                   "status" => "v2_pending",
-                   "access_level" => "write",
-                   "target_type" => "channel_ids",
-                   "target_ids" => ["C1"],
-                   "attempt_count" => 0
-                 }
-               })
-             end)
-
-    MockSlack.respond("canvases.access.set", %{"ok" => false, "error" => "missing_scope"})
-
-    assert {:error, {:terminal, {:canvas_unavailable, reason}}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert reason =~ "missing_scope"
-    assert MockSlack.requests("chat.postMessage") == []
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    assert delivery["summary_message_ts"] == "111.legacy"
-    refute delivery["summary_message_kind"]
-    assert delivery["canvas_access"]["status"] == "v2_abandoned"
-    refute delivery["published_at"]
-  end
-
-  test "the Slack API keeps explicit access levels on the legacy channel helper" do
-    assert %{"ok" => true} = API.set_canvas_access("xoxb-test", "CAN1", "C1", "read")
-
-    access = MockSlack.last_request("canvases.access.set")
-    assert access.params["canvas_id"] == "CAN1"
-    assert access.params["access_level"] == "read"
-    assert access.params["channel_ids"] == "C1"
-    refute access.params["user_ids"]
-  end
-
-  test "a DM Canvas link is shared before granting its user write access",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-dm")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-
-    meeting_id =
-      seed_done_meeting(tenant_id, group_id, meeting_agent, connect,
-        slack_ref: %{"channel_id" => "D1", "thread_ts" => "111.222"}
-      )
-
-    MockSlack.respond("conversations.info", %{
-      "ok" => true,
-      "channel" => %{"id" => "D1", "is_im" => true, "is_mpim" => false, "user" => "U1"}
-    })
-
-    # Slack rejects canvases.access.set unless the standalone Canvas link has
-    # already been shared directly with the target user.
-    MockSlack.respond("canvases.access.set", fn _params ->
-      case MockSlack.last_request("chat.postMessage") do
-        %{params: %{"channel" => "D1"} = params} ->
-          if String.contains?(
-               slack_block_text(%{params: params}),
-               "https://w.slack.com/canvases/CAN1"
-             ) do
-            %{"ok" => true}
-          else
-            %{"ok" => false, "error" => "invalid_arguments"}
-          end
-
-        _ ->
-          %{"ok" => false, "error" => "invalid_arguments"}
-      end
-    end)
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    summary = MockSlack.last_request("chat.postMessage")
-    assert summary.params["channel"] == "D1"
-    assert slack_block_text(summary) =~ "[Open canvas](https://w.slack.com/canvases/CAN1)"
-
-    access = MockSlack.last_request("canvases.access.set")
-    assert access.params["canvas_id"] == "CAN1"
-    assert access.params["access_level"] == "write"
-    assert access.params["user_ids"] == "U1"
-    refute access.params["channel_ids"]
-    assert MockSlack.requests("conversations.members") == []
-
-    methods = Enum.map(MockSlack.requests(), & &1.method)
-
-    assert Enum.find_index(methods, &(&1 == "chat.postMessage")) <
-             Enum.find_index(methods, &(&1 == "canvases.access.set"))
-  end
-
-  test "an MPDM posts an explicit failure instead of claiming unverified Canvas access",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-mpdm")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-
-    meeting_id =
-      seed_done_meeting(tenant_id, group_id, meeting_agent, connect,
-        slack_ref: %{"channel_id" => "GMPDM", "thread_ts" => "111.222"}
-      )
-
-    MockSlack.respond("conversations.info", %{
-      "ok" => true,
-      "channel" => %{"id" => "GMPDM", "is_im" => false, "is_mpim" => true}
-    })
-
-    MockSlack.respond("canvases.access.set", %{
-      "ok" => false,
-      "error" => "invalid_arguments"
-    })
-
-    assert {:error, {:terminal, {:canvas_unavailable, reason}}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert reason =~ "mpdm_requires_individual_direct_shares"
-
-    notice = MockSlack.last_request("chat.postMessage")
-    assert notice.params["channel"] == "GMPDM"
-    assert notice.params["text"] =~ "Slack Canvas is unavailable"
-    refute notice.params["text"] =~ "CAN1"
-    assert MockSlack.requests("conversations.members") == []
-    assert MockSlack.requests("canvases.access.set") == []
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    assert delivery["canvas_access"]["status"] == "v2_abandoned"
-    assert delivery["canvas_access_error"] =~ "mpdm_requires_individual_direct_shares"
-    assert delivery["summary_message_kind"] == "canvas_failure"
-    assert delivery["summary_message_ts"]
-    assert delivery["canvas_create"]["canvas_id"] == "CAN1"
-    refute delivery["canvas_id"]
-    refute delivery["published_at"]
-  end
-
-  test "rolling recovery revalidates a legacy MPDM user target before sharing its Canvas link",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-mpdm-legacy-target")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-
-    meeting_id =
-      seed_done_meeting(tenant_id, group_id, meeting_agent, connect,
-        slack_ref: %{"channel_id" => "GMPDM", "thread_ts" => "111.222"}
-      )
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "status" => "failed",
-                 "canvas_url" => "https://w.slack.com/canvases/CANOLD",
-                 "canvas_create" => %{
-                   "schema_version" => 2,
-                   "status" => "v2_ready",
-                   "canvas_id" => "CANOLD"
-                 },
-                 # The exact-base worker staged MPDM members directly. Without
-                 # the current grant-strategy marker this target must be
-                 # revalidated instead of reused.
-                 "canvas_access" => %{
-                   "status" => "pending",
-                   "access_level" => "write",
-                   "target_type" => "user_ids",
-                   "target_ids" => ["U1", "U2"],
-                   "attempt_count" => 0
-                 }
-               })
-             end)
-
-    MockSlack.respond("conversations.info", %{
-      "ok" => true,
-      "channel" => %{"id" => "GMPDM", "is_im" => false, "is_mpim" => true}
-    })
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert MockSlack.requests("canvases.access.set") == []
-    assert MockSlack.requests("conversations.members") == []
-
-    assert [notice] = MockSlack.requests("chat.postMessage")
-    assert notice.params["text"] =~ "Slack Canvas is unavailable"
-    refute notice.params["text"] =~ "CANOLD"
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    assert delivery["status"] == "failed_terminal"
-    assert delivery["failure_kind"] == "canvas_unavailable"
-    assert delivery["error"] =~ "mpdm_requires_individual_direct_shares"
-    assert delivery["canvas_access"]["status"] == "v2_abandoned"
-    assert delivery["summary_message_kind"] == "canvas_failure"
-    refute delivery["published_at"]
-  end
-
-  test "rolling recovery retires unverified legacy link-shared access without duplicate output",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Enum.each(["link_shared", "v2_link_shared"], fn old_status ->
-      connect =
-        seed_done_meeting_connect(
-          tenant_id,
-          group_id,
-          "slack-canvas-old-link-#{old_status}"
-        )
-
-      {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-      meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-      assert {:ok, _doc, _etag} =
-               Store.update_state_retrying(meeting_id, fn state ->
-                 Map.put(state, "delivery", %{
-                   "status" => "failed",
-                   "summary_message_ts" => "111.999",
-                   "summary_message_kind" => "summary",
-                   "canvas_url" => "https://w.slack.com/canvases/CANOLD",
-                   "canvas_url_source" => "legacy",
-                   "canvas_create" => %{
-                     "schema_version" => 2,
-                     "status" => "v2_created",
-                     "canvas_id" => "CANOLD",
-                     "target_title" => "Weekly Sync"
-                   },
-                   "canvas_access" => %{
-                     "schema_version" => 2,
-                     "status" => old_status,
-                     "target_type" => "mpdm_link",
-                     "target_ids" => ["U1", "U2"]
-                   }
-                 })
-               end)
-
-      for _attempt <- 1..2 do
-        assert {:error, {:terminal, {:canvas_unavailable, reason}}} =
-                 publish_claimed_summary(meeting_agent, meeting_id)
-
-        assert reason =~ "not verified"
-      end
-
-      assert MockSlack.requests("chat.postMessage") == []
-      assert MockSlack.requests("canvases.access.set") == []
-
-      {:ok, doc, _etag} = Store.get(meeting_id)
-      delivery = doc["state"]["delivery"]
-      assert delivery["summary_message_ts"] == "111.999"
-      assert delivery["canvas_access"]["status"] == "v2_abandoned"
-      refute delivery["canvas_id"]
-      refute delivery["published_at"]
-    end)
-  end
-
   test "a terminal Canvas failure posts complete notes once without claiming Canvas publication",
        %{tenant_id: tenant_id, group_id: group_id} do
-    telemetry_id = {__MODULE__, :terminal_canvas_delivery, make_ref()}
+    telemetry_id = {__MODULE__, :terminal_canvas_delivery, SystemsRuntime.Proc.make_ref()}
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         telemetry_id,
         [:salix, :operation, :stop],
         fn _event, measurements, metadata, owner ->
           if metadata.component == "salix_meet" and
                metadata.operation == "meeting_delivery" do
-            send(owner, {:meeting_delivery_telemetry, measurements, metadata})
+            SystemsRuntime.Proc.send(owner, {:meeting_delivery_telemetry, measurements, metadata})
           end
         end,
-        self()
+        SystemsRuntime.Proc.self()
       )
 
-    on_exit(fn -> :telemetry.detach(telemetry_id) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(telemetry_id) end)
 
-    Application.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
-    Application.put_env(:salix_meet, :activation_test_pid, self())
+    SystemsRuntime.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
+    SystemsRuntime.put_env(:salix_meet, :activation_test_pid, SystemsRuntime.Proc.self())
 
     connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-terminal")
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
@@ -4477,7 +3002,7 @@ defmodule SalixMeet.SlackProviderTest do
     assert delivery["notes_delivery"]["kind"] == "summary_fallback"
     assert delivery["activation"]["status"] == "queued"
 
-    assert_receive {:activation_handoff, state, summary, :ok, nil}, 2_000
+    settle_receive({:activation_handoff, state, summary, :ok, nil})
     assert state["meeting_id"] == meeting_id
     assert summary["title"] == "Weekly Sync"
 
@@ -4485,7 +3010,7 @@ defmodule SalixMeet.SlackProviderTest do
     assert meeting["notes_delivery_status"] == "visible"
     assert meeting["notes_delivery_surface"] == "message_fallback"
 
-    assert_receive {:meeting_delivery_telemetry, %{duration: duration}, metadata}
+    settle_receive({:meeting_delivery_telemetry, %{duration: duration}, metadata})
     assert is_integer(duration) and duration >= 0
     assert metadata.component == "salix_meet"
     assert metadata.operation == "meeting_delivery"
@@ -4494,1367 +3019,9 @@ defmodule SalixMeet.SlackProviderTest do
     assert :not_claimable =
              SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
 
-    refute_receive {:meeting_delivery_telemetry, _measurements, _metadata}
-    refute_receive {:activation_handoff, _state, _summary, _result, _published_at}, 100
+    settle_refute_receive({:meeting_delivery_telemetry, _measurements, _metadata})
+    settle_refute_receive({:activation_handoff, _state, _summary, _result, _published_at}, 10)
     assert length(MockSlack.requests("chat.postMessage")) == 1
-  end
-
-  test "a conflicted failure notice cannot downgrade a Canvas terminal failure to retrying",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-notice-conflict")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               delivery = state["delivery"] || %{}
-
-               Map.put(
-                 state,
-                 "delivery",
-                 Map.put(delivery, "message_post", %{
-                   "kind" => "canvas_failure",
-                   "status" => "conflict",
-                   "event_type" => "meeting_canvas_failure_#{meeting_id}"
-                 })
-               )
-             end)
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert MockSlack.requests("chat.postMessage") == []
-
-    assert {:ok, persisted, _etag} = Store.get(meeting_id)
-    delivery = persisted["state"]["delivery"]
-    assert delivery["status"] == "failed_terminal"
-    assert delivery["failure_kind"] == "canvas_unavailable"
-    assert delivery["message_post"]["status"] == "conflict"
-  end
-
-  test "a multibyte terminal fallback is split into independently confirmed Slack parts",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fallback-multipart")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    long_point = String.duplicate("会议纪要🙂", 4_000)
-
-    meeting_id =
-      seed_done_meeting(tenant_id, group_id, meeting_agent, connect,
-        summary: %{
-          "title" => "Large Weekly Sync",
-          "key_points" => [long_point <> " https://example.com/meeting-notes?part=完整"],
-          "action_items" => [%{"description" => "Review the complete fallback"}]
-        }
-      )
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-
-    MockSlack.respond("chat.postMessage", fn params ->
-      metadata = Jason.decode!(params["metadata"])
-      index = get_in(metadata, ["event_payload", "part_index"])
-
-      %{
-        "ok" => true,
-        "ts" => "multipart.#{index}",
-        "message" => %{
-          "text" => params["text"],
-          "blocks" => Jason.decode!(params["blocks"])
-        }
-      }
-    end)
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    posts = MockSlack.requests("chat.postMessage")
-    assert length(posts) > 1
-
-    Enum.with_index(posts, 1)
-    |> Enum.each(fn {post, index} ->
-      assert String.valid?(post.params["text"])
-      assert byte_size(post.params["text"]) <= 29_000
-      assert post.params["text"] =~ "*Meeting notes fallback (part #{index}/#{length(posts)})*"
-
-      assert Enum.map_join(Jason.decode!(post.params["blocks"]), &get_in(&1, ["text", "text"])) ==
-               post.params["text"]
-    end)
-
-    assert Enum.count(posts, &String.contains?(&1.params["text"], "<@UBOT>")) == 1
-
-    assert Enum.count(
-             posts,
-             &String.contains?(&1.params["text"], "https://example.com/meeting-notes?part=完整")
-           ) == 1
-
-    event_types =
-      Enum.map(posts, fn post ->
-        get_in(Jason.decode!(post.params["metadata"]), ["event_type"])
-      end)
-
-    assert length(Enum.uniq(event_types)) == length(posts)
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    manifest = delivery["fallback_message_manifest"]
-    assert manifest["part_count"] == length(posts)
-    assert manifest["content_kind"] == "summary_fallback_multipart_v1"
-    assert manifest["status"] == "confirmed"
-
-    assert Enum.all?(manifest["parts"], fn part ->
-             part["content_kind"] == "summary_fallback_multipart_v1"
-           end)
-
-    assert Enum.map(manifest["parts"], & &1["text"]) == Enum.map(posts, & &1.params["text"])
-    assert SalixMeet.SlackProvider.fallback_notes_manifest_complete?(delivery, meeting_id)
-    assert delivery["notes_delivery"]["part_count"] == length(posts)
-    assert delivery["notes_delivery"]["status"] == "visible"
-  end
-
-  test "fallback proof uses exact Block Kit payload when Slack parses text",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fallback-canonical-text")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-
-    meeting_id =
-      seed_done_meeting(tenant_id, group_id, meeting_agent, connect,
-        summary: %{
-          "title" => "Canonical Text",
-          "key_points" => ["See https://example.com/meeting 🙂"]
-        }
-      )
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-
-    MockSlack.respond("chat.postMessage", fn params ->
-      metadata = Jason.decode!(params["metadata"])
-
-      parsed_text =
-        String.replace(
-          params["text"],
-          "https://example.com/meeting",
-          "<https://example.com/meeting>"
-        )
-
-      %{
-        "ok" => true,
-        "ts" => "canonical.1",
-        "message" => %{
-          "text" => parsed_text,
-          "metadata" => metadata,
-          "blocks" => Jason.decode!(params["blocks"])
-        }
-      }
-    end)
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    [post] = MockSlack.requests("chat.postMessage")
-    assert post.params["text"] =~ "🙂"
-    assert Jason.decode!(post.params["blocks"]) |> inspect() =~ "🙂"
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    [part] = delivery["fallback_message_manifest"]["parts"]
-    assert part["content_proof"] == "exact_blocks"
-    assert part["provider_payload_sha256"] == part["blocks_sha256"]
-    assert delivery["notes_delivery"]["status"] == "visible"
-  end
-
-  test "exact top-level text cannot authorize truncated visible fallback blocks",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
-    Application.put_env(:salix_meet, :activation_test_pid, self())
-
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fallback-truncated-blocks")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-
-    MockSlack.respond("chat.postMessage", fn params ->
-      [first | rest] = Jason.decode!(params["blocks"])
-      truncated = put_in(first, ["text", "text"], "Meeting Summary: truncated")
-
-      %{
-        "ok" => true,
-        "ts" => "truncated.blocks",
-        "message" => %{
-          "text" => params["text"],
-          "blocks" => [truncated, "malformed-provider-block" | rest]
-        }
-      }
-    end)
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    [part] = delivery["fallback_message_manifest"]["parts"]
-    assert part["status"] == "conflict"
-    refute part["content_proof"]
-    refute delivery["notes_delivery"]
-    refute delivery["activation"]
-    refute_receive {:activation_handoff, _state, _summary, _result, _published_at}, 100
-  end
-
-  test "exact top-level text cannot authorize a fallback with no visible blocks",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
-    Application.put_env(:salix_meet, :activation_test_pid, self())
-
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fallback-missing-blocks")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-
-    MockSlack.respond("chat.postMessage", fn params ->
-      %{
-        "ok" => true,
-        "ts" => "missing.blocks",
-        "message" => %{"text" => params["text"]}
-      }
-    end)
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    [part] = delivery["fallback_message_manifest"]["parts"]
-    assert part["status"] == "conflict"
-    refute part["content_proof"]
-    refute delivery["notes_delivery"]
-    refute delivery["activation"]
-    refute_receive {:activation_handoff, _state, _summary, _result, _published_at}, 100
-  end
-
-  test "malformed persisted fallback manifests fail closed without a Slack write",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
-    Application.put_env(:salix_meet, :activation_test_pid, self())
-
-    for {suffix, malformed} <- [
-          {"scalar", "bad-manifest"},
-          {"invalid-parts", %{"parts" => "bad-parts"}}
-        ] do
-      connect =
-        seed_done_meeting_connect(
-          tenant_id,
-          group_id,
-          "slack-fallback-malformed-manifest-#{suffix}"
-        )
-
-      {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-      meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-      assert {:ok, _doc, _etag} =
-               Store.update_state_retrying(meeting_id, fn state ->
-                 update_in(state, ["delivery"], fn delivery ->
-                   Map.put(delivery || %{}, "fallback_message_manifest", malformed)
-                 end)
-               end)
-
-      MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-
-      assert :terminal_failed =
-               SalixMeet.Delivery.deliver_one(meeting_id,
-                 node: "node-#{suffix}",
-                 now: 1_000
-               )
-
-      assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-      delivery = final_doc["state"]["delivery"]
-      assert delivery["status"] == "failed_terminal"
-      assert delivery["fallback_message_manifest"] == malformed
-      refute delivery["notes_delivery"]
-      refute delivery["activation"]
-    end
-
-    assert MockSlack.requests("chat.postMessage") == []
-    refute_receive {:activation_handoff, _state, _summary, _result, _published_at}, 100
-  end
-
-  test "a success response without text requires exact Slack read-back before activation",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
-    Application.put_env(:salix_meet, :activation_test_pid, self())
-
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fallback-missing-text")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-    MockSlack.respond("chat.postMessage", %{"ok" => true, "ts" => "fallback.unconfirmed"})
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [first_post] = MockSlack.requests("chat.postMessage")
-    refute_receive {:activation_handoff, _state, _summary, _result, _published_at}, 100
-
-    {:ok, retry_doc, _etag} = Store.get(meeting_id)
-    retry_delivery = retry_doc["state"]["delivery"]
-    refute retry_delivery["notes_delivery"]
-
-    assert get_in(retry_delivery, ["fallback_message_manifest", "parts", Access.at(0), "status"]) ==
-             "unknown"
-
-    metadata =
-      first_post.params["metadata"]
-      |> Jason.decode!()
-      |> update_in(["event_payload"], &Map.delete(&1, "content_sha256"))
-
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{
-          "ts" => "fallback.unconfirmed",
-          "text" => first_post.params["text"],
-          "blocks" => Jason.decode!(first_post.params["blocks"]),
-          "metadata" => metadata
-        }
-      ],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    assert [^first_post] = MockSlack.requests("chat.postMessage")
-
-    assert MockSlack.last_request("conversations.replies").params["include_all_metadata"] ==
-             "true"
-
-    assert_receive {:activation_handoff, state, _summary, :ok, nil}, 2_000
-    assert state["meeting_id"] == meeting_id
-
-    {:ok, final_doc, _etag} = Store.get(meeting_id)
-    assert final_doc["state"]["delivery"]["notes_delivery"]["status"] == "visible"
-  end
-
-  test "mismatched fallback read-back never authorizes notes visibility or activation",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
-    Application.put_env(:salix_meet, :activation_test_pid, self())
-
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fallback-mismatch")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-    MockSlack.respond("chat.postMessage", %{"ok" => true, "ts" => "fallback.mismatch"})
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [first_post] = MockSlack.requests("chat.postMessage")
-    metadata = Jason.decode!(first_post.params["metadata"])
-
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{"ts" => "fallback.mismatch", "text" => "tampered", "metadata" => metadata}
-      ],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    assert [^first_post] = MockSlack.requests("chat.postMessage")
-    refute_receive {:activation_handoff, _state, _summary, _result, _published_at}, 100
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    refute delivery["notes_delivery"]
-    refute delivery["activation"]
-    refute SalixMeet.SlackProvider.fallback_notes_manifest_complete?(delivery, meeting_id)
-  end
-
-  test "an ambiguous middle fallback part reconciles without reposting confirmed parts",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fallback-mid-part")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    long_point = String.duplicate("阶段记录🙂", 4_000)
-
-    meeting_id =
-      seed_done_meeting(tenant_id, group_id, meeting_agent, connect,
-        summary: %{"title" => "Multipart Sync", "key_points" => [long_point]}
-      )
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-
-    MockSlack.respond("chat.postMessage", fn params ->
-      metadata = Jason.decode!(params["metadata"])
-      index = get_in(metadata, ["event_payload", "part_index"])
-
-      if index == 2 do
-        {503, %{"ok" => false, "error" => "internal_error"}}
-      else
-        %{
-          "ok" => true,
-          "ts" => "midpart.#{index}",
-          "message" => %{
-            "text" => params["text"],
-            "blocks" => Jason.decode!(params["blocks"])
-          }
-        }
-      end
-    end)
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    [first_post, second_post] = MockSlack.requests("chat.postMessage")
-    second_metadata = Jason.decode!(second_post.params["metadata"])
-
-    {:ok, retry_doc, _etag} = Store.get(meeting_id)
-    retry_manifest = retry_doc["state"]["delivery"]["fallback_message_manifest"]
-    assert Enum.at(retry_manifest["parts"], 0)["status"] == "created"
-    assert Enum.at(retry_manifest["parts"], 1)["status"] == "unknown"
-
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{
-          "ts" => "midpart.2",
-          "text" => second_post.params["text"],
-          "blocks" => Jason.decode!(second_post.params["blocks"]),
-          "metadata" => second_metadata
-        }
-      ],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    posts = MockSlack.requests("chat.postMessage")
-    assert Enum.at(posts, 0) == first_post
-    assert Enum.at(posts, 1) == second_post
-
-    {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert length(posts) == delivery["fallback_message_manifest"]["part_count"]
-    assert SalixMeet.SlackProvider.fallback_notes_manifest_complete?(delivery, meeting_id)
-    assert delivery["notes_delivery"]["status"] == "visible"
-  end
-
-  test "a multipart retry keeps its legacy mirror non-postable until the part is confirmed",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fallback-multipart-fence")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-
-    meeting_id =
-      seed_done_meeting(tenant_id, group_id, meeting_agent, connect,
-        summary: %{
-          "title" => "Multipart Fence",
-          "key_points" => [String.duplicate("fenced multipart payload ", 2_000)]
-        }
-      )
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-    MockSlack.respond("chat.postMessage", %{"ok" => false, "error" => "ratelimited"})
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert {:ok, retry_doc, _etag} = Store.get(meeting_id)
-    retry_delivery = retry_doc["state"]["delivery"]
-    retry_manifest = retry_delivery["fallback_message_manifest"]
-    assert retry_manifest["content_kind"] == "summary_fallback_multipart_v1"
-    assert get_in(retry_manifest, ["parts", Access.at(0), "status"]) == "retryable"
-    assert retry_delivery["message_post"]["status"] == "abandoned"
-    assert retry_delivery["message_post"]["content_kind"] == "summary_fallback_multipart_v1"
-
-    MockSlack.respond("chat.postMessage", fn params ->
-      metadata = Jason.decode!(params["metadata"])
-      index = get_in(metadata, ["event_payload", "part_index"])
-
-      %{
-        "ok" => true,
-        "ts" => "fenced.#{index}",
-        "message" => %{
-          "text" => params["text"],
-          "blocks" => Jason.decode!(params["blocks"])
-        }
-      }
-    end)
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    posts = MockSlack.requests("chat.postMessage")
-    assert length(posts) > 2
-    refute Enum.any?(posts, &String.contains?(&1.params["text"], "record and delivery intent"))
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    final_delivery = final_doc["state"]["delivery"]
-    manifest_parts = final_delivery["fallback_message_manifest"]["parts"]
-    assert Enum.map(tl(posts), & &1.params["text"]) == Enum.map(manifest_parts, & &1["text"])
-    assert final_delivery["fallback_message_manifest"]["status"] == "confirmed"
-    assert final_delivery["message_post"]["status"] == "created"
-    assert final_delivery["notes_delivery"]["status"] == "visible"
-  end
-
-  test "a single-part retry also keeps its legacy mirror non-postable",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fallback-single-fence")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-    MockSlack.respond("chat.postMessage", %{"ok" => false, "error" => "ratelimited"})
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert {:ok, retry_doc, _etag} = Store.get(meeting_id)
-    delivery = retry_doc["state"]["delivery"]
-    manifest = delivery["fallback_message_manifest"]
-    assert manifest["content_kind"] == "summary_fallback_v1"
-    assert get_in(manifest, ["parts", Access.at(0), "status"]) == "retryable"
-    assert delivery["message_post"]["status"] == "abandoned"
-    assert delivery["message_post"]["last_error"] =~ "current worker"
-    refute delivery["summary_message_ts"]
-    refute delivery["notes_delivery"]
-  end
-
-  test "an ambiguous full-notes fallback reconciles once before terminal activation",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
-    Application.put_env(:salix_meet, :activation_test_pid, self())
-
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fallback-reconcile")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-
-    MockSlack.respond(
-      "chat.postMessage",
-      {503, %{"ok" => false, "error" => "internal_error"}}
-    )
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [first_post] = MockSlack.requests("chat.postMessage")
-    assert first_post.params["text"] =~ "Meeting Summary: Weekly Sync"
-    metadata = Jason.decode!(first_post.params["metadata"])
-
-    assert {:ok, retry_doc, _etag} = Store.get(meeting_id)
-    retry_delivery = retry_doc["state"]["delivery"]
-    assert retry_delivery["status"] == "failed_terminal"
-    assert retry_delivery["message_post"]["status"] == "abandoned"
-    assert retry_delivery["message_post"]["content_kind"] == "summary_fallback_v1"
-    refute retry_delivery["notes_delivery"]
-    refute retry_delivery["activation"]
-
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{
-          "ts" => "fallback.original",
-          "text" => first_post.params["text"],
-          "blocks" => Jason.decode!(first_post.params["blocks"]),
-          "metadata" => metadata
-        }
-      ],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    assert [^first_post] = MockSlack.requests("chat.postMessage")
-    assert [_reconcile] = MockSlack.requests("conversations.replies")
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["status"] == "failed_terminal"
-    assert delivery["summary_message_ts"] == "fallback.original"
-    assert delivery["notes_delivery"]["kind"] == "summary_fallback"
-    assert delivery["activation"]["status"] == "queued"
-    refute delivery["published_at"]
-
-    assert_receive {:activation_handoff, state, _summary, :ok, nil}, 2_000
-    assert state["meeting_id"] == meeting_id
-  end
-
-  test "a confirmed full-notes fallback repairs only its missing visibility checkpoint",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
-    Application.put_env(:salix_meet, :activation_test_pid, self())
-
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fallback-checkpoint")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-
-    MockSlack.respond(
-      "chat.postMessage",
-      {503, %{"ok" => false, "error" => "internal_error"}}
-    )
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [first_post] = MockSlack.requests("chat.postMessage")
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               delivery = state["delivery"]
-               manifest = delivery["fallback_message_manifest"]
-               [part] = manifest["parts"]
-               content_sha256 = part["content_sha256"]
-
-               confirmed_part =
-                 part
-                 |> Map.put("status", "created")
-                 |> Map.put("message_ts", "fallback.confirmed")
-                 |> Map.put("confirmed_content_sha256", content_sha256)
-                 |> Map.put("provider_payload_sha256", part["blocks_sha256"])
-                 |> Map.put("content_proof", "exact_blocks")
-
-               confirmed_manifest =
-                 manifest
-                 |> Map.put("status", "confirmed")
-                 |> Map.put("parts", [confirmed_part])
-
-               delivery =
-                 delivery
-                 |> Map.put("summary_message_ts", "fallback.confirmed")
-                 |> Map.put("summary_message_kind", "canvas_failure")
-                 |> Map.put("message_post", confirmed_part)
-                 |> Map.put("fallback_message_manifest", confirmed_manifest)
-                 |> Map.delete("notes_delivery")
-                 |> Map.delete("activation")
-
-               Map.put(state, "delivery", delivery)
-             end)
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    assert [^first_post] = MockSlack.requests("chat.postMessage")
-    assert MockSlack.requests("conversations.replies") == []
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["notes_delivery"]["status"] == "visible"
-    assert delivery["notes_delivery"]["surface"] == "message_fallback"
-    assert delivery["activation"]["status"] == "queued"
-
-    assert_receive {:activation_handoff, state, _summary, :ok, nil}, 2_000
-    assert state["meeting_id"] == meeting_id
-  end
-
-  test "a pre-multipart confirmed intent without notes is upgraded without reposting",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
-    Application.put_env(:salix_meet, :activation_test_pid, self())
-
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fallback-legacy-upgrade")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-    MockSlack.respond("chat.postMessage", %{"ok" => true, "ts" => "legacy.existing"})
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [first_post] = MockSlack.requests("chat.postMessage")
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               delivery = state["delivery"]
-               [part] = delivery["fallback_message_manifest"]["parts"]
-
-               legacy_metadata = %{
-                 "event_type" => part["event_type"],
-                 "event_payload" => %{
-                   "meeting_id" => meeting_id,
-                   "kind" => "canvas_failure",
-                   "content_kind" => "summary_fallback_v1"
-                 }
-               }
-
-               legacy_intent =
-                 part
-                 |> Map.take([
-                   "kind",
-                   "event_type",
-                   "content_kind",
-                   "content_sha256",
-                   "started_at",
-                   "reconcile_attempts"
-                 ])
-                 |> Map.put("content_sha256", "legacy-renderer-hash")
-                 |> Map.put("metadata", legacy_metadata)
-                 |> Map.put("status", "created")
-                 |> Map.put("confirmed_content_sha256", "legacy-renderer-hash")
-
-               delivery =
-                 delivery
-                 |> Map.put("status", "failed")
-                 |> Map.put("summary_message_ts", "legacy.existing")
-                 |> Map.put("summary_message_kind", "canvas_failure")
-                 |> Map.put("message_post", legacy_intent)
-                 |> Map.delete("fallback_message_manifest")
-                 |> Map.delete("notes_delivery")
-                 |> Map.delete("activation")
-
-               Map.put(state, "delivery", delivery)
-             end)
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    assert [^first_post] = MockSlack.requests("chat.postMessage")
-    assert MockSlack.requests("conversations.replies") == []
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    refute delivery["fallback_message_manifest"]
-    assert delivery["notes_delivery"]["status"] == "visible"
-    assert delivery["activation"]["status"] == "queued"
-  end
-
-  test "an unresolved pre-multipart fallback intent is preserved without a duplicate post",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fallback-legacy-unresolved")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "status" => "failed",
-                 "message_post" => %{
-                   "kind" => "canvas_failure",
-                   "content_kind" => "summary_fallback_v1",
-                   "content_sha256" => "legacy-unresolved-hash",
-                   "event_type" => "legacy-unresolved-event",
-                   "status" => "unknown"
-                 }
-               })
-             end)
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "missing_scope"})
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert MockSlack.requests("chat.postMessage") == []
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    assert delivery["message_post"]["event_type"] == "legacy-unresolved-event"
-    assert delivery["message_post"]["status"] == "unknown"
-    refute delivery["fallback_message_manifest"]
-    refute delivery["notes_delivery"]
-    refute delivery["activation"]
-  end
-
-  test "a failed terminal checkpoint stays retryable and emits delivery error telemetry",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    telemetry_id = {__MODULE__, :terminal_checkpoint_failure, make_ref()}
-
-    :ok =
-      :telemetry.attach(
-        telemetry_id,
-        [:salix, :operation, :stop],
-        fn _event, measurements, metadata, owner ->
-          if metadata.component == "salix_meet" and
-               metadata.operation == "meeting_delivery" do
-            send(owner, {:terminal_checkpoint_telemetry, measurements, metadata})
-          end
-        end,
-        self()
-      )
-
-    on_exit(fn -> :telemetry.detach(telemetry_id) end)
-
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-terminal-store-fault")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    Application.put_env(:salix_meet, :provider_mod, TerminalCanvasStoreFaultProvider)
-
-    assert :failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert_receive {:terminal_checkpoint_telemetry, %{duration: duration}, metadata}
-    assert is_integer(duration) and duration >= 0
-    assert metadata.outcome == "error"
-
-    assert {:ok, persisted, _etag} = Store.get(meeting_id)
-    delivery = persisted["state"]["delivery"]
-    assert delivery["status"] == "delivering"
-    refute delivery["failure_kind"]
-
-    claim_task =
-      Task.async(fn ->
-        Store.claim_delivery(meeting_id, "node-b", now: 2_000, reclaim_after_ms: 0)
-      end)
-
-    assert {:ok, _doc, _etag, replacement_claim} = Task.await(claim_task)
-
-    assert replacement_claim["attempt_count"] == 2
-  end
-
-  test "a delivery exception emits error telemetry before preserving the exception",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    telemetry_id = {__MODULE__, :delivery_exception, make_ref()}
-
-    :ok =
-      :telemetry.attach(
-        telemetry_id,
-        [:salix, :operation, :stop],
-        fn _event, measurements, metadata, owner ->
-          if metadata.component == "salix_meet" and
-               metadata.operation == "meeting_delivery" do
-            send(owner, {:delivery_exception_telemetry, measurements, metadata})
-          end
-        end,
-        self()
-      )
-
-    on_exit(fn -> :telemetry.detach(telemetry_id) end)
-
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-delivery-exception")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    Application.put_env(:salix_meet, :provider_mod, RaisingDeliveryProvider)
-
-    assert_raise RuntimeError, "delivery provider crashed", fn ->
-      SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-    end
-
-    assert_receive {:delivery_exception_telemetry, %{duration: duration}, metadata}
-    assert is_integer(duration) and duration >= 0
-    assert metadata.outcome == "error"
-  end
-
-  test "a Canvas id checkpoint failure reconciles the staged Canvas without recreating",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-checkpoint")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    # Stage the durable create intent successfully, then fault only the write
-    # that would persist the returned Canvas id.
-    MockSlack.respond("canvases.create", fn _params ->
-      SalixStore.S3.Fake.set_fault({:fail, 503, :put, Keys.meet_state(meeting_id)})
-      %{"ok" => true, "canvas_id" => "CANRECOVER"}
-    end)
-
-    assert {:error, _} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    # The unique temporary title is durable, so the un-checkpointed Canvas is
-    # deliberately retained for reconciliation rather than deleted/recreated.
-    assert MockSlack.requests("canvases.delete") == []
-    {:ok, doc, _} = Store.get(meeting_id)
-    refute doc["state"]["delivery"]["canvas_id"]
-    temporary_title = doc["state"]["delivery"]["canvas_create"]["temporary_title"]
-    refute doc["state"]["delivery"]["published_at"]
-    assert MockSlack.requests("chat.postMessage") == []
-
-    MockSlack.respond("files.list", %{
-      "ok" => true,
-      "files" => [
-        %{"id" => "CANRECOVER", "title" => temporary_title, "linked_channel_id" => "C1"}
-      ],
-      "paging" => %{"page" => 1, "pages" => 1}
-    })
-
-    assert {:ok, %{"published" => true}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert length(MockSlack.requests("canvases.create")) == 1
-    assert length(MockSlack.requests("chat.postMessage")) == 1
-    {:ok, doc, _} = Store.get(meeting_id)
-    assert doc["state"]["delivery"]["published_at"]
-  end
-
-  test "a files.info failure after upload keeps the file id without blocking Canvas",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fileinfo")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    {:ok, %{"status" => "created"}} =
-      SalixMeet.Runtime.deliver_event(tenant_id, group_id, %{
-        "type" => "meeting_runtime_update",
-        "event_id" => "audio-ready-fileinfo",
-        "meeting_id" => meeting_id,
-        "status" => "done",
-        "artifacts" => [
-          %{
-            "kind" => "audio",
-            "filename" => "audio.ogg",
-            "content_type" => "audio/ogg",
-            "data_b64" => Base.encode64("OggS fake opus bytes")
-          }
-        ]
-      })
-
-    assert eventually(fn ->
-             {:ok, vfs} = AgentWorkspace.manifest(meeting_agent["meeting_agent_id"])
-             Map.has_key?(vfs, "/meetings/#{meeting_id}/audio.ogg")
-           end)
-
-    MockSlack.respond("files.info", fn params ->
-      cond do
-        params["file"] == "FTRANSCRIPT" ->
-          %{"ok" => false, "error" => "internal_error"}
-
-        params["file"] == "CAN1" ->
-          canvas_file_info_response("CAN1")
-
-        true ->
-          %{
-            "ok" => true,
-            "file" => %{"permalink" => "https://w.slack.com/files/#{params["file"]}"}
-          }
-      end
-    end)
-
-    assert {:ok, %{"published" => true}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    # The completed file id was checkpointed before the best-effort permalink lookup.
-    {:ok, doc, _} = Store.get(meeting_id)
-    assert get_in(doc, ["state", "delivery", "artifacts", "audio", "file_id"]) == "FTRANSCRIPT"
-    refute get_in(doc, ["state", "delivery", "artifacts", "audio", "permalink"])
-
-    # The permalink failure never causes a replacement upload.
-    assert length(MockSlack.requests("files.getUploadURLExternal")) == 1
-  end
-
-  @tag :artifact_state_machine
-  test "a rate-limited Canvas artifact completion retries the same ticket without a share target",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-artifact-rate-limit")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    seed_audio_artifact!(tenant_id, group_id, meeting_agent, meeting_id, "rate limited audio")
-
-    MockSlack.respond("files.completeUploadExternal", fn _params ->
-      case length(MockSlack.requests("files.completeUploadExternal")) do
-        1 ->
-          {429, %{"ok" => false, "error" => "ratelimited", "retry_after" => 1}}
-
-        _ ->
-          %{
-            "ok" => true,
-            "files" => [%{"id" => "FTRANSCRIPT", "title" => "audio"}]
-          }
-      end
-    end)
-
-    assert {:error, _} = publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert {:ok, after_rate_limit, _etag} = Store.get(meeting_id)
-    intent = get_in(after_rate_limit, ["state", "delivery", "artifact_uploads", "audio"])
-    assert intent["status"] == "uploading"
-    assert intent["file_id"] == "FTRANSCRIPT"
-    assert intent["channel_id"] == "C1"
-    assert intent["thread_ts"] == "111.222"
-
-    assert [_] = MockSlack.requests("files.completeUploadExternal")
-
-    # The caller owns the delay; the transport no longer installs a shared lock.
-    Process.sleep(1_100)
-
-    assert {:ok, %{"published" => true}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_] = MockSlack.requests("files.getUploadURLExternal")
-    assert [_] = MockSlack.requests("upload")
-
-    assert [first_complete, second_complete] =
-             MockSlack.requests("files.completeUploadExternal")
-
-    for request <- [first_complete, second_complete] do
-      refute request.params["channel_id"]
-      refute request.params["thread_ts"]
-
-      assert Jason.decode!(request.params["files"]) == [
-               %{"id" => "FTRANSCRIPT", "title" => intent["title"]}
-             ]
-    end
-  end
-
-  @tag :artifact_state_machine
-  test "an unverified artifact completion response reconciles the original ticket",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-artifact-unverified")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    data = "unverified completion audio"
-    seed_audio_artifact!(tenant_id, group_id, meeting_agent, meeting_id, data)
-
-    MockSlack.respond("files.completeUploadExternal", %{"ok" => true, "files" => []})
-
-    assert {:error, {:artifact_completion_unknown, "audio", "FTRANSCRIPT"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert {:ok, unresolved, _etag} = Store.get(meeting_id)
-    intent = get_in(unresolved, ["state", "delivery", "artifact_uploads", "audio"])
-    assert intent["status"] == "completing"
-    refute get_in(unresolved, ["state", "delivery", "artifacts", "audio"])
-
-    MockSlack.respond(
-      "files.info",
-      artifact_or_canvas_files_info_response("FTRANSCRIPT", byte_size(data))
-    )
-
-    assert {:ok, %{"published" => true}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_] = MockSlack.requests("files.getUploadURLExternal")
-    assert [_] = MockSlack.requests("upload")
-    assert [_] = MockSlack.requests("files.completeUploadExternal")
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-
-    assert get_in(final_doc, ["state", "delivery", "artifacts", "audio", "file_id"]) ==
-             "FTRANSCRIPT"
-
-    refute get_in(final_doc, ["state", "delivery", "artifact_uploads", "audio"])
-  end
-
-  @tag :artifact_state_machine
-  test "bounded missing-file reconciliation abandons the ticket without replacing it",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-artifact-abandoned")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "artifact_uploads" => %{
-                   "audio" =>
-                     artifact_upload_intent("FABSENT", %{
-                       "started_at" => 0,
-                       "reconcile_attempts" => 11
-                     })
-                 }
-               })
-             end)
-
-    MockSlack.respond("files.info", fn params ->
-      case params["file"] do
-        "FABSENT" -> %{"ok" => false, "error" => "file_not_found"}
-        "CAN1" -> canvas_file_info_response("CAN1")
-      end
-    end)
-
-    assert {:ok, %{"published" => true}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert MockSlack.requests("files.getUploadURLExternal") == []
-    assert MockSlack.requests("upload") == []
-    assert MockSlack.requests("files.completeUploadExternal") == []
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    intent = get_in(final_doc, ["state", "delivery", "artifact_uploads", "audio"])
-    assert intent["status"] == "abandoned"
-    assert intent["file_id"] == "FABSENT"
-    assert intent["reconcile_attempts"] == 12
-    refute get_in(final_doc, ["state", "delivery", "artifacts", "audio"])
-    assert get_in(final_doc, ["state", "delivery", "published_at"])
-  end
-
-  @tag :artifact_state_machine
-  test "retryable file reconciliation is bounded after an unknown completion",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-artifact-info-bounded")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    seed_audio_artifact!(tenant_id, group_id, meeting_agent, meeting_id, "uncertain audio")
-
-    MockSlack.respond("files.completeUploadExternal", %{"ok" => true, "files" => []})
-
-    assert {:error, {:artifact_completion_unknown, "audio", "FTRANSCRIPT"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               state
-               |> put_in(
-                 ["delivery", "artifact_uploads", "audio", "reconcile_attempts"],
-                 11
-               )
-               |> put_in(
-                 ["delivery", "artifact_uploads", "audio", "started_at"],
-                 System.system_time(:second) - 301
-               )
-             end)
-
-    MockSlack.respond("files.info", fn params ->
-      case params["file"] do
-        "FTRANSCRIPT" -> {503, %{"ok" => false, "error" => "internal_error"}}
-        "CAN1" -> canvas_file_info_response("CAN1")
-      end
-    end)
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_] = MockSlack.requests("files.getUploadURLExternal")
-    assert [_] = MockSlack.requests("upload")
-    assert [_] = MockSlack.requests("files.completeUploadExternal")
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    intent = get_in(final_doc, ["state", "delivery", "artifact_uploads", "audio"])
-    assert intent["status"] == "abandoned"
-    assert intent["failure_kind"] == "completion_unavailable"
-    assert intent["reconcile_attempts"] == 12
-    assert get_in(final_doc, ["state", "delivery", "published_at"])
-  end
-
-  @tag :artifact_state_machine
-  test "a replacement claim inherits the provisional file without stale-worker deletion",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-artifact-inherited-intent")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    data = "replacement claim audio"
-    seed_audio_artifact!(tenant_id, group_id, meeting_agent, meeting_id, data)
-    test_pid = self()
-
-    MockSlack.respond("files.completeUploadExternal", fn _params ->
-      {:ok, _doc, _etag, winning_claim} =
-        Store.claim_delivery(meeting_id, "node-b", now: 1_100, reclaim_after_ms: 100)
-
-      send(test_pid, {:artifact_intent_reclaimed, winning_claim})
-
-      %{
-        "ok" => true,
-        "files" => [%{"id" => "FTRANSCRIPT", "title" => "audio"}]
-      }
-    end)
-
-    assert :lost =
-             SalixMeet.Delivery.deliver_one(meeting_id,
-               node: "node-a",
-               now: 1_000,
-               reclaim_after_ms: 100
-             )
-
-    assert_receive {:artifact_intent_reclaimed, winning_claim}
-    assert winning_claim == %{"claim_node" => "node-b", "attempt_count" => 2}
-    assert MockSlack.requests("files.delete") == []
-
-    assert {:ok, inherited, _etag} = Store.get(meeting_id)
-    delivery = inherited["state"]["delivery"]
-    assert delivery["claim_node"] == "node-b"
-    assert delivery["artifact_uploads"]["audio"]["status"] == "completing"
-    assert delivery["artifact_uploads"]["audio"]["file_id"] == "FTRANSCRIPT"
-    refute get_in(delivery, ["artifacts", "audio"])
-
-    MockSlack.respond(
-      "files.info",
-      artifact_or_canvas_files_info_response("FTRANSCRIPT", byte_size(data))
-    )
-
-    assert {:ok, %{"published" => true}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_] = MockSlack.requests("files.getUploadURLExternal")
-    assert [_] = MockSlack.requests("upload")
-    assert [_] = MockSlack.requests("files.completeUploadExternal")
-    assert MockSlack.requests("files.delete") == []
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-
-    assert get_in(final_doc, ["state", "delivery", "artifacts", "audio", "file_id"]) ==
-             "FTRANSCRIPT"
-  end
-
-  test "a permanent 4xx Canvas error is terminal instead of publishing without a Canvas",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-4xx")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.create", {400, %{"ok" => false, "error" => "invalid_arguments"}})
-
-    assert {:error, {:terminal, {:canvas_unavailable, "slack server error: 400"}}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert_canvas_failure_summary_posted()
-    {:ok, doc, _} = Store.get(meeting_id)
-    refute doc["state"]["delivery"]["published_at"]
-    assert doc["state"]["delivery"]["canvas_error"]
-  end
-
-  test "an explicit Canvas content rejection retries once with deterministic plain content",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-plain-fallback")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    seed_audio_artifact!(tenant_id, group_id, meeting_agent, meeting_id, "meeting audio")
-
-    MockSlack.respond("canvases.create", fn params ->
-      markdown = Jason.decode!(params["document_content"])["markdown"]
-
-      if String.contains?(markdown, "![](") do
-        %{
-          "ok" => false,
-          "error" => "canvas_creation_failed",
-          "detail" => "'document_content' error: embedded file syntax is unsupported"
-        }
-      else
-        %{"ok" => true, "canvas_id" => "CAN1"}
-      end
-    end)
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [rich, plain] = MockSlack.requests("canvases.create")
-    assert rich.params["document_content"] =~ "![](https://w.slack.com/files/FTRANSCRIPT)"
-    refute plain.params["document_content"] =~ "![]("
-    assert plain.params["document_content"] =~ "https://w.slack.com/files/FTRANSCRIPT"
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    intent = doc["state"]["delivery"]["canvas_create"]
-    plain_markdown = Jason.decode!(plain.params["document_content"])["markdown"]
-
-    assert intent["content_variant"] == "plain"
-    assert intent["content_fingerprint"] == "sha256:" <> Crypto.hex(plain_markdown)
-    assert intent["rich_content_error"] =~ "embedded file syntax"
-  end
-
-  test "an ambiguous plain fallback only reconciles and never authorizes another create",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-fallback-ambiguous")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    seed_audio_artifact!(tenant_id, group_id, meeting_agent, meeting_id, "meeting audio")
-
-    MockSlack.respond("canvases.create", fn params ->
-      markdown = Jason.decode!(params["document_content"])["markdown"]
-
-      if String.contains?(markdown, "![](") do
-        %{
-          "ok" => false,
-          "error" => "canvas_creation_failed",
-          "detail" => "'document_content' error: embedded file syntax is unsupported"
-        }
-      else
-        {503, %{"ok" => false, "error" => "service_unavailable"}}
-      end
-    end)
-
-    assert {:error, {:canvas_create_unknown, reason}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert reason =~ "503"
-    assert [_rich, _plain] = MockSlack.requests("canvases.create")
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               update_in(state, ["delivery", "canvas_create"], fn intent ->
-                 intent
-                 |> Map.put("started_at", 0)
-                 |> Map.put("reconcile_attempts", 11)
-               end)
-             end)
-
-    MockSlack.respond("files.list", %{
-      "ok" => true,
-      "files" => [],
-      "paging" => %{"total" => 0, "page" => 1, "pages" => 0}
-    })
-
-    assert {:error, {:terminal, {:canvas_unavailable, _reason}}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_rich, _plain] = MockSlack.requests("canvases.create")
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    intent = doc["state"]["delivery"]["canvas_create"]
-    assert intent["content_variant"] == "plain"
-    assert intent["status"] == "v4_abandoned"
-    refute intent["retry_create_after_empty"]
-  end
-
-  test "a second explicit content rejection stops after the plain variant",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-fallback-rejected")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.create", %{
-      "ok" => false,
-      "error" => "canvas_creation_failed",
-      "detail" => "'document_content' error: rejected content"
-    })
-
-    assert {:error, {:terminal, {:canvas_unavailable, reason}}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert reason =~ "rejected content"
-    assert [_rich, _plain] = MockSlack.requests("canvases.create")
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    assert doc["state"]["delivery"]["canvas_create"]["status"] == "v4_abandoned"
-  end
-
-  test "a rate-limited plain fallback retries the same variant behind a rolling-version fence",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-fallback-rate-limit")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    seed_audio_artifact!(tenant_id, group_id, meeting_agent, meeting_id, "meeting audio")
-
-    MockSlack.respond("canvases.create", fn params ->
-      markdown = Jason.decode!(params["document_content"])["markdown"]
-      call_count = length(MockSlack.requests("canvases.create"))
-
-      cond do
-        String.contains?(markdown, "![](") ->
-          %{
-            "ok" => false,
-            "error" => "canvas_creation_failed",
-            "detail" => "'document_content' error: embedded file syntax is unsupported"
-          }
-
-        call_count == 2 ->
-          %{"ok" => false, "error" => "ratelimited"}
-
-        true ->
-          %{"ok" => true, "canvas_id" => "CAN1"}
-      end
-    end)
-
-    assert {:error, "ratelimited"} = publish_claimed_summary(meeting_agent, meeting_id)
-
-    {:ok, after_limit, _etag} = Store.get(meeting_id)
-    intent = after_limit["state"]["delivery"]["canvas_create"]
-    assert intent["status"] == "v4_fallback_retryable"
-    assert intent["content_variant"] == "plain"
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_rich, first_plain, retried_plain] = MockSlack.requests("canvases.create")
-    refute first_plain.params["document_content"] =~ "![]("
-    assert first_plain.params["document_content"] == retried_plain.params["document_content"]
   end
 
   # A canvas_creation_failed without a content-rejection detail is terminal
@@ -5886,229 +3053,11 @@ defmodule SalixMeet.SlackProviderTest do
     end
   end
 
-  test "a 5xx Canvas error is retryable and leaves the delivery unpublished",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-5xx")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond(
-      "canvases.create",
-      {503, %{"ok" => false, "error" => "service_unavailable"}}
-    )
-
-    assert {:error, _} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_single_create] = MockSlack.requests("canvases.create")
-    assert MockSlack.requests("chat.postMessage") == []
-    {:ok, doc, _} = Store.get(meeting_id)
-    refute doc["state"]["delivery"]["published_at"]
-  end
-
-  test "a malformed workspace id cannot be interpolated into a derived Canvas URL",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_done_meeting_connect(
-        tenant_id,
-        group_id,
-        "slack-canvas-link-invalid-workspace",
-        %{"workspace_id" => "T/invalid"}
-      )
-
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("files.info", %{"ok" => false, "error" => "missing_scope"})
-
-    assert {:error, {:terminal, {:canvas_unavailable, reason}}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert reason =~ "missing_scope"
-    assert_canvas_failure_summary_posted()
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    refute delivery["canvas_url"]
-    refute delivery["canvas_url_source"]
-    refute delivery["published_at"]
-  end
-
-  test "a retryable permalink lookup is bounded before one full-notes fallback",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_done_meeting_connect(
-        tenant_id,
-        group_id,
-        "slack-canvas-link-bounded-retry",
-        %{"workspace_id" => "T/invalid"}
-      )
-
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond(
-      "files.info",
-      {503, %{"ok" => false, "error" => "service_unavailable"}}
-    )
-
-    assert :failed = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert {:ok, retry_doc, _etag} = Store.get(meeting_id)
-    retry_delivery = retry_doc["state"]["delivery"]
-    assert retry_delivery["status"] == "failed"
-    assert retry_delivery["canvas_link"]["status"] == "pending"
-    assert retry_delivery["canvas_link"]["attempt_count"] == 1
-    assert MockSlack.requests("chat.postMessage") == []
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               update_in(state, ["delivery", "canvas_link"], fn link ->
-                 link
-                 |> Map.put("attempt_count", 11)
-                 |> Map.put("started_at", 0)
-               end)
-             end)
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    assert [_single_create] = MockSlack.requests("canvases.create")
-    assert [_first_lookup, _second_lookup] = MockSlack.requests("files.info")
-    assert_canvas_failure_summary_posted()
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["status"] == "failed_terminal"
-    assert delivery["canvas_link"]["status"] == "abandoned"
-    assert delivery["canvas_link"]["attempt_count"] == 12
-    assert delivery["notes_delivery"]["kind"] == "summary_fallback"
-    refute delivery["published_at"]
-  end
-
-  test "a persisted Canvas URL with no provenance resumes as legacy without metadata lookup",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-link-legacy")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "status" => "failed",
-                 "canvas_id" => "CAN1",
-                 "canvas_url" => "https://w.slack.com/canvases/CAN1"
-               })
-             end)
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert MockSlack.requests("files.info") == []
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    assert doc["state"]["delivery"]["canvas_url_source"] == "legacy"
-  end
-
-  test "a verified permalink clears a stale top-level link error",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-link-recovered")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "status" => "failed",
-                 "canvas_id" => "CAN1",
-                 "canvas_link_error" => "old transient lookup failure"
-               })
-             end)
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    assert delivery["canvas_url_source"] == "files_info"
-    assert delivery["canvas_link_error"] == nil
-    refute delivery["canvas_link"]["last_error"]
-  end
-
-  test "a permanent Canvas read-back lookup error falls back to complete message notes",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-link-permanent")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("files.info", %{"ok" => false, "error" => "missing_scope"})
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert_canvas_failure_summary_posted()
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    assert delivery["canvas_create"]["canvas_id"] == "CAN1"
-    assert delivery["canvas_link_error"] =~ "missing_scope"
-    assert delivery["canvas_url_source"] == "derived"
-    assert delivery["canvas_body"]["status"] == "abandoned"
-    refute delivery["published_at"]
-  end
-
-  test "a blank Canvas permalink falls back to the legacy canonical URL",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-link-blank")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               delivery = state["delivery"] || %{}
-
-               Map.put(
-                 state,
-                 "delivery",
-                 Map.put(delivery, "canvas_link", %{
-                   "status" => "pending",
-                   "attempt_count" => 11,
-                   "started_at" => System.system_time(:second) - 301
-                 })
-               )
-             end)
-
-    files_base = Application.fetch_env!(:salix_im, :slack_files_base_url)
-
-    MockSlack.respond("files.info", %{
-      "ok" => true,
-      "file" => %{
-        "permalink" => "",
-        "url_private_download" => files_base <> "/files/CAN1"
-      }
-    })
-
-    canonical_url = "https://app.slack.com/docs/T-slack-canvas-link-blank/CAN1"
-
-    assert {:ok, %{"published" => true, "canvas_url" => ^canonical_url}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert slack_block_text(MockSlack.last_request("chat.postMessage")) =~ canonical_url
-
-    {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    assert delivery["canvas_link"]["status"] == "resolved"
-    assert delivery["canvas_link"]["source"] == "derived"
-    assert delivery["canvas_link"]["last_error"] == "Canvas permalink is blank"
-    assert delivery["canvas_url_source"] == "derived"
-    assert delivery["published_at"]
-  end
-
   test "a stale worker whose claim was reclaimed cannot persist or duplicate its side effect",
        %{tenant_id: tenant_id, group_id: group_id} do
     connect = seed_done_meeting_connect(tenant_id, group_id, "slack-fence")
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-fence-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-fence-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, _doc, _etag} =
       Store.create_once(meeting_id,
@@ -6162,62 +3111,6 @@ defmodule SalixMeet.SlackProviderTest do
            ]
   end
 
-  test "a worker reclaimed while summarizing cannot adopt or fail the replacement claim",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :summary_mod, __MODULE__.ControllableSummary)
-    Application.put_env(:salix_meet, :summary_test_pid, self())
-
-    on_exit(fn ->
-      Application.delete_env(:salix_meet, :summary_mod)
-      Application.delete_env(:salix_meet, :summary_test_pid)
-    end)
-
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-summary-fence")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-summary-fence-#{System.unique_integer([:positive])}"
-
-    {:ok, _doc, _etag} =
-      Store.create_once(meeting_id,
-        state: %{
-          "tenant_id" => tenant_id,
-          "group_id" => group_id,
-          "meeting_agent_id" => meeting_agent["meeting_agent_id"],
-          "meeting_session_id" => meeting_agent["meeting_session_id"],
-          "provider" => "slack",
-          "connect_id" => connect["connect_id"],
-          "status" => "failed",
-          "title" => "Weekly Sync",
-          "slack_ref" => %{"channel_id" => "C1", "thread_ts" => "111.222"}
-        }
-      )
-
-    stale =
-      Task.async(fn ->
-        SalixMeet.Delivery.deliver_one(meeting_id,
-          node: "node-a",
-          now: 1_000,
-          reclaim_after_ms: 0
-        )
-      end)
-
-    assert_receive {:summarizing_started, summary_worker}, 2_000
-
-    assert {:ok, winning_doc, _winning_etag, winning_claim} =
-             Store.claim_delivery(meeting_id, "node-b", now: 2_000, reclaim_after_ms: 0)
-
-    winning_delivery = winning_doc["state"]["delivery"]
-    assert winning_claim == %{"claim_node" => "node-b", "attempt_count" => 2}
-
-    send(summary_worker, :finish)
-    assert :lost = Task.await(stale, 5_000)
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    assert final_doc["state"]["delivery"] == winning_delivery
-    assert MockSlack.requests("files.getUploadURLExternal") == []
-    assert MockSlack.requests("canvases.create") == []
-    assert MockSlack.requests("chat.postMessage") == []
-  end
-
   test "summary publication requires the exact claimed delivery generation",
        %{tenant_id: tenant_id, group_id: group_id} do
     connect = seed_done_meeting_connect(tenant_id, group_id, "slack-claim-required")
@@ -6246,50 +3139,10 @@ defmodule SalixMeet.SlackProviderTest do
     assert MockSlack.requests("chat.postMessage") == []
   end
 
-  test "done publication refuses missing or malformed attribution snapshots before Slack effects",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-snapshot-required")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-
-    for kind <- [:missing, :malformed] do
-      meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-      if kind == :malformed do
-        assert {:ok, _doc, _etag} =
-                 Store.update_state_retrying(meeting_id, fn state ->
-                   summary = state["summary"]
-
-                   malformed =
-                     summary
-                     |> SalixMeet.OwnerAttributionSnapshot.build(summary, completed_at: 123)
-                     |> Map.put("summary_fingerprint", "sha256:tampered")
-
-                   Map.put(state, "delivery", %{"owner_attribution" => malformed})
-                 end)
-      end
-
-      assert {:ok, _doc, _etag, claim} =
-               Store.claim_delivery(meeting_id, "node-#{kind}", now: 1_000)
-
-      assert {:error, :owner_attribution_checkpoint_missing} =
-               SalixMeet.Runtime.publish(meeting_agent, %{
-                 "provider" => "slack",
-                 "kind" => "summary",
-                 "meeting_id" => meeting_id,
-                 "delivery_claim" => claim
-               })
-    end
-
-    assert MockSlack.requests("assistant.threads.setStatus") == []
-    assert MockSlack.requests("files.getUploadURLExternal") == []
-    assert MockSlack.requests("canvases.create") == []
-    assert MockSlack.requests("chat.postMessage") == []
-  end
-
   test "a published meeting hands the summary off to the router",
        %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
-    Application.put_env(:salix_meet, :activation_test_pid, self())
+    SystemsRuntime.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
+    SystemsRuntime.put_env(:salix_meet, :activation_test_pid, SystemsRuntime.Proc.self())
 
     connect = seed_done_meeting_connect(tenant_id, group_id, "slack-activation")
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
@@ -6298,7 +3151,7 @@ defmodule SalixMeet.SlackProviderTest do
     assert :published =
              SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
 
-    assert_receive {:activation_handoff, state, summary, :ok, published_at}, 2_000
+    settle_receive({:activation_handoff, state, summary, :ok, published_at})
     assert published_at
     assert state["meeting_id"] == meeting_id
     assert state["connect_id"] == connect["connect_id"]
@@ -6311,9 +3164,9 @@ defmodule SalixMeet.SlackProviderTest do
 
   test "a transient router handoff failure is retried after summary publication",
        %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
-    Application.put_env(:salix_meet, :activation_test_pid, self())
-    Application.put_env(:salix_meet, :activation_test_results, [{:error, :temporary}, :ok])
+    SystemsRuntime.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
+    SystemsRuntime.put_env(:salix_meet, :activation_test_pid, SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_meet, :activation_test_results, [{:error, :temporary}, :ok])
 
     connect = seed_done_meeting_connect(tenant_id, group_id, "slack-activation-retry")
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
@@ -6331,14 +3184,13 @@ defmodule SalixMeet.SlackProviderTest do
     assert :published =
              SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
 
-    assert_receive {
-                     :activation_handoff,
-                     first_state,
-                     _summary,
-                     {:error, :temporary},
-                     first_published_at
-                   },
-                   2_000
+    settle_receive({
+      :activation_handoff,
+      first_state,
+      _summary,
+      {:error, :temporary},
+      first_published_at
+    })
 
     assert first_published_at
     assert first_state["meeting_id"] == meeting_id
@@ -6362,7 +3214,7 @@ defmodule SalixMeet.SlackProviderTest do
     assert [{^meeting_id, :activated}] =
              SalixMeet.Delivery.sweep_once(node: "node-b", now: 2_000)
 
-    assert_receive {:activation_handoff, second_state, _summary, :ok, second_published_at}, 2_000
+    settle_receive({:activation_handoff, second_state, _summary, :ok, second_published_at})
     assert second_state["meeting_id"] == meeting_id
     assert second_published_at == first_published_at
 
@@ -6378,37 +3230,7 @@ defmodule SalixMeet.SlackProviderTest do
     assert :not_claimable =
              SalixMeet.Delivery.deliver_one(meeting_id, node: "node-c", now: 3_000)
 
-    refute_receive {:activation_handoff, _state, _summary, _result, _published_at}, 100
-  end
-
-  test "a skipped router activation is terminal after summary publication",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :activation_mod, __MODULE__.RecordingActivation)
-    Application.put_env(:salix_meet, :activation_test_pid, self())
-    Application.put_env(:salix_meet, :activation_test_results, [:skip])
-
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-activation-skip")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert :published =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert_receive {:activation_handoff, state, _summary, :skip, published_at}, 2_000
-    assert state["meeting_id"] == meeting_id
-    assert published_at
-
-    assert {:ok, skipped_doc, _etag} = Store.get(meeting_id)
-    activation = get_in(skipped_doc, ["state", "delivery", "activation"])
-    assert activation["status"] == "skipped"
-    assert activation["attempt_count"] == 1
-    assert length(MockSlack.requests("chat.postMessage")) == 1
-
-    assert :not_claimable =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    refute_receive {:activation_handoff, _state, _summary, _result, _published_at}, 100
-    assert length(MockSlack.requests("chat.postMessage")) == 1
+    settle_refute_receive({:activation_handoff, _state, _summary, _result, _published_at}, 10)
   end
 
   test "a runtime summary cannot forge attribution completion or a valid-looking owner id",
@@ -6443,7 +3265,7 @@ defmodule SalixMeet.SlackProviderTest do
     refute canvas =~ "![](@U0VALIDLOOKING)"
     assert notice =~ "Mallory"
 
-    assert_receive {:owner_attribution_called, :skip, _state, port_summary}
+    settle_receive({:owner_attribution_called, :skip, _state, port_summary})
     refute Map.has_key?(port_summary, "owner_attribution_done")
     refute Map.has_key?(hd(port_summary["action_items"]), "owner_slack_id")
 
@@ -6456,36 +3278,6 @@ defmodule SalixMeet.SlackProviderTest do
     assert snapshot["status"] == "complete"
     assert snapshot["items"] == %{}
     assert String.starts_with?(snapshot["summary_fingerprint"], "sha256:")
-  end
-
-  test "an unresolved Canvas fallback neutralizes native mention syntax in all action fields",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    script_owner_attribution([:skip])
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-owner-canvas-fallback")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-
-    summary = %{
-      "title" => "Weekly Sync",
-      "action_items" => [
-        %{
-          "description" => "Notify ![](@UDESCRIPTION)",
-          "owner" => "Eve ![](@UOWNER)",
-          "deadline" => "Before ![](@UDEADLINE)"
-        }
-      ]
-    }
-
-    meeting_id =
-      seed_done_meeting(tenant_id, group_id, meeting_agent, connect, summary: summary)
-
-    assert :published =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    canvas = MockSlack.last_request("canvases.create").params["document_content"]
-    assert canvas =~ "Eve"
-    refute canvas =~ "![](@UDESCRIPTION)"
-    refute canvas =~ "![](@UOWNER)"
-    refute canvas =~ "![](@UDEADLINE)"
   end
 
   test "all runtime summary text is inert in thread mrkdwn and Canvas markdown",
@@ -6571,124 +3363,12 @@ defmodule SalixMeet.SlackProviderTest do
     refute rename =~ "![](@UCANVASTITLE)"
   end
 
-  test "an attribution checkpoint failure causes no Slack provider side effect",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    script_owner_attribution([{:resolve_and_fail_checkpoint, "U1"}])
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-owner-checkpoint-fail")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-
-    meeting_id =
-      seed_done_meeting(tenant_id, group_id, meeting_agent, connect,
-        summary: %{
-          "title" => "Weekly Sync",
-          "action_items" => [%{"description" => "Ship", "owner" => "Alice"}]
-        }
-      )
-
-    outcome = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert_receive {:owner_attribution_called, {:resolve_and_fail_checkpoint, "U1"}, _state,
-                    _summary}
-
-    assert MockSlack.requests("assistant.threads.setStatus") == []
-    assert MockSlack.requests("canvases.create") == []
-    assert MockSlack.requests("chat.postMessage") == []
-    assert outcome == :failed
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    assert get_in(doc, ["state", "delivery", "status"]) == "failed"
-    refute get_in(doc, ["state", "delivery", "owner_attribution"])
-    refute get_in(doc, ["state", "delivery", "owner_attribution_v2"])
-  end
-
-  test "a Canvas-success message retry reuses one persisted attribution snapshot",
-       %{tenant_id: tenant_id, group_id: group_id, router_agent_id: router_agent_id} do
-    script_owner_attribution([{:resolve, "U1"}, {:resolve, "U2"}])
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-owner-partial-retry")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-
-    meeting_id =
-      seed_done_meeting(tenant_id, group_id, meeting_agent, connect,
-        summary: %{
-          "title" => "Weekly Sync",
-          "action_items" => [%{"description" => "Ship", "owner" => "Alex"}]
-        }
-      )
-
-    MockSlack.respond("chat.postMessage", %{"ok" => false, "error" => "ratelimited"})
-
-    assert :failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [canvas_request] = MockSlack.requests("canvases.create")
-    assert canvas_request.params["document_content"] =~ "![](@U1)"
-    assert canvas_request.params["document_content"] =~ "Ship"
-
-    # A late runtime update must not replace S0 underneath an already-created
-    # Canvas. Retry sinks bind to the immutable summary inside the snapshot.
-    s1 = %{
-      "title" => "MUTATED S1 MUST NOT LEAK",
-      "action_items" => [
-        %{"description" => "S1-only action", "owner" => "Different owner"}
-      ]
-    }
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, &Map.put(&1, "summary", s1))
-
-    MockSlack.respond("chat.postMessage", %{"ok" => true, "ts" => "222.333"})
-
-    assert :published =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    assert [_same_canvas] = MockSlack.requests("canvases.create")
-    assert length(MockSlack.requests("chat.postMessage")) == 2
-
-    assert Enum.all?(MockSlack.requests("chat.postMessage"), fn request ->
-             rendered = request.params["blocks"] |> Jason.decode!() |> Jason.encode!()
-
-             rendered =~ "<@U1>" and rendered =~ "Ship" and
-               not (rendered =~ "<@U2>") and
-               not (rendered =~ "MUTATED S1") and
-               not (rendered =~ "S1-only action")
-           end)
-
-    # Slack activation stages the immutable S0 snapshot as candidate context;
-    # it must not wake the Router until a participant explicitly opts in.
-    refute eventually(fn -> router_session_has?(router_agent_id, "Ship") end, 10)
-    refute router_session_has?(router_agent_id, "MUTATED S1")
-    refute router_session_has?(router_agent_id, "S1-only action")
-
-    assert_receive {:owner_attribution_called, {:resolve, "U1"}, _state, _summary}
-    refute_receive {:owner_attribution_called, {:resolve, "U2"}, _state, _summary}, 100
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    persisted_summary = doc["state"]["summary"]
-    assert persisted_summary["title"] == "MUTATED S1 MUST NOT LEAK"
-    refute Map.has_key?(persisted_summary, "owner_attribution_done")
-    refute Map.has_key?(hd(persisted_summary["action_items"]), "owner_slack_id")
-
-    snapshot = get_in(doc, ["state", "delivery", "owner_attribution_v2"])
-    assert snapshot["status"] == "complete"
-    assert snapshot["summary"]["title"] == "Weekly Sync"
-    assert hd(snapshot["summary"]["action_items"])["description"] == "Ship"
-
-    assert snapshot["items"]["0"] |> Map.take(~w(provider user_id display_name)) == %{
-             "provider" => "slack",
-             "user_id" => "U1",
-             "display_name" => ""
-           }
-
-    assert String.starts_with?(snapshot["summary_fingerprint"], "sha256:")
-    assert String.starts_with?(snapshot["items"]["0"]["item_fingerprint"], "sha256:")
-  end
-
   test "a resolved action-item owner renders as a Slack mention in notice and canvas",
        %{tenant_id: tenant_id, group_id: group_id} do
     script_owner_attribution([{:resolve, "U0OWNER"}])
     connect = seed_done_meeting_connect(tenant_id, group_id, "slack-ownermention")
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-#{connect["connect_id"]}-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-#{connect["connect_id"]}-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, _doc, _etag} =
       Store.create_once(meeting_id,
@@ -6745,215 +3425,7 @@ defmodule SalixMeet.SlackProviderTest do
 
     refute Map.has_key?(action, "accessory")
     assert MockSlack.last_request("canvases.create").params["document_content"] =~ "![](@U0OWNER)"
-    assert_receive {:owner_attribution_called, {:resolve, "U0OWNER"}, _state, _summary}
-  end
-
-  test "an unresolved owner's Slack control characters are escaped, not rendered as a mention",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-ownerescape")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-#{connect["connect_id"]}-#{System.unique_integer([:positive])}"
-
-    {:ok, _doc, _etag} =
-      Store.create_once(meeting_id,
-        state: %{
-          "tenant_id" => tenant_id,
-          "group_id" => group_id,
-          "meeting_agent_id" => meeting_agent["meeting_agent_id"],
-          "meeting_session_id" => meeting_agent["meeting_session_id"],
-          "provider" => "slack",
-          "connect_id" => connect["connect_id"],
-          "status" => "done",
-          "title" => "Weekly Sync",
-          "summary" => %{
-            "title" => "Weekly Sync",
-            "action_items" => [
-              %{
-                "description" => "ship the thing",
-                "owner" => "Eve @everyone #general <@UVICTIM>"
-              }
-            ]
-          },
-          "slack_ref" => %{"channel_id" => "C1", "thread_ts" => "111.222"}
-        }
-      )
-
-    assert :published = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    request = MockSlack.last_request("chat.postMessage")
-    blocks = Jason.decode!(request.params["blocks"])
-    rendered = Jason.encode!(blocks)
-    action = Enum.find(blocks, &(&1["block_id"] == "meeting_action_0_v1"))
-
-    refute rendered =~ "<@UVICTIM>"
-    assert rendered =~ "&lt;@UVICTIM&gt;"
-    assert action["text"]["text"] =~ "@everyone #general"
-    assert action["text"]["verbatim"] == true
-  end
-
-  test "a scalar action item remains visible in meeting summary blocks",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    script_owner_attribution([:skip])
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-scalaraction")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-
-    meeting_id =
-      seed_done_meeting(tenant_id, group_id, meeting_agent, connect,
-        summary: %{
-          "title" => "Weekly Sync",
-          "action_items" => ["Ship"]
-        }
-      )
-
-    assert :published = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    request = MockSlack.last_request("chat.postMessage")
-    blocks = Jason.decode!(request.params["blocks"])
-
-    assert Enum.find(blocks, &(&1["block_id"] == "meeting_action_0_v1")) == %{
-             "type" => "section",
-             "block_id" => "meeting_action_0_v1",
-             "text" => %{"type" => "mrkdwn", "text" => "Ship", "verbatim" => true}
-           }
-
-    assert request.params["text"] =~ "*Action items:*"
-    assert request.params["text"] =~ "• Ship"
-  end
-
-  test "owner-only and deadline-only action items remain in the accessible fallback",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    script_owner_attribution([:skip, :skip])
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-actionmetadata")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-
-    meeting_id =
-      seed_done_meeting(tenant_id, group_id, meeting_agent, connect,
-        summary: %{
-          "title" => "Weekly Sync",
-          "action_items" => [
-            %{"description" => "", "owner" => "Alice", "deadline" => ""},
-            %{"description" => "", "owner" => "", "deadline" => "Friday"}
-          ]
-        }
-      )
-
-    assert :published = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    request = MockSlack.last_request("chat.postMessage")
-    blocks = Jason.decode!(request.params["blocks"])
-
-    assert Enum.find(blocks, &(&1["block_id"] == "meeting_action_0_v1"))["text"]["text"] ==
-             "Alice"
-
-    assert Enum.find(blocks, &(&1["block_id"] == "meeting_action_1_v1"))["text"]["text"] ==
-             "Due Friday"
-
-    assert request.params["text"] =~ "*Action items:*"
-    assert request.params["text"] =~ "• Alice"
-    assert request.params["text"] =~ "• Due Friday"
-  end
-
-  test "an oversized meeting Markdown body falls back to the complete legacy notice",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    script_owner_attribution([:skip])
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-markdownlimit")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    long_point = String.duplicate("x", 12_001)
-
-    meeting_id =
-      seed_done_meeting(tenant_id, group_id, meeting_agent, connect,
-        summary: %{
-          "title" => "Weekly Sync",
-          "key_points" => [long_point],
-          "action_items" => []
-        }
-      )
-
-    assert :published = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    request = MockSlack.last_request("chat.postMessage")
-    refute request.params["blocks"]
-    assert request.params["text"] =~ "Meeting Summary: Weekly Sync"
-    assert request.params["text"] =~ long_point
-  end
-
-  test "meeting summaries fall back before exceeding Slack block and section bounds",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    script_owner_attribution([:skip, :skip])
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-
-    cases = [
-      {"block-count",
-       Enum.map(1..47, fn index ->
-         %{"description" => "Task #{index}", "owner" => "", "deadline" => ""}
-       end), "Task 47"},
-      {"section-size", [%{"description" => String.duplicate("y", 3_001)}],
-       String.duplicate("y", 3_001)}
-    ]
-
-    Enum.each(cases, fn {suffix, action_items, expected_text} ->
-      connect = seed_done_meeting_connect(tenant_id, group_id, "slack-#{suffix}")
-
-      meeting_id =
-        seed_done_meeting(tenant_id, group_id, meeting_agent, connect,
-          summary: %{
-            "title" => "Weekly Sync",
-            "key_points" => ["One"],
-            "action_items" => action_items
-          }
-        )
-
-      assert :published =
-               SalixMeet.Delivery.deliver_one(meeting_id,
-                 node: "node-#{suffix}",
-                 now: 1_000
-               )
-
-      request = MockSlack.last_request("chat.postMessage")
-      refute request.params["blocks"]
-      assert request.params["text"] =~ "Meeting Summary: Weekly Sync"
-      assert request.params["text"] =~ expected_text
-    end)
-  end
-
-  test "a malformed owner_slack_id is not emitted as a mention",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-ownerbadid")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-#{connect["connect_id"]}-#{System.unique_integer([:positive])}"
-
-    {:ok, _doc, _etag} =
-      Store.create_once(meeting_id,
-        state: %{
-          "tenant_id" => tenant_id,
-          "group_id" => group_id,
-          "meeting_agent_id" => meeting_agent["meeting_agent_id"],
-          "meeting_session_id" => meeting_agent["meeting_session_id"],
-          "provider" => "slack",
-          "connect_id" => connect["connect_id"],
-          "status" => "done",
-          "title" => "Weekly Sync",
-          "summary" => %{
-            "title" => "Weekly Sync",
-            "action_items" => [
-              %{
-                "description" => "ship the thing",
-                "owner" => "Frank",
-                "owner_slack_id" => "U1><@UVICTIM"
-              }
-            ]
-          },
-          "slack_ref" => %{"channel_id" => "C1", "thread_ts" => "111.222"}
-        }
-      )
-
-    assert :published = SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    request = MockSlack.last_request("chat.postMessage")
-    rendered = request.params["blocks"] |> Jason.decode!() |> Jason.encode!()
-    refute rendered =~ "<@UVICTIM>"
-    refute rendered =~ "<@U1"
-    assert rendered =~ "Frank"
+    settle_receive({:owner_attribution_called, {:resolve, "U0OWNER"}, _state, _summary})
   end
 
   test "an ambiguous Canvas create is reconciled by its durable intent without recreating",
@@ -6990,7 +3462,7 @@ defmodule SalixMeet.SlackProviderTest do
       "paging" => %{"page" => 1, "pages" => 1}
     })
 
-    files_base = Application.fetch_env!(:salix_im, :slack_files_base_url)
+    files_base = SystemsRuntime.fetch_env!(:salix_im, :slack_files_base_url)
 
     MockSlack.respond("files.info", fn %{"file" => "CANAMB"} ->
       %{
@@ -7114,725 +3586,6 @@ defmodule SalixMeet.SlackProviderTest do
              delivery["canvas_body"]["submitted_fingerprint"]
   end
 
-  test "Canvas publication rejects rendered markup without its staged body probe",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-body-markup-only")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond(
-      "canvas_download",
-      ~s(<div class="quip-canvas-content"><p><br></p></div>)
-    )
-
-    assert :failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [_download] = MockSlack.requests("canvas_download")
-    assert MockSlack.requests("chat.postMessage") == []
-    assert MockSlack.requests("canvases.access.set") == []
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    refute delivery["published_at"]
-    assert delivery["canvas_body"]["status"] == "pending"
-    assert delivery["canvas_body"]["last_error"] =~ "body probe"
-  end
-
-  test "Canvas publication retries a transient provider body download failure",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-body-503")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvas_download", {503, "temporarily unavailable"})
-
-    assert :failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [_download] = MockSlack.requests("canvas_download")
-    assert MockSlack.requests("chat.postMessage") == []
-    assert MockSlack.requests("canvases.access.set") == []
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    refute delivery["published_at"]
-    assert delivery["canvas_body"]["status"] == "pending"
-    assert delivery["canvas_body"]["attempt_count"] == 1
-    assert delivery["canvas_body"]["last_error"] =~ "503"
-  end
-
-  test "Canvas publication preserves Retry-After for a rate-limited body download",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-body-429")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvas_download", {429, [{"retry-after", "17"}], "rate limited"})
-
-    assert :failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    assert delivery["canvas_body"]["status"] == "pending"
-    assert delivery["canvas_body"]["attempt_count"] == 1
-    assert delivery["canvas_body"]["last_error"] =~ "retry after 17s"
-    assert MockSlack.requests("chat.postMessage") == []
-    assert MockSlack.requests("canvases.access.set") == []
-  end
-
-  test "new body-proof Canvas intents are fenced from exact-base workers",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-body-v4-fence")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvas_download", {503, "temporarily unavailable"})
-
-    assert :failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    intent = delivery["canvas_create"]
-
-    assert intent["schema_version"] == 4
-    assert intent["status"] == "v4_ready"
-    assert intent["body_probe"] =~ ~r/^comma-canvas-body-[0-9a-f]{24}$/
-    refute delivery["canvas_id"]
-
-    created_markdown =
-      MockSlack.last_request("canvases.create").params["document_content"]
-      |> Jason.decode!()
-      |> Map.fetch!("markdown")
-
-    assert created_markdown =~ intent["body_probe"]
-    assert intent["content_fingerprint"] == "sha256:" <> Crypto.hex(created_markdown)
-  end
-
-  test "new workers preserve a schema-v1 exact Canvas body verification",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-body-v1")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvas_download", "\n\t")
-
-    assert :failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert {:ok, pending_doc, _etag} = Store.get(meeting_id)
-    intent = pending_doc["state"]["delivery"]["canvas_create"]
-    submitted = intent["content_fingerprint"]
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               legacy_verified = %{
-                 "schema_version" => 1,
-                 "status" => "verified",
-                 "expected_fingerprint" => submitted,
-                 "observed_fingerprint" => submitted,
-                 "attempt_count" => 1
-               }
-
-               update_in(state, ["delivery"], fn delivery ->
-                 Map.put(delivery || %{}, "canvas_body", legacy_verified)
-               end)
-             end)
-
-    MockSlack.respond("canvas_download", "\n")
-
-    assert :published =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    assert length(MockSlack.requests("canvas_download")) == 1
-    assert [_summary] = MockSlack.requests("chat.postMessage")
-    assert [_access] = MockSlack.requests("canvases.access.set")
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["published_at"]
-    assert delivery["canvas_body"]["schema_version"] == 1
-    assert delivery["canvas_body"]["status"] == "verified"
-  end
-
-  test "Canvas publication waits while Slack's downloadable body is empty",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-body-empty")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvas_download", "\n\t")
-
-    assert :failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [_download] = MockSlack.requests("canvas_download")
-    assert MockSlack.requests("chat.postMessage") == []
-    assert MockSlack.requests("canvases.access.set") == []
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    refute delivery["published_at"]
-    assert delivery["canvas_body"]["status"] == "pending"
-    assert delivery["canvas_body"]["attempt_count"] == 1
-    assert delivery["canvas_body"]["last_error"] == "Canvas body read-back was empty"
-
-    assert delivery["canvas_body"]["verification_contract"] ==
-             "provider_body_probe_v1"
-  end
-
-  test "empty Canvas body read-back is bounded and falls back to complete message notes",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-body-bounded")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               canvas_body = %{
-                 "status" => "pending",
-                 "attempt_count" => 11,
-                 "started_at" => System.system_time(:second) - 301
-               }
-
-               Map.update(state, "delivery", %{"canvas_body" => canvas_body}, fn delivery ->
-                 Map.put(delivery || %{}, "canvas_body", canvas_body)
-               end)
-             end)
-
-    MockSlack.respond("canvas_download", "  \n\t")
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert_canvas_failure_summary_posted()
-    assert MockSlack.requests("canvases.access.set") == []
-
-    assert {:ok, doc, _etag} = Store.get(meeting_id)
-    delivery = doc["state"]["delivery"]
-    refute delivery["published_at"]
-    assert delivery["canvas_body"]["status"] == "abandoned"
-    assert delivery["canvas_body"]["attempt_count"] == 12
-    assert delivery["canvas_error"] == "Canvas body read-back was empty"
-  end
-
-  test "an abandoned Canvas body remains terminal while ambiguous fallback notes repair",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-body-terminal")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               canvas_body = %{
-                 "status" => "pending",
-                 "attempt_count" => 11,
-                 "started_at" => System.system_time(:second) - 301
-               }
-
-               Map.update(state, "delivery", %{"canvas_body" => canvas_body}, fn delivery ->
-                 Map.put(delivery || %{}, "canvas_body", canvas_body)
-               end)
-             end)
-
-    MockSlack.respond("canvas_download", "\n\t")
-
-    MockSlack.respond(
-      "chat.postMessage",
-      {503, %{"ok" => false, "error" => "internal_error"}}
-    )
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [first_post] = MockSlack.requests("chat.postMessage")
-    metadata = Jason.decode!(first_post.params["metadata"])
-
-    assert {:ok, terminal_doc, _etag} = Store.get(meeting_id)
-    terminal_delivery = terminal_doc["state"]["delivery"]
-    assert terminal_delivery["canvas_body"]["status"] == "abandoned"
-    refute terminal_delivery["published_at"]
-
-    MockSlack.respond("canvas_download", rendered_canvas_html())
-
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{
-          "ts" => "fallback.original",
-          "text" => first_post.params["text"],
-          "blocks" => Jason.decode!(first_post.params["blocks"]),
-          "metadata" => metadata
-        }
-      ],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    assert length(MockSlack.requests("canvas_download")) == 1
-    assert [^first_post] = MockSlack.requests("chat.postMessage")
-    assert MockSlack.requests("canvases.access.set") == []
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["status"] == "failed_terminal"
-    assert delivery["canvas_body"]["status"] == "abandoned"
-    assert delivery["fallback_message_manifest"]["status"] == "confirmed"
-    assert delivery["notes_delivery"]["status"] == "visible"
-    refute delivery["published_at"]
-  end
-
-  test "Canvas reconciliation stays bounded when a legacy connect has no bot user id",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-no-bot-user", %{
-        "bot_user_id" => ""
-      })
-
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "internal_error"})
-
-    assert {:error, {:canvas_create_unknown, "internal_error"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert {:ok, after_ambiguous, _etag} = Store.get(meeting_id)
-    intent = after_ambiguous["state"]["delivery"]["canvas_create"]
-    assert intent["status"] == "v4_unknown"
-    refute intent["creator_user_id"]
-
-    MockSlack.respond("files.list", %{
-      "ok" => true,
-      "files" => [%{"id" => "CANNOUSER", "title" => intent["temporary_title"]}],
-      "paging" => %{"page" => 1, "pages" => 1}
-    })
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CANNOUSER"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    list = MockSlack.last_request("files.list")
-    assert list.params["ts_from"] == to_string(intent["reconcile_ts_from"])
-    assert list.params["ts_to"] == to_string(intent["reconcile_ts_to"])
-    refute list.params["user"]
-    refute list.params["channel"]
-    assert [_create] = MockSlack.requests("canvases.create")
-  end
-
-  test "an old pre-create intent becomes terminal after bounded reconciliation",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-precreate-crash")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "status" => "failed",
-                 "canvas_create" => %{
-                   "ref" => "precreate",
-                   "temporary_title" => "Comma summary delivery precreate",
-                   "target_title" => "Weekly Sync",
-                   "status" => "creating",
-                   "started_at" => 0,
-                   "reconcile_attempts" => 11
-                 }
-               })
-             end)
-
-    MockSlack.respond("files.list", %{"ok" => true, "files" => [], "paging" => %{}})
-
-    assert {:error, {:terminal, {:canvas_unavailable, reason}}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert reason =~ "bounded reconciliation"
-
-    assert MockSlack.requests("canvases.create") == []
-    assert_canvas_failure_summary_posted()
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["canvas_create"]["status"] == "v2_abandoned"
-    assert delivery["canvas_error"] =~ "bounded reconciliation"
-  end
-
-  test "an oversized Canvas reconciliation advances attempts and fails terminally",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-page-cap")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "status" => "failed",
-                 "canvas_create" => %{
-                   "schema_version" => 2,
-                   "ref" => "page-cap",
-                   "temporary_title" => "Comma summary delivery page-cap",
-                   "target_title" => "Weekly Sync",
-                   "status" => "unknown",
-                   "started_at" => 0,
-                   "reconcile_ts_from" => 0,
-                   "reconcile_ts_to" => 300,
-                   "reconcile_attempts" => 11
-                 }
-               })
-             end)
-
-    MockSlack.respond("files.list", %{
-      "ok" => true,
-      "files" => [],
-      "paging" => %{"page" => 1, "pages" => 101}
-    })
-
-    assert {:error, {:terminal, {:canvas_unavailable, reason}}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert reason =~ "incomplete"
-
-    assert [_bounded_page] = MockSlack.requests("files.list")
-    assert_canvas_failure_summary_posted()
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["canvas_create"]["status"] == "v2_abandoned"
-    assert delivery["canvas_create"]["reconcile_attempts"] == 12
-    assert delivery["canvas_error"] =~ "incomplete"
-    refute delivery["published_at"]
-  end
-
-  test "a legacy Canvas reconciliation conflict advances to a bounded terminal failure",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-conflict")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "status" => "failed",
-                 "canvas_create" => %{
-                   "ref" => "legacy-conflict",
-                   "temporary_title" => "Comma summary delivery legacy-conflict",
-                   "target_title" => "Weekly Sync",
-                   "status" => "conflict",
-                   "started_at" => 0,
-                   "reconcile_attempts" => 11
-                 }
-               })
-             end)
-
-    MockSlack.respond("files.list", %{
-      "ok" => true,
-      "files" => [
-        %{"id" => "CANCONFLICT1", "title" => "Comma summary delivery legacy-conflict"},
-        %{"id" => "CANCONFLICT2", "title" => "Comma summary delivery legacy-conflict"}
-      ],
-      "paging" => %{"page" => 1, "pages" => 1}
-    })
-
-    assert {:error, {:terminal, {:canvas_unavailable, reason}}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert reason =~ "multiple"
-
-    assert MockSlack.requests("canvases.create") == []
-    assert [_list] = MockSlack.requests("files.list")
-    assert_canvas_failure_summary_posted()
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["canvas_create"]["status"] == "v2_abandoned"
-    assert delivery["canvas_create"]["reconcile_attempts"] == 12
-    assert delivery["canvas_error"] =~ "multiple"
-    refute delivery["published_at"]
-  end
-
-  test "a rate-limited create is staged before retry so a lost id checkpoint reconciles",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-rate-recover")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond("canvases.create", %{"ok" => false, "error" => "ratelimited"})
-    assert {:error, "ratelimited"} = publish_claimed_summary(meeting_agent, meeting_id)
-
-    MockSlack.respond("canvases.create", fn _params ->
-      SalixStore.S3.Fake.set_fault({:fail, 503, :put, Keys.meet_state(meeting_id)})
-      %{"ok" => true, "canvas_id" => "CANRATE"}
-    end)
-
-    assert {:error, _} = publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert {:ok, after_checkpoint_loss, _etag} = Store.get(meeting_id)
-    intent = after_checkpoint_loss["state"]["delivery"]["canvas_create"]
-    assert intent["status"] == "v4_creating"
-
-    MockSlack.respond("files.list", %{
-      "ok" => true,
-      "files" => [
-        %{
-          "id" => "CANRATE",
-          "title" => intent["temporary_title"],
-          "linked_channel_id" => "C1"
-        }
-      ],
-      "paging" => %{"page" => 1, "pages" => 1}
-    })
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CANRATE"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert length(MockSlack.requests("canvases.create")) == 2
-  end
-
-  test "a legacy retryable Canvas intent reconciles before it is allowed to recreate",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-legacy-retry")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "status" => "failed",
-                 "canvas_create" => %{
-                   "ref" => "legacy-retry",
-                   "temporary_title" => "Comma summary delivery legacy-retry",
-                   "target_title" => "Weekly Sync",
-                   "status" => "retryable",
-                   "started_at" => 0,
-                   "reconcile_attempts" => 0,
-                   "last_error" => "ratelimited"
-                 }
-               })
-             end)
-
-    MockSlack.respond("files.list", %{
-      "ok" => true,
-      "files" => [
-        %{"id" => "CANLEGACY", "title" => "Comma summary delivery legacy-retry"}
-      ],
-      "paging" => %{"page" => 1, "pages" => 1}
-    })
-
-    MockSlack.respond("files.info", %{
-      "ok" => true,
-      "file" => %{"permalink" => "https://w.slack.com/canvases/CANLEGACY"}
-    })
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CANLEGACY"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert MockSlack.requests("canvases.create") == []
-    assert [_list] = MockSlack.requests("files.list")
-    assert [_access] = MockSlack.requests("canvases.access.set")
-  end
-
-  test "a transient legacy reconciliation error preserves the one-time recreate marker",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-legacy-error")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "status" => "failed",
-                 "canvas_create" => %{
-                   "ref" => "legacy-error",
-                   "temporary_title" => "Comma summary delivery legacy-error",
-                   "target_title" => "Weekly Sync",
-                   "status" => "retryable",
-                   "started_at" => 0,
-                   "reconcile_attempts" => 10,
-                   "last_error" => "ratelimited"
-                 }
-               })
-             end)
-
-    MockSlack.respond("files.list", %{"ok" => false, "error" => "ratelimited"})
-
-    assert {:error, "ratelimited"} = publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert {:ok, after_error, _etag} = Store.get(meeting_id)
-    intent = after_error["state"]["delivery"]["canvas_create"]
-    assert intent["schema_version"] == 3
-    assert intent["status"] == "v3_unknown"
-    assert intent["retry_create_after_empty"] == true
-    assert intent["reconcile_attempts"] == 11
-
-    MockSlack.respond("files.list", %{
-      "ok" => true,
-      "files" => [],
-      "paging" => %{"total" => 0, "page" => 1, "pages" => 0}
-    })
-
-    assert {:error, {:canvas_create_retry_authorized, "legacy-error"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_create] = MockSlack.requests("canvases.create")
-  end
-
-  test "a schema-v2 retryable Canvas intent without the legacy retry marker recreates",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-v2-retry")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "status" => "failed",
-                 "canvas_create" => %{
-                   "schema_version" => 2,
-                   "ref" => "v2-retry",
-                   "temporary_title" => "Comma summary delivery v2-retry",
-                   "target_title" => "Weekly Sync",
-                   "status" => "retryable",
-                   "started_at" => 0,
-                   "reconcile_attempts" => 0,
-                   "last_error" => "ratelimited"
-                 }
-               })
-             end)
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_create] = MockSlack.requests("canvases.create")
-    assert MockSlack.requests("files.list") == []
-  end
-
-  test "a clean legacy retryable reconciliation eventually authorizes one new create",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-legacy-empty")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "status" => "failed",
-                 "canvas_create" => %{
-                   "ref" => "legacy-empty",
-                   "temporary_title" => "Comma summary delivery legacy-empty",
-                   "target_title" => "Weekly Sync",
-                   "status" => "retryable",
-                   "started_at" => 0,
-                   "reconcile_attempts" => 11,
-                   "last_error" => "ratelimited"
-                 }
-               })
-             end)
-
-    MockSlack.respond("files.list", %{
-      "ok" => true,
-      "files" => [],
-      "paging" => %{"total" => 0, "page" => 1, "pages" => 0}
-    })
-
-    assert {:error, {:canvas_create_retry_authorized, "legacy-empty"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert MockSlack.requests("canvases.create") == []
-
-    assert {:ok, after_reconciliation, _etag} = Store.get(meeting_id)
-    intent = after_reconciliation["state"]["delivery"]["canvas_create"]
-    assert intent["schema_version"] == 3
-    assert intent["status"] == "v3_create_retryable"
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_create] = MockSlack.requests("canvases.create")
-  end
-
-  test "a permanent Canvas rename error is recorded without blocking the summary",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-canvas-rename-terminal")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond(
-      "canvases.edit",
-      {400, %{"ok" => false, "error" => "invalid_arguments"}}
-    )
-
-    assert {:ok, %{"published" => true, "canvas_id" => "CAN1"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_summary] = MockSlack.requests("chat.postMessage")
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    assert final_doc["state"]["delivery"]["canvas_title_error"] =~ "400"
-  end
-
-  test "a reclaimed terminal message intent is preserved for replacement reconciliation",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-terminal-fence")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, &Map.put(&1, "status", "failed"))
-
-    test_pid = self()
-
-    MockSlack.respond("chat.postMessage", fn params ->
-      result = Store.claim_delivery(meeting_id, "node-b", now: 1_100, reclaim_after_ms: 100)
-      send(test_pid, {:replacement_claimed, result, params})
-      %{"ok" => true, "ts" => "old.terminal"}
-    end)
-
-    assert :lost =
-             SalixMeet.Delivery.deliver_one(meeting_id,
-               node: "node-a",
-               now: 1_000,
-               reclaim_after_ms: 100
-             )
-
-    assert_receive {:replacement_claimed, {:ok, winning_doc, _winning_etag, winning_claim},
-                    params}
-
-    assert winning_claim == %{"claim_node" => "node-b", "attempt_count" => 2}
-    metadata = Jason.decode!(params["metadata"])
-
-    assert MockSlack.requests("chat.delete") == []
-
-    assert get_in(winning_doc, ["state", "delivery", "message_post", "event_type"]) ==
-             metadata["event_type"]
-
-    refute get_in(winning_doc, ["state", "delivery", "summary_message_ts"])
-
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{"ts" => "old.terminal", "text" => params["text"], "metadata" => metadata}
-      ],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    assert {:ok, %{"published" => true, "message_ts" => "old.terminal"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_original] = MockSlack.requests("chat.postMessage")
-    assert MockSlack.requests("chat.delete") == []
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["summary_message_ts"] == "old.terminal"
-    assert delivery["summary_message_kind"] == "terminal:failed"
-    assert delivery["published_at"]
-  end
-
   test "an ambiguous summary post reconciles its staged metadata intent",
        %{tenant_id: tenant_id, group_id: group_id} do
     connect = seed_done_meeting_connect(tenant_id, group_id, "slack-message-ambiguous")
@@ -7890,314 +3643,6 @@ defmodule SalixMeet.SlackProviderTest do
     assert delivery["attempt_count"] == 2
   end
 
-  test "message reconciliation follows reply cursors before adopting the unique metadata match",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-message-pages")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond(
-      "chat.postMessage",
-      {503, %{"ok" => false, "error" => "internal_error"}}
-    )
-
-    assert :failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [first_post] = MockSlack.requests("chat.postMessage")
-    metadata = Jason.decode!(first_post.params["metadata"])
-
-    MockSlack.respond("conversations.replies", fn params ->
-      case params["cursor"] do
-        nil ->
-          %{
-            "ok" => true,
-            "messages" => [%{"ts" => "other.message", "metadata" => %{}}],
-            "response_metadata" => %{"next_cursor" => "page-2"}
-          }
-
-        "page-2" ->
-          %{
-            "ok" => true,
-            "messages" => [%{"ts" => "paged.original", "metadata" => metadata}],
-            "response_metadata" => %{"next_cursor" => ""}
-          }
-      end
-    end)
-
-    assert :published =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    assert [^first_post] = MockSlack.requests("chat.postMessage")
-    assert [first_page, second_page] = MockSlack.requests("conversations.replies")
-    refute Map.has_key?(first_page.params, "cursor")
-    assert second_page.params["cursor"] == "page-2"
-    assert first_page.params["oldest"]
-    assert first_page.params["limit"] == "15"
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["summary_message_ts"] == "paged.original"
-    assert delivery["published_at"]
-  end
-
-  test "multiple metadata matches make message reconciliation conflict without reposting",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-message-conflict")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond(
-      "chat.postMessage",
-      {503, %{"ok" => false, "error" => "internal_error"}}
-    )
-
-    assert :failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [first_post] = MockSlack.requests("chat.postMessage")
-    metadata = Jason.decode!(first_post.params["metadata"])
-
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{"ts" => "conflict.one", "metadata" => metadata},
-        %{"ts" => "conflict.two", "metadata" => metadata}
-      ],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    assert :failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    assert [^first_post] = MockSlack.requests("chat.postMessage")
-    assert [_replies] = MockSlack.requests("conversations.replies")
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["message_post"]["status"] == "conflict"
-    refute delivery["summary_message_ts"]
-    refute delivery["published_at"]
-  end
-
-  test "bounded message reconciliation abandons an unconfirmed post without reposting",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-message-abandoned")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    MockSlack.respond(
-      "chat.postMessage",
-      {503, %{"ok" => false, "error" => "internal_error"}}
-    )
-
-    assert :failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-a", now: 1_000)
-
-    assert [first_post] = MockSlack.requests("chat.postMessage")
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               update_in(state, ["delivery", "message_post"], fn intent ->
-                 intent
-                 |> Map.put("started_at", 0)
-                 |> Map.put("reconcile_attempts", 11)
-               end)
-             end)
-
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    # An abandoned intent is the provider's permanent conclusion; the round
-    # that reaches it converges terminally instead of leaving the delivery
-    # claimable for an infinite silent retry loop (the pre-RFC behavior this
-    # test used to assert).
-    assert :terminal_failed =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-b", now: 2_000)
-
-    assert [^first_post] = MockSlack.requests("chat.postMessage")
-    assert [_replies] = MockSlack.requests("conversations.replies")
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["status"] == "failed_terminal"
-    assert delivery["failure_kind"] == "message_post_abandoned"
-    assert delivery["message_post"]["status"] == "abandoned"
-    assert delivery["message_post"]["reconcile_attempts"] == 12
-    refute delivery["summary_message_ts"]
-    refute delivery["published_at"]
-
-    assert :not_claimable =
-             SalixMeet.Delivery.deliver_one(meeting_id, node: "node-c", now: 3_000)
-  end
-
-  test "a reclaimed message intent preserves the post for the replacement to reconcile",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-message-intent-reclaim")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-    test_pid = self()
-
-    MockSlack.respond("chat.postMessage", fn params ->
-      {:ok, _doc, _etag, winning_claim} =
-        Store.claim_delivery(meeting_id, "node-b", now: 1_100, reclaim_after_ms: 100)
-
-      send(test_pid, {:message_intent_reclaimed, winning_claim, params})
-      %{"ok" => true, "ts" => "shared.summary"}
-    end)
-
-    assert :lost =
-             SalixMeet.Delivery.deliver_one(meeting_id,
-               node: "node-a",
-               now: 1_000,
-               reclaim_after_ms: 100
-             )
-
-    assert_receive {:message_intent_reclaimed, winning_claim, post_params}
-    assert winning_claim == %{"claim_node" => "node-b", "attempt_count" => 2}
-    assert MockSlack.requests("chat.delete") == []
-
-    metadata = Jason.decode!(post_params["metadata"])
-
-    assert {:ok, inherited, _etag} = Store.get(meeting_id)
-    intent = get_in(inherited, ["state", "delivery", "message_post"])
-    assert intent["event_type"] == metadata["event_type"]
-    refute get_in(inherited, ["state", "delivery", "summary_message_ts"])
-
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{"ts" => "shared.summary", "text" => post_params["text"], "metadata" => metadata}
-      ],
-      "response_metadata" => %{"next_cursor" => ""}
-    })
-
-    assert {:ok, %{"published" => true, "message_ts" => "shared.summary"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [_original] = MockSlack.requests("chat.postMessage")
-    assert MockSlack.requests("chat.delete") == []
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    assert get_in(final_doc, ["state", "delivery", "summary_message_ts"]) == "shared.summary"
-    assert get_in(final_doc, ["state", "delivery", "published_at"])
-  end
-
-  test "a stale terminal worker does not delete a message inherited by the replacement claim",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-terminal-inherited")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, &Map.put(&1, "status", "failed"))
-
-    test_pid = self()
-
-    MockSlack.respond("chat.postMessage", fn _params ->
-      {:ok, _doc, _etag, winning_claim} =
-        Store.claim_delivery(meeting_id, "node-b", now: 1_100, reclaim_after_ms: 100)
-
-      {:ok, winning_doc, winning_etag} =
-        Store.checkpoint_delivery(meeting_id, winning_claim, %{
-          "summary_message_ts" => "shared.terminal",
-          "summary_message_kind" => "terminal:failed"
-        })
-
-      send(test_pid, {:replacement_checkpointed, winning_doc, winning_etag, winning_claim})
-      %{"ok" => true, "ts" => "shared.terminal"}
-    end)
-
-    assert :lost =
-             SalixMeet.Delivery.deliver_one(meeting_id,
-               node: "node-a",
-               now: 1_000,
-               reclaim_after_ms: 100
-             )
-
-    assert_receive {:replacement_checkpointed, winning_doc, winning_etag, winning_claim}
-    assert winning_claim == %{"claim_node" => "node-b", "attempt_count" => 2}
-    assert MockSlack.requests("chat.delete") == []
-
-    assert {:ok, final_doc, final_etag} = Store.get(meeting_id)
-    assert {final_doc, final_etag} == {winning_doc, winning_etag}
-    assert final_doc["state"]["delivery"]["summary_message_ts"] == "shared.terminal"
-  end
-
-  test "a stale upload worker does not delete a file inherited by the replacement claim",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-file-inherited")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, %{"status" => "created"}} =
-             SalixMeet.Runtime.deliver_event(tenant_id, group_id, %{
-               "type" => "meeting_runtime_update",
-               "event_id" => "audio-ready-inherited-file",
-               "meeting_id" => meeting_id,
-               "status" => "done",
-               "artifacts" => [
-                 %{
-                   "kind" => "audio",
-                   "filename" => "audio.ogg",
-                   "content_type" => "audio/ogg",
-                   "data_b64" => Base.encode64("OggS inherited opus bytes")
-                 }
-               ]
-             })
-
-    assert eventually(fn ->
-             {:ok, vfs} = AgentWorkspace.manifest(meeting_agent["meeting_agent_id"])
-             Map.has_key?(vfs, "/meetings/#{meeting_id}/audio.ogg")
-           end)
-
-    assert {:ok, before_delivery, _etag} = Store.get(meeting_id)
-    audio_path = get_in(before_delivery, ["state", "artifacts", "audio", "path"])
-    assert is_binary(audio_path) and audio_path != ""
-    test_pid = self()
-
-    MockSlack.respond("files.completeUploadExternal", fn _params ->
-      {:ok, _doc, _etag, winning_claim} =
-        Store.claim_delivery(meeting_id, "node-b", now: 1_100, reclaim_after_ms: 100)
-
-      {:ok, winning_doc, winning_etag} =
-        Store.checkpoint_delivery(meeting_id, winning_claim, %{
-          "artifacts" => %{
-            "audio" => %{"file_id" => "FTRANSCRIPT", "path" => audio_path}
-          }
-        })
-
-      send(test_pid, {:replacement_inherited_file, winning_doc, winning_etag, winning_claim})
-
-      %{
-        "ok" => true,
-        "files" => [%{"id" => "FTRANSCRIPT", "title" => "audio"}]
-      }
-    end)
-
-    assert :lost =
-             SalixMeet.Delivery.deliver_one(meeting_id,
-               node: "node-a",
-               now: 1_000,
-               reclaim_after_ms: 100
-             )
-
-    assert_receive {:replacement_inherited_file, winning_doc, winning_etag, winning_claim}
-    assert winning_claim == %{"claim_node" => "node-b", "attempt_count" => 2}
-    assert MockSlack.requests("files.delete") == []
-    assert MockSlack.requests("canvases.create") == []
-    assert MockSlack.requests("chat.postMessage") == []
-
-    assert {:ok, final_doc, final_etag} = Store.get(meeting_id)
-    assert {final_doc, final_etag} == {winning_doc, winning_etag}
-
-    assert get_in(final_doc, ["state", "delivery", "artifacts", "audio", "file_id"]) ==
-             "FTRANSCRIPT"
-  end
-
   for provider <- ["slack", "feishu"], order <- [:observation_first, :final_first] do
     @partial_provider provider
     @partial_order order
@@ -8205,7 +3650,7 @@ defmodule SalixMeet.SlackProviderTest do
       tenant_id: tenant_id,
       group_id: group_id
     } do
-      Application.put_env(:salix_meet, :provider_mod, SalixMeet.ProviderDispatcher)
+      SystemsRuntime.put_env(:salix_meet, :provider_mod, SalixMeet.ProviderDispatcher)
       provider = @partial_provider
       order = @partial_order
       {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
@@ -8222,7 +3667,7 @@ defmodule SalixMeet.SlackProviderTest do
           })
         end
 
-      id = "partial-removal-#{provider}-#{System.unique_integer([:positive])}"
+      id = "partial-removal-#{provider}-#{SystemsRuntime.Proc.unique_integer([:positive])}"
       path = "/meetings/#{id}/transcript.txt"
 
       state = %{
@@ -8350,175 +3795,6 @@ defmodule SalixMeet.SlackProviderTest do
     end
   end
 
-  test "admission outcomes publish distinct Slack notices", %{
-    tenant_id: tenant_id,
-    group_id: group_id
-  } do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-outcome")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-
-    for {code, text} <- [
-          {"admission_denied", "入会请求被拒绝"},
-          {"meeting_full", "会议已满"},
-          {"admission_timeout", "等待准入超时"},
-          {"removed_from_meeting", "已被移出会议"}
-        ] do
-      meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-      assert {:ok, _, _} =
-               Store.update_state_retrying(meeting_id, fn state ->
-                 state |> Map.put("status", "failed") |> Map.put("reason_code", code)
-               end)
-
-      before = length(MockSlack.requests("chat.postMessage"))
-      assert {:ok, %{"published" => true}} = publish_claimed_summary(meeting_agent, meeting_id)
-      requests = MockSlack.requests("chat.postMessage")
-      assert length(requests) == before + 1
-      assert Enum.any?(requests, &String.contains?(&1.params["text"], text))
-    end
-  end
-
-  test "a failed meeting does not reuse a staged summary post as its terminal notice",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-terminal-kind")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               state
-               |> Map.put("status", "failed")
-               |> Map.put("delivery", %{
-                 "status" => "failed",
-                 "summary_message_ts" => "summary.old",
-                 "summary_message_kind" => "summary"
-               })
-             end)
-
-    assert {:ok, %{"published" => true, "message_ts" => "222.333"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [terminal] = MockSlack.requests("chat.postMessage")
-    assert terminal.params["text"] =~ "Meeting failed"
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["summary_message_ts"] == "222.333"
-    assert delivery["summary_message_kind"] == "terminal:failed"
-  end
-
-  test "a done meeting does not reuse a staged terminal notice as its summary post",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect = seed_done_meeting_connect(tenant_id, group_id, "slack-summary-kind")
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = seed_done_meeting(tenant_id, group_id, meeting_agent, connect)
-
-    assert {:ok, _doc, _etag} =
-             Store.update_state_retrying(meeting_id, fn state ->
-               Map.put(state, "delivery", %{
-                 "status" => "failed",
-                 "summary_message_ts" => "terminal.old",
-                 "summary_message_kind" => "terminal:failed"
-               })
-             end)
-
-    assert {:ok, %{"published" => true, "message_ts" => "222.333"}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    assert [summary] = MockSlack.requests("chat.postMessage")
-    assert slack_block_text(summary) =~ "Weekly Sync"
-
-    assert {:ok, final_doc, _etag} = Store.get(meeting_id)
-    delivery = final_doc["state"]["delivery"]
-    assert delivery["summary_message_ts"] == "222.333"
-    assert delivery["summary_message_kind"] == "summary"
-  end
-
-  test "terminal meeting canvas renders every summary section",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-canvas",
-        "app_id" => "A-canvas",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-canvas",
-        "bot_token" => "xoxb-canvas",
-        "oauth_completed_at" => 1
-      })
-
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-canvas-#{System.unique_integer([:positive])}"
-
-    {:ok, _doc, _etag} =
-      Store.create_once(meeting_id,
-        state: %{
-          "tenant_id" => tenant_id,
-          "group_id" => group_id,
-          "meeting_agent_id" => meeting_agent["meeting_agent_id"],
-          "meeting_session_id" => meeting_agent["meeting_session_id"],
-          "provider" => "slack",
-          "connect_id" => connect["connect_id"],
-          "status" => "done",
-          "title" => "Weekly Sync",
-          "start_at" => 1_700_000_000,
-          "summary" => %{
-            "title" => "Weekly Sync",
-            "attendees" => ["Alice", "Bob"],
-            "duration_minutes" => 42,
-            "timeline" => [%{"time" => "00:13:27", "summary" => "Kickoff and demo"}],
-            "key_points" => ["Shipped the dashboard"],
-            "action_items" => [
-              %{"description" => "Wire up Zoom", "owner" => "Alice", "deadline" => "Fri"}
-            ],
-            "decisions" => ["Use write-once cron jobs first"],
-            "open_questions" => ["Can Zoom land this week?"],
-            "blockers" => ["Nothing partner is unavailable"]
-          },
-          "slack_ref" => %{"channel_id" => "C1", "thread_ts" => "111.222"}
-        }
-      )
-
-    assert {:ok, %{"published" => true}} =
-             publish_claimed_summary(meeting_agent, meeting_id)
-
-    canvas_req = MockSlack.last_request("canvases.create")
-    assert canvas_req, "expected a canvases.create request"
-    refute canvas_req.params["title"] == "Weekly Sync (2023-11-14 22:13)"
-
-    # Creation uses a unique recovery title; the idempotent rename installs the
-    # requested meeting title/date after the Canvas id is checkpointed.
-    rename = MockSlack.last_request("canvases.edit")
-    assert rename.params["changes"] =~ "Weekly Sync (2023-11-14 22:13)"
-    # `document_content` is the JSON `%{"type" => "markdown", "markdown" => ...}`
-    # form field, so the rendered canvas markdown appears verbatim inside it.
-    doc = canvas_req.params["document_content"]
-
-    # Every summary section must survive into the canvas markdown. Before the
-    # fix only Key Points + Action Items were rendered; timeline / decisions /
-    # open_questions / blockers / attendees / duration were silently dropped.
-    for fragment <- [
-          "**Duration:** 42 min",
-          "## Attendees",
-          "Alice",
-          "## Timeline",
-          "00:13:27",
-          "Kickoff and demo",
-          "## Key Points",
-          "Shipped the dashboard",
-          "## Action Items",
-          "Wire up Zoom",
-          "## Decisions",
-          "Use write-once cron jobs first",
-          "## Open Questions",
-          "Can Zoom land this week?",
-          "## Blockers",
-          "Nothing partner is unavailable"
-        ] do
-      assert doc =~ fragment, "canvas markdown missing #{inspect(fragment)}"
-    end
-  end
-
   test "delivery sweep automatically publishes terminal Slack meetings",
        %{tenant_id: tenant_id, group_id: group_id} do
     connect =
@@ -8533,7 +3809,7 @@ defmodule SalixMeet.SlackProviderTest do
       })
 
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-delivery-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-delivery-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, _doc, _etag} =
       Store.create_once(meeting_id,
@@ -8600,7 +3876,7 @@ defmodule SalixMeet.SlackProviderTest do
       })
 
     {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-generating-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-generating-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     summary = %{"title" => "Weekly Sync", "key_points" => ["One"]}
 
     snapshot =
@@ -8644,331 +3920,8 @@ defmodule SalixMeet.SlackProviderTest do
     assert MockSlack.requests("chat.postMessage") == []
   end
 
-  test "summary_generating is skipped when a summary has no mandatory snapshot",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-generating-skip",
-        "app_id" => "A-generating-skip",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-generating-skip",
-        "bot_token" => "xoxb-generating-skip",
-        "oauth_completed_at" => 1
-      })
-
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-generating-skip-#{System.unique_integer([:positive])}"
-
-    {:ok, _doc, _etag} =
-      Store.create_once(meeting_id,
-        state: %{
-          "tenant_id" => tenant_id,
-          "group_id" => group_id,
-          "meeting_agent_id" => meeting_agent["meeting_agent_id"],
-          "meeting_session_id" => meeting_agent["meeting_session_id"],
-          "provider" => "slack",
-          "connect_id" => connect["connect_id"],
-          "status" => "done",
-          "title" => "Weekly Sync",
-          "summary" => %{"title" => "Weekly Sync", "key_points" => ["One"]},
-          "slack_ref" => %{"channel_id" => "C1", "thread_ts" => "111.222"}
-        }
-      )
-
-    assert {:ok, %{"status_set" => false}} =
-             SalixMeet.Runtime.publish(meeting_agent, %{
-               "provider" => "slack",
-               "kind" => "summary_generating",
-               "meeting_id" => meeting_id
-             })
-
-    assert MockSlack.requests("assistant.threads.setStatus") == []
-  end
-
-  test "delivery sweep defers generating status until the snapshot exists, then posts",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    Application.put_env(:salix_meet, :summary_mod, __MODULE__.ControllableSummary)
-    Application.put_env(:salix_meet, :summary_test_pid, self())
-
-    on_exit(fn ->
-      Application.delete_env(:salix_meet, :summary_mod)
-      Application.delete_env(:salix_meet, :summary_test_pid)
-    end)
-
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-gen-live",
-        "app_id" => "A-gen-live",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-gen-live",
-        "bot_token" => "xoxb-gen-live",
-        "oauth_completed_at" => 1
-      })
-
-    {:ok, meeting_agent} = SalixMeet.Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-gen-live-#{System.unique_integer([:positive])}"
-
-    {:ok, _doc, _etag} =
-      Store.create_once(meeting_id,
-        state: %{
-          "tenant_id" => tenant_id,
-          "group_id" => group_id,
-          "meeting_agent_id" => meeting_agent["meeting_agent_id"],
-          "meeting_session_id" => meeting_agent["meeting_session_id"],
-          "provider" => "slack",
-          "connect_id" => connect["connect_id"],
-          "status" => "done",
-          "title" => "Weekly Sync",
-          "slack_ref" => %{"channel_id" => "C1", "thread_ts" => "111.222"}
-        }
-      )
-
-    sweep = Task.async(fn -> SalixMeet.Delivery.sweep_once(node: "test-node") end)
-
-    # generation is now in progress, blocked inside the summary port
-    assert_receive {:summarizing_started, worker}, 2_000
-
-    # No external status crosses the mandatory attribution checkpoint while
-    # summary generation is still in progress.
-    assert MockSlack.requests("assistant.threads.setStatus") == []
-    assert MockSlack.requests("chat.postMessage") == []
-
-    # Once generation and the immutable snapshot finish, status + summary may
-    # cross the provider boundary (the post clears the status in Slack).
-    send(worker, :finish)
-    assert [{^meeting_id, :published}] = Task.await(sweep, 5_000)
-
-    status = MockSlack.last_request("assistant.threads.setStatus")
-    assert status.params["channel_id"] == "C1"
-    assert status.params["thread_ts"] == "111.222"
-    assert status.params["status"] =~ "Summarizing"
-    assert slack_block_text(MockSlack.last_request("chat.postMessage")) =~ "Weekly Sync"
-  end
-
-  test "\"already scheduled\" notice fires only on an explicit re-request, not thread chatter",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    SalixAgent.LLM.Mock.script(for _ <- 1..6, do: {:final, "ok"})
-
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-notice",
-        "app_id" => "A-meeting",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-notice",
-        "oauth_completed_at" => 1
-      })
-
-    meet_url = "https://meet.google.com/abc-defg-hij"
-
-    notices = fn ->
-      MockSlack.requests("chat.postMessage")
-      |> Enum.count(&(&1.params["text"] =~ "already scheduled"))
-    end
-
-    # 1) schedule via a direct Meet URL (root message ts 123.456 → thread 123.456)
-    first = slack_envelope("Ev-notice-1", "please join #{meet_url}")
-    first_raw = Jason.encode!(first)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               first,
-               sign_slack_body(first_raw, "slack-secret"),
-               first_raw
-             )
-
-    assert [_meeting_id] = meeting_ids()
-    assert notices.() == 0, "scheduling must not emit the already-scheduled notice"
-
-    # The thread now contains the Meet URL, so any later reply re-detects it via
-    # the thread-scan path (request source == "thread").
-    MockSlack.respond("conversations.replies", %{
-      "ok" => true,
-      "messages" => [
-        %{"user" => "U1", "text" => "please join #{meet_url}", "ts" => "123.456"},
-        %{"user" => "U2", "text" => "sounds good", "ts" => "124.000"}
-      ]
-    })
-
-    # 2) incidental thread chatter (no URL, no @mention): the bot is not addressed,
-    #    so it is ignored outright (never scans the thread) — no notice, no meeting.
-    chatter =
-      slack_envelope("Ev-notice-2", "how is it going", %{
-        "thread_ts" => "123.456",
-        "ts" => "125.000",
-        "event_ts" => "125.000"
-      })
-
-    chatter_raw = Jason.encode!(chatter)
-
-    assert {:error, :ignored} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               chatter,
-               sign_slack_body(chatter_raw, "slack-secret"),
-               chatter_raw
-             )
-
-    assert notices.() == 0, "thread chatter must not emit the already-scheduled notice"
-    assert length(meeting_ids()) == 1
-
-    # 3) explicit re-request: re-post the Meet URL directly → source == "message"
-    #    → posts the notice exactly once, still reusing the active meeting.
-    again =
-      slack_envelope("Ev-notice-3", "please join #{meet_url} again", %{
-        "thread_ts" => "123.456",
-        "ts" => "126.000",
-        "event_ts" => "126.000"
-      })
-
-    again_raw = Jason.encode!(again)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               again,
-               sign_slack_body(again_raw, "slack-secret"),
-               again_raw
-             )
-
-    assert eventually(fn -> notices.() == 1 end)
-    assert notices.() == 1, "exactly one notice — thread chatter stayed silent"
-    assert length(meeting_ids()) == 1
-  end
-
-  test "the app_mention twin of the same scheduling message must not say already-scheduled",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    SalixAgent.LLM.Mock.script(for _ <- 1..6, do: {:final, "ok"})
-
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-twin",
-        "app_id" => "A-meeting",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-twin",
-        "bot_user_id" => "UBOT",
-        "oauth_completed_at" => 1
-      })
-
-    meet_url = "https://meet.google.com/abc-defg-hij"
-
-    notices = fn ->
-      MockSlack.requests("chat.postMessage")
-      |> Enum.count(&(&1.params["text"] =~ "already scheduled"))
-    end
-
-    # Slack delivers ONE user message as TWO events (message + app_mention),
-    # same message ts "123.456", different event_ids.
-    msg = slack_envelope("Ev-twin-msg", "<@UBOT> join #{meet_url}")
-    msg_raw = Jason.encode!(msg)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               msg,
-               sign_slack_body(msg_raw, "slack-secret"),
-               msg_raw
-             )
-
-    assert [_id] = meeting_ids()
-
-    mention =
-      slack_envelope("Ev-twin-mention", "<@UBOT> join #{meet_url}", %{"type" => "app_mention"})
-
-    mention_raw = Jason.encode!(mention)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               mention,
-               sign_slack_body(mention_raw, "slack-secret"),
-               mention_raw
-             )
-
-    assert notices.() == 0,
-           "the twin delivery of the same scheduling message must not say already-scheduled"
-
-    assert length(meeting_ids()) == 1
-  end
-
-  test "a different meeting url in an active thread announces in-progress once, never already-scheduled",
-       %{tenant_id: tenant_id, group_id: group_id} do
-    SalixAgent.LLM.Mock.script(for _ <- 1..6, do: {:final, "ok"})
-
-    connect =
-      seed_slack_connect(group_id, %{
-        "tenant_id" => tenant_id,
-        "connect_id" => "slack-conflict",
-        "app_id" => "A-meeting",
-        "signing_secret" => "slack-secret",
-        "workspace_id" => "T-meeting",
-        "bot_token" => "xoxb-conflict",
-        "bot_user_id" => "UBOT",
-        "oauth_completed_at" => 1
-      })
-
-    url_a = "https://meet.google.com/abc-defg-hij"
-    url_b = "https://meet.google.com/mno-pqrs-tuv"
-
-    count = fn frag ->
-      MockSlack.requests("chat.postMessage")
-      |> Enum.count(&(&1.params["text"] =~ frag))
-    end
-
-    a = slack_envelope("Ev-c-a", "join #{url_a}")
-    a_raw = Jason.encode!(a)
-
-    assert {:ok, :accepted} =
-             SalixIM.ProviderHTTP.handle_slack_event(
-               connect,
-               a,
-               sign_slack_body(a_raw, "slack-secret"),
-               a_raw
-             )
-
-    assert [_] = meeting_ids()
-
-    # a DIFFERENT meeting (url_b), same thread, delivered as message + app_mention
-    # twin (same message ts 200.000)
-    twins = [
-      slack_envelope("Ev-c-b1", "<@UBOT> join #{url_b}", %{
-        "thread_ts" => "123.456",
-        "ts" => "200.000",
-        "event_ts" => "200.000"
-      }),
-      slack_envelope("Ev-c-b2", "<@UBOT> join #{url_b}", %{
-        "type" => "app_mention",
-        "thread_ts" => "123.456",
-        "ts" => "200.000",
-        "event_ts" => "200.000"
-      })
-    ]
-
-    for e <- twins do
-      raw = Jason.encode!(e)
-
-      assert {:ok, :accepted} =
-               SalixIM.ProviderHTTP.handle_slack_event(
-                 connect,
-                 e,
-                 sign_slack_body(raw, "slack-secret"),
-                 raw
-               )
-    end
-
-    assert count.("in progress") == 1, "one in-progress notice (twin deduped)"
-    assert count.("already scheduled") == 0, "a different meeting must not say already-scheduled"
-    assert length(meeting_ids()) == 1, "still one meeting per thread"
-  end
-
   defp put_group!(tenant_id, group_id, router_agent_id) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     rec = %{
       "tenant_id" => tenant_id,
@@ -8985,7 +3938,7 @@ defmodule SalixMeet.SlackProviderTest do
   end
 
   defp put_router_agent!(tenant_id, group_id, agent_id) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     rec = %{
       "agent_id" => agent_id,
@@ -8995,8 +3948,6 @@ defmodule SalixMeet.SlackProviderTest do
       "name" => "Router",
       "system_prompt" => "",
       "router_system_prompt" => "",
-      "template_id" => "router",
-      "provider" => "internal/noop",
       "db_namespace" => "salix:" <> agent_id,
       "status" => "idle",
       "purpose" => "default",
@@ -9004,37 +3955,10 @@ defmodule SalixMeet.SlackProviderTest do
       "created_at" => now,
       "heartbeat_schedule_id" => SalixStore.Ids.new_schedule_id(),
       "router_session_id" => SalixStore.Ids.new_session_id(),
-      "tool_router_enabled" => false,
-      "vm" => %{"enabled" => false}
+      "tool_router_enabled" => false
     }
 
     {:ok, _} = S3.put(Keys.ctl_agent(agent_id), Jason.encode!(rec), if_none_match: "*")
-    rec
-  end
-
-  defp put_router_template! do
-    now = System.system_time(:second)
-
-    rec = %{
-      "template_id" => "router",
-      "name" => "Router",
-      "model" => "internal/noop",
-      "provider" => "internal/noop",
-      "provider_config" => %{},
-      "request_headers" => %{},
-      "image_config" => %{},
-      "video_config" => %{},
-      "vision_describer_config" => %{},
-      "analyze_config" => %{},
-      "max_tokens" => 65_536,
-      "context_tokens" => 0,
-      "role" => "router",
-      "hidden" => false,
-      "purpose" => "default",
-      "created_at" => now
-    }
-
-    {:ok, _} = S3.put(Keys.ctl_template("router"), Jason.encode!(rec), if_none_match: "*")
     rec
   end
 
@@ -9045,7 +3969,7 @@ defmodule SalixMeet.SlackProviderTest do
         "session_id" => "main",
         "name" => "Router",
         "hidden" => false,
-        "created_at" => System.system_time(:second)
+        "created_at" => SystemsClock.system_time(:second)
       }
     ])
   end
@@ -9064,7 +3988,8 @@ defmodule SalixMeet.SlackProviderTest do
   end
 
   defp shared_preparation_file(size) do
-    base = Application.fetch_env!(:salix_im, :slack_api_base_url) |> String.trim_trailing("/api")
+    base =
+      SystemsRuntime.fetch_env!(:salix_im, :slack_api_base_url) |> String.trim_trailing("/api")
 
     %{
       "id" => "FTRANSCRIPT",
@@ -9077,7 +4002,7 @@ defmodule SalixMeet.SlackProviderTest do
   end
 
   defp seed_slack_connect(group_id, attrs) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
     connect_id = attrs["connect_id"]
 
     rec =
@@ -9110,7 +4035,7 @@ defmodule SalixMeet.SlackProviderTest do
   end
 
   defp seed_feishu_connect(group_id, attrs) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
     connect_id = attrs["connect_id"]
 
     rec =
@@ -9124,6 +4049,31 @@ defmodule SalixMeet.SlackProviderTest do
           "app_id" => attrs["app_id"],
           "app_secret" => "secret",
           "bot_open_id" => attrs["bot_open_id"],
+          "created_at" => now,
+          "updated_at" => now
+        },
+        attrs
+      )
+
+    {:ok, _} =
+      S3.put(Keys.ctl_im_connect(group_id, connect_id), Jason.encode!(rec), if_none_match: "*")
+
+    rec
+  end
+
+  defp seed_lark_connect(group_id, attrs) do
+    now = SystemsClock.system_time(:second)
+    connect_id = attrs["connect_id"]
+
+    rec =
+      Map.merge(
+        %{
+          "group_id" => group_id,
+          "provider" => "lark",
+          "status" => "connected",
+          "app_id" => "cli_" <> String.replace(connect_id, "-", "_"),
+          "app_secret" => "secret",
+          "bot_open_id" => "ou_bot",
           "created_at" => now,
           "updated_at" => now
         },
@@ -9155,7 +4105,7 @@ defmodule SalixMeet.SlackProviderTest do
   end
 
   defp seed_done_meeting(tenant_id, group_id, meeting_agent, connect, opts \\ []) do
-    meeting_id = "mtg-#{connect["connect_id"]}-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-#{connect["connect_id"]}-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     summary = Keyword.get(opts, :summary, %{"title" => "Weekly Sync", "key_points" => ["One"]})
     slack_ref = Keyword.get(opts, :slack_ref, %{"channel_id" => "C1", "thread_ts" => "111.222"})
 
@@ -9185,7 +4135,7 @@ defmodule SalixMeet.SlackProviderTest do
     assert {:ok, %{"status" => "created"}} =
              SalixMeet.Runtime.deliver_event(tenant_id, group_id, %{
                "type" => "meeting_runtime_update",
-               "event_id" => "audio-ready-#{System.unique_integer([:positive])}",
+               "event_id" => "audio-ready-#{SystemsRuntime.Proc.unique_integer([:positive])}",
                "meeting_id" => meeting_id,
                "status" => "done",
                "artifacts" => [
@@ -9213,76 +4163,6 @@ defmodule SalixMeet.SlackProviderTest do
                  false
              end
            end)
-  end
-
-  defp seed_agent_vfs_stream!(agent_id, path, mebibytes) do
-    chunk = :binary.copy(<<0xA5>>, 1024 * 1024)
-    stream = Stream.repeatedly(fn -> chunk end) |> Stream.take(mebibytes)
-
-    assert {:ok, event} = SalixAgent.AgentWorkspace.prepare_write_stream(agent_id, path, stream)
-
-    assert {:ok, _result} =
-             SalixAgent.AgentWorkspace.seed_operation(
-               agent_id,
-               "meeting-large-artifact-seed:#{System.unique_integer([:positive])}",
-               %{},
-               [event]
-             )
-  end
-
-  defp artifact_upload_intent(file_id, overrides) do
-    Map.merge(
-      %{
-        "file_id" => file_id,
-        "status" => "completing",
-        "path" => "/meetings/test/audio.ogg",
-        "title" => "Weekly Sync - recording.ogg",
-        "size" => byte_size("test audio"),
-        "sha256" => Base.encode16(:crypto.hash(:sha256, "test audio"), case: :lower),
-        "channel_id" => "C1",
-        "thread_ts" => "111.222",
-        "started_at" => System.system_time(:second),
-        "reconcile_attempts" => 0
-      },
-      overrides
-    )
-  end
-
-  defp artifact_or_canvas_files_info_response(file_id, size) do
-    fn params ->
-      case params["file"] do
-        ^file_id ->
-          %{
-            "ok" => true,
-            "file" => %{
-              "id" => file_id,
-              "size" => size,
-              "permalink" => "https://w.slack.com/files/#{file_id}",
-              "channels" => ["C1"],
-              "shares" => %{
-                "public" => %{"C1" => [%{"thread_ts" => "111.222"}]}
-              }
-            }
-          }
-
-        "CAN1" ->
-          canvas_file_info_response("CAN1")
-      end
-    end
-  end
-
-  defp canvas_file_info_response(canvas_id) do
-    files_base = Application.fetch_env!(:salix_im, :slack_files_base_url)
-
-    %{
-      "ok" => true,
-      "file" => %{
-        "id" => canvas_id,
-        "title" => "Weekly Sync",
-        "permalink" => "https://w.slack.com/canvases/#{canvas_id}",
-        "url_private_download" => files_base <> "/files/#{canvas_id}"
-      }
-    }
   end
 
   # Slack serves Canvas downloads as rendered Quip HTML even when
@@ -9403,6 +4283,36 @@ defmodule SalixMeet.SlackProviderTest do
              end)
   end
 
+  defp ensure_lark_owner_snapshot_for_test!(meeting_id) do
+    assert {:ok, _doc, _etag} =
+             Store.update_state_retrying(meeting_id, fn state ->
+               summary =
+                 SalixMeet.OwnerAttributionSnapshot.sanitize_summary(state["summary"] || %{})
+
+               [first | rest] = summary["action_items"]
+
+               enriched =
+                 Map.put(summary, "action_items", [
+                   Map.put(first, "owner_provider_identity", %{
+                     "provider" => "lark",
+                     "user_id" => "ou_alice",
+                     "display_name" => "Alice"
+                   })
+                   | rest
+                 ])
+
+               snapshot =
+                 SalixMeet.OwnerAttributionSnapshot.build(summary, enriched, completed_at: 123)
+
+               Map.update(
+                 state,
+                 "delivery",
+                 SalixMeet.OwnerAttributionSnapshot.put_in_delivery(%{}, snapshot),
+                 &SalixMeet.OwnerAttributionSnapshot.put_in_delivery(&1, snapshot)
+               )
+             end)
+  end
+
   defp claim_delivery_for_test!(meeting_id) do
     case Store.claim_delivery(meeting_id, "direct-provider-test") do
       {:ok, _doc, _etag, claim} -> claim
@@ -9428,30 +4338,6 @@ defmodule SalixMeet.SlackProviderTest do
         }
         |> Map.merge(event_overrides)
     }
-  end
-
-  defp deterministic_slack_meeting_id(connect, envelope, meet_url) do
-    event = envelope["event"]
-    channel = event["channel"]
-    thread = event["thread_ts"] || event["ts"] || event["event_ts"]
-    source_id = envelope["event_id"] || event["client_msg_id"] || event["ts"] || meet_url
-
-    digest =
-      [
-        "comma30-meeting-v1",
-        connect["tenant_id"],
-        connect["group_id"],
-        connect["connect_id"],
-        channel,
-        thread,
-        source_id,
-        meet_url
-      ]
-      |> Enum.join("\n")
-      |> Crypto.hex()
-      |> binary_part(0, 24)
-
-    "mtg-" <> digest
   end
 
   defp feishu_envelope(event_id, text, message_overrides \\ %{}) do
@@ -9485,7 +4371,7 @@ defmodule SalixMeet.SlackProviderTest do
   end
 
   defp sign_slack_body(raw, secret) do
-    ts = Integer.to_string(System.system_time(:second))
+    ts = Integer.to_string(SystemsClock.system_time(:second))
 
     mac =
       :crypto.mac(:hmac, :sha256, secret, "v0:" <> ts <> ":" <> raw)
@@ -9560,42 +4446,44 @@ defmodule SalixMeet.SlackProviderTest do
 
   defp nested_metadata_event_type?(_value, _event_type), do: false
 
-  defp eventually(fun, attempts \\ 50)
-
-  defp eventually(fun, attempts) when attempts > 0 do
-    if fun.() do
-      true
-    else
-      Process.sleep(20)
-      eventually(fun, attempts - 1)
-    end
-  end
-
-  defp eventually(_fun, 0), do: false
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun), do: settle_until(fun)
 
   defp ensure_fake_s3_started! do
-    case Process.whereis(SalixStore.S3.Fake) do
+    case SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       nil -> start_supervised!(SalixStore.S3.Fake)
       _pid -> :ok
     end
   end
 
   defp ensure_mock_llm_started! do
-    case Process.whereis(SalixAgent.LLM.Mock) do
+    case SystemsRuntime.Proc.whereis(SalixAgent.LLM.Mock) do
       nil -> start_supervised!(SalixAgent.LLM.Mock)
       _pid -> :ok
     end
   end
 
   defp ensure_runtime_driver_started! do
-    case Process.whereis(RuntimeDriver) do
+    case SystemsRuntime.Proc.whereis(RuntimeDriver) do
       nil -> start_supervised!(RuntimeDriver)
       _pid -> :ok
     end
   end
 
+  defp stop_all_meetings do
+    if SystemsRuntime.Proc.whereis(SalixMeet.MeetingSup) do
+      SalixMeet.MeetingSup
+      |> DynamicSupervisor.which_children()
+      |> Enum.each(fn {_, pid, _, _} ->
+        DynamicSupervisor.terminate_child(SalixMeet.MeetingSup, pid)
+      end)
+    end
+
+    :ok
+  end
+
   defp stop_all_agents do
-    if Process.whereis(SalixAgent.Registry) do
+    if SystemsRuntime.Proc.whereis(SalixAgent.Registry) do
       SalixAgent.Registry
       |> Registry.select([{{:"$1", :"$2", :"$3"}, [], [:"$1"]}])
       |> Enum.uniq()
@@ -9607,14 +4495,14 @@ defmodule SalixMeet.SlackProviderTest do
 
   defp script_owner_attribution(steps) when is_list(steps) do
     previous = %{
-      mod: Application.get_env(:salix_meet, :owner_attribution_mod),
-      pid: Application.get_env(:salix_meet, :owner_attribution_test_pid),
-      steps: Application.get_env(:salix_meet, :owner_attribution_test_steps)
+      mod: SystemsRuntime.get_env(:salix_meet, :owner_attribution_mod),
+      pid: SystemsRuntime.get_env(:salix_meet, :owner_attribution_test_pid),
+      steps: SystemsRuntime.get_env(:salix_meet, :owner_attribution_test_steps)
     }
 
-    Application.put_env(:salix_meet, :owner_attribution_mod, ScriptedOwnerAttribution)
-    Application.put_env(:salix_meet, :owner_attribution_test_pid, self())
-    Application.put_env(:salix_meet, :owner_attribution_test_steps, steps)
+    SystemsRuntime.put_env(:salix_meet, :owner_attribution_mod, ScriptedOwnerAttribution)
+    SystemsRuntime.put_env(:salix_meet, :owner_attribution_test_pid, SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_meet, :owner_attribution_test_steps, steps)
 
     on_exit(fn ->
       restore_env(:salix_meet, :owner_attribution_mod, previous.mod)
@@ -9623,6 +4511,6 @@ defmodule SalixMeet.SlackProviderTest do
     end)
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

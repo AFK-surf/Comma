@@ -1,0 +1,20 @@
+id: go-test-random
+language: go
+severity: error
+message: "A test uses unseeded randomness."
+note: |
+  Use fixed values or a generator with a fixed seed.
+metadata:
+  category: random
+rule:
+  all:
+    - kind: call_expression
+    - has:
+        field: function
+        regex: "^(rand\\.[A-Z][A-Za-z0-9]*|uuid\\.(New|NewString|NewRandom|NewV7))$"
+files:
+  - "**/*_test.go"
+# Live tests reach real services and skip unless their credentials are given;
+# CI never runs them.
+ignores:
+  - "**/*_live_test.go"

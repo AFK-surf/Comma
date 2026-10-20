@@ -47,8 +47,26 @@
   transition-duration: 0ms;
 }
 
+/* HoverPanel enters like a card from the edge facing its trigger. It has no
+   exit motion: it closes at once when people move on. */
+.comma-hover-panel {
+  opacity: 1;
+  transform: scale(1);
+  transform-origin: top left;
+  transition:
+    opacity var(--motion-duration-hover-card-enter)
+      var(--motion-easing-surface-smooth-out),
+    transform var(--motion-duration-hover-card-enter)
+      var(--motion-easing-surface-smooth-out);
+}
+
+.comma-hover-panel[data-placement="top"] {
+  transform-origin: bottom left;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .comma-hover-card {
+  .comma-hover-card,
+  .comma-hover-panel {
     transform: none;
     filter: none;
     transition-property: opacity;
@@ -64,5 +82,12 @@
 @starting-style {
   .comma-hover-card[data-bounded="true"]:not([data-instant="true"]) {
     opacity: 0;
+  }
+}
+
+@starting-style {
+  .comma-hover-panel {
+    opacity: 0;
+    transform: scale(var(--motion-scale-menu-enter));
   }
 }

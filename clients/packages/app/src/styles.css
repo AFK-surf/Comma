@@ -5,6 +5,7 @@
 @import "./components/commaCustomThemeStudio.css";
 @import "./components/onboarding/onboarding.css";
 @import "./components/onboarding/window/onboardingWindow.css";
+@import "./components/web-intro/webIntro.css";
 
 @source "./";
 @source "../../../apps/web/src";
@@ -452,6 +453,20 @@ body[data-comma-window-role="browser-inspection-composer"] #root {
   initial-value: 300px;
 }
 
+/* The shell writes these on a sidebar toggle (below). Inherited, each toggle
+   restyled all of Home — every message of the transcript — in one frame. */
+@property --comma-home-greet-shell-clearance {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --comma-home-tasks-shell-clearance {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
 /* Home rails resize from their chat-facing seams and fold below 240px.
    Route pressure folds Tasks first, then Greeting, preserving the chat floor. */
 .comma-home-layout {
@@ -500,6 +515,10 @@ body[data-comma-window-role="browser-inspection-composer"] #root {
         )
       )
     );
+  /* The one row is the layout's own height. Sized by content (the implicit
+     auto row), every change inside the chat made the grid measure each rail
+     again before it could place the row. */
+  grid-template-rows: minmax(0, 1fr);
   justify-content: stretch;
   overflow: hidden;
   padding-block: 0;
@@ -618,8 +637,8 @@ body[data-comma-window-role="browser-inspection-composer"] #root {
    accept no var()) both rails have auto-folded and render no handle, so the
    route inset that hosts the handles is empty. Chat then keeps one 16px edge
    on each side: the route inset goes, the thread's own inset narrows, and the
-   shared avatar gutter closes the way Side Chat's does, reopening only on a
-   reply that paints identity chrome in it. */
+   shared avatar gutter closes, reopening only on a reply that paints
+   identity chrome in it. */
 @container comma-home (width < 560px) {
   .comma-home-layout {
     padding-inline: var(--spacing-none);
@@ -690,6 +709,7 @@ body[data-comma-window-role="browser-inspection-composer"] #root {
 
 .comma-home-tasks-rail {
   --comma-home-tasks-preferred: inherit;
+  --comma-home-greet-shell-clearance: inherit;
   margin-inline-start: var(--spacing-xl);
   grid-column: 3;
 }
@@ -701,6 +721,7 @@ body[data-comma-window-role="browser-inspection-composer"] #root {
 
 .comma-home-tasks-rail .comma-home-rail-surface {
   --comma-home-tasks-preferred: inherit;
+  --comma-home-greet-shell-clearance: inherit;
   /* Resolve the resting width on its consumer. A fold must not invalidate
      unrelated content through an inherited geometry variable on Home. */
   width: clamp(
@@ -1232,7 +1253,7 @@ html[data-comma-routine-dragging="true"] * {
   line-height: 1.25rem;
 }
 
-.comma-recommendations-summary h1 {
+.comma-recommendations-summary-title {
   margin: 0 0 var(--spacing-md);
   color: var(--color-text-primary);
   font-size: 1.125rem;
@@ -1818,7 +1839,9 @@ html[data-comma-routine-dragging="true"] * {
   flex-shrink: 1;
 }
 
-.comma-recommendation-text-item-content p + p::before {
+.comma-recommendation-text-item-content
+  .markdown-stream-copy
+  + .markdown-stream-copy::before {
   content: " ";
 }
 
@@ -2181,7 +2204,10 @@ html[data-comma-routine-dragging="true"] * {
   background: var(--color-bg-tertiary);
 }
 
-.comma-recommendations-empty-logos > * + * {
+/* Not `* + *`: a sibling combinator over universal compounds makes Chromium
+   restyle the whole parent subtree on every element insertion anywhere in the
+   document — each sent message restyled the entire transcript. */
+.comma-recommendations-empty-logos > :not(:first-child) {
   margin-left: calc(-1 * var(--spacing-xxs));
 }
 
@@ -2295,9 +2321,14 @@ html[data-comma-routine-dragging="true"] * {
   display: grid;
   min-height: 0;
   flex: 1 1 auto;
-  grid-template-columns: minmax(0, var(--comma-chat-content-max)) var(--container-xxs);
+  /* The panel track carries a leading inset that the column gap gives up,
+     so the details sit where they would with the full gap; the inset is the
+     room Properties rows hang into (see .comma-task-panel-pill). */
+  grid-template-columns: minmax(0, var(--comma-chat-content-max)) calc(
+      var(--container-xxs) + var(--spacing-lg)
+    );
   justify-content: center;
-  column-gap: var(--spacing-4xl);
+  column-gap: calc(var(--spacing-4xl) - var(--spacing-lg));
   /* A toggled surface: it opens on the panel clock with a strong ease-out and
      closes sooner than it opened, so the fold gets out of the way. */
   transition:
@@ -2410,6 +2441,14 @@ body.comma-window-is-resizing .comma-chat-body .comma-task-panel-inner {
   height: auto;
   max-height: var(--container-md);
   padding: var(--spacing-lg);
+}
+
+/* Properties rows hang outside the column (see .comma-task-panel-pill). The
+   column layout's leading inset, taken from the column gap, holds the hanging
+   depth plus a focus ring, so hover fills and rings are never clipped. */
+.comma-task-panel[data-layout="column"] .comma-task-panel-inner {
+  width: calc(var(--container-xxs) + var(--spacing-lg));
+  padding-inline-start: var(--spacing-lg);
 }
 
 /* The same Task properties inside a chat-hosted Comma Web page. */
@@ -2660,7 +2699,7 @@ body.comma-window-is-resizing .comma-chat-body .comma-task-panel-inner {
 }
 
 /* The hairline starts under the text, not under the status icon. */
-.comma-embedded-task-list > li + li > .comma-embedded-task-row::before {
+.comma-embedded-task-list > li:not(:first-child) > .comma-embedded-task-row::before {
   position: absolute;
   top: 0;
   right: 0;
@@ -2817,6 +2856,10 @@ body.comma-window-is-resizing .comma-chat-body .comma-task-panel-inner {
   }
 }
 
+.comma-task-panel[data-layout="embedded"] {
+  overflow: visible;
+}
+
 .comma-task-panel[data-layout="embedded"] .comma-task-panel-inner {
   width: auto;
   height: auto;
@@ -2849,11 +2892,12 @@ body.comma-window-is-resizing .comma-chat-body .comma-task-panel-inner {
 }
 
 /* Folded in the rail: the popover trigger floats over the transcript's top
-   right corner instead of taking a header row. */
+   right corner instead of taking a header row. The right inset is the window
+   bar's, so the trigger shares the Chat Sidebar toggle's column. */
 .comma-task-panel-float {
   position: absolute;
   top: var(--spacing-md);
-  right: var(--spacing-md);
+  right: var(--spacing-lg);
   z-index: 1;
 }
 
@@ -2861,6 +2905,19 @@ body.comma-window-is-resizing .comma-chat-body .comma-task-panel-inner {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-md);
+}
+
+.comma-task-loop-hover-card {
+  width: min(var(--container-xxs), calc(100vw - var(--spacing-3xl)));
+  padding: var(--spacing-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.comma-task-loop-detail-icon {
+  display: flex;
+  height: var(--text-sm--line-height);
+  flex-shrink: 0;
+  align-items: center;
 }
 
 .comma-task-panel-heading {
@@ -2878,16 +2935,26 @@ body.comma-window-is-resizing .comma-chat-body .comma-task-panel-inner {
   gap: var(--spacing-xxs);
 }
 
+/* A Properties row has no outline, only a hover fill. Its glyph lines up
+   with the section title: the pill hangs its padding and the glyph's own
+   inset (--spacing-xxs) outside the column, so the hover fill reaches past
+   the column instead of pushing the glyph in. */
 .comma-task-panel-pill {
   display: inline-flex;
   align-items: center;
   gap: var(--spacing-xs);
+  margin-inline-start: calc(-1 * (var(--spacing-xs) + var(--spacing-xxs)));
   padding: var(--spacing-xxs) var(--spacing-md) var(--spacing-xxs) var(--spacing-xs);
   border-radius: var(--radius-full);
   color: var(--color-text-primary);
   font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   line-height: var(--text-sm--line-height);
+}
+
+/* The Worker's avatar is a filled disc: it has no inset to hang. */
+.comma-task-panel-pill:has(> .comma-session-avatar) {
+  margin-inline-start: calc(-1 * var(--spacing-xs));
 }
 
 /* The origin pill opens the Tasks page narrowed to that platform, so it is
@@ -2902,8 +2969,17 @@ button.comma-task-panel-pill {
   outline: none;
 }
 
-button.comma-task-panel-pill:hover {
+button.comma-task-panel-pill:hover,
+button.comma-task-panel-pill[aria-expanded="true"] {
   background: var(--color-bg-quaternary-hover);
+}
+
+button.comma-task-panel-pill:disabled {
+  cursor: default;
+}
+
+button.comma-task-panel-pill:disabled:hover {
+  background: none;
 }
 
 button.comma-task-panel-pill:active {
@@ -2914,53 +2990,9 @@ button.comma-task-panel-pill:focus-visible {
   box-shadow: var(--shadow-focus-gray);
 }
 
-/* Done sits beside the status; it leaves with the old state (below). */
-.comma-task-panel-done {
-  display: inline-flex;
-}
-
-/* ---- State swap ----------------------------------------------------
-   A state trading places with the next (Needs Review → Done): the old layer
-   clears first, the new one arrives once it has gone, so the two never
-   overlap and nothing appears from nowhere. Both layers share one grid cell,
-   so the pill holds the wider of the two until the old one is unmounted,
-   and by then the new one has not yet shown. Controls that leave with the
-   old state (the panel's Done, the transcript's review card) take the same
-   exit. */
-.comma-status-swap {
-  display: inline-grid;
-  align-items: center;
-}
-
-.comma-status-swap-layer {
-  display: inline-flex;
-  grid-area: 1 / 1;
-  align-items: center;
-  gap: var(--spacing-xs);
-  transition:
-    opacity var(--motion-duration-state-swap-enter) var(--motion-easing-smooth-out),
-    transform var(--motion-duration-state-swap-enter) var(--motion-easing-smooth-out);
-}
-
-/* The arriving state waits out the departing one. */
-.comma-status-swap[data-swapping="true"]
-  .comma-status-swap-layer:not([data-leaving="true"]) {
-  transition-delay: var(--motion-duration-state-swap-exit);
-
-  @starting-style {
-    opacity: 0;
-    transform: scale(var(--motion-scale-tactile-pressed));
-  }
-}
-
-.comma-status-swap-layer[data-leaving="true"] {
-  opacity: 0;
-  transform: scale(var(--motion-scale-tactile-pressed));
-  transition-duration: var(--motion-duration-state-swap-exit);
-  transition-timing-function: var(--motion-easing-sharp-in);
-  pointer-events: none;
-}
-
+/* ---- Leaving control ----------------------------------------------
+   The transcript's review card leaves once its review is accepted: it stays
+   mounted through this exit instead of vanishing. */
 .comma-status-swap-exit {
   transition:
     opacity var(--motion-duration-state-swap-exit) var(--motion-easing-sharp-in),
@@ -2974,19 +3006,10 @@ button.comma-task-panel-pill:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .comma-status-swap-layer,
   .comma-status-swap-exit {
     transition-property: opacity;
   }
 
-  .comma-status-swap[data-swapping="true"]
-    .comma-status-swap-layer:not([data-leaving="true"]) {
-    @starting-style {
-      transform: none;
-    }
-  }
-
-  .comma-status-swap-layer[data-leaving="true"],
   .comma-status-swap-exit[data-leaving="true"] {
     transform: none;
   }
@@ -3018,6 +3041,179 @@ button.comma-task-panel-pill:focus-visible {
   gap: var(--spacing-xs);
 }
 
+/* ---- Task Activity ---------------------------------------------------
+   The Task's milestones as a timeline, after Linear's activity log: each
+   request (the Task's creation, then a person's later message) sits on one
+   hairline that runs through the requests; the milestones recorded after it
+   hang below, indented, on their own hairline. Rows read "what · when". */
+.comma-task-activity,
+.comma-task-activity-entries {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.comma-task-activity-group,
+.comma-task-activity-item {
+  position: relative;
+}
+
+/* A milestone hangs one glyph column plus the row gap to the right. */
+.comma-task-activity-entries {
+  padding-inline-start: calc(var(--spacing-xl) + var(--spacing-md));
+}
+
+/* Each hairline runs from under its glyph to over the next one, with a 1px
+   gap at each end: the 16px glyph is centred on a row's first 18px line, so
+   it ends 1px above the line box's foot and the next starts 1px below the
+   next row's padding. The request line passes beside the nested milestones. */
+.comma-task-activity-group:not(:last-child)::before,
+.comma-task-activity-item:not(:last-child)::after {
+  position: absolute;
+  inset-block: calc(var(--spacing-xs) + var(--text-xs--line-height))
+    calc(-1 * var(--spacing-xs));
+  border-inline-start: var(--border-width-default) solid var(--color-border-primary);
+  content: "";
+  pointer-events: none;
+}
+
+.comma-task-activity-group:not(:last-child)::before {
+  inset-inline-start: calc(var(--spacing-md) - var(--border-width-default) / 2);
+}
+
+.comma-task-activity-item:not(:last-child)::after {
+  inset-inline-start: calc(var(--spacing-md) - var(--border-width-default) / 2);
+}
+
+/* A row hangs its padding outside its column, like a Properties pill, so
+   its glyph lines up with what sits above it and the hover fill reaches
+   past it. The fill is as wide as the row's content, up to the column. */
+.comma-task-activity-row {
+  display: flex;
+  width: fit-content;
+  max-width: calc(100% + var(--spacing-md));
+  align-items: flex-start;
+  gap: var(--spacing-md);
+  margin-inline-start: calc(-1 * var(--spacing-md));
+  padding: var(--spacing-xs) var(--spacing-md);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--color-text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  text-align: start;
+  outline: none;
+}
+
+button.comma-task-activity-row {
+  cursor: pointer;
+}
+
+/* Hover and press share one gray fill, and it changes at once: the rows opt
+   out of the global press scale. */
+button.comma-task-activity-row:hover,
+button.comma-task-activity-row:active {
+  background: var(--color-bg-quaternary-hover);
+}
+
+button.comma-task-activity-row:focus-visible {
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-task-activity-icon {
+  display: flex;
+  width: var(--spacing-xl);
+  height: var(--text-xs--line-height);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-fg-quaternary);
+}
+
+.comma-task-activity-icon svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+.comma-task-activity-icon[data-done="true"] {
+  color: var(--color-fg-success-primary);
+}
+
+.comma-task-activity-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A request reads like the person who made it; a long one keeps one line. */
+.comma-task-activity-text[data-kind="request"] {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+}
+
+.comma-task-activity-text[data-kind="request"] .comma-task-activity-title {
+  overflow: hidden;
+  color: var(--color-text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-task-activity-item[data-live="true"] .comma-task-activity-text,
+[data-fold="true"] > .comma-task-activity-row .comma-task-activity-text {
+  color: var(--color-text-tertiary);
+}
+
+/* The time follows its title after a gap, with no separator. */
+.comma-task-activity-time {
+  flex-shrink: 0;
+  margin-inline-start: var(--spacing-sm);
+  color: var(--color-text-quaternary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The trigger rule is a Properties pill that shows the rule in full and
+   wraps. Its radius is more than half of a one-line pill's height, so one
+   line keeps the pill shape and a wrapped rule gets rounded corners. */
+.comma-task-loop-section .comma-task-panel-pill {
+  align-items: flex-start;
+  border-radius: var(--radius-2xl);
+  text-align: left;
+}
+
+.comma-task-loop-section .comma-task-loop-rule {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* State rows are not pills: they hang only the glyph's inset, so their
+   glyphs and text share the trigger pill's columns. */
+.comma-task-loop-section li.comma-task-loop-detail {
+  margin-inline-start: calc(-1 * var(--spacing-xxs));
+}
+
+/* The drawn-smaller pause glyph moves back by its extra padding, so its bars
+   line up with the other glyphs; its text column stays. */
+.comma-task-loop-section .comma-task-loop-detail[data-tone="warning"] svg {
+  translate: calc(-1 * var(--spacing-xxs));
+}
+
+.comma-task-loop-detail[data-tone="muted"] {
+  color: var(--color-text-tertiary);
+}
+
+/* The pause glyph is a filled media bar pair: drawn a size smaller than the
+   outlined glyphs so it weighs the same, in the pause colour. */
+.comma-task-loop-detail[data-tone="warning"] svg {
+  padding: var(--spacing-xxs);
+  color: var(--color-fg-warning-primary);
+}
+
 /* Figma "Label" chip: a 1px pill with an 8px colour mark, the text set
    medium; the mark sits 8px in, the text ends 12px before the edge. */
 .comma-task-label-chip {
@@ -3046,7 +3242,8 @@ button.comma-task-panel-pill:focus-visible {
   padding-block: 0;
 }
 
-/* The chip's text never wraps; only a squeezed list row may truncate it. */
+/* The chip's text never wraps, except for the trigger rule in Properties;
+   only a squeezed list row may truncate it. */
 .comma-task-label-chip-text {
   min-width: 0;
   white-space: nowrap;
@@ -3177,6 +3374,28 @@ button.comma-task-label-chip:focus-visible {
   height: var(--spacing-xl);
 }
 
+/* A Loop type uses the label chip with its trigger icon where the colour mark
+   sits; the glyph's own margin takes 2px of the 8px inset. */
+.comma-task-schedule-chip {
+  padding-inline-start: var(--spacing-sm);
+}
+
+.comma-task-schedule-chip svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex-shrink: 0;
+  color: var(--color-fg-quaternary);
+}
+
+/* The calendar alone: a round mark at the row chip's 22px height, never
+   stretched to a squeezed row's chip floor. */
+[data-slot="task-list-item"]
+  [data-slot="task-list-item-badges"]
+  .comma-task-schedule-chip-icon {
+  min-width: auto;
+  padding: var(--spacing-xxs);
+}
+
 /* A chip arrives on the menu clock with a strong ease-out from a barely
    smaller size — never from nothing — and leaves faster than it came, the
    moment it is unchecked in the picker (the write follows). Transitions, not keyframes:
@@ -3260,6 +3479,21 @@ button.comma-task-label-chip:focus-visible {
 .comma-task-panel-add-label[data-disabled] {
   cursor: default;
   opacity: 0.5;
+}
+
+/* With no label on the Task, the add button names its action beside the
+   plus and wears a label chip's outline and height: its edge lines up with
+   the section title, as a label chip's does. */
+.comma-task-panel-add-label[data-labeled] {
+  width: auto;
+  height: auto;
+  gap: var(--spacing-xxs);
+  padding: var(--spacing-xxs) var(--spacing-lg) var(--spacing-xxs) var(--spacing-xs);
+  border: var(--border-width-default) solid var(--color-border-primary);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm--line-height);
 }
 
 /* ---- Settings › Labels page ---------------------------------------------
@@ -3634,14 +3868,31 @@ button.comma-task-label-chip:focus-visible {
   display: flex;
   flex-direction: column;
   gap: var(--comma-chat-message-gap);
-  /* Inline-size container for the user bubble width cap: 100cqi resolves
-     against this always-definite column even when every element between the
-     column and the bubble is shrink-to-fit (side-chat's flex-end chain). */
+}
+
+/* Inline-size container for the user bubble width cap: the row spans the
+   column's content box in every variant, so 100cqi resolves to the column's
+   width even though everything between the row and the bubble is
+   shrink-to-fit (the flex-end chain). Not the column itself: a container
+   holding the whole transcript made each streamed word lay it all out. */
+.comma-chat-message-user {
   container-type: inline-size;
 }
 
+/* Layout containment keeps transcript growth inside the scrollport. Its size
+   is already contained (container-type), but without layout containment every
+   new line of a streaming reply or unfolded block also relaid out the page
+   around it, such as the Home rails: in a long Home chat that took a
+   streaming frame's Layout from about 8ms to 12ms and its longest frames to
+   26ms. The viewport also becomes the containing block for fixed descendants
+   and a stacking context. Nothing in the transcript relies on either: the
+   outgoing bubble flies in the top layer (outgoingBubbleMotion), media
+   previews, menus and hover cards render in portals, the video
+   picture-in-picture window lives outside the thread, and every negative
+   z-index inside a message sits in its own isolated stacking context. */
 .comma-chat-scroll-viewport {
   container-type: size;
+  contain: layout;
 }
 
 /* A reply reveal transfers keyboard position to the message, not a selectable
@@ -3717,11 +3968,11 @@ button.comma-task-label-chip:focus-visible {
   flex: none;
 }
 
+/* Each send moves this marker to the new turn, so it may change only the box's
+   geometry, never its display type: flipping the previous turn from flex to
+   block rebuilt its whole layout subtree. The shell wraps a single turn and is
+   a flex item of the column, so as a block it lays that turn out identically. */
 .comma-chat-turn-shell[data-chat-latest-turn="true"] {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--comma-chat-message-gap);
   padding-bottom: 48px;
 }
 
@@ -3827,12 +4078,62 @@ button.comma-task-label-chip:focus-visible {
   margin: 0 0 var(--spacing-md);
 }
 
+/* Text the sender attached, such as a Routine item: the app's mark and the
+   text's first line on one row, the whole text on hover. It is as wide as its
+   title, up to the width of the file cards beside it. */
+.comma-chat-attached-text {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-lg) var(--spacing-sm) var(--spacing-md);
+  border: 0;
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-popup-primary);
+  box-shadow: inset 0 0 0 var(--border-width-0-5) var(--color-border-primary);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  cursor: default;
+  outline: none;
+}
+
+.comma-chat-attached-text:focus-visible {
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-focus-gray);
+}
+
+.comma-chat-attached-text-icon {
+  display: inline-flex;
+  width: var(--spacing-3xl);
+  height: var(--spacing-3xl);
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-fg-secondary);
+}
+
+.comma-chat-attached-text-icon > :where(svg, img) {
+  width: 100%;
+  height: 100%;
+}
+
+.comma-chat-attached-text-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .comma-chat-user-bubble-slot {
   display: flex;
-  /* The readable-width cap lives here and resolves against the column via
-     container query units. A percentage would resolve against the nearest
-     shrink-to-fit ancestor and collapse short messages narrower than natural
-     (the slot settles at bubble+42 and the text wraps early). */
+  /* The readable-width cap lives here and resolves against the column width
+     via the user row's container query units. A percentage would resolve
+     against the nearest shrink-to-fit ancestor and collapse short messages
+     narrower than natural (the slot settles at bubble+42 and the text wraps
+     early). */
   max-width: min(
     500px,
     calc(100cqi - var(--comma-chat-user-bubble-actions-width, 42px))
@@ -3936,55 +4237,6 @@ button.comma-task-label-chip:focus-visible {
   );
 }
 
-.comma-chat-browser-inspection-context {
-  display: grid;
-  width: min(500px, calc(100cqi - 42px));
-  min-width: 0;
-  margin-top: var(--spacing-xs);
-  gap: 3px;
-  border: 1px solid var(--color-border-primary);
-  border-radius: 10px;
-  background: var(--color-bg-secondary);
-  padding: var(--spacing-sm) var(--spacing-md);
-  color: var(--color-text-secondary);
-  text-align: start;
-}
-
-.comma-chat-browser-inspection-context-label {
-  color: var(--color-text-tertiary);
-  font-size: var(--text-micro);
-  line-height: var(--text-micro--line-height);
-}
-
-.comma-chat-browser-inspection-context-page,
-.comma-chat-browser-inspection-context-selector,
-.comma-chat-browser-inspection-context-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.comma-chat-browser-inspection-context-page {
-  color: var(--color-text-primary);
-  font-size: var(--text-sm);
-  font-weight: 500;
-  line-height: var(--text-sm--line-height);
-}
-
-.comma-chat-browser-inspection-context-selector {
-  color: var(--color-text-secondary);
-  font-family: var(--font-mono);
-  font-size: var(--text-micro);
-  line-height: var(--text-micro--line-height);
-}
-
-.comma-chat-browser-inspection-context-text {
-  color: var(--color-text-tertiary);
-  font-size: var(--text-xs);
-  line-height: var(--text-xs--line-height);
-}
-
 /* Defer outgoing glyph layout until its measurement frame. Ancestor scroll
    metrics can otherwise force the full text layout during the mount task. */
 .comma-chat-user-bubble[data-outgoing-measurement="pending"] {
@@ -4057,6 +4309,19 @@ button.comma-task-label-chip:focus-visible {
   max-block-size: var(--comma-chat-user-bubble-expanded-block-size);
 }
 
+/* The rest of a very long message (UserMessageBubble splits it after a line
+   near the start) lays out only once it can be seen. The collapsed bubble
+   clips it, so sending the message lays out the first lines, not all of them. */
+.comma-chat-user-bubble-tail {
+  display: block;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 0px;
+}
+
+.comma-chat-user-bubble-tail[data-revealed="true"] {
+  content-visibility: visible;
+}
+
 /* 1rem sentinel: resizes exactly when the root font size changes, which is
    the only signal a clamped overflowing bubble gets that its scrollHeight
    (and the necessity of the expand control) must be re-measured. */
@@ -4076,6 +4341,9 @@ button.comma-task-label-chip:focus-visible {
   inset-inline: 0;
   bottom: 0;
   height: var(--spacing-8xl);
+  /* A tailed bubble does not clip (its tail hangs below the box), so the
+     fade rounds its own corners to the bubble's. */
+  border-radius: inherit;
   pointer-events: none;
   background: linear-gradient(
     to bottom,
@@ -4210,7 +4478,9 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 
 /* The first-launch onboarding's thread draws its bubbles with the same tails:
    the user's on the right, and Comma's own bubble, the user bubble in the
-   assistant's material, on the left. */
+   assistant's material, on the left. A reply's tail goes on the bubble of its
+   last slot, which the renderer marks: no `:has()` re-checked every slot for
+   each node streamed into the reply. */
 :is(.comma-chat-thread, .comma-onboarding-thread)
   [data-bubble-tail="right"]
   .comma-chat-user-bubble:not([data-outgoing-presentation="flying"]),
@@ -4219,9 +4489,9 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   .comma-chat-user-bubble:not([data-outgoing-presentation="flying"]),
 .comma-chat-thread
   [data-bubble-tail="left"]
-  .node-slot:not(:has(~ .node-slot))
+  .node-slot
   > .node-content
-  > .markdown-stream-bubble {
+  > .markdown-stream-bubble[data-last-slot] {
   position: relative;
   isolation: isolate;
   overflow: visible;
@@ -4237,19 +4507,16 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   .comma-chat-user-bubble:not([data-outgoing-presentation="flying"])::before,
 .comma-chat-thread
   [data-bubble-tail="left"]
-  .node-slot:not(:has(~ .node-slot))
+  .node-slot
   > .node-content
-  > .markdown-stream-bubble::before,
+  > .markdown-stream-bubble[data-last-slot]::before,
 .comma-chat-thinking-bubble::before {
   position: absolute;
   z-index: -1;
   inset: 0 0 -7px;
   background: var(
     --comma-chat-tail-background,
-    var(
-      --comma-chat-user-bubble-background,
-      var(--comma-side-chat-assistant-bg, var(--color-markdown-bg-message))
-    )
+    var(--comma-chat-user-bubble-background, var(--color-markdown-bg-message))
   );
   backdrop-filter: var(--comma-chat-tail-filter, none);
   mask-image:
@@ -4272,9 +4539,9 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   .comma-chat-user-bubble:not([data-outgoing-presentation="flying"])::before,
 .comma-chat-thread
   [data-bubble-tail="left"]
-  .node-slot:not(:has(~ .node-slot))
+  .node-slot
   > .node-content
-  > .markdown-stream-bubble::before {
+  > .markdown-stream-bubble[data-last-slot]::before {
   transform: scaleX(-1);
 }
 
@@ -4284,6 +4551,8 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   --comma-chat-tail-background: var(--color-markdown-bg-table);
 }
 
+/* Only the Markdown knows where an image lands, so these keep `:has()`, each
+   on the box it styles: an insertion re-checks just that box, not what it holds. */
 .comma-chat-message-assistant:has(.markdown-stream-image-preview),
 .comma-chat-assistant-response-body:has(.markdown-stream-image-preview) {
   width: 100%;
@@ -4417,6 +4686,34 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   flex-direction: column;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* Task cards under the message that announced the Tasks. Each is the
+   Tasks board's card inside the surface's Task link; the card paints its own
+   hover and focus ring, so the link adds none. A card is as wide as a Home
+   Tasks card at rest: the rail's resting width less its list's inline
+   padding. The rail property does not inherit, so a resized rail leaves the
+   chat as it is. */
+.comma-chat-task-cards {
+  display: flex;
+  width: min(calc(var(--comma-home-tasks-preferred) - 2 * var(--spacing-xs)), 100%);
+  align-self: flex-start;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-lg);
+}
+
+.comma-chat-task-card {
+  display: block;
+  min-width: 0;
+  color: inherit;
+  text-align: left;
+  text-decoration: none;
+  outline: none;
+}
+
+.comma-chat-task-card:focus-visible [data-slot="task-card"] {
+  box-shadow: var(--shadow-focus-gray);
 }
 
 .comma-chat-message-user .comma-chat-block-extras {
@@ -4731,7 +5028,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   margin-top: 24px;
 }
 
-.comma-chat-assistant-response-body:not(:has(.comma-chat-assistant-source-label))
+.comma-chat-assistant-response-body:not([data-source-label])
   > .comma-chat-message-actions {
   margin-top: 6px;
 }
@@ -4788,6 +5085,67 @@ button.comma-chat-user-bubble-toggle:focus-visible {
 
 .comma-chat-column [data-reply-chain-state="muted"] {
   opacity: 0.25;
+}
+
+/* An open reply thread, iMessage style: the transcript dims and blurs behind
+   it, and the thread's messages gather above the composer. The rows fly in
+   and out with the Web Animations API; only the backdrop rides CSS. */
+.comma-chat-reply-thread {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in oklch, var(--color-main-panel-bg) 72%, transparent);
+  -webkit-backdrop-filter: blur(var(--blur-md));
+  backdrop-filter: blur(var(--blur-md));
+  animation: comma-chat-reply-thread-in var(--motion-duration-reply-thread-enter)
+    var(--motion-easing-drawer) both;
+}
+
+.comma-chat-reply-thread[data-state="closing"] {
+  pointer-events: none;
+  animation: comma-chat-reply-thread-out var(--motion-duration-reply-thread-exit)
+    var(--motion-easing-drawer) both;
+}
+
+.comma-chat-reply-thread-content {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding: var(--spacing-3xl) var(--spacing-3xl) var(--spacing-xl);
+}
+
+/* Bubble width caps resolve against 100cqi. In the thread that resolves
+   against this column, as in the transcript it resolves against the scroll
+   viewport. The container holds only the thread's few messages. */
+.comma-chat-reply-thread-column {
+  container-type: inline-size;
+}
+
+@keyframes comma-chat-reply-thread-in {
+  from {
+    opacity: 0;
+    -webkit-backdrop-filter: blur(0);
+    backdrop-filter: blur(0);
+  }
+}
+
+@keyframes comma-chat-reply-thread-out {
+  to {
+    opacity: 0;
+    -webkit-backdrop-filter: blur(0);
+    backdrop-filter: blur(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .comma-chat-reply-thread,
+  .comma-chat-reply-thread[data-state="closing"] {
+    animation-duration: var(--motion-duration-state-change);
+  }
 }
 
 .comma-chat-message-assistant[data-reply-chain-state="active"]
@@ -4884,7 +5242,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   cursor: default;
 }
 
-.comma-chat-message-assistant:has(> .comma-chat-reply-preview)
+.comma-chat-message-assistant[data-reply-preview]
   > .comma-chat-assistant-response-body {
   grid-row: 2;
 }
@@ -5344,6 +5702,28 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   text-align: center;
 }
 
+/* An agent message the agent sent on its own opens its timestamp inside the
+   turn it joins; it keeps the separation a timestamp opening a turn has. */
+.comma-chat-conversation-timestamp:not(:first-child) {
+  margin-block-start: calc(
+    var(--comma-chat-message-gap) - var(--comma-chat-turn-row-gap)
+  );
+}
+
+/* "New" leads the newest timestamp of what the agent sent on its own. It is
+   inline text on the timestamp's line, so it comes and goes without moving
+   the transcript. */
+.comma-chat-conversation-timestamp-new {
+  color: var(--color-fg-brand-primary);
+  font-weight: var(--font-weight-medium);
+}
+
+/* The brand foreground is too dim to read on the dark canvas; the dark scale
+   brightens its brand ink, the colour a brand Badge's label takes there. */
+[data-theme="Dark mode"] .comma-chat-conversation-timestamp-new {
+  color: var(--color-utility-brand-700);
+}
+
 .comma-chat-conversation-timestamp[data-outgoing-entry="true"] {
   animation: comma-chat-outgoing-timestamp 220ms linear 50ms both;
 }
@@ -5501,11 +5881,6 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   visibility: hidden;
 }
 
-.comma-chat-column[data-empty-card="true"]
-  > .comma-chat-activity-slot[data-active="false"] {
-  display: none;
-}
-
 /* An error is a notice card rather than a one-line participant status. Let its
    shared 44px frame (and any wrapped copy) define the slot's block size. */
 .comma-chat-activity-slot[data-state="error"] {
@@ -5569,10 +5944,7 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   max-width: 100%;
   height: 40px;
   padding: 10px 13px;
-  --comma-chat-tail-background: var(
-    --comma-side-chat-assistant-bg,
-    var(--color-markdown-bg-message)
-  );
+  --comma-chat-tail-background: var(--color-markdown-bg-message);
 }
 
 .comma-chat-thinking-bubble::before {
@@ -5592,6 +5964,758 @@ button.comma-chat-user-bubble-toggle:focus-visible {
   height: 100%;
 }
 
+/* Worker avatars sit beside the Router mark inside the bubble, as the channel
+   capsule does, so the bubble keeps the reply column's edge. A ring in the
+   bubble colour separates each disc from the one before it. */
+.comma-chat-thinking-worker {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  outline: 1.5px solid var(--comma-chat-tail-background);
+}
+
+.comma-chat-thinking-logo + .comma-chat-thinking-worker,
+.comma-chat-thinking-worker + .comma-chat-thinking-worker {
+  margin-inline-start: calc(-1 * var(--spacing-sm) - 4px);
+}
+
+/* With Task details the bubble is the Task's link. It keeps the bubble's look. */
+.comma-chat-thinking-bubble[data-interactive="true"] {
+  margin: 0;
+  border: 0;
+  border-radius: 20px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.comma-chat-thinking-bubble[data-interactive="true"]:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* A computer's screen, live, in a small card above the app, like the video
+   that keeps playing in a corner (.chat-panel-video-pip). The picture fills
+   the card. Its name sits on the picture in a glass capsule; its actions show
+   on hover or focus. Script writes its corner and the dragged position as
+   `translate`. */
+.comma-remote-screen {
+  --comma-remote-screen-glass: color-mix(
+    in oklch,
+    var(--color-bg-popup-primary) 72%,
+    transparent
+  );
+  position: fixed;
+  z-index: var(--z-index-picture-in-picture);
+  top: 0;
+  left: 0;
+  width: min(var(--container-xs), calc(100vw - 2 * var(--spacing-xl)));
+  aspect-ratio: clamp(calc(3 / 4), var(--comma-remote-screen-ratio), calc(21 / 9));
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-secondary);
+  border: var(--border-width-default) solid var(--color-border-primary);
+  box-shadow: var(--shadow-3xl);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
+  /* It arrives out of the corner it rests in and leaves back into it; script
+     draws both on a spring (ScreenStreamWindow). */
+  transform-origin: top right;
+}
+
+/* Still connecting: it is not shown, and nothing reaches it. */
+.comma-remote-screen[data-pending="true"] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Held, it lifts a little. Script moves the deck (screenDeck.ts): the place
+   is never eased here, so a card is under the pointer at once. */
+.comma-remote-screen[data-dragging="true"]:not([data-depth]) {
+  scale: 1.01;
+  will-change: translate;
+}
+
+/* The copy that leaves (leaveAsStill) is drawn by script alone. */
+.comma-remote-screen[data-leaving="true"] {
+  pointer-events: none;
+  transition: none;
+}
+
+/* Behind the front card of the deck: an edge each, a little smaller each. The
+   front card covers the rest of it; picking the edge brings it forward. */
+.comma-remote-screen[data-depth] {
+  z-index: calc(var(--z-index-picture-in-picture) - 1);
+  height: var(--spacing-6xl);
+  padding: 0;
+  aspect-ratio: auto;
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  transform-origin: top center;
+  /* A card that changes its depth moves there; it does not jump. */
+  transition:
+    transform var(--motion-duration-spatial-move) var(--motion-easing-spatial-move),
+    opacity var(--motion-duration-picture-in-picture-enter)
+      var(--motion-easing-surface-smooth-out);
+
+  @starting-style {
+    opacity: 0;
+    scale: 1;
+  }
+}
+
+.comma-remote-screen[data-depth="1"] {
+  transform: translateY(calc(-1 * var(--spacing-md))) scale(0.94);
+}
+
+.comma-remote-screen[data-depth="2"] {
+  transform: translateY(calc(-2 * var(--spacing-md))) scale(0.88);
+}
+
+.comma-remote-screen[data-depth="3"] {
+  transform: translateY(calc(-3 * var(--spacing-md))) scale(0.82);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-remote-screen[data-depth]:hover {
+    background: var(--color-bg-tertiary);
+  }
+}
+
+.comma-remote-screen[data-depth]:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-gray);
+}
+
+/* Less motion: nothing moves or changes size; things still fade. */
+@media (prefers-reduced-motion: reduce) {
+  .comma-remote-screen,
+  .comma-remote-screen[data-depth] {
+    transition: opacity var(--motion-duration-state-change) linear;
+
+    @starting-style {
+      scale: 1;
+    }
+  }
+
+  .comma-remote-screen[data-dragging="true"]:not([data-depth]),
+  .comma-remote-screen-action[data-pointer-pressed="true"] {
+    scale: 1;
+  }
+
+  .comma-remote-screen-stage video,
+  .comma-remote-screen-still {
+    transition: opacity var(--motion-duration-state-change) linear;
+  }
+
+  [data-state="connecting"]
+    > .comma-remote-screen-stage
+    .comma-remote-screen-still[data-kept] {
+    filter: none;
+  }
+}
+
+.comma-remote-screen-count {
+  flex: none;
+  color: var(--color-text-tertiary);
+}
+
+.comma-remote-screen[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+/* Filling the screen it is the big screen: no card, and control may be on. */
+.comma-remote-screen[data-full="true"] {
+  inset: 0;
+  width: auto;
+  aspect-ratio: auto;
+  border: 0;
+  border-radius: 0;
+  cursor: default;
+}
+
+/* The picture and its status, on the ground the computer paints behind an
+   app's windows (ScreenStreamStage reads it). */
+.comma-remote-screen-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: var(--color-bg-secondary);
+}
+
+.comma-remote-screen-stage video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  outline: none;
+  transition:
+    opacity var(--motion-duration-state-change) var(--motion-easing-surface-smooth-out),
+    filter var(--motion-duration-state-change) var(--motion-easing-surface-smooth-out);
+}
+
+/* Between two streams (another target, control turned on) the last frame of
+   the old one stays, blurred a little, and fades as the new one plays: one
+   picture that changes, not two that swap. */
+.comma-remote-screen-still {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity var(--motion-duration-feedback-out) var(--motion-easing-surface-smooth-out),
+    filter var(--motion-duration-state-change) var(--motion-easing-surface-smooth-out);
+}
+
+[data-state="connecting"]
+  > .comma-remote-screen-stage
+  .comma-remote-screen-still[data-kept] {
+  opacity: 0.7;
+  filter: blur(var(--blur-sm));
+}
+
+[data-state="connecting"] > .comma-remote-screen-stage video {
+  opacity: 0;
+}
+
+/* The kept frame already says that the picture is changing. */
+.comma-remote-screen-still[data-kept] ~ .comma-remote-screen-status {
+  visibility: hidden;
+}
+
+.comma-remote-screen-stage[data-control="true"] video {
+  cursor: crosshair;
+}
+
+/* The big screen as a side panel page. A brand line round it says that the
+   pointer and keyboard go to the computer. */
+.comma-remote-screen-panel {
+  --comma-remote-screen-glass: color-mix(
+    in oklch,
+    var(--color-bg-popup-primary) 72%,
+    transparent
+  );
+
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  background: var(--color-bg-secondary);
+}
+
+.comma-remote-screen-panel[data-control="true"]::after {
+  position: absolute;
+  inset: 0;
+  border: var(--border-width-default) solid var(--color-border-brand);
+  content: "";
+  pointer-events: none;
+}
+
+.comma-remote-screen-panel .comma-remote-screen-actions {
+  opacity: 1;
+}
+
+.comma-remote-screen-status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-remote-screen-name,
+.comma-remote-screen-action {
+  background: var(--comma-remote-screen-glass);
+  -webkit-backdrop-filter: blur(var(--blur-md));
+  backdrop-filter: blur(var(--blur-md));
+  box-shadow:
+    0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-sm);
+  color: var(--color-text-primary);
+}
+
+.comma-remote-screen-name {
+  position: absolute;
+  bottom: var(--spacing-md);
+  left: var(--spacing-md);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  max-width: calc(100% - 2 * var(--spacing-md));
+  height: var(--spacing-3xl);
+  padding: 0 var(--spacing-lg) 0 var(--spacing-md);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-remote-screen-name strong {
+  overflow: hidden;
+  font-weight: var(--font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-remote-screen-dot {
+  flex: none;
+  width: var(--spacing-sm);
+  height: var(--spacing-sm);
+  border-radius: var(--radius-full);
+  background: var(--color-fg-quaternary);
+}
+
+[data-state="live"] > .comma-remote-screen-name .comma-remote-screen-dot {
+  background: var(--color-bg-success-solid);
+}
+
+[data-state="failed"] > .comma-remote-screen-name .comma-remote-screen-dot {
+  background: var(--color-bg-error-solid);
+}
+
+.comma-remote-screen-actions {
+  position: absolute;
+  top: var(--spacing-md);
+  right: var(--spacing-md);
+  display: flex;
+  gap: var(--spacing-xs);
+  opacity: 0;
+  transition: opacity var(--motion-duration-state-change)
+    var(--motion-easing-surface-smooth-out);
+}
+
+.comma-remote-screen:hover .comma-remote-screen-actions,
+.comma-remote-screen-actions:focus-within {
+  opacity: 1;
+}
+
+.comma-remote-screen-action {
+  display: grid;
+  width: var(--spacing-3xl);
+  height: var(--spacing-3xl);
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration-state-change)
+      var(--motion-easing-surface-smooth-out),
+    scale var(--motion-duration-press-recoil) var(--motion-easing-surface-smooth-out);
+}
+
+.comma-remote-screen-action[data-pointer-pressed="true"] {
+  scale: var(--motion-scale-tactile-pressed);
+  transition-duration: var(--motion-duration-press-travel);
+}
+
+.comma-remote-screen-action svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-remote-screen-action:hover {
+    background: var(--color-bg-popup-primary);
+  }
+}
+
+.comma-remote-screen-action:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-gray);
+}
+
+.comma-remote-screen-action[aria-pressed="true"] {
+  background: var(--color-bg-brand-solid);
+  box-shadow: var(--shadow-sm);
+  color: var(--color-text-white);
+}
+
+/* The card behind the status bubble: a row per Task. Rows are divided by a
+   full-width rule, and the hover fill sits inside the row. Every row keeps
+   three single lines, so loading steps never change the card's height.
+   When Tasks come or go, the card eases to its new height; while it moves,
+   content that has outgrown it stays inside, and the logs still reach out
+   to the side. */
+.comma-chat-activity-card {
+  position: relative;
+  width: 340px;
+  max-width: 100%;
+  transition: height var(--motion-duration-spatial-move)
+    var(--motion-easing-surface-smooth-out);
+}
+
+.comma-chat-activity-card[data-resizing="true"] {
+  overflow-y: clip;
+}
+
+.comma-chat-activity-card-body {
+  display: grid;
+  padding: var(--spacing-xs);
+}
+
+.comma-chat-activity-card-heading {
+  padding: var(--spacing-sm) var(--spacing-md) var(--spacing-xs);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+}
+
+.comma-chat-activity-card-rows {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Each row reaches the card's edges, so the pointer leaves it straight into
+   its log. */
+.comma-chat-activity-card-rows > li {
+  margin-inline: calc(-1 * var(--spacing-xs));
+  padding-inline: var(--spacing-xs);
+}
+
+.comma-chat-activity-card-rows > li:not(:first-child) {
+  margin-top: var(--spacing-xs);
+  padding-top: var(--spacing-xs);
+  border-top: 1px solid var(--color-border-secondary);
+}
+
+.comma-chat-activity-card-row {
+  display: grid;
+  gap: var(--spacing-xxs);
+  min-width: 0;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-lg);
+  color: inherit;
+  text-align: start;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.comma-chat-activity-card-row:hover,
+.comma-chat-activity-card-row:focus-visible {
+  outline: none;
+  background: var(--color-bg-secondary);
+}
+
+.comma-chat-activity-card-who,
+.comma-chat-activity-card-step {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-width: 0;
+}
+
+.comma-chat-activity-card-avatar {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border: 0.5px solid var(--color-border-secondary);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-tertiary);
+}
+
+/* A Worker is the mark of its model's maker on a plain disc. */
+.comma-worker-model-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 0.5px solid var(--color-border-primary);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}
+
+.comma-worker-model-mark > :is(svg, img) {
+  width: 70%;
+  height: 70%;
+}
+
+.comma-chat-activity-card-meta,
+.comma-chat-activity-card-title,
+.comma-chat-activity-step-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comma-chat-activity-card-meta {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.comma-chat-activity-card-title {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.comma-chat-activity-card-step {
+  color: var(--color-text-quaternary);
+  font-size: var(--text-sm);
+  /* The row gap is 2px; the step line sits 4px under the title. */
+  margin-top: calc(var(--spacing-xs) - var(--spacing-xxs));
+}
+
+.comma-chat-activity-step-text {
+  flex: 1;
+}
+
+.comma-chat-activity-step-text time {
+  margin-inline-end: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Stands in for a part of a row that is not known yet, at the height of its text. */
+.comma-chat-activity-card-placeholder {
+  display: inline-block;
+  width: 72px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-tertiary);
+  vertical-align: middle;
+}
+
+.comma-chat-activity-card-chevron {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--color-text-tertiary);
+}
+
+/* The Worker's step while it works: the same quiet sweep as a running
+   Worker's activity line. It covers only the words, inline, so it crosses
+   them at one pace however wide the line is, and across a wrapped step it
+   runs along the text from line to line. */
+.comma-chat-activity-step-words > [data-shimmer="true"] {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-text-quaternary) 0%,
+    var(--color-text-quaternary) 40%,
+    var(--color-text-secondary) 50%,
+    var(--color-text-quaternary) 60%,
+    var(--color-text-quaternary) 100%
+  );
+  background-repeat: no-repeat;
+  background-size: 400% 100%;
+  background-clip: text;
+  color: transparent;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: comma-ai-activity-shimmer var(--motion-duration-loading-shine) linear
+    infinite;
+}
+
+/* A row's log opens beside the card while the row is hovered or focused,
+   level with the card's bottom, and grows up, as the card does above its
+   bubble. It enters like the card, and another row's log gives way at once.
+   Its outer box is transparent and spans the gap and the card's height, so
+   the pointer crosses straight into it from any row; the frame carries the
+   surface. */
+.comma-chat-activity-log {
+  position: absolute;
+  bottom: 0;
+  left: 100%;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  box-sizing: border-box;
+  width: calc(300px + var(--spacing-md));
+  min-height: 100%;
+  padding-inline-start: var(--spacing-md);
+  visibility: hidden;
+  opacity: 0;
+  transform: scale(var(--motion-scale-menu-enter));
+  transform-origin: bottom left;
+  /* It lingers a moment, so a pointer cutting a corner does not close it. */
+  transition:
+    opacity 0s linear 150ms,
+    transform 0s linear 150ms,
+    visibility 0s linear 150ms;
+}
+
+.comma-chat-activity-log[data-side="start"] {
+  right: 100%;
+  left: auto;
+  padding-inline: 0 var(--spacing-md);
+  transform-origin: bottom right;
+}
+
+.comma-chat-activity-card-item:hover > .comma-chat-activity-log,
+.comma-chat-activity-card-item:focus-within > .comma-chat-activity-log {
+  visibility: visible;
+  opacity: 1;
+  transform: scale(1);
+  transition:
+    opacity var(--motion-duration-hover-card-enter)
+      var(--motion-easing-surface-smooth-out),
+    transform var(--motion-duration-hover-card-enter)
+      var(--motion-easing-surface-smooth-out),
+    visibility 0s;
+}
+
+.comma-chat-activity-card-rows:has(
+    > .comma-chat-activity-card-item:is(:hover, :focus-within)
+  )
+  > .comma-chat-activity-card-item:not(:hover, :focus-within)
+  > .comma-chat-activity-log {
+  transition: none;
+}
+
+/* Tall enough for every listed step, wrapped or not, unless the window's
+   top comes first; then it scrolls. Its height eases as steps come. */
+.comma-chat-activity-log-frame {
+  flex: none;
+  max-height: min(440px, var(--comma-activity-log-room, 440px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  border: 0.5px solid var(--color-border-primary);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-popup-primary);
+  box-shadow: var(--shadow-lg);
+  transition: height var(--motion-duration-spatial-move)
+    var(--motion-easing-surface-smooth-out);
+}
+
+.comma-chat-activity-log-steps {
+  display: grid;
+  gap: var(--spacing-xs);
+  margin: 0;
+  padding: var(--spacing-sm);
+  list-style: none;
+}
+
+/* A step's words hang beside its time and keep to two lines. A new step
+   rises in. */
+.comma-chat-activity-log-steps > li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 6px;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+  line-height: 18px;
+  transition:
+    opacity var(--motion-duration-hover-card-enter)
+      var(--motion-easing-surface-smooth-out),
+    translate var(--motion-duration-hover-card-enter)
+      var(--motion-easing-surface-smooth-out);
+}
+
+@starting-style {
+  .comma-chat-activity-log-steps > li {
+    opacity: 0;
+    translate: 0 var(--spacing-xs);
+  }
+}
+
+.comma-chat-activity-log-steps > li[data-failed="true"] {
+  color: var(--color-text-error-primary);
+}
+
+.comma-chat-activity-log-steps time {
+  color: var(--color-text-quaternary);
+  font-variant-numeric: tabular-nums;
+}
+
+.comma-chat-activity-log-steps .comma-chat-activity-step-words {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.comma-chat-activity-log-steps .comma-chat-activity-step-words:only-child {
+  grid-column: 1 / -1;
+}
+
+/* Without motion, heights and steps change at once, the log only fades,
+   and the step in progress holds still. */
+@media (prefers-reduced-motion: reduce) {
+  .comma-chat-activity-step-words > [data-shimmer="true"] {
+    animation: none;
+  }
+
+  .comma-chat-activity-card,
+  .comma-chat-activity-log-frame,
+  .comma-chat-activity-log-steps > li {
+    transition: none;
+  }
+
+  .comma-chat-activity-log {
+    transform: none;
+  }
+
+  .comma-chat-activity-card-item:hover > .comma-chat-activity-log,
+  .comma-chat-activity-card-item:focus-within > .comma-chat-activity-log {
+    transition:
+      opacity var(--motion-duration-hover-card-enter)
+        var(--motion-easing-surface-smooth-out),
+      visibility 0s;
+  }
+}
+
+:root[data-comma-reduced-motion="true"]
+  .comma-chat-activity-step-words
+  > [data-shimmer="true"] {
+  animation: none;
+}
+
+:root[data-comma-reduced-motion="true"] .comma-chat-activity-card,
+:root[data-comma-reduced-motion="true"] .comma-chat-activity-log-frame,
+:root[data-comma-reduced-motion="true"] .comma-chat-activity-log-steps > li {
+  transition: none;
+}
+
+:root[data-comma-reduced-motion="true"] .comma-chat-activity-log {
+  transform: none;
+}
+
+:root[data-comma-reduced-motion="true"]
+  .comma-chat-activity-card-item:hover
+  > .comma-chat-activity-log,
+:root[data-comma-reduced-motion="true"]
+  .comma-chat-activity-card-item:focus-within
+  > .comma-chat-activity-log {
+  transition:
+    opacity var(--motion-duration-hover-card-enter)
+      var(--motion-easing-surface-smooth-out),
+    visibility 0s;
+}
+
+@media (forced-colors: active) {
+  .comma-chat-activity-step-words > [data-shimmer="true"] {
+    background-image: none;
+    color: CanvasText;
+    animation: none;
+    -webkit-text-fill-color: currentcolor;
+  }
+}
+
+.comma-chat-activity-card-more {
+  margin: 0;
+  padding: var(--spacing-xs) var(--spacing-md);
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+}
+
 .comma-chat-channel-logos {
   display: flex;
   align-items: center;
@@ -5602,28 +6726,15 @@ button.comma-chat-user-bubble-toggle:focus-visible {
    the channel logo is drawn smaller to look the same size. */
 .comma-chat-channel-logo {
   --comma-chat-channel-logo-size: calc(var(--spacing-xl) + var(--spacing-xxs));
-  position: relative;
   width: var(--comma-chat-channel-logo-size);
   height: var(--comma-chat-channel-logo-size);
   margin-right: -1px;
-  overflow: visible;
 }
 
 .comma-chat-channel-logo img {
   display: block;
   width: 100%;
   height: 100%;
-}
-
-/* WeChat's artwork keeps its shadow in a canvas 1.25 times its disc, with
-   the disc inset by 0.125 and 0.075 of its size. */
-[data-working-provider="wechat"] .comma-chat-channel-logo img {
-  position: absolute;
-  max-width: none;
-  width: calc(var(--comma-chat-channel-logo-size) * 1.25);
-  height: calc(var(--comma-chat-channel-logo-size) * 1.25);
-  left: calc(var(--comma-chat-channel-logo-size) * -0.125);
-  top: calc(var(--comma-chat-channel-logo-size) * -0.075);
 }
 
 .comma-chat-channel-comma {
@@ -6953,50 +8064,138 @@ body[data-comma-window-role="meeting-recorder"]
   white-space: nowrap;
   text-align: left;
 }
+/* A scrolling label has no ellipsis. It fades out at an edge instead, by as
+   much as it still hides there, up to the fade width. */
 .comma-recommendation-text-item[data-scrolling="true"]
   .comma-recommendation-inline-source
   > span {
+  --comma-label-fade-start: min(var(--comma-scrolled, 0px), var(--spacing-xl));
+  --comma-label-fade-end: min(
+    var(--comma-unscrolled, var(--spacing-xl)),
+    var(--spacing-xl)
+  );
   text-overflow: clip;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--comma-label-fade-start),
+    black calc(100% - var(--comma-label-fade-end)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--comma-label-fade-start),
+    black calc(100% - var(--comma-label-fade-end)),
+    transparent
+  );
 }
 
+/* The source context card: the task the row starts, then the quoted source
+   words as its evidence under a quote rule, then the source they come from. */
 .comma-hover-card.comma-recommendation-source-detail-card {
   width: 400px;
   max-width: calc(100vw - var(--spacing-xl) * 2);
+  padding: var(--spacing-md);
 }
-.comma-recommendation-source-detail {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-align: left;
-}
-
-.comma-recommendation-source-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xs);
-}
-
 .comma-recommendation-source-scroll {
   max-height: min(480px, 60vh);
 }
-
-.comma-recommendation-source-context,
-.comma-recommendation-prompt-preview .comma-recommendation-source-detail {
-  color: var(--color-text-tertiary);
+.comma-recommendation-source-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
 }
-.comma-recommendation-prompt-preview .comma-recommendation-task-objective {
-  margin-top: var(--spacing-sm);
+.comma-recommendation-task-objective {
+  margin: 0;
   color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
 }
-.comma-recommendation-context-link {
-  font: inherit;
+/* The quoted context previews at most four lines, wrapped lines included. */
+.comma-recommendation-source-detail {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  border-inline-start: var(--spacing-xxs) solid var(--color-border-primary);
+  padding-inline-start: var(--spacing-md);
+  color: var(--color-text-tertiary);
   white-space: normal;
   overflow-wrap: anywhere;
   text-align: left;
 }
+/* Each source line is its own block; a wrapped list item hangs off its bullet. */
+.comma-recommendation-source-line {
+  display: block;
+}
+.comma-recommendation-source-line[data-list-item="true"] {
+  position: relative;
+  padding-inline-start: var(--spacing-lg);
+}
+.comma-recommendation-source-line[data-list-item="true"]::before {
+  position: absolute;
+  inset-inline-start: var(--spacing-xxs);
+  content: "•";
+}
+/* A link or mention in the quote is set in the words' own colour, not as a
+   chip. A link is underlined, as in message Markdown, and is an anchor, so a
+   long one wraps with its line. */
+.comma-recommendation-source-detail .comma-recommendation-context-link {
+  display: inline;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  padding: 0;
+  font: inherit;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.comma-recommendation-source-detail a.comma-recommendation-context-link {
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  text-decoration-thickness: var(--border-width-default);
+  text-underline-offset: var(--spacing-xxs);
+}
+.comma-recommendation-source-detail a.comma-recommendation-context-link:hover {
+  background: none;
+  text-decoration-color: currentColor;
+}
+.comma-recommendation-source-origin {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--color-text-quaternary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+.comma-recommendation-source-origin-mark {
+  display: inline-grid;
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex: 0 0 auto;
+  place-items: center;
+}
+.comma-recommendation-source-origin-mark svg,
+.comma-recommendation-source-origin-mark img {
+  width: 100%;
+  height: 100%;
+}
+.comma-recommendation-source-origin-name {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Widgets use the full conversation width and have their own visual shell. */
-.comma-chat-message-assistant:has(.comma-chat-widget),
-.comma-chat-assistant-response-body:has(.comma-chat-widget) {
+.comma-chat-message-assistant[data-widget],
+.comma-chat-assistant-response-body[data-widget] {
   width: 100%;
   max-width: 100%;
 }
@@ -7005,23 +8204,15 @@ body[data-comma-window-role="meeting-recorder"]
   min-width: 0;
   margin-block: var(--spacing-md);
 }
-.comma-chat-assistant-response-body:has(.comma-chat-widget) .markdown-stream-bubble {
+.comma-chat-assistant-response-body[data-widget] .markdown-stream-bubble {
   max-width: min(500px, 100%);
 }
 
-.comma-chat-credit-warning-frame > .comma-chat-notice-card {
-  margin-top: 0;
-  margin-bottom: var(--spacing-md);
-}
-
-.comma-chat-credit-warning[data-tone="warning"] .comma-chat-notice-card-icon {
-  color: var(--color-fg-warning-primary);
-}
-
-.comma-chat-credit-warning-frame {
-  display: flow-root;
-}
-
-.comma-chat-credit-warning[data-tone="info"] .comma-chat-notice-card-icon {
-  color: var(--color-fg-secondary);
+/* The fix for a funding stop, under the status line that names it. */
+.comma-chat-funding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-sm);
 }

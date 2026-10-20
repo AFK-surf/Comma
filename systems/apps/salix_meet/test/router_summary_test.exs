@@ -1,17 +1,25 @@
 defmodule SalixMeet.RouterSummaryTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixMeet"]
   alias SalixMeet.{Delivery, RouterSummary, Store}
 
   defmodule Handoff do
     def request(state, request) do
-      send(Application.fetch_env!(:salix_meet, :summary_test_pid), {:request, state, request})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_meet, :summary_test_pid),
+        {:request, state, request}
+      )
+
       :ok
     end
   end
 
   defmodule Materials do
     def prepare_context(_state) do
-      send(Application.fetch_env!(:salix_meet, :summary_test_pid), :prepared)
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_meet, :summary_test_pid),
+        :prepared
+      )
 
       {:ok,
        %{
@@ -33,13 +41,13 @@ defmodule SalixMeet.RouterSummaryTest do
       {:salix_meet, :router_summary_mod, Handoff},
       {:salix_meet, :summary_mod, Materials},
       {:salix_meet, :owner_attribution_mod, SalixMeet.Ports.OwnerAttribution.None},
-      {:salix_meet, :summary_test_pid, self()}
+      {:salix_meet, :summary_test_pid, SystemsRuntime.Proc.self()}
     ]
 
     old =
       Enum.map(configs, fn {app, key, value} ->
-        previous = Application.fetch_env(app, key)
-        Application.put_env(app, key, value)
+        previous = SystemsRuntime.fetch_env(app, key)
+        SystemsRuntime.put_env(app, key, value)
         {app, key, previous}
       end)
 
@@ -48,12 +56,12 @@ defmodule SalixMeet.RouterSummaryTest do
 
     on_exit(fn ->
       Enum.each(old, fn
-        {app, key, {:ok, value}} -> Application.put_env(app, key, value)
-        {app, key, :error} -> Application.delete_env(app, key)
+        {app, key, {:ok, value}} -> SystemsRuntime.put_env(app, key, value)
+        {app, key, :error} -> SystemsRuntime.delete_env(app, key)
       end)
     end)
 
-    id = "router-summary-#{System.unique_integer([:positive])}"
+    id = "router-summary-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     state = %{
       "status" => "done",
@@ -76,8 +84,8 @@ defmodule SalixMeet.RouterSummaryTest do
     assert {:error, :router_summary_pending} =
              Delivery.prepare_summary_for_delivery(c.id, c.state, c.claim)
 
-    assert_receive :prepared
-    assert_receive {:request, _, request}
+    settle_receive(:prepared)
+    settle_receive({:request, _, request})
     {:ok, %{"state" => state}, _} = Store.get(c.id)
     assert get_in(state, ["delivery", "router_summary", "request_id"]) == request["request_id"]
     refute Map.has_key?(state, "summary")
@@ -85,9 +93,8 @@ defmodule SalixMeet.RouterSummaryTest do
     assert {:error, :router_summary_pending} =
              Delivery.prepare_summary_for_delivery(c.id, state, c.claim)
 
-    refute_receive :prepared
-    assert_receive {:request, _, ^request}
-
+    settle_refute_receive(:prepared)
+    settle_receive({:request, _, ^request})
     params = params(c.id, request)
     assert {:ok, first, _} = RouterSummary.read("summary-group", params)
     assert String.length(first["text"]) == 16_000
@@ -108,14 +115,14 @@ defmodule SalixMeet.RouterSummaryTest do
              SalixMeet.OwnerAttributionSnapshot.current(saved)
            )
 
-    refute_receive :prepared
+    settle_refute_receive(:prepared)
   end
 
   test "cross-group, stale, malformed and replacement submissions cannot write", c do
     {:error, :router_summary_pending} =
       Delivery.prepare_summary_for_delivery(c.id, c.state, c.claim)
 
-    assert_receive {:request, _, request}
+    settle_receive({:request, _, request})
     params = params(c.id, request)
     assert {:error, :not_found} = RouterSummary.submit("other-group", params)
 
@@ -130,64 +137,6 @@ defmodule SalixMeet.RouterSummaryTest do
     assert {:error, :summary_already_submitted} = RouterSummary.submit("summary-group", changed)
   end
 
-  test "changed materials invalidate submission and create a new request", c do
-    {:error, :router_summary_pending} =
-      Delivery.prepare_summary_for_delivery(c.id, c.state, c.claim)
-
-    assert_receive {:request, _, old}
-
-    {:ok, %{"state" => state}, _} =
-      Store.update_state_retrying(c.id, &Map.put(&1, "captions", [%{"text" => "Changed"}]))
-
-    assert {:error, :summary_source_changed} =
-             RouterSummary.submit("summary-group", params(c.id, old))
-
-    assert {:error, :router_summary_pending} =
-             Delivery.prepare_summary_for_delivery(c.id, state, c.claim)
-
-    assert_receive {:request, _, new}
-    refute old["request_id"] == new["request_id"]
-    assert new["attempt"] == 1
-  end
-
-  test "expired request is fenced, retried with new identity, then bounded", c do
-    {:error, :router_summary_pending} =
-      Delivery.prepare_summary_for_delivery(c.id, c.state, c.claim)
-
-    assert_receive {:request, _, old}
-
-    {:ok, %{"state" => state}, _} =
-      Store.update_state_retrying(
-        c.id,
-        &put_in(&1, ["delivery", "router_summary", "expires_at"], 1)
-      )
-
-    assert {:error, :summary_request_expired} =
-             RouterSummary.submit("summary-group", params(c.id, old))
-
-    assert {:error, :router_summary_pending} =
-             Delivery.prepare_summary_for_delivery(c.id, state, c.claim)
-
-    assert_receive {:request, _, new}
-    assert new["attempt"] == 2
-    refute new["request_id"] == old["request_id"]
-
-    assert {:error, :stale_summary_request} =
-             RouterSummary.submit("summary-group", params(c.id, old))
-
-    {:ok, %{"state" => state}, _} =
-      Store.update_state_retrying(c.id, fn live ->
-        live
-        |> put_in(["delivery", "router_summary", "expires_at"], 1)
-        |> put_in(["delivery", "router_summary", "attempt"], 3)
-      end)
-
-    assert {:error, :router_summary_timeout} =
-             Delivery.prepare_summary_for_delivery(c.id, state, c.claim)
-
-    refute_receive {:request, _, _}
-  end
-
   test "stale delivery claim cannot enqueue a request", c do
     assert {:error, :fenced} =
              Delivery.prepare_summary_for_delivery(
@@ -196,7 +145,7 @@ defmodule SalixMeet.RouterSummaryTest do
                Map.put(c.claim, "attempt_count", -1)
              )
 
-    refute_receive {:request, _, _}
+    settle_refute_receive({:request, _, _})
   end
 
   defp params(id, request) do

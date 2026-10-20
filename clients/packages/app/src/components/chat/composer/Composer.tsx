@@ -1,20 +1,24 @@
+import { uiClock } from "@comma/ui/clock";
 import { useApplicationMenu } from "../../application-menu/useApplicationMenu";
 import {
   AiInput,
   AI_INPUT_SMALL_TEXTAREA_MIN_HEIGHT_PX,
-  GlobeIcon,
-  isImeKeyEvent,
-  PaperclipIcon,
-  CubeIcon,
-  resolveProviderBrandLogo,
-  taskStatusIcon,
-  toast,
   type AiInputAttachment,
   type AiInputMenuGroup,
   type AiInputMenuItem,
   type AiInputMenuRegistration,
   type AiInputSize,
-} from "@comma/ui";
+} from "@comma/ui/components/ai-input";
+import {
+  CubeIcon,
+  FileTextIcon,
+  GlobeIcon,
+  PaperclipIcon,
+} from "@comma/ui/components/icons";
+import { isImeKeyEvent } from "@comma/ui/components/utils";
+import { resolveProviderBrandLogo } from "@comma/ui/components/provider-brand-logos";
+import { taskNeutralIcon, taskStatusIcon } from "@comma/ui/components/task-workspace";
+import { toast } from "@comma/ui/components/toast";
 import { formatNumber, formatRelativeDate, type CommaLocale } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import {
@@ -22,6 +26,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -29,23 +34,39 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { nativePlatformClipboard } from "../../../runtime-chat/nativePlatformActions";
-import type { CommaSkill } from "../../../api";
+import { nativePlatformClipboard } from "../../../nativePlatformActions";
+import type { CommaSkill } from "@comma/core/api-schemas";
+import type { RecommendationSource } from "@comma/recommendation-contract";
 import { chatQuoteLabel, type ChatDraftQuote } from "./draftQuotes";
-import { useComposerDraft, type ComposerDraftSource } from "./conversationDraft";
+import {
+  chatSnippetTitle,
+  PASTED_SNIPPET_MIN_LENGTH,
+  type ChatDraftSnippet,
+} from "./draftSnippets";
+import {
+  useComposerDraft,
+  type ComposerDraftFill,
+  type ComposerDraftSource,
+} from "./conversationDraft";
 import { deriveMentionedSkills } from "./mentions";
 import {
   linkMentionPlainText,
+  modelMentionPlainText,
   taskMentionPlainText,
-} from "../model/mentionSerialization";
+} from "@comma/core/chat";
+import { ModelVendorIcon } from "@comma/ui/components/model-icons/ModelVendorIcon";
 import { MENTION_MENU_ID, projectMentionTokens } from "./mentionProjection";
-import { ATTACHMENT_ACCEPT, isGroupImagePreviewPath } from "../model/protocol";
+import {
+  ATTACHMENT_ACCEPT,
+  draftUploadPreviewRef,
+  isGroupImagePreviewPath,
+} from "@comma/core/chat";
 import type {
   AttachmentUploadInput,
   ChatImagePreviewRef,
   DraftAttachment,
   LocalFilePreview,
-} from "../model/conversationChannel";
+} from "@comma/core/chat";
 import { useRecordingFileActions } from "../../useRecordingFileActions";
 import { useAudioCapture } from "../../useAudioCapture";
 import { needsDesktopApp, requestDesktopApp } from "../../DesktopAppPrompt";
@@ -61,11 +82,13 @@ import {
   useLocalFilePreviews,
 } from "../thread/attachments/useLocalFilePreviews";
 
-// Side Chat uses the small composer; collapsed height comes from that layout.
-const SIDE_CHAT_TEXTAREA_MIN_HEIGHT = AI_INPUT_SMALL_TEXTAREA_MIN_HEIGHT_PX;
+// The compact composer uses the small layout; collapsed height comes from it.
+const COMPACT_TEXTAREA_MIN_HEIGHT = AI_INPUT_SMALL_TEXTAREA_MIN_HEIGHT_PX;
 
 /** Files the "@" panel's Drive section lists before its "View more" row. */
 const DRIVE_MENU_LIMIT = 5;
+
+const EMPTY_SNIPPETS: readonly ChatDraftSnippet[] = [];
 
 /** English affordance synonyms; the localized label itself also matches. */
 const addFilesKeywords = [
@@ -79,16 +102,22 @@ const addFilesKeywords = [
 ] as const;
 
 /**
- * Routine mentions carry their source's brand mark (Linear, Notion, ...);
- * unbranded entries fall back to what the mention is: a link or a Task.
+ * A Routine source's brand mark (Linear, Notion, ...): its bundled logo, else
+ * its icon URL. Unbranded sources show `fallback`.
  */
-function RoutineMentionIcon({ routine }: { routine: ComposerRoutineMentionItem }) {
+function RoutineSourceIcon({
+  fallback,
+  source,
+}: {
+  fallback: ReactNode;
+  source: RecommendationSource | undefined;
+}) {
   const [failedIconUrl, setFailedIconUrl] = useState<string>();
-  const BrandLogo = resolveProviderBrandLogo(routine.source?.appId);
+  const BrandLogo = resolveProviderBrandLogo(source?.appId);
   if (BrandLogo) {
     return <BrandLogo />;
   }
-  const iconUrl = routine.source?.iconUrl;
+  const iconUrl = source?.iconUrl;
   if (iconUrl && failedIconUrl !== iconUrl) {
     return (
       <img
@@ -99,7 +128,17 @@ function RoutineMentionIcon({ routine }: { routine: ComposerRoutineMentionItem }
       />
     );
   }
-  return routine.kind === "task" ? <>{taskStatusIcon("backlog")}</> : <GlobeIcon />;
+  return <>{fallback}</>;
+}
+
+/** Unbranded routine mentions show what the mention is: a link or a Task. */
+function RoutineMentionIcon({ routine }: { routine: ComposerRoutineMentionItem }) {
+  return (
+    <RoutineSourceIcon
+      fallback={routine.kind === "task" ? taskNeutralIcon() : <GlobeIcon />}
+      source={routine.source}
+    />
+  );
 }
 
 function PluginMentionIcon({
@@ -126,14 +165,18 @@ function PluginMentionIcon({
 /**
  * The ref a draft image renders its own thumbnail from, if it has one. An
  * attachment without one will never receive a preview, so it must not be held
- * in a loading state waiting for something that is not coming.
+ * in a loading state waiting for something that is not coming. One still
+ * uploading shows from the bytes the core holds; the preview is kept by the
+ * attachment's id, so it stays as the ref moves to the uploaded file.
  */
 const imagePreviewRef = (attachment: DraftAttachment) =>
   isLocalFilePreviewRef(attachment.id)
     ? attachment.id
-    : attachment.path && isGroupImagePreviewPath(attachment.path)
-      ? attachment.path
-      : undefined;
+    : attachment.status === "uploading"
+      ? draftUploadPreviewRef(attachment.id)
+      : attachment.path && isGroupImagePreviewPath(attachment.path)
+        ? attachment.path
+        : undefined;
 
 const attachmentsFromFiles = (files: File[]): AttachmentUploadInput[] =>
   files.map((file) => ({
@@ -149,14 +192,18 @@ export const Composer = memo(function Composer({
   draftSource,
   draftAttachments = [],
   draftQuotes = [],
+  draftSnippets = EMPTY_SNIPPETS,
+  fill,
   mentionSources,
   onAttachFiles,
-  onContentHeightChange,
   onDraftChange,
   onPickAttachments,
   onPreviewLocalFile,
   onRemoveAttachment,
+  onExpandSnippet,
+  onPasteSnippet,
   onRemoveQuote,
+  onRemoveSnippet,
   onRetryAttachment,
   onSend,
   placeholder,
@@ -176,10 +223,11 @@ export const Composer = memo(function Composer({
   draftSource: ComposerDraftSource;
   draftAttachments?: DraftAttachment[];
   draftQuotes?: ChatDraftQuote[];
+  draftSnippets?: readonly ChatDraftSnippet[] | undefined;
+  fill?: ComposerDraftFill | undefined;
   /** Tasks, routines, and plugins for the "@" panel; Add works without it. */
   mentionSources?: ComposerMentionSources | undefined;
   onAttachFiles?: (files: AttachmentUploadInput[]) => void;
-  onContentHeightChange?: (height: number) => void;
   onDraftChange: (draft: string) => void;
   onPickAttachments?: () => unknown;
   onPreviewLocalFile?:
@@ -189,7 +237,11 @@ export const Composer = memo(function Composer({
       ) => Promise<LocalFilePreview | undefined>)
     | undefined;
   onRemoveAttachment?: (id: string) => void;
+  onExpandSnippet?: ((snippet: ChatDraftSnippet) => void) | undefined;
+  /** Takes a paste of at least `PASTED_SNIPPET_MIN_LENGTH` characters. */
+  onPasteSnippet?: ((text: string) => void) | undefined;
   onRemoveQuote?: (id: string) => void;
+  onRemoveSnippet?: ((id: string) => void) | undefined;
   onRetryAttachment?: (id: string) => void;
   onSend: (draft: string, options: { skills: { location: string }[] }) => void;
   placeholder?: string;
@@ -202,7 +254,7 @@ export const Composer = memo(function Composer({
   submitDisabled: boolean;
   submitPending?: boolean;
   toolbarLeading?: ReactNode;
-  variant?: "default" | "side-chat";
+  variant?: "default" | "compact";
 }) {
   const locale = useCommaLocale();
   const messages = useCommaMessages();
@@ -325,10 +377,9 @@ export const Composer = memo(function Composer({
   const driveAttachErrorToastId = `chat-drive-attach-error-${useId()}`;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingFilePickerFinishRef = useRef<(() => void) | null>(null);
-  const [sideChatLayout, setSideChatLayout] = useState({
-    contentHeight: SIDE_CHAT_TEXTAREA_MIN_HEIGHT,
-    textareaHeight: SIDE_CHAT_TEXTAREA_MIN_HEIGHT,
-  });
+  const [compactTextareaHeight, setCompactTextareaHeight] = useState(
+    COMPACT_TEXTAREA_MIN_HEIGHT
+  );
   // Key the exclusion set by VALUE: the mentioned-skill set changes on very
   // few keystrokes (only when a /mention is completed or removed), and the
   // menu registrations below must keep their identity for every keystroke in
@@ -345,28 +396,24 @@ export const Composer = memo(function Composer({
     () => new Set(excludedLocationsKey === "" ? [] : excludedLocationsKey.split("\n")),
     [excludedLocationsKey]
   );
-  const hasUploadedAttachment = draftAttachments.some(
-    (attachment) => attachment.status === "uploaded"
-  );
-  const anyUploading = draftAttachments.some(
-    (attachment) => attachment.status === "uploading"
+  // A file still uploading goes with the message, which waits for it.
+  const hasAttachment = draftAttachments.some(
+    (attachment) =>
+      attachment.status === "uploaded" || attachment.status === "uploading"
   );
   const anyFailed = draftAttachments.some(
     (attachment) => attachment.status === "failed"
   );
-  // A staged quote is message content in its own right, so it alone can
-  // satisfy the "something to send" gate the same way an upload does.
-  const hasDraftQuote = draftQuotes.length > 0;
+  // A staged quote or snippet is message content in its own right, so it
+  // alone can satisfy the "something to send" gate the same way an upload does.
+  const hasStagedText = draftQuotes.length > 0 || draftSnippets.length > 0;
   const effectiveSubmitDisabled =
-    submitDisabled ||
-    anyUploading ||
-    anyFailed ||
-    (!draft.trim() && !hasUploadedAttachment && !hasDraftQuote);
+    submitDisabled || anyFailed || (!draft.trim() && !hasAttachment && !hasStagedText);
   const localImagePreviewRequests = useMemo(
     () =>
       draftAttachments.flatMap((attachment) => {
         const previewRef = imagePreviewRef(attachment);
-        return attachment.isImage && attachment.status === "uploaded" && previewRef
+        return attachment.isImage && attachment.status !== "failed" && previewRef
           ? [{ key: attachment.id, previewRef }]
           : [];
       }),
@@ -386,6 +433,28 @@ export const Composer = memo(function Composer({
         type: "quote" as const,
       })),
     [draftQuotes, onRemoveQuote]
+  );
+  const handlePasteText = useCallback(
+    (text: string) => {
+      if (disabled || !onPasteSnippet || text.length < PASTED_SNIPPET_MIN_LENGTH) {
+        return false;
+      }
+      onPasteSnippet(text);
+      return true;
+    },
+    [disabled, onPasteSnippet]
+  );
+  const snippetAttachments = useMemo<AiInputAttachment[]>(
+    () =>
+      draftSnippets.map((snippet) => ({
+        icon: <RoutineSourceIcon fallback={<FileTextIcon />} source={snippet.source} />,
+        id: snippet.id,
+        name: chatSnippetTitle(snippet.text),
+        ...(onExpandSnippet ? { onExpand: () => onExpandSnippet(snippet) } : {}),
+        onRemove: () => onRemoveSnippet?.(snippet.id),
+        type: "snippet" as const,
+      })),
+    [draftSnippets, onExpandSnippet, onRemoveSnippet]
   );
   const fileAttachments = useMemo<AiInputAttachment[]>(
     () =>
@@ -440,10 +509,11 @@ export const Composer = memo(function Composer({
     ]
   );
   // Quotes lead the row: they are the reason the message exists, and they are
-  // also what the sent message puts first.
+  // also what the sent message puts first. Snippets are text, so they come
+  // before the files.
   const aiAttachments = useMemo(
-    () => [...quoteAttachments, ...fileAttachments],
-    [fileAttachments, quoteAttachments]
+    () => [...quoteAttachments, ...snippetAttachments, ...fileAttachments],
+    [fileAttachments, quoteAttachments, snippetAttachments]
   );
   const failedAttachments = draftAttachments.filter(
     (attachment) => attachment.status === "failed"
@@ -519,20 +589,17 @@ export const Composer = memo(function Composer({
     [uploadErrorToastId]
   );
 
-  const sideChatExpanded =
-    variant === "side-chat" &&
-    (sideChatLayout.textareaHeight > SIDE_CHAT_TEXTAREA_MIN_HEIGHT ||
-      aiAttachments.length > 0);
-  const reportSideChatLayout = useCallback(
-    (layout: { contentHeight: number; textareaHeight: number }) => {
-      setSideChatLayout(layout);
-      onContentHeightChange?.(layout.contentHeight);
-    },
-    [onContentHeightChange]
+  const compactExpanded =
+    variant === "compact" &&
+    (compactTextareaHeight > COMPACT_TEXTAREA_MIN_HEIGHT || aiAttachments.length > 0);
+  const reportCompactLayout = useCallback(
+    (layout: { textareaHeight: number }) =>
+      setCompactTextareaHeight(layout.textareaHeight),
+    []
   );
   const submit = (value: string) => {
     if (
-      (!value.trim() && !hasUploadedAttachment && !hasDraftQuote) ||
+      (!value.trim() && !hasAttachment && !hasStagedText) ||
       effectiveSubmitDisabled
     ) {
       return;
@@ -541,6 +608,25 @@ export const Composer = memo(function Composer({
       skills: deriveMentionedSkills(value, skills),
     });
   };
+
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const playedFillRef = useRef<ComposerDraftFill | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!fill || fill === playedFillRef.current || draft !== fill.draft) return;
+    playedFillRef.current = fill;
+    const editor = shellRef.current?.querySelector<HTMLElement>('[role="textbox"]');
+    if (!editor) return;
+    // The rich editor has committed the draft before this effect. Continue from
+    // the end of the written text, as if it had been typed, and show it.
+    editor.focus({ preventScroll: true });
+    const range = editor.ownerDocument.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    const selection = editor.ownerDocument.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    editor.scrollTop = editor.scrollHeight;
+  }, [draft, fill]);
 
   // Cmd/Ctrl+Enter is an alternate submit gesture. It uses the same direct
   // Conversation send path as the button and plain Enter.
@@ -632,6 +718,10 @@ export const Composer = memo(function Composer({
   const tasksGroupLabel = messages.chat_menu_tasks_group();
   const routinesGroupLabel = messages.chat_menu_routines_group();
   const pluginsGroupLabel = messages.chat_plugin_menu_group();
+  const modelsGroupLabel = messages.chat_menu_models_group();
+  const effortLabel = messages.settings_providers_picker_effort();
+  const defaultEffortLabel = messages.settings_providers_picker_default_effort();
+  const noResultsLabel = messages.ui_ai_menu_no_results();
   const driveGroupLabel = messages.nav_drive();
   const driveViewMoreLabel = messages.chat_menu_drive_view_more();
   const driveSearchLabel = messages.chat_menu_drive_search();
@@ -658,11 +748,6 @@ export const Composer = memo(function Composer({
                   [
                     ["status", messages.chat_command_status(), "status"],
                     ["compact", messages.chat_command_compact(), "compact"],
-                    [
-                      "emergency-compact",
-                      messages.chat_command_emergency_compact(),
-                      "emergency-compact",
-                    ],
                     ["help", messages.chat_command_help(), "help"],
                     ["ls", messages.chat_command_ls(), "ls /"],
                     ["cat", messages.chat_command_cat(), "cat /path/to/file"],
@@ -681,8 +766,14 @@ export const Composer = memo(function Composer({
         {
           id: "workspace-skills",
           label: skillMenuGroupLabel,
+          // Miniskills (`per-message`) attach automatically per message, so
+          // the menu lists only skills a person picks.
           items: skills
-            .filter((skill) => !excludedLocations.has(skill.location))
+            .filter(
+              (skill) =>
+                skill.activation !== "per-message" &&
+                !excludedLocations.has(skill.location)
+            )
             .map((skill) => ({
               id: skill.skill_id,
               label: skill.name,
@@ -698,7 +789,7 @@ export const Composer = memo(function Composer({
     });
 
     const mentionGroups: AiInputMenuGroup[] = [];
-    // Menu order is this push order: Add, Tasks, Routines, Plugins, Drive.
+    // Menu order is this push order: Add, Models, Tasks, Routines, Plugins, Drive.
     if (canAttach) {
       mentionGroups.push({
         id: "add",
@@ -714,6 +805,57 @@ export const Composer = memo(function Composer({
             },
           },
         ],
+      });
+    }
+    // In the Router chat, a model named starts a Task with it and the rest of the message.
+    if (
+      mentionSources?.models.items.length ||
+      mentionSources?.models.status === "loading"
+    ) {
+      mentionGroups.push({
+        id: "models",
+        label: modelsGroupLabel,
+        status: mentionSources.models.status,
+        items: mentionSources.models.items.map((model) => {
+          const icon = <ModelVendorIcon vendor={model.vendor} />;
+          // A row of its own for the default effort and for each it takes.
+          const choice = (effort: string | null): AiInputMenuItem => {
+            const name = effort ? `${model.name} · ${effort}` : model.name;
+            return {
+              id: `model:${model.id}${effort ? `:${effort}` : ""}`,
+              label: effort ?? defaultEffortLabel,
+              icon,
+              tokenLabel: name,
+              plainText: modelMentionPlainText(name, model.id, effort ?? undefined),
+              data: { kind: "model", modelId: model.id, effort },
+            };
+          };
+          return {
+            ...choice(null),
+            label: model.name,
+            keywords: [model.id],
+            ...(model.efforts.length > 0
+              ? {
+                  browse: {
+                    compact: true,
+                    label: model.name,
+                    title: `${model.name} · ${effortLabel}`,
+                    // The field heads the panel: which model these efforts are for.
+                    searchPlaceholder: model.name,
+                    emptyLabel: noResultsLabel,
+                    noResultsLabel,
+                    groups: [
+                      {
+                        id: `model:${model.id}/efforts`,
+                        label: effortLabel,
+                        items: [null, ...model.efforts].map(choice),
+                      },
+                    ],
+                  },
+                }
+              : {}),
+          };
+        }),
       });
     }
     if (mentionSources) {
@@ -783,12 +925,12 @@ export const Composer = memo(function Composer({
           void attachDriveFile(entry);
         },
       });
-      const now = Date.now();
+      const now = uiClock.now();
       mentionGroups.push({
         id: "drive",
         label: driveGroupLabel,
         status: mentionSources.drive.status,
-        prefiltered: !!mentionSources.drive.onMenuQueryChange,
+        prefiltered: !!mentionSources.drive.prefiltered,
         limit: DRIVE_MENU_LIMIT,
         items: [
           ...(mentionSources.drive.error
@@ -811,7 +953,7 @@ export const Composer = memo(function Composer({
           emptyLabel: driveEmptyLabel,
           noResultsLabel: driveNoResultsLabel,
           onQueryChange: mentionSources.drive.browse?.onQueryChange,
-          onLoadMore: mentionSources.drive.browse?.cursor
+          onLoadMore: mentionSources.drive.browse?.more
             ? mentionSources.drive.browse.loadMore
             : undefined,
           loadingMore: mentionSources.drive.browse?.loadingMore,
@@ -862,6 +1004,10 @@ export const Composer = memo(function Composer({
     mentionSources,
     onAttachFiles,
     pluginsGroupLabel,
+    modelsGroupLabel,
+    effortLabel,
+    defaultEffortLabel,
+    noResultsLabel,
     routinesGroupLabel,
     controlCommandsEnabled,
     messages,
@@ -915,8 +1061,9 @@ export const Composer = memo(function Composer({
 
   return (
     <div
+      ref={shellRef}
       className="comma-chat-composer-shell"
-      data-side-chat-multiline={sideChatExpanded ? "true" : undefined}
+      data-compact-multiline={compactExpanded ? "true" : undefined}
     >
       {onAttachFiles ? (
         <input
@@ -949,6 +1096,7 @@ export const Composer = memo(function Composer({
               onPasteFiles: handleTransferredFiles,
             }
           : {})}
+        {...(onPasteSnippet ? { onPasteText: handlePasteText } : {})}
         placeholder={placeholder ?? messages.chat_composer_placeholder()}
         richText
         sendLabel={sendLabel ?? messages.chat_send_message()}
@@ -968,9 +1116,9 @@ export const Composer = memo(function Composer({
         submitDisabled={effectiveSubmitDisabled}
         submitPending={submitPending}
         toolbarLeading={toolbarLeading}
-        {...(variant === "side-chat"
+        {...(variant === "compact"
           ? {
-              onLayoutHeightChange: reportSideChatLayout,
+              onLayoutHeightChange: reportCompactLayout,
               size: "small" as const,
               textareaMeasurementWidthMode: "narrowest" as const,
             }

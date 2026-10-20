@@ -6,6 +6,7 @@ defmodule BridgeForTeams.OrgComposioSettingsTest do
   key forwarding are covered with swapped-in fake Salix clients.
   """
   use BridgeForTeams.DataCase, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{OrgComposioSettings, Orgs}
 
@@ -21,7 +22,7 @@ defmodule BridgeForTeams.OrgComposioSettingsTest do
     # Records the attrs forwarded to Salix so the test can assert blank keys
     # are dropped (pointer-merge keeps the stored key).
     def put_composio_settings(_tenant_id, attrs) do
-      send(self(), {:put_attrs, attrs})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:put_attrs, attrs})
       {:ok, %{"enabled" => true, "api_key_configured" => true, "base_url" => ""}}
     end
   end
@@ -33,13 +34,13 @@ defmodule BridgeForTeams.OrgComposioSettingsTest do
   end
 
   defp with_client(mod) do
-    prev = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, mod)
+    prev = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, mod)
     on_exit(fn -> restore_env(:bridge_for_teams_core, :salix_client, prev) end)
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   test "unconfigured org reads as not configured, source none", %{org: org} do
     assert {:ok, view} = OrgComposioSettings.get_org_composio_settings(org.id)
@@ -104,6 +105,6 @@ defmodule BridgeForTeams.OrgComposioSettingsTest do
 
   test "unknown org id is an error" do
     assert {:error, _} =
-             OrgComposioSettings.get_org_composio_settings(Ecto.UUID.generate())
+             OrgComposioSettings.get_org_composio_settings(SystemsRuntime.Proc.uuid())
   end
 end

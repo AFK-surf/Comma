@@ -198,7 +198,7 @@ export const delegationStatus = (delegation: {
 export const delegationLabel = (delegation: { status: string | null; task: string }) =>
   t.delegation[delegationStatus(delegation)](delegation.task);
 
-/** The effects line under a decision: context, worker tasks, reactions. */
+/** The effects line under a decision: context, Triage Tasks, reactions. */
 export function effectSummary(item: BftTriageOutcome) {
   const effects: string[] = [];
   const candidates = item.context.candidates ?? 0;

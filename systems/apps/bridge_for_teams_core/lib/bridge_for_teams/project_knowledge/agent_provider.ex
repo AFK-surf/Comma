@@ -6,7 +6,7 @@ defmodule BridgeForTeams.ProjectKnowledge.AgentProvider do
   alias BridgeForTeams.SourcedContext.Grounding
 
   def retrieve(salix_agent_id, question, _context) do
-    if Process.whereis(Repo) do
+    if SystemsRuntime.Proc.whereis(Repo) do
       case BridgeForTeams.Agents.get_agent(salix_agent_id) do
         {:ok, %Agent{} = agent} ->
           if Agent.active?(agent) do

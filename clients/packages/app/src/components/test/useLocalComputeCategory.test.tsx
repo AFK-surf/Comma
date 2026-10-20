@@ -1,5 +1,8 @@
+import { flush } from "@comma/test-utils/fake-clock";
 import { act, renderHook } from "@comma/test-utils/render";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import { afterEach, expect, it, vi } from "vitest";
+import type { ReactNode } from "react";
 import type {
   ComputeNodeState,
   LocalComputeOverview,
@@ -53,15 +56,28 @@ const page: LocalComputeOverview = {
   ],
   nextCursor: "next-page",
 };
+// The page's clock is the core's: the test ticks it.
+let tick = 0;
+let core = createScriptedCore();
+const scriptCore = () => {
+  tick = 0;
+  core = createScriptedCore({
+    values: (topic) => (topic.topic === "computeTick" ? { tick } : undefined),
+  });
+  return { wrapper: ({ children }: { children: ReactNode }) => core.wrap(children) };
+};
+const tickCore = async () => {
+  tick += 1;
+  core.changed("computeTick");
+  await flush();
+};
 afterEach(() => {
-  vi.useRealTimers();
   vi.restoreAllMocks();
   mock.overview.mockReset();
   mock.workloads.mockReset();
 });
 
 it("bounds visible reads, leaves pagination to the user, and withdraws old cloud detail while retaining local management", async () => {
-  vi.useFakeTimers();
   let hidden = false;
   vi.spyOn(document, "hidden", "get").mockImplementation(() => hidden);
   let release!: (page: LocalComputeOverview) => void;
@@ -75,11 +91,11 @@ it("bounds visible reads, leaves pagination to the user, and withdraws old cloud
     .mockResolvedValue(page);
   const { result, rerender } = renderHook(
     ({ visible }) => useLocalComputeCategory(visible, "workspace"),
-    { initialProps: { visible: true } }
+    { initialProps: { visible: true }, ...scriptCore() }
   );
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(20_000);
-  });
+  await flush();
+  // A tick while the first read is out reads nothing more.
+  await tickCore();
   expect(mock.overview).toHaveBeenCalledTimes(1);
   await act(async () => {
     release(page);
@@ -87,24 +103,23 @@ it("bounds visible reads, leaves pagination to the user, and withdraws old cloud
   hidden = true;
   await act(async () => {
     document.dispatchEvent(new Event("visibilitychange"));
-    await vi.advanceTimersByTimeAsync(20_000);
   });
+  await tickCore();
+  await tickCore();
   expect(mock.overview).toHaveBeenCalledTimes(1);
+  // Shown again, it reads at once.
   hidden = false;
   await act(async () => {
     document.dispatchEvent(new Event("visibilitychange"));
   });
+  await flush();
   expect(mock.overview).toHaveBeenCalledTimes(2);
+  await tickCore();
+  expect(mock.overview).toHaveBeenCalledTimes(3);
   expect(mock.overview.mock.calls.every(([input]) => !input.cursor)).toBe(true);
-  const manage = result.current.section.items[0]!.control;
-  if (manage?.type !== "button") throw new Error("Local management entry unavailable");
-  act(() => manage.onPress?.());
+  act(() => result.current.open());
   const environment = () =>
-    result.current.category
-      .detail!.sections!.flatMap((section) => section.items)
-      .find((row) => row.id === "local-environment.opaque-A")!;
-  const menu = environment().control;
-  if (menu?.type !== "menu") throw new Error("Local actions unavailable");
+    result.current.overview?.environments.find((row) => row.key === "opaque-A");
   let finishWork!: (result: LocalComputeWorkloads) => void;
   mock.workloads.mockImplementation(
     () =>
@@ -113,34 +128,27 @@ it("bounds visible reads, leaves pagination to the user, and withdraws old cloud
       })
   );
   act(() => {
-    menu.items.find((item) => item.id === "workloads")!.onPress();
-    menu.items.find((item) => item.id === "workloads")!.onPress();
+    result.current.select("opaque-A");
+    void result.current.readWorkloads("opaque-A");
+    void result.current.readWorkloads("opaque-A");
   });
   expect(mock.workloads).toHaveBeenCalledTimes(1);
   await act(async () => {
     mock.listener?.({ confirmationId: "B" } as ComputeNodeState);
     finishWork({ workloads: [{ label: "private-A", state: "ready" }] });
   });
-  const withdrawn = environment().control;
-  if (withdrawn?.type !== "menu") throw new Error("Local actions lost on login change");
-  expect(withdrawn.items.some((item) => item.id === "workloads")).toBe(false);
-  expect(withdrawn.items.some((item) => item.id === "delete")).toBe(true);
-  const next = result.current.category
-    .detail!.sections!.flatMap((section) => section.items)
-    .find((row) => row.id === "compute-node.local-next")!.control;
-  if (next?.type !== "button") throw new Error("Next page unavailable");
-  await act(async () => {
-    next.onPress?.();
-  });
+  expect(environment()?.canReadWorkloads).toBe(false);
+  expect(environment()?.canDisposeLocal).toBe(true);
+  expect(result.current.cloudWorkloads).toBeUndefined();
+  await act(async () => result.current.nextPage());
   expect(mock.overview).toHaveBeenLastCalledWith({
     workspaceId: "workspace",
     cursor: "next-page",
   });
   rerender({ visible: false });
   const count = mock.overview.mock.calls.length;
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(20_000);
-  });
+  await tickCore();
+  await tickCore();
   expect(mock.overview).toHaveBeenCalledTimes(count);
 });
 
@@ -155,9 +163,7 @@ it("keeps local maintenance across login changes and withdraws old environment d
   await act(async () => {});
   act(() => result.current.open());
   expect(
-    result.current.category.detail?.sections
-      ?.flatMap((s) => s.items)
-      .some((i) => i.id === "local-environment.opaque-A")
+    !!result.current.data?.environments.some((row) => row.key === "opaque-A")
   ).toBe(true);
   mock.maintenance.mockResolvedValue({
     installation: "not_installed",
@@ -175,9 +181,7 @@ it("keeps local maintenance across login changes and withdraws old environment d
     await result.current.maintenance.refresh();
   });
   expect(
-    result.current.category.detail?.sections
-      ?.flatMap((s) => s.items)
-      .some((i) => i.id === "local-environment.opaque-A")
+    !!result.current.data?.environments.some((row) => row.key === "opaque-A")
   ).toBe(false);
   act(() => mock.listener?.({ confirmationId: "new-login" } as ComputeNodeState));
   expect(result.current.maintenance.state?.operation?.requestId).toBe("local-task");

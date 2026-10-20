@@ -112,44 +112,39 @@ describe("useStickToBottom", () => {
   });
 
   it("keeps an explicitly focused target visible through content shrink", () => {
-    vi.useFakeTimers();
-    try {
-      const { container } = render(<StickHarness dependencyKey="msg_1" />);
-      const viewport = queryViewport(container);
-      const target = screen.getByTestId("focus-target");
-      let targetDocumentTop = 320;
-      setElementMetric(viewport, "clientHeight", 100);
-      setElementMetric(viewport, "clientWidth", 400);
-      setElementMetric(viewport, "scrollHeight", 500);
-      setElementRect(viewport, () => ({
-        bottom: 100,
-        left: 0,
-        right: 400,
-        top: 0,
-      }));
-      setElementRect(target, () => ({
-        bottom: targetDocumentTop - viewport.scrollTop + 20,
-        left: 0,
-        right: 40,
-        top: targetDocumentTop - viewport.scrollTop,
-      }));
-      act(() => vi.advanceTimersByTime(20));
-      viewport.scrollTop = 300;
-      act(() => target.focus());
+    const { container } = render(<StickHarness dependencyKey="msg_1" />);
+    const viewport = queryViewport(container);
+    const target = screen.getByTestId("focus-target");
+    let targetDocumentTop = 320;
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "clientWidth", 400);
+    setElementMetric(viewport, "scrollHeight", 500);
+    setElementRect(viewport, () => ({
+      bottom: 100,
+      left: 0,
+      right: 400,
+      top: 0,
+    }));
+    setElementRect(target, () => ({
+      bottom: targetDocumentTop - viewport.scrollTop + 20,
+      left: 0,
+      right: 40,
+      top: targetDocumentTop - viewport.scrollTop,
+    }));
+    act(() => vi.advanceTimersByTime(20));
+    viewport.scrollTop = 300;
+    act(() => target.focus());
 
-      setElementMetric(viewport, "scrollHeight", 250);
-      targetDocumentTop = 130;
-      viewport.scrollTop = 150;
-      fireEvent.click(screen.getByTestId("content-resize"));
+    setElementMetric(viewport, "scrollHeight", 250);
+    targetDocumentTop = 130;
+    viewport.scrollTop = 150;
+    fireEvent.click(screen.getByTestId("content-resize"));
 
-      expect(viewport.scrollTop).toBe(130);
-      act(() => vi.advanceTimersByTime(1_250));
-      fireEvent.click(screen.getByTestId("viewport-resize"));
-      expect(viewport.scrollTop).toBe(130);
-      expect(target).toHaveFocus();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(viewport.scrollTop).toBe(130);
+    act(() => vi.advanceTimersByTime(1_250));
+    fireEvent.click(screen.getByTestId("viewport-resize"));
+    expect(viewport.scrollTop).toBe(130);
+    expect(target).toHaveFocus();
   });
 
   it("keeps intent pending through a stale at-bottom scroll", () => {
@@ -171,79 +166,64 @@ describe("useStickToBottom", () => {
   });
 
   it("preserves a delayed small move after pre-scroll intent", () => {
-    vi.useFakeTimers();
-    try {
-      const { container } = render(<StickHarness dependencyKey="msg_1" />);
-      const viewport = queryViewport(container);
-      setElementMetric(viewport, "clientHeight", 100);
-      setElementMetric(viewport, "clientWidth", 400);
-      setElementMetric(viewport, "scrollHeight", 500);
-      act(() => vi.advanceTimersByTime(20));
-      viewport.scrollTop = 400;
-      fireEvent.scroll(viewport);
+    const { container } = render(<StickHarness dependencyKey="msg_1" />);
+    const viewport = queryViewport(container);
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "clientWidth", 400);
+    setElementMetric(viewport, "scrollHeight", 500);
+    act(() => vi.advanceTimersByTime(20));
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
 
-      fireEvent.click(screen.getByTestId("scroll-intent"));
-      fireEvent.scroll(viewport);
-      act(() => vi.advanceTimersByTime(250));
-      viewport.scrollTop = 390;
-      fireEvent.scroll(viewport);
-      act(() => vi.advanceTimersByTime(1_100));
-      fireEvent.click(screen.getByTestId("viewport-resize"));
+    fireEvent.click(screen.getByTestId("scroll-intent"));
+    fireEvent.scroll(viewport);
+    act(() => vi.advanceTimersByTime(250));
+    viewport.scrollTop = 390;
+    fireEvent.scroll(viewport);
+    act(() => vi.advanceTimersByTime(1_100));
+    fireEvent.click(screen.getByTestId("viewport-resize"));
 
-      expect(viewport.scrollTop).toBe(390);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(viewport.scrollTop).toBe(390);
   });
 
   it("preserves a small move that occurs before React observes intent", () => {
-    vi.useFakeTimers();
-    try {
-      const { container } = render(<StickHarness dependencyKey="msg_1" />);
-      const viewport = queryViewport(container);
-      setElementMetric(viewport, "clientHeight", 100);
-      setElementMetric(viewport, "clientWidth", 400);
-      setElementMetric(viewport, "scrollHeight", 500);
-      act(() => vi.advanceTimersByTime(20));
-      viewport.scrollTop = 400;
-      fireEvent.scroll(viewport);
+    const { container } = render(<StickHarness dependencyKey="msg_1" />);
+    const viewport = queryViewport(container);
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "clientWidth", 400);
+    setElementMetric(viewport, "scrollHeight", 500);
+    act(() => vi.advanceTimersByTime(20));
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
 
-      viewport.scrollTop = 390;
-      fireEvent.click(screen.getByTestId("scroll-intent"));
-      fireEvent.scroll(viewport);
-      act(() => vi.advanceTimersByTime(1_100));
-      fireEvent.click(screen.getByTestId("viewport-resize"));
+    viewport.scrollTop = 390;
+    fireEvent.click(screen.getByTestId("scroll-intent"));
+    fireEvent.scroll(viewport);
+    act(() => vi.advanceTimersByTime(1_100));
+    fireEvent.click(screen.getByTestId("viewport-resize"));
 
-      expect(viewport.scrollTop).toBe(390);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(viewport.scrollTop).toBe(390);
   });
 
   it("catches up after an away intent settles without movement", () => {
-    vi.useFakeTimers();
-    try {
-      const { container, rerender } = render(<StickHarness dependencyKey="msg_1" />);
-      const viewport = queryViewport(container);
-      setElementMetric(viewport, "clientHeight", 100);
-      setElementMetric(viewport, "clientWidth", 400);
-      setElementMetric(viewport, "scrollHeight", 500);
-      viewport.scrollTop = 400;
-      fireEvent.scroll(viewport);
+    const { container, rerender } = render(<StickHarness dependencyKey="msg_1" />);
+    const viewport = queryViewport(container);
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "clientWidth", 400);
+    setElementMetric(viewport, "scrollHeight", 500);
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
 
-      fireEvent.click(screen.getByTestId("scroll-intent"));
-      fireEvent.scroll(viewport);
-      setElementMetric(viewport, "scrollHeight", 700);
-      rerender(<StickHarness dependencyKey="msg_1|assistant_2" />);
+    fireEvent.click(screen.getByTestId("scroll-intent"));
+    fireEvent.scroll(viewport);
+    setElementMetric(viewport, "scrollHeight", 700);
+    rerender(<StickHarness dependencyKey="msg_1|assistant_2" />);
 
-      expect(viewport.scrollTop).toBe(400);
-      expect(screen.getByTestId("unseen-count")).toHaveTextContent("0");
-      act(() => vi.advanceTimersByTime(1_100));
-      expect(viewport.scrollTop).toBe(600);
-      expect(screen.getByTestId("unseen-count")).toHaveTextContent("0");
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(viewport.scrollTop).toBe(400);
+    expect(screen.getByTestId("unseen-count")).toHaveTextContent("0");
+    act(() => vi.advanceTimersByTime(1_100));
+    expect(viewport.scrollTop).toBe(600);
+    expect(screen.getByTestId("unseen-count")).toHaveTextContent("0");
   });
 
   it("ignores an old settlement callback after a newer intent starts", () => {
@@ -344,41 +324,36 @@ describe("useStickToBottom", () => {
   });
 
   it("preserves focus when a no-move gesture settles after content growth", () => {
-    vi.useFakeTimers();
-    try {
-      const { container, rerender } = render(<StickHarness dependencyKey="msg_1" />);
-      const viewport = queryViewport(container);
-      const target = screen.getByTestId("focus-target");
-      setElementMetric(viewport, "clientHeight", 100);
-      setElementMetric(viewport, "scrollHeight", 500);
-      viewport.scrollTop = 400;
-      fireEvent.scroll(viewport);
-      setElementRect(viewport, () => ({
-        bottom: 100,
-        left: 0,
-        right: 400,
-        top: 0,
-      }));
-      setElementRect(target, () => ({
-        bottom: 60,
-        left: 0,
-        right: 40,
-        top: 40,
-      }));
+    const { container, rerender } = render(<StickHarness dependencyKey="msg_1" />);
+    const viewport = queryViewport(container);
+    const target = screen.getByTestId("focus-target");
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "scrollHeight", 500);
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
+    setElementRect(viewport, () => ({
+      bottom: 100,
+      left: 0,
+      right: 400,
+      top: 0,
+    }));
+    setElementRect(target, () => ({
+      bottom: 60,
+      left: 0,
+      right: 40,
+      top: 40,
+    }));
 
-      fireEvent.click(screen.getByTestId("scroll-gesture-start"));
-      act(() => target.focus());
-      setElementMetric(viewport, "scrollHeight", 700);
-      rerender(<StickHarness dependencyKey="msg_1|assistant_2" />);
-      fireEvent.pointerUp(window);
-      act(() => vi.advanceTimersByTime(1_100));
+    fireEvent.click(screen.getByTestId("scroll-gesture-start"));
+    act(() => target.focus());
+    setElementMetric(viewport, "scrollHeight", 700);
+    rerender(<StickHarness dependencyKey="msg_1|assistant_2" />);
+    fireEvent.pointerUp(window);
+    act(() => vi.advanceTimersByTime(1_100));
 
-      expect(viewport.scrollTop).toBe(400);
-      expect(target).toHaveFocus();
-      expect(screen.getByTestId("unseen-count")).toHaveTextContent("1");
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(viewport.scrollTop).toBe(400);
+    expect(target).toHaveFocus();
+    expect(screen.getByTestId("unseen-count")).toHaveTextContent("1");
   });
 
   it("keeps following when a toward intent produces no movement", () => {
@@ -398,87 +373,72 @@ describe("useStickToBottom", () => {
   });
 
   it("keeps a scrollbar gesture pending until it ends", () => {
-    vi.useFakeTimers();
-    try {
-      const { container } = render(<StickHarness dependencyKey="msg_1" />);
-      const viewport = queryViewport(container);
-      setElementMetric(viewport, "clientHeight", 100);
-      setElementMetric(viewport, "clientWidth", 400);
-      setElementMetric(viewport, "scrollHeight", 500);
-      act(() => vi.advanceTimersByTime(20));
-      viewport.scrollTop = 400;
-      fireEvent.scroll(viewport);
+    const { container } = render(<StickHarness dependencyKey="msg_1" />);
+    const viewport = queryViewport(container);
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "clientWidth", 400);
+    setElementMetric(viewport, "scrollHeight", 500);
+    act(() => vi.advanceTimersByTime(20));
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
 
-      fireEvent.click(screen.getByTestId("scroll-gesture-start"));
-      act(() => vi.advanceTimersByTime(1_500));
-      viewport.scrollTop = 390;
-      fireEvent.scroll(viewport);
-      fireEvent.pointerUp(window);
-      act(() => vi.advanceTimersByTime(20));
-      fireEvent.click(screen.getByTestId("viewport-resize"));
+    fireEvent.click(screen.getByTestId("scroll-gesture-start"));
+    act(() => vi.advanceTimersByTime(1_500));
+    viewport.scrollTop = 390;
+    fireEvent.scroll(viewport);
+    fireEvent.pointerUp(window);
+    act(() => vi.advanceTimersByTime(20));
+    fireEvent.click(screen.getByTestId("viewport-resize"));
 
-      expect(viewport.scrollTop).toBe(390);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(viewport.scrollTop).toBe(390);
   });
 
   it("keeps touch scrolling active after its pointer stream is canceled", () => {
-    vi.useFakeTimers();
-    try {
-      const { container, rerender } = render(<StickHarness dependencyKey="msg_1" />);
-      const viewport = queryViewport(container);
-      setElementMetric(viewport, "clientHeight", 100);
-      setElementMetric(viewport, "scrollHeight", 500);
-      viewport.scrollTop = 400;
-      fireEvent.scroll(viewport);
+    const { container, rerender } = render(<StickHarness dependencyKey="msg_1" />);
+    const viewport = queryViewport(container);
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "scrollHeight", 500);
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
 
-      fireEvent.click(screen.getByTestId("scroll-intent"));
-      viewport.scrollTop = 390;
-      fireEvent.scroll(viewport);
-      fireEvent.click(screen.getByTestId("scroll-gesture-start"));
-      fireEvent.pointerCancel(window, { pointerType: "touch" });
-      act(() => vi.advanceTimersByTime(1_500));
+    fireEvent.click(screen.getByTestId("scroll-intent"));
+    viewport.scrollTop = 390;
+    fireEvent.scroll(viewport);
+    fireEvent.click(screen.getByTestId("scroll-gesture-start"));
+    fireEvent.pointerCancel(window, { pointerType: "touch" });
+    act(() => vi.advanceTimersByTime(1_500));
 
-      viewport.scrollTop = 400;
-      fireEvent.scroll(viewport);
-      fireEvent.touchEnd(window);
-      act(() => vi.advanceTimersByTime(1_100));
-      setElementMetric(viewport, "scrollHeight", 700);
-      rerender(<StickHarness dependencyKey="msg_1|assistant_2" />);
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
+    fireEvent.touchEnd(window);
+    act(() => vi.advanceTimersByTime(1_100));
+    setElementMetric(viewport, "scrollHeight", 700);
+    rerender(<StickHarness dependencyKey="msg_1|assistant_2" />);
 
-      expect(viewport.scrollTop).toBe(600);
-      expect(screen.getByTestId("unseen-count")).toHaveTextContent("0");
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(viewport.scrollTop).toBe(600);
+    expect(screen.getByTestId("unseen-count")).toHaveTextContent("0");
   });
 
   it("catches up after a persistent gesture ends without movement", () => {
-    vi.useFakeTimers();
-    try {
-      const { container, rerender } = render(<StickHarness dependencyKey="msg_1" />);
-      const viewport = queryViewport(container);
-      setElementMetric(viewport, "clientHeight", 100);
-      setElementMetric(viewport, "clientWidth", 400);
-      setElementMetric(viewport, "scrollHeight", 500);
-      act(() => vi.advanceTimersByTime(20));
-      viewport.scrollTop = 400;
-      fireEvent.scroll(viewport);
+    const { container, rerender } = render(<StickHarness dependencyKey="msg_1" />);
+    const viewport = queryViewport(container);
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "clientWidth", 400);
+    setElementMetric(viewport, "scrollHeight", 500);
+    act(() => vi.advanceTimersByTime(20));
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
 
-      fireEvent.click(screen.getByTestId("scroll-gesture-start"));
-      setElementMetric(viewport, "scrollHeight", 700);
-      rerender(<StickHarness dependencyKey="msg_1|assistant_2" />);
-      expect(viewport.scrollTop).toBe(400);
+    fireEvent.click(screen.getByTestId("scroll-gesture-start"));
+    setElementMetric(viewport, "scrollHeight", 700);
+    rerender(<StickHarness dependencyKey="msg_1|assistant_2" />);
+    expect(viewport.scrollTop).toBe(400);
 
-      fireEvent.pointerUp(window);
-      act(() => vi.advanceTimersByTime(1_100));
+    fireEvent.pointerUp(window);
+    act(() => vi.advanceTimersByTime(1_100));
 
-      expect(viewport.scrollTop).toBe(600);
-      expect(screen.getByTestId("unseen-count")).toHaveTextContent("0");
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(viewport.scrollTop).toBe(600);
+    expect(screen.getByTestId("unseen-count")).toHaveTextContent("0");
   });
 
   it("commits focus-induced off-bottom geometry without a scroll event", () => {
@@ -516,31 +476,26 @@ describe("useStickToBottom", () => {
   });
 
   it("keeps away mode after passive shrink clamps to the exact bottom", () => {
-    vi.useFakeTimers();
-    try {
-      const { container, rerender } = render(<StickHarness dependencyKey="msg_1" />);
-      const viewport = queryViewport(container);
-      setElementMetric(viewport, "clientHeight", 100);
-      setElementMetric(viewport, "scrollHeight", 500);
-      viewport.scrollTop = 400;
-      fireEvent.scroll(viewport);
+    const { container, rerender } = render(<StickHarness dependencyKey="msg_1" />);
+    const viewport = queryViewport(container);
+    setElementMetric(viewport, "clientHeight", 100);
+    setElementMetric(viewport, "scrollHeight", 500);
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
 
-      fireEvent.click(screen.getByTestId("scroll-intent"));
-      viewport.scrollTop = 390;
-      fireEvent.scroll(viewport);
-      setElementMetric(viewport, "scrollHeight", 490);
-      fireEvent.scroll(viewport);
-      fireEvent.click(screen.getByTestId("content-resize"));
-      act(() => vi.advanceTimersByTime(1_100));
+    fireEvent.click(screen.getByTestId("scroll-intent"));
+    viewport.scrollTop = 390;
+    fireEvent.scroll(viewport);
+    setElementMetric(viewport, "scrollHeight", 490);
+    fireEvent.scroll(viewport);
+    fireEvent.click(screen.getByTestId("content-resize"));
+    act(() => vi.advanceTimersByTime(1_100));
 
-      setElementMetric(viewport, "scrollHeight", 700);
-      rerender(<StickHarness dependencyKey="msg_1|assistant_2" />);
+    setElementMetric(viewport, "scrollHeight", 700);
+    rerender(<StickHarness dependencyKey="msg_1|assistant_2" />);
 
-      expect(viewport.scrollTop).toBe(390);
-      expect(screen.getByTestId("unseen-count")).toHaveTextContent("1");
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(viewport.scrollTop).toBe(390);
+    expect(screen.getByTestId("unseen-count")).toHaveTextContent("1");
   });
 
   it("ignores content resizes while the user has scrolled away", () => {

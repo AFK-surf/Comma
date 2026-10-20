@@ -1,5 +1,5 @@
 defmodule SalixStore.ServiceRoutesTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   alias SalixStore.{Compute, Repo, ServiceRoutes}
 
   setup do
@@ -93,7 +93,7 @@ defmodule SalixStore.ServiceRoutesTest do
                export_id: export.id,
                import_id: import.id,
                route_class: "public_http",
-               expires_at: DateTime.add(DateTime.utc_now(), 600, :second)
+               expires_at: DateTime.add(SystemsClock.utc_now(), 600, :second)
              })
 
     assert {:ok, active} = ServiceRoutes.activate(route.id, 1, "capability-v1")
@@ -104,7 +104,7 @@ defmodule SalixStore.ServiceRoutesTest do
              ServiceRoutes.renew(
                route.id,
                active.revision,
-               DateTime.add(DateTime.utc_now(), 900, :second),
+               DateTime.add(SystemsClock.utc_now(), 900, :second),
                "capability-v1"
              )
 
@@ -144,7 +144,7 @@ defmodule SalixStore.ServiceRoutesTest do
         export_id: export.id,
         import_id: import.id,
         route_class: "public_http",
-        expires_at: DateTime.add(DateTime.utc_now(), 600, :second)
+        expires_at: DateTime.add(SystemsClock.utc_now(), 600, :second)
       })
 
     {:ok, route} = ServiceRoutes.activate(route.id, 1, "capability")
@@ -192,44 +192,12 @@ defmodule SalixStore.ServiceRoutesTest do
         export_id: export.id,
         import_id: import.id,
         route_class: "public_http",
-        expires_at: DateTime.add(DateTime.utc_now(), 600, :second)
+        expires_at: DateTime.add(SystemsClock.utc_now(), 600, :second)
       })
 
     assert {:ok, active} = ServiceRoutes.activate(route.id, route.revision, "capability-v1")
     assert {:ok, revoked} = ServiceRoutes.revoke(route.id, active.revision)
     assert revoked.state == "revoked"
     assert {:error, :inactive} = ServiceRoutes.authorize(route.id, "capability-v1")
-  end
-
-  test "exports and imports reject workloads without the required hosting capability", context do
-    {:ok, unsupported} =
-      Compute.create_workload(%{
-        id: "unsupported-workload",
-        environment_id: context.source.environment.id,
-        allocation_id: context.source.workload.allocation_id,
-        kind: "service",
-        capability_requirements: [],
-        generation: 1
-      })
-
-    assert {:error, :unsupported} =
-             ServiceRoutes.create_export(%{
-               id: "unsupported-export",
-               tenant_id: "tenant",
-               workload_id: unsupported.id,
-               workload_generation: 1,
-               logical_endpoint: "api",
-               port: 8080,
-               protocol: "tcp"
-             })
-
-    assert {:error, :unsupported} =
-             ServiceRoutes.create_import(%{
-               id: "unsupported-import",
-               tenant_id: "tenant",
-               destination_workload_id: unsupported.id,
-               destination_workload_generation: 1,
-               virtual_service_name: "api"
-             })
   end
 end

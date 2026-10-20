@@ -54,8 +54,8 @@ defmodule AlertRouter.Web.GCPPushAuth.OIDC do
   @impl true
   def authorize(conn), do: authorize(conn, :gcp_push)
 
-  def authorize(conn, config_key) when config_key in [:gcp_push, :runtime_storage_push] do
-    config = Application.get_env(:alert_router, config_key, [])
+  def authorize(conn, config_key) when config_key == :gcp_push do
+    config = SystemsRuntime.get_env(:alert_router, config_key, [])
     audience = config[:audience]
     expected_email = config[:service_account_email]
 

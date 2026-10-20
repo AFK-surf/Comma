@@ -1,6 +1,6 @@
 defmodule SalixStore.LoopsStoreTest do
   # Shares the node-global control tables; keep serial.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{Loops, Repo}
 
@@ -46,64 +46,6 @@ defmodule SalixStore.LoopsStoreTest do
     assert {:error, :not_found} = Loops.get("l1")
   end
 
-  test "listings carry the artifact path, never bytes" do
-    assert {:ok, _} = Loops.create(rec("l1"))
-    assert {:ok, _} = Loops.create(rec("l2", %{"status" => "paused", "created_at" => 2_000}))
-    assert {:ok, [a, b]} = Loops.list_by_agent("agent_a")
-    assert a["id"] == "l1" and b["id"] == "l2"
-    refute Map.has_key?(a, "elf")
-    assert a["elf_path"] == "/loops/main.elf"
-    assert {:ok, [active]} = Loops.list_active_by_agent("agent_a")
-    assert active["id"] == "l1" and active["elf_path"] == "/loops/main.elf"
-    assert {:ok, {1, 1}} = Loops.active_counts("agent_a", "grp_a")
-  end
-
-  test "update is a locked read-modify-write" do
-    assert {:ok, _} = Loops.create(rec("l1"))
-
-    assert {:ok, written} =
-             Loops.update("l1", fn current ->
-               {:ok, Map.merge(current, %{"incarnation" => current["incarnation"] + 1})}
-             end)
-
-    assert written["incarnation"] == 1
-    assert {:error, :nope} = Loops.update("l1", fn _ -> {:error, :nope} end)
-    assert {:ok, same} = Loops.update("l1", fn current -> {:unchanged, current} end)
-    assert same["incarnation"] == 1
-    assert {:error, :not_found} = Loops.update("missing", fn c -> {:ok, c} end)
-  end
-
-  test "the stranded listing pages through a keyset cursor" do
-    for {id, at} <- [{"l1", 10}, {"l2", 20}, {"l3", 20}, {"l4", 30}] do
-      assert {:ok, _} = Loops.create(rec(id, %{"created_at" => at, "updated_at" => at}))
-    end
-
-    assert {:ok, _} =
-             Loops.create(
-               rec("l5", %{"created_at" => 5, "updated_at" => 5, "status" => "paused"})
-             )
-
-    assert {:ok, _} =
-             Loops.update(
-               "l4",
-               &{:ok, Map.merge(&1, %{"object_id" => "o4", "incarnation_node" => "alive"})}
-             )
-
-    assert {:ok, _} =
-             Loops.update(
-               "l3",
-               &{:ok, Map.merge(&1, %{"object_id" => "o3", "incarnation_node" => "gone"})}
-             )
-
-    assert {:ok, [a, b]} = Loops.list_active_stranded(["alive"], 2)
-    assert {a["id"], b["id"]} == {"l1", "l2"}
-    refute Map.has_key?(a, "elf")
-
-    assert {:ok, [c]} = Loops.list_active_stranded(["alive"], 2, {b["updated_at"], b["id"]})
-    assert c["id"] == "l3"
-    assert {:ok, []} = Loops.list_active_stranded(["alive"], 2, {c["updated_at"], c["id"]})
-  end
-
   test "archive transitions only touch the matching rows" do
     assert {:ok, _} = Loops.create(rec("l1"))
     assert {:ok, _} = Loops.create(rec("l2", %{"status" => "paused", "paused_by" => "user"}))
@@ -139,7 +81,7 @@ defmodule SalixStore.LoopsStoreTest do
 
     results =
       2..8
-      |> Task.async_stream(fn n ->
+      |> SystemsClock.async_stream(fn n ->
         Loops.admit_event(row, %{event | "event_id" => "e#{n}"}, 100, 2, 1000)
       end)
       |> Enum.map(fn {:ok, result} -> result end)

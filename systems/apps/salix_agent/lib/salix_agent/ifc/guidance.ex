@@ -66,7 +66,7 @@ defmodule SalixAgent.IFC.Guidance do
       content: content,
       error: false,
       status: "guidance",
-      input: Jason.encode!(call[:args] || call["args"] || %{}),
+      input: SalixAgent.Tools.recorded_input(call),
       output: content,
       guidance_reason: "information_flow",
       duration_ms: 0,

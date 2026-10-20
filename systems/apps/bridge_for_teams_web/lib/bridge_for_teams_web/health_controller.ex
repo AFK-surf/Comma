@@ -9,7 +9,7 @@ defmodule BridgeForTeamsWeb.HealthController do
 
   def ready(conn, _params) do
     lifecycle =
-      Application.get_env(
+      SystemsRuntime.get_env(
         :bridge_for_teams_web,
         :lifecycle_module,
         Module.concat([Comma, PodLifecycle])

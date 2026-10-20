@@ -6,42 +6,79 @@
     "declarationMap": true,
     "emitDeclarationOnly": true,
     "types": ["vite/client"],
-    "rootDir": "../..",
+    "rootDir": ".",
     "outDir": "dist",
     "paths": {
       "@comma/config": ["../config/src/index.ts"],
+      "@comma/core/contract": ["../core/src/contract.ts"],
+      "@comma/core/task-loop-filter": ["../core/src/task-loop-filter.ts"],
+      "@comma/core/chat": ["../core/src/chat/public.ts"],
+      "@comma/core/markdown": ["../core/src/markdown/index.ts"],
+      "@comma/core/api-schemas": ["../core/src/comma/api-schemas.ts"],
+      "@comma/core-client": ["../core-client/src/index.tsx"],
       "@comma/i18n": ["../i18n/src/index.ts"],
       "@comma/i18n/react": ["../i18n/src/react.tsx"],
       "@comma/layout-inspector": ["../layout-inspector/src/index.ts"],
       "@comma/native-bridge": ["../native-bridge/src/index.ts"],
       "@comma/session-contract": ["../session-contract/src/index.ts"],
-      "@comma/ui": ["../ui/src/index.ts"]
-    }
+      "@comma/ui": ["../ui/src/index.ts"],
+      "@comma/ui/*": ["../ui/src/*"],
+      "@comma/analytics": ["../analytics/src/index.ts"],
+      "@comma/core-kernel": ["../../packages/core-kernel/src/index.ts"],
+      "@comma/core-kernel/client": ["../../packages/core-kernel/src/client/index.ts"],
+      "@comma/core-kernel/testing": ["../../packages/core-kernel/src/testing.ts"],
+      "@comma/core-kernel/node-sql": ["../../packages/core-kernel/src/node-sql.ts"],
+      "@comma/core-kernel/web-worker": [
+        "../../packages/core-kernel/src/worker/relay.ts"
+      ]
+    },
+    "noEmit": false
   },
-  "include": [
-    "src/**/*.ts",
-    "src/**/*.tsx",
-    "../config/src/**/*.ts",
-    "../i18n/src/**/*.ts",
-    "../i18n/src/**/*.tsx",
-    "../layout-inspector/src/**/*.ts",
-    "../layout-inspector/src/**/*.tsx",
-    "../native-bridge/src/**/*.ts",
-    "../session-contract/src/**/*.ts",
-    "../ui/src/**/*.ts",
-    "../ui/src/**/*.tsx",
-    "../ui/src/**/*.json"
-  ],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.json"],
   "exclude": [
     "**/*.test.*",
     "**/*.spec.*",
-    "../layout-inspector/**/*.test.*",
-    "../layout-inspector/**/*.spec.*",
-    "../native-bridge/**/*.test.*",
-    "../native-bridge/**/*.spec.*",
-    "../session-contract/**/*.test.*",
-    "../session-contract/**/*.spec.*",
-    "../ui/**/*.test.*",
-    "../ui/**/*.spec.*"
+    "**/*.stories.*",
+    "src/test/productInboxProjectionHarness.ts",
+    "src/test/settingsHarness.tsx",
+    "src/test/labelsCore.tsx"
+  ],
+  "references": [
+    {
+      "path": "../analytics"
+    },
+    {
+      "path": "../chat-contract"
+    },
+    {
+      "path": "../config"
+    },
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../core-client"
+    },
+    {
+      "path": "../core-kernel"
+    },
+    {
+      "path": "../i18n"
+    },
+    {
+      "path": "../layout-inspector"
+    },
+    {
+      "path": "../native-bridge"
+    },
+    {
+      "path": "../recommendation-contract"
+    },
+    {
+      "path": "../session-contract"
+    },
+    {
+      "path": "../ui"
+    }
   ]
 }

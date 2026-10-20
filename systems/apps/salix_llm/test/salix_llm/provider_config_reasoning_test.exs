@@ -5,7 +5,7 @@ defmodule SalixLlm.ProviderConfigReasoningTest do
   the trajectory-eval judge allowlist among them — rely on this seam to cap a
   reasoning model's effort per call.
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixLlm.ProviderConfig
 

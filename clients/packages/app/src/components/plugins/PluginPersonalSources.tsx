@@ -1,15 +1,17 @@
 import { useCommaMessages } from "@comma/i18n/react";
+import { Button } from "@comma/ui/components/Button";
+import { Collapse, CollapseContent } from "@comma/ui/components/collapse";
+import { LoaderIcon } from "@comma/ui/components/icons";
 import {
-  Button,
-  Collapse,
-  CollapseContent,
-  LoaderIcon,
   PluginArtwork,
   PluginDetailSection,
   type PluginDefinition,
-} from "@comma/ui";
+} from "@comma/ui/components/plugins";
 import { useState } from "react";
-import type { CommaPlugin, CommaPluginAccountConfirmation } from "../../api";
+import type {
+  Plugin as CommaPlugin,
+  PluginAccountConfirmation as CommaPluginAccountConfirmation,
+} from "@comma/core-client";
 import { PluginBrandArtwork } from "./PluginBrandArtwork";
 import type {
   PluginConnectionSource,

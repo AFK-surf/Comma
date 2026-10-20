@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="chat_sidebar_button" type="id" />
+    <item name="chat_status_capsule" type="id" />
+    <item name="chat_connection_notice" type="id" />
+    <item name="chat_sidebar" type="id" />
+    <item name="chat_sidebar_scrim" type="id" />
+    <item name="chat_sidebar_view_all" type="id" />
+    <item name="chat_sidebar_settings" type="id" />
+    <item name="tab_home" type="id" />
+    <item name="tab_inbox" type="id" />
+    <item name="tab_search" type="id" />
+    <item name="tab_settings" type="id" />
+    <item name="tab_router" type="id" />
+    <item name="shell_root" type="id" />
+    <item name="home_list" type="id" />
+    <item name="home_switcher" type="id" />
+    <item name="inbox_list" type="id" />
+    <item name="search_field" type="id" />
+    <item name="task_dock" type="id" />
+    <item name="remote_image_job" type="id" />
+</resources>

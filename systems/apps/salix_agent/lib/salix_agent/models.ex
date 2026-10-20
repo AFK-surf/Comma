@@ -9,9 +9,9 @@ defmodule SalixAgent.Models do
   (Opus 4.8 and Opus 5 are both `Opus`). A source is what a Profile connects to: an API-key provider or a
   subscription plan.
 
-  The catalog is platform data, generated from the provider model data that
-  ships with pi-ai by `scripts/generate-model-catalog.mjs`. It holds no tenant
-  data and no credentials.
+  The catalog is platform data. `scripts/generate-model-catalog.mjs` reads the
+  pinned pi-ai model data and adds newer models from provider documentation.
+  It holds no tenant data and no credentials.
   """
 
   @path Path.expand("../../priv/model_catalog.json", __DIR__)

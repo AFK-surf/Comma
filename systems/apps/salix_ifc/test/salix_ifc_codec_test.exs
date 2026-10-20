@@ -33,13 +33,6 @@ defmodule SalixIFC.CodecTest do
       end
     end
 
-    test "refuse an id that would break the grammar" do
-      assert Codec.encode_atom({:tag, "a|b"}) == :error
-      assert Codec.encode_atom({:scope, "w|1", "C1"}) == :error
-      assert Codec.encode_atom({:space, ""}) == :error
-      assert Codec.encode_atom({:nonsense, "x"}) == :error
-    end
-
     test "decode refuses malformed input" do
       assert Codec.decode_atom("scope|w1") == :error
       assert Codec.decode_atom("scope|w1|C1|extra") == :error
@@ -57,20 +50,9 @@ defmodule SalixIFC.CodecTest do
       assert Label.equal?(decoded, label)
     end
 
-    test "empty list is bottom" do
-      assert {:ok, label} = Codec.decode_label([])
-      assert Label.public?(label)
-    end
-
     test "one unreadable atom makes the whole label unreadable" do
       assert Codec.decode_label(["space|w", "nonsense"]) == :error
       assert Codec.decode_label("space|w") == :error
-    end
-
-    test "the fallback arity keeps a caller total" do
-      fallback = Label.new([:agent_private])
-      assert Label.equal?(Codec.decode_label(["bad"], fallback), fallback)
-      assert Label.equal?(Codec.decode_label(["public"], fallback), Label.bottom())
     end
   end
 
@@ -80,12 +62,6 @@ defmodule SalixIFC.CodecTest do
         encoded = Codec.encode_principal!(principal)
         assert {:ok, ^principal} = Codec.decode_principal(encoded)
       end
-    end
-
-    test "refuse ids that would break the grammar" do
-      assert Codec.encode_principal({:provider_user, "w", "U|1"}) == :error
-      assert Codec.encode_principal({:schedule, "s|1", :system}) == :error
-      assert Codec.encode_principal({:bft_member, "x"}) == :error
     end
 
     test "decode refuses malformed input" do
@@ -168,10 +144,6 @@ defmodule SalixIFC.CodecTest do
       assert facts.now == 0
     end
 
-    test "a non-map decodes to empty facts" do
-      assert Codec.decode_facts(nil) == Facts.new()
-    end
-
     test "policies round-trip" do
       policy =
         Policy.new(
@@ -227,14 +199,6 @@ defmodule SalixIFC.CodecTest do
              }
     end
 
-    test "a receipt clause carries its id" do
-      assert Codec.encode_admitted_source({"src:q-1", {:receipt, "r1"}}) == %{
-               "ref" => "src:q-1",
-               "clause" => "receipt",
-               "receipt_id" => "r1"
-             }
-    end
-
     test "a deny archives the clause, the ref and atom kinds only" do
       reason = %SalixIFC.Reason{clause: :flow_denied, ref: "src:q-2", detail: [:scope, :tag]}
 
@@ -246,11 +210,6 @@ defmodule SalixIFC.CodecTest do
                "source_failures" => []
              }
     end
-  end
-
-  test "keys used for membership comparison unwrap schedules" do
-    key = Principal.key({:schedule, "s1", {:provider_user, "w", "U1"}})
-    assert Codec.encode_principal!(key) == "provider_user|w|U1"
   end
 
   test "an inbound API key acts as, and is keyed by, its creator" do

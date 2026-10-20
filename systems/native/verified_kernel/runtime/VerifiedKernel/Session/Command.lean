@@ -73,7 +73,8 @@ def initialAttrs (payload : Term) : KernelM Term := do
   let attrs := compact ((["name", "hidden", "created_at", "platform", "source_session_id",
     "source_schedule_id"].map (fun name => (name, value payload name))) ++
     [("billing_context", ← optionalMap payload "billing_context"),
-     ("task_origin", ← optionalMap payload "task_origin")])
+     ("task_origin", ← optionalMap payload "task_origin"),
+     ("model", ← optionalMap payload "model")])
   return attrs
 
 private def attachment (item : Term) : Bool :=
@@ -102,11 +103,12 @@ def inputEvent (sessionId source payload now : Term) : KernelM Term := do
     ("wake", Term.bool (payload.get (a "no_wake") != a "true" && payload.get (b "no_wake") != a "true")),
     ("created_at", (value payload "created_at").default now), ("payload", body)]
 
-def preInputEvent (sessionId payload : Term) : Term :=
+def preInputEvent (sessionId activationSource payload : Term) : Term :=
   compact [("type", b "queue_append"), ("session_id", sessionId), ("kind", b "user_message"),
     ("wake", a "false"), ("dedupe_key", value payload "source_message_id"),
     ("created_at", value payload "created_at"), ("payload", compact [
       ("source_message_id", value payload "source_message_id"),
+      ("activation_source_message_id", activationSource),
       ("role", (value payload "role").default (b "user")),
       ("content", value payload "content"), ("created_at", value payload "created_at")])]
 
@@ -420,8 +422,13 @@ def input (state args : Term) : KernelM Term := do
   let created := timestampLifecycle
     ((← initialAttrs payload).put (b "type") (b "session_created") |>.put (b "session_id") sessionId)
     (integerValue now)
-  let pre := ((wrap (value payload "pre_deliveries")).filter Term.isMap).map (preInputEvent sessionId)
-  let events := (if born.truthy then [created] else []) ++ pre ++ [← inputEvent sessionId source payload now]
+  let event ← inputEvent sessionId source payload now
+  -- Human source context belongs to the same activation as its accepted input.
+  -- Worker/system context retains its ordinary same-activation behavior.
+  let human ← StateQuery.humanSourceWakeable event
+  let pre := ((wrap (value payload "pre_deliveries")).filter Term.isMap).map
+    (preInputEvent sessionId (if human then source else nil))
+  let events := (if born.truthy then [created] else []) ++ pre ++ [event]
   commitInput state entry events true
 
 def conversationFrontier (source : Term) : Term :=

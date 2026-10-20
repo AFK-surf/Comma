@@ -1,4 +1,6 @@
-import { Button, Dialog, ScrollArea } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Dialog } from "@comma/ui/components/dialog";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
 import { useState, type ReactNode } from "react";
 import type { BftProjectOverview, BftSwarmWebsites } from "./api";
 import { formatCompact, formatInteger, formatRelative, humanize } from "./format";
@@ -285,9 +287,6 @@ function AgentsPanel({
                 <th className="bft-col-status" scope="col">
                   {t.columnStatus}
                 </th>
-                <th className="bft-col-runtime" scope="col">
-                  {t.columnRunsOn}
-                </th>
               </tr>
             </thead>
             <tbody>
@@ -309,7 +308,6 @@ function AgentsPanel({
                   <td className="bft-col-status">
                     <State value={agent.lifecycle} />
                   </td>
-                  <td className="bft-col-runtime">{t.runtimes[agent.runtime]}</td>
                 </tr>
               ))}
             </tbody>
@@ -362,6 +360,7 @@ function ConversationsPanel({
                     <a
                       className="bft-link"
                       href={conversation.href}
+                      onClick={spaLinkClick}
                       title={conversation.title ?? t.untitled}
                     >
                       {conversation.title ?? t.untitled}
@@ -444,7 +443,7 @@ function AppsPanel({
         id="bft-apps-title"
         link={
           providers && providers.length > 0
-            ? { href: href("/connections"), label: t.appsManage }
+            ? { href: href("/connections"), label: t.appsManage, spa: true }
             : undefined
         }
         title={t.appsTitle}
@@ -454,7 +453,7 @@ function AppsPanel({
       ) : providers.length === 0 ? (
         <div className="bft-panel-body bft-empty-inline">
           <p className="bft-quiet bft-quiet-inline">{t.appsEmpty}</p>
-          <a className="bft-link" href={href("/connections")}>
+          <a className="bft-link" href={href("/connections")} onClick={spaLinkClick}>
             {t.appsConnect}
           </a>
         </div>

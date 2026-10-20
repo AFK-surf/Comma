@@ -37,7 +37,7 @@ defmodule SalixAgent.SessionWorkIndex do
 
   alias SalixStore.{Ids, Keys, S3, SessionWorkCandidates}
 
-  @runtime_kinds ~w(internal external)
+  @runtime_kinds ~w(internal)
   @work_reasons ~w(
     unacked_queue_item
     active_round
@@ -46,7 +46,6 @@ defmodule SalixAgent.SessionWorkIndex do
     capability_deadline
     runtime_failure_reply
     wait_deadline
-    runtime_wait
     provider_cutover_parked
     llm_retry
     stable_input_pending
@@ -55,19 +54,19 @@ defmodule SalixAgent.SessionWorkIndex do
     visible_reply_repair
     visible_reply_commit
   )
-  @deferred_or_external_reasons ~w(external_callback_tool_call capability_deadline wait_deadline llm_retry runtime_wait provider_cutover_parked)
+  @deferred_or_external_reasons ~w(external_callback_tool_call capability_deadline wait_deadline llm_retry provider_cutover_parked)
   @default_agent_page_size 100
   @default_discovery_page_size 100
   @max_discovery_page_size 128
 
-  @type runtime_kind :: :internal | :external | String.t()
+  @type runtime_kind :: :internal | String.t()
   @type index_record :: %{
           String.t() => term()
         }
   @type recovery_record :: index_record()
 
   @spec new_token() :: String.t()
-  def new_token, do: :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+  def new_token, do: SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower)
 
   @spec mark(String.t(), runtime_kind(), String.t(), [String.t()], keyword()) ::
           {:ok, index_record()} | {:error, term()}
@@ -87,7 +86,6 @@ defmodule SalixAgent.SessionWorkIndex do
         }
         |> put_optional("cas_base", opts[:cas_base])
         |> put_optional("base_revision", opts[:base_revision])
-        |> put_optional("device_runtime_id", opts[:device_runtime_id])
         |> put_optional("recover_after_ms", opts[:recover_after_ms])
 
       with true <- valid_cas_base?(rec["cas_base"]),
@@ -188,12 +186,7 @@ defmodule SalixAgent.SessionWorkIndex do
 
     with {:ok, cursor} <- decode_cursor(opts[:continuation_token], :eager),
          {:ok, %{records: records, eof: eof}} <-
-           SessionWorkCandidates.list_eager(
-             limit: max_keys,
-             after: cursor,
-             group_id: opts[:group_id],
-             workload_id: opts[:workload_id]
-           ) do
+           candidates().list_eager(limit: max_keys, after: cursor) do
       {:ok, page_result(records, eof, :eager)}
     end
   end
@@ -218,7 +211,7 @@ defmodule SalixAgent.SessionWorkIndex do
 
     with {:ok, cursor} <- decode_cursor(opts[:continuation_token], :deferred),
          {:ok, %{records: records, eof: eof}} <-
-           SessionWorkCandidates.list_due(now_ms, limit: max_keys, after: cursor) do
+           candidates().list_due(now_ms, limit: max_keys, after: cursor) do
       {:ok, page_result(records, eof, :deferred)}
     end
   end
@@ -260,7 +253,7 @@ defmodule SalixAgent.SessionWorkIndex do
 
     immediate_recovery_reasons?(normalized) or
       Enum.any?(
-        ~w(wait_deadline llm_retry capability_deadline runtime_wait provider_cutover_parked),
+        ~w(wait_deadline llm_retry capability_deadline provider_cutover_parked),
         &(&1 in normalized)
       )
   end
@@ -281,7 +274,7 @@ defmodule SalixAgent.SessionWorkIndex do
 
     case {eager,
           Enum.any?(
-            ~w(wait_deadline llm_retry capability_deadline runtime_wait),
+            ~w(wait_deadline llm_retry capability_deadline),
             &(&1 in normalized)
           ), wait_deadline_ms(wait)} do
       {[], true, deadline_ms} when is_integer(deadline_ms) -> deadline_ms
@@ -329,7 +322,7 @@ defmodule SalixAgent.SessionWorkIndex do
         "runtime_kind" => runtime_kind,
         "session_id" => session_id
       }) do
-    SessionWorkCandidates.delete_scoped(token, %{
+    candidates().delete_scoped(token, %{
       agent_id: agent_id,
       runtime_kind: runtime_kind,
       session_id: session_id
@@ -578,7 +571,7 @@ defmodule SalixAgent.SessionWorkIndex do
     with true <- Ids.valid_session_id?(session_id),
          {:ok, runtime_kind} <- normalize_runtime_kind(runtime_kind),
          :ok <-
-           SessionWorkCandidates.delete_scoped(token, %{
+           candidates().delete_scoped(token, %{
              agent_id: agent_id,
              runtime_kind: runtime_kind,
              session_id: session_id
@@ -648,7 +641,7 @@ defmodule SalixAgent.SessionWorkIndex do
 
   defp put_discovery(record) do
     if discoverable_reasons?(record["reasons"]) do
-      SessionWorkCandidates.insert(record)
+      candidates().insert(record)
     else
       :ok
     end
@@ -671,7 +664,6 @@ defmodule SalixAgent.SessionWorkIndex do
   defp maybe_put_continuation_token(opts, _token), do: opts
 
   defp normalize_runtime_kind(kind) when kind in [:internal, "internal"], do: {:ok, "internal"}
-  defp normalize_runtime_kind(kind) when kind in [:external, "external"], do: {:ok, "external"}
   defp normalize_runtime_kind(kind), do: {:error, {:invalid_runtime_kind, kind}}
 
   defp normalize_reasons(reasons) do
@@ -746,5 +738,7 @@ defmodule SalixAgent.SessionWorkIndex do
   defp put_optional(map, _key, nil), do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)
 
-  defp now, do: System.system_time(:second)
+  defp now, do: SystemsClock.system_time(:second)
+
+  defp candidates, do: SessionWorkCandidates
 end

@@ -14,7 +14,6 @@ defmodule SalixMeet.Runtime do
   alias SalixStore.{Ids, Keys, S3}
 
   @purpose "meeting"
-  @template_id "__internal_meeting_agent"
   @agent_name "__internal_meeting_agent"
   @agent_prompt """
   You are the group's meeting agent.
@@ -132,7 +131,7 @@ defmodule SalixMeet.Runtime do
   @doc "Publish meeting output through the configured provider/API boundary."
   @spec publish(map(), map()) :: {:ok, map()} | {:error, term()}
   def publish(meeting_agent, payload) when is_map(meeting_agent) and is_map(payload) do
-    case Application.get_env(:salix_meet, :provider_mod) do
+    case SystemsRuntime.get_env(:salix_meet, :provider_mod) do
       nil ->
         {:error, :provider_not_configured}
 
@@ -281,7 +280,7 @@ defmodule SalixMeet.Runtime do
                group_id,
                agent_id,
                session_id,
-               System.system_time(:second),
+               SystemsClock.system_time(:second),
                meeting_billing_context(meeting_agent)
              )
            ) do
@@ -307,7 +306,7 @@ defmodule SalixMeet.Runtime do
                group_id,
                agent_id,
                session_id,
-               System.system_time(:second),
+               SystemsClock.system_time(:second),
                meeting_billing_context(meeting_agent)
              )
            ) do
@@ -355,7 +354,7 @@ defmodule SalixMeet.Runtime do
       update_meeting_agent(meeting_agent, fn rec ->
         rec
         |> Map.put("billing_owner", owner)
-        |> Map.put("updated_at", System.system_time(:second))
+        |> Map.put("updated_at", SystemsClock.system_time(:second))
       end)
     end
   end
@@ -591,7 +590,7 @@ defmodule SalixMeet.Runtime do
     |> Base.encode16(case: :lower)
   end
 
-  defp timestamp(opts), do: opts[:now] || System.system_time(:second)
+  defp timestamp(opts), do: opts[:now] || SystemsClock.system_time(:second)
 
   defp present(value) when is_binary(value) and value != "", do: value
   defp present(_), do: nil
@@ -601,20 +600,12 @@ defmodule SalixMeet.Runtime do
 
   defp invalid(reason), do: {:error, {:invalid_meeting_agent, reason}}
 
-  defp meeting_template_ref do
-    case Application.get_env(:salix_meet, :agent_template) do
-      ref when is_binary(ref) and ref != "" -> ref
-      _ -> @template_id
-    end
-  end
-
   defp agent_runtime_request(tenant_id, group_id, agent_id, session_id, now, billing_context) do
     %{
       "tenant_id" => tenant_id,
       "group_id" => group_id,
       "agent_id" => agent_id,
       "session_id" => session_id,
-      "template_id" => meeting_template_ref(),
       "name" => @agent_name,
       "system_prompt" => @agent_prompt,
       "billing_context" => billing_context,

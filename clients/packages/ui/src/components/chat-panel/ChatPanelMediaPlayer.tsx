@@ -14,7 +14,9 @@ import {
   useSyncExternalStore,
 } from "react";
 import { Button as AriaButton } from "react-aria-components";
+import { uiClock, type CancelUiTimer } from "../../clock";
 import {
+  cssTimeMs,
   isReducedMotionEnabled,
   motionDuration,
   motionEasing,
@@ -293,13 +295,8 @@ export const useMediaPlaybackController = ({
               }
               attemptPlay(element);
             };
-            const ownerWindow = element.ownerDocument.defaultView;
-            const timeout = ownerWindow
-              ? ownerWindow.setTimeout(retry, 0)
-              : setTimeout(retry, 0);
             scheduledPlayRetryRef.current = {
-              cancel: () =>
-                ownerWindow ? ownerWindow.clearTimeout(timeout) : clearTimeout(timeout),
+              cancel: uiClock.after(0, retry),
               element,
             };
             return;
@@ -610,24 +607,24 @@ export const useMediaPlaybackController = ({
 
 const useInstantInteractionMotion = () => {
   const [instant, setInstant] = useState(false);
-  const animationFramesRef = useRef<number[]>([]);
+  const animationFramesRef = useRef<CancelUiTimer[]>([]);
 
   useEffect(
     () => () => {
-      for (const frame of animationFramesRef.current) cancelAnimationFrame(frame);
+      for (const frame of animationFramesRef.current) frame();
     },
     []
   );
 
   const run = useCallback((withoutMotion: boolean, action: () => void) => {
-    for (const frame of animationFramesRef.current) cancelAnimationFrame(frame);
+    for (const frame of animationFramesRef.current) frame();
     animationFramesRef.current = [];
     setInstant(withoutMotion);
     action();
     if (!withoutMotion) return;
 
-    const firstFrame = requestAnimationFrame(() => {
-      const secondFrame = requestAnimationFrame(() => setInstant(false));
+    const firstFrame = uiClock.frame(() => {
+      const secondFrame = uiClock.frame(() => setInstant(false));
       animationFramesRef.current = [secondFrame];
     });
     animationFramesRef.current = [firstFrame];
@@ -688,7 +685,7 @@ const PlaybackRateValue = ({ animate, rate }: { animate: boolean; rate: number }
     }
 
     const styles = getComputedStyle(element);
-    const duration = Number.parseFloat(
+    const duration = cssTimeMs(
       styles.getPropertyValue("--motion-duration-state-change")
     );
     const easing =
@@ -757,7 +754,7 @@ export const ChatPanelMediaPlayer = ({
   const progressRootElementRef = useRef<HTMLSpanElement | null>(null);
   const progressVisualElementRef = useRef<HTMLSpanElement | null>(null);
   const progressDragPointerIdRef = useRef<number | null>(null);
-  const progressHoverFrameRef = useRef<number | null>(null);
+  const progressHoverFrameRef = useRef<CancelUiTimer | null>(null);
   const rateInputWasKeyboardRef = useRef(false);
   const rateMenuOpenPendingRef = useRef(false);
   const ratePointerPressActiveRef = useRef(false);
@@ -778,7 +775,7 @@ export const ChatPanelMediaPlayer = ({
   useEffect(
     () => () => {
       if (progressHoverFrameRef.current !== null) {
-        cancelAnimationFrame(progressHoverFrameRef.current);
+        progressHoverFrameRef.current();
       }
       if (progressDragPointerIdRef.current !== null) {
         progressDragPointerIdRef.current = null;
@@ -846,7 +843,7 @@ export const ChatPanelMediaPlayer = ({
 
   const clearProgressHoverIndicator = useCallback(() => {
     if (progressHoverFrameRef.current !== null) {
-      cancelAnimationFrame(progressHoverFrameRef.current);
+      progressHoverFrameRef.current();
       progressHoverFrameRef.current = null;
     }
     progressElementRef.current?.removeAttribute("data-hover-indicator");
@@ -916,9 +913,9 @@ export const ChatPanelMediaPlayer = ({
       );
 
       if (progressHoverFrameRef.current !== null) {
-        cancelAnimationFrame(progressHoverFrameRef.current);
+        progressHoverFrameRef.current();
       }
-      progressHoverFrameRef.current = requestAnimationFrame(() => {
+      progressHoverFrameRef.current = uiClock.frame(() => {
         progressRoot?.style.setProperty(
           "--chat-panel-media-hover-position",
           `${hoverPosition}%`

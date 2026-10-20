@@ -1,3 +1,5 @@
+import { NativeOperationError } from "../ipc/operation-error";
+import { ComputeNodeCommandError } from "./command";
 import { readIntentFile } from "./intent-file";
 import type { LocalComputeOperator } from "./local-operator";
 import type { LocalHostMaintenance } from "./host-maintenance";
@@ -96,7 +98,33 @@ export class AccountComputeNodeService {
     return this.call(async (service) => {
       if (input.desiredEnabled) await this.maintenance?.assertInstallationAllowed();
       if (generation !== this.generation) throw new ComputeNodeSessionChangedError();
-      return service.configure(input);
+      try {
+        return await service.configure(input);
+      } catch (error) {
+        if (generation !== this.generation) throw new ComputeNodeSessionChangedError();
+        if (error instanceof ComputeNodeCommandError) {
+          const connectionFailed =
+            ["install-managed", "register"].includes(error.native?.reason ?? "") &&
+            service.state().setup?.components === "ready";
+          throw new NativeOperationError(
+            error.native?.code === "cloud_unavailable"
+              ? "The workspace service could not be reached. Check its status before continuing the same setup."
+              : connectionFailed
+                ? "The local workspace connection could not finish. Check the connection before continuing the same setup."
+                : error.reason === "outcome_unknown"
+                  ? "Compute setup result is unknown. Check its status before continuing the same setup."
+                  : "Compute setup could not finish. Continue the same setup after checking the connection and local components.",
+            error.native?.code === "cloud_unavailable"
+              ? "COMPUTE_CLOUD_UNAVAILABLE"
+              : connectionFailed
+                ? "COMPUTE_CONNECTION_FAILED"
+                : error.reason === "outcome_unknown"
+                  ? "COMPUTE_SETUP_UNKNOWN"
+                  : "COMPUTE_SETUP_FAILED"
+          );
+        }
+        throw error;
+      }
     });
   }
   drain(expected?: ComputeNodeExpectedBinding) {
@@ -212,11 +240,30 @@ export class AccountComputeNodeService {
     );
     current();
     this.recoveryTargets = verified;
+    if (candidates.length > 0 && verified.size === 0 && !page.nextCursor)
+      throw new NativeOperationError(
+        "The previous connection could not be verified. Check the local components and connection, then try again.",
+        "COMPUTE_RECOVERY_UNVERIFIED"
+      );
     return {
       confirmationId: generation,
       candidates: [...verified].map(([candidateKey, value]) => ({
         key: candidateKey,
-        label: value.binding.id.slice(-8),
+        label:
+          page.registrations
+            .find((row) => row.id === value.binding.registration_id)
+            ?.displayName?.slice(0, 80) || value.binding.id.slice(-8),
+        workspaceId: value.workspaceId,
+        endpoint: (() => {
+          try {
+            return new URL(
+              page.registrations.find((row) => row.id === value.binding.registration_id)
+                ?.endpoint ?? ""
+            ).origin.slice(0, 512);
+          } catch {
+            return undefined;
+          }
+        })(),
       })),
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     };
@@ -420,6 +467,14 @@ export class AccountComputeNodeService {
       // It does not verify identity, authorization, or file integrity.
       pending = ComputeNodeService.open({
         ...this.options,
+        ...(this.maintenance
+          ? {
+              installationBlocked: (id: string) =>
+                this.maintenance!.installationBlocked(id),
+              assertInstallationAllowed: () =>
+                this.maintenance!.assertInstallationAllowed(),
+            }
+          : {}),
         filePath: join(
           `${this.options.filePath}.accounts`,
           `${createHash("sha256").update(key).digest("hex")}.json`

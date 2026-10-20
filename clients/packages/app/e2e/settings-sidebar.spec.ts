@@ -5,7 +5,7 @@ import { startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 test("Settings sidebar leaves a gap between category backgrounds and the scrollbar", async ({
   page,
 }) => {
-  const stub = await startChatSmokeStub({ taskSchedule: null });
+  const stub = await startChatSmokeStub();
   try {
     await installBrowserTestSession(page, {
       apiBaseUrl: stub.baseUrl,

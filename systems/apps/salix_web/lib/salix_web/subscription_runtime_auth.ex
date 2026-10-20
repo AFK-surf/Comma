@@ -138,10 +138,13 @@ defmodule SalixWeb.SubscriptionRuntimeAuth do
          {:ok, :saved} <-
            SubscriptionStore.locked_account(tenant, account, fn current ->
              cond do
-               current["version"] != version ->
+               # The version the user saw; background writes since (quota,
+               # credential refresh) do not change what a binding depends on.
+               SubscriptionStore.edition(current["version"]) !=
+                   SubscriptionStore.edition(version) ->
                  {:error, :conflict}
 
-               not compatible_account?(current, provider) ->
+               not compatible_account?(SubscriptionStore.public(current), provider) ->
                  {:error, :unsupported_binding}
 
                true ->
@@ -234,7 +237,10 @@ defmodule SalixWeb.SubscriptionRuntimeAuth do
          {:ok, access} <- AccountPool.runtime_access(tenant, account, target["provider"]),
          {:ok, %{rows: [[^account]]}} <-
            SubscriptionStore.locked_account(tenant, account, fn current ->
-             if current["credential_kind"] == access["credential_kind"] and
+             # The exact version, not the edition (unlike a user's change): access
+             # carries the credentials of the version runtime_access just read,
+             # and a background refresh since has replaced them.
+             if SubscriptionStore.wire_kind(current) == access["credential_kind"] and
                   current["version"] == access["account_version"] and
                   current["disabled"] == false do
                SubscriptionStore.query(

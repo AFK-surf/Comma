@@ -69,8 +69,8 @@ defmodule SalixAgent.InternalAgentRuntime do
   rather than a second estimate that could disagree with it.
 
   Provider config is resolved live (`LlmResolver`, willow's activation-time
-  read), so a template edit shows up here on the next call. An unresolvable
-  template degrades instead of failing: this is a diagnostic surface, and the
+  read), so a model change shows up here on the next call. An unresolvable
+  model degrades instead of failing: this is a diagnostic surface, and the
   session's own context facts are still true. `model` and `context_tokens` are
   then absent — reporting the 128000 default as if it were this agent's window
   would misstate the denominator.
@@ -91,7 +91,7 @@ defmodule SalixAgent.InternalAgentRuntime do
           "estimated_context_tokens" => SalixAgent.Compaction.context_tokens_used(session),
           "context_bytes" => InternalSession.context_byte_size(session)
         }
-        |> Map.merge(session_status_llm(agent_id))
+        |> Map.merge(session_status_llm(agent_id, session))
 
       {:ok, status}
     end
@@ -103,8 +103,8 @@ defmodule SalixAgent.InternalAgentRuntime do
   # not a statement about THIS agent. Emitting it without a model would put a
   # confident denominator under a usage figure nothing sized, so an unresolved
   # model drops both, exactly like a resolver error.
-  defp session_status_llm(agent_id) do
-    case SalixAgent.LlmResolver.resolve_runtime(agent_id) do
+  defp session_status_llm(agent_id, session) do
+    case SalixAgent.LlmResolver.resolve_session(agent_id, session) do
       {:ok, llm_opts} ->
         case llm_opt(llm_opts, :model) do
           model when is_binary(model) and model != "" ->
@@ -152,6 +152,8 @@ defmodule SalixAgent.InternalAgentRuntime do
       agent_id
       |> session_json(session)
       |> Map.put("wait", InternalSession.wait(session))
+      |> put_funding(session)
+      |> put_failure_trigger(session)
       |> SessionActivity.project()
 
     Map.put(
@@ -160,6 +162,80 @@ defmodule SalixAgent.InternalAgentRuntime do
       InternalSession.current_activation_key(session)
     )
   end
+
+  # The Profile named by the latest provider-funding refusal, so the member can
+  # see which of their own keys ran out. Only the newest model failure counts.
+  defp put_funding(%{"issue" => "provider_quota_exhausted"} = json, session),
+    do: Map.put(json, "funding", funding_failure(session))
+
+  defp put_funding(json, _session), do: json
+
+  # What started the round whose model request failed, so a chat does not read
+  # the failure as its own last reply failing. The newest input or runtime
+  # message that could wake a round names it: runtime messages carry the origin
+  # of the input that caused them. Context staged without a wake arrives
+  # independently of the round, so it is skipped. A message without an origin
+  # names nothing rather than letting an older one speak for it. Only a voice
+  # call and system, provider-system or agent work are named. A person's
+  # message, here or on another channel, adds nothing.
+  defp put_failure_trigger(%{"issue" => "model_connection_failed"} = json, session) do
+    case failure_trigger(session) do
+      nil -> json
+      trigger -> Map.put(json, "failure_trigger", trigger)
+    end
+  end
+
+  defp put_failure_trigger(json, _session), do: json
+
+  @background_actors ["system", "provider_system", "agent"]
+
+  defp failure_trigger(session) do
+    session
+    |> InternalSession.get(:messages)
+    |> List.wrap()
+    |> Enum.reverse()
+    |> Enum.find(fn message ->
+      message_value(message, :role) in ["user", "runtime"] and
+        message_value(message, :no_wake) not in [true, "true"]
+    end)
+    |> message_origin()
+    |> case do
+      %{"provider" => "voice"} -> "voice_call"
+      %{"source_actor_type" => actor} when actor in @background_actors -> "background"
+      _other -> nil
+    end
+  end
+
+  defp message_origin(nil), do: nil
+
+  defp message_origin(message) do
+    case message_value(message, :trusted_origin) do
+      %{} = origin -> origin
+      _absent -> message |> message_value(:trusted_origins) |> List.wrap() |> List.first()
+    end
+  end
+
+  defp funding_failure(session) do
+    session
+    |> InternalSession.get(:events)
+    |> List.wrap()
+    |> Enum.reverse()
+    |> Enum.find(&(event_value(&1, "kind") == "llm_call_failed"))
+    |> case do
+      nil ->
+        nil
+
+      fact ->
+        payload = event_value(fact, "event")
+
+        if is_map(payload) and payload["reason"] == "provider_quota_exhausted",
+          do: payload["funding"]
+    end
+  end
+
+  defp event_value(map, "kind") when is_map(map), do: map["kind"] || map[:kind]
+  defp event_value(map, "event") when is_map(map), do: map["event"] || map[:event]
+  defp event_value(_map, _key), do: nil
 
   @spec get_session_messages(String.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -238,7 +314,7 @@ defmodule SalixAgent.InternalAgentRuntime do
 
           session_uses =
             session
-            |> InternalSession.masked_messages()
+            |> InternalSession.get(:messages)
             |> project_knowledge_uses(InternalSession.session_id(session), assertion_ids)
             |> Enum.take(remaining)
 
@@ -348,8 +424,7 @@ defmodule SalixAgent.InternalAgentRuntime do
     # archive is cold data and a fan-out over every chunk would make
     # `limit` bound nothing. Session states stream through an
     # early-stopping fold, so an early hit bounds the state GETs too. The
-    # masked window keeps redacted content out of results, and the response
-    # says whether archived history was not searched.
+    # response says whether archived history was not searched.
     fold =
       InternalSessionStore.reduce_sessions(agent_id, {[], 0, false}, fn session,
                                                                         {results, count,
@@ -362,7 +437,7 @@ defmodule SalixAgent.InternalAgentRuntime do
             InternalSession.get(session, :created_at) || 0
 
         hits =
-          Enum.flat_map(InternalSession.masked_messages(session), fn msg ->
+          Enum.flat_map(InternalSession.get(session, :messages), fn msg ->
             content = stringify_content(msg[:content])
 
             if q != "" and String.contains?(String.downcase(content), q) do
@@ -523,58 +598,6 @@ defmodule SalixAgent.InternalAgentRuntime do
     end
   end
 
-  @spec microcompact_session(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def microcompact_session(agent_id, session_id)
-      when is_binary(agent_id) and is_binary(session_id) do
-    route_to_owner(agent_id, :microcompact_session_local, [agent_id, session_id])
-  end
-
-  @doc false
-  def microcompact_session_local(agent_id, session_id)
-      when is_binary(agent_id) and is_binary(session_id) do
-    entry = %{
-      payload: %{kind: "session_microcompact", session_id: session_id},
-      source_message_id: "session:microcompact:" <> session_id <> ":" <> random_id()
-    }
-
-    with {:ok, _session} <- InternalSessionStore.read(agent_id, session_id),
-         {:ok, :committed} <-
-           InternalSessionFleet.stage_control(agent_id, session_id, entry, timeout: :infinity) do
-      {:ok, %{"status" => "microcompacted"}}
-    end
-  end
-
-  @spec emergency_compact_session(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def emergency_compact_session(agent_id, session_id)
-      when is_binary(agent_id) and is_binary(session_id) do
-    route_to_owner(agent_id, :emergency_compact_session_local, [agent_id, session_id])
-  end
-
-  @doc false
-  def emergency_compact_session_local(agent_id, session_id)
-      when is_binary(agent_id) and is_binary(session_id) do
-    entry = %{
-      payload: %{kind: "session_emergency_compact", session_id: session_id},
-      source_message_id: "session:emergency-compact:" <> session_id <> ":" <> random_id()
-    }
-
-    with {:ok, _session} <- InternalSessionStore.read(agent_id, session_id),
-         {:ok, :committed} <-
-           InternalSessionFleet.stage_control(agent_id, session_id, entry, timeout: :infinity),
-         {:ok, session} <- InternalSessionStore.read(agent_id, session_id) do
-      # The kernel answers the recorded redaction watermark, or the transcript
-      # head for a session written before format 2 recorded one; `nil` means a
-      # format-2 session committed the control entry without a result.
-      case InternalSession.query(session, :emergency_compact_through_id) do
-        through_id when is_integer(through_id) ->
-          {:ok, SalixAgent.EmergencyCompact.result(through_id)}
-
-        nil ->
-          {:error, :emergency_compact_result_missing}
-      end
-    end
-  end
-
   @spec seed_transcript(String.t(), String.t(), map()) :: {:ok, map()} | {:error, term()}
   def seed_transcript(agent_id, session_id, attrs)
       when is_binary(agent_id) and is_binary(session_id) and is_map(attrs) do
@@ -622,7 +645,7 @@ defmodule SalixAgent.InternalAgentRuntime do
               archived_through = InternalSession.archived_through(lineage_session) || 0
 
               %{
-                messages: InternalSession.masked_messages(lineage_session),
+                messages: InternalSession.get(lineage_session, :messages),
                 archived_through: archived_through,
                 truncated?: archived_through > 0
               }
@@ -718,7 +741,7 @@ defmodule SalixAgent.InternalAgentRuntime do
         case AgentActor.stage_delivery(
                agent_id,
                %{payload: payload, source_message_id: source_id},
-               timeout: @compact_control_stage_timeout_ms,
+               timeout: SystemsClock.timeout(@compact_control_stage_timeout_ms),
                process_on_init: false
              ) do
           {:ok, :committed, _wake_targets} ->
@@ -743,9 +766,9 @@ defmodule SalixAgent.InternalAgentRuntime do
     with :ok <- Control.ensure_not_stopped(agent_id),
          {:ok, pid} <-
            Placement.ensure_started(agent_id, create: false) do
-      owner_node = node(pid)
+      owner_node = SystemsRuntime.Proc.node(pid)
 
-      if owner_node == node() do
+      if owner_node == SystemsRuntime.Proc.node() do
         apply(__MODULE__, local_fun, args)
       else
         :erpc.call(owner_node, __MODULE__, local_fun, args, :infinity)
@@ -1226,12 +1249,12 @@ defmodule SalixAgent.InternalAgentRuntime do
     if remaining_ms <= 0 do
       {:error, :compact_result_wait_timeout}
     else
-      Process.sleep(min(@compact_result_poll_sleep_ms, remaining_ms))
+      SystemsClock.sleep(min(@compact_result_poll_sleep_ms, remaining_ms))
       wait_for_session_match(agent_id, session_id, predicate, deadline_ms)
     end
   end
 
-  defp monotonic_ms, do: System.monotonic_time(:millisecond)
+  defp monotonic_ms, do: SystemsClock.monotonic_time(:millisecond)
 
   defp transcript_seed_event(session_id, attrs) do
     attrs = string_keys(attrs)
@@ -1705,8 +1728,8 @@ defmodule SalixAgent.InternalAgentRuntime do
   defp put_optional_nonblank(map, _key, ""), do: map
   defp put_optional_nonblank(map, key, value), do: Map.put(map, key, value)
 
-  defp now, do: System.system_time(:second)
-  defp random_id, do: :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+  defp now, do: SystemsClock.system_time(:second)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower)
   defp trim(nil), do: ""
   defp trim(value), do: value |> to_string() |> String.trim()
 

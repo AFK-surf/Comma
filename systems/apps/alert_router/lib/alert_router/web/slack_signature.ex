@@ -8,12 +8,12 @@ defmodule AlertRouter.Web.SlackSignature do
   """
 
   def verify(conn, body) do
-    config = Application.get_env(:alert_router, :slack_progress, [])
+    config = SystemsRuntime.get_env(:alert_router, :slack_progress, [])
 
     with secret when is_binary(secret) and byte_size(secret) > 0 <- config[:signing_secret],
          [timestamp] <- Plug.Conn.get_req_header(conn, "x-slack-request-timestamp"),
          {seconds, ""} <- Integer.parse(timestamp),
-         true <- abs(System.system_time(:second) - seconds) <= 300,
+         true <- abs(SystemsClock.system_time(:second) - seconds) <= 300,
          ["v0=" <> signature] <- Plug.Conn.get_req_header(conn, "x-slack-signature"),
          {:ok, supplied} <- Base.decode16(signature, case: :lower),
          expected <- :crypto.mac(:hmac, :sha256, secret, "v0:" <> timestamp <> ":" <> body),

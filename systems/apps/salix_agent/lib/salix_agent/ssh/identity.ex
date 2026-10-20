@@ -67,7 +67,7 @@ defmodule SalixAgent.SSH.Identity do
     with [entry] <- :public_key.pem_decode(pem),
          {:ECPrivateKey, _version, private, {:namedCurve, @ed25519} = curve, _, _} <-
            :public_key.pem_entry_decode(entry) do
-      {public, _} = :crypto.generate_key(:eddsa, :ed25519, private)
+      {public, _} = SystemsRuntime.Proc.generate_key(:eddsa, :ed25519, private)
       public_key = {{:ECPoint, public}, curve}
 
       {:ok,

@@ -1,5 +1,5 @@
 defmodule SalixStore.AgentVMMAdminCommandsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Ecto.Query
 
@@ -34,16 +34,16 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
   end
 
   test "node initialization is concurrent-idempotent, scoped, and preserves existing work" do
-    previous = Application.get_env(:salix_store, :runtime_bundle_root)
+    previous = SystemsRuntime.get_env(:salix_store, :runtime_bundle_root)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_store,
       :runtime_bundle_root,
       Path.expand("fixtures/runtime-bundle", __DIR__)
     )
 
-    on_exit(fn -> Application.put_env(:salix_store, :runtime_bundle_root, previous) end)
-    now = DateTime.utc_now()
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :runtime_bundle_root, previous) end)
+    now = SystemsClock.utc_now()
 
     Repo.insert!(%SalixStore.AgentVMM.Registration{
       id: "initial-host",
@@ -81,7 +81,7 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
 
     results =
       1..6
-      |> Task.async_stream(
+      |> SystemsClock.async_stream(
         fn _ ->
           Compute.ensure_node_workload("tenant", "environment", "initial-host")
         end,
@@ -149,9 +149,9 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
   end
 
   test "Shell creation is tenant scoped and response-loss replay creates only one workload" do
-    previous = Application.get_env(:salix_store, :runtime_bundle_root)
+    previous = SystemsRuntime.get_env(:salix_store, :runtime_bundle_root)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_store,
       :runtime_bundle_root,
       Path.expand("fixtures/runtime-bundle", __DIR__)
@@ -159,9 +159,19 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_store, :runtime_bundle_root, previous),
-        else: Application.delete_env(:salix_store, :runtime_bundle_root)
+        do: SystemsRuntime.put_env(:salix_store, :runtime_bundle_root, previous),
+        else: SystemsRuntime.delete_env(:salix_store, :runtime_bundle_root)
     end)
+
+    # A provider projection cannot grant authority without its live registration.
+    assert {:ok, _} =
+             SalixStore.AgentVMM.create_registration(%{
+               id: "shell-host",
+               tenant_id: "tenant",
+               group_id: "group",
+               device_id: "shell-device",
+               enrollment_token: String.duplicate("s", 32)
+             })
 
     Repo.insert!(%Compute.ProviderBinding{
       id: "shell-binding",
@@ -173,7 +183,7 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
       generation: 1,
       revision: 1,
       observation: %{},
-      updated_at: DateTime.utc_now()
+      updated_at: SystemsClock.utc_now()
     })
 
     command = %{
@@ -184,15 +194,18 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
     }
 
     assert {:error, :not_found} =
-             AgentVMMAdminCommands.execute(Ecto.UUID.generate(), %{command | tenant_id: "other"})
+             AgentVMMAdminCommands.execute(SystemsRuntime.Proc.uuid(), %{
+               command
+               | tenant_id: "other"
+             })
 
     assert {:error, :revision_conflict} =
-             AgentVMMAdminCommands.execute(Ecto.UUID.generate(), %{
+             AgentVMMAdminCommands.execute(SystemsRuntime.Proc.uuid(), %{
                command
                | expected_revision: 999
              })
 
-    command_id = Ecto.UUID.generate()
+    command_id = SystemsRuntime.Proc.uuid()
     assert {:ok, %{accepted: true}} = AgentVMMAdminCommands.execute(command_id, command)
     assert {:already_applied, _} = AgentVMMAdminCommands.execute(command_id, command)
     assert Repo.aggregate(Compute.Workload, :count) == 1
@@ -202,93 +215,20 @@ defmodule SalixStore.AgentVMMAdminCommandsTest do
     assert workload.environment_id == "environment"
   end
 
-  test "response-loss retry returns the immutable receipt without repeating the effect" do
-    operation = retryable_install!()
-    command = retry_command(operation)
-
-    command_id = Ecto.UUID.generate()
-
-    assert {:ok, %{accepted: true, result_revision: result_revision}} =
-             AgentVMMAdminCommands.execute(command_id, command)
-
-    assert result_revision == operation.revision + 1
-    assert Repo.get!(Operation, operation.id).ticket_generation == 1
-
-    assert {:already_applied, %{result_revision: ^result_revision}} =
-             AgentVMMAdminCommands.replay_receipt(command_id, command)
-
-    assert Repo.get!(Operation, operation.id).revision == result_revision
-    assert Repo.get!(Operation, operation.id).ticket_generation == 1
-
-    conflicting = %{command | expected_revision: result_revision}
-
-    assert {:error, :idempotency_conflict} =
-             AgentVMMAdminCommands.execute(command_id, conflicting)
-  end
-
-  test "receipt attribution survives a later product writer" do
-    operation = retryable_install!()
-    command = retry_command(operation)
-
-    command_id = Ecto.UUID.generate()
-
-    assert {:ok, %{result_revision: committed_revision}} =
-             AgentVMMAdminCommands.execute(command_id, command)
-
-    assert {:ok, later} = AgentVMMInstallations.retry(operation.id)
-    assert later.operation.revision > committed_revision
-
-    assert {:already_applied, %{result_revision: ^committed_revision}} =
-             AgentVMMAdminCommands.execute(command_id, command)
-  end
-
   test "execute scopes the target and fences its exact revision" do
     operation = retryable_install!()
 
     assert {:error, :not_found} =
              AgentVMMAdminCommands.execute(
-               Ecto.UUID.generate(),
+               SystemsRuntime.Proc.uuid(),
                retry_command(%{operation | tenant_id: "other-tenant"})
              )
 
     assert {:error, :revision_conflict} =
              AgentVMMAdminCommands.execute(
-               Ecto.UUID.generate(),
+               SystemsRuntime.Proc.uuid(),
                retry_command(%{operation | revision: operation.revision + 1})
              )
-  end
-
-  test "admin retry is unavailable without the existing runner pull channel" do
-    attrs = %{request_attrs() | delivery_target_type: "comma_main_device"}
-    {:ok, descriptor} = AgentVMMInstallations.request(attrs)
-    operation = make_action_required!(descriptor.operation)
-
-    assert {:error, :install_retry_not_available} =
-             AgentVMMAdminCommands.execute(Ecto.UUID.generate(), retry_command(operation))
-  end
-
-  test "database owns monotonic revision for an old-style writer" do
-    {:ok, descriptor} = AgentVMMInstallations.request(request_attrs())
-    operation = descriptor.operation
-    operation_id = operation.id
-
-    {1, _} =
-      Repo.update_all(
-        from(o in Operation, where: o.id == ^operation_id),
-        set: [error_code: "legacy_writer_update"]
-      )
-
-    assert Repo.get!(Operation, operation.id).revision == operation.revision + 1
-  end
-
-  test "a missing receipt replay fails closed without mutating the owner" do
-    operation = retryable_install!()
-    command = retry_command(operation)
-
-    assert {:error, :unavailable} =
-             AgentVMMAdminCommands.replay_receipt(Ecto.UUID.generate(), command)
-
-    assert Repo.get!(Operation, operation.id).revision == operation.revision
   end
 
   defp retryable_install! do

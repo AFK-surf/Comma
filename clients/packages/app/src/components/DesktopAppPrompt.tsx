@@ -1,8 +1,8 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Dialog } from "@comma/ui";
+import { Dialog } from "@comma/ui/components/dialog";
 import { getNativeBridge } from "@comma/native-bridge";
 import { useSyncExternalStore } from "react";
-import { openNativePlatformExternalUrl } from "../runtime-chat/nativePlatformActions";
+import { openNativePlatformExternalUrl } from "../nativePlatformActions";
 
 /**
  * The website's download page. `start=mac` makes the page begin the macOS
@@ -14,7 +14,6 @@ export type DesktopAppFeature =
   | "browser"
   | "computer-use"
   | "compute-node"
-  | "device-connect"
   | "dock"
   | "keep-awake"
   | "launch-at-login"
@@ -60,7 +59,6 @@ const featureLabels: Record<DesktopAppFeature, (m: Messages) => string> = {
   browser: (m) => m.desktop_app_feature_browser(),
   "computer-use": (m) => m.desktop_app_feature_computer_use(),
   "compute-node": (m) => m.desktop_app_feature_compute_node(),
-  "device-connect": (m) => m.desktop_app_feature_device_connect(),
   dock: (m) => m.desktop_app_feature_dock(),
   "keep-awake": (m) => m.desktop_app_feature_keep_awake(),
   "launch-at-login": (m) => m.desktop_app_feature_launch_at_login(),

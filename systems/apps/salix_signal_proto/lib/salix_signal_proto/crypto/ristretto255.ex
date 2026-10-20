@@ -76,7 +76,7 @@ defmodule SalixSignalProto.Crypto.Ristretto255 do
   @doc "Returns a new uniformly random nonzero scalar."
   @spec random_scalar() :: scalar()
   def random_scalar do
-    scalar = scalar_from_wide_bytes(:crypto.strong_rand_bytes(64))
+    scalar = scalar_from_wide_bytes(SystemsRuntime.Proc.random_bytes(64))
     if scalar == <<0::256>>, do: random_scalar(), else: scalar
   end
 

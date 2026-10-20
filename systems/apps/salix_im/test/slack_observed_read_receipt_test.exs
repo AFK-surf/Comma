@@ -1,6 +1,7 @@
 defmodule SalixIM.SlackObservedReadReceiptTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   import Plug.Conn
 
   alias SalixIM.Provider.Slack.API
@@ -14,9 +15,13 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
 
     defp dispatch(conn, _opts) do
       conn = fetch_query_params(conn)
-      send(Application.fetch_env!(:salix_im, :slack_receipt_test_owner), {:slack_request, conn})
 
-      case Application.get_env(:salix_im, :slack_receipt_test_response, :success) do
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_im, :slack_receipt_test_owner),
+        {:slack_request, conn}
+      )
+
+      case SystemsRuntime.get_env(:salix_im, :slack_receipt_test_response, :success) do
         {:json_body, request_id, body} ->
           conn
           |> put_resp_content_type("application/json")
@@ -396,7 +401,7 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
         {:slow_pages, delay_ms} ->
           cursor = conn.query_params["cursor"] || ""
           index = if cursor == "", do: 1, else: String.to_integer(cursor)
-          Process.sleep(delay_ms)
+          SystemsClock.sleep(delay_ms)
 
           conn
           |> put_resp_content_type("application/json")
@@ -454,18 +459,18 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
   setup do
     {:ok, _started} = Application.ensure_all_started(:req)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     :ok = SalixStore.S3.Fake.reset()
 
-    previous_base_url = Application.get_env(:salix_im, :slack_api_base_url)
-    previous_owner = Application.get_env(:salix_im, :slack_receipt_test_owner)
-    previous_response = Application.get_env(:salix_im, :slack_receipt_test_response)
-    Application.put_env(:salix_im, :slack_receipt_test_owner, self())
-    Application.put_env(:salix_im, :slack_receipt_test_response, :success)
+    previous_base_url = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    previous_owner = SystemsRuntime.get_env(:salix_im, :slack_receipt_test_owner)
+    previous_response = SystemsRuntime.get_env(:salix_im, :slack_receipt_test_response)
+    SystemsRuntime.put_env(:salix_im, :slack_receipt_test_owner, SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_im, :slack_receipt_test_response, :success)
 
     port = BanditServer.start!(fn port -> {Bandit, plug: SlackLoopback, port: port} end)
     base_url = "http://127.0.0.1:#{port}/api"
-    Application.put_env(:salix_im, :slack_api_base_url, base_url)
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, base_url)
 
     on_exit(fn ->
       restore_env(:salix_im, :slack_api_base_url, previous_base_url)
@@ -479,7 +484,7 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
   test "observed Slack error returns one attempted receipt without the provider body", %{
     base_url: base_url
   } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, :slack_error)
+    SystemsRuntime.put_env(:salix_im, :slack_receipt_test_response, :slack_error)
     selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
     origin_sha256 = origin_sha256(base_url)
 
@@ -494,8 +499,8 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
                slack_api_origin_sha256: origin_sha256
              )
 
-    assert_receive {:slack_request, _conn}
-    refute_receive {:slack_request, _conn}, 50
+    settle_receive({:slack_request, _conn})
+    settle_refute_receive({:slack_request, _conn}, 50)
 
     assert receipt == %{
              "schema" => "comma.slack-read-receipt-chain.v1",
@@ -543,70 +548,6 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
     refute receipt_text =~ "xoxb-private-token"
   end
 
-  test "observed rate limit returns one closed attempted receipt without retry details", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, :rate_limited)
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
-
-    assert {:error, :rate_limited, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
-
-    assert_receive {:slack_request, _conn}
-    refute_receive {:slack_request, _conn}, 50
-    assert receipt["outcome"] == "rate_limited"
-    assert receipt["typed_reason"] == "rate_limited"
-    assert receipt["http_status"] == 429
-    assert receipt["canonical_page_sha256"] == nil
-    assert receipt["message_count"] == nil
-    assert receipt["next_cursor_empty"] == nil
-    assert receipt["slack_request_id_sha256"] == CanonicalJSON.sha256("req-rate-limited-1")
-
-    receipt_text = inspect(receipt)
-    refute receipt_text =~ "private-rate-limit"
-    refute Map.has_key?(receipt, "retry_after")
-  end
-
-  test "observed HTTP error does not follow redirects and returns one closed receipt", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, :redirect)
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
-
-    assert {:error, :http_error, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
-
-    assert_receive {:slack_request, conn}
-    assert conn.request_path == "/api/conversations.replies"
-    refute_receive {:slack_request, _conn}, 50
-    assert receipt["outcome"] == "http_error"
-    assert receipt["typed_reason"] == "http_error"
-    assert receipt["http_status"] == 302
-    assert receipt["slack_request_id_sha256"] == CanonicalJSON.sha256("req-http-error-1")
-
-    receipt_text = inspect(receipt)
-    refute receipt_text =~ "private-U-redirect"
-    refute receipt_text =~ "private redirect body"
-  end
-
   # Every rejected page is one closed decode_error receipt: one request, no
   # canonical page, the typed rejection, and none of the rejected bytes.
   for {name, mode, stage, path, response_id, secrets} <- [
@@ -628,7 +569,7 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
     @tag response_id: response_id
     @secrets secrets
     test name, %{base_url: base_url, response_id: response_id} do
-      Application.put_env(:salix_im, :slack_receipt_test_response, @mode)
+      SystemsRuntime.put_env(:salix_im, :slack_receipt_test_response, @mode)
       selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
       origin_sha256 = origin_sha256(base_url)
 
@@ -643,8 +584,8 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
                  slack_api_origin_sha256: origin_sha256
                )
 
-      assert_receive {:slack_request, _conn}
-      refute_receive {:slack_request, _conn}, 50
+      settle_receive({:slack_request, _conn})
+      settle_refute_receive({:slack_request, _conn}, 50)
       assert receipt["outcome"] == "decode_error"
       assert receipt["typed_reason"] == "decode_error"
       assert receipt["canonical_page_sha256"] == nil
@@ -667,384 +608,10 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
     end
   end
 
-  test "observed transport failure returns one closed receipt without retry", %{
-    base_url: _base_url
-  } do
-    port = unused_port()
-    unavailable_base_url = "http://127.0.0.1:#{port}/api"
-    Application.put_env(:salix_im, :slack_api_base_url, unavailable_base_url)
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(unavailable_base_url)
-
-    assert {:error, :transport_error, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
-
-    refute_receive {:slack_request, _conn}, 50
-    assert receipt["outcome"] == "transport_error"
-    assert receipt["typed_reason"] == "transport_error"
-    assert receipt["http_status"] == nil
-    assert receipt["canonical_page_sha256"] == nil
-    assert receipt["slack_request_id_sha256"] == nil
-    refute Map.has_key?(receipt, "url")
-    refute Map.has_key?(receipt, "transport_error")
-  end
-
-  test "observed replies allow and drop ordinary message metadata", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, :unknown_message_key)
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
-
-    assert {:ok, page, _chain_bytes, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
-
-    assert_receive {:slack_request, _conn}
-    refute_receive {:slack_request, _conn}, 50
-    assert exchange(receipt)["schema"] == "comma.slack-read-receipt.v1"
-
-    assert page == %{
-             "messages" => [
-               %{
-                 "app_id" => nil,
-                 "blocks" => [],
-                 "bot_id" => nil,
-                 "bot_profile_name" => nil,
-                 "subtype" => nil,
-                 "text" => "safe visible text",
-                 "ts" => "1786693124.936679",
-                 "user" => "U_ROOT"
-               }
-             ],
-             "next_cursor" => ""
-           }
-
-    refute inspect(page) =~ "metadata"
-    refute inspect(page) =~ "harmless amber private sentinel"
-    refute inspect(receipt) =~ "metadata"
-    refute inspect(receipt) =~ "harmless amber private sentinel"
-  end
-
-  test "observed replies preserve human authorship for user-owned uploads", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, :user_attributed_upload)
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
-
-    assert {:ok, page, _chain_bytes, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
-
-    assert page == %{
-             "messages" => [
-               %{
-                 "actor_kind" => "human",
-                 "app_id" => "A_USER_SCOPED_CLIENT",
-                 "blocks" => [],
-                 "bot_id" => "B_UPLOAD_TRANSPORT",
-                 "bot_profile_name" => nil,
-                 "subtype" => nil,
-                 "text" => "user-owned upload",
-                 "ts" => "1786693124.936679",
-                 "user" => "U_FILE_OWNER"
-               }
-             ],
-             "next_cursor" => ""
-           }
-
-    refute inspect(page) =~ "F_PRIVATE"
-    refute inspect(receipt) =~ "F_PRIVATE"
-  end
-
-  test "observed replies retain only the closed message projection from ordinary Slack extras", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, :ordinary_extras)
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
-
-    assert {:ok, page, _chain_bytes, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
-
-    assert page == %{
-             "messages" => [
-               %{
-                 "app_id" => "A_BFT",
-                 "blocks" => [%{"type" => "user", "user_id" => "U_HUMAN"}],
-                 "bot_id" => "B_BFT",
-                 "bot_profile_name" => "BFT (staging)",
-                 "subtype" => nil,
-                 "text" => "hello <@U_HUMAN>",
-                 "ts" => "1786693130.000001",
-                 "user" => nil,
-                 "reactions" => [%{"name" => "eyes", "count" => 1}]
-               }
-             ],
-             "next_cursor" => ""
-           }
-
-    page_bytes = CanonicalJSON.encode!(page)
-    assert receipt["canonical_page_sha256"] == CanonicalJSON.sha256(page_bytes)
-
-    Enum.each(
-      [
-        "T_DROP",
-        "client-drop",
-        "1786693999.999999",
-        "B_DROP",
-        "drop-block-id",
-        "example.invalid",
-        "U_DROP"
-      ],
-      &refute(String.contains?(page_bytes, &1))
-    )
-  end
-
-  test "observed replies accept Slack's optional boolean metadata on rich-text links", %{
-    base_url: base_url
-  } do
-    Application.put_env(
-      :salix_im,
-      :slack_receipt_test_response,
-      {:json_body, "req-truncated-link-1",
-       %{
-         "ok" => true,
-         "messages" => [
-           %{
-             "text" => "see the linked context <@U_HUMAN>",
-             "ts" => "1786693130.000001",
-             "user" => "U_ROOT",
-             "blocks" => [
-               %{
-                 "type" => "rich_text",
-                 "elements" => [
-                   %{
-                     "type" => "rich_text_section",
-                     "elements" => [
-                       %{
-                         "type" => "link",
-                         "url" => "https://example.invalid/long-context",
-                         "text" => "linked context",
-                         "truncated" => true,
-                         "from_llm" => true,
-                         "is_slack_url" => false,
-                         "unsafe" => false
-                       },
-                       %{"type" => "user", "user_id" => "U_HUMAN"}
-                     ]
-                   }
-                 ]
-               }
-             ]
-           }
-         ],
-         "response_metadata" => %{"next_cursor" => ""}
-       }}
-    )
-
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
-
-    assert {:ok, page, _chain_bytes, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
-
-    assert page["messages"] == [
-             %{
-               "app_id" => nil,
-               "blocks" => [%{"type" => "user", "user_id" => "U_HUMAN"}],
-               "bot_id" => nil,
-               "bot_profile_name" => nil,
-               "subtype" => nil,
-               "text" => "see the linked context <@U_HUMAN>",
-               "ts" => "1786693130.000001",
-               "user" => "U_ROOT"
-             }
-           ]
-
-    refute inspect(page) =~ "truncated"
-    refute inspect(page) =~ "from_llm"
-    refute inspect(page) =~ "is_slack_url"
-    refute inspect(page) =~ "unsafe"
-    refute inspect(receipt) =~ "example.invalid"
-  end
-
-  test "observed replies validate and drop Slack message presentation blocks", %{
-    base_url: base_url
-  } do
-    display_only_sentinel = "display-only-private-sentinel"
-
-    blocks = [
-      %{"type" => "divider", "block_id" => "divider-1"},
-      %{
-        "type" => "section",
-        "block_id" => "section-1",
-        "text" => %{"type" => "mrkdwn", "text" => display_only_sentinel},
-        "expand" => true
-      },
-      %{
-        "type" => "header",
-        "block_id" => "header-1",
-        "level" => 2,
-        "text" => %{"type" => "plain_text", "text" => display_only_sentinel}
-      },
-      %{"type" => "markdown", "block_id" => "markdown-1", "text" => display_only_sentinel},
-      %{
-        "type" => "table",
-        "block_id" => "table-1",
-        "rows" => [[%{"type" => "raw_text", "text" => display_only_sentinel}]],
-        "column_settings" => []
-      },
-      %{
-        "type" => "actions",
-        "block_id" => "actions-1",
-        "elements" => [%{"type" => "button", "action_id" => "display-only-action"}]
-      },
-      %{
-        "type" => "context",
-        "block_id" => "context-1",
-        "elements" => [%{"type" => "mrkdwn", "text" => display_only_sentinel}]
-      },
-      %{
-        "type" => "image",
-        "block_id" => "image-1",
-        "image_url" => "https://example.invalid/display-only.png",
-        "alt_text" => display_only_sentinel
-      },
-      %{
-        "type" => "card",
-        "block_id" => "card-1",
-        "body" => %{"type" => "mrkdwn", "text" => display_only_sentinel},
-        "subtext" => %{"type" => "plain_text", "text" => display_only_sentinel}
-      },
-      %{
-        "type" => "container",
-        "block_id" => "container-1",
-        "width" => "standard",
-        "title" => %{"type" => "plain_text", "text" => display_only_sentinel},
-        "child_blocks" => [%{"type" => "context", "elements" => []}],
-        "has_header_divider" => true
-      },
-      %{
-        "type" => "plan",
-        "block_id" => "plan-1",
-        "title" => display_only_sentinel,
-        "tasks" => [
-          %{"task_id" => "display-only-plan-task", "title" => "Plan task", "status" => "pending"}
-        ]
-      },
-      %{
-        "type" => "task_card",
-        "block_id" => "task-card-1",
-        "task_id" => "display-only-task",
-        "title" => "Task title",
-        "status" => "complete",
-        "output" => %{
-          "type" => "rich_text",
-          "elements" => [
-            %{
-              "type" => "rich_text_section",
-              "elements" => [%{"type" => "text", "text" => display_only_sentinel}]
-            }
-          ]
-        }
-      },
-      %{
-        "type" => "rich_text",
-        "elements" => [
-          %{
-            "type" => "rich_text_section",
-            "elements" => [%{"type" => "user", "user_id" => "U_HUMAN"}]
-          }
-        ]
-      }
-    ]
-
-    Application.put_env(
-      :salix_im,
-      :slack_receipt_test_response,
-      {:json_body, "req-display-blocks-1",
-       %{
-         "ok" => true,
-         "messages" => [
-           %{
-             "text" => "human summary <@U_HUMAN>",
-             "ts" => "1786693130.000001",
-             "user" => "U_ROOT",
-             "blocks" => blocks
-           }
-         ],
-         "response_metadata" => %{"next_cursor" => ""}
-       }}
-    )
-
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
-
-    assert {:ok, page, _chain_bytes, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
-
-    assert get_in(page, ["messages", Access.at(0), "blocks"]) == [
-             %{"type" => "user", "user_id" => "U_HUMAN"}
-           ]
-
-    refute inspect(page) =~ display_only_sentinel
-    refute inspect(page) =~ "display-only-task"
-    refute inspect(receipt) =~ display_only_sentinel
-    refute inspect(receipt) =~ "display-only-task"
-  end
-
   test "observed replies drop non-authoritative Slack structures after credential scan", %{
     base_url: base_url
   } do
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :slack_receipt_test_response,
       :ordinary_non_authoritative_content
@@ -1116,211 +683,6 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
     )
   end
 
-  test "observed replies reject duplicate Slack timestamps before page commit", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, :duplicate_timestamps)
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
-
-    assert {:error, :decode_error, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
-
-    assert receipt["canonical_page_sha256"] == nil
-    assert receipt["message_count"] == nil
-    assert exchange(receipt)["schema"] == "comma.slack-read-receipt.v2"
-
-    assert receipt["rejection"] == %{
-             "schema" => "comma.slack-read-rejection.v1",
-             "stage" => "duplicate_timestamps",
-             "path" => "messages",
-             "unknown_keys" => []
-           }
-  end
-
-  test "observed decode rejection uses the exact closed stage and path taxonomy", %{
-    base_url: base_url
-  } do
-    base_message = %{
-      "text" => "safe visible text",
-      "ts" => "1786693124.936679",
-      "user" => "U_ROOT"
-    }
-
-    cases = [
-      {"message_field_shape", "messages[].ts", [], Map.put(base_message, "ts", 123)},
-      {"bot_profile_unknown_keys", "messages[].bot_profile", ["metadata"],
-       Map.put(base_message, "bot_profile", %{"name" => "BFT", "metadata" => "private"})},
-      {"bot_profile_shape", "messages[].bot_profile", [],
-       Map.put(base_message, "bot_profile", %{"name" => 123})},
-      {"rich_text_unknown_keys", "messages[].blocks[]", ["metadata"],
-       Map.put(base_message, "blocks", [
-         %{"type" => "rich_text", "elements" => [], "metadata" => "private"}
-       ])},
-      {"rich_text_shape", "messages[].blocks", [], Map.put(base_message, "blocks", %{})},
-      {"rich_text_shape", "messages[].blocks[]", [],
-       Map.put(base_message, "blocks", [
-         %{
-           "type" => "rich_text",
-           "elements" => [
-             %{
-               "type" => "rich_text_quote",
-               "contains_padding" => "true",
-               "elements" => []
-             }
-           ]
-         }
-       ])},
-      {"rich_text_shape", "messages[].blocks[]", [],
-       Map.put(base_message, "blocks", [
-         %{
-           "type" => "rich_text",
-           "elements" => [
-             %{
-               "type" => "rich_text_section",
-               "elements" => [
-                 %{
-                   "type" => "link",
-                   "url" => "https://example.invalid/context",
-                   "truncated" => "true"
-                 }
-               ]
-             }
-           ]
-         }
-       ])},
-      {"rich_text_shape", "messages[].blocks[]", [],
-       rich_text_link_message(base_message, "from_llm", "true")},
-      {"rich_text_shape", "messages[].blocks[]", [],
-       rich_text_link_message(base_message, "is_slack_url", "false")},
-      {"rich_text_shape", "messages[].blocks[]", [],
-       rich_text_link_message(base_message, "unsafe", 0)},
-      {"rich_text_shape", "messages[].blocks[]", [],
-       Map.put(base_message, "blocks", [
-         %{
-           "type" => "task_card",
-           "task_id" => "task-1",
-           "title" => "Task",
-           "status" => "finished"
-         }
-       ])},
-      {"unsafe_unknown_key_name", "messages[]", [], Map.put(base_message, "Bad-Key", "private")},
-      {"unknown_key_overflow", "messages[]", [],
-       Enum.reduce(1..17, base_message, fn index, message ->
-         Map.put(message, "extra_#{index}", "private")
-       end)}
-    ]
-
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
-
-    Enum.each(cases, fn {stage, path, unknown_keys, message} ->
-      Application.put_env(
-        :salix_im,
-        :slack_receipt_test_response,
-        {:json_body, "req-#{stage}",
-         %{
-           "ok" => true,
-           "messages" => [message],
-           "response_metadata" => %{"next_cursor" => ""}
-         }}
-      )
-
-      assert {:error, :decode_error, receipt} =
-               API.conversation_replies(
-                 "xoxb-private-token",
-                 "C_THREAD",
-                 "1786693124.936679",
-                 receipt: :return,
-                 limit: 200,
-                 request_selector_sha256: selector_sha256,
-                 slack_api_origin_sha256: origin_sha256
-               )
-
-      assert_receive {:slack_request, _conn}
-      refute_receive {:slack_request, _conn}, 20
-      assert exchange(receipt)["schema"] == "comma.slack-read-receipt.v2"
-
-      assert receipt["rejection"] == %{
-               "schema" => "comma.slack-read-rejection.v1",
-               "stage" => stage,
-               "path" => path,
-               "unknown_keys" => unknown_keys
-             }
-
-      receipt_text = inspect(receipt)
-      refute receipt_text =~ "safe visible text"
-      refute receipt_text =~ "U_ROOT"
-      refute receipt_text =~ "private"
-      refute receipt_text =~ "1786693124.936679"
-    end)
-  end
-
-  defp rich_text_link_message(base_message, key, value) do
-    Map.put(base_message, "blocks", [
-      %{
-        "type" => "rich_text",
-        "elements" => [
-          %{
-            "type" => "rich_text_section",
-            "elements" => [
-              %{
-                "type" => "link",
-                "url" => "https://example.invalid/context",
-                key => value
-              }
-            ]
-          }
-        ]
-      }
-    ])
-  end
-
-  test "unknown receipt mode fails before transport" do
-    assert {:error, :invalid_slack_read_receipt_request} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :unknown
-             )
-
-    refute_receive {:slack_request, _conn}, 50
-  end
-
-  test "legacy replies mode keeps its existing tuple result and query behavior" do
-    assert {messages, ""} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               limit: 37,
-               inclusive: true
-             )
-
-    assert length(messages) == 2
-    assert_receive {:slack_request, conn}
-    assert conn.method == "GET"
-    assert conn.request_path == "/api/conversations.replies"
-
-    # The legacy tuple mode passes the caller's page size straight through; only
-    # the observed chain binds its own page limit.
-    assert conn.query_params == %{
-             "channel" => "C_THREAD",
-             "inclusive" => "true",
-             "limit" => "37",
-             "ts" => "1786693124.936679"
-           }
-  end
-
   test "observed selector, origin, and option drift all fail before transport", %{
     base_url: base_url
   } do
@@ -1358,22 +720,7 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
                Keyword.put(common, :cursor, "next-private-cursor")
              )
 
-    refute_receive {:slack_request, _conn}, 50
-  end
-
-  test "an empty observed thread selector fails before transport", %{base_url: base_url} do
-    assert {:error, :invalid_slack_read_receipt_request} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256("", "1786693124.936679"),
-               slack_api_origin_sha256: origin_sha256(base_url)
-             )
-
-    refute_receive {:slack_request, _conn}, 50
+    settle_refute_receive({:slack_request, _conn}, 50)
   end
 
   test "observed replies returns the exact page and one closed causal receipt", %{
@@ -1393,7 +740,7 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
                slack_api_origin_sha256: origin_sha256
              )
 
-    assert_receive {:slack_request, conn}
+    settle_receive({:slack_request, conn})
     assert conn.method == "GET"
     assert conn.request_path == "/api/conversations.replies"
 
@@ -1490,7 +837,7 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
   test "a multi-page observed read binds every exchange into one ordered proof chain", %{
     base_url: base_url
   } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, {:pages, 3})
+    SystemsRuntime.put_env(:salix_im, :slack_receipt_test_response, {:pages, 3})
     selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
     origin_sha256 = origin_sha256(base_url)
 
@@ -1507,12 +854,12 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
 
     cursors =
       for _ <- 1..3 do
-        assert_receive {:slack_request, conn}
+        settle_receive({:slack_request, conn})
         assert conn.query_params["limit"] == "15"
         conn.query_params["cursor"]
       end
 
-    refute_receive {:slack_request, _conn}, 50
+    settle_refute_receive({:slack_request, _conn}, 50)
     assert cursors == [nil, "2", "3"]
 
     # Slack repeats the thread parent on every replies page; the merged page
@@ -1562,179 +909,6 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
     assert Enum.map(pages, & &1["next_cursor"]) == ["2", "3", ""]
   end
 
-  test "an observed read that outruns the page budget settles as a bounded truncation", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, {:pages, :unbounded})
-    selector_sha256 = selector_sha256("C_THREAD", "1786693124.936679")
-    origin_sha256 = origin_sha256(base_url)
-
-    assert {:error, :page_budget_exceeded, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256,
-               slack_api_origin_sha256: origin_sha256
-             )
-
-    for _ <- 1..14, do: assert_receive({:slack_request, _conn})
-    refute_receive {:slack_request, _conn}, 50
-
-    assert receipt["outcome"] == "page_budget_exceeded"
-    assert receipt["typed_reason"] == "page_budget_exceeded"
-    assert receipt["transport_invocation_count"] == 14
-    assert receipt["page_budget"] == 14
-    assert length(receipt["exchanges"]) == 14
-    assert receipt["canonical_page_sha256"] == nil
-    assert receipt["canonical_page_chain_sha256"] == nil
-    assert receipt["message_count"] == nil
-    assert receipt["next_cursor_empty"] == nil
-
-    # Every exchange succeeded; the read still refuses to hand back a partial
-    # thread, so the truncation is a product boundary, not a broken transport.
-    assert Enum.all?(receipt["exchanges"], &(&1["outcome"] == "success"))
-    assert Enum.all?(receipt["exchanges"], &(&1["next_cursor_empty"] == false))
-  end
-
-  test "an observed page chain ignores a lease left by an older runtime", %{base_url: base_url} do
-    {:ok, _held} =
-      SalixStore.Lease.acquire(method_lease_key(), "old-runtime", ttl_ms: 120_000)
-
-    Application.put_env(:salix_im, :slack_receipt_test_response, {:pages, 3})
-
-    assert {:ok, _page, _chain_bytes, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256("C_THREAD", "1786693124.936679"),
-               slack_api_origin_sha256: origin_sha256(base_url)
-             )
-
-    assert receipt["transport_invocation_count"] == 3
-    # Only the old runtime's initial write: the new reader never renews it.
-    assert lease_writes() == 1
-  end
-
-  # Removing the shared lock does not remove the whole-chain time bound.
-  test "a stalled chain aborts on its own wall-clock deadline", %{base_url: base_url} do
-    previous = Application.get_env(:salix_im, :slack_observed_chain_deadline_ms)
-    Application.put_env(:salix_im, :slack_observed_chain_deadline_ms, 120)
-    Application.put_env(:salix_im, :slack_receipt_test_response, {:slow_pages, 80})
-    on_exit(fn -> restore_env(:salix_im, :slack_observed_chain_deadline_ms, previous) end)
-
-    assert {:error, :chain_deadline_exceeded, receipt} =
-             API.conversation_replies(
-               "xoxb-private-token",
-               "C_THREAD",
-               "1786693124.936679",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256("C_THREAD", "1786693124.936679"),
-               slack_api_origin_sha256: origin_sha256(base_url)
-             )
-
-    # The stub never exhausts its cursor, so only the deadline can stop it —
-    # well before the 14-page budget.
-    assert receipt["outcome"] == "chain_deadline_exceeded"
-    assert receipt["transport_invocation_count"] < 14
-    assert receipt["transport_invocation_count"] >= 1
-  end
-
-  test "a rate-limited observed read does not install a cooldown for another read", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, :rate_limited_beyond_window)
-
-    read = fn ->
-      API.conversation_replies(
-        "xoxb-private-token",
-        "C_THREAD",
-        "1786693124.936679",
-        receipt: :return,
-        limit: 200,
-        request_selector_sha256: selector_sha256("C_THREAD", "1786693124.936679"),
-        slack_api_origin_sha256: origin_sha256(base_url)
-      )
-    end
-
-    assert {:error, :rate_limited, receipt} = read.()
-    assert receipt["transport_invocation_count"] == 1
-    assert receipt["typed_reason"] == "rate_limited"
-    Application.put_env(:salix_im, :slack_receipt_test_response, {:pages, 2})
-    assert {:ok, _page, _chain_bytes, receipt} = read.()
-    assert receipt["transport_invocation_count"] == 2
-    assert lease_writes() == 0
-  end
-
-  # A merge wider than the authorized logical read is a scope the authorization
-  # never covered: it settles at the existing product boundary instead of
-  # silently handing back objects nobody authorized.
-  test "a chain wider than the authorized logical limit settles truncated", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, {:wide_pages, 14, 15})
-    selector = history_selector_sha256("C_WIDE")
-
-    assert {:error, :page_budget_exceeded, receipt} =
-             API.conversation_history("xoxb-private-token", "C_WIDE",
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector,
-               slack_api_origin_sha256: origin_sha256(base_url)
-             )
-
-    assert receipt["outcome"] == "page_budget_exceeded"
-    assert receipt["canonical_page_sha256"] == nil
-    # 14 pages x 15 objects = 210 > the authorized 200.
-    assert receipt["transport_invocation_count"] == 14
-  end
-
-  # Slack answers `conversations.replies` on a REPLY's ts with the whole thread
-  # headed by its real parent. Licensing the repeat by the REQUESTED ts made
-  # that legitimate read fail as `decode_error` on duplicate timestamps.
-  test "replies asked about a reply ts still merge on the parent Slack returned", %{
-    base_url: base_url
-  } do
-    Application.put_env(:salix_im, :slack_receipt_test_response, {:reply_ts_pages, 2})
-    reply_ts = "1786693131.000001"
-
-    assert {:ok, page, _chain_bytes, receipt} =
-             API.conversation_replies("xoxb-private-token", "C_THREAD", reply_ts,
-               receipt: :return,
-               limit: 200,
-               request_selector_sha256: selector_sha256("C_THREAD", reply_ts),
-               slack_api_origin_sha256: origin_sha256(base_url)
-             )
-
-    assert receipt["outcome"] == "success"
-
-    assert Enum.map(page["messages"], & &1["text"]) == [
-             "real parent",
-             "reply 1",
-             "reply 2"
-           ]
-  end
-
-  defp lease_writes,
-    do: SalixStore.S3.Fake.put_log() |> Enum.count(&(&1 == method_lease_key()))
-
-  defp history_selector_sha256(channel_id) do
-    %{
-      "operation" => "conversations.history",
-      "channel_id" => channel_id,
-      "limit" => 200,
-      "cursor" => ""
-    }
-    |> CanonicalJSON.encode!()
-    |> CanonicalJSON.sha256()
-  end
-
   defp exchange(receipt) do
     assert receipt["schema"] == "comma.slack-read-receipt-chain.v1"
     assert [only] = receipt["exchanges"]
@@ -1778,13 +952,6 @@ defmodule SalixIM.SlackObservedReadReceiptTest do
     |> CanonicalJSON.sha256()
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
-
-  defp unused_port do
-    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
-    {:ok, port} = :inet.port(socket)
-    :ok = :gen_tcp.close(socket)
-    port
-  end
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

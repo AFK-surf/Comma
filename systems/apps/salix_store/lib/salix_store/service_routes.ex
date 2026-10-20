@@ -91,7 +91,7 @@ defmodule SalixStore.ServiceRoutes do
           port: attrs.port,
           protocol: attrs.protocol,
           revision: 1,
-          created_at: DateTime.utc_now()
+          created_at: SystemsClock.timestamp(:utc_datetime_usec)
         })
     end
   rescue
@@ -123,7 +123,7 @@ defmodule SalixStore.ServiceRoutes do
           destination_workload_generation: attrs.destination_workload_generation,
           virtual_service_name: attrs.virtual_service_name,
           revision: 1,
-          created_at: DateTime.utc_now()
+          created_at: SystemsClock.timestamp(:utc_datetime_usec)
         })
     end
   rescue
@@ -131,7 +131,7 @@ defmodule SalixStore.ServiceRoutes do
   end
 
   def prepare(attrs) when is_map(attrs) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     export = Repo.get(Export, attrs[:export_id])
     import = Repo.get(Import, attrs[:import_id])
 
@@ -193,7 +193,7 @@ defmodule SalixStore.ServiceRoutes do
   end
 
   def renew(id, expected_revision, expires_at, capability_id) when is_binary(capability_id) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     with true <- valid_expiry?(expires_at, now) || {:error, :invalid_expiry},
          {:ok, _} <- authorize_projection(id, "active", capability_id) do
@@ -252,7 +252,7 @@ defmodule SalixStore.ServiceRoutes do
     end
   end
 
-  def expire_due(now \\ DateTime.utc_now()) do
+  def expire_due(now \\ SystemsClock.utc_now()) do
     {count, _} =
       Repo.update_all(
         from(r in Route,
@@ -279,7 +279,7 @@ defmodule SalixStore.ServiceRoutes do
   end
 
   defp authorize_projection(id, state, capability_id) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     case Repo.get(Route, id) do
       %Route{state: ^state} = route ->
@@ -364,7 +364,7 @@ defmodule SalixStore.ServiceRoutes do
 
   defp transition(id, revision, from, to, capability_id) when to in @states do
     changes =
-      [state: to, updated_at: DateTime.utc_now()] ++
+      [state: to, updated_at: SystemsClock.timestamp(:utc_datetime_usec)] ++
         if(capability_id, do: [capability_id: capability_id], else: [])
 
     case Repo.update_all(
@@ -393,14 +393,14 @@ defmodule SalixStore.ServiceRoutes do
   defp audit_result({:ok, %Route{} = route} = result, action) do
     Repo.insert_all("service_route_audit", [
       %{
-        id: Ecto.UUID.generate(),
+        id: SystemsRuntime.Proc.uuid(),
         tenant_id: route.tenant_id,
         route_id: route.id,
         action: action,
         outcome: "succeeded",
         revision: route.revision,
         generation: route.generation,
-        created_at: DateTime.utc_now()
+        created_at: SystemsClock.timestamp(:utc_datetime_usec)
       }
     ])
 

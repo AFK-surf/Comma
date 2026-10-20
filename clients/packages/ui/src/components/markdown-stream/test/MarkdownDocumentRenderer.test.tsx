@@ -3,10 +3,11 @@ import NodeRenderer, {
   getCustomNodeComponents,
   removeCustomComponents,
   setCustomComponents,
+  type CustomComponentMap,
   type NodeComponentProps,
   type RenderContext,
 } from "markstream-react";
-import { useState } from "react";
+import { Profiler, useState } from "react";
 import {
   getMarkdown,
   parseMarkdownToStructure,
@@ -16,6 +17,27 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { MarkdownDocumentRenderer } from "../MarkdownDocumentRenderer";
 import { MarkdownStream } from "../MarkdownStream";
+
+// A highlight resolves on promises alone, as a worker's reply would. Real Shiki
+// loads its grammars with module imports, real I/O that the test clock does
+// not move, so a wait on its output could end before the import does.
+vi.mock("../shikiHighlightWorkerClient", () => ({
+  renderCodeHighlightInWorker: async (
+    code: string,
+    _language: string,
+    theme: string
+  ) => {
+    let offset = 0;
+    return {
+      tokens: code.split(/\r\n|\r|\n/).map((content) => {
+        const token = { content, offset, color: "#4d9375" };
+        offset += content.length + 1;
+        return [token];
+      }),
+      themeName: theme,
+    };
+  },
+}));
 
 describe("MarkdownDocumentRenderer", () => {
   it("refreshes a custom child inside a memoized Comma quote without replacing its code", () => {
@@ -524,6 +546,146 @@ describe("MarkdownDocumentRenderer", () => {
     unmount();
     expect(getCustomNodeComponents(scope).new_root).toBeUndefined();
   });
+
+  it("re-renders only the document whose registry scope changed", () => {
+    const renders = { first: 0, second: 0 };
+    const count = (id: string) => renders[id as keyof typeof renders]++;
+    const controls = { addRoot: () => {}, remove: () => {} };
+    function FirstDocument() {
+      const [nodes, setNodes] = useState(textNodes(1));
+      const [mounted, setMounted] = useState(true);
+      controls.addRoot = () =>
+        setNodes([...textNodes(1), { type: "new_root", raw: "New root" } as BaseNode]);
+      controls.remove = () => setMounted(false);
+      return mounted ? (
+        <MarkdownDocumentRenderer
+          customId="first-document"
+          nodes={nodes}
+          customComponents={{ new_root: NewRoot }}
+        />
+      ) : null;
+    }
+    const secondId = "second-document";
+    const { container, unmount } = render(
+      <>
+        <Profiler id="first" onRender={count}>
+          <section>
+            <FirstDocument />
+          </section>
+        </Profiler>
+        <Profiler id="second" onRender={count}>
+          <section>
+            <MarkdownDocumentRenderer
+              customId={secondId}
+              nodes={[{ type: "registry_probe", raw: "probe" } as BaseNode]}
+            />
+          </section>
+        </Profiler>
+      </>
+    );
+    const [first, second] = container.querySelectorAll("section");
+    try {
+      // Each renderer mounts after its layout scope is registered.
+      expect(first).toHaveTextContent("root 0");
+      expect(second).toHaveTextContent("Unsupported node type: registry_probe");
+      let seen = { ...renders };
+      // A new root type re-registers the first document's layout scope.
+      act(() => controls.addRoot());
+      expect(first!.querySelector("aside")).toHaveTextContent("New root");
+      expect(renders.second).toBe(seen.second);
+      seen = { ...renders };
+      act(() => setCustomComponents(secondId, { registry_probe: RegistryFirst }));
+      expect(second).toHaveTextContent("First component");
+      expect(renders.first).toBe(seen.first);
+      seen = { ...renders };
+      act(() => controls.remove());
+      expect(first).toBeEmptyDOMElement();
+      expect(renders.second).toBe(seen.second);
+    } finally {
+      unmount();
+      removeCustomComponents(secondId);
+    }
+  });
+
+  it("picks up a later global registration in a document without a customId", () => {
+    const globalComponents = { ...getCustomNodeComponents() };
+    const nodes = [{ type: "registry_probe", raw: "probe" }] as ParsedNode[];
+    const { container, unmount } = render(<MarkdownDocumentRenderer nodes={nodes} />);
+    try {
+      expect(container).toHaveTextContent("Unsupported node type: registry_probe");
+      act(() =>
+        setCustomComponents({ ...globalComponents, registry_probe: RegistryFirst })
+      );
+      expect(container).toHaveTextContent("First component");
+    } finally {
+      unmount();
+      setCustomComponents(globalComponents);
+    }
+  });
+
+  it("does not re-render documents for a scope registered and removed elsewhere", () => {
+    const renders = { scoped: 0, unscoped: 0 };
+    const count = (id: string) => renders[id as keyof typeof renders]++;
+    const { unmount } = render(
+      <>
+        <Profiler id="scoped" onRender={count}>
+          <MarkdownDocumentRenderer
+            customId="untouched-document"
+            nodes={textNodes(1)}
+          />
+        </Profiler>
+        <Profiler id="unscoped" onRender={count}>
+          <MarkdownDocumentRenderer nodes={textNodes(1)} />
+        </Profiler>
+      </>
+    );
+    try {
+      const seen = { ...renders };
+      act(() => {
+        setCustomComponents("unrelated-scope", { registry_probe: RegistryFirst });
+        removeCustomComponents("unrelated-scope");
+      });
+      expect(renders).toEqual(seen);
+    } finally {
+      unmount();
+      removeCustomComponents("unrelated-scope");
+    }
+  });
+
+  it.each([
+    [
+      "the global id",
+      (map: CustomComponentMap) => setCustomComponents("__global__", map),
+    ],
+    ["a bare mapping", (map: CustomComponentMap) => setCustomComponents(map)],
+  ] as const)(
+    "delivers a global registration by %s to every document",
+    (_form, register) => {
+      const globalComponents = { ...getCustomNodeComponents() };
+      const nodes = [{ type: "registry_probe", raw: "probe" }] as ParsedNode[];
+      const { container, unmount } = render(
+        <>
+          <section>
+            <MarkdownDocumentRenderer customId="global-first" nodes={nodes} />
+          </section>
+          <section>
+            <MarkdownDocumentRenderer customId="global-second" nodes={nodes} />
+          </section>
+        </>
+      );
+      const surfaces = [...container.querySelectorAll("section")];
+      try {
+        for (const surface of surfaces)
+          expect(surface).toHaveTextContent("Unsupported node type: registry_probe");
+        act(() => register({ ...globalComponents, registry_probe: RegistryFirst }));
+        for (const surface of surfaces)
+          expect(surface).toHaveTextContent("First component");
+      } finally {
+        unmount();
+        setCustomComponents(globalComponents);
+      }
+    }
+  );
 
   it("keeps explicit content zero-budget behavior equal to the old per-root hosts", async () => {
     const scheduler = controlledScheduling();

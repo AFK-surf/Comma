@@ -1,4 +1,6 @@
 defmodule SalixSignal.IMHandler do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The product handler of every Signal account (`SalixSignal.Account.Handler`,
   docs/messaging-voice.md).
@@ -241,7 +243,7 @@ defmodule SalixSignal.IMHandler do
   defp download_opts(environment, max_bytes) do
     Keyword.merge(
       [environment: environment, max_bytes: max_bytes],
-      Application.get_env(:salix_signal, :im_download_opts, [])
+      SystemsRuntime.get_env(:salix_signal, :im_download_opts, [])
     )
   end
 
@@ -290,7 +292,7 @@ defmodule SalixSignal.IMHandler do
 
   @impl true
   def admit_call(account_id, %{peer_aci: peer, call_id: signal_call_id}, connection)
-      when is_pid(connection) do
+      when SystemsRuntime.Proc.is_process(connection) do
     with {:ok, connect} <- SignalConnects.find_signal_connect(account_id, peer),
          {:ok, voice} <-
            ProviderConnects.ensure_voice_im_connect(connect["tenant_id"], connect["group_id"]) do
@@ -322,7 +324,8 @@ defmodule SalixSignal.IMHandler do
     with {:ok, connect} <-
            SignalConnects.find_signal_connect(account_id, IMPort.group_peer(group_id)),
          false <- SalixVoice.group_busy?(connect["group_id"]) do
-      {:ok, _pid} = Task.start(fn -> join_group_call(account_id, group_id, connect) end)
+      {:ok, _pid} =
+        SystemsRuntime.Task.start(fn -> join_group_call(account_id, group_id, connect) end)
     end
 
     :ok

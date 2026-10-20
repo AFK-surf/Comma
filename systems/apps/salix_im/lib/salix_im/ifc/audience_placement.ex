@@ -18,7 +18,7 @@ defmodule SalixIM.IFC.AudiencePlacement do
 
   @doc false
   def create_table! do
-    :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+    SystemsRuntime.ETS.new(@table, [:named_table, :public, :set, read_concurrency: true])
   end
 
   @doc "Resolve at most 20 named users. Unresolved users remain absent."
@@ -57,9 +57,9 @@ defmodule SalixIM.IFC.AudiencePlacement do
        user_id}
 
     slot = :erlang.phash2(key, @slots)
-    now = System.monotonic_time(:millisecond)
+    now = SystemsClock.monotonic_time(:millisecond)
 
-    case :ets.lookup(@table, slot) do
+    case SystemsRuntime.ETS.lookup(@table, slot) do
       [{^slot, ^key, expires_at, placement}] when expires_at > now ->
         placement
 
@@ -67,7 +67,7 @@ defmodule SalixIM.IFC.AudiencePlacement do
         placement = fetch(connect, user_id)
         # Fixed slots bound memory. A collision evicts a cache entry, not its
         # identity check. Concurrent misses may each perform a provider read.
-        :ets.insert(@table, {slot, key, now + @ttl_ms, placement})
+        SystemsRuntime.ETS.insert(@table, {slot, key, now + @ttl_ms, placement})
         placement
     end
   end

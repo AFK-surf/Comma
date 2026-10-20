@@ -6,6 +6,7 @@ import {
   Badge,
   Button,
   CalendarIcon,
+  EyeIcon,
   TaskBoard,
   TaskBoardColumn,
   TaskCard,
@@ -23,10 +24,12 @@ import {
 } from "../TaskListItem/taskListItemStoryIcons";
 
 const meta = {
+  // Asserts measured overflow and the computed scrollbar display.
+  tags: ["browser"],
   title: "App components/Tasks/Task Board",
   component: TaskCard,
   args: {
-    icon: contentTaskIconStates.backlog.renderIcon(),
+    icon: contentTaskIconStates["in-progress"].renderIcon(),
     title: "Untitled",
   },
   parameters: {
@@ -41,17 +44,28 @@ const longTitle = "Summarizing recent OpenAI's update and create a HTML";
 const wrappedTitle =
   "Summarizing recent OpenAI's update and create a HTML report covering the key changes, reasoning, and what it means for our upcoming agent release";
 
-const ScheduleBadge = () => (
-  <Badge
-    className="gap-xs py-xxs pr-md pl-sm text-xs text-quaternary"
-    color="gray"
-    size="sm"
-    type="pill-outline"
-  >
-    <CalendarIcon className="size-3 shrink-0 text-quaternary" />
-    Schedules
-  </Badge>
-);
+// The Loop chip as the product shows it: each trigger type has its own icon.
+const loopBadges = {
+  scheduled: { Icon: CalendarIcon, label: "Scheduled" },
+  event_triggered: { Icon: EyeIcon, label: "On updates" },
+} as const;
+
+type LoopKind = keyof typeof loopBadges;
+
+const LoopBadge = ({ kind = "scheduled" }: { kind?: LoopKind | undefined }) => {
+  const { Icon, label } = loopBadges[kind];
+  return (
+    <Badge
+      className="gap-xs py-xxs pr-md pl-sm text-xs text-quaternary"
+      color="gray"
+      size="sm"
+      type="pill-outline"
+    >
+      <Icon className="size-3 shrink-0 text-quaternary" />
+      {label}
+    </Badge>
+  );
+};
 
 const WorkerMeta = () => (
   <TaskCardMeta textClassName="comma-shiny-text">
@@ -63,7 +77,7 @@ type BoardTask = {
   key: string;
   title: string;
   worker?: boolean;
-  schedule?: boolean;
+  loop?: LoopKind;
   footer: string;
 };
 
@@ -75,39 +89,32 @@ type BoardColumn = {
 
 const boardColumns: BoardColumn[] = [
   {
-    state: "backlog",
-    label: "Backlog",
-    tasks: [
-      {
-        key: "backlog-1",
-        title: wrappedTitle,
-        schedule: true,
-        footer: "Created May 9",
-      },
-      { key: "backlog-2", title: longTitle, footer: "Created May 9" },
-    ],
-  },
-  {
     state: "in-progress",
     label: "In progress",
     tasks: [
       {
+        key: "ip-wrapped",
+        title: wrappedTitle,
+        loop: "scheduled",
+        footer: "Created May 9",
+      },
+      {
         key: "ip-1",
         title: longTitle,
         worker: true,
-        schedule: true,
+        loop: "scheduled",
         footer: "Created May 9",
       },
       {
         key: "ip-2",
         title: longTitle,
-        schedule: true,
+        loop: "event_triggered",
         footer: "Created May 9",
       },
       {
         key: "ip-3",
         title: longTitle,
-        schedule: true,
+        loop: "scheduled",
         footer: "Created May 9",
       },
       { key: "ip-4", title: longTitle, footer: "Created May 9" },
@@ -153,7 +160,7 @@ const renderBoard = () => (
       >
         {column.tasks.map((task) => (
           <TaskCard
-            badges={task.schedule ? <ScheduleBadge /> : undefined}
+            badges={task.loop ? <LoopBadge kind={task.loop} /> : undefined}
             footer={task.footer}
             icon={renderIcon(column.state)}
             interactive
@@ -193,9 +200,9 @@ const renderList = () => (
             key={task.key}
             layout="content"
             tail={
-              task.schedule ? (
+              task.loop ? (
                 <>
-                  <ScheduleBadge />
+                  <LoopBadge kind={task.loop} />
                   <span className="shrink-0 whitespace-nowrap font-normal text-quaternary">
                     {task.footer}
                   </span>
@@ -219,12 +226,12 @@ export const Card: Story = {
     <div className="flex w-[320px] flex-col gap-lg bg-secondary p-xl">
       <TaskCard
         footer="Created May 9"
-        icon={renderIcon("backlog")}
+        icon={renderIcon("review")}
         interactive
         title={longTitle}
       />
       <TaskCard
-        badges={<ScheduleBadge />}
+        badges={<LoopBadge />}
         footer="Created May 9"
         icon={renderIcon("in-progress")}
         interactive
@@ -331,8 +338,8 @@ export const Reorder: Story = {
         <TaskBoardColumn
           className="h-full"
           count={order.length}
-          icon={renderIcon("backlog")}
-          label="Backlog"
+          icon={renderIcon("in-progress")}
+          label="In progress"
         >
           <TaskCardReorderList ids={order} onReorder={setOrder}>
             {order.map((title) => (
@@ -344,7 +351,7 @@ export const Reorder: Story = {
                 >
                   <TaskCard
                     footer="Updated May 9"
-                    icon={renderIcon("backlog")}
+                    icon={renderIcon("in-progress")}
                     interactive
                     title={title}
                   />
@@ -386,8 +393,8 @@ export const ReorderLiveUpdate: Story = {
         <TaskBoardColumn
           className="min-h-0 flex-1"
           count={order.length}
-          icon={renderIcon("backlog")}
-          label="Backlog"
+          icon={renderIcon("in-progress")}
+          label="In progress"
         >
           <TaskCardReorderList ids={order} onReorder={setOrder}>
             {order.map((title) => (
@@ -399,7 +406,7 @@ export const ReorderLiveUpdate: Story = {
                 >
                   <TaskCard
                     footer="Updated May 9"
-                    icon={renderIcon("backlog")}
+                    icon={renderIcon("in-progress")}
                     interactive
                     title={title}
                   />

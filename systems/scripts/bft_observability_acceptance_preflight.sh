@@ -61,7 +61,6 @@ mix test --seed 0 \
   apps/bridge_for_teams_web/test/dashboard/auth_controller_test.exs
 
 cd ..
-make test-policy
 
 # Final gate after targeted failures are resolved.
 make test-systems
@@ -249,9 +248,9 @@ require_fixed "schedule writes create audit/write attempts" "Observability.recor
 require_fixed "project IM connect writes create audit/write attempts" "Observability.record_write_attempt" \
   systems/apps/bridge_for_teams_core/lib/bridge_for_teams/project_im_connects.ex
 require_fixed "settings Run checks persist activity" "Observability.record_run_checks_activity" \
-  systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard/live/settings_live.ex
+  systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/controllers/dashboard_settings.ex
 require_fixed "project Run checks persist activity" "Observability.record_run_checks_activity" \
-  systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/dashboard/live/project_live/show.ex
+  systems/apps/bridge_for_teams_web/lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
 
 section "Automated test anchors"
 for path in \

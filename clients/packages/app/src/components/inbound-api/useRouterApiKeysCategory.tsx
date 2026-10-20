@@ -1,120 +1,93 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useCall, useTopic, type RouterKeyCreated } from "@comma/core-client";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import type { SettingsCategoryDefinition } from "@comma/ui";
-import type {
-  CommaApiClient,
-  CommaRouterApiKey,
-  CommaRouterApiKeyCreated,
-} from "../../api";
-import { readActiveWorkspaceId, subscribeActiveWorkspace } from "../activeWorkspace";
+import type { SettingsCategoryDefinition } from "@comma/ui/components/settings";
+import { useWorkspacePreference } from "../activeWorkspace";
 import { RouterApiKeysPage, type RouterApiKeyDraft } from "./RouterApiKeysSettings";
 
 /**
  * The Settings › Inbound API category: the keys that let an external service
  * post a message to this workspace's Router. A page of its own, like Labels.
+ * The core reads them while the page shows; each change is one of its calls.
  *
- * A freshly minted key's plaintext lives in this hook's state only: it is
- * never written to storage, and it is gone the moment the person dismisses
- * the panel or leaves the category.
+ * A freshly minted key's plaintext comes back to this hook only: it is never
+ * written to storage, and it is gone the moment the person dismisses the
+ * panel or leaves the category.
  */
-export function useRouterApiKeysCategory(
-  api: CommaApiClient,
-  enabled: boolean
-): SettingsCategoryDefinition {
+export function useRouterApiKeysCategory(enabled: boolean): SettingsCategoryDefinition {
   const messages = useCommaMessages();
   const locale = useCommaLocale();
+  const call = useCall();
   // The active workspace, as the Models category resolves it: the remembered
   // choice, else the first workspace the API lists.
-  const [workspaceId, setWorkspaceId] = useState(readActiveWorkspaceId);
-  useEffect(() => subscribeActiveWorkspace(setWorkspaceId), []);
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>();
+  const prefer = useWorkspacePreference();
+  const { value } = useTopic(
+    enabled && prefer !== undefined ? { topic: "routerKeys", prefer } : null
+  );
+  const activeWorkspaceId = value?.workspace ?? undefined;
+  const keys = value?.keys ?? undefined;
+  const error = value?.error ?? false;
 
-  const [keys, setKeys] = useState<CommaRouterApiKey[]>();
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(false);
   const [saveError, setSaveError] = useState(false);
   const [busy, setBusy] = useState<string>();
-  const [created, setCreated] = useState<CommaRouterApiKeyCreated>();
-  const generation = useRef(0);
+  const [created, setCreated] = useState<RouterKeyCreated>();
 
-  const load = useCallback(async () => {
-    const request = ++generation.current;
-    setLoading(true);
-    setError(false);
-    try {
-      const id = workspaceId ?? (await api.listWorkspaces())[0]?.id;
-      if (!id) throw new Error("workspace unavailable");
-      const next = await api.listRouterApiKeys(id);
-      if (request !== generation.current) return;
-      setActiveWorkspaceId(id);
-      setKeys(next);
-    } catch {
-      if (request === generation.current) setError(true);
-    } finally {
-      if (request === generation.current) setLoading(false);
-    }
-  }, [api, workspaceId]);
-
-  // Leaving the category (or a reload) supersedes any request in flight, and
-  // the plaintext of a just-minted key does not survive leaving the page.
-  const invalidate = useCallback(() => {
-    generation.current++;
-  }, []);
   useEffect(() => {
-    if (enabled) void load();
-    else setCreated(undefined);
-    return invalidate;
-  }, [enabled, load, invalidate]);
+    if (!enabled) setCreated(undefined);
+  }, [enabled]);
 
-  const mutate = useCallback(
-    async (key: string, run: () => Promise<unknown>) => {
-      setBusy(key);
-      setSaveError(false);
-      try {
-        await run();
-        await load();
-      } catch {
-        setSaveError(true);
-      } finally {
-        setBusy(undefined);
-      }
-    },
-    [load]
-  );
+  const mutate = useCallback(async (key: string, run: () => Promise<unknown>) => {
+    setBusy(key);
+    setSaveError(false);
+    try {
+      await run();
+    } catch {
+      setSaveError(true);
+    } finally {
+      setBusy(undefined);
+    }
+  }, []);
 
   const onCreate = useCallback(
     (draft: RouterApiKeyDraft) => {
       if (!activeWorkspaceId) return;
       void mutate("create", async () => {
-        setCreated(await api.createRouterApiKey(activeWorkspaceId, draft));
+        setCreated(
+          await call("routerKeys.create", {
+            workspace: activeWorkspaceId,
+            name: draft.name,
+          })
+        );
       });
     },
-    [api, activeWorkspaceId, mutate]
+    [call, activeWorkspaceId, mutate]
   );
   const onRename = useCallback(
-    (keyId: string, name: string) => {
+    (key: string, name: string) => {
       if (!activeWorkspaceId) return;
-      void mutate(keyId, () =>
-        api.updateRouterApiKey(activeWorkspaceId, keyId, { name })
+      void mutate(key, () =>
+        call("routerKeys.rename", { workspace: activeWorkspaceId, key, name })
       );
     },
-    [api, activeWorkspaceId, mutate]
+    [call, activeWorkspaceId, mutate]
   );
   const onSetStatus = useCallback(
-    (keyId: string, status: "active" | "disabled") => {
+    (key: string, status: "active" | "disabled") => {
       if (!activeWorkspaceId) return;
-      void mutate(keyId, () =>
-        api.updateRouterApiKey(activeWorkspaceId, keyId, { status })
+      void mutate(key, () =>
+        call("routerKeys.setStatus", { workspace: activeWorkspaceId, key, status })
       );
     },
-    [api, activeWorkspaceId, mutate]
+    [call, activeWorkspaceId, mutate]
   );
   const onDelete = useCallback(
-    (keyId: string) => {
+    (key: string) => {
       if (!activeWorkspaceId) return;
-      void mutate(keyId, () => api.deleteRouterApiKey(activeWorkspaceId, keyId));
+      void mutate(key, () =>
+        call("routerKeys.delete", { workspace: activeWorkspaceId, key })
+      );
     },
-    [api, activeWorkspaceId, mutate]
+    [call, activeWorkspaceId, mutate]
   );
 
   return {
@@ -148,13 +121,13 @@ export function useRouterApiKeysCategory(
               : undefined
         }
         keys={keys}
-        loading={loading && !keys}
+        loading={enabled && !keys && !error}
         locale={locale}
         onCreate={onCreate}
         onDelete={onDelete}
         onDismissCreated={() => setCreated(undefined)}
         onRename={onRename}
-        onRetry={() => void load()}
+        onRetry={() => void call("routerKeys.refresh", {}).catch(() => undefined)}
         onSetStatus={onSetStatus}
         workspaceId={activeWorkspaceId}
       />

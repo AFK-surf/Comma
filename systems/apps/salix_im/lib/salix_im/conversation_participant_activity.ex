@@ -1,11 +1,13 @@
 defmodule SalixIM.ConversationParticipantActivity do
   @moduledoc false
 
+  alias SalixIM.ConversationSourceIdentity
   alias SalixIM.Ports.SessionActivity
 
   import SalixIM.Provider.Util, only: [str: 1]
 
   @participant_realtime_key "_participant_realtime"
+  @max_working_conversations 8
 
   def read(group_id, conversation_id, participant_id, participant) when is_map(participant) do
     if str(participant["actor_type"]) == "agent" do
@@ -99,9 +101,14 @@ defmodule SalixIM.ConversationParticipantActivity do
       "participant_id" => participant_id,
       "activity" =>
         canonical
-        |> Map.take(~w(state status updated_at issue))
+        |> Map.take(~w(state status updated_at issue issue_detail))
         |> put_optional("working_provider", working_provider(canonical))
         |> put_optional("loop_wake", loop_wake(canonical))
+        |> put_optional("waiting", waiting(canonical))
+        |> put_optional(
+          "working_conversation_ids",
+          working_conversation_ids(canonical, conversation_id)
+        )
     }
     |> put_optional("presentation_activity", presentation_activity)
     |> put_optional("wait", canonical["wait"])
@@ -128,6 +135,38 @@ defmodule SalixIM.ConversationParticipantActivity do
   end
 
   defp loop_wake(_), do: nil
+
+  # A structured wait, such as a Router waiting for a delegated Task. The hint
+  # carries only the fact, never the reason: that is model text.
+  defp waiting(%{"state" => "active", "wait" => %{}}), do: true
+  defp waiting(_), do: nil
+
+  # A Router has one Session for Home and every Task it delegates. The other
+  # Conversations with input in the current activation name that work, such as
+  # Worker reports. A wait keeps the Home request unacknowledged, so it stays
+  # beside them. The list keeps source order and a small bound.
+  defp working_conversation_ids(
+         %{"state" => "active", "_active_source_message_ids" => sources},
+         conversation_id
+       )
+       when is_list(sources) do
+    sources
+    |> Enum.flat_map(fn source ->
+      case ConversationSourceIdentity.conversation_id(source) do
+        {:ok, ^conversation_id} -> []
+        {:ok, other} -> [other]
+        {:error, :invalid_source_identity} -> []
+      end
+    end)
+    |> Enum.uniq()
+    |> Enum.take(@max_working_conversations)
+    |> case do
+      [] -> nil
+      ids -> ids
+    end
+  end
+
+  defp working_conversation_ids(_canonical, _conversation_id), do: nil
 
   defp loop_source?("loop:" <> source), do: source != ""
   defp loop_source?(_), do: false

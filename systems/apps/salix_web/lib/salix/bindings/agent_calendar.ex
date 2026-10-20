@@ -34,7 +34,7 @@ defmodule Salix.Bindings.AgentCalendar do
   @impl true
   def issue_feed_link(group_id, principal_ref) do
     with {:ok, scope} <- AgentAPI.feed_scope(group_id, principal_ref) do
-      now = System.system_time(:millisecond)
+      now = SystemsClock.system_time(:millisecond)
 
       case CalendarFeedSubscriptions.active(scope) do
         {:ok, %{"id" => feed_id, "fence" => fence}} ->

@@ -185,17 +185,17 @@ def dropUnfinished (state : Term) (messages : List Term) : KernelM (List Term) :
       return []
   keep messages
 
-private def sanitize (state : Term) (messages : List Term) : KernelM (List Term) := do
-  asList (← Presentation.sanitizeContext messages (← ReplyQuery.phase state))
+private def sanitize (messages : List Term) : KernelM (List Term) := do
+  asList (← Presentation.sanitizeContext messages)
 
 /-- The window a commit fences on: the whole live window, sanitized. -/
 def fencedLive (state : Term) : KernelM (List Term) := do
-  sanitize state (← asList (← CompactionQuery.liveMessages state))
+  sanitize (← asList (← CompactionQuery.liveMessages state))
 
 /-- The window a compaction may summarize: the live window without the
 unfinished activation suffix, sanitized. -/
 def compactableLive (state : Term) : KernelM (List Term) := do
-  sanitize state (← dropUnfinished state (← asList (← CompactionQuery.liveMessages state)))
+  sanitize (← dropUnfinished state (← asList (← CompactionQuery.liveMessages state)))
 
 private def lastId (state : Term) (live : List Term) : KernelM Term := do
   let ids := live.map (fun message => message.get (a "id"))

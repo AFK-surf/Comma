@@ -216,7 +216,7 @@ defmodule SalixAnalytics.SlackMirror.Sink do
   defp headers(_cfg), do: []
 
   defp config(opts) do
-    cfg = Keyword.merge(Application.get_env(:salix_analytics, :clickhouse, []), opts)
+    cfg = Keyword.merge(SystemsRuntime.get_env(:salix_analytics, :clickhouse, []), opts)
     table = cfg[:table] || "salix_analytics.events"
     database = cfg[:database] || table |> String.split(".", parts: 2) |> hd()
 

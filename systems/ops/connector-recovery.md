@@ -5,58 +5,39 @@ Temporary service failures are acceptable during rolling updates. Full recovery 
 
 ## Prevention and limits
 
-During a graceful pod `preStop`, Comma withdraws readiness, drains actors, then
-closes local connector sockets. `SalixWeb.ConnectorDrain` waits for each exact
-local owner process to terminate before marking its run disconnected and
-confirming its predecessor stop target. Concurrent successors are preserved by
-the run/generation fence. The entire connector drain has a 15-second deadline.
-An in-flight upgrade reaching socket initialization after drain begins is
-rejected. This does not lengthen credentials or weaken revocation.
+During a graceful pod `preStop`, Comma withdraws readiness, drains actors, then closes local connector sockets.
+`SalixWeb.ConnectorDrain` waits for each exact local owner process to stop before it marks the run disconnected and confirms its predecessor stop target.
+The run and generation fence keeps concurrent successors. The connector drain has a deadline.
+An upgrade that reaches socket initialization after the drain starts is rejected.
+The lifecycle `connector_drain_complete` event reports completion or failure.
 
-The existing lifecycle `connector_drain_complete` event reports completion or
-failure. Socket-down logs include a bounded reason (expiry, revocation, drain,
-heartbeat timeout, replacement, normal, or other), not arbitrary frame/error
-contents. HTTP latency/error metrics continue to cover the revoke endpoint.
+A crash, forced deletion, failed persistence, or exhausted shutdown deadline can still leave a stop target without proof.
+A node missing from discovery or a disconnected device record **does not prove that its socket process stopped**.
+These cases need independent operator evidence. No server timeout forgives an unreachable owner.
 
-A crash, forced deletion, failed persistence, or exhausted shutdown deadline
-can still leave a stop target without proof. A node missing from discovery or
-a disconnected device record **does not prove its socket process stopped**.
-Those cases intentionally require independent operator evidence; no server
-timeout automatically forgives an unreachable owner.
-
-The desktop client bounds its own revoke-before-mint retry by the credential
-lifetime. When the requested TTL has elapsed and the server has refused the
-credential to the connector, two failed `DELETE /v1/comma/workspaces/:id/connector-token`
-attempts no longer block the client. It mints a replacement and reconnects.
-The server keeps the pending stop target and the expired token record for that
-generation. This bound does not confirm the owner stop, and it does not apply
-to a credential inside its TTL.
+The desktop client bounds its own revoke-before-mint retry by the credential lifetime.
+When the requested TTL has elapsed and the server has refused the credential, two failed `DELETE /v1/comma/workspaces/:id/connector-token` attempts no longer block the client.
+It mints a replacement and reconnects.
+The server keeps the pending stop target and the expired token record for that generation.
+This bound does not confirm the owner stop, and it does not apply to a credential inside its TTL.
 
 ## Recover an already-stranded generation credential
 
 This is a trusted operator mutation through release RPC, **not a public API**.
-Do not run it as part of diagnosis or deploy it without the normal release
-authorization. Production execution belongs to a human operator.
+Do not run it as part of diagnosis or deploy it without the normal release authorization. Production execution belongs to a human operator.
 
-Use this procedure to remove a stranded token record and its pending stop
-target. It is not required to restore a desktop client whose expired
-credential was refused: that client re-mints on its own.
+Use this procedure to remove a stranded token record and its pending stop target.
+A desktop client whose expired credential was refused does not need it. That client mints again by itself.
 
-1. Match the affected client's workspace/device and credential to its stored
-   token record. Use the token's SHA-256 object name, not the raw bearer token.
-   Verify tenant, group, device, connector id and credential generation. Do not
-   dump credentials or unrelated device metadata into logs. The desktop does
-   not keep the raw token of an expired, refused credential after it mints a
-   replacement. Read the pending generation from the device's
-   `pending_connector_revocations`. Find the token record under
-   `ctl/connector_tokens/` whose `device_id` and `credential_generation` match it.
-2. Inspect that device's `pending_connector_revocations` for the exact generation.
-   Independently verify the old server instances have actually terminated, using
-   their pod/container identity and termination evidence. A missing Pod object,
-   a forced deletion, a readiness failure, or a network partition alone is not
-   sufficient. If termination cannot be established, restore reachability or
-   have an authorized operator terminate the old instance first.
-3. Pass only the verified terminated server node names in `dead_nodes`:
+1. Read the pending generation from the device's `pending_connector_revocations`.
+2. Find the token record under `ctl/connector_tokens/` whose `device_id` and `credential_generation` match it.
+   Use the token's SHA-256 object name, not the raw bearer token. The desktop does not keep the raw token of a refused credential after it mints a replacement.
+3. Verify tenant, group, device, connector id, and credential generation.
+   Do not dump credentials or unrelated device metadata into logs.
+4. Verify that the old server instances terminated, with their pod or container identity and termination evidence.
+   A missing Pod object, a forced deletion, a readiness failure, or a network partition alone is not enough.
+   If you cannot prove termination, restore reachability or have an authorized operator terminate the old instance first.
+5. Pass only the verified terminated server node names in `dead_nodes`:
 
    ```elixir
    SalixEnv.ConnectorTokens.recover_connector_token(
@@ -65,26 +46,12 @@ credential was refused: that client re-mints on its own.
    )
    ```
 
-The operation checks exact scope, advances the credential revocation fence,
-and confirms only this credential's owner targets. Reachable members must
-confirm their own socket stops even if included in `dead_nodes`. A failure
-retains the token as the retry handle. Success proves that token was removed;
-it preserves the stable device, successor credentials and other generations'
-pending stops. Repeating a successful operation returns `{:ok, :already_revoked}`.
-It does not start a connector. A client with a live credential retries the
-revocation, then mints. A client whose credential had expired and was refused
-has usually re-minted already, so a connected desktop is not evidence that the
-pending stop was cleared: verify the device's `pending_connector_revocations`
-for the exact generation. Do not claim recovery based on RPC success alone.
-Pre-generation device retirement remains a separate operation.
+6. Verify the device's `pending_connector_revocations` for the exact generation. Do not claim recovery from RPC success alone.
 
-## Verification scope
-
-Regressions cover real WebSocket drain/reconnect, reply-before-process-exit,
-a racing successor, an uncooperative owner, late socket admission, scoped
-operator recovery, and the desktop's expired-credential re-mint
-(`clients/apps/electron/e2e/connector-runtime-containment.spec.ts`). The
-connector feature models were retired under
-[`tla/README.md`](../../tla/README.md); these changes do not add a new model or
-change the retained system-core lease/ACK/stream contracts. In particular,
-partition uncertainty and the need for positive stop evidence remain intact.
+The operation checks exact scope, advances the credential revocation fence, and confirms only this credential's owner targets.
+Reachable members must confirm their own socket stops, even if they are in `dead_nodes`.
+A failure keeps the token as the retry handle.
+Success proves that the token was removed. It keeps the stable device, successor credentials, and the pending stops of other generations.
+A repeat of a successful operation returns `{:ok, :already_revoked}`. It does not start a connector.
+A connected desktop is not evidence that the pending stop was cleared, because the client has usually minted a new credential already.
+Pre-generation device retirement is a separate operation.

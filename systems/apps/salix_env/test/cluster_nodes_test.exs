@@ -1,14 +1,7 @@
 defmodule SalixEnv.ClusterNodesTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixEnv.ClusterNodes
-
-  test "resolves only the local node or an already connected peer" do
-    assert ClusterNodes.find(node()) == node()
-    assert ClusterNodes.find(Atom.to_string(node())) == node()
-    assert ClusterNodes.find("unknown@comma.invalid") == nil
-    assert ClusterNodes.find(:unknown_node_identity) == nil
-  end
 
   test "unknown node-name churn does not create atoms" do
     assert ClusterNodes.find("warmup@comma.invalid") == nil

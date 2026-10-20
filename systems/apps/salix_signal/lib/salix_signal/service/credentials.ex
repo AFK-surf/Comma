@@ -42,7 +42,7 @@ defmodule SalixSignal.Service.Credentials do
   22 characters. The server imposes no format (CRS-01 section 4.1, rule 3).
   """
   @spec new_password() :: String.t()
-  def new_password, do: Base.encode64(:crypto.strong_rand_bytes(16), padding: false)
+  def new_password, do: Base.encode64(SystemsRuntime.Proc.random_bytes(16), padding: false)
 
   defimpl Inspect do
     def inspect(%{username: username}, _opts),

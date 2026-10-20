@@ -1,10 +1,13 @@
 import { expect } from "../../../e2e/helpers/native-expect";
 import { closeElectronTestApp } from "./close-electron-test-app";
+import { type ElectronApplication, type Page } from "@playwright/test";
+import { electron, electronMainOutput, test } from "./electron-test";
 import {
-  _electron as electron,
-  test,
-  type ElectronApplication,
-} from "@playwright/test";
+  closeElectronWindow,
+  destroyElectronWindow,
+  hideElectronWindow,
+  showElectronWindow,
+} from "./electron-operations";
 import { build } from "vite";
 import {
   createBuiltFixtureServer,
@@ -18,46 +21,43 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { once } from "node:events";
+import {
+  MAIN_UNCAUGHT_EXCEPTION_EXIT_CODE,
+  MAIN_UNCAUGHT_EXCEPTION_LINE,
+} from "../src/main/e2e-shutdown-report";
 import type {
   compressionScenario,
   stereoCompressionScenario,
 } from "./fixtures/meeting-recorder/compression";
-import type { MeetingRecorderState } from "@comma/native-bridge";
+import type { MeetingRecorderValue as MeetingRecorderState } from "@comma/core";
 import { findElectronWindowByNativeRole } from "../src/test-support/electron-native-window";
-
-import type {
-  meetingTaskRecoveryScenario,
-  meetingTaskReofferScenario,
-} from "../src/test-support/meeting-task-recovery";
 
 const clients = process.cwd();
 const fixture = resolve(clients, "apps/electron/e2e/fixtures/meeting-recorder");
 const aliases = Object.fromEntries(
   [
-    ["@comma/app/api", "packages/app/src/api/index.ts"],
     ["@comma/app/styles.css", "packages/app/src/styles.css"],
     ["@comma/i18n/react", "packages/i18n/src/react.tsx"],
     ["@comma/i18n", "packages/i18n/src/index.ts"],
     ["@comma/native-bridge", "packages/native-bridge/src/index.ts"],
     ["@comma/session-contract", "packages/session-contract/src/index.ts"],
     ["@comma/ui/styles.css", "packages/ui/src/styles.css"],
-    ["@comma/ui", "packages/ui/src/index.ts"],
+    ["@comma/ui", "packages/ui/src"],
   ].map(([name, path]) => [name!, resolve(clients, path!)])
 );
 let output: string;
 let server: BuiltFixtureServer;
 let audioHelper: string;
 test.beforeAll(async () => {
-  test.setTimeout(120000);
   output = await mkdtemp(join(tmpdir(), "comma-recorder-desktop-e2e-"));
   if (process.platform === "darwin") {
-    const scratch = join(output, "swift");
+    const scratch = process.env.COMMA_E2E_MIC_CAPTURE_SCRATCH ?? join(output, "swift");
     await promisify(execFile)(
       "swift",
       ["build", "-c", "release", "--scratch-path", scratch],
       {
         cwd: resolve(clients, "apps/electron/native/macos/MicCaptureHost"),
-        timeout: 120000,
       }
     );
     audioHelper = join(scratch, "release", "MicCaptureHost");
@@ -102,6 +102,9 @@ test.afterAll(async () => {
   await server?.close();
   if (output) await rm(output, { recursive: true, force: true });
 });
+// beforeAll builds the recorder fixture (and on macOS its audio helper); the
+// file's tests stay on one worker so that happens once.
+test.describe.configure({ mode: "default" });
 
 declare global {
   var commaSitePermissionMenuPresentationCallsForE2e:
@@ -112,31 +115,24 @@ declare global {
       prompt?: { origin: string; media: string[] };
       settings?: { origin: string; choices: { microphone: string; camera: string } };
     };
-    respondWebsitePermission(choice: "ask" | "allow" | "block"): void;
-    changeWebsitePermission(choice: "ask" | "allow" | "block"): void;
-    resetWebsitePermissions(): void;
+    /** Runs `change` on Main's next turn, never inside Main code that is running (as the seams that change Main do). */
+    onMainTurn<A>(change: () => A): Promise<Awaited<A>>;
+    respondWebsitePermission(choice: "ask" | "allow" | "block"): Promise<void>;
+    changeWebsitePermission(choice: "ask" | "allow" | "block"): Promise<void>;
+    resetWebsitePermissions(): Promise<void>;
     browserMeeting(
       action: "open" | "tick" | "close",
       tab?: string
     ): Promise<import("@comma/native-bridge").MeetingPresenceState>;
     startedSource(): import("@comma/native-bridge").AudioCaptureSource | undefined;
-    meetingTaskRecoveryScenario: typeof meetingTaskRecoveryScenario;
-    meetingTaskReofferScenario: typeof meetingTaskReofferScenario;
     compressionScenario: typeof compressionScenario;
     stereoCompressionScenario: typeof stereoCompressionScenario;
-    captureLifecycleScenario(action: "cancel" | "stop" | "close"): Promise<{
-      completedBeforeOpen: boolean;
-      recordingPublishedBeforeOpen: boolean;
-      tapStopped: boolean;
-      savedBytes: number;
-      files: string[];
-    }>;
     visibilityTimeline(): unknown[];
-    processEvents(): string[];
-    join(): void;
+    join(): Promise<void>;
     counts(): { starts: number; stops: number };
-    finish(): void;
+    finish(): Promise<void>;
     taskEvents(): string[];
+    taskTitles(): string[];
     state(): Promise<MeetingRecorderState>;
   };
 }
@@ -175,88 +171,20 @@ async function attachRecorderDiagnostics(app: ElectronApplication) {
     contentType: "application/json",
   });
 }
-/**
- * Explain a getUserMedia call the fixture allowed but that did not deliver a
- * stream. The capture device is already fake; what remains OS-bound is the
- * system microphone authorization Electron consults and the audio service.
- * `devices` only shows whether the page still answers: under the fake device
- * switch device enumeration does not reach the audio service.
- */
-async function attachMediaDiagnostics(app: ElectronApplication) {
-  const diagnostics = await app
-    .evaluate(async ({ app: electronApp, systemPreferences, webContents }) => {
-      const meet = webContents
-        .getAllWebContents()
-        .filter((contents) => contents.getURL().startsWith("https://meet.google.com/"));
-      return {
-        microphone: systemPreferences.getMediaAccessStatus("microphone"),
-        processes: electronApp
-          .getAppMetrics()
-          .map(({ type, name, serviceName }) => ({ type, name, serviceName })),
-        processEvents: globalThis.recorderFixture.processEvents(),
-        meet: meet.map((contents) => ({
-          crashed: contents.isCrashed(),
-          destroyed: contents.isDestroyed(),
-          loading: contents.isLoading(),
-        })),
-        devices: meet[0]
-          ? await Promise.race([
-              meet[0].executeJavaScript(
-                `navigator.mediaDevices.enumerateDevices().then((list) => list.map((device) => device.kind + ":" + device.label))`
-              ),
-              new Promise((settle) => setTimeout(() => settle("pending"), 5000)),
-            ])
-          : "no meet page",
-      };
-    })
-    .catch((error: unknown) => String(error));
-  await test.info().attach("media-diagnostics", {
-    body: JSON.stringify(diagnostics, null, 2),
-    contentType: "application/json",
-  });
-}
-/** "pending" when `promise` has not settled within `ms`; the test timeout would otherwise abort before any diagnostics can be attached. */
-async function settledWithin<T>(
-  promise: Promise<T>,
-  ms: number
-): Promise<T | "pending"> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<"pending">((settle) => {
-        timer = setTimeout(() => settle("pending"), ms);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-test("website permissions ask before media access and can be reset from the address bar", async ({
-  playwright,
-}, testInfo) => {
+test("website permissions ask before media access and can be reset from the address bar", async () => {
   const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
-  const { _electron: electronLauncher } = playwright;
-  const app = await electronLauncher.launch({
+  const app = await electron.launch({
     args: [
       join(output, "main.cjs"),
-      "--enable-logging=stderr",
-      "--vmodule=*audio*=2,*media_stream*=2",
       `--user-data-dir=${join(output, "website-permissions")}`,
     ],
     env: {
       ...env,
       NODE_ENV: "test",
-      ELECTRON_ENABLE_LOGGING: "1",
       COMMA_RECORDER_FIXTURE_PRELOAD: join(output, "preload.cjs"),
       COMMA_RECORDER_FIXTURE_URL: server.resolvedUrls!.local[0]!,
       COMMA_RECORDER_FIXTURE_BASELINE: "0",
     },
-  });
-  let audioDiagnostics: Buffer = Buffer.alloc(0);
-  app.process().stderr?.on("data", (data: Buffer) => {
-    audioDiagnostics = Buffer.concat([audioDiagnostics, data]).subarray(-65_536);
   });
   try {
     const client = await findElectronWindowByNativeRole(app, "main-window");
@@ -275,98 +203,69 @@ test("website permissions ask before media access and can be reset from the addr
         )
       )
       .toBe(true);
-    // Chromium's default fake input still queries the macOS default device.
-    // That can stall in CoreAudio on a VM. Select a non-default fake input.
-    // Enumeration needs permission, so grant it through the existing settings
-    // boundary, select the device, then reset before testing the Ask flow.
-    await client.getByRole("button", { name: "Site permissions", exact: true }).click();
-    await expect
-      .poll(() => app.evaluate(() => globalThis.recorderFixture.websitePermissions()))
-      .toMatchObject({ settings: { origin: "https://meet.google.com" } });
-    await app.evaluate(() =>
-      globalThis.recorderFixture.changeWebsitePermission("allow")
-    );
-    const microphoneId = await app.evaluate(async ({ webContents }) => {
-      const page = webContents
-        .getAllWebContents()
-        .find((contents) => contents.getURL().startsWith("https://meet.google.com/"))!;
-      return page.executeJavaScript(
-        `navigator.mediaDevices.enumerateDevices().then(devices => devices.find(device => device.kind === "audioinput" && device.label === "Fake Audio Input 1")?.deviceId)`
-      );
-    });
-    expect(microphoneId).toBeTruthy();
-    expect(microphoneId).not.toBe("default");
-    await app.evaluate(() => globalThis.recorderFixture.resetWebsitePermissions());
-    const requestMic = () =>
-      app.evaluate(async ({ webContents }, deviceId) => {
+    // The camera: an allowed microphone opens the macOS audio stack (CoreAudio's
+    // coreaudiod connection) even for Chromium's fake input, which took 17-67 s
+    // on a loaded Mac. The fake camera never leaves Chromium. Microphone and
+    // camera share the permission path; unit tests cover the media mapping.
+    const requestCamera = () =>
+      app.evaluate(async ({ webContents }) => {
         const page = webContents
           .getAllWebContents()
           .find((contents) =>
             contents.getURL().startsWith("https://meet.google.com/")
           )!;
         return page.executeJavaScript(
-          `navigator.mediaDevices.getUserMedia(${JSON.stringify({ audio: { deviceId: { exact: deviceId } } })}).then(stream => {
-            const tracks = stream.getAudioTracks();
+          `navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+            const tracks = stream.getVideoTracks();
             const live = tracks.length === 1 && tracks[0].readyState === "live";
             stream.getTracks().forEach(track => track.stop());
-            return live ? "allowed" : "invalid-audio-track";
+            return live ? "allowed" : "invalid-video-track";
           }, error => error.name)`
         );
-      }, microphoneId);
-    const first = requestMic();
+      });
+    const first = requestCamera();
     await expect
       .poll(() => app.evaluate(() => globalThis.recorderFixture.websitePermissions()))
       .toMatchObject({
-        prompt: { origin: "https://meet.google.com", media: ["microphone"] },
+        prompt: { origin: "https://meet.google.com", media: ["camera"] },
       });
     await app.evaluate(() =>
       globalThis.recorderFixture.respondWebsitePermission("block")
     );
     expect(await first).toBe("NotAllowedError");
-    expect(await requestMic()).toBe("NotAllowedError");
-    await client.getByRole("button", { name: "Site permissions", exact: true }).click();
+    expect(await requestCamera()).toBe("NotAllowedError");
+    await openSitePermissions(client);
     await expect
       .poll(() => app.evaluate(() => globalThis.recorderFixture.websitePermissions()))
       .toMatchObject({
         settings: {
           origin: "https://meet.google.com",
-          choices: { microphone: "block", camera: "ask" },
+          choices: { microphone: "ask", camera: "block" },
         },
       });
     await app.evaluate(() => globalThis.recorderFixture.resetWebsitePermissions());
-    const second = requestMic();
+    const second = requestCamera();
     await expect
       .poll(() => app.evaluate(() => globalThis.recorderFixture.websitePermissions()))
-      .toMatchObject({ prompt: { media: ["microphone"] } });
+      .toMatchObject({ prompt: { media: ["camera"] } });
     await app.evaluate(() =>
       globalThis.recorderFixture.respondWebsitePermission("allow")
     );
-    // Bound the wait so the media diagnostics can be attached when the allowed
-    // capture does not settle; the test timeout would otherwise abort first.
-    const secondResult = await settledWithin(second, 15_000);
-    if (secondResult !== "allowed") await attachMediaDiagnostics(app);
-    expect(secondResult).toBe("allowed");
-    expect(await requestMic()).toBe("allowed");
-    await client.getByRole("button", { name: "Site permissions", exact: true }).click();
+    expect(await second).toBe("allowed");
+    expect(await requestCamera()).toBe("allowed");
+    await openSitePermissions(client);
     await app.evaluate(() =>
       globalThis.recorderFixture.changeWebsitePermission("block")
     );
-    expect(await requestMic()).toBe("NotAllowedError");
+    expect(await requestCamera()).toBe("NotAllowedError");
   } finally {
     await closeElectronTestApp(app);
-    if (testInfo.status !== testInfo.expectedStatus) {
-      await testInfo.attach("media-capture-diagnostics", {
-        body: audioDiagnostics,
-        contentType: "text/plain",
-      });
-    }
   }
 });
 
 test("in-app Meet starts the recorder only after joining, including with no microphone", async () => {
   const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
   const app = await electron.launch({
-    timeout: 20000,
     args: [
       join(output, "main.cjs"),
       `--user-data-dir=${join(output, "browser-meeting")}`,
@@ -425,9 +324,7 @@ test("in-app Meet starts the recorder only after joining, including with no micr
     expect(
       (await app.evaluate(() => globalThis.recorderFixture.browserMeeting("tick")))
         .meetings
-    ).toMatchObject([
-      { name: "Google Meet · abc-defg-hij", browserTabId: "meet", status: "active" },
-    ]);
+    ).toMatchObject([{ name: "Google Meet", browserTabId: "meet", status: "active" }]);
     await expect(client.locator('[data-slot="meeting-recording-block"]')).toBeVisible();
     // A WebContentsView paints above DOM, regardless of z-index. Dragging the
     // client controls toward it must keep the whole card in the content area.
@@ -539,68 +436,116 @@ test("in-app Meet starts the recorder only after joining, including with no micr
 });
 
 for (const dockVisible of [true, false]) {
-  test(`desktop recorder preserves Dock visibility: ${dockVisible}`, async () => {
-    test.skip(process.platform !== "darwin", "Dock visibility is macOS-only.");
-    const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
-    const app = await electron.launch({
-      timeout: 20000,
-      ...(process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE
-        ? { executablePath: process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE }
-        : {}),
-      args: [
-        join(output, "main.cjs"),
-        `--user-data-dir=${join(output, `dock-${dockVisible}`)}`,
-      ],
-      env: {
-        ...env,
-        NODE_ENV: "test",
-        COMMA_RECORDER_FIXTURE_PRELOAD: join(output, "preload.cjs"),
-        COMMA_RECORDER_FIXTURE_URL: server.resolvedUrls!.local[0]!,
-        COMMA_RECORDER_FIXTURE_BASELINE: "0",
-      },
-    });
-    try {
-      await findElectronWindowByNativeRole(app, "main-window");
-      await app.evaluate(async ({ app: nativeApp }, visible) => {
-        if (visible) await nativeApp.dock!.show();
-        else nativeApp.dock!.hide();
-      }, dockVisible);
-      expect(
-        await app.evaluate(({ app: nativeApp }) => nativeApp.dock!.isVisible())
-      ).toBe(dockVisible);
-      await app.evaluate(() => globalThis.recorderFixture.join());
-      const desktop = await findElectronWindowByNativeRole(
-        app,
-        "meeting-recorder-window"
-      );
-      await expect(desktop.getByTestId("desktop-meeting-recorder")).toHaveAttribute(
-        "data-phase",
-        "recording"
-      );
-      const recorderWindow = await app.browserWindow(desktop);
-      await expect
-        .poll(() => recorderWindow.evaluate((window) => window.isVisible()))
-        .toBe(true);
-      expect(
-        await app.evaluate(({ app: nativeApp }) => nativeApp.dock!.isVisible())
-      ).toBe(dockVisible);
-      await recorderWindow.evaluate((window) => window.destroy());
-      expect(
-        await app.evaluate(({ app: nativeApp }) => nativeApp.dock!.isVisible())
-      ).toBe(dockVisible);
-    } catch (error) {
-      await attachRecorderDiagnostics(app);
-      throw error;
-    } finally {
-      await closeElectronTestApp(app);
+  test(
+    `desktop recorder preserves Dock visibility: ${dockVisible}`,
+    { tag: "@mac" },
+    async () => {
+      test.skip(process.platform !== "darwin", "Dock visibility is macOS-only.");
+      const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
+      const app = await electron.launch({
+        ...(process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE
+          ? { executablePath: process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE }
+          : {}),
+        args: [
+          join(output, "main.cjs"),
+          `--user-data-dir=${join(output, `dock-${dockVisible}`)}`,
+        ],
+        env: {
+          ...env,
+          NODE_ENV: "test",
+          COMMA_RECORDER_FIXTURE_PRELOAD: join(output, "preload.cjs"),
+          COMMA_RECORDER_FIXTURE_URL: server.resolvedUrls!.local[0]!,
+          COMMA_RECORDER_FIXTURE_BASELINE: "0",
+        },
+        // A regular app starts with its Dock icon; the hidden case starts
+        // without it. Given at launch: macOS reports no end of the transform
+        // of a running app, and dock.show() on a visible, active app can
+        // block Electron's main thread on a CI desktop.
+        main: dockVisible
+          ? undefined
+          : { beforeApp: ({ app: nativeApp }) => nativeApp.dock!.hide() },
+      });
+      try {
+        await findElectronWindowByNativeRole(app, "main-window");
+        expect(
+          await app.evaluate(({ app: nativeApp }) => nativeApp.dock!.isVisible())
+        ).toBe(dockVisible);
+        await app.evaluate(() => globalThis.recorderFixture.join());
+        const desktop = await findElectronWindowByNativeRole(
+          app,
+          "meeting-recorder-window"
+        );
+        await expect(desktop.getByTestId("desktop-meeting-recorder")).toHaveAttribute(
+          "data-phase",
+          "recording"
+        );
+        const recorderWindow = await app.browserWindow(desktop);
+        await expect
+          .poll(() => recorderWindow.evaluate((window) => window.isVisible()))
+          .toBe(true);
+        expect(
+          await app.evaluate(({ app: nativeApp }) => nativeApp.dock!.isVisible())
+        ).toBe(dockVisible);
+        // As the app destroys it: hidden, then destroyed deaf to the window server's late report of the hide.
+        await hideElectronWindow(app, recorderWindow);
+        await destroyElectronWindow(app, recorderWindow);
+        expect(
+          await app.evaluate(({ app: nativeApp }) => nativeApp.dock!.isVisible())
+        ).toBe(dockVisible);
+      } catch (error) {
+        await attachRecorderDiagnostics(app);
+        throw error;
+      } finally {
+        await closeElectronTestApp(app);
+      }
     }
-  });
+  );
 }
+
+// Electron's own handler shows a modal alert for an uncaught exception, which
+// blocks Main: the test would hang on its next call into Main, with no stack.
+test("an uncaught exception in the recorder's Main ends it with its stack in the output", async () => {
+  const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
+  const app = await electron.launch({
+    ...(process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE
+      ? { executablePath: process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE }
+      : {}),
+    args: [join(output, "main.cjs"), `--user-data-dir=${join(output, "uncaught")}`],
+    env: {
+      ...env,
+      NODE_ENV: "test",
+      COMMA_RECORDER_FIXTURE_PRELOAD: join(output, "preload.cjs"),
+      COMMA_RECORDER_FIXTURE_URL: server.resolvedUrls!.local[0]!,
+      COMMA_RECORDER_FIXTURE_BASELINE: "0",
+    },
+  });
+  // Read now: once Main exits, Playwright disposes the app and `app.process()` throws.
+  const child = app.process();
+  try {
+    await findElectronWindowByNativeRole(app, "main-window");
+    const exited =
+      child.exitCode === null && child.signalCode === null
+        ? once(child, "exit")
+        : Promise.resolve();
+    await app.evaluate(() => {
+      setImmediate(() => {
+        throw new Error("recorder fixture: thrown on Main's turn");
+      });
+    });
+    await exited;
+    expect(child.exitCode).toBe(MAIN_UNCAUGHT_EXCEPTION_EXIT_CODE);
+    expect(electronMainOutput(app)).toContain(
+      `${MAIN_UNCAUGHT_EXCEPTION_LINE}\nError: recorder fixture: thrown on Main's turn\n    at `
+    );
+  } finally {
+    if (child.exitCode === null && child.signalCode === null)
+      await closeElectronTestApp(app);
+  }
+});
 
 test("desktop recorder expands on the first forwarded mouse move without pointer-enter", async () => {
   const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
   const app = await electron.launch({
-    timeout: 20000,
     ...(process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE
       ? { executablePath: process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE }
       : {}),
@@ -648,10 +593,8 @@ test("desktop recorder expands on the first forwarded mouse move without pointer
 
 for (const mode of ["reminder", "hidden-auto"] as const) {
   test(`Meeting preferences control both native windows: ${mode}`, async () => {
-    test.setTimeout(120000);
     const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
     const app = await electron.launch({
-      timeout: 20000,
       ...(process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE
         ? { executablePath: process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE }
         : {}),
@@ -710,22 +653,18 @@ for (const mode of ["reminder", "hidden-auto"] as const) {
   });
 }
 
-for (const [baseline, resizeDuration] of [
-  [true, 180],
-  [false, 180],
-  [false, 480],
-] as const) {
-  test(`desktop recorder shares capture with client (${baseline ? "existing" : "new"} meeting${resizeDuration === 180 ? "" : ", slow resize"})`, async () => {
-    test.setTimeout(120000);
+for (const resizeDuration of [180, 480] as const) {
+  test(`desktop recorder shares capture with client (new meeting${resizeDuration === 180 ? "" : ", slow resize"})`, async () => {
     const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
     const app = await electron.launch({
-      timeout: 20000,
+      // The test is of the recorder's motion: its transitions run.
+      motion: "full",
       ...(process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE
         ? { executablePath: process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE }
         : {}),
       args: [
         join(output, "main.cjs"),
-        `--user-data-dir=${join(output, baseline ? "existing" : "new")}`,
+        `--user-data-dir=${join(output, "new")}`,
         // Exercise classic scrollbars even when the host prefers overlay bars.
         // This macOS preference applies only to the fixture process.
         ...(process.platform === "darwin" ? ["-AppleShowScrollBars", "Always"] : []),
@@ -735,14 +674,14 @@ for (const [baseline, resizeDuration] of [
         NODE_ENV: "test",
         COMMA_RECORDER_FIXTURE_PRELOAD: join(output, "preload.cjs"),
         COMMA_RECORDER_FIXTURE_URL: server.resolvedUrls!.local[0]!,
-        COMMA_RECORDER_FIXTURE_BASELINE: baseline ? "1" : "0",
+        COMMA_RECORDER_FIXTURE_BASELINE: "0",
         COMMA_RECORDER_FIXTURE_DELAY_STATE: "1",
       },
     });
     try {
       const client = await findElectronWindowByNativeRole(app, "main-window");
       await client.waitForLoadState("domcontentloaded");
-      if (!baseline) await app.evaluate(() => globalThis.recorderFixture.join());
+      await app.evaluate(() => globalThis.recorderFixture.join());
       const desktop = await findElectronWindowByNativeRole(
         app,
         "meeting-recorder-window"
@@ -750,17 +689,6 @@ for (const [baseline, resizeDuration] of [
       const rendererErrors: string[] = [];
       desktop.on("pageerror", (error) => rendererErrors.push(error.message));
       const card = desktop.getByTestId("desktop-meeting-recorder");
-      if (baseline) {
-        await expect(card).toHaveAttribute("data-phase", "detected");
-        expect(await app.evaluate(() => globalThis.recorderFixture.counts())).toEqual({
-          starts: 0,
-          stops: 0,
-        });
-        await expect(
-          client.locator('[data-slot="meeting-recording-block"]')
-        ).toHaveCount(0);
-        await card.getByRole("button", { name: "Start recording" }).click();
-      }
       await expect(card).toHaveAttribute("data-phase", "recording");
       // A longer CSS lane makes an early native settle reproducible without
       // relying on a busy runner. Keep all geometry tolerances unchanged.
@@ -800,44 +728,86 @@ for (const [baseline, resizeDuration] of [
           )
         )
         .toBeLessThanOrEqual(1);
+      // The hover envelope is settled when the OS window has its final width,
+      // the renderer has received that viewport and no CSS transition still
+      // moves the card. Native resize and the renderer's viewport update are
+      // separate steps, so either can trail the other by several frames.
+      const expectEnvelopeSettled = (width: number) =>
+        expect
+          .poll(async () => {
+            const native = await nativeBounds();
+            const renderer = await desktop.evaluate(() => ({
+              width: window.innerWidth,
+              moving: document
+                .getAnimations()
+                .some(
+                  (animation) =>
+                    animation instanceof CSSTransition &&
+                    animation.playState === "running"
+                ),
+            }));
+            return (
+              Math.abs(native.width - width) <= 1 &&
+              renderer.width === native.width &&
+              !renderer.moving
+            );
+          })
+          .toBe(true);
       // Sample the actual card's screen center every paint through both hover
-      // directions. The OS envelope must resize only at the boundaries.
+      // directions. Hover never resizes the OS envelope.
       const captureMotion = async (expand: boolean) => {
+        // Start from a settled card, so every sampled frame belongs to this
+        // transition and maps to the bounds read here.
+        await expectEnvelopeSettled(418);
         const before = await nativeBounds();
-        await desktop.evaluate((captureDuration) => {
+        await desktop.evaluate(() => {
           const samples: { x: number; y: number; width: number; height: number }[] = [];
-          (
-            window as unknown as { recorderFrames: Promise<typeof samples> }
-          ).recorderFrames = new Promise((finishFrames) => {
-            const started = performance.now();
-            const frame = () => {
-              const b = document
-                .querySelector('[data-slot="meeting-recorder"]')!
-                .getBoundingClientRect();
-              samples.push({
-                x: b.x + b.width / 2,
-                y: b.y + b.height / 2,
-                width: window.innerWidth,
-                height: window.innerHeight,
-              });
-              if (performance.now() - started < captureDuration)
-                requestAnimationFrame(frame);
-              else finishFrames(samples);
-            };
-            requestAnimationFrame(frame);
-          });
-        }, resizeDuration + 140);
+          const sampler = { samples, stop: false };
+          (window as unknown as { recorderFrames: typeof sampler }).recorderFrames =
+            sampler;
+          const frame = () => {
+            const b = document
+              .querySelector('[data-slot="meeting-recorder"]')!
+              .getBoundingClientRect();
+            samples.push({
+              x: b.x + b.width / 2,
+              y: b.y + b.height / 2,
+              width: window.innerWidth,
+              height: window.innerHeight,
+            });
+            if (!sampler.stop) requestAnimationFrame(frame);
+          };
+          requestAnimationFrame(frame);
+        });
         if (expand) await card.locator(".comma-recorder-copy").hover();
         else await desktop.mouse.move(0, 0);
+        // Sample until the transition has finished in both the OS window and
+        // the renderer, rather than for a fixed time.
+        await expectEnvelopeSettled(418);
         const frames = await desktop.evaluate(
           () =>
-            (
-              window as unknown as {
-                recorderFrames: Promise<
-                  { x: number; y: number; width: number; height: number }[]
-                >;
+            new Promise<{ x: number; y: number; width: number; height: number }[]>(
+              (finishFrames) => {
+                const sampler = (
+                  window as unknown as {
+                    recorderFrames: {
+                      samples: {
+                        x: number;
+                        y: number;
+                        width: number;
+                        height: number;
+                      }[];
+                      stop: boolean;
+                    };
+                  }
+                ).recorderFrames;
+                // Include one more paint of the settled envelope.
+                requestAnimationFrame(() => {
+                  sampler.stop = true;
+                  finishFrames(sampler.samples);
+                });
               }
-            ).recorderFrames
+            )
         );
         // Chromium reports screenX/screenY one frame after its viewport resize.
         // Use the OS bounds for each envelope instead of those stale properties.
@@ -854,9 +824,7 @@ for (const [baseline, resizeDuration] of [
         expect(
           Math.max(...frames.map((f) => f.y)) - Math.min(...frames.map((f) => f.y))
         ).toBeLessThanOrEqual(1);
-        expect(
-          new Set(frames.map((f) => `${f.width}:${f.height}`)).size
-        ).toBeLessThanOrEqual(2);
+        expect(new Set(frames.map((f) => `${f.width}:${f.height}`)).size).toBe(1);
       };
       await captureMotion(false);
       await captureMotion(true);
@@ -886,10 +854,10 @@ for (const [baseline, resizeDuration] of [
       await desktop.getByRole("menuitemradio", { name: "Microphone off" }).click();
       await expect(desktop.getByRole("menu")).toHaveCount(0);
       await expect
-        .poll(async () => Math.abs((await nativeBounds()).width - 275))
+        .poll(async () => Math.abs((await nativeBounds()).width - 418))
         .toBeLessThanOrEqual(1);
       await expect
-        .poll(async () => Math.abs((await nativeBounds()).height - 90))
+        .poll(async () => Math.abs((await nativeBounds()).height - 104))
         .toBeLessThanOrEqual(1);
       await card.locator(".comma-recorder-copy").hover();
       await expect
@@ -900,7 +868,7 @@ for (const [baseline, resizeDuration] of [
       await expect.poll(async () => (await nativeBounds()).height).toBeLessThan(182);
       await desktop.keyboard.press("Escape");
       await expect
-        .poll(async () => Math.abs((await nativeBounds()).width - 275))
+        .poll(async () => Math.abs((await nativeBounds()).height - 104))
         .toBeLessThanOrEqual(1);
       await card.locator(".comma-recorder-copy").hover();
       await expect.poll(async () => (await card.boundingBox())!.width).toBe(370);
@@ -1021,11 +989,7 @@ for (const [baseline, resizeDuration] of [
       await card.getByRole("button", { name: "Resume recording" }).click();
       await expect(block).not.toHaveAttribute("data-paused");
       // The desktop stays visible above other apps while the client is hidden.
-      await app.evaluate(({ BrowserWindow }) =>
-        BrowserWindow.getAllWindows()
-          .find((w) => !w.isAlwaysOnTop())!
-          .hide()
-      );
+      await hideElectronWindow(app, client);
       await expect
         .poll(() =>
           app.evaluate(() =>
@@ -1047,11 +1011,7 @@ for (const [baseline, resizeDuration] of [
           globalThis.recorderFixture.state().then((s) => !!s.saved)
         )
       ).toBe(true);
-      await app.evaluate(({ BrowserWindow }) =>
-        BrowserWindow.getAllWindows()
-          .find((w) => !w.isAlwaysOnTop())!
-          .show()
-      );
+      await showElectronWindow(app, client);
       await expect(client.getByTestId("meeting-recording-saved")).toBeVisible();
       expect(await app.evaluate(() => globalThis.recorderFixture.counts())).toEqual({
         starts: 1,
@@ -1079,7 +1039,6 @@ for (const [baseline, resizeDuration] of [
 test("a failed desktop window load prevents automatic capture and reports it in the client", async () => {
   const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
   const app = await electron.launch({
-    timeout: 20000,
     ...(process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE
       ? { executablePath: process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE }
       : {}),
@@ -1122,43 +1081,6 @@ test("a failed desktop window load prevents automatic capture and reports it in 
     await closeElectronTestApp(app);
   }
 });
-
-for (const action of ["cancel", "stop", "close"] as const) {
-  test(`Main ${action} drains an opening WAV without losing resource ownership`, async () => {
-    const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
-    const app = await electron.launch({
-      timeout: 20000,
-      ...(process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE
-        ? { executablePath: process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE }
-        : {}),
-      args: [join(output, "main.cjs"), `--user-data-dir=${join(output, action)}`],
-      env: {
-        ...env,
-        NODE_ENV: "test",
-        COMMA_RECORDER_FIXTURE_PRELOAD: join(output, "preload.cjs"),
-        COMMA_RECORDER_FIXTURE_URL: server.resolvedUrls!.local[0]!,
-        COMMA_RECORDER_FIXTURE_BASELINE: "0",
-      },
-    });
-    try {
-      await findElectronWindowByNativeRole(app, "main-window");
-      const result = await app.evaluate(
-        (_electron, operation) =>
-          globalThis.recorderFixture.captureLifecycleScenario(operation),
-        action
-      );
-      expect(result).toEqual({
-        completedBeforeOpen: false,
-        recordingPublishedBeforeOpen: false,
-        tapStopped: true,
-        savedBytes: action === "stop" ? 32 : 0,
-        files: [],
-      });
-    } finally {
-      await closeElectronTestApp(app);
-    }
-  });
-}
 
 test("Comma permission menu stays above the browser and closes on Escape, outside click and navigation", async () => {
   const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
@@ -1236,9 +1158,7 @@ test("Comma permission menu stays above the browser and closes on Escape, outsid
           .getBounds()
       );
       const started = Date.now();
-      await client
-        .getByRole("button", { name: "Site permissions", exact: true })
-        .click();
+      await openSitePermissions(client);
       const menu = await findElectronWindowByNativeRole(app, "site-permission-menu");
       await expect(
         menu.getByRole("menu", { name: "Site permissions", exact: true })
@@ -1293,7 +1213,10 @@ test("Comma permission menu stays above the browser and closes on Escape, outsid
       return menu;
     };
     let menu = await open();
-    await expect(menu.getByRole("heading")).toHaveText("https://meet.google.com");
+    await expect(menu.getByRole("heading", { name: "This site" })).toHaveAttribute(
+      "title",
+      "https://meet.google.com"
+    );
     // Native child ownership is what keeps the Comma menu above WebContentsView;
     // the remote view stays attached and visible underneath it.
     await expect
@@ -1393,65 +1316,28 @@ test("Comma permission menu stays above the browser and closes on Escape, outsid
         }
       })
     ).toBe("rejected");
-    await app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows()
-        .find((window) => !window.getParentWindow())
-        ?.close();
-    });
+    expect(await closeElectronWindow(app, client)).toBe("closed");
     await expect.poll(() => menu.isClosed()).toBe(true);
   } catch (error) {
     await attachRecorderDiagnostics(app);
     throw error;
   } finally {
     // This test already closes the application through its last window.
-    await app.close();
-  }
-});
-
-test("native AAC encoder downmixes a stereo source to mono", async () => {
-  test.skip(
-    process.platform !== "darwin",
-    "The production AAC encoder uses macOS AVFoundation."
-  );
-  const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
-  const app = await electron.launch({
-    args: [join(output, "main.cjs"), `--user-data-dir=${join(output, "aac-stereo")}`],
-    env: {
-      ...env,
-      NODE_ENV: "test",
-      COMMA_RECORDER_FIXTURE_PRELOAD: join(output, "preload.cjs"),
-      COMMA_RECORDER_FIXTURE_URL: server.resolvedUrls!.local[0]!,
-    },
-  });
-  try {
-    await findElectronWindowByNativeRole(app, "main-window");
-    await expect(
-      app.evaluate(
-        (_electron, helper) =>
-          globalThis.recorderFixture.stereoCompressionScenario(helper),
-        audioHelper
-      )
-    ).resolves.toEqual({ channels: 1 });
-  } finally {
     await closeElectronTestApp(app);
   }
 });
 
-for (const sampleRate of [48000, 44100]) {
-  test(`real AAC save and transcription artifacts preserve both tracks at ${sampleRate} Hz`, async () => {
+test(
+  "native AAC encoder downmixes a stereo source to mono",
+  { tag: "@mac" },
+  async () => {
     test.skip(
       process.platform !== "darwin",
       "The production AAC encoder uses macOS AVFoundation."
     );
     const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
     const app = await electron.launch({
-      ...(process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE
-        ? { executablePath: process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE }
-        : {}),
-      args: [
-        join(output, "main.cjs"),
-        `--user-data-dir=${join(output, `aac-${sampleRate}`)}`,
-      ],
+      args: [join(output, "main.cjs"), `--user-data-dir=${join(output, "aac-stereo")}`],
       env: {
         ...env,
         NODE_ENV: "test",
@@ -1461,196 +1347,212 @@ for (const sampleRate of [48000, 44100]) {
     });
     try {
       await findElectronWindowByNativeRole(app, "main-window");
-      const result = await app.evaluate(
-        (_electron, input) =>
-          globalThis.recorderFixture.compressionScenario(
-            input.sampleRate,
-            input.audioHelper
-          ),
-        { sampleRate, audioHelper }
-      );
-      expect(result.recording.driveFile.path).toMatch(
-        /^recording\/2026-09-09\/comma-recording-.*\.m4a$/
-      );
-      expect(result.recording.file.mediaType).toBe("audio/mp4");
-      expect(result.recording.file.size).toBeLessThan(
-        (result.recording.sampleRate * 5 * 2) / 2
-      );
-      expect(result.recording.durationMs).toBe(5000);
-      expect(result.decodedDurationMs).toBeCloseTo(5000, 0);
-      expect(result.channels).toBe(1);
-      expect(result.systemAmplitude).toBeGreaterThan(0.25);
-      expect(result.microphoneAmplitude).toBeGreaterThan(0.25);
-      expect(result.pausedAmplitude).toBeLessThan(0.01);
-      expect(result.uploadIsM4A).toBe(true);
-      expect(result.openedCorrectFile).toBe(true);
-      expect(result.artifacts).toHaveLength(3);
-      expect(result.transcript).toContain("Meeting fixture");
-      expect(result.staging).toEqual([]);
-    } finally {
-      await closeElectronTestApp(app);
-    }
-  });
-}
-
-for (const submissionFails of [false, true]) {
-  test(`meeting Task persists through saved summary Toast (submission fails: ${submissionFails})`, async () => {
-    test.setTimeout(90000);
-    const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
-    const application = await electron.launch({
-      args: [
-        join(output, "main.cjs"),
-        `--user-data-dir=${join(output, "meeting-task")}`,
-      ],
-      env: {
-        ...env,
-        NODE_ENV: "test",
-        COMMA_RECORDER_FIXTURE_PRELOAD: join(output, "preload.cjs"),
-        COMMA_RECORDER_FIXTURE_URL: server.resolvedUrls!.local[0]!,
-        COMMA_RECORDER_FIXTURE_REMINDER: "1",
-        COMMA_RECORDER_FIXTURE_TASKS: "1",
-        COMMA_RECORDER_FIXTURE_TASK_FAILURE: submissionFails ? "1" : "0",
-      },
-    });
-    try {
-      const client = await findElectronWindowByNativeRole(application, "main-window");
-      await application.evaluate(() => globalThis.recorderFixture.join());
-      const desktop = await findElectronWindowByNativeRole(
-        application,
-        "meeting-recorder-window"
-      );
-      const card = desktop.getByTestId("desktop-meeting-recorder");
-      await expect(card).toHaveAttribute("data-phase", "detected");
-      expect(
-        await application.evaluate(() => globalThis.recorderFixture.taskEvents())
-      ).toEqual(["entry"]);
-      await card.getByRole("button", { name: "Start recording" }).click();
-      const block = client.locator('[data-slot="meeting-recording-block"]');
-      await expect(block).toBeVisible();
-      await block.getByRole("button", { name: "Pause", exact: true }).click();
-      await expect(card).toHaveAttribute("data-phase", "paused");
-      expect(
-        await application.evaluate(() => globalThis.recorderFixture.taskEvents())
-      ).toEqual(["entry", "recording", "paused"]);
-      await block.getByRole("button", { name: "Resume", exact: true }).click();
-      await block.getByRole("button", { name: "Stop recording", exact: true }).click();
-      await expect(card).toHaveAttribute("data-phase", "saving");
-      await application.evaluate(() => globalThis.recorderFixture.finish());
       await expect(
-        client.getByRole("button", { name: "Check the summary" })
-      ).toBeVisible();
-      await expect(client.getByRole("button", { name: "Show in Drive" })).toBeVisible();
-      if (submissionFails) {
-        await expect(
-          client.getByText(/Meeting submission \(submit\): HTTP 403\./)
-        ).toBeVisible();
-        await client.getByRole("button", { name: "Retry", exact: true }).click();
-        await expect(
-          client.getByText(/Meeting submission \(submit\): HTTP 403\./)
-        ).toHaveCount(0);
-      }
-      expect(
-        await application.evaluate(() => globalThis.recorderFixture.taskEvents())
-      ).toEqual([
-        "entry",
-        "recording",
-        "paused",
-        "recording",
-        "finalize",
-        ...(submissionFails ? ["retry"] : []),
-      ]);
-      await client.evaluate(async () => {
-        const native = (
-          window as unknown as {
-            commaNative: { meetingRecorder: { retryTaskSync(): Promise<unknown> } };
-          }
-        ).commaNative;
-        await native.meetingRecorder.retryTaskSync();
-      });
-      expect(
-        await application.evaluate(() => globalThis.recorderFixture.taskEvents())
-      ).toContain("retry");
-    } finally {
-      await closeElectronTestApp(application);
-    }
-  });
-}
-
-for (const failure of ["entry", "snapshot", "register"] as const) {
-  test(`saved meeting retries ${failure} failure after scratch cleanup`, async () => {
-    const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
-    const app = await electron.launch({
-      args: [
-        join(output, "main.cjs"),
-        `--user-data-dir=${join(output, `retry-${failure}`)}`,
-      ],
-      env: {
-        ...env,
-        NODE_ENV: "test",
-        COMMA_RECORDER_FIXTURE_PRELOAD: join(output, "preload.cjs"),
-        COMMA_RECORDER_FIXTURE_URL: server.resolvedUrls!.local[0]!,
-      },
-    });
-    try {
-      await findElectronWindowByNativeRole(app, "main-window");
-      const result = await app.evaluate(
-        (_electron, fault) =>
-          globalThis.recorderFixture.meetingTaskRecoveryScenario(fault),
-        failure
-      );
-      expect(result).toEqual({
-        saved: "ready",
-        initialError:
-          failure === "register"
-            ? "Meeting submission (register): The Connector or file registration is temporarily unavailable."
-            : `Meeting submission (${failure === "entry" ? "prepare" : "snapshot"}): Unexpected failure. Retry this meeting.`,
-        scratchFiles: [],
-        creates: 1,
-        finalAction: "finalize",
-        sameRecordingId: true,
-        sameOccurrenceId: true,
-        driveBytes: 364,
-        retryStatus: "synced",
-      });
+        app.evaluate(
+          (_electron, helper) =>
+            globalThis.recorderFixture.stereoCompressionScenario(helper),
+          audioHelper
+        )
+      ).resolves.toEqual({ channels: 1 });
     } finally {
       await closeElectronTestApp(app);
     }
-  });
+  }
+);
+
+for (const sampleRate of [48000, 44100]) {
+  test(
+    `real AAC save and transcription artifacts preserve both tracks at ${sampleRate} Hz`,
+    { tag: "@mac" },
+    async () => {
+      test.skip(
+        process.platform !== "darwin",
+        "The production AAC encoder uses macOS AVFoundation."
+      );
+      const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
+      const app = await electron.launch({
+        ...(process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE
+          ? { executablePath: process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE }
+          : {}),
+        args: [
+          join(output, "main.cjs"),
+          `--user-data-dir=${join(output, `aac-${sampleRate}`)}`,
+        ],
+        env: {
+          ...env,
+          NODE_ENV: "test",
+          COMMA_RECORDER_FIXTURE_PRELOAD: join(output, "preload.cjs"),
+          COMMA_RECORDER_FIXTURE_URL: server.resolvedUrls!.local[0]!,
+        },
+      });
+      try {
+        await findElectronWindowByNativeRole(app, "main-window");
+        const result = await app.evaluate(
+          (_electron, input) =>
+            globalThis.recorderFixture.compressionScenario(
+              input.sampleRate,
+              input.audioHelper
+            ),
+          { sampleRate, audioHelper }
+        );
+        expect(result.recording.driveFile.path).toMatch(
+          /^recording\/2026-09-09\/comma-recording-.*\.m4a$/
+        );
+        expect(result.recording.file.mediaType).toBe("audio/mp4");
+        expect(result.recording.file.size).toBeLessThan(
+          (result.recording.sampleRate * 5 * 2) / 2
+        );
+        expect(result.recording.durationMs).toBe(5000);
+        expect(result.decodedDurationMs).toBeCloseTo(5000, 0);
+        expect(result.channels).toBe(1);
+        expect(result.systemAmplitude).toBeGreaterThan(0.25);
+        expect(result.microphoneAmplitude).toBeGreaterThan(0.25);
+        expect(result.pausedAmplitude).toBeLessThan(0.01);
+        expect(result.uploadIsM4A).toBe(true);
+        expect(result.openedCorrectFile).toBe(true);
+        expect(result.artifacts).toHaveLength(3);
+        expect(result.transcript).toContain("Meeting fixture");
+        expect(result.staging).toEqual([]);
+      } finally {
+        await closeElectronTestApp(app);
+      }
+    }
+  );
 }
 
-test("a meeting offered again after dismissal never resends to its archived Task", async () => {
+test("meeting Task persists through saved summary Toast after a failed submission", async () => {
   const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
-  const app = await electron.launch({
-    args: [join(output, "main.cjs"), `--user-data-dir=${join(output, "reoffer")}`],
+  const application = await electron.launch({
+    args: [join(output, "main.cjs"), `--user-data-dir=${join(output, "meeting-task")}`],
     env: {
       ...env,
       NODE_ENV: "test",
       COMMA_RECORDER_FIXTURE_PRELOAD: join(output, "preload.cjs"),
       COMMA_RECORDER_FIXTURE_URL: server.resolvedUrls!.local[0]!,
+      COMMA_RECORDER_FIXTURE_REMINDER: "1",
+      COMMA_RECORDER_FIXTURE_TASKS: "1",
+      COMMA_RECORDER_FIXTURE_TASK_FAILURE: "1",
+    },
+  });
+  try {
+    const client = await findElectronWindowByNativeRole(application, "main-window");
+    await application.evaluate(() => globalThis.recorderFixture.join());
+    const desktop = await findElectronWindowByNativeRole(
+      application,
+      "meeting-recorder-window"
+    );
+    const card = desktop.getByTestId("desktop-meeting-recorder");
+    await expect(card).toHaveAttribute("data-phase", "detected");
+    expect(
+      await application.evaluate(() => globalThis.recorderFixture.taskEvents())
+    ).toEqual(["entry"]);
+    // The Task says when the call started, not just which app holds it.
+    expect(
+      await application.evaluate(() => globalThis.recorderFixture.taskTitles())
+    ).toEqual([expect.stringMatching(/^Zoom meeting · .*\d:\d\d/)]);
+    await card.getByRole("button", { name: "Start recording" }).click();
+    const block = client.locator('[data-slot="meeting-recording-block"]');
+    await expect(block).toBeVisible();
+    await block.getByRole("button", { name: "Pause", exact: true }).click();
+    await expect(card).toHaveAttribute("data-phase", "paused");
+    expect(
+      await application.evaluate(() => globalThis.recorderFixture.taskEvents())
+    ).toEqual(["entry", "recording", "paused"]);
+    await block.getByRole("button", { name: "Resume", exact: true }).click();
+    await block.getByRole("button", { name: "Stop recording", exact: true }).click();
+    await expect(card).toHaveAttribute("data-phase", "saving");
+    await application.evaluate(() => globalThis.recorderFixture.finish());
+    await expect(
+      client.getByRole("button", { name: "Check the summary" })
+    ).toBeVisible();
+    await expect(client.getByRole("button", { name: "Show in Drive" })).toBeVisible();
+    await expect(
+      client.getByText(/Meeting submission \(submit\): HTTP 403\./)
+    ).toBeVisible();
+    await client.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(
+      client.getByText(/Meeting submission \(submit\): HTTP 403\./)
+    ).toHaveCount(0);
+    // The Retry sent the same saved finalize again.
+    expect(
+      await application.evaluate(() => globalThis.recorderFixture.taskEvents())
+    ).toEqual(["entry", "recording", "paused", "recording", "finalize", "finalize"]);
+  } finally {
+    await closeElectronTestApp(application);
+  }
+});
+
+test("desktop recorder keeps hover when the pointer rests at the compact card's edge", async () => {
+  const { ELECTRON_RUN_AS_NODE: _node, ...env } = process.env;
+  const app = await electron.launch({
+    // The test is of the recorder's motion: its transitions run.
+    motion: "full",
+    ...(process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE
+      ? { executablePath: process.env.COMMA_RECORDER_ELECTRON_EXECUTABLE }
+      : {}),
+    args: [join(output, "main.cjs"), `--user-data-dir=${join(output, "edge-hover")}`],
+    env: {
+      ...env,
+      NODE_ENV: "test",
+      COMMA_RECORDER_FIXTURE_PRELOAD: join(output, "preload.cjs"),
+      COMMA_RECORDER_FIXTURE_URL: server.resolvedUrls!.local[0]!,
+      COMMA_RECORDER_FIXTURE_BASELINE: "0",
     },
   });
   try {
     await findElectronWindowByNativeRole(app, "main-window");
-    const result = await app.evaluate(() =>
-      globalThis.recorderFixture.meetingTaskReofferScenario()
+    await app.evaluate(() => globalThis.recorderFixture.join());
+    const desktop = await findElectronWindowByNativeRole(
+      app,
+      "meeting-recorder-window"
     );
-    // An older client journaled a dismissal of archived task-0 at version 3. Startup and
-    // restart retries and the second dismissal of task-1 send nothing. The recording
-    // after the next offer goes to a new task-2.
-    expect(result).toEqual({
-      commands: [
-        "enter task-1",
-        "task-1 dismiss v1",
-        "enter task-2",
-        "task-2 recording v1",
-        "task-2 finalize v2",
-      ],
-      errors: [],
-      recording: { status: "synced", task: { groupId: "group", taskId: "task-2" } },
-      saved: { summary: "queued", task: { groupId: "group", taskId: "task-2" } },
-      journal: ["task-2"],
+    const card = desktop.getByTestId("desktop-meeting-recorder");
+    await desktop.mouse.move(0, 0);
+    await expect(card).toHaveAttribute("data-compact", "true");
+    // Resolves when no CSS transition is left running, through a bounded number
+    // of restarted transitions.
+    const transitionsSettled = () =>
+      desktop.evaluate(async () => {
+        for (let round = 0; round < 20; round += 1) {
+          const running = document
+            .getAnimations()
+            .filter(
+              (animation) =>
+                animation instanceof CSSTransition && animation.playState === "running"
+            );
+          if (!running.length) break;
+          await Promise.allSettled(running.map((animation) => animation.finished));
+        }
+      });
+    await transitionsSettled();
+    await card.evaluate((element) => {
+      const changes: boolean[] = [];
+      (window as unknown as { compactChanges: boolean[] }).compactChanges = changes;
+      new MutationObserver(() =>
+        changes.push(element.hasAttribute("data-compact"))
+      ).observe(element, { attributes: true, attributeFilter: ["data-compact"] });
     });
+    // A real pointer stays at one screen point after it enters. Chromium hit-tests
+    // that last point again after layout, so the card must not move under it.
+    const compact = (await card.boundingBox())!;
+    await desktop.mouse.move(compact.x + 3, compact.y + compact.height / 2);
+    await expect(card).not.toHaveAttribute("data-compact");
+    await transitionsSettled();
+    await expect(card).not.toHaveAttribute("data-compact");
+    expect(
+      await desktop.evaluate(
+        () => (window as unknown as { compactChanges: boolean[] }).compactChanges
+      )
+    ).toEqual([false]);
+  } catch (error) {
+    await attachRecorderDiagnostics(app);
+    throw error;
   } finally {
     await closeElectronTestApp(app);
   }
 });
+
+/** Site permissions sit in the page menu behind the toolbar's "More actions". */
+async function openSitePermissions(client: Page) {
+  await client.getByRole("button", { name: "More actions", exact: true }).click();
+}

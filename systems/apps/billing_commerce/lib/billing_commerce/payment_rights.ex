@@ -4,7 +4,7 @@ defmodule BillingCommerce.PaymentRights do
   alias BillingCore.{Credits, Metadata}
 
   def apply(payment_intent_id, event_id, read_provider) do
-    repo = Application.fetch_env!(:billing_commerce, :repo)
+    repo = SystemsRuntime.fetch_env!(:billing_commerce, :repo)
     path = "$.*.payment_intent_id ? (@ == #{Jason.encode!(payment_intent_id)})"
 
     accounts =
@@ -106,7 +106,7 @@ defmodule BillingCommerce.PaymentRights do
 
           if action.type == :dispute and action.status in ["won", "warning_closed"] do
             Enum.each(cycles, fn [id, _, starts, ends] ->
-              now = DateTime.utc_now()
+              now = SystemsClock.utc_now()
 
               if DateTime.compare(starts, now) != :gt and DateTime.compare(ends, now) == :gt,
                 do:

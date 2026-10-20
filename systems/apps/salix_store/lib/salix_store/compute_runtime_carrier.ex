@@ -33,9 +33,8 @@ defmodule SalixStore.ComputeRuntimeCarrier do
     end
   end
 
-  # External Worker activation includes the product system prompt and tool
-  # manuals. Keep the durable input below the 8 MiB runtime socket frame bound,
-  # with room for the carrier envelope added after this check.
+  # Keep the durable input below the 8 MiB runtime socket frame bound, with
+  # room for the carrier envelope added after this check.
   @max_payload_bytes 4 * 1024 * 1024
   @max_claim_limit 32
 
@@ -50,7 +49,6 @@ defmodule SalixStore.ComputeRuntimeCarrier do
 
     with :ok <- validate_dispatch_id(dispatch_id),
          :ok <- validate_epoch(connection_epoch),
-         :ok <- validate_runtime_capability_token(payload),
          :ok <- validate_payload_size(payload),
          {:ok, runtime_capability_ciphertext} <-
            Crypto.seal_runtime_capability(runtime_capability_token),
@@ -163,7 +161,10 @@ defmodule SalixStore.ComputeRuntimeCarrier do
 
                  Repo.update_all(
                    from(i in Input, where: i.id in ^ids and i.status in ["pending", "in_flight"]),
-                   set: [status: "in_flight", updated_at: DateTime.utc_now()]
+                   set: [
+                     status: "in_flight",
+                     updated_at: SystemsClock.timestamp(:utc_datetime_usec)
+                   ]
                  )
                end
 
@@ -258,7 +259,7 @@ defmodule SalixStore.ComputeRuntimeCarrier do
                  from(i in Input,
                    where: i.id == ^input.id and i.status == "in_flight"
                  ),
-                 set: [status: "acked", updated_at: DateTime.utc_now()]
+                 set: [status: "acked", updated_at: SystemsClock.timestamp(:utc_datetime_usec)]
                )
 
              cursor_field =
@@ -266,7 +267,7 @@ defmodule SalixStore.ComputeRuntimeCarrier do
 
              Repo.update_all(
                from(r in Compute.RuntimeInstance, where: r.id == ^runtime.id),
-               set: [{cursor_field, input.id}, {:updated_at, DateTime.utc_now()}]
+               set: [{cursor_field, input.id}, {:updated_at, SystemsClock.utc_now()}]
              )
 
              Repo.get!(Input, input.id)
@@ -283,13 +284,15 @@ defmodule SalixStore.ComputeRuntimeCarrier do
 
   def ack(_, _, _), do: {:error, :invalid_runtime_input}
 
-  defp current_runtime!(runtime, workload, epoch) do
+  defp current_runtime!(runtime, workload, epoch, settlement \\ false) do
     if runtime.generation == workload.generation and
          runtime.connection_epoch == epoch and
          runtime.caught_up_epoch == epoch and
          runtime.readiness == "ready" and
          runtime.status == "connected" and
-         workload.desired_state == "ready" and Compute.runtime_control_current?(runtime) do
+         (workload.desired_state == "ready" or
+            (settlement and Compute.runtime_settlement_open?(workload))) and
+         Compute.runtime_control_current?(runtime, settlement) do
       :ok
     else
       Repo.rollback(:stale_runtime_capability)
@@ -339,12 +342,12 @@ defmodule SalixStore.ComputeRuntimeCarrier do
       )
 
     if is_nil(runtime), do: Repo.rollback(:runtime_not_found)
-    :ok = current_runtime!(runtime, workload, connection_epoch)
+    :ok = current_runtime!(runtime, workload, connection_epoch, true)
     {runtime, workload}
   end
 
   defp insert_once(workload, runtime, dispatch_id, payload, runtime_capability_ciphertext) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     input_id = input_id(workload, dispatch_id)
 
     row = %{
@@ -383,7 +386,7 @@ defmodule SalixStore.ComputeRuntimeCarrier do
                   from(i in Input, where: i.id == ^input.id),
                   set: [
                     runtime_capability_ciphertext: runtime_capability_ciphertext,
-                    updated_at: DateTime.utc_now()
+                    updated_at: SystemsClock.timestamp(:utc_datetime_usec)
                   ]
                 )
 
@@ -400,18 +403,6 @@ defmodule SalixStore.ComputeRuntimeCarrier do
 
   defp validate_dispatch_id(value) when is_binary(value) and byte_size(value) in 1..180, do: :ok
   defp validate_dispatch_id(_), do: {:error, :invalid_dispatch_id}
-
-  defp validate_runtime_capability_token(%{
-         "kind" => "external",
-         "runtime_capability_token" => token
-       })
-       when is_binary(token) and token != "",
-       do: :ok
-
-  defp validate_runtime_capability_token(%{"kind" => "external"}),
-    do: {:error, :invalid_runtime_input}
-
-  defp validate_runtime_capability_token(_), do: :ok
 
   defp validate_epoch(value) do
     case Integer.parse(value) do

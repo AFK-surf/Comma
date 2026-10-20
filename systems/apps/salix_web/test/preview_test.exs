@@ -8,7 +8,7 @@ defmodule SalixWeb.PreviewTest do
   page is then served by the public host-based site server WITHOUT auth.
   Against the Fake S3 backend.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.SiteId
   alias SalixAgent.Tools.Preview
@@ -19,22 +19,22 @@ defmodule SalixWeb.PreviewTest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
 
-    prev_domain = Application.get_env(:salix_agent, :sites_domain)
-    prev_port = Application.get_env(:salix_agent, :sites_port)
-    Application.put_env(:salix_agent, :sites_domain, @domain)
+    prev_domain = SystemsRuntime.get_env(:salix_agent, :sites_domain)
+    prev_port = SystemsRuntime.get_env(:salix_agent, :sites_port)
+    SystemsRuntime.put_env(:salix_agent, :sites_domain, @domain)
     # Pin the port off: URL assertions here stay port-less; the sites_port
     # suffix behavior is covered by SiteIdTest.
-    Application.put_env(:salix_agent, :sites_port, nil)
+    SystemsRuntime.put_env(:salix_agent, :sites_port, nil)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev)
-      Application.put_env(:salix_agent, :sites_domain, prev_domain)
-      Application.put_env(:salix_agent, :sites_port, prev_port)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
+      SystemsRuntime.put_env(:salix_agent, :sites_domain, prev_domain)
+      SystemsRuntime.put_env(:salix_agent, :sites_port, prev_port)
     end)
 
     agent = SalixAgent.TestSupport.new_agent_id()
@@ -352,13 +352,13 @@ defmodule SalixWeb.PreviewTest do
     end
 
     # unconfigured sites domain → willow's exact error
-    Application.put_env(:salix_agent, :sites_domain, nil)
+    SystemsRuntime.put_env(:salix_agent, :sites_domain, nil)
 
     assert_raise RuntimeError, ~r/agent website domain is not configured/, fn ->
       Preview.publish_html_preview(%{"html" => @html}, ctx)
     end
 
-    Application.put_env(:salix_agent, :sites_domain, @domain)
+    SystemsRuntime.put_env(:salix_agent, :sites_domain, @domain)
   end
 
   test "site-name fallback chain: title → basename → tool call id → preview", %{agent: a} do

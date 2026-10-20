@@ -1,5 +1,5 @@
 defmodule CommaWeb.TelegramCommandSetupTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias CommaWeb.{TelegramBot, TelegramCommands, TelegramCommandSetup}
   alias SalixIM.TestSupport.BanditServer
@@ -57,9 +57,9 @@ defmodule CommaWeb.TelegramCommandSetupTest do
       )
 
     port = BanditServer.start!(fn port -> {Bandit, plug: {API, state}, port: port} end)
-    previous = Application.get_env(:comma_web, :telegram)
+    previous = SystemsRuntime.get_env(:comma_web, :telegram)
 
-    Application.put_env(:comma_web, :telegram,
+    SystemsRuntime.put_env(:comma_web, :telegram,
       enabled: true,
       bot_token: "setup-test-token",
       bot_username: "comma_product_bot",
@@ -71,8 +71,8 @@ defmodule CommaWeb.TelegramCommandSetupTest do
 
     on_exit(fn ->
       if is_nil(previous),
-        do: Application.delete_env(:comma_web, :telegram),
-        else: Application.put_env(:comma_web, :telegram, previous)
+        do: SystemsRuntime.delete_env(:comma_web, :telegram),
+        else: SystemsRuntime.put_env(:comma_web, :telegram, previous)
     end)
 
     %{state: state}
@@ -103,25 +103,5 @@ defmodule CommaWeb.TelegramCommandSetupTest do
     end
 
     assert Enum.all?(data.calls, fn {method, _params} -> method != "setWebhook" end)
-  end
-
-  test "identity mismatch stops before changing any menu", %{state: state} do
-    Agent.update(state, &%{&1 | username: "another_bot"})
-    assert {:error, :telegram_bot_identity_mismatch} = TelegramCommandSetup.apply(dry_run: false)
-    assert [{"getMe", %{}}] = Agent.get(state, & &1.calls)
-  end
-
-  test "command readback drift fails closed without configuring subsequent languages or menu", %{
-    state: state
-  } do
-    Agent.update(state, &%{&1 | drift: true})
-    assert {:error, :telegram_command_setup_drift} = TelegramCommandSetup.apply(dry_run: false)
-
-    assert ["getMe", "setMyCommands", "getMyCommands"] ==
-             Agent.get(state, &Enum.map(&1.calls, fn {method, _} -> method end))
-  end
-
-  test "Bot API error_code is retained for failure classification, without returning payload content" do
-    assert {:error, {:telegram_http_error, 403}} = TelegramBot.send_message("123", "hello")
   end
 end

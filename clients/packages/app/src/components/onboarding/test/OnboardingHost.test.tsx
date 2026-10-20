@@ -9,14 +9,12 @@ import {
   type OnboardingWindowState,
 } from "@comma/native-bridge";
 import type { SessionProductLease } from "@comma/session-contract";
+import { createScriptedCore, resolvedWorkspace } from "@comma/test-utils/scripted-core";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { act, render, screen, waitFor, within } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CommaApiClient } from "../../../api";
-import type { AgentModels } from "../../../api/modelCatalog";
-import { writeActiveWorkspaceId } from "../../activeWorkspace";
 import { useApplicationMenu } from "../../application-menu/useApplicationMenu";
 import { CommaAuthContext, type CommaAuthContextValue } from "../../auth-context";
 import {
@@ -60,7 +58,6 @@ const productLease: SessionProductLease = {
 describe("OnboardingHost", () => {
   beforeEach(() => {
     initializeCommaI18n(["en"]);
-    writeActiveWorkspaceId("wsp_home");
   });
 
   afterEach(() => {
@@ -85,10 +82,10 @@ describe("OnboardingHost", () => {
       },
     });
     let routerName = "Default workspace Router";
-    const getAgentModels = vi.fn(async () => agentModels(routerName));
+    const core = routerCore(() => routerName);
 
     render(
-      <ProductWindow api={{ getAgentModels }}>
+      <ProductWindow core={core}>
         <CommaElectronClientSettingsProvider
           initialPreferences={preferences.state.current()}
         >
@@ -117,7 +114,7 @@ describe("OnboardingHost", () => {
     await act(async () => menu.invoke("go-search"));
     expect(menu.openSearch).toHaveBeenCalledOnce();
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Atlas"));
-    expect(getAgentModels).toHaveBeenCalledTimes(2);
+    expect(core.reads).toHaveLength(2);
     expect(presentWindow).toHaveBeenCalledOnce();
 
     // It ended with Start chatting: Main hands the user to Home's composer.
@@ -152,7 +149,7 @@ describe("OnboardingHost", () => {
     // Its renderer crashed: Main closed it, and nothing recorded completion.
     onboardingWindow.publish({ open: true });
     onboardingWindow.publish({ open: false });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await act(() => vi.advanceTimersByTimeAsync(0));
 
     expect(presentWindow).toHaveBeenCalledOnce();
     expect(screen.queryByRole("region", { name: /Onboarding/ })).toBeNull();
@@ -232,20 +229,20 @@ describe("OnboardingHost", () => {
  * menu command, and Home's composer.
  */
 function ProductWindow({
-  api = { getAgentModels: async () => agentModels("Default workspace Router") },
+  core: given,
   children,
   lease = productLease,
 }: {
-  api?: Partial<CommaApiClient>;
+  core?: ReturnType<typeof routerCore>;
   children: ReactNode;
   lease?: SessionProductLease;
 }) {
+  const [core] = useState(() => given ?? routerCore());
   const auth = {
-    api,
     productLease: lease,
     userId,
   } as unknown as CommaAuthContextValue;
-  return (
+  return core.wrap(
     <CommaI18nProvider locale="en">
       <CommaAuthContext.Provider value={auth}>
         <RouterIdentityProvider>
@@ -361,14 +358,19 @@ function appPreferences(
   };
 }
 
-const routerModel = (name: string) => ({
-  agent_id: "agent_router",
-  name,
-  role: "router" as const,
-});
-
-const agentModels = (routerName: string): AgentModels => ({
-  workspace_id: "wsp_home",
-  agents: { router: routerModel(routerName) },
-  workers: { items: [], next_cursor: null },
-});
+/** A core whose `router` topic answers `name()` at each read, and records the reads. */
+function routerCore(name: () => string = () => "Default workspace Router") {
+  const reads: Record<string, unknown>[] = [];
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "workspace"
+        ? resolvedWorkspace("wsp_home")
+        : topic.topic === "router"
+          ? { agent: "agent_router", name: name() }
+          : undefined,
+    onSubscribe: (topic) => {
+      if (topic.topic === "router") reads.push(topic);
+    },
+  });
+  return { ...core, reads };
+}

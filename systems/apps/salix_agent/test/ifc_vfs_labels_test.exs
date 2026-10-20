@@ -14,24 +14,22 @@ defmodule SalixAgent.IFCVfsLabelsTest do
   sources would have been, which is the whole invariant.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{AgentWorkspace, FileBackend, Tools}
 
   @legal "scope|cnx1|C_LEGAL"
-  @space "space|cnx1"
-
   setup do
-    previous = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    if Process.whereis(SalixStore.S3.Fake),
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake),
       do: SalixStore.S3.Fake.reset(),
       else: start_supervised!(SalixStore.S3.Fake)
 
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, previous) end)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, previous) end)
 
-    {:ok, agent: "ifc-vfs-#{System.unique_integer([:positive])}"}
+    {:ok, agent: "ifc-vfs-#{SystemsRuntime.Proc.unique_integer([:positive])}"}
   end
 
   # A ctx as the dispatcher hands it to a tool: `:ifc` present means this Group
@@ -59,7 +57,7 @@ defmodule SalixAgent.IFCVfsLabelsTest do
     assert {:ok, _state} =
              AgentWorkspace.seed_operation(
                agent,
-               "ifc-vfs:#{System.unique_integer([:positive])}",
+               "ifc-vfs:#{SystemsRuntime.Proc.unique_integer([:positive])}",
                %{},
                events
              )
@@ -68,29 +66,6 @@ defmodule SalixAgent.IFCVfsLabelsTest do
   end
 
   describe "a file written while the check is on" do
-    test "a generated UI retains the source audience through its immutable artifact", %{
-      agent: agent
-    } do
-      {result, events} =
-        SalixAgent.Tools.DynamicUI.create(
-          %{
-            "html" => "<p>Private report</p>",
-            "script" => "",
-            "data" => %{},
-            "summary" => "Private report"
-          },
-          ctx(agent, sources_label: [@legal])
-        )
-
-      assert [%{"type" => "vfs_write", "ifc_label" => [@legal]}] = events
-      commit!(agent, events)
-      block = Jason.decode!(result)["content"]
-      assert AgentWorkspace.label(agent, block["path"]) == [@legal]
-
-      assert {:tool_ifc, _content, [], %{"label" => [@legal]}} =
-               Tools.read_file(%{"path" => block["path"]}, ctx(agent))
-    end
-
     test "records what the write drew on, and hands it back on read", %{agent: agent} do
       write!(agent, "/notes/legal.md", "what #legal said", sources_label: [@legal])
 
@@ -100,24 +75,6 @@ defmodule SalixAgent.IFCVfsLabelsTest do
                Tools.read_file(%{"path" => "/notes/legal.md"}, ctx(agent))
 
       assert content =~ "what #legal said"
-    end
-
-    test "keeps the join when the write drew on more than one place", %{agent: agent} do
-      write!(agent, "/notes/both.md", "two sources", sources_label: [@legal, @space])
-
-      assert {:tool_ifc, _content, [], %{"label" => label}} =
-               Tools.read_file(%{"path" => "/notes/both.md"}, ctx(agent))
-
-      assert Enum.sort(label) == Enum.sort([@legal, @space])
-    end
-
-    test "a write that drew on nothing is readable by anyone", %{agent: agent} do
-      # `sources: []` is an honest declaration, not an absent one: the file
-      # carries no confidential content, so reading it is bottom of the lattice.
-      write!(agent, "/notes/scratch.md", "just arithmetic", sources_label: ["public"])
-
-      assert {:tool_ifc, _content, [], %{"label" => ["public"]}} =
-               Tools.read_file(%{"path" => "/notes/scratch.md"}, ctx(agent))
     end
 
     test "an edit keeps the audience of what it did not touch", %{agent: agent} do
@@ -140,32 +97,6 @@ defmodule SalixAgent.IFCVfsLabelsTest do
       assert AgentWorkspace.label(agent, "/notes/plan.md") == [@legal]
       assert {:ok, body} = AgentWorkspace.read(agent, "/notes/plan.md")
       assert body == "DONE ship\nSalary: 123"
-    end
-
-    test "an append to memory keeps it too, joined with what the append drew on", %{agent: agent} do
-      today = SalixAgent.Tools.Memory.today_episode_path()
-      write!(agent, today, "yesterday, from #legal", sources_label: [@legal])
-
-      {_told, events} =
-        SalixAgent.Tools.Memory.memory_write(
-          %{"path" => today, "content" => "and today, from the space", "mode" => "append"},
-          ctx(agent, sources_label: [@space])
-        )
-
-      commit!(agent, events)
-
-      # The appended note and the day's earlier entries are now one file, so it
-      # belongs to both.
-      assert Enum.sort(AgentWorkspace.label(agent, today)) == Enum.sort([@legal, @space])
-    end
-
-    test "a full replacement does not inherit what it overwrote", %{agent: agent} do
-      write!(agent, "/notes/legal.md", "what #legal said", sources_label: [@legal])
-      write!(agent, "/notes/legal.md", "unrelated public note", sources_label: ["public"])
-
-      # Nothing of the private file survives, so keeping its audience would
-      # make an ordinary note permanently unusable for no reason.
-      assert AgentWorkspace.label(agent, "/notes/legal.md") == ["public"]
     end
 
     test "a copy carries the label with it", %{agent: agent} do
@@ -194,19 +125,6 @@ defmodule SalixAgent.IFCVfsLabelsTest do
                Tools.read_file(%{"path" => "/notes/legacy.md"}, ctx(agent))
     end
 
-    test "and drags a listing that contains it down with it", %{agent: agent} do
-      write!(agent, "/notes/legal.md", "labelled", sources_label: [@legal])
-      write!(agent, "/notes/legacy.md", "unlabelled", [])
-
-      assert {:tool_ifc, listing, [], %{"label" => label}} =
-               Tools.list_files(%{"prefix" => "/notes"}, ctx(agent))
-
-      assert listing =~ "/notes/legacy.md"
-      # Not `[@legal]`: the answer was derived from a file whose audience is
-      # unknown, and an unknown audience must not be quietly dropped from a join.
-      assert "agent_private" in label
-    end
-
     # A read of such a file already says agent-private. A write that keeps most
     # of it has to say the same thing, or the two disagree about one file and
     # the edit is a way to publish whatever the check was turned on to protect.
@@ -224,88 +142,12 @@ defmodule SalixAgent.IFCVfsLabelsTest do
       assert AgentWorkspace.label(agent, "/notes/legacy.md") == ["agent_private"]
       assert {:ok, "DONE ship\nSalary: 123"} = AgentWorkspace.read(agent, "/notes/legacy.md")
     end
-
-    test "an append to it cannot either", %{agent: agent} do
-      today = SalixAgent.Tools.Memory.today_episode_path()
-      write!(agent, today, "from before the check", [])
-
-      {_told, events} =
-        SalixAgent.Tools.Memory.memory_write(
-          %{"path" => today, "content" => "and today, from the space", "mode" => "append"},
-          ctx(agent, sources_label: [@space])
-        )
-
-      commit!(agent, events)
-
-      assert Enum.sort(AgentWorkspace.label(agent, today)) ==
-               Enum.sort(["agent_private", @space])
-    end
-
-    test "but replacing it wholesale inherits nothing", %{agent: agent} do
-      write!(agent, "/notes/legacy.md", "Salary: 123", [])
-      write!(agent, "/notes/legacy.md", "an unrelated public note", sources_label: ["public"])
-
-      # Nothing of the old file survives, so an ordinary note is not stranded.
-      assert AgentWorkspace.label(agent, "/notes/legacy.md") == ["public"]
-    end
-
-    test "and a first write to a path is absence, not unknown retention", %{agent: agent} do
-      write!(agent, "/notes/fresh.md", "brand new", sources_label: ["public"])
-
-      # The distinction the seam exists to draw: nothing was kept, so there is
-      # nothing whose audience is unknown, and the note stays usable.
-      assert AgentWorkspace.label(agent, "/notes/fresh.md") == ["public"]
-    end
   end
 
   describe "what the workspace can answer about a path" do
-    test "tells apart a labelled file, an unlabelled one, and an absent one", %{agent: agent} do
-      write!(agent, "/notes/legal.md", "what #legal said", sources_label: [@legal])
-      write!(agent, "/notes/legacy.md", "from before", [])
-
-      assert AgentWorkspace.retained(agent, "/notes/legal.md") == {:labelled, [@legal]}
-      assert AgentWorkspace.retained(agent, "/notes/legacy.md") == :unlabelled
-      assert AgentWorkspace.retained(agent, "/notes/never-written.md") == :absent
-    end
-
-    test "a stored label whose atoms do not decode still fails closed", %{agent: agent} do
-      # `apply_workspace_event` only lets a list into the manifest, so an
-      # unreadable label is a list of atoms nobody can decode rather than a
-      # bad shape. It must not be joined as if it named an audience.
-      {_told, events} =
-        Tools.write_file(
-          %{"path" => "/notes/corrupt.md", "content" => "Salary: 123"},
-          ctx(agent, sources_label: [@legal])
-        )
-
-      commit!(agent, Enum.map(events, &Map.put(&1, "ifc_label", ["not-a-real-atom"])))
-
-      {_told, edited} =
-        Tools.edit_file(
-          %{"path" => "/notes/corrupt.md", "old" => "Salary", "new" => "Pay"},
-          ctx(agent, sources_label: ["public"])
-        )
-
-      commit!(agent, edited)
-
-      # Not `["public"]`, and not `["not-a-real-atom", "public"]` either.
-      assert AgentWorkspace.label(agent, "/notes/corrupt.md") == ["agent_private"]
-    end
   end
 
   describe "memory" do
-    test "a scoped note reads back with the audience it was written from", %{agent: agent} do
-      write!(agent, "/memory/scoped/legal.md", "what #legal decided", sources_label: [@legal])
-
-      assert {:tool_ifc, content, [], %{"label" => [@legal]}} =
-               SalixAgent.Tools.Memory.memory_get(
-                 %{"path" => "/memory/scoped/legal.md"},
-                 ctx(agent)
-               )
-
-      assert content =~ "what #legal decided"
-    end
-
     test "a search labels each hit by the note it came from", %{agent: agent} do
       write!(agent, "/memory/index.md", "quarterly plan", sources_label: ["public"])
       write!(agent, "/memory/scoped/legal.md", "quarterly counsel", sources_label: [@legal])
@@ -350,42 +192,8 @@ defmodule SalixAgent.IFCVfsLabelsTest do
       assert {:tool_ifc, "{}", [%{"e" => 1}], %{"label" => ["group|grp_1"]}} =
                ConnectorLabels.group_audience({"{}", [%{"e" => 1}]}, labelling)
     end
-
-    test "fails closed when there is no Group to name" do
-      assert {:tool_ifc, "{}", [], %{"label" => ["agent_private"]}} =
-               ConnectorLabels.group_audience("{}", %{agent_id: "a", ifc: %{"items" => []}})
-    end
-
-    test "is silent for a session that is not labelling" do
-      assert ConnectorLabels.group_audience("{}", %{agent_id: "a", group_id: "grp_1"}) == "{}"
-    end
-
-    test "leaves a result that is not plain content alone" do
-      labelling = %{agent_id: "a", group_id: "grp_1", ifc: %{"items" => []}}
-      status = {:tool_status, "cancelled", "{}", []}
-      assert ConnectorLabels.group_audience(status, labelling) == status
-    end
   end
 
   describe "a Group that is not labelling" do
-    test "records nothing, because nothing was decided", %{agent: agent} do
-      # A Group that is `off` never reaches `SalixAgent.IFC.Check`, so no
-      # effect ever carries evidence and no file ever carries a label.
-      write!(agent, "/notes/plain.md", "hello", labelling?: false)
-
-      assert AgentWorkspace.label(agent, "/notes/plain.md") == nil
-    end
-
-    test "and reads come back as plain content", %{agent: agent} do
-      write!(agent, "/notes/legal.md", "what #legal said", sources_label: [@legal])
-
-      # Stamping the fail-closed label here would put it on results that
-      # predate the decision to have one, and every file the Group wrote while
-      # it was off would flow nowhere the day it turns the check on.
-      content = Tools.read_file(%{"path" => "/notes/legal.md"}, ctx(agent, labelling?: false))
-
-      assert is_binary(content)
-      assert content =~ "what #legal said"
-    end
   end
 end

@@ -23,6 +23,7 @@ defmodule SalixIM.IFC.Projection do
   require Logger
 
   alias SalixIM.Provider.Feishu.API, as: FeishuAPI
+  alias SalixIM.Provider.Lark.API, as: LarkAPI
   alias SalixIM.Provider.Slack.API, as: SlackAPI
   alias SalixIM.ProviderConnects
   alias SalixIM.ProviderObservations
@@ -85,6 +86,9 @@ defmodule SalixIM.IFC.Projection do
            feishu_message_chat(connect, message_id) do
       chat_id
     else
+      # The provider of the connect did not match: a message of a Lark
+      # connect is read from Lark.
+      "lark" -> lark_message_scope_id(scope, message_id)
       _unplaceable -> ""
     end
   rescue
@@ -93,6 +97,19 @@ defmodule SalixIM.IFC.Projection do
       ""
   catch
     _kind, _reason -> ""
+  end
+
+  defp lark_message_scope_id(scope, message_id) do
+    with {:ok, %{"provider" => "lark"} = connect} <- connect(scope),
+         {:ok, data} <- LarkAPI.get(connect, "/im/v1/messages/#{URI.encode(message_id)}") do
+      case data do
+        %{"items" => [%{"chat_id" => chat_id} | _rest]} when is_binary(chat_id) -> chat_id
+        %{"chat_id" => chat_id} when is_binary(chat_id) -> chat_id
+        _other -> ""
+      end
+    else
+      _unplaceable -> ""
+    end
   end
 
   defp feishu_message_chat(connect, message_id) do
@@ -337,7 +354,7 @@ defmodule SalixIM.IFC.Projection do
     }
   end
 
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 
   defp refresh_structure(%{kind: kind} = row, _scope, _scope_id) when is_binary(kind), do: row
 
@@ -392,6 +409,7 @@ defmodule SalixIM.IFC.Projection do
         case to_string(connect["provider"]) do
           "slack" -> slack_structure(scope, connect, scope_id)
           "feishu" -> feishu_structure(scope, connect, scope_id)
+          "lark" -> lark_structure(scope, connect, scope_id)
           "telegram" -> telegram_structure(scope, connect, scope_id)
           "wechat" -> wechat_structure(scope, connect, scope_id)
           _unsupported -> :error
@@ -502,6 +520,88 @@ defmodule SalixIM.IFC.Projection do
   defp feishu_member_id(%{"member_id" => id}) when is_binary(id) and id != "", do: [id]
   defp feishu_member_id(_item), do: []
 
+  # A Lark chat says what it is, in the same fields as a Feishu chat:
+  # `external` for a chat with people of another tenant, `chat_mode` for a
+  # private chat, and `chat_type: "public"` for a group anyone of the tenant
+  # can find and join.
+  #
+  # A private chat does not name its person here. Ingress learns the pair
+  # (`observe_direct/3`); until then the chat is its own scope with unknown
+  # members.
+  defp lark_structure(scope, connect, chat_id) do
+    case lark_chat(connect, chat_id) do
+      %{} = chat ->
+        kind = lark_kind(chat)
+
+        {:ok,
+         %{
+           kind: kind,
+           within: space_atom(scope.connect_id),
+           display_name: lark_display_name(kind, chat),
+           canonical_scope_id: nil
+         }}
+
+      _other ->
+        :error
+    end
+  end
+
+  defp lark_kind(chat) do
+    cond do
+      chat["external"] == true -> "shared"
+      to_string(chat["chat_mode"]) == "p2p" -> "direct"
+      to_string(chat["chat_type"]) == "public" -> "public"
+      true -> "room"
+    end
+  end
+
+  defp lark_display_name("direct", _chat), do: "私聊"
+
+  defp lark_display_name(_kind, chat) do
+    case String.trim(to_string(chat["name"] || "")) do
+      "" -> nil
+      name -> name
+    end
+  end
+
+  defp lark_chat(connect, chat_id) do
+    case LarkAPI.get(connect, "/im/v1/chats/#{URI.encode(to_string(chat_id))}") do
+      {:ok, %{} = chat} -> chat
+      _other -> nil
+    end
+  rescue
+    exception ->
+      Logger.debug("ifc: lark chat lookup failed: #{Exception.message(exception)}")
+      nil
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp lark_members(connect, chat_id) do
+    params = %{member_id_type: "open_id", page_size: @member_page_limit}
+
+    case LarkAPI.get(connect, "/im/v1/chats/#{URI.encode(to_string(chat_id))}/members", params) do
+      {:ok, %{"items" => items} = page} when is_list(items) ->
+        # With `has_more` this is not the whole set, and a part of the
+        # members is not the members.
+        if page["has_more"] == true,
+          do: nil,
+          else: Enum.flat_map(items, &lark_member_id/1)
+
+      _other ->
+        nil
+    end
+  rescue
+    exception ->
+      Logger.debug("ifc: lark chat members failed: #{Exception.message(exception)}")
+      nil
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp lark_member_id(%{"member_id" => id}) when is_binary(id) and id != "", do: [id]
+  defp lark_member_id(_item), do: []
+
   # Telegram's structure comes from the observation the connect already writes
   # on every inbound, so this costs no API call. A private chat is named by the
   # user it is with — a Telegram private chat id *is* that user's id — which is
@@ -600,6 +700,11 @@ defmodule SalixIM.IFC.Projection do
       # then, so it is not asked.
       "feishu" when kind != "direct" ->
         feishu_members(connect, scope_id)
+
+      # Lark lists the members of a group only. A private chat is named by
+      # its person once ingress saw a message of it.
+      "lark" when kind != "direct" ->
+        lark_members(connect, scope_id)
 
       # Telegram's Bot API can count a group's members and name its
       # administrators, but it cannot enumerate them, so a group's member set

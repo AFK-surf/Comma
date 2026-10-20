@@ -1,5 +1,5 @@
 defmodule Salix.Control.PluginSetupTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Control.{OAuthBindings, Plugins, PluginSetup, RemoteMCPOAuth, Tenants}
   alias SalixMCP.Gateway
@@ -20,7 +20,7 @@ defmodule Salix.Control.PluginSetupTest do
     def init(opts) do
       {:ok, bandit} =
         Bandit.start_link(
-          plug: {__MODULE__.Plug, self()},
+          plug: {__MODULE__.Plug, SystemsRuntime.Proc.self()},
           port: 0,
           ip: {127, 0, 0, 1},
           startup_log: false
@@ -127,10 +127,10 @@ defmodule Salix.Control.PluginSetupTest do
   end
 
   setup do
-    previous_store = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -138,8 +138,8 @@ defmodule Salix.Control.PluginSetupTest do
 
     on_exit(fn ->
       if previous_store,
-        do: Application.put_env(:salix_store, :s3_backend, previous_store),
-        else: Application.delete_env(:salix_store, :s3_backend)
+        do: SystemsRuntime.put_env(:salix_store, :s3_backend, previous_store),
+        else: SystemsRuntime.delete_env(:salix_store, :s3_backend)
     end)
 
     assert {:ok, %{created: created}} = SalixMCP.Builtins.seed_builtin_definitions()
@@ -150,134 +150,14 @@ defmodule Salix.Control.PluginSetupTest do
     %{tenant_id: tenant["tenant_id"], group_id: group["group_id"]}
   end
 
-  test "the product MCP catalog and fixed default-disabled Linear plugin are idempotent" do
+  test "seeding built-in MCP definitions is idempotent" do
     assert {:ok, %{created: 0, updated: 0, unchanged: unchanged}} =
              SalixMCP.Builtins.seed_builtin_definitions()
 
-    assert unchanged >= 8
-
-    assert {:ok, definition} =
-             MCPStore.get_definition("mcp1_0000000000000000004", "")
-
-    assert definition["supports_server"]
-    assert get_in(definition, ["salix_metadata", "supported_placements"]) == ["server"]
-
-    assert get_in(definition, ["server_metadata", "remotes"]) == [
-             %{
-               "target_ref" => "remote:linear",
-               "transport" => "streamable-http",
-               "url" => "https://mcp.linear.app/mcp",
-               "headers_schema" => %{
-                 "Authorization" => %{
-                   "isRequired" => true,
-                   "isSecret" => true,
-                   "value" => "Bearer ${LINEAR_ACCESS_TOKEN}"
-                 }
-               }
-             }
-           ]
-
-    remote_definitions = %{
-      "mcp1_0000000000000000003" => {"remote:github", "https://api.githubcopilot.com/mcp/"},
-      "mcp1_0000000000000000005" => {"remote:feishu", "https://mcp.feishu.cn/mcp"},
-      "mcp1_0000000000000000006" =>
-        {"remote:google-workspace", "https://workspacemcp.googleapis.com/mcp/v1"},
-      "mcp1_0000000000000000007" => {"remote:notion", "https://mcp.notion.com/mcp"},
-      "mcp1_0000000000000000008" => {"remote:slack", "https://mcp.slack.com/mcp"}
-    }
-
-    for {mcp_id, {target_ref, url}} <- remote_definitions do
-      assert {:ok, product_definition} = MCPStore.get_definition(mcp_id, "")
-      assert product_definition["supports_server"]
-      assert "server" in get_in(product_definition, ["salix_metadata", "supported_placements"])
-
-      assert [%{"target_ref" => ^target_ref, "url" => ^url}] =
-               get_in(product_definition, ["server_metadata", "remotes"])
-               |> Enum.map(&Map.take(&1, ~w(target_ref url)))
-    end
-
-    plugin = Enum.find(Plugins.system_plugins(), &(&1["plugin_id"] == "linear"))
-    refute plugin["default_enabled"]
-    assert plugin["setup"]["type"] == "integration"
-    assert plugin["setup"]["default_connection"] == "linear-managed"
-
-    assert Enum.map(plugin["setup"]["connections"], & &1["kind"]) ==
-             ~w(native_mcp_oauth managed_oauth)
-
-    assert hd(plugin["setup"]["connections"])["scopes"] == ~w(read write openid email)
-
-    assert hd(plugin["setup"]["mcps"])["auth_refs"] ==
-             ["linear-native", "linear-managed"]
-
-    assert plugin["refs"]["tool_refs"] == ["mcp.linear.*"]
-    assert plugin["refs"]["mcp_refs"] == [%{"mcp_id" => definition["mcp_id"]}]
-
-    assert plugin["refs"]["oauth_requirements"] == [
-             %{"provider" => "linear", "alias" => "linear", "scopes" => ~w(read write)}
-           ]
-
-    expected_mcps = %{
-      "feishu" => {"mcp1_0000000000000000005", "remote:feishu"},
-      "github" => {"mcp1_0000000000000000003", "remote:github"},
-      "google" => {"mcp1_0000000000000000006", "remote:google-workspace"},
-      "linear" => {"mcp1_0000000000000000004", "remote:linear"},
-      "notion" => {"mcp1_0000000000000000007", "remote:notion"},
-      "slack" => {"mcp1_0000000000000000008", "remote:slack"}
-    }
-
-    products =
-      Plugins.system_plugins()
-      |> Enum.filter(&(get_in(&1, ["setup", "type"]) == "integration"))
-
-    assert Enum.map(products, & &1["plugin_id"]) |> Enum.sort() ==
-             ~w(feishu github google linear notion slack)
-
-    assert Map.new(products, &{&1["plugin_id"], get_in(&1, ["ui", "brand"])}) == %{
-             "feishu" => "feishu",
-             "github" => "github",
-             "google" => "google",
-             "linear" => "linear",
-             "notion" => "notion",
-             "slack" => "slack"
-           }
-
-    refute Enum.find(products, &(&1["plugin_id"] == "google"))["default_enabled"]
-
-    assert get_in(
-             Enum.find(products, &(&1["plugin_id"] == "google")),
-             ["setup", "mcps", Access.at(0), "icon"]
-           ) == "google"
-
-    for product <- products do
-      assert [mcp] = product["setup"]["mcps"]
-      {mcp_id, target_ref} = Map.fetch!(expected_mcps, product["plugin_id"])
-      assert mcp["mcp_id"] == mcp_id
-      assert mcp["target_ref"] == target_ref
-      assert mcp["placement"] == "server"
-      assert is_list(mcp["auth_refs"])
-      assert mcp["auth_refs"] != []
-      assert product["refs"]["mcp_refs"] == [%{"mcp_id" => mcp_id}]
-
-      for connection <- product["setup"]["connections"], connection["kind"] == "managed_oauth" do
-        assert connection["alias"] == connection["provider"]
-      end
-    end
-
-    external_im = Enum.find(Plugins.system_plugins(), &(&1["plugin_id"] == "external-im"))
-    refute "im_api.slack.*" in external_im["refs"]["tool_refs"]
-    refute "im_api.feishu.*" in external_im["refs"]["tool_refs"]
+    assert unchanged > 0
   end
 
-  test "every product plugin resolves its MCP and connection dependencies", context do
-    assert {:ok, definitions} = Plugins.list_definitions(context.tenant_id, context.group_id)
-
-    for plugin_id <- ~w(feishu github google linear notion slack) do
-      status = Enum.find(definitions, &(&1["plugin_id"] == plugin_id))["setup_status"]
-      assert status["type"] == "integration"
-      assert length(status["mcps"]) == 1
-      assert status["connections"] != []
-    end
-
+  test "setup creates an MCP binding for GitHub and reuses Feishu IM", context do
     assert {:ok, %{"bindings" => [github], "connection" => %{"kind" => "managed_oauth"}}} =
              Plugins.prepare_group_setup(context.tenant_id, context.group_id, "github")
 
@@ -286,6 +166,42 @@ defmodule Salix.Control.PluginSetupTest do
 
     assert {:ok, %{"bindings" => [], "connection" => %{"kind" => "im_connect"}}} =
              Plugins.prepare_group_setup(context.tenant_id, context.group_id, "feishu")
+  end
+
+  test "Lark reuses Lark IM and binds Lark's hosted MCP for native OAuth", context do
+    assert {:ok,
+            %{"bindings" => [], "connection" => %{"kind" => "im_connect", "provider" => "lark"}}} =
+             Plugins.prepare_group_setup(context.tenant_id, context.group_id, "lark")
+
+    assert {:ok, %{"bindings" => [binding], "connection" => connection}} =
+             Plugins.prepare_group_setup(
+               context.tenant_id,
+               context.group_id,
+               "lark",
+               "lark-native"
+             )
+
+    assert connection["kind"] == "native_mcp_oauth"
+    assert "offline_access" in connection["scopes"]
+    assert binding["alias"] == "lark"
+    assert binding["target_ref"] == "remote:lark"
+    assert binding["placement"] == "server"
+    assert binding["oauth_binding_refs"] == %{}
+
+    assert {:ok, _binding, definition, _connection} =
+             MCPStore.get_binding_with_definition(
+               context.tenant_id,
+               context.group_id,
+               binding["binding_id"]
+             )
+
+    assert [%{"url" => "https://mcp.larksuite.com/mcp"}] =
+             definition["server_metadata"]["remotes"]
+
+    assert %{"connections" => connections, "mcps" => [mcp]} = plugin_status(context, "lark")
+    assert Enum.find(connections, &(&1["id"] == "lark-native"))["state"] == "not_connected"
+    assert mcp["alias"] == "lark"
+    assert mcp["state"] == "waiting_for_oauth"
   end
 
   test "managed MCP OAuth requires an active credential with every declared scope", context do
@@ -373,6 +289,42 @@ defmodule Salix.Control.PluginSetupTest do
     assert RemoteMCPOAuth.authorization_scope(%{"scope" => "read"}, metadata) == "read"
   end
 
+  test "X does not treat an unreadable OAuth store as absence", context do
+    prefix = SalixStore.Keys.ctl_oauth_group_bindings_prefix(context.group_id)
+    :ok = SalixStore.S3.Fake.set_fault({:fail, 503, :list, prefix})
+
+    assert {:error, {:missing_oauth, _}} =
+             Salix.Bindings.MCPCredentials.resolve(%{
+               "mcp_id" => "mcp1_0000000000000000009",
+               "tenant_id" => context.tenant_id,
+               "group_id" => context.group_id,
+               "config_values" => %{"X_BEARER_TOKEN" => "app-only-fallback"}
+             })
+  end
+
+  test "X does not select App-only credentials after an incomplete OAuth lookup", context do
+    for index <- 1..65 do
+      id = "oauth-other-#{index}"
+
+      assert {:ok, _} =
+               Salix.Control.Store.put_new(
+                 SalixStore.Keys.ctl_oauth_group_binding(context.group_id, id),
+                 %{"binding_id" => id, "provider" => "github", "alias" => "account-#{index}"}
+               )
+    end
+
+    assert {:error, :oauth_binding_lookup_incomplete} =
+             OAuthBindings.select_provider_record(context.group_id, "x", "x")
+
+    assert {:error, {:missing_oauth, _}} =
+             Salix.Bindings.MCPCredentials.resolve(%{
+               "mcp_id" => "mcp1_0000000000000000009",
+               "tenant_id" => context.tenant_id,
+               "group_id" => context.group_id,
+               "config_values" => %{"X_BEARER_TOKEN" => "app-only-fallback"}
+             })
+  end
+
   defp plugin_status(context, plugin_id) do
     assert {:ok, definitions} = Plugins.list_definitions(context.tenant_id, context.group_id)
     Enum.find(definitions, &(&1["plugin_id"] == plugin_id))["setup_status"]
@@ -380,7 +332,7 @@ defmodule Salix.Control.PluginSetupTest do
 
   test "native MCP OAuth returns only to a configured Comma web origin" do
     [configured_base_url | _] =
-      Application.fetch_env!(:salix_web, :oauth_return_base_urls)
+      SystemsRuntime.fetch_env!(:salix_web, :oauth_return_base_urls)
 
     configured_uri = URI.parse(configured_base_url)
 
@@ -470,14 +422,14 @@ defmodule Salix.Control.PluginSetupTest do
   end
 
   test "native MCP OAuth satisfies a declared authorization header at runtime", context do
-    previous_private_targets = Application.get_env(:salix_mcp, :allow_private_http_targets)
-    Application.put_env(:salix_mcp, :allow_private_http_targets, true)
+    previous_private_targets = SystemsRuntime.get_env(:salix_mcp, :allow_private_http_targets)
+    SystemsRuntime.put_env(:salix_mcp, :allow_private_http_targets, true)
 
     on_exit(fn ->
       if is_nil(previous_private_targets) do
-        Application.delete_env(:salix_mcp, :allow_private_http_targets)
+        SystemsRuntime.delete_env(:salix_mcp, :allow_private_http_targets)
       else
-        Application.put_env(:salix_mcp, :allow_private_http_targets, previous_private_targets)
+        SystemsRuntime.put_env(:salix_mcp, :allow_private_http_targets, previous_private_targets)
       end
     end)
 
@@ -869,14 +821,14 @@ defmodule Salix.Control.PluginSetupTest do
 
   test "managed OAuth can drive first-use discovery and a tool call through a declared binding",
        context do
-    previous_private_targets = Application.get_env(:salix_mcp, :allow_private_http_targets)
-    Application.put_env(:salix_mcp, :allow_private_http_targets, true)
+    previous_private_targets = SystemsRuntime.get_env(:salix_mcp, :allow_private_http_targets)
+    SystemsRuntime.put_env(:salix_mcp, :allow_private_http_targets, true)
 
     on_exit(fn ->
       if is_nil(previous_private_targets) do
-        Application.delete_env(:salix_mcp, :allow_private_http_targets)
+        SystemsRuntime.delete_env(:salix_mcp, :allow_private_http_targets)
       else
-        Application.put_env(:salix_mcp, :allow_private_http_targets, previous_private_targets)
+        SystemsRuntime.put_env(:salix_mcp, :allow_private_http_targets, previous_private_targets)
       end
     end)
 

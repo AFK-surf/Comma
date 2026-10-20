@@ -8,7 +8,6 @@ import type {
   NativeStateBridge,
   NativeRendererIdentity,
   SurfacesBridge,
-  UpdateBridge,
 } from "@comma/native-bridge";
 import {
   createGeneratedNativeBridgeMock,
@@ -18,11 +17,10 @@ import { vi } from "vitest";
 
 type CommaNativeBridgeMockOverrides = Omit<
   Partial<CommaNativeBridge>,
-  keyof GeneratedNativeBridge | "connector" | "updates"
+  keyof GeneratedNativeBridge | "connector"
 > & {
   connector?: Partial<ConnectorBridge>;
   peers?: Partial<NativePeersBridge>;
-  updates?: Partial<UpdateBridge>;
 } & Omit<GeneratedNativeBridgeOverrides, "peers" | "surfaces"> & {
     surfaces?: Partial<SurfacesBridge>;
   };
@@ -38,17 +36,6 @@ export function createNativeBridgeMock(
     }),
     overrides
   );
-  const updates: UpdateBridge = {
-    status: vi.fn(async () => ({
-      configured: false,
-      currentVersion: "test",
-      error: "Updates are unavailable in this test runtime.",
-    })),
-    check: vi.fn(async () => null),
-    download: vi.fn(async () => false),
-    apply: vi.fn(async () => false),
-    ...overrides.updates,
-  };
   const connector: ConnectorBridge = {
     status: vi.fn(async () => ({
       available: false,
@@ -121,7 +108,6 @@ export function createNativeBridgeMock(
     surfaces,
     peers,
     connector,
-    updates,
   };
 }
 

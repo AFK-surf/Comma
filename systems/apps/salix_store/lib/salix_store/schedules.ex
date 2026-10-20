@@ -569,7 +569,8 @@ defmodule SalixStore.Schedules do
     |> Map.put_new("status", "active")
   end
 
-  defp to_record(%Row{} = row) do
+  @doc false
+  def to_record(%Row{} = row) do
     core =
       %{
         "id" => row.id,
@@ -594,7 +595,8 @@ defmodule SalixStore.Schedules do
     Map.merge(attrs_map(row.attrs), core)
   end
 
-  defp row_map(record, next_fire_at) do
+  @doc false
+  def row_map(record, next_fire_at) do
     %{
       id: record["id"],
       receiver: record["receiver"] || "agent",

@@ -102,7 +102,7 @@ defmodule SalixAgent.PersonalPreparationReview do
           role: "user",
           content:
             Jason.encode!(%{
-              "reviewed_at" => DateTime.to_iso8601(DateTime.utc_now()),
+              "reviewed_at" => DateTime.to_iso8601(SystemsClock.utc_now()),
               "recipient" => Map.take(recipient, ~w(connect_id recipient)),
               "draft" => draft,
               "original_evidence" => sources

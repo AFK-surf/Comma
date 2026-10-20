@@ -70,7 +70,7 @@ defmodule SalixAgent.OAuthStore do
 
   @doc "The configured implementation module, or nil."
   @spec impl() :: module() | nil
-  def impl, do: Application.get_env(:salix_agent, :oauth_store_mod)
+  def impl, do: SystemsRuntime.get_env(:salix_agent, :oauth_store_mod)
 
   @spec agent_oauth_context(String.t()) ::
           {:ok, %{tenant: String.t(), group_id: String.t()}} | {:error, term()}

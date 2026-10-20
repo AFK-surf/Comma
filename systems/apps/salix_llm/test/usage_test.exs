@@ -1,5 +1,5 @@
 defmodule SalixLlm.UsageTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   test "chat usage normalizes cache fields like Willow" do
     assert_usage(

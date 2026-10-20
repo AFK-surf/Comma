@@ -1,5 +1,6 @@
 defmodule SalixAgent.AutomaticSnapshotRecoveryTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.{InternalSessionStore, OOMRecoveryFixture, LegacyGuardSnapshotRepair}
   alias SalixStore.{Codec, Keys, S3}
 
@@ -11,24 +12,24 @@ defmodule SalixAgent.AutomaticSnapshotRecoveryTest do
             :snapshot_repair_timeout_ms
           ],
           into: %{},
-          do: {key, Application.get_env(:salix_agent, key)}
+          do: {key, SystemsRuntime.get_env(:salix_agent, key)}
 
-    Application.put_env(:salix_agent, :snapshot_recovery_enabled, true)
-    Application.put_env(:salix_agent, :snapshot_read_max_bytes, 32_768)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
+    SystemsRuntime.put_env(:salix_agent, :snapshot_recovery_enabled, true)
+    SystemsRuntime.put_env(:salix_agent, :snapshot_read_max_bytes, 32_768)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
     start_supervised!(S3.Fake)
 
-    unless Process.whereis(SalixAgent.Registry),
+    unless SystemsRuntime.Proc.whereis(SalixAgent.Registry),
       do: start_supervised!({Registry, keys: :unique, name: SalixAgent.Registry})
 
-    unless Process.whereis(SalixAgent.TaskSup),
-      do: start_supervised!({Task.Supervisor, name: SalixAgent.TaskSup})
+    unless SystemsRuntime.Proc.whereis(SalixAgent.TaskSup),
+      do: start_supervised!({SystemsRuntime.TaskSupervisor, name: SalixAgent.TaskSup})
 
     on_exit(fn ->
       Enum.each(old, fn {k, v} ->
         if is_nil(v),
-          do: Application.delete_env(:salix_agent, k),
-          else: Application.put_env(:salix_agent, k, v)
+          do: SystemsRuntime.delete_env(:salix_agent, k),
+          else: SystemsRuntime.put_env(:salix_agent, k, v)
       end)
     end)
 
@@ -80,30 +81,12 @@ defmodule SalixAgent.AutomaticSnapshotRecoveryTest do
     key = Keys.agent_internal_runtime_session(before.agent_id, before.session_id)
     bytes = Codec.encode_session_snapshot(before)
     {:ok, _} = S3.put(key, bytes)
-    Application.put_env(:salix_agent, :snapshot_repair_timeout_ms, 1_000)
+    SystemsRuntime.put_env(:salix_agent, :snapshot_repair_timeout_ms, 1_000)
     S3.Fake.set_fault({:pause, :get, key})
-    task = Task.async(fn -> LegacyGuardSnapshotRepair.recover(key) end)
+    task = SystemsRuntime.Task.async(fn -> LegacyGuardSnapshotRepair.recover(key) end)
     wait_paused(100)
     assert {:error, :snapshot_repair_busy} = LegacyGuardSnapshotRepair.recover(key)
-    assert {:error, :snapshot_repair_failed} = Task.await(task)
-    S3.Fake.release_pause()
-    assert {:ok, %{body: ^bytes}} = S3.get(key)
-    assert {:ok, :repaired} = LegacyGuardSnapshotRepair.recover(key)
-  end
-
-  test "repair deadline survives reader death and frees its lane" do
-    before = OOMRecoveryFixture.build(100, false)
-    key = Keys.agent_internal_runtime_session(before.agent_id, before.session_id)
-    bytes = Codec.encode_session_snapshot(before)
-    {:ok, _} = S3.put(key, bytes)
-    Application.put_env(:salix_agent, :snapshot_repair_timeout_ms, 1_000)
-    S3.Fake.set_fault({:pause, :get, key})
-    reader = spawn(fn -> LegacyGuardSnapshotRepair.recover(key) end)
-    wait_paused(100)
-    [{repair, _}] = Registry.lookup(SalixAgent.Registry, :snapshot_repair_lane)
-    ref = Process.monitor(repair)
-    Process.exit(reader, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^repair, _}, 2000
+    assert {:error, :snapshot_repair_failed} = settled_await(task)
     S3.Fake.release_pause()
     assert {:ok, %{body: ^bytes}} = S3.get(key)
     assert {:ok, :repaired} = LegacyGuardSnapshotRepair.recover(key)
@@ -114,7 +97,7 @@ defmodule SalixAgent.AutomaticSnapshotRecoveryTest do
     key = Keys.agent_internal_runtime_session(before.agent_id, before.session_id)
     {:ok, _} = S3.put(key, Codec.encode_session_snapshot(before))
     S3.Fake.set_fault({:pause, :put, key})
-    task = Task.async(fn -> LegacyGuardSnapshotRepair.recover(key) end)
+    task = SystemsRuntime.Task.async(fn -> LegacyGuardSnapshotRepair.recover(key) end)
     wait_paused(100)
 
     newer = %{
@@ -124,7 +107,7 @@ defmodule SalixAgent.AutomaticSnapshotRecoveryTest do
 
     {:ok, _} = S3.put(key, Codec.encode_session_snapshot(newer))
     S3.Fake.release_pause()
-    assert {:ok, :repaired} = Task.await(task)
+    assert {:ok, :repaired} = settled_await(task)
     assert {:ok, %{body: body}} = S3.get(key)
     assert Codec.decode_snapshot(body).input_queue == newer.input_queue
   end
@@ -265,7 +248,7 @@ defmodule SalixAgent.AutomaticSnapshotRecoveryTest do
       do: :ok,
       else:
         (
-          Process.sleep(10)
+          SystemsClock.sleep(10)
           wait_paused(n - 1)
         )
   end

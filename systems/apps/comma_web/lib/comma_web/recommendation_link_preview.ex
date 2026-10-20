@@ -19,9 +19,15 @@ defmodule CommaWeb.RecommendationLinkPreview do
   #                                    replies included, only after `auth.test`
   #                                    confirms the permalink's workspace)
   #   * Google Drive files          -> name, kind, owner, size, edit time
+  #   * Outlook mail/events         -> exact currently collected webLink and Graph id;
+  #                                    same consent, source and account, read live
   #
-  # Everything else (Gmail in particular: mail bodies are private) is
+  # Everything else (including arbitrary Outlook links and Gmail) is
   # `:not_found`, and the client keeps its generic destination card.
+  #
+  # Slack reads use the Group's managed Slack OAuth binding (the Comma Slack
+  # plugin's user token) directly against the Web API. The other providers
+  # read through the link's Composio account.
 
   @github_pull_request ~r"^https://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)(?:[/?#].*)?$"
   @linear_issue ~r"^https://linear\.app/[\w-]+/issue/([A-Za-z][A-Za-z0-9]*-\d+)(?:[/?#].*)?$"
@@ -39,7 +45,6 @@ defmodule CommaWeb.RecommendationLinkPreview do
   @notion_tool "NOTION_FETCH_ROW"
   @google_calendar_api "https://www.googleapis.com/calendar/v3"
   @google_drive_api "https://www.googleapis.com/drive/v3"
-  @slack_api "https://slack.com/api"
 
   @linear_issue_query """
   query CommaRecommendationLinkPreview($id: String!) {
@@ -58,13 +63,211 @@ defmodule CommaWeb.RecommendationLinkPreview do
   }
   """
 
-  def preview(workspace, sources, href, source_id) when is_map(workspace) do
-    with {:ok, target} <- parse_href(href),
-         {:ok, source} <- resolve_source(sources, source_id, toolkit(target)),
-         {:ok, settings} <- settings_store().settings(workspace["salix_tenant_id"]) do
-      read(target, settings, workspace, source, String.trim(href))
+  # A GitHub hover depends on the viewer's live connection, not whether
+  # Routine has been configured or its source was enabled for recommendation
+  # collection. Do not discover group Composio accounts as an alternative.
+  def preview_connected(workspace, href, source_id, viewer_id) do
+    href = if is_binary(href), do: String.trim(href), else: href
+
+    if CommaWeb.RecommendationOutlookPreview.supported_href?(href) do
+      CommaWeb.RecommendationOutlookPreview.preview(workspace, viewer_id, href, source_id)
+    else
+      with true <- is_binary(viewer_id) and workspace["owner_user_id"] == viewer_id,
+           {:ok, target} <- parse_href(href) do
+        managed =
+          if managed_toolkit?(toolkit(target)) do
+            workspace["default_group_id"]
+            |> Salix.Control.OAuthBindings.list()
+            |> Enum.filter(fn binding ->
+              binding["provider"] == toolkit(target) and
+                binding["alias"] == toolkit(target) and
+                binding["group_id"] == workspace["default_group_id"] and
+                binding["status"] == "active" and binding["enabled"] != false
+            end)
+            |> Enum.map(fn binding ->
+              %{
+                "appId" => toolkit(target),
+                "toolkit" => toolkit(target),
+                "kind" => "managed_oauth",
+                "connectionId" => binding["binding_id"],
+                "enabled" => true
+              }
+            end)
+          else
+            []
+          end
+
+        # A Routine profile is optional for managed OAuth. It is not an
+        # authorization substitute for a provider connection or resource read.
+        # Composio requires the viewer's explicit, current account receipt.
+        # A Routine profile can contain a stale or different group account and
+        # is not authorization to disclose provider content to this viewer.
+        composio =
+          if toolkit(target) in ~w(googlecalendar googledrive) do
+            case Comma.MemberSourceConsents.binding(workspace["id"], viewer_id, toolkit(target)) do
+              %{"connection_id" => id} when is_binary(id) and id != "" ->
+                [
+                  %{
+                    "appId" => toolkit(target),
+                    "toolkit" => toolkit(target),
+                    "kind" => "composio",
+                    "connectionId" => id,
+                    "enabled" => true
+                  }
+                ]
+
+              _ ->
+                []
+            end
+          else
+            []
+          end
+
+        with {:ok, selected} <- resolve_source(managed ++ composio, source_id, toolkit(target)),
+             {:ok, result} <- preview(workspace, [selected], href, source_id, viewer_id),
+             true <-
+               selected["kind"] != "composio" or
+                 (case Comma.MemberSourceConsents.binding(
+                         workspace["id"],
+                         viewer_id,
+                         toolkit(target)
+                       ) do
+                    %{"connection_id" => id} -> id == selected["connectionId"]
+                    _ -> false
+                  end) do
+          {:ok, result}
+        else
+          _ -> {:error, :not_found}
+        end
+      else
+        false -> {:error, :not_found}
+        {:error, _} = error -> error
+      end
     end
   end
+
+  # The caller supplies the authenticated requester, never a user id from the URL.
+  # Keep the four-argument form for existing internal Composio callers; a
+  # managed OAuth source cannot be read without a verified viewer.
+  def preview(workspace, sources, href, source_id),
+    do: preview(workspace, sources, href, source_id, nil)
+
+  def preview(workspace, sources, href, source_id, viewer_id) when is_map(workspace) do
+    with {:ok, target} <- parse_href(href),
+         {:ok, source} <- resolve_source(sources, source_id, toolkit(target)) do
+      case {target, source["kind"]} do
+        {{:github_pull_request, owner, repo, number}, "managed_oauth"} ->
+          with {:ok, data} <-
+                 CommaWeb.RecommendationOAuthSource.preview_github_pull_request(
+                   workspace,
+                   viewer_id,
+                   source,
+                   owner,
+                   repo,
+                   number
+                 ),
+               true <- github_pull_request_matches?(data, owner, repo, number) do
+            {:ok, pull_request_preview(data, String.trim(href), owner, repo, number)}
+          else
+            false -> {:error, :not_found}
+            {:error, _} = error -> error
+          end
+
+        {{:linear_issue, identifier}, "managed_oauth"} ->
+          with {:ok, issue} <-
+                 CommaWeb.RecommendationOAuthSource.preview_managed(
+                   workspace,
+                   viewer_id,
+                   source,
+                   {:linear_issue, identifier}
+                 ),
+               true <-
+                 String.upcase(issue["identifier"] || "") == identifier and
+                   is_binary(issue["title"]) and String.trim(issue["title"]) != "" do
+            {:ok,
+             linear_issue_preview(issue, String.trim(href), identifier)
+             |> Map.put("href", String.trim(href))}
+          else
+            _ -> {:error, :not_found}
+          end
+
+        {{:notion_page, hex}, "managed_oauth"} ->
+          with {:ok, page} <-
+                 CommaWeb.RecommendationOAuthSource.preview_managed(
+                   workspace,
+                   viewer_id,
+                   source,
+                   {:notion_page, notion_uuid(hex)}
+                 ),
+               true <-
+                 String.replace(String.downcase(page["id"] || ""), "-", "") == hex and
+                   page["object"] == "page" and is_map(page["properties"]) do
+            {:ok,
+             notion_page_preview(page, String.trim(href)) |> Map.put("href", String.trim(href))}
+          else
+            _ -> {:error, :not_found}
+          end
+
+        {{:slack_message, _host, _channel_id, _ts, _thread_ts}, "managed_oauth"} ->
+          # The managed Web API read below, bound to the viewer's own member
+          # identity, which must be unchanged after the read.
+          with {:ok, identity} <-
+                 CommaWeb.RecommendationMemberIdentity.resolve(workspace, viewer_id, source),
+               {:ok, result} <-
+                 read(
+                   target,
+                   nil,
+                   workspace,
+                   Map.put(source, "memberIdentity", identity),
+                   String.trim(href)
+                 ),
+               {:ok, ^identity} <-
+                 CommaWeb.RecommendationMemberIdentity.resolve(workspace, viewer_id, source) do
+            {:ok, result}
+          else
+            {:error, {:unavailable, _}} = error ->
+              error
+
+            {:error, :member_identity_unavailable} ->
+              {:error, {:unavailable, :member_identity_unavailable}}
+
+            _ ->
+              {:error, :not_found}
+          end
+
+        {_target, "composio"} ->
+          # The production entrypoint admits only the viewer's explicit
+          # current account receipt; this lower-level pure adapter is also
+          # used by existing provider-proxy contract tests.
+          with true <- is_binary(viewer_id) and workspace["owner_user_id"] == viewer_id,
+               {:ok, settings} <- settings_store().settings(workspace["salix_tenant_id"]) do
+            read(target, settings, workspace, source, String.trim(href))
+          else
+            false -> {:error, :not_found}
+            {:error, _} = error -> error
+          end
+
+        _ ->
+          {:error, :not_found}
+      end
+    end
+  end
+
+  # One registry for managed preview discovery and dispatch. Unknown kinds
+  # never resolve to a credential or provider read.
+  defdelegate managed_toolkits(), to: CommaWeb.RecommendationPreviewCatalog
+  defdelegate managed_toolkit?(toolkit), to: CommaWeb.RecommendationPreviewCatalog, as: :managed?
+
+  defp github_pull_request_matches?(data, owner, repo, number) when is_map(data) do
+    details = if is_map(data["details"]), do: data["details"], else: data
+    base = get_in(details, ["base", "repo", "full_name"])
+
+    details["number"] == number and is_binary(details["title"]) and
+      String.trim(details["title"]) != "" and is_binary(base) and
+      String.downcase(base) == String.downcase("#{owner}/#{repo}")
+  end
+
+  defp github_pull_request_matches?(_, _, _, _), do: false
 
   @doc false
   def parse_href(href) when is_binary(href) do
@@ -151,12 +354,17 @@ defmodule CommaWeb.RecommendationLinkPreview do
   end
 
   # The link's sourceId pins the connected account that surfaced it; a link
-  # without one (or whose account is gone) may still read through any enabled
-  # source of the same toolkit, but never through another toolkit's account.
+  # without one may read through any enabled source of the same toolkit, but
+  # never through another toolkit's account.
+  # Slack links read only through the managed OAuth binding: a saved Composio
+  # Slack source is never a preview reader. An explicit sourceId must match the
+  # live enabled source; a disconnected account is never silently replaced.
   defp resolve_source(sources, source_id, toolkit) when is_list(sources) do
+    kinds = source_kinds(toolkit)
+
     candidates =
       Enum.filter(sources, fn source ->
-        is_map(source) and source["enabled"] == true and source["kind"] == "composio" and
+        is_map(source) and source["enabled"] == true and source["kind"] in kinds and
           clean(source["toolkit"] || source["appId"]) == toolkit and
           is_binary(source["connectionId"]) and source["connectionId"] != ""
       end)
@@ -166,13 +374,16 @@ defmodule CommaWeb.RecommendationLinkPreview do
         do: Enum.find(candidates, &(&1["connectionId"] == source_id)),
         else: nil
 
-    case pinned || List.first(candidates) do
+    case if(is_binary(source_id) and source_id != "", do: pinned, else: List.first(candidates)) do
       nil -> {:error, :not_found}
       source -> {:ok, source}
     end
   end
 
   defp resolve_source(_sources, _source_id, _toolkit), do: {:error, :not_found}
+
+  defp source_kinds("slack"), do: ["managed_oauth"]
+  defp source_kinds(_toolkit), do: ["composio", "managed_oauth"]
 
   # ---------------------------------------------------------------- reads
 
@@ -244,14 +455,16 @@ defmodule CommaWeb.RecommendationLinkPreview do
     end
   end
 
-  # Composio's slack toolkit has no permalink resolver, and Slack itself
-  # locates a message only by channel + ts, so the read proxies the Web API
-  # directly: the session first binds the permalink's workspace subdomain via
-  # `auth.test`, then the message itself is required, while the channel name
-  # and the author are best-effort garnishes fetched through the same session.
-  defp read({:slack_message, host, channel_id, ts, thread_ts}, settings, workspace, source, href) do
-    with {:ok, message, channel_name, author} <-
-           slack_message_get(settings, workspace, source, host, channel_id, ts, thread_ts) do
+  # Slack locates a message only by channel + ts, so the read calls the Web
+  # API with the managed binding's user token: the first request binds the
+  # permalink's workspace subdomain via `auth.test`, then the message itself
+  # is required, while the channel name and the author are best-effort
+  # garnishes read with the same token.
+  defp read({:slack_message, host, channel_id, ts, thread_ts}, _settings, workspace, source, href) do
+    with {:ok, token} <- slack_token(workspace, source),
+         get = fn endpoint -> slack_request(token, endpoint) end,
+         {:ok, message, channel_name, author} <-
+           slack_message_get(get, source["memberIdentity"], host, channel_id, ts, thread_ts) do
       {:ok, slack_message_preview(message, channel_id, channel_name, author, href)}
     end
   end
@@ -278,13 +491,13 @@ defmodule CommaWeb.RecommendationLinkPreview do
   # leaked session would outlive the hover that asked for it. `fun` gets the
   # open session id and performs the provider requests; only a
   # `:proxy_session_missing` it lets through participates in the one bounded
-  # missing-session replacement modeled in
-  # tla/recommendations/RecommendationLinkPreviewProxy.tla.
+  # missing-session replacement.
   defp proxy_read(settings, workspace, source, toolkit, fun),
     do: proxy_read(settings, workspace, source, toolkit, fun, true)
 
   defp proxy_read(settings, workspace, source, toolkit, fun, retry_session?) do
-    with {:ok, session_id} <- proxy_session(settings, workspace, source, toolkit) do
+    with {:ok, account} <- preview_account(settings, workspace, source, toolkit),
+         {:ok, session_id} <- proxy_session(settings, workspace, source, toolkit) do
       result =
         case fun.(session_id) do
           # The Tool Router session endpoint was missing, not the provider's
@@ -302,6 +515,12 @@ defmodule CommaWeb.RecommendationLinkPreview do
 
       _ = composio_client().delete_proxy_session(settings, session_id)
 
+      result =
+        case preview_account(settings, workspace, source, toolkit) do
+          {:ok, ^account} -> result
+          _ -> {:error, :not_found}
+        end
+
       case result do
         :retry_proxy_session ->
           proxy_read(settings, workspace, source, toolkit, fun, false)
@@ -309,6 +528,29 @@ defmodule CommaWeb.RecommendationLinkPreview do
         other ->
           other
       end
+    end
+  end
+
+  # The proxy account is checked before and after the read. An account that
+  # changes, disconnects or becomes unowned while the session is in flight
+  # withholds the card. A same-id ABA change invisible to Composio's account
+  # representation is outside this fence and remains an integration risk.
+  defp preview_account(settings, workspace, source, toolkit) do
+    id = source["connectionId"]
+    group = workspace["default_group_id"]
+
+    case composio_client().get_connected_account(settings, id) do
+      {:ok,
+       %{
+         "id" => ^id,
+         "user_id" => ^group,
+         "toolkit" => %{"slug" => ^toolkit},
+         "status" => "ACTIVE"
+       } = account} ->
+        {:ok, account}
+
+      _ ->
+        {:error, :not_found}
     end
   end
 
@@ -360,9 +602,6 @@ defmodule CommaWeb.RecommendationLinkPreview do
 
   defp calendar_provider_error(status, _data),
     do: {:error, {:unavailable, {:google_calendar_http, status}}}
-
-  defp slack_provider_error(status, _data),
-    do: {:error, {:unavailable, {:slack_http, status}}}
 
   defp drive_provider_error(status, _data),
     do: {:error, {:unavailable, {:google_drive_http, status}}}
@@ -628,43 +867,82 @@ defmodule CommaWeb.RecommendationLinkPreview do
 
   # -------------------------------------------------------- Slack mapping
 
-  defp slack_message_get(settings, workspace, source, host, channel_id, ts, thread_ts) do
-    proxy_read(settings, workspace, source, "slack", fn session_id ->
-      with :ok <- slack_workspace_check(settings, session_id, host),
-           {:ok, data} <-
-             proxy_request(
-               settings,
-               session_id,
-               "slack",
-               slack_message_endpoint(channel_id, ts, thread_ts),
-               provider_error: &slack_provider_error/2
-             ),
-           {:ok, message} <- slack_message(data, ts, thread_ts) do
-        {:ok, message, slack_channel_name(settings, session_id, channel_id),
-         slack_author(settings, session_id, message["user"])}
-      end
-    end)
+  # The managed binding's token. A revoked or disabled binding is an
+  # unavailable reader, not evidence that the message is gone.
+  defp slack_token(workspace, source) do
+    case CommaWeb.RecommendationOAuthSource.token(workspace, source) do
+      {:ok, token} -> {:ok, token}
+      {:error, reason} -> {:error, {:unavailable, reason}}
+    end
   end
 
-  # A permalink names its workspace in the subdomain, and the connected
-  # account answers for exactly one workspace — without this binding,
-  # `https://evil.slack.com/...` would dress a foreign link in a genuine
-  # preview from the victim's workspace. The session's first request pins the
-  # team via `auth.test` before any message is touched: a foreign subdomain
-  # is a plain not-found, and an unverifiable team (transport failure,
-  # `ok: false`) never skips the check.
-  defp slack_workspace_check(settings, session_id, host) do
-    endpoint = @slack_api <> "/auth.test"
+  # One bounded GET against the Slack Web API with the user token. Slack
+  # answers method errors inside an HTTP 200 (`ok: false`), which the callers
+  # map; a non-2xx status or a transport failure is an unavailable provider.
+  defp slack_request(token, endpoint) do
+    options =
+      Keyword.merge(
+        [
+          method: :get,
+          url: endpoint,
+          auth: {:bearer, token},
+          headers: [{"user-agent", "Comma"}],
+          retry: false,
+          redirect: false,
+          receive_timeout: 10_000,
+          pool_timeout: 10_000,
+          connect_options: [timeout: 10_000]
+        ],
+        SystemsRuntime.get_env(:comma_web, :recommendation_oauth_http_options, [])
+      )
 
-    case proxy_request(settings, session_id, "slack", endpoint,
-           provider_error: &slack_provider_error/2
-         ) do
-      {:ok, %{"ok" => true, "url" => url}} when is_binary(url) ->
+    case Req.request(options) do
+      {:ok, %{status: status, body: %{} = data}} when status in 200..299 ->
+        {:ok, data}
+
+      {:ok, %{status: status}} when status in 200..299 ->
+        {:error, {:unavailable, :invalid_provider_response}}
+
+      {:ok, %{status: status}} ->
+        {:error, {:unavailable, {:slack_http, status}}}
+
+      {:error, _reason} ->
+        {:error, {:unavailable, :slack_unavailable}}
+    end
+  end
+
+  defp slack_member?(auth, %{} = identity),
+    do:
+      auth["user_id"] == identity["provider_user_id"] and
+        auth["team_id"] == identity["provider_workspace_id"]
+
+  defp slack_member?(_auth, _identity), do: false
+
+  defp slack_message_get(get, identity, host, channel_id, ts, thread_ts) do
+    with :ok <- slack_workspace_check(get, identity, host),
+         {:ok, data} <- get.(slack_message_endpoint(channel_id, ts, thread_ts)),
+         {:ok, message} <- slack_message(data, ts, thread_ts) do
+      {:ok, message, slack_channel_name(get, channel_id), slack_author(get, message["user"])}
+    end
+  end
+
+  # A permalink names its workspace in the subdomain, and the binding's token
+  # answers for exactly one workspace — without this check,
+  # `https://evil.slack.com/...` would dress a foreign link in a genuine
+  # preview from the victim's workspace. The first request pins the team via
+  # `auth.test` before any message is touched: a foreign subdomain is a plain
+  # not-found, and an unverifiable team (transport failure, `ok: false`) never
+  # skips the check. The token must also still answer as the viewer's own
+  # member identity in the same team.
+  defp slack_workspace_check(get, identity, host) do
+    case get.(CommaWeb.SlackWebAPI.url("auth.test")) do
+      {:ok, %{"ok" => true, "url" => url} = auth} when is_binary(url) ->
         case URI.parse(url).host do
           team_host when is_binary(team_host) and team_host != "" ->
-            if String.downcase(team_host) == String.downcase(host),
-              do: :ok,
-              else: {:error, :not_found}
+            if String.downcase(team_host) == String.downcase(host) and
+                 slack_member?(auth, identity),
+               do: :ok,
+               else: {:error, :not_found}
 
           _ ->
             {:error, {:unavailable, :invalid_provider_response}}
@@ -676,8 +954,6 @@ defmodule CommaWeb.RecommendationLinkPreview do
       {:ok, _data} ->
         {:error, {:unavailable, :invalid_provider_response}}
 
-      # `:proxy_session_missing` keeps the one bounded session replacement
-      # bound to the session's first request; other errors surface as-is.
       {:error, _reason} = error ->
         error
     end
@@ -742,23 +1018,15 @@ defmodule CommaWeb.RecommendationLinkPreview do
   defp slack_message(_data, _ts, _thread_ts),
     do: {:error, {:unavailable, :invalid_provider_response}}
 
-  defp slack_channel_name(settings, session_id, channel_id) do
-    endpoint = slack_endpoint("conversations.info", [{"channel", channel_id}])
-
-    case proxy_request(settings, session_id, "slack", endpoint,
-           provider_error: &slack_provider_error/2
-         ) do
+  defp slack_channel_name(get, channel_id) do
+    case get.(slack_endpoint("conversations.info", [{"channel", channel_id}])) do
       {:ok, %{"ok" => true, "channel" => %{"name" => name}}} -> string(name)
       _ -> nil
     end
   end
 
-  defp slack_author(settings, session_id, user_id) when is_binary(user_id) and user_id != "" do
-    endpoint = slack_endpoint("users.info", [{"user", user_id}])
-
-    case proxy_request(settings, session_id, "slack", endpoint,
-           provider_error: &slack_provider_error/2
-         ) do
+  defp slack_author(get, user_id) when is_binary(user_id) and user_id != "" do
+    case get.(slack_endpoint("users.info", [{"user", user_id}])) do
       {:ok, %{"ok" => true, "user" => %{} = user}} ->
         profile = if is_map(user["profile"]), do: user["profile"], else: %{}
 
@@ -778,10 +1046,9 @@ defmodule CommaWeb.RecommendationLinkPreview do
     end
   end
 
-  defp slack_author(_settings, _session_id, _user_id), do: nil
+  defp slack_author(_get, _user_id), do: nil
 
-  defp slack_endpoint(method, params),
-    do: @slack_api <> "/" <> method <> "?" <> URI.encode_query(params)
+  defp slack_endpoint(method, params), do: CommaWeb.SlackWebAPI.url(method, params)
 
   defp slack_message_preview(message, channel_id, channel_name, author, href) do
     %{
@@ -886,7 +1153,7 @@ defmodule CommaWeb.RecommendationLinkPreview do
 
   defp settings_store,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :comma_web,
         :recommendation_composio_settings_mod,
         SalixAgent.ComposioStore
@@ -894,9 +1161,9 @@ defmodule CommaWeb.RecommendationLinkPreview do
 
   defp composio_client,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :comma_web,
         :recommendation_composio_client_mod,
-        Application.get_env(:salix_agent, :composio_client_mod, SalixStore.Composio)
+        SystemsRuntime.get_env(:salix_agent, :composio_client_mod, SalixStore.Composio)
       )
 end

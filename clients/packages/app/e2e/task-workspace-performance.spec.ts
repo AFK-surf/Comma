@@ -1,65 +1,36 @@
 import { expect, test as baseTest } from "@playwright/test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { build, preview } from "vite";
-import { fileURLToPath } from "node:url";
+import {
+  installReactRenderCounter,
+  reactRenderWork,
+  type ReactRenderWork,
+} from "../../../e2e/helpers/render-work";
+import { serveAppFixtures } from "../../../e2e/helpers/app-fixtures";
 // Build the real task workspace in production mode without network latency.
 const test = baseTest.extend<{}, { taskBaseURL: string }>({
   taskBaseURL: [
     // Playwright requires fixture dependencies to use object destructuring.
     // eslint-disable-next-line no-empty-pattern
     async ({}, use) => {
-      const root = fileURLToPath(new URL("../../../apps/web/", import.meta.url));
-      const cacheDir = await mkdtemp(join(tmpdir(), "comma-task-workspace-perf-"));
-      const previousCwd = process.cwd();
-      let server: Awaited<ReturnType<typeof preview>> | undefined;
+      const fixtures = await serveAppFixtures();
       try {
-        // The web app config resolves workspace source aliases from its own cwd.
-        process.chdir(root);
-        const configFile = join(root, "vite.config.ts");
-        await build({
-          root: fileURLToPath(new URL("./fixtures/", import.meta.url)),
-          configFile,
-          logLevel: "error",
-          build: {
-            outDir: cacheDir,
-            emptyOutDir: true,
-            rollupOptions: {
-              input: fileURLToPath(
-                new URL("./fixtures/task-workspace-performance.html", import.meta.url)
-              ),
-            },
-          },
-        });
-        server = await preview({
-          root,
-          configFile,
-          build: { outDir: cacheDir },
-          preview: { host: "127.0.0.1", port: 0, strictPort: false },
-        });
+        await use(fixtures.url);
       } finally {
-        process.chdir(previousCwd);
-      }
-      try {
-        await use(server.resolvedUrls!.local[0]!);
-      } finally {
-        await new Promise<void>((resolve) => server.httpServer.close(() => resolve()));
-        await rm(cacheDir, { recursive: true, force: true });
+        await fixtures.close();
       }
     },
     { scope: "worker" },
   ],
 });
 
+// The tests share this file's production build, so one worker runs them all.
+test.describe.configure({ mode: "default" });
+
 for (const view of ["board", "list"] as const) {
-  test(`Task ${view} selection with 500 tasks @frame-budget`, async ({
+  test(`Task ${view} selection with 500 tasks`, async ({
     page,
     taskBaseURL,
   }, testInfo) => {
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-    await cdp.send("Performance.enable");
+    await installReactRenderCounter(page, "data-task-navigation-id");
     await page.goto(
       new URL(`/task-workspace-performance.html?${view}`, taskBaseURL).href
     );
@@ -68,44 +39,41 @@ for (const view of ["board", "list"] as const) {
     const first = page.locator('[data-task-navigation-id="task-0"]');
     await expect(first).toBeVisible();
     await page.waitForTimeout(300);
-    const before = await cdp.send("Performance.getMetrics");
-    const actions = await page.evaluate(async () => {
-      const timings: number[] = [];
-      for (let index = 0; index < 20; index++) {
-        const row = document.querySelector(
-          `[data-task-navigation-id="task-${(index % 4) * 4}"]`
-        )!;
-        const start = performance.now();
-        row.dispatchEvent(
-          new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: true })
-        );
-        await new Promise<void>((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
-        );
-        timings.push(performance.now() - start);
-      }
-      return timings;
-    });
-    const after = await cdp.send("Performance.getMetrics");
-    const delta = (name: string) =>
-      ((after.metrics.find((metric) => metric.name === name)?.value ?? 0) -
-        (before.metrics.find((metric) => metric.name === name)?.value ?? 0)) *
-      1000;
-    await testInfo.attach("task-selection-performance.json", {
-      body: JSON.stringify({
-        view,
-        actions,
-        scriptMs: delta("ScriptDuration"),
-        taskMs: delta("TaskDuration"),
-        layoutMs: delta("LayoutDuration"),
-      }),
+    const clicks = [];
+    for (let index = 0; index < 12; index++) {
+      clicks.push(
+        await reactRenderWork(page, () =>
+          page.evaluate(
+            async (task) => {
+              document
+                .querySelector(`[data-task-navigation-id="${task}"]`)!
+                .dispatchEvent(
+                  new MouseEvent("click", {
+                    bubbles: true,
+                    cancelable: true,
+                    shiftKey: true,
+                  })
+                );
+              await new Promise<void>((resolve) =>
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+              );
+            },
+            `task-${(index % 4) * 4}`
+          )
+        )
+      );
+    }
+    await testInfo.attach("task-selection-work.json", {
+      body: JSON.stringify(clicks),
       contentType: "application/json",
     });
-    if (view === "list") {
-      // 500 loaded tasks must still leave room for input within 100 ms at 4x CPU.
-      const p95 = actions.toSorted((a, b) => a - b)[Math.floor(actions.length * 0.95)]!;
-      expect(p95).toBeLessThan(100);
-    }
+    // A selection change renders the row it changes, not the 500 loaded rows.
+    clicks.forEach((click, index) => {
+      expect(click.keys["data-task-navigation-id"]).toEqual([
+        `task-${(index % 4) * 4}`,
+      ]);
+      expect(click.elements).toBeLessThan(500);
+    });
     await page.getByTestId("tasks-ask-comma").click();
     expect(await page.evaluate(() => window.taskWorkspaceStress.selected)).toEqual([
       "task-0",
@@ -128,43 +96,45 @@ for (const view of ["board", "list"] as const) {
   });
 }
 
-test("Task view switching defers offscreen layout and preserves navigation @frame-budget", async ({
+test("Task view switching defers offscreen layout and preserves navigation", async ({
   page,
   taskBaseURL,
 }, testInfo) => {
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-  await cdp.send("Performance.enable");
+  await installReactRenderCounter(page, "data-task-navigation-id");
   await page.goto(new URL("/task-workspace-performance.html?board", taskBaseURL).href);
   await page.waitForFunction(() => Boolean(window.taskWorkspaceStress));
   await page.evaluate(() => window.taskWorkspaceStress.load(500));
   const first = page.locator('[data-task-navigation-id="task-0"]');
   await expect(first).toBeVisible();
-  const samples: { elapsedMs: number; scriptMs: number; styleMs: number }[] = [];
+  const samples = [];
   for (let round = 0; round < 3; round++) {
     await page.getByRole("button", { name: "List view", exact: true }).click();
     const option = page.getByRole("menuitemradio", { name: "List", exact: true });
     await expect(option).toBeVisible();
-    const before = await cdp.send("Performance.getMetrics");
-    const elapsedMs = await option.evaluate(async (element) => {
-      const start = performance.now();
-      (element as HTMLElement).click();
-      await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+    let inputResponse: ReactRenderWork | undefined;
+    await reactRenderWork(page, async () => {
+      inputResponse = await option.evaluate(async (element) => {
+        (element as HTMLElement).click();
+        // React commits the click's own updates in a microtask of this task.
+        // A transition renders in a later task.
+        for (let index = 0; index < 5; index++) await Promise.resolve();
+        return window.commaRenderWork!.peek();
+      });
+      await expect(page.getByTestId("tasks-list")).toBeVisible();
+    });
+    await expect(page.locator("[data-task-navigation-id]")).toHaveCount(500);
+    // Rows whose content the browser styles and lays out; offscreen rows skip it.
+    const renderedRows = await page
+      .locator("[data-task-navigation-id]")
+      .evaluateAll(
+        (rows) =>
+          rows.filter((row) =>
+            [...row.children].some((child) =>
+              child.checkVisibility({ contentVisibilityAuto: true })
+            )
+          ).length
       );
-      return performance.now() - start;
-    });
-    const after = await cdp.send("Performance.getMetrics");
-    const delta = (name: string) =>
-      ((after.metrics.find((metric) => metric.name === name)?.value ?? 0) -
-        (before.metrics.find((metric) => metric.name === name)?.value ?? 0)) *
-      1000;
-    samples.push({
-      elapsedMs,
-      scriptMs: delta("ScriptDuration"),
-      styleMs: delta("RecalcStyleDuration"),
-    });
-    await expect(page.getByTestId("tasks-list")).toBeVisible();
+    samples.push({ inputResponseElements: inputResponse!.elements, renderedRows });
     if (round < 2) {
       await page.getByRole("button", { name: "Board view", exact: true }).click();
       await page.getByRole("menuitemradio", { name: "Board", exact: true }).click();
@@ -172,11 +142,16 @@ test("Task view switching defers offscreen layout and preserves navigation @fram
     }
     await page.waitForTimeout(300);
   }
-  await testInfo.attach("task-view-switch-performance.json", {
+  await testInfo.attach("task-view-switch-work.json", {
     body: JSON.stringify(samples),
     contentType: "application/json",
   });
-  expect(Math.max(...samples.map((sample) => sample.styleMs))).toBeLessThan(150);
+  for (const sample of samples) {
+    // The click closes the menu; the list of every loaded Task mounts after it.
+    expect(sample.inputResponseElements).toBeLessThan(500);
+    // Offscreen rows skip style and layout until they are scrolled to.
+    expect(sample.renderedRows).toBeLessThan(60);
+  }
   await expect(page.locator("[data-task-navigation-id]")).toHaveCount(500);
 
   // Native focus must reveal a row that has not yet entered the viewport.

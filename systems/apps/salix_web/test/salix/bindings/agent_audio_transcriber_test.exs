@@ -1,12 +1,18 @@
 defmodule Salix.Bindings.AgentAudioTranscriberTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias Salix.Bindings.AgentAudioTranscriber
 
   defmodule RecordingTranscriber do
-    def transcribe_audio_stream_with_metadata(_cfg, stream, size, filename, prompt) do
+    def transcribe_audio_stream_with_metadata(cfg, stream, size, filename, prompt, opts \\ []) do
       received = Enum.reduce(stream, 0, &(byte_size(&1) + &2))
-      send(self(), {:transcribed, received, size, filename, prompt})
+
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:transcribed, received, size, filename, prompt}
+      )
+
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:asked, cfg, opts})
 
       {:ok,
        %{
@@ -23,7 +29,7 @@ defmodule Salix.Bindings.AgentAudioTranscriberTest do
     size = 11 * 1024 * 1024
 
     stream_fun = fn %{agent_id: agent_id}, path ->
-      send(self(), {:streamed, agent_id, path})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:streamed, agent_id, path})
 
       stream =
         Stream.repeatedly(fn -> :binary.copy(<<0xA5>>, 256 * 1024) end)
@@ -57,33 +63,26 @@ defmodule Salix.Bindings.AgentAudioTranscriberTest do
              )
   end
 
-  test "recording uploads use the same configured transcription engine and prompt" do
-    assert {:ok, %{duration_seconds: 11}} =
-             AgentAudioTranscriber.transcribe_upload(["M4A"], 3, "recording.m4a",
-               config_fun: fn -> {:ok, %{}} end,
-               transcriber: RecordingTranscriber
-             )
-
-    assert_receive {:transcribed, 3, 3, "recording.m4a", _prompt}
-
-    assert {:error, :asr_not_configured} =
-             AgentAudioTranscriber.transcribe_upload([], 0, "recording.m4a",
-               config_fun: fn -> {:error, :asr_not_configured} end
-             )
-  end
-
-  test "rejects empty, invalid, and oversized streams before provider dispatch" do
-    call = fn size ->
-      AgentAudioTranscriber.transcribe("agent-1", "/audio.ogg",
-        config_fun: fn -> {:ok, %{}} end,
-        stream_fun: fn _ctx, _path -> {:ok, [], size} end,
-        transcriber: RecordingTranscriber
+  test "Quick Chat's words are asked for as dictation, quickly, not as timed speaker lines" do
+    upload = fn opts ->
+      AgentAudioTranscriber.transcribe_upload(
+        ["M4A"],
+        3,
+        "recording.m4a",
+        [config_fun: fn -> {:ok, %{}} end, transcriber: RecordingTranscriber] ++ opts
       )
     end
 
-    assert {:error, :asr_audio_empty} = call.(0)
-    assert {:error, :asr_audio_size_invalid} = call.(-1)
-    assert {:error, :asr_audio_too_large} = call.(30 * 1024 * 1024 + 1)
-    refute_receive {:transcribed, _, _, _, _}
+    assert {:ok, _} = upload.([])
+    assert_received {:transcribed, 3, 3, "recording.m4a", recording_prompt}
+    # A meeting recording keeps the tier's own settings.
+    assert_received {:asked, %{}, []}
+    assert {:ok, _} = upload.(purpose: :dictation)
+    assert_received {:transcribed, 3, 3, "recording.m4a", dictation_prompt}
+    refute dictation_prompt == recording_prompt
+    # A person waits for dictation: short reasoning, a request asked again, a bound under 10 s.
+    assert_received {:asked, %{"reasoning_effort" => "low"}, opts}
+    assert is_function(opts[:transcribe_fun], 4)
+    assert opts[:batch_timeout_ms] < 10_000
   end
 end

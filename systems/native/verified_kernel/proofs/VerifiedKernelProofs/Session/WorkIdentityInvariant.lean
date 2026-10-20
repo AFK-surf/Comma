@@ -11,18 +11,17 @@ theorem admitted_nonretiring {event : Term} (allowed : Command.inputEventAllowed
     NonRetiring event := by
   have excluded := InputAdmission.admitted_event_no_retirement (events := [event]) (event := event)
     (by simpa using allowed) (by simp)
-  exact ⟨excluded.1, excluded.2.1, excluded.2.2.1⟩
+  exact ⟨excluded.1, excluded.2.1, excluded.2.2⟩
 
 theorem admitted_inner_ledger_supported {state event next : Term} {sealed journal rest : List Term}
-    (ready : QueueReady state) (format : state.get (a "storage_format") = i 3)
-    (allowed : Command.inputEventAllowed event = true) (supported : LedgerSupported state sealed)
+    (ready : QueueReady state) (allowed : Command.inputEventAllowed event = true) (supported : LedgerSupported state sealed)
     (call : inner state event journal = .ok (next, rest)) : LedgerSupported next sealed := by
   intro source present
   rcases identity_present_or_absent (state.get (a "input_dedupe")) (.binary source) with old | absent
   · obtain ⟨original, fact, origin, represented⟩ := supported source old
     exact ⟨original, fact, origin, identity_fact_preserves
-      (nonretiring_inner_preserves ready format (admitted_nonretiring allowed) call sealed)
-      (fun _ stored => record_survives (nonretiring_inner_extends format (admitted_nonretiring allowed) call) stored)
+      (nonretiring_inner_preserves ready (admitted_nonretiring allowed) call sealed)
+      (fun _ stored => record_survives (nonretiring_inner_extends (admitted_nonretiring allowed) call) stored)
       represented⟩
   · obtain ⟨fact, origin, represented⟩ := admitted_new_identity_fact ready allowed call absent present
     exact ⟨event, fact, origin, represented sealed⟩
@@ -40,8 +39,7 @@ theorem activity_ledger_supported {state next : Term} {sealed : List Term}
   · exact fun _ before => record_survives (activity_frame_extends frame) before
 
 theorem admitted_resident_ledger_supported {state event next : Term} {sealed : List Term}
-    (step : ResidentStep state event next) (ready : QueueReady state)
-    (format : state.get (a "storage_format") = i 3) (canonical : BinaryKeys event)
+    (step : ResidentStep state event next) (ready : QueueReady state) (canonical : BinaryKeys event)
     (allowed : Command.inputEventAllowed event = true) (supported : LedgerSupported state sealed) :
     LedgerSupported next sealed := by
   obtain ⟨middle, normalized, journal, rest, prepared, activity⟩ := step
@@ -52,7 +50,7 @@ theorem admitted_resident_ledger_supported {state event next : Term} {sealed : L
     obtain ⟨_, read, _, call⟩ := prepareTrusted_stringify prepared
     have same := shallowStringify_binary_keys canonical read
     subst normalized
-    exact admitted_inner_ledger_supported ready format allowed supported call
+    exact admitted_inner_ledger_supported ready allowed supported call
 
 theorem admitted_batch_ledger_supported {state next : Term} {events sealed : List Term}
     (execution : ResidentBatch state events next) (ready : QueueReady state)
@@ -71,7 +69,7 @@ theorem admitted_batch_ledger_supported {state next : Term} {events sealed : Lis
     exact ih middleReady middleFormat
       (fun event member => canonical event (List.mem_cons_of_mem _ member))
       (fun event member => allowed event (List.mem_cons_of_mem _ member))
-      (admitted_resident_ledger_supported step ready format headKeys headAllowed supported)
+      (admitted_resident_ledger_supported step ready headKeys headAllowed supported)
 
 theorem equivalent_identity_present {before after : Term} {source : ByteArray}
     (same : ValueSemantics.Equivalent before after) :

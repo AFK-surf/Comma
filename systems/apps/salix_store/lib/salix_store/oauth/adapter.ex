@@ -24,13 +24,13 @@ defmodule SalixStore.OAuth.Adapter do
       provider extras from it (willow `control.OAuthConnection` token fields)
 
   Every endpoint URL resolves through
-  `Application.get_env(:salix_store, :oauth_endpoint_overrides, %{})` —
+  `SystemsRuntime.get_env(:salix_store, :oauth_endpoint_overrides, %{})` —
   `%{provider => %{"authorize_url" | "token_url" | "revoke_url" | "api_url" => url}}`
   — falling back to the real provider endpoints. This is the test seam.
 
   Intentional divergences from willow:
 
-    * Expiry timestamps are absolute **milliseconds** (`System.system_time(:millisecond)`
+    * Expiry timestamps are absolute **milliseconds** (`SystemsClock.system_time(:millisecond)`
       at exchange/refresh time + `expires_in * 1000`); willow stores Unix seconds.
     * The authorization request carries a precomputed S256 `code_challenge`
       (base64url) instead of the raw verifier; willow's adapters compute the
@@ -87,7 +87,7 @@ defmodule SalixStore.OAuth.Adapter do
   def endpoint(provider, key, default) do
     # nil-tolerant: a test restoring the seam with put_env(key, nil) stores a
     # literal nil, which get_env returns INSTEAD of the default.
-    overrides = Application.get_env(:salix_store, :oauth_endpoint_overrides) || %{}
+    overrides = SystemsRuntime.get_env(:salix_store, :oauth_endpoint_overrides) || %{}
 
     overrides
     |> Map.get(provider, %{})
@@ -201,7 +201,7 @@ defmodule SalixStore.OAuth.Adapter do
   def expires_at_ms(expires_in, now_ms \\ nil)
 
   def expires_at_ms(expires_in, now_ms) when is_number(expires_in) and expires_in > 0 do
-    (now_ms || System.system_time(:millisecond)) + trunc(expires_in) * 1000
+    (now_ms || SystemsClock.system_time(:millisecond)) + trunc(expires_in) * 1000
   end
 
   def expires_at_ms(_, _), do: nil

@@ -2,16 +2,17 @@ defmodule SalixMeet.Meeting do
   @moduledoc """
   One GenServer per live meeting. It holds
   leadership by CAS-renewing the `meet/{id}/state.json` object on an interval —
-  the lease is folded into that object, so the same ETag fences both renewal and
-  any state mutation. On a lost CAS the process **surrenders** (drops to
-  standby): a zombie leader's writes are inert because its ETag is dead.
+  the lease is folded into that object. Other writers (the join outbox,
+  delivery) CAS the same object, so renewal fences on the leader's epoch, not on
+  its last ETag: a claim by another node changes the epoch, and the process then
+  **surrenders** (drops to standby).
 
   Join is at-most-once through the durable `SalixMeet.JoinDispatch` outbox.
   The Meeting process gates calls on live leadership, while the winning caller
   owns the bounded external runtime call. Replays and re-elections are
   resumable from S3, never from process memory.
   """
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
   alias SalixMeet.Store
@@ -20,14 +21,14 @@ defmodule SalixMeet.Meeting do
 
   def start_link(opts) do
     id = Keyword.fetch!(opts, :id)
-    GenServer.start_link(__MODULE__, opts, name: via(id))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: via(id))
   end
 
   @doc "Is this node currently the meeting leader?"
   @spec leader?(String.t()) :: boolean()
   def leader?(id) do
-    case Registry.lookup(SalixMeet.Registry, id) do
-      [{pid, _}] -> GenServer.call(pid, :leader?)
+    case SystemsRuntime.Registry.lookup(SalixMeet.Registry, id) do
+      [{pid, _}] -> SystemsRuntime.Server.call(pid, :leader?)
       [] -> false
     end
   end
@@ -35,9 +36,9 @@ defmodule SalixMeet.Meeting do
   @doc "Request to join (at most once). Returns the `join_requested_at` timestamp."
   @spec join(String.t()) :: {:ok, integer()} | {:error, term()}
   def join(id) do
-    case Registry.lookup(SalixMeet.Registry, id) do
+    case SystemsRuntime.Registry.lookup(SalixMeet.Registry, id) do
       [{pid, _}] ->
-        if GenServer.call(pid, :leader?),
+        if SystemsRuntime.Server.call(pid, :leader?),
           do: SalixMeet.JoinDispatch.run(id),
           else: {:error, :not_leader}
 
@@ -46,7 +47,7 @@ defmodule SalixMeet.Meeting do
     end
   end
 
-  defp via(id), do: {:via, Registry, {SalixMeet.Registry, id}}
+  defp via(id), do: {:via, SystemsRuntime.Registry, {SalixMeet.Registry, id}}
 
   @impl true
   def init(opts) do
@@ -79,7 +80,7 @@ defmodule SalixMeet.Meeting do
   defp tick(state) do
     state = acquire_or_renew(state)
     state = maybe_run_copilot(state)
-    Process.send_after(self(), :tick, state.interval)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, state.interval)
     state
   end
 
@@ -97,7 +98,7 @@ defmodule SalixMeet.Meeting do
 
   defp active?(doc), do: get_in(doc || %{}, ["state", "status"]) == "active"
 
-  defp copilot_enabled?, do: Application.get_env(:salix_meet, :copilot_enabled, true)
+  defp copilot_enabled?, do: SystemsRuntime.get_env(:salix_meet, :copilot_enabled, true)
 
   # Standby: (re)load the state object — resumable across restarts/elections —
   # then try to claim leadership by CAS.
@@ -108,9 +109,9 @@ defmodule SalixMeet.Meeting do
     end
   end
 
-  # Leader: CAS-renew; a lost CAS surrenders (fail-closed).
+  # Leader: CAS-renew the epoch it holds; a lost epoch surrenders (fail-closed).
   defp acquire_or_renew(state) do
-    case Store.claim_leader(state.id, state.node, state.etag) do
+    case Store.renew_leader(state.id, state.node, state.doc["epoch"]) do
       {:ok, doc, etag} ->
         %{state | doc: doc, etag: etag}
 

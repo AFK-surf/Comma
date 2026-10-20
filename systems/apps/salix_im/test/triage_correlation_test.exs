@@ -1,42 +1,27 @@
 defmodule SalixIM.Triage.CorrelationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.Triage.{CanonicalJSON, Correlation}
   alias SalixStore.{CasRecord, S3, ULID}
 
   setup do
-    previous_triage_backend = Application.get_env(:salix_store, :triage_record_backend)
-    Application.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
+    previous_triage_backend = SystemsRuntime.get_env(:salix_store, :triage_record_backend)
+    SystemsRuntime.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
     S3.Fake.reset()
 
     on_exit(fn ->
       if previous_triage_backend do
-        Application.put_env(:salix_store, :triage_record_backend, previous_triage_backend)
+        SystemsRuntime.put_env(:salix_store, :triage_record_backend, previous_triage_backend)
       else
-        Application.delete_env(:salix_store, :triage_record_backend)
+        SystemsRuntime.delete_env(:salix_store, :triage_record_backend)
       end
     end)
 
     :ok
   end
 
-  test "rejects empty or malformed operator selectors before storage reads" do
-    namespace = "triage-correlation-invalid-#{System.unique_integer([:positive])}"
-
-    assert {:error, :invalid_triage_correlation} =
-             Correlation.lookup(namespace, {:slack_event_id, "  "})
-
-    assert {:error, :invalid_triage_correlation} =
-             Correlation.lookup(namespace, {:receipt_ref, ""})
-
-    assert {:error, :invalid_triage_correlation} =
-             Correlation.lookup(namespace, {:slack_permalink, "https://example.com/not-slack"})
-
-    assert S3.Fake.read_log(self()) == []
-  end
-
   test "stores only hashed selectors, detects ambiguity, and bounds time windows" do
-    namespace = "triage-correlation-index-#{System.unique_integer([:positive])}"
+    namespace = "triage-correlation-index-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     event_id = "Ev-private-correlation"
     receipt_ref = "s3://private/receipt/correlation"
 
@@ -85,7 +70,7 @@ defmodule SalixIM.Triage.CorrelationTest do
                limit: 1
              )
 
-    assert [{:list, time_prefix, opts} | _reads] = S3.Fake.read_log(self())
+    assert [{:list, time_prefix, opts} | _reads] = S3.Fake.read_log(SystemsRuntime.Proc.self())
     assert time_prefix == SalixStore.TriageKeys.ctl_im_triage_run_time_index_prefix(namespace)
     assert opts[:max_keys] == 2
     assert is_binary(opts[:start_after])

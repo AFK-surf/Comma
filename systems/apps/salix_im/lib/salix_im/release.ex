@@ -163,29 +163,30 @@ defmodule SalixIM.Release do
   end
 
   defp ensure_release_conversation_owners do
-    registry = Process.whereis(SalixIM.ConversationRegistry)
-    fleet = Process.whereis(SalixIM.ConversationFleetSup)
+    registry = SystemsRuntime.Proc.whereis(SalixIM.ConversationRegistry)
+    fleet = SystemsRuntime.Proc.whereis(SalixIM.ConversationFleetSup)
 
     cond do
-      is_pid(registry) and is_pid(fleet) ->
+      registry != nil and fleet != nil ->
         :ok
 
-      is_nil(registry) and is_nil(fleet) ->
-        Application.put_env(
+      registry == nil and fleet == nil ->
+        SystemsRuntime.put_env(
           :salix_im,
           :conversation_placement,
           SalixIM.ConversationPlacement.LocalFleet
         )
 
         children = [
-          {Registry,
+          {SystemsRuntime.Registry,
            keys: :unique,
            name: SalixIM.ConversationRegistry,
            partitions: System.schedulers_online()},
-          {DynamicSupervisor, name: SalixIM.ConversationFleetSup, strategy: :one_for_one}
+          {SystemsRuntime.DynamicSupervisor,
+           name: SalixIM.ConversationFleetSup, strategy: :one_for_one}
         ]
 
-        case Supervisor.start_link(children,
+        case SystemsRuntime.Supervisor.start_link(children,
                strategy: :rest_for_one,
                name: SalixIM.ReleaseConversationOwnerSupervisor
              ) do

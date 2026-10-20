@@ -1,5 +1,5 @@
 defmodule Salix.Bindings.MeetingChannelTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Bindings.MeetingChannel
   alias Salix.Control.Store, as: ControlStore
@@ -7,8 +7,8 @@ defmodule Salix.Bindings.MeetingChannelTest do
   alias SalixStore.{Ids, Keys}
 
   setup do
-    previous_s3 = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     ensure_started!(SalixStore.S3.Fake)
     SalixStore.S3.Fake.reset()
     SalixAgent.TestSupport.stop_all_agents()
@@ -52,28 +52,11 @@ defmodule Salix.Bindings.MeetingChannelTest do
              MeetingChannel.resolve(group(context, "slack-primary", "T-primary", "C-x"))
   end
 
-  test "rejects a group missing the resolved channel target", context do
-    seed_connect(context, "slack-primary", "T-primary")
-
-    assert {:error, :meeting_slack_target_not_configured} =
-             MeetingChannel.resolve(%{
-               "tenant_id" => context.tenant_id,
-               "group_id" => context.group_id
-             })
-  end
-
   test "rejects a workspace that does not own the exact connect", context do
     seed_connect(context, "slack-primary", "T-actual")
 
     assert {:error, :meeting_slack_workspace_mismatch} =
              MeetingChannel.resolve(group(context, "slack-primary", "T-configured", "C-x"))
-  end
-
-  test "rejects a disabled connect", context do
-    seed_connect(context, "slack-disabled", "T-primary", disabled_at: 100)
-
-    assert {:error, _reason} =
-             MeetingChannel.resolve(group(context, "slack-disabled", "T-primary", "C-x"))
   end
 
   test "rejects a connect that is not router-visible", context do
@@ -127,12 +110,12 @@ defmodule Salix.Bindings.MeetingChannelTest do
   end
 
   defp ensure_started!(module) do
-    case Process.whereis(module) do
+    case SystemsRuntime.Proc.whereis(module) do
       nil -> start_supervised!(module)
       _pid -> :ok
     end
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

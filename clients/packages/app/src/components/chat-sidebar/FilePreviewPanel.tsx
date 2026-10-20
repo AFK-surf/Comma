@@ -1,8 +1,8 @@
-import type { AttachmentUploadInput } from "../chat/model/conversationChannel";
+import type { AttachmentUploadInput } from "@comma/core/chat";
+import { CoreError, useCall } from "@comma/core-client";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import { fileDownloadMaxBytes, getNativeBridge } from "@comma/native-bridge";
+import { getNativeBridge } from "@comma/native-bridge";
 import { useEffect, useMemo, useState } from "react";
-import type { CommaApiClient } from "../../api";
 import { createFileDownloadCapability } from "../../runtime-files/fileDownloads";
 import { createFileOpenInAction } from "../../runtime-files/fileOpenActions";
 import {
@@ -14,13 +14,11 @@ import { useChatRegistry } from "../chat/ChatProvider";
 import { FilePreviewPanel as SharedFilePreviewPanel } from "../file-preview/FilePreviewPanel";
 
 export function FilePreviewPanel({
-  api,
   source,
   panelId,
   onOpenBrowser,
   onAttachFiles,
 }: {
-  api: CommaApiClient;
   source: ConversationFileSource;
   panelId: string;
   onOpenBrowser: (url: string) => void;
@@ -28,39 +26,44 @@ export function FilePreviewPanel({
 }) {
   const messages = useCommaMessages();
   const locale = useCommaLocale();
+  const call = useCall();
   const { beginAttempt } = useChatRegistry();
   const key = conversationFileSourceKey(source);
   const [loaded, setState] = useState<{
-    owner?: CommaApiClient;
+    owner?: object;
     key?: string;
     blob?: Blob;
     error?: string;
   }>({});
-  const state = loaded.owner === api && loaded.key === key ? loaded : {};
+  const state = loaded.owner === beginAttempt && loaded.key === key ? loaded : {};
   // Each mounted selection owns its request. Switch/close unmounts it; a late
-  // response cannot publish another selection (FilePreviewSelection.tla).
+  // response cannot publish another selection.
   useEffect(() => {
     const controller = new AbortController();
     const attempt = beginAttempt();
     const signal = AbortSignal.any([controller.signal, attempt.signal]);
     let current = true;
-    setState({ owner: api, key });
+    setState({ owner: beginAttempt, key });
     const clearRevoked = () => {
-      if (current) setState({ owner: api, key, error: messages.file_preview_failed() });
+      if (current)
+        setState({ owner: beginAttempt, key, error: messages.file_preview_failed() });
     };
     signal.addEventListener("abort", clearRevoked, { once: true });
-    void resolveConversationFile(api, source, signal).then(
+    void resolveConversationFile(call, source, signal).then(
       (blob) => {
         if (!current || signal.aborted || !attempt.isCurrent()) return;
-        setState(
-          blob.size > fileDownloadMaxBytes
-            ? { owner: api, key, error: messages.file_preview_too_large() }
-            : { owner: api, key, blob }
-        );
+        setState({ owner: beginAttempt, key, blob });
       },
-      () => {
+      (error: unknown) => {
         if (current)
-          setState({ owner: api, key, error: messages.file_preview_failed() });
+          setState({
+            owner: beginAttempt,
+            key,
+            error:
+              error instanceof CoreError && error.code === "too_large"
+                ? messages.file_preview_too_large()
+                : messages.file_preview_failed(),
+          });
       }
     );
     return () => {
@@ -69,27 +72,27 @@ export function FilePreviewPanel({
       controller.abort();
       attempt.release();
     };
-  }, [api, key, source, beginAttempt, messages]);
+  }, [call, key, source, beginAttempt, messages]);
   const download = useMemo(
     () => ({
       fileName: source.fileName,
       capability: createFileDownloadCapability(
-        (signal) => resolveConversationFile(api, source, signal),
+        (signal) => resolveConversationFile(call, source, signal),
         { locale }
       ),
     }),
-    [api, source, locale]
+    [call, source, locale]
   );
   const openIn = useMemo(
     () =>
       createFileOpenInAction({
-        api,
+        call,
         source,
         bridge: getNativeBridge(),
         locale,
         beginAttempt,
       }),
-    [api, source, locale, beginAttempt]
+    [call, source, locale, beginAttempt]
   );
   return (
     <SharedFilePreviewPanel

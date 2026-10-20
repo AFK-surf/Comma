@@ -1,15 +1,21 @@
 defmodule SalixAgent.AgentReplyTask do
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
   @moduledoc false
 
   @default_timeout_ms 120_000
 
   @spec start(GenServer.from(), (-> term())) :: {:ok, pid()} | {:error, term()}
-  def start({caller, _tag} = from, fun) when is_pid(caller) and is_function(fun, 0) do
+  def start({caller, _tag} = from, fun)
+      when SystemsRuntime.Proc.is_process(caller) and is_function(fun, 0) do
     start_on(SalixAgent.AgentReplyTaskSup, from, caller, fun)
   end
 
   @spec start_stage(GenServer.from(), (-> term())) :: {:ok, pid()} | {:error, term()}
-  def start_stage({caller, _tag} = from, fun) when is_pid(caller) and is_function(fun, 0) do
+  def start_stage({caller, _tag} = from, fun)
+      when SystemsRuntime.Proc.is_process(caller) and is_function(fun, 0) do
     start_on(SalixAgent.AgentStageTaskSup, from, caller, fun)
   end
 
@@ -23,11 +29,11 @@ defmodule SalixAgent.AgentReplyTask do
   """
   @spec call((-> term()), timeout()) :: term()
   def call(fun, timeout \\ :infinity) when is_function(fun, 0) do
-    caller = self()
-    tag = make_ref()
-    reply = fn result -> send(caller, {tag, result}) end
+    caller = SystemsRuntime.Proc.self()
+    tag = SystemsRuntime.Proc.make_ref()
+    reply = fn result -> SystemsRuntime.Proc.send(caller, {tag, result}) end
 
-    case Task.Supervisor.start_child(SalixAgent.AgentReplyTaskSup, fn ->
+    case SystemsRuntime.TaskSupervisor.start_child(SalixAgent.AgentReplyTaskSup, fn ->
            run(reply, caller, fun, timeout_ms())
          end) do
       {:ok, pid} -> await_call(pid, tag, timeout)
@@ -36,45 +42,50 @@ defmodule SalixAgent.AgentReplyTask do
   end
 
   defp await_call(pid, tag, timeout) do
-    monitor = Process.monitor(pid)
+    monitor = SystemsRuntime.Proc.monitor(pid)
 
-    receive do
+    SystemsClock.vreceive do
       {^tag, result} ->
-        Process.demonitor(monitor, [:flush])
+        SystemsRuntime.Proc.demonitor(monitor, [:flush])
         result
 
       {:DOWN, ^monitor, :process, ^pid, reason} ->
         {:error, {:agent_actor_reply_task_failed, reason}}
     after
       timeout ->
-        Process.demonitor(monitor, [:flush])
-        Process.exit(pid, :kill)
+        SystemsRuntime.Proc.demonitor(monitor, [:flush])
+        SystemsRuntime.Proc.exit(pid, :kill)
         exit({:timeout, {__MODULE__, :call, [timeout]}})
     end
   end
 
   defp start_on(supervisor, from, caller, fun) do
-    Task.Supervisor.start_child(supervisor, fn ->
-      run(&GenServer.reply(from, &1), caller, fun, timeout_ms())
+    SystemsRuntime.TaskSupervisor.start_child(supervisor, fn ->
+      run(&SystemsRuntime.Server.reply(from, &1), caller, fun, timeout_ms())
     end)
   end
 
   defp run(reply, caller, fun, timeout_ms) do
-    caller_monitor = Process.monitor(caller)
-    owner = self()
-    token = make_ref()
+    caller_monitor = SystemsRuntime.Proc.monitor(caller)
+    owner = SystemsRuntime.Proc.self()
+    token = SystemsRuntime.Proc.make_ref()
 
     worker =
-      spawn_link(fn ->
-        send(owner, {:agent_reply_task_result, token, safe_call(fun)})
+      SystemsRuntime.Proc.spawn_link(fn ->
+        SystemsRuntime.Proc.send(owner, {:agent_reply_task_result, token, safe_call(fun)})
       end)
 
-    timer = Process.send_after(self(), {:agent_reply_task_timeout, token}, timeout_ms)
+    timer =
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
+        {:agent_reply_task_timeout, token},
+        timeout_ms
+      )
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {:agent_reply_task_result, ^token, result} ->
         cancel_timer(timer)
-        Process.demonitor(caller_monitor, [:flush])
+        SystemsRuntime.Proc.demonitor(caller_monitor, [:flush])
         reply.(result)
 
       {:DOWN, ^caller_monitor, :process, ^caller, _reason} ->
@@ -82,9 +93,9 @@ defmodule SalixAgent.AgentReplyTask do
         terminate(worker)
 
       {:agent_reply_task_timeout, ^token} ->
-        Process.demonitor(caller_monitor, [:flush])
+        SystemsRuntime.Proc.demonitor(caller_monitor, [:flush])
         terminate(worker)
-        # The caller may be on another BEAM node, while `Process.alive?/1` is
+        # The caller may be on another BEAM node, while `SystemsRuntime.Proc.alive?/1` is
         # only a reliable local-process predicate. Reply unconditionally; a
         # dead caller simply drops it.
         reply.({:error, {:agent_actor_reply_timeout, timeout_ms}})
@@ -100,21 +111,21 @@ defmodule SalixAgent.AgentReplyTask do
   end
 
   defp timeout_ms do
-    case Application.get_env(:salix_agent, :agent_reply_task_timeout_ms, @default_timeout_ms) do
+    case SystemsRuntime.get_env(:salix_agent, :agent_reply_task_timeout_ms, @default_timeout_ms) do
       timeout when is_integer(timeout) and timeout > 0 -> timeout
       _invalid -> @default_timeout_ms
     end
   end
 
   defp cancel_timer(timer) do
-    Process.cancel_timer(timer, async: false, info: false)
+    SystemsClock.cancel_timer(timer)
     :ok
   end
 
-  defp terminate(pid) when is_pid(pid) do
-    if Process.alive?(pid) do
-      Process.unlink(pid)
-      Process.exit(pid, :kill)
+  defp terminate(pid) when SystemsRuntime.Proc.is_process(pid) do
+    if SystemsRuntime.Proc.alive?(pid) do
+      SystemsRuntime.Proc.unlink(pid)
+      SystemsRuntime.Proc.exit(pid, :kill)
     end
 
     :ok

@@ -106,7 +106,7 @@ defmodule Comma.Billing.RouterModels do
     if is_binary(agent_id) and agent_id == workspace["router_agent_id"] do
       with {:ok, %{models: [_ | _] = models}} <- get(),
            {:ok, config} when is_map(config) <-
-             SalixAgent.Templates.resolve_llm_for_agent(agent_id) do
+             SalixAgent.AgentModel.resolve_llm_for_agent(agent_id) do
         {provider, sku} =
           BillingCore.LLMMetering.model_key(
             SalixAgent.LLMProvider.provider(config),

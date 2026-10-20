@@ -7,9 +7,17 @@ defmodule SalixMeet.MeetingRuntimePolicy do
   Connected and Compute targets.
   """
 
-  @sources ~w(connected_runtime compute_workload)
+  @sources ~w(connected_runtime compute_workload native_runtime)
 
   def sources, do: @sources
+
+  @doc "Runtime source recorded on new provider-triggered Meetings."
+  def default_source do
+    case SystemsRuntime.get_env(:salix_meet, :default_runtime_source) do
+      source when source in @sources -> source
+      _ -> "connected_runtime"
+    end
+  end
 
   def select(payload) when is_map(payload) do
     source = payload["runtime_source"] || get_in(payload, ["runtime_policy", "source"])

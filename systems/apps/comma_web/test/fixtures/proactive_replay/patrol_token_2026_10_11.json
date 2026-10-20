@@ -1,0 +1,604 @@
+{
+ "name": "patrol_token_2026_10_11",
+ "description": "Bridge prod macOS patrol failed three hourly runs on a revoked credit token. Alerts named only the ops bot; its replies asked the 'patrol account owner' by account email. The owner renews this token monthly in #patrol-test. Reconstructed from Slack search on 2026-10-12 with pseudonymized IDs; the owner's direct messages were not visible and are absent.",
+ "now": "2026-10-11T13:06:00Z",
+ "pending_since": "2026-10-11T11:00:00Z",
+ "locale": "zh-CN",
+ "timezone": "Asia/Shanghai",
+ "owner": {
+  "user": "U0OWNER001",
+  "team": "T0TEAM0001",
+  "handle": "kai"
+ },
+ "home": [],
+ "slack": {
+  "search": [
+   {
+    "query": "<@U0OWNER001> after:2026-10-04",
+    "matches": [
+     {
+      "type": "message",
+      "ts": "1791635457.000400",
+      "text": "<@U0OWNER001> cc",
+      "permalink": "https://example.slack.com/archives/C0APPDEV01/p1791635457000400",
+      "channel": {
+       "id": "C0APPDEV01",
+       "name": "app-dev",
+       "is_im": false
+      },
+      "user": "U0PEERA001"
+     },
+     {
+      "type": "message",
+      "ts": "1791572491.000300",
+      "text": "Yes, because <@U0OWNER001> did a migration today, it seems openclaw's memory got lost",
+      "permalink": "https://example.slack.com/archives/C0APPDEV01/p1791572491000300",
+      "channel": {
+       "id": "C0APPDEV01",
+       "name": "app-dev",
+       "is_im": false
+      },
+      "user": "U0PEERC001"
+     },
+     {
+      "type": "message",
+      "ts": "1791561713.000200",
+      "text": "<@U0OWNER001> you can ask 3720 to check the backroom event archive",
+      "permalink": "https://example.slack.com/archives/C0APPDEV01/p1791561713000200",
+      "channel": {
+       "id": "C0APPDEV01",
+       "name": "app-dev",
+       "is_im": false
+      },
+      "user": "U0PEERB001"
+     },
+     {
+      "type": "message",
+      "ts": "1791547657.000100",
+      "text": "Ah, it's their self-hosted install. <@U0OWNER001> please share all logs from when the error happened",
+      "permalink": "https://example.slack.com/archives/C0APPDEV01/p1791547657000100?thread_ts=1791545990.258929&cid=C0APPDEV01",
+      "channel": {
+       "id": "C0APPDEV01",
+       "name": "app-dev",
+       "is_im": false
+      },
+      "user": "U0PEERA001"
+     }
+    ]
+   },
+   {
+    "query": "to:me after:2026-10-04",
+    "matches": []
+   },
+   {
+    "query": "is:thread with:<@U0OWNER001> after:2026-10-04",
+    "matches": []
+   },
+   {
+    "query": "from:<@U0OWNER001> after:2026-09-11",
+    "matches": [
+     {
+      "type": "message",
+      "ts": "1791634000.000102",
+      "text": "迁移那个我明天再看一下 openclaw 的记忆",
+      "permalink": "https://example.slack.com/archives/C0APPDEV01/p1791634000000102",
+      "channel": {
+       "id": "C0APPDEV01",
+       "name": "app-dev",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     },
+     {
+      "type": "message",
+      "ts": "1791548400.000101",
+      "text": "self-hosted 的日志我晚点整理一下发上来",
+      "permalink": "https://example.slack.com/archives/C0APPDEV01/p1791548400000101",
+      "channel": {
+       "id": "C0APPDEV01",
+       "name": "app-dev",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     },
+     {
+      "type": "message",
+      "ts": "1791450146.000012",
+      "text": "如果还有问题就继续修，如果有疑问就找 peer-b",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791450146000012?thread_ts=1791306673.383769&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     },
+     {
+      "type": "message",
+      "ts": "1791449956.000011",
+      "text": "<@U0BOTOPS01> 你换一个账号批",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791449956000011?thread_ts=1791306673.383769&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     },
+     {
+      "type": "message",
+      "ts": "1791448285.000010",
+      "text": "如果修好了就合了",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791448285000010?thread_ts=1791306673.383769&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     },
+     {
+      "type": "message",
+      "ts": "1791448152.000009",
+      "text": "这个巡检是 board 仓库的",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791448152000009?thread_ts=1791306673.383769&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     },
+     {
+      "type": "message",
+      "ts": "1791448094.000008",
+      "text": "<@U0PEERA001> 修修 bridge",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791448094000008?thread_ts=1791306673.383769&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     },
+     {
+      "type": "message",
+      "ts": "1791448047.000007",
+      "text": "所以发生了什么时候",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791448047000007?thread_ts=1791306673.383769&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     },
+     {
+      "type": "message",
+      "ts": "1791375966.000006",
+      "text": "合吧",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791375966000006",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     },
+     {
+      "type": "message",
+      "ts": "1791375966.000005",
+      "text": "<@U0BOTOPS01> 你看看这个巡检的attention 的人能不能从 codex-3720 换成你",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791375966000005",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     },
+     {
+      "type": "message",
+      "ts": "1790165560.000004",
+      "text": "你去查查怎么回事",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1790165560000004",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     },
+     {
+      "type": "message",
+      "ts": "1790165062.000003",
+      "text": "中文人话讲讲发生了啥",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1790165062000003",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     },
+     {
+      "type": "message",
+      "ts": "1789122480.000002",
+      "text": "换了 auth token 了",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1789122480000002?thread_ts=1789116035.795969&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     },
+     {
+      "type": "message",
+      "ts": "1789122140.033729",
+      "text": "咋了，auth 过期了吗？",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1789122140033729?thread_ts=1789116035.795969&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0OWNER001"
+     }
+    ]
+   },
+   {
+    "query": "in:#patrol-test after:2026-10-10",
+    "matches": [
+     {
+      "type": "message",
+      "ts": "1791723920.808149",
+      "text": "Confirmed in the <https://github.com/acme/board/actions/runs/38141712936/job/114476743041|failed job logs>: the backend returned `401 unauthorized: invalid authentication token`. No credit balance was obtained; macOS tests were skipped.\n\nThe workflow uses `BRIDGE_PROD_PATROL_CREDIT_TOKEN`. The logs do not establish why it became invalid.\n\nPatrol account owner: please refresh that GitHub Actions secret with a valid production token for `kai+patrolcredittest@example.com`, then confirm here so the patrol can be rechecked. Keep the token out of Slack.",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791723920808149?thread_ts=1791723871.445919&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0BOTOPS01"
+     },
+     {
+      "type": "message",
+      "ts": "1791723871.445919",
+      "text": ":rotating_light: Bridge prod macOS patrol failed.\nAttention: <@U0BOTOPS01>\nWorkflow: Production macOS Patrol\nCode ref: main\nBackend: <https://api.bridge.example>\nFailed step: Check normal patrol account credits\nSummary: Credit check script failed before macOS tests started.\n\nDetails:\nOpen the GitHub Actions run logs for the full failing step output.\n\nRun: <https://github.com/acme/board/actions/runs/38141712936>",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791723871445919?thread_ts=1791723871.445919&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "username": "incoming-webhook"
+     },
+     {
+      "type": "message",
+      "ts": "1791720339.315419",
+      "text": "Confirmed in the <https://github.com/acme/board/actions/runs/38137904113|failed run>: the credit check returned HTTP 401, `invalid authentication token`. The balance was never checked, and macOS tests did not start.\n\nThe workflow uses `BRIDGE_PROD_PATROL_CREDIT_TOKEN` for `kai+patrolcredittest@example.com`. The logs do not establish why the token is invalid.\n\nPlease have the patrol account owner renew that account’s production token and update the GitHub Actions secret, then reply here. Keep the token out of Slack.",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791720339315419?thread_ts=1791720296.302419&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0BOTOPS01"
+     },
+     {
+      "type": "message",
+      "ts": "1791720296.302419",
+      "text": ":rotating_light: Bridge prod macOS patrol failed.\nAttention: <@U0BOTOPS01>\nWorkflow: Production macOS Patrol\nCode ref: main\nBackend: <https://api.bridge.example>\nFailed step: Check normal patrol account credits\nSummary: Credit check script failed before macOS tests started.\n\nDetails:\nOpen the GitHub Actions run logs for the full failing step output.\n\nRun: <https://github.com/acme/board/actions/runs/38137904113>",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791720296302419?thread_ts=1791720296.302419&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "username": "incoming-webhook"
+     },
+     {
+      "type": "message",
+      "ts": "1791716695.143479",
+      "text": "The <https://github.com/acme/board/actions/runs/38134125171|run logs> show HTTP 401: `invalid authentication token`. The credit check could not authenticate; no balance was retrieved and macOS tests never started.\n\nThe workflow uses `BRIDGE_PROD_PATROL_CREDIT_TOKEN` for this check. Could the patrol account owner refresh that GitHub Actions secret with a valid production token for `kai+patrolcredittest@example.com`, then rerun the patrol? The logs do not establish why the token was rejected.",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791716695143479?thread_ts=1791716662.890239&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0BOTOPS01"
+     },
+     {
+      "type": "message",
+      "ts": "1791716662.890239",
+      "text": ":rotating_light: Bridge prod macOS patrol failed.\nAttention: <@U0BOTOPS01>\nWorkflow: Production macOS Patrol\nCode ref: main\nBackend: <https://api.bridge.example>\nFailed step: Check normal patrol account credits\nSummary: Credit check script failed before macOS tests started.\n\nDetails:\nOpen the GitHub Actions run logs for the full failing step output.\n\nRun: <https://github.com/acme/board/actions/runs/38134125171>",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791716662890239?thread_ts=1791716662.890239&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "username": "incoming-webhook"
+     },
+     {
+      "type": "message",
+      "ts": "1791663737.660109",
+      "text": "*Located the UI hang: task notification audio blocked Bridge’s main thread.* The test stalled after pasting into the composer, before clicking Send. The fix should isolate sound playback from the main thread. Diagnosis only; no code or production changes made.",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791663737660109?thread_ts=1791663450.624599&cid=C0PATROL01",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "user": "U0BOTOPS01"
+     },
+     {
+      "type": "message",
+      "ts": "1791663450.624599",
+      "text": ":rotating_light: Bridge prod macOS patrol failed.\nAttention: <@U0BOTOPS01>\nWorkflow: Production macOS Patrol\nFailed step: Run production macOS patrol tests\nSummary: One or more macOS patrol tests failed.\n\nFailed test: BridgeE2ETests / ProdPatrolCreditAccountE2ETests",
+      "permalink": "https://example.slack.com/archives/C0PATROL01/p1791663450624599",
+      "channel": {
+       "id": "C0PATROL01",
+       "name": "patrol-test",
+       "is_im": false
+      },
+      "username": "incoming-webhook"
+     }
+    ]
+   },
+   {
+    "query": "in:#app-dev after:2026-10-10",
+    "matches": [
+     {
+      "type": "message",
+      "ts": "1791723644.822819",
+      "text": "<https://github.com/acme/app/pull/3407|PR #3407> merged | Cloud VM restores its archive before starting the station\n• Author: peer-d\n• Production LoC +434 / -277\nVerification: not verified on a real Cloudflare VM.",
+      "permalink": "https://example.slack.com/archives/C0APPDEV01/p1791723644822819",
+      "channel": {
+       "id": "C0APPDEV01",
+       "name": "app-dev",
+       "is_im": false
+      },
+      "user": "U0BOTTEAM1"
+     },
+     {
+      "type": "message",
+      "ts": "1791723768.450789",
+      "text": "<@U0BOTOPS01> look at the last week of app repo changes and write a changelog with the changelog skill",
+      "permalink": "https://example.slack.com/archives/C0APPDEV01/p1791723768450789?thread_ts=1791723768.450789&cid=C0APPDEV01",
+      "channel": {
+       "id": "C0APPDEV01",
+       "name": "app-dev",
+       "is_im": false
+      },
+      "user": "U0PEERB001"
+     },
+     {
+      "type": "message",
+      "ts": "1791723420.019349",
+      "text": "<@U0BOTDEV01> look at the recent CI performance of the app repo",
+      "permalink": "https://example.slack.com/archives/C0APPDEV01/p1791723420019349?thread_ts=1791723420.019349&cid=C0APPDEV01",
+      "channel": {
+       "id": "C0APPDEV01",
+       "name": "app-dev",
+       "is_im": false
+      },
+      "user": "U0PEERB001"
+     },
+     {
+      "type": "message",
+      "ts": "1791719721.041199",
+      "text": "<https://github.com/acme/app/pull/3410|PR #3410> merged | Converge known flaky tests with World and isolated fixtures\n• Author: peer-d\n• Requested by: Kai (@kai, from linked issue #1983); peer-b (issue #3243)\n• Production LoC +74 / -23, test LoC +1696 / -1236\nVerification: PR text and diff reviewed; tests and CI not run.",
+      "permalink": "https://example.slack.com/archives/C0APPDEV01/p1791719721041199",
+      "channel": {
+       "id": "C0APPDEV01",
+       "name": "app-dev",
+       "is_im": false
+      },
+      "user": "U0BOTTEAM1"
+     }
+    ]
+   }
+  ],
+  "replies": [
+   {
+    "channel": "C0PATROL01",
+    "ts": "1789116035.795969",
+    "messages": [
+     {
+      "ts": "1789116035.795969",
+      "username": "incoming-webhook",
+      "text": ":rotating_light: Bridge prod macOS patrol failed.\nAttention: <@U0BOTCDX01>\nWorkflow: Production macOS Patrol\nFailed step: Run production macOS patrol tests\nFailure: BackendClient.swift:469: failed: caught error: httpError(status: 401, body: {\"error\":{\"code\":\"unauthorized\",\"message\":\"invalid authentication token\"}})\nFailed test: ProdPatrolNoCreditAccountE2ETests: (\"401\") is not equal to (\"402\") - No-credit patrol account should receive HTTP 402\nRun: <https://github.com/acme/board/actions/runs/34577351701>"
+     }
+    ]
+   },
+   {
+    "channel": "C0PATROL01",
+    "ts": "1791306673.383769",
+    "messages": [
+     {
+      "ts": "1791306673.383769",
+      "username": "incoming-webhook",
+      "text": ":rotating_light: Bridge prod macOS patrol failed.\nAttention: <@U0BOTOPS01>\nWorkflow: Production macOS Patrol\nFailed step: Run production macOS patrol tests\nSummary: One or more macOS patrol tests failed.\n\nDetails:\nmacro expansion @TaskLocal:1:24: error: main actor-isolated default value in a nonisolated context"
+     }
+    ]
+   }
+  ]
+ },
+ "own_work": [],
+ "user_md": "# User\n\n- Prefers short replies in Chinese.\n",
+ "http": [
+  {
+   "url": "https://api.github.com/repos/acme/board/actions/runs/38134125171",
+   "body": {
+    "html_url": "https://github.com/acme/board/actions/runs/38134125171",
+    "name": "Production macOS Patrol",
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "updated_at": "2026-10-11T11:04:22Z"
+   }
+  },
+  {
+   "url": "https://api.github.com/repos/acme/board/actions/runs/38137904113",
+   "body": {
+    "html_url": "https://github.com/acme/board/actions/runs/38137904113",
+    "name": "Production macOS Patrol",
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "updated_at": "2026-10-11T12:04:56Z"
+   }
+  },
+  {
+   "url": "https://api.github.com/repos/acme/board/actions/runs/38141712936",
+   "body": {
+    "html_url": "https://github.com/acme/board/actions/runs/38141712936",
+    "name": "Production macOS Patrol",
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "updated_at": "2026-10-11T13:04:31Z"
+   }
+  },
+  {
+   "url": "https://slack.com/api/conversations.replies?channel=C0PATROL01&limit=50&ts=1791723871.445919",
+   "body": {
+    "ok": true,
+    "messages": [
+     {
+      "ts": "1791723871.445919",
+      "username": "incoming-webhook",
+      "text": ":rotating_light: Bridge prod macOS patrol failed.\nAttention: <@U0BOTOPS01>\nWorkflow: Production macOS Patrol\nCode ref: main\nBackend: <https://api.bridge.example>\nFailed step: Check normal patrol account credits\nSummary: Credit check script failed before macOS tests started.\n\nDetails:\nOpen the GitHub Actions run logs for the full failing step output.\n\nRun: <https://github.com/acme/board/actions/runs/38141712936>"
+     },
+     {
+      "ts": "1791723890.464799",
+      "user": "U0BOTOPS01",
+      "text": "I’ll inspect the failed credit-check logs and identify what blocked the patrol."
+     },
+     {
+      "ts": "1791723920.808149",
+      "user": "U0BOTOPS01",
+      "text": "Confirmed: the backend returned `401 unauthorized: invalid authentication token`. Patrol account owner: please refresh `BRIDGE_PROD_PATROL_CREDIT_TOKEN` for `kai+patrolcredittest@example.com`, then confirm here."
+     }
+    ]
+   }
+  }
+ ],
+ "labels": {
+  "alert_1104z": "https://example.slack.com/archives/C0PATROL01/p1791716662890239?thread_ts=1791716662.890239&cid=C0PATROL01",
+  "alert_1204z": "https://example.slack.com/archives/C0PATROL01/p1791720296302419?thread_ts=1791720296.302419&cid=C0PATROL01",
+  "alert_1304z": "https://example.slack.com/archives/C0PATROL01/p1791723871445919?thread_ts=1791723871.445919&cid=C0PATROL01",
+  "owner_ask_1104z": "https://example.slack.com/archives/C0PATROL01/p1791716695143479?thread_ts=1791716662.890239&cid=C0PATROL01",
+  "owner_ask_1204z": "https://example.slack.com/archives/C0PATROL01/p1791720339315419?thread_ts=1791720296.302419&cid=C0PATROL01",
+  "owner_ask_1305z": "https://example.slack.com/archives/C0PATROL01/p1791723920808149?thread_ts=1791723871.445919&cid=C0PATROL01",
+  "ui_hang_diagnosis": "https://example.slack.com/archives/C0PATROL01/p1791663737660109?thread_ts=1791663450.624599&cid=C0PATROL01",
+  "pr_3410_requested_by_owner": "https://example.slack.com/archives/C0APPDEV01/p1791719721041199",
+  "pr_3407_merged": "https://example.slack.com/archives/C0APPDEV01/p1791723644822819",
+  "mention_share_logs": "https://example.slack.com/archives/C0APPDEV01/p1791547657000100?thread_ts=1791545990.258929&cid=C0APPDEV01",
+  "mention_backroom_hint": "https://example.slack.com/archives/C0APPDEV01/p1791561713000200",
+  "mention_migration_fyi": "https://example.slack.com/archives/C0APPDEV01/p1791572491000300",
+  "mention_cc": "https://example.slack.com/archives/C0APPDEV01/p1791635457000400",
+  "ci_perf_ask_to_bot": "https://example.slack.com/archives/C0APPDEV01/p1791723420019349?thread_ts=1791723420.019349&cid=C0APPDEV01",
+  "changelog_ask_to_bot": "https://example.slack.com/archives/C0APPDEV01/p1791723768450789?thread_ts=1791723768.450789&cid=C0APPDEV01"
+ },
+ "expect": {
+  "collected_any": [
+   "alert_1104z",
+   "alert_1204z",
+   "alert_1304z",
+   "owner_ask_1104z",
+   "owner_ask_1204z",
+   "owner_ask_1305z"
+  ],
+  "routed_any": [
+   "alert_1104z",
+   "alert_1204z",
+   "alert_1304z",
+   "owner_ask_1104z",
+   "owner_ask_1204z",
+   "owner_ask_1305z"
+  ],
+  "not_routed": [
+   "pr_3410_requested_by_owner",
+   "pr_3407_merged",
+   "ci_perf_ask_to_bot",
+   "changelog_ask_to_bot"
+  ]
+ },
+ "scenarios": [
+  {
+   "name": "first_collection_without_portrait",
+   "expect": {
+    "collected_any": null,
+    "routed_any": null
+   }
+  },
+  {
+   "name": "steady_state",
+   "portrait": "refresh",
+   "expect": {
+    "urgency_any": [
+     "critical",
+     "high"
+    ]
+   }
+  },
+  {
+   "name": "judge_if_collected",
+   "relation": "posted_in_your_channel",
+   "read_channels": false,
+   "inject": [
+    "alert_1304z",
+    "owner_ask_1305z",
+    "pr_3410_requested_by_owner",
+    "ci_perf_ask_to_bot",
+    "changelog_ask_to_bot"
+   ],
+   "expect": {
+    "collected_any": null,
+    "urgency_any": [
+     "ask"
+    ]
+   }
+  },
+  {
+   "name": "judge_if_collected_with_portrait",
+   "relation": "posted_in_your_channel",
+   "portrait": "refresh",
+   "read_channels": false,
+   "inject": [
+    "alert_1304z",
+    "owner_ask_1305z",
+    "pr_3410_requested_by_owner",
+    "ci_perf_ask_to_bot",
+    "changelog_ask_to_bot"
+   ],
+   "expect": {
+    "collected_any": null,
+    "urgency_any": [
+     "critical",
+     "high"
+    ]
+   }
+  },
+  {
+   "name": "others_work_with_portrait",
+   "relation": "posted_in_your_channel",
+   "portrait": "refresh",
+   "read_channels": false,
+   "inject": [
+    "pr_3410_requested_by_owner",
+    "pr_3407_merged",
+    "ci_perf_ask_to_bot",
+    "changelog_ask_to_bot"
+   ],
+   "expect": {
+    "collected_any": null,
+    "routed_any": null
+   }
+  }
+ ]
+}

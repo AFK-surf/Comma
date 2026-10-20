@@ -32,13 +32,13 @@ syntax "auxiliary_frame_step" ident : tactic
 macro_rules
   | `(tactic| auxiliary_frame_step $h:ident) => do
     -- Select the execution summary before inspecting its arguments.
-    let steps ← (transcriptSteps ++ [`mergePredicate, `microcompactIds, `microcompact, `archiveAdvance]).mapM (fun name => do
+    let steps ← (transcriptSteps ++ [`archiveAdvance]).mapM (fun name => do
       let lemma := Lean.mkIdent (name.appendAfter "_auxiliary_frame")
       let head := Lean.Syntax.mkStrLit ("VerifiedKernel.Session." ++ name.toString)
       `(tactic| (execution_head_is $h $head:str
                  refine auxiliary_frame_trans ($lemma:ident $h) ?_)))
     let writes ← `(tactic| (execution_head_is $h "VerifiedKernel.Data.write"
-                            refine auxiliary_frame_trans (write_auxiliary_frame $h rfl rfl) ?_))
+                            refine auxiliary_frame_trans (write_auxiliary_frame $h (by keys_absent) (by keys_absent)) ?_))
     let alternatives := (writes :: steps).toArray
     `(tactic| first $[| $alternatives:tactic]*)
 
@@ -425,7 +425,7 @@ theorem historyCompaction_auxiliary_frame {s e t : Term} {provider : Bool} {j r 
        obtain ⟨value, _, prior, h⟩ := bound
        first
          | (execution_head_is prior "VerifiedKernel.Data.write"
-            refine auxiliary_frame_trans (write_auxiliary_frame prior rfl rfl) ?_)
+            refine auxiliary_frame_trans (write_auxiliary_frame prior (by keys_absent) (by keys_absent)) ?_)
          | (execution_head_is prior "VerifiedKernel.Session.pruneResultRefs"
             refine auxiliary_frame_trans (pruneResultRefs_auxiliary_frame prior) ?_)
          | (execution_head_is prior "VerifiedKernel.Session.pruneCompactResults"
@@ -468,10 +468,11 @@ theorem transcriptLog_auxiliary_frame_step {s e t : Term} {j r : List Term} :
     transcriptLog s e j = .ok (t, r) ↔ Except.ok (t, r) = transcriptLog s e j ∧ AuxiliaryFrame s t :=
   step_iff transcriptLog_auxiliary_frame
 
+/-- Compose the two writes of `transcriptSeed` (`transcriptSeed_ops`). -/
 theorem transcriptSeed_auxiliary_frame {s e t : Term} {j r : List Term} (h : transcriptSeed s e j = .ok (t, r)) :
     AuxiliaryFrame s t := by
-  unfold transcriptSeed at h
-  auxiliary_frame_walk h
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, seeded, bytes⟩ := transcriptSeed_ops h
+  exact auxiliary_frame_trans (write_auxiliary_frame seeded (by keys_absent) (by keys_absent)) (write_auxiliary_frame bytes (by keys_absent) (by keys_absent))
 
 theorem transcriptSeed_auxiliary_frame_step {s e t : Term} {j r : List Term} :
     transcriptSeed s e j = .ok (t, r) ↔ Except.ok (t, r) = transcriptSeed s e j ∧ AuxiliaryFrame s t :=
@@ -491,7 +492,7 @@ cheaper than a walk over every branch of `runtimeAppend`. -/
 theorem runtimeAppend_auxiliary_frame {s e t : Term} {j r : List Term} (h : runtimeAppend s e j = .ok (t, r)) :
     AuxiliaryFrame s t := by
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops h
-  exact auxiliary_frame_trans (appendFields_auxiliary_frame appended) (auxiliary_frame_trans (write_auxiliary_frame written rfl rfl)
+  exact auxiliary_frame_trans (appendFields_auxiliary_frame appended) (auxiliary_frame_trans (write_auxiliary_frame written (by keys_absent) (by keys_absent))
     (auxiliary_frame_trans (bumpHwm_auxiliary_frame bumped) (resetFresh_auxiliary_frame reset)))
 
 theorem runtimeAppend_auxiliary_frame_step {s e t : Term} {j r : List Term} :
@@ -513,7 +514,7 @@ theorem transcriptDelivery_auxiliary_frame {s e t : Term} {j r : List Term}
     (h : transcriptDelivery s e j = .ok (t, r)) : AuxiliaryFrame s t := by
   rcases transcriptDelivery_ops h with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, obligated, bumped, reset⟩
   · exact auxiliary_frame_refl _
-  · exact auxiliary_frame_trans (appendFields_auxiliary_frame appended) (auxiliary_frame_trans (write_auxiliary_frame written rfl rfl)
+  · exact auxiliary_frame_trans (appendFields_auxiliary_frame appended) (auxiliary_frame_trans (write_auxiliary_frame written (by keys_absent) (by keys_absent))
       (auxiliary_frame_trans (addObligation_auxiliary_frame obligated) (auxiliary_frame_trans (bumpHwm_auxiliary_frame bumped) (resetFresh_auxiliary_frame reset))))
 
 theorem transcriptDelivery_auxiliary_frame_step {s e t : Term} {j r : List Term} :
@@ -549,40 +550,5 @@ theorem queueConsume_auxiliary_frame {s e t : Term} {j r : List Term}
 theorem queueConsume_auxiliary_frame_step {s e t : Term} {j r : List Term} :
     queueConsume s e j = .ok (t, r) ↔ Except.ok (t, r) = queueConsume s e j ∧ AuxiliaryFrame s t :=
   step_iff queueConsume_auxiliary_frame
-
-theorem mergePredicate_auxiliary_frame {s kind through replacement extra t : Term} {j r : List Term}
-    (h : mergePredicate s kind through replacement extra j = .ok (t, r)) : AuxiliaryFrame s t := by
-  unfold mergePredicate at h
-  repeat' first
-    | exact ⟨write_field_frame h rfl, write_field_frame h rfl⟩
-    | split at h
-    | (obtain ⟨_, _, _, h⟩ := bind_ok h)
-
-theorem mergePredicate_auxiliary_frame_step {s kind through replacement extra t : Term} {j r : List Term} :
-    mergePredicate s kind through replacement extra j = .ok (t, r) ↔
-      Except.ok (t, r) = mergePredicate s kind through replacement extra j ∧ AuxiliaryFrame s t :=
-  step_iff mergePredicate_auxiliary_frame
-
-theorem microcompactIds_auxiliary_frame {s replacement e t : Term} {ids j r : List Term}
-    (h : microcompactIds s ids replacement e j = .ok (t, r)) : AuxiliaryFrame s t := by
-  unfold microcompactIds at h
-  repeat' first
-    | exact ⟨write_field_frame h rfl, write_field_frame h rfl⟩
-    | split at h
-    | (obtain ⟨_, _, _, h⟩ := bind_ok h)
-
-theorem microcompactIds_auxiliary_frame_step {s replacement e t : Term} {ids j r : List Term} :
-    microcompactIds s ids replacement e j = .ok (t, r) ↔
-      Except.ok (t, r) = microcompactIds s ids replacement e j ∧ AuxiliaryFrame s t :=
-  step_iff microcompactIds_auxiliary_frame
-
-theorem microcompact_auxiliary_frame {s e t : Term} {j r : List Term}
-    (h : microcompact s e j = .ok (t, r)) : AuxiliaryFrame s t := by
-  unfold microcompact at h
-  auxiliary_frame_walk h
-
-theorem microcompact_auxiliary_frame_step {s e t : Term} {j r : List Term} :
-    microcompact s e j = .ok (t, r) ↔ Except.ok (t, r) = microcompact s e j ∧ AuxiliaryFrame s t :=
-  step_iff microcompact_auxiliary_frame
 
 end VerifiedKernel.Session.WorkConservation

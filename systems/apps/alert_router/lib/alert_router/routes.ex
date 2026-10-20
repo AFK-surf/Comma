@@ -43,10 +43,10 @@ defmodule AlertRouter.Routes do
 
   def resolve(_event, mode), do: {:error, {:unsupported_route_mode, mode}}
 
-  defp configured_mode, do: Application.get_env(:alert_router, :mode, :disabled)
+  defp configured_mode, do: SystemsRuntime.get_env(:alert_router, :mode, :disabled)
 
   defp configured_channel(route_id) do
-    routes = Application.get_env(:alert_router, :slack, []) |> Keyword.get(:routes, %{})
+    routes = SystemsRuntime.get_env(:alert_router, :slack, []) |> Keyword.get(:routes, %{})
 
     case routes[route_id] do
       @approved_shadow_channel_id = channel_id when route_id == "shadow" ->

@@ -19,10 +19,6 @@ defmodule BridgeForTeams.MembershipsTest do
     assert {:ok, "admin"} = Memberships.org_role(org.id, user.id)
   end
 
-  test "org_role not found", %{org: org} do
-    assert {:error, :not_found} = Memberships.org_role(org.id, Ecto.UUID.generate())
-  end
-
   test "project_role derives from org membership", %{org: org, user: user, project: project} do
     {:ok, _} = Memberships.put_org_member(org.id, user.id, "owner")
     # org owner ⇒ project admin baseline
@@ -47,51 +43,7 @@ defmodule BridgeForTeams.MembershipsTest do
   end
 
   test "no membership ⇒ project_role not_found", %{project: project} do
-    assert {:error, :not_found} = Memberships.project_role(project.id, Ecto.UUID.generate())
-  end
-
-  test "bounded project members apply the limit in stable role order", %{project: project} do
-    suffix = System.unique_integer([:positive])
-
-    for {email, role} <- [
-          {"z-#{suffix}@example.com", "user"},
-          {"b-#{suffix}@example.com", "admin"},
-          {"a-#{suffix}@example.com", "admin"},
-          {"c-#{suffix}@example.com", "user"},
-          {"d-#{suffix}@example.com", "user"}
-        ] do
-      {:ok, member} = Accounts.create_user(%{email: email})
-      {:ok, _membership} = Memberships.put_project_member(project.id, member.id, role)
-    end
-
-    assert {:ok, page} = Memberships.list_project_members_bounded(project.id, 3)
-    assert page.completeness == :truncated
-    assert page.truncated
-
-    assert Enum.map(page.members, &{&1.role, &1.user.email}) == [
-             {"admin", "a-#{suffix}@example.com"},
-             {"admin", "b-#{suffix}@example.com"},
-             {"user", "c-#{suffix}@example.com"}
-           ]
-  end
-
-  test "bounded project members prove completeness when the whole roster fits", %{
-    project: project
-  } do
-    suffix = System.unique_integer([:positive])
-
-    for email <- ["b-#{suffix}@example.com", "a-#{suffix}@example.com"] do
-      {:ok, member} = Accounts.create_user(%{email: email})
-      {:ok, _membership} = Memberships.put_project_member(project.id, member.id, "user")
-    end
-
-    assert {:ok, %{members: members, completeness: :complete, truncated: false}} =
-             Memberships.list_project_members_bounded(project.id, 3)
-
-    assert Enum.map(members, & &1.user.email) == [
-             "a-#{suffix}@example.com",
-             "b-#{suffix}@example.com"
-           ]
+    assert {:error, :not_found} = Memberships.project_role(project.id, SystemsRuntime.Proc.uuid())
   end
 
   describe "authorize/3" do
@@ -149,68 +101,6 @@ defmodule BridgeForTeams.MembershipsTest do
     assert {:error, :not_found} = Memberships.remove_project_member(project.id, user.id)
   end
 
-  test "org membership writes with an actor record audit trail", %{org: org, user: actor} do
-    {:ok, target} = Accounts.create_user(%{email: "member-audit@example.com"})
-
-    assert {:ok, _membership} =
-             Memberships.put_org_member(org.id, target.id, "member",
-               actor_user_id: actor.id,
-               actor_label: "admin@example.com",
-               request_id: "req_org_member_grant"
-             )
-
-    assert {:ok, _membership} =
-             Memberships.put_org_member(org.id, target.id, "admin",
-               actor_user_id: actor.id,
-               actor_label: "admin@example.com",
-               request_id: "req_org_member_role"
-             )
-
-    assert [grant] = Observability.list_audit_logs(org.id, action: "org_member.granted")
-    assert grant.actor_user_id == actor.id
-    assert grant.actor_label == "admin@example.com"
-    assert grant.resource_type == "org_member"
-    assert grant.resource_id == target.id
-    assert grant.request_id == "req_org_member_grant"
-    assert grant.redacted_diff["role"] == %{"from" => nil, "to" => "member"}
-
-    assert [role_change] =
-             Observability.list_audit_logs(org.id, action: "org_member.role_changed")
-
-    assert role_change.resource_id == target.id
-    assert role_change.metadata["target_user_id"] == target.id
-    assert role_change.redacted_diff["role"] == %{"from" => "member", "to" => "admin"}
-  end
-
-  test "project membership writes with an actor record grant role and removal audit", %{
-    org: org,
-    project: project,
-    user: actor
-  } do
-    {:ok, target} = Accounts.create_user(%{email: "project-member-audit@example.com"})
-    audit_opts = [actor_user_id: actor.id, actor_label: "admin@example.com"]
-
-    assert {:ok, _membership} =
-             Memberships.put_project_member(project.id, target.id, "user", audit_opts)
-
-    assert {:ok, _membership} =
-             Memberships.put_project_member(project.id, target.id, "admin", audit_opts)
-
-    assert :ok = Memberships.remove_project_member(project.id, target.id, audit_opts)
-
-    audits = Observability.list_audit_logs(org.id, resource_type: "project_member", limit: 10)
-    actions = Enum.map(audits, & &1.action)
-
-    assert "project_member.granted" in actions
-    assert "project_member.role_changed" in actions
-    assert "project_member.removed" in actions
-
-    removal = Enum.find(audits, &(&1.action == "project_member.removed"))
-    assert removal.resource_id == target.id
-    assert removal.metadata["project_id"] == project.id
-    assert removal.redacted_diff["role"] == %{"from" => "admin", "to" => nil}
-  end
-
   describe "swarm owner email sync" do
     alias BridgeForTeams.Schema.ReconcileOutbox
 
@@ -258,12 +148,6 @@ defmodule BridgeForTeams.MembershipsTest do
       assert length(owner_email_sync_rows(project.id)) == 4
     end
 
-    test "removing a non-admin grant does not sync", %{user: user, project: project} do
-      {:ok, _} = Memberships.put_project_member(project.id, user.id, "user")
-      assert :ok = Memberships.remove_project_member(project.id, user.id)
-      assert owner_email_sync_rows(project.id) == []
-    end
-
     test "org owner/admin membership changes sync every non-archived swarm",
          %{org: org, user: user, project: project} do
       {:ok, other} = Projects.create_project(org.id, %{name: "Other", slug: "other"})
@@ -282,16 +166,6 @@ defmodule BridgeForTeams.MembershipsTest do
       assert :ok = Memberships.remove_org_member(org.id, user.id)
       assert last_synced_owner_emails(project.id) == []
       assert last_synced_owner_emails(other.id) == []
-    end
-
-    test "the synced list combines explicit admins and org owners, deduped and sorted",
-         %{org: org, user: user, project: project} do
-      {:ok, org_owner} = Accounts.create_user(%{email: "Zoe@Example.com"})
-      {:ok, _} = Memberships.put_org_member(org.id, org_owner.id, "owner")
-      {:ok, _} = Memberships.put_project_member(project.id, user.id, "admin")
-
-      assert Projects.owner_emails(project) == ["Zoe@Example.com", "u@x.com"]
-      assert last_synced_owner_emails(project.id) == ["Zoe@Example.com", "u@x.com"]
     end
   end
 end

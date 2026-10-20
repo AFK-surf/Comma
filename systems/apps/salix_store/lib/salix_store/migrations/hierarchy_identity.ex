@@ -48,19 +48,19 @@ defmodule SalixStore.Migrations.HierarchyIdentity do
 
   defp migrate_pending(seed) do
     Logger.info("Salix hierarchy identity inventory started")
-    started_at = System.monotonic_time(:millisecond)
+    started_at = SystemsClock.monotonic_time(:millisecond)
     inventory = build_inventory!()
 
     Logger.info(
       "Salix hierarchy identity inventory completed " <>
-        "objects=#{:ets.info(inventory, :size)} " <>
-        "elapsed_ms=#{System.monotonic_time(:millisecond) - started_at}"
+        "objects=#{SystemsRuntime.ETS.info(inventory, :size)} " <>
+        "elapsed_ms=#{SystemsClock.monotonic_time(:millisecond) - started_at}"
     )
 
     try do
       migrate_pending(seed, inventory)
     after
-      :ets.delete(inventory)
+      SystemsRuntime.ETS.delete(inventory)
     end
   end
 
@@ -421,7 +421,7 @@ defmodule SalixStore.Migrations.HierarchyIdentity do
       "group_id" => entry.target_group,
       "worker_type" => worker_type,
       "idempotency_hash" => identity_hash,
-      "created_at" => entry.record["created_at"] || System.system_time(:second)
+      "created_at" => entry.record["created_at"] || SystemsClock.system_time(:second)
     }
 
     stats = put_create_once_json(stats, key, reservation, context.inventory)
@@ -1434,7 +1434,7 @@ defmodule SalixStore.Migrations.HierarchyIdentity do
 
   defp parallel_map(items, fun) do
     items
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn item ->
         try do
           {:ok, fun.(item)}
@@ -1464,12 +1464,12 @@ defmodule SalixStore.Migrations.HierarchyIdentity do
 
   defp migrate_phase(stats, phase, run) do
     Logger.info("Salix hierarchy identity phase started phase=#{phase}")
-    started_at = System.monotonic_time(:millisecond)
+    started_at = SystemsClock.monotonic_time(:millisecond)
     result = run.(stats)
 
     Logger.info(
       "Salix hierarchy identity phase completed " <>
-        "phase=#{phase} elapsed_ms=#{System.monotonic_time(:millisecond) - started_at}"
+        "phase=#{phase} elapsed_ms=#{SystemsClock.monotonic_time(:millisecond) - started_at}"
     )
 
     result
@@ -1477,7 +1477,7 @@ defmodule SalixStore.Migrations.HierarchyIdentity do
 
   defp build_inventory! do
     inventory =
-      :ets.new(:hierarchy_identity_inventory, [
+      SystemsRuntime.ETS.new(:hierarchy_identity_inventory, [
         :set,
         :public,
         read_concurrency: true,
@@ -1486,11 +1486,11 @@ defmodule SalixStore.Migrations.HierarchyIdentity do
 
     case S3.list_all("") do
       {:ok, objects} ->
-        :ets.insert(inventory, Enum.map(objects, &{&1.key}))
+        SystemsRuntime.ETS.insert(inventory, Enum.map(objects, &{&1.key}))
         inventory
 
       {:error, reason} ->
-        :ets.delete(inventory)
+        SystemsRuntime.ETS.delete(inventory)
         abort({:list_failed, "", reason})
     end
   end
@@ -1498,8 +1498,8 @@ defmodule SalixStore.Migrations.HierarchyIdentity do
   defp refresh_inventory!(inventory) do
     case S3.list_all("") do
       {:ok, objects} ->
-        :ets.delete_all_objects(inventory)
-        :ets.insert(inventory, Enum.map(objects, &{&1.key}))
+        SystemsRuntime.ETS.delete_all_objects(inventory)
+        SystemsRuntime.ETS.insert(inventory, Enum.map(objects, &{&1.key}))
         :ok
 
       {:error, reason} ->
@@ -1508,7 +1508,7 @@ defmodule SalixStore.Migrations.HierarchyIdentity do
   end
 
   defp list_keys!(prefix, inventory) do
-    :ets.foldl(
+    SystemsRuntime.ETS.foldl(
       fn {key}, acc ->
         if String.starts_with?(key, prefix), do: [key | acc], else: acc
       end,
@@ -1519,13 +1519,13 @@ defmodule SalixStore.Migrations.HierarchyIdentity do
   end
 
   defp move_inventory(stats, inventory, source, target) do
-    :ets.delete(inventory, source)
-    :ets.insert(inventory, {target})
+    SystemsRuntime.ETS.delete(inventory, source)
+    SystemsRuntime.ETS.insert(inventory, {target})
     migrated(stats)
   end
 
   defp add_inventory(stats, inventory, key, result) do
-    :ets.insert(inventory, {key})
+    SystemsRuntime.ETS.insert(inventory, {key})
 
     case result do
       :migrated -> migrated(stats)

@@ -29,6 +29,6 @@ defmodule Comma.Launcher.MixProject do
   end
 
   defp deps do
-    [{:systems_observability, in_umbrella: true}]
+    [{:systems_observability, in_umbrella: true}, {:systems_clock, in_umbrella: true}]
   end
 end

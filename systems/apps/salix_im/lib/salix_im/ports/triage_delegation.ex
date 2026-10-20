@@ -24,7 +24,7 @@ defmodule SalixIM.Ports.TriageDelegation do
     do: impl().authorize_target(original, router_agent_id, worker_agent_id)
 
   defp impl,
-    do: Application.get_env(:salix_im, :triage_delegation_mod, __MODULE__.Unconfigured)
+    do: SystemsRuntime.get_env(:salix_im, :triage_delegation_mod, __MODULE__.Unconfigured)
 
   defmodule Unconfigured do
     @moduledoc false

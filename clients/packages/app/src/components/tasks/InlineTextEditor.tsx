@@ -1,4 +1,5 @@
-import { MenuPopover } from "@comma/ui";
+import { MenuPopover } from "@comma/ui/components/menu";
+import { uiClock } from "@comma/ui/clock";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   Button as AriaButton,
@@ -47,8 +48,8 @@ export function InlineTextEditor({
   // a transform, so the row's layout and the sheet stay where they are.
   useEffect(() => {
     if (!open) return undefined;
-    let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => {
+    let frame = uiClock.frame(() => {
+      frame = uiClock.frame(() => {
         const labelText = triggerRef.current?.querySelector(
           '[data-slot="dropdown-trigger-label"]'
         );
@@ -65,7 +66,7 @@ export function InlineTextEditor({
         input.style.translate = `${dx}px ${dy}px`;
       });
     });
-    return () => cancelAnimationFrame(frame);
+    return () => frame();
   }, [open]);
   // Each request opens the editor once. The row flips `disabled` while its
   // write is in flight, and that must not replay an already handled request.

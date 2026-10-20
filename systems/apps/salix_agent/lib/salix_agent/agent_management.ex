@@ -1,8 +1,9 @@
 defmodule SalixAgent.AgentManagement do
   @moduledoc "Synchronous Router commands. The caller owns retries; no command worker or desired-state copy."
-  alias SalixAgent.Control
+  alias SalixAgent.{Control, StationBinding}
   alias SalixAgent.AgentManagement.{Error, Ports, Projection, Targets}
   alias SalixStore.{CasRecord, Ids, Keys}
+  require Logger
 
   def run(operation, args, ctx) do
     with {:ok, args} <- SalixAgent.Tools.AgentManagement.normalize(operation, args),
@@ -11,15 +12,50 @@ defmodule SalixAgent.AgentManagement do
          {:ok, result} <- dispatch(operation, args, ctx, caller) do
       {:ok, result}
     else
-      {:error, reason} -> {:error, Error.public(reason)}
+      {:error, reason} ->
+        issue = Error.public(reason)
+        log_opaque(operation, issue, reason)
+        {:error, issue}
     end
   rescue
-    _ ->
+    exception ->
+      # The model sees only "outcome unknown"; operators need the real cause.
+      # Log the exception type and where it was raised, never its data.
+      Logger.error(
+        "agent management #{operation} raised #{inspect(exception.__struct__)} at " <>
+          frame(__STACKTRACE__)
+      )
+
       {:error,
        Error.public(
          if(operation in [:get, :list], do: :read_unavailable, else: :mutation_outcome_unknown)
        )}
   end
+
+  @opaque_codes ~w(mutation_outcome_unknown management_unavailable read_unavailable)
+
+  defp log_opaque(operation, %{"code" => code}, reason) when code in @opaque_codes,
+    do: Logger.warning("agent management #{operation} returned #{code}: #{brief(reason)}")
+
+  defp log_opaque(_operation, _issue, _reason), do: :ok
+
+  defp frame([{module, function, arity, location} | _]) when is_list(location) do
+    arity = if is_list(arity), do: length(arity), else: arity
+    "#{inspect(module)}.#{function}/#{arity}:#{location[:line]}"
+  end
+
+  defp frame(_stacktrace), do: "unknown"
+
+  # Atoms and tuple structure only: error terms can carry records or configuration.
+  defp brief(reason) when is_atom(reason), do: inspect(reason)
+  defp brief({:creation_failed, _id, reason}), do: "creation_failed " <> brief(reason)
+
+  defp brief(reason) when is_tuple(reason),
+    do: "{" <> Enum.map_join(Tuple.to_list(reason), ", ", &brief/1) <> "}"
+
+  defp brief(reason) when is_binary(reason), do: "string"
+  defp brief(%{} = reason), do: "map with keys " <> inspect(Enum.take(Map.keys(reason), 8))
+  defp brief(_reason), do: "term"
 
   @doc "Ensure a domain-owned ordinary Worker without tying identity to a Router turn."
   def ensure_owned_worker(owner_key, args, ctx) when is_binary(owner_key) do
@@ -53,7 +89,7 @@ defmodule SalixAgent.AgentManagement do
     _ -> {:error, Error.public(:mutation_outcome_unknown)}
   end
 
-  defp admit(operation) when operation in [:list, :get], do: :ok
+  defp admit(operation) when operation in [:list, :get, :models], do: :ok
   defp admit(_), do: SalixStore.AgentConfigurationRollout.ensure_open()
 
   defp router(%{agent_id: id}) do
@@ -74,8 +110,11 @@ defmodule SalixAgent.AgentManagement do
 
   defp router(_), do: {:error, :forbidden}
 
+  # The Group's Task agent (`SalixAgent.TaskAgent`) is Salix's own: a Router
+  # neither lists nor manages it.
   defp dispatch(:list, args, _ctx, caller) do
-    opts = Enum.map(args, fn {key, value} -> {list_key(key), value} end)
+    opts =
+      [exclude_task_agent: true] ++ Enum.map(args, fn {key, value} -> {list_key(key), value} end)
 
     with {:ok, page} <- Control.page_workers(caller["tenant_id"], caller["group_id"], opts) do
       {:ok,
@@ -87,6 +126,27 @@ defmodule SalixAgent.AgentManagement do
     end
   end
 
+  # Bounded: at most 100 Profiles and `limit` models (`AccountPool.servable_models/2`).
+  defp dispatch(:models, args, _ctx, caller) do
+    scope = %{tenant_id: caller["tenant_id"], group_id: caller["group_id"]}
+
+    with {:ok, filter} <- Ports.model_filter(scope),
+         {:ok, served} <-
+           SalixAgent.AccountPool.servable_models(scope.tenant_id,
+             limit: args["limit"] || 50,
+             query: args["query"],
+             filter: filter
+           ),
+         {:ok, user} <- Ports.user_context(scope) do
+      {:ok,
+       served
+       |> Map.put("user", Map.take(user, ~w(locale timezone)))
+       |> Map.put("platform", platform_model())}
+    else
+      _ -> {:error, :read_unavailable}
+    end
+  end
+
   defp dispatch(:archive, %{"user_confirmed" => false}, _ctx, _caller),
     do: {:error, :user_confirmation_required}
 
@@ -94,13 +154,23 @@ defmodule SalixAgent.AgentManagement do
     command(%{tenant_id: caller["tenant_id"], group_id: caller["group_id"]}, operation, args, ctx)
   end
 
+  # The platform model a Task can choose (`model` kind platform, tier worker),
+  # by the name people see; nil when the platform has not set it up.
+  defp platform_model do
+    if SalixAgent.PlatformModels.configured?("worker"),
+      do: %{"kind" => "platform", "tier" => "worker", "name" => SalixAgent.PlatformModels.name()}
+  end
+
   defp get(scope, id) do
     with true <- Ids.valid_agent_id_for_group?(id, scope.group_id),
          {:ok, record} <- Control.get_including_archived(id, scope.tenant_id),
-         true <- record["group_id"] == scope.group_id and record["role"] == "worker" do
+         true <- record["group_id"] == scope.group_id and record["role"] == "worker",
+         {:ok, task_agent} <- SalixAgent.TaskAgent.get(scope.group_id),
+         true <- id != task_agent do
       {:ok, record}
     else
       false -> {:error, :agent_not_found}
+      {:error, :not_found} -> {:error, :agent_not_found}
       error -> error
     end
   end
@@ -122,24 +192,28 @@ defmodule SalixAgent.AgentManagement do
     end
   end
 
-  defp command(scope, :rebind, args, ctx) do
+  # A Worker bound to a station moves to another station, or another runtime
+  # model; its Tasks made later run there.
+  defp command(scope, :rebind, args, _ctx) do
     with {:ok, record} <- get(scope, args["agent_id"]),
          :ok <- writable(record),
-         true <- Control.external_runtime?(record),
-         {:ok, target} <- Targets.resolve(scope, args["target"]),
-         true <- target["kind"] != "internal",
-         {:ok, invocation} <- invocation(scope, ctx, "rebind"),
+         true <- StationBinding.bound?(record),
+         {:ok, %{"kind" => "station", "runs_on" => runs_on}} <-
+           Targets.resolve(scope, args["target"]),
          {:ok, %{record: updated, result: result}} <-
-           Control.rebind_external_worker(
+           Control.rebind_station_worker(
              record["agent_id"],
              scope.tenant_id,
-             target,
-             args["expected_binding_revision"],
-             invocation
+             %{
+               "runs_on" => runs_on,
+               "model" => args["model"] || get_in(record, ["station_binding", "model"])
+             },
+             args["expected_binding_revision"]
            ) do
       {:ok, %{"result" => Atom.to_string(result), "agent" => Projection.detail(updated)}}
     else
       false -> {:error, :unsupported_agent_kind}
+      {:ok, _internal} -> {:error, :unsupported_agent_kind}
       error -> error
     end
   end
@@ -212,25 +286,53 @@ defmodule SalixAgent.AgentManagement do
 
   defp create_worker(scope, input, id, audit) do
     with {:ok, runtime} <- Targets.resolve(scope, input["runtime"]),
-         {:ok, template} <- worker_template(runtime, scope),
-         {:ok, record} <-
-           Control.create_owned_preallocated(
-             %{
-               "group_id" => scope.group_id,
-               "role" => "worker",
-               "name" => input["name"],
-               "management_purpose" => input["purpose"],
-               "management_creation_audit" => audit,
-               "template_id" => template,
-               "runtime_config" => Targets.with_revision(runtime, 1)
-             },
-             scope.tenant_id,
-             id
-           ) do
+         {:ok, record} <- create_record(scope, runtime, input, id, audit) do
       {:ok, %{"result" => "applied", "replayed" => false, "agent" => Projection.detail(record)}}
     else
       {:error, reason} -> {:error, {:creation_failed, id, reason}}
     end
+  end
+
+  # The product port supplies an internal Worker's model (the chosen one, or
+  # none to follow the platform model) and environment, and creates it under
+  # its own lock. A catalog model applies only to a Worker inside Salix; a
+  # Worker bound to a station takes a runtime model for that station instead,
+  # and the product's defaults for everything else.
+  defp create_record(_scope, %{"kind" => "internal"}, %{"model" => %{"kind" => "runtime"}}, _, _),
+    do: {:error, :invalid_arguments}
+
+  defp create_record(scope, %{"kind" => "internal"}, input, id, audit) do
+    Ports.internal_worker(scope, input["model"], fn product ->
+      create_owned(scope, input, id, audit, Map.take(product, ~w(model vm)))
+    end)
+  end
+
+  defp create_record(scope, %{"kind" => "station", "runs_on" => runs_on}, input, id, audit) do
+    case input["model"] do
+      %{"kind" => "runtime"} = model ->
+        Ports.internal_worker(scope, nil, fn product ->
+          product
+          |> Map.take(~w(model vm))
+          |> Map.put("station_binding", %{"runs_on" => runs_on, "model" => model})
+          |> then(&create_owned(scope, input, id, audit, &1))
+        end)
+
+      _catalog_or_none ->
+        {:error, :station_model_required}
+    end
+  end
+
+  defp create_owned(scope, input, id, audit, product) do
+    %{
+      "group_id" => scope.group_id,
+      "role" => "worker",
+      "name" => input["name"],
+      "management_purpose" => input["purpose"],
+      "management_creation_audit" => audit,
+      "runtime_config" => %{"kind" => "internal"}
+    }
+    |> Map.merge(product)
+    |> Control.create_owned_preallocated(scope.tenant_id, id)
   end
 
   defp writable(record) do
@@ -241,8 +343,6 @@ defmodule SalixAgent.AgentManagement do
     end
   end
 
-  defp worker_template(%{"kind" => "internal"}, scope), do: Ports.worker_template(scope)
-  defp worker_template(_, _), do: {:ok, nil}
   defp list_key("cursor"), do: :cursor
   defp list_key("limit"), do: :limit
   defp list_key("lifecycle"), do: :lifecycle

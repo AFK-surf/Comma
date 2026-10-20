@@ -10,7 +10,7 @@ defmodule SalixLlm.AnthropicMessagesContractTest do
   an open stream, a `tool_use` whose arguments never finish, and
   `stop_reason: "refusal"`. None of those may surface as assistant output.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixLlm.{Convert, SiteProxy, Stream, Streaming}
 
@@ -127,9 +127,48 @@ defmodule SalixLlm.AnthropicMessagesContractTest do
                SalixLlm.Anthropic.complete([%{role: "user", content: "hi"}], [], opts)
 
       req = MockServer.last()
-      assert req.headers["anthropic-beta"] == "context-1m-2025-08-07"
+
+      assert req.headers["anthropic-beta"] ==
+               "context-1m-2025-08-07,thinking-binding-controls-2026-08-01"
+
       assert req.headers["anthropic-version"] == "2023-06-01"
-      assert req.body["thinking"] == %{"type" => "adaptive"}
+
+      assert req.body["thinking"] == %{
+               "type" => "adaptive",
+               "block_binding" => %{"prefix_mismatch_behavior" => "drop_block"}
+             }
+    end
+
+    test "only a Claude request with thinking asks to drop mismatched thinking blocks", %{
+      base: base
+    } do
+      MockServer.set(text_response("ok"))
+      conversation = [%{role: "user", content: "hi"}]
+
+      assert {:final, "ok"} =
+               SalixLlm.Anthropic.complete(
+                 conversation,
+                 [],
+                 llm(base, %{"thinking" => %{"type" => "adaptive"}})
+               )
+
+      req = MockServer.last()
+      assert req.headers["anthropic-beta"] == "thinking-binding-controls-2026-08-01"
+
+      assert req.body["thinking"]["block_binding"] == %{
+               "prefix_mismatch_behavior" => "drop_block"
+             }
+
+      for extra <- [
+            %{"model" => "kimi-k2", "thinking" => %{"type" => "adaptive"}},
+            %{"thinking" => %{"type" => "disabled"}},
+            %{}
+          ] do
+        assert {:final, "ok"} = SalixLlm.Anthropic.complete(conversation, [], llm(base, extra))
+        req = MockServer.last()
+        refute Map.has_key?(req.headers, "anthropic-beta")
+        refute Map.has_key?(req.body["thinking"] || %{}, "block_binding")
+      end
     end
 
     test "cache breakpoints are placed on the wire, and can be turned off", %{base: base} do
@@ -178,9 +217,17 @@ defmodule SalixLlm.AnthropicMessagesContractTest do
 
       req = MockServer.last()
       assert req.path == "/v1/messages"
-      assert req.headers["anthropic-beta"] == "fine-grained-tool-streaming-2025-05-14"
+
+      assert req.headers["anthropic-beta"] ==
+               "fine-grained-tool-streaming-2025-05-14,thinking-binding-controls-2026-08-01"
+
       assert req.headers["anthropic-version"] == "2023-06-01"
-      assert req.body["thinking"] == %{"type" => "adaptive"}
+      assert req.body["thinking"]["type"] == "adaptive"
+
+      assert req.body["thinking"]["block_binding"] == %{
+               "prefix_mismatch_behavior" => "drop_block"
+             }
+
       assert req.body["stream"] == true
     end
 
@@ -234,12 +281,13 @@ defmodule SalixLlm.AnthropicMessagesContractTest do
 
       body = MockServer.last().body
 
-      assert [%{"role" => "user", "content" => content}] = body["messages"]
-      assert content =~ "<end-of-turn>settle this round</end-of-turn>"
+      assert [%{"role" => "user", "content" => [%{"text" => "[No new user message.]"}]}] =
+               body["messages"]
 
       assert [%{"type" => "text", "text" => system}] = body["system"]
       assert system =~ "ROUTER PROMPT"
       assert system =~ "<compacted-context>what happened</compacted-context>"
+      assert system =~ "<end-of-turn>settle this round</end-of-turn>"
     end
   end
 
@@ -350,6 +398,30 @@ defmodule SalixLlm.AnthropicMessagesContractTest do
     assert trace["model"] == "claude-opus-4-8"
     assert trace["usage"]["prompt_tokens"] == 11
     assert trace["usage"]["completion_tokens"] == 3
+    refute Map.has_key?(trace, "input_transformations")
+  end
+
+  test "a streamed turn reports the thinking blocks the provider dropped" do
+    dropped = [
+      %{
+        "type" => "thinking_dropped",
+        "path" => "messages.1.content.0",
+        "reason" => "prefix_binding_mismatch"
+      }
+    ]
+
+    body = """
+    data: {"type":"message_start","message":{"id":"msg_1","model":"claude-opus-4-8","usage":{"input_tokens":11},"input_transformations":#{Jason.encode!(dropped)}}}
+
+    data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+    data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+    data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}
+    """
+
+    assert {:final, "hi", trace} = Stream.decode(body)
+    assert trace["input_transformations"] == dropped
   end
 
   # ---- site proxy (OpenAI-shaped site API over the Messages endpoint) ----

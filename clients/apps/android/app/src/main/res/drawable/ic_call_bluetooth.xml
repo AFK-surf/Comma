@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Central Icons (commercially licensed): IconBluetooth, round-filled-radius-2-stroke-2.
+    Not for redistribution; see ui/icons/IconSources.kt. Tinted in code.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M9.86397 3.85142C9.86397 2.29761 11.6613 1.43376 12.8746 2.40442L17.6436 6.21955C18.5708 6.96138 18.5709 8.37173 17.6436 9.11356L14.0357 11.9999L17.6436 14.8862C18.5709 15.628 18.5708 17.0384 17.6436 17.7802L12.8746 21.5954C11.6613 22.566 9.86397 21.7022 9.86397 20.1484V15.3372L6.20739 18.2625C5.74019 18.6363 5.05846 18.5605 4.6847 18.0933C4.31094 17.6261 4.38669 16.9444 4.85389 16.5706L9.86397 12.5625V11.4372L4.85389 7.42916C4.38669 7.0554 4.31094 6.37367 4.6847 5.90647C5.05846 5.43927 5.74019 5.36352 6.20739 5.73728L9.86397 8.66254V3.85142ZM12.3015 10.6125L12.0306 10.3959V4.5039L15.984 7.66655L12.3015 10.6125ZM12.3015 13.3872L12.0306 13.6039V19.4959L15.984 16.3332L12.3015 13.3872Z"
+        android:fillType="evenOdd"
+        android:fillColor="#FF000000" />
+</vector>

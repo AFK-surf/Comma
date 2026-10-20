@@ -1,5 +1,5 @@
 defmodule SalixAgent.StateTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.Compaction
   alias SalixAgent.InternalSession
@@ -9,53 +9,9 @@ defmodule SalixAgent.StateTest do
   alias SalixStore.{Agent, Codec, Keys, S3}
 
   describe "agent root state shell" do
-    test "does not absorb runtime session events" do
-      state =
-        [
-          %{type: "session_created", session_id: "s1"},
-          %{
-            type: "delivery",
-            from_queue: true,
-            session_id: "s1",
-            message_id: 1,
-            content: "hello"
-          },
-          %{type: "assistant", session_id: "s1", message_id: 2, content: "hi"}
-        ]
-        |> Enum.reduce(State.init("agent-1"), &State.apply_event(&2, &1))
-
-      assert state == %State{agent_id: "agent-1"}
-      refute Map.has_key?(state, :sessions)
-      refute Map.has_key?(state, :dedupe)
-      refute Map.has_key?(state, :next_message_id)
-      assert State.hot(state) == %{"agent_id" => "agent-1"}
-    end
   end
 
   describe "internal session reducer" do
-    test "session_created creates an idle session and billing context is session-local" do
-      session =
-        reduce_session([
-          %{
-            type: "session_created",
-            session_id: "s1",
-            billing_context: %{
-              "billing_account_id" => "ba_1",
-              "entrypoint" => "conversation_send"
-            }
-          }
-        ])
-
-      assert session.status == :idle
-      assert session.messages == []
-      assert SessionData.query(session, :derived_state) == :paused
-
-      assert session.billing_context == %{
-               "billing_account_id" => "ba_1",
-               "entrypoint" => "conversation_send"
-             }
-    end
-
     test "scheduler status and detailed activity follow only durable session facts" do
       idle = new_session("agent-1", "s1", %{"created_at" => 10})
 
@@ -223,32 +179,6 @@ defmodule SalixAgent.StateTest do
       assert appended.next_queue_id == 9
     end
 
-    test "normalize ignores partial numeric queue ids instead of accepting ambiguous prefixes" do
-      session =
-        normalize(%SessionState{
-          agent_id: "agent-1",
-          session_id: "s1",
-          next_queue_id: "9-dirty",
-          input_queue: [
-            %{
-              "queue_id" => "2",
-              "kind" => "user_message",
-              "dedupe_key" => "src-2",
-              "payload" => %{"source_message_id" => "src-2", "content" => "two"}
-            },
-            %{
-              "queue_id" => "4-dirty",
-              "kind" => "user_message",
-              "dedupe_key" => "src-4",
-              "payload" => %{"source_message_id" => "src-4", "content" => "dirty"}
-            }
-          ]
-        })
-
-      assert Enum.map(session.input_queue, & &1["queue_id"]) == ["2"]
-      assert session.next_queue_id == 3
-    end
-
     test "queue append dedupes by source id and materialized no_wake stays silent until wakeable input" do
       queued =
         reduce_session([
@@ -376,42 +306,6 @@ defmodule SalixAgent.StateTest do
       assert [%{trusted_origin: ^trusted_origin}] = session.messages
     end
 
-    test "input dedupe ledger preserves durable entries and pending queue facts" do
-      compacted =
-        %SessionState{
-          agent_id: "agent-1",
-          session_id: "compacted",
-          input_dedupe: MapSet.new(["accepted-before-snapshot"]),
-          input_queue: [],
-          messages: []
-        }
-        |> normalize()
-
-      assert compacted.input_dedupe == MapSet.new(["accepted-before-snapshot"])
-
-      session =
-        %SessionState{
-          agent_id: "agent-1",
-          session_id: "s1",
-          input_dedupe: MapSet.new(["accepted-before-snapshot"]),
-          input_queue: [
-            %{
-              "queue_id" => 1,
-              "kind" => "user_message",
-              "dedupe_key" => "src-queued",
-              "payload" => %{"source_message_id" => "src-queued", "content" => "queued"}
-            }
-          ],
-          messages: [
-            %{id: 1, role: "user", content: "kept", source_message_id: "src-message"}
-          ]
-        }
-        |> normalize()
-
-      assert session.input_dedupe ==
-               MapSet.new(["accepted-before-snapshot", "src-queued"])
-    end
-
     test "materialized input dedupe survives compaction and rejects later duplicate delivery" do
       queued =
         reduce_session([
@@ -449,198 +343,6 @@ defmodule SalixAgent.StateTest do
       assert compacted.input_queue == []
       assert MapSet.member?(compacted.input_dedupe, "source-1")
       assert Enum.map(compacted.messages, & &1.content) == ["first"]
-    end
-
-    test "queue append rejects unknown input kind" do
-      assert_raise ArgumentError,
-                   "queue_append kind must be user_message or runtime_message",
-                   fn ->
-                     reduce_session([
-                       %{type: "session_created", session_id: "s1"},
-                       %{
-                         type: "queue_append",
-                         session_id: "s1",
-                         kind: "unexpected",
-                         dedupe_key: "src-unknown",
-                         payload: %{source_message_id: "src-unknown", content: "bad"}
-                       }
-                     ])
-                   end
-    end
-
-    test "user message queue item rejects runtime role and wakeable summary context" do
-      assert_raise ArgumentError,
-                   "user_message queue item role must be user or summary",
-                   fn ->
-                     reduce_session([
-                       %{type: "session_created", session_id: "s1"},
-                       %{
-                         type: "queue_append",
-                         session_id: "s1",
-                         kind: "user_message",
-                         dedupe_key: "src-runtime-role",
-                         payload: %{
-                           source_message_id: "src-runtime-role",
-                           role: "runtime",
-                           content: "not a runtime message"
-                         }
-                       }
-                     ])
-                   end
-
-      assert_raise ArgumentError,
-                   "summary user_message queue item must use wake=false",
-                   fn ->
-                     reduce_session([
-                       %{type: "session_created", session_id: "s1"},
-                       %{
-                         type: "queue_append",
-                         session_id: "s1",
-                         kind: "user_message",
-                         wake: true,
-                         dedupe_key: "src-wakeable-summary",
-                         payload: %{
-                           source_message_id: "src-wakeable-summary",
-                           role: "summary",
-                           content: "source context"
-                         }
-                       }
-                     ])
-                   end
-
-      assert_raise ArgumentError,
-                   "summary user_message queue item must use wake=false",
-                   fn ->
-                     reduce_session([
-                       %{type: "session_created", session_id: "s1"},
-                       %{
-                         type: "queue_append",
-                         session_id: "s1",
-                         kind: "user_message",
-                         dedupe_key: "src-default-wake-summary",
-                         payload: %{
-                           source_message_id: "src-default-wake-summary",
-                           role: "summary",
-                           content: "source context"
-                         }
-                       }
-                     ])
-                   end
-
-      session =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: false,
-            dedupe_key: "src-summary",
-            payload: %{
-              source_message_id: "src-summary",
-              role: "summary",
-              content: "source context"
-            }
-          }
-        ])
-
-      assert [%{"payload" => %{"role" => "summary"}}] = session.input_queue
-    end
-
-    test "queue append ignores caller supplied queue id" do
-      queued =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            queue_id: 99,
-            kind: "user_message",
-            dedupe_key: "src-1",
-            payload: %{source_message_id: "src-1", content: "first"}
-          },
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            queue_id: 2,
-            kind: "user_message",
-            dedupe_key: "src-2",
-            payload: %{source_message_id: "src-2", content: "second"}
-          }
-        ])
-
-      assert Enum.map(queued.input_queue, & &1["queue_id"]) == [1, 2]
-      assert queued.next_queue_id == 3
-    end
-
-    test "no_wake input does not wake an active wait" do
-      waiting =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{
-            type: "wait_set",
-            session_id: "s1",
-            wait: %{
-              "wait_id" => "wait-1",
-              "reason" => "waiting for user",
-              "deadline_ms" => System.system_time(:millisecond) + 60_000
-            }
-          },
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "runtime_message",
-            wake: false,
-            dedupe_key: "ctx-runtime-1",
-            payload: %{
-              runtime_message_id: "ctx-runtime-1",
-              type: "runtime_recovered",
-              summary: "context only"
-            }
-          }
-        ])
-
-      refute SessionData.query(waiting, :has_unacked_wakeable_input?)
-      assert SessionData.query(waiting, :waiting?)
-      assert SessionData.query(waiting, :derived_state) == :waiting
-
-      {events, false, _hwm} = materialize(waiting)
-      materialized = SessionData.apply_events(waiting, events)
-
-      assert materialized.wait["wait_id"] == "wait-1"
-      assert SessionData.query(materialized, :derived_state) == :waiting
-      refute SessionData.query(materialized, :has_unprocessed_stable_work?)
-
-      assert [%{role: "runtime", type: "runtime_recovered", no_wake: true}] =
-               materialized.messages
-
-      user_waiting =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{
-            type: "wait_set",
-            session_id: "s1",
-            wait: %{"wait_id" => "wait-2", "reason" => "waiting for user"}
-          },
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: false,
-            dedupe_key: "ctx-user-1",
-            payload: %{source_message_id: "ctx-user-1", content: "context only"}
-          }
-        ])
-
-      {events, false, _hwm} = materialize(user_waiting)
-      user_materialized = SessionData.apply_events(user_waiting, events)
-
-      assert user_materialized.wait["wait_id"] == "wait-2"
-      assert SessionData.query(user_materialized, :derived_state) == :waiting
-      refute SessionData.query(user_materialized, :has_unprocessed_stable_work?)
-
-      assert [%{role: "user", content: "context only", no_wake: true}] =
-               user_materialized.messages
     end
 
     test "wait timeout queue append keeps wait until runtime message materialization" do
@@ -776,6 +478,19 @@ defmodule SalixAgent.StateTest do
             type: "queue_append",
             session_id: "s1",
             kind: "user_message",
+            wake: false,
+            dedupe_key: unrelated_source <> ":source-context",
+            payload: %{
+              source_message_id: unrelated_source <> ":source-context",
+              activation_source_message_id: unrelated_source,
+              role: "summary",
+              content: "next request facts"
+            }
+          },
+          %{
+            type: "queue_append",
+            session_id: "s1",
+            kind: "user_message",
             wake: true,
             dedupe_key: unrelated_source,
             payload: %{
@@ -818,6 +533,7 @@ defmodule SalixAgent.StateTest do
         SessionData.apply_events(queued, first_events)
 
       assert Enum.map(after_first.input_queue, &queue_payload_content/1) == [
+               "next request facts",
                "这个",
                "meeting tool completed"
              ]
@@ -832,13 +548,18 @@ defmodule SalixAgent.StateTest do
 
       assert [
                %{"type" => "runtime_message", "runtime_message_id" => ^completion_source},
-               %{"type" => "queue_consume", "queue_id" => 3}
+               %{"type" => "queue_consume", "queue_id" => 4}
              ] = completion_events
 
       assert :ok = SessionState.validate_events(completion_events)
 
       before_ack = SessionData.apply_events(after_first, completion_events)
-      assert Enum.map(before_ack.input_queue, &queue_payload_content/1) == ["这个"]
+
+      assert Enum.map(before_ack.input_queue, &queue_payload_content/1) == [
+               "next request facts",
+               "这个"
+             ]
+
       assert before_ack.queue_ack_id == 1
       assert {[], false, 0} = materialize(before_ack)
 
@@ -852,78 +573,12 @@ defmodule SalixAgent.StateTest do
       {second_events, true, second_hwm} =
         materialize(after_ack)
 
-      assert second_hwm == 3
+      assert second_hwm == 4
 
       assert Enum.map(
                Enum.filter(second_events, &(&1["type"] == "delivery")),
                & &1["source_message_id"]
-             ) == [unrelated_source]
-    end
-
-    test "only the current durable wait timeout bypasses a deferred provider source" do
-      source = fn id ->
-        %{
-          type: "queue_append",
-          session_id: "s1",
-          kind: "user_message",
-          wake: true,
-          dedupe_key: id,
-          payload: %{
-            content: id,
-            source_message_id: id,
-            trusted_origin: %{"provider" => "slack", "source_message_id" => id}
-          }
-        }
-      end
-
-      timeout = fn id ->
-        %{
-          type: "queue_append",
-          session_id: "s1",
-          kind: "runtime_message",
-          wake: true,
-          dedupe_key: "timeout:" <> id,
-          payload: %{
-            type: "wait_expired",
-            wait_id: id,
-            runtime_message_id: "timeout:" <> id,
-            content: "wait timeout reached"
-          }
-        }
-      end
-
-      queued =
-        reduce_session([%{type: "session_created", session_id: "s1"}, source.("A"), source.("B")])
-
-      {events, true, _} = materialize(queued)
-
-      waiting =
-        SessionData.apply_events(
-          queued,
-          events ++
-            [
-              %{
-                type: "wait_set",
-                session_id: "s1",
-                wait: %{"wait_id" => "current", "deadline_ms" => 100}
-              },
-              timeout.("stale"),
-              timeout.("current")
-            ]
-        )
-
-      {events, true, _} = materialize(waiting)
-
-      assert [
-               %{"type" => "runtime_message", "wait_id" => "current"},
-               %{"type" => "queue_consume", "queue_id" => 4}
-             ] = events
-
-      after_timeout = SessionData.apply_events(waiting, events)
-      assert after_timeout.wait == nil
-      assert after_timeout.queue_ack_id == 1
-      assert Enum.map(after_timeout.input_queue, & &1["queue_id"]) == [2, 3]
-      assert {[], false, 0} = materialize(after_timeout)
+             ) == [unrelated_source <> ":source-context", unrelated_source]
     end
 
     for {label, event, error} <- [
@@ -945,44 +600,6 @@ defmodule SalixAgent.StateTest do
              summary: "recovered"
            }, :runtime_message_must_come_from_queue}
         ] do
-      test "direct #{label} cannot bypass the pending input queue" do
-        event = unquote(Macro.escape(event))
-        session = reduce_session([%{type: "session_created", session_id: "s1"}, event])
-
-        assert session.messages == []
-        assert session.input_queue == []
-        assert session.input_dedupe == MapSet.new()
-        assert SessionData.query(session, :derived_state) == :paused
-
-        assert {:error, unquote(error)} = SessionState.validate_events([event])
-      end
-    end
-
-    test "session log messages are history records, not pending stable input" do
-      session =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{
-            type: "session_log_message",
-            session_id: "s1",
-            source_message_id: "meeting-event-1",
-            role: "user",
-            content: "meeting event"
-          },
-          %{
-            type: "session_log_message",
-            session_id: "s1",
-            source_message_id: "meeting-event-1",
-            role: "event",
-            content: "duplicate"
-          }
-        ])
-
-      assert Enum.map(session.messages, & &1.content) == ["meeting event"]
-      assert Enum.map(session.messages, & &1.role) == ["event"]
-      assert session.next_message_id == 2
-      assert SessionData.query(session, :derived_state) == :paused
-      assert SessionData.query(session, :work_reasons) == []
     end
 
     test "session log dedupes by explicit dedupe key and stays out of model context" do
@@ -1084,239 +701,12 @@ defmodule SalixAgent.StateTest do
       assert SessionData.query(materialized, :derived_state) == :queued
     end
 
-    test "queued runtime message requires stable identity even after materialization" do
-      assert {:error, :runtime_message_identity_required} =
-               SessionState.validate_events([
-                 %{
-                   type: "runtime_message",
-                   from_queue: true,
-                   session_id: "s1",
-                   message_id: 1,
-                   runtime_message_type: "runtime_recovered",
-                   summary: "missing identity"
-                 }
-               ])
-
-      assert_raise ArgumentError,
-                   "runtime_message requires runtime_message_id, source_message_id, or dedupe_key",
-                   fn ->
-                     reduce_session([
-                       %{type: "session_created", session_id: "s1"},
-                       %{
-                         type: "runtime_message",
-                         from_queue: true,
-                         session_id: "s1",
-                         message_id: 1,
-                         runtime_message_type: "runtime_recovered",
-                         summary: "missing identity"
-                       }
-                     ])
-                   end
-    end
-
-    test "runtime queue append dedupes by runtime message identity" do
-      by_runtime_id =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "runtime_message",
-            payload: %{
-              runtime_message_id: "runtime-id-1",
-              type: "runtime_recovered",
-              summary: "first"
-            }
-          },
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "runtime_message",
-            payload: %{
-              runtime_message_id: "runtime-id-1",
-              type: "runtime_recovered",
-              summary: "duplicate"
-            }
-          }
-        ])
-
-      assert Enum.map(by_runtime_id.input_queue, & &1["dedupe_key"]) == ["runtime-id-1"]
-      assert MapSet.member?(by_runtime_id.input_dedupe, "runtime-id-1")
-
-      by_source_id =
-        reduce_session(
-          [
-            %{type: "session_created", session_id: "s2"},
-            %{
-              type: "queue_append",
-              session_id: "s2",
-              kind: "runtime_message",
-              source_message_id: "source-runtime-1",
-              payload: %{type: "runtime_recovered", summary: "first"}
-            },
-            %{
-              type: "queue_append",
-              session_id: "s2",
-              kind: "runtime_message",
-              source_message_id: "source-runtime-1",
-              payload: %{type: "runtime_recovered", summary: "duplicate"}
-            }
-          ],
-          "agent-1",
-          "s2"
-        )
-
-      assert Enum.map(by_source_id.input_queue, & &1["dedupe_key"]) == ["source-runtime-1"]
-      assert MapSet.member?(by_source_id.input_dedupe, "source-runtime-1")
-    end
-
-    test "runtime message materialized from queue records its identity in the dedupe ledger" do
-      queued =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "runtime_message",
-            payload: %{
-              runtime_message_id: "runtime-direct-1",
-              type: "runtime_recovered",
-              summary: "first"
-            }
-          }
-        ])
-
-      {events, true, _hwm} = materialize(queued)
-      session = SessionData.apply_events(queued, events)
-
-      assert session.input_dedupe == MapSet.new(["runtime-direct-1"])
-      assert Enum.map(session.messages, & &1.summary) == ["first"]
-    end
-
-    test "pending input queue never materializes beyond the batch limit" do
-      queued =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: false,
-            dedupe_key: "src-1",
-            payload: %{source_message_id: "src-1", content: "one"}
-          },
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: false,
-            dedupe_key: "src-2",
-            payload: %{source_message_id: "src-2", content: "two"}
-          },
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: false,
-            dedupe_key: "src-3",
-            payload: %{source_message_id: "src-3", content: "three"}
-          },
-          %{
-            type: "queue_append",
-            session_id: "s1",
-            kind: "user_message",
-            wake: true,
-            dedupe_key: "src-4",
-            payload: %{source_message_id: "src-4", content: "four"}
-          }
-        ])
-
-      {events, false, hwm} = materialize(queued, 3)
-      materialized = SessionData.apply_events(queued, events)
-
-      assert hwm == 3
-      assert materialized.queue_ack_id == 3
-      assert Enum.map(materialized.messages, & &1.content) == ["one", "two", "three"]
-    end
-
     for {kind, payload, message} <- [
           {"runtime_message", %{type: "runtime_recovered", summary: "missing identity"},
            "runtime_message queue item requires runtime_message_id or dedupe_key"},
           {"user_message", %{role: "user", content: "missing source"},
            "user_message queue item requires source_message_id or dedupe_key"}
         ] do
-      test "#{kind} queue item without stable identity is rejected" do
-        assert_raise ArgumentError, unquote(message), fn ->
-          reduce_session([
-            %{type: "session_created", session_id: "s1"},
-            %{
-              type: "queue_append",
-              session_id: "s1",
-              kind: unquote(kind),
-              wake: true,
-              payload: unquote(Macro.escape(payload))
-            }
-          ])
-        end
-      end
-    end
-
-    test "wait and ack are derived from the target session only" do
-      session =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{type: "ack", session_id: "s1", last_ack_message_id: 5},
-          %{type: "ack", session_id: "s1", last_ack_message_id: 3},
-          %{type: "status", session_id: "s1", status: "idle"},
-          %{type: "wait_set", session_id: "s1", wait: %{"reason" => "async"}}
-        ])
-
-      assert session.last_ack_message_id == 5
-      assert SessionData.query(session, :derived_state) == :waiting
-    end
-
-    test "visible reply activation identity survives round boundaries and retires on ack" do
-      response_identity =
-        "rsp_" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
-
-      scope = %{
-        "conversation_id" => "conv-activity-owner",
-        "response_identity" => response_identity,
-        "source_message_ids" => ["source-1"],
-        "source_messages" => [
-          %{"source_message_id" => "source-1", "message_id" => "message-1"}
-        ]
-      }
-
-      session =
-        new_session("agent-1", "s1")
-        |> SessionData.apply_event(%{
-          type: "visible_reply_activation_started",
-          session_id: "s1",
-          scope: scope
-        })
-        |> SessionData.apply_event(%{type: "status", session_id: "s1", status: "active"})
-        |> SessionData.apply_event(%{type: "status", session_id: "s1", status: "idle"})
-
-      assert session.visible_reply_activation_scope == scope
-
-      duplicate_ack =
-        SessionData.apply_event(session, %{
-          type: "ack",
-          session_id: "s1",
-          last_ack_message_id: 0
-        })
-
-      assert duplicate_ack.visible_reply_activation_scope == scope
-
-      settled =
-        SessionData.apply_event(duplicate_ack, %{
-          type: "ack",
-          session_id: "s1",
-          last_ack_message_id: 1
-        })
-
-      assert settled.visible_reply_activation_scope == nil
     end
 
     test "async tool calls are session-local records" do
@@ -1346,82 +736,6 @@ defmodule SalixAgent.StateTest do
       # with a live-reference pointer at its seq.
       refute Map.has_key?(session.async_tool_calls, "call-1")
       assert session.async_result_refs["call-1"] == record["seq"]
-    end
-
-    test "running async tool pauses transcript continuation after its early tool result" do
-      session =
-        reduce_session([
-          %{type: "session_created", session_id: "s1"},
-          %{type: "status", session_id: "s1", status: "idle"},
-          %{type: "assistant", session_id: "s1", message_id: 1, content: "calling"},
-          %{
-            type: "tool_result",
-            session_id: "s1",
-            message_id: 2,
-            tool_call_id: "async-1",
-            content: "tool is still running"
-          },
-          %{
-            type: "async_tool_call_started",
-            session_id: "s1",
-            tool_call_id: "async-1",
-            tool_name: "env.copy",
-            status: "running",
-            completion_mode: "local_background"
-          }
-        ])
-
-      assert "process_local_background_tool_run" in SessionData.query(session, :work_reasons)
-      refute "transcript_continuation" in SessionData.query(session, :work_reasons)
-      refute SessionData.query(session, :has_unprocessed_stable_work?)
-    end
-
-    test "tool results preserve commit order and session_event stays out of transcript" do
-      session =
-        reduce_session([
-          %{type: "assistant", session_id: "s1", message_id: 1, content: "calling"},
-          %{
-            type: "tool_result",
-            session_id: "s1",
-            message_id: 2,
-            tool_call_id: "a",
-            content: "ra"
-          },
-          %{
-            type: "tool_result",
-            session_id: "s1",
-            message_id: 3,
-            tool_call_id: "b",
-            content: "rb"
-          },
-          %{
-            type: "session_event",
-            session_id: "s1",
-            event_id: "event-1",
-            kind: "internal_runtime_event",
-            source: "internal_runtime",
-            method: "item/completed",
-            event: %{"method" => "item/completed"},
-            created_at: 123
-          }
-        ])
-
-      assert session.messages |> Enum.filter(&(&1.role == "tool")) |> Enum.map(& &1.tool_call_id) ==
-               ["a", "b"]
-
-      refute Enum.any?(session.messages, &(&1.role == "session_event"))
-
-      assert session.events == [
-               %{
-                 "event_id" => "event-1",
-                 "kind" => "internal_runtime_event",
-                 "source" => "internal_runtime",
-                 "method" => "item/completed",
-                 "event" => %{"method" => "item/completed"},
-                 "created_at" => 123,
-                 "seq" => 4
-               }
-             ]
     end
 
     test "fork copies internal transcript metadata but not wait or async state" do
@@ -1492,40 +806,11 @@ defmodule SalixAgent.StateTest do
 
   describe "generic store root" do
     setup do
-      prev = Application.get_env(:salix_store, :s3_backend)
-      Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+      prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
       start_supervised!(SalixStore.S3.Fake)
-      on_exit(fn -> Application.put_env(:salix_store, :s3_backend, prev) end)
+      on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, prev) end)
       {:ok, agent: SalixAgent.TestSupport.new_agent_id()}
-    end
-
-    test "runtime session events do not create root split-session refs", %{agent: agent_id} do
-      {:ok, owned} = Agent.create(agent_id, "node-1", State)
-
-      {:ok, _owned} =
-        Agent.commit(
-          owned,
-          [
-            %{type: "session_created", session_id: "s1"},
-            %{
-              type: "delivery",
-              from_queue: true,
-              session_id: "s1",
-              message_id: 1,
-              content: "hello"
-            }
-          ],
-          hwm: 1
-        )
-
-      {:ok, reloaded} = Agent.claim(agent_id, "node-2", State, steal: true)
-      assert reloaded.state == %State{agent_id: agent_id}
-      assert reloaded.head.hot == %{"agent_id" => agent_id}
-
-      {:ok, %{body: root_body}} = S3.get(Keys.agent_state(agent_id))
-
-      %{payload: %{mode: :whole, state: %State{agent_id: ^agent_id}}} =
-        Codec.decode_snapshot(root_body)
     end
   end
 

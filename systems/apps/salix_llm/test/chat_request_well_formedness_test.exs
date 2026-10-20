@@ -10,11 +10,11 @@ defmodule SalixLlm.ChatRequestWellFormednessTest do
       responding to each `tool_call_id`" — no interleaving, none missing, none
       unclaimed
     * DeepSeek thinking mode wants `reasoning_content` on every assistant
-      message once the request carries tools
+      message; an assistant without reasoning sends an empty one
     * OpenRouter replays reasoning blocks as a consecutive sequence, so streamed
       text/summary fragments merge only until the next block-type transition
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixLlm.ConvertOpenAI
 
@@ -23,6 +23,12 @@ defmodule SalixLlm.ChatRequestWellFormednessTest do
   end
 
   defp call(id, name), do: %{"id" => id, "name" => name, "args" => %{}}
+
+  defp reasoned(text, model \\ "deepseek-flash"),
+    do: %{
+      model: model,
+      provider_meta: %{"chat_message_extra" => %{"reasoning_content" => text}}
+    }
 
   # Every rule the providers validate about tool sequencing, in one pass.
   defp assert_tool_sequencing!(chat) do
@@ -73,10 +79,11 @@ defmodule SalixLlm.ChatRequestWellFormednessTest do
                %{"role" => "user", "content" => "run it"},
                %{"role" => "assistant"},
                %{"role" => "tool", "tool_call_id" => "c1", "content" => "done"},
-               %{"role" => "user", "content" => runtime}
+               %{"role" => "assistant", "tool_calls" => [%{"id" => id}]},
+               %{"role" => "tool", "tool_call_id" => id, "content" => runtime}
              ] = chat
 
-      assert runtime =~ "<runtime-message>"
+      assert Jason.decode!(runtime)["runtime_message_id"] == "r1"
     end
 
     test "a call with no recorded result still gets one" do
@@ -143,35 +150,57 @@ defmodule SalixLlm.ChatRequestWellFormednessTest do
   end
 
   describe "DeepSeek reasoning_content" do
-    test "every assistant message carries the field once the turn uses it" do
+    # DeepSeek answers HTTP 400 "The `reasoning_content` in the thinking mode
+    # must be passed back to the API" when a request with tools has an
+    # assistant message whose reasoning_content is missing or null. A string,
+    # even an empty one, is accepted.
+    test "every assistant message carries a string" do
       chat =
-        ConvertOpenAI.to_chat([
-          %{role: "user", content: "go"},
-          # A sanitized/legacy turn: no reasoning was kept for it.
-          assistant("earlier answer", []),
-          %{role: "user", content: "again"},
-          assistant("", [call("c1", "shell")], %{
-            provider_meta: %{"chat_message_extra" => %{"reasoning_content" => "thinking"}}
-          }),
-          %{role: "tool", tool_call_id: "c1", content: "done"}
-        ])
+        ConvertOpenAI.to_chat(
+          [
+            %{role: "user", content: "go"},
+            # A sanitized/legacy turn: no reasoning was kept for it.
+            assistant("earlier answer", []),
+            %{role: "user", content: "switch models"},
+            # Recorded under the previous model: its reasoning is not replayed.
+            assistant("", [call("c0", "shell")], reasoned("other thoughts", "gpt-6-sol")),
+            %{role: "tool", tool_call_id: "c0", content: "done"},
+            %{role: "user", content: "again"},
+            assistant("", [call("c1", "shell")], reasoned("thinking")),
+            %{role: "tool", tool_call_id: "c1", content: "done"},
+            # A runtime message after a turn becomes a synthetic tool call.
+            %{
+              role: "runtime",
+              runtime_message_id: "runtime-1",
+              type: "tool_call_completed",
+              content: "A background call finished."
+            },
+            # A call the model made without thinking.
+            assistant("", [call("c2", "send_message")], reasoned("")),
+            %{role: "tool", tool_call_id: "c2", content: "sent"}
+          ],
+          "deepseek-flash"
+        )
+        |> assert_tool_sequencing!()
 
-      assistants = Enum.filter(chat, &(&1["role"] == "assistant"))
-      assert length(assistants) == 2
-      assert Enum.all?(assistants, &Map.has_key?(&1, "reasoning_content"))
-      assert Enum.map(assistants, & &1["reasoning_content"]) == [nil, "thinking"]
+      reasoning =
+        chat
+        |> Enum.filter(&(&1["role"] == "assistant"))
+        |> Enum.map(&Map.fetch(&1, "reasoning_content"))
+
+      assert reasoning == [{:ok, ""}, {:ok, ""}, {:ok, "thinking"}, {:ok, ""}, {:ok, ""}]
     end
 
-    test "assistants stay untouched when no turn reasoned" do
+    test "an assistant sends empty reasoning when no turn reasoned" do
       chat =
         ConvertOpenAI.to_chat([
           %{role: "user", content: "go"},
           assistant("answer", [])
         ])
 
-      refute chat
+      assert chat
              |> Enum.filter(&(&1["role"] == "assistant"))
-             |> Enum.any?(&Map.has_key?(&1, "reasoning_content"))
+             |> Enum.map(& &1["reasoning_content"]) == [""]
     end
   end
 

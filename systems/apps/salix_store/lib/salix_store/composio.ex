@@ -30,7 +30,7 @@ defmodule SalixStore.Composio do
   read from global state except the test seam.
 
   The base URL resolves through
-  `Application.get_env(:salix_store, :composio_base_url_override)` first —
+  `SystemsRuntime.get_env(:salix_store, :composio_base_url_override)` first —
   the test seam, mirroring `:oauth_endpoint_overrides` — then the settings
   record's `"base_url"`, then the public default.
 
@@ -466,6 +466,8 @@ defmodule SalixStore.Composio do
 
   # ---- HTTP plumbing ----
 
+  @account_wait_ms 8_000
+
   defp request(settings, method, path, opts) do
     label = Keyword.fetch!(opts, :label)
     error_mode = opts[:error_mode] || :message
@@ -488,14 +490,20 @@ defmodule SalixStore.Composio do
         # gets one attempt and a finite transport wait. Tool execution keeps its
         # existing policy and its caller-owned collection budget.
         req_opts =
-          if String.starts_with?(path, [
-               "/api/v3/connected_accounts",
-               "/api/v3/auth_configs",
-               "/api/v3.1/trigger",
-               "/api/v3.1/webhook_subscriptions"
-             ]) do
+          Keyword.merge(req_opts, SystemsRuntime.get_env(:salix_store, :composio_req_options, []))
+
+        account_management? =
+          String.starts_with?(path, [
+            "/api/v3/connected_accounts",
+            "/api/v3/auth_configs",
+            "/api/v3.1/trigger",
+            "/api/v3.1/webhook_subscriptions"
+          ])
+
+        req_opts =
+          if account_management? do
             Keyword.merge(req_opts,
-              receive_timeout: 8_000,
+              receive_timeout: SystemsClock.timeout(@account_wait_ms),
               connect_options: [timeout: 8_000],
               retry: false
             )
@@ -503,10 +511,20 @@ defmodule SalixStore.Composio do
             req_opts
           end
 
-        req_opts
-        |> bound_response(opts[:max_response_bytes])
-        |> Req.request()
-        |> handle_response(label, error_mode)
+        req_opts = bound_response(req_opts, opts[:max_response_bytes])
+
+        if account_management?,
+          do: req_opts |> bounded_request() |> handle_response(label, error_mode),
+          else: req_opts |> Req.request() |> handle_response(label, error_mode)
+    end
+  end
+
+  # The answer is awaited on SystemsClock, so a test's clock can expire a
+  # stalled provider; the receive timeout stays as the socket bound.
+  defp bounded_request(options) do
+    case SystemsClock.run_bounded(fn -> Req.request(options) end, @account_wait_ms) do
+      {:ok, response} -> response
+      _exit_or_timeout -> {:error, %Req.TransportError{reason: :timeout}}
     end
   end
 
@@ -515,7 +533,7 @@ defmodule SalixStore.Composio do
       retry: false,
       redirect: false,
       decode_body: false,
-      receive_timeout: 8_000,
+      receive_timeout: SystemsClock.timeout(8_000),
       connect_options: [timeout: 8_000],
       into: fn {:data, data}, {req, resp} ->
         body = (resp.body || "") <> data
@@ -575,7 +593,7 @@ defmodule SalixStore.Composio do
   end
 
   defp base_url(settings) do
-    override = Application.get_env(:salix_store, :composio_base_url_override)
+    override = SystemsRuntime.get_env(:salix_store, :composio_base_url_override)
     configured = String.trim(to_string((is_map(settings) && settings["base_url"]) || ""))
 
     cond do

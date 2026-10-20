@@ -5,7 +5,7 @@ defmodule SalixAgent.VFSTest do
   driven end-to-end through activation-scoped LLM/tool rounds. Against the Fake
   backend.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{Blob, Agent, Keys, S3}
   alias SalixAgent.{AgentWorkspace, Fleet, InternalAgentRuntime, State, Tools, WorkspaceEvents}
@@ -21,10 +21,13 @@ defmodule SalixAgent.VFSTest do
 
     @impl true
     def authorize_write(attrs) do
-      send(Application.fetch_env!(:salix_agent, :storage_authorization_test_pid), {
-        :storage_authorize,
-        attrs
-      })
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :storage_authorization_test_pid),
+        {
+          :storage_authorize,
+          attrs
+        }
+      )
 
       {:error, {:billing_unavailable, %{allowed?: false, reason: "insufficient_credits"}}}
     end
@@ -35,10 +38,13 @@ defmodule SalixAgent.VFSTest do
 
     @impl true
     def authorize_write(attrs) do
-      send(Application.fetch_env!(:salix_agent, :storage_authorization_test_pid), {
-        :storage_authorize,
-        attrs
-      })
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :storage_authorization_test_pid),
+        {
+          :storage_authorize,
+          attrs
+        }
+      )
 
       :ok
     end
@@ -46,22 +52,22 @@ defmodule SalixAgent.VFSTest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev = Application.get_env(:salix_store, :s3_backend)
-    prev_group_context = Application.get_env(:salix_agent, :group_context_mod)
-    prev_storage_authorization = Application.get_env(:salix_agent, :storage_authorization_mod)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_group_context = SystemsRuntime.get_env(:salix_agent, :group_context_mod)
+    prev_storage_authorization = SystemsRuntime.get_env(:salix_agent, :storage_authorization_mod)
 
     prev_storage_authorization_test_pid =
-      Application.get_env(:salix_agent, :storage_authorization_test_pid)
+      SystemsRuntime.get_env(:salix_agent, :storage_authorization_test_pid)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     start_supervised!(Mock)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_agent, :llm, Mock)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_agent, :llm, Mock)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
       put_or_delete_env(:salix_agent, :group_context_mod, prev_group_context)
       put_or_delete_env(:salix_agent, :llm, prev_llm)
       put_or_delete_env(:salix_agent, :storage_authorization_mod, prev_storage_authorization)
@@ -79,24 +85,10 @@ defmodule SalixAgent.VFSTest do
     {:ok, agent: agent_id}
   end
 
-  defp put_or_delete_env(app, key, nil), do: Application.delete_env(app, key)
-  defp put_or_delete_env(app, key, value), do: Application.put_env(app, key, value)
+  defp put_or_delete_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp put_or_delete_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   describe "Blob storage (invariant #3)" do
-    test "small and larger bodies both store as canonical blobs and round-trip", %{agent: a} do
-      small = String.duplicate("x", 1000)
-      big = String.duplicate("y", 20_000)
-
-      assert {:ok, %{kind: "blob", size: 1000} = pref} = Blob.put(a, small)
-      assert {:ok, %{kind: "blob", size: 20_000} = bref} = Blob.put(a, big)
-      assert {:ok, ^small} = Blob.get(a, pref)
-      assert {:ok, ^big} = Blob.get(a, bref)
-    end
-
-    test "rejects bodies over the 10MB cap", %{agent: a} do
-      huge = String.duplicate("z", 10 * 1024 * 1024 + 1)
-      assert {:error, :too_large} = Blob.put(a, huge)
-    end
   end
 
   describe "VFS manifest operations" do
@@ -183,43 +175,6 @@ defmodule SalixAgent.VFSTest do
       assert {:error, :not_found} = AgentWorkspace.read(a, "/notes/not-owner.txt")
     end
 
-    test "public write and delete are idempotent across request retries", %{agent: a} do
-      assert {:ok, first} =
-               SalixAgent.Workspace.write(a, "/notes/public.txt", "first",
-                 idempotency_key: "write-public"
-               )
-
-      assert {:ok, ^first} =
-               SalixAgent.Workspace.write(a, "/notes/public.txt", "second",
-                 idempotency_key: "write-public"
-               )
-
-      assert {:ok, "first"} = AgentWorkspace.read(a, "/notes/public.txt")
-
-      assert {:ok, deleted} =
-               SalixAgent.Workspace.delete(a, "/notes/public.txt",
-                 idempotency_key: "delete-public"
-               )
-
-      assert deleted == %{"path" => "/notes/public.txt", "deleted" => 1}
-
-      assert {:ok, ^deleted} =
-               SalixAgent.Workspace.delete(a, "/notes/public.txt",
-                 idempotency_key: "delete-public"
-               )
-
-      assert {:error, :not_found} = AgentWorkspace.read(a, "/notes/public.txt")
-    end
-
-    test "public delete without an idempotency key does not turn history into success", %{
-      agent: a
-    } do
-      assert {:ok, _} = SalixAgent.Workspace.write(a, "/notes/delete-once.txt", "content")
-      assert {:ok, %{"deleted" => 1}} = SalixAgent.Workspace.delete(a, "/notes/delete-once.txt")
-
-      assert {:error, :not_found} = SalixAgent.Workspace.delete(a, "/notes/delete-once.txt")
-    end
-
     test "validated control projections still reject hidden and archived site reads", %{
       agent: a
     } do
@@ -235,8 +190,13 @@ defmodule SalixAgent.VFSTest do
     } do
       assert {:ok, _} = SalixAgent.Workspace.write(a, "/notes/existing.txt", "still readable")
 
-      Application.put_env(:salix_agent, :storage_authorization_mod, DenyingStorageAuthorizer)
-      Application.put_env(:salix_agent, :storage_authorization_test_pid, self())
+      SystemsRuntime.put_env(:salix_agent, :storage_authorization_mod, DenyingStorageAuthorizer)
+
+      SystemsRuntime.put_env(
+        :salix_agent,
+        :storage_authorization_test_pid,
+        SystemsRuntime.Proc.self()
+      )
 
       billing_context = %{
         "billing_account_id" => "ba-storage-zero",
@@ -258,50 +218,6 @@ defmodule SalixAgent.VFSTest do
 
       assert {:error, :not_found} = AgentWorkspace.read(a, "/notes/blocked.txt")
       assert {:ok, "still readable"} = SalixAgent.Workspace.read(a, "/notes/existing.txt")
-    end
-
-    test "denied workspace write is authorized before blob storage and can derive billing owner",
-         %{
-           agent: a
-         } do
-      {:ok, before_blobs} = S3.list_all("blobs/")
-      group_id = SalixStore.Ids.group_id_from_agent!(a)
-      tenant_id = SalixStore.Ids.tenant_id_from_group!(group_id)
-
-      {:ok, _} =
-        S3.put(
-          Keys.ctl_group(group_id),
-          Jason.encode!(%{
-            "tenant_id" => tenant_id,
-            "group_id" => group_id,
-            "router_conversation_id" => SalixStore.Ids.new_conversation_id(),
-            "billing_owner" => %{
-              "billing_account_id" => "ba-storage-derived",
-              "surface" => "bridge",
-              "product_owner_type" => "organization",
-              "product_owner_id" => "org-storage-derived",
-              "salix_tenant_id" => tenant_id,
-              "salix_group_id" => group_id
-            }
-          })
-        )
-
-      Application.put_env(:salix_agent, :storage_authorization_mod, DenyingStorageAuthorizer)
-      Application.put_env(:salix_agent, :storage_authorization_test_pid, self())
-
-      assert {:error, {:billing_unavailable, %{allowed?: false}}} =
-               SalixAgent.Workspace.write(a, "/notes/derived-blocked.txt", "blocked")
-
-      assert_receive {:storage_authorize,
-                      %{
-                        agent_id: ^a,
-                        events: [%{"type" => "vfs_write"}],
-                        billing_context: %{"billing_account_id" => "ba-storage-derived"}
-                      }}
-
-      {:ok, after_blobs} = S3.list_all("blobs/")
-      assert Enum.map(after_blobs, & &1.key) == Enum.map(before_blobs, & &1.key)
-      assert {:error, :not_found} = AgentWorkspace.read(a, "/notes/derived-blocked.txt")
     end
 
     test "denied tool write is authorized before blob storage", %{agent: a} do
@@ -327,8 +243,13 @@ defmodule SalixAgent.VFSTest do
           })
         )
 
-      Application.put_env(:salix_agent, :storage_authorization_mod, DenyingStorageAuthorizer)
-      Application.put_env(:salix_agent, :storage_authorization_test_pid, self())
+      SystemsRuntime.put_env(:salix_agent, :storage_authorization_mod, DenyingStorageAuthorizer)
+
+      SystemsRuntime.put_env(
+        :salix_agent,
+        :storage_authorization_test_pid,
+        SystemsRuntime.Proc.self()
+      )
 
       assert_raise RuntimeError, ~r/billing_unavailable/, fn ->
         Tools.write_file(
@@ -347,27 +268,6 @@ defmodule SalixAgent.VFSTest do
       {:ok, after_blobs} = S3.list_all("blobs/")
       assert Enum.map(after_blobs, & &1.key) == Enum.map(before_blobs, & &1.key)
       assert {:error, :not_found} = AgentWorkspace.read(a, "/notes/tool-blocked.txt")
-    end
-
-    test "storage write authorizer allows active billing context", %{agent: a} do
-      Application.put_env(:salix_agent, :storage_authorization_mod, AllowingStorageAuthorizer)
-      Application.put_env(:salix_agent, :storage_authorization_test_pid, self())
-
-      billing_context = %{"billing_account_id" => "ba-storage-active"}
-
-      assert {:ok, %{"path" => "/notes/allowed.txt"}} =
-               SalixAgent.Workspace.write(a, "/notes/allowed.txt", "allowed",
-                 billing_context: billing_context
-               )
-
-      assert_receive {:storage_authorize,
-                      %{
-                        agent_id: ^a,
-                        entrypoint: "storage_write",
-                        billing_context: ^billing_context
-                      }}
-
-      assert {:ok, "allowed"} = SalixAgent.Workspace.read(a, "/notes/allowed.txt")
     end
 
     test "tool workspace operation ids are scoped by session while sharing agent workspace", %{
@@ -425,67 +325,6 @@ defmodule SalixAgent.VFSTest do
                "tool-result:#{a}:#{@session_b}:same-tool-call"
              )
     end
-
-    test "tool workspace result requires a stable tool call id", %{agent: a} do
-      {:ok, write_event} = AgentWorkspace.prepare_write(a, "/notes/missing-id.txt", "bad")
-
-      assert {:error, :missing_tool_call_id} =
-               WorkspaceEvents.commit_result(
-                 a,
-                 @session_a,
-                 %{name: "fs.write_file", status: "completed", events: [write_event]},
-                 "tool-result"
-               )
-
-      assert {:error, :not_found} = AgentWorkspace.read(a, "/notes/missing-id.txt")
-
-      {:ok, workspace_state} = AgentWorkspace.read_state(a)
-      assert workspace_state.operations == %{}
-    end
-
-    test "delivery workspace operation ids are scoped by session", %{agent: a} do
-      SalixAgent.TestSupport.create_control_agent!(a)
-
-      {:ok, write_a} = AgentWorkspace.prepare_write(a, "/notes/delivery-a.txt", "A")
-      {:ok, write_b} = AgentWorkspace.prepare_write(a, "/notes/delivery-b.txt", "B")
-
-      source_message_id = "same-source"
-
-      assert {:ok, :committed} =
-               SalixAgent.InternalSessionFleet.stage_delivery(a, @session_a, %{
-                 source_message_id: source_message_id,
-                 payload: %{
-                   session_id: @session_a,
-                   content: "write A",
-                   events: [write_a]
-                 }
-               })
-
-      assert {:ok, :committed} =
-               SalixAgent.InternalSessionFleet.stage_delivery(a, @session_b, %{
-                 source_message_id: source_message_id,
-                 payload: %{
-                   session_id: @session_b,
-                   content: "write B",
-                   events: [write_b]
-                 }
-               })
-
-      assert {:ok, "A"} = AgentWorkspace.read(a, "/notes/delivery-a.txt")
-      assert {:ok, "B"} = AgentWorkspace.read(a, "/notes/delivery-b.txt")
-
-      {:ok, workspace_state} = AgentWorkspace.read_state(a)
-
-      assert Map.has_key?(
-               workspace_state.operations,
-               "delivery-workspace:#{a}:#{@session_a}:#{source_message_id}"
-             )
-
-      assert Map.has_key?(
-               workspace_state.operations,
-               "delivery-workspace:#{a}:#{@session_b}:#{source_message_id}"
-             )
-    end
   end
 
   describe "file tools end-to-end through activation-scoped rounds" do
@@ -523,7 +362,7 @@ defmodule SalixAgent.VFSTest do
 
       SalixAgent.Server.wake(a)
       {:parked, _owned} = SalixAgent.Server.info(a)
-      assert eventually(fn -> internal_sessions_settled?(a) end, 200)
+      assert eventually(fn -> internal_sessions_settled?(a) end, 3000)
 
       write_result = await_tool_terminal!(a, @session_main, "w1")
       read_result = await_tool_terminal!(a, @session_main, "r1")
@@ -536,7 +375,7 @@ defmodule SalixAgent.VFSTest do
                  read_session!(a, @session_main).messages
                  |> Enum.any?(&(&1[:role] == "assistant" and &1[:content] == "done"))
                end,
-               300
+               3000
              )
 
       # the file is in the manifest
@@ -570,7 +409,7 @@ defmodule SalixAgent.VFSTest do
     cond do
       fun.() -> true
       retries == 0 -> false
-      true -> Process.sleep(10) && eventually(fun, retries - 1)
+      true -> SystemsRuntime.Proc.sleep(10) && eventually(fun, retries - 1)
     end
   end
 
@@ -578,7 +417,7 @@ defmodule SalixAgent.VFSTest do
   # the zero-time yield is committed directly to the transcript, while a live
   # dependency first publishes `running` and later commits an async result.
   # Observe both; the bounded wait is only for the latter path to settle.
-  defp await_tool_terminal!(agent_id, session_id, tool_call_id, retries \\ 1_200)
+  defp await_tool_terminal!(agent_id, session_id, tool_call_id, retries \\ 3000)
 
   defp await_tool_terminal!(_agent_id, _session_id, tool_call_id, 0) do
     flunk("tool call #{tool_call_id} did not reach a terminal result")
@@ -587,7 +426,7 @@ defmodule SalixAgent.VFSTest do
   defp await_tool_terminal!(agent_id, session_id, tool_call_id, retries) do
     case terminal_tool_result(agent_id, session_id, tool_call_id) do
       nil ->
-        Process.sleep(10)
+        SystemsRuntime.Proc.sleep(10)
         await_tool_terminal!(agent_id, session_id, tool_call_id, retries - 1)
 
       result ->

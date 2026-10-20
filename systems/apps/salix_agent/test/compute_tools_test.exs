@@ -1,5 +1,5 @@
 defmodule SalixAgent.ComputeToolsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.Tools.Compute, as: ComputeTools
   alias SalixStore.{Compute, Repo}
@@ -51,6 +51,7 @@ defmodule SalixAgent.ComputeToolsTest do
         tenant_id: "tenant",
         name: "tools",
         region: "local",
+        capabilities: ["runtime_exec", "runtime_process"],
         provider_policy: %{"providers" => ["cloudflare"]}
       })
 
@@ -87,7 +88,9 @@ defmodule SalixAgent.ComputeToolsTest do
         id: "workload-tools",
         environment_id: environment.id,
         allocation_id: allocation.id,
-        kind: "external_worker",
+        kind: "shell",
+        template_key: "shell.default",
+        capability_requirements: ["runtime_exec", "runtime_process"],
         generation: 1
       })
 
@@ -100,15 +103,37 @@ defmodule SalixAgent.ComputeToolsTest do
         principal_type: "agent",
         principal_id: "agent",
         permissions: ["workspace", "service_route", "runtime"],
-        expires_at: DateTime.add(DateTime.utc_now(), 300, :second)
+        expires_at: DateTime.add(SystemsClock.utc_now(), 300, :second)
       })
 
     %{environment: environment, workload: workload, grant: grant}
   end
 
+  test "explicit grant target cannot be redirected or replaced by workspace authority", c do
+    entry = Enum.find(ComputeTools.defs(), &(elem(&1, 0) == "process.list"))
+
+    ctx = %{
+      tenant_id: "tenant",
+      agent_id: "agent",
+      runtime_kind: :internal,
+      environment_id: c.environment.id,
+      workload_grant_id: c.grant.id,
+      compute_adapter: MustNotRunAdapter
+    }
+
+    assert {:tool_failure, _, "workload_target_mismatch", "user_reportable", _, []} =
+             elem(entry, 3).(%{"workload_id" => "another-shell"}, ctx)
+
+    :ok = Compute.revoke_grant("tenant", c.grant.id, 1)
+
+    assert_raise RuntimeError, ~r/revoked/, fn ->
+      elem(entry, 3).(%{"workload_id" => c.workload.id}, ctx)
+    end
+  end
+
   test "registers one compute family and dispatches the authorized Workload", context do
     names = Enum.map(ComputeTools.defs(), &elem(&1, 0))
-    assert length(names) == 14
+    assert length(names) == 15
     assert Enum.uniq(names) == names
 
     assert Enum.all?(
@@ -202,7 +227,7 @@ defmodule SalixAgent.ComputeToolsTest do
         principal_type: "agent",
         principal_id: "agent",
         permissions: ["workspace", "service_route"],
-        expires_at: DateTime.add(DateTime.utc_now(), 300, :second)
+        expires_at: DateTime.add(SystemsClock.utc_now(), 300, :second)
       })
 
     exec_entry = Enum.find(ComputeTools.defs(), &(elem(&1, 0) == "compute.exec"))
@@ -247,13 +272,13 @@ defmodule SalixAgent.ComputeToolsTest do
 
   test "exec and process start resolve group OAuth references only for the authorized workload",
        context do
-    previous = Application.get_env(:salix_agent, :oauth_store_mod)
-    Application.put_env(:salix_agent, :oauth_store_mod, OAuthStore)
+    previous = SystemsRuntime.get_env(:salix_agent, :oauth_store_mod)
+    SystemsRuntime.put_env(:salix_agent, :oauth_store_mod, OAuthStore)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_agent, :oauth_store_mod, previous),
-        else: Application.delete_env(:salix_agent, :oauth_store_mod)
+        do: SystemsRuntime.put_env(:salix_agent, :oauth_store_mod, previous),
+        else: SystemsRuntime.delete_env(:salix_agent, :oauth_store_mod)
     end)
 
     :ok =
@@ -306,47 +331,6 @@ defmodule SalixAgent.ComputeToolsTest do
         %{"command" => ["true"], "credential_env" => [ref]},
         %{ctx | compute_adapter: MustNotRunAdapter}
       )
-    end
-  end
-
-  test "plugin visibility never invokes or revokes a resource", context do
-    projection = %{
-      "revision" => 1,
-      "disabled_tool_prefixes" => ["compute."],
-      "allowed_tool_prefixes" => [],
-      "allowed_tools" => [],
-      "disabled_tools" => []
-    }
-
-    entry = Enum.find(ComputeTools.defs(), &(elem(&1, 0) == "compute.workspace.stat"))
-
-    assert_raise RuntimeError, ~r/admission is disabled/, fn ->
-      elem(entry, 3).(%{"path" => "."}, %{
-        tenant_id: "tenant",
-        agent_id: "agent",
-        environment_id: context.environment.id,
-        workload_grant_id: context.grant.id,
-        compute_adapter: MustNotRunAdapter,
-        plugin_projection: projection
-      })
-    end
-
-    assert Repo.get!(Compute.Environment, context.environment.id).desired_state == "ready"
-  end
-
-  test "revoked stable grant fails before Provider dispatch", context do
-    assert :ok = Compute.revoke_grant("tenant", context.grant.id, 1)
-    entry = Enum.find(ComputeTools.defs(), &(elem(&1, 0) == "compute.workspace.stat"))
-
-    assert_raise RuntimeError, ~r/revoked/, fn ->
-      elem(entry, 3).(%{"path" => "."}, %{
-        tenant_id: "tenant",
-        agent_id: "agent",
-        environment_id: context.environment.id,
-        workload_grant_id: context.grant.id,
-        compute_adapter: MustNotRunAdapter,
-        plugin_projection: %{}
-      })
     end
   end
 

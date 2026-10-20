@@ -24,7 +24,7 @@ defmodule SalixSignalProto.Test.Oracle do
 
   @doc "Returns `{:ok, result}` or `{:error, kind}`. Compare kinds only as advice."
   def call(socket, op, args) do
-    id = System.unique_integer([:positive])
+    id = SystemsRuntime.Proc.unique_integer([:positive])
     line = JSON.encode!(%{id: id, op: op, args: encode_args(args)})
     :ok = :gen_tcp.send(socket, [line, "\n"])
     {:ok, response} = :gen_tcp.recv(socket, 0, @timeout)

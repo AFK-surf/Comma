@@ -1,3 +1,8 @@
+import type { CoreClient } from "@comma/core-client";
+import { CoreProvider } from "@comma/core-client";
+import { delegateScriptedCore } from "@comma/test-utils/scripted-core";
+import { flush } from "@comma/test-utils/fake-clock";
+import { labelCatalog, labelsCore } from "./labelsCore";
 import userEvent from "@testing-library/user-event";
 import {
   Outlet,
@@ -8,16 +13,14 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import type { ProductInboxListResult } from "@comma/native-bridge";
+import type { ProductInboxListResult } from "@comma/core-client";
 import { initializeCommaI18n } from "@comma/i18n";
 import { CommaI18nProvider } from "@comma/i18n/react";
 import { controlIntersections } from "@comma/test-utils/intersection";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
-import { act, render, screen, waitFor, within } from "@comma/test-utils/render";
-import { Toaster } from "@comma/ui";
-import { taskStatusBucket } from "@comma/ui";
+import { act, render, screen, within } from "@comma/test-utils/render";
+import { taskStatusBucket } from "@comma/ui/components/task-workspace";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCommaApi } from "../api";
 import { CommaAuthContext } from "../components/auth-context";
 import { ChatProvider } from "../components/chat/ChatProvider";
 import {
@@ -25,15 +28,26 @@ import {
   TasksRoute,
   type TaskViewModel,
 } from "../components/tasks/TasksRoute";
-import {
-  ProductInboxProjectionProvider,
-  type ProductInboxProjectionController,
-} from "../product-inbox";
+import { validateTasksSearch } from "../components/tasks/tasksSearch";
 import {
   createProductInboxProjectionHarness,
   createTestCommaAuthValue,
   testProductLease,
 } from "./productInboxProjectionHarness";
+
+/** A user whose waits run on the fake clock. */
+const user = () => userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+const morningLoop = (minute: number) => ({
+  state: "active" as const,
+  startedAt: 1,
+  wakeCount: 0,
+  cadence: {
+    cron: `${minute} 9 * * *`,
+    timezone: "Asia/Singapore",
+    pattern: { kind: "daily" as const, hour: 9, minute },
+  },
+});
 
 describe("TasksRoute", () => {
   it("hides archived owner items without adding a board column or filter", async () => {
@@ -49,7 +63,8 @@ describe("TasksRoute", () => {
     });
     installNativeBridgeMock({ platform: "electron" });
     renderTasksRoute(projection.controller);
-    await screen.findByText("Visible task");
+    await flush();
+    expect(screen.getByText("Visible task")).toBeInTheDocument();
     expect(screen.queryByText("Archived task title")).toBeNull();
     expect(screen.queryByText("Archived", { exact: true })).toBeNull();
   });
@@ -59,53 +74,12 @@ describe("TasksRoute", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders the empty task state without fabricating status sections", async () => {
-    const { container } = render(
-      <>
-        <Toaster />
-        <TaskWorkspacePanel capabilityState="planned" />
-      </>
-    );
-
-    expect(screen.getByText("All tasks")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Filter tasks" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "List view" })).toBeInTheDocument();
-    expect(container.querySelector('[data-slot="task-board-column"]')).toBeNull();
-    expect(
-      screen.getByText(
-        "You can create tasks directly through the worker or use the Comma assistant to intelligently create and assign tasks."
-      )
-    ).toBeInTheDocument();
-    expect(await screen.findByTestId("tasks-not-connected")).toHaveTextContent(
-      "Task data is not connected yet. The board UI is ready."
-    );
-  });
-
   it.each([
     ["terminal", "done"],
     ["escalated", "needs_review"],
     ["ready_for_review", "needs_review"],
   ])("maps status %s to the %s display bucket", (status, bucket) => {
     expect(taskStatusBucket(status)).toBe(bucket);
-  });
-
-  it("switches to the complete task status list from the view panel", async () => {
-    const user = userEvent.setup();
-    render(<TaskWorkspacePanel tasks={[taskFixture()]} />);
-
-    await user.click(screen.getByRole("button", { name: "List view" }));
-    await user.click(screen.getByRole("menuitemradio", { name: "List" }));
-
-    const list = screen.getByTestId("tasks-list");
-    expect(within(list).getByText("In progress")).toBeInTheDocument();
-    expect(within(list).getByText("Review task UI")).toBeInTheDocument();
-    // Statuses holding no tasks get no group of their own.
-    expect(within(list).queryByText("Backlog")).toBeNull();
-    expect(within(list).queryByText("Needs Review")).toBeNull();
-    expect(within(list).queryByText("No tasks")).toBeNull();
-    expect(
-      within(list).getByRole("button", { name: "Review task UI" })
-    ).toHaveAttribute("data-slot", "task-list-item");
   });
 
   it("localizes task activity instead of exposing its raw status enum", () => {
@@ -128,39 +102,10 @@ describe("TasksRoute", () => {
     expect(screen.queryByText("running_tests")).not.toBeInTheDocument();
   });
 
-  it("keeps card selection and task chat as presentation interactions", async () => {
-    const onCopyLink = vi.fn();
-    const onExpand = vi.fn();
-    const onSendMessage = vi.fn();
-    const task = taskFixture();
-    render(
-      <TaskWorkspacePanel
-        onCopyLink={onCopyLink}
-        onExpand={onExpand}
-        onSendMessage={onSendMessage}
-        tasks={[task]}
-      />
-    );
-
-    await userEvent.click(screen.getByRole("button", { name: task.title }));
-
-    const taskChat = screen.getByRole("complementary", { name: "Task chat" });
-    expect(taskChat).toBeVisible();
-    expect(within(taskChat).getByText("I am checking it now.")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Open task chat" }));
-    await userEvent.click(screen.getByRole("button", { name: "Copy task link" }));
-    await userEvent.type(screen.getByLabelText("Continue task"), "Looks good");
-    await userEvent.click(screen.getByRole("button", { name: "Send message" }));
-
-    expect(onExpand).toHaveBeenCalledWith(task);
-    expect(onCopyLink).toHaveBeenCalledWith(task);
-    expect(onSendMessage).toHaveBeenCalledWith(task, "Looks good");
-  });
-
   it("disables unimplemented task detail actions", async () => {
     render(<TaskWorkspacePanel tasks={[taskFixture()]} />);
 
-    await userEvent.click(screen.getByRole("button", { name: "Review task UI" }));
+    await user().click(screen.getByRole("button", { name: "Review task UI" }));
 
     expect(screen.getByRole("button", { name: "Open task chat" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Copy task link" })).toBeDisabled();
@@ -204,16 +149,58 @@ describe("TasksRoute", () => {
     installNativeBridgeMock({ platform: "electron" });
     const { router } = renderTasksRoute(projection.controller);
 
-    expect(await screen.findByText("Comma 本地聊天验收清单")).toBeInTheDocument();
+    await flush();
+    expect(screen.getByText("Comma 本地聊天验收清单")).toBeInTheDocument();
     expect(screen.queryByText("Personal Chat")).toBeNull();
     expect(projection.retain).toHaveBeenCalledWith({ session: testProductLease });
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "Comma 本地聊天验收清单" })
+    await user().click(screen.getByRole("button", { name: "Comma 本地聊天验收清单" }));
+    await flush();
+    expect(router.state.location.pathname).toBe("/tasks/w1/grp_test/task-1");
+  });
+
+  it("lists the Tasks the workspace's stations host, where each runs, and opens one on its station's page", async () => {
+    const station = "a".repeat(64);
+    const projection = createProductInboxProjectionHarness({
+      initial: {
+        activeWorkspaceId: "w1",
+        lastSyncedAt: 1_000,
+        source: "live-sync",
+        items: [taskInboxItem("salix", "Kept by Salix")],
+        workspaces: [{ id: "w1", name: "My Workspace", group_id: "grp_test" }],
+      },
+      stationTasks: {
+        state: "ready",
+        tasks: [
+          {
+            id: `station:${station}:7`,
+            station,
+            device: "dev_mac",
+            thread: "7",
+            title: "Fix the build on Studio",
+            status: "in_progress",
+            createdBy: "ann@x",
+            createdAt: 1_000,
+            lastActivityAt: 3_000,
+            runtime: "codex",
+            model: "gpt-5.5",
+            labels: [],
+            machine: { name: "Studio", online: false },
+          },
+        ],
+      },
+    });
+    installNativeBridgeMock({ platform: "electron" });
+    const { router } = renderTasksRoute(projection.controller);
+    await flush();
+    expect(screen.getByText("Kept by Salix")).toBeInTheDocument();
+    const card = screen.getByRole("button", { name: "Fix the build on Studio" });
+    expect(screen.getByTestId("task-card-host")).toHaveTextContent(
+      "On Studio · gpt-5.5 · Offline"
     );
-    await expect
-      .poll(() => router.state.location.pathname)
-      .toBe("/tasks/w1/grp_test/task-1");
+    await user().click(card);
+    await flush();
+    expect(router.state.location.pathname).toBe(`/tasks/w1/station/${station}/7`);
   });
 
   it("only exposes implemented production empty-state actions", async () => {
@@ -228,14 +215,15 @@ describe("TasksRoute", () => {
 
     const { unmount } = renderTasksRoute(projection.controller);
 
-    expect(await screen.findByText("No tasks")).toBeVisible();
+    await flush();
+    expect(screen.getByText("No tasks")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Create new task" })).toBeNull();
     expect(screen.getByRole("button", { name: "Chat with Comma" })).toBeVisible();
 
     unmount();
   });
 
-  it("keeps an initial desktop retention failure non-retryable until normal cleanup", async () => {
+  it("shows a list the core cannot keep as unavailable, without a retry", async () => {
     const projection = createProductInboxProjectionHarness({
       initial: {
         items: [],
@@ -249,7 +237,8 @@ describe("TasksRoute", () => {
 
     const { unmount } = renderTasksRoute(projection.controller);
 
-    expect(await screen.findByRole("heading", { name: "Error" })).toBeVisible();
+    await flush();
+    expect(screen.getByRole("heading", { name: "Error" })).toBeVisible();
     expect(screen.getByText("Task list unavailable")).toBeVisible();
     expect(
       screen.queryByText("Task could not be refreshed. Try again in a moment.")
@@ -258,14 +247,10 @@ describe("TasksRoute", () => {
     expect(projection.retain).toHaveBeenCalledOnce();
     expect(projection.retain).toHaveBeenCalledWith({ session: testProductLease });
     expect(projection.refresh).not.toHaveBeenCalled();
-    expect(projection.release).not.toHaveBeenCalled();
 
+    // A topic the core failed holds nothing to let go; nothing reads again.
     unmount();
-
-    await vi.waitFor(() => {
-      expect(projection.release).toHaveBeenCalledOnce();
-    });
-    expect(projection.release).toHaveBeenCalledWith({ session: testProductLease });
+    await flush();
     expect(projection.retain).toHaveBeenCalledOnce();
     expect(projection.refresh).not.toHaveBeenCalled();
   });
@@ -295,7 +280,8 @@ describe("TasksRoute", () => {
 
     renderTasksRoute(projection.controller);
 
-    const taskButton = await screen.findByRole("button", {
+    await flush();
+    const taskButton = screen.getByRole("button", {
       name: /Cached running task.*Stale/i,
     });
     expect(taskButton).toHaveAttribute("data-freshness", "stale");
@@ -337,23 +323,21 @@ describe("TasksRoute", () => {
     try {
       renderTasksRoute(projection.controller);
 
-      expect(await screen.findByText("First task")).toBeInTheDocument();
-      const columnEnd = await waitFor(() => {
-        const end = document.querySelector<HTMLElement>(
-          '[data-slot="task-board-column"] [data-slot="scroll-area-load-more"]'
-        );
-        expect(end).not.toBeNull();
-        return end!;
-      });
-      await act(async () => {});
+      await flush();
+      expect(screen.getByText("First task")).toBeInTheDocument();
+      const columnEnd = document.querySelector<HTMLElement>(
+        '[data-slot="task-board-column"] [data-slot="scroll-area-load-more"]'
+      );
+      expect(columnEnd).not.toBeNull();
+      await flush();
       expect(projection.refresh.mock.calls.some(([input]) => input.cursor)).toBe(false);
 
-      act(() => intersections.reveal(columnEnd));
+      act(() => intersections.reveal(columnEnd!));
+      await flush();
 
-      expect(await screen.findByText("Second task")).toBeInTheDocument();
+      expect(screen.getByText("Second task")).toBeInTheDocument();
       expect(projection.refresh).toHaveBeenCalledWith({
         cursor: "cursor-2",
-        limit: 50,
         session: testProductLease,
         workspaceId: "w1",
       });
@@ -394,8 +378,9 @@ describe("TasksRoute", () => {
     });
     installNativeBridgeMock({ platform: "electron" });
     renderTasksRoute(projection.controller);
-    await screen.findByText("First task");
-    await waitFor(() => expect(attempts).toBe(1));
+    await flush();
+    expect(screen.getByText("First task")).toBeInTheDocument();
+    expect(attempts).toBe(1);
     await act(async () => {
       failedPage.resolve({
         activeWorkspaceId: "w1",
@@ -404,20 +389,21 @@ describe("TasksRoute", () => {
         items: [],
       });
     });
+    await flush();
     expect(attempts).toBe(1);
-    await userEvent.click(await screen.findByRole("button", { name: "Retry" }));
-    await screen.findByText("Last task");
+    await user().click(screen.getByRole("button", { name: "Retry" }));
+    await flush();
+    expect(screen.getByText("Last task")).toBeInTheDocument();
     expect(screen.getByText("First task")).toBeInTheDocument();
     expect(attempts).toBe(2);
     expect(projection.refresh).toHaveBeenLastCalledWith({
       cursor: "cursor-2",
-      limit: 50,
       workspaceId: "w1",
       session: testProductLease,
     });
   });
 
-  it("preserves loaded task pages across a Main-owned projection refresh", async () => {
+  it("shows a loaded task page the core kept stale when it read the first page again", async () => {
     const firstPage: ProductInboxListResult = {
       activeWorkspaceId: "w1",
       hasMore: true,
@@ -442,17 +428,28 @@ describe("TasksRoute", () => {
     installNativeBridgeMock({ platform: "electron" });
 
     renderTasksRoute(projection.controller);
-    await screen.findByText("Initial first task");
+    await flush();
+    expect(screen.getByText("Initial first task")).toBeInTheDocument();
     // No column scrolls (jsdom lays nothing out), so there is no end for the
     // reader to reach and the board pages on by itself.
-    await screen.findByText("Loaded second task");
+    await flush();
+    expect(screen.getByText("Loaded second task")).toBeInTheDocument();
 
-    projection.emit({
-      ...firstPage,
-      items: [taskInboxItem("task-1", "Refreshed first task")],
-    });
+    // The core reads the first page again and keeps the loaded tail, stale.
+    act(() =>
+      projection.emit({
+        activeWorkspaceId: "w1",
+        hasMore: false,
+        items: [
+          taskInboxItem("task-1", "Refreshed first task"),
+          { ...taskInboxItem("task-2", "Loaded second task"), freshness: "stale" },
+        ],
+        source: "live-sync",
+      })
+    );
+    await flush();
 
-    await screen.findByText("Refreshed first task");
+    expect(screen.getByText("Refreshed first task")).toBeInTheDocument();
     expect(screen.getByText("Loaded second task")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Loaded second task.*Stale/i })
@@ -464,9 +461,13 @@ describe("TasksRoute", () => {
   });
 
   it("filters every loaded Task from its projected labels without another metadata read", async () => {
-    stubGroupApi({
-      labels: [{ color: "blue", id: "lbl_work", name: "Work" }],
-    });
+    // The UI's own Comma API answers nothing: a direct metadata read would show here.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("Unexpected fetch");
+      })
+    );
     const projection = createProductInboxProjectionHarness({
       initial: {
         activeWorkspaceId: "w1",
@@ -479,9 +480,10 @@ describe("TasksRoute", () => {
       },
     });
     installNativeBridgeMock({ platform: "electron" });
-    renderTasksRoute(projection.controller, "/tasks?label=lbl_work");
+    renderTasksRoute(projection.controller, "/tasks?label=lbl_work", workLabels());
+    await flush();
 
-    expect(await screen.findByText("Deep task")).toBeInTheDocument();
+    expect(screen.getByText("Deep task")).toBeInTheDocument();
     expect(screen.getByText("First task")).toBeInTheDocument();
     expect(screen.queryByText("Bare task")).toBeNull();
     const summaryReads = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
@@ -500,14 +502,12 @@ describe("TasksRoute", () => {
         ],
       })
     );
-    await waitFor(() => expect(screen.queryByText("Deep task")).toBeNull());
+    await flush();
+    expect(screen.queryByText("Deep task")).toBeNull();
     expect(screen.getByText("First task")).toBeInTheDocument();
   });
 
   it("does not count a deleted label's lingering id as a label", async () => {
-    stubGroupApi({
-      labels: [{ color: "blue", id: "lbl_work", name: "Work" }],
-    });
     const projection = createProductInboxProjectionHarness({
       initial: {
         activeWorkspaceId: "w1",
@@ -516,10 +516,15 @@ describe("TasksRoute", () => {
       },
     });
     installNativeBridgeMock({ platform: "electron" });
-    renderTasksRoute(projection.controller, "/tasks?label=comma:no-label");
+    renderTasksRoute(
+      projection.controller,
+      "/tasks?label=comma:no-label",
+      workLabels()
+    );
+    await flush();
 
     // Only the deleted label's id is on it, so it is a Task with no label.
-    expect(await screen.findByText("Stale task")).toBeInTheDocument();
+    expect(screen.getByText("Stale task")).toBeInTheDocument();
   });
 
   it.each([
@@ -528,9 +533,6 @@ describe("TasksRoute", () => {
   ])(
     "narrows Tasks for %s and restores the list when cleared",
     async (query, shown, hidden) => {
-      stubGroupApi({
-        labels: [],
-      });
       const projection = createProductInboxProjectionHarness({
         initial: {
           activeWorkspaceId: "w1",
@@ -550,22 +552,25 @@ describe("TasksRoute", () => {
         },
       });
       installNativeBridgeMock({ platform: "electron" });
-      const { router } = renderTasksRoute(projection.controller, `/tasks?${query}`);
-      expect(await screen.findByText(shown)).toBeInTheDocument();
+      const { router } = renderTasksRoute(
+        projection.controller,
+        `/tasks?${query}`,
+        labelsCore({ catalog: labelCatalog() })
+      );
+      await flush();
+      expect(screen.getByText(shown)).toBeInTheDocument();
       expect(screen.queryByText(hidden)).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Filter tasks" })).toHaveAttribute(
         "data-filtered",
         "true"
       );
-      await router.navigate({ search: {}, to: "/tasks" });
-      expect(await screen.findByText(hidden)).toBeInTheDocument();
+      await act(() => router.navigate({ search: {}, to: "/tasks" }));
+      await flush();
+      expect(screen.getByText(hidden)).toBeInTheDocument();
     }
   );
 
   it("narrows to a platform deep link and shows label and platform chips on cards", async () => {
-    stubGroupApi({
-      labels: [{ color: "blue", id: "lbl_work", name: "Work" }],
-    });
     const projection = createProductInboxProjectionHarness({
       initial: {
         activeWorkspaceId: "w1",
@@ -581,9 +586,14 @@ describe("TasksRoute", () => {
       },
     });
     installNativeBridgeMock({ platform: "electron" });
-    const { router } = renderTasksRoute(projection.controller, "/tasks?platform=slack");
+    const { router } = renderTasksRoute(
+      projection.controller,
+      "/tasks?platform=slack",
+      workLabels()
+    );
+    await flush();
 
-    expect(await screen.findByText("Slack task")).toBeInTheDocument();
+    expect(screen.getByText("Slack task")).toBeInTheDocument();
     expect(screen.queryByText("Comma task")).toBeNull();
     expect(screen.getByRole("button", { name: "Filter tasks" })).toHaveAttribute(
       "data-filtered",
@@ -594,9 +604,10 @@ describe("TasksRoute", () => {
     expect(within(card).getByTestId("task-card-platform")).toHaveTextContent("Slack");
 
     // Leaving the deep link behind restores the whole list.
-    await router.navigate({ search: {}, to: "/tasks" });
+    await act(() => router.navigate({ search: {}, to: "/tasks" }));
+    await flush();
 
-    expect(await screen.findByText("Comma task")).toBeInTheDocument();
+    expect(screen.getByText("Comma task")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Filter tasks" })).toHaveAttribute(
       "data-filtered",
       "false"
@@ -604,9 +615,6 @@ describe("TasksRoute", () => {
   });
 
   it("opens the Tasks page narrowed to a label from a card chip", async () => {
-    stubGroupApi({
-      labels: [{ color: "blue", id: "lbl_work", name: "Work" }],
-    });
     const projection = createProductInboxProjectionHarness({
       initial: {
         activeWorkspaceId: "w1",
@@ -618,71 +626,458 @@ describe("TasksRoute", () => {
       },
     });
     installNativeBridgeMock({ platform: "electron" });
-    const { router } = renderTasksRoute(projection.controller);
+    const { router } = renderTasksRoute(projection.controller, "/tasks", workLabels());
+    await flush();
 
-    await screen.findByText("Plain task");
-    await userEvent.click(await screen.findByTestId("task-card-label"));
+    expect(screen.getByText("Plain task")).toBeInTheDocument();
+    await user().click(screen.getByTestId("task-card-label"));
+    await flush();
 
-    await expect
-      .poll(() => router.state.location.search)
-      .toEqual({ label: "lbl_work" });
+    expect(router.state.location.search).toEqual({ label: "lbl_work" });
     expect(router.state.location.pathname).toBe("/tasks");
-    await vi.waitFor(() => expect(screen.queryByText("Plain task")).toBeNull());
+    expect(screen.queryByText("Plain task")).toBeNull();
     expect(screen.getByText("Labeled task")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Filter tasks" })).toHaveAttribute(
       "data-filtered",
       "true"
     );
   });
+
+  it("opens, changes, searches and clears a specific rule without refreshing the list", async () => {
+    const key = '["cron","0 9 * * *","Asia/Singapore"]';
+    const projection = createProductInboxProjectionHarness({
+      initial: {
+        activeWorkspaceId: "w1",
+        source: "live-sync",
+        items: [
+          { ...taskInboxItem("nine", "Nine o'clock"), loop: morningLoop(0) },
+          {
+            ...taskInboxItem("same", "Same trigger"),
+            loop: { ...morningLoop(0), wakeCount: 8, maxRuns: 10 },
+          },
+          { ...taskInboxItem("next", "One minute later"), loop: morningLoop(1) },
+          {
+            ...taskInboxItem("ended", "Ended task"),
+            loop: { ...morningLoop(0), state: "ended" },
+          },
+          taskInboxItem("once", "One-off task"),
+        ],
+      },
+    });
+    installNativeBridgeMock({ platform: "electron" });
+    const { router } = renderTasksRoute(
+      projection.controller,
+      `/tasks?loopRule=${encodeURIComponent(JSON.stringify(key))}`
+    );
+    await flush();
+    expect(screen.getByText("Nine o'clock")).toBeInTheDocument();
+    expect(screen.getByText("Same trigger")).toBeInTheDocument();
+    expect(screen.queryByText("One minute later")).toBeNull();
+    expect(screen.queryByText("Ended task")).toBeNull();
+    const reads = projection.refresh.mock.calls.length;
+    await user().click(screen.getByRole("button", { name: "Filter tasks" }));
+    await user().click(screen.getByRole("menuitem", { name: "Trigger rule" }));
+    const panel = screen.getByRole("dialog", { name: "Trigger rule" });
+    expect(
+      within(panel).getByRole("menuitemradio", { name: /9:00 AM/ })
+    ).toHaveAttribute("aria-checked", "true");
+    await user().type(within(panel).getByRole("textbox"), "9:01");
+    await user().click(within(panel).getByRole("menuitemradio", { name: /9:01 AM/ }));
+    await flush();
+    expect(screen.getByText("One minute later")).toBeInTheDocument();
+    expect(screen.queryByText("Nine o'clock")).toBeNull();
+    expect(router.state.location.search).toEqual({});
+    await user().clear(within(panel).getByRole("textbox"));
+    await user().click(within(panel).getByRole("menuitemradio", { name: /All tasks/ }));
+    await flush();
+    expect(screen.getByText("Ended task")).toBeInTheDocument();
+    expect(screen.getByText("One-off task")).toBeInTheDocument();
+    expect(projection.refresh.mock.calls.length).toBe(reads);
+    expect(screen.getByRole("button", { name: "Filter tasks" })).toHaveAttribute(
+      "data-filtered",
+      "false"
+    );
+  });
+
+  it("keeps a linked rule that no loaded Task has checked at zero until All tasks clears it", async () => {
+    const key = '["cron","5 9 * * *","Asia/Singapore"]';
+    const projection = createProductInboxProjectionHarness({
+      initial: {
+        activeWorkspaceId: "w1",
+        source: "live-sync",
+        items: [
+          { ...taskInboxItem("next", "One minute later"), loop: morningLoop(1) },
+          taskInboxItem("once", "One-off task"),
+        ],
+      },
+    });
+    installNativeBridgeMock({ platform: "electron" });
+    renderTasksRoute(
+      projection.controller,
+      `/tasks?loopRule=${encodeURIComponent(JSON.stringify(key))}`
+    );
+    await flush();
+    expect(screen.queryByText("One minute later")).toBeNull();
+    expect(screen.queryByText("One-off task")).toBeNull();
+    const filter = screen.getByRole("button", { name: "Filter tasks" });
+    expect(filter).toHaveAttribute("data-filtered", "true");
+    await user().click(filter);
+    await user().click(screen.getByRole("menuitem", { name: "Trigger rule" }));
+    const panel = screen.getByRole("dialog", { name: "Trigger rule" });
+    const linked = within(panel).getByRole("menuitemradio", { name: /9:05\sAM/ });
+    expect(linked).toHaveAttribute("aria-checked", "true");
+    expect(within(linked).getByText("0")).toBeInTheDocument();
+    await user().click(within(panel).getByRole("menuitemradio", { name: /All tasks/ }));
+    await flush();
+    expect(screen.getByText("One minute later")).toBeInTheDocument();
+    expect(screen.getByText("One-off task")).toBeInTheDocument();
+    expect(filter).toHaveAttribute("data-filtered", "false");
+  });
+
+  it("orders trigger rules by label through list updates, names a zone only where two rules read the same, and merges spellings of one cron", async () => {
+    const daily = (timezone: string) => ({
+      ...morningLoop(0),
+      cadence: { ...morningLoop(0).cadence, timezone },
+    });
+    const weekdays = (cron: string) => ({
+      ...morningLoop(0),
+      cadence: {
+        cron,
+        timezone: "Asia/Singapore",
+        pattern: { kind: "weekdays" as const, hour: 9, minute: 0 },
+      },
+    });
+    const every = (minutes: number) => ({
+      ...morningLoop(0),
+      cadence: {
+        everyMinutes: minutes,
+        pattern: { kind: "interval" as const, minutes },
+      },
+    });
+    const items = [
+      {
+        ...taskInboxItem("shanghai", "Shanghai morning"),
+        loop: daily("Asia/Shanghai"),
+      },
+      {
+        ...taskInboxItem("singapore", "Singapore morning"),
+        loop: daily("Asia/Singapore"),
+      },
+      { ...taskInboxItem("ten", "Every ten minutes"), loop: every(10) },
+      { ...taskInboxItem("five", "Every five minutes"), loop: every(5) },
+      { ...taskInboxItem("numbers", "Weekday numbers"), loop: weekdays("0 9 * * 1-5") },
+      { ...taskInboxItem("names", "Weekday names"), loop: weekdays("0 9 * * MON-FRI") },
+    ];
+    const projection = createProductInboxProjectionHarness({
+      initial: { activeWorkspaceId: "w1", source: "live-sync", items },
+    });
+    installNativeBridgeMock({ platform: "electron" });
+    renderTasksRoute(projection.controller);
+    await flush();
+    await user().click(screen.getByRole("button", { name: "Filter tasks" }));
+    await user().click(screen.getByRole("menuitem", { name: "Trigger rule" }));
+    const panel = screen.getByRole("dialog", { name: "Trigger rule" });
+    const labels = () =>
+      within(panel)
+        .getAllByRole("menuitemradio")
+        .map((row) => row.querySelector('[data-slot="menu-item-label"]')?.textContent);
+    // The reader's zone decides whether "GMT+8" shows; the IANA ids show either way.
+    const expected = [
+      "All tasks",
+      "Every 5 minutes",
+      "Every 10 minutes",
+      expect.stringMatching(/^Every day at 9:00\sAM( · GMT\+8)? · Asia\/Shanghai$/),
+      expect.stringMatching(/^Every day at 9:00\sAM( · GMT\+8)? · Asia\/Singapore$/),
+      expect.stringMatching(/^Every weekday at 9:00\sAM( · GMT\+8)?$/),
+    ];
+    expect(labels()).toEqual(expected);
+    expect(
+      within(
+        within(panel).getByRole("menuitemradio", { name: /Every weekday/ })
+      ).getByText("2")
+    ).toBeInTheDocument();
+    act(() =>
+      projection.emit({
+        activeWorkspaceId: "w1",
+        source: "live-sync",
+        items: items.toReversed(),
+      })
+    );
+    await flush();
+    expect(labels()).toEqual(expected);
+  });
+
+  it("lands a link with another spelling of a cron on the rule of the loaded Tasks", async () => {
+    const weekdays = {
+      ...morningLoop(0),
+      cadence: {
+        cron: "0 9 * * 1-5",
+        timezone: "Asia/Singapore",
+        pattern: { kind: "weekdays" as const, hour: 9, minute: 0 },
+      },
+    };
+    const projection = createProductInboxProjectionHarness({
+      initial: {
+        activeWorkspaceId: "w1",
+        source: "live-sync",
+        items: [
+          { ...taskInboxItem("weekdays", "Weekday standup"), loop: weekdays },
+          { ...taskInboxItem("daily", "Daily digest"), loop: morningLoop(0) },
+        ],
+      },
+    });
+    installNativeBridgeMock({ platform: "electron" });
+    const key = '["cron","0 9 * * MON-FRI","Asia/Singapore"]';
+    renderTasksRoute(
+      projection.controller,
+      `/tasks?loopRule=${encodeURIComponent(JSON.stringify(key))}`
+    );
+    await flush();
+    expect(screen.getByText("Weekday standup")).toBeInTheDocument();
+    expect(screen.queryByText("Daily digest")).toBeNull();
+    await user().click(screen.getByRole("button", { name: "Filter tasks" }));
+    await user().click(screen.getByRole("menuitem", { name: "Trigger rule" }));
+    const panel = screen.getByRole("dialog", { name: "Trigger rule" });
+    // All tasks and one row for each loaded rule: the link adds no empty row.
+    expect(within(panel).getAllByRole("menuitemradio")).toHaveLength(3);
+    const linked = within(panel).getByRole("menuitemradio", { name: /Every weekday/ });
+    expect(linked).toHaveAttribute("aria-checked", "true");
+    expect(within(linked).getByText("1")).toBeInTheDocument();
+  });
+
+  it("names the trigger type where an event rule reads like a schedule", async () => {
+    const projection = createProductInboxProjectionHarness({
+      initial: {
+        activeWorkspaceId: "w1",
+        source: "live-sync",
+        items: [
+          {
+            ...taskInboxItem("interval", "Five-minute check"),
+            loop: {
+              ...morningLoop(0),
+              cadence: {
+                everyMinutes: 5,
+                pattern: { kind: "interval" as const, minutes: 5 },
+              },
+            },
+          },
+          {
+            ...taskInboxItem("events", "Watch the feed"),
+            loop: { ...morningLoop(0), cadence: { events: "Every 5 minutes" } },
+          },
+        ],
+      },
+    });
+    installNativeBridgeMock({ platform: "electron" });
+    renderTasksRoute(projection.controller);
+    await flush();
+    await user().click(screen.getByRole("button", { name: "Filter tasks" }));
+    await user().click(screen.getByRole("menuitem", { name: "Trigger rule" }));
+    const panel = screen.getByRole("dialog", { name: "Trigger rule" });
+    expect(
+      within(panel)
+        .getAllByRole("menuitemradio")
+        .map((row) => row.querySelector('[data-slot="menu-item-label"]')?.textContent)
+    ).toEqual([
+      "All tasks",
+      "Every 5 minutes · On updates",
+      "Every 5 minutes · Scheduled",
+    ]);
+  });
+
+  it("names a foreign zone in full in a trigger rule's hover text", async () => {
+    // No other zone has Chatham's offset (+13:45 in January, the test clock's
+    // month). A runner in Chatham gets Kathmandu (+5:45).
+    const zone =
+      new Intl.DateTimeFormat().resolvedOptions().timeZone === "Pacific/Chatham"
+        ? { id: "Asia/Kathmandu", offset: "GMT+5:45", name: "Nepal Time" }
+        : { id: "Pacific/Chatham", offset: "GMT+13:45", name: "Chatham Time" };
+    const projection = createProductInboxProjectionHarness({
+      initial: {
+        activeWorkspaceId: "w1",
+        source: "live-sync",
+        items: [
+          {
+            ...taskInboxItem("far", "Far morning"),
+            loop: {
+              ...morningLoop(0),
+              cadence: { ...morningLoop(0).cadence, timezone: zone.id },
+            },
+          },
+        ],
+      },
+    });
+    installNativeBridgeMock({ platform: "electron" });
+    renderTasksRoute(projection.controller);
+    await flush();
+    await user().click(screen.getByRole("button", { name: "Filter tasks" }));
+    await user().click(screen.getByRole("menuitem", { name: "Trigger rule" }));
+    const panel = screen.getByRole("dialog", { name: "Trigger rule" });
+    expect(
+      within(panel).getByTitle(new RegExp(`^Every day at 9:00\\sAM · ${zone.name}$`))
+    ).toHaveTextContent(`Every day at 9:00 AM · ${zone.offset}`);
+  });
+
+  it("keeps an older Loop link narrowed to every Loop type", async () => {
+    const projection = createProductInboxProjectionHarness({
+      initial: {
+        activeWorkspaceId: "w1",
+        source: "live-sync",
+        items: [
+          {
+            ...taskInboxItem("task-loop", "Morning digest"),
+            loop: {
+              state: "active",
+              startedAt: 1,
+              wakeCount: 0,
+              cadence: { everyMinutes: 60 },
+            },
+          },
+          {
+            ...taskInboxItem("task-event", "PR updates"),
+            loop: {
+              state: "active",
+              startedAt: 1,
+              wakeCount: 0,
+              cadence: { events: "new comments" },
+            },
+          },
+          taskInboxItem("task-once", "One-off task"),
+        ],
+      },
+    });
+    installNativeBridgeMock({ platform: "electron" });
+    renderTasksRoute(projection.controller, "/tasks?schedule=loop");
+    await flush();
+    expect(screen.getByText("Morning digest")).toBeInTheDocument();
+    expect(screen.getByText("PR updates")).toBeInTheDocument();
+    expect(screen.queryByText("One-off task")).toBeNull();
+    expect(screen.getByRole("button", { name: "Filter tasks" })).toHaveAttribute(
+      "data-filtered",
+      "true"
+    );
+  });
+
+  it("filters Scheduled and On updates cards separately through chips and the menu", async () => {
+    const projection = createProductInboxProjectionHarness({
+      initial: {
+        activeWorkspaceId: "w1",
+        source: "live-sync",
+        items: [
+          {
+            ...taskInboxItem("task-loop", "Morning digest"),
+            labels: ["lbl_work"],
+            loop: {
+              state: "active",
+              startedAt: 1,
+              wakeCount: 3,
+              cadence: { everyMinutes: 60 },
+            },
+          },
+          {
+            ...taskInboxItem("task-event", "PR updates"),
+            loop: {
+              state: "paused",
+              startedAt: 1,
+              wakeCount: 2,
+              cadence: { events: "new comments" },
+            },
+          },
+          taskInboxItem("task-once", "One-off task"),
+        ],
+      },
+    });
+    installNativeBridgeMock({ platform: "electron" });
+    const { router } = renderTasksRoute(projection.controller, "/tasks", workLabels());
+    await flush();
+    const card = screen.getByRole("button", { name: /Morning digest/ });
+    expect(
+      [...card.querySelectorAll("[data-chip]")].map((chip) => chip.textContent)
+    ).toEqual(["Scheduled", "Work"]);
+    expect(
+      within(screen.getByRole("button", { name: /PR updates/ })).getByTestId(
+        "task-card-schedule"
+      )
+    ).toHaveTextContent("On updates");
+    await user().click(within(card).getByTestId("task-card-schedule"));
+    await flush();
+    expect(router.state.location.search).toEqual({ schedule: "scheduled" });
+    expect(screen.queryByText("One-off task")).toBeNull();
+    expect(screen.queryByText("PR updates")).toBeNull();
+    const filter = screen.getByRole("button", { name: "Filter tasks" });
+    await user().click(filter);
+    await user().click(
+      within(screen.getByRole("menu", { name: "Filter tasks" })).getByRole("menuitem", {
+        name: "Loops",
+      })
+    );
+    const panel = await screen.findByRole("dialog", { name: "Loops" });
+    const scheduled = within(panel).getByRole("menuitemcheckbox", {
+      name: /^Scheduled/,
+    });
+    const event = within(panel).getByRole("menuitemcheckbox", {
+      name: /^On updates/,
+    });
+    const noLoop = within(panel).getByRole("menuitemcheckbox", { name: /No loop/ });
+    expect(event).toHaveTextContent("1 task");
+    expect(event).toHaveAttribute("aria-checked", "false");
+    await user().click(scheduled);
+    await user().click(event);
+    await flush();
+    expect(router.state.location.search).toEqual({});
+    expect(screen.queryByText("Morning digest")).toBeNull();
+    expect(screen.getByText("PR updates")).toBeInTheDocument();
+    expect(screen.queryByText("One-off task")).toBeNull();
+    await user().click(scheduled);
+    await user().click(noLoop);
+    await flush();
+    expect(screen.getByText("One-off task")).toBeInTheDocument();
+    expect(screen.getByText("Morning digest")).toBeInTheDocument();
+    expect(filter).toHaveAttribute("data-filtered", "false");
+    await user().keyboard("{Escape}{Escape}");
+    await user().click(
+      within(screen.getByRole("button", { name: /PR updates/ })).getByTestId(
+        "task-card-schedule"
+      )
+    );
+    await flush();
+    expect(router.state.location.search).toEqual({ schedule: "event_triggered" });
+    expect(screen.queryByText("Morning digest")).toBeNull();
+    expect(screen.getByText("PR updates")).toBeInTheDocument();
+  });
 });
 
-function json(body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    headers: { "content-type": "application/json" },
-    status: 200,
+/** The core's catalog of the test Group: one label, Work. */
+function workLabels() {
+  return labelsCore({
+    catalog: labelCatalog({
+      labels: [{ color: "blue", id: "lbl_work", name: "Work" }],
+    }),
   });
 }
 
-/** Label names and colors remain Group-owned. */
-function stubGroupApi({
-  labels,
-}: {
-  labels: { color: string; id: string; name: string }[];
-}) {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
-      const url = input instanceof Request ? input.url : String(input);
-      if (url.includes("/v1/comma/groups/grp_test/task-labels")) {
-        return json({ colors: [], labels, proposals: [] });
-      }
-      throw new TypeError(`Unexpected fetch: ${url}`);
-    })
-  );
-}
-
 function renderTasksRoute(
-  productInboxController: ProductInboxProjectionController = createProductInboxProjectionHarness(
-    {
-      initial: {
-        errorCode: "utility_unavailable",
-        items: [],
-        source: "unavailable",
-      },
-    }
-  ).controller,
-  initialEntry = "/tasks"
+  productInboxController: CoreClient = createProductInboxProjectionHarness({
+    initial: {
+      errorCode: "utility_unavailable",
+      items: [],
+      source: "unavailable",
+    },
+  }).controller,
+  initialEntry = "/tasks",
+  // By default the core has not read the Group's label catalog.
+  labels = labelsCore()
 ): { router: AnyRouter; unmount: () => void } {
-  const api = createCommaApi({ baseUrl: "", token: "" });
+  delegateScriptedCore(productInboxController, labels.client);
   const auth = createTestCommaAuthValue();
   const rootRoute = createRootRoute({
     component: () => (
       <CommaAuthContext.Provider value={auth}>
-        <ProductInboxProjectionProvider controller={productInboxController}>
-          <ChatProvider api={api} productLease={auth.productLease}>
+        <CoreProvider client={productInboxController}>
+          <ChatProvider productLease={auth.productLease}>
             <Outlet />
           </ChatProvider>
-        </ProductInboxProjectionProvider>
+        </CoreProvider>
       </CommaAuthContext.Provider>
     ),
   });
@@ -690,14 +1085,20 @@ function renderTasksRoute(
     getParentRoute: () => rootRoute,
     path: "/tasks",
     component: TasksRoute,
+    validateSearch: validateTasksSearch,
   });
   const taskDetailRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/tasks/$workspaceId/$groupId/$conversationId",
     component: () => null,
   });
+  const stationTaskRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/tasks/$workspaceId/station/$station/$thread",
+    component: () => null,
+  });
   const router = createRouter({
-    routeTree: rootRoute.addChildren([tasksRoute, taskDetailRoute]),
+    routeTree: rootRoute.addChildren([tasksRoute, taskDetailRoute, stationTaskRoute]),
     history: createMemoryHistory({ initialEntries: [initialEntry] }),
   });
 

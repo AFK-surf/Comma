@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -34,6 +35,9 @@ const (
 
 type env struct {
 	lookup func(string) (string, bool)
+	// dial connects to the server; nil is the network's own dialer. Tests
+	// serve the server in memory.
+	dial func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 func (e env) get(name string) string {
@@ -178,7 +182,11 @@ func runCheck(ctx context.Context, args []string, e env, std stdio) int {
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	client := http.DefaultClient
+	if e.dial != nil {
+		client = &http.Client{Transport: &http.Transport{DialContext: e.dial}}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintf(std.err, "comma-voice: readiness request failed: %v\n", err)
 		return exitOther
@@ -304,6 +312,7 @@ func runCall(ctx context.Context, args []string, e env, std stdio) int {
 		DisplayName: f.displayName,
 		Client:      "comma-voice/" + version,
 		Log:         std.err,
+		Dial:        e.dial,
 	}
 	if f.json {
 		opts.JSON = std.out

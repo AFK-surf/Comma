@@ -1,5 +1,5 @@
 defmodule SalixVoice.Carrier.WebSocketTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixVoice.Carrier.{Pacing, WebSocket}
 
@@ -145,17 +145,17 @@ defmodule SalixVoice.Carrier.WebSocketTest do
   end
 
   describe "pacing" do
-    test "caller audio at real time passes; faster than 1.25x over 5 s is refused" do
+    test "caller audio at real time passes; sustained 1.5x real time is refused" do
       # pcmu_8k: 160 bytes per 20 ms frame.
       steady =
-        Enum.reduce(0..499, {:ok, Pacing.inbound(:pcmu_8k)}, fn i, {:ok, pacer} ->
+        Enum.reduce(0..2_999, {:ok, Pacing.inbound(:pcmu_8k)}, fn i, {:ok, pacer} ->
           Pacing.ingest(pacer, 160, i * 20)
         end)
 
       assert {:ok, _} = steady
 
       fast =
-        Enum.reduce_while(0..499, Pacing.inbound(:pcmu_8k), fn i, pacer ->
+        Enum.reduce_while(0..2_999, Pacing.inbound(:pcmu_8k), fn i, pacer ->
           # 1.5x real time: a 20 ms frame every 13 ms.
           case Pacing.ingest(pacer, 160, i * 13) do
             {:ok, pacer} -> {:cont, pacer}
@@ -163,8 +163,27 @@ defmodule SalixVoice.Carrier.WebSocketTest do
           end
         end)
 
+      # 5 s of credit spent at 0.25 s per second.
       assert {:too_fast, at_ms} = fast
-      assert at_ms >= 4_000 and at_ms <= 6_500
+      assert at_ms >= 15_000 and at_ms <= 20_000
+    end
+
+    test "buffered caller audio after a network stall is a catch-up, not too fast" do
+      frames = fn pacer, range, at -> Enum.reduce(range, pacer, &ok!(&2, 160, at.(&1))) end
+
+      # 8 s at real time, nothing for 2 s, then the 2 s held in the client's
+      # send buffer in one burst, then real time again for 20 s.
+      pacer = frames.(Pacing.inbound(:pcmu_8k), 0..399, &(&1 * 20))
+      pacer = frames.(pacer, 400..499, fn _ -> 10_000 end)
+      pacer = frames.(pacer, 500..1_499, &(&1 * 20))
+
+      # A 4 s stall later in the call, such as a grown Android TCP send
+      # buffer, is tolerated the same way.
+      pacer = frames.(pacer, 1_500..1_699, fn _ -> 34_000 end)
+      _pacer = frames.(pacer, 1_700..2_699, &(&1 * 20))
+
+      # More than 5 s at once is refused.
+      assert {:error, :too_fast} = Pacing.ingest(Pacing.inbound(:pcmu_8k), 40_001, 0)
     end
 
     test "agent audio is written at most the lead ahead and a silent client is a slow reader" do
@@ -187,15 +206,142 @@ defmodule SalixVoice.Carrier.WebSocketTest do
 
       {chunks, _mark, out} = Pacing.take(out, 500)
       assert length(chunks) == 5
-      # That batch is due at 1 s; without output.played past 3 s it is overdue.
-      refute Pacing.slow_reader?(out, 2_900)
-      assert Pacing.slow_reader?(out, 3_100)
+      # That batch is due at 1 s; without output.played past 9 s it is overdue.
+      refute Pacing.slow_reader?(out, 8_900)
+      assert Pacing.slow_reader?(out, 9_100)
 
-      cleared = Pacing.clear(out, 3_100)
+      # The threshold is an option.
+      strict = Pacing.outbound(:pcmu_8k, slow_reader_ms: 2_000) |> Pacing.push(frame)
+      {_chunks, _mark, strict} = Pacing.take(strict, 0)
+      refute Pacing.slow_reader?(strict, 2_100)
+      assert Pacing.slow_reader?(strict, 2_200)
+
+      cleared = Pacing.clear(out, 9_100)
       assert Pacing.held_ms(cleared) == 0
       refute Pacing.slow_reader?(cleared, 10_000)
       assert Pacing.pacing_mark?("pace:3")
       refute Pacing.pacing_mark?("router-mark")
     end
+
+    test "a 3 s downlink stall followed by on-time confirmations is not a slow reader" do
+      frame = :binary.copy(<<0>>, 800)
+
+      out =
+        Enum.reduce(1..100, Pacing.outbound(:pcmu_8k), fn _, out -> Pacing.push(out, frame) end)
+
+      # The socket keeps writing on schedule while the client receives nothing.
+      out =
+        Enum.reduce(0..3_000//100, out, fn now, out ->
+          {_chunks, _mark, out} = Pacing.take(out, now)
+          refute Pacing.slow_reader?(out, now)
+          out
+        end)
+
+      assert %{oldest_mark: {1, 500}, pending_marks: pending} = Pacing.diagnostics(out, 3_100)
+      assert pending > 1
+
+      # The stalled bytes arrive; the client plays them and confirms each mark.
+      out =
+        Enum.reduce(1..out.mark_seq, out, &Pacing.played(&2, "pace:#{&1}", 3_100 + &1))
+
+      refute Pacing.slow_reader?(out, 3_200)
+      assert Pacing.diagnostics(out, 3_200).pending_marks == 0
+
+      # Confirmations that never arrive are a slow reader after 8 s.
+      {_chunks, "pace:" <> _, out} = Pacing.take(out, 3_200)
+      deadline = out.deadline_ms
+      refute Pacing.slow_reader?(out, deadline + 8_000)
+      assert Pacing.slow_reader(out, deadline + 8_001) == :mark_overdue
+    end
+
+    test "two 3 s downlink stalls in one agent turn add up but stay under the threshold" do
+      frame = :binary.copy(<<0>>, 800)
+
+      out =
+        Enum.reduce(1..300, Pacing.outbound(:pcmu_8k), fn _, out -> Pacing.push(out, frame) end)
+
+      # Stalls start at 5 s and 12 s. The client plays at real time, so each
+      # stall leaves its playback 3 s further behind the write schedule.
+      lag = fn deadline ->
+        cond do
+          deadline <= 5_000 -> 0
+          deadline <= 12_000 -> 3_000
+          true -> 6_000
+        end
+      end
+
+      {out, max_overdue} =
+        Enum.reduce(0..20_000//100, {out, 0}, fn now, {out, max_overdue} ->
+          {_chunks, _mark, out} = Pacing.take(out, now)
+
+          out =
+            out.marks
+            |> :queue.to_list()
+            |> Enum.filter(fn {_name, deadline} -> deadline + lag.(deadline) <= now end)
+            |> Enum.reduce(out, fn {name, _deadline}, out -> Pacing.played(out, name, now) end)
+
+          refute Pacing.slow_reader?(out, now)
+
+          overdue =
+            case Pacing.diagnostics(out, now).oldest_mark do
+              {_seq, deadline} -> now - deadline
+              nil -> 0
+            end
+
+          {out, max(max_overdue, overdue)}
+        end)
+
+      # Past the old 2 s threshold, within the 8 s one.
+      assert max_overdue > 5_000 and max_overdue <= 6_000
+      assert Pacing.diagnostics(out, 20_000).pending_marks > 0
+    end
+
+    test "a slow reader reports its cause, the oldest mark and a bounded trail" do
+      frame = :binary.copy(<<0>>, 800)
+
+      out =
+        Enum.reduce(1..10, Pacing.outbound(:pcmu_8k), fn _, out -> Pacing.push(out, frame) end)
+
+      {_chunks, "pace:1", out} = Pacing.take(out, 0)
+      out = out |> Pacing.played("pace:1", 480) |> Pacing.played("pace:9", 490)
+      {_chunks, "pace:2", out} = Pacing.take(out, 500)
+
+      assert %{
+               cause: :mark_overdue,
+               held_ms: 0,
+               oldest_mark: {2, 1_000},
+               pending_marks: 1,
+               last_sent_seq: 2,
+               last_played: {1, 480},
+               trail: [
+                 {:mark, 1, 0, 500, 500},
+                 {:played, 1, 480, true},
+                 {:played, 9, 490, false},
+                 {:mark, 2, 500, 1_000, 500}
+               ]
+             } = Pacing.diagnostics(out, 9_100)
+
+      cleared = Pacing.clear(out, 9_200)
+
+      assert %{cause: nil, last_played: {1, 480}, trail: trail} =
+               Pacing.diagnostics(cleared, 9_300)
+
+      assert List.last(trail) == {:clear, 1, 9_200}
+
+      # A model burst beyond the memory bound is the other cause.
+      held =
+        Pacing.push(Pacing.outbound(:pcmu_8k, max_held_ms: 1_000), :binary.copy(<<0>>, 8_800))
+
+      assert Pacing.slow_reader(held, 0) == :held_limit
+
+      # The trail keeps only the last 80 events.
+      chatty = Enum.reduce(1..200, cleared, fn i, out -> Pacing.played(out, "pace:x", i) end)
+      assert length(Pacing.diagnostics(chatty, 0).trail) == 80
+    end
+  end
+
+  defp ok!(pacer, bytes, now_ms) do
+    assert {:ok, pacer} = Pacing.ingest(pacer, bytes, now_ms)
+    pacer
   end
 end

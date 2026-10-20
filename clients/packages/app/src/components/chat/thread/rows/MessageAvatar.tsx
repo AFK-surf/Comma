@@ -1,22 +1,21 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { SparklesIcon, cx } from "@comma/ui";
+import { SparklesIcon } from "@comma/ui/components/icons";
+import { cx } from "@comma/ui/components/utils";
 import { useContext } from "react";
 import { CommaProductMark } from "../../../CommaProductMark";
 import { UserAvatar } from "../../../UserAvatar";
-import type { ChatMessage } from "../../model/conversationChannel";
-import { useMessageWorkerAvatar } from "../activity/useMessageWorkerAvatar";
-import { ThreadUserAvatarContext } from "../threadContexts";
+import type { ChatMessage } from "@comma/core/chat";
+import { WorkerModelMark } from "../activity/WorkerModelMark";
+import { ThreadUserAvatarContext, ThreadWorkerVendorContext } from "../threadContexts";
 
 export function MessageAvatar({
   actorRole,
-  actorId,
   createdBy,
   user = false,
   preview = false,
   unavailable = false,
 }: {
   actorRole?: ChatMessage["actorRole"];
-  actorId?: string | undefined;
   createdBy?: string | undefined;
   user?: boolean;
   preview?: boolean;
@@ -32,19 +31,17 @@ export function MessageAvatar({
       (createdBy === "current" && profile.currentUserAlias))
       ? profile
       : undefined;
-  const style = useMessageWorkerAvatar(actorRole === "worker" ? actorId : undefined);
+  const workerVendor = useContext(ThreadWorkerVendorContext);
+  const className = cx(
+    "comma-chat-assistant-source-avatar",
+    actorRole === "router" && "comma-chat-assistant-router-mark",
+    user && "comma-chat-user-source-avatar",
+    preview && "comma-chat-reply-preview-avatar"
+  );
+  if (actorRole === "worker" && !unavailable)
+    return <WorkerModelMark className={className} vendor={workerVendor} />;
   return (
-    <span
-      aria-hidden
-      className={cx(
-        "comma-chat-assistant-source-avatar",
-        actorRole === "router" && "comma-chat-assistant-router-mark",
-        user && "comma-chat-user-source-avatar",
-        preview && "comma-chat-reply-preview-avatar"
-      )}
-      style={style}
-      data-unavailable={unavailable || undefined}
-    >
+    <span aria-hidden className={className} data-unavailable={unavailable || undefined}>
       {unavailable ? null : user ? (
         <UserAvatar
           key={userProfile?.avatarUrl}
@@ -57,7 +54,7 @@ export function MessageAvatar({
         />
       ) : actorRole === "router" ? (
         <CommaProductMark viewBox="2 2 16 16" />
-      ) : style ? null : (
+      ) : (
         <SparklesIcon />
       )}
     </span>

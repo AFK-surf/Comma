@@ -4,7 +4,11 @@ defmodule BridgeForTeams.Schema.ProjectDeviceProjectionScan do
   use Ecto.Schema
 
   @primary_key {:id, :string, autogenerate: false}
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   schema "project_device_projection_scans" do
     field :cursor_project_id, Ecto.UUID

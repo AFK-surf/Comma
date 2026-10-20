@@ -161,7 +161,9 @@ defmodule SalixIM.WeChatFiles do
   end
 
   defp download_url(media) do
-    base = Application.get_env(:salix_im, :wechat_cdn_base_url, @cdn) |> String.trim_trailing("/")
+    base =
+      SystemsRuntime.get_env(:salix_im, :wechat_cdn_base_url, @cdn) |> String.trim_trailing("/")
+
     full = media["full_url"]
     param = media["encrypt_query_param"]
 
@@ -195,7 +197,7 @@ defmodule SalixIM.WeChatFiles do
     result = fetch_once(url, deadline)
 
     if retries_left > 0 and retryable?(result) and deadline - now() > 100 do
-      Process.sleep(100)
+      SystemsClock.sleep(100)
       fetch(url, deadline, retries_left - 1)
     else
       result
@@ -313,5 +315,5 @@ defmodule SalixIM.WeChatFiles do
     |> String.slice(0, 160)
   end
 
-  defp now, do: System.monotonic_time(:millisecond)
+  defp now, do: SystemsClock.monotonic_time(:millisecond)
 end

@@ -1,4 +1,6 @@
 defmodule SalixAgent.LiveLlmE2eTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   End-to-end tests against a REAL LLM (CI: the `Live LLM e2e tests` step in
   `systems-ci.yml`; locally: `SALIX_E2E_LLM_API_KEY=... mix test --include live_llm`).
@@ -14,7 +16,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
   VFS tool recovery, async callbacks, visible Conversation delivery, natural
   Router → Task → Worker → Router closure, and adversarial Workflow review.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.LiveLlmTestSupport, as: Live
 
@@ -50,8 +52,8 @@ defmodule SalixAgent.LiveLlmE2eTest do
 
     @impl true
     def notify(agent_id, event) do
-      if pid = Application.get_env(:salix_agent, :live_llm_core_capture_pid) do
-        send(pid, {:live_llm_notification, agent_id, event})
+      if pid = SystemsRuntime.get_env(:salix_agent, :live_llm_core_capture_pid) do
+        SystemsRuntime.Proc.send(pid, {:live_llm_notification, agent_id, event})
       end
 
       :ok
@@ -75,8 +77,8 @@ defmodule SalixAgent.LiveLlmE2eTest do
     end
 
     defp notify(stage, fact) do
-      if pid = Application.get_env(:salix_agent, :live_llm_core_capture_pid) do
-        send(pid, {:live_llm_metering, stage, fact})
+      if pid = SystemsRuntime.get_env(:salix_agent, :live_llm_core_capture_pid) do
+        SystemsRuntime.Proc.send(pid, {:live_llm_metering, stage, fact})
       end
     end
   end
@@ -87,8 +89,8 @@ defmodule SalixAgent.LiveLlmE2eTest do
 
     @impl true
     def tool_call(fact) do
-      if pid = Application.get_env(:salix_agent, :live_llm_core_capture_pid) do
-        send(pid, {:live_llm_tool_fact, fact})
+      if pid = SystemsRuntime.get_env(:salix_agent, :live_llm_core_capture_pid) do
+        SystemsRuntime.Proc.send(pid, {:live_llm_tool_fact, fact})
       end
 
       :ok
@@ -105,18 +107,22 @@ defmodule SalixAgent.LiveLlmE2eTest do
     @moduledoc false
     @behaviour SalixAgent.LLM
 
-    def set_owner(pid), do: :persistent_term.put({__MODULE__, :owner}, pid)
-    def clear_owner, do: :persistent_term.erase({__MODULE__, :owner})
+    def set_owner(pid), do: SystemsRuntime.PersistentTerm.put({__MODULE__, :owner}, pid)
+    def clear_owner, do: SystemsRuntime.PersistentTerm.erase({__MODULE__, :owner})
 
     @impl true
     def complete(_messages, _tools), do: {:final, "capture completion title"}
 
     @impl true
     def complete_stream(_messages, _tools, on_delta) do
-      owner = :persistent_term.get({__MODULE__, :owner})
-      send(owner, {:live_llm_capture_provider_blocked, self()})
+      owner = SystemsRuntime.PersistentTerm.get({__MODULE__, :owner})
 
-      receive do
+      SystemsRuntime.Proc.send(
+        owner,
+        {:live_llm_capture_provider_blocked, SystemsRuntime.Proc.self()}
+      )
+
+      SystemsRuntime.Proc.receive do
         :release_live_llm_capture_provider ->
           on_delta.("capture completed")
           {:final, "capture completed"}
@@ -135,12 +141,15 @@ defmodule SalixAgent.LiveLlmE2eTest do
     def create_capability_request(attrs) do
       request =
         attrs
-        |> Map.put_new("request_id", "live-request-#{System.unique_integer([:positive])}")
+        |> Map.put_new(
+          "request_id",
+          "live-request-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+        )
         |> Map.put_new("status", "pending")
         |> Map.put_new("response_payload", %{})
 
-      if pid = Application.get_env(:salix_agent, :live_llm_core_capture_pid) do
-        send(pid, {:live_llm_capability_request, request})
+      if pid = SystemsRuntime.get_env(:salix_agent, :live_llm_core_capture_pid) do
+        SystemsRuntime.Proc.send(pid, {:live_llm_capability_request, request})
       end
 
       {:ok, request}
@@ -156,7 +165,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
          %{
            "request_id" => "live-" <> id,
            "status" => "pending",
-           "expires_at" => System.system_time(:second) + 600
+           "expires_at" => SystemsClock.system_time(:second) + 600
          }}
 
     @impl true
@@ -179,7 +188,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
     @impl true
     def create_task_conversation(_group_id, delegator, target, attrs) do
       conversation_id = SalixStore.Ids.new_conversation_id()
-      now = System.system_time(:millisecond)
+      now = SystemsClock.system_time(:millisecond)
       content = attrs[:content] || attrs["content"] || ""
       session_id = SalixStore.Ids.new_session_id()
 
@@ -255,26 +264,26 @@ defmodule SalixAgent.LiveLlmE2eTest do
 
   setup %{llm: llm} do
     # The real protocol dispatcher (test env defaults to the scriptable mock).
-    prev = Application.get_env(:salix_agent, :llm)
-    prev_summarizer = Application.get_env(:salix_agent, :summarizer)
-    prev_oauth = Application.get_env(:salix_agent, :oauth_store_mod)
-    prev_task = Application.get_env(:salix_im, :task_create_mod)
-    prev_im_provider = Application.get_env(:salix_agent, :im_provider_mod)
-    prev_group_context = Application.get_env(:salix_agent, :group_context_mod)
-    prev_capture_pid = Application.get_env(:salix_agent, :live_llm_core_capture_pid)
-    prev_notifier = Application.get_env(:salix_agent, :notifier)
-    prev_metering = Application.get_env(:salix_agent, :llm_metering_mod)
-    prev_observability = Application.get_env(:salix_agent, :agent_observability_mod)
+    prev = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_summarizer = SystemsRuntime.get_env(:salix_agent, :summarizer)
+    prev_oauth = SystemsRuntime.get_env(:salix_agent, :oauth_store_mod)
+    prev_task = SystemsRuntime.get_env(:salix_im, :task_create_mod)
+    prev_im_provider = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
+    prev_group_context = SystemsRuntime.get_env(:salix_agent, :group_context_mod)
+    prev_capture_pid = SystemsRuntime.get_env(:salix_agent, :live_llm_core_capture_pid)
+    prev_notifier = SystemsRuntime.get_env(:salix_agent, :notifier)
+    prev_metering = SystemsRuntime.get_env(:salix_agent, :llm_metering_mod)
+    prev_observability = SystemsRuntime.get_env(:salix_agent, :agent_observability_mod)
 
-    Application.put_env(:salix_agent, :llm, SalixLlm.Provider)
-    Application.delete_env(:salix_agent, :summarizer)
-    Application.put_env(:salix_agent, :oauth_store_mod, OAuthStubStore)
-    Application.put_env(:salix_im, :task_create_mod, TaskCreateStub)
-    Application.put_env(:salix_agent, :im_provider_mod, SalixIM.Provider)
-    Application.put_env(:salix_agent, :live_llm_core_capture_pid, self())
-    Application.put_env(:salix_agent, :notifier, CaptureNotifier)
-    Application.put_env(:salix_agent, :llm_metering_mod, CaptureMetering)
-    Application.put_env(:salix_agent, :agent_observability_mod, CaptureObservability)
+    SystemsRuntime.put_env(:salix_agent, :llm, SalixLlm.Provider)
+    SystemsRuntime.delete_env(:salix_agent, :summarizer)
+    SystemsRuntime.put_env(:salix_agent, :oauth_store_mod, OAuthStubStore)
+    SystemsRuntime.put_env(:salix_im, :task_create_mod, TaskCreateStub)
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, SalixIM.Provider)
+    SystemsRuntime.put_env(:salix_agent, :live_llm_core_capture_pid, SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_agent, :notifier, CaptureNotifier)
+    SystemsRuntime.put_env(:salix_agent, :llm_metering_mod, CaptureMetering)
+    SystemsRuntime.put_env(:salix_agent, :agent_observability_mod, CaptureObservability)
 
     # The shared test config disables cluster background sweeps. Run the real
     # timer owner here so a live model's intentional wait_for call can expire
@@ -282,7 +291,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
     start_supervised!(SalixCluster.Timers)
 
     on_exit(fn ->
-      Application.put_env(:salix_agent, :llm, prev)
+      SystemsRuntime.put_env(:salix_agent, :llm, prev)
       restore_env(:summarizer, prev_summarizer)
       restore_env(:oauth_store_mod, prev_oauth)
       restore_im_env(:task_create_mod, prev_task)
@@ -297,30 +306,11 @@ defmodule SalixAgent.LiveLlmE2eTest do
     {:ok, llm: llm}
   end
 
-  defp configure!(agent, llm, agent_config \\ nil) do
-    create_control_agent!(agent, llm, agent_config || %{})
-    {_, _} = SalixAgent.Server.info(agent)
-    :ok
-  end
+  defp configure!(agent, llm, agent_config \\ nil),
+    do: SalixAgent.LiveLlmTestSupport.configure!(agent, llm, agent_config || %{})
 
-  defp create_control_agent!(agent, llm, agent_config) do
-    llm = stringify_keys(llm)
-    agent_config = stringify_keys(agent_config)
-
-    provider_config =
-      llm
-      |> Map.drop(["model", "max_tokens"])
-
-    SalixAgent.TestSupport.create_control_agent!(
-      agent,
-      Map.merge(agent_config, %{
-        "model" => llm["model"],
-        "provider" => provider_config["protocol"] || "openai",
-        "provider_config" => provider_config,
-        "max_tokens" => llm["max_tokens"]
-      })
-    )
-  end
+  defp create_control_agent!(agent, llm, agent_config),
+    do: SalixAgent.LiveLlmTestSupport.create_agent!(agent, llm, agent_config)
 
   defp eventually(fun, timeout_ms \\ 180_000) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
@@ -332,7 +322,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
 
         :retry ->
           if System.monotonic_time(:millisecond) > deadline, do: raise("eventually: timed out")
-          Process.sleep(1_000)
+          SystemsRuntime.Proc.sleep(1_000)
           :cont
       end
     end)
@@ -380,7 +370,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
           raise "session #{agent_id}/#{session_id} did not become idle; last=#{inspect(session_summary(session))}"
         end
 
-        Process.sleep(1_000)
+        SystemsRuntime.Proc.sleep(1_000)
         await_idle_session(agent_id, session_id, deadline, session_summary(session))
 
       {:error, :not_found} ->
@@ -388,7 +378,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
           raise "session #{agent_id}/#{session_id} was not found; last=#{inspect(last_seen)}"
         end
 
-        Process.sleep(1_000)
+        SystemsRuntime.Proc.sleep(1_000)
         await_idle_session(agent_id, session_id, deadline, last_seen)
 
       {:error, reason} ->
@@ -404,14 +394,14 @@ defmodule SalixAgent.LiveLlmE2eTest do
     }
   end
 
-  defp unique_suffix, do: :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
+  defp unique_suffix, do: SystemsRuntime.Proc.random_bytes(4) |> Base.encode16(case: :lower)
 
   defp stringify_keys(map) when is_map(map) do
     Map.new(map, fn {key, value} -> {to_string(key), value} end)
   end
 
   defp flush_live_capture! do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:live_llm_notification, _, _} -> flush_live_capture!()
       {:live_llm_metering, _, _} -> flush_live_capture!()
       {:live_llm_tool_fact, _} -> flush_live_capture!()
@@ -434,7 +424,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
   defp await_captured_run(agent_id, session_id, deadline, captured) do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {:live_llm_notification, ^agent_id, {:delta, ^session_id, text}} ->
         captured
         |> Map.update!(:deltas, &[text | &1])
@@ -494,7 +484,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
   end
 
   defp drain_captured_run(captured, agent_id, session_id) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:live_llm_notification, ^agent_id, {:delta, ^session_id, text}} ->
         drain_captured_run(%{captured | deltas: [text | captured.deltas]}, agent_id, session_id)
 
@@ -655,7 +645,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
   end
 
   defp create_two_agent_conversation!(group_id, agents) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     participants =
       [
@@ -683,7 +673,8 @@ defmodule SalixAgent.LiveLlmE2eTest do
 
     {:ok, conversation} =
       SalixIM.ConversationInput.create_group_conversation(group_id, %{
-        "client_request_id" => "live-two-agent-#{System.unique_integer([:positive])}",
+        "client_request_id" =>
+          "live-two-agent-#{SystemsRuntime.Proc.unique_integer([:positive])}",
         "title" => "Live LLM anti-whirlpool",
         "participants" => participants
       })
@@ -691,29 +682,34 @@ defmodule SalixAgent.LiveLlmE2eTest do
     conversation
   end
 
-  defp restore_env(key, nil), do: Application.delete_env(:salix_agent, key)
-  defp restore_env(key, value), do: Application.put_env(:salix_agent, key, value)
-  defp restore_im_env(key, nil), do: Application.delete_env(:salix_im, key)
-  defp restore_im_env(key, value), do: Application.put_env(:salix_im, key, value)
+  defp restore_env(key, nil), do: SystemsRuntime.delete_env(:salix_agent, key)
+  defp restore_env(key, value), do: SystemsRuntime.put_env(:salix_agent, key, value)
+  defp restore_im_env(key, nil), do: SystemsRuntime.delete_env(:salix_im, key)
+  defp restore_im_env(key, value), do: SystemsRuntime.put_env(:salix_im, key, value)
 
   test "capture barrier waits for the target session, not agent inbox settle", %{llm: llm} do
     agent_id = SalixAgent.TestSupport.new_agent_id()
     session_id = SalixStore.Ids.new_session_id()
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     configure!(agent_id, llm)
     BlockingCaptureLLM.set_owner(parent)
-    Application.put_env(:salix_agent, :llm, BlockingCaptureLLM)
+    SystemsRuntime.put_env(:salix_agent, :llm, BlockingCaptureLLM)
     on_exit(&BlockingCaptureLLM.clear_owner/0)
 
     awaiter =
-      Task.async(fn ->
-        Application.put_env(:salix_agent, :live_llm_core_capture_pid, self())
-        send(parent, :live_llm_capture_awaiter_ready)
+      SystemsRuntime.Task.async(fn ->
+        SystemsRuntime.put_env(
+          :salix_agent,
+          :live_llm_core_capture_pid,
+          SystemsRuntime.Proc.self()
+        )
+
+        SystemsRuntime.Proc.send(parent, :live_llm_capture_awaiter_ready)
         await_settled_run!(agent_id, session_id, 10_000)
       end)
 
-    assert_receive :live_llm_capture_awaiter_ready, 1_000
+    assert_receive :live_llm_capture_awaiter_ready
 
     assert {:ok, _} =
              SalixAgent.deliver(
@@ -725,13 +721,13 @@ defmodule SalixAgent.LiveLlmE2eTest do
                source_message_id: "live-e2e-1:#{agent_id}"
              )
 
-    assert_receive {:live_llm_capture_provider_blocked, provider_pid}, 2_000
-    early_result = Task.yield(awaiter, 1_000)
-    send(provider_pid, :release_live_llm_capture_provider)
+    assert_receive {:live_llm_capture_provider_blocked, provider_pid}
+    early_result = SystemsRuntime.Task.yield(awaiter, 1_000)
+    SystemsRuntime.Proc.send(provider_pid, :release_live_llm_capture_provider)
 
     case early_result do
       nil ->
-        captured = Task.await(awaiter, 10_000)
+        captured = SystemsRuntime.Task.await(awaiter, :infinity)
         assert captured.after != []
         assert IO.iodata_to_binary(captured.deltas) == "capture completed"
 
@@ -1027,9 +1023,13 @@ defmodule SalixAgent.LiveLlmE2eTest do
     resume_path = "/live-llm/permission-resume-#{unique_suffix()}.txt"
 
     previous_store =
-      Application.get_env(:salix_agent, :capability_request_store_mod)
+      SystemsRuntime.get_env(:salix_agent, :capability_request_store_mod)
 
-    Application.put_env(:salix_agent, :capability_request_store_mod, CapabilityRequestStoreStub)
+    SystemsRuntime.put_env(
+      :salix_agent,
+      :capability_request_store_mod,
+      CapabilityRequestStoreStub
+    )
 
     on_exit(fn ->
       restore_env(:capability_request_store_mod, previous_store)
@@ -1189,8 +1189,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
         tenant_id: tenant,
         group_id: group_id,
         role: "worker",
-        system_prompt: prompt,
-        template_id: "live-llm-anti-whirlpool"
+        system_prompt: prompt
       })
     end
 
@@ -1285,7 +1284,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
       _session = eventually_idle_session(agent_id, Map.fetch!(session_ids, agent_id))
     end
 
-    Process.sleep(1_000)
+    SystemsRuntime.Proc.sleep(1_000)
 
     {:ok, final_messages} =
       SalixIM.Conversations.list_group_conversation_messages(group_id, conversation_id, limit: 20)
@@ -1296,9 +1295,9 @@ defmodule SalixAgent.LiveLlmE2eTest do
   test "live LLM: Router creates a visible Task for dated train availability research", %{
     llm: llm
   } do
-    previous_task_mod = Application.get_env(:salix_im, :task_create_mod)
+    previous_task_mod = SystemsRuntime.get_env(:salix_im, :task_create_mod)
     real_task_mod = Module.concat(["Salix", "Bindings", "AgentConversations"])
-    Application.put_env(:salix_im, :task_create_mod, real_task_mod)
+    SystemsRuntime.put_env(:salix_im, :task_create_mod, real_task_mod)
     on_exit(fn -> restore_im_env(:task_create_mod, previous_task_mod) end)
 
     suffix = unique_suffix()
@@ -1313,15 +1312,13 @@ defmodule SalixAgent.LiveLlmE2eTest do
     configure!(router, llm, %{
       tenant_id: tenant,
       group_id: group_id,
-      role: "router",
-      template_id: "natural-closure-router-#{suffix}"
+      role: "router"
     })
 
     configure!(worker, Map.put(llm, :max_tokens, 4_000), %{
       tenant_id: tenant,
       group_id: group_id,
       role: "worker",
-      template_id: "natural-closure-worker-#{suffix}",
       system_prompt: """
       Complete exact-token deliverables in their Task conversation. After reading
       the request, send exactly one visible result with
@@ -1367,7 +1364,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
              %{
                messages: messages,
                tools: run.tool_facts,
-               history: SalixAgent.InternalSession.masked_messages(state) |> Enum.take(-8)
+               history: SalixAgent.InternalSession.get(state, :messages) |> Enum.take(-8)
              },
              limit: :infinity
            )
@@ -1384,9 +1381,9 @@ defmodule SalixAgent.LiveLlmE2eTest do
   end
 
   test "live LLM: natural Router delegation completes inside its Task", %{llm: llm} do
-    previous_task_mod = Application.get_env(:salix_im, :task_create_mod)
+    previous_task_mod = SystemsRuntime.get_env(:salix_im, :task_create_mod)
     real_task_mod = Module.concat(["Salix", "Bindings", "AgentConversations"])
-    Application.put_env(:salix_im, :task_create_mod, real_task_mod)
+    SystemsRuntime.put_env(:salix_im, :task_create_mod, real_task_mod)
     on_exit(fn -> restore_im_env(:task_create_mod, previous_task_mod) end)
 
     suffix = unique_suffix()
@@ -1401,15 +1398,13 @@ defmodule SalixAgent.LiveLlmE2eTest do
     configure!(router, llm, %{
       tenant_id: tenant,
       group_id: group_id,
-      role: "router",
-      template_id: "natural-closure-router-#{suffix}"
+      role: "router"
     })
 
     configure!(worker, Map.put(llm, :max_tokens, 4_000), %{
       tenant_id: tenant,
       group_id: group_id,
       role: "worker",
-      template_id: "natural-closure-worker-#{suffix}",
       system_prompt: """
       Complete exact-token deliverables in their Task conversation. After reading
       the request, send exactly one visible result with
@@ -1537,9 +1532,9 @@ defmodule SalixAgent.LiveLlmE2eTest do
   @tag :tmp_dir
   test "live LLM: Worker presents supplied forecast data as UI and Home receives the same content",
        %{llm: llm, tmp_dir: tmp_dir} do
-    previous = Application.get_env(:salix_im, :task_create_mod)
+    previous = SystemsRuntime.get_env(:salix_im, :task_create_mod)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :task_create_mod,
       Module.concat(["Salix", "Bindings", "AgentConversations"])
@@ -1556,8 +1551,7 @@ defmodule SalixAgent.LiveLlmE2eTest do
       configure!(agent, Map.put(llm, :max_tokens, 6000), %{
         tenant_id: tenant,
         group_id: group,
-        role: role,
-        template_id: "ui-result-#{role}-#{unique_suffix()}"
+        role: role
       })
     end
 
@@ -1712,13 +1706,13 @@ defmodule SalixAgent.LiveLlmE2eTest do
   test "live LLM: a canonical Task publishes runnable HTML", %{
     llm: llm
   } do
-    previous_task_mod = Application.get_env(:salix_im, :task_create_mod)
-    previous_sites_domain = Application.get_env(:salix_agent, :sites_domain)
-    previous_sites_port = Application.get_env(:salix_agent, :sites_port)
+    previous_task_mod = SystemsRuntime.get_env(:salix_im, :task_create_mod)
+    previous_sites_domain = SystemsRuntime.get_env(:salix_agent, :sites_domain)
+    previous_sites_port = SystemsRuntime.get_env(:salix_agent, :sites_port)
     real_task_mod = Module.concat(["Salix", "Bindings", "AgentConversations"])
-    Application.put_env(:salix_im, :task_create_mod, real_task_mod)
-    Application.put_env(:salix_agent, :sites_domain, "salix.localhost")
-    Application.put_env(:salix_agent, :sites_port, SalixWeb.Application.http_port())
+    SystemsRuntime.put_env(:salix_im, :task_create_mod, real_task_mod)
+    SystemsRuntime.put_env(:salix_agent, :sites_domain, "salix.localhost")
+    SystemsRuntime.put_env(:salix_agent, :sites_port, SalixWeb.Application.http_port())
 
     on_exit(fn ->
       restore_im_env(:task_create_mod, previous_task_mod)
@@ -1737,15 +1731,13 @@ defmodule SalixAgent.LiveLlmE2eTest do
     configure!(router, llm, %{
       tenant_id: tenant,
       group_id: group_id,
-      role: "router",
-      template_id: "roundtrip-router-#{suffix}"
+      role: "router"
     })
 
     configure!(worker, Map.put(llm, :max_tokens, 12_000), %{
       tenant_id: tenant,
       group_id: group_id,
       role: "worker",
-      template_id: "roundtrip-worker-#{suffix}",
       system_prompt: """
       Complete the assigned work in this Task conversation. When asked for a
       single-page counter, create a minimal runnable standalone HTML page with
@@ -1902,8 +1894,8 @@ defmodule SalixAgent.LiveLlmE2eTest do
   end
 
   test "live LLM: Router keeps questions and missing-input requests in Chat", %{llm: llm} do
-    previous_task_mod = Application.get_env(:salix_im, :task_create_mod)
-    Application.put_env(:salix_im, :task_create_mod, RoutingTaskCreateStub)
+    previous_task_mod = SystemsRuntime.get_env(:salix_im, :task_create_mod)
+    SystemsRuntime.put_env(:salix_im, :task_create_mod, RoutingTaskCreateStub)
     on_exit(fn -> restore_im_env(:task_create_mod, previous_task_mod) end)
 
     suffix = unique_suffix()
@@ -1930,15 +1922,13 @@ defmodule SalixAgent.LiveLlmE2eTest do
           tenant_id: tenant,
           group_id: group_id,
           role: "worker",
-          template_id: "routing-eval-worker-#{name}-#{suffix}",
           system_prompt: "Complete assigned tasks and report the result."
         })
 
         configure!(router, llm, %{
           tenant_id: tenant,
           group_id: group_id,
-          role: "router",
-          template_id: "routing-eval-router-#{name}"
+          role: "router"
         })
 
         {:ok, _group} =

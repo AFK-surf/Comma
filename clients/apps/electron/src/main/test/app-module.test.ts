@@ -1,19 +1,20 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { mkdir, readdir, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach } from "vitest";
 import { describe, expect, it, vi } from "vitest";
 import {
-  defaultSideChatDebugSettings,
-  defaultSideChatShortcut,
   generatedNativeCapabilityManifest,
   filesListOpenApplicationsResultSchema,
   filesSaveDownloadResultSchema,
+  surfacesChangedEvent,
+  type SurfaceList,
 } from "@comma/native-bridge";
 import {
   sessionExpectation,
   sessionProductLease,
+  type SessionLifecycleSnapshot,
   type SessionProductLease,
 } from "@comma/session-contract";
 
@@ -46,10 +47,10 @@ import {
   type ElectronMainRuntimeDeps,
 } from "../modules/electron-main.module";
 import type { BrowserSidebarViewLike } from "../modules/browser-sidebar";
-import { LOCAL_DATA_SCHEMA_VERSION } from "../modules/local-data";
 import { LocalFileSnapshotStore } from "../modules/local-files";
 import { SecureSessionStore } from "../secure-store";
-import { openTestLocalDataRepository } from "./support/test-local-data-repository";
+import { fakeAirDropHelper } from "../../test-support/fake-airdrop-helper";
+import { startInProcessCore } from "../../test-support/in-process-core";
 
 const tempDirs: string[] = [];
 
@@ -65,42 +66,56 @@ describe("Electron main composition root", () => {
     async () => {
       const directory = mkdtempSync(join(tmpdir(), "comma-main-airdrop-"));
       tempDirs.push(directory);
-      const binaryPath = join(directory, "receiver.mjs");
-      await writeFile(
-        binaryPath,
-        `#!${process.execPath}\nprocess.stdout.write(JSON.stringify(process.argv[2]==='receive'?{version:1,type:'listening',port:8771}:{version:1,type:'progress',message:'Scanning'})+'\\n');\nprocess.stdin.resume();process.stdin.on('end',()=>process.exit(0));\n`,
-        { mode: 0o755 }
-      );
+      // The services require their helper on disk; the fake runs in its place.
+      const binaryPath = join(directory, "helper");
+      await writeFile(binaryPath, "");
+      const helper = fakeAirDropHelper((run) => {
+        run.emit(
+          run.args[0] === "receive"
+            ? { type: "listening", port: 8771 }
+            : { type: "progress", message: "Scanning" }
+        );
+        run.onStdinEnd(() => run.exit(0));
+      });
       const app = await createTestElectronMainContext({
         fetch: createSignedInFetch(),
         airDropBinaryPath: binaryPath,
         airDropSenderBinaryPath: binaryPath,
+        spawnAirDropHelper: helper.spawn,
       });
       try {
         expect(app.airdrop.status().status).toBe("idle");
+        const receiving = helper.nextSpawn();
         await signInTestSession(app);
-        await expect.poll(() => app.airdrop.status().status).toBe("receiving");
+        const receiver = await receiving;
+        await receiver.started;
+        expect(receiver.args[0]).toBe("receive");
+        expect(app.airdrop.status().status).toBe("receiving");
         expect(app.airdrop.status().requiresApproval).toBe(true);
+        const scanning = helper.nextSpawn();
         const scan = await app.sessionAdmissionGuard.runOwned(() =>
           app.airdropSender.find()
         );
-        await expect
-          .poll(() => app.airdropSender.status().active?.progress)
-          .toBe("Scanning");
+        const scanner = await scanning;
+        await scanner.started;
+        expect(app.airdropSender.status().active?.progress).toBe("Scanning");
         expect(scan.status).toBe("running");
-        const signedOut = await app.session.signOut({
+        const signedOut = (await coreOf(app).client.call("session.signOut", {
           expected: currentSessionExpectation(app),
-        });
+        })) as { ok: boolean };
         expect(signedOut.ok).toBe(true);
-        await expect.poll(() => app.airdrop.status().status).toBe("idle");
-        await expect.poll(() => app.airdropSender.status().active).toBeUndefined();
+        // Logout ends both helpers; their exits settle the services.
+        await Promise.all([receiver.closed, scanner.closed]);
+        expect(app.airdrop.status().status).toBe("idle");
+        expect(app.airdropSender.status().active).toBeUndefined();
+        expect(helper.processes).toHaveLength(2);
       } finally {
         await app.close();
       }
     }
   );
 
-  it("persists a startup Session before the one lifecycle initialization", async () => {
+  it("persists a startup Session before the core's one startup probe", async () => {
     const observedPhases: string[] = [];
     const secureSessionFilePath = tempSecureSessionPath();
     const previousStore = await SecureSessionStore.open(secureSessionFilePath);
@@ -150,6 +165,7 @@ describe("Electron main composition root", () => {
     });
 
     try {
+      await startedCore(app, "signed_in");
       expect(app.session.state()).toMatchObject({
         phase: "signed_in",
         principal: {
@@ -212,6 +228,7 @@ describe("Electron main composition root", () => {
     });
 
     try {
+      await startedCore(app, "signed_in");
       expect(app.session.state()).toMatchObject({
         phase: "signed_in",
         session: { sessionId: "verified-session" },
@@ -303,6 +320,8 @@ describe("Electron main composition root", () => {
     );
 
     const pendingYields = new Set<() => void>();
+    // Settles at the cleanup's next yield, which follows each batch it removed.
+    let yielded = Promise.withResolvers<void>();
     const yieldBetweenBatches = (signal: AbortSignal) =>
       new Promise<void>((resolveYield) => {
         let settled = false;
@@ -314,9 +333,17 @@ describe("Electron main composition root", () => {
           resolveYield();
         };
         pendingYields.add(finish);
+        yielded.resolve();
         signal.addEventListener("abort", finish, { once: true });
         if (signal.aborted) finish();
       });
+    /** Lets the pending yield go; settles once the cleanup removed its next batch and yields again. */
+    const nextBatch = () => {
+      yielded = Promise.withResolvers<void>();
+      [...pendingYields][0]?.();
+      return yielded.promise;
+    };
+    let cleanupFinished!: Promise<void>;
     const originalStart = LocalFileSnapshotStore.prototype.startStartupArtifactCleanup;
     let observedClose!: () => void;
     const closeObserved = new Promise<void>((resolveClose) => {
@@ -333,12 +360,14 @@ describe("Electron main composition root", () => {
           limit: 2,
           yieldBetweenBatches,
         });
+        cleanupFinished = running.finished;
         return Object.freeze({
           close: async () => {
             observedClose();
             await running.close();
             await closeMayFinish;
           },
+          finished: running.finished,
         });
       });
     let app: ElectronMainContext | undefined;
@@ -349,24 +378,21 @@ describe("Electron main composition root", () => {
       expect(pendingYields.size).toBe(1);
       expect(await readdir(temporaryDirectory)).toHaveLength(5);
 
-      [...pendingYields][0]?.();
-      await vi.waitFor(async () =>
-        expect(await readdir(temporaryDirectory)).toHaveLength(3)
-      );
-      await vi.waitFor(() => expect(pendingYields.size).toBe(1));
+      await nextBatch();
+      expect(await readdir(temporaryDirectory)).toHaveLength(3);
+      expect(pendingYields.size).toBe(1);
 
-      [...pendingYields][0]?.();
-      await vi.waitFor(async () =>
-        expect(await readdir(temporaryDirectory)).toHaveLength(1)
-      );
-      await vi.waitFor(() => expect(pendingYields.size).toBe(1));
+      await nextBatch();
+      expect(await readdir(temporaryDirectory)).toHaveLength(1);
+      expect(pendingYields.size).toBe(1);
 
       let contextClosed = false;
       const closing = app.close().then(() => {
         contextClosed = true;
       });
       await closeObserved;
-      await vi.waitFor(() => expect(pendingYields.size).toBe(0));
+      await cleanupFinished;
+      expect(pendingYields.size).toBe(0);
       expect(contextClosed).toBe(false);
       releaseClose();
       await closing;
@@ -380,10 +406,50 @@ describe("Electron main composition root", () => {
     }
   });
 
+  it("leaves a new install's state and its IPC channels free once closed and erased", async () => {
+    // Electron's ipcMain refuses a second handler for a channel.
+    const handlers = new Map<string, unknown>();
+    const ipcMain = {
+      handle: (channel: string, handler: unknown) => {
+        if (handlers.has(channel)) throw new Error(`second handler for ${channel}`);
+        handlers.set(channel, handler);
+      },
+      removeHandler: (channel: string) => void handlers.delete(channel),
+    };
+    const paths = {
+      appPreferencesFilePath: tempAppPreferencesPath(),
+      localFileIndexRoot: tempFileStorePath(),
+      secureSessionFilePath: tempSecureSessionPath(),
+    };
+    const first = await createTestElectronMainContext({ ...paths, ipcMain });
+    registerNativeBridgeHandlersFromContext(first);
+    const channels = [...handlers.keys()];
+    await first.appPreferences.update({ notificationSound: false });
+    await writeFile(paths.secureSessionFilePath, "kept");
+    expect(existsSync(paths.appPreferencesFilePath)).toBe(true);
+
+    await first.close();
+    await first.erase();
+
+    expect(handlers.size).toBe(0);
+    expect(existsSync(paths.appPreferencesFilePath)).toBe(false);
+    expect(existsSync(paths.secureSessionFilePath)).toBe(false);
+    expect(existsSync(paths.localFileIndexRoot)).toBe(false);
+
+    const next = await createTestElectronMainContext({ ...paths, ipcMain });
+    try {
+      registerNativeBridgeHandlersFromContext(next);
+      expect([...handlers.keys()]).toEqual(channels);
+      expect((await next.appPreferences.state()).notificationSound).toBe(true);
+    } finally {
+      await next.close();
+    }
+  });
+
   it("registers PR1 golden path handlers from a typed composition root", async () => {
     const handle = vi.fn();
     const app = await createTestElectronMainContext({
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
     });
 
     try {
@@ -415,7 +481,7 @@ describe("Electron main composition root", () => {
     const reveal = vi.fn();
     const app = await createTestElectronMainContext({
       fileApplications,
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
       openDownloadedFilePath: openDefault,
       resolveDownloadsDirectory: () => directory,
       revealDownloadedFilePath: reveal,
@@ -522,93 +588,88 @@ describe("Electron main composition root", () => {
     }
   });
 
-  it.each(["main-window", "side-chat-test-window"] as const)(
-    "routes %s browser sidebar commands through the generated caller-bound provider",
-    async (role) => {
-      const handle = vi.fn();
-      const view = createBrowserSidebarView();
-      const createView = vi.fn(() => view);
-      const ownerWindow = createBrowserSidebarOwnerWindow(31);
-      const app = await createTestElectronMainContext({
-        createBrowserSidebarView: createView,
-        ipcMain: { handle },
+  it("routes main-window browser sidebar commands through the generated caller-bound provider", async () => {
+    const handle = vi.fn();
+    const view = createBrowserSidebarView();
+    const createView = vi.fn(() => view);
+    const ownerWindow = createBrowserSidebarOwnerWindow(31);
+    const app = await createTestElectronMainContext({
+      createBrowserSidebarView: createView,
+      ipcMain: { handle, removeHandler: vi.fn() },
+    });
+
+    try {
+      app.webContentsRegistry.registerWindow({
+        id: "win_main",
+        role: "main-window",
+        window: ownerWindow,
       });
+      await app.surfaces.registerWindow({
+        id: "win_main",
+        role: "main-window",
+        route: "/",
+        window: ownerWindow,
+      });
+      app.webContentsRegistry.registerWindow({
+        id: "meeting-recorder",
+        role: "meeting-recorder-window",
+        window: { webContents: { id: 32 } },
+      });
+      registerNativeBridgeHandlersFromContext(app);
+      const handlers = new Map<string, (event: unknown, input: unknown) => unknown>(
+        handle.mock.calls.map(([channel, registeredHandler]) => [
+          channel,
+          registeredHandler,
+        ])
+      );
+      const input = {
+        bounds: { height: 720, width: 420, x: 860, y: 0 },
+        sessionId: "workspace-1:task",
+        url: "https://example.com/task",
+      };
 
-      try {
-        app.webContentsRegistry.registerWindow({
-          id: "win_main",
-          role,
-          window: ownerWindow,
-        });
-        await app.surfaces.registerWindow({
-          id: "win_main",
-          role,
-          route: "/",
-          window: ownerWindow,
-        });
-        app.webContentsRegistry.registerWindow({
-          id: "win_side_chat",
-          role: "side-chat-window",
-          window: { webContents: { id: 32 } },
-        });
-        registerNativeBridgeHandlersFromContext(app);
-        const handlers = new Map<string, (event: unknown, input: unknown) => unknown>(
-          handle.mock.calls.map(([channel, registeredHandler]) => [
-            channel,
-            registeredHandler,
-          ])
-        );
-        const input = {
-          bounds: { height: 720, width: 420, x: 860, y: 0 },
-          sessionId: "workspace-1:task",
-          url: "https://example.com/task",
-        };
-
-        await expect(
-          handlers.get("comma:browser-sidebar:open")?.(
-            {
-              sender: { id: 31 },
-              senderFrame: { url: "assets://./#/inbox/workspace/task" },
-            },
-            input
-          )
-        ).resolves.toMatchObject({
-          ok: true,
-          value: {
-            active: true,
-            available: true,
-            surface: {
-              lifecycle: "ready",
-              owner: { id: "win_main", kind: "window" },
-              role: "browser-sidebar",
-            },
+      await expect(
+        handlers.get("comma:browser-sidebar:open")?.(
+          {
+            sender: { id: 31 },
+            senderFrame: { url: "assets://./#/inbox/workspace/task" },
           },
-        });
-        expect(createView).toHaveBeenCalledWith(
-          role === "side-chat-test-window" ? 20 : 0
-        );
-        expect(view.webContents.loadURL).toHaveBeenCalledWith(input.url);
-
-        await expect(
-          handlers.get("comma:browser-sidebar:open")?.(
-            {
-              sender: { id: 32 },
-              senderFrame: { url: "assets://./#/side-chat" },
-            },
-            input
-          )
-        ).resolves.toEqual({
-          error: {
-            code: "FORBIDDEN",
-            message: "Native command permission denied.",
+          input
+        )
+      ).resolves.toMatchObject({
+        ok: true,
+        value: {
+          active: true,
+          available: true,
+          surface: {
+            lifecycle: "ready",
+            owner: { id: "win_main", kind: "window" },
+            role: "browser-sidebar",
           },
-          ok: false,
-        });
-      } finally {
-        await app.close();
-      }
+        },
+      });
+      expect(createView).toHaveBeenCalledOnce();
+      expect(view.webContents.loadURL).toHaveBeenCalledWith(input.url);
+
+      await expect(
+        handlers.get("comma:browser-sidebar:open")?.(
+          {
+            sender: { id: 32 },
+            senderFrame: { url: "assets://./#/meeting-recorder" },
+          },
+          input
+        )
+      ).resolves.toEqual({
+        error: {
+          code: "FORBIDDEN",
+          message: "Native command permission denied.",
+        },
+        ok: false,
+      });
+    } finally {
+      await app.close();
     }
-  );
+  });
 
   it("closes all native browser sessions when the main session signs out", async () => {
     const handle = vi.fn();
@@ -617,7 +678,7 @@ describe("Electron main composition root", () => {
     const app = await createTestElectronMainContext({
       createBrowserSidebarView: () => view,
       fetch: createSignedInFetch() as typeof fetch,
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
     });
 
     try {
@@ -656,21 +717,23 @@ describe("Electron main composition root", () => {
         value: { active: true },
       });
       expect((await app.surfaces.state()).views).toHaveLength(1);
+      // The main window is sent every change of the surfaces; closing the view ends with one that lists none.
+      const viewsClosed = new Promise<void>((resolve) => {
+        ownerWindow.webContents.send.mockImplementation(
+          (channel: string, state: SurfaceList) => {
+            if (channel === surfacesChangedEvent.channel && state.views.length === 0)
+              resolve();
+          }
+        );
+      });
 
       await expect(
-        handlers.get("comma:session:sign-out")?.(event, {
+        coreOf(app).client.call("session.signOut", {
           expected: currentSessionExpectation(app),
         })
-      ).resolves.toMatchObject({
-        ok: true,
-        value: {
-          ok: true,
-          value: { phase: "signed_out" },
-        },
-      });
-      await vi.waitFor(async () => {
-        expect((await app.surfaces.state()).views).toEqual([]);
-      });
+      ).resolves.toMatchObject({ ok: true, value: { phase: "signed_out" } });
+      await viewsClosed;
+      expect((await app.surfaces.state()).views).toEqual([]);
       expect(view.webContents.close).toHaveBeenCalledWith({
         waitForBeforeUnload: false,
       });
@@ -682,7 +745,7 @@ describe("Electron main composition root", () => {
   it("denies golden path commands from callers without a registered role grant", async () => {
     const handle = vi.fn();
     const app = await createTestElectronMainContext({
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
     });
 
     try {
@@ -712,148 +775,11 @@ describe("Electron main composition root", () => {
     }
   });
 
-  it("gives SideChat caller-bound ProductInbox and local-file access, not Session ownership", async () => {
-    const handle = vi.fn();
-    const app = await createTestElectronMainContext({
-      fetch: createSignedInFetch() as typeof fetch,
-      ipcMain: { handle },
-    });
-
-    try {
-      const session = await signInTestSession(app);
-      const pickLocalFiles = vi
-        .spyOn(app.localFilePicker, "pick")
-        .mockResolvedValue({ cancelled: true, errors: [], files: [] });
-      const previewLocalFile = vi
-        .spyOn(app.localFilePicker, "preview")
-        .mockResolvedValue({
-          pngImage: new Uint8Array([137, 80, 78, 71]),
-          status: "ready",
-        });
-      const localFileRef = `lfi1_${"p".repeat(43)}`;
-      app.webContentsRegistry.registerWindow({
-        id: "win_side_chat",
-        role: "side-chat-window",
-        window: { webContents: { id: 22, send: vi.fn() } },
-      });
-      registerNativeBridgeHandlersFromContext(app);
-      const handlers = new Map<string, (event: unknown, input: unknown) => unknown>(
-        handle.mock.calls.map(([channel, registeredHandler]) => [
-          channel,
-          registeredHandler,
-        ])
-      );
-      const event = {
-        sender: { id: 22 },
-        senderFrame: { url: "assets://./#/side-chat" },
-      };
-      await expect(
-        handlers.get("comma:product-inbox:retain")?.(event, { session })
-      ).resolves.toMatchObject({
-        ok: true,
-        value: {
-          session,
-          snapshot: { items: [], source: "unavailable" },
-        },
-      });
-      await expect(
-        handlers.get("comma:local-files:pick")?.(event, {
-          maxFiles: 1,
-          maxTotalSize: 1_024,
-          session,
-          workspaceId: "wsp_1",
-        })
-      ).resolves.toEqual({
-        ok: true,
-        value: { cancelled: true, errors: [], files: [] },
-      });
-      expect(pickLocalFiles).toHaveBeenCalledWith({
-        maxFiles: 1,
-        maxTotalSize: 1_024,
-        session,
-        workspaceId: "wsp_1",
-      });
-      await expect(
-        handlers.get("comma:local-files:preview")?.(event, {
-          localFileRef,
-          session,
-        })
-      ).resolves.toEqual({
-        ok: true,
-        value: {
-          pngImage: new Uint8Array([137, 80, 78, 71]),
-          status: "ready",
-        },
-      });
-      expect(previewLocalFile).toHaveBeenCalledWith({ localFileRef, session });
-      expect(pickLocalFiles).toHaveBeenCalledTimes(1);
-      expect(previewLocalFile).toHaveBeenCalledTimes(1);
-      await expect(
-        handlers.get("comma:session:sign-out")?.(event, {
-          expected: currentSessionExpectation(app),
-        })
-      ).resolves.toEqual({
-        error: {
-          code: "FORBIDDEN",
-          message: "Native command permission denied.",
-        },
-        ok: false,
-      });
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("lets a SideChat task window replace itself with a nested Task window", async () => {
-    const handle = vi.fn();
-    const sideChat = createSideChatProvider();
-    const app = await createTestElectronMainContext({
-      ipcMain: { handle },
-      sideChat,
-    });
-
-    try {
-      app.webContentsRegistry.registerWindow({
-        id: "win_side_chat_test",
-        role: "side-chat-test-window",
-        window: { webContents: { id: 23 } },
-      });
-      registerNativeBridgeHandlersFromContext(app);
-      const handlers = new Map<string, (event: unknown, input: unknown) => unknown>(
-        handle.mock.calls.map(([channel, registeredHandler]) => [
-          channel,
-          registeredHandler,
-        ])
-      );
-      const input = {
-        sourceFrame: { height: 24, width: 120, x: 42, y: 84 },
-        target: {
-          conversationId: "cnv_nested",
-          groupId: "grp_1",
-          workspaceId: "wsp_1",
-        },
-      };
-
-      await expect(
-        handlers.get("comma:side-chat:open-test-window")?.(
-          {
-            sender: { id: 23 },
-            senderFrame: { url: "assets://./#/side-chat/test-window" },
-          },
-          input
-        )
-      ).resolves.toEqual({ ok: true, value: { revision: 0 } });
-      expect(sideChat.openTestWindow).toHaveBeenCalledWith(input);
-    } finally {
-      await app.close();
-    }
-  });
-
   it("grants generated native permissions to the dev workbench in development", async () => {
     const handle = vi.fn();
     const app = await createTestElectronMainContext({
-      devServerUrl: "http://localhost:5173",
-      ipcMain: { handle },
+      devServerUrl: "https://vite.comma.test",
+      ipcMain: { handle, removeHandler: vi.fn() },
       isDevelopment: true,
     });
 
@@ -873,13 +799,18 @@ describe("Electron main composition root", () => {
         handler(
           {
             sender: { id: 7 },
-            senderFrame: { url: "http://localhost:5173/#/dev/workbench" },
+            senderFrame: { url: "https://vite.comma.test/#/dev/workbench" },
           },
           undefined
         )
       ).resolves.toEqual({
         ok: true,
-        value: { appVersion: "0.0.1", os: "macos", platform: "electron" },
+        value: {
+          appVersion: "0.0.1",
+          desktopLaunch: { kind: "new_profile", eventId: expect.any(String) },
+          os: "macos",
+          platform: "electron",
+        },
       });
     } finally {
       await app.close();
@@ -889,7 +820,7 @@ describe("Electron main composition root", () => {
   it("does not grant generated native permissions to dev workbench in production", async () => {
     const handle = vi.fn();
     const app = await createTestElectronMainContext({
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
     });
 
     try {
@@ -924,163 +855,30 @@ describe("Electron main composition root", () => {
     }
   });
 
-  it("binds chat subscriber and surface identities to the real IPC caller", async () => {
-    const handle = vi.fn();
-    const app = await createTestElectronMainContext({
-      fetch: createSignedInFetch() as typeof fetch,
-      ipcMain: { handle },
-    });
-    const target = {
-      conversationId: "cnv_bound",
-      groupId: "grp_bound",
-      workspaceId: "wsp_bound",
-    };
-    const sideSubscriberId = "win_side_chat:grp_bound/cnv_bound";
-    const sideLeaseId = crypto.randomUUID();
-    const mainEvent = {
-      sender: { id: 21 },
-      senderFrame: { url: "assets://./#/" },
-    };
-    const sideEvent = {
-      sender: { id: 22 },
-      senderFrame: { url: "assets://./#/side-chat" },
-    };
-
-    try {
-      const session = await signInTestSession(app);
-      app.webContentsRegistry.registerWindow({
-        id: "win_main",
-        role: "main-window",
-        window: { webContents: { id: 21 } },
-      });
-      app.webContentsRegistry.registerWindow({
-        id: "win_side_chat",
-        role: "side-chat-window",
-        window: { webContents: { id: 22 } },
-      });
-      registerNativeBridgeHandlersFromContext(app);
-      const handlers = new Map<string, (event: unknown, input: unknown) => unknown>(
-        handle.mock.calls.map(([channel, handler]) => [channel, handler])
-      );
-      const invoke = (channel: string, event: unknown, input: unknown) => {
-        const handler = handlers.get(channel);
-        if (!handler) throw new Error(`Missing native handler ${channel}.`);
-        return handler(event, input);
-      };
-      const callerBindingRejected = {
-        error: {
-          code: "FORBIDDEN",
-          message: "Native command caller binding rejected.",
-        },
-        ok: false,
-      };
-
-      await expect(
-        invoke("comma:chat:retain", mainEvent, {
-          ...target,
-          leaseId: crypto.randomUUID(),
-          session,
-          subscriberId: sideSubscriberId,
-        })
-      ).resolves.toEqual(callerBindingRejected);
-      expect(app.chat.state().sessions).toEqual([]);
-
-      await expect(
-        invoke("comma:chat:retain", sideEvent, {
-          ...target,
-          leaseId: sideLeaseId,
-          session,
-          subscriberId: sideSubscriberId,
-        })
-      ).resolves.toEqual({
-        ok: true,
-        // The retain receipt projects the Main-owned draft epoch for
-        // diagnostics; Renderer never echoes it on send.
-        value: { draftEpoch: expect.any(Number), revision: expect.any(Number) },
-      });
-      expect(app.chat.state().sessions[0]?.refs).toBe(1);
-
-      const sideLease = {
-        ...target,
-        leaseId: sideLeaseId,
-        session,
-        subscriberId: sideSubscriberId,
-      };
-      await expect(
-        invoke("comma:chat:clear-presentation", mainEvent, sideLease)
-      ).resolves.toEqual(callerBindingRejected);
-      expect(app.chat.state().sessions[0]?.surfaceProjections).toBeUndefined();
-
-      await expect(
-        invoke("comma:chat:set-draft", sideEvent, {
-          ...sideLease,
-          draft: "forged surface draft",
-          surfaceId: "win_main",
-        })
-      ).resolves.toEqual(callerBindingRejected);
-      expect(app.chat.state().sessions[0]?.state.draft).toBe("");
-
-      await expect(
-        invoke("comma:chat:clear-presentation", sideEvent, sideLease)
-      ).resolves.toEqual({
-        ok: true,
-        value: { revision: expect.any(Number) },
-      });
-      await expect(
-        invoke("comma:chat:set-draft", sideEvent, {
-          ...sideLease,
-          draft: "caller-owned draft",
-          surfaceId: "win_side_chat",
-        })
-      ).resolves.toEqual({
-        ok: true,
-        value: { draftEpoch: expect.any(Number), revision: expect.any(Number) },
-      });
-      expect(app.chat.state().sessions[0]).toMatchObject({
-        state: { draft: "caller-owned draft" },
-        surfaceProjections: [{ subscriberId: sideSubscriberId }],
-      });
-
-      await expect(
-        invoke("comma:session:sign-out", sideEvent, {
-          expected: currentSessionExpectation(app),
-        })
-      ).resolves.toEqual({
-        error: {
-          code: "FORBIDDEN",
-          message: "Native command permission denied.",
-        },
-        ok: false,
-      });
-    } finally {
-      await app.close();
-    }
-  });
-
   it("routes a mixed native attachment pick in original order without returning image bytes", async () => {
     const handle = vi.fn();
     const app = await createTestElectronMainContext({
       fetch: createSignedInFetch() as typeof fetch,
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
     });
     const target = {
       conversationId: "cnv_pick",
       groupId: "grp_pick",
       workspaceId: "wsp_pick",
     };
-    const subscriberId = "win_side_chat:grp_pick/cnv_pick";
-    const leaseId = crypto.randomUUID();
+    const subscriberId = "win_main:grp_pick/cnv_pick";
+    const leaseId = "00000000-0000-4000-8000-000000000001";
     const event = {
       sender: { id: 24 },
-      senderFrame: { url: "assets://./#/side-chat" },
+      senderFrame: { url: "assets://./#/" },
     };
     const localFileRef = `lfi1_${"m".repeat(43)}`;
 
     try {
       const session = await signInTestSession(app);
       app.webContentsRegistry.registerWindow({
-        id: "win_side_chat",
-        role: "side-chat-window",
+        id: "win_main",
+        role: "main-window",
         window: { webContents: { id: 24 } },
       });
       const pickForChat = vi
@@ -1120,13 +918,22 @@ describe("Electron main composition root", () => {
             },
           ],
         });
+      // The core holds the intake and the draft; Main attaches what the picker registered, in order.
+      vi.spyOn(app.chat, "claim").mockResolvedValue({
+        intakeId: "intake-1",
+        refresh: vi.fn(async () => undefined),
+        assertCurrent: vi.fn(),
+        markDialogClosed: vi.fn(),
+        settle: vi.fn(async () => undefined),
+        releaseIfUnused: vi.fn(),
+      });
       const attach = vi
         .spyOn(app.chat, "attach")
-        .mockReturnValueOnce({ revision: 10 })
-        .mockReturnValueOnce({ revision: 12 });
+        .mockResolvedValueOnce({ revision: 10 })
+        .mockResolvedValueOnce({ revision: 12 });
       const attachLocalFiles = vi
         .spyOn(app.chat, "attachLocalFiles")
-        .mockReturnValue({ revision: 11 });
+        .mockResolvedValue({ revision: 11 });
       registerNativeBridgeHandlersFromContext(app);
       const handlers = new Map<string, (event: unknown, input: unknown) => unknown>(
         handle.mock.calls.map(([channel, handler]) => [channel, handler])
@@ -1138,15 +945,12 @@ describe("Electron main composition root", () => {
       };
       const lease = { ...target, leaseId, session, subscriberId };
 
-      await expect(invoke("comma:chat:retain", lease)).resolves.toMatchObject({
-        ok: true,
-      });
       const result = await invoke("comma:chat:pick-attachments", {
         ...lease,
         maxFiles: 49,
         maxTotalSize: 1_024,
         maxUploadFiles: 7,
-        surfaceId: "win_side_chat",
+        surfaceId: "win_main",
       });
 
       expect(result).toEqual({
@@ -1169,6 +973,8 @@ describe("Electron main composition root", () => {
       expect(JSON.stringify(result)).not.toContain("1,2,3");
       expect(pickForChat).toHaveBeenCalledWith({
         assertLocalFileRegistrationAllowed: expect.any(Function),
+        localFileIntakeId: "intake-1",
+        refreshLocalFileRegistration: expect.any(Function),
         maxFiles: 49,
         maxTotalSize: 1_024,
         maxUploadFiles: 7,
@@ -1204,88 +1010,19 @@ describe("Electron main composition root", () => {
       await app.close();
     }
   });
-
-  it("reads a workspace image through the generated Session-bound preview path", async () => {
-    const handle = vi.fn();
-    const authFetch = createSignedInFetch();
-    const sourceBytes = Uint8Array.of(137, 80, 78, 71);
-    const previewBytes = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10);
-    const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
-      if (new URL(String(input)).pathname === "/v1/comma/groups/grp_image/files") {
-        return new Response(sourceBytes, {
-          headers: { "content-type": "image/png" },
-          status: 200,
-        });
-      }
-      return authFetch(input);
-    });
-    const app = await createTestElectronMainContext({
-      fetch: fetch as typeof globalThis.fetch,
-      ipcMain: { handle },
-    });
-    const event = {
-      sender: { id: 25 },
-      senderFrame: { url: "assets://./#/" },
-    };
-    const path = `/uploads/${"p".repeat(22)}-photo.png`;
-
-    try {
-      const session = await signInTestSession(app);
-      const renderImagePreview = vi
-        .spyOn(app.localFilePicker, "renderImagePreview")
-        .mockResolvedValue(previewBytes);
-      app.webContentsRegistry.registerWindow({
-        id: "win_main",
-        role: "main-window",
-        window: { webContents: { id: 25 } },
-      });
-      registerNativeBridgeHandlersFromContext(app);
-      const handlers = new Map<string, (event: unknown, input: unknown) => unknown>(
-        handle.mock.calls.map(([channel, handler]) => [channel, handler])
-      );
-
-      await expect(
-        handlers.get("comma:chat:read-group-image")?.(event, {
-          groupId: "grp_image",
-          path,
-          session,
-          source: "group-file",
-        })
-      ).resolves.toEqual({ ok: true, value: previewBytes });
-      expect(renderImagePreview).toHaveBeenCalledWith({
-        bytes: sourceBytes,
-        mediaType: "image/png",
-      });
-      const fileRequest = fetch.mock.calls.find(
-        ([input]) =>
-          new URL(String(input)).pathname === "/v1/comma/groups/grp_image/files"
-      );
-      expect(new Headers(fileRequest?.[1]?.headers).get("authorization")).toBe(
-        "Bearer main-secret"
-      );
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("owns the main-process local data services", async () => {
-    const app = await createTestElectronMainContext();
-
-    try {
-      await expect(app.localData.schemaVersion()).resolves.toBe(
-        LOCAL_DATA_SCHEMA_VERSION
-      );
-      expect(app.fileStore.rootDir()).toContain("comma-blobs");
-    } finally {
-      await app.close();
-    }
-  });
 });
 
-function createTestElectronMainContext(
+/** Each app's listeners to the session snapshots Main publishes. */
+const sessionListeners = new WeakMap<
+  ElectronMainContext,
+  Set<(snapshot: SessionLifecycleSnapshot) => void>
+>();
+
+async function createTestElectronMainContext(
   overrides: Partial<ElectronMainRuntimeDeps> = {}
 ) {
-  return createElectronMainContext({
+  const listeners = new Set<(snapshot: SessionLifecycleSnapshot) => void>();
+  const app = await createElectronMainContext({
     appPreferencesFilePath: tempAppPreferencesPath(),
     appPreferencesPlatform: {
       authorizeSystemNotifications: vi.fn(async () => true),
@@ -1299,12 +1036,9 @@ function createTestElectronMainContext(
     authApiBaseUrl: "https://salix.test",
     devServerUrl: undefined,
     getOperatingSystem: () => "macos",
-    ipcMain: { handle: vi.fn() },
+    ipcMain: { handle: vi.fn(), removeHandler: vi.fn() },
     isDevelopment: false,
-    localDataDatabasePath: tempDatabasePath(),
-    localDataFileStorePath: tempFileStorePath(),
     localFileIndexRoot: tempFileStorePath(),
-    openLocalDataRepository: openTestLocalDataRepository,
     notch: createNotchProvider(),
     openExternalUrl: vi.fn(async () => undefined),
     resolveDownloadsDirectory: () => "/tmp/comma-test-downloads",
@@ -1315,12 +1049,17 @@ function createTestElectronMainContext(
     writeClipboardImage: vi.fn(() => true),
     writeClipboardText: vi.fn(),
     secureSessionFilePath: tempSecureSessionPath(),
-    sideChat: createSideChatProvider(),
     windowAppearance: {
       setResolvedTheme: vi.fn((theme) => theme),
     },
     ...overrides,
+    onSessionStateChanged: (snapshot) => {
+      for (const listener of listeners) listener(snapshot);
+      return overrides.onSessionStateChanged?.(snapshot);
+    },
   });
+  sessionListeners.set(app, listeners);
+  return app;
 }
 
 function createNotchProvider() {
@@ -1336,36 +1075,6 @@ function createNotchProvider() {
     stop: vi.fn(async () => ({ type: "ack", payload: { method: "stop" } })),
     toggle: vi.fn(async () => ({ type: "ack", payload: { method: "toggle" } })),
     update: vi.fn(async () => ({ type: "ack", payload: { method: "update" } })),
-  };
-}
-
-function createSideChatProvider() {
-  return {
-    close: vi.fn(() => ({ revision: 0 })),
-    closeTestWindow: vi.fn(() => ({ revision: 0 })),
-    debugSettings: vi.fn(() => defaultSideChatDebugSettings),
-    finishInteractiveProgress: vi.fn(() => ({ revision: 0 })),
-    openSettings: vi.fn(() => ({ revision: 0 })),
-    openTestWindow: vi.fn(() => ({ revision: 0 })),
-    presentation: vi.fn(() => ({
-      availableContentHeight: 600,
-      contentFrame: { height: 0, width: 0, x: 0, y: 0 },
-      displayId: 0,
-      kind: "side-chat.presentation" as const,
-      offsetX: -539,
-      phase: "closed" as const,
-      progress: 0,
-      protocolVersion: 3 as const,
-      revision: 0,
-      screenFrame: { height: 0, width: 0, x: 0, y: 0 },
-      windowFrame: { height: 0, width: 0, x: 0, y: 0 },
-    })),
-    resetDebugSettings: vi.fn(() => defaultSideChatDebugSettings),
-    setContentSize: vi.fn(() => ({ revision: 0 })),
-    setInteractiveProgress: vi.fn(() => ({ revision: 0 })),
-    updateDebugSettings: vi.fn(() => defaultSideChatDebugSettings),
-    setEnabled: vi.fn(),
-    updateShortcut: vi.fn(() => defaultSideChatShortcut),
   };
 }
 
@@ -1390,7 +1099,7 @@ function createBrowserSidebarOwnerWindow(webContentsId: number) {
     isMaximized: () => false,
     isMinimized: () => false,
     isVisible: () => true,
-    webContents: { id: webContentsId },
+    webContents: { id: webContentsId, send: vi.fn() },
   };
 }
 
@@ -1451,26 +1160,67 @@ function currentSessionExpectation(app: ElectronMainContext) {
   return sessionExpectation(snapshot);
 }
 
+/** The client core running on `app`'s session host (in this process): started once per app, closed with it. */
+const cores = new WeakMap<ElectronMainContext, ReturnType<typeof startInProcessCore>>();
+
+function coreOf(app: ElectronMainContext) {
+  let core = cores.get(app);
+  if (!core) {
+    core = startInProcessCore(app.session);
+    cores.set(app, core);
+    const close = app.close.bind(app);
+    const started = core;
+    app.close = async () => {
+      started.close();
+      await close();
+    };
+  }
+  return core;
+}
+
+/** Starts the core on `app` and waits for the session it finds (the startup probe). */
+async function startedCore(app: ElectronMainContext, phase: string) {
+  const found =
+    app.session.state().phase === phase
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          const listeners = sessionListeners.get(app)!;
+          const listener = (snapshot: SessionLifecycleSnapshot) => {
+            if (snapshot.phase !== phase) return;
+            listeners.delete(listener);
+            resolve();
+          };
+          listeners.add(listener);
+        });
+  const core = coreOf(app);
+  await found;
+  return core;
+}
+
+/** Signs in as the app does: the core runs the sign-in, Main keeps the bearer and opens its gate. */
 async function signInTestSession(
   app: ElectronMainContext
 ): Promise<SessionProductLease> {
+  const core = await startedCore(app, "signed_out");
   const initial = app.session.state();
   if (initial.phase !== "signed_out") {
     throw new Error(`Expected signed-out test Session, received ${initial.phase}.`);
   }
-  const requested = await app.session.requestEmailLogin({
+  const requested = (await core.client.call("session.email.request", {
     email: "caller-binding@comma.test",
     expected: sessionExpectation(initial),
-  });
+  })) as { ok: true; value: { attempt: unknown; challengeId: string } };
   if (!requested.ok) throw new Error("Expected test auth attempt.");
-  const verified = await app.session.verifyEmailLogin({
+  const verified = (await core.client.call("session.email.verify", {
     attempt: requested.value.attempt,
     challengeId: requested.value.challengeId,
     code: "123456",
-  });
+  })) as { ok: boolean };
   if (!verified.ok) throw new Error("Expected signed-in test Session.");
-  const lease = sessionProductLease(verified.value);
+  const lease = sessionProductLease(app.session.state());
   if (!lease) throw new Error("Expected product Session lease.");
+  // The bearer stayed in Main: nothing the core was told or sent carries it.
+  expect(core.log()).not.toContain("main-secret");
   return lease;
 }
 
@@ -1505,12 +1255,6 @@ function jsonResponse(value: unknown, status = 200) {
     headers: { "content-type": "application/json" },
     status,
   });
-}
-
-function tempDatabasePath() {
-  const dir = mkdtempSync(join(tmpdir(), "comma-main-module-"));
-  tempDirs.push(dir);
-  return join(dir, "comma.sqlite");
 }
 
 function tempAppPreferencesPath() {

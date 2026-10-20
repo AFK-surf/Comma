@@ -12,13 +12,15 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 )
 
 const copilotToken = "tid=1;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com;sku=x"
 
+// Imported credentials stay current: they expire long after any test runs.
+const farExpiry = "2099-01-01T00:00:00Z"
+
 func providerCredentials(provider string) map[string]any {
-	expiry := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	expiry := farExpiry
 	switch provider {
 	case "gemini":
 		return map[string]any{"access_token": "synthetic-selected", "expired": expiry, "project_id": "project-1"}

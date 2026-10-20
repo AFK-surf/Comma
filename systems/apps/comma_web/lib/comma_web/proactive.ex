@@ -178,7 +178,8 @@ defmodule CommaWeb.Proactive do
          {:ok, _, authorized, home} <- HomeMail.context(%{"id" => owner}, %{}, ctx.group_id),
          true <- authorized.agent_id == ctx.agent_id and authorized.session_id == ctx.session_id,
          true <- valid_reference?(args),
-         true <- is_integer(args["run_at"]) and args["run_at"] > System.system_time(:millisecond),
+         true <-
+           is_integer(args["run_at"]) and args["run_at"] > SystemsClock.system_time(:millisecond),
          {:ok, data} <- ProactiveWatch.read(args["read"], ctx),
          :ok <- CommaWeb.ProactiveRoutine.validate_reference(args, data),
          {:ok, read, task_id} <- CommaWeb.ProactiveRoutine.continuation(args["read"], data, ctx),

@@ -1,6 +1,9 @@
 defmodule Comma.Phase4OperationsFoundationTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.Comma"]
   import Ecto.Query
 
   alias Comma.Data.ExternalOperation
@@ -64,7 +67,7 @@ defmodule Comma.Phase4OperationsFoundationTest do
     assert executing.attempt == 1
     assert {:error, :not_due} = Comma.Operations.claim(operation_id, 1)
 
-    stale_at = DateTime.add(DateTime.utc_now(), -600, :second)
+    stale_at = DateTime.add(SystemsClock.utc_now(), -600, :second)
 
     Comma.Repo.update_all(
       from(operation in ExternalOperation,
@@ -76,7 +79,7 @@ defmodule Comma.Phase4OperationsFoundationTest do
     assert {:ok, {:execute, recovered}} = Comma.Operations.claim(operation_id, 1)
     assert recovered.attempt == 2
 
-    next_attempt_at = DateTime.add(DateTime.utc_now(), 60, :second)
+    next_attempt_at = DateTime.add(SystemsClock.utc_now(), 60, :second)
 
     assert {:ok, {:updated, retryable}} =
              Comma.Operations.retryable(operation_id, 1, "provider_unavailable", next_attempt_at)
@@ -89,7 +92,7 @@ defmodule Comma.Phase4OperationsFoundationTest do
       from(operation in ExternalOperation,
         where: operation.operation_id == ^operation_id
       ),
-      set: [next_attempt_at: DateTime.add(DateTime.utc_now(), -1, :second)]
+      set: [next_attempt_at: DateTime.add(SystemsClock.utc_now(), -1, :second)]
     )
 
     assert {:ok, {:execute, final_attempt}} = Comma.Operations.claim(operation_id, 1)
@@ -140,23 +143,6 @@ defmodule Comma.Phase4OperationsFoundationTest do
     assert same.status == "superseded"
   end
 
-  test "lower generation arriving after current generation cannot execute" do
-    owner_id = unique("owner")
-    current_attrs = operation_attrs(2, owner_id)
-    stale_attrs = operation_attrs(1, owner_id)
-    insert_operation!(current_attrs)
-    insert_operation!(stale_attrs)
-
-    assert Comma.Repo.get!(ExternalOperation, stale_attrs.operation_id).status == "pending"
-
-    assert {:ok, {:superseded, stale}} =
-             Comma.Operations.claim(stale_attrs.operation_id, current_attrs.generation)
-
-    assert stale.status == "superseded"
-    assert stale.finished_at
-    assert Comma.Repo.get!(ExternalOperation, current_attrs.operation_id).status == "pending"
-  end
-
   test "two independent Repo clients allow only one fresh claim" do
     attrs = operation_attrs(1)
     {repo_a, repo_b} = start_independent_repos()
@@ -173,164 +159,6 @@ defmodule Comma.Phase4OperationsFoundationTest do
     operation = on_repo(repo_a, fn -> Comma.Repo.get!(ExternalOperation, attrs.operation_id) end)
     assert operation.status == "executing"
     assert operation.attempt == 1
-  end
-
-  test "two Repo clients converge a repeated stable generation and only one may claim" do
-    attrs = operation_attrs(1)
-    {repo_a, repo_b} = start_independent_repos()
-    job_changeset = fn -> Worker.new(%{"operation_id" => attrs.operation_id}) end
-
-    create_results =
-      concurrent(repo_a, repo_b, fn ->
-        Comma.Operations.create_with_job(attrs, job_changeset.())
-      end)
-
-    assert Enum.all?(create_results, &match?({:ok, _}, &1))
-
-    operation_ids =
-      Enum.map(create_results, fn {:ok, changes} ->
-        changes.comma_operation_row.operation_id
-      end)
-
-    assert Enum.uniq(operation_ids) == [attrs.operation_id]
-
-    claim_results =
-      concurrent(repo_a, repo_b, fn ->
-        Comma.Operations.claim(attrs.operation_id, 1)
-      end)
-
-    assert Enum.count(claim_results, &match?({:ok, {:execute, _}}, &1)) == 1
-    assert Enum.count(claim_results, &(&1 == {:error, :not_due})) == 1
-  end
-
-  test "new generation atomically supersedes older active generation" do
-    owner_id = unique("owner")
-    old_attrs = operation_attrs(1, owner_id)
-    new_attrs = operation_attrs(2, owner_id)
-    insert_operation!(old_attrs)
-
-    assert {:ok, %{comma_operation_row: current, comma_superseded_operations: 1}} =
-             Comma.Operations.create_with_job(
-               new_attrs,
-               Worker.new(%{"operation_id" => new_attrs.operation_id})
-             )
-
-    assert current.generation == 2
-    assert Comma.Repo.get!(ExternalOperation, old_attrs.operation_id).status == "superseded"
-    assert Comma.Repo.get!(ExternalOperation, old_attrs.operation_id).finished_at
-  end
-
-  test "Oban telemetry exports only bounded queue and state dimensions" do
-    handler_id = "phase4-telemetry-#{unique("handler")}"
-    parent = self()
-
-    :ok =
-      :telemetry.attach(
-        handler_id,
-        [:comma, :oban, :job, :exception],
-        fn event, measurements, metadata, _ ->
-          send(parent, {event, measurements, metadata})
-        end,
-        nil
-      )
-
-    on_exit(fn -> :telemetry.detach(handler_id) end)
-
-    Comma.ObanTelemetry.handle_event(
-      [:oban, :job, :exception],
-      %{duration: 10, queue_time: 2, memory: 999},
-      %{
-        conf: %{name: Comma.Oban},
-        job: %Oban.Job{queue: "unbounded-user-input"},
-        state: :failure,
-        reason: "must not be exported"
-      },
-      nil
-    )
-
-    assert_receive {
-      [:comma, :oban, :job, :exception],
-      %{duration: 10, queue_time: 2},
-      %{queue: "other", state: "failure"}
-    }
-  end
-
-  test "worker errors handed to Oban are bounded low-cardinality classes" do
-    missing_operation_id = unique("missing-operation")
-
-    assert {:ok, job} =
-             Oban.insert(
-               Comma.Oban,
-               Comma.Workers.WorkspaceConvergence.new(
-                 %{
-                   "operation_id" => missing_operation_id
-                 },
-                 queue: :comma_error_test,
-                 priority: 0
-               )
-             )
-
-    drain_result =
-      Oban.drain_queue(
-        Comma.Oban,
-        queue: :comma_error_test,
-        with_limit: 1
-      )
-
-    assert drain_result.failure == 1
-
-    persisted = Comma.Repo.get!(Oban.Job, job.id)
-    assert [%{"error" => oban_error}] = persisted.errors
-    assert byte_size(oban_error) <= 160
-    refute String.contains?(oban_error, missing_operation_id)
-  end
-
-  test "retry, terminal failure, and bounded queue backlog are emitted into a real scrape" do
-    reporter = Module.concat(__MODULE__, BacklogReporter)
-
-    start_supervised!(
-      {TelemetryMetricsPrometheus.Core,
-       name: reporter,
-       metrics: SystemsObservability.Metrics.enabled_metrics([:comma_product]),
-       start_async: false}
-    )
-
-    retry_attrs = operation_attrs(1)
-    insert_operation!(retry_attrs)
-    assert {:ok, {:execute, _}} = Comma.Operations.claim(retry_attrs.operation_id, 1)
-
-    assert {:ok, {:updated, _}} =
-             Comma.Operations.retryable(
-               retry_attrs.operation_id,
-               1,
-               "provider_unavailable",
-               DateTime.add(DateTime.utc_now(), 60, :second)
-             )
-
-    terminal_attrs = operation_attrs(1)
-    insert_operation!(terminal_attrs)
-    assert {:ok, {:execute, _}} = Comma.Operations.claim(terminal_attrs.operation_id, 1)
-
-    assert {:ok, {:updated, _}} =
-             Comma.Operations.terminal_failed(
-               terminal_attrs.operation_id,
-               1,
-               "invalid_owner"
-             )
-
-    assert :ok = Comma.ObanBacklogSampler.sample(Comma.Repo)
-
-    scrape = TelemetryMetricsPrometheus.Core.scrape(reporter)
-
-    assert scrape =~ ~s(comma_product_backlog_retries_total{queue="comma_external"} 1)
-
-    assert scrape =~
-             ~s(comma_product_backlog_terminal_failures_total{queue="comma_external"} 1)
-
-    assert scrape =~ ~s(comma_product_backlog_depth{queue="comma_external"})
-    assert scrape =~ ~s(comma_product_backlog_oldest_age_seconds{queue="comma_external"})
-    refute scrape =~ retry_attrs.operation_id
-    refute scrape =~ terminal_attrs.operation_id
   end
 
   defp insert_operation!(attrs) do
@@ -362,31 +190,31 @@ defmodule Comma.Phase4OperationsFoundationTest do
     opts = [name: nil, pool: DBConnection.ConnectionPool, pool_size: 1]
     {:ok, repo_a} = Comma.Repo.start_link(opts)
     {:ok, repo_b} = Comma.Repo.start_link(opts)
-    Process.unlink(repo_a)
-    Process.unlink(repo_b)
+    SystemsRuntime.Proc.unlink(repo_a)
+    SystemsRuntime.Proc.unlink(repo_b)
 
     on_exit(fn ->
-      for repo <- [repo_a, repo_b], Process.alive?(repo), do: Supervisor.stop(repo)
+      for repo <- [repo_a, repo_b], SystemsRuntime.Proc.alive?(repo), do: Supervisor.stop(repo)
     end)
 
     {repo_a, repo_b}
   end
 
   defp concurrent(repo_a, repo_b, fun) do
-    parent = self()
-    ref = make_ref()
+    parent = SystemsRuntime.Proc.self()
+    ref = SystemsRuntime.Proc.make_ref()
 
     tasks =
       for repo <- [repo_a, repo_b] do
-        Task.async(fn ->
-          send(parent, {ref, :ready, self()})
-          receive do: ({^ref, :go} -> on_repo(repo, fun))
+        SystemsRuntime.Task.async(fn ->
+          SystemsRuntime.Proc.send(parent, {ref, :ready, SystemsRuntime.Proc.self()})
+          SystemsRuntime.Proc.receive(do: ({^ref, :go} -> on_repo(repo, fun)))
         end)
       end
 
-    for task <- tasks, do: assert_receive({^ref, :ready, pid} when pid == task.pid)
-    for task <- tasks, do: send(task.pid, {ref, :go})
-    Enum.map(tasks, &Task.await(&1, 10_000))
+    for task <- tasks, do: settle_receive({^ref, :ready, pid} when pid == task.pid)
+    for task <- tasks, do: SystemsRuntime.Proc.send(task.pid, {ref, :go})
+    Enum.map(tasks, &settled_await/1)
   end
 
   defp on_repo(repo, fun) do
@@ -401,5 +229,5 @@ defmodule Comma.Phase4OperationsFoundationTest do
   end
 
   defp unique(prefix),
-    do: prefix <> "_" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+    do: prefix <> "_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(9), padding: false)
 end

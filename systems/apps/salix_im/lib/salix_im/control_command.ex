@@ -23,7 +23,7 @@ defmodule SalixIM.ControlCommand do
   provider commands, a crash after the receipt commits can lose execution; the
   user must send a new command. Task conversations do not grant authority.
 
-  **External providers: Slack and Feishu only.** Authority is granted per provider, by the ingress
+  **External providers: Slack, Feishu and QQ only.** Authority is granted per provider, by the ingress
   path that knows who sent what (`slack_command_text/4`, `feishu_command_text/2`
   in `SalixIM.ProviderHTTP`); a provider that grants none can never produce a
   command here. Telegram and WeChat grant none: neither filters inbound for bot
@@ -37,7 +37,6 @@ defmodule SalixIM.ControlCommand do
     * `status` — the Router session's model and context usage.
     * `clear` — start a fresh Router session, preserving the previous transcript.
     * `compact` — trigger a compaction of the Router session context.
-    * `emergency-compact` — mask historical non-model messages over 1,000 bytes.
     * `ls <path>` — list a path in the Router agent's VFS (`ls /`).
     * `cat <path>` — show a VFS file, truncated to a chat-safe size.
     * `help` — the supported commands.
@@ -56,9 +55,9 @@ defmodule SalixIM.ControlCommand do
   anything that is not UTF-8 text, and — on Slack — is escaped at the reply
   builder; see `slack_reply/2`.
 
-  Every command is scoped to the group's own Router — `status`, `compact`, and
-  `emergency-compact` to its session; `clear` switches its canonical session;
-  `ls` and `cat` to its workspace. Slack
+  Every command is scoped to the group's own Router — `status` and `compact` to
+  its session; `clear` switches its canonical session; `ls` and `cat` to its
+  workspace. Slack
   worker-thread messages take a different ingress path
   (`SlackConversationIngress`) that does not cross this funnel, so a command in
   a worker thread is not recognized there.
@@ -75,9 +74,7 @@ defmodule SalixIM.ControlCommand do
   its Router session, resolved from the connect's `group_id` — never from
   anything in the message. `status` reports only what that chat's own agent is
   configured with. `compact` summarizes context without deleting transcript
-  (see `SalixAgent.Compaction`); `emergency-compact` installs a read-side mask
-  for that session's historical non-model messages over 1,000 bytes while
-  preserving immutable event/archive bytes. `ls` and `cat` read the same
+  (see `SalixAgent.Compaction`). `ls` and `cat` read the same
   workspace the chat's own agent already reads out on request; the path is the
   only thing the sender chooses, and it selects a key in THAT agent's manifest,
   so no path can reach another agent's files.
@@ -85,6 +82,9 @@ defmodule SalixIM.ControlCommand do
   The granting ingress paths require a HUMAN who ADDRESSED the bot: Slack needs
   an explicit mention on the message itself and refuses app-authored events;
   Feishu needs `sender_type == "user"` on top of its existing relevance gate.
+  `SalixIM.QQInbound` admits a group message only when it mentions the bot and
+  a person wrote it, so it grants every message it admits. There a command is the slash form the QQ command panel inserts
+  (`/status`).
   Thread participation alone is not enough — it admits replies that never
   addressed the bot, and on Slack it admits other apps' relayed content, whose
   text is written by whoever wrote the PR title or alert being relayed.
@@ -114,9 +114,7 @@ defmodule SalixIM.ControlCommand do
   reviving later — a stale `status` would be wrong by the time it arrived, and a
   compaction the runtime still needs is re-triggered by the auto threshold
   (`SalixAgent.Compaction`) without anyone asking. An unanswered command is
-  visible to the sender, who re-sends. The same applies to
-  `emergency-compact`: its range predicate is durable and repeated commands
-  coalesce, but a command lost before commit must be sent again.
+  visible to the sender, who re-sends.
   """
 
   require Logger
@@ -164,7 +162,6 @@ defmodule SalixIM.ControlCommand do
   • status — model and context usage
   • clear — start a fresh Router session (shared by all chats for this Router)
   • compact — compact the session context
-  • emergency-compact — replace historical non-model messages over 1,000 bytes
   • ls PATH — list a workspace path, e.g. ls / or ls /artifacts
   • cat PATH — show a workspace file
   ls and cat require VFS control commands to be enabled in the Salix dashboard for this group.
@@ -175,7 +172,6 @@ defmodule SalixIM.ControlCommand do
           :status
           | :clear
           | :compact
-          | :emergency_compact
           | :help
           | {:ls, String.t()}
           | {:cat, String.t()}
@@ -224,7 +220,6 @@ defmodule SalixIM.ControlCommand do
       "status" -> {:ok, :status}
       "clear" -> {:ok, :clear}
       "compact" -> {:ok, :compact}
-      "emergency-compact" -> {:ok, :emergency_compact}
       "help" -> {:ok, :help}
       # A bare `ls` means the root, the way it means the working directory in a
       # shell. A bare `cat` has no such default — there is no file it could
@@ -338,8 +333,8 @@ defmodule SalixIM.ControlCommand do
       # Saturation is not an ingress fault and a retry cannot fix it: the tasks
       # holding the pool park for as long as a compaction takes, which outlasts
       # every provider retry. Erroring would put human message volume straight
-      # onto the ingress error alert (im-ingress-alerting.md declines
-      # caller-amplifiable input) and still lose the message. So the sender is
+      # onto the ingress error alert, which must not page on
+      # caller-amplifiable input, and still lose the message. So the sender is
       # told, from the REPLY pool — never inline, see `respond_busy/2`.
       {:error, {:control_command_unavailable, :max_children}, agent_id} ->
         log(group_id, parsed, metadata, :saturated)
@@ -362,7 +357,7 @@ defmodule SalixIM.ControlCommand do
   # never a second counter, and never a label carrying a group, connect or
   # sender. `over_budget` is the refusal; `ok` is a command that got a slot.
   defp emit_dispatch(outcome, surface) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
       %{duration: 0},
       %{
@@ -400,8 +395,8 @@ defmodule SalixIM.ControlCommand do
       end)
     end
 
-    if Process.whereis(@reply_supervisor) do
-      case Task.Supervisor.start_child(@reply_supervisor, reply) do
+    if SystemsRuntime.Proc.whereis(@reply_supervisor) do
+      case SystemsRuntime.TaskSupervisor.start_child(@reply_supervisor, reply) do
         {:ok, _pid} -> :ok
         {:error, reason} -> Logger.warning("salix busy reply not sent: #{inspect(reason)}")
       end
@@ -424,12 +419,22 @@ defmodule SalixIM.ControlCommand do
   def run(group_id, parsed, metadata, agent_id, session_id)
       when is_binary(group_id) and is_map(metadata) and is_binary(agent_id) and
              is_binary(session_id) do
-    text = execute_for_group(group_id, parsed, agent_id, session_id)
+    text =
+      provider_text(group_id, parsed, metadata) ||
+        execute_for_group(group_id, parsed, agent_id, session_id)
+
     log(group_id, parsed, metadata, :executed)
     respond(agent_id, metadata, text)
   end
 
   # ---- execution ----
+
+  # A QQ bot answers `help` in its own words: its menu is the connect's, and
+  # its people read Chinese.
+  defp provider_text(group_id, {:ok, :help}, %{"provider" => "qq"} = metadata),
+    do: SalixIM.Provider.QQ.Menu.help(group_id, metadata)
+
+  defp provider_text(_group_id, _parsed, _metadata), do: nil
 
   # Read the current group setting inside the execution task, not at enqueue time.
   defp execute_for_group(group_id, {:ok, {command, _path}} = parsed, agent_id, session_id)
@@ -495,30 +500,6 @@ defmodule SalixIM.ControlCommand do
 
       {:error, reason} ->
         "Compaction failed — #{failure(:compact, reason)}."
-    end
-  end
-
-  defp execute({:ok, :emergency_compact}, agent_id, session_id) do
-    case AgentControl.emergency_compact_session(agent_id, session_id) do
-      {:ok,
-       %{
-         "status" => "emergency_compacted",
-         "through_id" => through_id,
-         "max_bytes" => max_bytes,
-         "replacement" => replacement
-       }} ->
-        "Emergency compaction complete. Historical non-model messages over " <>
-          "#{number(max_bytes)} bytes through message ##{number(through_id)} now read as " <>
-          replacement <> "."
-
-      {:ok, %{"status" => status}} ->
-        "Emergency compaction finished with status #{status}."
-
-      {:ok, _result} ->
-        "Emergency compaction finished."
-
-      {:error, reason} ->
-        "Emergency compaction failed — #{failure(:emergency_compact, reason)}."
     end
   end
 
@@ -779,6 +760,8 @@ defmodule SalixIM.ControlCommand do
     case trim(metadata["provider"]) do
       "slack" -> slack_reply(metadata, text)
       "feishu" -> feishu_reply(metadata, text)
+      "qq" -> qq_reply(metadata, text)
+      "lark" -> lark_reply(metadata, text)
       "internal" -> internal_reply(metadata, text)
       _ -> :unsupported
     end
@@ -822,6 +805,45 @@ defmodule SalixIM.ControlCommand do
     |> String.replace("&", "&amp;")
     |> String.replace("<", "&lt;")
     |> String.replace(">", "&gt;")
+  end
+
+  # A reply to the source message keeps the answer beside the request; in a
+  # group it goes into that message's thread, as the Router's own answers do.
+  # Sent as literal text: `cat` echoes file bytes, and Markdown would turn
+  # them into links and mentions.
+  defp lark_reply(metadata, text) do
+    case trim(metadata["chat_id"]) do
+      "" ->
+        :unsupported
+
+      chat_id ->
+        params = %{"chat_id" => chat_id, "text" => text, "format" => "text"}
+
+        case trim(metadata["message_id"]) do
+          "" ->
+            {:ok, "lark", "lark.send_message", params}
+
+          message_id ->
+            {:ok, "lark", "lark.send_message",
+             Map.merge(params, %{
+               "reply_to" => message_id,
+               "reply_in_thread" => trim(metadata["chat_type"]) != "p2p"
+             })}
+        end
+    end
+  end
+
+  # Sent as literal text: `cat` echoes file bytes, and QQ Markdown would turn
+  # them into links and images.
+  defp qq_reply(metadata, text) do
+    case trim(metadata["chat_id"]) do
+      "" ->
+        :unsupported
+
+      chat_id ->
+        {:ok, "qq", "qq.send_message",
+         %{"chat_id" => chat_id, "text" => text, "format" => "text"}}
+    end
   end
 
   # Replying to the source message keeps the answer attached to the request in
@@ -883,7 +905,7 @@ defmodule SalixIM.ControlCommand do
   # would blow the provider's ACK budget. A dispatch that cannot start is an
   # ERROR, not a silent drop — see `intercept/4`.
   defp dispatch(fun) do
-    if Application.get_env(:salix_im, :control_command_execution, :async) == :sync do
+    if SystemsRuntime.get_env(:salix_im, :control_command_execution, :async) == :sync do
       guarded(fun)
       :ok
     else
@@ -899,8 +921,8 @@ defmodule SalixIM.ControlCommand do
     surface = SystemsObservability.Context.current_surface()
     child = fn -> SystemsObservability.Context.run(observability, fn -> guarded(fun) end) end
 
-    if Process.whereis(@task_supervisor) do
-      case Task.Supervisor.start_child(@task_supervisor, child) do
+    if SystemsRuntime.Proc.whereis(@task_supervisor) do
+      case SystemsRuntime.TaskSupervisor.start_child(@task_supervisor, child) do
         {:ok, _pid} ->
           emit_dispatch("ok", surface)
 

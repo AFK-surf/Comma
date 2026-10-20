@@ -59,6 +59,55 @@ describe("MeetingRecorder", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
+  it("checks the chosen microphone and reports a new choice", async () => {
+    const onMicrophoneChange = vi.fn();
+    const devices = [
+      { id: "default", label: "System default", isDefault: true },
+      { id: "macbook", label: "MacBook Pro Microphone" },
+    ];
+    const { rerender } = render(
+      <MeetingRecorder
+        microphone="on"
+        microphoneDeviceId="default"
+        microphoneDevices={devices}
+        onMicrophoneChange={onMicrophoneChange}
+        phase="recording"
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Choose microphone" }));
+    expect(
+      await screen.findByRole("menuitemradio", { name: /System default/ })
+    ).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(
+      screen.getByRole("menuitemradio", { name: "MacBook Pro Microphone" })
+    );
+    expect(onMicrophoneChange).toHaveBeenCalledWith("macbook");
+
+    rerender(
+      <MeetingRecorder
+        microphone="on"
+        microphoneDeviceId="macbook"
+        microphoneDevices={devices}
+        onMicrophoneChange={onMicrophoneChange}
+        phase="recording"
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Choose microphone" }));
+    expect(
+      await screen.findByRole("menuitemradio", { name: "MacBook Pro Microphone" })
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("discards from the stop options without stopping to save", async () => {
+    const onDiscard = vi.fn();
+    const onStop = vi.fn();
+    render(<MeetingRecorder onDiscard={onDiscard} onStop={onStop} phase="recording" />);
+    fireEvent.click(screen.getByRole("button", { name: "Stop options" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Discard and stop" }));
+    expect(onDiscard).toHaveBeenCalledOnce();
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
   it("swaps pause for resume while paused", () => {
     const onResume = vi.fn();
     render(<MeetingRecorder durationMs={1_000} onResume={onResume} phase="paused" />);

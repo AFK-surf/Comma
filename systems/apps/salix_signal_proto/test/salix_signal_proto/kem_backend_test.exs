@@ -3,7 +3,7 @@ defmodule SalixSignalProto.KemBackendTest do
   # constant time in OTP :crypto; plain Elixir stands in only when a test
   # enables it. Not async: it changes the application environment that the
   # other tests rely on.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import SalixSignalProto.Test.SessionFixtures
 
@@ -17,15 +17,15 @@ defmodule SalixSignalProto.KemBackendTest do
   @bob Address.new("00000000-0000-4000-8000-000000000022", 1)
 
   setup do
-    on_exit(fn -> Application.put_env(:salix_signal_proto, :plain_kem_in_tests, true) end)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_signal_proto, :plain_kem_in_tests, true) end)
   end
 
   defp disable_plain_kem,
-    do: Application.put_env(:salix_signal_proto, :plain_kem_in_tests, false)
+    do: SystemsRuntime.put_env(:salix_signal_proto, :plain_kem_in_tests, false)
 
   test "without constant-time KEM, a responder refuses a pre-key message and a new session cannot send" do
     bob = responder()
-    alice_ctx = context(:crypto.strong_rand_bytes(32), 1234, @alice, @bob)
+    alice_ctx = context(SystemsRuntime.Proc.random_bytes(32), 1234, @alice, @bob)
 
     bob_ctx = %{
       identity: bob.identity,

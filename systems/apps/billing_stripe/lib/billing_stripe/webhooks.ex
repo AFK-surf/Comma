@@ -17,7 +17,8 @@ defmodule BillingStripe.Webhooks do
   end
 
   defp do_handle_webhook(payload, signature_header, opts) do
-    secret = Keyword.get(opts, :secret) || Application.get_env(:billing_stripe, :webhook_secret)
+    secret =
+      Keyword.get(opts, :secret) || SystemsRuntime.get_env(:billing_stripe, :webhook_secret)
 
     with {:ok, event} <- verify(payload, signature_header, secret, opts),
          :ok <- journal_event(event, payload),
@@ -36,7 +37,7 @@ defmodule BillingStripe.Webhooks do
   def verify(payload, signature_header, secret, opts) do
     tolerance = Keyword.get(opts, :tolerance, 300)
 
-    api = Application.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
+    api = SystemsRuntime.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
 
     with {:ok, event} <-
            api.construct_webhook_event(
@@ -53,7 +54,7 @@ defmodule BillingStripe.Webhooks do
   end
 
   defp journal_event(%{"id" => id, "type" => type} = event, payload) do
-    repo = Application.fetch_env!(:billing_stripe, :repo)
+    repo = SystemsRuntime.fetch_env!(:billing_stripe, :repo)
     sql = Ecto.Adapters.SQL
     digest = :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
     object = get_in(event, ["data", "object"]) || %{}
@@ -80,7 +81,7 @@ defmodule BillingStripe.Webhooks do
   end
 
   defp process_journaled(event) do
-    repo = Application.fetch_env!(:billing_stripe, :repo)
+    repo = SystemsRuntime.fetch_env!(:billing_stripe, :repo)
 
     # The journal survives a request crash, but its business effects and the
     # processed marker commit together. A concurrent retry waits on this row;
@@ -151,7 +152,7 @@ defmodule BillingStripe.Webhooks do
 
     BillingCommerce.Projection.emit(%{
       source_key: "stripe:#{event["id"]}:#{status}",
-      occurred_at: DateTime.utc_now(),
+      occurred_at: SystemsClock.utc_now(),
       surface: metadata["surface"] || "unknown",
       billing_account_id: metadata["billing_account_id"] || "unknown",
       product_owner_type: metadata["product_owner_type"] || "unknown",

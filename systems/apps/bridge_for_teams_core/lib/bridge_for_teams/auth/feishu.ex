@@ -32,7 +32,7 @@ defmodule BridgeForTeams.Auth.Feishu do
   @doc "The configured Feishu provider (`{:bridge_for_teams_core, :feishu_provider}`)."
   @spec impl() :: module()
   def impl do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :bridge_for_teams_core,
       :feishu_provider,
       BridgeForTeams.Auth.Feishu.HTTP

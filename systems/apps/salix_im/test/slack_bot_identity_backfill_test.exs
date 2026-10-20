@@ -1,6 +1,8 @@
 defmodule SalixIM.SlackBotIdentityBackfillTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  require SystemsClock
 
+  use SalixAgent.TestSupport.Settle
   alias Mix.Tasks.Salix.Slack.BackfillBotIds
   alias SalixStore.Keys
 
@@ -34,14 +36,14 @@ defmodule SalixIM.SlackBotIdentityBackfillTest do
   end
 
   setup do
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
     previous_shell = Mix.shell()
-    previous_slack_api_base_url = Application.get_env(:salix_im, :slack_api_base_url)
+    previous_slack_api_base_url = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     Mix.Task.run("app.start")
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -50,7 +52,7 @@ defmodule SalixIM.SlackBotIdentityBackfillTest do
     Mix.shell(Mix.Shell.Process)
 
     on_exit(fn ->
-      Application.put_env(:salix_store, :s3_backend, previous_backend)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, previous_backend)
       restore_env(:salix_im, :slack_api_base_url, previous_slack_api_base_url)
       Mix.shell(previous_shell)
     end)
@@ -198,7 +200,7 @@ defmodule SalixIM.SlackBotIdentityBackfillTest do
     assert summary =~ "scanned 2"
     assert summary =~ "--cursor v1."
     refute summary =~ "scan complete"
-    refute_receive {:mix_shell, :info, [_message]}
+    settle_refute_receive({:mix_shell, :info, [_message]})
   end
 
   test "task fails instead of omitting an unreadable candidate" do
@@ -229,7 +231,7 @@ defmodule SalixIM.SlackBotIdentityBackfillTest do
     {second_key, _second} = seed_connect("group-a", "connect-2")
     port = free_port()
     start_supervised!({Bandit, plug: MockSlackAPI, port: port})
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
 
     error =
       assert_raise Mix.Error, ~r/backfill failed.*connect-2.*invalid_auth/i, fn ->
@@ -252,7 +254,7 @@ defmodule SalixIM.SlackBotIdentityBackfillTest do
   end
 
   defp seed_connect(group_id, connect_id, attrs \\ %{}) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     connect =
       Map.merge(
@@ -277,13 +279,13 @@ defmodule SalixIM.SlackBotIdentityBackfillTest do
 
   defp receive_info_messages(count) do
     Enum.map(1..count, fn _ ->
-      assert_receive {:mix_shell, :info, [message]}
+      settle_receive({:mix_shell, :info, [message]})
       message
     end)
   end
 
   defp receive_info_messages_until_quiet(messages \\ []) do
-    receive do
+    SystemsClock.vreceive do
       {:mix_shell, :info, [message]} -> receive_info_messages_until_quiet([message | messages])
     after
       20 -> Enum.reverse(messages)
@@ -297,6 +299,6 @@ defmodule SalixIM.SlackBotIdentityBackfillTest do
     port
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

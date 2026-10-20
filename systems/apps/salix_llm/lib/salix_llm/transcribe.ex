@@ -1,6 +1,8 @@
 defmodule SalixLlm.Transcribe do
   @moduledoc false
 
+  require SystemsRuntime.Proc
+
   alias SalixLlm.AudioChunker
 
   @receive_timeout 180_000
@@ -90,7 +92,7 @@ defmodule SalixLlm.Transcribe do
 
   defp transcribe_audio_source_with_metadata(cfg, prompt, opts, run_chunker) do
     deadline_ms =
-      System.monotonic_time(:millisecond) +
+      SystemsClock.monotonic_time(:millisecond) +
         positive_integer(opts[:batch_timeout_ms], @batch_timeout)
 
     opts = Keyword.put(opts, :deadline_ms, deadline_ms)
@@ -177,9 +179,102 @@ defmodule SalixLlm.Transcribe do
     end)
   end
 
+  @doc """
+  A `:transcribe_fun` that asks once more when the first request has not
+  answered after `after_ms`, or failed, and returns the first complete
+  transcript; the other request is stopped. At most two requests are made,
+  and both failing returns the first failure.
+
+  The provider's slow answers are independent of each other: on 2026-10-13,
+  16% of dictation requests took over 10 s, while a second request sent
+  alongside a slow one was no more likely to be slow than any other.
+  """
+  @spec hedged(
+          (cfg(), String.t(), String.t(), String.t() -> {:ok, String.t()} | {:error, term()}),
+          pos_integer()
+        ) :: (cfg(), String.t(), String.t(), String.t() -> {:ok, String.t()} | {:error, term()})
+  def hedged(transcribe_fun, after_ms) when is_function(transcribe_fun, 4) do
+    fn cfg, audio_b64, format, prompt ->
+      attempt = fn -> attempt(transcribe_fun, cfg, audio_b64, format, prompt) end
+      first = SystemsRuntime.Task.async(attempt)
+
+      case SystemsClock.yield(first, after_ms) do
+        {:ok, {:ok, _text} = transcript} ->
+          transcript
+
+        {:ok, failure} ->
+          first_transcript([SystemsRuntime.Task.async(attempt)], failure)
+
+        {:exit, reason} ->
+          first_transcript(
+            [SystemsRuntime.Task.async(attempt)],
+            {:error, {:asr_chunk_exit, :exit, reason}}
+          )
+
+        nil ->
+          first_transcript([first, SystemsRuntime.Task.async(attempt)], nil)
+      end
+    end
+  end
+
+  # A failure is an answer: the request's process always replies.
+  defp attempt(transcribe_fun, cfg, audio_b64, format, prompt) do
+    transcribe_fun.(cfg, audio_b64, format, prompt)
+  rescue
+    error -> {:error, {:asr_chunk_exception, Exception.message(error)}}
+  catch
+    kind, reason -> {:error, {:asr_chunk_exit, kind, reason}}
+  end
+
+  defp first_transcript([], failure), do: failure
+
+  defp first_transcript(tasks, failure) do
+    refs = Map.new(tasks, &{&1.ref, &1})
+
+    SystemsRuntime.Proc.receive do
+      {ref, answer} when is_map_key(refs, ref) ->
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
+        rest = refs |> Map.delete(ref) |> Map.values()
+
+        case answer do
+          {:ok, _text} ->
+            Enum.each(rest, &SystemsRuntime.Task.shutdown(&1, :brutal_kill))
+            answer
+
+          _failure ->
+            first_transcript(rest, failure || answer)
+        end
+
+      {:DOWN, ref, :process, _pid, reason} when is_map_key(refs, ref) ->
+        rest = refs |> Map.delete(ref) |> Map.values()
+        first_transcript(rest, failure || {:error, {:asr_chunk_exit, :exit, reason}})
+    end
+  end
+
   defp do_transcribe(base_url, model, key, cfg, audio_b64, format, prompt) do
     url = String.trim_trailing(base_url, "/") <> "/chat/completions"
+    body = request_body(model, cfg, audio_b64, format, prompt)
 
+    headers =
+      [{"authorization", "Bearer #{key}"}, {"content-type", "application/json"}] ++
+        header_pairs(cfg["headers"])
+
+    case Req.post(url, json: body, headers: headers, receive_timeout: @receive_timeout) do
+      {:ok, %{status: 200, body: resp}} ->
+        complete_content(resp)
+
+      {:ok, %{status: status, body: resp}} ->
+        {:error, {:asr_http, status, preview(resp)}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc false
+  # The chat-completions request: the prompt, then the audio, at the reasoning
+  # effort the tier names (`SalixAgent.PlatformModels`), if any.
+  def request_body(model, cfg, audio_b64, format, prompt) do
     body = %{
       "model" => model,
       "messages" => [
@@ -196,19 +291,9 @@ defmodule SalixLlm.Transcribe do
       ]
     }
 
-    headers =
-      [{"authorization", "Bearer #{key}"}, {"content-type", "application/json"}] ++
-        header_pairs(cfg["headers"])
-
-    case Req.post(url, json: body, headers: headers, receive_timeout: @receive_timeout) do
-      {:ok, %{status: 200, body: resp}} ->
-        complete_content(resp)
-
-      {:ok, %{status: status, body: resp}} ->
-        {:error, {:asr_http, status, preview(resp)}}
-
-      {:error, reason} ->
-        {:error, reason}
+    case cfg["reasoning_effort"] do
+      effort when is_binary(effort) and effort != "" -> Map.put(body, "reasoning_effort", effort)
+      _none -> body
     end
   end
 
@@ -244,7 +329,7 @@ defmodule SalixLlm.Transcribe do
     task_timeout = opts[:task_timeout_ms] || @chunk_task_timeout
 
     chunks
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn chunk -> transcribe_chunk(cfg, chunk, prompt, transcribe_fun) end,
       max_concurrency: max_concurrency,
       ordered: true,
@@ -256,9 +341,10 @@ defmodule SalixLlm.Transcribe do
 
   defp run_chunk_transcriptions_bounded(cfg, chunks, prompt, opts) do
     with {:ok, timeout} <- remaining_batch_timeout(opts) do
-      task = Task.async(fn -> run_chunk_transcriptions(cfg, chunks, prompt, opts) end)
+      task =
+        SystemsRuntime.Task.async(fn -> run_chunk_transcriptions(cfg, chunks, prompt, opts) end)
 
-      case Task.yield(task, timeout) do
+      case SystemsClock.yield(task, timeout) do
         {:ok, results} ->
           {:ok, results}
 
@@ -266,7 +352,7 @@ defmodule SalixLlm.Transcribe do
           {:error, {:asr_batch_exit, reason}}
 
         nil ->
-          case Task.shutdown(task, :brutal_kill) do
+          case SystemsRuntime.Task.shutdown(task, :brutal_kill) do
             {:ok, results} -> {:ok, results}
             _ -> {:error, :asr_batch_timeout}
           end
@@ -277,7 +363,7 @@ defmodule SalixLlm.Transcribe do
   defp remaining_batch_timeout(opts) do
     case opts[:deadline_ms] do
       deadline_ms when is_integer(deadline_ms) ->
-        remaining = deadline_ms - System.monotonic_time(:millisecond)
+        remaining = deadline_ms - SystemsClock.monotonic_time(:millisecond)
 
         if remaining > 0,
           do: {:ok, remaining},

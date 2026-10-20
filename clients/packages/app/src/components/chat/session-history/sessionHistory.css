@@ -61,7 +61,7 @@
   padding: 0;
   margin: 12px 0;
 }
-.comma-session-hover li + li {
+.comma-session-hover li:not(:first-child) {
   border-top: 1px solid var(--color-border-secondary);
   padding-top: 8px;
   margin-top: 8px;
@@ -506,6 +506,10 @@
 .comma-session-request-phase[data-phase="ttft"] {
   background: var(--color-text-primary);
   box-shadow: 0 0 0 1px var(--color-bg-primary);
+}
+.comma-session-overview-track .comma-session-request-phase[data-phase="ttft"] {
+  /* The share of the bar's time before the first token. */
+  left: calc(var(--session-span-phase) * 100%);
 }
 .comma-session-overview-span:hover,
 .comma-session-overview-span[data-inspected],

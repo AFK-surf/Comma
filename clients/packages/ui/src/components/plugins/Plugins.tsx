@@ -18,6 +18,7 @@ import { InputField } from "../input";
 import { ScrollArea } from "../scroll-area";
 import { cx, definedProps } from "../utils";
 import {
+  afterAnimations,
   isReducedMotionEnabled,
   motionDistance,
   motionDuration,
@@ -726,16 +727,7 @@ const PluginCategorySection = ({
     previewIconOriginsRef.current = undefined;
     const hiddenPluginsElement = hiddenPluginsRef.current;
     const reducedMotion = isReducedMotionEnabled();
-    const view = hiddenPluginsElement.ownerDocument.defaultView;
-    const pointerTransitionTimer = view
-      ? (() => {
-          hiddenPluginsElement.dataset.pointerExpanding = "";
-          return view.setTimeout(
-            () => delete hiddenPluginsElement.dataset.pointerExpanding,
-            reducedMotion ? motionDuration.feedbackIn : pluginRevealTimelineDuration
-          );
-        })()
-      : undefined;
+    hiddenPluginsElement.dataset.pointerExpanding = "";
     const previewIconAnimation = animatePluginPreviewIcons(
       hiddenPluginsElement,
       origins,
@@ -746,11 +738,15 @@ const PluginCategorySection = ({
       reducedMotion,
       previewIconAnimation?.pluginIds ?? new Set()
     );
+    // Pointer feedback waits until the revealed rows have arrived.
+    const cancelPointerWait = afterAnimations(
+      hiddenPluginsElement,
+      reducedMotion ? motionDuration.feedbackIn : pluginRevealTimelineDuration,
+      () => delete hiddenPluginsElement.dataset.pointerExpanding
+    );
 
     return () => {
-      if (pointerTransitionTimer !== undefined) {
-        view?.clearTimeout(pointerTransitionTimer);
-      }
+      cancelPointerWait();
       delete hiddenPluginsElement.dataset.pointerExpanding;
       previewIconAnimation?.cleanup();
       cleanupItems();

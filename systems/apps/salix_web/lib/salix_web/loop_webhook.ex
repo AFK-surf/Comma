@@ -7,7 +7,7 @@ defmodule SalixWeb.LoopWebhook do
   alias Salix.App.RouterInbox.RateLimit
 
   # Authenticate and limit before the parser reads the request body. Redis
-  # buckets contain Loop IDs, never secrets, and expire through Hammer.
+  # buckets contain Loop IDs, never secrets, and expire with their window.
   def admit(conn) do
     secret = List.last(conn.path_info)
 
@@ -46,7 +46,7 @@ defmodule SalixWeb.LoopWebhook do
       true ->
         event_id =
           case get_req_header(conn, "idempotency-key") do
-            [] -> Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
+            [] -> Base.url_encode64(SystemsRuntime.Proc.random_bytes(24), padding: false)
             [value] -> String.trim(value)
             _ -> nil
           end
@@ -98,7 +98,7 @@ defmodule SalixWeb.LoopWebhook do
   end
 
   defp limit(bucket, count) do
-    case RateLimit.hit("loop-webhook:" <> bucket, 60_000, count) do
+    case RateLimit.admit("loop-webhook:" <> bucket, 60_000, count) do
       {:allow, _} -> :ok
       {:deny, ms} -> {:error, {:rate_limited, max(1, div(ms + 999, 1000))}}
     end

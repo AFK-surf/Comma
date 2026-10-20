@@ -5,8 +5,10 @@
     "declaration": true,
     "declarationMap": true,
     "emitDeclarationOnly": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "noEmit": false,
+    "rootDir": "."
   },
-  "include": ["src", "catalog/*.json"],
-  "exclude": ["**/*.test.*", "**/*.spec.*"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.json", "catalog/*.json"],
+  "exclude": ["**/*.test.*", "**/*.spec.*", "**/*.stories.*"]
 }

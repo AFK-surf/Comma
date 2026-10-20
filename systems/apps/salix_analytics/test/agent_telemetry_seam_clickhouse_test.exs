@@ -14,7 +14,7 @@ defmodule SalixAnalytics.AgentTelemetrySeamClickHouseTest do
       event_date now derives from the UTC instant, and the coarse bounds
       are widened a day for pre-fix historical rows.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAnalytics.AgentTelemetryQueries, as: Queries
   alias SalixAnalytics.Migrations
@@ -33,12 +33,12 @@ defmodule SalixAnalytics.AgentTelemetrySeamClickHouseTest do
   setup_all do
     Application.ensure_all_started(:req)
 
-    database = "salix_telemetry_seam_test_#{System.unique_integer([:positive])}"
-    prev = Application.get_env(:salix_analytics, :clickhouse)
+    database = "salix_telemetry_seam_test_#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    prev = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
     clickhouse_query!("DROP DATABASE IF EXISTS #{database}")
 
-    Application.put_env(:salix_analytics, :clickhouse,
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
       base_url: @clickhouse_url,
       table: "#{database}.events"
     )
@@ -46,7 +46,10 @@ defmodule SalixAnalytics.AgentTelemetrySeamClickHouseTest do
     {:ok, _versions} = Migrations.migrate()
 
     on_exit(fn ->
-      Application.put_env(:salix_analytics, :clickhouse, prev)
+      if prev,
+        do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, prev),
+        else: SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
+
       clickhouse_query!("DROP DATABASE IF EXISTS #{database}")
     end)
 

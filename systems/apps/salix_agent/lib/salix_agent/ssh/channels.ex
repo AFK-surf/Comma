@@ -1,4 +1,6 @@
 defmodule SalixAgent.SSH.Channels do
+  require SystemsClock
+
   @moduledoc """
   Extra channels on an open SSH session's connection: one-shot `exec` and
   SFTP file transfer. They run in the calling tool job and close with it; the
@@ -36,7 +38,7 @@ defmodule SalixAgent.SSH.Channels do
   """
   @spec exec(pid(), String.t(), binary(), pos_integer()) :: {:ok, map()} | {:error, term()}
   def exec(conn, command, stdin, timeout_ms) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    deadline = SystemsClock.monotonic_time(:millisecond) + timeout_ms
 
     with {:ok, channel} <- :ssh_connection.session_channel(conn, @window, @packet, @op_timeout_ms),
          :success <-
@@ -64,9 +66,9 @@ defmodule SalixAgent.SSH.Channels do
   end
 
   defp collect(conn, channel, deadline, acc) do
-    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    remaining = max(deadline - SystemsClock.monotonic_time(:millisecond), 0)
 
-    receive do
+    SystemsClock.vreceive do
       {:ssh_cm, ^conn, {:data, ^channel, type, data}} ->
         :ssh_connection.adjust_window(conn, channel, byte_size(data))
         stream = if type == 1, do: :stderr, else: :stdout
@@ -293,14 +295,14 @@ defmodule SalixAgent.SSH.Channels do
   defp with_sftp(conn, fun) do
     case :ssh_sftp.start_channel(conn, timeout: @op_timeout_ms) do
       {:ok, sftp} ->
-        Process.link(sftp)
+        SystemsRuntime.Proc.link(sftp)
 
         try do
           fun.(sftp)
         catch
           {:remote_read_failed, reason} -> {:error, {:remote_read_failed, reason}}
         after
-          Process.unlink(sftp)
+          SystemsRuntime.Proc.unlink(sftp)
           :ssh_sftp.stop_channel(sftp)
         end
 

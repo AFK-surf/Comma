@@ -71,6 +71,13 @@ defmodule SalixIM.Conversations do
     end
   end
 
+  def list_group_activity_tasks(group_id) do
+    with {:ok, _group} <- GroupDirectory.get_group(group_id),
+         {:ok, %{"data" => data}} <- SalixIM.TaskActivityProjection.list(group_id) do
+      {:ok, %{"data" => Enum.map(data, &project_conversation/1)}}
+    end
+  end
+
   @spec get_group_conversation(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def get_group_conversation(group_id, conversation_id) do
     with {:ok, _group} <- GroupDirectory.get_group(group_id),
@@ -108,10 +115,14 @@ defmodule SalixIM.Conversations do
       {:ok,
        %{
          "conversation" => projected,
-         "messages" => SalixIM.PlatformMessage.project_all(group_id, messages)
+         "messages" => present(conversation, messages)
        }}
     end
   end
+
+  # Messages as readers see them: provider presentation of the stored Messages.
+  defp present(conversation, messages),
+    do: SalixIM.PlatformMessage.project_all(conversation["agent_group_id"], messages)
 
   def list_group_conversation_participants(group_id, conversation_id, opts \\ []) do
     with {:ok, _conversation} <- get_group_conversation_record(group_id, conversation_id),
@@ -189,7 +200,7 @@ defmodule SalixIM.Conversations do
   def list_group_conversation_messages(group_id, conversation_id, opts \\ []) do
     with {:ok, conversation} <- get_group_conversation_record(group_id, conversation_id),
          {:ok, messages} <- list_messages(conversation, opts) do
-      {:ok, SalixIM.PlatformMessage.project_all(group_id, messages)}
+      {:ok, present(conversation, messages)}
     end
   end
 
@@ -230,7 +241,7 @@ defmodule SalixIM.Conversations do
 
       {:ok,
        %{
-         "messages" => SalixIM.PlatformMessage.project_all(group_id, messages),
+         "messages" => present(conversation, messages),
          "covered" => covered_span(messages),
          "has_older" => tail_seq > 0 and min(first_seq, last_seq + 1) > head_seq,
          "has_newer" => tail_seq > 0 and max(last_seq, first_seq - 1) < tail_seq,
@@ -325,12 +336,12 @@ defmodule SalixIM.Conversations do
   end
 
   def get_group_conversation_message(group_id, conversation_id, message_id) do
-    with {:ok, _conversation} <- get_group_conversation_record(group_id, conversation_id),
+    with {:ok, conversation} <- get_group_conversation_record(group_id, conversation_id),
          :ok <- require_id(message_id, "message_id", &Ids.valid_message_id?/1),
          {:ok, pointer} <- message_pointer_by_id(group_id, conversation_id, message_id),
          {:ok, message} <-
            message_from_pointer(group_id, conversation_id, pointer, message_id: message_id) do
-      {:ok, hd(SalixIM.PlatformMessage.project_all(group_id, [message]))}
+      {:ok, hd(present(conversation, [message]))}
     end
   end
 
@@ -356,6 +367,7 @@ defmodule SalixIM.Conversations do
       with {:ok, %{"segment_id" => segment_id}} <-
              message_pointer_by_seq(group_id, conversation_id, start_seq) do
         collect_task_search_segments(
+          conversation,
           group_id,
           conversation_id,
           segment_id,
@@ -458,7 +470,7 @@ defmodule SalixIM.Conversations do
         statuses =
           participants
           |> Enum.filter(&valid_participant?/1)
-          |> Task.async_stream(
+          |> SystemsClock.async_stream(
             fn participant ->
               id = participant["participant_id"]
 
@@ -602,7 +614,7 @@ defmodule SalixIM.Conversations do
   # Bounded conversation list projection.
 
   defp list_conversation_records(group_id, start_after, desired_count, nil) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
     page_size = min(max(desired_count * @list_page_multiplier, 100), @max_limit)
 
     opts =
@@ -624,7 +636,7 @@ defmodule SalixIM.Conversations do
   end
 
   defp list_conversation_records(group_id, start_after, desired_count, kind) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
     page_size = min(max(desired_count * @list_page_multiplier, 100), @max_limit)
 
     opts =
@@ -749,7 +761,7 @@ defmodule SalixIM.Conversations do
   defp hydrate_conversation_indexes(_group_id, [], _desired_count), do: {:ok, []}
 
   defp hydrate_conversation_indexes(group_id, objects, desired_count) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     result =
       hydrate_conversation_index_batches(group_id, objects, desired_count, [], 0)
@@ -760,10 +772,10 @@ defmodule SalixIM.Conversations do
         {:error, _reason, object_count} -> {[], object_count}
       end
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix_im, :conversations, :list_hydration],
       %{
-        duration: System.monotonic_time() - started_at,
+        duration: SystemsClock.monotonic_time() - started_at,
         object_count: object_count,
         hydrated_count: length(records),
         dropped_count: object_count - length(records)
@@ -833,7 +845,7 @@ defmodule SalixIM.Conversations do
 
   defp hydrate_conversation_index_batch(group_id, objects) do
     objects
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       &conversation_from_list_index(group_id, &1),
       ordered: true,
       max_concurrency: conversation_list_read_concurrency(),
@@ -888,7 +900,7 @@ defmodule SalixIM.Conversations do
 
   defp conversation_list_read_concurrency do
     :salix_im
-    |> Application.get_env(
+    |> SystemsRuntime.get_env(
       :conversation_list_read_concurrency,
       @conversation_list_read_concurrency
     )
@@ -898,7 +910,7 @@ defmodule SalixIM.Conversations do
 
   defp conversation_list_read_timeout do
     :salix_im
-    |> Application.get_env(:conversation_list_read_timeout, @conversation_list_read_timeout)
+    |> SystemsRuntime.get_env(:conversation_list_read_timeout, @conversation_list_read_timeout)
     |> normalize_positive_integer(@conversation_list_read_timeout)
   end
 
@@ -910,10 +922,10 @@ defmodule SalixIM.Conversations do
   defp emit_conversation_list_read(result, limit, started_at) do
     hydrated_count = if match?({:ok, _}, result), do: result |> elem(1) |> length(), else: 0
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix_im, :conversations, :list_page],
       %{
-        duration: System.monotonic_time() - started_at,
+        duration: SystemsClock.monotonic_time() - started_at,
         hydrated_count: hydrated_count
       },
       %{
@@ -1113,6 +1125,7 @@ defmodule SalixIM.Conversations do
   end
 
   defp collect_task_search_segments(
+         _conversation,
          _group_id,
          _conversation_id,
          _segment_id,
@@ -1127,6 +1140,7 @@ defmodule SalixIM.Conversations do
        do: {:error, :task_search_segment_limit_exceeded}
 
   defp collect_task_search_segments(
+         conversation,
          group_id,
          conversation_id,
          segment_id,
@@ -1166,6 +1180,7 @@ defmodule SalixIM.Conversations do
         is_binary(segment_index["next_segment_id"]) and
             segment_index["next_segment_id"] != "" ->
           collect_task_search_segments(
+            conversation,
             group_id,
             conversation_id,
             segment_index["next_segment_id"],

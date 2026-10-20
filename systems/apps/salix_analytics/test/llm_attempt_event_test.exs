@@ -1,5 +1,5 @@
 defmodule SalixAnalytics.LlmAttemptEventTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAnalytics.LlmAttemptEvent
   alias SalixAnalytics.Sink.ClickHouseTyped

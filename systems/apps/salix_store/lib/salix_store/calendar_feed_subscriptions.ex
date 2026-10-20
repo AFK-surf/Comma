@@ -125,7 +125,8 @@ defmodule SalixStore.CalendarFeedSubscriptions do
     end
   end
 
-  defp decode_fence(fence) do
+  @doc false
+  def decode_fence(fence) do
     case Base.decode16(fence) do
       {:ok, expected} -> {:ok, expected}
       :error -> {:error, :invalid_fence}
@@ -220,7 +221,8 @@ defmodule SalixStore.CalendarFeedSubscriptions do
     end
   end
 
-  defp validated_subject(%{} = scope) do
+  @doc false
+  def validated_subject(%{} = scope) do
     subject = Map.take(scope, @subject_keys)
 
     cond do
@@ -246,17 +248,19 @@ defmodule SalixStore.CalendarFeedSubscriptions do
   defp revocation_state(%Row{}), do: {:error, :revoked}
 
   defp mint_secret,
-    do: :crypto.strong_rand_bytes(@secret_bytes) |> Base.url_encode64(padding: false)
+    do: SystemsRuntime.Proc.random_bytes(@secret_bytes) |> Base.url_encode64(padding: false)
 
-  defp digest(secret), do: :crypto.hash(:sha256, @digest_domain <> <<0>> <> secret)
+  @doc false
+  def digest(secret), do: :crypto.hash(:sha256, @digest_domain <> <<0>> <> secret)
 
   # :crypto.hash_equals/2 raises on a length mismatch; both operands here are
   # fixed 32-byte SHA-256 outputs, and the DB CHECK guarantees the stored side.
-  defp constant_time_equal?(left, right)
-       when byte_size(left) == byte_size(right),
-       do: :crypto.hash_equals(left, right)
+  @doc false
+  def constant_time_equal?(left, right)
+      when byte_size(left) == byte_size(right),
+      do: :crypto.hash_equals(left, right)
 
-  defp constant_time_equal?(_left, _right), do: false
+  def constant_time_equal?(_left, _right), do: false
 
   defp active_row(scope, subject) do
     Repo.one(
@@ -281,7 +285,8 @@ defmodule SalixStore.CalendarFeedSubscriptions do
     end
   end
 
-  defp scope(%Row{} = row) do
+  @doc false
+  def scope(%Row{} = row) do
     %{
       "id" => row.id,
       "tenant_id" => row.tenant_id,
@@ -292,7 +297,8 @@ defmodule SalixStore.CalendarFeedSubscriptions do
     }
   end
 
-  defp to_record(%Row{} = row) do
+  @doc false
+  def to_record(%Row{} = row) do
     row
     |> scope()
     |> Map.put("created_at", millis(row.created_at))
@@ -303,7 +309,8 @@ defmodule SalixStore.CalendarFeedSubscriptions do
   defp put_optional(map, _key, nil), do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)
 
-  defp datetime(ms) when is_integer(ms), do: DateTime.from_unix!(ms * 1_000, :microsecond)
+  @doc false
+  def datetime(ms) when is_integer(ms), do: DateTime.from_unix!(ms * 1_000, :microsecond)
   defp millis(nil), do: nil
   defp millis(%DateTime{} = value), do: DateTime.to_unix(value, :millisecond)
 end

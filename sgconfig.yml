@@ -1,0 +1,5 @@
+# ast-grep (https://ast-grep.github.io) checks repository rules on the syntax
+# tree. Run `ast-grep scan` from the repository root. scripts/ast-grep.sh
+# installs the pinned version.
+ruleDirs:
+  - lint/rules

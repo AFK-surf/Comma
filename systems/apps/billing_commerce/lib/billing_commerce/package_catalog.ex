@@ -132,7 +132,7 @@ defmodule BillingCommerce.PackageCatalog do
     latest_per_package? =
       Map.get(attrs, :latest_per_package?, Map.get(attrs, "latest_per_package?", false))
 
-    at = attrs[:at] || attrs["at"] || DateTime.utc_now()
+    at = attrs[:at] || attrs["at"] || SystemsClock.utc_now()
 
     {surface_where, surface_params} =
       if is_binary(surface) and String.trim(surface) != "" do
@@ -387,7 +387,7 @@ defmodule BillingCommerce.PackageCatalog do
   end
 
   defp repo(attrs),
-    do: attrs[:repo] || attrs["repo"] || Application.fetch_env!(:billing_commerce, :repo)
+    do: attrs[:repo] || attrs["repo"] || SystemsRuntime.fetch_env!(:billing_commerce, :repo)
 
   defp sql(attrs), do: attrs[:sql_runner] || attrs["sql_runner"] || Ecto.Adapters.SQL
 
@@ -399,5 +399,5 @@ defmodule BillingCommerce.PackageCatalog do
   end
 
   defp id(prefix),
-    do: prefix <> "_" <> (:crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower))
+    do: prefix <> "_" <> (SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower))
 end

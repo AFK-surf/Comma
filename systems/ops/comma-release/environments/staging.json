@@ -7,6 +7,7 @@
   "requireProvider": true,
   "agentVmmGatewayEnabled": true,
   "computeRuntimeBaseURL": "https://salix-staging.comma.surf",
+  "lmhubUserAgent": "bridge-unbox-staging/1.0.0",
   "oauthIdp": "enabled",
   "alertRouter": {
     "enabled": true,

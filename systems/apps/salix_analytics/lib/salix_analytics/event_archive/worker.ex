@@ -1,4 +1,6 @@
 defmodule SalixAnalytics.EventArchive.Worker do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Batches sealed archive rows into ClickHouse inserts.
 
@@ -54,7 +56,7 @@ defmodule SalixAnalytics.EventArchive.Worker do
   into the ground. The grouping is gone; the batching is load-bearing.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -79,7 +81,7 @@ defmodule SalixAnalytics.EventArchive.Worker do
   end
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
   end
 
   @doc """
@@ -95,14 +97,14 @@ defmodule SalixAnalytics.EventArchive.Worker do
     if buffered(table) >= max_buffer(opts) do
       {:error, :buffer_full}
     else
-      index = :ets.update_counter(table, @index_key, {2, 1}, {@index_key, 0})
-      :ets.insert(table, {index, sealed})
+      index = SystemsRuntime.ETS.update_counter(table, @index_key, {2, 1}, {@index_key, 0})
+      SystemsRuntime.ETS.insert(table, {index, sealed})
 
       # Nudge the worker once the batch threshold is crossed, so a burst does
       # not sit until the next timer tick. A CAST, never a call: it returns
       # immediately and cannot be blocked by a slow flush already in progress.
       if rem(index, batch_size(opts)) == 0 do
-        GenServer.cast(opts[:server] || __MODULE__, :flush)
+        SystemsRuntime.Server.cast(opts[:server] || __MODULE__, :flush)
       end
 
       :ok
@@ -114,16 +116,21 @@ defmodule SalixAnalytics.EventArchive.Worker do
   @doc "Flush everything buffered. Used by tests and graceful shutdown."
   @spec flush(keyword()) :: :ok
   def flush(opts \\ []) do
-    GenServer.call(opts[:server] || __MODULE__, :flush, opts[:timeout] || 30_000)
+    SystemsRuntime.Server.call(opts[:server] || __MODULE__, :flush, opts[:timeout] || 30_000)
   catch
     :exit, _ -> :ok
   end
 
   @doc false
   def ensure_buffer(table \\ @buffer) do
-    case :ets.whereis(table) do
+    case SystemsRuntime.ETS.whereis(table) do
       :undefined ->
-        :ets.new(table, [:named_table, :public, :ordered_set, {:write_concurrency, true}])
+        SystemsRuntime.ETS.new(table, [
+          :named_table,
+          :public,
+          :ordered_set,
+          {:write_concurrency, true}
+        ])
 
       _ ->
         :ok
@@ -134,7 +141,7 @@ defmodule SalixAnalytics.EventArchive.Worker do
 
   defp buffered(table) do
     # The index row is not an item.
-    max(:ets.info(table, :size) - 1, 0)
+    max(SystemsRuntime.ETS.info(table, :size) - 1, 0)
   end
 
   # These are properties of the BUFFER, not of the worker process, because the
@@ -143,23 +150,25 @@ defmodule SalixAnalytics.EventArchive.Worker do
   defp batch_size(opts) do
     opts[:batch_size] ||
       :salix_analytics
-      |> Application.get_env(:event_archive, [])
+      |> SystemsRuntime.get_env(:event_archive, [])
       |> Keyword.get(:batch_size, @default_batch_size)
   end
 
   defp max_buffer(opts) do
     opts[:max_buffer] ||
       :salix_analytics
-      |> Application.get_env(:event_archive, [])
+      |> SystemsRuntime.get_env(:event_archive, [])
       |> Keyword.get(:max_buffer, @default_max_buffer)
   end
 
   defp take_buffer(table) do
     items =
-      :ets.select(table, [{{:"$1", :"$2"}, [{:is_integer, :"$1"}], [{{:"$1", :"$2"}}]}])
+      SystemsRuntime.ETS.select(table, [
+        {{:"$1", :"$2"}, [{:is_integer, :"$1"}], [{{:"$1", :"$2"}}]}
+      ])
       |> Enum.sort_by(&elem(&1, 0))
 
-    Enum.each(items, fn {index, _} -> :ets.delete(table, index) end)
+    Enum.each(items, fn {index, _} -> SystemsRuntime.ETS.delete(table, index) end)
     Enum.map(items, &elem(&1, 1))
   rescue
     ArgumentError -> []
@@ -167,9 +176,9 @@ defmodule SalixAnalytics.EventArchive.Worker do
 
   @impl true
   def init(opts) do
-    config = Application.get_env(:salix_analytics, :event_archive, [])
+    config = SystemsRuntime.get_env(:salix_analytics, :event_archive, [])
 
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
     table = opts[:table] || @buffer
     ensure_buffer(table)
 
@@ -261,7 +270,7 @@ defmodule SalixAnalytics.EventArchive.Worker do
   defp refuse([]), do: :ok
 
   defp refuse(rows) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix_analytics, :event_archive, :lost],
       %{count: length(rows)},
       %{reason: :table_layout_mismatch}
@@ -296,20 +305,20 @@ defmodule SalixAnalytics.EventArchive.Worker do
   defp row_bytes(row), do: byte_size(row["e"] || "") + 512
 
   defp arm_timer(%{timer: nil, flush_ms: flush_ms} = state),
-    do: %{state | timer: Process.send_after(self(), :flush, flush_ms)}
+    do: %{state | timer: SystemsClock.send_after(SystemsRuntime.Proc.self(), :flush, flush_ms)}
 
   defp arm_timer(state), do: state
 
   # Every flush re-arms, and a flush can be triggered by cast or call as well
   # as by the timer itself — so the old timer must be cleared or each batch
-  # threshold crossing leaks one. `info: false` plus the mailbox sweep stops an
+  # threshold crossing leaks one. Cancelling plus the mailbox sweep stops an
   # already-fired timer causing a redundant drain cycle.
   defp cancel_timer(%{timer: nil} = state), do: state
 
   defp cancel_timer(%{timer: timer} = state) do
-    Process.cancel_timer(timer, info: false)
+    SystemsClock.cancel_timer(timer)
 
-    receive do
+    SystemsRuntime.Proc.receive do
       :flush -> :ok
     after
       0 -> :ok
@@ -356,13 +365,13 @@ defmodule SalixAnalytics.EventArchive.Worker do
   defp lost(rows, reason) do
     count = length(rows)
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix_analytics, :event_archive, :write_error],
       %{count: count},
       %{reason: reason}
     )
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix_analytics, :event_archive, :lost],
       %{count: count},
       %{reason: reason}

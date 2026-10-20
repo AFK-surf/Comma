@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionFormat1BackupPruneTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.InternalSession
   alias SalixAgent.InternalSession.State
@@ -10,7 +10,7 @@ defmodule SalixAgent.SessionFormat1BackupPruneTest do
   @session "ses1_0000000000000000870"
 
   setup do
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
 
     SalixStore.Repo.query!("DELETE FROM salix_cutover_markers WHERE name = $1", [
@@ -36,7 +36,7 @@ defmodule SalixAgent.SessionFormat1BackupPruneTest do
   # failed call), the resulting archive/hot object and a real marker row.
   # The retired format-2 writer is deliberately not invoked.
   defp migrate_legacy_fleet! do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     {:ok, _} = S3.put(Keys.ctl_agent(agent_id), Jason.encode!(%{"agent_id" => agent_id}))
 
     state =

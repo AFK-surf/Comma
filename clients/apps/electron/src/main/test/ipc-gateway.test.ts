@@ -1,7 +1,10 @@
+import { NativeOperationError } from "../modules/ipc/operation-error";
+import { AgentVMMCommandAdapter } from "../modules/compute-node/runtime-adapter";
 import { z } from "zod";
 import { describe, expect, it, vi } from "vitest";
 import {
   defineNativeCommand,
+  computeNodeConfigureCapability,
   nativePeerPortChannel,
   peersConnectCapability,
   sessionStateChangedEvent,
@@ -34,7 +37,7 @@ describe("IpcGateway", () => {
   it("validates input and output around a contract handler", async () => {
     const handle = vi.fn();
     const gateway = new IpcGateway({
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
       resolveCallerContext: () => callerContext,
       senderPolicy: { allow: () => true },
     });
@@ -54,10 +57,36 @@ describe("IpcGateway", () => {
     });
   });
 
+  it("stops answering its channels once closed, so a new gateway can register them", () => {
+    const handlers = new Map<string, unknown>();
+    const ipcMain = {
+      handle: (channel: string, handler: unknown) => {
+        if (handlers.has(channel)) throw new Error(`second handler for ${channel}`);
+        handlers.set(channel, handler);
+      },
+      removeHandler: (channel: string) => void handlers.delete(channel),
+    };
+    const options = {
+      ipcMain,
+      resolveCallerContext: () => callerContext,
+      senderPolicy: { allow: () => true },
+    };
+    const first = new IpcGateway(options);
+    first.register(echoContract, (input) => ({ reply: input.message }));
+
+    first.close();
+    expect(handlers.size).toBe(0);
+
+    new IpcGateway(options).register(echoContract, (input) => ({
+      reply: input.message,
+    }));
+    expect([...handlers.keys()]).toEqual([echoContract.channel]);
+  });
+
   it("returns a typed envelope when zod input validation fails", async () => {
     const handle = vi.fn();
     const gateway = new IpcGateway({
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
       resolveCallerContext: () => callerContext,
       senderPolicy: { allow: () => true },
     });
@@ -83,7 +112,7 @@ describe("IpcGateway", () => {
   it("rejects senders that are not allowed for the current build", async () => {
     const handle = vi.fn();
     const gateway = new IpcGateway({
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
       resolveCallerContext: () => callerContext,
       senderPolicy: { allow: () => false },
     });
@@ -114,7 +143,7 @@ describe("IpcGateway", () => {
       permission: "test.echo",
     });
     const gateway = new IpcGateway({
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
       permissionPolicy: { allow: () => false },
       resolveCallerContext: () => callerContext,
       senderPolicy: { allow: () => true },
@@ -140,7 +169,7 @@ describe("IpcGateway", () => {
   it("exposes caller context while a handler runs", async () => {
     const handle = vi.fn();
     const gateway = new IpcGateway({
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
       resolveCallerContext: () => callerContext,
       senderPolicy: { allow: () => true },
     });
@@ -164,7 +193,7 @@ describe("IpcGateway", () => {
     const handle = vi.fn();
     const observability = { record: vi.fn() };
     const gateway = new IpcGateway({
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
       observability,
       resolveCallerContext: () => callerContext,
       senderPolicy: { allow: () => true },
@@ -207,6 +236,70 @@ describe("IpcGateway", () => {
     );
   });
 
+  it("returns only the Main owner's selected operation message", async () => {
+    const handle = vi.fn();
+    const gateway = new IpcGateway({
+      ipcMain: { handle, removeHandler: vi.fn() },
+      resolveCallerContext: () => callerContext,
+      senderPolicy: { allow: () => true },
+    });
+    gateway.register(echoContract, async () => {
+      throw new NativeOperationError(
+        "Setup could not finish. Continue the same setup."
+      );
+    });
+    const handler = handle.mock.calls[0]?.[1] as (
+      event: unknown,
+      input: unknown
+    ) => Promise<unknown>;
+    await expect(handler(createIpcEvent(), { message: "hello" })).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "OPERATION_FAILED",
+        message: "Setup could not finish. Continue the same setup.",
+      },
+    });
+  });
+
+  it("returns maintenance instructions when an old helper rejects the enable compatibility probe", async () => {
+    const handle = vi.fn();
+    const gateway = new IpcGateway({
+      ipcMain: { handle, removeHandler: vi.fn() },
+      resolveCallerContext: () => callerContext,
+      senderPolicy: { allow: () => true },
+    });
+    const run = vi.fn(async () => {
+      throw new Error("/Users/private/helper: unknown maintenance-status command");
+    });
+    const adapter = new AgentVMMCommandAdapter("isolated-helper", run, true);
+    gateway.register(computeNodeConfigureCapability, async () => {
+      await adapter.enable("operation", "registration");
+      throw new Error("An incompatible helper must not enable the connection.");
+    });
+    const handler = handle.mock.calls[0]?.[1] as (
+      event: unknown,
+      input: unknown
+    ) => Promise<unknown>;
+
+    await expect(
+      handler(createIpcEvent(), { desiredEnabled: true, workspaceId: "workspace" })
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "OPERATION_FAILED",
+        message:
+          "Update Agent VMM Host in Local maintenance before changing this connection.",
+      },
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0]).toEqual([
+      "isolated-helper",
+      expect.arrayContaining(["maintenance-status"]),
+      "{}",
+      5_000,
+    ]);
+  });
+
   it("logs handler failures without exposing internal error details to the renderer", async () => {
     const handle = vi.fn();
     const logger = {
@@ -214,7 +307,7 @@ describe("IpcGateway", () => {
       error: vi.fn(),
     };
     const gateway = new IpcGateway({
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
       logger,
       resolveCallerContext: () => callerContext,
       senderPolicy: { allow: () => true },
@@ -249,7 +342,7 @@ describe("IpcGateway", () => {
   it("preserves token-free Session recovery metadata in admission failures", async () => {
     const handle = vi.fn();
     const gateway = new IpcGateway({
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
       resolveCallerContext: () => callerContext,
       senderPolicy: { allow: () => true },
     });
@@ -512,7 +605,7 @@ describe("NativePeerBrokerService", () => {
       registry,
     });
     const gateway = new IpcGateway({
-      ipcMain: { handle },
+      ipcMain: { handle, removeHandler: vi.fn() },
       permissionPolicy,
       resolveCallerContext: (event) => registry.resolveCallerContext(event),
       senderPolicy: { allow: () => true },

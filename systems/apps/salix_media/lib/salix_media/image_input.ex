@@ -1,4 +1,6 @@
 defmodule SalixMedia.ImageInput do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Bounded previews for model input; original attachment bytes are never changed.
 
@@ -26,7 +28,7 @@ defmodule SalixMedia.ImageInput do
     dir =
       Path.join(
         System.tmp_dir!(),
-        "salix-image-#{Base.url_encode64(:crypto.strong_rand_bytes(18))}"
+        "salix-image-#{Base.url_encode64(SystemsRuntime.Proc.random_bytes(18))}"
       )
 
     try do
@@ -84,7 +86,7 @@ defmodule SalixMedia.ImageInput do
       port = Port.open({:spawn_executable, executable}, [:binary, :exit_status, args: args])
 
       try do
-        collect(port, System.monotonic_time(:millisecond) + 10_000, "")
+        collect(port, SystemsClock.monotonic_time(:millisecond) + 10_000, "")
       after
         if Port.info(port), do: Port.close(port)
       end
@@ -96,9 +98,9 @@ defmodule SalixMedia.ImageInput do
   end
 
   defp collect(port, deadline, output) do
-    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    remaining = max(deadline - SystemsClock.monotonic_time(:millisecond), 0)
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {^port, {:data, data}} ->
         if byte_size(output) + byte_size(data) <= @max_bytes,
           do: collect(port, deadline, output <> data),

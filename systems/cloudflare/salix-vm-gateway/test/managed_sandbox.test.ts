@@ -2,14 +2,16 @@ import { describe, expect, test, vi } from "vitest";
 import type { ControlPermit } from "../src/control";
 
 // The platform adapter is replaced, not the control implementation. Cloudflare
-// native stop/start and eviction semantics still require the isolated experiment.
+// native stop/start and eviction semantics still require platform validation.
 vi.mock("@cloudflare/sandbox", () => ({
   Sandbox: class {
     envVars = {};
     enableInternet = true;
     entrypoint = undefined;
-    constructor(public ctx: { keepAlive?: (enabled: boolean) => Promise<void> }) {}
+    constructor(public ctx: { keepAlive?: (enabled: boolean) => Promise<void>; armAlarm?: () => Promise<void> }) {}
     async setKeepAlive(enabled: boolean) { await this.ctx.keepAlive?.(enabled); }
+    async scheduleNextAlarm() { await this.ctx.armAlarm?.(); }
+    async onStop() {}
   },
 }));
 
@@ -26,128 +28,148 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+const station = { SALIX_SERVER: "wss://salix.example", SALIX_WORKLOAD_CREDENTIAL: "connect-credential" };
+
 function harness(running = false) {
-  let saved: string | undefined;
-  const tcp = vi.fn(async (_request: Request) => new Response("ready"));
+  const saved = new Map<string, string>();
+  const table = (sql: string) => /salix_container_\w+/.exec(sql)?.[0] ?? "";
+  const events: string[] = [];
+  // Resolved when the object keeps its Container's next stop.
+  const stopKept: ReturnType<typeof deferred<void>>[] = [];
+  const nextStop = () => { const kept = deferred<void>(); stopKept.push(kept); return kept.promise; };
+  // Nobody may be watching when it ends.
+  const running_ = () => { const d = deferred<void>(); d.promise.catch(() => undefined); return d; };
+  let exited = running_();
   const container = {
     running,
-    start: vi.fn(() => { container.running = true; }),
-    destroy: vi.fn(async () => { container.running = false; }),
-    monitor: vi.fn(() => new Promise<void>(() => {})),
-    getTcpPort: vi.fn((_port: number) => ({ fetch: tcp })),
+    start: vi.fn((_options: { env: Record<string, string> }) => { container.running = true; events.push("start"); }),
+    destroy: vi.fn(async () => { container.exit(new Error("container destroyed")); }),
+    monitor: vi.fn(() => exited.promise),
+    // The platform ends the Container by itself.
+    exit(error?: Error) { container.running = false; const ended = exited; exited = running_(); if (error) ended.reject(error); else ended.resolve(); },
   };
   const ctx = {
     container,
+    events,
     keepAlive: vi.fn(async (_enabled: boolean): Promise<void> => undefined),
-    waitUntil: vi.fn(),
+    armAlarm: vi.fn(async (): Promise<void> => { events.push("alarm"); }),
     storage: {
       sql: {
         exec: vi.fn((sql: string, value?: string) => {
-          if (sql.startsWith("INSERT")) saved = value;
-          return { toArray: () => sql.startsWith("SELECT") && saved ? [{ value: saved }] : [] };
+          if (sql.startsWith("INSERT")) {
+            saved.set(table(sql), value!);
+            if (table(sql) === "salix_container_stop") stopKept.splice(0).forEach((kept) => kept.resolve());
+          }
+          return { toArray: () => sql.startsWith("SELECT") && saved.has(table(sql)) ? [{ value: saved.get(table(sql))! }] : [] };
         }),
       },
       sync: vi.fn(async () => undefined),
     },
   };
   const construct = () => new ManagedSandbox(ctx as unknown as DurableObjectState<{}>, {});
-  return { sandbox: construct(), construct, container, tcp, ctx };
+  return { sandbox: construct(), construct, container, ctx, nextStop };
 }
 
 describe("managed Sandbox platform boundary", () => {
-  test("an exact native capacity refusal settles its failed start, while a lost monitor does not", async () => {
-    for (const [message, settled] of [
-      ["There is no container instance that can be provided to this Durable Object, try again later", true],
-      ["Network connection lost", false],
-    ] as const) {
-      const h = harness();
-      const ended = deferred<void>();
-      h.container.monitor.mockReturnValueOnce(ended.promise);
-      h.tcp.mockRejectedValueOnce(new Error("port not listening"));
-      await h.sandbox.salixOpen(permit);
-      await expect(h.sandbox.salixEnsure(permit, true)).rejects.toThrow("port not listening");
-      ended.reject(new Error(message));
-      await h.ctx.waitUntil.mock.calls[0][0];
-      await h.sandbox.salixSeal(sealing);
-      expect(h.sandbox.salixObserve().managed_commands_settled).toBe(settled);
-      if (settled) {
-        expect(h.sandbox.salixObserve().control?.last_terminal).toMatchObject({ action: "ensure", status: 503 });
-        await h.sandbox.salixOpen(claim("retry", { ...sealing, revision: 12 }));
-      }
-    }
-  });
-
-  test("an old monitor cannot settle a later incarnation's start", async () => {
-    const h = harness();
-    const ended = deferred<void>();
-    h.container.monitor.mockReturnValueOnce(ended.promise);
-    h.tcp.mockRejectedValueOnce(new Error("port not listening"));
-    await h.sandbox.salixOpen(permit);
-    await expect(h.sandbox.salixEnsure(permit, true)).rejects.toThrow("port not listening");
-    await h.sandbox.salixStatus(permit);
-    await h.sandbox.salixSeal(sealing);
-    const next = claim("next-start", { ...sealing, generation: 2, revision: 12 });
-    await h.sandbox.salixOpen(next);
-    h.tcp.mockRejectedValueOnce(new Error("next port not listening"));
-    await expect(h.sandbox.salixEnsure(next, true)).rejects.toThrow("next port not listening");
-    ended.resolve();
-    await h.ctx.waitUntil.mock.calls[0][0];
-    expect(h.sandbox.salixObserve().control?.pending?.claim_id).toBe("next-start");
-  });
-
-  test("stopped status and receipt never start, configure, or fetch the Container", async () => {
-    const h = harness();
-    expect(h.sandbox.salixObserve()).toMatchObject({ running: false, control: null, managed_commands_settled: false });
-    await h.sandbox.salixOpen(permit);
-    await expect(h.sandbox.salixStatus(permit)).rejects.toThrow("container_not_running");
-    await expect(h.sandbox.salixReceipt(permit, "snapshot-1")).rejects.toThrow("container_not_running");
-    expect(h.container.start).not.toHaveBeenCalled();
-    expect(h.ctx.keepAlive).not.toHaveBeenCalled();
-    expect(h.tcp).not.toHaveBeenCalled();
-  });
-
-  test("a lost start response can be confirmed after eviction, without another start", async () => {
+  test("ensure starts the Container once with its station's server and credential, and issuing the start completes it", async () => {
     const h = harness();
     await h.sandbox.salixOpen(permit);
-    h.tcp.mockRejectedValueOnce(new Error("connection closed"));
-    await expect(h.sandbox.salixEnsure(permit, true)).rejects.toThrow("connection closed");
-    expect(h.sandbox.salixObserve().control?.pending).toMatchObject({ action: "ensure", start_issued: true });
-    const replacement = h.construct();
-    expect((await replacement.salixStatus(claim("observe"))).status).toBe(200);
-    expect(replacement.salixObserve().control).toMatchObject({ pending: null, last_terminal: { claim_id: "ensure-1", outcome: "completed" } });
+    const observed = await h.sandbox.salixEnsure(permit, true, station);
+    expect(h.container.start).toHaveBeenCalledTimes(1);
+    expect(h.container.start.mock.calls[0][0].env).toMatchObject(station);
+    expect(observed).toMatchObject({ running: true, control: { pending: null, last_terminal: { action: "ensure", claim_id: "ensure-1", outcome: "completed" } } });
+    await h.sandbox.salixEnsure(claim("again"), true, station);
     expect(h.container.start).toHaveBeenCalledTimes(1);
   });
 
-  test("only an exact restored import receipt settles response loss after eviction", async () => {
-    const h = harness(true);
+  test("a start that names an archive gives it to the Container, and a Container that could not restore it is kept as its stop", async () => {
+    const h = harness();
     await h.sandbox.salixOpen(permit);
-    h.tcp.mockRejectedValueOnce(new Error("response lost"));
-    await expect(h.sandbox.salixForward(permit, new Request("http://container/archive", { method: "POST" }), "import", "snapshot-1")).rejects.toThrow("response lost");
-    const replacement = h.construct();
-    await replacement.salixSeal(sealing);
-    for (const receipt of [{ operation: "other", phase: "restored", next_offset: 42, sessions: 1 }, { operation: "snapshot-1", phase: "restoring", next_offset: 42, sessions: 1 }]) {
-      h.tcp.mockResolvedValueOnce(Response.json(receipt));
-      await replacement.salixReceipt(sealing, "snapshot-1");
-      expect(replacement.salixObserve().managed_commands_settled).toBe(false);
-    }
-    h.tcp.mockResolvedValueOnce(Response.json({ operation: "snapshot-1", phase: "restored", next_offset: 42, sessions: 1 }));
-    await replacement.salixReceipt(sealing, "snapshot-1");
-    expect(replacement.salixObserve()).toMatchObject({ managed_commands_settled: true, control: { pending: null, last_terminal: { action: "import", claim_id: permit.claim_id, archive_operation: "snapshot-1", outcome: "completed" } } });
-    expect(h.container.start).not.toHaveBeenCalled();
+    const waking = { ...station, SALIX_RESTORE_ARCHIVE: "H4sIAAAA" };
+    await h.sandbox.salixEnsure(permit, true, waking);
+    expect(h.container.start.mock.calls[0][0].env).toMatchObject(waking);
+    // The entrypoint could not restore the archive: it started no station and exited.
+    const kept = h.nextStop();
+    h.container.exit(new Error("Container exited with unexpected exit code: 65"));
+    await kept;
+    expect(h.sandbox.salixObserve()).toMatchObject({ running: false, last_stop: { exit_code: 65, requested: false, operation_id: "wake-1" } });
+    // Salix starts another under the same permit, with URLs it signed anew: that start's own.
+    const again = { ...station, SALIX_RESTORE_ARCHIVE: "H4sIBBBB" };
+    await h.sandbox.salixEnsure(claim("again"), true, again);
+    expect(h.container.start).toHaveBeenCalledTimes(2);
+    expect(h.container.start.mock.calls[1][0].env).toMatchObject(again);
+  });
+
+  // Cloudflare stops a Container shortly after its Durable Object becomes inactive; the SDK's alarm is what keeps the
+  // object active, and the native start does not arm it (staging 2026-10-10: every Container gone ~30 s after its start).
+  test("ensure arms the alarm that keeps the object active before it starts the Container, and for one found running", async () => {
+    const h = harness();
+    await h.sandbox.salixOpen(permit);
+    await h.sandbox.salixEnsure(permit, true, station);
+    expect(h.ctx.events).toEqual(["alarm", "start"]);
+    // An object that no longer has its alarm (it fired before the start) is asked again: the alarm is armed, nothing starts.
+    await h.sandbox.salixEnsure(claim("again"), true, station);
+    expect(h.ctx.events).toEqual(["alarm", "start", "alarm"]);
+  });
+
+  test("a Container that stops is recorded with what its monitor said, apart from a destroy Salix commanded", async () => {
+    const h = harness();
+    await h.sandbox.salixOpen(permit);
+    expect((await h.sandbox.salixEnsure(permit, true, station)).last_stop).toBeNull();
+    let kept = h.nextStop();
+    h.container.exit(new Error("Container exited with unexpected exit code: 137"));
+    await kept;
+    expect(h.sandbox.salixObserve().last_stop).toMatchObject({ exit_code: 137, requested: false, operation_id: "wake-1", error: expect.stringContaining("137") });
+    expect(h.sandbox.salixObserve().running).toBe(false);
+
+    await h.sandbox.salixEnsure(claim("second"), true, station);
+    await h.sandbox.salixSeal(sealing);
+    kept = h.nextStop();
+    await h.sandbox.salixDestroy(claim("destroy", sealing));
+    await kept;
+    expect(h.sandbox.salixObserve().last_stop).toMatchObject({ requested: true, operation_id: "archive-1" });
+  });
+
+  test("a stop nobody commanded is kept apart: the seal and destroy that follow it do not replace it", async () => {
+    const h = harness();
+    await h.sandbox.salixOpen(permit);
+    await h.sandbox.salixEnsure(permit, true, station);
+    expect(h.sandbox.salixObserve().last_uncommanded_stop).toBeNull();
+    let kept = h.nextStop();
+    h.container.exit(new Error("Container exited with unexpected exit code: 137"));
+    await kept;
+    const lost = { exit_code: 137, requested: false, operation_id: "wake-1", seen_by: "monitor", started_at: expect.any(Number), error: expect.stringContaining("137") };
+    expect(h.sandbox.salixObserve()).toMatchObject({ last_stop: lost, last_uncommanded_stop: lost });
+
+    // Salix releases the lost Container as an archive does, wakes it, and later archives it: commanded stops.
+    await h.sandbox.salixSeal(sealing);
+    await h.sandbox.salixDestroy(claim("release", sealing));
+    const woken: ControlPermit = { ...permit, operation_id: "wake-2", revision: 12, claim_id: "ensure-2" };
+    await h.sandbox.salixOpen(woken);
+    await h.sandbox.salixEnsure(woken, true, station);
+    const archiving: ControlPermit = { ...woken, operation_id: "archive-2", revision: 13, claim_id: "seal-2" };
+    await h.sandbox.salixSeal(archiving);
+    kept = h.nextStop();
+    await h.sandbox.salixDestroy(claim("destroy-2", archiving));
+    await kept;
+    const observed = h.sandbox.salixObserve();
+    expect(observed.last_stop).toMatchObject({ requested: true, operation_id: "archive-2" });
+    expect(observed.last_uncommanded_stop).toMatchObject(lost);
+
+    // An object made after the Container's start (its own was evicted) is told the stop by the SDK, and says so.
+    const later = h.construct();
+    await later.onStop({ exitCode: 1, reason: "exit" });
+    expect(later.salixObserve().last_uncommanded_stop).toMatchObject({ exit_code: 1, error: "exit", requested: false, seen_by: "sdk", started_at: null });
   });
 
   test("seal blocks an ensure delayed inside SDK keepAlive before native start", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.sandbox.salixOpen(permit);
     const configured = deferred<void>();
     const entered = deferred<void>();
     h.ctx.keepAlive.mockImplementationOnce(() => { entered.resolve(); return configured.promise; });
-    const ensure = h.sandbox.salixEnsure(permit, true);
-    const rejected = expect(ensure).rejects.toThrow("stale_control_permit");
+    const rejected = expect(h.sandbox.salixEnsure(permit, true, station)).rejects.toThrow("stale_control_permit");
     await entered.promise;
-    // Ready from a previous running disk cannot settle a not-yet-issued start.
-    await h.sandbox.salixStatus(claim("observe"));
-    expect(h.sandbox.salixObserve().control?.pending).not.toBeNull();
     await h.sandbox.salixSeal(sealing);
     configured.resolve();
     await rejected;
@@ -155,52 +177,32 @@ describe("managed Sandbox platform boundary", () => {
     expect(h.sandbox.salixObserve().managed_commands_settled).toBe(false);
   });
 
-  test("seal does not wait on a long import, but destroy waits for its real response", async () => {
-    const h = harness(true);
+  test("destroy needs a seal, and approved disk disposal covers an unresolved ensure", async () => {
+    const h = harness();
     await h.sandbox.salixOpen(permit);
-    const response = deferred<Response>();
+    const configured = deferred<void>();
     const entered = deferred<void>();
-    h.tcp.mockImplementationOnce(() => { entered.resolve(); return response.promise; });
-    const transfer = h.sandbox.salixForward(permit, new Request("http://container/archive", { method: "POST", body: "part" }), "import", "snapshot-1");
+    h.ctx.keepAlive.mockImplementationOnce(() => { entered.resolve(); return configured.promise; });
+    const ensure = h.sandbox.salixEnsure(permit, true, station).catch((error: Error) => error);
     await entered.promise;
-    expect((await h.sandbox.salixSeal(sealing)).managed_commands_settled).toBe(false);
-    await expect(h.sandbox.salixDestroy(claim("destroy", sealing))).rejects.toThrow("control_command_unsettled");
-    expect(h.container.destroy).not.toHaveBeenCalled();
-    response.resolve(new Response("receipt"));
-    await transfer;
-    expect(h.sandbox.salixObserve().managed_commands_settled).toBe(true);
-    await h.sandbox.salixDestroy(claim("destroy", sealing));
-    expect(h.container.running).toBe(false);
+    const replacement = h.construct();
+    await replacement.salixSeal(sealing);
+    await expect(replacement.salixDestroy(claim("normal", sealing))).rejects.toThrow("control_command_unsettled");
+    const stopped = await replacement.salixDestroy(claim("discard", sealing), true);
+    expect(stopped).toMatchObject({ running: false, managed_commands_settled: true,
+      control: { sealed: true, pending: null, last_terminal: { action: "destroy", claim_id: "discard", outcome: "completed" } } });
+    configured.resolve();
+    expect(await ensure).toBeInstanceOf(Error);
+    expect(h.container.start).not.toHaveBeenCalled();
   });
 
-  test("closed admission permits only repair WebSocket handshakes and archive export", async () => {
+  test("nothing reaches the Container through the gateway, and legacy SDK entrypoints never start it", async () => {
     const h = harness(true);
     await h.sandbox.salixOpen(permit);
-    await h.sandbox.salixSeal(sealing);
-    const socket = { stillOpen: true };
-    h.tcp.mockResolvedValue({ status: 101, webSocket: socket } as unknown as Response);
-    const connect = (p: ControlPermit, repair: boolean) => new Request(`http://container/connect?salix_control=${encodeURIComponent(JSON.stringify(p))}${repair ? "&archive_repair=true" : ""}`, { headers: { upgrade: "websocket" } });
-    expect((await h.sandbox.fetch(connect(claim("normal", sealing), false))).status).toBe(409);
-    const response = await h.sandbox.fetch(connect(claim("repair", sealing), true));
-    expect(response.status).toBe(101);
-    expect(h.sandbox.salixObserve().managed_commands_settled).toBe(true);
-    expect(socket.stillOpen).toBe(true);
-    const forwarded = h.tcp.mock.calls[0][0];
-    expect(new URL(forwarded.url).searchParams.get("archive_repair")).toBe("true");
-    expect(JSON.parse(forwarded.headers.get("x-salix-control")!)).toMatchObject(claim("repair", sealing));
-    h.tcp.mockResolvedValue(new Response("checkpoint"));
-    await h.sandbox.salixForward(claim("export", sealing), new Request("http://container/archive/export", { method: "POST", body: "checkpoint" }), "export");
-    await expect(h.sandbox.salixForward(claim("import", sealing), new Request("http://container/archive", { method: "POST" }), "import")).rejects.toThrow("control_sealed");
-  });
-
-  test("legacy SDK entrypoints and stopped-between-check-and-fetch never fall back to start", async () => {
-    const h = harness(true);
-    await h.sandbox.salixOpen(permit);
+    expect((await h.sandbox.fetch()).status).toBe(409);
     for (const method of ["containerFetch", "start", "startAndWaitForPorts", "stop", "destroy", "configure", "setKeepAlive", "createBackup", "restoreBackup"] as const) {
       await expect(h.sandbox[method]()).rejects.toThrow("control_permit_required");
     }
-    h.tcp.mockImplementationOnce(async () => { h.container.running = false; throw new Error("container stopped"); });
-    await expect(h.sandbox.salixReceipt(permit, "snapshot-1")).rejects.toThrow("container stopped");
     expect(h.container.start).not.toHaveBeenCalled();
     expect(h.container.destroy).not.toHaveBeenCalled();
   });

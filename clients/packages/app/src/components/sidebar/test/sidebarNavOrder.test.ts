@@ -15,7 +15,7 @@ describe("reconcileSidebarNavOrder", () => {
     },
     {
       name: "drops ids the build no longer ships and appends ones it newly does",
-      stored: ["tasks", "archive", "home"],
+      stored: ["tasks", "stations", "home"],
       expected: ["tasks", "home", "inbox", "drive", "plugins"],
     },
     {

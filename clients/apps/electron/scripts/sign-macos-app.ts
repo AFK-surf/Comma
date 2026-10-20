@@ -7,7 +7,8 @@ import { getPackableReleaseConfig } from "../src/release-config";
 import {
   packagedComputerUseAppPath,
   packagedNotchHostPath,
-  packagedSideChatHostAppPath,
+  packagedQuickChatHostPath,
+  packagedMenuBarHostAppPath,
   packagedSleepGuardPath,
 } from "./native-paths";
 
@@ -118,13 +119,15 @@ async function main() {
   const app = resolveAppBundle();
   const notchHost = packagedNotchHostPath(app);
   const computerUseHelper = packagedComputerUseAppPath(app, forgePlatform, forgeArch);
-  const sideChatHelper = packagedSideChatHostAppPath(app);
-  const binaries = [notchHost, packagedSleepGuardPath(app)].filter((path) =>
-    existsSync(path)
-  );
+  const menuBarHelper = packagedMenuBarHostAppPath(app);
+  const binaries = [
+    notchHost,
+    packagedQuickChatHostPath(app),
+    packagedSleepGuardPath(app),
+  ].filter((path) => existsSync(path));
 
   signNestedHelperApp(computerUseHelper, identity, keychain);
-  signNestedHelperApp(sideChatHelper, identity, keychain);
+  signNestedHelperApp(menuBarHelper, identity, keychain);
 
   console.log(`Signing ${app}`);
   for (const binary of binaries) {

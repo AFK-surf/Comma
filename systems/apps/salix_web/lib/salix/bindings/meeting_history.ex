@@ -50,7 +50,7 @@ defmodule Salix.Bindings.MeetingHistory do
   # requested page. No polling, deployment-wide scan, or per-meeting RPC.
   defp read_page(ids, group, connect, channel) do
     ids
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn id ->
         case Store.get_indexed(id) do
           {:ok, %{"id" => ^id, "state" => state} = doc, _} ->

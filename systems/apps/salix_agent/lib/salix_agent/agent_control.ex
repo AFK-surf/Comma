@@ -8,10 +8,11 @@ defmodule SalixAgent.AgentControl do
   """
 
   alias SalixAgent.{
-    AgentDefaults,
+    AgentModel,
+    StationBinding,
     AgentWorkspace,
+    ModelChoice,
     ArchivedSchedules,
-    CloudVM,
     GroupContext,
     InternalSession,
     InternalSessionFleet,
@@ -19,12 +20,10 @@ defmodule SalixAgent.AgentControl do
     Placement,
     Repair,
     StorageAuthorization,
-    Templates,
     Waits
   }
 
-  alias SalixStore.RuntimeIds
-  alias SalixStore.{Agent, ExternalWorkerTargets, Ids, Keys, S3}
+  alias SalixStore.{Agent, Ids, Keys, S3}
 
   require InternalSession
   require Logger
@@ -32,9 +31,8 @@ defmodule SalixAgent.AgentControl do
   @lifecycle_stop_timeout_ms 5_000
   @generated_id_retries 5
   @router_session_switch_retries 5
-  @external_binding_apply_retries 5
   @list_read_concurrency 8
-  @external_runtime_providers RuntimeIds.external_runtime_providers()
+  @station_runtime_providers ~w(codex claude)
 
   @doc "One bounded native storage page of visible group Workers; filters never scan ahead."
   def page_workers(tenant_id, group_id, opts \\ []) do
@@ -45,7 +43,11 @@ defmodule SalixAgent.AgentControl do
       else: {:error, :invalid_arguments}
   end
 
-  @doc "One bounded canonical group Agent page, shared by product rosters."
+  @doc """
+  One bounded canonical group Agent page, shared by product rosters.
+  `exclude_task_agent: true` leaves out the Group's Task agent
+  (`SalixAgent.TaskAgent`), which no product list shows.
+  """
   def page_agents(tenant_id, group_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, 20)
     lifecycle = Keyword.get(opts, :lifecycle, "unarchived")
@@ -59,8 +61,8 @@ defmodule SalixAgent.AgentControl do
          true <- is_integer(limit) and limit in 1..500,
          true <- role in [nil, "router", "worker"],
          true <- lifecycle in ~w(unarchived archived all),
-         true <- source in [nil, "internal", "connected", "compute"],
-         true <- is_nil(provider) or provider in @external_runtime_providers,
+         true <- source in [nil, "internal", "station"],
+         true <- is_nil(provider) or provider in @station_runtime_providers,
          true <- source != "internal" or is_nil(provider),
          {:ok, token} <- decode_worker_cursor(Keyword.get(opts, :cursor), scope),
          {:ok, %{objects: objects, next: next}} <-
@@ -69,14 +71,15 @@ defmodule SalixAgent.AgentControl do
              continuation_token: token
            ),
          true <- length(objects) <= limit,
-         {:ok, records} <- read_worker_page(objects, tenant_id, group_id) do
+         {:ok, records} <- read_worker_page(objects, tenant_id, group_id),
+         {:ok, task_agent} <- page_task_agent(group_id, records, opts) do
       items =
         Enum.filter(records, fn record ->
-          runtime = record["runtime_config"] || %{}
-          actual_source = worker_runtime_source(runtime)
-          actual_provider = runtime["provider"] || get_in(runtime, ["runtime_spec", "provider"])
+          actual_source = if StationBinding.bound?(record), do: "station", else: "internal"
+          actual_provider = get_in(record, ["station_binding", "model", "provider"])
 
           (is_nil(role) or record["role"] == role) and record["hidden"] != true and
+            record["agent_id"] != task_agent and
             (lifecycle == "all" or archived?(record) == (lifecycle == "archived")) and
             (is_nil(source) or source == actual_source) and
             (is_nil(provider) or provider == actual_provider) and
@@ -100,12 +103,18 @@ defmodule SalixAgent.AgentControl do
     end
   end
 
-  defp worker_runtime_source(%{"kind" => "compute_workload"}), do: "compute"
+  defp page_task_agent(group_id, [_ | _], opts) do
+    with true <- Keyword.get(opts, :exclude_task_agent) == true,
+         {:ok, id} <- SalixAgent.TaskAgent.get(group_id) do
+      {:ok, id}
+    else
+      false -> {:ok, nil}
+      {:error, :not_found} -> {:ok, nil}
+      error -> error
+    end
+  end
 
-  defp worker_runtime_source(%{"kind" => kind}) when kind in ~w(external connected_runtime),
-    do: "connected"
-
-  defp worker_runtime_source(_), do: "internal"
+  defp page_task_agent(_group_id, [], _opts), do: {:ok, nil}
 
   defp decode_worker_cursor(nil, _scope), do: {:ok, nil}
 
@@ -127,7 +136,7 @@ defmodule SalixAgent.AgentControl do
 
   defp read_worker_page(objects, tenant_id, group_id) do
     objects
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn %{key: key} ->
         with {:ok, %{"agent_id" => id} = record} <- get_json(key),
              true <-
@@ -166,217 +175,37 @@ defmodule SalixAgent.AgentControl do
     end)
   end
 
-  @doc "Compare expected binding revision and allocate its successor at the actual Control CAS."
-  # Model anchor: tla/salix/AgentBindingCommand.tla.
-  def rebind_external_worker(agent_id, tenant_id, target, expected, command_id)
-      when is_map(target) and is_integer(expected) and expected >= 0 and is_binary(command_id) do
+  @doc """
+  Move a Worker bound to a station (`SalixAgent.StationBinding`) to another
+  station or runtime model at the Control CAS. `expected` is the binding
+  revision the caller read; the new binding takes the next one. The same
+  binding asked again at the revision it made answers `:unchanged`.
+  """
+  def rebind_station_worker(agent_id, tenant_id, request, expected)
+      when is_map(request) and is_integer(expected) and expected >= 0 do
     management_change(agent_id, tenant_id, fn record ->
-      current = record["runtime_config"] || %{}
+      current = record["station_binding"]
 
-      with :ok <- writable_authority(record, :salix) do
+      with :ok <- writable_authority(record, :salix),
+           true <- StationBinding.bound?(record) || {:error, :unsupported_agent_kind},
+           {:ok, binding} <-
+             StationBinding.normalize(request, record["tenant_id"], expected + 1) do
         cond do
-          match?(%{"kind" => "migration"}, record["session_admission"]) ->
-            {:error, :session_migration_in_progress}
+          current == binding ->
+            {:ok, :unchanged, record}
 
-          not external_runtime?(record) ->
-            {:error, :unsupported_agent_kind}
-
-          record["binding_command_id"] == command_id ->
-            if expected + 1 == binding_revision(current) and
-                 Map.drop(current, ["binding_revision"]) == target,
-               do: {:ok, :applied, record},
-               else: {:error, :invocation_conflict}
-
-          binding_revision(current) != expected ->
+          current["binding_revision"] != expected ->
             {:error, :binding_conflict}
 
           true ->
-            with {:ok, canonical} <-
-                   canonical_external_binding(
-                     Map.put(target, "binding_revision", expected + 1),
-                     record
-                   ),
-                 :ok <- validate_external_binding_target(canonical, record) do
-              if Map.drop(canonical, ["binding_revision"]) ==
-                   Map.drop(current, ["binding_revision"]) do
-                {:ok, :unchanged, record}
-              else
-                {:ok, :applied,
-                 record
-                 |> Map.put("runtime_config", canonical)
-                 |> Map.put("binding_command_id", command_id)}
-              end
-            end
+            {:ok, :applied, Map.put(record, "station_binding", binding)}
         end
       end
     end)
   end
 
-  @doc false
-  def reserve_external_session(agent_id, session_id) do
-    update_record(Keys.ctl_agent(agent_id), fn record ->
-      case record["session_admission"] do
-        nil ->
-          if archived?(record) or not external_runtime?(record) do
-            {:error, :external_session_read_only}
-          else
-            Map.put(record, "session_admission", %{
-              "kind" => "birth",
-              "session_id" => session_id,
-              "binding" => record["runtime_config"]
-            })
-          end
-
-        %{"kind" => "birth", "session_id" => ^session_id} ->
-          {:unchanged, record}
-
-        _ ->
-          {:error, :session_creation_frozen}
-      end
-    end)
-  end
-
-  @doc false
-  def release_external_session(agent_id, session_id) do
-    update_record(Keys.ctl_agent(agent_id), fn record ->
-      case record["session_admission"] do
-        %{"kind" => "birth", "session_id" => ^session_id} ->
-          Map.delete(record, "session_admission")
-
-        _ ->
-          {:unchanged, record}
-      end
-    end)
-  end
-
-  @doc false
-  def freeze_session_creation(agent_id, tenant_id, operation_id, source, target) do
-    management_change(agent_id, tenant_id, fn record ->
-      freeze = %{
-        "kind" => "migration",
-        "operation_id" => operation_id,
-        "source" => source,
-        "target" => target
-      }
-
-      with :ok <- writable_authority(record, :salix) do
-        cond do
-          source["kind"] not in ~w(external connected_runtime) or
-              target["kind"] != "compute_workload" ->
-            {:error, :unsupported_session_migration_target}
-
-          is_map(record["session_admission"]) and
-              Map.drop(record["session_admission"], [
-                "session_id",
-                "cursor",
-                "cancel_phase",
-                "cancel_cursor"
-              ]) == freeze ->
-            {:ok, :applied, record}
-
-          record["session_admission"] != nil ->
-            {:error, {:session_admission_pending, record["session_admission"]}}
-
-          record["runtime_config"] != source ->
-            {:error, :binding_conflict}
-
-          not external_runtime?(record) ->
-            {:error, :unsupported_agent_kind}
-
-          true ->
-            with {:ok, canonical} <- canonical_external_binding(target, record),
-                 :ok <- validate_external_binding_target(canonical, record) do
-              {:ok, :applied, Map.put(record, "session_admission", freeze)}
-            end
-        end
-      end
-    end)
-  end
-
-  @doc false
-  def select_migration_session(agent_id, tenant_id, operation_id, session_id, cursor) do
-    management_change(agent_id, tenant_id, fn record ->
-      case record["session_admission"] do
-        %{"kind" => "migration", "operation_id" => ^operation_id} = freeze ->
-          if freeze["session_id"] in [nil, session_id] or is_nil(session_id) do
-            {:ok, :applied,
-             Map.put(
-               record,
-               "session_admission",
-               freeze |> Map.put("session_id", session_id) |> Map.put("cursor", cursor)
-             )}
-          else
-            {:error, :another_session_migration_in_progress}
-          end
-
-        _ ->
-          {:error, :migration_operation_conflict}
-      end
-    end)
-  end
-
-  @doc false
-  def cancel_session_migration(agent_id, tenant_id, operation_id, phase, cursor) do
-    management_change(agent_id, tenant_id, fn record ->
-      case record["session_admission"] do
-        %{"kind" => "migration", "operation_id" => ^operation_id} = freeze ->
-          if phase == :complete do
-            {:ok, :applied,
-             record
-             |> Map.delete("session_admission")
-             |> Map.put("binding_command_id", operation_id)}
-          else
-            {:ok, :applied,
-             Map.put(
-               record,
-               "session_admission",
-               freeze |> Map.put("cancel_phase", phase) |> Map.put("cancel_cursor", cursor)
-             )}
-          end
-
-        _ ->
-          {:error, :migration_operation_conflict}
-      end
-    end)
-  end
-
-  @doc false
-  def finish_session_migration(agent_id, tenant_id, operation_id, target) do
-    management_change(agent_id, tenant_id, fn record ->
-      case record["session_admission"] do
-        %{
-          "kind" => "migration",
-          "operation_id" => ^operation_id,
-          "source" => source,
-          "target" => ^target
-        } ->
-          if record["runtime_config"] == source do
-            with {:ok, canonical} <-
-                   canonical_external_binding(
-                     Map.put(target, "binding_revision", binding_revision(source) + 1),
-                     record
-                   ),
-                 :ok <- validate_external_binding_target(canonical, record) do
-              {:ok, :applied,
-               record
-               |> Map.put("runtime_config", canonical)
-               |> Map.put("binding_command_id", operation_id)
-               |> Map.delete("session_admission")}
-            end
-          else
-            {:error, :binding_conflict}
-          end
-
-        nil ->
-          if record["binding_command_id"] == operation_id,
-            do: {:ok, :applied, record},
-            else: {:error, :migration_operation_conflict}
-
-        _ ->
-          {:error, :migration_operation_conflict}
-      end
-    end)
-  end
+  def rebind_station_worker(_agent_id, _tenant_id, _request, _expected),
+    do: {:error, :invalid_arguments}
 
   @doc "Archive the identity at its Control CAS. Existing execution stops independently."
   # Model anchor: tla/salix/AgentPermanentArchive.tla.
@@ -605,7 +434,7 @@ defmodule SalixAgent.AgentControl do
          requested_id,
          generated?
        ) do
-    with :ok <- SalixStore.AgentConfigurationRollout.ensure_open(),
+    with :ok <- rollout().ensure_open(),
          do: do_create_once(attrs, tenant_id, requested_id, generated?)
   end
 
@@ -613,39 +442,28 @@ defmodule SalixAgent.AgentControl do
     do: do_create_once(attrs, tenant_id, requested_id, generated?)
 
   defp do_create_once(attrs, tenant_id, requested_id, generated?) do
-    # An omitted template copies the tenant creation choice, including nil.
-    template_id = nonblank_template_id(attrs["template_id"])
-
-    with {:ok, role} <-
+    # An Agent without a model choice (`ModelChoice`) follows the platform
+    # model of its role (`AgentModel`).
+    with :ok <- reject_template_id(attrs),
+         {:ok, role} <-
            validate_role(attrs["role"] || if(attrs["is_router"], do: "router", else: "worker")),
-         {:ok, template_id} <- creation_template(template_id, role, tenant_id),
-         {:ok, template} <- load_creation_template(template_id, role, tenant_id),
-         {:ok, vm_input} <- normalize_vm_input(attrs["vm"], tenant_id),
-         :ok <- admit_tenant_profile(tenant_id, role, attrs["purpose"], vm_input) do
-      name = attrs["name"] || template["name"] || "Agent"
-
-      create_with_vm(
-        attrs,
-        tenant_id,
-        requested_id,
-        generated?,
-        role,
-        template,
-        template_id,
-        name,
-        vm_input
-      )
+         {:ok, model} <- creation_model(attrs["model"], tenant_id),
+         attrs = Map.put(attrs, "model", model),
+         {:ok, record} <- creation_record(model, role, tenant_id),
+         :ok <- admit_tenant_profile(tenant_id, role, attrs["purpose"]) do
+      name = attrs["name"] || record["name"] || "Agent"
+      create_in_group(attrs, tenant_id, requested_id, generated?, role, record, name)
     end
   end
 
-  # A router-only (guest) Tenant admits only guest Routers without a Cloud VM.
-  # The purpose then selects the fail-closed guest tool policy.
-  defp admit_tenant_profile(tenant_id, role, purpose, vm_input) do
+  # A router-only (guest) Tenant admits only guest Routers. The purpose then
+  # selects the fail-closed guest tool policy; its Group has no Cloud VM.
+  defp admit_tenant_profile(tenant_id, role, purpose) do
     guest_purpose = SalixStore.TenantProfiles.guest_router_purpose()
 
     cond do
       SalixStore.TenantProfiles.router_only?(tenant_id) ->
-        if role == "router" and purpose == guest_purpose and vm_input["enabled"] == false,
+        if role == "router" and purpose == guest_purpose,
           do: :ok,
           else: {:error, {:bad_request, "this tenant admits only guest Router agents"}}
 
@@ -659,8 +477,8 @@ defmodule SalixAgent.AgentControl do
 
   defp reject_guest_router_escalation(%{"purpose" => purpose}, attrs) do
     if purpose == SalixStore.TenantProfiles.guest_router_purpose() and
-         (Map.has_key?(attrs, "purpose") or match?(%{"enabled" => true}, attrs["vm"]) or
-            Map.has_key?(attrs, "disabled_tools") or Map.has_key?(attrs, "runtime_config") or
+         (Map.has_key?(attrs, "purpose") or Map.has_key?(attrs, "disabled_tools") or
+            Map.has_key?(attrs, "runtime_config") or
             Map.has_key?(attrs, "inspector_policy")),
        do: {:error, {:bad_request, "guest Router configuration is fixed"}},
        else: :ok
@@ -668,48 +486,48 @@ defmodule SalixAgent.AgentControl do
 
   defp reject_guest_router_escalation(_current, _attrs), do: :ok
 
-  defp nonblank_template_id(id) when is_binary(id) do
-    if String.trim(id) == "", do: nil, else: id
+  # `template_id` is not an Agent field: an Agent names its model with `model`.
+  defp reject_template_id(attrs) do
+    if Map.has_key?(attrs, "template_id"),
+      do: {:error, {:bad_request, "template_id is not supported; give model"}},
+      else: :ok
   end
 
-  defp nonblank_template_id(_), do: nil
+  # Only a map is a model choice; older callers send other `model` values that
+  # were never Agent fields, and they keep being ignored.
+  defp creation_model(model, _tenant_id) when not is_map(model), do: {:ok, nil}
 
-  defp creation_template(nil, role, tenant_id),
-    do: AgentDefaults.creation_template(role, tenant_id)
-
-  defp creation_template(template_id, _role, _tenant_id), do: {:ok, template_id}
-
-  defp load_creation_template(nil, role, tenant_id) when role in ["router", "worker"] do
-    with {:ok, id, _source} <- AgentDefaults.resolve_platform_default(role),
-         do: load_visible_template(id, tenant_id)
+  defp creation_model(model, tenant_id) do
+    case ModelChoice.choose(model, tenant_id) do
+      {:ok, value} -> {:ok, value}
+      {:error, _reason} -> {:error, {:bad_request, "invalid model"}}
+    end
   end
 
-  defp load_creation_template(nil, role, _tenant_id),
-    do: {:error, {:bad_request, "template_id is required for role #{role}"}}
+  # The model record names a new Agent and its provider. A following Agent can
+  # be created before the platform configures its tier; it runs once the tier
+  # is configured.
+  defp creation_record(nil, role, _tenant_id) do
+    with {:ok, choice, _source} <- AgentModel.platform_default(role),
+         {:ok, record} <- ModelChoice.record(choice, nil) do
+      {:ok, record}
+    else
+      _unresolved -> {:ok, %{}}
+    end
+  end
 
-  defp load_creation_template(template_id, _role, tenant_id),
-    do: load_visible_template(template_id, tenant_id)
+  defp creation_record(model, _role, tenant_id), do: ModelChoice.record(model, tenant_id)
 
-  defp create_with_vm(
-         attrs,
-         tenant_id,
-         requested_id,
-         generated?,
-         role,
-         template,
-         template_id,
-         name,
-         vm_input
-       ) do
+  # An Agent has no Cloud VM setting: its Group's switch decides
+  # (`SalixAgent.CloudVM.allowed?/1`). A `vm` from older callers is ignored.
+  defp create_in_group(attrs, tenant_id, requested_id, generated?, role, record, name) do
     with {:ok, group_id} <- resolve_agent_group_id(attrs, tenant_id),
          {:ok, group} <- GroupContext.get(group_id, tenant_id),
          {:ok, id} <- resolve_agent_id(requested_id, group["group_id"], generated?),
-         :ok <- validate_vm_enabled(vm_input, tenant_id, group_id),
          {:ok, fork_source} <- load_fork_source(attrs["fork_from"], tenant_id, group_id),
-         {:ok, runtime_updates} <-
-           validate_runtime_config(attrs, %{}, tenant_id: tenant_id, group_id: group_id),
-         :ok <-
-           validate_owned_initial_binding(attrs, runtime_updates, id, tenant_id, group_id, role),
+         {:ok, runtime_updates} <- validate_runtime_config(attrs, %{}),
+         {:ok, station_binding} <- creation_station_binding(attrs, role, tenant_id),
+         attrs = put_optional(attrs, "station_binding", station_binding),
          {:ok, disabled_tools} <- validate_disabled_tools(attrs["disabled_tools"]),
          {:ok, runtime_updates} <-
            validate_inspector_policy(attrs, runtime_updates, %{"role" => role}) do
@@ -717,11 +535,9 @@ defmodule SalixAgent.AgentControl do
         id,
         group_id,
         tenant_id,
-        template,
-        template_id,
+        record,
         name,
         role,
-        vm_input,
         disabled_tools,
         attrs,
         runtime_updates,
@@ -731,23 +547,17 @@ defmodule SalixAgent.AgentControl do
     end
   end
 
-  defp validate_owned_initial_binding(
-         %{"configuration_authority" => "salix"},
-         %{"runtime_config" => %{"kind" => kind} = runtime},
-         id,
-         tenant,
-         group,
-         role
-       )
-       when kind in ~w(connected_runtime compute_workload) do
-    record = %{"agent_id" => id, "tenant_id" => tenant, "group_id" => group, "role" => role}
+  # A Worker bound to a station (`SalixAgent.StationBinding`) is an internal
+  # Worker whose Tasks run on that station.
+  defp creation_station_binding(%{"station_binding" => nil}, _role, _tenant_id), do: {:ok, nil}
 
-    with true <- role == "worker" || {:error, :external_binding_role_mismatch},
-         {:ok, binding} <- canonical_external_binding(runtime, record),
-         do: validate_external_binding_target(binding, record)
+  defp creation_station_binding(%{"station_binding" => request}, role, tenant_id) do
+    if role == "worker",
+      do: StationBinding.normalize(request, tenant_id, 1),
+      else: {:error, {:bad_request, "only a Worker can be bound to a station"}}
   end
 
-  defp validate_owned_initial_binding(_, _, _, _, _, _), do: :ok
+  defp creation_station_binding(_attrs, _role, _tenant_id), do: {:ok, nil}
 
   # Legacy wire entry point. Its final CAS rejects transferred configuration.
   def update(agent_id, attrs), do: configure_record(agent_id, attrs, :legacy)
@@ -764,8 +574,7 @@ defmodule SalixAgent.AgentControl do
     with {:ok, current} <- get(agent_id),
          :ok <- writable_authority(current, authority),
          {:ok, updates} <- validate_updates(current, attrs),
-         stored_updates <-
-           strip_vm_command_flags(configuration_updates(current, updates, authority)),
+         stored_updates <- configuration_updates(current, updates, authority),
          {:ok, updated} <-
            update_record(Keys.ctl_agent(agent_id), fn record ->
              merged = Map.merge(record, stored_updates)
@@ -774,19 +583,7 @@ defmodule SalixAgent.AgentControl do
                   :ok <- SalixAgent.InspectorPolicy.validate(merged["inspector_policy"], merged),
                   do: merged
            end) do
-      case maybe_switch_vm_provider(current, updates) do
-        :ok ->
-          {:ok, CloudVM.attach(updated)}
-
-        {:error, reason} ->
-          case rollback_agent_vm(agent_id, current) do
-            {:ok, _} ->
-              {:error, reason}
-
-            {:error, rollback_reason} ->
-              {:error, {:vm_switch_rollback_failed, reason, rollback_reason}}
-          end
-      end
+      {:ok, updated}
     end
   end
 
@@ -808,7 +605,7 @@ defmodule SalixAgent.AgentControl do
 
   @doc false
   def ensure_configuration_owner(record) do
-    with :ok <- SalixStore.AgentConfigurationRollout.ensure_open(),
+    with :ok <- rollout().ensure_open(),
          do: configuration_owner(record)
   end
 
@@ -829,7 +626,7 @@ defmodule SalixAgent.AgentControl do
 
   def claim_configuration(agent_id, tenant_id, archived_at)
       when is_nil(archived_at) or is_integer(archived_at) do
-    with :ok <- SalixStore.AgentConfigurationRollout.ensure_open(),
+    with :ok <- rollout().ensure_open(),
          do: do_claim_configuration(agent_id, tenant_id, archived_at)
   end
 
@@ -885,29 +682,6 @@ defmodule SalixAgent.AgentControl do
     end
   end
 
-  @doc """
-  Apply one provider-neutral External Worker binding under the Agent record's
-  S3 ETag and a monotonic binding revision.
-
-  Equal revisions are idempotent only for the same canonical envelope. A late
-  lower revision is superseded without changing the record.
-  Modeled in `tla/salix/ExternalWorkerBindingRevision.tla`.
-  """
-  @spec apply_external_worker_binding(String.t(), String.t(), map()) ::
-          {:ok, map()} | {:error, term()}
-  def apply_external_worker_binding(agent_id, tenant_id, runtime_config)
-      when is_binary(agent_id) and is_binary(tenant_id) and is_map(runtime_config) do
-    do_apply_external_worker_binding(
-      agent_id,
-      tenant_id,
-      stringify_keys(runtime_config),
-      @external_binding_apply_retries
-    )
-  end
-
-  def apply_external_worker_binding(_, _, _),
-    do: {:error, {:bad_request, "invalid external worker binding"}}
-
   @doc false
   @spec switch_router_session_record(String.t(), String.t(), String.t()) ::
           {:ok, map()} | {:error, term()}
@@ -957,6 +731,29 @@ defmodule SalixAgent.AgentControl do
              |> Map.put("archive_epoch", ArchivedSchedules.archive_epoch_on_archive(rec))
              |> Map.put("archived_at", now())
              |> Map.put("status", "cancelled")
+           end) do
+      pause_schedules_for_archive(agent_id, ArchivedSchedules.archive_epoch(agent))
+      {:ok, agent}
+    end
+  end
+
+  @doc """
+  Archive a Worker whose External Runtime has no station replacement, with
+  the reason on its record (`archive_reason`). Nothing is deleted; an
+  archived Worker can be unarchived. A Worker already archived is unchanged.
+  """
+  def archive_retired_runtime(agent_id, reason) when is_binary(reason) do
+    with {:ok, agent} <-
+           update_record(Keys.ctl_agent(agent_id), fn
+             %{"archived_at" => _} = rec ->
+               {:unchanged, rec}
+
+             rec ->
+               rec
+               |> Map.put("archive_epoch", ArchivedSchedules.archive_epoch_on_archive(rec))
+               |> Map.put("archived_at", now())
+               |> Map.put("status", "cancelled")
+               |> Map.put("archive_reason", reason)
            end) do
       pause_schedules_for_archive(agent_id, ArchivedSchedules.archive_epoch(agent))
       {:ok, agent}
@@ -1036,7 +833,7 @@ defmodule SalixAgent.AgentControl do
   # other order would strand resumed-but-still-paused rows behind a
   # successful unarchive, with nothing left to retry them.
   def unarchive(agent_id, tenant_id) do
-    with :ok <- SalixStore.AgentConfigurationRollout.ensure_open(),
+    with :ok <- rollout().ensure_open(),
          {:ok, rec} <- get_record(agent_id),
          true <- rec["tenant_id"] == tenant_id,
          true <- archived?(rec),
@@ -1123,16 +920,15 @@ defmodule SalixAgent.AgentControl do
   @spec force_recover(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def force_recover(agent_id, opts \\ []) when is_binary(agent_id) and is_list(opts) do
     with :ok <- ensure_not_stopped(agent_id),
-         {:ok, rec} <- get_record(agent_id),
-         :ok <- ensure_internal_runtime(rec),
+         {:ok, _rec} <- get_record(agent_id),
          {:ok, wake?} <- force_recover_wake(opts),
          {:ok, sessions} <- force_recover_sessions(agent_id, opts) do
       timeout = Keyword.get(opts, :timeout, 5_000)
-      reason = Keyword.get(opts, :reason, :force_recover)
 
-      stop_runtime_result =
-        safe_stop_runtime(agent_id, reason: reason, timeout: timeout)
-
+      # Stop the Server before the session actors, as Fleet.stop_existing
+      # does: a running Server can wake sessions until it stops. A missing
+      # Server starts passive: it takes the lease without the startup cycle
+      # that wakes indexed sessions.
       stop_server_result =
         stop_running_server(agent_id,
           reason: :normal,
@@ -1140,6 +936,9 @@ defmodule SalixAgent.AgentControl do
           force: true,
           start_if_missing: true
         )
+
+      stop_runtime_result =
+        safe_stop_existing(agent_id, reason: :normal, timeout: timeout, force: true)
 
       recovered =
         Enum.map(sessions, fn session ->
@@ -1173,7 +972,7 @@ defmodule SalixAgent.AgentControl do
   end
 
   defp wake_owner(agent_id) do
-    case Registry.lookup(SalixAgent.Registry, agent_id) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, agent_id) do
       [{pid, _}] ->
         SalixAgent.Server.wake(pid)
 
@@ -1186,45 +985,6 @@ defmodule SalixAgent.AgentControl do
   def wake(agent_id, attrs, tenant_id) do
     with {:ok, _agent} <- get(agent_id, tenant_id) do
       wake(agent_id, attrs)
-    end
-  end
-
-  def runtime_kind(%{"runtime_config" => %{"kind" => kind}})
-      when kind in ["external", "connected_runtime", "compute_workload"],
-      do: "external"
-
-  def runtime_kind(%{"runtime_config" => %{"kind" => kind}}) when is_binary(kind), do: kind
-  def runtime_kind(_agent), do: "internal"
-
-  def external_runtime?(%{
-        "runtime_config" => %{"kind" => "external", "provider" => provider}
-      })
-      when provider in @external_runtime_providers,
-      do: true
-
-  def external_runtime?(%{
-        "runtime_config" => %{"kind" => "connected_runtime", "provider" => provider}
-      })
-      when provider in @external_runtime_providers,
-      do: true
-
-  def external_runtime?(%{
-        "runtime_config" => %{
-          "kind" => "compute_workload",
-          "workload_id" => workload_id,
-          "runtime_spec" => %{"provider" => provider}
-        }
-      })
-      when is_binary(workload_id) and workload_id != "" and
-             provider in @external_runtime_providers,
-      do: true
-
-  def external_runtime?(_agent), do: false
-
-  defp ensure_internal_runtime(rec) do
-    case runtime_kind(rec) do
-      "internal" -> :ok
-      other -> {:error, {:unsupported_runtime_kind, other}}
     end
   end
 
@@ -1297,10 +1057,7 @@ defmodule SalixAgent.AgentControl do
         response =
           Enum.find(InternalSession.get(current, :messages), fn message ->
             message.role == "assistant" and
-              message.id >= InternalSession.get(committed, :next_message_id) and
-              not Enum.any?(Map.get(message, :tool_calls) || [], fn call ->
-                is_map(call["runtime_failure_reply"] || call[:runtime_failure_reply])
-              end)
+              message.id >= InternalSession.get(committed, :next_message_id)
           end)
 
         issue = InternalSession.query(current, :activity_issue)
@@ -1345,7 +1102,7 @@ defmodule SalixAgent.AgentControl do
             "kind" => "runtime_message",
             "wake" => true,
             "dedupe_key" => dedupe_key,
-            "created_at" => System.system_time(:second),
+            "created_at" => SystemsClock.system_time(:second),
             "payload" => %{
               "runtime_message_id" => dedupe_key,
               "type" => "runtime_recovered",
@@ -1371,11 +1128,14 @@ defmodule SalixAgent.AgentControl do
 
   defp wake_internal_session(agent_id, session_id, timeout) do
     case Placement.ensure_started(agent_id, create: false) do
-      {:ok, pid} when node(pid) == node() ->
-        InternalSessionFleet.wake(agent_id, session_id)
-
       {:ok, pid} ->
-        :erpc.call(node(pid), InternalSessionFleet, :wake, [agent_id, session_id], timeout)
+        owner = SystemsRuntime.Proc.node(pid)
+
+        if owner == SystemsRuntime.Proc.node() do
+          InternalSessionFleet.wake(agent_id, session_id)
+        else
+          :erpc.call(owner, InternalSessionFleet, :wake, [agent_id, session_id], timeout)
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -1384,8 +1144,8 @@ defmodule SalixAgent.AgentControl do
     :exit, reason -> {:error, {:wake_failed, reason}}
   end
 
-  defp safe_stop_runtime(agent_id, opts) do
-    SalixAgent.AgentActor.stop_runtime(agent_id, opts)
+  defp safe_stop_existing(agent_id, opts) do
+    Placement.stop_existing(agent_id, opts)
   catch
     :exit, reason -> {:error, {:exit, reason}}
   end
@@ -1426,11 +1186,9 @@ defmodule SalixAgent.AgentControl do
          id,
          group_id,
          tenant_id,
-         template,
-         template_id,
+         model_record,
          name,
          role,
-         vm_input,
          disabled_tools,
          attrs,
          runtime_updates,
@@ -1448,8 +1206,7 @@ defmodule SalixAgent.AgentControl do
           "name" => name,
           "system_prompt" => attrs["system_prompt"] || "",
           "router_system_prompt" => attrs["router_system_prompt"] || "",
-          "template_id" => template_id,
-          "provider" => template["provider"],
+          "provider" => model_record["provider"],
           "db_namespace" => "salix:" <> id,
           "forked_from" => attrs["fork_from"],
           "status" => "idle",
@@ -1458,9 +1215,10 @@ defmodule SalixAgent.AgentControl do
           "created_at" => now,
           "heartbeat_schedule_id" => Ids.new_schedule_id(),
           "tool_router_enabled" => false,
-          "vm" => vm_input,
           "disabled_tools" => disabled_tools
         }
+        |> put_optional("model", attrs["model"])
+        |> put_optional("station_binding", attrs["station_binding"])
         |> put_optional("source_initial_agent_slot", attrs["source_initial_agent_slot"])
         |> put_optional("configuration_authority", attrs["configuration_authority"])
         |> put_optional("management_purpose", attrs["management_purpose"])
@@ -1475,7 +1233,7 @@ defmodule SalixAgent.AgentControl do
           "router_session_id",
           if(role == "router", do: Ids.new_session_id())
         )
-        |> Map.put("runtime_config", runtime_updates["runtime_config"] || %{"kind" => "internal"})
+        |> Map.put("runtime_config", %{"kind" => "internal"})
         |> Enum.reject(fn {_k, value} -> is_nil(value) end)
         |> Map.new()
 
@@ -1490,7 +1248,7 @@ defmodule SalixAgent.AgentControl do
           with :ok <- Agent.release(owned) do
             case put_control_record(Keys.ctl_agent(id), rec, if_none_match: "*") do
               {:ok, _} ->
-                {:ok, CloudVM.attach(rec)}
+                {:ok, rec}
 
               {:error, :precondition_failed} ->
                 {:error, :exists}
@@ -1518,11 +1276,6 @@ defmodule SalixAgent.AgentControl do
   end
 
   defp seed_initial_internal_sessions(_agent_id, nil, _runtime_updates), do: :ok
-
-  defp seed_initial_internal_sessions(_agent_id, {_source_agent, _source_sessions}, %{
-         "runtime_config" => %{"kind" => "external"}
-       }),
-       do: :ok
 
   defp seed_initial_internal_sessions(
          agent_id,
@@ -1643,17 +1396,6 @@ defmodule SalixAgent.AgentControl do
   defp resolve_agent_id(_agent_id, _group_id, _generated?),
     do: {:error, {:bad_request, "invalid agent_id"}}
 
-  defp load_visible_template(template_id, tenant_id) do
-    with {:ok, template} <- Templates.get(template_id, tenant_id),
-         true <- template["hidden"] != true do
-      {:ok, template}
-    else
-      false -> {:error, {:bad_request, "template not found"}}
-      {:error, :not_found} -> {:error, {:bad_request, "template not found"}}
-      {:error, _} = err -> err
-    end
-  end
-
   defp load_fork_source(nil, _tenant_id, _group_id), do: {:ok, nil}
   defp load_fork_source("", _tenant_id, _group_id), do: {:ok, nil}
 
@@ -1688,41 +1430,51 @@ defmodule SalixAgent.AgentControl do
     end
   end
 
-  defp validate_vm_enabled(%{"enabled" => false}, _tenant_id, _group_id), do: :ok
-
-  defp validate_vm_enabled(%{"enabled" => true, "provider" => provider}, tenant_id, group_id) do
-    with :ok <- CloudVM.validate_enabled(tenant_id, provider) do
-      CloudVM.validate_group_provider(group_id, provider)
-    end
-  end
-
   defp validate_updates(current, attrs) when is_map(attrs) do
     with :ok <- reject_identity_updates(attrs),
          :ok <- reject_guest_router_escalation(current, attrs),
-         :ok <- reject_generic_revised_binding_update(current, attrs),
          {:ok, updates} <- validate_name(attrs, %{}),
          {:ok, updates} <- validate_purpose(attrs, updates),
          {:ok, updates} <- validate_system_prompt(attrs, updates),
          {:ok, updates} <- validate_router_system_prompt(attrs, updates),
-         {:ok, updates} <- validate_template(attrs, updates, current["tenant_id"]),
-         {:ok, updates} <- validate_vm(attrs, updates, current),
+         {:ok, updates} <- validate_reply_style(attrs, updates),
+         :ok <- reject_template_id(attrs),
+         {:ok, updates} <- validate_model(attrs, updates, current["tenant_id"]),
          {:ok, updates} <- validate_tool_router(attrs, updates),
          {:ok, updates} <- validate_disabled_tools(attrs, updates),
-         {:ok, updates} <-
-           validate_runtime_config(attrs, updates,
-             tenant_id: current["tenant_id"],
-             group_id: current["group_id"]
-           ),
+         {:ok, updates} <- validate_runtime_config(attrs, updates),
+         {:ok, updates} <- validate_station_binding(attrs, updates, current),
          {:ok, updates} <- validate_inspector_policy(attrs, updates, current) do
       {:ok,
        updates
        |> Map.take(writable_fields() ++ ["provider"])
-       |> maybe_force_template_provider(current)}
+       |> put_model_provider(current)}
     end
   end
 
   defp validate_updates(_current, _attrs),
     do: {:error, {:bad_request, "invalid request body"}}
+
+  # `nil` removes the binding; a new binding takes the next revision.
+  defp validate_station_binding(%{"station_binding" => nil}, updates, _current),
+    do: {:ok, Map.put(updates, "station_binding", nil)}
+
+  defp validate_station_binding(%{"station_binding" => request}, updates, current) do
+    cond do
+      current["role"] != "worker" ->
+        {:error, {:bad_request, "only a Worker can be bound to a station"}}
+
+      true ->
+        revision = (get_in(current, ["station_binding", "binding_revision"]) || 0) + 1
+
+        with {:ok, binding} <-
+               StationBinding.normalize(request, current["tenant_id"], revision) do
+          {:ok, Map.put(updates, "station_binding", binding)}
+        end
+    end
+  end
+
+  defp validate_station_binding(_attrs, updates, _current), do: {:ok, updates}
 
   defp validate_inspector_policy(attrs, updates, current) do
     updates =
@@ -1742,124 +1494,6 @@ defmodule SalixAgent.AgentControl do
       field -> {:error, {:bad_request, "#{field} is immutable"}}
     end
   end
-
-  defp reject_generic_revised_binding_update(
-         %{"session_admission" => %{"kind" => "migration"}},
-         %{"runtime_config" => _}
-       ),
-       do: {:error, :session_migration_in_progress}
-
-  defp reject_generic_revised_binding_update(
-         %{"runtime_config" => %{"binding_revision" => revision}},
-         %{"runtime_config" => _}
-       )
-       when is_integer(revision) and revision > 0,
-       do: {:error, {:bad_request, "external worker binding must use revision CAS"}}
-
-  defp reject_generic_revised_binding_update(_current, _attrs), do: :ok
-
-  defp validate_vm(%{"vm" => value}, updates, current) do
-    with {:ok, vm} <- normalize_vm_input(value, current["tenant_id"]),
-         :ok <- validate_vm_change(vm, current) do
-      {:ok, Map.put(updates, "vm", vm)}
-    end
-  end
-
-  defp validate_vm(_attrs, updates, _current), do: {:ok, updates}
-
-  defp validate_vm_change(%{"enabled" => true} = vm, current) do
-    current_vm = current["vm"] || %{"enabled" => false}
-    provider_changed = current_vm["enabled"] == true and vm["provider"] != current_vm["provider"]
-
-    cond do
-      provider_changed and vm["recreate"] != true ->
-        {:error, {:conflict, "vm provider change requires recreate=true"}}
-
-      provider_changed ->
-        CloudVM.validate_enabled(current["tenant_id"], vm["provider"])
-
-      current_vm["enabled"] != true ->
-        with :ok <- CloudVM.validate_enabled(current["tenant_id"], vm["provider"]) do
-          CloudVM.validate_group_provider(current["group_id"], vm["provider"])
-        end
-
-      true ->
-        :ok
-    end
-  end
-
-  defp validate_vm_change(%{"enabled" => false}, _current), do: :ok
-
-  defp normalize_vm_input(nil, _tenant_id), do: {:ok, %{"enabled" => false}}
-
-  defp normalize_vm_input(%{"enabled" => false}, _tenant_id), do: {:ok, %{"enabled" => false}}
-
-  defp normalize_vm_input(%{"enabled" => true} = vm, tenant_id) do
-    with {:ok, provider} <- resolve_vm_provider(vm, tenant_id) do
-      normalize_enabled_vm(vm, provider)
-    end
-  end
-
-  defp normalize_vm_input(%{"enabled" => _}, _tenant_id),
-    do: {:error, {:bad_request, "vm.enabled must be a boolean"}}
-
-  defp normalize_vm_input(_, _tenant_id), do: {:error, {:bad_request, "vm must be an object"}}
-
-  defp resolve_vm_provider(%{"provider" => provider}, _tenant_id) when is_binary(provider),
-    do: {:ok, provider}
-
-  defp resolve_vm_provider(%{"provider" => nil}, tenant_id),
-    do: CloudVM.default_provider(tenant_id)
-
-  defp resolve_vm_provider(%{"provider" => _provider}, _tenant_id),
-    do: {:error, {:bad_request, "vm.provider must be a string"}}
-
-  defp resolve_vm_provider(%{}, tenant_id), do: CloudVM.default_provider(tenant_id)
-
-  defp normalize_enabled_vm(vm, provider) do
-    cond do
-      provider != "cloudflare" ->
-        {:error, {:bad_request, "vm.provider must be cloudflare"}}
-
-      vm["profile"] != nil and not is_binary(vm["profile"]) ->
-        {:error, {:bad_request, "vm.profile must be a string"}}
-
-      vm["recreate"] != nil and not is_boolean(vm["recreate"]) ->
-        {:error, {:bad_request, "vm.recreate must be a boolean"}}
-
-      true ->
-        {:ok,
-         %{"enabled" => true, "provider" => provider}
-         |> put_optional("profile", vm["profile"])
-         |> put_optional("recreate", vm["recreate"])}
-    end
-  end
-
-  defp maybe_switch_vm_provider(current, %{
-         "vm" => %{"enabled" => true, "recreate" => true, "provider" => provider}
-       }) do
-    current_vm = current["vm"] || %{"enabled" => false}
-
-    if current_vm["enabled"] == true and current_vm["provider"] != provider do
-      with {:ok, _rec} <-
-             CloudVM.switch_provider(current, provider),
-           do: :ok
-    else
-      :ok
-    end
-  end
-
-  defp maybe_switch_vm_provider(_current, _updates), do: :ok
-
-  defp rollback_agent_vm(agent_id, current) do
-    current_vm = current["vm"] || %{"enabled" => false}
-    update_record(Keys.ctl_agent(agent_id), &Map.put(&1, "vm", current_vm))
-  end
-
-  defp strip_vm_command_flags(%{"vm" => vm} = updates) when is_map(vm),
-    do: Map.put(updates, "vm", Map.delete(vm, "recreate"))
-
-  defp strip_vm_command_flags(updates), do: updates
 
   defp validate_name(%{"name" => name}, updates) when is_binary(name) do
     if String.trim(name) == "" do
@@ -1905,22 +1539,29 @@ defmodule SalixAgent.AgentControl do
 
   defp validate_router_system_prompt(_attrs, updates), do: {:ok, updates}
 
-  # `nil` or `""` clears the pin so the Agent follows its role default.
-  defp validate_template(%{"template_id" => template_id}, updates, _tenant_id)
-       when template_id in [nil, ""],
-       do: {:ok, Map.put(updates, "template_id", nil)}
+  # How the Agent writes to people (`ToolPolicy.reply_style_prompt/2`).
+  defp validate_reply_style(%{"reply_style" => style}, updates)
+       when style in ["default", "concise"],
+       do: {:ok, Map.put(updates, "reply_style", style)}
 
-  defp validate_template(%{"template_id" => template_id}, updates, tenant_id)
-       when is_binary(template_id) do
-    if match?({:ok, _}, Templates.get(template_id, tenant_id)),
-      do: {:ok, Map.put(updates, "template_id", template_id)},
-      else: {:error, {:bad_request, "template not found"}}
+  defp validate_reply_style(%{"reply_style" => _}, _updates),
+    do: {:error, {:bad_request, "reply_style must be default or concise"}}
+
+  defp validate_reply_style(_attrs, updates), do: {:ok, updates}
+
+  # A model choice (`ModelChoice`); `nil` clears it, so the Agent follows the
+  # platform model of its role.
+  defp validate_model(%{"model" => nil}, updates, _tenant_id),
+    do: {:ok, Map.put(updates, "model", nil)}
+
+  defp validate_model(%{"model" => model}, updates, tenant_id) when is_map(model) do
+    case ModelChoice.choose(model, tenant_id) do
+      {:ok, value} -> {:ok, Map.put(updates, "model", value)}
+      {:error, _reason} -> {:error, {:bad_request, "invalid model"}}
+    end
   end
 
-  defp validate_template(%{"template_id" => _}, _updates, _tenant_id),
-    do: {:error, {:bad_request, "template_id must be a string"}}
-
-  defp validate_template(_attrs, updates, _tenant_id), do: {:ok, updates}
+  defp validate_model(_attrs, updates, _tenant_id), do: {:ok, updates}
 
   defp validate_tool_router(%{"tool_router_enabled" => enabled}, updates)
        when is_boolean(enabled),
@@ -1959,154 +1600,31 @@ defmodule SalixAgent.AgentControl do
   defp validate_disabled_tools(_value),
     do: {:error, {:bad_request, "disabled_tools must be an array of tool names"}}
 
-  defp validate_runtime_config(%{"runtime_config" => config}, updates, opts)
-       when is_map(config) do
-    with {:ok, kind} <- required_runtime_config_string(config, "kind"),
-         {:ok, rec} <- validate_runtime_config_by_kind(kind, config, opts) do
-      {:ok, Map.put(updates, "runtime_config", rec)}
-    end
-  end
+  # A Worker's Tasks run in Salix or on the station it is bound to
+  # (`SalixAgent.StationBinding`); `runtime_config` keeps only kind internal.
+  defp validate_runtime_config(%{"runtime_config" => %{"kind" => "internal"}}, updates),
+    do: {:ok, Map.put(updates, "runtime_config", %{"kind" => "internal"})}
 
-  defp validate_runtime_config(%{"runtime_config" => _config}, _updates, _opts),
-    do: {:error, {:bad_request, "runtime_config must be an object"}}
+  defp validate_runtime_config(%{"runtime_config" => %{"kind" => kind}}, _updates)
+       when kind in ~w(external connected_runtime compute_workload),
+       do: {:error, {:bad_request, StationBinding.retired_external_message()}}
 
-  defp validate_runtime_config(_attrs, updates, _opts), do: {:ok, updates}
+  defp validate_runtime_config(%{"runtime_config" => _config}, _updates),
+    do: {:error, {:bad_request, "runtime_config.kind must be internal"}}
 
-  defp validate_runtime_config_by_kind("internal", _config, _opts),
-    do: {:ok, %{"kind" => "internal"}}
-
-  defp validate_runtime_config_by_kind("external", config, _opts) do
-    with {:ok, provider} <- required_runtime_config_string(config, "provider"),
-         :ok <- validate_external_runtime_provider(provider),
-         {:ok, device_runtime_id} <- required_runtime_config_string(config, "device_runtime_id"),
-         {:ok, device_id} <- required_runtime_config_string(config, "device_id"),
-         {:ok, runtime_id} <- required_runtime_config_string(config, "runtime_id"),
-         :ok <-
-           validate_external_device_runtime_id(device_id, provider, runtime_id, device_runtime_id) do
-      rec =
-        %{
-          "kind" => "external",
-          "provider" => provider,
-          "device_id" => device_id,
-          "runtime_id" => runtime_id,
-          "device_runtime_id" => device_runtime_id
-        }
-        |> put_optional_nonblank("model", trim(config["model"]))
-        |> put_optional_nonblank("model_provider", trim(config["model_provider"]))
-        |> put_optional_nonblank("reasoning_effort", trim(config["reasoning_effort"]))
-
-      {:ok, rec}
-    end
-  end
-
-  defp validate_runtime_config_by_kind("connected_runtime", config, opts) do
-    with {:ok, rec} <- validate_runtime_config_by_kind("external", config, opts),
-         {:ok, rec} <-
-           preserve_binding_contract_fields(
-             Map.put(rec, "kind", "connected_runtime"),
-             config,
-             "group",
-             opts[:group_id]
-           ) do
-      {:ok, rec}
-    end
-  end
-
-  defp validate_runtime_config_by_kind("compute_workload", config, _opts) do
-    runtime_spec = config["runtime_spec"]
-
-    with {:ok, workload_id} <- required_runtime_config_string(config, "workload_id"),
-         :ok <- validate_runtime_spec(runtime_spec),
-         {:ok, provider} <- required_runtime_config_string(runtime_spec, "provider"),
-         :ok <- validate_compute_runtime_provider(provider) do
-      rec = %{
-        "kind" => "compute_workload",
-        "workload_id" => workload_id,
-        "runtime_spec" =>
-          runtime_spec
-          |> Map.take(~w(provider model model_provider reasoning_effort command))
-          |> Map.put("provider", provider)
-      }
-
-      preserve_binding_contract_fields(rec, config, "project", nil)
-    else
-      {:error, _} = error -> error
-    end
-  end
-
-  defp validate_runtime_config_by_kind(_kind, _config, _opts),
-    do:
-      {:error,
-       {:bad_request,
-        "runtime_config.kind must be internal, external, connected_runtime, or compute_workload"}}
-
-  defp validate_runtime_spec(value) when is_map(value), do: :ok
-
-  defp validate_runtime_spec(_),
-    do: {:error, {:bad_request, "runtime_config.runtime_spec must be an object"}}
-
-  defp validate_external_runtime_provider(provider) when provider in @external_runtime_providers,
-    do: :ok
-
-  defp validate_external_runtime_provider(_provider),
-    do: {:error, {:bad_request, "runtime_config.provider must be codex, pi, kimi, or claude"}}
-
-  defp validate_compute_runtime_provider(provider) when provider in ["codex", "pi", "claude"],
-    do: :ok
-
-  defp validate_compute_runtime_provider(_provider),
-    do: {:error, {:bad_request, "runtime_config.provider must be codex, pi, or claude"}}
-
-  defp preserve_binding_contract_fields(rec, config, owner_type, expected_owner_id) do
-    owner_scope = config["owner_scope"]
-    revision = config["binding_revision"]
-
-    cond do
-      is_nil(owner_scope) and is_nil(revision) ->
-        {:ok, rec}
-
-      true ->
-        with {:ok, revision} <- positive_binding_revision(revision),
-             {:ok, owner_id} <- owner_scope_id(owner_scope, owner_type),
-             true <-
-               (is_nil(expected_owner_id) or owner_id == expected_owner_id) ||
-                 {:error,
-                  {:bad_request, "runtime_config.owner_scope does not match target owner"}} do
-          {:ok,
-           rec
-           |> Map.put("owner_scope", %{"type" => owner_type, "id" => owner_id})
-           |> Map.put("binding_revision", revision)}
-        end
-    end
-  end
-
-  defp validate_external_device_runtime_id(device_id, provider, runtime_id, device_runtime_id) do
-    expected = RuntimeIds.device_runtime_id(device_id, provider, runtime_id)
-
-    if device_runtime_id == expected do
-      :ok
-    else
-      {:error,
-       {:bad_request,
-        "runtime_config.device_runtime_id does not match device_id/provider/runtime_id"}}
-    end
-  end
-
-  defp required_runtime_config_string(runtime, key) do
-    case trim(runtime[key]) do
-      "" -> {:error, {:bad_request, "runtime_config.#{key} is required"}}
-      value -> {:ok, value}
-    end
-  end
+  defp validate_runtime_config(_attrs, updates), do: {:ok, updates}
 
   defp stop_running_server(agent_id, opts) do
-    case Registry.lookup(SalixAgent.Registry, agent_id) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, agent_id) do
       [{_pid, _}] ->
         SalixAgent.Fleet.stop_server(agent_id, opts)
 
       [] ->
         if Keyword.fetch!(opts, :start_if_missing) do
-          case SalixAgent.Placement.ensure_started(agent_id, create: false) do
+          case SalixAgent.Placement.ensure_started(agent_id,
+                 create: false,
+                 startup_mode: :passive
+               ) do
             {:ok, pid} -> SalixAgent.Fleet.stop_pid(pid, opts)
             {:error, _} -> :ok
           end
@@ -2117,24 +1635,21 @@ defmodule SalixAgent.AgentControl do
   end
 
   # The denormalized `provider` is provenance for listings, never the source
-  # of the live provider config; `Templates.resolve_llm_for_record/1` is.
-  defp maybe_force_template_provider(%{"template_id" => nil} = updates, current) do
+  # of the live provider config; `AgentModel.resolve_llm/1` is.
+  defp put_model_provider(%{"model" => _} = updates, current) do
     provider =
-      case Templates.resolve_template_for_record(Map.put(current, "template_id", nil)) do
-        {:ok, template, _source} -> template["provider"]
+      case AgentModel.resolve(Map.merge(current, updates)) do
+        {:ok, record, _source} -> record["provider"]
         _ -> nil
       end
 
     Map.put(updates, "provider", provider)
   end
 
-  defp maybe_force_template_provider(%{"template_id" => template_id} = updates, current),
-    do: Map.put(updates, "provider", Templates.provider(template_id, current["tenant_id"]))
-
-  defp maybe_force_template_provider(updates, _current), do: updates
+  defp put_model_provider(updates, _current), do: updates
 
   defp writable_fields do
-    ~w(name system_prompt router_system_prompt template_id purpose hidden status archived_at completed_at vm runtime_config disabled_tools inspector_policy)
+    ~w(name system_prompt router_system_prompt reply_style model purpose hidden status archived_at completed_at runtime_config station_binding disabled_tools inspector_policy)
   end
 
   @doc "Returns whether a control record is visible to ordinary tenant-scoped APIs."
@@ -2154,7 +1669,7 @@ defmodule SalixAgent.AgentControl do
       context = SystemsObservability.Context.capture()
 
       objects
-      |> Task.async_stream(
+      |> SystemsClock.async_stream(
         fn %{key: key} ->
           SystemsObservability.Context.run(context, fn -> read_listed_record(key) end)
         end,
@@ -2273,183 +1788,6 @@ defmodule SalixAgent.AgentControl do
       end
     end
   end
-
-  defp do_apply_external_worker_binding(_agent_id, _tenant_id, _config, 0),
-    do: {:error, :precondition_failed}
-
-  defp do_apply_external_worker_binding(agent_id, tenant_id, config, attempts) do
-    key = Keys.ctl_agent(agent_id)
-
-    with {:ok, %{body: body, etag: etag}} <- S3.get(key),
-         {:ok, %{"tenant_id" => ^tenant_id} = record} <- Jason.decode(body),
-         :ok <- writable_authority(record, :legacy),
-         true <- visible?(record) || {:error, :not_found},
-         true <- record["role"] == "worker" || {:error, :external_binding_role_mismatch},
-         {:ok, canonical} <- canonical_external_binding(config, record),
-         :ok <-
-           SalixAgent.InspectorPolicy.validate(
-             record["inspector_policy"],
-             Map.put(record, "runtime_config", canonical)
-           ) do
-      current = record["runtime_config"] || %{}
-      current_revision = binding_revision(current)
-      requested_revision = canonical["binding_revision"]
-
-      cond do
-        current_revision > requested_revision ->
-          {:ok, record}
-
-        current_revision == requested_revision and same_external_binding?(current, canonical) ->
-          {:ok, record}
-
-        current_revision == requested_revision ->
-          {:error, :binding_revision_conflict}
-
-        true ->
-          with :ok <- validate_external_binding_target(canonical, record) do
-            updated = Map.put(record, "runtime_config", canonical)
-
-            case put_control_record(key, updated, if_match: etag) do
-              {:ok, _} ->
-                {:ok, updated}
-
-              {:error, reason} when reason in [:precondition_failed, :timeout] ->
-                do_apply_external_worker_binding(agent_id, tenant_id, config, attempts - 1)
-
-              {:error, {:ambiguous, _}} ->
-                do_apply_external_worker_binding(agent_id, tenant_id, config, attempts - 1)
-
-              {:error, _} = error ->
-                error
-            end
-          end
-      end
-    else
-      {:ok, _other_record} -> {:error, :not_found}
-      false -> {:error, :not_found}
-      {:error, _} = error -> error
-    end
-  end
-
-  defp canonical_external_binding(%{"kind" => "connected_runtime"} = config, record) do
-    owner_scope = config["owner_scope"]
-
-    with {:ok, revision} <- positive_binding_revision(config["binding_revision"]),
-         {:ok, provider} <- required_runtime_config_string(config, "provider"),
-         :ok <- validate_external_runtime_provider(provider),
-         {:ok, device_runtime_id} <- required_runtime_config_string(config, "device_runtime_id"),
-         {:ok, device_id} <- required_runtime_config_string(config, "device_id"),
-         {:ok, runtime_id} <- required_runtime_config_string(config, "runtime_id"),
-         :ok <-
-           validate_external_device_runtime_id(device_id, provider, runtime_id, device_runtime_id),
-         :ok <- exact_owner_scope(owner_scope, "group", record["group_id"]) do
-      {:ok,
-       %{
-         "kind" => "connected_runtime",
-         "device_id" => device_id,
-         "runtime_id" => runtime_id,
-         "device_runtime_id" => device_runtime_id,
-         "provider" => provider,
-         "owner_scope" => %{"type" => "group", "id" => record["group_id"]},
-         "binding_revision" => revision
-       }}
-    end
-  end
-
-  defp canonical_external_binding(%{"kind" => "compute_workload"} = config, _record) do
-    runtime_spec = config["runtime_spec"]
-    owner_scope = config["owner_scope"]
-
-    with {:ok, revision} <- positive_binding_revision(config["binding_revision"]),
-         {:ok, workload_id} <- required_runtime_config_string(config, "workload_id"),
-         :ok <- validate_runtime_spec(runtime_spec),
-         {:ok, provider} <- required_runtime_config_string(runtime_spec, "provider"),
-         :ok <- validate_compute_runtime_provider(provider),
-         {:ok, project_id} <- owner_scope_id(owner_scope, "project") do
-      {:ok,
-       %{
-         "kind" => "compute_workload",
-         "workload_id" => workload_id,
-         "runtime_spec" => %{"provider" => provider},
-         "owner_scope" => %{"type" => "project", "id" => project_id},
-         "binding_revision" => revision
-       }}
-    end
-  end
-
-  defp canonical_external_binding(_, _),
-    do: {:error, {:bad_request, "unsupported external worker binding"}}
-
-  defp validate_external_binding_target(%{"kind" => "connected_runtime"} = binding, record) do
-    case SalixAgent.RuntimeEnvironment.connected_status(
-           binding,
-           record["tenant_id"],
-           record["group_id"]
-         ) do
-      {:ok, %{"status" => status}} when status not in ["missing", "unknown"] -> :ok
-      {:ok, _} -> {:error, :external_worker_target_not_found}
-      {:error, _} = error -> error
-    end
-  end
-
-  defp validate_external_binding_target(%{"kind" => "compute_workload"} = binding, record) do
-    owner_scope = binding["owner_scope"]
-    provider = get_in(binding, ["runtime_spec", "provider"])
-
-    scope = %{
-      tenant_id: record["tenant_id"],
-      owner_type: "project",
-      owner_id: owner_scope["id"],
-      group_id: record["group_id"],
-      provider: provider
-    }
-
-    with {:ok, %{provider: ^provider}} <-
-           ExternalWorkerTargets.validate_binding(scope, binding["workload_id"]) do
-      :ok
-    end
-  end
-
-  defp binding_revision(%{"binding_revision" => revision})
-       when is_integer(revision) and revision > 0,
-       do: revision
-
-  defp binding_revision(_), do: 0
-
-  defp same_external_binding?(current, canonical) do
-    keys =
-      case canonical["kind"] do
-        "connected_runtime" ->
-          ~w(kind device_id runtime_id device_runtime_id provider owner_scope binding_revision)
-
-        "compute_workload" ->
-          ~w(kind workload_id runtime_spec owner_scope binding_revision)
-      end
-
-    Map.take(current, keys) == canonical
-  end
-
-  defp positive_binding_revision(revision) when is_integer(revision) and revision > 0,
-    do: {:ok, revision}
-
-  defp positive_binding_revision(_),
-    do: {:error, {:bad_request, "runtime_config.binding_revision must be a positive integer"}}
-
-  defp exact_owner_scope(scope, expected_type, expected_id) do
-    with {:ok, ^expected_id} <- owner_scope_id(scope, expected_type), do: :ok
-  end
-
-  defp owner_scope_id(scope, expected_type) when is_map(scope) do
-    scope = stringify_keys(scope)
-
-    case scope do
-      %{"type" => ^expected_type, "id" => id} when is_binary(id) and id != "" -> {:ok, id}
-      _ -> {:error, {:bad_request, "runtime_config.owner_scope does not match target owner"}}
-    end
-  end
-
-  defp owner_scope_id(_, _),
-    do: {:error, {:bad_request, "runtime_config.owner_scope is required"}}
 
   # Canonical Router rotation is expected-value fenced separately from the S3
   # ETag. A stale dashboard retry therefore observes the already-landed target
@@ -2624,7 +1962,7 @@ defmodule SalixAgent.AgentControl do
   defp local_node_id do
     case System.get_env("SALIX_NODE_ID") do
       id when is_binary(id) and id != "" -> id
-      _ -> to_string(node())
+      _ -> to_string(SystemsRuntime.Proc.node())
     end
   end
 
@@ -2637,15 +1975,12 @@ defmodule SalixAgent.AgentControl do
 
   defp put_optional(map, _key, nil), do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)
-  defp put_optional_nonblank(map, _key, ""), do: map
-  defp put_optional_nonblank(map, _key, nil), do: map
-  defp put_optional_nonblank(map, key, value), do: Map.put(map, key, value)
-  defp trim(nil), do: ""
-  defp trim(value) when is_binary(value), do: String.trim(value)
-  defp trim(value), do: value |> to_string() |> String.trim()
   defp blank?(nil), do: true
   defp blank?(""), do: true
   defp blank?(_), do: false
   defp present?(value), do: is_binary(value) and String.trim(value) != ""
-  defp now, do: System.system_time(:second)
+  defp now, do: SystemsClock.system_time(:second)
+
+  # The rollout store, or its in-memory twin in a simulation.
+  defp rollout, do: SalixStore.AgentConfigurationRollout
 end

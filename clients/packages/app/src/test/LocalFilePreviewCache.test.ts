@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LocalFilePreviewCache } from "../runtime-chat/channel/preview/LocalFilePreviewCache";
-import type { ChatImagePreviewRef } from "../components/chat/model/conversationChannel";
+import { LocalFilePreviewCache } from "../components/chat/channel/LocalFilePreviewCache";
+import type { ChatImagePreviewRef } from "@comma/core/chat";
 
 type Deferred<Value> = {
   promise: Promise<Value>;

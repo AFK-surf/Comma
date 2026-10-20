@@ -11,6 +11,8 @@ defmodule SalixIM.ConversationFleet do
   running instead of retrying an already registered identity.
   """
 
+  require SystemsRuntime.Proc, as: Proc
+
   alias SalixIM.{ConversationActor, ConversationGroupActor}
 
   @start_retry_attempts 5
@@ -79,11 +81,50 @@ defmodule SalixIM.ConversationFleet do
 
   @spec running?(String.t(), String.t()) :: boolean()
   def running?(group_id, conversation_id) do
-    Registry.lookup(
+    SystemsRuntime.Registry.lookup(
       SalixIM.ConversationRegistry,
       ConversationActor.key(group_id, conversation_id)
     ) != []
   end
+
+  @doc """
+  Group collection, conversation, and participant owners registered on this
+  node, as `{registry_key, pid}`. A node-local registry read with no storage
+  or remote I/O.
+  """
+  @spec local_owners() :: [{tuple(), pid()}]
+  def local_owners do
+    SystemsRuntime.Registry.select(SalixIM.ConversationRegistry, [
+      {{:"$1", :"$2", :_}, [], [{{:"$1", :"$2"}}]}
+    ])
+    |> Enum.filter(fn {key, _pid} -> owner_key?(key) end)
+  end
+
+  @doc """
+  Asks a local owner to exit once it can do so safely, because placement now
+  names another node. Each owner finishes its current work first:
+
+    * a group collection or conversation owner stops after its current command;
+    * a conversation owner that is cleaning up a deletion keeps cleaning up;
+    * a participant owner finishes an in-flight provider delivery first.
+
+  A normal exit is not restarted (`:transient`). Subscribers monitor the owner,
+  so their streams end and reconnect through current placement with a resync.
+  Durable work left behind resumes on the current owner.
+  """
+  @spec release(pid()) :: :ok
+  def release(pid) when Proc.is_process(pid) do
+    Proc.send(pid, :release_non_owner)
+    :ok
+  end
+
+  defp owner_key?({:conversation_group, _group_id}), do: true
+  defp owner_key?({:conversation, _group_id, _conversation_id}), do: true
+
+  defp owner_key?({:conversation_participant, _group_id, _conversation_id, _participant_id}),
+    do: true
+
+  defp owner_key?(_key), do: false
 
   @spec stop(String.t(), String.t()) :: :ok
   def stop(group_id, conversation_id) do
@@ -109,9 +150,12 @@ defmodule SalixIM.ConversationFleet do
   end
 
   defp terminate_registered_child(key) do
-    case Registry.lookup(SalixIM.ConversationRegistry, key) do
-      [{pid, _}] -> DynamicSupervisor.terminate_child(SalixIM.ConversationFleetSup, pid)
-      [] -> :ok
+    case SystemsRuntime.Registry.lookup(SalixIM.ConversationRegistry, key) do
+      [{pid, _}] ->
+        SystemsRuntime.DynamicSupervisor.terminate_child(SalixIM.ConversationFleetSup, pid)
+
+      [] ->
+        :ok
     end
   end
 
@@ -119,7 +163,7 @@ defmodule SalixIM.ConversationFleet do
     group_id
     |> participant_children(conversation_id)
     |> Enum.reduce_while(:ok, fn pid, :ok ->
-      case DynamicSupervisor.terminate_child(SalixIM.ConversationFleetSup, pid) do
+      case SystemsRuntime.DynamicSupervisor.terminate_child(SalixIM.ConversationFleetSup, pid) do
         :ok -> {:cont, :ok}
         {:error, :not_found} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, {:participant_stop_failed, reason}}}
@@ -135,8 +179,8 @@ defmodule SalixIM.ConversationFleet do
     }
 
     SalixIM.ConversationRegistry
-    |> Registry.select([match])
-    |> Enum.filter(&Process.alive?/1)
+    |> SystemsRuntime.Registry.select([match])
+    |> Enum.filter(&Proc.alive?/1)
   end
 
   defp start_child_or_lookup(key, child_spec),
@@ -154,7 +198,7 @@ defmodule SalixIM.ConversationFleet do
     spec = Supervisor.child_spec(child_spec, [])
     spec = %{spec | start: {__MODULE__, :start_owner_link, [spec.start]}}
 
-    case DynamicSupervisor.start_child(SalixIM.ConversationFleetSup, spec) do
+    case SystemsRuntime.DynamicSupervisor.start_child(SalixIM.ConversationFleetSup, spec) do
       {:ok, pid} ->
         {:ok, pid}
 
@@ -162,12 +206,12 @@ defmodule SalixIM.ConversationFleet do
         {:ok, pid}
 
       result when result in [:ignore, {:error, :already_present}] ->
-        case Registry.lookup(SalixIM.ConversationRegistry, key) do
+        case SystemsRuntime.Registry.lookup(SalixIM.ConversationRegistry, key) do
           [{pid, _}] ->
             {:ok, pid}
 
           [] when attempts_left > 0 ->
-            Process.sleep(@start_retry_sleep_ms)
+            SystemsClock.sleep(@start_retry_sleep_ms)
             start_child_or_lookup(key, child_spec, attempts_left - 1)
 
           [] ->

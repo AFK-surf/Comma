@@ -1,4 +1,6 @@
 defmodule CommaWeb.TelegramOIDC.ProviderOwner do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Isolates Telegram provider failures from Comma Web's supervision restart budget.
 
@@ -9,15 +11,15 @@ defmodule CommaWeb.TelegramOIDC.ProviderOwner do
   Lifecycle modeled in `tla/salix/CommaTelegramOIDCRecovery.tla`.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   alias Oidcc.ProviderConfiguration.Worker
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts)
 
   @impl true
   def init(opts) do
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
 
     state = %{
       worker: nil,
@@ -43,7 +45,7 @@ defmodule CommaWeb.TelegramOIDC.ProviderOwner do
 
   @impl true
   def handle_info({:EXIT, worker, _reason}, %{worker: worker} = state)
-      when is_pid(worker) do
+      when SystemsRuntime.Proc.is_process(worker) do
     {:noreply, schedule_restart(%{state | worker: nil})}
   end
 
@@ -57,14 +59,14 @@ defmodule CommaWeb.TelegramOIDC.ProviderOwner do
 
   @impl true
   def terminate(_reason, state) do
-    if state.restart_timer, do: :erlang.cancel_timer(state.restart_timer)
-    if state.worker, do: Process.exit(state.worker, :shutdown)
+    if state.restart_timer, do: SystemsClock.cancel_timer(state.restart_timer)
+    if state.worker, do: SystemsRuntime.Proc.exit(state.worker, :shutdown)
     :ok
   end
 
   defp schedule_restart(%{worker: nil, restart_timer: nil} = state) do
-    delay = state.restart_delay_ms + :rand.uniform(state.restart_jitter_ms + 1) - 1
-    timer = :erlang.start_timer(delay, self(), :restart_worker)
+    delay = state.restart_delay_ms + SystemsRuntime.Proc.uniform(state.restart_jitter_ms + 1) - 1
+    timer = SystemsClock.start_timer(delay, SystemsRuntime.Proc.self(), :restart_worker)
     emit_restart()
     %{state | restart_timer: timer}
   end

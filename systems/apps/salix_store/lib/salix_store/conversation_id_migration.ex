@@ -154,7 +154,7 @@ defmodule SalixStore.ConversationIdMigration do
         "version" => 1,
         "phase" => Atom.to_string(phase),
         "identity_fingerprint" => fingerprint(maps),
-        "completed_at" => System.system_time(:millisecond)
+        "completed_at" => SystemsClock.system_time(:millisecond)
       }
 
       case S3.put(completion_key(phase), Jason.encode!(record), if_none_match: "*") do
@@ -314,8 +314,8 @@ defmodule SalixStore.ConversationIdMigration do
        "participant_ids" => participant_targets,
        "message_ids" =>
          allocate_targets(message_ids, &Ids.valid_message_id?/1, &Ids.new_message_id/0),
-       "created_at" => System.system_time(:millisecond),
-       "updated_at" => System.system_time(:millisecond)
+       "created_at" => SystemsClock.system_time(:millisecond),
+       "updated_at" => SystemsClock.system_time(:millisecond)
      }}
   end
 
@@ -346,7 +346,7 @@ defmodule SalixStore.ConversationIdMigration do
     {:ok,
      if(merged == map,
        do: map,
-       else: Map.put(merged, "updated_at", System.system_time(:millisecond))
+       else: Map.put(merged, "updated_at", SystemsClock.system_time(:millisecond))
      )}
   end
 

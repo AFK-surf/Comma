@@ -1,17 +1,22 @@
 defmodule BridgeForTeams.Schema.OrgSsoIdentity do
   @moduledoc """
-  Org-scoped external SSO identity. Feishu users may not have email, so the
-  durable login key is the provider subject within an organization, not
-  `users.email`.
+  Org-scoped external SSO identity. Feishu and Lark users may not have email,
+  so the durable login key is the provider subject within an organization, not
+  `users.email`. Feishu and Lark are different providers: the same person has
+  one identity for each.
   """
   use Ecto.Schema
   import Ecto.Changeset
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
-  @providers ~w(feishu)
+  @providers ~w(feishu lark)
   @subject_types ~w(user_id union_id open_id)
 
   schema "org_sso_identities" do

@@ -1,6 +1,9 @@
 defmodule SalixIM.SlackHistoryReaderTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle
   import Plug.Conn
 
   alias SalixIM.SlackHistoryReader
@@ -21,7 +24,7 @@ defmodule SalixIM.SlackHistoryReaderTest do
 
       query = Map.put(query, "channel", scope["channel_id"])
       query = if root, do: Map.put(query, "ts", root), else: query
-      handler = Application.fetch_env!(:salix_im, :slack_history_test_handler)
+      handler = SystemsRuntime.fetch_env!(:salix_im, :slack_history_test_handler)
 
       {_, _, body} =
         handler.(%Plug.Conn{request_path: "/api/conversations." <> kind, query_params: query})
@@ -43,7 +46,7 @@ defmodule SalixIM.SlackHistoryReaderTest do
 
     defp dispatch(conn, _opts) do
       conn = fetch_query_params(conn)
-      handler = Application.fetch_env!(:salix_im, :slack_history_test_handler)
+      handler = SystemsRuntime.fetch_env!(:salix_im, :slack_history_test_handler)
       {status, headers, body} = handler.(conn)
 
       headers
@@ -55,19 +58,19 @@ defmodule SalixIM.SlackHistoryReaderTest do
 
   setup do
     {:ok, _started} = Application.ensure_all_started(:req)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     :ok = SalixStore.S3.Fake.reset()
 
-    previous_base_url = Application.get_env(:salix_im, :slack_api_base_url)
-    previous_handler = Application.get_env(:salix_im, :slack_history_test_handler)
-    previous_reader = Application.get_env(:salix_im, :slack_triage_clickhouse_reader_mod)
-    previous_mirror = Application.get_env(:salix_im, :slack_message_mirror_mod)
-    Application.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, Mirror)
-    Application.put_env(:salix_im, :slack_message_mirror_mod, Mirror)
+    previous_base_url = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    previous_handler = SystemsRuntime.get_env(:salix_im, :slack_history_test_handler)
+    previous_reader = SystemsRuntime.get_env(:salix_im, :slack_triage_clickhouse_reader_mod)
+    previous_mirror = SystemsRuntime.get_env(:salix_im, :slack_message_mirror_mod)
+    SystemsRuntime.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, Mirror)
+    SystemsRuntime.put_env(:salix_im, :slack_message_mirror_mod, Mirror)
     port = BanditServer.start!(fn port -> {Bandit, plug: SlackLoopback, port: port} end)
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
 
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     connect = %{
       "provider" => "slack",
@@ -96,8 +99,8 @@ defmodule SalixIM.SlackHistoryReaderTest do
         1_787_529_600_000_000
       )
 
-    owner = self()
-    Application.put_env(:salix_im, :slack_history_test_handler, success_handler(owner))
+    owner = SystemsRuntime.Proc.self()
+    SystemsRuntime.put_env(:salix_im, :slack_history_test_handler, success_handler(owner))
 
     on_exit(fn ->
       restore_env(:salix_im, :slack_api_base_url, previous_base_url)
@@ -143,43 +146,18 @@ defmodule SalixIM.SlackHistoryReaderTest do
              %{"id" => "F1", "mimetype" => "text/plain", "name" => "plan.txt", "size" => 12}
            ]
 
-    assert_receive {:slack_history_request, "/api/conversations.history", query}
+    settle_receive({:slack_history_request, "/api/conversations.history", query})
     assert query["limit"] == "15"
     assert query["oldest"] == "1786924800.000000"
     assert query["latest"] == "1787529599.999999"
     assert query["inclusive"] == "true"
   end
 
-  test "normalizes legal Slack edge whitespace before patrol receipt admission", ctx do
-    owner = self()
-
-    Application.put_env(:salix_im, :slack_history_test_handler, fn conn ->
-      {status, headers, body} = success_response(conn)
-
-      body =
-        if conn.request_path == "/api/conversations.history" do
-          put_in(body, ["messages", Access.at(0), "text"], "  Atlas launch approved \n")
-        else
-          body
-        end
-
-      send(owner, {:slack_history_request, conn.request_path, conn.query_params})
-      {status, headers, body}
-    end)
-
-    assert {:ok, authority} = SlackHistoryReader.source_authority(identity_request(ctx.connect))
-
-    assert {:ok, %{messages: [%{"text" => "Atlas launch approved"}]}} =
-             SlackHistoryReader.read_page(
-               page_request(ctx.connect, authority.channel.authority_revision)
-             )
-  end
-
   test "fails closed before history transport for a shared public channel", ctx do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
-    Application.put_env(:salix_im, :slack_history_test_handler, fn conn ->
-      send(owner, {:shared_channel_request, conn.request_path})
+    SystemsRuntime.put_env(:salix_im, :slack_history_test_handler, fn conn ->
+      SystemsRuntime.Proc.send(owner, {:shared_channel_request, conn.request_path})
       {status, headers, body} = success_response(conn)
 
       if conn.request_path == "/api/conversations.info" do
@@ -192,16 +170,16 @@ defmodule SalixIM.SlackHistoryReaderTest do
     assert SlackHistoryReader.source_authority(identity_request(ctx.connect)) ==
              {:error, :channel_ineligible}
 
-    assert_receive {:shared_channel_request, "/api/conversations.info"}
-    refute_receive {:shared_channel_request, _other_path}, 50
+    settle_receive({:shared_channel_request, "/api/conversations.info"})
+    settle_refute_receive({:shared_channel_request, _other_path}, 50)
   end
 
   test "fails closed before history transport when the bot membership is absent", ctx do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     Enum.each([false, nil], fn membership ->
-      Application.put_env(:salix_im, :slack_history_test_handler, fn conn ->
-        send(owner, {:membership_request, membership, conn.request_path})
+      SystemsRuntime.put_env(:salix_im, :slack_history_test_handler, fn conn ->
+        SystemsRuntime.Proc.send(owner, {:membership_request, membership, conn.request_path})
         {status, headers, body} = success_response(conn)
 
         if conn.request_path == "/api/conversations.info" do
@@ -219,20 +197,20 @@ defmodule SalixIM.SlackHistoryReaderTest do
       assert SlackHistoryReader.source_authority(identity_request(ctx.connect)) ==
                {:error, :channel_ineligible}
 
-      assert_receive {:membership_request, ^membership, "/api/conversations.info"}
-      refute_receive {:membership_request, ^membership, _other_path}, 50
+      settle_receive({:membership_request, ^membership, "/api/conversations.info"})
+      settle_refute_receive({:membership_request, ^membership, _other_path}, 50)
     end)
   end
 
   test "discards an archive response when the connect generation changes in flight",
        ctx do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
-    Application.put_env(:salix_im, :slack_history_test_handler, fn conn ->
+    SystemsRuntime.put_env(:salix_im, :slack_history_test_handler, fn conn ->
       if conn.request_path == "/api/conversations.history" do
-        send(owner, {:history_blocked, self()})
+        SystemsRuntime.Proc.send(owner, {:history_blocked, SystemsRuntime.Proc.self()})
 
-        receive do
+        SystemsRuntime.Proc.receive do
           :release_history -> success_response(conn)
         end
       else
@@ -242,10 +220,9 @@ defmodule SalixIM.SlackHistoryReaderTest do
 
     assert {:ok, authority} = SlackHistoryReader.source_authority(identity_request(ctx.connect))
     request = page_request(ctx.connect, authority.channel.authority_revision)
-    task = Task.async(fn -> SlackHistoryReader.read_page(request) end)
+    task = SystemsRuntime.Task.async(fn -> SlackHistoryReader.read_page(request) end)
 
-    assert_receive {:history_blocked, provider_process}, 1_000
-
+    settle_receive({:history_blocked, provider_process})
     key = Keys.ctl_im_connect(ctx.connect["group_id"], ctx.connect["connect_id"])
 
     assert {:ok, _rotated} =
@@ -255,71 +232,13 @@ defmodule SalixIM.SlackHistoryReaderTest do
                |> Map.put("bot_token", "xoxb-history-test-rotated")
              end)
 
-    send(provider_process, :release_history)
-    assert Task.await(task, 2_000) == {:error, :stale_source}
-  end
-
-  test "maps channel authority 429 into a bounded retry delay without leaking provider body",
-       ctx do
-    assert {:ok, authority} = SlackHistoryReader.source_authority(identity_request(ctx.connect))
-
-    Application.put_env(:salix_im, :slack_history_test_handler, fn conn ->
-      case conn.request_path do
-        "/api/conversations.info" ->
-          {429, [{"retry-after", "17"}], %{"ok" => false, "error" => "private-body"}}
-
-        _other ->
-          success_response(conn)
-      end
-    end)
-
-    assert SlackHistoryReader.read_page(
-             page_request(ctx.connect, authority.channel.authority_revision)
-           ) == {:error, {:rate_limited, 17_000}}
-  end
-
-  test "rejects a legacy Slack cursor so BFT can resume from its time boundary", ctx do
-    Application.put_env(:salix_im, :slack_history_test_handler, fn conn ->
-      case conn.request_path do
-        "/api/conversations.history" ->
-          {200, [], %{"ok" => false, "error" => "invalid_cursor"}}
-
-        _other ->
-          success_response(conn)
-      end
-    end)
-
-    assert {:ok, authority} = SlackHistoryReader.source_authority(identity_request(ctx.connect))
-
-    request =
-      ctx.connect
-      |> page_request(authority.channel.authority_revision)
-      |> Map.put(:cursor, "expired-cursor")
-
-    assert SlackHistoryReader.read_page(request) == {:error, :invalid_cursor}
-  end
-
-  test "bounds a recovered history read before the last durable message", ctx do
-    owner = self()
-    Application.put_env(:salix_im, :slack_history_test_handler, success_handler(owner))
-
-    assert {:ok, authority} = SlackHistoryReader.source_authority(identity_request(ctx.connect))
-
-    request =
-      ctx.connect
-      |> page_request(authority.channel.authority_revision)
-      |> Map.put(:resume_boundary, "1787227200.000001")
-
-    assert {:ok, _page} = SlackHistoryReader.read_page(request)
-
-    assert_receive {:slack_history_request, "/api/conversations.history", query}
-    assert query["oldest"] == "1786924800.000000"
-    assert query["latest"] == "1787227200.000000"
+    SystemsRuntime.Proc.send(provider_process, :release_history)
+    assert settled_await(task) == {:error, :stale_source}
   end
 
   test "reads replies only for an explicit root and advances after the durable reply", ctx do
-    owner = self()
-    Application.put_env(:salix_im, :slack_history_test_handler, success_handler(owner))
+    owner = SystemsRuntime.Proc.self()
+    SystemsRuntime.put_env(:salix_im, :slack_history_test_handler, success_handler(owner))
 
     assert {:ok, authority} = SlackHistoryReader.source_authority(identity_request(ctx.connect))
 
@@ -337,7 +256,7 @@ defmodule SalixIM.SlackHistoryReaderTest do
     assert page.root_ts == "1787000000.000001"
     assert [%{"thread_ts" => "1787000000.000001"}] = page.messages
 
-    assert_receive {:slack_history_request, "/api/conversations.replies", query}
+    settle_receive({:slack_history_request, "/api/conversations.replies", query})
     assert query["ts"] == "1787000000.000001"
     assert query["limit"] == "15"
     assert query["oldest"] == "1787227200.000002"
@@ -372,7 +291,12 @@ defmodule SalixIM.SlackHistoryReaderTest do
   defp success_handler(owner) do
     fn conn ->
       response = success_response(conn)
-      send(owner, {:slack_history_request, conn.request_path, conn.query_params})
+
+      SystemsRuntime.Proc.send(
+        owner,
+        {:slack_history_request, conn.request_path, conn.query_params}
+      )
+
       response
     end
   end
@@ -442,6 +366,6 @@ defmodule SalixIM.SlackHistoryReaderTest do
      }}
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

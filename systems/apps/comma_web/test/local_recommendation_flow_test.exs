@@ -1,5 +1,8 @@
 defmodule CommaWeb.LocalRecommendationFlowTest do
+  require SystemsRuntime.Proc
+
   use Comma.DataCase, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
   use Oban.Testing, repo: Comma.Repo
   import Ecto.Query, only: [from: 2]
   import Plug.Conn
@@ -24,16 +27,22 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     def record(fact),
       do: Agent.update(__MODULE__, &Map.update!(&1, :archives, fn all -> [fact | all] end))
 
+    # A published briefing wakes the Router, whose turn reaches this model too,
+    # as an encoded provider request, whenever it gets to run. Only Comma's own
+    # model calls (message lists) are recorded, so `requests/0` does not depend
+    # on whether that turn ran before the test reads it.
     def complete_stream(messages, tools, _delta, opts) do
       state =
         Agent.get_and_update(__MODULE__, fn state ->
-          {state, %{state | requests: [{messages, tools, opts} | state.requests]}}
+          if is_list(messages),
+            do: {state, %{state | requests: [{messages, tools, opts} | state.requests]}},
+            else: {state, state}
         end)
 
       if state.mode == :hold do
-        send(state.owner, {:model_waiting, self()})
+        SystemsRuntime.Proc.send(state.owner, {:model_waiting, SystemsRuntime.Proc.self()})
 
-        receive do
+        SystemsRuntime.Proc.receive do
           :continue -> :ok
         end
       end
@@ -42,7 +51,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
         :deepseek_chat ->
           transport = fn _url, request ->
             body = Jason.decode!(request[:body])
-            send(state.owner, {:routine_provider_request, body})
+            SystemsRuntime.Proc.send(state.owner, {:routine_provider_request, body})
 
             {status, payload} =
               if get_in(body, ["response_format", "type"]) in [nil, "text", "json_object"] do
@@ -139,10 +148,57 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     defp draft(messages) do
       input = Jason.decode!(List.last(messages).content)
 
-      if Map.has_key?(input["contentSchema"]["properties"], "most_urgent") do
+      cond do
+        Map.has_key?(input["contentSchema"]["properties"], "entries") -> portrait(input)
+        Map.has_key?(input["contentSchema"]["properties"], "most_urgent") -> attention(input)
+        true -> member_or_generic(input)
+      end
+    end
+
+    # The portrait cites the member's first own message; an entry with made-up
+    # evidence must not survive.
+    defp portrait(input) do
+      [own | _] = input["ownMessages"]
+
+      %{
+        "entries" => [
+          %{
+            "kind" => "duty",
+            "text" => "renews the patrol token",
+            "evidence" => [own["permalink"]]
+          },
+          %{
+            "kind" => "duty",
+            "text" => "approves payroll",
+            "evidence" => ["https://example.com/x"]
+          }
+        ]
+      }
+    end
+
+    defp attention(input) do
+      if true do
         rated =
           Enum.map(input["candidates"], fn candidate ->
             cond do
+              # A notice that names no request: the evidence cannot tell
+              # whether the member must act, and the model names it first.
+              candidate["excerpt"] =~ "status changed" ->
+                {"unclear", candidate}
+
+              # A GitHub notification with only its reason: like the real
+              # model, the judge cannot tell whether the member must act.
+              (get_in(candidate, ["context", "text"]) || "") =~ "reason: author" and
+                  not ((get_in(candidate, ["context", "text"]) || "") =~ "state:") ->
+                {"unclear", candidate}
+
+              # A deletion notice: the judge needs the deadline, which only
+              # the full text holds.
+              candidate["excerpt"] =~ "Account notice" ->
+                if (get_in(candidate, ["context", "text"]) || "") =~ "permanently deleted",
+                  do: {"critical", candidate},
+                  else: {"unclear", candidate}
+
               candidate["excerpt"] =~ "approve" or
                   (get_in(candidate, ["context", "text"]) || "") =~ "approval tomorrow" ->
                 {"critical", candidate}
@@ -160,19 +216,25 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
             %{"most_urgent" => nil}
 
           {level, candidate} ->
+            # A reminder is a later step of the newest earlier matter.
+            continues =
+              if candidate["excerpt"] =~ "Reminder:",
+                do: get_in(input, ["matters", Access.at(0), "id"])
+
             %{
               "most_urgent" => %{
                 "id" => candidate["id"],
+                "continues" => continues,
                 "urgency" => level,
                 "message" =>
                   "Milo is waiting for your launch approval today. Want me to draft the reply?"
               }
             }
         end
-      else
-        member_or_generic(input)
       end
     end
+
+    defp level_rank("unclear"), do: -1
 
     defp level_rank(level),
       do: Enum.find_index(CommaWeb.RecommendationRenderer.attention_urgencies(), &(&1 == level))
@@ -228,24 +290,25 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
   defmodule CrashedSource do
     def execute_tool(_settings, "NOTION_FETCH_DATA", _group, _args, _opts),
-      do: Process.exit(self(), :kill)
+      do: SystemsRuntime.Proc.exit(SystemsRuntime.Proc.self(), :kill)
 
     def execute_tool(settings, tool, group, args, opts),
       do: SalixWeb.LocalComposioMock.execute_tool(settings, tool, group, args, opts)
   end
 
   defmodule AllCrashedSources do
-    def execute_tool(_settings, _tool, _group, _args, _opts), do: Process.exit(self(), :kill)
+    def execute_tool(_settings, _tool, _group, _args, _opts),
+      do: SystemsRuntime.Proc.exit(SystemsRuntime.Proc.self(), :kill)
   end
 
   defmodule MemberGmail do
     def get(_tenant) do
-      state = Application.get_env(:comma_web, :member_gmail_test, %{})
+      state = SystemsRuntime.get_env(:comma_web, :member_gmail_test, %{})
       {:ok, if(state[:webhook], do: %{"webhook_configured" => true}, else: %{})}
     end
 
     def get_connected_account(_settings, id, _opts \\ []) do
-      %{workspace: workspace} = Application.fetch_env!(:comma_web, :member_gmail_test)
+      %{workspace: workspace} = SystemsRuntime.fetch_env!(:comma_web, :member_gmail_test)
 
       {:ok,
        %{
@@ -257,13 +320,13 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     end
 
     def upsert_trigger(_settings, group, account, slug, config) do
-      state = Application.fetch_env!(:comma_web, :member_gmail_test)
-      send(state.owner, {:upsert_trigger, group, account, slug, config})
+      state = SystemsRuntime.fetch_env!(:comma_web, :member_gmail_test)
+      SystemsRuntime.Proc.send(state.owner, {:upsert_trigger, group, account, slug, config})
       {:ok, %{"trigger_id" => "ti_member_gmail"}}
     end
 
     def create_proxy_session(_settings, group, account, "gmail", _opts) do
-      state = Application.fetch_env!(:comma_web, :member_gmail_test)
+      state = SystemsRuntime.fetch_env!(:comma_web, :member_gmail_test)
       true = state.account == account and state.workspace["default_group_id"] == group
       {:ok, "member-gmail-session"}
     end
@@ -273,11 +336,12 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     def proxy_execute(_settings, "member-gmail-session", request, _opts) do
       %{"toolkit_slug" => "gmail", "method" => "GET", "endpoint" => endpoint} = request
       "https://gmail.googleapis.com/gmail/v1/users/me" <> path = endpoint
-      state = Application.fetch_env!(:comma_web, :member_gmail_test)
+      state = SystemsRuntime.fetch_env!(:comma_web, :member_gmail_test)
 
       message = fn id, subject, body ->
         %{
           "id" => id,
+          "threadId" => id,
           "internalDate" => "1000",
           "labelIds" => ~w(INBOX UNREAD IMPORTANT),
           "payload" => %{
@@ -299,7 +363,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
             %{"threads" => arrived ++ [%{"id" => "readable"}, %{"id" => stalled}]}
 
           "/threads/stalled" ->
-            Process.sleep(2_000)
+            SystemsClock.sleep(2_000)
             %{"id" => "stalled", "messages" => [message.("stalled", "Late", "Late mail")]}
 
           "/threads/readable" ->
@@ -316,6 +380,12 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
           "/threads/" <> id ->
             mail = Enum.find(state.arrived, &(&1.id == id))
             %{"id" => id, "messages" => [message.(id, mail.subject, mail.body)]}
+
+          # The full read of one message, with its thread above.
+          "/messages/" <> id ->
+            if state[:full_reads], do: SystemsRuntime.Proc.send(state.owner, {:full_read, id})
+            mail = Enum.find(state.arrived, &(&1.id == id))
+            message.(id, mail.subject, mail.body)
         end
 
       {:ok, %{"status" => 200, "data" => data}}
@@ -324,9 +394,11 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
   defmodule MemberSlack do
     def get(_tenant), do: {:ok, %{}}
+    def list_connected_accounts(_settings, _group), do: {:ok, []}
+    def list_connected_accounts_all(_settings, _group, _opts \\ []), do: {:ok, []}
 
     def get_connected_account(_settings, id) do
-      %{workspace: workspace} = Application.fetch_env!(:comma_web, :member_slack_test)
+      %{workspace: workspace} = SystemsRuntime.fetch_env!(:comma_web, :member_slack_test)
 
       {:ok,
        %{
@@ -337,112 +409,122 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
        }}
     end
 
-    def create_proxy_session(_settings, group, account, "slack", _opts) do
-      state = Application.fetch_env!(:comma_web, :member_slack_test)
-      true = state.account == account and state.workspace["default_group_id"] == group
-      {:ok, "member-auth-session"}
-    end
+    # The managed Slack member read, over Req, answered by this test's state.
+    # Each request reports its Web API path to the test when asked.
+    def call(conn) do
+      conn = Plug.Conn.fetch_query_params(conn)
+      path = "/api/" <> List.last(String.split(conn.request_path, "/"))
+      state = SystemsRuntime.fetch_env!(:comma_web, :member_slack_test)
+      if state[:reads], do: SystemsRuntime.Proc.send(state.reads, {:slack_read, path})
 
-    def proxy_execute(_settings, "member-auth-session", request, _opts) do
-      %{"toolkit_slug" => "slack", "method" => "GET", "endpoint" => endpoint} = request
-      state = Application.fetch_env!(:comma_web, :member_slack_test)
-      %URI{host: "slack.com", path: path, query: query} = URI.parse(endpoint)
-      if state[:reads], do: send(state.reads, {:slack_read, path})
-
-      data =
-        case {path, URI.decode_query(query || "")["query"]} do
-          {"/api/auth.test", nil} ->
-            Map.merge(
-              %{"ok" => true, "user_id" => "U123", "team_id" => "T123"},
-              Map.get(state, :auth, %{})
-            )
-
-          {"/api/search.messages", _query} when is_map_key(state, :search_error) ->
-            %{"ok" => false, "error" => state.search_error}
-
-          {"/api/search.messages", "<@U123> after:" <> _} ->
-            search([
-              %{
-                "text" => "https://example.com/plan\n<@U123> review the plan",
-                "next" => %{"text" => "The revised plan is ready for review.", "ts" => "101"},
-                "user" => "U999",
-                "permalink" => "https://team.slack.com/archives/C123/p100"
-              },
-              %{
-                "text" => "Unrelated team chatter",
-                "user" => "U999",
-                "permalink" => "https://team.slack.com/archives/C123/p200"
-              }
-            ])
-
-          {"/api/search.messages", "to:me after:" <> _} when is_map_key(state, :direct_error) ->
-            :unavailable
-
-          {"/api/search.messages", "to:me after:" <> _} ->
-            if owner = state[:hold] do
-              send(owner, {:source_waiting, self()})
-
-              receive do
-                :continue -> :ok
-              end
-            end
-
-            search(Map.get(state, :direct, []))
-
-          {"/api/search.messages", "is:thread with:<@U123> after:" <> _} ->
-            search(Map.get(state, :threads, []))
-        end
-
-      respond(data)
-    end
-
-    defp search(matches), do: %{"ok" => true, "messages" => %{"matches" => matches}}
-
-    defp respond(:unavailable), do: {:ok, %{"status" => 502, "data" => %{}}}
-    defp respond(data), do: {:ok, %{"status" => 200, "data" => data}}
-
-    def delete_proxy_session(_settings, "member-auth-session"), do: :ok
-  end
-
-  # The owner's Drive as the notebook sees it: one hosted file per path.
-  defmodule NotebookDrive do
-    def start, do: Agent.start_link(fn -> %{files: %{}, writes: 0} end, name: __MODULE__)
-    def files, do: Agent.get(__MODULE__, & &1.files)
-    def writes, do: Agent.get(__MODULE__, & &1.writes)
-
-    def stat(_group, path) do
-      if Map.has_key?(files(), path),
-        do:
-          {:ok, %{path: path, name: Path.basename(path), kind: "file", size: 0, modified_at: nil}},
-        else: {:error, :not_found}
-    end
-
-    def read(_group, path, _max) do
-      case files()[path] do
-        nil -> {:error, :not_found}
-        body -> {:ok, body, false}
+      case data(path, conn.query_params["query"], state) do
+        :unavailable -> Plug.Conn.send_resp(conn, 502, "")
+        data -> Req.Test.json(conn, data)
       end
     end
 
-    def write(_group, path, body, size) do
-      Agent.update(__MODULE__, fn state ->
-        %{
-          state
-          | files: Map.put(state.files, path, IO.iodata_to_binary(body)),
-            writes: state.writes + 1
-        }
-      end)
+    defp data(path, query, state) do
+      case {path, query} do
+        {"/api/auth.test", nil} ->
+          Map.merge(
+            %{"ok" => true, "user_id" => "UCOMMALOCAL", "team_id" => "TCOMMALOCAL"},
+            Map.get(state, :auth, %{})
+          )
 
-      {:ok, %{size: size, root: nil}}
+        {"/api/search.messages", _query} when is_map_key(state, :search_error) ->
+          %{"ok" => false, "error" => state.search_error}
+
+        {"/api/search.messages", "<@UCOMMALOCAL> after:" <> _} ->
+          search([
+            %{
+              "text" => "https://example.com/plan\n<@UCOMMALOCAL> review the plan",
+              "next" => %{"text" => "The revised plan is ready for review.", "ts" => "101"},
+              "user" => "U999",
+              "permalink" => "https://team.slack.com/archives/C123/p100"
+            },
+            %{
+              "text" => "Unrelated team chatter",
+              "user" => "U999",
+              "permalink" => "https://team.slack.com/archives/C123/p200"
+            }
+          ])
+
+        {"/api/search.messages", "to:me after:" <> _} when is_map_key(state, :direct_error) ->
+          :unavailable
+
+        {"/api/search.messages", "to:me after:" <> _} ->
+          if owner = state[:hold] do
+            SystemsRuntime.Proc.send(owner, {:source_waiting, SystemsRuntime.Proc.self()})
+
+            SystemsRuntime.Proc.receive do
+              :continue -> :ok
+            end
+          end
+
+          search(Map.get(state, :direct, []))
+
+        {"/api/search.messages", "is:thread with:<@UCOMMALOCAL> after:" <> _} ->
+          search(Map.get(state, :threads, []))
+
+        # The member's own messages name the channels where they work.
+        {"/api/search.messages", "from:<@UCOMMALOCAL> after:" <> _} ->
+          search(Map.get(state, :own, []))
+
+        {"/api/search.messages", "in:#" <> _} ->
+          search(Map.get(state, :channel, []))
+      end
     end
 
-    def delete(_group, path) do
-      withdrawn = Map.has_key?(files(), path)
-      Agent.update(__MODULE__, &%{&1 | files: Map.delete(&1.files, path)})
+    defp search(matches), do: %{"ok" => true, "messages" => %{"matches" => matches}}
+  end
 
-      if withdrawn,
-        do: {:ok, %{withdrawn: true, still_published: false}},
-        else: {:error, :not_found}
+  # The member's GitHub reads, answered by this test's state: no assigned
+  # work, review requests, mentions or open pull requests, only the inbox
+  # and the issues and pull requests that it names.
+  defmodule MemberGitHub do
+    def call(conn) do
+      state = SystemsRuntime.fetch_env!(:comma_web, :member_github_test)
+
+      case conn.request_path do
+        "/user" ->
+          Req.Test.json(conn, %{"id" => 1, "login" => "comma-local-user"})
+
+        "/issues" ->
+          Req.Test.json(conn, [])
+
+        "/search/issues" ->
+          Req.Test.json(conn, %{"items" => [], "incomplete_results" => false})
+
+        "/notifications" ->
+          Req.Test.json(conn, state.notifications)
+
+        "/graphql" ->
+          {:ok, body, conn} = Plug.Conn.read_body(conn)
+          %{"query" => query} = request = Jason.decode!(body)
+          variables = request["variables"] || %{}
+
+          if query =~ "search(" do
+            Req.Test.json(conn, %{"data" => %{"search" => %{"nodes" => []}}})
+          else
+            data =
+              variables
+              |> Map.keys()
+              |> Enum.flat_map(fn
+                "k" <> index ->
+                  key =
+                    "#{variables["o" <> index]}/#{variables["n" <> index]}#" <>
+                      "#{variables["k" <> index]}"
+
+                  [{"s" <> index, %{"issueOrPullRequest" => state[:subjects][key]}}]
+
+                _ ->
+                  []
+              end)
+              |> Map.new()
+
+            Req.Test.json(conn, %{"data" => data})
+          end
+      end
     end
   end
 
@@ -454,15 +536,25 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     def deliver(_agent, _payload, _opts), do: {:ok, :queued}
   end
 
+  defmodule NoCredits do
+    def before_llm_call(_fact),
+      do: {:error, {:billing_unavailable, %{reason: "insufficient_credits"}}}
+  end
+
+  defmodule UnavailableBilling do
+    def before_llm_call(_fact),
+      do: {:error, {:billing_unavailable, %{reason: "fee_control_error"}}}
+  end
+
   setup do
-    previous_delivery = Application.get_env(:salix_im, :agent_delivery_mod)
-    Application.put_env(:salix_im, :agent_delivery_mod, RouterDelivery)
+    previous_delivery = SystemsRuntime.get_env(:salix_im, :agent_delivery_mod)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, RouterDelivery)
     on_exit(fn -> restore_env(:salix_im, :agent_delivery_mod, previous_delivery) end)
     # A scheduled briefing wakes the Router. Its turn is out of scope here and
     # must not run into the next test's model fixture.
     on_exit(fn -> SalixAgent.TestSupport.stop_all_agents() end)
     Req.Test.set_req_test_to_shared()
-    unless Process.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
     billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(billing_owner) end)
     :ok
@@ -478,14 +570,18 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     previous =
       for key <- [:composio_client_mod, :composio_settings_mod],
-          do: {key, Application.get_env(:salix_web, key)}
+          do: {key, SystemsRuntime.get_env(:salix_web, key)}
 
-    for {key, _} <- previous, do: Application.put_env(:salix_web, key, MemberGmail)
-    Application.put_env(:comma_web, :member_gmail_test, %{workspace: workspace, account: account})
+    for {key, _} <- previous, do: SystemsRuntime.put_env(:salix_web, key, MemberGmail)
+
+    SystemsRuntime.put_env(:comma_web, :member_gmail_test, %{
+      workspace: workspace,
+      account: account
+    })
 
     on_exit(fn ->
       for {key, value} <- previous, do: restore_env(:salix_web, key, value)
-      Application.delete_env(:comma_web, :member_gmail_test)
+      SystemsRuntime.delete_env(:comma_web, :member_gmail_test)
     end)
 
     {:ok, _} = Recommendations.reconcile_discovered_sources(profile.id, [source])
@@ -526,11 +622,11 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     previous =
       for key <- [:composio_client_mod, :composio_settings_mod],
-          do: {key, Application.get_env(:salix_web, key)}
+          do: {key, SystemsRuntime.get_env(:salix_web, key)}
 
-    for {key, _} <- previous, do: Application.put_env(:salix_web, key, MemberGmail)
+    for {key, _} <- previous, do: SystemsRuntime.put_env(:salix_web, key, MemberGmail)
 
-    Application.put_env(:comma_web, :member_gmail_test, %{
+    SystemsRuntime.put_env(:comma_web, :member_gmail_test, %{
       workspace: workspace,
       account: account,
       stalled: true
@@ -538,7 +634,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     on_exit(fn ->
       for {key, value} <- previous, do: restore_env(:salix_web, key, value)
-      Application.delete_env(:comma_web, :member_gmail_test)
+      SystemsRuntime.delete_env(:comma_web, :member_gmail_test)
     end)
 
     {:ok, :ok} = Comma.MemberSourceConsents.record(user, %{}, workspace["id"], "gmail", account)
@@ -557,8 +653,8 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
   test "one source crash publishes healthy work with a warning through the HTTP boundary" do
     {_user, workspace, profile, token} = generation_fixture!()
-    previous = Application.get_env(:comma_web, :recommendation_composio_client_mod)
-    Application.put_env(:comma_web, :recommendation_composio_client_mod, CrashedSource)
+    previous = SystemsRuntime.get_env(:comma_web, :recommendation_composio_client_mod)
+    SystemsRuntime.put_env(:comma_web, :recommendation_composio_client_mod, CrashedSource)
     on_exit(fn -> restore_env(:comma_web, :recommendation_composio_client_mod, previous) end)
 
     failed = %{
@@ -586,7 +682,21 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     assert length(DraftLLM.requests()) == 1
 
-    Application.put_env(:comma_web, :recommendation_composio_client_mod, AllCrashedSources)
+    # Every source fails: the Composio ones through the client, the managed
+    # Slack one at the Web API.
+    SystemsRuntime.put_env(:comma_web, :recommendation_composio_client_mod, AllCrashedSources)
+    previous_http = SystemsRuntime.get_env(:comma_web, :recommendation_oauth_http_options)
+    Req.Test.set_req_test_to_shared()
+    Req.Test.stub(AllCrashedSources, fn conn -> Plug.Conn.send_resp(conn, 500, "") end)
+
+    SystemsRuntime.put_env(:comma_web, :recommendation_oauth_http_options,
+      plug: {Req.Test, AllCrashedSources}
+    )
+
+    on_exit(fn ->
+      restore_env(:comma_web, :recommendation_oauth_http_options, previous_http)
+    end)
+
     retry = request(:post, workspace, token, "/refresh")
     retry_id = Jason.decode!(retry.resp_body)["run"]["id"]
     assert :ok = RecommendationGenerate.perform(%Oban.Job{args: %{"run_id" => retry_id}})
@@ -662,20 +772,60 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     assert length(DraftLLM.requests()) == 1
   end
 
+  test "HTTP refresh exposes exhausted credits and can publish after billing recovers" do
+    {_user, workspace, _profile, token} = generation_fixture!()
+    previous = SystemsRuntime.get_env(:salix_agent, :llm_metering_mod)
+    on_exit(fn -> restore_env(:salix_agent, :llm_metering_mod, previous) end)
+    SystemsRuntime.put_env(:salix_agent, :llm_metering_mod, NoCredits)
+
+    response = request(:post, workspace, token, "/refresh")
+    assert response.status == 202
+    run_id = Jason.decode!(response.resp_body)["run"]["id"]
+    assert :ok = RecommendationGenerate.perform(%Oban.Job{args: %{"run_id" => run_id}})
+    assert DraftLLM.requests() == []
+
+    envelope = request(:get, workspace, token, "") |> then(&Jason.decode!(&1.resp_body))
+    assert envelope["state"] == "error"
+    assert envelope["snapshot"] == nil
+    assert envelope["lastError"] == "insufficient_credits"
+
+    restore_env(:salix_agent, :llm_metering_mod, previous)
+    retry = request(:post, workspace, token, "/refresh") |> then(&Jason.decode!(&1.resp_body))
+
+    assert :ok =
+             RecommendationGenerate.perform(%Oban.Job{args: %{"run_id" => retry["run"]["id"]}})
+
+    recovered = request(:get, workspace, token, "") |> then(&Jason.decode!(&1.resp_body))
+    assert recovered["state"] == "fresh"
+    assert recovered["lastError"] == nil
+    assert length(DraftLLM.requests()) == 1
+  end
+
+  test "HTTP refresh keeps billing outages within the public failure contract" do
+    {_user, workspace, _profile, token} = generation_fixture!()
+    previous = SystemsRuntime.get_env(:salix_agent, :llm_metering_mod)
+    on_exit(fn -> restore_env(:salix_agent, :llm_metering_mod, previous) end)
+    SystemsRuntime.put_env(:salix_agent, :llm_metering_mod, UnavailableBilling)
+
+    response = request(:post, workspace, token, "/refresh")
+    assert response.status == 202
+    run_id = Jason.decode!(response.resp_body)["run"]["id"]
+    assert :ok = RecommendationGenerate.perform(%Oban.Job{args: %{"run_id" => run_id}})
+    assert DraftLLM.requests() == []
+
+    assert {:ok, %{run: run}} = Recommendations.run_context(run_id)
+    assert run.error == inspect({:billing_unavailable, "fee_control_error"})
+
+    response = request(:get, workspace, token, "")
+    assert response.status == 200
+    envelope = Jason.decode!(response.resp_body)
+    assert envelope["state"] == "error"
+    assert envelope["lastError"] == "failed"
+  end
+
   test "DeepSeek generic refresh publishes through its supported chat response format" do
     {user, workspace, _profile, token} = generation_fixture!()
-    template = Application.fetch_env!(:comma_core, :default_agent_template)
-
-    Application.put_env(
-      :comma_core,
-      :default_agent_template,
-      template
-      |> Map.put("model", "deepseek-flash")
-      |> Map.put("provider_config", %{
-        "base_url" => "https://api.deepseek.com",
-        "api_key" => "local-dev-only"
-      })
-    )
+    configure_platform_llm!("deepseek-flash", "chat_completions", "https://api.deepseek.com")
 
     DraftLLM.mode(:deepseek_chat)
     response = request(:post, workspace, token, "/refresh")
@@ -703,7 +853,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
       run
       |> Ecto.Changeset.change(
         status: status,
-        inserted_at: DateTime.add(DateTime.utc_now(), -480, :second)
+        inserted_at: DateTime.add(SystemsClock.utc_now(), -480, :second)
       )
       |> Comma.Repo.update!()
 
@@ -739,7 +889,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     run_id = Jason.decode!(response.resp_body)["run"]["id"]
 
     Comma.Repo.get!(Comma.Data.RecommendationRun, run_id)
-    |> Ecto.Changeset.change(inserted_at: DateTime.add(DateTime.utc_now(), -3_600, :second))
+    |> Ecto.Changeset.change(inserted_at: DateTime.add(SystemsClock.utc_now(), -3_600, :second))
     |> Comma.Repo.update!()
 
     response = request(:get, workspace, token, "")
@@ -765,17 +915,17 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     DraftLLM.mode(:hold)
 
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         RecommendationGenerate.perform(%Oban.Job{args: %{"run_id" => first["run"]["id"]}})
       end)
 
-    assert_receive {:model_waiting, model}, 5_000
+    settle_receive({:model_waiting, model})
     assert request(:get, workspace, token, "").status == 200
     second = request(:post, workspace, token, "/refresh")
     assert second.status == 202
     second_id = Jason.decode!(second.resp_body)["run"]["id"]
-    send(model, :continue)
-    assert :ok = Task.await(task, 5_000)
+    SystemsRuntime.Proc.send(model, :continue)
+    assert :ok = settled_await(task)
 
     assert {:ok, %{run: %{status: "superseded"}}} =
              Recommendations.run_context(first["run"]["id"])
@@ -808,67 +958,6 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     assert snapshot["generation"] == first["run"]["generation"]
     assert length(DraftLLM.requests()) == 2
-  end
-
-  @tag sandbox: false
-  test "a committed refresh cancels the executing Oban owner and releases its model dependency" do
-    # PostgreSQL sends Oban's cancellation only after COMMIT. This test needs
-    # real connections and a queue producer; a sandbox rollback cannot prove it.
-    :ok = Ecto.Adapters.SQL.Sandbox.mode(Comma.Repo, :auto)
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.mode(Comma.Repo, :manual) end)
-    {user, workspace, profile, token} = generation_fixture!()
-
-    on_exit(fn ->
-      Comma.Repo.query!(
-        """
-        DELETE FROM oban_jobs WHERE args->>'profile_id' = $1 OR args->>'run_id' IN
-          (SELECT id::text FROM comma_recommendation_runs WHERE profile_id = $1::uuid)
-        """,
-        [profile.id]
-      )
-
-      Comma.WorkspaceTestSupport.cleanup_committed_user!(Process.whereis(Comma.Repo), user["id"])
-    end)
-
-    DraftLLM.mode(:hold)
-    first = request(:post, workspace, token, "/refresh") |> then(&Jason.decode!(&1.resp_body))
-
-    start_supervised!(
-      {Oban,
-       name: Comma.RoutineExecutionTestOban,
-       repo: Comma.Repo,
-       peer: {Oban.Peers.Isolated, []},
-       queues: [comma_recommendations: 1],
-       plugins: false,
-       testing: :disabled}
-    )
-
-    assert_receive {:model_waiting, model}, 5_000
-    monitor = Process.monitor(model)
-    DraftLLM.mode(:normal)
-    second = request(:post, workspace, token, "/refresh")
-    assert second.status == 202
-    assert_receive {:DOWN, ^monitor, :process, ^model, _}, 5_000
-
-    assert {:ok, %{run: %{status: "superseded"}}} =
-             Recommendations.run_context(first["run"]["id"])
-
-    second_id = Jason.decode!(second.resp_body)["run"]["id"]
-    assert wait_for_publication(second_id, 100)
-    assert length(DraftLLM.requests()) == 2
-  end
-
-  defp wait_for_publication(_run_id, 0), do: false
-
-  defp wait_for_publication(run_id, attempts) do
-    case Recommendations.run_context(run_id) do
-      {:ok, %{run: %{status: "published"}}} ->
-        true
-
-      _ ->
-        Process.sleep(50)
-        wait_for_publication(run_id, attempts - 1)
-    end
   end
 
   test "queued work cannot read sources or call a model after workspace access is revoked" do
@@ -911,7 +1000,8 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
         "title" => "My task",
         "url" => "https://linear.app/team/issue/mine",
         "assignee" => %{"id" => "viewer"},
-        "state" => %{"type" => "started"}
+        "state" => %{"type" => "started"},
+        "description" => "## Plan\n\nShip  it"
       }
     ])
 
@@ -938,7 +1028,8 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     prompt_id = item["action"]["promptId"]
     assert [%{"link" => %{"promptId" => ^prompt_id}}] = item["parts"]
     assert snapshot["prompts"][prompt_id]["objective"] == "Review My task"
-    assert snapshot["prompts"][prompt_id]["context"] == ~s(My task state: {"type":"started"})
+    # The hover quotes what the issue says, line by line, without markdown marks.
+    assert snapshot["prompts"][prompt_id]["context"] == "My task\nPlan\nShip it"
 
     {:ok, %{run: newer}} = Recommendations.request_refresh(user, %{}, workspace["id"])
 
@@ -966,36 +1057,33 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
   test "the member's Router judges with its own model and identity" do
     {user, workspace, _profile, _token, _connection} = member_fixture!()
-    archive = Application.get_env(:salix_agent, :event_archive_mod)
-    Application.put_env(:salix_agent, :event_archive_mod, DraftLLM)
+    # A stored default Worker with another model must not judge member work.
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
+    archive = SystemsRuntime.get_env(:salix_agent, :event_archive_mod)
+    SystemsRuntime.put_env(:salix_agent, :event_archive_mod, DraftLLM)
     on_exit(fn -> restore_env(:salix_agent, :event_archive_mod, archive) end)
 
-    for {role, model} <- [{"router", "router-judge"}, {"worker", "worker-model"}] do
-      {:ok, template} =
-        SalixAgent.Templates.create_private(
-          %{
-            "name" => model,
-            "model" => model,
-            "provider" => "openai",
-            "provider_config" => %{
-              "protocol" => "chat_completions",
-              "base_url" => "http://llm-mock:43123",
-              "api_key" => "local-dev-only"
-            },
-            "max_tokens" => 4096
-          },
-          workspace["salix_tenant_id"]
-        )
+    # The member's own endpoint serves both models.
+    assert {:ok, _profile} =
+             SalixAgent.AccountPool.create(workspace["salix_tenant_id"], %{
+               "credential_kind" => "provider_api_key",
+               "source" => "custom",
+               "api_key" => "sk-local-dev-only-0123456789",
+               "base_url" => "https://models.example.test/v1",
+               "protocol" => "chat_completions",
+               "models" => ["router-judge", "worker-model"]
+             })
 
+    for {role, model} <- [{"router", "router-judge"}, {"worker", "worker-model"}] do
       assert {:ok, _} =
-               Comma.Salix.Client.update_workspace_agent_model(
-                 workspace,
-                 role,
-                 template["template_id"]
-               )
+               Comma.Salix.Client.update_workspace_agent_model(workspace, role, %{
+                 "kind" => "catalog",
+                 "model" => model,
+                 "allow_paid" => true
+               })
     end
 
-    # The local mock substitutes one deterministic template for every Agent.
+    # The local mock substitutes one deterministic model for every Agent.
     assert {:ok, %{enabled: false}} = SalixWeb.LocalOAuthMock.set_enabled(false)
 
     member_response([
@@ -1182,27 +1270,349 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     assert {:ok, %{run: %{status: "superseded"}}} = Recommendations.run_context(queued["id"])
   end
 
+  test "a lost source collection resumes and schedules its successor without replacing live work" do
+    {user, workspace, _profile, _token} = generation_fixture!()
+    args = %{"group_id" => workspace["default_group_id"], "user_id" => user["id"]}
+    worker = "CommaWeb.MemberSourceIngest"
+    assert :ok = CommaWeb.MemberSourceIngest.enqueue(user, %{}, args["group_id"])
+
+    query = from(j in Oban.Job, where: j.worker == ^worker and j.args == ^args)
+    job = Comma.Repo.one!(query)
+
+    Comma.Repo.update_all(query,
+      set: [
+        queue: "proactive_recovery",
+        state: "executing",
+        attempt: 3,
+        max_attempts: 3,
+        attempted_at: DateTime.add(SystemsClock.utc_now(), -481, :second)
+      ]
+    )
+
+    # Home entry joins the orphan until the recovery owner releases it.
+    assert :ok = CommaWeb.MemberSourceIngest.enqueue(user, %{}, args["group_id"])
+    assert Comma.Repo.one!(query).id == job.id
+
+    live =
+      %Oban.Job{
+        worker: "CommaWeb.ProactiveCheck",
+        queue: "comma_external",
+        args: %{"profile_id" => SystemsRuntime.Proc.uuid()},
+        state: "executing",
+        attempted_at: SystemsClock.utc_now(),
+        attempt: 1,
+        max_attempts: 3
+      }
+      |> Comma.Repo.insert!()
+
+    assert {1, [%{id: id, max_attempts: 4}]} =
+             Comma.ObanPlugins.OperationLifeline.rescue_recommendation_jobs(
+               Oban.config(Comma.Oban),
+               1
+             )
+
+    assert id == job.id
+    assert Comma.Repo.get!(Oban.Job, live.id).state == "executing"
+    # Oban computes schedule_in from the real wall clock.
+    before_drain = DateTime.utc_now()
+    assert %{success: 1, failure: 0} = Oban.drain_queue(Comma.Oban, queue: :proactive_recovery)
+    after_drain = DateTime.utc_now()
+    assert Comma.Repo.get!(Oban.Job, job.id).state == "completed"
+
+    assert [successor] =
+             all_enqueued(worker: CommaWeb.MemberSourceIngest, args: args)
+
+    assert successor.state == "scheduled"
+    # Scheduled 900 s after the moment the drain completed the job.
+    assert DateTime.diff(successor.scheduled_at, before_drain, :microsecond) >= 900_000_000
+    assert DateTime.diff(successor.scheduled_at, after_drain, :microsecond) <= 900_000_000
+  end
+
+  test "an unclear notice does not hold back the review request that arrived with it" do
+    f = withdrawal_fixture!()
+    f.collect.([])
+
+    notice = %{
+      "text" => "<@UCOMMALOCAL> the deploy status changed",
+      "user" => "U777",
+      "ts" => "800",
+      "channel" => %{"id" => "D800", "is_im" => true},
+      "permalink" => "https://team.slack.com/archives/D800/p800"
+    }
+
+    review = %{
+      notice
+      | "text" => "<@UCOMMALOCAL> can you review the notes this week?",
+        "ts" => "810",
+        "channel" => %{"id" => "D810", "is_im" => true},
+        "permalink" => "https://team.slack.com/archives/D810/p810"
+    }
+
+    f.collect.([notice, review])
+
+    # One check reaches the Router with the request the owner must act on.
+    # The unclear notice keeps waiting for a later judgment.
+    assert :ok = f.check.()
+    assert [%{"agent_input" => %{"content" => text}}] = f.router_inputs.()
+    assert text =~ "p810"
+    assert f.pending.() == ["https://team.slack.com/archives/D800/p800"]
+  end
+
+  test "the Router reads a handed-over matter that no Routine briefing names yet" do
+    f = withdrawal_fixture!()
+
+    review = %{
+      "text" => "<@UCOMMALOCAL> can you review the notes this week?",
+      "user" => "U777",
+      "ts" => "820",
+      "channel" => %{"id" => "D820", "is_im" => true},
+      "permalink" => "https://team.slack.com/archives/D820/p820"
+    }
+
+    f.collect.([review])
+    assert :ok = f.check.()
+    assert [%{"agent_input" => %{"content" => handoff}}] = f.router_inputs.()
+    [_, evidence] = String.split(handoff, "\n", parts: 2)
+    handoff = Jason.decode!(evidence)
+
+    {:ok, agent} = SalixAgent.Control.get(f.workspace["router_agent_id"])
+
+    ctx = %{
+      agent_id: f.workspace["router_agent_id"],
+      session_id: agent["router_session_id"],
+      tenant_id: f.workspace["salix_tenant_id"],
+      group_id: f.workspace["default_group_id"],
+      trusted_origin: %{
+        "provider" => "internal",
+        "participant_id" => f.user["id"],
+        "source_actor_type" => "user"
+      }
+    }
+
+    assert {:ok, %{"sources" => sources}} = CommaWeb.Proactive.state(%{}, ctx)
+    assert %{"read" => read} = Enum.find(sources, &((&1["source_url"] || "") =~ "p820"))
+
+    # The handoff names the source the Router must read before it decides.
+    # That read returns the pooled evidence the check judged.
+    assert {:ok, item} = CommaWeb.ProactiveRoutine.read(read["arguments"], ctx)
+    assert item["url"] == "https://team.slack.com/archives/D820/p820"
+    assert item["body"] =~ "review the notes"
+
+    # The Router's decision names the same matter the check handed over.
+    assert :ok = CommaWeb.ProactiveRoutine.validate_reference(handoff, item)
+  end
+
+  test "a notification on the owner's merged pull request settles in the briefing instead of staying unclear" do
+    {user, workspace, profile, _token} = generation_fixture!()
+    connect_github!(user, workspace)
+    assert :ok = RecommendationRuntime.sync_sources(profile.id)
+    assert {:ok, profile} = Recommendations.get_runtime_profile(workspace["id"], user["id"])
+    source = Enum.find(profile.sources, &(&1["appId"] == "github"))
+    {:ok, _} = Recommendations.reconcile_discovered_sources(profile.id, [source])
+    {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "member")
+    member_github_http!(%{notifications: []})
+    group = workspace["default_group_id"]
+
+    collect = fn ->
+      job = %Oban.Job{args: %{"group_id" => group, "user_id" => user["id"]}}
+      assert :ok = CommaWeb.MemberSourceIngest.perform(job)
+    end
+
+    url = "https://github.com/AFK-surf/Cue/pull/2718"
+    item = fn -> Comma.Repo.one!(from(i in Comma.Data.MemberSourceItem, where: i.url == ^url)) end
+
+    # The first collection is the baseline. GitHub then notifies the author
+    # about activity on a pull request that is already merged, so the open
+    # pull request read no longer returns it.
+    collect.()
+
+    SystemsRuntime.put_env(:comma_web, :member_github_test, %{
+      notifications: [
+        %{
+          "id" => "thread-2718",
+          "reason" => "author",
+          "updated_at" => DateTime.to_iso8601(SystemsClock.utc_now()),
+          "subject" => %{
+            "type" => "PullRequest",
+            "title" =>
+              "fix(release): restart salix_store when a migration leaves it without a Repo",
+            "url" => "https://api.github.com/repos/AFK-surf/Cue/pulls/2718",
+            "latest_comment_url" => "https://api.github.com/repos/AFK-surf/Cue/issues/comments/9"
+          },
+          "repository" => %{
+            "full_name" => "AFK-surf/Cue",
+            "html_url" => "https://github.com/AFK-surf/Cue"
+          }
+        }
+      ],
+      subjects: %{
+        "AFK-surf/Cue#2718" => %{
+          "state" => "MERGED",
+          "comments" => %{
+            "nodes" => [
+              %{
+                "author" => %{"login" => "github-actions"},
+                "body" => "Deployed to staging.",
+                "createdAt" => DateTime.to_iso8601(SystemsClock.utc_now())
+              }
+            ]
+          }
+        }
+      }
+    })
+
+    collect.()
+    assert %{baseline: false, attention: nil, relationship: "notified_you"} = item.()
+
+    # The judge sees that the work is resolved and rates it low. The
+    # notification stays in the briefing; nothing reaches the Router and
+    # nothing waits for another judgment.
+    assert :ok = perform_job(CommaWeb.ProactiveCheck, %{"profile_id" => profile.id})
+    assert [{messages, [], _opts}] = DraftLLM.requests()
+    [candidate] = Jason.decode!(List.last(messages).content)["candidates"]
+    assert candidate["context"]["text"] =~ "state: merged"
+    assert candidate["context"]["text"] =~ "Deployed to staging."
+    assert %{attention: %{"outcome" => "quiet", "urgency" => "low"}} = item.()
+    assert Comma.MemberSourceItems.pending(profile.id, 24) == []
+  end
+
+  test "a credit refusal keeps arrived work pending until a later collection can judge it" do
+    f = withdrawal_fixture!()
+    previous = SystemsRuntime.get_env(:salix_agent, :llm_metering_mod)
+    on_exit(fn -> restore_env(:salix_agent, :llm_metering_mod, previous) end)
+    f.collect.([])
+    f.collect.([f.approval.("900")])
+    pending = f.pending.()
+    assert pending != []
+
+    SystemsRuntime.put_env(:salix_agent, :llm_metering_mod, UnavailableBilling)
+    assert {:error, {:billing_unavailable, "fee_control_error"}} = f.check.()
+    assert f.pending.() == pending
+
+    SystemsRuntime.put_env(:salix_agent, :llm_metering_mod, NoCredits)
+
+    # The refusal names whose check it was, so an operator finds the owner.
+    # Oban runs each job in a new process; the collection above set its own IDs here.
+    Logger.reset_metadata()
+
+    log =
+      ExUnit.CaptureLog.capture_log([metadata: [:user_id, :workspace_id]], fn ->
+        assert {:cancel, :insufficient_credits} = f.check.()
+      end)
+
+    assert log =~ "proactive_check failed reason=:insufficient_credits"
+    assert log =~ "user_id=#{f.user["id"]}"
+    assert log =~ "workspace_id=#{f.workspace["id"]}"
+    assert f.pending.() == pending
+    assert f.router_inputs.() == []
+    assert DraftLLM.requests() == []
+
+    restore_env(:salix_agent, :llm_metering_mod, previous)
+    assert :ok = f.check.()
+    assert f.pending.() == []
+    assert length(f.router_inputs.()) == 1
+  end
+
+  test "the daily portrait lands in the Router's user memory and the check reads it" do
+    {user, workspace, profile, _token} = generation_fixture!()
+
+    previous =
+      for key <- [:composio_client_mod, :composio_settings_mod],
+          do: {key, SystemsRuntime.get_env(:salix_web, key)}
+
+    for {key, _} <- previous, do: SystemsRuntime.put_env(:salix_web, key, MemberSlack)
+
+    on_exit(fn ->
+      for {key, value} <- previous, do: restore_env(:salix_web, key, value)
+      SystemsRuntime.delete_env(:comma_web, :member_slack_test)
+    end)
+
+    member_slack_http!()
+    source = Enum.find(profile.sources, &(&1["toolkit"] == "slack"))
+
+    own =
+      for ts <- ["300", "301"],
+          do: %{
+            "text" => "Renewed the patrol token",
+            "user" => "UCOMMALOCAL",
+            "ts" => ts,
+            "channel" => %{"id" => "C9", "name" => "alerts"},
+            "permalink" => "https://team.slack.com/archives/C9/p#{ts}"
+          }
+
+    SystemsRuntime.put_env(:comma_web, :member_slack_test, %{
+      workspace: workspace,
+      account: source["connectionId"],
+      own: own
+    })
+
+    {:ok, _} = Recommendations.reconcile_discovered_sources(profile.id, [source])
+    {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "member")
+    agent = workspace["router_agent_id"]
+
+    # What the Router or the owner already wrote stays.
+    {:ok, event} =
+      SalixAgent.AgentWorkspace.prepare_write(
+        agent,
+        "/memory/semantic/user.md",
+        "- Lives in Shanghai.\n"
+      )
+
+    {:ok, _} =
+      SalixAgent.AgentActor.commit_workspace_operation(agent, "seed", %{}, [event],
+        storage_authorized: true
+      )
+
+    # The write is stored in the Router's workspace, which needs credits.
+    {:ok, _grant} =
+      BillingCore.Credits.issue_grant(%{
+        repo: BillingCore.Repo,
+        billing_account_id: workspace["billing_account_id"],
+        credits: 100,
+        valid_from: ~U[2026-06-17 00:00:00Z],
+        expires_at: DateTime.add(SystemsClock.utc_now(), 30, :day),
+        source_type: "manual_contract",
+        source_id: "portrait-test:#{workspace["id"]}",
+        source_event_id: "portrait-test:#{workspace["id"]}",
+        idempotency_key: "portrait-test:#{workspace["id"]}"
+      })
+
+    assert :ok = perform_job(CommaWeb.MemberPortrait, %{"profile_id" => profile.id})
+    {:ok, note} = SalixAgent.AgentWorkspace.read(agent, "/memory/semantic/user.md")
+
+    assert note =~ "- Lives in Shanghai."
+    assert note =~ ~r/renews the patrol token · \d{4}-\d{2}-\d{2}/
+    refute note =~ "payroll"
+
+    assert [
+             %{"text" => "About you · duty: renews the patrol token · " <> _},
+             %{"text" => "Lives in Shanghai."}
+           ] =
+             CommaWeb.MemberPortrait.statements(Map.put(workspace, "router_agent_id", agent))
+  end
+
   test "collection feeds the item pool and hands arrivals the owner must act on to the Router" do
     {user, workspace, profile, _token} = generation_fixture!()
 
     previous =
       for key <- [:composio_client_mod, :composio_settings_mod],
-          do: {key, Application.get_env(:salix_web, key)}
+          do: {key, SystemsRuntime.get_env(:salix_web, key)}
 
-    for {key, _} <- previous, do: Application.put_env(:salix_web, key, MemberSlack)
+    for {key, _} <- previous, do: SystemsRuntime.put_env(:salix_web, key, MemberSlack)
 
     on_exit(fn ->
       for {key, value} <- previous, do: restore_env(:salix_web, key, value)
-      Application.delete_env(:comma_web, :member_slack_test)
+      SystemsRuntime.delete_env(:comma_web, :member_slack_test)
     end)
+
+    member_slack_http!()
 
     source = Enum.find(profile.sources, &(&1["toolkit"] == "slack"))
     account = source["connectionId"]
     slack = %{workspace: workspace, account: account}
-    Application.put_env(:comma_web, :member_slack_test, slack)
+    SystemsRuntime.put_env(:comma_web, :member_slack_test, slack)
     {:ok, _} = Recommendations.reconcile_discovered_sources(profile.id, [source])
     {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "member")
-    {:ok, :ok} = Comma.MemberSourceConsents.record(user, %{}, workspace["id"], "slack", account)
     group = workspace["default_group_id"]
 
     # One collection writes the pool and queues the proactive consumer when
@@ -1256,10 +1666,12 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     # A request without a deadline rates high. The owner personally must act, so
     # the Router receives it as evidence. Nothing has reached the owner yet.
-    Application.put_env(
+    SystemsRuntime.put_env(
       :comma_web,
       :member_slack_test,
-      Map.put(slack, :direct, [direct.("200", "<@U123> can you review the notes this week?")])
+      Map.put(slack, :direct, [
+        direct.("200", "<@UCOMMALOCAL> can you review the notes this week?")
+      ])
     )
 
     collect.()
@@ -1280,12 +1692,12 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     # The next check hands over the most urgent new item. The other one waits
     # in the pool for a later check.
-    Application.put_env(
+    SystemsRuntime.put_env(
       :comma_web,
       :member_slack_test,
       Map.put(slack, :direct, [
-        direct.("400", "<@U123> please review the budget too"),
-        direct.("300", "<@U123> can you approve the launch today?")
+        direct.("400", "<@UCOMMALOCAL> please review the budget too"),
+        direct.("300", "<@UCOMMALOCAL> can you approve the launch today?")
       ])
     )
 
@@ -1334,7 +1746,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     assert {:ok, %{"notification_budget" => %{"remaining" => 0, "next_at" => next_at}}} =
              CommaWeb.Proactive.state(%{}, ctx)
 
-    assert next_at > System.system_time(:millisecond)
+    assert next_at > SystemsClock.system_time(:millisecond)
 
     assert {:error, :proactive_notification_budget_exhausted} =
              CommaWeb.Proactive.act(%{notify | "request_id" => "decide-2"}, ctx)
@@ -1363,13 +1775,13 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     # While the notification spacing is closed, a judged non-critical item is
     # not handed to the Router: it could not notify. It waits in the pool.
-    Application.put_env(
+    SystemsRuntime.put_env(
       :comma_web,
       :member_slack_test,
       Map.put(slack, :direct, [
-        direct.("500", "<@U123> can you review the slides this week?"),
-        direct.("400", "<@U123> please review the budget too"),
-        direct.("300", "<@U123> can you approve the launch today?")
+        direct.("500", "<@UCOMMALOCAL> can you review the slides this week?"),
+        direct.("400", "<@UCOMMALOCAL> please review the budget too"),
+        direct.("300", "<@UCOMMALOCAL> can you approve the launch today?")
       ])
     )
 
@@ -1380,16 +1792,28 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     assert length(router_inputs.()) == inputs
     assert %{attention: nil, baseline: false} = Enum.find(pool.(), &(&1.url =~ "p500"))
 
-    # The owner's notebook in their Drive shows what Comma decided and why.
-    # The server renders it from the matters and the pool; no model writes it.
-    previous_drive = Application.get_env(:salix_agent, :drive_mod)
-    {:ok, _} = NotebookDrive.start()
-    Application.put_env(:salix_agent, :drive_mod, NotebookDrive)
-    on_exit(fn -> restore_env(:salix_agent, :drive_mod, previous_drive) end)
+    # The owner's notebook in the Router's VFS shows what Comma decided and
+    # why. The server renders it from the matters and the pool; no model
+    # writes it. The Workspace has no Drive device: System Files shows it.
+    agent = workspace["router_agent_id"]
+
+    {:ok, _grant} =
+      BillingCore.Credits.issue_grant(%{
+        repo: BillingCore.Repo,
+        billing_account_id: workspace["billing_account_id"],
+        credits: 100,
+        valid_from: ~U[2026-06-17 00:00:00Z],
+        expires_at: DateTime.add(SystemsClock.utc_now(), 30, :day),
+        source_type: "manual_contract",
+        source_id: "notebook-test:#{workspace["id"]}",
+        source_event_id: "notebook-test:#{workspace["id"]}",
+        idempotency_key: "notebook-test:#{workspace["id"]}"
+      })
+
     render = %{"group_id" => group, "owner_id" => user["id"]}
     assert_enqueued(worker: CommaWeb.ProactiveNotebook, args: render)
     assert :ok = perform_job(CommaWeb.ProactiveNotebook, render)
-    assert %{"Comma/Notebook.md" => notebook} = NotebookDrive.files()
+    {:ok, notebook} = SalixAgent.AgentWorkspace.read(agent, "/Comma/Notebook.md")
 
     [needs_you, quiet] =
       notebook |> String.split(["## Needs you", "## Did not interrupt you"]) |> tl()
@@ -1404,19 +1828,20 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     assert notebook =~ "Automatic messages are on. Until "
     assert notebook =~ ", only urgent matters can interrupt you."
 
-    # A render that changes nothing leaves no new Drive version, and the Router
-    # can point the owner to the notebook.
+    # A render that changes nothing writes no new version, and the Router can
+    # point the owner to the notebook.
+    {:ok, written} = SalixAgent.AgentWorkspace.entry(agent, "/Comma/Notebook.md")
     assert :ok = perform_job(CommaWeb.ProactiveNotebook, render)
-    assert NotebookDrive.writes() == 1
+    assert {:ok, ^written} = SalixAgent.AgentWorkspace.entry(agent, "/Comma/Notebook.md")
 
-    assert {:ok, %{"notebook" => "/drive/Comma/Notebook.md"}} =
+    assert {:ok, %{"notebook" => "/Comma/Notebook.md"}} =
              CommaWeb.Proactive.state(%{}, ctx)
 
-    # The Drive is the Workspace's shared folder. Once another member joins,
-    # the owner's private notebook is withdrawn.
+    # Every member's Router turn reads the Router's VFS. Once another member
+    # joins, the owner's private notebook is deleted.
     {:ok, member} =
       Comma.Accounts.create_user(%{
-        "email" => "notebook-member-#{System.unique_integer([:positive])}@comma.test"
+        "email" => "notebook-member-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     Comma.Repo.insert!(%Comma.Data.WorkspaceMembership{
@@ -1427,11 +1852,16 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     })
 
     assert :ok = perform_job(CommaWeb.ProactiveNotebook, render)
-    assert NotebookDrive.files() == %{}
+    assert {:error, :not_found} = SalixAgent.AgentWorkspace.entry(agent, "/Comma/Notebook.md")
 
     # The scheduled Routine reads the same pool. Collection ran within its
     # interval, so the run makes no provider read and offers the pooled items.
-    Application.put_env(:comma_web, :member_slack_test, Map.put(slack, :reads, self()))
+    SystemsRuntime.put_env(
+      :comma_web,
+      :member_slack_test,
+      Map.put(slack, :reads, SystemsRuntime.Proc.self())
+    )
+
     assert :ok = RecommendationRuntime.reconcile_profile(profile.id)
     profile = Comma.Repo.get!(Comma.Data.RecommendationProfile, profile.id)
 
@@ -1502,21 +1932,23 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
   test "a provider read started before source disable cannot restore its items" do
     f = withdrawal_fixture!()
-    state = Application.fetch_env!(:comma_web, :member_slack_test)
+    state = SystemsRuntime.fetch_env!(:comma_web, :member_slack_test)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :comma_web,
       :member_slack_test,
-      Map.merge(state, %{hold: self(), direct: [f.approval.("450")]})
+      Map.merge(state, %{hold: SystemsRuntime.Proc.self(), direct: [f.approval.("450")]})
     )
 
     collecting =
-      Task.async(fn -> CommaWeb.MemberSourceIngest.ingest(f.workspace, f.user["id"]) end)
+      SystemsRuntime.Task.async(fn ->
+        CommaWeb.MemberSourceIngest.ingest(f.workspace, f.user["id"])
+      end)
 
-    assert_receive {:source_waiting, reader}, 10_000
+    settle_receive({:source_waiting, reader})
     {:ok, _} = Recommendations.update_settings(f.user, %{}, f.workspace["id"], f.settings.(false))
-    send(reader, :continue)
-    assert {:ok, %{new: 0, changed: 0}} = Task.await(collecting, 30_000)
+    SystemsRuntime.Proc.send(reader, :continue)
+    assert {:ok, %{new: 0, changed: 0}} = settled_await(collecting)
     assert Comma.Repo.aggregate(Comma.Data.MemberSourceItem, :count) == 0
     assert Comma.Repo.aggregate(Comma.Data.MemberSourceState, :count) == 0
     assert :ok = f.check.()
@@ -1524,9 +1956,63 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     assert f.router_inputs.() == []
   end
 
+  test "a reminder in another thread continues the earlier matter the owner was told about" do
+    f = withdrawal_fixture!()
+    f.collect.([f.approval.("470")])
+    assert :ok = f.check.()
+    assert [_first] = f.router_inputs.()
+
+    reminder =
+      f.approval.("480")
+      |> Map.put("text", "Reminder: <@UCOMMALOCAL> can you approve the launch today?")
+
+    f.collect.([reminder])
+    assert :ok = f.check.()
+    assert [_first, %{"agent_input" => %{"content" => handoff}}] = f.router_inputs.()
+
+    # The Router sees the earlier matter with the handoff.
+    assert handoff =~ ~s("continues")
+    assert handoff =~ "approve the launch"
+
+    {:ok, home} = SalixIM.RouterConversationInput.ensure(f.workspace["default_group_id"])
+
+    {:ok, conversation} =
+      SalixIM.Conversations.get_group_conversation_record(
+        f.workspace["default_group_id"],
+        home["conversation_id"]
+      )
+
+    [later] =
+      for {_key, value} <- SalixIM.MailInteraction.entries(conversation),
+          value["source_url"] =~ "p480",
+          do: value
+
+    assert later["continues"]["subject"] =~ "approve the launch"
+    assert later["assessment"]["cost"] != nil
+
+    # The notebook shows the two together.
+    notebook =
+      CommaWeb.ProactiveNotebook.render(%{
+        now: SystemsClock.system_time(:millisecond),
+        locale: "en",
+        timezone: "Etc/UTC",
+        automatic: true,
+        notifications: {:open, 5},
+        urgent: {:open, 5},
+        matters: Map.values(SalixIM.MailInteraction.entries(conversation)),
+        monitors: [],
+        sources: [],
+        judged: [],
+        briefing: nil,
+        portrait: []
+      })
+
+    assert notebook =~ "continues: "
+  end
+
   test "changed source context reaches Routine and proactive judgment without a new prompt" do
     f = withdrawal_fixture!()
-    request = f.approval.("460") |> Map.put("text", "<@U123> can you review the launch?")
+    request = f.approval.("460") |> Map.put("text", "<@UCOMMALOCAL> can you review the launch?")
     f.collect.([request])
     # A review request without a deadline rates high and reaches the Router.
     assert :ok = f.check.()
@@ -1594,12 +2080,12 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     # The answer arrives after the revocation, but the item is gone.
     DraftLLM.mode(:hold)
-    judging = Task.async(f.check)
-    assert_receive {:model_waiting, judge}, 10_000
-    :ok = Comma.MemberSourceConsents.forget_connection(f.workspace["id"], f.account)
+    judging = SystemsRuntime.Task.async(f.check)
+    settle_receive({:model_waiting, judge})
+    disconnect_slack!(f.user, f.workspace)
     DraftLLM.mode(:normal)
-    send(judge, :continue)
-    assert :ok = Task.await(judging, 30_000)
+    SystemsRuntime.Proc.send(judge, :continue)
+    assert :ok = settled_await(judging)
     assert [_judgment] = DraftLLM.requests()
     assert f.router_inputs.() == []
   end
@@ -1609,22 +2095,23 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     previous =
       for key <- [:composio_client_mod, :composio_settings_mod],
-          do: {key, Application.get_env(:salix_web, key)}
+          do: {key, SystemsRuntime.get_env(:salix_web, key)}
 
-    for {key, _} <- previous, do: Application.put_env(:salix_web, key, MemberSlack)
+    for {key, _} <- previous, do: SystemsRuntime.put_env(:salix_web, key, MemberSlack)
 
     on_exit(fn ->
       for {key, value} <- previous, do: restore_env(:salix_web, key, value)
-      Application.delete_env(:comma_web, :member_slack_test)
+      SystemsRuntime.delete_env(:comma_web, :member_slack_test)
     end)
+
+    member_slack_http!()
 
     source = Enum.find(profile.sources, &(&1["toolkit"] == "slack"))
     account = source["connectionId"]
     slack = %{workspace: workspace, account: account}
-    Application.put_env(:comma_web, :member_slack_test, slack)
+    SystemsRuntime.put_env(:comma_web, :member_slack_test, slack)
     {:ok, _} = Recommendations.reconcile_discovered_sources(profile.id, [source])
     {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "member")
-    {:ok, :ok} = Comma.MemberSourceConsents.record(user, %{}, workspace["id"], "slack", account)
     group = workspace["default_group_id"]
     {:ok, home} = SalixIM.RouterConversationInput.ensure(group)
 
@@ -1670,10 +2157,10 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     end
 
     arrive = fn messages ->
-      Application.put_env(
+      SystemsRuntime.put_env(
         :comma_web,
         :member_slack_test,
-        slack |> Map.put(:direct, messages) |> Map.put(:reads, self())
+        slack |> Map.put(:direct, messages) |> Map.put(:reads, SystemsRuntime.Proc.self())
       )
     end
 
@@ -1685,7 +2172,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     assert {200, %{"enabled" => false}} =
              setting.(:put, %{"enabled" => false, "request_id" => "off-1"})
 
-    urgent = direct.("300", "<@U123> can you approve the launch today?")
+    urgent = direct.("300", "<@UCOMMALOCAL> can you approve the launch today?")
     arrive.([urgent])
     Comma.Repo.delete_all(from(j in Oban.Job, where: j.worker == "CommaWeb.MemberSourceIngest"))
     chain.()
@@ -1735,7 +2222,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     assert pool.() != []
 
     # Work that arrives after that moment interrupts as before.
-    arrive.([direct.("400", "<@U123> please approve the budget today"), urgent])
+    arrive.([direct.("400", "<@UCOMMALOCAL> please approve the budget today"), urgent])
     chain.()
     assert_enqueued(worker: CommaWeb.ProactiveCheck, args: %{"profile_id" => profile.id})
     assert :ok = perform_job(CommaWeb.ProactiveCheck, %{"profile_id" => profile.id})
@@ -1752,14 +2239,21 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     previous =
       for key <- [:composio_client_mod, :composio_settings_mod],
-          do: {key, Application.get_env(:salix_web, key)}
+          do: {key, SystemsRuntime.get_env(:salix_web, key)}
 
-    for {key, _} <- previous, do: Application.put_env(:salix_web, key, MemberGmail)
-    gmail = %{workspace: workspace, account: account, webhook: true, owner: self()}
-    Application.put_env(:comma_web, :member_gmail_test, gmail)
+    for {key, _} <- previous, do: SystemsRuntime.put_env(:salix_web, key, MemberGmail)
+
+    gmail = %{
+      workspace: workspace,
+      account: account,
+      webhook: true,
+      owner: SystemsRuntime.Proc.self()
+    }
+
+    SystemsRuntime.put_env(:comma_web, :member_gmail_test, gmail)
 
     # The tenant's Composio webhook. Its secret URL is the ingress credential.
-    secret = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+    secret = Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
 
     SalixStore.ComposioSettings.put(tenant, %{
       "api_key" => "ck_test",
@@ -1769,7 +2263,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     on_exit(fn ->
       for {key, value} <- previous, do: restore_env(:salix_web, key, value)
-      Application.delete_env(:comma_web, :member_gmail_test)
+      SystemsRuntime.delete_env(:comma_web, :member_gmail_test)
       SalixStore.ComposioSettings.delete(tenant)
     end)
 
@@ -1780,6 +2274,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     # The first collection records the inbox as history and creates the
     # source's trigger.
     job = %Oban.Job{args: %{"group_id" => group, "user_id" => user["id"]}}
+    first_read = SystemsClock.utc_now()
     assert :ok = CommaWeb.MemberSourceIngest.perform(job)
     assert_received {:upsert_trigger, ^group, ^account, "GMAIL_NEW_GMAIL_MESSAGE", %{}}
     refute Comma.MemberSourceItems.pending?(profile.id)
@@ -1787,7 +2282,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     # Mail arrives. The event also carries mail data, which Comma never uses:
     # the pool stores what the official read returns.
     arrived = %{id: "contract", subject: "Please approve the contract today", body: "Due 5 PM."}
-    Application.put_env(:comma_web, :member_gmail_test, Map.put(gmail, :arrived, [arrived]))
+    SystemsRuntime.put_env(:comma_web, :member_gmail_test, Map.put(gmail, :arrived, [arrived]))
 
     post = fn id ->
       Req.post!(SalixWeb.Application.base_url() <> "/v1/composio-webhooks/" <> secret,
@@ -1814,7 +2309,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
              all_enqueued(worker: CommaWeb.MemberSourceIngest, args: %{"source_id" => account})
 
     # The read waits until a minute after the previous read of the source.
-    assert DateTime.diff(at, DateTime.utc_now()) > 30
+    assert DateTime.diff(at, first_read, :microsecond) >= 60_000_000
     assert :ok = perform_job(CommaWeb.MemberSourceIngest, args)
     assert_enqueued(worker: CommaWeb.ProactiveCheck, args: %{"profile_id" => profile.id})
     assert :ok = perform_job(CommaWeb.ProactiveCheck, %{"profile_id" => profile.id})
@@ -1840,33 +2335,108 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     refute text =~ "Wire the payment"
   end
 
-  test "Slack member runs require consent, exclude chatter, and hide results after disconnect" do
+  test "a mail cut off in the pool is read in full when the judgment cannot tell" do
+    {user, workspace, profile, _token} = generation_fixture!()
+    source = Enum.find(profile.sources, &(&1["toolkit"] == "gmail"))
+    account = source["connectionId"]
+    group = workspace["default_group_id"]
+
+    previous =
+      for key <- [:composio_client_mod, :composio_settings_mod],
+          do: {key, SystemsRuntime.get_env(:salix_web, key)}
+
+    for {key, _} <- previous, do: SystemsRuntime.put_env(:salix_web, key, MemberGmail)
+
+    gmail = %{
+      workspace: workspace,
+      account: account,
+      full_reads: true,
+      owner: SystemsRuntime.Proc.self()
+    }
+
+    SystemsRuntime.put_env(:comma_web, :member_gmail_test, gmail)
+
+    on_exit(fn ->
+      for {key, value} <- previous, do: restore_env(:salix_web, key, value)
+      SystemsRuntime.delete_env(:comma_web, :member_gmail_test)
+    end)
+
+    {:ok, _} = Recommendations.reconcile_discovered_sources(profile.id, [source])
+    {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "member")
+    {:ok, :ok} = Comma.MemberSourceConsents.record(user, %{}, workspace["id"], "gmail", account)
+
+    job = %Oban.Job{args: %{"group_id" => group, "user_id" => user["id"]}}
+    assert :ok = CommaWeb.MemberSourceIngest.perform(job)
+
+    # The deadline and the loss come after the pooled excerpt's budget.
+    arrived = %{
+      id: "deletion",
+      subject: "Account notice",
+      body:
+        String.duplicate("We review inactive accounts regularly. ", 60) <>
+          "Sign in within 3 days or your vault is permanently deleted."
+    }
+
+    SystemsRuntime.put_env(:comma_web, :member_gmail_test, Map.put(gmail, :arrived, [arrived]))
+    assert :ok = CommaWeb.MemberSourceIngest.perform(job)
+
+    [pooled] =
+      Comma.Repo.all(
+        from(i in Comma.Data.MemberSourceItem,
+          where: i.profile_id == ^profile.id and not i.baseline
+        )
+      )
+
+    assert pooled.context["truncated"]
+    refute pooled.context["text"] =~ "permanently deleted"
+
+    assert :ok = perform_job(CommaWeb.ProactiveCheck, %{"profile_id" => profile.id})
+    assert_received {:full_read, "deletion"}
+
+    assert [%{attention: %{"outcome" => "routed", "urgency" => "critical"}}] =
+             Comma.Repo.all(
+               from(i in Comma.Data.MemberSourceItem,
+                 where: i.profile_id == ^profile.id and not i.baseline
+               )
+             )
+  end
+
+  test "Slack member runs require the member stamp, exclude chatter, and hide results after disconnect" do
     {user, workspace, profile, _token} = generation_fixture!()
 
     previous =
       for key <- [:composio_client_mod, :composio_settings_mod],
-          do: {key, Application.get_env(:salix_web, key)}
+          do: {key, SystemsRuntime.get_env(:salix_web, key)}
 
-    for {key, _} <- previous, do: Application.put_env(:salix_web, key, MemberSlack)
+    for {key, _} <- previous, do: SystemsRuntime.put_env(:salix_web, key, MemberSlack)
 
     on_exit(fn ->
       for {key, value} <- previous, do: restore_env(:salix_web, key, value)
-      Application.delete_env(:comma_web, :member_slack_test)
+      SystemsRuntime.delete_env(:comma_web, :member_slack_test)
     end)
 
+    member_slack_http!()
+
     source = Enum.find(profile.sources, &(&1["toolkit"] == "slack"))
+    assert source["kind"] == "managed_oauth"
     account = source["connectionId"]
-    Application.put_env(:comma_web, :member_slack_test, %{workspace: workspace, account: account})
+
+    SystemsRuntime.put_env(:comma_web, :member_slack_test, %{
+      workspace: workspace,
+      account: account
+    })
+
     {:ok, _} = Recommendations.reconcile_discovered_sources(profile.id, [source])
     {:ok, profile} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "member")
 
+    # A grant without the member stamp (a connection from before #1919)
+    # identifies nobody: the member run fails closed.
+    {:ok, oauth} = Salix.Control.OAuthBindings.get(workspace["default_group_id"], account)
+    {:ok, stamped} = SalixStore.OAuth.get(oauth["connection_id"])
+    :ok = SalixStore.OAuth.put(oauth["connection_id"], Map.delete(stamped, "comma_member"))
+
     assert {:error, _} =
-             CommaWeb.RecommendationComposioMemberSource.read(
-               workspace,
-               user["id"],
-               source,
-               DateTime.utc_now()
-             )
+             CommaWeb.RecommendationOAuthSource.read_member(workspace, user["id"], source)
 
     {:ok, %{run: missing}} = Recommendations.request_refresh(user, %{}, workspace["id"])
     assert :ok = RecommendationGenerate.perform(%Oban.Job{args: %{"run_id" => missing["id"]}})
@@ -1874,14 +2444,14 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     assert {:ok, %{"lastError" => "member_identity_required"}} =
              Recommendations.get(user, %{}, workspace["id"])
 
-    {:ok, :ok} = Comma.MemberSourceConsents.record(user, %{}, workspace["id"], "slack", account)
+    :ok = SalixStore.OAuth.put(oauth["connection_id"], stamped)
 
     assert {:ok, %{facts: [fact]}} =
              RecommendationSourceCollector.collect(workspace, [source],
                member_user_id: user["id"]
              )
 
-    assert [%{"text" => "https://example.com/plan\n<@U123> review the plan"}] =
+    assert [%{"text" => "https://example.com/plan\n<@UCOMMALOCAL> review the plan"}] =
              fact["data"]["messages"]["matches"]
 
     {:ok, %{run: run}} = Recommendations.request_refresh(user, %{}, workspace["id"])
@@ -1890,45 +2460,42 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     assert [{messages, [], _opts}] = DraftLLM.requests()
     assert [candidate] = Jason.decode!(List.last(messages).content)["candidates"]
     assert candidate["title"] == "review the plan"
-    assert candidate["excerpt"] == "https://example.com/plan\n<@U123> review the plan"
-    assert candidate["recipient"] == "U123"
+    assert candidate["excerpt"] == "https://example.com/plan\n<@UCOMMALOCAL> review the plan"
+    assert candidate["recipient"] == "UCOMMALOCAL"
     assert candidate["context"]["scope"] == "search_neighbors"
     assert candidate["context"]["text"] =~ "The revised plan is ready for review."
-    :ok = Comma.MemberSourceConsents.forget_connection(workspace["id"], account)
+
+    # Disconnecting the plugin retires the grant: published results hide.
+    disconnect_slack!(user, workspace)
 
     assert {:ok, %{"snapshot" => nil, "state" => "error"}} =
              Recommendations.get(user, %{}, workspace["id"])
 
-    {:ok, :ok} = Comma.MemberSourceConsents.record(user, %{}, workspace["id"], "slack", account)
+    # A new grant is a new source. Slack reports method errors with HTTP 200;
+    # the failure keeps the code.
+    reconnected = connect_slack!(user, workspace)
+    assert {:ok, [source]} = CommaWeb.RecommendationSources.discover(workspace)
+    assert source["connectionId"] == reconnected["binding_id"]
+    {:ok, _} = Recommendations.reconcile_discovered_sources(profile.id, [source])
 
-    Application.put_env(:comma_web, :member_slack_test, %{
+    SystemsRuntime.put_env(:comma_web, :member_slack_test, %{
       workspace: workspace,
-      account: account,
+      account: source["connectionId"],
       search_error: "missing_scope"
     })
 
-    # Slack reports method errors with HTTP 200; the failure keeps the code.
     assert {:error, {:member_provider_error, "missing_scope"}} =
-             CommaWeb.RecommendationComposioMemberSource.read(
-               workspace,
-               user["id"],
-               source,
-               DateTime.utc_now()
-             )
+             CommaWeb.RecommendationOAuthSource.read_member(workspace, user["id"], source)
 
-    Application.put_env(:comma_web, :member_slack_test, %{
+    # A bot token never identifies the member.
+    SystemsRuntime.put_env(:comma_web, :member_slack_test, %{
       workspace: workspace,
-      account: account,
+      account: source["connectionId"],
       auth: %{"bot_id" => "B123"}
     })
 
     assert {:error, _} =
-             CommaWeb.RecommendationComposioMemberSource.read(
-               workspace,
-               user["id"],
-               source,
-               DateTime.utc_now()
-             )
+             CommaWeb.RecommendationOAuthSource.read_member(workspace, user["id"], source)
 
     assert profile.relevance_mode == "member"
   end
@@ -1938,14 +2505,16 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     previous =
       for key <- [:composio_client_mod, :composio_settings_mod],
-          do: {key, Application.get_env(:salix_web, key)}
+          do: {key, SystemsRuntime.get_env(:salix_web, key)}
 
-    for {key, _} <- previous, do: Application.put_env(:salix_web, key, MemberSlack)
+    for {key, _} <- previous, do: SystemsRuntime.put_env(:salix_web, key, MemberSlack)
 
     on_exit(fn ->
       for {key, value} <- previous, do: restore_env(:salix_web, key, value)
-      Application.delete_env(:comma_web, :member_slack_test)
+      SystemsRuntime.delete_env(:comma_web, :member_slack_test)
     end)
+
+    member_slack_http!()
 
     source = Enum.find(profile.sources, &(&1["toolkit"] == "slack"))
     account = source["connectionId"]
@@ -1956,7 +2525,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     direct = %{"id" => "D1", "is_im" => true}
 
-    Application.put_env(:comma_web, :member_slack_test, %{
+    SystemsRuntime.put_env(:comma_web, :member_slack_test, %{
       workspace: workspace,
       account: account,
       direct: [
@@ -1984,7 +2553,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
         message.(
           %{"id" => "C123"},
           "Shipped, thanks.",
-          "U123",
+          "UCOMMALOCAL",
           "https://team.slack.com/archives/C123/p500?thread_ts=450.0"
         ),
         message.(
@@ -1998,7 +2567,6 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     {:ok, _} = Recommendations.reconcile_discovered_sources(profile.id, [source])
     {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "member")
-    {:ok, :ok} = Comma.MemberSourceConsents.record(user, %{}, workspace["id"], "slack", account)
 
     assert {:ok, %{facts: [fact]}} =
              RecommendationSourceCollector.collect(workspace, [source],
@@ -2008,16 +2576,16 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     # The latest direct message per conversation, and only threads where
     # someone else spoke last. Group conversations need a mention.
     assert Enum.map(fact["data"]["messages"]["matches"], &{&1["text"], &1["memberRelation"]}) == [
-             {"https://example.com/plan\n<@U123> review the plan", "mentioned_you"},
+             {"https://example.com/plan\n<@UCOMMALOCAL> review the plan", "mentioned_you"},
              {"Can you send the launch checklist today?", "direct_message_to_you"},
              {"Does Friday still work for the rollout?", "replied_in_your_thread"}
            ]
 
     # An unreadable relationship leaves the others readable and is reported.
-    Application.put_env(
+    SystemsRuntime.put_env(
       :comma_web,
       :member_slack_test,
-      Map.put(Application.fetch_env!(:comma_web, :member_slack_test), :direct_error, true)
+      Map.put(SystemsRuntime.fetch_env!(:comma_web, :member_slack_test), :direct_error, true)
     )
 
     assert {:ok, %{facts: [fact], failures: [failure]}} =
@@ -2034,9 +2602,9 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
   test "Notion member runtime finds mentions, open items naming the member and recent drafts without setup" do
     {user, workspace, profile, _token, old_connection} = member_fixture!()
-    id = "notion-#{System.unique_integer([:positive])}"
-    viewer = Ecto.UUID.generate()
-    now = DateTime.utc_now()
+    id = "notion-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    viewer = SystemsRuntime.Proc.uuid()
+    now = SystemsClock.utc_now()
     ago = fn hours -> now |> DateTime.add(-hours * 3600) |> DateTime.to_iso8601() end
 
     connection =
@@ -2249,14 +2817,14 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
   defp member_fixture! do
     {user, workspace, profile, token} = generation_fixture!()
-    previous = Application.get_env(:comma_web, :recommendation_oauth_http_options)
+    previous = SystemsRuntime.get_env(:comma_web, :recommendation_oauth_http_options)
 
-    Application.put_env(:comma_web, :recommendation_oauth_http_options,
+    SystemsRuntime.put_env(:comma_web, :recommendation_oauth_http_options,
       plug: {Req.Test, __MODULE__}
     )
 
     on_exit(fn -> restore_env(:comma_web, :recommendation_oauth_http_options, previous) end)
-    id = "member-#{System.unique_integer([:positive])}"
+    id = "member-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     connection = %{
       "connection_id" => id,
@@ -2310,24 +2878,24 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
   defp generation_fixture!(protocol \\ "chat_completions") do
     enable_local_recommendation_mock!()
-    configure_local_llm_template!(protocol)
+    configure_local_llm!(protocol)
 
     {:ok, user} =
       Comma.Accounts.create_user(%{
-        "email" => "routine-job-#{System.unique_integer([:positive])}@comma.test"
+        "email" => "routine-job-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     workspace = create_ready_workspace!(user)
-    assert {:ok, _} = Comma.Plugins.install(user, %{}, workspace["id"], "slack")
+    connect_slack!(user, workspace)
     assert {:ok, _} = RecommendationRuntime.ensure(user, %{}, workspace, "UTC")
     # This fixture exercises the retained generic recipe; member tests opt in below.
     assert {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "generic")
     assert {:ok, profile} = Recommendations.get_runtime_profile(workspace["id"], user["id"])
     assert :ok = RecommendationRuntime.sync_sources(profile.id)
     assert {:ok, profile} = Recommendations.get_runtime_profile(workspace["id"], user["id"])
-    previous = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_agent, :llm, DraftLLM)
-    start_supervised!({DraftLLM, self()})
+    previous = SystemsRuntime.get_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_agent, :llm, DraftLLM)
+    start_supervised!({DraftLLM, SystemsRuntime.Proc.self()})
     on_exit(fn -> restore_env(:salix_agent, :llm, previous) end)
     {:ok, session} = Comma.Accounts.create_session(user["id"])
     {user, workspace, profile, session["token"]}
@@ -2346,11 +2914,12 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
   test "adding an app that already holds an active account leaves one account and one source" do
     enable_local_recommendation_mock!()
-    _local_template_id = configure_local_llm_template!()
+    configure_local_llm!()
 
     {:ok, user} =
       Comma.Accounts.create_user(%{
-        "email" => "local-recommendation-readd-#{System.unique_integer([:positive])}@comma.test"
+        "email" =>
+          "local-recommendation-readd-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     workspace = create_ready_workspace!(user)
@@ -2389,6 +2958,10 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     # whose earlier authorization the provider kept.
     assert [%{"id" => earlier_id}] = slack_accounts.()
 
+    # The provider stamps each account's creation on the clock: the member
+    # adds the app a second later, so the new account is the newer one.
+    SystemsClock.run_for(1_000)
+
     # Add obtains fresh consent: a second account exists until it completes.
     assert {:ok, install} =
              CommaWeb.PluginConnections.install(user, %{}, workspace["id"], plugin_id)
@@ -2407,27 +2980,28 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     assert completed["plugin"]["installed"] == true
     assert [%{"id" => ^new_id}] = slack_accounts.()
 
+    # Account replacement is a plugin fact. Routine discovery never lists a
+    # Composio Slack account: Slack reads use the managed binding only.
     assert {:ok, sources} = CommaWeb.RecommendationSources.discover(workspace)
-    assert [%{"connectionId" => ^new_id}] = Enum.filter(sources, &(&1["toolkit"] == "slack"))
+    assert Enum.filter(sources, &(&1["toolkit"] == "slack")) == []
   end
 
   test "runtime sync excludes an active unsupported Composio account before collection" do
     enable_local_recommendation_mock!()
-    _local_template_id = configure_local_llm_template!()
+    configure_local_llm!()
 
     {:ok, user} =
       Comma.Accounts.create_user(%{
         "email" =>
-          "local-recommendation-unsupported-#{System.unique_integer([:positive])}@comma.test"
+          "local-recommendation-unsupported-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     workspace = create_ready_workspace!(user)
-    assert {:ok, _plugin} = Comma.Plugins.install(user, %{}, workspace["id"], "slack")
 
     assert {:ok, %{"connected_account_id" => supported_account_id}} =
              SalixWeb.LocalComposioMock.create_connect_link(
                %{},
-               "local-auth-config-slack",
+               "local-auth-config-gmail",
                workspace["default_group_id"]
              )
 
@@ -2475,11 +3049,12 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
   test "switching out of the local mock invalidates its snapshot and active run" do
     enable_local_recommendation_mock!()
-    _local_template_id = configure_local_llm_template!()
+    configure_local_llm!()
 
     {:ok, user} =
       Comma.Accounts.create_user(%{
-        "email" => "local-recommendation-switch-#{System.unique_integer([:positive])}@comma.test"
+        "email" =>
+          "local-recommendation-switch-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     workspace = create_ready_workspace!(user)
@@ -2508,7 +3083,8 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     {:ok, user} =
       Comma.Accounts.create_user(%{
-        "email" => "local-recommendation-preview-#{System.unique_integer([:positive])}@comma.test"
+        "email" =>
+          "local-recommendation-preview-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     workspace = create_ready_workspace!(user)
@@ -2534,7 +3110,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     [notion_page] = SalixWeb.LocalProviderFixtures.notion_pages_data()["values"]
 
     assert {:ok, %{"kind" => "notion_page", "title" => "Q3 plan"}} =
-             CommaWeb.RecommendationLinkPreview.preview(
+             authorized_preview(
                workspace,
                [source.("notion")],
                notion_page["url"],
@@ -2542,7 +3118,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
              )
 
     assert {:ok, %{"kind" => "github_pull_request", "state" => "merged", "number" => 845}} =
-             CommaWeb.RecommendationLinkPreview.preview(
+             authorized_preview(
                workspace,
                [source.("github")],
                "https://github.com/AFK-surf/Comma/pull/845",
@@ -2555,7 +3131,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
               "identifier" => "COMMA-143",
               "title" => "Fix onboarding crash on first launch"
             }} =
-             CommaWeb.RecommendationLinkPreview.preview(
+             authorized_preview(
                workspace,
                [source.("linear")],
                "https://linear.app/comma/issue/COMMA-143",
@@ -2570,7 +3146,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
               "title" => "Launch review",
               "startsAt" => starts_at
             }} =
-             CommaWeb.RecommendationLinkPreview.preview(
+             authorized_preview(
                workspace,
                [source.("googlecalendar")],
                event["htmlLink"],
@@ -2593,10 +3169,10 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
       {:salix_mcp, :private_http_target_allowlist}
     ]
 
-    previous = Map.new(keys, fn {app, key} -> {{app, key}, Application.get_env(app, key)} end)
+    previous = Map.new(keys, fn {app, key} -> {{app, key}, SystemsRuntime.get_env(app, key)} end)
     base_url = SalixWeb.Application.base_url()
 
-    Application.put_env(:salix_web, :public_base_url, base_url)
+    SystemsRuntime.put_env(:salix_web, :public_base_url, base_url)
     assert {:ok, %{enabled: true}} = SalixWeb.LocalOAuthMock.set_enabled(true)
 
     on_exit(fn ->
@@ -2605,26 +3181,42 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
     end)
   end
 
-  defp configure_local_llm_template!(protocol \\ "chat_completions") do
-    template_id = "local-recommendation-#{System.unique_integer([:positive])}"
-    previous = Application.get_env(:comma_core, :default_agent_template)
+  # The deterministic local LLM as the platform model the Workspace's Agents follow.
+  defp configure_local_llm!(protocol \\ "chat_completions"),
+    do: configure_platform_llm!("gpt-local-dev", protocol, "http://llm-mock:23123")
 
-    Application.put_env(:comma_core, :default_agent_template, %{
-      "template_id" => template_id,
-      "name" => "Local recommendation deterministic LLM",
-      "model" => "gpt-local-dev",
-      "provider_config" => %{
+  defp configure_platform_llm!(model, protocol, base_url) do
+    platform = SalixAgent.AccountPool.platform_tenant()
+
+    {:ok, profile} =
+      SalixAgent.AccountPool.create(platform, %{
+        "credential_kind" => "provider_api_key",
+        "source" => "custom",
+        "api_key" => "sk-local-dev-only-0123456789",
+        "base_url" => base_url,
         "protocol" => protocol,
-        "base_url" => "http://llm-mock:43123",
-        "api_key" => "local-dev-only"
-      }
-    })
+        "models" => [model]
+      })
 
-    on_exit(fn -> restore_env(:comma_core, :default_agent_template, previous) end)
-    template_id
+    {:ok, previous} = SalixAgent.PlatformModels.get()
+
+    on_exit(fn ->
+      {:ok, _} = SalixAgent.PlatformModels.put(previous)
+
+      SalixAgent.SubscriptionStore.query("DELETE FROM subscription_accounts WHERE id=$1", [
+        profile["id"]
+      ])
+    end)
+
+    entry = %{"profile_id" => profile["id"], "model" => model, "protocol" => protocol}
+
+    tiers =
+      Map.merge(previous["tiers"] || %{}, %{"router" => entry, "worker" => entry})
+
+    {:ok, _} = SalixAgent.PlatformModels.put(Map.put(previous, "tiers", tiers))
   end
 
-  # The owner's Slack source in member mode, with consent and a recorded
+  # The owner's managed Slack source in member mode, with a recorded
   # baseline. Each collection only records the pool; the proactive consumer
   # runs when the test says.
   defp withdrawal_fixture! do
@@ -2632,26 +3224,27 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     previous =
       for key <- [:composio_client_mod, :composio_settings_mod],
-          do: {key, Application.get_env(:salix_web, key)}
+          do: {key, SystemsRuntime.get_env(:salix_web, key)}
 
-    for {key, _} <- previous, do: Application.put_env(:salix_web, key, MemberSlack)
+    for {key, _} <- previous, do: SystemsRuntime.put_env(:salix_web, key, MemberSlack)
 
     on_exit(fn ->
       for {key, value} <- previous, do: restore_env(:salix_web, key, value)
-      Application.delete_env(:comma_web, :member_slack_test)
+      SystemsRuntime.delete_env(:comma_web, :member_slack_test)
     end)
+
+    member_slack_http!()
 
     source = Enum.find(profile.sources, &(&1["toolkit"] == "slack"))
     account = source["connectionId"]
     slack = %{workspace: workspace, account: account}
-    Application.put_env(:comma_web, :member_slack_test, slack)
+    SystemsRuntime.put_env(:comma_web, :member_slack_test, slack)
     {:ok, _} = Recommendations.reconcile_discovered_sources(profile.id, [source])
     {:ok, _} = Recommendations.set_relevance_mode(user, %{}, workspace["id"], "member")
-    {:ok, :ok} = Comma.MemberSourceConsents.record(user, %{}, workspace["id"], "slack", account)
     group = workspace["default_group_id"]
 
     collect = fn direct ->
-      Application.put_env(:comma_web, :member_slack_test, Map.put(slack, :direct, direct))
+      SystemsRuntime.put_env(:comma_web, :member_slack_test, Map.put(slack, :direct, direct))
       job = %Oban.Job{args: %{"group_id" => group, "user_id" => user["id"]}}
       assert :ok = CommaWeb.MemberSourceIngest.perform(job)
     end
@@ -2674,7 +3267,7 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
 
     approval = fn ts ->
       %{
-        "text" => "<@U123> can you approve the launch today?",
+        "text" => "<@UCOMMALOCAL> can you approve the launch today?",
         "user" => "U777",
         "ts" => ts,
         "channel" => %{"id" => "D#{ts}", "is_im" => true},
@@ -2708,10 +3301,297 @@ defmodule CommaWeb.LocalRecommendationFlowTest do
       pending: pending,
       router_inputs: router_inputs,
       approval: approval,
-      settings: settings
+      settings: settings,
+      user: user
     }
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  # The built-in Slack plugin's managed authorization through the local OAuth
+  # mock: the Group binding carries the member stamp and the local identity.
+  defp connect_slack!(user, workspace) do
+    # The plugin's Slack MCP binding needs the built-in definitions, which an
+    # earlier suite may have cleared with its storage backend.
+    {:ok, _} = SalixMCP.Builtins.seed_builtin_definitions()
+
+    assert {:ok, install} =
+             CommaWeb.PluginConnections.install(user, %{}, workspace["id"], "slack")
+
+    state =
+      install["authorization"]["authorizationUrl"]
+      |> URI.parse()
+      |> Map.fetch!(:query)
+      |> URI.decode_query()
+      |> Map.fetch!("state")
+
+    SalixWeb.OAuthFlow.handle_callback("slack", %{"state" => state, "code" => "test"})
+
+    assert {:ok, %{"plugin" => %{"installed" => true}}} =
+             CommaWeb.PluginConnections.install(user, %{}, workspace["id"], "slack", %{
+               "verify_only" => true,
+               "authorization_state" => install["authorization"]["state"]
+             })
+
+    workspace["default_group_id"]
+    |> Salix.Control.OAuthBindings.list()
+    |> Enum.find(&(&1["provider"] == "slack" and &1["alias"] == "slack"))
+  end
+
+  # Removing the plugin disconnects the managed grant, like the owner's
+  # Disconnect in Plugins.
+  defp disconnect_slack!(user, workspace) do
+    assert {:ok, _} = CommaWeb.PluginConnections.uninstall(user, %{}, workspace["id"], "slack")
+  end
+
+  # The built-in GitHub plugin's managed authorization through the local OAuth
+  # mock, like connect_slack!/2.
+  defp connect_github!(user, workspace) do
+    assert {:ok, install} =
+             CommaWeb.PluginConnections.install(user, %{}, workspace["id"], "github")
+
+    state =
+      install["authorization"]["authorizationUrl"]
+      |> URI.parse()
+      |> Map.fetch!(:query)
+      |> URI.decode_query()
+      |> Map.fetch!("state")
+
+    SalixWeb.OAuthFlow.handle_callback("github", %{"state" => state, "code" => "test"})
+
+    assert {:ok, %{"plugin" => %{"installed" => true}}} =
+             CommaWeb.PluginConnections.install(user, %{}, workspace["id"], "github", %{
+               "verify_only" => true,
+               "authorization_state" => install["authorization"]["state"]
+             })
+  end
+
+  # Managed GitHub member reads go to the MemberGitHub stub instead of the API.
+  defp member_github_http!(state) do
+    previous = SystemsRuntime.get_env(:comma_web, :recommendation_oauth_http_options)
+    SystemsRuntime.put_env(:comma_web, :member_github_test, state)
+    Req.Test.set_req_test_to_shared()
+    Req.Test.stub(MemberGitHub, &MemberGitHub.call/1)
+
+    SystemsRuntime.put_env(:comma_web, :recommendation_oauth_http_options,
+      plug: {Req.Test, MemberGitHub}
+    )
+
+    on_exit(fn ->
+      restore_env(:comma_web, :recommendation_oauth_http_options, previous)
+      SystemsRuntime.delete_env(:comma_web, :member_github_test)
+    end)
+  end
+
+  # Managed Slack reads go to the MemberSlack stub instead of the Web API.
+  defp member_slack_http! do
+    previous = SystemsRuntime.get_env(:comma_web, :recommendation_oauth_http_options)
+    Req.Test.set_req_test_to_shared()
+    Req.Test.stub(MemberSlack, &MemberSlack.call/1)
+
+    SystemsRuntime.put_env(:comma_web, :recommendation_oauth_http_options,
+      plug: {Req.Test, MemberSlack}
+    )
+
+    on_exit(fn -> restore_env(:comma_web, :recommendation_oauth_http_options, previous) end)
+  end
+
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
+
+  defmodule OutlookPreviewClient do
+    def get(_tenant), do: {:ok, %{}}
+
+    def get_connected_account(_settings, id) do
+      fixture = SystemsRuntime.fetch_env!(:comma_web, :outlook_preview_fixture)
+      state = if fixture[:rebind], do: "INACTIVE", else: "ACTIVE"
+
+      {:ok,
+       %{
+         "id" => id,
+         "user_id" => fixture.group,
+         "toolkit" => %{"slug" => "outlook"},
+         "status" => state
+       }}
+    end
+
+    def create_proxy_session(_settings, _group, _id, "outlook", _opts),
+      do: {:ok, "outlook-preview"}
+
+    def delete_proxy_session(_settings, "outlook-preview"), do: :ok
+
+    def proxy_execute(_settings, "outlook-preview", %{"endpoint" => endpoint}, _opts) do
+      fixture = SystemsRuntime.fetch_env!(:comma_web, :outlook_preview_fixture)
+
+      data =
+        cond do
+          String.ends_with?(endpoint, "/me?$select=id") ->
+            %{"id" => fixture.provider_user}
+
+          String.contains?(endpoint, "/me/messages/") ->
+            %{
+              "id" => fixture.message,
+              "webLink" => fixture.url,
+              "subject" => "Private mail",
+              "bodyPreview" => "Review it"
+            }
+
+          String.contains?(endpoint, "/me/events/") ->
+            %{
+              "id" => fixture.event,
+              "webLink" => fixture.url,
+              "subject" => "Private event",
+              "start" => %{"dateTime" => "2026-10-06T09:00:00.0000000", "timeZone" => "UTC"}
+            }
+        end
+
+      if fixture[:rebind_during_read] == true and
+           not String.ends_with?(endpoint, "/me?$select=id"),
+         do:
+           SystemsRuntime.put_env(
+             :comma_web,
+             :outlook_preview_fixture,
+             Map.put(fixture, :rebind, true)
+           )
+
+      {:ok, %{"status" => 200, "data" => data}}
+    end
+  end
+
+  test "collected Outlook mail and event use exact URL/id/account; rebind and other links fail closed" do
+    {user, workspace, profile, _token} = generation_fixture!()
+    account = "ca-outlook-preview"
+    {:ok, :ok} = Comma.MemberSourceConsents.record(user, %{}, workspace["id"], "outlook", account)
+    consent = Comma.MemberSourceConsents.binding(workspace["id"], user["id"], "outlook")
+
+    profile =
+      profile
+      |> Ecto.Changeset.change(%{
+        relevance_mode: "member",
+        sources: [
+          %{
+            "appId" => "outlook",
+            "toolkit" => "outlook",
+            "kind" => "composio",
+            "enabled" => true,
+            "connectionId" => account
+          }
+        ]
+      })
+      |> Comma.Repo.update!()
+
+    subject =
+      Map.merge(consent, %{
+        "user_id" => user["id"],
+        "toolkit" => "outlook",
+        "provider_user_id" => "graph-owner"
+      })
+
+    urls = [
+      {"message", "https://outlook.office.com/mail/id/AAMk1", %{"messageId" => "AAMk1"}},
+      {"event", "https://outlook.office.com/calendar/item/AAEv1", %{"eventId" => "AAEv1"}}
+    ]
+
+    keys =
+      Enum.map(urls, fn {_, url, _} -> Base.encode16(:crypto.hash(:sha256, url), case: :lower) end)
+
+    now = SystemsClock.utc_now()
+
+    Comma.Repo.insert!(%Comma.Data.MemberSourceState{
+      profile_id: profile.id,
+      source_id: account,
+      toolkit: "outlook",
+      subject: subject,
+      current_keys: keys,
+      collected_at: now,
+      attempted_at: now
+    })
+
+    for {{_, url, ids}, key} <- Enum.zip(urls, keys) do
+      Comma.Repo.insert!(%Comma.Data.MemberSourceItem{
+        profile_id: profile.id,
+        source_id: account,
+        item_key: key,
+        toolkit: "outlook",
+        url: url,
+        provider_ids: ids,
+        fingerprint: key,
+        first_seen_at: now,
+        changed_at: now,
+        last_seen_at: now
+      })
+    end
+
+    old_client = SystemsRuntime.get_env(:salix_web, :composio_client_mod)
+    old_settings = SystemsRuntime.get_env(:salix_web, :composio_settings_mod)
+    SystemsRuntime.put_env(:salix_web, :composio_client_mod, OutlookPreviewClient)
+    SystemsRuntime.put_env(:salix_web, :composio_settings_mod, OutlookPreviewClient)
+
+    on_exit(fn ->
+      restore_env(:salix_web, :composio_client_mod, old_client)
+      restore_env(:salix_web, :composio_settings_mod, old_settings)
+      SystemsRuntime.delete_env(:comma_web, :outlook_preview_fixture)
+    end)
+
+    for {kind, url, _ids} <- urls do
+      fixture = %{
+        group: workspace["default_group_id"],
+        provider_user: "graph-owner",
+        url: url,
+        message: "AAMk1",
+        event: "AAEv1"
+      }
+
+      SystemsRuntime.put_env(:comma_web, :outlook_preview_fixture, fixture)
+
+      assert {:ok, %{"kind" => card_kind, "href" => ^url}} =
+               CommaWeb.RecommendationOutlookPreview.preview(workspace, user["id"], url, account)
+
+      assert card_kind == "outlook_" <> kind
+
+      # Graph's zoneless UTC string becomes epoch milliseconds, like Google Calendar.
+      assert {:ok, %{"startsAt" => starts_at}} =
+               CommaWeb.RecommendationOutlookPreview.preview(workspace, user["id"], url, account)
+
+      assert starts_at ==
+               if(kind == "event",
+                 do: DateTime.to_unix(~U[2026-10-06 09:00:00Z], :millisecond),
+                 else: nil
+               )
+
+      assert {:error, :not_found} =
+               CommaWeb.RecommendationOutlookPreview.preview(
+                 workspace,
+                 user["id"],
+                 url <> "?uncollected=true",
+                 account
+               )
+
+      assert {:error, :not_found} =
+               CommaWeb.RecommendationOutlookPreview.preview(
+                 workspace,
+                 user["id"],
+                 url,
+                 "other-account"
+               )
+
+      SystemsRuntime.put_env(
+        :comma_web,
+        :outlook_preview_fixture,
+        Map.put(fixture, :rebind_during_read, true)
+      )
+
+      assert {:error, :not_found} =
+               CommaWeb.RecommendationOutlookPreview.preview(
+                 workspace,
+                 user["id"],
+                 url,
+                 account
+               )
+    end
+  end
+
+  defp authorized_preview(workspace, sources, href, source_id) do
+    viewer = workspace["owner_user_id"] || "test-viewer"
+    workspace = Map.put(workspace, "owner_user_id", viewer)
+    CommaWeb.RecommendationLinkPreview.preview(workspace, sources, href, source_id, viewer)
+  end
 end

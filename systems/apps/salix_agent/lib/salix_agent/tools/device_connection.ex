@@ -4,7 +4,7 @@ defmodule SalixAgent.Tools.DeviceConnection do
   def defs do
     [
       {"device.create_connector_install_command",
-       "Create the direct Connector installation command for a target Mac or Linux computer. Give the command to the user to run there and confirm local consent. No SSH or Drive setup is required. Creates one device credential per call. Retain device_id and reuse this command after an uncertain result. Verify the returned file through Connector. Starts read-only in the background until reboot, without an OS startup service.",
+       "Create the direct Connector installation command for a target Mac or Linux computer. Give the command to the user to run there and confirm local consent.\n\nNo SSH or Drive setup is required. Creates one device credential per call. Retain device_id and reuse this command after an uncertain result. Verify the returned file through Connector. Starts read-only in the background until reboot, without an OS startup service.",
        install_schema(), &__MODULE__.install/2,
        SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds(),
        [roles: ["router"], safety: "write"]}
@@ -23,7 +23,11 @@ defmodule SalixAgent.Tools.DeviceConnection do
   def install(args, ctx) do
     with :ok <- SalixAgent.Tools.validate_schema(args, install_schema()),
          {:ok, result} <-
-           SalixAgent.EnvDispatch.create_device_install(ctx[:agent_id], args["name"]) do
+           SalixAgent.EnvDispatch.create_device_install(
+             ctx[:agent_id],
+             args["name"],
+             Map.take(ctx, [:tenant_id, :group_id, :trusted_origin])
+           ) do
       Jason.encode!(result)
     else
       {:error, reason} when is_binary(reason) ->
@@ -31,6 +35,12 @@ defmodule SalixAgent.Tools.DeviceConnection do
 
       {:error, :forbidden} ->
         failure("forbidden", "Only the workspace Router can prepare device setup.")
+
+      {:error, :requester_required} ->
+        failure(
+          "requester_required",
+          "Station setup needs the Workspace member who asked, and that member must not be a read-only member."
+        )
 
       {:error, :connector_release_unavailable} ->
         failure(

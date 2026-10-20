@@ -77,4 +77,20 @@ describe("Comma web static worker", () => {
       assetsFetch.mock.calls.map(([request]) => new URL(request.url).pathname)
     ).toEqual(["/share.html", "/share"]);
   });
+
+  it("keeps staging out of search indexes and leaves production indexable", async () => {
+    const assetsFetch = vi.fn(async () => new Response("app", { status: 200 }));
+    const env = { ASSETS: { fetch: assetsFetch } };
+
+    const staging = await worker.fetch(
+      new Request("https://app-staging.comma.surf/"),
+      env
+    );
+    const production = await worker.fetch(new Request("https://app.comma.surf/"), env);
+
+    expect(staging.status).toBe(200);
+    expect(await staging.text()).toBe("app");
+    expect(staging.headers.get("x-robots-tag")).toBe("noindex");
+    expect(production.headers.get("x-robots-tag")).toBeNull();
+  });
 });

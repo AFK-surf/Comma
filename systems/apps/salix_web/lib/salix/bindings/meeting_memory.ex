@@ -150,7 +150,7 @@ defmodule Salix.Bindings.MeetingMemory do
     |> String.slice(0, 128)
   end
 
-  defp enabled?, do: Application.get_env(:salix_meet, :meeting_memory_enabled, true)
+  defp enabled?, do: SystemsRuntime.get_env(:salix_meet, :meeting_memory_enabled, true)
 
   defp present(value) do
     case trim(value) do

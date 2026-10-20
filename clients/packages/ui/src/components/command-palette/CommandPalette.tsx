@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { Dialog as AriaDialog, Modal, ModalOverlay } from "react-aria-components";
+import { uiClock, type CancelUiTimer } from "../../clock";
 import { commandPaletteLayout, motionDuration, spacing } from "../../tokens";
 import { XIcon } from "../icons";
 import { CommaLogoAnimation } from "../comma-mascot/CommaLogoAnimation";
@@ -283,7 +284,7 @@ export function CommandPalette<TValue extends string = string>({
     useRef<CommandPaletteActiveChangeSource>("programmatic");
   // Keep cmdk's pointer selection immediate; only the expensive preview
   // handoff waits for a cancelable dwell.
-  const pointerIntentTimeoutRef = useRef<number | undefined>(undefined);
+  const pointerIntentTimeoutRef = useRef<CancelUiTimer | undefined>(undefined);
   const pointerIntentValueRef = useRef<TValue | undefined>(undefined);
   const activeValueRef = useRef(activeValue);
   activeValueRef.current = activeValue;
@@ -337,7 +338,7 @@ export function CommandPalette<TValue extends string = string>({
   };
   const clearPointerIntent = useCallback(() => {
     if (pointerIntentTimeoutRef.current !== undefined) {
-      window.clearTimeout(pointerIntentTimeoutRef.current);
+      pointerIntentTimeoutRef.current();
       pointerIntentTimeoutRef.current = undefined;
     }
     pointerIntentValueRef.current = undefined;
@@ -350,17 +351,20 @@ export function CommandPalette<TValue extends string = string>({
 
     clearPointerIntent();
     pointerIntentValueRef.current = value;
-    pointerIntentTimeoutRef.current = window.setTimeout(() => {
-      pointerIntentTimeoutRef.current = undefined;
-      pointerIntentValueRef.current = undefined;
-      if (
-        (activeValueRef.current !== undefined && activeValueRef.current !== value) ||
-        !selectableValuesRef.current.has(value)
-      ) {
-        return;
+    pointerIntentTimeoutRef.current = uiClock.after(
+      motionDuration.pointerIntent,
+      () => {
+        pointerIntentTimeoutRef.current = undefined;
+        pointerIntentValueRef.current = undefined;
+        if (
+          (activeValueRef.current !== undefined && activeValueRef.current !== value) ||
+          !selectableValuesRef.current.has(value)
+        ) {
+          return;
+        }
+        pointerIntentCommit(value);
       }
-      pointerIntentCommit(value);
-    }, motionDuration.pointerIntent);
+    );
   };
   const markPointerChangeSource = () => {
     activeChangeSourceRef.current = "pointer";

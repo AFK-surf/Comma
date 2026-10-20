@@ -2,98 +2,20 @@ package main
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
-
-func TestConnectedPrivateRuntimeAuthRejectsUnownedCredentialImport(t *testing.T) {
-	c := newEventTestConnector(t, t.TempDir())
-	defer c.externalRuntimeState.close()
-	c.runtimeAuthSlots = make(chan struct{}, runtimeAuthConcurrency)
-	c.runtimeInventory = newRuntimeInventory()
-	implementation := newCodexRuntimeImplementation(c)
-	c.runtimeImplementations = map[string]externalRuntimeImplementation{"codex": implementation}
-	c.runtimeInventory.commitGuard = implementation.commitRuntimeProbe
-	session := c.claimConnection(context.Background(), func(context.Context, message) error { return nil }, nil)
-	defer session.close(nil)
-	if !c.setIdentity(session, "run", "device", "connector", "admin", 1) {
-		t.Fatal("identity rejected")
-	}
-	off := c.activateRuntimeTransport(session.sendCtx)
-	defer off()
-	directory := t.TempDir()
-	t.Setenv("PI_CODING_AGENT_DIR", directory)
-	sdkRoot := filepath.Join(t.TempDir(), "dist")
-	if err := os.MkdirAll(filepath.Join(sdkRoot, "bundle"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(sdkRoot, "index.js"),
-		[]byte(`export function getAgentDir(){ return process.env.PI_CODING_AGENT_DIR; }`),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	command := filepath.Join(sdkRoot, "bundle", "cli.js")
-	if err := os.WriteFile(command, []byte(""), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	target := runtimeProbeTarget{provider: "pi", identityMaterial: command}
-	c.runtimeInventory.runtimes[target.key()] = map[string]any{
-		"kind": "external", "provider": "pi", "identity_material": target.identityMaterial,
-		"readiness_valid_until": time.Now().Add(time.Minute).UnixMilli(),
-	}
-	wire := map[string]any{
-		"actor_id": "admin", "tenant_id": "tenant", "project_id": "project",
-		"device_id": "device", "runtime_id": "pi-runtime", "provider": "pi",
-		"identity_material": target.identityMaterial, "runtime_instance_id": "run",
-		"generation": 1, "connection_epoch": "1",
-	}
-
-	status, err := c.connectedPrivateRuntimeAuth(
-		context.Background(), session, "runtime_auth_status", map[string]any{"target": wire},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, method := range status["methods"].([]map[string]any) {
-		if stringParam(method, "method") == "credential_import" {
-			t.Fatalf("connected target advertised an unowned writer: %#v", method)
-		}
-	}
-
-	if _, err := c.connectedPrivateRuntimeAuth(
-		context.Background(), session, "runtime_auth_input_begin",
-		map[string]any{"target": wire, "backend": "openrouter", "form": "api_key"},
-	); err == nil {
-		t.Fatal("connected target accepted credential import without single-writer ownership")
-	}
-	binding := runtimeAuthInputContext{
-		ActorID: "admin", TargetKind: "connected_runtime", RuntimeID: "pi-runtime",
-		Provider: "pi", Backend: "openrouter", Method: "credential_import",
-		Form: "api_key", SchemaVersion: 1,
-	}
-	if _, err := implementation.auth.beginPrivateInput(target, binding); err == nil {
-		t.Fatal("target owner accepted connected credential import")
-	}
-	if _, err := os.Stat(filepath.Join(directory, "auth.json")); !os.IsNotExist(err) {
-		t.Fatalf("rejected import touched provider state: %v", err)
-	}
-}
 
 func TestConnectedPrivateRuntimeAuthRejectsUnownedClaudeMutation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	command := fakeClaudeRuntimeCommand(t)
-	c := newEventTestConnector(t, t.TempDir())
-	defer c.externalRuntimeState.close()
+	c := newBareTestConnector(t, t.TempDir())
 	c.runtimeAuthSlots = make(chan struct{}, runtimeAuthConcurrency)
 	c.runtimeInventory = newRuntimeInventory()
 	codex := newCodexRuntimeImplementation(c)
-	claude := newClaudeRuntimeImplementation(c)
-	c.runtimeImplementations = map[string]externalRuntimeImplementation{
+	claude := newClaudeRuntimeImplementation()
+	c.runtimeImplementations = map[string]runtimeImplementation{
 		"codex": codex, "claude": claude,
 	}
 	c.runtimeInventory.commitGuard = codex.commitRuntimeProbe
@@ -107,8 +29,8 @@ func TestConnectedPrivateRuntimeAuthRejectsUnownedClaudeMutation(t *testing.T) {
 	target := runtimeProbeTarget{provider: "claude", identityMaterial: command}
 	c.runtimeInventory.runtimes[target.key()] = map[string]any{
 		"kind": "external", "provider": "claude", "identity_material": command,
-		"version":               "2.1.258 (Claude Code)",
-		"readiness_valid_until": time.Now().Add(time.Minute).UnixMilli(),
+		"version":               "2.1.296 (Claude Code)",
+		"readiness_valid_until": testFarFuture.UnixMilli(),
 	}
 	wire := map[string]any{
 		"actor_id": "admin", "tenant_id": "tenant", "project_id": "project",
@@ -138,7 +60,7 @@ func TestConnectedPrivateRuntimeAuthRejectsUnownedClaudeMutation(t *testing.T) {
 	}
 	if _, err := c.connectedPrivateRuntimeAuth(
 		context.Background(), session, "runtime_auth_login_start",
-		map[string]any{"target": wire, "backend": "anthropic", "flow": runtimeAuthClaudeLoginFlow},
+		map[string]any{"target": wire, "backend": "anthropic", "flow": "authorization_code"},
 	); err == nil {
 		t.Fatal("connected target accepted Claude login that commits provider state")
 	}
@@ -153,8 +75,7 @@ func TestConnectedPrivateRuntimeAuthRejectsUnownedClaudeMutation(t *testing.T) {
 }
 
 func TestConnectedRuntimeAuthCloseCannotCrossRename(t *testing.T) {
-	c := newEventTestConnector(t, t.TempDir())
-	defer c.externalRuntimeState.close()
+	c := newBareTestConnector(t, t.TempDir())
 	session := c.claimConnection(context.Background(), func(context.Context, message) error { return nil }, nil)
 	defer session.close(nil)
 	c.setIdentity(session, "run", "device", "connector", "admin", 1)
@@ -173,10 +94,12 @@ func TestConnectedRuntimeAuthCloseCannotCrossRename(t *testing.T) {
 	<-entered
 	closed := make(chan struct{})
 	go func() { session.close(nil); close(closed) }()
+	// The close waits for the admitted mutation, which the test holds.
+	waitUntilParked(t, "", "(*connectionSession).close(")
 	select {
 	case <-closed:
 		t.Error("connection close crossed admitted native mutation")
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 	close(release)
 	if (<-done).SaveResult != "committed" {

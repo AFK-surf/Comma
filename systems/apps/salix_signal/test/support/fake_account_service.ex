@@ -76,7 +76,7 @@ defmodule SalixSignal.Test.FakeAccountService do
 
     defp route("POST", ["v1", "verification", "session"], _conn, %{"number" => number}, state) do
       if Regex.match?(~r/\A\+[1-9][0-9]{6,14}\z/, number) do
-        id = Base.url_encode64(:crypto.strong_rand_bytes(16))
+        id = Base.url_encode64(SystemsRuntime.Proc.random_bytes(16))
 
         session = %{
           id: id,
@@ -485,7 +485,7 @@ defmodule SalixSignal.Test.FakeAccountService do
     defp uuid do
       <<a::binary-size(8), b::binary-size(4), c::binary-size(4), d::binary-size(4),
         e::binary-size(12)>> =
-        Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+        Base.encode16(SystemsRuntime.Proc.random_bytes(16), case: :lower)
 
       Enum.join([a, b, c, d, e], "-")
     end

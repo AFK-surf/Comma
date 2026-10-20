@@ -11,7 +11,7 @@ defmodule SalixAgent.PreparedBlobCleanup do
   key. Storage failures retain the intent for the next pass.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
   alias SalixAgent.AgentWorkspace
@@ -22,17 +22,18 @@ defmodule SalixAgent.PreparedBlobCleanup do
   @default_batch_size 64
   @max_uploads_per_intent 8
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @doc false
   def nudge do
-    if pid = Process.whereis(__MODULE__), do: send(pid, :sweep)
+    if pid = SystemsRuntime.Proc.whereis(__MODULE__), do: SystemsRuntime.Proc.send(pid, :sweep)
     :ok
   end
 
   @doc false
   def sweep_once(opts \\ []) do
-    now = Keyword.get(opts, :now, System.system_time(:second))
+    now = Keyword.get(opts, :now, SystemsClock.system_time(:second))
     grace = Keyword.get(opts, :grace_seconds, configured_grace_seconds())
     batch_size = Keyword.get(opts, :batch_size, configured_batch_size())
 
@@ -251,25 +252,30 @@ defmodule SalixAgent.PreparedBlobCleanup do
   defp expired?(record, now, grace), do: now - record["updated_at"] >= grace
 
   defp schedule(interval) do
-    if timer = Process.get({__MODULE__, :timer}), do: Process.cancel_timer(timer)
-    timer = Process.send_after(self(), :sweep, interval)
+    if timer = Process.get({__MODULE__, :timer}), do: SystemsClock.cancel_timer(timer)
+    timer = SystemsClock.send_after(SystemsRuntime.Proc.self(), :sweep, interval)
     Process.put({__MODULE__, :timer}, timer)
   end
 
   defp configured_interval_ms,
     do:
-      Application.get_env(:salix_agent, :prepared_blob_cleanup_interval_ms, @default_interval_ms)
+      SystemsRuntime.get_env(
+        :salix_agent,
+        :prepared_blob_cleanup_interval_ms,
+        @default_interval_ms
+      )
 
   defp configured_grace_seconds,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :salix_agent,
         :prepared_blob_cleanup_grace_seconds,
         @default_grace_seconds
       )
 
   defp configured_batch_size,
-    do: Application.get_env(:salix_agent, :prepared_blob_cleanup_batch_size, @default_batch_size)
+    do:
+      SystemsRuntime.get_env(:salix_agent, :prepared_blob_cleanup_batch_size, @default_batch_size)
 
   defp emit_outcome(outcome) do
     Salix.Telemetry.emit_operation(

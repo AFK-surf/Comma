@@ -1,0 +1,768 @@
+syntax = "proto3";
+
+package salix_meet_native.wire;
+
+
+// Reverse-engineered Google Meet wire messages used by the native client.
+//
+// This schema intentionally names only fields whose meaning is known from the
+// Meet web bundle, live RTCDataChannel/$rpc captures, or docs/ field maps.
+// Captured templates may contain additional fields; generated protobuf runtime
+// unknown-field preservation keeps those bytes when we unmarshal and marshal the
+// template, without pretending the schema understands them.
+
+enum MeetingIdentifierKind {
+  MEETING_IDENTIFIER_KIND_UNSPECIFIED = 0;
+  MEETING_IDENTIFIER_KIND_SPACE_SHORT_ID = 3;
+}
+
+// DeviceJoinState — the authoritative MeetingDevice.JoinState enum, recovered verbatim from the Meet web
+// client (com.google.rtc.meetings.v1.MeetingDevice$JoinState). NOTE: earlier RE mislabeled 3 as
+// "KNOCKING_SYNC" and 8 as "KNOCKING_DATA_CHANNEL" — 3 is plain KNOCKING and 8 is ERROR. State 9
+// (MISSING_PREREQUISITES) means the device hasn't satisfied a join prerequisite (e.g. an un-acknowledged
+// AckRequirement); the host's admit cannot clear it.
+enum DeviceJoinState {
+  DEVICE_JOIN_STATE_UNSPECIFIED = 0;
+  DEVICE_JOIN_STATE_JOINED = 1;
+  DEVICE_JOIN_STATE_HIDDEN = 2;
+  DEVICE_JOIN_STATE_KNOCKING = 3;
+  DEVICE_JOIN_STATE_DENIED = 4;
+  DEVICE_JOIN_STATE_LOBBY = 5;
+  DEVICE_JOIN_STATE_LEFT = 6;
+  DEVICE_JOIN_STATE_EJECTED = 7;
+  DEVICE_JOIN_STATE_ERROR = 8;
+  DEVICE_JOIN_STATE_MISSING_PREREQUISITES = 9;
+  DEVICE_JOIN_STATE_RINGING = 10;
+  DEVICE_JOIN_STATE_DENIED_FULL = 11;
+  reserved 12; // gap in the real enum (deleted/reserved value); the JS list index diverges from the proto value here
+  DEVICE_JOIN_STATE_WAITING = 13;
+  DEVICE_JOIN_STATE_MISSING_CSE_KEY = 14;
+  DEVICE_JOIN_STATE_MISSING_THIRD_PARTY_AUTHENTICATION = 15;
+}
+
+enum ParticipationMode {
+  PARTICIPATION_MODE_UNSPECIFIED = 0;
+  PARTICIPATION_MODE_DEFAULT = 1;
+  PARTICIPATION_MODE_COMPANION = 2;
+}
+
+enum MediaCaptureType {
+  MEDIA_CAPTURE_TYPE_UNSPECIFIED = 0;
+  MEDIA_CAPTURE_TYPE_CAMERA_MIC = 1;
+  MEDIA_CAPTURE_TYPE_SCREENCAST_PRESENT = 2;
+  MEDIA_CAPTURE_TYPE_HDMI_PRESENT = 3;
+  MEDIA_CAPTURE_TYPE_WHITEBOARD_PRESENT = 4;
+  MEDIA_CAPTURE_TYPE_CAMERA_PRESENT = 5;
+  MEDIA_CAPTURE_TYPE_UNRECOGNIZED = 6;
+}
+
+enum MediaType {
+  MEDIA_TYPE_UNSPECIFIED = 0;
+  MEDIA_TYPE_AUDIO = 1;
+  MEDIA_TYPE_VIDEO = 2;
+}
+
+enum IceTransportType {
+  ICE_TRANSPORT_TYPE_UNSPECIFIED = 0;
+  ICE_TRANSPORT_TYPE_UDP = 1;
+  ICE_TRANSPORT_TYPE_UDP_ALTERNATE = 2;
+  ICE_TRANSPORT_TYPE_TCP = 3;
+}
+
+enum ChatDeliveryScope {
+  CHAT_DELIVERY_SCOPE_UNSPECIFIED = 0;
+  CHAT_DELIVERY_SCOPE_MEETING = 1;
+}
+
+enum MediaSessionHeartbeatType {
+  MEDIA_SESSION_HEARTBEAT_TYPE_UNSPECIFIED = 0;
+  MEDIA_SESSION_HEARTBEAT_TYPE_ACK = 1;
+  MEDIA_SESSION_HEARTBEAT_TYPE_KEEPALIVE = 2;
+  MEDIA_SESSION_HEARTBEAT_TYPE_CLIENT_KEEPALIVE = 4;
+  // NOTE: the #2.#1 field of the steady keepalive is NOT a fixed type — it is the media-session
+  // generation+1 (the "next expected generation"), tracked from inbound frame #2.#2. The keepalive is
+  // built directly (mediartc.mediaSessionOutbound), not via this enum. See mediartc/control_frames.go.
+}
+
+message ResolveMeetingSpaceRequest {
+  string meeting_code = 1;
+  uint64 guest_mode = 6;
+}
+
+message ResolveMeetingSpaceResponse {
+  string space = 1;
+}
+
+message GetMeetingSpaceRequest {
+  string space = 1;
+}
+
+message GetMeetingSpaceResponse {
+  string space = 1;
+  string meeting_code = 2;
+}
+
+message MeetingIdentifier {
+  MeetingIdentifierKind identifier_kind = 1;
+  string space_id = 2;
+}
+
+message CreateMeetingDeviceRequest {
+  string space = 1;
+  MeetingDevice device = 2;
+}
+
+message CreateMeetingDeviceResponse {
+  MeetingDevice device = 1;
+}
+
+message BulkUpdateMeetingDevicesRequest {
+  string space = 1;
+  string device_name = 2;
+  MeetingDevice patch = 3;
+  FieldMask update_mask = 4;
+}
+
+// UpdateMeetingDeviceRequest mutates the bot's OWN device (a guest self-action, authenticated by the
+// meeting token). Used to (a) acknowledge a join prerequisite — patch device.ack_requirements with
+// state=2, no update_mask; and (b) mark the device JOINED — patch join_state + session fields with an
+// update_mask. Wire-verified by CDP capture of the Chrome client; the client logs "Modifying the meeting
+// device as JOINED" and sends exactly this (MeetingDeviceService/UpdateMeetingDevice).
+message UpdateMeetingDeviceRequest {
+  MeetingDevice device = 1;
+  FieldMask update_mask = 2;
+}
+
+message CreateHandRaiseRequest {
+  string space = 1;
+  Empty request = 2;
+}
+
+message CreateHandRaiseResponse {
+  string hand_raise = 1;
+}
+
+message DeleteHandRaiseRequest {
+  string hand_raise = 1;
+}
+
+message FieldMask {
+  repeated string paths = 1;
+}
+
+message Empty {}
+
+message MeetingDevice {
+  string name = 1;
+  string display_name = 2;
+  string avatar_url = 3;
+  DeviceJoinState join_state = 4;
+  uint64 joined_flag = 5;
+  uint64 guest = 8;
+  uint64 client_type = 11;
+  uint64 anonymous = 15;
+  // Packed [4] in captured CreateMeetingDevice requests; the web client sends
+  // it with the device capability set before binding cloud_session_id.
+  repeated uint64 device_capability_versions = 18;
+  PSTNInfo pstn = 20;
+  string cloud_session_id = 22;
+  ParticipationMode participation_mode = 25;
+  string first_name = 29;
+  MediaCaptureType media_capture_type = 38;
+  // Packed list of advertised client/device capability ids. Captured requests
+  // send [3,17,2,12,20,18,4,10,5,21,22,15,16,1,6,9,28,27,23,24,26,29,30,31,36,34,33,35].
+  repeated uint64 advertised_capability_ids = 39;
+  // Pending join-prerequisite acknowledgments (e.g. Gemini Smart Notes / recording / transcription). The
+  // server populates these on the device while holding it at MISSING_PREREQUISITES; the client clears each
+  // by setting state 1→2 via UpdateMeetingDevice. Wire-verified field #41.
+  repeated AckRequirement ack_requirements = 41;
+  repeated string pronouns = 44;
+  uint64 meeting_role = 46;
+}
+
+// AckRequirement is one join prerequisite the device must acknowledge (MeetingDevice.ack_requirements,
+// field #41). operation identifies what to acknowledge (echo the server-provided value — e.g. 5 =
+// SMART_NOTES on the wire; do NOT use the web client's ujg model enum where SMART_NOTES=7). state: 1 =
+// pending, 2 = acknowledged.
+message AckRequirement {
+  uint64 operation = 1;
+  uint64 state = 2;
+}
+
+message PSTNInfo {
+  string phone = 1;
+  string pin = 5;
+}
+
+message SyncMeetingSpaceCollectionsRequest {
+  string space = 1;
+  CollectionCursor meeting_space_cursor = 2;
+  CollectionCursor devices_cursor = 3;
+}
+
+message CollectionCursor {
+  uint64 version = 1;
+}
+
+message SyncMeetingSpaceCollectionsResponse {
+  SyncCollection meeting_space = 1;
+  SyncCollection devices = 2;
+}
+
+message SyncCollection {
+  SyncCollectionState synced = 1;
+  SyncCollectionState changed = 2;
+}
+
+message SyncCollectionState {
+  CollectionCursor cursor = 1;
+  // Heterogeneous serialized collection resources. Decode using the collection id:
+  // 1=MeetingSpaceResource, 2=MeetingDevice; realtime collection resources use
+  // CollectionBlock on the data-channel path.
+  repeated bytes resource_messages = 2;
+}
+
+message MeetingSpaceResource {
+  string space = 1;
+  string code = 2;
+  string url = 3;
+  MeetingSpaceDetails details = 6;
+}
+
+message MeetingSpaceDetails {
+  HostInfo host = 16;
+}
+
+message HostInfo {
+  string display_name = 1;
+}
+
+message CollectionsFrame {
+  CollectionsEnvelope envelope = 1;
+}
+
+message CollectionsEnvelope {
+  CollectionsContainer container = 2;
+}
+
+message CollectionsContainer {
+  CollectionBlock media_streams = 3;
+  InteractionCollections interactions = 13;
+}
+
+message CollectionBlock {
+  CollectionCursor cursor = 1;
+  // Heterogeneous serialized resources for this collection block. The enclosing
+  // field number names the collection: media_streams, roster, chat, hand_raises.
+  repeated bytes added_resource_messages = 2;
+  repeated string removed_resource_names = 3;
+}
+
+message InteractionCollections {
+  CollectionBlock roster = 1;
+  CollectionBlock chat = 4;
+  CollectionBlock hand_raises = 12;
+  // Counters/unread state collection. Its outer collection role is known from
+  // Meet's interaction container, but no capture has yet established the nested
+  // resource schema, so resource_messages stay opaque bytes on CollectionBlock.
+  CollectionBlock counters = 17;
+}
+
+message MediaStreamResource {
+  MediaType media_type = 2;
+  string stream_id = 4;
+  string device = 6;
+  SsrcGroup fid_group = 8;
+  MediaStreamState stream_state = 9;
+  StreamToggle toggle = 10;
+  uint64 video_stream_marker = 11;
+  uint64 stream_flags = 14;
+}
+
+message SsrcGroup {
+  repeated uint64 ssrc = 1 [packed = false];
+  repeated SsrcSemantics semantics = 2;
+}
+
+message SsrcSemantics {
+  string name = 1;
+  repeated uint64 ssrc = 2 [packed = false];
+}
+
+message MediaStreamState {
+  uint64 audio_stream_marker = 2;
+  VideoDimensions dimensions = 8;
+}
+
+message VideoDimensions {
+  uint64 width = 1;
+  uint64 height = 2;
+  AspectRatio aspect_ratio = 3;
+}
+
+message AspectRatio {
+  float min = 1;
+  float max = 2;
+}
+
+message StreamToggle {
+  // Per-stream mic/camera toggle value. The field's purpose is known; the exact
+  // on/off polarity still needs one labeled mute/camera capture, so callers
+  // should expose the raw state rather than inventing a boolean.
+  uint64 state = 1;
+}
+
+message ChatMessage {
+  string id = 1;
+  string sender_device = 2;
+  uint64 message_type = 3;
+  Timestamp created_at = 4;
+  ChatText text = 5;
+  ChatActor actor = 8;
+  repeated ChatReaction reactions = 13;
+  repeated ChatAttachment attachments = 16;
+}
+
+message ChatReaction {
+  string emoji = 1;
+  uint64 count = 2;
+}
+
+message ChatAttachment {
+  string url = 1;
+  string mime = 2;
+  string thumbnail_url = 3;
+}
+
+message ChatText {
+  string text = 1;
+}
+
+message ChatActor {
+  string name = 1;
+  string avatar_url = 2;
+}
+
+message HandRaiseResource {
+  string resource = 1;
+  Timestamp created_at = 2;
+  uint64 state = 3;
+  string device = 4;
+}
+
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
+
+message CaptionFrame {
+  repeated CaptionSegment segments = 1;
+}
+
+message CaptionSegment {
+  string speaker = 1;
+  uint64 segment = 2;
+  uint64 revision = 3;
+  bool final = 4;
+  string text = 6;
+  uint64 spoken_language = 8;
+  uint64 display_language = 10;
+  Timestamp start = 12;
+  Timestamp end = 13;
+  uint64 caption_kind = 15;
+  uint64 dedup_state = 16;
+}
+
+message ReactionFrame {
+  bytes envelope = 2;
+}
+
+message ReactionEnvelope {
+  ReactionEnvelope2 envelope = 1;
+}
+
+message ReactionEnvelope2 {
+  ReactionEvent reaction = 1;
+}
+
+message ReactionEvent {
+  ReactionEmoji emoji = 1;
+  ReactionTarget target = 4;
+  ReactionActor actor = 6;
+}
+
+message ReactionEmoji {
+  string emoji = 1;
+}
+
+message ReactionTarget {
+  string device = 1;
+}
+
+message ReactionActor {
+  string device = 1;
+  string name = 2;
+}
+
+message CreateMediaSessionRequest {
+  CreateMediaSessionWrapper wrapper = 1;
+}
+
+message CreateMediaSessionWrapper {
+  // Logged-in Chrome reuses its preview session by sending this existing
+  // resource name. Native replay must clear it before creating a new session
+  // with independently generated DTLS/ICE credentials.
+  string media_session = 1;
+  MediaSessionOffer offer = 3;
+}
+
+message MediaSessionOffer {
+  DTLSTransport dtls = 1;
+  ICETransport ice = 2;
+  repeated MediaCodec codecs = 3;
+  repeated RTPHeaderExtension header_extensions = 4;
+  BandwidthSettings bandwidth = 5;
+  MediaSessionMode mode = 7;
+  MediaSessionCapabilitySet capabilities = 8;
+  repeated DataChannelOffer data_channels = 17;
+  MediaSessionMode transport_mode = 19;
+  optional uint64 browser_profile = 36;
+  optional uint64 receiver_support = 42;
+  optional bool streams_muted = 44;
+  GPUInfo gpu = 45;
+  VideoProcessingConfig video_processing = 46;
+  optional uint64 media_receive_enabled = 50;
+  repeated OutboundStreamDescriptor outbound_streams = 52;
+}
+
+message DTLSTransport {
+  Fingerprint fingerprint = 1;
+  uint64 setup_role = 2;
+  optional uint64 enabled = 3;
+}
+
+message Fingerprint {
+  string algorithm = 1;
+  string digest = 2;
+}
+
+message ICETransport {
+  string username_fragment = 3;
+  string password = 4;
+}
+
+message MediaCodec {
+  optional uint64 payload_type = 1;
+  string name = 2;
+  MediaType media_type = 3;
+  uint64 clock_rate = 4;
+  uint64 channels = 5;
+  repeated CodecParameter parameters = 6;
+  repeated RtcpFeedback rtcp_feedback = 8;
+  repeated RtcpFeedback goog_feedback = 9;
+}
+
+message CodecParameter {
+  optional string key = 1;
+  optional string parameter_value = 2;
+}
+
+message RtcpFeedback {
+  // The web client maps these to SDP rtcp-fb entries. Captures currently only
+  // show explicit zero/one enum values, so keep the numeric value while naming
+  // the role.
+  optional uint64 feedback_type = 1;
+}
+
+message RTPHeaderExtension {
+  uint64 id = 1;
+  string uri = 2;
+  MediaType media_type = 3;
+  optional uint64 enabled = 4;
+}
+
+message BandwidthSettings {
+  uint64 max_bitrate_kbps = 2;
+  uint64 start_bitrate_kbps = 3;
+}
+
+message MediaSessionMode {
+  uint64 mode = 1;
+}
+
+message MediaSessionCapabilitySet {
+  uint64 audio = 1;
+  uint64 video = 2;
+}
+
+message DataChannelOffer {
+  string label = 1;
+  optional uint64 ordered = 2;
+  optional uint64 negotiated = 4;
+  bytes protocol = 7;
+}
+
+message GPUInfo {
+  uint64 vendor_id = 1;
+  uint64 device_id = 2;
+  uint64 feature_level = 4;
+  string description = 6;
+}
+
+message VideoProcessingConfig {
+  VideoProcessingOption option = 1;
+}
+
+message VideoProcessingOption {
+  optional uint64 enabled = 5;
+  optional uint64 mode = 6;
+}
+
+message OutboundStreamDescriptor {
+  OutboundStreamSource source = 1;
+  uint64 direction = 2;
+}
+
+message OutboundStreamSource {
+  OutboundVideoResolution resolution = 3;
+  OutboundLayerHints layer_hints = 8;
+  OutboundRid rid = 9;
+}
+
+message OutboundVideoResolution {
+  uint64 height = 1;
+  uint64 width = 2;
+  uint64 frame_rate = 3;
+}
+
+message OutboundLayerHints {
+  uint64 target_bitrate = 1;
+  uint64 min_bitrate = 2;
+  OutboundLayerRange range = 3;
+}
+
+message OutboundLayerRange {
+  uint64 min = 1;
+  uint64 max = 2;
+}
+
+message OutboundRid {
+  OutboundRidValue rid_value = 1;
+}
+
+message OutboundRidValue {
+  string rid = 1;
+}
+
+message CreateMediaSessionResponse {
+  string session_id = 1;
+  MediaSessionTransport transport = 2;
+}
+
+message MediaSessionTransport {
+  DTLSTransport dtls = 1;
+  ICETransport ice = 2;
+  repeated ICECandidate candidates = 3;
+  repeated MediaCodec accepted_codecs = 4;
+  repeated RTPHeaderExtension accepted_header_extensions = 5;
+  repeated uint64 ssrc_pool = 6;
+  optional uint64 selected_bundle = 7;
+  MediaSessionTransportTag transport_tag = 9;
+  optional uint64 downlink_pool_size = 11;
+  repeated DataChannelSpec data_channels = 12;
+  MediaSessionMode transport_mode = 13;
+}
+
+message ICECandidate {
+  IceTransportType transport_type = 1;
+  string ip = 2;
+  uint64 port = 3;
+  uint64 priority = 4;
+  uint64 component = 5;
+}
+
+message DataChannelSpec {
+  string label = 1;
+  optional bool ordered = 2;
+  uint64 id = 3;
+  optional uint64 negotiated = 4;
+  optional uint64 max_packet_life_time = 5;
+  optional uint64 priority = 6;
+  bytes protocol = 7;
+}
+
+message MediaSessionTransportTag {
+  bytes tag = 1;
+}
+
+message MediaSessionDCFrame {
+  MediaSessionDCEnvelope envelope = 1;
+}
+
+message MediaSessionDCEnvelope {
+  MediaSessionUpdate request = 2;
+}
+
+message MediaSessionUpdate {
+  uint64 request_id = 1;
+  UpdateMediaSessionRequest update = 3;
+}
+
+message UpdateMediaSessionRequest {
+  MediaSessionClientConfig client_config = 1;
+  FieldMask update_mask = 2;
+}
+
+message MediaSessionClientConfig {
+  CaptionConfig caption_config = 9;
+}
+
+message CaptionConfig {
+  string display_language = 1;
+  string spoken_language = 2;
+}
+
+message DCRPCFrame {
+  uint64 request_id = 1;
+  DCRPCSubscribeVideoStreamsOp subscribe_video_streams = 2;
+  DCRPCRefreshOp refresh = 3;
+}
+
+message DCRPCEnvelope {
+  DCRPCFrame frame = 1;
+}
+
+message DCRPCSubscribeVideoStreamsOp {
+  // Opaque Hotlane client context captured from the web client and replayed
+  // verbatim when present. Its outer role is known (#1 browser/client id,
+  // #2 page ids, #4 locale, #7 feature flags), but the bot does not interpret
+  // or synthesize those nested fields.
+  bytes hotlane_client_context = 1;
+  repeated VideoStreamSubscription streams = 4;
+}
+
+message DCRPCRefreshOp {
+  bytes hotlane_client_context = 1;
+  uint64 kind = 2;
+  string media_session_id = 3;
+  DCRPCRefreshCounter counter = 5;
+}
+
+message DCRPCRefreshCounter {
+  uint64 value = 1;
+}
+
+message VideoStreamSubscription {
+  bool subscribe = 1;
+  MediaType media_type = 2;
+  string media_session_id = 3;
+  string ssrc = 4;
+  string request_id = 5;
+  string device = 6;
+  SsrcGroup fid_group = 8;
+  VideoReceiveOptions receive_options = 9;
+}
+
+message VideoReceiveOptions {
+  bool enabled = 2;
+  VideoDimensions dimensions = 8;
+}
+
+message MeetMessagesFrame {
+  MeetMessagesEnvelope envelope = 1;
+  bytes received = 2;
+}
+
+message MeetMessagesEnvelope {
+  MeetMessagesSequenced sequenced = 1;
+}
+
+message MeetMessagesSequenced {
+  uint64 sequence = 1;
+  ChatSendBranch chat = 3;
+  MeetMessagesReceivedBranch received = 4;
+}
+
+message MeetMessagesReceivedBranch {
+  ChatMessage message = 1;
+}
+
+message ChatSendBranch {
+  ChatSendOuter outer = 1;
+}
+
+message ChatSendOuter {
+  ChatSendMessage message = 2;
+}
+
+message ChatSendMessage {
+  uint64 send_time_millis = 3;
+  ChatText text = 5;
+  ChatDeliveryScope delivery_scope = 6;
+}
+
+message ReactionSendFrame {
+  ReactionSendEnvelope envelope = 1;
+}
+
+message ReactionSendEnvelope {
+  ReactionSendSequenced sequenced = 1;
+}
+
+message ReactionSendSequenced {
+  uint64 sequence = 1;
+  ReactionSendBranch reaction = 2;
+}
+
+message ReactionSendBranch {
+  ReactionEmoji emoji = 1;
+}
+
+message MeetingAgentHeartbeatFrame {
+  MeetingAgentHeartbeatEnvelope envelope = 1;
+}
+
+message MeetingAgentHeartbeatEnvelope {
+  MeetingAgentClientState client_state = 1;
+  MeetingAgentClock clock = 6;
+}
+
+message MeetingAgentClientState {
+  uint64 connected = 2;
+  MeetingAgentNestedClientState nested = 3;
+}
+
+message MeetingAgentNestedClientState {
+  uint64 connected = 2;
+}
+
+message MeetingAgentClock {
+  int64 seconds = 1;
+}
+
+message MediaSessionHeartbeatFrame {
+  MediaSessionHeartbeatEnvelope envelope = 1;
+}
+
+message MediaSessionHeartbeatEnvelope {
+  MediaSessionHeartbeat sequenced = 1;
+  MediaSessionHeartbeatOutbound outbound = 2;
+}
+
+message MediaSessionHeartbeat {
+  uint64 sequence = 1;
+  MediaSessionHeartbeatBody body = 3;
+}
+
+message MediaSessionHeartbeatBody {
+  MediaSessionHeartbeatType heartbeat_type = 1;
+}
+
+message MediaSessionHeartbeatOutbound {
+  uint64 sequence = 1;
+  MediaSessionHeartbeatOutboundBody body = 2;
+}
+
+message MediaSessionHeartbeatOutboundBody {
+  MediaSessionHeartbeatType heartbeat_type = 1;
+}

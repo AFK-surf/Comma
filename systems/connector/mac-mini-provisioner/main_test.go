@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -1477,54 +1478,58 @@ func TestRejectedProvisionRequestStopsStaleConnectorAndReleasesCapacity(t *testi
 		replyJSON(w, http.StatusNotFound, map[string]any{"error": "provision_request_not_found"})
 	}))
 	defer server.Close()
+	// The server stays outside the bubble; the reporter's request timeout is on
+	// the bubble's clock, which stands still while the request is in flight.
+	synctest.Test(t, func(t *testing.T) {
+		// A kept-alive connection would outlive the bubble.
+		t.Cleanup(http.DefaultTransport.(*http.Transport).CloseIdleConnections)
+		stateDir := t.TempDir()
+		if err := os.MkdirAll(connectorConfigDir(stateDir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		requestID := "request-stale"
+		if err := os.WriteFile(connectorConfigPath(stateDir, requestID), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(connectorStatusPath(stateDir, requestID), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		connectors := map[string]*managedConnector{
+			requestID: {requestID: requestID},
+		}
+		reporter := newStatusReporter(server.URL, "token", "org_test", "runner-1", time.Second)
+		defer reporter.stop()
+		if !reporter.verifyRequest(requestID) {
+			t.Fatal("request authority check was not queued")
+		}
 
-	stateDir := t.TempDir()
-	if err := os.MkdirAll(connectorConfigDir(stateDir), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	requestID := "request-stale"
-	if err := os.WriteFile(connectorConfigPath(stateDir, requestID), []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(connectorStatusPath(stateDir, requestID), []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	connectors := map[string]*managedConnector{
-		requestID: {requestID: requestID},
-	}
-	reporter := newStatusReporter(server.URL, "token", "org_test", "runner-1", time.Second)
-	defer reporter.stop()
-	if !reporter.verifyRequest(requestID) {
-		t.Fatal("request authority check was not queued")
-	}
-
-	statusPath := filepath.Join(stateDir, "runner-status.json")
-	deadline := time.Now().Add(time.Second)
-	for connectors[requestID] != nil && time.Now().Before(deadline) {
+		statusPath := filepath.Join(stateDir, "runner-status.json")
+		// The reporter hands the rejected request to the owner loop before its
+		// check stops counting as pending.
+		reporter.pending.Wait()
 		if err := reconcileRejectedManagedConnectors(reporter, map[string]any{}, stateDir, statusPath, "runner-1", connectors); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if connectors[requestID] != nil {
-		t.Fatal("server-rejected connector still consumed local capacity")
-	}
-	for _, path := range []string{connectorConfigPath(stateDir, requestID), connectorStatusPath(stateDir, requestID)} {
-		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("stale connector credential was retained at %s: %v", path, err)
+		if connectors[requestID] != nil {
+			t.Fatal("server-rejected connector still consumed local capacity")
 		}
-	}
-	rawStatus, err := os.ReadFile(statusPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var status map[string]any
-	if err := json.Unmarshal(rawStatus, &status); err != nil {
-		t.Fatal(err)
-	}
-	if status["status"] != "stale_connector_removed" || len(status["managed_connectors"].([]any)) != 0 {
-		t.Fatalf("unexpected stale connector status: %#v", status)
-	}
+		for _, path := range []string{connectorConfigPath(stateDir, requestID), connectorStatusPath(stateDir, requestID)} {
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("stale connector credential was retained at %s: %v", path, err)
+			}
+		}
+		rawStatus, err := os.ReadFile(statusPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var status map[string]any
+		if err := json.Unmarshal(rawStatus, &status); err != nil {
+			t.Fatal(err)
+		}
+		if status["status"] != "stale_connector_removed" || len(status["managed_connectors"].([]any)) != 0 {
+			t.Fatalf("unexpected stale connector status: %#v", status)
+		}
+	})
 }
 
 func TestStartLoopReportsLocalConnectorStateWithoutEchoingToken(t *testing.T) {

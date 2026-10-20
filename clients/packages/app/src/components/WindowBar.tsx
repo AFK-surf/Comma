@@ -1,6 +1,10 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { getNativeBridge } from "@comma/native-bridge";
-import { appKeybindingKeycaps, cx, formatAppKeybinding } from "@comma/ui";
+import { getNativeBridge, type WindowControlAction } from "@comma/native-bridge";
+import {
+  appKeybindingKeycaps,
+  formatAppKeybinding,
+} from "@comma/ui/components/settings-shortcut";
+import { cx } from "@comma/ui/components/utils";
 import { useCanGoBack, useRouter } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Button as AriaButton } from "react-aria-components";
@@ -25,6 +29,8 @@ export function WindowBar() {
   const backShortcut = useAppShortcutBinding("history-back");
   const forwardShortcut = useAppShortcutBinding("history-forward");
   const hasTrafficLights = useHasTrafficLights();
+  const bridge = getNativeBridge();
+  const hasWindowButtons = bridge.platform === "electron" && bridge.os === "windows";
   const guest = useIsGuestSession();
 
   return (
@@ -75,6 +81,9 @@ export function WindowBar() {
       <div className="comma-window-bar-trailing flex shrink-0 items-center justify-end gap-xs">
         {guest ? null : <RecentTasksMenu />}
         {guest ? null : <ChatSidebarToggle />}
+        {/* Windows draws no window buttons of its own (window-options.ts): the
+            bar draws them after a divider. */}
+        {hasWindowButtons ? <WindowButtons /> : null}
       </div>
     </div>
   );
@@ -96,6 +105,71 @@ function useHasTrafficLights() {
   }, [bridge, macWindow]);
 
   return macWindow && !fullScreen;
+}
+
+/**
+ * Minimise, maximise (restore while maximised) and close for the Windows
+ * window, drawn as the bar's other icon buttons after a divider. Hidden in full
+ * screen, which has no window buttons.
+ */
+function WindowButtons() {
+  const messages = useCommaMessages();
+  const bridge = getNativeBridge();
+  const [maximized, setMaximized] = useState(false);
+  const [fullScreen, setFullScreen] = useState(false);
+
+  useEffect(
+    () =>
+      bridge.surfaces.windowMaximized.subscribe((snapshot) =>
+        setMaximized(snapshot.maximized)
+      ),
+    [bridge]
+  );
+  useEffect(
+    () =>
+      bridge.surfaces.windowFullScreen.subscribe((snapshot) =>
+        setFullScreen(snapshot.fullScreen)
+      ),
+    [bridge]
+  );
+
+  if (fullScreen) return null;
+  const act = (action: WindowControlAction) =>
+    void bridge.surfaces.windowControl({ action });
+
+  return (
+    <div
+      className="comma-window-buttons flex shrink-0 items-center gap-xs"
+      data-testid="comma-window-buttons"
+    >
+      <span
+        aria-hidden="true"
+        className="mx-xs h-4 w-px shrink-0 bg-border-primary"
+        data-testid="comma-window-buttons-divider"
+      />
+      <ShellIconButton
+        icon="window-minimize"
+        label={messages.shell_window_minimize()}
+        onClick={() => act("minimize")}
+        testId="comma-window-minimize"
+      />
+      <ShellIconButton
+        icon={maximized ? "window-restore" : "window-maximize"}
+        label={
+          maximized ? messages.shell_window_restore() : messages.shell_window_maximize()
+        }
+        onClick={() => act("toggleMaximize")}
+        testId="comma-window-maximize"
+      />
+      <ShellIconButton
+        icon="window-close"
+        label={messages.shell_window_close()}
+        onClick={() => act("close")}
+        testId="comma-window-close"
+        tone="danger"
+      />
+    </div>
+  );
 }
 
 // The hint is the pointer path to the command palette; the palette's own

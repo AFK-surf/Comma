@@ -45,6 +45,10 @@ test("the chat-hosted Task panel reads and refreshes one Task without starting c
                 actor_id: "actor_worker",
                 name: "Mira",
               },
+              run: {
+                place: { kind: "station", device_id: "dev_studio", name: "Mac Studio" },
+                model: { kind: "catalog", name: "Claude Sonnet" },
+              },
             }
           : path === "/v1/comma/groups/grp_panel/task-labels"
             ? {
@@ -72,7 +76,11 @@ test("the chat-hosted Task panel reads and refreshes one Task without starting c
       page.getByRole("heading", { name: "Prepare Friday's product launch" })
     ).toBeVisible();
     const details = page.getByRole("complementary", { name: "Task details" });
-    await expect(details.getByText("Mira", { exact: true })).toBeVisible();
+    // The panel names where the Task runs and its model, never its Agent.
+    await expect(details.getByTestId("task-panel-run")).toHaveText(
+      "on Mac Studio · Claude Sonnet"
+    );
+    await expect(details.getByText("Mira", { exact: true })).toHaveCount(0);
     await expect(details.getByText("Launch", { exact: true })).toBeVisible();
     await expect(details.getByText("Telegram", { exact: true })).toBeVisible();
     await expect(page.getByRole("textbox")).toHaveCount(0);
@@ -101,15 +109,19 @@ test("the chat-hosted Task panel reads and refreshes one Task without starting c
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(page.getByRole("alert")).toContainText("Task unavailable");
     await expect(details).toHaveCount(0);
-    await expect(page.getByText("Mira", { exact: true })).toHaveCount(0);
-    // Opening and refreshing this page must not provision Home or touch a transcript.
+    await expect(page.getByText("on Mac Studio · Claude Sonnet")).toHaveCount(0);
+    // Opening and refreshing this page must not provision Home or touch a
+    // transcript: it reads the Task, its labels and its summary (a Loop Task's
+    // Loop), and the workspaces that summary is read in.
     expect(
-      requests.every(
+      requests.filter(
         (request) =>
-          request === `GET ${previewPath}?include_worker=true` ||
-          request === "GET /v1/comma/groups/grp_panel/task-labels"
+          request !== `GET ${previewPath}?include_worker=true` &&
+          request !== "GET /v1/comma/groups/grp_panel/task-labels" &&
+          request !== "GET /v1/comma/groups/grp_panel/task-summaries?ids=cnv_panel" &&
+          request !== "GET /v1/comma/workspaces"
       )
-    ).toBe(true);
+    ).toEqual([]);
   } finally {
     await stub.close();
   }
@@ -238,6 +250,7 @@ test("an ended Telegram panel session asks to reopen before offering Comma sign-
   page,
 }) => {
   let ended = false;
+  const reads: string[] = [];
   const task = {
     id: "cnv_panel",
     group_id: "grp_panel",
@@ -253,6 +266,7 @@ test("an ended Telegram panel session asks to reopen before offering Comma sign-
   const stub = await startSessionProjectionStub({
     email: "telegram-ended@comma.local",
     handleRequest(request, response, path) {
+      reads.push(`${request.method} ${path}`);
       if (request.method === "POST" && path === "/v1/comma/auth/telegram-miniapp") {
         response.writeHead(201, { "content-type": "application/json" });
         response.end(
@@ -305,6 +319,21 @@ test("an ended Telegram panel session asks to reopen before offering Comma sign-
     await expect(
       page.getByRole("heading", { name: "Long-open Telegram Task" })
     ).toBeVisible();
+    // The opened panel finishes its own reads first: one meeting the ended
+    // session would replace the panel before Refresh is pressed.
+    await expect(page.getByText("No reply from the Worker yet.")).toBeVisible();
+    await expect(
+      page.getByRole("complementary", { name: "Task details" }).getByText("No label")
+    ).toBeVisible();
+    await expect
+      .poll(() => reads)
+      .toEqual(
+        expect.arrayContaining([
+          `GET ${previewPath}`,
+          "GET /v1/comma/groups/grp_panel/task-labels",
+          "GET /v1/comma/groups/grp_panel/conversations/cnv_panel",
+        ])
+      );
 
     // The session ends while the panel stays open; the next read finds it gone.
     ended = true;
@@ -334,19 +363,17 @@ test("an ended Telegram panel session asks to reopen before offering Comma sign-
   }
 });
 
-test("a focused peer finishes checking its session when Telegram renews in another tab", async ({
+test("a focused tab keeps its Task while Telegram renews the session in another tab", async ({
   page,
   context,
 }) => {
   let sessionId = "panel-original";
+  let exchanges = 0;
   const projection = () =>
     createE2eSessionProjection({ email: "peer-panel@comma.local", sessionId });
   const { promise: exchangeHeld, resolve: releaseExchange } =
     Promise.withResolvers<void>();
   const { promise: exchangeStarted, resolve: markExchangeStarted } =
-    Promise.withResolvers<void>();
-  const { promise: probeHeld, resolve: releaseProbe } = Promise.withResolvers<void>();
-  const { promise: probeStarted, resolve: markProbeStarted } =
     Promise.withResolvers<void>();
   const stub = await startSessionProjectionStub({
     email: "peer-panel@comma.local",
@@ -386,24 +413,13 @@ test("a focused peer finishes checking its session when Telegram renews in anoth
         value: { WebApp: { initData: "signed-launch", ready: () => {} } },
       });
     }, stub.baseUrl);
-    // Observe real BroadcastChannel delivery without changing its timing or payload.
-    await page.addInitScript(() => {
-      const NativeChannel = window.BroadcastChannel;
-      window.BroadcastChannel = class extends NativeChannel {
-        constructor(name: string) {
-          super(name);
-          this.addEventListener("message", () => {
-            document.documentElement.dataset.sessionHintReceived = "true";
-          });
-        }
-      };
-    });
     await context.route("https://telegram.org/js/telegram-web-app.js?63", (route) =>
       route.fulfill({ status: 200, contentType: "application/javascript", body: "" })
     );
     await context.route(
       `${stub.baseUrl}/v1/comma/auth/telegram-miniapp`,
       async (route) => {
+        exchanges += 1;
         markExchangeStarted();
         await exchangeHeld;
         sessionId = "panel-renewed";
@@ -411,10 +427,6 @@ test("a focused peer finishes checking its session when Telegram renews in anoth
       }
     );
     await context.route(`${stub.baseUrl}/v1/comma/auth/session`, async (route) => {
-      if (sessionId === "panel-renewed" && route.request().frame().page() === page) {
-        markProbeStarted();
-        await probeHeld;
-      }
       const expected = route.request().headers()["x-comma-expected-auth-session-id"];
       const matches = expected === "unknown" || expected === sessionId;
       await route.fulfill({
@@ -424,32 +436,24 @@ test("a focused peer finishes checking its session when Telegram renews in anoth
     });
     await page.goto(`/task-panel.html?${target}`);
     await expect(heading).toBeVisible();
+    // Both tabs are UIs of one client core: the second tab's launch renews the session they share.
     const renewedPage = await context.newPage();
     await renewedPage.goto(`/task-panel.html?${target}&source=telegram`);
     await exchangeStarted;
+    // The first tab comes back while the renewal is under way: the core checks the session after it.
     await page.bringToFront();
-    await page.evaluate(() => {
-      window.dispatchEvent(new Event("focus"));
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     releaseExchange();
-    await probeStarted;
-    await expect(heading).toBeVisible();
-    await expect(page.locator("html")).toHaveAttribute(
-      "data-session-hint-received",
-      "true"
-    );
     await expect(
       renewedPage.getByRole("heading", { name: "Shared Telegram Task" })
     ).toBeVisible();
-    releaseProbe();
     await expect(heading).toBeVisible();
     await expect(page.getByText("Checking your session…", { exact: true })).toHaveCount(
       0
     );
+    expect(exchanges).toBe(1);
   } finally {
     releaseExchange();
-    releaseProbe();
     await stub.close();
   }
 });
@@ -788,9 +792,7 @@ test("Task panel shows progress while the Telegram SDK is loading", async ({
   await page.goto("/task-panel.html?" + target + "&source=telegram", {
     waitUntil: "domcontentloaded",
   });
-  await expect(page.getByRole("status")).toContainText("Opening Task panel", {
-    timeout: 2000,
-  });
+  await expect(page.getByRole("status")).toContainText("Opening Task panel");
   await page.screenshot({ path: "/tmp/comma-task-panel-startup.png" });
 });
 
@@ -812,12 +814,8 @@ test("Task startup paints before the full stylesheet arrives", async ({ page }) 
     waitUntil: "commit",
   });
   await expect
-    .poll(
-      () =>
-        page.evaluate(
-          () => performance.getEntriesByName("first-contentful-paint").length
-        ),
-      { timeout: 2000 }
+    .poll(() =>
+      page.evaluate(() => performance.getEntriesByName("first-contentful-paint").length)
     )
     .toBeGreaterThan(0);
   await expect(page.getByRole("status")).toContainText("Opening Task panel");

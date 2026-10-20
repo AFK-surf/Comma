@@ -87,7 +87,7 @@ defmodule BridgeForTeams.Observability do
       attrs
       |> stringify_keys()
       |> Map.put_new("severity", "info")
-      |> Map.put_new("occurred_at", DateTime.utc_now())
+      |> Map.put_new("occurred_at", SystemsClock.utc_now())
       |> redact_summary()
       |> put_sized_payload("evidence", "evidence_size_bytes")
 
@@ -236,7 +236,7 @@ defmodule BridgeForTeams.Observability do
       attrs
       |> stringify_keys()
       |> Map.put_new("check_family", "run_checks")
-      |> Map.put_new("ran_at", DateTime.utc_now())
+      |> Map.put_new("ran_at", SystemsClock.timestamp(:utc_datetime_usec))
       |> maybe_normalize_run_checks()
       |> maybe_derive_check_status()
       |> put_sized_check_result()
@@ -282,7 +282,9 @@ defmodule BridgeForTeams.Observability do
       "result" => result,
       "ran_by_user_id" => Keyword.get(opts, :ran_by_user_id),
       "invocation_id" => Keyword.get(opts, :invocation_id),
-      "ran_at" => result["ran_at"] || Keyword.get(opts, :ran_at) || DateTime.utc_now()
+      "ran_at" =>
+        result["ran_at"] || Keyword.get(opts, :ran_at) ||
+          SystemsClock.timestamp(:utc_datetime_usec)
     })
   end
 
@@ -296,7 +298,7 @@ defmodule BridgeForTeams.Observability do
   @spec record_run_checks_activity(map(), keyword()) :: {:ok, CheckResult.t()} | {:error, term()}
   def record_run_checks_activity(%{} = result, opts \\ []) do
     result = GateContract.normalize_result(result)
-    request_id = Keyword.get(opts, :request_id) || Ecto.UUID.generate()
+    request_id = Keyword.get(opts, :request_id) || SystemsRuntime.Proc.uuid()
     ran_by_user_id = Keyword.get(opts, :ran_by_user_id)
     org_id = result["org_ref"] || Keyword.get(opts, :org_id)
     project_id = result["project_ref"] || Keyword.get(opts, :project_id)
@@ -383,7 +385,7 @@ defmodule BridgeForTeams.Observability do
           validation_summary(surface, attrs["resource_label"], status, reason_class),
       evidence: validation_evidence(attrs, surface, status, reason_class),
       correlation_id: attrs["correlation_id"],
-      occurred_at: attrs["occurred_at"] || DateTime.utc_now()
+      occurred_at: attrs["occurred_at"] || SystemsClock.utc_now()
     })
   end
 
@@ -580,7 +582,7 @@ defmodule BridgeForTeams.Observability do
       summary: audit_event_summary(audit),
       evidence: audit_event_evidence(audit),
       correlation_id: audit.request_id || "audit:#{audit.id}",
-      occurred_at: audit.created_at || DateTime.utc_now()
+      occurred_at: audit.created_at || SystemsClock.utc_now()
     }
   end
 
@@ -907,7 +909,7 @@ defmodule BridgeForTeams.Observability do
   @spec retention_policy() :: map()
   def retention_policy do
     :bridge_for_teams_core
-    |> Application.get_env(:observability_retention, [])
+    |> SystemsRuntime.get_env(:observability_retention, [])
     |> Map.new()
     |> then(&Map.merge(@default_retention_policy, &1))
   end
@@ -916,7 +918,7 @@ defmodule BridgeForTeams.Observability do
   @spec freshness_policy() :: map()
   def freshness_policy do
     :bridge_for_teams_core
-    |> Application.get_env(:observability_freshness, [])
+    |> SystemsRuntime.get_env(:observability_freshness, [])
     |> Map.new()
     |> then(&Map.merge(@default_freshness_policy, &1))
   end
@@ -924,7 +926,7 @@ defmodule BridgeForTeams.Observability do
   @doc "Event ingestion rate-limit policy for high-volume Operations sources."
   @spec event_rate_limit_policy() :: map()
   def event_rate_limit_policy do
-    case Application.get_env(:bridge_for_teams_core, :observability_event_rate_limit, []) do
+    case SystemsRuntime.get_env(:bridge_for_teams_core, :observability_event_rate_limit, []) do
       false ->
         Map.put(@default_event_rate_limit_policy, :enabled, false)
 
@@ -974,7 +976,7 @@ defmodule BridgeForTeams.Observability do
         }
   def org_health_summary_for_org(org_id, project_count, runners, opts \\ [])
       when is_binary(org_id) and is_integer(project_count) and is_list(runners) do
-    now = Keyword.get(opts, :now, DateTime.utc_now())
+    now = Keyword.get(opts, :now, SystemsClock.utc_now())
     policy = Keyword.get(opts, :freshness_policy, freshness_policy())
     reason_codes = org_health_reason_codes_for_org(org_id, project_count, runners, now, policy)
 
@@ -1036,7 +1038,7 @@ defmodule BridgeForTeams.Observability do
   end
 
   defp do_prune_expired(opts) do
-    now = Keyword.get(opts, :now, DateTime.utc_now())
+    now = Keyword.get(opts, :now, SystemsClock.utc_now())
     policy = Keyword.get(opts, :policy, retention_policy())
 
     {stderr_tails_cleared, _} =
@@ -1142,7 +1144,7 @@ defmodule BridgeForTeams.Observability do
   end
 
   defp rate_limit_cutoff(_occurred_at, window_seconds) do
-    DateTime.utc_now() |> DateTime.add(-window_seconds, :second)
+    SystemsClock.utc_now() |> DateTime.add(-window_seconds, :second)
   end
 
   defp event_source_count(org_id, source, %DateTime{} = cutoff) do
@@ -1263,7 +1265,7 @@ defmodule BridgeForTeams.Observability do
 
   defp page_by(query, field, opts) do
     page_limit = limit(opts)
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     rows =
       query
@@ -1273,7 +1275,7 @@ defmodule BridgeForTeams.Observability do
       |> Repo.all()
 
     duration_us =
-      System.convert_time_unit(System.monotonic_time() - started_at, :native, :microsecond)
+      System.convert_time_unit(SystemsClock.monotonic_time() - started_at, :native, :microsecond)
 
     entries = Enum.take(rows, page_limit)
     next_cursor = if length(rows) > page_limit, do: encode_cursor(List.last(entries), field)
@@ -1822,7 +1824,7 @@ defmodule BridgeForTeams.Observability do
   defp quarantine_timestamp(%{"quarantined_at" => timestamp}) when is_binary(timestamp),
     do: timestamp
 
-  defp quarantine_timestamp(_opts), do: DateTime.utc_now() |> DateTime.to_iso8601()
+  defp quarantine_timestamp(_opts), do: SystemsClock.utc_now() |> DateTime.to_iso8601()
 
   defp maybe_put_quarantine_note(payload, opts) do
     case Map.get(opts, "operator_note") || Map.get(opts, "note") do
@@ -1837,11 +1839,13 @@ defmodule BridgeForTeams.Observability do
 
   defp default_subject_type("bot"), do: "project"
   defp default_subject_type("slack_calendar"), do: "project"
+  defp default_subject_type("lark_bot"), do: "project"
   defp default_subject_type("sso"), do: "org"
   defp default_subject_type(_surface), do: "unknown"
 
   defp default_subject_id("bot", _org_id, project_id), do: project_id
   defp default_subject_id("slack_calendar", _org_id, project_id), do: project_id
+  defp default_subject_id("lark_bot", _org_id, project_id), do: project_id
   defp default_subject_id("sso", org_id, _project_id), do: org_id
   defp default_subject_id(_surface, org_id, _project_id), do: org_id
 
@@ -2054,7 +2058,7 @@ defmodule BridgeForTeams.Observability do
   defp payload_size(payload), do: payload |> Jason.encode!() |> byte_size()
 
   defp payload_max_bytes do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :bridge_for_teams_core,
       :observability_payload_max_bytes,
       @default_payload_max_bytes

@@ -1,5 +1,5 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Dialog } from "@comma/ui";
+import { Dialog } from "@comma/ui/components/dialog";
 import { DriveFileIcon } from "./DriveFileIcon";
 import { DriveFileName } from "./DriveFileName";
 import type { DriveFile } from "./driveStore";

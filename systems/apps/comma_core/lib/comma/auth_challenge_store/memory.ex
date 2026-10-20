@@ -35,13 +35,13 @@ defmodule Comma.AuthChallengeStore.Memory do
       case lookup(challenge_key(id), now) do
         %{} = challenge ->
           if challenge["code_hash"] == code_hash do
-            :ets.delete(@table, challenge_key(id))
+            SystemsRuntime.ETS.delete(@table, challenge_key(id))
             {:ok, challenge}
           else
             attempts = (challenge["attempts"] || 0) + 1
 
             if attempts >= max_attempts do
-              :ets.delete(@table, challenge_key(id))
+              SystemsRuntime.ETS.delete(@table, challenge_key(id))
               {:error, :too_many_attempts}
             else
               update_value(challenge_key(id), Map.put(challenge, "attempts", attempts))
@@ -68,7 +68,7 @@ defmodule Comma.AuthChallengeStore.Memory do
       now = now_ms()
 
       cond do
-        retry_after(circuit_key(), now) > 0 ->
+        not Map.has_key?(challenge, "review_user_id") and retry_after(circuit_key(), now) > 0 ->
           {:error, :provider_unavailable, retry_after(circuit_key(), now)}
 
         retry_after(cooldown_key(email_fingerprint), now) > 0 ->
@@ -121,13 +121,18 @@ defmodule Comma.AuthChallengeStore.Memory do
           failure_key = verification_window_key(email_fingerprint)
           failure_count = window_count(failure_key, now)
 
+          expected =
+            if challenge["review_user_id"],
+              do: Map.get(opts, :review_candidate, ""),
+              else: code_hash
+
           cond do
             failure_count >= Map.fetch!(opts, :verification_failure_limit) ->
               {:error, :rate_limited, retry_after(failure_key, now)}
 
-            challenge["code_hash"] == code_hash ->
-              :ets.delete(@table, challenge_key(id))
-              :ets.delete(@table, failure_key)
+            challenge["code_hash"] == expected ->
+              SystemsRuntime.ETS.delete(@table, challenge_key(id))
+              SystemsRuntime.ETS.delete(@table, failure_key)
               {:ok, challenge}
 
             true ->
@@ -141,7 +146,7 @@ defmodule Comma.AuthChallengeStore.Memory do
                 )
 
               if attempts >= max_attempts do
-                :ets.delete(@table, challenge_key(id))
+                SystemsRuntime.ETS.delete(@table, challenge_key(id))
               else
                 update_value(challenge_key(id), Map.put(challenge, "attempts", attempts))
               end
@@ -170,8 +175,8 @@ defmodule Comma.AuthChallengeStore.Memory do
   @impl true
   def record_delivery(:ok, _opts) do
     transaction(fn ->
-      :ets.delete(@table, delivery_failure_key())
-      :ets.delete(@table, circuit_key())
+      SystemsRuntime.ETS.delete(@table, delivery_failure_key())
+      SystemsRuntime.ETS.delete(@table, circuit_key())
       :ok
     end)
   end
@@ -208,26 +213,26 @@ defmodule Comma.AuthChallengeStore.Memory do
   @impl true
   def delete(id) when is_binary(id) do
     transaction(fn ->
-      :ets.delete(@table, challenge_key(id))
+      SystemsRuntime.ETS.delete(@table, challenge_key(id))
       :ok
     end)
   end
 
   def reset! do
     ensure!()
-    :ets.delete_all_objects(@table)
+    SystemsRuntime.ETS.delete_all_objects(@table)
   end
 
   defp transaction(fun) do
     ensure!()
-    :global.trans({@lock, self()}, fun)
+    SystemsRuntime.Proc.global_trans({@lock, SystemsRuntime.Proc.self()}, fun)
   end
 
   defp ensure! do
-    case :ets.whereis(@table) do
+    case SystemsRuntime.ETS.whereis(@table) do
       :undefined ->
         try do
-          :ets.new(@table, [:named_table, :public, read_concurrency: true])
+          SystemsRuntime.ETS.new(@table, [:named_table, :public, read_concurrency: true])
         rescue
           ArgumentError -> :ok
         end
@@ -238,12 +243,12 @@ defmodule Comma.AuthChallengeStore.Memory do
   end
 
   defp lookup(key, now) do
-    case :ets.lookup(@table, key) do
+    case SystemsRuntime.ETS.lookup(@table, key) do
       [{^key, value, expires_at}] when expires_at > now ->
         value
 
       [{^key, _value, _expires_at}] ->
-        :ets.delete(@table, key)
+        SystemsRuntime.ETS.delete(@table, key)
         nil
 
       [] ->
@@ -251,17 +256,18 @@ defmodule Comma.AuthChallengeStore.Memory do
     end
   end
 
-  defp put(key, value, expires_at), do: :ets.insert(@table, {key, value, expires_at})
+  defp put(key, value, expires_at),
+    do: SystemsRuntime.ETS.insert(@table, {key, value, expires_at})
 
   defp update_value(key, value) do
-    case :ets.lookup(@table, key) do
+    case SystemsRuntime.ETS.lookup(@table, key) do
       [{^key, _old_value, expires_at}] -> put(key, value, expires_at)
       [] -> false
     end
   end
 
   defp increment_window(key, window_seconds, now) do
-    case :ets.lookup(@table, key) do
+    case SystemsRuntime.ETS.lookup(@table, key) do
       [{^key, count, expires_at}] when expires_at > now ->
         put(key, count + 1, expires_at)
         count + 1
@@ -280,12 +286,12 @@ defmodule Comma.AuthChallengeStore.Memory do
   end
 
   defp retry_after(key, now) do
-    case :ets.lookup(@table, key) do
+    case SystemsRuntime.ETS.lookup(@table, key) do
       [{^key, _value, expires_at}] when expires_at > now ->
         max(div(expires_at - now + 999, 1_000), 1)
 
       [{^key, _value, _expires_at}] ->
-        :ets.delete(@table, key)
+        SystemsRuntime.ETS.delete(@table, key)
         0
 
       [] ->
@@ -302,5 +308,5 @@ defmodule Comma.AuthChallengeStore.Memory do
   defp delivery_failure_key, do: :delivery_failures
   defp circuit_key, do: :delivery_circuit
   defp seconds_from_now(now, seconds), do: now + seconds * 1_000
-  defp now_ms, do: System.monotonic_time(:millisecond)
+  defp now_ms, do: SystemsClock.monotonic_time(:millisecond)
 end

@@ -1,7 +1,7 @@
 defmodule CommaWeb.RecommendationNotionMemberSource do
   @moduledoc false
 
-  alias CommaWeb.RecommendationMemberRead
+  alias CommaWeb.{RecommendationMemberRead, RecommendationSourceQuote}
 
   @api "https://api.notion.com/v1"
   @headers [{"notion-version", "2025-09-03"}, {"user-agent", "Comma"}]
@@ -18,7 +18,7 @@ defmodule CommaWeb.RecommendationNotionMemberSource do
   # mention the member, open items that name the member in a task database,
   # and pages the member last edited or started within seven days. Notion
   # throttles bursts, so each read that fails leaves the others readable.
-  def read(identity, request, now \\ DateTime.utc_now()) do
+  def read(identity, request, now \\ SystemsClock.utc_now()) do
     with {:ok, self} <- request.("notion_self", :get, @api <> "/users/me", headers: @headers),
          {:ok, user} <- member(self, identity) do
       [sources, pages] =
@@ -201,6 +201,7 @@ defmodule CommaWeb.RecommendationNotionMemberSource do
         |> Map.take(~w(id url context))
         |> Map.put("title", title(page))
         |> Map.put("memberRelation", "involves_you")
+        |> RecommendationSourceQuote.put(title: title(page), facts: [status: status])
       ]
     else
       []
@@ -300,6 +301,10 @@ defmodule CommaWeb.RecommendationNotionMemberSource do
     }
     |> CommaWeb.RecommendationSourceContext.attach(~w(mention))
     |> Map.delete("mention")
+    |> RecommendationSourceQuote.put(
+      title: title(page),
+      body: {:plain, Enum.map_join(comment["rich_text"], &(&1["plain_text"] || ""))}
+    )
   end
 
   defp recent_document?(page, user, now) do
@@ -333,6 +338,19 @@ defmodule CommaWeb.RecommendationNotionMemberSource do
     |> Map.take(~w(id url context))
     |> Map.put("title", title(page))
     |> Map.put("memberRelation", "edited_by_you")
+    |> RecommendationSourceQuote.put(title: title(page), body: {:plain, quoted_blocks(blocks)})
+  end
+
+  # The document from its start. A list or to-do block is a list item.
+  defp quoted_blocks(blocks) do
+    Enum.map_join(blocks, "\n", fn
+      %{"type" => type} = block
+      when type in ~w(bulleted_list_item numbered_list_item to_do) ->
+        "• " <> rich_text(block[type])
+
+      block ->
+        block_text(block)
+    end)
   end
 
   defp block_text(%{"type" => "to_do", "to_do" => %{"checked" => checked} = data}),

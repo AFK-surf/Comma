@@ -1,6 +1,6 @@
 defmodule SalixAgent.Browser.Driver do
   @moduledoc "Native CDP driver. One pending operation and a bounded stream lifecycle queue."
-  use GenServer
+  use SystemsRuntime.Server
   alias SalixStore.{BrowserSettings, BrowserBindings}
   alias SalixAgent.Browser.{Connection, Commands}
 
@@ -11,7 +11,7 @@ defmodule SalixAgent.Browser.Driver do
       restart: :temporary
     }
 
-  def start_link(row), do: GenServer.start_link(__MODULE__, row, name: name(row))
+  def start_link(row), do: SystemsRuntime.Server.start_link(__MODULE__, row, name: name(row))
 
   # The process address is cluster-wide. SQL admission remains authoritative
   # if distribution partitions or a driver disappears during an operation.
@@ -19,9 +19,12 @@ defmodule SalixAgent.Browser.Driver do
     do: {:global, {__MODULE__, row.agent_id, row.session_id, row.provider_id}}
 
   def ensure(row) do
-    case GenServer.whereis(name(row)) do
+    case SystemsRuntime.Server.whereis(name(row)) do
       nil ->
-        case DynamicSupervisor.start_child(SalixAgent.Browser.Supervisor, {__MODULE__, row}) do
+        case SystemsRuntime.DynamicSupervisor.start_child(
+               SalixAgent.Browser.Supervisor,
+               {__MODULE__, row}
+             ) do
           {:ok, pid} -> {:ok, pid}
           {:error, {:already_started, pid}} -> {:ok, pid}
           _ -> {:error, :browser_driver_unavailable}
@@ -33,14 +36,14 @@ defmodule SalixAgent.Browser.Driver do
   end
 
   def observe(row) do
-    case GenServer.whereis(name(row)) do
+    case SystemsRuntime.Server.whereis(name(row)) do
       nil -> {:error, :browser_driver_unavailable}
       pid -> {:ok, pid}
     end
   end
 
   def activate(row) do
-    with {:ok, pid} <- ensure(row), do: GenServer.call(pid, :activate)
+    with {:ok, pid} <- ensure(row), do: SystemsRuntime.Server.call(pid, :activate)
   end
 
   def call(row, op, args \\ %{}) do
@@ -50,12 +53,12 @@ defmodule SalixAgent.Browser.Driver do
     with {:ok, pid} <- driver, do: request(pid, op, args)
   end
 
-  def request(pid, op, args), do: GenServer.call(pid, {:command, op, args}, 40_000)
-  def frame(pid, tab), do: GenServer.call(pid, {:frame, tab}, 2000)
+  def request(pid, op, args), do: SystemsClock.call(pid, {:command, op, args}, 40_000)
+  def frame(pid, tab), do: SystemsClock.call(pid, {:frame, tab}, 2000)
 
   def stop(row) do
-    if pid = GenServer.whereis(name(row)),
-      do: GenServer.stop(pid, :normal, 5000)
+    if pid = SystemsRuntime.Server.whereis(name(row)),
+      do: SystemsRuntime.Server.stop(pid, :normal, 5000)
 
     :ok
   end
@@ -90,9 +93,9 @@ defmodule SalixAgent.Browser.Driver do
 
   # Also used by integration tests with a real local Chromium CDP endpoint.
   def init_connection(opts) do
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
 
-    case Connection.start_link(Keyword.put(opts, :owner, self())) do
+    case Connection.start_link(Keyword.put(opts, :owner, SystemsRuntime.Proc.self())) do
       {:ok, conn} ->
         {:ok,
          %{
@@ -108,7 +111,7 @@ defmodule SalixAgent.Browser.Driver do
            binding: Keyword.get(opts, :binding),
            checkpoint_timer: nil,
            checkpoint_worker: nil,
-           last_activity: System.monotonic_time(:millisecond)
+           last_activity: SystemsClock.monotonic_time(:millisecond)
          }}
 
       _ ->
@@ -165,7 +168,7 @@ defmodule SalixAgent.Browser.Driver do
 
   @impl true
   def handle_info({:completed, pid, result}, %{pending: {pid, from, timer}} = state) do
-    Process.cancel_timer(timer)
+    SystemsClock.cancel_timer(timer)
 
     {reply, commands} =
       case result do
@@ -173,12 +176,12 @@ defmodule SalixAgent.Browser.Driver do
         {:error, reason} -> {{:error, reason}, state.commands}
       end
 
-    if from, do: GenServer.reply(from, reply)
+    if from, do: SystemsRuntime.Server.reply(from, reply)
     state = %{state | commands: commands, pending: nil, pending_op: nil}
 
     case :queue.out(state.queue) do
       {{:value, {op, args, from, deadline}}, queue} ->
-        remaining = deadline - System.monotonic_time(:millisecond)
+        remaining = deadline - SystemsClock.monotonic_time(:millisecond)
 
         if remaining > 0 do
           {:noreply, start_command(%{state | queue: queue}, op, args, from, remaining)}
@@ -196,15 +199,15 @@ defmodule SalixAgent.Browser.Driver do
 
     if state.binding && state.binding.options["shared_storage"] == true &&
          is_nil(state.checkpoint_worker) &&
-         System.monotonic_time(:millisecond) - state.last_activity <
+         SystemsClock.monotonic_time(:millisecond) - state.last_activity <
            (state.binding.options["idle_timeout_ms"] || 60000) do
-      owner = self()
+      owner = SystemsRuntime.Proc.self()
       binding = state.binding
 
       {pid, _} =
         spawn_monitor(fn ->
           SalixAgent.Browser.checkpoint(binding)
-          send(owner, :checkpoint_finished)
+          SystemsRuntime.Proc.send(owner, :checkpoint_finished)
         end)
 
       {:noreply, %{state | checkpoint_worker: pid}}
@@ -228,12 +231,14 @@ defmodule SalixAgent.Browser.Driver do
   def handle_info({:EXIT, pid, _}, %{pending: {pid, _, _}} = state), do: {:stop, :normal, state}
 
   def handle_info(:idle, state) do
-    Process.cancel_timer(state.idle)
-    remaining = state.last_activity + 600_000 - System.monotonic_time(:millisecond)
+    SystemsClock.cancel_timer(state.idle)
+    remaining = state.last_activity + 600_000 - SystemsClock.monotonic_time(:millisecond)
     remaining = if remaining > 0, do: remaining, else: control_remaining(state.binding)
 
     if remaining > 0,
-      do: {:noreply, %{state | idle: Process.send_after(self(), :idle, remaining)}},
+      do:
+        {:noreply,
+         %{state | idle: SystemsClock.send_after(SystemsRuntime.Proc.self(), :idle, remaining)}},
       else: {:stop, :normal, state}
   end
 
@@ -245,11 +250,11 @@ defmodule SalixAgent.Browser.Driver do
         do: min(timeout, min(args["timeout_ms"] || 15_000, 15_000)),
         else: timeout
 
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
     commands = state.commands
 
     pid =
-      spawn_link(fn ->
+      SystemsRuntime.Proc.spawn_link(fn ->
         result =
           try do
             {value, commands} = Commands.execute(commands, op, args)
@@ -261,10 +266,10 @@ defmodule SalixAgent.Browser.Driver do
             :exit, _ -> {:error, :browser_outcome_unknown}
           end
 
-        send(owner, {:completed, self(), result})
+        SystemsRuntime.Proc.send(owner, {:completed, SystemsRuntime.Proc.self(), result})
       end)
 
-    timer = Process.send_after(self(), {:command_timeout, pid}, timeout)
+    timer = SystemsClock.send_after(SystemsRuntime.Proc.self(), {:command_timeout, pid}, timeout)
     %{state | pending: {pid, from, timer}, pending_op: op}
   end
 
@@ -272,15 +277,17 @@ defmodule SalixAgent.Browser.Driver do
   def terminate(_, state) do
     if state.pending do
       {pid, from, _} = state.pending
-      Process.exit(pid, :kill)
-      if from, do: GenServer.reply(from, {:error, :browser_outcome_unknown})
+      SystemsRuntime.Proc.exit(pid, :kill)
+      if from, do: SystemsRuntime.Server.reply(from, {:error, :browser_outcome_unknown})
     end
 
     for {_, _, from, _} <- :queue.to_list(state.queue),
         from != nil,
-        do: GenServer.reply(from, {:error, :browser_outcome_unknown})
+        do: SystemsRuntime.Server.reply(from, {:error, :browser_outcome_unknown})
 
-    if Process.alive?(state.commands.conn), do: GenServer.stop(state.commands.conn, :normal)
+    if SystemsRuntime.Proc.alive?(state.commands.conn),
+      do: SystemsRuntime.Server.stop(state.commands.conn, :normal)
+
     :ok
   end
 
@@ -289,12 +296,15 @@ defmodule SalixAgent.Browser.Driver do
   defp schedule_checkpoint(%{binding: nil} = state), do: state
 
   defp schedule_checkpoint(%{checkpoint_timer: nil} = state),
-    do: %{state | checkpoint_timer: Process.send_after(self(), :checkpoint, 15_000)}
+    do: %{
+      state
+      | checkpoint_timer: SystemsClock.send_after(SystemsRuntime.Proc.self(), :checkpoint, 15_000)
+    }
 
   defp schedule_checkpoint(state), do: state
 
-  defp deadline, do: System.monotonic_time(:millisecond) + 35_000
-  defp idle_timer, do: Process.send_after(self(), :idle, 600_000)
+  defp deadline, do: SystemsClock.monotonic_time(:millisecond) + 35_000
+  defp idle_timer, do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :idle, 600_000)
 
   # Check one binding only at idle expiry, then at the active lease expiry.
   # Passive viewers never grant a lease or refresh command activity.
@@ -304,7 +314,7 @@ defmodule SalixAgent.Browser.Driver do
     case BrowserBindings.get(binding) do
       %{provider_id: id, status: "ready", control: "human", controller_expires_at: expires}
       when id == binding.provider_id and not is_nil(expires) ->
-        max(0, DateTime.diff(expires, DateTime.utc_now(), :millisecond))
+        max(0, DateTime.diff(expires, SystemsClock.utc_now(), :millisecond))
 
       _ ->
         0
@@ -312,12 +322,12 @@ defmodule SalixAgent.Browser.Driver do
   end
 
   defp activity(state) do
-    Process.cancel_timer(state.idle)
+    SystemsClock.cancel_timer(state.idle)
 
     schedule_checkpoint(%{
       state
       | idle: idle_timer(),
-        last_activity: System.monotonic_time(:millisecond)
+        last_activity: SystemsClock.monotonic_time(:millisecond)
     })
   end
 end

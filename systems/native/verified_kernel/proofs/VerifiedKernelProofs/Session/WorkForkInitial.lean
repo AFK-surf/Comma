@@ -1,5 +1,6 @@
-import VerifiedKernelProofs.Session.WorkPhysicalFence
+import VerifiedKernelProofs.Session.WorkArchivePersistence
 import VerifiedKernelProofs.Session.WorkForkIdentity
+import VerifiedKernelProofs.Session.WorkLedgerShape
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data
@@ -45,19 +46,19 @@ theorem rebuild_refs_fork_initial {state next : Term} {journal rest : List Term}
   repeat
     fail_if_success (head_is call [write]; change write _ _ _ = .ok (next, rest) at call)
     obtain ⟨_, _, _, call⟩ := bind_ok call
-  have frame : QueueFrame state next := write_queue_frame call rfl rfl rfl rfl rfl
+  have frame : QueueFrame state next := write_queue_frame call (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent)
   obtain ⟨messages, read⟩ := initial.messages
   refine ⟨queue_frame_ready frame initial.ready, frame.2.2.2.2.trans initial.format, ?_,
-    ⟨messages, (write_field_frame call rfl).trans read⟩,
-    (write_field_frame call rfl).trans initial.catalog, (write_field_frame call rfl).trans initial.archived⟩
+    ⟨messages, (write_field_frame call (by keys_absent)).trans read⟩,
+    (write_field_frame call (by keys_absent)).trans initial.catalog, (write_field_frame call (by keys_absent)).trans initial.archived⟩
   unfold LedgerHeader
   rw [write_field_frame (key := "input_dedupe") call rfl]
   exact initial.header
 
 theorem fork_finish_initial {source session attrs next : Term} {copy : Bool}
-    {messages facts results remapped clamped journal rest : List Term}
+    {messages facts results journal rest : List Term}
     {lastSeq lastAck forkThrough nextId created : Term}
-    (call : forkFinish source session attrs copy messages facts results remapped clamped
+    (call : forkFinish source session attrs copy messages facts results
       lastSeq lastAck forkThrough nextId created journal = .ok (next, rest)) : InitialFields next := by
   cases copy <;> unfold forkFinish at call <;> simp only [Bool.false_eq_true, ↓reduceIte] at call
   all_goals repeat
@@ -72,7 +73,7 @@ theorem current_fork_initial {source session attrs maxId next : Term} {journal r
   rw [current_fork_factor] at call
   unfold forkSelection at call
   repeat' first
-    | exact fork_finish_initial call
+    | (head_is call [forkFinish]; exact fork_finish_initial call)
     | (obtain ⟨_, _, _, call⟩ := bind_ok call)
     | split at call
     | dsimp only at call

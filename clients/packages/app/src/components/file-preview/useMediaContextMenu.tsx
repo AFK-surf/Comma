@@ -1,10 +1,11 @@
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import { getNativeBridge } from "@comma/native-bridge";
 import {
   MediaContextMenu,
-  toast,
-  useTextEditContextMenuState,
   type MediaContextMenuAction,
-} from "@comma/ui";
+} from "@comma/ui/components/menu/MediaContextMenu";
+import { toast } from "@comma/ui/components/toast";
+import { useTextEditContextMenuState } from "@comma/ui/components/menu";
 import {
   createContext,
   useCallback,
@@ -13,7 +14,7 @@ import {
   useState,
   type MouseEvent,
 } from "react";
-import type { AttachmentUploadInput } from "../chat/model/conversationChannel";
+import type { AttachmentUploadInput } from "@comma/core/chat";
 import { canCopyFile, copyFile } from "../../runtime-files/fileClipboard";
 import { captureVideoFrame } from "../../runtime-files/videoFrame";
 import { copyImageBlob } from "../../runtime-files/imageClipboard";
@@ -224,7 +225,12 @@ export function useMediaContextMenu(
           ...(menuKind === "video"
             ? {
                 copyFrame: messages.video_context_copy_frame(),
-                copyUnavailable: messages.video_context_copy_desktop(),
+                // The web points to the macOS app, which copies files;
+                // another desktop app (Windows) cannot yet.
+                copyUnavailable:
+                  getNativeBridge().platform === "electron"
+                    ? messages.video_context_copy_unavailable()
+                    : messages.video_context_copy_desktop(),
               }
             : {}),
           save:

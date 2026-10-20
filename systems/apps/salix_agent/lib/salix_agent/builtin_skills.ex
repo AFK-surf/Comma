@@ -17,20 +17,20 @@ defmodule SalixAgent.BuiltinSkills do
   def snapshot do
     root = root()
 
-    case :persistent_term.get(@cache_key, nil) do
+    case SystemsRuntime.PersistentTerm.get(@cache_key, nil) do
       {^root, state} ->
         {:ok, state}
 
       _ ->
         with {:ok, state} <- load(root) do
-          :persistent_term.put(@cache_key, {root, state})
+          SystemsRuntime.PersistentTerm.put(@cache_key, {root, state})
           {:ok, state}
         end
     end
   end
 
   defp root do
-    (Application.get_env(:salix_agent, :builtin_skills_path) ||
+    (SystemsRuntime.get_env(:salix_agent, :builtin_skills_path) ||
        if(File.dir?(@release_root), do: @release_root, else: @source_root))
     |> Path.expand()
   end

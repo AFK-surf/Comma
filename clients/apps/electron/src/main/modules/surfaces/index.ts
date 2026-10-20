@@ -5,8 +5,10 @@ import type {
   SurfaceBounds,
   SurfaceLifecycle,
   ViewSurface,
+  WindowControlInput,
   WindowCreateInput,
   WindowFullScreen,
+  WindowMaximized,
   WindowSurface,
   WindowTargetInput,
 } from "@comma/native-bridge";
@@ -20,8 +22,11 @@ interface WindowLike {
   isMaximized(): boolean;
   isMinimized(): boolean;
   isVisible(): boolean;
+  maximize?(): void;
+  minimize?(): void;
   restore?(): void;
   show?(): void;
+  unmaximize?(): void;
 }
 
 interface WindowRegistration {
@@ -181,6 +186,22 @@ export class NativeSurfaceService {
 
   windowFullScreen(windowId: string): WindowFullScreen {
     return { fullScreen: this.#getWindow(windowId).window.isFullScreen() };
+  }
+
+  windowMaximized(windowId: string): WindowMaximized {
+    return { maximized: this.#getWindow(windowId).window.isMaximized() };
+  }
+
+  /** The window buttons the Windows window bar draws in place of the system's. */
+  windowControl(windowId: string, { action }: WindowControlInput): void {
+    const { window } = this.#getWindow(windowId);
+    if (action === "minimize") window.minimize?.();
+    if (action === "close") window.close();
+    // A full-screen window has no maximize of its own.
+    if (action === "toggleMaximize" && !window.isFullScreen()) {
+      if (window.isMaximized()) window.unmaximize?.();
+      else window.maximize?.();
+    }
   }
 
   async snapshot(): Promise<SurfaceList> {

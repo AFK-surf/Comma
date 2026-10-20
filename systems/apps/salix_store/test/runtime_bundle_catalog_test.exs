@@ -1,30 +1,21 @@
 defmodule SalixStore.RuntimeBundleCatalogTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixStore.RuntimeBundleCatalog
 
   @templates [
     "shell.default",
-    "external.claude",
-    "external.codex",
-    "external.pi",
-    "meeting.meetnative"
+    "meeting.meetnative",
+    "station.default"
   ]
   @root Path.expand("fixtures/runtime-bundle", __DIR__)
 
-  test "maps the five fixed product templates onto the three release-bundled images" do
+  test "maps the three fixed product templates onto the three release-bundled images" do
     assert RuntimeBundleCatalog.keys() == Enum.sort(@templates)
 
-    assert {:ok, codex} = RuntimeBundleCatalog.resolve("external.codex", root: @root)
-    assert {:ok, claude} = RuntimeBundleCatalog.resolve("external.claude", root: @root)
-    assert {:ok, pi} = RuntimeBundleCatalog.resolve("external.pi", root: @root)
-    assert codex.image == claude.image
-    assert codex.image == pi.image
-    assert codex.class == "external"
-    assert codex.source_revision == "test-runtime-revision"
-
-    for key <- ["shell.default", "meeting.meetnative"] do
+    for key <- @templates do
       assert {:ok, template} = RuntimeBundleCatalog.resolve(key, root: @root)
+      assert template.source_revision == "test-runtime-revision"
       assert template.image["platform"] == "linux/arm64"
 
       assert template.image["archiveUrl"] ==
@@ -32,32 +23,10 @@ defmodule SalixStore.RuntimeBundleCatalogTest do
     end
   end
 
-  test "Claude materializes the shared non-root external Workload policy" do
-    assert {:ok, materialized} =
-             RuntimeBundleCatalog.materialize(
-               "external.claude",
-               %{owner_id: "claude-workload", generation: 1},
-               root: @root
-             )
-
-    assert materialized.template_key == "external.claude"
-    assert materialized.spec["egress_mode"] == "public_internet"
-
-    assert [
-             %{
-               "destination" => "/workspace",
-               "owner_uid" => 1_000,
-               "owner_gid" => 1_000,
-               "mode" => 0o700,
-               "read_only" => false
-             }
-           ] = materialized.spec["volume_requirements"]
-  end
-
   test "materializes the digest, inline descriptor, and product policy" do
     assert {:ok, materialized} =
              RuntimeBundleCatalog.materialize(
-               "external.codex",
+               "station.default",
                %{
                  owner_id: "workload-1",
                  generation: 3,
@@ -67,20 +36,20 @@ defmodule SalixStore.RuntimeBundleCatalogTest do
                root: @root
              )
 
-    assert materialized.template_key == "external.codex"
-    digest = "sha256:" <> String.duplicate("a", 64)
+    assert materialized.template_key == "station.default"
+    digest = "sha256:" <> String.duplicate("d", 64)
     assert materialized.runtime_revision == digest
 
     assert materialized.spec["runtime_artifact"] == %{
-             "class" => "external",
+             "class" => "station",
              "platform" => "linux/arm64",
              "manifest_digest" => digest,
-             "reference" => "comma.local/runtime/external@" <> digest,
+             "reference" => "comma.local/runtime/station@" <> digest,
              "archive_sha256" =>
-               "1b665050c87b37aa6ac165e4d12580794f99fa769fc6a87d482923a5be8465bb",
-             "archive_size" => 9,
+               "47721ddbed08259663f848ff30b14ca2f844ba8fcc7fb03f8f3074e64a76d4c5",
+             "archive_size" => 8,
              "archive_url" =>
-               "https://comma-release.afk.surf/runtime-bundles/sha256/1b665050c87b37aa6ac165e4d12580794f99fa769fc6a87d482923a5be8465bb.oci.tar"
+               "https://comma-release.afk.surf/runtime-bundles/sha256/47721ddbed08259663f848ff30b14ca2f844ba8fcc7fb03f8f3074e64a76d4c5.oci.tar"
            }
 
     assert materialized.spec["egress_mode"] == "public_internet"
@@ -111,14 +80,14 @@ defmodule SalixStore.RuntimeBundleCatalogTest do
   test "keeps the provider volume stable across generations of one workload" do
     assert {:ok, first} =
              RuntimeBundleCatalog.materialize(
-               "external.pi",
+               "station.default",
                %{owner_id: "workload-1", generation: 1},
                root: @root
              )
 
     assert {:ok, replacement} =
              RuntimeBundleCatalog.materialize(
-               "external.pi",
+               "station.default",
                %{owner_id: "workload-1", generation: 2},
                root: @root
              )
@@ -127,7 +96,7 @@ defmodule SalixStore.RuntimeBundleCatalogTest do
 
     assert {:ok, other} =
              RuntimeBundleCatalog.materialize(
-               "external.pi",
+               "station.default",
                %{owner_id: "workload-2", generation: 1},
                root: @root
              )
@@ -135,34 +104,10 @@ defmodule SalixStore.RuntimeBundleCatalogTest do
     refute first.spec["volume_requirements"] == other.spec["volume_requirements"]
   end
 
-  test "materializes a Meeting-owned writable workspace" do
-    assert {:ok, materialized} =
-             RuntimeBundleCatalog.materialize(
-               "meeting.meetnative",
-               %{owner_id: "meeting-workload", generation: 1},
-               root: @root
-             )
-
-    assert [volume] = materialized.spec["volume_requirements"]
-    assert volume["destination"] == "/workspace"
-    assert volume["owner_uid"] == 10_001
-    assert volume["owner_gid"] == 10_001
-    assert volume["mode"] == 0o700
-    refute volume["read_only"]
-  end
-
-  test "fails closed for unknown templates or a missing bundle" do
-    assert {:error, :unsupported_runtime_template} =
-             RuntimeBundleCatalog.resolve("arbitrary.image", root: @root)
-
-    assert {:error, :runtime_bundle_unavailable} =
-             RuntimeBundleCatalog.resolve("shell.default", root: Path.join(@root, "missing"))
-  end
-
   test "recovers the image only from the stored descriptor" do
     assert {:ok, workload} =
              RuntimeBundleCatalog.materialize(
-               "external.codex",
+               "station.default",
                %{owner_id: "workload-1", generation: 1},
                root: @root
              )

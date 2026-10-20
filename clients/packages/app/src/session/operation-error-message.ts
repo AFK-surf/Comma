@@ -3,7 +3,8 @@ import { baseLocale, messages, type CommaLocale } from "@comma/i18n";
 export class SessionOperationDisplayError extends Error {
   constructor(
     readonly code: string,
-    message: string
+    message: string,
+    readonly retryAfterMs?: number
   ) {
     super(message);
     this.name = "SessionOperationDisplayError";
@@ -13,7 +14,8 @@ export class SessionOperationDisplayError extends Error {
 export function sessionOperationDisplayError(
   code: string,
   unsupportedMessage: string,
-  locale: CommaLocale = baseLocale
+  locale: CommaLocale = baseLocale,
+  retryAfterMs?: number
 ): SessionOperationDisplayError {
   let message: string;
   switch (code) {
@@ -41,5 +43,5 @@ export function sessionOperationDisplayError(
     default:
       message = messages.auth_sign_in_failed({}, { locale });
   }
-  return new SessionOperationDisplayError(code, message);
+  return new SessionOperationDisplayError(code, message, retryAfterMs);
 }

@@ -18,7 +18,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { TaskCard, TaskCardMeta } from "../task-board";
+import { TaskCard, TaskCardMeta, TaskProgressText } from "../task-board";
 import { taskStatusIcon } from "../task-workspace/TaskSummaryCard";
 import { ScrollArea } from "../scroll-area";
 import { isImeKeyEvent } from "../utils";
@@ -256,12 +256,7 @@ export function SideChatComposer({
   );
 }
 
-export type SideChatTaskStatus =
-  | "backlog"
-  | "in_progress"
-  | "needs_review"
-  | "done"
-  | "cancelled";
+export type SideChatTaskStatus = "in_progress" | "needs_review" | "done" | "cancelled";
 export type SideChatTask = {
   archiveAction?: TaskArchiveAction | undefined;
   activityStatus: string;
@@ -288,7 +283,6 @@ export type SideChatCardsCapabilityState =
     };
 
 const STATUS_COLUMN_DEFINITIONS = [
-  { bucket: "backlog", icon: taskStatusIcon("backlog") },
   { bucket: "in_progress", icon: taskStatusIcon("in_progress") },
   { bucket: "needs_review", icon: taskStatusIcon("needs_review") },
   { bucket: "done", icon: taskStatusIcon("done") },
@@ -300,22 +294,18 @@ function useStatusColumns() {
   return [
     {
       ...STATUS_COLUMN_DEFINITIONS[0],
-      label: messages.tasks_backlog(),
-    },
-    {
-      ...STATUS_COLUMN_DEFINITIONS[1],
       label: messages.tasks_in_progress(),
     },
     {
-      ...STATUS_COLUMN_DEFINITIONS[2],
+      ...STATUS_COLUMN_DEFINITIONS[1],
       label: messages.tasks_needs_review(),
     },
     {
-      ...STATUS_COLUMN_DEFINITIONS[3],
+      ...STATUS_COLUMN_DEFINITIONS[2],
       label: messages.tasks_done(),
     },
     {
-      ...STATUS_COLUMN_DEFINITIONS[4],
+      ...STATUS_COLUMN_DEFINITIONS[3],
       label: messages.tasks_cancelled(),
     },
   ] as const;
@@ -416,8 +406,7 @@ export function SideChatCardsPanel({
             aria-label={messages.side_chat_task_status()}
             value={taskStatusToIndicatorId(selectedBucket)}
             onChange={(id) => {
-              const bucket = indicatorIdToTaskStatus(id);
-              if (bucket !== "archived") setSelectedBucket(bucket);
+              setSelectedBucket(indicatorIdToTaskStatus(id));
             }}
           />
         </div>
@@ -444,7 +433,6 @@ function SideChatCardsColumn({
   const messages = useCommaMessages();
   const column = useStatusColumns().find((item) => item.bucket === bucket)!;
   const emptyTitle = {
-    backlog: messages.side_chat_no_backlog_tasks(),
     cancelled: messages.side_chat_no_cancelled_tasks(),
     done: messages.side_chat_no_done_tasks(),
     in_progress: messages.side_chat_no_in_progress_tasks(),
@@ -511,7 +499,11 @@ function SideChatCardsColumn({
         ref={scrollViewportRef}
       >
         {tasks.map((task, index) => (
-          <TaskArchiveMenu key={task.id} action={task.archiveAction}>
+          <TaskArchiveMenu
+            key={task.id}
+            action={task.archiveAction}
+            overlay="task-card"
+          >
             <button
               aria-label={messages.side_chat_open_task({ title: task.title })}
               className="comma-side-chat-task-card-button"
@@ -578,8 +570,10 @@ function SideChatTaskCard({ task }: { task: SideChatTask }) {
   // it falls back to the status rather than dropping the line.
   const meta =
     task.statusBucket !== "in_progress" ? undefined : (
-      <TaskCardMeta textClassName="comma-shiny-text">
-        {task.lastMessage?.content || activityLabel || messages.tasks_in_progress()}
+      <TaskCardMeta>
+        <TaskProgressText className="comma-shiny-text">
+          {task.lastMessage?.content || activityLabel || messages.tasks_in_progress()}
+        </TaskProgressText>
       </TaskCardMeta>
     );
   return (

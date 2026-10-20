@@ -204,7 +204,7 @@ export class HelperMicrophoneCapture implements MicrophoneCapture {
             return;
           }
           const force = setTimeout(() => {
-            // HelperTermination.tla: a sent signal is not an observed exit.
+            // A sent signal is not an observed exit.
             if (!exited) child.kill("SIGKILL");
           }, STOP_GRACE_MS);
           child.once("exit", () => {

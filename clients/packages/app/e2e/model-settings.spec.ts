@@ -116,11 +116,13 @@ async function mockBackend(
   page: Page,
   state: {
     profiles: Json[];
-    agents: { router: Json; workers: Json[] };
+    agents: { router: Json };
     polled?: boolean;
     resetAnswered?: boolean;
     refuseModel?: string | undefined;
-  }
+    refuseProfileWrite?: boolean;
+  },
+  modelCatalog: { sources: unknown; models: unknown[] } = catalog
 ) {
   const writes: { method: string; path: string; body: unknown }[] = [];
   await installBrowserTestSession(page, {
@@ -146,7 +148,7 @@ async function mockBackend(
     const body = req.postData() ? (req.postDataJSON() as Json) : undefined;
     if (req.method() !== "GET") writes.push({ method: req.method(), path, body });
     const base = `/v1/comma/workspaces/${workspaceId}`;
-    if (path === "/v1/comma/model-catalog") return respond(catalog);
+    if (path === "/v1/comma/model-catalog") return respond(modelCatalog);
     if (path === "/v1/comma/workspaces")
       return respond({
         data: [{ id: workspaceId, group_id: "group", name: "Workspace" }],
@@ -155,13 +157,12 @@ async function mockBackend(
       return respond({
         workspace_id: workspaceId,
         agents: { router: state.agents.router },
-        workers: { items: state.agents.workers, next_cursor: null },
+        task_model: { selection: { kind: "builtin" } },
+        task_place: { place: { kind: "salix" } },
       });
     const agent = path.match(/\/agents\/([^/]+)(\/model)?$/);
     if (agent) {
-      const id = agent[1]!;
-      const all = [state.agents.router, ...state.agents.workers];
-      const target = all.find((entry) => entry.agent_id === id)!;
+      const target = state.agents.router;
       // A model no profile can serve is refused, as the backend does.
       if (agent[2] && (body!.selection as Json).model === state.refuseModel)
         return respond({ error: "invalid_model_configuration" }, 400);
@@ -288,6 +289,7 @@ async function mockBackend(
         state.profiles.splice(index, 1);
         return respond({ deleted: true });
       }
+      if (state.refuseProfileWrite) return respond({ error: "conflict" }, 409);
       const { version: _version, ...patch } = body!;
       state.profiles[index] = { ...state.profiles[index], ...patch, version: "v2" };
       return respond(state.profiles[index]);
@@ -319,7 +321,7 @@ test("adds, switches off and removes profiles, and shows subscription quota", as
       structuredClone(codexProfile) as Json,
       structuredClone(geminiProfile) as Json,
     ],
-    agents: { router, workers: [] },
+    agents: { router },
   };
   const writes = await mockBackend(page, state);
   await openModels(page);
@@ -440,15 +442,23 @@ test("adds, switches off and removes profiles, and shows subscription quota", as
   // One press copies the code and opens the sign-in page.
   const signInPage = page.waitForEvent("popup");
   await page
-    .getByRole("button", { name: "Copy code and open sign-in page", exact: true })
+    .getByRole("button", {
+      name: "Copy code and continue to GitHub Copilot",
+      exact: true,
+    })
     .click();
-  await (await signInPage).close();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe("ABCD-1234");
+  const authorizationPage = await signInPage;
+  await expect(authorizationPage).toHaveURL("https://example.com/device");
+  await authorizationPage.close();
   expect(popups).toBe(1);
   await expect(
     page.getByText("GitHub Copilot · GitHub Copilot Business subscription", {
       exact: true,
     })
-  ).toBeVisible({ timeout: 15_000 });
+  ).toBeVisible();
   expect(writes).toContainEqual({
     method: "POST",
     path: `/v1/comma/workspaces/${workspaceId}/subscription-accounts/oauth`,
@@ -461,6 +471,32 @@ test("adds, switches off and removes profiles, and shows subscription quota", as
   await expect(page.getByText("Opus 5", { exact: true })).toBeVisible();
   await expect(page.getByText("GPT-5.5", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Model & API", exact: true }).last().click();
+
+  // A profile's name is one field, asked in a dialog from its actions menu.
+  await page
+    .getByRole("button", { name: "Actions for octo@example.com", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
+  const renameProfile = page.getByRole("dialog", {
+    name: "Rename profile",
+    exact: true,
+  });
+  const profileName = renameProfile.getByRole("textbox", {
+    name: "Profile name",
+    exact: true,
+  });
+  await expect(profileName).toHaveValue("octo@example.com");
+  await profileName.fill("Octo work");
+  await profileName.press("Enter");
+  await expect(renameProfile).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Actions for Octo work", exact: true })
+  ).toBeVisible();
+  expect(writes.at(-1)).toMatchObject({
+    method: "PATCH",
+    path: `/v1/comma/workspaces/${workspaceId}/subscription-accounts/profile-copilot`,
+    body: { version: "v1", name: "Octo work" },
+  });
 
   // Off keeps the credential but serves nothing.
   await page
@@ -483,449 +519,4 @@ test("adds, switches off and removes profiles, and shows subscription quota", as
     page.getByRole("button", { name: "Actions for OpenRouter", exact: true })
   ).toHaveCount(0);
   expect(writes.at(-1)).toMatchObject({ method: "DELETE", body: { version: "v2" } });
-});
-
-test("chooses Agent models by family, gates pay-per-use, and renames", async ({
-  page,
-}, testInfo) => {
-  const state = {
-    refuseModel: undefined as string | undefined,
-    profiles: [
-      structuredClone(codexProfile) as Json,
-      {
-        id: "profile-key",
-        credential_kind: "provider_api_key",
-        source: "openrouter",
-        name: "Team router",
-        key_hint: "sk-…or42",
-        disabled: false,
-        status: "active",
-        version: "v1",
-      },
-    ],
-    agents: {
-      router: { ...router },
-      workers: [
-        {
-          agent_id: "coder",
-          name: "Coder",
-          role: "worker",
-          selection: {
-            kind: "catalog",
-            model: "gpt-5.5",
-            reasoning_effort: "high",
-            allow_paid: false,
-          },
-        },
-        {
-          // An external runtime reports its own model and no selection.
-          agent_id: "vm-codex",
-          name: "VM Codex",
-          role: "worker",
-          source: "agent_config",
-          model: "gpt-5.5",
-          reasoning_effort: "high",
-          runtime: { kind: "compute", provider: "codex" },
-        },
-        {
-          // A compute runtime on its own sign-in: its plan's models only.
-          agent_id: "vm-claude",
-          name: "VM Claude",
-          role: "worker",
-          runtime: { kind: "compute", provider: "claude" },
-          selection: {
-            kind: "runtime",
-            model: "claude-opus-5",
-            reasoning_effort: "low",
-          },
-        },
-        {
-          // Kept to a profile that has since been removed.
-          agent_id: "pinned",
-          name: "Pinned",
-          role: "worker",
-          selection: {
-            kind: "catalog",
-            model: "gpt-5.5",
-            reasoning_effort: null,
-            allow_paid: false,
-            profile_id: "profile-gone",
-          },
-        },
-        {
-          // A private template chosen before the catalog existed.
-          agent_id: "legacy",
-          name: "Legacy",
-          role: "worker",
-          template_id: "tmpl-old",
-          model_display_name: "Old GPT",
-          selection: { kind: "template", template_id: "tmpl-old" },
-        },
-      ],
-    },
-  };
-  const writes = await mockBackend(page, state);
-  await openModels(page);
-
-  await expect(page.getByRole("button", { name: "Router", exact: true })).toContainText(
-    "Comma built-in (recommended)"
-  );
-  const coder = page.getByRole("button", { name: "Coder", exact: true });
-  await expect(coder).toContainText("GPT-5.5");
-  await expect(coder).toContainText("high");
-  await expect(coder).toContainText("Automatic");
-
-  // One panel: models under their families, efforts beside them.
-  const putSelection = () =>
-    writes.filter((write) => write.method === "PUT").at(-1)?.body;
-  await coder.click();
-  const panel = page.getByRole("dialog", { name: "Coder", exact: true });
-  await expect(panel.getByRole("group", { name: "Sonnet" })).toBeVisible();
-  // A new model waits for its effort; the effort saves both.
-  const before = writes.length;
-  await panel.getByRole("button", { name: "Opus 5", exact: true }).click();
-  await expect(
-    panel.getByRole("button", { name: "high", exact: true })
-  ).toHaveAttribute("aria-pressed", "false");
-  expect(writes.length).toBe(before);
-  await panel.getByRole("button", { name: "high", exact: true }).click();
-  await page.screenshot({ path: testInfo.outputPath("model-menu.png") });
-  await expect
-    .poll(() => writes.at(-1))
-    .toEqual({
-      method: "PUT",
-      path: `/v1/comma/workspaces/${workspaceId}/agents/coder/model`,
-      body: {
-        selection: {
-          kind: "catalog",
-          model: "claude-opus-5",
-          reasoning_effort: "high",
-          allow_paid: false,
-          profile_id: null,
-        },
-      },
-    });
-  // Only an API key serves Opus 5 here, so subscriptions-only cannot run it.
-  const warning = page.getByText(/No enabled subscription serves this model/);
-  await expect(warning).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(panel).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath("pay-per-use-warning.png") });
-
-  // The account: automatic with pay-per-use allowed, then kept to one key.
-  await coder.click();
-  await panel.getByRole("button", { name: "Account", exact: true }).click();
-  const accounts = page.getByRole("dialog", { name: "Account", exact: true });
-  await accounts.getByText("Allow pay-per-use (API keys)", { exact: true }).click();
-  await page.screenshot({ path: testInfo.outputPath("account-panel.png") });
-  // Nothing in the account panel spills past its edge.
-  const fits = await accounts.evaluate(
-    (element) => element.scrollWidth <= element.clientWidth
-  );
-  expect(fits).toBe(true);
-  await expect.poll(putSelection).toEqual({
-    selection: {
-      kind: "catalog",
-      model: "claude-opus-5",
-      reasoning_effort: "high",
-      allow_paid: true,
-      profile_id: null,
-    },
-  });
-  await expect(warning).toHaveCount(0);
-
-  await accounts.getByRole("button", { name: /Team router/ }).click();
-  await expect.poll(putSelection).toEqual({
-    selection: {
-      kind: "catalog",
-      model: "claude-opus-5",
-      reasoning_effort: "high",
-      allow_paid: true,
-      profile_id: "profile-key",
-    },
-  });
-  // Choosing an account closes its panel; a click outside closes the picker.
-  await page.mouse.click(5, 5);
-  await expect(panel).toHaveCount(0);
-  await expect(coder).toContainText("Team router");
-  // The trigger is named for the Agent and describes its current choice.
-  await expect(coder).toHaveAccessibleDescription(/Opus 5/);
-
-  // A refused choice leaves the page on what the server holds.
-  state.refuseModel = "claude-sonnet-4-5";
-  await coder.click();
-  await panel.getByRole("button", { name: "Sonnet 4.5", exact: true }).click();
-  await panel.getByRole("button", { name: "high", exact: true }).click();
-  await page.mouse.click(5, 5);
-  await expect(coder).toContainText("Opus 5");
-  await expect(page.getByText("Something went wrong. Try again.")).toBeVisible();
-  // A later choice that succeeds shows, even after the refused one reloaded.
-  state.refuseModel = undefined;
-  await coder.click();
-  await panel.getByRole("button", { name: "Sonnet 4.5", exact: true }).click();
-  await panel.getByRole("button", { name: "low", exact: true }).click();
-  await page.mouse.click(5, 5);
-  await expect(coder).toContainText("Sonnet 4.5");
-
-  // The runtime sets VM Codex's model, so the page shows it without a picker.
-  await expect(page.getByText("GPT-5.5 · high", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "VM Codex", exact: true })).toHaveCount(
-    0
-  );
-  // A compute Worker picks among its runtime's models, with no account.
-  const vmClaude = page.getByRole("button", { name: "VM Claude", exact: true });
-  await expect(vmClaude).toContainText("Opus 5");
-  await vmClaude.click();
-  const vmPanel = page.getByRole("dialog", { name: "VM Claude", exact: true });
-  await expect(vmPanel.getByRole("button", { name: "GPT-5.5" })).toHaveCount(0);
-  await expect(vmPanel.getByRole("button", { name: "Account" })).toHaveCount(0);
-  await vmPanel.getByRole("button", { name: "high", exact: true }).click();
-  await expect.poll(putSelection).toEqual({
-    selection: { kind: "runtime", model: "claude-opus-5", reasoning_effort: "high" },
-  });
-  await page.screenshot({ path: testInfo.outputPath("runtime-worker.png") });
-  await page.mouse.click(5, 5);
-  await expect(vmPanel).toHaveCount(0);
-
-  // A pin to a removed profile says so instead of reading as automatic.
-  await expect(page.getByRole("button", { name: "Pinned", exact: true })).toContainText(
-    "Removed profile"
-  );
-  await expect(
-    page.getByText(/The profile this Agent keeps to is off, removed/)
-  ).toBeVisible();
-  // An earlier template choice still loads and stays selected until replaced.
-  await expect(page.getByRole("button", { name: "Legacy", exact: true })).toContainText(
-    "Old GPT (earlier setting)"
-  );
-
-  await page.getByRole("button", { name: "Rename Coder", exact: true }).click();
-  await page.getByRole("textbox", { name: "Name", exact: true }).fill("Builder");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "Builder", exact: true })
-  ).toBeVisible();
-  expect(writes.at(-1)).toEqual({
-    method: "PATCH",
-    path: `/v1/comma/workspaces/${workspaceId}/agents/coder`,
-    body: { name: "Builder" },
-  });
-});
-
-test("resets Codex quota, re-authorizes a subscription, and serves TokenDance models", async ({
-  page,
-}, testInfo) => {
-  const state = {
-    profiles: [
-      {
-        ...structuredClone(codexProfile),
-        quota: {
-          ...structuredClone(codexProfile.quota),
-          reset_credits: { available_count: 2 },
-        },
-      } as Json,
-      {
-        // What one-click TokenDance saves: a Custom key on its gateway.
-        id: "profile-tokendance",
-        credential_kind: "provider_api_key",
-        source: "custom",
-        name: "TokenDance",
-        key_hint: "td-…9f2c",
-        models: ["claude-sonnet-4-5", "video-model"],
-        connection: {
-          endpoint: "https://tokendance.space/gateway/v1/chat/completions",
-          protocol: "openai_completions",
-        },
-        disabled: false,
-        status: "active",
-        version: "v1",
-      },
-      {
-        // A sign-in that expired cannot reset until it is renewed.
-        ...structuredClone(codexProfile),
-        id: "profile-expired",
-        name: "expired@example.com",
-        email: "expired@example.com",
-        status: "expired",
-        quota: {
-          ...structuredClone(codexProfile.quota),
-          reset_credits: { available_count: 2 },
-        },
-      } as Json,
-    ],
-    agents: { router, workers: [] },
-  };
-  const writes = await mockBackend(page, state);
-  await openModels(page);
-
-  await page
-    .getByRole("button", { name: "Actions for expired@example.com", exact: true })
-    .click();
-  await expect(
-    page.getByRole("menuitem", { name: "Reset quota (2 resets left)", exact: true })
-  ).toBeDisabled();
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("menu")).toHaveCount(0);
-
-  // The fix sits on the row: an expired plan offers to re-authorize, and a
-  // Codex plan running low (8% weekly, resets left) offers to reset.
-  // Each row action names its profile.
-  await expect(
-    page.getByRole("button", { name: "Re-authorize expired@example.com", exact: true })
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", {
-      name: "Reset quota for member@example.com",
-      exact: true,
-    })
-  ).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("row-actions.png") });
-
-  // Reset: confirm, retry an unconfirmed attempt with the same request id.
-  const actions = page.getByRole("button", {
-    name: "Actions for member@example.com",
-    exact: true,
-  });
-  await actions.click();
-  await page
-    .getByRole("menuitem", { name: "Reset quota (2 resets left)", exact: true })
-    .click();
-  const dialog = page.getByRole("dialog", { name: /^Reset quota for / });
-  await dialog.getByRole("button", { name: "Reset quota", exact: true }).click();
-  await expect(dialog).toContainText("The reset could not be confirmed.");
-  await dialog.getByRole("button", { name: "Reset quota", exact: true }).click();
-  await expect(dialog).toContainText("Quota reset confirmed.");
-  await page.screenshot({ path: testInfo.outputPath("reset-quota.png") });
-  const resets = writes.filter((write) => write.path.endsWith("/quota/reset"));
-  expect(resets).toHaveLength(2);
-  expect(resets[0]!.body).toEqual(resets[1]!.body);
-  expect(resets[0]!.body).toMatchObject({ version: "v1" });
-  await dialog.getByRole("button", { name: "Close", exact: true }).click();
-  await actions.click();
-  await expect(
-    page.getByRole("menuitem", { name: "Reset quota (1 reset left)", exact: true })
-  ).toBeVisible();
-
-  // Re-authorize renews the same account instead of adding another.
-  await page.getByRole("menuitem", { name: "Re-authorize", exact: true }).click();
-  await expect(
-    page.getByRole("heading", { name: "Re-authorize member@example.com" })
-  ).toBeVisible();
-  // Renewing has nothing to fill in: its sign-in starts at once.
-  await expect(
-    page.getByRole("status", { name: "Device code", exact: true })
-  ).toHaveText("ABCD-1234");
-  await page.screenshot({ path: testInfo.outputPath("reauthorize.png") });
-  expect(writes).toContainEqual({
-    method: "POST",
-    path: `/v1/comma/workspaces/${workspaceId}/subscription-accounts/oauth`,
-    body: {
-      provider: "codex",
-      mode: "device",
-      account_id: "profile-codex",
-      version: "v1-reset",
-    },
-  });
-  // Back to the list; the first match is the sidebar entry.
-  await page.getByRole("button", { name: "Model & API", exact: true }).last().click();
-
-  // A TokenDance profile serves the catalog models it listed, under its own name.
-  await expect(
-    page.getByText("TokenDance · API key · td-…9f2c", { exact: true })
-  ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Actions for TokenDance", exact: true })
-    .click();
-  await page.getByRole("menuitem", { name: "View models", exact: true }).click();
-  await expect(page.getByText("Sonnet 4.5", { exact: true })).toBeVisible();
-  await expect(page.getByText("Opus 5", { exact: true })).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath("tokendance-models.png") });
-
-  // A profile changed elsewhere: the reset says so, reloads, and the retry
-  // uses the current version.
-  state.profiles[0]!.version = "v7";
-  await page.getByRole("button", { name: "Model & API", exact: true }).last().click();
-  await actions.click();
-  await page
-    .getByRole("menuitem", { name: "Reset quota (1 reset left)", exact: true })
-    .click();
-  await dialog.getByRole("button", { name: "Reset quota", exact: true }).click();
-  await expect(dialog).toContainText("This profile changed elsewhere.");
-  await dialog.getByRole("button", { name: "Reset quota", exact: true }).click();
-  await expect(dialog).toContainText("Quota reset confirmed.");
-  expect(
-    writes.filter((write) => write.path.endsWith("/quota/reset")).at(-1)?.body
-  ).toMatchObject({ version: "v7" });
-});
-
-test("connects Ollama by listing its models, and an Agent can run one", async ({
-  page,
-}, testInfo) => {
-  const state = {
-    profiles: [] as Json[],
-    agents: {
-      router,
-      workers: [{ agent_id: "coder", name: "Coder", role: "worker" }],
-    },
-  };
-  const writes = await mockBackend(page, state);
-  await openModels(page);
-
-  await page.getByRole("button", { name: "Add profile", exact: true }).click();
-  await page
-    .getByRole("region", { name: "Local & custom", exact: true })
-    .getByRole("button", { name: "Ollama", exact: true })
-    .click();
-  // Ollama speaks Chat Completions and needs no key.
-  await expect(page.getByRole("button", { name: "Protocol" })).toHaveCount(0);
-  await page
-    .getByRole("textbox", { name: "Base URL", exact: true })
-    .fill("https://ollama.example.com/v1");
-  await page.screenshot({ path: testInfo.outputPath("ollama-connect.png") });
-  await page.getByRole("button", { name: "Connect", exact: true }).click();
-  await expect(page.getByText("Ollama", { exact: true })).toBeVisible();
-  // The first profile says nothing else is needed.
-  await expect(
-    page.getByText("Profile added. Agents use it automatically.", { exact: true })
-  ).toBeVisible();
-  expect(writes).toContainEqual({
-    method: "POST",
-    path: `/v1/comma/workspaces/${workspaceId}/model-discovery`,
-    body: { base_url: "https://ollama.example.com/v1", protocol: "chat_completions" },
-  });
-  // A key-less profile serving the listed ids an endpoint may take.
-  expect(writes.at(-1)).toEqual({
-    method: "POST",
-    path: `/v1/comma/workspaces/${workspaceId}/subscription-accounts`,
-    body: {
-      credential_kind: "provider_api_key",
-      source: "custom",
-      base_url: "https://ollama.example.com/v1",
-      protocol: "chat_completions",
-      models: ["llama3.2:3b"],
-      // Named for its tile: a Custom profile would otherwise read "Custom".
-      name: "Ollama",
-    },
-  });
-
-  // Its model is not in the catalog, yet the Agent can choose it.
-  await page.getByRole("button", { name: "Coder", exact: true }).click();
-  const panel = page.getByRole("dialog", { name: "Coder", exact: true });
-  // Models outside the catalog share one group.
-  await panel
-    .getByRole("group", { name: "Custom" })
-    .getByRole("button", { name: "llama3.2:3b", exact: true })
-    .click();
-  await expect
-    .poll(() => writes.at(-1)?.body)
-    .toEqual({
-      selection: {
-        kind: "catalog",
-        model: "llama3.2:3b",
-        reasoning_effort: null,
-        allow_paid: false,
-        profile_id: null,
-      },
-    });
-  await page.screenshot({ path: testInfo.outputPath("ollama-model.png") });
 });

@@ -7,8 +7,7 @@ defmodule SalixEnv.Registry do
   run on the same device; disconnect removes the run while preserving the
   device and its last runtime inventory.
 
-  Modeled in `tla/connector/ConnectorCredentialFence.tla`: generation
-  reservation, admission CAS, exact predecessor carry, expiry compensation,
+  Generation reservation, admission CAS, exact predecessor carry, expiry compensation,
   and revocation confirmation share this durable device authority.
   """
 
@@ -17,6 +16,9 @@ defmodule SalixEnv.Registry do
   alias SalixStore.{Ids, Keys, S3}
 
   @cas_attempts 5
+  @swept_device_page 100
+  @owned_device_scan 100
+  @device_expiry_ms 30 * 24 * 60 * 60 * 1000
 
   @type device_record :: %{required(String.t()) => term()}
 
@@ -127,6 +129,232 @@ defmodule SalixEnv.Registry do
     end
   end
 
+  @doc """
+  Sweep one page of a group's devices at an owner's credential mint.
+
+  Deletes the owner's devices of one surface that can never come back: they
+  never connected and every credential minted for them is revoked. Only a
+  client still holding such a device's id could re-mint onto it, and that
+  mint is refused as `stable_device_unavailable` and starts a fresh device; a
+  never-connected device carries no routes, name or system info to lose. Each
+  delete is conditional on the record read, so a concurrent mint onto the
+  device keeps it.
+
+  Also returns the group's expired devices (`expired_device?/2`), of any
+  owner. Their credentials may still be live, so the caller removes them
+  through `SalixEnv.ConnectorTokens.remove_device/1`.
+
+  One call reads only the group's first #{@swept_device_page} device records.
+  Deleted records leave that page, so repeated calls reach later ones while
+  the group has fewer live devices than the page holds.
+  """
+  @spec sweep_devices(String.t(), String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, %{deleted: [String.t()], expired: [device_record()]}} | {:error, term()}
+  def sweep_devices(tenant_id, group_id, owner_user_id, surface, keep_device_id) do
+    now = now_ms()
+
+    with {:ok, %{objects: objects}} <-
+           S3.list(Keys.ctl_group_devices_prefix(tenant_id, group_id),
+             max_keys: @swept_device_page
+           ) do
+      objects
+      |> Enum.reduce_while({:ok, [], []}, fn %{key: key}, {:ok, deleted, expired} ->
+        case read_json_with_etag(key) do
+          {:ok, record, etag} ->
+            cond do
+              abandoned_device?(record, owner_user_id, surface, keep_device_id) ->
+                case S3.delete(key, if_match: etag) do
+                  :ok -> {:cont, {:ok, [record["device_id"] | deleted], expired}}
+                  {:error, :precondition_failed} -> {:cont, {:ok, deleted, expired}}
+                  {:error, _} = error -> {:halt, error}
+                end
+
+              record["device_id"] != keep_device_id and expired_device?(record, now) ->
+                {:cont, {:ok, deleted, [record | expired]}}
+
+              true ->
+                {:cont, {:ok, deleted, expired}}
+            end
+
+          {:error, :not_found} ->
+            {:cont, {:ok, deleted, expired}}
+
+          {:error, _} = error ->
+            {:halt, error}
+        end
+      end)
+      |> case do
+        {:ok, deleted, expired} ->
+          {:ok, %{deleted: Enum.reverse(deleted), expired: Enum.reverse(expired)}}
+
+        error ->
+          error
+      end
+    end
+  end
+
+  defp abandoned_device?(record, owner_user_id, surface, keep_device_id) do
+    meta = if is_map(record["meta"]), do: record["meta"], else: %{}
+    latest = record["latest_credential_generation"]
+
+    record["device_id"] != keep_device_id and meta["owner_user_id"] == owner_user_id and
+      meta["surface"] == surface and record["status"] == "disconnected" and
+      is_nil(record["connected_at"]) and is_nil(record["registered_at"]) and
+      is_nil(record["connector_run_id"]) and pending_revocations(record) == %{} and
+      is_integer(latest) and latest > 0 and
+      nonnegative_integer(record["revoked_through_generation"]) >= latest
+  end
+
+  @doc """
+  Whether a user's device has expired: it is offline and nothing happened to
+  it (a connection, a credential mint or revocation, a rename) for more than
+  30 days. A device without an owner (a Group's Cloud VM) never expires.
+  """
+  @spec expired_device?(device_record(), integer()) :: boolean()
+  def expired_device?(record, now_ms) when is_map(record) and is_integer(now_ms) do
+    last_activity =
+      max(
+        nonnegative_integer(record["disconnected_at"]),
+        nonnegative_integer(record["updated_at"])
+      )
+
+    user_device?(record) and offline?(record) and last_activity > 0 and
+      now_ms - last_activity > @device_expiry_ms
+  end
+
+  @doc """
+  The devices a one-time cleanup deletes from one group's records: an offline
+  device of a user whose same machine has a more recently active device of
+  that user. A machine is the owner, the client that connected and the
+  hostname, OS and architecture it reported; a device that reported no
+  hostname is never selected. Of each machine's devices, the online ones and
+  the most recently active one (connection or disconnection time) are kept.
+  """
+  @spec superseded_devices([device_record()]) :: [device_record()]
+  def superseded_devices(records) when is_list(records) do
+    records
+    |> Enum.filter(&user_device?/1)
+    |> Enum.group_by(&machine/1)
+    |> Enum.reject(fn {machine, _devices} -> is_nil(machine) end)
+    |> Enum.flat_map(fn {_machine, devices} ->
+      [_newest | older] = Enum.sort_by(devices, &recency/1, :desc)
+      Enum.filter(older, &offline?/1)
+    end)
+    |> Enum.sort_by(& &1["device_id"])
+  end
+
+  defp user_device?(record) do
+    meta = if is_map(record["meta"]), do: record["meta"], else: %{}
+    owner = meta["owner_user_id"]
+    is_binary(owner) and String.trim(owner) != ""
+  end
+
+  defp offline?(record) do
+    record["status"] != "connected" and
+      (is_nil(record["connector_run_id"]) or record["connector_run_id"] == "")
+  end
+
+  defp machine(record) do
+    meta = if is_map(record["meta"]), do: record["meta"], else: %{}
+    info = if is_map(meta["system_info"]), do: meta["system_info"], else: %{}
+
+    case trim(info["hostname"]) do
+      "" ->
+        nil
+
+      hostname ->
+        {trim(meta["owner_user_id"]), trim(info["client_source"]), String.downcase(hostname),
+         trim(meta["os"] || info["os_type"]), trim(meta["arch"] || info["arch"])}
+    end
+  end
+
+  # An online device ranks above every offline one, then by its last
+  # connection or disconnection.
+  defp recency(record) do
+    seen =
+      record
+      |> Map.take(["registered_at", "connected_at", "disconnected_at"])
+      |> Map.values()
+      |> Enum.map(&nonnegative_integer/1)
+      |> Enum.max(fn -> 0 end)
+
+    {if(offline?(record), do: 0, else: 1), seen, record["device_id"]}
+  end
+
+  @doc """
+  List one bounded page of one owner's devices in a group that connected at
+  least once. One call reads at most #{@owned_device_scan} device records, so
+  a page can hold fewer than `limit` devices while `next_cursor` says more may
+  follow. The cursor names the last device record read.
+  """
+  @spec page_owned_by_group(String.t(), String.t(), keyword()) ::
+          {:ok, %{records: [device_record()], next_cursor: String.t() | nil}} | {:error, term()}
+  def page_owned_by_group(group_id, owner_user_id, opts)
+      when is_binary(owner_user_id) and owner_user_id != "" do
+    limit = opts |> Keyword.fetch!(:limit) |> min(100) |> max(1)
+
+    with {:ok, tenant_id} <- tenant_for_group(group_id),
+         prefix = Keys.ctl_group_devices_prefix(tenant_id, group_id),
+         {:ok, start_after} <- owned_cursor(prefix, opts[:cursor]),
+         {:ok, %{objects: objects, next: next}} <-
+           S3.list(prefix, maybe_put([max_keys: @owned_device_scan], :start_after, start_after)) do
+      take_owned(objects, prefix, owner_user_id, limit, not is_nil(next), nil, [])
+    end
+  end
+
+  defp owned_cursor(_prefix, nil), do: {:ok, nil}
+
+  defp owned_cursor(prefix, cursor) when is_binary(cursor) do
+    case Base.url_decode64(cursor, padding: false) do
+      {:ok, name} when byte_size(name) in 1..256 ->
+        if String.contains?(name, "/"),
+          do: {:error, {:bad_request, "invalid cursor"}},
+          else: {:ok, prefix <> name}
+
+      _ ->
+        {:error, {:bad_request, "invalid cursor"}}
+    end
+  end
+
+  defp owned_cursor(_prefix, _cursor), do: {:error, {:bad_request, "invalid cursor"}}
+
+  defp take_owned([], prefix, _owner, _limit, more?, last_key, records) do
+    {:ok,
+     %{
+       records: Enum.reverse(records),
+       next_cursor: if(more? and last_key, do: owned_cursor_after(prefix, last_key))
+     }}
+  end
+
+  defp take_owned([%{key: key} | rest], prefix, owner, limit, more?, _last_key, records) do
+    case read_json(key) do
+      {:ok, record} ->
+        records = if owned_computer?(record, owner), do: [record | records], else: records
+
+        if length(records) >= limit and (rest != [] or more?) do
+          {:ok, %{records: Enum.reverse(records), next_cursor: owned_cursor_after(prefix, key)}}
+        else
+          take_owned(rest, prefix, owner, limit, more?, key, records)
+        end
+
+      {:error, :not_found} ->
+        take_owned(rest, prefix, owner, limit, more?, key, records)
+
+      {:error, reason} ->
+        {:error, {:device_read_failed, key, reason}}
+    end
+  end
+
+  defp owned_cursor_after(prefix, key),
+    do: key |> String.replace_prefix(prefix, "") |> Base.url_encode64(padding: false)
+
+  defp owned_computer?(record, owner_user_id) do
+    meta = if is_map(record["meta"]), do: record["meta"], else: %{}
+
+    meta["owner_user_id"] == owner_user_id and
+      not (is_nil(record["connected_at"]) and is_nil(record["registered_at"]))
+  end
+
   @doc "List stable devices below one tenant through its direct group records."
   @spec list_by_tenant(String.t()) :: {:ok, [device_record()]} | {:error, term()}
   def list_by_tenant(tenant_id) do
@@ -143,7 +371,7 @@ defmodule SalixEnv.Registry do
     with {:ok, group_objects} <- S3.list_all(group_prefix) do
       group_objects
       |> Enum.map(&group_id_from_object/1)
-      |> Task.async_stream(
+      |> SystemsClock.async_stream(
         fn group_id -> list_records(Keys.ctl_group_devices_prefix(tenant_id, group_id)) end,
         max_concurrency: 8,
         ordered: false,
@@ -1070,7 +1298,6 @@ defmodule SalixEnv.Registry do
           case S3.put(device_key(device), Jason.encode!(disconnected), if_match: etag) do
             {:ok, _} ->
               cleanup_run(run)
-              _ = SalixEnv.RuntimeTargets.observe(disconnected)
               {:ok, disconnected}
 
             {:error, :precondition_failed} ->
@@ -1097,7 +1324,7 @@ defmodule SalixEnv.Registry do
   @doc "Generate a fresh connector run id."
   @spec generate_connector_run_id() :: String.t()
   def generate_connector_run_id do
-    "run_" <> (:crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false))
+    "run_" <> (SystemsRuntime.Proc.random_bytes(12) |> Base.url_encode64(padding: false))
   end
 
   defp connect_attempt(_node, _meta, _scope, _opts, 0), do: {:error, :connect_conflict}
@@ -1297,7 +1524,7 @@ defmodule SalixEnv.Registry do
       case admission do
         :ok ->
           retire_previous(previous, run)
-          _ = SalixEnv.RuntimeTargets.observe(device)
+          observe_connected(device)
           {:ok, run["transport_id"], device}
 
         {:error, reason} ->
@@ -1306,6 +1533,26 @@ defmodule SalixEnv.Registry do
             other -> other
           end
       end
+    end
+  end
+
+  # The product may watch devices come online, for example to close a setup
+  # offer. It runs apart from the connection, which neither waits for it nor
+  # fails with it.
+  defp observe_connected(device) do
+    case SystemsRuntime.get_env(:salix_env, :device_connect_observer) do
+      nil ->
+        :ok
+
+      module ->
+        # Registry keeps what the Connector reported under `meta`.
+        snapshot =
+          (device["meta"] || %{})
+          |> Map.take(~w(name alias system_info))
+          |> Map.merge(Map.take(device, ~w(tenant_id group_id device_id display_name)))
+
+        SystemsRuntime.Task.start(fn -> module.device_connected(snapshot) end)
+        :ok
     end
   end
 
@@ -1341,7 +1588,6 @@ defmodule SalixEnv.Registry do
 
       case S3.put(device_key(device), Jason.encode!(updated), if_match: etag) do
         {:ok, _} ->
-          _ = SalixEnv.RuntimeTargets.observe(updated)
           {:ok, updated}
 
         {:error, :precondition_failed} ->
@@ -1934,5 +2180,5 @@ defmodule SalixEnv.Registry do
   defp stringify(map), do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
   defp trim(nil), do: ""
   defp trim(value), do: value |> to_string() |> String.trim()
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 end

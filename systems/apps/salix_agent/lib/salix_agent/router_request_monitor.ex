@@ -1,17 +1,20 @@
 defmodule SalixAgent.RouterRequestMonitor do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Best-effort node-local observation of admitted Router requests, outside the
   Router mailbox. Identities are private cache keys, never telemetry labels.
   This is not a delivery ledger: node/observer restarts lose observations.
   No business protocol or recovery transition depends on this cache.
   """
-  use GenServer
+  use SystemsRuntime.Server
 
   @max_routers 1024
   @max_requests 1000
   @threshold_ms 300_000
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   def register(agent_id, owner), do: emit({:register, agent_id, owner})
   def clear_session(agent_id, session_id), do: emit({:clear, {agent_id, session_id}})
@@ -38,10 +41,10 @@ defmodule SalixAgent.RouterRequestMonitor do
   end
 
   @doc false
-  def sample, do: GenServer.call(__MODULE__, :sample)
+  def sample, do: SystemsRuntime.Server.call(__MODULE__, :sample)
 
   defp emit(message) do
-    GenServer.cast(__MODULE__, message)
+    SystemsRuntime.Server.cast(__MODULE__, message)
     :ok
   catch
     _, _ -> :ok
@@ -53,24 +56,26 @@ defmodule SalixAgent.RouterRequestMonitor do
       owners: %{},
       queues: %{},
       dropped: 0,
-      clock: Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end),
+      clock: Keyword.get(opts, :clock, fn -> SystemsClock.monotonic_time(:millisecond) end),
       interval: Keyword.get(opts, :interval, 15_000)
     }
 
-    Process.send_after(self(), :sample, state.interval)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :sample, state.interval)
     {:ok, state}
   end
 
   @impl true
-  def handle_cast({:register, id, pid}, state) when is_pid(pid) do
+  def handle_cast({:register, id, pid}, state) when SystemsRuntime.Proc.is_process(pid) do
     case state.owners[id] do
       {^pid, _ref} ->
         {:noreply, state}
 
       previous when previous != nil or map_size(state.owners) < @max_routers ->
-        if previous, do: Process.demonitor(elem(previous, 1), [:flush])
+        if previous, do: SystemsRuntime.Proc.demonitor(elem(previous, 1), [:flush])
         state = remove_agent(state, id)
-        {:noreply, %{state | owners: Map.put(state.owners, id, {pid, Process.monitor(pid)})}}
+
+        {:noreply,
+         %{state | owners: Map.put(state.owners, id, {pid, SystemsRuntime.Proc.monitor(pid)})}}
 
       _ ->
         {:noreply, %{state | dropped: state.dropped + 1}}
@@ -142,7 +147,7 @@ defmodule SalixAgent.RouterRequestMonitor do
   @impl true
   def handle_info(:sample, state) do
     publish(state)
-    Process.send_after(self(), :sample, state.interval)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :sample, state.interval)
     {:noreply, state}
   end
 
@@ -174,11 +179,11 @@ defmodule SalixAgent.RouterRequestMonitor do
       stalled: stalled,
       pending: map_size(state.queues),
       dropped: state.dropped,
-      observed_at: System.system_time(:second)
+      observed_at: SystemsClock.system_time(:second)
     }
 
     try do
-      :telemetry.execute([:salix, :router_requests, :sample], sample, %{})
+      SystemsRuntime.Telemetry.execute([:salix, :router_requests, :sample], sample, %{})
     catch
       _, _ -> :ok
     end

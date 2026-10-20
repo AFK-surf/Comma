@@ -164,6 +164,59 @@ defmodule Salix.Bindings.MeetingEnrollment do
     end
   end
 
+  # A Lark connect has the notify mode of a Feishu connect.
+  def resolve(
+        %{
+          "connect_id" => connect_id,
+          "mode" => "notify",
+          "chat_id" => chat_id,
+          "calendars" => calendars,
+          "create_calendar" => create_calendar,
+          "mentions" => mentions
+        },
+        %{"provider" => "lark"} = identity
+      )
+      when is_binary(connect_id) and is_binary(chat_id) and is_list(calendars) and
+             is_binary(create_calendar) and is_map(mentions) do
+    with {:ok, connect} <- find_connect(connect_id, identity),
+         group_id when group_id != "" <- trim(connect["group_id"]),
+         tenant_id when tenant_id != "" <- trim(connect["tenant_id"]),
+         "connected" <- connect["status"],
+         chat_id when chat_id != "" <- trim(chat_id),
+         :ok <- validate_calendar_names(calendars),
+         true <- create_calendar in calendars,
+         :ok <- validate_mentions(mentions),
+         {:ok, settings} <- ComposioSettings.get(tenant_id),
+         {:ok, accounts} <- active_accounts(settings, group_id),
+         {:ok, calendar_selection} <-
+           resolve_calendars(settings, group_id, accounts, calendars),
+         {:ok, comma_calendar, calendar_sources} <-
+           ensure_calendar_sources(group_id, calendar_selection.pairs),
+         {:ok, create_pair} <-
+           calendar_pair_for_selector(
+             calendar_selection.selectors,
+             calendar_sources,
+             create_calendar
+           ) do
+      {:ok,
+       %{
+         "provider" => "lark",
+         "mode" => "notify",
+         "tenant_id" => tenant_id,
+         "group_id" => group_id,
+         "connect_id" => trim(connect_id),
+         "chat_id" => chat_id,
+         "calendar_id" => comma_calendar["calendar_id"],
+         "calendars" => calendar_sources,
+         "create_calendar" => Map.put(create_pair, "name", create_calendar),
+         "mentions" => mentions
+       }}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :calendar_enrollment_invalid}
+    end
+  end
+
   def resolve(_entry, _identity), do: {:error, :calendar_enrollment_invalid}
 
   @doc "Read the connected accounts' calendar catalog without enrolling sources or creating watches."
@@ -291,6 +344,9 @@ defmodule Salix.Bindings.MeetingEnrollment do
             oauth_completed_at > 0
 
         "feishu" ->
+          connect["status"] == "connected"
+
+        "lark" ->
           connect["status"] == "connected"
 
         _ ->

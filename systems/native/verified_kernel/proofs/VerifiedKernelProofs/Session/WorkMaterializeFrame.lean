@@ -1,4 +1,7 @@
-import VerifiedKernelProofs.Session.WorkRevisionRawPlan
+import VerifiedKernelProofs.AgentLoop.Round
+import VerifiedKernelProofs.IFC.Identity
+import VerifiedKernelProofs.Session.WorkResidentSafety
+import VerifiedKernelProofs.Session.WorkSemanticRepresentation
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

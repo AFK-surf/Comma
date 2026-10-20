@@ -52,10 +52,11 @@ defmodule SalixAgent.RunTelemetry do
     billing_context = field(attrs, :billing_context) || field(meter_ctx, :billing_context) || %{}
     trace_ctx = field(attrs, :trace_ctx) || %{}
     started_at_ms = int(field(attrs, :started_at_ms) || field(meter_ctx, :started_at_ms))
-    started_at_ms = started_at_ms || System.system_time(:millisecond)
+    started_at_ms = started_at_ms || SystemsClock.system_time(:millisecond)
 
     duration_ms =
-      int(field(attrs, :duration_ms)) || max(System.system_time(:millisecond) - started_at_ms, 0)
+      int(field(attrs, :duration_ms)) ||
+        max(SystemsClock.system_time(:millisecond) - started_at_ms, 0)
 
     round_id =
       field(trace_ctx, :round_id) || field(meter_ctx, :round_id) || field(attrs, :round_id)
@@ -71,7 +72,7 @@ defmodule SalixAgent.RunTelemetry do
       status: status(field(attrs, :status)),
       duration_ms: duration_ms,
       started_at: timestamp(started_at_ms),
-      metered_at: DateTime.utc_now(),
+      metered_at: SystemsClock.utc_now(),
       trace_id:
         field(trace_ctx, :trace_id) || field(meter_ctx, :trace_id) || field(attrs, :trace_id),
       request_id:
@@ -120,7 +121,7 @@ defmodule SalixAgent.RunTelemetry do
 
   defp timestamp(%DateTime{} = value), do: value
   defp timestamp(value) when is_integer(value), do: DateTime.from_unix!(value, :millisecond)
-  defp timestamp(_), do: DateTime.utc_now()
+  defp timestamp(_), do: SystemsClock.utc_now()
 
   defp nested(attrs, meter_ctx, billing_context, key),
     do: field(attrs, key) || field(meter_ctx, key) || field(billing_context, key)
@@ -135,5 +136,5 @@ defmodule SalixAgent.RunTelemetry do
   defp int(value) when is_binary(value), do: String.to_integer(value)
   defp int(_), do: nil
 
-  defp random_id, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower)
 end

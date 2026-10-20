@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { projectMentionTokens } from "../mentionProjection";
-import { taskMentionPlainText } from "../../model/mentionSerialization";
+import { taskMentionPlainText } from "@comma/core/chat";
 
 describe("projectMentionTokens", () => {
   it("turns each task mention into the @ menu's token and keeps the words between", () => {

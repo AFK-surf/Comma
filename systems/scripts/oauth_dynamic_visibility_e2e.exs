@@ -1,7 +1,7 @@
 # E2E validation for group OAuth credential availability.
 #
-# Run through Deno:
-#   deno test --allow-all e2e/tests/oauth_dynamic_visibility_test.ts
+# Run through Bun, from systems/e2e:
+#   bun test tests/oauth_dynamic_visibility_test.ts
 
 defmodule OAuthDynamicVisibilityE2E.MockProvider do
   @moduledoc false

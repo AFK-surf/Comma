@@ -61,7 +61,7 @@ describe("isolated Salix development sandbox", () => {
     assert.equal(config.storage.endpoint, "http://minio:9000");
     assert.equal(config.salix.database.url, "ecto://postgres:postgres@postgres:5432/billing_core_dev");
     assert.equal(config.clickhouse.url, "http://clickhouse:8123");
-    assert.equal(config.llm.default_template.provider_config.base_url, "http://llm-mock:43123");
+    assert.equal(config.llm.default_template.provider_config.base_url, "http://llm-mock:23123");
     assert.equal(config.web.port, 4000);
     assert.equal(config.web.api_base_url, "http://127.0.0.1:25002");
     assert.equal(config.transfer.port, 4400);

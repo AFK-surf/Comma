@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { TaskStatusBucket } from "../../task-workspace/taskStatus";
+import type { VisibleTaskStatusBucket } from "@comma/i18n";
 import { statusIds } from "../StatusIndicator";
 import { indicatorIdToTaskStatus, taskStatusToIndicatorId } from "../statusMapping";
 
-const BUCKETS: TaskStatusBucket[] = [
-  "backlog",
+const BUCKETS: VisibleTaskStatusBucket[] = [
   "in_progress",
   "needs_review",
   "done",

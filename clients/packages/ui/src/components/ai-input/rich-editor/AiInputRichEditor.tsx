@@ -29,7 +29,7 @@ export const AiInputRichEditor = forwardRef<HTMLDivElement, AiInputRichEditorPro
       registrations,
       ariaLabel,
       clipboard,
-      onPasteFilesFromMenu,
+      onPasteFromMenu,
       placeholder,
       className,
       disabled = false,
@@ -90,7 +90,7 @@ export const AiInputRichEditor = forwardRef<HTMLDivElement, AiInputRichEditorPro
       clipboard,
       commitEditor,
       immutable,
-      onPasteFilesFromMenu,
+      onPasteFromMenu,
     });
 
     return (

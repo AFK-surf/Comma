@@ -14,7 +14,8 @@ Reuse known targets without repeating discovery.
 ## Core Rules
 
 - Call `device.list` followed by `device.get` through the current runtime tool envelope before choosing where to work.
-- Prefer `cloud-vm` by default when it is connected, because it has a durable Linux shell and often supports persistent process host APIs.
+- Prefer `cloud-vm` when connected. It provides a temporary Linux shell and background process APIs.
+- Its disk is disposable. Archives are best effort. Save deliverables to VFS or their durable destination before completion.
 - If the user explicitly names a path on their local computer or another connected environment, use that requested environment/path instead of moving work to `cloud-vm`.
 - Invoke Codex as `codex`; do not hard-code a machine-specific Codex binary path in commands or skill text.
 - When starting Codex on `cloud-vm`, default to the global flag `--dangerously-bypass-approvals-and-sandbox` because `cloud-vm` is already an external sandbox. Put the flag before the subcommand, for example `codex --dangerously-bypass-approvals-and-sandbox app-server ...`. Do not apply this default to a user's local computer unless the user explicitly asks for it.

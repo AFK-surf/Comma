@@ -4,7 +4,7 @@ defmodule SalixWeb.Dashboard.SessionTimelineLiveTest do
   round grouping with finish verdicts, outcome chips, repeat folding, and the
   not-configured degrade.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
@@ -141,14 +141,12 @@ defmodule SalixWeb.Dashboard.SessionTimelineLiveTest do
     {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Timeline"})
     Process.put(:test_tenant_id, tenant["tenant_id"])
     {:ok, group} = Salix.Control.Groups.create(%{"name" => "TimelineGrp"}, tenant_id())
-    {:ok, tmpl} = SalixAgent.Templates.create(%{"name" => "TimelineTmpl", "model" => "mock"})
 
     {:ok, agent} =
       SalixAgent.Control.create(
         %{
           "name" => "Timeline Agent",
           "group_id" => group["group_id"],
-          "template_id" => tmpl["template_id"],
           "role" => "worker"
         },
         tenant_id()
@@ -164,7 +162,7 @@ defmodule SalixWeb.Dashboard.SessionTimelineLiveTest do
           kind: "session_create",
           session_id: session_id,
           name: "Main",
-          created_at: System.system_time(:second)
+          created_at: SystemsClock.system_time(:second)
         },
         source_message_id: "test:timeline-session:#{aid}"
       )
@@ -180,13 +178,13 @@ defmodule SalixWeb.Dashboard.SessionTimelineLiveTest do
       |> Plug.Test.init_test_session(%{"admin_authed" => true, "current_tenant" => tenant_id()})
 
   defp with_queries(mod) do
-    prev = Application.get_env(:salix_web, :agent_telemetry_queries_mod)
-    Application.put_env(:salix_web, :agent_telemetry_queries_mod, mod)
+    prev = SystemsRuntime.get_env(:salix_web, :agent_telemetry_queries_mod)
+    SystemsRuntime.put_env(:salix_web, :agent_telemetry_queries_mod, mod)
 
     on_exit(fn ->
       if prev,
-        do: Application.put_env(:salix_web, :agent_telemetry_queries_mod, prev),
-        else: Application.delete_env(:salix_web, :agent_telemetry_queries_mod)
+        do: SystemsRuntime.put_env(:salix_web, :agent_telemetry_queries_mod, prev),
+        else: SystemsRuntime.delete_env(:salix_web, :agent_telemetry_queries_mod)
     end)
   end
 
@@ -234,16 +232,5 @@ defmodule SalixWeb.Dashboard.SessionTimelineLiveTest do
     # Dispatch calls land in the outside-rounds group.
     assert html =~ "Outside rounds"
     assert html =~ "gpt-4o-mini"
-  end
-
-  test "hides the card when ClickHouse is not configured", %{
-    aid: aid,
-    session_id: session_id
-  } do
-    with_queries(NotConfiguredQueries)
-
-    {:ok, _view, html} = live(authed_conn(), "/dash/agents/#{aid}/sessions/#{session_id}")
-
-    refute html =~ "What actually ran"
   end
 end

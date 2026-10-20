@@ -30,6 +30,9 @@ type EnvironmentSpec struct {
 	PublicHosts            []string `json:"publicHosts"`
 	AgentVmmGatewayEnabled bool     `json:"agentVmmGatewayEnabled"`
 	ComputeRuntimeBaseURL  string   `json:"computeRuntimeBaseURL"`
+	// LmhubUserAgent is the user agent the internal LMHub gateway admits this
+	// environment by; empty sends none.
+	LmhubUserAgent string `json:"lmhubUserAgent,omitempty"`
 	// The following fields name live provider resources. They are not stored
 	// in the versioned spec. LoadEnvironmentSpec fills them, together with
 	// Project and Cluster, from the release environment configuration.
@@ -721,8 +724,6 @@ func (p KubectlPlatform) jobManifest(spec JobSpec, replacements map[string]strin
 )`
 	} else if spec.Stage == "plan" {
 		command = "IO.puts(Comma.Release.plan_json())"
-	} else if spec.RuntimeRelease != nil {
-		command = `Comma.Release.publish_runtime_release(System.fetch_env!("COMMA_RUNTIME_RELEASE_ID"), String.to_integer(System.fetch_env!("COMMA_RUNTIME_HELM_REVISION")))`
 	}
 	bootExpression := `case Application.ensure_all_started(:salix_store) do
   {:ok, _} -> :ok
@@ -757,12 +758,6 @@ end
 	// Release Jobs load the same runtime configuration as the serving pods, so they need the same
 	// environment; without it runtime.exs falls back to config_env() and validates staging as production.
 	env := []any{map[string]any{"name": "COMMA_RELEASE_JOB", "value": "1"}, map[string]any{"name": "COMMA_ENVIRONMENT", "value": p.Spec.Environment}, map[string]any{"name": "COMMA_SUBSYSTEMS", "value": releaseSubsystems}, map[string]any{"name": "SALIX_SNOWFLAKE_WORKER_ID", "value": "1023"}, map[string]any{"name": "COMMA_RELEASE_BOOT_EXPRESSION", "value": bootExpression}, map[string]any{"name": "COMMA_RELEASE_EXPRESSION", "value": command}, map[string]any{"name": "REQUIRE_PROVIDER", "value": strconv.FormatBool(p.Spec.RequireProvider)}, map[string]any{"name": "INSTANCE_CONNECTION_NAME", "value": replacements["INSTANCE_CONNECTION_NAME"]}}
-	if spec.RuntimeRelease != nil {
-		env = append(env,
-			map[string]any{"name": "COMMA_RUNTIME_RELEASE_ID", "value": spec.RuntimeRelease.ReleaseID},
-			map[string]any{"name": "COMMA_RUNTIME_HELM_REVISION", "value": strconv.Itoa(spec.RuntimeRelease.Helm.ServingRevision)},
-		)
-	}
 	if legacyUpgrade {
 		env = append(env, map[string]any{"name": "COMMA_LEGACY_UPGRADE", "value": "1"})
 	}
@@ -2132,7 +2127,7 @@ func (p KubectlPlatform) buildHelmValues(replacements map[string]string) ([]byte
 		"maintenance":    map[string]any{"enabled": false},
 		"workloads":      map[string]any{"commaReplicas": 2, "collectorReplicas": 2},
 		"alertRouter":    map[string]any{"enabled": alertRouterEnabled, "replicas": 2},
-		"runtime":        map[string]any{"traceSampleRatio": replacements["COMMA_TRACE_SAMPLE_RATIO"], "claimWriterFenceEpoch": replacements["COMMA_LEGACY_MESSAGE_EVENT_CLAIM_WRITER_FENCE_EPOCH"], "cloudSqlInstanceConnectionName": replacements["INSTANCE_CONNECTION_NAME"], "agentVmmGatewayEnabled": p.Spec.AgentVmmGatewayEnabled, "computeRuntimeBaseURL": p.Spec.ComputeRuntimeBaseURL},
+		"runtime":        map[string]any{"traceSampleRatio": replacements["COMMA_TRACE_SAMPLE_RATIO"], "claimWriterFenceEpoch": replacements["COMMA_LEGACY_MESSAGE_EVENT_CLAIM_WRITER_FENCE_EPOCH"], "cloudSqlInstanceConnectionName": replacements["INSTANCE_CONNECTION_NAME"], "agentVmmGatewayEnabled": p.Spec.AgentVmmGatewayEnabled, "computeRuntimeBaseURL": p.Spec.ComputeRuntimeBaseURL, "lmhubUserAgent": p.Spec.LmhubUserAgent},
 		"config":         map[string]any{"salixChecksum": replacements["SALIX_CONFIG_SHA256"], "alertRouterChecksum": alertRouterChecksum},
 		"references":     map[string]any{"commaSecrets": replacements["COMMA_SECRETS_NAME"], "salixConfigSecret": replacements["SALIX_CONFIG_SECRET_NAME"], "alertRouterConfigSecret": alertRouterConfigSecret, "agentVmmGatewayRuntimeSecret": "salix-vmm-gateway-runtime", "agentVmmGatewayClientTlsSecret": "salix-vmm-gateway-client-tls", "computeWorkloadCredentialSecret": "salix-compute-runtime", "salixTlsSecret": replacements["SALIX_TLS_SECRET_NAME"], "salixSitesTlsSecret": replacements["SALIX_SITES_TLS_SECRET_NAME"], "teamsTlsSecret": replacements["TEAMS_TLS_SECRET_NAME"]},
 		"ssh":            map[string]any{"enabled": p.Spec.SSHEnabled},

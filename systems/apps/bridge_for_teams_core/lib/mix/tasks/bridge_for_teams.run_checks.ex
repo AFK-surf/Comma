@@ -4,10 +4,11 @@ defmodule Mix.Tasks.BridgeForTeams.RunChecks do
 
       mix bridge_for_teams.run_checks --surface sso --org acme --redirect-uri https://teams.example/auth/callback
       mix bridge_for_teams.run_checks --surface bot --org acme --project agent-swarm-slug
+      mix bridge_for_teams.run_checks --surface lark_bot --org acme --project agent-swarm-slug
   """
   use Mix.Task
 
-  alias BridgeForTeams.{Orgs, Projects, RunChecks}
+  alias BridgeForTeams.{LarkRunChecks, Orgs, Projects, RunChecks}
   alias BridgeForTeams.Schema.Organization
 
   @shortdoc "Run BFT Feishu checks and print the redacted JSON contract"
@@ -42,7 +43,10 @@ defmodule Mix.Tasks.BridgeForTeams.RunChecks do
   end
 
   defp run_surface("sso", %Organization{} = org, opts) do
-    RunChecks.run_sso(org, redirect_uri: opts[:redirect_uri])
+    case Orgs.get_sso_connection(org.id) do
+      %{provider: "lark"} -> LarkRunChecks.run_sso(org, redirect_uri: opts[:redirect_uri])
+      _ -> RunChecks.run_sso(org, redirect_uri: opts[:redirect_uri])
+    end
   end
 
   defp run_surface("bot", %Organization{} = org, opts) do
@@ -51,6 +55,15 @@ defmodule Mix.Tasks.BridgeForTeams.RunChecks do
 
     with {:ok, project} <- fetch_project(org, project_ref) do
       RunChecks.run_bot(org, project)
+    end
+  end
+
+  defp run_surface("lark_bot", %Organization{} = org, opts) do
+    project_ref =
+      opts[:project] || Mix.raise("Missing --project for --surface lark_bot.\n\n#{usage()}")
+
+    with {:ok, project} <- fetch_project(org, project_ref) do
+      LarkRunChecks.run_bot(org, project)
     end
   end
 
@@ -98,6 +111,7 @@ defmodule Mix.Tasks.BridgeForTeams.RunChecks do
     Usage:
       mix bridge_for_teams.run_checks --surface sso --org ORG_SLUG_OR_ID [--redirect-uri URL]
       mix bridge_for_teams.run_checks --surface bot --org ORG_SLUG_OR_ID --project PROJECT_SLUG_OR_ID
+      mix bridge_for_teams.run_checks --surface lark_bot --org ORG_SLUG_OR_ID --project PROJECT_SLUG_OR_ID
     """
   end
 end

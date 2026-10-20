@@ -1,8 +1,6 @@
-import VerifiedKernelProofs.IFC.Transfer
-import VerifiedKernelProofs.AgentLoop.Dispatch
-import VerifiedKernelProofs.Provider.Dispatch
-import VerifiedKernelProofs.Session.WorkArchiveOrder
-import VerifiedKernelProofs.Session.WorkInitialFormat
+import VerifiedKernelProofs.AgentLoop.Round
+import VerifiedKernelProofs.IFC.Identity
+import VerifiedKernelProofs.Session.WorkLifecycle
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data
@@ -56,8 +54,8 @@ theorem normalize_sequence_value {s t : Term} {j r : List Term}
   obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨_, _, providerWrite, h⟩ := bind_ok h
   obtain ⟨_, _, _, h⟩ := bind_ok h
-  exact ⟨value, _, last, read, (write_field_frame h rfl).trans
-    ((write_field_frame providerWrite rfl).trans ((write_field_frame activityWrite rfl).trans selected))⟩
+  exact ⟨value, _, last, read, (write_field_frame h (by keys_absent)).trans
+    ((write_field_frame providerWrite (by keys_absent)).trans ((write_field_frame activityWrite (by keys_absent)).trans selected))⟩
 
 theorem normalize_empty_sequence {s t : Term} {j r : List Term} (ready : QueueReady s)
     (messages : s.get (a "messages") = list []) (events : s.get (a "events") = list [])

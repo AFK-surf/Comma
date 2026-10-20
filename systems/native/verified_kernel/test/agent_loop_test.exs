@@ -9,26 +9,35 @@ defmodule SalixVerifiedKernel.AgentLoopTest do
     end
   end
 
-  test "actual BEAM references retain exact identity and stale events cannot consume the owner" do
-    token = make_ref()
-    copy = token |> :erlang.term_to_binary() |> :erlang.binary_to_term()
-    stale = make_ref()
+  test "reference identities survive the boundary and stale events cannot consume the owner" do
+    for {token, stale} <- [
+          {make_ref(), make_ref()},
+          {%{__struct__: SystemsRuntime.Ref, id: 1}, %{__struct__: SystemsRuntime.Ref, id: 2}}
+        ] do
+      copy = token |> :erlang.term_to_binary() |> :erlang.binary_to_term()
 
-    for {event, command} <- [result: :accept_result, timeout: :accept_timeout, down: :accept_down] do
-      assert Kernel.dependency_step({:running, token}, {copy, event}) ==
-               {{:retained, token}, command}
+      for {event, command} <- [
+            result: :accept_result,
+            timeout: :accept_timeout,
+            down: :accept_down
+          ] do
+        assert Kernel.dependency_step({:running, token}, {copy, event}) ==
+                 {{:retained, token}, command}
 
-      assert Kernel.dependency_step({:running, token}, {stale, event}) ==
+        assert Kernel.dependency_step({:running, token}, {stale, event}) ==
+                 {{:running, token}, :ignore}
+
+        assert Kernel.dependency_step({:retained, token}, {copy, event}) ==
+                 {{:retained, token}, :ignore}
+
+        assert Kernel.dependency_step(:retired, {copy, event}) == {:retired, :ignore}
+      end
+
+      assert Kernel.dependency_step({:running, token}, {token, :irrelevant}) ==
                {{:running, token}, :ignore}
-
-      assert Kernel.dependency_step({:retained, token}, {copy, event}) ==
-               {{:retained, token}, :ignore}
-
-      assert Kernel.dependency_step(:retired, {copy, event}) == {:retired, :ignore}
     end
 
-    assert Kernel.dependency_step({:running, token}, {token, :irrelevant}) ==
-             {{:running, token}, :ignore}
+    token = make_ref()
 
     assert {:error, :wire, _} =
              SalixVerifiedKernel.invoke(

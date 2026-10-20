@@ -1,9 +1,99 @@
 import { gunzipSync } from "node:zlib";
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { installBrowserTestSession } from "../../../../e2e/helpers/browser-auth";
+import {
+  apiBaseUrl,
+  posthogHost,
+  startPosthogCapture,
+  type Event,
+} from "./posthog-capture";
 
-type Event = { event: string; properties: Record<string, unknown> };
-const apiBaseUrl = "http://127.0.0.1:65534";
+// The test's PostHog: what the SDK sends reaches it whole, a beacon of a page
+// that is leaving included (./posthog-capture.ts).
+let capture: Awaited<ReturnType<typeof startPosthogCapture>> | undefined;
+test.afterEach(async () => {
+  await capture?.close();
+  capture = undefined;
+});
+
+test("hosted web build joins website first touch without an injected project token", async ({
+  page,
+}) => {
+  const { events } = await captureEvents(page);
+  // Different origins have separate localStorage but share the SDK's cookie.
+  // Exercise the real website and app entry points, not a replacement SDK fixture.
+  await page.goto(
+    "http://127.0.0.1:4188/?utm_source=slack&utm_medium=social&utm_campaign=launch&email=private@example.com&utm_content=private-content"
+  );
+  await expect.poll(() => events.filter((e) => e.event === "$pageview").length).toBe(1);
+  const visitor = events[0]!.properties.distinct_id;
+  await page.goto(
+    "http://127.0.0.1:4188/download?utm_source=overwrite&utm_campaign=overwrite"
+  );
+  await page.route("**/download/mac", (route) =>
+    route.fulfill({ status: 200, body: "download fixture" })
+  );
+  await page.locator(".download-cta").click();
+  // Both events of this page reach the test's PostHog before the test leaves
+  // it: the pageview leaves in a beacon of its own as the page goes.
+  await expect
+    .poll(
+      () =>
+        events.some((e) => e.event === "comma_website_download_clicked") &&
+        events.some(
+          (e) => e.event === "$pageview" && e.properties.route === "/download"
+        )
+    )
+    .toBe(true);
+  await installSession(page);
+  await page.goto("/?utm_source=overwrite#/settings");
+  await expect.poll(() => events.some((e) => e.event === "$identify")).toBe(true);
+  const identity = events.find((e) => e.event === "$identify")!;
+  expect(identity.properties).toMatchObject({
+    distinct_id: "analytics-user",
+    $anon_distinct_id: visitor,
+    token: events[0]!.properties.token,
+  });
+  expect(identity.$set_once).toMatchObject({
+    initial_utm_source: "slack",
+    initial_utm_medium: "social",
+    initial_utm_campaign: "launch",
+    initial_landing_page: "/",
+  });
+  // A pageview names its own visit's campaign; later visits never replace the
+  // first touch, on any event or on the person.
+  const download = events.find(
+    (e) => e.event === "$pageview" && e.properties.route === "/download"
+  )!;
+  expect(download.properties).toMatchObject({
+    utm_source: "overwrite",
+    utm_campaign: "overwrite",
+  });
+  for (const e of events)
+    for (const fields of [e.properties, e.$set_once ?? {}])
+      for (const [key, value] of Object.entries(fields))
+        if (key.startsWith("initial_")) expect(value).not.toBe("overwrite");
+  const serialized = JSON.stringify(events);
+  for (const value of ["private@example.com", "private-content", "comma_sess_private"])
+    expect(serialized).not.toContain(value);
+  // A second account must not inherit the first account's campaign or anonymous ID.
+  const other = { ...privateProfile, id: "second-analytics-user" };
+  await installBrowserTestSession(page, {
+    apiBaseUrl,
+    email: other.email,
+    token: "comma_sess_second",
+    userId: other.id,
+  });
+  await page.route(`${apiBaseUrl}/v1/comma/me/profile`, (route) =>
+    fulfillApi(route, other)
+  );
+  await page.reload();
+  await expect.poll(() => events.filter((e) => e.event === "$identify").length).toBe(2);
+  const next = events.filter((e) => e.event === "$identify")[1]!;
+  expect(next.properties.distinct_id).toBe(other.id);
+  expect(next.properties.$anon_distinct_id).not.toBe(visitor);
+  expect(next.$set_once).not.toHaveProperty("initial_utm_campaign");
+});
 
 async function captureEvents(
   page: Page,
@@ -16,8 +106,8 @@ async function captureEvents(
     Object.defineProperty(navigator, "webdriver", { get: () => false });
     Object.defineProperty(navigator, "userAgentData", { get: () => undefined });
   });
-  const events: Event[] = [];
-  const requests: string[] = [];
+  capture = await startPosthogCapture();
+  const { events, requests } = capture;
   let initialPageviewHeld!: () => void;
   const waitForInitialPageview = new Promise<void>((complete) => {
     initialPageviewHeld = complete;
@@ -26,38 +116,43 @@ async function captureEvents(
   const initialPageviewReleased = new Promise<void>((complete) => {
     releaseInitialPageview = complete;
   });
-  await page.route("https://posthog.comma.test/**", async (route) => {
-    const request = route.request();
-    requests.push(request.url());
-    if (offline) {
-      await route.abort();
-      return;
-    }
-    let body = request.postDataBuffer();
-    if (body?.length) {
-      if (body[0] === 0x1f && body[1] === 0x8b) body = gunzipSync(body);
-      const data = JSON.parse(body.toString());
-      const batch: Event[] = Array.isArray(data) ? data : (data.batch ?? [data]);
-      if (
-        deferInitialPageview &&
-        batch.some(
-          (event) =>
-            event.event === "$pageview" && event.properties.route === "/settings"
-        )
-      ) {
-        initialPageviewHeld();
-        await initialPageviewReleased;
+  // The page's side of the SDK's requests: none reach the server when PostHog
+  // is unreachable, and the app's first /settings pageview can be held back.
+  // Otherwise nothing intercepts them: a beacon the browser sends as its page
+  // goes has no page left to continue it from, and an intercepted one is lost.
+  if (offline || deferInitialPageview)
+    await page.route(`${posthogHost}/**`, async (route) => {
+      if (offline) {
+        requests.push(route.request().url());
+        await route.abort();
+        return;
       }
-      events.push(...batch);
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ status: 1 }),
-      headers: { "access-control-allow-origin": "*" },
+      if (deferInitialPageview) {
+        let body = route.request().postDataBuffer();
+        if (body?.length) {
+          if (body[0] === 0x1f && body[1] === 0x8b) body = gunzipSync(body);
+          const data = JSON.parse(body.toString());
+          const batch: Event[] = Array.isArray(data) ? data : (data.batch ?? [data]);
+          if (
+            batch.some(
+              (event) =>
+                event.event === "$pageview" && event.properties.route === "/settings"
+            )
+          ) {
+            initialPageviewHeld();
+            await initialPageviewReleased;
+          }
+        }
+      }
+      await route.continue();
     });
-  });
-  return { events, requests, waitForInitialPageview, releaseInitialPageview };
+  return {
+    events,
+    requests,
+    waitForInitialPageview,
+    releaseInitialPageview,
+    waitForEvents: capture.waitForEvents,
+  };
 }
 
 const privateProfile = {
@@ -157,7 +252,7 @@ for (const deferInitialPageview of [false, true]) {
     for (const event of events) {
       expect(event.properties).toMatchObject({
         runtime: "web",
-        channel: "dev",
+        channel: "prod",
         window_role: "main-window",
         app_version: "0.0.1",
         build_sha: expect.stringMatching(/^[a-f0-9]{40}$/),
@@ -234,4 +329,62 @@ test("the app remains usable when PostHog is unreachable", async ({ page }) => {
   await expect(
     page.getByRole("button", { name: "Edit name: Private Person" })
   ).toBeVisible();
+});
+
+test("visible replies reach PostHog with the committed message ID and no conversation content", async ({
+  page,
+}) => {
+  const { events } = await captureEvents(page);
+  await installSession(page);
+  await page.goto("/#/settings");
+  await expect.poll(() => events.some(({ event }) => event === "$identify")).toBe(true);
+  await page.evaluate(async (fixtureUrl) => {
+    const { showReply } = await import(fixtureUrl);
+    showReply();
+  }, "/assets/reply-fixture.js");
+  await expect
+    .poll(
+      () => events.filter(({ event }) => event === "comma_reply_first_visible").length
+    )
+    .toBe(1);
+  const reply = events.find(({ event }) => event === "comma_reply_first_visible")!;
+  expect(reply.properties).toMatchObject({
+    distinct_id: "analytics-user",
+    source_message_id: "msg1_1234567890123456789",
+    surface: "route",
+  });
+  expect(JSON.stringify(reply)).not.toContain("private");
+});
+
+test("desktop launch observation survives SDK resets without counting renderer reloads", async ({
+  page,
+}) => {
+  const { events, waitForEvents } = await captureEvents(page);
+  const start = async (kind: "new_profile" | "version_changed", eventId: string) => {
+    await page.evaluate(
+      async ({ snapshot, fixtureUrl }) => {
+        const { startLaunch } = await import(fixtureUrl);
+        startLaunch(snapshot);
+      },
+      { snapshot: { kind, eventId }, fixtureUrl: "/assets/launch-fixture.js" }
+    );
+  };
+  await page.goto("/launch.html");
+  await start("new_profile", "first-main-launch");
+  await waitForEvents("comma_desktop_launched", 1);
+  await page.reload();
+  await start("new_profile", "first-main-launch");
+  await waitForEvents("comma_client_opened", 2);
+  expect(
+    events.filter((event) => event.event === "comma_desktop_launched")
+  ).toHaveLength(1);
+  await page.reload();
+  await start("version_changed", "second-main-launch");
+  await waitForEvents("comma_desktop_launched", 2);
+  expect(
+    events
+      .filter((event) => event.event === "comma_desktop_launched")
+      .map((event) => event.properties.launch_kind)
+  ).toEqual(["new_profile", "version_changed"]);
+  expect(JSON.stringify(events)).not.toContain("main-launch");
 });

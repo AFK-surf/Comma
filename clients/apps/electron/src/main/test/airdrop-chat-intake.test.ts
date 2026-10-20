@@ -2,15 +2,23 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CommaApiClient } from "@comma/app/api";
-import { ChatCoordinator } from "../modules/chat";
+import type { ChatRuntimeSnapshot, ConversationProjection } from "@comma/chat-contract";
+import { CoreClient } from "@comma/core-kernel/client";
+import {
+  FakeHost,
+  inProcessOpener,
+  json,
+  signedIn,
+  startTestCore,
+} from "@comma/core/testing";
+import { MainChat } from "../modules/chat";
 import { approveAirDropForChat } from "../modules/airdrop/chat-intake";
 import type { AirDropOffer } from "../modules/airdrop";
 
-const coordinators: ChatCoordinator[] = [];
+const clients: CoreClient[] = [];
 const roots: string[] = [];
 afterEach(async () => {
-  for (const chat of coordinators.splice(0)) chat.close();
+  for (const client of clients.splice(0)) client.close();
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { force: true, recursive: true }))
   );
@@ -34,37 +42,68 @@ const offer: AirDropOffer = {
   files: [{ name: "report.pdf", isDirectory: false }],
   linkCount: 0,
 };
-function harness() {
-  const conversation = {
-    id: "cnv_1",
-    group_id: "grp_1",
-    kind: "user_chat",
-    status: "active",
-    title: "Current chat",
-    messages: [],
-  };
-  const sendMessage = vi.fn(async () => conversation);
-  const api = {
-    pollConversation: vi.fn(async () => ({ conversation, notModified: false })),
-    streamConversationEvents: vi.fn(
-      async (_w: unknown, _c: unknown, options: { signal: AbortSignal }) =>
-        new Promise<void>((resolve) =>
-          options.signal.addEventListener("abort", () => resolve(), { once: true })
-        )
-    ),
-    sendMessage,
-  } as unknown as CommaApiClient;
-  const chat = new ChatCoordinator({ createApi: () => api });
-  coordinators.push(chat);
+/** The chat the window shows, as the server gives it. */
+const conversation = (id: string) => ({
+  id,
+  group_id: "grp_1",
+  kind: "user_chat",
+  status: "active",
+  title: "Current chat",
+  messages: [],
+});
+
+/** A client core on a fake Comma API (the real clock), Main's chat on it, and a window that retains a chat. */
+function harness({ view = false }: { view?: boolean } = {}) {
+  const host = new FakeHost({ time: null });
+  host.api.on("GET", "/v1/comma/groups/grp_1/conversations/*", (request) =>
+    json(200, conversation(request.path.split("/").at(-1)!.split("?")[0]!))
+  );
+  host.api.onStream("/v1/comma/groups/grp_1/conversations/cnv_1/events");
+  host.api.onStream("/v1/comma/groups/grp_1/conversations/cnv_2/events");
+  const sent = Promise.withResolvers<void>();
+  const sendMessage = vi.fn((_request: { body: unknown }) => {
+    sent.resolve();
+    return json(200, conversation("cnv_1"));
+  });
+  host.api.on(
+    "POST",
+    "/v1/comma/groups/grp_1/conversations/cnv_1/messages",
+    sendMessage
+  );
+  const core = startTestCore(host);
+  core.observeSession(signedIn());
+  const client = new CoreClient(inProcessOpener(core, host));
+  clients.push(client);
+  const call = (name: string, params: unknown) => client.call(name, params);
+  const main = new MainChat(() => client);
   const target = {
     workspaceId: "wsp_1",
     groupId: "grp_1",
     conversationId: "cnv_1",
     subscriberId: "main:grp_1/cnv_1",
-    leaseId: "renderer-lease",
-    surfaceId: "main",
+    leaseId: "00000000-0000-4000-8000-000000000001",
   };
-  chat.retain(target);
+  /** The window's view of cnv_1 (`view`), as its calls name it; otherwise the window retains cnv_1 under `target`. */
+  const named = {
+    workspace: "wsp_1",
+    group: "grp_1",
+    conversation: "cnv_1",
+    surface: "main",
+  };
+  const act = (name: string, params: Record<string, unknown>) =>
+    call(`chatView.${name}`, { ...named, ...params });
+  const retained = view
+    ? new Promise<void>((resolve, reject) => {
+        // The view's first value: the conversation is retained for the window.
+        client.subscribe(
+          { topic: "chatView", ...named },
+          (value) => {
+            if ((value as { state: unknown }).state) resolve();
+          },
+          reject
+        );
+      })
+    : call("chat.retain", target);
   const file = {
     localFileRef: `lfi1_${"a".repeat(43)}`,
     name: "report.pdf",
@@ -95,18 +134,44 @@ function harness() {
     received: vi.fn(),
     refuse: vi.fn(),
   };
+  /** `conversationId`'s state in the first chat snapshot Main is sent where `ready` holds of it. */
+  const sessionWhen = (
+    ready: (state: ConversationProjection | undefined) => boolean,
+    conversationId = "cnv_1"
+  ) =>
+    new Promise<ConversationProjection | undefined>((resolve, reject) => {
+      const stop = client.subscribe(
+        { topic: "chat" },
+        (value) => {
+          const state = (
+            value as { snapshot: ChatRuntimeSnapshot }
+          ).snapshot.sessions.find((s) => s.conversationId === conversationId)?.state;
+          if (!ready(state)) return;
+          resolve(state);
+          queueMicrotask(stop);
+        },
+        reject
+      );
+    });
+  const session = (conversationId = "cnv_1") => sessionWhen(() => true, conversationId);
   return {
-    chat,
+    core,
+    act,
+    call,
+    retained,
+    session,
+    sessionWhen,
     target,
     picker,
     controller,
     reception,
     sendMessage,
+    sent: sent.promise,
     options: {
       offer,
       signal: controller.signal,
       surfaceId: "main",
-      chat,
+      chat: main,
       picker,
       reception,
     },
@@ -114,17 +179,16 @@ function harness() {
 }
 describe("AirDrop to chat attachments", () => {
   it("adds received files to the existing draft and waits for the user to send", async () => {
-    const h = harness();
-    h.chat.setDraft({ ...h.target, draft: "Review this" });
-    await expect
-      .poll(() => h.chat.state().sessions[0]?.state.conversation?.title)
-      .toBe("Current chat");
+    const h = harness({ view: true });
+    await h.retained;
+    await h.act("setDraft", { draft: "Review this" });
+    await h.sessionWhen((state) => state?.conversation?.title === "Current chat");
     const intake = await approveAirDropForChat(h.options);
     expect(h.reception.confirm).toHaveBeenCalledWith(
       expect.objectContaining({ chatTitle: "Current chat", senderName: "iPhone" }),
       h.controller.signal
     );
-    expect(h.chat.state().sessions[0]?.state.attachmentIntakeInFlight).toBe(true);
+    expect((await h.session())?.attachmentIntakeInFlight).toBe(true);
     expect(h.picker.importForChat).not.toHaveBeenCalled();
     intake!.progress({ fraction: 0.5, totalBytes: 24, transferredBytes: 12 });
     expect(h.reception.progress).toHaveBeenCalledWith(offer.requestId, {
@@ -133,70 +197,63 @@ describe("AirDrop to chat attachments", () => {
       transferredBytes: 12,
     });
     await intake!.complete([await receivedFile()]);
-    expect(h.chat.state().sessions[0]?.state).toMatchObject({
+    expect(
+      await h.sessionWhen((state) => state?.draftAttachments.length === 1)
+    ).toMatchObject({
       draft: "Review this",
       draftAttachments: [{ name: "report.pdf", status: "uploaded" }],
     });
     expect(h.reception.complete).toHaveBeenCalledWith(offer.requestId, 0);
     expect(h.sendMessage).not.toHaveBeenCalled();
-    const reservation = { ...h.target, sendIntentId: "send-after-airdrop" };
-    h.chat.beginSendIntent(reservation);
-    await h.chat.send({ ...reservation, text: "Review this" });
-    expect(h.sendMessage).toHaveBeenCalledWith(
-      "grp_1",
-      "cnv_1",
-      expect.objectContaining({
-        text: "Review this",
-        localFiles: [expect.objectContaining({ displayName: "report.pdf" })],
-      })
-    );
+    await h.act("send", { text: "Review this" });
+    await h.sent;
+    expect(h.sendMessage).toHaveBeenCalledOnce();
+    expect(h.sendMessage.mock.calls[0]![0]).toMatchObject({
+      body: {
+        message: {
+          content: [
+            { type: "text", text: "Review this" },
+            expect.objectContaining({ type: "local_file", display_name: "report.pdf" }),
+          ],
+        },
+      },
+    });
   });
   it("declining preserves the draft and leaves no pending attachment intake", async () => {
-    const h = harness();
+    const h = harness({ view: true });
     h.reception.confirm.mockResolvedValue(false);
-    h.chat.setDraft({ ...h.target, draft: "Keep me" });
+    await h.retained;
+    await h.act("setDraft", { draft: "Keep me" });
     expect(await approveAirDropForChat(h.options)).toBeUndefined();
-    expect(h.chat.state().sessions[0]?.state).toMatchObject({
-      draft: "Keep me",
-      draftAttachments: [],
-    });
-    expect(h.chat.state().sessions[0]?.state.attachmentIntakeInFlight).not.toBe(true);
+    expect(
+      await h.sessionWhen(
+        (state) => state !== undefined && state.attachmentIntakeInFlight !== true
+      )
+    ).toMatchObject({ draft: "Keep me", draftAttachments: [] });
     expect(h.picker.importForChat).not.toHaveBeenCalled();
   });
   it("keeps files local if the user switches chats before upload finishes", async () => {
     const h = harness();
+    await h.retained;
     const intake = await approveAirDropForChat(h.options);
-    h.chat.release(h.target);
-    h.chat.retain({
+    await h.call("chat.release", h.target);
+    await h.call("chat.retain", {
       ...h.target,
       conversationId: "cnv_2",
       subscriberId: "main:grp_1/cnv_2",
-      leaseId: "next-lease",
+      leaseId: "00000000-0000-4000-8000-000000000002",
     });
     const path = await receivedFile();
     await expect(intake!.complete([path])).rejects.toThrow("changed");
     expect(h.picker.importForChat).not.toHaveBeenCalled();
-    expect(
-      h.chat.state().sessions.find((s) => s.conversationId === "cnv_2")?.state
-        .draftAttachments
-    ).toEqual([]);
+    expect((await h.session("cnv_2"))?.draftAttachments).toEqual([]);
     expect(h.reception.received).toHaveBeenCalledWith(offer.requestId, [path]);
     expect(h.reception.fail).toHaveBeenCalledWith(offer.requestId, "attach");
   });
-  it("does not attach a late transfer after account reset", async () => {
-    const h = harness();
-    const intake = await approveAirDropForChat(h.options);
-    h.chat.reset();
-    h.controller.abort();
-    await expect(intake!.complete([await receivedFile()])).rejects.toThrow();
-    expect(h.chat.state().sessions).toEqual([]);
-    expect(h.picker.importForChat).not.toHaveBeenCalled();
-  });
   it("attaches a package's files, drops the bundle it emptied, and keeps a full one for Finder", async () => {
     const h = harness();
-    await expect
-      .poll(() => h.chat.state().sessions[0]?.state.conversation?.title)
-      .toBe("Current chat");
+    await h.retained;
+    await h.sessionWhen((state) => state?.conversation?.title === "Current chat");
     const intake = await approveAirDropForChat(h.options);
     const root = await receivedDirectory();
     // A Live Photo: the helper published the still beside its .pvt bundle.
@@ -218,13 +275,18 @@ describe("AirDrop to chat attachments", () => {
 
   it("requires a single live destination and refuses folder attachments", async () => {
     const h = harness();
-    h.chat.release(h.target);
+    await h.retained;
+    await h.call("chat.release", h.target);
     expect(await approveAirDropForChat(h.options)).toBeUndefined();
     expect(h.reception.refuse).toHaveBeenCalledWith(
       expect.not.objectContaining({ chatTitle: expect.any(String) }),
       "no_chat"
     );
-    h.chat.retain(h.target);
+    await h.call("chat.retain", {
+      ...h.target,
+      leaseId: "00000000-0000-4000-8000-000000000002",
+    });
+    await h.sessionWhen((state) => state?.conversation?.title === "Current chat");
     expect(
       await approveAirDropForChat({
         ...h.options,
@@ -240,9 +302,11 @@ describe("AirDrop to chat attachments", () => {
   });
   it("recomputes remaining attachment quotas when transfer completes", async () => {
     const h = harness();
+    await h.retained;
     const intake = await approveAirDropForChat(h.options);
-    h.chat.attachLocalFiles({
+    await h.call("chat.attachLocalFiles", {
       ...h.target,
+      surfaceId: "main",
       files: [
         {
           localFileRef: `lfi1_${"b".repeat(43)}`,

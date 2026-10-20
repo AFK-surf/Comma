@@ -6,6 +6,8 @@ import type {
   SynchronicityAdoptTreeResult,
   SynchronicityDeleteInput,
   SynchronicityImportFileInput,
+  SynchronicityStageImportInput,
+  SynchronicityStageImportResult,
   SynchronicityListInput,
   SynchronicityListResult,
   SynchronicityMutationResult,
@@ -19,6 +21,8 @@ import type {
   SynchronicitySetDomainInput,
   SynchronicitySaveDownloadInput,
   SynchronicityOpenLocalRootResult,
+  SynchronicityOpenStreamInput,
+  SynchronicityOpenStreamResult,
   SynchronicitySourceAddInput,
   SynchronicitySourceRemoveInput,
   SynchronicitySpace,
@@ -30,6 +34,12 @@ import type {
   SynchronicityWriteInput,
 } from "@comma/native-bridge";
 import type { SynchronicityProvider } from "./index";
+import {
+  DriveStreamRegistry,
+  type DriveStreamReference,
+  type DriveStreamSource,
+} from "./stream";
+import { StagedImports } from "./staged-imports";
 
 /**
  * A node in memory, for the Electron E2E: the renderer's whole Drive path —
@@ -193,6 +203,25 @@ export class FakeSynchronicityProvider implements SynchronicityProvider {
     return { status: "unavailable" };
   }
 
+  async openStream(
+    input: SynchronicityOpenStreamInput
+  ): Promise<SynchronicityOpenStreamResult> {
+    const content = this.#selected(input).content;
+    return {
+      status: "opened",
+      url: this.#streams.open({
+        contentRoot: rootOf(content),
+        contentType: input.contentType,
+        reference: { path: input.path, policy: input.policy, space: input.space },
+        size: content.byteLength,
+      }),
+    };
+  }
+
+  serveStream(request: Request): Promise<Response> {
+    return this.#streams.serve(request, this.#streamSource);
+  }
+
   async openLocalRoot(): Promise<SynchronicityOpenLocalRootResult> {
     return { status: "opened" };
   }
@@ -220,6 +249,28 @@ export class FakeSynchronicityProvider implements SynchronicityProvider {
     ]);
     this.#changed();
     return { status: "done" };
+  }
+
+  stageImport(
+    input: SynchronicityStageImportInput
+  ): Promise<SynchronicityStageImportResult> {
+    return this.#staged.stage(input.sourcePath);
+  }
+
+  async importStaged(input: {
+    space: string;
+    path: string;
+    ref: string;
+  }): Promise<SynchronicityMutationResult> {
+    return this.importFile({
+      path: input.path,
+      sourcePath: this.#staged.path(input.ref),
+      space: input.space,
+    });
+  }
+
+  async releaseStaged(input: { refs: string[] }): Promise<void> {
+    this.#staged.release(input.refs);
   }
 
   async importFile(
@@ -430,6 +481,30 @@ export class FakeSynchronicityProvider implements SynchronicityProvider {
     const space = this.#spaces.get(id);
     if (!space) throw new Error(`unknown space ${id}`);
     return space;
+  }
+
+  readonly #streams = new DriveStreamRegistry();
+  readonly #staged = new StagedImports();
+  readonly #streamSource: DriveStreamSource = {
+    resolve: async (reference) => {
+      const content = this.#selected(reference).content;
+      return { contentRoot: rootOf(content), size: content.byteLength };
+    },
+    read: (reference, start, length) => {
+      const content = this.#selected(reference).content;
+      return (async function* () {
+        yield content.subarray(start, start + length);
+      })();
+    },
+  };
+
+  #selected(reference: DriveStreamReference): FakeVersion {
+    const selected = selectVersion(
+      this.#file(reference.space, reference.path),
+      reference.policy
+    );
+    if (!selected) throw new Error(`no selected version for ${reference.path}`);
+    return selected;
   }
 
   #file(spaceId: string, path: string): FakeFile {

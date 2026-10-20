@@ -45,7 +45,7 @@ defmodule SalixStore.OAuth do
   @spec valid_token(String.t(), (conn_record() -> {:ok, map()} | {:error, term()}), keyword()) ::
           {:ok, String.t()} | {:error, term()}
   def valid_token(id, refresher, opts \\ []) do
-    now = opts[:now] || System.system_time(:millisecond)
+    now = opts[:now] || SystemsClock.system_time(:millisecond)
 
     case S3.get(Keys.oauth_connection(id)) do
       {:ok, %{body: body, etag: etag}} ->

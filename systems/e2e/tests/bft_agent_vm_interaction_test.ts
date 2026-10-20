@@ -1,10 +1,9 @@
+import { setDefaultTimeout, test } from "bun:test";
 import { runAgentVmInteraction } from "../helpers/agent_vm_interaction.ts";
 
-Deno.test({
-  name: "BridgeForTeams agent turn reaches Cloudflare VM through env.exec",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn() {
-    await runAgentVmInteraction("bft");
-  },
+// Builds and subprocesses here take longer than the five-second default.
+setDefaultTimeout(30 * 60_000);
+
+test("BridgeForTeams agent turn reaches Cloudflare VM through env.exec", async () => {
+  await runAgentVmInteraction("bft");
 });

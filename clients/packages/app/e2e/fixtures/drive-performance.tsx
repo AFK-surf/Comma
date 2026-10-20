@@ -1,12 +1,10 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useSyncExternalStore } from "react";
+import type { CallFn } from "@comma/core-client";
+import type { DriveValue } from "@comma/core/contract";
 import { createRoot } from "react-dom/client";
 import { initializeCommaI18n } from "@comma/i18n";
 import { DriveFileList } from "../../src/components/drive/DriveFileList";
-import {
-  DriveStore,
-  useDriveSnapshot,
-  type DriveFile,
-} from "../../src/components/drive/driveStore";
+import { DriveStore, type DriveFile } from "../../src/components/drive/driveStore";
 import {
   useDriveFileReveal,
   type DriveRevealSearch,
@@ -28,16 +26,34 @@ declare global {
 const thumbnails: string[] = [];
 const noAction = () => {};
 const requestThumbnail = (file: DriveFile) => thumbnails.push(file.id);
-const seed = {
+const seed: DriveValue = {
+  node: { status: "ready" },
   devices: [{ id: "device", label: "This device", current: true }],
   spaces: [{ id: "space", name: "Performance files" }],
   files: [],
   originDeviceId: "device",
+  versionPolicy: "newest",
+  localSyncEnabled: false,
+  localSyncRoot: "",
+  syncHistory: [],
+  transfers: [],
 };
 
 function Fixture() {
-  const [store] = useState(() => new DriveStore(seed));
-  const snapshot = useDriveSnapshot(store);
+  const [store] = useState(() => new DriveStore());
+  const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  // The one call the list makes here: the core finding a revealed file.
+  const call = ((method: string, params: { path: string }) =>
+    method === "drive.reveal"
+      ? Promise.resolve({
+          file: store
+            .getSnapshot()
+            .files.find(
+              (file) =>
+                [file.folderPath, file.name].filter(Boolean).join("/") === params.path
+            )!.id,
+        })
+      : Promise.reject(new Error(`${method} is not part of this fixture`))) as CallFn;
   const files = snapshot.files;
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [folder, setFolder] = useState<readonly string[]>([]);
@@ -45,7 +61,7 @@ function Fixture() {
   const [search, setSearch] = useState<DriveRevealSearch>({});
   const rootRef = useRef<HTMLDivElement>(null);
   const revealFileId = useDriveFileReveal({
-    backend: undefined,
+    call,
     folderPath: folder,
     onConsumed: () => setSearch({}),
     rootRef,
@@ -68,7 +84,7 @@ function Fixture() {
       thumbnails.length = 0;
       setSelected(new Set());
       setFolder([]);
-      store.load({
+      store.setCore({
         ...seed,
         files: Array.from({ length: count }, (_, index) => ({
           id: `file-${index}`,
@@ -114,6 +130,7 @@ function Fixture() {
         onToggleFiles={toggleFiles}
         onToggleSelected={(file, checked) => toggleFiles([file], checked)}
         onUploadFiles={noAction}
+        pinnable
         selectedFileIds={selected}
         selecting={selected.size > 0}
         selectionKeptOffline={false}

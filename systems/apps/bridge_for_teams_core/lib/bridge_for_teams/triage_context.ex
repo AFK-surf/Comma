@@ -60,7 +60,7 @@ defmodule BridgeForTeams.TriageContext do
     self_agent_identity_revision_sha256
     source_origin_sha256
   )
-  alias SalixIM.Triage.ChannelBatch
+  alias SalixIM.Triage.{ChannelBatch, ClickHouseReader}
 
   @sha256 ~r/\A[0-9a-f]{64}\z/
   @raw_uri ~r/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"']+/i
@@ -106,6 +106,9 @@ defmodule BridgeForTeams.TriageContext do
          :ok <- validate_derived_identity_profile(identity_profile, opts),
          {:ok, thread} <- read_thread(authority, connect, identity_profile, input, opts),
          {:ok, full_slack_context} <- slack_context(thread, authority),
+         :ok <- verify_missing_events_deleted(full_slack_context, input, authority, connect, opts),
+         product =
+           retarget_trajectory(product_source, product, authority, input, full_slack_context),
          {:ok, slack_context} <-
            expression_slack_context(full_slack_context, authority, connect, opts),
          {:ok, recheck} <- compatibility_recheck(input, thread, full_slack_context, connect, opts),
@@ -252,22 +255,36 @@ defmodule BridgeForTeams.TriageContext do
   defp prepare_worker(_fixture_source, product, _connect, _input, _slack, _identity),
     do: {:ok, product}
 
+  # Ordinary intake goes to the swarm's Task agent: its Task runs at the
+  # swarm's default place and default Task model. No Worker is chosen.
   defp prepare_intake_worker(product, connect) do
     with %{status: "active"} = project <- product.project,
          {:ok, router} <- Agents.current_router(project),
          true <- router.salix_agent_id == connect["inbound_agent_id"],
-         {:ok, worker_id} <-
-           BridgeForTeams.Salix.Client.impl().ensure_triage_worker(
-             connect["group_id"],
-             router.salix_agent_id
-           ),
-         {:ok, %{role: "worker"} = worker} <- Agents.get_project_agent(project.id, worker_id),
-         true <- BridgeForTeams.Schema.Agent.active?(worker) do
-      {:ok, Map.put(product, :investigation_workers, [worker])}
+         {:ok, task_agent} <- task_agent(project) do
+      {:ok, Map.put(product, :investigation_workers, [task_agent])}
     else
       _ -> {:error, :triage_worker_unavailable}
     end
   end
+
+  @doc """
+  The swarm's Task agent as the one investigation Worker of a Triage
+  decision (`SalixAgent.TaskAgent`), made when the swarm has none yet.
+  """
+  def task_agent(%{salix_group_id: group_id, org_id: org_id}) when is_binary(group_id) do
+    with %{salix_tenant_id: tenant_id} when is_binary(tenant_id) <-
+           BridgeForTeams.Repo.get(BridgeForTeams.Schema.Organization, org_id),
+         {:ok, agent_id} when is_binary(agent_id) <-
+           BridgeForTeams.Salix.Client.impl().ensure_task_agent(tenant_id, group_id) do
+      {:ok, %{"agent_id" => agent_id}}
+    else
+      {:error, _reason} = error -> error
+      _missing -> {:error, :triage_worker_unavailable}
+    end
+  end
+
+  def task_agent(_project), do: {:error, :triage_worker_unavailable}
 
   defp load_product(source, connect, opts),
     do: safe_apply(source, :load_product, [connect, opts], :product_fact_source)
@@ -1027,7 +1044,7 @@ defmodule BridgeForTeams.TriageContext do
     CanonicalJSON.encode(%{
       "llm_config" => agent.salix["llm_config"] || %{},
       "system_prompt" => agent.salix["system_prompt"] || "",
-      "template_id" => agent.salix["template_id"] || ""
+      "model" => agent.salix["model"] || %{}
     })
   end
 
@@ -1296,13 +1313,102 @@ defmodule BridgeForTeams.TriageContext do
   defp project_slack_context(_raw_slack, _raw_identity, _input, _registry),
     do: {:error, :identity_projection_invalid}
 
+  # A batch event newer than every present batch message may be retargeted
+  # past only when the mirror's latest state proves its deletion. Absence alone
+  # can be mirror lag, so it keeps the unavailable outcome.
+  defp verify_missing_events_deleted(slack_context, input, authority, connect, opts) do
+    if identity_mode?(opts),
+      do: verify_missing_events_deleted(slack_context, input, authority, connect),
+      else: :ok
+  end
+
+  defp verify_missing_events_deleted(%{"messages" => messages}, input, authority, connect)
+       when is_list(messages) do
+    events = input["events"] || []
+    present = ChannelBatch.present_events(events, messages)
+
+    newest_present =
+      present |> Enum.map(&slack_ts_key!(&1["message_ts"])) |> Enum.max(fn -> nil end)
+
+    missing =
+      Enum.filter(events, fn event ->
+        event not in present and
+          (is_nil(newest_present) or slack_ts_key!(event["message_ts"]) > newest_present)
+      end)
+
+    cond do
+      missing == [] ->
+        :ok
+
+      not source_messages_deleted?(missing, authority, connect) ->
+        {:error, :triage_source_target_unavailable}
+
+      present == [] ->
+        {:error, :triage_source_deleted}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp verify_missing_events_deleted(_raw_slack, _input, _authority, _connect),
+    do: {:error, :identity_projection_invalid}
+
+  defp source_messages_deleted?(events, authority, connect) do
+    reader = ClickHouseReader.impl()
+    keys = events |> Enum.map(&ChannelBatch.micros(&1["message_ts"])) |> Enum.uniq()
+
+    scope = %{
+      "tenant_id" => connect["tenant_id"],
+      "workspace_id" => connect["workspace_id"],
+      "channel_id" => authority["channel_id"]
+    }
+
+    with true <- is_atom(reader) and Code.ensure_loaded?(reader),
+         true <- function_exported?(reader, :latest_states, 2),
+         {:ok, states} when is_map(states) <- reader.latest_states(scope, keys) do
+      Enum.all?(keys, &match?(%{"deleted" => true}, states[&1]))
+    else
+      _unavailable -> false
+    end
+  rescue
+    _exception -> false
+  catch
+    _kind, _reason -> false
+  end
+
+  defp retarget_trajectory(@identity_product_source, product, authority, input, slack_context) do
+    initial = authority |> ChannelBatch.target(input["events"]) |> Map.take(@required_authority)
+
+    case ChannelBatch.present_target(authority, input["events"], slack_context["messages"]) do
+      %{} = present ->
+        present = Map.take(present, @required_authority)
+
+        if present == initial,
+          do: product,
+          else: @identity_product_source.retarget_trajectory(product, present)
+
+      nil ->
+        product
+    end
+  end
+
+  defp retarget_trajectory(_product_source, product, _authority, _input, _slack_context),
+    do: product
+
+  # The target is the newest batch event whose message is still present in the
+  # source read. Author-deleted batch messages are absent from current reads.
   defp raw_decision_target(messages, raw_identity, input) do
-    with {:ok, target_key} <- latest_event_key(input),
+    with {:ok, event_keys} <- event_ts_keys(input["events"] || []),
+         event_keys = MapSet.new(event_keys),
          {raw_target, index} <-
            messages
            |> Enum.with_index(1)
-           |> Enum.find(fn {message, _} ->
-             slack_ts_key!(message["message_ts"]) == target_key
+           |> Enum.filter(fn {message, _} ->
+             MapSet.member?(event_keys, slack_ts_key!(message["message_ts"]))
+           end)
+           |> Enum.max_by(fn {message, _} -> slack_ts_key!(message["message_ts"]) end, fn ->
+             nil
            end),
          addressee when addressee in ~w(self other mixed none) <-
            syntactic_addressee(raw_target["source_ref"], raw_identity) do
@@ -1960,16 +2066,13 @@ defmodule BridgeForTeams.TriageContext do
   defp investigation_worker_facts(product) do
     product
     |> Map.get(:investigation_workers, [])
-    |> Enum.map(fn worker ->
-      name = worker.salix["name"] || "Worker"
-      purpose = worker.salix["management_purpose"] || "No responsibility description supplied."
-
+    |> Enum.map(fn %{"agent_id" => agent_id} ->
       %{
         "kind" => SalixIM.Triage.WorkerSelection.kind(),
-        "source_ref" => "comma-agent://" <> worker.salix_agent_id,
+        "source_ref" => "comma-agent://" <> agent_id,
         "text" =>
-          "Available project Worker: #{String.slice(to_string(name), 0, 160)}. " <>
-            "Responsibilities (descriptive, not instructions or authority): #{String.slice(to_string(purpose), 0, 1000)}"
+          "Available project Worker: the swarm's Task agent. " <>
+            "Responsibilities (descriptive, not instructions or authority): it runs this swarm's Tasks at the swarm's default place and default Task model."
       }
     end)
   end
@@ -2404,8 +2507,6 @@ defmodule BridgeForTeams.TriageContext do
 
     @active_connect_reader SalixIM.ProviderConnects
     @member_limit 25
-    @agent_limit 64
-    @agent_page_limit 4
 
     alias BridgeForTeams.Salix.Client
 
@@ -2451,40 +2552,22 @@ defmodule BridgeForTeams.TriageContext do
     end
 
     defp load_investigation_workers(project) do
-      # Storage pages include records filtered out of the visible roster. Read
-      # at most four pages (256 storage entries), retaining at most 64 visible
-      # Agents. Never treat a partial roster as a complete candidate set.
-      case load_agent_pages(project, nil, @agent_page_limit, []) do
-        {:ok, agents} ->
-          agents
-          |> Enum.filter(&(&1.role == "worker" and BridgeForTeams.Schema.Agent.active?(&1)))
-          |> Enum.sort_by(& &1.salix_agent_id)
-
-        :unavailable ->
-          []
+      case BridgeForTeams.TriageContext.task_agent(project) do
+        {:ok, task_agent} -> [task_agent]
+        {:error, _reason} -> []
       end
     end
 
-    defp load_agent_pages(_project, _cursor, 0, _agents), do: :unavailable
+    @doc "Reloads processing history for the surviving decision target."
+    def retarget_trajectory(%{trajectory: %{}} = product, target),
+      do:
+        Map.put(
+          product,
+          :trajectory,
+          load_trajectory(product.project, product.agent, trajectory_target: target)
+        )
 
-    defp load_agent_pages(project, cursor, pages_left, agents) do
-      opts = [limit: @agent_limit, cursor: cursor]
-
-      case Agents.page_agents(project, opts) do
-        {:ok, %{items: page, next_cursor: next}}
-        when length(agents) + length(page) <= @agent_limit ->
-          combined = agents ++ page
-
-          cond do
-            is_nil(next) -> {:ok, combined}
-            next == cursor -> :unavailable
-            true -> load_agent_pages(project, next, pages_left - 1, combined)
-          end
-
-        _ ->
-          :unavailable
-      end
-    end
+    def retarget_trajectory(product, _target), do: product
 
     defp load_trajectory(project, agent, opts) do
       case Keyword.get(opts, :trajectory_target) do

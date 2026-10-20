@@ -164,7 +164,6 @@ defmodule SalixVerifiedKernel do
     :pending_origin_patch,
     :visible_reply_origin,
     :sanitize_activity_calls,
-    :append_repair_reminder,
     :role,
     :report,
     :llm_failed,
@@ -960,7 +959,7 @@ defmodule SalixVerifiedKernel.Session do
     SalixVerifiedKernel.invoke_session_read(
       cursor,
       :resume,
-      {:observed_time, System.system_time(:millisecond)}
+      {:observed_time, now()}
     )
     |> read_revision_result(read)
   end
@@ -1226,7 +1225,7 @@ defmodule SalixVerifiedKernel.Session do
   end
 
   defp batch_event(resident, report, invoke) do
-    started = System.monotonic_time()
+    started = Application.get_env(:salix_verified_kernel, :clock, System).monotonic_time()
 
     completed =
       try do
@@ -1248,7 +1247,7 @@ defmodule SalixVerifiedKernel.Session do
       resident
       |> invoke.(
         :resume,
-        {:ok, System.system_time(:millisecond)}
+        {:ok, now()}
       )
       |> batch_observe(invoke)
 
@@ -1300,7 +1299,7 @@ defmodule SalixVerifiedKernel.Session do
   defp query_result({:ok, resident, {:observe, request, token}}, read) do
     value =
       case request do
-        :time -> System.system_time(:millisecond)
+        :time -> now()
         {:config, app, key, default} -> Application.get_env(app, key, default)
         {:request_batch, requests} -> Enum.map(requests, read)
         request -> read.(request)
@@ -1353,7 +1352,7 @@ defmodule SalixVerifiedKernel.Session do
   @doc false
   def prelude do
     [
-      {:ok_for, :time, System.system_time(:millisecond)}
+      {:ok_for, :time, now()}
       | Enum.map(@config_keys, fn {key, default} ->
           {:ok_for, {:config, :salix_agent, key}, Application.get_env(:salix_agent, key, default)}
         end)
@@ -1362,7 +1361,7 @@ defmodule SalixVerifiedKernel.Session do
 
   @doc "Supplies clock and configuration observations until an outcome is final."
   def settle({:observe_time, token}),
-    do: settle(step(token, {:observed_time, System.system_time(:millisecond)}))
+    do: settle(step(token, {:observed_time, now()}))
 
   def settle({:observe_config, app, key, default, token}),
     do: settle(step(token, {:observed_config, Application.get_env(app, key, default)}))
@@ -1436,4 +1435,9 @@ defmodule SalixVerifiedKernel.Session do
     do: raise(FunctionClauseError, module: Enum, function: :filter_list, arity: 2)
 
   defp raise_kernel(reason), do: raise("verified kernel: #{inspect(reason)}")
+
+  # The host clock module; the umbrella configures SystemsClock so time facts
+  # follow a test's virtual clock.
+  defp now,
+    do: Application.get_env(:salix_verified_kernel, :clock, System).system_time(:millisecond)
 end

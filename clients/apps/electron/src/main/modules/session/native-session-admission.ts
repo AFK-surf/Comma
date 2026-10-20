@@ -8,9 +8,9 @@ import {
 import type { NativeCommandContract } from "@comma/native-bridge";
 import { NativeSessionAdmissionError } from "../ipc";
 import {
-  MainProductCredentialAuthority,
+  MainCredentialGate,
   type MainProductCredentialLease,
-} from "./main-product-credential-authority";
+} from "./main-credential-gate";
 
 export interface NativeSessionAdmissionContext {
   credential: MainProductCredentialLease;
@@ -22,9 +22,9 @@ const nativeSessionAdmissionStorage =
   new AsyncLocalStorage<NativeSessionAdmissionContext>();
 
 export class MainNativeSessionAdmissionGuard {
-  readonly #authority: MainProductCredentialAuthority;
+  readonly #authority: MainCredentialGate;
 
-  constructor(authority: MainProductCredentialAuthority) {
+  constructor(authority: MainCredentialGate) {
     this.#authority = authority;
   }
 
@@ -33,6 +33,23 @@ export class MainNativeSessionAdmissionGuard {
     const session = sessionProductLease(this.#authority.getSnapshot());
     if (!session) throw this.#admissionError();
     return this.#runSession(session, handler);
+  }
+
+  /**
+   * Admit a command the client core gives Main for its lease (the meeting recorder's): refused unless that lease is
+   * Main's current one. `assertCurrent` throws once the lease's credential is no longer current.
+   */
+  runLease<Output>(
+    session: SessionProductLease,
+    handler: (assertCurrent: () => void) => Promise<Output> | Output
+  ): Promise<Output> {
+    return this.#runSession(session, () => {
+      const { credential } = getCurrentNativeSessionAdmission();
+      return handler(() => {
+        if (!this.#authority.isCurrentProductCredential(credential))
+          throw this.#admissionError();
+      });
+    });
   }
 
   run<Input, Output>({

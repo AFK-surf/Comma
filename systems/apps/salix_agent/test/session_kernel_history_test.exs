@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelHistoryTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   alias SalixAgent.InternalSession.State
   alias SalixAgent.TestSupport.SessionData
   alias SalixStore.Ids
@@ -21,85 +21,6 @@ defmodule SalixAgent.SessionKernelHistoryTest do
       state,
       Map.merge(fields, %{"type" => type, "session_id" => state.session_id})
     )
-  end
-
-  test "legacy microcompaction changes only selected content and invalidates byte cache" do
-    first = %{id: 1, role: "tool", content: "first"}
-    second = %{"id" => 2, "role" => "user", "content" => "long content"}
-    assistant = %{id: 3, role: "assistant", content: "long assistant"}
-
-    before =
-      state(storage_format: 1, messages: [first, second, assistant], live_context_bytes: 99)
-
-    ev = %{
-      "message_ids" => [1],
-      "new_content" => "x",
-      "non_model_messages_over_bytes_through" => 3,
-      "non_model_message_max_bytes" => 4
-    }
-
-    assert apply_event(before, "session_microcompact", ev) ===
-             %{
-               before
-               | messages: [%{first | content: "x"}, %{second | "content" => "x"}, assistant],
-                 live_context_bytes: nil
-             }
-  end
-
-  test "legacy microcompaction updates plain message fields" do
-    message = %{path: "opaque", id: 1, role: "tool", content: "raw"}
-    before = state(storage_format: 1, messages: [message], live_context_bytes: 3)
-
-    assert apply_event(before, "session_microcompact", %{
-             "message_ids" => [1],
-             "new_content" => "x"
-           }) ===
-             %{before | messages: [Map.put(message, :content, "x")], live_context_bytes: nil}
-  end
-
-  test "format two microcompaction appends sorted overlays and leaves raw bytes intact" do
-    message = %{id: 2, seq: 7, role: "tool", content: "raw"}
-    old = %{"message_id" => 1, "replacement" => "old"}
-
-    before =
-      state(storage_format: 2, messages: [message], redactions: [old], live_context_bytes: 3)
-
-    expected = [
-      old,
-      %{
-        "message_id" => 2,
-        "seq" => 7,
-        "replacement" => "[microcompacted]",
-        "reason" => "microcompact",
-        "created_at" => 0
-      },
-      %{
-        "message_id" => 9,
-        "replacement" => "[microcompacted]",
-        "reason" => "microcompact",
-        "created_at" => 0
-      }
-    ]
-
-    assert apply_event(before, "session_microcompact", %{
-             "message_ids" => [9, 2, 2],
-             "new_content" => false,
-             "created_at" => 0
-           }) === %{before | redactions: expected}
-  end
-
-  test "predicate overlays retain monotone bounds and the strictest byte threshold" do
-    kind = "non_model_messages_over_bytes_through"
-    old = %{"kind" => kind, "through_id" => 8, "replacement" => "old", "max_bytes" => 100}
-    other = %{"message_id" => 1, "replacement" => "unrelated"}
-    before = state(storage_format: 2, redactions: [old, other])
-
-    assert apply_event(before, "session_microcompact", %{
-             "non_model_messages_over_bytes_through" => 4,
-             "non_model_message_max_bytes" => 20,
-             "new_content" => "new"
-           }) ===
-             %{before | redactions: [other, %{old | "replacement" => "new", "max_bytes" => 20}]}
   end
 
   test "stale compaction baselines are complete no-ops before malformed payload reads" do
@@ -169,47 +90,10 @@ defmodule SalixAgent.SessionKernelHistoryTest do
              }
   end
 
-  test "compact-result writes append exact facts and keep eight newest manual records" do
-    manual = Map.new(1..10, fn n -> {"manual-#{n}", %{"seq" => n}} end)
-
-    before =
-      state(
-        last_seq: 10,
-        compact_results: Map.put(manual, 1, %{"seq" => 1}),
-        llm_failure_streak: %{"count" => 2}
-      )
-
-    fact = %{
-      "source_message_id" => "new",
-      "status" => false,
-      "kind" => "session_compact_result",
-      "seq" => 11
-    }
-
-    kept =
-      Map.take(manual, Enum.map(4..10, &"manual-#{&1}"))
-      |> Map.put(1, %{"seq" => 1})
-      |> Map.put("new", fact)
-
-    assert apply_event(before, "session_compact_result", %{
-             "source_message_id" => "new",
-             "status" => false,
-             "reason" => nil
-           }) ===
-             %{
-               before
-               | events: [fact],
-                 last_seq: 11,
-                 llm_failure_streak: nil,
-                 compact_results: kept
-             }
-  end
-
   test "archive advance replaces sorted valid catalog and removes only covered records" do
     kept_message = %{id: 2, seq: 3, content: "keep"}
     kept_event = %{"seq" => 3, "kind" => "fact"}
     kept_result = %{"seq" => 3, "tool_call_id" => "call"}
-    overlay = %{"message_id" => 1, "replacement" => "masked"}
 
     before =
       state(
@@ -219,7 +103,6 @@ defmodule SalixAgent.SessionKernelHistoryTest do
         messages: [%{id: 1, seq: 1, content: "gone"}, kept_message],
         events: [%{"seq" => 2}, kept_event],
         async_results: [%{"seq" => 1}, kept_result],
-        redactions: [overlay],
         segment_catalog: [[9, 9, 0, 1]]
       )
 

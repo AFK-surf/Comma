@@ -137,7 +137,9 @@ defmodule SalixStore.OAuthProviderApps do
     }
   end
 
-  defp to_record(%Row{} = row) do
+  @doc false
+  # Shared with the memory implementation.
+  def to_record(%Row{} = row) do
     %{
       "provider" => row.provider,
       "client_id" => row.client_id,
@@ -146,7 +148,8 @@ defmodule SalixStore.OAuthProviderApps do
     }
   end
 
-  defp from_record(scope, record) do
+  @doc false
+  def from_record(scope, record) do
     %Row{
       scope: scope,
       provider: record["provider"],

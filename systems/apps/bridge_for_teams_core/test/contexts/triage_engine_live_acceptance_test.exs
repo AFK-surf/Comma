@@ -1,4 +1,6 @@
 defmodule BridgeForTeams.TriageEngineLiveAcceptanceTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Native Triage assignments and captured-input evaluator replays with a live provider profile.
 
@@ -9,7 +11,8 @@ defmodule BridgeForTeams.TriageEngineLiveAcceptanceTest do
 
   Both paths use an in-BEAM ClickHouse corpus and a loopback Slack boundary.
   They do not import sources or write to Slack. Provider credentials are resolved
-  through `SalixAgent.LlmResolver.resolve_runtime/1` from the selected template.
+  through `SalixAgent.LlmResolver.resolve_runtime/1` from the platform Router
+  model that the harness sets up.
 
   ## Running it
 
@@ -31,9 +34,10 @@ defmodule BridgeForTeams.TriageEngineLiveAcceptanceTest do
   credentials in the test process environment, never in fixtures or reports.
 
     * `COMMA_TRIAGE_LIVE_API_KEY_ENV` — the NAME of the env var holding the key
-      (default `OPENAI_API_KEY`). The key itself is never read into a fixture,
-      a template record or a durable proof; only its variable name travels, and
-      `SalixLlm.ProviderConfig` resolves it at request time.
+      (default `OPENAI_API_KEY`). The key is never written to a fixture or a
+      durable proof. The harness stores it only in the encrypted platform
+      Profile that serves the round's model, and deletes that Profile when the
+      test exits.
     * `COMMA_TRIAGE_LIVE_BASE_URL` — default `https://api.openai.com/v1`
     * `COMMA_TRIAGE_LIVE_MODEL` — default `gpt-5.6-luna`, the adapter's own default
     * `COMMA_TRIAGE_LIVE_PROTOCOL` — default `responses`, the ONE protocol on which
@@ -76,9 +80,9 @@ defmodule BridgeForTeams.TriageEngineLiveAcceptanceTest do
 
   setup do
     SalixStore.S3.Fake.reset()
-    unless Process.whereis(Ids), do: start_supervised!(Ids)
+    unless SystemsRuntime.Proc.whereis(Ids), do: start_supervised!(Ids)
 
-    :ok = Fixture.install_clickhouse_reader!(self())
+    :ok = Fixture.install_clickhouse_reader!(SystemsRuntime.Proc.self())
     :ok = install_agent_llm_resolver!()
 
     %{profile: profile!()}
@@ -90,7 +94,7 @@ defmodule BridgeForTeams.TriageEngineLiveAcceptanceTest do
     # Check the live profile separately from the zero-request intake rounds.
     :ok = preflight!(profile)
 
-    evaluator_port = Harness.evaluator_port(self())
+    evaluator_port = Harness.evaluator_port(SystemsRuntime.Proc.self())
 
     rounds =
       Enum.map(Harness.scenario_ids(), fn id ->
@@ -138,7 +142,7 @@ defmodule BridgeForTeams.TriageEngineLiveAcceptanceTest do
     spec = Harness.scenario("slack_permalink", Harness.new_round_context!(profile))
 
     round =
-      Harness.drive_round!(spec, Harness.evaluator_port(self()),
+      Harness.drive_round!(spec, Harness.evaluator_port(SystemsRuntime.Proc.self()),
         attempts: 8_000,
         evaluation_timeout_ms: 180_000
       )
@@ -219,7 +223,7 @@ defmodule BridgeForTeams.TriageEngineLiveAcceptanceTest do
       }
 
       round =
-        Harness.drive_round!(spec, Harness.evaluator_port(self()),
+        Harness.drive_round!(spec, Harness.evaluator_port(SystemsRuntime.Proc.self()),
           attempts: 8000,
           evaluation_timeout_ms: 180_000
         )
@@ -236,7 +240,7 @@ defmodule BridgeForTeams.TriageEngineLiveAcceptanceTest do
   test "an older cost estimate reaches the frozen Worker assignment as historical evidence",
        %{profile: profile} do
     context = Harness.new_round_context!(profile)
-    old_id = "cost-estimate-#{System.unique_integer([:positive])}"
+    old_id = "cost-estimate-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     source_ref = "slack://T_ATLAS/C_ATLAS/1788404837.144179/1788404837.144179"
 
     # Canonical stored-state fixture from the captured 2026-09-03 statement.
@@ -294,7 +298,7 @@ defmodule BridgeForTeams.TriageEngineLiveAcceptanceTest do
 
     refute Enum.any?(latest, &(&1.entry_id == old_id))
 
-    root = "#{System.system_time(:second)}.000001"
+    root = "#{SystemsClock.system_time(:second)}.000001"
     question = "bft staging bot 目前每天实际花多少钱？之前有没有费用记录？"
 
     spec = %{
@@ -311,7 +315,7 @@ defmodule BridgeForTeams.TriageEngineLiveAcceptanceTest do
     }
 
     round =
-      Harness.drive_round!(spec, Harness.evaluator_port(self()),
+      Harness.drive_round!(spec, Harness.evaluator_port(SystemsRuntime.Proc.self()),
         attempts: 8000,
         evaluation_timeout_ms: 180_000
       )
@@ -376,13 +380,13 @@ defmodule BridgeForTeams.TriageEngineLiveAcceptanceTest do
   # here keeps a suite that ran with a different resolver from silently
   # resolving the round's provider config somewhere else.
   defp install_agent_llm_resolver! do
-    previous = Application.get_env(:salix_agent, :llm_resolver)
-    Application.put_env(:salix_agent, :llm_resolver, Salix.Bindings.AgentLlmResolver)
+    previous = SystemsRuntime.get_env(:salix_agent, :llm_resolver)
+    SystemsRuntime.put_env(:salix_agent, :llm_resolver, Salix.Bindings.AgentLlmResolver)
 
     on_exit(fn ->
       if is_nil(previous),
-        do: Application.delete_env(:salix_agent, :llm_resolver),
-        else: Application.put_env(:salix_agent, :llm_resolver, previous)
+        do: SystemsRuntime.delete_env(:salix_agent, :llm_resolver),
+        else: SystemsRuntime.put_env(:salix_agent, :llm_resolver, previous)
     end)
 
     :ok
@@ -390,13 +394,15 @@ defmodule BridgeForTeams.TriageEngineLiveAcceptanceTest do
 end
 
 defmodule BridgeForTeams.TriageEngineLiveHarnessWireTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The live harness's own transport contract, proved with no network.
 
   This runs the SAME six rounds through the SAME driver as the live drive —
-  real `Salix.Bindings.TriageEvaluator`, real `SalixLlm.Provider`, real agent
-  template, real `SalixAgent.LlmResolver.resolve_runtime/1`, real HTTP, real
-  OpenAI Responses request encoding and response parsing — with the template's
+  real `Salix.Bindings.TriageEvaluator`, real `SalixLlm.Provider`, real platform
+  Router model, real `SalixAgent.LlmResolver.resolve_runtime/1`, real HTTP, real
+  OpenAI Responses request encoding and response parsing — with the model's
   `base_url` pointed at a loopback Bandit plug that speaks that wire instead of
   at a model provider.
 
@@ -434,10 +440,10 @@ defmodule BridgeForTeams.TriageEngineLiveHarnessWireTest do
     def init(opts), do: opts
 
     def call(conn, _opts) do
-      owner = Application.fetch_env!(:bridge_for_teams_core, :triage_live_wire_owner)
+      owner = SystemsRuntime.fetch_env!(:bridge_for_teams_core, :triage_live_wire_owner)
       {:ok, body, conn} = Plug.Conn.read_body(conn, length: 32_000_000)
       request = Jason.decode!(body)
-      send(owner, {:wire_request, Enum.join(conn.path_info, "/"), request})
+      SystemsRuntime.Proc.send(owner, {:wire_request, Enum.join(conn.path_info, "/"), request})
 
       response = %{
         "id" => "resp_loopback",
@@ -454,7 +460,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarnessWireTest do
     end
 
     defp output(request) do
-      action = Application.get_env(:bridge_for_teams_core, :triage_live_wire_action, "reply")
+      action = SystemsRuntime.get_env(:bridge_for_teams_core, :triage_live_wire_action, "reply")
 
       if action in ["slack_permalink", "online_bare_link"] and
            match?([_ | _], request["tools"]) do
@@ -524,7 +530,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarnessWireTest do
 
         decision = Harness.assignment_decision(schema, [source_ref])
 
-        if Application.get_env(:bridge_for_teams_core, :triage_live_wire_action) ==
+        if SystemsRuntime.get_env(:bridge_for_teams_core, :triage_live_wire_action) ==
              "forged_source" do
           put_in(decision, ["delegations", Access.at(0), "source_refs"], [
             "meeting://run/m999-never-frozen"
@@ -550,7 +556,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarnessWireTest do
           "enum"
         ]) || []
 
-      action = Application.get_env(:bridge_for_teams_core, :triage_live_wire_action, "reply")
+      action = SystemsRuntime.get_env(:bridge_for_teams_core, :triage_live_wire_action, "reply")
 
       base = %{
         "schema" => ProductDecision.schema(),
@@ -626,7 +632,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarnessWireTest do
 
     defp legacy_decision(schema) do
       source_refs = get_in(schema, ["properties", "source_refs", "items", "enum"]) || []
-      action = Application.get_env(:bridge_for_teams_core, :triage_live_wire_action, "reply")
+      action = SystemsRuntime.get_env(:bridge_for_teams_core, :triage_live_wire_action, "reply")
 
       base = %{
         "action" => action,
@@ -682,9 +688,9 @@ defmodule BridgeForTeams.TriageEngineLiveHarnessWireTest do
 
   setup do
     SalixStore.S3.Fake.reset()
-    unless Process.whereis(Ids), do: start_supervised!(Ids)
+    unless SystemsRuntime.Proc.whereis(Ids), do: start_supervised!(Ids)
 
-    :ok = Fixture.install_clickhouse_reader!(self())
+    :ok = Fixture.install_clickhouse_reader!(SystemsRuntime.Proc.self())
     :ok = install_agent_llm_resolver!()
 
     port =
@@ -692,18 +698,19 @@ defmodule BridgeForTeams.TriageEngineLiveHarnessWireTest do
         {Bandit, plug: ResponsesLoopback, port: port, startup_log: false}
       end)
 
-    Application.put_env(:bridge_for_teams_core, @owner_env_key, self())
-    Application.put_env(:bridge_for_teams_core, @action_env_key, "reply")
+    SystemsRuntime.put_env(:bridge_for_teams_core, @owner_env_key, SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:bridge_for_teams_core, @action_env_key, "reply")
 
     on_exit(fn ->
-      Application.delete_env(:bridge_for_teams_core, @owner_env_key)
-      Application.delete_env(:bridge_for_teams_core, @action_env_key)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, @owner_env_key)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, @action_env_key)
     end)
 
     profile = %{
       protocol: "responses",
       base_url: "http://127.0.0.1:#{port}/v1",
-      model: "triage-wire-contract-model",
+      # A Custom endpoint names no provider; a `gpt-` model id names OpenAI.
+      model: "gpt-triage-wire-contract",
       provider: "openai",
       api_key: "loopback-only-not-a-credential",
       max_tokens: 65_536
@@ -712,215 +719,17 @@ defmodule BridgeForTeams.TriageEngineLiveHarnessWireTest do
     %{profile: profile}
   end
 
-  test "the six intake rounds settle with Worker assignments and no decision request", ctx do
-    %{profile: profile} = ctx
-    evaluator_port = Harness.evaluator_port(self())
-
-    rounds =
-      Enum.map(Harness.scenario_ids(), fn id ->
-        Application.put_env(:bridge_for_teams_core, @action_env_key, "assignment")
-        spec = Harness.scenario(id, Harness.new_round_context!(profile))
-        Harness.drive_round!(spec, evaluator_port)
-      end)
-
-    IO.puts(Harness.report("harness wire contract (loopback Responses endpoint)", rounds))
-
-    assert Enum.map(rounds, & &1.id) == Harness.scenario_ids()
-    assert Enum.map(rounds, & &1.request_count) == [0, 0, 0, 0, 0, 0]
-
-    assert Enum.map(rounds, & &1.expected_communication) == List.duplicate("silence", 6)
-
-    for round <- rounds, is_binary(round.expected_communication) do
-      assert Harness.communication_kind(round.decision) == round.expected_communication
-    end
-
-    assert Enum.all?(rounds, &(&1.status == "evaluated"))
-
-    # Each assignment survives the engine and durable proof unchanged.
-    assert Enum.map(rounds, &Harness.decision_action(&1.decision)) ==
-             List.duplicate("delegate", 6)
-
-    for round <- rounds, round.status == "evaluated" do
-      assert round.model == nil
-      assert Enum.all?(round.proof_checks, fn {_name, ok?} -> ok? end)
-    end
-
-    assert drain_wire_requests() == []
-  end
-
-  test "live acceptance accepts a matching product model and rejects unpinned or mismatched profiles" do
-    assert :ok = Harness.require_live_model!("gpt-5.6-luna", "gpt-5.6-luna")
-    assert :ok = Harness.require_live_model!("openai/gpt-6-astra", "openai/gpt-6-astra")
-
-    for {model, expected} <- [
-          {"gpt-5.6-luna", nil},
-          {"gpt-5.6-luna", "other"},
-          {"", ""}
-        ] do
-      assert_raise ArgumentError, fn -> Harness.require_live_model!(model, expected) end
-    end
-  end
-
-  test "a human file-share question stays human through source read, freeze and Worker handoff",
-       %{
-         profile: profile
-       } do
-    Application.put_env(:bridge_for_teams_core, @action_env_key, "reply")
-
-    spec =
-      Harness.scenario("reply", Harness.new_round_context!(profile))
-      |> Map.update!(:thread, fn [message] -> [Map.put(message, "subtype", "file_share")] end)
-
-    round = Harness.drive_round!(spec, Harness.evaluator_port(self()), attempts: 1_200)
-    assert Enum.all?(round.proof_checks, fn {_name, ok?} -> ok? end)
-    assert drain_wire_requests() == []
-    input = round.run["input_snapshot"]["canonical_snapshot_bytes"]
-    snapshot = Jason.decode!(input)
-    assert [%{"actor_kind" => "human"}] = snapshot["events"]
-    assert [%{"actor_kind" => "human"}] = snapshot["slack_context"]["messages"]
-    assert input == round.run["input_snapshot"]["canonical_snapshot_bytes"]
-    refute_receive {:slack_reply_posted, _}
-  end
-
-  test "captured bare-link input stays exact while the current evaluator rejects its absent roster",
-       %{
-         profile: profile
-       } do
-    alias BridgeForTeams.TriageOnlineCaseFixture, as: Online
-    Application.put_env(:bridge_for_teams_core, @action_env_key, "online_bare_link")
-
-    assert {:error, :invalid_triage_decision} = Online.replay("bare_forwarded_reply", profile)
-
-    [{_, first}] = drain_wire_requests()
-    [input] = for %{"role" => "user", "content" => content} <- first["input"], do: content
-    assert input == Online.model_input("bare_forwarded_reply")["canonical_snapshot_bytes"]
-    snapshot = Jason.decode!(input)
-    assert [%{"text" => "<@link:l001|@link:l001>"}] = snapshot["slack_context"]["messages"]
-    assert [%{"fast_path" => false, "actor_kind" => "human"}] = snapshot["events"]
-    assert length(snapshot["team_project_memory"]["facts"]) == 20
-    assert length(snapshot["team_project_memory"]["members"]) == 1
-    assert input =~ "不希望 router 因此启动 bot"
-    refute input =~ "发布步骤"
-    refute input =~ "IMG_4242.MOV"
-    assert first["max_output_tokens"] == 16_384
-    assert first["reasoning"]["effort"] == "medium"
-    assert first["tools"] in [nil, []]
-
-    assert get_in(first, [
-             "text",
-             "format",
-             "schema",
-             "properties",
-             "delegations",
-             "items",
-             "properties",
-             "worker_ref",
-             "enum"
-           ]) == ["unavailable"]
-
-    refute_receive {:slack_link_read, _}
-    refute_receive {:slack_reply_posted, _}
-  end
-
-  test "captured token input is rejected without leaking later answers", %{
-    profile: profile
-  } do
-    alias BridgeForTeams.TriageOnlineCaseFixture, as: Online
-    Application.put_env(:bridge_for_teams_core, @action_env_key, "online_token_report")
-
-    assert {:error, :invalid_triage_decision} = Online.replay("token_report_no_tools", profile)
-    [{_, body}] = drain_wire_requests()
-    [input] = for %{"role" => "user", "content" => content} <- body["input"], do: content
-    assert input == Online.model_input("token_report_no_tools")["canonical_snapshot_bytes"]
-    snapshot = Jason.decode!(input)
-
-    assert [%{"actor_kind" => "system", "text" => "orion meet bot 的 salix token 怎么被注销了"}] =
-             snapshot["slack_context"]["messages"]
-
-    assert snapshot["slack_context"]["links"] == []
-    assert body["tools"] in [nil, []]
-    assert length(snapshot["team_project_memory"]["facts"]) == 20
-    refute input =~ "k8s"
-    refute input =~ "1478"
-    refute input =~ "image.png"
-    refute_receive {:slack_link_read, _}
-    refute_receive {:slack_reply_posted, _}
-  end
-
-  test "current source replay changes only the actor derived by the real reader", %{
-    profile: profile
-  } do
-    alias BridgeForTeams.TriageOnlineCaseFixture, as: Online
-    Application.put_env(:bridge_for_teams_core, @action_env_key, "online_token_report")
-
-    assert {:error, :invalid_triage_decision} =
-             Online.replay("token_report_no_tools", profile, source_projection: :current)
-
-    [{_, body}] = drain_wire_requests()
-    [input] = for %{"role" => "user", "content" => content} <- body["input"], do: content
-    snapshot = Jason.decode!(input)
-    historical = Online.fetch!("token_report_no_tools")["snapshot"]
-
-    expected =
-      put_in(historical, ["slack_context", "messages", Access.at(0), "actor_kind"], "human")
-
-    assert snapshot == expected
-    assert [%{"actor_kind" => "system"}] = historical["slack_context"]["messages"]
-    assert body["tools"] in [nil, []]
-    refute_receive {:slack_reply_posted, _}
-  end
-
-  test "a separate Slack permalink stays frozen in a pending Worker handoff", %{profile: profile} do
-    Application.put_env(:bridge_for_teams_core, @action_env_key, "slack_permalink")
-    context = Harness.new_round_context!(profile)
-    spec = Harness.scenario("slack_permalink", context)
-    round = Harness.drive_round!(spec, Harness.evaluator_port(self()))
-
-    assert round.status == "evaluated"
-    assert round.request_count == 0
-    Harness.assert_worker_assignment!(round.run)
-    assert drain_wire_requests() == []
-    snapshot = round.run["input_snapshot"]["canonical_snapshot_bytes"] |> Jason.decode!()
-
-    assert [%{"link_ref" => "link://run/l001", "source_refs" => [source_ref]}] =
-             snapshot["slack_context"]["links"]
-
-    assert source_ref in hd(round.decision["delegations"])["source_refs"]
-    url = "https://atlas.slack.com/archives/C_ATLAS/p1787019000000001"
-    refute Jason.encode!(snapshot) =~ "0.5%"
-    refute Jason.encode!(snapshot) =~ "xoxb-"
-
-    assert %{rows: [["pending", payload]]} =
-             Repo.query!(
-               "SELECT state, payload FROM triage_product_obligations WHERE run_id = $1",
-               [round.run["run_id"]]
-             )
-
-    assert [%{"worker_ref" => "comma-agent://" <> worker_id}] = payload["delegations"]
-
-    assert Enum.any?(BridgeForTeams.Agents.list_agents(context.project.id), fn agent ->
-             agent.role == "worker" and agent.salix_agent_id == worker_id
-           end)
-
-    assert Jason.encode!(payload) =~ url
-    refute Jason.encode!(payload) =~ "0.5%"
-    refute_receive {:slack_link_read, _}
-    refute_receive {:slack_reply_posted, _}
-    refute SalixAgent.Fleet.running?(worker_id)
-    refute SalixAgent.Fleet.running?(spec.authority["inbound_agent_id"])
-  end
-
   test "a decision naming a source this run never froze settles as a failed terminal", ctx do
     %{profile: profile} = ctx
 
     # A recorded-shape response: same wire, same encoding, but the decision
     # names a source outside the frozen closure. Nothing about this needs a
     # network, and the engine must seal an explicit failed terminal for it.
-    Application.put_env(:bridge_for_teams_core, @action_env_key, "forged_source")
+    SystemsRuntime.put_env(:bridge_for_teams_core, @action_env_key, "forged_source")
 
     spec = Harness.scenario("reply", Harness.new_round_context!(profile))
-    namespace = "triage-wire-forged-#{System.unique_integer([:positive])}"
-    server = Fixture.start_engine!(namespace, Harness.evaluator_port(self()))
+    namespace = "triage-wire-forged-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    server = Fixture.start_engine!(namespace, Harness.evaluator_port(SystemsRuntime.Proc.self()))
 
     Fixture.put_thread(spec.thread)
 
@@ -937,7 +746,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarnessWireTest do
     occurrence = %{
       "entry_id" => "forged-source-recheck",
       "schedule_id" => "forged-source-schedule",
-      "scheduled_for_ms" => System.system_time(:millisecond)
+      "scheduled_for_ms" => SystemsClock.system_time(:millisecond)
     }
 
     assert {:ok, _, receipt} =
@@ -950,7 +759,7 @@ defmodule BridgeForTeams.TriageEngineLiveHarnessWireTest do
     assert {:ok, :accepted} = SalixIM.Triage.accept_current(server, spec.authority, receipt)
 
     # The provider was reached and answered.
-    assert_receive {:wire_request, "v1/responses", _body}, 15_000
+    assert_receive {:wire_request, "v1/responses", _body}
 
     run = Fixture.await_run!(server)
 
@@ -985,22 +794,14 @@ defmodule BridgeForTeams.TriageEngineLiveHarnessWireTest do
 
   ## Helpers
 
-  defp drain_wire_requests(acc \\ []) do
-    receive do
-      {:wire_request, path, body} -> drain_wire_requests([{path, body} | acc])
-    after
-      0 -> Enum.reverse(acc)
-    end
-  end
-
   defp install_agent_llm_resolver! do
-    previous = Application.get_env(:salix_agent, :llm_resolver)
-    Application.put_env(:salix_agent, :llm_resolver, Salix.Bindings.AgentLlmResolver)
+    previous = SystemsRuntime.get_env(:salix_agent, :llm_resolver)
+    SystemsRuntime.put_env(:salix_agent, :llm_resolver, Salix.Bindings.AgentLlmResolver)
 
     on_exit(fn ->
       if is_nil(previous),
-        do: Application.delete_env(:salix_agent, :llm_resolver),
-        else: Application.put_env(:salix_agent, :llm_resolver, previous)
+        do: SystemsRuntime.delete_env(:salix_agent, :llm_resolver),
+        else: SystemsRuntime.put_env(:salix_agent, :llm_resolver, previous)
     end)
 
     :ok

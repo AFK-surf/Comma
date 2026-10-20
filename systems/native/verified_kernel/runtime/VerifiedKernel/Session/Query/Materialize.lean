@@ -2,10 +2,10 @@ import VerifiedKernel.Session.Query.StateCore
 
 /-! `State.materialize_pending_input_events/2` and the provider-wait yield it gates.
 
-The batch admits at most one human activation at a time: leading no-wake context
-stays ordinary Router context, one human input opens the activation, and while
-one is open only runtime completions inherited from that source (or the current
-wait's own timeout) still materialize. -/
+The batch admits at most one human activation at a time. A human input's source
+context stays with that activation; ordinary Worker/system context keeps its
+existing behavior. Runtime completions inherited from the active source (or the
+current wait's own timeout) can bypass a deferred human activation. -/
 
 namespace VerifiedKernel.Session.StateQuery
 open Data
@@ -95,13 +95,22 @@ def queueItemEvent (sessionId item nextId hwm : Term) : KernelM (Term × Term ×
     else deliveryEvent sessionId item payload nextId
   return (event, ← add nextId (i 1), ← maximum hwm nextId)
 
+/-- A queued human's context cannot cross an already active human boundary.
+The input command seals this scheduling relation; it grants no source authority. -/
+def deferredActivation (item : Term) (sourceIds : List Term) (active : Bool) : KernelM Bool := do
+  if ← humanSourceWakeable item then return true
+  if !active then return false
+  let payload ← stringify ((← access item (b "payload")).default empty)
+  let owner ← access payload (b "activation_source_message_id")
+  return owner != nil && !sourceIds.contains owner
+
 /-- `materialize_batch/3`: the admitted items, the queue-ack item, and the exact consumes. -/
 def materializeBatch (state : Term) (items : List Term) (limit : Int) :
     KernelM (List Term × Term × List Term) := do
   let sourceIds ← activeHumanSourceIds state
   let active := !sourceIds.isEmpty
   let items := if active then items else takeUpTo items limit
-  let (leading, deferred) ← splitWhile (fun item => return !(← humanSourceWakeable item)) items
+  let (leading, deferred) ← splitWhile (fun item => return !(← deferredActivation item sourceIds active)) items
   let leading := takeUpTo leading limit
   if !active then
     let selected := takeUpTo (leading ++ takeUpTo deferred 1) limit

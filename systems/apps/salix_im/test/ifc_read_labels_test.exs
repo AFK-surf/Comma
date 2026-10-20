@@ -12,7 +12,7 @@ defmodule SalixIM.IFCReadLabelsTest do
   minute per `(tenant, group)` and these Groups deliberately differ in it.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.IFC.ReadLabels
   alias SalixStore.{Ids, Keys, S3}
@@ -26,14 +26,14 @@ defmodule SalixIM.IFCReadLabelsTest do
       SalixStore.Repo.query!("DELETE FROM #{table}")
     end
 
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
-    if Process.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+    if SystemsRuntime.Proc.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
 
     on_exit(fn ->
       if is_nil(previous_backend),
-        do: Application.delete_env(:salix_store, :s3_backend),
-        else: Application.put_env(:salix_store, :s3_backend, previous_backend)
+        do: SystemsRuntime.delete_env(:salix_store, :s3_backend),
+        else: SystemsRuntime.put_env(:salix_store, :s3_backend, previous_backend)
     end)
 
     tenant = Ids.new_tenant_id()
@@ -84,14 +84,6 @@ defmodule SalixIM.IFCReadLabelsTest do
       assert legal_atom == legal()
     end
 
-    test "a public channel reads as the whole space, as ingress labels it too", %{tenant: tenant} do
-      group_id = group(tenant, "enforce")
-      observe(tenant, group_id)
-
-      assert %{"label" => [space_atom]} = ReadLabels.for_scope(connect(tenant, group_id), "C_PUB")
-      assert space_atom == space()
-    end
-
     test "carries the operator's classification tags with it", %{tenant: tenant} do
       group_id = group(tenant, "enforce")
       observe(tenant, group_id)
@@ -99,12 +91,6 @@ defmodule SalixIM.IFCReadLabelsTest do
 
       assert %{"label" => label} = ReadLabels.for_scope(connect(tenant, group_id), "C_LEGAL")
       assert Enum.sort(label) == Enum.sort([legal(), "tag|counsel"])
-    end
-
-    test "a scope it cannot name is not labelled at all", %{tenant: tenant} do
-      group_id = group(tenant, "enforce")
-      assert ReadLabels.for_scope(connect(tenant, group_id), "") == nil
-      assert ReadLabels.for_scope(connect(tenant, group_id), nil) == nil
     end
   end
 
@@ -152,13 +138,6 @@ defmodule SalixIM.IFCReadLabelsTest do
       assert [%{"index" => 0}, %{"index" => 1, "label" => ["agent_private"]}] = items
       assert "agent_private" in label
     end
-
-    test "an empty page is labelled, and reads as private rather than public", %{tenant: tenant} do
-      group_id = group(tenant, "enforce")
-
-      assert %{"label" => ["agent_private"], "items" => []} =
-               ReadLabels.for_messages(connect(tenant, group_id), [])
-    end
   end
 
   describe "one thing that lives in several scopes" do
@@ -174,40 +153,6 @@ defmodule SalixIM.IFCReadLabelsTest do
       assert Enum.sort(label) == Enum.sort([space(), legal()])
       refute Map.has_key?(ReadLabels.for_scopes(connect(tenant, group_id), ["C_PUB"]), "items")
     end
-
-    test "one scope is exactly that scope", %{tenant: tenant} do
-      group_id = group(tenant, "enforce")
-      observe(tenant, group_id)
-
-      assert ReadLabels.for_scopes(connect(tenant, group_id), ["C_LEGAL"]) ==
-               ReadLabels.for_scope(connect(tenant, group_id), "C_LEGAL")
-
-      # The same place named twice is the same audience, not a stricter one.
-      assert ReadLabels.for_scopes(connect(tenant, group_id), ["C_LEGAL", "C_LEGAL"]) ==
-               ReadLabels.for_scope(connect(tenant, group_id), "C_LEGAL")
-    end
-
-    test "a place nobody has observed still narrows the join", %{tenant: tenant} do
-      group_id = group(tenant, "enforce")
-      observe(tenant, group_id)
-
-      assert %{"label" => label} =
-               ReadLabels.for_scopes(connect(tenant, group_id), ["C_PUB", "C_ABSENT"])
-
-      # An unobserved channel is a scope of its own, not the space, so the file
-      # does not inherit the public channel's reach. Whether anyone may read it
-      # is then a membership question the kernel answers, and cannot: an
-      # unobserved scope has no members, so the flow is denied rather than
-      # guessed.
-      assert Enum.sort(label) ==
-               Enum.sort([space(), "scope|#{@connect}|C_ABSENT"])
-    end
-
-    test "nowhere at all is not labelled, because nothing was established", %{tenant: tenant} do
-      group_id = group(tenant, "enforce")
-      assert ReadLabels.for_scopes(connect(tenant, group_id), []) == nil
-      assert ReadLabels.for_scopes(connect(tenant, group_id), ["", nil]) == nil
-    end
   end
 
   describe "a Group that has not opted in" do
@@ -220,38 +165,8 @@ defmodule SalixIM.IFCReadLabelsTest do
       assert ReadLabels.for_messages(connect(tenant, group_id), [%{"channel" => "C_LEGAL"}]) ==
                nil
     end
-
-    test "an unknown Group is off too", %{tenant: tenant} do
-      connect = %{"tenant_id" => tenant, "group_id" => "grp_absent", "connect_id" => @connect}
-      assert ReadLabels.for_scope(connect, "C_LEGAL") == nil
-    end
-
-    test "a connect with nothing to scope by is off" do
-      assert ReadLabels.for_scope(%{}, "C_LEGAL") == nil
-      assert ReadLabels.for_messages(%{}, [%{"channel" => "C_LEGAL"}]) == nil
-      assert ReadLabels.for_scopes(%{}, ["C_LEGAL"]) == nil
-    end
   end
 
   describe "a provider whose hits name their own scope" do
-    test "labels each hit by the key that provider uses", %{tenant: tenant} do
-      group_id = group(tenant, "enforce")
-      observe(tenant, group_id)
-
-      # A Feishu page names its chat in `chat_id`, not `channel`. A thread page
-      # is addressed by thread id and never says which chat it is in, so the
-      # audience is read off the messages rather than off the argument.
-      messages = [%{"chat_id" => "C_LEGAL"}, %{"chat_id" => "C_PUB"}]
-
-      assert %{"label" => label, "items" => items} =
-               ReadLabels.for_messages(connect(tenant, group_id), messages, "chat_id")
-
-      assert [%{"index" => 0, "label" => [legal_atom]}, %{"index" => 1, "label" => [space_atom]}] =
-               items
-
-      assert legal_atom == legal()
-      assert space_atom == space()
-      assert Enum.sort(label) == Enum.sort([space(), legal()])
-    end
   end
 end

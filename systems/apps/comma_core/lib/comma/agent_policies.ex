@@ -1,4 +1,6 @@
 defmodule Comma.AgentPolicies do
+  require SystemsRuntime.Proc
+
   @moduledoc "Conversation policy checks before runtime delivery."
 
   alias BillingCore.FeeControl.Request
@@ -118,9 +120,9 @@ defmodule Comma.AgentPolicies do
   end
 
   defp notify_fee_control(result, billing_context) do
-    case Application.get_env(:comma_core, :fee_control_observer) do
-      observer when is_pid(observer) ->
-        send(observer, {:comma_fee_control_check, result, billing_context})
+    case SystemsRuntime.get_env(:comma_core, :fee_control_observer) do
+      observer when SystemsRuntime.Proc.is_process(observer) ->
+        SystemsRuntime.Proc.send(observer, {:comma_fee_control_check, result, billing_context})
 
       _ ->
         :ok

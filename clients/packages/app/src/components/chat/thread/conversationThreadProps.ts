@@ -1,6 +1,6 @@
-import type { ScrollEdgeMask } from "@comma/ui";
+import type { ScrollEdgeMask } from "@comma/ui/components/scroll-area";
 import type { ReactNode } from "react";
-import type { CommaApiClient, CommaConversationKind } from "../../../api";
+import type { CommaConversationKind } from "@comma/core/api-schemas";
 import type { ConversationFileSource } from "../../../runtime-files/fileSources";
 import type {
   ChatAssistantDraft,
@@ -8,14 +8,19 @@ import type {
   ChatImagePreviewRef,
   ChatMessage,
   LocalFilePreview,
-} from "../model/conversationChannel";
-import type { RevealTurnHandle } from "./navigation/useTurnReveal";
+} from "@comma/core/chat";
+import type { RevealMessageHandle, RevealTurnHandle } from "./navigation/useTurnReveal";
+import type { ReplyThreadSelection } from "./replies/replyThread";
 import type { ChatOutgoingLaunch } from "./outgoing/outgoingPresentation";
 import type { ResponseFeedback } from "./turns/ConversationTurnEntries";
 import type { AnchoredTail } from "./turns/useAnchoredTails";
 
 export type ConversationThreadProps = {
-  api?: CommaApiClient | undefined;
+  /**
+   * The thread shows the core's live data: replies load the messages they quote, attachments read their bytes, and
+   * inline Tasks and widgets read theirs. A static thread (a preview, a share) shows only what it was given.
+   */
+  live?: boolean | undefined;
   assistantDraft?: ChatAssistantDraft | undefined;
   assistantResponseSlotId?: string | undefined;
   afterMessages?: ReactNode;
@@ -50,6 +55,8 @@ export type ConversationThreadProps = {
       ) => Promise<LocalFilePreview | undefined>)
     | undefined;
   onRetry: (clientRequestId: string) => void;
+  /** Closes the open reply thread; the thread asks when its dimmed space is clicked. */
+  onExitReplyThread?: (() => void) | undefined;
   outgoingLaunches?: readonly ChatOutgoingLaunch[] | undefined;
   /**
    * Receives the imperative "reveal this turn" entry point. A stable ref
@@ -57,8 +64,15 @@ export type ConversationThreadProps = {
    * this memoized thread without breaking the memo boundary.
    */
   revealTurnHandle?: RevealTurnHandle | undefined;
+  /**
+   * Receives "reveal this message" for UI outside the thread, such as a Task's
+   * Activity: a message not loaded yet is read first. A ref object, like
+   * `revealTurnHandle`.
+   */
+  revealMessageHandle?: RevealMessageHandle | undefined;
+  /** The thread gathered above the composer for a reply, if one is open. */
+  replyThread?: ReplyThreadSelection | undefined;
   scrollAreaEdgeMask?: ScrollEdgeMask;
   showMessageActions?: boolean;
-  variant?: "default" | "side-chat";
   workspaceId: string;
 };

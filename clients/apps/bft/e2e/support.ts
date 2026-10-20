@@ -62,12 +62,13 @@ export interface RecordedRequest {
 type Reply = { status: number; body: unknown } | { status: number; text: string };
 
 /**
- * Answers `/dashboard/api/v1/**` from `handle` (undefined means 404) and
- * records every request with its CSRF header and JSON body.
+ * Answers `/dashboard/api/v1/**` from `handle` (undefined means 404; a promise
+ * holds the reply until it settles) and records every request with its CSRF
+ * header and JSON body.
  */
 export async function routeApi(
   page: Page,
-  handle: (request: RecordedRequest) => Reply | undefined
+  handle: (request: RecordedRequest) => Reply | undefined | Promise<Reply | undefined>
 ) {
   const requests: RecordedRequest[] = [];
   await page.route("**/dashboard/api/v1/**", async (route) => {
@@ -82,7 +83,7 @@ export async function routeApi(
       body: raw ? (JSON.parse(raw) as unknown) : undefined,
     };
     requests.push(recorded);
-    const reply = handle(recorded) ?? {
+    const reply = (await handle(recorded)) ?? {
       status: 404,
       body: { ok: false, error: { code: "not_found", message: "Not found" } },
     };

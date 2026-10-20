@@ -11,8 +11,11 @@ defmodule SalixStore.S3Case do
     end
   end
 
+  # A synchronous test stops what it leaves running when it ends.
+  setup {SystemsClock.Case, :isolate}
+
   @doc "A unique key prefix for the running test."
   def unique_prefix(tag \\ "t") do
-    "itest/#{tag}/#{System.unique_integer([:positive])}/"
+    "itest/#{tag}/#{SystemsRuntime.Proc.unique_integer([:positive])}/"
   end
 end

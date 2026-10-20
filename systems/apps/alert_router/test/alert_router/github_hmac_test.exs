@@ -1,5 +1,5 @@
 defmodule AlertRouter.GitHubHMACTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   import Plug.Conn
   import Plug.Test

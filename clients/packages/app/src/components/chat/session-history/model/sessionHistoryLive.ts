@@ -1,10 +1,10 @@
 import { useMemo } from "react";
-import type { SessionHistorySnapshot } from "../../../../runtime-chat/sessionHistoryBridge";
+import type { SessionHistoryValue } from "../useSessionHistory";
 
 /** Durable terminal measurements dominate observational overlays. An absent
  * completion never implies a live request; only the owner supplies `live`. */
 export function useHistoryRecords(
-  snapshot: SessionHistorySnapshot | null | undefined,
+  snapshot: SessionHistoryValue | null | undefined,
   recent = false
 ) {
   return useMemo(() => {

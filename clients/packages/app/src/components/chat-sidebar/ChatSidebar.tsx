@@ -1,23 +1,29 @@
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { useApplicationMenu } from "../application-menu/useApplicationMenu";
 import { useTaskSummary } from "../tasks/useTaskArchive";
 import { openUrlInExternalBrowser } from "../chat/thread/inline/linkActions";
+import { Button } from "@comma/ui/components/Button";
 import {
-  Button,
   ExpandSimpleIcon,
   FileIcon,
   GlobeIcon,
-  taskStatusBucket,
-  taskStatusIcon,
+  MacbookIcon,
+} from "@comma/ui/components/icons";
+import { DeviceScreenPanel } from "../remote-screen/DeviceScreenPanel";
+import { taskStatusBucket, taskStatusIcon } from "@comma/ui/components/task-workspace";
+import {
   RightSidebar,
   RightSidebarBrowserToolbar,
   RightSidebarToolbarButton,
-  appKeybindingKeycaps,
+  type RightSidebarTab,
+} from "@comma/ui/components/right-sidebar";
+import { appKeybindingKeycaps } from "@comma/ui/components/settings-shortcut";
+import {
   claimToastObstructionRight,
   releaseToastObstructionRight,
   toast,
-  useNativeSurfaceSuppressed,
-  type RightSidebarTab,
-} from "@comma/ui";
+} from "@comma/ui/components/toast";
+import { useNativeSurfaceSuppressed } from "@comma/ui/components/native-surface/nativeSurfaceSuppression";
 import { useCommaMessages } from "@comma/i18n/react";
 import {
   getNativeBridge,
@@ -35,8 +41,14 @@ import {
   type CSSProperties,
 } from "react";
 import { flushSync } from "react-dom";
-import type { CommaApiClient } from "../../api";
+import { useCall } from "@comma/core-client";
 import { ShellIconButton } from "../ShellIconButton";
+import {
+  BrowserImportDialog,
+  BrowserImportOffer,
+  dismissBrowserImportOffer,
+} from "../chat/BrowserImportDialog";
+import { BrowserPasskeyDialog } from "../chat/BrowserPasskeyDialog";
 import { commaChatSidebarMaxWidth, commaChatSidebarMinWidth } from "../shellGeometry";
 import { useOptionalAppShortcutBinding } from "../shortcuts/commaAppShortcuts";
 import {
@@ -44,11 +56,8 @@ import {
   type ConversationViewActions,
 } from "../chat/conversation/ConversationView";
 import { type TasksFilterLink, useOpenTasksFilter } from "../tasks/taskChips";
-import type {
-  AttachmentUploadInput,
-  ChatConversationRef,
-} from "../chat/model/conversationChannel";
-import { useChatApi, useChatRegistry } from "../chat/ChatProvider";
+import type { AttachmentUploadInput, ChatConversationRef } from "@comma/core/chat";
+import { useChatRegistry } from "../chat/ChatProvider";
 import { useConversation } from "../chat/conversation/useConversation";
 import { useWorkspaceSkills } from "../chat/useWorkspaceSkills";
 import {
@@ -63,7 +72,10 @@ import {
   useChatSidebar,
   useChatSidebarWidth,
 } from "./ChatSidebarContext";
-import { buildBrowserElementInspectionMessage } from "./browserElementInspection";
+import {
+  browserElementInspectionFiles,
+  buildBrowserElementInspectionMessage,
+} from "./browserElementInspection";
 import { FilePreviewPanel } from "./FilePreviewPanel";
 import { DrivePreviewPanel } from "../drive/DrivePreviewPanel";
 import {
@@ -83,6 +95,7 @@ const chatTabId = (chat: ChatSidebarConversationTarget) =>
 const fileTabPrefix = "file:";
 const driveTabPrefix = "drive:";
 const driveTabId = (fileId: string) => `${driveTabPrefix}${fileId}`;
+const screenTabPrefix = "screen:";
 const historyTabPrefix = "history:";
 const historyTabId = (pageId: string) => `${historyTabPrefix}${pageId}`;
 const driveFileIdFromTab = (tabId: string) =>
@@ -156,7 +169,6 @@ export function ChatSidebarSurface({
   onOpenChat: (target: ChatSidebarConversationTarget) => void;
   onOpenTasksFilter?: ((filter: TasksFilterLink) => void) | undefined;
 }) {
-  const api = useChatApi();
   const registry = useChatRegistry();
   const messages = useCommaMessages();
   const routerName = useRouterDisplayName();
@@ -171,6 +183,7 @@ export function ChatSidebarSurface({
     closeFilePreview,
     selectFilePreview,
     closeHistoryPage,
+    closeScreenPage,
     getNativeBrowserCapacityBlockedEpoch,
     isOpen,
     toggleActive,
@@ -183,6 +196,7 @@ export function ChatSidebarSurface({
     selectChat,
     selectDrivePreview,
     selectHistoryPage,
+    selectScreenPage,
     trailingRef,
     updateBrowserPage,
     updateBrowserPageMetadata,
@@ -244,8 +258,10 @@ export function ChatSidebarSurface({
         toast.error("The chat is not ready to receive browser context yet.");
         return;
       }
+      const files = browserElementInspectionFiles(inspection);
       sendInspection(buildBrowserElementInspectionMessage(inspection), {
         consumeDraft: false,
+        ...(files.length > 0 ? { files } : {}),
       });
     },
     [inspectionChannel, sendInspection]
@@ -284,6 +300,10 @@ export function ChatSidebarSurface({
   const activeHistoryPage =
     historyPages.find((page) => page.id === displayedSession?.activeHistoryPageId) ??
     historyPages[0];
+  const screenPages = displayedSession?.screenPages ?? [];
+  const activeScreenPage =
+    screenPages.find((page) => page.id === displayedSession?.activeScreenPageId) ??
+    screenPages[0];
   const activeBrowserPageId = displayedSession?.activeBrowserPageId;
   const activeBrowserPage =
     browserPages.find((page) => page.id === activeBrowserPageId) ?? browserPages[0];
@@ -300,10 +320,11 @@ export function ChatSidebarSurface({
     drive: drivePreviews.length > 0,
     file: filePreviews.length > 0,
     history: historyPages.length > 0,
+    screen: screenPages.length > 0,
   };
   const activeSurface = availableSurfaces[requestedSurface]
     ? requestedSurface
-    : ((["chat", "browser", "drive", "history", "file"] as const).find(
+    : ((["chat", "browser", "drive", "history", "file", "screen"] as const).find(
         (surface) => availableSurfaces[surface]
       ) ?? "chat");
   const activeTab =
@@ -313,11 +334,13 @@ export function ChatSidebarSurface({
         ? activeChat
           ? chatTabId(activeChat)
           : ""
-        : activeSurface === "history"
-          ? historyTabId(activeHistoryPage?.id ?? "")
-          : activeSurface === "drive"
-            ? driveTabId(activeDrivePreview?.id ?? "")
-            : (activeBrowserPage?.id ?? browserPages[0]?.id ?? "");
+        : activeSurface === "screen"
+          ? `${screenTabPrefix}${activeScreenPage?.id ?? ""}`
+          : activeSurface === "history"
+            ? historyTabId(activeHistoryPage?.id ?? "")
+            : activeSurface === "drive"
+              ? driveTabId(activeDrivePreview?.id ?? "")
+              : (activeBrowserPage?.id ?? browserPages[0]?.id ?? "");
 
   const expandChat = () => {
     if (!activeChat) return;
@@ -342,7 +365,7 @@ export function ChatSidebarSurface({
   const sidebarTabs: RightSidebarTab[] = [
     ...chats.map((chat) => ({
       closable: true,
-      icon: <SidebarTaskIcon api={api} target={chat} />,
+      icon: <SidebarTaskIcon target={chat} />,
       id: chatTabId(chat),
       label: chat.title?.trim() || messages.chat_ref_task(),
       panelId: "chat-sidebar-chat-panel",
@@ -360,6 +383,13 @@ export function ChatSidebarSurface({
       id: driveTabId(preview.id),
       label: preview.name,
       panelId: `chat-sidebar-drive-panel-${preview.id}`,
+    })),
+    ...screenPages.map((page) => ({
+      closable: true,
+      icon: <MacbookIcon className="size-5" />,
+      id: `${screenTabPrefix}${page.id}`,
+      label: page.apps.length ? page.apps.join(", ") : messages.remote_screen_tab(),
+      panelId: `chat-sidebar-screen-panel-${page.id}`,
     })),
     ...historyPages.map((page) => ({
       closable: true,
@@ -381,6 +411,10 @@ export function ChatSidebarSurface({
       selectFilePreview(displayedHost, tabId.slice(fileTabPrefix.length));
       return;
     }
+    if (tabId.startsWith(screenTabPrefix)) {
+      selectScreenPage(displayedHost, tabId.slice(screenTabPrefix.length));
+      return;
+    }
     if (tabId.startsWith(historyTabPrefix)) {
       selectHistoryPage(displayedHost, tabId.slice(historyTabPrefix.length));
       return;
@@ -400,6 +434,10 @@ export function ChatSidebarSurface({
     if (!displayedHost) return;
     if (tabId.startsWith(fileTabPrefix)) {
       closeFilePreview(displayedHost, tabId.slice(fileTabPrefix.length));
+      return;
+    }
+    if (tabId.startsWith(screenTabPrefix)) {
+      closeScreenPage(displayedHost, tabId.slice(screenTabPrefix.length));
       return;
     }
     if (tabId.startsWith(historyTabPrefix)) {
@@ -515,7 +553,6 @@ export function ChatSidebarSurface({
           )}
           {open && activeSurface === "file" && activeFilePreview ? (
             <FilePreviewPanel
-              api={api}
               key={activeFilePreview.id}
               source={activeFilePreview.source}
               panelId="chat-sidebar-file-panel"
@@ -532,6 +569,23 @@ export function ChatSidebarSurface({
               panelId={`chat-sidebar-drive-panel-${activeDrivePreview.id}`}
             />
           ) : null}
+          {screenPages.map((page) => {
+            const shown =
+              activeSurface === "screen" && activeScreenPage?.id === page.id;
+            return (
+              <section
+                key={page.id}
+                role="tabpanel"
+                id={`chat-sidebar-screen-panel-${page.id}`}
+                aria-label={messages.remote_screen_tab()}
+                hidden={!shown}
+                style={{ display: shown ? "flex" : "none" }}
+                className="min-h-0 min-w-0 flex-1 flex-col"
+              >
+                <DeviceScreenPanel active={open && shown} page={page} />
+              </section>
+            );
+          })}
           {historyPages.map((page) => (
             <section
               key={page.id}
@@ -560,7 +614,6 @@ export function ChatSidebarSurface({
           ))}
           {activeSurface === "chat" && activeChat ? (
             <ChatSidebarConversation
-              api={api}
               key={chatSidebarHostKey(activeChat)}
               onOpenBrowser={(url) => openBrowser(displayedHost, { url })}
               onOpenConversationRef={openChildChat}
@@ -589,8 +642,8 @@ export function ChatSidebarToggle() {
     <ShellIconButton
       className="comma-chat-sidebar-toggle"
       expanded={isOpen}
-      icon="layout-right"
-      label="Toggle chat sidebar"
+      icon="column-wide-add"
+      label="New tab"
       onClick={toggleActive}
       {...(rightSidebarShortcut
         ? { shortcut: appKeybindingKeycaps(rightSidebarShortcut) }
@@ -635,34 +688,38 @@ function ChatSidebarEmptyState({
 
 function ChatSidebarConversation({
   onOpenTasksFilter,
-  api,
   onOpenBrowser,
   onOpenConversationRef,
   surfaceActive,
   target,
 }: {
-  api: CommaApiClient;
   onOpenTasksFilter?: ((filter: TasksFilterLink) => void) | undefined;
   onOpenBrowser: (url: string) => void;
   onOpenConversationRef: (conversationRef: ChatConversationRef) => void;
   surfaceActive: boolean;
   target: ChatSidebarConversationTarget;
 }) {
+  const call = useCall();
   const conversation = useConversation(
     target.workspaceId,
     target.groupId,
     target.conversationId
   );
-  const skills = useWorkspaceSkills(api, target.workspaceId);
+  const skills = useWorkspaceSkills(target.workspaceId);
   // Depend on the stable per-channel action identities, not the conversation
   // object (whose identity changes on every state emit).
-  const { acceptTaskReview, refresh } = conversation;
+  const { acceptTaskReview, refresh, setTaskStatus } = conversation;
   const actions = useMemo<ConversationViewActions>(
     () => ({
       acceptTaskReview,
+      setTaskStatus,
       setTaskLabels: async (labelIds) => {
         try {
-          await api.setTaskLabels(target.groupId, target.conversationId, labelIds);
+          await call("taskLabels.assign", {
+            group: target.groupId,
+            conversation: target.conversationId,
+            labels: [...labelIds],
+          });
         } finally {
           await refresh();
         }
@@ -675,26 +732,31 @@ function ChatSidebarConversation({
       ...(conversation.previewLocalFile
         ? { previewLocalFile: conversation.previewLocalFile }
         : {}),
+      readTaskActivity: conversation.readTaskActivity,
       refresh,
       removeAttachment: conversation.removeAttachment,
       retry: conversation.retry,
       retryAttachment: conversation.retryAttachment,
+      answerQuestion: conversation.answerQuestion,
       send: conversation.send,
       setDraft: conversation.setDraft,
     }),
     [
       acceptTaskReview,
-      api,
+      setTaskStatus,
+      call,
       target.conversationId,
       target.groupId,
       conversation.attachFiles,
       conversation.discard,
       conversation.pickAttachments,
       conversation.previewLocalFile,
+      conversation.readTaskActivity,
       refresh,
       conversation.removeAttachment,
       conversation.retry,
       conversation.retryAttachment,
+      conversation.answerQuestion,
       conversation.send,
       conversation.setDraft,
     ]
@@ -710,7 +772,7 @@ function ChatSidebarConversation({
     >
       <ConversationView
         actions={actions}
-        api={api}
+        live
         groupId={target.groupId}
         conversationId={target.conversationId}
         draftSource={conversation.draftSource}
@@ -843,8 +905,6 @@ function BrowserSidebarPanel({
   suppressed: boolean;
   visible: boolean;
 }) {
-  // Native metadata and inactive-session recovery are modeled in
-  // tla/browser-sidebar/BrowserSidebar.tla.
   const bridge = getNativeBridge();
   const messages = useCommaMessages();
   const [unavailableReason, setUnavailableReason] = useState<string | undefined>(
@@ -866,6 +926,7 @@ function BrowserSidebarPanel({
   const [addressError, setAddressError] = useState<string | undefined>();
   const [editingAddress, setEditingAddress] = useState(false);
   const [inspecting, setInspecting] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   useBrowserErrorToast(
     addressError ?? (browserState.available ? browserState.reason : undefined)
   );
@@ -927,6 +988,12 @@ function BrowserSidebarPanel({
   useEffect(() => {
     if (!editingAddress) setAddress(page.url);
   }, [editingAddress, page.url]);
+
+  const openExternal = () => {
+    void openUrlInExternalBrowser(page.url).catch(() =>
+      toast.error(messages.chat_open_browser_failed())
+    );
+  };
 
   const navigate = async (action: "back" | "forward" | "reload" | "stop") => {
     const panelGeneration = panelGenerationRef.current;
@@ -1067,27 +1134,23 @@ function BrowserSidebarPanel({
               }
             : undefined
         }
-        onOpenExternal={() => {
-          void openUrlInExternalBrowser(page.url).catch(() =>
-            toast.error(messages.chat_open_browser_failed())
-          );
-        }}
-        onPermissions={
+        onOpenExternal={openExternal}
+        onPageMenu={
           bridge.platform === "electron"
             ? (anchor) => {
                 void bridge.browserSidebar
                   .showPermissions({ sessionId, anchor })
                   .then((result) => {
                     if (result.status === "unavailable")
-                      toast.error(
-                        result.reason ?? "Website permissions are unavailable."
-                      );
+                      toast.error(result.reason ?? "The page menu is unavailable.");
+                    else if (result.picked === "import-sign-ins") setImportOpen(true);
+                    else if (result.picked === "open-external") openExternal();
                   })
                   .catch((error) =>
                     toast.error(
                       error instanceof Error
                         ? error.message
-                        : "Website permissions are unavailable."
+                        : "The page menu is unavailable."
                     )
                   );
               }
@@ -1100,6 +1163,29 @@ function BrowserSidebarPanel({
           void navigate("stop");
         }}
       />
+      {visible && browserState.active && browserState.passkey ? (
+        <BrowserPasskeyDialog
+          onDismiss={() => {
+            void bridge.browserSidebar
+              .dismissPasskey({ sessionId })
+              .then(publishBrowserState)
+              .catch(() => undefined);
+          }}
+          prompt={browserState.passkey}
+        />
+      ) : null}
+      {bridge.platform === "electron" && !unavailableReason ? (
+        <BrowserImportOffer onImport={() => setImportOpen(true)} />
+      ) : null}
+      {importOpen ? (
+        <BrowserImportDialog
+          onClose={() => setImportOpen(false)}
+          onImported={() => {
+            dismissBrowserImportOffer();
+            void navigate("reload");
+          }}
+        />
+      ) : null}
       {bridge.platform === "electron" && !unavailableReason ? (
         <NativeBrowserViewport
           closeBeforeOpenSessionIds={page.closeBeforeOpenSessionIds}
@@ -1184,7 +1270,7 @@ function NativeBrowserViewport({
     navigationRevision,
     url,
   });
-  const syncFrameRef = useRef<number | undefined>(undefined);
+  const syncFrameRef = useRef<(() => void) | undefined>(undefined);
   // What the native view may show right now: the product says the panel is
   // displayed AND no full-window DOM overlay holds a suppression claim.
   const nativeVisible = visible && !suppressed;
@@ -1596,7 +1682,7 @@ function NativeBrowserViewport({
       recoveryAttemptedRef.current = false;
       recoveryScheduledRef.current = false;
       if (syncFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(syncFrameRef.current);
+        syncFrameRef.current();
       }
       // React StrictMode replays layout-effect cleanup/setup for the same
       // mounted tree. Let the matching setup reclaim this exact native
@@ -1618,7 +1704,7 @@ function NativeBrowserViewport({
     if (!nativeVisible) {
       if (!capacityBlockedRef.current) recoveryAttemptedRef.current = false;
       if (syncFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(syncFrameRef.current);
+        syncFrameRef.current();
         syncFrameRef.current = undefined;
       }
       if (openedRef.current) {
@@ -1673,15 +1759,25 @@ function NativeBrowserViewport({
               if (!currentEpoch() || !mountedRef.current) return;
               // Cross a paint boundary after decoding; a single rAF runs
               // before paint, so hiding from it can still reveal a blank frame.
-              // A timer bounds this wait when an occluded window pauses rAF;
-              // the paint is invisible there anyway.
+              // A hidden (occluded) window pauses rAF and paints nothing
+              // visible, so it does not wait.
               return new Promise<void>((resolve) => {
-                const timer = window.setTimeout(resolve, 48);
-                requestAnimationFrame(() => {
-                  requestAnimationFrame(() => {
-                    window.clearTimeout(timer);
-                    resolve();
-                  });
+                let cancelFrame: CancelUiTimer | undefined;
+                const done = () => {
+                  document.removeEventListener("visibilitychange", onHidden);
+                  cancelFrame?.();
+                  resolve();
+                };
+                const onHidden = () => {
+                  if (document.visibilityState === "hidden") done();
+                };
+                if (document.visibilityState === "hidden") {
+                  done();
+                  return;
+                }
+                document.addEventListener("visibilitychange", onHidden);
+                cancelFrame = uiClock.frame(() => {
+                  cancelFrame = uiClock.frame(done);
                 });
               });
             })
@@ -1822,9 +1918,9 @@ function NativeBrowserViewport({
     };
     const scheduleSync = () => {
       if (syncFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(syncFrameRef.current);
+        syncFrameRef.current();
       }
-      syncFrameRef.current = window.requestAnimationFrame(() => {
+      syncFrameRef.current = uiClock.frame(() => {
         syncFrameRef.current = undefined;
         syncSurface();
       });
@@ -1959,14 +2055,8 @@ function BrowserPageIcon({ favicon }: { favicon: string | undefined }) {
   );
 }
 
-function SidebarTaskIcon({
-  api,
-  target,
-}: {
-  api: CommaApiClient;
-  target: ChatSidebarConversationTarget;
-}) {
-  const task = useTaskSummary(api, target.groupId, target.conversationId);
+function SidebarTaskIcon({ target }: { target: ChatSidebarConversationTarget }) {
+  const task = useTaskSummary(target.groupId, target.conversationId);
   return (
     <span
       className="comma-inline-task-icon"

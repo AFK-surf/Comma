@@ -1,6 +1,7 @@
 import { initializeCommaI18n } from "@comma/i18n";
 import { act, render, screen } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
+import { useSyncExternalStore, type ReactNode } from "react";
 import {
   Outlet,
   RouterProvider,
@@ -9,19 +10,27 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestCommaAuthValue } from "../../../test/productInboxProjectionHarness";
 import { CommaAuthContext } from "../../auth-context";
 import { CommaWebClientSettingsProvider } from "../../commaClientSettings";
 import { CommaAppShortcutsProvider } from "../../shortcuts/commaAppShortcuts";
 import { SidebarChrome } from "../SidebarChrome";
+import {
+  CommaCenterStatusProvider,
+  usePublishCommaCenterStatus,
+} from "../CommaCenterStatusContext";
+import {
+  CommaSettingsOverlayProvider,
+  useCommaSettingsOverlay,
+} from "../../settingsOverlay";
 
 // Each rail item's render, by item id ("/inbox", "settings", ...).
 const railRenders = vi.hoisted(() => [] as string[]);
 
-vi.mock("@comma/ui", async (importOriginal) => {
+vi.mock("@comma/ui/components/left-rail", async (importOriginal) => {
   const [actual, React] = await Promise.all([
-    importOriginal<typeof import("@comma/ui")>(),
+    importOriginal<typeof import("@comma/ui/components/left-rail")>(),
     import("react"),
   ]);
   return {
@@ -33,15 +42,30 @@ vi.mock("@comma/ui", async (importOriginal) => {
   };
 });
 
-function renderRail() {
+function renderRail({
+  children,
+  initialEntry = "/",
+}: { children?: ReactNode; initialEntry?: string } = {}) {
   const auth = createTestCommaAuthValue();
+  const rail = (
+    <>
+      {children}
+      <SidebarChrome />
+      <Outlet />
+    </>
+  );
   const rootRoute = createRootRoute({
     component: () => (
       <CommaWebClientSettingsProvider>
         <CommaAuthContext.Provider value={auth}>
           <CommaAppShortcutsProvider>
-            <SidebarChrome />
-            <Outlet />
+            <CommaCenterStatusProvider>
+              {children ? (
+                <CommaSettingsOverlayProvider>{rail}</CommaSettingsOverlayProvider>
+              ) : (
+                rail
+              )}
+            </CommaCenterStatusProvider>
           </CommaAppShortcutsProvider>
         </CommaAuthContext.Provider>
       </CommaWebClientSettingsProvider>
@@ -52,7 +76,7 @@ function renderRail() {
   );
   const router = createRouter({
     routeTree: rootRoute.addChildren(pages),
-    history: createMemoryHistory({ initialEntries: ["/"] }),
+    history: createMemoryHistory({ initialEntries: [initialEntry] }),
   });
   render(<RouterProvider router={router} />);
   return router;
@@ -62,6 +86,7 @@ describe("SidebarChrome", () => {
   beforeAll(() => {
     initializeCommaI18n(["en"]);
   });
+  afterEach(() => vi.restoreAllMocks());
 
   it("re-renders only the two links a page switch moves between", async () => {
     const router = renderRail();
@@ -89,4 +114,93 @@ describe("SidebarChrome", () => {
     expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ to: "/tasks" }));
     expect(router.state.location.pathname).toBe("/tasks");
   });
+
+  it("badges a new Router reply away from Home and clears it when Home is viewed", async () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const { router, publish } = renderReplyRail("/inbox");
+    const home = await screen.findByRole("link", { name: "Home" });
+    const badge = () => home.querySelector('[data-slot="left-rail-item-badge"]');
+    expect(badge()).toBeNull();
+    // Initial history is the baseline, even when Home has not been opened.
+    act(() => publish("old-reply"));
+    expect(badge()).toBeNull();
+    act(() => publish("new-reply"));
+    expect(badge()).not.toBeNull();
+    await userEvent.click(home);
+    expect(router.state.location.pathname).toBe("/");
+    expect(badge()).toBeNull();
+    act(() => publish("reply-while-reading"));
+    await act(() => router.navigate({ to: "/inbox" }));
+    expect(badge()).toBeNull();
+  });
+
+  it("keeps a first reply unread under Settings and while the Home window is away", async () => {
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const { publish } = renderReplyRail("/");
+    const home = await screen.findByRole("link", { name: "Home" });
+    const badge = () => home.querySelector('[data-slot="left-rail-item-badge"]');
+    act(() => publish(null));
+    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    act(() => publish("first-reply"));
+    expect(badge()).not.toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
+    expect(badge()).toBeNull();
+    focused.mockReturnValue(false);
+    act(() => window.dispatchEvent(new Event("blur")));
+    act(() => publish("background-reply"));
+    expect(badge()).not.toBeNull();
+    focused.mockReturnValue(true);
+    act(() => window.dispatchEvent(new Event("focus")));
+    expect(badge()).toBeNull();
+  });
+
+  it("keeps unread through a reconnect and drops it with the conversation owner", async () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const { publish, replaceOwner } = renderReplyRail("/inbox");
+    const home = await screen.findByRole("link", { name: "Home" });
+    const badge = () => home.querySelector('[data-slot="left-rail-item-badge"]');
+    act(() => publish(null));
+    act(() => publish("new-reply"));
+    expect(badge()).not.toBeNull();
+    act(() => publish(undefined));
+    expect(badge()).not.toBeNull();
+    act(() => publish("new-reply"));
+    expect(badge()).not.toBeNull();
+    act(() => replaceOwner());
+    expect(badge()).toBeNull();
+    act(() => publish("other-account-history"));
+    expect(badge()).toBeNull();
+  });
 });
+
+function renderReplyRail(initialEntry: string) {
+  let snapshot = {
+    owner: Symbol("home"),
+    replyId: undefined as string | null | undefined,
+  };
+  const listeners = new Set<() => void>();
+  const subscribe = (listener: () => void) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  };
+  const getSnapshot = () => snapshot;
+  function ReplyPublisher() {
+    const { owner, replyId } = useSyncExternalStore(subscribe, getSnapshot);
+    usePublishCommaCenterStatus(owner, { kind: "idle" }, replyId);
+    const { open, closeSettings } = useCommaSettingsOverlay();
+    return open ? <button onClick={closeSettings}>Close settings</button> : null;
+  }
+  return {
+    router: renderRail({ children: <ReplyPublisher />, initialEntry }),
+    publish(replyId: string | null | undefined) {
+      snapshot = { ...snapshot, replyId };
+      listeners.forEach((listener) => listener());
+    },
+    replaceOwner() {
+      snapshot = { owner: Symbol("other-home"), replyId: undefined };
+      listeners.forEach((listener) => listener());
+    },
+  };
+}

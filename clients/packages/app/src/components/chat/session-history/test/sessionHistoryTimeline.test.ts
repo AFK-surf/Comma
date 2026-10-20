@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { SessionHistoryRecord } from "../../../../runtime-chat/sessionHistoryBridge";
+import type { SessionHistoryRecord } from "../useSessionHistory";
 import { sessionTimeline } from "../timeline/sessionHistoryTimelineModel";
 import type { SessionItemPresentation } from "../model/sessionHistoryPresentation";
 

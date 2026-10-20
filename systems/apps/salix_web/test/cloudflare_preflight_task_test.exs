@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Salix.Vm.CloudflarePreflightTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Mix.Tasks.Salix.Vm.CloudflarePreflight
   alias SalixWeb.CloudVM
@@ -8,12 +8,15 @@ defmodule Mix.Tasks.Salix.Vm.CloudflarePreflightTest do
   setup do
     Salix.App.configure()
 
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    prev_platform_vm = Application.get_env(:salix_web, :platform_vm)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.delete_env(:salix_web, :platform_vm)
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_platform_vm = SystemsRuntime.get_env(:salix_web, :platform_vm)
+    prev_req_defaults = Req.default_options()
+    # The mock's 503 healthz would otherwise spend ~7s in Req's transient retries.
+    Req.default_options(Keyword.put(prev_req_defaults, :retry, false))
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.delete_env(:salix_web, :platform_vm)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -21,7 +24,8 @@ defmodule Mix.Tasks.Salix.Vm.CloudflarePreflightTest do
 
     on_exit(fn ->
       CloudVM.delete_default_vm_config()
-      Application.put_env(:salix_store, :s3_backend, prev_backend)
+      Req.default_options(prev_req_defaults)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_backend)
       restore_salix_web_env(:platform_vm, prev_platform_vm)
     end)
 
@@ -81,6 +85,6 @@ defmodule Mix.Tasks.Salix.Vm.CloudflarePreflightTest do
       })
   end
 
-  defp restore_salix_web_env(key, nil), do: Application.delete_env(:salix_web, key)
-  defp restore_salix_web_env(key, value), do: Application.put_env(:salix_web, key, value)
+  defp restore_salix_web_env(key, nil), do: SystemsRuntime.delete_env(:salix_web, key)
+  defp restore_salix_web_env(key, value), do: SystemsRuntime.put_env(:salix_web, key, value)
 end

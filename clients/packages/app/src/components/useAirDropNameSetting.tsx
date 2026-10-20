@@ -6,12 +6,10 @@ import {
   type AppPreferences,
   type AppPreferencesPatch,
 } from "@comma/native-bridge";
-import {
-  Button,
-  ChevronRightSmallIcon,
-  Dialog,
-  type SettingsPanelItem,
-} from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { ChevronRightSmallIcon } from "@comma/ui/components/icons";
+import { Dialog } from "@comma/ui/components/dialog";
+import { type SettingsPanelItem } from "@comma/ui/components/settings-panel";
 import { useCommaAuth } from "./auth-context";
 
 /**

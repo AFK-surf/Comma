@@ -69,7 +69,12 @@ defmodule SalixCalendar.LocalItem do
   @doc "Canonical typed digest of a complete principal_ref, for owner index markers."
   @spec owner_digest(map()) :: String.t()
   def owner_digest(%{} = owner),
-    do: owner |> canonical_owner() |> JSON.stringify() |> :erlang.term_to_binary([:deterministic]) |> Crypto.hex()
+    do:
+      owner
+      |> canonical_owner()
+      |> JSON.stringify()
+      |> :erlang.term_to_binary([:deterministic])
+      |> Crypto.hex()
 
   @doc "UTC year-month bucket (\"yyyy-mm\") for an epoch-millisecond instant."
   @spec month_bucket(integer()) :: String.t()
@@ -101,7 +106,7 @@ defmodule SalixCalendar.LocalItem do
   end
 
   defp time_zone(zone) when is_binary(zone) do
-    case DateTime.shift_zone(DateTime.utc_now(), zone) do
+    case DateTime.shift_zone(SystemsClock.utc_now(), zone) do
       {:ok, _} -> {:ok, zone}
       {:error, _} -> {:error, :invalid_time_zone}
     end
@@ -182,5 +187,5 @@ defmodule SalixCalendar.LocalItem do
 
   defp pad2(n), do: n |> Integer.to_string() |> String.pad_leading(2, "0")
 
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 end

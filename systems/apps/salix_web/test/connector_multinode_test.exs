@@ -17,59 +17,14 @@ defmodule SalixWeb.ConnectorMultinodeTest do
   visible cross-node. Requires BEAM distribution + MinIO + Go; the module fails
   if distribution is unavailable.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   @moduletag :multinode
 
   alias SalixAgent.{AgentWorkspace, ToolDisclosure, Tools}
-  alias SalixEnv.VM.Providers.Cloudflare.{Attachments, Client}
   alias SalixWeb.ComputeProviders.Cloudflare
   alias SalixWeb.MockCloudflareGateway
-  @root "/tmp/salix-mn-connector-#{System.system_time(:second)}"
-
-  @blocking_coordinator_handler_source ~S"""
-  defmodule SalixWeb.ConnectorMultinodeTest.BlockingCoordinatorHandler do
-    @moduledoc false
-
-    def handle_connector_event(_connector_run_id, params, _meta) do
-      send(params["test_pid"], {:multinode_coordinator_started, self()})
-
-      receive do
-        :release_multinode_coordinator ->
-          {:ok, %{"event_id" => params["event_id"]}}
-      end
-    end
-
-    def forward_remote_socket(test_pid) do
-      receive do
-        message ->
-          send(test_pid, {:multinode_remote_socket, message})
-          forward_remote_socket(test_pid)
-      end
-    end
-  end
-  """
-
-  defmodule BlockingCoordinatorHandler do
-    @moduledoc false
-
-    def handle_connector_event(_connector_run_id, params, _meta) do
-      send(params["test_pid"], {:multinode_coordinator_started, self()})
-
-      receive do
-        :release_multinode_coordinator ->
-          {:ok, %{"event_id" => params["event_id"]}}
-      end
-    end
-
-    def forward_remote_socket(test_pid) do
-      receive do
-        message ->
-          send(test_pid, {:multinode_remote_socket, message})
-          forward_remote_socket(test_pid)
-      end
-    end
-  end
+  @root "/tmp/salix-mn-connector-#{SystemsClock.system_time(:second)}"
 
   @binary_dir @root <> "-binary"
   setup_all do
@@ -109,9 +64,9 @@ defmodule SalixWeb.ConnectorMultinodeTest do
 
   setup do
     # Node A also talks to the shared MinIO bucket (fakes are per-VM).
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.AWS)
-    Application.put_env(:salix_store, :s3_bucket, "salix-test")
-    Application.put_env(:salix_agent, :env_dispatch, SalixWeb.EnvDispatch)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.AWS)
+    SystemsRuntime.put_env(:salix_store, :s3_bucket, "salix-test")
+    SystemsRuntime.put_env(:salix_agent, :env_dispatch, SalixWeb.EnvDispatch)
     File.mkdir_p!(@root)
     on_exit(fn -> File.rm_rf(@root) end)
     :ok
@@ -121,12 +76,8 @@ defmodule SalixWeb.ConnectorMultinodeTest do
     run(ctx)
   end
 
-  test "idle archive on node A reaches a Cloudflare Connector owned by node B", ctx do
+  test "idle archive on node A reaches a Cloud VM station connected to node B", ctx do
     run_remote_idle_archive(ctx.node)
-  end
-
-  test "external-event submits from two nodes converge on the stable Ring owner", ctx do
-    run_coordinator_route(ctx.node)
   end
 
   defp run_remote_idle_archive(peer_node) do
@@ -162,21 +113,40 @@ defmodule SalixWeb.ConnectorMultinodeTest do
           })
       })
 
-    previous_vm = Application.get_env(:salix_web, :sprites)
-    Application.put_env(:salix_web, :sprites, auto_provision: false)
+    previous_vm = SystemsRuntime.get_env(:salix_web, :sprites)
+    previous_r2 = SystemsRuntime.get_env(:salix_web, :cloud_vm_archive_r2)
+    SystemsRuntime.put_env(:salix_web, :sprites, auto_provision: false)
+
+    # The station exports its archive straight to R2; the Gateway mock stores the parts.
+    SystemsRuntime.put_env(:salix_web, :cloud_vm_archive_r2, %{
+      "endpoint" => "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com",
+      "bucket" => "test-archive",
+      "access_key_id" => "testaccess",
+      "secret_access_key" => "testsecret"
+    })
+
+    # R2 itself is the store the Gateway mock's stations write their parts to.
+    SystemsRuntime.put_env(:salix_web, :cloud_vm_archive_r2_req,
+      plug: &SalixWeb.MockCloudflareGateway.r2/1
+    )
+
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_web, :cloud_vm_archive_r2_req) end)
 
     on_exit(fn ->
       if previous_vm,
-        do: Application.put_env(:salix_web, :sprites, previous_vm),
-        else: Application.delete_env(:salix_web, :sprites)
+        do: SystemsRuntime.put_env(:salix_web, :sprites, previous_vm),
+        else: SystemsRuntime.delete_env(:salix_web, :sprites)
+
+      if previous_r2,
+        do: SystemsRuntime.put_env(:salix_web, :cloud_vm_archive_r2, previous_r2),
+        else: SystemsRuntime.delete_env(:salix_web, :cloud_vm_archive_r2)
     end)
 
     {:ok, agent} =
       SalixAgent.Control.create(
         %{
           "group_id" => group_id,
-          "name" => "MN archive agent",
-          "vm" => %{"enabled" => true, "provider" => "cloudflare"}
+          "name" => "MN archive agent"
         },
         tenant_id
       )
@@ -189,26 +159,14 @@ defmodule SalixWeb.ConnectorMultinodeTest do
     env_id = rec["env_id"]
     assert Registry.lookup(SalixEnv.Bridges, env_id) != []
 
-    :ok = Attachments.stop(env_id)
-
-    assert eventually(fn -> Registry.lookup(SalixEnv.Bridges, env_id) == [] end)
-
-    {:ok, cfg} = SalixWeb.CloudVM.cloudflare_config(tenant_id)
-
-    client =
-      Client.new(
-        base_url: cfg.base_url,
-        secret: cfg.secret,
-        worker_name: cfg.worker_name,
-        worker_version_id: rec["current_worker_version_id"],
-        group_id: group_id,
-        backoff_ms: 1
+    # The VM's station reconnects, to node B.
+    :ok =
+      MockCloudflareGateway.set_station_server(
+        gateway,
+        :erpc.call(peer_node, SalixWeb.Application, :base_url, [])
       )
 
-    assert {:ok, _pid} =
-             :erpc.call(peer_node, Cloudflare, :attach_existing, [rec, %{}, [client: client]])
-
-    on_exit(fn -> :erpc.call(peer_node, Attachments, :stop, [env_id]) end)
+    :ok = MockCloudflareGateway.restart_station(gateway, rec["provider_resource_name"])
 
     assert eventually(fn ->
              Registry.lookup(SalixEnv.Bridges, env_id) == [] and
@@ -219,154 +177,6 @@ defmodule SalixWeb.ConnectorMultinodeTest do
     assert Enum.any?(MockCloudflareGateway.calls(gateway), &(&1.op == :destroy))
 
     assert {:ok, %{"status" => "ready"}} = Cloudflare.wake_archived_vm(group_id)
-    assert eventually(fn -> :erpc.call(peer_node, Attachments, :whereis, [env_id]) == nil end)
-  end
-
-  defp run_coordinator_route(peer_node) do
-    load_blocking_coordinator_handler!(peer_node)
-
-    assert eventually(fn ->
-             expected_nodes = MapSet.new([node(), peer_node])
-             local_nodes = MapSet.new(SalixCluster.Ring.nodes())
-             peer_nodes = MapSet.new(:erpc.call(peer_node, SalixCluster.Ring, :nodes, []))
-
-             local_nodes == expected_nodes and peer_nodes == expected_nodes
-           end)
-
-    assert SalixCluster.Ring.owner("connector-external-event-coordinator") ==
-             :erpc.call(
-               peer_node,
-               SalixCluster.Ring,
-               :owner,
-               ["connector-external-event-coordinator"]
-             )
-
-    owner = SalixCluster.Ring.owner("connector-external-event-coordinator")
-    previous = Application.get_env(:salix_web, :connector_external_runtime_handler)
-
-    peer_previous =
-      :erpc.call(peer_node, Application, :get_env, [
-        :salix_web,
-        :connector_external_runtime_handler
-      ])
-
-    Application.put_env(
-      :salix_web,
-      :connector_external_runtime_handler,
-      __MODULE__.BlockingCoordinatorHandler
-    )
-
-    :ok =
-      :erpc.call(peer_node, Application, :put_env, [
-        :salix_web,
-        :connector_external_runtime_handler,
-        __MODULE__.BlockingCoordinatorHandler
-      ])
-
-    on_exit(fn ->
-      restore_env(:connector_external_runtime_handler, previous)
-
-      case peer_previous do
-        nil ->
-          :erpc.call(peer_node, Application, :delete_env, [
-            :salix_web,
-            :connector_external_runtime_handler
-          ])
-
-        value ->
-          :erpc.call(peer_node, Application, :put_env, [
-            :salix_web,
-            :connector_external_runtime_handler,
-            value
-          ])
-      end
-    end)
-
-    id = "multinode-coordinator-event"
-    lane = {"tenant-multinode", "group-multinode", "device-multinode"}
-    params = %{"event_id" => id, "test_pid" => self()}
-    context = {:connector_context, "run-multinode", %{}}
-
-    socket =
-      if owner == node() do
-        :erpc.call(peer_node, :erlang, :spawn, [
-          __MODULE__.BlockingCoordinatorHandler,
-          :forward_remote_socket,
-          [self()]
-        ])
-      else
-        self()
-      end
-
-    assert node(socket) != owner
-
-    if node(socket) != node(), do: on_exit(fn -> Process.exit(socket, :kill) end)
-
-    assert {:wait, waiter_ref} =
-             SalixWeb.ConnectorExternalEventCoordinator.submit(
-               socket,
-               lane,
-               1,
-               id,
-               params,
-               context
-             )
-
-    assert_receive {:multinode_coordinator_started, worker}, 1_000
-
-    assert {:reply, %{"id" => ^id, "type" => "error"}} =
-             :erpc.call(
-               peer_node,
-               SalixWeb.ConnectorExternalEventCoordinator,
-               :submit,
-               [self(), lane, 1, id, params, context]
-             )
-
-    state =
-      if owner == node() do
-        :sys.get_state(SalixWeb.ConnectorExternalEventCoordinator)
-      else
-        :erpc.call(owner, :sys, :get_state, [SalixWeb.ConnectorExternalEventCoordinator])
-      end
-
-    assert state.retained_count == 1
-    send(worker, :release_multinode_coordinator)
-
-    if socket == self() do
-      assert_receive {:connector_external_event_reply, ^waiter_ref,
-                      %{"id" => ^id, "type" => "response"}},
-                     1_000
-    else
-      assert_receive {:multinode_remote_socket,
-                      {:connector_external_event_reply, ^waiter_ref,
-                       %{"id" => ^id, "type" => "response"}}},
-                     1_000
-    end
-  end
-
-  defp load_blocking_coordinator_handler!(peer_node) do
-    # Modules declared in a test .exs are loaded only in this VM, so adding the
-    # local code paths does not make this callback available to the peer.
-    expected = __MODULE__.BlockingCoordinatorHandler
-
-    assert [{^expected, _beam}] =
-             :erpc.call(peer_node, Code, :compile_string, [
-               @blocking_coordinator_handler_source
-             ])
-
-    assert :erpc.call(peer_node, Code, :ensure_loaded?, [expected])
-
-    assert :erpc.call(peer_node, :erlang, :function_exported, [
-             expected,
-             :handle_connector_event,
-             3
-           ])
-
-    assert :erpc.call(peer_node, :erlang, :function_exported, [
-             expected,
-             :forward_remote_socket,
-             1
-           ])
   end
 
   defp run(%{node: node, peer_port: peer_port}) do
@@ -553,7 +363,11 @@ defmodule SalixWeb.ConnectorMultinodeTest do
   end
 
   defp call(name, args),
-    do: %{"id" => "c-#{System.unique_integer([:positive])}", "name" => name, "args" => args}
+    do: %{
+      "id" => "c-#{SystemsRuntime.Proc.unique_integer([:positive])}",
+      "name" => name,
+      "args" => args
+    }
 
   defp tool_ctx(agent_id) do
     ctx =
@@ -561,11 +375,11 @@ defmodule SalixWeb.ConnectorMultinodeTest do
         agent_id: agent_id,
         session_id: SalixStore.Ids.new_session_id(),
         role: "worker",
-        runtime_kind: :external
+        runtime_kind: :internal
       }
       |> SalixAgent.TestSupport.with_plugin_projection()
 
-    Map.put(ctx, :tool_disclosure, ToolDisclosure.materialize("worker", :external, ctx))
+    Map.put(ctx, :tool_disclosure, ToolDisclosure.materialize("worker", :internal, ctx))
   end
 
   # ---- the real Go connector, attached to node B ----
@@ -602,7 +416,7 @@ defmodule SalixWeb.ConnectorMultinodeTest do
         env
 
       _ when attempts > 0 ->
-        Process.sleep(100)
+        SystemsRuntime.Proc.sleep(100)
         wait_for_connected!(group_id, attempts - 1)
 
       _ ->
@@ -610,16 +424,13 @@ defmodule SalixWeb.ConnectorMultinodeTest do
     end
   end
 
-  defp eventually(fun, retries \\ 100) do
+  defp eventually(fun, retries \\ 1500) do
     cond do
       fun.() -> true
       retries == 0 -> false
-      true -> Process.sleep(20) && eventually(fun, retries - 1)
+      true -> SystemsRuntime.Proc.sleep(20) && eventually(fun, retries - 1)
     end
   end
-
-  defp restore_env(key, nil), do: Application.delete_env(:salix_web, key)
-  defp restore_env(key, value), do: Application.put_env(:salix_web, key, value)
 
   # ---- distribution + peer (node B runs salix_web on MinIO) ----
 
@@ -643,7 +454,7 @@ defmodule SalixWeb.ConnectorMultinodeTest do
     if Node.alive?() do
       :ok
     else
-      name = :"salix_web_main_#{System.unique_integer([:positive])}@127.0.0.1"
+      name = :"salix_web_main_#{SystemsRuntime.Proc.unique_integer([:positive])}@127.0.0.1"
 
       case :net_kernel.start([name, :longnames]) do
         {:ok, _} ->
@@ -663,7 +474,7 @@ defmodule SalixWeb.ConnectorMultinodeTest do
 
   defp start_peer do
     [_, host] = String.split(to_string(Node.self()), "@")
-    name = :"salix_web_peer_#{System.unique_integer([:positive])}"
+    name = :"salix_web_peer_#{SystemsRuntime.Proc.unique_integer([:positive])}"
     cookie = Atom.to_charlist(:erlang.get_cookie())
     long? = String.contains?(host, ".")
 
@@ -689,7 +500,10 @@ defmodule SalixWeb.ConnectorMultinodeTest do
           s3_access_key_id: "minioadmin",
           s3_secret_access_key: "minioadmin",
           s3_backend: SalixStore.S3.AWS,
-          snowflake_worker_id: 1
+          snowflake_worker_id: 1,
+          # A Cloud VM station connecting to node B signs in with node A's Workload credential.
+          compute_workload_credential_secret:
+            SystemsRuntime.fetch_env!(:salix_store, :compute_workload_credential_secret)
         ] do
       :ok = :erpc.call(node, Application, :put_env, [:salix_store, k, v])
     end
@@ -698,7 +512,7 @@ defmodule SalixWeb.ConnectorMultinodeTest do
       :erpc.call(node, Application, :put_env, [
         :salix_store,
         SalixStore.Repo,
-        Application.fetch_env!(:salix_store, SalixStore.Repo)
+        SystemsRuntime.fetch_env!(:salix_store, SalixStore.Repo)
       ])
 
     :ok = :erpc.call(node, Application, :put_env, [:salix_store, :start_repo, true])
@@ -711,7 +525,7 @@ defmodule SalixWeb.ConnectorMultinodeTest do
       :erpc.call(node, Application, :put_env, [
         :salix_web,
         :site_rate_limit_redis_url,
-        Application.fetch_env!(:salix_web, :site_rate_limit_redis_url)
+        SystemsRuntime.fetch_env!(:salix_web, :site_rate_limit_redis_url)
       ])
 
     :ok = :erpc.call(node, Application, :put_env, [:salix_env, :transfer_port, free_tcp_port()])

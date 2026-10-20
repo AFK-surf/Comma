@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestDefaultComputerUseHelperPathFollowsConnectorBinary(t *testing.T) {
@@ -433,15 +432,20 @@ func TestDefaultComputerUseSocketPathAvoidsGlobalTmpSocket(t *testing.T) {
 func startFakeComputerUseSocket(t *testing.T, response string) (string, <-chan map[string]any) {
 	t.Helper()
 
-	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("cu-%d-%d.sock", os.Getpid(), time.Now().UnixNano()))
-	_ = os.Remove(socketPath)
+	// A directory of its own under the short system temp root keeps the
+	// socket path within the Unix socket length limit.
+	directory, err := os.MkdirTemp("", "cu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(directory, "s.sock")
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen fake computer_use socket: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = listener.Close()
-		_ = os.Remove(socketPath)
+		_ = os.RemoveAll(directory)
 	})
 
 	requests := make(chan map[string]any, 1)
@@ -452,7 +456,7 @@ func startFakeComputerUseSocket(t *testing.T, response string) (string, <-chan m
 			if err != nil {
 				return
 			}
-			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+			// Every client sends one line or closes the connection.
 			line, err := bufio.NewReader(conn).ReadString('\n')
 			if err != nil && strings.TrimSpace(line) == "" {
 				_ = conn.Close()
@@ -505,16 +509,11 @@ func containsString(values []string, want string) bool {
 func receiveComputerUseRequest(t *testing.T, requests <-chan map[string]any) map[string]any {
 	t.Helper()
 
-	select {
-	case request, ok := <-requests:
-		if !ok {
-			t.Fatal("fake computer_use socket closed before receiving request")
-		}
-		return request
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for computer_use request")
-		return map[string]any{}
+	request, ok := <-requests
+	if !ok {
+		t.Fatal("fake computer_use socket closed before receiving request")
 	}
+	return request
 }
 
 func TestComputerUseImageExpiryAndIsolation(t *testing.T) {
@@ -534,7 +533,7 @@ func TestComputerUseImageExpiryAndIsolation(t *testing.T) {
 	restarted := &connector{cfg: c.cfg}
 	assertCapability(t, restarted.readComputerUseImage(name), "ok", true)
 	assertCapability(t, c.readComputerUseImage("../"+name), "ok", false)
-	old := time.Now().Add(-computerUseImageTTL - time.Second)
+	old := testLongAgo
 	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatal(err)
 	}

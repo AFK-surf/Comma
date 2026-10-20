@@ -11,7 +11,7 @@ defmodule Salix.RemoteShell.HostKey do
 
     case Keyword.fetch!(opts, :expected) do
       :learn ->
-        send(Keyword.fetch!(opts, :owner), {Keyword.fetch!(opts, :ref), key})
+        SystemsRuntime.Proc.send(Keyword.fetch!(opts, :owner), {Keyword.fetch!(opts, :ref), key})
         true
 
       expected ->

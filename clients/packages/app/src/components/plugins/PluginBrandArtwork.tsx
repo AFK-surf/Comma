@@ -1,4 +1,7 @@
-import { normalizeProviderBrandName, resolveProviderBrandLogo } from "@comma/ui";
+import {
+  normalizeProviderBrandName,
+  resolveProviderBrandLogo,
+} from "@comma/ui/components/provider-brand-logos";
 
 export function PluginBrandArtwork({
   brand,

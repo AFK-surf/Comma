@@ -50,7 +50,6 @@ def inner (state event : Term) : KernelM Term := do
   else if kind == b "runtime_message" then transcriptRuntime state event
   else if kind == b "delivery" then transcriptDelivery state event
   else if kind == b "session_event" then sessionEvent state event
-  else if kind == b "session_microcompact" then microcompact state event
   else if kind == b "compaction" then historyCompaction state event false
   else if kind == b "provider_compaction" then historyCompaction state event true
   else if kind == b "session_compact_result" then compactResult state event

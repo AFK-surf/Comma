@@ -1,9 +1,12 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { CheckIcon, CopyIcon, Tooltip, toast } from "@comma/ui";
+import { CheckIcon, CopyIcon } from "@comma/ui/components/icons";
+import { Tooltip } from "@comma/ui/components/tooltip";
+import { toast } from "@comma/ui/components/toast";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { memo, useEffect, useRef, useState } from "react";
 import { Button as AriaButton } from "react-aria-components";
 import { copyTextToClipboard } from "../inline/linkActions";
-import { MessagePlatformBadge } from "../../MessagePlatformBadge";
+import { MessagePlatformBadge, QuickChatBadge } from "../../MessagePlatformBadge";
 
 // Shared id so copying several messages in a row updates one toast in place
 // instead of stacking, and a failure replaces the success it invalidates.
@@ -14,20 +17,23 @@ export const MessageCopyAction = memo(function MessageCopyAction({
   copyText,
   messageId,
   platform,
+  quickChat = false,
 }: {
   ariaLabel: string;
   copyText: string;
   messageId: string;
   platform?: string | undefined;
+  /** The message is a person's words that Quick Chat sent. */
+  quickChat?: boolean;
 }) {
   const messagesApi = useCommaMessages();
   const [copied, setCopied] = useState(false);
-  const copiedTimerRef = useRef<number | undefined>(undefined);
+  const copiedTimerRef = useRef<CancelUiTimer | undefined>(undefined);
 
   useEffect(
     () => () => {
       if (copiedTimerRef.current) {
-        window.clearTimeout(copiedTimerRef.current);
+        copiedTimerRef.current();
       }
     },
     []
@@ -52,12 +58,12 @@ export const MessageCopyAction = memo(function MessageCopyAction({
     });
     setCopied(true);
     if (copiedTimerRef.current) {
-      window.clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current();
     }
-    copiedTimerRef.current = window.setTimeout(() => {
+    copiedTimerRef.current = uiClock.after(800, () => {
       setCopied(false);
       copiedTimerRef.current = undefined;
-    }, 800);
+    });
   };
 
   return (
@@ -66,6 +72,7 @@ export const MessageCopyAction = memo(function MessageCopyAction({
       data-testid={`chat-message-actions-${messageId}`}
     >
       <MessagePlatformBadge platform={platform} />
+      {quickChat ? <QuickChatBadge /> : null}
       <Tooltip content={messagesApi.common_copy()} placement="bottom">
         <AriaButton
           aria-label={copied ? messagesApi.chat_copied() : ariaLabel}

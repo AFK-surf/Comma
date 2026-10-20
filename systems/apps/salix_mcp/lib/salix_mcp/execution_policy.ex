@@ -79,7 +79,7 @@ defmodule SalixMCP.ExecutionPolicy do
   end
 
   defp server_process_runner do
-    case Application.get_env(:salix_mcp, @runner_app_env) do
+    case SystemsRuntime.get_env(:salix_mcp, @runner_app_env) do
       nil ->
         not_runnable(
           "server-side MCP process execution requires a configured server process runner; use device placement or a remote MCP endpoint"

@@ -4,8 +4,8 @@ defmodule Salix.Bindings.AgentEnvDispatch do
   @behaviour SalixAgent.EnvDispatch
 
   @impl true
-  def create_device_install(agent_id, name),
-    do: SalixWeb.EnvDispatch.create_device_install(agent_id, name)
+  def create_device_install(agent_id, name, requester),
+    do: SalixWeb.EnvDispatch.create_device_install(agent_id, name, requester)
 
   @impl true
   def list_devices(agent_id, opts), do: SalixWeb.EnvDispatch.list_devices(agent_id, opts)
@@ -23,6 +23,10 @@ defmodule Salix.Bindings.AgentEnvDispatch do
   @impl true
   def request(agent_id, target, method, params),
     do: SalixWeb.EnvDispatch.request(agent_id, target, method, params)
+
+  @impl true
+  def open_tunnel(agent_id, target, id, params, relay),
+    do: SalixWeb.EnvDispatch.open_tunnel(agent_id, target, id, params, relay)
 
   @impl true
   def computer_use(agent_id, target, action),

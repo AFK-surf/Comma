@@ -152,18 +152,18 @@ defmodule BridgeForTeams.TriageInvestigationContext do
             {:salix_im, :slack_triage_clickhouse_reader_mod},
             {:salix_im, :slack_message_mirror_mod}
           ],
-          do: {app, key, Application.fetch_env(app, key)}
+          do: {app, key, SystemsRuntime.fetch_env(app, key)}
 
     Agent.update(state, &Map.put(&1, :context, context))
-    Application.put_env(:bridge_for_teams_core, @state_key, state)
-    Application.put_env(:salix_agent, :im_provider_mod, __MODULE__)
-    Application.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, __MODULE__)
-    Application.put_env(:salix_im, :slack_message_mirror_mod, __MODULE__)
+    SystemsRuntime.put_env(:bridge_for_teams_core, @state_key, state)
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, __MODULE__)
+    SystemsRuntime.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, __MODULE__)
+    SystemsRuntime.put_env(:salix_im, :slack_message_mirror_mod, __MODULE__)
 
     fn ->
       Enum.each(previous, fn
-        {app, key, :error} -> Application.delete_env(app, key)
-        {app, key, {:ok, value}} -> Application.put_env(app, key, value)
+        {app, key, :error} -> SystemsRuntime.delete_env(app, key)
+        {app, key, {:ok, value}} -> SystemsRuntime.put_env(app, key, value)
       end)
     end
   end
@@ -189,7 +189,7 @@ defmodule BridgeForTeams.TriageInvestigationContext do
         response: response
       }
 
-      state = Application.fetch_env!(:bridge_for_teams_core, @state_key)
+      state = SystemsRuntime.fetch_env!(:bridge_for_teams_core, @state_key)
 
       Agent.get_and_update(state, fn current ->
         events = Map.get(current, :provider_responses, [])
@@ -241,7 +241,7 @@ defmodule BridgeForTeams.TriageInvestigationContext do
   def search(scope, opts), do: read(:search, scope, nil, opts)
 
   def read(operation, scope, root, opts) do
-    state = Application.get_env(:bridge_for_teams_core, @state_key)
+    state = SystemsRuntime.get_env(:bridge_for_teams_core, @state_key)
     context = if is_pid(state), do: Agent.get(state, & &1.context)
 
     with %{} <- context,

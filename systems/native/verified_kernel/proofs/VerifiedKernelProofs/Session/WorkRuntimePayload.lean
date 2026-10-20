@@ -114,8 +114,8 @@ theorem runtime_append_stores_identity {s e t : Term} {j r : List Term}
       transcript_walk h
     · repeat' first
         | exact base
-        | refine runtime_identity_put ?_ (by simp +decide [RecordShape.SafeName]) (by decide) (by decide)
-            (by decide) (by decide) (by decide) (by decide) _
+        | refine runtime_identity_put ?_ (by safe_name) (by string_ne) (by string_ne)
+            (by string_ne) (by string_ne) (by string_ne) (by string_ne) _
         | split
 
 theorem runtime_append_stores_fields {s e t : Term} {j r : List Term}

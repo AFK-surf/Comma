@@ -34,7 +34,7 @@ defmodule SalixIM.ConversationPlacement do
   def notify_group_conversation_mutation_if_running(group_id, mutation),
     do: impl().notify_group_conversation_mutation_if_running(group_id, mutation)
 
-  defp impl, do: Application.get_env(:salix_im, :conversation_placement, __MODULE__.LocalFleet)
+  defp impl, do: SystemsRuntime.get_env(:salix_im, :conversation_placement, __MODULE__.LocalFleet)
 
   defmodule LocalFleet do
     @moduledoc false

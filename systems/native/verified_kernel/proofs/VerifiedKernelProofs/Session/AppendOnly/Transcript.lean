@@ -1,4 +1,4 @@
-import VerifiedKernelProofs.Session.AppendOnly.Bookkeeping
+import VerifiedKernelProofs.Session.AppendOnly.State
 
 /-!
 Transcript proofs for the tool-result, assistant, log and seed events, and activity bookkeeping.

@@ -1,117 +1,41 @@
-import { CommaApiError, type CommaApiClient } from "@comma/app";
-import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import { describe, expect, it } from "vitest";
 import { testProductLease } from "../../../test/productInboxProjectionHarness";
 import { resolveWorkspaceChat } from "../useWorkspaceChat";
 
+/** A core whose `chat.resolveWorkspaceChat` answers `resolution`. */
+const coreAnswering = (resolution: unknown) =>
+  createScriptedCore({
+    calls: (name) => (name === "chat.resolveWorkspaceChat" ? resolution : null),
+  });
+
+// What the core decides (the server's default workspace, an exact one, provisioning, refusals) is the core's test
+// (packages/core/test/chat/chat.test.ts); here, what the window asks and how it shows the answer.
 describe("Workspace Chat resolution", () => {
-  beforeEach(() => {
-    installNativeBridgeMock({ platform: "web" });
-  });
-
-  it("uses the server ensure endpoint and does not create a client fallback", async () => {
-    const api = createWorkspaceChatApi({
-      ensureGroupChat: vi.fn(async () => {
-        throw new CommaApiError(404, "not_found");
-      }),
-      getConversation: vi.fn(async () => {
-        throw new CommaApiError(404, "not_found");
-      }),
-    });
-
-    await expect(resolveWorkspaceChat({ api })).resolves.toEqual({
-      status: "hidden",
-    });
-
-    expect(api.bootstrapWorkspace).toHaveBeenCalledTimes(1);
-    expect(api.listWorkspaces).not.toHaveBeenCalled();
-    expect(api.ensureGroupChat).toHaveBeenCalledWith("grp_1");
-    expect(api.getConversation).not.toHaveBeenCalled();
-  });
-
-  it("returns an explicit provisioning state without entering Chat", async () => {
-    const api = createWorkspaceChatApi({
-      bootstrapWorkspace: vi.fn(async () => ({
-        retry_after_seconds: 2,
-        status: "provisioning" as const,
-        workspace: {
-          group_id: "grp_reserved",
-          id: "wsp_reserved",
-          name: "Default workspace",
-          status: "provisioning" as const,
-        },
-      })),
-    });
-
-    await expect(resolveWorkspaceChat({ api })).resolves.toEqual({
-      groupId: "grp_reserved",
-      retryAfterSeconds: 2,
-      status: "provisioning",
-      workspaceId: "wsp_reserved",
-    });
-
-    expect(api.ensureGroupChat).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    { expectedStatus: "unauthorized", responseStatus: 401 },
-    { expectedStatus: "hidden", responseStatus: 403 },
-  ] as const)(
-    "maps HTTP $responseStatus to $expectedStatus",
-    async ({ expectedStatus, responseStatus }) => {
-      const api = createWorkspaceChatApi({
-        ensureGroupChat: vi.fn(async () => {
-          throw new CommaApiError(responseStatus, "request_failed");
-        }),
-      });
-
-      await expect(resolveWorkspaceChat({ api })).resolves.toEqual({
-        status: expectedStatus,
-      });
-    }
-  );
-
-  it("passes through an unauthorized native resolution", async () => {
-    const resolveNativeWorkspaceChat = vi.fn(async () => ({
-      status: "unauthorized" as const,
-    }));
-    installNativeBridgeMock({
-      chat: {
-        resolveWorkspaceChat: resolveNativeWorkspaceChat,
-      },
-      platform: "electron",
-    });
+  it("passes through an unauthorized resolution", async () => {
+    const core = coreAnswering({ status: "unauthorized" });
 
     await expect(
-      resolveWorkspaceChat({
-        api: createWorkspaceChatApi(),
-        session: testProductLease,
-      })
-    ).resolves.toEqual({
-      status: "unauthorized",
-    });
-    expect(resolveNativeWorkspaceChat).toHaveBeenCalledWith({
-      session: testProductLease,
-    });
+      resolveWorkspaceChat({ core: core.client, session: testProductLease })
+    ).resolves.toEqual({ status: "unauthorized" });
+    expect(core.sentTo("chat.resolveWorkspaceChat")).toEqual([
+      { session: testProductLease },
+    ]);
   });
 
-  it("preserves Main's canonical timestamps in a native ready resolution", async () => {
-    const resolveNativeWorkspaceChat = vi.fn(async () => ({
+  it("preserves the core's canonical timestamps in a ready resolution", async () => {
+    const core = coreAnswering({
       conversationId: "cnv_native",
       createdAt: 1_720_000_000,
       groupId: "grp_native",
-      status: "ready" as const,
+      status: "ready",
       updatedAt: 1_720_000_003,
       workspaceId: "wsp_native",
-    }));
-    installNativeBridgeMock({
-      chat: { resolveWorkspaceChat: resolveNativeWorkspaceChat },
-      platform: "electron",
     });
 
     await expect(
       resolveWorkspaceChat({
-        api: createWorkspaceChatApi(),
+        core: core.client,
         defaultTitle: "Native Chat",
         session: testProductLease,
       })
@@ -128,121 +52,33 @@ describe("Workspace Chat resolution", () => {
     });
   });
 
-  it("fails closed when native Workspace Chat resolution has no Session lease", async () => {
-    const resolveNativeWorkspaceChat = vi.fn();
-    installNativeBridgeMock({
-      chat: { resolveWorkspaceChat: resolveNativeWorkspaceChat },
-      platform: "electron",
-    });
+  it("fails closed without a Session lease", async () => {
+    const core = coreAnswering({ status: "hidden" });
 
-    await expect(
-      resolveWorkspaceChat({ api: createWorkspaceChatApi() })
-    ).rejects.toThrow("requires the active Session product lease");
-    expect(resolveNativeWorkspaceChat).not.toHaveBeenCalled();
+    await expect(resolveWorkspaceChat({ core: core.client })).rejects.toThrow(
+      "requires the active Session product lease"
+    );
+    expect(core.sentTo("chat.resolveWorkspaceChat")).toEqual([]);
   });
 
-  it("uses the server default Workspace instead of a stale local selection", async () => {
-    const ensureGroupChat = vi.fn(async (groupId: string) => ({
-      group_id: groupId,
-      id: `cnv_public_${groupId}`,
-      title: "聊天",
-      status: "active",
-      kind: "user_chat" as const,
-    }));
-    const api = createWorkspaceChatApi({
-      listWorkspaces: vi.fn(async () => [
-        { group_id: "grp_1", id: "wsp_1", name: "Main" },
-        { group_id: "grp_2", id: "wsp_2", name: "Second" },
-      ]),
-      ensureGroupChat,
+  it("asks the core for the exact workspace only on an explicit route scope", async () => {
+    const core = coreAnswering({ status: "hidden" });
+
+    await resolveWorkspaceChat({
+      core: core.client,
+      session: testProductLease,
+      workspaceId: "wsp_2",
     });
-
-    await expect(
-      resolveWorkspaceChat({ api, workspaceId: "wsp_2" })
-    ).resolves.toMatchObject({
-      status: "ready",
-      groupId: "grp_1",
-      workspaceId: "wsp_1",
-      conversation: { id: "cnv_public_grp_1", kind: "user_chat" },
-    });
-
-    expect(ensureGroupChat).toHaveBeenCalledWith("grp_1");
-    expect(api.bootstrapWorkspace).toHaveBeenCalledOnce();
-    expect(api.listWorkspaces).not.toHaveBeenCalled();
-  });
-
-  it("does not show another workspace Chat on an explicit route scope", async () => {
-    const api = createWorkspaceChatApi();
-
-    await expect(
-      resolveWorkspaceChat({
-        api,
-        exactWorkspace: true,
-        workspaceId: "wsp_missing",
-      })
-    ).resolves.toEqual({ status: "hidden" });
-
-    expect(api.ensureGroupChat).not.toHaveBeenCalled();
-    expect(api.bootstrapWorkspace).not.toHaveBeenCalled();
-  });
-
-  it("resolves only the requested Workspace on an explicit route scope", async () => {
-    const ensureGroupChat = vi.fn(async (groupId: string) => ({
-      group_id: groupId,
-      id: `cnv_public_${groupId}`,
-      title: "聊天",
-      status: "active",
-      kind: "user_chat" as const,
-    }));
-    const api = createWorkspaceChatApi({
-      ensureGroupChat,
-      listWorkspaces: vi.fn(async () => [
-        { group_id: "grp_1", id: "wsp_1", name: "Main" },
-        { group_id: "grp_2", id: "wsp_2", name: "Requested" },
-      ]),
-    });
-
-    await expect(
-      resolveWorkspaceChat({
-        api,
-        exactWorkspace: true,
-        workspaceId: "wsp_2",
-      })
-    ).resolves.toMatchObject({
-      conversation: { id: "cnv_public_grp_2", kind: "user_chat" },
-      groupId: "grp_2",
-      status: "ready",
+    await resolveWorkspaceChat({
+      core: core.client,
+      session: testProductLease,
+      exactWorkspace: true,
       workspaceId: "wsp_2",
     });
 
-    expect(api.listWorkspaces).toHaveBeenCalledOnce();
-    expect(ensureGroupChat).toHaveBeenCalledWith("grp_2");
-    expect(api.bootstrapWorkspace).not.toHaveBeenCalled();
+    expect(core.sentTo("chat.resolveWorkspaceChat")).toEqual([
+      { session: testProductLease },
+      { session: testProductLease, workspaceId: "wsp_2" },
+    ]);
   });
 });
-
-function createWorkspaceChatApi(overrides: Partial<CommaApiClient> = {}) {
-  return {
-    bootstrapWorkspace: vi.fn(async () => ({
-      status: "ready" as const,
-      workspace: {
-        group_id: "grp_1",
-        id: "wsp_1",
-        name: "Main",
-        status: "ready" as const,
-      },
-    })),
-    listWorkspaces: vi.fn(async () => [
-      { group_id: "grp_1", id: "wsp_1", name: "Main" },
-    ]),
-    ensureGroupChat: vi.fn(async () => ({
-      group_id: "grp_1",
-      id: "cnv_public_chat_1",
-      title: "聊天",
-      status: "active",
-      kind: "user_chat",
-    })),
-    getConversation: vi.fn(),
-    ...overrides,
-  } as unknown as CommaApiClient;
-}

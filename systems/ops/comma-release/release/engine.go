@@ -19,7 +19,6 @@ type JobSpec struct {
 	AllowedStepIDs                     []string
 	Fence                              string
 	LifecycleEpoch                     *LifecycleEpochSpec
-	RuntimeRelease                     *State
 }
 
 type Platform interface {

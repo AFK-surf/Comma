@@ -49,13 +49,13 @@ defmodule SalixAgent.RoundConfigCache do
   defp maybe_refresh(cache, build), do: refresh(cache, build)
 
   defp refresh_min_age_ms do
-    case Application.get_env(:salix_agent, :round_config_refresh_min_age_ms) do
+    case SystemsRuntime.get_env(:salix_agent, :round_config_refresh_min_age_ms) do
       ms when is_integer(ms) and ms >= 0 -> ms
       _ -> @refresh_min_age_ms
     end
   end
 
-  defp now_ms, do: System.monotonic_time(:millisecond)
+  defp now_ms, do: SystemsClock.monotonic_time(:millisecond)
 
   @doc """
   Starts the first build ahead of the round boundary. A delivery into a cold
@@ -68,7 +68,8 @@ defmodule SalixAgent.RoundConfigCache do
   def prewarm(cache, _build), do: cache
 
   defp join_prewarm(%{task: %Task{} = task} = cache) do
-    case Task.yield(task, prewarm_timeout_ms()) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, prewarm_timeout_ms()) ||
+           SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, {:ok, snapshot}} ->
         # The prewarm ran for this same delivery: its control reads serve
         # the boundary joining it. A later refresh keeps its reads to itself.
@@ -85,7 +86,7 @@ defmodule SalixAgent.RoundConfigCache do
   defp join_prewarm(cache), do: {:build, cache}
 
   defp prewarm_timeout_ms do
-    case Application.get_env(:salix_agent, :round_config_prewarm_timeout_ms) do
+    case SystemsRuntime.get_env(:salix_agent, :round_config_prewarm_timeout_ms) do
       ms when is_integer(ms) and ms > 0 -> ms
       _ -> @prewarm_timeout_ms
     end
@@ -102,18 +103,18 @@ defmodule SalixAgent.RoundConfigCache do
   end
 
   def completed(%{task: %Task{ref: ref}} = cache, ref, result) do
-    Process.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
     %{cache | result: result}
   end
 
   def down(%{task: %Task{ref: ref}} = cache, ref, reason),
     do: %{cache | result: {:error, {:refresh_exit, reason}}}
 
-  def stop(%{task: %Task{} = task}), do: Task.shutdown(task, :brutal_kill)
+  def stop(%{task: %Task{} = task}), do: SystemsRuntime.Task.shutdown(task, :brutal_kill)
   def stop(_), do: :ok
 
   defp accept_ready(%{task: %Task{} = task, result: nil} = cache) do
-    case Task.yield(task, 0) do
+    case SystemsRuntime.Task.yield(task, 0) do
       nil -> cache
       {:ok, result} -> accept_ready(%{cache | result: result})
       {:exit, reason} -> accept_ready(%{cache | result: {:error, {:refresh_exit, reason}}})
@@ -162,9 +163,9 @@ defmodule SalixAgent.RoundConfigCache do
     context = SystemsObservability.Context.capture()
 
     task =
-      Task.Supervisor.async_nolink(SalixAgent.TaskSup, fn ->
+      SystemsRuntime.TaskSupervisor.async_nolink(SalixAgent.TaskSup, fn ->
         SystemsObservability.Context.run(context, fn ->
-          started = System.monotonic_time()
+          started = SystemsClock.monotonic_time()
 
           result =
             SalixStore.ReadScope.run(fn ->
@@ -202,7 +203,7 @@ defmodule SalixAgent.RoundConfigCache do
       "round_config_refresh",
       SystemsObservability.Context.current_surface(),
       outcome,
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
   rescue
     _ -> :ok

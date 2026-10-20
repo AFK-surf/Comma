@@ -1,12 +1,14 @@
+import { useCall } from "@comma/core-client";
 import { useCommaMessages } from "@comma/i18n/react";
+import { Checkbox } from "@comma/ui/components/checkbox";
 import {
-  Checkbox,
   CircleCheckIcon,
-  HoverCard,
   MoreHorizontalIcon,
   TagLabelIcon,
   TrashCanIcon,
-} from "@comma/ui";
+} from "@comma/ui/components/icons";
+import { HoverCard } from "@comma/ui/components/hover-card";
+import { uiClock } from "@comma/ui/clock";
 import {
   useCallback,
   useEffect,
@@ -16,10 +18,9 @@ import {
   type ReactNode,
 } from "react";
 import type {
-  CommaApiClient,
   CommaTaskLabelCatalog,
   CommaTaskLabelProposal,
-} from "../../../../api";
+} from "@comma/core/api-schemas";
 import type { LabelProposalDecision } from "../../../tasks/LabelProposalList";
 import { taskLabelProposalLabels } from "../../../tasks/taskLabelProposal";
 import { TaskLabelChip } from "../../../tasks/taskChips";
@@ -65,7 +66,6 @@ export function conversationLabelProposals(
  * policy together; future decisions do not depend on this chat staying open.
  */
 export function ChatLabelProposals({
-  api,
   conversationId,
   groupId,
   proposals: proposalSubset,
@@ -73,7 +73,6 @@ export function ChatLabelProposals({
   revealOnAppear = true,
   workspaceId,
 }: {
-  api: CommaApiClient;
   conversationId: string;
   groupId: string;
   /**
@@ -95,7 +94,8 @@ export function ChatLabelProposals({
   workspaceId: string;
 }) {
   const messages = useCommaMessages();
-  const { catalog, refresh, replace } = useTaskLabelsCatalog(api, groupId);
+  const call = useCall();
+  const { catalog, refresh } = useTaskLabelsCatalog(groupId);
   const policy = catalog?.approval_policy ?? "ask";
   const seenReply = useRef(replyKey);
   useEffect(() => {
@@ -198,13 +198,13 @@ export function ChatLabelProposals({
     const appearing = !revealedRef.current;
     revealedRef.current = true;
     if (appearing && !revealOnAppear) return undefined;
-    const timer = window.setTimeout(() => {
+    const timer = uiClock.after(250, () => {
       const cards = cardsRef.current;
       if (cards && typeof cards.scrollIntoView === "function") {
         cards.scrollIntoView({ behavior: "smooth", block: "nearest" });
       }
-    }, 250);
-    return () => window.clearTimeout(timer);
+    });
+    return () => timer();
   }, [revealOnAppear, visibleKey]);
 
   const [busy, setBusy] = useState<string>();
@@ -220,13 +220,12 @@ export function ChatLabelProposals({
       setFailed(false);
       try {
         for (const proposal of items) {
-          const next = await api.resolveTaskLabelProposal(
-            groupId,
-            proposal.id,
+          await call("taskLabels.resolve", {
+            group: groupId,
+            proposal: proposal.id,
             decision,
-            autoApprove ? { autoApprove: true } : undefined
-          );
-          replace(next);
+            ...(autoApprove ? { autoApprove: true } : {}),
+          });
         }
       } catch {
         // A legacy batch may have partly settled; the catalog owns each result.
@@ -236,7 +235,7 @@ export function ChatLabelProposals({
         setBusy(undefined);
       }
     },
-    [api, groupId, refresh, replace]
+    [call, groupId, refresh]
   );
 
   const setAutoApprove = useCallback(
@@ -249,16 +248,17 @@ export function ChatLabelProposals({
       setBusy("policy");
       setFailed(false);
       try {
-        replace(
-          await api.setTaskLabelApprovalPolicy(groupId, checked ? "auto" : "ask")
-        );
+        await call("taskLabels.setPolicy", {
+          group: groupId,
+          policy: checked ? "auto" : "ask",
+        });
       } catch {
         setFailed(true);
       } finally {
         setBusy(undefined);
       }
     },
-    [api, busy, decide, groupId, replace]
+    [busy, call, decide, groupId]
   );
 
   if (groups.length === 0) return null;
@@ -303,7 +303,6 @@ export function ChatLabelProposals({
                         {task ? (
                           <>
                             <MessageInlineTask
-                              api={api}
                               groupId={groupId}
                               showHoverPreview={false}
                               task={{
@@ -344,7 +343,6 @@ export function ChatLabelProposals({
                         <>
                           <span>{messages.chat_label_proposal_to_task()}</span>
                           <MessageInlineTask
-                            api={api}
                             groupId={groupId}
                             showHoverPreview={false}
                             task={{

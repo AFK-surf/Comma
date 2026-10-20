@@ -191,6 +191,57 @@ test("the connect step opens the first Agent Swarm; finished setup closes with D
   ).toHaveLength(1);
 });
 
+test("a member waiting for OAuth reminds the admins once", async ({ page }) => {
+  let reminded = false;
+  const checklist = () => ({
+    active: true,
+    steps: [
+      { id: "swarm", done: true },
+      { id: "connect", done: false },
+    ],
+    first_project_id: "p-1",
+    oauth_configured: false,
+    oauth_reminded: reminded,
+  });
+  await injectCsrfToken(page);
+  const requests = await routeApi(page, ({ method, path }) => {
+    if (path === "/orgs/acme/context")
+      return ok({ ...context, org: { ...context.org, role: "member" } });
+    if (path === "/orgs/acme/overview") return ok(overview);
+    if (path === "/orgs/acme/onboarding/remind-admins" && method === "POST") {
+      reminded = true;
+      return ok(checklist());
+    }
+    if (path === "/orgs/acme/onboarding") return ok(checklist());
+    return undefined;
+  });
+
+  await page.goto("/orgs/acme");
+  const setup = page.getByRole("region", { name: "Quick setup" });
+  await expect(setup).toContainText("Waiting for an admin to configure OAuth");
+  await setup.getByRole("button", { name: "Remind the admins" }).click();
+  await expect(setup).toContainText(
+    "Admins reminded. Waiting for them to configure OAuth."
+  );
+  await expect(setup.getByRole("button", { name: "Remind the admins" })).toHaveCount(0);
+  expect(
+    requests.filter((r) => r.path === "/orgs/acme/onboarding/remind-admins")
+  ).toEqual([
+    {
+      method: "POST",
+      path: "/orgs/acme/onboarding/remind-admins",
+      search: "",
+      csrf,
+      body: undefined,
+    },
+  ]);
+
+  await page.reload();
+  await expect(page.getByRole("region", { name: "Quick setup" })).toContainText(
+    "Admins reminded."
+  );
+});
+
 test("a member does not see admin-only destinations", async ({ page }) => {
   await stubApi(page, {
     "/orgs/acme/context": ok({
@@ -283,6 +334,31 @@ test("a user without organizations can sign out", async ({ page }) => {
   expect(new URLSearchParams(request.body).get("_csrf_token")).toBe(csrf);
 });
 
+test("the account menu restarts the first-run setup", async ({ page }) => {
+  await injectCsrfToken(page);
+  await stubApi(page, {
+    "/session": ok({ user, orgs }),
+    "/orgs/acme/context": ok(context),
+    "/orgs/acme/overview": ok(overview),
+  });
+  const restart = new Promise<{ method: string; body: string }>((resolve) => {
+    void page.route("**/onboarding/restart", async (route) => {
+      const request = route.request();
+      resolve({ method: request.method(), body: request.postData() ?? "" });
+      await route.fulfill({ status: 200, body: "restarted" });
+    });
+  });
+
+  await page.goto("/orgs/acme");
+  await page.getByRole("button", { name: /account/i }).click();
+  await page.getByRole("menuitem", { name: "Restart setup" }).click();
+
+  const request = await restart;
+  expect(request.method).toBe("POST");
+  expect(new URLSearchParams(request.body).get("_csrf_token")).toBe(csrf);
+  expect(new URLSearchParams(request.body).get("_method")).toBeNull();
+});
+
 test("a redirect's flash message shows once above the page it lands on", async ({
   page,
 }) => {
@@ -302,4 +378,39 @@ test("a redirect's flash message shows once above the page it lands on", async (
 
   await notice.getByRole("button", { name: "Dismiss" }).click();
   await expect(notice).toHaveCount(0);
+});
+
+test("an admin is told who waits for an OAuth app until they dismiss it", async ({
+  page,
+}) => {
+  let waiting = { names: ["Li Na", "Sam Lee"], truncated: false };
+  await routeApi(page, ({ path }) => {
+    if (path === "/orgs/acme/context") return ok(context);
+    if (path === "/orgs/acme/overview")
+      return ok({ ...overview, oauth_waiting: waiting });
+    return undefined;
+  });
+
+  await page.goto("/orgs/acme");
+  const notice = page
+    .getByRole("status")
+    .filter({ hasText: "waiting for an OAuth app" });
+  await expect(notice).toContainText(
+    "2 members are waiting for an OAuth app: Li Na, Sam Lee."
+  );
+  await expect(notice.getByRole("link", { name: "Set up OAuth apps" })).toHaveAttribute(
+    "href",
+    "/orgs/acme/settings/integrations#oauth"
+  );
+
+  await notice.getByRole("button", { name: "Dismiss" }).click();
+  await expect(notice).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText("Most active Agent Swarms")).toBeVisible();
+  await expect(notice).toHaveCount(0);
+
+  // Another member asks: it shows again.
+  waiting = { names: ["Li Na", "Sam Lee", "Ana Ruiz"], truncated: false };
+  await page.reload();
+  await expect(notice).toContainText("3 members are waiting");
 });

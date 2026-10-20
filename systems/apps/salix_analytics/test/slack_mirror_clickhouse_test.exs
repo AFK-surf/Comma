@@ -10,7 +10,7 @@ defmodule SalixAnalytics.SlackMirrorClickHouseTest do
   replaces by insertion order, so a tombstone loses to a live row that happened
   to arrive later, and a deleted message comes back.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   @moduletag :clickhouse
 
@@ -20,13 +20,13 @@ defmodule SalixAnalytics.SlackMirrorClickHouseTest do
   @clickhouse_url System.get_env("SALIX_TEST_CLICKHOUSE_URL", "http://127.0.0.1:8123/")
 
   setup do
-    database = "slack_mirror_test_#{System.unique_integer([:positive])}"
-    previous = Application.get_env(:salix_analytics, :clickhouse)
+    database = "slack_mirror_test_#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    previous = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
     query!("DROP DATABASE IF EXISTS #{database}")
     query!("CREATE DATABASE #{database}")
 
-    Application.put_env(:salix_analytics, :clickhouse,
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
       base_url: @clickhouse_url,
       table: "#{database}.events",
       database: database
@@ -34,7 +34,7 @@ defmodule SalixAnalytics.SlackMirrorClickHouseTest do
 
     on_exit(fn ->
       query!("DROP DATABASE IF EXISTS #{database}")
-      if previous, do: Application.put_env(:salix_analytics, :clickhouse, previous)
+      if previous, do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, previous)
     end)
 
     {:ok, database: database}

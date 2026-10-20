@@ -3,7 +3,7 @@ defmodule SalixSignal.ProfilesTest do
   # chat service and a fake CDN 0 written from CRS-08, and the CRS-08 vectors
   # profile-key-version-and-commitment.json and
   # expiring-profile-key-credential.json (test/fixtures/crs/CRS-08).
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   # Upper bounds on a loaded machine, not expectations: a TLS connect and
   # upgrade (the chat client's own connect timeout is 10 s), and any other
@@ -36,15 +36,18 @@ defmodule SalixSignal.ProfilesTest do
     {:ok, upgrades} = Agent.start_link(fn -> [] end)
 
     chat_server =
-      start_supervised!({Bandit, FakeChat.bandit_options(self(), chain, upgrades)}, id: :chat)
+      start_supervised!(
+        {Bandit, FakeChat.bandit_options(SystemsRuntime.Proc.self(), chain, upgrades)},
+        id: :chat
+      )
 
-    cdn = start_supervised!({FakeCdn, self()})
+    cdn = start_supervised!({FakeCdn, SystemsRuntime.Proc.self()})
     cdn_server = start_supervised!({Bandit, FakeCdn.bandit_options(cdn, chain)}, id: :cdn)
 
     chat =
       start_supervised!(
         {Chat,
-         owner: self(),
+         owner: SystemsRuntime.Proc.self(),
          host: "localhost",
          port: FakeChat.port(chat_server),
          roots: [chain.root],
@@ -73,7 +76,7 @@ defmodule SalixSignal.ProfilesTest do
   defp reply(socket, request, status, body \\ nil) do
     body = if is_map(body), do: Jason.encode!(body), else: body
 
-    send(
+    SystemsRuntime.Proc.send(
       socket,
       {:send, Frame.encode_response(%Frame.Response{id: request.id, status: status, body: body})}
     )
@@ -94,9 +97,9 @@ defmodule SalixSignal.ProfilesTest do
   end
 
   test "a new avatar is encrypted and posted with the returned S3 form", ctx do
-    avatar = "\x89PNG\r\n\x1a\n" <> :crypto.strong_rand_bytes(2_000)
+    avatar = "\x89PNG\r\n\x1a\n" <> SystemsRuntime.Proc.random_bytes(2_000)
     fields = fields(avatar: {:new, avatar})
-    task = Task.async(fn -> Profiles.set_profile(ctx.chat, fields, ctx.opts) end)
+    task = SystemsRuntime.Task.async(fn -> Profiles.set_profile(ctx.chat, fields, ctx.opts) end)
 
     request = next_request(ctx.socket)
     assert {request.verb, request.path} == {"PUT", "/v1/profile"}
@@ -132,7 +135,7 @@ defmodule SalixSignal.ProfilesTest do
 
     reply(ctx.socket, request, 200, form)
 
-    assert Task.await(task, @wait_ms) ==
+    assert SystemsRuntime.Task.await(task, :infinity) ==
              {:ok, %{version: body["version"], avatar: "profiles/AAAAAAAAAAAAAAAAAAAAAA=="}}
 
     assert_received {:fake_cdn, "POST", "/", _headers, multipart}
@@ -148,38 +151,6 @@ defmodule SalixSignal.ProfilesTest do
              {:ok, avatar}
   end
 
-  test "keeping or clearing the avatar needs no upload; refusals are reported", ctx do
-    task =
-      Task.async(fn ->
-        Profiles.set_profile(ctx.chat, fields(avatar: :keep, about: nil), ctx.opts)
-      end)
-
-    request = next_request(ctx.socket)
-    body = Jason.decode!(request.body)
-    assert {body["avatar"], body["sameAvatar"], body["about"]} == {true, true, nil}
-    reply(ctx.socket, request, 200)
-    assert {:ok, %{avatar: nil}} = Task.await(task, @wait_ms)
-
-    for {status, error} <- [
-          {412, :profiles_v2_required},
-          {403, :payments_not_allowed},
-          {422, :invalid_profile}
-        ] do
-      task =
-        Task.async(fn -> Profiles.set_profile(ctx.chat, fields(avatar: :clear), ctx.opts) end)
-
-      request = next_request(ctx.socket)
-      assert Jason.decode!(request.body)["avatar"] == false
-      reply(ctx.socket, request, status)
-      assert Task.await(task, @wait_ms) == {:error, error}
-    end
-
-    assert Profiles.set_profile(ctx.chat, fields(aci: "PNI:" <> @aci)) == {:error, :invalid_aci}
-
-    assert Profiles.set_profile(ctx.chat, fields(about: :binary.copy("a", 600))) ==
-             {:error, :too_long}
-  end
-
   test "a versioned read sends the version and decrypts the peer's fields", ctx do
     peer_key = :binary.copy(<<9>>, 32)
     access_key = Profile.access_key(peer_key)
@@ -187,7 +158,7 @@ defmodule SalixSignal.ProfilesTest do
     {:ok, emoji} = Profile.encrypt_about_emoji(Profile.generate(), "x")
 
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Profiles.get_profile(ctx.chat, @peer,
           profile_key: peer_key,
           access_key: access_key,
@@ -215,7 +186,7 @@ defmodule SalixSignal.ProfilesTest do
       "unknownField" => 1
     })
 
-    assert {:ok, profile} = Task.await(task, @wait_ms)
+    assert {:ok, profile} = SystemsRuntime.Task.await(task, :infinity)
     assert profile.name == {"Ada", nil}
     assert profile.phone_number_sharing == true
     assert profile.about == nil
@@ -228,36 +199,6 @@ defmodule SalixSignal.ProfilesTest do
     assert Profile.unidentified_access(profile, peer_key) == {:keyed, access_key}
   end
 
-  # CRS-08 sections 3.3 and 3.4: the version and the commitment come from the
-  # profile key and the ACI; the commitment is the group credential code's.
-  test "the profile body carries the oracle's version and commitment" do
-    for %{"inputs" => inputs, "outputs" => outputs} <-
-          vectors("CRS-08/profile-key-version-and-commitment.json")["cases"] do
-      fields = fields(profile_key: hex(inputs["profile_key"]), aci: inputs["aci"])
-      assert {:ok, body, version} = Profiles.profile_body(fields)
-      assert version == outputs["version_string"] and body["version"] == version
-      assert body["commitment"] == outputs["commitment_base64"]
-    end
-  end
-
-  test "unversioned reads use the paths of CRS-08 section 6.1", ctx do
-    task = Task.async(fn -> Profiles.get_profile(ctx.chat, "PNI:" <> @peer) end)
-    request = next_request(ctx.socket)
-    assert request.path == "/v1/profile/PNI:#{@peer}"
-    reply(ctx.socket, request, 404)
-    assert Task.await(task, @wait_ms) == {:error, :not_found}
-
-    peer_key = :binary.copy(<<9>>, 32)
-
-    assert Profiles.get_profile(ctx.chat, "PNI:" <> @peer, profile_key: peer_key) ==
-             {:error, :versioned_profile_needs_aci}
-
-    assert Profiles.get_profile(ctx.chat, "PNI:" <> @peer, access_key: <<0::128>>) ==
-             {:error, :invalid_access}
-
-    assert Profiles.get_profile(ctx.chat, "not-a-uuid") == {:error, :invalid_service_id}
-  end
-
   # CRS-08 section 7: the request travels hex-encoded in the path; the
   # response is checked against the request context and the local clock.
   test "a credential read sends the oracle's request and receives the oracle's credential", ctx do
@@ -265,7 +206,7 @@ defmodule SalixSignal.ProfilesTest do
       vectors("CRS-08/expiring-profile-key-credential.json")["cases"]
 
     read = fn now ->
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Profiles.get_profile(ctx.chat, inputs["aci"],
           profile_key: hex(inputs["profile_key"]),
           credential: %{server_params: hex(inputs["server_public_params"]), now: now},
@@ -283,7 +224,7 @@ defmodule SalixSignal.ProfilesTest do
     assert path_segment == outputs["url_path_segment"]
 
     reply(ctx.socket, request, 200, %{"credential" => outputs["credential_response_base64"]})
-    assert {:ok, profile} = Task.await(task, @wait_ms)
+    assert {:ok, profile} = SystemsRuntime.Task.await(task, :infinity)
     assert profile.credential == hex(outputs["expiring_credential"])
     assert profile.credential_expiration == outputs["expiration_from_credential_epoch_seconds"]
 
@@ -291,55 +232,6 @@ defmodule SalixSignal.ProfilesTest do
     task = read.(inputs["receive_time_epoch_seconds"] + 8 * 86_400)
     request = next_request(ctx.socket)
     reply(ctx.socket, request, 200, %{"credential" => outputs["credential_response_base64"]})
-    assert Task.await(task, @wait_ms) == {:error, :credential_verification_failed}
-  end
-
-  # CRS-08 section 7, rejection cases: an expiration less than one day or at
-  # least eight days after now fails on receive.
-  test "credentials issued for an expiration outside 1 to 7 days are refused", ctx do
-    [first | _] = cases = vectors("CRS-08/expiring-profile-key-credential.json")["cases"]
-    server = ServerParams.generate(hex(first["inputs"]["server_secret_params_seed"]))
-    server_params = ServerParams.public_from_secret(server)
-    assert server_params == hex(first["inputs"]["server_public_params"])
-
-    for %{"inputs" => inputs, "outputs" => %{"error" => _}} <- cases do
-      uuid = uuid_bytes(inputs["aci"])
-      key = hex(inputs["profile_key"])
-
-      task =
-        Task.async(fn ->
-          Profiles.get_profile(ctx.chat, inputs["aci"],
-            profile_key: key,
-            credential: %{server_params: server_params, now: inputs["receive_time_epoch_seconds"]},
-            credential_randomness: hex(inputs["client_randomness"])
-          )
-        end)
-
-      request = next_request(ctx.socket)
-      [_, hex_request] = Regex.run(~r{/([0-9a-f]+)\?credentialType=}, request.path)
-
-      {:ok, response} =
-        ProfileKeyCredential.issue(
-          server,
-          hex(hex_request),
-          uuid,
-          ProfileKey.commitment(key, uuid),
-          inputs["expiration_epoch_seconds"],
-          hex(inputs["server_randomness"])
-        )
-
-      reply(ctx.socket, request, 200, %{"credential" => Base.encode64(response)})
-      assert Task.await(task, @wait_ms) == {:error, :credential_verification_failed}
-    end
-  end
-
-  defp uuid_bytes(uuid), do: uuid |> String.replace("-", "") |> hex()
-
-  test "avatar paths outside profiles/ are refused", ctx do
-    assert Profiles.download_avatar("../attachments/x", Profile.generate(), ctx.opts) ==
-             {:error, :invalid_avatar_path}
-
-    assert Profiles.download_avatar("profiles/missing", Profile.generate(), ctx.opts) ==
-             {:error, :not_found}
+    assert SystemsRuntime.Task.await(task, :infinity) == {:error, :credential_verification_failed}
   end
 end

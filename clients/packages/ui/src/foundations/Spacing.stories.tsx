@@ -73,6 +73,8 @@ const LargeSpacingMeasurement = ({ value }: { value: number }) => (
 );
 
 const meta = {
+  // Fails on accessibility violations, which axe checks against the real cascade.
+  tags: ["browser"],
   title: "Foundations/Spacing",
   parameters: {
     a11y: {

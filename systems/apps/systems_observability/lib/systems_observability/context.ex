@@ -144,6 +144,6 @@ defmodule SystemsObservability.Context do
   end
 
   defp normalize_correlation(_), do: new_correlation_id()
-  defp new_correlation_id, do: Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+  defp new_correlation_id, do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(12), padding: false)
   defp value(carrier, key), do: carrier |> List.keyfind(key, 0, {key, nil}) |> elem(1)
 end

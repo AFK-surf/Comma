@@ -1,91 +1,35 @@
+import { useCall, useDoing, useTopic } from "@comma/core-client";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import {
-  LoadingIndicator,
-  ScrollAreaLoadMore,
-  toast,
-  type SettingsCategoryDefinition,
-} from "@comma/ui";
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { CommaApiClient, CommaTaskShareEntry } from "../../api";
-import { useCommaAuth } from "../AuthGate";
-import { useProductInboxProjection } from "../../product-inbox";
-import { readActiveWorkspaceId, subscribeActiveWorkspace } from "../activeWorkspace";
+import { LoadingIndicator } from "@comma/ui/components/LoadingIndicator";
+import { ScrollAreaLoadMore } from "@comma/ui/components/scroll-area";
+import { toast } from "@comma/ui/components/toast";
+import { type SettingsCategoryDefinition } from "@comma/ui/components/settings";
+import { useActiveWorkspace } from "../activeWorkspace";
 
 /**
  * Settings > Shared tasks: the active public links of the Workspace's Group,
- * most recently shared first, each with a Stop sharing action. It reads one
- * bounded page at a time, as Archived tasks does.
+ * most recently shared first, each with a Stop sharing action. The core reads
+ * one bounded page at a time (`taskShares`), as Archived tasks does.
  */
-export function useSharedTasksCategory(
-  api: CommaApiClient,
-  enabled: boolean
-): SettingsCategoryDefinition {
+export function useSharedTasksCategory(enabled: boolean): SettingsCategoryDefinition {
   const messages = useCommaMessages(),
-    locale = useCommaLocale(),
-    auth = useCommaAuth();
-  const [workspaceId, setWorkspaceId] = useState(readActiveWorkspaceId);
-  useEffect(() => subscribeActiveWorkspace(setWorkspaceId), []);
-  const { result } = useProductInboxProjection({
-    enabled,
-    session: auth.productLease,
-    ...(workspaceId ? { workspaceId } : {}),
-  });
-  const workspace = result?.workspaces?.find(
-    (w) => w.id === (workspaceId ?? result?.activeWorkspaceId)
+    locale = useCommaLocale();
+  const call = useCall();
+  const resolved = useActiveWorkspace(enabled);
+  const workspace = resolved?.workspace?.id ?? "";
+  const { value } = useTopic(
+    enabled && resolved && resolved.status !== "loading"
+      ? { topic: "taskShares", workspace }
+      : null
   );
-  const groupId = workspace?.group_id;
-  const [page, setPage] = useState<{
-    group?: string;
-    shares: CommaTaskShareEntry[];
-    cursor?: string;
-    more: boolean;
-  }>({ shares: [], more: false });
-  const [loading, setLoading] = useState(false),
-    [error, setError] = useState<string>();
-  const [pending, setPending] = useState<string>();
-  const generation = useRef(0);
-  const load = useCallback(
-    async (cursor?: string) => {
-      if (!groupId) return;
-      const request = ++generation.current;
-      setLoading(true);
-      setError(undefined);
-      try {
-        const next = await api.listTaskShares(groupId, cursor ? { cursor } : {});
-        if (request !== generation.current) return;
-        setPage((previous) => ({
-          group: groupId,
-          shares:
-            cursor && previous.group === groupId
-              ? [...previous.shares, ...next.data].filter(
-                  (v, i, a) =>
-                    a.findIndex((x) => x.conversation.id === v.conversation.id) === i
-                )
-              : next.data,
-          more: next.hasMore,
-          ...(next.nextCursor ? { cursor: next.nextCursor } : {}),
-        }));
-      } catch (failure) {
-        if (request === generation.current)
-          setError(failure instanceof Error ? failure.message : String(failure));
-      } finally {
-        if (request === generation.current) setLoading(false);
-      }
-    },
-    [api, groupId]
-  );
-  const invalidate = useCallback(() => {
-    generation.current++;
-  }, []);
-  useEffect(() => {
-    if (enabled) void load();
-    return invalidate;
-  }, [enabled, load, invalidate]);
-  const shares = page.group === groupId ? page.shares : [];
+  const doing = useDoing("taskShare.revoke");
+  const pending = doing?.stage === "running" ? doing.params.conversation : undefined;
+  const groupId = value?.workspace?.group_id;
+  const shares = value?.shares ?? [];
   const items: SettingsCategoryDefinition["sections"][number]["items"][number][] =
-    shares.map(({ artifact_count, conversation, shared_at }) => ({
-      id: `shared-task.${conversation.id}`,
-      title: conversation.title,
+    shares.map(({ artifact_count, id, shared_at, title }) => ({
+      id: `shared-task.${id}`,
+      title,
       description: [
         messages.task_share_shared_on({
           date: new Date(shared_at * 1000).toLocaleString(locale),
@@ -102,46 +46,34 @@ export function useSharedTasksCategory(
       control: {
         type: "button",
         label:
-          pending === conversation.id
-            ? messages.task_share_stopping()
-            : messages.task_share_stop(),
+          pending === id ? messages.task_share_stopping() : messages.task_share_stop(),
         disabled: pending !== undefined,
         onPress: () => {
           if (!groupId) return;
-          setPending(conversation.id);
-          // A page load may start while the link stops; the row leaves the
-          // list regardless, since its link is gone from every page.
-          void api
-            .revokeTaskShare(groupId, conversation.id)
-            .then(() => {
-              setPage((previous) => ({
-                ...previous,
-                shares: previous.shares.filter(
-                  (item) => item.conversation.id !== conversation.id
-                ),
-              }));
-            })
-            .catch(() => {
+          // The core takes the row off every page once the link is gone.
+          void call("taskShare.revoke", { group: groupId, conversation: id }).catch(
+            () => {
               toast.error(messages.task_share_failed());
-            })
-            .finally(() => setPending(undefined));
+            }
+          );
         },
       },
     }));
-  if (error)
+  if (value?.error)
     items.push({
       id: "shared-tasks.error",
-      title: error,
+      title: value.error,
       control: {
         type: "button",
         label: messages.tasks_archive_retry(),
-        onPress: () => void load(),
+        onPress: () =>
+          void call("taskShares.refresh", { workspace }).catch(() => undefined),
       },
     });
-  const more = page.group === groupId && page.more;
+  const more = value?.hasMore === true;
   // A later page loads as the reader scrolls to the end of the list, and shows
   // its progress there; this row covers the first page only.
-  if ((loading && !more) || (enabled && !result))
+  if ((value?.loading && !more) || (enabled && !value))
     items.push({
       id: "shared-tasks.loading",
       title: messages.task_share_list_loading(),
@@ -151,9 +83,9 @@ export function useSharedTasksCategory(
         content: <LoadingIndicator label={messages.task_share_list_loading()} />,
       },
     });
-  if (result && !loading && !error && !shares.length && !more)
+  if (value && !value.loading && !value.error && !shares.length && !more)
     items.push({ id: "shared-tasks.empty", title: messages.task_share_list_empty() });
-  if (more && !error)
+  if (more && !value?.error)
     items.push({
       id: "shared-tasks.more",
       title: messages.task_share_list_loading(),
@@ -163,8 +95,10 @@ export function useSharedTasksCategory(
         content: (
           <ScrollAreaLoadMore
             hasMore
-            loading={loading}
-            onLoadMore={() => void load(page.cursor)}
+            loading={value?.loading === true}
+            onLoadMore={() =>
+              void call("taskShares.more", { workspace }).catch(() => undefined)
+            }
           />
         ),
       },
@@ -176,7 +110,7 @@ export function useSharedTasksCategory(
     sections: [
       {
         id: "shared-tasks.list",
-        title: workspace?.name ?? messages.settings_shared_tasks(),
+        title: value?.workspace?.name ?? messages.settings_shared_tasks(),
         items,
       },
     ],

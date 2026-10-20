@@ -1,17 +1,17 @@
 defmodule SalixAgent.HierarchyIdentitySkillScopeMigrationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.SkillStore
   alias SalixStore.{Codec, HierarchyIdMigration, Ids, Keys, S3}
   alias SalixStore.Migrations.HierarchyIdentity
 
   setup do
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
     start_supervised!(S3.Fake)
 
     on_exit(fn ->
-      Application.put_env(:salix_store, :s3_backend, previous_backend)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, previous_backend)
     end)
 
     :ok

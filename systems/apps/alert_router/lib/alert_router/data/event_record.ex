@@ -23,7 +23,12 @@ defmodule AlertRouter.Data.EventRecord do
     field(:delivery_lease_token, Ecto.UUID)
     field(:delivery_lease_expires_at, :utc_datetime_usec)
     field(:last_error_class, :string)
-    timestamps(updated_at: false, type: :utc_datetime_usec)
+
+    timestamps(
+      updated_at: false,
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 
   @type t :: %__MODULE__{}

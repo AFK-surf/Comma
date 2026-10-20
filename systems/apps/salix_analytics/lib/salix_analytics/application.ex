@@ -31,11 +31,11 @@ defmodule SalixAnalytics.Application do
         event_archive_children() ++ SalixAnalytics.SlackSemanticIndex.children()
 
     opts = [strategy: :one_for_one, name: SalixAnalytics.Supervisor]
-    Supervisor.start_link(children, opts)
+    SystemsRuntime.Supervisor.start_link(children, opts)
   end
 
   defp typed_sink_children do
-    if Application.get_env(:salix_analytics, :typed_sink_worker, true) do
+    if SystemsRuntime.get_env(:salix_analytics, :typed_sink_worker, true) do
       [
         SalixAnalytics.TypedSinkWorker,
         {SalixAnalytics.TypedSinkWorker, name: SalixAnalytics.AgentObservabilitySinkWorker}

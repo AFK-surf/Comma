@@ -10,21 +10,6 @@ defmodule BridgeForTeamsWeb.ProjectAPIResponse do
   alias BridgeForTeams.Schema.{Agent, Organization, Project}
   alias BridgeForTeamsWeb.{JSON, ResponseSanitizer}
 
-  @public_external_runtime_config_keys ~w(
-    binding_revision
-    kind
-    owner_scope
-    provider
-    device_id
-    runtime_id
-    device_runtime_id
-    model
-    model_provider
-    reasoning_effort
-    runtime_spec
-    workload_id
-  )
-
   def public_org(%Organization{} = org) do
     %{
       "id" => org.id,
@@ -44,10 +29,8 @@ defmodule BridgeForTeamsWeb.ProjectAPIResponse do
     }
   end
 
-  def public_agent(%Agent{} = agent, environments \\ []) do
+  def public_agent(%Agent{} = agent) do
     salix_agent = agent.salix
-    runtime_config = normalize_map(salix_agent["runtime_config"])
-    vm = normalize_map(agent.salix["vm"])
 
     %{
       "id" => agent.id,
@@ -55,10 +38,9 @@ defmodule BridgeForTeamsWeb.ProjectAPIResponse do
       "name" => agent.salix["name"],
       "role" => agent.role,
       "status" => BridgeForTeams.Schema.Agent.lifecycle(agent),
-      "runtime_config" => public_runtime_config(runtime_config),
-      "runtime" => public_agent_runtime(runtime_config, environments),
+      "runtime" => public_agent_runtime(salix_agent),
+      "station_binding" => normalize_map(salix_agent["station_binding"]) |> empty_to_nil(),
       "provisioned" => is_nil(agent.provisioning) and salix_agent != %{},
-      "vm" => public_vm(vm),
       "created_at" => timestamp(agent.created_at),
       "updated_at" => timestamp(agent.updated_at)
     }
@@ -124,111 +106,18 @@ defmodule BridgeForTeamsWeb.ProjectAPIResponse do
 
   def sanitize_url(value), do: ResponseSanitizer.sanitize_url(value)
 
-  defp public_runtime_config(config) do
-    config
-    |> Map.take(@public_external_runtime_config_keys)
-    |> drop_nil_values()
-    |> empty_to_nil()
-  end
-
-  defp public_vm(config) do
-    config
-    |> Map.take(~w(enabled provider))
-    |> drop_nil_values()
-    |> empty_to_nil()
-  end
-
-  defp public_agent_runtime(%{"kind" => "internal"}, _environments), do: %{"kind" => "internal"}
-
-  defp public_agent_runtime(%{"kind" => "external"} = config, environments),
-    do: public_connected_runtime(config, environments)
-
-  defp public_agent_runtime(%{"kind" => "connected_runtime"} = config, environments),
-    do: public_connected_runtime(config, environments)
-
-  defp public_agent_runtime(config, _environments) do
-    %{"kind" => nonblank(config["kind"], "unknown"), "status" => "unknown"}
-  end
-
-  defp public_connected_runtime(config, environments) do
-    device_id = trim(config["device_id"])
-    device_runtime_id = trim(config["device_runtime_id"])
-
-    environment = current_device_environment(environments, device_id)
-
-    runtime = environment && find_agent_runtime(environment, device_runtime_id)
-
+  # A Worker bound to a station runs its Tasks there; every other Agent is internal.
+  defp public_agent_runtime(%{"station_binding" => %{"runs_on" => %{} = runs_on} = binding}) do
     %{
-      "kind" => config["kind"],
-      "provider" => config["provider"],
-      "device_id" => device_id,
-      "runtime_id" => trim(config["runtime_id"]),
-      "device_runtime_id" => device_runtime_id,
-      "connector_run_id" => environment && map_value(environment, "connector_run_id"),
-      "device_name" => device_name(environment),
-      "device_status" => environment && nonblank(map_value(environment, "status"), "unknown"),
-      "status" => external_runtime_status(environment, runtime),
-      "issue" => runtime && map_value(runtime, "issue"),
-      "runtime_status" => runtime && map_value(runtime, "status"),
-      "version" => runtime && map_value(runtime, "version"),
-      "model" => runtime && map_value(runtime, "model"),
-      "model_provider" => runtime && map_value(runtime, "model_provider"),
-      "reasoning_effort" => runtime && map_value(runtime, "reasoning_effort"),
-      "readiness_checked_at" => runtime && map_value(runtime, "readiness_checked_at")
+      "kind" => "station",
+      "runs_on" => runs_on,
+      "provider" => get_in(binding, ["model", "provider"]),
+      "model" => get_in(binding, ["model", "model"])
     }
     |> drop_nil_values()
   end
 
-  defp find_agent_runtime(environment, device_runtime_id) do
-    environment
-    |> device_runtimes()
-    |> Enum.find(&(trim(map_value(&1, "device_runtime_id")) == device_runtime_id))
-  end
-
-  defp current_device_environment(_environments, ""), do: nil
-
-  defp current_device_environment(environments, device_id) do
-    environments
-    |> Enum.filter(&(trim(map_value(&1, "device_id")) == device_id))
-    |> Enum.max_by(&environment_sort_key/1, fn -> nil end)
-  end
-
-  defp environment_sort_key(environment) do
-    connected = if map_value(environment, "status") == "connected", do: 1, else: 0
-
-    {connected,
-     integer(map_value(environment, "updated_at") || map_value(environment, "connected_at"))}
-  end
-
-  defp device_runtimes(environment) do
-    case map_value(environment, "device_runtimes") do
-      runtimes when is_list(runtimes) ->
-        runtimes
-        |> Enum.filter(&is_map/1)
-        |> Enum.map(&normalize_map/1)
-
-      _other ->
-        []
-    end
-  end
-
-  defp external_runtime_status(nil, _runtime), do: "missing"
-
-  defp external_runtime_status(_environment, nil), do: "missing"
-
-  defp external_runtime_status(_environment, runtime) do
-    case map_value(runtime, "status") do
-      status when status in ~w(ready unavailable stale disconnected missing unknown) -> status
-      _other -> "unknown"
-    end
-  end
-
-  defp device_name(nil), do: nil
-
-  defp device_name(environment) do
-    meta = normalize_map(map_value(environment, "meta"))
-    nonblank(meta["name"] || map_value(environment, "name"), nil)
-  end
+  defp public_agent_runtime(_record), do: %{"kind" => "internal"}
 
   defp normalize_map(map) when is_map(map) do
     Map.new(map, fn {key, value} -> {to_string(key), value} end)
@@ -274,35 +163,8 @@ defmodule BridgeForTeamsWeb.ProjectAPIResponse do
     end
   end
 
-  defp connect_field(map, key) when is_map(map), do: map_value(map, key)
+  defp connect_field(map, key) when is_map(map), do: Map.get(map, key)
   defp connect_field(_map, _key), do: nil
-
-  defp map_value(map, key) when is_map(map), do: Map.get(map, key)
-
-  defp map_value(_map, _key), do: nil
-
-  defp nonblank(value, fallback) when is_binary(value) do
-    case String.trim(value) do
-      "" -> fallback
-      trimmed -> trimmed
-    end
-  end
-
-  defp nonblank(value, fallback), do: value || fallback
-
-  defp trim(value) when is_binary(value), do: String.trim(value)
-  defp trim(_value), do: ""
-
-  defp integer(value) when is_integer(value), do: value
-
-  defp integer(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {int, _} -> int
-      _ -> 0
-    end
-  end
-
-  defp integer(_value), do: 0
 
   defp present?(value) when is_binary(value), do: String.trim(value) != ""
   defp present?(value), do: value not in [nil, false]
@@ -328,7 +190,7 @@ defmodule BridgeForTeamsWeb.ProjectAPIResponse do
              :connect_not_found,
              :org_not_found,
              :project_not_found,
-             :target_not_found
+             :station_not_found
            ],
       do: 404
 
@@ -345,40 +207,43 @@ defmodule BridgeForTeamsWeb.ProjectAPIResponse do
       when reason in [
              :stale_binding_revision,
              :binding_conflict,
-             :binding_revision_conflict,
-             :selection_changed
+             :binding_revision_conflict
            ],
       do: 409
 
   def error_status(reason)
       when reason in [
              :connect_rejected,
+             :feishu_app_mismatch,
+             :feishu_app_secret_missing,
              :unsupported_provider,
              :unsupported_action,
              :invalid_inbound_agent,
              :runtime_required,
-             :runtime_ambiguous,
              :agent_ambiguous,
              :agent_not_in_project,
              :use_runtime_rebind,
              :unsupported_agent_role,
              :unsupported_runtime_binding,
-             :provider_unsupported,
-             :target_required,
-             :invalid_external_target,
+             :invalid_station_target,
+             :external_runtime_retired,
+             :station_required,
+             :device_needs_station,
+             :station_outdated,
+             :cloud_vm_disabled,
+             :invalid_runtime_model,
              :invalid_expected_binding_revision,
              :raw_runtime_config_forbidden
            ],
       do: 400
 
-  def error_status(reason) when reason in [:runtime_not_found], do: 404
-
-  def error_status(:use_template_catalog), do: 400
+  def error_status(:workers_retired), do: 410
+  def error_status(:model_not_allowed), do: 422
+  def error_status(:use_model_choice), do: 400
   def error_status({:bad_request, _}), do: 400
   def error_status({:missing_credentials, _}), do: 400
   def error_status({:missing_bot_secret, _}), do: 400
   def error_status({:sso_provider_conflict, _}), do: 409
-  def error_status({:target_unavailable, _}), do: 409
   def error_status(_reason), do: 500
 
   def error_code(reason) when is_atom(reason), do: Atom.to_string(reason)

@@ -74,7 +74,7 @@ defmodule SalixAgent.Tools.Browser do
   def call(operation, args, ctx) do
     case SalixAgent.Browser.execute(SalixAgent.Browser.owner(ctx), operation, args) do
       {:ok, %{"data" => data, "mime_type" => mime}} when operation == "screenshot" ->
-        path = "/artifacts/browser-" <> Ecto.UUID.generate() <> ".jpg"
+        path = "/artifacts/browser-" <> SystemsRuntime.Proc.uuid() <> ".jpg"
         body = Base.decode64!(data)
 
         case SalixAgent.FileBackend.prepare_write(

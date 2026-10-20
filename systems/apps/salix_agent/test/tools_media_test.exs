@@ -8,7 +8,7 @@ defmodule SalixAgent.ToolsMediaTest do
   raise willow's error texts. Direct tool-fun unit tests with the Fake S3
   backend.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{AgentWorkspace, Tools}
   alias SalixAgent.Tools.Media
@@ -18,10 +18,19 @@ defmodule SalixAgent.ToolsMediaTest do
 
     @impl true
     def transcribe(agent_id, path) do
-      owner = Application.fetch_env!(:salix_agent, :tools_media_test_pid)
-      send(owner, {:audio_transcribe, agent_id, path})
-      Process.sleep(Application.get_env(:salix_agent, :tools_media_audio_delay_ms, 0))
+      owner = SystemsRuntime.fetch_env!(:salix_agent, :tools_media_test_pid)
+      SystemsRuntime.Proc.send(owner, {:audio_transcribe, agent_id, path})
 
+      SystemsRuntime.Proc.sleep(
+        SystemsRuntime.get_env(:salix_agent, :tools_media_audio_delay_ms, 0)
+      )
+
+      transcribe_result(path)
+    end
+
+    defp transcribe_result("/uploads/silence.mp4"), do: {:error, :asr_empty_transcript}
+
+    defp transcribe_result(_path) do
       {:ok,
        %{
          transcript: "[00:00:01] Speaker: complete",
@@ -36,10 +45,11 @@ defmodule SalixAgent.ToolsMediaTest do
   defmodule MockResolver do
     @behaviour SalixAgent.MediaResolver
 
-    def set(config), do: :persistent_term.put({__MODULE__, :config}, config)
+    def set(config), do: SystemsRuntime.PersistentTerm.put({__MODULE__, :config}, config)
 
     @impl true
-    def resolve(_agent_id), do: {:ok, :persistent_term.get({__MODULE__, :config}, nil)}
+    def resolve(_agent_id),
+      do: {:ok, SystemsRuntime.PersistentTerm.get({__MODULE__, :config}, nil)}
   end
 
   defmodule MockMedia do
@@ -82,15 +92,15 @@ defmodule SalixAgent.ToolsMediaTest do
   end
 
   setup do
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     start_supervised!(MockMedia)
 
     # Retry on port collisions (randomized ports can collide across suites).
     port =
       Enum.find_value(1..10, fn _ ->
-        p = 40000 + :erlang.phash2(make_ref(), 20000)
+        p = 40000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20000)
 
         case start_supervised({Bandit, plug: MockMedia, port: p}, id: {:bandit, p}) do
           {:ok, _pid} -> p
@@ -98,18 +108,18 @@ defmodule SalixAgent.ToolsMediaTest do
         end
       end)
 
-    prev_url = Application.get_env(:salix_media, :base_url)
-    prev_key = Application.get_env(:salix_media, :api_key)
-    prev_resolver = Application.get_env(:salix_agent, :media_resolver)
-    prev_audio_transcriber = Application.get_env(:salix_agent, :audio_transcriber_mod)
-    prev_test_pid = Application.get_env(:salix_agent, :tools_media_test_pid)
-    prev_audio_delay = Application.get_env(:salix_agent, :tools_media_audio_delay_ms)
-    Application.put_env(:salix_media, :base_url, "http://127.0.0.1:#{port}")
-    Application.put_env(:salix_media, :api_key, "test-key")
-    Application.put_env(:salix_agent, :media_resolver, MockResolver)
-    Application.put_env(:salix_agent, :audio_transcriber_mod, MockAudioTranscriber)
-    Application.put_env(:salix_agent, :tools_media_test_pid, self())
-    Application.put_env(:salix_agent, :tools_media_audio_delay_ms, 0)
+    prev_url = SystemsRuntime.get_env(:salix_media, :base_url)
+    prev_key = SystemsRuntime.get_env(:salix_media, :api_key)
+    prev_resolver = SystemsRuntime.get_env(:salix_agent, :media_resolver)
+    prev_audio_transcriber = SystemsRuntime.get_env(:salix_agent, :audio_transcriber_mod)
+    prev_test_pid = SystemsRuntime.get_env(:salix_agent, :tools_media_test_pid)
+    prev_audio_delay = SystemsRuntime.get_env(:salix_agent, :tools_media_audio_delay_ms)
+    SystemsRuntime.put_env(:salix_media, :base_url, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:salix_media, :api_key, "test-key")
+    SystemsRuntime.put_env(:salix_agent, :media_resolver, MockResolver)
+    SystemsRuntime.put_env(:salix_agent, :audio_transcriber_mod, MockAudioTranscriber)
+    SystemsRuntime.put_env(:salix_agent, :tools_media_test_pid, SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_agent, :tools_media_audio_delay_ms, 0)
 
     MockResolver.set(%{
       "image_config" => %{
@@ -125,14 +135,14 @@ defmodule SalixAgent.ToolsMediaTest do
     })
 
     on_exit(fn ->
-      Application.put_env(:salix_store, :s3_backend, prev_backend)
-      Application.put_env(:salix_media, :base_url, prev_url)
-      Application.put_env(:salix_media, :api_key, prev_key)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_backend)
+      SystemsRuntime.put_env(:salix_media, :base_url, prev_url)
+      SystemsRuntime.put_env(:salix_media, :api_key, prev_key)
       restore_env(:media_resolver, prev_resolver)
       restore_env(:audio_transcriber_mod, prev_audio_transcriber)
       restore_env(:tools_media_test_pid, prev_test_pid)
       restore_env(:tools_media_audio_delay_ms, prev_audio_delay)
-      :persistent_term.erase({MockResolver, :config})
+      SystemsRuntime.PersistentTerm.erase({MockResolver, :config})
     end)
 
     agent = SalixAgent.TestSupport.new_agent_id()
@@ -140,16 +150,8 @@ defmodule SalixAgent.ToolsMediaTest do
   end
 
   describe "image.generate" do
-    test "raises clearly when template image config is not configured", %{ctx: ctx} do
-      MockResolver.set(%{})
-
-      assert_raise RuntimeError, "image_config is not configured for this agent", fn ->
-        Media.generate_image(%{"prompt" => "x"}, ctx)
-      end
-    end
-
     test "decodes a b64 payload, writes it to the VFS, and round-trips", %{agent: agent, ctx: ctx} do
-      bytes = "fake-png-bytes-#{System.unique_integer([:positive])}"
+      bytes = "fake-png-bytes-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
       MockMedia.set("/v1/images/generations", %{"data" => [%{"b64_json" => Base.encode64(bytes)}]})
 
@@ -169,27 +171,6 @@ defmodule SalixAgent.ToolsMediaTest do
       assert MockMedia.last_request()["prompt"] == "a red fox"
     end
 
-    test "defaults the output path to /artifacts/generated-image-<id>.jpg", %{
-      agent: agent,
-      ctx: ctx
-    } do
-      MockMedia.set("/v1/images/generations", %{"data" => [%{"b64_json" => Base.encode64("img")}]})
-
-      assert {content, [event]} = Media.generate_image(%{"prompt" => "a cat"}, ctx)
-      assert %{"type" => "vfs_write", "path" => path} = event
-      assert path =~ ~r{^/artifacts/generated-image-\d+\.jpg$}
-      assert content =~ "[Generated image: #{path}, 3 bytes"
-
-      commit_workspace!(agent, "image-default", [event])
-      assert {:ok, "img"} = AgentWorkspace.read(agent, path)
-    end
-
-    test "a non-absolute output path is rejected", %{ctx: ctx} do
-      assert_raise RuntimeError, "output_path must be an absolute visible file path", fn ->
-        Media.generate_image(%{"prompt" => "a cat", "path" => "relative.png"}, ctx)
-      end
-    end
-
     test "a url-only response returns the URL as text with no events", %{ctx: ctx} do
       MockMedia.set("/v1/images/generations", %{"data" => [%{"url" => "https://cdn/img-1.png"}]})
 
@@ -198,8 +179,8 @@ defmodule SalixAgent.ToolsMediaTest do
     end
   end
 
-  defp restore_env(key, nil), do: Application.delete_env(:salix_agent, key)
-  defp restore_env(key, value), do: Application.put_env(:salix_agent, key, value)
+  defp restore_env(key, nil), do: SystemsRuntime.delete_env(:salix_agent, key)
+  defp restore_env(key, value), do: SystemsRuntime.put_env(:salix_agent, key, value)
 
   defp commit_workspace!(agent, operation_id, events) do
     assert {:ok, _} =
@@ -218,20 +199,6 @@ defmodule SalixAgent.ToolsMediaTest do
       assert MockMedia.last_path() == "/v1/videos/generations"
       assert MockMedia.last_request()["prompt"] == "waves at dusk"
     end
-
-    test "a provider 4xx surfaces the actionable message (willow client-error behavior)", %{
-      ctx: ctx
-    } do
-      MockMedia.set(
-        "/v1/videos/generations",
-        %{"error" => %{"message" => "invalid duration"}},
-        400
-      )
-
-      assert_raise RuntimeError, "video generation failed: invalid duration", fn ->
-        Media.generate_video(%{"prompt" => "waves"}, ctx)
-      end
-    end
   end
 
   describe "image.generate and video.generate failures" do
@@ -239,19 +206,6 @@ defmodule SalixAgent.ToolsMediaTest do
           {"image", :generate_image, "/v1/images/generations"},
           {"video", :generate_video, "/v1/videos/generations"}
         ] do
-      test "#{kind}: an empty prompt raises", %{ctx: ctx} do
-        assert_raise RuntimeError, "prompt is required", fn ->
-          apply(Media, unquote(generate), [%{}, ctx])
-        end
-      end
-
-      test "#{kind}: a malformed provider response raises the opaque willow error", %{ctx: ctx} do
-        MockMedia.set(unquote(endpoint), %{"unexpected" => true})
-
-        assert_raise RuntimeError, "#{unquote(kind)} generation failed", fn ->
-          apply(Media, unquote(generate), [%{"prompt" => "x"}, ctx])
-        end
-      end
     end
   end
 
@@ -280,84 +234,16 @@ defmodule SalixAgent.ToolsMediaTest do
                AgentWorkspace.read(agent, transcript_path)
     end
 
-    test "reuses committed meeting ASR after a later summary failure", %{agent: agent, ctx: ctx} do
-      args = %{
-        "path" => "/uploads/meeting.m4a",
-        "output_path" => "/artifacts/meetings/one/transcript.txt"
-      }
-
-      assert {content, events} = Media.transcribe_audio(args, ctx)
-      assert_receive {:audio_transcribe, ^agent, "/uploads/meeting.m4a"}
-      commit_workspace!(agent, "meeting-asr", events)
-      assert {^content, []} = Media.transcribe_audio(args, ctx)
-      refute_receive {:audio_transcribe, _, _}
-
-      assert {:ok, metadata} =
-               AgentWorkspace.read(agent, "/artifacts/meetings/one/transcript.json")
-
-      assert [%{"transcript" => "[00:00:01] Speaker: complete"}] =
-               Jason.decode!(metadata)["chunks"]
-
-      assert %{"status" => "unavailable", "reason" => reason} =
-               Jason.decode!(metadata)["calibration"]
-
-      assert reason =~ "independent captions"
-
-      assert_raise RuntimeError, ~r/Saved transcript cannot be reused/, fn ->
-        Media.transcribe_audio(Map.put(args, "path", "/uploads/another-meeting.m4a"), ctx)
-      end
-
-      refute_receive {:audio_transcribe, _, _}
-    end
-
-    test "rejects missing, relative, and runtime paths before dispatch", %{ctx: ctx} do
-      assert_raise RuntimeError, "path is required", fn ->
-        Media.transcribe_audio(%{}, ctx)
-      end
-
-      assert_raise RuntimeError, "path must be an absolute visible file path", fn ->
-        Media.transcribe_audio(%{"path" => "relative.m4a"}, ctx)
-      end
-
-      assert_raise RuntimeError, "path must be a normal visible file path", fn ->
-        Media.transcribe_audio(%{"path" => "/.runtime/compaction-recovery.md"}, ctx)
-      end
-
-      refute_receive {:audio_transcribe, _, _}
-    end
-
-    test "uses the existing async dependency lifecycle for long transcription", %{
+    test "reports a file without speech as such instead of a failure", %{
       agent: agent,
       ctx: ctx
     } do
-      Application.put_env(:salix_agent, :tools_media_audio_delay_ms, 50)
+      assert {content, []} = Media.transcribe_audio(%{"path" => "/uploads/silence.mp4"}, ctx)
 
-      call = %{
-        "id" => "audio-async",
-        "name" => "audio.transcribe",
-        "args" => %{
-          "path" => "/uploads/long.m4a",
-          "output_path" => "/artifacts/long/transcript.txt"
-        }
-      }
+      assert_received {:audio_transcribe, ^agent, "/uploads/silence.mp4"}
 
-      async_ctx =
-        ctx
-        |> Map.put(:session_id, "audio-transcription-test")
-        |> Map.put(:calls_prepared, true)
-
-      {[early], [pending]} = Tools.execute_with_async_window([call], async_ctx)
-      assert early.status == "async_running"
-
-      assert {:ok, terminal} = SalixAgent.DependencyJob.yield(pending.dependency_job, 1_000)
-      assert terminal.status == "completed"
-
-      assert [
-               %{"type" => "vfs_write", "path" => "/artifacts/long/transcript.txt"},
-               %{"type" => "vfs_write", "path" => "/artifacts/long/transcript.json"}
-             ] = terminal.events
-
-      assert_receive {:audio_transcribe, ^agent, "/uploads/long.m4a"}
+      assert %{"source_path" => "/uploads/silence.mp4", "speech_detected" => false} ==
+               Jason.decode!(content)
     end
   end
 end

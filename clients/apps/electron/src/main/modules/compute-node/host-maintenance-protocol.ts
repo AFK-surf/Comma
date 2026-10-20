@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { NativeOperationError } from "../ipc/operation-error";
 import type { HostCommand } from "./host-preparation";
 
 export const nativeReceiptSchema = z.object({
@@ -41,8 +42,9 @@ export async function assertMaintenanceCapable(
     );
     if (value !== null) nativeReceiptSchema.parse(value);
   } catch (error) {
-    throw new Error(
+    throw new NativeOperationError(
       "Update Agent VMM Host in Local maintenance before changing this connection.",
+      "OPERATION_FAILED",
       { cause: error }
     );
   }

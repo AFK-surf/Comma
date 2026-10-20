@@ -1,6 +1,7 @@
 defmodule SalixIM.TaskContinuation do
   @moduledoc """
-  Call-local authority for a Router that receives its assigned Worker's report.
+  Call-local authority for a Router that receives its assigned Worker's report,
+  a Loop runtime notice, or the notice that a user ended the Task by hand.
   Canonical Task ownership and the consumed Message authorize Task coordination.
   A protected return target authorizes a text reply to the original Slack thread.
   Worker Messages remain data. The IFC kernel still checks every source label.
@@ -98,9 +99,7 @@ defmodule SalixIM.TaskContinuation do
              origin["conversation_id"],
              origin["message_id"]
            ),
-         "agent" <- report["actor_type"],
-         worker when is_binary(worker) and worker != "" <- task["task_worker_agent_id"],
-         true <- report["agent_id"] == worker do
+         true <- continuation_report?(report, task, api) do
       authorize_effect(api, args, source, scope, task)
     else
       _ -> :none
@@ -108,6 +107,31 @@ defmodule SalixIM.TaskContinuation do
   end
 
   def ifc_request(_, _, _), do: :none
+
+  defp continuation_report?(%{"actor_type" => "agent", "agent_id" => agent}, task, _api) do
+    worker = task["task_worker_agent_id"]
+    is_binary(worker) and worker != "" and agent == worker
+  end
+
+  # Only the Conversation owner writes system Messages. A user's manual end
+  # authorizes the closing text to the original Slack thread, nothing more.
+  defp continuation_report?(
+         %{"actor_type" => "system", "metadata" => %{"message_type" => "task_manual_status"}},
+         _task,
+         api
+       ),
+       do: api in ["slack.post_message", "slack.reply_message"]
+
+  # The owner persists these notices for this Loop Task. They authorize the
+  # Router's existing Task coordination, never arbitrary system-message work.
+  defp continuation_report?(
+         %{"actor_type" => "system", "metadata" => %{"message_type" => "task_loop"}},
+         task,
+         _api
+       ),
+       do: loop_task?(task)
+
+  defp continuation_report?(_report, _task, _api), do: false
 
   # Terminal status must not strand the closing notice. Only text to the
   # protected original Slack target remains eligible; authorize_effect still
@@ -118,13 +142,16 @@ defmodule SalixIM.TaskContinuation do
               api in ["slack.post_message", "slack.reply_message"],
        do: true
 
-  # A lost completion response may be retried without reopening other writes.
-  defp continuation_status?(%{"status" => "completed"} = task, api, args) do
-    api == "internal.update_conversation" and
+  # A lost response may retry the same exact status, never reopen the Task.
+  defp continuation_status?(%{"status" => status} = task, api, args)
+       when status in ~w(completed failed escalated) do
+    allowed = if loop_task?(task), do: ~w(completed failed escalated), else: ~w(completed)
+
+    status in allowed and api == "internal.update_conversation" and
       args == %{
         "connect_id" => "internal",
         "conversation_id" => task["conversation_id"],
-        "status" => "completed"
+        "status" => status
       }
   end
 
@@ -157,7 +184,12 @@ defmodule SalixIM.TaskContinuation do
           Map.take(args, Map.keys(target)) == target
 
         "internal.update_conversation" ->
-          args in Enum.map(~w(ready_for_review completed), &Map.put(target, "status", &1))
+          statuses =
+            if loop_task?(task),
+              do: ~w(completed escalated failed),
+              else: ~w(ready_for_review completed)
+
+          args in Enum.map(statuses, &Map.put(target, "status", &1))
       end
 
     if allowed do
@@ -178,6 +210,15 @@ defmodule SalixIM.TaskContinuation do
     else
       _ -> :none
     end
+  end
+
+  # A Task that requested a Loop (`SalixIM.TaskLoop`). A failed read is no
+  # Loop Task: it grants only the plain Task's authority.
+  defp loop_task?(task) do
+    match?(
+      {:ok, %{"trigger" => %{}}},
+      SalixIM.TaskLoop.get(task["agent_group_id"], task["conversation_id"])
+    )
   end
 
   defp ordinary?(nil), do: true

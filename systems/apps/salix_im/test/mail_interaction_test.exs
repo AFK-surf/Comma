@@ -1,5 +1,5 @@
 defmodule SalixIM.MailInteractionTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixIM.MailInteraction
 
@@ -91,57 +91,48 @@ defmodule SalixIM.MailInteractionTest do
              MailInteraction.notification_budget(conversation, @owner, now + 24 * 60 * @minute)
   end
 
-  test "notifying keeps a pending recheck" do
+  test "a full store drops the oldest settled matter for a new one and never a followed one" do
     now = 1_000_000_000
-    key = MailInteraction.key("internal", "later")
-    conversation = present(%{"metadata" => %{}}, "later", "high", now)
-    value = MailInteraction.entries(conversation)[key]
 
-    conversation =
-      run(conversation, now, %{
-        "action" => "snooze",
-        "key" => key,
-        "generation" => value["generation"],
-        "request_id" => "snooze-1",
-        "run_at" => now + 60 * @minute,
-        "reason" => "Before the deadline"
-      })
-
-    %{"schedule_id" => schedule} = MailInteraction.entries(conversation)[key]
-    conversation = decide(conversation, "later", "notify", "d1", now + @minute)
-
-    assert %{"state" => "snoozed", "schedule_id" => ^schedule, "run_at" => run_at} =
-             MailInteraction.entries(conversation)[key]
-
-    assert run_at == now + 60 * @minute
-  end
-
-  test "notifying about a matter the owner asked for spends nothing" do
-    now = 1_000_000_000
-    key = MailInteraction.key("internal", "asked")
-
-    conversation =
-      run(%{"metadata" => %{}}, now, %{
-        "action" => "track",
-        "key" => key,
-        "request_id" => "track-1",
+    value = fn thread, state, changed ->
+      %{
+        "owner_id" => @owner,
         "account_id" => "internal",
-        "thread_id" => "asked",
-        "message_id" => "m1"
-      })
+        "thread_id" => thread,
+        "state" => state,
+        "generation" => 1,
+        "changed_at" => changed
+      }
+    end
 
-    # A caller cannot claim the matter is automatic.
-    value = MailInteraction.entries(conversation)[key]
+    # 127 followed matters and one handled matter, the oldest of all.
+    full =
+      for(
+        i <- 1..127,
+        into: %{},
+        do: {MailInteraction.key("internal", "t#{i}"), value.("t#{i}", "active", now + i)}
+      )
+      |> Map.put(MailInteraction.key("internal", "done"), value.("done", "handled", now))
 
     conversation =
-      run(conversation, now, %{
-        "action" => "notify",
-        "automatic" => true,
-        "key" => key,
-        "generation" => value["generation"],
-        "request_id" => "d1"
-      })
+      present(%{"metadata" => %{"mail_interactions" => full}}, "new", "high", now + 500)
 
-    assert {:open, 5} = MailInteraction.notification_budget(conversation, @owner, now)
+    entries = MailInteraction.entries(conversation)
+
+    assert map_size(entries) == 128
+    assert Map.has_key?(entries, MailInteraction.key("internal", "new"))
+    refute Map.has_key?(entries, MailInteraction.key("internal", "done"))
+
+    # With only followed matters, nothing is dropped and the new matter fails.
+    followed =
+      Map.put(full, MailInteraction.key("internal", "done"), value.("done", "active", now))
+
+    assert {:error, :mail_tracking_capacity} =
+             present(
+               %{"metadata" => %{"mail_interactions" => followed}},
+               "new",
+               "high",
+               now + 500
+             )
   end
 end

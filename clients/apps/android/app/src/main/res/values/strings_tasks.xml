@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="task_status_in_progress">进行中</string>
+    <string name="task_status_needs_review">待审核</string>
+    <string name="task_status_done">已完成</string>
+    <string name="task_status_cancelled">已取消</string>
+    <string name="task_status_archived">已归档</string>
+    <string name="task_status_failed">失败</string>
+    <string name="task_untitled">未命名任务</string>
+    <string name="task_updated_date">更新于 %1$s</string>
+    <string name="task_updated_recently">最近更新</string>
+    <plurals name="task_count">
+        <item quantity="other">%d 个任务</item>
+    </plurals>
+    <plurals name="task_running_count">
+        <item quantity="other">%d 个进行中</item>
+    </plurals>
+    <string name="task_counts_joined">%1$s · %2$s</string>
+    <string name="task_panel_title">本会话的任务</string>
+    <string name="task_action_hide">隐藏</string>
+    <string name="task_action_archive">归档</string>
+    <string name="task_action_back">返回</string>
+    <string name="task_list_title">任务</string>
+    <string name="task_filter_all">全部</string>
+    <string name="task_list_empty">还没有任务</string>
+    <string name="task_list_loading">正在加载…</string>
+    <string name="task_list_empty_filtered">这个标签下没有任务</string>
+    <string name="task_detail_messages_placeholder">任务的消息会显示在这里</string>
+    <string name="task_archive_not_allowed">这个任务现在不能归档</string>
+    <string name="task_archive_conflict">任务刚刚有变化，请再试一次</string>
+    <string name="task_archive_unavailable">暂时无法归档，请稍后再试</string>
+    <string name="task_list_offline">网络不可用</string>
+    <string name="task_list_problem">任务加载失败</string>
+    <string name="task_list_refresh_failed">刷新失败，显示的是之前的内容</string>
+    <string name="task_detail_loading">正在加载…</string>
+    <string name="task_detail_empty">这个任务还没有消息</string>
+    <string name="task_detail_not_found">找不到这个任务，或者没有权限查看</string>
+    <string name="task_detail_problem">消息加载失败</string>
+    <string name="task_detail_retry">重试</string>
+    <string name="task_brief_title">任务说明</string>
+    <string name="task_brief_show_all">展开全部</string>
+    <string name="task_brief_show_less">收起</string>
+    <string name="task_panel_all">全部任务</string>
+</resources>

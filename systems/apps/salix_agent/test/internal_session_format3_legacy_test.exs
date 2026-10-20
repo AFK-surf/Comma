@@ -1,9 +1,9 @@
 defmodule SalixAgent.InternalSessionFormat3LegacyTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias SalixAgent.InternalSession
   alias SalixAgent.InternalSessionFormat3Legacy, as: Legacy
 
-  test "normalizes mixed unstamped history and new results without losing result identity or redaction" do
+  test "normalizes mixed unstamped history and new results without losing result identity" do
     ref = SalixStore.Ids.new_tool_result_ref()
 
     result = %{
@@ -34,7 +34,6 @@ defmodule SalixAgent.InternalSessionFormat3LegacyTest do
         ],
         async_results: [result],
         async_result_refs: %{ref => 1},
-        redactions: [%{"seq" => 2, "replacement" => "redacted"}],
         async_tool_calls: %{
           "legacy-tool" => %{
             "status" => "completed",
@@ -57,10 +56,6 @@ defmodule SalixAgent.InternalSessionFormat3LegacyTest do
     messages = InternalSession.get(next, :messages)
     message = Enum.find(messages, &(&1.id == 2))
     assert message.result_seq == migrated["seq"]
-
-    assert InternalSession.get(next, :redactions) == [
-             %{"seq" => message.seq, "replacement" => "redacted"}
-           ]
 
     assert {:ok, ^migrated} = InternalSession.lookup_async_call(next, ref)
     assert Enum.map(messages, & &1.id) == [1, 2]

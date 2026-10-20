@@ -6,7 +6,7 @@ defmodule SalixSignal.Test.FakeChat do
   # test root, like the chat hosts in CRS-01 section 3.2. `GET /v1/websocket/`
   # upgrades to a socket whose frames are forwarded to the test process as
   # `{:fake_chat, :frame, socket, decoded}`; the test drives the socket with
-  # `send(socket, {:send, bytes})` and `send(socket, {:close, code})`. Other
+  # `SystemsRuntime.Proc.send(socket, {:send, bytes})` and `SystemsRuntime.Proc.send(socket, {:close, code})`. Other
   # paths answer 200 with the request's Authorization header as the body.
 
   alias SalixSignalProto.Service.Frame
@@ -71,7 +71,7 @@ defmodule SalixSignal.Test.FakeChat do
 
     @impl true
     def call(%{request_path: "/v1/websocket/"} = conn, state) do
-      send(state.test, {:fake_chat, :upgrade, conn.req_headers})
+      SystemsRuntime.Proc.send(state.test, {:fake_chat, :upgrade, conn.req_headers})
 
       decision =
         Agent.get_and_update(state.upgrades, fn
@@ -92,7 +92,7 @@ defmodule SalixSignal.Test.FakeChat do
     end
 
     def call(conn, state) do
-      send(state.test, {:fake_chat, :http, conn.method, conn.request_path})
+      SystemsRuntime.Proc.send(state.test, {:fake_chat, :http, conn.method, conn.request_path})
 
       conn
       |> put_resp_header("x-signal-timestamp", "1758790000000")
@@ -106,7 +106,7 @@ defmodule SalixSignal.Test.FakeChat do
 
     @impl true
     def init(state) do
-      send(state.test, {:fake_chat, :connected, self()})
+      SystemsRuntime.Proc.send(state.test, {:fake_chat, :connected, SystemsRuntime.Proc.self()})
       {:ok, state}
     end
 
@@ -116,12 +116,20 @@ defmodule SalixSignal.Test.FakeChat do
 
       case frame do
         %Frame.Request{verb: "GET", path: "/v1/keepalive", id: id} when state.auto_keepalive ->
-          send(state.test, {:fake_chat, :keepalive, self()})
+          SystemsRuntime.Proc.send(
+            state.test,
+            {:fake_chat, :keepalive, SystemsRuntime.Proc.self()}
+          )
+
           reply = Frame.encode_response(%Frame.Response{id: id, status: 200})
           {:push, {:binary, reply}, state}
 
         _ ->
-          send(state.test, {:fake_chat, :frame, self(), frame})
+          SystemsRuntime.Proc.send(
+            state.test,
+            {:fake_chat, :frame, SystemsRuntime.Proc.self(), frame}
+          )
+
           {:ok, state}
       end
     end

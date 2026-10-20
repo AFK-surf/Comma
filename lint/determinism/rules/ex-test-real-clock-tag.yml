@@ -1,0 +1,16 @@
+id: ex-test-real-clock-tag
+language: elixir
+severity: error
+message: "A test runs on the real clock."
+note: |
+  A test tagged clock: :real reads real time. Put it on the test clock, or
+  test the time-independent contract only.
+metadata:
+  category: unclocked
+rule:
+  all:
+    - kind: unary_operator
+    - regex: "^@(tag|moduletag)\\s+clock:\\s*:real"
+files:
+  - "systems/apps/*/test/**/*.exs"
+  - "systems/apps/*/test/**/*.ex"

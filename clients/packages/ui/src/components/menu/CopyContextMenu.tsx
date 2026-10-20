@@ -4,15 +4,18 @@ import { Menu, MenuItem, MenuPopover } from "./Menu";
 import type { MenuPointerOffsets } from "./pointerPosition";
 import { menuCompactClasses } from "./styles";
 
-export type CopyContextMenuAction = "copy";
+export type CopyContextMenuAction = "copy" | "reply";
 
 export interface CopyContextMenuLabels {
   ariaLabel: string;
   copy: string;
+  /** Offers Reply above Copy when present. */
+  reply?: string | undefined;
 }
 
 export interface CopyContextMenuDisabledActions {
   copy?: boolean;
+  reply?: boolean;
 }
 
 export interface CopyContextMenuProps {
@@ -57,6 +60,14 @@ export const CopyContextMenu = ({
         onAction={handleAction}
         onClose={() => onOpenChange(false)}
       >
+        {labels.reply ? (
+          <MenuItem
+            id="reply"
+            {...definedProps({ isDisabled: disabledActions?.reply })}
+          >
+            {labels.reply}
+          </MenuItem>
+        ) : null}
         <MenuItem id="copy" {...definedProps({ isDisabled: disabledActions?.copy })}>
           {labels.copy}
         </MenuItem>

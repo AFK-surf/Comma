@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import { isReducedMotionEnabled } from "@comma/ui";
+import { isReducedMotionEnabled } from "@comma/ui/tokens";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { isCommaSurfacePaused } from "../../../commaSurfacePause";
 
 const BOTTOM_EPSILON_PX = 1;
@@ -63,11 +64,11 @@ export function useStickToBottom(
   // stays false through mount and through an anchor that fails to resolve.
   const bottomPinnedRef = useRef(false);
   const nextInteractionIdRef = useRef(1);
-  const interactionTimeoutRef = useRef<number | null>(null);
+  const interactionTimeoutRef = useRef<CancelUiTimer | null>(null);
   const retainedFocusRef = useRef<Element | null>(null);
   const revealFocusRef = useRef<Element | null>(null);
   const revealRef = useRef<{ cancel: () => void; reconcile: () => void } | null>(null);
-  const focusReconcileFrameRef = useRef<number | null>(null);
+  const focusReconcileFrameRef = useRef<CancelUiTimer | null>(null);
   const maxScrollTopRef = useRef(0);
   const stateRef = useRef<StickState>({
     deferredUnseen: 0,
@@ -132,14 +133,14 @@ export function useStickToBottom(
 
   const clearInteractionTimeout = useCallback(() => {
     if (interactionTimeoutRef.current !== null) {
-      window.clearTimeout(interactionTimeoutRef.current);
+      interactionTimeoutRef.current();
       interactionTimeoutRef.current = null;
     }
   }, []);
 
   const clearFocusReconcileFrame = useCallback(() => {
     if (focusReconcileFrameRef.current !== null) {
-      window.cancelAnimationFrame(focusReconcileFrameRef.current);
+      focusReconcileFrameRef.current();
       focusReconcileFrameRef.current = null;
     }
   }, []);
@@ -295,7 +296,7 @@ export function useStickToBottom(
 
       // One native scroll and one completion listener per explicit reveal.
       // Gestures, another reveal, normal focus, and unmount cancel both.
-      let finishFrame: number | null = null;
+      let finishFrame: CancelUiTimer | null = null;
       const finish = () => {
         // A prefix restore can queue scrollend before this smooth scroll starts.
         // It must not release navigation ownership or flash the target early.
@@ -303,7 +304,7 @@ export function useStickToBottom(
         if (finishFrame !== null) return;
         // Let the commit's Markdown layout settle, including an instant reveal
         // under reduced motion, before releasing the resize correction.
-        finishFrame = window.requestAnimationFrame(() => {
+        finishFrame = uiClock.frame(() => {
           finishFrame = null;
           revealRef.current?.reconcile();
           if (Math.abs(node.scrollTop - top) > BOTTOM_EPSILON_PX) return;
@@ -315,7 +316,7 @@ export function useStickToBottom(
       };
       revealRef.current = {
         cancel: () => {
-          if (finishFrame !== null) window.cancelAnimationFrame(finishFrame);
+          if (finishFrame !== null) finishFrame();
           node.removeEventListener("scrollend", finish);
           node.scrollTo({ top: node.scrollTop, behavior: "instant" });
           onCancel?.();
@@ -535,9 +536,8 @@ export function useStickToBottom(
   const scheduleInteractionSettlement = useCallback(
     (interactionId: number) => {
       clearInteractionTimeout();
-      interactionTimeoutRef.current = window.setTimeout(
-        () => settleInteraction(interactionId),
-        INTERACTION_SETTLE_MS
+      interactionTimeoutRef.current = uiClock.after(INTERACTION_SETTLE_MS, () =>
+        settleInteraction(interactionId)
       );
     },
     [clearInteractionTimeout, settleInteraction]
@@ -760,8 +760,7 @@ export function useStickToBottom(
       enterAway();
       ensureFocusedTargetVisible();
       clearFocusReconcileFrame();
-      focusReconcileFrameRef.current =
-        window.requestAnimationFrame(reconcileRetainedFocus);
+      focusReconcileFrameRef.current = uiClock.frame(reconcileRetainedFocus);
     },
     [
       cancelReveal,
@@ -808,13 +807,13 @@ export function useStickToBottom(
     if (!initializedRef.current) {
       initializedRef.current = true;
       forceFollow();
-      const frame = window.requestAnimationFrame(() => {
+      const frame = uiClock.frame(() => {
         const state = stateRef.current;
         if (state.followMode === "following" && state.interaction.kind === "idle") {
           syncBottom();
         }
       });
-      return () => window.cancelAnimationFrame(frame);
+      return () => frame();
     }
 
     const forceKey = options.forceKey;

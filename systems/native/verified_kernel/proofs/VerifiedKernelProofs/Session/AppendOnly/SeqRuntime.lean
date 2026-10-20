@@ -16,7 +16,7 @@ cheaper than a walk over every branch of `runtimeAppend`. -/
 theorem runtimeAppend_seq {s e t : Term} {j r : List Term} (h : runtimeAppend s e j = .ok (t, r)) :
     SeqStep s t := by
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops h
-  exact seq_trans (appendFields_seq appended) (seq_trans (write_seq_frame written rfl)
+  exact seq_trans (appendFields_seq appended) (seq_trans (write_seq_frame written (by keys_absent))
     (seq_trans (bumpHwm_seq bumped) (resetFresh_seq reset)))
 
 theorem runtimeAppend_sstep {s e t : Term} {j r : List Term} :
@@ -38,7 +38,7 @@ theorem transcriptDelivery_seq {s e t : Term} {j r : List Term}
     (h : transcriptDelivery s e j = .ok (t, r)) : SeqStep s t := by
   rcases transcriptDelivery_ops h with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, obligated, bumped, reset⟩
   · exact seq_refl _
-  · exact seq_trans (appendFields_seq appended) (seq_trans (write_seq_frame written rfl)
+  · exact seq_trans (appendFields_seq appended) (seq_trans (write_seq_frame written (by keys_absent))
       (seq_trans (addObligation_seq obligated) (seq_trans (bumpHwm_seq bumped) (resetFresh_seq reset))))
 
 theorem transcriptDelivery_sstep {s e t : Term} {j r : List Term} :

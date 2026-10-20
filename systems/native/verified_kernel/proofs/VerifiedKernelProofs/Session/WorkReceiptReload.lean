@@ -63,21 +63,21 @@ theorem normalize_receipt_origin {state next : Term} {source : Term} {journal re
   obtain ⟨normalized, _, written, call⟩ := bind_ok call
   have ledgerWritten : normalized.get (a "input_dedupe") = normalizedLedger := by
     iterate 8 obtain ⟨_, written⟩ := write_cons written
-    exact (write_field_frame written rfl).trans (get_put_same _ _ _)
+    exact (write_field_frame written (by keys_absent)).trans (get_put_same _ _ _)
   obtain ⟨_, _, _, call⟩ := bind_ok call
   obtain ⟨active, _, activityWrite, call⟩ := bind_ok call
   obtain ⟨_, _, _, call⟩ := bind_ok call
   obtain ⟨providers, _, providerWrite, call⟩ := bind_ok call
   have carried : providers.get (a "input_dedupe") = normalizedLedger :=
-    (write_field_frame providerWrite rfl).trans
-      ((write_field_frame activityWrite rfl).trans ledgerWritten)
+    (write_field_frame providerWrite (by keys_absent)).trans
+      ((write_field_frame activityWrite (by keys_absent)).trans ledgerWritten)
   obtain ⟨ledger, _, preserved, call⟩ := bind_ok call
   have resultLedger : next.get (a "input_dedupe") = ledger := by
     obtain ⟨_, tail⟩ := write_cons call
     rw [pure_ok tail]
     exact get_put_same _ _ _
   have queueFrame : next.get (a "input_queue") = providers.get (a "input_queue") :=
-    write_field_frame call rfl
+    write_field_frame call (by keys_absent)
   rw [resultLedger] at present
   rcases preserve_receipt_origin preserved present with original | queued
   · rw [carried] at original

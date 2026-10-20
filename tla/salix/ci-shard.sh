@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Four isolated runners: HeadCommit alone, all other configs round-robin.
+# Four shards: all configs round-robin over four.
+# CI runs each shard on its own runner.
 # The check.sh manifest remains the only coverage roster, including new configs.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -16,12 +17,8 @@ configs=()
 index=0
 while read -r cfg; do
   [[ -n "$cfg" ]] || continue
-  if [[ "$cfg" == HeadCommit ]]; then
-    owner=1
-  else
-    owner=$((index % 3 + 2))
-    index=$((index + 1))
-  fi
+  owner=$((index % 4 + 1))
+  index=$((index + 1))
   if [[ "$owner" == "$shard" ]]; then configs+=("$cfg"); fi
 done <<< "$roster"
 if [[ ${#configs[@]} -eq 0 ]]; then

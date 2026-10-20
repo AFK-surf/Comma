@@ -17,10 +17,10 @@ import {
   CommaAppearanceProvider,
   CommaReducedMotionRootSync,
 } from "./components/commaAppearance";
-import { CommaSideChatShortcutProvider } from "./components/commaSideChatShortcut";
 import { CommaAppShortcutsProvider } from "./components/shortcuts/commaAppShortcuts";
 import { ConversationRoute } from "./components/chat/conversation/ConversationRoute";
 import { DriveRoute } from "./components/drive/DriveRoute";
+import { StationTaskRoute } from "./components/tasks/station/StationTaskPage";
 import { InboxWorkspace } from "./components/inbox/InboxRoute";
 import { PluginsRoute } from "./components/plugins/PluginsRoute";
 import {
@@ -30,6 +30,7 @@ import {
   commaInboxConversationRailWidth,
 } from "./components/shellGeometry";
 import { TasksRoute } from "./components/tasks/TasksRoute";
+import { validateTasksSearch } from "./components/tasks/tasksSearch";
 
 export { CommaAnalyticsLifecycle } from "./analytics/CommaAnalyticsLifecycle";
 export { startCommaAnalytics, reportCommaClientError } from "./analytics/client";
@@ -42,20 +43,10 @@ declare module "@tanstack/router-core" {
 
 export {
   apiBaseUrlStorageKey,
-  CommaApiError,
-  createCommaApi,
   defaultApiBaseUrl,
   storeCommaApiBaseUrl,
-  type CommaApiClient,
-  type CommaApiSessionTransport,
-  type CommaConnectorToken,
-  type CommaConversation,
-  type CommaConversationEvent,
-  type SalixMessage,
-  type CommaPlugin,
-  type CommaPluginResource,
-  type CommaWorkspace,
-} from "./api";
+} from "./apiBaseUrl";
+export type { CommaApiSessionTransport } from "./session/controller";
 export {
   commaLogoUrl,
   getActiveCommaConfig,
@@ -84,7 +75,6 @@ export {
   type SessionHostController,
   type SessionLifecycleController,
   type SessionLoginChallenge,
-  type WebSessionHostPorts,
 } from "./session/react";
 export {
   CommaClientSettingsI18nProvider,
@@ -96,37 +86,22 @@ export {
   useCommaClientSettingsPending,
 } from "./components/commaClientSettings";
 export { readLegacyCommaClientSettings } from "./components/readLegacyCommaClientSettings";
-export { createBrowserSessionHostPorts } from "./session/web/browser-session-host";
-export { createWebSessionHostController } from "./session/web/web-session-host-controller";
-export { createElectronSessionHostController } from "./session/electron/electron-session-host-controller";
+export { createCoreSessionHostController } from "./session/core-session-host-controller";
 export {
-  WebCookieSessionAdapter,
-  type WebCookieSessionProductLease,
-} from "./session/web/web-cookie-session-adapter";
-export {
-  createProductInboxProjectionController,
-  createElectronProductInboxProjectionController,
   productInboxErrorMessage,
   productInboxUnavailableResult,
-  type ProductInboxProjectionBridge,
-  type ProductInboxProjectionController,
-  type ProductInboxProjectionEnvelope,
-  type ProductInboxRefresh,
-  type ProductInboxRetention,
-} from "./product-inbox/controller";
+} from "./product-inbox/messages";
 export {
-  ProductInboxProjectionProvider,
   useProductInboxProjection,
   useProductInboxSnapshot,
+  type ProductInboxRefresh,
 } from "./product-inbox/react";
-export { SideChatApp } from "./components/chat/side-chat/SideChatApp";
-export { SideChatTestWindow } from "./components/chat/side-chat/SideChatTestWindow";
 export { BrowserInspectionComposer } from "./components/chat-sidebar/BrowserInspectionComposer";
 export { OnboardingWindowApp } from "./components/onboarding/window/OnboardingWindowApp";
 // Re-exported so an Electron renderer can declare, at its entry point, whether
 // its window has a toast surface at all. Only CommaApp and OnboardingWindowApp
 // mount a <Toaster />.
-export { setToastsEnabled } from "@comma/ui";
+export { setToastsEnabled } from "@comma/ui/components/toast";
 export { CommaAppearanceProvider, CommaReducedMotionRootSync };
 
 const rootRoute = createRootRoute({
@@ -159,7 +134,12 @@ const indexRoute = createRoute({
   component: () => null,
   validateSearch: (
     search: Record<string, unknown>
-  ): { meetingTask?: string | undefined; meetingGroup?: string | undefined } => ({
+  ): {
+    meetingTask?: string | undefined;
+    meetingGroup?: string | undefined;
+    workspace?: string | undefined;
+  } => ({
+    workspace: typeof search.workspace === "string" ? search.workspace : undefined,
     meetingTask:
       typeof search.meetingTask === "string" ? search.meetingTask : undefined,
     meetingGroup:
@@ -220,41 +200,25 @@ const tasksRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "tasks",
   component: TasksRoute,
-  // Task properties and chips link to a label, origin, status, or client platform.
-  // Drop unsupported query fields and unknown status/platform values.
-  validateSearch: (
-    search: Record<string, unknown>
-  ): {
-    label?: string;
-    platform?: string;
-    status?: string;
-    clientPlatform?: string;
-  } => {
-    const label = search["label"];
-    const platform = search["platform"];
-    return {
-      ...(typeof label === "string" && label ? { label } : {}),
-      ...(typeof platform === "string" && platform ? { platform } : {}),
-      ...(typeof search["status"] === "string" &&
-      ["backlog", "in_progress", "needs_review", "done", "cancelled"].includes(
-        search["status"]
-      )
-        ? { status: search["status"] }
-        : {}),
-      ...(typeof search["clientPlatform"] === "string" &&
-      ["macos", "windows", "linux", "ios", "android", "web", "unknown"].includes(
-        search["clientPlatform"]
-      )
-        ? { clientPlatform: search["clientPlatform"] }
-        : {}),
-    };
-  },
+  validateSearch: validateTasksSearch,
 });
 
 const taskDetailRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "tasks/$workspaceId/$groupId/$conversationId",
   component: ConversationRoute,
+});
+
+// A Task a station hosts: read and written on the station, over this device's link to it.
+const stationTaskRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "tasks/$workspaceId/station/$station/$thread",
+  component: function StationTaskRouteView() {
+    const { station, thread, workspaceId } = stationTaskRoute.useParams();
+    return (
+      <StationTaskRoute station={station} thread={thread} workspace={workspaceId} />
+    );
+  },
 });
 
 const pluginsRoute = createRoute({
@@ -277,6 +241,7 @@ const shellRouteTree = shellRoute.addChildren({
   driveRoute,
   pluginsRoute,
   settingsRoute,
+  stationTaskRoute,
   taskDetailRoute,
   tasksRoute,
 });
@@ -340,16 +305,12 @@ export function CommaApp() {
 
   return (
     <CommaAppearanceProvider>
-      <CommaSideChatShortcutProvider>
-        <CommaAppShortcutsProvider>
-          <RouterProvider router={router} />
-        </CommaAppShortcutsProvider>
-      </CommaSideChatShortcutProvider>
+      <CommaAppShortcutsProvider>
+        <RouterProvider router={router} />
+      </CommaAppShortcutsProvider>
     </CommaAppearanceProvider>
   );
 }
-
-export { SessionHistoryBridgeProvider } from "./runtime-chat/sessionHistoryBridge";
 
 export { MeetingRecorderWindowApp } from "./components/MeetingRecorderWindowApp";
 

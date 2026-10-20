@@ -1,11 +1,11 @@
 import { useCommaMessages } from "@comma/i18n/react";
+import { Tooltip } from "@comma/ui/components/tooltip";
+import { appKeybindingKeycaps } from "@comma/ui/components/settings-shortcut";
+import { cx } from "@comma/ui/components/utils";
 import {
-  Tooltip,
-  appKeybindingKeycaps,
-  cx,
   LeftRailItemControl,
   leftRailNavClassName,
-} from "@comma/ui";
+} from "@comma/ui/components/left-rail";
 import { useLocation, useNavigate, useRouter } from "@tanstack/react-router";
 import {
   useCallback,
@@ -15,7 +15,6 @@ import {
   type ReactElement,
   type RefObject,
 } from "react";
-import { driveSynchronicityAvailable } from "../drive/driveSynchronicityBackend";
 import { AppIcon, type AppIconName } from "../icons";
 import { useProductInboxSnapshot } from "../../product-inbox";
 import {
@@ -34,6 +33,8 @@ import { useTaskReviewSeenMarks } from "../tasks/taskReviewAttention";
 import { useCommaSidebar } from "./SidebarContext";
 import { reconcileSidebarNavOrder, type SidebarNavItemId } from "./sidebarNavOrder";
 import { useSidebarNavReorder } from "./useSidebarNavReorder";
+import { useHomeTabUnread } from "./CommaCenterStatusContext";
+import { useOnboardingAhead } from "../onboarding/useOnboardingAhead";
 
 type SidebarItem = {
   icon: AppIconName;
@@ -67,15 +68,9 @@ export function SidebarChrome() {
   const inboxUnread = useInboxTabUnread();
   const { isGuest = false } = useCommaAuth();
   const storedOrder = settings.sidebarNavOrder;
-  // Drive needs the synchronicity node only the Electron host runs, so the
-  // web rail leaves it out. A guest Session has only Home's Router chat.
+  // A guest Session has only Home's Router chat.
   const settledOrder = useMemo(
-    () =>
-      isGuest
-        ? ["home"]
-        : reconcileSidebarNavOrder(storedOrder).filter(
-            (id) => id !== "drive" || driveSynchronicityAvailable()
-          ),
+    () => (isGuest ? ["home"] : reconcileSidebarNavOrder(storedOrder)),
     [isGuest, storedOrder]
   );
   // The drop shows its order at once; the setting owner acknowledges after a
@@ -117,11 +112,15 @@ export function SidebarChrome() {
               ref={(element) => registerRow(id, element)}
               {...rowProps(id)}
             >
-              <SidebarNavLink
-                badge={item.id === "inbox" && inboxUnread}
-                item={item}
-                tooltipDisabled={dragging}
-              />
+              {item.id === "home" ? (
+                <HomeSidebarNavLink item={item} tooltipDisabled={dragging} />
+              ) : (
+                <SidebarNavLink
+                  badge={item.id === "inbox" && inboxUnread}
+                  item={item}
+                  tooltipDisabled={dragging}
+                />
+              )}
             </div>
           );
         })}
@@ -168,6 +167,22 @@ function SidebarSettingsItem() {
         }}
       />
     </SidebarItemTooltip>
+  );
+}
+
+function HomeSidebarNavLink({
+  item,
+  tooltipDisabled,
+}: {
+  item: SidebarItem;
+  tooltipDisabled: boolean;
+}) {
+  const active = useLocation({ select: (location) => location.pathname === "/" });
+  const { open: settingsOpen } = useCommaSettingsOverlay();
+  const onboardingAhead = useOnboardingAhead();
+  const unread = useHomeTabUnread(active && !settingsOpen && !onboardingAhead);
+  return (
+    <SidebarNavLink badge={unread} item={item} tooltipDisabled={tooltipDisabled} />
   );
 }
 
@@ -221,7 +236,9 @@ function SidebarNavLink({
           badge,
           className: cx("comma-sidebar-link", active && "comma-sidebar-link-active"),
           href: item.to === "/" ? "#/" : `#${item.to}`,
-          icon: <AppIcon className="comma-sidebar-icon" name={item.icon} />,
+          icon: (
+            <AppIcon className="comma-sidebar-icon" filled={active} name={item.icon} />
+          ),
           iconRef,
           id: item.to,
           label,
@@ -267,38 +284,13 @@ function SidebarItemTooltip({
 }
 
 /**
- * The authenticated session already retains ProductInbox (NotchTaskSync).
- * The rail reads that snapshot so the Inbox tab can show unread without a
- * second retain.
+ * The rail reads the client core's list (the account's: the core keeps one per
+ * account), so the Inbox tab can show unread without asking for it again.
  */
 function useInboxTabUnread() {
-  const { productLease } = useCommaAuth();
-  const envelope = useProductInboxSnapshot();
+  const items = useProductInboxSnapshot()?.items;
   const deletedMarks = useInboxDeletedMarks();
   const unreadMarks = useInboxUnreadMarks();
   const seenMarks = useTaskReviewSeenMarks();
-  const items = useMemo(() => {
-    if (
-      !envelope ||
-      productLeaseKey(envelope.session) !== productLeaseKey(productLease)
-    ) {
-      return [];
-    }
-    return envelope.snapshot.items;
-  }, [envelope, productLease]);
-  return inboxHasUnread(items, seenMarks, unreadMarks, deletedMarks);
-}
-
-function productLeaseKey(lease: {
-  audience: string;
-  authorityInstanceId: string;
-  generation: number;
-  sessionId: string;
-}) {
-  return JSON.stringify([
-    lease.authorityInstanceId,
-    lease.generation,
-    lease.sessionId,
-    lease.audience,
-  ]);
+  return inboxHasUnread(items ?? [], seenMarks, unreadMarks, deletedMarks);
 }

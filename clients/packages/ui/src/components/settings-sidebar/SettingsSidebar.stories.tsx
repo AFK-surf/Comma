@@ -4,6 +4,8 @@ import { SettingsIcon } from "../icons";
 import { SettingsSidebar } from "./SettingsSidebar";
 
 const meta = {
+  // Asserts computed padding.
+  tags: ["browser"],
   title: "App components/Settings Sidebar",
   component: SettingsSidebar,
   args: {

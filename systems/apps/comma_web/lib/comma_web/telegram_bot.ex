@@ -87,9 +87,10 @@ defmodule CommaWeb.TelegramBot do
 
   def webhook_url,
     do:
-      String.trim_trailing(config()[:public_base_url], "/") <> "/v1/comma/integrations/telegram/webhook"
+      String.trim_trailing(config()[:public_base_url], "/") <>
+        "/v1/comma/integrations/telegram/webhook"
 
   defp adapter, do: config()[:bot_adapter] || CommaWeb.TelegramBot.Req
   defp nonblank?(value), do: is_binary(value) and String.trim(value) != ""
-  defp config, do: Application.get_env(:comma_web, :telegram, [])
+  defp config, do: SystemsRuntime.get_env(:comma_web, :telegram, [])
 end

@@ -50,7 +50,7 @@ defmodule SalixSignalProto.Test.SgxAttestation do
   """
   def build(opts \\ []) do
     now = Keyword.get(opts, :now, @now)
-    noise_key = Keyword.get(opts, :noise_key, :crypto.strong_rand_bytes(32))
+    noise_key = Keyword.get(opts, :noise_key, SystemsRuntime.Proc.random_bytes(32))
     mrenclave = Keyword.get(opts, :mrenclave, :binary.copy(<<0xA5>>, 32))
 
     root_key = ec_key()

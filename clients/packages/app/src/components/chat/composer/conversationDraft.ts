@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
-import { isDraftOnlyChange } from "../model/channelStateChange";
-import type { ConversationChannelState } from "../model/conversationChannel";
+import { isDraftOnlyChange } from "@comma/core/chat";
+import type { ConversationChannelState } from "@comma/core/chat";
 
 /** The conversation as the view shows it: every field but the draft. */
 export type ConversationViewState = Omit<ConversationChannelState, "draft">;
@@ -13,6 +13,15 @@ export type ConversationViewState = Omit<ConversationChannelState, "draft">;
 export interface ComposerDraftSource {
   getSnapshot(): string;
   subscribe(listener: () => void): () => void;
+}
+
+/**
+ * Text written at the end of the draft from a snippet tile ("Show in text
+ * field"). Each new value focuses the composer with the caret after the text
+ * once the composer shows `draft`.
+ */
+export interface ComposerDraftFill {
+  draft: string;
 }
 
 const unsubscribeNothing = () => {};

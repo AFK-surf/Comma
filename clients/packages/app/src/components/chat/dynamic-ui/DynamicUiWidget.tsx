@@ -5,11 +5,13 @@ import {
   compactTypeScale,
   motionDuration,
   motionEasing,
-} from "@comma/ui";
+} from "@comma/ui/tokens";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import type { ChatMessagePart } from "@comma/chat-contract";
-import { supportsDynamicUiWidgets } from "../../../runtime-chat/nativePlatformActions";
-import { Button, ClockIcon, CircleInfoIcon, TrainIcon } from "@comma/ui";
+import { supportsDynamicUiWidgets } from "../../../nativePlatformActions";
+import { Button } from "@comma/ui/components/Button";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
+import { ClockIcon, CircleInfoIcon, TrainIcon } from "@comma/ui/components/icons";
 import { useCommaUiThemeName } from "../../commaUiTheme";
 import {
   createContext,
@@ -19,13 +21,15 @@ import {
   useRef,
   useState,
 } from "react";
-import { CommaApiError, type CommaApiClient } from "../../../api";
+import { useCall, useTopic } from "@comma/core-client";
 import {
   useSessionHostController,
   useSessionLifecycleSnapshot,
 } from "../../../session/react";
+import { ChatLinkHoverCard } from "../thread/inline/ChatLinkHoverCard";
 import { cardBrandIcons, cardCopy, cardIconMarkup, cardTokenProbe } from "./cardHost";
 import { WidgetFailureNotice, type WidgetFailure } from "./WidgetFailureNotice";
+import { useReportWidgetPresence } from "./widgetPresence";
 
 export const DynamicUiDraftContext = createContext<
   ((text: string, messageId: string) => void) | undefined
@@ -33,9 +37,25 @@ export const DynamicUiDraftContext = createContext<
 export const DynamicUiLinkContext = createContext<((url: string) => void) | undefined>(
   undefined
 );
+/** Opens the host's link menu for a right-click inside a widget, at viewport coordinates. */
+export const DynamicUiLinkMenuContext = createContext<
+  | ((url: string, clientX: number, clientY: number, frame: HTMLIFrameElement) => void)
+  | undefined
+>(undefined);
+/** A link the pointer is over inside the frame, boxed in widget coordinates. */
+type LinkHover = {
+  url: string;
+  label: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  open: boolean;
+};
 type Props = {
   part: Extract<ChatMessagePart, { kind: "dynamic-ui" }>;
-  api: CommaApiClient | undefined;
+  /** The surface reads the widget from the core; a static surface (a Task's report) does not. */
+  live: boolean;
   groupId: string;
   workspaceId: string;
 };
@@ -61,7 +81,7 @@ export function DynamicUiWidget(props: Props) {
   return <NativeDynamicUiWidget {...props} />;
 }
 
-function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
+function NativeDynamicUiWidget({ part, live, groupId, workspaceId }: Props) {
   const messages = useCommaMessages();
   const locale = useCommaLocale();
   const localeRef = useRef(locale);
@@ -72,6 +92,10 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
   const openLink = useContext(DynamicUiLinkContext);
   const openLinkRef = useRef(openLink);
   openLinkRef.current = openLink;
+  const openLinkMenu = useContext(DynamicUiLinkMenuContext);
+  const openLinkMenuRef = useRef(openLinkMenu);
+  openLinkMenuRef.current = openLinkMenu;
+  useReportWidgetPresence();
   const themeName = useCommaUiThemeName();
   const currentTheme = useRef(themeName);
   currentTheme.current = themeName;
@@ -86,13 +110,9 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
   const [active, setActive] = useState(true);
   const [error, setError] = useState<WidgetFailure>();
   const [proposal, setProposal] = useState("");
+  const [linkHover, setLinkHover] = useState<LinkHover>();
   const [height, setHeight] = useState(160);
   const measuredScope = useRef<string | undefined>(undefined);
-  const [loaded, setLoaded] = useState<{
-    scope: string;
-    attempt: number;
-    value: unknown;
-  }>();
   const [attempt, setAttempt] = useState(0);
   const reload = useCallback(() => {
     setError(undefined);
@@ -116,11 +136,57 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
     part.messageId,
     part.attachmentIndex,
   ]);
-  const payload =
-    loaded?.scope === loadScope && loaded.attempt === attempt
-      ? loaded.value
-      : undefined;
-  const mounted = active && visible && payload !== undefined && !!stateKey && !error;
+  // The widget's JSON as the core reads it, once it shows; a retry is a new read.
+  const { value: load } = useTopic(
+    visible && active && live && user
+      ? {
+          topic: "dynamicUi",
+          group: groupId,
+          conversation: part.conversationId,
+          message: part.messageId,
+          index: String(part.attachmentIndex),
+          read: String(attempt),
+        }
+      : null
+  );
+  const payload = load?.status === "ready" ? load.ui : undefined;
+  // What this widget saved before, as the core keeps it for the account: every
+  // window that shows the widget sees a save at once.
+  const { value: saved } = useTopic(
+    visible && active && stateKey ? { topic: "dynamicUiState", key: stateKey } : null
+  );
+  const savedRef = useRef(saved);
+  savedRef.current = saved;
+  const call = useCall();
+  const save = useRef<(kind: "state" | "cards", value: unknown) => void>(() => {});
+  save.current = (kind, value) => {
+    if (!stateKey) return;
+    let text: string;
+    try {
+      text = JSON.stringify(value);
+      if (new TextEncoder().encode(text).length > 32768) throw Error();
+    } catch {
+      setError({ kind: "display", reason: "UI state could not be saved" });
+      return;
+    }
+    if (kind === "cards") ownCards.current = text;
+    void call("dynamicUiState.save", { key: stateKey, kind, text }).catch(() =>
+      setError({ kind: "display", reason: "UI state could not be saved" })
+    );
+  };
+  /** The card progress this copy saved last: it already shows it, so it is not sent back. */
+  const ownCards = useRef<string | undefined>(undefined);
+  const port = useRef<MessagePort | undefined>(undefined);
+  const loadFailure: WidgetFailure | undefined =
+    load?.status === "failed" ? { kind: load.kind, reason: load.reason } : undefined;
+  const failure = error ?? loadFailure;
+  const mounted =
+    active &&
+    visible &&
+    payload !== undefined &&
+    !!stateKey &&
+    saved !== undefined &&
+    !failure;
 
   useEffect(() => {
     setProposal("");
@@ -129,17 +195,17 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
 
   // A connection that drops and comes back reloads the widget without a click.
   useEffect(() => {
-    if (error?.kind !== "load") return;
+    if (failure?.kind !== "load") return;
     window.addEventListener("online", reload);
     return () => window.removeEventListener("online", reload);
-  }, [error, reload]);
+  }, [failure?.kind, reload]);
 
   useEffect(() => {
     if (!ref.current) return;
     let intersects = false;
-    let releaseTimer: ReturnType<typeof setTimeout> | undefined;
+    let releaseTimer: CancelUiTimer | undefined;
     const refresh = () => {
-      clearTimeout(releaseTimer);
+      releaseTimer?.();
       // Window occlusion is not a viewport exit. Keep the bounded live instance
       // so returning to the app does not recreate the iframe and Worker.
       if (document.visibilityState !== "visible") return;
@@ -147,7 +213,7 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
         setVisible(true);
       } else {
         // Absorb a quick scroll reversal without destroying interaction state.
-        releaseTimer = setTimeout(() => setVisible(false), 1500);
+        releaseTimer = uiClock.after(1500, () => setVisible(false));
       }
     };
     const observer = new IntersectionObserver(
@@ -160,115 +226,24 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
     document.addEventListener("visibilitychange", refresh);
     observer.observe(ref.current);
     return () => {
-      clearTimeout(releaseTimer);
+      releaseTimer?.();
       observer.disconnect();
       document.removeEventListener("visibilitychange", refresh);
     };
   }, []);
   useEffect(() => {
-    if (!visible || !active || !api || !user) return;
-    if (loaded?.scope === loadScope && loaded.attempt === attempt) return;
-    const controller = new AbortController();
-    setLoaded(undefined);
-    const load = () =>
-      api.fetchConversationAttachment(
-        groupId,
-        part.conversationId,
-        part.messageId,
-        part.attachmentIndex,
-        { signal: controller.signal }
-      );
-    void load()
-      .catch(async (reason: unknown) => {
-        // One quiet second try for a failure that time can fix. The text
-        // answer stays in place meanwhile, so the reader sees no error.
-        if (!transientLoadFailure(reason)) throw reason;
-        await pause(loadRetryDelayMs, controller.signal);
-        return load();
-      })
-      .then(
-        async (blob) => {
-          // The content arrived; only its own size or format can fail here.
-          try {
-            if (blob.size > 262144) throw Error("UI exceeds 256 KiB");
-            const value: unknown = JSON.parse(await blob.text());
-            if (!controller.signal.aborted)
-              setLoaded({ scope: loadScope, attempt, value });
-          } catch (reason) {
-            if (!controller.signal.aborted)
-              setError({ kind: "display", reason: failureReason(reason) });
-          }
-        },
-        (reason) => {
-          if (!controller.signal.aborted)
-            setError({ kind: "load", reason: failureReason(reason) });
-        }
-      );
-    return () => controller.abort();
-  }, [
-    api,
-    groupId,
-    part.conversationId,
-    part.messageId,
-    part.attachmentIndex,
-    user,
-    visible,
-    active,
-    attempt,
-    loaded,
-    loadScope,
-  ]);
-
-  useEffect(() => {
     if (!mounted || !stateKey) return;
     const release = acquire(instance.current, () => setActive(false));
     let channel: MessageChannel | undefined;
     let initialized = false;
-    const updateState = (text: string | null) => {
-      try {
-        if (text && new TextEncoder().encode(text).length <= 32768)
-          channel?.port1.postMessage({ type: "state", value: JSON.parse(text) });
-      } catch {
-        setError({ kind: "display", reason: "Saved UI state could not be read" });
-      }
-    };
-    // Card progress syncs like widget state, except that the copy that saved
-    // it already shows it and is not sent its own change back.
-    const updateCardState = (text: string | null) => {
-      try {
-        if (text && new TextEncoder().encode(text).length <= 32768)
-          channel?.port1.postMessage({ type: "card-state", value: JSON.parse(text) });
-      } catch {
-        setError({ kind: "display", reason: "Saved UI state could not be read" });
-      }
-    };
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === `comma.dynamic-ui:${stateKey}`) updateState(event.newValue);
-      if (event.key === `comma.dynamic-ui-cards:${stateKey}`)
-        updateCardState(event.newValue);
-    };
-    const onLocalState = (event: Event) => {
-      const detail = (event as CustomEvent<{ key: string; text: string }>).detail;
-      if (detail.key === stateKey) updateState(detail.text);
-    };
-    const onLocalCardState = (event: Event) => {
-      const detail = (
-        event as CustomEvent<{ key: string; text: string; source: symbol }>
-      ).detail;
-      if (detail.key === stateKey && detail.source !== instance.current)
-        updateCardState(detail.text);
-    };
-    window.addEventListener("storage", onStorage);
-    window.addEventListener("comma-ui-state", onLocalState);
-    window.addEventListener("comma-ui-card-state", onLocalCardState);
-    let timeout = window.setTimeout(
-      () => setError({ kind: "display", reason: "UI startup timed out" }),
-      5000
+    // The widget's own frame must say it is ready within 5 s.
+    let startup: CancelUiTimer | undefined = uiClock.after(5000, () =>
+      setError({ kind: "display", reason: "UI startup timed out" })
     );
     let themeObserver: MutationObserver | undefined;
     let themeProbes: HTMLDivElement | undefined;
     let tokenProbe: ReturnType<typeof cardTokenProbe> | undefined;
-    let themeFrame = 0;
+    let themeFrame: CancelUiTimer | undefined;
     const onReady = (event: MessageEvent) => {
       if (
         initialized ||
@@ -278,15 +253,14 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
         return;
       initialized = true;
       channel = new MessageChannel();
+      port.current = channel.port1;
       let state: unknown = {};
       let cardState: unknown = {};
       try {
-        const stored = localStorage.getItem(`comma.dynamic-ui:${stateKey}`);
-        if (stored && new TextEncoder().encode(stored).length <= 32768)
-          state = JSON.parse(stored);
-        const storedCards = localStorage.getItem(`comma.dynamic-ui-cards:${stateKey}`);
-        if (storedCards && new TextEncoder().encode(storedCards).length <= 32768)
-          cardState = JSON.parse(storedCards);
+        const stored = savedRef.current;
+        if (stored?.state) state = JSON.parse(stored.state);
+        if (stored?.cards) cardState = JSON.parse(stored.cards);
+        ownCards.current = stored?.cards ?? undefined;
       } catch {
         setError({ kind: "display", reason: "Saved UI state could not be read" });
         return;
@@ -295,8 +269,8 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
         const message = incoming.data;
         if (!message || typeof message !== "object") return;
         if (message.type === "ready") {
-          clearTimeout(timeout);
-          timeout = 0;
+          startup?.();
+          startup = undefined;
         }
         if (message.type === "error")
           setError({
@@ -342,42 +316,87 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
         ) {
           try {
             const url = new URL(message.url);
-            if (url.protocol === "https:" && !url.username && !url.password)
+            if (url.protocol === "https:" && !url.username && !url.password) {
+              setLinkHover((current) => current && { ...current, open: false });
               openLinkRef.current?.(url.href);
+            }
           } catch {
             /* Ignore invalid navigation requests. */
           }
         }
-        if (message.type === "card-state") {
+        if (message.type === "link-hover") {
+          const box = [message.x, message.y, message.width, message.height];
+          let url: URL | undefined;
           try {
-            const text = JSON.stringify(message.value);
-            if (new TextEncoder().encode(text).length > 32768) throw Error();
-            localStorage.setItem(`comma.dynamic-ui-cards:${stateKey}`, text);
-            window.dispatchEvent(
-              new CustomEvent("comma-ui-card-state", {
-                detail: { key: stateKey, text, source: instance.current },
-              })
-            );
+            if (typeof message.url === "string" && message.url.length <= 4000)
+              url = new URL(message.url);
           } catch {
-            setError({ kind: "display", reason: "UI state could not be saved" });
+            /* An invalid url ends the hover like a null one. */
+          }
+          const placed = frame.current;
+          if (
+            url?.protocol === "https:" &&
+            !url.username &&
+            !url.password &&
+            box.every(Number.isFinite) &&
+            message.width >= 0 &&
+            message.height >= 0 &&
+            placed
+          ) {
+            // Frame coordinates are relative to its own viewport, and the frame
+            // never scrolls. Keep the part of the box inside the frame, and let
+            // the frame's offset place it in the widget.
+            const left = Math.min(Math.max(message.x, 0), placed.offsetWidth);
+            const top = Math.min(Math.max(message.y, 0), placed.offsetHeight);
+            setLinkHover({
+              url: url.href,
+              label:
+                typeof message.label === "string" ? message.label.slice(0, 200) : "",
+              left: placed.offsetLeft + left,
+              top: placed.offsetTop + top,
+              width: Math.max(
+                0,
+                Math.min(message.x + message.width, placed.offsetWidth) - left
+              ),
+              height: Math.max(
+                0,
+                Math.min(message.y + message.height, placed.offsetHeight) - top
+              ),
+              open: true,
+            });
+          } else {
+            setLinkHover((current) => current && { ...current, open: false });
           }
         }
+        if (
+          message.type === "link-menu" &&
+          typeof message.url === "string" &&
+          message.url.length <= 4000 &&
+          Number.isFinite(message.x) &&
+          Number.isFinite(message.y) &&
+          frame.current
+        ) {
+          try {
+            const url = new URL(message.url);
+            // Frame coordinates are relative to its own viewport.
+            const bounds = frame.current.getBoundingClientRect();
+            if (url.protocol === "https:" && !url.username && !url.password)
+              openLinkMenuRef.current?.(
+                url.href,
+                bounds.left + message.x,
+                bounds.top + message.y,
+                frame.current
+              );
+          } catch {
+            /* Ignore invalid link menu requests. */
+          }
+        }
+        if (message.type === "card-state") save.current("cards", message.value);
         if (message.type === "brand-icons")
           void cardBrandIcons(message.names).then((icons) =>
             channel?.port1.postMessage({ type: "brand-icons", icons })
           );
-        if (message.type === "save") {
-          try {
-            const text = JSON.stringify(message.value);
-            if (new TextEncoder().encode(text).length > 32768) throw Error();
-            localStorage.setItem(`comma.dynamic-ui:${stateKey}`, text);
-            window.dispatchEvent(
-              new CustomEvent("comma-ui-state", { detail: { key: stateKey, text } })
-            );
-          } catch {
-            setError({ kind: "display", reason: "UI state could not be saved" });
-          }
-        }
+        if (message.type === "save") save.current("state", message.value);
       });
       channel.port1.start();
       // Insert every color probe together. Reading a probe must not invalidate
@@ -439,8 +458,8 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
       };
       syncTheme.current = () => {
         if (themeFrame) return;
-        themeFrame = requestAnimationFrame(() => {
-          themeFrame = 0;
+        themeFrame = uiClock.frame(() => {
+          themeFrame = undefined;
           const theme = readTheme();
           channel?.port1.postMessage({
             type: "theme",
@@ -491,6 +510,7 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
           // Card templates pick each card's layout from this widget's identity.
           seed: part.contentId,
           locale: localeRef.current,
+          timeZone: viewerTimeZone(),
           copy: cardCopy(messages),
           cardState,
         },
@@ -501,30 +521,52 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
     window.addEventListener("message", onReady);
     frame.current?.contentWindow?.postMessage({ type: "comma-ui:hello" }, "*");
     return () => {
-      clearTimeout(timeout);
+      startup?.();
       themeObserver?.disconnect();
-      cancelAnimationFrame(themeFrame);
+      themeFrame?.();
       themeProbes?.remove();
       tokenProbe?.remove();
       syncTheme.current = undefined;
       window.removeEventListener("message", onReady);
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener("comma-ui-state", onLocalState);
-      window.removeEventListener("comma-ui-card-state", onLocalCardState);
+      port.current = undefined;
       channel?.port1.postMessage({ type: "stop" });
       channel?.port1.close();
       release();
+      // The links under a preview leave with this runtime; a remount starts clean.
+      setLinkHover(undefined);
     };
   }, [mounted, payload, stateKey, loadScope, messages, part.contentId]);
+
+  // A save on any window reaches the running widget: its own state always (the
+  // widget settles on what was kept), its cards' progress unless this copy saved it.
+  const savedState = saved?.state;
+  const savedCards = saved?.cards;
+  useEffect(() => {
+    if (!savedState) return;
+    try {
+      port.current?.postMessage({ type: "state", value: JSON.parse(savedState) });
+    } catch {
+      setError({ kind: "display", reason: "Saved UI state could not be read" });
+    }
+  }, [savedState]);
+  useEffect(() => {
+    if (!savedCards || savedCards === ownCards.current) return;
+    ownCards.current = savedCards;
+    try {
+      port.current?.postMessage({ type: "card-state", value: JSON.parse(savedCards) });
+    } catch {
+      setError({ kind: "display", reason: "Saved UI state could not be read" });
+    }
+  }, [savedCards]);
 
   return (
     <div
       ref={ref}
-      className="comma-chat-widget"
+      className="comma-chat-widget relative"
       data-testid="dynamic-ui-widget"
       style={{
         minHeight:
-          !mounted && !error && measuredScope.current === loadScope
+          !mounted && !failure && measuredScope.current === loadScope
             ? height
             : undefined,
       }}
@@ -549,8 +591,31 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
           }}
         />
       ) : null}
-      {error ? (
-        <WidgetFailureNotice failure={error} onRetry={reload} />
+      {mounted && live && linkHover ? (
+        <ChatLinkHoverCard
+          // Each link gets its own card, so a move between rows reads its link.
+          key={`${linkHover.url}:${linkHover.left}:${linkHover.top}`}
+          anchor={
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute"
+              data-testid="dynamic-ui-link-anchor"
+              style={{
+                left: linkHover.left,
+                top: linkHover.top,
+                width: linkHover.width,
+                height: linkHover.height,
+              }}
+            />
+          }
+          href={linkHover.url}
+          label={linkHover.label}
+          open={linkHover.open}
+          workspaceId={workspaceId}
+        />
+      ) : null}
+      {failure ? (
+        <WidgetFailureNotice failure={failure} onRetry={reload} />
       ) : active ? null : (
         <Button hierarchy="secondary-gray" onPress={reload} size="xs">
           {messages.chat_ui_reload()}
@@ -577,36 +642,6 @@ function NativeDynamicUiWidget({ part, api, groupId, workspaceId }: Props) {
   );
 }
 
-/**
- * Load failures a second try can fix: no answer from the network, a gateway
- * that could not reach Comma, or a busy service. Anything else fails at once.
- */
-const transientStatuses = new Set([408, 429, 502, 503, 504]);
-const loadRetryDelayMs = 2000;
-
-function transientLoadFailure(reason: unknown) {
-  return reason instanceof CommaApiError
-    ? transientStatuses.has(reason.status)
-    : reason instanceof TypeError;
-}
-
-/** Resolves after `ms`, or at once when the load is abandoned. */
-function pause(ms: number, signal: AbortSignal) {
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(done, ms);
-    signal.addEventListener("abort", done, { once: true });
-    function done() {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", done);
-      resolve();
-    }
-  });
-}
-
-function failureReason(reason: unknown) {
-  return reason instanceof Error ? reason.message : "UI unavailable";
-}
-
 function themeStyleKey(value: string | null) {
   const style = document.createElement("span").style;
   style.cssText = value ?? "";
@@ -618,4 +653,13 @@ function themeStyleKey(value: string | null) {
       style.getPropertyValue(name),
       style.getPropertyPriority(name),
     ]);
+}
+
+/** The viewer's IANA time zone, which card templates show ISO times in. */
+function viewerTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return "";
+  }
 }

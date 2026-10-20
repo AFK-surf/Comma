@@ -1,5 +1,5 @@
 defmodule SalixAgent.InternalSessionForkFormat2Test do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{
     AgentWorkspace,
@@ -16,9 +16,9 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -833,24 +833,10 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
     assert second["fork_request_id"] == "req-legacy-retry"
   end
 
-  test "a cutoff fork carries no future control state: predicates clamp, dedupe shrinks", %{
+  test "a cutoff fork carries no future control state: dedupe shrinks", %{
     agent_id: agent_id
   } do
-    seed_source(agent_id, Enum.map(1..100, &deliver/1), [
-      %{
-        "type" => "session_microcompact",
-        "session_id" => @source,
-        "tool_messages_through" => 100,
-        "new_content" => "[microcompacted]"
-      },
-      %{
-        "type" => "session_microcompact",
-        "session_id" => @source,
-        "non_model_messages_over_bytes_through" => 100,
-        "non_model_message_max_bytes" => 1_000,
-        "new_content" => "[emergency-compacted non-model message over 1000 bytes]"
-      }
-    ])
+    seed_source(agent_id, Enum.map(1..100, &deliver/1))
 
     assert {:ok, forked} =
              InternalAgentRuntime.fork_session_local(agent_id, @source, %{
@@ -859,54 +845,6 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
              })
 
     {:ok, fork} = InternalSessionStore.read(agent_id, forked["session_id"])
-
-    # Both predicates travelled clamped to the snapshot: fresh branch
-    # non-model messages above the cutoff must not be born pre-masked.
-    assert [
-             %{"kind" => "tool_messages_through", "through_id" => 50},
-             %{
-               "kind" => "non_model_messages_over_bytes_through",
-               "through_id" => 50,
-               "max_bytes" => 1_000
-             }
-           ] = InternalSession.get(fork, :redactions)
-
-    fresh_tool = %{
-      "type" => "delivery",
-      "from_queue" => true,
-      "message_id" => InternalSession.next_message_id(fork),
-      "role" => "tool",
-      "content" => "fresh branch tool output",
-      "source_message_id" => "src-branch-tool",
-      "created_at" => 9_000
-    }
-
-    {:ok, with_tool} =
-      InternalSessionStore.prepare_commit(agent_id, forked["session_id"], [fresh_tool])
-
-    fresh = Enum.find(InternalSession.masked_messages(with_tool), &(&1[:role] == "tool"))
-    assert fresh[:content] == "fresh branch tool output"
-
-    fresh_user = %{
-      "type" => "delivery",
-      "from_queue" => true,
-      "message_id" => InternalSession.next_message_id(with_tool),
-      "role" => "user",
-      "content" => String.duplicate("u", 1_001),
-      "source_message_id" => "src-branch-large-user",
-      "created_at" => 9_001
-    }
-
-    {:ok, with_large_user} =
-      InternalSessionStore.prepare_commit(agent_id, forked["session_id"], [fresh_user])
-
-    fresh =
-      Enum.find(
-        InternalSession.masked_messages(with_large_user),
-        &(&1[:source_message_id] == "src-branch-large-user")
-      )
-
-    assert fresh[:content] == String.duplicate("u", 1_001)
 
     # A source dedupe key that belongs only to a post-cutoff input does not
     # suppress the branch delivery carrying the same key.
@@ -920,7 +858,7 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
     redelivery = %{
       "type" => "delivery",
       "from_queue" => true,
-      "message_id" => InternalSession.next_message_id(with_large_user),
+      "message_id" => InternalSession.next_message_id(fork),
       "role" => "user",
       "content" => "redelivered into the branch",
       "source_message_id" => post_cutoff_key,
@@ -934,38 +872,6 @@ defmodule SalixAgent.InternalSessionForkFormat2Test do
              InternalSession.get(redelivered, :messages),
              &(&1[:content] == "redelivered into the branch")
            )
-  end
-
-  test "redaction overlays remap onto the fork's renumbered seqs", %{agent_id: agent_id} do
-    seed_source(agent_id, Enum.map(1..20, &deliver/1), [
-      %{
-        "type" => "compaction",
-        "session_id" => @source,
-        "summary" => "s",
-        "compacted_through" => 10,
-        "summary_sequence" => 1
-      },
-      %{
-        "type" => "session_microcompact",
-        "session_id" => @source,
-        "message_ids" => [15],
-        "new_content" => "[gone]"
-      }
-    ])
-
-    assert {:ok, forked} =
-             InternalAgentRuntime.fork_session_local(agent_id, @source, %{
-               "fork_request_id" => "req-redact"
-             })
-
-    {:ok, fork} = InternalSessionStore.read(agent_id, forked["session_id"])
-
-    # Message id 15 sat at source seq 15 and lands at fork seq 5.
-    assert [%{"seq" => 5, "message_id" => 15, "replacement" => "[gone]"}] =
-             InternalSession.get(fork, :redactions)
-
-    assert Enum.find(InternalSession.masked_messages(fork), &(&1[:id] == 15))[:content] ==
-             "[gone]"
   end
 
   test "a fork remaps a runtime completion to its carried authoritative result", %{

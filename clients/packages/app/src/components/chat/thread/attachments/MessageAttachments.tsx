@@ -1,11 +1,15 @@
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import { ChatPanelFile, ChatPanelImage, ChatPanelImageGroup } from "@comma/ui";
+import {
+  ChatPanelFile,
+  ChatPanelImage,
+  ChatPanelImageGroup,
+} from "@comma/ui/components/chat-panel";
 import { useContext, useState } from "react";
 import type {
   ChatAttachment,
   ChatImagePreviewRef,
   LocalFilePreview,
-} from "../../model/conversationChannel";
+} from "@comma/core/chat";
 import { MessageInlineVideo } from "../inline/MessageInlineVideo";
 import { ThreadFileSourceContext } from "../threadContexts";
 import { AttachmentPill } from "./AttachmentPill";
@@ -141,7 +145,6 @@ export function MessageAttachments({
               ? [
                   <MessageInlineVideo
                     active={imageGroupActivated}
-                    api={sourceContext.api}
                     beginAttempt={beginAttempt}
                     key={`video:${position}`}
                     mediaType={mediaType}

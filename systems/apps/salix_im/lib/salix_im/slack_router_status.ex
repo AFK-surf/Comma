@@ -87,7 +87,7 @@ defmodule SalixIM.SlackRouterStatus do
   end
 
   defp start_actor(connect_id, owner_agent_id) do
-    case Registry.lookup(
+    case SystemsRuntime.Registry.lookup(
            SalixIM.SlackRouterStatusRegistry,
            SlackRouterStatusActor.key(connect_id)
          ) do
@@ -95,7 +95,7 @@ defmodule SalixIM.SlackRouterStatus do
         {:ok, pid}
 
       [] ->
-        case DynamicSupervisor.start_child(
+        case SystemsRuntime.DynamicSupervisor.start_child(
                SalixIM.SlackRouterStatusFleetSup,
                {SlackRouterStatusActor,
                 connect_id: connect_id, owner_agent_id: str(owner_agent_id)}
@@ -108,8 +108,8 @@ defmodule SalixIM.SlackRouterStatus do
   end
 
   defp dispatch(label, fun) do
-    if Process.whereis(@task_supervisor) do
-      case Task.Supervisor.start_child(@task_supervisor, fn -> run(label, fun) end) do
+    if SystemsRuntime.Proc.whereis(@task_supervisor) do
+      case SystemsRuntime.TaskSupervisor.start_child(@task_supervisor, fn -> run(label, fun) end) do
         {:ok, _pid} ->
           :ok
 

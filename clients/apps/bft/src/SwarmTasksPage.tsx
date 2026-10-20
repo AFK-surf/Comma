@@ -1,24 +1,30 @@
-import {
-  Button,
-  Dropdown,
-  ScrollArea,
-  ScrollAreaLoadMore,
-  SearchIcon,
-} from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Dropdown } from "@comma/ui/components/dropdown";
+import { ScrollArea, ScrollAreaLoadMore } from "@comma/ui/components/scroll-area";
+import { SearchIcon } from "@comma/ui/components/icons";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   BftApiError,
+  stationRuntimes,
+  type BftNewTask,
+  type BftStationRuntime,
   type BftSwarmSchedules,
   type BftSwarmTask,
   type BftSwarmTasks,
+  type BftTaskTargets,
 } from "./api";
 import { formatInteger, formatRelative, humanize } from "./format";
 import { messages } from "./messages";
-import { projectHref } from "./navSpec";
 import { State, stateLabel } from "./ProjectOverviewPage";
-import { useApi, useResource, type Resource } from "./resource";
+import { useApi, useResource, useStateFor, type Resource } from "./resource";
 import { navigate, spaLinkClick, useSearch } from "./router";
-import { FormDialog, TextField, useConfirm, useWrite } from "./settingsForm";
+import {
+  FormDialog,
+  TextAreaField,
+  TextField,
+  useConfirm,
+  useWrite,
+} from "./settingsForm";
 import { ErrorState, Skeleton } from "./states";
 
 const t = messages.swarmTasks;
@@ -96,7 +102,8 @@ export function SwarmTasksPage({
   const view = initialView(useSearch());
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
-  const [more, setMore] = useState<More>({
+  // Fresh data for the first page (after a cached one) starts the list over.
+  const [more, setMore] = useStateFor<More>(data, {
     tasks: [],
     cursor: undefined,
     loading: false,
@@ -143,11 +150,8 @@ export function SwarmTasksPage({
     );
   };
 
-  const agents = data?.agents;
-  const canCreate =
-    data?.project.role === "admin" &&
-    agents?.status === "ok" &&
-    agents.items.length > 0;
+  // Every swarm member creates Tasks, on any place of the swarm.
+  const canCreate = data?.project.role === "admin" || data?.project.role === "user";
   const statuses = taskStatuses(tasks);
   const countOf = (status: string) =>
     tasks.filter((task) => task.status === status).length;
@@ -231,21 +235,6 @@ export function SwarmTasksPage({
                 {messages.states.retry}
               </button>
             </div>
-          ) : agents?.status === "ok" &&
-            agents.items.length === 0 &&
-            tasks.length === 0 ? (
-            <div className="bft-panel-body bft-empty-inline">
-              <p className="bft-quiet bft-quiet-inline">
-                {t.noAgentsTitle} {t.noAgentsBody}
-              </p>
-              <a
-                className="bft-link"
-                href={projectHref(org, project, "/agents")}
-                onClick={spaLinkClick}
-              >
-                {t.manageAgents}
-              </a>
-            </div>
           ) : (
             <TaskRows
               cursor={cursor}
@@ -259,13 +248,8 @@ export function SwarmTasksPage({
           )}
         </section>
       )}
-      {creating && agents ? (
-        <NewTaskDialog
-          agents={agents.items}
-          onClose={() => setCreating(false)}
-          org={org}
-          project={project}
-        />
+      {creating ? (
+        <NewTaskDialog onClose={() => setCreating(false)} org={org} project={project} />
       ) : null}
     </div>
   );
@@ -342,10 +326,10 @@ function TaskRows({
                   <tr key={task.id}>
                     <td>
                       <span className="bft-title-cell">
-                        {/* Task detail is a LiveView page: a full page load. */}
                         <a
                           className="bft-link"
                           href={task.href}
+                          onClick={spaLinkClick}
                           title={taskTitle(task)}
                         >
                           {taskTitle(task)}
@@ -463,8 +447,7 @@ function Schedules({ org, project }: { org: string; project: string }) {
                     <a
                       className="bft-link"
                       href={schedule.href}
-                      // An agent schedule opens the agent on the Agents page.
-                      onClick={schedule.target === "agent" ? spaLinkClick : undefined}
+                      onClick={spaLinkClick}
                       title={target}
                     >
                       {target}
@@ -533,21 +516,91 @@ function Schedules({ org, project }: { org: string; project: string }) {
   );
 }
 
+/** What the New task form holds; `placeId` null keeps the swarm's default place. */
+export interface NewTaskDraft {
+  title: string;
+  content: string;
+  placeId: string | null;
+  runtime: BftStationRuntime;
+  /** On a station: empty for its default model. */
+  stationModel: string;
+  /** Inside Salix: empty for the swarm's default Task model. */
+  modelKey: string;
+}
+
+export const emptyTaskDraft: NewTaskDraft = {
+  title: "",
+  content: "",
+  placeId: null,
+  runtime: "codex",
+  stationModel: "",
+  modelKey: "",
+};
+
+/** The chosen place: the draft's, else the swarm's default, else Salix. */
+export function chosenPlace(targets: BftTaskTargets, draft: NewTaskDraft) {
+  const { places } = targets;
+  return (
+    places.find((place) => place.id === draft.placeId) ??
+    places.find((place) => place.default) ??
+    places.find((place) => place.kind === "salix")
+  );
+}
+
+/**
+ * The create request: the place chosen, and its model. Inside Salix the
+ * swarm's default Task model names none; on a station or the Cloud VM the
+ * coding agent, and the model unless the station's default.
+ */
+export function newTaskRequest(
+  targets: BftTaskTargets,
+  draft: NewTaskDraft
+): BftNewTask {
+  const task = { title: draft.title.trim(), content: draft.content.trim() };
+  const place = chosenPlace(targets, draft);
+  if (!place || place.kind === "salix") {
+    const choice = targets.models.find((row) => row.key === draft.modelKey)?.choice;
+    return {
+      ...task,
+      runs_on: { kind: "salix" },
+      ...(draft.modelKey && choice ? { model: choice } : {}),
+    };
+  }
+  const model = {
+    kind: "runtime",
+    provider: draft.runtime,
+    ...(draft.stationModel ? { model: draft.stationModel } : {}),
+  };
+  return place.kind === "cloud_vm"
+    ? { ...task, runs_on: { kind: "cloud_vm" }, model }
+    : {
+        ...task,
+        runs_on: { kind: "station", device_id: place.device_id ?? place.id },
+        model,
+      };
+}
+
+// The Dropdown needs a non-empty id for "the station's default model".
+const stationDefault = "__station_default";
+
 function NewTaskDialog({
   org,
   project,
-  agents,
   onClose,
 }: {
   org: string;
   project: string;
-  agents: { id: string; name: string }[];
   onClose: () => void;
 }) {
   const api = useApi();
   const write = useWrite();
-  const [title, setTitle] = useState("");
-  const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
+  const [draft, setDraft] = useState(emptyTaskDraft);
+  const [targets, retry] = useResource(`task-targets:${org}:${project}`, (signal) =>
+    api.taskTargets(org, project, signal)
+  );
+  const change = (next: Partial<NewTaskDraft>) =>
+    setDraft((previous) => ({ ...previous, ...next }));
+  const ready = targets.state === "ready" ? targets.data : undefined;
 
   return (
     <FormDialog
@@ -555,14 +608,13 @@ function NewTaskDialog({
       onClose={() => {
         if (!write.busy) onClose();
       }}
-      onSubmit={() =>
+      onSubmit={() => {
+        if (!ready) return;
         write.run(
-          () =>
-            api.createTask(org, project, { title: title.trim(), agent_id: agentId }),
-          // Task detail is a LiveView page.
-          (task) => window.location.assign(task.href)
-        )
-      }
+          () => api.createTask(org, project, newTaskRequest(ready, draft)),
+          (task) => navigate(task.href)
+        );
+      }}
       submitLabel={t.createConfirm}
       title={t.newTask}
       write={write}
@@ -570,19 +622,111 @@ function NewTaskDialog({
       <TextField
         disabled={write.busy}
         label={t.titleLabel}
-        onChange={setTitle}
+        onChange={(title) => change({ title })}
         placeholder={t.titlePlaceholder}
-        value={title}
+        value={draft.title}
       />
+      <TextAreaField
+        disabled={write.busy}
+        label={t.contentLabel}
+        onChange={(content) => change({ content })}
+        rows={4}
+        value={draft.content}
+      />
+      {targets.state === "loading" ? (
+        <Skeleton height={32} />
+      ) : targets.state === "error" ? (
+        <div className="bft-quiet-row bft-quiet-row-flush" role="alert">
+          <p className="bft-quiet bft-quiet-inline">{t.targetsUnavailable}</p>
+          <button className="bft-btn bft-btn-sm" onClick={retry} type="button">
+            {messages.states.retry}
+          </button>
+        </div>
+      ) : (
+        <PlaceAndModel
+          disabled={write.busy}
+          draft={draft}
+          onChange={change}
+          targets={targets.data}
+        />
+      )}
+    </FormDialog>
+  );
+}
+
+/** Where the Task runs and its model, defaulting to the swarm's. */
+function PlaceAndModel({
+  targets,
+  draft,
+  onChange,
+  disabled,
+}: {
+  targets: BftTaskTargets;
+  draft: NewTaskDraft;
+  onChange: (change: Partial<NewTaskDraft>) => void;
+  disabled: boolean;
+}) {
+  const place = chosenPlace(targets, draft);
+  const listed = place?.models[draft.runtime] ?? [];
+  return (
+    <>
       <Dropdown
         className="bft-form-field"
-        disabled={write.busy}
-        items={agents.map((agent) => ({ id: agent.id, label: agent.name }))}
-        label={t.agentLabel}
-        onChange={setAgentId}
+        disabled={disabled}
+        items={targets.places.map((item) => ({
+          id: item.id,
+          label: item.default ? t.defaultPlace(item.label) : item.label,
+        }))}
+        label={t.placeLabel}
+        onChange={(placeId) => onChange({ placeId, stationModel: "" })}
         size="sm"
-        value={agentId}
+        value={place?.id ?? "salix"}
       />
-    </FormDialog>
+      {!place || place.kind === "salix" ? (
+        <Dropdown
+          className="bft-form-field"
+          disabled={disabled}
+          items={targets.models.map((row) => ({
+            id: row.key || "default",
+            label: row.label,
+          }))}
+          label={t.modelLabel}
+          onChange={(key) => onChange({ modelKey: key === "default" ? "" : key })}
+          size="sm"
+          value={draft.modelKey || "default"}
+        />
+      ) : (
+        <>
+          <Dropdown
+            className="bft-form-field"
+            disabled={disabled}
+            items={stationRuntimes.map((runtime) => ({
+              id: runtime,
+              label: t.runtimes[runtime],
+            }))}
+            label={t.runtimeLabel}
+            onChange={(runtime) =>
+              onChange({ runtime: runtime as BftStationRuntime, stationModel: "" })
+            }
+            size="sm"
+            value={draft.runtime}
+          />
+          <Dropdown
+            className="bft-form-field"
+            disabled={disabled}
+            items={[
+              { id: stationDefault, label: t.stationDefault },
+              ...listed.map((model) => ({ id: model, label: model })),
+            ]}
+            label={t.modelLabel}
+            onChange={(id) =>
+              onChange({ stationModel: id === stationDefault ? "" : id })
+            }
+            size="sm"
+            value={draft.stationModel || stationDefault}
+          />
+        </>
+      )}
+    </>
   );
 }

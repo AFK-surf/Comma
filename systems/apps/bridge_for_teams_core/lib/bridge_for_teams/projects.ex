@@ -7,9 +7,9 @@ defmodule BridgeForTeams.Projects do
   """
   import Ecto.Query
 
-  alias BridgeForTeams.{Observability, Repo}
+  alias BridgeForTeams.{Models, Observability, Repo}
   alias BridgeForTeams.Outbox
-  alias BridgeForTeams.Salix.Identity
+  alias BridgeForTeams.Salix.{Client, Identity}
   alias BridgeForTeams.Schema.{Agent, OrgMembership, Organization, Project, ProjectMembership}
   alias SalixStore.Ids
 
@@ -411,13 +411,13 @@ defmodule BridgeForTeams.Projects do
   end
 
   @doc """
-  Toggle managed cloud VM for the swarm. Flips `vm_enabled` and enqueues an
-  `update_agent` reconcile for every provisioned agent in the project so their
-  runtime VM state follows — both in one transaction (transactional outbox).
+  Toggle managed cloud VM for the swarm. Flips `vm_enabled` and enqueues the
+  same switch for the project's Salix group (`cloud_vm_enabled`), which decides
+  for every agent of the group — both in one transaction (transactional outbox).
 
   Enabling requires a configured VM provider (tenant or platform default);
-  the reconcile fails soft if none exists (the agent stays VM-less), so the
-  flag reflects intent and provisioning catches up once a provider is set.
+  the reconcile fails soft if none exists (the group stays VM-less), so the
+  flag reflects intent and turning it on again catches up once a provider is set.
   """
   @spec set_vm_enabled(Project.t(), boolean(), keyword()) ::
           {:ok, Project.t()} | {:error, term()}
@@ -427,7 +427,7 @@ defmodule BridgeForTeams.Projects do
     Repo.transaction(fn ->
       with {:ok, updated} <- Repo.update(changeset),
            %Organization{} = org <- Repo.get(Organization, updated.org_id) do
-        enqueue_vm_update(updated, org, enabled)
+        enqueue_vm_update(updated, org, enabled, SystemsClock.timestamp(:utc_datetime_usec))
 
         with {:ok, _audit} <-
                maybe_record_project_audit("project.vm_enabled_changed", updated, opts,
@@ -444,6 +444,50 @@ defmodule BridgeForTeams.Projects do
         {:error, cs} -> Repo.rollback(cs)
       end
     end)
+  end
+
+  @doc """
+  After the rollout that moved the Cloud VM switch onto the Salix group (the
+  release's post-rollout job, `Comma.Release`): enqueues the group switch of
+  at most 100 live projects after `after_id` (nil: the first) from
+  `Project.vm_enabled`, the product fact. A toggle a server of the release
+  before wrote only onto agents is kept that way, and a group no longer keeps
+  a switch its project has off. The project rows stay locked until the rows
+  are queued, so a toggle made meanwhile is queued after them. Answers the
+  cursor of the next page (nil: done).
+  """
+  def converge_group_cloud_vm_page(after_id) do
+    {:ok, projects} =
+      Repo.transaction(fn ->
+        projects =
+          from(p in Project,
+            where: not is_nil(p.salix_group_id) and is_nil(p.archived_at),
+            order_by: [asc: p.id],
+            limit: 100,
+            lock: "FOR UPDATE"
+          )
+          |> then(fn query ->
+            if after_id, do: where(query, [p], p.id > ^after_id), else: query
+          end)
+          |> Repo.all()
+
+        orgs =
+          Repo.all(from(o in Organization, where: o.id in ^Enum.map(projects, & &1.org_id)))
+          |> Map.new(&{&1.id, &1})
+
+        ts = SystemsClock.timestamp(:utc_datetime_usec)
+
+        for project <- projects,
+            %Organization{salix_tenant_id: tenant_id} = org <- [orgs[project.org_id]],
+            is_binary(tenant_id) do
+          enqueue_vm_update(project, org, project.vm_enabled == true, ts)
+        end
+
+        projects
+      end)
+
+    next = if length(projects) == 100, do: List.last(projects).id
+    {:ok, %{processed: length(projects), next_cursor: next}}
   end
 
   @doc """
@@ -488,7 +532,7 @@ defmodule BridgeForTeams.Projects do
   def archive_project(%Project{} = project, opts \\ []) do
     changeset =
       Project.changeset(project, %{
-        "archived_at" => DateTime.utc_now(),
+        "archived_at" => SystemsClock.utc_now(),
         "status" => "archived",
         "slug" => nil
       })
@@ -520,6 +564,124 @@ defmodule BridgeForTeams.Projects do
     end)
   end
 
+  @doc """
+  The default Task model of the project's Group (`SalixAgent.TaskModel`): the
+  model choice a Task runs when the Router names no model and no station. nil
+  when the swarm has set none: each Task runs its Worker's model.
+  """
+  @spec default_task_model(Project.t()) :: {:ok, Models.choice() | nil} | {:error, term()}
+  def default_task_model(%Project{salix_group_id: group_id}) when is_binary(group_id),
+    do: Client.call_optional(:get_group_task_model, [group_id])
+
+  def default_task_model(%Project{}), do: {:error, :not_provisioned}
+
+  @doc """
+  Set the default Task model of the project's Group. The platform model
+  (`%{"kind" => "platform", "tier" => "worker"}`) is always allowed; a catalog
+  choice must be one the org admins can give to an Agent
+  (`Models.allowed?/3`, as the Agent Configure form checks). Salix then checks
+  it against the catalog and answers the stored value.
+  """
+  @spec set_default_task_model(Project.t(), term(), keyword()) ::
+          {:ok, Models.choice()} | {:error, term()}
+  def set_default_task_model(%Project{} = project, choice, opts \\ []) do
+    with %Organization{} = org <- Repo.get(Organization, project.org_id) || {:error, :not_found},
+         {:ok, choice} <- task_model_choice(org, choice) do
+      write_default_task_model(org, project, choice, opts)
+    end
+  end
+
+  @doc """
+  Clear the default Task model of the project's Group: each Task that names no
+  model runs its Worker's model again (the platform model unless the Worker has
+  its own). Answers `{:ok, nil}`.
+  """
+  @spec clear_default_task_model(Project.t(), keyword()) :: {:ok, nil} | {:error, term()}
+  def clear_default_task_model(%Project{} = project, opts \\ []) do
+    with %Organization{} = org <- Repo.get(Organization, project.org_id) || {:error, :not_found} do
+      write_default_task_model(org, project, nil, opts)
+    end
+  end
+
+  defp write_default_task_model(org, project, choice, opts) do
+    with {:ok, previous} <- default_task_model(project),
+         {:ok, stored} <-
+           Client.call_optional(:put_group_task_model, [
+             org.salix_tenant_id,
+             project.salix_group_id,
+             choice
+           ]),
+         {:ok, _audit} <-
+           maybe_record_project_audit("project.default_task_model_changed", project, opts,
+             redacted_diff: %{
+               "default_task_model" => %{
+                 "from" => previous && Models.key(previous),
+                 "to" => stored && Models.key(stored)
+               }
+             }
+           ) do
+      {:ok, stored}
+    end
+  end
+
+  @doc """
+  The default place to run Tasks of the project's Group
+  (`SalixAgent.TaskPlace`): where a Task runs when the Router names no place.
+  nil when the swarm has set none: inside Salix.
+  """
+  @spec default_task_place(Project.t()) :: {:ok, map() | nil} | {:error, term()}
+  def default_task_place(%Project{salix_group_id: group_id}) when is_binary(group_id),
+    do: Client.call_optional(:get_group_task_place, [group_id])
+
+  def default_task_place(%Project{}), do: {:error, :not_provisioned}
+
+  @doc """
+  Set the default place to run Tasks of the project's Group: inside Salix,
+  the swarm's Cloud VM while it is enabled, or one of its stations that takes
+  Tasks (`BridgeForTeams.Agents.task_place/2`). Salix answers the stored value.
+  During a rolling release a Salix node of the release before answers
+  `{:error, :unavailable}`: nothing is stored, and the admin saves again.
+  """
+  @spec set_default_task_place(Project.t(), term(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def set_default_task_place(%Project{} = project, place, opts \\ []) do
+    with %Organization{} = org <- Repo.get(Organization, project.org_id) || {:error, :not_found},
+         {:ok, place} <- BridgeForTeams.Agents.task_place(project, place),
+         {:ok, previous} <- default_task_place(project),
+         {:ok, stored} <-
+           Client.call_optional(:put_group_task_place, [
+             org.salix_tenant_id,
+             project.salix_group_id,
+             place
+           ]),
+         {:ok, _audit} <-
+           maybe_record_project_audit("project.default_task_place_changed", project, opts,
+             redacted_diff: %{
+               "default_task_place" => %{"from" => place_key(previous), "to" => place_key(stored)}
+             }
+           ) do
+      {:ok, stored}
+    end
+  end
+
+  defp place_key(%{"kind" => "station", "device_id" => device_id}), do: "station:" <> device_id
+  defp place_key(%{"kind" => kind}), do: kind
+  defp place_key(nil), do: nil
+
+  @platform_task_model %{"kind" => "platform", "tier" => "worker"}
+
+  defp task_model_choice(_org, @platform_task_model), do: {:ok, @platform_task_model}
+
+  defp task_model_choice(org, %{"kind" => "catalog"} = choice) do
+    choice = Models.normalize(choice)
+
+    if Models.allowed?(org, choice, Models.catalog()),
+      do: {:ok, choice},
+      else: {:error, :model_not_allowed}
+  end
+
+  defp task_model_choice(_org, _choice), do: {:error, :invalid_model_configuration}
+
   @doc "Record a failed or denied project write attempt without mutating projects."
   @spec record_project_write_attempt(
           Project.t() | {:org, Ecto.UUID.t()} | Ecto.UUID.t(),
@@ -546,7 +708,7 @@ defmodule BridgeForTeams.Projects do
             Keyword.get(extra, :resource_label, project_write_attempt_label(project)),
           result: result,
           reason_class: failure_reason_class(reason),
-          request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+          request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
           metadata: project_write_attempt_metadata(project, reason, extra),
           redacted_diff: Keyword.get(extra, :redacted_diff, %{})
         })
@@ -621,7 +783,7 @@ defmodule BridgeForTeams.Projects do
         resource_id: project.id,
         resource_label: project.name,
         result: "ok",
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         metadata: project_audit_metadata(project),
         redacted_diff: Keyword.get(extra, :redacted_diff, %{})
       })
@@ -733,17 +895,22 @@ defmodule BridgeForTeams.Projects do
 
   defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
-  # The default router pins no model: it follows the org Router default and
-  # then the platform default (SalixAgent.AgentDefaults), so a later change to
-  # either default applies without touching the agent.
-  defp insert_default_router(%Project{} = project, %Organization{} = _org) do
-    attrs = %{
-      "project_id" => project.id,
-      "salix_agent_id" => Ids.new_agent_id(project.salix_group_id),
-      "role" => "router",
-      "slot" => "router",
-      "name" => "Router"
-    }
+  # The default Router gets a copy of the org Router default model
+  # (`BridgeForTeams.Models`). Without one it follows the platform Router
+  # model, so a platform change applies without touching the Agent.
+  defp insert_default_router(%Project{} = project, %Organization{} = org) do
+    attrs =
+      maybe_put(
+        %{
+          "project_id" => project.id,
+          "salix_agent_id" => Ids.new_agent_id(project.salix_group_id),
+          "role" => "router",
+          "slot" => "router",
+          "name" => "Router"
+        },
+        "model",
+        BridgeForTeams.Models.default_for(org, "router")
+      )
 
     %Agent{}
     |> Agent.changeset(attrs)
@@ -808,7 +975,7 @@ defmodule BridgeForTeams.Projects do
   # itself is created by Orgs.create_org's reconcile.) The Salix group validates
   # router references, so the router assignment is enqueued after create_agent.
   defp enqueue_create(%Project{} = project, %Organization{} = org, %Agent{} = router) do
-    base = DateTime.utc_now()
+    base = SystemsClock.timestamp(:utc_datetime_usec)
 
     payload = %{
       "attrs" => %{
@@ -828,6 +995,9 @@ defmodule BridgeForTeams.Projects do
     enqueue_default_router(project, org, router, DateTime.add(base, 1, :microsecond))
     enqueue_group_router(project, org, router, DateTime.add(base, 2, :microsecond))
 
+    if project.vm_enabled,
+      do: enqueue_vm_update(project, org, true, DateTime.add(base, 3, :microsecond))
+
     :ok
   end
 
@@ -840,21 +1010,13 @@ defmodule BridgeForTeams.Projects do
         "role" => router.role,
         "name" => router.salix["name"]
       }
-      |> maybe_put("template_id", router.salix["template_id"])
-      |> maybe_put_vm(project)
+      |> maybe_put("model", router.salix["model"])
 
     {:ok, _} =
       Outbox.enqueue("agent", router.id, "create_owned_agent", %{"attrs" => attrs},
         created_at: ts
       )
   end
-
-  # Request a managed cloud VM for the swarm's agents when the project has it
-  # enabled (default). The reconciler degrades gracefully when no VM provider
-  # is configured (tenant or platform default), so default-on never blocks
-  # swarm creation.
-  defp maybe_put_vm(attrs, %Project{vm_enabled: false}), do: attrs
-  defp maybe_put_vm(attrs, %Project{}), do: Map.put(attrs, "vm", %{"enabled" => true})
 
   defp enqueue_group_router(%Project{} = project, %Organization{} = org, %Agent{} = router, ts) do
     payload = %{
@@ -869,31 +1031,18 @@ defmodule BridgeForTeams.Projects do
     {:ok, _} = Outbox.enqueue("project", project.id, "update_group", payload, created_at: ts)
   end
 
-  # Enqueue immutable product-policy input; Salix decides current lifecycle and applies configuration.
-  defp enqueue_vm_update(%Project{} = project, %Organization{} = org, enabled) do
-    from(a in Agent,
-      where:
-        a.project_id == ^project.id and
-          not is_nil(a.salix_agent_id)
-    )
-    |> lock("FOR UPDATE")
-    |> Repo.all()
-    |> Enum.each(fn agent ->
-      op =
-        case agent.configuration_authority do
-          "legacy" -> Repo.rollback(:agent_configuration_transfer_required)
-          "salix" -> "apply_product_vm_default"
-          "moving" -> Repo.rollback(:agent_configuration_transfer_in_progress)
-        end
+  # The swarm's Cloud VM switch is its Salix group's (`cloud_vm_enabled`). A
+  # new group starts with it off; the reconciler turns it on when the project
+  # has it enabled (default) and fails soft when no VM provider is configured,
+  # so default-on never blocks swarm creation.
+  defp enqueue_vm_update(%Project{} = project, %Organization{} = org, enabled, ts) do
+    payload = %{
+      "group_id" => project.salix_group_id,
+      "tenant_id" => org.salix_tenant_id,
+      "attrs" => %{"cloud_vm_enabled" => enabled}
+    }
 
-      {:ok, _} =
-        Outbox.enqueue("agent", agent.id, op, %{
-          "agent_id" => agent.salix_agent_id,
-          "tenant_id" => org.salix_tenant_id,
-          "attrs" => %{"vm" => %{"enabled" => enabled}}
-        })
-    end)
-
+    {:ok, _} = Outbox.enqueue("project", project.id, "update_group", payload, created_at: ts)
     :ok
   end
 

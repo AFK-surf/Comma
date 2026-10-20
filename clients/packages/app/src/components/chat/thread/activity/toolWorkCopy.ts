@@ -36,6 +36,8 @@ const workCopy = {
   telegramUse: ["chat_tool_telegram_use", "chat_tool_telegram_use_failed"],
   feishuSend: ["chat_tool_feishu_send", "chat_tool_feishu_send_failed"],
   feishuUse: ["chat_tool_feishu_use", "chat_tool_feishu_use_failed"],
+  larkSend: ["chat_tool_lark_send", "chat_tool_lark_send_failed"],
+  larkUse: ["chat_tool_lark_use", "chat_tool_lark_use_failed"],
   wechatSend: ["chat_tool_wechat_send", "chat_tool_wechat_send_failed"],
   wechatUse: ["chat_tool_wechat_use", "chat_tool_wechat_use_failed"],
   imessageSend: ["chat_tool_imessage_send", "chat_tool_imessage_send_failed"],

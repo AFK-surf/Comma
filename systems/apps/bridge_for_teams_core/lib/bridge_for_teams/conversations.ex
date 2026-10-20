@@ -25,25 +25,59 @@ defmodule BridgeForTeams.Conversations do
   }
   @transient [:unavailable, :timeout]
 
-  @doc "Create a canonical agent Task with a Router delegator and Worker target."
-  @spec create_project_task_conversation(
-          Project.t(),
-          Agent.t(),
-          Agent.t(),
-          map(),
-          keyword()
-        ) :: {:ok, map()} | {:error, term()}
+  @doc """
+  Create a Task of the project's Group, delegated by its Router. The Group's
+  Task agent runs it. `attrs` holds `title` and `content`, and may name where
+  it runs (`runs_on`: `{kind: salix}`, `{kind: cloud_vm}` or
+  `{kind: station, device_id}`) and its model (`model`); Salix checks both
+  (`SalixIM.TaskPlacement`). A Task that names neither runs at the Group's
+  default place with its default Task model. A Salix node of the release
+  before answers `{:error, :unavailable}`: nothing is made, and the caller
+  asks again.
+  """
+  @spec create_project_task_conversation(Project.t(), Agent.t(), map(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def create_project_task_conversation(
+        %Project{salix_group_id: group_id} = project,
+        %Agent{role: "router"} = router,
+        attrs,
+        opts \\ []
+      )
+      when is_map(attrs) do
+    attrs = stringify(attrs)
+    opts = Keyword.put_new(opts, :request_id, SystemsRuntime.Proc.uuid())
+    attrs = Map.put_new(attrs, "client_request_id", Keyword.fetch!(opts, :request_id))
+
+    result =
+      case Client.call_optional(:create_placed_task_conversation, [
+             group_id,
+             router.salix_agent_id,
+             attrs
+           ]) do
+        {:error, :unsupported} -> {:error, :task_conversation_create_unavailable}
+        result -> result
+      end
+
+    task_created(result, project, router, opts)
+  end
+
+  @doc """
+  Create a canonical agent Task with a Router delegator and a named Worker
+  target. Only Triage still names a Worker.
+  """
+  @spec create_project_task_conversation(Project.t(), Agent.t(), Agent.t(), map(), keyword()) ::
+          {:ok, map()} | {:error, term()}
   def create_project_task_conversation(
         %Project{salix_group_id: group_id} = project,
         %Agent{role: "router"} = router,
         %Agent{role: "worker"} = worker,
         attrs,
-        opts \\ []
+        opts
       )
       when is_map(attrs) do
     client = Client.impl()
     attrs = stringify(attrs)
-    opts = Keyword.put_new(opts, :request_id, Ecto.UUID.generate())
+    opts = Keyword.put_new(opts, :request_id, SystemsRuntime.Proc.uuid())
     attrs = Map.put_new(attrs, "client_request_id", Keyword.fetch!(opts, :request_id))
 
     result =
@@ -58,19 +92,23 @@ defmodule BridgeForTeams.Conversations do
         {:error, :task_conversation_create_unavailable}
       end
 
+    task_created(result, project, worker, opts)
+  end
+
+  defp task_created(result, project, agent, opts) do
     case result do
       {:ok, %{"conversation_id" => conversation_id} = created}
       when is_binary(conversation_id) and conversation_id != "" ->
-        record_conversation_event(project, worker, conversation_id, "ok", nil, opts)
-        maybe_record_conversation_audit(project, worker, conversation_id, opts)
+        record_conversation_event(project, agent, conversation_id, "ok", nil, opts)
+        maybe_record_conversation_audit(project, agent, conversation_id, opts)
         {:ok, created}
 
       {:ok, _invalid} ->
         {:error, {:invalid_salix_response, :conversation_id}}
 
       {:error, reason} = error ->
-        record_conversation_event(project, worker, nil, "failed", reason, opts)
-        maybe_record_conversation_write_attempt(error, project, worker, nil, opts)
+        record_conversation_event(project, agent, nil, "failed", reason, opts)
+        maybe_record_conversation_write_attempt(error, project, agent, nil, opts)
         error
     end
   end
@@ -193,7 +231,7 @@ defmodule BridgeForTeams.Conversations do
         "status" => "unavailable"
       },
       correlation_id: "project:#{project.id}:conversations:index",
-      occurred_at: DateTime.utc_now()
+      occurred_at: SystemsClock.utc_now()
     }
 
     case Observability.create_event(attrs) do
@@ -230,7 +268,7 @@ defmodule BridgeForTeams.Conversations do
         opts \\ []
       ) do
     attrs = stringify(attrs)
-    opts = Keyword.put_new(opts, :request_id, Ecto.UUID.generate())
+    opts = Keyword.put_new(opts, :request_id, SystemsRuntime.Proc.uuid())
     title = to_string(attrs["title"] || "")
 
     conversation_attrs =
@@ -282,18 +320,6 @@ defmodule BridgeForTeams.Conversations do
     Client.impl().get_group_conversation_attachment(group_id, conversation_id, message_id, index)
   end
 
-  @doc "Subscribe the calling process to committed updates for one project conversation."
-  @spec subscribe_project_conversation(Project.t(), String.t(), pid()) ::
-          {:ok, map()} | {:error, term()}
-  def subscribe_project_conversation(
-        %Project{salix_group_id: group_id},
-        conversation_id,
-        subscriber
-      )
-      when is_pid(subscriber) do
-    Client.impl().subscribe_group_conversation(group_id, conversation_id, subscriber)
-  end
-
   @doc "List participants for a project conversation."
   @spec list_project_conversation_participants(Project.t(), String.t(), keyword()) ::
           {:ok, [map()]} | {:error, term()}
@@ -316,6 +342,9 @@ defmodule BridgeForTeams.Conversations do
 
   @doc """
   Fetch a project conversation and its messages in one Salix read snapshot.
+
+  `tail: n` reads the latest `n` messages, `after_id` the `limit` messages
+  after that one, and `through_id` the `limit` messages ending with that one.
   """
   @spec get_project_conversation_with_messages(Project.t(), String.t(), keyword()) ::
           {:ok, %{conversation: map(), messages: [map()]}} | {:error, term()}
@@ -325,7 +354,9 @@ defmodule BridgeForTeams.Conversations do
         opts \\ []
       ) do
     limit = Keyword.get(opts, :limit, @default_limit)
-    snapshot_opts = opts |> Keyword.take([:after_id, :tail]) |> Keyword.put(:limit, limit)
+
+    snapshot_opts =
+      opts |> Keyword.take([:after_id, :through_id, :tail]) |> Keyword.put(:limit, limit)
 
     case Client.impl().get_group_conversation_with_messages(
            group_id,
@@ -367,8 +398,7 @@ defmodule BridgeForTeams.Conversations do
   thinking/typing/execution signal per running session (see
   `SalixAgent.ActivitySurface`) — for seeding a status display on connect.
   Best-effort: a runtime (or scripted test client) without the read degrades
-  to `[]`, the same "liveness upgrade, never a correctness dependency"
-  contract the event relay follows.
+  to `[]`; the display is a liveness upgrade, never a correctness dependency.
   """
   @spec list_agent_activities(Agent.t() | String.t() | nil) :: [map()]
   def list_agent_activities(%Agent{salix_agent_id: agent_id}), do: list_agent_activities(agent_id)
@@ -453,7 +483,7 @@ defmodule BridgeForTeams.Conversations do
          actor,
          opts
        ) do
-    opts = Keyword.put_new(opts, :request_id, Ecto.UUID.generate())
+    opts = Keyword.put_new(opts, :request_id, SystemsRuntime.Proc.uuid())
     request_id = Keyword.fetch!(opts, :request_id)
     client_request_id = dashboard_message_request_id(request_id)
 
@@ -518,13 +548,6 @@ defmodule BridgeForTeams.Conversations do
   @spec get_session_trace(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def get_session_trace(agent_id, session_id, opts \\ []) do
     Client.impl().session_trace(agent_id, session_id, opts)
-  end
-
-  @doc "Read one backward-paginated page of a runtime session's durable records."
-  @spec get_session_records(String.t(), String.t(), keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def get_session_records(agent_id, session_id, opts \\ []) do
-    Client.impl().session_records(agent_id, session_id, opts)
   end
 
   @doc "Read durable delivery/session diagnostics for one project conversation participant."
@@ -691,7 +714,7 @@ defmodule BridgeForTeams.Conversations do
          attrs,
          opts
        ) do
-    opts = Keyword.put_new(opts, :request_id, Ecto.UUID.generate())
+    opts = Keyword.put_new(opts, :request_id, SystemsRuntime.Proc.uuid())
     client = Client.impl()
 
     result =
@@ -752,7 +775,7 @@ defmodule BridgeForTeams.Conversations do
   end
 
   defp record_conversation_event(project, agent, conversation_id, result, reason, opts) do
-    request_id = Keyword.get(opts, :request_id, Ecto.UUID.generate())
+    request_id = Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid())
 
     attrs = %{
       org_id: project.org_id,
@@ -783,7 +806,7 @@ defmodule BridgeForTeams.Conversations do
 
   defp maybe_record_conversation_audit(project, agent, conversation_id, opts) do
     if audit_enabled?(opts) do
-      request_id = Keyword.get(opts, :request_id, Ecto.UUID.generate())
+      request_id = Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid())
 
       case Observability.record_audit(%{
              org_id: project.org_id,
@@ -815,7 +838,7 @@ defmodule BridgeForTeams.Conversations do
          opts
        ) do
     if audit_enabled?(opts) do
-      request_id = Keyword.get(opts, :request_id, Ecto.UUID.generate())
+      request_id = Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid())
 
       case Observability.record_write_attempt(%{
              org_id: project.org_id,
@@ -845,7 +868,7 @@ defmodule BridgeForTeams.Conversations do
   end
 
   defp record_message_event(project, conversation_id, send_result, result, reason, opts) do
-    request_id = Keyword.get(opts, :request_id, Ecto.UUID.generate())
+    request_id = Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid())
 
     attrs = %{
       org_id: project.org_id,
@@ -876,7 +899,7 @@ defmodule BridgeForTeams.Conversations do
 
   defp maybe_record_message_audit(project, conversation_id, send_result, opts) do
     if audit_enabled?(opts) do
-      request_id = Keyword.get(opts, :request_id, Ecto.UUID.generate())
+      request_id = Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid())
 
       case Observability.record_audit(%{
              org_id: project.org_id,
@@ -908,7 +931,7 @@ defmodule BridgeForTeams.Conversations do
          opts
        ) do
     if audit_enabled?(opts) do
-      request_id = Keyword.get(opts, :request_id, Ecto.UUID.generate())
+      request_id = Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid())
 
       case Observability.record_write_attempt(%{
              org_id: project.org_id,
@@ -995,7 +1018,7 @@ defmodule BridgeForTeams.Conversations do
   defp dashboard_message_request_id(request_id) when is_binary(request_id) and request_id != "",
     do: "dash-" <> request_id
 
-  defp dashboard_message_request_id(_request_id), do: "dash-" <> Ecto.UUID.generate()
+  defp dashboard_message_request_id(_request_id), do: "dash-" <> SystemsRuntime.Proc.uuid()
 
   defp reason_class(reason) when reason in [:not_found, :missing, :unknown_agent], do: "not_found"
   defp reason_class(reason) when reason in [:unauthorized, :forbidden], do: "permission"

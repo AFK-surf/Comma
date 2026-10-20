@@ -32,15 +32,20 @@ export const unavailableOnboardingWindow: OnboardingWindowProvider = {
 };
 
 /**
- * The window follows macOS's app activation to step down for the browser and
- * System Settings; Electron reports activation only there. Elsewhere the
- * in-window overlay presents the onboarding.
+ * Where the window can step down for the browser and System Settings when
+ * Comma stops being the active app: macOS by its app activation, Windows by the
+ * focus of Comma's windows. Elsewhere the in-window overlay presents the
+ * onboarding.
  */
+const onboardingWindowSystems: readonly string[] = ["macos", "windows"];
+
 export function onboardingWindowFor(
   operatingSystem: string,
   presenter: OnboardingWindowProvider
 ): OnboardingWindowProvider {
-  return operatingSystem === "macos" ? presenter : unavailableOnboardingWindow;
+  return onboardingWindowSystems.includes(operatingSystem)
+    ? presenter
+    : unavailableOnboardingWindow;
 }
 
 export interface WindowBounds {
@@ -66,9 +71,9 @@ export interface OnboardingDisplay {
 export const onboardingSheetLevel = "main-menu";
 
 /**
- * Whether the first-launch onboarding comes before the product: on macOS,
- * where it has a window of its own, for a signed-in account that has not
- * finished it on this Mac. The main window then stays hidden until the
+ * Whether the first-launch onboarding comes before the product: where it has a
+ * window of its own (macOS and Windows), for a signed-in account that has not
+ * finished it on this computer. The main window then stays hidden until the
  * onboarding window closes.
  */
 export function onboardingHoldsMainWindow({
@@ -81,7 +86,7 @@ export function onboardingHoldsMainWindow({
   session: Pick<SessionLifecycleSnapshot, "phase" | "principal">;
 }) {
   return (
-    operatingSystem === "macos" &&
+    onboardingWindowSystems.includes(operatingSystem) &&
     session.phase === "signed_in" &&
     session.principal !== null &&
     !completedUserIds.includes(session.principal.userId)
@@ -152,11 +157,16 @@ export class MainWindowOnboardingHold {
   }
 
   release() {
+    if (this.cancel()) this.#options.showMainWindow();
+  }
+
+  /** Ends the hold without showing the main window (Main closes its windows); false when none was held. */
+  cancel() {
     const timer = this.#timer;
-    if (!timer) return;
+    if (!timer) return false;
     this.#timer = undefined;
     clearTimeout(timer);
-    this.#options.showMainWindow();
+    return true;
   }
 
   /**
@@ -199,6 +209,7 @@ export interface OnboardingBrowserWindowLike {
   on(event: "close" | "closed" | "unresponsive", listener: () => void): unknown;
   setAlwaysOnTop(flag: boolean, level: typeof onboardingSheetLevel): void;
   setBounds(bounds: WindowBounds): void;
+  setIgnoreMouseEvents(ignore: boolean): void;
   webContents: {
     on(event: "render-process-gone", listener: () => void): unknown;
     on(
@@ -335,6 +346,12 @@ export class OnboardingWindowPresenter implements OnboardingWindowProvider {
     const { load, window } = this.#options.createWindow(
       onboardingSheetBounds(this.#options.displayMatching(main.getBounds()))
     );
+    // A transparent window lets AppKit pass a click through any pixel it
+    // finds clear, to the app behind. Chromium may drop the sheet's frame
+    // while the browser covers it for a plugin's authorization, so a click
+    // on the card that brings Comma back would land on another app. Set
+    // explicitly, the whole sheet takes every click.
+    window.setIgnoreMouseEvents(false);
     const presentation: Presentation = {
       ending: undefined,
       focused: false,
@@ -356,10 +373,10 @@ export class OnboardingWindowPresenter implements OnboardingWindowProvider {
     return { presented: true };
   }
 
-  closeWindow({ pluginAuthorization }: OnboardingCloseWindowInput) {
+  closeWindow(_input: OnboardingCloseWindowInput) {
     const presentation = this.#presentation;
     if (!presentation) return;
-    presentation.handoff = pluginAuthorization ? { pluginAuthorization } : {};
+    presentation.handoff = {};
     this.#end(presentation, "finished");
     this.#completed(presentation, "finished");
   }

@@ -56,7 +56,12 @@ defmodule SalixSignal.Test.FakeCdn do
     def call(conn, cdn) do
       {:ok, body, conn} = read_all(conn, "")
       test = Agent.get(cdn, & &1.test)
-      send(test, {:fake_cdn, conn.method, conn.request_path, conn.req_headers, body})
+
+      SystemsRuntime.Proc.send(
+        test,
+        {:fake_cdn, conn.method, conn.request_path, conn.req_headers, body}
+      )
+
       route(conn, conn.method, conn.path_info, body, cdn)
     end
 

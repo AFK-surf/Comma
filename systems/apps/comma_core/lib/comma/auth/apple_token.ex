@@ -21,7 +21,7 @@ defmodule Comma.Auth.AppleToken do
   def verify(_token, _attempt), do: {:error, :invalid_apple_credential}
 
   defp valid_claims?(claims, attempt) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     claims["iss"] == @issuer and claims["aud"] == attempt["client_id"] and
       claims["nonce"] == attempt["nonce"] and

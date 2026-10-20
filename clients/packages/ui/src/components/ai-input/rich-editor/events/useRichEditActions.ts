@@ -11,7 +11,7 @@ export interface RichEditActionsOptions {
   clipboard: Pick<AiInputClipboard, "readText" | "writeText">;
   commitEditor: () => void;
   immutable: boolean;
-  onPasteFilesFromMenu: (() => Promise<boolean>) | undefined;
+  onPasteFromMenu: (() => Promise<boolean>) | undefined;
   restoreEditSelection: () => boolean;
 }
 
@@ -27,7 +27,7 @@ export function useRichEditActions(
     clipboard,
     commitEditor,
     immutable,
-    onPasteFilesFromMenu,
+    onPasteFromMenu,
     restoreEditSelection,
   }: RichEditActionsOptions
 ) {
@@ -60,7 +60,7 @@ export function useRichEditActions(
       if (action === "paste") {
         if (immutable) return;
         try {
-          if (await onPasteFilesFromMenu?.()) return;
+          if (await onPasteFromMenu?.()) return;
           const text = await clipboard.readText();
           insertTextAtSelection(text);
           commitEditor();
@@ -77,7 +77,7 @@ export function useRichEditActions(
     [
       captureEditSelectionAfterAction,
       clipboard,
-      onPasteFilesFromMenu,
+      onPasteFromMenu,
       commitEditor,
       editorRef,
       immutable,

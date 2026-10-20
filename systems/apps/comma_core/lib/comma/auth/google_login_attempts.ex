@@ -46,7 +46,6 @@ defmodule Comma.Auth.GoogleLoginAttempts do
   @spec consume(map(), String.t()) :: {:ok, map()} | {:error, :invalid_google_attempt | term()}
   def consume(attrs, expected_platform)
       when is_map(attrs) and expected_platform in @platforms do
-    # Protocol anchor: tla/google_desktop_auth/GoogleDesktopAuth.tla
     attempt_id = trim(value(attrs, "attempt_id"))
     nonce = trim(value(attrs, "nonce"))
 
@@ -119,12 +118,14 @@ defmodule Comma.Auth.GoogleLoginAttempts do
   defp normalize_client_id(_value), do: nil
 
   defp random_id(platform),
-    do: "gla_#{platform}_" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+    do:
+      "gla_#{platform}_" <>
+        Base.url_encode64(SystemsRuntime.Proc.random_bytes(18), padding: false)
 
   defp platform_attempt_id?(attempt_id, platform),
     do: String.starts_with?(attempt_id, "gla_#{platform}_")
 
-  defp random_nonce, do: Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+  defp random_nonce, do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
 
   defp ip_fingerprint(attrs) do
     peer =
@@ -172,8 +173,8 @@ defmodule Comma.Auth.GoogleLoginAttempts do
   defp ttl_seconds,
     do: google_config()[:attempt_ttl_seconds] || @default_ttl_seconds
 
-  defp google_config, do: Application.get_env(:comma_core, :google_auth, [])
-  defp auth_config, do: Application.get_env(:comma_core, :auth, [])
+  defp google_config, do: SystemsRuntime.get_env(:comma_core, :google_auth, [])
+  defp auth_config, do: SystemsRuntime.get_env(:comma_core, :auth, [])
   defp value(map, key), do: Map.get(map, key, Map.get(map, String.to_atom(key)))
   defp trim(value) when is_binary(value), do: String.trim(value)
   defp trim(_value), do: ""

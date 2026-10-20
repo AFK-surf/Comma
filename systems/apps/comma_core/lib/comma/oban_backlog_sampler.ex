@@ -4,7 +4,7 @@ defmodule Comma.ObanBacklogSampler do
   Oban queues. It never enumerates jobs or exports job/operation identifiers.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   import Ecto.Query
 
@@ -15,7 +15,7 @@ defmodule Comma.ObanBacklogSampler do
   @default_interval_ms 10_000
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
   @impl true
@@ -25,16 +25,20 @@ defmodule Comma.ObanBacklogSampler do
         Keyword.get(
           opts,
           :interval_ms,
-          Application.get_env(:comma_core, :oban_backlog_sample_interval_ms, @default_interval_ms)
+          SystemsRuntime.get_env(
+            :comma_core,
+            :oban_backlog_sample_interval_ms,
+            @default_interval_ms
+          )
         )
     }
 
-    send(self(), :sample)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :sample)
     {:ok, state}
   end
 
   @doc false
-  def sample(repo \\ Comma.Repo, now \\ DateTime.utc_now()) do
+  def sample(repo \\ Comma.Repo, now \\ SystemsClock.utc_now()) do
     rows =
       from(job in Oban.Job,
         where: job.queue in ^@queues and job.state in ^@backlog_states,
@@ -74,7 +78,7 @@ defmodule Comma.ObanBacklogSampler do
         Logger.warning("comma_oban_backlog_sample_failed error=#{Exception.message(error)}")
     end
 
-    Process.send_after(self(), :sample, state.interval_ms)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :sample, state.interval_ms)
     {:noreply, state}
   end
 end

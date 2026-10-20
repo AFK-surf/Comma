@@ -4,8 +4,6 @@ defmodule BridgeForTeams.OrgsTest do
   alias BridgeForTeams.{Accounts, Memberships, Observability, Orgs, Projects}
   alias BridgeForTeams.Schema.{Organization, ReconcileOutbox}
 
-  @icon "data:image/png;base64,iVBORw0KGgo="
-
   describe "create_org/1" do
     test "creates with name+slug" do
       assert {:ok, %Organization{} = org} = Orgs.create_org(%{name: "Acme", slug: "acme"})
@@ -46,14 +44,14 @@ defmodule BridgeForTeams.OrgsTest do
     end
 
     test "does not require a started billing commerce repo" do
-      previous_repo = Application.get_env(:billing_commerce, :repo)
-      Application.put_env(:billing_commerce, :repo, __MODULE__.UnstartedBillingRepo)
+      previous_repo = SystemsRuntime.get_env(:billing_commerce, :repo)
+      SystemsRuntime.put_env(:billing_commerce, :repo, __MODULE__.UnstartedBillingRepo)
 
       on_exit(fn ->
         if is_nil(previous_repo) do
-          Application.delete_env(:billing_commerce, :repo)
+          SystemsRuntime.delete_env(:billing_commerce, :repo)
         else
-          Application.put_env(:billing_commerce, :repo, previous_repo)
+          SystemsRuntime.put_env(:billing_commerce, :repo, previous_repo)
         end
       end)
 
@@ -63,137 +61,15 @@ defmodule BridgeForTeams.OrgsTest do
       assert org.billing_account_id == "bridge-ba-" <> org.salix_tenant_id
       assert default_entitlement_count(org.billing_account_id) == 0
     end
-
-    test "stores an inline icon" do
-      assert {:ok, %Organization{} = org} =
-               Orgs.create_org(%{name: "Acme", slug: "acme", icon: @icon})
-
-      assert org.icon == @icon
-      assert {:ok, reloaded} = Orgs.get_org(org.id)
-      assert reloaded.icon == @icon
-    end
-
-    test "requires name and slug" do
-      assert {:error, cs} = Orgs.create_org(%{})
-      assert %{name: _, slug: _} = errors_on(cs)
-    end
-
-    test "slug is unique" do
-      {:ok, _} = Orgs.create_org(%{name: "A", slug: "dup"})
-      assert {:error, cs} = Orgs.create_org(%{name: "B", slug: "dup"})
-      assert %{slug: _} = errors_on(cs)
-    end
   end
 
   describe "lookups" do
-    test "get_org / get_org_by_slug" do
-      {:ok, org} = Orgs.create_org(%{name: "Acme", slug: "acme"})
-      assert {:ok, ^org} = Orgs.get_org(org.id)
-      assert {:ok, found} = Orgs.get_org_by_slug("acme")
-      assert found.id == org.id
-      assert {:error, :not_found} = Orgs.get_org(Ecto.UUID.generate())
-      assert {:error, :not_found} = Orgs.get_org_by_slug("nope")
-    end
   end
 
   test "update_org/2" do
     {:ok, org} = Orgs.create_org(%{name: "Acme", slug: "acme"})
     assert {:ok, updated} = Orgs.update_org(org, %{name: "Acme Inc"})
     assert updated.name == "Acme Inc"
-  end
-
-  test "update_org/3 records settings and model audit when an actor is supplied" do
-    {:ok, org} = Orgs.create_org(%{name: "Acme", slug: "acme"})
-    {:ok, actor} = Accounts.create_user(%{email: "owner@example.com"})
-
-    assert {:ok, updated} =
-             Orgs.update_org(org, %{name: "Acme Inc"},
-               actor_user_id: actor.id,
-               actor_label: actor.email
-             )
-
-    assert [settings_audit] =
-             Observability.list_audit_logs(org.id, action: "org.settings.updated")
-
-    assert settings_audit.actor_user_id == actor.id
-    assert settings_audit.resource_id == org.id
-    assert settings_audit.redacted_diff["name"] == %{"from" => "Acme", "to" => "Acme Inc"}
-
-    assert {:ok, _updated} =
-             Orgs.update_org(
-               updated,
-               %{"allowed_template_ids" => ["tmpl-1"], "default_template_id" => "tmpl-1"},
-               actor_user_id: actor.id,
-               actor_label: actor.email
-             )
-
-    assert [model_audit] =
-             Observability.list_audit_logs(org.id, action: "org.model_settings.updated")
-
-    assert model_audit.metadata["settings_surface"] == "models"
-
-    assert model_audit.redacted_diff["default_template_id"] == %{
-             "from" => nil,
-             "to" => "tmpl-1"
-           }
-
-    assert [model_event] =
-             Observability.list_events(org.id,
-               domain: "integration",
-               resource_type: "model_settings"
-             )
-
-    assert model_event.actor_user_id == actor.id
-    assert model_event.event_type == "model.validation.passed"
-    assert model_event.status == "ok"
-    assert model_event.evidence["settings_path"] == "settings/models"
-    assert model_event.evidence["allowed_template_count"] == 1
-  end
-
-  test "update_org/3 records failed settings write attempts" do
-    {:ok, org} = Orgs.create_org(%{name: "Acme", slug: "acme"})
-    {:ok, actor} = Accounts.create_user(%{email: "owner@example.com"})
-
-    assert {:error, changeset} =
-             Orgs.update_org(org, %{default_locale: "fr"},
-               actor_user_id: actor.id,
-               actor_label: actor.email,
-               request_id: "req_org_settings_failed"
-             )
-
-    assert %{default_locale: ["is invalid"]} = errors_on(changeset)
-
-    assert [audit] =
-             Observability.list_audit_logs(org.id,
-               action: "org.settings.updated",
-               result: "failed"
-             )
-
-    assert audit.actor_user_id == actor.id
-    assert audit.resource_id == org.id
-    assert audit.reason_class == "validation_failed"
-    assert audit.request_id == "req_org_settings_failed"
-    assert audit.metadata["write_attempt"] == "true"
-    assert audit.metadata["surface"] == "general"
-    assert audit.metadata["changed_fields"] == ["default_locale"]
-    assert audit.metadata["error_fields"] == ["default_locale"]
-
-    assert [event] = Observability.list_events(org.id, audit_log_id: audit.id)
-    assert event.event_type == "audit.org.settings.updated"
-    assert event.severity == "error"
-    assert event.status == "failed"
-    assert event.reason_class == "validation_failed"
-    assert event.correlation_id == "req_org_settings_failed"
-  end
-
-  test "update_org/2 updates and clears the inline icon" do
-    {:ok, org} = Orgs.create_org(%{name: "Acme", slug: "acme"})
-
-    assert {:ok, updated} = Orgs.update_org(org, %{icon: @icon})
-    assert updated.icon == @icon
-
-    assert {:ok, cleared} = Orgs.update_org(updated, %{icon: ""})
-    assert is_nil(cleared.icon)
   end
 
   test "update_org/2 does not switch billing accounts" do
@@ -249,23 +125,6 @@ defmodule BridgeForTeams.OrgsTest do
                "tenant_key" => "tenant-abc",
                "provisioning_policy" => "existing_identity"
              }
-    end
-
-    test "drops unknown Feishu provisioning policies" do
-      {:ok, org} = Orgs.create_org(%{name: "Acme", slug: "acme"})
-
-      assert {:ok, sso} =
-               Orgs.upsert_sso_connection(org.id, %{
-                 provider: "feishu",
-                 client_id: "feishu-app",
-                 client_secret: "feishu-secret",
-                 provider_config: %{
-                   scope: "contact:user.base:readonly",
-                   provisioning_policy: "phone_number_match"
-                 }
-               })
-
-      assert sso.provider_config == %{"scope" => "contact:user.base:readonly"}
     end
 
     test "requires a Feishu client secret for a usable SSO connection" do

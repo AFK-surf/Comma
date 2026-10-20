@@ -47,7 +47,7 @@ defmodule SalixSignal.Service.Chat do
   because the server drops such header lines (section 7.2).
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -95,7 +95,7 @@ defmodule SalixSignal.Service.Chat do
   timers stay real) and `:name`.
   """
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
   end
 
   @doc """
@@ -122,7 +122,11 @@ defmodule SalixSignal.Service.Chat do
     with :ok <- validate_headers(headers) do
       # The process replies by `timeout`; the margin covers a connect attempt
       # that holds the process when the call arrives.
-      GenServer.call(chat, {:request, verb, path, body, headers, timeout}, timeout + 15_000)
+      SystemsRuntime.Server.call(
+        chat,
+        {:request, verb, path, body, headers, timeout},
+        timeout + 15_000
+      )
     end
   end
 
@@ -134,17 +138,17 @@ defmodule SalixSignal.Service.Chat do
   The server pushes that envelope again on the current or a later socket.
   """
   @spec ack(GenServer.server(), ack_token(), 100..599) :: :ok | {:error, :stale}
-  def ack(chat, token, status \\ 200), do: GenServer.call(chat, {:ack, token, status})
+  def ack(chat, token, status \\ 200), do: SystemsRuntime.Server.call(chat, {:ack, token, status})
 
   @doc "The current phase: `:connecting`, `:open`, `:disconnected` or `{:stopped, reason}`."
-  def phase(chat), do: GenServer.call(chat, :phase)
+  def phase(chat), do: SystemsRuntime.Server.call(chat, :phase)
 
   # --- GenServer ---------------------------------------------------------
 
   @impl true
   def init(opts) do
     owner = Keyword.fetch!(opts, :owner)
-    Process.monitor(owner)
+    SystemsRuntime.Proc.monitor(owner)
     config = Keyword.merge(@defaults, opts) |> Map.new()
     host = config.host || Endpoints.host(config.environment, :chat)
 
@@ -243,7 +247,7 @@ defmodule SalixSignal.Service.Chat do
         {:noreply, %{state | pending: pending}}
 
       {{from, _timer}, pending} ->
-        GenServer.reply(from, {:error, :timeout})
+        SystemsRuntime.Server.reply(from, {:error, :timeout})
         {:noreply, %{state | pending: pending}}
 
       {nil, _} ->
@@ -293,7 +297,12 @@ defmodule SalixSignal.Service.Chat do
              transport_opts: transport_opts
            ),
          {:ok, conn, ref} <- upgrade(conn, state) do
-      timer = Process.send_after(self(), {:upgrade_timeout, ref}, state.connect_timeout_ms)
+      timer =
+        SystemsClock.send_after(
+          SystemsRuntime.Proc.self(),
+          {:upgrade_timeout, ref},
+          state.connect_timeout_ms
+        )
 
       %{
         state
@@ -377,7 +386,11 @@ defmodule SalixSignal.Service.Chat do
           value |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
       end
 
-    Process.send_after(self(), {:keepalive, generation}, state.keepalive_interval_ms)
+    SystemsClock.send_after(
+      SystemsRuntime.Proc.self(),
+      {:keepalive, generation},
+      state.keepalive_interval_ms
+    )
 
     notify(
       state,
@@ -480,7 +493,7 @@ defmodule SalixSignal.Service.Chat do
 
       {{from, timer}, pending} ->
         cancel(timer)
-        GenServer.reply(from, reply)
+        SystemsRuntime.Server.reply(from, reply)
         %{state | pending: pending}
 
       {nil, _} ->
@@ -511,7 +524,11 @@ defmodule SalixSignal.Service.Chat do
     if now_ms(state) - state.last_rx >= state.idle_timeout_ms do
       lost(state, :keepalive_timeout)
     else
-      Process.send_after(self(), {:keepalive, state.generation}, state.keepalive_interval_ms)
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
+        {:keepalive, state.generation},
+        state.keepalive_interval_ms
+      )
 
       if map_size(state.pending) >= state.max_pending do
         state
@@ -535,8 +552,8 @@ defmodule SalixSignal.Service.Chat do
       case send_frame(state, frame) do
         {:ok, state} ->
           timer =
-            Process.send_after(
-              self(),
+            SystemsClock.send_after(
+              SystemsRuntime.Proc.self(),
               {:request_timeout, state.generation, request.id},
               timeout
             )
@@ -582,7 +599,7 @@ defmodule SalixSignal.Service.Chat do
       |> Backoff.delay_ms(state.backoff)
       |> Backoff.honor_retry_after(retry_after)
 
-    timer = Process.send_after(self(), :reconnect, delay)
+    timer = SystemsClock.send_after(SystemsRuntime.Proc.self(), :reconnect, delay)
     %{state | phase: :disconnected, attempt: attempt + 1, opened_at: nil, timer: timer}
   end
 
@@ -598,7 +615,7 @@ defmodule SalixSignal.Service.Chat do
 
     for {_id, {from, timer}} <- state.pending do
       cancel(timer)
-      if from != :keepalive, do: GenServer.reply(from, pending_reply)
+      if from != :keepalive, do: SystemsRuntime.Server.reply(from, pending_reply)
     end
 
     # A new generation fences acknowledgements and timers of this socket.
@@ -616,12 +633,13 @@ defmodule SalixSignal.Service.Chat do
 
   # --- Helpers -----------------------------------------------------------
 
-  defp notify(state, event), do: send(state.owner, {:signal_chat, self(), event})
+  defp notify(state, event),
+    do: SystemsRuntime.Proc.send(state.owner, {:signal_chat, SystemsRuntime.Proc.self(), event})
 
   defp cancel(nil), do: :ok
-  defp cancel(timer), do: Process.cancel_timer(timer)
+  defp cancel(timer), do: SystemsClock.cancel_timer(timer)
 
-  defp now_ms(%{clock: nil}), do: System.monotonic_time(:millisecond)
+  defp now_ms(%{clock: nil}), do: SystemsClock.monotonic_time(:millisecond)
   defp now_ms(%{clock: clock}), do: clock.()
 
   defp lower_headers(headers), do: Enum.map(headers, fn {k, v} -> {String.downcase(k), v} end)

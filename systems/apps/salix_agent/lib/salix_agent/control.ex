@@ -25,7 +25,7 @@ defmodule SalixAgent.Control do
   defdelegate create_owned_preallocated(attrs, tenant_id, agent_id), to: SalixAgent.AgentControl
   defdelegate create_preallocated(attrs, tenant_id, agent_id), to: SalixAgent.AgentControl
 
-  defdelegate rebind_external_worker(agent_id, tenant_id, target, expected, command_id),
+  defdelegate rebind_station_worker(agent_id, tenant_id, request, expected),
     to: SalixAgent.AgentControl
 
   defdelegate configure(agent_id, attrs), to: SalixAgent.AgentControl
@@ -37,9 +37,6 @@ defmodule SalixAgent.Control do
   defdelegate update(agent_id, attrs), to: SalixAgent.AgentControl
   defdelegate update(agent_id, attrs, tenant_id), to: SalixAgent.AgentControl
 
-  defdelegate apply_external_worker_binding(agent_id, tenant_id, runtime_config),
-    to: SalixAgent.AgentControl
-
   defdelegate delete(agent_id), to: SalixAgent.AgentControl
   defdelegate delete(agent_id, tenant_id), to: SalixAgent.AgentControl
   defdelegate unarchive(agent_id, tenant_id), to: SalixAgent.AgentControl
@@ -50,8 +47,6 @@ defmodule SalixAgent.Control do
   defdelegate wake(agent_id, attrs \\ %{}), to: SalixAgent.AgentControl
   defdelegate wake(agent_id, attrs, tenant_id), to: SalixAgent.AgentControl
   defdelegate archived?(agent), to: SalixAgent.AgentControl
-  defdelegate runtime_kind(agent), to: SalixAgent.AgentControl
-  defdelegate external_runtime?(agent), to: SalixAgent.AgentControl
   defdelegate visible?(agent), to: SalixAgent.AgentControl
   defdelegate ensure_not_stopped(agent_id), to: SalixAgent.AgentControl
 end

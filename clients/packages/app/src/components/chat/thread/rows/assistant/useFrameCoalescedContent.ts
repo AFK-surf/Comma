@@ -1,10 +1,11 @@
 import { useLayoutEffect, useRef, useState } from "react";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 
 export function useFrameCoalescedContent(content: string, activelyStreaming: boolean) {
   const [renderedContent, setRenderedContent] = useState(content);
   const renderedContentRef = useRef(content);
   const latestContentRef = useRef(content);
-  const frameRef = useRef<number | undefined>(undefined);
+  const frameRef = useRef<CancelUiTimer | undefined>(undefined);
   const renderImmediately =
     !activelyStreaming ||
     renderedContentRef.current.length === 0 ||
@@ -18,7 +19,7 @@ export function useFrameCoalescedContent(content: string, activelyStreaming: boo
 
     if (renderImmediately) {
       if (frameRef.current !== undefined) {
-        window.cancelAnimationFrame(frameRef.current);
+        frameRef.current();
         frameRef.current = undefined;
       }
       renderedContentRef.current = content;
@@ -29,7 +30,7 @@ export function useFrameCoalescedContent(content: string, activelyStreaming: boo
     // This is scheduled only by an accepted stream update. It coalesces a
     // burst into one Markdown render per frame; it is not a polling loop.
     if (frameRef.current !== undefined) return;
-    frameRef.current = window.requestAnimationFrame(() => {
+    frameRef.current = uiClock.frame(() => {
       frameRef.current = undefined;
       const nextContent = latestContentRef.current;
       renderedContentRef.current = nextContent;
@@ -42,7 +43,7 @@ export function useFrameCoalescedContent(content: string, activelyStreaming: boo
   useLayoutEffect(
     () => () => {
       if (frameRef.current !== undefined) {
-        window.cancelAnimationFrame(frameRef.current);
+        frameRef.current();
         frameRef.current = undefined;
       }
     },

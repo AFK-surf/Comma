@@ -1,8 +1,7 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { ExclamationTriangleIcon } from "@comma/ui";
+import { ExclamationTriangleIcon } from "@comma/ui/components/icons";
 import { openUsageBillingSettings } from "../../../../billing/outOfCredits";
-import type { ChatMessage } from "../../../model/conversationChannel";
-import { OutOfCreditsNotice } from "./OutOfCreditsNotice";
+import type { ChatMessage } from "@comma/core/chat";
 
 export function FailedDeliveryNotice({
   message,
@@ -14,18 +13,10 @@ export function FailedDeliveryNotice({
   onRetry: (clientRequestId: string) => void;
 }) {
   const messagesApi = useCommaMessages();
-  if (
+  // A send refused for Comma credits says how to add them, in both windows.
+  const outOfCredits =
     message.failureAction === "billing" ||
-    message.error === messagesApi.chat_insufficient_credits()
-  ) {
-    return (
-      <OutOfCreditsNotice
-        onAddCredits={openUsageBillingSettings}
-        onDiscard={() => onDiscard(message.clientRequestId!)}
-        onRetry={() => onRetry(message.clientRequestId!)}
-      />
-    );
-  }
+    message.error === messagesApi.chat_insufficient_credits();
   return (
     <div
       className="comma-chat-notice-card comma-chat-failed-row"
@@ -43,6 +34,15 @@ export function FailedDeliveryNotice({
           {/* Discard leaves the send behind; Retry is the one that
               resumes it, so it sits at the far end. */}
           <div className="comma-chat-notice-card-actions-group">
+            {outOfCredits ? (
+              <button
+                className="comma-chat-notice-card-action"
+                onClick={openUsageBillingSettings}
+                type="button"
+              >
+                {messagesApi.chat_add_credits()}
+              </button>
+            ) : null}
             <button
               className="comma-chat-notice-card-action comma-chat-notice-card-action-quiet"
               onClick={() => onDiscard(message.clientRequestId!)}

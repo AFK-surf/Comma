@@ -73,9 +73,9 @@ defmodule SalixAnalytics.EventArchive.Sequence do
   @doc "Create the counter table. Idempotent; called from the supervision root."
   @spec create_table() :: :ok
   def create_table do
-    case :ets.whereis(@table) do
+    case SystemsRuntime.ETS.whereis(@table) do
       :undefined ->
-        :ets.new(@table, [:named_table, :public, :set, write_concurrency: true])
+        SystemsRuntime.ETS.new(@table, [:named_table, :public, :set, write_concurrency: true])
         :ok
 
       _ ->
@@ -92,15 +92,15 @@ defmodule SalixAnalytics.EventArchive.Sequence do
   """
   @spec writer() :: String.t()
   def writer do
-    case :persistent_term.get(@writer_key, :miss) do
+    case SystemsRuntime.PersistentTerm.get(@writer_key, :miss) do
       :miss ->
-        id = 16 |> :crypto.strong_rand_bytes() |> Base.encode16(case: :lower)
+        id = 16 |> SystemsRuntime.Proc.random_bytes() |> Base.encode16(case: :lower)
         # put/2 is idempotent under a race: both racers write a valid epoch and
         # whichever lands second is the one every subsequent read returns. A
         # racing pair can therefore stamp two epochs on the first few items,
         # which reads as one extra reset at boot — never as a collision.
-        :persistent_term.put(@writer_key, id)
-        :persistent_term.get(@writer_key, id)
+        SystemsRuntime.PersistentTerm.put(@writer_key, id)
+        SystemsRuntime.PersistentTerm.get(@writer_key, id)
 
       cached ->
         cached
@@ -110,27 +110,27 @@ defmodule SalixAnalytics.EventArchive.Sequence do
   @doc "Drop the cached writer epoch. Tests only."
   @spec reset_writer() :: :ok
   def reset_writer do
-    _ = :persistent_term.erase(@writer_key)
+    _ = SystemsRuntime.PersistentTerm.erase(@writer_key)
     :ok
   end
 
   @doc "Next sequence number for `stream`, starting at 1."
   @spec next(String.t()) :: pos_integer()
   def next(stream) when is_binary(stream) do
-    :ets.update_counter(@table, stream, {2, 1}, {stream, 0})
+    SystemsRuntime.ETS.update_counter(@table, stream, {2, 1}, {stream, 0})
   rescue
     ArgumentError ->
       # Table missing (a test process, or archiving before boot completed).
       # Creating it here keeps the emitter path total; the cost is that this
       # stream's run restarts, which verify reports as a reset, not a gap.
       create_table()
-      :ets.update_counter(@table, stream, {2, 1}, {stream, 0})
+      SystemsRuntime.ETS.update_counter(@table, stream, {2, 1}, {stream, 0})
   end
 
   @doc "Forget a stream's counter once its session is finished."
   @spec forget(String.t()) :: :ok
   def forget(stream) when is_binary(stream) do
-    :ets.delete(@table, stream)
+    SystemsRuntime.ETS.delete(@table, stream)
     :ok
   rescue
     ArgumentError -> :ok

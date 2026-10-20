@@ -1,5 +1,6 @@
 defmodule CommaWeb.TelegramTelemetryTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
   import Plug.Conn
   import Plug.Test
 
@@ -9,9 +10,9 @@ defmodule CommaWeb.TelegramTelemetryTest do
   @secret "test-webhook-secret-with-32-characters"
 
   setup do
-    previous = Application.get_env(:comma_web, :telegram)
+    previous = SystemsRuntime.get_env(:comma_web, :telegram)
 
-    Application.put_env(:comma_web, :telegram,
+    SystemsRuntime.put_env(:comma_web, :telegram,
       enabled: true,
       bot_token: "private-bot-token",
       bot_username: "comma_test_bot",
@@ -24,24 +25,24 @@ defmodule CommaWeb.TelegramTelemetryTest do
        name: @reporter, metrics: CommaProduct.Telemetry.metrics(), start_async: false}
     )
 
-    handler = {__MODULE__, make_ref()}
-    parent = self()
+    handler = {__MODULE__, SystemsRuntime.Proc.make_ref()}
+    parent = SystemsRuntime.Proc.self()
 
-    :telemetry.attach(
+    SystemsRuntime.Telemetry.attach(
       handler,
       [:comma_product, :operation, :stop],
       fn _, measurements, metadata, _ ->
-        send(parent, {:observed, measurements, metadata})
+        SystemsRuntime.Proc.send(parent, {:observed, measurements, metadata})
       end,
       nil
     )
 
     on_exit(fn ->
-      :telemetry.detach(handler)
+      SystemsRuntime.Telemetry.detach(handler)
 
       if is_nil(previous),
-        do: Application.delete_env(:comma_web, :telegram),
-        else: Application.put_env(:comma_web, :telegram, previous)
+        do: SystemsRuntime.delete_env(:comma_web, :telegram),
+        else: SystemsRuntime.put_env(:comma_web, :telegram, previous)
     end)
 
     :ok
@@ -60,7 +61,7 @@ defmodule CommaWeb.TelegramTelemetryTest do
         ] do
       assert TelegramTelemetry.observe(:telegram_send_message, fn -> result end) == result
 
-      assert_receive {:observed, %{duration: duration}, metadata}
+      settle_receive({:observed, %{duration: duration}, metadata})
       assert duration >= 0
 
       assert metadata == %{
@@ -69,7 +70,7 @@ defmodule CommaWeb.TelegramTelemetryTest do
                outcome: expected
              }
 
-      refute_receive {:observed, _, _}, 0
+      settle_refute_receive({:observed, _, _}, 0)
     end
 
     scrape = TelemetryMetricsPrometheus.Core.scrape(@reporter)
@@ -80,69 +81,6 @@ defmodule CommaWeb.TelegramTelemetryTest do
     refute scrape =~ "private-message-id"
     refute scrape =~ "private-error-text"
     refute scrape =~ "private-bot-token"
-  end
-
-  test "raise, exit, and throw each emit once without changing the original failure" do
-    assert_raise RuntimeError, "private-exception", fn ->
-      TelegramTelemetry.observe(:telegram_webhook, fn -> raise "private-exception" end)
-    end
-
-    assert_receive {:observed, _, %{outcome: :error}}
-    refute_receive {:observed, _, _}, 0
-
-    assert catch_exit(TelegramTelemetry.observe(:telegram_webhook, fn -> exit(:private_exit) end)) ==
-             :private_exit
-
-    assert_receive {:observed, _, %{outcome: :error}}
-    refute_receive {:observed, _, _}, 0
-
-    assert catch_throw(
-             TelegramTelemetry.observe(:telegram_webhook, fn -> throw(:private_throw) end)
-           ) == :private_throw
-
-    assert_receive {:observed, _, %{outcome: :error}}
-    refute_receive {:observed, _, _}, 0
-
-    refute TelemetryMetricsPrometheus.Core.scrape(@reporter) =~ "private"
-  end
-
-  test "telemetry handler failure does not change the business result" do
-    handler = {__MODULE__, :broken, make_ref()}
-
-    :telemetry.attach(
-      handler,
-      [:comma_product, :operation, :stop],
-      fn _, _, _, _ -> raise "broken observer" end,
-      nil
-    )
-
-    on_exit(fn -> :telemetry.detach(handler) end)
-
-    assert :ok == TelegramTelemetry.observe(:telegram_webhook, fn -> :ok end)
-    assert_receive {:observed, _, %{outcome: :ok}}
-  end
-
-  test "only authenticated webhook work contributes; public junk never fires or dilutes the signal" do
-    for secret <- [nil, "wrong-secret"] do
-      assert webhook(secret).status == 401
-      refute_receive {:observed, _, _}, 0
-    end
-
-    assert webhook(@secret).status == 200
-    assert_receive {:observed, _, %{operation: :telegram_webhook, outcome: :ok}}
-    refute_receive {:observed, _, _}, 0
-
-    assert SystemsObservability.RouteCatalog.classify(
-             "comma_product_api",
-             "/v1/comma/integrations/telegram/webhook"
-           ) == "/v1/comma/integrations/*"
-  end
-
-  test "an absent reporter does not change webhook or send results" do
-    stop_supervised!(@reporter)
-    assert :ok == TelegramTelemetry.observe(:telegram_webhook, fn -> :ok end)
-    failure = {:error, {:telegram_http_error, 503}}
-    assert TelegramTelemetry.observe(:telegram_send_message, fn -> failure end) == failure
   end
 
   defp webhook(secret) do

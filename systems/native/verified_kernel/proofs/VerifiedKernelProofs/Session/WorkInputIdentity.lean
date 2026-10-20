@@ -124,7 +124,7 @@ theorem inputEvent_source_fields {session payload now event : Term} {source : By
   intro name value member
   simp only [List.mem_cons, List.mem_singleton, Prod.mk.injEq] at member
   rcases member with ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ |
-    ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ <;> simp_all
+    ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ <;> string_ne
 
 theorem uniq_binary_subset {items : List Term} (binary : items.all Term.isBinary = true) :
     (uniq items).Sublist items := by

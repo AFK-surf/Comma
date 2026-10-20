@@ -114,6 +114,8 @@ defmodule Comma.Plugins do
   # integration setup surface. Tenant/group definitions remain product-owned.
   # Feishu is not open for installation in Comma yet. Keep its Salix definition.
   defp product_plugin?(%{"plugin_id" => "feishu"}), do: false
+  # Lark is not open for installation in Comma yet either. Keep its Salix definition.
+  defp product_plugin?(%{"plugin_id" => "lark"}), do: false
 
   defp product_plugin?(%{"owner_scope" => "system"} = definition) do
     get_in(definition, ["setup", "type"]) == "integration" or
@@ -123,7 +125,11 @@ defmodule Comma.Plugins do
   defp product_plugin?(_definition), do: true
 
   defp public_plugin(definition, enablement_by_id, installed_plugin_ids) do
-    description = clean_description(definition["description"])
+    description =
+      if definition["plugin_id"] == "x-twitter",
+        do: "Read public X posts, users, news, and trends with an App-only Bearer Token.",
+        else: clean_description(definition["description"])
+
     refs = definition["refs"] || %{}
     mcp_names = setup_mcp_names(definition)
 
@@ -139,9 +145,31 @@ defmodule Comma.Plugins do
       # not mean the user connected or installed an integration.
       "installed" => installed?(definition, enablement_by_id, installed_plugin_ids),
       "locked" => definition["locked"] == true,
+      "credentialSetup" => credential_setup(definition),
       "mcps" => resources(refs["mcp_refs"], "mcp_id", mcp_names),
       "skills" => resources(refs["skill_refs"], "skill_id", %{})
     }
+  end
+
+  defp credential_setup(definition) do
+    setup = definition["setup"] || %{}
+
+    connection_id =
+      if definition["plugin_id"] == "x-twitter",
+        do: "x-api-key",
+        else: setup["default_connection"]
+
+    case Enum.find(setup["connections"] || [], &(&1["id"] == connection_id)) do
+      %{"kind" => "mcp_api_key"} = connection ->
+        %{
+          "key" => connection["config_key"],
+          "label" => connection["credential_label"],
+          "helpUrl" => connection["help_url"]
+        }
+
+      _ ->
+        nil
+    end
   end
 
   defp installed?(%{"locked" => true}, _enablement_by_id, _installed_plugin_ids), do: true

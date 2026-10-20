@@ -3,8 +3,7 @@ defmodule SalixCluster.SessionWorkNotificationListener do
   Per-Pod Postgres notification listener for durable Session work candidates.
 
   The listener subscribes before requesting a durable catch-up sweep. It then
-  routes address hints on the current ring owner and requests catch-up for
-  runtime-ready hints. A broken
+  routes address hints on the current ring owner. A broken
   connection is re-established with bounded backoff and repeats the same
   subscribe-then-catch-up sequence. Correctness remains with the durable
   candidate projection and lease-driven recovery sweep.
@@ -13,7 +12,7 @@ defmodule SalixCluster.SessionWorkNotificationListener do
   The retired notification model is not a current machine-checked guarantee.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
   alias SalixStore.SessionWorkNotifications
@@ -47,14 +46,14 @@ defmodule SalixCluster.SessionWorkNotificationListener do
 
   def start_link(opts \\ []) do
     case Keyword.get(opts, :name, __MODULE__) do
-      nil -> GenServer.start_link(__MODULE__, opts)
-      name -> GenServer.start_link(__MODULE__, opts, name: name)
+      nil -> SystemsRuntime.Server.start_link(__MODULE__, opts)
+      name -> SystemsRuntime.Server.start_link(__MODULE__, opts, name: name)
     end
   end
 
   @impl true
   def init(opts) do
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
     backoff_ms = positive_integer(opts[:reconnect_backoff_ms], @default_reconnect_backoff_ms)
 
     state = %{
@@ -85,7 +84,7 @@ defmodule SalixCluster.SessionWorkNotificationListener do
         end)
     }
 
-    send(self(), :connect)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :connect)
     {:ok, state}
   end
 
@@ -112,7 +111,11 @@ defmodule SalixCluster.SessionWorkNotificationListener do
         {:notification, connection, listen_ref, channel, payload},
         %{connection: connection, listen_ref: listen_ref} = state
       ) do
-    if channel == SessionWorkNotifications.channel(), do: dispatch_notification(payload, state)
+    if channel == SessionWorkNotifications.channel() do
+      dispatch_notification(payload, state)
+      SessionWorkNotifications.delivered(payload)
+    end
+
     {:noreply, state}
   end
 
@@ -160,10 +163,10 @@ defmodule SalixCluster.SessionWorkNotificationListener do
   end
 
   defp stop_failed_connection(connection) do
-    Process.unlink(connection)
+    SystemsRuntime.Proc.unlink(connection)
 
-    if Process.alive?(connection) do
-      Process.exit(connection, :shutdown)
+    if SystemsRuntime.Proc.alive?(connection) do
+      SystemsRuntime.Proc.exit(connection, :shutdown)
     end
   end
 
@@ -171,7 +174,8 @@ defmodule SalixCluster.SessionWorkNotificationListener do
     do: state
 
   defp schedule_reconnect(state) do
-    timer = Process.send_after(self(), :connect, state.reconnect_backoff_ms)
+    timer =
+      SystemsClock.send_after(SystemsRuntime.Proc.self(), :connect, state.reconnect_backoff_ms)
 
     next_backoff =
       min(state.reconnect_backoff_ms * 2, state.reconnect_backoff_max_ms)
@@ -188,9 +192,6 @@ defmodule SalixCluster.SessionWorkNotificationListener do
         emit_dispatch("rejected")
     end
   end
-
-  defp dispatch_valid_notification(:runtime_ready, state),
-    do: emit_catch_up(run_catch_up(state.catch_up_fn))
 
   defp dispatch_valid_notification(notification, state) do
     case safe_fun(state.owner_node_fn, [notification.agent_id]) do

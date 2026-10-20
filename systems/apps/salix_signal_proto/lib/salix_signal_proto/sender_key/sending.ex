@@ -50,7 +50,7 @@ defmodule SalixSignalProto.SenderKey.Sending do
   @doc "A random version-4 UUID (RFC 4122 section 4.4)."
   @spec random_uuid() :: <<_::128>>
   def random_uuid do
-    <<a::48, _::4, b::12, _::2, c::62>> = :crypto.strong_rand_bytes(16)
+    <<a::48, _::4, b::12, _::2, c::62>> = SystemsRuntime.Proc.random_bytes(16)
     <<a::48, 4::4, b::12, 2::2, c::62>>
   end
 

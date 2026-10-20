@@ -17,7 +17,7 @@ defmodule SalixAgent.CapabilityRequests do
   @list_read_concurrency 8
   @default_request_ttl_seconds 120
   @receipt_result_budget_ms 30_000
-  @request_types ~w(host_access computer_use_start location oauth_authorization runtime_auth ifc_declassify)
+  @request_types ~w(host_access computer_use_start location oauth_authorization ifc_declassify)
 
   # How long one confirmed information-flow transfer stays confirmed. Long
   # enough for the Router to retry the effect it was refused for, short
@@ -206,37 +206,6 @@ defmodule SalixAgent.CapabilityRequests do
         |> Enum.take(limit)
 
       {:ok, requests}
-    end
-  end
-
-  @doc "Read one bounded storage page of runtime-auth requests for a group."
-  def list_runtime_auth_page(group_id, tenant_id, opts \\ []) do
-    with {:ok, _group} <- GroupContext.get(group_id, tenant_id),
-         {:ok, limit} <- runtime_auth_page_limit(Keyword.get(opts, :limit)),
-         {:ok, cursor} <- list_cursor(Keyword.get(opts, :cursor)),
-         {:ok, page} <-
-           S3.list(
-             Keys.ctl_capability_requests_prefix(group_id),
-             [max_keys: limit] ++ if(cursor, do: [continuation_token: cursor], else: [])
-           ) do
-      requests =
-        page.objects
-        |> read_records()
-        |> Enum.filter(
-          &(&1["tenant_id"] == tenant_id and &1["request_type"] == "runtime_auth" and
-              visible_for_status?(&1, "pending"))
-        )
-        |> Enum.sort_by(&{&1["updated_at"] || 0, &1["request_id"]}, :desc)
-
-      {:ok, %{"requests" => requests, "next_cursor" => page.next}}
-    end
-  end
-
-  @doc "Point-read one runtime-auth request without scanning its group."
-  def get_runtime_auth(group_id, request_id, tenant_id) do
-    with {:ok, request} <- find(group_id, request_id, tenant_id),
-         :ok <- require_type(request, "runtime_auth") do
-      {:ok, request}
     end
   end
 
@@ -432,7 +401,7 @@ defmodule SalixAgent.CapabilityRequests do
                |> Map.put("completed_at", now)
                |> Map.put(
                  "settlement_deadline_ms",
-                 System.system_time(:millisecond) + @receipt_result_budget_ms
+                 SystemsClock.system_time(:millisecond) + @receipt_result_budget_ms
                )}
             end
 
@@ -470,26 +439,6 @@ defmodule SalixAgent.CapabilityRequests do
         {:error, {:bad_request, "declassification request is missing its flow"}}
     end
   end
-
-  def complete_runtime_auth(group_id, request_id, attrs, tenant_id) when is_map(attrs) do
-    with {:ok, request} <- find(group_id, request_id, tenant_id),
-         :ok <- require_type(request, "runtime_auth"),
-         outcome when is_binary(outcome) <- attrs["outcome"] || attrs[:outcome],
-         actor_id when is_binary(actor_id) <- attrs["actor_id"] || attrs[:actor_id],
-         {:ok, response} <-
-           SalixAgent.Tools.RuntimeAuth.validate_completion(request, outcome, actor_id),
-         {:ok, completed} <- complete(request, response, completed_result(response)),
-         :ok <- deliver_stored_result(completed) do
-      {:ok, completed}
-    else
-      nil -> {:error, {:bad_request, "runtime auth completion fields are required"}}
-      {:error, _} = error -> error
-      _ -> {:error, {:bad_request, "invalid runtime auth completion"}}
-    end
-  end
-
-  def complete_runtime_auth(_group_id, _request_id, _attrs, _tenant_id),
-    do: {:error, {:bad_request, "invalid runtime auth completion"}}
 
   defp find(group_id, request_id, tenant_id) do
     with {:ok, _group} <- GroupContext.get(group_id, tenant_id),
@@ -709,8 +658,6 @@ defmodule SalixAgent.CapabilityRequests do
   defp tool_name_for_request(%{"request_type" => "oauth_authorization"}),
     do: "oauth.request_authorization"
 
-  defp tool_name_for_request(%{"request_type" => "runtime_auth"}), do: "runtime.auth"
-
   defp tool_name_for_request(%{"request_type" => "ifc_declassify"}),
     do: "ifc.request_declassification"
 
@@ -840,7 +787,7 @@ defmodule SalixAgent.CapabilityRequests do
 
   defp receipt_result_due?(request) do
     deadline = request["settlement_deadline_ms"]
-    not is_integer(deadline) or System.system_time(:millisecond) >= deadline
+    not is_integer(deadline) or SystemsClock.system_time(:millisecond) >= deadline
   end
 
   defp receipt_incomplete_result do
@@ -892,7 +839,7 @@ defmodule SalixAgent.CapabilityRequests do
   end
 
   defp notify(request) do
-    case Application.get_env(:salix_agent, :capability_request_notifier_mod) do
+    case SystemsRuntime.get_env(:salix_agent, :capability_request_notifier_mod) do
       nil ->
         :ok
 
@@ -916,15 +863,6 @@ defmodule SalixAgent.CapabilityRequests do
 
   defp request_limit(_value), do: {:error, {:bad_request, "invalid limit"}}
 
-  defp runtime_auth_page_limit(nil), do: {:ok, 50}
-  defp runtime_auth_page_limit(value) when is_integer(value) and value in 1..50, do: {:ok, value}
-  defp runtime_auth_page_limit(_value), do: {:error, {:bad_request, "invalid limit"}}
-
-  defp list_cursor(nil), do: {:ok, nil}
-  defp list_cursor(""), do: {:ok, nil}
-  defp list_cursor(value) when is_binary(value) and byte_size(value) <= 4_096, do: {:ok, value}
-  defp list_cursor(_value), do: {:error, {:bad_request, "invalid cursor"}}
-
   defp get_record(key) do
     case S3.get(key) do
       {:ok, %{body: body}} -> Jason.decode(body)
@@ -947,7 +885,7 @@ defmodule SalixAgent.CapabilityRequests do
     context = SystemsObservability.Context.capture()
 
     objects
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn %{key: key} ->
         SystemsObservability.Context.run(context, fn ->
           case get_record(key) do
@@ -1080,5 +1018,5 @@ defmodule SalixAgent.CapabilityRequests do
   defp request_expiry(_value),
     do: {:error, {:bad_request, "expires_at must be a positive Unix timestamp in seconds"}}
 
-  defp now, do: System.system_time(:second)
+  defp now, do: SystemsClock.system_time(:second)
 end

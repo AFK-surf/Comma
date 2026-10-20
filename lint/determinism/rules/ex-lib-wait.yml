@@ -1,0 +1,58 @@
+id: ex-lib-wait
+language: elixir
+severity: error
+message: "Application code waits with a real-time timeout."
+note: |
+  GenServer.call, Task.await, Task.yield and Task.async_stream give up after
+  real time (5 seconds by default). Use SystemsClock.call, SystemsClock.yield,
+  SystemsClock.async_stream or SystemsClock.run_bounded, or :infinity where
+  no bound is wanted.
+metadata:
+  category: deadline
+rule:
+  any:
+    - all:
+        - kind: call
+        - has:
+            field: target
+            regex: "^(GenServer\\.call|:gen_server\\.call|:gen_statem\\.call|GenStateMachine\\.call|Agent\\.(get|update|get_and_update))$"
+        - not:
+            has:
+              kind: arguments
+              has:
+                regex: "^:infinity$"
+    - all:
+        - kind: call
+        - has:
+            field: target
+            regex: "^Task\\.(await|await_many|yield_many)$"
+        - not:
+            has:
+              kind: arguments
+              has:
+                regex: "^:infinity$"
+    - all:
+        - kind: call
+        - has:
+            field: target
+            regex: "^Task\\.yield$"
+        - not:
+            has:
+              kind: arguments
+              has:
+                regex: "^(0|:infinity)$"
+                nthChild:
+                  position: 2
+    - all:
+        - kind: call
+        - has:
+            field: target
+            regex: "^(Task|Task\\.Supervisor)\\.(async_stream|async_stream_nolink)$"
+        - not:
+            has:
+              kind: arguments
+              has:
+                stopBy: end
+                regex: "^timeout:\\s*:infinity$"
+files:
+  - "systems/apps/*/lib/**/*.ex"

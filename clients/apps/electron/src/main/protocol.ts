@@ -3,7 +3,7 @@ import {
   dynamicUiCsp,
 } from "@comma/chat-contract/dynamic-ui-runtime";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   sessionPresenceExpectationHeader,
@@ -11,9 +11,10 @@ import {
   type SessionAdmissionFailure,
   type SessionPresenceExpectation,
 } from "@comma/session-contract";
-import { net, protocol } from "electron";
+import { net, protocol, session } from "electron";
 import log from "electron-log/main";
 import type { MainProductCredentialLease } from "./modules/session";
+import { driveStreamScheme } from "./modules/synchronicity/stream";
 
 const internalOrigin = "assets://.";
 const commaApiPrefix = "/v1";
@@ -31,6 +32,8 @@ const upstreamRetryDelayMs = 300;
 const rendererRequestHeaderAllowlist = new Set([
   "accept",
   "content-type",
+  // The caller's dedupe key for a write (an install request, a station send): no authority.
+  "idempotency-key",
   "if-match",
   "if-none-match",
   "last-event-id",
@@ -65,6 +68,21 @@ type CommaNetFetch = (
   init: RequestInit & { bypassCustomProtocolHandlers: boolean }
 ) => Promise<Response>;
 
+/**
+ * Long-lived API subscriptions share one in-memory Chromium session. Chromium limits each HTTP/1.1 origin
+ * pool to six connections: keeping them out of the ordinary API pool leaves requests (including POST SSE transcriptions)
+ * able to start. This is one fixed pool for the app, not one per account, window or subscription. Chromium keeps
+ * the existing system proxy and TLS behavior; all credentials and lease settlement remain in the proxy below.
+ */
+const fetchCommaApi: CommaNetFetch = (url, init) => {
+  const subscription =
+    init.method === "GET" &&
+    new Headers(init.headers).get("accept") === "text/event-stream";
+  return subscription
+    ? session.fromPartition("comma-api-events", { cache: false }).fetch(url, init)
+    : net.fetch(url, init);
+};
+
 export interface CommaApiCredentialAuthority {
   acquireProductCredential(
     expected: SessionPresenceExpectation
@@ -79,6 +97,10 @@ export interface CommaApiCredentialAuthority {
 export interface AppProtocolOptions {
   fetch?: CommaNetFetch | undefined;
   getCredentialAuthority?: (() => CommaApiCredentialAuthority | undefined) | undefined;
+  /** Serves `comma-drive:` media streams Drive opened through the native bridge. */
+  getDriveStreams?:
+    | (() => { serveStream(request: Request): Promise<Response> } | undefined)
+    | undefined;
 }
 
 export function registerAppProtocol(
@@ -107,6 +129,17 @@ export function registerAppProtocol(
     });
   });
 
+  protocol.handle(driveStreamScheme, async (request) => {
+    const streams = options.getDriveStreams?.();
+    if (!streams) return new Response(null, { status: 503 });
+    try {
+      return await streams.serveStream(request);
+    } catch (error) {
+      log.warn("Drive stream request failed", error);
+      return new Response(null, { status: 502 });
+    }
+  });
+
   protocol.handle("assets", async (request) => {
     const url = new URL(request.url);
 
@@ -124,7 +157,7 @@ export function registerAppProtocol(
     if (isCommaApiPath(url.pathname)) {
       const authority = options.getCredentialAuthority?.();
       return authority
-        ? proxyCommaApiRequest(request, url, authority, fetchImpl)
+        ? proxyCommaApiRequest(request, url, authority, options.fetch)
         : sessionLeaseUnavailableResponse();
     }
 
@@ -149,6 +182,16 @@ export function registerPrivilegedSchemes() {
     {
       scheme: "comma-ui",
       privileges: { standard: true, secure: true, supportFetchAPI: true },
+    },
+    {
+      scheme: driveStreamScheme,
+      privileges: {
+        corsEnabled: true,
+        secure: true,
+        standard: true,
+        stream: true,
+        supportFetchAPI: true,
+      },
     },
     {
       scheme: "assets",
@@ -179,7 +222,7 @@ export async function proxyCommaApiRequest(
   request: Request,
   url: URL,
   authority: CommaApiCredentialAuthority,
-  fetchImpl: CommaNetFetch = net.fetch
+  fetchImpl: CommaNetFetch = fetchCommaApi
 ): Promise<Response> {
   const expected = readRendererSessionExpectation(request.headers);
   if (!expected) {
@@ -195,13 +238,19 @@ export async function proxyCommaApiRequest(
   const headers = rendererRequestHeaders(request.headers);
   headers.set("authorization", `Bearer ${lease.token}`);
 
+  // Ends the upstream request once its answer is let go (the body cancelled) or not passed on: cancelling the body of a
+  // `net.fetch` answer alone leaves its connection open. The caller's signal cannot do it then: the requests of
+  // Electron's protocol handler have none that aborts, and the signal of a `Request` stops following its controller
+  // once the `Request` is collected.
+  const upstream = new AbortController();
   const init: RequestInit & { bypassCustomProtocolHandlers: boolean } = {
     bypassCustomProtocolHandlers: true,
     credentials: "omit",
     headers,
     method: request.method,
     redirect: "manual",
-    signal: lease.signal,
+    // The caller letting go while the request is under way ends it too.
+    signal: AbortSignal.any([lease.signal, request.signal, upstream.signal]),
   };
 
   if (request.method !== "GET" && request.method !== "HEAD" && request.body) {
@@ -216,6 +265,8 @@ export async function proxyCommaApiRequest(
       if (!authority.isCurrentProductCredential(lease)) {
         return sessionLeaseUnavailableResponse(authority.admissionFailure());
       }
+      // The caller let it go: nothing to read again.
+      if (request.signal.aborted) return upstreamUnavailableResponse();
       log.warn(
         `Comma API ${request.method} ${pathShape(url.pathname)} got no response ` +
           `(attempt ${attempt}): ${error instanceof Error ? error.message : String(error)}`
@@ -231,19 +282,22 @@ export async function proxyCommaApiRequest(
   }
 
   if (!authority.isCurrentProductCredential(lease)) {
+    upstream.abort();
     return sessionLeaseUnavailableResponse(authority.admissionFailure());
   }
 
   if (isRedirectStatus(response.status)) {
+    upstream.abort();
     return upstreamRedirectBlockedResponse();
   }
 
   if (response.status === 401) {
+    upstream.abort();
     await authority.reportUnauthorized?.(lease);
     return unauthorizedResponse();
   }
 
-  return rebuildRendererResponse(response, lease, authority);
+  return rebuildRendererResponse(response, lease, authority, upstream);
 }
 
 /** Resolves after `ms`, or at once when the lease ends. */
@@ -301,9 +355,11 @@ function rendererRequestHeaders(source: Headers) {
 function rebuildRendererResponse(
   response: Response,
   lease: MainProductCredentialLease,
-  authority: CommaApiCredentialAuthority
+  authority: CommaApiCredentialAuthority,
+  upstream: AbortController
 ) {
   if (!authority.isCurrentProductCredential(lease)) {
+    upstream.abort();
     return sessionLeaseUnavailableResponse(authority.admissionFailure());
   }
 
@@ -319,7 +375,7 @@ function rebuildRendererResponse(
   }
 
   const body = response.body
-    ? settledRendererResponseBody(response.body, lease, authority)
+    ? settledRendererResponseBody(response.body, lease, authority, upstream)
     : null;
 
   return new Response(body, {
@@ -332,7 +388,8 @@ function rebuildRendererResponse(
 function settledRendererResponseBody(
   source: ReadableStream<Uint8Array>,
   lease: MainProductCredentialLease,
-  authority: CommaApiCredentialAuthority
+  authority: CommaApiCredentialAuthority,
+  upstream: AbortController
 ) {
   const reader = source.getReader();
   let consumerCancelled = false;
@@ -343,7 +400,9 @@ function settledRendererResponseBody(
       async cancel(reason) {
         consumerCancelled = true;
         terminal = true;
-        await reader.cancel(reason);
+        upstream.abort(reason);
+        // The aborted request may already have ended the body with its error: nobody reads it any more.
+        await reader.cancel(reason).catch(() => undefined);
       },
       async pull(controller) {
         if (terminal) return;
@@ -374,6 +433,7 @@ function settledRendererResponseBody(
           }
 
           terminal = true;
+          upstream.abort(deliveryError);
           await reader.cancel(deliveryError).catch(() => undefined);
           if (!consumerCancelled) {
             controller.error(deliveryError);
@@ -677,6 +737,7 @@ function isRedirectStatus(status: number) {
 }
 
 function isPathInside(root: string, target: string) {
-  const normalizedRoot = root.endsWith("/") ? root : `${root}/`;
+  // By whole components, as this machine separates them (`\` on Windows).
+  const normalizedRoot = root.endsWith(sep) ? root : `${root}${sep}`;
   return target === root || target.startsWith(normalizedRoot);
 }

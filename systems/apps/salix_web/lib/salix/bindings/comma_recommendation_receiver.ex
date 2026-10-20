@@ -3,7 +3,7 @@ defmodule Salix.Bindings.CommaRecommendationReceiver do
 
   def receive(%{"profile_id" => profile_id}, status, opts) when status in [:claimed, :exists] do
     result =
-      Application.fetch_env!(:salix_agent, :recommendation_adapter_mod).begin_schedule_occurrence(
+      SystemsRuntime.fetch_env!(:salix_agent, :recommendation_adapter_mod).begin_schedule_occurrence(
         profile_id,
         Keyword.fetch!(opts, :schedule_id),
         Keyword.fetch!(opts, :scheduled_for)

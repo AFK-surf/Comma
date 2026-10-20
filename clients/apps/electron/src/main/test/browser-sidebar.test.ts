@@ -2,9 +2,11 @@ import {
   browserInspectionComposerConsolePrefix,
   type BrowserSidebarOpenTabRequest,
   type BrowserSidebarState,
+  type SurfaceBounds,
   type SurfaceList,
 } from "@comma/native-bridge";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
+import { fakeTimersStepWhenIdle } from "@comma/test-utils/settle";
 import {
   BROWSER_SIDEBAR_PARTITION,
   BROWSER_SIDEBAR_WEB_PREFERENCES,
@@ -20,7 +22,12 @@ import {
   maxBrowserSidebarFaviconBytes,
   maxBrowserSidebarSessionsPerOwner,
 } from "@comma/native-bridge";
+import { browserSidebarElementInspectorRectSource } from "../modules/browser-sidebar/element-inspector";
 import { NativeSurfaceService } from "../modules/surfaces";
+
+// The file's timers run on the test's clock, which moves to the next timer
+// whenever the test waits.
+fakeTimersStepWhenIdle();
 
 describe("NativeBrowserSidebarService", () => {
   it("owns a sandboxed, permission-denied view and publishes its surface lifecycle", async () => {
@@ -84,29 +91,13 @@ describe("NativeBrowserSidebarService", () => {
     expect(BROWSER_SIDEBAR_WEB_PREFERENCES).toEqual({
       contextIsolation: true,
       nodeIntegration: false,
+      nodeIntegrationInSubFrames: true,
       partition: BROWSER_SIDEBAR_PARTITION,
       sandbox: true,
       webSecurity: true,
       webviewTag: false,
     });
     expect(BROWSER_SIDEBAR_WEB_PREFERENCES).not.toHaveProperty("preload");
-  });
-
-  it("attaches and removes the clipping root while retaining logical browser bounds", async () => {
-    const nativeRoot = createTestView();
-    const harness = await createHarness({ nativeRoot });
-    const bounds = { x: 200, y: 100, width: 420, height: 500 };
-    const state = await harness.service.open({
-      sessionId: "host-a",
-      bounds,
-      url: "https://example.com",
-    });
-    expect(harness.owner.contentView.addChildView).toHaveBeenCalledWith(nativeRoot);
-    expect(harness.views[0]!.setBounds).toHaveBeenCalledWith(bounds);
-    expect(state.surface?.bounds).toEqual(bounds);
-    await harness.service.dispose();
-    expect(harness.owner.contentView.removeChildView).toHaveBeenCalledWith(nativeRoot);
-    expect(harness.views[0]!.webContents.close).toHaveBeenCalledOnce();
   });
 
   it("updates navigation in place and reattaches the same session without losing history", async () => {
@@ -190,10 +181,9 @@ describe("NativeBrowserSidebarService", () => {
                   })
                 : new Response("<html>", { headers: { "content-type": "text/html" } })
     );
-    const lastState = () => harness.sidebarStates.at(-1);
-
     // Oversized, failed, over-long, empty and non-image candidates are skipped for the
     // next candidate.
+    const fetched = harness.nextState();
     view.emitStateChange("page-favicon-updated", {}, [
       "https://example.com/huge.png",
       "https://example.com/missing.png",
@@ -202,50 +192,50 @@ describe("NativeBrowserSidebarService", () => {
       "https://example.com/page.html",
       "https://example.com/favicon.ico",
     ]);
-    await vi.waitFor(() =>
-      expect(lastState()?.favicon).toBe("data:image/x-icon;base64,BwcHBw==")
-    );
-    expect(browserSidebarStateSchema.parse(lastState())).toMatchObject({
+    expect(browserSidebarStateSchema.parse(await fetched)).toMatchObject({
       favicon: "data:image/x-icon;base64,BwcHBw==",
     });
 
     // Chromium sends no new list when a reloaded document declares the same
     // icons, so the navigation alone keeps the icon.
-    const published = harness.sidebarStates.length;
+    const navigated = harness.nextState();
     view.emitStateChange("did-navigate", {}, "https://example.com/one");
-    await vi.waitFor(() =>
-      expect(harness.sidebarStates.length).toBeGreaterThan(published)
-    );
-    expect(lastState()?.favicon).toBe("data:image/x-icon;base64,BwcHBw==");
+    expect((await navigated).favicon).toBe("data:image/x-icon;base64,BwcHBw==");
 
     // A new list replaces the icon: `data:,` declares that there is none, and an
     // inline icon is used as is.
+    const cleared = harness.nextState();
     view.emitStateChange("page-favicon-updated", {}, ["data:,"]);
-    await vi.waitFor(() => expect(lastState()).not.toHaveProperty("favicon"));
+    expect(await cleared).not.toHaveProperty("favicon");
+    const inline = harness.nextState();
     view.emitStateChange("page-favicon-updated", {}, ["data:image/svg+xml,%3Csvg/%3E"]);
-    await vi.waitFor(() =>
-      expect(lastState()?.favicon).toBe("data:image/svg+xml,%3Csvg/%3E")
-    );
+    expect((await inline).favicon).toBe("data:image/svg+xml,%3Csvg/%3E");
 
     // A newer list aborts an older list's slow request, and its late response
     // never lands over the newer list's icon.
     let finishStale!: (response: Response) => void;
+    let finishFresh!: (response: Response) => void;
     let staleSignal: AbortSignal | null | undefined;
-    view.webContents.session.fetch.mockImplementationOnce((_url, init) => {
-      staleSignal = init?.signal;
-      return new Promise<Response>((resolve) => (finishStale = resolve));
-    });
+    view.webContents.session.fetch
+      .mockImplementationOnce((_url, init) => {
+        staleSignal = init?.signal;
+        return new Promise<Response>((resolve) => (finishStale = resolve));
+      })
+      .mockImplementationOnce(
+        () => new Promise<Response>((resolve) => (finishFresh = resolve))
+      );
     view.emitStateChange("page-favicon-updated", {}, ["https://example.org/old.png"]);
     view.emitStateChange("page-favicon-updated", {}, [
       "https://example.com/favicon.ico",
     ]);
-    await vi.waitFor(() =>
-      expect(lastState()?.favicon).toBe("data:image/x-icon;base64,BwcHBw==")
-    );
     expect(staleSignal?.aborted).toBe(true);
+    // Both reads take the same steps once answered, so the stale one, answered
+    // just after the newer one, finishes after the newer icon lands but before
+    // it is published: had the stale icon landed, that state would show it.
+    const replaced = harness.nextState();
+    finishFresh(iconResponse("image/x-icon"));
     finishStale(iconResponse("image/png"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(lastState()?.favicon).toBe("data:image/x-icon;base64,BwcHBw==");
+    expect((await replaced).favicon).toBe("data:image/x-icon;base64,BwcHBw==");
   });
 
   it("captures PNG bytes only for the current visible browser session", async () => {
@@ -261,9 +251,9 @@ describe("NativeBrowserSidebarService", () => {
       url: "https://example.com/start",
     });
     const pngImage = new Uint8Array([137, 80, 78, 71]);
-    harness.views[0]!.webContents.capturePage.mockResolvedValueOnce({
-      toPNG: () => pngImage,
-    });
+    harness.views[0]!.webContents.capturePage.mockResolvedValueOnce(
+      fakePageImage(pngImage)
+    );
 
     await expect(harness.service.capture({ sessionId: "host-a" })).resolves.toEqual({
       pngImage,
@@ -277,20 +267,40 @@ describe("NativeBrowserSidebarService", () => {
     expect(harness.views[0]!.webContents.capturePage).toHaveBeenCalledOnce();
   });
 
-  it("returns unavailable when native page capture rejects", async () => {
+  it("captures again when the compositor refuses one frame", async () => {
     const harness = await createHarness();
     await harness.service.open({
       sessionId: "host-a",
       bounds: { height: 720, width: 420, x: 860, y: 0 },
       url: "https://example.com/start",
     });
-    harness.views[0]!.webContents.capturePage.mockRejectedValueOnce(
-      new Error("capture failed")
-    );
+    const pngImage = new Uint8Array([137, 80, 78, 71]);
+    const capturePage = harness.views[0]!.webContents.capturePage;
+    capturePage
+      .mockRejectedValueOnce(new Error("UnknownVizError"))
+      .mockResolvedValueOnce(fakePageImage(pngImage));
+
+    await expect(harness.service.capture({ sessionId: "host-a" })).resolves.toEqual({
+      pngImage,
+      status: "ready",
+    });
+    expect(capturePage).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns unavailable when native page capture keeps rejecting", async () => {
+    const harness = await createHarness();
+    await harness.service.open({
+      sessionId: "host-a",
+      bounds: { height: 720, width: 420, x: 860, y: 0 },
+      url: "https://example.com/start",
+    });
+    const capturePage = harness.views[0]!.webContents.capturePage;
+    capturePage.mockRejectedValue(new Error("capture failed"));
 
     await expect(harness.service.capture({ sessionId: "host-a" })).resolves.toEqual({
       status: "unavailable",
     });
+    expect(capturePage).toHaveBeenCalledTimes(3);
   });
 
   it("opens a renderer tab by stable tab id and settles from that exact native view", async () => {
@@ -523,12 +533,15 @@ describe("NativeBrowserSidebarService", () => {
       data: pngImage.toString("base64"),
     });
 
-    await expect(
-      harness.service.captureClientScreenshot({ tabId: "tab-a" })
-    ).resolves.toMatchObject({
-      pngImage,
-      target: { tabId: "tab-a" },
+    const screenshot = await harness.service.captureClientScreenshot({
+      tabId: "tab-a",
     });
+
+    expect(screenshot.target).toMatchObject({ tabId: "tab-a" });
+    // Buffer#equals compares natively; Vitest's structural equality walks the
+    // 400 KiB payload one element at a time and takes seconds under load.
+    expect(screenshot.pngImage.byteLength).toBe(pngImage.byteLength);
+    expect(screenshot.pngImage.equals(pngImage)).toBe(true);
   });
 
   it("does not let detach failure mask a primary CDP failure", async () => {
@@ -617,15 +630,18 @@ describe("NativeBrowserSidebarService", () => {
     );
 
     const pendingSelection = deferred<unknown>();
-    executeJavaScript.mockReturnValueOnce(pendingSelection.promise);
+    const selecting = deferred<void>();
+    executeJavaScript.mockImplementationOnce(() => {
+      selecting.resolve();
+      return pendingSelection.promise;
+    });
     const inspection = harness.service.inspect({
       action: "start",
       sessionId: "host-a",
     });
-    await vi.waitFor(() =>
-      expect(executeJavaScript.mock.calls.at(-1)?.[0]).toContain(
-        "comma-browser-sidebar-element-inspector"
-      )
+    await selecting.promise;
+    expect(executeJavaScript.mock.calls.at(-1)?.[0]).toContain(
+      "comma-browser-sidebar-element-inspector"
     );
     await expect(
       harness.service.inspect({ action: "cancel", sessionId: "host-a" })
@@ -635,6 +651,115 @@ describe("NativeBrowserSidebarService", () => {
     await expect(inspection).resolves.toEqual({ status: "cancelled" });
   });
 
+  it("captures the on-screen part of a zoomed element, scaled to the longest edge a model reads", async () => {
+    const harness = await createHarness();
+    await harness.service.open({
+      sessionId: "host-a",
+      bounds: { height: 720, width: 420, x: 860, y: 40 },
+      url: "https://example.com/start",
+    });
+    const composer = await harness.composerCreated;
+    composer.emitStateChange("console-message", {
+      message: `${browserInspectionComposerConsolePrefix}${JSON.stringify({ height: 88, type: "layout" })}`,
+    });
+    const page = harness.views[0]!.webContents;
+    page.getZoomFactor.mockReturnValue(2);
+    const captured = fakePageImage(new Uint8Array([1]), {
+      height: 1_280,
+      width: 3_136,
+    });
+    page.capturePage.mockResolvedValueOnce(captured);
+    answerPageScripts(page, {
+      rects: [{ height: 1_000, width: 300, x: 150, y: 40 }],
+      selections: [
+        {
+          element: {
+            attributes: {},
+            rect: { height: 1_000, width: 300, x: 150, y: 40 },
+            selector: "main",
+            tagName: "main",
+          },
+          inspectionId: "inspection-zoomed",
+          page: { url: "https://example.com/start" },
+          status: "selected",
+        },
+      ],
+    });
+
+    const focused = nextFocus(composer.webContents);
+    const result = harness.service.inspect({ action: "start", sessionId: "host-a" });
+    await focused;
+    composer.emitStateChange("console-message", {
+      message: `${browserInspectionComposerConsolePrefix}${JSON.stringify({ message: "What is this?", type: "submit" })}`,
+    });
+
+    await expect(result).resolves.toMatchObject({
+      screenshot: new Uint8Array([1]),
+      status: "selected",
+    });
+    // CSS pixels times the zoom, cut to the 420x720 view.
+    expect(page.capturePage).toHaveBeenCalledWith({
+      height: 640,
+      width: 120,
+      x: 300,
+      y: 80,
+    });
+    expect(captured.resize).toHaveBeenCalledWith({
+      height: 640,
+      quality: "best",
+      width: 1_568,
+    });
+  });
+
+  it("sends no screenshot of an element that moved while it was captured", async () => {
+    const harness = await createHarness();
+    await harness.service.open({
+      sessionId: "host-a",
+      bounds: { height: 720, width: 420, x: 860, y: 40 },
+      url: "https://example.com/start",
+    });
+    const composer = await harness.composerCreated;
+    composer.emitStateChange("console-message", {
+      message: `${browserInspectionComposerConsolePrefix}${JSON.stringify({ height: 88, type: "layout" })}`,
+    });
+    const page = harness.views[0]!.webContents;
+    // A scroll between reading the element's place and copying the frame.
+    answerPageScripts(page, {
+      rects: [
+        { height: 32, width: 80, x: 20, y: 40 },
+        { height: 32, width: 80, x: 20, y: 10 },
+      ],
+      selections: [
+        {
+          element: {
+            attributes: {},
+            rect: { height: 32, width: 80, x: 20, y: 40 },
+            selector: "button",
+            tagName: "button",
+          },
+          inspectionId: "inspection-moved",
+          page: { url: "https://example.com/start" },
+          status: "selected",
+        },
+      ],
+    });
+
+    const focused = nextFocus(composer.webContents);
+    const result = harness.service.inspect({ action: "start", sessionId: "host-a" });
+    await focused;
+    composer.emitStateChange("console-message", {
+      message: `${browserInspectionComposerConsolePrefix}${JSON.stringify({ message: "What is this?", type: "submit" })}`,
+    });
+
+    const selected = await result;
+    expect(selected).toMatchObject({
+      status: "selected",
+      userMessage: "What is this?",
+    });
+    expect(page.capturePage).toHaveBeenCalledOnce();
+    expect(selected).not.toHaveProperty("screenshot");
+  });
+
   it("places the shared composer beside the selected element and returns its prompt", async () => {
     const harness = await createHarness();
     await harness.service.open({
@@ -642,8 +767,7 @@ describe("NativeBrowserSidebarService", () => {
       bounds: { height: 720, width: 420, x: 860, y: 40 },
       url: "https://example.com/start",
     });
-    await vi.waitFor(() => expect(harness.composerViews).toHaveLength(1));
-    const composer = harness.composerViews[0]!;
+    const composer = await harness.composerCreated;
     expect(composer.webContents.loadURL).toHaveBeenCalledWith(
       "assets://./#/browser-inspection-composer"
     );
@@ -651,27 +775,35 @@ describe("NativeBrowserSidebarService", () => {
     composer.emitStateChange("console-message", {
       message: `${browserInspectionComposerConsolePrefix}${JSON.stringify({ height: 88, type: "layout" })}`,
     });
-    harness.views[0]!.webContents.executeJavaScript.mockResolvedValueOnce({
-      element: {
-        attributes: { role: "button" },
-        outerHTML: "<button>Save</button>",
-        rect: { height: 32, width: 80, x: 20, y: 40 },
-        selector: "main > button",
-        tagName: "button",
-        text: "Save",
-      },
-      inspectionId: "inspection-overlay",
-      page: { title: "Example", url: "https://example.com/start" },
-      status: "selected",
+    // The page scrolled after the click: the capture follows the element to where it is now.
+    answerPageScripts(harness.views[0]!.webContents, {
+      rects: [{ height: 32, width: 80, x: 20, y: 52 }],
+      selections: [
+        {
+          element: {
+            attributes: { role: "button" },
+            outerHTML: "<button>Save</button>",
+            rect: { height: 32, width: 80, x: 20, y: 40 },
+            selector: "main > button",
+            tagName: "button",
+            text: "Save",
+          },
+          inspectionId: "inspection-overlay",
+          page: { title: "Example", url: "https://example.com/start" },
+          status: "selected",
+        },
+      ],
     });
 
+    const focused = nextFocus(composer.webContents);
     const result = harness.service.inspect({ action: "start", sessionId: "host-a" });
     const escapedNavigation = composer.emitNavigation(
       "will-navigate",
       "https://example.com/escape"
     );
     expect(escapedNavigation.preventDefault).toHaveBeenCalledOnce();
-    await vi.waitFor(() => expect(composer.webContents.focus).toHaveBeenCalledOnce());
+    await focused;
+    expect(composer.webContents.focus).toHaveBeenCalledOnce();
     expect(composer.setBounds).toHaveBeenLastCalledWith({
       height: 88,
       width: 396,
@@ -684,9 +816,22 @@ describe("NativeBrowserSidebarService", () => {
 
     await expect(result).resolves.toMatchObject({
       inspectionId: "inspection-overlay",
+      screenshot: new Uint8Array([137, 80, 78, 71]),
       status: "selected",
       userMessage: "Explain this",
     });
+    // The element as the page showed it, captured before its outline returns.
+    expect(harness.views[0]!.webContents.capturePage).toHaveBeenCalledWith({
+      height: 32,
+      width: 80,
+      x: 20,
+      y: 52,
+    });
+    expect(
+      harness.views[0]!.webContents.executeJavaScript.mock.calls.map(
+        ([source]) => source
+      )
+    ).toContain("globalThis.commaBrowserSidebarElementInspector?.highlight();");
     expect(harness.owner.children).toEqual([harness.views[0], composer]);
     expect(composer.setVisible).toHaveBeenLastCalledWith(false);
     expect(composer.webContents.close).not.toHaveBeenCalled();
@@ -704,11 +849,13 @@ describe("NativeBrowserSidebarService", () => {
       page: { title: "Example", url: "https://example.com/start" },
       status: "selected",
     });
+    const refocused = nextFocus(composer.webContents);
     const reusedResult = harness.service.inspect({
       action: "start",
       sessionId: "host-a",
     });
-    await vi.waitFor(() => expect(composer.webContents.focus).toHaveBeenCalledTimes(2));
+    await refocused;
+    expect(composer.webContents.focus).toHaveBeenCalledTimes(2);
     expect(harness.composerViews).toHaveLength(1);
     composer.emitStateChange("console-message", {
       message: `${browserInspectionComposerConsolePrefix}${JSON.stringify({ message: "Why this link?", type: "submit" })}`,
@@ -728,8 +875,7 @@ describe("NativeBrowserSidebarService", () => {
       bounds: { height: 720, width: 420, x: 860, y: 40 },
       url: "https://example.com/start",
     });
-    await vi.waitFor(() => expect(harness.composerViews).toHaveLength(1));
-    const composer = harness.composerViews[0]!;
+    const composer = await harness.composerCreated;
     composer.emitStateChange("console-message", {
       message: `${browserInspectionComposerConsolePrefix}${JSON.stringify({ height: 76, type: "layout" })}`,
     });
@@ -747,15 +893,19 @@ describe("NativeBrowserSidebarService", () => {
       status: "selected",
     });
 
+    const focused = nextFocus(composer.webContents);
     const result = harness.service.inspect({ action: "start", sessionId: "host-a" });
-    await vi.waitFor(() => expect(composer.webContents.focus).toHaveBeenCalledOnce());
+    await focused;
+    expect(composer.webContents.focus).toHaveBeenCalledOnce();
 
+    // Main restores the open composer as soon as the reloaded renderer reports
+    // its layout.
     composer.emitStateChange("did-start-loading");
     composer.emitStateChange("console-message", {
       message: `${browserInspectionComposerConsolePrefix}${JSON.stringify({ height: 88, type: "layout" })}`,
     });
 
-    await vi.waitFor(() => expect(composer.webContents.focus).toHaveBeenCalledTimes(2));
+    expect(composer.webContents.focus).toHaveBeenCalledTimes(2);
     expect(composer.setVisible).toHaveBeenLastCalledWith(true);
     expect(composer.webContents.executeJavaScript).toHaveBeenLastCalledWith(
       expect.stringContaining("resetDraft: false")
@@ -793,12 +943,13 @@ describe("NativeBrowserSidebarService", () => {
     });
 
     const result = harness.service.inspect({ action: "start", sessionId: "host-a" });
-    await vi.waitFor(() => expect(harness.composerViews).toHaveLength(1));
-    const composer = harness.composerViews[0]!;
+    const composer = await harness.composerCreated;
+    const focused = nextFocus(composer.webContents);
     composer.emitStateChange("console-message", {
       message: `${browserInspectionComposerConsolePrefix}${JSON.stringify({ height: 76, type: "layout" })}`,
     });
-    await vi.waitFor(() => expect(composer.webContents.focus).toHaveBeenCalledOnce());
+    await focused;
+    expect(composer.webContents.focus).toHaveBeenCalledOnce();
     composer.webContents.close({ waitForBeforeUnload: false });
 
     await expect(result).resolves.toEqual({
@@ -815,37 +966,44 @@ describe("NativeBrowserSidebarService", () => {
       bounds: { height: 720, width: 420, x: 860, y: 40 },
       url: "https://example.com/start",
     });
-    await vi.waitFor(() => expect(harness.composerViews).toHaveLength(1));
-    const composer = harness.composerViews[0]!;
+    const composer = await harness.composerCreated;
     composer.emitStateChange("console-message", {
       message: `${browserInspectionComposerConsolePrefix}${JSON.stringify({ height: 76, type: "layout" })}`,
     });
 
     const bareSelection = deferred<unknown>();
     const pageContents = harness.views[0]!.webContents;
-    pageContents.executeJavaScript
-      .mockResolvedValueOnce({
-        element: {
-          attributes: {},
-          outerHTML: "<button>Save</button>",
-          rect: { height: 32, width: 80, x: 20, y: 40 },
-          selector: "button",
-          tagName: "button",
-          text: "Save",
+    answerPageScripts(pageContents, {
+      rects: [{ height: 32, width: 80, x: 20, y: 40 }],
+      selections: [
+        {
+          element: {
+            attributes: {},
+            outerHTML: "<button>Save</button>",
+            rect: { height: 32, width: 80, x: 20, y: 40 },
+            selector: "button",
+            tagName: "button",
+            text: "Save",
+          },
+          inspectionId: "inspection-dismissed",
+          page: { url: "https://example.com/start" },
+          status: "selected",
         },
-        inspectionId: "inspection-dismissed",
-        page: { url: "https://example.com/start" },
-        status: "selected",
-      })
-      .mockReturnValueOnce(bareSelection.promise);
+        bareSelection.promise,
+      ],
+    });
 
+    const focused = nextFocus(composer.webContents);
     const result = harness.service.inspect({ action: "start", sessionId: "host-a" });
-    await vi.waitFor(() => expect(composer.webContents.focus).toHaveBeenCalledOnce());
+    await focused;
+    expect(composer.webContents.focus).toHaveBeenCalledOnce();
+    const reselecting = nextFocus(pageContents);
     composer.emitStateChange("console-message", {
       message: `${browserInspectionComposerConsolePrefix}${JSON.stringify({ type: "cancel" })}`,
     });
 
-    await vi.waitFor(() => expect(pageContents.focus).toHaveBeenCalledTimes(2));
+    await reselecting;
+    expect(pageContents.focus).toHaveBeenCalledTimes(2);
     expect(bareSelection.settled()).toBe(false);
     expect(composer.setVisible).toHaveBeenLastCalledWith(false);
 
@@ -921,6 +1079,45 @@ describe("NativeBrowserSidebarService", () => {
     await Promise.resolve();
   });
 
+  it("repeats a reload or history step that hiding the view stopped before it committed", async () => {
+    const harness = await createHarness();
+    await harness.service.open({
+      bounds: { height: 720, width: 420, x: 860, y: 0 },
+      sessionId: "host-a",
+      url: "https://example.com/one",
+    });
+    const view = harness.views[0]!;
+    await harness.service.update({
+      sessionId: "host-a",
+      url: "https://example.com/two",
+    });
+
+    // A dialog hides the view while the reload it asked for is still in flight.
+    await harness.service.navigate({ sessionId: "host-a", action: "reload" });
+    await harness.service.update({ sessionId: "host-a", visible: false });
+    view.emitStateChange("did-stop-loading");
+    expect(view.webContents.stop).toHaveBeenCalledOnce();
+    await harness.service.update({ sessionId: "host-a", visible: true });
+    expect(view.webContents.reload).toHaveBeenCalledTimes(2);
+
+    // A reload that committed is done: showing the view again does not repeat it.
+    view.emitStateChange("did-navigate");
+    await harness.service.update({ sessionId: "host-a", visible: false });
+    await harness.service.update({ sessionId: "host-a", visible: true });
+    expect(view.webContents.reload).toHaveBeenCalledTimes(2);
+
+    // A stopped back step is taken again, not turned into a reload.
+    harness.views[0]!.webContents.navigationHistory.goBack.mockImplementationOnce(
+      () => {}
+    );
+    await harness.service.navigate({ sessionId: "host-a", action: "back" });
+    await harness.service.update({ sessionId: "host-a", visible: false });
+    await harness.service.update({ sessionId: "host-a", visible: true });
+    expect(view.webContents.navigationHistory.goBack).toHaveBeenCalledTimes(2);
+    expect(view.webContents.getURL()).toBe("https://example.com/one");
+    expect(view.webContents.reload).toHaveBeenCalledTimes(2);
+  });
+
   it("removes native views when the owner renderer reloads or exits", async () => {
     const harness = await createHarness();
     const bounds = { height: 720, width: 420, x: 860, y: 0 };
@@ -938,8 +1135,11 @@ describe("NativeBrowserSidebarService", () => {
     harness.owner.emitDidStartNavigation({ isInPlace: true, isMainFrame: true });
     expect(harness.owner.children).toHaveLength(2);
 
+    // Teardown unregisters a tab's surface last, after removing and closing its view.
+    const reloaded = harness.nextSurfaces((list) => list.views.length === 0);
     harness.owner.emitDidStartNavigation({ isInPlace: false, isMainFrame: true });
-    await vi.waitFor(() => expect(harness.owner.children).toEqual([]));
+    await reloaded;
+    expect(harness.owner.children).toEqual([]);
     expect(harness.views[0]?.webContents.close).toHaveBeenCalledOnce();
     expect(harness.views[1]?.webContents.close).toHaveBeenCalledOnce();
 
@@ -948,8 +1148,10 @@ describe("NativeBrowserSidebarService", () => {
       sessionId: "host-c",
       url: "https://example.com/c",
     });
+    const exited = harness.nextSurfaces((list) => list.views.length === 0);
     harness.owner.emitRenderProcessGone();
-    await vi.waitFor(() => expect(harness.owner.children).toEqual([]));
+    await exited;
+    expect(harness.owner.children).toEqual([]);
     expect(harness.views[2]?.webContents.close).toHaveBeenCalledOnce();
   });
 
@@ -981,17 +1183,17 @@ describe("NativeBrowserSidebarService", () => {
     expect(view.webContents.reload).toHaveBeenCalledOnce();
     expect(view.webContents.stop).toHaveBeenCalledOnce();
 
+    const loading = harness.nextState();
     view.emitStateChange("did-start-loading");
-    await vi.waitFor(() =>
-      expect(harness.sidebarStates.at(-1)).toMatchObject({
-        active: true,
-        canGoBack: true,
-        title: "Page title",
-        url: "https://example.com/two",
-      })
-    );
+    expect(await loading).toMatchObject({
+      active: true,
+      canGoBack: true,
+      title: "Page title",
+      url: "https://example.com/two",
+    });
 
     view.emitNavigation("will-navigate", "https://example.com/two");
+    const failed = harness.nextState();
     view.emitStateChange(
       "did-fail-load",
       {},
@@ -1000,11 +1202,7 @@ describe("NativeBrowserSidebarService", () => {
       "https://example.com/two",
       true
     );
-    await vi.waitFor(() =>
-      expect(harness.sidebarStates.at(-1)).toMatchObject({
-        reason: "Name not resolved",
-      })
-    );
+    expect(await failed).toMatchObject({ reason: "Name not resolved" });
   });
 
   it("lets stop, hide, close, owner disposal, and service disposal preempt a pending load", async () => {
@@ -1061,7 +1259,7 @@ describe("NativeBrowserSidebarService", () => {
       url: "https://example.com/hang",
     });
     const executeJavaScript = harness.views[0]!.webContents.executeJavaScript;
-    await vi.waitFor(() => expect(harness.composerViews).toHaveLength(1));
+    await harness.composerCreated;
     executeJavaScript.mockClear();
 
     await expect(harness.service.reset()).resolves.toBeUndefined();
@@ -1484,15 +1682,14 @@ describe("NativeBrowserSidebarService", () => {
       new Error("surface unregister failed")
     );
 
+    const closed = harness.nextState();
     harness.views[0]?.webContents.close({ waitForBeforeUnload: false });
 
-    await vi.waitFor(() =>
-      expect(harness.sidebarStates.at(-1)).toEqual({
-        active: false,
-        available: true,
-        sessionId,
-      })
-    );
+    expect(await closed).toEqual({
+      active: false,
+      available: true,
+      sessionId,
+    });
     await expect(
       harness.service.update({
         bounds: { height: 700, width: 400, x: 880, y: 10 },
@@ -1594,7 +1791,7 @@ describe("NativeBrowserSidebarService", () => {
     });
     expect(recovered).not.toHaveProperty("reason");
 
-    const stateCountBeforeLateFailure = harness.sidebarStates.length;
+    const lateFailure = harness.nextState();
     harness.views[0]?.emitStateChange(
       "did-fail-load",
       {},
@@ -1603,9 +1800,7 @@ describe("NativeBrowserSidebarService", () => {
       "https://example.com/hang",
       true
     );
-    await vi.waitFor(() =>
-      expect(harness.sidebarStates.length).toBeGreaterThan(stateCountBeforeLateFailure)
-    );
+    await lateFailure;
     expect(harness.sidebarStates.at(-1)).toMatchObject({
       url: "https://example.com/recovered",
     });
@@ -1636,7 +1831,7 @@ describe("NativeBrowserSidebarService", () => {
       action: "stop",
       sessionId: "host-b",
     });
-    const stateCountBeforeStoppedFailure = stoppedHarness.sidebarStates.length;
+    const stoppedFailure = stoppedHarness.nextState();
     stoppedHarness.views[0]?.emitStateChange(
       "did-fail-load",
       {},
@@ -1645,11 +1840,7 @@ describe("NativeBrowserSidebarService", () => {
       "https://example.com/hang",
       true
     );
-    await vi.waitFor(() =>
-      expect(stoppedHarness.sidebarStates.length).toBeGreaterThan(
-        stateCountBeforeStoppedFailure
-      )
-    );
+    await stoppedFailure;
     expect(stoppedHarness.sidebarStates.at(-1)).not.toHaveProperty("reason");
     stoppedNavigation.reject(new Error("ERR_ABORTED"));
     await Promise.resolve();
@@ -1701,12 +1892,11 @@ describe("NativeBrowserSidebarService", () => {
       "https://example.com/redirect-target",
       { isMainFrame: true }
     );
+    const mainRedirectFailure = mainRedirectHarness.nextState();
     mainRedirectNavigation.reject(new Error("main redirect navigation failed"));
-    await vi.waitFor(() =>
-      expect(mainRedirectHarness.sidebarStates.at(-1)).toMatchObject({
-        reason: "main redirect navigation failed",
-      })
-    );
+    expect(await mainRedirectFailure).toMatchObject({
+      reason: "main redirect navigation failed",
+    });
 
     const subframeRedirectNavigation = deferred<unknown>();
     const subframeRedirectHarness = await createHarness({
@@ -1722,12 +1912,11 @@ describe("NativeBrowserSidebarService", () => {
       "https://example.com/iframe-target",
       { isMainFrame: false }
     );
+    const subframeRedirectFailure = subframeRedirectHarness.nextState();
     subframeRedirectNavigation.reject(new Error("current main navigation failed"));
-    await vi.waitFor(() =>
-      expect(subframeRedirectHarness.sidebarStates.at(-1)).toMatchObject({
-        reason: "current main navigation failed",
-      })
-    );
+    expect(await subframeRedirectFailure).toMatchObject({
+      reason: "current main navigation failed",
+    });
   });
 
   it("rejects unsafe direct calls before allocating a view", async () => {
@@ -1817,11 +2006,11 @@ describe("NativeBrowserSidebarService", () => {
       url: "https://example.org",
     });
     const second = harness.views[1]!;
+    const unregistered = harness.nextSurfaces((list) => list.views.length === 0);
     harness.unregisterOwner?.("win_main");
-    await vi.waitFor(() => {
-      expect(second.webContents.close).toHaveBeenCalledWith({
-        waitForBeforeUnload: false,
-      });
+    await unregistered;
+    expect(second.webContents.close).toHaveBeenCalledWith({
+      waitForBeforeUnload: false,
     });
     await expect(harness.surfaces.state()).resolves.toMatchObject({ views: [] });
 
@@ -1838,13 +2027,11 @@ describe("NativeBrowserSidebarService", () => {
 });
 
 async function createHarness({
-  nativeRoot,
   dropWebContentsFromViewOnDestroy,
   loadNavigation,
   onClientOpenTabRequested,
   onBrowserSidebarStateChanged,
 }: {
-  nativeRoot?: BrowserSidebarViewLike | undefined;
   dropWebContentsFromViewOnDestroy?: boolean | undefined;
   loadNavigation?: ((url: string) => Promise<unknown>) | undefined;
   onClientOpenTabRequested?:
@@ -1855,7 +2042,9 @@ async function createHarness({
     | undefined;
 } = {}) {
   const published: SurfaceList[] = [];
+  const surfaceWaiters: Waiters<SurfaceList> = new Set();
   const sidebarStates: BrowserSidebarState[] = [];
+  const stateWaiters: Waiters<BrowserSidebarState> = new Set();
   const surfaces = new NativeSurfaceService({
     getNativeInfo: () => ({
       appVersion: "0.0.1",
@@ -1865,6 +2054,7 @@ async function createHarness({
     getNotchStatus: () => ({ available: false }),
     onStateChanged: (snapshot) => {
       published.push(snapshot);
+      notify(surfaceWaiters, snapshot);
     },
   });
   const owner = createOwnerWindow();
@@ -1878,17 +2068,18 @@ async function createHarness({
 
   const views: TestBrowserSidebarView[] = [];
   const composerViews: TestBrowserSidebarView[] = [];
+  const composerCreated = Promise.withResolvers<TestBrowserSidebarView>();
   const createView = vi.fn(() => {
     const view = createTestView(loadNavigation, {
       dropWebContentsFromViewOnDestroy,
     });
-    if (nativeRoot) Object.assign(view, { nativeView: nativeRoot });
     views.push(view);
     return view;
   });
   const createComposerView = vi.fn(() => {
     const view = createTestView();
     composerViews.push(view);
+    composerCreated.resolve(view);
     return view;
   });
   let unregisterOwner: ((windowId: string) => void) | undefined;
@@ -1901,6 +2092,7 @@ async function createHarness({
     onClientOpenTabRequested,
     onStateChanged: async (_windowId, state) => {
       sidebarStates.push(state);
+      notify(stateWaiters, state);
       await onBrowserSidebarStateChanged?.(state);
     },
     onOwnerWindowUnregistered: (listener) => {
@@ -1913,7 +2105,14 @@ async function createHarness({
 
   return {
     createView,
+    /** The first composer view, once the service has created it. */
+    composerCreated: composerCreated.promise,
     composerViews,
+    /** Resolves with the next sidebar state published after the call. */
+    nextState: () => nextMatch(stateWaiters),
+    /** Resolves with the next surface list published after the call that `matches`. */
+    nextSurfaces: (matches: (list: SurfaceList) => boolean) =>
+      nextMatch(surfaceWaiters, matches),
     owner,
     published,
     releaseOwnerListener,
@@ -1923,6 +2122,32 @@ async function createHarness({
     unregisterOwner,
     views,
   };
+}
+
+type Waiters<T> = Set<{ matches: (value: T) => boolean; resolve: (value: T) => void }>;
+
+function nextMatch<T>(
+  waiters: Waiters<T>,
+  matches: (value: T) => boolean = () => true
+) {
+  const next = Promise.withResolvers<T>();
+  waiters.add({ matches, resolve: next.resolve });
+  return next.promise;
+}
+
+function notify<T>(waiters: Waiters<T>, value: T) {
+  for (const waiter of waiters) {
+    if (!waiter.matches(value)) continue;
+    waiters.delete(waiter);
+    waiter.resolve(value);
+  }
+}
+
+/** Resolves when `webContents` is next focused; arm it before the action. */
+function nextFocus(webContents: { focus: Mock }) {
+  const focused = Promise.withResolvers<void>();
+  webContents.focus.mockImplementationOnce(() => focused.resolve());
+  return focused.promise;
 }
 
 function iconResponse(type: string, size = 4) {
@@ -2034,9 +2259,7 @@ function createTestView(
   let debuggerAttached = false;
   const webContents = {
     id: nextWebContentsId++,
-    capturePage: vi.fn(async () => ({
-      toPNG: () => new Uint8Array([137, 80, 78, 71]),
-    })),
+    capturePage: vi.fn(async (_rect?: SurfaceBounds) => fakePageImage()),
     close: vi.fn((_options: { waitForBeforeUnload: boolean }) => {
       destroyed = true;
       for (const listener of destroyedListeners) listener();
@@ -2061,6 +2284,7 @@ function createTestView(
     focus: vi.fn(),
     getTitle: vi.fn(() => "Page title"),
     getURL: vi.fn(() => currentUrl),
+    getZoomFactor: vi.fn(() => 1),
     isLoading: vi.fn(() => false),
     isDestroyed: vi.fn(() => destroyed),
     loadURL: vi.fn(async (url: string) => {
@@ -2142,6 +2366,27 @@ function createTestView(
     },
   };
   return view as typeof view & BrowserSidebarViewLike;
+}
+
+/**
+ * Answers the page's scripts by what they ask: each selection in turn for the inspector, and the element's place for
+ * Main's reads of it, the last one repeating.
+ */
+function answerPageScripts(
+  page: { executeJavaScript: Mock<(source: string) => Promise<unknown>> },
+  answers: { rects: SurfaceBounds[]; selections: unknown[] }
+) {
+  const selections = [...answers.selections];
+  const rects = [...answers.rects];
+  page.executeJavaScript.mockImplementation(async (source) => {
+    if (source === browserSidebarElementInspectorRectSource) {
+      return rects.length > 1 ? rects.shift() : rects[0];
+    }
+    if (source.includes("comma-browser-sidebar-element-inspector")) {
+      return await (selections.shift() ?? { status: "cancelled" });
+    }
+    return undefined;
+  });
 }
 
 function deferred<T>() {
@@ -2330,4 +2575,25 @@ function createSecurityTarget() {
     { now: () => clock }
   );
   return handle;
+}
+
+interface FakePageImage {
+  getSize(): { height: number; width: number };
+  resize: Mock<
+    (options: { height: number; quality: "best"; width: number }) => FakePageImage
+  >;
+  toPNG(): Uint8Array;
+}
+
+function fakePageImage(
+  png = new Uint8Array([137, 80, 78, 71]),
+  size = { height: 1, width: 1 }
+): FakePageImage {
+  return {
+    getSize: () => size,
+    resize: vi.fn((options) =>
+      fakePageImage(png, { height: options.height, width: options.width })
+    ),
+    toPNG: () => png,
+  };
 }

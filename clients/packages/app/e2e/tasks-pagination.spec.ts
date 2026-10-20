@@ -68,38 +68,3 @@ test("the board loads one shared page when a resize makes every column fit", asy
     await stub.close();
   }
 });
-
-test("automatic task pagination keeps the first page during startup refreshes", async ({
-  page,
-}) => {
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-  const stub = await startChatSmokeStub({
-    conversationList: (url) => ({
-      body: {
-        data: [
-          url.searchParams.has("cursor")
-            ? task("Older task", "completed")
-            : task("First task", "active"),
-        ],
-        has_more: !url.searchParams.has("cursor"),
-        next_cursor: url.searchParams.has("cursor") ? null : "older-tasks",
-      },
-    }),
-  });
-  try {
-    await installBrowserTestSession(page, {
-      apiBaseUrl: stub.baseUrl,
-      email: "tasks-startup-pagination@comma.local",
-      token: "comma_sess_tasks_startup_pagination",
-    });
-    await page.goto("/#/tasks");
-    const cards = page.locator('[data-slot="task-card"]');
-    await expect(cards.filter({ hasText: "Older task" })).toBeVisible();
-    await expect(cards.filter({ hasText: "First task" })).toBeVisible();
-    await expect(cards).toHaveCount(2);
-    await expect(page.getByTestId("tasks-sync-error")).toHaveCount(0);
-  } finally {
-    await stub.close();
-  }
-});

@@ -1,0 +1,25 @@
+id: tsx-test-page-global
+language: tsx
+severity: error
+message: "A test defines a property on a global object or a DOM prototype and leaves it there."
+note: |
+  Test files share processes (clients/vitest.config.ts `sharedDomFiles`), so
+  what a test puts on `window`, `navigator`, `document`, `CSS` or a prototype
+  reaches the files after it. Use `stubProperty` (@comma/test-utils/stub-property),
+  `vi.spyOn` or `vi.stubGlobal`: each puts back what was there when the test ends.
+metadata:
+  category: shared-state
+rule:
+  any:
+    - pattern: Object.defineProperty($TARGET, $$$)
+    - pattern: Object.defineProperties($TARGET, $$$)
+    - pattern: Object.assign($TARGET, $$$)
+    - pattern: $TARGET.$KEY = $VALUE
+constraints:
+  TARGET:
+    regex: ^(window|globalThis|navigator|document|CSS|[A-Za-z_$][\w$.]*\.prototype)$
+files:
+  - "clients/**/*.test.tsx"
+ignores:
+  - "**/vendor/**"
+  - "**/*.chromium.test.tsx"

@@ -494,7 +494,7 @@ defmodule Salix.Bindings.LocalFileImport do
   defp monotonic_ms(opts) do
     case Keyword.get(opts, :monotonic_ms) do
       fun when is_function(fun, 0) -> fun.()
-      _ -> System.monotonic_time(:millisecond)
+      _ -> SystemsClock.monotonic_time(:millisecond)
     end
   end
 end

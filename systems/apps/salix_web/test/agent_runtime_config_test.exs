@@ -1,5 +1,5 @@
 defmodule SalixWeb.AgentRuntimeConfigTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{AgentRuntimeConfig, LlmResolver}
   alias SalixStore.Agent
@@ -7,10 +7,10 @@ defmodule SalixWeb.AgentRuntimeConfigTest do
   setup do
     SalixAgent.TestSupport.stop_all_agents()
 
-    prev_store = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -20,7 +20,7 @@ defmodule SalixWeb.AgentRuntimeConfigTest do
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev_store)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_store)
     end)
 
     {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Runtime Config"})
@@ -28,25 +28,16 @@ defmodule SalixWeb.AgentRuntimeConfigTest do
 
     {:ok, group} = Salix.Control.Groups.create(%{"name" => "Runtime Config"}, tenant_id())
 
-    template_id = "tmpl-runtime-config-#{System.unique_integer([:positive])}"
-
-    {:ok, template} =
-      SalixAgent.Templates.create(%{
-        "template_id" => template_id,
-        "name" => "Runtime Config",
-        "model" => "template-model",
-        "provider" => "openai",
-        "provider_config" => %{
-          "protocol" => "responses",
-          "api_key_env" => "TEMPLATE_KEY"
-        }
-      })
+    SalixAgent.TestSupport.configure_platform_tier!(
+      "router",
+      "https://runtime-config.example.test/v1",
+      "platform-router-model"
+    )
 
     {:ok, agent} =
       SalixAgent.Control.create(
         %{
           "group_id" => group["group_id"],
-          "template_id" => template["template_id"],
           "name" => "Config Agent",
           "role" => "router",
           "system_prompt" => "control system",
@@ -81,7 +72,9 @@ defmodule SalixWeb.AgentRuntimeConfigTest do
             }} = AgentRuntimeConfig.resolve(agent["agent_id"])
   end
 
-  test "runtime llm config comes from the live template instead of stale state", %{agent: agent} do
+  test "runtime llm config comes from the live platform model instead of stale state", %{
+    agent: agent
+  } do
     commit_state_events!(agent["agent_id"], [
       %{
         "type" => "llm_config",
@@ -93,9 +86,9 @@ defmodule SalixWeb.AgentRuntimeConfigTest do
     ])
 
     assert {:ok, llm} = LlmResolver.resolve_runtime(agent["agent_id"])
-    assert llm["model"] == "template-model"
-    assert llm["protocol"] == "responses"
-    assert llm["api_key_env"] == "TEMPLATE_KEY"
+    assert llm["model"] == "platform-router-model"
+    assert llm["protocol"] == "chat_completions"
+    assert llm["base_url"] == "https://runtime-config.example.test/v1"
   end
 
   defp commit_state_events!(agent_id, events) do

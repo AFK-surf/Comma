@@ -1,5 +1,5 @@
 defmodule AlertRouter.StartupIsolationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   @tag timeout: 60_000
   test "standalone Router serves HTTP without starting the Salix storage runtime" do

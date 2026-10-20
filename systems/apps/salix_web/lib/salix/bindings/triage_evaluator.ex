@@ -1,4 +1,6 @@
 defmodule Salix.Bindings.TriageEvaluator do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Bounded native Triage evaluation. Product intake makes one provider request
   without tools: participation, direct communication and Worker selection are
@@ -14,6 +16,7 @@ defmodule Salix.Bindings.TriageEvaluator do
   require Logger
 
   alias SalixAgent.{SessionToolDispatch, ToolDisclosure, Tools}
+  alias SalixAgent.LLM.Error, as: LLMError
   alias Salix.Bindings.TriageSlackRead
 
   alias SalixIM.Triage.{
@@ -584,13 +587,13 @@ defmodule Salix.Bindings.TriageEvaluator do
          prompt,
          model_input,
          _messages,
-         _request_opts,
+         request_opts,
          _opts,
          _read_tool_context
        )
        when elem(result, 0) == :final do
     with {:ok, content} <- final_content(result),
-         {:ok, decision} <- decode_decision(content),
+         {:ok, decision} <- decode_final_decision(result, content, provider_name, request_opts),
          decision = enforce_product_target_boundary(decision, model_input),
          :ok <- validate_decision(decision, model_input) do
       {:ok, decision, direct_proof(provider_name, model, prompt, request, model_input)}
@@ -615,7 +618,8 @@ defmodule Salix.Bindings.TriageEvaluator do
            messages ++ [assistant_tool_message(assistant_content, call), tool_message],
          {:ok, second} <- provider_request(provider, second_messages, [], request_opts, opts),
          {:ok, content} <- final_content(second.result),
-         {:ok, decision} <- decode_decision(content),
+         {:ok, decision} <-
+           decode_final_decision(second.result, content, provider_name, request_opts),
          decision = enforce_product_target_boundary(decision, model_input),
          :ok <- validate_decision(decision, model_input) do
       {:ok, decision,
@@ -624,14 +628,14 @@ defmodule Salix.Bindings.TriageEvaluator do
   end
 
   defp provider_request(provider, messages, tools, request_opts, opts) do
-    owner = self()
-    observation_ref = make_ref()
-    started_at = System.monotonic_time(:millisecond)
-    dispatched = :atomics.new(1, [])
+    owner = SystemsRuntime.Proc.self()
+    observation_ref = SystemsRuntime.Proc.make_ref()
+    started_at = SystemsClock.monotonic_time(:millisecond)
+    dispatched = SystemsRuntime.Atomics.new(1, [])
 
     observer = fn payload_bytes ->
-      :atomics.put(dispatched, 1, 1)
-      send(owner, {observation_ref, :provider_payload, payload_bytes})
+      SystemsRuntime.Atomics.put(dispatched, 1, 1)
+      SystemsRuntime.Proc.send(owner, {observation_ref, :provider_payload, payload_bytes})
       log_provider_request_started(payload_bytes)
       :ok
     end
@@ -642,7 +646,7 @@ defmodule Salix.Bindings.TriageEvaluator do
       SalixAgent.AccountPool.dispatch(
         request_opts,
         fn resolved_opts -> apply(provider, :complete, [messages, tools, resolved_opts]) end,
-        fn -> :atomics.get(dispatched, 1) == 1 end
+        fn -> SystemsRuntime.Atomics.get(dispatched, 1) == 1 end
       )
 
     log_provider_request_settled(result, started_at)
@@ -767,14 +771,44 @@ defmodule Salix.Bindings.TriageEvaluator do
     Logger.info("triage_evaluator_provider_request_started #{diagnostic_fields(diagnostic)}")
   end
 
+  # The provider seam reports token usage but not the stop/finish reason, so
+  # the output size and completion tokens are the available evidence of an
+  # output budget spent on reasoning.
   defp log_provider_request_settled(result, started_at) do
-    elapsed_ms = max(System.monotonic_time(:millisecond) - started_at, 0)
+    elapsed_ms = max(SystemsClock.monotonic_time(:millisecond) - started_at, 0)
+    usage = final_usage(result)
 
     Logger.info(
       "triage_evaluator_provider_request_settled elapsed_ms=#{elapsed_ms} " <>
-        "result=#{provider_result_class(result)}"
+        "result=#{provider_result_class(result)} " <>
+        "content_bytes=#{content_bytes(result)} " <>
+        "completion_tokens=#{usage_count(usage, "completion_tokens")} " <>
+        "reasoning_tokens=#{usage_count(usage, "reasoning_tokens")}"
     )
   end
+
+  defp content_bytes(result) do
+    case final_content(result) do
+      {:ok, content} -> byte_size(content)
+      _not_final -> "none"
+    end
+  end
+
+  defp final_usage({:final, _content, %{"usage" => usage}}) when is_map(usage), do: usage
+
+  defp final_usage({:final, _content, _provider_meta, %{"usage" => usage}}) when is_map(usage),
+    do: usage
+
+  defp final_usage(_result), do: nil
+
+  defp usage_count(usage, key) when is_map(usage) do
+    case Map.get(usage, key) do
+      count when is_integer(count) and count >= 0 -> count
+      _unreported -> "unreported"
+    end
+  end
+
+  defp usage_count(_usage, _key), do: "unreported"
 
   defp provider_result_class(result) when is_tuple(result) and tuple_size(result) > 0 do
     tag = elem(result, 0)
@@ -798,7 +832,7 @@ defmodule Salix.Bindings.TriageEvaluator do
   defp read_tool_boundary(%{tool_disclosure: %{"tools" => [entry]}} = context) do
     valid? =
       entry["name"] == context[:tool_name] and entry["safety"] == "read" and
-        entry["callable"] == true and is_map(entry["input_schema"]) and
+        entry["callable"] == true and is_map(ToolDisclosure.entry_schema(entry)) and
         valid_read_tool_context?(context)
 
     # The disclosed envelope enumerates exactly the one authorized tool, so the
@@ -817,7 +851,9 @@ defmodule Salix.Bindings.TriageEvaluator do
     # exposes one exact read, so disclose its real argument schema and frozen
     # reference on the wire as well as in the human-readable tool manual.
     params_schema =
-      put_in(entry["input_schema"], ["properties", "link_ref", "enum"], [target["link_ref"]])
+      entry
+      |> ToolDisclosure.entry_schema()
+      |> put_in(["properties", "link_ref", "enum"], [target["link_ref"]])
 
     read_call_envelope(@slack_read_tool)
     |> put_in(["input_schema", "properties", "params"], params_schema)
@@ -1416,7 +1452,7 @@ defmodule Salix.Bindings.TriageEvaluator do
   # second observation is a second outbound payload for one logical call, which
   # this adapter refuses rather than proves.
   defp observed_payloads(ref, observed \\ []) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {^ref, :provider_payload, bytes} when is_binary(bytes) ->
         observed_payloads(ref, [bytes | observed])
     after
@@ -1478,6 +1514,49 @@ defmodule Salix.Bindings.TriageEvaluator do
 
         {:error, :invalid_triage_decision}
     end
+  end
+
+  # A provider response that settles with no decision text, or whose
+  # undecodable text spent the whole output budget, carries no model judgment.
+  # It is a provider failure, classified like a transport fault, not an invalid
+  # decision.
+  defp decode_final_decision(result, content, provider_name, request_opts) do
+    case decode_decision(content) do
+      {:ok, _decision} = decoded ->
+        decoded
+
+      {:error, :invalid_triage_decision} = invalid ->
+        cond do
+          String.trim(content) == "" ->
+            Logger.warning("triage_evaluator_rejected stage=final_output reason=empty_output")
+
+            output_failure(provider_name, "empty_output")
+
+          output_budget_exhausted?(result, request_opts) ->
+            Logger.warning(
+              "triage_evaluator_rejected stage=final_output reason=output_token_limit"
+            )
+
+            output_failure(provider_name, "output_token_limit")
+
+          true ->
+            invalid
+        end
+    end
+  end
+
+  defp output_budget_exhausted?(result, request_opts) do
+    completion = usage_count(final_usage(result), "completion_tokens")
+    max_tokens = field(request_opts, "max_tokens")
+
+    is_integer(completion) and is_integer(max_tokens) and max_tokens > 0 and
+      completion >= max_tokens
+  end
+
+  defp output_failure(provider_name, reason) do
+    label = if is_binary(provider_name), do: provider_name, else: @default_provider_label
+    {:error, meta} = LLMError.transport(label, reason)
+    {:error, {:provider_error, meta}}
   end
 
   defp unwrap_exact_json(content) when is_binary(content) do

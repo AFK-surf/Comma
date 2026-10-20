@@ -83,7 +83,7 @@ defmodule Salix.Bindings.FeishuMeetingOwnerResolver do
   defp run_with_deadline(fun, timeout)
        when is_function(fun, 0) and is_integer(timeout) and timeout > 0 do
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         try do
           {:result, fun.()}
         rescue
@@ -93,7 +93,7 @@ defmodule Salix.Bindings.FeishuMeetingOwnerResolver do
         end
       end)
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, timeout) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, {:result, result}} -> result
       {:ok, {:lookup_crash, reason}} -> {:error, {:provider_error, {:lookup_crash, reason}}}
       {:exit, reason} -> {:error, {:provider_error, {:lookup_exit, error_class(reason)}}}

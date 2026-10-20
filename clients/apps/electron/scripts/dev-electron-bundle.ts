@@ -1,10 +1,12 @@
 import { spawnSync } from "node:child_process";
+import { generateAssetCatalogForIcon } from "@electron/packager/dist/icon-composer";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -69,7 +71,7 @@ function plistString(plistPath: string, key: string) {
   return result.stdout.trim();
 }
 
-export function prepareDevElectronBundle(): DevElectronBundle {
+export async function prepareDevElectronBundle(): Promise<DevElectronBundle> {
   const releaseConfig = getCommaReleaseConfig();
   const electronPackageDir = dirname(require.resolve("electron/package.json"));
   const electronVersion = (
@@ -91,12 +93,32 @@ export function prepareDevElectronBundle(): DevElectronBundle {
   const notificationSound = createHash("sha256")
     .update(readFileSync(notificationSoundPath))
     .digest("hex");
+  const iconRoot = resolve(appRoot, "build/icons", releaseConfig.flavor);
+  const iconSource = resolve(iconRoot, "icon.icon");
+  const hasLayeredIcon = existsSync(iconSource);
+  // Retain the compiler inputs in this local cache stamp so edits in Icon
+  // Composer rebuild the source bundle. This does not establish bundle trust.
+  const icon = {
+    composer: hasLayeredIcon
+      ? {
+          document: readFileSync(resolve(iconSource, "icon.json"), "utf8"),
+          assets: readdirSync(resolve(iconSource, "Assets"))
+            .toSorted()
+            .map((name) => [
+              name,
+              readFileSync(resolve(iconSource, "Assets", name)).toString("base64"),
+            ]),
+        }
+      : null,
+    legacy: readFileSync(resolve(iconRoot, "icon.icns")).toString("base64"),
+  };
   const stamp = JSON.stringify({
     bundleId,
     displayName,
     electronVersion,
     notificationSound,
     sourceApp,
+    icon,
   });
   const bundle: DevElectronBundle = {
     appPath,
@@ -130,8 +152,17 @@ export function prepareDevElectronBundle(): DevElectronBundle {
   ] as const) {
     run("plutil", ["-replace", key, "-string", value, infoPlist]);
   }
+  if (hasLayeredIcon) {
+    // Use the same pinned Packager compiler as release builds. It names the
+    // compiled icon "Icon" and emits every supported system appearance.
+    run("plutil", ["-replace", "CFBundleIconName", "-string", "Icon", infoPlist]);
+    writeFileSync(
+      resolve(appPath, "Contents/Resources/Assets.car"),
+      await generateAssetCatalogForIcon(iconSource)
+    );
+  }
   copyFileSync(
-    resolve(appRoot, "build/icons", releaseConfig.flavor, "icon.icns"),
+    resolve(iconRoot, "icon.icns"),
     resolve(appPath, "Contents/Resources", plistString(infoPlist, "CFBundleIconFile"))
   );
   copyFileSync(
@@ -140,7 +171,7 @@ export function prepareDevElectronBundle(): DevElectronBundle {
   );
 
   // Editing Info.plist breaks the prebuilt seal, and an unsealed bundle no
-  // longer launches; re-seal the whole tree ad hoc, as the Side Chat host is.
+  // longer launches; re-seal the whole tree ad hoc, as the menu-bar helper is.
   run("codesign", ["--force", "--deep", "--sign", "-", appPath]);
   run(launchServices, ["-f", appPath]);
   writeFileSync(stampPath, stamp);

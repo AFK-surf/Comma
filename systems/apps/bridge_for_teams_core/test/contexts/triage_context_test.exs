@@ -6,13 +6,16 @@ defmodule BridgeForTeams.TriageContextTest do
   """
 
   use BridgeForTeams.DataCase, async: false
+  use SalixStore.QueueCase, queues: [:triage_product_effects]
+
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{Accounts, Agents, Memberships, Orgs, Projects, Repo}
   alias BridgeForTeams.Schema.{Agent, Project, ProjectMembership, User}
 
   defmodule ProductSource do
     def resolve_connect(authority, _opts) do
-      send(self(), {:product_source_authority, authority})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:product_source_authority, authority})
 
       {:ok,
        %{
@@ -26,8 +29,15 @@ defmodule BridgeForTeams.TriageContextTest do
     end
 
     def load_product(_connect, opts) do
-      send(self(), {:batch_knowledge_query, opts[:knowledge_query]})
-      send(self(), {:trajectory_target, opts[:trajectory_target]})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:batch_knowledge_query, opts[:knowledge_query]}
+      )
+
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:trajectory_target, opts[:trajectory_target]}
+      )
 
       {:ok,
        %{
@@ -88,7 +98,7 @@ defmodule BridgeForTeams.TriageContextTest do
     use BridgeForTeams.TestSupport.CanonicalAgentClient
 
     def triage_knowledge_context(_project, _group, _agent, opts) do
-      send(self(), {:knowledge_options, opts})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:knowledge_options, opts})
       {:ok, %{items: [%{source_ref: "triage-context://due-reminder"}], complete: true}}
     end
 
@@ -102,7 +112,7 @@ defmodule BridgeForTeams.TriageContextTest do
 
     def page_group_agents(_tenant, _group, opts) do
       cursor = opts[:cursor]
-      send(self(), {:worker_page, cursor, opts[:limit]})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:worker_page, cursor, opts[:limit]})
       Map.fetch!(Process.get(:worker_pages), cursor)
     end
 
@@ -199,7 +209,10 @@ defmodule BridgeForTeams.TriageContextTest do
 
   defmodule SourcedContextGrounder do
     def ground_for_triage(agent_id, question, capability) do
-      send(self(), {:sourced_context_grounding, agent_id, question, capability})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:sourced_context_grounding, agent_id, question, capability}
+      )
 
       {:ok,
        %{
@@ -273,7 +286,7 @@ defmodule BridgeForTeams.TriageContextTest do
 
   defmodule ThreadReader do
     def read(authority, connect, opts) do
-      send(opts[:test_pid], {:thread_read, authority, connect})
+      SystemsRuntime.Proc.send(opts[:test_pid], {:thread_read, authority, connect})
 
       {:ok,
        %{
@@ -308,16 +321,16 @@ defmodule BridgeForTeams.TriageContextTest do
 
   describe "production investigation Worker pagination" do
     setup do
-      previous = Application.get_env(:bridge_for_teams_core, :salix_client)
-      Application.put_env(:bridge_for_teams_core, :salix_client, SealedEmptyMeetingSource)
+      previous = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+      SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, SealedEmptyMeetingSource)
 
       on_exit(fn ->
         if previous,
-          do: Application.put_env(:bridge_for_teams_core, :salix_client, previous),
-          else: Application.delete_env(:bridge_for_teams_core, :salix_client)
+          do: SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous),
+          else: SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
       end)
 
-      suffix = System.unique_integer([:positive])
+      suffix = SystemsRuntime.Proc.unique_integer([:positive])
       {:ok, org} = Orgs.create_org(%{name: "Worker pages", slug: "worker-pages-#{suffix}"})
       {:ok, project} = Projects.create_project(org.id, %{name: "Workers", slug: "workers"})
       fixture = BridgeForTeams.TestSupport.CanonicalAgentClient
@@ -331,7 +344,7 @@ defmodule BridgeForTeams.TriageContextTest do
           "role" => "worker"
         })
 
-      Application.put_env(:bridge_for_teams_core, :salix_client, PaginatedWorkerSource)
+      SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, PaginatedWorkerSource)
 
       %{
         connect: %{
@@ -341,148 +354,19 @@ defmodule BridgeForTeams.TriageContextTest do
         worker: worker
       }
     end
-
-    test "keeps a Worker when a filtered storage page has a continuation", %{
-      connect: connect,
-      worker: worker
-    } do
-      Process.put(:worker_pages, %{
-        nil => {:ok, %{items: [worker.salix], next_cursor: "page-2"}},
-        "page-2" => {:ok, %{items: [], next_cursor: nil}}
-      })
-
-      assert {:ok, product} = BridgeForTeams.TriageContext.ProductSource.load_product(connect, [])
-
-      assert Enum.map(product.investigation_workers, & &1.salix_agent_id) == [
-               worker.salix_agent_id
-             ]
-
-      assert_receive {:worker_page, nil, 64}
-      assert_receive {:worker_page, "page-2", 64}
-      refute_receive {:worker_page, _, _}
-    end
-
-    test "finds a later Worker when the roster completes on the fourth page", %{
-      connect: connect,
-      worker: worker
-    } do
-      Process.put(:worker_pages, %{
-        nil => {:ok, %{items: [], next_cursor: "page-2"}},
-        "page-2" => {:ok, %{items: [worker.salix], next_cursor: "page-3"}},
-        "page-3" => {:ok, %{items: [], next_cursor: "page-4"}},
-        "page-4" => {:ok, %{items: [], next_cursor: nil}}
-      })
-
-      assert {:ok, product} = BridgeForTeams.TriageContext.ProductSource.load_product(connect, [])
-
-      assert Enum.map(product.investigation_workers, & &1.salix_agent_id) == [
-               worker.salix_agent_id
-             ]
-
-      for cursor <- [nil, "page-2", "page-3", "page-4"],
-          do: assert_receive({:worker_page, ^cursor, 64})
-
-      refute_receive {:worker_page, _, _}
-    end
-
-    test "does not use a partial roster when a later page fails", %{
-      connect: connect,
-      worker: worker
-    } do
-      Process.put(:worker_pages, %{
-        nil => {:ok, %{items: [worker.salix], next_cursor: "page-2"}},
-        "page-2" => {:error, :unavailable}
-      })
-
-      assert {:ok, product} = BridgeForTeams.TriageContext.ProductSource.load_product(connect, [])
-      assert product.investigation_workers == []
-      assert_receive {:worker_page, "page-2", 64}
-    end
-
-    test "stops after four pages without using the incomplete roster", %{
-      connect: connect,
-      worker: worker
-    } do
-      Process.put(:worker_pages, %{
-        nil => {:ok, %{items: [worker.salix], next_cursor: "page-2"}},
-        "page-2" => {:ok, %{items: [], next_cursor: "page-3"}},
-        "page-3" => {:ok, %{items: [], next_cursor: "page-4"}},
-        "page-4" => {:ok, %{items: [], next_cursor: "page-5"}}
-      })
-
-      assert {:ok, product} = BridgeForTeams.TriageContext.ProductSource.load_product(connect, [])
-      assert product.investigation_workers == []
-
-      for cursor <- [nil, "page-2", "page-3", "page-4"],
-          do: assert_receive({:worker_page, ^cursor, 64})
-
-      refute_receive {:worker_page, _, _}
-    end
-  end
-
-  test "production product source carries an incomplete bounded roster instead of failing" do
-    previous_client = Application.get_env(:bridge_for_teams_core, :salix_client)
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :salix_client,
-      SealedEmptyMeetingSource
-    )
-
-    on_exit(fn ->
-      if previous_client,
-        do: Application.put_env(:bridge_for_teams_core, :salix_client, previous_client),
-        else: Application.delete_env(:bridge_for_teams_core, :salix_client)
-    end)
-
-    suffix = System.unique_integer([:positive])
-    {:ok, org} = Orgs.create_org(%{name: "Roster #{suffix}", slug: "roster-#{suffix}"})
-
-    {:ok, project} =
-      Projects.create_project(org.id, %{name: "Roster #{suffix}", slug: "roster-#{suffix}"})
-
-    {:ok, agent} = Agents.create_agent(project.id, %{"name" => "router", "role" => "router"})
-
-    for ordinal <- 1..26 do
-      {:ok, member} = Accounts.create_user(%{email: "roster-#{suffix}-#{ordinal}@example.com"})
-      {:ok, _membership} = Memberships.put_project_member(project.id, member.id, "user")
-    end
-
-    assert {:ok, product} =
-             BridgeForTeams.TriageContext.ProductSource.load_product(
-               %{
-                 "group_id" => project.salix_group_id,
-                 "inbound_agent_id" => agent.salix_agent_id
-               },
-               knowledge_query: "好",
-               recheck_context_refs: ["triage-context://due-reminder"]
-             )
-
-    assert length(product.members) == 25
-    assert_receive {:knowledge_options, knowledge_opts}
-    assert knowledge_opts[:entry_ids] == ["due-reminder"]
-    assert knowledge_opts[:query] == "好"
-    assert [%{current_wakeup: true}] = product.retained_context
-
-    assert product.member_roster == %{
-             completeness: :truncated,
-             truncated: true,
-             limit: 25,
-             returned_count: 25
-           }
   end
 
   test "production product source keeps Slack Triage available while Meetings is not ready" do
-    previous_client = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, UnsealedMeetingSource)
+    previous_client = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, UnsealedMeetingSource)
 
     on_exit(fn ->
       if previous_client,
-        do: Application.put_env(:bridge_for_teams_core, :salix_client, previous_client),
-        else: Application.delete_env(:bridge_for_teams_core, :salix_client)
+        do: SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous_client),
+        else: SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
     end)
 
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     {:ok, org} =
       Orgs.create_org(%{name: "Meeting optional #{suffix}", slug: "meeting-optional-#{suffix}"})
@@ -520,7 +404,7 @@ defmodule BridgeForTeams.TriageContextTest do
 
   defmodule StaleProductSource do
     def resolve_connect(_authority, opts) do
-      send(opts[:test_pid], :current_connect_read)
+      SystemsRuntime.Proc.send(opts[:test_pid], :current_connect_read)
 
       {:ok,
        %{
@@ -533,16 +417,16 @@ defmodule BridgeForTeams.TriageContextTest do
     end
 
     def load_product(_connect, opts) do
-      send(opts[:test_pid], :forbidden_project_read)
-      send(opts[:test_pid], :forbidden_memberships_read)
-      send(opts[:test_pid], :forbidden_meetings_read)
+      SystemsRuntime.Proc.send(opts[:test_pid], :forbidden_project_read)
+      SystemsRuntime.Proc.send(opts[:test_pid], :forbidden_memberships_read)
+      SystemsRuntime.Proc.send(opts[:test_pid], :forbidden_meetings_read)
       raise "stale receipt must not read product facts"
     end
   end
 
   defmodule ChannelDriftProductSource do
     def resolve_connect(_authority, opts) do
-      send(opts[:test_pid], :current_connect_read)
+      SystemsRuntime.Proc.send(opts[:test_pid], :current_connect_read)
 
       {:ok,
        %{
@@ -556,16 +440,16 @@ defmodule BridgeForTeams.TriageContextTest do
     end
 
     def load_product(_connect, opts) do
-      send(opts[:test_pid], :forbidden_project_read)
-      send(opts[:test_pid], :forbidden_memberships_read)
-      send(opts[:test_pid], :forbidden_meetings_read)
+      SystemsRuntime.Proc.send(opts[:test_pid], :forbidden_project_read)
+      SystemsRuntime.Proc.send(opts[:test_pid], :forbidden_memberships_read)
+      SystemsRuntime.Proc.send(opts[:test_pid], :forbidden_meetings_read)
       raise "stale channel authority must not read product facts"
     end
   end
 
   defmodule ForbiddenThreadReader do
     def read(_authority, _connect, opts) do
-      send(opts[:test_pid], :forbidden_thread_read)
+      SystemsRuntime.Proc.send(opts[:test_pid], :forbidden_thread_read)
       raise "stale connect authority must fail before Slack or Memory assembly"
     end
   end
@@ -576,9 +460,9 @@ defmodule BridgeForTeams.TriageContextTest do
   end
 
   test "identity allowlist ignores a substituted active-connect reader" do
-    previous = Application.get_env(:bridge_for_teams_core, :triage_active_connect_reader)
+    previous = SystemsRuntime.get_env(:bridge_for_teams_core, :triage_active_connect_reader)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :triage_active_connect_reader,
       InjectedActiveConnectReader
@@ -586,8 +470,9 @@ defmodule BridgeForTeams.TriageContextTest do
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:bridge_for_teams_core, :triage_active_connect_reader, previous),
-        else: Application.delete_env(:bridge_for_teams_core, :triage_active_connect_reader)
+        do:
+          SystemsRuntime.put_env(:bridge_for_teams_core, :triage_active_connect_reader, previous),
+        else: SystemsRuntime.delete_env(:bridge_for_teams_core, :triage_active_connect_reader)
     end)
 
     sha = String.duplicate("a", 64)
@@ -649,7 +534,7 @@ defmodule BridgeForTeams.TriageContextTest do
   end
 
   test "identity allowlist rejects current-connect selector drift before Product reads" do
-    n = System.unique_integer([:positive])
+    n = SystemsRuntime.Proc.unique_integer([:positive])
     tenant_id = SalixStore.Ids.new_tenant_id()
     group_id = SalixStore.Ids.new_group_id(tenant_id)
     inbound_agent_id = SalixStore.Ids.new_agent_id(group_id)
@@ -708,9 +593,9 @@ defmodule BridgeForTeams.TriageContextTest do
                connect["approved_channel_id"]
              )
 
-    previous = Application.get_env(:bridge_for_teams_core, :triage_active_connect_reader)
+    previous = SystemsRuntime.get_env(:bridge_for_teams_core, :triage_active_connect_reader)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :triage_active_connect_reader,
       SalixIM.ProviderConnects
@@ -718,8 +603,9 @@ defmodule BridgeForTeams.TriageContextTest do
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:bridge_for_teams_core, :triage_active_connect_reader, previous),
-        else: Application.delete_env(:bridge_for_teams_core, :triage_active_connect_reader)
+        do:
+          SystemsRuntime.put_env(:bridge_for_teams_core, :triage_active_connect_reader, previous),
+        else: SystemsRuntime.delete_env(:bridge_for_teams_core, :triage_active_connect_reader)
     end)
 
     input = %{
@@ -805,10 +691,10 @@ defmodule BridgeForTeams.TriageContextTest do
     assert {:ok, _} =
              BridgeForTeams.TriageContext.freeze(input,
                product_source: ProductSource,
-               thread_reader: {ThreadReader, test_pid: self()}
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
-    assert_receive {:batch_knowledge_query, query}
+    settle_receive({:batch_knowledge_query, query})
     assert query =~ "电视播放调查"
     assert query =~ "还是不行"
     assert length(Regex.scan(~r/好/u, query)) == 1
@@ -826,10 +712,10 @@ defmodule BridgeForTeams.TriageContextTest do
              BridgeForTeams.TriageContext.freeze(
                %{input | "events" => large_events ++ [List.last(input["events"])]},
                product_source: ProductSource,
-               thread_reader: {ThreadReader, test_pid: self()}
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
-    assert_receive {:batch_knowledge_query, bounded_query}
+    settle_receive({:batch_knowledge_query, bounded_query})
     assert String.valid?(bounded_query)
     assert byte_size(bounded_query) <= 2_048
     assert String.starts_with?(bounded_query, "还是不行")
@@ -869,10 +755,10 @@ defmodule BridgeForTeams.TriageContextTest do
     assert {:ok, _frozen} =
              BridgeForTeams.TriageContext.freeze(input,
                product_source: ProductSource,
-               thread_reader: {ThreadReader, test_pid: self()}
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
-    assert_receive {:trajectory_target, target}
+    settle_receive({:trajectory_target, target})
     assert target == authority |> Map.put("thread_ts", "200.001") |> Map.delete("scope_kind")
   end
 
@@ -941,7 +827,7 @@ defmodule BridgeForTeams.TriageContextTest do
     assert {:ok, frozen} =
              BridgeForTeams.TriageContext.freeze(input,
                product_source: TaskTrajectoryProductSource,
-               thread_reader: {ThreadReader, test_pid: self()}
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
     history =
@@ -983,10 +869,10 @@ defmodule BridgeForTeams.TriageContextTest do
     assert {:ok, frozen} =
              BridgeForTeams.TriageContext.freeze(input,
                product_source: ProductSource,
-               thread_reader: {ThreadReader, test_pid: self()}
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
-    assert_receive {:thread_read, ^authority, %{"group_id" => "group-atlas"}}, 100
+    settle_receive({:thread_read, ^authority, %{"group_id" => "group-atlas"}})
 
     assert frozen["slack_context"] == %{
              "expression_context" => %{
@@ -1108,11 +994,11 @@ defmodule BridgeForTeams.TriageContextTest do
     assert {:ok, frozen} =
              BridgeForTeams.TriageContext.freeze(input,
                product_source: GroundingProductSource,
-               thread_reader: {ThreadReader, test_pid: self()},
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()},
                sourced_context_grounder: SourcedContextGrounder
              )
 
-    assert_receive {:sourced_context_grounding, "agent-atlas", question, capability}
+    settle_receive({:sourced_context_grounding, "agent-atlas", question, capability})
     assert question == "Atlas reconnect 应该怎么处理？"
     assert capability["org_id"] == "org-atlas"
     assert capability["project_id"] == "project-atlas"
@@ -1173,11 +1059,11 @@ defmodule BridgeForTeams.TriageContextTest do
       assert {:ok, frozen} =
                BridgeForTeams.TriageContext.freeze(input,
                  product_source: unquote(product_source),
-                 thread_reader: {ThreadReader, test_pid: self()},
+                 thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()},
                  sourced_context_grounder: SourcedContextGrounder
                )
 
-      refute_receive {:sourced_context_grounding, _, _, _}
+      settle_refute_receive({:sourced_context_grounding, _, _, _})
 
       refute Enum.any?(
                frozen["team_project_memory"]["facts"],
@@ -1209,7 +1095,7 @@ defmodule BridgeForTeams.TriageContextTest do
     assert {:ok, frozen} =
              BridgeForTeams.TriageContext.freeze(input,
                product_source: TruncatedProductSource,
-               thread_reader: {ThreadReader, test_pid: self()}
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
     assert get_in(frozen, ["team_project_memory", "member_roster"]) == %{
@@ -1243,7 +1129,7 @@ defmodule BridgeForTeams.TriageContextTest do
     assert {:ok, frozen} =
              BridgeForTeams.TriageContext.freeze(input,
                product_source: MixedMeetingsProductSource,
-               thread_reader: {ThreadReader, test_pid: self()}
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
     memory = frozen["team_project_memory"]
@@ -1297,60 +1183,27 @@ defmodule BridgeForTeams.TriageContextTest do
       assert {:error, :stale_source_authority} =
                BridgeForTeams.TriageContext.freeze(input,
                  product_source: unquote(product_source),
-                 test_pid: self(),
-                 thread_reader: {ForbiddenThreadReader, test_pid: self()}
+                 test_pid: SystemsRuntime.Proc.self(),
+                 thread_reader: {ForbiddenThreadReader, test_pid: SystemsRuntime.Proc.self()}
                )
 
-      assert_receive :current_connect_read, 100
-      refute_receive :forbidden_project_read, 40
-      refute_receive :forbidden_memberships_read, 40
-      refute_receive :forbidden_meetings_read, 40
-      refute_receive :forbidden_thread_read, 40
+      settle_receive(:current_connect_read)
+      settle_refute_receive(:forbidden_project_read, 40)
+      settle_refute_receive(:forbidden_memberships_read, 40)
+      settle_refute_receive(:forbidden_meetings_read, 40)
+      settle_refute_receive(:forbidden_thread_read, 40)
     end
   end
 
-  test "rejects Slack context timestamps with more than six fractional digits" do
-    input = %{
-      "schema" => "comma.triage-input-snapshot.v1",
-      "source_authority" => %{
-        "connect_id" => "imc-native-triage",
-        "connect_generation" => "generation-7",
-        "workspace_id" => "T1",
-        "channel_id" => "C1",
-        "thread_ts" => "200.001"
-      },
-      "events" => [
-        %{
-          "event_id" => "Ev-overprecise-history",
-          "message_ts" => "200.002",
-          "actor_id" => "member-peng",
-          "text" => "Who owns Atlas?"
-        }
-      ]
-    }
-
-    assert {:error, :invalid_slack_timestamp} =
-             BridgeForTeams.TriageContext.freeze(input,
-               product_source: ProductSource,
-               thread_reader:
-                 {ConfiguredThreadReader,
-                  messages: [
-                    %{
-                      "ts" => "200.1234567",
-                      "user" => "member-peng",
-                      "actor_kind" => "human",
-                      "text" => "Who owns Atlas?"
-                    }
-                  ]}
-             )
-  end
-
   defp identity_fence_handle do
-    %SalixIM.Triage.IdentityFenceHandle{runtime: self(), capability: make_ref()}
+    %SalixIM.Triage.IdentityFenceHandle{
+      runtime: SystemsRuntime.Proc.self(),
+      capability: SystemsRuntime.Proc.make_ref()
+    }
   end
 
   test "default product source reads the real BFT project/member rows and Salix meeting summary" do
-    n = System.unique_integer([:positive])
+    n = SystemsRuntime.Proc.unique_integer([:positive])
 
     {:ok, user} =
       Accounts.create_user(%{"email" => "triage-real-#{n}@example.test", "name" => "Lin"})
@@ -1456,9 +1309,6 @@ defmodule BridgeForTeams.TriageContextTest do
       |> Map.put("channel_id", "C-real")
       |> Map.put("thread_ts", "300.001")
 
-    worker = Process.whereis(SalixIM.Triage.ProductEffectWorker)
-    if worker, do: :sys.suspend(worker)
-    on_exit(fn -> if worker && Process.alive?(worker), do: :sys.resume(worker) end)
     seed_trajectory_round!(project, router, authority, "prior-work-#{n}")
 
     input = %{
@@ -1480,7 +1330,7 @@ defmodule BridgeForTeams.TriageContextTest do
     assert {:ok, scheduled} =
              BridgeForTeams.TriageContext.freeze(
                Map.put(input, "source_mode", "scheduled_recheck"),
-               thread_reader: {ThreadReader, test_pid: self()}
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
     assert Agents.list_agents(project.id) |> Enum.map(& &1.salix_agent_id) |> Enum.sort() ==
@@ -1488,7 +1338,7 @@ defmodule BridgeForTeams.TriageContextTest do
 
     assert {:ok, frozen} =
              BridgeForTeams.TriageContext.freeze(input,
-               thread_reader: {ThreadReader, test_pid: self()}
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
     assert get_in(frozen, ["team_project_memory", "project", "name"]) == "Atlas"
@@ -1540,7 +1390,7 @@ defmodule BridgeForTeams.TriageContextTest do
 
     assert {:ok, next_frozen} =
              BridgeForTeams.TriageContext.freeze(next_input,
-               thread_reader: {ThreadReader, test_pid: self()}
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
     updated =

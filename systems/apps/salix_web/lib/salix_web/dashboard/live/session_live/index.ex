@@ -61,12 +61,9 @@ defmodule SalixWeb.Dashboard.SessionLive.Index do
         "compact" ->
           Runtime.compact_session(agent_id, sid)
 
-        "microcompact" ->
-          Runtime.microcompact_session(agent_id, sid)
-
         "fork" ->
           Runtime.fork_session(agent_id, sid, %{
-            "fork_request_id" => "dash-fork-" <> Ecto.UUID.generate()
+            "fork_request_id" => "dash-fork-" <> SystemsRuntime.Proc.uuid()
           })
       end
 
@@ -117,15 +114,6 @@ defmodule SalixWeb.Dashboard.SessionLive.Index do
             phx-value-sid={s["session_id"]}
           >
             Compact
-          </.button>
-          <.button
-            :if={internal_session?(s) and !@archived?}
-            size="sm"
-            phx-click="act"
-            phx-value-op="microcompact"
-            phx-value-sid={s["session_id"]}
-          >
-            Microcompact
           </.button>
         </:action>
       </.table>

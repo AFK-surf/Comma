@@ -18,7 +18,9 @@ defmodule SalixStore.OAuth.Adapters.Linear do
       `scope` string; the array wins when non-empty.
     * Account metadata comes from a GraphQL `viewer`/`organization` query;
       organization id/name are the primary account identity with viewer
-      fallback, and `metadata.actor` is `"user"`.
+      fallback, and `metadata.actor` is `"user"`, or `"app"` when the request
+      carried `actor: "app"` (an agent installation; `viewer_id` is then the
+      application's own user id in that workspace).
     * Refresh requires a refresh token (error when absent).
     * Revoke posts the access token with a bearer header; 400/401 (already
       invalid) count as success.
@@ -68,7 +70,7 @@ defmodule SalixStore.OAuth.Adapters.Linear do
             {"state", req["state"] || ""},
             {"scope", scope},
             {"prompt", "consent"}
-          ] ++ challenge_params(req["code_challenge"])
+          ] ++ actor_params(req["actor"]) ++ challenge_params(req["code_challenge"])
 
         {:ok, "#{authorize_url()}?#{Adapter.encode_query(q)}"}
     end
@@ -94,7 +96,7 @@ defmodule SalixStore.OAuth.Adapters.Linear do
 
       with {:ok, parsed} <- post_token_form(form),
            tokens = tokens_from_response(parsed),
-           {:ok, account} <- load_account_metadata(tokens["access_token"]) do
+           {:ok, account} <- load_account_metadata(tokens["access_token"], ctx["actor"]) do
         {:ok, %{"tokens" => tokens, "account" => account}}
       end
     end
@@ -157,6 +159,11 @@ defmodule SalixStore.OAuth.Adapters.Linear do
 
   # ---- internals ----
 
+  # `actor=app` installs the application into the workspace as its own user
+  # (an agent); the default authorizes the signed-in person.
+  defp actor_params("app"), do: [{"actor", "app"}]
+  defp actor_params(_actor), do: []
+
   defp challenge_params(challenge) do
     if Adapter.blank?(challenge) do
       []
@@ -208,7 +215,7 @@ defmodule SalixStore.OAuth.Adapters.Linear do
     }
   end
 
-  defp load_account_metadata(access_token) do
+  defp load_account_metadata(access_token, actor) do
     query = "query { viewer { id name email } organization { id name urlKey } }"
 
     case Adapter.post_json(graphql_url(), %{"query" => query}, "linear viewer query",
@@ -231,7 +238,8 @@ defmodule SalixStore.OAuth.Adapters.Linear do
              "url_key" => org["urlKey"],
              "viewer_id" => viewer["id"],
              "viewer_name" => viewer["name"],
-             "actor" => "user"
+             "viewer_email" => viewer["email"],
+             "actor" => if(actor == "app", do: "app", else: "user")
            }
          }}
 

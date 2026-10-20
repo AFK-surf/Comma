@@ -1,12 +1,13 @@
 defmodule SalixAgent.BrowserLiveTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle
   require Ecto.Query
   alias SalixStore.{BrowserSettings, BrowserBindings, Ids, Repo}
   alias SalixAgent.Browser
   @moduletag :browser_live
   @moduletag timeout: 120_000
   test "real provider through stored settings, tool entry, serialized control and driver frames" do
-    unless Process.whereis(SalixAgent.Browser.Supervisor),
+    unless SystemsRuntime.Proc.whereis(SalixAgent.Browser.Supervisor),
       do:
         start_supervised!(
           {DynamicSupervisor, name: SalixAgent.Browser.Supervisor, strategy: :one_for_one}
@@ -16,9 +17,9 @@ defmodule SalixAgent.BrowserLiveTest do
     group = Ids.new_group_id(tenant)
     ctx = %{agent_id: Ids.new_agent_id(group), session_id: "browser-live-test"}
     owner = Browser.owner(ctx)
-    old = Application.get_env(:salix_store, :compute_workload_credential_secret)
+    old = SystemsRuntime.get_env(:salix_store, :compute_workload_credential_secret)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_store,
       :compute_workload_credential_secret,
       String.duplicate("live-test-only", 4)
@@ -33,8 +34,8 @@ defmodule SalixAgent.BrowserLiveTest do
       Repo.delete_all(Ecto.Query.from(r in BrowserSettings.Row, where: r.scope == ^tenant))
 
       if old,
-        do: Application.put_env(:salix_store, :compute_workload_credential_secret, old),
-        else: Application.delete_env(:salix_store, :compute_workload_credential_secret)
+        do: SystemsRuntime.put_env(:salix_store, :compute_workload_credential_secret, old),
+        else: SystemsRuntime.delete_env(:salix_store, :compute_workload_credential_secret)
     end)
 
     assert {:ok, :ok} =
@@ -69,7 +70,7 @@ defmodule SalixAgent.BrowserLiveTest do
             {:halt, frame}
 
           _ ->
-            Process.sleep(100)
+            SystemsClock.sleep(100)
             {:cont, nil}
         end
       end)
@@ -79,7 +80,7 @@ defmodule SalixAgent.BrowserLiveTest do
     assert URI.parse(snapshot["url"]).host == "example.com"
 
     # Set a form through the private CDP seam. Agents cannot evaluate arbitrary scripts.
-    state = :sys.get_state(pid).commands
+    state = :sys.get_state(pid, :infinity).commands
 
     html =
       "<input aria-label='Name'><button onclick=\"document.querySelector('output').textContent=document.querySelector('input').value\">Save</button><output></output>"
@@ -189,7 +190,7 @@ defmodule SalixAgent.BrowserLiveTest do
   end
 
   test "real Cloudflare replacement restores Group cookies and local storage across tasks" do
-    unless Process.whereis(SalixAgent.Browser.Supervisor),
+    unless SystemsRuntime.Proc.whereis(SalixAgent.Browser.Supervisor),
       do:
         start_supervised!(
           {DynamicSupervisor, name: SalixAgent.Browser.Supervisor, strategy: :one_for_one}
@@ -199,9 +200,9 @@ defmodule SalixAgent.BrowserLiveTest do
     group = Ids.new_group_id(tenant)
     first = Browser.owner(%{agent_id: Ids.new_agent_id(group), session_id: "storage-first"})
     second = Browser.owner(%{agent_id: Ids.new_agent_id(group), session_id: "storage-second"})
-    old = Application.get_env(:salix_store, :compute_workload_credential_secret)
+    old = SystemsRuntime.get_env(:salix_store, :compute_workload_credential_secret)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_store,
       :compute_workload_credential_secret,
       String.duplicate("live-storage-test", 4)
@@ -227,8 +228,8 @@ defmodule SalixAgent.BrowserLiveTest do
       )
 
       if old,
-        do: Application.put_env(:salix_store, :compute_workload_credential_secret, old),
-        else: Application.delete_env(:salix_store, :compute_workload_credential_secret)
+        do: SystemsRuntime.put_env(:salix_store, :compute_workload_credential_secret, old),
+        else: SystemsRuntime.delete_env(:salix_store, :compute_workload_credential_secret)
     end)
 
     token = System.fetch_env!("CF_BROWSER_TOKEN_FILE") |> File.read!() |> String.trim()
@@ -281,28 +282,32 @@ defmodule SalixAgent.BrowserLiveTest do
     assert {:ok, _} = Browser.execute(first, "request_control", %{})
 
     Repo.update_all(BrowserBindings.query(first),
-      set: [updated_at: DateTime.add(DateTime.utc_now(), -901)]
+      set: [updated_at: DateTime.add(SystemsClock.utc_now(), -901)]
     )
 
     assert {:ok, _} = Browser.execute(first, "open", %{})
     assert BrowserBindings.get(first).provider_id == holder.provider_id
     assert {:error, :browser_shared_profile_in_use} = Browser.execute(second, "open", %{})
     {:ok, driver} = SalixAgent.Browser.Driver.observe(holder)
-    monitor = Process.monitor(driver)
+    monitor = SystemsRuntime.Proc.monitor(driver)
 
-    :sys.replace_state(driver, fn state ->
-      Process.cancel_timer(state.idle)
+    :sys.replace_state(
+      driver,
+      fn state ->
+        SystemsClock.cancel_timer(state.idle)
 
-      %{
-        state
-        | last_activity: System.monotonic_time(:millisecond) - 600_001,
-          idle: Process.send_after(driver, :idle, 2000)
-      }
-    end)
+        %{
+          state
+          | last_activity: SystemsClock.monotonic_time(:millisecond) - 600_001,
+            idle: SystemsClock.send_after(driver, :idle, 2000)
+        }
+      end,
+      :infinity
+    )
 
     assert {:ok, _} = SalixAgent.Browser.Driver.call(holder, "stream_start", %{"tab_id" => tab})
     assert {:ok, _} = SalixAgent.Browser.Driver.frame(driver, tab)
-    assert_receive {:DOWN, ^monitor, :process, ^driver, :normal}, 5000
+    settle_receive({:DOWN, ^monitor, :process, ^driver, :normal})
     assert {:error, :browser_driver_unavailable} = SalixAgent.Browser.Driver.observe(holder)
 
     assert {:error, :browser_driver_unavailable} =
@@ -359,6 +364,6 @@ defmodule SalixAgent.BrowserLiveTest do
 
   defp live_commands(owner) do
     {:ok, pid} = SalixAgent.Browser.Driver.ensure(BrowserBindings.get(owner))
-    :sys.get_state(pid).commands
+    :sys.get_state(pid, :infinity).commands
   end
 end

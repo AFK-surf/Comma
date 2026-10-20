@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
-import type { CommaApiClient } from "../../../../api";
-import type { ChatConversationRef } from "../../model/conversationChannel";
+import type { ChatConversationRef } from "@comma/core/chat";
 import type { LocalFilePreviewLoader } from "../attachments/useLocalFilePreviews";
 import type { ConversationTurn } from "../layout/conversationLayout";
 import type { OutgoingPresentations } from "../outgoing/useOutgoingPresentations";
@@ -12,8 +11,8 @@ import type { ResponseFeedback } from "./ConversationTurnEntries";
 
 /** What every row of one thread renders with: its content source and its actions. */
 type ThreadRowBindings = {
-  api: CommaApiClient | undefined;
   groupId: string;
+  live: boolean;
   onAnchorOutgoingTurn: (turnKey: string) => void;
   onDiscard: (clientRequestId: string) => void;
   onOpenConversationRef: ((conversationRef: ChatConversationRef) => void) | undefined;
@@ -23,13 +22,15 @@ type ThreadRowBindings = {
   workspaceId: string;
 };
 
-/** What both turn lists render; the variant only decides how a turn is framed. */
+/** What the turn list renders. */
 export type ThreadTurnsProps = {
   afterMessages: ReactNode;
   anchoredTailsFor: (turnKey: string) => ReactNode;
   conversationTurns: ConversationTurn[];
   historyBoundaryMessageId: string | undefined;
   lastTurnKey: string | undefined;
+  /** The message or draft whose timestamp reads "New". */
+  newTimestampId: string | undefined;
   outgoing: Pick<
     OutgoingPresentations,
     "outgoingPresentationByTurnKey" | "outgoingTurnKeys"

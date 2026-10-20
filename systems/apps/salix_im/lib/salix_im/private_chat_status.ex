@@ -1,6 +1,6 @@
 defmodule SalixIM.PrivateChatStatus do
   @moduledoc """
-  Best-effort, source-scoped Telegram, WeChat and Signal activity. Runs outside inbound delivery;
+  Best-effort, source-scoped Telegram, WeChat, Signal and Photon iMessage activity. Runs outside inbound delivery;
   presentation failure must never turn accepted input into a webhook retry.
   """
 
@@ -8,7 +8,7 @@ defmodule SalixIM.PrivateChatStatus do
 
   @task_supervisor SalixIM.PrivateChatStatusTaskSupervisor
 
-  def enabled?, do: Application.get_env(:salix_im, :private_chat_status, true) != false
+  def enabled?, do: SystemsRuntime.get_env(:salix_im, :private_chat_status, true) != false
 
   def record_inbound(group_id, metadata, source_id, agent_id, session_id) do
     if enabled?() and private_source?(metadata) do
@@ -28,7 +28,9 @@ defmodule SalixIM.PrivateChatStatus do
     do: is_binary(peer) and peer != ""
 
   defp private_source?(metadata),
-    do: metadata["provider"] in ["telegram", "signal"] and metadata["chat_type"] == "private"
+    do:
+      metadata["provider"] in ["telegram", "signal", "imessage"] and
+        metadata["chat_type"] == "private"
 
   defp start_projection(group_id, metadata, source_id, agent_id, session_id) do
     with {:ok, connect} <-
@@ -51,6 +53,10 @@ defmodule SalixIM.PrivateChatStatus do
   # the Group's own; its peer binding authorizes the surface
   # (`SalixIM.SignalStatusTransport`).
   defp managed_surface?(%{"provider" => "signal"}), do: true
+  # The relay transport has no typing indicator; Photon lines do.
+  defp managed_surface?(%{"provider" => "imessage"} = connect),
+    do: connect["managed_by"] == "comma_product" and connect["runtime_mode"] == "photon"
+
   defp managed_surface?(connect), do: connect["managed_by"] == "comma_product"
 
   # Telegram clears native status when a reply lands. The actor continues to
@@ -82,7 +88,7 @@ defmodule SalixIM.PrivateChatStatus do
   defp dispatch(fun) do
     context = SystemsObservability.Context.capture()
 
-    case Task.Supervisor.start_child(@task_supervisor, fn ->
+    case SystemsRuntime.TaskSupervisor.start_child(@task_supervisor, fn ->
            SystemsObservability.Context.run(context, fn -> guarded(fun) end)
          end) do
       {:ok, _} -> :ok
@@ -107,7 +113,7 @@ defmodule SalixIM.PrivateChatStatus do
   end
 
   defp observe_dispatch(outcome) do
-    :telemetry.execute([:salix, :operation, :stop], %{duration: 0}, %{
+    SystemsRuntime.Telemetry.execute([:salix, :operation, :stop], %{duration: 0}, %{
       component: "salix_im",
       operation: "private_chat_status_start",
       surface: "comma",
@@ -122,12 +128,12 @@ defmodule SalixIM.PrivateChatStatus do
   def ensure_local(agent_id, connect, metadata) do
     key = PrivateChatStatusActor.key(connect, metadata)
 
-    case Registry.lookup(SalixIM.PrivateChatStatusRegistry, key) do
+    case SystemsRuntime.Registry.lookup(SalixIM.PrivateChatStatusRegistry, key) do
       [{pid, _}] ->
         {:ok, pid}
 
       [] ->
-        case DynamicSupervisor.start_child(
+        case SystemsRuntime.DynamicSupervisor.start_child(
                SalixIM.PrivateChatStatusFleetSup,
                {PrivateChatStatusActor, agent_id: agent_id, connect: connect, metadata: metadata}
              ) do

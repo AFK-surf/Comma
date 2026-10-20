@@ -182,14 +182,19 @@ def toolBatchEvents (state args : Term) : KernelM Term := do
     else pure results
   let sessionId ← field state "session_id"
   let first ← field state "next_message_id"
+  -- The runtime failure notice is recorded by its runtime message, not as a
+  -- tool result: the model never called it.
+  let notice := (← field state "runtime_failure_reply").get (b "tool_call_id")
   let mut id := integerValue first
   let mut hwm := id - 1
   let mut wait := false
   let mut events : List Term := []
   for result in ← asList results do
+    let recorded := !(notice.isBinary && atomFirst result "id" == notice)
     let event ← toolResultEvent sessionId trace result (i id)
-    hwm := max hwm id
-    id := id + 1
+    if recorded then
+      hwm := max hwm id
+      id := id + 1
     let mut extra : List Term := []
     for sideEvent in wrap (orElse (atomFirst result "events") (list [])) do
       let explicit := eventMessageId sideEvent
@@ -200,7 +205,7 @@ def toolBatchEvents (state args : Term) : KernelM Term := do
       extra := extra ++ [sideEvent]
     wait := wait || extra.any waitSetEvent
     let obligations := (← resolutionEvents sessionId result nil) ++ (← cardObligationEvents sessionId result nil)
-    events := events ++ [event] ++ extra ++ obligations
+    events := events ++ (if recorded then [event] else []) ++ extra ++ obligations
   Presentation.finishToolBatch state
     (.tuple [list events, i hwm, Term.bool wait, RoundQuery.textKey pending "checkpoint", results])
 
@@ -427,6 +432,15 @@ def noticeScope (state args : Term) : KernelM Term := do
 private def envelopeMisuse : String :=
   "internal LLM sessions must call capability tools through the call envelope"
 
+/-- The guidance for a model call of `get_runtime_message`. The runtime writes
+calls of that name to show its own messages (`Provider.Messages.runtimeToolName`).
+It is not a tool and has nothing to fetch, so the guidance names the actions
+that do exist instead of a manual. -/
+private def runtimeMessageGuidance : String :=
+  "get_runtime_message is not a tool. The runtime writes these calls to show its own messages. Tool completions also arrive that way without a request. Call wait_for to wait for a running tool, or call end_turn when the work is done."
+
+private def runtimeMessageName : Term := b VerifiedKernel.Provider.Messages.runtimeToolName
+
 private def nameOf (call : Term) : Term := orElse (call.get (a "name")) (call.get (b "name"))
 private def argsOf (call : Term) : Term := orElse (orElse (call.get (a "args")) (call.get (b "args"))) empty
 
@@ -451,11 +465,14 @@ private def guide (call reason target : Term) (envelope : Bool) (kind : String) 
   return call.put (a "name") name |>.put (b "name") name |>.put (a "guidance_error") reason
     |>.put (a "guidance_tool") (← text target) |>.put (a "guidance_reason") (b kind)
 
-/-- One call through the envelope: a direct call of a capability tool, or a
-`call` that targets `wait_for`, becomes guidance; a `call` becomes its target
+/-- One call through the envelope: a direct call of a capability tool, a
+call of `get_runtime_message` (direct or enveloped), or a `call` that targets
+`wait_for`, becomes guidance; a `call` becomes its target
 with the target's arguments, reply intent and IFC declaration. -/
 private def envelopeCall (envelope : Bool) (call : Term) : KernelM Term := do
   let name ← text (nameOf call)
+  if name == runtimeMessageName then
+    return ← guide call (b runtimeMessageGuidance) name envelope "envelope_misuse"
   let call ← if envelope then
       if name == b "call" || name == b "wait_for" then pure call
       else guide call (b envelopeMisuse) name true "envelope_misuse"
@@ -466,6 +483,8 @@ private def envelopeCall (envelope : Bool) (call : Term) : KernelM Term := do
   if nameOf call != b "call" || guidanceCall call then return call
   match ← VerifiedKernel.AgentLoop.CallEnvelope.decode (argsOf call) with
   | .tuple [.atom "ok", target, params, ifc, intent] =>
+    if target == runtimeMessageName then
+      return ← guide call (b runtimeMessageGuidance) target envelope "envelope_misuse"
     if target == b "wait_for" then
       return ← guide call (b "wait_for is a direct internal session control; call wait_for directly instead of using the call envelope")
         (b "wait_for") envelope "envelope_misuse"
@@ -540,15 +559,13 @@ def activationFacts : KernelM Term := do
 
 /-- One model round's entry. `config` carries the host's `role`,
 `canonical_router`, `restricted`, `guard_config` and `nonce`, and the
-request's `delta`, `disclosure`, `protocol`, `cfg`, `tools` and `mode`.
+request's `delta`, `protocol`, `cfg`, `tools` and `mode`.
 A pending guard disposition enters `{:guard_notice, facts}`. Otherwise the
 answer is `{:ok, request, facts}`: the provider request and the round facts
 that `{:model_response, response, facts}` carries. `facts["trace"]` holds the
 request generation that `loop_record` records on the response. -/
 def roundRequest (state config : Term) : KernelM Term := do
   let key := RoundQuery.textKey config
-  let role := key "role"
-  let router := (key "canonical_router").truthy
   let base := roundFacts config
   if ← RoundQuery.guardDispositionPending state then
     return .tuple [a "guard_notice",
@@ -556,9 +573,8 @@ def roundRequest (state config : Term) : KernelM Term := do
   let prefetched ← Request.prefetch state
   match ← roundView state with
   | .tuple [.atom "ok", view] =>
-    let request ← Request.dispatch state (.tuple [key "delta", Term.bool (key "available").truthy,
-      view.get (b "trusted_origin"), key "disclosure", Term.bool (role == b "router" && router), key "protocol",
-      key "cfg", orElse (key "tools") (list []), orElse (key "mode") (b "complete")]) prefetched
+    let request ← Request.dispatch state (.tuple [key "delta", key "protocol", key "cfg",
+      orElse (key "tools") (list []), orElse (key "mode") (b "complete")]) prefetched
     let phase := orElse (view.get (b "phase")) (a "clean")
     let facts := base (view.get (b "source_ids")) (view.get (b "id_snapshot"))
       (orElse (view.get (b "guard")) phase) phase

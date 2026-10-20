@@ -100,7 +100,7 @@ defmodule SalixAgent.InternalSession do
 
   @spec apply_event(t(), map()) :: t()
   def apply_event(session, event) when is_session(session) and is_map(event) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     try do
       next = session |> Kernel.step(event) |> settle()
@@ -324,7 +324,6 @@ defmodule SalixAgent.InternalSession do
 
   def covered_seq(session, compacted_through), do: query(session, :covered_seq, compacted_through)
   def total_message_count(session), do: query(session, :total_message_count)
-  def masked_messages(session), do: query(session, :masked_messages)
   def pending_assistant_id(session), do: query(session, :pending_assistant_id)
   def decision_required?(session), do: query(session, :decision_required?)
   def consecutive_timeouts(session), do: query(session, :consecutive_timeouts)
@@ -357,7 +356,6 @@ defmodule SalixAgent.InternalSession do
   # Runtime consumers (see the README query catalog).
   def session_json(session, agent_id), do: query(session, :session_json, agent_id)
   def compact_result_for(session, source_id), do: query(session, :compact_result_for, source_id)
-  def emergency_compact_through_id(session), do: query(session, :emergency_compact_through_id)
   def lineage_source_session_id(session), do: query(session, :lineage_source_session_id)
 
   def title_has_assistant?(session), do: query(session, :title_has_assistant?)
@@ -401,9 +399,6 @@ defmodule SalixAgent.InternalSession do
 
   def terminal_reply_source_scope(session), do: query(session, :terminal_reply_source_scope)
 
-  def terminal_reply_reminder_active?(session),
-    do: query(session, :terminal_reply_reminder_active?)
-
   def terminal_reply_matches?(session, binding),
     do: query(session, :terminal_reply_matches?, binding)
 
@@ -418,6 +413,11 @@ defmodule SalixAgent.InternalSession do
   # Compaction and context providers (see the README query catalog).
   def compaction_live_messages(session), do: query(session, :compaction_live_messages)
   def request_live_messages(session), do: query(session, :request_live_messages)
+
+  @doc "The newest `limit` user and assistant messages with text, without exporting the rest."
+  def request_conversation_tail(session, limit) when is_integer(limit) and limit >= 0,
+    do: query(session, :request_conversation_tail, limit)
+
   def compaction_context_prefix(session), do: query(session, :compaction_context_prefix)
   def provider_compaction_items(session), do: query(session, :provider_compaction_items)
 
@@ -515,7 +515,7 @@ defmodule SalixAgent.InternalSession do
       "session_kernel",
       SystemsObservability.Context.current_surface(),
       outcome,
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
   rescue
     _ -> :ok

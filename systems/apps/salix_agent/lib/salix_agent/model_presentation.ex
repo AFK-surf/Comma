@@ -1,5 +1,5 @@
 defmodule SalixAgent.ModelPresentation do
-  @moduledoc "Credential-free display values for a template's main model."
+  @moduledoc "Credential-free display values for a model record's main model."
 
   @vendors %{
     "openai" => "openai",
@@ -48,15 +48,6 @@ defmodule SalixAgent.ModelPresentation do
   end
 
   def name(template), do: catalog_metadata(template)["name"]
-
-  def option_name(template) do
-    model = name(template) || template["template_id"]
-    alias_name = template["name"]
-
-    if is_binary(alias_name) and alias_name not in ["", model],
-      do: "#{model} — #{alias_name}",
-      else: model
-  end
 
   def vendor(template), do: vendor(template, catalog_metadata(template))
 
@@ -111,25 +102,5 @@ defmodule SalixAgent.ModelPresentation do
       "account_pool" => pool,
       "model_icon" => if(pool in ["codex", "claude"], do: pool, else: vendor)
     }
-  end
-
-  def validate(attrs) do
-    if Enum.all?(~w(model_display_name model_vendor), fn field ->
-         value = attrs[field]
-         is_nil(value) or (is_binary(value) and byte_size(value) <= 200)
-       end), do: :ok, else: {:error, {:bad_request, "Invalid model display information"}}
-  end
-
-  def refresh(attrs, old) do
-    changed =
-      Enum.any?(~w(model provider provider_config base_url protocol account_pool), fn key ->
-        Map.has_key?(attrs, key) and attrs[key] != old[key]
-      end)
-
-    if changed do
-      attrs |> Map.put_new("model_display_name", nil) |> Map.put_new("model_vendor", nil)
-    else
-      attrs
-    end
   end
 end

@@ -5,6 +5,9 @@ defmodule SalixAgent.Tools.Compute do
   @request_id_pattern ~r/\A[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}\z/
 
   @definitions [
+    {"compute.workloads.list",
+     "List one page of enabled shared Workloads in this workspace. Compare kind, capabilities, status, network policy and resources. Pass the selected workload_id to each compute or process call. next_cursor continues with after_id. Private Agent runtime carriers are not shared Workloads.",
+     :workloads_list},
     {"compute.workspace.stat", "Read metadata for one relative workspace path.", :workspace_stat},
     {"compute.workspace.list", "List one bounded relative workspace directory.", :workspace_list},
     {"compute.workspace.read", "Read a bounded byte range from one workspace file.",
@@ -37,9 +40,30 @@ defmodule SalixAgent.Tools.Compute do
 
   def defs do
     Enum.map(@definitions, fn {name, description, operation} ->
-      {name, description, schema(operation), fn args, ctx -> call(name, operation, args, ctx) end,
-       @wait}
+      entry =
+        {name, description <> target_help(operation), schema(operation),
+         fn args, ctx -> call(name, operation, args, ctx) end, @wait}
+
+      if operation == :workloads_list,
+        do: Tuple.insert_at(entry, tuple_size(entry), safety: "read", runtimes: [:internal]),
+        else: entry
     end)
+  end
+
+  defp call(name, :workloads_list, args, ctx) do
+    cond do
+      not SalixAgent.PluginPolicy.allowed_tool?(ctx, name) ->
+        failure(:compute_disabled)
+
+      ctx[:runtime_kind] != :internal ->
+        failure(:compute_workspace_unavailable)
+
+      true ->
+        case SalixAgent.ComputeAccess.list(ctx, stringify(args)) do
+          {:ok, result} -> Jason.encode!(result)
+          {:error, reason} -> failure(reason)
+        end
+    end
   end
 
   defp call(name, operation, args, ctx) do
@@ -48,19 +72,11 @@ defmodule SalixAgent.Tools.Compute do
     end
 
     adapter = ctx[:compute_adapter] || ctx["compute_adapter"] || SalixStore.Compute
-    tenant_id = required_context(ctx, :tenant_id)
-    agent_id = required_context(ctx, :agent_id)
-    environment_id = required_context(ctx, :environment_id)
-    grant_id = required_context(ctx, :workload_grant_id)
 
-    with {:ok, workload} <-
-           SalixStore.Compute.authorize_workload_grant(
-             tenant_id,
-             grant_id,
-             environment_id,
-             agent_id,
-             permission(operation)
-           ),
+    args = stringify(args)
+    {target, args} = Map.pop(args, "workload_id")
+
+    with {:ok, workload} <- authorize_workload(ctx, permission(operation), target),
          {:ok, result} <-
            dispatch(
              adapter,
@@ -71,7 +87,44 @@ defmodule SalixAgent.Tools.Compute do
       Jason.encode!(result)
     else
       false -> raise "compute is unavailable for this Workload"
-      {:error, reason} -> raise "compute.#{operation} failed: #{inspect(reason)}"
+      {:error, reason} -> failure(reason)
+    end
+  end
+
+  defp authorize_workload(ctx, permission, target) do
+    with {:ok, workload} <- resolve_workload(ctx, permission, target),
+         true <- is_nil(target) or target == workload.id do
+      {:ok, workload}
+    else
+      false -> {:error, :workload_target_mismatch}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp resolve_workload(ctx, permission, target) do
+    tenant_id = required_context(ctx, :tenant_id)
+    agent_id = required_context(ctx, :agent_id)
+    grant_id = ctx[:workload_grant_id] || ctx["workload_grant_id"]
+
+    cond do
+      not is_nil(grant_id) ->
+        SalixStore.Compute.authorize_workload_grant(
+          tenant_id,
+          grant_id,
+          required_context(ctx, :environment_id),
+          agent_id,
+          permission
+        )
+
+      ctx[:runtime_kind] == :internal ->
+        if is_binary(target) and byte_size(target) in 1..128 do
+          SalixAgent.ComputeAccess.authorize(ctx, target, permission)
+        else
+          {:error, :workload_target_required}
+        end
+
+      true ->
+        {:error, :compute_grant_required}
     end
   end
 
@@ -136,6 +189,21 @@ defmodule SalixAgent.Tools.Compute do
   defp stringify(value) when is_list(value), do: Enum.map(value, &stringify/1)
   defp stringify(value), do: value
 
+  defp target_help(:workloads_list), do: ""
+
+  defp target_help(_),
+    do:
+      " Pass workload_id from compute.workloads.list. Never switch targets after an uncertain result."
+
+  defp schema(:workloads_list) do
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "required" => [],
+      "properties" => %{"after_id" => %{"type" => "string", "maxLength" => 128}}
+    }
+  end
+
   defp schema(operation) do
     required =
       case operation do
@@ -159,7 +227,9 @@ defmodule SalixAgent.Tools.Compute do
       "type" => "object",
       "additionalProperties" => false,
       "required" => required,
-      "properties" => Map.new(required, &{&1, %{"type" => property_type(&1)}})
+      "properties" =>
+        Map.new(required, &{&1, %{"type" => property_type(&1)}})
+        |> Map.put("workload_id", %{"type" => "string", "minLength" => 1, "maxLength" => 128})
     }
 
     base =
@@ -190,6 +260,32 @@ defmodule SalixAgent.Tools.Compute do
       })
     else
       base
+    end
+  end
+
+  @public_errors %{
+    compute_grant_required:
+      "This operation requires an authorized Shell or an explicit Compute Grant.",
+    workload_target_required: "Select workload_id from compute.workloads.list before this call.",
+    workload_target_mismatch: "The selected Workload differs from this Session or Grant target.",
+    workload_not_available:
+      "The selected Workload is unavailable to this workspace. Refresh compute.workloads.list.",
+    compute_workspace_unavailable:
+      "This Agent has no current workspace access for shared Workloads.",
+    compute_disabled: "Compute tools are disabled for this Agent.",
+    invalid_cursor: "Use next_cursor from compute.workloads.list as after_id."
+  }
+
+  defp failure(reason) do
+    case Map.fetch(@public_errors, reason) do
+      {:ok, message} ->
+        code = Atom.to_string(reason)
+
+        {:tool_failure, Jason.encode!(%{error_class: code, message: message}), code,
+         "user_reportable", message, []}
+
+      :error ->
+        raise "Compute operation failed: #{inspect(reason)}"
     end
   end
 

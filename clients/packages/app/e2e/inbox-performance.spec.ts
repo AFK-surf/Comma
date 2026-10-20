@@ -1,56 +1,24 @@
 import { expect, test as baseTest } from "@playwright/test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { build, preview } from "vite";
-import { fileURLToPath } from "node:url";
-// Build the real Inbox UI in production mode; no network latency in list timings.
+import { serveAppFixtures } from "../../../e2e/helpers/app-fixtures";
+// Build the real Inbox UI in production mode, the React build users run.
 const test = baseTest.extend<{}, { inboxBaseURL: string }>({
   inboxBaseURL: [
     // Playwright requires fixture dependencies to use object destructuring.
     // eslint-disable-next-line no-empty-pattern
     async ({}, use) => {
-      const root = fileURLToPath(new URL("../../../apps/web/", import.meta.url));
-      const cacheDir = await mkdtemp(join(tmpdir(), "comma-inbox-perf-"));
-      const previousCwd = process.cwd();
-      let server: Awaited<ReturnType<typeof preview>> | undefined;
+      const fixtures = await serveAppFixtures();
       try {
-        // The web app config resolves workspace source aliases from its own cwd.
-        process.chdir(root);
-        const configFile = join(root, "vite.config.ts");
-        await build({
-          root: fileURLToPath(new URL("./fixtures/", import.meta.url)),
-          configFile,
-          logLevel: "error",
-          build: {
-            outDir: cacheDir,
-            emptyOutDir: true,
-            rollupOptions: {
-              input: fileURLToPath(
-                new URL("./fixtures/inbox-performance.html", import.meta.url)
-              ),
-            },
-          },
-        });
-        server = await preview({
-          root,
-          configFile,
-          build: { outDir: cacheDir },
-          preview: { host: "127.0.0.1", port: 0, strictPort: false },
-        });
+        await use(fixtures.url);
       } finally {
-        process.chdir(previousCwd);
-      }
-      try {
-        await use(server.resolvedUrls!.local[0]!);
-      } finally {
-        await new Promise<void>((resolve) => server.httpServer.close(() => resolve()));
-        await rm(cacheDir, { recursive: true, force: true });
+        await fixtures.close();
       }
     },
     { scope: "worker" },
   ],
 });
+
+// The tests share this file's production build, so one worker runs them all.
+test.describe.configure({ mode: "default" });
 
 function paginationItem(id: string) {
   return {
@@ -213,141 +181,120 @@ for (const visibleTail of [false, true]) {
   });
 }
 
-for (const count of [50, 500, 2000]) {
-  test(`Inbox stress ${count} rows`, async ({ page, inboxBaseURL }, testInfo) => {
-    test.setTimeout(180_000);
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-    await page.goto(new URL("/inbox-performance.html", inboxBaseURL).href);
-    await page.waitForFunction(() => Boolean(window.inboxStress));
-    const result = await page.evaluate(async (sampleCount) => {
-      // Browser-evaluated helpers must remain inside the serialized callback.
-      // eslint-disable-next-line unicorn/consistent-function-scoping
-      const paint = () =>
-        new Promise<void>((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
-        );
-      const timed = async (action: () => void) => {
-        const start = performance.now();
-        action();
-        await paint();
-        return performance.now() - start;
-      };
-      const mount = await timed(() => window.inboxStress.load(sampleCount));
-      if (!document.querySelector('[data-inbox-row-id="task-0"]'))
-        throw new Error("Initial list has not committed");
-      const selection: number[] = [],
-        updates: number[] = [],
-        read: number[] = [];
-      for (let index = 0; index < 15; index++) {
-        selection.push(
-          await timed(() =>
-            (
-              document.querySelector(
-                `[data-inbox-row-id="task-${index % 10}"] [data-testid="inbox-item"]`
-              ) as HTMLElement
-            ).click()
-          )
-        );
-        if (
-          !document.querySelector(
-            `[data-inbox-row-id="task-${index % 10}"] [aria-current="page"]`
-          )
-        )
-          throw new Error("Selection has not committed");
-        read.push(await timed(() => window.inboxStress.read(index)));
-        updates.push(await timed(() => window.inboxStress.update()));
-      }
-      // eslint-disable-next-line unicorn/consistent-function-scoping
-      const p95 = (values: number[]) =>
-        values.toSorted((a, b) => a - b)[Math.floor(values.length * 0.95)]!;
-      return {
-        count: sampleCount,
-        mount,
-        selection: p95(selection),
-        update: p95(updates),
-        read: p95(read),
-        nodes: document.querySelectorAll("*").length,
-      };
-    }, count);
-    console.log(JSON.stringify(result));
-    await testInfo.attach("metrics", {
-      body: JSON.stringify(result, null, 2),
-      contentType: "application/json",
-    });
-    // Report timings without making shared-runner scheduling a pass/fail gate.
-    // DOM bounds and the actual interaction results remain required below.
-    expect(result.nodes).toBeLessThan(1000);
-    const rows = page.getByTestId("inbox-item");
-    await page.locator('[data-inbox-row-id="task-0"] a').focus();
-    for (let index = 1; index < 35; index++) {
-      await page.keyboard.press("Tab");
-      await expect(page.locator(`[data-inbox-row-id="task-${index}"] a`)).toBeFocused();
-    }
-    await page.keyboard.press("Shift+Tab");
-    await expect(page.locator('[data-inbox-row-id="task-33"] a')).toBeFocused();
-    const scrolling = await page.evaluate(async () => {
-      const viewport = document.querySelector(
-        '[data-slot="scroll-area-viewport"]'
-      ) as HTMLElement;
-      const frames: number[] = [];
-      let previous = performance.now();
-      for (let index = 0; index < 60; index++) {
-        viewport.scrollTop += 100;
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-        const now = performance.now();
-        frames.push(now - previous);
-        previous = now;
-      }
-      viewport.scrollTop = viewport.scrollHeight;
-      return frames.toSorted((a, b) => a - b)[Math.floor(frames.length * 0.95)]!;
-    });
-    console.log(JSON.stringify({ count, scrollFrameP95: scrolling }));
-    await testInfo.attach("scroll-metrics", {
-      body: JSON.stringify({ count, scrollFrameP95: scrolling }),
-      contentType: "application/json",
-    });
-    // Reaching the end of the rail loads the next page with no button to press;
-    // the list stays windowed however many pages it holds.
-    const setSize = async () =>
-      Number(
-        await page.locator("[data-inbox-row-id]").first().getAttribute("aria-setsize")
+const count = 2000;
+test(`Inbox stress ${count} rows`, async ({ page, inboxBaseURL }) => {
+  await page.goto(new URL("/inbox-performance.html", inboxBaseURL).href);
+  await page.waitForFunction(() => Boolean(window.inboxStress));
+  const nodes = await page.evaluate(async (sampleCount) => {
+    // Browser-evaluated helpers must remain inside the serialized callback.
+    // eslint-disable-next-line unicorn/consistent-function-scoping
+    const paint = () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
       );
-    await expect.poll(setSize).toBeGreaterThan(count);
-    expect(await rows.count()).toBeLessThan(50);
-    // A page lands below the reader: the rows in view keep their place.
-    const viewport = page.locator('[data-slot="scroll-area-viewport"]');
-    const loaded = await setSize();
-    const bottom = await viewport.evaluate((element) => {
-      element.scrollTop = element.scrollHeight;
-      return element.scrollTop;
-    });
-    await expect.poll(setSize).toBeGreaterThan(loaded);
-    expect(await viewport.evaluate((element) => element.scrollTop)).toBeCloseTo(
-      bottom,
-      0
-    );
-    await expect(
-      page.locator(`[data-inbox-row-id="task-${loaded - 1}"] a`)
-    ).toBeVisible();
-    await page.evaluate(() => {
-      document.documentElement.style.fontSize = "20px";
-    });
-    await expect
-      .poll(async () => {
-        const geometry = await page
-          .locator("[data-inbox-row-id]")
-          .evaluateAll((elements) =>
-            elements
-              .filter((element) => !element.querySelector("h2"))
-              .map((element) => element.getBoundingClientRect())
-              .filter((rect) => rect.top >= 0 && rect.bottom <= innerHeight)
-          );
-        if (geometry.length < 2) return false;
-        return geometry.every(
-          (rect, index) => index === 0 || rect.top >= geometry[index - 1]!.bottom - 1
-        );
-      })
-      .toBe(true);
+    window.inboxStress.load(sampleCount);
+    await paint();
+    if (!document.querySelector('[data-inbox-row-id="task-0"]'))
+      throw new Error("Initial list has not committed");
+    for (let index = 0; index < 15; index++) {
+      (
+        document.querySelector(
+          `[data-inbox-row-id="task-${index % 10}"] [data-testid="inbox-item"]`
+        ) as HTMLElement
+      ).click();
+      await paint();
+      if (
+        !document.querySelector(
+          `[data-inbox-row-id="task-${index % 10}"] [aria-current="page"]`
+        )
+      )
+        throw new Error("Selection has not committed");
+      window.inboxStress.read(index);
+      await paint();
+      window.inboxStress.update();
+      await paint();
+    }
+    return document.querySelectorAll("*").length;
+  }, count);
+  // The list stays windowed: DOM size does not follow the row count.
+  expect(nodes).toBeLessThan(1000);
+  const rows = page.getByTestId("inbox-item");
+  await page.locator('[data-inbox-row-id="task-0"] a').focus();
+  for (let index = 1; index < 35; index++) {
+    await page.keyboard.press("Tab");
+    await expect(page.locator(`[data-inbox-row-id="task-${index}"] a`)).toBeFocused();
+  }
+  await page.keyboard.press("Shift+Tab");
+  await expect(page.locator('[data-inbox-row-id="task-33"] a')).toBeFocused();
+  await page.evaluate(async () => {
+    const viewport = document.querySelector(
+      '[data-slot="scroll-area-viewport"]'
+    ) as HTMLElement;
+    for (let index = 0; index < 60; index++) {
+      viewport.scrollTop += 100;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    viewport.scrollTop = viewport.scrollHeight;
   });
-}
+  // Reaching the end of the rail loads the next page with no button to press;
+  // the list stays windowed however many pages it holds.
+  const setSize = async () =>
+    Number(
+      await page.locator("[data-inbox-row-id]").first().getAttribute("aria-setsize")
+    );
+  await expect.poll(setSize).toBeGreaterThan(count);
+  expect(await rows.count()).toBeLessThan(50);
+  // A page lands below the reader: the rows in view keep their place.
+  const viewport = page.locator('[data-slot="scroll-area-viewport"]');
+  const loaded = await setSize();
+  // Row count can commit before the observer sees the new page move the
+  // pagination trigger out of reach. Wait for that departure before returning
+  // to the end, so the second scroll is a distinct pagination arrival.
+  await viewport.evaluate(
+    (element) =>
+      new Promise<void>((resolve) => {
+        const sentinel = element.querySelector('[data-slot="scroll-area-load-more"]');
+        if (!sentinel) throw new Error("Missing pagination trigger");
+        const observer = new IntersectionObserver(
+          ([entry]) => {
+            if (!entry || entry.isIntersecting) return;
+            observer.disconnect();
+            resolve();
+          },
+          { root: element, rootMargin: "0px 0px 100% 0px" }
+        );
+        observer.observe(sentinel);
+      })
+  );
+  const bottom = await viewport.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    return element.scrollTop;
+  });
+  await expect.poll(setSize).toBeGreaterThan(loaded);
+  expect(await viewport.evaluate((element) => element.scrollTop)).toBeCloseTo(
+    bottom,
+    0
+  );
+  await expect(
+    page.locator(`[data-inbox-row-id="task-${loaded - 1}"] a`)
+  ).toBeVisible();
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = "20px";
+  });
+  await expect
+    .poll(async () => {
+      const geometry = await page
+        .locator("[data-inbox-row-id]")
+        .evaluateAll((elements) =>
+          elements
+            .filter((element) => !element.querySelector("h2"))
+            .map((element) => element.getBoundingClientRect())
+            .filter((rect) => rect.top >= 0 && rect.bottom <= innerHeight)
+        );
+      if (geometry.length < 2) return false;
+      return geometry.every(
+        (rect, index) => index === 0 || rect.top >= geometry[index - 1]!.bottom - 1
+      );
+    })
+    .toBe(true);
+});

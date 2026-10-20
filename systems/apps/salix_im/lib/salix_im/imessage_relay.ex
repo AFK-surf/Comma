@@ -11,7 +11,9 @@ defmodule SalixIM.IMessageRelay do
   @max_event_bytes 1024 * 1024
   @max_image_bytes 20 * 1024 * 1024
 
-  def config, do: Application.get_env(:salix_im, :imessage, [])
+  @request_timeout_ms 15_000
+
+  def config, do: SystemsRuntime.get_env(:salix_im, :imessage, [])
 
   def configured? do
     config()[:enabled] == true and
@@ -53,7 +55,8 @@ defmodule SalixIM.IMessageRelay do
           chat_guid: chat,
           caption: caption,
           image: {upload.data, filename: upload.filename}
-        }
+        },
+        plugins: [SalixIM.Multipart]
       )
       |> sent()
     else
@@ -100,7 +103,7 @@ defmodule SalixIM.IMessageRelay do
   end
 
   defp do_stream(after_event_id, handle, opts) do
-    deadline = System.monotonic_time(:millisecond) + Keyword.get(opts, :duration_ms, 60_000)
+    deadline = SystemsClock.monotonic_time(:millisecond) + Keyword.get(opts, :duration_ms, 60_000)
 
     with :ok <- require_configured() do
       response =
@@ -112,6 +115,7 @@ defmodule SalixIM.IMessageRelay do
           decode_body: false,
           receive_timeout: 35_000,
           connect_options: [timeout: 5_000],
+          plug: req_options()[:plug],
           into: fn {:data, chunk}, {req, resp} ->
             result =
               if resp.status == 200,
@@ -122,7 +126,7 @@ defmodule SalixIM.IMessageRelay do
               {:ok, buffer} ->
                 next = Req.Response.put_private(resp, :imessage_buffer, buffer)
 
-                if System.monotonic_time(:millisecond) >= deadline,
+                if SystemsClock.monotonic_time(:millisecond) >= deadline,
                   do:
                     {:halt,
                      {req, Req.Response.put_private(next, :imessage_duration_elapsed, true)}},
@@ -152,7 +156,7 @@ defmodule SalixIM.IMessageRelay do
   def download_image(agent_id, attachment_id)
       when is_binary(attachment_id) and attachment_id != "" do
     alias SalixStore.Blob
-    state_key = {__MODULE__, make_ref()}
+    state_key = {__MODULE__, SystemsRuntime.Proc.make_ref()}
     Process.put(state_key, Blob.put_stream_init(agent_id))
 
     try do
@@ -163,7 +167,8 @@ defmodule SalixIM.IMessageRelay do
             retry: false,
             redirect: false,
             decode_body: false,
-            receive_timeout: 15_000,
+            receive_timeout: SystemsClock.timeout(15_000),
+            plug: req_options()[:plug],
             into: fn {:data, chunk}, {req, resp} ->
               size = (resp.private[:imessage_bytes] || 0) + byte_size(chunk)
 
@@ -208,21 +213,27 @@ defmodule SalixIM.IMessageRelay do
 
   defp do_request(method, path, opts) do
     with :ok <- require_configured() do
-      response =
-        Req.request(
-          Keyword.merge(
-            [
-              method: method,
-              url: url(path),
-              headers: headers(),
-              retry: false,
-              redirect: false,
-              receive_timeout: 15_000,
-              connect_options: [timeout: 5_000]
-            ],
-            opts
-          )
+      options =
+        Keyword.merge(
+          [
+            method: method,
+            url: url(path),
+            headers: headers(),
+            retry: false,
+            redirect: false,
+            receive_timeout: SystemsClock.timeout(@request_timeout_ms),
+            connect_options: [timeout: 5_000]
+          ],
+          Keyword.merge(req_options(), opts)
         )
+
+      # The relay's answer is awaited on SystemsClock, so a test's clock can
+      # expire a stalled relay; the receive timeout stays as the socket bound.
+      response =
+        case SystemsClock.run_bounded(fn -> Req.request(options) end, @request_timeout_ms) do
+          {:ok, response} -> response
+          _exit_or_timeout -> {:error, :timeout}
+        end
 
       case response do
         {:ok, %{status: status, body: body}} when status in 200..299 and is_map(body) ->
@@ -234,7 +245,7 @@ defmodule SalixIM.IMessageRelay do
     end
   end
 
-  defp observe(operation, fun), do: observe(operation, fun, System.monotonic_time())
+  defp observe(operation, fun), do: observe(operation, fun, SystemsClock.monotonic_time())
 
   defp observe(operation, fun, started) do
     result = fun.()
@@ -252,9 +263,9 @@ defmodule SalixIM.IMessageRelay do
   end
 
   defp emit(operation, outcome, started) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{component: "salix_im", operation: operation, surface: "comma", outcome: outcome}
     )
   rescue
@@ -268,14 +279,17 @@ defmodule SalixIM.IMessageRelay do
 
   defp sent({:error, :imessage_unavailable} = error), do: error
 
-  defp sent(_) do
+  defp sent(_), do: delivery_unknown()
+
+  @doc "The send outcome when a transport did not acknowledge a dispatched send."
+  def delivery_unknown do
     {:error,
      %{
        "code" => "imessage_delivery_unknown",
        "delivery_status" => "unknown",
        "retryable" => false,
        "message" =>
-         "The relay did not acknowledge this send. The message may already have been sent. " <>
+         "iMessage did not acknowledge this send. The message may already have been sent. " <>
            "Do not retry this text/image, send a failure notice, or claim delivery. " <>
            "This integration has no delivery-verification API. Device or connection discovery cannot confirm this send. " <>
            "End this turn now with end_turn and outcome=blocked. " <>
@@ -285,6 +299,9 @@ defmodule SalixIM.IMessageRelay do
   end
 
   defp require_configured, do: if(configured?(), do: :ok, else: {:error, :imessage_unavailable})
+  # Extra Req options from the `:imessage` config (a test plug, for one).
+  defp req_options, do: config()[:req_options] || []
+
   defp url(path), do: String.trim_trailing(config()[:base_url], "/") <> path
   defp headers, do: [{"authorization", "Bearer " <> config()[:bearer_token]}]
 end

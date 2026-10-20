@@ -60,12 +60,28 @@ let package = Package(
                 .linkedFramework("ScreenCaptureKit"),
             ]
         ),
+        .target(
+            name: "CUStream",
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+                // Match Swift 6 dependencies' ObjC async continuation ABI.
+                // https://github.com/swiftlang/swift/issues/81846
+                .unsafeFlags(["-Xfrontend", "-checked-async-objc-bridging=on"]),
+            ],
+            linkerSettings: [
+                .linkedFramework("AppKit"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("ScreenCaptureKit"),
+                .linkedFramework("VideoToolbox"),
+            ]
+        ),
         .executableTarget(
             name: "CommaComputerUseDaemon",
             dependencies: [
                 "CUShared",
                 "CUBackground",
                 "CUForeground",
+                "CUStream",
                 .product(name: "PermissionFlow", package: "PermissionFlow"),
                 .product(name: "SystemSettingsKit", package: "PermissionFlow"),
             ],

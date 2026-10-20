@@ -61,6 +61,6 @@ defmodule SalixSignalProto.KemBackend do
 
   defp plain_allowed? do
     @plain_allowed_in_build and
-      Application.get_env(:salix_signal_proto, :plain_kem_in_tests, false) == true
+      SystemsRuntime.get_env(:salix_signal_proto, :plain_kem_in_tests, false) == true
   end
 end

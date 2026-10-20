@@ -1,11 +1,6 @@
-import {
-  ProductInboxProjectionProvider,
-  useProductInboxProjection,
-} from "../../../../product-inbox";
-import {
-  createProductInboxProjectionHarness,
-  testProductLease,
-} from "../../../../test/productInboxProjectionHarness";
+import { CoreProvider } from "@comma/core-client";
+import { useProductInboxProjection } from "../../../../product-inbox";
+import { createProductInboxProjectionHarness } from "../../../../test/productInboxProjectionHarness";
 import {
   Outlet,
   RouterProvider,
@@ -14,34 +9,23 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@comma/test-utils/render";
+import { act, fireEvent, render, screen, waitFor } from "@comma/test-utils/render";
 import { initializeCommaI18n } from "@comma/i18n";
-import { useMemo, useState, type ComponentProps } from "react";
+import { useMemo, useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CommaApiClient } from "../../../../api";
 import { ChatTaskPanel } from "../ChatTaskPanel";
 import {
   ConversationView,
   type ConversationViewActions,
 } from "../../conversation/ConversationView";
 import { fixedDraftSource } from "../../composer/conversationDraft";
-import type {
-  ChatMessage,
-  ConversationChannelState,
-} from "../../model/conversationChannel";
+import type { ChatMessage, ConversationChannelState } from "@comma/core/chat";
+import { createdTasksOf } from "@comma/core/chat";
 
 describe("chat task panel", () => {
   beforeEach(() => {
     initializeCommaI18n(["en"]);
-    // Acknowledgements persist in localStorage; keep tests independent.
     window.localStorage.clear();
   });
 
@@ -73,78 +57,35 @@ describe("chat task panel", () => {
     expect(screen.getByText("This conversation cannot be opened")).toBeVisible();
   });
 
-  it.each(["route", "rail"] as const)(
-    "keeps %s Properties in sync when only the Inbox task status changes",
-    async (variant) => {
-      const actions = { ...createActions(), acceptTaskReview: vi.fn() };
-      const { setTaskProjection } = renderConversation({
-        actions,
-        variant,
-        state: settled({
-          conversation: {
-            id: "cnv_task_1",
-            group_id: "grp_1",
-            kind: "agent_task",
-            status: "in_progress",
-            title: "Translate this sentence",
-          },
-        }),
-      });
-
-      const status = await screen.findByTestId("task-conversation-status");
-      // Without a task summary, fall back to the conversation snapshot.
-      expect(status).toHaveTextContent("In progress");
-
-      for (const [rawStatus, label] of [
-        ["needs_review", "Needs Review"],
-        ["completed", "Done"],
-        ["in_progress", "In progress"],
-      ] as const) {
-        // The Inbox advances independently; the open conversation stays stale.
-        act(() => setTaskProjection(taskState(rawStatus)));
-        await waitFor(() => {
-          expect(status).not.toHaveAttribute("data-swapping");
-          expect(status).toHaveTextContent(label);
-        });
-        // A summary alone must not invent a versioned review action.
-        expect(
-          status.closest("aside")?.querySelector(".comma-task-panel-done")
-        ).toBeNull();
-      }
-      expect(actions.acceptTaskReview).not.toHaveBeenCalled();
-    }
-  );
-
-  it("lists agent-created tasks above the composer in creation order", async () => {
-    renderConversation({
+  it("keeps route Properties in sync when only the Inbox task status changes", async () => {
+    const actions = { ...createActions(), setTaskStatus: vi.fn() };
+    const { setTaskProjection } = renderConversation({
+      actions,
       state: settled({
-        messages: [
-          message("msg_u1", "user", "Translate these"),
-          message("msg_a1", "assistant", "Started the first task.", {
-            parts: [
-              { kind: "markdown", text: "Started the first task." },
-              inlineTaskPart("cnv_task_1", "Translate this sentence"),
-            ],
-          }),
-          message("msg_u2", "user", "And one more"),
-          message("msg_a2", "assistant", "Started the second task.", {
-            parts: [
-              { kind: "markdown", text: "Started the second task." },
-              inlineTaskPart("cnv_task_2", "Summarize the document"),
-            ],
-          }),
-        ],
+        conversation: {
+          id: "cnv_task_1",
+          group_id: "grp_1",
+          kind: "agent_task",
+          status: "in_progress",
+          title: "Translate this sentence",
+        },
       }),
     });
 
-    const panel = await screen.findByTestId("chat-task-panel");
-    const titles = [...panel.querySelectorAll(".comma-chat-task-item-title")].map(
-      (node) => node.textContent
-    );
-    expect(titles).toEqual(["Translate this sentence", "Summarize the document"]);
-    expect(screen.getByTestId("chat-task-item-cnv_task_1").textContent).toContain(
-      "In progress"
-    );
+    const status = await screen.findByTestId("task-conversation-status");
+    // Without a task summary, fall back to the conversation snapshot.
+    expect(status).toHaveTextContent("In progress");
+
+    for (const [rawStatus, label] of [
+      ["needs_review", "Needs Review"],
+      ["completed", "Done"],
+      ["in_progress", "In progress"],
+    ] as const) {
+      // The Inbox advances independently; the open conversation stays stale.
+      act(() => setTaskProjection(taskState(rawStatus)));
+      await waitFor(() => expect(status).toHaveTextContent(label));
+    }
+    expect(actions.setTaskStatus).not.toHaveBeenCalled();
   });
 
   it("tracks a task's status as its projection moves on", async () => {
@@ -171,9 +112,11 @@ describe("chat task panel", () => {
       conversationId: "cnv_task_arrival",
       messageId: "msg_a1",
       needsAttention: false,
+      needsInput: false,
       statusBucket: "needs_review" as const,
       title: "Review the arrival",
       turnKey: "msg_u1",
+      version: 1,
     };
     const actions = {
       onArchive: vi.fn().mockResolvedValue(undefined),
@@ -213,9 +156,11 @@ describe("chat task panel", () => {
       conversationId: "cnv_task_cancelled_arrival",
       messageId: "msg_a1",
       needsAttention: false,
+      needsInput: false,
       statusBucket: "in_progress" as const,
       title: "Cancelled arrival",
       turnKey: "msg_u1",
+      version: 1,
     };
     render(
       <ChatTaskPanel
@@ -232,7 +177,7 @@ describe("chat task panel", () => {
     expect(item).not.toHaveAttribute("data-arriving");
   });
 
-  it("ignores user-authored task mentions and stays out of the side chat", async () => {
+  it("ignores user-authored task mentions and stays out of the rail", async () => {
     const { unmount } = renderConversation({
       state: settled({
         messages: [
@@ -251,7 +196,7 @@ describe("chat task panel", () => {
     expect(screen.queryByTestId("chat-task-panel")).toBeNull();
     unmount();
 
-    renderConversation({ state: taskState("in_progress"), variant: "side-chat" });
+    renderConversation({ state: taskState("in_progress"), variant: "rail" });
     await waitFor(() => {
       expect(
         document.querySelector('[data-slot="chat-assistant-output"]')
@@ -270,12 +215,13 @@ describe("chat task panel", () => {
     await user.click(screen.getByTestId("chat-task-reveal-cnv_task_1"));
     expect(screen.queryByTestId("chat-task-panel")).toBeNull();
 
-    // Running again re-docks the task and lifts the old acknowledgement…
-    setState(taskState("in_progress"));
+    // Running again re-docks the task…
+    setState(taskState("in_progress", [], 2));
     await screen.findByTestId("chat-task-item-cnv_task_1");
 
-    // …so its next settle shows again and asks for a fresh acknowledgement.
-    setState(taskState("needs_review"));
+    // …and its next settle is a newer version than the one acknowledged, so it
+    // shows again and asks for a fresh acknowledgement.
+    setState(taskState("needs_review", [], 3));
     await waitFor(() => {
       expect(screen.getByTestId("chat-task-item-cnv_task_1").textContent).toContain(
         "Needs Review"
@@ -287,36 +233,43 @@ describe("chat task panel", () => {
     });
   });
 
-  it("opts the row out of the shared button press scale", async () => {
-    renderConversation({ state: taskState("needs_review") });
+  it("shows a newer settle that this device never saw run", async () => {
+    const user = userEvent.setup();
+    const { setState } = renderConversation({ state: taskState("done") });
+    await screen.findByTestId("chat-task-item-cnv_task_1");
+    await user.click(screen.getByTestId("chat-task-dismiss-cnv_task_1"));
+    expect(screen.queryByTestId("chat-task-panel")).toBeNull();
 
-    const row = openButton(await screen.findByTestId("chat-task-item-cnv_task_1"));
-    expect(row).toHaveAttribute("data-no-press-feedback");
+    // The Task ran and settled again while no panel here watched it run.
+    setState(taskState("needs_review", [], 5));
+    await screen.findByTestId("chat-task-item-cnv_task_1");
   });
 
-  it("collapses the panel to its header and back", async () => {
+  it("keeps a dismissed task cleared when it changes without running again", async () => {
     const user = userEvent.setup();
-    renderConversation({ state: taskState("needs_review") });
+    const { setState } = renderConversation({ state: taskState("needs_review") });
+    await screen.findByTestId("chat-task-item-cnv_task_1");
+    await user.click(screen.getByTestId("chat-task-dismiss-cnv_task_1"));
+    expect(screen.queryByTestId("chat-task-panel")).toBeNull();
 
-    const panel = await screen.findByTestId("chat-task-panel");
-    const toggle = screen.getByTestId("chat-task-panel-toggle");
-    expect(toggle.textContent).toContain("1 Task");
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(panel.dataset["collapsed"]).toBeUndefined();
-
-    await user.click(toggle);
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(panel.dataset["collapsed"]).toBe("true");
-    // Folded, the panel is its header alone: no list is left behind it to take
-    // focus, reach the a11y tree, or keep following the Tasks.
-    expect(screen.queryByTestId("chat-task-panel-list")).toBeNull();
+    // The review is accepted elsewhere: a newer version of the same run.
+    setState(taskState("completed", [], 1, 9));
+    await waitFor(() => expect(screen.queryByTestId("chat-task-panel")).toBeNull());
     expect(screen.queryByTestId("chat-task-item-cnv_task_1")).toBeNull();
-    expect(toggle.textContent).toContain("1 Task");
+  });
 
-    await user.click(toggle);
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(panel.dataset["collapsed"]).toBeUndefined();
-    expect(screen.getByTestId("chat-task-item-cnv_task_1")).toBeTruthy();
+  it("keeps a dismissal when another surface still sees the task running", async () => {
+    const user = userEvent.setup();
+    renderConversation({ state: taskState("done") });
+    // The rail reads the same chat with facts that can lag: it still has the
+    // Task running long after it settled.
+    renderConversation({ state: taskState("in_progress"), variant: "rail" });
+
+    await screen.findByTestId("chat-task-item-cnv_task_1");
+    await user.click(screen.getByTestId("chat-task-dismiss-cnv_task_1"));
+
+    // The running copy on the other surface does not lift the acknowledgement.
+    await waitFor(() => expect(screen.queryByTestId("chat-task-panel")).toBeNull());
   });
 
   it("docks every task but mounts only the rows near the scrollport", async () => {
@@ -389,41 +342,6 @@ describe("chat task panel", () => {
     expect(document.querySelector('[data-turn-key="msg_u1"]')).toBeNull();
   });
 
-  it("keeps a running task docked when it is revealed", async () => {
-    const user = userEvent.setup();
-    renderConversation({ state: taskState("in_progress") });
-
-    const item = await screen.findByTestId("chat-task-item-cnv_task_1");
-    expect(screen.queryByTestId("chat-task-dismiss-cnv_task_1")).toBeNull();
-    // Open the Task and Reveal in Chat; a running row offers no Dismiss.
-    expect(item.querySelectorAll("button")).toHaveLength(2);
-    await user.click(screen.getByTestId("chat-task-reveal-cnv_task_1"));
-    expect(screen.getByTestId("chat-task-item-cnv_task_1")).toBeTruthy();
-  });
-
-  it("opens the task's chat from the row without revealing or clearing it", async () => {
-    const user = userEvent.setup();
-    const onOpenConversationRef = vi.fn();
-    renderConversation({
-      onOpenConversationRef,
-      state: taskState("needs_review"),
-    });
-
-    const item = await screen.findByTestId("chat-task-item-cnv_task_1");
-    await user.click(openButton(item));
-
-    // The same open the Task's chip in the transcript performs.
-    expect(onOpenConversationRef).toHaveBeenCalledExactlyOnceWith({
-      conversationId: "cnv_task_1",
-      kind: "agent_task",
-      title: "Translate this sentence",
-    });
-    // Opening is navigation, not acknowledgement: the settled row stays, and
-    // the transcript is not moved to the announcing turn.
-    expect(screen.getByTestId("chat-task-item-cnv_task_1")).toBeTruthy();
-    expect(document.querySelector('[data-reveal-highlight="true"]')).toBeNull();
-  });
-
   it("splits the row between opening the task and revealing its turn", async () => {
     const user = userEvent.setup();
     const task = {
@@ -431,9 +349,11 @@ describe("chat task panel", () => {
       conversationId: "cnv_task_split",
       messageId: "msg_a1",
       needsAttention: false,
+      needsInput: false,
       statusBucket: "in_progress" as const,
       title: "Build the release",
       turnKey: "msg_u1",
+      version: 1,
     };
     const onOpen = vi.fn();
     const onReveal = vi.fn();
@@ -470,9 +390,11 @@ describe("chat task panel", () => {
       conversationId: "cnv_task_archive",
       messageId: "msg_a1",
       needsAttention: false,
+      needsInput: false,
       statusBucket: "needs_review" as const,
       title: "Review the release",
       turnKey: "msg_u1",
+      version: 1,
     };
     render(
       <ChatTaskPanel
@@ -506,60 +428,6 @@ describe("chat task panel", () => {
     await user.click(screen.getByRole("menuitem", { name: "Archive task" }));
     expect(onArchive).toHaveBeenCalledExactlyOnceWith(task);
   });
-
-  it("reveals the announcing turn, remounting it when the window dropped it", async () => {
-    const user = userEvent.setup();
-    const olderTurns: ChatMessage[] = [
-      message("msg_u1", "user", "Start a task"),
-      message("msg_a1", "assistant", "Started.", {
-        parts: [
-          { kind: "markdown", text: "Started." },
-          inlineTaskPart("cnv_task_1", "Translate this sentence"),
-        ],
-      }),
-    ];
-    const laterTurns: ChatMessage[] = Array.from({ length: 8 }, (_, index) => [
-      message(`msg_u${index + 2}`, "user", `Follow-up ${index}`),
-      message(`msg_a${index + 2}`, "assistant", `Reply ${index}`),
-    ]).flat();
-    const { setState } = renderConversation({
-      state: settled({ messages: [...olderTurns, ...laterTurns] }),
-    });
-
-    const item = await screen.findByTestId("chat-task-item-cnv_task_1");
-    // Eight later turns push the task's turn out of the six-turn window.
-    expect(document.querySelector('[data-turn-key="msg_u1"]')).toBeNull();
-
-    await user.click(within(item).getByTestId("chat-task-reveal-cnv_task_1"));
-
-    await waitFor(() => {
-      expect(document.querySelector('[data-turn-key="msg_u1"]')).toBeTruthy();
-    });
-
-    act(() => {
-      setState(
-        settled({
-          messages: [
-            ...olderTurns,
-            ...laterTurns,
-            message("msg_u10", "user", "One more follow-up"),
-            message("msg_a10", "assistant", "One more reply"),
-          ],
-        })
-      );
-    });
-
-    // Once reveal hands the old turn to the window, a new tail turn advances
-    // the bounded suffix instead of retaining every turn after the reveal.
-    await waitFor(() => {
-      expect(
-        document
-          .querySelector(".comma-chat-thread")
-          ?.getAttribute("data-comma-turn-window-start")
-      ).toBe("1");
-    });
-    expect(document.querySelector('[data-turn-key="msg_u1"]')).toBeNull();
-  });
 });
 
 function inlineTaskPart(conversationId: string, title: string) {
@@ -591,11 +459,18 @@ function openButton(item: HTMLElement): HTMLElement {
   return button;
 }
 
+/** When each fixture state's Task started its latest run, as Salix says it. */
+const runsOf = new WeakMap<ConversationChannelState, number>();
+
 function taskState(
   status: string,
-  laterTurns: ChatMessage[] = []
+  laterTurns: ChatMessage[] = [],
+  /** When the Task's latest run started (`run_started_at`). */
+  run = 1,
+  /** The Task's metadata version (`updated_at`): a rename or review acceptance moves it on. */
+  updatedAt = run
 ): ConversationChannelState {
-  return settled({
+  const state = settled({
     messages: [
       message("msg_u1", "user", "Translate this"),
       message("msg_a1", "assistant", "Started the task.", {
@@ -608,6 +483,7 @@ function taskState(
               status,
               title: "Translate this sentence",
               unavailable: false,
+              updatedAt,
             },
           },
         ],
@@ -615,6 +491,8 @@ function taskState(
       ...laterTurns,
     ],
   });
+  runsOf.set(state, run);
+  return state;
 }
 
 function createActions(): ConversationViewActions {
@@ -667,7 +545,7 @@ function message(
   text: string,
   overrides: Partial<ChatMessage> = {}
 ): ChatMessage {
-  return {
+  const built: ChatMessage = {
     attachments: [],
     blocksKey: undefined,
     clientRequestId: undefined,
@@ -684,31 +562,30 @@ function message(
     text,
     ...overrides,
   };
+  // The Tasks an agent's message announces, as the core names them.
+  return role === "user"
+    ? built
+    : { ...built, ...createdTasksOf(built.parts ?? [], built.refs) };
 }
 
 function renderConversation({
   actions = createActions(),
   conversationId,
-  onOpenConversationRef,
   state: initialState,
   variant = "route",
 }: {
   actions?: ConversationViewActions;
   conversationId?: string;
-  onOpenConversationRef?: ComponentProps<
-    typeof ConversationView
-  >["onOpenConversationRef"];
   state: ConversationChannelState;
-  variant?: "home" | "rail" | "route" | "side-chat";
+  variant?: "home" | "rail" | "route";
 }) {
   const projection = createProductInboxProjectionHarness({
     initial: canonicalTaskProjection(initialState),
   });
-  const api = stubApi();
   let setViewState: ((next: ConversationChannelState) => void) | undefined;
 
   function RouteComponent() {
-    useProductInboxProjection({ enabled: true, session: testProductLease });
+    useProductInboxProjection({ enabled: true });
     const [viewState, setState] = useState(initialState);
     const draftSource = useMemo(
       () => fixedDraftSource(viewState.draft),
@@ -718,11 +595,10 @@ function renderConversation({
     return (
       <ConversationView
         actions={actions}
-        api={api}
+        live
         conversationId={conversationId}
         draftSource={draftSource}
         groupId="grp_1"
-        onOpenConversationRef={onOpenConversationRef}
         state={viewState}
         variant={variant}
         workspaceId="wsp_1"
@@ -756,9 +632,9 @@ function renderConversation({
   });
 
   const result = render(
-    <ProductInboxProjectionProvider controller={projection.controller}>
+    <CoreProvider client={projection.controller}>
       <RouterProvider router={router} />
-    </ProductInboxProjectionProvider>
+    </CoreProvider>
   );
   return {
     ...result,
@@ -770,10 +646,6 @@ function renderConversation({
       setViewState?.(next);
     },
   };
-}
-
-function stubApi() {
-  return {} as unknown as CommaApiClient;
 }
 
 // Fixture server state is supplied separately from the transcript render path.
@@ -797,6 +669,7 @@ function canonicalTaskProjection(state: ConversationChannelState) {
       status: task.status ?? "in_progress",
       title: task.title ?? "",
       updatedAt: task.updatedAt ?? 1,
+      runStartedAt: runsOf.get(state) ?? 1,
       workspaceId: "wsp_1",
       workspaceName: "Workspace",
     })),

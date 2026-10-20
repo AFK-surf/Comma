@@ -116,13 +116,13 @@ theorem pruneResultRefs_frame {s t : Term} {j r : List Term} (h : pruneResultRef
     obtain ⟨_, _, _, h⟩ := bind_ok h
     obtain ⟨_, _, _, h⟩ := bind_ok h
     obtain ⟨_, _, _, h⟩ := bind_ok h
-    exact write_frame h rfl
+    exact write_frame h (by keys_absent)
 
 theorem recomputeContext_frame {s t : Term} {j r : List Term} (h : recomputeContext s j = .ok (t, r)) :
     t.get (a "messages") = s.get (a "messages") := by
   unfold recomputeContext at h
   obtain ⟨_, _, _, h⟩ := bind_ok h
-  exact write_frame h rfl
+  exact write_frame h (by keys_absent)
 
 /-- `archive_advance` keeps a suffix of the transcript. Every removed message has an integer
 `seq` at or below the event's `archived_through`; the early-return branches remove nothing. -/

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Central Icons (commercially licensed): IconAt, round-outlined-radius-2-stroke-2.
+    Not for redistribution; see ui/icons/IconSources.kt. Tinted in code.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M16.7368 19.6541C15.361 20.5073 13.738 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12C21 13.9262 20.0428 15.9154 17.8101 15.7125C15.9733 15.5455 14.6512 13.8737 14.9121 12.0479L15.4274 8.5M14.8581 12.4675C14.559 14.596 12.8066 16.1093 10.9442 15.8476C9.08175 15.5858 7.81444 13.6481 8.11358 11.5196C8.41272 9.39109 10.165 7.87778 12.0275 8.13953C13.8899 8.40128 15.1573 10.339 14.8581 12.4675Z"
+        android:strokeColor="#FF000000" android:strokeWidth="2" android:strokeLineCap="round" />
+</vector>

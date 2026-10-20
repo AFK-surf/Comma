@@ -6,12 +6,22 @@
     "declarationMap": true,
     "emitDeclarationOnly": true,
     "outDir": "dist",
-    "rootDir": "../..",
+    "rootDir": ".",
     "paths": {
+      "@comma/core/markdown": ["../core/src/markdown/index.ts"],
       "@comma/i18n": ["../i18n/src/index.ts"],
       "@comma/i18n/react": ["../i18n/src/react.tsx"]
-    }
+    },
+    "noEmit": false
   },
-  "include": ["src", "src/**/*.json", "../i18n/src/**/*.ts", "../i18n/src/**/*.tsx"],
-  "exclude": ["**/*.test.*", "**/*.spec.*"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.json"],
+  "exclude": ["**/*.test.*", "**/*.spec.*", "**/*.stories.*"],
+  "references": [
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../i18n"
+    }
+  ]
 }

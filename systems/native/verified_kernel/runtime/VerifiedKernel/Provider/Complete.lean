@@ -8,6 +8,7 @@ def response (protocol : String) (resp model : Term) (compact := false) : Kernel
   if protocol == "anthropic" then
     if !resp.has (b "content") then return ← Error.state (b "anthropic") (b "failed") resp
     return Usage.attach (← Response.anthropic resp model) (Usage.anthropic (get resp "usage")) (coalesce [get resp "model", model])
+      (get resp "input_transformations")
   if (get resp "error").isMap then
     return ← Error.state (b (if protocol == "chat" then "openai_chat" else "openai_responses")) (b "failed") resp
   if protocol == "chat" then return Usage.attach (← Response.chat resp) (Usage.chat resp) model
@@ -58,6 +59,7 @@ private def anthropicStream (events : List Term) (model : Term) : KernelM Term :
   let mut stop := nil
   let mut usage := nil
   let mut responseModel := nil
+  let mut transformations := nil
   for ev in events do
     let type := get ev "type"
     if type == b "error" then
@@ -94,9 +96,13 @@ private def anthropicStream (events : List Term) (model : Term) : KernelM Term :
     else if type == b "message_delta" then
       stop := coalesce [get (get ev "delta") "stop_reason", stop]
       if (get ev "usage").isMap then usage := mergeMaps (coalesce [usage, empty]) (get ev "usage")
+      -- A mid-stream server-side fallback reports the request's transformations again.
+      let later := coalesce [get ev "input_transformations", get (get ev "message") "input_transformations"]
+      if later.isList then transformations := later
     else if type == b "message_start" then
       let m := get ev "message"
       responseModel := coalesce [get m "model", responseModel]
+      if (get m "input_transformations").isList then transformations := get m "input_transformations"
       if (get m "usage").isMap then usage := mergeMaps (coalesce [usage, empty]) (get m "usage")
   let mut content := []
   for idx in order.reverse do
@@ -111,7 +117,7 @@ private def anthropicStream (events : List Term) (model : Term) : KernelM Term :
       content := (removeKey block (b "_json")).put (b "input") value :: content
     else content := block :: content
   let resp := obj [("content", list content.reverse), ("stop_reason", stop), ("usage", usage), ("model", responseModel)]
-  return Usage.attach (← Response.anthropic resp model) (Usage.anthropic usage) responseModel
+  return Usage.attach (← Response.anthropic resp model) (Usage.anthropic usage) responseModel transformations
 
 private def itemKey (item : Term) : Term :=
   coalesce [get item "item_id", get item "id", get item "output_index", get item "call_id",

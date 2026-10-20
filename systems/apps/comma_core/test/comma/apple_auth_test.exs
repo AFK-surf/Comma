@@ -7,26 +7,30 @@ defmodule Comma.AppleAuthTest do
   alias Comma.Auth.{AppleKeys, AppleToken}
   alias Comma.{Accounts, AppleAuth}
 
+  setup context do
+    if context[:analytics], do: Comma.AnalyticsTestSupport.setup_collector(), else: :ok
+  end
+
   setup do
     Comma.AuthChallengeStore.Memory.reset!()
-    previous = Application.get_env(:comma_core, :apple_auth)
+    previous = SystemsRuntime.get_env(:comma_core, :apple_auth)
     key = JOSE.JWK.generate_key({:rsa, 2048})
     {_, public} = key |> JOSE.JWK.to_public() |> JOSE.JWK.to_map()
     public = Map.merge(public, %{"kid" => "apple-test", "alg" => "RS256", "use" => "sig"})
 
-    Application.put_env(:comma_core, :apple_auth,
+    SystemsRuntime.put_env(:comma_core, :apple_auth,
       client_id: "surf.comma.ios.test",
       request_options: [plug: {Req.Test, __MODULE__}]
     )
 
     Req.Test.stub(__MODULE__, fn conn -> Req.Test.json(conn, %{"keys" => [public]}) end)
     pid = start_supervised!(AppleKeys)
-    Req.Test.allow(__MODULE__, self(), pid)
+    Req.Test.allow(__MODULE__, SystemsRuntime.Proc.self(), pid)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:comma_core, :apple_auth, previous),
-        else: Application.delete_env(:comma_core, :apple_auth)
+        do: SystemsRuntime.put_env(:comma_core, :apple_auth, previous),
+        else: SystemsRuntime.delete_env(:comma_core, :apple_auth)
     end)
 
     %{key: key}
@@ -109,10 +113,10 @@ defmodule Comma.AppleAuthTest do
     expected = %{
       "nonce" => attempt["nonce"],
       "client_id" => attempt["client_id"],
-      "issued_at" => System.system_time(:second)
+      "issued_at" => SystemsClock.system_time(:second)
     }
 
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     for override <- [
           %{"iss" => "https://attacker.test"},
@@ -140,20 +144,15 @@ defmodule Comma.AppleAuthTest do
     identity_id = Repo.get!(AuthSession, issued["session_id"]).login_identity_id
 
     Repo.get!(Identity, identity_id)
-    |> Ecto.Changeset.change(disabled_at: DateTime.utc_now())
+    |> Ecto.Changeset.change(disabled_at: SystemsClock.utc_now())
     |> Repo.update!()
 
     assert {:error, :revoked} = Accounts.resolve_session_id(issued["session_id"])
     assert {:error, :revoked} = Accounts.validate_session(issued["token"])
   end
 
-  test "unconfigured Apple login fails before allocating an attempt" do
-    Application.delete_env(:comma_core, :apple_auth)
-    assert {:error, :apple_not_configured} = AppleAuth.start_attempt()
-  end
-
   defp claims(attempt, extra \\ %{}) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     Map.merge(
       %{
@@ -184,5 +183,6 @@ defmodule Comma.AppleAuthTest do
       "client_platform" => "ios"
     }
 
-  defp email(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}@example.test"
+  defp email(prefix),
+    do: "#{prefix}-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.test"
 end

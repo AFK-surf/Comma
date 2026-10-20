@@ -57,12 +57,12 @@ defmodule SalixAgent.RoundBudgetNotice do
         "Do not start new searches, checks or waits."
 
     %{
-      "runtime_message_id" => "round-budget:" <> Ecto.UUID.generate(),
+      "runtime_message_id" => "round-budget:" <> SystemsRuntime.Proc.uuid(),
       "runtime_message_type" => "round_budget",
       "content_kind" => "model_context",
       "summary" => "#{remaining} of #{cap} model rounds remain for the current input",
       "content" => content,
-      "created_at" => System.system_time(:second),
+      "created_at" => SystemsClock.system_time(:second),
       "source_refs" => %{"providers" => ["round_budget"]}
     }
   end

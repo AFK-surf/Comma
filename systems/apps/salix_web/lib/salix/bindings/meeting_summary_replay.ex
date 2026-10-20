@@ -64,7 +64,7 @@ defmodule Salix.Bindings.MeetingSummaryReplay do
   def run_existing(_group_id, _meeting_id, _opts), do: {:error, :invalid_request}
 
   defp ensure_online_replay_enabled do
-    if Application.get_env(:salix_web, :meeting_notes_online_replay_enabled, false) do
+    if SystemsRuntime.get_env(:salix_web, :meeting_notes_online_replay_enabled, false) do
       :ok
     else
       {:error, :online_replay_disabled}

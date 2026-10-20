@@ -21,7 +21,7 @@ defmodule SalixIM.SlackFiles do
 
   @doc "Configured max file size to stage."
   @spec max_bytes() :: pos_integer()
-  def max_bytes, do: Application.get_env(:salix_im, :slack_file_max_bytes, @default_max_bytes)
+  def max_bytes, do: SystemsRuntime.get_env(:salix_im, :slack_file_max_bytes, @default_max_bytes)
 
   @doc "True when a Slack file's declared size exceeds the staging ceiling."
   @spec oversized?(map()) :: boolean()

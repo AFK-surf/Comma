@@ -38,6 +38,7 @@ defmodule SalixSignalProto.MixProject do
 
   defp deps do
     [
+      {:systems_clock, in_umbrella: true},
       {:elixir_make, "~> 0.9", runtime: false},
       # Protobuf codecs with schemas written from the CRS (PLAN "Libraries").
       {:protobuf, "~> 0.17"},

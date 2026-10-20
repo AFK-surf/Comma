@@ -31,8 +31,13 @@ defmodule SalixVerifiedKernel.AgentLoop do
   def terminal_owner(owner_session, owner_call, session, call),
     do: call(:terminal_owner, {owner_session, owner_call, session, call})
 
+  # The runtime's logical references carry the same opaque identity contract.
+  # This pure bridge does not start or depend on the runtime application.
+  defguardp reference?(value)
+            when is_reference(value) or is_struct(value, SystemsRuntime.Ref)
+
   def dependency_step({phase, expected}, {observed, event})
-      when phase in [:running, :retained] and is_reference(expected) and is_reference(observed) do
+      when phase in [:running, :retained] and reference?(expected) and reference?(observed) do
     case call(
            :dependency_step,
            {{phase, reference_bytes(expected)}, {reference_bytes(observed), event}}
@@ -41,7 +46,7 @@ defmodule SalixVerifiedKernel.AgentLoop do
     end
   end
 
-  def dependency_step(:retired, {observed, event}) when is_reference(observed),
+  def dependency_step(:retired, {observed, event}) when reference?(observed),
     do: call(:dependency_step, {:retired, {reference_bytes(observed), event}})
 
   # Only references use this representation. Lean compares bytes and does not

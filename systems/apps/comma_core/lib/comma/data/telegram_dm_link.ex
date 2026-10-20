@@ -10,7 +10,11 @@ defmodule Comma.Data.TelegramDMLink do
     field(:telegram_user_id, :string)
     field(:telegram_username, :string)
     field(:connect_id, :string)
-    timestamps(type: :utc_datetime_usec)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 
   def changeset(link, attrs) do

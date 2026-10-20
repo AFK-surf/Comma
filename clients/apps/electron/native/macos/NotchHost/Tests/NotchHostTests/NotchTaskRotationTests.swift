@@ -25,6 +25,16 @@ import Testing
     #expect(rotation.currentTaskID == "new")
 }
 
+@Test func notifiedUpdateShowsTheNewestTask() {
+    var rotation = CommaNotchTaskRotation()
+    rotation.update(taskIDs: ["a", "b"])
+    rotation.advance()
+    rotation.update(taskIDs: ["new", "a", "b"], showsNewest: true)
+    #expect(rotation.currentTaskID == "new")
+    rotation.advance()
+    #expect(rotation.currentTaskID == "a")
+}
+
 @Test func completedTaskIsReplacedByARemainingTask() {
     var rotation = CommaNotchTaskRotation()
     rotation.update(taskIDs: ["a", "b", "c"])

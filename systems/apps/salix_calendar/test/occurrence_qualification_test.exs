@@ -1,5 +1,5 @@
 defmodule SalixCalendar.OccurrenceQualificationTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixCalendar.OccurrenceQualification
 

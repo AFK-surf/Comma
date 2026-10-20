@@ -1,6 +1,10 @@
 defmodule SystemsObservability.BanditInstrumentationTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
+  use SystemsClock.Case, async: false
+  require SystemsClock
+
+  use SystemsClock.Test, scope: ["Elixir.SalixStore", "Elixir.SystemsObservability"]
   require Record
 
   Record.defrecordp(
@@ -24,7 +28,7 @@ defmodule SystemsObservability.BanditInstrumentationTest do
   end
 
   setup do
-    :ok = :otel_batch_processor.set_exporter(:otel_exporter_pid, self())
+    :ok = :otel_batch_processor.set_exporter(:otel_exporter_pid, SystemsRuntime.Proc.self())
     :ok = :otel_tracer_provider.force_flush()
     drain_exported_spans()
     :ok
@@ -33,11 +37,11 @@ defmodule SystemsObservability.BanditInstrumentationTest do
   test "real Bandit request events create and finish a server span" do
     conn = Plug.Test.conn(:get, "/health?token=secret")
 
-    :telemetry.execute([:bandit, :request, :start], %{}, %{conn: conn})
+    SystemsRuntime.Telemetry.execute([:bandit, :request, :start], %{}, %{conn: conn})
     assert OpenTelemetry.Span.is_valid(OpenTelemetry.Tracer.current_span_ctx())
 
     conn = Plug.Conn.resp(conn, 204, "")
-    :telemetry.execute([:bandit, :request, :stop], %{duration: 1}, %{conn: conn})
+    SystemsRuntime.Telemetry.execute([:bandit, :request, :stop], %{duration: 1}, %{conn: conn})
 
     refute OpenTelemetry.Span.is_valid(OpenTelemetry.Tracer.current_span_ctx())
   end
@@ -87,9 +91,9 @@ defmodule SystemsObservability.BanditInstrumentationTest do
         "00-#{trace_id_hex}-0123456789abcdef-01"
       )
 
-    :telemetry.execute([:bandit, :request, :start], %{}, %{conn: conn})
+    SystemsRuntime.Telemetry.execute([:bandit, :request, :start], %{}, %{conn: conn})
     conn = Plug.Conn.resp(conn, 204, "")
-    :telemetry.execute([:bandit, :request, :stop], %{duration: 1}, %{conn: conn})
+    SystemsRuntime.Telemetry.execute([:bandit, :request, :stop], %{duration: 1}, %{conn: conn})
 
     assert :ok = :otel_tracer_provider.force_flush()
     span = receive_span(trace_id)
@@ -106,23 +110,25 @@ defmodule SystemsObservability.BanditInstrumentationTest do
   end
 
   test "upstream tracer throws and exits do not detach the safe Bandit handler" do
-    failure_handler = {__MODULE__, make_ref()}
-    test = self()
+    failure_handler = {__MODULE__, SystemsRuntime.Proc.make_ref()}
+    test = SystemsRuntime.Proc.self()
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         failure_handler,
         [:systems_observability, :handler, :failure],
-        fn event, measurements, metadata, _ -> send(test, {event, measurements, metadata}) end,
+        fn event, measurements, metadata, _ ->
+          SystemsRuntime.Proc.send(test, {event, measurements, metadata})
+        end,
         nil
       )
 
-    on_exit(fn -> :telemetry.detach(failure_handler) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(failure_handler) end)
 
     for failure <- [:throw, :exit] do
       with_application_tracer(OpentelemetryBandit, {FailingTracer, failure}, fn ->
         assert :ok ==
-                 :telemetry.execute(
+                 SystemsRuntime.Telemetry.execute(
                    [:bandit, :request, :start],
                    %{},
                    %{conn: Plug.Test.conn(:get, "/health")}
@@ -131,8 +137,9 @@ defmodule SystemsObservability.BanditInstrumentationTest do
 
       assert handler_attached?({BanditInstrumentation, :request})
 
-      assert_receive {[:systems_observability, :handler, :failure], %{},
-                      %{reason: "invalid_measurement"}}
+      settle_receive(
+        {[:systems_observability, :handler, :failure], %{}, %{reason: "invalid_measurement"}}
+      )
     end
   end
 
@@ -157,15 +164,15 @@ defmodule SystemsObservability.BanditInstrumentationTest do
     refute inspect(sanitized) =~ "token=secret"
   end
 
-  defp receive_span(trace_id, timeout \\ 1_000) do
-    deadline = System.monotonic_time(:millisecond) + timeout
+  defp receive_span(trace_id, timeout \\ 30_000) do
+    deadline = SystemsClock.monotonic_time(:millisecond) + timeout
     receive_span_until(trace_id, deadline)
   end
 
   defp receive_span_until(trace_id, deadline) do
-    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    remaining = max(deadline - SystemsClock.monotonic_time(:millisecond), 0)
 
-    receive do
+    SystemsClock.vreceive do
       {:span, span} ->
         if otel_span(span, :trace_id) == trace_id and bandit_span?(span) do
           span
@@ -185,7 +192,7 @@ defmodule SystemsObservability.BanditInstrumentationTest do
   end
 
   defp handler_attached?(id) do
-    Enum.any?(:telemetry.list_handlers([:bandit, :request, :start]), &(&1.id == id))
+    Enum.any?(SystemsRuntime.Telemetry.list_handlers([:bandit, :request, :start]), &(&1.id == id))
   end
 
   defp with_application_tracer(module, tracer, fun) do
@@ -194,17 +201,17 @@ defmodule SystemsObservability.BanditInstrumentationTest do
     key = {:opentelemetry, :global, :tracer, {name, version, schema_url}}
 
     original = :opentelemetry.get_application_tracer(module)
-    :persistent_term.put(key, tracer)
+    SystemsRuntime.PersistentTerm.put(key, tracer)
 
     try do
       fun.()
     after
-      :persistent_term.put(key, original)
+      SystemsRuntime.PersistentTerm.put(key, original)
     end
   end
 
   defp drain_exported_spans do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:span, _span} -> drain_exported_spans()
     after
       0 -> :ok

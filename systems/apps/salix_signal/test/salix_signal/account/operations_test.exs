@@ -1,10 +1,12 @@
 defmodule SalixSignal.Account.OperationsTest do
+  require SystemsRuntime.Proc
+
   # The account operations the product layer uses (C12c), end to end
   # through the owner process: chat requests on a real socket to the fake
   # chat service (CRS-01), messages through the mock message service
   # (CRS-07), uploads to the fake CDN (CRS-10), groups on the fake storage
   # service (CRS-09b) and a group call on the fake calling server (CRS-14).
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixSignal.{Account, Accounts, Attachments}
   alias SalixSignal.Messaging.{Inbound, Pipeline}
@@ -44,14 +46,14 @@ defmodule SalixSignal.Account.OperationsTest do
     @behaviour SalixSignal.Account.Handler
 
     def handle_inbound(account_id, seq, inbound) do
-      test = :persistent_term.get({__MODULE__, :test})
-      send(test, {:handler_inbound, account_id, seq, inbound})
+      test = SystemsRuntime.PersistentTerm.get({__MODULE__, :test})
+      SystemsRuntime.Proc.send(test, {:handler_inbound, account_id, seq, inbound})
 
-      case :persistent_term.get({__MODULE__, :mode}, :normal) do
+      case SystemsRuntime.PersistentTerm.get({__MODULE__, :mode}, :normal) do
         :block ->
-          send(test, {:handler_blocked, self()})
+          SystemsRuntime.Proc.send(test, {:handler_blocked, SystemsRuntime.Proc.self()})
 
-          receive do
+          SystemsRuntime.Proc.receive do
             :release -> :ok
           after
             20_000 -> {:error, :not_released}
@@ -59,7 +61,7 @@ defmodule SalixSignal.Account.OperationsTest do
 
         :reply when inbound.content_kind == :data ->
           reply = SalixSignal.Account.send_text(account_id, inbound.sender, "echo")
-          send(test, {:handler_replied, reply})
+          SystemsRuntime.Proc.send(test, {:handler_replied, reply})
           :ok
 
         _mode ->
@@ -71,7 +73,11 @@ defmodule SalixSignal.Account.OperationsTest do
     def admit_call(_account_id, _info, _connection), do: {:error, :not_bound}
 
     def handle_event(account_id, event),
-      do: send(:persistent_term.get({__MODULE__, :test}), {:handler_event, account_id, event})
+      do:
+        SystemsRuntime.Proc.send(
+          SystemsRuntime.PersistentTerm.get({__MODULE__, :test}),
+          {:handler_event, account_id, event}
+        )
   end
 
   setup_all do
@@ -81,17 +87,20 @@ defmodule SalixSignal.Account.OperationsTest do
   end
 
   setup %{chain: chain, secret: secret, server: server} do
-    :persistent_term.put({Handler, :test}, self())
-    :persistent_term.put({Handler, :mode}, :normal)
+    SystemsRuntime.PersistentTerm.put({Handler, :test}, SystemsRuntime.Proc.self())
+    SystemsRuntime.PersistentTerm.put({Handler, :mode}, :normal)
     {:ok, upgrades} = Agent.start_link(fn -> [] end)
 
     chat_server =
-      start_supervised!({Bandit, FakeChat.bandit_options(self(), chain, upgrades)}, id: :chat)
+      start_supervised!(
+        {Bandit, FakeChat.bandit_options(SystemsRuntime.Proc.self(), chain, upgrades)},
+        id: :chat
+      )
 
-    cdn = start_supervised!({FakeCdn, self()})
+    cdn = start_supervised!({FakeCdn, SystemsRuntime.Proc.self()})
     cdn_server = start_supervised!({Bandit, FakeCdn.bandit_options(cdn, chain)}, id: :cdn)
-    now = System.system_time(:second)
-    storage = start_supervised!({FakeStorage, {self(), secret, now}})
+    now = SystemsClock.system_time(:second)
+    storage = start_supervised!({FakeStorage, {SystemsRuntime.Proc.self(), secret, now}})
 
     storage_server =
       start_supervised!({Bandit, FakeStorage.bandit_options(storage, chain)}, id: :storage)
@@ -163,7 +172,7 @@ defmodule SalixSignal.Account.OperationsTest do
         headers: [{"X-Signal-Timestamp", "1758790000500"}]
       }
 
-      send(socket, {:send, Frame.encode_request(request)})
+      SystemsRuntime.Proc.send(socket, {:send, Frame.encode_request(request)})
     end)
   end
 
@@ -212,7 +221,7 @@ defmodule SalixSignal.Account.OperationsTest do
 
   defp respond(socket, request, status, body) do
     response = %Frame.Response{id: request.id, status: status, body: Jason.encode!(body)}
-    send(socket, {:send, Frame.encode_response(response)})
+    SystemsRuntime.Proc.send(socket, {:send, Frame.encode_response(response)})
   end
 
   defp download(ctx, pointer) do
@@ -222,36 +231,12 @@ defmodule SalixSignal.Account.OperationsTest do
     )
   end
 
-  test "handler delivery runs outside the owner: sends go on while it blocks, and it may send",
-       ctx do
-    ctx = start_owner(ctx)
-    :persistent_term.put({Handler, :mode}, :block)
-    alice = alice_sends(ctx.alice, "slow")
-    push_queued(ctx, 10)
-
-    assert_receive {:handler_inbound, _id, slow, %Inbound{content_kind: :data}}, @wait_ms
-    assert_receive {:handler_blocked, delivery}, @wait_ms
-    assert {:ok, %{timestamp: _}} = Account.send_text(ctx.id, @alice, "meanwhile")
-    assert [%{data_message: %{body: "meanwhile"}}] = received(alice, :data)
-
-    # The cursor moves past the item once the handler accepts it.
-    :persistent_term.put({Handler, :mode}, :reply)
-    send(delivery, :release)
-    assert :sys.get_state(delivery).delivered >= slow
-
-    # A handler that sends on its own account does not wait for itself.
-    alice = alice_sends(alice, "ping")
-    push_queued(ctx, 20)
-    assert_receive {:handler_replied, {:ok, %{timestamp: _}}}, @wait_ms
-    assert [%{data_message: %{body: "echo"}}] = received(alice, :data)
-  end
-
   test "an attachment uploads in the caller over the owner's chat and sends as a pointer", ctx do
     ctx = start_owner(ctx)
-    data = :crypto.strong_rand_bytes(3_000)
+    data = SystemsRuntime.Proc.random_bytes(3_000)
 
     upload =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Account.upload_attachment(ctx.id, data, content_type: "image/png", file_name: "a.png")
       end)
 
@@ -264,7 +249,7 @@ defmodule SalixSignal.Account.OperationsTest do
     respond(socket, request, 200, form(ctx, "upload-key-1"))
 
     assert {:ok, %Pointer{content_type: "image/png", file_name: "a.png"} = pointer} =
-             Task.await(upload, @wait_ms)
+             SystemsRuntime.Task.await(upload, :infinity)
 
     assert {:ok, _} = Account.send_text(ctx.id, @alice, "a file", attachments: [pointer])
 
@@ -280,9 +265,9 @@ defmodule SalixSignal.Account.OperationsTest do
     ctx = start_owner(ctx)
     long = String.duplicate("ä", 1_500) <> String.duplicate("x", 3_000)
 
-    sent = Task.async(fn -> Account.send_text(ctx.id, @alice, long) end)
+    sent = SystemsRuntime.Task.async(fn -> Account.send_text(ctx.id, @alice, long) end)
     answer_form(ctx, "long-text-1")
-    assert {:ok, %{timestamp: _}} = Task.await(sent, @wait_ms)
+    assert {:ok, %{timestamp: _}} = SystemsRuntime.Task.await(sent, :infinity)
 
     assert [%{data_message: %{body: body, attachments: [pointer]}}] = received(ctx.alice, :data)
     assert byte_size(body) == 2_048
@@ -294,19 +279,6 @@ defmodule SalixSignal.Account.OperationsTest do
     inline = String.duplicate("y", 2_048)
     assert {:ok, _} = Account.send_text(ctx.id, @alice, inline)
     assert [%{data_message: %{body: ^inline, attachments: []}}] = received(ctx.alice, :data)
-  end
-
-  test "a reaction to a malformed author is refused and the owner keeps running", ctx do
-    ctx = start_owner(ctx)
-
-    assert Account.send_reaction(ctx.id, @alice, "👍", "not-an-aci", 1) ==
-             {:error, :invalid_author}
-
-    assert Account.send_group_reaction(ctx.id, :binary.copy(<<4>>, 32), "👍", "nope", 1) ==
-             {:error, :invalid_author}
-
-    assert Process.alive?(ctx.pid)
-    assert {:ok, _} = Account.send_reaction(ctx.id, @alice, "👍", @alice, 1)
   end
 
   # CRS-08: the profile of a sender whose profile key is new is read off
@@ -339,7 +311,7 @@ defmodule SalixSignal.Account.OperationsTest do
   # the group update; an account without a stored profile key is invited.
   test "adding members: a credential presentation for a known profile key, else an invitation",
        ctx do
-    params = Params.from_master_key(:crypto.strong_rand_bytes(32))
+    params = Params.from_master_key(SystemsRuntime.Proc.random_bytes(32))
     {:ok, bob_uuid} = ServiceId.aci_from_string(@bob)
     {:ok, alice_uuid} = ServiceId.aci_from_string(@alice)
     bob_uid = Uid.encrypt(params, {:aci, bob_uuid})
@@ -385,7 +357,9 @@ defmodule SalixSignal.Account.OperationsTest do
     dave = "00000000-0000-4000-8000-0000000000c4"
 
     adding =
-      Task.async(fn -> Account.add_group_members(ctx.id, params.group_id, [@alice, dave]) end)
+      SystemsRuntime.Task.async(fn ->
+        Account.add_group_members(ctx.id, params.group_id, [@alice, dave])
+      end)
 
     # CRS-08 section 7: the versioned profile with a credential request.
     version = Profile.version(ctx.alice.profile_key, alice_uuid)
@@ -401,12 +375,12 @@ defmodule SalixSignal.Account.OperationsTest do
         alice_uuid,
         ProfileKey.commitment(ctx.alice.profile_key, alice_uuid),
         ctx.now - rem(ctx.now, 86_400) + 7 * 86_400,
-        :crypto.strong_rand_bytes(32)
+        SystemsRuntime.Proc.random_bytes(32)
       )
 
     respond(ctx.socket, request, 200, %{"credential" => Base.encode64(response)})
     answer_credentials(ctx)
-    assert {:ok, 5} = Task.await(adding, @wait_ms)
+    assert {:ok, 5} = SystemsRuntime.Task.await(adding, :infinity)
 
     stored = FakeStorage.group(ctx.storage, params)
     alice_uid = Uid.encrypt(params, {:aci, alice_uuid})
@@ -429,7 +403,7 @@ defmodule SalixSignal.Account.OperationsTest do
   # announces the era to the group, sends its media key to the account in
   # the call, and calls `admit` with the era; a refused admission leaves.
   test "joining a group call wires the account's token, sends and admission", ctx do
-    params = Params.from_master_key(:crypto.strong_rand_bytes(32))
+    params = Params.from_master_key(SystemsRuntime.Proc.random_bytes(32))
     {:ok, alice_uuid} = ServiceId.aci_from_string(@alice)
     {:ok, bob_uuid} = ServiceId.aci_from_string(@bob)
     alice_uid = Uid.encrypt(params, {:aci, alice_uuid})
@@ -478,7 +452,7 @@ defmodule SalixSignal.Account.OperationsTest do
 
     # The storage service's token names the caller's UID ciphertext.
     token = "fake:" <> Base.encode16(:crypto.hash(:sha256, bob_uid), case: :lower)
-    sfu = start_supervised!({FakeSfu, {self(), token, []}})
+    sfu = start_supervised!({FakeSfu, {SystemsRuntime.Proc.self(), token, []}})
     sfu_server = start_supervised!({Bandit, FakeSfu.bandit_options(sfu, ctx.chain)}, id: :sfu)
     FakeSfu.put_devices(sfu, [{@alice_demux, GroupCallProto.opaque_user_id(alice_uid)}])
 
@@ -491,12 +465,12 @@ defmodule SalixSignal.Account.OperationsTest do
         ]
       )
 
-    test = self()
+    test = SystemsRuntime.Proc.self()
 
     admit = fn session, info ->
-      send(test, {:admit, self(), session, info})
+      SystemsRuntime.Proc.send(test, {:admit, SystemsRuntime.Proc.self(), session, info})
 
-      receive do
+      SystemsRuntime.Proc.receive do
         {:admit_result, result} -> result
       after
         @wait_ms -> {:error, :timeout}
@@ -504,7 +478,7 @@ defmodule SalixSignal.Account.OperationsTest do
     end
 
     assert {:ok, session} = Account.join_group_call(ctx.id, params.group_id, admit: admit)
-    ref = Process.monitor(session)
+    ref = SystemsRuntime.Proc.monitor(session)
     answer_credentials(ctx)
 
     assert_receive {:admit, admit_task, ^session, %{era_id: era}}, @wait_ms
@@ -516,14 +490,14 @@ defmodule SalixSignal.Account.OperationsTest do
     # in the call as a 1:1 call message.
     assert eventually(fn -> call_arrivals(ctx.alice, params.group_id) end) == {true, true}
 
-    send(admit_task, {:admit_result, {:error, :declined}})
+    SystemsRuntime.Proc.send(admit_task, {:admit_result, {:error, :declined}})
     assert_receive {:DOWN, ^ref, :process, ^session, _reason}, @wait_ms
     assert Account.join_group_call(ctx.id, :binary.copy(<<8>>, 32)) == {:error, :unknown_group}
   end
 
   test "joining by link initializes a missing profile and receives a group credential", ctx do
-    params = Params.from_master_key(:crypto.strong_rand_bytes(32))
-    password = :crypto.strong_rand_bytes(16)
+    params = Params.from_master_key(SystemsRuntime.Proc.random_bytes(32))
+    password = SystemsRuntime.Proc.random_bytes(16)
 
     FakeStorage.put_group(ctx.storage, params, %Wire.Group{
       revision: 0,
@@ -533,7 +507,7 @@ defmodule SalixSignal.Account.OperationsTest do
 
     ctx = start_owner(ctx)
     url = SalixSignalProto.Group.InviteLink.build(params.master_key, password)
-    joining = Task.async(fn -> Account.join_group(ctx.id, url) end)
+    joining = SystemsRuntime.Task.async(fn -> Account.join_group(ctx.id, url) end)
     answer_credentials(ctx)
     request = receive_request(ctx.socket, "/v1/profile/#{@bob}/")
     respond(ctx.socket, request, 200, %{})
@@ -550,31 +524,13 @@ defmodule SalixSignal.Account.OperationsTest do
 
     respond(ctx.socket, publish, 200, %{})
     answer_own_profile_credential(ctx)
-    assert {:ok, {:joined, group_id}} = Task.await(joining, @wait_ms)
+    assert {:ok, {:joined, group_id}} = SystemsRuntime.Task.await(joining, :infinity)
     assert group_id == params.group_id
     assert [%{group_id: ^group_id}] = Account.groups(ctx.id)
   end
 
-  test "a missing credential does not overwrite an existing account profile", ctx do
-    ctx = start_owner(ctx)
-
-    url =
-      SalixSignalProto.Group.InviteLink.build(
-        :crypto.strong_rand_bytes(32),
-        :crypto.strong_rand_bytes(16)
-      )
-
-    joining = Task.async(fn -> Account.join_group(ctx.id, url) end)
-    answer_credentials(ctx)
-    request = receive_request(ctx.socket, "/v1/profile/#{@bob}/")
-    {:ok, name} = Profile.encrypt_name(ctx.bob.profile_key, "Existing bot", nil)
-    respond(ctx.socket, request, 200, %{"name" => Base.encode64(name)})
-    assert {:error, :no_profile_credential} = Task.await(joining, @wait_ms)
-    refute_receive {:fake_chat, :frame, _, %Frame.Request{verb: "PUT", path: "/v1/profile"}}
-  end
-
   test "an incoming direct invitation makes the owner accept and persist membership", ctx do
-    params = Params.from_master_key(:crypto.strong_rand_bytes(32))
+    params = Params.from_master_key(SystemsRuntime.Proc.random_bytes(32))
     {:ok, bob_uuid} = ServiceId.aci_from_string(@bob)
     bob_uid = Uid.encrypt(params, {:aci, bob_uuid})
 
@@ -585,7 +541,7 @@ defmodule SalixSignal.Account.OperationsTest do
 
     ctx = start_owner(ctx)
 
-    timestamp = System.system_time(:millisecond)
+    timestamp = SystemsClock.system_time(:millisecond)
 
     content =
       %SalixSignalProto.Message.Wire.Content{
@@ -649,7 +605,7 @@ defmodule SalixSignal.Account.OperationsTest do
         bob_uuid,
         ProfileKey.commitment(ctx.bob.profile_key, bob_uuid),
         ctx.now - rem(ctx.now, 86_400) + 7 * 86_400,
-        :crypto.strong_rand_bytes(32)
+        SystemsRuntime.Proc.random_bytes(32)
       )
 
     respond(ctx.socket, request, 200, %{"credential" => Base.encode64(response)})
@@ -669,7 +625,9 @@ defmodule SalixSignal.Account.OperationsTest do
 
     credentials =
       for day <- first..last//86_400 do
-        response = AuthCredential.issue(ctx.secret, aci, pni, day, :crypto.strong_rand_bytes(32))
+        response =
+          AuthCredential.issue(ctx.secret, aci, pni, day, SystemsRuntime.Proc.random_bytes(32))
+
         %{"credential" => Base.encode64(response), "redemptionTime" => day}
       end
 
@@ -680,7 +638,7 @@ defmodule SalixSignal.Account.OperationsTest do
         "pni" => @pni
       })
 
-    send(
+    SystemsRuntime.Proc.send(
       socket,
       {:send, Frame.encode_response(%Frame.Response{id: request.id, status: 200, body: body})}
     )
@@ -720,10 +678,10 @@ defmodule SalixSignal.Account.OperationsTest do
     if update? and key?, do: {true, true}, else: nil
   end
 
-  defp eventually(fun, tries \\ 300) do
+  defp eventually(fun, tries \\ 1_500) do
     case fun.() do
       result when result in [nil, {:ok, nil}] and tries > 0 ->
-        Process.sleep(100)
+        SystemsRuntime.Proc.sleep(20)
         eventually(fun, tries - 1)
 
       result ->

@@ -9,7 +9,7 @@ defmodule SalixStore.S3ContractTest do
   HEAD, LIST pagination, multipart-upload reconciliation, and the not-found /
   precondition-failed / not-modified tagged errors.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.S3
 
@@ -21,14 +21,14 @@ defmodule SalixStore.S3ContractTest do
   for {backend, name} <- @backends do
     describe "#{name} backend" do
       setup do
-        prev = Application.get_env(:salix_store, :s3_backend)
-        Application.put_env(:salix_store, :s3_backend, unquote(backend))
+        prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+        SystemsRuntime.put_env(:salix_store, :s3_backend, unquote(backend))
 
         if unquote(backend) == SalixStore.S3.Fake do
           start_supervised!(SalixStore.S3.Fake)
         end
 
-        on_exit(fn -> Application.put_env(:salix_store, :s3_backend, prev) end)
+        on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, prev) end)
         :ok
       end
 
@@ -146,5 +146,5 @@ defmodule SalixStore.S3ContractTest do
     end
   end
 
-  defp key(tag), do: "itest/#{tag}/#{System.unique_integer([:positive])}"
+  defp key(tag), do: "itest/#{tag}/#{SystemsRuntime.Proc.unique_integer([:positive])}"
 end

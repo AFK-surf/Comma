@@ -15,7 +15,7 @@ defmodule SalixAnalytics.SlackSemanticUpload do
       {"cf-access-client-secret", cfg[:client_secret]}
     ]
 
-    deadline = System.monotonic_time(:millisecond) + 300_000
+    deadline = SystemsClock.monotonic_time(:millisecond) + 300_000
 
     with false <- cancelled.(),
          true <- size > 0 and size <= 512 * 1024 * 1024,
@@ -35,7 +35,7 @@ defmodule SalixAnalytics.SlackSemanticUpload do
             expected = offset + byte_size(part)
 
             with false <- cancelled.(),
-                 true <- System.monotonic_time(:millisecond) < deadline,
+                 true <- SystemsClock.monotonic_time(:millisecond) < deadline,
                  {:ok, reply} <-
                    request(url, headers ++ [{"x-media-offset", to_string(offset)}],
                      method: :put,
@@ -64,7 +64,7 @@ defmodule SalixAnalytics.SlackSemanticUpload do
   end
 
   defp request(url, headers, opts) do
-    deadline = System.monotonic_time(:millisecond) + 30_000
+    deadline = SystemsClock.monotonic_time(:millisecond) + 30_000
 
     result =
       Req.request(
@@ -81,7 +81,7 @@ defmodule SalixAnalytics.SlackSemanticUpload do
             into: fn {:data, data}, {req, resp} ->
               body = (resp.body || "") <> data
 
-              if byte_size(body) <= 4096 and System.monotonic_time(:millisecond) < deadline,
+              if byte_size(body) <= 4096 and SystemsClock.monotonic_time(:millisecond) < deadline,
                 do: {:cont, {req, %{resp | body: body}}},
                 else: {:halt, {req, %{resp | status: 502, body: ""}}}
             end

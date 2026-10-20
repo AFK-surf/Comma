@@ -12,7 +12,7 @@ def rank : Term → Nat
   | .list _ | .improper _ _ => 9
   | .binary _ | .bitstring _ _ => 10
 
-private def lexM (cmp : Term → Term → KernelM Ordering) :
+def lexM (cmp : Term → Term → KernelM Ordering) :
     List Term → List Term → KernelM Ordering
   | [], [] => pure .eq
   | [], _ => pure .lt
@@ -39,14 +39,14 @@ def sortM (cmp : Term → Term → KernelM Ordering) (xs : List Term) : KernelM 
       merge xs.length (← sort fuel left) (← sort fuel right) []
   sort (xs.length + 1) xs
 
-private def rawBits : Term → List Bool
+def rawBits : Term → List Bool
   | .binary raw => raw.toList.flatMap (fun byte => (List.range 8).map (fun n => byte.toNat / 2^(7 - n) % 2 == 1))
   | .bitstring raw lastBits =>
     let bits := raw.toList.flatMap (fun byte => (List.range 8).map (fun n => byte.toNat / 2^(7 - n) % 2 == 1))
     bits.take (raw.size * 8 - (8 - lastBits.toNat))
   | _ => []
 
-private def compareLists (cmp : Term → Term → KernelM Ordering) (xtail ytail : Term) :
+def compareLists (cmp : Term → Term → KernelM Ordering) (xtail ytail : Term) :
     List Term → List Term → KernelM Ordering
   | [], [] => cmp xtail ytail
   | [], ys => cmp xtail (.improper ys ytail)

@@ -162,7 +162,7 @@ defmodule BillingCore.ResourceMetering do
   defp sink(attrs),
     do:
       attrs[:typed_sink] ||
-        Application.get_env(:billing_core, :typed_sink, SalixAnalytics.TypedSinkWorker)
+        SystemsRuntime.get_env(:billing_core, :typed_sink, SalixAnalytics.TypedSinkWorker)
 
   defp shadow_fee_control(kind, attrs) do
     context =
@@ -204,5 +204,6 @@ defmodule BillingCore.ResourceMetering do
   defp default_meter_unit(:vm), do: :second
   defp default_meter_unit(:storage), do: :byte_second
 
-  defp fee_env(key), do: Application.get_env(:billing_core, :fee_control, []) |> Keyword.get(key)
+  defp fee_env(key),
+    do: SystemsRuntime.get_env(:billing_core, :fee_control, []) |> Keyword.get(key)
 end

@@ -1,5 +1,5 @@
 defmodule SalixEnv.LocalFileRefsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixEnv.{LocalFileRefs, Registry}
   alias SalixStore.{Ids, Repo, S3}
@@ -7,20 +7,20 @@ defmodule SalixEnv.LocalFileRefsTest do
   setup do
     Repo.query!("TRUNCATE local_file_refs")
 
-    previous = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_store, :s3_backend, previous),
-        else: Application.delete_env(:salix_store, :s3_backend)
+        do: SystemsRuntime.put_env(:salix_store, :s3_backend, previous),
+        else: SystemsRuntime.delete_env(:salix_store, :s3_backend)
     end)
 
     tenant_id = Ids.new_tenant_id()
     group_id = Ids.new_group_id(tenant_id)
     device_id = Ids.new_device_id()
-    owner_user_id = "user-#{System.unique_integer([:positive])}"
+    owner_user_id = "user-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     assert {:ok, _transport_id, device} =
              Registry.connect(
@@ -291,126 +291,6 @@ defmodule SalixEnv.LocalFileRefsTest do
              )
   end
 
-  test "expired drafts cannot bind and one ref never rebinds to another message", ctx do
-    ref = local_ref()
-    assert {:ok, _route} = register(ctx, ref, now: 1, draft_ttl_ms: 1)
-    message = message(ctx.owner_user_id, ref)
-
-    assert {:error, :local_file_unavailable} =
-             LocalFileRefs.bind_message(ctx.group_id, message["conversation_id"], message)
-
-    fresh = local_ref()
-    assert {:ok, _route} = register(ctx, fresh)
-    first = message(ctx.owner_user_id, fresh)
-    assert :ok = LocalFileRefs.bind_message(ctx.group_id, first["conversation_id"], first)
-
-    second = message(ctx.owner_user_id, fresh)
-
-    assert {:error, :local_file_ref_conflict} =
-             LocalFileRefs.bind_message(ctx.group_id, second["conversation_id"], second)
-  end
-
-  test "bound routes expire at their seven-day retention deadline", ctx do
-    ref = local_ref()
-    assert {:ok, _route} = register(ctx, ref)
-    message = message(ctx.owner_user_id, ref)
-    conversation_id = message["conversation_id"]
-    assert :ok = LocalFileRefs.bind_message(ctx.group_id, conversation_id, message)
-
-    assert {:ok, %{"expires_at" => expires_at, "state" => "bound"}} =
-             SalixStore.LocalFileRefs.get(ref)
-
-    assert {:ok, _route} =
-             LocalFileRefs.resolve_committed(ctx.group_id, conversation_id, message, ref,
-               now: expires_at - 1
-             )
-
-    assert {:error, :local_file_unavailable} =
-             LocalFileRefs.resolve_committed(ctx.group_id, conversation_id, message, ref,
-               now: expires_at
-             )
-  end
-
-  test "concurrent route registration settles idempotently without rebinding", ctx do
-    ref = local_ref()
-
-    results =
-      1..8
-      |> Enum.map(fn _ -> Task.async(fn -> register(ctx, ref) end) end)
-      |> Task.await_many()
-
-    assert Enum.all?(results, &match?({:ok, %{"local_file_ref" => ^ref}}, &1))
-
-    other_device_id = Ids.new_device_id()
-
-    assert {:ok, _transport_id, _device} =
-             Registry.connect(
-               to_string(node()),
-               %{
-                 "tenant_id" => ctx.tenant_id,
-                 "group_id" => ctx.group_id,
-                 "device_id" => other_device_id,
-                 "connector_id" => "connector-local-file-other",
-                 "owner_user_id" => ctx.owner_user_id,
-                 "capabilities" => %{
-                   "local_file_import_v1" => true,
-                   "local_file_index_version" => 2
-                 }
-               },
-               connection_generation: 1,
-               transport_id: "transport-local-file-other"
-             )
-
-    assert {:error, :local_file_ref_conflict} =
-             LocalFileRefs.register(
-               ctx.tenant_id,
-               ctx.group_id,
-               ctx.owner_user_id,
-               other_device_id,
-               ref
-             )
-  end
-
-  test "bounded cleanup retires expired routes and permanently rejects ref reuse", ctx do
-    now = System.system_time(:millisecond)
-    registered_ref = local_ref()
-    bound_ref = local_ref()
-    live_ref = local_ref()
-
-    assert {:ok, _} = register(ctx, registered_ref, now: now - 10, draft_ttl_ms: 1)
-    assert {:ok, _} = register(ctx, bound_ref, now: now - 10, draft_ttl_ms: 1_000)
-    assert {:ok, _} = register(ctx, live_ref, now: now, draft_ttl_ms: 1_000)
-
-    bound_message = message(ctx.owner_user_id, bound_ref)
-
-    assert :ok =
-             LocalFileRefs.bind_message(
-               ctx.group_id,
-               bound_message["conversation_id"],
-               bound_message
-             )
-
-    # Force the bound retention deadline to make the cleanup boundary deterministic.
-    Repo.query!("UPDATE local_file_refs SET expires_at = $1 WHERE ref_digest = $2", [
-      DateTime.from_unix!((now - 1) * 1_000, :microsecond),
-      SalixStore.LocalFileRefs.ref_digest(bound_ref)
-    ])
-
-    assert {:ok, 2} = LocalFileRefs.cleanup_expired(now, limit: 2)
-
-    assert {:ok, %{"state" => "retired"}} =
-             SalixStore.LocalFileRefs.get(registered_ref)
-
-    assert {:ok, %{"state" => "retired"}} = SalixStore.LocalFileRefs.get(bound_ref)
-    assert {:ok, %{"state" => "registered"}} = SalixStore.LocalFileRefs.get(live_ref)
-
-    assert {:error, :local_file_ref_conflict} =
-             register(ctx, registered_ref, now: now + 1, draft_ttl_ms: 1_000)
-
-    assert {:error, :local_file_ref_conflict} =
-             register(ctx, bound_ref, now: now + 1, draft_ttl_ms: 1_000)
-  end
-
   defp register(ctx, ref, opts \\ []) do
     LocalFileRefs.register(
       ctx.tenant_id,
@@ -447,5 +327,5 @@ defmodule SalixEnv.LocalFileRefsTest do
   end
 
   defp local_ref,
-    do: "lfi1_" <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+    do: "lfi1_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
 end

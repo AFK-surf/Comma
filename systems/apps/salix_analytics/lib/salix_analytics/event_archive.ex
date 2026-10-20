@@ -211,7 +211,7 @@ defmodule SalixAnalytics.EventArchive do
   end
 
   defp emit(event, context) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix_analytics, :event_archive, event],
       %{count: 1},
       %{boundary: context[:boundary], stream: context[:stream]}

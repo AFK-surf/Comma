@@ -1,6 +1,5 @@
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -27,7 +26,7 @@ afterEach(async () => {
 describe("Comma Main client-control API", () => {
   it("routes an AirDrop send and returns actionable errors through the authenticated API", async () => {
     const harness = await createHarness();
-    const operationId = randomUUID();
+    const operationId = "11111111-1111-4111-8111-111111111111";
     const input = {
       requestId: operationId,
       peerId: "phone-id",
@@ -81,7 +80,7 @@ describe("Comma Main client-control API", () => {
       expect(sender.send).toHaveBeenCalledWith(input);
       // Several files, Drive and Mac paths alike, go to the recipient together.
       const vfsInput = {
-        requestId: randomUUID(),
+        requestId: "22222222-2222-4222-8222-222222222222",
         peerId: "phone-id",
         paths: ["/drive/file.png", "/tmp/report.pdf"],
       };
@@ -178,8 +177,7 @@ describe("Comma Main client-control API", () => {
                 appearance: expect.any(Object),
                 appShortcutOverrides: expect.any(Object),
                 localePreference: expect.any(Object),
-                sideChatAppearance: expect.any(Object),
-                sideChatShortcut: expect.any(Object),
+                openCommaShortcut: expect.any(Object),
               }),
             }),
           }),
@@ -222,12 +220,12 @@ describe("Comma Main client-control API", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
     });
     expect(harness.appPreferences.update).toHaveBeenCalledWith({ showInDock: false });
@@ -423,12 +421,12 @@ async function createHarness() {
     notchSideWidth: 156,
     notificationSound: true,
     notifyRouterMessages: true,
+    quickChatEnabled: true,
     revision: 0,
     showInAirDrop: true,
     showInDock: true,
     showInMenuBar: true,
     showInNotch: true,
-    sideChatEnabled: true,
     systemNotifications: true,
   };
   const appPreferences = {

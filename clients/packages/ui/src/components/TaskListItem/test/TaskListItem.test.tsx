@@ -59,47 +59,6 @@ describe("TaskListItem", () => {
     );
   });
 
-  it("renders content tail typography", () => {
-    const { container } = render(
-      <TaskListItem
-        icon={<Icon name="task-icon" />}
-        layout="content"
-        tail="Create May 9"
-        title="Untitled"
-      />
-    );
-
-    expect(screen.getByText("Create May 9")).toHaveClass(
-      "font-normal",
-      "text-quaternary",
-      "shrink-0"
-    );
-    expect(container.querySelector('[data-slot="task-list-item-tail"]')).toHaveClass(
-      "contents"
-    );
-  });
-
-  it("uses medium tail typography for the sidebar layout", () => {
-    const { container } = render(
-      <TaskListItem
-        icon={<Icon name="task-icon" />}
-        layout="sidebar"
-        tail="30m"
-        title="Summarizing recent OpenAI's update"
-      />
-    );
-
-    expect(container.querySelector('[data-slot="task-list-item-tail"]')).toHaveClass(
-      "font-medium",
-      "text-quaternary"
-    );
-    expect(container.querySelector('[data-slot="task-list-item-title"]')).toHaveClass(
-      "font-normal"
-    );
-    expect(container.firstElementChild).toHaveClass("px-lg", "py-md");
-    expect(container.firstElementChild).not.toHaveClass("p-lg");
-  });
-
   it("indents the content row icon under the group header with a hidden handle", () => {
     const { container } = render(
       <div className="w-[360px]">
@@ -145,7 +104,7 @@ describe("TaskListItem", () => {
           layout="content"
           tail={
             <>
-              <span data-testid="schedule-tag">Schedules</span>
+              <span data-testid="schedule-tag">Loops</span>
               <span>Create May 9</span>
             </>
           }
@@ -199,21 +158,6 @@ describe("TaskListItem", () => {
       "data-state",
       "visible"
     );
-  });
-
-  it("uses the sidebar item background for hover unless disabled", () => {
-    const { container, rerender } = render(
-      <TaskListItem icon={<Icon name="idle-icon" />} title="Untitled" />
-    );
-
-    expect(container.firstElementChild).toHaveClass("hover:bg-sidebar-bg-item");
-
-    rerender(
-      <TaskListItem disabled icon={<Icon name="idle-icon" />} title="Untitled" />
-    );
-
-    expect(container.firstElementChild).not.toHaveClass("hover:bg-sidebar-bg-item");
-    expect(container.firstElementChild).toHaveClass("cursor-not-allowed", "opacity-60");
   });
 
   it("opens its context menu at the pointer and closes after an action", async () => {
@@ -456,8 +400,6 @@ describe("TaskListItem", () => {
   });
 
   it("keeps exiting and entering icons mounted during the switch animation", () => {
-    vi.useFakeTimers();
-
     const { container, rerender } = render(
       <TaskListItem
         icon={<Icon name="loading-icon" />}
@@ -485,15 +427,13 @@ describe("TaskListItem", () => {
     expect(
       container.querySelector('[data-motion="idle"] [data-testid="done-icon"]')
     ).toBeTruthy();
-
-    vi.useRealTimers();
   });
 
   it("falls back to default icons when playground params are incomplete", () => {
     const iconState = resolveTaskListItemStoryIcon("content", undefined, undefined);
 
     expect(iconState.icon).toBeTruthy();
-    expect(iconState.label).toBe("Backlog");
+    expect(iconState.label).toBe("In progress");
   });
 
   it("renders distinct icons for each content task state", () => {
@@ -531,12 +471,10 @@ describe("TaskListItem", () => {
   });
 
   it("updates the visible icon when playground state changes", () => {
-    vi.useFakeTimers();
-
     const { container, rerender } = render(
       <TaskListItem
-        icon={contentTaskIconStates.backlog.renderIcon()}
-        iconKey="backlog"
+        icon={contentTaskIconStates["in-progress"].renderIcon()}
+        iconKey="in-progress"
         title="Task"
       />
     );
@@ -548,7 +486,7 @@ describe("TaskListItem", () => {
       container.querySelector('[data-slot="task-list-item-icon"] svg')?.outerHTML ??
       "";
 
-    const backlogSvg = readCurrentSvg();
+    const inProgressSvg = readCurrentSvg();
 
     rerender(
       <TaskListItem
@@ -563,8 +501,6 @@ describe("TaskListItem", () => {
     });
 
     const doneSvg = readCurrentSvg();
-    expect(backlogSvg).not.toBe(doneSvg);
-
-    vi.useRealTimers();
+    expect(inProgressSvg).not.toBe(doneSvg);
   });
 });

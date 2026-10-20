@@ -1,0 +1,113 @@
+id: ts-test-timer
+language: typescript
+severity: error
+message: "A test arms a real timer."
+note: |
+  A real timer fires after real time, so what runs before it depends on the
+  machine. Use the fake clock (test-clock.ts) or the virtual clock and move it,
+  or wait for the event the timer stands in for.
+metadata:
+  category: timer
+rule:
+  any:
+    - pattern: setTimeout($$$)
+    - pattern: setInterval($$$)
+    - pattern: setImmediate($$$)
+    - pattern: requestAnimationFrame($$$)
+    - pattern: $G.setTimeout($$$)
+    - pattern: $G.setInterval($$$)
+    - pattern: $G.setImmediate($$$)
+    - pattern: $G.requestAnimationFrame($$$)
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"
+  - "clients/apps/**/test/**/*.test.tsx"
+  - "clients/packages/**/test/**/*.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"
+---
+id: tsx-test-timer
+language: tsx
+severity: error
+message: "A test arms a real timer."
+note: |
+  A real timer fires after real time, so what runs before it depends on the
+  machine. Use the fake clock (test-clock.ts) or the virtual clock and move it,
+  or wait for the event the timer stands in for.
+metadata:
+  category: timer
+rule:
+  any:
+    - pattern: setTimeout($$$)
+    - pattern: setInterval($$$)
+    - pattern: setImmediate($$$)
+    - pattern: requestAnimationFrame($$$)
+    - pattern: $G.setTimeout($$$)
+    - pattern: $G.setInterval($$$)
+    - pattern: $G.setImmediate($$$)
+    - pattern: $G.requestAnimationFrame($$$)
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"
+  - "clients/apps/**/test/**/*.test.tsx"
+  - "clients/packages/**/test/**/*.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"
+---
+id: tsx-test-timer-browser
+language: tsx
+severity: error
+message: "A test arms a real timer."
+note: |
+  A real timer fires after real time, so what runs before it depends on the
+  machine. Use the fake clock (test-clock.ts) or the virtual clock and move it,
+  or wait for the event the timer stands in for.
+metadata:
+  category: timer
+rule:
+  any:
+    - pattern: setTimeout($$$)
+    - pattern: setInterval($$$)
+    - pattern: setImmediate($$$)
+    - pattern: requestAnimationFrame($$$)
+    - pattern: $G.setTimeout($$$)
+    - pattern: $G.setInterval($$$)
+    - pattern: $G.setImmediate($$$)
+    - pattern: $G.requestAnimationFrame($$$)
+files:
+  - "clients/apps/**/test/**/*.chromium.test.tsx"
+  - "clients/packages/**/test/**/*.chromium.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"

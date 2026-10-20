@@ -1,4 +1,5 @@
 export {
+  loadStatusIndicatorElement,
   StatusIndicator,
   statusIds,
   type StatusId,

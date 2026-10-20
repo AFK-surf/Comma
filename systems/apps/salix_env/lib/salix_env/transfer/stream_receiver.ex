@@ -1,11 +1,13 @@
 defmodule SalixEnv.Transfer.StreamReceiver do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Caller-owned receiver for bounded cross-node byte forwarding.
 
   Connector remote-read worker ownership is modeled in
   `tla/salix/ConnectorReadStream.tla`.
   """
-  use GenServer
+  use SystemsRuntime.Server
 
   alias SalixEnv.Transfer.Tokens
 
@@ -13,30 +15,30 @@ defmodule SalixEnv.Transfer.StreamReceiver do
   @default_absolute_timeout_ms 305_000
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts)
+    SystemsRuntime.Server.start_link(__MODULE__, opts)
   end
 
-  def attach_worker(pid, worker), do: GenServer.call(pid, {:attach_worker, worker})
+  def attach_worker(pid, worker), do: SystemsRuntime.Server.call(pid, {:attach_worker, worker})
 
   def register!(pid) do
     token = Tokens.register(owner: pid)
-    GenServer.call(pid, {:token, token})
+    SystemsRuntime.Server.call(pid, {:token, token})
     {token, SalixEnv.Transfer.advertise_url(token), stream(pid)}
   end
 
-  def fail(pid, reason), do: GenServer.cast(pid, {:fail, reason})
+  def fail(pid, reason), do: SystemsRuntime.Server.cast(pid, {:fail, reason})
 
   def stream(pid) do
     Stream.resource(
       fn -> pid end,
       fn pid ->
-        case GenServer.call(pid, :next, :infinity) do
+        case SystemsRuntime.Server.call(pid, :next, :infinity) do
           {:chunk, chunk} -> {[chunk], pid}
           :eof -> {:halt, pid}
           {:error, reason} -> raise "transfer stream failed: #{inspect(reason)}"
         end
       end,
-      fn pid -> GenServer.cast(pid, :close) end
+      fn pid -> SystemsRuntime.Server.cast(pid, :close) end
     )
   end
 
@@ -50,7 +52,7 @@ defmodule SalixEnv.Transfer.StreamReceiver do
     absolute_timeout =
       positive_timeout(Keyword.get(opts, :absolute_timeout_ms), @default_absolute_timeout_ms)
 
-    absolute_token = make_ref()
+    absolute_token = SystemsRuntime.Proc.make_ref()
 
     state = %{
       token: nil,
@@ -59,15 +61,16 @@ defmodule SalixEnv.Transfer.StreamReceiver do
       eof: nil,
       closed: false,
       error: nil,
-      owner_monitor: if(is_pid(owner), do: Process.monitor(owner)),
+      owner_monitor:
+        if(SystemsRuntime.Proc.is_process(owner), do: SystemsRuntime.Proc.monitor(owner)),
       worker: nil,
       worker_monitor: nil,
       idle_timeout: idle_timeout,
       idle_timer: nil,
       idle_token: nil,
       absolute_timer:
-        Process.send_after(
-          self(),
+        SystemsClock.send_after(
+          SystemsRuntime.Proc.self(),
           {:remote_read_stream_absolute_timeout, absolute_token},
           absolute_timeout
         ),
@@ -81,19 +84,20 @@ defmodule SalixEnv.Transfer.StreamReceiver do
   def handle_call({:token, token}, _from, state),
     do: {:reply, :ok, renew_idle(%{state | token: token})}
 
-  def handle_call({:attach_worker, worker}, _from, state) when is_pid(worker) do
-    monitor = Process.monitor(worker)
+  def handle_call({:attach_worker, worker}, _from, state)
+      when SystemsRuntime.Proc.is_process(worker) do
+    monitor = SystemsRuntime.Proc.monitor(worker)
     {:reply, :ok, renew_idle(%{state | worker: worker, worker_monitor: monitor})}
   end
 
   def handle_call(:next, _from, %{pending: {handler, chunk}, token: token} = state) do
-    send(handler, {:transfer_ack, token})
+    SystemsRuntime.Proc.send(handler, {:transfer_ack, token})
     {:reply, {:chunk, chunk}, renew_idle(%{state | pending: nil})}
   end
 
   def handle_call(:next, _from, %{eof: handler, token: token} = state) when not is_nil(handler) do
-    send(handler, {:transfer_ack, token})
-    send(handler, {:transfer_complete, token, %{"ok" => true}})
+    SystemsRuntime.Proc.send(handler, {:transfer_ack, token})
+    SystemsRuntime.Proc.send(handler, {:transfer_complete, token, %{"ok" => true}})
     {:stop, :normal, :eof, %{state | eof: nil, closed: true}}
   end
 
@@ -109,8 +113,8 @@ defmodule SalixEnv.Transfer.StreamReceiver do
         %{token: token, waiting: waiting} = state
       )
       when not is_nil(waiting) do
-    GenServer.reply(waiting, {:chunk, chunk})
-    send(handler, {:transfer_ack, token})
+    SystemsRuntime.Server.reply(waiting, {:chunk, chunk})
+    SystemsRuntime.Proc.send(handler, {:transfer_ack, token})
     {:noreply, renew_idle(%{state | waiting: nil})}
   end
 
@@ -120,9 +124,9 @@ defmodule SalixEnv.Transfer.StreamReceiver do
 
   def handle_info({:transfer_eof, token, handler}, %{token: token, waiting: waiting} = state)
       when not is_nil(waiting) do
-    GenServer.reply(waiting, :eof)
-    send(handler, {:transfer_ack, token})
-    send(handler, {:transfer_complete, token, %{"ok" => true}})
+    SystemsRuntime.Server.reply(waiting, :eof)
+    SystemsRuntime.Proc.send(handler, {:transfer_ack, token})
+    SystemsRuntime.Proc.send(handler, {:transfer_complete, token, %{"ok" => true}})
     {:noreply, renew_idle(%{state | waiting: nil, closed: true})}
   end
 
@@ -171,38 +175,41 @@ defmodule SalixEnv.Transfer.StreamReceiver do
   @impl true
   def terminate(_reason, state) do
     abort_waiting_transfer(state, state.error || :remote_read_stream_receiver_closed)
-    if is_pid(state.worker), do: Process.exit(state.worker, :kill)
-    if state.worker_monitor, do: Process.demonitor(state.worker_monitor, [:flush])
-    if state.owner_monitor, do: Process.demonitor(state.owner_monitor, [:flush])
-    if state.idle_timer, do: Process.cancel_timer(state.idle_timer)
-    if state.absolute_timer, do: Process.cancel_timer(state.absolute_timer)
+
+    if SystemsRuntime.Proc.is_process(state.worker),
+      do: SystemsRuntime.Proc.exit(state.worker, :kill)
+
+    if state.worker_monitor, do: SystemsRuntime.Proc.demonitor(state.worker_monitor, [:flush])
+    if state.owner_monitor, do: SystemsRuntime.Proc.demonitor(state.owner_monitor, [:flush])
+    if state.idle_timer, do: SystemsClock.cancel_timer(state.idle_timer)
+    if state.absolute_timer, do: SystemsClock.cancel_timer(state.absolute_timer)
     if is_binary(state.token), do: Tokens.revoke(state.token)
     :ok
   end
 
   defp fail_state(%{waiting: waiting} = state, reason) do
-    if waiting, do: GenServer.reply(waiting, {:error, reason})
+    if waiting, do: SystemsRuntime.Server.reply(waiting, {:error, reason})
 
     {:noreply, renew_idle(%{state | waiting: nil, error: reason, closed: true})}
   end
 
   defp stop_for_deadline(state, reason) do
-    if state.waiting, do: GenServer.reply(state.waiting, {:error, reason})
+    if state.waiting, do: SystemsRuntime.Server.reply(state.waiting, {:error, reason})
 
     {:stop, :normal, %{state | waiting: nil, error: reason, closed: true, idle_timer: nil}}
   end
 
   defp abort_waiting_transfer(%{token: token, pending: {handler, _chunk}}, reason)
-       when is_binary(token) and is_pid(handler) do
-    send(handler, {:transfer_ack, token})
-    send(handler, {:transfer_complete, token, transfer_error(reason)})
+       when is_binary(token) and SystemsRuntime.Proc.is_process(handler) do
+    SystemsRuntime.Proc.send(handler, {:transfer_ack, token})
+    SystemsRuntime.Proc.send(handler, {:transfer_complete, token, transfer_error(reason)})
     :ok
   end
 
   defp abort_waiting_transfer(%{token: token, eof: handler}, reason)
-       when is_binary(token) and is_pid(handler) do
-    send(handler, {:transfer_ack, token})
-    send(handler, {:transfer_complete, token, transfer_error(reason)})
+       when is_binary(token) and SystemsRuntime.Proc.is_process(handler) do
+    SystemsRuntime.Proc.send(handler, {:transfer_ack, token})
+    SystemsRuntime.Proc.send(handler, {:transfer_complete, token, transfer_error(reason)})
     :ok
   end
 
@@ -211,11 +218,15 @@ defmodule SalixEnv.Transfer.StreamReceiver do
   defp transfer_error(reason), do: %{"ok" => false, "error" => inspect(reason)}
 
   defp renew_idle(%{idle_timeout: timeout} = state) do
-    if state.idle_timer, do: Process.cancel_timer(state.idle_timer)
-    token = make_ref()
+    if state.idle_timer, do: SystemsClock.cancel_timer(state.idle_timer)
+    token = SystemsRuntime.Proc.make_ref()
 
     timer =
-      Process.send_after(self(), {:remote_read_stream_idle_timeout, token}, timeout)
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
+        {:remote_read_stream_idle_timeout, token},
+        timeout
+      )
 
     %{state | idle_timer: timer, idle_token: token}
   end

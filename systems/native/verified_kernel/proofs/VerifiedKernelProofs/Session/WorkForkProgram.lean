@@ -6,7 +6,7 @@ set_option Elab.async false
 
 /-- This factorization retains the executable fork's order of effects and all constructor fields. -/
 def forkFinish (source sessionId attrs : Term) (copy : Bool)
-    (messages facts results remapped clamped : List Term)
+    (messages facts results : List Term)
     (lastSeq lastAck forkThrough nextId created : Term) : KernelM Term := do
   let child ← Lifecycle.normalize (Lifecycle.build
     [("agent_id", ← field source "agent_id"), ("session_id", sessionId), ("storage_format", i 3),
@@ -36,8 +36,9 @@ def forkFinish (source sessionId attrs : Term) (copy : Bool)
      ("system_prompt", ← if copy then field source "system_prompt" else pure nil),
      ("context_provider_states", empty), ("last_seq", lastSeq), ("compacted_seq", i 0),
      ("archived_through", i 0), ("archive_chunks", list []),
-     ("redactions", list (remapped ++ clamped)), ("llm_failure_streak", nil), ("context_overflow_recovery", nil),
-     ("fork_request_id", ← alias attrs (b "fork_request_id") (a "fork_request_id"))])
+     ("llm_failure_streak", nil), ("context_overflow_recovery", nil),
+     ("fork_request_id", ← alias attrs (b "fork_request_id") (a "fork_request_id")),
+     ("model", source.get (a "model"))])
   rebuildRefs child
 
 def forkSelection (source sessionId attrs maxId : Term) : KernelM Term := do
@@ -66,23 +67,11 @@ def forkSelection (source sessionId attrs maxId : Term) : KernelM Term := do
   let (messages, facts, results, remap, lastSeq) ← renumber (ordered ++ tail)
   let messages ← messages.mapM (fun message => remapRuntimeSeq message remap)
   let through := (← field source "compacted_through").default (i 0)
-  let maxCopied ← largest (← messages.mapM (fun message => do
-    return (← access message (a "id")).default (i 0))) through
-  let redactions ← asList ((← field source "redactions").default (list []))
-  let remapped ← redactions.foldlM (fun acc entry => do
-    let next := remap.get (← access entry (b "seq"))
-    if next.isInteger then return acc ++ [← put entry (b "seq") next] else pure acc) []
-  let clamped ← redactions.foldlM (fun acc entry => do
-    let kind ← access entry (b "kind")
-    if kind != b "tool_messages_through" && kind != b "non_model_messages_over_bytes_through" then
-      return acc
-    let value ← minimum ((← access entry (b "through_id")).default (i 0)) maxCopied
-    if ← greater value (i 0) then return acc ++ [← put entry (b "through_id") value] else pure acc) []
   let lastAck ← forkLastAck (← field source "last_ack_message_id") maxId
   let forkThrough ← if copy then pure through else pure (i 0)
   let nextId ← largest [← nextMessageId messages, ← add forkThrough (i 1), ← add lastAck (i 1)] (i 0)
   let created ← alias attrs (b "created_at") (a "created_at")
-  forkFinish source sessionId attrs copy messages facts results remapped clamped lastSeq lastAck forkThrough nextId created
+  forkFinish source sessionId attrs copy messages facts results lastSeq lastAck forkThrough nextId created
 
 theorem current_fork_factor (source sessionId attrs maxId : Term) :
     Fork.currentFork source sessionId attrs maxId = forkSelection source sessionId attrs maxId := rfl

@@ -1,0 +1,11 @@
+{
+  "//": "Renderer files that still make Comma API requests themselves. The client core (packages/core) takes them over phase by phase; this list only shrinks (check:foundation).",
+  "requests": [
+    "packages/app/src/components/chat/thread/attachments/images/readAttachmentImage.ts",
+    "packages/app/src/components/file-preview/useMediaContextMenu.tsx",
+    "packages/app/src/components/share/publicShareApi.ts",
+    "packages/ui/src/components/chat-panel/ChatPanelMedia.tsx",
+    "packages/ui/src/components/chat-panel/ChatPanelMediaDownload.ts"
+  ],
+  "apiClient": []
+}

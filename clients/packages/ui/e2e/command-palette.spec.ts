@@ -8,6 +8,11 @@ test("keeps row hover immediate while preview waits for pointer intent", async (
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
+  // The preview waits for a short pointer dwell. Playwright sends each mouse
+  // step as its own round trip, so on a busy runner real time between two
+  // steps can exceed the dwell and commit a row the pointer only crossed.
+  // The page clock stops during each gesture and the test advances it.
+  await page.clock.install();
   await page.goto(LONG_TASK_HISTORY_STORY);
 
   const options = page.getByRole("option");
@@ -81,14 +86,30 @@ test("keeps row hover immediate while preview waits for pointer intent", async (
 
   const firstCenterY = firstBox.y + firstBox.height / 2;
   const fourthCenterY = fourthBox.y + fourthBox.height / 2;
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
   await page.mouse.move(firstBox.x + 8, firstCenterY);
   // One continuous gesture: the intermediate points hit rows two and three,
-  // while the final point lands in the preview at row four's height.
-  await page.mouse.move(previewBox.x + 8, fourthCenterY, { steps: 3 });
+  // while the final point lands in the preview at row four's height. Each
+  // point waits for its row's hover to commit: two moves sent back to back can
+  // land in one React render (the hover commits at continuous priority, after
+  // the next input), which would skip a row the pointer did cross.
+  // The paused clock keeps the dwell from running meanwhile.
+  const from = { x: firstBox.x + 8, y: firstCenterY };
+  const to = { x: previewBox.x + 8, y: fourthCenterY };
+  for (const step of [1, 2, 3]) {
+    await page.mouse.move(
+      from.x + ((to.x - from.x) * step) / 3,
+      from.y + ((to.y - from.y) * step) / 3
+    );
+    if (step < 3) {
+      await expect(options.nth(step)).toHaveAttribute("aria-selected", "true");
+      await expect(previewTitle).toHaveText("Task result 1");
+    }
+  }
 
-  // Wait beyond the dwell threshold to prove that no abandoned row left a
+  // Run past the dwell threshold to prove that no abandoned row left a
   // timer capable of replacing the preview after the pointer arrived there.
-  await page.waitForTimeout(motionDuration.pointerIntent + 50);
+  await page.clock.runFor(motionDuration.pointerIntent + 50);
   await expect(first).toHaveAttribute("aria-selected", "true");
   await expect(previewTitle).toHaveText("Task result 1");
 
@@ -119,6 +140,8 @@ test("keeps row hover immediate while preview waits for pointer intent", async (
     fourthBox.x + fourthBox.width / 2,
     fourthBox.y + fourthBox.height / 2
   );
+  await page.clock.runFor(motionDuration.pointerIntent + 50);
+  await page.clock.resume();
 
   const dwellTrace = await page.evaluate(
     () =>

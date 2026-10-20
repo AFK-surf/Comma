@@ -12,6 +12,8 @@ export const ARTIFACT_TARGETS = Object.freeze([
   { component: "salix-connect", platform: "darwin-amd64", artifact: "salix-connect" },
   { component: "salix-connect", platform: "darwin-arm64", artifact: "salix-connect" },
   { component: "agent-vmm-host", platform: "darwin-arm64", artifact: "Agent-VMM-Host.zip" },
+  { component: "computer-use-helper", platform: "darwin-amd64", artifact: "comma-computer-use.tar.gz" },
+  { component: "computer-use-helper", platform: "darwin-arm64", artifact: "comma-computer-use.tar.gz" },
 ]);
 
 const TARGET_BY_KEY = new Map(
@@ -34,6 +36,7 @@ const PRIMARY_ARTIFACT = Object.freeze({
   runner: "mac-mini-provisioner",
   "salix-connect": "salix-connect",
   "agent-vmm-host": "Agent-VMM-Host.zip",
+  "computer-use-helper": "comma-computer-use.tar.gz",
 });
 
 const assertObject = (value, label) => {
@@ -168,13 +171,35 @@ export function publicationEntries(root, descriptor) {
   });
 }
 
-export function generateDescriptor({ root, serverBuildId, agentVMMReleaseId, baseUrl }) {
+// The darwin connector is reused across server builds while its inputs are unchanged, so it
+// reports its own release id; the target must carry that id or every Mac looks out of date.
+// The Computer Use helper is reused the same way and carries the id of its stored set.
+export function generateDescriptor({
+  root,
+  serverBuildId,
+  agentVMMReleaseId,
+  darwinSalixConnectReleaseId = serverBuildId,
+  computerUseHelperReleaseId = serverBuildId,
+  baseUrl,
+}) {
   if (!BUILD_ID.test(serverBuildId ?? "")) {
     throw new Error("server build id must be a full lowercase commit SHA");
   }
   if (!RELEASE_ID.test(agentVMMReleaseId ?? "")) {
     throw new Error("Agent VMM release id must be a stable identifier");
   }
+  if (!RELEASE_ID.test(darwinSalixConnectReleaseId ?? "")) {
+    throw new Error("darwin salix-connect release id must be a stable identifier");
+  }
+  if (!RELEASE_ID.test(computerUseHelperReleaseId ?? "")) {
+    throw new Error("Computer Use helper release id must be a stable identifier");
+  }
+  const releaseId = (target) => {
+    if (target.component === "agent-vmm-host") return agentVMMReleaseId;
+    if (target.component === "salix-connect" && target.platform.startsWith("darwin-")) return darwinSalixConnectReleaseId;
+    if (target.component === "computer-use-helper") return computerUseHelperReleaseId;
+    return serverBuildId;
+  };
   let base;
   try {
     base = new URL(baseUrl);
@@ -192,7 +217,7 @@ export function generateDescriptor({ root, serverBuildId, agentVMMReleaseId, bas
       component: target.component,
       platform: target.platform,
       artifact: target.artifact,
-      release_id: target.component === "agent-vmm-host" ? agentVMMReleaseId : serverBuildId,
+      release_id: releaseId(target),
       source: `${prefix}/releases/${serverBuildId}/${target.component}/${target.platform}/${target.artifact}`,
       sha256: sha256File(path),
       size: statSync(path).size,

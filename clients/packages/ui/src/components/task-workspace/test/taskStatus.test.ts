@@ -17,7 +17,7 @@ describe("task status semantics", () => {
     ["completed", "done"],
     ["archived", "archived"],
     ["failed", "cancelled"],
-    ["unknown_status", "backlog"],
+    ["unknown_status", "in_progress"],
   ] as const)("maps %s to the %s display bucket", (status, bucket) => {
     expect(taskStatusBucket(status)).toBe(bucket);
   });

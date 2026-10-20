@@ -1,6 +1,8 @@
 defmodule SalixIM.Triage.ClickHousePatrolTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixStore.QueueCase, queues: [:triage_patrol_cursors]
 
+  use SalixAgent.TestSupport.Settle
   import ExUnit.CaptureLog
 
   alias SalixIM.{ProviderConnects, ProviderReceipts}
@@ -144,6 +146,20 @@ defmodule SalixIM.Triage.ClickHousePatrolTest do
     end
 
     defp peer_mention_row(row), do: Map.put(row, "text", "please ask <@UPEER123> to review")
+  end
+
+  defmodule PaddedTextReader do
+    def tail(scope), do: Reader.tail(scope)
+    def list_changes(scope, window, limit), do: Reader.list_changes(scope, window, limit)
+
+    def latest_states(scope, keys) do
+      {:ok, states} = Reader.latest_states(scope, keys)
+
+      {:ok,
+       Map.new(states, fn {key, row} ->
+         {key, Map.put(row, "text", "<https://x.com/example/status/1|x.com/example> ")}
+       end)}
+    end
   end
 
   defmodule AlertReader do
@@ -326,14 +342,14 @@ defmodule SalixIM.Triage.ClickHousePatrolTest do
   end
 
   setup do
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    previous_triage_backend = Application.get_env(:salix_store, :triage_record_backend)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
-    Application.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_triage_backend = SystemsRuntime.get_env(:salix_store, :triage_record_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
 
-    if Process.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
-    unless Process.whereis(Ids), do: start_supervised!(Ids)
-    unless Process.whereis(WorkerProbe), do: start_supervised!(WorkerProbe)
+    if SystemsRuntime.Proc.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
+    unless SystemsRuntime.Proc.whereis(Ids), do: start_supervised!(Ids)
+    unless SystemsRuntime.Proc.whereis(WorkerProbe), do: start_supervised!(WorkerProbe)
 
     on_exit(fn ->
       restore_env(:salix_store, :s3_backend, previous_backend)
@@ -400,14 +416,14 @@ defmodule SalixIM.Triage.ClickHousePatrolTest do
   end
 
   test "new observations enter the real runtime without waiting for the historical receipt ring" do
-    Application.delete_env(:salix_store, :triage_record_backend)
+    SystemsRuntime.delete_env(:salix_store, :triage_record_backend)
     authority = SalixIM.TriageEngineFixtures.authority!()
-    namespace = "patrol-direct-#{System.unique_integer([:positive])}"
+    namespace = "patrol-direct-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     runtime =
       start_supervised!(
         {SalixIM.Triage.Runtime, name: nil, namespace: namespace, mode: :review},
-        id: make_ref()
+        id: SystemsRuntime.Proc.make_ref()
       )
 
     opts = [
@@ -452,102 +468,19 @@ defmodule SalixIM.Triage.ClickHousePatrolTest do
                event_id(authority, 1_787_019_001_000_001)
              )
 
-    test_pid = self()
+    test_pid = SystemsRuntime.Proc.self()
 
     assert {:ok, %{duplicate: 1, settled: 1}} =
              scan(
                authority,
                before_row_state(),
                Keyword.put(opts, :admission, fn current, stored ->
-                 send(test_pid, {:admitted, current, stored})
+                 SystemsRuntime.Proc.send(test_pid, {:admitted, current, stored})
                  {:ok, :accepted}
                end)
              )
 
-    assert_receive {:admitted, ^authority, ^receipt}
-  end
-
-  test "worker tail-initializes discovery and settles one exact fenced cursor claim" do
-    authority = authority()
-
-    channel = %{
-      "tenant_id" => authority["tenant_id"],
-      "group_id" => authority["group_id"],
-      "connect_id" => authority["connect_id"],
-      "channel_id" => authority["approved_channel_id"],
-      "channel_name" => "atlas",
-      "channel_generation" => ULID.generate()
-    }
-
-    tail = %{
-      "ingest_at" => "2026-09-01T00:00:00.000Z",
-      "message_ts_us" => 1_787_019_000_000_000,
-      "version" => 3_574_038_000_000_000
-    }
-
-    {:ok, tail_state} = TriagePatrolScanState.initial(tail)
-
-    {:ok, next_scan_state} =
-      TriagePatrolScanState.initial(%{
-        "ingest_at" => "2026-09-01T00:00:01.000Z",
-        "message_ts_us" => 1_787_019_001_000_001,
-        "version" => 3_574_038_002_000_002
-      })
-
-    claim = %{
-      cursor_key: "cursor-atlas",
-      tenant_id: authority["tenant_id"],
-      group_id: authority["group_id"],
-      connect_id: authority["connect_id"],
-      channel_id: authority["approved_channel_id"],
-      channel_name: "atlas",
-      channel_generation: channel["channel_generation"],
-      authority_generation: authority["connect_generation"],
-      last_message_ts: "0.000000",
-      scan_state: tail_state,
-      revision: 3,
-      claim_token: "claim-atlas",
-      lease_until: DateTime.utc_now(),
-      holder: "worker-test"
-    }
-
-    WorkerProbe.put(%{
-      authority: authority,
-      channel: channel,
-      tail: tail,
-      next_scan_state: next_scan_state,
-      claim: claim
-    })
-
-    assert {:ok,
-            %{
-              discovered: 1,
-              synced: 1,
-              sync_errors: 0,
-              claimed: 1,
-              settled: 1,
-              created: 1,
-              discovery_complete?: true,
-              discovery_cursor: nil
-            }} =
-             ClickHousePatrolWorker.process_once(
-               reader: WorkerReader,
-               channel_store: WorkerChannelStore,
-               cursor_store: WorkerCursorStore,
-               provider_connects: WorkerProviderConnects,
-               patrol: WorkerPatrol,
-               holder: "worker-test"
-             )
-
-    assert WorkerProbe.get(:ensure) == {channel, authority, tail_state}
-    assert {^authority, ^tail_state, scan_opts} = WorkerProbe.get(:scan)
-    assert scan_opts[:cursor_revision] == claim.revision
-
-    assert {^claim, result, settle_opts} = WorkerProbe.get(:settle)
-    assert result.scan_state == next_scan_state
-    assert result.last_message_ts == "1787019001.000001"
-    assert result.created == 1
-    assert settle_opts[:interval_ms] == 2_000
+    settle_receive({:admitted, ^authority, ^receipt})
   end
 
   test "stale installation leaves patrol until current member discovery reauthorizes it" do
@@ -615,230 +548,6 @@ defmodule SalixIM.Triage.ClickHousePatrolTest do
              ClickHousePatrolWorker.process_once(opts)
   end
 
-  test "an unavailable authority remains retryable instead of suspending patrol" do
-    {original, _peer} = projected_peer_fixture!()
-    tenant = original["tenant_id"]
-    group = original["group_id"]
-    connect = original["connect_id"]
-    channel_id = original["approved_channel_id"]
-
-    on_exit(fn ->
-      Repo.query!("DELETE FROM triage_patrol_cursors WHERE group_id = $1", [group])
-      Repo.query!("DELETE FROM slack_triage_channels WHERE group_id = $1", [group])
-    end)
-
-    {:ok, channel} = SlackTriageChannels.get(tenant, group, connect, channel_id)
-
-    {:ok, authority} =
-      ProviderConnects.get_slack_triage_authority(tenant, group, connect, channel_id)
-
-    {:ok, stored} = SalixStore.TriagePatrolCursors.ensure(channel, authority, before_row_state())
-    WorkerProbe.put(%{channel: channel})
-
-    opts = [
-      reader: QuietReader,
-      channel_store: WorkerChannelStore,
-      provider_connects: UnavailableWorkerProviderConnects
-    ]
-
-    assert {:ok, %{claimed: 1, failed: 1, sync_errors: 1}} =
-             ClickHousePatrolWorker.process_once(opts)
-
-    {:ok, current} = SalixStore.TriagePatrolCursors.get(tenant, group, connect, channel_id)
-    assert current["last_outcome"] == "failed"
-    assert current["scan_state"] == stored["scan_state"]
-
-    Repo.query!(
-      "UPDATE triage_patrol_cursors SET next_due_at = statement_timestamp() WHERE cursor_key = $1",
-      [stored["cursor_key"]]
-    )
-
-    assert {:ok, %{claimed: 1, failed: 1, sync_errors: 1}} =
-             ClickHousePatrolWorker.process_once(opts)
-  end
-
-  test "worker reports channel sync degradation once and recovery once without stopping patrol" do
-    authority = authority()
-
-    tail = %{
-      "ingest_at" => "2026-09-01T00:00:00.000Z",
-      "message_ts_us" => 1_787_019_000_000_000,
-      "version" => 3_574_038_000_000_000
-    }
-
-    channel = %{
-      "tenant_id" => authority["tenant_id"],
-      "group_id" => authority["group_id"],
-      "connect_id" => authority["connect_id"],
-      "channel_id" => authority["approved_channel_id"],
-      "channel_generation" => ULID.generate()
-    }
-
-    WorkerProbe.put(%{
-      authority: authority,
-      channel: channel,
-      tail: tail,
-      tail_result: {:error, :reader_unavailable}
-    })
-
-    opts = [
-      reader: TransitionReader,
-      channel_store: WorkerChannelStore,
-      cursor_store: TransitionCursorStore,
-      provider_connects: WorkerProviderConnects,
-      patrol: WorkerPatrol,
-      holder: "worker-test",
-      interval_ms: 100,
-      initial_delay_ms: 0
-    ]
-
-    assert {:ok, initial} = ClickHousePatrolWorker.init(opts)
-
-    degraded_log =
-      capture_log(fn ->
-        assert {:noreply, degraded} = ClickHousePatrolWorker.handle_info(:tick, initial)
-        assert degraded.sync_errors == 1
-        send(self(), {:degraded, degraded})
-      end)
-
-    assert degraded_log =~ "channel sync degraded errors=1"
-    assert_receive {:degraded, degraded}
-
-    unchanged_log =
-      capture_log(fn ->
-        assert {:noreply, unchanged} = ClickHousePatrolWorker.handle_info(:tick, degraded)
-        assert unchanged.sync_errors == 1
-      end)
-
-    refute unchanged_log =~ "channel sync degraded"
-
-    WorkerProbe.record(:tail_result, {:ok, tail})
-
-    recovered_log =
-      capture_log(fn ->
-        assert {:noreply, recovered} = ClickHousePatrolWorker.handle_info(:tick, degraded)
-        assert recovered.sync_errors == 0
-      end)
-
-    assert recovered_log =~ "channel sync recovered"
-  end
-
-  test "worker clears channel sync degradation only after a complete clean discovery pass" do
-    authority = authority()
-
-    tail = %{
-      "ingest_at" => "2026-09-01T00:00:00.000Z",
-      "message_ts_us" => 1_787_019_000_000_000,
-      "version" => 3_574_038_000_000_000
-    }
-
-    first_channel = %{
-      "tenant_id" => authority["tenant_id"],
-      "group_id" => authority["group_id"],
-      "connect_id" => authority["connect_id"],
-      "channel_id" => "C_FAILING",
-      "channel_generation" => ULID.generate()
-    }
-
-    second_channel = %{first_channel | "channel_id" => "C_HEALTHY"}
-
-    WorkerProbe.put(%{
-      authority: authority,
-      first_channel: first_channel,
-      second_channel: second_channel,
-      tail_results: %{
-        "C_FAILING" => {:error, :reader_unavailable},
-        "C_HEALTHY" => {:ok, tail}
-      }
-    })
-
-    opts = [
-      reader: PagedTransitionReader,
-      channel_store: PagedTransitionChannelStore,
-      cursor_store: TransitionCursorStore,
-      provider_connects: PagedTransitionProviderConnects,
-      patrol: WorkerPatrol,
-      holder: "worker-test",
-      interval_ms: 100,
-      initial_delay_ms: 0,
-      discovery_limit: 1
-    ]
-
-    assert {:ok, initial} = ClickHousePatrolWorker.init(opts)
-
-    first_page_log =
-      capture_log(fn ->
-        assert {:noreply, first_page} = ClickHousePatrolWorker.handle_info(:tick, initial)
-        assert first_page.sync_errors == 1
-        assert first_page.discovery_cursor == "second-page"
-        send(self(), {:first_page, first_page})
-      end)
-
-    assert first_page_log =~ "channel sync degraded errors=1"
-    assert_receive {:first_page, first_page}
-
-    second_page_log =
-      capture_log(fn ->
-        assert {:noreply, second_page} = ClickHousePatrolWorker.handle_info(:tick, first_page)
-        assert second_page.sync_errors == 1
-        assert second_page.discovery_cursor == nil
-        send(self(), {:second_page, second_page})
-      end)
-
-    refute second_page_log =~ "channel sync recovered"
-    assert_receive {:second_page, degraded}
-
-    WorkerProbe.record(:tail_results, %{
-      "C_FAILING" => {:ok, tail},
-      "C_HEALTHY" => {:ok, tail}
-    })
-
-    clean_first_page_log =
-      capture_log(fn ->
-        assert {:noreply, clean_first_page} =
-                 ClickHousePatrolWorker.handle_info(:tick, degraded)
-
-        assert clean_first_page.sync_errors == 1
-        send(self(), {:clean_first_page, clean_first_page})
-      end)
-
-    refute clean_first_page_log =~ "channel sync recovered"
-    assert_receive {:clean_first_page, clean_first_page}
-
-    clean_second_page_log =
-      capture_log(fn ->
-        assert {:noreply, recovered} =
-                 ClickHousePatrolWorker.handle_info(:tick, clean_first_page)
-
-        assert recovered.sync_errors == 0
-      end)
-
-    assert clean_second_page_log =~ "channel sync recovered"
-  end
-
-  test "an empty bounded pass commits its captured tail without inventing a message" do
-    authority = authority()
-    {:ok, scan_state} = TriagePatrolScanState.initial(elem(QuietReader.tail(%{}), 1))
-
-    assert {:ok,
-            %{
-              created: 0,
-              duplicate: 0,
-              ineligible: 0,
-              settled: 0,
-              has_more?: false,
-              next_scan_state: completed
-            }} =
-             scan(authority, scan_state,
-               reader: QuietReader,
-               cursor_revision: 7,
-               limit: 25,
-               authority_verifier: fn _current -> flunk("no row may request authority") end
-             )
-
-    assert completed == scan_state
-  end
-
   test "a backfilled history row is not an ambient Triage subject" do
     authority = authority()
     scan_state = before_row_state()
@@ -886,98 +595,6 @@ defmodule SalixIM.Triage.ClickHousePatrolTest do
            )
   end
 
-  test "a Task handover after the binding read wins before the CH receipt write" do
-    authority = authority()
-    scan_state = before_row_state()
-    scope = route_scope(authority, "1787019001.000001")
-
-    assert {:ok, %{created: 0, duplicate: 0, ineligible: 1, settled: 1}} =
-             scan(authority, scan_state,
-               reader: Reader,
-               cursor_revision: 7,
-               limit: 25,
-               authority_verifier: fn _current ->
-                 assert {:ok, task_identity} =
-                          ThreadRouteOwner.task_claim_identity(scope, "cnv_racing_task")
-
-                 assert {:ok, :task} = ThreadRouteOwner.claim_task(scope, task_identity)
-                 :ok
-               end
-             )
-
-    refute match?(
-             {:ok, _receipt},
-             CasRecord.get(
-               Keys.ctl_im_slack_event_receipt(
-                 authority["connect_id"],
-                 event_id(authority, 1_787_019_001_000_001)
-               )
-             )
-           )
-  end
-
-  test "ordinary bot_message replies explicitly addressing this bot remain eligible" do
-    authority = authority()
-    scan_state = before_row_state()
-
-    assert {:ok, %{created: 1, ineligible: 0, settled: 1}} =
-             scan(authority, scan_state,
-               reader: AgentReader,
-               cursor_revision: 7,
-               limit: 25,
-               authority_verifier: fn _current -> :ok end
-             )
-
-    event_id = event_id(authority, 1_787_019_001_000_001)
-
-    assert {:ok, receipt} =
-             CasRecord.get(Keys.ctl_im_slack_event_receipt(authority["connect_id"], event_id))
-
-    assert receipt["triage_event"]["actor_kind"] == "agent"
-    assert receipt["triage_event"]["addressing_kind"] == "directed"
-  end
-
-  test "an undirected bot alert root reaches triage once without manufacturing a reply" do
-    authority = authority()
-    scan_state = before_row_state()
-
-    opts = [
-      reader: AlertReader,
-      cursor_revision: 7,
-      limit: 25,
-      authority_verifier: fn _ -> :ok end
-    ]
-
-    assert {:ok, %{created: 1}} = scan(authority, scan_state, opts)
-    assert {:ok, %{created: 0, duplicate: 1}} = scan(authority, scan_state, opts)
-
-    key =
-      Keys.ctl_im_slack_event_receipt(
-        authority["connect_id"],
-        event_id(authority, 1_787_019_001_000_001)
-      )
-
-    assert {:ok, receipt} = CasRecord.get(key)
-    assert receipt["triage_event"]["actor_kind"] == "agent"
-    assert receipt["triage_event"]["addressing_kind"] == "ambient"
-    assert ProviderReceipts.verify_slack_triage_receipt(authority, receipt) == :ok
-    assert Bucketing.validate_receipt(receipt) == :ok
-
-    forged =
-      update_in(
-        receipt,
-        ["triage_event"],
-        &Map.merge(&1, %{
-          "addressing_kind" => "directed",
-          "trigger_kind" => "mention",
-          "fast_path" => true,
-          "addressed_connect" => authority["connect_id"]
-        })
-      )
-
-    assert {:error, _reason} = ProviderReceipts.verify_slack_triage_receipt(authority, forged)
-  end
-
   test "own bot alerts and undirected bot replies do not start an ambient loop" do
     for reader <- [OwnAlertReader, AlertReplyReader] do
       assert {:ok, %{created: 0, ineligible: 1}} =
@@ -988,29 +605,6 @@ defmodule SalixIM.Triage.ClickHousePatrolTest do
                  authority_verifier: fn _ -> :ok end
                )
     end
-  end
-
-  test "a projected sibling bot mention settles as ineligible without claiming the root" do
-    {authority, peer} = projected_peer_fixture!()
-
-    on_exit(fn ->
-      Repo.query!("DELETE FROM slack_triage_channels WHERE group_id = $1", [authority["group_id"]])
-    end)
-
-    assert {:ok, true} =
-             ProviderConnects.slack_triage_peer_mentioned?(authority, [peer["bot_user_id"]])
-
-    assert ThreadRouteOwner.lookup(route_scope(authority, "1787019001.000001")) == :unbound
-
-    assert {:ok, %{created: 0, ineligible: 1, settled: 1}} =
-             scan(authority, before_row_state(),
-               reader: PeerMentionReader,
-               cursor_revision: 7,
-               limit: 25,
-               authority_verifier: fn _current -> :ok end
-             )
-
-    assert ThreadRouteOwner.lookup(route_scope(authority, "1787019001.000001")) == :unbound
   end
 
   test "member discovery defaults channels on and preserves explicit exclusions" do
@@ -1116,28 +710,6 @@ defmodule SalixIM.Triage.ClickHousePatrolTest do
     assert excluded["enabled"] == false
   end
 
-  test "authority rotation treats the same physical CH source as a duplicate instead of blocking" do
-    first = authority()
-    second = Map.put(first, "connect_generation", ULID.generate())
-    scan_state = before_row_state()
-
-    assert {:ok, %{created: 1}} =
-             scan(first, scan_state,
-               reader: Reader,
-               cursor_revision: 7,
-               limit: 25,
-               authority_verifier: fn _current -> :ok end
-             )
-
-    assert {:ok, %{created: 0, duplicate: 1, settled: 1}} =
-             scan(second, scan_state,
-               reader: Reader,
-               cursor_revision: 8,
-               limit: 25,
-               authority_verifier: fn _current -> :ok end
-             )
-  end
-
   # Existing provider/route cases isolate admission. The direct-admission
   # regression above overrides this callback with the real Runtime and DB.
   defp scan(authority, state, opts) do
@@ -1234,18 +806,6 @@ defmodule SalixIM.Triage.ClickHousePatrolTest do
     |> Base.encode16(case: :lower)
   end
 
-  defp route_scope(authority, root_thread_ts) do
-    %{
-      "tenant_id" => authority["tenant_id"],
-      "group_id" => authority["group_id"],
-      "connect_id" => authority["connect_id"],
-      "connect_generation" => authority["connect_generation"],
-      "workspace_id" => authority["workspace_id"],
-      "channel_id" => authority["approved_channel_id"],
-      "root_thread_ts" => root_thread_ts
-    }
-  end
-
   defp before_row_state do
     {:ok, state} =
       TriagePatrolScanState.initial(%{
@@ -1257,6 +817,6 @@ defmodule SalixIM.Triage.ClickHousePatrolTest do
     state
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

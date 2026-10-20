@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  copyFileSync,
   createReadStream,
   existsSync,
   readFileSync,
@@ -30,6 +31,49 @@ export function getReleaseArtifactBaseName(packVersion: string) {
 
 export function getDmgArtifactName({ packVersion }: { packVersion: string }) {
   return `${getReleaseArtifactBaseName(packVersion)}.dmg`;
+}
+
+export function getWindowsInstallerArtifactName({
+  packVersion,
+}: {
+  packVersion: string;
+}) {
+  return `${getReleaseArtifactBaseName(packVersion)}-Setup.exe`;
+}
+
+/**
+ * A Windows release's installer under its version's name, beside Velopack's (one name for every version, which the
+ * feed's manifest keeps), and `setup.<channel>.txt` naming it: a download follows the pointer, so a production
+ * installer is offered only once its feed is promoted.
+ */
+export function writeWindowsInstallerPointer({
+  releaseOutputDir,
+  packVersion,
+  releaseChannel,
+}: {
+  releaseOutputDir: string;
+  packVersion: string;
+  releaseChannel: string;
+}) {
+  const installers = readdirSync(releaseOutputDir).filter((name) =>
+    name.endsWith("-Setup.exe")
+  );
+  const versioned = getWindowsInstallerArtifactName({ packVersion });
+  const source = installers.filter((name) => !name.startsWith("Comma-"));
+  if (source.length !== 1) {
+    throw new Error(
+      `Expected one Velopack installer in ${releaseOutputDir}; found ${source.join(", ") || "none"}`
+    );
+  }
+  copyFileSync(
+    resolve(releaseOutputDir, source[0]!),
+    resolve(releaseOutputDir, versioned)
+  );
+  writeFileSync(
+    resolve(releaseOutputDir, `setup.${releaseChannel}.txt`),
+    `${versioned}\n`
+  );
+  return versioned;
 }
 
 function updateJsonFile(path: string, renamedFiles: Map<string, string>) {

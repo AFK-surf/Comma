@@ -28,6 +28,7 @@ defmodule SalixLlm.MixProject do
 
   defp deps do
     [
+      {:systems_clock, in_umbrella: true},
       {:systems_observability, in_umbrella: true},
       {:salix_agent, in_umbrella: true},
       {:salix_media, in_umbrella: true},

@@ -20,26 +20,22 @@ test("permission probes exit without credentials and preserve the control socket
   try {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const outputPath = join(directory, `status-${attempt}.json`);
-      await run(
-        "open",
-        [
-          "-n",
-          "-g",
-          "-W",
-          "--stdout",
-          outputPath,
-          "--stderr",
-          join(directory, "stderr"),
-          "--env",
-          "COMMA_COMPUTER_USE_AUTH_TOKEN=",
-          "--env",
-          `COMMA_COMPUTER_USE_SOCKET_PATH=${socketPath}`,
-          helper,
-          "--args",
-          "--permissions-status",
-        ],
-        { timeout: 10_000 }
-      ).catch((error: unknown) => {
+      await run("open", [
+        "-n",
+        "-g",
+        "-W",
+        "--stdout",
+        outputPath,
+        "--stderr",
+        join(directory, "stderr"),
+        "--env",
+        "COMMA_COMPUTER_USE_AUTH_TOKEN=",
+        "--env",
+        `COMMA_COMPUTER_USE_SOCKET_PATH=${socketPath}`,
+        helper,
+        "--args",
+        "--permissions-status",
+      ]).catch((error: unknown) => {
         if (!openWaitTargetAlreadyExited(error)) throw error;
       });
       expect(JSON.parse(await readFile(outputPath, "utf8"))).toEqual({
@@ -63,11 +59,16 @@ test("authorization window exits after existing permissions are confirmed", asyn
   const directory = await mkdtemp(join(tmpdir(), "comma-authorization-window-"));
   try {
     const output = join(directory, "permissions.json");
-    await run(
-      "open",
-      ["-n", "-g", "-W", "--stdout", output, helper, "--args", "--permissions-status"],
-      { timeout: 10_000 }
-    ).catch((error: unknown) => {
+    await run("open", [
+      "-n",
+      "-g",
+      "-W",
+      "--stdout",
+      output,
+      helper,
+      "--args",
+      "--permissions-status",
+    ]).catch((error: unknown) => {
       if (!openWaitTargetAlreadyExited(error)) throw error;
     });
     const { permissions } = JSON.parse(await readFile(output, "utf8"));
@@ -75,9 +76,7 @@ test("authorization window exits after existing permissions are confirmed", asyn
       !permissions.accessibility || !permissions.screenRecording,
       "This smoke test requires manually granted macOS permissions."
     );
-    await run("open", ["-n", "-W", helper, "--args", "--permissions-ui"], {
-      timeout: 10_000,
-    });
+    await run("open", ["-n", "-W", helper, "--args", "--permissions-ui"]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -1,7 +1,9 @@
 Code.require_file("../../../native/verified_kernel/test/support/activation_fixture.exs", __DIR__)
 
 defmodule SalixAgent.ActivationLatencyTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle
 
   alias SalixAgent.{
     InternalSession,
@@ -23,7 +25,11 @@ defmodule SalixAgent.ActivationLatencyTest do
 
   defmodule Observer do
     def round_phase(fact) do
-      send(Application.fetch_env!(:salix_agent, :activation_latency_test_pid), {:phase, fact})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :activation_latency_test_pid),
+        {:phase, fact}
+      )
+
       :ok
     end
 
@@ -38,14 +44,14 @@ defmodule SalixAgent.ActivationLatencyTest do
       {:salix_store, :s3_backend, SalixStore.S3.Fake},
       {:salix_agent, :llm, ImmediateLLM},
       {:salix_agent, :agent_observability_mod, Observer},
-      {:salix_agent, :activation_latency_test_pid, self()},
+      {:salix_agent, :activation_latency_test_pid, SystemsRuntime.Proc.self()},
       {:salix_agent, :ifc_facts_mod, nil}
     ]
 
     previous =
       Enum.map(changes, fn {app, key, value} ->
-        old = Application.fetch_env(app, key)
-        Application.put_env(app, key, value)
+        old = SystemsRuntime.fetch_env(app, key)
+        SystemsRuntime.put_env(app, key, value)
         {app, key, old}
       end)
 
@@ -55,8 +61,8 @@ defmodule SalixAgent.ActivationLatencyTest do
       SalixAgent.TestSupport.stop_all_agents()
 
       Enum.each(previous, fn
-        {app, key, {:ok, value}} -> Application.put_env(app, key, value)
-        {app, key, :error} -> Application.delete_env(app, key)
+        {app, key, {:ok, value}} -> SystemsRuntime.put_env(app, key, value)
+        {app, key, :error} -> SystemsRuntime.delete_env(app, key)
       end)
     end)
 
@@ -94,16 +100,16 @@ defmodule SalixAgent.ActivationLatencyTest do
                payload: %{
                  role: "user",
                  content: "Answer this new input.",
-                 delivered_at_ms: System.system_time(:millisecond)
+                 delivered_at_ms: SystemsClock.system_time(:millisecond)
                }
              })
 
     # Admission loaded the revision. Exclude fixture setup, cold load and
     # admission from the budget; measure the actual runtime phase emitted by
     # the owner, not a copied implementation of activation.
-    assert %{revision: %InternalSessionStore.Revision{}} = :sys.get_state(actor)
+    assert %{revision: %InternalSessionStore.Revision{}} = :sys.get_state(actor, :infinity)
     InternalSessionActor.wake(agent_id, session_id)
-    assert_receive {:phase, %{phase: "activation", duration_ms: ms}}, 60_000
+    settle_receive({:phase, %{phase: "activation", duration_ms: ms}})
     IO.puts("resident Router activation: #{ms} ms")
 
     assert ms <= 500,

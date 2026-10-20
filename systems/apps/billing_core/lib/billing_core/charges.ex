@@ -32,14 +32,14 @@ defmodule BillingCore.Charges do
   end
 
   defp observe_charge(event, surface) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = do_charge_meter_event(event)
 
     BillingTelemetry.emit_operation(
       :charge,
       surface,
       charge_outcome(result),
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     result
@@ -395,7 +395,7 @@ defmodule BillingCore.Charges do
   defp charge_typed_sink(%{typed_sink: false}), do: nil
 
   defp charge_typed_sink(event),
-    do: event[:typed_sink] || Application.get_env(:billing_core, :charge_typed_sink)
+    do: event[:typed_sink] || SystemsRuntime.get_env(:billing_core, :charge_typed_sink)
 
   defp charge_context(event) do
     owner = event[:owner_snapshot] || %{}

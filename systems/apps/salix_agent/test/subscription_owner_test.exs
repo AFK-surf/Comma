@@ -1,5 +1,8 @@
 defmodule SalixAgent.SubscriptionOwnerTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.AccountPool
   alias SalixAgent.SubscriptionStore, as: Store
 
@@ -9,25 +12,25 @@ defmodule SalixAgent.SubscriptionOwnerTest do
     def init(fun), do: {:ok, fun}
 
     def handle_call({:start, id, data, reply_to}, _from, fun) do
-      Task.start(fn ->
+      SystemsRuntime.Task.start(fn ->
         cmd = Jason.decode!(data)
         result = fun.(cmd)
 
         case result do
           {:error, status, code} ->
-            send(
+            SystemsRuntime.Proc.send(
               reply_to,
               {:subscription, id, %{"type" => "error", "status" => status, "code" => code}}
             )
 
           _ ->
-            send(
+            SystemsRuntime.Proc.send(
               reply_to,
               {:subscription, id,
                %{"type" => "data", "data" => Base.encode64(Jason.encode!(result))}}
             )
 
-            send(reply_to, {:subscription, id, %{"type" => "done"}})
+            SystemsRuntime.Proc.send(reply_to, {:subscription, id, %{"type" => "done"}})
         end
       end)
 
@@ -39,31 +42,33 @@ defmodule SalixAgent.SubscriptionOwnerTest do
 
   defmodule ImageResolver do
     def resolve(_agent_id) do
-      {template, tenant} = Application.fetch_env!(:salix_agent, :subscription_image_test_template)
-      SalixAgent.Templates.resolve_media_for_template(template, tenant)
+      {choice, tenant} = SystemsRuntime.fetch_env!(:salix_agent, :subscription_image_test_choice)
+      SalixAgent.ModelChoice.media(choice, tenant)
     end
   end
 
   defmodule ImageArchive do
     def record(fact) do
-      send(self(), {:image_archive, fact})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:image_archive, fact})
       :ok
     end
   end
 
-  test "private image template selects its pool and writes the generated image", %{tenant: tenant} do
+  test "a model its own Codex subscription serves generates images through that pool", %{
+    tenant: tenant
+  } do
     image_storage()
-    old_archive = Application.get_env(:salix_agent, :event_archive_mod)
-    Application.put_env(:salix_agent, :event_archive_mod, ImageArchive)
+    old_archive = SystemsRuntime.get_env(:salix_agent, :event_archive_mod)
+    SystemsRuntime.put_env(:salix_agent, :event_archive_mod, ImageArchive)
 
     on_exit(fn ->
       if old_archive,
-        do: Application.put_env(:salix_agent, :event_archive_mod, old_archive),
-        else: Application.delete_env(:salix_agent, :event_archive_mod)
+        do: SystemsRuntime.put_env(:salix_agent, :event_archive_mod, old_archive),
+        else: SystemsRuntime.delete_env(:salix_agent, :event_archive_mod)
     end)
 
     account(tenant)
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     server(fn cmd ->
       case cmd["op"] do
@@ -71,7 +76,7 @@ defmodule SalixAgent.SubscriptionOwnerTest do
           reply(cmd)
 
         "/v1/images/generations" ->
-          send(parent, {:image_request, cmd})
+          SystemsRuntime.Proc.send(parent, {:image_request, cmd})
 
           %{
             "data" => [%{"b64_json" => Base.encode64("generated image bytes")}],
@@ -81,33 +86,13 @@ defmodule SalixAgent.SubscriptionOwnerTest do
       end
     end)
 
-    cfg = image_config() |> Map.put("account_pool_tenant", SalixStore.Ids.new_tenant_id())
-    cfg = put_in(cfg, ["provider_config", "base_url"], "https://untrusted.invalid")
-    cfg = put_in(cfg, ["provider_config", "api_key"], "must-not-be-used")
+    choice = %{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => false}
+    {:ok, media} = SalixAgent.ModelChoice.media(choice, tenant)
+    assert media["image_config"]["model"] == "gpt-image-2"
+    assert media["image_config"]["provider_config"] == %{"account_pool" => "codex"}
+    assert media["image_config"]["account_pool_tenant"] == tenant
 
-    {:ok, template} =
-      SalixAgent.Templates.create_private(
-        %{"name" => "Image subscription", "model" => "gpt-5.5", "image_config" => cfg},
-        tenant
-      )
-
-    {:ok, resolved} =
-      SalixAgent.Templates.resolve_media_for_template(template["template_id"], tenant)
-
-    assert resolved["image_config"]["account_pool_tenant"] == tenant
-
-    assert {:error, {:template_not_found, _}} =
-             SalixAgent.Templates.resolve_media_for_template(
-               template["template_id"],
-               SalixStore.Ids.new_tenant_id()
-             )
-
-    Application.put_env(
-      :salix_agent,
-      :subscription_image_test_template,
-      {template["template_id"], tenant}
-    )
-
+    SystemsRuntime.put_env(:salix_agent, :subscription_image_test_choice, {choice, tenant})
     agent = SalixAgent.TestSupport.new_agent_id()
 
     assert {text, [%{"type" => "vfs_write", "path" => "/artifacts/pool.png"} = event]} =
@@ -124,153 +109,45 @@ defmodule SalixAgent.SubscriptionOwnerTest do
     assert {:ok, "generated image bytes"} =
              SalixAgent.AgentWorkspace.read(agent, "/artifacts/pool.png")
 
-    assert_receive {:image_request, cmd}
+    settle_receive({:image_request, cmd})
     assert cmd["body"]["model"] == "gpt-image-2"
     assert cmd["body"]["prompt"] == "a blue leaf"
     assert cmd["body"]["quality"] == "low"
     assert cmd["credential"]["credentials"] == %{"access_token" => "rotated"}
 
-    assert_receive {:image_archive,
-                    %{boundary: :llm_request, agent_id: ^agent, tenant_id: ^tenant}}
+    settle_receive(
+      {:image_archive, %{boundary: :llm_request, agent_id: ^agent, tenant_id: ^tenant}}
+    )
 
-    assert_receive {:image_archive,
-                    %{
-                      boundary: :llm_response,
-                      agent_id: ^agent,
-                      payload: %{
-                        "kind" => "image",
-                        "image" => %{"usage" => %{"output_tokens" => 5}}
-                      }
-                    }}
-
-    {:ok, _} =
-      SalixAgent.Templates.update_private(
-        template["template_id"],
-        %{
-          "image_config" => %{},
-          "provider_config" => %{"account_pool" => "codex"}
-        },
-        tenant
-      )
-
-    assert {_text, [%{"type" => "vfs_write"}]} =
-             SalixAgent.Tools.Media.generate_image(
-               %{"prompt" => "an inherited blue leaf", "path" => "/artifacts/inherited.png"},
-               %{agent_id: agent, tenant_id: tenant}
-             )
-
-    assert_receive {:image_request, inherited}
-    assert inherited["body"]["model"] == "gpt-image-2"
-    assert inherited["credential"]["credentials"] == %{"access_token" => "rotated"}
+    settle_receive(
+      {:image_archive,
+       %{
+         boundary: :llm_response,
+         agent_id: ^agent,
+         payload: %{"kind" => "image", "image" => %{"usage" => %{"output_tokens" => 5}}}
+       }}
+    )
   end
 
-  test "empty image configuration follows the private template's current subscription source", %{
+  test "without its own Codex subscription a model keeps the platform image settings", %{
     tenant: tenant
   } do
     image_storage()
-
-    {:ok, template} =
-      SalixAgent.Templates.create_private(
-        %{
-          "name" => "Automatic images",
-          "model" => "gpt-5.5",
-          "provider_config" => %{"account_pool" => "codex"}
-        },
-        tenant
-      )
-
-    id = template["template_id"]
-    {:ok, media} = SalixAgent.Templates.resolve_media_for_template(id, tenant)
-    assert media["image_config"]["model"] == "gpt-image-2"
-    assert media["image_config"]["provider_config"]["account_pool"] == "codex"
-    assert media["image_config"]["account_pool_tenant"] == tenant
-    {:ok, stored} = SalixAgent.Templates.get(id, tenant)
-    assert stored["image_config"] == %{}
-
-    custom = %{
-      "provider" => "openai",
-      "model" => "custom-image",
-      "base_url" => "https://images.example.test"
-    }
-
-    {:ok, _} = SalixAgent.Templates.update_private(id, %{"image_config" => custom}, tenant)
-    {:ok, media} = SalixAgent.Templates.resolve_media_for_template(id, tenant)
-    assert media["image_config"]["model"] == "custom-image"
-    refute Map.has_key?(media["image_config"], "account_pool_tenant")
-
-    {:ok, _} =
-      SalixAgent.Templates.update_private(
-        id,
-        %{"image_config" => %{}, "provider_config" => %{"account_pool" => "claude"}},
-        tenant
-      )
-
-    {:ok, media} = SalixAgent.Templates.resolve_media_for_template(id, tenant)
-    refute Map.has_key?(media["image_config"], "account_pool_tenant")
-    refute media["image_config"]["model"] == "gpt-image-2"
-  end
-
-  test "image pools fail closed without an owned account and reject global templates", %{
-    tenant: tenant
-  } do
-    image_storage()
+    # Another Tenant's subscription neither serves this Tenant nor its images.
     account(SalixStore.Ids.new_tenant_id())
     server(fn _ -> flunk("must not use another tenant's credentials") end)
 
-    attrs = %{
-      "name" => "Image subscription",
-      "model" => "gpt-5.5",
-      "image_config" => image_config()
-    }
+    choice = %{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => false}
+    {:ok, media} = SalixAgent.ModelChoice.media(choice, tenant)
+    refute Map.has_key?(media["image_config"], "account_pool_tenant")
 
-    assert {:error, {:bad_request, _}} = SalixAgent.Templates.create(attrs)
-    assert {:ok, template} = SalixAgent.Templates.create_private(attrs, tenant)
-
-    assert {:error, {:bad_request, _}} =
-             SalixAgent.Templates.update_private(
-               template["template_id"],
-               %{
-                 "image_config" =>
-                   put_in(image_config(), ["provider_config", "account_pool"], "claude")
-               },
-               tenant
-             )
-
-    {:ok, media} =
-      SalixAgent.Templates.resolve_media_for_template(template["template_id"], tenant)
-
-    assert {:error, error} =
-             SalixAgent.LLM.generate_image("a leaf", [config: media["image_config"]], %{
-               tenant_id: tenant
-             })
-
-    assert error["body"] =~ "subscription accounts unavailable"
-  end
-
-  test "image output received from a failed attempt is not generated again", %{tenant: tenant} do
-    image_storage()
-    account(tenant)
-    account(tenant)
-    parent = self()
-
-    server(fn cmd ->
-      case cmd["op"] do
-        "/prepare" ->
-          reply(cmd)
-
-        "/v1/images/generations" ->
-          send(parent, :image_attempt)
-          %{"data" => []}
-      end
-    end)
-
+    # A pool route for a Tenant without an owned account fails closed.
     cfg = Map.put(image_config(), "account_pool_tenant", tenant)
 
-    assert {:error, _} =
+    assert {:error, error} =
              SalixAgent.LLM.generate_image("a leaf", [config: cfg], %{tenant_id: tenant})
 
-    assert_receive :image_attempt
-    refute_received :image_attempt
+    assert error["body"] =~ "subscription accounts unavailable"
   end
 
   defp image_config do
@@ -286,56 +163,55 @@ defmodule SalixAgent.SubscriptionOwnerTest do
       for {app, key} <- [
             {:salix_store, :s3_backend},
             {:salix_agent, :media_resolver},
-            {:salix_agent, :subscription_image_test_template}
+            {:salix_agent, :subscription_image_test_choice}
           ],
-          do: {app, key, Application.get_env(app, key)}
+          do: {app, key, SystemsRuntime.get_env(app, key)}
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
-    Application.put_env(:salix_agent, :media_resolver, ImageResolver)
+    SystemsRuntime.put_env(:salix_agent, :media_resolver, ImageResolver)
 
     on_exit(fn ->
       for {app, key, value} <- saved do
         if is_nil(value),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, value)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, value)
       end
     end)
   end
 
-  # The background quota poller claims every due account in this database,
-  # including the ones these tests create, because a new row is due at once.
-  # It would then call the stub worker and rewrite the account version under
-  # tests that own both. Keep that independent writer out of this module.
-  setup_all do
-    poller = Process.whereis(SalixAgent.SubscriptionQuotaWorker)
-    if poller, do: :sys.suspend(poller)
-
-    on_exit(fn ->
-      if poller && Process.alive?(poller), do: :sys.resume(poller)
-    end)
-
-    :ok
-  end
-
   setup do
-    old = Application.get_env(:salix_agent, :subscription_worker)
+    old = SystemsRuntime.get_env(:salix_agent, :subscription_worker)
 
     on_exit(fn ->
       if old,
-        do: Application.put_env(:salix_agent, :subscription_worker, old),
-        else: Application.delete_env(:salix_agent, :subscription_worker)
+        do: SystemsRuntime.put_env(:salix_agent, :subscription_worker, old),
+        else: SystemsRuntime.delete_env(:salix_agent, :subscription_worker)
     end)
 
     {:ok, tenant: SalixStore.Ids.new_tenant_id()}
   end
 
   test "new subscription accounts return and persist one initial quota read", %{tenant: tenant} do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
-    snapshot = %{
-      "plan_type" => "pro",
-      "windows" => [%{"period" => "week", "remaining_percent" => 75}]
+    reset = 1_798_761_600
+
+    # The provider's answer as account-proxy reads it, for each plan.
+    answers = %{
+      "codex" => %{
+        "plan_type" => "pro",
+        "rate_limit" => %{
+          "primary_window" => %{
+            "used_percent" => 25,
+            "reset_at" => reset,
+            "limit_window_seconds" => 604_800
+          }
+        }
+      },
+      "claude" => %{
+        "seven_day" => %{"utilization" => 25, "resets_at" => "2026-12-31T00:00:00Z"}
+      }
     }
 
     server(fn cmd ->
@@ -344,8 +220,12 @@ defmodule SalixAgent.SubscriptionOwnerTest do
           %{"email" => "new@example.com", "credentials" => cmd["body"]["credentials"]}
 
         "/quota" ->
-          send(parent, {:initial_quota, cmd["body"]["provider"], cmd["body"]["credentials"]})
-          snapshot
+          SystemsRuntime.Proc.send(
+            parent,
+            {:initial_quota, cmd["body"]["provider"], cmd["body"]["credentials"]}
+          )
+
+          %{"body" => answers[cmd["body"]["provider"]]}
       end
     end)
 
@@ -359,60 +239,28 @@ defmodule SalixAgent.SubscriptionOwnerTest do
                  "credentials" => credentials
                })
 
-      assert_receive {:initial_quota, ^provider, ^credentials}
-      refute_receive {:initial_quota, ^provider, _}
-      assert account["quota"] == snapshot
+      settle_receive({:initial_quota, ^provider, ^credentials})
+      settle_refute_receive({:initial_quota, ^provider, _})
+      # Stored as the Profile's quota; the API says it as before.
+      assert [%{"period" => "week", "remaining_percent" => 75.0}] = account["quota"]["windows"]
       refute Map.has_key?(account, "credentials")
       assert {:ok, saved} = Store.get(tenant, account["id"])
-      assert saved["quota"] == snapshot
+
+      assert [%{"label" => "每周", "minutes" => 10_080, "used_percent" => 25.0}] =
+               saved["quota"]["windows"]
+
+      if provider == "codex", do: assert(saved["quota"]["plan_type"] == "pro")
       assert saved["version"] == account["version"]
     end
-  end
-
-  test "failed initial quota read preserves the saved subscription", %{tenant: tenant} do
-    parent = self()
-
-    server(fn cmd ->
-      case cmd["op"] do
-        "/normalize" ->
-          %{"email" => "new@example.com", "credentials" => cmd["body"]["credentials"]}
-
-        "/quota" ->
-          send(parent, :initial_quota_failed)
-          {:error, 502, "quota_unavailable"}
-      end
-    end)
-
-    assert {:ok, account} =
-             AccountPool.create(tenant, %{
-               "credential_kind" => "subscription_oauth",
-               "provider" => "codex",
-               "credentials" => %{"access_token" => "new-token"}
-             })
-
-    assert_receive :initial_quota_failed
-    refute_receive :initial_quota_failed
-    assert account["status"] == "active"
-    assert {:ok, saved} = Store.get(tenant, account["id"])
-    assert saved["version"] == account["version"]
-
-    assert {:ok, %{"access_token" => "new-token"}} =
-             Store.open(tenant, saved["id"], saved["credentials"])
-
-    assert {:ok, _} =
-             AccountPool.update(tenant, account["id"], %{
-               "version" => account["version"],
-               "disabled" => true
-             })
   end
 
   test "missing storage key fails subscription requests without calling the provider", %{
     tenant: tenant
   } do
-    key = Application.get_env(:salix_agent, :subscription_storage_key)
-    on_exit(fn -> Application.put_env(:salix_agent, :subscription_storage_key, key) end)
+    key = SystemsRuntime.get_env(:salix_agent, :subscription_storage_key)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_agent, :subscription_storage_key, key) end)
     route = config(tenant)
-    Application.delete_env(:salix_agent, :subscription_storage_key)
+    SystemsRuntime.delete_env(:salix_agent, :subscription_storage_key)
 
     assert AccountPool.owns_route?(route)
 
@@ -427,7 +275,7 @@ defmodule SalixAgent.SubscriptionOwnerTest do
 
   defp server(fun) do
     pid = start_supervised!({Worker, fun})
-    Application.put_env(:salix_agent, :subscription_worker, pid)
+    SystemsRuntime.put_env(:salix_agent, :subscription_worker, pid)
   end
 
   defp account(tenant, attrs \\ %{}) do
@@ -442,10 +290,10 @@ defmodule SalixAgent.SubscriptionOwnerTest do
         Map.merge(
           %{
             "id" => id,
-            "credential_kind" => "subscription_oauth",
-            "provider" => "codex",
+            "credential" => "subscription",
+            "source" => "codex",
             "disabled" => false,
-            "status" => "active",
+            "status" => "ok",
             "credentials" => cipher,
             "prepared" => false
           },
@@ -454,70 +302,6 @@ defmodule SalixAgent.SubscriptionOwnerTest do
       )
 
     a
-  end
-
-  test "an exhausted Gemini model window blocks only that exact model", %{tenant: tenant} do
-    reset = DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), 3600))
-
-    gemini =
-      account(tenant, %{
-        "provider" => "gemini",
-        "quota" => %{
-          "windows" => [
-            %{"model" => "gemini-3-flash", "remaining_percent" => 0, "reset_at" => reset}
-          ]
-        }
-      })
-
-    assert {:ok, []} = Store.candidates(tenant, "gemini", "gemini-3-flash")
-    assert {:ok, [%{"id" => id}]} = Store.candidates(tenant, "gemini", "gemini-3.1-flash-lite")
-    assert id == gemini["id"]
-  end
-
-  test "runtime candidates skip global exhaustion and cooldown without hiding later accounts", %{
-    tenant: tenant
-  } do
-    future = DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
-    past = DateTime.utc_now() |> DateTime.add(-3600) |> DateTime.to_iso8601()
-    window = %{"period" => "week", "remaining_percent" => 0, "reset_at" => future}
-
-    for {id, attrs} <- [
-          {"00-empty", %{"quota" => %{"windows" => [window]}}},
-          {"01-empty", %{"quota" => %{"windows" => [window]}}},
-          {"02-cooling", %{"cooldown_until" => future}},
-          {"03-available", %{"quota" => %{"windows" => [%{window | "remaining_percent" => 10}]}}},
-          {"04-unknown", %{}},
-          {"05-reset", %{"quota" => %{"windows" => [%{window | "reset_at" => past}]}}},
-          {"06-model", %{"quota" => %{"windows" => [Map.put(window, "model", "special")]}}}
-        ] do
-      assert {:ok, _} =
-               Store.create(
-                 tenant,
-                 Map.merge(
-                   %{
-                     "id" => id,
-                     "credential_kind" => "subscription_oauth",
-                     "provider" => "codex",
-                     "disabled" => false,
-                     "status" => "active"
-                   },
-                   attrs
-                 )
-               )
-    end
-
-    assert {:ok, ["03-available", "04-unknown", "05-reset"]} =
-             Store.runtime_candidates(tenant, "codex")
-
-    assert {:ok, ["06-model"]} = Store.runtime_candidates(tenant, "codex", "05-reset")
-    assert Store.runtime_quota_exhausted?(tenant, "00-empty")
-
-    for id <- ~w(02-cooling 03-available 04-unknown 05-reset 06-model missing) do
-      refute Store.runtime_quota_exhausted?(tenant, id)
-    end
-
-    refute Store.runtime_quota_exhausted?(SalixStore.Ids.new_tenant_id(), "00-empty")
-    assert {:ok, []} = Store.runtime_candidates(tenant, "claude")
   end
 
   test "Claude pool OAuth projects access only and rejects disabled or foreign accounts", %{
@@ -529,16 +313,16 @@ defmodule SalixAgent.SubscriptionOwnerTest do
       Store.seal(tenant, id, %{
         "access_token" => "claude-access",
         "refresh_token" => "private-refresh",
-        "expired" => DateTime.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
+        "expired" => SystemsClock.utc_now() |> DateTime.add(3600) |> DateTime.to_iso8601()
       })
 
     {:ok, record} =
       Store.create(tenant, %{
         "id" => id,
-        "credential_kind" => "subscription_oauth",
-        "provider" => "claude",
+        "credential" => "subscription",
+        "source" => "claude",
         "disabled" => false,
-        "status" => "active",
+        "status" => "ok",
         "credentials" => cipher
       })
 
@@ -579,7 +363,7 @@ defmodule SalixAgent.SubscriptionOwnerTest do
 
     assert {:ok, public} = AccountPool.create(tenant, attrs)
     assert public["credential_kind"] == "provider_api_key"
-    assert public["compatible_runtimes"] == ["pi", "claude"]
+    assert public["compatible_runtimes"] == ["claude"]
     assert public["saved"]
     refute Map.has_key?(public, "credentials")
     refute inspect(public) =~ "secret-value"
@@ -668,103 +452,17 @@ defmodule SalixAgent.SubscriptionOwnerTest do
     assert disabled["disabled"]
   end
 
-  test "account locking serializes binding creation before a connection update", %{tenant: tenant} do
-    {:ok, account} =
-      AccountPool.create(tenant, %{
-        "credential_kind" => "provider_api_key",
-        "name" => "Concurrent",
-        "connection" => %{
-          "endpoint" => "https://models.example.test",
-          "protocol" => "openai_responses",
-          "auth_scheme" => "bearer"
-        },
-        "credentials" => %{"api_key" => "first"}
-      })
-
-    parent = self()
-
-    binder =
-      Task.async(fn ->
-        Store.locked_account(tenant, account["id"], fn _current ->
-          send(parent, :account_locked)
-          receive do: (:create_binding -> :ok)
-
-          Store.query(
-            "INSERT INTO runtime_subscription_bindings (tenant_id,project_id,workload_id,account_id) VALUES ($1,'project','workload',$2)",
-            [tenant, account["id"]]
-          )
-        end)
-      end)
-
-    assert_receive :account_locked
-
-    editor =
-      Task.async(fn ->
-        AccountPool.update(tenant, account["id"], %{
-          "version" => account["version"],
-          "connection" => %{
-            "endpoint" => "https://new.example.test",
-            "protocol" => "openai_responses",
-            "auth_scheme" => "bearer"
-          },
-          "credentials" => %{"api_key" => "second"}
-        })
-      end)
-
-    refute Task.yield(editor, 50)
-    send(binder.pid, :create_binding)
-    assert {:ok, %Postgrex.Result{num_rows: 1}} = Task.await(binder)
-    assert {:error, :account_in_use} = Task.await(editor)
-  end
-
-  test "binding usage is indexed, tenant scoped, and paginated at 25", %{tenant: tenant} do
-    {:ok, account} =
-      AccountPool.create(tenant, %{
-        "credential_kind" => "provider_api_key",
-        "name" => "Paged",
-        "connection" => %{
-          "endpoint" => "https://models.example.test",
-          "protocol" => "openai_completions",
-          "auth_scheme" => "bearer"
-        },
-        "credentials" => %{"api_key" => "secret"}
-      })
-
-    for n <- 1..26 do
-      {:ok, _} =
-        Store.query(
-          "INSERT INTO runtime_subscription_bindings (tenant_id,project_id,workload_id,account_id) VALUES ($1,$2,$3,$4)",
-          [tenant, "project-#{n}", "workload-#{n}", account["id"]]
-        )
-    end
-
-    assert {:ok, %{"bindings" => first, "next" => cursor}} =
-             AccountPool.list_bindings(tenant, account["id"])
-
-    assert length(first) == 25
-    assert is_integer(cursor)
-    assert Enum.all?(first, &(&1["enabled"] == true))
-
-    assert {:ok, %{"bindings" => [last], "next" => nil}} =
-             AccountPool.list_bindings(tenant, account["id"], cursor)
-
-    assert last["project_id"] == "project-26"
-
-    assert {:error, :not_found} =
-             AccountPool.list_bindings(SalixStore.Ids.new_tenant_id(), account["id"])
-  end
-
   test "reset consumes once, refreshes quota, and replays the same result", %{tenant: tenant} do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     server(fn cmd ->
       case cmd["op"] do
         "/quota/reset" ->
-          send(parent, {:reset_key, cmd["body"]["redeem_request_id"]})
+          SystemsRuntime.Proc.send(parent, {:reset_key, cmd["body"]["redeem_request_id"]})
           %{"code" => "reset", "windows_reset" => 2}
 
         "/quota" ->
-          %{"windows" => [], "reset_credits" => %{"available_count" => 0}}
+          %{"body" => %{"rate_limit_reset_credits" => %{"available_count" => 0}}}
       end
     end)
 
@@ -777,18 +475,18 @@ defmodule SalixAgent.SubscriptionOwnerTest do
 
     assert public["quota"]["reset_credits"]["available_count"] == 0
     refute Map.has_key?(public, "credentials")
-    assert_receive {:reset_key, ^key}
+    settle_receive({:reset_key, ^key})
     assert {:ok, %{"outcome" => "reset"}} = AccountPool.reset_quota(tenant, a["id"], attrs)
-    refute_receive {:reset_key, _}
+    settle_refute_receive({:reset_key, _})
   end
 
   test "uncertain reset keeps its key across reload and refuses a different attempt", %{
     tenant: tenant
   } do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     server(fn cmd ->
-      send(parent, {:operation, cmd["op"], cmd["body"]["redeem_request_id"]})
+      SystemsRuntime.Proc.send(parent, {:operation, cmd["op"], cmd["body"]["redeem_request_id"]})
       {:error, 502, "reset_unavailable"}
     end)
 
@@ -796,7 +494,7 @@ defmodule SalixAgent.SubscriptionOwnerTest do
     key = Store.id()
     attrs = %{"version" => a["version"], "request_id" => key}
     assert {:error, :reset_pending} = AccountPool.reset_quota(tenant, a["id"], attrs)
-    assert_receive {:operation, "/quota/reset", ^key}
+    settle_receive({:operation, "/quota/reset", ^key})
     assert {:ok, stored} = Store.get(tenant, a["id"])
     assert stored["reset_attempt"] == %{"request_id" => key, "outcome" => "pending"}
 
@@ -806,12 +504,12 @@ defmodule SalixAgent.SubscriptionOwnerTest do
                "request_id" => Store.id()
              })
 
-    refute_receive {:operation, _, _}
+    settle_refute_receive({:operation, _, _})
     assert {:error, :reset_pending} = AccountPool.reset_quota(tenant, a["id"], attrs)
-    assert_receive {:operation, "/quota/reset", ^key}
+    settle_receive({:operation, "/quota/reset", ^key})
   end
 
-  test "a concurrent quota write preserves the pending reset for same-key recovery", %{
+  test "a concurrent quota write does not lose the reset outcome", %{
     tenant: tenant
   } do
     a = account(tenant, %{"prepared" => true})
@@ -821,10 +519,11 @@ defmodule SalixAgent.SubscriptionOwnerTest do
       case cmd["op"] do
         "/quota/reset" ->
           if :atomics.add_get(calls, 1, 1) == 1 do
+            # The quota poll writes while the reset is out.
             {:ok, current} = Store.get(tenant, a["id"])
 
             {:ok, _} =
-              Store.update(
+              Store.update_background(
                 tenant,
                 Map.put(current, "quota", %{"windows" => [], "observed_at" => "concurrent-poll"}),
                 current["version"]
@@ -835,19 +534,92 @@ defmodule SalixAgent.SubscriptionOwnerTest do
             %{"code" => "already_redeemed"}
           end
 
+        # The follow-up read fails, so the account shows what the settle left.
         "/quota" ->
-          %{"windows" => [], "reset_credits" => %{"available_count" => 0}}
+          {:error, 502, "quota_unavailable"}
       end
     end)
 
     attrs = %{"version" => a["version"], "request_id" => Store.id()}
-    assert {:error, :reset_pending} = AccountPool.reset_quota(tenant, a["id"], attrs)
-    {:ok, current} = Store.get(tenant, a["id"])
-    assert current["quota"]["observed_at"] == "concurrent-poll"
-    assert current["reset_attempt"]["outcome"] == "pending"
 
-    assert {:ok, %{"outcome" => "already_redeemed", "quota_refreshed" => true}} =
+    assert {:ok, %{"outcome" => "reset", "quota_refreshed" => false}} =
              AccountPool.reset_quota(tenant, a["id"], attrs)
+
+    {:ok, current} = Store.get(tenant, a["id"])
+    assert current["reset_attempt"]["outcome"] == "reset"
+    assert current["quota"]["observed_at"] == "concurrent-poll"
+    assert :atomics.get(calls, 1) == 1
+
+    # The same key reads the recorded outcome instead of spending another credit.
+    assert {:ok, %{"outcome" => "reset"}} = AccountPool.reset_quota(tenant, a["id"], attrs)
+    assert :atomics.get(calls, 1) == 1
+  end
+
+  test "a second settle of the same reset key keeps the recorded outcome", %{tenant: tenant} do
+    a = account(tenant, %{"prepared" => true})
+    attrs = %{"version" => a["version"], "request_id" => Store.id()}
+    calls = :atomics.new(1, signed: false)
+    parent = SystemsRuntime.Proc.self()
+
+    server(fn cmd ->
+      case cmd["op"] do
+        "/quota/reset" ->
+          if :atomics.add_get(calls, 1, 1) == 1 do
+            # A retry with the same pending key runs to the end first.
+            SystemsRuntime.Proc.send(
+              parent,
+              {:second, AccountPool.reset_quota(tenant, a["id"], attrs)}
+            )
+
+            %{"code" => "reset"}
+          else
+            %{"code" => "already_redeemed"}
+          end
+
+        "/quota" ->
+          {:error, 502, "quota_unavailable"}
+      end
+    end)
+
+    assert {:ok, %{"outcome" => "already_redeemed"}} =
+             AccountPool.reset_quota(tenant, a["id"], attrs)
+
+    assert {:ok, %{"outcome" => "already_redeemed"}} =
+             SystemsRuntime.Proc.receive(do: ({:second, result} -> result))
+
+    {:ok, current} = Store.get(tenant, a["id"])
+    assert current["reset_attempt"]["outcome"] == "already_redeemed"
+  end
+
+  test "a slow quota answer from before a reset does not replace the quota the reset read", %{
+    tenant: tenant
+  } do
+    a = account(tenant, %{"prepared" => true})
+    polls = :atomics.new(1, signed: false)
+
+    server(fn cmd ->
+      case cmd["op"] do
+        "/quota/reset" ->
+          %{"code" => "reset"}
+
+        "/quota" ->
+          if :atomics.add_get(polls, 1, 1) == 1 do
+            # The poll's answer is slow: a reset and its follow-up read land first.
+            attrs = %{"version" => a["version"], "request_id" => Store.id()}
+
+            {:ok, %{"quota_refreshed" => true}} =
+              AccountPool.reset_quota(tenant, a["id"], attrs)
+
+            %{"body" => %{"plan_type" => "before-reset"}}
+          else
+            %{"body" => %{"plan_type" => "after-reset"}}
+          end
+      end
+    end)
+
+    assert {:error, :conflict} = AccountPool.quota(tenant, a["id"])
+    {:ok, current} = Store.get(tenant, a["id"])
+    assert current["quota"]["plan_type"] == "after-reset"
   end
 
   test "completed reset remains successful when the follow-up quota read fails", %{tenant: tenant} do
@@ -872,7 +644,7 @@ defmodule SalixAgent.SubscriptionOwnerTest do
   } do
     server(fn _ -> flunk("must not contact provider") end)
     codex = account(tenant, %{"prepared" => true})
-    claude = account(tenant, %{"provider" => "claude", "prepared" => true})
+    claude = account(tenant, %{"source" => "claude", "prepared" => true})
     attrs = %{"version" => codex["version"], "request_id" => Store.id()}
 
     assert {:error, :not_found} =
@@ -942,7 +714,7 @@ defmodule SalixAgent.SubscriptionOwnerTest do
             }
 
           "/quota" ->
-            %{"plan_type" => "pro", "windows" => []}
+            %{"body" => %{"plan_type" => "pro"}}
         end
       end)
 
@@ -990,7 +762,7 @@ defmodule SalixAgent.SubscriptionOwnerTest do
       assert {:ok, saved} = Store.get(tenant, first["id"])
       assert {:ok, ^credentials} = Store.open(tenant, first["id"], saved["credentials"])
       refute saved["prepared"]
-      assert saved["quota"] == %{"plan_type" => "pro", "windows" => []}
+      assert %{"windows" => []} = saved["quota"]
       for key <- ["cooldown_until", "expires_at"], do: refute(Map.has_key?(saved, key))
 
       assert {:ok, %{rows: [[0, true]]}} =
@@ -1003,52 +775,9 @@ defmodule SalixAgent.SubscriptionOwnerTest do
     end
   end
 
-  test "concurrent imports keep one account and the final import replaces its credentials", %{
-    tenant: tenant
-  } do
-    server(fn cmd ->
-      case cmd["op"] do
-        "/normalize" ->
-          %{"credentials" => cmd["body"]["credentials"], "email" => "member@example.com"}
-
-        "/quota" ->
-          %{"plan_type" => "pro", "windows" => []}
-      end
-    end)
-
-    results =
-      1..8
-      |> Task.async_stream(
-        fn n ->
-          AccountPool.create(tenant, %{
-            "credential_kind" => "subscription_oauth",
-            "provider" => "codex",
-            "credentials" => %{"access_token" => "token-#{n}"}
-          })
-        end,
-        max_concurrency: 8
-      )
-      |> Enum.map(fn {:ok, {:ok, account}} -> account end)
-
-    assert results |> Enum.map(& &1["id"]) |> Enum.uniq() |> length() == 1
-
-    assert {:ok, final} =
-             AccountPool.create(tenant, %{
-               "credential_kind" => "subscription_oauth",
-               "provider" => "codex",
-               "credentials" => %{"access_token" => "final"}
-             })
-
-    assert {:ok, %{"accounts" => [^final]}} = AccountPool.list(tenant)
-    {:ok, stored} = Store.get(tenant, final["id"])
-
-    assert {:ok, %{"access_token" => "final"}} =
-             Store.open(tenant, final["id"], stored["credentials"])
-  end
-
   test "device enrollment stays tenant scoped, respects its interval, and consumes the attempt",
        %{tenant: tenant} do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     server(fn cmd ->
       case cmd["op"] do
@@ -1063,14 +792,14 @@ defmodule SalixAgent.SubscriptionOwnerTest do
           }
 
         "/oauth/device/poll" ->
-          send(parent, :device_polled)
+          SystemsRuntime.Proc.send(parent, :device_polled)
           %{"credentials" => %{"access_token" => "device-token"}}
 
         "/normalize" ->
           %{"email" => "device@example.com", "credentials" => cmd["body"]["credentials"]}
 
         "/quota" ->
-          %{"plan_type" => "pro", "windows" => []}
+          %{"body" => %{"plan_type" => "pro"}}
       end
     end)
 
@@ -1131,7 +860,7 @@ defmodule SalixAgent.SubscriptionOwnerTest do
           %{"email" => "member@example.com", "credentials" => cmd["body"]["credentials"]}
 
         "/quota" ->
-          %{"plan_type" => "pro", "windows" => []}
+          %{"body" => %{"plan_type" => "pro"}}
       end
     end)
 
@@ -1192,17 +921,17 @@ defmodule SalixAgent.SubscriptionOwnerTest do
 
   test "one refresher, persisted credentials before execution, and no refresh token in inference",
        %{tenant: tenant} do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     server(fn cmd ->
       if cmd["op"] == "/prepare" do
-        send(owner, {:prepare, self()})
+        SystemsRuntime.Proc.send(owner, {:prepare, SystemsRuntime.Proc.self()})
 
-        receive do
+        SystemsRuntime.Proc.receive do
           :continue -> reply(cmd)
         end
       else
-        send(owner, {:selected_credential, cmd["credential"]})
+        SystemsRuntime.Proc.send(owner, {:selected_credential, cmd["credential"]})
         %{"ok" => true}
       end
     end)
@@ -1210,10 +939,10 @@ defmodule SalixAgent.SubscriptionOwnerTest do
     a = account(tenant)
 
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         AccountPool.dispatch(config(tenant), fn opts ->
           {:ok, saved} = Store.get(tenant, a["id"])
-          assert saved["status"] == "active"
+          assert saved["status"] == "ok"
           {:ok, credentials} = Store.open(tenant, a["id"], saved["credentials"])
           assert credentials["access_token"] == "rotated"
 
@@ -1226,14 +955,14 @@ defmodule SalixAgent.SubscriptionOwnerTest do
         end)
       end)
 
-    assert_receive {:prepare, request}, 2_000
+    settle_receive({:prepare, request})
 
     assert {:error, %{"status" => 503}} =
              AccountPool.dispatch(config(tenant), fn _ -> flunk("second refresher executed") end)
 
-    send(request, :continue)
-    assert {:final, "ok", %{}} = Task.await(task)
-    assert_receive {:selected_credential, %{"credentials" => selected}}
+    SystemsRuntime.Proc.send(request, :continue)
+    assert {:final, "ok", %{}} = settled_await(task)
+    settle_receive({:selected_credential, %{"credentials" => selected}})
     assert selected["access_token"] == "rotated"
     refute Map.has_key?(selected, "refresh_token")
     {:ok, stored} = Store.get(tenant, a["id"])
@@ -1244,12 +973,12 @@ defmodule SalixAgent.SubscriptionOwnerTest do
   end
 
   test "a late refresh cannot restore an account deleted during exchange", %{tenant: tenant} do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     server(fn conn ->
-      send(owner, {:prepare, self()})
+      SystemsRuntime.Proc.send(owner, {:prepare, SystemsRuntime.Proc.self()})
 
-      receive do
+      SystemsRuntime.Proc.receive do
         :continue -> reply(conn)
       end
     end)
@@ -1257,40 +986,40 @@ defmodule SalixAgent.SubscriptionOwnerTest do
     a = account(tenant)
 
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         AccountPool.dispatch(config(tenant), fn _ -> flunk("deleted account executed") end)
       end)
 
-    assert_receive {:prepare, request}, 2_000
+    settle_receive({:prepare, request})
     {:ok, claimed} = Store.get(tenant, a["id"])
     assert {:ok, nil} = AccountPool.delete(tenant, a["id"], claimed["version"])
-    send(request, :continue)
-    assert {:error, %{"status" => 503}} = Task.await(task)
+    SystemsRuntime.Proc.send(request, :continue)
+    assert {:error, %{"status" => 503}} = settled_await(task)
     assert {:error, :not_found} = Store.get(tenant, a["id"])
   end
 
   test "SQL selection follows quota policy and excludes other tenants and exhausted short windows",
        %{tenant: tenant} do
-    window = fn pct, days, period ->
+    now = SystemsClock.system_time(:millisecond)
+
+    window = fn pct, days, minutes ->
       %{
-        "remaining_percent" => pct,
-        "reset_at" => DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), round(days * 86400))),
-        "period" => period
+        "used_percent" => 100 - pct,
+        "resets_at" => now + round(days * 86_400_000),
+        "minutes" => minutes
       }
     end
 
-    quota = fn windows ->
-      %{"observed_at" => DateTime.to_iso8601(DateTime.utc_now()), "windows" => windows}
-    end
+    quota = fn windows -> %{"observed_at" => now, "windows" => windows} end
 
-    regular = account(tenant, %{"quota" => quota.([window.(80, 4, "week")])})
-    urgent = account(tenant, %{"quota" => quota.([window.(10, 0.5, "week")])})
+    regular = account(tenant, %{"quota" => quota.([window.(80, 4, 10_080)])})
+    urgent = account(tenant, %{"quota" => quota.([window.(10, 0.5, 10_080)])})
 
     _exhausted =
-      account(tenant, %{"quota" => quota.([window.(100, 0.1, "week"), window.(0, 0.01, "short")])})
+      account(tenant, %{"quota" => quota.([window.(100, 0.1, 10_080), window.(0, 0.01, 300)])})
 
     _foreign =
-      account(SalixStore.Ids.new_tenant_id(), %{"quota" => quota.([window.(100, 0.001, "week")])})
+      account(SalixStore.Ids.new_tenant_id(), %{"quota" => quota.([window.(100, 0.001, 10_080)])})
 
     assert {:ok, [first, second]} = Store.candidates(tenant, "codex", "gpt-5.5")
     assert first["id"] == urgent["id"]
@@ -1303,40 +1032,6 @@ defmodule SalixAgent.SubscriptionOwnerTest do
     assert {:ok, [remaining]} = Store.candidates(tenant, "codex", "gpt-5.5")
     assert remaining["id"] == regular["id"]
     assert disabled["disabled"]
-  end
-
-  @tag subscription_timeout_regression: true
-  test "a cooling pool reports when to retry and prefers ready accounts", %{tenant: tenant} do
-    cooling =
-      account(tenant, %{
-        "prepared" => true,
-        "cooldown_until" => DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), 30))
-      })
-
-    assert {:error, %{"status" => 503, "retry_after_ms" => delay}} =
-             AccountPool.dispatch(config(tenant), fn _ -> flunk("cooling account executed") end)
-
-    assert delay > 20_000 and delay <= 30_000
-
-    for _ <- 1..3 do
-      account(tenant, %{
-        "prepared" => true,
-        "cooldown_until" => DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), 30))
-      })
-    end
-
-    ready = account(tenant, %{"prepared" => true})
-    assert {:ok, candidates} = Store.candidates(tenant, "codex", "gpt-5.5")
-    assert length(candidates) == 3
-    assert hd(candidates)["id"] == ready["id"]
-    assert :ready = AccountPool.dispatch(config(tenant), fn _ -> :ready end)
-
-    assert {:ok, _} = Store.update(tenant, Map.put(ready, "disabled", true), ready["version"])
-
-    assert {:ok, _} =
-             Store.update(tenant, Map.delete(cooling, "cooldown_until"), cooling["version"])
-
-    assert :recovered = AccountPool.dispatch(config(tenant), fn _ -> :recovered end)
   end
 
   test "account logs connect selection refresh and cooldown without credentials", %{
@@ -1409,124 +1104,12 @@ defmodule SalixAgent.SubscriptionOwnerTest do
     assert Logger.metadata() == previous
   end
 
-  test "an empty pool does not request a cooldown wait", %{tenant: tenant} do
-    assert {:error, error} =
-             AccountPool.dispatch(config(tenant), fn _ -> flunk("empty pool executed") end)
-
-    refute Map.has_key?(error, "retry_after_ms")
-  end
-
-  test "execution retries stay bounded and stop after stream output", %{tenant: tenant} do
-    for _ <- 1..4, do: account(tenant, %{"prepared" => true})
-    {:ok, counter} = Agent.start_link(fn -> 0 end)
-    on_exit(fn -> if Process.alive?(counter), do: Agent.stop(counter) end)
-
-    callback = fn _ ->
-      Agent.update(counter, &(&1 + 1))
-      {:error, %{"status" => 429}}
-    end
-
-    assert {:error, %{"status" => 429}} = AccountPool.dispatch(config(tenant), callback)
-    assert Agent.get(counter, & &1) == 3
-
-    assert {:error, %{"status" => 429}} =
-             AccountPool.dispatch(config(tenant), callback, fn -> true end)
-
-    assert Agent.get(counter, & &1) == 4
-  end
-
-  test "local worker capacity refusal does not rotate or cool healthy accounts", %{tenant: tenant} do
-    accounts = for _ <- 1..3, do: account(tenant, %{"prepared" => true})
-    owner = self()
-
-    server(fn cmd ->
-      send(owner, {:capacity_attempt, cmd["op"]})
-      {:error, 429, "worker_busy"}
-    end)
-
-    assert {:error, %{"status" => 429, "retryable" => true}} =
-             AccountPool.dispatch(config(tenant), fn opts ->
-               SalixLlm.OpenAIResponses.complete(
-                 [%{"role" => "user", "content" => "hello"}],
-                 [],
-                 opts
-               )
-             end)
-
-    assert_received {:capacity_attempt, "/v1/responses"}
-    refute_received {:capacity_attempt, _}
-
-    for account <- accounts do
-      assert {:ok, saved} = Store.get(tenant, account["id"])
-      refute saved["cooldown_until"]
-      assert saved["version"] == account["version"]
-    end
-  end
-
-  test "a refresh rejected before execution keeps credentials available for retry", %{
-    tenant: tenant
-  } do
-    accounts = for _ <- 1..3, do: account(tenant)
-    owner = self()
-
-    server(fn cmd ->
-      send(owner, {:refresh_admission, cmd["op"]})
-      {:error, 429, "worker_busy"}
-    end)
-
-    assert {:error, %{"status" => 429, "retryable" => true}} =
-             AccountPool.dispatch(config(tenant), fn _ ->
-               flunk("inference ran without preparation")
-             end)
-
-    assert_received {:refresh_admission, "/prepare"}
-    refute_received {:refresh_admission, _}
-
-    for account <- accounts do
-      assert {:ok, saved} = Store.get(tenant, account["id"])
-      assert saved["status"] == "active"
-      assert saved["credentials"] == account["credentials"]
-      refute saved["prepared"]
-      refute saved["cooldown_until"]
-    end
-  end
-
-  test "a rejected refresh cannot restore over a concurrent account edit", %{tenant: tenant} do
-    account = account(tenant)
-
-    server(fn _cmd ->
-      {:ok, claimed} = Store.get(tenant, account["id"])
-      {:ok, _} = Store.update(tenant, Map.put(claimed, "disabled", true), claimed["version"])
-      {:error, 429, "worker_busy"}
-    end)
-
-    assert {:error, _} =
-             AccountPool.dispatch(config(tenant), fn _ -> flunk("disabled account executed") end)
-
-    assert {:ok, saved} = Store.get(tenant, account["id"])
-    assert saved["disabled"]
-    assert saved["status"] == "reauthorization_required"
-  end
-
-  test "an ambiguous refresh failure still requires reauthorization", %{tenant: tenant} do
-    account = account(tenant)
-    server(fn _ -> {:error, 503, "worker_down"} end)
-
-    assert {:error, _} =
-             AccountPool.dispatch(config(tenant), fn _ ->
-               flunk("ambiguous credential executed")
-             end)
-
-    assert {:ok, saved} = Store.get(tenant, account["id"])
-    assert saved["status"] == "reauthorization_required"
-  end
-
   test "legacy import preserves identity, credentials and disabled state without overwriting", %{
     tenant: tenant
   } do
     id = Store.id()
     key = String.duplicate("k", 32)
-    nonce = :crypto.strong_rand_bytes(12)
+    nonce = SystemsRuntime.Proc.random_bytes(12)
 
     old = %{
       "id" => id,

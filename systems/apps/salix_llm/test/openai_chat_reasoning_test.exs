@@ -6,7 +6,7 @@ defmodule SalixLlm.OpenAIChatReasoningTest do
   ordinary JSON body, and come back out of the stream intact rather than
   concatenated into nonsense.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixLlm.{ConvertOpenAI, MockSSEServer, OpenAIChat}
 
@@ -129,7 +129,7 @@ defmodule SalixLlm.OpenAIChatReasoningTest do
           "target-model"
         )
 
-      refute Map.has_key?(assistant, "reasoning_content")
+      assert assistant["reasoning_content"] == ""
       refute Map.has_key?(assistant, "reasoning_details")
     end
 
@@ -266,7 +266,7 @@ defmodule SalixLlm.OpenAIChatReasoningTest do
 
   defp start_bandit_retry!(spec_fun) do
     Enum.find_value(1..10, fn _ ->
-      p = 40000 + :erlang.phash2(make_ref(), 20000)
+      p = 40000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20000)
 
       case ExUnit.Callbacks.start_supervised(spec_fun.(p), id: {:bandit_retry, p}) do
         {:ok, _pid} -> p

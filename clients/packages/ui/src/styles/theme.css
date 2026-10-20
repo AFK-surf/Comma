@@ -778,6 +778,8 @@
   --motion-duration-reveal-stagger: 30ms;
   --motion-duration-spatial-move: 200ms;
   --motion-duration-reply-draw: 600ms;
+  --motion-duration-reply-thread-enter: 380ms;
+  --motion-duration-reply-thread-exit: 280ms;
   --motion-duration-menu-enter: 120ms;
   --motion-duration-menu-exit: 80ms;
   --motion-duration-pointer-intent: 100ms;

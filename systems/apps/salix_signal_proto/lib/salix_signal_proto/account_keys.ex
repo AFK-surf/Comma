@@ -38,7 +38,7 @@ defmodule SalixSignalProto.AccountKeys do
 
   defp collect(pool) do
     extra =
-      for <<byte <- :crypto.strong_rand_bytes(@pool_length)>>, byte < 252, into: <<>> do
+      for <<byte <- SystemsRuntime.Proc.random_bytes(@pool_length)>>, byte < 252, into: <<>> do
         <<Enum.at(@alphabet, rem(byte, 36))>>
       end
 

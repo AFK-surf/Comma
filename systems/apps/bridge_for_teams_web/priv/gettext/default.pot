@@ -11,25 +11,6 @@
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:405
-#, elixir-autogen
-msgid "Actions"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1238
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6293
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6398
-#, elixir-autogen
-msgid "Add"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1308
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4110
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4113
-#, elixir-autogen
-msgid "Admin"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:416
 #: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:135
 #: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:266
@@ -39,23 +20,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7955
 #, elixir-autogen
 msgid "Agent"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6579
-#, elixir-autogen
-msgid "Agent Swarm"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:160
-#, elixir-autogen
-msgid "Agent Swarm activity"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6301
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6817
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7211
-#, elixir-autogen
-msgid "Agent Swarm is still preparing"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4855
@@ -69,52 +33,23 @@ msgstr ""
 msgid "Agent Swarm not found."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:247
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:607
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:333
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:148
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3721
-#, elixir-autogen
-msgid "Agent Swarms"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1083
 #, elixir-autogen
 msgid "Agent archived."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3684
-#, elixir-autogen
-msgid "Agent configuration saved. Reconcile enqueued."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:944
-#, elixir-autogen
-msgid "Agent created. Configuration is reconciling."
 msgstr ""
 
 #, elixir-autogen
 msgid "Agent not found."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6691
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_plugins.ex
 #, elixir-autogen
-msgid "App ID"
+msgid "Android admission status is unavailable. Try again shortly."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6690
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_plugins.ex
 #, elixir-autogen
-msgid "App name"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:263
-#, elixir-autogen
-msgid "Browse organizations"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:218
-#, elixir-autogen
-msgid "Cache"
+msgid "Android connector access is not enabled for this organization."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_members.ex
@@ -143,37 +78,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7918
 #, elixir-autogen
 msgid "Cancel"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6692
-#, elixir-autogen
-msgid "Client ID"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6693
-#, elixir-autogen
-msgid "Client secret"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:493
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:583
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:1483
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:461
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2690
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4404
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7545
-#, elixir-autogen
-msgid "Close"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:393
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4416
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5528
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6350
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6384
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6398
-#, elixir-autogen
-msgid "Configure"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1528
@@ -293,17 +197,6 @@ msgstr ""
 msgid "Couldn't update role."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5471
-#, elixir-autogen
-msgid "Create a router or worker agent for this Agent Swarm."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6506
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6704
-#, elixir-autogen
-msgid "Create connect"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:231
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:318
 #, elixir-autogen
@@ -313,11 +206,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:86
 #, elixir-autogen
 msgid "Create organization with invite code"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:162
-#, elixir-autogen
-msgid "Created vs used"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:758
@@ -349,32 +237,9 @@ msgstr ""
 msgid "Devices"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1196
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6327
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6443
-#, elixir-autogen
-msgid "Feishu"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2197
 #, elixir-autogen
 msgid "Feishu webhook connect ready."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5143
-#, elixir-autogen
-msgid "General"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:135
-#, elixir-autogen
-msgid "Here's an overview of your workspace."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:41
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:43
-#, elixir-autogen
-msgid "Home"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/controllers/impersonation_html/new.html.heex:29
@@ -385,11 +250,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/controllers/impersonation_html/new.html.heex:4
 #, elixir-autogen
 msgid "Impersonate user"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:206
-#, elixir-autogen
-msgid "Input"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/components/layouts.ex:396
@@ -404,20 +264,9 @@ msgstr ""
 msgid "Invite code"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:532
-#, elixir-autogen
-msgid "Language"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_members.ex
 #, elixir-autogen
 msgid "Member not found."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:450
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:623
-#, elixir-autogen
-msgid "Members"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:433
@@ -437,21 +286,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7723
 #, elixir-autogen
 msgid "Name"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6487
-#, elixir-autogen
-msgid "No Feishu connects yet"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:876
-#, elixir-autogen
-msgid "No messages yet"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4630
-#, elixir-autogen
-msgid "Not configured"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:732
@@ -479,38 +313,9 @@ msgstr ""
 msgid "Organization slug"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:212
-#, elixir-autogen
-msgid "Output"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:240
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:606
-#, elixir-autogen
-msgid "Overview"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1016
-#, elixir-autogen
-msgid "Participants"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_plugins.ex:104
 #, elixir-autogen, elixir-format
 msgid "Plugins are unavailable right now. Retry shortly."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:371
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4899
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5319
-#, elixir-autogen
-msgid "Remove"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5828
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6583
-#, elixir-autogen
-msgid "Router"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4860
@@ -523,28 +328,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4887
 #, elixir-autogen
 msgid "Salix timed out. Retry shortly."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6159
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6308
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6824
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7718
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7940
-#, elixir-autogen
-msgid "Salix unavailable"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:249
-#, elixir-autogen
-msgid "Save changes"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:454
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:621
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:625
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3761
-#, elixir-autogen
-msgid "Settings"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:26
@@ -562,22 +345,14 @@ msgstr ""
 msgid "Sign in with your organization account."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:556
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_skills.ex
 #, elixir-autogen
-msgid "Sign out"
+msgid "Skill not found."
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1476
 #, elixir-autogen
 msgid "Slack connect created. Open the install URL to finish the OAuth install."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5166
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5502
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6857
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7729
-#, elixir-autogen
-msgid "Status"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/controllers/impersonation_html/new.html.heex:6
@@ -609,75 +384,15 @@ msgstr ""
 msgid "The runtime is not ready yet. Retry shortly."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:194
-#, elixir-autogen
-msgid "Token usage"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:240
-#, elixir-autogen
-msgid "Top Agent Swarm usage"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:200
-#, elixir-autogen
-msgid "Total tokens"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:184
-#, elixir-autogen
-msgid "Unused"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6535
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6749
-#, elixir-autogen
-msgid "Updated"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:233
 #, elixir-autogen
 msgid "Use your invite code to create your organization and owner account."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:167
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:178
-#, elixir-autogen
-msgid "Used"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:265
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4110
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4114
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5282
-#, elixir-autogen
-msgid "User"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:152
-#, elixir-autogen
-msgid "View agent swarms"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:143
-#, elixir-autogen
-msgid "View all"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:134
-#, elixir-autogen
-msgid "Welcome back"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:151
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:290
 #, elixir-autogen
 msgid "Work email"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5828
-#, elixir-autogen
-msgid "Worker"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:432
@@ -694,211 +409,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2080
 #, elixir-autogen
 msgid "[image]"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5723
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5822
-#, elixir-autogen
-msgid "agent"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4913
-#, elixir-autogen
-msgid "missing"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4912
-#, elixir-autogen
-msgid "set"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:249
-#, elixir-autogen
-msgid "tokens"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1132
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1138
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4416
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4431
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4456
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6512
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6590
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6713
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6941
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7032
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7038
-#, elixir-autogen
-msgid "Connect"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6522
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6739
-#, elixir-autogen
-msgid "Credentials"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6245
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6564
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6786
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7535
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7587
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7832
-#, elixir-autogen
-msgid "Delete"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6562
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6784
-#, elixir-autogen
-msgid "Delete this connect? This releases the provider app reservation."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6545
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6767
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6868
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7810
-#, elixir-autogen
-msgid "Disable"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4442
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5084
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6887
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7023
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7821
-#, elixir-autogen
-msgid "Disconnect"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:196
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2128
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5382
-#, elixir-autogen
-msgid "Done"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6554
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6776
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6877
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7810
-#, elixir-autogen
-msgid "Enable"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6674
-#, elixir-autogen
-msgid "Events URL"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6727
-#, elixir-autogen
-msgid "Install"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6702
-#, elixir-autogen
-msgid "No Slack connects yet"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6735
-#, elixir-autogen
-msgid "Open install URL"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6670
-#, elixir-autogen
-msgid "Redirect URL"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6694
-#, elixir-autogen
-msgid "Signing secret"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6361
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6614
-#, elixir-autogen
-msgid "Slack"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6632
-#, elixir-autogen
-msgid "Step 1 · Create the Slack app from this manifest"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6682
-#, elixir-autogen
-msgid "Step 2 · Paste the created app's credentials"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6519
-#, elixir-autogen
-msgid "Webhook URL"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:237
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:606
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:607
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:608
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:609
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:610
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:626
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6721
-#, elixir-autogen
-msgid "Workspace"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6717
-#, elixir-autogen
-msgid "awaiting install"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6742
-#, elixir-autogen
-msgid "client"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6516
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6718
-#, elixir-autogen
-msgid "disabled"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6531
-#, elixir-autogen
-msgid "encryption"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6716
-#, elixir-autogen
-msgid "installed"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6525
-#, elixir-autogen
-msgid "secret"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6745
-#, elixir-autogen
-msgid "signing"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6528
-#, elixir-autogen
-msgid "verification"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:713
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6851
-#, elixir-autogen
-msgid "Account"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:710
-#, elixir-autogen
-msgid "Select org"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:904
@@ -943,22 +453,6 @@ msgstr ""
 msgid "Only organization admins can remove members."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:256
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:608
-#, elixir-autogen
-msgid "Fin"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/device_provisioning.ex:43
-#, elixir-autogen
-msgid "Runner"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex
-#, elixir-autogen
-msgid "Single sign-on"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_runners.ex
 #, elixir-autogen
 msgid "Runner API key not found."
@@ -984,14 +478,6 @@ msgstr ""
 msgid "Couldn't save the model settings."
 msgstr ""
 
-#, elixir-autogen
-msgid "Default model"
-msgstr ""
-
-#, elixir-autogen
-msgid "No default"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
 #, elixir-autogen
 msgid "The default model must be one of the allowed models."
@@ -1003,54 +489,11 @@ msgstr ""
 msgid "Account disconnected."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6894
-#, elixir-autogen
-msgid "Connect an account"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6839
-#, elixir-autogen
-msgid "Connect an account below to let this Agent Swarm's agents act on your behalf."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6810
-#, elixir-autogen
-msgid "Connect third-party accounts for"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6833
-#, elixir-autogen
-msgid "Connected accounts"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:397
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:618
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3739
-#, elixir-autogen
-msgid "Connections"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:741
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3123
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3196
 #, elixir-autogen
 msgid "Could not connect the account. Please try again."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6885
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7021
-#, elixir-autogen
-msgid "Disconnect this account? Agents will lose access to it."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6937
-#, elixir-autogen
-msgid "Label (optional)"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6838
-#, elixir-autogen
-msgid "No connected accounts yet"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1536
@@ -1068,22 +511,12 @@ msgstr ""
 msgid "Only Agent Swarm admins can manage connected accounts."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6843
-#, elixir-autogen
-msgid "Platform"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:738
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2873
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3120
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3193
 #, elixir-autogen
 msgid "Salix is unavailable right now. Retry shortly."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6854
-#, elixir-autogen
-msgid "Scopes"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3111
@@ -1113,12 +546,6 @@ msgstr ""
 msgid "Could not delete the schedule."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:386
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6160
-#, elixir-autogen
-msgid "Could not load schedules from Salix. Retry shortly."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1184
 #, elixir-autogen
 msgid "Only Agent Swarm admins can manage schedules."
@@ -1128,17 +555,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1202
 #, elixir-autogen
 msgid "That schedule no longer exists."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6363
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6616
-#, elixir-autogen
-msgid "connected"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6644
-#, elixir-autogen
-msgid "Create app on Slack"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3038
@@ -1171,79 +587,6 @@ msgstr ""
 msgid "Only Agent Swarm admins can rename this Agent Swarm."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1067
-#, elixir-autogen
-msgid "Open Slack thread"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2362
-#, elixir-autogen
-msgid "%{count} attendee"
-msgid_plural "%{count} attendees"
-msgstr[0] ""
-msgstr[1] ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2400
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5075
-#, elixir-autogen
-msgid "%{count} captions"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/relative_time.ex:28
-#, elixir-autogen
-msgid "%{count}d ago"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/relative_time.ex:22
-#, elixir-autogen
-msgid "%{count}h ago"
-msgid_plural "%{count}h ago"
-msgstr[0] ""
-msgstr[1] ""
-
-#: lib/bridge_for_teams_web/dashboard/relative_time.ex:19
-#, elixir-autogen
-msgid "%{count}m ago"
-msgid_plural "%{count}m ago"
-msgstr[0] ""
-msgstr[1] ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5118
-#, elixir-autogen
-msgid "%{date} · %{count} attendees"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1300
-#, elixir-autogen
-msgid "%{name} — %{role} at %{org}"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3169
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3868
-#, elixir-autogen
-msgid "%{prs} PRs · %{commits} commits"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:63
-#, elixir-autogen
-msgid "A daily digest of mail, meetings, and news."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:143
-#, elixir-autogen
-msgid "A persistent model of you and your team."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4680
-#, elixir-autogen
-msgid "Action items"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:142
-#, elixir-autogen
-msgid "Agent Memory"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:1075
 #: lib/bridge_for_teams_web/dashboard/components/layouts.ex:387
 #: lib/bridge_for_teams_web/dashboard/components/layouts.ex:612
@@ -1258,31 +601,6 @@ msgstr ""
 msgid "App ID cannot be changed for an existing Feishu app. Delete it and add a new app instead."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:34
-#, elixir-autogen
-msgid "Archive unimportant emails"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4692
-#, elixir-autogen
-msgid "Artifacts"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5327
-#, elixir-autogen
-msgid "Ask your agent anything"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:39
-#, elixir-autogen
-msgid "Assist with scheduling"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5315
-#, elixir-autogen
-msgid "Assistant unavailable"
-msgstr ""
-
 #, elixir-autogen
 msgid "At least one runner heartbeat is stale or unknown."
 msgstr ""
@@ -1295,109 +613,15 @@ msgstr ""
 msgid "At least one runner reports a critical status."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5845
-#, elixir-autogen
-msgid "Attach files or images"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:1268
-#, elixir-autogen
-msgid "Attached files in your workspace:"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5526
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6235
-#, elixir-autogen
-msgid "Audit"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:810
-#, elixir-autogen
-msgid "Back"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4542
-#, elixir-autogen
-msgid "Body"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2425
-#, elixir-autogen
-msgid "Call ended — writing the summary."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:233
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:301
-#, elixir-autogen
-msgid "Capabilities"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_runners.ex
 #, elixir-autogen
 msgid "Check local posture"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:782
-#, elixir-autogen
-msgid "Checks"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7993
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
 #, elixir-autogen
 msgid "Checks ran, but Operations could not record them."
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
-#, elixir-autogen
-msgid "Choose a bot-enabled Feishu app first."
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
-#, elixir-autogen
-msgid "Choose an Agent Swarm before connecting the bot."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:68
-#, elixir-autogen
-msgid "Clean digests of your newsletters, on a schedule."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:136
-#, elixir-autogen
-msgid "Collapse"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1006
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1201
-#, elixir-autogen
-msgid "Command"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1015
-#, elixir-autogen
-msgid "Communication Style"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:72
-#, elixir-autogen
-msgid "Competitive intel briefing"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:824
-#, elixir-autogen
-msgid "Completed and archived."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1153
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7051
-#, elixir-autogen
-msgid "Configure in Settings"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6496
-#, elixir-autogen
-msgid "Connect name"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1124
@@ -1407,21 +631,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7014
 #, elixir-autogen
 msgid "Connected"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5292
-#, elixir-autogen
-msgid "Connecting to your agent…"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1085
-#, elixir-autogen
-msgid "Connections help your agent do more work — all optional."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:95
-#, elixir-autogen
-msgid "Contact research dossier"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:206
@@ -1458,11 +667,6 @@ msgstr ""
 msgid "Could not save the Feishu app. Check the App ID and secret."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:951
-#, elixir-autogen
-msgid "Could not save the draft."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:674
 #, elixir-autogen
 msgid "Could not save. Please try again."
@@ -1483,119 +687,12 @@ msgstr ""
 msgid "Create an Agent Swarm first to connect accounts."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5301
-#, elixir-autogen
-msgid "Create an Agent Swarm with an agent, then come back."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4274
-#, elixir-autogen
-msgid "Create the Feishu connect below. Feishu callback HTTP 200 alone does not prove this Agent Swarm will reply."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6503
-#, elixir-autogen
-msgid "Current limitation: one Feishu app can be connected to one Agent Swarm. If this app is already used elsewhere, delete that connect or choose another app."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4216
-#, elixir-autogen
-msgid "Daily"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:49
-#, elixir-autogen
-msgid "Decline cold outreach"
-msgstr ""
-
 #, elixir-autogen
 msgid "Delivery"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:402
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4856
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6199
-#, elixir-autogen
-msgid "Details"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5646
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5745
-#, elixir-autogen
-msgid "Device"
-msgstr ""
-
 #, elixir-autogen
 msgid "Diagnostic recorded"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4608
-#, elixir-autogen
-msgid "Download .md"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:1442
-#, elixir-autogen
-msgid "Draft opened in Gmail — hit send there."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4468
-#, elixir-autogen
-msgid "Draft preview"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:44
-#, elixir-autogen
-msgid "Draft replies to important emails"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:1445
-#, elixir-autogen
-msgid "Draft saved."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:990
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3728
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4487
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7112
-#, elixir-autogen
-msgid "Edit"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4512
-#, elixir-autogen
-msgid "Edit draft"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4261
-#, elixir-autogen
-msgid "Enable this Feishu connect before testing the group bot."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:368
-#, elixir-autogen
-msgid "Engineering activity from your portfolio's repositories."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:78
-#, elixir-autogen
-msgid "Engineering activity summaries from connected repos."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5515
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6225
-#, elixir-autogen
-msgid "Events"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:96
-#, elixir-autogen
-msgid "Executive-ready briefings for new contacts."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5621
-#, elixir-autogen
-msgid "External Codex"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:425
@@ -1603,152 +700,18 @@ msgstr ""
 msgid "External user"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:832
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:402
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2132
-#, elixir-autogen
-msgid "Failed"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6491
-#, elixir-autogen
-msgid "Feishu app"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
 #, elixir-autogen
 msgid "Feishu app not found."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4933
-#, elixir-autogen
-msgid "Follow up in chat"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2354
-#, elixir-autogen
-msgid "Follow-ups are drafted in your inbox for anything that needs a reply."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2458
-#, elixir-autogen
-msgid "From: %{title}"
 msgstr ""
 
 #, elixir-autogen
 msgid "Gate"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:117
-#, elixir-autogen
-msgid "Get pinged where you already work."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:77
-#, elixir-autogen
-msgid "GitHub reports"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:359
-#, elixir-autogen
-msgid "Gmail, Calendar, Drive, and Contacts power inbox and meeting features."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2148
-#, elixir-autogen
-msgid "Good afternoon"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2149
-#, elixir-autogen
-msgid "Good evening"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2147
-#, elixir-autogen
-msgid "Good morning"
-msgstr ""
-
-#, elixir-autogen
-msgid "Health"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:939
-#, elixir-autogen
-msgid "Here's the model your agent starts from. It sharpens as you work together."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2348
-#, elixir-autogen
-msgid "Highlights"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4911
-#, elixir-autogen
-msgid "How your agent did it"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:1267
-#, elixir-autogen
-msgid "I've attached some files:"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:121
-#, elixir-autogen
-msgid "IM updates"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:396
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:411
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2129
-#, elixir-autogen
-msgid "In progress"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6697
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6724
-#, elixir-autogen
-msgid "Inbound agent"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_runners.ex
 #, elixir-autogen
 msgid "Inspect status and logs"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1102
-#, elixir-autogen
-msgid "Integrations attach to an Agent Swarm. You can connect accounts later from its Connections tab."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:371
-#, elixir-autogen
-msgid "Issue tracking visibility across teams."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5330
-#, elixir-autogen
-msgid "It sees your dashboard and can create tasks, draft mail, and dig through your tools."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:50
-#, elixir-autogen
-msgid "Keep your inbox clear of unsolicited pitches."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:972
-#, elixir-autogen
-msgid "Key Contacts Sample"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4670
-#, elixir-autogen
-msgid "Key points"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:29
-#, elixir-autogen
-msgid "Label new mail"
 msgstr ""
 
 #, elixir-autogen
@@ -1763,77 +726,6 @@ msgstr ""
 msgid "Latest diagnostic: %{summary}"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1059
-#, elixir-autogen
-msgid "Learning"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:148
-#, elixir-autogen
-msgid "Maintain a durable profile of your preferences and context."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:103
-#, elixir-autogen
-msgid "Manage Your Calendar"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:24
-#, elixir-autogen
-msgid "Manage Your Inbox"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:831
-#, elixir-autogen
-msgid "Manual"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4954
-#, elixir-autogen
-msgid "Mark reviewed"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4599
-#, elixir-autogen
-msgid "Markdown"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:888
-#, elixir-autogen
-msgid "Marked as reviewed."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:90
-#, elixir-autogen
-msgid "Meeting briefing"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2434
-#, elixir-autogen
-msgid "Meeting cancelled."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2430
-#, elixir-autogen
-msgid "Meeting failed: %{error}"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:314
-#, elixir-autogen
-msgid "Meetings"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1309
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1310
-#, elixir-autogen
-msgid "Member"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5719
-#, elixir-autogen
-msgid "Message your agent…"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:115
 #: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:502
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1159
@@ -1841,44 +733,9 @@ msgstr ""
 msgid "Messaging"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:62
-#, elixir-autogen
-msgid "Morning briefing"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:35
-#, elixir-autogen
-msgid "Move low-signal mail out of the inbox automatically."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:71
-#, elixir-autogen
-msgid "New Home"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:67
-#, elixir-autogen
-msgid "Newsletter digest"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2352
-#, elixir-autogen
-msgid "Next steps"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1100
-#, elixir-autogen
-msgid "No Agent Swarm yet"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
 #, elixir-autogen
 msgid "No Feishu app is enabled for sign-in yet."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5298
-#, elixir-autogen
-msgid "No agent to chat with yet"
 msgstr ""
 
 #, elixir-autogen
@@ -1889,171 +746,14 @@ msgstr ""
 msgid "No gates recorded"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6587
-#, elixir-autogen
-msgid "No group router selected"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6471
-#, elixir-autogen
-msgid "No org Feishu app has bot enabled yet."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1020
-#, elixir-autogen
-msgid "No participants recorded."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:999
-#, elixir-autogen
-msgid "No teammates yet — contacts appear here as your organization grows."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6592
-#, elixir-autogen
-msgid "Not created yet"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2500
-#, elixir-autogen
-msgid "Nothing here yet"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:830
-#, elixir-autogen
-msgid "OK"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5147
-#, elixir-autogen
-msgid "On track"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
 #, elixir-autogen
 msgid "Only one Feishu app can be enabled for the group bot right now. Disable the existing bot app before enabling another."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5310
-#, elixir-autogen
-msgid "Open Agent Swarms"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4502
-#, elixir-autogen
-msgid "Open in Gmail"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3660
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4793
-#, elixir-autogen
-msgid "Open site"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:264
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:609
-#, elixir-autogen
-msgid "Operations"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:449
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7256
-#, elixir-autogen
-msgid "Organization"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1307
-#, elixir-autogen
-msgid "Owner"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4614
-#, elixir-autogen
-msgid "PDF"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:734
 #, elixir-autogen
 msgid "Participant"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:147
-#, elixir-autogen
-msgid "Personal memory"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:91
-#, elixir-autogen
-msgid "Prep notes before internal and external meetings."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:85
-#, elixir-autogen
-msgid "Prepare for Meetings"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:45
-#, elixir-autogen
-msgid "Prepare replies for your review — nothing sends itself."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3776
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3918
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4589
-#, elixir-autogen
-msgid "Preview"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3718
-#, elixir-autogen
-msgid "Preview Draft"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:116
-#, elixir-autogen
-msgid "Proactive Notifications"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:945
-#, elixir-autogen
-msgid "Professional Identity"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:450
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7257
-#, elixir-autogen
-msgid "Project"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2134
-#, elixir-autogen
-msgid "Queued"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1171
-#, elixir-autogen
-msgid "Reach your agent from where your team chats."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:374
-#, elixir-autogen
-msgid "Read and create pages in your workspace."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:399
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2130
-#, elixir-autogen
-msgid "Ready for review"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:794
-#, elixir-autogen
-msgid "Reason"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:109
-#, elixir-autogen
-msgid "Rebalance your week and protect focus time."
 msgstr ""
 
 #, elixir-autogen
@@ -2088,80 +788,13 @@ msgstr ""
 msgid "Recent runs need manual follow-up or were skipped."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2446
-#, elixir-autogen
-msgid "Recording"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:130
-#, elixir-autogen
-msgid "Recurring work your agent runs on a schedule."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5780
-#, elixir-autogen
-msgid "Remove attachment"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4218
-#, elixir-autogen
-msgid "Report"
-msgstr ""
-
 #, elixir-autogen
 msgid "Resource"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:400
-#, elixir-autogen
-msgid "Result"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5320
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7215
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7226
-#, elixir-autogen
-msgid "Retry"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4270
-#, elixir-autogen
-msgid "Retry checks shortly; Salix route/router readiness could not be verified."
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2192
 #, elixir-autogen
 msgid "Reused the existing Feishu connect and refreshed its credentials from the org app."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3670
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3966
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4023
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4146
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4186
-#, elixir-autogen
-msgid "Review"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5094
-#, elixir-autogen
-msgid "Review result"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4961
-#, elixir-autogen
-msgid "Reviewed"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6452
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6759
-#, elixir-autogen
-msgid "Run checks"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:135
-#, elixir-autogen
-msgid "Run recurring jobs on cron — briefings, reports, cleanups."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_health.ex
@@ -2174,187 +807,9 @@ msgstr ""
 msgid "SSO"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4557
-#, elixir-autogen
-msgid "Save draft"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:108
-#, elixir-autogen
-msgid "Schedule optimizer"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:129
-#, elixir-autogen
-msgid "Scheduled Routines"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:134
-#, elixir-autogen
-msgid "Scheduled routines"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:377
-#, elixir-autogen
-msgid "Search and send messages on your behalf."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4561
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5704
-#, elixir-autogen
-msgid "Send"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4256
-#, elixir-autogen
-msgid "Send a real @Bridge message in the Feishu group after the Feishu console steps pass."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4553
-#, elixir-autogen
-msgid "Send opens Gmail with this draft prefilled."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:122
-#, elixir-autogen
-msgid "Send updates in Slack or Feishu when something needs you."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1183
-#, elixir-autogen
-msgid "Set up in Agent Swarm"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4703
-#, elixir-autogen
-msgid "Shared back to the Slack thread that started the meeting."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6498
-#, elixir-autogen
-msgid "Shown in Salix. Defaults to the app's display name."
-msgstr ""
-
-#, elixir-autogen
-msgid "Signal"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:202
 #, elixir-autogen
 msgid "Signing you in..."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:953
-#, elixir-autogen
-msgid "Signs in as %{email}"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:831
-#, elixir-autogen
-msgid "Skip for now"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:817
-#, elixir-autogen
-msgid "Skip onboarding"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:814
-#, elixir-autogen
-msgid "Skip onboarding? You can revisit these settings later."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:833
-#, elixir-autogen
-msgid "Skipped"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1195
-#, elixir-autogen
-msgid "Slack Bot"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2397
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5063
-#, elixir-autogen
-msgid "Slack · Google Meet"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:104
-#, elixir-autogen
-msgid "Smarter weeks, fewer back-to-backs."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:91
-#, elixir-autogen
-msgid "Something went wrong. Please try again."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:30
-#, elixir-autogen
-msgid "Sort incoming email into topical labels."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4874
-#, elixir-autogen
-msgid "Source"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:40
-#, elixir-autogen
-msgid "Spot scheduling requests and propose times."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:58
-#, elixir-autogen
-msgid "Start your day knowing exactly what matters."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4477
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4532
-#, elixir-autogen
-msgid "Subject"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2135
-#, elixir-autogen
-msgid "Suggested"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:267
-#, elixir-autogen
-msgid "Summary"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1083
-#, elixir-autogen
-msgid "Supercharge your agent."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1316
-#, elixir-autogen
-msgid "Teammate"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2429
-#, elixir-autogen
-msgid "The bot couldn't complete this meeting."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:155
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4774
-#, elixir-autogen
-msgid "The result is on your board."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1094
-#, elixir-autogen
-msgid "The runtime is unreachable right now — connection status may be incomplete. You can continue and connect later."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5317
-#, elixir-autogen
-msgid "The runtime is unreachable right now."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_cli_login.ex
@@ -2382,123 +837,6 @@ msgstr ""
 msgid "This Feishu app is already connected to another Agent Swarm. Current limitation: one Feishu app can serve one Agent Swarm; delete the existing connect or use a different app."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5694
-#, elixir-autogen
-msgid "This runtime is not ready. The agent may fail to start."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4473
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4522
-#, elixir-autogen
-msgid "To"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3704
-#, elixir-autogen
-msgid "To: %{to}"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:870
-#, elixir-autogen
-msgid "Toggle any on or off — you can change these later."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:73
-#, elixir-autogen
-msgid "Track the companies you care about. Stay ahead."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2445
-#, elixir-autogen
-msgid "Transcript"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:862
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5226
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5459
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5918
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6076
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6151
-#, elixir-autogen
-msgid "View audit"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6283
-#, elixir-autogen
-msgid "View checks"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4945
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4967
-#, elixir-autogen
-msgid "View delivery"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:856
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4953
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4970
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5451
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5912
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6070
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6143
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7703
-#, elixir-autogen
-msgid "View events"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6275
-#, elixir-autogen
-msgid "View in Operations"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7695
-#, elixir-autogen
-msgid "View runners"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:86
-#, elixir-autogen
-msgid "Walk in knowing who you'll meet and why."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4217
-#, elixir-autogen
-msgid "Weekly"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:63
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:66
-#, elixir-autogen
-msgid "Welcome"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:868
-#, elixir-autogen
-msgid "What may your agent do for you?"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1005
-#, elixir-autogen
-msgid "Work Patterns"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:958
-#, elixir-autogen
-msgid "Works with %{count} teammate in %{org}"
-msgid_plural "Works with %{count} teammates in %{org}"
-msgstr[0] ""
-msgstr[1] ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1025
-#, elixir-autogen
-msgid "Writing Style Reference"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1038
-#, elixir-autogen
-msgid "You can edit this later in your agent's memory."
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_cli_login.ex
 #, elixir-autogen
 msgid "You do not have permission to approve CLI login requests."
@@ -2509,92 +847,13 @@ msgstr ""
 msgid "You're all set."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2502
-#, elixir-autogen
-msgid "Your agent adds work here as it learns your mail, meetings, and tools."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2422
-#, elixir-autogen
-msgid "Your agent is in the call, taking notes."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2419
-#, elixir-autogen
-msgid "Your agent is joining the call…"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:581
-#, elixir-autogen
-msgid "Your agent isn't connected yet — try again shortly."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:25
-#, elixir-autogen
-msgid "Your inbox, organized without the work."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1292
-#, elixir-autogen
-msgid "Your profile"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4249
-#, elixir-autogen
-msgid "connect disabled"
-msgstr ""
-
-#, elixir-autogen
-msgid "enabled"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/relative_time.ex:16
-#, elixir-autogen
-msgid "just now"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4251
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6363
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6616
-#, elixir-autogen
-msgid "not connected"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:53
 #, elixir-autogen
 msgid "or"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6920
-#, elixir-autogen
-msgid "ready"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4248
-#, elixir-autogen
-msgid "route ready"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4252
-#, elixir-autogen
-msgid "route unknown"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4250
-#, elixir-autogen
-msgid "router missing"
-msgstr ""
-
-#, elixir-autogen
-msgid "stale"
-msgstr ""
-
 #, elixir-autogen
 msgid "system"
-msgstr ""
-
-#, elixir-autogen
-msgid "unknown"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:426
@@ -2602,405 +861,14 @@ msgstr ""
 msgid "user"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:1436
-#, elixir-autogen
-msgid "Draft saved, but your agent's copy couldn't be updated just now."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1018
-#, elixir-autogen
-msgid "Learns how direct and detailed you like messages from how you write in Gmail."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1028
-#, elixir-autogen
-msgid "Learns the phrases and sign-offs you use from your sent mail, so drafts sound like you."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1008
-#, elixir-autogen
-msgid "Learns your meeting cadence and focus hours from your Google calendar and mail."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:975
-#, elixir-autogen
-msgid "The teammates in your organization your agent can already address by name."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1059
-#, elixir-autogen
-msgid "When connected"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1021
-#, elixir-autogen
-msgid "Will learn how direct and detailed you like messages once you connect Google."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1031
-#, elixir-autogen
-msgid "Will learn the phrases and sign-offs you use once you connect Google."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1011
-#, elixir-autogen
-msgid "Will learn your meeting cadence and focus hours once you connect Google."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:444
-#, elixir-autogen
-msgid "%{count} member is waiting for OAuth clients to be configured."
-msgid_plural "%{count} members are waiting for OAuth clients to be configured."
-msgstr[0] ""
-msgstr[1] ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:494
-#, elixir-autogen
-msgid "Add a client ID for GitHub, Google, Linear, Notion, or Slack in Settings."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:508
-#, elixir-autogen
-msgid "Admins reminded — waiting for configuration"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:519
-#, elixir-autogen
-msgid "Agent Swarm created and an account connected. Your agent is ready."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:514
-#, elixir-autogen
-msgid "Agent Swarm created, OAuth configured, and an account connected. Your agent team is ready."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:624
 #, elixir-autogen
 msgid "Attachment"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:497
-#, elixir-autogen
-msgid "Authorize agents to act on your behalf on the connected platforms."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:483
-#, elixir-autogen
-msgid "Complete setup in %{total} steps to put your agent to work."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:413
-#, elixir-autogen
-msgid "Complete the action on the page"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:478
-#, elixir-autogen
-msgid "Complete the initial setup in %{total} steps to put your team's agents to work."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:486
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:395
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:407
-#, elixir-autogen
-msgid "Configure OAuth clients"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:487
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:424
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:468
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:480
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:492
-#, elixir-autogen
-msgid "Connect a third-party account"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:485
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:365
-#, elixir-autogen
-msgid "Create an Agent Swarm"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:491
-#, elixir-autogen
-msgid "Each member can create one agent cluster."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:398
-#, elixir-autogen
-msgid "Exit tour"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:565
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5811
-#, elixir-autogen
-msgid "File"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:454
-#, elixir-autogen
-msgid "Go to Settings → Integrations"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:409
-#, elixir-autogen
-msgid "Go to Settings → Integrations. Members can only connect a platform in an Agent Swarm after a client ID is configured."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:493
-#, elixir-autogen
-msgid "Head back to Agent Swarms and open your Swarm."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:557
-#, elixir-autogen
-msgid "Image"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:101
-#, elixir-autogen
-msgid "Maybe later"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:454
-#, elixir-autogen
-msgid "No OAuth client is configured yet. Finish step 2 (Settings → OAuth apps) first, then platforms appear here."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:452
-#, elixir-autogen
-msgid "One step missing"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:481
-#, elixir-autogen
-msgid "Open the “Connections” tab."
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_projects.ex:85
 #, elixir-autogen
 msgid "Org members can create only one Agent Swarm; you have already created yours."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:426
-#, elixir-autogen
-msgid "Pick a platform, click “Connect”, and finish the authorization on the provider's page."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:129
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:361
-#, elixir-autogen
-msgid "Quick setup"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:292
-#, elixir-autogen
-msgid "Remind the admins"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:289
-#, elixir-autogen
-msgid "Reminded"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:505
-#, elixir-autogen
-msgid "Requires “Configure OAuth clients” first"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:490
-#, elixir-autogen
-msgid "Set up your first agent cluster."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:175
-#, elixir-autogen
-msgid "Setup complete!"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:165
-#, elixir-autogen
-msgid "Skip setup"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:411
-#, elixir-autogen
-msgid "Skip this step"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:108
-#, elixir-autogen
-msgid "Start setup"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:322
-#, elixir-autogen
-msgid "Step %{n} of %{total}"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:268
-#, elixir-autogen
-msgid "The admins were already notified — hang tight while they configure OAuth."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:438
-#, elixir-autogen
-msgid "Waiting for an admin"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:510
-#, elixir-autogen
-msgid "Waiting for an admin to configure OAuth"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:73
-#, elixir-autogen
-msgid "Welcome, %{name}"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:276
-#, elixir-autogen
-msgid "Your org admins were asked to configure OAuth under Settings → Integrations."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:440
-#, elixir-autogen
-msgid "Your organization has no OAuth clients configured yet. Click “Remind the admins” — once configured, the platforms appear here."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:145
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4597
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4634
-#, elixir-autogen
-msgid "Disabled"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:141
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:143
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4596
-#, elixir-autogen
-msgid "Enabled"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4891
-#, elixir-autogen
-msgid "Add task"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5844
-#, elixir-autogen
-msgid "Attach files or images — or drop them anywhere on this box"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4878
-#, elixir-autogen
-msgid "Category"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:401
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3676
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3734
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3782
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3924
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3972
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4029
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4103
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4152
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4192
-#, elixir-autogen
-msgid "Completed"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4097
-#, elixir-autogen
-msgid "Delete task"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2869
-#, elixir-autogen
-msgid "Drag to rearrange"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4867
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7478
-#, elixir-autogen
-msgid "Instructions"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3874
-#, elixir-autogen
-msgid "Live from connected repos"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4087
-#, elixir-autogen
-msgid "Mark as Complete"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5165
-#, elixir-autogen
-msgid "New chat"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2545
-#, elixir-autogen
-msgid "Nothing needs your review right now."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2536
-#, elixir-autogen
-msgid "Show more"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:395
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:616
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:497
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3752
-#, elixir-autogen
-msgid "Skills"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2511
-#, elixir-autogen
-msgid "Start a task"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5718
-#, elixir-autogen
-msgid "Start a task…"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2550
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:319
-#, elixir-autogen
-msgid "Suggestions"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:351
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:474
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5563
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5607
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5618
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4078
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6193
-#, elixir-autogen
-msgid "Task"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5453
-#, elixir-autogen
-msgid "Task handed to your agent"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:386
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:613
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:335
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:201
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2492
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3730
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5888
-#, elixir-autogen
-msgid "Tasks"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1741
@@ -3023,34 +891,9 @@ msgstr ""
 msgid "Agent Swarms exist, but no runner is connected."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3708
-#, elixir-autogen
-msgid "Agent runtime rebound. Reconcile enqueued."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2551
-#, elixir-autogen
-msgid "Agent runtime status is unavailable right now. Retry shortly."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6957
-#, elixir-autogen
-msgid "An organization admin must configure this OAuth app before accounts can be connected."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6951
-#, elixir-autogen
-msgid "Configure in org settings"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1334
 #, elixir-autogen
 msgid "Could not disconnect the device."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2557
-#, elixir-autogen
-msgid "Could not load agent runtime status."
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2548
@@ -3063,16 +906,6 @@ msgstr ""
 msgid "Couldn't create the runner install command (%{reason})."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7495
-#, elixir-autogen
-msgid "Create skill"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7636
-#, elixir-autogen
-msgid "Custom skill"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1337
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1375
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1382
@@ -3080,43 +913,13 @@ msgstr ""
 msgid "Device not found."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5632
-#, elixir-autogen
-msgid "External Codex agents run on a connected device and are created as workers."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1736
 #, elixir-autogen
 msgid "Give the skill a name (letters or numbers)."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7569
-#, elixir-autogen
-msgid "Imported"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7635
-#, elixir-autogen
-msgid "Imported skill"
-msgstr ""
-
 #, elixir-autogen
 msgid "Latest device event: %{summary}"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2554
-#, elixir-autogen
-msgid "Loading agent runtime status timed out. Retry shortly."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7367
-#, elixir-autogen
-msgid "New skill"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6903
-#, elixir-autogen
-msgid "No OAuth platforms available"
 msgstr ""
 
 #, elixir-autogen
@@ -3125,11 +928,6 @@ msgstr ""
 
 #, elixir-autogen
 msgid "No runner heartbeat observed"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6904
-#, elixir-autogen
-msgid "No supported OAuth platforms were returned by the runtime. Retry shortly."
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:994
@@ -3145,15 +943,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/controllers/dashboard_plugins.ex:107
 #, elixir-autogen
 msgid "Only organization admins can manage plugins."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:394
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:615
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3744
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3749
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7083
-#, elixir-autogen
-msgid "Plugins"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2112
@@ -3202,94 +991,9 @@ msgstr ""
 msgid "Skill uploaded."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7621
-#, elixir-autogen
-msgid "Stored as %{location}"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6897
-#, elixir-autogen
-msgid "Supported OAuth platforms appear here. Organization OAuth settings control whether authorization can start."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7634
-#, elixir-autogen
-msgid "System skill"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7432
-#, elixir-autogen
-msgid "System skills"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2103
-#, elixir-autogen
-msgid "The file could not be uploaded. Please try again."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2118
 #, elixir-autogen
 msgid "The runtime is unreachable right now. Try again shortly."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5804
-#, elixir-autogen
-msgid "Too large — files can be up to 10 MB"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5805
-#, elixir-autogen
-msgid "Unsupported file type"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7361
-#, elixir-autogen
-msgid "Upload"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5807
-#, elixir-autogen
-msgid "Upload failed"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5858
-#, elixir-autogen
-msgid "Upload files"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5867
-#, elixir-autogen
-msgid "Upload images"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5806
-#, elixir-autogen
-msgid "You can attach up to 8 files"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6921
-#, elixir-autogen
-msgid "setup required"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3596
-#, elixir-autogen
-msgid "%{count} need attention"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3595
-#, elixir-autogen
-msgid "%{count} on track"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3646
-#, elixir-autogen
-msgid "%{count} runs"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3597
-#, elixir-autogen
-msgid "%{count} unknown"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:421
@@ -3297,32 +1001,10 @@ msgstr ""
 msgid "%{name}'s Swarm"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:78
-#, elixir-autogen
-msgid "Artifact not found."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1135
-#, elixir-autogen
-msgid "Ask a swarm owner"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:732
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3184
 #, elixir-autogen
 msgid "Composio isn't configured for your organization yet."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1148
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7045
-#, elixir-autogen
-msgid "Connections need a Composio API key configured once for your organization."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:139
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4758
-#, elixir-autogen
-msgid "Content unavailable right now."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
@@ -3335,96 +1017,14 @@ msgstr ""
 msgid "Couldn't save the Composio settings (%{reason})."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2921
-#, elixir-autogen
-msgid "Device list is unavailable right now."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2893
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5225
-#, elixir-autogen
-msgid "Drag to resize"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4798
-#, elixir-autogen
-msgid "Earlier runs"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2585
-#, elixir-autogen
-msgid "Hold a card to drag it; pull the corner to resize."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:362
-#, elixir-autogen
-msgid "Inbox triage, drafted replies, and mail digests."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:329
-#, elixir-autogen
-msgid "Loading"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:136
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4755
-#, elixir-autogen
-msgid "Loading the full content…"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:365
-#, elixir-autogen
-msgid "Meeting briefings and a smarter, rebalanced week."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:227
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:605
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:114
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:117
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:200
-#, elixir-autogen
-msgid "My Space"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:424
 #, elixir-autogen
 msgid "My Swarm"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:176
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4814
-#, elixir-autogen
-msgid "New"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2925
-#, elixir-autogen
-msgid "No devices connected yet."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2976
-#, elixir-autogen
-msgid "Nothing here yet — your agent fills this in."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:208
 #, elixir-autogen
 msgid "Only this swarm's owners can connect accounts."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4783
-#, elixir-autogen
-msgid "Open full view"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2595
-#, elixir-autogen
-msgid "Reset layout"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:161
-#, elixir-autogen
-msgid "Run history"
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_cli_login.ex
@@ -3433,200 +1033,10 @@ msgstr ""
 msgid "Select at least one organization."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2582
-#, elixir-autogen
-msgid "Space widget"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:735
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3190
 #, elixir-autogen
 msgid "The platform rejected the connection request."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:330
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4636
-#, elixir-autogen
-msgid "Unavailable"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2939
-#, elixir-autogen
-msgid "Unnamed device"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live/artifact_blocks.ex:261
-#, elixir-autogen
-msgid "Unrecognized content"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3385
-#, elixir-autogen
-msgid "commit · %{repos} repos"
-msgid_plural "commits · %{repos} repos"
-msgstr[0] ""
-msgstr[1] ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3542
-#, elixir-autogen
-msgid "company in the portfolio"
-msgid_plural "companies in the portfolio"
-msgstr[0] ""
-msgstr[1] ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3337
-#, elixir-autogen
-msgid "draft waiting for review"
-msgid_plural "drafts waiting for review"
-msgstr[0] ""
-msgstr[1] ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3430
-#, elixir-autogen
-msgid "workspace update"
-msgid_plural "workspace updates"
-msgstr[0] ""
-msgstr[1] ""
-
-msgid "Approve"
-msgstr ""
-
-msgid "Approved. Return to the terminal to finish login."
-msgstr ""
-
-msgid "Confirm the terminal login request before the CLI can receive a bearer session."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2260
-msgid "Deploying…"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:201
-msgid "Only organization admins can connect accounts."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3479
-msgid "Nothing connected yet."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:167
-#, elixir-autogen, elixir-format
-msgid "Won't show again"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:295
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:502
-#, elixir-autogen, elixir-format
-msgctxt "onboarding"
-msgid "Configure"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:503
-#, elixir-autogen, elixir-format
-msgctxt "onboarding"
-msgid "Connect"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:501
-#, elixir-autogen, elixir-format
-msgctxt "onboarding"
-msgid "Create"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2679
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5238
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5239
-#, elixir-autogen, elixir-format
-msgid "Back to assistant"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5221
-#, elixir-autogen, elixir-format
-msgid "Chat"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5248
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5249
-#, elixir-autogen, elixir-format
-msgid "Expand chat"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5380
-#, elixir-autogen, elixir-format
-msgid "Hit a wall"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2648
-#, elixir-autogen, elixir-format
-msgid "Open chat"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:57
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:313
-#, elixir-autogen, elixir-format
-msgid "Stay informed"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4687
-#, elixir-autogen, elixir-format
-msgid "These are on your General tasks list — check them off there."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:183
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5370
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5373
-#, elixir-autogen, elixir-format
-msgid "Thinking"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5377
-#, elixir-autogen, elixir-format
-msgid "Typing"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5386
-#, elixir-autogen, elixir-format
-msgid "Working"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3156
-#, elixir-autogen
-msgid "Gmail"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3157
-#, elixir-autogen
-msgid "Google Calendar"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3164
-#, elixir-autogen
-msgid "Read and send email on your behalf."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3167
-#, elixir-autogen
-msgid "See and manage your calendar events."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3170
-#, elixir-autogen
-msgid "Work with issues, pull requests, and repositories."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3172
-#, elixir-autogen
-msgid "Track issues and projects."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3175
-#, elixir-autogen
-msgid "Read and update your Notion workspace."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3177
-#, elixir-autogen
-msgid "Post and read messages in Slack."
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3187
@@ -3634,76 +1044,14 @@ msgstr ""
 msgid "Could not start the connection. Please try again."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6982
-#, elixir-autogen
-msgid "App connections via Composio"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6985
-#, elixir-autogen
-msgid "Connect toolkits through Composio so this Agent Swarm's agents can act in them. Managed once for your organization with a single Composio API key."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6992
-#, elixir-autogen
-msgid "The runtime is unreachable right now — connection status may be incomplete. Retry shortly."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7035
-#, elixir-autogen
-msgid "Ask a swarm admin"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7054
-#, elixir-autogen
-msgid "An organization admin must configure it before accounts can be connected."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:172
 #, elixir-autogen, elixir-format
 msgid "Back to sign in"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5339
-#, elixir-autogen, elixir-format
-msgid "Copy this token now — it is shown only once and cannot be recovered later. It expires %{at} and can seed the My Space board for this Agent Swarm."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:888
-#, elixir-autogen, elixir-format
-msgid "Could not mint a data-import token."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5218
-#, elixir-autogen, elixir-format
-msgid "Data import"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5335
-#, elixir-autogen, elixir-format
-msgid "Data-import token"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:166
 #, elixir-autogen, elixir-format
 msgid "Email me a sign-in link"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5363
-#, elixir-autogen, elixir-format
-msgid "Import command"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:867
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:884
-#, elixir-autogen, elixir-format
-msgid "Only Agent Swarm admins can mint a data-import token."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3946
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4059
-#, elixir-autogen, elixir-format
-msgid "Open task"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:146
@@ -3721,104 +1069,11 @@ msgstr ""
 msgid "This organization does not use SSO. We'll email you a one-time sign-in link instead."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5344
-#, elixir-autogen, elixir-format
-msgid "Token"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:154
-#, elixir-autogen, elixir-format
-msgid "%{name} is required"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7192
-#, elixir-autogen, elixir-format
-msgid "%{enabled} enabled · %{disabled} disabled"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:403
-#, elixir-autogen, elixir-format
-msgid "Add %{type} reference"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:496
-#, elixir-autogen, elixir-format
-msgid "Add a canonical tool id, then press Enter."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:501
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:503
-#, elixir-autogen, elixir-format
-msgid "Add a provider or JSON requirement, then press Enter."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:497
-#, elixir-autogen, elixir-format
-msgid "Add a skill id or wildcard, then press Enter."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:499
-#, elixir-autogen, elixir-format
-msgid "Add an MCP binding or capability ref, then press Enter."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:413
-#, elixir-autogen, elixir-format
-msgid "Advanced JSON"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:67
-#, elixir-autogen, elixir-format
-msgid "Agent Swarm connections"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:69
-#, elixir-autogen, elixir-format
-msgid "Agent Swarm devices"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:68
-#, elixir-autogen, elixir-format
-msgid "Agent Swarm integrations"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:66
-#, elixir-autogen, elixir-format
-msgid "Agent Swarm skills"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4595
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5945
-#, elixir-autogen, elixir-format
-msgid "All"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7254
-#, elixir-autogen, elixir-format
-msgid "All sources"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:396
-#, elixir-autogen, elixir-format
-msgid "Capability reference"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1917
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1980
 #: lib/bridge_for_teams_web/controllers/dashboard_plugins.ex:76
 #, elixir-autogen, elixir-format
 msgid "Choose a valid setup destination."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7322
-#, elixir-autogen, elixir-format
-msgid "Clear filters"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:84
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:198
-#, elixir-autogen, elixir-format
-msgid "Close navigation"
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_plugins.ex:36
@@ -3831,46 +1086,10 @@ msgstr ""
 msgid "Could not update plugin state."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7313
-#, elixir-autogen, elixir-format
-msgid "Create a project plugin or add one in the organization catalog."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1719
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2063
 #, elixir-autogen, elixir-format
 msgid "Create an Agent Swarm agent first."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:249
-#, elixir-autogen, elixir-format
-msgid "Create plugin"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7407
-#, elixir-autogen, elixir-format
-msgid "Created here, uploaded, or saved by this Agent Swarm from chat."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7405
-#, elixir-autogen, elixir-format
-msgid "Custom skills"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7532
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7584
-#, elixir-autogen, elixir-format
-msgid "Delete this skill? This Agent Swarm loses it immediately."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:218
-#, elixir-autogen, elixir-format
-msgid "Description"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:157
-#, elixir-autogen, elixir-format
-msgid "Disable %{name}"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:370
@@ -3878,95 +1097,10 @@ msgstr ""
 msgid "Each capability category must be an array."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:92
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:486
-#, elixir-autogen, elixir-format
-msgid "Edit %{name}"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:91
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:348
-#, elixir-autogen, elixir-format
-msgid "Edit plugin"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:158
-#, elixir-autogen, elixir-format
-msgid "Enable %{name}"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:235
-#, elixir-autogen, elixir-format
-msgid "Group existing capabilities into this plugin. Add one reference at a time."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:109
 #: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:498
 #, elixir-autogen, elixir-format
 msgid "MCP"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7351
-#, elixir-autogen, elixir-format
-msgid "Managed through %{agent}."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7455
-#, elixir-autogen, elixir-format
-msgid "New Agent Swarm skill"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:489
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7204
-#, elixir-autogen, elixir-format
-msgid "New project plugin"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7414
-#, elixir-autogen, elixir-format
-msgid "No custom skills yet."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:60
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:274
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7100
-#, elixir-autogen, elixir-format
-msgid "No description"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7305
-#, elixir-autogen, elixir-format
-msgid "No matching plugins"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7304
-#, elixir-autogen, elixir-format
-msgid "No plugins yet"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7389
-#, elixir-autogen, elixir-format
-msgid "No runtime agent yet"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:227
-#, elixir-autogen, elixir-format
-msgid "No setup link"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7441
-#, elixir-autogen, elixir-format
-msgid "No system skills are projected in this environment."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:500
-#, elixir-autogen, elixir-format
-msgid "OAuth"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:367
-#, elixir-autogen, elixir-format
-msgid "Object refs must be JSON objects."
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1823
@@ -3984,32 +1118,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2060
 #, elixir-autogen, elixir-format
 msgid "Only Agent Swarm admins can manage skills."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:66
-#, elixir-autogen, elixir-format
-msgid "Open navigation"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:73
-#, elixir-autogen, elixir-format
-msgid "Organization Composio settings"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:72
-#, elixir-autogen, elixir-format
-msgid "Organization Feishu settings"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:71
-#, elixir-autogen, elixir-format
-msgid "Organization OAuth settings"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:451
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:624
-#, elixir-autogen, elixir-format
-msgid "Organization plugins"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1898
@@ -4033,39 +1141,9 @@ msgstr ""
 msgid "Plugin enabled."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1965
-#, elixir-autogen, elixir-format
-msgid "Plugin is required."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7251
-#, elixir-autogen, elixir-format
-msgid "Plugin source"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7264
-#, elixir-autogen, elixir-format
-msgid "Plugin state"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1957
 #, elixir-autogen, elixir-format
 msgid "Plugin updated."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7222
-#, elixir-autogen, elixir-format
-msgid "Plugins unavailable"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4961
-#, elixir-autogen, elixir-format
-msgid "Project operations"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7434
-#, elixir-autogen, elixir-format
-msgid "Read-only playbooks projected into this Agent Swarm by the runtime and plugins."
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:369
@@ -4076,77 +1154,9 @@ msgstr ""
 msgid "Refs JSON must be an object."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7348
-#, elixir-autogen, elixir-format
-msgid "Reusable playbooks available to this Agent Swarm."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:247
-#, elixir-autogen, elixir-format
-msgid "Saving..."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7244
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7245
-#, elixir-autogen, elixir-format
-msgid "Search plugins"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:224
-#, elixir-autogen, elixir-format
-msgid "Setup destination"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7620
-#, elixir-autogen, elixir-format
-msgid "Shared with this Agent Swarm as SKILL.md."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:448
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:268
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7255
-#, elixir-autogen, elixir-format
-msgid "System"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7212
-#, elixir-autogen, elixir-format
-msgid "The runtime group is not ready yet. Retry shortly."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7383
-#, elixir-autogen, elixir-format
-msgid "The runtime is unreachable right now; skills may be incomplete. Refresh to retry."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1867
-#, elixir-autogen, elixir-format
-msgid "This plugin cannot be edited here."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:496
-#, elixir-autogen, elixir-format
-msgid "Tools"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7314
-#, elixir-autogen, elixir-format
-msgid "Try a different search or clear the filters."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2102
 #, elixir-autogen, elixir-format
 msgid "Upload a Markdown file with SKILL.md frontmatter."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7473
-#, elixir-autogen, elixir-format
-msgid "When should the Agent Swarm use it?"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:368
-#, elixir-autogen, elixir-format
-msgid "Enter valid JSON."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_runners.ex
@@ -4194,88 +1204,10 @@ msgstr ""
 msgid "runtime unavailable"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:429
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:446
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:623
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:624
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:625
-#, elixir-autogen, elixir-format
-msgid "Administration"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:579
-#, elixir-autogen, elixir-format
-msgid "Close navigation search"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:356
-#, elixir-autogen, elixir-format
-msgid "Current Agent Swarm"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:603
-#, elixir-autogen, elixir-format
-msgid "Navigation search results"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:632
-#, elixir-autogen, elixir-format
-msgid "No matching navigation destinations"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:224
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:605
-#, elixir-autogen, elixir-format
-msgid "Personal"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:221
-#, elixir-autogen, elixir-format
-msgid "Primary navigation"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:214
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:588
-#, elixir-autogen, elixir-format
-msgid "Search navigation"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:596
-#, elixir-autogen, elixir-format
-msgid "Search pages and Agent Swarm sections"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:385
-#, elixir-autogen, elixir-format
-msgid "Work"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7399
-#, elixir-autogen, elixir-format
-msgid "Go to Agents"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1087
 #, elixir-autogen, elixir-format
 msgid "Router agents cannot be archived."
 msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4265
-#, elixir-autogen, elixir-format
-msgid "The Agent Swarm router is not ready. Retry checks shortly; if this persists, contact support."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7390
-#, elixir-autogen, elixir-format
-msgid "Create or bind an Agent before managing Agent Swarm skills."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:245
-#, elixir-autogen, elixir-format
-msgid "%{count} task"
-msgid_plural "%{count} tasks"
-msgstr[0] ""
-msgstr[1] ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1173
 #, elixir-autogen, elixir-format
@@ -4292,41 +1224,9 @@ msgstr ""
 msgid "Only Agent Swarm admins can manage tasks."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:196
-#, elixir-autogen, elixir-format
-msgid "Recorded tasks"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:877
-#, elixir-autogen, elixir-format
-msgid "Steer this task to get started."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:70
 #, elixir-autogen, elixir-format
 msgid "Task not found."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:367
-#, elixir-autogen, elixir-format
-msgid "Open Agent Swarms in the sidebar. Your agents, tasks, and third-party connections all live inside a Swarm."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:70
-#, elixir-autogen, elixir-format
-msgid "Agent Swarm agents"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:343
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3972
-#, elixir-autogen, elixir-format
-msgid "Untitled task"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:372
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:373
-#, elixir-autogen
-msgid "Agent Swarm settings"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:631
@@ -4349,84 +1249,6 @@ msgstr ""
 msgid "Couldn't remove the runner (%{reason})."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6263
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6317
-#, elixir-autogen
-msgid "Messaging integrations"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6265
-#, elixir-autogen
-msgid "Connect Feishu or Slack so this Agent Swarm can receive messages and reply in your team's workspace."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6332
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6411
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6448
-#, elixir-autogen
-msgid "Receive group mentions and route them to this Agent Swarm."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6473
-#, elixir-autogen
-msgid "Add a Feishu app at the organization level and enable it for group bot messaging. Credentials are reused automatically."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6477
-#, elixir-autogen
-msgid "Configure Feishu app"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6571
-#, elixir-autogen
-msgid "Message route details"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6575
-#, elixir-autogen
-msgid "Feishu group messages for this connect route to this Agent Swarm. Feishu callback HTTP 200 only proves the provider reached Salix; the message route and selected Router determine whether the bot replies."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6366
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6425
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6619
-#, elixir-autogen
-msgid "Receive app mentions and send replies in Slack."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6627
-#, elixir-autogen
-msgid "Set up Slack"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6627
-#, elixir-autogen
-msgid "Add another Slack connect"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6634
-#, elixir-autogen
-msgid "Open Slack with the app settings pre-filled, then choose a workspace and confirm."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6650
-#, elixir-autogen
-msgid "View manifest and callback URLs"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6661
-#, elixir-autogen
-msgid "Copy manifest"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6337
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6371
-#, elixir-autogen
-msgid "%{count} connection"
-msgid_plural "%{count} connections"
-msgstr[0] ""
-msgstr[1] ""
-
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:271
 #, elixir-autogen
 msgid "%{period} %{hour} o'clock"
@@ -4442,11 +1264,6 @@ msgstr ""
 msgid "%{schedule} (%{timezone})"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1114
-#, elixir-autogen
-msgid "At a fixed time"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:184
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:192
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:201
@@ -4455,16 +1272,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:227
 #, elixir-autogen
 msgid "Custom schedule"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1136
-#, elixir-autogen
-msgid "Cron expression"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1186
-#, elixir-autogen
-msgid "Days"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:207
@@ -4538,29 +1345,9 @@ msgstr ""
 msgid "Friday"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1183
-#, elixir-autogen
-msgid "Hours"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:299
 #, elixir-autogen
 msgid "Monday"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1180
-#, elixir-autogen
-msgid "Minutes"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1130
-#, elixir-autogen
-msgid "Repeat after a duration"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1162
-#, elixir-autogen
-msgid "Repeat every"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:304
@@ -4571,11 +1358,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:88
 #, elixir-autogen
 msgid "Schedule not configured"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1099
-#, elixir-autogen
-msgid "Schedule type"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:120
@@ -4592,11 +1374,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:302
 #, elixir-autogen
 msgid "Thursday"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1148
-#, elixir-autogen
-msgid "Time zone"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:300
@@ -4634,18 +1411,6 @@ msgstr ""
 msgid "noon"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:403
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2133
-#, elixir-autogen
-msgid "Cancelled"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:990
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1219
-#, elixir-autogen, elixir-format
-msgid "Add schedule"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:210
 #, elixir-autogen, elixir-format
 msgid "Could not save the task schedule."
@@ -4656,310 +1421,9 @@ msgstr ""
 msgid "Could not update the task schedule."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1226
-#, elixir-autogen, elixir-format
-msgid "Delete schedule"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2283
-#, elixir-autogen, elixir-format
-msgid "I accepted this suggestion — go ahead: %{title}"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:499
-#, elixir-autogen, elixir-format
-msgid "Loading earlier activity…"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:484
-#, elixir-autogen, elixir-format
-msgid "Loading session activity…"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:486
-#, elixir-autogen, elixir-format
-msgid "No session activity recorded"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:340
-#, elixir-autogen, elixir-format
-msgid "Operation"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:482
-#, elixir-autogen, elixir-format
-msgid "Operation timeline"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2552
-#, elixir-autogen, elixir-format
-msgid "Proposed by your agent."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:222
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:269
-#, elixir-autogen, elixir-format
-msgid "Runtime event"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:832
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6036
-#, elixir-autogen, elixir-format
-msgid "Scheduled"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:55
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:476
-#, elixir-autogen, elixir-format
-msgid "Session activity"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:481
-#, elixir-autogen, elixir-format
-msgid "Session activity timeline"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:485
-#, elixir-autogen, elixir-format
-msgid "Session activity unavailable"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:239
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:282
-#, elixir-autogen, elixir-format
-msgid "Session record"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:64
-#, elixir-autogen, elixir-format
-msgid "Session record not found."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6060
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6061
-#, elixir-autogen, elixir-format
-msgid "Task actions"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:872
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5515
-#, elixir-autogen, elixir-format
-msgid "Task conversation"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:958
-#, elixir-autogen, elixir-format
-msgid "Task details"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:846
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:847
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5902
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5903
-#, elixir-autogen, elixir-format
-msgid "Task operations"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:981
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1091
-#, elixir-autogen, elixir-format
-msgid "Task schedule"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:201
-#, elixir-autogen, elixir-format
-msgid "Task schedule saved."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:232
-#, elixir-autogen, elixir-format
-msgid "Task schedule updated."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:485
-#, elixir-autogen, elixir-format
-msgid "The runtime session record could not be loaded."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:486
-#, elixir-autogen, elixir-format
-msgid "This session has no records yet."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:454
-#, elixir-autogen, elixir-format
-msgid "Time unavailable"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:316
-#, elixir-autogen, elixir-format
-msgid "Tool call"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:213
-#, elixir-autogen, elixir-format
-msgid "Tool result"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1218
-#, elixir-autogen, elixir-format
-msgid "Update schedule"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:548
-#, elixir-autogen, elixir-format
-msgid "Restart onboarding"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2171
-#, elixir-autogen, elixir-format
-msgid "%{count} task for you to review."
-msgid_plural "%{count} tasks for you to review."
-msgstr[0] ""
-msgstr[1] ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2165
-#, elixir-autogen, elixir-format
-msgid "%{review} for you to review · %{working} in progress with your agent."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2187
-#, elixir-autogen, elixir-format
-msgid "All caught up."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2190
-#, elixir-autogen, elixir-format
-msgid "Work you and your agent take on shows up here."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2179
-#, elixir-autogen, elixir-format
-msgid "Your agent is working on %{count} task — nothing to review yet."
-msgid_plural "Your agent is working on %{count} tasks — nothing to review yet."
-msgstr[0] ""
-msgstr[1] ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:72
-#, elixir-autogen, elixir-format
-msgid "%{name} needs setup"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4622
-#, elixir-autogen, elixir-format
-msgid "Additional access required"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4627
-#, elixir-autogen, elixir-format
-msgid "Authorization pending"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7072
-#, elixir-autogen, elixir-format
-msgid "Back to plugins"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7189
-#, elixir-autogen, elixir-format
-msgid "Choose which products this Agent Swarm can use."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4616
-#, elixir-autogen, elixir-format
-msgid "Composio direct API"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5024
-#, elixir-autogen, elixir-format
-msgid "Composio hosts the account connection. It enables direct API tools only and is never used as an MCP credential."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4635
-#, elixir-autogen, elixir-format
-msgid "Configuration conflict"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5080
-#, elixir-autogen, elixir-format
-msgid "Connecting..."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4618
-#, elixir-autogen, elixir-format
-msgid "Connection"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4762
 #, elixir-autogen, elixir-format
 msgid "Connection disconnected."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4387
-#, elixir-autogen, elixir-format
-msgid "Credential for %{names} MCP"
-msgid_plural "Credential for %{names} MCPs"
-msgstr[0] ""
-msgstr[1] ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4633
-#, elixir-autogen, elixir-format
-msgid "Degraded"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5038
-#, elixir-autogen, elixir-format
-msgid "Dependent MCP servers"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4628
-#, elixir-autogen, elixir-format
-msgid "Direct API connection"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5006
-#, elixir-autogen, elixir-format
-msgid "Disconnecting removes this credential from the plugin and its dependent MCP servers. You can reconnect at any time."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5079
-#, elixir-autogen, elixir-format
-msgid "Disconnecting..."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4478
-#, elixir-autogen, elixir-format
-msgid "MCP Server"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7124
-#, elixir-autogen, elixir-format
-msgid "MCP servers"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4615
-#, elixir-autogen, elixir-format
-msgid "Managed OAuth"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4617
-#, elixir-autogen, elixir-format
-msgid "Messaging connection"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4614
-#, elixir-autogen, elixir-format
-msgid "Native MCP OAuth"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4621
-#, elixir-autogen, elixir-format
-msgid "Not connected"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5057
-#, elixir-autogen, elixir-format
-msgid "Nothing is connected until you continue to the provider and approve access."
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4653
@@ -4972,39 +1436,9 @@ msgstr ""
 msgid "Only existing external workers can be rebound."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2542
-#, elixir-autogen, elixir-format
-msgid "Only worker agents can be rebound to an external runtime."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4704
 #, elixir-autogen, elixir-format
 msgid "Plugin connection was not found."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7067
-#, elixir-autogen, elixir-format
-msgid "Plugin not found"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4631
-#, elixir-autogen, elixir-format
-msgid "Ready on first use"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4431
-#, elixir-autogen, elixir-format
-msgid "Reconnect"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4625
-#, elixir-autogen, elixir-format
-msgid "Reconnect required"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4632
-#, elixir-autogen, elixir-format
-msgid "Running"
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2513
@@ -5012,101 +1446,9 @@ msgstr ""
 msgid "Select an external runtime."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2539
-#, elixir-autogen, elixir-format
-msgid "Selected external runtime is ambiguous. Select the device and runtime again."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2536
-#, elixir-autogen, elixir-format
-msgid "Selected external runtime is no longer available."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2519
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2533
-#, elixir-autogen, elixir-format
-msgid "Selected external runtime is not ready."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5012
-#, elixir-autogen, elixir-format
-msgid "The MCP server owns this OAuth flow. Comma discovers its authorization server, registers a client when supported, and stores and refreshes the resulting credential securely."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5055
-#, elixir-autogen, elixir-format
-msgid "The current credential stays active until the new authorization succeeds."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5030
-#, elixir-autogen, elixir-format
-msgid "This messaging connection lets the product receive workspace messages and route replies through this Agent Swarm. Continue to configure the existing provider integration."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7068
-#, elixir-autogen, elixir-format
-msgid "This plugin is not available to the Agent Swarm."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5018
-#, elixir-autogen, elixir-format
-msgid "This uses the organization's OAuth app and stores the connected account in Comma. Resources that explicitly depend on this connection can use it."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4629
-#, elixir-autogen, elixir-format
-msgid "Waiting for OAuth"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:340
-#, elixir-autogen
-msgid "Guidance added."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:941
-#, elixir-autogen
-msgid "Steer this task..."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:948
-#, elixir-autogen
-msgid "Steer"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1058
-#, elixir-autogen
-msgid "View timeline"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:969
-#, elixir-autogen
-msgid "Mark complete"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:163
-#, elixir-autogen
-msgid "Task marked complete."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:169
 #, elixir-autogen
 msgid "The task changed. Review it again before completing it."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:404
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2131
-#, elixir-autogen
-msgid "Blocked"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:487
-#, elixir-autogen, elixir-format
-msgid "Activity archived"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:487
-#, elixir-autogen, elixir-format
-msgid "All earlier activity has been archived and is not shown here."
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:672
@@ -5124,19 +1466,9 @@ msgstr ""
 msgid "Could not run Slack calendar checks."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:600
-#, elixir-autogen, elixir-format
-msgid "Could not start this task."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:675
 #, elixir-autogen, elixir-format
 msgid "Could not update Compute environment."
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
-#, elixir-autogen, elixir-format
-msgid "Couldn't disable the Feishu bot route (%{reason})."
 msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1368
@@ -5144,24 +1476,9 @@ msgstr ""
 msgid "Device deleted."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:500
-#, elixir-autogen, elixir-format
-msgid "Earlier activity has been archived and is not shown here."
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
-#, elixir-autogen, elixir-format
-msgid "Feishu bot route not found."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:679
 #, elixir-autogen, elixir-format
 msgid "Only Agent Swarm admins can manage Compute."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:828
-#, elixir-autogen, elixir-format
-msgid "Pending"
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:1075
@@ -5198,12 +1515,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:279
 #, elixir-autogen, elixir-format
 msgid "This organization is not connected to Salix yet."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:272
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:610
-#, elixir-autogen, elixir-format
-msgid "Triage"
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:165
@@ -5263,210 +1574,14 @@ msgstr ""
 msgid "Salix did not answer in time, so the result is unconfirmed: the change may or may not have landed. The state below was re-read after the attempt — check it before retrying."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3625
-#, elixir-autogen, elixir-format
-msgid "Another sign-in flow is already active on this runtime."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7915
-#, elixir-autogen, elixir-format
-msgid "Check again"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3263
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3394
-#, elixir-autogen, elixir-format
-msgid "Codex could not complete sign-in. Start again from the runtime row."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3622
-#, elixir-autogen, elixir-format
-msgid "Codex is already signed in on this runtime."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3255
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3386
-#, elixir-autogen, elixir-format
-msgid "Codex is not signed in. Start sign-in again from the runtime row."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3238
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3288
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3369
-#, elixir-autogen, elixir-format
-msgid "Codex is signed in."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3289
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3295
-#, elixir-autogen, elixir-format
-msgid "Codex sign-in canceled."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2788
-#, elixir-autogen, elixir-format
-msgid "Continue login"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7889
-#, elixir-autogen, elixir-format
-msgid "Copy code"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3309
-#, elixir-autogen, elixir-format
-msgid "Could not cancel Codex sign-in. It may still be active on the device."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3335
-#, elixir-autogen, elixir-format
-msgid "Could not reach the device. Retry Codex sign-in from the runtime row."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3647
-#, elixir-autogen, elixir-format
-msgid "Could not read Codex sign-in status. Check the device and try again."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3638
-#, elixir-autogen, elixir-format
-msgid "Could not start Codex sign-in."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7896
-#, elixir-autogen, elixir-format
-msgid "Existing sign-in resumed"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2789
-#, elixir-autogen, elixir-format
-msgid "Log in"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7738
-#, elixir-autogen, elixir-format
-msgid "No Codex runtime"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2755
-#, elixir-autogen, elixir-format
-msgid "Not reported"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2757
-#, elixir-autogen, elixir-format
-msgid "Not signed in"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7874
-#, elixir-autogen, elixir-format
-msgid "One-time code"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7853
-#, elixir-autogen, elixir-format
-msgid "Open the verification page, enter the one-time code, and return here. Comma will detect completion automatically."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7869
-#, elixir-autogen, elixir-format
-msgid "Open verification page"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6762
-#, elixir-autogen, elixir-format
-msgid "Person"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7850
-#, elixir-autogen, elixir-format
-msgid "Sign in to Codex"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2760
-#, elixir-autogen, elixir-format
-msgid "Sign-in error"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2759
-#, elixir-autogen, elixir-format
-msgid "Sign-in not required"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2758
-#, elixir-autogen, elixir-format
-msgid "Sign-in pending"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2756
-#, elixir-autogen, elixir-format
-msgid "Signed in"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:735
 #, elixir-autogen, elixir-format
 msgid "Slack receipt details are unavailable, so source references remain visible but message text cannot be opened."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2761
-#, elixir-autogen, elixir-format
-msgid "Status unknown"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:1067
 #, elixir-autogen, elixir-format
 msgid "That Agent is no longer available."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3641
-#, elixir-autogen, elixir-format
-msgid "The Codex runtime changed while sign-in was active. Start again."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3644
-#, elixir-autogen, elixir-format
-msgid "The device disconnected while sign-in was active."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3628
-#, elixir-autogen, elixir-format
-msgid "The device is disconnected."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3635
-#, elixir-autogen, elixir-format
-msgid "The device is unavailable right now. Try again shortly."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3401
-#, elixir-autogen, elixir-format
-msgid "The device returned an invalid sign-in status."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3242
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3374
-#, elixir-autogen, elixir-format
-msgid "This Codex runtime does not require sign-in."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3537
-#, elixir-autogen, elixir-format
-msgid "This Codex sign-in code expired. Start again from the runtime row."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3631
-#, elixir-autogen, elixir-format
-msgid "Update the device connector before signing in from Comma."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7857
-#, elixir-autogen, elixir-format
-msgid "Verification page"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7894
-#, elixir-autogen, elixir-format
-msgid "Waiting for browser sign-in"
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:259
@@ -5498,11 +1613,6 @@ msgstr ""
 msgid "The Router session was already switched. The current session is shown below."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6679
-#, elixir-autogen, elixir-format
-msgid "Interactions URL"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_runners.ex
 #, elixir-autogen, elixir-format
 msgid "Server release is unavailable."
@@ -5516,10 +1626,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:486
 #, elixir-autogen, elixir-format
 msgid "Triage activity is temporarily unavailable. Listening settings are unchanged; refresh to check again."
-msgstr ""
-
-#, elixir-autogen, elixir-format
-msgid "Silence category: %{reason}. No message-specific explanation was recorded."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:354
@@ -5607,12 +1713,6 @@ msgstr ""
 msgid "That conversation is no longer available. Refresh the page."
 msgstr ""
 
-msgid "Slack connected"
-msgstr ""
-
-msgid "Connection status incomplete"
-msgstr ""
-
 #, elixir-format
 msgid "This bot's Slack permissions are unknown. Reconnect it before enabling attendee DMs."
 msgstr ""
@@ -5627,15 +1727,13 @@ msgstr ""
 msgid "Default (%{model})"
 msgstr ""
 
-msgid "Platform billing"
+msgid "Platform"
 msgstr ""
 
-#, elixir-format
-msgid "Evaluation finished"
+msgid "Other"
 msgstr ""
 
-#, elixir-format
-msgid "Evaluation ended. Open batch details to inspect its evidence."
+msgid "Choose a model from the list."
 msgstr ""
 
 #, elixir-format
@@ -5643,179 +1741,7 @@ msgid "Batch evidence is unavailable. The recorded processing status is still sh
 msgstr ""
 
 #, elixir-format
-msgid "Processing has not finished"
-msgstr ""
-
-#, elixir-format
-msgid "No processing step recorded after receipt"
-msgstr ""
-
-#, elixir-format
-msgid "Slack history ingestion"
-msgstr ""
-
-#, elixir-format
-msgid "reminder delivered"
-msgstr ""
-
-#, elixir-format
-msgid "Source access could not be recorded. Refresh to retry."
-msgstr ""
-
-#, elixir-format
-msgid "Reaction :%{emoji}: · %{status}"
-msgstr ""
-
-#, elixir-format
-msgid "in progress"
-msgstr ""
-
-#, elixir-format
-msgid "suppressed"
-msgstr ""
-
-#, elixir-format
-msgid "added"
-msgstr ""
-
-#, elixir-format
-msgid "Comma could not complete this Triage action. No successful Slack action is being claimed."
-msgstr ""
-
-#, elixir-format
-msgid "Assigned to the Worker for investigation and a participation decision."
-msgstr ""
-
-#, elixir-format
-msgid "Assigned to Worker"
-msgstr ""
-
-#, elixir-format
-msgid "Reaction"
-msgstr ""
-
-#, elixir-format
-msgid "Reaction added"
-msgstr ""
-
-#, elixir-format
-msgid "Reply and reaction"
-msgstr ""
-
-#, elixir-format
-msgid "Would react"
-msgstr ""
-
-#, elixir-format
-msgid "Would reply and react"
-msgstr ""
-
-#, elixir-format
-msgid "Reply queued · reaction failed"
-msgstr ""
-
-#, elixir-format
-msgid "Reaction in progress"
-msgstr ""
-
-#, elixir-format
-msgid "Action suppressed"
-msgstr ""
-
-#, elixir-format
-msgid "Worker task status unavailable: %{task}"
-msgstr ""
-
-#, elixir-format
-msgid "Stale worker task suppressed: %{task}"
-msgstr ""
-
-#, elixir-format
-msgid "Worker task will retry: %{task}"
-msgstr ""
-
-#, elixir-format
-msgid "Worker task proposed: %{task}"
-msgstr ""
-
-#, elixir-format
-msgid "Investigation routed: %{task}"
-msgstr ""
-
-#, elixir-format
-msgid "Worker task created: %{task}"
-msgstr ""
-
-#, elixir-format
 msgid "Task lookup is unavailable. Try again."
-msgstr ""
-
-#, elixir-format
-msgid "The Task is currently unavailable."
-msgstr ""
-
-#, elixir-format
-msgid "No Task has been created yet."
-msgstr ""
-
-#, elixir-format
-msgid "Task message"
-msgstr ""
-
-#, elixir-format
-msgid "Silence · reason unclassified"
-msgstr ""
-
-#, elixir-format
-msgid "No useful addition"
-msgstr ""
-
-#, elixir-format
-msgid "Already handled"
-msgstr ""
-
-#, elixir-format
-msgid "Required evidence unavailable"
-msgstr ""
-
-#, elixir-format
-msgid "1 worker task status unavailable"
-msgid_plural "%{count} worker task statuses unavailable"
-msgstr[0] ""
-msgstr[1] ""
-
-#, elixir-format
-msgid "1 stale worker task suppressed"
-msgid_plural "%{count} stale worker tasks suppressed"
-msgstr[0] ""
-msgstr[1] ""
-
-#, elixir-format
-msgid "1 worker task awaiting retry"
-msgid_plural "%{count} worker tasks awaiting retry"
-msgstr[0] ""
-msgstr[1] ""
-
-#, elixir-format
-msgid "1 worker task proposed"
-msgid_plural "%{count} worker tasks proposed"
-msgstr[0] ""
-msgstr[1] ""
-
-#, elixir-format
-msgid "1 investigation routed"
-msgid_plural "%{count} investigations routed"
-msgstr[0] ""
-msgstr[1] ""
-
-#, elixir-format
-msgid "1 worker task created"
-msgid_plural "%{count} worker tasks created"
-msgstr[0] ""
-msgstr[1] ""
-
-#, elixir-format
-msgid "1 Slack reaction"
 msgstr ""
 
 #, elixir-format
@@ -5823,207 +1749,7 @@ msgid "That delegation is no longer available."
 msgstr ""
 
 #, elixir-format
-msgid "1 attached file"
-msgid_plural "%{count} attached files"
-msgstr[0] ""
-msgstr[1] ""
-
-#, elixir-format
-msgid "Unnamed file"
-msgstr ""
-
-#, elixir-format
-msgid "File list or names shortened; file contents are not shown."
-msgstr ""
-
-#, elixir-format
-msgid "File names only; file contents are not shown."
-msgstr ""
-
-#, elixir-format
-msgid "Open Task"
-msgstr ""
-
-#, elixir-format
-msgid "Checking…"
-msgstr ""
-
-#, elixir-format
-msgid "Refresh Task"
-msgstr ""
-
-#, elixir-format
-msgid "Load Task"
-msgstr ""
-
-#, elixir-format
-msgid "Task content is unavailable. Open the Task or try refreshing."
-msgstr ""
-
-#, elixir-format
-msgid "The Worker finished. This Task is waiting for human review."
-msgstr ""
-
-#, elixir-format
-msgid "Worker delivery could not be confirmed. It may still finish. Check this Task before retrying."
-msgstr ""
-
-#, elixir-format
-msgid "Worker decision: %{decision}"
-msgstr ""
-
-#, elixir-format
-msgid "Private Task activity · latest 20 messages"
-msgstr ""
-
-#, elixir-format
-msgid "No Task messages yet."
-msgstr ""
-
-#, elixir-format
-msgid "Processing evidence"
-msgstr ""
-
-#, elixir-format
-msgid "Batch details"
-msgstr ""
-
-#, elixir-format
-msgid "Choose an Agent to inspect its replies, reactions, silence decisions, and collected context."
-msgstr ""
-
-#, elixir-format
 msgid "Processing status is unavailable. Refresh to retry."
-msgstr ""
-
-#, elixir-format
-msgid "All activity"
-msgstr ""
-
-#, elixir-format
-msgid "Replies"
-msgstr ""
-
-#, elixir-format
-msgid "Reactions"
-msgstr ""
-
-#, elixir-format
-msgid "Silence"
-msgstr ""
-
-#, elixir-format
-msgid "Investigations"
-msgstr ""
-
-#, elixir-format
-msgid "Page %{page}"
-msgstr ""
-
-#, elixir-format
-msgid "Previous"
-msgstr ""
-
-#, elixir-format
-msgid "Next"
-msgstr ""
-
-#, elixir-format
-msgid "No Triage activity yet"
-msgstr ""
-
-#, elixir-format
-msgid "A reply, reaction, deliberate silence, or blocked attempt will appear here after Slack activity is evaluated."
-msgstr ""
-
-#, elixir-format
-msgid "1 activity"
-msgid_plural "%{count} activities"
-msgstr[0] ""
-msgstr[1] ""
-
-#, elixir-format
-msgid "View batch details"
-msgstr ""
-
-#, elixir-format
-msgid "Thread started"
-msgstr ""
-
-#, elixir-format
-msgid "Companion reaction"
-msgstr ""
-
-#, elixir-format
-msgid "Source message"
-msgstr ""
-
-#, elixir-format
-msgid "Follow-up work"
-msgstr ""
-
-#, elixir-format
-msgid "Latest 20 retained follow-ups, ordered by last change. A proposed follow-up is not a scheduled reminder."
-msgstr ""
-
-#, elixir-format
-msgid "No follow-ups in this view."
-msgstr ""
-
-#, elixir-format
-msgid "Follow-up status is unavailable."
-msgstr ""
-
-#, elixir-format
-msgid "Loading Triage…"
-msgstr ""
-
-#, elixir-format
-msgid "Worker for Triage"
-msgstr ""
-
-#, elixir-format
-msgid "Choose a Worker from this Swarm for new Triage tasks. It can still handle other work."
-msgstr ""
-
-#, elixir-format
-msgid "Find a Worker"
-msgstr ""
-
-#, elixir-format
-msgid "Not assigned — pause new tasks"
-msgstr ""
-
-#, elixir-format
-msgid "Not assigned"
-msgstr ""
-
-#, elixir-format
-msgid "New Triage tasks are paused when no Worker is assigned."
-msgstr ""
-
-#, elixir-format
-msgid "Changing this selection does not move existing tasks."
-msgstr ""
-
-#, elixir-format
-msgid "Required Triage tools are disabled. Update this Swarm's plugin settings before assigning work."
-msgstr ""
-
-#, elixir-format
-msgid "All channels"
-msgstr ""
-
-#, elixir-format
-msgid "No activity matches this filter"
-msgstr ""
-
-#, elixir-format
-msgid "Try another channel or activity type."
-msgstr ""
-
-#, elixir-format
-msgid "Agent decision"
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_members.ex
@@ -6049,11 +1775,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/controllers/dashboard_runners.ex
 #, elixir-autogen
 msgid "Runner not found."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex
-#, elixir-autogen, elixir-format
-msgid "AI models"
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
@@ -6099,11 +1820,6 @@ msgstr ""
 #: lib/bridge_for_teams_web/controllers/dashboard_data_policy.ex
 #, elixir-autogen, elixir-format
 msgid "Choose a valid mode."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex
-#, elixir-autogen, elixir-format
-msgid "Data policy"
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_data_policy.ex
@@ -6237,99 +1953,7 @@ msgid "%{model} (current; unavailable for selection)"
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Sleeping · starts when work arrives"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Waiting for Host capacity"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Starting"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Ready to select"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Provider unsupported"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Node unavailable"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Provider binding unavailable"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Environment not ready"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Allocation not ready"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Workload not ready"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Runtime missing"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Runtime is outdated"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Runtime not connected"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Runtime recovery needs operator attention"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Runtime not ready"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Runtime catching up"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Host capacity needs attention"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Outside this Agent Swarm"
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Select a Compute Workload."
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
 msgid "The binding changed. Reopen the form and try again."
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "The selected Workload changed. Refresh the list and select it again."
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "The selected Workload is not ready: %{reason}."
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "The selected Workload runs a different provider. Refresh the list and select it again."
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "The selected Workload's provider is not supported."
 msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
@@ -6366,4 +1990,379 @@ msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
 msgid "This Compute environment changed. Refresh and try again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Choose on or off."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Signal has no number on this server yet."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Couldn't create a Signal code."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Signal chat disconnected."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Couldn't disconnect the Signal chat."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Only project admins can do this."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Configure a Google Admin OAuth app in Composio with Directory group read scopes before connecting."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_plugins.ex
+msgid "Set up this messaging connection on the Connections page."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "That Signal chat is no longer connected."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "That account is no longer connected."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Choose an active agent of this Agent Swarm."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "The organization's Feishu bot app is a different app now. Reload the page and choose it again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "The organization's Feishu app has no app secret. An organization admin must add it in organization settings."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex:622
+#, elixir-autogen, elixir-format
+msgid "Could not load this task. Salix is unavailable — retry shortly."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex:158
+#, elixir-autogen, elixir-format
+msgid "Enter the command this schedule runs."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex:627
+#, elixir-autogen, elixir-format
+msgid "These messages are no longer available."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex:112
+#, elixir-autogen, elixir-format
+msgid "Write a message first."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex
+#, elixir-autogen, elixir-format
+msgid "Could not complete the task. Salix is unavailable — retry shortly."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex
+#, elixir-autogen, elixir-format
+msgid "This task cannot be completed here."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex
+#, elixir-autogen, elixir-format
+msgid "The schedule changed. Reload the task and try again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_onboarding_wizard.ex
+msgid "That account type is not offered here."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_onboarding_wizard.ex
+msgid "Choose on or off for the listed capabilities."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_api_controller.ex
+msgid "Admins configure OAuth clients in Settings → Integrations."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_api_controller.ex
+#, elixir-autogen, elixir-format
+msgid "Could not remind the admins. Try again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "The device is disconnected. Reconnect it and check again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "This device's Connector cannot check runtimes on demand. Update the Connector."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "The device did not answer in time. Check again shortly."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "Could not check the runtime. Check again shortly."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "Choose a model and reasoning effort from the list before saving."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "Only a Worker on a connected Codex or Claude Code runtime can detect models."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "The Worker's device is not connected. Connect it and detect again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "Update the connector on the Worker's device to detect its models."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "Could not list the runtime's models. Try again shortly."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "The runner was asked to get ready for the Cloud VM."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Runner removed from this Agent Swarm."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "This Agent Swarm already has a runner. Remove it before you choose another runner."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "The Cloud VM already exists. The runner choice applies only when the Cloud VM is first created."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "The Cloud VM runs on this runner. You cannot remove the runner."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "This Agent Swarm has no runner."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Couldn't update the runner."
+msgstr ""
+
+#: lib/bridge_for_teams_web/station_notice.ex
+msgid "This device runs the old connector, which cannot take tasks. Install the Comma desktop app on it (it includes the station), or install the station with the command from Add station in Comma."
+msgstr ""
+
+#: lib/bridge_for_teams_web/station_notice.ex
+msgid "This device's station is too old to take tasks. Update the Comma desktop app, or on a standalone station run `stillfail update` or use its Updates page."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Updated the QQ bot's credentials."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Menu saved and sent to QQ."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Menu saved."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Menu saved. The bot has a command panel made in the QQ bot console, which QQ keeps showing. Delete that panel there to show this menu."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Send the menu items as a list."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "QQ bot connected. Save the callback address in the QQ bot console."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "This QQ bot is already connected to another Agent Swarm. One QQ bot serves one Agent Swarm; delete the existing connect or use a different bot."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "QQ rejected these credentials. Check the AppID and AppSecret and retry."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Enter the Verification Token or the Encrypt Key of the Lark app. Lark signs events with them."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Updated the Lark app's credentials."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Lark app connected. Save the request URL in the Lark Developer Console."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "This Lark app is already connected to another Agent Swarm. One Lark app serves one Agent Swarm; delete the existing connect or use a different app."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Lark rejected these credentials. Check the App ID and App Secret, and that the app has the Bot capability and a published version."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Could not run Lark checks."
+msgstr ""
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+#, elixir-autogen, elixir-format
+msgid "Sign in with Lark"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Each Worker's model"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Platform model"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Platform model (%{model})"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Only Agent Swarm admins can change the default Task model."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Could not save the default Task model."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Salix"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "The Cloud VM"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Only Agent Swarm admins can change the default place to run Tasks."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Could not save the default place to run Tasks."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "The Cloud VM is turned off for this swarm."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Choose Salix, the Cloud VM or a station that takes Tasks."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "Only Agent Swarm members can create tasks."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "Say what the task should do."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "Choose Salix, the Cloud VM or a station of this swarm."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "That station has no profile with this model enabled. Choose another model."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "The organization does not allow this model. Choose another model."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "The station did not take the task. Check the station and try again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "This Agent Swarm has no Router to create tasks yet."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "Could not create the task. Salix is unavailable — retry shortly."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "The Cloud VM is not running. Start it on the Devices page, then try again."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "That station is not connected now. Choose another place."
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "Swarm default (%{model})"
+msgstr ""
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "Swarm default"
 msgstr ""

@@ -1,5 +1,5 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { ExclamationTriangleIcon } from "@comma/ui";
+import { ExclamationTriangleIcon } from "@comma/ui/components/icons";
 
 /**
  * Why a widget is not showing. `load` means its content never arrived, so

@@ -1,4 +1,6 @@
 defmodule SalixSignal.Account.Server do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The `SignalAccount` actor: the one writer of one Signal account's durable
   state (PLAN "Design rules", "Durable state").
@@ -77,7 +79,7 @@ defmodule SalixSignal.Account.Server do
       (default 1 h), `:delivery_retry_ms` (default 30 s).
   """
 
-  use GenServer, restart: :transient
+  use SystemsRuntime.Server, restart: :transient
 
   require Logger
 
@@ -135,7 +137,10 @@ defmodule SalixSignal.Account.Server do
 
   def start_link(opts) do
     id = Keyword.fetch!(opts, :account_id)
-    GenServer.start_link(__MODULE__, opts, name: {:via, Registry, {@registry, id}})
+
+    SystemsRuntime.Server.start_link(__MODULE__, opts,
+      name: {:via, SystemsRuntime.Registry, {@registry, id}}
+    )
   end
 
   @doc "The pipeline functions that `{:pipeline, name, args}` requests may call."
@@ -145,7 +150,7 @@ defmodule SalixSignal.Account.Server do
 
   @impl true
   def init(opts) do
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
     id = Keyword.fetch!(opts, :account_id)
 
     with :ok <- KemSupport.check(),
@@ -164,7 +169,7 @@ defmodule SalixSignal.Account.Server do
   defp start_runtime(id, epoch, account, delivered, opts) do
     handler =
       Keyword.get_lazy(opts, :handler, fn ->
-        Application.get_env(:salix_signal, :handler, SalixSignal.Account.NullHandler)
+        SystemsRuntime.get_env(:salix_signal, :handler, SalixSignal.Account.NullHandler)
       end)
 
     environment = account.environment
@@ -172,7 +177,7 @@ defmodule SalixSignal.Account.Server do
 
     {:ok, chat} =
       Chat.start_link(
-        [owner: self(), credentials: credentials, environment: environment] ++
+        [owner: SystemsRuntime.Proc.self(), credentials: credentials, environment: environment] ++
           Keyword.get(opts, :chat, [])
       )
 
@@ -187,7 +192,7 @@ defmodule SalixSignal.Account.Server do
         params
       end)
 
-    me = self()
+    me = SystemsRuntime.Proc.self()
     {:ok, calls} = start_call_signaling(id, account, handler, me, opts)
 
     {:ok, delivery} =
@@ -245,7 +250,9 @@ defmodule SalixSignal.Account.Server do
       maintenance_interval_ms: Keyword.get(opts, :maintenance_interval_ms, 6 * @hour_ms),
       prune_interval_ms: Keyword.get(opts, :prune_interval_ms, @hour_ms)
     }
-    |> tap(fn state -> Process.send_after(self(), :prune, state.prune_interval_ms) end)
+    |> tap(fn state ->
+      SystemsClock.send_after(SystemsRuntime.Proc.self(), :prune, state.prune_interval_ms)
+    end)
   end
 
   defp start_call_signaling(id, account, handler, me, opts) do
@@ -254,7 +261,7 @@ defmodule SalixSignal.Account.Server do
         aci: account.aci,
         device_id: account.device_id,
         identity_key: account.identities.aci.public,
-        ice_servers: fn -> GenServer.call(me, :call_ice_servers, 15_000) end,
+        ice_servers: fn -> SystemsRuntime.Server.call(me, :call_ice_servers, 15_000) end,
         peer_identity_key: fn aci ->
           case Storage.identity(id, aci) do
             nil -> :error
@@ -262,7 +269,7 @@ defmodule SalixSignal.Account.Server do
           end
         end,
         send: fn recipient, message, %{urgent: urgent} ->
-          GenServer.call(me, {:send_call_message, recipient, message, urgent}, 20_000)
+          SystemsRuntime.Server.call(me, {:send_call_message, recipient, message, urgent}, 20_000)
         end,
         incoming_call: fn info -> incoming_call(id, account.aci, handler, info) end,
         admit: fn info, connection -> handler.admit_call(id, info, connection) end,
@@ -308,7 +315,7 @@ defmodule SalixSignal.Account.Server do
   end
 
   def handle_call(:call_ice_servers, _from, state) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     case state.call_relays do
       %{expires_at_ms: expires, relays: relays} when expires > now ->
@@ -517,7 +524,9 @@ defmodule SalixSignal.Account.Server do
   end
 
   def handle_info({:signal_chat, chat, {:connected, _info}}, %{chat: chat} = state) do
-    unless state.maintained?, do: send(self(), {:maintain, true})
+    unless state.maintained?,
+      do: SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:maintain, true})
+
     {:noreply, %{state | maintained?: true}}
   end
 
@@ -535,12 +544,18 @@ defmodule SalixSignal.Account.Server do
 
   def handle_info({:maintain, check?}, state) do
     state = maintain(state, check?)
-    Process.send_after(self(), {:maintain, false}, state.maintenance_interval_ms)
+
+    SystemsClock.send_after(
+      SystemsRuntime.Proc.self(),
+      {:maintain, false},
+      state.maintenance_interval_ms
+    )
+
     {:noreply, state}
   end
 
   def handle_info(:prune, state) do
-    Process.send_after(self(), :prune, state.prune_interval_ms)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :prune, state.prune_interval_ms)
 
     case Storage.prune(state.id, state.epoch) do
       {:ok, _count} -> {:noreply, state}
@@ -583,9 +598,9 @@ defmodule SalixSignal.Account.Server do
   def terminate(_reason, state) do
     if is_map(state) do
       for pid <- [state[:delivery], state[:calls], state[:chat]],
-          is_pid(pid),
-          Process.alive?(pid),
-          do: Process.exit(pid, :shutdown)
+          SystemsRuntime.Proc.is_process(pid),
+          SystemsRuntime.Proc.alive?(pid),
+          do: SystemsRuntime.Proc.exit(pid, :shutdown)
     end
 
     :ok
@@ -772,7 +787,7 @@ defmodule SalixSignal.Account.Server do
   # receiver replaces its signed and last-resort pre-keys.
   defp rotate_pre_keys(id, epoch, transport, kind) do
     with %PreKeys.Store{} = store <- Storage.pre_key_store(id, kind),
-         {planned, body} = PreKeys.Store.rotate_all(store, System.system_time(:millisecond)),
+         {planned, body} = PreKeys.Store.rotate_all(store, SystemsClock.system_time(:millisecond)),
          :ok <- commit_pre_keys(id, epoch, kind, planned),
          :ok <- PreKeyService.upload(identified(transport), kind, body) do
       commit_pre_keys(id, epoch, kind, PreKeys.Store.uploaded(planned))
@@ -915,7 +930,7 @@ defmodule SalixSignal.Account.Server do
 
     with {:ok, group} <- GroupSend.member_group(state.pipeline, group_id),
          nil <- GroupCall.whereis(aci, group_id) do
-      me = self()
+      me = SystemsRuntime.Proc.self()
       id = state.id
       params = Params.from_master_key(group.master_key)
 
@@ -934,7 +949,7 @@ defmodule SalixSignal.Account.Server do
 
       case GroupCall.join(session_opts) do
         {:ok, session} ->
-          Process.monitor(session)
+          SystemsRuntime.Proc.monitor(session)
           entry = %{group_id: group_id, admit: Keyword.get(opts, :admit)}
           {{:ok, session}, %{state | group_calls: Map.put(state.group_calls, session, entry)}}
 
@@ -946,7 +961,7 @@ defmodule SalixSignal.Account.Server do
       end
     else
       {:error, reason} -> {{:error, reason}, state}
-      session when is_pid(session) -> {{:error, :already_in_call}, state}
+      session when SystemsRuntime.Proc.is_process(session) -> {{:error, :already_in_call}, state}
     end
   end
 
@@ -959,7 +974,7 @@ defmodule SalixSignal.Account.Server do
   end
 
   defp call_owner(owner, request) do
-    GenServer.call(owner, request, 30_000)
+    SystemsRuntime.Server.call(owner, request, 30_000)
   catch
     :exit, reason -> {:error, {:owner, reason}}
   end
@@ -981,7 +996,7 @@ defmodule SalixSignal.Account.Server do
   defp group_call_event(state, _session, _event), do: state
 
   defp admit_group_call(session, admit, era_id) do
-    Task.start(fn ->
+    SystemsRuntime.Task.start(fn ->
       result =
         try do
           admit.(session, %{era_id: era_id})

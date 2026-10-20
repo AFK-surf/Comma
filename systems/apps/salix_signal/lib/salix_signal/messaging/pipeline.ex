@@ -211,7 +211,7 @@ defmodule SalixSignal.Messaging.Pipeline do
            Keyword.get_lazy(opts, :known_server_certificates, fn ->
              Certificate.known_server_certificates(environment)
            end),
-         clock: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end),
+         clock: Keyword.get(opts, :clock, fn -> SystemsClock.system_time(:millisecond) end),
          sender_key: Keyword.get(opts, :sender_key),
          rotate_pre_keys: Keyword.get(opts, :rotate_pre_keys),
          call_message: Keyword.get(opts, :call_message),
@@ -301,9 +301,10 @@ defmodule SalixSignal.Messaging.Pipeline do
   # Opening reads state only; it runs in a task under the work budget.
   defp open_bounded(pipeline, envelope) do
     context = receive_context(pipeline)
-    task = Task.async(fn -> Receive.open(envelope, context) end)
+    task = SystemsRuntime.Task.async(fn -> Receive.open(envelope, context) end)
 
-    case Task.yield(task, pipeline.config.decrypt_budget_ms) || Task.shutdown(task, :brutal_kill) do
+    case SystemsRuntime.Task.yield(task, pipeline.config.decrypt_budget_ms) ||
+           SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, %Receive.Result{} = result} ->
         if result.reason == :sender_cooling,
           do: SalixSignal.Telemetry.receive_guard(:sender_cooling)

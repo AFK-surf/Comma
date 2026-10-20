@@ -6,6 +6,19 @@ activation: per-message
 
 Shared procedure: `/.runtime/skills/service-access/SKILL.md`.
 
+## Cloud documents and Minutes through the Feishu connect
+
+When `im.connects_list` shows a Feishu connect, use its document operations
+first: `im_api.feishu.fetch_doc`, `update_doc`, `create_doc`, and the other
+`*doc*` operations listed by `im.provider_apis_list`. They act as the bot and
+need no login. The bot opens only documents shared with a chat it is in,
+shared with the app, or open by link inside the company. If a read is denied,
+ask the user to share the document with the chat. Minutes (妙记) recordings
+work the same way through `get_minute`, `list_minutes`, and
+`fetch_minute_media`. Use the CLI below only for work that needs the user's
+own identity, such as editing Minutes, or a document type these operations do
+not support.
+
 Feishu recommends its official CLI `@larksuite/cli` (github.com/larksuite/cli)
 for agents. It stores tokens in the OS keychain, so run it with `env.exec` on
 the user's Mac.

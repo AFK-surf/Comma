@@ -71,14 +71,13 @@ defmodule SalixCluster.Schedules do
   advance protocol is modeled in `tla/salix/ScheduleDispatch.tla`.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
   alias SalixStore.{Ids, ScheduleRuns}
   alias SalixCluster.{S3Lease, Cron}
 
   @interval_ms 30_000
-  @store SalixStore.Schedules
 
   # RESOLVED run claims older than this are audit trail and are pruned by the
   # lease holder. An unresolved dispatch claim (blocked target, anchor held) is
@@ -124,7 +123,7 @@ defmodule SalixCluster.Schedules do
           | {:error, :invalid_schedule}
           | {:error, term()}
   def create(id, params, opts \\ []) do
-    now = opts[:now] || System.system_time(:millisecond)
+    now = opts[:now] || SystemsClock.system_time(:millisecond)
     params = stringify(params)
 
     with true <- Ids.valid_schedule_id?(id),
@@ -152,7 +151,7 @@ defmodule SalixCluster.Schedules do
         |> Map.put_new("receiver", "agent")
         |> Map.merge(%{"id" => id, "created_at" => now, "last_run" => nil})
 
-      case @store.create(sched, next_fire_ms(sched)) do
+      case store().create(sched, next_fire_ms(sched)) do
         {:ok, record} -> {:ok, record}
         {:error, _} = error -> error
       end
@@ -172,7 +171,7 @@ defmodule SalixCluster.Schedules do
 
   @doc "Fetch a schedule definition."
   @spec get(String.t()) :: {:ok, schedule()} | {:error, :not_found} | {:error, term()}
-  def get(id), do: @store.get(id)
+  def get(id), do: store().get(id)
 
   @doc """
   Merge `changes` into the definition under a serialized row update.
@@ -183,7 +182,7 @@ defmodule SalixCluster.Schedules do
   def update(id, changes) do
     changes = stringify(changes)
 
-    @store.update(id, fn current ->
+    store().update(id, fn current ->
       merged = merge_changes(current, changes)
 
       case validate(merged) do
@@ -198,33 +197,52 @@ defmodule SalixCluster.Schedules do
   owner must use `delete_agent_owned/2` or `delete_task_owned/2`.
   """
   @spec delete(String.t()) :: :ok | {:error, term()}
-  def delete(id), do: @store.delete(id)
+  def delete(id), do: store().delete(id)
 
   @doc "Point read scoped to an Agent owner (never a Task row)."
   @spec get_agent_owned(String.t(), String.t()) ::
           {:ok, schedule()} | {:error, :not_found} | {:error, term()}
-  def get_agent_owned(id, agent_id), do: @store.get_agent_owned(id, agent_id)
+  def get_agent_owned(id, agent_id), do: store().get_agent_owned(id, agent_id)
 
   @doc "Atomic delete scoped to an Agent owner (never a Task row)."
   @spec delete_agent_owned(String.t(), String.t()) ::
           :ok | {:error, :not_found} | {:error, term()}
-  def delete_agent_owned(id, agent_id), do: @store.delete_agent_owned(id, agent_id)
+  def delete_agent_owned(id, agent_id), do: store().delete_agent_owned(id, agent_id)
 
   @doc "Atomic delete scoped to a Task's group owner."
   @spec delete_task_owned(String.t(), String.t()) ::
           :ok | {:error, :not_found} | {:error, term()}
-  def delete_task_owned(id, group_id), do: @store.delete_task_owned(id, group_id)
+  def delete_task_owned(id, group_id), do: store().delete_task_owned(id, group_id)
 
   @doc """
   List all schedule definitions. Admin/audit surface only — request paths
   (agent tools, BFT dashboards) must use the owner-filtered `list_by_agents/1`.
   """
   @spec list() :: {:ok, [schedule()]} | {:error, term()}
-  def list, do: @store.list()
+  def list, do: store().list()
+
+  @doc """
+  Cron math for a Background Loop's trigger (`SalixAgent.Loops.next_run/3`,
+  through the `:schedules_mod` seam): the first occurrence of `cron` in
+  `timezone` strictly after `after_ms`.
+  """
+  @spec cron_next_after(String.t(), integer(), String.t()) :: {:ok, integer()} | {:error, term()}
+  def cron_next_after(cron, after_ms, timezone), do: Cron.next_after_ms(cron, after_ms, timezone)
+
+  @doc "The latest occurrence of `cron` in `timezone` at or before `now_ms`."
+  @spec cron_latest_at_or_before(String.t(), integer(), String.t()) ::
+          {:ok, integer()} | {:error, term()}
+  def cron_latest_at_or_before(cron, now_ms, timezone),
+    do: Cron.latest_at_or_before_ms(cron, now_ms, timezone)
+
+  @doc "Whether `cron` parses and `timezone` is a known IANA zone."
+  @spec valid_cron?(String.t(), String.t()) :: boolean()
+  def valid_cron?(cron, timezone),
+    do: match?({:ok, _}, Cron.parse(cron)) and match?({:ok, _}, DateTime.now(timezone))
 
   @doc "Owner-filtered listing: definitions owned by any of `agent_ids`."
   @spec list_by_agents([String.t()]) :: {:ok, [schedule()]} | {:error, term()}
-  def list_by_agents(agent_ids) when is_list(agent_ids), do: @store.list_by_agents(agent_ids)
+  def list_by_agents(agent_ids) when is_list(agent_ids), do: store().list_by_agents(agent_ids)
 
   @doc """
   Owner-filtered listing across both receiver shapes: agent-owned definitions
@@ -232,7 +250,7 @@ defmodule SalixCluster.Schedules do
   """
   @spec list_for_owners([String.t()], String.t() | nil) :: {:ok, [schedule()]} | {:error, term()}
   def list_for_owners(agent_ids, group_id) when is_list(agent_ids),
-    do: @store.list_for_owners(agent_ids, group_id)
+    do: store().list_for_owners(agent_ids, group_id)
 
   # ---- due math ----
 
@@ -271,11 +289,11 @@ defmodule SalixCluster.Schedules do
   """
   @spec due(integer()) :: {:ok, [schedule()]} | {:error, term()}
   def due(now_ms) do
-    with {:ok, candidates} <- @store.due_candidates(now_ms) do
+    with {:ok, candidates} <- store().due_candidates(now_ms) do
       {due, stale_bounds} = Enum.split_with(candidates, &(next_fire_ms(&1) <= now_ms))
 
       Enum.each(stale_bounds, fn sched ->
-        @store.recompute_next_fire(sched["id"], &next_fire_ms/1)
+        store().recompute_next_fire(sched["id"], &next_fire_ms/1)
       end)
 
       {:ok, due}
@@ -297,7 +315,7 @@ defmodule SalixCluster.Schedules do
         schedule
         |> claim_attributes()
         |> Map.put("disposition", "dispatch")
-        |> Map.put("fired_at", opts[:now] || System.system_time(:millisecond))
+        |> Map.put("fired_at", opts[:now] || SystemsClock.system_time(:millisecond))
 
       claim_result = claim_window(id, scheduled_for_ms, claim)
 
@@ -334,7 +352,7 @@ defmodule SalixCluster.Schedules do
   def recover_claim(schedule_id, scheduled_for_ms, opts \\ [])
       when is_binary(schedule_id) and is_integer(scheduled_for_ms) do
     with {:ok, schedule} <- get(schedule_id) do
-      case ScheduleRuns.claim_state(schedule_id, scheduled_for_ms) do
+      case runs().claim_state(schedule_id, scheduled_for_ms) do
         {:ok, %{disposition: :dispatch, target: target}} ->
           with {:ok, receiver} <- receiver_module(schedule) do
             dispatch_and_advance(schedule, receiver, :exists, scheduled_for_ms, opts, target)
@@ -372,8 +390,8 @@ defmodule SalixCluster.Schedules do
            }}
           | {:error, term()}
   def run_once(opts \\ []) do
-    started = System.monotonic_time()
-    now = opts[:now] || System.system_time(:millisecond)
+    started = SystemsClock.monotonic_time()
+    now = opts[:now] || SystemsClock.system_time(:millisecond)
     grace = opts[:stale_grace_ms] || @stale_grace_ms
 
     result =
@@ -409,9 +427,9 @@ defmodule SalixCluster.Schedules do
   end
 
   defp emit_schedule_operation(result, started) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{
         component: "salix_cluster",
         operation: "schedule",
@@ -494,7 +512,7 @@ defmodule SalixCluster.Schedules do
   end
 
   defp put_meeting_origin(inbox_payload, id, payload, scheduled_for_ms) do
-    module = Application.get_env(:salix_agent, :meeting_preparation_mod)
+    module = SystemsRuntime.get_env(:salix_agent, :meeting_preparation_mod)
 
     if is_map(payload["meeting_preparation"]) and module do
       case module.seal_schedule(id, payload, scheduled_for_ms) do
@@ -581,7 +599,7 @@ defmodule SalixCluster.Schedules do
       # never gate the sweep. A failure of either write leaves the claim
       # open; the next sweep resumes it and converges.
       {:ok, :undeliverable, reason} ->
-        with :ok <- ScheduleRuns.resolve_undeliverable(schedule["id"], scheduled_for_ms),
+        with :ok <- runs().resolve_undeliverable(schedule["id"], scheduled_for_ms),
              :ok <- advance(schedule, scheduled_for_ms, opts) do
           emit_schedule_diagnostic(
             schedule,
@@ -633,12 +651,15 @@ defmodule SalixCluster.Schedules do
   # the bound past the true next occurrence. `:unchanged` means a racing
   # sweeper already advanced past this window — converged, not an error.
   defp advance_last_run(%{"id" => id}, scheduled_for_ms) do
-    case @store.advance(id, scheduled_for_ms, &next_fire_ms/1) do
+    case store().advance(id, scheduled_for_ms, &next_fire_ms/1) do
       :ok -> :ok
       :unchanged -> :ok
       {:error, _} = error -> error
     end
   end
+
+  defp store, do: SalixStore.Schedules
+  defp runs, do: ScheduleRuns
 
   defp receiver_module(schedule) do
     case Map.fetch(@receivers, schedule["receiver"] || "agent") do
@@ -682,7 +703,7 @@ defmodule SalixCluster.Schedules do
       |> stringify()
       |> Map.put_new("node", to_string(node()))
 
-    ScheduleRuns.claim(schedule_id, scheduled_for_ms, claim)
+    runs().claim(schedule_id, scheduled_for_ms, claim)
   end
 
   # Only cron schedules are skip-stale'd; interval schedules keep their existing
@@ -713,14 +734,14 @@ defmodule SalixCluster.Schedules do
   end
 
   defp resume_claim(schedule, receiver, scheduled_for_ms, opts) do
-    case ScheduleRuns.claim_state(schedule["id"], scheduled_for_ms) do
+    case runs().claim_state(schedule["id"], scheduled_for_ms) do
       # Every loser/resumer dispatches to the CLAIM's frozen target — never
       # its own definition snapshot (occurrence authority, #871).
       {:ok, %{disposition: :dispatch, target: target}} ->
         dispatch_and_advance(schedule, receiver, :exists, scheduled_for_ms, opts, target)
 
       {:ok, %{disposition: :skipped_stale}} ->
-        skip_stale(schedule, opts[:now] || System.system_time(:millisecond))
+        skip_stale(schedule, opts[:now] || SystemsClock.system_time(:millisecond))
 
       # Follow the durable terminal decision: never re-dispatch, advance if
       # the anchor has not caught up (a crash between resolve and advance
@@ -835,13 +856,13 @@ defmodule SalixCluster.Schedules do
         stage: stage,
         correlation_id: diagnostic_correlation_id(opts, sched["id"], scheduled_for_ms),
         node: to_string(node()),
-        observed_at_ms: opts[:now] || System.system_time(:millisecond)
+        observed_at_ms: opts[:now] || SystemsClock.system_time(:millisecond)
       }
       |> maybe_put_diagnostic_option(:request_id, opts)
       |> maybe_put_diagnostic_option(:client_request_id, opts)
       |> maybe_put_diagnostic_option(:invocation_id, opts)
 
-    case Application.get_env(:salix_cluster, :schedule_diagnostic_sink) do
+    case SystemsRuntime.get_env(:salix_cluster, :schedule_diagnostic_sink) do
       nil ->
         # Without a configured sink every blocked/undeliverable/failed dispatch
         # used to vanish completely. The log line is the observability floor:
@@ -880,9 +901,9 @@ defmodule SalixCluster.Schedules do
 
   defp safe_emit_schedule_diagnostic(sink, diagnostic) do
     {:ok, _pid} =
-      Task.start(fn ->
+      SystemsRuntime.Task.start(fn ->
         inner =
-          Task.async(fn ->
+          SystemsRuntime.Task.async(fn ->
             try do
               sink.(diagnostic)
             rescue
@@ -894,7 +915,8 @@ defmodule SalixCluster.Schedules do
             end
           end)
 
-        Task.yield(inner, @diagnostic_sink_timeout_ms) || Task.shutdown(inner, :brutal_kill)
+        SystemsClock.yield(inner, @diagnostic_sink_timeout_ms) ||
+          SystemsRuntime.Task.shutdown(inner, :brutal_kill)
       end)
 
     :ok
@@ -1102,7 +1124,8 @@ defmodule SalixCluster.Schedules do
 
   # ---- GenServer (optional lease-gated periodic sweep) ----
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
   def init(opts) do
@@ -1150,18 +1173,18 @@ defmodule SalixCluster.Schedules do
         state
       end
 
-    Process.send_after(self(), :tick, state.interval)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, state.interval)
     state
   end
 
   # Lease-holder-only retention prune of old run claims; low frequency and
   # best-effort — a failed prune never affects the sweep.
   defp maybe_prune_runs(state) do
-    now = System.monotonic_time(:millisecond)
+    now = SystemsClock.monotonic_time(:millisecond)
 
     if is_nil(state.last_runs_prune_ms) or
          now - state.last_runs_prune_ms >= @runs_prune_every_ms do
-      case ScheduleRuns.prune_older_than(@runs_retention_days) do
+      case runs().prune_older_than(@runs_retention_days) do
         {:ok, count} when count > 0 ->
           Logger.info("schedules: pruned #{count} run claims older than #{@runs_retention_days}d")
 

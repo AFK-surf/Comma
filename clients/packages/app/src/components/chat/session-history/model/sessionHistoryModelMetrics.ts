@@ -1,4 +1,4 @@
-import type { SessionHistoryRecord } from "../../../../runtime-chat/sessionHistoryBridge";
+import type { SessionHistoryRecord } from "../useSessionHistory";
 import { sessionDataObject } from "./sessionHistoryPresentation";
 
 const tokens = (value: unknown) =>

@@ -2,12 +2,9 @@ package main
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/rand"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -29,12 +26,12 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
-	"unicode/utf8"
+
+	mathrand "math/rand/v2"
 
 	"github.com/gorilla/websocket"
-	"github.com/oklog/ulid/v2"
-	bolt "go.etcd.io/bbolt"
 )
 
 func TestCurrentBuildInfoPublishesDiagnosticReleaseWithoutTargetRevision(t *testing.T) {
@@ -103,7 +100,7 @@ func TestHelperRuntimeMetadataConnector(t *testing.T) {
 				"kind": "external", "provider": "codex", "command": identity,
 				"identity_material": identity,
 				"session_snapshot": map[string]any{
-					"schema_version": 1, "observed_at": time.Now().UnixMilli(),
+					"schema_version": 1, "observed_at": runtimeAuthTestObservedAt,
 					"session_count": len(ids), "session_ids": ids, "truncated": false,
 				},
 			}},
@@ -125,13 +122,7 @@ func TestHelperRuntimeMetadataConnector(t *testing.T) {
 	}
 	if mode == "malformed" {
 		go func() {
-			gate := os.Getenv("SALIX_TEST_RUNTIME_METADATA_GATE")
-			for {
-				if _, err := os.Stat(gate); err == nil {
-					break
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
+			waitForFakeMarker(os.Getenv("SALIX_TEST_RUNTIME_METADATA_GATE"))
 			_ = write(map[string]any{
 				"type": "metadata", "skills": []any{},
 				"capabilities": map[string]any{
@@ -153,585 +144,6 @@ func TestHelperRuntimeMetadataConnector(t *testing.T) {
 				return
 			}
 		}
-	}
-}
-
-func TestHelperSeedLegacyRuntimeState(t *testing.T) {
-	root := os.Getenv("SALIX_TEST_SEED_LEGACY_RUNTIME_STATE")
-	if root == "" {
-		return
-	}
-	type oldRecoveryRecord struct {
-		Provider     string         `json:"provider"`
-		SessionID    string         `json:"session_id"`
-		Token        string         `json:"runtime_capability_token"`
-		Command      string         `json:"command"`
-		Workspace    string         `json:"workspace"`
-		SystemPrompt string         `json:"system_prompt,omitempty"`
-		Payload      map[string]any `json:"runtime_payload"`
-	}
-	type oldRecoveryFile struct {
-		Version int               `json:"version"`
-		Session oldRecoveryRecord `json:"session"`
-	}
-	workspace := filepath.Join(root, "workspace")
-	if err := os.MkdirAll(workspace, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	command := os.Getenv("SALIX_TEST_SEED_LEGACY_RUNTIME_COMMAND")
-	if command == "" {
-		command = "/bin/true"
-	}
-	raw, err := json.Marshal(oldRecoveryFile{Version: 1, Session: oldRecoveryRecord{
-		Provider: "pi", SessionID: "session-upgrade", Token: "capability-upgrade",
-		Command: command, Workspace: workspace, SystemPrompt: "upgrade e2e",
-		Payload: map[string]any{"session_id": "pi-native"},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateDir := filepath.Join(root, "external-runtime")
-	legacyDir := filepath.Join(stateDir, "active")
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	db, err := bolt.Open(filepath.Join(stateDir, "state.db"), 0o600, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists(externalRuntimeSessionsBucket)
-		if err != nil {
-			return err
-		}
-		if err := bucket.Put([]byte("pi\x00session-upgrade"), raw); err != nil {
-			return err
-		}
-		if os.Getenv("SALIX_TEST_SEED_LEGACY_RUNTIME_EVENT") != "1" {
-			return nil
-		}
-		events, err := tx.CreateBucketIfNotExists(externalRuntimeSessionEventsBucket)
-		if err != nil {
-			return err
-		}
-		const eventID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
-		request := message{
-			ID: eventID, Type: "request", Method: "external_runtime_event",
-			Params: map[string]any{
-				"event_id": eventID, "capability_token": "capability-upgrade",
-				"event": map[string]any{
-					"type": "operation", "provider": "pi", "name": "read_file",
-					"operation_id": "legacy-read", "status": "end", "created_at": int64(1),
-					"input": map[string]any{
-						"path": "/workspace/report.txt", "offset": 7, "limit": 4096,
-						"content": "legacy-input-body-must-not-survive",
-					},
-					"output": map[string]any{"text": strings.Repeat("legacy-read-body", 64*1024)},
-					"issue":  "runtime_failed",
-				},
-			},
-		}
-		rawEvent, err := json.Marshal(request)
-		if err != nil {
-			return err
-		}
-		if err := events.Put([]byte(eventID), rawEvent); err != nil {
-			return err
-		}
-		const invalidEventID = "00000000000000000000000000"
-		invalidRequest := message{
-			ID: invalidEventID, Type: "request", Method: "external_runtime_event",
-			Params: map[string]any{
-				"event_id": invalidEventID, "capability_token": "capability-upgrade",
-				"event": map[string]any{
-					"type": "operation", "provider": "pi", "created_at": int64(1),
-				},
-			},
-		}
-		rawInvalidEvent, err := json.Marshal(invalidRequest)
-		if err != nil {
-			return err
-		}
-		return events.Put([]byte(invalidEventID), rawInvalidEvent)
-	}); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "session-upgrade.json"), raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestHelperInspectExternalRuntimeState(t *testing.T) {
-	root := os.Getenv("SALIX_TEST_INSPECT_EXTERNAL_RUNTIME_STATE")
-	output := os.Getenv("SALIX_TEST_INSPECT_EXTERNAL_RUNTIME_STATE_OUTPUT")
-	if root == "" {
-		return
-	}
-	if output == "" {
-		t.Fatal("SALIX_TEST_INSPECT_EXTERNAL_RUNTIME_STATE_OUTPUT is required")
-	}
-	db, err := bolt.Open(filepath.Join(root, "external-runtime", "state.db"), 0o600, &bolt.Options{ReadOnly: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	summary := map[string]any{}
-	if err := db.View(func(tx *bolt.Tx) error {
-		for _, name := range []string{
-			"active-sessions-v1",
-			"session-identities-v2",
-			"active-executions-v2",
-			"input-batches-v1",
-			"session-events-v1",
-		} {
-			bucket := tx.Bucket([]byte(name))
-			if bucket == nil {
-				summary[name] = 0
-				continue
-			}
-			summary[name] = bucket.Stats().KeyN
-		}
-		eventNames := map[string]int{}
-		if bucket := tx.Bucket([]byte("session-events-v1")); bucket != nil {
-			if err := bucket.ForEach(func(_, raw []byte) error {
-				var request message
-				if err := json.Unmarshal(raw, &request); err != nil {
-					return err
-				}
-				name := stringParam(mapParam(request.Params, "event"), "name")
-				if name != "" {
-					eventNames[name]++
-				}
-				return nil
-			}); err != nil {
-				return err
-			}
-		}
-		summary["event_names"] = eventNames
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := json.Marshal(summary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(output, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestHelperSeedRuntimeEventRetryFairness(t *testing.T) {
-	root := os.Getenv("SALIX_TEST_SEED_RUNTIME_EVENT_RETRY_FAIRNESS")
-	if root == "" {
-		return
-	}
-	stateDir := filepath.Join(root, "external-runtime")
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	db, err := bolt.Open(filepath.Join(stateDir, "state.db"), 0o600, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	if err := db.Update(func(tx *bolt.Tx) error {
-		outbox, err := tx.CreateBucketIfNotExists(externalRuntimeSessionEventsBucket)
-		if err != nil {
-			return err
-		}
-		for index := 0; index < externalRuntimeEventBatchMaxItems+2; index++ {
-			id := ulid.MustNew(uint64(index+1), bytes.NewReader(make([]byte, 10))).String()
-			token := "capability-retrying-session"
-			state := "retrying"
-			if index == externalRuntimeEventBatchMaxItems+1 {
-				token = "capability-healthy-session"
-				state = "healthy"
-			}
-			event, err := canonicalExternalRuntimeEvent(map[string]any{
-				"type": "status", "provider": "pi", "state": state,
-				"created_at": int64(index + 1),
-			})
-			if err != nil {
-				return err
-			}
-			request := message{
-				ID: id, Type: "request", Method: "external_runtime_event",
-				Params: map[string]any{
-					"event_id": id, "capability_token": token, "event": event,
-				},
-			}
-			raw, err := json.Marshal(request)
-			if err != nil {
-				return err
-			}
-			if err := outbox.Put([]byte(id), raw); err != nil {
-				return err
-			}
-		}
-		for index := 0; index < externalRuntimeEventScanMaxItems+1; index++ {
-			id := ulid.MustNew(uint64(externalRuntimeEventBatchMaxItems+3+index), bytes.NewReader(make([]byte, 10))).String()
-			event, err := canonicalExternalRuntimeEvent(map[string]any{
-				"type": "status", "provider": "pi", "state": "retrying-tail",
-				"created_at": int64(externalRuntimeEventBatchMaxItems + 3 + index),
-			})
-			if err != nil {
-				return err
-			}
-			request := message{
-				ID: id, Type: "request", Method: "external_runtime_event",
-				Params: map[string]any{
-					"event_id": id, "capability_token": "capability-retrying-session",
-					"event": event,
-				},
-			}
-			raw, err := json.Marshal(request)
-			if err != nil {
-				return err
-			}
-			if err := outbox.Put([]byte(id), raw); err != nil {
-				return err
-			}
-		}
-		healthyTailID := ulid.MustNew(
-			uint64(externalRuntimeEventBatchMaxItems+externalRuntimeEventScanMaxItems+4),
-			bytes.NewReader(make([]byte, 10)),
-		).String()
-		healthyTail, err := canonicalExternalRuntimeEvent(map[string]any{
-			"type": "status", "provider": "pi", "state": "healthy-tail",
-			"created_at": int64(externalRuntimeEventBatchMaxItems + externalRuntimeEventScanMaxItems + 4),
-		})
-		if err != nil {
-			return err
-		}
-		rawHealthyTail, err := json.Marshal(message{
-			ID: healthyTailID, Type: "request", Method: "external_runtime_event",
-			Params: map[string]any{
-				"event_id": healthyTailID, "capability_token": "capability-healthy-session",
-				"event": healthyTail,
-			},
-		})
-		if err != nil {
-			return err
-		}
-		if err := outbox.Put([]byte(healthyTailID), rawHealthyTail); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestHelperSeedLegacyRuntimeLifecycleState(t *testing.T) {
-	root := os.Getenv("SALIX_TEST_SEED_LEGACY_RUNTIME_LIFECYCLE_STATE")
-	if root == "" {
-		return
-	}
-	completedCommand := os.Getenv("SALIX_TEST_SEED_LEGACY_COMPLETED_COMMAND")
-	activeCommand := os.Getenv("SALIX_TEST_SEED_LEGACY_ACTIVE_COMMAND")
-	ackedActiveCommand := os.Getenv("SALIX_TEST_SEED_LEGACY_ACKED_ACTIVE_COMMAND")
-	if completedCommand == "" || activeCommand == "" || ackedActiveCommand == "" {
-		t.Fatal("legacy lifecycle seed commands are required")
-	}
-	stateDir := filepath.Join(root, "external-runtime")
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	db, err := bolt.Open(filepath.Join(stateDir, "state.db"), 0o600, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	records := []externalRuntimeRecoveryRecord{
-		{
-			Provider: "pi", SessionID: "session-legacy-completed",
-			DispatchID: "dispatch-legacy-completed", ExecutionID: "execution-legacy-completed",
-			Token: "capability-legacy-completed", Command: completedCommand,
-			Workspace: filepath.Join(root, "workspace-completed"), SystemPrompt: "legacy migration e2e",
-			Payload: map[string]any{"session_id": "pi-native-completed"},
-		},
-		{
-			Provider: "pi", SessionID: "session-legacy-active",
-			DispatchID: "dispatch-legacy-active", ExecutionID: "execution-legacy-active",
-			Token: "capability-legacy-active", Command: activeCommand,
-			Workspace: filepath.Join(root, "workspace-active"), SystemPrompt: "legacy migration e2e",
-			Payload: map[string]any{"session_id": "pi-native-active"},
-		},
-		{
-			Provider: "pi", SessionID: "session-legacy-acked-active",
-			DispatchID: "dispatch-legacy-acked-active", ExecutionID: "execution-legacy-acked-active",
-			Token: "capability-legacy-acked-active", Command: ackedActiveCommand,
-			Workspace: filepath.Join(root, "workspace-acked-active"), SystemPrompt: "legacy migration e2e",
-			Payload: map[string]any{"session_id": "pi-native-acked-active"},
-		},
-	}
-	for _, record := range records {
-		if err := os.MkdirAll(record.Workspace, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	events := []struct {
-		id        string
-		record    externalRuntimeRecoveryRecord
-		name      string
-		workState string
-	}{
-		{"01ARZ3NDEKTSV4RRFFQ69G5FAA", records[0], "agent_start", "running"},
-		{"01ARZ3NDEKTSV4RRFFQ69G5FAB", records[0], "agent_settled", "settled"},
-		{"01ARZ3NDEKTSV4RRFFQ69G5FAC", records[1], "agent_start", "running"},
-		// records[2] is also running. Its running event was already durably ACKed by
-		// the Server, so the old active-sessions-v1 recovery obligation is the only
-		// remaining Connector-local fact and the event is no longer in the outbox.
-	}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		legacy, err := tx.CreateBucketIfNotExists(externalRuntimeSessionsBucket)
-		if err != nil {
-			return err
-		}
-		outbox, err := tx.CreateBucketIfNotExists(externalRuntimeSessionEventsBucket)
-		if err != nil {
-			return err
-		}
-		inputBatches, err := tx.CreateBucketIfNotExists(externalRuntimeInputBatchesBucket)
-		if err != nil {
-			return err
-		}
-		for _, record := range records {
-			raw, err := json.Marshal(externalRuntimeRecoveryFile{Version: 1, Session: record})
-			if err != nil {
-				return err
-			}
-			if err := legacy.Put([]byte(record.key()), raw); err != nil {
-				return err
-			}
-		}
-		for _, item := range events {
-			event, err := canonicalExternalRuntimeEvent(map[string]any{
-				"type": "status", "provider": "pi", "name": item.name,
-				"state": item.workState, "created_at": int64(1),
-				"dispatch_id":  item.record.DispatchID,
-				"execution_id": item.record.ExecutionID,
-				"work_state":   item.workState,
-			})
-			if err != nil {
-				return err
-			}
-			request := message{ID: item.id, Type: "request", Method: "external_runtime_event", Params: map[string]any{
-				"event_id": item.id, "capability_token": item.record.Token, "event": event,
-			}}
-			raw, err := json.Marshal(request)
-			if err != nil {
-				return err
-			}
-			if err := outbox.Put([]byte(item.id), raw); err != nil {
-				return err
-			}
-		}
-		// The native runtime accepted and completed this exact dispatch, but the
-		// Connector crashed before deleting its at-least-once input batch. Exact
-		// terminal lifecycle evidence must dominate that stale pending record.
-		stalePending := externalRuntimeInputBatch{
-			Version: 1,
-			Session: records[0],
-			Messages: []map[string]any{{
-				"id":      "message-legacy-completed-stale-pending",
-				"role":    "user",
-				"content": "already completed before the migration crash window",
-			}},
-		}
-		// agent_runtime_input is durably ACKed before the background native Send
-		// allocates an execution id, so real input-batches-v1 records have none.
-		stalePending.Session.ExecutionID = ""
-		raw, err := json.Marshal(stalePending)
-		if err != nil {
-			return err
-		}
-		if err := inputBatches.Put([]byte(stalePending.key()), raw); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestHelperSeedLegacyAsyncInputBatch(t *testing.T) {
-	root := os.Getenv("SALIX_TEST_SEED_LEGACY_ASYNC_INPUT")
-	if root == "" {
-		return
-	}
-	command := os.Getenv("SALIX_TEST_SEED_LEGACY_ASYNC_COMMAND")
-	if command == "" {
-		t.Fatal("SALIX_TEST_SEED_LEGACY_ASYNC_COMMAND is required")
-	}
-	const toolCallID = "call-legacy-oversized"
-	const summary = "async tool env.exec completed for call-legacy-oversized"
-	content, err := json.Marshal(map[string]any{
-		"type":         "tool_call_completed",
-		"tool_call_id": toolCallID,
-		"tool_name":    "env.exec",
-		"status":       "completed",
-		"error":        false,
-		"summary":      summary,
-		"source_refs": map[string]any{
-			"tool_call_id": toolCallID,
-			"tool_name":    "env.exec",
-			"status":       "completed",
-		},
-		"result": map[string]any{
-			"status":  "completed",
-			"content": strings.Repeat("x", 1_100_000) + "LEGACY_RESULT_END",
-		},
-		"message": "tool call completed after returning early; short result is included in this notification",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	historicalFailedContent, err := json.Marshal(map[string]any{
-		"type":         "tool_call_failed",
-		"tool_call_id": "call-legacy-oversized-failed",
-		"tool_name":    "env.exec",
-		// Before bounded result pages, Waits defaulted an omitted result status
-		// independently from AsyncToolResults' outer failed status.
-		"status":  "completed",
-		"error":   true,
-		"summary": "async tool env.exec completed for call-legacy-oversized-failed",
-		"source_refs": map[string]any{
-			"tool_call_id": "call-legacy-oversized-failed",
-			"tool_name":    "env.exec",
-			"status":       "completed",
-		},
-		"result": map[string]any{
-			"error":   true,
-			"content": strings.Repeat("y", 1_100_000) + "LEGACY_FAILED_RESULT_END",
-		},
-		"message": "tool call failed after returning early; short error details are included in this notification",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	currentPage, err := json.Marshal(map[string]any{
-		"type":         "tool_call_completed",
-		"tool_call_id": "call-current-page",
-		"tool_name":    "env.exec",
-		"status":       "completed",
-		"error":        false,
-		"result_page": map[string]any{
-			"encoding":      "json",
-			"offset":        0,
-			"content":       "CURRENT_PAGE_PREVIEW",
-			"content_chars": 20,
-			"total_chars":   40,
-			"truncated":     true,
-			"next_offset":   20,
-		},
-		"message": "current bounded result preview",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	workspace := filepath.Join(root, "workspace")
-	if err := os.MkdirAll(workspace, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	batch := externalRuntimeInputBatch{
-		Version: 1,
-		Session: externalRuntimeRecoveryRecord{
-			Provider:     "codex",
-			SessionID:    "session-legacy-oversized-async",
-			DispatchID:   "batch-legacy-oversized-async",
-			Token:        "capability-session-legacy-oversized-async",
-			Command:      command,
-			Workspace:    workspace,
-			SystemPrompt: "legacy oversized async completion recovery e2e",
-			Payload:      map[string]any{},
-		},
-		Messages: []map[string]any{
-			{
-				"id":                  "message-legacy-oversized-async",
-				"role":                "runtime",
-				"kind":                "runtime_message",
-				"runtime_message_id":  "tool-call-result:" + toolCallID,
-				"type":                "tool_call_completed",
-				"summary":             summary,
-				"source_tool_call_id": toolCallID,
-				"source_message_id":   "tool-call-result:" + toolCallID,
-				"source_refs": map[string]any{
-					"tool_call_id": toolCallID,
-					"tool_name":    "env.exec",
-					"status":       "completed",
-				},
-				"content":    string(content),
-				"created_at": 1_721_056_896,
-			},
-			{
-				"id":                  "message-legacy-oversized-failed",
-				"role":                "runtime",
-				"kind":                "runtime_message",
-				"runtime_message_id":  "tool-call-result:call-legacy-oversized-failed",
-				"type":                "tool_call_failed",
-				"summary":             "async tool env.exec failed for call-legacy-oversized-failed",
-				"source_tool_call_id": "call-legacy-oversized-failed",
-				"source_message_id":   "tool-call-result:call-legacy-oversized-failed",
-				"source_refs": map[string]any{
-					"tool_call_id": "call-legacy-oversized-failed",
-					"tool_name":    "env.exec",
-					"status":       "failed",
-				},
-				"content":    string(historicalFailedContent),
-				"created_at": 1_721_056_897,
-			},
-			{
-				"id":         "message-ordinary-user",
-				"role":       "user",
-				"content":    "ORDINARY_USER_INPUT_UNCHANGED",
-				"created_at": 1_721_056_898,
-			},
-			{
-				"id":                  "message-current-page",
-				"role":                "runtime",
-				"kind":                "runtime_message",
-				"runtime_message_id":  "tool-call-result:call-current-page",
-				"type":                "tool_call_completed",
-				"source_tool_call_id": "call-current-page",
-				"source_message_id":   "tool-call-result:call-current-page",
-				"content":             string(currentPage),
-				"created_at":          1_721_056_899,
-			},
-		},
-	}
-	raw, err := json.Marshal(batch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateDir := filepath.Join(root, "external-runtime")
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	db, err := bolt.Open(filepath.Join(stateDir, "state.db"), 0o600, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists(externalRuntimeInputBatchesBucket)
-		if err != nil {
-			return err
-		}
-		return bucket.Put([]byte(batch.key()), raw)
-	}); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -763,16 +175,71 @@ func dialVMWebSocket(t *testing.T, wsURL string) *websocket.Conn {
 	return ws
 }
 
+// testLongAgo is a time that every budget, TTL and deadline in these tests
+// has long passed, even on a synctest bubble's clock (which starts in 2000);
+// testFarFuture is one that none of them reaches. Tests use them instead of
+// the machine clock.
+var (
+	testLongAgo   = time.Date(1990, time.January, 1, 0, 0, 0, 0, time.UTC)
+	testFarFuture = time.Date(2100, time.January, 1, 0, 0, 0, 0, time.UTC)
+)
+
+// incompressibleBytes fills data with a fixed pseudorandom stream: the same
+// bytes in every run, and as incompressible as random ones.
+func incompressibleBytes(data []byte) {
+	_, _ = mathrand.NewChaCha8([32]byte{}).Read(data)
+}
+
+// waitForCondition returns once condition holds. The wait has no deadline of
+// its own: the go test timeout stops a test that never sees it.
 func waitForCondition(t *testing.T, description string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
+	t.Logf("waiting for %s", description)
+	for !condition() {
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for %s", description)
+}
+
+// waitUntilParked returns once a goroutine with fn on its stack is parked in a
+// state that starts with state, as a goroutine dump names it
+// ("sync.Mutex.Lock", "select", "chan receive"; "" for any wait). It reads the
+// goroutine stacks instead of a clock: when it returns, that goroutine has
+// reached the wait.
+func waitUntilParked(t *testing.T, state, fn string) {
+	t.Helper()
+	waitUntilParkedCount(t, state, fn, 1)
+}
+
+// waitUntilParkedCount is waitUntilParked for count goroutines at once.
+func waitUntilParkedCount(t *testing.T, state, fn string, count int) {
+	t.Helper()
+	waitForParked(t, state, count, func(frames string) bool { return strings.Contains(frames, fn) })
+}
+
+// waitForParked returns once count goroutines whose frames match are parked in
+// state.
+func waitForParked(t *testing.T, state string, count int, match func(frames string) bool) {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n == len(buf) {
+			buf = make([]byte, 2*len(buf))
+			continue
+		}
+		parked := 0
+		for _, goroutine := range strings.Split(string(buf[:n]), "\n\n") {
+			header, frames, _ := strings.Cut(goroutine, "\n")
+			waiting := !strings.Contains(header, "[running") && !strings.Contains(header, "[runnable")
+			if waiting && strings.Contains(header, "["+state) && match(frames) {
+				parked++
+			}
+		}
+		if parked >= count {
+			return
+		}
+		runtime.Gosched()
+	}
 }
 
 func dispatchForTest(
@@ -883,11 +350,7 @@ func TestRunRemoteOnceRepliesToHeartbeat(t *testing.T) {
 		t.Fatalf("heartbeat reply type = %q, want heartbeat", reply.Type)
 	}
 
-	select {
-	case <-errs:
-	case <-time.After(2 * time.Second):
-		t.Fatal("connector did not exit after server close")
-	}
+	<-errs
 }
 
 func TestRemoteWebSocketBlockedDataSendFailsWithinWriteDeadline(t *testing.T) {
@@ -898,64 +361,54 @@ func TestRemoteWebSocketBlockedDataSendFailsWithinWriteDeadline(t *testing.T) {
 	defer func() { webSocketWriteTimeout = previousTimeout }()
 
 	root := t.TempDir()
-	payload := make([]byte, maxFile)
-	if _, err := rand.Read(payload); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "large.bin"), payload, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "large.bin"), make([]byte, maxFile), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	upgrader := websocket.Upgrader{}
-	requestSent := make(chan struct{})
-	releaseServer := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ws, err := upgrader.Upgrade(w, r, nil)
+	// The Server asks for a large file and never reads the answer. Over the
+	// in-memory network the send blocks at once, and the bubble's clock
+	// reaches the write deadline, whatever the kernel would have buffered.
+	synctest.Test(t, func(t *testing.T) {
+		upgrader := websocket.Upgrader{}
+		requestSent := make(chan struct{})
+		releaseServer := make(chan struct{})
+		defer close(releaseServer)
+		server, dial := memoryServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ws, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer ws.Close()
+			var metadata message
+			if ws.ReadJSON(&metadata) != nil {
+				return
+			}
+			if ws.WriteJSON(message{
+				ID: "blocked-send", Type: "request", Method: "read",
+				Params: map[string]any{"path": "large.bin"},
+			}) != nil {
+				return
+			}
+			close(requestSent)
+			<-releaseServer
+		}))
+
+		connector, err := newConnector(config{
+			root: root, name: "blocked-data-send", server: server, dial: dial,
+			token: "token", systemInfoInterval: 0,
+		})
 		if err != nil {
-			return
+			t.Fatal(err)
 		}
-		defer ws.Close()
-		var metadata message
-		if ws.ReadJSON(&metadata) != nil {
-			return
-		}
-		if tcp, ok := ws.UnderlyingConn().(*net.TCPConn); ok {
-			_ = tcp.SetReadBuffer(4 * 1024)
-		}
-		if ws.WriteJSON(message{
-			ID: "blocked-send", Type: "request", Method: "read",
-			Params: map[string]any{"path": "large.bin"},
-		}) != nil {
-			return
-		}
-		close(requestSent)
-		<-releaseServer
-	}))
-	defer server.Close()
-	defer close(releaseServer)
-
-	connector, err := newConnector(config{
-		root: root, name: "blocked-data-send", server: server.URL,
-		token: "token", systemInfoInterval: 0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := make(chan error, 1)
-	go func() { result <- connector.runRemoteOnce(context.Background()) }()
-	select {
-	case <-requestSent:
-	case <-time.After(10 * time.Second):
-		t.Fatal("server did not send the large read request")
-	}
-	select {
-	case err := <-result:
-		if err == nil {
+		// The connector's workers end with the bubble.
+		defer close(connector.cleanupQueue)
+		result := make(chan error, 1)
+		go func() { result <- connector.runRemoteOnce(context.Background()) }()
+		<-requestSent
+		if err := <-result; err == nil {
 			t.Fatal("blocked websocket send returned no error")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("blocked websocket send outlived its write deadline")
-	}
+	})
 }
 
 func TestRuntimeAgentCarrierContract(t *testing.T) {
@@ -1004,9 +457,20 @@ func newVMWebSocketTestConnector(t *testing.T, cfg config) (*connector, error) {
 	t.Helper()
 	connector, err := newConnector(cfg)
 	if err == nil {
-		t.Cleanup(connector.closeExternalRuntimes)
+		t.Cleanup(connector.closeRuntimes)
 	}
 	return connector, err
+}
+
+// handlerReturns wraps handler. The channel receives each time a request's
+// handler has returned: for a VM WebSocket, once its generation reads no more
+// frames.
+func handlerReturns(handler http.Handler) (http.Handler, <-chan struct{}) {
+	returned := make(chan struct{}, 8)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() { returned <- struct{}{} }()
+		handler.ServeHTTP(w, r)
+	}), returned
 }
 
 func isolateHostRuntimeCommands(t *testing.T) {
@@ -1015,6 +479,16 @@ func isolateHostRuntimeCommands(t *testing.T) {
 	previousBundlePaths := codexAppBundleCommandPaths
 	codexAppBundleCommandPaths = func() []string { return nil }
 	t.Cleanup(func() { codexAppBundleCommandPaths = previousBundlePaths })
+}
+
+// Tests discover Claude only through PATH and the per-user install location,
+// which follows each test's HOME, never through a host-wide install such as
+// Homebrew's.
+func init() {
+	claudeCommandPaths = func() []string {
+		home, _ := os.UserHomeDir()
+		return []string{filepath.Join(home, ".local", "bin", "claude")}
+	}
 }
 
 func TestVMServerHealthReadyAndConnect(t *testing.T) {
@@ -1061,7 +535,6 @@ func TestVMServerHealthReadyAndConnect(t *testing.T) {
 	if err := ws.WriteJSON(message{Type: "connected", ConnectorRunID: "run-vm"}); err != nil {
 		t.Fatalf("write connected: %v", err)
 	}
-	acknowledgeExternalInputCatchup(t, ws)
 	if err := ws.WriteJSON(message{
 		ID:     "req-1",
 		Type:   "request",
@@ -1171,7 +644,8 @@ func TestVMWebSocketReplacementClosesOldGenerationAndServesNewRPC(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(connector.vmHTTPHandler(context.Background()))
+	handler, served := handlerReturns(connector.vmHTTPHandler(context.Background()))
+	server := httptest.NewServer(handler)
 	defer server.Close()
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/connect"
 
@@ -1187,7 +661,6 @@ func TestVMWebSocketReplacementClosesOldGenerationAndServesNewRPC(t *testing.T) 
 	if err := oldWS.WriteJSON(message{Type: "connected", ConnectorRunID: "old-run"}); err != nil {
 		t.Fatal(err)
 	}
-	acknowledgeExternalInputCatchup(t, oldWS)
 	if err := oldWS.WriteJSON(message{
 		ID:     "old-exec",
 		Type:   "request",
@@ -1213,7 +686,6 @@ func TestVMWebSocketReplacementClosesOldGenerationAndServesNewRPC(t *testing.T) 
 	if err := newWS.WriteJSON(message{Type: "connected", ConnectorRunID: "new-run"}); err != nil {
 		t.Fatal(err)
 	}
-	acknowledgeExternalInputCatchup(t, newWS)
 	if err := newWS.WriteJSON(message{
 		ID:     "new-list",
 		Type:   "request",
@@ -1229,32 +701,22 @@ func TestVMWebSocketReplacementClosesOldGenerationAndServesNewRPC(t *testing.T) 
 		t.Fatalf("replacement reply = %#v", reply)
 	}
 
-	_ = oldWS.SetReadDeadline(time.Now().Add(time.Second))
+	// The replacement closes the old socket; a socket left open would block
+	// this read until the go test timeout.
 	if err := oldWS.ReadJSON(&reply); err == nil {
 		t.Fatalf("old generation remained readable after replacement: %#v", reply)
 	}
 	if runID, _, _ := connector.connectionIdentity(); runID != "new-run" {
 		t.Fatalf("stale generation replaced active identity: %q", runID)
 	}
-	time.Sleep(50 * time.Millisecond)
-	if fileExists(lateMarker) {
+	// The old generation's handler has returned, so it reads no more frames.
+	// A request it admitted would hold an operation record.
+	<-served
+	connector.requestMu.Lock()
+	_, admitted := connector.requestOperations["late-old-exec"]
+	connector.requestMu.Unlock()
+	if admitted || fileExists(lateMarker) {
 		t.Fatal("old generation admitted a request after replacement metadata was visible")
-	}
-}
-
-func acknowledgeExternalInputCatchup(t *testing.T, ws *websocket.Conn) {
-	t.Helper()
-	var request message
-	if err := ws.ReadJSON(&request); err != nil {
-		t.Fatalf("read reconnect catch-up request: %v", err)
-	}
-	if request.Type != "request" || request.Method != "agent_runtime_catchup" || request.ID == "" {
-		t.Fatalf("reconnect catch-up request = %#v", request)
-	}
-	if err := ws.WriteJSON(message{
-		ID: request.ID, Type: "response", Result: map[string]any{"accepted": true},
-	}); err != nil {
-		t.Fatalf("ack reconnect catch-up request: %v", err)
 	}
 }
 
@@ -1284,7 +746,8 @@ func TestVMWebSocketReplacementRejectsOldRequestAlreadyPastReadLoopActiveCheck(t
 		<-releaseReplacement
 	}
 
-	server := httptest.NewServer(connector.vmHTTPHandler(context.Background()))
+	handler, served := handlerReturns(connector.vmHTTPHandler(context.Background()))
+	server := httptest.NewServer(handler)
 	defer server.Close()
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/connect"
 	oldWS := dialVMWebSocket(t, wsURL)
@@ -1295,25 +758,22 @@ func TestVMWebSocketReplacementRejectsOldRequestAlreadyPastReadLoopActiveCheck(t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-admissionEntered:
-	case <-time.After(time.Second):
-		t.Fatal("old request did not reach the admission boundary")
-	}
+	<-admissionEntered
 
 	newWS, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer newWS.Close()
-	select {
-	case <-replacementPublished:
-	case <-time.After(time.Second):
-		t.Fatal("replacement was not published")
-	}
+	<-replacementPublished
 	close(releaseAdmission)
-	time.Sleep(50 * time.Millisecond)
-	if fileExists(marker) {
+	// The old generation's handler returns after admission has decided on the
+	// write. A write it admitted would hold an operation record.
+	<-served
+	connector.requestMu.Lock()
+	_, admitted := connector.requestOperations["old-window-write"]
+	connector.requestMu.Unlock()
+	if admitted || fileExists(marker) {
 		t.Fatal("old generation produced a side effect after replacement was published")
 	}
 	close(releaseReplacement)
@@ -1367,11 +827,7 @@ func TestVMWebSocketReplacementClosesOldReplySinkBeforePublishingNewGeneration(t
 		t.Fatal(err)
 	}
 	defer newWS.Close()
-	select {
-	case <-replacementPublished:
-	case <-time.After(time.Second):
-		t.Fatal("replacement was not published")
-	}
+	<-replacementPublished
 
 	writer, err := os.OpenFile(fifo, os.O_WRONLY, 0)
 	if err != nil {
@@ -1385,7 +841,8 @@ func TestVMWebSocketReplacementClosesOldReplySinkBeforePublishingNewGeneration(t
 	}
 	waitForCondition(t, "actor-owned old request completion", func() bool { return len(connector.requestSlots) == 0 })
 
-	_ = oldWS.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	// The replacement closed the old socket before it was published; a socket
+	// left open would block this read until the go test timeout.
 	var frame message
 	if err := oldWS.ReadJSON(&frame); err == nil {
 		t.Fatalf("old reply sink remained writable after replacement publication: %#v", frame)
@@ -1448,7 +905,12 @@ func TestVMReplacementDuringComputerUseLaunchDoesNotPoisonConnector(t *testing.T
 	}
 	root := t.TempDir()
 	helperApp := filepath.Join(root, "Comma Computer Use.app")
-	if err := os.MkdirAll(helperApp, 0o755); err != nil {
+	daemon := filepath.Join(helperApp, "Contents", "MacOS", "CommaComputerUseDaemon")
+	if err := os.MkdirAll(filepath.Dir(daemon), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The launch first asks the bundled daemon to prepare the application.
+	if err := os.WriteFile(daemon, []byte("#!/bin/sh\nprintf '%s\\n' "+shellQuote(helperApp)+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	started := filepath.Join(root, "open-started")
@@ -1470,7 +932,8 @@ func TestVMReplacementDuringComputerUseLaunchDoesNotPoisonConnector(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(connector.vmHTTPHandler(context.Background()))
+	handler, served := handlerReturns(connector.vmHTTPHandler(context.Background()))
+	server := httptest.NewServer(handler)
 	defer server.Close()
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/connect"
 	oldWS := dialVMWebSocket(t, wsURL)
@@ -1484,7 +947,9 @@ func TestVMReplacementDuringComputerUseLaunchDoesNotPoisonConnector(t *testing.T
 	waitForCondition(t, "computer_use helper launch", func() bool { return fileExists(started) })
 	replacement := dialVMWebSocket(t, wsURL)
 	defer replacement.Close()
-	time.Sleep(connectionDrainTimeout + 250*time.Millisecond)
+	// The old generation's handler returns after its workers drained, or
+	// after it reported them stuck.
+	<-served
 	if fatal := connector.connectorFatal(); fatal != nil {
 		t.Fatalf("canceled computer_use launch poisoned connector: %v", fatal)
 	}
@@ -1535,7 +1000,6 @@ func TestVMWebSocketControlFrameOvertakesQueuedDataFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
 	dataBeforeHeartbeat := 0
 	for {
 		var frame message
@@ -1573,6 +1037,14 @@ func TestVMWebSocketRealBlockingRequestsHitAdmissionLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A request is done once it marked the workspace dirty, after its slot is
+	// free: the test's directory goes only after that write.
+	finished := make(chan string, len(paths))
+	connector.afterRequestFinished = func(msg message) {
+		if strings.HasPrefix(msg.ID, "blocked-") {
+			finished <- msg.ID
+		}
+	}
 	server := httptest.NewServer(connector.vmHTTPHandler(context.Background()))
 	defer server.Close()
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/connect"
@@ -1597,7 +1069,6 @@ func TestVMWebSocketRealBlockingRequestsHitAdmissionLimit(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_ = ws.SetReadDeadline(time.Now().Add(time.Second))
 	var frame message
 	if err := ws.ReadJSON(&frame); err != nil {
 		t.Fatal(err)
@@ -1619,9 +1090,12 @@ func TestVMWebSocketRealBlockingRequestsHitAdmissionLimit(t *testing.T) {
 		}()
 	}
 	release.Wait()
-	waitForCondition(t, "released filesystem requests to finish", func() bool {
-		return len(connector.requestSlots) == 0
-	})
+	for range paths {
+		<-finished
+	}
+	if len(connector.requestSlots) != 0 {
+		t.Fatalf("request slots still held: %d", len(connector.requestSlots))
+	}
 }
 
 func TestVMWebSocketRealBlockingStreamsHitAdmissionLimit(t *testing.T) {
@@ -1656,7 +1130,7 @@ func TestVMWebSocketRealBlockingStreamsHitAdmissionLimit(t *testing.T) {
 	t.Cleanup(func() {
 		_ = ws.Close()
 		server.Close()
-		connector.closeExternalRuntimes()
+		connector.closeRuntimes()
 	})
 
 	for index := range paths {
@@ -1693,7 +1167,6 @@ func TestVMWebSocketRealBlockingStreamsHitAdmissionLimit(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_ = ws.SetReadDeadline(time.Now().Add(time.Second))
 	var frame message
 	if err := ws.ReadJSON(&frame); err != nil {
 		t.Fatal(err)
@@ -1776,6 +1249,8 @@ func TestVMWebSocketRequestWatchdogClosesBlockedIOAndReplacementServes(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	finished := make(chan string, 4)
+	connector.afterRequestFinished = func(msg message) { finished <- msg.ID }
 	server := httptest.NewServer(connector.vmHTTPHandler(context.Background()))
 	defer server.Close()
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/connect"
@@ -1801,12 +1276,11 @@ func TestVMWebSocketRequestWatchdogClosesBlockedIOAndReplacementServes(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_ = blockedWS.SetReadDeadline(time.Now().Add(time.Second))
+	// The read is admitted and blocked opening the FIFO before the
+	// replacement connects: a replacement that came first would turn the
+	// read away, and nothing would hold the FIFO open for the writer below.
+	waitUntilParked(t, "syscall", "(*connector).methodRead(")
 	var reply message
-	if err := blockedWS.ReadJSON(&reply); err == nil {
-		t.Fatalf("watchdog left blocked request socket alive: %#v", reply)
-	}
-
 	replacement, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1821,6 +1295,11 @@ func TestVMWebSocketRequestWatchdogClosesBlockedIOAndReplacementServes(t *testin
 	if err := replacement.ReadJSON(&reply); err != nil || reply.ID != "replacement-list" || reply.Type != "response" {
 		t.Fatalf("replacement RPC reply=%#v err=%v", reply, err)
 	}
+	// The serving replacement has closed the blocked socket; a socket left
+	// open would block this read until the go test timeout.
+	if err := blockedWS.ReadJSON(&reply); err == nil {
+		t.Fatalf("replacement left the blocked request socket alive: %#v", reply)
+	}
 
 	writer, err := os.OpenFile(fifo, os.O_WRONLY, 0)
 	if err != nil {
@@ -1829,11 +1308,12 @@ func TestVMWebSocketRequestWatchdogClosesBlockedIOAndReplacementServes(t *testin
 	_, _ = writer.Write([]byte("release"))
 	_ = writer.Close()
 
-	// Join the released read goroutine before returning: its teardown still
-	// touches the connector root, and returning early races t.TempDir's
-	// RemoveAll ("directory not empty").
-	if !blockedSession.wait() {
-		t.Fatal("blocked request goroutine did not drain after the FIFO release")
+	// Join both request goroutines before returning: each marks the workspace
+	// dirty under the connector root after its reply, and returning early races
+	// t.TempDir's RemoveAll ("directory not empty").
+	pending := map[string]bool{"blocked-read": true, "replacement-list": true}
+	for len(pending) > 0 {
+		delete(pending, <-finished)
 	}
 }
 
@@ -1865,11 +1345,12 @@ func TestVMWebSocketRequestWatchdogHonorsLongRunningMethodTimeout(t *testing.T) 
 	}
 	if err := ws.WriteJSON(message{
 		ID: "long-exec", Type: "request", Method: "exec",
-		Params: map[string]any{"command": "sleep 0.05; printf ok", "timeout": 1},
+		// The command outlasts the 20 ms watchdog of ordinary methods and ends
+		// long before its own timeout.
+		Params: map[string]any{"command": "sleep 0.05; printf ok", "timeout": 3600},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_ = ws.SetReadDeadline(time.Now().Add(time.Second))
 	if err := ws.ReadJSON(&frame); err != nil || frame.ID != "long-exec" || frame.Type != "response" {
 		t.Fatalf("long-running method reply=%#v err=%v", frame, err)
 	}
@@ -1965,11 +1446,17 @@ func TestVMReplacementKeepsAcceptedProcessWritesButClosesOldReplySink(t *testing
 	if err := newWS.ReadJSON(&frame); err != nil || frame.ID != "new-marker" || frame.Type != "response" {
 		t.Fatalf("new process_write reply=%#v err=%v", frame, err)
 	}
-	_ = oldWS.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	// The replacement closed the old socket; a socket left open would block
+	// this read until the go test timeout.
 	if err := oldWS.ReadJSON(&frame); err == nil {
 		t.Fatalf("old reply sink remained readable after replacement: %#v", frame)
 	}
-	time.Sleep(50 * time.Millisecond)
+	// cat copies its stdin to the marker. A write lost across the replacement
+	// never arrives there, and the go test timeout reports it.
+	waitForCondition(t, "both accepted writes to reach the process", func() bool {
+		content, _ := os.ReadFile(marker)
+		return bytes.Contains(content, []byte("OLD_MARKER")) && bytes.Contains(content, []byte("NEW_MARKER"))
+	})
 	if err := newWS.WriteJSON(message{
 		ID: "stop-reader", Type: "request", Method: "process_stop",
 		Params: map[string]any{"process_name": "delayed-reader"},
@@ -1978,13 +1465,6 @@ func TestVMReplacementKeepsAcceptedProcessWritesButClosesOldReplySink(t *testing
 	}
 	if err := newWS.ReadJSON(&frame); err != nil {
 		t.Fatal(err)
-	}
-	content, err := os.ReadFile(marker)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(content, []byte("OLD_MARKER")) || !bytes.Contains(content, []byte("NEW_MARKER")) {
-		t.Fatalf("accepted process writes were lost across replacement: bytes=%d old=%t new=%t", len(content), bytes.Contains(content, []byte("OLD_MARKER")), bytes.Contains(content, []byte("NEW_MARKER")))
 	}
 }
 
@@ -2031,31 +1511,19 @@ func TestRemoteCleanupFatalStopsReconnectAfterServerDisappears(t *testing.T) {
 	blockedCleanup := &blockingCloser{started: make(chan struct{}), release: make(chan struct{})}
 	defer close(blockedCleanup.release)
 	connector.enqueueCleanup(blockedCleanup)
-	select {
-	case <-blockedCleanup.started:
-	case <-time.After(time.Second):
-		t.Fatal("cleanup worker did not enter the blocking closer")
-	}
+	<-blockedCleanup.started
 	for index := 0; index < cleanupQueueSize; index++ {
 		connector.enqueueCleanup(io.NopCloser(strings.NewReader("occupied")))
 	}
 	result := make(chan error, 1)
 	go func() { result <- connector.runRemote(context.Background()) }()
-	select {
-	case <-firstDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("remote connector did not establish the first websocket")
-	}
+	<-firstDone
 	server.Close()
-	select {
-	case err := <-result:
-		if !isConnectorFatal(err) {
-			t.Fatalf("runRemote returned non-terminal error: %T %v", err, err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("cleanup fatal left runRemote reconnecting")
+	err = <-result
+	if !isConnectorFatal(err) {
+		t.Fatalf("runRemote returned non-terminal error: %T %v", err, err)
 	}
-	time.Sleep(50 * time.Millisecond)
+	// runRemote has returned, so it dials no more.
 	if got := atomic.LoadInt64(&dials); got != 1 {
 		t.Fatalf("connector redialed after sticky fatal: dials=%d", got)
 	}
@@ -2068,11 +1536,16 @@ func TestVMServerArchiveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer connector.closeExternalRuntimes()
-	connector.forwardRuntimeEvent("capability", map[string]any{
-		"type": "status", "provider": "codex", "state": "running",
-	})
-	waitForDurableEventCount(t, connector, 1)
+	defer connector.closeRuntimes()
+	// A device upgraded from an earlier release keeps its External Session
+	// state directory; it is never archived.
+	legacyState := filepath.Join(connector.root, legacyExternalRuntimeDir, "state.db")
+	if err := os.MkdirAll(filepath.Dir(legacyState), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyState, []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(connector.root, "hello.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
@@ -2092,8 +1565,8 @@ func TestVMServerArchiveRoundTrip(t *testing.T) {
 	if !tarGzContains(t, raw, "hello.txt") {
 		t.Fatal("archive did not contain hello.txt")
 	}
-	if tarGzContains(t, raw, externalRuntimeStateRelativePath) {
-		t.Fatal("archive included live external runtime state")
+	if tarGzContains(t, raw, legacyExternalRuntimeDir+"/state.db") || tarGzContains(t, raw, legacyExternalRuntimeDir) {
+		t.Fatal("archive included legacy external runtime state")
 	}
 
 	restoreRoot := t.TempDir()
@@ -2101,7 +1574,7 @@ func TestVMServerArchiveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new restore connector: %v", err)
 	}
-	defer restored.closeExternalRuntimes()
+	defer restored.closeRuntimes()
 	restoreServer := httptest.NewServer(restored.vmHTTPHandler(context.Background()))
 	defer restoreServer.Close()
 
@@ -2125,20 +1598,28 @@ func TestVMServerArchiveRoundTrip(t *testing.T) {
 		t.Fatalf("restored file = %q", data)
 	}
 
-	corruptDB := makeTarGz(t, []tarEntry{{name: externalRuntimeStateRelativePath, data: []byte("corrupt")}})
-	req, _ = http.NewRequest(http.MethodPut, restoreServer.URL+"/archive", bytes.NewReader(corruptDB))
+	// An archive from an earlier release may carry External Session state:
+	// the rest restores and the legacy state is skipped.
+	legacyArchive := makeTarGz(t, []tarEntry{
+		{name: legacyExternalRuntimeDir + "/state.db", data: []byte("legacy")},
+		{name: legacyExternalRuntimeDir + "/archive-scope.json", data: []byte(`{"scope":"recovery"}`)},
+		{name: "after-upgrade.txt", data: []byte("kept")},
+	})
+	req, _ = http.NewRequest(http.MethodPut, restoreServer.URL+"/archive", bytes.NewReader(legacyArchive))
 	restoreResp, err = http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("restore live state: %v", err)
+		t.Fatalf("restore legacy archive: %v", err)
 	}
 	if restoreResp.StatusCode != http.StatusOK {
-		t.Fatalf("restore live state status=%s", restoreResp.Status)
+		t.Fatalf("restore legacy archive status=%s", restoreResp.Status)
 	}
 	_ = restoreResp.Body.Close()
-	restored.forwardRuntimeEvent("capability", map[string]any{
-		"type": "status", "provider": "codex", "state": "running",
-	})
-	waitForDurableEventCount(t, restored, 1)
+	if data, err := os.ReadFile(filepath.Join(restoreRoot, "after-upgrade.txt")); err != nil || string(data) != "kept" {
+		t.Fatalf("restored file = %q, %v", data, err)
+	}
+	if _, err := os.Lstat(filepath.Join(restoreRoot, legacyExternalRuntimeDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy external runtime state was restored: %v", err)
+	}
 }
 
 func TestVMServerArchiveRestoreRejectsSymlinkEscape(t *testing.T) {
@@ -2248,7 +1729,7 @@ func TestMetadataAdvertisesLocalFileIndexVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 
 	capabilities := c.metadata().Capabilities
 	if got, present := capabilities["scope"]; !present || got != "" {
@@ -2276,7 +1757,7 @@ func TestLocalFileReadScopeRefusesEveryMethodExceptReadRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 
 	refused := []string{
 		"exec",
@@ -2321,58 +1802,6 @@ func TestLocalFileReadScopeRefusesEveryMethodExceptReadRef(t *testing.T) {
 	}
 }
 
-func TestScopedConnectorsShareOneRootWithoutRuntimeState(t *testing.T) {
-	root := t.TempDir()
-	index := t.TempDir()
-
-	first, err := newConnector(config{
-		name:                "workspace-a",
-		parentLifelineFD:    3,
-		root:                root,
-		runNonce:            "11111111111111111111111111111111",
-		shutdownRequestPath: filepath.Join(t.TempDir(), "shutdown-request.json"),
-		localFileIndexRoot:  index,
-		scope:               scopeLocalFileRead,
-		systemInfoInterval:  0,
-	})
-	if err != nil {
-		t.Fatalf("first scoped connector: %v", err)
-	}
-	defer first.closeExternalRuntimes()
-
-	// The previous implementation opened <root>/external-runtime/state.db with
-	// an exclusive bolt lock, so a second scoped connector on the same root
-	// failed with "open external runtime state: timeout". Scoped connectors
-	// must not touch that database at all.
-	second, err := newConnector(config{
-		name:                "workspace-b",
-		parentLifelineFD:    3,
-		root:                root,
-		runNonce:            "22222222222222222222222222222222",
-		shutdownRequestPath: filepath.Join(t.TempDir(), "shutdown-request.json"),
-		localFileIndexRoot:  index,
-		scope:               scopeLocalFileRead,
-		systemInfoInterval:  0,
-	})
-	if err != nil {
-		t.Fatalf("second scoped connector on the same root: %v", err)
-	}
-	defer second.closeExternalRuntimes()
-
-	if _, err := os.Stat(filepath.Join(root, "external-runtime", "state.db")); !os.IsNotExist(err) {
-		t.Fatalf("scoped connectors must not create the external runtime database (stat err = %v)", err)
-	}
-	if len(first.runtimeImplementations) != 0 {
-		t.Fatalf("scoped connector must not instantiate agent runtime implementations")
-	}
-	if got := first.externalRuntimeState.db; got != nil {
-		t.Fatalf("scoped connector must hold a disabled external runtime state")
-	}
-	if err := first.externalRuntimeState.enqueueInputBatch("codex", externalRuntimeInput{}); !errors.Is(err, errExternalRuntimeStateDisabled) {
-		t.Fatalf("enqueueInputBatch = %v, want errExternalRuntimeStateDisabled", err)
-	}
-}
-
 func TestScopedConnectorNeverProbesAgentRuntimes(t *testing.T) {
 	c, err := newConnector(config{
 		name:                "attachment-reader",
@@ -2387,7 +1816,7 @@ func TestScopedConnectorNeverProbesAgentRuntimes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 
 	probes := 0
 	c.runtimeInventory.run = func(runtimeProbeTarget) map[string]any {
@@ -2430,7 +1859,7 @@ func TestLocalFileReadScopeAdvertisesMinimalCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 
 	capabilities := c.metadata().Capabilities
 	if got := capabilities["scope"]; got != scopeLocalFileRead {
@@ -2474,7 +1903,7 @@ func TestCommaDesktopScopeChangesInPlaceWithoutStartingExternalRuntimes(t *testi
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 
 	if got := c.currentScope(); got != scopeLocalFileRead {
 		t.Fatalf("initial scope = %q, want %q", got, scopeLocalFileRead)
@@ -2485,7 +1914,7 @@ func TestCommaDesktopScopeChangesInPlaceWithoutStartingExternalRuntimes(t *testi
 	if got := c.currentScope(); got != "" {
 		t.Fatalf("enabled scope = %q, want full", got)
 	}
-	if len(c.runtimeImplementations) != 0 || c.externalRuntimeState.db != nil {
+	if len(c.runtimeImplementations) != 0 {
 		t.Fatalf("scope elevation must not initialize external runtimes")
 	}
 
@@ -2525,7 +1954,7 @@ func TestScopeControlRequiresExactRunNonceAndPublishesMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 
 	var sent []message
 	session := c.claimConnection(context.Background(), func(_ context.Context, m message) error {
@@ -2563,7 +1992,7 @@ func TestScopeDowngradeFencesAnAlreadyAdmittedProcessStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	if err := c.setCurrentScope(""); err != nil {
 		t.Fatal(err)
 	}
@@ -2588,13 +2017,13 @@ func TestScopeDowngradeFencesAnAlreadyAdmittedProcessStart(t *testing.T) {
 
 	downgradeDone := make(chan error, 1)
 	go func() { downgradeDone <- c.setCurrentScope(scopeLocalFileRead) }()
-	for c.currentScope() != scopeLocalFileRead {
-		time.Sleep(time.Millisecond)
-	}
+	// The downgrade waits for processMu, which the admitted start holds inside
+	// its fence.
+	waitUntilParked(t, "sync.Mutex.Lock", "(*connector).stopManagedProcesses(")
 	select {
 	case err := <-downgradeDone:
 		t.Fatalf("downgrade acknowledged before admitted process fence drained: %v", err)
-	case <-time.After(20 * time.Millisecond):
+	default:
 	}
 	close(releaseFence)
 	if err := <-startDone; err == nil {
@@ -2628,7 +2057,7 @@ func TestScopeDowngradeAbortsPendingWriteStreamAndRejectsLaterFrames(t *testing.
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	if err := c.setCurrentScope(""); err != nil {
 		t.Fatal(err)
 	}
@@ -2671,14 +2100,10 @@ func TestScopeDowngradeAbortsPendingWriteStreamAndRejectsLaterFrames(t *testing.
 	if session.pendingWrite("write-after-downgrade") != nil {
 		t.Fatal("restricted transition retained pending write_stream")
 	}
-	select {
-	case frame := <-terminal:
-		if frame.Stream == nil || frame.Stream.Channel != "done" || !frame.Stream.EOF ||
-			!strings.Contains(frame.Error, "scope restricted") {
-			t.Fatalf("scope cancellation frame = %#v", frame)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("scope downgrade did not terminate pending write_stream")
+	frame := <-terminal
+	if frame.Stream == nil || frame.Stream.Channel != "done" || !frame.Stream.EOF ||
+		!strings.Contains(frame.Error, "scope restricted") {
+		t.Fatalf("scope cancellation frame = %#v", frame)
 	}
 	content, err := os.ReadFile(filepath.Join(root, "bounded.txt"))
 	if err != nil {
@@ -2703,7 +2128,7 @@ func TestScopeDowngradeDoesNotWaitForUserFileClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	if err := c.setCurrentScope(""); err != nil {
 		t.Fatal(err)
 	}
@@ -2727,19 +2152,11 @@ func TestScopeDowngradeDoesNotWaitForUserFileClose(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { done <- c.setCurrentScope(scopeLocalFileRead) }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("scope downgrade waited for user file Close")
+	err = <-done
+	if err != nil {
+		t.Fatal(err)
 	}
-	select {
-	case <-closer.started:
-	case <-time.After(time.Second):
-		t.Fatal("asynchronous user file cleanup did not start")
-	}
+	<-closer.started
 }
 
 func TestScopeStatusAcknowledgesOnlyAfterMetadataPublishAndPeriodicRetry(t *testing.T) {
@@ -2758,7 +2175,7 @@ func TestScopeStatusAcknowledgesOnlyAfterMetadataPublishAndPeriodicRetry(t *test
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	c.writeStatus("connected", "", nil)
 
 	session := c.claimConnection(context.Background(), func(context.Context, message) error {
@@ -2818,7 +2235,7 @@ func TestConnectURLCarriesCurrentScopeIncludingFull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 
 	restrictedURL, err := c.connectURL("https://salix.test")
 	if err != nil {
@@ -2888,78 +2305,82 @@ func TestParentLifelineCancelsConnectorContextOnEOF(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
+	reads := make(chan struct{}, 4)
 	go func() {
-		watchParentLifeline(ctx, reader, cancel)
+		watchParentLifeline(ctx, readSignalingReader{reader, reads}, cancel)
 		close(done)
 	}()
 
+	<-reads
 	if _, err := writer.Write([]byte("still-alive")); err != nil {
 		t.Fatal(err)
 	}
+	// The watcher reads again only after it has handled the payload.
 	select {
+	case <-reads:
 	case <-ctx.Done():
 		t.Fatal("lifeline payload must not terminate the connector before EOF")
-	case <-time.After(25 * time.Millisecond):
 	}
 
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("connector context remained live after parent lifeline EOF")
-	}
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("parent lifeline watcher did not return")
-	}
+	<-ctx.Done()
+	<-done
 }
 
+// readSignalingReader sends on reads each time a Read starts.
+type readSignalingReader struct {
+	io.Reader
+	reads chan<- struct{}
+}
+
+func (r readSignalingReader) Read(p []byte) (int, error) {
+	r.reads <- struct{}{}
+	return r.Reader.Read(p)
+}
+
+// The watcher polls on a ticker of the bubble's clock.
 func TestCooperativeShutdownRequiresExactRunNonce(t *testing.T) {
-	requestPath := filepath.Join(t.TempDir(), "shutdown-request.json")
-	runNonce := "0123456789abcdef0123456789abcdef"
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		watchShutdownRequest(ctx, requestPath, runNonce, cancel)
-		close(done)
-	}()
+	synctest.Test(t, func(t *testing.T) {
+		requestPath := filepath.Join(t.TempDir(), "shutdown-request.json")
+		runNonce := "0123456789abcdef0123456789abcdef"
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			watchShutdownRequest(ctx, requestPath, runNonce, cancel)
+			close(done)
+		}()
 
-	wrong, err := json.Marshal(map[string]string{
-		"runNonce": "ffffffffffffffffffffffffffffffff",
+		wrong, err := json.Marshal(map[string]string{
+			"runNonce": "ffffffffffffffffffffffffffffffff",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(requestPath, wrong, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// Three polls read the request for another run.
+		time.Sleep(150 * time.Millisecond)
+		synctest.Wait()
+		select {
+		case <-ctx.Done():
+			t.Fatal("a shutdown request for another run must not cancel this connector")
+		default:
+		}
+
+		exact, err := json.Marshal(map[string]string{"runNonce": runNonce})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(requestPath, exact, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		<-ctx.Done()
+		<-done
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(requestPath, wrong, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-ctx.Done():
-		t.Fatal("a shutdown request for another run must not cancel this connector")
-	case <-time.After(150 * time.Millisecond):
-	}
-
-	exact, err := json.Marshal(map[string]string{"runNonce": runNonce})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(requestPath, exact, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("exact cooperative shutdown request did not cancel the connector")
-	}
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("cooperative shutdown watcher did not return")
-	}
 }
 
 func TestMetadataIncludesSystemInfo(t *testing.T) {
@@ -2967,7 +2388,7 @@ func TestMetadataIncludesSystemInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 
 	meta := c.metadata()
 	if meta.Type != "metadata" {
@@ -3005,16 +2426,13 @@ func TestMetadataReportsCodexAgentRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	if _, err := c.runtimeInventory.probe(context.Background(), "", "", "connect"); err != nil {
 		t.Fatalf("initial runtime probe: %v", err)
 	}
 	before, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("read probe log: %v", err)
-	}
-	if !strings.Contains(string(before), "cli_output=salix-cli-ok") {
-		t.Fatalf("Codex app-server did not receive an executable SALIX_CLI: %q", before)
 	}
 
 	meta := c.metadata()
@@ -3234,141 +2652,6 @@ func TestCodexRuntimeRPCUsesWebSocket(t *testing.T) {
 	}
 }
 
-func TestRuntimeBridgeRoutesRegisteredRuntimeContext(t *testing.T) {
-	c, err := newConnector(config{name: "laptop", root: t.TempDir()})
-	if err != nil {
-		t.Fatalf("new connector: %v", err)
-	}
-
-	sent := make(chan message, 1)
-	deactivate := activateRuntimeTransportForTest(c, func(msg message) error {
-		sent <- msg
-		go c.completeRuntimeProxy(message{
-			ID:   msg.ID,
-			Type: "response",
-			Result: map[string]any{
-				"status":      200,
-				"body_base64": base64.StdEncoding.EncodeToString([]byte(`{"ok":true}`)),
-				"headers": map[string]any{
-					"content-type": "application/json",
-				},
-			},
-		})
-		return nil
-	})
-	defer deactivate()
-	bridgeURL, err := c.ensureRuntimeBridge()
-	if err != nil {
-		t.Fatalf("ensureRuntimeBridge: %v", err)
-	}
-
-	c.registerRuntimeRoute("context-cli", "cap-token")
-
-	resp, err := http.Get(bridgeURL + "/runtime/context-cli/tools")
-	if err != nil {
-		t.Fatalf("get thread path: %v", err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("thread path status = %d, want 200", resp.StatusCode)
-	}
-	msg := receiveMessage(t, sent)
-	if msg.Params["capability_token"] != "cap-token" {
-		t.Fatalf("capability_token = %#v", msg.Params["capability_token"])
-	}
-	if msg.Params["route_path"] != "/tools" {
-		t.Fatalf("route_path = %#v", msg.Params["route_path"])
-	}
-}
-
-func TestRuntimeBridgeReturnsStructuredOfflineError(t *testing.T) {
-	c, err := newConnector(config{name: "laptop", root: t.TempDir()})
-	if err != nil {
-		t.Fatalf("new connector: %v", err)
-	}
-	bridgeURL, err := c.ensureRuntimeBridge()
-	if err != nil {
-		t.Fatalf("ensure runtime bridge: %v", err)
-	}
-	c.registerRuntimeRoute("context-offline", "cap-token")
-
-	resp, err := http.Post(
-		bridgeURL+"/runtime/context-offline/tool/env.exec",
-		"application/json",
-		strings.NewReader(`{"command":"pwd"}`),
-	)
-	if err != nil {
-		t.Fatalf("post offline tool: %v", err)
-	}
-	defer resp.Body.Close()
-	var body map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode offline response: %v", err)
-	}
-	if resp.StatusCode != http.StatusServiceUnavailable || body["code"] != "connector_offline" {
-		t.Fatalf("offline response status=%d body=%#v", resp.StatusCode, body)
-	}
-}
-
-func TestRuntimeBridgeReturnsStructuredOfflineErrorWhenTransportDisconnectsDuringCall(t *testing.T) {
-	c, err := newConnector(config{name: "laptop", root: t.TempDir()})
-	if err != nil {
-		t.Fatalf("new connector: %v", err)
-	}
-
-	sent := make(chan message, 1)
-	deactivate := activateRuntimeTransportForTest(c, func(msg message) error {
-		sent <- msg
-		return nil
-	})
-	defer func() {
-		if deactivate != nil {
-			deactivate()
-		}
-	}()
-
-	bridgeURL, err := c.ensureRuntimeBridge()
-	if err != nil {
-		t.Fatalf("ensure runtime bridge: %v", err)
-	}
-	c.registerRuntimeRoute("context-disconnect", "cap-token")
-
-	type response struct {
-		resp *http.Response
-		err  error
-	}
-	responses := make(chan response, 1)
-	go func() {
-		resp, err := http.Post(
-			bridgeURL+"/runtime/context-disconnect/tool/env.exec",
-			"application/json",
-			strings.NewReader(`{"command":"pwd"}`),
-		)
-		responses <- response{resp: resp, err: err}
-	}()
-
-	receiveMessage(t, sent)
-	deactivate()
-	deactivate = nil
-
-	result := <-responses
-	if result.err != nil {
-		t.Fatalf("post tool during disconnect: %v", result.err)
-	}
-	defer result.resp.Body.Close()
-	raw, err := io.ReadAll(result.resp.Body)
-	if err != nil {
-		t.Fatalf("read offline response: %v", err)
-	}
-	var body map[string]any
-	if err := json.Unmarshal(raw, &body); err != nil {
-		t.Fatalf("decode offline response status=%d body=%q: %v", result.resp.StatusCode, raw, err)
-	}
-	if result.resp.StatusCode != http.StatusServiceUnavailable || body["code"] != "connector_offline" {
-		t.Fatalf("offline response status=%d body=%#v", result.resp.StatusCode, body)
-	}
-}
-
 func TestProcessMethodsSupportStdioLongRunningProcess(t *testing.T) {
 	c, err := newConnector(config{name: "laptop", root: t.TempDir()})
 	if err != nil {
@@ -3432,237 +2715,6 @@ func TestProcessMethodsSupportStdioLongRunningProcess(t *testing.T) {
 		"process_name": "echoer",
 	}, func(message) error { return nil }); err != nil {
 		t.Fatalf("process_stop: %v", err)
-	}
-}
-
-func TestRuntimeBridgeProxiesCapabilityRequests(t *testing.T) {
-	c, err := newConnector(config{name: "laptop", root: t.TempDir()})
-	if err != nil {
-		t.Fatalf("new connector: %v", err)
-	}
-
-	sent := make(chan message, 1)
-	deactivate := activateRuntimeTransportForTest(c, func(msg message) error {
-		sent <- msg
-		go c.completeRuntimeProxy(message{
-			ID:   msg.ID,
-			Type: "response",
-			Result: map[string]any{
-				"status":      201,
-				"body_base64": base64.StdEncoding.EncodeToString([]byte("proxied")),
-				"headers": map[string]any{
-					"content-type": "text/plain",
-				},
-			},
-		})
-		return nil
-	})
-	defer deactivate()
-	bridgeURL, err := c.ensureRuntimeBridge()
-	if err != nil {
-		t.Fatalf("ensureRuntimeBridge: %v", err)
-	}
-
-	c.registerRuntimeRoute("context-proxy", "cap-token")
-
-	resp, err := http.Post(bridgeURL+"/runtime/context-proxy/tool/im_api.slack.post_message?x=1", "application/json", strings.NewReader(`{"ok":true}`))
-	if err != nil {
-		t.Fatalf("post bridge: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 201 {
-		t.Fatalf("status = %d, want 201", resp.StatusCode)
-	}
-
-	msg := receiveMessage(t, sent)
-	if msg.Type != "request" || msg.Method != "runtime_proxy" {
-		t.Fatalf("runtime proxy message = %#v", msg)
-	}
-	if msg.Params["capability_token"] != "cap-token" {
-		t.Fatalf("capability_token = %#v", msg.Params["capability_token"])
-	}
-	if msg.Params["method"] != "POST" {
-		t.Fatalf("method = %#v", msg.Params["method"])
-	}
-	if msg.Params["route_path"] != "/tool/im_api.slack.post_message" {
-		t.Fatalf("route_path = %#v", msg.Params["route_path"])
-	}
-	if msg.Params["raw_query"] != "x=1" {
-		t.Fatalf("raw_query = %#v", msg.Params["raw_query"])
-	}
-	if msg.Params["body_base64"] != base64.StdEncoding.EncodeToString([]byte(`{"ok":true}`)) {
-		t.Fatalf("body_base64 = %#v", msg.Params["body_base64"])
-	}
-}
-
-func TestRuntimeBridgeProxiesExecThroughSessionRuntime(t *testing.T) {
-	c, err := newConnector(config{name: "laptop", root: t.TempDir()})
-	if err != nil {
-		t.Fatalf("new connector: %v", err)
-	}
-
-	sent := make(chan message, 1)
-	deactivate := activateRuntimeTransportForTest(c, func(msg message) error {
-		sent <- msg
-		go c.completeRuntimeProxy(message{
-			ID:   msg.ID,
-			Type: "response",
-			Result: map[string]any{
-				"status":      200,
-				"body_base64": base64.StdEncoding.EncodeToString([]byte(`{"proxied":true}`)),
-				"headers": map[string]any{
-					"content-type": "application/json",
-				},
-			},
-		})
-		return nil
-	})
-	defer deactivate()
-	bridgeURL, err := c.ensureRuntimeBridge()
-	if err != nil {
-		t.Fatalf("ensureRuntimeBridge: %v", err)
-	}
-
-	c.registerRuntimeRoute("context-exec", "cap-token")
-
-	body := `{"environment_id":"laptop","command":"printf SHOULD_NOT_RUN","description":"proxy exec"}`
-	resp, err := http.Post(bridgeURL+"/runtime/context-exec/tool/env.exec", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("post bridge: %v", err)
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read response: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d body=%q", resp.StatusCode, raw)
-	}
-	if !strings.Contains(string(raw), `"proxied":true`) {
-		t.Fatalf("response body = %q", raw)
-	}
-
-	msg := receiveMessage(t, sent)
-	if msg.Type != "request" || msg.Method != "runtime_proxy" {
-		t.Fatalf("runtime proxy message = %#v", msg)
-	}
-	if msg.Params["capability_token"] != "cap-token" {
-		t.Fatalf("capability_token = %#v", msg.Params["capability_token"])
-	}
-	if msg.Params["method"] != "POST" {
-		t.Fatalf("method = %#v", msg.Params["method"])
-	}
-	if msg.Params["route_path"] != "/tool/env.exec" {
-		t.Fatalf("route_path = %#v", msg.Params["route_path"])
-	}
-	if msg.Params["body_base64"] != base64.StdEncoding.EncodeToString([]byte(body)) {
-		t.Fatalf("body_base64 = %#v", msg.Params["body_base64"])
-	}
-
-	select {
-	case extra := <-sent:
-		t.Fatalf("env.exec should not make a local policy probe or second proxy request: %#v", extra)
-	case <-time.After(50 * time.Millisecond):
-	}
-}
-
-func TestSalixRuntimeCLIUsesRuntimeContext(t *testing.T) {
-	c, err := newConnector(config{name: "laptop", root: t.TempDir()})
-	if err != nil {
-		t.Fatalf("new connector: %v", err)
-	}
-
-	sent := make(chan message, 2)
-	deactivate := activateRuntimeTransportForTest(c, func(msg message) error {
-		sent <- msg
-		go c.completeRuntimeProxy(message{
-			ID:   msg.ID,
-			Type: "response",
-			Result: map[string]any{
-				"status":      200,
-				"body_base64": base64.StdEncoding.EncodeToString([]byte(`{"ok":true}`)),
-				"headers": map[string]any{
-					"content-type": "application/json",
-				},
-			},
-		})
-		return nil
-	})
-	defer deactivate()
-	bridgeURL, err := c.ensureRuntimeBridge()
-	if err != nil {
-		t.Fatalf("ensureRuntimeBridge: %v", err)
-	}
-
-	c.registerRuntimeRoute("context-a", "cap-token-a")
-	c.registerRuntimeRoute("context-b", "cap-token-b")
-	t.Setenv("SALIX_CONNECT_URL", bridgeURL)
-	t.Setenv("SALIX_RUNTIME_CONTEXT", "context-a")
-
-	out, err := captureStdout(t, func() error {
-		return runSalixRuntimeCLI([]string{"tools"})
-	})
-	if err != nil {
-		t.Fatalf("salix tools: %v", err)
-	}
-	if !strings.Contains(out, `"ok":true`) {
-		t.Fatalf("salix tools output = %q", out)
-	}
-	msg := receiveMessage(t, sent)
-	if msg.Params["capability_token"] != "cap-token-a" {
-		t.Fatalf("capability_token = %#v", msg.Params["capability_token"])
-	}
-	if msg.Params["method"] != "GET" {
-		t.Fatalf("method = %#v", msg.Params["method"])
-	}
-	if msg.Params["route_path"] != "/tools" {
-		t.Fatalf("route_path = %#v", msg.Params["route_path"])
-	}
-
-	t.Setenv("SALIX_RUNTIME_CONTEXT", "context-b")
-	out, err = captureStdout(t, func() error {
-		return runSalixRuntimeCLI([]string{
-			"tool", "call", "im_api.slack.post_message",
-			"--json", `{"text":"hi"}`,
-		})
-	})
-	if err != nil {
-		t.Fatalf("salix tool call: %v", err)
-	}
-	if !strings.Contains(out, `"ok":true`) {
-		t.Fatalf("salix tool call output = %q", out)
-	}
-	msg = receiveMessage(t, sent)
-	if msg.Params["capability_token"] != "cap-token-b" {
-		t.Fatalf("capability_token = %#v", msg.Params["capability_token"])
-	}
-	if msg.Params["method"] != "POST" {
-		t.Fatalf("method = %#v", msg.Params["method"])
-	}
-	if msg.Params["route_path"] != "/tool/im_api.slack.post_message" {
-		t.Fatalf("route_path = %#v", msg.Params["route_path"])
-	}
-	if msg.Params["body_base64"] != base64.StdEncoding.EncodeToString([]byte(`{"text":"hi"}`)) {
-		t.Fatalf("body_base64 = %#v", msg.Params["body_base64"])
-	}
-}
-
-func TestCodexDeveloperInstructionsRequireVisibleIMRepliesThroughCLI(t *testing.T) {
-	instructions := codexDeveloperInstructions()
-
-	for _, want := range []string{
-		"Assistant text is recorded only in the Salix runtime session",
-		"not visible in a Salix conversation",
-		"SALIX_CLI",
-		"`\"$SALIX_CLI\" tools`",
-		"`\"$SALIX_CLI\" tool call <tool_name>",
-		"every user-visible IM reply",
-	} {
-		if !strings.Contains(instructions, want) {
-			t.Fatalf("developer instructions missing %q:\n%s", want, instructions)
-		}
 	}
 }
 
@@ -3731,7 +2783,7 @@ func TestSystemInfoLoopRetriesAfterTransientPublishFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer connector.closeExternalRuntimes()
+	defer connector.closeRuntimes()
 
 	done := make(chan struct{})
 	defer close(done)
@@ -3749,11 +2801,7 @@ func TestSystemInfoLoopRetriesAfterTransientPublishFailure(t *testing.T) {
 		return nil
 	}, done, "")
 
-	select {
-	case <-recovered:
-	case <-time.After(time.Second):
-		t.Fatalf("periodic loop stopped after transient failure; attempts=%d", attempts.Load())
-	}
+	<-recovered
 	if got := attempts.Load(); got < 2 {
 		t.Fatalf("publish attempts = %d, want at least 2", got)
 	}
@@ -3764,7 +2812,7 @@ func TestPeriodicSystemInfoPublishesCachedMetadataWithoutRuntimeProbe(t *testing
 	if err != nil {
 		t.Fatalf("new connector: %v", err)
 	}
-	defer connector.closeExternalRuntimes()
+	defer connector.closeRuntimes()
 	connector.runtimeInventory.run = func(runtimeProbeTarget) map[string]any {
 		t.Fatal("periodic system info must not run the runtime inventory probe")
 		return nil
@@ -3788,37 +2836,8 @@ func TestPeriodicSystemInfoPublishesCachedMetadataWithoutRuntimeProbe(t *testing
 func receiveMessage(t *testing.T, messages <-chan message) message {
 	t.Helper()
 
-	select {
-	case msg := <-messages:
-		return msg
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for connector frame")
-		return message{}
-	}
-}
-
-func readStatusFile(t *testing.T, path string) map[string]any {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read status: %v", err)
-	}
-	var status map[string]any
-	if err := json.Unmarshal(data, &status); err != nil {
-		t.Fatalf("decode status: %v\n%s", err, data)
-	}
-	return status
-}
-
-func writeJSON(t *testing.T, path string, value any) {
-	t.Helper()
-	data, err := json.Marshal(value)
-	if err != nil {
-		t.Fatalf("encode json: %v", err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write json: %v", err)
-	}
+	msg := <-messages
+	return msg
 }
 
 func assertCapability(t *testing.T, values map[string]any, key string, want any) {
@@ -3851,593 +2870,6 @@ func fakeCodexCommand(t *testing.T, logPath string, env map[string]string) strin
 	return codex
 }
 
-func TestHelperPiRPC(t *testing.T) {
-	if os.Getenv("SALIX_TEST_FAKE_PI") != "1" {
-		return
-	}
-	args := helperProcessArgs()
-	for _, arg := range args {
-		if arg == "--approve" {
-			t.Fatal("Pi 0.73 RPC mode does not accept --approve")
-		}
-	}
-	nativeID := "pi-native"
-	modelProvider := os.Getenv("SALIX_TEST_FAKE_PI_MODEL_PROVIDER")
-	if modelProvider == "" {
-		modelProvider = "test"
-	}
-	if os.Getenv("SALIX_TEST_FAKE_RUNTIME_EXECUTE_SALIX") == "1" {
-		for index, arg := range args {
-			if arg == "--session-dir" && index+1 < len(args) {
-				nativeID += "-" + filepath.Base(args[index+1])
-			}
-		}
-	}
-	for index, arg := range args {
-		if arg == "--session" && index+1 < len(args) {
-			nativeID = args[index+1]
-		}
-	}
-	appendFakeProcessLog(os.Getenv("SALIX_TEST_FAKE_PI_LOG"), "start "+strings.Join(args, " "))
-	// Match Pi's prompt-file input so transport E2E still checks the complete
-	// prompt received by the child, not only the filename in its argv.
-	for index, arg := range args {
-		if arg == "--append-system-prompt" && index+1 < len(args) {
-			prompt := args[index+1]
-			if contents, err := os.ReadFile(prompt); err == nil {
-				prompt = string(contents)
-			}
-			appendFakeProcessLog(os.Getenv("SALIX_TEST_FAKE_PI_LOG"), "system_prompt="+prompt)
-		}
-	}
-	appendFakeProcessLog(os.Getenv("SALIX_TEST_FAKE_PI_LOG"), "context="+os.Getenv("SALIX_RUNTIME_CONTEXT"))
-	if cwd, err := os.Getwd(); err == nil {
-		appendFakeProcessLog(os.Getenv("SALIX_TEST_FAKE_PI_LOG"), "cwd="+cwd)
-	}
-	appendFakeLocalShellLog(os.Getenv("SALIX_TEST_FAKE_PI_LOG"))
-
-	encoder := json.NewEncoder(os.Stdout)
-	var writeMu sync.Mutex
-	write := func(value map[string]any) {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		_ = encoder.Encode(value)
-	}
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		var request map[string]any
-		if json.Unmarshal(scanner.Bytes(), &request) != nil {
-			continue
-		}
-		raw, _ := json.Marshal(request)
-		appendFakeProcessLog(os.Getenv("SALIX_TEST_FAKE_PI_LOG"), string(raw))
-		response := map[string]any{
-			"id":      request["id"],
-			"type":    "response",
-			"command": request["type"],
-			"success": true,
-		}
-		if stringParam(request, "type") == "get_state" {
-			response["data"] = map[string]any{
-				"sessionId": nativeID,
-				"model":     map[string]any{"provider": modelProvider, "id": "test-model"},
-			}
-		}
-		if stringParam(request, "type") == "get_available_models" {
-			models := []any{}
-			if os.Getenv("SALIX_TEST_FAKE_PI_AUTH_READY") != "0" {
-				models = append(models, map[string]any{"provider": modelProvider, "id": "test-model"})
-			}
-			response["data"] = map[string]any{"models": models}
-		}
-		if stringParam(request, "type") == "prompt" {
-			runFakeManagedProviderRequest("pi", "")
-			if marker := os.Getenv("SALIX_TEST_FAKE_PI_BLOCK_PROMPT_WHILE_EXISTS"); marker != "" {
-				if _, err := os.Stat(marker); err == nil {
-					appendFakeProcessLog(os.Getenv("SALIX_TEST_FAKE_PI_LOG"), "blocked_batch_prompt")
-					for {
-						if _, err := os.Stat(marker); os.IsNotExist(err) {
-							break
-						}
-						time.Sleep(25 * time.Millisecond)
-					}
-				}
-			}
-		}
-		write(response)
-		input := stringParam(request, "message")
-		if response["success"] != true {
-			continue
-		}
-		if stringParam(request, "type") == "prompt" {
-			if marker := os.Getenv("SALIX_TEST_FAKE_PI_FIRST_PROMPT_LIFECYCLE_MARKER"); marker != "" {
-				if err := os.Remove(marker); err == nil {
-					write(map[string]any{"type": "agent_start"})
-					if os.Getenv("SALIX_TEST_FAKE_PI_FIRST_PROMPT_LIFECYCLE") == "settled" {
-						write(map[string]any{"type": "agent_settled"})
-					}
-				}
-			}
-			runFakeCrashPendingMessageCall(os.Getenv("SALIX_TEST_FAKE_PI_LOG"))
-			if decision := recordFakeRecoveryDecision(input); decision != "" {
-				runFakeOfflineToolCall(os.Getenv("SALIX_TEST_FAKE_PI_LOG"))
-				stopAfterMessage := runFakeOfflineMessageCall(os.Getenv("SALIX_TEST_FAKE_PI_LOG")) &&
-					os.Getenv("SALIX_TEST_FAKE_OFFLINE_MESSAGE_EXIT_AFTER") == "1"
-				write(map[string]any{"type": "agent_start"})
-				write(map[string]any{
-					"type":       "tool_execution_start",
-					"toolCallId": "pi-recovery-decision",
-					"toolName":   "workspace-state",
-					"args":       map[string]any{"state": decision},
-				})
-				write(map[string]any{
-					"type":       "tool_execution_end",
-					"toolCallId": "pi-recovery-decision",
-					"toolName":   "workspace-state",
-					"result":     map[string]any{"text": decision},
-				})
-				write(map[string]any{"type": "agent_settled"})
-				if stopAfterMessage {
-					os.Exit(0)
-				}
-			}
-			runFakeOfflineMessageCall(os.Getenv("SALIX_TEST_FAKE_PI_LOG"))
-			if os.Getenv("SALIX_TEST_FAKE_PI_EXIT_AFTER_PROMPT") == "1" {
-				// Normal-stop fixtures must finish their turn; exit 0 alone is
-				// interruption evidence when execution is still unfinished.
-				write(map[string]any{"type": "agent_start"})
-				write(map[string]any{"type": "agent_settled"})
-				os.Exit(0)
-			}
-			if rawBytes := os.Getenv("SALIX_TEST_FAKE_PI_OVERSIZED_TOOL_RESULT_BYTES"); rawBytes != "" {
-				emit := true
-				if marker := os.Getenv("SALIX_TEST_FAKE_PI_OVERSIZED_TOOL_RESULT_ONCE"); marker != "" {
-					emit = os.Remove(marker) == nil
-				}
-				if emit {
-					bytes, _ := strconv.Atoi(rawBytes)
-					event := map[string]any{
-						"type":       "tool_execution_end",
-						"toolCallId": "pi-oversized-result",
-						"toolName": defaultString(
-							os.Getenv("SALIX_TEST_FAKE_PI_OVERSIZED_TOOL_NAME"),
-							"oversized-result",
-						),
-						"result": map[string]any{"text": strings.Repeat("x", bytes)},
-					}
-					if path := os.Getenv("SALIX_TEST_FAKE_PI_OVERSIZED_TOOL_PATH"); path != "" {
-						event["args"] = map[string]any{
-							"path": path, "offset": 7, "limit": bytes,
-							"content": "new-input-body-must-not-survive",
-						}
-					}
-					write(event)
-				}
-			}
-			if os.Getenv("SALIX_TEST_FAKE_RUNTIME_EXECUTE_SALIX") != "1" {
-				continue
-			}
-			go func() {
-				delayFakeRuntimeLifecycle()
-				write(map[string]any{"type": "agent_start"})
-				write(map[string]any{
-					"type":       "tool_execution_start",
-					"toolCallId": "pi-visible-reply",
-					"toolName":   "bash",
-					"args":       map[string]any{"command": "salix tool call im_api.internal.send_message"},
-				})
-				if token := completeFakeRuntimeVisibleReply("pi", input); token != "" {
-					write(map[string]any{
-						"type":       "tool_execution_end",
-						"toolCallId": "pi-visible-reply",
-						"toolName":   "bash",
-						"result":     map[string]any{"text": token},
-					})
-					write(map[string]any{
-						"type": "message_end",
-						"message": map[string]any{
-							"role":    "assistant",
-							"content": []any{map[string]any{"type": "text", "text": token}},
-						},
-					})
-					write(map[string]any{"type": "agent_settled"})
-				}
-			}()
-		}
-	}
-	os.Exit(0)
-}
-
-func runFakeManagedProviderRequest(provider, model string) {
-	if os.Getenv("SALIX_TEST_MANAGED_PROVIDER_E2E") != "1" {
-		return
-	}
-	endpoint, protocol, key, authScheme := "", "", "", ""
-	switch provider {
-	case "pi":
-		raw, err := os.ReadFile(filepath.Join(os.Getenv("PI_CODING_AGENT_DIR"), "models.json"))
-		if err != nil {
-			return
-		}
-		var config map[string]any
-		if json.Unmarshal(raw, &config) != nil {
-			return
-		}
-		entry := mapParam(mapParam(config, "providers"), "salix-managed")
-		endpoint, protocol = stringParam(entry, "baseUrl"), stringParam(entry, "api")
-		keyRef := strings.TrimPrefix(stringParam(entry, "apiKey"), "$")
-		key = os.Getenv(keyRef)
-		if entry["authHeader"] == true {
-			authScheme = "bearer"
-		} else {
-			authScheme = "api_key"
-		}
-		for index, arg := range helperProcessArgs() {
-			if arg == "--model" && index+1 < len(helperProcessArgs()) {
-				model = helperProcessArgs()[index+1]
-			}
-		}
-	case "claude":
-		endpoint, protocol = os.Getenv("ANTHROPIC_BASE_URL"), "anthropic-messages"
-		key, authScheme = os.Getenv("ANTHROPIC_AUTH_TOKEN"), "bearer"
-		if key == "" {
-			key, authScheme = os.Getenv("ANTHROPIC_API_KEY"), "api_key"
-		}
-	}
-	path := map[string]string{"openai-completions": "/chat/completions", "openai-responses": "/responses", "anthropic-messages": "/v1/messages"}[protocol]
-	request, err := http.NewRequest(http.MethodPost, strings.TrimRight(endpoint, "/")+path, strings.NewReader(fmt.Sprintf(`{"model":%q}`, model)))
-	if err != nil {
-		return
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if authScheme == "bearer" {
-		request.Header.Set("Authorization", "Bearer "+key)
-	} else {
-		request.Header.Set("x-api-key", key)
-	}
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, Timeout: 3 * time.Second} // #nosec G402 -- synthetic test server only.
-	response, err := client.Do(request)
-	if err == nil {
-		response.Body.Close()
-	}
-}
-
-func runFakeOfflineToolCall(logPath string) {
-	trigger := os.Getenv("SALIX_TEST_FAKE_OFFLINE_TOOL_TRIGGER")
-	if trigger == "" {
-		return
-	}
-	if err := os.Remove(trigger); err != nil {
-		return
-	}
-	started := time.Now()
-	output, err := exec.Command(
-		"salix",
-		"tool",
-		"call",
-		"env.exec",
-		"--json",
-		`{"command":"pwd","description":"offline e2e"}`,
-	).CombinedOutput()
-	appendFakeProcessLog(
-		logPath,
-		fmt.Sprintf(
-			"offline_tool err=%v elapsed_ms=%d output=%s",
-			err,
-			time.Since(started).Milliseconds(),
-			strings.TrimSpace(string(output)),
-		),
-	)
-}
-
-func runFakeOfflineMessageCall(logPath string) bool {
-	trigger := os.Getenv("SALIX_TEST_FAKE_OFFLINE_MESSAGE_TRIGGER")
-	if trigger == "" {
-		return false
-	}
-	if err := os.Remove(trigger); err != nil {
-		return false
-	}
-	payloadBytes, _ := json.Marshal(map[string]any{
-		"connect_id":      "internal",
-		"conversation_id": "cnv1_0000000000000000001",
-		"content": []any{map[string]any{
-			"type": "text", "text": "COMMA31_OFFLINE_MESSAGE",
-		}},
-	})
-	output, err := exec.Command(
-		"salix",
-		"tool",
-		"call",
-		"im_api.internal.send_message",
-		"--json",
-		string(payloadBytes),
-	).CombinedOutput()
-	appendFakeProcessLog(
-		logPath,
-		fmt.Sprintf(
-			"offline_message err=%v output=%s",
-			err,
-			strings.TrimSpace(string(output)),
-		),
-	)
-	return true
-}
-
-func runFakeCrashPendingMessageCall(logPath string) {
-	trigger := os.Getenv("SALIX_TEST_FAKE_CRASH_PENDING_MESSAGE_TRIGGER")
-	if trigger == "" {
-		return
-	}
-	if err := os.Remove(trigger); err != nil {
-		return
-	}
-	payload := `{"connect_id":"internal","conversation_id":"cnv1_0000000000000000001","content":[{"type":"text","text":"COMMA31_CRASH_PENDING_MESSAGE"}]}`
-	output, err := exec.Command(
-		"salix",
-		"tool",
-		"call",
-		"im_api.internal.send_message",
-		"--json",
-		payload,
-	).CombinedOutput()
-	appendFakeProcessLog(
-		logPath,
-		fmt.Sprintf(
-			"crash_pending_message err=%v output=%s",
-			err,
-			strings.TrimSpace(string(output)),
-		),
-	)
-}
-
-func TestHelperKimiServer(t *testing.T) {
-	if os.Getenv("SALIX_TEST_FAKE_KIMI") != "1" {
-		return
-	}
-	args := helperProcessArgs()
-	if len(args) != 6 || args[0] != "web" || args[1] != "--no-open" || args[2] != "--port" {
-		fmt.Fprintf(os.Stderr, "unexpected fake kimi args: %#v\n", args)
-		os.Exit(2)
-	}
-	port := args[3]
-	logPath := os.Getenv("SALIX_TEST_FAKE_KIMI_LOG")
-	nativeID := "kimi-native"
-	if os.Getenv("SALIX_TEST_FAKE_RUNTIME_EXECUTE_SALIX") == "1" {
-		nativeID += "-" + filepath.Base(os.Getenv("KIMI_CODE_HOME"))
-	}
-	appendFakeProcessLog(logPath, "start "+strings.Join(args, " "))
-	appendFakeProcessLog(logPath, "context="+os.Getenv("SALIX_RUNTIME_CONTEXT"))
-	if cwd, err := os.Getwd(); err == nil {
-		appendFakeProcessLog(logPath, "cwd="+cwd)
-	}
-	appendFakeLocalShellLog(logPath)
-	if agents, err := os.ReadFile(filepath.Join(os.Getenv("KIMI_CODE_HOME"), "AGENTS.md")); err == nil {
-		appendFakeProcessLog(logPath, "agents="+string(agents))
-	}
-	if err := os.WriteFile(filepath.Join(os.Getenv("KIMI_CODE_HOME"), "server.token"), []byte("fake-kimi-token\n"), 0o600); err != nil {
-		fmt.Fprintf(os.Stderr, "write fake kimi token: %v\n", err)
-		os.Exit(2)
-	}
-
-	var promptMu sync.Mutex
-	promptCount := 0
-	upgrader := websocket.Upgrader{}
-	var wsMu sync.RWMutex
-	var wsWriteMu sync.Mutex
-	var activeWS *websocket.Conn
-	writeWS := func(event map[string]any) {
-		wsMu.RLock()
-		ws := activeWS
-		wsMu.RUnlock()
-		if ws == nil {
-			return
-		}
-		wsWriteMu.Lock()
-		defer wsWriteMu.Unlock()
-		_ = ws.WriteJSON(event)
-	}
-	pingPayload := map[string]any{"id": "fake-ping"}
-	if os.Getenv("SALIX_TEST_FAKE_KIMI_LARGE_HANDSHAKE") == "1" {
-		pingPayload["padding"] = strings.Repeat("x", 4<<20)
-	}
-	ping, err := json.Marshal(map[string]any{"type": "ping", "payload": pingPayload})
-	if err != nil {
-		t.Fatal(err)
-	}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer fake-kimi-token" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		appendFakeProcessLog(logPath, r.Method+" "+r.URL.Path)
-		if r.URL.Path == "/api/v1/healthz" {
-			_, _ = io.WriteString(w, "{}")
-			return
-		}
-		if r.URL.Path == "/api/v1/ws" {
-			ws, err := upgrader.Upgrade(w, r, nil)
-			if err != nil {
-				return
-			}
-			wsMu.Lock()
-			activeWS = ws
-			wsMu.Unlock()
-			defer func() {
-				wsMu.Lock()
-				if activeWS == ws {
-					activeWS = nil
-				}
-				wsMu.Unlock()
-				_ = ws.Close()
-			}()
-			var hello map[string]any
-			if ws.ReadJSON(&hello) != nil {
-				return
-			}
-			appendFakeProcessLog(logPath, "client_hello")
-			wsWriteMu.Lock()
-			err = ws.WriteMessage(websocket.TextMessage, ping)
-			wsWriteMu.Unlock()
-			if err != nil {
-				return
-			}
-			var pong map[string]any
-			if ws.ReadJSON(&pong) == nil {
-				appendFakeProcessLog(logPath, stringParam(pong, "type"))
-			}
-			for {
-				if _, _, err := ws.ReadMessage(); err != nil {
-					return
-				}
-			}
-		}
-
-		writeEnvelope := func(data map[string]any) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": data})
-		}
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/auth":
-			if os.Getenv("SALIX_TEST_FAKE_KIMI_AUTH_READY") == "0" {
-				writeEnvelope(map[string]any{
-					"ready":            false,
-					"providers_count":  0,
-					"default_model":    nil,
-					"managed_provider": nil,
-				})
-			} else {
-				writeEnvelope(map[string]any{
-					"ready":           true,
-					"providers_count": 1,
-					"default_model":   "kimi-test",
-					"managed_provider": map[string]any{
-						"name":   "kimi-test",
-						"status": "authenticated",
-					},
-				})
-			}
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions":
-			writeEnvelope(map[string]any{"id": nativeID})
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/sessions/"):
-			writeEnvelope(map[string]any{"id": strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")})
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/prompts:steer"):
-			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			raw, _ := json.Marshal(body)
-			appendFakeProcessLog(logPath, string(raw))
-			writeEnvelope(map[string]any{})
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/prompts"):
-			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			raw, _ := json.Marshal(body)
-			appendFakeProcessLog(logPath, string(raw))
-			input := contentBlockText(body["content"], "text", "text")
-			sessionID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/"), "/prompts")
-			promptMu.Lock()
-			promptCount++
-			current := promptCount
-			promptMu.Unlock()
-			if current == 2 {
-				writeEnvelope(map[string]any{"status": "queued", "prompt_id": "prompt-2"})
-			} else {
-				writeEnvelope(map[string]any{"status": "running", "prompt_id": "prompt-1"})
-			}
-			if decision := recordFakeRecoveryDecision(input); decision != "" {
-				go func() {
-					writeWS(map[string]any{
-						"type":       "turn.started",
-						"session_id": sessionID,
-						"payload":    map[string]any{"status": "running"},
-					})
-					writeWS(map[string]any{
-						"type":       "tool.call.started",
-						"session_id": sessionID,
-						"payload": map[string]any{
-							"type":       "tool.call.started",
-							"toolCallId": "kimi-recovery-decision",
-							"name":       "workspace-state",
-							"args":       map[string]any{"state": decision},
-						},
-					})
-					writeWS(map[string]any{
-						"type":       "tool.result",
-						"session_id": sessionID,
-						"payload": map[string]any{
-							"type":       "tool.result",
-							"toolCallId": "kimi-recovery-decision",
-							"output":     decision,
-						},
-					})
-					writeWS(map[string]any{
-						"type":       "turn.ended",
-						"session_id": sessionID,
-						"payload": map[string]any{
-							"type":   "turn.ended",
-							"status": "completed",
-						},
-					})
-				}()
-			}
-			if os.Getenv("SALIX_TEST_FAKE_RUNTIME_EXECUTE_SALIX") == "1" {
-				go func() {
-					delayFakeRuntimeLifecycle()
-					writeWS(map[string]any{
-						"type":       "turn.started",
-						"session_id": sessionID,
-						"payload":    map[string]any{"status": "running"},
-					})
-					writeWS(map[string]any{
-						"type":       "tool.call.started",
-						"session_id": sessionID,
-						"payload": map[string]any{
-							"type":       "tool.call.started",
-							"toolCallId": "kimi-visible-reply",
-							"name":       "Bash",
-							"args":       map[string]any{"command": "salix tool call im_api.internal.send_message"},
-						},
-					})
-					if token := completeFakeRuntimeVisibleReply("kimi", input); token != "" {
-						writeWS(map[string]any{
-							"type":       "tool.result",
-							"session_id": sessionID,
-							"payload": map[string]any{
-								"type":       "tool.result",
-								"toolCallId": "kimi-visible-reply",
-								"output":     token,
-							},
-						})
-						writeWS(map[string]any{
-							"type":       "assistant.delta",
-							"session_id": sessionID,
-							"payload":    map[string]any{"type": "assistant.delta", "delta": token},
-						})
-						writeWS(map[string]any{
-							"type":       "turn.ended",
-							"session_id": sessionID,
-							"payload":    map[string]any{"status": "completed"},
-						})
-					}
-				}()
-			}
-			if os.Getenv("SALIX_TEST_FAKE_KIMI_EXIT_AFTER_PROMPT") == "1" {
-				writeWS(map[string]any{"type": "turn.started", "session_id": sessionID})
-				writeWS(map[string]any{"type": "turn.ended", "session_id": sessionID,
-					"payload": map[string]any{"status": "completed"}})
-				go func() { time.Sleep(50 * time.Millisecond); os.Exit(0) }()
-			}
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	server := &http.Server{Addr: "127.0.0.1:" + port, Handler: handler}
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fmt.Fprintf(os.Stderr, "fake kimi server: %v\n", err)
-		os.Exit(2)
-	}
-	os.Exit(0)
-}
-
 func appendFakeProcessLog(path, line string) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -4445,41 +2877,6 @@ func appendFakeProcessLog(path, line string) {
 	}
 	_, _ = fmt.Fprintln(file, line)
 	_ = file.Close()
-}
-
-func recordFakeRecoveryDecision(input string) string {
-	recoveryMessage := externalRuntimeRecoveryMessage
-	if os.Getenv("SALIX_TEST_FAKE_EXPECT_RECREATED_THREAD") == "1" {
-		recoveryMessage = externalRuntimeRecreatedMessage
-	}
-	if !strings.Contains(input, recoveryMessage) {
-		return ""
-	}
-	statePath := os.Getenv("SALIX_TEST_FAKE_RECOVERY_STATE_PATH")
-	decisionPath := os.Getenv("SALIX_TEST_FAKE_RECOVERY_DECISION_PATH")
-	state, err := os.ReadFile(statePath)
-	if err != nil || decisionPath == "" {
-		return ""
-	}
-	decision := strings.TrimSpace(string(state))
-	if decision != "continue" && decision != "complete" {
-		return ""
-	}
-	appendFakeProcessLog(decisionPath, decision)
-	return decision
-}
-
-func claimFakeCodexRecoveryResponseDrop() bool {
-	path := os.Getenv("SALIX_TEST_FAKE_CODEX_DROP_RECOVERY_RESPONSE_ONCE")
-	if path == "" {
-		return false
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return false
-	}
-	_ = file.Close()
-	return true
 }
 
 func claimFakeCodexLoginStartResponseDrop() bool {
@@ -4567,19 +2964,12 @@ func TestHelperCodexAppServer(t *testing.T) {
 	if claimFakeCodexNormalExitBeforeListen() {
 		os.Exit(0)
 	}
-	appendFakeLocalShellLog(os.Getenv("SALIX_TEST_FAKE_CODEX_LOG"))
 
 	upgrader := websocket.Upgrader{}
-	threadSeq := 0
-	turnSeq := 0
 	accountType := defaultString(os.Getenv("SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE"), "chatgpt")
 	loginSeq := 0
 	loginCanceled := map[string]bool{}
 	var accountMu sync.Mutex
-	threadPrefix := ""
-	if os.Getenv("SALIX_TEST_FAKE_CODEX_MISSING_THREAD_ON_RESUME") == "1" {
-		threadPrefix = fmt.Sprintf("%d-", os.Getpid())
-	}
 	server := &http.Server{
 		Addr: listen.Host,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4619,10 +3009,6 @@ func TestHelperCodexAppServer(t *testing.T) {
 				}
 				method := stringFromAny(msg["method"])
 				appendFakeCodexLog(method)
-				if method == "thread/start" || method == "thread/resume" ||
-					method == "turn/start" || method == "turn/steer" {
-					appendFakeCodexJSONLog(method, mapParam(msg, "params"))
-				}
 				id := msg["id"]
 				if id == "subscription-refresh-test" && method == "" {
 					if stringParam(mapParam(msg, "result"), "accessToken") == "rotated-access" {
@@ -4748,9 +3134,9 @@ func TestHelperCodexAppServer(t *testing.T) {
 					if os.Getenv("SALIX_TEST_FAKE_CODEX_EXIT_IMMEDIATELY_AFTER_LOGIN_START") == "1" {
 						os.Exit(0)
 					}
-					if os.Getenv("SALIX_TEST_FAKE_CODEX_EXIT_AFTER_LOGIN_START") == "1" {
+					if gate := os.Getenv("SALIX_TEST_FAKE_CODEX_EXIT_GATE_AFTER_LOGIN_START"); gate != "" {
 						go func() {
-							time.Sleep(50 * time.Millisecond)
+							waitForFakeMarker(gate)
 							os.Exit(0)
 						}()
 					}
@@ -4785,6 +3171,7 @@ func TestHelperCodexAppServer(t *testing.T) {
 									"params": map[string]any{"authMode": "chatgpt"},
 								})
 							}
+							appendFakeCodexLog("sent account/login/completed")
 						}(loginID)
 					}
 				case "account/login/cancel":
@@ -4810,139 +3197,6 @@ func TestHelperCodexAppServer(t *testing.T) {
 						items = append(items, map[string]any{"id": model, "model": model})
 					}
 					_ = write(map[string]any{"id": id, "result": map[string]any{"data": items}})
-				case "thread/start":
-					threadSeq++
-					if claimFakeCodexNormalExitBeforeThreadStartResponse() {
-						os.Exit(0)
-					}
-					_ = write(map[string]any{
-						"id":     id,
-						"result": map[string]any{"thread": map[string]any{"id": fmt.Sprintf("thread-%s%d", threadPrefix, threadSeq)}},
-					})
-				case "thread/resume":
-					threadID := stringParam(mapParam(msg, "params"), "threadId")
-					if claimFakeCodexThreadResumeFailure() {
-						_ = write(map[string]any{
-							"id": id,
-							"error": map[string]any{
-								"code":    -32603,
-								"message": "transient thread/resume failure",
-							},
-						})
-						continue
-					}
-					if os.Getenv("SALIX_TEST_FAKE_CODEX_MISSING_THREAD_ON_RESUME") == "1" {
-						_ = write(map[string]any{
-							"id": id,
-							"error": map[string]any{
-								"code":    -32600,
-								"message": "no rollout found for thread id " + threadID,
-							},
-						})
-						continue
-					}
-					_ = write(map[string]any{
-						"id":     id,
-						"result": map[string]any{"thread": map[string]any{"id": threadID}},
-					})
-				case "thread/read":
-					if !initialized {
-						_ = write(map[string]any{
-							"id": id,
-							"error": map[string]any{
-								"code":    -32600,
-								"message": "Not initialized",
-							},
-						})
-						continue
-					}
-					threadID := stringParam(mapParam(msg, "params"), "threadId")
-					if claimFakeCodexMalformedThreadRead() {
-						_ = write(map[string]any{
-							"id":     id,
-							"result": map[string]any{"thread": map[string]any{"id": "unexpected-thread"}},
-						})
-						continue
-					}
-					if claimFakeCodexMissingThreadRead() {
-						_ = write(map[string]any{
-							"id": id,
-							"error": map[string]any{
-								"code":    -32600,
-								"message": "no rollout found for thread id " + threadID,
-							},
-						})
-						continue
-					}
-					if claimFakeCodexCloseThreadRead() {
-						return
-					}
-					_ = write(map[string]any{
-						"id":     id,
-						"result": map[string]any{"thread": map[string]any{"id": threadID}},
-					})
-				case "turn/start":
-					turnSeq++
-					turnID := fmt.Sprintf("turn-%d", turnSeq)
-					params := mapParam(msg, "params")
-					inputText := fakeCodexInputText(params)
-					maxInputChars, _ := strconv.Atoi(os.Getenv("SALIX_TEST_FAKE_CODEX_MAX_INPUT_CHARS"))
-					if maxInputChars > 0 && utf8.RuneCountInString(inputText) > maxInputChars {
-						appendFakeCodexLog("turn/rejected input_too_large")
-						_ = write(map[string]any{
-							"id": id,
-							"error": map[string]any{
-								"code":    -32600,
-								"message": fmt.Sprintf("Input exceeds the maximum length of %d characters.", maxInputChars),
-							},
-						})
-						continue
-					}
-					decision := recordFakeRecoveryDecision(inputText)
-					if decision != "" {
-						_ = write(map[string]any{
-							"method": "turn/started",
-							"params": map[string]any{
-								"threadId": stringParam(params, "threadId"),
-								"turn":     map[string]any{"id": turnID, "status": "inProgress"},
-							},
-						})
-						completeFakeCodexRecoveryTurn(write, params, turnID, decision)
-						if !claimFakeCodexRecoveryResponseDrop() {
-							_ = write(map[string]any{
-								"id":     id,
-								"result": map[string]any{"turn": map[string]any{"id": turnID}},
-							})
-						}
-					} else {
-						_ = write(map[string]any{
-							"id":     id,
-							"result": map[string]any{"turn": map[string]any{"id": turnID}},
-						})
-						go func() {
-							delayFakeRuntimeLifecycle()
-							_ = write(map[string]any{
-								"method": "turn/started",
-								"params": map[string]any{
-									"threadId": stringParam(params, "threadId"),
-									"turn":     map[string]any{"id": turnID, "status": "inProgress"},
-								},
-							})
-							completeFakeCodexTurn(write, params, turnID)
-							exitFakeCodexAfterCompletedTurnIfRequested()
-						}()
-					}
-					if os.Getenv("SALIX_TEST_FAKE_CODEX_EXIT_AFTER_TURN") == "1" {
-						go func() { time.Sleep(50 * time.Millisecond); os.Exit(0) }()
-					}
-				case "turn/steer":
-					params := mapParam(msg, "params")
-					turnID := stringParam(params, "expectedTurnId")
-					_ = write(map[string]any{"id": id, "result": map[string]any{"ok": true}})
-					go func() {
-						completeFakeCodexTurn(write, params, turnID)
-						exitFakeCodexAfterCompletedTurnIfRequested()
-					}()
 				default:
 					_ = write(map[string]any{"id": id, "result": map[string]any{"ok": true}})
 				}
@@ -4956,204 +3210,16 @@ func TestHelperCodexAppServer(t *testing.T) {
 	os.Exit(0)
 }
 
-func appendFakeLocalShellLog(logPath string) {
-	localRoot := os.Getenv("SALIX_ENV_ROOT")
-	localShell := exec.Command("sh", "-c", "test -d \"$SALIX_ENV_ROOT\" && printf local-shell-ok")
-	localShell.Env = os.Environ()
-	localOutput, localErr := localShell.CombinedOutput()
-	cliOutput := ""
-	cliErr := error(nil)
-	if info, err := os.Stat(os.Getenv("SALIX_CLI")); err != nil {
-		cliErr = err
-	} else if info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
-		cliOutput = "salix-cli-ok"
-	} else {
-		cliErr = fmt.Errorf("SALIX_CLI is not an executable regular file")
-	}
-	appendFakeProcessLog(
-		logPath,
-		fmt.Sprintf(
-			"local_shell root=%s err=%v output=%s cli_err=%v cli_output=%s",
-			localRoot,
-			localErr,
-			strings.TrimSpace(string(localOutput)),
-			cliErr,
-			cliOutput,
-		),
-	)
-}
+// waitForFakeMarker returns once the marker at path exists;
+// waitForFakeMarkerRemoval once it no longer does. The tests that drive these
+// fakes, in Go, Bun and Elixir, write and remove markers from another process,
+// which a fake has no event for, so it polls. The wait has no deadline of its
+// own.
+func waitForFakeMarker(path string) { waitForFakeMarkerState(path, true) }
 
-func exitFakeCodexAfterCompletedTurnIfRequested() {
-	gate := os.Getenv("SALIX_TEST_FAKE_CODEX_NORMAL_EXIT_GATE")
-	if gate == "" {
-		return
-	}
-	if _, err := os.Stat(gate); err != nil {
-		return
-	}
-	time.Sleep(50 * time.Millisecond)
-	os.Exit(0)
-}
-
-func completeFakeCodexRecoveryTurn(write func(map[string]any) error, params map[string]any, turnID, decision string) {
-	threadID := stringParam(params, "threadId")
-	operationID := "codex-recovery-decision"
-	_ = write(map[string]any{
-		"method": "item/started",
-		"params": map[string]any{
-			"threadId": threadID,
-			"item": map[string]any{
-				"type":    "commandExecution",
-				"id":      operationID,
-				"status":  "inProgress",
-				"command": "inspect workspace recovery state",
-				"cwd":     ".",
-			},
-		},
-	})
-	_ = write(map[string]any{
-		"method": "item/completed",
-		"params": map[string]any{
-			"threadId": threadID,
-			"item": map[string]any{
-				"type":             "commandExecution",
-				"id":               operationID,
-				"status":           "completed",
-				"command":          "inspect workspace recovery state",
-				"cwd":              ".",
-				"aggregatedOutput": decision,
-			},
-		},
-	})
-	_ = write(map[string]any{
-		"method": "item/completed",
-		"params": map[string]any{
-			"threadId": threadID,
-			"item":     map[string]any{"type": "agentMessage", "text": "recovery-decision:" + decision},
-		},
-	})
-	_ = write(map[string]any{
-		"method": "turn/completed",
-		"params": map[string]any{
-			"threadId": threadID,
-			"turn":     map[string]any{"id": turnID, "status": "completed"},
-		},
-	})
-}
-
-func completeFakeCodexTurn(write func(map[string]any) error, params map[string]any, turnID string) {
-	if os.Getenv("SALIX_TEST_FAKE_CODEX_EXECUTE_SALIX") != "1" {
-		if os.Getenv("SALIX_TEST_FAKE_CODEX_COMPLETE_TURN") == "1" {
-			time.Sleep(50 * time.Millisecond)
-			_ = write(map[string]any{
-				"method": "turn/completed",
-				"params": map[string]any{
-					"threadId": stringParam(params, "threadId"),
-					"turn":     map[string]any{"id": turnID, "status": "completed"},
-				},
-			})
-		}
-		return
-	}
-	input := fakeRuntimeInputText(fakeCodexInputText(params))
-	waitForFakeRuntimeObservationLoss(input)
-	delay := 50 * time.Millisecond
-	if strings.Contains(input, "COMMA31_CONCURRENT_A") {
-		delay = 2 * time.Second
-	}
-	time.Sleep(delay)
-	if !waitForFakeRuntimeReconnect(input) {
-		appendFakeCodexLog("visible_reply reconnect wait timed out")
-		return
-	}
-
-	conversationID := lineValue(input, "- conversation_id:")
-	replyToken := comma31ReplyText(input)
-	if conversationID == "" || replyToken == "" {
-		appendFakeCodexLog("visible_reply skipped")
-		return
-	}
-	payload, _ := json.Marshal(map[string]any{
-		"connect_id":      "internal",
-		"conversation_id": conversationID,
-		"content":         []any{map[string]any{"type": "text", "text": replyToken}},
-	})
-	cmd := exec.Command("salix", "tool", "call", "im_api.internal.send_message", "--json", string(payload))
-	cmd.Env = append(os.Environ(), "CODEX_THREAD_ID="+stringParam(params, "threadId"))
-	output, err := cmd.CombinedOutput()
-	appendFakeCodexLog(fmt.Sprintf("visible_reply %s err=%v output=%s", replyToken, err, strings.TrimSpace(string(output))))
-	if err != nil {
-		return
-	}
-
-	threadID := stringParam(params, "threadId")
-	operationID := "codex-visible-reply"
-	_ = write(map[string]any{
-		"method": "item/started",
-		"params": map[string]any{
-			"threadId": threadID,
-			"item": map[string]any{
-				"type":    "commandExecution",
-				"id":      operationID,
-				"status":  "inProgress",
-				"command": "salix tool call im_api.internal.send_message",
-				"cwd":     ".",
-			},
-		},
-	})
-	_ = write(map[string]any{
-		"method": "item/completed",
-		"params": map[string]any{
-			"threadId": threadID,
-			"item": map[string]any{
-				"type":             "commandExecution",
-				"id":               operationID,
-				"status":           "completed",
-				"command":          "salix tool call im_api.internal.send_message",
-				"cwd":              ".",
-				"aggregatedOutput": string(output),
-			},
-		},
-	})
-	_ = write(map[string]any{
-		"method": "item/completed",
-		"params": map[string]any{
-			"threadId": threadID,
-			"item":     map[string]any{"type": "agentMessage", "text": replyToken},
-		},
-	})
-	_ = write(map[string]any{
-		"method": "turn/completed",
-		"params": map[string]any{
-			"threadId": threadID,
-			"turn":     map[string]any{"id": turnID, "status": "completed"},
-		},
-	})
-}
-
-func waitForFakeRuntimeObservationLoss(input string) {
-	gate := os.Getenv("SALIX_TEST_FAKE_RUNTIME_OBSERVATION_LOSS_GATE")
-	if gate == "" || !strings.Contains(input, "COMMA31_OBSERVATION_LOSS") {
-		return
-	}
-	_ = os.WriteFile(gate+".waiting", []byte("waiting\n"), 0o600)
-	waitForFakeMarker(gate)
-}
-
-func delayFakeRuntimeLifecycle() {
-	if gate := os.Getenv("SALIX_TEST_FAKE_RUNTIME_LIFECYCLE_GATE"); gate != "" {
-		_ = os.WriteFile(gate+".waiting", []byte("waiting\n"), 0o600)
-		waitForFakeMarker(gate)
-	}
-	delay, _ := strconv.Atoi(os.Getenv("SALIX_TEST_FAKE_RUNTIME_LIFECYCLE_DELAY_MS"))
-	if delay > 0 {
-		time.Sleep(time.Duration(delay) * time.Millisecond)
-	}
-}
-
-func waitForFakeMarker(path string) {
+func waitForFakeMarkerState(path string, exists bool) {
 	for path != "" {
-		if _, err := os.Stat(path); err == nil {
+		if _, err := os.Stat(path); (err == nil) == exists {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -5178,26 +3244,6 @@ func fakeCodexAccountResult(accountType string) map[string]any {
 		result["account"] = map[string]any{"type": "apiKey"}
 	}
 	return result
-}
-
-func fakeCodexInputText(params map[string]any) string {
-	parts := []string{}
-	for _, item := range sliceMapParam(params, "input") {
-		if text := stringParam(item, "text"); text != "" {
-			parts = append(parts, text)
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-func lineValue(text, prefix string) string {
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if value, ok := strings.CutPrefix(line, prefix); ok {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
 }
 
 func TestFakeRuntimeRepliesToEveryOutstandingMessageInBatch(t *testing.T) {
@@ -5247,50 +3293,6 @@ func comma31ReplyText(text string) string {
 	return strings.Join(tokens, "\n")
 }
 
-func completeFakeRuntimeVisibleReply(provider, input string) string {
-	input = fakeRuntimeInputText(input)
-	delay := 50 * time.Millisecond
-	if strings.Contains(input, "COMMA31_CONCURRENT_A") {
-		delay = 2 * time.Second
-	}
-	time.Sleep(delay)
-	if !waitForFakeRuntimeReconnect(input) {
-		appendFakeProcessLog(
-			os.Getenv("SALIX_TEST_FAKE_"+strings.ToUpper(provider)+"_LOG"),
-			"visible_reply reconnect wait timed out",
-		)
-		return ""
-	}
-
-	conversationID := lineValue(input, "- conversation_id:")
-	replyToken := comma31ReplyText(input)
-	if conversationID == "" || replyToken == "" {
-		return ""
-	}
-	payload, _ := json.Marshal(map[string]any{
-		"connect_id":      "internal",
-		"conversation_id": conversationID,
-		"content":         []any{map[string]any{"type": "text", "text": replyToken}},
-	})
-	output, err := exec.Command(
-		"salix",
-		"tool",
-		"call",
-		"im_api.internal.send_message",
-		"--json",
-		string(payload),
-	).CombinedOutput()
-	logPath := os.Getenv("SALIX_TEST_FAKE_" + strings.ToUpper(provider) + "_LOG")
-	appendFakeProcessLog(
-		logPath,
-		fmt.Sprintf("visible_reply %s err=%v output=%s", replyToken, err, strings.TrimSpace(string(output))),
-	)
-	if err != nil {
-		return ""
-	}
-	return replyToken
-}
-
 func fakeRuntimeInputText(input string) string {
 	var envelope struct {
 		Schema   string `json:"schema"`
@@ -5314,24 +3316,6 @@ func fakeRuntimeInputText(input string) string {
 	return strings.Join(parts, "\n\n")
 }
 
-func waitForFakeRuntimeReconnect(input string) bool {
-	trigger := os.Getenv("SALIX_TEST_RUNTIME_RECONNECT_TRIGGER")
-	if trigger == "" || !strings.Contains(input, "COMMA31_RECONNECT_TOOL") {
-		return true
-	}
-	if err := os.WriteFile(trigger+".waiting", []byte("waiting\n"), 0o600); err != nil {
-		return false
-	}
-	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(trigger); err == nil {
-			return true
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return false
-}
-
 func helperProcessArgs() []string {
 	for i, arg := range os.Args {
 		if arg == "--" {
@@ -5339,15 +3323,6 @@ func helperProcessArgs() []string {
 		}
 	}
 	return nil
-}
-
-func appendFakeCodexJSONLog(method string, payload map[string]any) {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		appendFakeCodexLog(method + " <json error>")
-		return
-	}
-	appendFakeCodexLog(method + " " + string(raw))
 }
 
 func appendFakeCodexLog(line string) {
@@ -5363,11 +3338,6 @@ func appendFakeCodexLog(line string) {
 	_, _ = f.WriteString(line + "\n")
 }
 
-func claimFakeCodexNormalExitBeforeThreadStartResponse() bool {
-	path := os.Getenv("SALIX_TEST_FAKE_CODEX_NORMAL_EXIT_BEFORE_THREAD_START_RESPONSE_ONCE")
-	return path != "" && os.Remove(path) == nil
-}
-
 func claimFakeCodexNormalExitBeforeListen() bool {
 	path := os.Getenv("SALIX_TEST_FAKE_CODEX_NORMAL_EXIT_BEFORE_LISTEN_ONCE")
 	if path == "" || os.Remove(path) != nil {
@@ -5375,21 +3345,6 @@ func claimFakeCodexNormalExitBeforeListen() bool {
 	}
 	_ = os.WriteFile(path+".bridge-url", []byte(os.Getenv("SALIX_CONNECT_URL")), 0o600)
 	return true
-}
-
-func claimFakeCodexMissingThreadRead() bool {
-	path := os.Getenv("SALIX_TEST_FAKE_CODEX_MISSING_THREAD_ON_READ_ONCE")
-	return path != "" && os.Remove(path) == nil
-}
-
-func claimFakeCodexMalformedThreadRead() bool {
-	path := os.Getenv("SALIX_TEST_FAKE_CODEX_MALFORMED_THREAD_READ_ONCE")
-	return path != "" && os.Remove(path) == nil
-}
-
-func claimFakeCodexThreadResumeFailure() bool {
-	path := os.Getenv("SALIX_TEST_FAKE_CODEX_FAIL_THREAD_RESUME_ONCE")
-	return path != "" && os.Remove(path) == nil
 }
 
 func claimFakeCodexInitializeFailure() bool {
@@ -5407,21 +3362,11 @@ func claimFakeCodexInitializeConnectionClose() bool {
 	return path != "" && os.Remove(path) == nil
 }
 
-func claimFakeCodexCloseThreadRead() bool {
-	path := os.Getenv("SALIX_TEST_FAKE_CODEX_CLOSE_THREAD_READ_ONCE")
-	return path != "" && os.Remove(path) == nil
-}
-
 func receiveMap(t *testing.T, messages <-chan map[string]any) map[string]any {
 	t.Helper()
 
-	select {
-	case msg := <-messages:
-		return msg
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for connector frame")
-		return map[string]any{}
-	}
+	msg := <-messages
+	return msg
 }
 
 func httpGetJSON(t *testing.T, endpoint string) map[string]any {
@@ -5524,6 +3469,9 @@ func TestRetiredFlagsParseWithoutEffect(t *testing.T) {
 	for _, name := range retiredFlags {
 		args = append(args, "--"+name, "value")
 	}
+	for _, name := range retiredBoolFlags {
+		args = append(args, "--"+name, "--"+name+"=false")
+	}
 	if err := fs.Parse(args); err != nil {
 		t.Fatalf("parse retired flags: %v", err)
 	}
@@ -5531,8 +3479,12 @@ func TestRetiredFlagsParseWithoutEffect(t *testing.T) {
 		t.Fatalf("root = %q", *root)
 	}
 
+	if fs.NArg() != 0 {
+		t.Fatalf("retired flags left arguments: %q", fs.Args())
+	}
+
 	fs.Usage()
-	for _, name := range retiredFlags {
+	for _, name := range append(append([]string{}, retiredFlags...), retiredBoolFlags...) {
 		if strings.Contains(out.String(), "-"+name) {
 			t.Fatalf("usage lists %q:\n%s", name, out.String())
 		}
@@ -5590,132 +3542,6 @@ func TestManagedArchivePreservesExecutableLinksAndNativeFiles(t *testing.T) {
 	}
 	if err := writeTarGz(io.Discard, root); err == nil {
 		t.Fatal("archive must reject an absent external link target")
-	}
-}
-
-func TestManagedArchiveRestoresDormantRuntimeIdentityWithoutReplacingLiveState(t *testing.T) {
-	isolateHostRuntimeCommands(t)
-	root := t.TempDir()
-	home := filepath.Join(root, "home")
-	if err := os.MkdirAll(home, 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	t.Setenv("SALIX_MANAGED_RUNTIME_ROOT", filepath.Join(home, "runtimes"))
-	source, err := newConnector(config{vmServer: true, root: root, externalStateRoot: home})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer source.closeExternalRuntimes()
-	identity := externalRuntimeSessionIdentity{Provider: "pi", SessionID: "archived-session", Command: "/usr/local/bin/pi", Workspace: "/workspace/home/.comma/workspaces/archived-session", Payload: map[string]any{}, LastActivityAt: time.Now().Unix()}
-	persistRuntimeIdentity(t, source.externalRuntimeState, identity)
-	handler := source.vmHTTPHandler(context.Background())
-	blocked := httptest.NewRecorder()
-	handler.ServeHTTP(blocked, httptest.NewRequest(http.MethodGet, "/archive", nil))
-	if blocked.Code != http.StatusConflict {
-		t.Fatalf("unquiesced archive: %d", blocked.Code)
-	}
-	if _, err := source.methodCloudRuntimeLifecycle(context.Background(), "cloud_runtime_quiesce", map[string]any{"token": "archive"}); err != nil {
-		t.Fatal(err)
-	}
-	archived := httptest.NewRecorder()
-	handler.ServeHTTP(archived, httptest.NewRequest(http.MethodGet, "/archive", nil))
-	if archived.Code != http.StatusOK {
-		t.Fatalf("archive: %d %s", archived.Code, archived.Body.String())
-	}
-	if tarGzContains(t, archived.Body.Bytes(), "home/external-runtime/state.db") {
-		t.Fatal("archive copied the live nested database")
-	}
-	if !tarGzContains(t, archived.Body.Bytes(), externalRuntimeStateRelativePath) {
-		t.Fatal("missing transactional snapshot")
-	}
-	restoredRoot := t.TempDir()
-	restoredHome := filepath.Join(restoredRoot, "home")
-	if err := os.MkdirAll(restoredHome, 0700); err != nil {
-		t.Fatal(err)
-	}
-	target, err := newConnector(config{vmServer: true, root: restoredRoot, externalStateRoot: restoredHome})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer target.closeExternalRuntimes()
-	targetHandler := target.vmHTTPHandler(context.Background())
-	restored := httptest.NewRecorder()
-	targetHandler.ServeHTTP(restored, httptest.NewRequest(http.MethodPut, "/archive?operation=wake-one", bytes.NewReader(archived.Body.Bytes())))
-	if restored.Code != http.StatusOK {
-		t.Fatalf("restore: %d %s", restored.Code, restored.Body.String())
-	}
-	resumable, active, inputs, events := target.externalRuntimeState.healthCounts()
-	if resumable != 1 || active != 0 || inputs != 0 || events != 0 {
-		t.Fatalf("restored state: %d %d %d %d", resumable, active, inputs, events)
-	}
-	if got := target.externalRuntimeState.identities[identity.key()]; got.Command != identity.Command || got.Workspace != identity.Workspace {
-		t.Fatalf("identity changed: %+v", got)
-	}
-	if err := os.WriteFile(filepath.Join(restoredRoot, "new-work.txt"), []byte("after restore"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	target.closeExternalRuntimes()
-	target, err = newConnector(config{vmServer: true, root: restoredRoot, externalStateRoot: restoredHome})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer target.closeExternalRuntimes()
-	targetHandler = target.vmHTTPHandler(context.Background())
-	replayed := httptest.NewRecorder()
-	targetHandler.ServeHTTP(replayed, httptest.NewRequest(http.MethodPut, "/archive?operation=wake-one", bytes.NewReader(archived.Body.Bytes())))
-	if replayed.Code != http.StatusOK {
-		t.Fatalf("warm reconnect restore replay: %d %s", replayed.Code, replayed.Body.String())
-	}
-	if data, err := os.ReadFile(filepath.Join(restoredRoot, "new-work.txt")); err != nil || string(data) != "after restore" {
-		t.Fatal("warm retry replaced live files", err)
-	}
-	repeated := httptest.NewRecorder()
-	targetHandler.ServeHTTP(repeated, httptest.NewRequest(http.MethodPut, "/archive?operation=other-wake", bytes.NewReader(archived.Body.Bytes())))
-	if repeated.Code != http.StatusConflict {
-		t.Fatalf("occupied target overwritten: %d", repeated.Code)
-	}
-}
-
-func TestManagedArchiveSnapshotSharesExportBudget(t *testing.T) {
-	isolateHostRuntimeCommands(t)
-	root := t.TempDir()
-	t.Setenv("HOME", root)
-	source, err := newConnector(config{vmServer: true, root: root, externalStateRoot: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer source.closeExternalRuntimes()
-	state := source.externalRuntimeState
-	var snapshot bytes.Buffer
-	if err := state.writeArchiveSnapshot(tar.NewWriter(&snapshot), migrationByteLimit); err != nil {
-		t.Fatal(err)
-	}
-	header, err := tar.NewReader(bytes.NewReader(snapshot.Bytes())).Next()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rejected bytes.Buffer
-	if err := state.writeArchiveSnapshot(tar.NewWriter(&rejected), header.Size-1); err == nil {
-		t.Fatal("export accepted snapshot beyond restore budget")
-	}
-	if rejected.Len() != 0 {
-		t.Fatal("rejected snapshot emitted an archive entry")
-	}
-	var exact bytes.Buffer
-	tw := tar.NewWriter(&exact)
-	if err := state.writeArchiveSnapshot(tw, header.Size); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	tr := tar.NewReader(bytes.NewReader(exact.Bytes()))
-	if _, err := tr.Next(); err != nil {
-		t.Fatal(err)
-	}
-	if n, err := io.Copy(io.Discard, tr); err != nil || n != header.Size {
-		t.Fatalf("snapshot: %d %v", n, err)
 	}
 }
 
@@ -5899,4 +3725,83 @@ func TestArchiveExportsMoreThanOneHundredThousandEntries(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(restored, "entry-100000")); err != nil {
 		t.Fatalf("last archive entry missing after restore: %v", err)
 	}
+}
+
+func TestScopedConnectorsShareOneRootWithoutRuntimeState(t *testing.T) {
+	root := t.TempDir()
+	index := t.TempDir()
+
+	first, err := newConnector(config{
+		name:                "workspace-a",
+		parentLifelineFD:    3,
+		root:                root,
+		runNonce:            "11111111111111111111111111111111",
+		shutdownRequestPath: filepath.Join(t.TempDir(), "shutdown-request.json"),
+		localFileIndexRoot:  index,
+		scope:               scopeLocalFileRead,
+		systemInfoInterval:  0,
+	})
+	if err != nil {
+		t.Fatalf("first scoped connector: %v", err)
+	}
+	defer first.closeRuntimes()
+
+	// An earlier implementation opened <root>/external-runtime/state.db with
+	// an exclusive bolt lock, so a second scoped connector on the same root
+	// failed with "open external runtime state: timeout".
+	second, err := newConnector(config{
+		name:                "workspace-b",
+		parentLifelineFD:    3,
+		root:                root,
+		runNonce:            "22222222222222222222222222222222",
+		shutdownRequestPath: filepath.Join(t.TempDir(), "shutdown-request.json"),
+		localFileIndexRoot:  index,
+		scope:               scopeLocalFileRead,
+		systemInfoInterval:  0,
+	})
+	if err != nil {
+		t.Fatalf("second scoped connector on the same root: %v", err)
+	}
+	defer second.closeRuntimes()
+
+	if _, err := os.Stat(filepath.Join(root, "external-runtime", "state.db")); !os.IsNotExist(err) {
+		t.Fatalf("scoped connectors must not create the external runtime database (stat err = %v)", err)
+	}
+	if len(first.runtimeImplementations) != 0 {
+		t.Fatalf("scoped connector must not instantiate agent runtime implementations")
+	}
+}
+
+func TestConnectorStartsBesideLegacyExternalRuntimeState(t *testing.T) {
+	isolateHostRuntimeCommands(t)
+	root := t.TempDir()
+	legacy := filepath.Join(root, legacyExternalRuntimeDir)
+	if err := os.MkdirAll(filepath.Join(legacy, "active"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Not a database: a legacy file is never opened, whatever it holds.
+	if err := os.WriteFile(filepath.Join(legacy, "state.db"), []byte("legacy state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		c, err := newConnector(config{root: root, systemInfoInterval: 0})
+		if err != nil {
+			t.Fatalf("connector beside legacy state: %v", err)
+		}
+		c.closeRuntimes()
+	}
+	if data, err := os.ReadFile(filepath.Join(legacy, "state.db")); err != nil || string(data) != "legacy state" {
+		t.Fatalf("legacy state changed: %q, %v", data, err)
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+// newBareTestConnector is a connector without runtime implementations, for
+// tests that install their own.
+func newBareTestConnector(t *testing.T, root string) *connector {
+	t.Helper()
+	return &connector{root: root, runtimePending: map[string]runtimePendingRequest{}}
 }

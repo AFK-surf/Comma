@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { ServerResponse } from "node:http";
-import type { SessionHistoryRecord } from "@comma/native-bridge";
+import type { SessionHistoryRecord } from "@comma/core-client";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
 import { chatSmokeWorkspaceChat, startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 import { enableSessionHistory } from "./session-history-settings";

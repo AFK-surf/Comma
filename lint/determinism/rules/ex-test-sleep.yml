@@ -1,0 +1,19 @@
+id: ex-test-sleep
+language: elixir
+severity: error
+message: "A test sleeps real time."
+note: |
+  Settle or move the test clock (settle_receive, settle_until,
+  SystemsClock.sleep/advance/run_for under SystemsClock.Test), or wait for
+  the message itself.
+metadata:
+  category: sleep
+rule:
+  all:
+    - kind: call
+    - has:
+        field: target
+        regex: "^(Process\\.sleep|:timer\\.sleep)$"
+files:
+  - "systems/apps/*/test/**/*.exs"
+  - "systems/apps/*/test/**/*.ex"

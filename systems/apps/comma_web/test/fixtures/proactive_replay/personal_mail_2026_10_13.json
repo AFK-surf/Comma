@@ -1,0 +1,296 @@
+{
+ "name": "personal_mail_2026_10_13",
+ "description": "Personal Outlook mail with no work duty behind it. A final LastPass deletion notice (3 days, cannot be undone) and a photo removal notice that no prompt rule names should reach the owner; a promotion, a coupon that expires tomorrow, a paid receipt, a newsletter and a shipping notice should not. The LastPass text follows the mail that staging judged low on 2026-10-13, when the judgment read only the 255-character preview. Later scenarios add the owner's earlier Home matter about the first LastPass notice: the final notice continues it; after the owner said the account is not needed, it stays quiet; a promotion from the same sender does not continue it.",
+ "now": "2026-10-13T02:20:00Z",
+ "pending_since": "2026-10-13T01:00:00Z",
+ "locale": "zh-CN",
+ "timezone": "Asia/Singapore",
+ "owner": {
+  "user": "outlook-user-1",
+  "team": "T0TEAM0001",
+  "handle": "pengxiao",
+  "mail": "pengxiao@example.com"
+ },
+ "home": [],
+ "outlook": [
+  {
+   "id": "lastpass_final",
+   "conversationId": "c-lastpass_final",
+   "subject": "Final reminder: Your LastPass account will be deleted soon",
+   "from": {
+    "emailAddress": {
+     "address": "no-reply@lastpass.com"
+    }
+   },
+   "receivedDateTime": "2026-10-13T02:00:44Z",
+   "bodyPreview": "Your account is scheduled for deletion in a few days   This is your final reminder: your LastPass account linked to pengxiao@example.com hasn't been used in nearly 2 years. To protect your privacy, we delete accounts that stay inactive for that long.  If ",
+   "webLink": "https://outlook.office.com/mail/inbox/id/lastpass_final",
+   "importance": "normal",
+   "uniqueBody": {
+    "contentType": "text",
+    "content": "Your account is scheduled for deletion in a few days\r\n\r\n\r\nThis is your final reminder: your LastPass account linked to pengxiao@example.com hasn't been used in nearly 2 years. To protect your privacy, we delete accounts that stay inactive for that long.\r\n\r\nIf you don't log in within the next 3 days, your account and everything stored in your vault, including passwords and secure notes, will be permanently deleted. This cannot be undone.\r\n\r\nTo keep your account, simply log in to LastPass.\r\n\r\nThe LastPass Team"
+   }
+  },
+  {
+   "id": "lastpass_promo",
+   "conversationId": "c-lastpass_promo",
+   "subject": "Save 30% on LastPass Premium",
+   "from": {
+    "emailAddress": {
+     "address": "offers@lastpass.com"
+    }
+   },
+   "receivedDateTime": "2026-10-13T01:40:00Z",
+   "bodyPreview": "Upgrade to LastPass Premium today and save 30%.  Get advanced multi-factor options, 1 GB encrypted file storage and emergency access. Offer ends Sunday.  Upgrade now.  The LastPass Team",
+   "webLink": "https://outlook.office.com/mail/inbox/id/lastpass_promo",
+   "importance": "normal",
+   "uniqueBody": {
+    "contentType": "text",
+    "content": "Upgrade to LastPass Premium today and save 30%.\r\n\r\nGet advanced multi-factor options, 1 GB encrypted file storage and emergency access. Offer ends Sunday.\r\n\r\nUpgrade now.\r\n\r\nThe LastPass Team"
+   }
+  },
+  {
+   "id": "order_receipt",
+   "conversationId": "c-order_receipt",
+   "subject": "Your receipt for order #114-2231",
+   "from": {
+    "emailAddress": {
+     "address": "receipts@shop.example"
+    }
+   },
+   "receivedDateTime": "2026-10-13T01:30:00Z",
+   "bodyPreview": "Thanks for your order.  Order #114-2231 has been paid in full: 2x USB-C cable, total SGD 24.90, charged to Visa ending 4421.  No action is needed.",
+   "webLink": "https://outlook.office.com/mail/inbox/id/order_receipt",
+   "importance": "normal",
+   "uniqueBody": {
+    "contentType": "text",
+    "content": "Thanks for your order.\r\n\r\nOrder #114-2231 has been paid in full: 2x USB-C cable, total SGD 24.90, charged to Visa ending 4421.\r\n\r\nNo action is needed."
+   }
+  },
+  {
+   "id": "ts_newsletter",
+   "conversationId": "c-ts_newsletter",
+   "subject": "This week in TypeScript",
+   "from": {
+    "emailAddress": {
+     "address": "news@typescript.example"
+    }
+   },
+   "receivedDateTime": "2026-10-13T01:20:00Z",
+   "bodyPreview": "This week in TypeScript: the 6.0 release candidate, faster type checking with tsgo, and five talks from TSConf.  Read more on our blog.",
+   "webLink": "https://outlook.office.com/mail/inbox/id/ts_newsletter",
+   "importance": "normal",
+   "uniqueBody": {
+    "contentType": "text",
+    "content": "This week in TypeScript: the 6.0 release candidate, faster type checking with tsgo, and five talks from TSConf.\r\n\r\nRead more on our blog."
+   }
+  },
+  {
+   "id": "photos_removal",
+   "conversationId": "c-photos_removal",
+   "subject": "Your photos will be removed on 17 October",
+   "from": {
+    "emailAddress": {
+     "address": "no-reply@photos.example"
+    }
+   },
+   "receivedDateTime": "2026-10-13T01:10:00Z",
+   "bodyPreview": "Your storage plan ended on 1 October.  You are using 212 GB of 15 GB. Because your account is over its limit, the photos and videos you uploaded after 2024 will be permanently removed on 17 October 2026 unless you renew your plan or free up space. Removed",
+   "webLink": "https://outlook.office.com/mail/inbox/id/photos_removal",
+   "importance": "normal",
+   "uniqueBody": {
+    "contentType": "text",
+    "content": "Your storage plan ended on 1 October.\r\n\r\nYou are using 212 GB of 15 GB. Because your account is over its limit, the photos and videos you uploaded after 2024 will be permanently removed on 17 October 2026 unless you renew your plan or free up space. Removed items cannot be recovered.\r\n\r\nManage storage"
+   }
+  },
+  {
+   "id": "order_shipped",
+   "conversationId": "c-order_shipped",
+   "subject": "Your order has shipped",
+   "from": {
+    "emailAddress": {
+     "address": "ship@shop.example"
+    }
+   },
+   "receivedDateTime": "2026-10-13T01:05:00Z",
+   "bodyPreview": "Good news: your order #114-2231 has shipped and will arrive on 15 October.  Track your parcel.",
+   "webLink": "https://outlook.office.com/mail/inbox/id/order_shipped",
+   "importance": "normal",
+   "uniqueBody": {
+    "contentType": "text",
+    "content": "Good news: your order #114-2231 has shipped and will arrive on 15 October.\r\n\r\nTrack your parcel."
+   }
+  },
+  {
+   "id": "coupon_tomorrow",
+   "conversationId": "c-coupon_tomorrow",
+   "subject": "Your 20% coupon expires tomorrow",
+   "from": {
+    "emailAddress": {
+     "address": "deals@shop.example"
+    }
+   },
+   "receivedDateTime": "2026-10-13T01:50:00Z",
+   "bodyPreview": "Last chance: your 20% welcome coupon expires tomorrow at midnight.  Use code WELCOME20 on any order over SGD 50 before it's gone.  Shop now",
+   "webLink": "https://outlook.office.com/mail/inbox/id/coupon_tomorrow",
+   "importance": "normal",
+   "uniqueBody": {
+    "contentType": "text",
+    "content": "Last chance: your 20% welcome coupon expires tomorrow at midnight.\r\n\r\nUse code WELCOME20 on any order over SGD 50 before it's gone.\r\n\r\nShop now"
+   }
+  }
+ ],
+ "labels": {
+  "lastpass_final": "https://outlook.office.com/mail/inbox/id/lastpass_final",
+  "lastpass_promo": "https://outlook.office.com/mail/inbox/id/lastpass_promo",
+  "order_receipt": "https://outlook.office.com/mail/inbox/id/order_receipt",
+  "ts_newsletter": "https://outlook.office.com/mail/inbox/id/ts_newsletter",
+  "photos_removal": "https://outlook.office.com/mail/inbox/id/photos_removal",
+  "order_shipped": "https://outlook.office.com/mail/inbox/id/order_shipped",
+  "coupon_tomorrow": "https://outlook.office.com/mail/inbox/id/coupon_tomorrow"
+ },
+ "scenarios": [
+  {
+   "name": "lastpass_among_noise",
+   "only": [
+    "lastpass_final",
+    "lastpass_promo",
+    "order_receipt",
+    "ts_newsletter"
+   ],
+   "read_channels": false,
+   "expect": {
+    "routed_any": [
+     "lastpass_final"
+    ],
+    "urgency_any": [
+     "critical"
+    ]
+   }
+  },
+  {
+   "name": "unnamed_kind_of_loss",
+   "only": [
+    "photos_removal",
+    "order_shipped",
+    "ts_newsletter"
+   ],
+   "read_channels": false,
+   "expect": {
+    "routed_any": [
+     "photos_removal"
+    ],
+    "urgency_any": [
+     "critical"
+    ]
+   }
+  },
+  {
+   "name": "nothing_to_lose",
+   "only": [
+    "lastpass_promo",
+    "order_receipt",
+    "ts_newsletter",
+    "order_shipped",
+    "coupon_tomorrow"
+   ],
+   "read_channels": false,
+   "expect": {
+    "not_routed": [
+     "lastpass_promo",
+     "order_receipt",
+     "ts_newsletter",
+     "order_shipped",
+     "coupon_tomorrow"
+    ]
+   }
+  },
+  {
+   "name": "final_notice_continues",
+   "only": [
+    "lastpass_final",
+    "lastpass_promo",
+    "ts_newsletter"
+   ],
+   "read_channels": false,
+   "matters": [
+    {
+     "subject": "Your LastPass account will be deleted in 30 days",
+     "state": "active",
+     "urgency": "high",
+     "decision": "notify",
+     "reason": "LastPass 账号 30 天后会因长期未用被删除，已提醒成员；成员问了通知来源",
+     "changedAt": "2026-09-15T08:00:00Z",
+     "cost": "LastPass 账号和密码库会被删除",
+     "due": "2026-10-15T00:00:00Z"
+    }
+   ],
+   "expect": {
+    "routed_any": [
+     "lastpass_final"
+    ],
+    "urgency_any": [
+     "critical"
+    ],
+    "continues_any": [
+     "Your LastPass account will be deleted in 30 days"
+    ]
+   }
+  },
+  {
+   "name": "owner_already_decided",
+   "only": [
+    "lastpass_final",
+    "ts_newsletter"
+   ],
+   "read_channels": false,
+   "matters": [
+    {
+     "subject": "Your LastPass account will be deleted in 30 days",
+     "state": "handled",
+     "urgency": "high",
+     "decision": "quiet",
+     "reason": "成员说账号早已迁走，LastPass 里没有要保留的东西，不用再提醒",
+     "changedAt": "2026-09-15T08:00:00Z",
+     "cost": "LastPass 账号和密码库会被删除",
+     "due": "2026-10-15T00:00:00Z"
+    }
+   ],
+   "expect": {
+    "not_routed": [
+     "lastpass_final",
+     "ts_newsletter"
+    ]
+   }
+  },
+  {
+   "name": "promo_does_not_continue",
+   "only": [
+    "lastpass_promo",
+    "order_receipt"
+   ],
+   "read_channels": false,
+   "matters": [
+    {
+     "subject": "Your LastPass account will be deleted in 30 days",
+     "state": "active",
+     "urgency": "high",
+     "decision": "notify",
+     "reason": "LastPass 账号 30 天后会因长期未用被删除，已提醒成员；成员问了通知来源",
+     "changedAt": "2026-09-15T08:00:00Z",
+     "cost": "LastPass 账号和密码库会被删除",
+     "due": "2026-10-15T00:00:00Z"
+    }
+   ],
+   "expect": {
+    "not_routed": [
+     "lastpass_promo",
+     "order_receipt"
+    ],
+    "continues_any": [
+     null
+    ]
+   }
+  }
+ ]
+}

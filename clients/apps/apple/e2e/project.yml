@@ -1,39 +1,57 @@
 name: CommaGestureTests
 options:
+  # The Hermes the app runs the client core in (../Vendor/hermes), as the app's project fetches it.
+  preGenCommand: ../scripts/fetch-hermes.sh
   deploymentTarget:
     iOS: "18.0"
 settings:
   base:
     SWIFT_VERSION: "6.0"
     CODE_SIGNING_ALLOWED: NO
+    COMMA_APPLE_DIR: $(SRCROOT)/..
 packages:
   CommaCore:
     path: ../../../packages/apple-core
-  Markdown:
-    url: https://github.com/swiftlang/swift-markdown
-    from: 0.9.0
 targets:
+  # The production shell on the client core the app carries, which a fixture server answers in the process
+  # (Fixture/FixtureServer.swift): no backend is contacted.
   CommaGestureFixture:
     type: application
     platform: iOS
     sources:
       - path: ../iOS
-        excludes: [CommaApp.swift, "*.plist", "*.entitlements"]
+        excludes: ["*.plist", "*.entitlements", "Core/Comma-Bridging-Header.h"]
       - path: ../Shared
+        excludes: ["State/**", "Chat/**"]
+      - path: ../../../packages/core/native
       - path: Fixture
+      - path: Common
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: surf.comma.chat-gesture-fixture
+        OTHER_SWIFT_FLAGS: "$(inherited) -D GESTURE_FIXTURE"
         GENERATE_INFOPLIST_FILE: YES
         TARGETED_DEVICE_FAMILY: "1"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        SWIFT_OBJC_BRIDGING_HEADER: $(COMMA_APPLE_DIR)/iOS/Core/Comma-Bridging-Header.h
+        CLANG_CXX_LANGUAGE_STANDARD: c++20
+        HEADER_SEARCH_PATHS:
+          - $(COMMA_APPLE_DIR)/Vendor/hermes/include
+          - $(COMMA_APPLE_DIR)/../../packages/core/native
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    preBuildScripts:
+      - name: Bundle the client core
+        script: |
+          bash "$COMMA_APPLE_DIR/scripts/bundle-core.sh"
+        basedOnDependencyAnalysis: false
     dependencies:
       - package: CommaCore
-      - package: Markdown
+      - framework: ../Vendor/hermes/hermes.xcframework
+        embed: true
   CommaGestureUITests:
     type: bundle.ui-testing
     platform: iOS
-    sources: [Tests]
+    sources: [Tests, Common]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: surf.comma.chat-gesture-fixture.tests

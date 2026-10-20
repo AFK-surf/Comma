@@ -7,7 +7,7 @@ defmodule SalixMeet.Ports.Activation do
   def handoff(state, summary) when is_map(state), do: impl().handoff(state, summary)
 
   defp impl do
-    Application.get_env(:salix_meet, :activation_mod, __MODULE__.None)
+    SystemsRuntime.get_env(:salix_meet, :activation_mod, __MODULE__.None)
   end
 
   defmodule None do

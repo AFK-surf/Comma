@@ -94,7 +94,7 @@ defmodule SalixIM.SlackSemanticFiles do
     path = Path.join(System.tmp_dir!(), "comma-semantic-#{SalixStore.ULID.generate()}")
     {:ok, output} = File.open(path, [:write, :binary, :exclusive])
     File.chmod!(path, 0o600)
-    deadline = System.monotonic_time(:millisecond) + 300_000
+    deadline = SystemsClock.monotonic_time(:millisecond) + 300_000
 
     try do
       result =
@@ -105,7 +105,7 @@ defmodule SalixIM.SlackSemanticFiles do
             size = (resp.private[:semantic_bytes] || 0) + byte_size(chunk)
 
             if not cancelled.() and resp.status == 200 and size <= @max_bytes and
-                 System.monotonic_time(:millisecond) < deadline do
+                 SystemsClock.monotonic_time(:millisecond) < deadline do
               :ok = IO.binwrite(output, chunk)
               {:cont, {req, Req.Response.put_private(resp, :semantic_bytes, size)}}
             else

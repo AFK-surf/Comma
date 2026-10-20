@@ -199,20 +199,25 @@
 
 @supports ((background-clip: text) or (-webkit-background-clip: text)) and
   (color: color-mix(in oklab, black 50%, white)) {
-  .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"] {
+  /* `comma-gradient-shimmer` takes the same sweep on other text that runs
+     `useGradientShimmer`. The band takes the fixed brand scale, not the
+     themed utility scale, so it sweeps bright in both themes: the dark
+     utility scale runs the other way and would sweep dark. */
+  .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"],
+  .comma-gradient-shimmer[data-shimmer-ready="true"] {
     display: inline-block;
     contain: paint;
     background-color: currentcolor;
     background-image: linear-gradient(
       var(--ai-activity-shimmer-angle),
       currentcolor calc(50% - var(--ai-activity-shimmer-spread)),
-      color-mix(in oklab, currentcolor 42%, var(--color-utility-brand-400))
+      color-mix(in oklab, currentcolor 42%, var(--color-brand-300))
         calc(50% - var(--ai-activity-shimmer-spread-mid)),
-      var(--color-utility-brand-400) calc(50% - var(--ai-activity-shimmer-spread-core)),
-      var(--color-utility-brand-300) calc(50% - var(--ai-activity-shimmer-spread-inner)),
-      var(--color-utility-brand-200) calc(50% + var(--ai-activity-shimmer-spread-inner)),
-      var(--color-utility-brand-100) calc(50% + var(--ai-activity-shimmer-spread-core)),
-      color-mix(in oklab, currentcolor 42%, var(--color-utility-brand-100))
+      var(--color-brand-300) calc(50% - var(--ai-activity-shimmer-spread-core)),
+      var(--color-brand-200) calc(50% - var(--ai-activity-shimmer-spread-inner)),
+      var(--color-brand-100) calc(50% + var(--ai-activity-shimmer-spread-inner)),
+      var(--color-brand-50) calc(50% + var(--ai-activity-shimmer-spread-core)),
+      color-mix(in oklab, currentcolor 42%, var(--color-brand-50))
         calc(50% + var(--ai-activity-shimmer-spread-mid)),
       currentcolor calc(50% + var(--ai-activity-shimmer-spread))
     );
@@ -568,6 +573,7 @@
 }
 
 @media (forced-colors: active) {
+  .comma-gradient-shimmer[data-shimmer-ready="true"],
   .comma-ai-activity-text-summary[data-shimmer="true"][data-shimmer-ready="true"],
   .comma-ai-activity-text-summary[data-shimmer="true"]:not([data-shimmer-ready="true"]),
   .comma-ai-worker-activity[data-status="running"] .comma-ai-worker-activity-copy {

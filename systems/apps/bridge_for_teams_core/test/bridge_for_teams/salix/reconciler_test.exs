@@ -11,7 +11,7 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
     SalixStore.S3.Fake.reset()
 
     on_exit(fn ->
-      Application.delete_env(:bridge_for_teams_core, :salix_nodes_override)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_nodes_override)
     end)
 
     :ok
@@ -23,11 +23,11 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
 
   defp row(op), do: Repo.one(from(r in ReconcileOutbox, where: r.op == ^op))
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp org_fixture do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
     tenant_id = SalixStore.Ids.new_tenant_id()
 
     %Organization{}
@@ -41,7 +41,7 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
   end
 
   defp project_fixture(%Organization{} = org) do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     %Project{}
     |> Project.changeset(%{
@@ -54,7 +54,7 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
   end
 
   defp agent_fixture(%Project{} = project) do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     %Agent{}
     |> Agent.changeset(%{
@@ -156,32 +156,97 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
              Salix.Control.Groups.get(group_id)
   end
 
-  test "create_agent with vm.enabled degrades to VM-less when no provider is configured" do
+  test "update_group turning on the Cloud VM degrades to VM-less when no provider is configured" do
     tenant_id = SalixStore.Ids.new_tenant_id()
     group_id = SalixStore.Ids.new_group_id(tenant_id)
-    agent_id = SalixStore.Ids.new_agent_id(group_id)
 
     {:ok, _} = Salix.Control.Tenants.create_preallocated(%{}, tenant_id)
     {:ok, _} = Salix.Control.Groups.create_preallocated(%{}, tenant_id, group_id)
 
     {:ok, _} =
-      Reconciler.enqueue("agent", agent_id, "create_agent", %{
-        "attrs" => %{
-          "agent_id" => agent_id,
-          "group_id" => group_id,
-          "tenant_id" => tenant_id,
-          "role" => "router",
-          "vm" => %{"enabled" => true}
-        }
+      Reconciler.enqueue("project", group_id, "update_group", %{
+        "group_id" => group_id,
+        "tenant_id" => tenant_id,
+        "attrs" => %{"name" => "Renamed", "cloud_vm_enabled" => true}
       })
 
     # The tenant has no VM provider (and no platform default), yet the row
-    # drains clean — the router provisions without a VM instead of stranding.
+    # drains clean: the rest of the update lands and the group stays VM-less.
     assert {:ok, 1} = Reconciler.drain_once()
-    assert row("create_agent").status == "done"
+    assert row("update_group").status == "done"
 
-    assert {:ok, agent} = SalixAgent.Control.get(agent_id)
-    refute get_in(agent, ["vm", "enabled"]) == true
+    assert {:ok, %{"name" => "Renamed", "cloud_vm_enabled" => false}} =
+             Salix.Control.Groups.get(group_id)
+  end
+
+  # A Salix node of the release before, during a rolling release.
+  defmodule OldReleaseSalix do
+    def update_group(_group_id, _tenant_id, _attrs),
+      do: {:error, {:bad_request, "unsupported group update fields: cloud_vm_enabled"}}
+  end
+
+  test "an update_group a node of the release before refuses stays pending until this release takes it" do
+    tenant_id = SalixStore.Ids.new_tenant_id()
+    group_id = SalixStore.Ids.new_group_id(tenant_id)
+
+    {:ok, _} = Salix.Control.Tenants.create_preallocated(%{}, tenant_id)
+    {:ok, _} = Salix.Control.Groups.create_preallocated(%{}, tenant_id, group_id)
+
+    {:ok, _} =
+      Reconciler.enqueue("project", group_id, "update_group", %{
+        "group_id" => group_id,
+        "tenant_id" => tenant_id,
+        "attrs" => %{"name" => "Renamed", "cloud_vm_enabled" => false}
+      })
+
+    prev = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, OldReleaseSalix)
+
+    assert {:ok, 0} = Reconciler.drain_once()
+    deferred = row("update_group")
+    assert deferred.status == "pending"
+    assert deferred.last_error =~ "cloud_vm_switch_unknown"
+
+    restore_env(:bridge_for_teams_core, :salix_client, prev)
+
+    assert {:ok, 1} = Reconciler.drain_once()
+    assert row("update_group").status == "done"
+
+    assert {:ok, %{"name" => "Renamed", "cloud_vm_enabled" => false}} =
+             Salix.Control.Groups.get(group_id)
+  end
+
+  test "a VM row written for an agent before the switch moved sets its group's switch" do
+    tenant_id = SalixStore.Ids.new_tenant_id()
+    group_id = SalixStore.Ids.new_group_id(tenant_id)
+    agent_id = SalixStore.Ids.new_agent_id(group_id)
+
+    {:ok, _} =
+      Salix.Control.Tenants.create_preallocated(
+        %{
+          "config" =>
+            Jason.encode!(%{
+              "vm" => %{
+                "default_provider" => "cloudflare",
+                "providers" => %{"cloudflare" => %{"enabled" => true}}
+              }
+            })
+        },
+        tenant_id
+      )
+
+    {:ok, _} = Salix.Control.Groups.create_preallocated(%{}, tenant_id, group_id)
+
+    {:ok, _} =
+      Reconciler.enqueue("agent", agent_id, "apply_product_vm_default", %{
+        "agent_id" => agent_id,
+        "tenant_id" => tenant_id,
+        "attrs" => %{"vm" => %{"enabled" => true}}
+      })
+
+    assert {:ok, 1} = Reconciler.drain_once()
+    assert row("apply_product_vm_default").status == "done"
+    assert {:ok, %{"cloud_vm_enabled" => true}} = Salix.Control.Groups.get(group_id)
   end
 
   test "drains update_group, sets the group's router agent" do
@@ -237,7 +302,7 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
   end
 
   test "transient error (:unavailable) keeps the row pending and bumps attempts" do
-    Application.put_env(:bridge_for_teams_core, :salix_nodes_override, [])
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_nodes_override, [])
     tenant_id = SalixStore.Ids.new_tenant_id()
 
     {:ok, _} =
@@ -259,7 +324,7 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
     assert row("create_tenant").attempts == 2
 
     # once salix recovers it drains clean
-    Application.delete_env(:bridge_for_teams_core, :salix_nodes_override)
+    SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_nodes_override)
     assert {:ok, 1} = Reconciler.drain_once()
     assert row("create_tenant").status == "done"
   end
@@ -404,8 +469,8 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
 
   test "clamps an oversized hard-failure reason instead of aborting the drain" do
     org = org_fixture()
-    prev = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, GiantHardErrorClient)
+    prev = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, GiantHardErrorClient)
     on_exit(fn -> restore_env(:bridge_for_teams_core, :salix_client, prev) end)
 
     {:ok, _} = Reconciler.enqueue("organization", org.id, "create_tenant", %{"attrs" => %{}})
@@ -421,8 +486,8 @@ defmodule BridgeForTeams.Salix.ReconcilerTest do
 
   test "clamps an oversized transient reason and leaves the row pending" do
     org = org_fixture()
-    prev = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, GiantTransientErrorClient)
+    prev = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, GiantTransientErrorClient)
     on_exit(fn -> restore_env(:bridge_for_teams_core, :salix_client, prev) end)
 
     {:ok, _} = Reconciler.enqueue("organization", org.id, "create_tenant", %{"attrs" => %{}})

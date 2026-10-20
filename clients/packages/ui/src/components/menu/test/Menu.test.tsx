@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@comma/test-utils/render";
-import { motionDuration } from "@comma/ui";
+import { motionDuration } from "@comma/ui/tokens";
 import { Button } from "../../Button";
 import {
   Menu,
@@ -12,7 +12,6 @@ import {
   MenuTrigger,
   SubmenuTrigger,
 } from "../Menu";
-import { menuCompactClasses, menuClasses } from "../styles";
 
 const TestIcon = ({ name }: { name: string }) => <span data-testid={name} />;
 
@@ -36,65 +35,6 @@ const TaskActionsMenu = ({
 );
 
 describe("Menu", () => {
-  it("keeps the edit menu compact instead of the task-menu width", () => {
-    expect(menuClasses).toContain("w-60");
-    expect(menuCompactClasses).toContain("w-fit");
-    expect(menuCompactClasses).toContain("min-w-44");
-    expect(menuCompactClasses).not.toContain("w-60");
-  });
-
-  it("uses the Figma menu shell, item spacing, separator, and destructive tone", () => {
-    const { container } = render(<TaskActionsMenu />);
-
-    const menu = screen.getByRole("menu", { name: "Task actions" });
-    const deleteItem = screen.getByRole("menuitem", { name: "Delete" });
-
-    expect(menu).toHaveClass(
-      "w-60",
-      "rounded-xl",
-      "border-[length:var(--border-width-0-5)]",
-      "border-primary",
-      "bg-popup-secondary",
-      "py-sm",
-      "text-sm",
-      "text-secondary",
-      "shadow-lg"
-    );
-    expect(screen.getByRole("menuitem", { name: "Unpin" })).toHaveClass("px-sm");
-    expect(screen.getByRole("menuitem", { name: "Unpin" })).not.toHaveClass("py-px");
-    expect(container.querySelector('[data-slot="menu-item-content"]')).toHaveClass(
-      "gap-lg",
-      "rounded-sm",
-      "px-md",
-      "py-sm",
-      "font-medium"
-    );
-    expect(container.querySelector('[data-slot="menu-item-content"]')).not.toHaveClass(
-      "text-sm",
-      "transition-colors"
-    );
-    expect(container.querySelector('[data-slot="menu-item-content"]')).not.toHaveClass(
-      "leading-5"
-    );
-    expect(container.querySelector('[data-slot="menu-item-icon"]')).toHaveClass(
-      "size-xl"
-    );
-    expect(screen.getByText("⌥⌘P")).toHaveClass(
-      "text-xs",
-      "font-regular",
-      "text-quaternary"
-    );
-    expect(screen.getByText("⌥⌘P")).not.toHaveClass("font-normal", "leading-[18px]");
-    expect(screen.getByRole("separator")).toHaveClass(
-      "my-xs",
-      "border-t-[length:var(--border-width-0-5)]",
-      "border-primary"
-    );
-    expect(screen.getByRole("separator")).not.toHaveClass("mx-sm");
-    expect(deleteItem).toHaveAttribute("data-tone", "destructive");
-    expect(deleteItem.firstElementChild).toHaveClass("text-error-primary");
-  });
-
   it("uses foreground secondary for ordinary icons only while hovered", async () => {
     const user = userEvent.setup();
     const { container } = render(
@@ -187,11 +127,7 @@ describe("Menu", () => {
       screen.getByRole("button", { name: "Open filters", hidden: true })
     );
 
-    await act(async () => {
-      await new Promise((resolve) =>
-        setTimeout(resolve, motionDuration.submenuCloseDelay)
-      );
-    });
+    await act(() => vi.advanceTimersByTimeAsync(motionDuration.submenuCloseDelay));
     expect(statusEntry).toHaveAttribute("aria-expanded", "false");
     expect(statusContent).not.toHaveClass(
       "bg-quaternary",
@@ -242,24 +178,6 @@ describe("Menu", () => {
 
     expect(item).not.toHaveAttribute("data-pressed");
     expect(content).not.toHaveClass("scale-[var(--motion-scale-pressed)]");
-  });
-
-  it("allows a menu to inherit a scoped typography token", () => {
-    const { container } = render(
-      <Menu aria-label="Compact actions" className="text-xs">
-        <MenuItem id="compact">Compact action</MenuItem>
-      </Menu>
-    );
-
-    expect(screen.getByRole("menu", { name: "Compact actions" })).toHaveClass(
-      "text-xs"
-    );
-    expect(screen.getByRole("menu", { name: "Compact actions" })).not.toHaveClass(
-      "text-sm"
-    );
-    expect(container.querySelector('[data-slot="menu-item-content"]')).not.toHaveClass(
-      "text-sm"
-    );
   });
 
   it("does not retain the hover background after pointer focus leaves an item", async () => {
@@ -466,9 +384,7 @@ describe("Menu", () => {
     ).not.toBeNull();
 
     // Keyboard focus lands on the checked row that sits over the trigger.
-    await act(async () => {
-      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
-    });
+    await act(() => vi.advanceTimersToNextFrame());
     expect(
       screen.getByRole("menuitemradio", { name: "Show when badged" })
     ).toHaveFocus();

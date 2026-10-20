@@ -5,7 +5,7 @@ defmodule BillingCommerce.PaidCycles do
   alias BillingCommerce.PackageCatalog
 
   def record_invoice(subscription, package, invoice, payment, at) do
-    repo = Application.fetch_env!(:billing_commerce, :repo)
+    repo = SystemsRuntime.fetch_env!(:billing_commerce, :repo)
 
     repo.transaction(fn ->
       lock_owner(repo, subscription.billing_account_id, subscription.id)
@@ -120,7 +120,7 @@ defmodule BillingCommerce.PaidCycles do
   end
 
   def issue(cycle) do
-    repo = Application.fetch_env!(:billing_commerce, :repo)
+    repo = SystemsRuntime.fetch_env!(:billing_commerce, :repo)
 
     repo.transaction(fn ->
       lock_owner(repo, cycle.billing_account_id, cycle.subscription_id)

@@ -1,4 +1,4 @@
-import type { ScrollAreaMetrics } from "@comma/ui";
+import type { ScrollAreaMetrics } from "@comma/ui/components/scroll-area";
 import { useCallback, useRef } from "react";
 import type { useStickToBottom } from "./useStickToBottom";
 import type { ThreadTurnWindow } from "../navigation/useThreadTurnWindow";

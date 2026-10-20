@@ -1,7 +1,10 @@
 import { useLayoutEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { initializeCommaI18n } from "@comma/i18n";
-import { PluginCatalog, type PluginSkillDefinition } from "@comma/ui";
+import {
+  PluginCatalog,
+  type PluginSkillDefinition,
+} from "@comma/ui/components/plugins";
 import "../../src/styles.css";
 
 initializeCommaI18n(["en"]);

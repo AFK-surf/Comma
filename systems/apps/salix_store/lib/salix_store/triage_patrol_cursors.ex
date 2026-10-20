@@ -366,7 +366,8 @@ defmodule SalixStore.TriagePatrolCursors do
     """
   end
 
-  defp claim_row(columns, values, holder) do
+  @doc false
+  def claim_row(columns, values, holder) do
     row = row(columns, values)
 
     %{
@@ -387,7 +388,8 @@ defmodule SalixStore.TriagePatrolCursors do
     }
   end
 
-  defp validate_channel_authority(channel, authority) do
+  @doc false
+  def validate_channel_authority(channel, authority) do
     channel_values =
       Enum.map(
         ~w(tenant_id group_id connect_id channel_id channel_name channel_generation),
@@ -403,7 +405,8 @@ defmodule SalixStore.TriagePatrolCursors do
     if valid?, do: :ok, else: {:error, :invalid}
   end
 
-  defp validate_claim(claim) do
+  @doc false
+  def validate_claim(claim) do
     valid? =
       valid_strings?([
         claim[:cursor_key],
@@ -416,7 +419,8 @@ defmodule SalixStore.TriagePatrolCursors do
     if valid?, do: :ok, else: {:error, :invalid}
   end
 
-  defp validate_result(result) do
+  @doc false
+  def validate_result(result) do
     with true <- TriagePatrolScanState.valid?(result[:scan_state]),
          true <-
            is_binary(result[:last_message_ts]) and Regex.match?(@slack_ts, result.last_message_ts),
@@ -431,11 +435,13 @@ defmodule SalixStore.TriagePatrolCursors do
     end
   end
 
-  defp settlement_outcome(%{has_more?: true}), do: "partial"
-  defp settlement_outcome(%{created: created}) when created > 0, do: "admitted"
-  defp settlement_outcome(_result), do: "idle"
+  @doc false
+  def settlement_outcome(%{has_more?: true}), do: "partial"
+  def settlement_outcome(%{created: created}) when created > 0, do: "admitted"
+  def settlement_outcome(_result), do: "idle"
 
-  defp result_json(result) do
+  @doc false
+  def result_json(result) do
     %{
       "created" => result.created,
       "duplicate" => result.duplicate,
@@ -444,7 +450,8 @@ defmodule SalixStore.TriagePatrolCursors do
     }
   end
 
-  defp cursor_key(channel) do
+  @doc false
+  def cursor_key(channel) do
     ~w(tenant_id group_id connect_id channel_id)
     |> Enum.map(&channel[&1])
     |> Enum.join("\0")
@@ -467,15 +474,19 @@ defmodule SalixStore.TriagePatrolCursors do
 
   defp row(columns, values), do: columns |> Enum.zip(values) |> Map.new()
 
-  defp valid_holder?(holder), do: valid_strings?([holder]) and byte_size(holder) <= 200
-  defp valid_delay?(value, min), do: is_integer(value) and value in min..@max_delay_ms
+  @doc false
+  def valid_holder?(holder), do: valid_strings?([holder]) and byte_size(holder) <= 200
+  @doc false
+  def valid_delay?(value, min), do: is_integer(value) and value in min..@max_delay_ms
 
-  defp valid_strings?(values),
+  @doc false
+  def valid_strings?(values),
     do: Enum.all?(values, &(is_binary(&1) and &1 != "" and &1 == String.trim(&1)))
 
-  defp safe_reason(reason) when is_atom(reason),
+  @doc false
+  def safe_reason(reason) when is_atom(reason),
     do: reason |> Atom.to_string() |> String.slice(0, 1_000)
 
-  defp safe_reason({reason, _detail}) when is_atom(reason), do: safe_reason(reason)
-  defp safe_reason(_reason), do: "patrol_unavailable"
+  def safe_reason({reason, _detail}) when is_atom(reason), do: safe_reason(reason)
+  def safe_reason(_reason), do: "patrol_unavailable"
 end

@@ -20,9 +20,6 @@ defmodule Salix.Runtime do
   def compact_session(agent_id, session_id),
     do: SalixAgent.Runtime.compact_session(agent_id, session_id)
 
-  def microcompact_session(agent_id, session_id),
-    do: SalixAgent.Runtime.microcompact_session(agent_id, session_id)
-
   def session_trace(agent_id, session_id, opts \\ []),
     do: SalixAgent.Runtime.session_trace(agent_id, session_id, opts)
 

@@ -13,7 +13,7 @@ defmodule Comma.OauthIdp.KeyRotationTest do
   likewise refused, with explicitly named emergency bypasses.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Boruta.Ecto.Admin
   alias Boruta.Oauth.AuthorizeResponse
@@ -52,7 +52,7 @@ defmodule Comma.OauthIdp.KeyRotationTest do
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Comma.Repo)
-    Ecto.Adapters.SQL.Sandbox.mode(Comma.Repo, {:shared, self()})
+    Ecto.Adapters.SQL.Sandbox.mode(Comma.Repo, {:shared, SystemsRuntime.Proc.self()})
     OauthIdpTestKeys.install_kek()
 
     {:ok, user} = Comma.Accounts.get_or_create_user_by_email("idp-rotation@example.com")
@@ -77,7 +77,7 @@ defmodule Comma.OauthIdp.KeyRotationTest do
   end
 
   defp issue_id_token!(user, client) do
-    code_verifier = Base.url_encode64(:crypto.strong_rand_bytes(48), padding: false)
+    code_verifier = Base.url_encode64(SystemsRuntime.Proc.random_bytes(48), padding: false)
 
     code_challenge =
       :sha256 |> :crypto.hash(code_verifier) |> Base.url_encode64(padding: false)
@@ -152,7 +152,7 @@ defmodule Comma.OauthIdp.KeyRotationTest do
     Comma.Repo.update_all(
       from(k in SigningKeys.Key, where: k.status == "pending"),
       inc: [],
-      set: [created_at: DateTime.add(DateTime.utc_now(), -seconds, :second)]
+      set: [created_at: DateTime.add(SystemsClock.utc_now(), -seconds, :second)]
     )
   end
 
@@ -161,7 +161,7 @@ defmodule Comma.OauthIdp.KeyRotationTest do
 
     Comma.Repo.update_all(
       from(k in SigningKeys.Key, where: k.kid == ^kid),
-      set: [retire_after: DateTime.add(DateTime.utc_now(), -seconds, :second)]
+      set: [retire_after: DateTime.add(SystemsClock.utc_now(), -seconds, :second)]
     )
   end
 
@@ -307,10 +307,10 @@ defmodule Comma.OauthIdp.KeyRotationTest do
       refute Map.has_key?(map, "d")
     end
 
-    previous = Application.get_env(:comma_core, :oauth_idp)
-    wrong = Keyword.put(previous, :kek, :crypto.strong_rand_bytes(32))
-    Application.put_env(:comma_core, :oauth_idp, wrong)
-    on_exit(fn -> Application.put_env(:comma_core, :oauth_idp, previous) end)
+    previous = SystemsRuntime.get_env(:comma_core, :oauth_idp)
+    wrong = Keyword.put(previous, :kek, SystemsRuntime.Proc.random_bytes(32))
+    SystemsRuntime.put_env(:comma_core, :oauth_idp, wrong)
+    on_exit(fn -> SystemsRuntime.put_env(:comma_core, :oauth_idp, previous) end)
 
     assert_raise RuntimeError, ~r/failed authenticated\s+decryption/, fn ->
       OauthIdp.signing_key!()

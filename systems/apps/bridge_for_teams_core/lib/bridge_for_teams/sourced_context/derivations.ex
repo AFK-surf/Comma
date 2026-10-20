@@ -224,7 +224,7 @@ defmodule BridgeForTeams.SourcedContext.Derivations do
     :ok = reject_existing_evidence(snapshot.id, request)
     :ok = ensure_derivation_bound(run.id)
 
-    attempt_id = Ecto.UUID.generate()
+    attempt_id = SystemsRuntime.Proc.uuid()
     parent_derivation_id = if run.state == "preview_ready", do: run.derivation_id
 
     {transitioned_run, _event} =
@@ -260,7 +260,7 @@ defmodule BridgeForTeams.SourcedContext.Derivations do
   end
 
   defp persist_claim(attempt_id, worker_id) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     {_bundle, attempt, run} = lock_derivation_context(attempt_id)
 
     :ok = ensure_claimable(attempt, now)
@@ -317,7 +317,7 @@ defmodule BridgeForTeams.SourcedContext.Derivations do
 
   defp persist_success(claim, normalized) do
     transaction(fn ->
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
       {_bundle, attempt, run} = lock_derivation_context(claim.attempt_id)
       :ok = verify_fence(attempt, claim, now)
       :ok = verify_run_fence(run, attempt)
@@ -361,7 +361,7 @@ defmodule BridgeForTeams.SourcedContext.Derivations do
 
   defp persist_failure(claim, failure) do
     transaction(fn ->
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
       {_bundle, attempt, run} = lock_derivation_context(claim.attempt_id)
       :ok = verify_fence(attempt, claim, now)
 
@@ -451,7 +451,7 @@ defmodule BridgeForTeams.SourcedContext.Derivations do
 
   defp insert_artifacts!(derivation, artifacts, now) do
     Enum.map(artifacts, fn normalized ->
-      id = Ecto.UUID.generate()
+      id = SystemsRuntime.Proc.uuid()
       {:ok, sealed} = Payloads.seal(:artifact, id, normalized["payload"])
 
       artifact =
@@ -510,7 +510,7 @@ defmodule BridgeForTeams.SourcedContext.Derivations do
       |> Repo.insert!()
 
     Enum.each(artifacts, fn artifact ->
-      id = Ecto.UUID.generate()
+      id = SystemsRuntime.Proc.uuid()
       {:ok, sealed} = Payloads.seal(:review_item, id, artifact.payload)
 
       %SourcedContextReviewItem{id: id}
@@ -781,7 +781,7 @@ defmodule BridgeForTeams.SourcedContext.Derivations do
     if attempt.run_id != run.id or run.context_bundle_id != bundle_id,
       do: Repo.rollback(:context_lifecycle_not_ready)
 
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     :ok = verify_fence(attempt, claim, now)
     verify_run_fence(run, attempt)
   end
@@ -903,7 +903,7 @@ defmodule BridgeForTeams.SourcedContext.Derivations do
   defp processor(opts) do
     processor =
       Keyword.get(opts, :processor) ||
-        Application.get_env(:bridge_for_teams_core, :sourced_context_processor)
+        SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_processor)
 
     if is_atom(processor) and not is_nil(processor) and Code.ensure_loaded?(processor) and
          function_exported?(processor, :derive, 1) do
@@ -915,7 +915,7 @@ defmodule BridgeForTeams.SourcedContext.Derivations do
 
   defp invoke_processor(processor, request) do
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         try do
           processor.derive(request)
         rescue
@@ -925,8 +925,8 @@ defmodule BridgeForTeams.SourcedContext.Derivations do
         end
       end)
 
-    case Task.yield(task, bound(:processor_timeout_ms, 120_000)) ||
-           Task.shutdown(task, :brutal_kill) do
+    case SystemsRuntime.Task.yield(task, bound(:processor_timeout_ms, 120_000)) ||
+           SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, {:ok, result}} when is_map(result) -> {:ok, result}
       {:ok, {:error, reason}} -> {:error, normalize_processor_error(reason)}
       {:ok, _invalid} -> {:error, :invalid_processor_output}
@@ -1010,13 +1010,13 @@ defmodule BridgeForTeams.SourcedContext.Derivations do
   end
 
   defp bound(key, default) do
-    Application.get_env(:bridge_for_teams_core, :sourced_context_bounds, [])
+    SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_bounds, [])
     |> Keyword.get(key, default)
   end
 
   defp feature_enabled do
     if Keyword.get(
-         Application.get_env(:bridge_for_teams_core, :sourced_context_features, []),
+         SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_features, []),
          :derivation,
          false
        ),

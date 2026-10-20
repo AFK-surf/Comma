@@ -1,4 +1,5 @@
-import VerifiedKernelProofs.Session.WorkRetainedStaging
+import VerifiedKernelProofs.Session.WorkRetainedCursor
+import VerifiedKernelProofs.Session.WorkStagedExecution
 
 namespace VerifiedKernel.Session.WorkConservation.CurrentExecution
 open Data ArchivePublication CommandDriver
@@ -40,7 +41,7 @@ theorem captured_read_valid {framing : CodecFraming} {objects : Objects} {versio
   obtain ⟨sealed, history, token⟩ := read.history lineage codec
   refine ⟨⟨sealed, history⟩, ?_⟩
   intro extended extension before after bytes result currentVersioned cas fact present
-  have address := (SessionDomain.ReadRevision.start_captured read.started).1
+  have address := (SessionDomain.ReadRevision.dispatch_start_captured read.started).1
   change read.objectKey = StorageAddress.key read.agent read.session at address
   change HotCAS before (.tuple [a "cas", StorageAddress.key read.agent read.session,
     .binary bytes, read.context.candidate.etag]) result after at cas

@@ -1,3 +1,4 @@
+import type { BrowserPageMenuItem } from "@comma/native-bridge";
 import type { SitePermissionMenuProvider } from "../../site-permission-menu-window";
 import type { Session } from "electron";
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -38,16 +39,22 @@ export interface SitePermissionPlatform {
     media: SiteMediaPermission[];
     signal: AbortSignal;
   }): Promise<SitePermissionChoice>;
+  /** Shows the page menu; resolves with the page action picked in it, if any. */
   settings(input: {
     anchor?: { x: number; y: number; width: number; height: number } | undefined;
     owner: unknown;
-    origin: string;
-    choices: SitePermissionChoices;
     signal: AbortSignal;
-    change(media: SiteMediaPermission, value: SitePermissionChoice): void;
-    reset(): void;
-    reload(): void;
-  }): Promise<void>;
+    /** The website's permissions, absent when the page is not an HTTPS site. */
+    site?:
+      | {
+          origin: string;
+          choices: SitePermissionChoices;
+          change(media: SiteMediaPermission, value: SitePermissionChoice): void;
+          reset(): void;
+          reload(): void;
+        }
+      | undefined;
+  }): Promise<BrowserPageMenuItem | undefined>;
   hasSystemAccess(media: SiteMediaPermission): boolean;
   ensureSystemAccess(owner: unknown, media: SiteMediaPermission[]): Promise<boolean>;
   reportError(owner: unknown, message: string): void;
@@ -207,15 +214,19 @@ export class BrowserSitePermissions {
   async showSettings(
     contents: SitePermissionContents,
     anchor?: { x: number; y: number; width: number; height: number }
-  ) {
+  ): Promise<{
+    status: "opened" | "unavailable";
+    reason?: string;
+    picked?: BrowserPageMenuItem;
+  }> {
     const tab = this.#tabs.get(contents.id);
-    const origin = sitePermissionOrigin(contents.getURL());
-    if (!tab || !origin || !this.#valid(tab))
+    if (!tab || !this.#valid(tab))
       return {
         status: "unavailable" as const,
-        reason: "Website permissions require an active HTTPS page.",
+        reason: "The page menu is unavailable for this tab.",
       };
-    if (this.#storageError) throw new Error(this.#storageError);
+    const origin = sitePermissionOrigin(contents.getURL());
+    if (origin && this.#storageError) throw new Error(this.#storageError);
     const signal = tab.document.signal;
     const current = () =>
       !signal.aborted &&
@@ -223,24 +234,31 @@ export class BrowserSitePermissions {
       sitePermissionOrigin(contents.getURL()) === origin;
     const save = (values: SitePermissionChoices) => {
       if (!current()) return;
-      this.#save(origin, values);
+      this.#save(origin!, values);
     };
     if (this.#settingsOpen) return { status: "opened" as const };
     this.#settingsOpen = true;
     try {
-      await this.platform.settings({
+      const picked = await this.platform.settings({
         anchor,
         owner: tab.owner,
-        origin,
-        choices: this.choices(origin),
         signal,
-        change: (media, value) => save({ ...this.choices(origin), [media]: value }),
-        reset: () => save(defaults()),
-        reload: () => {
-          if (current()) contents.reload();
-        },
+        site: origin
+          ? {
+              origin,
+              choices: this.choices(origin),
+              change: (media, value) =>
+                save({ ...this.choices(origin), [media]: value }),
+              reset: () => save(defaults()),
+              reload: () => {
+                if (current()) contents.reload();
+              },
+            }
+          : undefined,
       });
-      return { status: "opened" as const };
+      return picked
+        ? { status: "opened" as const, picked }
+        : { status: "opened" as const };
     } finally {
       this.#settingsOpen = false;
     }

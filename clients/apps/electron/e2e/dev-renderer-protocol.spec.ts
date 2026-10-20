@@ -1,11 +1,12 @@
+import { type ElectronApplication } from "@playwright/test";
 import {
-  _electron as electron,
+  electron,
+  electronTestCertificate,
   expect,
   test,
-  type ElectronApplication,
-} from "@playwright/test";
-import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+  trackElectronTestResource,
+} from "./electron-test";
+import { mkdtemp, rm } from "node:fs/promises";
 import {
   createSecureServer,
   type Http2ServerResponse,
@@ -14,13 +15,12 @@ import {
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
 import { findElectronWindowByNativeRole } from "../src/test-support/electron-native-window";
+import { closeElectronTestApp } from "./close-electron-test-app";
 
 const electronAppDir = resolve(process.cwd(), "apps/electron");
 const electronMain = resolve(electronAppDir, ".vite/build/main.js");
 const stalledAssetCount = 32;
-const execFileAsync = promisify(execFile);
 
 test("renderer reload cancels stalled dev assets and admits the fresh document", async () => {
   const stub = await startDevRendererStub();
@@ -31,12 +31,7 @@ test("renderer reload cancels stalled dev assets and admits the fresh document",
   try {
     userDataDir = await mkdtemp(join(tmpdir(), "comma-dev-protocol-e2e-"));
     app = await electron.launch({
-      args: [
-        electronMain,
-        // The loopback HTTP/2 fixture uses an ephemeral self-signed certificate.
-        "--ignore-certificate-errors",
-        "--user-data-dir=" + userDataDir,
-      ],
+      args: [electronMain, "--user-data-dir=" + userDataDir],
       cwd: electronAppDir,
       env: {
         ...hostEnv,
@@ -54,7 +49,7 @@ test("renderer reload cancels stalled dev assets and admits the fresh document",
     expect(stub.activeSlowResponses).toBe(stalledAssetCount - 1);
     expect(stub.http2RequestCount).toBe(stalledAssetCount);
 
-    await mainWindow.reload({ timeout: 15_000, waitUntil: "domcontentloaded" });
+    await mainWindow.reload({ waitUntil: "domcontentloaded" });
 
     await expect(mainWindow.locator("body")).toHaveAttribute("data-generation", "2");
     expect(stub.documentRequestCount).toBe(2);
@@ -65,7 +60,7 @@ test("renderer reload cancels stalled dev assets and admits the fresh document",
     await expect.poll(() => stub.activeSlowResponses).toBe(0);
   } finally {
     try {
-      await app?.close();
+      if (app) await closeElectronTestApp(app);
     } finally {
       try {
         await stub.close();
@@ -79,7 +74,8 @@ test("renderer reload cancels stalled dev assets and admits the fresh document",
 });
 
 async function startDevRendererStub() {
-  const certificate = await createTestCertificate();
+  // The app trusts this certificate from its launch.
+  const certificate = electronTestCertificate();
   let activeSlowResponses = 0;
   let documentRequestCount = 0;
   let http2RequestCount = 0;
@@ -141,7 +137,14 @@ async function startDevRendererStub() {
     session.once("close", () => sessions.delete(session));
   });
   let closed = false;
+  // An HTTP/2 server of its own (the transport is what the test exercises), recorded as the test's like any other.
+  const forget = trackElectronTestResource({
+    name: "dev renderer stub (HTTP/2)",
+    open: () => server.listening,
+    dispose: () => close(),
+  });
   const close = async () => {
+    forget();
     if (closed) return;
     closed = true;
     for (const response of pendingResponses) response.destroy();
@@ -152,7 +155,6 @@ async function startDevRendererStub() {
         server.close((error) => (error ? rejectClose(error) : resolveClose()));
       });
     }
-    await rm(certificate.directory, { force: true, recursive: true });
   };
 
   let address: ReturnType<typeof server.address>;
@@ -189,59 +191,6 @@ async function startDevRendererStub() {
       return slowRequestCount;
     },
   };
-}
-
-async function createTestCertificate() {
-  const directory = await mkdtemp(join(tmpdir(), "comma-dev-protocol-cert-"));
-  const certificatePath = join(directory, "certificate.pem");
-  const configPath = join(directory, "openssl.cnf");
-  const keyPath = join(directory, "private-key.pem");
-  const config = [
-    "[req]",
-    "prompt = no",
-    "distinguished_name = distinguished_name",
-    "x509_extensions = extensions",
-    "[distinguished_name]",
-    "CN = 127.0.0.1",
-    "[extensions]",
-    "subjectAltName = @alt_names",
-    "basicConstraints = critical,CA:TRUE",
-    "keyUsage = critical,digitalSignature,keyEncipherment",
-    "extendedKeyUsage = serverAuth",
-    "[alt_names]",
-    "IP.1 = 127.0.0.1",
-    "DNS.1 = localhost",
-  ].join("\n");
-
-  try {
-    await writeFile(configPath, config, "utf8");
-    await execFileAsync("openssl", [
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-keyout",
-      keyPath,
-      "-out",
-      certificatePath,
-      "-days",
-      "1",
-      "-sha256",
-      "-config",
-      configPath,
-      "-extensions",
-      "extensions",
-    ]);
-    return {
-      cert: await readFile(certificatePath),
-      directory,
-      key: await readFile(keyPath),
-    };
-  } catch (error) {
-    await rm(directory, { force: true, recursive: true });
-    throw error;
-  }
 }
 
 function rendererDocument(generation: number) {

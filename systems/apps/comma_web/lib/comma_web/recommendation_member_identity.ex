@@ -9,8 +9,10 @@ defmodule CommaWeb.RecommendationMemberIdentity do
 
   alias Salix.Control.OAuthBindings
 
+  @managed_toolkits CommaWeb.RecommendationPreviewCatalog.managed_toolkits()
+
   def resolve(workspace, user_id, %{"kind" => "managed_oauth", "appId" => provider} = source)
-      when provider in ~w(linear github notion slack) do
+      when provider in @managed_toolkits do
     with true <- present?(user_id) and workspace["owner_user_id"] == user_id,
          {:ok, binding} <-
            OAuthBindings.get(workspace["default_group_id"], source["connectionId"]),

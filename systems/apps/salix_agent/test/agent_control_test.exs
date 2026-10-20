@@ -1,7 +1,11 @@
 defmodule SalixAgent.AgentControlTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
-  alias SalixAgent.{Control, ExternalAgentRuntime}
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle
+  alias SalixAgent.Control
+  alias SalixAgent.TestSupport.RetiredSessionFixture
   alias SalixStore.{Keys, S3}
 
   defmodule GateBackend do
@@ -47,7 +51,7 @@ defmodule SalixAgent.AgentControlTest do
 
     @impl true
     def list(prefix, opts) do
-      case :persistent_term.get({__MODULE__, :config}, nil) do
+      case SystemsRuntime.PersistentTerm.get({__MODULE__, :config}, nil) do
         %{prefix: ^prefix, keys: keys} ->
           objects = Enum.map(keys, &%{key: &1})
           {:ok, %{objects: objects, next: nil}}
@@ -59,12 +63,15 @@ defmodule SalixAgent.AgentControlTest do
 
     @impl true
     def get(key, opts) do
-      case :persistent_term.get({__MODULE__, :config}, nil) do
+      case SystemsRuntime.PersistentTerm.get({__MODULE__, :config}, nil) do
         %{coordinator: coordinator, gate_ref: gate_ref, keys: keys} ->
           if key in keys do
-            send(coordinator, {:get_started, gate_ref, key, self()})
+            SystemsRuntime.Proc.send(
+              coordinator,
+              {:get_started, gate_ref, key, SystemsRuntime.Proc.self()}
+            )
 
-            receive do
+            SystemsRuntime.Proc.receive do
               {:release, ^gate_ref, ^key} -> {:ok, %{body: "{}", etag: "gate"}}
             end
           else
@@ -78,8 +85,8 @@ defmodule SalixAgent.AgentControlTest do
   end
 
   setup do
-    previous_store = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
     start_supervised!(SalixStore.S3.Fake)
 
@@ -96,54 +103,16 @@ defmodule SalixAgent.AgentControlTest do
   end
 
   @tag :owner_retry_fix
-  test "wake returns placement failure instead of claiming the wake was queued" do
-    id = SalixAgent.TestSupport.new_agent_id()
-    SalixAgent.TestSupport.create_control_agent!(id)
-    previous = Application.get_env(:salix_agent, :placement)
-    Application.put_env(:salix_agent, :placement, UnavailableWakePlacement)
-    on_exit(fn -> restore_env(:salix_agent, :placement, previous) end)
-
-    assert {:error, {:owner_unreachable, :wake_owner, :not_connected}} = Control.wake(id)
-    assert [] = Registry.lookup(SalixAgent.Registry, id)
-  end
-
-  @tag :owner_retry_fix
   test "wake starts the owner and reports an enqueued wake" do
     id = SalixAgent.TestSupport.new_agent_id()
     SalixAgent.TestSupport.create_control_agent!(id)
     assert {:ok, %{"status" => "queued"}} = Control.wake(id)
     assert [{pid, _}] = Registry.lookup(SalixAgent.Registry, id)
-    assert Process.alive?(pid)
+    assert SystemsRuntime.Proc.alive?(pid)
   end
 
-  test "all External Worker binding kinds share the external runtime owner" do
-    assert Control.runtime_kind(%{"runtime_config" => %{"kind" => "external"}}) == "external"
-
-    assert Control.runtime_kind(%{"runtime_config" => %{"kind" => "connected_runtime"}}) ==
-             "external"
-
-    assert Control.runtime_kind(%{"runtime_config" => %{"kind" => "compute_workload"}}) ==
-             "external"
-
-    assert Control.runtime_kind(%{"runtime_config" => %{"kind" => "internal"}}) == "internal"
-  end
-
-  test "get reads only the agent control record" do
-    agent = create_agent!("external")
-    seed_related_objects!(agent)
-    SalixStore.S3.Fake.reset_read_log()
-
-    assert {:ok, result} = Control.get(agent["agent_id"], agent["tenant_id"])
-    assert result["status"] == "idle"
-    refute Map.has_key?(result, "activity_status")
-
-    agent_key = Keys.ctl_agent(agent["agent_id"])
-
-    assert SalixStore.S3.Fake.read_log() == [{:get, agent_key}]
-  end
-
-  test "Inspector configuration persists and refuses external runtimes and unsafe roots" do
-    agent = create_agent!("internal")
+  test "Inspector configuration persists and refuses External Runtimes and unsafe roots" do
+    agent = create_agent!()
     id = agent["agent_id"]
     policy = SalixAgent.TestSupport.inspector_policy()
 
@@ -161,16 +130,11 @@ defmodule SalixAgent.AgentControlTest do
                })
     end
 
-    external = create_agent!("external", agent["tenant_id"])
+    retired = SalixAgent.StationBinding.retired_external_message()
 
-    assert {:error, {:bad_request, _}} =
-             SalixAgent.AgentControl.configure(external["agent_id"], %{
-               "inspector_policy" => policy
-             })
-
-    assert {:error, {:bad_request, _}} =
+    assert {:error, {:bad_request, ^retired}} =
              SalixAgent.AgentControl.configure(id, %{
-               "runtime_config" => external_runtime_config()
+               "runtime_config" => %{"kind" => "external", "provider" => "codex"}
              })
 
     assert {:ok, current} = SalixAgent.AgentControl.get_record(id)
@@ -178,17 +142,33 @@ defmodule SalixAgent.AgentControlTest do
     assert current["runtime_config"]["kind"] == "internal"
   end
 
+  test "a reply style is default or concise and reaches the runtime prompts" do
+    id = create_agent!()["agent_id"]
+
+    assert {:ok, %{"reply_style" => "concise"}} =
+             SalixAgent.AgentControl.configure(id, %{"reply_style" => "concise"})
+
+    assert {:ok, %{prompts: %{"reply_style" => "concise"}}} =
+             SalixAgent.AgentRuntimeConfig.resolve(id)
+
+    assert {:error, {:bad_request, _}} =
+             SalixAgent.AgentControl.configure(id, %{"reply_style" => "terse"})
+
+    assert {:ok, %{"reply_style" => "default"}} =
+             SalixAgent.AgentControl.configure(id, %{"reply_style" => "default"})
+  end
+
   test "list reads each control record once and no related resource" do
-    internal = create_agent!("internal")
-    external = create_agent!("external", internal["tenant_id"])
+    internal = create_agent!()
+    sibling = create_agent!(internal["tenant_id"])
     seed_related_objects!(internal)
-    seed_related_objects!(external)
+    seed_related_objects!(sibling)
     SalixStore.S3.Fake.reset_read_log()
 
     listed = Control.list(internal["tenant_id"])
 
     assert Enum.sort(Enum.map(listed, & &1["agent_id"])) ==
-             Enum.sort([internal["agent_id"], external["agent_id"]])
+             Enum.sort([internal["agent_id"], sibling["agent_id"]])
 
     assert Enum.all?(listed, &(not Map.has_key?(&1, "activity_status")))
 
@@ -199,12 +179,12 @@ defmodule SalixAgent.AgentControlTest do
     assert Enum.sort(reads) ==
              Enum.sort([
                {:get, Keys.ctl_agent(internal["agent_id"])},
-               {:get, Keys.ctl_agent(external["agent_id"])}
+               {:get, Keys.ctl_agent(sibling["agent_id"])}
              ])
   end
 
   test "list_result surfaces LIST failures while list keeps the legacy empty contract" do
-    agent = create_agent!("internal")
+    agent = create_agent!()
     tenant_id = agent["tenant_id"]
     prefix = Keys.ctl_agents_prefix_for_tenant(tenant_id)
 
@@ -218,98 +198,9 @@ defmodule SalixAgent.AgentControlTest do
     assert {:ok, [%{"agent_id" => _}]} = Control.list_result(tenant_id)
   end
 
-  test "list_result surfaces per-record GET transport failures instead of dropping rows" do
-    agent = create_agent!("internal")
-    _sibling = create_agent!("internal", agent["tenant_id"])
-
-    SalixStore.S3.Fake.set_fault({:fail, 500, :get, Keys.ctl_agent(agent["agent_id"])})
-
-    assert {:error, {:http, 500}} = Control.list_result(agent["tenant_id"])
-  end
-
-  test "list keeps at most eight record reads in flight while later reads wait" do
-    tenant_id = SalixAgent.TestSupport.new_tenant_id()
-    prefix = Keys.ctl_agents_prefix_for_tenant(tenant_id)
-    keys = for i <- 1..12, do: prefix <> "gate-#{i}.json"
-    gate_ref = make_ref()
-
-    :persistent_term.put(
-      {GateBackend, :config},
-      %{coordinator: self(), gate_ref: gate_ref, keys: keys, prefix: prefix}
-    )
-
-    Application.put_env(:salix_store, :s3_backend, GateBackend)
-
-    on_exit(fn ->
-      :persistent_term.erase({GateBackend, :config})
-    end)
-
-    unrelated_prefix = "agent-control-gate-unrelated/#{System.unique_integer([:positive])}/"
-    assert {:ok, %{objects: [], next: nil}} = S3.list(unrelated_prefix)
-    assert {:error, :not_found} = S3.get(unrelated_prefix <> "record.json")
-    refute_receive {:get_started, ^gate_ref, _, _}, 0
-
-    task = Task.async(fn -> Control.list_result(tenant_id) end)
-
-    # Exactly eight reads start; the ninth stays queued behind the cap.
-    workers =
-      for _ <- 1..8 do
-        assert_receive {:get_started, ^gate_ref, key, pid}, 2_000
-        {key, pid}
-      end
-
-    assert workers |> Enum.map(&elem(&1, 0)) |> Enum.uniq() |> length() == 8
-    assert workers |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> length() == 8
-
-    # An unrelated, unscoped control message cannot open a record gate.
-    {_first_key, first_pid} = hd(workers)
-    send(first_pid, :release)
-    refute_receive {:get_started, ^gate_ref, _, _}, 200
-
-    # Releasing one slot admits exactly one more read.
-    [{first_key, first_pid} | rest] = workers
-    send(first_pid, {:release, gate_ref, first_key})
-    assert_receive {:get_started, ^gate_ref, ninth_key, ninth_pid}, 2_000
-    refute_receive {:get_started, ^gate_ref, _, _}, 200
-
-    for {key, pid} <- rest ++ [{ninth_key, ninth_pid}],
-        do: send(pid, {:release, gate_ref, key})
-
-    for _ <- 1..3 do
-      assert_receive {:get_started, ^gate_ref, key, pid}, 2_000
-      send(pid, {:release, gate_ref, key})
-    end
-
-    # Bodies decode to records without an agent_id, which are skipped.
-    assert {:ok, []} = Task.await(task)
-  end
-
-  test "concurrent list reads keep the caller's observability surface" do
-    agent = create_agent!("internal")
-    test_pid = self()
-    handler_id = "agent-control-list-surface-#{System.unique_integer([:positive])}"
-
-    :telemetry.attach(
-      handler_id,
-      [:salix, :operation, :stop],
-      fn _event, _meas, meta, _cfg ->
-        if meta.operation == "store_get", do: send(test_pid, {:surface, meta.surface})
-      end,
-      nil
-    )
-
-    on_exit(fn -> :telemetry.detach(handler_id) end)
-
-    SystemsObservability.Context.with_surface("salix", fn ->
-      assert {:ok, [_]} = Control.list_result(agent["tenant_id"])
-    end)
-
-    assert_receive {:surface, "salix"}
-  end
-
   test "list excludes archived agents unless include_archived is set" do
-    active = create_agent!("internal")
-    archived = create_agent!("internal", active["tenant_id"])
+    active = create_agent!()
+    archived = create_agent!(active["tenant_id"])
     tenant_id = active["tenant_id"]
 
     assert {:ok, _} = Control.delete(archived["agent_id"], tenant_id)
@@ -332,7 +223,7 @@ defmodule SalixAgent.AgentControlTest do
   test "get_including_archived widens get only on the archived axis" do
     # hidden is not settable through create/update; the meeting runtime writes
     # its internal agent records directly, so the test does the same.
-    created = create_agent!("internal")
+    created = create_agent!()
     tenant_id = created["tenant_id"]
     hidden = mark_hidden!(created["agent_id"])
     assert hidden["hidden"] == true
@@ -347,7 +238,7 @@ defmodule SalixAgent.AgentControlTest do
     refute hidden["agent_id"] in list_ids(tenant_id, include_archived: true)
 
     # Tenant scoping still applies to non-hidden archived agents.
-    visible = create_agent!("internal", tenant_id)
+    visible = create_agent!(tenant_id)
     assert {:ok, _} = Control.delete(visible["agent_id"], tenant_id)
     other_tenant = SalixAgent.TestSupport.new_tenant_id()
 
@@ -368,46 +259,32 @@ defmodule SalixAgent.AgentControlTest do
     updated
   end
 
-  test "activity reads bounded session, status, and availability projections" do
-    agent = create_agent!("external")
+  test "activity reads bounded session projections, retired Sessions included" do
+    agent = create_agent!()
     session_id = SalixStore.Ids.new_session_id()
-
-    assert {:ok, :external} =
-             ExternalAgentRuntime.stage_delivery(agent["agent_id"], %{
-               source_message_id: "agent-control-activity",
-               payload: %{
-                 "session_id" => session_id,
-                 "role" => "user",
-                 "content" => "context only",
-                 "no_wake" => true
-               }
-             })
-
-    SalixAgent.TestSupport.stop_all_agents()
-    seed_related_objects!(agent)
+    RetiredSessionFixture.put!(agent, session_id, %{"status" => "running"})
     SalixStore.S3.Fake.reset_read_log()
 
+    # A retired Session is read-only history and never reports activity.
     assert SalixAgent.Activity.list(agent["tenant_id"]) == []
 
     agent_id = agent["agent_id"]
     agent_key = Keys.ctl_agent(agent_id)
     session_key = Keys.agent_external_runtime_session(agent_id, session_id)
-    status_key = Keys.agent_external_runtime_session_status(agent_id, session_id)
     control_prefix = Keys.ctl_agents_prefix_for_tenant(agent["tenant_id"])
+    internal_prefix = Keys.agent_internal_runtime_sessions_prefix(agent_id)
     session_prefix = Keys.agent_external_runtime_sessions_prefix(agent_id)
-    device_key = Keys.ctl_group_device(agent["tenant_id"], agent["group_id"], "test-device")
 
     assert SalixStore.S3.Fake.read_log() == [
              {:list, control_prefix, []},
              {:get, agent_key},
+             {:list, internal_prefix, []},
              {:list, session_prefix, delimiter: "/"},
-             {:get, session_key},
-             {:get, device_key},
-             {:get, status_key}
+             {:get, session_key}
            ]
   end
 
-  defp create_agent!(runtime_kind, tenant_id \\ nil) do
+  defp create_agent!(tenant_id \\ nil) do
     tenant_id = tenant_id || SalixAgent.TestSupport.new_tenant_id()
     group_id = SalixStore.Ids.new_group_id(tenant_id)
     agent_id = SalixStore.Ids.new_agent_id(group_id)
@@ -416,32 +293,14 @@ defmodule SalixAgent.AgentControlTest do
       "tenant_id" => tenant_id,
       "group_id" => group_id,
       "role" => "worker",
-      "runtime_config" =>
-        if(runtime_kind == "external",
-          do: external_runtime_config(),
-          else: %{"kind" => "internal"}
-        )
+      "runtime_config" => %{"kind" => "internal"}
     })
-  end
-
-  defp external_runtime_config do
-    device_id = "test-device"
-    runtime_id = "test-runtime"
-
-    %{
-      "kind" => "external",
-      "provider" => "codex",
-      "device_id" => device_id,
-      "runtime_id" => runtime_id,
-      "device_runtime_id" =>
-        SalixStore.RuntimeIds.device_runtime_id(device_id, "codex", runtime_id)
-    }
   end
 
   defp seed_related_objects!(agent) do
     agent_id = agent["agent_id"]
     group_id = agent["group_id"]
-    payload = :crypto.strong_rand_bytes(128_000)
+    payload = SystemsRuntime.Proc.random_bytes(128_000)
 
     assert {:ok, _} = S3.put(Keys.agent_internal_runtime_session(agent_id, "internal"), payload)
     assert {:ok, _} = S3.put(Keys.agent_external_runtime_session(agent_id, "external"), payload)
@@ -453,11 +312,11 @@ defmodule SalixAgent.AgentControlTest do
     updated =
       body
       |> Jason.decode!()
-      |> Map.put("vm", %{"enabled" => true, "provider" => "sprites"})
+      |> Map.put("vm", %{"enabled" => true})
 
     assert {:ok, _} = S3.put(key, Jason.encode!(updated), if_match: etag)
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

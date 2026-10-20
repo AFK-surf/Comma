@@ -258,7 +258,7 @@ defmodule SalixIM.IFC.SlackConfirmation do
     ProviderConnects.get_active_connect_by_id(group_id, connect_id, "slack")
   end
 
-  defp capability_mod, do: Application.get_env(:salix_im, :capability_request_mod)
+  defp capability_mod, do: SystemsRuntime.get_env(:salix_im, :capability_request_mod)
 
   defp text(nil), do: ""
   defp text(value) when is_binary(value), do: String.trim(value)

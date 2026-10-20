@@ -84,6 +84,174 @@ defmodule Salix.Bindings.AgentConversations do
     )
   end
 
+  @impl SalixIM.Ports.TaskCreate
+  def task_worker(scope),
+    do:
+      SalixAgent.AgentManagement.Ports.task_worker(%{
+        tenant_id: scope.tenant_id,
+        group_id: scope.group_id
+      })
+
+  @impl SalixIM.Ports.TaskCreate
+  def default_task_model(scope),
+    do:
+      SalixAgent.AgentManagement.Ports.default_task_model(%{
+        tenant_id: scope.tenant_id,
+        group_id: scope.group_id
+      })
+
+  @impl SalixIM.Ports.TaskCreate
+  def session_model(scope, choice) do
+    with :ok <- station_runs(scope, choice) do
+      SalixAgent.AgentManagement.Ports.session_model(
+        %{
+          tenant_id: scope.tenant_id,
+          group_id: scope.group_id,
+          runs_on: scope[:runs_on]
+        },
+        choice
+      )
+    end
+  end
+
+  # A Task that runs on a station takes a model the station's profiles have
+  # enabled, as the station last said (`task_models`). One that has said
+  # nothing runs no model a Task can name.
+  defp station_runs(%{runs_on: %{"device_id" => device_id}} = scope, %{
+         "kind" => "runtime",
+         "provider" => provider,
+         "model" => model
+       }) do
+    models =
+      case SalixEnv.Registry.get_device(scope.tenant_id, scope.group_id, device_id) do
+        {:ok, device} -> get_in(device, ["meta", "capabilities", "task_models"])
+        _ -> nil
+      end
+
+    cond do
+      not is_map(models) -> {:error, {:not_on_station, %{}}}
+      model in List.wrap(models[provider]) -> :ok
+      true -> {:error, {:not_on_station, Map.take(models, ~w(claude codex))}}
+    end
+  end
+
+  defp station_runs(_scope, _choice), do: :ok
+
+  # The station must be connected now, and a desktop station take Tasks as
+  # stations ask each other (`tasks` 2, systems/station/docs/tasks.md):
+  # nothing is woken on the way. An agent starts the Group's Cloud VM itself (`cloud_vm.start`); a
+  # Task runs there when the Group's Cloud VM switch is on. Giving a station the Task is the
+  # `station.session` egress; with no transcript to label, a Group in IFC
+  # enforce mode refuses it.
+  #
+  # A Loop Task (`loop`) runs its Loop while every app is closed. A person's
+  # own computer, a station minted for its owner (`meta.owner_user_id`, the
+  # Comma desktop station), stops taking Tasks when the app quits and is never
+  # woken, so it is refused for one, connected or not. Stations Salix or a
+  # provisioner runs, and the Cloud VM, stay allowed.
+  @impl SalixIM.Ports.TaskCreate
+  def runs_on(scope, request) do
+    ctx = %{tenant_id: scope.tenant_id, group_id: scope.group_id, agent_id: scope[:agent_id]}
+
+    {class, _descriptor} =
+      SalixAgent.IFC.Destination.describe("station.session", %{"action" => "start"}, ctx)
+
+    if class == :egress and SalixAgent.IFC.mode_for(ctx.tenant_id, ctx.group_id) == :enforce,
+      do: {:error, :ifc_enforced},
+      else: resolve_runs_on(scope, request)
+  end
+
+  defp resolve_runs_on(scope, %{"kind" => "cloud_vm"} = request) when map_size(request) == 1 do
+    # The Group's Cloud VM switch decides; a binding only makes the Cloud VM
+    # the Worker's default Task location.
+    case SalixAgent.Control.get_record(scope.agent_id) do
+      {:ok, %{"tenant_id" => tenant, "group_id" => group} = agent}
+      when tenant == scope.tenant_id and group == scope.group_id ->
+        if SalixAgent.CloudVM.allowed?(agent),
+          do: cloud_vm_running(scope),
+          else: {:error, :cloud_vm_disabled}
+
+      {:ok, _other_group} ->
+        {:error, :not_found}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp resolve_runs_on(scope, %{"kind" => "station", "device_id" => device_id} = request)
+       when map_size(request) == 2 and is_binary(device_id) and device_id != "" do
+    if device_id == SalixStore.RuntimeIds.cloud_vm_device_id(scope.group_id) do
+      {:error, :use_cloud_vm_kind}
+    else
+      with {:ok, device} <- device(scope, device_id),
+           :ok <- unattended(scope, device),
+           {:ok, _device} <- connected_station(device),
+           do: {:ok, %{"kind" => "station", "device_id" => device_id}}
+    end
+  end
+
+  defp resolve_runs_on(_scope, _request), do: {:error, :invalid_runs_on}
+
+  defp cloud_vm_running(scope) do
+    device_id = SalixStore.RuntimeIds.cloud_vm_device_id(scope.group_id)
+
+    # Its station is Salix's own image's: it takes Tasks as Salix asks. It
+    # is running once the VM is ready: a station that connected while its
+    # archive is still to be restored takes no work (a used station cannot
+    # take its archive back).
+    with {:ok, %{"status" => "ready"}} <-
+           SalixWeb.ComputeProviders.Cloudflare.get_record(scope.group_id),
+         {:ok, _device} <- connected(scope, device_id) do
+      {:ok, %{"kind" => "cloud_vm", "device_id" => device_id}}
+    else
+      _not_running -> {:error, :cloud_vm_not_running}
+    end
+  end
+
+  # A device that reports no `tasks` capability runs the old connector
+  # (`salix-connect`), which runs no Task: its user installs the Comma station
+  # (`device_needs_station`); an older `tasks` is a station to update
+  # (`station_outdated`). See `SalixStore.StationReadiness`.
+  #
+  # The capabilities are those of the device's last connection, which its
+  # record keeps while it is offline. A device that cannot take Tasks is
+  # refused with how to upgrade it whether it is connected or not: coming
+  # back online would not let it take the Task. A record that never
+  # connected holds no capabilities: that device is only known to be offline.
+  defp connected_station(device) do
+    capabilities = get_in(device, ["meta", "capabilities"])
+
+    case {SalixStore.StationReadiness.check(capabilities), online(device)} do
+      {:ready, online} -> online
+      {_unknown, {:error, _} = offline} when not is_map(capabilities) -> offline
+      {refusal, _online} -> {:error, refusal}
+    end
+  end
+
+  defp unattended(%{loop: true}, %{"meta" => %{"owner_user_id" => owner}})
+       when is_binary(owner) and owner != "",
+       do: {:error, :personal_station_for_loop}
+
+  defp unattended(_scope, _device), do: :ok
+
+  defp connected(scope, device_id) do
+    with {:ok, device} <- device(scope, device_id), do: online(device)
+  end
+
+  defp device(scope, device_id) do
+    case SalixEnv.Registry.get_device(scope.tenant_id, scope.group_id, device_id) do
+      {:ok, device} -> {:ok, device}
+      {:error, _reason} -> {:error, :device_not_found}
+    end
+  end
+
+  defp online(%{"status" => "connected", "connector_run_id" => run_id} = device)
+       when is_binary(run_id) and run_id != "",
+       do: {:ok, device}
+
+  defp online(_device), do: {:error, :device_offline}
+
   @impl SalixIM.Ports.TaskSchedule
   def update_task_schedule(group_id, conversation_id, schedule) do
     SalixCluster.TaskSchedules.update_task_schedule(group_id, conversation_id, schedule)
@@ -160,14 +328,13 @@ defmodule Salix.Bindings.AgentConversations do
       Enum.map(relevant, fn participant ->
         agent_id = participant["agent_id"]
         session_id = get_in(participant, ["payload", "session_id"])
-        {:ok, agent} = SalixAgent.Control.get_record(agent_id)
 
         %{
           agent_id: agent_id,
           session_id: session_id,
           participant_id: participant["participant_id"],
           worker_role: participant["role_label"] || "worker",
-          runtime_kind: SalixAgent.Control.runtime_kind(agent),
+          runtime_kind: "internal",
           rank_at: hit["created_at"] || 0,
           conversation_ref:
             %{

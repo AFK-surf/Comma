@@ -1,26 +1,22 @@
 # Lean verified kernel
 
-This package owns all 39 Session event reducers, their activity bookkeeping, IFC authorization, and AgentLoop control decisions.
-Elixir calls Lean through one ETF NIF. No Erlang Session reducer or refinement bridge remains.
-AgentLoop control decisions execute in Lean. Elixir executes processes, effects, and the Actor loop.
-No Erlang kernel, Core export, or Erlean refinement package remains.
+This package owns the Session event reducers, their activity bookkeeping, IFC authorization, and AgentLoop control decisions.
+Elixir calls Lean through one ETF NIF. Elixir executes processes, effects, and the Actor loop.
 
 ## Source layout
 
 `runtime/VerifiedKernel/` contains executable Lean modules. `runtime/VerifiedKernel.lean` imports the NIF dispatch entry point.
 `proofs/VerifiedKernelProofs/` contains theorems, specification models, and proof-only traces and ghost state.
 `lakefile.toml` selects every module under `runtime/` and `proofs/` with Lake globs. There is no aggregate import list to update.
-Both trees retain the `VerifiedKernel` declaration namespaces. Proof module imports use the `VerifiedKernelProofs` prefix.
+Both trees keep the `VerifiedKernel` declaration namespaces. Proof module imports use the `VerifiedKernelProofs` prefix.
 Proofs import runtime modules. Runtime modules do not import proofs.
 `SalixAgent.IFC.Help` embeds `proofs/VerifiedKernelProofs/IFC/Model.lean` as tool documentation during Elixir compilation.
-Its contents are unchanged. Elixir does not execute this specification model.
+Elixir does not execute this specification model.
 
 `lake build VerifiedKernel.Native` builds the runtime entry point. The NIF links only its executable import closure.
-`Native` imports the dispatcher and the terminal emulator. The dispatcher does not import the terminal, so a terminal change does not rebuild the dispatcher proofs.
 `lake build` builds every runtime and proof module. `scripts/check.sh` also runs the axiom audit, native tests, and shared-library checks.
-`profile/`, `c/`, and the Elixir adapter keep their existing roles.
 
-`scripts/audit-axioms.lean` is the axiom audit. It finds the modules from the `runtime/` and `proofs/` source trees and imports all of them.
+`scripts/audit-axioms.lean` is the axiom audit. It imports every module from the `runtime/` and `proofs/` source trees.
 It checks the transitive axioms of every declaration in those modules, including private and generated declarations.
 A declaration passes only if it uses no axioms other than `propext`, `Classical.choice`, and `Quot.sound`.
 Thus the audit rejects `sorry` and `admit` (`sorryAx`), the auxiliary axiom that `native_decide` adds, and each `axiom` declaration.
@@ -28,23 +24,7 @@ The audit does not replay declarations through the kernel. It does not check `@[
 
 CI runs `scripts/check-proofs.sh` for the complete proof target and axiom audit.
 A push to `main` always runs it. A pull request runs it when its diff touches the kernel, the toolchain setup action, or the Systems CI workflow.
-It then saves `.lake/build`, including dependency traces, before `scripts/check-runtime.sh` builds and tests the native adapter.
-`scripts/check.sh` runs both checks locally.
-The cache key includes the platform, Lean toolchain, Lake configuration, and Lean sources.
-Earlier source revisions can supply a cache within the same platform and configuration.
-Lake checks dependency traces and rebuilds changed modules and their affected consumers. A cache hit never skips the proof target or axiom audit.
-GitHub scopes PR caches to their merge ref, and Systems CI cancels superseded main runs.
-The `Verified Kernel Cache` workflow (`.github/workflows/verified-kernel-cache.yml`) writes the main-branch cache on each kernel push to `main` and weekly.
-Pull requests restore that cache through the prefix key. The save step also runs after a failed proof step, so a fix-up push replays only the remaining modules.
-A missing cache triggers a complete build. Memory and heartbeat limits remain unchanged.
-CI sets `LEAN_NUM_THREADS=4`, one Lake worker per runner core. Local checks default to one Lake worker.
-Each Lean compiler retains `-j1` and `-M2048`. The single-threaded axiom audit uses `-M4096` because it imports every module.
-
-The reducer walks (`transcript_walk`, `sorted_walk`, and the frame walks) select each step by the head constant of the hypothesis.
-`proofs/VerifiedKernelProofs/Proof/WalkTactic.lean` defines `head_is`, `bind_head_is`, `bind_field_is`, and `head_step`.
-A walk alternative rewrites only when its head guard passes, and the step lemma is named after the head reducer.
-No alternative searches the reducer lemma list, and no failing `simp` traverses the unfolded reducer body.
-Bind-unrolling loops that stop at a named call guard their `change` the same way, so the unifier never unfolds a reducer to reject a mismatch.
+A build cache hit never skips the proof target or the axiom audit.
 
 ### AgentLoop domain
 
@@ -55,8 +35,8 @@ and the reply intent, or returns the guidance for a malformed envelope.
 `terminal_reply_admission` admits one tool call against the scope from the `terminal_reply_context`
 query. `completion_wake` decides whether a settling background result wakes the session, continues it,
 or permits a speculative model call. It holds the notification's wake while a sibling settlement in the
-same Actor is due; direct-poll completions never activate. It rewrites the event before the
-`queue_append` reducer, which is unchanged. These two have runtime tests, not proofs.
+same Actor is due. Direct-poll completions never activate. It rewrites the event before the
+`queue_append` reducer. These two have runtime tests, not proofs.
 The other payloads contain phase atoms, booleans, nonnegative attempt counts, and binary or nil owner identities.
 Retry admission also accepts the actor's explicit `invalid` owner status and ignores that retry.
 Dependency identities are binary ETF encodings of BEAM references, not nested terms that Lean decodes.
@@ -87,7 +67,7 @@ The host keeps provider formatting, tool contexts, tool execution, the workspace
 result projection.
 The host supplies facts it alone observes: the canonical Router session, busy delegates, and the
 completion owners of the Actor's in-flight background calls.
-The Conversation owner still chooses delivery targets and `no_wake`.
+The Conversation owner chooses delivery targets and `no_wake`.
 Lean owns identity comparison, event admission, and command selection. There is no general opaque-object transport.
 An event out of order fails the step with `loop_order`. A tool turn that the proven round machine rejects fails with `round_order`.
 The loop commits some events that the host builds: tool-turn intent and admission events, final-output
@@ -98,16 +78,13 @@ type `queue_ack`, `queue_consume`, `archive_advance`, or `session_stamp`, the st
 The runtime `AgentLoop.Round`, `AgentLoop.Dependency`, and `AgentLoop.Policy` modules contain executable functions.
 Their matching proof modules contain the theorems and trace models.
 The dispatch proof module proves terminal owner equality and accepted-pair uniqueness.
-The 29 AgentLoop proofs cover arbitrary finite traces, phase-qualified commits, at-most-once commands and dependency admission, policy precedence, and retry budgets.
+The AgentLoop proofs cover arbitrary finite traces, phase-qualified commits, at-most-once commands and dependency admission, policy precedence, and retry budgets.
 These claims assume truthful commit observations and faithful reference encoding.
 They do not prove storage commits, BEAM identity allocation, external-effect idempotency, or scheduling progress.
-The native tests exercise real references, including an ETF round trip and stale references.
-Existing Actor tests retain coverage of timeouts, crashes, retries, and terminal ownership.
 
 ### Agent loop proofs
 
 `proofs/VerifiedKernelProofs/Loop/` proves properties of `loop_step` itself, not only of the abstract `Round` machine.
-Issue #2070 records the selection of these properties and their design.
 `Loop.stepWith` takes the query oracle as a parameter, and `Loop.step` is `stepWith queryAsk`.
 `Source.lean` lists every place where the loop emits a commit, a `run_tools` dispatch, or an activation `write`.
 `Shape.lean` proves `step_shape` for any oracle: notifications, at most one commit, then exactly one blocking effect.
@@ -117,7 +94,7 @@ It also proves that each commit, dispatch, and write comes from a listed source 
 | --- | --- | --- |
 | A. No false completion | `DischargeFrame.project_discharge_source`, `Discharge.loop_chain_discharge_justified`, `failed_send_keeps_turn_open` | Only `ack` and `provider_reply_obligation_resolved` events move the ACK or remove an obligation. Each such event in a loop commit has a named `Justified` reason. `Settlement.terminal` settles nothing for a non-terminal send result. The reasons listed below can still settle. |
 | B. Recorded, non-duplicated dispatch | `Dispatch.dispatch_after_durable_intent`, `notice_after_durable_record`, `speculative_dispatch`, `dispatch_at_most_once`, `round_refines`, `dispatch_once_per_round` | Over the host model in `Host.lean`, each non-speculative dispatch follows a durable commit of its record, and dispatch is at most once for each `aid`. The only exception is a speculative dispatch whose durable fence failed. |
-| C. Bounded work | `WaitBudget.wait_extension_budget`, `ActivationChain.activation_chain_bounded`, `RequestBound.requests_le_grants`, `TerminalTail.local_settlement_stops_continuation`, `TerminalTail.failureAck_final`, `RoundBudget.failureAck_keeps_rounds`, `RequestBound.requests_not_bounded` | Wait extensions stay within the ceiling. An activation chain is linear in outside writes. On the host model, each model request needs a granted activation, so requests do not exceed grants. A local settlement or a runaway retirement stops continuation unless a Task card fences its ACK. A retryable failure does not ACK a source that no failure notice reached. The bound on model requests for each credit is false on the host model, because the model leaves some host answers free. `Budget.lean` lists the host contracts that a proof needs. |
+| C. Bounded work | `WaitBudget.wait_extension_budget`, `ActivationChain.activation_chain_bounded`, `RequestBound.requests_le_grants`, `TerminalTail.local_settlement_stops_continuation`, `TerminalTail.failureAck_final`, `RoundBudget.failureAck_keeps_rounds`, `RequestBound.requests_not_bounded` | Wait extensions stay within the ceiling. An activation chain is linear in outside writes. On the host model, each model request needs a granted activation, so requests do not exceed grants. A local settlement or a runaway retirement stops continuation unless a Task card fences its ACK. A retryable failure does not ACK a source that no failure notice reached. The loop's failure ACK keeps the stored round count. The bound on model requests for each credit is false on the host model, because the model leaves some host answers free. `Budget.lean` lists the host contracts that a proof needs. |
 | D. Accepted work | `HostEvents.host_events_raw_ordinary`, `WorkEmbedding.loop_commit_ordinary`, `loop_write_ordinary`, `activation_write_staged`, `loop_commit_run` | Every loop commit and yield write is a `RawOrdinaryBatch`. A loop commit extends a `NativeProductRun`, so `NativeProductRun.refinement` applies. |
 
 These theorems are conditional. Their hypotheses state these external assumptions:
@@ -135,12 +112,12 @@ For `run_tools` it uses `notice_reply_scope`, `call_envelopes`, and `terminal_re
 The session driver builds each round with `round_request`, which reads the round with `round_view`.
 The standalone `systems/kernel_agent` uses the same queries.
 The proofs still treat these answers as host data under H2 and `Justified.host`.
-Runtime tests cover the queries (`test/loop_host_test.exs`). No theorem covers them.
+Runtime tests cover the queries. No theorem covers them.
 
 Compaction has its own host queries (`Session.CompactionHost`).
 The kernel decides when a session compacts, the window a request summarizes, the request, how the model answer reads, and the commit events.
 Production and `systems/kernel_agent` use the same queries. The host projects its model configuration, runs the model call, and commits the events.
-Runtime tests cover the queries (`test/compaction_host_test.exs`). No theorem covers them.
+Runtime tests cover the queries. No theorem covers them.
 
 Other host decisions are kernel queries too: crash repair (`Session.RepairHost`), the activation entry (`activation_plan`), write validation (`Session.WriteValidation`), and the activity revision of a fence (`Session.FenceStamp`).
 A host answers each with I/O and the facts that it owns.
@@ -149,33 +126,23 @@ The production session actor (`SalixAgent.InternalSessionActor`) and the standal
 The driver decides recovery, crash repair, the activation, the overlapped activation that starts the model call beside its fence, compaction, model rounds, and the failure of a model call.
 The actor keeps a waiting driver with its model call or summary, and continues it when the dependency answers.
 The restart, activation, command-driver, and revision-fence proofs do not call these queries, and treat their answers as host data.
-Runtime tests cover the queries (`test/repair_host_test.exs`, `test/write_validation_test.exs`, `test/loop_host_test.exs`). No theorem covers them.
+Runtime tests cover the queries. No theorem covers them.
 
-The proofs found a round-budget reset. A model failure in a session without a reply target commits an ACK.
-That ACK cleared `input_round_streak`, and activation then resumed on the unanswered tool results.
-A cycle of one tool round and one failed request repeated with no input and never reached `input_round_cap`.
-The failure ACK now carries `keep_round_budget`, and `sessionAck` keeps the round count for such an ACK.
-`RoundBudget.failureAck_keeps_rounds` proves that applying the loop's failure ACK leaves the stored count unchanged.
-`loop_budget_test.exs` drives the cycle and shows that the cap parks the session.
+These reasons can clear a reply obligation or advance the ACK without a visible reply:
 
-The settle-reason review (issue #2070, M4) checked each reason that clears a reply obligation or advances the ACK without a visible reply:
+| Reason | Contract |
+| --- | --- |
+| Runaway retirement | `docs/agent-runtime.md` guards: a fenced commit abandons replies and ACKs its transcript. The retirement closes the turn (`terminal_reply_ack_hwm`). |
+| Local disposition | `docs/agent-runtime.md`: failures without a safe notification path retire locally. The disposition closes the turn. |
+| Model failure without a destination | `llmFailureAck`: only a final failure with no pending send ACKs. A retryable failure keeps the source for retries or one notice. |
+| `end_turn` without a reply | `docs/tools-integrations.md#ownership-and-failure`: a plain reply target is advisory. Only Task cards fence the ACK. |
+| Exhausted repair | The repair budget is bounded. The session records `visible_reply_repair_exhausted`. |
+| Provider-wait yield | `docs/agent-runtime.md`: a Router wait yields to queued human input. |
+| Onboarding after a failed send or an exhausted guard | Channel welcomes are optional. |
+| Failure notice with an unknown outcome | No blind retry of an ambiguous send. |
+| Host-built `finish_tool_batch` ACKs | The kernel query computes them. The host relays them (`Justified.host`). |
 
-| Reason | Contract | Verdict |
-| --- | --- | --- |
-| Runaway retirement | `docs/agent-runtime.md` guards: a fenced commit abandons replies and ACKs its transcript. | Intended. The retirement now closes the turn (`terminal_reply_ack_hwm`). |
-| Local disposition | `docs/agent-runtime.md`: failures without a safe notification path retire locally. | Intended. The disposition now closes the turn. |
-| Model failure without a destination | `llmFailureAck` keeps the source for retries or one notice. | Fixed. Only a final failure with no pending send ACKs. A retryable failure keeps the source. |
-| `end_turn` without a reply | `docs/tools-integrations.md#ownership-and-failure`: a plain reply reminder is advisory. Only Task cards fence the ACK. | Intended. |
-| Exhausted repair | The repair budget is bounded. The session records `visible_reply_repair_exhausted`. | Intended. |
-| Provider-wait yield | `docs/agent-runtime.md`: a Router wait yields to queued human input. | Intended. |
-| Onboarding after a failed send or an exhausted guard | Channel welcomes are optional. | Intended. |
-| Failure notice with an unknown outcome | No blind retry of an ambiguous send. | Intended. |
-| Host-built `finish_tool_batch` ACKs | The kernel query computes them. The host relays them (`Justified.host`). | Intended. |
-
-The review also found that a guard park without a destination did not stop the session.
-The local settlement ACK cleared the round count, and activation resumed on the tool-result tail.
-`runtime_failure_disposed` and `runtime_runaway_retired` now set `terminal_reply_ack_hwm`, so the tail waits for new input or a new result.
-`loop_budget_test.exs` covers both fixes.
+`runtime_failure_disposed` and `runtime_runaway_retired` set `terminal_reply_ack_hwm`, so the tool-result tail waits for new input or a new result.
 
 `StoredObligations.kernel_session_blocking_agree` proves that `obligationBlocking` and `blockingObligationCount` agree on every `KernelSession` state.
 Such a state is created, forked, or loaded from a snapshot without a binary-keyed obligation field, followed by any batch.
@@ -199,45 +166,75 @@ It encodes requests and headers, restores protocol history, places cache breakpo
 It preserves split Unicode characters, verifies the final prefix, and suppresses further fragments for a rejected partial tool event.
 `Provider.Complete` reconstructs the final response and rejects malformed Responses tool arguments before any sibling call can execute.
 
-The existing ETF NIF carries the provider domain. Its existing resident-value entry point retains stream state without exporting it per chunk.
+The ETF NIF carries the provider domain. Its resident-value entry point keeps stream state without exporting it per chunk.
 `new` starts one request-local stream, `feed` returns callback data, and `finish` returns the final result and trailing callbacks.
 `raw` reads an error body for transport decompression. No provider state is persisted or added to the Session snapshot.
 Stateless operations serve request, response, usage, and test projections through `invoke`.
 Chat history assigns deterministic suffixes to repeated tool-call IDs only in the outbound copy.
 It reserves original IDs, including later calls, and rewrites each invocation's tool-result and reasoning-detail references together. Signed payload bytes and stored history stay unchanged.
 This projection also precedes vision annotations and missing-result repair.
-Request-local hash indexes cover reserved IDs, renames, tool names, ownership, and results,
-so valid binary IDs do not incur growing association-list scans. A global suffix cursor
-bounds collision probes by the reserved inputs plus generated IDs. Expected work is linear
-in history size and ID bytes (hash-table assumptions), including wide parallel batches.
-JSON array/object joining appends separators iteratively, avoiding native stack growth
-with container width. Wide-history and wide-object regressions exercise the actual NIF.
-Provider failure telemetry and the request archive retain their existing dispatch seams.
-Elixir retains credential lookup, HTTP and compression I/O, callback execution, process cancellation, and timer execution.
-It uses Req and the existing stream watchdog. It does not parse or reassemble agent-loop provider responses.
+Elixir keeps credential lookup, HTTP and compression I/O, callback execution, process cancellation, and timer execution.
+It uses Req and the stream watchdog. It does not parse or reassemble agent-loop provider responses.
 
 The `VerifiedKernelProofs.Provider.Dispatch` module proves two properties of the runtime retry function.
 It allows no transport retry after successful stream data or after the attempt budget ends.
 The axiom audit includes both proofs and the stateless and resident dispatch functions.
+
+`VerifiedKernelProofs.Provider.RequestPrefix` proves request prefix stability for `Provider.Request.body`.
+Let `H` be a closed history (`ClosedHistory`). It has a user or tool message, and its results match its calls (`Matched`).
+Each tool result answers the newest waiting call with an equivalent id, and no call waits at the end.
+`Matched.answeredEq` gives every call a later result with an equal id.
+`Matched.of_distinct` shows that an answered history with distinct call ids is matched.
+A request for `H ++ X`, for any `X`, has the same head as the request for `H` alone, and its messages start with the messages of that request.
+The head is the system text and tools for Anthropic, the instructions and tools for Responses, and the tools for Chat.
+Each projection decides a message from the earlier messages only, so a later message does not change an earlier one:
+- Chat sends `reasoning_content` on each assistant message, with an empty string when the message has none.
+- Every projection reads the role as `openaiRole`, so an atom role and a text role project the same.
+- Responses marks a call with a provider-unsafe name, and each later output for its id, as a historical record (`historicalTools`).
+- Chat gives a call whose provider id an earlier call uses the first free `id__n` suffix, and binds a result to the newest waiting call of its id (`uniqueChatCallIds`).
+- Chat sends the images of tool results after the last result of their batch (`chatLoop_released`), not before the next message.
+- Anthropic sends a runtime-authored message after the leading run as a mid-conversation `system` message, and a runtime message with external content (`untrusted`) as user text.
+  The `[No new user message.]` turn precedes a `system` message that does not follow a user turn. The `[Noted.]` assistant turn precedes a user turn that follows a `system` message.
+  Both depend only on earlier messages.
+Anthropic messages are compared without cache markers, and one text block is equal to its text.
+`Provider.Stateless` proves that the projection reads no host answer, so two runs agree on all journals.
+
+`VerifiedKernelProofs.RequestPrefix.EndToEnd` connects this theorem to `Session.Request.dispatch`.
+`consecutive_requests_share_prefix` compares a dispatch for state `s` with a later dispatch for state `s'`.
+Both bodies start with the projection of one durable history `D`.
+`D` is the stored prompt and the Session context of `s`, with attachments inlined.
+The theorem has these conditions:
+- The states agree on the compaction prefix, the live-window fields, and the stored prompt (`SameWindow`).
+- The transcript of `s'` extends the transcript of `s` (`TranscriptExtends`). `TranscriptRuns.extends` gives this for completed `runTrusted` events other than `archive_advance`.
+- Attachment inlining reads the messages of `s` the same way at the watermark of `s'` (`AckFrame`). An unchanged watermark is sufficient.
+- The host gives the same answer to the same request in both dispatches (`HostAnswers`, `PrefetchSound`).
+`D` must be a closed history (`ClosedHistory`).
+The messages after `D` need no condition: the context that `s'` adds and the delta messages.
+`VerifiedKernelProofs.RequestPrefix.Events` removes the state conditions for runs of events.
+`runs_share_prefix` requires only that `s'` follows `s` by completed `runTrusted` events whose types are not in `prefixEventTypes`.
+This closed list has five event types:
+- `session_system_prompt` writes the stored prompt.
+- `compaction` and `provider_compaction` write the compaction prefix and watermark.
+- `ack` writes the watermark that attachment inlining reads.
+- `archive_advance` removes a transcript prefix.
+Every other reducer keeps the stored prompt, the compaction fields, and the acknowledgment watermark (`inner_prefix_kept`), and appends to the transcript.
+`Keeps` proves that the request builder leaves an answered-ahead journal unchanged.
+The theorem is about the body before UTF-8 scrubbing and JSON encoding. It does not cover the provider cache itself.
 Other provider definitions have termination checks and runtime tests, not functional correctness proofs.
-Chat tool-history regressions cover IDs reused across rounds: each result belongs to the most recent preceding invocation of its ID, with duplicate results collapsed only inside that scope. Missing results and earlier orphans cannot borrow a different invocation's output. Wire IDs and signed provider metadata are preserved; this projection does not allocate Session execution identities or disambiguate late results that contain only a reused ID.
 These proofs do not establish provider compliance, callback delivery, network progress, or a fixed runtime bound.
-Site-proxy translation and media APIs remain separate from this agent-loop boundary.
+Site-proxy translation and media APIs are separate from this agent-loop boundary.
 
 ### Session archive domain
 
 The resident `session_archive` domain has `start` and `resume` operations.
 `ArchivePublication` captures the actual Session archive window, selects segments, validates landed records, and constructs the final advance event.
 The cursor stays resident. Each storage call transfers only one segment, not the remaining window or earlier observations.
-The host executes read, create-once, and codec requests. It commits the kernel's final event through the existing Session CAS path.
+The host executes read, create-once, and codec requests. It commits the kernel's final event through the Session CAS path.
 The cursor is a transient Session projection, not another owner or storage format.
-`WorkArchivePublication` checks cursor round trips, capture, unchanged cuts, encoded create requests, and final event construction.
-`WorkArchiveObjects` connects actual creation and adoption to stored object facts under explicit storage and codec primitive contracts.
-It binds object addresses to catalog entries and preserves complete input facts in those objects.
-`WorkArchivePersistence` composes publication, removal, preparation, metadata, and positive CAS on the captured state.
-`WorkArchiveFence` connects the publication to actual native pending writes and revision-fence execution.
+`WorkArchivePublication`, `WorkArchiveObjects`, `WorkArchivePersistence`, and `WorkArchiveFence` connect capture, object creation and adoption, removal, metadata, native pending writes, and positive CAS to stored object facts.
+These proofs assume explicit storage and codec primitive contracts.
 The sealer reads one revision for publication and CAS. A conflict restarts publication from a new revision.
-External command/prerequisite binding is an assumption. The aggregate derives reload lineage and global invariants in the domain below.
+External command/prerequisite binding is an assumption.
 
 ### Session commit domain
 
@@ -253,30 +250,28 @@ The resident `session_batch` domain captures an event list and applies it in ord
 Each reducer must finish before the continuation advances to the next event.
 Clock and configuration observations resume the captured reducer. They cannot replace the remaining events.
 The host returns a Session handle only after the complete batch succeeds.
-It retains per-event telemetry. A telemetry failure cannot change the batch result.
+A telemetry failure cannot change the batch result.
 `WorkBatchExecution.start_executes_batch` derives the resident batch relation from finite native execution.
-This relation supplies the batch application premise in the work-preservation proofs.
 Input commands fix missing or invalid lifecycle timestamps before they expose a write batch.
 `WorkInputTimestamp.input_timestamp_batch_unchanged` proves that later timestamp preparation cannot change that batch, even with a different clock value.
-The main input retains its original payload fields. UTF-8 repair still precedes input admission at the host boundary.
+UTF-8 repair precedes input admission at the host boundary.
 
 ### Pending revision domain
 
-The resident `session_pending` domain owns the existing pending revision fields.
-Each write retains the baseline and ETag, appends its events, and applies the optional HWM update after that batch.
-The `session_revision` domain retains snapshot absence, a committed Session/ETag pair, or the pending cursor.
+The resident `session_pending` domain owns the pending revision fields.
+Each write keeps the baseline and ETag, appends its events, and applies the optional HWM update after that batch.
+The `session_revision` domain holds snapshot absence, a committed Session/ETag pair, or the pending cursor.
 The host Revision keeps read-only projections. Fence and rollback read the native cursor and its constructor.
-The `session_read` continuation creates the hot-object key and retains it through the storage response and load callbacks.
-Keys retain the existing lowercase SHA-256 Session-ID component from `SalixStore.Keys` and `SalixStore.Crypto`.
+The `session_read` continuation creates the hot-object key and keeps it through the storage response and load callbacks.
+Keys use the lowercase SHA-256 Session-ID component from `SalixStore.Keys` and `SalixStore.Crypto`.
 This hash is an address, not an authenticity check. The native reader owns key construction.
 It checks the loaded owner and Session before it initializes the native Revision with the observed ETag.
-The host supplies storage and codec results, clock values, and configuration observations. Existing read and decode spans retain their scopes.
+The host supplies storage and codec results, clock values, and configuration observations.
 Invalid Session IDs fail before storage I/O. Scope mismatches cannot return a Revision.
 Even an empty write produces a pending cursor. Rollback restores the captured baseline and ETag.
-A failed write returns no partial pending revision. Older handles remain valid.
+A failed write returns no partial pending revision. Older handles stay valid.
 The owner can pass a frozen continuation to its persistence task without changing its baseline or candidate.
 `WorkPendingRevision.history_refines` derives the complete reducer history from finite native writes and proves baseline and ETag retention.
-This changes no durable record or storage format.
 
 ### Revision fence domain
 
@@ -285,13 +280,13 @@ It runs write preparation and fixed commit metadata events before it encodes the
 The host supplies metadata values, not replacement Session states or reducer events.
 The captured owner and Session determine the snapshot address. A wrong host-supplied key could otherwise overwrite another Session's object.
 Both the native fence and snapshot commit reject an address mismatch before they issue a CAS request.
-`StorageAddress` owns this check and the existing key formula. The read continuation uses the same formula.
+`StorageAddress` owns this check and the key formula. The read continuation uses the same formula.
 Successful CAS settlement returns the captured candidate and committed ETag in a native committed revision. Earlier phases cannot confirm a commit.
 `Revision.confirmed_revision` binds that returned cursor to the exact encoded candidate, baseline ETag, and durable snapshot fact.
 `WorkRevisionFence.input_durable` derives complete input facts and earlier-work preservation through these actual native phases.
 The Store uses this path for versioned commits, including frozen pending revisions in persistence tasks.
-Unversioned commits retain their separate storage continuation.
-The local command-result proofs below cover finite successful episodes. Complete episode coverage and global durable lineage remain open.
+Unversioned commits use their separate storage continuation.
+The local command-result proofs below cover finite successful episodes.
 
 ### Command driver domain
 
@@ -301,139 +296,63 @@ It validates the source generation and position before ordinary input admission.
 It adds the frontier event to the input batch before any write, including after workspace effects.
 Scans and already admitted inputs advance the frontier without adding queued work.
 `WorkConservation.conversation_input_atomic_frontier` proves this batch shape for every successful command evaluation.
-`stage_conversation` retains that same batch and returns `staged`, a working-state result without durable acknowledgment.
+`stage_conversation` keeps that same batch and returns `staged`, a working-state result without durable acknowledgment.
 The owner continues activation on that revision and fences both before acknowledging source admission.
-`WorkConservation.staged_frontier_write` proves that staging retains the exact input/frontier batch.
+`WorkConservation.staged_frontier_write` proves that staging keeps the exact input/frontier batch.
 The theorems cover command planning. Runtime tests cover CAS failure, lost replies, retries, and Session rotation.
-It captures the actual command's events and continuation. Write validation cannot replace that batch.
-The driver retains the HWM and fixes missing lifecycle timestamps before write validation.
+
+The driver captures the actual command's events and continuation. Write validation cannot replace that batch.
+It keeps the HWM and fixes missing lifecycle timestamps before write validation.
 The host repairs command-argument UTF-8 before planning, including activation's leading events and system prompt.
-It resumes a successful write only after its native batch completes.
+The driver resumes a successful write only after its native batch completes.
 It carries the fence continuation through the shared preparation, metadata, encoding, and CAS path.
 A successful CAS returns a confirmed command cursor. Its `next` operation resumes the captured continuation against the committed candidate.
 `WorkCommandDriver.input_confirmation_durable` connects the actual input batch and native CAS to that cursor, its complete input fact, and earlier-work preservation.
 The host cannot supply a successful write or fence observation to this path.
 A failed fence restores the captured baseline before the command returns its error.
-A clean duplicate uses the native committed constructor and the existing owner and epoch checks without another CAS.
-Authorization, entropy, workspace, notification, and draft cleanup remain external observations, with request-specific result types.
+A clean duplicate uses the native committed constructor and the owner and epoch checks without another CAS.
+Authorization, entropy, workspace, notification, and draft cleanup are external observations, with request-specific result types.
 A monitor failure does not undo a committed input.
 Asynchronous activation passes its original native command cursor through the persistence task and resumes directly from the returned cursor.
-Fresh revisions retain a missing CAS base and cannot use the clean-confirmation path.
-Creation claims the existing Session birth authority before work-index insertion. A creation conflict fails without replay against a different baseline.
-Recovery retains the observed revision through its captured write and CAS before draft cleanup.
-`WorkDriverConfirmation.InputCommitTrace.confirms_same_input` composes the finite native input stages through notification and the committed return.
-The trace covers direct admission and the workspace branch, native batch observations, preparation, metadata, encoding, and CAS settlement.
-It derives the original command call, complete batch execution, and exact continuations instead of accepting independent application-stage premises.
-Observation and batch loops follow public responses with opaque resources. Reflection derives their internal cursor tags from actual native execution.
-The composed theorem uses these raw loops for input admission, reducer writes, preparation, and metadata writes.
-Admission permits finite observation/effect sequences. The actual input command derives the direct or single-workspace branch, rather than assuming that structure.
-Effect results are arbitrary terms. Native validation excludes malformed workspace results from successful admission traces.
-The theorem requires a binary source, `QueueReady`, format 3, and the stated storage and codec primitives.
-It derives complete new-input facts and earlier-work preservation in the committed snapshot.
-The aggregate composes these local results with duplicate lineage and initialization/reload invariants in the domain below.
-`WorkPendingMaterialize` connects a materialization plan to the native pending write, its HWM update, and the snapshot CAS.
-It preserves the captured baseline, ETag, queue invariant, and represented work.
-Native Revision planning now retains the activation planner's result through the pending batch, including kernel-selected wait expiry.
-The Actor uses that pending revision for activation or a standalone fence. It does not resubmit the materialization event array.
-`WorkRevisionRawPlan` derives the matched planner and write from public `run` and `resume` traces for fast, run, and until-wake modes.
-`WorkRevisionExpiry` adds timeout plans and derives their projection-to-reducer correspondence from actual queue append calls.
-`Revision.plan_preserves` covers every changed native plan. The actual command determines its mode.
-`RevisionFence.any_planned_snapshot_preserves` connects those traces to snapshot CAS without an independent batch-matching premise.
-`Revision.plan_unchanged_captured` proves that an unchanged plan returns the exact original revision, including fresh and pending revisions.
-`WorkActivationReturn.ActivationCommitTrace.return_has_durable_work` connects activation's subsequent writes, CAS, cleanup callbacks, and public return.
-The initial command derives its control events and mandatory fence, including authorization, entropy, and lifecycle timestamp callbacks.
-The proof retains the original baseline and ETag, then preserves all represented work in the exact durable snapshot.
-It covers both active activation and the inactive post-compaction path, with arbitrary captured HWM values.
-`WorkDriverDurableBatch` shares the public batch and fence reflection across captured command continuations.
-These local theorems cover finite successful episodes. The aggregate states its permitted history and external prerequisite contracts below.
-`WorkNonRetiring` covers every modern native reducer except queue ACK, selective consume, and archive removal.
-Those three removals require the separate materialization and publication proofs. Other control events and modern microcompaction preserve represented work.
-`WorkLedgerOrigins` traces new binary ledger identities to actual input-writer key reads.
-`WorkForkLedger` ties fork identities to fields in records that its ledger builder actually receives.
-`WorkReloadLedger` proves normalization retains prior identities or derives them from the pending queue.
-`WorkDuplicateOrigin` derives duplicate fences from the original input query and excludes workspace callbacks as a bypass.
-A clean fence can reuse only the exact committed revision constructor.
-`WorkIdentityFacts` connects each of the five input writers to its actual queue item or transcript record.
-The queue witness retains the complete payload. Log, delivery, and runtime records retain their source or alias and content.
-`WorkSeedFact` binds the source to the actual enumerated seed entry and the record that entry generated.
-`WorkEnumeration` covers lists, plain maps, and MapSet values without a list-only assumption.
-`WorkIdentityInvariant` preserves this ledger support through actual admitted resident batches, persistence projection, and semantic codec changes.
-`WorkIdentityInitial` derives an empty ledger from the public constructor and preserves support through normalization.
-`WorkForkIdentity` composes the actual format-3 public fork through selection, its ledger builder, normalization, and reference reconstruction.
-`WorkForkProgram.current_fork_factor` checks the proof factorization against the executable body by definitional equality.
-`WorkLedgerShape` derives the MapSet header from creation and normalization. `WorkLedgerClosure` preserves it through every actual reducer and resident batch.
-The latter also preserves identity support through all non-retiring modern batches, including owner controls and microcompaction.
-`WorkMaterializedIdentity` preserves identity support through actual materialization, including ACK, consume, and retry events.
-`WorkPlannedIdentity` covers all four native plan modes. `WorkIdentityFence` carries support through preparation, commit metadata, and the actual successful CAS.
-`WorkArchiveIdentity` ties removed records to their actual archive projections and the post-reduction catalog.
-Its binary-field theorem proves that the stored object retains the selected identity value.
-`WorkArchiveLineage` preserves old catalog entries and supports both old and newly archived records after each publication.
-`WorkIdentityReload` reflects support from normalized states to their decoded snapshots, including identities that normalization adds from queued work.
-`WorkPhysicalIdentity` removes unbacked archive witnesses and composes the actual reload, duplicate admission, clean fence, and return.
-The latter still requires the loaded snapshot's durable lineage and invariants from the global execution proof.
-Archive projection witnesses do not assert full equality between hot records and their normalized archive data.
-`WorkPhysicalFence` preserves physical archive support and ledger invariants in the actual CAS snapshot, including its owner, Session, and catalog fields.
-`WorkIdentityCodec` proves that semantic codec equivalence retains valid integer catalog entries exactly.
-`WorkDurableReload` carries the queue, ledger, catalog, and physical archive invariants through the actual load and resume loop.
-`WorkInitialIdentity` derives initial queue and ledger invariants from creation and modern fork calls.
-`WorkForkNumbers` checks the actual renumber fold and proves that reference remapping preserves message stamps.
-`WorkForkHistory` derives ordered integer history from the complete modern fork, without a caller-supplied history invariant.
+Fresh revisions have no CAS base and cannot use the clean-confirmation path.
+Creation claims the Session birth authority before work-index insertion. A creation conflict fails without replay against a different baseline.
+Recovery keeps the observed revision through its captured write and CAS before draft cleanup.
 
-`WorkKernelHistory` derives queue, format, ledger, and history invariants from actual creation, fork, batch, materialization, archive, persistence, and reload calls.
-Its archive history remains logical. The global proof must connect each removed prefix to the actual publication and current durable snapshot.
-`WorkCatalogExecution` preserves the catalog, archive watermark, and Session ID through every non-archive reducer and its resident execution.
-`WorkPhysicalBatch` preserves physical archive support through admitted input batches and actual materialization, including ACK, consume, and retry events.
+The `Work*` modules under `proofs/VerifiedKernelProofs/Session/` compose these local results. The main ones:
 
-`WorkArchiveInvariant` preserves catalog validity through normalization, persistence, semantic codec changes, and actual archive reduction.
-`WorkArchiveExecution` derives message-map validity from successful archive field reads. Publication proofs no longer require a separate message-map assumption.
-Those proofs accept the sequence invariant directly, including the invariant derived from modern fork execution.
-Publication also preserves every catalog entry's physical object witness under the actual owner and Session.
-`WorkCatalogBacking` carries that scoped support through input batches, materialization, normalization, codec changes, and actual archive reduction.
-`WorkInitialScope` derives owner and Session fields from actual creation and modern fork arguments.
-`WorkArchiveWatermark` proves that actual archive reduction cannot decrease the watermark.
-`WorkPhysicalHistory` derives scoped catalog and record backing, nonnegative watermarks, and logical invariants from its listed execution paths.
-Its reload step uses the actual decode and load loop. Its archive step uses actual publication and removal.
-`WorkPhysicalPlan` extends this history through all four native plan modes, including the timeout projection and HWM batch.
-`WorkPhysicalCommit` extends it through preparation, metadata, and the exact encoded CAS snapshot.
-This history does not yet model the current hot-object CAS world or prove coverage of every command episode.
-`WorkCurrentStorage` models one current object per key, not a set of all historical snapshots.
-Its atomic successful CAS requires the expected revision or confirmed absence and leaves other keys unchanged.
-It derives the existing snapshot-storage premise from the newly current encoded bytes.
-An old ETag cannot witness a current snapshot after a different ETag replaces it.
-Its read observation binds bytes and ETag to the same object. This primitive model does not prove application-level work preservation by itself.
-`WorkReadRevision` connects that observation to the actual native read, load callbacks, scope checks, and returned committed Revision.
-The returned state preserves work and extends the physical history through the actual decode and normalization.
-`WorkReadIdentity` connects duplicate admission, the clean fence, and the return to physical facts in that captured snapshot.
-`WorkPhysicalInput` connects the new input, preserved older work, physical backing, and public return to the same encoded snapshot.
-`WorkReadInput` derives its starting invariants and baseline ETag from the native read, decode, and normalization.
-Its pure `InputEpisode` records executable calls without a storage-success premise. Actual `HotCAS` supplies the committed snapshot in the current store.
-`WorkStorageAddress` binds that CAS address and base to the captured Session and revision. The host key is not a proof assumption.
-`WorkCurrentVersion` states the storage-token contract: at one key, the same token identifies the same bytes.
-Tokens may repeat for identical bytes. The proof does not require global token freshness or a monotone ETag counter.
-Under that contract, the successful CAS matches the bytes captured by the read, even with intervening writers.
-`WorkPhysicalEncoded` establishes the candidate history before the CAS response, including writes whose responses are lost.
-`WorkPhysicalTransport` preserves all physical work facts, including catalog records outside a selected logical archive history.
-`WorkPhysicalPreservation` and `WorkPhysicalPlanPreservation` carry these facts through actual batches, normalization, preparation, persistence, and all four native plans.
-`WorkReadPhysicalPreservation` and `WorkPhysicalInputPreservation` connect this stronger property to the native read and input execution.
-`WorkReadInput` now preserves all old physical work facts in the actual CAS snapshot.
-`WorkCurrentFence` and `WorkCurrentArchive` connect landed candidates and archive publications to the current object without a caller-reply premise.
-The archive projection ignores only the two activity fields. The actual resident archive batch supplies that field frame.
-The aggregate composes current snapshot lineage and permitted Lean command episodes. External prerequisites follow explicit assumptions.
+- `WorkDriverConfirmation.InputCommitTrace.confirms_same_input` composes the finite native input stages through notification and the committed return.
+  It derives the original command call, complete batch execution, and exact continuations instead of accepting independent application-stage premises.
+  It requires a binary source, `QueueReady`, format 3, and the stated storage and codec primitives.
+- `WorkPendingMaterialize` connects a materialization plan to the native pending write, its HWM update, and the snapshot CAS.
+  `Revision.plan_preserves` covers every changed native plan for all four plan modes. `Revision.plan_unchanged_captured` proves that an unchanged plan returns the exact original revision.
+- `WorkActivationReturn.ActivationCommitTrace.return_has_durable_work` connects activation's writes, CAS, cleanup callbacks, and public return, for both active activation and the inactive post-compaction path.
+- `WorkNonRetiring` covers every modern native reducer except queue ACK, selective consume, and archive removal.
+  Those three removals need the separate materialization and publication proofs.
+- The identity modules (`WorkLedger*`, `WorkIdentity*`, `WorkFork*`, `WorkArchiveIdentity`, `WorkArchiveLineage`, `WorkPhysical*`) trace each ledger identity to an actual input writer, queue item, or archive record, and preserve that support through batches, materialization, normalization, codec changes, archive reduction, fork, and reload.
+  Archive projection witnesses do not assert full equality between hot records and their normalized archive data.
+- `WorkKernelHistory` and `WorkPhysicalHistory` derive queue, format, ledger, catalog, watermark, and history invariants from actual creation, fork, batch, materialization, archive, persistence, and reload calls.
+- `WorkCurrentStorage` models one current object per key, not a set of all historical snapshots.
+  Its atomic successful CAS requires the expected revision or confirmed absence and leaves other keys unchanged.
+  Its read observation binds bytes and ETag to the same object. It does not prove application-level work preservation by itself.
+- `WorkCurrentVersion` states the storage-token contract: at one key, the same token identifies the same bytes.
+  Tokens may repeat for identical bytes. The proof does not require global token freshness or a monotone ETag counter.
+  Under that contract, the successful CAS matches the bytes captured by the read, even with intervening writers.
+- `WorkStorageAddress` binds the CAS address and base to the captured Session and revision. The host key is not a proof assumption.
+- `WorkReadInput` derives its starting invariants and baseline ETag from the native read, and preserves all old physical work facts in the actual CAS snapshot.
+- `WorkCurrentFence` and `WorkCurrentArchive` connect landed candidates and archive publications to the current object without a caller-reply premise.
 
-### Merge scope
-
-PR #1734 retains implementation fixes, executable local proofs, and runtime regressions.
-It does not claim a complete Actor-to-product refinement or certify every supported initial snapshot.
-The owner deferred the remaining proof composition to [issue #1799](https://github.com/AFK-surf/Comma/issues/1799).
-This scope change does not weaken accepted-work preservation or durable-confirmation product guarantees.
-The owner later set the proof boundary at Lean. External code is an assumption, not a source-verification target.
-This includes Elixir/Erlang application code, standard libraries, C, BEAM/FFI, codecs, and storage.
-Theorems must state the external contracts they need as explicit hypotheses.
-These include faithful call arguments, resource identity, response association, storage observations, and public confirmation reporting.
-Lean state transitions and their work-preservation results remain proof obligations, not external assumptions.
-The proof does not inspect external source code or certify that external implementations satisfy these contracts.
+These local theorems cover finite successful episodes. The aggregate below composes current snapshot lineage and permitted Lean command episodes.
+External prerequisites follow explicit assumptions.
 
 ### Lean-only refinement
+
+The proof boundary is Lean. External code is an assumption, not a source-verification target.
+This includes Elixir/Erlang application code, standard libraries, C, BEAM/FFI, codecs, and storage.
+Theorems state the external contracts they need as explicit hypotheses:
+faithful call arguments, resource identity, response association, storage observations, and public confirmation reporting.
+Lean state transitions and their work-preservation results are proof obligations, not external assumptions.
+The proof does not inspect external source code or certify that external implementations satisfy these contracts.
+It does not claim a complete Actor-to-product refinement. The open composition is [issue #1799](https://github.com/AFK-surf/Comma/issues/1799).
 
 `WorkLeanBoundary.NativeProductRun.refinement` combines the two product safety properties over one finite storage history.
 `InputOccurrence.conserved` connects each declared input to a Lean submission and landed CAS, then derives its generated record and current backing.
@@ -442,9 +361,9 @@ The proof does not inspect external source code or certify that external impleme
 External contracts supply operation correspondence, not `ObserverBacked` or a work-preservation conclusion.
 
 The domain starts with empty modern storage and uses the permitted `ResidentStep` constructors.
-It includes creation, fork/clone, reads, admitted writes, the four plan modes, archive extension, restart, and retained committed cursors.
-Landed input preservation does not require a CAS reply. Stale revisions remain subject to the per-key token contract.
-Arbitrary legacy, imported, or corrupt initial snapshots require an additional initialization proof.
+It includes creation, fork/clone, reads, admitted writes, the four plan modes, archive extension, restart, and committed cursors.
+Landed input preservation does not require a CAS reply. Stale revisions are subject to the per-key token contract.
+Arbitrary legacy, imported, or corrupt initial snapshots need an additional initialization proof.
 Arbitrary overwrites, deletion, and writers outside this domain are not covered.
 Ordinary writes require `RawOrdinaryBatch`. The specialized activation path requires empty leading events, not arbitrary injected batches.
 
@@ -464,9 +383,7 @@ The theorems cover finite-prefix safety. They do not establish liveness, externa
 
 The NIF initializes the executable dispatcher, not the proof library.
 `scripts/build.sh` and `mix compile` build the dispatcher and its executable dependencies, not the proof library.
-CMake uses Lake's transitive import artifacts for the native source list. A prior proof build cannot add unused proof IR.
-`scripts/check.sh` explicitly builds all runtime and proof modules before the axiom audit and native checks.
-The required Linux and macOS proof jobs use that script. Compile-time tactics do not become NIF runtime dependencies.
+`scripts/check.sh` builds all runtime and proof modules before the axiom audit and native checks.
 
 Use Linux or macOS, the pinned Lean toolchain, OTP 29, and Elixir 1.20.
 Install CMake 3.24+, a C/C++20 compiler, pkg-config, libuv headers, and OpenSSL development packages.
@@ -489,25 +406,24 @@ bash scripts/check.sh
 ```
 
 The checks compile the NIF, audit proofs, run ExUnit, and inspect native dependencies and exports.
-The self-hosted macOS CI also runs the concurrent runtime smoke test with the Lean toolchain directory unavailable.
 Homebrew supplies the local macOS BEAM toolchain. Check that it meets the versions above.
-CI pins OTP 29.0.2 and Elixir 1.20.1 with `setup-beam`.
+CI pins OTP 29.0.2 and Elixir 1.20.1.
 
-Use Docker for the Linux runtime-only check:
+Use Docker for the Linux runtime-only check. It runs the NIF that
+`scripts/check-runtime.sh` built on a Linux host, in an image without Lean:
 
 ```sh
+bash scripts/check-runtime.sh
 docker build -t verified-kernel-runtime -f test/runtime.Dockerfile .
 docker run --rm verified-kernel-runtime
 ```
 
 Load your shell profile first if it supplies toolchain paths.
 For asdf installations, include the shims directory in `PATH`.
-Run one package build at a time. Lean uses one worker and a 2 GiB compiler limit.
-The native build uses two compiler processes.
+Run one package build at a time.
 
 `mix compile` builds the NIF and links its `priv` directory into the application.
 The production image, development container, and Systems CI install Lean at build time.
-The runtime test rebuilds on Bookworm and runs in an OTP-only Bookworm image.
 
 From the systems directory, run the Session regressions:
 
@@ -515,23 +431,16 @@ From the systems directory, run the Session regressions:
 SALIX_TEST_DB=salix_lean_kernel_test mix test apps/salix_agent/test/session_kernel*_test.exs
 ```
 
-These tests assert explicit expected kernel results.
-They do not load the deleted Erlang reducer.
-Schema tests replace the former custom-protocol compatibility tests.
-
 `systems/kernel_agent` is an agent runtime whose only dependency is this application.
 Its tests run the kernel without `salix_agent`. Its README lists the host logic that the kernel does not own yet.
 The kernel CI job runs them.
 
 ## Activation latency reproduction
 
-The synthetic fixture represents the September 13 Router incident: about 4,000 messages,
+The synthetic fixture represents a large Router session: about 4,000 messages,
 600 result references, and 16 MB of session state. It contains no staging content.
-Every synthetic message contains a JSON result reference. This stresses transcript scanning,
-not the exact distribution of private staging messages.
 
-The opt-in tests assert the requested 500 ms activation budget. Use them to compare performance before and after a change. Default test runs exclude `activation_latency`.
-The small replay test remains in the default kernel suite.
+The opt-in tests assert a 500 ms activation budget. Use them to compare performance before and after a change. Default test runs exclude `activation_latency`.
 
 Run the kernel-only reproduction from this directory:
 
@@ -542,17 +451,12 @@ mix test test/activation_latency_test.exs --include activation_latency
 It reports materialization, projected event application, commit replay, normalization,
 and snapshot encoding. This is a lower bound, not the complete actor activation.
 
-The dense snapshot benchmark covers a different encoding cost: 4,000 messages with
-40,000 nested metadata maps and many small string fields. It reports five encoding
-samples without a hardware-specific encoding assertion. The default test checks
-concurrent readers, snapshot contents, and input immutability.
+The dense snapshot benchmark measures encoding cost on a snapshot with many nested
+metadata maps. It reports encoding samples without a hardware-specific assertion.
 
 ```sh
 mix test test/snapshot_encoding_test.exs --include activation_latency
 ```
-
-The encoder borrows immutable input terms. It keeps the same ETF format while
-avoiding per-node reference-count updates during traversal.
 
 Run the actual actor reproduction from `systems`:
 
@@ -570,21 +474,14 @@ Do not point this command at a shared database. The actor test uses fake S3, IFC
 and an immediate model response. It measures the runtime activation phase after admission
 has loaded the resident revision. It excludes cold loading, admission, and model latency.
 No cloud access is required. Host speed affects timings. A local pass does not establish
-the staging latency budget. The JSON parser scans UTF-8 bytes and copies string spans,
-instead of allocating a character list for each historical JSON payload.
-
-Reference pruning searches only for the droppable references. It decodes a JSON tool
-result only when the text names a droppable reference or holds a `\u` escape, and it
-stops the transcript walk when every droppable reference is protected. A malformed message
-after that point does not fail the prune. Stored result records are always read.
+the staging latency budget.
 
 ## Round kernel profile
 
 The round profile measures the kernel calls of complete Session rounds. Each input runs
 one tool round and one final round through the actor. The report groups the calls by
 kernel operation. It gives the call time, the isolated replay time, and the ETF sizes.
-The isolated replay runs each call again on its immutable handle, without lineage-lock
-or dirty-scheduler waits. Use the isolated replay total to compare kernel CPU time.
+Use the isolated replay total to compare kernel CPU time.
 
 Run it from `systems` with the database settings of the actor reproduction:
 
@@ -595,7 +492,7 @@ mix test apps/salix_agent/test/round_kernel_profile_test.exs --include activatio
 
 The module documentation lists the CSV output and the hot-loop settings for a stack
 sampler. Compare results from the same host only. Run the profile several times and
-compare the medians, because shared hosts vary by several percent.
+compare the medians.
 
 ## Interface
 
@@ -606,7 +503,7 @@ The response is `{1, :ok, result}` or `{1, :error, domain, binary_code}`.
 
 The Session state is resident in the Lean heap. It crosses the boundary as data only in `open` (host to kernel) and `export` (kernel to host).
 Every transition and every observation passes the state by reference.
-References derived from one admitted state form a lineage that shares Lean objects; the NIF serializes calls and releases on one lineage with a lock, so the objects keep single-threaded reference counts.
+References derived from one admitted state form a lineage that shares Lean objects. The NIF serializes calls and releases on one lineage with a lock, so the objects keep single-threaded reference counts.
 Calls on different lineages run in parallel on the dirty schedulers.
 
 ```elixir
@@ -623,7 +520,7 @@ next = SalixVerifiedKernel.Session.export(handle)
 ```
 
 `SalixVerifiedKernel.Session.step/2` also accepts a state map for one transition and returns the next state as data.
-`SalixAgent.InternalSession.apply_events/2` steps every event by reference and returns the next handle; nothing is exported.
+`SalixAgent.InternalSession.apply_events/2` steps every event by reference and returns the next handle. Nothing is exported.
 A handle is immutable: each step returns a new handle, and an old handle stays valid.
 
 Session wire operations are `:open` with the state, `:step` with `{event, prelude}`, `:resume` with `{token, {:ok, observation}}`,
@@ -643,24 +540,15 @@ Do not add domain decisions, field access, or callbacks to C.
 Outbound SSH sessions use it for `ssh.screen`. It is not a kernel domain.
 `SalixVerifiedKernel.Terminal` wraps five NIF functions: `terminal_new/2`, `terminal_feed/2`, `terminal_resize/3`, `terminal_snapshot/1`, and `terminal_app_cursor/1`.
 The terminal state is resident in the Lean heap, in a NIF resource with a lock.
-`feed` and `resize` give the state to Lean and store the result, so a unique state updates in place.
 `feed` runs on a dirty CPU scheduler and returns the replies owed to the remote side, such as a cursor position report.
 `snapshot` returns an ETF map with binary keys `lines`, `cursor`, `title`, and `alternate_screen`.
-The Lean module lists the supported sequences and its bounds: 10 to 500 columns, 2 to 200 rows, 32 CSI parameters, 4 KiB of OSC text, and 4096 combined characters.
+The Lean module lists the supported sequences and its bounds.
 A sequence or UTF-8 character split across `feed` calls stays in the parser state.
 C holds only the resource and the calls. The emulator decisions stay in Lean.
 
-`feed` has fast paths for line ends, tabs, printable ASCII runs, complete CSI sequences, complete OSC strings, and complete UTF-8 sequences.
-An ASCII run can use either character set (ASCII or DEC Special Graphics) and either insert or replace mode.
-In insert mode, the run shifts the rest of the row once for each row segment, not once for each character.
-`step` is the byte state machine, and the fast paths skip it.
-Input in other shapes, such as a sequence split across `feed` calls, goes through `step`.
+`feed` has fast paths that skip the byte state machine `step`.
 `proofs/VerifiedKernelProofs/Terminal/` proves that the fast paths are exact.
-The byte scans and row copies use machine-word indices with proved bounds, and `Loops.lean` proves that each loop equals its `Nat` form.
-The state stores the cursor, the ring base, the size and the scroll region as `UInt32`, so the compiler keeps them unboxed.
-`Loops.lean` also relates this arithmetic to `Nat`, and `Ascii.lean` uses it to relate the column arithmetic of `putChar` and `writeAscii`.
 `feed_eq_foldl` states that `feed t bytes = bytes.data.foldl step t` for every state `t` that satisfies `Good`.
-`Good` requires a nonzero width, and a clear UTF-8 decoder when no sequence is in progress.
 `Host.good` proves `Good` for every state that `exportNew`, `exportFeed`, and `exportResize` produce, so `host_feed_eq_foldl` holds without a hypothesis.
 The proofs relate the two paths only. They do not prove that `step` implements a VT100 correctly.
 `apps/salix_agent/test/ssh_terminal_test.exs` tests that behavior.
@@ -668,8 +556,8 @@ The proofs relate the two paths only. They do not prove that `step` implements a
 ## Session surface
 
 The kernel owns immutable Session values. Elixir holds `SalixAgent.InternalSession.t()`, an opaque handle.
-The Actor and storage CAS select the current committed revision. Old handles remain valid but cannot establish commit authority.
-Existing field queries return data, but cannot mutate resident state. Prefer complete decisions and consumer projections over host rules assembled from getters.
+The Actor and storage CAS select the current committed revision. Old handles stay valid but cannot establish commit authority.
+Field queries return data, but cannot mutate resident state. Prefer complete decisions and consumer projections over host rules assembled from getters.
 The surface has three parts. Everything else in `salix_agent` is derived from these calls.
 
 Lifecycle, where the state crosses as data once at each end:
@@ -685,29 +573,24 @@ Lifecycle, where the state crosses as data once at each end:
 | `fork` | `{session_id, attrs}` | handle of the fork, or `fork_cutoff_below_compaction` |
 | `export` | none | the state as data, for tests and one-off tools only |
 
-Commands: `step` with one event and `resume` with an observation, as before.
+Commands: `step` with one event and `resume` with an observation.
 Host bookkeeping is an event too. `session_stamp` writes `agent_id`, `runtime_epoch`, `runtime_node`,
-`activity_revision`, `storage_revision`, `flush_id`, `work_index_token`, and `work_index_reasons`;
+`activity_revision`, `storage_revision`, `flush_id`, `work_index_token`, and `work_index_reasons`.
 `bump_hwm` raises `next_message_id` past a materialized high-water mark.
 
 Queries: `query` with `{name, args}` returns data derived from the state.
 `get` reads one field. Prefer derived queries for large transcript fields.
-The derived queries are the former `State`, `TurnOutcome`, `VisibleReplyPolicy`, `VisibleReplyScope`,
-`ProviderReplyObligation`, `Repair`, `Compaction`, `Round`, `TerminalReply`, `InternalSessionActor`,
-`IFC.Context`, `ToolCallProvenance`, `ProjectKnowledgeContext`, and runtime-consumer projections.
 A query that needs configuration or the clock asks through the same observation continuation as an event.
 The query modules live under `runtime/VerifiedKernel/Session/Query/`, one per Elixir domain. Most queries are not proved.
 `WorkConservation.materialize_batch_has_records` proves coverage of queue retirement by generated records in the materialization query.
 `WorkConservation.materialized_input_fields` connects planned retirement to concrete records after successful canonical batch application.
 It checks delivery and runtime identity and content fields against their generated events.
-Existing projections have explicit-result tests (`apps/salix_agent/test/session_kernel_*_query_test.exs`).
-Actor decisions and archive projection also have direct boundary tests in `test/session_boundary_test.exs`.
 
 ### Query catalog
 
 Each query is `(state, args) → value`. `args` is `nil` unless a shape is listed.
 Values use plain data: `true`/`false`, `nil`, integers, binaries, lists, maps, and tagged tuples.
-The Lean name is the Elixir name without `?`; the wire name is the Elixir name.
+The Lean name is the Elixir name without `?`. The wire name is the Elixir name.
 
 | Query | Args | Value | Source |
 | --- | --- | --- | --- |
@@ -749,7 +632,6 @@ The Lean name is the Elixir name without `?`; the wire name is the Elixir name.
 | `lookup_async_call` | ref binary | `{:ok, record}`, `{:archived, seq}`, `:not_found` | `State.lookup_async_call/2` |
 | `covered_seq` | compacted_through integer | integer | `State.covered_seq/2` |
 | `total_message_count` | | integer | `State.total_message_count/1` |
-| `masked_messages` | | list of message maps | `State.masked_messages/1` |
 | `human_source_origin?` | origin | boolean | `State.human_source_origin?/1` |
 | `pending_assistant_id` | | integer or `nil` | `TurnOutcome.pending_assistant_id/1` |
 | `decision_required?` | | boolean | `TurnOutcome.decision_required?/1` |
@@ -766,13 +648,12 @@ The Lean name is the Elixir name without `?`; the wire name is the Elixir name.
 | `obligation_admission_full?` | `{payload, limit}` | boolean | `ProviderReplyObligation.admission_full?/3` |
 | `normalize_obligation` | raw target | target map or `nil` | `ProviderReplyObligation.normalize/1` |
 | `obligation_key` | target | binary | `ProviderReplyObligation.key/1` |
-| `should_compact?` | `{threshold or nil, context_tokens or nil}` | boolean | `Compaction.should_compact?/2` |
+| `should_compact?` | `{threshold or nil, context_tokens or nil, model or nil}` | boolean | `Compaction.should_compact?/2` |
 | `prepare_prompt_snapshot` | configured prompt or `nil` | `{events, effective_prompt}` | `Round.prepare_prompt_snapshot/2` |
 | `provider_states` | | map | `ContextProviders.provider_states/1` |
 | `fork_inline_result_seqs` | attrs | sorted list of integers | `State.fork_inline_result_seqs/2` |
 | `session_json` | agent id | string-keyed listing map, `nil` values dropped | `InternalAgentRuntime.session_json/2` |
 | `compact_result_for` | source message id | compact-result map or `nil` | `InternalAgentRuntime.compact_result_for/2` |
-| `emergency_compact_through_id` | | integer watermark, or `nil` when a format-2 session recorded no result | `InternalAgentRuntime.emergency_compact/2` |
 | `lineage_source_session_id` | | parent session id, or `nil` for a cross-agent fork | `InternalAgentRuntime.session_trace_lineage/4` |
 | `title_has_assistant?` | | boolean | `Titles.has_assistant?/1` |
 | `title_source_content` | | binary (first user message, blocks flattened, untruncated) | `Titles.first_user_content/1` |
@@ -793,13 +674,13 @@ The Lean name is the Elixir name without `?`; the wire name is the Elixir name.
 | `terminal_reply_source_scope` | | scope map or `nil` | `TerminalReply.source_scope/1` |
 | `terminal_reply_targets` | | exact source reply target records | `TerminalReply.context/4` |
 | `terminal_reply_context` | role, trusted origin, source ids, assistant id, call count, `router_authority` | scope map or `nil` | `TerminalReply.context/4` |
-| `terminal_reply_reminder_active?` | | boolean | `TerminalReply.append_reminder/3` |
 | `terminal_reply_matches?` | binding map | boolean | `TerminalReply.matches?/2` |
 | `terminal_reply_running?` | | boolean | `TerminalReply.running?/1` |
 | `onboarding_source_message_id` | source id binary | integer or `nil` | `TerminalReply.settle_onboarding/3` |
 | `onboarding_send_completed?` | last_ack integer | boolean | `TerminalReply.settle_onboarding/3` |
-| `compaction_live_messages` | | list of messages | `Compaction.live_messages/1` |
-| `request_live_messages` | | list of messages | `Compaction.live_messages/1` with the current activation's project knowledge kept in place (the provider request context) |
+| `compaction_live_messages` | | list of messages | `Compaction.live_messages/1`: the live window, with each project knowledge block kept only where its content first appears |
+| `request_live_messages` | | list of messages | `Compaction.live_messages/1` for the provider request context |
+| `request_conversation_tail` | non-negative integer limit | list of messages | the newest `limit` user and assistant messages with text from `request_live_messages`. Tool and runtime messages are left out |
 | `compaction_context_prefix` | | list of zero or one message | the prefix of `Compaction.context/1` |
 | `provider_compaction_items` | | list of items or `nil` | `Compaction.provider_compaction_items/1` |
 | `unfinished_activation_start_id` | list of messages | integer or `nil` | `Compaction.unfinished_activation_start_id/2` |
@@ -816,9 +697,8 @@ The Lean name is the Elixir name without `?`; the wire name is the Elixir name.
 | `project_knowledge_committed?` | runtime message id | boolean | `ProjectKnowledgeContext.already_committed?/2` |
 | `visible_reply_async_completion_facts` | tool result map | string-keyed map: `"exhausted?"`, `"phase"` (`:clean` or `{:repair_required, n}`), `"scheduled"` (`:not_scheduled` or `{:scheduled, :completed \| :pending \| :failed}`), `"next_hwm"`, `"repair_revision"`, `"repair_diagnostic_hwm"` | the state reads of `VisibleReplyPolicy.async_completion_events/4` |
 
-Configuration a query reads: `llm_failure_activation_cap` (3), `runaway_unsettled_round_cap` (2),
-`repeated_tool_result_cap` (5), `input_round_cap` (120), `compaction_threshold` (`nil`), all under `:salix_agent`.
-`should_compact?` uses its `threshold` argument before the configuration and the default window `128000` and ratio `0.85`.
+Queries read these `:salix_agent` configuration keys: `llm_failure_activation_cap`, `runaway_unsettled_round_cap`,
+`repeated_tool_result_cap`, `input_round_cap`, and `compaction_threshold`. `should_compact?` uses its `threshold` argument before the configuration.
 
 ### Profiling the resident kernel
 
@@ -832,11 +712,14 @@ lake build profile && .lake/build/bin/profile path/to/snapshot.etf
 
 The snapshot is the plain ETF `SalixAgent.InternalSession.persist/1` returns (or its `{:comma_internal_session, 3, state}` envelope).
 
+Run `lake env lean --run scripts/bench-tool-history.lean` to compare Chat Completions projection time for distinct and reused tool-call IDs.
+These are interpreter microbenchmarks, not native NIF or end-to-end latency.
+
 ## IFC domain
 
 The `:ifc` domain owns authorization, label operations, membership evaluation,
 request validation, receipt checks, and compaction labels.
-`SalixIFC` retains public structs, input constructors, and the durable string codec.
+`SalixIFC` keeps public structs, input constructors, and the durable string codec.
 The facade sends `{1, :ifc, 1, operation, arguments_tuple}` through the same NIF.
 IFC does not request observations. Its caller supplies time in `Facts.now`.
 
@@ -844,10 +727,10 @@ The schema permits explicit IFC records and canonical MapSets, not custom protoc
 Malformed authorization input returns `{:deny, %SalixIFC.Reason{clause: :invalid_input}}`.
 Unknown membership never supplies permission. A separate affirmative clause can still allow a source.
 
-Nine IFC proofs cover permission conjunction, sealed declassification, read permission
+The IFC proofs cover permission conjunction, sealed declassification, read permission
 for each declassification clause, unknown rejection, request integrity, consumed refs,
 and validation failure through the complete decision pipeline.
-Lattice laws and compaction restriction still have property tests, not complete Lean proofs.
+Lattice laws and compaction restriction have property tests, not complete Lean proofs.
 The independent `IFC.System` module proves semantic label laws, authorization properties,
 and consent/receipt invariants over arbitrary finite traces.
 `IFC.SystemRefinement` proves the executed clause selector's branch conditions.
@@ -856,13 +739,12 @@ and consent/receipt invariants over arbitrary finite traces.
 `IFC.Transfer` controls receipt consumption. `IFC.TransferSystem` connects completed claims and checked admission to a reachable dispatch.
 `IFC.CheckedExecution` proves payload and final low-state equality for evolving result stores, including reactive scheduling from the current low view.
 These proofs do not impose cumulative model labels or prove the codec, resolver, database, timing, or external delivery.
-See the [system model and proof boundaries](../../../docs/verification.md).
-See the [IFC contract](../../../docs/verification.md).
+See the [IFC contract and proof boundaries](../../../docs/verification.md).
 
 ## Session commands and projections
 
 `InternalSession.Command.run/6` drives complete input, activation, and recovery operations.
-The command protocol uses the existing query transport. It adds no NIF entry point or dynamic callback dispatch.
+The command protocol uses the query transport. It adds no NIF entry point or dynamic callback dispatch.
 
 | Query | Arguments | Result |
 | --- | --- | --- |
@@ -876,9 +758,9 @@ The command protocol uses the existing query transport. It adds no NIF entry poi
 | `finish_output` / `finish_tool_batch` | Provider observations | Complete commit batch and post-commit instructions |
 | `async_completion_events` / `recovered_completion_events` | Tool observations and candidate events | Completion batch with repair and notification rules |
 | `tool_continuation` | Independent runtime observations and opaque checkpoint | AgentLoop's next action |
-| `provider_context` | None | Compaction prefix and live messages, with runtime-page sizing, source annotations, and diagnostic redaction |
-| `provider_dispatch` | Activation facts, authority facts, protocol, config, tools, mode | Final provider JSON from the resident Session, with external attachment observations |
-| `provider_request_part` | Named projection and its data | Shared prompt, reminder, activation-message, or source-annotation projection |
+| `provider_context` | None | Compaction prefix and live messages, with runtime-page sizing, source annotations, and public-summary projection |
+| `provider_dispatch` | Delta, trusted origin, disclosure, protocol, config, tools, mode | Final provider JSON from the resident Session, with external attachment observations |
+| `provider_request_part` | Named projection and its data | Shared prompt, activation-message, or source-annotation projection |
 | `settle_tool_batch` | Events, tool results, guidance candidates, tracking flag, and Router authority | Complete settlement batch |
 | `terminal_settlement` / `onboarding_settlement` / `onboarding_async_settlement` | Tool results, candidate events, and external authority where required | Terminal acknowledgment and idle events |
 | `round_view` / `round_request` | None, or the round's role, Router fact, notice flag, nonce, and request arguments | Activation sources, current source, and visible-reply presentation, or the provider request with its round facts |
@@ -887,10 +769,10 @@ The command protocol uses the existing query transport. It adds no NIF entry poi
 | `call_envelopes` / `notice_reply_scope` | A `run_tools` effect's calls and whether the LLM tool envelope is on, or a notice's assistant id | Each call through the envelope, or the notice's scope |
 | `restart_plan` / `resume_restart` | Live dependency ids and recovery mode, then continuation and observation | Closed external request or complete recovery batch |
 | `guard_recovery` | Live dependency ids. Reads `{:archived_record, seq}` and `{:staged_result, attempt}` through the query reader | The settlement batch of a committed runtime failure reply, or a runaway or local guard settlement |
-| `capability_observation` | A `capability` request's record. Reads `{:reconcile_capability, id, result}` through the query reader | `{observation, reason}`: the observation for `resume_restart`, and the failure reason when reconciliation exhausted its 30-second budget |
+| `capability_observation` | A `capability` request's record. Reads `{:reconcile_capability, id, result}` through the query reader | `{observation, reason}`: the observation for `resume_restart`, and the failure reason when reconciliation exhausted its retry budget |
 | `restart_encode` | An `encode_missing` or `encode_external` request of `restart_plan` | The request's result events |
 | `session_repair` | `%{"live" => tool_call_ids, "checkpoint" => recovery}`. Reads as `session_step` does | `{:ok, events, next_message_id}`: the crash repair that `session_step` runs, for a host outside a processing entry (`Repair.plan_session/2`), or `{:error, reason}` |
-| `session_step` | `{machine, event, nil}`. Reads `{:held, key}`, `:clock`, `:nonce`, crash-repair reads, `{:restart, request, guard_events}`, and the request reads of `round_request` through the query reader | `{machine, effect}`: the next effect of a whole session (recovery, repair, activation, compaction, model rounds, and the agent loop). The machine's `"held"` map holds the held values that the step changed; `SalixVerifiedKernel.SessionStep` keeps them on the host |
+| `session_step` | `{machine, event, nil}`. Reads `{:held, key}`, `:clock`, `:nonce`, crash-repair reads, `{:restart, request, guard_events}`, and the request reads of `round_request` through the query reader | `{machine, effect}`: the next effect of a whole session (recovery, repair, activation, compaction, model rounds, and the agent loop). The machine's `"held"` map holds the held values that the step changed. `SalixVerifiedKernel.SessionStep` keeps them on the host |
 | `activation_plan` | `{prompt, compaction_facts}` | Whether the session compacts first, the `activate` arguments, and whether the activation must land before the model call |
 | `activation_facts` / `round_facts` | None, or `{config, snapshot \| :current, guard}` | The wait-extension ceiling, or the facts of a round |
 | `validate_events` | A write's events | `:ok` or `{:error, reason}` |
@@ -921,36 +803,29 @@ After a staged write, the driver resumes against its working revision and must c
 A failed fence restores the baseline and cannot trigger a success notification or draft cleanup.
 
 Lean owns authorization reuse and presentation identity selection.
-An opaque Actor checkpoint retains a successful authorization across a failed CAS.
+An opaque Actor checkpoint keeps a successful authorization across a failed CAS.
 An Actor restart drops that checkpoint and requires fresh authorization.
-The combined activation CAS still includes materialization, presentation installation, prompt initialization, and active status.
+The combined activation CAS includes materialization, presentation installation, prompt initialization, and active status.
 No command state or authorization checkpoint enters a durable snapshot.
 
-Presentation operations own diagnostic redaction, repair transitions, scheduled fallback selection, and live and recovered completion batches.
-After repair, redaction keeps a private failure as a `failed` record with only the closed facts of `Session/FailureOutcome.lean`. It never shows a failure as a success.
+Presentation operations own public-summary projection, repair transitions, scheduled fallback selection, and live and recovered completion batches.
+The request projection shows a user-reportable failure by its public summary and a model-only diagnostic behind a `[private diagnostic]` header. Every other message is shown as committed. Repair does not change earlier messages.
 One output plan selects settlement, provider rejection, repair continuation, and exhaustion. The host does not select a finalizer from repair phase.
-External tool adapters retain callable-tool and provider-schema validation.
-Tool-result encodings and telemetry observations remain host responsibilities.
-Request projection uses the same query transport without a new continuation protocol or durable state.
-It selects and renders request reminders and reuses IFC reference generation for source annotations.
-Later result reads preserve earlier reader pages. History reduction uses the existing compaction boundary.
+External tool adapters keep callable-tool and provider-schema validation.
+Tool-result encodings and telemetry observations are host responsibilities.
+Request projection reuses IFC reference generation for source annotations.
+Later result reads preserve earlier reader pages. History reduction uses the compaction boundary.
 Lean fits runtime reader pages and checks attachment provenance and activation scope before it requests external data.
 An inbound attachment is never model input. Lean asks the host for it as a workspace file, whatever type the sender declared, and the host answers with a note that gives its name and VFS path.
 Only a tool read asks for image bytes. The host refuses that read unless the agent template accepts image input.
 Attachment reads use `{:request_batch, requests}` observations. The host returns one result per request, in the same order.
-One batch reads authoritative result records. After validation, another batch reads approved attachments. Empty batches do not cross the NIF.
-This bounds attachment projection to two continuations without per-image replay or additional read concurrency.
-The transport regression checks actual ETF bytes against final request size. It does not use a wall-clock threshold.
+One batch reads authoritative result records. After validation, another batch reads approved attachments.
 Normal resident dispatch returns final provider JSON, not intermediate message lists.
 Providers with `request_config/1` receive that encoded body. List-based providers use the explicit `neutral` projection from the same query.
-Elixir retains tool-result publication sizing, live authority, image reads and preprocessing, stored-result reads, and network I/O.
-Runtime-page sizing uses the same kernel annotation function as the final request. Annotation does not filter or reorder messages.
-Transient activation facts enter only the request. The existing response acceptance path decides whether to persist them.
+Elixir keeps tool-result publication sizing, live authority, image reads and preprocessing, stored-result reads, and network I/O.
+Transient activation facts enter only the request. The response acceptance path decides whether to persist them.
 Host-only exception and process values in error observations become bounded diagnostic text. They do not widen the Session schema.
 
-The host hashes mismatched compaction views only for existing diagnostics, not commit admission.
-Archive work traverses the existing hot window. It adds no history fetch, polling loop, or per-child RPC.
-The hot window has no new size bound. Existing storage and memory limits still apply.
 Most of these operations have runtime tests, not functional correctness theorems.
 The command-confirmation and materialization exceptions are listed in the [verification contract](../../../docs/verification.md#accepted-work-and-durable-confirmation).
 Lean checks termination of their pure definitions. The axiom audit includes executable command and policy dispatch.
@@ -960,7 +835,7 @@ This does not prove external-call termination, fixed latency, or Actor retry pro
 
 Session accepts integers, finite floats, atoms, binaries, bitstrings, tuples, lists, and maps.
 Improper lists can travel as data, but list operations can reject them.
-Map keys retain exact integer/float and atom/binary distinctions.
+Map keys keep exact integer/float and atom/binary distinctions.
 Binary content need not be UTF-8.
 
 Only the root State envelope and canonical MapSet data records can carry struct tags.
@@ -972,37 +847,34 @@ It accepts UTF-8 and Latin-1 atoms and both string/list encodings.
 No custom Access, Enumerable, String.Chars, Inspect, or Jason protocol runs.
 Lean defines the supported field access, traversal, text conversion, JSON, and fallback display operations.
 Unsupported data operations raise `ArgumentError` with the `invalid Session data:` prefix.
-Existing arithmetic, missing-field, and malformed-list failures retain their explicit exception categories.
+Arithmetic, missing-field, and malformed-list failures keep their explicit exception categories.
 
 The wire parser permits 64 nested term levels, including the envelope.
 Encoding permits 72 levels for response and continuation envelopes.
 There is no package-specific byte-size or integer-magnitude limit.
-Inputs must fit the caller's existing request, storage, and memory limits.
+Inputs must fit the caller's request, storage, and memory limits.
 This is an internal BEAM-generated ETF interface, not a general untrusted deserialization service.
 
 ## Observations and continuation data
 
 The caller supplies only clock and configuration observations.
-An event requests at most one clock value and nine configuration values.
-The host answers the clock and the known configuration keys ahead of each call with `{:ok_for, key, value}` entries
-(`key` is the exact request, or `{:config, app, name}` for a configuration request with any fallback);
-these are consulted for every matching request and never consumed, so the common call finishes in one round trip and a
-replay reads the same answers. A request with no answered-ahead entry follows the continuation protocol below.
-A resident state is checked against the schema once, when it is admitted (`open`, `load`); reduction trusts it afterwards.
-The three activity classifications keep their original order and lazy branches.
+The host answers the clock and the known configuration keys ahead of each call with `{:ok_for, key, value}` entries.
+`key` is the exact request, or `{:config, app, name}` for a configuration request with any fallback.
+These entries are consulted for every matching request and never consumed, so a replay reads the same answers.
+A request with no answered-ahead entry follows the continuation protocol below.
+A resident state is checked against the schema once, when it is admitted (`open`, `load`). Reduction trusts it afterwards.
 The adapter does not provide a candidate state or an admission decision.
 
-Clock continuations retain the event inputs and reference the resident state before the event.
+Clock continuations keep the event inputs and reference the resident state before the event.
 Activity continuations reference the resident reduced state and carry activity input fields, timestamp fields, and recorded configuration values as data.
 Configuration resumes do not repeat the event reducer or decode the full history.
-The final resume writes the two activity-owned fields into the resident reduced state.
 
 A token holds one resident state reference and otherwise only data. It has no pointers, closures, or host callback names.
-`Session.detach` removes the state from a kernel response and `Session.attach` restores it before `resume`; the `attach_detach_*` theorems state that the pair is lossless.
+`Session.detach` removes the state from a kernel response and `Session.attach` restores it before `resume`. The `attach_detach_*` theorems state that the pair is lossless.
 Tokens are private to one synchronous invocation, not persisted or authenticated.
 Do not resume a reducer observation token against a newer state.
 Command continuations advance with the working revision after staging and the committed revision after a successful fence.
-Actors, timers, storage CAS, and network calls remain outside the kernel.
+Actors, timers, storage CAS, and network calls are outside the kernel.
 Kernel command plans construct input and presentation events. Host adapters encode provider observations.
 
 ## Proofs and trust
@@ -1014,24 +886,22 @@ Observation laws cover empty and recorded journals.
 `WorkConservation`, `WorkFrames`, and `DurableConfirmation` prove executable materialization, queue preservation, and input-confirmation properties.
 `WorkProtocol` states a conditional transaction model. It does not prove the full projection from concrete host states.
 `WorkRefinement` connects the planner to actual record insertion and field preservation through a complete applied batch.
-Its supporting modules are `WorkApplication`, `WorkBatch`, `WorkRecordFields`, `WorkPayload`, and `WorkRuntimePayload`.
 See [accepted work and durable confirmation](../../../docs/verification.md#accepted-work-and-durable-confirmation) for its host assumptions and runtime conformance limits.
 
 `Session/AppendOnly.lean` and `Session/AppendOnly/*.lean` prove that the transcript only grows.
-`inner_extends`, `prepare_extends`, and `run_done_extends` state that every event except `archive_advance` and the legacy in-place `session_microcompact` keeps the existing `messages` list as a prefix of the next one.
+`inner_extends`, `prepare_extends`, `run_done_extends`, and `runTrusted_done_extends` state that every event except `archive_advance` keeps the `messages` list as a prefix of the next one.
 Compaction events (`compaction`, `provider_compaction`, `session_compact_result`, `compaction_failure`, `compaction_recovery`) are included: they move watermarks and summaries and never rewrite messages.
 `archiveAdvance_suffix` covers the excluded archive event: for a transcript of plain messages with nondecreasing integer `seq` stamps, `archive_advance` keeps a suffix, and every removed message has `seq` at or below the event's `archived_through`.
-The `messages` field must already be a list; the theorems say nothing about the format-2 redaction overlay.
+The `messages` field must already be a list.
 `Session/AppendOnly/Seq*.lean` and `Session/AppendOnly/Sorted.lean` prove that the `seq` stamps stay sorted.
 `SeqSorted` says that `messages` is a list, `last_seq` defaults to an integer, every message carries an integer `seq` at most `last_seq`, and the stamps are nondecreasing along the list.
-`inner_seq`, `prepare_seq`, and `run_done_seq` state that every event, including `archive_advance` and both `session_microcompact` formats, preserves `SeqSorted`; `seq_sorted_empty` establishes it for the empty transcript.
+`inner_seq`, `prepare_seq`, and `run_done_seq` state that every event, including `archive_advance`, preserves `SeqSorted`. `seq_sorted_empty` establishes it for the empty transcript.
 `archiveAdvance_prefix` combines the two results: from any state that satisfies `SeqSorted`, `archive_advance` on plain messages removes exactly a prefix, with no ordering hypothesis left to the caller.
-The tactics `transcript_walk` and `sorted_walk` unfold one reducer at a time and apply the lemma of each state-transforming call, so the proofs follow the runtime dispatch code rather than a separate model.
-The axiom audit rejects proof shortcuts such as `sorryAx` and `native_decide`.
+The proofs follow the runtime dispatch code rather than a separate model.
 
 This is not a proof of every Session property.
-Codec behavior, text compatibility, snapshot projection, C ownership, and compiled execution also require runtime tests.
-Lean's compiler, runtime, native standard library, C wrapper, OpenSSL's SHA-256, and BEAM remain trusted.
+Codec behavior, text compatibility, snapshot projection, C ownership, and compiled execution also need runtime tests.
+Lean's compiler, runtime, native standard library, C wrapper, OpenSSL's SHA-256, and BEAM are trusted.
 No theorem here proves storage durability, Actor scheduling, external effects, or complete user-task success.
 
 ## Native stack safety
@@ -1039,34 +909,18 @@ No theorem here proves storage durability, Actor scheduling, external effects, o
 The NIF shares BEAM's process and runs on bounded dirty-scheduler stacks.
 Termination proofs do not establish a native stack bound. Do not increase the
 scheduler stack to compensate for traversal depth proportional to list width.
-Provider text/reasoning joins and restart-notice ID joins append into a buffer.
-Queue prefix/selection and positional-observation scans accumulate explicitly;
-selection order, predicate short-circuiting, and observation order are preserved.
-The queue conservation proofs cover the accumulator implementations.
+Use loops or accumulators for byte scans and wide-list folds.
 
-JSON parsing admits at most 64 value levels (the root counts as one), independently
-of array/object width and byte-scanning fuel. This also bounds syntax conversion
-and destruction before native recursion can exhaust a scheduler stack. Provider
-normalization retains its existing undecodable-body fallback; tool arguments
-remain rejected when decoding fails. Reference pruning distinguishes malformed
-JSON from a resource rejection: the latter aborts the projection rather than
-silently deleting potentially referenced results. An over-depth stored message
-therefore needs repair; it does not justify discarding result references.
+JSON parsing admits at most 64 value levels (the root counts as one). This bounds
+syntax conversion and destruction before native recursion can exhaust a scheduler
+stack. Tool arguments are rejected when decoding fails. Reference pruning
+distinguishes malformed JSON from a resource rejection: the latter aborts the
+projection rather than silently deleting potentially referenced results. An
+over-depth stored message needs repair. It does not justify discarding result
+references.
 
-The stack audit covered executable Lean runtime sources, the C NIF boundary,
-ETF ingress/egress, JSON, provider assembly, Session scans, and IFC traversal.
-ETF input is already bounded to 64 levels and output to 72; admitted Term trees
-bound structural walkers. Byte scans and wide-list folds use loops/accumulators.
-The remaining `Session.Request.obligationReminder` intersperse operates on at
-most 20 targets. Standard list sorting uses Lean's compiled mergeSortTR₂ path.
-The external spinfoam runtime is a separate process, not an in-process Lean NIF.
-This is a bounded code audit, not a proof that arbitrary native code cannot crash.
-
-`test/native_stack_test.exs` exercises real NIF stream completion, separator
-ordering, restart notices, queue selection, observation preludes, JSON depth
-boundaries, and reference-retention failure behavior. Run with the default native
-scheduler stack, not an increased `+sssdcpu` setting. Existing wide JSON/history
-and snapshot regressions cover the previously repaired paths.
+The stack review is a bounded code audit, not a proof that arbitrary native code cannot crash.
+Run `test/native_stack_test.exs` with the default native scheduler stack, not an increased `+sssdcpu` setting.
 
 ## Static runtime
 
@@ -1080,12 +934,7 @@ The runtime requires no Lean installation or Lean dynamic library.
 Resident Session states live in NIF resources. C marks each stored Lean object multi-threaded, so scheduler threads share it safely, and releases it when the BEAM collects the resource.
 The application bundles third-party license notices in `priv/licenses`.
 
-Operating-system C/C++ libraries remain dynamic. OpenSSL `libcrypto` supplies SHA-256 through the `salix_verified_kernel_sha256` extern; the kernel does not implement cryptographic hashing itself.
+Operating-system C/C++ libraries stay dynamic. OpenSSL `libcrypto` supplies SHA-256 through the `salix_verified_kernel_sha256` extern. The kernel does not implement cryptographic hashing itself.
 `scripts/check.sh` checks shared dependencies and exports.
 Upgrade by restarting the node. Runtime unloading and hot replacement are unsupported.
 Dirty CPU scheduling does not isolate native crashes or force cancellation.
-
-See the [design](../../../docs/verification.md) and
-[verification scope](../../../docs/verification.md).
-
-Run `lake env lean --run scripts/bench-tool-history.lean` to compare Chat Completions projection time for distinct/reused IDs at 100, 500, and 1,000 calls. These are interpreter microbenchmarks, not native NIF or end-to-end latency. Invocation results use a transcript-position array so reused IDs do not create a transcript-wide linear tuple-key lookup.

@@ -95,12 +95,12 @@ defmodule Mix.Tasks.Salix.MeetingNotes.Replay do
       true ->
         llm = read_llm_config!(llm_config)
         ensure_provider_runtime!()
-        Logger.put_process_level(self(), :warning)
+        Logger.put_process_level(SystemsRuntime.Proc.self(), :warning)
 
         try do
           run_calibration_and_summary(replay_case, llm, agent_id)
         after
-          Logger.delete_process_level(self())
+          Logger.delete_process_level(SystemsRuntime.Proc.self())
         end
     end
   end

@@ -6,19 +6,22 @@ import {
   CloudUploadIcon,
   FolderUploadIcon,
   ChevronRightSmallIcon,
-  cx,
   DevicesIcon,
   Filter2Icon,
+} from "@comma/ui/components/icons";
+import { cx } from "@comma/ui/components/utils";
+import {
   FilterOptionsPanel,
+  taskToolbarIconButtonClassName,
+} from "@comma/ui/components/task-workspace";
+import {
   Menu,
   MenuItem,
   MenuPopover,
   MenuTrigger,
-  motionDuration,
-  spacing,
   SubmenuTrigger,
-  taskToolbarIconButtonClassName,
-} from "@comma/ui";
+} from "@comma/ui/components/menu";
+import { motionDuration, spacing } from "@comma/ui/tokens";
 import { useState } from "react";
 import { Button as AriaButton } from "react-aria-components";
 import { drivePrimaryButton, driveSecondaryButton } from "./driveButtonStyles";
@@ -222,6 +225,7 @@ function DriveFilterMenu({
 
 export function DriveToolbar({
   className,
+  device,
   devices,
   localSyncEnabled,
   localSyncRoot,
@@ -238,6 +242,8 @@ export function DriveToolbar({
   writable,
 }: {
   className?: string;
+  /** Whether this device's node is behind the list: only then is there a copy to pick or a folder to sync. */
+  device: boolean;
   devices: readonly DriveDevice[];
   localSyncEnabled: boolean;
   localSyncRoot: string;
@@ -258,20 +264,24 @@ export function DriveToolbar({
   return (
     <div className={cx("flex min-w-0 items-center justify-between gap-md", className)}>
       <div className="flex min-w-0 items-center gap-md">
-        <DriveFilterMenu
-          devices={devices}
-          onSelectDevice={onSelectDevice}
-          onSelectVersionPolicy={onSelectVersionPolicy}
-          originDeviceId={originDeviceId}
-          versionPolicy={versionPolicy}
-        />
-        <DriveSyncPanel
-          enabled={localSyncEnabled}
-          localRoot={localSyncRoot}
-          onEnabledChange={onLocalSyncEnabledChange}
-          onOpenHistory={onOpenSyncHistory}
-          onOpenLocally={onOpenLocalRoot}
-        />
+        {device ? (
+          <>
+            <DriveFilterMenu
+              devices={devices}
+              onSelectDevice={onSelectDevice}
+              onSelectVersionPolicy={onSelectVersionPolicy}
+              originDeviceId={originDeviceId}
+              versionPolicy={versionPolicy}
+            />
+            <DriveSyncPanel
+              enabled={localSyncEnabled}
+              localRoot={localSyncRoot}
+              onEnabledChange={onLocalSyncEnabledChange}
+              onOpenHistory={onOpenSyncHistory}
+              onOpenLocally={onOpenLocalRoot}
+            />
+          </>
+        ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-md">
         <button

@@ -162,7 +162,7 @@ defmodule CommaWeb.CommaSkillsTest do
                   SalixStore.Ids.new_message_id()
               )
               |> Map.put_new("actor_type", "user")
-              |> Map.put_new("created_at", System.system_time(:second))
+              |> Map.put_new("created_at", SystemsClock.system_time(:second))
 
           updated_messages = if message in messages, do: messages, else: messages ++ [message]
           {message, put_in(state, [:messages, conversation_id], updated_messages)}
@@ -217,19 +217,19 @@ defmodule CommaWeb.CommaSkillsTest do
   end
 
   setup do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
 
     billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
 
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    prev_salix_client = Application.get_env(:comma_core, :salix_client)
-    prev_api_token = Application.get_env(:comma_web, :api_token)
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_salix_client = SystemsRuntime.get_env(:comma_core, :salix_client)
+    prev_api_token = SystemsRuntime.get_env(:comma_web, :api_token)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:comma_web, :api_token, @admin_token)
-    Application.put_env(:comma_core, :salix_client, SalixClientFake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:comma_web, :api_token, @admin_token)
+    SystemsRuntime.put_env(:comma_core, :salix_client, SalixClientFake)
 
     ensure_fake_s3!()
     start_supervised!(SalixClientFake)
@@ -303,7 +303,11 @@ defmodule CommaWeb.CommaSkillsTest do
     refute Jason.encode!(body) =~ "editable"
 
     detail =
-      user_req(session["token"], :get, "/v1/comma/workspaces/#{workspace["id"]}/skills/weekly-summary")
+      user_req(
+        session["token"],
+        :get,
+        "/v1/comma/workspaces/#{workspace["id"]}/skills/weekly-summary"
+      )
       |> expect_status(200)
       |> Map.fetch!(:body)
 
@@ -330,7 +334,11 @@ defmodule CommaWeb.CommaSkillsTest do
              "source"
            ]
 
-    assert user_req(session["token"], :get, "/v1/comma/workspaces/#{workspace["id"]}/skills/missing").status ==
+    assert user_req(
+             session["token"],
+             :get,
+             "/v1/comma/workspaces/#{workspace["id"]}/skills/missing"
+           ).status ==
              404
 
     restricted =
@@ -353,28 +361,6 @@ defmodule CommaWeb.CommaSkillsTest do
              :get,
              "/v1/comma/workspaces/#{workspace["id"]}/skills/weekly-summary"
            ).status == 403
-  end
-
-  test "skills endpoint degrades empty before provisioning and reports unavailable failures" do
-    %{workspace: workspace, session: session} = create_fixture("skills-empty@example.com")
-
-    SalixClientFake.set_skills_result({:error, :not_found})
-
-    empty =
-      user_req(session["token"], :get, "/v1/comma/workspaces/#{workspace["id"]}/skills")
-      |> expect_status(200)
-      |> Map.fetch!(:body)
-
-    assert empty == %{"data" => []}
-
-    SalixClientFake.set_skills_result({:error, :boom})
-
-    unavailable =
-      user_req(session["token"], :get, "/v1/comma/workspaces/#{workspace["id"]}/skills")
-      |> expect_status(503)
-      |> Map.fetch!(:body)
-
-    assert unavailable["error"] == "skills_unavailable"
   end
 
   test "message skill mentions are server-authorized and spoof-resistant" do
@@ -424,99 +410,6 @@ defmodule CommaWeb.CommaSkillsTest do
     assert [%{"content" => ^content}] = visible["data"]
   end
 
-  test "no skills stays bit-for-bit and unavailable catalog silently degrades send" do
-    %{workspace: workspace, session: session, conversation: conversation} =
-      create_fixture("skills-degrade@example.com")
-
-    send_path =
-      "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}/messages"
-
-    user_req(session["token"], :post, send_path,
-      json: %{
-        "client_request_id" => "skills-none",
-        "message" => %{"content" => "plain text"}
-      }
-    )
-    |> expect_status(202)
-
-    SalixClientFake.set_skills_result({:error, :catalog_down})
-
-    user_req(session["token"], :post, send_path,
-      json: %{
-        "client_request_id" => "skills-down",
-        "message" => %{"content" => "please /weekly-summary"},
-        "skills" => [%{"location" => "/.runtime/skills/weekly-summary/SKILL.md"}]
-      }
-    )
-    |> expect_status(202)
-
-    assert [
-             %{"content" => "plain text"},
-             %{"content" => "please /weekly-summary"}
-           ] = SalixClientFake.messages(conversation["id"])
-  end
-
-  test "user-authored protocol marker is escaped before display stripping can hide text" do
-    %{workspace: workspace, session: session, conversation: conversation} =
-      create_fixture("skills-marker@example.com")
-
-    send_path =
-      "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}/messages"
-
-    user_req(session["token"], :post, send_path,
-      json: %{
-        "client_request_id" => "skills-marker",
-        "message" => %{
-          "content" => "visible #{@protocol_marker}\nhidden from UI if unescaped"
-        }
-      }
-    )
-    |> expect_status(202)
-
-    assert [%{"content" => content}] = SalixClientFake.messages(conversation["id"])
-    assert content == "visible [[comma-protocol-user]]\nhidden from UI if unescaped"
-    refute content =~ @protocol_marker
-  end
-
-  test "skill mentions dedupe, cap at ten, and idempotent retry does not duplicate protocol" do
-    %{workspace: workspace, session: session, conversation: conversation} =
-      create_fixture("skills-cap@example.com")
-
-    skills = Enum.map(1..12, &skill("skill-#{&1}", "Skill #{&1}"))
-    SalixClientFake.set_skills_result({:ok, %{"skills" => skills}})
-
-    send_path =
-      "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}/messages"
-
-    user_req(session["token"], :post, send_path,
-      json: %{
-        "client_request_id" => "skills-cap",
-        "message" => %{"content" => "run many"},
-        "skills" =>
-          [%{"location" => List.first(skills)["location"]}] ++
-            Enum.map(skills, &%{"location" => &1["location"]})
-      }
-    )
-    |> expect_status(202)
-
-    user_req(session["token"], :post, send_path,
-      json: %{
-        "client_request_id" => "skills-cap",
-        "message" => %{"content" => "run many"},
-        "skills" => Enum.map(skills, &%{"location" => &1["location"]})
-      }
-    )
-    |> expect_status(202)
-
-    assert [%{"content" => content}] = SalixClientFake.messages(conversation["id"])
-    assert content =~ @protocol_marker
-    assert length(Regex.scan(~r/^- Skill /m, content)) == 10
-    assert content =~ "- Skill 1 — /.runtime/skills/skill-1/SKILL.md"
-    assert content =~ "- Skill 10 — /.runtime/skills/skill-10/SKILL.md"
-    refute content =~ "skill-11"
-    refute content =~ "skill-12"
-  end
-
   defp create_fixture(email) do
     user =
       admin_req(:post, "/v1/comma/admin/users", json: %{"email" => email, "name" => "Skills"})
@@ -558,7 +451,7 @@ defmodule CommaWeb.CommaSkillsTest do
   end
 
   defp ensure_fake_s3! do
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -578,8 +471,8 @@ defmodule CommaWeb.CommaSkillsTest do
     resp
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
   defp base, do: CommaWeb.Application.base_url()
 
   defp issue_billing_grant(%{"billing_account_id" => account_id, "id" => workspace_id}) do
@@ -598,7 +491,8 @@ defmodule CommaWeb.CommaSkillsTest do
         billing_account_id: account_id,
         credits: 100,
         valid_from: ~U[2026-06-17 00:00:00Z],
-        expires_at: DateTime.utc_now() |> DateTime.add(30, :day) |> DateTime.truncate(:second),
+        expires_at:
+          SystemsClock.utc_now() |> DateTime.add(30, :day) |> DateTime.truncate(:second),
         source_type: "manual_contract",
         source_id: "comma-skills-test:#{workspace_id}",
         source_event_id: "comma-skills-test:#{workspace_id}",

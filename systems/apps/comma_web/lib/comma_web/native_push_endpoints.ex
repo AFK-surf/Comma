@@ -26,10 +26,24 @@ defmodule CommaWeb.NativePushEndpoints do
   end
 
   def unregister(conn, id) do
+    conn = fetch_query_params(conn)
+    reason = conn.query_params["reason"]
+
     with %{comma_session: session} <- conn.assigns,
-         :ok <- Comma.Notifications.unregister(session, id) do
+         true <-
+           reason in [
+             nil,
+             "dismissed",
+             "expired",
+             "finished",
+             "stopped",
+             "disabled",
+             "authority_changed"
+           ],
+         :ok <- Comma.Notifications.unregister(session, id, reason) do
       send_resp(conn, 204, "")
     else
+      false -> json(conn, 422, %{error: "invalid_notification_reason"})
       _ -> json(conn, 404, %{error: "not_found"})
     end
   end

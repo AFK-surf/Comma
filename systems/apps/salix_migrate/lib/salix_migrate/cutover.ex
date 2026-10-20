@@ -108,5 +108,5 @@ defmodule SalixMigrate.Cutover do
     end
   end
 
-  defp at(opts), do: opts[:at] || DateTime.utc_now() |> DateTime.to_iso8601()
+  defp at(opts), do: opts[:at] || SystemsClock.utc_now() |> DateTime.to_iso8601()
 end

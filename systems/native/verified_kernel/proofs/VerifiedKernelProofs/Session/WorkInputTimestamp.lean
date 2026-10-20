@@ -21,8 +21,8 @@ theorem queue_event_timestamp_fixed {event : Term}
   intro now
   simp +decide [Command.timestampLifecycle, kind]
 
-theorem preInputEvent_timestamp_fixed (session payload : Term) :
-    TimestampFixed (Command.preInputEvent session payload) := by
+theorem preInputEvent_timestamp_fixed (session activationSource payload : Term) :
+    TimestampFixed (Command.preInputEvent session activationSource payload) := by
   apply queue_event_timestamp_fixed
   simp +decide [Command.preInputEvent, compact_lookup, List.find?_cons]
 
@@ -64,6 +64,7 @@ theorem input_generated_timestamp_fixed {s args result : Term} {j r : List Term}
       obtain ⟨time, _, _, h⟩ := bind_ok h
       obtain ⟨attrs, _, _, h⟩ := bind_ok h
       obtain ⟨event, _, eventRead, h⟩ := bind_ok h
+      obtain ⟨human, _, _, h⟩ := bind_ok h
       refine Or.inr (Or.inr ⟨_, _, _, ?_, h⟩)
       intro current member
       simp only [List.mem_append, List.mem_singleton] at member
@@ -77,7 +78,7 @@ theorem input_generated_timestamp_fixed {s args result : Term} {j r : List Term}
         · simp at created
       · obtain ⟨payload, _, same⟩ := List.mem_map.mp pre
         subst current
-        exact preInputEvent_timestamp_fixed _ _
+        exact preInputEvent_timestamp_fixed _ _ _
       · subst current
         exact inputEvent_timestamp_fixed eventRead
   · exact (fail_ok h).elim

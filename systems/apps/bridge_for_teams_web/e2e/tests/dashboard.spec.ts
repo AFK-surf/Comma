@@ -13,10 +13,8 @@ const PNG_ICON = Buffer.from(
 const uniq = () =>
   Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
 
-// Organization pages are the React dashboard, which carries the session's
-// CSRF token in its page; so are an Agent Swarm's Overview, Agents, Devices,
-// Tasks and Settings. Its other pages (Plugins, Skills, ...) are still
-// LiveView pages.
+// Every dashboard page is the React dashboard, which carries the session's
+// CSRF token in its page.
 const SPA_PAGE = `/orgs/${ORG_SLUG}`;
 
 async function login(page: Page) {
@@ -27,17 +25,6 @@ async function login(page: Page) {
   await expect(page.locator('meta[name="csrf-token"]')).toHaveCount(1);
 }
 
-async function gotoDashboard(page: Page, path: string) {
-  await page.goto(path);
-  await expectLiveViewConnected(page);
-}
-
-async function expectLiveViewConnected(page: Page) {
-  const liveViewRoot = page.locator("[data-phx-main]").first();
-  await expect(liveViewRoot).toBeVisible();
-  await expect(liveViewRoot).toHaveClass(/(^|\s)phx-connected(\s|$)/);
-}
-
 // Settings are React pages; drive their JSON API with the session's CSRF
 // token, which every dashboard page carries.
 async function settingsApi(
@@ -46,16 +33,7 @@ async function settingsApi(
   path: string,
   data?: Record<string, unknown>,
 ) {
-  if ((await page.locator('meta[name="csrf-token"]').count()) === 0) {
-    await page.goto(SPA_PAGE);
-  }
-  const token = await page
-    .locator('meta[name="csrf-token"]')
-    .getAttribute("content");
-  const response = await page.request.fetch(
-    `/dashboard/api/v1/orgs/${ORG_SLUG}/settings/${path}`,
-    { method, data, headers: { "x-csrf-token": token || "" } },
-  );
+  const response = await dashboardApi(page, method, `settings/${path}`, data);
   expect(response.ok(), await response.text()).toBe(true);
   return (await response.json()).data;
 }
@@ -74,12 +52,6 @@ async function projectIdByName(page: Page, name: string): Promise<string> {
   return project.id;
 }
 
-// The LiveView shell (sidebar and org switcher) of a seeded Agent Swarm.
-async function gotoLiveViewPage(page: Page) {
-  const projectId = await projectIdByName(page, "E2E External Runtime");
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${projectId}/plugins`);
-}
-
 // The React Agents page of an Agent Swarm, its list loaded. The list shows
 // what Salix knows: a new swarm's Router appears only after its reconcile, so
 // a just-created swarm may show the empty list.
@@ -94,7 +66,7 @@ async function gotoAgents(page: Page, projectId: string) {
       .or(
         page
           .getByRole("main")
-          .getByText("No agents yet. New agents appear after provisioning."),
+          .getByText("No Router yet. It appears after provisioning."),
       ),
   ).toBeVisible();
 }
@@ -105,36 +77,64 @@ const agentRows = (page: Page) =>
     .getByRole("region", { name: "All agents" })
     .getByRole("row");
 
-// Opens an agent in the detail rail from its row.
-async function openAgent(page: Page, name: string) {
-  await agentRows(page)
-    .filter({ hasText: name })
-    .getByRole("link", { name, exact: true })
-    .click();
-  const rail = page.getByRole("complementary", { name });
-  await expect(rail).toBeVisible();
-  return rail;
-}
-
-// Chooses an option of a dashboard dropdown, by its text or the first one.
-async function chooseOption(
+// A dashboard JSON API call with the session's CSRF token, which every
+// dashboard page carries; the response is returned as is.
+async function dashboardApi(
   page: Page,
-  dropdown: Locator,
-  option?: string | RegExp,
+  method: string,
+  path: string,
+  data?: Record<string, unknown>,
 ) {
-  await dropdown.click();
-  const options = page.getByRole("option");
-  await (option ? options.filter({ hasText: option }) : options).first().click();
+  if ((await page.locator('meta[name="csrf-token"]').count()) === 0) {
+    await page.goto(SPA_PAGE);
+  }
+  const token = await page
+    .locator('meta[name="csrf-token"]')
+    .getAttribute("content");
+  return page.request.fetch(`/dashboard/api/v1/orgs/${ORG_SLUG}/${path}`, {
+    method,
+    data,
+    headers: { "x-csrf-token": token || "" },
+  });
 }
 
-// A task row of the React Tasks page; its link opens the LiveView task detail.
+// A task row of the React Tasks page; its link opens task detail in place.
 async function openTask(page: Page, projectId: string, title: string) {
   await page.goto(`/orgs/${ORG_SLUG}/projects/${projectId}/tasks`);
-  const link = page.getByRole("row").filter({ hasText: title }).getByRole("link");
+  const link = page
+    .getByRole("row")
+    .filter({ hasText: title })
+    .getByRole("link");
   await expect(link).toBeVisible();
   await link.click();
   await expect(page).toHaveURL(/\/tasks\/cnv1_/);
-  await expectLiveViewConnected(page);
+  await expectTask(page, title);
+}
+
+// Task detail, read: its title, and its schedule section (an agent task).
+async function expectTask(page: Page, title: string) {
+  const main = page.getByRole("main");
+  await expect(
+    main.getByRole("heading", { level: 1, name: title }),
+  ).toBeVisible();
+  await expect(
+    taskDetails(page).getByRole("heading", { name: "Schedule" }),
+  ).toBeVisible();
+}
+
+const taskDetails = (page: Page) =>
+  page.getByRole("main").getByRole("complementary", { name: "Task details" });
+
+const taskConversation = (page: Page) =>
+  page.getByRole("main").getByRole("region", { name: "Conversation" });
+
+async function steer(page: Page, text: string) {
+  const main = page.getByRole("main");
+  await main
+    .getByRole("textbox", { name: "Guidance for this task" })
+    .fill(text);
+  await main.getByRole("button", { name: "Send" }).click();
+  await expect(main.getByText("Guidance added.")).toBeVisible();
 }
 
 async function clickAndExpectVisible(trigger: Locator, target: Locator) {
@@ -142,20 +142,6 @@ async function clickAndExpectVisible(trigger: Locator, target: Locator) {
   await expect(trigger).toBeEnabled();
   await trigger.click();
   await expect(target).toBeVisible();
-}
-
-async function waitForProvisionedAgent(page: Page, name: string) {
-  const row = agentRows(page).filter({ hasText: name });
-  await expect
-    .poll(async () => {
-      await page
-        .getByRole("main")
-        .getByRole("button", { name: "Refresh", exact: true })
-        .click();
-      return row.isVisible();
-    }, { timeout: 15_000, intervals: [500, 1_000] })
-    .toBe(true);
-  return row;
 }
 
 test.beforeEach(async ({ page }) => {
@@ -167,7 +153,23 @@ test("Slack triage Agent picker keeps the chosen Agent in the address", async ({
 }) => {
   // The picker shows only when the org has more than one router Agent; the
   // seed has one Agent Swarm, and a new one brings its own router Agent.
-  await createAndOpenProject(page, `triage-${uniq()}`);
+  const projectId = await createAndOpenProject(page, `triage-${uniq()}`);
+  // The new router is provisioned asynchronously; the page reads the routers
+  // once, so wait until triage lists the new swarm's router.
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(
+          `/dashboard/api/v1/orgs/${ORG_SLUG}/triage`,
+        );
+        if (!response.ok()) return false;
+        const agents: { project_id: string }[] =
+          (await response.json()).data?.agents ?? [];
+        return agents.some((agent) => agent.project_id === projectId);
+      },
+      { intervals: [500, 1_000, 2_000] },
+    )
+    .toBe(true);
   await page.goto(`/orgs/${ORG_SLUG}/triage`);
   await expect(
     page.getByRole("heading", { level: 1, name: "Slack triage" }),
@@ -194,82 +196,39 @@ test("Slack triage Agent picker keeps the chosen Agent in the address", async ({
   await expect(picker).toContainText(name);
 });
 
-test("Triage Worker selection and archive confirmation preserve the configured assignment", async ({
+test("Triage says where its Tasks run and links to the Agent Swarm's Settings", async ({
   page,
-}, testInfo) => {
+}) => {
   const projectName =
     process.env.E2E_TRIAGE_PROJECT_NAME || "E2E External Runtime";
   const projectId = await projectIdByName(page, projectName);
-  // The Agents API names the group Router.
+  // The Agents API lists the swarm's Router.
   const response = await page.request.get(
     `/dashboard/api/v1/orgs/${ORG_SLUG}/projects/${projectId}/agents`,
   );
   expect(response.ok(), await response.text()).toBe(true);
   const routerId = (await response.json()).data.agents.find(
-    (agent: { group_router: boolean }) => agent.group_router,
+    (agent: { role: string }) => agent.role === "router",
   ).id;
   await page.goto(`/orgs/${ORG_SLUG}/triage?agent=${routerId}`);
-  const panel = page.locator("#triage-worker-configuration");
-  const selector = panel.getByRole("button", { name: "Worker for Triage" });
-  const workerName = process.env.E2E_TRIAGE_WORKER_NAME || "e2e-triage-worker";
-  await selector.click();
-  await page.getByRole("option", { name: workerName, exact: true }).click();
-  await expect(panel.locator("#triage-worker-preview")).toContainText(
-    "Configured",
-  );
-  await panel.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(panel).toContainText("Triage Worker updated");
-  await page.reload();
-  await expect(selector).toContainText(workerName);
-  await page.setViewportSize({ width: 375, height: 812 });
-  await panel.scrollIntoViewIfNeeded();
+  const section = page.locator("#triage-tasks");
   await expect(
-    panel.getByRole("button", { name: "Save", exact: true }),
+    section.getByRole("heading", { name: "Triage Tasks" }),
   ).toBeVisible();
-  const bounds = await panel.boundingBox();
-  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(375);
-  await page.screenshot({
-    path: testInfo.outputPath("worker-for-triage-mobile.png"),
-  });
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await page.screenshot({
-    path: testInfo.outputPath("worker-for-triage.png"),
-    fullPage: true,
-  });
-  await gotoAgents(page, projectId);
-  const assignedRow = agentRows(page).filter({ hasText: "Used by Triage" });
-  await expect(assignedRow).toHaveCount(1);
-  await assignedRow
-    .getByRole("link", { name: "Used by Triage", exact: true })
-    .click();
-  await expect(page).toHaveURL(
-    new RegExp(`/triage[?]agent=${routerId}#triage-worker-configuration$`),
+  await expect(section).toContainText(
+    "Triage Tasks run on this Agent Swarm at its default place and default Task model.",
   );
-  await expect(selector).toContainText(workerName);
-  await gotoAgents(page, projectId);
-  const rail = await openAgent(page, workerName);
-  await rail.getByRole("button", { name: "Archive", exact: true }).click();
-  const modal = page.getByRole("dialog", { name: "Archive agent" });
-  await expect(modal.locator("#archive-triage-warning")).toContainText(
-    "stop new Triage assignments",
-  );
-  await page.screenshot({
-    path: testInfo.outputPath("archive-triage-worker.png"),
-    fullPage: true,
+  const settings = section.getByRole("link", {
+    name: "Change them in Settings",
   });
-  await modal
-    .getByRole("link", { name: "Choose another Worker in Triage" })
-    .click();
-  await expect(selector).toContainText(workerName);
-  await selector.click();
-  await page
-    .getByRole("option", { name: "Not assigned — pause new tasks" })
-    .click();
-  await panel.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(panel).toContainText("Triage Worker updated");
-  await page.reload();
-  await expect(selector).toContainText("Not assigned");
-  await expect(panel).toContainText("New Triage tasks are paused");
+  await expect(settings).toHaveAttribute(
+    "href",
+    `/orgs/${ORG_SLUG}/projects/${projectId}/settings`,
+  );
+  await settings.click();
+  await expect(
+    page.getByRole("main").getByRole("heading", { level: 1, name: "Settings" }),
+  ).toBeVisible();
 });
 
 test("organization Overview renders in the React dashboard", async ({
@@ -287,33 +246,6 @@ test("organization Overview renders in the React dashboard", async ({
     page.getByRole("heading", { name: "Needs attention" }),
   ).toBeVisible();
   await expect(page.getByText("E2E Org").first()).toBeVisible();
-});
-
-test("dashboard main content scrolls at narrow viewport widths", async ({
-  page,
-}) => {
-  const projectId = await projectIdByName(page, "E2E External Runtime");
-  await page.setViewportSize({ width: 390, height: 480 });
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${projectId}/plugins`);
-
-  const mainScroll = page.locator("[data-scroll-main]");
-  await expect(mainScroll).toBeVisible();
-
-  const dimensions = await mainScroll.evaluate((panel) => ({
-    clientHeight: panel.clientHeight,
-    overflowY: getComputedStyle(panel).overflowY,
-    scrollHeight: panel.scrollHeight,
-  }));
-
-  expect(dimensions.overflowY).toBe("auto");
-  expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.clientHeight);
-
-  await mainScroll.evaluate((panel) => {
-    panel.scrollTop = panel.scrollHeight;
-  });
-  await expect
-    .poll(() => mainScroll.evaluate((panel) => panel.scrollTop))
-    .toBeGreaterThan(0);
 });
 
 test("Runners API lists the seeded runner with its connector summary", async ({
@@ -369,8 +301,8 @@ test("create a project in the org", async ({ page }) => {
   await expect(row).toContainText(/grp1_/);
 });
 
-test("project detail: settings + create an agent", async ({ page }) => {
-  const id = await createAndOpenProject(page, `agents-${uniq()}`);
+test("project detail: settings", async ({ page }) => {
+  const id = await createAndOpenProject(page, `settings-${uniq()}`);
 
   // Settings is a React page: runtime ids are plain rows with copy buttons,
   // and Access adds users in a dialog.
@@ -390,50 +322,9 @@ test("project detail: settings + create an agent", async ({ page }) => {
   );
   await addUser.getByRole("button", { name: "Cancel" }).click();
   await expect(addUser).toHaveCount(0);
-
-  // Agents → create an agent. The page is React; a new agent appears once
-  // provisioned.
-  await gotoAgents(page, id);
-  const form = page.getByRole("dialog", { name: "New agent" });
-  await clickAndExpectVisible(
-    page.getByRole("button", { name: "New agent" }),
-    form,
-  );
-  await chooseOption(page, form.getByRole("button", { name: /Type/ }), "External agent");
-  await expect(
-    form.getByText("No connected devices are available for this Agent Swarm."),
-  ).toBeVisible();
-  await chooseOption(page, form.getByRole("button", { name: /Type/ }), "Internal");
-  const workerName = `worker-${uniq()}`;
-  await form.getByLabel("Name").fill(workerName);
-  await form.getByRole("button", { name: "Create agent" }).click();
-
-  await expect(
-    page.getByText(
-      "Agent creation accepted. Refresh the list after provisioning.",
-    ),
-  ).toBeVisible();
-  const workerRow = await waitForProvisionedAgent(page, workerName);
-  await expect(workerRow).toContainText("Worker");
-  const rail = await openAgent(page, workerName);
-  await rail.getByRole("button", { name: "Archive", exact: true }).click();
-  const archiveModal = page.getByRole("dialog", { name: "Archive agent" });
-  await expect(archiveModal).toBeVisible();
-  await expect(archiveModal).toContainText(workerName);
-  await archiveModal.getByRole("button", { name: "Cancel" }).click();
-  await expect(archiveModal).toHaveCount(0);
-
-  await page.setViewportSize({ width: 390, height: 844 });
-  await gotoAgents(page, id);
-  await clickAndExpectVisible(
-    page.getByRole("button", { name: "New agent" }),
-    form,
-  );
-  await expect(form.getByLabel("Name")).toBeVisible();
-  await expect(form.getByRole("button", { name: /Type/ })).toBeVisible();
 });
 
-test("project detail: create and rebind external Codex agents", async ({
+test("the Agents page lists the swarm's Router; a new Worker is refused", async ({
   page,
 }) => {
   const projectId = await projectIdByName(page, "E2E External Runtime");
@@ -444,72 +335,41 @@ test("project detail: create and rebind external Codex agents", async ({
   ).toBeVisible();
   await gotoAgents(page, projectId);
 
-  const externalName = `external-${uniq()}`;
-  const newAgentForm = page.getByRole("dialog", { name: "New agent" });
-  await clickAndExpectVisible(
-    page.getByRole("button", { name: "New agent" }),
-    newAgentForm,
-  );
-  await chooseOption(
-    page,
-    newAgentForm.getByRole("button", { name: /Type/ }),
-    "External agent",
-  );
-  await newAgentForm.getByLabel("Name").fill(externalName);
-  await chooseOption(
-    page,
-    newAgentForm.getByRole("button", { name: /Connected Device$/ }),
-  );
-  await chooseOption(
-    page,
-    newAgentForm.getByRole("button", { name: /External runtime/ }),
-  );
-  await newAgentForm.getByRole("button", { name: "Create agent" }).click();
+  // The header row and the Router.
+  await expect(agentRows(page)).toHaveCount(2);
+  await expect(agentRows(page).nth(1)).toContainText("Router");
   await expect(
-    page.getByText(
-      "Agent creation accepted. Refresh the list after provisioning.",
-    ),
-  ).toBeVisible();
-  await waitForProvisionedAgent(page, externalName);
+    page
+      .getByRole("main")
+      .getByRole("link", { name: "Change them in Settings" }),
+  ).toHaveAttribute("href", `/orgs/${ORG_SLUG}/projects/${projectId}/settings`);
 
-  const rail = await openAgent(page, "e2e-external-worker");
-  const form = page.getByRole("dialog", {
-    name: "Rebind runtime for e2e-external-worker",
-  });
-  await clickAndExpectVisible(
-    rail.getByRole("button", { name: "Rebind runtime" }),
-    form,
+  // Workers are retired: Tasks run on the swarm's Task agent instead.
+  const refused = await dashboardApi(
+    page,
+    "POST",
+    `projects/${projectId}/agents`,
+    { type: "internal", name: `worker-${uniq()}` },
   );
-
-  // Move new sessions to the other seeded device.
-  const deviceSelect = form.getByRole("button", { name: /Connected Device$/ });
-  const initialDevice = (await deviceSelect.innerText()).split("\n")[0];
-  await deviceSelect.click();
-  const nextDevice = page
-    .getByRole("option")
-    .filter({ hasNotText: initialDevice });
-  await expect(nextDevice.first()).toBeVisible();
-  await nextDevice.first().click();
-  await chooseOption(page, form.getByRole("button", { name: /External runtime/ }));
-  await expect(
-    form.getByTestId("runtime-readiness").getByText(/codex-e2e-[ab]/),
-  ).toBeVisible();
-
-  await form.getByRole("button", { name: "Save runtime" }).click();
-  await expect(page.getByText("Agent runtime rebound.")).toBeVisible();
+  expect(refused.status()).toBe(410);
+  expect((await refused.json()).error.code).toBe("workers_retired");
 });
 
 test("organization owner deletes an Agent Swarm skill created by another Agent", async ({
   page,
 }) => {
   const projectId = await projectIdByName(page, "E2E External Runtime");
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${projectId}/skills`);
+  await page.goto(`/orgs/${ORG_SLUG}/projects/${projectId}/skills`);
+  const custom = page
+    .getByRole("main")
+    .getByRole("list", { name: "Custom skills" });
+  await expect(custom).toBeVisible();
 
-  const skillCard = page.locator("#project-skill-e2e-cross-agent-skill");
-  await expect(skillCard).toBeVisible();
-
-  page.once("dialog", (dialog) => dialog.accept());
-  await skillCard.getByRole("button", { name: "Delete" }).click();
+  await custom
+    .getByRole("button", { name: "Delete E2E cross-Agent deletion" })
+    .click();
+  const confirm = page.getByRole("dialog", { name: "Delete skill" });
+  await confirm.getByRole("button", { name: "Delete" }).click();
 
   await expect(page.getByText("Skill deleted.")).toBeVisible();
   await expect(page.getByText("E2E cross-Agent deletion")).toHaveCount(0);
@@ -522,179 +382,84 @@ test("task detail manages a conversation-owned Schedule in place", async ({
   const projectId = await projectIdByName(page, "E2E External Runtime");
   const taskTitle = "E2E conversation-owned Task Schedule";
   await openTask(page, projectId, taskTitle);
-  const taskId = page.url().match(/\/tasks\/([^/?]+)/)![1];
+  const taskPath = new URL(page.url()).pathname;
+  const main = page.getByRole("main");
+  const details = taskDetails(page);
 
-  const workbench = await page
-    .locator("#task-messages")
-    .evaluate((messageList) => {
-      const panel = document.querySelector<HTMLElement>("[data-scroll-main]");
-      const taskConversation = messageList.closest<HTMLElement>(
-        '[aria-label="Task conversation"]',
-      );
-      const taskDetails = document.querySelector<HTMLElement>(
-        '[aria-label="Task details"]',
-      );
-      const composer = document.querySelector<HTMLElement>("#message-form");
-
-      if (!panel || !taskConversation || !taskDetails || !composer) return null;
-
-      return {
-        panelOverflowY: getComputedStyle(panel).overflowY,
-        messageOverflowY: getComputedStyle(messageList).overflowY,
-        detailsOverflowY: getComputedStyle(taskDetails).overflowY,
-        taskConversationBottom: taskConversation.getBoundingClientRect().bottom,
-        composerBottom: composer.getBoundingClientRect().bottom,
-      };
-    });
-
-  if (!workbench) throw new Error("Task workbench did not render.");
-
-  expect(workbench.panelOverflowY).toBe("hidden");
-  expect(workbench.messageOverflowY).toBe("auto");
-  expect(workbench.detailsOverflowY).toBe("auto");
-  expect(
-    Math.abs(workbench.taskConversationBottom - workbench.composerBottom),
-  ).toBeLessThanOrEqual(1);
-
-  await page.setViewportSize({ width: 390, height: 480 });
-  const mobileScroll = page.locator("[data-scroll-main]");
   const guidance =
     "Keep the next security review focused on exposed credentials.";
-  await page.getByPlaceholder("Steer this task...").fill(guidance);
-  await mobileScroll.evaluate((panel) => {
-    panel.scrollTop = 0;
-  });
-  await page.locator("#message-form").evaluate((form) => {
-    const taskForm = form as HTMLFormElement;
-    taskForm.requestSubmit();
-  });
-  await expect(page.getByText("Guidance added.")).toBeVisible();
-  await expect(page.locator("#task-messages")).toContainText(guidance);
-  await expect
-    .poll(() =>
-      mobileScroll.evaluate(
-        (panel) =>
-          Math.abs(panel.scrollHeight - panel.clientHeight - panel.scrollTop) <=
-          1,
-      ),
-    )
-    .toBe(true);
+  await steer(page, guidance);
+  await expect(taskConversation(page)).toContainText(guidance);
 
-  await page.setViewportSize({ width: 1280, height: 900 });
-
-  const scheduleForm = page.locator("#task-schedule-form");
-  const taskDetails = page.getByLabel("Task details");
+  // The Task agent is a participant by name only: no Agents list shows it,
+  // so it has no link there. Its session id stays hidden.
+  const participants = details.getByRole("region", { name: "Participants" });
   await expect(
-    taskDetails.getByRole("heading", { name: "Properties" }),
-  ).toHaveCount(0);
-  await expect(
-    taskDetails.locator("summary").filter({ hasText: /^Delivery$/ }),
-  ).toHaveCount(0);
-  await expect(page.getByPlaceholder("Steer this task...")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Steer" })).toBeVisible();
-  await expect(page.getByText(/^\d+ messages?$/)).toHaveCount(0);
-  await expect(
-    page.locator("#task-messages time").filter({ hasText: "UTC" }),
-  ).toHaveCount(0);
-
-  const workerParticipant = page.locator("[id^='participant-']", {
-    hasText: "e2e-external-worker",
-  });
-  await expect(
-    workerParticipant.getByRole("link", { name: "e2e-external-worker" }),
-  ).toBeVisible();
-  await expect(workerParticipant).not.toContainText("ses1_");
-  await workerParticipant
-    .getByRole("link", { name: "e2e-external-worker" })
-    .click();
-  await expect(page).toHaveURL(
-    new RegExp(`/orgs/${ORG_SLUG}/projects/${projectId}/agents/[0-9a-f-]+$`),
-  );
-
-  await gotoDashboard(
-    page,
-    `/orgs/${ORG_SLUG}/projects/${projectId}/tasks/${taskId}`,
-  );
-  const timelineLink = workerParticipant.getByRole("link", {
-    name: "View timeline",
-  });
-  await expect(timelineLink).toHaveAttribute(
-    "href",
-    new RegExp(`/tasks/${taskId}/session\\?participant=ptp1_`),
-  );
-  await timelineLink.click();
-  await expect(page).toHaveURL(
-    new RegExp(`/tasks/${taskId}/session\\?participant=ptp1_`),
-  );
-  await expect(
-    page.getByRole("heading", { name: "Session activity", exact: true }),
+    participants.getByRole("listitem").filter({ hasText: "Task agent" }),
   ).toBeVisible();
   await expect(
-    page.locator("#session-activity-timeline li").first(),
-  ).toBeVisible();
-  await expect(page.locator("#session-activity-timeline")).toContainText(
-    "mix test",
-  );
+    participants.getByRole("link", { name: "Task agent" }),
+  ).toHaveCount(0);
+  await expect(details).not.toContainText("ses1_");
 
-  await gotoDashboard(
-    page,
-    `/orgs/${ORG_SLUG}/projects/${projectId}/tasks/${taskId}`,
-  );
-  const deleteSchedule = page.getByRole("button", { name: "Delete schedule" });
-  if (await page.getByRole("button", { name: "Edit" }).isVisible()) {
-    await page.getByRole("button", { name: "Edit" }).click();
-    await expect(scheduleForm).toBeVisible();
+  // The retired session inspector's address opens the task.
+  await page.goto(`${taskPath}/session?participant=ptp1_worker`);
+  await expect(page).toHaveURL(new RegExp(`${taskPath}$`));
+  await expectTask(page, taskTitle);
+
+  // A schedule left by an interrupted run is removed first.
+  const deleteSchedule = details.getByRole("button", {
+    name: "Delete schedule",
+  });
+  await expect(
+    details.getByRole("button", { name: /^(Add schedule|Edit)$/ }),
+  ).toBeVisible();
+  if (await deleteSchedule.isVisible()) {
     await deleteSchedule.click();
-    await expect(scheduleForm).not.toBeVisible();
+    await page
+      .getByRole("dialog", { name: "Delete schedule" })
+      .getByRole("button", { name: "Delete" })
+      .click();
+    await expect(details.getByText("This task does not repeat.")).toBeVisible();
   }
 
-  await page.goto(`/orgs/${ORG_SLUG}/projects/${projectId}/tasks`);
+  // Back to Tasks through the crumb, in place.
+  await main.getByRole("link", { name: "Tasks", exact: true }).click();
   const oneShotRow = page.getByRole("row").filter({ hasText: taskTitle });
   await expect(oneShotRow).toBeVisible();
   await expect(oneShotRow.getByText("Scheduled", { exact: true })).toHaveCount(
     0,
   );
-  await openTask(page, projectId, taskTitle);
-  await expect(scheduleForm).not.toBeVisible();
-  await expect(page.getByText("Scheduled", { exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Add schedule" }).click();
-  await expect(scheduleForm).toBeVisible();
-  await scheduleForm
-    .getByText("Repeat after a duration", { exact: true })
-    .click();
-  const intervalValue = scheduleForm.locator(
-    'input[name="schedule[interval_value]"]',
-  );
-  await expect(intervalValue).toBeVisible();
-  await intervalValue.fill("1");
-  await scheduleForm
-    .locator('select[name="schedule[interval_unit]"]')
-    .selectOption("hours");
-  await scheduleForm
-    .locator('textarea[name="schedule[command]"]')
+  await oneShotRow.getByRole("link").click();
+  await expectTask(page, taskTitle);
+
+  await details.getByRole("button", { name: "Add schedule" }).click();
+  const add = page.getByRole("dialog", { name: "Add schedule" });
+  await add.getByRole("radio", { name: "Repeat after a duration" }).check();
+  await add.getByLabel("Repeat every").fill("1");
+  await add.getByRole("button", { name: "Unit" }).click();
+  await page.getByRole("option", { name: "Hours" }).click();
+  await expect(add.getByText("Every hour", { exact: true })).toBeVisible();
+  await add
+    .getByLabel("Command")
     .fill("Inspect the repository and report every security finding.");
-  await scheduleForm.getByRole("button", { name: "Add schedule" }).click();
+  await add.getByRole("button", { name: "Save schedule" }).click();
 
   await expect(page.getByText("Task schedule saved.")).toBeVisible();
-  await expect(
-    page.getByText("Scheduled", { exact: true }).first(),
-  ).toBeVisible();
-  await expect(
-    taskDetails.getByText("Every hour", { exact: true }),
-  ).toBeVisible();
-  await expect(scheduleForm).not.toBeVisible();
-  await gotoDashboard(
-    page,
-    `/orgs/${ORG_SLUG}/projects/${projectId}/tasks/${taskId}`,
+  await expect(main.getByText("Scheduled", { exact: true })).toBeVisible();
+  await expect(details.getByText("Every hour", { exact: true })).toBeVisible();
+
+  await page.reload();
+  await expectTask(page, taskTitle);
+  await details.getByRole("button", { name: "Edit" }).click();
+  const edit = page.getByRole("dialog", { name: "Edit schedule" });
+  await expect(edit.getByLabel("Repeat every")).toHaveValue("1");
+  await expect(edit.getByRole("button", { name: "Unit" })).toContainText(
+    "Hours",
   );
-  await page.getByRole("button", { name: "Edit" }).click();
-  await expect(scheduleForm).toBeVisible();
-  await expect(intervalValue).toHaveValue("1");
-  await expect(
-    scheduleForm.locator('select[name="schedule[interval_unit]"]'),
-  ).toHaveValue("hours");
-  await page.getByRole("button", { name: "Cancel" }).click();
-  await page.goto(`/orgs/${ORG_SLUG}/projects/${projectId}/tasks`);
+  await edit.getByRole("button", { name: "Cancel" }).click();
+
+  await main.getByRole("link", { name: "Tasks", exact: true }).click();
   await expect(
     page
       .getByRole("row")
@@ -703,34 +468,29 @@ test("task detail manages a conversation-owned Schedule in place", async ({
   ).toBeVisible();
 
   await openTask(page, projectId, taskTitle);
-  await page.getByRole("button", { name: "Edit" }).click();
-  await expect(scheduleForm).toBeVisible();
-  await scheduleForm.getByText("At a fixed time", { exact: true }).click();
-  const cron = scheduleForm.locator('input[name="schedule[cron]"]');
-  await expect(cron).toBeVisible();
-  await cron.fill("30 18 * * 3");
-  await scheduleForm
-    .locator('input[name="schedule[timezone]"]')
-    .fill("Asia/Shanghai");
-  await scheduleForm.getByRole("button", { name: "Update schedule" }).click();
-  await expect(page.getByText("Task schedule saved.")).toBeVisible();
+  await details.getByRole("button", { name: "Edit" }).click();
+  await edit.getByRole("radio", { name: "At a fixed time" }).check();
+  await edit.getByLabel("Cron expression").fill("30 18 * * 3");
+  await edit.getByLabel("Time zone").fill("Asia/Shanghai");
   await expect(
-    taskDetails.getByText("Every Wednesday at 6:30 PM (Asia/Shanghai)", {
+    edit.getByText("Every Wednesday at 6:30 PM (Asia/Shanghai)", {
       exact: true,
     }),
   ).toBeVisible();
-  await expect(scheduleForm).not.toBeVisible();
-
-  await gotoDashboard(
-    page,
-    `/orgs/${ORG_SLUG}/projects/${projectId}/tasks/${taskId}`,
-  );
-  await page.getByRole("button", { name: "Edit" }).click();
-  await expect(cron).toHaveValue("30 18 * * 3");
+  await edit.getByRole("button", { name: "Save schedule" }).click();
+  await expect(page.getByText("Task schedule saved.")).toBeVisible();
   await expect(
-    scheduleForm.locator('input[name="schedule[timezone]"]'),
-  ).toHaveValue("Asia/Shanghai");
-  await page.getByRole("button", { name: "Cancel" }).click();
+    details.getByText("Every Wednesday at 6:30 PM (Asia/Shanghai)", {
+      exact: true,
+    }),
+  ).toBeVisible();
+
+  await page.reload();
+  await expectTask(page, taskTitle);
+  await details.getByRole("button", { name: "Edit" }).click();
+  await expect(edit.getByLabel("Cron expression")).toHaveValue("30 18 * * 3");
+  await expect(edit.getByLabel("Time zone")).toHaveValue("Asia/Shanghai");
+  await edit.getByRole("button", { name: "Cancel" }).click();
 
   // The retired Schedules page opens the Scheduled view of Tasks.
   await page.goto(`/orgs/${ORG_SLUG}/projects/${projectId}/schedules`);
@@ -741,22 +501,20 @@ test("task detail manages a conversation-owned Schedule in place", async ({
   await expect(taskScheduleRow).toBeVisible();
   await expect(
     taskScheduleRow.getByRole("link", { name: "Task" }),
-  ).toHaveAttribute(
-    "href",
-    `/orgs/${ORG_SLUG}/projects/${projectId}/tasks/${taskId}`,
-  );
+  ).toHaveAttribute("href", taskPath);
+  await taskScheduleRow.getByRole("link", { name: "Task" }).click();
+  await expectTask(page, taskTitle);
 
-  await gotoDashboard(
-    page,
-    `/orgs/${ORG_SLUG}/projects/${projectId}/tasks/${taskId}`,
-  );
-  await page.getByRole("button", { name: "Edit" }).click();
-  await page.getByRole("button", { name: "Delete schedule" }).click();
-  await expect(page.getByText("Task schedule updated.")).toBeVisible();
-  await expect(page.getByText("Scheduled", { exact: true })).toHaveCount(0);
-  await expect(scheduleForm).not.toBeVisible();
+  await details.getByRole("button", { name: "Delete schedule" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete schedule" })
+    .getByRole("button", { name: "Delete" })
+    .click();
+  await expect(page.getByText("Task schedule deleted.")).toBeVisible();
+  await expect(details.getByText("This task does not repeat.")).toBeVisible();
+  await expect(main.getByText("Scheduled", { exact: true })).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "Add schedule" }),
+    details.getByRole("button", { name: "Add schedule" }),
   ).toBeVisible();
 });
 
@@ -765,18 +523,19 @@ test("task detail receives guidance sent from another dashboard session", async 
   context,
 }) => {
   const projectId = await projectIdByName(page, "E2E External Runtime");
-  await openTask(page, projectId, "E2E conversation-owned Task Schedule");
+  const taskTitle = "E2E conversation-owned Task Schedule";
+  await openTask(page, projectId, taskTitle);
   const taskPath = new URL(page.url()).pathname;
 
   const receiver = await context.newPage();
-  await gotoDashboard(receiver, taskPath);
+  await receiver.goto(taskPath);
+  await expectTask(receiver, taskTitle);
   const guidance = `Cross-session guidance ${uniq()}`;
-  await expect(receiver.locator("#task-messages")).not.toContainText(guidance);
+  await expect(taskConversation(receiver)).not.toContainText(guidance);
 
-  await page.getByPlaceholder("Steer this task...").fill(guidance);
-  await page.getByRole("button", { name: "Steer" }).click();
-  await expect(page.getByText("Guidance added.")).toBeVisible();
-  await expect(receiver.locator("#task-messages")).toContainText(guidance);
+  await steer(page, guidance);
+  // The receiver polls while visible; an idle poll waits at most 12 s here.
+  await expect(taskConversation(receiver)).toContainText(guidance);
 });
 
 test("project detail: create a project device request on a runner", async ({
@@ -785,13 +544,16 @@ test("project detail: create a project device request on a runner", async ({
   const id = await createAndOpenProject(page, `devices-${uniq()}`);
   const name = `staging-${uniq()}`;
 
-  // The React Devices page. A new swarm lists only its cloud computer.
+  // The React Devices page. A new swarm has no Cloud VM yet and no devices.
   await page.goto(`/orgs/${ORG_SLUG}/projects/${id}/devices`);
   const main = page.getByRole("main");
   await expect(
     main.getByRole("heading", { level: 1, name: "Devices" }),
   ).toBeVisible();
-  await expect(main.getByRole("row", { name: /Cloud computer/ })).toBeVisible();
+  await expect(
+    main.getByRole("region", { name: "Cloud VM" }).getByText("Not created yet"),
+  ).toBeVisible();
+  await expect(main.getByText("No devices yet.")).toBeVisible();
 
   const dialog = page.getByRole("dialog", { name: "Add device" });
   await clickAndExpectVisible(
@@ -810,7 +572,7 @@ test("project detail: create a project device request on a runner", async ({
   ).toBeVisible();
   await expect(dialog).toHaveCount(0);
   // The request is not a device until the runner attaches it.
-  await expect(main.getByRole("row", { name: /Cloud computer/ })).toBeVisible();
+  await expect(main.getByText("No devices yet.")).toBeVisible();
   await expect(page.getByText(name, { exact: true })).toHaveCount(0);
 });
 
@@ -818,17 +580,21 @@ test("create a project Slack provider-connect", async ({ page }) => {
   // IM connects are project-scoped: each project maps 1:1 to a Salix group, and
   // the connect (plus its credentials) lives in Salix's provider-connect store.
   const id = await createAndOpenProject(page, `slack-${uniq()}`);
-  await gotoDashboard(page, `/orgs/${ORG_SLUG}/projects/${id}/integrations`);
-  await page
-    .locator("#integration-provider-slack")
-    .getByRole("button", { name: "Configure" })
-    .click();
+  await page.goto(
+    `/orgs/${ORG_SLUG}/projects/${id}/connections?provider=slack`,
+  );
+  const slack = page
+    .getByRole("main")
+    .getByRole("region", { name: "Slack", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Add Slack app" });
+  await clickAndExpectVisible(
+    slack.getByRole("button", { name: "Add Slack app" }),
+    dialog,
+  );
 
-  // Step 1: the guided panel previews a paste-ready App Manifest with bot scopes.
-  const panel = page.locator("#integration-setup-panel");
-  await expect(panel).toBeVisible();
-  await panel.getByText("View manifest and callback URLs").click();
-  const manifest = panel.locator("#slack-manifest-json");
+  // Step 1: the dialog previews a paste-ready App Manifest with bot scopes.
+  await dialog.getByText("Manifest and callback URLs").click();
+  const manifest = dialog.getByLabel("App manifest", { exact: true });
   await expect(manifest).toBeVisible();
   await expect(manifest).toContainText("chat:write");
   await expect(manifest).toContainText("users:read.email");
@@ -840,25 +606,25 @@ test("create a project Slack provider-connect", async ({ page }) => {
   );
   await expect(manifest).toContainText("/v1/im/slack/events");
 
-  // Step 2: the create form collects the app credentials (write-only).
-  const form = panel.locator("#create-slack-connect-form");
-  await expect(form).toBeVisible();
-  await form.locator('input[name="slack_connect[app_id]"]').fill(`A${uniq()}`);
-  await form
-    .locator('input[name="slack_connect[client_id]"]')
+  // Step 2: the credentials of the created app (write-only).
+  await dialog.getByRole("textbox", { name: "App ID" }).fill(`A${uniq()}`);
+  await dialog
+    .getByRole("textbox", { name: "Client ID" })
     .fill("e2e-client-id");
-  for (const pw of await form.locator('input[type="password"]').all()) {
-    await pw.fill("e2e-dummy-secret");
-  }
-  await form.locator('button[type="submit"]').click();
+  await dialog.getByLabel("Client secret").fill("e2e-dummy-secret");
+  await dialog.getByLabel("Signing secret").fill("e2e-dummy-secret");
+  await dialog.getByRole("button", { name: "Connect" }).click();
+  await expect(dialog).toHaveCount(0);
 
-  // The new connect row renders with its Salix connect id and the OAuth
-  // install link; secrets are never echoed back.
-  const connects = page.locator("#slack-connects");
-  await expect(connects).toBeVisible();
+  // The new connect row shows its Salix connect id and the OAuth install
+  // link; secrets are never echoed back.
+  const connects = slack.getByRole("list", { name: "Slack connects" });
   await expect(connects.getByText(/imc1_/).first()).toBeVisible();
-  const installLink = connects.getByRole("link", { name: "Open install URL" });
+  const installLink = connects
+    .getByRole("link", { name: "Open install URL" })
+    .first();
   await expect(installLink).toBeVisible();
+  await expect(page.getByText("e2e-dummy-secret")).toHaveCount(0);
 
   const installHref = await installLink.getAttribute("href");
   expect(installHref).toBeTruthy();
@@ -1017,7 +783,16 @@ test("settings configures Feishu SSO and completes a phone-only browser login", 
   // the first-run onboarding wizard.
   await page.goto(callback.toString());
   await expect(page).toHaveURL(/\/onboarding$/);
-  await expectLiveViewConnected(page);
+  await expect(page.getByText("Step 1 of 3")).toBeVisible();
+  await expect(
+    page.getByRole("heading", {
+      level: 1,
+      name: "What may your agent do for you?",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("checkbox", { name: /Label new mail/ }),
+  ).toBeChecked();
 
   expect(authorizeURL.searchParams.get("client_id")).toBe(appId);
   expect(authorizeURL.searchParams.get("state")).toMatch(/^fake-feishu-state-/);
@@ -1098,48 +873,51 @@ test("login page renders localStorage org shortcuts and submits the selected org
   expect(postData).toContain("_csrf_token=");
 });
 
-test("Settings API saves an organization icon shown in the sidebar", async ({
+test("Settings API saves an organization icon shown on General settings", async ({
   page,
 }) => {
   const icon = `data:image/png;base64,${PNG_ICON.toString("base64")}`;
   const general = await settingsApi(page, "PATCH", "general", { icon });
   expect(general.organization.icon).toBe(icon);
 
-  await gotoLiveViewPage(page);
-  await expect(
-    page.locator(`#org-switcher img[src="${icon}"]`).first(),
-  ).toBeAttached();
+  await page.goto(`/orgs/${ORG_SLUG}/settings`);
+  await expect(page.locator(`main img[src="${icon}"]`).first()).toBeAttached();
 });
 
-test("org switcher keeps long organization names inside the sidebar", async ({
+test("org switcher keeps long organization names inside the top bar", async ({
   page,
 }) => {
   const name = `Long Organization ${uniq()} with a customer name that should truncate in the switcher`;
   const originalName = await renameOrg(page, name);
 
   try {
-    const sidebar = page.locator("aside");
-    const menu = page.locator("#org-switcher-menu");
-    const trigger = page.locator("#org-switcher > summary");
-    await expect(trigger).toHaveCount(1);
-    await trigger.click();
-    await expect(menu).toBeVisible();
-    await expect(menu.getByRole("link", { name })).toBeVisible();
+    const trigger = page.getByRole("button", { name: /^Switch organization/ });
+    const triggerBox = await trigger.boundingBox();
+    const searchBox = await page
+      .getByRole("button", { name: "Search" })
+      .boundingBox();
+    expect(triggerBox).not.toBeNull();
+    expect(searchBox).not.toBeNull();
+    // The name is cut short before the search field.
+    expect(triggerBox!.x + triggerBox!.width).toBeLessThanOrEqual(searchBox!.x);
 
-    const sidebarBox = await sidebar.boundingBox();
+    await trigger.click();
+    const option = page.getByRole("menuitem", { name });
+    await expect(option).toBeVisible();
+    const menu = page.getByRole("menu", { name: "Switch organization" });
+    const viewport = page.viewportSize()!;
     const menuBox = await menu.boundingBox();
-    expect(sidebarBox).not.toBeNull();
     expect(menuBox).not.toBeNull();
-    expect(menuBox!.x).toBeGreaterThanOrEqual(sidebarBox!.x - 0.5);
-    expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(
-      sidebarBox!.x + sidebarBox!.width + 0.5,
-    );
-    await expect
-      .poll(async () =>
-        menu.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
-      )
-      .toBe(true);
+    expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(viewport.width);
+    expect(
+      await page.evaluate(
+        () =>
+          document.documentElement.scrollWidth -
+          document.documentElement.clientWidth,
+      ),
+    ).toBeLessThanOrEqual(0);
   } finally {
+    await page.keyboard.press("Escape");
     await renameOrg(page, originalName);
   }
 });
@@ -1163,7 +941,9 @@ async function createAndOpenProject(page: Page, name: string): Promise<string> {
 async function renameOrg(page: Page, name: string): Promise<string> {
   const { organization } = await settingsApi(page, "GET", "general");
   await settingsApi(page, "PATCH", "general", { name });
-  await gotoLiveViewPage(page);
-  await expect(page.locator("#org-switcher")).toContainText(name);
+  await page.goto(SPA_PAGE);
+  await expect(
+    page.getByRole("button", { name: `Switch organization: ${name}` }),
+  ).toBeVisible();
   return organization.name;
 }

@@ -1,4 +1,8 @@
 defmodule SalixVoice.Drain do
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
   @moduledoc """
   End this node's calls before the pod stops (docs/messaging-voice.md).
 
@@ -17,23 +21,25 @@ defmodule SalixVoice.Drain do
   @doc "Drain local calls. Returns `:ok` or `{:error, {:voice_calls_remaining, n}}`."
   @spec drain(keyword()) :: :ok | {:error, {:voice_calls_remaining, pos_integer()}}
   def drain(opts \\ []) do
-    if Process.whereis(@pg) do
+    if SystemsRuntime.Proc.whereis(@pg) do
       pids = :pg.get_local_members(@pg, :calls)
-      ref = make_ref()
+      ref = SystemsRuntime.Proc.make_ref()
 
       monitors =
         Map.new(pids, fn pid ->
-          send(pid, {:voice_drain, self(), ref})
-          {Process.monitor(pid), pid}
+          SystemsRuntime.Proc.send(pid, {:voice_drain, SystemsRuntime.Proc.self(), ref})
+          {SystemsRuntime.Proc.monitor(pid), pid}
         end)
 
-      deadline = System.monotonic_time(:millisecond) + Keyword.get(opts, :timeout_ms, @wait_ms)
+      deadline =
+        SystemsClock.monotonic_time(:millisecond) + Keyword.get(opts, :timeout_ms, @wait_ms)
+
       remaining = await(monitors, deadline)
 
-      Enum.each(remaining, fn {_mref, pid} -> send(pid, :voice_drain_now) end)
-      force_deadline = System.monotonic_time(:millisecond) + @force_wait_ms
+      Enum.each(remaining, fn {_mref, pid} -> SystemsRuntime.Proc.send(pid, :voice_drain_now) end)
+      force_deadline = SystemsClock.monotonic_time(:millisecond) + @force_wait_ms
       remaining = await(remaining, force_deadline)
-      Enum.each(remaining, fn {mref, _pid} -> Process.demonitor(mref, [:flush]) end)
+      Enum.each(remaining, fn {mref, _pid} -> SystemsRuntime.Proc.demonitor(mref, [:flush]) end)
       flush_drained(ref)
 
       case map_size(remaining) do
@@ -48,9 +54,9 @@ defmodule SalixVoice.Drain do
   defp await(monitors, _deadline) when map_size(monitors) == 0, do: monitors
 
   defp await(monitors, deadline) do
-    timeout = max(deadline - System.monotonic_time(:millisecond), 0)
+    timeout = max(deadline - SystemsClock.monotonic_time(:millisecond), 0)
 
-    receive do
+    SystemsClock.vreceive do
       {:DOWN, mref, :process, _pid, _reason} when is_map_key(monitors, mref) ->
         await(Map.delete(monitors, mref), deadline)
     after
@@ -59,7 +65,7 @@ defmodule SalixVoice.Drain do
   end
 
   defp flush_drained(ref) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:voice_drained, ^ref, _call_id} -> flush_drained(ref)
     after
       0 -> :ok

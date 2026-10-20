@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelStatusTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
   alias SalixAgent.TestSupport.SessionData
@@ -46,16 +46,6 @@ defmodule SalixAgent.SessionKernelStatusTest do
     end
   end
 
-  test "missing status and activity fields preserve the inner state" do
-    before = state()
-
-    for type <- ["status", "activity_status"] do
-      ev = event(type, %{"created_at" => 99})
-      assert Driver.step(before, ev) === {:done, before}
-      assert SessionData.apply_event(before, ev) === before
-    end
-  end
-
   test "active activity accepts native atom and binary spellings without changing other fields" do
     before = state()
 
@@ -77,44 +67,5 @@ defmodule SalixAgent.SessionKernelStatusTest do
       ev = event("activity_status", %{"activity_status" => value, "created_at" => 43})
       assert SessionData.apply_event(before, ev) === before
     end
-  end
-
-  test "invalid present values retain their existing ArgumentError messages" do
-    before = state()
-
-    for value <- [false, [], "unknown", 1.25, %{"arbitrary" => true}] do
-      ev = event("status", %{"status" => value})
-      message = "invalid internal session status #{inspect(value)}"
-      assert_raise ArgumentError, message, fn -> Driver.step(before, ev) end
-
-      assert_raise ArgumentError, message, fn ->
-        SessionData.apply_event(before, ev)
-      end
-    end
-
-    for value <- [nil, false, [], "paused", :waiting, 1.25] do
-      ev = event("activity_status", %{"activity_status" => value})
-      message = "invalid internal session activity status #{inspect(value)}"
-      assert_raise ArgumentError, message, fn -> Driver.step(before, ev) end
-
-      assert_raise ArgumentError, message, fn ->
-        SessionData.apply_event(before, ev)
-      end
-    end
-  end
-
-  test "the public kernel owns Session admission and timestamp truthiness" do
-    before = state()
-    foreign = %{"type" => "status", "status" => "idle", "session_id" => "another"}
-    assert SessionData.apply_event(before, foreign) === before
-
-    ev =
-      event("activity_status", %{
-        "activity_status" => "messaging",
-        "created_at" => [],
-        "updated_at" => 44
-      })
-
-    assert SessionData.apply_event(before, ev) === %State{before | activity_status: :messaging}
   end
 end

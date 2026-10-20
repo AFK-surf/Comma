@@ -7,13 +7,13 @@ defmodule BridgeForTeams.RateLimit do
   observable; this module never falls back to a node-local counter.
   """
 
+  @prefix "bft:magic-link:v1"
+  @timeout 2_000
+
+  # Hammer supervises the Redis connection; the buckets are SalixStore.RedisLimit's, on the application's clock.
   defmodule Redis do
     @moduledoc false
-    use Hammer,
-      backend: Hammer.Redis,
-      algorithm: :token_bucket,
-      prefix: "bft:magic-link:v1",
-      timeout: 2_000
+    use Hammer, backend: Hammer.Redis, timeout: 2_000
   end
 
   @default_burst 60
@@ -39,11 +39,14 @@ defmodule BridgeForTeams.RateLimit do
       {refill_rate, scale} = scaled_rate(rate)
 
       result =
-        Redis.hit(
+        SalixStore.RedisLimit.token_bucket(
+          Redis,
+          @prefix,
           digest_key(key),
           refill_rate,
           burst * scale,
-          cost * scale
+          cost * scale,
+          @timeout
         )
 
       case result do
@@ -88,7 +91,7 @@ defmodule BridgeForTeams.RateLimit do
   end
 
   defp emit(outcome) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:bridge_for_teams, :rate_limit, :decision],
       %{count: 1},
       %{policy: :magic_link, outcome: outcome}
@@ -96,6 +99,6 @@ defmodule BridgeForTeams.RateLimit do
   end
 
   defp redis_url do
-    Application.fetch_env!(:bridge_for_teams_core, :rate_limit_redis_url)
+    SystemsRuntime.fetch_env!(:bridge_for_teams_core, :rate_limit_redis_url)
   end
 end

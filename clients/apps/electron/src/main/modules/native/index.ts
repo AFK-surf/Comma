@@ -2,11 +2,8 @@ import type {
   LocalComputeOverview,
   LocalComputeDisposalResult,
 } from "@comma/native-bridge";
-import type { TokenDanceAuthorizationService } from "../../tokendance-authorization";
-import type { SubscriptionAuthorizationService } from "../../subscription-authorization";
 import type { ConnectorService } from "../../connector";
 import { applicationMenuProvider } from "../../application-menu-provider";
-import type { DriveCatalogService } from "../synchronicity/catalog";
 import {
   unavailableSitePermissionMenu,
   type SitePermissionMenuProvider,
@@ -15,35 +12,11 @@ import {
   unavailableOnboardingWindow,
   type OnboardingWindowProvider,
 } from "../../onboarding-window";
-import type { SessionHistoryRuntime } from "@comma/session-history-runtime";
 import type {
-  ChatBeginSendIntentReceipt,
-  ChatCommandReceipt,
-  ChatLeasedAcknowledgeIntakeFailuresInput,
-  ChatLeasedAttachInput,
-  ChatLeasedAttachLocalFilesInput,
-  ChatLeasedAttachmentIdInput,
-  ChatLeasedClientRequestInput,
-  ChatLeasedBeginSendIntentInput,
   ChatLeasedPickAttachmentsInput,
-  ChatLeasedSendInput,
-  ChatLeasedSetDraftInput,
-  ChatLeasedTarget,
   ChatPickAttachmentsResult,
-  ChatReadGroupImageInput,
-  ChatReleaseInput,
-  ChatRetainInput,
-  ChatSkill,
-  ChatWorkspaceResolution,
-  ChatWorkspaceSkillsInput,
-  SideChatContentSizeInput,
-  SideChatInteractiveCompletionInput,
-  SideChatInteractiveProgressInput,
-  SideChatPresentation,
 } from "@comma/chat-contract";
 import {
-  chatRuntimeDraftsEnvelopeSchema,
-  chatRuntimeStateEnvelopeSchema,
   generatedNativeCapabilityManifest,
   generatedNativeEventManifest,
   type AppPreferences,
@@ -57,7 +30,6 @@ import {
   type ClipboardWriteTextResult,
   type CommaResolvedTheme,
   type CommaClientSettings,
-  type LocalDataStatus,
   type NativeCommandContract,
   type NativeInfo,
   type NativePeerConnectInput,
@@ -67,14 +39,11 @@ import {
   type NotchPreviewInput,
   type NotchScenePayload,
   type NotchStatus,
-  type ProductInboxListInput,
-  type SideChatDebugSettings,
-  type SideChatDebugSettingsPatch,
-  type SideChatOpenTestWindowInput,
-  type SideChatShortcutBinding,
   type SurfaceList,
   type SystemNotificationsStatus,
+  type WindowControlInput,
   type WindowFullScreen,
+  type WindowMaximized,
   type WindowCreateInput,
   type WindowTargetInput,
   type ComputeNodeConfigureInput,
@@ -85,18 +54,12 @@ import {
   type ConnectorScopeTarget,
   type ConnectorSetScopeInput,
 } from "@comma/native-bridge";
-import {
-  sameSessionProductLease,
-  sessionProductLease,
-  type SessionProductLease,
-} from "@comma/session-contract";
-import type { z } from "zod";
+import { type SessionProductLease } from "@comma/session-contract";
 import {
   registerGeneratedNativeMainBindings,
   type NativeSessionAdmissionGuard,
 } from "../../generated/native-capability-main-artifacts";
-import type { LocalDataRepository } from "../../../shared/local-data";
-import type { ChatAttachmentIntakeOutcome, ChatProvider } from "../chat";
+import type { ChatAttachmentIntakeOutcome, MainChat } from "../chat";
 import type { BrowserSidebarProvider } from "../browser-sidebar";
 import type { FilesProvider } from "../files/downloads";
 import type { SynchronicityProvider } from "../synchronicity";
@@ -104,18 +67,10 @@ import type { LocalFilePickerProvider } from "../local-files/picker";
 import type { RecommendationMediaProvider } from "../recommendation-media";
 import type { AudioCaptureProvider } from "../audio-capture";
 import type { MeetingPresenceProvider } from "../meeting-presence";
-import type { MeetingRecorderProvider } from "../meeting-recorder";
+import type { MeetingRecorderWindowProvider } from "../meeting-recorder";
 import type { AirDropReceptionProvider } from "../airdrop/reception";
 import { getCurrentNativeCallerContext, NativeCallerBindingError } from "../ipc";
-import { FileStore, LOCAL_DATA_SCHEMA_VERSION } from "../local-data";
-import type {
-  ProductInboxNativeDemandProvider,
-  ProductInboxStateEnvelope,
-} from "../product-inbox";
-import {
-  ElectronMainSessionService,
-  getCurrentNativeSessionAdmission,
-} from "../session";
+import { MainSessionHost } from "../session";
 
 interface GatewayLike {
   register<Input, Output>(
@@ -177,19 +132,28 @@ export interface NotchProvider {
 
 export interface SurfaceListProvider {
   state(input: void): Promise<SurfaceList> | SurfaceList;
+  windowControl(input: WindowControlInput): void;
   windowFullScreen(input: void): WindowFullScreen;
+  windowMaximized(input: void): WindowMaximized;
 }
 
 /** The surface registry itself; the caller's window is bound in below. */
 export interface SurfaceListService {
   state(): Promise<SurfaceList> | SurfaceList;
+  windowControl(windowId: string, input: WindowControlInput): void;
   windowFullScreen(windowId: string): WindowFullScreen;
+  windowMaximized(windowId: string): WindowMaximized;
 }
 
 export interface WindowsProvider {
   close(input: WindowTargetInput): Promise<SurfaceList> | SurfaceList;
   create(input: WindowCreateInput): Promise<SurfaceList> | SurfaceList;
   focus(input: WindowTargetInput): Promise<SurfaceList> | SurfaceList;
+}
+
+/** Opens a channel from the calling window to the client core (its port arrives on `nativeCorePortChannel`). */
+export interface CoreProvider {
+  open(input?: void): Promise<NativePeerConnectResult> | NativePeerConnectResult;
 }
 
 export interface PeersProvider {
@@ -199,32 +163,7 @@ export interface PeersProvider {
 }
 
 export interface SessionProvider {
-  cancelAuthAttempt(
-    input: Parameters<ElectronMainSessionService["cancelAuthAttempt"]>[0]
-  ): ReturnType<ElectronMainSessionService["cancelAuthAttempt"]>;
-  reconcile(
-    input: Parameters<ElectronMainSessionService["reconcile"]>[0]
-  ): ReturnType<ElectronMainSessionService["reconcile"]>;
-  requestEmailLogin(
-    input: Parameters<ElectronMainSessionService["requestEmailLogin"]>[0]
-  ): ReturnType<ElectronMainSessionService["requestEmailLogin"]>;
-  signInWithGoogle(
-    input: Parameters<ElectronMainSessionService["signInWithGoogle"]>[0]
-  ): ReturnType<ElectronMainSessionService["signInWithGoogle"]>;
-  signOut(
-    input: Parameters<ElectronMainSessionService["signOut"]>[0]
-  ): ReturnType<ElectronMainSessionService["signOut"]>;
-  state(input: void): ReturnType<ElectronMainSessionService["state"]>;
-  verifyEmailLogin(
-    input: Parameters<ElectronMainSessionService["verifyEmailLogin"]>[0]
-  ): ReturnType<ElectronMainSessionService["verifyEmailLogin"]>;
-  verifyGoogleLink(
-    input: Parameters<ElectronMainSessionService["verifyGoogleLink"]>[0]
-  ): ReturnType<ElectronMainSessionService["verifyGoogleLink"]>;
-}
-
-export interface LocalDataStatusProvider {
-  status(input: void): Promise<LocalDataStatus> | LocalDataStatus;
+  state(input: void): ReturnType<MainSessionHost["state"]>;
 }
 
 export interface TransportStatusProvider {
@@ -269,88 +208,13 @@ export interface ComputeNodeProvider {
   abandon(expected: ComputeNodeExpectedBinding): Promise<ComputeNodeState>;
 }
 
-export interface ProductInboxProvider {
-  refresh(input: ProductInboxListInput): Promise<ProductInboxStateEnvelope>;
-  release(input: { session: SessionProductLease }): boolean;
-  retain(input: { session: SessionProductLease }): ProductInboxStateEnvelope;
-  state(input: { session: SessionProductLease }): ProductInboxStateEnvelope;
-}
-
 type SessionBound<Input> = Input & { session: SessionProductLease };
-export type ChatRuntimeStateEnvelope = z.output<typeof chatRuntimeStateEnvelopeSchema>;
-export type ChatRuntimeDraftsEnvelope = z.output<
-  typeof chatRuntimeDraftsEnvelopeSchema
->;
 
+/** Chat's one native capability: the file picker (and dropped files), which attaches what it registers. */
 export interface NativeChatProvider {
-  acceptTaskReview(
-    input: SessionBound<ChatLeasedTarget & { reviewVersion: number }>
-  ): Promise<ChatCommandReceipt>;
-  beginSendIntent(
-    input: SessionBound<ChatLeasedBeginSendIntentInput>
-  ): ChatBeginSendIntentReceipt;
-  cancelSendIntent(
-    input: SessionBound<ChatLeasedBeginSendIntentInput>
-  ): ChatCommandReceipt;
-  acknowledgeIntakeFailures(
-    input: SessionBound<ChatLeasedAcknowledgeIntakeFailuresInput>
-  ): ChatCommandReceipt;
-  attach(input: SessionBound<ChatLeasedAttachInput>): ChatCommandReceipt;
-  attachLocalFiles(
-    input: SessionBound<ChatLeasedAttachLocalFilesInput>
-  ): ChatCommandReceipt;
-  clearPresentation(input: SessionBound<ChatLeasedTarget>): ChatCommandReceipt;
-  discard(input: SessionBound<ChatLeasedClientRequestInput>): ChatCommandReceipt;
-  listSkills(input: SessionBound<ChatWorkspaceSkillsInput>): Promise<ChatSkill[]>;
   pickAttachments(
     input: SessionBound<ChatLeasedPickAttachmentsInput>
   ): Promise<ChatPickAttachmentsResult>;
-  presentInSideChat(input: SessionBound<ChatLeasedTarget>): ChatCommandReceipt;
-  readGroupImage(input: SessionBound<ChatReadGroupImageInput>): Promise<Uint8Array>;
-  refresh(input: SessionBound<ChatLeasedTarget>): ChatCommandReceipt;
-  release(input: SessionBound<ChatReleaseInput>): ChatCommandReceipt;
-  removeAttachment(
-    input: SessionBound<ChatLeasedAttachmentIdInput>
-  ): ChatCommandReceipt;
-  resolveWorkspaceChat(input: {
-    session: SessionProductLease;
-  }): Promise<ChatWorkspaceResolution>;
-  retain(input: SessionBound<ChatRetainInput>): ChatCommandReceipt;
-  retry(input: SessionBound<ChatLeasedClientRequestInput>): Promise<ChatCommandReceipt>;
-  retryAttachment(input: SessionBound<ChatLeasedAttachmentIdInput>): ChatCommandReceipt;
-  send(input: SessionBound<ChatLeasedSendInput>): Promise<ChatCommandReceipt>;
-  setDraft(input: SessionBound<ChatLeasedSetDraftInput>): ChatCommandReceipt;
-  state(input: { session: SessionProductLease }): ChatRuntimeStateEnvelope;
-  drafts(input: { session: SessionProductLease }): ChatRuntimeDraftsEnvelope;
-}
-
-export interface SideChatProvider {
-  close(input: void): Promise<ChatCommandReceipt> | ChatCommandReceipt;
-  closeTestWindow(input: void): Promise<ChatCommandReceipt> | ChatCommandReceipt;
-  debugSettings(input: void): Promise<SideChatDebugSettings> | SideChatDebugSettings;
-  finishInteractiveProgress(
-    input: SideChatInteractiveCompletionInput
-  ): Promise<ChatCommandReceipt> | ChatCommandReceipt;
-  openSettings(input: void): Promise<ChatCommandReceipt> | ChatCommandReceipt;
-  openTestWindow(
-    input: SideChatOpenTestWindowInput
-  ): Promise<ChatCommandReceipt> | ChatCommandReceipt;
-  presentation(input: void): Promise<SideChatPresentation> | SideChatPresentation;
-  resetDebugSettings(
-    input: void
-  ): Promise<SideChatDebugSettings> | SideChatDebugSettings;
-  setContentSize(
-    input: SideChatContentSizeInput
-  ): Promise<ChatCommandReceipt> | ChatCommandReceipt;
-  setInteractiveProgress(
-    input: SideChatInteractiveProgressInput
-  ): Promise<ChatCommandReceipt> | ChatCommandReceipt;
-  updateDebugSettings(
-    input: SideChatDebugSettingsPatch
-  ): Promise<SideChatDebugSettings> | SideChatDebugSettings;
-  updateShortcut(
-    input: SideChatShortcutBinding
-  ): Promise<SideChatShortcutBinding> | SideChatShortcutBinding;
 }
 
 export class NativeInfoService {
@@ -446,60 +310,7 @@ export class ElectronShellService implements ShellProvider {
   }
 }
 
-export { ElectronMainSessionService as SessionService };
-
-export class LocalDataDiagnosticsService implements LocalDataStatusProvider {
-  readonly #fileStore: FileStore;
-  readonly #localData: LocalDataRepository;
-  readonly #observabilityLocation: string | undefined;
-
-  constructor({
-    fileStore,
-    localData,
-    observabilityLocation,
-  }: {
-    fileStore: FileStore;
-    localData: LocalDataRepository;
-    observabilityLocation?: string | undefined;
-  }) {
-    this.#fileStore = fileStore;
-    this.#localData = localData;
-    this.#observabilityLocation = observabilityLocation;
-  }
-
-  async status() {
-    const health = this.#localData.health();
-    let schemaVersion = 0;
-    let missingReferences = 0;
-    if (health.status === "ready") {
-      [schemaVersion, missingReferences] = await Promise.all([
-        this.#localData.schemaVersion(),
-        this.#fileStore.findMissingReferencedBlobs().then((items) => items.length),
-      ]);
-    }
-
-    return {
-      available: health.status === "ready",
-      database: {
-        latestSchemaVersion: LOCAL_DATA_SCHEMA_VERSION,
-        schemaVersion,
-        status: health.status === "ready" ? "ready" : "unavailable",
-      },
-      fileStore: {
-        diskUsage: this.#fileStore.totalBytes(),
-        missingReferences,
-        status: health.status === "ready" ? "ready" : "unavailable",
-        storedEntries: this.#fileStore.blobCount(),
-      },
-      observability: {
-        jsonlEnabled: Boolean(this.#observabilityLocation),
-        location: this.#observabilityLocation ?? "disabled",
-        redacted: true,
-        status: this.#observabilityLocation ? "ready" : "disabled",
-      },
-    } satisfies LocalDataStatus;
-  }
-}
+export { MainSessionHost as SessionService };
 
 export class TransportDiagnosticsService implements TransportStatusProvider {
   readonly #messagePortRegistered: boolean;
@@ -548,48 +359,14 @@ export class TransportDiagnosticsService implements TransportStatusProvider {
   }
 }
 
-export function createCallerBoundProductInboxProvider({
-  demand,
-}: {
-  demand: ProductInboxNativeDemandProvider<string>;
-}): ProductInboxProvider {
-  return {
-    refresh: (input) => demand.refresh(input),
-    release: (input) => demand.release(input, currentNativeCallerKey()),
-    retain: (input) => demand.retain(input, currentNativeCallerKey()),
-    state: (input) => demand.state(input),
-  };
-}
-
-export type NativeSessionHistoryProvider = Pick<
-  SessionHistoryRuntime,
-  "state" | "load" | "retain" | "release"
->;
-export function createCallerBoundSessionHistoryProvider(
-  runtime: SessionHistoryRuntime
-): NativeSessionHistoryProvider {
-  return {
-    state: (input) => runtime.state(input),
-    load: (input) => runtime.load(input),
-    retain: (input) =>
-      runtime.retain({
-        ...input,
-        consumerId: `${currentNativeCallerKey()}:${input.consumerId}`,
-      }),
-    release: (input) =>
-      runtime.release({
-        ...input,
-        consumerId: `${currentNativeCallerKey()}:${input.consumerId}`,
-      }),
-  };
-}
-
 function createCallerBoundSurfaceListProvider(
   surfaces: SurfaceListService
 ): SurfaceListProvider {
   return {
     state: () => surfaces.state(),
+    windowControl: (input) => surfaces.windowControl(currentNativeCallerKey(), input),
     windowFullScreen: () => surfaces.windowFullScreen(currentNativeCallerKey()),
+    windowMaximized: () => surfaces.windowMaximized(currentNativeCallerKey()),
   };
 }
 
@@ -598,53 +375,23 @@ function currentNativeCallerKey() {
 }
 
 export function createSessionBoundChatProvider(
-  chat: ChatProvider,
+  chat: MainChat,
   localFiles: LocalFilePickerProvider
 ): NativeChatProvider {
   return {
-    beginSendIntent(input) {
-      requireCallerBoundChatInput(input);
-      return chat.beginSendIntent(withoutSession(input));
-    },
-    cancelSendIntent(input) {
-      requireCallerBoundChatInput(input);
-      return chat.cancelSendIntent(withoutSession(input));
-    },
-    acknowledgeIntakeFailures(input) {
-      requireCallerBoundChatInput(input);
-      return chat.acknowledgeIntakeFailures(withoutSession(input));
-    },
-    attach(input) {
-      requireCallerBoundChatInput(input);
-      return chat.attach(withoutSession(input));
-    },
-    attachLocalFiles(input) {
-      requireCallerBoundChatInput(input);
-      return chat.attachLocalFiles(withoutSession(input));
-    },
-    clearPresentation(input) {
-      requireCallerBoundChatInput(input);
-      return chat.clearPresentation(withoutSession(input));
-    },
-    discard(input) {
-      requireCallerBoundChatInput(input);
-      return chat.discard(withoutSession(input));
-    },
-    listSkills: (input) => chat.listSkills(withoutSession(input)),
     async pickAttachments(input) {
       requireCallerBoundChatInput(input);
       const { maxFiles, maxTotalSize, maxUploadFiles, sources, ...target } =
         withoutSession(input);
-      const intake = chat.claimAttachmentIntake(target);
+      const intake = await chat.claim({ ...target, surfaceId: target.surfaceId });
       // A picker that throws before reporting must settle as failed so a send
       // waiting on this intake rejects instead of committing a partial draft.
-      let outcome: ChatAttachmentIntakeOutcome = {
-        cancelled: false,
-        errorCount: 1,
-      };
+      let outcome: ChatAttachmentIntakeOutcome = { cancelled: false, errorCount: 1 };
       try {
         const picked = await localFiles.pickForChat({
           assertLocalFileRegistrationAllowed: intake.assertCurrent,
+          localFileIntakeId: intake.intakeId,
+          refreshLocalFileRegistration: intake.refresh,
           maxFiles,
           maxTotalSize,
           maxUploadFiles,
@@ -653,21 +400,18 @@ export function createSessionBoundChatProvider(
           workspaceId: target.workspaceId,
         });
         let receipt: { draftEpoch?: number | undefined; revision: number } = {
-          revision: chat.state().revision,
+          revision: 0,
         };
         for (const item of picked.items) {
           receipt =
             item.kind === "upload"
-              ? chat.attach({
+              ? await chat.attach({
                   ...target,
                   bytes: new Uint8Array(item.bytes),
                   name: item.name,
                   size: item.size,
                 })
-              : chat.attachLocalFiles({
-                  ...target,
-                  files: [item.file],
-                });
+              : await chat.attachLocalFiles({ ...target, files: [item.file] });
         }
         outcome = {
           cancelled: picked.cancelled,
@@ -684,111 +428,16 @@ export function createSessionBoundChatProvider(
             : { draftEpoch: receipt.draftEpoch }),
         };
       } finally {
-        intake.settle(outcome);
+        await intake.settle(outcome);
         intake.releaseIfUnused();
       }
-    },
-    presentInSideChat(input) {
-      requireCallerBoundChatInput(input);
-      return chat.presentInSideChat(withoutSession(input));
-    },
-    readGroupImage: (input) => chat.readGroupImage(withoutSession(input)),
-    acceptTaskReview(input) {
-      requireCallerBoundChatInput(input);
-      return chat.acceptTaskReview(withoutSession(input));
-    },
-    refresh(input) {
-      requireCallerBoundChatInput(input);
-      return chat.refresh(withoutSession(input));
-    },
-    release(input) {
-      requireCallerBoundChatInput(input);
-      return chat.release(withoutSession(input));
-    },
-    removeAttachment(input) {
-      requireCallerBoundChatInput(input);
-      return chat.removeAttachment(withoutSession(input));
-    },
-    resolveWorkspaceChat: () => chat.resolveWorkspaceChat(),
-    retain(input) {
-      requireCallerBoundChatInput(input);
-      return chat.retain(withoutSession(input));
-    },
-    retry(input) {
-      requireCallerBoundChatInput(input);
-      return chat.retry(withoutSession(input));
-    },
-    retryAttachment(input) {
-      requireCallerBoundChatInput(input);
-      return chat.retryAttachment(withoutSession(input));
-    },
-    send(input) {
-      requireCallerBoundChatInput(input);
-      return chat.send(withoutSession(input));
-    },
-    setDraft(input) {
-      requireCallerBoundChatInput(input);
-      return chat.setDraft(withoutSession(input));
-    },
-    state(input) {
-      const admission = getCurrentNativeSessionAdmission();
-      if (!sameSessionProductLease(input.session, admission.session)) {
-        throw new Error("Native Chat session admission context mismatch.");
-      }
-      return chatRuntimeStateEnvelopeSchema.parse({
-        session: admission.session,
-        snapshot: chat.state(),
-      });
-    },
-    drafts(input) {
-      const admission = getCurrentNativeSessionAdmission();
-      if (!sameSessionProductLease(input.session, admission.session)) {
-        throw new Error("Native Chat session admission context mismatch.");
-      }
-      return chatRuntimeDraftsEnvelopeSchema.parse({
-        session: admission.session,
-        snapshot: chat.drafts(),
-      });
     },
   };
 }
 
-export function currentChatStateEnvelope(
-  session: ElectronMainSessionService,
-  snapshot: ReturnType<ChatProvider["state"]>
-): ChatRuntimeStateEnvelope | undefined {
-  return currentChatEnvelope(session, (lease) =>
-    chatRuntimeStateEnvelopeSchema.parse({ session: lease, snapshot })
-  );
-}
-
-export function currentChatDraftsEnvelope(
-  session: ElectronMainSessionService,
-  snapshot: ReturnType<ChatProvider["drafts"]>
-): ChatRuntimeDraftsEnvelope | undefined {
-  return currentChatEnvelope(session, (lease) => ({ session: lease, snapshot }));
-}
-
-/** A Chat publish carries the product lease only while its credential is current. */
-function currentChatEnvelope<Envelope>(
-  session: ElectronMainSessionService,
-  toEnvelope: (lease: SessionProductLease) => Envelope
-): Envelope | undefined {
-  const lease = sessionProductLease(session.state());
-  if (!lease) return undefined;
-  const credential = session.acquireProductCredential({
-    authorityInstanceId: lease.authorityInstanceId,
-    expectedAudience: lease.audience,
-    expectedSessionId: lease.sessionId,
-    generation: lease.generation,
-  });
-  if (!credential) return undefined;
-  const envelope = toEnvelope(lease);
-  return session.isCurrentProductCredential(credential) ? envelope : undefined;
-}
-
 export function registerNativeBridgeHandlers({
   airDrop,
+  core,
   appPreferences,
   computerUse,
   audioCapture,
@@ -801,30 +450,24 @@ export function registerNativeBridgeHandlers({
   clipboard,
   files,
   gateway,
-  localData,
   localFiles,
   nativeInfo,
   notch,
-  sessionHistory,
-  productInbox,
   recommendationMedia,
   peers,
   session,
   sessionAdmissionGuard,
-  subscriptionAuthorization,
-  tokenDanceAuthorization,
   shell,
-  sideChat,
   surfaces,
   transport,
   computeNode,
   connectorRuntime,
-  driveCatalog,
   synchronicity,
   windowAppearance,
   windows,
 }: {
   airDrop: AirDropReceptionProvider;
+  core: CoreProvider;
   appPreferences: AppPreferencesProvider;
   computerUse: Pick<
     ConnectorService,
@@ -835,30 +478,23 @@ export function registerNativeBridgeHandlers({
   meetingPresence: MeetingPresenceProvider;
   sitePermissionMenu?: SitePermissionMenuProvider;
   onboardingWindow?: OnboardingWindowProvider;
-  meetingRecorder: MeetingRecorderProvider;
+  meetingRecorder: MeetingRecorderWindowProvider;
   chat: NativeChatProvider;
   clipboard: ClipboardProvider;
   files: FilesProvider;
   gateway: GatewayLike;
-  localData: LocalDataStatusProvider;
   localFiles: LocalFilePickerProvider;
   nativeInfo: NativeInfoProvider;
   notch: NotchProvider;
-  sessionHistory: NativeSessionHistoryProvider;
-  productInbox: ProductInboxProvider;
   recommendationMedia: RecommendationMediaProvider;
   peers: PeersProvider;
   session: SessionProvider;
   sessionAdmissionGuard: NativeSessionAdmissionGuard;
-  subscriptionAuthorization: SubscriptionAuthorizationService;
-  tokenDanceAuthorization: TokenDanceAuthorizationService;
   shell: ShellProvider;
-  sideChat: SideChatProvider;
   surfaces: SurfaceListService;
   transport: TransportStatusProvider;
   computeNode: ComputeNodeProvider;
   connectorRuntime: ConnectorRuntimeProvider;
-  driveCatalog: DriveCatalogService;
   synchronicity: SynchronicityProvider;
   windowAppearance: WindowAppearanceProvider;
   windows: WindowsProvider;
@@ -867,6 +503,7 @@ export function registerNativeBridgeHandlers({
     gateway,
     providers: {
       airDrop,
+      core,
       applicationMenu: applicationMenuProvider,
       appPreferences,
       computerUse,
@@ -879,24 +516,17 @@ export function registerNativeBridgeHandlers({
       chat,
       clipboard,
       files,
-      localData,
       localFiles,
       nativeInfo,
       notch,
-      sessionHistory,
-      productInbox,
       recommendationMedia,
       peers,
       session,
-      subscriptionAuthorization,
-      tokenDanceAuthorization,
       shell,
-      sideChat,
       surfaces: createCallerBoundSurfaceListProvider(surfaces),
       transport,
       computeNode,
       connectorRuntime,
-      driveCatalog,
       synchronicity,
       windowAppearance,
       windows,

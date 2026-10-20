@@ -1,5 +1,5 @@
 defmodule SalixWeb.AuthTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Plug.Conn
   import Plug.Test
@@ -8,10 +8,10 @@ defmodule SalixWeb.AuthTest do
   alias SalixStore.{Ids, Keys, S3}
 
   setup do
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -24,11 +24,11 @@ defmodule SalixWeb.AuthTest do
 
     SalixStore.S3.Fake.reset_read_log()
 
-    foreign_read_key = "auth-test/foreign-read/#{System.unique_integer([:positive])}"
+    foreign_read_key = "auth-test/foreign-read/#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     assert {:error, :not_found} =
-             Task.async(fn -> SalixStore.S3.Fake.get(foreign_read_key, []) end)
-             |> Task.await()
+             SystemsRuntime.Task.async(fn -> SalixStore.S3.Fake.get(foreign_read_key, []) end)
+             |> SystemsRuntime.Task.await(:infinity)
 
     on_exit(fn -> restore_env(:salix_store, :s3_backend, previous_backend) end)
 
@@ -54,7 +54,7 @@ defmodule SalixWeb.AuthTest do
     # The key lookup is a Postgres point read; the only S3 read is the tenant
     # record (docs/storage-search.md).
     assert {:get, ctx.foreign_read_key} in SalixStore.S3.Fake.read_log()
-    assert SalixStore.S3.Fake.read_log(self()) == [{:get, ctx.tenant_record}]
+    assert SalixStore.S3.Fake.read_log(SystemsRuntime.Proc.self()) == [{:get, ctx.tenant_record}]
   end
 
   test "connector token is validated once and keeps the connector role", ctx do
@@ -66,7 +66,10 @@ defmodule SalixWeb.AuthTest do
     assert conn.assigns.auth_role == :connector
     assert conn.assigns.tenant_id == ctx.tenant_id
     assert conn.assigns.connector_token["token_hash"]
-    assert SalixStore.S3.Fake.read_log(self()) == [{:get, ctx.connector_token_key}]
+
+    assert SalixStore.S3.Fake.read_log(SystemsRuntime.Proc.self()) == [
+             {:get, ctx.connector_token_key}
+           ]
   end
 
   test "connect path still falls back to a tenant API key without duplicate validation", ctx do
@@ -79,7 +82,7 @@ defmodule SalixWeb.AuthTest do
     assert conn.assigns.tenant_id == ctx.tenant_id
     refute Map.has_key?(conn.assigns, :connector_token)
 
-    assert SalixStore.S3.Fake.read_log(self()) == [
+    assert SalixStore.S3.Fake.read_log(SystemsRuntime.Proc.self()) == [
              {:get, Keys.ctl_connector_token(token_hash(ctx.tenant_key))},
              {:get, ctx.tenant_record}
            ]
@@ -98,12 +101,12 @@ defmodule SalixWeb.AuthTest do
     assert Jason.decode!(conn.resp_body) == %{"error" => "unauthorized"}
 
     # An unknown key misses in Postgres before any S3 read happens.
-    assert SalixStore.S3.Fake.read_log(self()) == []
+    assert SalixStore.S3.Fake.read_log(SystemsRuntime.Proc.self()) == []
   end
 
   test "compute gateway secret is scoped to compute paths and requires workload identity" do
-    previous = Application.get_env(:salix_web, :agent_vmm_gateway_control_secret)
-    Application.put_env(:salix_web, :agent_vmm_gateway_control_secret, "compute-secret")
+    previous = SystemsRuntime.get_env(:salix_web, :agent_vmm_gateway_control_secret)
+    SystemsRuntime.put_env(:salix_web, :agent_vmm_gateway_control_secret, "compute-secret")
     on_exit(fn -> restore_env(:salix_web, :agent_vmm_gateway_control_secret, previous) end)
 
     conn =
@@ -131,7 +134,10 @@ defmodule SalixWeb.AuthTest do
   end
 
   defp seed_connector_token!(tenant_id) do
-    token = "salix_conn_auth_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+    token =
+      "salix_conn_auth_" <>
+        Base.url_encode64(SystemsRuntime.Proc.random_bytes(12), padding: false)
+
     hash = token_hash(token)
 
     record = %{
@@ -143,7 +149,7 @@ defmodule SalixWeb.AuthTest do
       "name" => "Auth Test",
       "alias" => "auth-test",
       "meta" => %{},
-      "created_at" => System.system_time(:second),
+      "created_at" => SystemsClock.system_time(:second),
       "expires_at" => nil
     }
 
@@ -154,6 +160,6 @@ defmodule SalixWeb.AuthTest do
   defp token_hash(token),
     do: :crypto.hash(:sha256, token) |> Base.encode16(case: :lower)
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

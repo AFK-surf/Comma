@@ -1,5 +1,5 @@
 defmodule CommaWeb.RecommendationMailTasksTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   alias CommaWeb.RecommendationMailTasks
 
   test "mail without a confirmed Task keeps the member's pre-task prompt" do

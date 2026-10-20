@@ -1,5 +1,11 @@
 defmodule BillingStripe.WebhooksTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+  require SystemsClock
+
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.BillingStripe", "Elixir.BillingCore"]
 
   alias BillingCommerce.{PackageCatalog, Subscriptions}
   alias BillingStripe.Checkout
@@ -9,16 +15,16 @@ defmodule BillingStripe.WebhooksTest do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(BillingCore.Repo)
     seed_package("comma_monthly", "comma")
     seed_package("comma_topup", "comma", kind: "one_time")
-    Application.put_env(:billing_stripe, :webhook_secret, "whsec_test")
-    Application.put_env(:billing_stripe, :secret_key, "sk_test_secret")
-    Application.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
+    SystemsRuntime.put_env(:billing_stripe, :webhook_secret, "whsec_test")
+    SystemsRuntime.put_env(:billing_stripe, :secret_key, "sk_test_secret")
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
 
     Enum.each(
       [:test_payment_intents, :test_charges, :test_disputes, :test_prices, :test_invoices],
-      &Application.delete_env(:billing_stripe, &1)
+      &SystemsRuntime.delete_env(:billing_stripe, &1)
     )
 
-    Application.delete_env(:billing_stripe, :test_subscriptions)
+    SystemsRuntime.delete_env(:billing_stripe, :test_subscriptions)
 
     start_supervised!(%{
       id: BillingStripe.TestAPI.Recorder,
@@ -30,17 +36,21 @@ defmodule BillingStripe.WebhooksTest do
       start: {Agent, :start_link, [fn -> [] end, [name: __MODULE__.ProjectionLog]]}
     })
 
-    Application.put_env(:billing_commerce, :billing_source_typed_sink, __MODULE__.ProjectionSink)
+    SystemsRuntime.put_env(
+      :billing_commerce,
+      :billing_source_typed_sink,
+      __MODULE__.ProjectionSink
+    )
 
     on_exit(fn ->
-      Application.delete_env(:billing_commerce, :billing_source_typed_sink)
+      SystemsRuntime.delete_env(:billing_commerce, :billing_source_typed_sink)
 
       Enum.each(
         [:test_payment_intents, :test_charges, :test_disputes, :test_prices, :test_invoices],
-        &Application.delete_env(:billing_stripe, &1)
+        &SystemsRuntime.delete_env(:billing_stripe, &1)
       )
 
-      Application.delete_env(:billing_stripe, :test_subscriptions)
+      SystemsRuntime.delete_env(:billing_stripe, :test_subscriptions)
     end)
 
     :ok
@@ -419,7 +429,7 @@ defmodule BillingStripe.WebhooksTest do
   test "disputes pause unspent credits without reducing them and replay idempotently" do
     account_id = "example-ba-wsp_partial_dispute"
     payment_intent_id = "pi_partial_dispute"
-    Application.put_env(:billing_stripe, :test_payment_intents, %{payment_intent_id => 2_000})
+    SystemsRuntime.put_env(:billing_stripe, :test_payment_intents, %{payment_intent_id => 2_000})
 
     assert {:ok, _} =
              one_time_checkout(account_id, payment_intent_id, "evt_checkout_partial_dispute")
@@ -467,9 +477,9 @@ defmodule BillingStripe.WebhooksTest do
         500
       )
 
-    current_dispute = Application.get_env(:billing_stripe, :test_disputes)["dp_retryable"]
+    current_dispute = SystemsRuntime.get_env(:billing_stripe, :test_disputes)["dp_retryable"]
 
-    Application.put_env(:billing_stripe, :test_disputes, %{
+    SystemsRuntime.put_env(:billing_stripe, :test_disputes, %{
       "dp_retryable" => {:error, :stripe_temporarily_unavailable}
     })
 
@@ -483,7 +493,7 @@ defmodule BillingStripe.WebhooksTest do
     assert event_status("evt_dispute_retryable") == "failed"
     assert grant_balance(account_id) == {500, "active"}
 
-    Application.put_env(:billing_stripe, :test_disputes, %{"dp_retryable" => current_dispute})
+    SystemsRuntime.put_env(:billing_stripe, :test_disputes, %{"dp_retryable" => current_dispute})
 
     assert {:ok, %{result: %{action: %{type: :dispute}}}} =
              Webhooks.handle_webhook(
@@ -719,7 +729,7 @@ defmodule BillingStripe.WebhooksTest do
                now: 1_780_272_100
              )
 
-    Application.put_env(:billing_stripe, :test_subscriptions, %{
+    SystemsRuntime.put_env(:billing_stripe, :test_subscriptions, %{
       "sub_lifecycle" => %{"id" => "sub_lifecycle", "status" => "canceled"}
     })
 
@@ -777,7 +787,7 @@ defmodule BillingStripe.WebhooksTest do
                now: 1_780_272_100
              )
 
-    Application.put_env(:billing_stripe, :test_subscriptions, %{
+    SystemsRuntime.put_env(:billing_stripe, :test_subscriptions, %{
       "sub_plan_change" => %{
         "id" => "sub_plan_change",
         "status" => "active",
@@ -819,13 +829,13 @@ defmodule BillingStripe.WebhooksTest do
   end
 
   test "real Stripe webhook verifier accepts matching HMAC and rejects mismatch" do
-    previous_api = Application.get_env(:billing_stripe, :stripe_api)
-    Application.put_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
+    previous_api = SystemsRuntime.get_env(:billing_stripe, :stripe_api)
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
 
     on_exit(fn ->
       case previous_api do
-        nil -> Application.delete_env(:billing_stripe, :stripe_api)
-        api -> Application.put_env(:billing_stripe, :stripe_api, api)
+        nil -> SystemsRuntime.delete_env(:billing_stripe, :stripe_api)
+        api -> SystemsRuntime.put_env(:billing_stripe, :stripe_api, api)
       end
     end)
 
@@ -836,7 +846,7 @@ defmodule BillingStripe.WebhooksTest do
         "data" => %{"object" => %{"id" => "cs_real_signature"}}
       })
 
-    timestamp = System.system_time(:second)
+    timestamp = SystemsClock.system_time(:second)
     header = signature(payload, "whsec_real_signature", timestamp)
 
     assert {:ok, %{"id" => "evt_real_signature"}} =
@@ -861,19 +871,19 @@ defmodule BillingStripe.WebhooksTest do
         "metadata" => metadata(account_id)
       })
 
-    test_pid = self()
+    test_pid = SystemsRuntime.Proc.self()
     handler = "comma-audit-journal-crash"
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:billing_core, :repo, :query],
         fn _, _, meta, _ ->
           if String.contains?(meta.query, "INSERT INTO billing_stripe_events") and
                List.first(meta.params) == event_id do
-            send(test_pid, {:journal_written, self()})
+            SystemsRuntime.Proc.send(test_pid, {:journal_written, SystemsRuntime.Proc.self()})
 
-            receive do
+            SystemsClock.vreceive do
               :continue -> :ok
             after
               5_000 -> :ok
@@ -885,7 +895,7 @@ defmodule BillingStripe.WebhooksTest do
 
     {worker, monitor} =
       spawn_monitor(fn ->
-        receive do
+        SystemsRuntime.Proc.receive do
           :go ->
             Webhooks.handle_webhook(payload, signature(payload, "whsec_test", 1_780_272_100),
               now: 1_780_272_100
@@ -893,12 +903,12 @@ defmodule BillingStripe.WebhooksTest do
         end
       end)
 
-    :ok = Ecto.Adapters.SQL.Sandbox.allow(BillingCore.Repo, self(), worker)
-    send(worker, :go)
-    assert_receive {:journal_written, ^worker}, 3_000
-    Process.exit(worker, :kill)
-    assert_receive {:DOWN, ^monitor, :process, ^worker, :killed}, 3_000
-    :telemetry.detach(handler)
+    :ok = Ecto.Adapters.SQL.Sandbox.allow(BillingCore.Repo, SystemsRuntime.Proc.self(), worker)
+    SystemsRuntime.Proc.send(worker, :go)
+    settle_receive({:journal_written, ^worker})
+    SystemsRuntime.Proc.exit(worker, :kill)
+    settle_receive({:DOWN, ^monitor, :process, ^worker, :killed})
+    SystemsRuntime.Telemetry.detach(handler)
     assert event_status(event_id) == "processing"
 
     assert {:ok, %{idempotent: false}} =
@@ -924,7 +934,7 @@ defmodule BillingStripe.WebhooksTest do
 
     assert {:ok, _} = Webhooks.handle_webhook(payload, "audit", [])
 
-    Application.put_env(:billing_stripe, :test_subscriptions, %{
+    SystemsRuntime.put_env(:billing_stripe, :test_subscriptions, %{
       "sub_audit_order" => %{"id" => "sub_audit_order", "status" => "canceled"}
     })
 
@@ -1044,14 +1054,14 @@ defmodule BillingStripe.WebhooksTest do
         "metadata" => metadata(account_id)
       })
 
-    Application.put_env(:billing_stripe, :test_subscriptions, %{
+    SystemsRuntime.put_env(:billing_stripe, :test_subscriptions, %{
       "sub_provider_read_retry" => {:error, :timeout}
     })
 
     assert {:error, :timeout} = Webhooks.handle_webhook(payload, "audit", [])
     assert grant_count(account_id) == 0
     assert event_status("evt_provider_read_retry") == "failed"
-    Application.delete_env(:billing_stripe, :test_subscriptions)
+    SystemsRuntime.delete_env(:billing_stripe, :test_subscriptions)
     assert {:ok, %{idempotent: false}} = Webhooks.handle_webhook(payload, "audit", [])
     assert grant_count(account_id) == 1
     assert event_status("evt_provider_read_retry") == "processed"
@@ -1064,7 +1074,7 @@ defmodule BillingStripe.WebhooksTest do
       "metadata" => metadata("example-ba-wsp_early_cancel")
     }
 
-    Application.put_env(:billing_stripe, :test_subscriptions, %{
+    SystemsRuntime.put_env(:billing_stripe, :test_subscriptions, %{
       "sub_early_cancel" => subscription
     })
 
@@ -1171,10 +1181,10 @@ defmodule BillingStripe.WebhooksTest do
 
   defp put_provider(key, id, object),
     do:
-      Application.put_env(
+      SystemsRuntime.put_env(
         :billing_stripe,
         key,
-        Map.put(Application.get_env(:billing_stripe, key, %{}), id, object)
+        Map.put(SystemsRuntime.get_env(:billing_stripe, key, %{}), id, object)
       )
 
   defp invoice_payload(event_id, invoice) do

@@ -1,9 +1,11 @@
 defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Real-LLM coverage for semantic decisions that only become observable through
   the canonical Chat and Task conversation paths.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.LiveLlmTestSupport, as: Live
 
@@ -12,8 +14,8 @@ defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
 
     # The model chooses the command. This boundary double never executes a host shell.
     def exec(_agent_id, %{device_id: "auth-mac", environment_id: "auth-env"}, command, _opts) do
-      %{owner: owner, result: result} = :persistent_term.get(__MODULE__)
-      send(owner, {:native_auth_command, command})
+      %{owner: owner, result: result} = SystemsRuntime.PersistentTerm.get(__MODULE__)
+      SystemsRuntime.Proc.send(owner, {:native_auth_command, command})
 
       if String.contains?(command, "osascript") and
            String.contains?(command, "with administrator privileges") do
@@ -44,20 +46,63 @@ defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
   defmodule ObservedImProvider do
     @moduledoc false
 
-    def observe(owner), do: :persistent_term.put({__MODULE__, :owner}, owner)
-    def clear, do: :persistent_term.erase({__MODULE__, :owner})
+    def observe(owner), do: SystemsRuntime.PersistentTerm.put({__MODULE__, :owner}, owner)
+    def clear, do: SystemsRuntime.PersistentTerm.erase({__MODULE__, :owner})
 
+    # The real seam's whole surface, so the Router sees the same catalog,
+    # manuals and Task authority as in production.
+    defdelegate task_execution_request(name, args, context), to: SalixIM.Provider
     defdelegate list_connects(agent_id), to: SalixIM.Provider
+    defdelegate list_connects(agent_id, context), to: SalixIM.Provider
+    defdelegate discovery_catalog(agent_id, context), to: SalixIM.Provider
+    defdelegate group_providers(agent_id), to: SalixIM.Provider
     defdelegate provider_manual(platform), to: SalixIM.Provider
+    defdelegate provider_manual(platform, agent_id), to: SalixIM.Provider
+    defdelegate provider_manual(platform, agent_id, context), to: SalixIM.Provider
 
     def call_api(agent_id, platform, api, args) do
-      if platform == "internal" and api == "internal.task.list" do
-        if owner = :persistent_term.get({__MODULE__, :owner}, nil) do
-          send(owner, {:internal_task_list_called, agent_id, args["params"] || %{}})
-        end
-      end
+      if platform == "internal" and api == "internal.task.list",
+        do: notify({:internal_task_list_called, agent_id, args["params"] || %{}})
 
-      SalixIM.Provider.call_api(agent_id, platform, api, args)
+      result = SalixIM.Provider.call_api(agent_id, platform, api, args)
+
+      if platform == "internal" and api == "internal.task.create",
+        do: notify({:internal_task_create_result, agent_id, result})
+
+      result
+    end
+
+    defp notify(message) do
+      if owner = SystemsRuntime.PersistentTerm.get({__MODULE__, :owner}, nil),
+        do: SystemsRuntime.Proc.send(owner, message)
+    end
+  end
+
+  defmodule ObservedProactive do
+    @moduledoc false
+
+    # Comma's proactive controls, reduced to an accepted enrollment.
+    def observe(owner), do: SystemsRuntime.PersistentTerm.put({__MODULE__, :owner}, owner)
+    def clear, do: SystemsRuntime.PersistentTerm.erase({__MODULE__, :owner})
+
+    def state(_args, _ctx) do
+      notify({:proactive_called, :state})
+      {:ok, %{"automatic_enabled" => true, "watches" => [], "reminders" => []}}
+    end
+
+    def watch(args, _ctx) do
+      notify({:proactive_called, :watch})
+      {:ok, %{"key" => args["key"], "status" => "watching"}}
+    end
+
+    def act(args, _ctx) do
+      notify({:proactive_called, {:act, args["action"]}})
+      {:ok, %{"key" => args["key"], "action" => args["action"]}}
+    end
+
+    defp notify(message) do
+      if owner = SystemsRuntime.PersistentTerm.get({__MODULE__, :owner}, nil),
+        do: SystemsRuntime.Proc.send(owner, message)
     end
   end
 
@@ -80,139 +125,101 @@ defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
     :ok
   end
 
-  test "live LLM: an explicit daily delegated request creates one scheduled Task, not a Router schedule",
+  test "live LLM: a daily delegated request is one Loop Task with a cron cadence in the device timezone",
        %{llm: llm} do
     suffix = Live.unique_suffix()
     %{group_id: group_id, router: router, worker: worker} = configure_group!(llm, suffix)
 
-    {:ok, parent} = SalixIM.RouterConversationInput.ensure(group_id)
-    parent_conversation_id = parent["conversation_id"]
-    router_session_id = Live.router_session_id!(router)
+    # The user names no timezone: the device's, which the message carries, is the one to use.
+    {task, parent} =
+      await_loop_task!(group_id, router, %{
+        "content" =>
+          "每天上午 9:00 让一个 worker 检查仓库健康并生成报告，" <>
+            "报告必须包含唯一标记 RECURRING_TASK_#{suffix}。",
+        "client_request_id" => "recurring-task-#{suffix}",
+        "metadata" => %{"client_timezone" => "Asia/Shanghai"}
+      })
 
-    Live.flush_notifications!()
-
-    assert {:ok, %{"message_id" => parent_message_id}} =
-             SalixIM.RouterConversationInput.append_user_message(group_id, %{
-               "content" =>
-                 "每天上午 9:00（Asia/Shanghai）让一个 worker 检查仓库健康并生成报告，" <>
-                   "报告必须包含唯一标记 RECURRING_TASK_#{suffix}。",
-               "client_request_id" => "recurring-task-#{suffix}"
-             })
-
-    task_conversation_id =
-      Live.eventually(fn ->
-        {:ok, messages} =
-          SalixIM.Conversations.list_group_conversation_messages(
-            group_id,
-            parent_conversation_id,
-            limit: 20
-          )
-
-        ids = Live.conversation_ref_ids(messages) |> Enum.uniq()
-        inline_ids = Live.inline_task_ref_ids(messages) |> Enum.uniq()
-
-        case {ids, inline_ids} do
-          {[conversation_id], [conversation_id]} ->
-            {:ok, conversation_id}
-
-          {[], []} ->
-            if settled_router_reply?(router, router_session_id, messages) do
-              raise "recurring request settled with a Router reply but no Task reference: " <>
-                      inspect(router_replies(router, messages))
-            else
-              :retry
-            end
-
-          {ids, inline_ids} ->
-            raise "recurring request must create exactly one inline Task reference; " <>
-                    "all=#{inspect(ids)} inline=#{inspect(inline_ids)}"
-        end
-      end)
-
-    _router_session = Live.await_session_settled!(router, router_session_id)
-
-    assert {:ok, task} =
-             SalixIM.Conversations.get_group_conversation(group_id, task_conversation_id)
-
-    assert task["kind"] == "agent_task"
     assert task["task_worker_agent_id"] == worker
-    assert get_in(task, ["source_refs", "parent_conversation_id"]) == parent_conversation_id
-    assert get_in(task, ["source_refs", "parent_message_id"]) == parent_message_id
+    assert get_in(task, ["source_refs", "parent_conversation_id"]) == parent["conversation_id"]
+    assert get_in(task, ["source_refs", "parent_message_id"]) == parent["message_id"]
 
-    assert %{"schedule_id" => schedule_id, "command" => command} = task["schedule"]
-    assert is_binary(schedule_id) and schedule_id != ""
+    loop = task["loop"]
+    assert loop["cadence"]["cron"] =~ ~r/^0{1,2} 0?9 \* \* \*$/
+    assert loop["cadence"]["timezone"] == "Asia/Shanghai"
+    assert loop["wake_count"] == 0
+    # Nothing the user did not state: no run limit, end time or stop condition.
+    refute Enum.any?(~w(max_runs ends_at until), &Map.has_key?(loop, &1))
+
+    # Content is one run's work, in the user's language; the cadence stays in loop.
+    command = task["schedule"]["command"]
+    assert is_nil(task["schedule"]["schedule_id"])
     assert command =~ "RECURRING_TASK_#{suffix}"
     assert command =~ ~r/\p{Han}/u
+    refute command =~ ~r/(每天|每日|周期|定时|9:00|09:00|Asia\/Shanghai|cron|timezone)/iu
 
-    refute command =~
-             ~r/(每天|每日|周期|定时|9:00|09:00|Asia\/Shanghai|cron|timezone)/iu
-
-    assert {:ok, schedule} = SalixCluster.Schedules.get(schedule_id)
-    assert schedule["receiver"] == "task"
-    assert schedule["cron"] == "0 9 * * *"
-    assert schedule["timezone"] == "Asia/Shanghai"
-    refute Map.has_key?(schedule, "interval_minutes")
-    refute Map.has_key?(schedule, "run_at")
-
-    assert schedule["payload"] == %{
-             "agent_group_id" => group_id,
-             "conversation_id" => task_conversation_id
-           }
-
-    assert {:ok, parent_messages} =
-             SalixIM.Conversations.list_group_conversation_messages(
-               group_id,
-               parent_conversation_id,
-               limit: 20
-             )
-
-    router_texts =
-      parent_messages
-      |> Enum.filter(&(&1["actor_type"] == "agent" and &1["agent_id"] == router))
-      |> Enum.map(&Live.text_content(&1["content"]))
-      |> Enum.reject(&(String.trim(&1) == ""))
-
-    assert router_texts != []
-    assert Enum.all?(router_texts, &(&1 =~ ~r/\p{Han}/u))
-
-    assert {:ok, task_messages} =
-             SalixIM.Conversations.list_group_conversation_messages(
-               group_id,
-               task_conversation_id,
-               limit: 20
-             )
-
-    assert [task_command] =
-             Enum.filter(task_messages, fn message ->
-               message["actor_type"] == "agent" and message["agent_id"] == router and
-                 get_in(message, ["metadata", "message_type"]) == "task_command"
-             end)
-
-    initial_envelope = task_command["content"] |> Live.text_content() |> Jason.decode!()
-
-    assert initial_envelope["format"] == "scheduled_task_initial/v1"
-    assert initial_envelope["mode"] == "read_only_validation"
-    assert initial_envelope["production_command"] == command
-    assert initial_envelope["production_command"] =~ ~r/\p{Han}/u
-    assert initial_envelope["execute_production_command"] == false
-    assert initial_envelope["external_side_effects"] == false
-    assert initial_envelope["claim_production_completed"] == false
-
-    assert "deployment" in initial_envelope["forbidden_operations"]
-    assert "read_only_validation" in initial_envelope["allowed_operations"]
-
-    assert {:ok, schedules} =
-             SalixCluster.Schedules.list_for_owners([router, worker], group_id)
-
-    assert Enum.map(schedules, & &1["id"]) == [schedule_id]
-
-    assert {:ok, %{"data" => conversations}} =
-             SalixIM.Conversations.list_group_conversations(group_id, limit: 20)
-
-    assert Enum.count(conversations, &(&1["kind"] == "agent_task")) == 1
+    assert_no_router_loop_or_schedule!(group_id, router, worker)
   end
 
-  test "live LLM: a daily delegated request without a time asks in Chat and creates no schedule",
+  test "live LLM: every six hours, five times, is one interval Loop Task with a run limit",
+       %{llm: llm} do
+    suffix = Live.unique_suffix()
+    %{group_id: group_id, router: router, worker: worker} = configure_group!(llm, suffix)
+
+    {task, _parent} =
+      await_loop_task!(group_id, router, %{
+        "content" =>
+          "每 6 小时让一个 worker 检查一次仓库的 CI 状态并报告，一共执行 5 次。" <>
+            "报告必须包含唯一标记 INTERVAL_LOOP_#{suffix}。",
+        "client_request_id" => "interval-loop-#{suffix}",
+        "metadata" => %{"client_timezone" => "Asia/Shanghai"}
+      })
+
+    assert task["loop"]["cadence"] == %{"every_minutes" => 360}
+    assert task["loop"]["max_runs"] == 5
+    # A count is no end time.
+    refute Map.has_key?(task["loop"], "ends_at")
+    refute Map.has_key?(task["loop"], "until")
+    assert task["schedule"]["command"] =~ "INTERVAL_LOOP_#{suffix}"
+
+    assert_no_router_loop_or_schedule!(group_id, router, worker)
+  end
+
+  test "live LLM: watching a pull request to handle each new comment until it merges is an event Loop Task",
+       %{llm: llm} do
+    suffix = Live.unique_suffix()
+    %{group_id: group_id, router: router, worker: worker} = configure_group!(llm, suffix)
+    observe_proactive!()
+    observe_im_provider!()
+
+    {task, _parent} =
+      await_loop_task!(group_id, router, %{
+        "content" =>
+          "盯着 https://github.com/acme/widgets/pull/12 ，有新评论就让 worker 处理，合并了就停。" <>
+            "处理结果必须包含唯一标记 PR_LOOP_#{suffix}。",
+        "client_request_id" => "pr-loop-#{suffix}",
+        "metadata" => %{"client_timezone" => "Asia/Shanghai"}
+      })
+
+    loop = task["loop"]
+    assert Map.keys(loop["cadence"]) == ["events"]
+    # The trigger is a short label: the stop condition stays in until.
+    events = loop["cadence"]["events"]
+    assert events =~ ~r/评论|comment/iu
+    refute events =~ ~r/合并|merge/iu
+    assert loop["until"] =~ ~r/合并|merge/iu
+    # The Router wrote a fitting label at once, not after the server refused a long one.
+    assert_received {:internal_task_create_result, ^router, {:ok, _created}}
+    refute_received {:internal_task_create_result, ^router, {:error, "loop.cadence.events" <> _}}
+    refute Map.has_key?(loop, "max_runs")
+    refute Map.has_key?(loop, "ends_at")
+
+    # Delegated work on the pull request is the Task's, not a watch in Home.
+    refute_received {:proactive_called, :watch}
+    assert_no_router_loop_or_schedule!(group_id, router, worker)
+  end
+
+  test "live LLM: a daily delegated request without a time asks once with a proposed time and creates nothing",
        %{llm: llm} do
     suffix = Live.unique_suffix()
     %{group_id: group_id, router: router, worker: worker} = configure_group!(llm, suffix)
@@ -228,49 +235,31 @@ defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
                "content" =>
                  "每天让一个 worker 检查仓库健康并生成报告；我还没有指定每天几点执行。" <>
                    "如果必须补充执行时间，请在追问里原样包含 NEED_RUN_TIME_#{suffix}。",
-               "client_request_id" => "missing-recurring-time-#{suffix}"
+               "client_request_id" => "missing-recurring-time-#{suffix}",
+               "metadata" => %{"client_timezone" => "Asia/Shanghai"}
              })
 
-    visible_reply =
-      Live.eventually(fn ->
-        {:ok, messages} =
-          SalixIM.Conversations.list_group_conversation_messages(
-            group_id,
-            parent_conversation_id,
-            limit: 20
-          )
-
-        case Enum.filter(messages, &(&1["actor_type"] == "agent" and &1["agent_id"] == router)) do
-          [message] -> {:ok, message}
-          [] -> :retry
-          messages -> raise "Router produced multiple clarification replies: #{inspect(messages)}"
-        end
-      end)
+    Live.eventually(fn ->
+      if router_replies(router, task_messages!(group_id, parent_conversation_id)) == [],
+        do: :retry,
+        else: {:ok, :replied}
+    end)
 
     router_session = Live.await_session_settled!(router, router_session_id)
-
     assert is_nil(router_session.wait)
 
-    assert {:ok, settled_messages} =
-             SalixIM.Conversations.list_group_conversation_messages(
-               group_id,
-               parent_conversation_id,
-               limit: 20
-             )
+    assert [visible_reply] =
+             router_replies(router, task_messages!(group_id, parent_conversation_id))
 
-    assert [^visible_reply] = router_replies(router, settled_messages)
-
-    assert Live.text_content(visible_reply["content"]) =~ "NEED_RUN_TIME_#{suffix}"
-    assert Live.text_content(visible_reply["content"]) =~ ~r/\p{Han}/u
+    text = Live.text_content(visible_reply["content"])
+    assert text =~ "NEED_RUN_TIME_#{suffix}"
+    assert text =~ ~r/\p{Han}/u
+    # A concrete proposal, such as every day at 09:00.
+    assert String.replace(text, "NEED_RUN_TIME_#{suffix}", "") =~ ~r/\d|点|上午|下午|早上|晚上/u
     assert Live.conversation_ref_ids([visible_reply]) == []
 
-    assert {:ok, %{"data" => conversations}} =
-             SalixIM.Conversations.list_group_conversations(group_id, limit: 20)
-
-    assert Enum.count(conversations, &(&1["kind"] == "agent_task")) == 0
-
-    assert {:ok, []} =
-             SalixCluster.Schedules.list_for_owners([router, worker], group_id)
+    assert routing_tasks!(group_id) == []
+    assert_no_router_loop_or_schedule!(group_id, router, worker)
   end
 
   test "live LLM: an exact current-Tasks question lists through the canonical internal API and replies with ordered inline refs",
@@ -284,7 +273,7 @@ defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
 
     older_task_id = SalixStore.Ids.new_conversation_id()
     newer_task_id = SalixStore.Ids.new_conversation_id()
-    older_created_at = System.system_time(:millisecond) - 1
+    older_created_at = SystemsClock.system_time(:millisecond) - 1
 
     assert {:ok, _older_task} =
              SalixIM.TaskConversationInput.ensure_with_id(
@@ -310,18 +299,7 @@ defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
                }
              )
 
-    previous_im_provider = Application.get_env(:salix_agent, :im_provider_mod)
-    ObservedImProvider.observe(self())
-    Application.put_env(:salix_agent, :im_provider_mod, ObservedImProvider)
-
-    on_exit(fn ->
-      ObservedImProvider.clear()
-
-      if is_nil(previous_im_provider),
-        do: Application.delete_env(:salix_agent, :im_provider_mod),
-        else: Application.put_env(:salix_agent, :im_provider_mod, previous_im_provider)
-    end)
-
+    observe_im_provider!()
     Live.flush_notifications!()
 
     assert {:ok, %{"message_id" => _message_id}} =
@@ -402,15 +380,13 @@ defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
     Live.configure!(router, llm, %{
       tenant_id: tenant,
       group_id: group_id,
-      role: "router",
-      template_id: "clarification-router-#{suffix}"
+      role: "router"
     })
 
     Live.configure!(worker, Map.put(llm, :max_tokens, 4_000), %{
       tenant_id: tenant,
       group_id: group_id,
-      role: "worker",
-      template_id: "clarification-worker-#{suffix}"
+      role: "worker"
     })
 
     {:ok, _group} =
@@ -1118,15 +1094,13 @@ defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
     Live.configure!(router, llm, %{
       tenant_id: tenant,
       group_id: group_id,
-      role: "router",
-      template_id: "task-semantics-router-#{suffix}"
+      role: "router"
     })
 
     Live.configure!(worker, llm, %{
       tenant_id: tenant,
       group_id: group_id,
       role: "worker",
-      template_id: "task-semantics-worker-#{suffix}",
       system_prompt:
         worker_prompt ||
           "This is a scheduled Task dry run. Do not perform external side effects or call tools; finish privately and briefly."
@@ -1138,6 +1112,84 @@ defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
       end)
 
     %{tenant: tenant, group_id: group_id, router: router, worker: worker}
+  end
+
+  # Send one Chat request and answer the one Task it made, shown inline in
+  # Chat, with the request's Message.
+  defp await_loop_task!(group_id, router, attrs) do
+    {:ok, parent} = SalixIM.RouterConversationInput.ensure(group_id)
+    router_session_id = Live.router_session_id!(router)
+    Live.flush_notifications!()
+
+    assert {:ok, %{"message_id" => message_id}} =
+             SalixIM.RouterConversationInput.append_user_message(group_id, attrs)
+
+    task_id =
+      Live.eventually(fn ->
+        messages = task_messages!(group_id, parent["conversation_id"])
+        ids = Live.conversation_ref_ids(messages) |> Enum.uniq()
+        inline_ids = Live.inline_task_ref_ids(messages) |> Enum.uniq()
+
+        case {ids, inline_ids} do
+          {[conversation_id], [conversation_id]} ->
+            {:ok, conversation_id}
+
+          {[], []} ->
+            if settled_router_reply?(router, router_session_id, messages),
+              do:
+                raise(
+                  "the request settled with a Router reply but no Task: " <>
+                    inspect(router_replies(router, messages))
+                ),
+              else: :retry
+
+          {ids, inline_ids} ->
+            raise "the request must make exactly one inline Task reference; " <>
+                    "all=#{inspect(ids)} inline=#{inspect(inline_ids)}"
+        end
+      end)
+
+    Live.await_session_settled!(router, router_session_id)
+    assert [%{"conversation_id" => ^task_id}] = routing_tasks!(group_id)
+    assert {:ok, task} = SalixIM.Conversations.get_group_conversation(group_id, task_id)
+    assert task["kind"] == "agent_task"
+    assert is_map(task["loop"]), "the Task must be a Loop Task: #{inspect(task)}"
+
+    {task, %{"conversation_id" => parent["conversation_id"], "message_id" => message_id}}
+  end
+
+  # The Task's Worker makes the Loop: the Router makes none, and no Schedule.
+  defp assert_no_router_loop_or_schedule!(group_id, router, worker) do
+    assert {:ok, []} = SalixStore.Loops.list_by_agent(router)
+    assert {:ok, []} = SalixCluster.Schedules.list_for_owners([router, worker], group_id)
+  end
+
+  defp observe_im_provider! do
+    previous = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
+    ObservedImProvider.observe(SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, ObservedImProvider)
+
+    on_exit(fn ->
+      ObservedImProvider.clear()
+
+      if is_nil(previous),
+        do: SystemsRuntime.delete_env(:salix_agent, :im_provider_mod),
+        else: SystemsRuntime.put_env(:salix_agent, :im_provider_mod, previous)
+    end)
+  end
+
+  defp observe_proactive! do
+    previous = SystemsRuntime.get_env(:salix_agent, :proactive_adapter)
+    ObservedProactive.observe(SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_agent, :proactive_adapter, ObservedProactive)
+
+    on_exit(fn ->
+      ObservedProactive.clear()
+
+      if is_nil(previous),
+        do: SystemsRuntime.delete_env(:salix_agent, :proactive_adapter),
+        else: SystemsRuntime.put_env(:salix_agent, :proactive_adapter, previous)
+    end)
   end
 
   defp task_messages!(group_id, conversation_id) do
@@ -1243,7 +1295,7 @@ defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
       session = SalixStore.Ids.new_session_id()
       marker = "NATIVE_AUTH_#{Live.unique_suffix()}"
       path = "/authorization/#{marker}.json"
-      previous = Application.get_env(:salix_agent, :env_dispatch)
+      previous = SystemsRuntime.get_env(:salix_agent, :env_dispatch)
 
       result = %{
         "status" => "completed",
@@ -1252,15 +1304,19 @@ defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
         "stderr" => @auth_stderr
       }
 
-      :persistent_term.put(NativeAuthorizationDispatch, %{owner: self(), result: result})
-      Application.put_env(:salix_agent, :env_dispatch, NativeAuthorizationDispatch)
+      SystemsRuntime.PersistentTerm.put(NativeAuthorizationDispatch, %{
+        owner: SystemsRuntime.Proc.self(),
+        result: result
+      })
+
+      SystemsRuntime.put_env(:salix_agent, :env_dispatch, NativeAuthorizationDispatch)
 
       on_exit(fn ->
-        :persistent_term.erase(NativeAuthorizationDispatch)
+        SystemsRuntime.PersistentTerm.erase(NativeAuthorizationDispatch)
 
         if previous,
-          do: Application.put_env(:salix_agent, :env_dispatch, previous),
-          else: Application.delete_env(:salix_agent, :env_dispatch)
+          do: SystemsRuntime.put_env(:salix_agent, :env_dispatch, previous),
+          else: SystemsRuntime.delete_env(:salix_agent, :env_dispatch)
       end)
 
       Live.configure!(agent, llm)
@@ -1301,7 +1357,7 @@ defmodule SalixAgent.LiveLlmTaskSemanticsE2eTest do
   end
 
   defp collect_native_auth_commands(commands) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:native_auth_command, command} -> collect_native_auth_commands([command | commands])
     after
       0 -> Enum.reverse(commands)

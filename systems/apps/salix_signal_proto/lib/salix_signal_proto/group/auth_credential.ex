@@ -165,7 +165,7 @@ defmodule SalixSignalProto.Group.AuthCredential do
   """
   @spec present(ServerParams.Public.t(), Params.t(), binary(), <<_::256>>) ::
           {:ok, {binary(), binary(), binary()}} | {:error, :invalid}
-  def present(server, group, credential, randomness \\ :crypto.strong_rand_bytes(32))
+  def present(server, group, credential, randomness \\ SystemsRuntime.Proc.random_bytes(32))
 
   def present(
         %ServerParams.Public{} = server,

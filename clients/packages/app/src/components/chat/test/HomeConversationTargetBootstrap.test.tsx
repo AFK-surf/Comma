@@ -40,7 +40,6 @@ const harness = vi.hoisted(() => ({
 }));
 
 vi.mock("../ChatProvider", () => ({
-  useChatApi: () => ({}),
   useChatRegistry: () => ({
     rememberHomeConversationTarget: harness.rememberHomeConversationTarget,
   }),
@@ -95,33 +94,6 @@ describe("HomeConversationTargetBootstrap", () => {
     harness.homeConversationTarget = undefined;
     harness.rememberHomeConversationTarget.mockReset();
     harness.useWorkspaceChat.mockReset();
-  });
-
-  it("resolves and remembers the Home conversation target on a non-Home product route", async () => {
-    harness.chatState = {
-      conversation: {
-        group_id: "grp_boot",
-        id: "cnv_boot",
-        kind: "user_chat",
-        status: "active",
-        title: "Workspace Chat",
-      },
-      groupId: "grp_boot",
-      status: "ready",
-      workspaceId: "wsp_boot",
-    };
-
-    await renderBootstrapAt("/plugins");
-
-    expect(harness.useWorkspaceChat).toHaveBeenCalledWith(
-      expect.objectContaining({ activateWorkspace: false })
-    );
-    expect(harness.rememberHomeConversationTarget).toHaveBeenCalledWith(
-      "wsp_boot",
-      "grp_boot",
-      "cnv_boot",
-      harness.chatState.conversation
-    );
   });
 
   it("does not remember a target before the Workspace resolves ready", async () => {

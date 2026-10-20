@@ -360,7 +360,7 @@ defmodule SalixMeet.FeishuProvider do
   defp create_meeting(connect, meeting_agent, envelope, event, message, request) do
     ref = request["feishu_ref"]
     meeting_id = meeting_id(connect, ref, request["meet_url"])
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     with {:ok, state} <-
            MeetingState.new_feishu(meeting_id, meeting_agent, %{
@@ -374,7 +374,7 @@ defmodule SalixMeet.FeishuProvider do
              "caption_language" => infer_caption_language(request["context_texts"]),
              "start_at" => now,
              "end_at" => now + 3600,
-             "runtime_source" => "connected_runtime",
+             "runtime_source" => SalixMeet.MeetingRuntimePolicy.default_source(),
              "source" => %{
                "event_id" =>
                  first_nonblank([get_in(envelope, ["header", "event_id"]), envelope["event_id"]]),
@@ -423,7 +423,7 @@ defmodule SalixMeet.FeishuProvider do
         :ok
 
       {:error, reason} when reason in [:not_leader, :not_running] ->
-        Process.sleep(10)
+        SystemsClock.sleep(10)
         request_join(meeting_id, attempts - 1)
 
       {:error, _} = error ->
@@ -503,7 +503,7 @@ defmodule SalixMeet.FeishuProvider do
       "thread_id" => ref["thread_id"],
       "root_message_id" => ref["root_message_id"],
       "meeting_id" => meeting_id,
-      "updated_at" => System.system_time(:second)
+      "updated_at" => SystemsClock.system_time(:second)
     }
 
     case S3.put(source_index_key(connect, ref), Jason.encode!(record)) do
@@ -657,11 +657,11 @@ defmodule SalixMeet.FeishuProvider do
            Store.checkpoint_delivery(meeting_id, claim, %{
              "provider" => "feishu",
              "status" => "published",
-             "published_at" => System.system_time(:second),
+             "published_at" => SystemsClock.system_time(:second),
              "activation" => %{
                "status" => "pending",
                "attempt_count" => 0,
-               "updated_at" => System.system_time(:millisecond)
+               "updated_at" => SystemsClock.system_time(:millisecond)
              }
            }) do
       {:ok, %{"published" => true}}
@@ -1087,12 +1087,16 @@ defmodule SalixMeet.FeishuProvider do
 
     if han >= 4 and han > latin,
       do: @default_caption_language,
-      else: Application.get_env(:salix_meet, :default_caption_language, @default_caption_language)
+      else:
+        SystemsRuntime.get_env(:salix_meet, :default_caption_language, @default_caption_language)
   end
 
   defp status_text(%{"type" => "status", "status" => "error", "reason_code" => code})
        when code in ~w(admission_denied meeting_full removed_from_meeting admission_timeout),
        do: {"error", SalixMeet.Outcome.text(code)}
+
+  defp status_text(%{"type" => "status", "status" => "guest_fallback"}),
+    do: {"guest_fallback", "Google 登录已失效，本次以访客身份加入。"}
 
   defp status_text(%{"type" => "status", "status" => "waiting_room"}),
     do: {"waiting_room", "已请求入会，正在等待主持人准入…"}
@@ -1109,7 +1113,7 @@ defmodule SalixMeet.FeishuProvider do
   defp status_text(_event), do: nil
 
   defp default_bot_name,
-    do: Application.get_env(:salix_meet, :default_bot_name, @default_bot_name)
+    do: SystemsRuntime.get_env(:salix_meet, :default_bot_name, @default_bot_name)
 
   defp prompt_key(ref, text) do
     digest = Crypto.hex([ref_identity(ref), <<0>>, text]) |> binary_part(0, 24)

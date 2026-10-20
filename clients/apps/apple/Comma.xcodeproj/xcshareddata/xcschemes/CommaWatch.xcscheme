@@ -37,6 +37,17 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "E8977C812BE0FF09F71A6C38"
+               BuildableName = "CommaWatchTests.xctest"
+               BlueprintName = "CommaWatchTests"
+               ReferencedContainer = "container:Comma.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

@@ -3,7 +3,7 @@ defmodule SalixAgent.LiveLlmSlackParticipationTest do
   Real-model participation decisions with a supplied source-read result.
   This does not exercise source retrieval, Task execution, or Slack delivery.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.LiveLlmTestSupport, as: Live
   alias SalixAgent.SlackParticipationPrompt

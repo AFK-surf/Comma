@@ -1,5 +1,5 @@
 defmodule CommaLog.FormatterTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   require OpenTelemetry.Tracer, as: Tracer
 
   alias CommaLog.Formatter
@@ -50,7 +50,12 @@ defmodule CommaLog.FormatterTest do
 
   test "emits one JSON object per line with ts/level/msg + metadata" do
     ts = {{2026, 6, 15}, {11, 40, 33, 715}}
-    line = Formatter.format(:info, ["hello ", "world"], ts, request_id: "abc", pid: self())
+
+    line =
+      Formatter.format(:info, ["hello ", "world"], ts,
+        request_id: "abc",
+        pid: SystemsRuntime.Proc.self()
+      )
 
     obj = decode(line)
     assert obj["level"] == "info"
@@ -145,9 +150,9 @@ defmodule CommaLog.FormatterTest do
             token: "state-secret"
           })
 
-        ref = Process.monitor(pid)
+        ref = SystemsRuntime.Proc.monitor(pid)
         GenServer.cast(pid, :load)
-        assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1_000
+        assert_receive {:DOWN, ^ref, :process, ^pid, _}
       end)
 
     crash =
@@ -188,9 +193,9 @@ defmodule CommaLog.FormatterTest do
               "shape" => :input
             })
 
-          ref = Process.monitor(pid)
+          ref = SystemsRuntime.Proc.monitor(pid)
           GenServer.cast(pid, unquote(operation))
-          assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1_000
+          assert_receive {:DOWN, ^ref, :process, ^pid, _}
         end)
 
       crash =
@@ -468,7 +473,7 @@ defmodule CommaLog.FormatterTest do
   test "never raises on un-encodable message/metadata" do
     line =
       Formatter.format(:warning, {:not, "chardata"}, {{2026, 1, 1}, {0, 0, 0, 0}},
-        ref: make_ref()
+        ref: SystemsRuntime.Proc.make_ref()
       )
 
     obj = decode(line)

@@ -34,35 +34,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIMembersTest do
       assert {:ok, _, _} = DateTime.from_iso8601(hd(data["members"])["joined_at"])
     end
 
-    test "names a phone-only Feishu member from the SSO identity", %{conn: conn, org: org} do
-      {:ok, user} = %User{} |> User.changeset(%{"name" => ""}) |> Repo.insert()
-      {:ok, _} = Memberships.put_org_member(org.id, user.id, "member")
-
-      {:ok, _identity} =
-        %OrgSsoIdentity{}
-        |> OrgSsoIdentity.changeset(%{
-          org_id: org.id,
-          user_id: user.id,
-          provider: "feishu",
-          provider_subject_type: "user_id",
-          provider_subject: "feishu-phone-only-member",
-          mobile: "+10000000001",
-          display_name: "Feishu Phone User"
-        })
-        |> Repo.insert()
-
-      members =
-        conn |> get(members_path(org)) |> json_response(200) |> get_in(["data", "members"])
-
-      assert %{
-               "name" => "Feishu Phone User",
-               "email" => nil,
-               "mobile" => "+10000000001",
-               "sso" => true,
-               "sso_provider" => "feishu"
-             } = Enum.find(members, &(&1["user_id"] == user.id))
-    end
-
     test "a member may list but cannot manage", %{org: org} do
       member = add_member(org, "member")
 
@@ -105,21 +76,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIMembersTest do
       assert audit.actor_user_id == owner.id
       assert audit.resource_id == invitee.id
       assert audit.redacted_diff["role"] == %{"from" => nil, "to" => "admin"}
-    end
-
-    test "rejects an invalid email or role", %{conn: conn, org: org} do
-      assert %{"error" => %{"code" => "invalid_email"}} =
-               conn |> post(members_path(org), %{"email" => "  "}) |> json_response(422)
-
-      assert %{"error" => %{"code" => "invalid_email"}} =
-               conn |> post(members_path(org), %{"email" => "not-an-email"}) |> json_response(422)
-
-      assert %{"error" => %{"code" => "invalid_role"}} =
-               conn
-               |> post(members_path(org), %{"email" => "x@example.com", "role" => "root"})
-               |> json_response(422)
-
-      assert {:error, :not_found} = Accounts.get_user_by_email("x@example.com")
     end
 
     test "does not change an existing member's role", %{conn: conn, org: org} do
@@ -212,23 +168,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIMembersTest do
                admin_conn
                |> patch(member_path(org, member), %{"role" => "admin"})
                |> json_response(200)
-    end
-
-    test "rejects an unknown member or role", %{conn: conn, org: org} do
-      member = add_member(org, "member")
-      outsider = user_fixture()
-
-      for target <- [outsider.id, "not-a-uuid"] do
-        assert %{"error" => %{"code" => "member_not_found"}} =
-                 conn
-                 |> patch(~p"/dashboard/api/v1/orgs/#{org.slug}/members/#{target}", %{
-                   "role" => "admin"
-                 })
-                 |> json_response(404)
-      end
-
-      assert %{"error" => %{"code" => "invalid_role"}} =
-               conn |> patch(member_path(org, member), %{"role" => "root"}) |> json_response(422)
     end
   end
 

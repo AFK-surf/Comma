@@ -235,7 +235,7 @@ defmodule SalixIM.ProviderIdentity do
   end
 
   def release(%{"provider" => provider, "app_id" => app_id, "connect_id" => connect_id})
-      when provider in ["slack", "feishu"],
+      when provider in ["slack", "feishu", "qq", "lark"],
       do: release_provider(provider, app_id, connect_id)
 
   def release(%{"provider" => "wechat", "bot_user_id" => bot_id, "connect_id" => connect_id}),
@@ -390,6 +390,20 @@ defmodule SalixIM.ProviderIdentity do
     end)
   end
 
+  def find_active_lark_im_connect_by_app_id(app_id) do
+    find_inbound_connect("lark", app_id, fn rec ->
+      rec["status"] == "connected" and is_nil(rec["deleted_at"]) and
+        is_nil(rec["disabled_at"])
+    end)
+  end
+
+  def find_active_qq_im_connect_by_app_id(app_id) do
+    find_inbound_connect("qq", app_id, fn rec ->
+      rec["status"] == "connected" and is_nil(rec["deleted_at"]) and
+        is_nil(rec["disabled_at"])
+    end)
+  end
+
   # Inbound webhook resolution: EXACT app_id answer match (the settled
   # inbound contract) plus the caller's liveness predicate; read-only,
   # so the answer's body coordinates are never dereferenced for writes.
@@ -492,7 +506,7 @@ defmodule SalixIM.ProviderIdentity do
   defp emit_resolution(:reserved, _provider, _resolution), do: :ok
 
   defp emit_resolution(:inbound, provider, resolution) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :im, :identity_resolution],
       %{count: 1},
       %{provider: provider, result: resolution}
@@ -660,7 +674,7 @@ defmodule SalixIM.ProviderIdentity do
     end
   end
 
-  defp scan_page_size, do: Application.get_env(:salix_im, :identity_scan_page_size, 1000)
+  defp scan_page_size, do: SystemsRuntime.get_env(:salix_im, :identity_scan_page_size, 1000)
 
   defp scan_connect_page(objects, provider, app_id, eligible?, acc, malformed) do
     Enum.reduce_while(objects, {:cont, acc}, fn %{key: key}, {:cont, acc} ->
@@ -723,5 +737,5 @@ defmodule SalixIM.ProviderIdentity do
   defp trim(nil), do: ""
   defp trim(value) when is_binary(value), do: String.trim(value)
   defp trim(value), do: value |> to_string() |> String.trim()
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 end

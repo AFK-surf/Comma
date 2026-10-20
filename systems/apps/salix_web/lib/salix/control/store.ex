@@ -17,7 +17,7 @@ defmodule Salix.Control.Store do
         context = SystemsObservability.Context.capture()
 
         objects
-        |> Task.async_stream(
+        |> SystemsClock.async_stream(
           fn %{key: key} ->
             SystemsObservability.Context.run(context, fn ->
               case get_record(key) do
@@ -135,6 +135,6 @@ defmodule Salix.Control.Store do
   def present?(value) when is_binary(value), do: String.trim(value) != ""
   def present?(value), do: not is_nil(value)
 
-  def random_id, do: :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
-  def now, do: System.system_time(:second)
+  def random_id, do: SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower)
+  def now, do: SystemsClock.system_time(:second)
 end

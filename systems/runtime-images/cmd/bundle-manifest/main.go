@@ -35,7 +35,7 @@ func main() {
 	flag.StringVar(&revision, "revision", "", "Comma Server source revision (provenance only)")
 	flag.StringVar(&inputsPath, "inputs", "", "per-class runtime input digest manifest")
 	flag.StringVar(&output, "output", "", "output manifest path")
-	flag.Var(images, "image", "OCI archive as class=path (repeat for shell, external, meeting)")
+	flag.Var(images, "image", "OCI archive as class=path (repeat for shell, meeting, station)")
 	flag.Parse()
 
 	if output == "" || inputsPath == "" {

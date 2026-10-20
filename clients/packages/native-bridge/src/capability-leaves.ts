@@ -1,76 +1,20 @@
-import {
-  sessionHistoryDemandSchema,
-  sessionHistoryInputSchema,
-  sessionHistoryLoadSchema,
-  sessionHistoryEnvelopeSchema,
-} from "./session-history-contract.ts";
 import { z } from "zod";
 import {
-  chatWorkspaceResolutionSchema,
-  chatBeginSendIntentReceiptSchema,
-  chatCommandReceiptSchema,
-  chatProtocolVersion,
-  chatLeasedAttachInputSchema,
-  chatLeasedBeginSendIntentInputSchema,
-  chatLeasedAttachLocalFilesInputSchema,
-  chatLeasedAcknowledgeIntakeFailuresInputSchema,
-  chatLeasedAttachmentIdInputSchema,
-  chatLeasedClientRequestInputSchema,
+  statusMenuClientFrameSchema,
+  statusMenuHostFrameSchema,
   chatLeasedPickAttachmentsInputSchema,
-  chatLeasedSendInputSchema,
-  chatLeasedSetDraftInputSchema,
-  chatLeasedTargetSchema,
   chatPickAttachmentsResultSchema,
   chatAttachmentDownloadMaxBytes,
   chatAttachmentUploadMaxBytes,
   chatAttachmentDownloadMaxFileNameBytes,
-  chatReadAgentBlobImageInputSchema,
-  chatReadUploadedGroupImageInputSchema,
-  chatReleaseInputSchema,
-  chatRetainInputSchema,
-  chatRuntimeDraftsSnapshotSchema,
-  chatRuntimeSnapshotSchema,
-  chatSkillSchema,
-  chatWorkspaceSkillsInputSchema,
-  chatGroupImagePreviewSchema,
   chatImagePreviewMaxBytes,
-  emptyChatRuntimeDraftsSnapshot,
-  emptyChatRuntimeSnapshot,
-  sideChatClientFrameSchema,
-  sideChatCommandResultSchema,
-  sideChatCommandSchema,
-  sideChatContentSizeInputSchema,
-  sideChatDebugSettingsValuesSchema,
-  sideChatHostFrameSchema,
-  sideChatInteractiveCompletionInputSchema,
-  sideChatInteractiveProgressInputSchema,
-  sideChatPresentationSchema,
-  sideChatProtocolErrorSchema,
-  sideChatSnapshotEnvelopeSchema,
-  sideChatSurfaceControlSchema,
 } from "@comma/chat-contract";
 import {
   indeterminateSessionSnapshotSchema,
-  sessionCancelAuthAttemptInputSchema,
-  sessionCancelAuthAttemptResultSchema,
-  sessionBoundStateEnvelopeSchema,
-  sessionGoogleSignInInputSchema,
-  sessionGoogleSignInResultSchema,
   sessionLifecycleSnapshotSchema,
-  sessionReconcileInputSchema,
-  sessionReconcileResultSchema,
-  sessionRequestEmailLoginInputSchema,
-  sessionRequestEmailLoginResultSchema,
   sessionProductLeaseSchema,
-  sessionSignOutInputSchema,
-  sessionSignOutResultSchema,
-  sessionVerifyEmailLoginResultSchema,
-  sessionVerifyGoogleLinkResultSchema,
-  sessionVerifyLoginInputSchema,
-  signedInSessionSnapshotSchema,
   signedOutSessionSnapshotSchema,
   type SessionAdmissionFailure,
-  type SessionOperationName,
 } from "@comma/session-contract";
 
 export type CommaPlatform = "web" | "electron";
@@ -203,7 +147,16 @@ export function defineNativePartnerProtocol<Schema extends z.ZodType>(
 
 export type NativeBridgeError =
   | {
-      code: "BAD_REQUEST" | "FORBIDDEN" | "INTERNAL_ERROR";
+      code:
+        | "BAD_REQUEST"
+        | "FORBIDDEN"
+        | "INTERNAL_ERROR"
+        | "OPERATION_FAILED"
+        | "COMPUTE_SETUP_FAILED"
+        | "COMPUTE_SETUP_UNKNOWN"
+        | "COMPUTE_CLOUD_UNAVAILABLE"
+        | "COMPUTE_CONNECTION_FAILED"
+        | "COMPUTE_RECOVERY_UNVERIFIED";
       message: string;
     }
   | {
@@ -441,6 +394,12 @@ export function validateNativeCapabilityFixtures(
 
 export interface NativeInfo {
   appVersion: string;
+  desktopLaunch?:
+    | {
+        kind: "new_profile" | "existing_profile" | "version_changed" | "returning";
+        eventId: string;
+      }
+    | undefined;
   os: CommaOperatingSystem;
   platform: CommaPlatform;
 }
@@ -456,7 +415,8 @@ export const notchTaskItemSchema = z.object({
   conversationId: z.string().min(1).max(256),
   groupId: z.string().min(1).max(256),
   id: z.string().min(1).max(256),
-  status: z.literal("in_progress"),
+  /** Quick Chat uses `sent` after Home accepts its message; settled rows show no progress. */
+  status: z.enum(["in_progress", "failed", "sent"]),
   subtitle: z.string().max(2_048),
   title: z.string().max(2_048),
   updatedAt: z.number().finite(),
@@ -594,45 +554,15 @@ export const nativePartnerProtocolRegistry = [
   }),
   defineNativePartnerProtocol({
     direction: "main-to-native",
-    id: "side-chat.snapshot-envelope",
-    schema: sideChatSnapshotEnvelopeSchema,
-    swiftType: "CommaChatSnapshotEnvelope",
+    id: "status-menu.host-frame",
+    schema: statusMenuHostFrameSchema,
+    swiftType: "CommaStatusMenuHostFrame",
   }),
   defineNativePartnerProtocol({
     direction: "native-to-main",
-    id: "side-chat.command",
-    schema: sideChatCommandSchema,
-    swiftType: "CommaSideChatCommand",
-  }),
-  defineNativePartnerProtocol({
-    direction: "bidirectional",
-    id: "side-chat.command-result",
-    schema: sideChatCommandResultSchema,
-    swiftType: "CommaSideChatCommandResult",
-  }),
-  defineNativePartnerProtocol({
-    direction: "native-to-main",
-    id: "side-chat.protocol-error",
-    schema: sideChatProtocolErrorSchema,
-    swiftType: "CommaSideChatProtocolError",
-  }),
-  defineNativePartnerProtocol({
-    direction: "main-to-native",
-    id: "side-chat.surface-control",
-    schema: sideChatSurfaceControlSchema,
-    swiftType: "CommaSideChatSurfaceControl",
-  }),
-  defineNativePartnerProtocol({
-    direction: "main-to-native",
-    id: "side-chat.host-frame",
-    schema: sideChatHostFrameSchema,
-    swiftType: "CommaSideChatHostFrame",
-  }),
-  defineNativePartnerProtocol({
-    direction: "native-to-main",
-    id: "side-chat.client-frame",
-    schema: sideChatClientFrameSchema,
-    swiftType: "CommaSideChatClientFrame",
+    id: "status-menu.client-frame",
+    schema: statusMenuClientFrameSchema,
+    swiftType: "CommaStatusMenuClientFrame",
   }),
 ] as const;
 
@@ -774,17 +704,33 @@ export type BrowserSidebarInspectResult =
       element: BrowserSidebarInspectedElement;
       inspectionId: string;
       page: { title?: string | undefined; url: string };
+      /** The element as the page showed it (PNG), when it was on screen. */
+      screenshot?: Uint8Array | undefined;
       status: "selected";
       userMessage: string;
     };
 
-// Modeled in tla/browser-sidebar/BrowserSidebar.tla.
 export const maxBrowserSidebarSessionsPerOwner = 32;
 
 /** Larger icons are skipped: the tab shows its generic globe instead. */
 export const maxBrowserSidebarFaviconBytes = 64 * 1024;
 export const maxBrowserSidebarFaviconDataUrlLength =
   Math.ceil(maxBrowserSidebarFaviconBytes / 3) * 4 + 128;
+
+/**
+ * A passkey request of the tab's page that a phone can answer. `scan` shows
+ * the QR code; `failed` stays until the user closes it.
+ */
+export interface BrowserSidebarPasskeyPrompt {
+  /** The relying party, which Main checked against the page's origin. */
+  site: string;
+  kind: "create" | "get";
+  phase: "scan" | "connecting" | "phone" | "failed";
+  qr?: string | undefined;
+  bluetooth?: "on" | "off" | "denied" | "unsupported" | "pending" | undefined;
+  /** A USB security key can answer the same request. */
+  securityKey: boolean;
+}
 
 export interface BrowserSidebarState {
   available: boolean;
@@ -801,6 +747,7 @@ export interface BrowserSidebarState {
   surface?: ViewSurface | undefined;
   reason?: string | undefined;
   reasonCode?: "capacity" | undefined;
+  passkey?: BrowserSidebarPasskeyPrompt | undefined;
 }
 
 export type SurfaceLifecycle = "creating" | "ready" | "destroying" | "destroyed";
@@ -868,14 +815,20 @@ export type NativePeerConnectionSide = Extract<
 
 export const nativePeerPortChannel = "comma:peers:port";
 
+/** Where Main delivers a window's end of a core channel (`core.open`), and says it closed. */
+export const nativeCorePortChannel = "comma:core:port";
+
+export const nativeCorePortMessageSchema = z.discriminatedUnion("kind", [
+  z.object({ channelId: z.string().min(1), kind: z.literal("connected") }),
+  z.object({ channelId: z.string().min(1), kind: z.literal("closed") }),
+]);
+
 export type NativeRendererWindowRole =
   | "site-permission-menu"
   | "meeting-recorder-window"
   | "dev-workbench"
   | "main-window"
   | "onboarding-window"
-  | "side-chat-test-window"
-  | "side-chat-window"
   | "unknown";
 
 export interface NativeRendererIdentity {
@@ -885,6 +838,12 @@ export interface NativeRendererIdentity {
 
 export const nativeInfoSchema = z.object({
   appVersion: z.string(),
+  desktopLaunch: z
+    .object({
+      kind: z.enum(["new_profile", "existing_profile", "version_changed", "returning"]),
+      eventId: z.string().uuid(),
+    })
+    .optional(),
   os: z.enum(["macos", "windows", "linux", "unknown"]),
   platform: z.enum(["web", "electron"]),
 });
@@ -1111,12 +1070,8 @@ export type CommaClientAppShortcutOverrides = z.output<
   typeof commaClientAppShortcutOverridesSchema
 >;
 
-export const commaClientSideChatAppearanceSchema = z.enum(["auto", "light", "dark"]);
-export type CommaClientSideChatAppearance = z.output<
-  typeof commaClientSideChatAppearanceSchema
->;
-
-export const sideChatShortcutSchema = z.object({
+/** A global shortcut: a physical key and at least one modifier. */
+export const globalShortcutSchema = z.object({
   // Keys identify KeyboardEvent.code positions (KeyA/Digit1/Space/Comma),
   // not layout-dependent KeyboardEvent.key characters.
   key: z.enum([
@@ -1172,24 +1127,68 @@ export const sideChatShortcutSchema = z.object({
     ),
 });
 
-export type SideChatShortcut = z.infer<typeof sideChatShortcutSchema>;
-export const sideChatShortcutBindingSchema = sideChatShortcutSchema.nullable();
-export type SideChatShortcutBinding = z.infer<typeof sideChatShortcutBindingSchema>;
+export type GlobalShortcut = z.infer<typeof globalShortcutSchema>;
+export const globalShortcutBindingSchema = globalShortcutSchema.nullable();
+export type GlobalShortcutBinding = z.infer<typeof globalShortcutBindingSchema>;
 
-export const defaultSideChatShortcut: SideChatShortcut = {
-  key: "z",
-  modifiers: {
-    alt: false,
-    control: true,
-    meta: false,
-    shift: false,
-  },
-};
-
-export const defaultOpenCommaShortcut: SideChatShortcut = {
+export const defaultOpenCommaShortcut: GlobalShortcut = {
   key: "comma",
   modifiers: { alt: true, control: false, meta: false, shift: false },
 };
+
+/**
+ * Client settings that builds with Side Chat require, at their defaults. Saved
+ * settings keep carrying them so such a build, after a rollback, still parses
+ * the file instead of resetting every setting; reads drop them before parsing.
+ */
+export const retiredCommaClientSettings = {
+  sideChatAppearance: "auto",
+  sideChatShortcut: {
+    key: "z",
+    modifiers: { alt: false, control: true, meta: false, shift: false },
+  },
+} as const;
+
+/**
+ * Stored client settings without the keys of `retiredCommaClientSettings` and the shortcut of the retired Stations
+ * view (`go-stations`), which the strict schema refuses.
+ */
+export function withoutRetiredCommaClientSettings(stored: unknown): unknown {
+  if (stored === null || typeof stored !== "object" || Array.isArray(stored))
+    return stored;
+  const settings: Record<string, unknown> = { ...stored };
+  for (const key of Object.keys(retiredCommaClientSettings)) delete settings[key];
+  const overrides = settings.appShortcutOverrides;
+  if (
+    overrides !== null &&
+    typeof overrides === "object" &&
+    !Array.isArray(overrides)
+  ) {
+    const { "go-stations": _stations, ...kept } = overrides as Record<string, unknown>;
+    settings.appShortcutOverrides = kept;
+  }
+  return settings;
+}
+
+/**
+ * Stored app preferences without the keys earlier builds wrote, which the strict
+ * schema refuses: Side Chat's (Main writes it back for those builds) and the
+ * Stations switch (those builds default it when it is missing).
+ */
+export function withoutRetiredAppPreferences(
+  stored: Record<string, unknown>
+): Record<string, unknown> {
+  const {
+    sideChatEnabled: _sideChatEnabled,
+    stationsEnabled: _stationsEnabled,
+    ...preferences
+  } = stored;
+  if (!("clientSettings" in preferences)) return preferences;
+  return {
+    ...preferences,
+    clientSettings: withoutRetiredCommaClientSettings(preferences.clientSettings),
+  };
+}
 
 export const commaClientSettingsSchema = z
   .object({
@@ -1197,12 +1196,14 @@ export const commaClientSettingsSchema = z
     appearance: commaClientAppearancePreferencesSchema,
     localePreference: commaClientLocalePreferenceSchema,
     sessionHistoryEnabled: z.boolean().default(false),
+    // Shows the screen an Agent drives through computer use, live.
+    computerUseScreenEnabled: z.boolean().default(false),
+    // Debug: shows the Condensed Workspace settings category.
+    condensedWorkspaceSettingsVisible: z.boolean().default(false),
     meetingStartRecording: z.enum(["reminder", "auto"]).default("reminder"),
     meetingHideRecorder: z.boolean().default(false),
     meetingSmartSummary: z.boolean().default(true),
-    sideChatAppearance: commaClientSideChatAppearanceSchema,
-    sideChatShortcut: sideChatShortcutBindingSchema,
-    openCommaShortcut: sideChatShortcutBindingSchema.default(defaultOpenCommaShortcut),
+    openCommaShortcut: globalShortcutBindingSchema.default(defaultOpenCommaShortcut),
     // Icon-rail item ids in the reader's order. Stored loosely: an id the
     // running build no longer knows is dropped on read and one it newly ships
     // is appended, so a rail change never invalidates the whole settings file.
@@ -1225,12 +1226,12 @@ export const commaClientSettingsPatchSchema = z
       .optional(),
     localePreference: commaClientLocalePreferenceSchema.optional(),
     sessionHistoryEnabled: z.boolean().optional(),
+    computerUseScreenEnabled: z.boolean().optional(),
+    condensedWorkspaceSettingsVisible: z.boolean().optional(),
     meetingStartRecording: z.enum(["reminder", "auto"]).optional(),
     meetingHideRecorder: z.boolean().optional(),
     meetingSmartSummary: z.boolean().optional(),
-    sideChatAppearance: commaClientSideChatAppearanceSchema.optional(),
-    sideChatShortcut: sideChatShortcutBindingSchema.optional(),
-    openCommaShortcut: sideChatShortcutBindingSchema.optional(),
+    openCommaShortcut: globalShortcutBindingSchema.optional(),
     sidebarNavOrder: z.array(z.string()).optional(),
     onboardingCompletedUserIds: z.array(z.string()).optional(),
   })
@@ -1245,12 +1246,9 @@ export const defaultCommaClientSettings = commaClientSettingsSchema.parse({
   appShortcutOverrides: {},
   appearance: defaultCommaClientAppearancePreferences,
   localePreference: "system",
-  sideChatAppearance: "auto",
-  sideChatShortcut: defaultSideChatShortcut,
 });
 
-// Modeled in tla/app-preferences/AppPreferences.tla: Main publishes a
-// monotonic per-process revision and renderers reject older state deliveries.
+// Main publishes a monotonic per-process revision and renderers reject older state deliveries.
 const mutableAppPreferencesSchema = z
   .object({
     /** macOS: the name nearby devices see; null means `defaultAirDropName`. */
@@ -1269,16 +1267,18 @@ const mutableAppPreferencesSchema = z
     showInMenuBar: z.boolean(),
     /** macOS: whether Comma shows running Tasks and AirDrop around the notch. */
     showInNotch: z.boolean(),
-    /** Whether the shortcut, the macOS edge gesture and the menus open Side Chat. */
-    sideChatEnabled: z.boolean(),
+    /** macOS 26: whether a double tap of ⌘ or the menu-bar item opens Quick Chat. */
+    quickChatEnabled: z.boolean(),
     systemNotifications: z.boolean(),
   })
   .strict();
 export const appPreferencesSchema = mutableAppPreferencesSchema.extend({
   openCommaShortcutStatus: z.enum(["registered", "unset", "unavailable"]).optional(),
+  /** macOS 26: this Mac can run Quick Chat (double-tap ⌘), which Settings offers. Never saved. */
+  quickChatSupported: z.boolean().optional(),
   launchAtLoginStatus: appLaunchAtLoginStatusSchema.optional(),
   // Defaults keep preference files written before notifications, AirDrop,
-  // the Notch and the Side Chat settings shipped parseable; patches derive from the default-free
+  // and the Notch settings shipped parseable; patches derive from the default-free
   // mutable schema below.
   airDropName: airDropNameSchema.nullable().default(null),
   keepAwakeWhenLidClosed: z.boolean().default(false),
@@ -1286,10 +1286,10 @@ export const appPreferencesSchema = mutableAppPreferencesSchema.extend({
   notchSideWidth: notchSideWidthSchema.default(notchSideWidthRange.default),
   notificationSound: z.boolean().default(true),
   notifyRouterMessages: z.boolean().default(true),
+  quickChatEnabled: z.boolean().default(true),
   revision: z.number().int().nonnegative().default(0),
   showInAirDrop: z.boolean().default(true),
   showInNotch: z.boolean().default(true),
-  sideChatEnabled: z.boolean().default(true),
   systemNotifications: z.boolean().default(true),
   systemNotificationsStatus: systemNotificationsStatusSchema.optional(),
 });
@@ -1339,12 +1339,12 @@ export const defaultAppPreferences = appPreferencesSchema.parse({
   notchSideWidth: notchSideWidthRange.default,
   notificationSound: true,
   notifyRouterMessages: true,
+  quickChatEnabled: true,
   revision: 0,
   showInAirDrop: true,
   showInDock: true,
   showInMenuBar: true,
   showInNotch: true,
-  sideChatEnabled: true,
   systemNotifications: true,
 });
 
@@ -1364,108 +1364,6 @@ export const surfaceBoundsSchema = z.object({
   width: z.number(),
   height: z.number(),
 });
-
-/** Electron screen-DIP coordinates, using the top-left display coordinate space. */
-export const sideChatTestWindowSourceFrameSchema = z
-  .object({
-    x: z.number().finite(),
-    y: z.number().finite(),
-    width: z.number().finite().positive(),
-    height: z.number().finite().positive(),
-  })
-  .strict();
-
-export const sideChatOpenTestWindowInputSchema = z
-  .object({
-    sourceFrame: sideChatTestWindowSourceFrameSchema,
-    target: z
-      .object({
-        conversationId: z.string().min(1),
-        groupId: z.string().min(1),
-        workspaceId: z.string().min(1),
-      })
-      .strict()
-      .optional(),
-  })
-  .strict();
-
-export type SideChatTestWindowSourceFrame = z.output<
-  typeof sideChatTestWindowSourceFrameSchema
->;
-export type SideChatOpenTestWindowInput = z.output<
-  typeof sideChatOpenTestWindowInputSchema
->;
-
-export const sideChatDebugSettingsSchema = sideChatDebugSettingsValuesSchema
-  .extend({
-    revision: z.number().int().nonnegative(),
-  })
-  .strict();
-
-export const sideChatDebugSettingsPatchSchema = sideChatDebugSettingsValuesSchema
-  .partial()
-  .strict()
-  .refine((patch) => Object.keys(patch).length > 0, {
-    message: "At least one Side Chat debug setting must be provided.",
-  });
-
-export type SideChatDebugSettings = z.output<typeof sideChatDebugSettingsSchema>;
-export type SideChatDebugSettingsPatch = z.output<
-  typeof sideChatDebugSettingsPatchSchema
->;
-
-export const defaultSideChatDebugSettings = sideChatDebugSettingsSchema.parse({
-  allowsGroupBlending: true,
-  allowsInPlaceFiltering: false,
-  blurRadius: 24,
-  bottomFeather: 26,
-  bottomOffset: 12,
-  closedExtraOffset: 16,
-  contentOffsetX: -34,
-  contentOffsetY: -35,
-  contentWidth: 400,
-  disablesOccludedBackdropBlurs: false,
-  leftFeather: 39,
-  maskGamma: 1.25,
-  maxMaskAlpha: 1,
-  openXOffset: 4,
-  revision: 0,
-  rightFeather: 120,
-  showBackdrop: true,
-  solidOutsetBottom: 0,
-  solidOutsetLeft: -14,
-  solidOutsetRight: -60,
-  solidOutsetTop: -23,
-  tintOpacity: 0.06,
-  topFeather: 53,
-  windowServerAware: true,
-});
-
-export function deriveSideChatDebugGeometry(settings: SideChatDebugSettings) {
-  const horizontalBackdropPadding =
-    settings.leftFeather +
-    settings.rightFeather +
-    Math.max(0, settings.solidOutsetLeft) +
-    Math.max(0, settings.solidOutsetRight);
-  const verticalBackdropPadding =
-    settings.topFeather +
-    settings.bottomFeather +
-    Math.max(0, settings.solidOutsetTop) +
-    Math.max(0, settings.solidOutsetBottom);
-
-  return {
-    contentOriginX:
-      settings.leftFeather +
-      Math.max(0, settings.solidOutsetLeft) +
-      settings.contentOffsetX,
-    contentOriginY:
-      settings.bottomFeather +
-      Math.max(0, settings.solidOutsetBottom) +
-      settings.contentOffsetY,
-    horizontalBackdropPadding,
-    verticalBackdropPadding,
-  };
-}
 
 export const surfaceLifecycleSchema = z.enum([
   "creating",
@@ -1666,6 +1564,7 @@ export const browserSidebarInspectResultSchema = z.discriminatedUnion("status", 
           url: browserSidebarUrlSchema,
         })
         .strict(),
+      screenshot: browserSidebarCapturePngSchema.optional(),
       status: z.literal("selected"),
       userMessage: z.string().min(1).max(4_000),
     })
@@ -1691,6 +1590,21 @@ export const browserSidebarStateSchema = z
     surface: viewSurfaceSchema.optional(),
     reason: z.string().optional(),
     reasonCode: z.literal("capacity").optional(),
+    passkey: z
+      .object({
+        site: z.string().min(1).max(253),
+        kind: z.enum(["create", "get"]),
+        phase: z.enum(["scan", "connecting", "phone", "failed"]),
+        qr: z
+          .string()
+          .regex(/^FIDO:\/\d+$/u)
+          .max(1024)
+          .optional(),
+        bluetooth: z.enum(["on", "off", "denied", "unsupported", "pending"]).optional(),
+        securityKey: z.boolean(),
+      })
+      .strict()
+      .optional(),
   })
   .strict() satisfies z.ZodType<BrowserSidebarState>;
 
@@ -1730,8 +1644,6 @@ export const nativeRendererIdentitySchema = z.object({
     "dev-workbench",
     "main-window",
     "onboarding-window",
-    "side-chat-test-window",
-    "side-chat-window",
     "unknown",
   ]),
   windowId: z.string().min(1),
@@ -2610,6 +2522,94 @@ export const surfacesWindowFullScreenStateLeaf = defineNativeState({
   subscribe: surfacesWindowFullScreenChangedEvent,
 });
 
+export interface WindowMaximized {
+  maximized: boolean;
+}
+
+export const windowMaximizedSchema = z
+  .object({ maximized: z.boolean() })
+  .strict() satisfies z.ZodType<WindowMaximized>;
+
+const windowNotMaximized: WindowMaximized = { maximized: false };
+
+/**
+ * Whether the caller's own window is maximized. On Windows the window bar
+ * draws the window buttons itself, and its maximize button shows restore while
+ * the window fills the screen; the web build has no window of its own.
+ */
+export const surfacesWindowMaximizedCapability = defineNativeCapability({
+  bridge: { method: "windowMaximized", namespace: "surfaces" },
+  channel: "comma:surfaces:window-maximized",
+  handler: {
+    exportName: "SurfaceListProvider",
+    member: "windowMaximized",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "surfaces",
+  },
+  id: "surfaces.windowMaximized",
+  input: z.void(),
+  mock: windowNotMaximized,
+  output: windowMaximizedSchema,
+  permission: "surfaces.state.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Reads the calling local window's maximized state without Session state.",
+  webFallback: windowNotMaximized,
+});
+
+/** Emitted to one window as it is maximized or restored. */
+export const surfacesWindowMaximizedChangedEvent = defineNativeEvent({
+  channel: "comma:surfaces:window-maximized-changed",
+  id: "surfaces.windowMaximized.changed",
+  mock: windowNotMaximized,
+  payload: windowMaximizedSchema,
+  permission: surfacesStateCapability.permission,
+  target: { type: "all" },
+});
+
+export const surfacesWindowMaximizedStateLeaf = defineNativeState({
+  bridge: { method: "windowMaximized", namespace: "surfaces" },
+  get: surfacesWindowMaximizedCapability,
+  id: "surfaces.windowMaximized",
+  subscribe: surfacesWindowMaximizedChangedEvent,
+});
+
+export const windowControlActionSchema = z.enum([
+  "minimize",
+  "toggleMaximize",
+  "close",
+]);
+export type WindowControlAction = z.output<typeof windowControlActionSchema>;
+
+export const windowControlInputSchema = z
+  .object({ action: windowControlActionSchema })
+  .strict();
+export type WindowControlInput = z.output<typeof windowControlInputSchema>;
+
+/**
+ * The window buttons the Windows window bar draws in place of the system's:
+ * each acts on the caller's own window.
+ */
+export const surfacesWindowControlCapability = defineNativeCapability({
+  bridge: { method: "windowControl", namespace: "surfaces" },
+  channel: "comma:surfaces:window-control",
+  handler: {
+    exportName: "SurfaceListProvider",
+    member: "windowControl",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "surfaces",
+  },
+  id: "surfaces.windowControl",
+  input: windowControlInputSchema,
+  mock: undefined,
+  output: z.void(),
+  permission: "surfaces.window.control",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Minimizes, maximizes or closes the calling local window without Session state.",
+  webFallback: undefined,
+});
+
 export const onboardingPresentWindowInputSchema = z
   .object({ session: sessionProductLeaseSchema })
   .strict();
@@ -2655,27 +2655,7 @@ export const onboardingPresentWindowCapability = defineNativeCapability({
   webFallback: onboardingWindowNotPresented,
 });
 
-/**
- * A plugin authorization the onboarding started and the user has not finished
- * in the browser yet. The install happens only when a window verifies it, so
- * the main window takes it over when the onboarding window closes.
- */
-export const onboardingPluginAuthorizationSchema = z
-  .object({
-    workspaceId: z.string().min(1),
-    pluginId: z.string().min(1),
-    authorizationState: z.string().min(1),
-    /** When the attempt expires, in epoch milliseconds. */
-    expiresAt: z.number(),
-  })
-  .strict();
-export type OnboardingPluginAuthorization = z.output<
-  typeof onboardingPluginAuthorizationSchema
->;
-
-export const onboardingCloseWindowInputSchema = z
-  .object({ pluginAuthorization: onboardingPluginAuthorizationSchema.optional() })
-  .strict();
+export const onboardingCloseWindowInputSchema = z.object({}).strict();
 export type OnboardingCloseWindowInput = z.output<
   typeof onboardingCloseWindowInputSchema
 >;
@@ -2684,8 +2664,8 @@ export type OnboardingCloseWindowInput = z.output<
  * The onboarding window ended with "Start chatting" and finished its exit
  * reveal. Main records the completion for the user it presented the window
  * to, closes it, and hands focus back to the main window, then tells the main
- * window of the hand-off (`onboarding.handoff`) with any plugin authorization
- * still open.
+ * window of the hand-off (`onboarding.handoff`). A plugin authorization still
+ * open goes on in the client core, which no window owns.
  */
 export const onboardingCloseWindowCapability = defineNativeCapability({
   bridge: { method: "closeWindow", namespace: "onboarding" },
@@ -2791,12 +2771,9 @@ export const onboardingWindowStateLeaf = defineNativeState({
 
 /**
  * The onboarding window ended with "Start chatting" and has closed, after Main
- * gave the main window the focus back: Home focuses its composer, and the main
- * window goes on verifying a plugin authorization the onboarding left open.
+ * gave the main window the focus back: Home focuses its composer.
  */
-export const onboardingHandoffSchema = z
-  .object({ pluginAuthorization: onboardingPluginAuthorizationSchema.optional() })
-  .strict();
+export const onboardingHandoffSchema = z.object({}).strict();
 export type OnboardingHandoff = z.output<typeof onboardingHandoffSchema>;
 
 export const onboardingHandoffEvent = defineNativeEvent({
@@ -2995,204 +2972,6 @@ export const shellOpenExternalResultSchema = z
   .strict();
 
 export type ShellOpenExternalResult = z.infer<typeof shellOpenExternalResultSchema>;
-
-const tokenDanceAuthorizationStatusSchema = z.object({
-  status: z.enum(["pending", "complete", "failed"]),
-  error: z.string().optional(),
-  models: z
-    .object({
-      base_url: z.string(),
-      provider: z.string(),
-      protocol: z.literal("responses"),
-      truncated: z.boolean(),
-      data: z
-        .array(
-          z.object({
-            id: z.string(),
-            name: z.string(),
-            vendor: z.string().nullable().optional(),
-            supported_protocols: z
-              .array(z.enum(["responses", "chat_completions", "anthropic"]))
-              .max(3)
-              .optional(),
-            supports_images: z.boolean(),
-          })
-        )
-        .max(1000),
-    })
-    .optional(),
-});
-
-// TokenDance and subscription account authorization store model credentials:
-// a permission of their own, so a window granted only to open a URL in the
-// browser (`shell.open-external`) cannot start or save them.
-export const tokenDanceAuthorizationStartCapability = defineNativeCapability({
-  bridge: { namespace: "tokenDanceAuthorization", method: "start" },
-  channel: "comma:tokendance-authorization:start",
-  handler: {
-    exportName: "TokenDanceAuthorizationService",
-    member: "start",
-    module: "../../../apps/electron/src/main/tokendance-authorization",
-    provider: "tokenDanceAuthorization",
-  },
-  id: "tokenDanceAuthorization.start",
-  input: z
-    .object({
-      session: sessionProductLeaseSchema,
-      requestId: z.string().uuid(),
-      workspaceId: z.string().min(1).max(200),
-    })
-    .strict(),
-  output: tokenDanceAuthorizationStatusSchema,
-  permission: "model-account.authorize",
-  sessionAdmission: "required",
-  mock: { status: "failed", error: "unsupported" },
-  webFallback: { status: "failed", error: "unsupported" },
-});
-
-export const tokenDanceAuthorizationStatusCapability = defineNativeCapability({
-  bridge: { namespace: "tokenDanceAuthorization", method: "status" },
-  channel: "comma:tokendance-authorization:status",
-  handler: {
-    exportName: "TokenDanceAuthorizationService",
-    member: "status",
-    module: "../../../apps/electron/src/main/tokendance-authorization",
-    provider: "tokenDanceAuthorization",
-  },
-  id: "tokenDanceAuthorization.status",
-  input: z
-    .object({ session: sessionProductLeaseSchema, requestId: z.string().uuid() })
-    .strict(),
-  output: tokenDanceAuthorizationStatusSchema,
-  permission: "model-account.authorize",
-  sessionAdmission: "required",
-  mock: { status: "failed", error: "unsupported" },
-  webFallback: { status: "failed", error: "unsupported" },
-});
-
-export const tokenDanceAuthorizationSaveCapability = defineNativeCapability({
-  bridge: { namespace: "tokenDanceAuthorization", method: "save" },
-  channel: "comma:tokendance-authorization:save",
-  handler: {
-    exportName: "TokenDanceAuthorizationService",
-    member: "save",
-    module: "../../../apps/electron/src/main/tokendance-authorization",
-    provider: "tokenDanceAuthorization",
-  },
-  id: "tokenDanceAuthorization.save",
-  input: z
-    .object({
-      session: sessionProductLeaseSchema,
-      requestId: z.string().uuid(),
-      /** The profile's name; it serves every model TokenDance listed. */
-      name: z.string().min(1).max(120),
-    })
-    .strict(),
-  output: z.object({ ok: z.boolean() }),
-  permission: "model-account.authorize",
-  sessionAdmission: "required",
-  mock: { ok: false },
-  webFallback: { ok: false },
-});
-export type TokenDanceAuthorizationSaveInput = z.infer<
-  typeof tokenDanceAuthorizationSaveCapability.input
->;
-export type TokenDanceAuthorizationStatus = z.infer<
-  typeof tokenDanceAuthorizationStatusSchema
->;
-
-export const tokenDanceAuthorizationCancelCapability = defineNativeCapability({
-  bridge: { namespace: "tokenDanceAuthorization", method: "cancel" },
-  channel: "comma:tokendance-authorization:cancel",
-  handler: {
-    exportName: "TokenDanceAuthorizationService",
-    member: "cancel",
-    module: "../../../apps/electron/src/main/tokendance-authorization",
-    provider: "tokenDanceAuthorization",
-  },
-  id: "tokenDanceAuthorization.cancel",
-  input: z
-    .object({ session: sessionProductLeaseSchema, requestId: z.string().uuid() })
-    .strict(),
-  output: z.object({ ok: z.literal(true) }),
-  permission: "model-account.authorize",
-  sessionAdmission: "required",
-  mock: { ok: true },
-  webFallback: { ok: true },
-});
-
-export const subscriptionAuthorizationStartCapability = defineNativeCapability({
-  bridge: { namespace: "subscriptionAuthorization", method: "start" },
-  channel: "comma:subscription-authorization:start",
-  handler: {
-    exportName: "SubscriptionAuthorizationService",
-    member: "start",
-    module: "../../../apps/electron/src/main/subscription-authorization",
-    provider: "subscriptionAuthorization",
-  },
-  id: "subscriptionAuthorization.start",
-  input: z
-    .object({
-      session: sessionProductLeaseSchema,
-      requestId: z.string().uuid(),
-      workspaceId: z.string().min(1),
-      provider: z.enum(["codex", "claude"]),
-      accountId: z.string().optional(),
-      version: z.string().optional(),
-    })
-    .strict(),
-  output: z.object({
-    status: z.enum(["pending", "complete", "failed"]),
-    error: z.string().optional(),
-  }),
-  permission: "model-account.authorize",
-  sessionAdmission: "required",
-  mock: { status: "failed", error: "unsupported" },
-  webFallback: { status: "failed", error: "unsupported" },
-});
-
-export const subscriptionAuthorizationStatusCapability = defineNativeCapability({
-  bridge: { namespace: "subscriptionAuthorization", method: "status" },
-  channel: "comma:subscription-authorization:status",
-  handler: {
-    exportName: "SubscriptionAuthorizationService",
-    member: "status",
-    module: "../../../apps/electron/src/main/subscription-authorization",
-    provider: "subscriptionAuthorization",
-  },
-  id: "subscriptionAuthorization.status",
-  input: z
-    .object({ session: sessionProductLeaseSchema, requestId: z.string().uuid() })
-    .strict(),
-  output: z.object({
-    status: z.enum(["pending", "complete", "failed"]),
-    error: z.string().optional(),
-  }),
-  permission: "model-account.authorize",
-  sessionAdmission: "required",
-  mock: { status: "failed", error: "unsupported" },
-  webFallback: { status: "failed", error: "unsupported" },
-});
-
-export const subscriptionAuthorizationCancelCapability = defineNativeCapability({
-  bridge: { namespace: "subscriptionAuthorization", method: "cancel" },
-  channel: "comma:subscription-authorization:cancel",
-  handler: {
-    exportName: "SubscriptionAuthorizationService",
-    member: "cancel",
-    module: "../../../apps/electron/src/main/subscription-authorization",
-    provider: "subscriptionAuthorization",
-  },
-  id: "subscriptionAuthorization.cancel",
-  input: z
-    .object({ session: sessionProductLeaseSchema, requestId: z.string().uuid() })
-    .strict(),
-  output: z.object({ ok: z.literal(true) }),
-  permission: "model-account.authorize",
-  sessionAdmission: "required",
-  mock: { ok: true },
-  webFallback: { ok: true },
-});
 
 export const shellOpenExternalCapability = defineNativeCapability({
   bridge: {
@@ -3669,6 +3448,29 @@ export const browserSidebarCloseCapability = defineNativeCapability({
   webFallback: unavailableBrowserSidebarState,
 });
 
+export const browserSidebarDismissPasskeyCapability = defineNativeCapability({
+  bridge: {
+    method: "dismissPasskey",
+    namespace: "browserSidebar",
+  },
+  channel: "comma:browser-sidebar:dismiss-passkey",
+  handler: {
+    exportName: "BrowserSidebarProvider",
+    member: "dismissPasskey",
+    module: "../../../apps/electron/src/main/modules/browser-sidebar/index",
+    provider: "browserSidebar",
+  },
+  id: "browserSidebar.dismissPasskey",
+  input: browserSidebarCloseInputSchema,
+  mock: unavailableBrowserSidebarState,
+  output: browserSidebarStateSchema,
+  permission: "browser-sidebar.control",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Cancels the phone passkey request of a sandboxed browser tab owned by the caller window. The page receives the error a browser gives when the user dismisses its passkey dialog.",
+  webFallback: unavailableBrowserSidebarState,
+});
+
 export const browserSidebarInspectCapability = defineNativeCapability({
   bridge: {
     method: "inspect",
@@ -3685,6 +3487,8 @@ export const browserSidebarInspectCapability = defineNativeCapability({
   input: browserSidebarInspectInputSchema,
   mock: { status: "cancelled" },
   output: browserSidebarInspectResultSchema,
+  // The selection carries the element's screenshot.
+  payloadClass: "binary",
   permission: "browser-sidebar.control",
   sessionAdmission: "local_only",
   sessionAdmissionRationale:
@@ -3701,15 +3505,24 @@ export const browserSitePermissionsInputSchema = browserSidebarCloseInputSchema.
 export type BrowserSitePermissionsInput = z.infer<
   typeof browserSitePermissionsInputSchema
 >;
+/** Page actions in the browser page menu that the caller window performs. */
+export const browserPageMenuItemSchema = z.enum(["import-sign-ins", "open-external"]);
+export type BrowserPageMenuItem = z.infer<typeof browserPageMenuItemSchema>;
 export const sitePermissionMenuSnapshotSchema = z
   .object({
-    origin: z.string(),
-    choices: z
+    /** The website's permissions; null when the page is not an HTTPS site. */
+    site: z
       .object({
-        microphone: z.enum(["ask", "allow", "block"]),
-        camera: z.enum(["ask", "allow", "block"]),
+        origin: z.string(),
+        choices: z
+          .object({
+            microphone: z.enum(["ask", "allow", "block"]),
+            camera: z.enum(["ask", "allow", "block"]),
+          })
+          .strict(),
       })
-      .strict(),
+      .strict()
+      .nullable(),
     systemSettings: z.boolean(),
   })
   .strict();
@@ -3747,7 +3560,22 @@ export const sitePermissionMenuActionSchema = z.discriminatedUnion("action", [
     .strict(),
   z
     .object({
-      action: z.enum(["reset", "reload", "close", "present"]),
+      action: z.literal("pick"),
+      generation: z.number().int().positive(),
+      item: browserPageMenuItemSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("present"),
+      generation: z.number().int().positive(),
+      /** The rendered menu's full height in CSS pixels; the window takes it. */
+      height: z.number().nonnegative().finite(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.enum(["reset", "reload", "close"]),
       generation: z.number().int().positive(),
     })
     .strict(),
@@ -3822,6 +3650,8 @@ export const browserSidebarShowPermissionsCapability = defineNativeCapability({
     .object({
       status: z.enum(["opened", "unavailable"]),
       reason: z.string().optional(),
+      /** The page action chosen in the menu, for the caller window to perform. */
+      picked: browserPageMenuItemSchema.optional(),
     })
     .strict(),
   permission: "browser-sidebar.control",
@@ -3833,6 +3663,168 @@ export const browserSidebarShowPermissionsCapability = defineNativeCapability({
     status: "unavailable",
     reason: "Website permissions require the desktop app.",
   },
+});
+
+// Chromium browsers on this Mac whose cookies the browser sidebar can import.
+export const browserImportSourceIds = [
+  "chrome",
+  "arc",
+  "brave",
+  "edge",
+  "dia",
+  "comet",
+] as const;
+export const browserImportSourceSchema = z.enum(browserImportSourceIds);
+export type BrowserImportSource = z.infer<typeof browserImportSourceSchema>;
+
+export const browserImportProfileSchema = z
+  .object({
+    source: browserImportSourceSchema,
+    appName: z.string().max(64),
+    profileDirectory: z.string().min(1).max(128),
+    profileName: z.string().max(256),
+    userName: z.string().max(256).optional(),
+    // The browser's app icon as a PNG data URL, when the app is installed.
+    icon: z
+      .string()
+      .max(64 * 1024)
+      .regex(/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/u)
+      .optional(),
+    // `permission-required`: macOS refused to let Comma read the profile.
+    status: z.enum(["ready", "permission-required"]),
+  })
+  .strict();
+export type BrowserImportProfile = z.infer<typeof browserImportProfileSchema>;
+
+export const browserImportProfilesSchema = z
+  .object({ profiles: z.array(browserImportProfileSchema).max(64) })
+  .strict();
+export type BrowserImportProfiles = z.infer<typeof browserImportProfilesSchema>;
+
+// One profile of one browser. The folder is one directory name in the browser
+// data folder, such as `Default`.
+export const browserImportProfileRefSchema = z
+  .object({
+    source: browserImportSourceSchema,
+    profileDirectory: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^(?!\.\.?$)[^/\\]+$/u),
+  })
+  .strict();
+export type BrowserImportProfileRef = z.infer<typeof browserImportProfileRefSchema>;
+
+// The profiles to import. For each site, the profile that used it most
+// recently provides all of its cookies.
+export const browserCookieImportInputSchema = z
+  .object({ profiles: z.array(browserImportProfileRefSchema).min(1).max(64) })
+  .strict();
+export type BrowserCookieImportInput = z.infer<typeof browserCookieImportInputSchema>;
+
+const browserCookieImportCount = z.number().int().nonnegative();
+// Why a profile was not imported.
+const browserCookieImportFailureSchema = z.enum([
+  "failed",
+  "keychain-denied",
+  "not-found",
+  "permission-required",
+]);
+export const browserCookieImportResultSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("imported"),
+      imported: browserCookieImportCount,
+      // Sites that got at least one cookie, and sites where the sidebar kept
+      // its own different cookies and got none.
+      importedSites: browserCookieImportCount,
+      keptSites: browserCookieImportCount,
+      // Sites whose cookies the sidebar already has with the same values, and
+      // the number of those cookies.
+      unchangedSites: browserCookieImportCount,
+      unchanged: browserCookieImportCount,
+      skippedExisting: browserCookieImportCount,
+      skippedExpired: browserCookieImportCount,
+      skippedUnsupported: browserCookieImportCount,
+      failed: browserCookieImportCount,
+      // The same site counts for each profile that was read, in the order
+      // selected. Each site counts under the profile that provided it.
+      profiles: z
+        .array(
+          z
+            .object({
+              source: browserImportSourceSchema,
+              profileDirectory: browserImportProfileRefSchema.shape.profileDirectory,
+              importedSites: browserCookieImportCount,
+              keptSites: browserCookieImportCount,
+              unchangedSites: browserCookieImportCount,
+            })
+            .strict()
+        )
+        .max(64),
+      // Selected profiles that could not be read.
+      unread: z
+        .array(
+          z
+            .object({
+              source: browserImportSourceSchema,
+              profileDirectory: browserImportProfileRefSchema.shape.profileDirectory,
+              status: browserCookieImportFailureSchema,
+            })
+            .strict()
+        )
+        .max(64),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.union([
+        browserCookieImportFailureSchema,
+        z.enum(["busy", "unavailable"]),
+      ]),
+    })
+    .strict(),
+]);
+export type BrowserCookieImportResult = z.infer<typeof browserCookieImportResultSchema>;
+
+export const browserSidebarListImportProfilesCapability = defineNativeCapability({
+  bridge: { method: "listImportProfiles", namespace: "browserSidebar" },
+  channel: "comma:browser-sidebar:list-import-profiles",
+  handler: {
+    exportName: "BrowserSidebarProvider",
+    member: "listImportProfiles",
+    module: "../../../apps/electron/src/main/modules/browser-sidebar/index",
+    provider: "browserSidebar",
+  },
+  id: "browserSidebar.listImportProfiles",
+  input: z.void(),
+  output: browserImportProfilesSchema,
+  permission: "browser-sidebar.import",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Lists browser profile names on this Mac. It reads no cookies and no keychain item.",
+  mock: { profiles: [] },
+  webFallback: { profiles: [] },
+});
+
+export const browserSidebarImportCookiesCapability = defineNativeCapability({
+  bridge: { method: "importCookies", namespace: "browserSidebar" },
+  channel: "comma:browser-sidebar:import-cookies",
+  handler: {
+    exportName: "BrowserSidebarProvider",
+    member: "importCookies",
+    module: "../../../apps/electron/src/main/modules/browser-sidebar/index",
+    provider: "browserSidebar",
+  },
+  id: "browserSidebar.importCookies",
+  input: browserCookieImportInputSchema,
+  output: browserCookieImportResultSchema,
+  permission: "browser-sidebar.import",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Copies the cookies of browser profiles on this Mac into the browser sidebar, after macOS asks the user to allow each browser's keychain read. Main decrypts and stores them. The renderer receives only counts.",
+  mock: { status: "unavailable" },
+  webFallback: { status: "unavailable" },
 });
 
 export const browserSidebarChangedEvent = defineNativeEvent({
@@ -3886,6 +3878,39 @@ export const peersConnectCapability = defineNativeCapability({
   },
 });
 
+/**
+ * A channel from this window to the Comma client core in its utility process: Main hands the window one end of a
+ * MessagePort on `nativeCorePortChannel` and the core the other. The core holds no credential; its requests go
+ * through Main's `/v1` proxy.
+ */
+export const coreOpenCapability = defineNativeCapability({
+  bridge: {
+    method: "open",
+    namespace: "core",
+  },
+  channel: "comma:core:open",
+  handler: {
+    exportName: "CoreProvider",
+    member: "open",
+    module: "../../../apps/electron/src/main/modules/native/index",
+    provider: "core",
+  },
+  id: "core.open",
+  input: z.void(),
+  mock: {
+    channelId: "core_mock",
+  },
+  output: nativePeerConnectResultSchema,
+  permission: "core.open",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Connects a window to the client core, which holds no credential: its API requests go through Main's /v1 proxy under Main's session admission.",
+  transport: "message-port",
+  webFallback: {
+    channelId: "core_unavailable",
+  },
+});
+
 export const notchHostEvent = defineNativeEvent({
   bridge: { method: "onEvent", namespace: "notch" },
   channel: "comma:notch:event",
@@ -3914,456 +3939,6 @@ export const surfacesStateLeaf = defineNativeState({
   get: surfacesStateCapability,
   id: "surfaces.state",
   subscribe: surfacesChangedEvent,
-});
-
-export const salixWorkspaceSchema = z.strictObject({
-  group_id: z.string().min(1).max(256),
-  id: z.string().min(1).max(256),
-  name: z.string().min(1).max(512),
-});
-
-const salixConversationKindSchema = z.enum(["user_chat", "agent_task"]);
-
-const taskArchiveAvailabilitySchema = z.object({
-  allowed: z.boolean(),
-  reason: z.string().nullable(),
-});
-
-const meetingPhaseSchema = z.enum([
-  "awaiting_recording",
-  "recording",
-  "paused",
-  "saving",
-  "processing",
-  "saved",
-  "dismissed",
-  "discarded",
-]);
-
-export const salixConversationSchema = z.strictObject({
-  meeting: z.object({ phase: meetingPhaseSchema }).strip().optional(),
-  archive_availability: taskArchiveAvailabilitySchema.optional(),
-  activity_status: z.string().max(256).optional(),
-  created_at: z.number().finite().optional(),
-  freshness: z
-    .strictObject({
-      state: z.enum(["fresh", "stale", "unknown"]),
-    })
-    .optional(),
-  group_id: z.string().min(1).max(256),
-  id: z.string().min(1).max(256),
-  kind: salixConversationKindSchema,
-  origin: z.string().max(256).optional(),
-  labels: z.array(z.string()).optional(),
-  client_platform: z.string().optional(),
-  status: z.string().min(1).max(256),
-  title: z.string().max(2_048),
-  updated_at: z.number().finite().optional(),
-});
-
-export function salixPageSchema<T extends z.ZodType>(itemSchema: T) {
-  return z.strictObject({
-    data: z.array(itemSchema).max(1_000),
-    has_more: z.boolean().optional(),
-    next_cursor: z.string().max(2_048).nullable().optional(),
-  });
-}
-
-export type SalixWorkspace = z.output<typeof salixWorkspaceSchema>;
-export type SalixConversation = z.output<typeof salixConversationSchema>;
-
-export const productInboxListInputSchema = z.strictObject({
-  conversationIds: z.array(z.string().min(1).max(256)).max(50).optional(),
-  cursor: z.string().min(1).max(2_048).optional(),
-  limit: z.number().int().positive().max(100).optional(),
-  session: sessionProductLeaseSchema,
-  workspaceId: z.string().min(1).max(256).optional(),
-});
-
-export type ProductInboxListInput = z.output<typeof productInboxListInputSchema>;
-export type ProductInboxListSource = "cache" | "live-sync" | "unavailable" | "error";
-
-export interface ProductInboxItem {
-  meetingPhase?: z.output<typeof meetingPhaseSchema> | undefined;
-  archiveAvailability?: { allowed: boolean; reason: string | null } | undefined;
-  archiveVersion?: number | undefined;
-  id: string;
-  source: "salix.conversation";
-  groupId: string;
-  workspaceId: string;
-  workspaceName: string;
-  conversationId: string;
-  freshness?: "fresh" | "stale" | "unknown" | undefined;
-  kind: "user_chat" | "agent_task";
-  /** Requesting platform from the canonical summary; absent when not recorded. */
-  origin?: string | undefined;
-  labels?: string[] | undefined;
-  clientPlatform?: string | undefined;
-  title: string;
-  status: string;
-  updatedAt: number;
-}
-
-export interface ProductInboxListResult {
-  items: ProductInboxItem[];
-  source: ProductInboxListSource;
-  activeWorkspaceId?: string | undefined;
-  hasMore?: boolean | undefined;
-  lastSyncedAt?: number | undefined;
-  nextCursor?: string | undefined;
-  errorCode?:
-    | "network_unavailable"
-    | "protocol_mismatch"
-    | "session_product_lease_unavailable"
-    | "utility_unavailable"
-    | "unknown"
-    | undefined;
-  workspaces?: SalixWorkspace[] | undefined;
-}
-
-export const productInboxItemSchema = z.strictObject({
-  meetingPhase: meetingPhaseSchema.optional(),
-  archiveAvailability: taskArchiveAvailabilitySchema.optional(),
-  archiveVersion: z.number().optional(),
-  conversationId: z.string(),
-  freshness: z.enum(["fresh", "stale", "unknown"]).optional(),
-  groupId: z.string(),
-  id: z.string(),
-  kind: salixConversationKindSchema,
-  origin: z.string().max(256).optional(),
-  labels: z.array(z.string()).optional(),
-  clientPlatform: z.string().optional(),
-  source: z.literal("salix.conversation"),
-  status: z.string(),
-  title: z.string(),
-  updatedAt: z.number(),
-  workspaceId: z.string(),
-  workspaceName: z.string(),
-}) satisfies z.ZodType<ProductInboxItem>;
-
-export const productInboxSnapshotSchema = z.strictObject({
-  activeWorkspaceId: z.string().optional(),
-  errorCode: z
-    .enum([
-      "network_unavailable",
-      "protocol_mismatch",
-      "session_product_lease_unavailable",
-      "utility_unavailable",
-      "unknown",
-    ])
-    .optional(),
-  hasMore: z.boolean().optional(),
-  items: z.array(productInboxItemSchema),
-  lastSyncedAt: z.number().optional(),
-  nextCursor: z.string().optional(),
-  source: z.enum(["cache", "live-sync", "unavailable", "error"]),
-  workspaces: z.array(salixWorkspaceSchema).optional(),
-});
-
-export const productInboxStateEnvelopeSchema = sessionBoundStateEnvelopeSchema(
-  productInboxSnapshotSchema
-);
-
-const mockProductSessionLease = {
-  audience: "https://api.comma.test",
-  authorityInstanceId: "mock-electron-main",
-  generation: 1,
-  sessionId: "mock-session",
-} as const;
-
-const mockProductInboxSnapshot = productInboxSnapshotSchema.parse({
-  items: [],
-  source: "unavailable",
-});
-
-const mockProductInboxEnvelope = productInboxStateEnvelopeSchema.parse({
-  session: mockProductSessionLease,
-  snapshot: mockProductInboxSnapshot,
-});
-
-const requiredSessionInputSchema = z.strictObject({
-  session: sessionProductLeaseSchema,
-});
-
-export const productInboxStateCapability = defineNativeCapability({
-  bridge: { method: "state", namespace: "productInbox" },
-  channel: "comma:product-inbox:state",
-  handler: {
-    exportName: "ProductInboxProvider",
-    member: "state",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "productInbox",
-  },
-  id: "productInbox.state",
-  input: requiredSessionInputSchema,
-  mock: mockProductInboxEnvelope,
-  output: productInboxStateEnvelopeSchema,
-  permission: "product-inbox.state.read",
-  sessionAdmission: "required",
-  webFallback: mockProductInboxEnvelope,
-});
-
-export const productInboxStateChangedEvent = defineNativeEvent({
-  channel: "comma:product-inbox:state-changed",
-  id: "productInbox.state.changed",
-  mock: mockProductInboxEnvelope,
-  payload: productInboxStateEnvelopeSchema,
-  permission: productInboxStateCapability.permission,
-  target: { type: "all" },
-});
-
-export const productInboxStateLeaf = defineNativeState({
-  bridge: { method: "state", namespace: "productInbox" },
-  get: productInboxStateCapability,
-  id: "productInbox.state",
-  subscribe: productInboxStateChangedEvent,
-});
-
-export const productInboxRetainInputSchema = z.strictObject({
-  session: sessionProductLeaseSchema,
-});
-
-export const productInboxRetainCapability = defineNativeCapability({
-  bridge: { method: "retain", namespace: "productInbox" },
-  channel: "comma:product-inbox:retain",
-  handler: {
-    exportName: "ProductInboxProvider",
-    member: "retain",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "productInbox",
-  },
-  id: "productInbox.retain",
-  input: productInboxRetainInputSchema,
-  mock: mockProductInboxEnvelope,
-  output: productInboxStateEnvelopeSchema,
-  permission: "product-inbox.demand",
-  sessionAdmission: "required",
-  webFallback: mockProductInboxEnvelope,
-});
-
-export const productInboxReleaseCapability = defineNativeCapability({
-  bridge: { method: "release", namespace: "productInbox" },
-  channel: "comma:product-inbox:release",
-  handler: {
-    exportName: "ProductInboxProvider",
-    member: "release",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "productInbox",
-  },
-  id: "productInbox.release",
-  input: requiredSessionInputSchema,
-  mock: false,
-  output: z.boolean(),
-  permission: "product-inbox.demand",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Releases only the current caller's local ProductInbox demand; it cannot acquire a credential, access cache data, or start network work.",
-  webFallback: false,
-});
-
-export const productInboxRefreshCapability = defineNativeCapability({
-  bridge: { method: "refresh", namespace: "productInbox" },
-  channel: "comma:product-inbox:refresh",
-  handler: {
-    exportName: "ProductInboxProvider",
-    member: "refresh",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "productInbox",
-  },
-  id: "productInbox.refresh",
-  input: productInboxListInputSchema,
-  mock: mockProductInboxEnvelope,
-  output: productInboxStateEnvelopeSchema,
-  permission: "product-inbox.demand",
-  sessionAdmission: "required",
-  webFallback: mockProductInboxEnvelope,
-});
-
-const mockSessionHistoryEnvelope = sessionHistoryEnvelopeSchema.parse({
-  session: mockProductSessionLease,
-  snapshot: {
-    groupId: "group_mock",
-    conversationId: "conversation_mock",
-    participantId: "participant_mock",
-    records: [],
-    status: "idle",
-    loaded: "none",
-    error: null,
-    hasMore: false,
-    nextBefore: null,
-    revision: 0,
-  },
-});
-
-export const sessionHistoryStateCapability = defineNativeCapability({
-  bridge: { method: "state", namespace: "sessionHistory" },
-  channel: "comma:session-history:state",
-  handler: {
-    exportName: "NativeSessionHistoryProvider",
-    member: "state",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sessionHistory",
-  },
-  id: "sessionHistory.state",
-  input: sessionHistoryInputSchema,
-  output: sessionHistoryEnvelopeSchema,
-  mock: mockSessionHistoryEnvelope,
-  webFallback: mockSessionHistoryEnvelope,
-  permission: "session-history.read",
-  sessionAdmission: "required",
-});
-export const sessionHistoryLoadCapability = defineNativeCapability({
-  bridge: { method: "load", namespace: "sessionHistory" },
-  channel: "comma:session-history:load",
-  handler: {
-    exportName: "NativeSessionHistoryProvider",
-    member: "load",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sessionHistory",
-  },
-  id: "sessionHistory.load",
-  input: sessionHistoryLoadSchema,
-  output: sessionHistoryEnvelopeSchema,
-  mock: mockSessionHistoryEnvelope,
-  webFallback: mockSessionHistoryEnvelope,
-  permission: "session-history.read",
-  sessionAdmission: "required",
-});
-export const sessionHistoryRetainCapability = defineNativeCapability({
-  bridge: { method: "retain", namespace: "sessionHistory" },
-  channel: "comma:session-history:retain",
-  handler: {
-    exportName: "NativeSessionHistoryProvider",
-    member: "retain",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sessionHistory",
-  },
-  id: "sessionHistory.retain",
-  input: sessionHistoryDemandSchema,
-  output: sessionHistoryEnvelopeSchema,
-  mock: mockSessionHistoryEnvelope,
-  webFallback: mockSessionHistoryEnvelope,
-  permission: "session-history.read",
-  sessionAdmission: "required",
-});
-export const sessionHistoryReleaseCapability = defineNativeCapability({
-  bridge: { method: "release", namespace: "sessionHistory" },
-  channel: "comma:session-history:release",
-  handler: {
-    exportName: "NativeSessionHistoryProvider",
-    member: "release",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sessionHistory",
-  },
-  id: "sessionHistory.release",
-  input: sessionHistoryDemandSchema,
-  output: z.boolean(),
-  mock: false,
-  webFallback: false,
-  permission: "session-history.read",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Releases only this caller’s local history demand without credentials or network work.",
-});
-export const sessionHistoryStateChangedEvent = defineNativeEvent({
-  channel: "comma:session-history:state-changed",
-  id: "sessionHistory.state.changed",
-  payload: sessionHistoryEnvelopeSchema,
-  mock: mockSessionHistoryEnvelope,
-  permission: "session-history.read",
-  target: { type: "all" },
-});
-export const sessionHistoryStateLeaf = defineNativeState({
-  bridge: { method: "state", namespace: "sessionHistory" },
-  id: "sessionHistory.state",
-  get: sessionHistoryStateCapability,
-  subscribe: sessionHistoryStateChangedEvent,
-});
-
-export const chatRuntimeStateEnvelopeSchema = sessionBoundStateEnvelopeSchema(
-  chatRuntimeSnapshotSchema
-);
-const mockChatRuntimeStateEnvelope = chatRuntimeStateEnvelopeSchema.parse({
-  session: mockProductSessionLease,
-  snapshot: emptyChatRuntimeSnapshot,
-});
-
-export const chatStateCapability = defineNativeCapability({
-  bridge: { method: "state", namespace: "chat" },
-  channel: "comma:chat:state",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "state",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.state",
-  input: requiredSessionInputSchema,
-  mock: mockChatRuntimeStateEnvelope,
-  output: chatRuntimeStateEnvelopeSchema,
-  permission: "chat.state.read",
-  sessionAdmission: "required",
-  webFallback: mockChatRuntimeStateEnvelope,
-});
-
-export const chatStateChangedEvent = defineNativeEvent({
-  channel: "comma:chat:state-changed",
-  id: "chat.state.changed",
-  mock: mockChatRuntimeStateEnvelope,
-  payload: chatRuntimeStateEnvelopeSchema,
-  permission: chatStateCapability.permission,
-  target: { type: "all" },
-});
-
-export const chatStateLeaf = defineNativeState({
-  bridge: { method: "state", namespace: "chat" },
-  get: chatStateCapability,
-  id: "chat.state",
-  subscribe: chatStateChangedEvent,
-});
-
-export const chatRuntimeDraftsEnvelopeSchema = sessionBoundStateEnvelopeSchema(
-  chatRuntimeDraftsSnapshotSchema
-);
-const mockChatRuntimeDraftsEnvelope = chatRuntimeDraftsEnvelopeSchema.parse({
-  session: mockProductSessionLease,
-  snapshot: emptyChatRuntimeDraftsSnapshot,
-});
-
-export const chatDraftsCapability = defineNativeCapability({
-  bridge: { method: "drafts", namespace: "chat" },
-  channel: "comma:chat:drafts",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "drafts",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.drafts",
-  input: requiredSessionInputSchema,
-  mock: mockChatRuntimeDraftsEnvelope,
-  output: chatRuntimeDraftsEnvelopeSchema,
-  permission: "chat.state.read",
-  sessionAdmission: "required",
-  webFallback: mockChatRuntimeDraftsEnvelope,
-});
-
-// Drafts publish apart from chat.state so a keystroke never re-serializes
-// the retained transcripts to every window.
-export const chatDraftsChangedEvent = defineNativeEvent({
-  channel: "comma:chat:drafts-changed",
-  id: "chat.drafts.changed",
-  mock: mockChatRuntimeDraftsEnvelope,
-  payload: chatRuntimeDraftsEnvelopeSchema,
-  permission: chatStateCapability.permission,
-  target: { type: "all" },
-});
-
-export const chatDraftsLeaf = defineNativeState({
-  bridge: { method: "drafts", namespace: "chat" },
-  get: chatDraftsCapability,
-  id: "chat.drafts",
-  subscribe: chatDraftsChangedEvent,
 });
 
 export const messageNotificationTargetSchema = z
@@ -4400,549 +3975,8 @@ export const messageNotificationsEvent = defineNativeEvent({
   id: "messageNotifications.event",
   mock: mockMessageNotificationEvent,
   payload: messageNotificationEventSchema,
-  permission: chatStateCapability.permission,
+  permission: "chat.state.read",
   target: { type: "window", windowId: "win_main" },
-});
-
-export const unavailableSideChatPresentation = sideChatPresentationSchema.parse({
-  availableContentHeight: 600,
-  contentFrame: { height: 0, width: 0, x: 0, y: 0 },
-  displayId: 0,
-  kind: "side-chat.presentation",
-  offsetX: -539,
-  phase: "closed",
-  progress: 0,
-  protocolVersion: chatProtocolVersion,
-  revision: 0,
-  screenFrame: { height: 0, width: 0, x: 0, y: 0 },
-  windowFrame: { height: 0, width: 0, x: 0, y: 0 },
-});
-
-export const sideChatPresentationCapability = defineNativeCapability({
-  bridge: { method: "presentation", namespace: "sideChat" },
-  channel: "comma:side-chat:presentation",
-  handler: {
-    exportName: "SideChatProvider",
-    member: "presentation",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sideChat",
-  },
-  id: "sideChat.presentation",
-  input: z.void(),
-  mock: unavailableSideChatPresentation,
-  output: sideChatPresentationSchema,
-  permission: "side-chat.state.read",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Reads local Side Chat presentation geometry without Session state or authenticated transport.",
-  webFallback: unavailableSideChatPresentation,
-});
-
-export const sideChatPresentationChangedEvent = defineNativeEvent({
-  channel: "comma:side-chat:presentation-changed",
-  id: "sideChat.presentation.changed",
-  mock: unavailableSideChatPresentation,
-  payload: sideChatPresentationSchema,
-  permission: sideChatPresentationCapability.permission,
-  target: { type: "all" },
-});
-
-export const sideChatPresentationStateLeaf = defineNativeState({
-  bridge: { method: "presentation", namespace: "sideChat" },
-  get: sideChatPresentationCapability,
-  id: "sideChat.presentation",
-  subscribe: sideChatPresentationChangedEvent,
-});
-
-export const sideChatDebugSettingsCapability = defineNativeCapability({
-  bridge: { method: "debugSettings", namespace: "sideChat" },
-  channel: "comma:side-chat:debug-settings",
-  handler: {
-    exportName: "SideChatProvider",
-    member: "debugSettings",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sideChat",
-  },
-  id: "sideChat.debugSettings",
-  input: z.void(),
-  mock: defaultSideChatDebugSettings,
-  output: sideChatDebugSettingsSchema,
-  permission: "side-chat.debug-settings.read",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Reads local Side Chat debug settings without Session state or authenticated transport.",
-  webFallback: defaultSideChatDebugSettings,
-});
-
-export const sideChatDebugSettingsChangedEvent = defineNativeEvent({
-  channel: "comma:side-chat:debug-settings-changed",
-  id: "sideChat.debugSettings.changed",
-  mock: defaultSideChatDebugSettings,
-  payload: sideChatDebugSettingsSchema,
-  permission: sideChatDebugSettingsCapability.permission,
-  target: { type: "all" },
-});
-
-export const sideChatDebugSettingsStateLeaf = defineNativeState({
-  bridge: { method: "debugSettings", namespace: "sideChat" },
-  get: sideChatDebugSettingsCapability,
-  id: "sideChat.debugSettings",
-  subscribe: sideChatDebugSettingsChangedEvent,
-});
-
-export const sideChatUpdateDebugSettingsCapability = defineNativeCapability({
-  bridge: { method: "updateDebugSettings", namespace: "sideChat" },
-  channel: "comma:side-chat:update-debug-settings",
-  handler: {
-    exportName: "SideChatProvider",
-    member: "updateDebugSettings",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sideChat",
-  },
-  id: "sideChat.updateDebugSettings",
-  input: sideChatDebugSettingsPatchSchema,
-  mock: defaultSideChatDebugSettings,
-  output: sideChatDebugSettingsSchema,
-  permission: "side-chat.debug-settings.write",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Updates local Side Chat debug settings without Session state or authenticated transport.",
-  webFallback: defaultSideChatDebugSettings,
-});
-
-export const sideChatResetDebugSettingsCapability = defineNativeCapability({
-  bridge: { method: "resetDebugSettings", namespace: "sideChat" },
-  channel: "comma:side-chat:reset-debug-settings",
-  handler: {
-    exportName: "SideChatProvider",
-    member: "resetDebugSettings",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sideChat",
-  },
-  id: "sideChat.resetDebugSettings",
-  input: z.void(),
-  mock: defaultSideChatDebugSettings,
-  output: sideChatDebugSettingsSchema,
-  permission: "side-chat.debug-settings.write",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Resets local Side Chat debug settings without Session state or authenticated transport.",
-  webFallback: defaultSideChatDebugSettings,
-});
-
-export const sideChatSetContentSizeCapability = defineNativeCapability({
-  bridge: { method: "setContentSize", namespace: "sideChat" },
-  channel: "comma:side-chat:set-content-size",
-  handler: {
-    exportName: "SideChatProvider",
-    member: "setContentSize",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sideChat",
-  },
-  id: "sideChat.setContentSize",
-  // height reserves the window; visualHeight owns the backdrop and hit region.
-  input: sideChatContentSizeInputSchema,
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "side-chat.write",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Updates local Side Chat presentation geometry without Session state or authenticated transport.",
-  webFallback: { revision: 0 },
-});
-
-export const sideChatSetInteractiveProgressCapability = defineNativeCapability({
-  bridge: { method: "setInteractiveProgress", namespace: "sideChat" },
-  channel: "comma:side-chat:set-interactive-progress",
-  handler: {
-    exportName: "SideChatProvider",
-    member: "setInteractiveProgress",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sideChat",
-  },
-  id: "sideChat.setInteractiveProgress",
-  input: sideChatInteractiveProgressInputSchema,
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "side-chat.write",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Updates local Side Chat presentation progress without Session state or authenticated transport.",
-  webFallback: { revision: 0 },
-});
-
-export const sideChatFinishInteractiveProgressCapability = defineNativeCapability({
-  bridge: { method: "finishInteractiveProgress", namespace: "sideChat" },
-  channel: "comma:side-chat:finish-interactive-progress",
-  handler: {
-    exportName: "SideChatProvider",
-    member: "finishInteractiveProgress",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sideChat",
-  },
-  id: "sideChat.finishInteractiveProgress",
-  input: sideChatInteractiveCompletionInputSchema,
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "side-chat.write",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Settles local Side Chat presentation progress without Session state or authenticated transport.",
-  webFallback: { revision: 0 },
-});
-
-export const sideChatUpdateShortcutCapability = defineNativeCapability({
-  bridge: { method: "updateShortcut", namespace: "sideChat" },
-  channel: "comma:side-chat:update-shortcut",
-  handler: {
-    exportName: "SideChatProvider",
-    member: "updateShortcut",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sideChat",
-  },
-  id: "sideChat.updateShortcut",
-  input: sideChatShortcutBindingSchema,
-  mock: defaultSideChatShortcut,
-  output: sideChatShortcutBindingSchema,
-  permission: "side-chat.shortcut.write",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Updates the local Side Chat presentation shortcut without Session state or authenticated transport.",
-  webFallback: defaultSideChatShortcut,
-});
-
-export const sideChatCloseCapability = defineNativeCapability({
-  bridge: { method: "close", namespace: "sideChat" },
-  channel: "comma:side-chat:close",
-  handler: {
-    exportName: "SideChatProvider",
-    member: "close",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sideChat",
-  },
-  id: "sideChat.close",
-  input: z.void(),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "side-chat.write",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Closes the local Side Chat surface without Session state or authenticated transport.",
-  webFallback: { revision: 0 },
-});
-
-export const sideChatOpenSettingsCapability = defineNativeCapability({
-  bridge: { method: "openSettings", namespace: "sideChat" },
-  channel: "comma:side-chat:open-settings",
-  handler: {
-    exportName: "SideChatProvider",
-    member: "openSettings",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sideChat",
-  },
-  id: "sideChat.openSettings",
-  input: z.void(),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "side-chat.write",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Opens the main app settings dialog without authenticated transport.",
-  webFallback: { revision: 0 },
-});
-
-export const sideChatOpenTestWindowCapability = defineNativeCapability({
-  bridge: { method: "openTestWindow", namespace: "sideChat" },
-  channel: "comma:side-chat:open-test-window",
-  handler: {
-    exportName: "SideChatProvider",
-    member: "openTestWindow",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sideChat",
-  },
-  id: "sideChat.openTestWindow",
-  input: sideChatOpenTestWindowInputSchema,
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "side-chat.test-window.open",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Opens a local Side Chat test window without Session state or authenticated transport.",
-  webFallback: { revision: 0 },
-});
-
-export const sideChatCloseTestWindowCapability = defineNativeCapability({
-  bridge: { method: "closeTestWindow", namespace: "sideChat" },
-  channel: "comma:side-chat:close-test-window",
-  handler: {
-    exportName: "SideChatProvider",
-    member: "closeTestWindow",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "sideChat",
-  },
-  id: "sideChat.closeTestWindow",
-  input: z.void(),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "side-chat.test-window.close",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Closes a local Side Chat test window without Session state or authenticated transport.",
-  webFallback: { revision: 0 },
-});
-
-export const chatRetainCapability = defineNativeCapability({
-  bridge: { method: "retain", namespace: "chat" },
-  channel: "comma:chat:retain",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "retain",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.retain",
-  input: chatRetainInputSchema.extend({ session: sessionProductLeaseSchema }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatReleaseCapability = defineNativeCapability({
-  bridge: { method: "release", namespace: "chat" },
-  channel: "comma:chat:release",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "release",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.release",
-  input: chatReleaseInputSchema.extend({ session: sessionProductLeaseSchema }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatClearPresentationCapability = defineNativeCapability({
-  bridge: { method: "clearPresentation", namespace: "chat" },
-  channel: "comma:chat:clear-presentation",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "clearPresentation",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.clearPresentation",
-  input: chatLeasedTargetSchema.extend({ session: sessionProductLeaseSchema }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatSetDraftCapability = defineNativeCapability({
-  bridge: { method: "setDraft", namespace: "chat" },
-  channel: "comma:chat:set-draft",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "setDraft",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.setDraft",
-  input: chatLeasedSetDraftInputSchema.extend({
-    session: sessionProductLeaseSchema,
-  }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatBeginSendIntentCapability = defineNativeCapability({
-  bridge: { method: "beginSendIntent", namespace: "chat" },
-  channel: "comma:chat:begin-send-intent",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "beginSendIntent",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.beginSendIntent",
-  input: chatLeasedBeginSendIntentInputSchema.extend({
-    session: sessionProductLeaseSchema,
-  }),
-  mock: { draftEpoch: 0, revision: 0, sendIntentId: "mock-send-intent" },
-  output: chatBeginSendIntentReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: {
-    draftEpoch: 0,
-    revision: 0,
-    sendIntentId: "web-fallback-send-intent",
-  },
-});
-
-export const chatCancelSendIntentCapability = defineNativeCapability({
-  bridge: { method: "cancelSendIntent", namespace: "chat" },
-  channel: "comma:chat:cancel-send-intent",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "cancelSendIntent",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.cancelSendIntent",
-  input: chatLeasedBeginSendIntentInputSchema.extend({
-    session: sessionProductLeaseSchema,
-  }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatSendCapability = defineNativeCapability({
-  bridge: { method: "send", namespace: "chat" },
-  channel: "comma:chat:send",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "send",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.send",
-  input: chatLeasedSendInputSchema.extend({ session: sessionProductLeaseSchema }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatRetryCapability = defineNativeCapability({
-  bridge: { method: "retry", namespace: "chat" },
-  channel: "comma:chat:retry",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "retry",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.retry",
-  input: chatLeasedClientRequestInputSchema.extend({
-    session: sessionProductLeaseSchema,
-  }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatDiscardCapability = defineNativeCapability({
-  bridge: { method: "discard", namespace: "chat" },
-  channel: "comma:chat:discard",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "discard",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.discard",
-  input: chatLeasedClientRequestInputSchema.extend({
-    session: sessionProductLeaseSchema,
-  }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatAcceptTaskReviewCapability = defineNativeCapability({
-  bridge: { method: "acceptTaskReview", namespace: "chat" },
-  channel: "comma:chat:accept-task-review",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "acceptTaskReview",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.acceptTaskReview",
-  input: chatLeasedTargetSchema.extend({
-    session: sessionProductLeaseSchema,
-    reviewVersion: z.number().int().nonnegative(),
-  }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatRefreshCapability = defineNativeCapability({
-  bridge: { method: "refresh", namespace: "chat" },
-  channel: "comma:chat:refresh",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "refresh",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.refresh",
-  input: chatLeasedTargetSchema.extend({ session: sessionProductLeaseSchema }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatAttachCapability = defineNativeCapability({
-  bridge: { method: "attach", namespace: "chat" },
-  channel: "comma:chat:attach",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "attach",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.attach",
-  input: chatLeasedAttachInputSchema.extend({ session: sessionProductLeaseSchema }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  payloadClass: "binary",
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatAttachLocalFilesCapability = defineNativeCapability({
-  bridge: { method: "attachLocalFiles", namespace: "chat" },
-  channel: "comma:chat:attach-local-files",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "attachLocalFiles",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.attachLocalFiles",
-  input: chatLeasedAttachLocalFilesInputSchema.extend({
-    session: sessionProductLeaseSchema,
-  }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
 });
 
 export const chatPickAttachmentsRendererInputSchema =
@@ -4990,150 +4024,6 @@ export const chatPickAttachmentsCapability = defineNativeCapability({
   },
 });
 
-export const chatPresentInSideChatCapability = defineNativeCapability({
-  bridge: { method: "presentInSideChat", namespace: "chat" },
-  channel: "comma:chat:present-in-side-chat",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "presentInSideChat",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.presentInSideChat",
-  input: chatLeasedTargetSchema.extend({ session: sessionProductLeaseSchema }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatResolveWorkspaceChatCapability = defineNativeCapability({
-  bridge: { method: "resolveWorkspaceChat", namespace: "chat" },
-  channel: "comma:chat:resolve-workspace-chat",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "resolveWorkspaceChat",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.resolveWorkspaceChat",
-  input: requiredSessionInputSchema,
-  mock: { status: "hidden" },
-  output: chatWorkspaceResolutionSchema,
-  permission: "chat.state.read",
-  sessionAdmission: "required",
-  webFallback: { status: "hidden" },
-});
-
-export const chatListSkillsCapability = defineNativeCapability({
-  bridge: { method: "listSkills", namespace: "chat" },
-  channel: "comma:chat:list-skills",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "listSkills",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.listSkills",
-  input: chatWorkspaceSkillsInputSchema.extend({
-    session: sessionProductLeaseSchema,
-  }),
-  mock: [],
-  output: z.array(chatSkillSchema),
-  permission: "chat.state.read",
-  sessionAdmission: "required",
-  webFallback: [],
-});
-
-const unavailableGroupImageBytes = new Uint8Array();
-
-export const chatReadGroupImageCapability = defineNativeCapability({
-  bridge: { method: "readGroupImage", namespace: "chat" },
-  channel: "comma:chat:read-group-image",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "readGroupImage",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.readGroupImage",
-  input: z.discriminatedUnion("source", [
-    chatReadUploadedGroupImageInputSchema.extend({
-      session: sessionProductLeaseSchema,
-    }),
-    chatReadAgentBlobImageInputSchema.extend({
-      session: sessionProductLeaseSchema,
-    }),
-  ]),
-  mock: unavailableGroupImageBytes,
-  output: chatGroupImagePreviewSchema,
-  payloadClass: "binary",
-  permission: "chat.state.read",
-  sessionAdmission: "required",
-  webFallback: unavailableGroupImageBytes,
-});
-
-export const chatAcknowledgeIntakeFailuresCapability = defineNativeCapability({
-  bridge: { method: "acknowledgeIntakeFailures", namespace: "chat" },
-  channel: "comma:chat:acknowledge-intake-failures",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "acknowledgeIntakeFailures",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.acknowledgeIntakeFailures",
-  input: chatLeasedAcknowledgeIntakeFailuresInputSchema.extend({
-    session: sessionProductLeaseSchema,
-  }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatRemoveAttachmentCapability = defineNativeCapability({
-  bridge: { method: "removeAttachment", namespace: "chat" },
-  channel: "comma:chat:remove-attachment",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "removeAttachment",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.removeAttachment",
-  input: chatLeasedAttachmentIdInputSchema.extend({
-    session: sessionProductLeaseSchema,
-  }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
-export const chatRetryAttachmentCapability = defineNativeCapability({
-  bridge: { method: "retryAttachment", namespace: "chat" },
-  channel: "comma:chat:retry-attachment",
-  handler: {
-    exportName: "NativeChatProvider",
-    member: "retryAttachment",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "chat",
-  },
-  id: "chat.retryAttachment",
-  input: chatLeasedAttachmentIdInputSchema.extend({
-    session: sessionProductLeaseSchema,
-  }),
-  mock: { revision: 0 },
-  output: chatCommandReceiptSchema,
-  permission: "chat.write",
-  sessionAdmission: "required",
-  webFallback: { revision: 0 },
-});
-
 const mockSessionAuthority = {
   authorityInstanceId: "mock-electron-main",
   kind: "electron_main",
@@ -5149,24 +4039,6 @@ const mockSignedOutSessionSnapshot = signedOutSessionSnapshotSchema.parse({
   reason: "no_session",
   revision: 1,
   session: null,
-});
-
-const mockSignedInSessionSnapshot = signedInSessionSnapshotSchema.parse({
-  authority: mockSessionAuthority,
-  cleanup: { revocation: "idle" },
-  contractVersion: 1,
-  generation: 1,
-  phase: "signed_in",
-  principal: {
-    email: "mock@example.com",
-    userId: "mock-user",
-  },
-  revision: 2,
-  session: {
-    audience: "https://api.mock.comma.invalid",
-    expiresAtEpochSeconds: 1_900_000_000,
-    sessionId: "mock-session",
-  },
 });
 
 const unsupportedNativeSessionSnapshot = indeterminateSessionSnapshotSchema.parse({
@@ -5188,37 +4060,6 @@ const unsupportedNativeSessionSnapshot = indeterminateSessionSnapshotSchema.pars
   revision: 0,
   session: null,
 });
-
-const mockSessionAbsenceExpectation = {
-  authorityInstanceId: mockSessionAuthority.authorityInstanceId,
-  expectedSessionId: null,
-  generation: 0,
-} as const;
-
-const mockSessionAuthAttempt = {
-  attemptId: "mock-auth-attempt",
-  expected: mockSessionAbsenceExpectation,
-} as const;
-
-function unsupportedNativeSessionOperation<Operation extends SessionOperationName>(
-  operation: Operation
-) {
-  return {
-    error: {
-      code: "unsupported",
-      operation,
-      recovery: "none",
-      recoveryRef: {
-        authorityInstanceId:
-          unsupportedNativeSessionSnapshot.authority.authorityInstanceId,
-        generation: unsupportedNativeSessionSnapshot.generation,
-        revision: unsupportedNativeSessionSnapshot.revision,
-      },
-      retryable: false,
-    },
-    ok: false,
-  } as const;
-}
 
 export const sessionStateCapability = defineNativeCapability({
   bridge: { method: "state", namespace: "session" },
@@ -5252,144 +4093,6 @@ export const sessionStateLeaf = defineNativeState({
   get: sessionStateCapability,
   id: "session.state",
   subscribe: sessionStateChangedEvent,
-});
-
-export const sessionRequestEmailLoginCapability = defineNativeCapability({
-  bridge: { method: "requestEmailLogin", namespace: "session" },
-  channel: "comma:session:request-email-login",
-  handler: {
-    exportName: "SessionProvider",
-    member: "requestEmailLogin",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "session",
-  },
-  id: "session.requestEmailLogin",
-  input: sessionRequestEmailLoginInputSchema,
-  mock: {
-    ok: true,
-    value: {
-      attempt: mockSessionAuthAttempt,
-      challengeId: "mock-email-challenge",
-    },
-  },
-  output: sessionRequestEmailLoginResultSchema,
-  permission: "session.authenticate",
-  sessionAdmission: "lifecycle",
-  webFallback: unsupportedNativeSessionOperation("request_email_login"),
-});
-
-export const sessionVerifyEmailLoginCapability = defineNativeCapability({
-  bridge: { method: "verifyEmailLogin", namespace: "session" },
-  channel: "comma:session:verify-email-login",
-  handler: {
-    exportName: "SessionProvider",
-    member: "verifyEmailLogin",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "session",
-  },
-  id: "session.verifyEmailLogin",
-  input: sessionVerifyLoginInputSchema,
-  mock: { ok: true, value: mockSignedInSessionSnapshot },
-  output: sessionVerifyEmailLoginResultSchema,
-  permission: "session.authenticate",
-  sessionAdmission: "lifecycle",
-  webFallback: unsupportedNativeSessionOperation("verify_email_login"),
-});
-
-export const sessionSignInWithGoogleCapability = defineNativeCapability({
-  bridge: { method: "signInWithGoogle", namespace: "session" },
-  channel: "comma:session:sign-in-with-google",
-  handler: {
-    exportName: "SessionProvider",
-    member: "signInWithGoogle",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "session",
-  },
-  id: "session.signInWithGoogle",
-  input: sessionGoogleSignInInputSchema,
-  mock: {
-    ok: true,
-    value: {
-      snapshot: mockSignedInSessionSnapshot,
-      status: "signed_in",
-    },
-  },
-  output: sessionGoogleSignInResultSchema,
-  permission: "session.authenticate",
-  sessionAdmission: "lifecycle",
-  webFallback: unsupportedNativeSessionOperation("sign_in_with_google"),
-});
-
-export const sessionVerifyGoogleLinkCapability = defineNativeCapability({
-  bridge: { method: "verifyGoogleLink", namespace: "session" },
-  channel: "comma:session:verify-google-link",
-  handler: {
-    exportName: "SessionProvider",
-    member: "verifyGoogleLink",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "session",
-  },
-  id: "session.verifyGoogleLink",
-  input: sessionVerifyLoginInputSchema,
-  mock: { ok: true, value: mockSignedInSessionSnapshot },
-  output: sessionVerifyGoogleLinkResultSchema,
-  permission: "session.authenticate",
-  sessionAdmission: "lifecycle",
-  webFallback: unsupportedNativeSessionOperation("verify_google_link"),
-});
-
-export const sessionCancelAuthAttemptCapability = defineNativeCapability({
-  bridge: { method: "cancelAuthAttempt", namespace: "session" },
-  channel: "comma:session:cancel-auth-attempt",
-  handler: {
-    exportName: "SessionProvider",
-    member: "cancelAuthAttempt",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "session",
-  },
-  id: "session.cancelAuthAttempt",
-  input: sessionCancelAuthAttemptInputSchema,
-  mock: { ok: true, value: mockSignedOutSessionSnapshot },
-  output: sessionCancelAuthAttemptResultSchema,
-  permission: "session.authenticate",
-  sessionAdmission: "lifecycle",
-  webFallback: unsupportedNativeSessionOperation("cancel_auth_attempt"),
-});
-
-export const sessionReconcileCapability = defineNativeCapability({
-  bridge: { method: "reconcile", namespace: "session" },
-  channel: "comma:session:reconcile",
-  handler: {
-    exportName: "SessionProvider",
-    member: "reconcile",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "session",
-  },
-  id: "session.reconcile",
-  input: sessionReconcileInputSchema,
-  mock: { ok: true, value: mockSignedOutSessionSnapshot },
-  output: sessionReconcileResultSchema,
-  permission: "session.reconcile",
-  sessionAdmission: "lifecycle",
-  webFallback: unsupportedNativeSessionOperation("reconcile"),
-});
-
-export const sessionSignOutCapability = defineNativeCapability({
-  bridge: { method: "signOut", namespace: "session" },
-  channel: "comma:session:sign-out",
-  handler: {
-    exportName: "SessionProvider",
-    member: "signOut",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "session",
-  },
-  id: "session.signOut",
-  input: sessionSignOutInputSchema,
-  mock: { ok: true, value: mockSignedOutSessionSnapshot },
-  output: sessionSignOutResultSchema,
-  permission: "session.sign-out",
-  sessionAdmission: "lifecycle",
-  webFallback: unsupportedNativeSessionOperation("sign_out"),
 });
 
 export const localFileSnapshotSchema = z
@@ -5525,70 +4228,6 @@ export const localFilesPreviewCapability = defineNativeCapability({
   webFallback: unavailableLocalFilesPreviewResult,
 });
 
-export const localDataStatusSchema = z.object({
-  available: z.boolean(),
-  database: z.object({
-    latestSchemaVersion: z.number(),
-    schemaVersion: z.number(),
-    status: z.enum(["ready", "unavailable"]),
-  }),
-  fileStore: z.object({
-    diskUsage: z.number(),
-    missingReferences: z.number(),
-    status: z.enum(["ready", "unavailable"]),
-    storedEntries: z.number(),
-  }),
-  observability: z.object({
-    jsonlEnabled: z.boolean(),
-    location: z.string(),
-    redacted: z.literal(true),
-    status: z.enum(["ready", "disabled"]),
-  }),
-});
-
-export type LocalDataStatus = z.infer<typeof localDataStatusSchema>;
-
-const unavailableLocalDataStatus: LocalDataStatus = {
-  available: false,
-  database: {
-    latestSchemaVersion: 0,
-    schemaVersion: 0,
-    status: "unavailable",
-  },
-  fileStore: {
-    diskUsage: 0,
-    missingReferences: 0,
-    status: "unavailable",
-    storedEntries: 0,
-  },
-  observability: {
-    jsonlEnabled: false,
-    location: "unavailable",
-    redacted: true,
-    status: "disabled",
-  },
-};
-
-export const localDataStatusCapability = defineNativeCapability({
-  bridge: { method: "status", namespace: "localData" },
-  channel: "comma:local-data:status",
-  handler: {
-    exportName: "LocalDataStatusProvider",
-    member: "status",
-    module: "../../../apps/electron/src/main/modules/native/index",
-    provider: "localData",
-  },
-  id: "localData.status",
-  input: z.void(),
-  mock: unavailableLocalDataStatus,
-  output: localDataStatusSchema,
-  permission: "local-data.status.read",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Reports rebuildable SQLite, file-store, and observability health without reading Session state.",
-  webFallback: unavailableLocalDataStatus,
-});
-
 export const transportStatusSchema = z.object({
   available: z.boolean(),
   capabilities: z.object({
@@ -5653,7 +4292,45 @@ export const computeNodeOperationSchema = z.strictObject({
 
 export type ComputeNodeOperation = z.infer<typeof computeNodeOperationSchema>;
 
+/** Why the last operation needs attention. The renderer owns the localized text. */
+export const computeNodeProblemSchema = z.enum([
+  "setup_unknown",
+  "setup_failed",
+  "setup_handoff_expired",
+  "setup_blocked",
+  "components_failed",
+  "connection_failed",
+  "connection_retry_limit",
+  "authorization_attention",
+  "rebuild_failed",
+  "repair_failed",
+  "stop_failed",
+  "removal_failed",
+  "removal_unconfirmed",
+  "remote_revocation_unconfirmed",
+  "intent_unreadable",
+  "operation_unknown",
+  "operation_failed",
+]);
+
+export type ComputeNodeProblem = z.infer<typeof computeNodeProblemSchema>;
+
 export const computeNodeStateSchema = z.strictObject({
+  setup: z
+    .strictObject({
+      components: z.enum(["not_started", "preparing", "ready", "failed", "unknown"]),
+      connection: z.enum(["not_started", "connecting", "ready", "failed", "unknown"]),
+      shell: z.enum([
+        "not_initialized",
+        "preparing",
+        "ready",
+        "failed",
+        "deleting",
+        "deleted",
+        "unknown",
+      ]),
+    })
+    .optional(),
   preparation: z
     .strictObject({
       source: z.enum(["download", "local"]),
@@ -5669,6 +4346,8 @@ export const computeNodeStateSchema = z.strictObject({
         "ready",
         "failed",
       ]),
+      /** The last failed attempt's error, kept until the next attempt starts. */
+      error: z.string().min(1).max(4096).optional(),
     })
     .optional(),
   confirmationId: z.string().min(1).max(160).optional(),
@@ -5689,7 +4368,6 @@ export const computeNodeStateSchema = z.strictObject({
       "operation_unknown",
       "needs_attention",
       "removal_incomplete",
-      "installation_receipt_missing",
       "shell_initialization_pending",
       "authorization_unavailable",
       "capability_missing",
@@ -5719,7 +4397,9 @@ export const computeNodeStateSchema = z.strictObject({
     runtimeReadiness: z.enum(["unavailable", "starting", "ready", "degraded"]),
     workActivity: z.enum(["idle", "active", "unknown"]),
   }),
-  problem: z.string().min(1).optional(),
+  problem: computeNodeProblemSchema.optional(),
+  /** The raw error text behind `problem`, for diagnostics only. */
+  problemDetail: z.string().min(1).max(4096).optional(),
   revision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
   status: computeNodeStatusSchema,
 });
@@ -5770,6 +4450,9 @@ export const hostMaintenanceInputSchema = z
   .refine((value) => value.action !== "update" || value.dataPolicy === "preserve");
 export type HostMaintenanceInput = z.infer<typeof hostMaintenanceInputSchema>;
 export const hostMaintenanceStateSchema = z.strictObject({
+  preparationPhase: computeNodeStateSchema.shape.preparation
+    .unwrap()
+    .shape.phase.optional(),
   installation: z.enum(["installed", "not_installed", "unreadable"]),
   installedReleaseId: z.string().max(200).optional(),
   selectedReleaseId: z.string().max(200),
@@ -5965,7 +4648,15 @@ export const localComputeResumeCapability = defineNativeCapability({
 export const computeRecoveryCandidatesSchema = z.strictObject({
   confirmationId: z.string().min(1).max(160),
   candidates: z
-    .array(z.strictObject({ key: z.string().uuid(), label: z.string().max(80) }))
+    .array(
+      z.strictObject({
+        key: z.string().uuid(),
+        label: z.string().max(80),
+        workspaceId: z.string().max(160).optional(),
+        endpoint: z.string().max(512).optional(),
+        machine: z.string().max(80).optional(),
+      })
+    )
     .max(32),
   nextCursor: z.string().max(200).optional(),
 });
@@ -6384,10 +5075,11 @@ export const audioCaptureDriveFileSchema = z
   .object({
     space: z.string().min(1).max(255),
     // WAV remains valid for recordings saved before AAC storage was introduced.
+    // A meeting's M4A is named by its platform and times (`Zoom 2026-10-09 14.30-15.15 (2).m4a`).
     path: z
       .string()
       .regex(
-        /^recording\/(?:[a-zA-Z0-9][a-zA-Z0-9._-]{0,200}\.wav|\d{4}-\d{2}-\d{2}\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,200}\.m4a)$/
+        /^recording\/(?:[a-zA-Z0-9][a-zA-Z0-9._-]{0,200}\.wav|\d{4}-\d{2}-\d{2}\/[a-zA-Z0-9][a-zA-Z0-9 ()._-]{0,200}\.m4a)$/
       ),
   })
   .strict();
@@ -6814,173 +5506,13 @@ export const meetingPresenceStateLeaf = defineNativeState({
   id: "meetingPresence.state",
   subscribe: meetingPresenceStateChangedEvent,
 });
-export const meetingTaskReferenceSchema = z
-  .object({ groupId: z.string(), taskId: z.string() })
-  .strict();
-export const meetingTaskSyncSchema = z
-  .object({
-    task: meetingTaskReferenceSchema.optional(),
-    status: z.enum(["pending", "synced", "error"]),
-    error: z.string().max(4096).optional(),
-  })
-  .strict();
-// Main owns automatic meeting recording and the shared desktop/client presentation.
-export const meetingRecorderStateSchema = z
-  .object({
-    clientVisible: z.boolean(),
-    hideRecorder: z.boolean().optional(),
-    generation: z.number().int().nonnegative(),
-    phase: z.enum([
-      "idle",
-      "detected",
-      "starting",
-      "recording",
-      "paused",
-      "saving",
-      "error",
-    ]),
-    revision: z.number().int().positive(),
-    meeting: meetingPresenceMeetingSchema.nullable(),
-    taskSync: meetingTaskSyncSchema.optional(),
-    capture: audioCaptureStateSchema,
-    error: z.string().max(4096).optional(),
-    saved: z
-      .object({
-        receiptId: z.number().int().positive(),
-        summary: z.enum(["pending", "queued", "error"]).optional(),
-        summaryError: z.string().max(4096).optional(),
-        task: meetingTaskReferenceSchema.optional(),
-        smartSummary: z.boolean().optional(),
-        archive: z.enum(["done", "error"]).optional(),
-        recording: audioCaptureRecordingSchema,
-      })
-      .strict()
-      .nullable(),
-  })
-  .strict();
-export type MeetingRecorderState = z.infer<typeof meetingRecorderStateSchema>;
-export const unavailableMeetingRecorderState: MeetingRecorderState = {
-  clientVisible: false,
-  phase: "idle",
-  revision: 1,
-  generation: 0,
-  meeting: null,
-  capture: unavailableAudioCaptureState,
-  saved: null,
-};
-export const meetingRecorderStateCapability = defineNativeCapability({
-  bridge: { method: "state", namespace: "meetingRecorder" },
-  channel: "comma:meeting-recorder:state",
-  handler: {
-    exportName: "MeetingRecorderProvider",
-    member: "state",
-    module: "../../../apps/electron/src/main/modules/meeting-recorder/index",
-    provider: "meetingRecorder",
-  },
-  id: "meetingRecorder.state",
-  input: z.void(),
-  output: meetingRecorderStateSchema,
-  mock: unavailableMeetingRecorderState,
-  webFallback: unavailableMeetingRecorderState,
-  permission: "meeting-recorder.read",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Controls only Main's current meeting presentation; Main admits capture and file operations against its current Session authority.",
-});
-export const meetingRecorderRetryTaskSyncCapability = defineNativeCapability({
-  bridge: { method: "retryTaskSync", namespace: "meetingRecorder" },
-  channel: "comma:meeting-recorder:retry-task-sync",
-  handler: {
-    exportName: "MeetingRecorderProvider",
-    member: "retryTaskSync",
-    module: "../../../apps/electron/src/main/modules/meeting-recorder/index",
-    provider: "meetingRecorder",
-  },
-  id: "meetingRecorder.retryTaskSync",
-  input: z.void(),
-  output: meetingRecorderStateSchema,
-  mock: unavailableMeetingRecorderState,
-  webFallback: unavailableMeetingRecorderState,
-  permission: "meeting-recorder.control",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Retries only Main's bounded saved meeting journal for the current account; Main-owned session admission fences each network request.",
-});
-
-export const meetingRecorderActionCapability = defineNativeCapability({
-  bridge: { method: "action", namespace: "meetingRecorder" },
-  channel: "comma:meeting-recorder:action",
-  handler: {
-    exportName: "MeetingRecorderProvider",
-    member: "action",
-    module: "../../../apps/electron/src/main/modules/meeting-recorder/index",
-    provider: "meetingRecorder",
-  },
-  id: "meetingRecorder.action",
-  input: z
-    .object({
-      action: z.enum(["start", "dismiss", "pause", "resume", "stop", "discard"]),
-      meetingKey: z.string().min(1).max(320),
-      generation: z.number().int().nonnegative(),
-    })
-    .strict(),
-  output: meetingRecorderStateSchema,
-  mock: unavailableMeetingRecorderState,
-  webFallback: unavailableMeetingRecorderState,
-  permission: "meeting-recorder.control",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Controls only Main's current meeting presentation; Main admits capture and file operations against its current Session authority.",
-});
-export const meetingRecorderSelectMicrophoneCapability = defineNativeCapability({
-  bridge: { method: "selectMicrophone", namespace: "meetingRecorder" },
-  channel: "comma:meeting-recorder:selectMicrophone",
-  handler: {
-    exportName: "MeetingRecorderProvider",
-    member: "selectMicrophone",
-    module: "../../../apps/electron/src/main/modules/meeting-recorder/index",
-    provider: "meetingRecorder",
-  },
-  id: "meetingRecorder.selectMicrophone",
-  input: z
-    .object({
-      deviceId: z.string().max(512).nullable(),
-      meetingKey: z.string().min(1).max(320),
-      generation: z.number().int().nonnegative(),
-    })
-    .strict(),
-  output: meetingRecorderStateSchema,
-  mock: unavailableMeetingRecorderState,
-  webFallback: unavailableMeetingRecorderState,
-  permission: "meeting-recorder.control",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Controls only Main's current meeting presentation; Main admits capture and file operations against its current Session authority.",
-});
-export const meetingRecorderAcknowledgeSavedCapability = defineNativeCapability({
-  bridge: { method: "acknowledgeSaved", namespace: "meetingRecorder" },
-  channel: "comma:meeting-recorder:acknowledgeSaved",
-  handler: {
-    exportName: "MeetingRecorderProvider",
-    member: "acknowledgeSaved",
-    module: "../../../apps/electron/src/main/modules/meeting-recorder/index",
-    provider: "meetingRecorder",
-  },
-  id: "meetingRecorder.acknowledgeSaved",
-  input: z.object({ receiptId: z.number().int().positive() }).strict(),
-  output: z.void(),
-  mock: undefined,
-  webFallback: undefined,
-  permission: "meeting-recorder.receipt",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Controls only Main's current meeting presentation; Main admits capture and file operations against its current Session authority.",
-});
+// The recorder window's geometry and pointer handling: Main owns the accessory window. What the recorder shows and
+// does is the client core's (its `meetingRecorder` topic and calls).
 export const meetingRecorderSetInteractiveCapability = defineNativeCapability({
   bridge: { method: "setInteractive", namespace: "meetingRecorder" },
   channel: "comma:meeting-recorder:setInteractive",
   handler: {
-    exportName: "MeetingRecorderProvider",
+    exportName: "MeetingRecorderWindowProvider",
     member: "setInteractive",
     module: "../../../apps/electron/src/main/modules/meeting-recorder/index",
     provider: "meetingRecorder",
@@ -6993,7 +5525,7 @@ export const meetingRecorderSetInteractiveCapability = defineNativeCapability({
   permission: "meeting-recorder.window",
   sessionAdmission: "local_only",
   sessionAdmissionRationale:
-    "Controls only Main's current meeting presentation; Main admits capture and file operations against its current Session authority.",
+    "Changes only whether the recorder accessory window takes the pointer; Main owns the window.",
 });
 export const meetingRecorderWindowLayoutSchema = z
   .object({
@@ -7018,7 +5550,7 @@ export const meetingRecorderLayoutWindowCapability = defineNativeCapability({
   bridge: { method: "layoutWindow", namespace: "meetingRecorder" },
   channel: "comma:meeting-recorder:layoutWindow",
   handler: {
-    exportName: "MeetingRecorderProvider",
+    exportName: "MeetingRecorderWindowProvider",
     member: "layoutWindow",
     module: "../../../apps/electron/src/main/modules/meeting-recorder/index",
     provider: "meetingRecorder",
@@ -7037,7 +5569,7 @@ export const meetingRecorderDragWindowCapability = defineNativeCapability({
   bridge: { method: "dragWindow", namespace: "meetingRecorder" },
   channel: "comma:meeting-recorder:dragWindow",
   handler: {
-    exportName: "MeetingRecorderProvider",
+    exportName: "MeetingRecorderWindowProvider",
     member: "dragWindow",
     module: "../../../apps/electron/src/main/modules/meeting-recorder/index",
     provider: "meetingRecorder",
@@ -7051,20 +5583,6 @@ export const meetingRecorderDragWindowCapability = defineNativeCapability({
   sessionAdmission: "local_only",
   sessionAdmissionRationale:
     "Changes only the bounded recorder accessory geometry; Main owns its screen placement.",
-});
-export const meetingRecorderStateChangedEvent = defineNativeEvent({
-  channel: "comma:meeting-recorder:state-changed",
-  id: "meetingRecorder.state.changed",
-  mock: unavailableMeetingRecorderState,
-  payload: meetingRecorderStateSchema,
-  permission: meetingRecorderStateCapability.permission,
-  target: { type: "all" },
-});
-export const meetingRecorderStateLeaf = defineNativeState({
-  bridge: { method: "state", namespace: "meetingRecorder" },
-  get: meetingRecorderStateCapability,
-  id: "meetingRecorder.state",
-  subscribe: meetingRecorderStateChangedEvent,
 });
 // -- airDrop ----------------------------------------------------------------
 //
@@ -7380,108 +5898,6 @@ export const synchronicityListCapability = defineNativeCapability({
   webFallback: emptySynchronicityListResult,
 });
 
-// Drive metadata queries are independent of the Drive route and its sync actions.
-export const driveCatalogStateSchema = z
-  .object({
-    revision: z.number().int().nonnegative(),
-    status: z.enum(["idle", "loading", "ready", "error"]),
-    reason: z.string().optional(),
-  })
-  .strict();
-export type DriveCatalogState = z.infer<typeof driveCatalogStateSchema>;
-const idleDriveCatalog: DriveCatalogState = { revision: 0, status: "idle" };
-export const driveCatalogCursorSchema = z
-  .object({
-    revision: z.number().int().nonnegative(),
-    offset: z.number().int().nonnegative(),
-    query: z.string().max(1024),
-  })
-  .strict();
-export const driveCatalogQueryInputSchema = z
-  .object({
-    query: z.string().max(256),
-    limit: z.number().int().min(1).max(50),
-    cursor: driveCatalogCursorSchema.optional(),
-    retry: z.boolean().optional(),
-    refresh: z.boolean().optional(),
-  })
-  .strict();
-export type DriveCatalogQueryInput = z.infer<typeof driveCatalogQueryInputSchema>;
-export const driveCatalogItemSchema = z
-  .object({
-    spaceId: z.string(),
-    spaceName: z.string(),
-    entry: synchronicityEntrySchema,
-  })
-  .strict();
-export type DriveCatalogItem = z.infer<typeof driveCatalogItemSchema>;
-export const driveCatalogQueryResultSchema = z
-  .object({
-    state: driveCatalogStateSchema,
-    items: z.array(driveCatalogItemSchema).max(50),
-    nextCursor: driveCatalogCursorSchema.optional(),
-    reset: z.boolean(),
-  })
-  .strict();
-export type DriveCatalogQueryResult = z.infer<typeof driveCatalogQueryResultSchema>;
-const emptyDriveCatalogQuery: DriveCatalogQueryResult = {
-  state: idleDriveCatalog,
-  items: [],
-  reset: false,
-};
-export const driveCatalogQueryCapability = defineNativeCapability({
-  bridge: { method: "query", namespace: "driveCatalog" },
-  channel: "comma:drive-catalog:query",
-  handler: {
-    exportName: "DriveCatalogService",
-    member: "query",
-    module: "../../../apps/electron/src/main/modules/synchronicity/catalog",
-    provider: "driveCatalog",
-  },
-  id: "driveCatalog.query",
-  input: driveCatalogQueryInputSchema,
-  output: driveCatalogQueryResultSchema,
-  mock: emptyDriveCatalogQuery,
-  webFallback: emptyDriveCatalogQuery,
-  permission: "synchronicity.read",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Queries metadata from this installation's local Drive node, under the existing local Drive authority.",
-});
-export const driveCatalogStateCapability = defineNativeCapability({
-  bridge: { method: "state", namespace: "driveCatalog" },
-  channel: "comma:drive-catalog:state",
-  handler: {
-    exportName: "DriveCatalogService",
-    member: "state",
-    module: "../../../apps/electron/src/main/modules/synchronicity/catalog",
-    provider: "driveCatalog",
-  },
-  id: "driveCatalog.state",
-  input: z.void(),
-  output: driveCatalogStateSchema,
-  mock: idleDriveCatalog,
-  webFallback: idleDriveCatalog,
-  permission: "synchronicity.read",
-  sessionAdmission: "local_only",
-  sessionAdmissionRationale:
-    "Reads the local Drive metadata query owner's refresh state.",
-});
-export const driveCatalogChangedEvent = defineNativeEvent({
-  channel: "comma:drive-catalog:changed",
-  id: "driveCatalog.state.changed",
-  payload: driveCatalogStateSchema,
-  mock: idleDriveCatalog,
-  permission: driveCatalogStateCapability.permission,
-  target: { type: "all" },
-});
-export const driveCatalogStateLeaf = defineNativeState({
-  bridge: { method: "state", namespace: "driveCatalog" },
-  get: driveCatalogStateCapability,
-  subscribe: driveCatalogChangedEvent,
-  id: "driveCatalog.state",
-});
-
 /** Renderer preview ceiling; downloads use the separate Main-owned stream. */
 export const synchronicityReadMaxBytes = fileDownloadMaxBytes;
 
@@ -7576,6 +5992,60 @@ export const synchronicitySaveDownloadCapability = defineNativeCapability({
   sessionAdmissionRationale:
     "Streams verified node content into the operating-system Downloads directory without Session state or authenticated transport.",
   webFallback: unavailableFilesSaveDownloadResult,
+});
+
+export const synchronicityOpenStreamInputSchema = z
+  .object({
+    /** The media type the stream is served as; only playable media streams. */
+    contentType: z.string().regex(/^(?:audio|video)\/[a-z0-9][a-z0-9.+-]{0,126}$/),
+    path: z.string().min(1),
+    /** `newest` (default), `strict`, or `origin=<id>`. */
+    policy: z.string().optional(),
+    space: z.string().min(1),
+  })
+  .strict();
+
+export type SynchronicityOpenStreamInput = z.infer<
+  typeof synchronicityOpenStreamInputSchema
+>;
+
+export const synchronicityOpenStreamResultSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("opened"),
+      /** An unguessable `comma-drive:` URL serving the selected object with HTTP ranges. */
+      url: z.string().regex(/^comma-drive:\/\/stream\/[0-9a-f-]{36}$/),
+    })
+    .strict(),
+  z.object({ status: z.literal("unavailable") }).strict(),
+]);
+
+export type SynchronicityOpenStreamResult = z.infer<
+  typeof synchronicityOpenStreamResultSchema
+>;
+
+const unavailableSynchronicityOpenStreamResult: SynchronicityOpenStreamResult = {
+  status: "unavailable",
+};
+
+export const synchronicityOpenStreamCapability = defineNativeCapability({
+  bridge: { method: "openStream", namespace: "synchronicity" },
+  channel: "comma:synchronicity:open-stream",
+  handler: {
+    exportName: "SynchronicityProvider",
+    member: "openStream",
+    module: "../../../apps/electron/src/main/modules/synchronicity/index",
+    provider: "synchronicity",
+  },
+  id: "synchronicity.openStream",
+  input: synchronicityOpenStreamInputSchema,
+  mock: unavailableSynchronicityOpenStreamResult,
+  output: synchronicityOpenStreamResultSchema,
+  permission: "synchronicity.read",
+  sessionAdmission: "local_only",
+  sessionAdmissionRationale:
+    "Pins one verified node object behind a Main-served range URL without Session state or authenticated transport.",
+  webFallback: unavailableSynchronicityOpenStreamResult,
 });
 
 export type SynchronicityOpenLocalRootResult = FilesOpenDownloadResult;
@@ -7708,17 +6178,45 @@ const rendererSelectedFileSchema = z.custom<NativeRendererSelectedFile>(
   "user-selected File"
 );
 
-export const synchronicityImportFileRendererInputSchema = z
+export const synchronicityStageImportInputSchema = z
   .object({
-    path: z.string().min(1),
-    source: rendererSelectedFileSchema,
-    space: z.string().min(1),
+    /** Main-local filesystem path derived from a user-picked File in preload. */
+    sourcePath: z.string().min(1),
   })
   .strict();
 
-export type SynchronicityImportFileRendererInput = z.infer<
-  typeof synchronicityImportFileRendererInputSchema
+export type SynchronicityStageImportInput = z.infer<
+  typeof synchronicityStageImportInputSchema
 >;
+
+export const synchronicityStageImportRendererInputSchema = z
+  .object({ source: rendererSelectedFileSchema })
+  .strict();
+
+export type SynchronicityStageImportRendererInput = z.infer<
+  typeof synchronicityStageImportRendererInputSchema
+>;
+
+/** A picked file Main keeps for the client core to import (`ref`, opaque), or why it could not. */
+export const synchronicityStageImportResultSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("staged"),
+      ref: z.string().min(1),
+      name: z.string().min(1),
+      size: z.number().int().nonnegative(),
+    })
+    .strict(),
+  z.object({ status: z.literal("unavailable") }).strict(),
+]);
+
+export type SynchronicityStageImportResult = z.infer<
+  typeof synchronicityStageImportResultSchema
+>;
+
+const unavailableStagedImport: SynchronicityStageImportResult = {
+  status: "unavailable",
+};
 
 export const synchronicityWriteCapability = defineNativeCapability({
   bridge: { method: "write", namespace: "synchronicity" },
@@ -7741,26 +6239,26 @@ export const synchronicityWriteCapability = defineNativeCapability({
   webFallback: unavailableSynchronicityMutation,
 });
 
-export const synchronicityImportFileCapability = defineNativeCapability({
-  bridge: { method: "importFile", namespace: "synchronicity" },
-  channel: "comma:synchronicity:import-file",
+export const synchronicityStageImportCapability = defineNativeCapability({
+  bridge: { method: "stageImport", namespace: "synchronicity" },
+  channel: "comma:synchronicity:stage-import",
   handler: {
     exportName: "SynchronicityProvider",
-    member: "importFile",
+    member: "stageImport",
     module: "../../../apps/electron/src/main/modules/synchronicity/index",
     provider: "synchronicity",
   },
-  id: "synchronicity.importFile",
-  input: synchronicityImportFileInputSchema,
-  mock: unavailableSynchronicityMutation,
-  output: synchronicityMutationResultSchema,
+  id: "synchronicity.stageImport",
+  input: synchronicityStageImportInputSchema,
+  mock: unavailableStagedImport,
+  output: synchronicityStageImportResultSchema,
   permission: "synchronicity.write",
-  preloadInput: synchronicityImportFileRendererInputSchema,
+  preloadInput: synchronicityStageImportRendererInputSchema,
   preloadTransform: "file-path-from-file",
   sessionAdmission: "local_only",
   sessionAdmissionRationale:
-    "Streams a preload-vetted local file into the local synchronicity node without placing file bytes in Session state or one large IPC payload.",
-  webFallback: unavailableSynchronicityMutation,
+    "Keeps a preload-vetted local file in Main under an opaque reference the client core imports into the local synchronicity node; no path or bytes reach Session state.",
+  webFallback: unavailableStagedImport,
 });
 
 export const synchronicityDeleteInputSchema = z
@@ -8298,6 +6796,8 @@ export const nativeCapabilityRegistry = [
   notchStopCapability,
   surfacesStateCapability,
   surfacesWindowFullScreenCapability,
+  surfacesWindowMaximizedCapability,
+  surfacesWindowControlCapability,
   windowsCreateCapability,
   windowsFocusCapability,
   windowsCloseCapability,
@@ -8309,13 +6809,6 @@ export const nativeCapabilityRegistry = [
   clipboardReadImageCapability,
   clipboardWriteTextCapability,
   clipboardWriteImageCapability,
-  subscriptionAuthorizationStartCapability,
-  tokenDanceAuthorizationStartCapability,
-  tokenDanceAuthorizationStatusCapability,
-  tokenDanceAuthorizationSaveCapability,
-  tokenDanceAuthorizationCancelCapability,
-  subscriptionAuthorizationStatusCapability,
-  subscriptionAuthorizationCancelCapability,
   shellOpenExternalCapability,
   filesSaveDownloadCapability,
   filesCopyDownloadCapability,
@@ -8329,21 +6822,17 @@ export const nativeCapabilityRegistry = [
   browserSidebarNavigateCapability,
   browserSidebarCloseCapability,
   browserSidebarInspectCapability,
+  browserSidebarDismissPasskeyCapability,
   browserSidebarShowPermissionsCapability,
+  browserSidebarListImportProfilesCapability,
+  browserSidebarImportCookiesCapability,
   sitePermissionMenuStateCapability,
   sitePermissionMenuActCapability,
   peersConnectCapability,
+  coreOpenCapability,
   sessionStateCapability,
-  sessionRequestEmailLoginCapability,
-  sessionVerifyEmailLoginCapability,
-  sessionSignInWithGoogleCapability,
-  sessionVerifyGoogleLinkCapability,
-  sessionCancelAuthAttemptCapability,
-  sessionReconcileCapability,
-  sessionSignOutCapability,
   localFilesPickCapability,
   localFilesPreviewCapability,
-  localDataStatusCapability,
   transportStatusCapability,
   computeNodeStateCapability,
   computeNodeConfigureCapability,
@@ -8362,49 +6851,7 @@ export const nativeCapabilityRegistry = [
   computeNodeDrainCapability,
   computeNodeRemoveCapability,
   computeNodeAbandonCapability,
-  sessionHistoryStateCapability,
-  sessionHistoryLoadCapability,
-  sessionHistoryRetainCapability,
-  sessionHistoryReleaseCapability,
-  productInboxStateCapability,
-  productInboxRetainCapability,
-  productInboxReleaseCapability,
-  productInboxRefreshCapability,
-  chatStateCapability,
-  chatDraftsCapability,
-  sideChatPresentationCapability,
-  sideChatDebugSettingsCapability,
-  sideChatUpdateDebugSettingsCapability,
-  sideChatResetDebugSettingsCapability,
-  sideChatSetContentSizeCapability,
-  sideChatSetInteractiveProgressCapability,
-  sideChatFinishInteractiveProgressCapability,
-  sideChatUpdateShortcutCapability,
-  sideChatCloseCapability,
-  sideChatOpenSettingsCapability,
-  sideChatOpenTestWindowCapability,
-  sideChatCloseTestWindowCapability,
-  chatRetainCapability,
-  chatReleaseCapability,
-  chatClearPresentationCapability,
-  chatSetDraftCapability,
-  chatBeginSendIntentCapability,
-  chatCancelSendIntentCapability,
-  chatSendCapability,
-  chatRetryCapability,
-  chatDiscardCapability,
-  chatAcceptTaskReviewCapability,
-  chatRefreshCapability,
-  chatAttachCapability,
-  chatAttachLocalFilesCapability,
   chatPickAttachmentsCapability,
-  chatPresentInSideChatCapability,
-  chatResolveWorkspaceChatCapability,
-  chatListSkillsCapability,
-  chatReadGroupImageCapability,
-  chatRemoveAttachmentCapability,
-  chatRetryAttachmentCapability,
-  chatAcknowledgeIntakeFailuresCapability,
   audioCaptureStateCapability,
   audioCaptureSourcesCapability,
   audioCaptureMicrophonesCapability,
@@ -8418,27 +6865,21 @@ export const nativeCapabilityRegistry = [
   audioCaptureOpenPermissionSettingsCapability,
   meetingPresenceStateCapability,
   meetingPresenceIconCapability,
-  meetingRecorderStateCapability,
-  meetingRecorderActionCapability,
-  meetingRecorderRetryTaskSyncCapability,
-  meetingRecorderSelectMicrophoneCapability,
-  meetingRecorderAcknowledgeSavedCapability,
   meetingRecorderSetInteractiveCapability,
   meetingRecorderLayoutWindowCapability,
   meetingRecorderDragWindowCapability,
   airDropStateCapability,
   airDropActCapability,
   airDropPreviewCapability,
-  driveCatalogQueryCapability,
-  driveCatalogStateCapability,
   synchronicityStateCapability,
   synchronicityListCapability,
   synchronicityReadCapability,
   synchronicitySaveDownloadCapability,
+  synchronicityOpenStreamCapability,
   synchronicityOpenLocalRootCapability,
   synchronicityVersionsCapability,
   synchronicityWriteCapability,
-  synchronicityImportFileCapability,
+  synchronicityStageImportCapability,
   synchronicityDeleteCapability,
   synchronicityAdoptCapability,
   synchronicityScanCapability,
@@ -8463,24 +6904,17 @@ export const nativeEventRegistry = [
   browserSidebarOpenTabRequestedEvent,
   surfacesChangedEvent,
   surfacesWindowFullScreenChangedEvent,
+  surfacesWindowMaximizedChangedEvent,
   onboardingWindowChangedEvent,
   onboardingHandoffEvent,
   notchHostEvent,
   sessionStateChangedEvent,
-  sessionHistoryStateChangedEvent,
-  productInboxStateChangedEvent,
-  chatStateChangedEvent,
-  chatDraftsChangedEvent,
   messageNotificationsEvent,
-  sideChatPresentationChangedEvent,
-  sideChatDebugSettingsChangedEvent,
   computeNodeStateChangedEvent,
   audioCaptureStateChangedEvent,
   meetingPresenceStateChangedEvent,
-  meetingRecorderStateChangedEvent,
   surfacesWindowResizeSettledEvent,
   airDropStateChangedEvent,
-  driveCatalogChangedEvent,
 ] as const;
 
 export const nativeStateRegistry = [
@@ -8489,20 +6923,13 @@ export const nativeStateRegistry = [
   connectorRuntimeStateLeaf,
   surfacesStateLeaf,
   surfacesWindowFullScreenStateLeaf,
+  surfacesWindowMaximizedStateLeaf,
   onboardingWindowStateLeaf,
   sessionStateLeaf,
-  sessionHistoryStateLeaf,
-  productInboxStateLeaf,
-  chatStateLeaf,
-  chatDraftsLeaf,
-  sideChatPresentationStateLeaf,
-  sideChatDebugSettingsStateLeaf,
   computeNodeStateLeaf,
   audioCaptureStateLeaf,
   meetingPresenceStateLeaf,
-  meetingRecorderStateLeaf,
   airDropStateLeaf,
-  driveCatalogStateLeaf,
 ] as const;
 
 function parseLeafFixture({

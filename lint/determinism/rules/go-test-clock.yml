@@ -1,0 +1,27 @@
+id: go-test-clock
+language: go
+severity: error
+message: "A test reads the machine clock outside a synctest bubble."
+note: |
+  Run the test in synctest.Test, where time.Now is virtual, or pass the code
+  a fixed time.
+metadata:
+  category: clock
+rule:
+  all:
+    - kind: selector_expression
+    - regex: "^time\\.(Now|Since|Until)$"
+
+    - not:
+        inside:
+          kind: call_expression
+          has:
+            field: function
+            regex: "^synctest\\.(Test|Run)$"
+          stopBy: end
+files:
+  - "**/*_test.go"
+# Live tests reach real services and skip unless their credentials are given;
+# CI never runs them.
+ignores:
+  - "**/*_live_test.go"

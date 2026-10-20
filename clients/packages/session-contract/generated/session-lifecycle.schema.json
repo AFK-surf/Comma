@@ -14,7 +14,12 @@
             },
             "kind": {
               "type": "string",
-              "enum": ["web_cookie", "electron_main", "swiftui_keychain"]
+              "enum": [
+                "web_cookie",
+                "electron_main",
+                "swiftui_keychain",
+                "android_keystore"
+              ]
             }
           },
           "required": ["authorityInstanceId", "kind"],
@@ -84,7 +89,12 @@
             },
             "kind": {
               "type": "string",
-              "enum": ["web_cookie", "electron_main", "swiftui_keychain"]
+              "enum": [
+                "web_cookie",
+                "electron_main",
+                "swiftui_keychain",
+                "android_keystore"
+              ]
             }
           },
           "required": ["authorityInstanceId", "kind"],
@@ -162,7 +172,12 @@
             },
             "kind": {
               "type": "string",
-              "enum": ["web_cookie", "electron_main", "swiftui_keychain"]
+              "enum": [
+                "web_cookie",
+                "electron_main",
+                "swiftui_keychain",
+                "android_keystore"
+              ]
             }
           },
           "required": ["authorityInstanceId", "kind"],
@@ -252,7 +267,12 @@
             },
             "kind": {
               "type": "string",
-              "enum": ["web_cookie", "electron_main", "swiftui_keychain"]
+              "enum": [
+                "web_cookie",
+                "electron_main",
+                "swiftui_keychain",
+                "android_keystore"
+              ]
             }
           },
           "required": ["authorityInstanceId", "kind"],

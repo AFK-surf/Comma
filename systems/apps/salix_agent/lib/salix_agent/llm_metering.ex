@@ -25,7 +25,7 @@ defmodule SalixAgent.LLMMetering do
     )
   end
 
-  defp impl, do: Application.get_env(:salix_agent, :llm_metering_mod, __MODULE__.Noop)
+  defp impl, do: SystemsRuntime.get_env(:salix_agent, :llm_metering_mod, __MODULE__.Noop)
 
   defp safe_call(function, fact) do
     apply(impl(), function, [fact])

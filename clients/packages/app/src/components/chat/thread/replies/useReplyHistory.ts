@@ -1,48 +1,47 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CommaApiClient, CommaConversationKind } from "../../../../api";
-import {
-  normalizeServerMessages,
-  type ChatMessage,
-} from "../../model/conversationChannel";
+import { useCall, type CallFn } from "@comma/core-client";
+import type { CommaConversationKind } from "@comma/core/api-schemas";
+import type { ChatMessage } from "@comma/core/chat";
 import type { ReplyChainReveal } from "./useReplyChainHighlight";
 
 export type PendingHistoryReveal = {
-  api: CommaApiClient;
   scope: string;
   messageId: string;
   lifecycle?: ReplyChainReveal | undefined;
 };
 
 export function useReplyHistory({
-  api,
+  live,
   conversationId,
   conversationKind,
   currentMessages,
   groupId,
   historyScope,
 }: {
-  api: CommaApiClient | undefined;
+  /** The transcript reads the core's live data; a static one loads no earlier messages. */
+  live: boolean;
   conversationId: string | undefined;
   conversationKind: CommaConversationKind;
   currentMessages: ChatMessage[];
   groupId: string;
   historyScope: string;
 }) {
+  const call = useCall();
   const [replyHistory, setReplyHistory] = useState<{
-    api: CommaApiClient;
+    call: CallFn;
     scope: string;
     messages: ChatMessage[];
   }>();
   const historyRequest = useRef<AbortController | null>(null);
   const historyReveal = useRef<PendingHistoryReveal | null>(null);
-  useEffect(() => () => historyRequest.current?.abort(), [api, historyScope]);
+  useEffect(() => () => historyRequest.current?.abort(), [call, historyScope]);
   const historyPrefix = useMemo(() => {
-    if (replyHistory?.scope !== historyScope || replyHistory.api !== api) return [];
+    if (replyHistory?.scope !== historyScope || replyHistory.call !== call) return [];
     const currentIds = new Set(currentMessages.map((message) => message.messageId));
     return replyHistory.messages.filter(
       (message) => !currentIds.has(message.messageId)
     );
-  }, [api, currentMessages, historyScope, replyHistory]);
+  }, [call, currentMessages, historyScope, replyHistory]);
   const messages = useMemo(
     () =>
       historyPrefix.length ? [...historyPrefix, ...currentMessages] : currentMessages,
@@ -53,7 +52,7 @@ export function useReplyHistory({
     : undefined;
   const loadReplyTarget = useCallback(
     async (messageId: string, lifecycle?: ReplyChainReveal) => {
-      if (!api || !conversationId) {
+      if (!live || !conversationId) {
         lifecycle?.cancel();
         return;
       }
@@ -62,9 +61,11 @@ export function useReplyHistory({
       historyRequest.current = controller;
       let history;
       try {
-        history = await api.getMessageContext(groupId, conversationId, messageId, {
-          signal: controller.signal,
-        });
+        history = await call(
+          "chat.messageContext",
+          { groupId, conversationId, messageId, conversationKind },
+          controller.signal
+        );
       } catch (error) {
         if (controller.signal.aborted) {
           lifecycle?.cancel();
@@ -76,13 +77,12 @@ export function useReplyHistory({
         lifecycle?.cancel();
         return;
       }
-      const normalized = normalizeServerMessages(history, [], conversationKind);
-      if (!normalized.some((message) => message.messageId === messageId))
+      if (!history.some((message) => message.messageId === messageId))
         throw new Error("Message unavailable");
-      historyReveal.current = { api, scope: historyScope, messageId, lifecycle };
-      setReplyHistory({ api, scope: historyScope, messages: normalized });
+      historyReveal.current = { scope: historyScope, messageId, lifecycle };
+      setReplyHistory({ call, scope: historyScope, messages: history });
     },
-    [api, conversationId, conversationKind, groupId, historyScope]
+    [call, conversationId, conversationKind, groupId, historyScope, live]
   );
   return { historyBoundaryMessageId, historyReveal, loadReplyTarget, messages };
 }

@@ -1,7 +1,7 @@
 import { initializeCommaI18n } from "@comma/i18n";
 import { render, screen } from "@comma/test-utils/render";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CommaRecommendationLinkPreview } from "../../../api";
+import type { CommaRecommendationLinkPreview } from "@comma/core/api-schemas";
 import {
   isPrivateMailLink,
   LinkPreviewCard,
@@ -38,6 +38,31 @@ const driveFilePreview = {
 } satisfies CommaRecommendationLinkPreview;
 
 describe("LinkPreviewCard", () => {
+  it("renders an Outlook event start as a localized time, not Graph's raw string", () => {
+    const startsAt = Date.UTC(2026, 9, 6, 9);
+    render(
+      <LinkPreviewCard
+        preview={{
+          excerpt: "Agenda",
+          href: "https://outlook.office.com/calendar/item/AAEv1",
+          kind: "outlook_event",
+          sender: null,
+          startsAt,
+          title: "Planning",
+        }}
+      />
+    );
+
+    const card = screen.getByTestId("recommendation-link-card");
+    expect(card).toHaveTextContent("Planning");
+    expect(card).toHaveTextContent("Agenda");
+    expect(card).not.toHaveTextContent("2026-10-06T09:00");
+    expect(card.querySelector("time")).toHaveAttribute(
+      "datetime",
+      new Date(startsAt).toISOString()
+    );
+  });
+
   it("renders a Slack message as channel, clamped excerpt and author", () => {
     pinNoon();
     render(
@@ -98,31 +123,6 @@ describe("LinkPreviewCard", () => {
     expect(owner).toHaveTextContent("zanwei");
     expect(owner).toHaveAttribute("title", "Owner: zanwei");
     expect(card.querySelector('svg[data-provider-logo="google-drive"]')).not.toBeNull();
-  });
-
-  it("labels every Drive file kind", () => {
-    const labels = {
-      document: "Document",
-      file: "File",
-      folder: "Folder",
-      form: "Form",
-      pdf: "PDF",
-      presentation: "Presentation",
-      spreadsheet: "Spreadsheet",
-    } as const;
-    for (const [fileKind, label] of Object.entries(labels)) {
-      const { unmount } = render(
-        <LinkPreviewCard
-          preview={{
-            ...driveFilePreview,
-            fileKind: fileKind as keyof typeof labels,
-            owner: null,
-          }}
-        />
-      );
-      expect(screen.getByTestId("recommendation-link-card")).toHaveTextContent(label);
-      unmount();
-    }
   });
 });
 

@@ -18,7 +18,7 @@ defmodule Salix.Control.PluginCatalogCache do
   served.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   alias SalixCluster.Ring
 
@@ -26,21 +26,21 @@ defmodule Salix.Control.PluginCatalogCache do
   @ttl_ms 60_000
   @invalidate_timeout_ms 5_000
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def snapshot(tenant_id, group_id) do
     key = {:catalog, tenant_id, group_id}
     generations = generations(tenant_id, group_id)
-    now = System.monotonic_time(:millisecond)
+    now = SystemsClock.monotonic_time(:millisecond)
 
-    case :ets.lookup(@table, key) do
+    case SystemsRuntime.ETS.lookup(@table, key) do
       [{^key, ^generations, expires_at, snapshot}] when expires_at > now ->
         {:ok, snapshot}
 
       _stale_or_absent ->
         with {:ok, snapshot} <- Salix.Control.Plugins.load_group_catalog(tenant_id, group_id) do
-          :ets.insert(@table, {key, generations, now + @ttl_ms, snapshot})
+          SystemsRuntime.ETS.insert(@table, {key, generations, now + @ttl_ms, snapshot})
           {:ok, snapshot}
         end
     end
@@ -54,21 +54,21 @@ defmodule Salix.Control.PluginCatalogCache do
 
   @doc false
   def invalidate_group_local(group_id) do
-    :ets.update_counter(@table, {:group_generation, group_id}, 1, {nil, 0})
-    :ets.match_delete(@table, {{:catalog, :_, group_id}, :_, :_, :_})
+    SystemsRuntime.ETS.update_counter(@table, {:group_generation, group_id}, 1, {nil, 0})
+    SystemsRuntime.ETS.match_delete(@table, {{:catalog, :_, group_id}, :_, :_, :_})
     :ok
   end
 
   @doc false
   def invalidate_tenant_local(tenant_id) do
-    :ets.update_counter(@table, {:tenant_generation, tenant_id}, 1, {nil, 0})
-    :ets.match_delete(@table, {{:catalog, tenant_id, :_}, :_, :_, :_})
+    SystemsRuntime.ETS.update_counter(@table, {:tenant_generation, tenant_id}, 1, {nil, 0})
+    SystemsRuntime.ETS.match_delete(@table, {{:catalog, tenant_id, :_}, :_, :_, :_})
     :ok
   end
 
   @impl true
   def init(_opts) do
-    :ets.new(@table, [
+    SystemsRuntime.ETS.new(@table, [
       :named_table,
       :public,
       :set,
@@ -84,9 +84,9 @@ defmodule Salix.Control.PluginCatalogCache do
   # sweep removes the others so memory follows the groups read recently.
   @impl true
   def handle_info(:sweep, state) do
-    now = System.monotonic_time(:millisecond)
+    now = SystemsClock.monotonic_time(:millisecond)
 
-    :ets.select_delete(@table, [
+    SystemsRuntime.ETS.select_delete(@table, [
       {{{:catalog, :_, :_}, :_, :"$1", :_}, [{:"=<", :"$1", now}], [true]}
     ])
 
@@ -94,13 +94,13 @@ defmodule Salix.Control.PluginCatalogCache do
     {:noreply, state}
   end
 
-  defp schedule_sweep, do: Process.send_after(self(), :sweep, @ttl_ms)
+  defp schedule_sweep, do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :sweep, @ttl_ms)
 
   defp generations(tenant_id, group_id),
     do: {counter({:group_generation, group_id}), counter({:tenant_generation, tenant_id})}
 
   defp counter(key) do
-    case :ets.lookup(@table, key) do
+    case SystemsRuntime.ETS.lookup(@table, key) do
       [{^key, value}] -> value
       [] -> 0
     end

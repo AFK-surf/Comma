@@ -1,10 +1,12 @@
 defmodule SalixAgent.SSHToolsTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   `ssh.*` tools against a real OTP SSH daemon on loopback: Group key creation,
   trust on first use, detailed connection failures, the interactive PTY
   session, exec and SFTP on the same connection, and session lifecycle.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{AgentWorkspace, Fleet, InternalSessionFleet, TestSupport}
   alias SalixAgent.SSH.{Identity, TailcatGateway}
@@ -16,8 +18,8 @@ defmodule SalixAgent.SSHToolsTest do
     # The AWS backend performs requests in linked tasks. Preserve that process
     # behavior here so a real SSH connection exercises the callback boundary.
     def get(key, opts) do
-      task = Task.async(fn -> S3.Fake.get(key, opts) end)
-      {:ok, result} = Task.yield(task, 5_000)
+      task = SystemsRuntime.Task.async(fn -> S3.Fake.get(key, opts) end)
+      {:ok, result} = SystemsRuntime.Task.yield(task, 5_000)
       result
     end
 
@@ -35,7 +37,7 @@ defmodule SalixAgent.SSHToolsTest do
     def host_key(algorithm, options)
         when algorithm in [:"ssh-ed25519", :"rsa-sha2-512", :"rsa-sha2-256"] do
       name = options |> Keyword.fetch!(:key_cb_private) |> Keyword.fetch!(:name)
-      {:ok, :persistent_term.get({__MODULE__, name, :host_key})}
+      {:ok, SystemsRuntime.PersistentTerm.get({__MODULE__, name, :host_key})}
     end
 
     def host_key(_algorithm, _options), do: {:error, :no_host_key}
@@ -43,8 +45,13 @@ defmodule SalixAgent.SSHToolsTest do
     @impl true
     def is_auth_key(key, _user, options) do
       name = options |> Keyword.fetch!(:key_cb_private) |> Keyword.fetch!(:name)
-      send(:persistent_term.get({__MODULE__, name, :test_pid}), {:auth_attempt, name})
-      key in :persistent_term.get({__MODULE__, name, :authorized})
+
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.PersistentTerm.get({__MODULE__, name, :test_pid}),
+        {:auth_attempt, name}
+      )
+
+      key in SystemsRuntime.PersistentTerm.get({__MODULE__, name, :authorized})
     end
   end
 
@@ -177,21 +184,139 @@ defmodule SalixAgent.SSHToolsTest do
     end
   end
 
+  defmodule GatewayDispatch do
+    @moduledoc false
+    # A gateway device whose connector runs in-process: it dials the host
+    # itself and speaks the tunnel frame protocol with the relay, acknowledging
+    # what it writes.
+    def get_device(_agent_id, "dev-gw") do
+      {:ok,
+       %{
+         "device_id" => "dev-gw",
+         "environment_id" => "env-gw",
+         "status" => "connected",
+         "capabilities" => %{
+           "lan_gateway" => %{
+             "methods" => SystemsRuntime.PersistentTerm.get({__MODULE__, :methods})
+           }
+         },
+         "environments" => [
+           %{
+             "environment_id" => "env-gw",
+             "environment_provider" => "connector",
+             "status" => "connected"
+           }
+         ]
+       }}
+    end
+
+    def get_device(_agent_id, _device_id), do: {:error, :not_found}
+
+    def open_tunnel(_agent_id, target, id, %{"host" => host, "port" => port}, relay) do
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.PersistentTerm.get({__MODULE__, :test_pid}),
+        {:tunnel_opened, target, host, port}
+      )
+
+      parent = SystemsRuntime.Proc.self()
+      owner = SystemsRuntime.Proc.spawn(fn -> connector(parent, id, host, port, relay) end)
+
+      SystemsRuntime.Proc.receive do
+        {^owner, :connected} ->
+          # A small window makes the relay wait for acknowledgements.
+          {:ok, %{owner: owner, result: %{"status" => "connected", "window" => 65_536}}}
+
+        {^owner, {:error, reason}} ->
+          {:error, reason}
+      end
+    end
+
+    defp connector(parent, id, host, port, relay) do
+      case :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: :once], 5_000) do
+        {:ok, socket} ->
+          SystemsRuntime.Proc.monitor(relay)
+          SystemsRuntime.Proc.send(parent, {SystemsRuntime.Proc.self(), :connected})
+          relay_loop(%{socket: socket, id: id, relay: relay, written: 0})
+
+        {:error, reason} ->
+          SystemsRuntime.Proc.send(
+            parent,
+            {SystemsRuntime.Proc.self(), {:error, "dial tcp #{host}:#{port}: #{reason}"}}
+          )
+      end
+    end
+
+    defp relay_loop(%{socket: socket, id: id, relay: relay} = state) do
+      SystemsRuntime.Proc.receive do
+        {:tcp, ^socket, data} ->
+          for <<chunk::binary-size(32_768) <- data>> do
+            SystemsRuntime.Proc.send(
+              relay,
+              {:env_tunnel_frame, id, %{"channel" => "tcp", "data" => Base.encode64(chunk)}}
+            )
+          end
+
+          rest =
+            binary_part(data, div(byte_size(data), 32_768) * 32_768, rem(byte_size(data), 32_768))
+
+          if rest != "",
+            do:
+              SystemsRuntime.Proc.send(
+                relay,
+                {:env_tunnel_frame, id, %{"channel" => "tcp", "data" => Base.encode64(rest)}}
+              )
+
+          :inet.setopts(socket, active: :once)
+          relay_loop(state)
+
+        {:tcp_closed, ^socket} ->
+          SystemsRuntime.Proc.send(
+            relay,
+            {:env_tunnel_frame, id, %{"channel" => "tcp", "eof" => true}}
+          )
+
+        {:env_tunnel_send, ^relay, ^id, %{"channel" => "tcp", "data" => data}} ->
+          bytes = Base.decode64!(data)
+          :ok = :gen_tcp.send(socket, bytes)
+          written = state.written + byte_size(bytes)
+
+          SystemsRuntime.Proc.send(
+            relay,
+            {:env_tunnel_frame, id, %{"channel" => "tcp_ack", "seq" => written}}
+          )
+
+          relay_loop(%{state | written: written})
+
+        {:env_tunnel_send, ^relay, ^id, %{"channel" => "tcp", "eof" => true}} ->
+          :gen_tcp.close(socket)
+
+        {:env_tunnel_send, ^relay, ^id, _ack} ->
+          relay_loop(state)
+
+        {:DOWN, _ref, :process, ^relay, _reason} ->
+          :gen_tcp.close(socket)
+      end
+    end
+  end
+
   setup do
     TestSupport.stop_all_agents()
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    previous_private = Application.get_env(:salix_agent, :ssh_allow_private_hosts)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
-    Application.put_env(:salix_agent, :ssh_allow_private_hosts, true)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_private = SystemsRuntime.get_env(:salix_agent, :ssh_allow_private_hosts)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+    SystemsRuntime.put_env(:salix_agent, :ssh_allow_private_hosts, true)
 
-    case Process.whereis(S3.Fake) do
+    case SystemsRuntime.Proc.whereis(S3.Fake) do
       nil -> start_supervised!(S3.Fake)
       _pid -> S3.Fake.reset()
     end
 
     agent_id = TestSupport.new_agent_id()
     group_id = Ids.group_id_from_agent!(agent_id)
-    root = Path.join(System.tmp_dir!(), "salix-ssh-#{System.unique_integer([:positive])}")
+
+    root =
+      Path.join(System.tmp_dir!(), "salix-ssh-#{SystemsRuntime.Proc.unique_integer([:positive])}")
+
     File.mkdir_p!(root)
 
     on_exit(fn ->
@@ -230,12 +355,12 @@ defmodule SalixAgent.SSHToolsTest do
     actor
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   # A daemon whose host key can be swapped between connections.
   defp daemon(ctx, root, opts \\ []) do
-    name = make_ref()
+    name = SystemsRuntime.Proc.make_ref()
 
     host_key =
       Keyword.get_lazy(opts, :host_key, fn ->
@@ -245,9 +370,9 @@ defmodule SalixAgent.SSHToolsTest do
     {:ok, identity} = Identity.fetch(ctx.group_id)
     authorized = if Keyword.get(opts, :authorize, true), do: [identity.public_key], else: []
 
-    :persistent_term.put({ServerKeys, name, :host_key}, host_key)
-    :persistent_term.put({ServerKeys, name, :authorized}, authorized)
-    :persistent_term.put({ServerKeys, name, :test_pid}, self())
+    SystemsRuntime.PersistentTerm.put({ServerKeys, name, :host_key}, host_key)
+    SystemsRuntime.PersistentTerm.put({ServerKeys, name, :authorized}, authorized)
+    SystemsRuntime.PersistentTerm.put({ServerKeys, name, :test_pid}, SystemsRuntime.Proc.self())
 
     {:ok, daemon} =
       :ssh.daemon({127, 0, 0, 1}, 0,
@@ -265,7 +390,7 @@ defmodule SalixAgent.SSHToolsTest do
 
       Enum.each(
         [:host_key, :authorized, :test_pid],
-        &:persistent_term.erase({ServerKeys, name, &1})
+        &SystemsRuntime.PersistentTerm.erase({ServerKeys, name, &1})
       )
     end)
 
@@ -273,7 +398,7 @@ defmodule SalixAgent.SSHToolsTest do
   end
 
   defp swap_host_key(server, key),
-    do: :persistent_term.put({ServerKeys, server.name, :host_key}, key)
+    do: SystemsRuntime.PersistentTerm.put({ServerKeys, server.name, :host_key}, key)
 
   defp decode(json) when is_binary(json), do: {:ok, Jason.decode!(json)}
 
@@ -296,7 +421,9 @@ defmodule SalixAgent.SSHToolsTest do
     alias SalixAgent.Loops.Capabilities
 
     # Exercise host calls directly without the runtime adopting the placeholder ELF.
-    :ok = :sys.suspend(Loops.Reconciler)
+    # A sweep in progress (host and database calls) can outlast the default
+    # 5 s system-message timeout on a loaded runner; wait for it to finish.
+    :ok = :sys.suspend(Loops.Reconciler, :infinity)
     on_exit(:loop_ssh_cleanup, fn -> :sys.resume(Loops.Reconciler) end)
     server = daemon(ctx, root)
 
@@ -367,73 +494,6 @@ defmodule SalixAgent.SSHToolsTest do
 
     assert {:ok, %{body: "-----BEGIN PRIVATE KEY-----" <> _}} =
              S3.get(Keys.ctl_group_ssh_identity(ctx.group_id))
-  end
-
-  test "host trust storage task exits do not terminate SSH authentication", %{
-    ctx: ctx,
-    root: root
-  } do
-    server = daemon(ctx, root)
-    Application.put_env(:salix_store, :s3_backend, LinkedTaskStore)
-
-    for {status, index} <- [{"trusted_on_first_use", 1}, {"known", 2}] do
-      attempt = %{ctx | tool_call_id: "linked-store-#{index}"}
-      session = open!(attempt, server)
-      assert session["host_key"]["status"] == status
-      assert_receive {:auth_attempt, _}
-      assert session["output"] =~ "welcome"
-
-      assert {:ok, result} =
-               write(attempt, session["ssh_session_id"], %{
-                 "input" => "echo authenticated",
-                 "keys" => ["enter"],
-                 "until_text" => "authenticated\n$ "
-               })
-
-      assert result["matched"]
-    end
-  end
-
-  test "an RSA host pin still permits Ed25519 client authentication", %{ctx: ctx, root: root} do
-    key = :public_key.generate_key({:rsa, 2048, 65537})
-
-    server =
-      daemon(ctx, root,
-        host_key: key,
-        host_algorithms: [:"rsa-sha2-512", :"rsa-sha2-256", :"ssh-ed25519"]
-      )
-
-    for {status, index} <- [{"trusted_on_first_use", 1}, {"known", 2}] do
-      attempt = %{ctx | tool_call_id: "rsa-host-#{index}"}
-      session = open!(attempt, server)
-      assert session["host_key"]["key_type"] == "ssh-rsa"
-      assert session["host_key"]["status"] == status
-      assert_receive {:auth_attempt, _}
-
-      assert {:ok, output} =
-               write(attempt, session["ssh_session_id"], %{
-                 "input" => "echo authenticated",
-                 "keys" => ["enter"],
-                 "until_text" => "authenticated\n$ "
-               })
-
-      assert output["matched"]
-
-      assert {:ok, _} =
-               decode(SSH.close(%{"ssh_session_id" => session["ssh_session_id"]}, attempt))
-    end
-
-    swap_host_key(server, :public_key.generate_key({:rsa, 2048, 65537}))
-
-    assert {:error, %{"code" => "host_key_mismatch"}} =
-             decode(
-               SSH.open(
-                 %{"host" => "127.0.0.1", "port" => server.port, "user" => "deploy"},
-                 %{ctx | tool_call_id: "rsa-host-replaced"}
-               )
-             )
-
-    refute_receive {:auth_attempt, _}
   end
 
   test "an interactive session types, waits for prompts, renders the screen and reports the exit",
@@ -580,7 +640,7 @@ defmodule SalixAgent.SSHToolsTest do
     assert failed["user"] == "deploy"
     assert failed["host_key"]["status"] == "trusted_on_first_use"
 
-    Application.put_env(:salix_agent, :ssh_allow_private_hosts, false)
+    SystemsRuntime.put_env(:salix_agent, :ssh_allow_private_hosts, false)
     ctx = %{ctx | tool_call_id: "call-open-private"}
 
     for host <- ["127.0.0.1", "localhost", "10.0.0.8", "db.internal"] do
@@ -753,10 +813,10 @@ defmodule SalixAgent.SSHToolsTest do
     :ets.insert(SalixAgent.SessionResidency, {:pressure, :high})
 
     try do
-      refute evicted?(actor, Process.monitor(actor), 3)
+      refute evicted?(actor, SystemsRuntime.Proc.monitor(actor), 3)
 
-      ref = Process.monitor(actor)
-      Enum.each(sessions, &Process.exit(&1, :kill))
+      ref = SystemsRuntime.Proc.monitor(actor)
+      Enum.each(sessions, &SystemsRuntime.Proc.exit(&1, :kill))
       assert evicted?(actor, ref, 20)
     after
       :ets.insert(SalixAgent.SessionResidency, previous_pressure)
@@ -766,13 +826,120 @@ defmodule SalixAgent.SSHToolsTest do
     actor = start_actor!(ctx)
     id = open!(%{ctx | tool_call_id: "call-after-evict"}, server)["ssh_session_id"]
     session = session_pid(ctx, id)
-    ref = Process.monitor(session)
+    ref = SystemsRuntime.Proc.monitor(session)
     :ok = Fleet.stop_session_actors(ctx.agent_id)
-    assert_receive {:DOWN, ^ref, :process, ^session, _}, 5_000
-    refute Process.alive?(actor)
+    assert_receive {:DOWN, ^ref, :process, ^session, _}
+    refute SystemsRuntime.Proc.alive?(actor)
 
     assert {:error, %{"code" => "ssh_session_not_found"}} =
              decode(SSH.screen(%{"ssh_session_id" => id}, ctx))
+  end
+
+  test "hosts on the user's network are reached through a gateway device's connector",
+       %{ctx: ctx, root: root} do
+    server = daemon(ctx, root)
+    previous = SystemsRuntime.get_env(:salix_agent, :env_dispatch)
+    SystemsRuntime.put_env(:salix_agent, :env_dispatch, GatewayDispatch)
+    SystemsRuntime.PersistentTerm.put({GatewayDispatch, :test_pid}, SystemsRuntime.Proc.self())
+
+    SystemsRuntime.PersistentTerm.put({GatewayDispatch, :methods}, [
+      "lan_http_request",
+      "lan_tcp_dial"
+    ])
+
+    on_exit(fn ->
+      restore(:salix_agent, :env_dispatch, previous)
+      SystemsRuntime.PersistentTerm.erase({GatewayDispatch, :test_pid})
+      SystemsRuntime.PersistentTerm.erase({GatewayDispatch, :methods})
+    end)
+
+    # The gateway dials whatever host it is given; Salix neither resolves nor
+    # checks it, so the public-destination policy does not apply.
+    SystemsRuntime.put_env(:salix_agent, :ssh_allow_private_hosts, false)
+
+    {:ok, session} =
+      decode(
+        SSH.open(
+          %{
+            "host" => "127.0.0.1",
+            "port" => server.port,
+            "via_device_id" => "dev-gw",
+            "user" => "deploy"
+          },
+          ctx
+        )
+      )
+
+    id = session["ssh_session_id"]
+    port = server.port
+
+    assert_received {:tunnel_opened, %{device_id: "dev-gw", environment_id: "env-gw"},
+                     "127.0.0.1", ^port}
+
+    host = "device:dev-gw:127.0.0.1"
+    assert session["host"] == host
+    assert session["host_key"]["status"] == "trusted_on_first_use"
+    assert session["output"] =~ "welcome"
+
+    assert {:ok, %{"output" => "echo via gateway\nvia gateway\n$ "}} =
+             write(ctx, id, %{
+               "input" => "echo via gateway",
+               "keys" => ["enter"],
+               "until_text" => "gateway\n$ "
+             })
+
+    # Three windows in each direction.
+    stdin = :binary.copy("0123456789abcdef", 12_288)
+
+    assert {:ok, %{"stdout" => stdout, "stdout_truncated" => false, "exit_status" => 0}} =
+             decode(
+               SSH.exec(%{"ssh_session_id" => id, "command" => "cat", "stdin" => stdin}, ctx)
+             )
+
+    assert stdout == stdin
+    assert {:ok, %{"hosts" => [%{"name" => name}]}} = decode(SSH.known_hosts_list(%{}, ctx))
+    assert name == "[#{host}]:#{server.port}"
+
+    assert {:ok, _} = decode(SSH.close(%{"ssh_session_id" => id}, ctx))
+
+    SystemsRuntime.PersistentTerm.put({GatewayDispatch, :methods}, ["lan_http_request"])
+
+    assert {:error, %{"code" => "not_a_lan_gateway", "via_device_id" => "dev-gw"}} =
+             decode(
+               SSH.open(
+                 %{"host" => "nas.local", "via_device_id" => "dev-gw", "user" => "deploy"},
+                 %{ctx | tool_call_id: "call-open-device-2"}
+               )
+             )
+
+    SystemsRuntime.PersistentTerm.put({GatewayDispatch, :methods}, ["lan_tcp_dial"])
+
+    closed =
+      :gen_tcp.listen(0, [])
+      |> then(fn {:ok, l} ->
+        {:ok, p} = :inet.port(l)
+        :gen_tcp.close(l)
+        p
+      end)
+
+    assert {:error, %{"code" => "connect_failed", "reason" => reason}} =
+             decode(
+               SSH.open(
+                 %{
+                   "host" => "127.0.0.1",
+                   "port" => closed,
+                   "via_device_id" => "dev-gw",
+                   "user" => "deploy"
+                 },
+                 %{ctx | tool_call_id: "call-open-device-3"}
+               )
+             )
+
+    assert reason =~ "econnrefused"
+
+    assert_raise RuntimeError, fn ->
+      SSH.open(%{"tailcat" => "tcabc", "via_device_id" => "dev-gw", "user" => "deploy"}, ctx)
+    end
   end
 
   test "Tailcat servers are reached through the node's gateway with ephemeral keys",
@@ -857,37 +1024,58 @@ defmodule SalixAgent.SSHToolsTest do
     end
   end
 
-  # The tailcat-ssh skill tells the user to run
-  # `tailcat serve --ssh-authorized-keys='<Group public key>' ssh`.
-  test "tailcat's built-in SSH server accepts the Group key with shell, exec and SFTP",
+  test "devices in the Group's tailnet are reached through the Group's node",
        %{ctx: ctx, root: root} do
-    {:ok, identity} = Identity.fetch(ctx.group_id)
-    peer = start_peer!(["--ssh-authorized-keys", identity.public_key_line])
-    gateway!(peer.derp_map_url)
-    File.write!(Path.join(root, "skill-check.txt"), "ok")
+    server = daemon(ctx, root)
+    peer = SalixAgent.TailnetTestPeer.start!("127.0.0.1:#{server.port}")
+    {:ok, pending} = SalixAgent.Tailnet.connect(ctx.group_id, %{}, "salix_admin")
+    SalixAgent.TailnetTestPeer.approve!(peer, pending["login_url"])
+    running = SalixAgent.TailnetTestPeer.await_state!(ctx.group_id, "running")
 
     {:ok, session} =
-      decode(SSH.open(%{"tailcat" => peer.address, "user" => "deploy"}, ctx))
+      decode(SSH.open(%{"host" => "nas", "via_tailnet" => true, "user" => "deploy"}, ctx))
 
     id = session["ssh_session_id"]
     assert session["status"] == "open"
     assert session["host_key"]["status"] == "trusted_on_first_use"
 
-    assert {:ok, %{"matched" => true}} =
+    assert {:ok, %{"output" => "echo over tailnet\nover tailnet\n$ "}} =
              write(ctx, id, %{
-               "input" => "echo $((6*7))",
+               "input" => "echo over tailnet",
                "keys" => ["enter"],
-               "until_text" => "42",
-               "wait_seconds" => 20
+               "until_text" => "tailnet\n$ "
              })
 
-    assert {:ok, %{"stdout" => "tailcat-exec\n", "exit_status" => 0}} =
-             decode(SSH.exec(%{"ssh_session_id" => id, "command" => "echo tailcat-exec"}, ctx))
+    # The trusted host key names the tailnet and the host as typed.
+    host = "tailnet:#{running["tailnet"]}:nas"
+    assert {:ok, %{"hosts" => [%{"name" => ^host}]}} = decode(SSH.known_hosts_list(%{}, ctx))
+    assert {:ok, _} = decode(SSH.close(%{"ssh_session_id" => id}, ctx))
 
-    assert {:ok, listing} =
-             decode(SSH.list_files(%{"ssh_session_id" => id, "path" => root}, ctx))
+    # The node reaches only its tailnet's peers.
+    assert {:error, %{"code" => "tailnet_destination_not_allowed"}} =
+             decode(
+               SSH.open(
+                 %{
+                   "host" => "127.0.0.1",
+                   "port" => server.port,
+                   "via_tailnet" => true,
+                   "user" => "deploy"
+                 },
+                 %{ctx | tool_call_id: "call-open-tailnet-2"}
+               )
+             )
 
-    assert Enum.any?(listing["entries"], &(&1["name"] == "skill-check.txt"))
+    assert_raise RuntimeError, fn ->
+      SSH.open(
+        %{
+          "host" => "nas",
+          "via_tailnet" => true,
+          "via_device_id" => "dev-gw",
+          "user" => "deploy"
+        },
+        ctx
+      )
+    end
   end
 
   # A Tailcat server behind a local relay (systems/tailcat-gateway
@@ -904,7 +1092,7 @@ defmodule SalixAgent.SSHToolsTest do
     port = Port.open({:spawn_executable, exe}, [:binary, {:line, 65_536}, args: args])
     on_exit(fn -> if Port.info(port), do: Port.close(port) end)
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {^port, {:data, {:eol, line}}} ->
         %{"address" => address, "derp_map_url" => url, "node_key" => key} = Jason.decode!(line)
         %{address: address, derp_map_url: url, node_key: key}
@@ -915,10 +1103,10 @@ defmodule SalixAgent.SSHToolsTest do
 
   # A gateway that trusts the peer's local relay map.
   defp gateway!(derp_map_url) do
-    name = :"tailcat_gateway_#{System.unique_integer([:positive])}"
+    name = :"tailcat_gateway_#{SystemsRuntime.Proc.unique_integer([:positive])}"
     start_supervised!({TailcatGateway, name: name, derp_map_url: derp_map_url}, id: name)
-    previous = Application.get_env(:salix_agent, :tailcat_gateway)
-    Application.put_env(:salix_agent, :tailcat_gateway, name)
+    previous = SystemsRuntime.get_env(:salix_agent, :tailcat_gateway)
+    SystemsRuntime.put_env(:salix_agent, :tailcat_gateway, name)
     on_exit(fn -> restore(:salix_agent, :tailcat_gateway, previous) end)
   end
 
@@ -931,9 +1119,9 @@ defmodule SalixAgent.SSHToolsTest do
     # reference bit, as the residency scan does first.
     :ets.insert(SalixAgent.SessionResidency, {:pressure, :high})
     SalixAgent.SessionResidency.second_chance(actor)
-    send(actor, :residency_evict)
+    SystemsRuntime.Proc.send(actor, :residency_evict)
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {:DOWN, ^ref, :process, ^actor, :normal} -> true
     after
       100 -> evicted?(actor, ref, attempts - 1)

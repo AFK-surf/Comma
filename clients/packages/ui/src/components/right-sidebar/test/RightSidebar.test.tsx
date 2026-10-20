@@ -9,6 +9,7 @@ import {
   RightSidebar,
   RightSidebarToolbarButton,
 } from "../RightSidebar";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 const tabs = [
   { id: "chat", label: "Chat", panelId: "chat-panel" },
@@ -182,7 +183,6 @@ describe("RightSidebar", () => {
   });
 
   it("keeps floating resize invisible without disabling resizing", () => {
-    vi.useFakeTimers();
     render(
       <RightSidebarHarness resizeEdge="right" resizeHandleAppearance="invisible" />
     );
@@ -204,11 +204,9 @@ describe("RightSidebar", () => {
       "aria-valuenow",
       String(RIGHT_SIDEBAR_DEFAULT_WIDTH + 16)
     );
-    vi.useRealTimers();
   });
 
   it("shows a cursor-following Drag to resize tooltip on hover", () => {
-    vi.useFakeTimers();
     render(<RightSidebarHarness />);
 
     const resizeHandle = screen.getByRole("separator", {
@@ -251,7 +249,6 @@ describe("RightSidebar", () => {
   });
 
   it("cancels a pending resize tooltip when the sidebar closes", () => {
-    vi.useFakeTimers();
     const view = render(renderRightSidebarForTooltipLifecycle(true));
     const resizeHandle = screen.getByRole("separator", {
       name: "Resize chat sidebar",
@@ -273,7 +270,6 @@ describe("RightSidebar", () => {
   });
 
   it("removes a visible resize tooltip when the sidebar closes", () => {
-    vi.useFakeTimers();
     const view = render(renderRightSidebarForTooltipLifecycle(true));
     const resizeHandle = screen.getByRole("separator", {
       name: "Resize chat sidebar",
@@ -332,8 +328,7 @@ describe("RightSidebar", () => {
   });
 
   it("clamps controlled widths and completes reduced-motion exits", async () => {
-    const originalMatchMedia = window.matchMedia;
-    Object.defineProperty(window, "matchMedia", {
+    stubProperty(window, "matchMedia", {
       configurable: true,
       value: vi.fn(() => ({ matches: true })),
     });
@@ -349,27 +344,16 @@ describe("RightSidebar", () => {
       width: RIGHT_SIDEBAR_MAX_WIDTH + 200,
     };
 
-    try {
-      const view = render(<RightSidebar {...props} open />);
-      expect(
-        screen.getByRole("separator", { name: "Resize chat sidebar" })
-      ).toHaveAttribute("aria-valuenow", String(RIGHT_SIDEBAR_MAX_WIDTH));
-      expect(screen.getByTestId("right-sidebar")).toHaveStyle({
-        "--comma-chat-sidebar-width": `${RIGHT_SIDEBAR_MAX_WIDTH}px`,
-      });
+    const view = render(<RightSidebar {...props} open />);
+    expect(
+      screen.getByRole("separator", { name: "Resize chat sidebar" })
+    ).toHaveAttribute("aria-valuenow", String(RIGHT_SIDEBAR_MAX_WIDTH));
+    expect(screen.getByTestId("right-sidebar")).toHaveStyle({
+      "--comma-chat-sidebar-width": `${RIGHT_SIDEBAR_MAX_WIDTH}px`,
+    });
 
-      view.rerender(<RightSidebar {...props} open={false} />);
-      await waitFor(() => expect(handleExitComplete).toHaveBeenCalledOnce());
-    } finally {
-      if (originalMatchMedia) {
-        Object.defineProperty(window, "matchMedia", {
-          configurable: true,
-          value: originalMatchMedia,
-        });
-      } else {
-        Reflect.deleteProperty(window, "matchMedia");
-      }
-    }
+    view.rerender(<RightSidebar {...props} open={false} />);
+    await waitFor(() => expect(handleExitComplete).toHaveBeenCalledOnce());
   });
 
   it("exposes closable tabs as sibling keyboard-operable controls", async () => {
@@ -551,9 +535,7 @@ describe("RightSidebar", () => {
   });
 
   it("uses the measured transition fallback and completes an exit exactly once", () => {
-    vi.useFakeTimers();
-    const originalMatchMedia = window.matchMedia;
-    Object.defineProperty(window, "matchMedia", {
+    stubProperty(window, "matchMedia", {
       configurable: true,
       value: vi.fn(() => ({ matches: false })),
     });
@@ -577,28 +559,17 @@ describe("RightSidebar", () => {
       />
     );
 
-    try {
-      const view = render(sidebar(true));
-      view.rerender(sidebar(false));
-      act(() => vi.advanceTimersByTime(179));
-      expect(handleExitComplete).not.toHaveBeenCalled();
-      act(() => vi.advanceTimersByTime(1));
-      expect(handleExitComplete).toHaveBeenCalledOnce();
+    const view = render(sidebar(true));
+    view.rerender(sidebar(false));
+    act(() => vi.advanceTimersByTime(179));
+    expect(handleExitComplete).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(handleExitComplete).toHaveBeenCalledOnce();
 
-      fireEvent.transitionEnd(screen.getByTestId("right-sidebar"), {
-        propertyName: "width",
-      });
-      expect(handleExitComplete).toHaveBeenCalledOnce();
-    } finally {
-      if (originalMatchMedia) {
-        Object.defineProperty(window, "matchMedia", {
-          configurable: true,
-          value: originalMatchMedia,
-        });
-      } else {
-        Reflect.deleteProperty(window, "matchMedia");
-      }
-    }
+    fireEvent.transitionEnd(screen.getByTestId("right-sidebar"), {
+      propertyName: "width",
+    });
+    expect(handleExitComplete).toHaveBeenCalledOnce();
   });
 });
 

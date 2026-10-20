@@ -1,4 +1,6 @@
 defmodule SalixAgent.SSH.Connection do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Opens one outbound OTP SSH connection for a Group.
 
@@ -15,8 +17,19 @@ defmodule SalixAgent.SSH.Connection do
   ephemeral Tailcat node key for each connection. The Tailcat tunnel
   authenticates the server's node key, so the known_hosts name is
   `tailcat:<nodekey>`, not the address: the address also carries a
-  pre-shared key and the relay. SSH authentication and host key trust are
-  the same for both transports.
+  pre-shared key and the relay.
+
+  A spec with `via_device_id:` dials `host` from that gateway device's network
+  (`SalixAgent.SSH.DeviceRelay`). The address is neither checked nor
+  resolved here. The same name can mean different hosts on different
+  networks, so the known_hosts name is `device:<device_id>:<host>`.
+
+  A spec with `via_tailnet: true` dials `host` in the Group's tailnet
+  (`SalixAgent.Tailnet`). The tailnet node resolves `host` from its own
+  network map and reaches only peers and approved subnet routes. The
+  known_hosts name is `tailnet:<tailnet>:<host>`.
+
+  SSH authentication and host key trust are the same for every transport.
 
   Failures return a diagnostic map for the Agent: a stable `code`, a
   `message`, and the facts it needs to recover (fingerprints, the public key
@@ -24,13 +37,20 @@ defmodule SalixAgent.SSH.Connection do
   """
 
   alias SalixAgent.Egress.Destination
-  alias SalixAgent.SSH.{Identity, KeyCallback, KnownHosts, TailcatGateway}
+  alias SalixAgent.SSH.{DeviceRelay, Identity, KeyCallback, KnownHosts, TailcatGateway}
+  alias SalixAgent.Tailnet
+  alias SalixAgent.Tools.LanGateway
 
   @connect_timeout_ms 10_000
   @negotiation_timeout_ms 20_000
   # The gateway pings for up to 10 s, then dials the port. With negotiation,
   # an open stays inside the 40 s wait of `SalixAgent.SSH.Sessions.open/1`.
   @tailcat_dial_timeout_ms 15_000
+  # The gateway dials for at most 15 s; a dial and negotiation stay inside
+  # the open wait as for Tailcat.
+  @device_dial_timeout_ms 15_000
+  # The tailnet node may need a few seconds to start on its owner.
+  @tailnet_dial_timeout_ms 15_000
   @keepalive %{count_max: 3, interval: 30_000}
 
   @type spec :: %{
@@ -39,7 +59,9 @@ defmodule SalixAgent.SSH.Connection do
           required(:host) => String.t(),
           required(:port) => pos_integer(),
           required(:user) => String.t(),
-          optional(:tailcat) => String.t() | nil
+          optional(:tailcat) => String.t() | nil,
+          optional(:via_device_id) => String.t() | nil,
+          optional(:via_tailnet) => boolean()
         }
 
   @doc """
@@ -47,14 +69,15 @@ defmodule SalixAgent.SSH.Connection do
   receives `{ref, {:disconnected, reason}}` when it ends.
 
   Returns the spec as connected: for Tailcat, `host` is the known_hosts host
-  `tailcat:<nodekey>`.
+  `tailcat:<nodekey>`; through a gateway device, `device:<device_id>:<host>`;
+  through the Group's tailnet, `tailnet:<tailnet>:<host>`.
   """
   @spec connect(spec(), reference()) ::
           {:ok, pid(), %{String.t() => term()}, spec()} | {:error, %{String.t() => term()}}
   def connect(spec, ref) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = do_connect(spec, ref)
-    emit(result, operation(spec), System.monotonic_time() - started)
+    emit(result, operation(spec), SystemsClock.monotonic_time() - started)
     result
   end
 
@@ -62,13 +85,50 @@ defmodule SalixAgent.SSH.Connection do
   @spec tailcat_host(String.t()) :: String.t()
   def tailcat_host("nodekey:" <> _ = node_key), do: "tailcat:" <> node_key
 
+  @doc "The known_hosts host for a host reached through a gateway device."
+  @spec device_host(String.t(), String.t()) :: String.t()
+  def device_host(device_id, host), do: "device:#{device_id}:#{host}"
+
   defp operation(%{tailcat: target}) when is_binary(target), do: "ssh_connect_tailcat"
+  defp operation(%{via_device_id: device_id}) when is_binary(device_id), do: "ssh_connect_device"
+  defp operation(%{via_tailnet: true}), do: "ssh_connect_tailnet"
   defp operation(_spec), do: "ssh_connect"
 
   defp do_connect(%{tailcat: target} = spec, ref) when is_binary(target) do
     with {:ok, identity} <- identity(spec.group_id),
          {:ok, socket, node_key} <- tailcat_dial(target, spec.port, @tailcat_dial_timeout_ms),
          spec = %{spec | host: tailcat_host(node_key)},
+         {:ok, known} <- known_host(spec) |> close_on_error(socket) do
+      options = options(spec, identity, known, ref)
+
+      socket
+      |> connect_socket(spec, identity, options, ref)
+      |> explain_pin(known)
+      |> with_spec(spec)
+    end
+  end
+
+  defp do_connect(%{via_device_id: device_id} = spec, ref) when is_binary(device_id) do
+    with {:ok, identity} <- identity(spec.group_id),
+         {:ok, target} <- gateway(spec),
+         dial_host = spec.host,
+         spec = %{spec | host: device_host(device_id, dial_host)},
+         {:ok, known} <- known_host(spec),
+         {:ok, socket} <- device_dial(spec, target, dial_host) do
+      options = options(spec, identity, known, ref)
+
+      socket
+      |> connect_socket(spec, identity, options, ref)
+      |> explain_pin(known)
+      |> with_spec(spec)
+    end
+  end
+
+  defp do_connect(%{via_tailnet: true} = spec, ref) do
+    with {:ok, identity} <- identity(spec.group_id),
+         dial_host = spec.host,
+         {:ok, socket, tailnet} <- tailnet_dial(spec, dial_host),
+         spec = %{spec | host: "tailnet:#{tailnet}:#{dial_host}"},
          {:ok, known} <- known_host(spec) |> close_on_error(socket) do
       options = options(spec, identity, known, ref)
 
@@ -112,6 +172,52 @@ defmodule SalixAgent.SSH.Connection do
     end
   end
 
+  defp gateway(spec) do
+    case LanGateway.resolve_gateway(spec.agent_id, spec.via_device_id, ["lan_tcp_dial"]) do
+      {:ok, target, _gateway, _method} ->
+        {:ok, target}
+
+      {:error, code, message} ->
+        {:error, diagnostic(code, message, %{"via_device_id" => spec.via_device_id})}
+    end
+  end
+
+  defp device_dial(spec, target, host) do
+    case DeviceRelay.dial(spec.agent_id, target, host, spec.port, @device_dial_timeout_ms) do
+      {:ok, socket, _result} ->
+        {:ok, socket}
+
+      {:error, reason} ->
+        {:error,
+         diagnostic(
+           "connect_failed",
+           "The gateway could not connect to #{host} port #{spec.port}.",
+           %{
+             "host" => host,
+             "port" => spec.port,
+             "via_device_id" => spec.via_device_id,
+             "reason" => device_reason(reason)
+           }
+         )}
+    end
+  end
+
+  defp tailnet_dial(spec, host) do
+    case Tailnet.dial(spec.group_id, host, spec.port, @tailnet_dial_timeout_ms) do
+      {:ok, socket, reply} ->
+        # OTP ssh takes over a socket only in list mode.
+        :ok = :inet.setopts(socket, [:list])
+        {:ok, socket, reply["tailnet"] || ""}
+
+      {:error, error} ->
+        {:error, Map.merge(error, %{"host" => host, "port" => spec.port})}
+    end
+  end
+
+  defp device_reason(:timeout), do: "timeout"
+  defp device_reason(reason) when is_binary(reason), do: String.slice(reason, 0, 300)
+  defp device_reason(reason), do: inspect(reason)
+
   # A DNS name is looked up for its `tailcat=` TXT record; the name policy
   # keeps the lookup off internal names.
   defp tailcat_name_allowed(target) do
@@ -142,7 +248,7 @@ defmodule SalixAgent.SSH.Connection do
         :gen_tcp.close(socket)
 
         {:error,
-         diagnostic("negotiation_failed", "SSH negotiation over Tailcat failed.", %{
+         diagnostic("negotiation_failed", "SSH negotiation with #{spec.host} failed.", %{
            "host" => spec.host,
            "port" => spec.port,
            "reason" => reason_text(reason)
@@ -194,7 +300,7 @@ defmodule SalixAgent.SSH.Connection do
   end
 
   defp resolve(host) do
-    allow_private = Application.get_env(:salix_agent, :ssh_allow_private_hosts, false) == true
+    allow_private = SystemsRuntime.get_env(:salix_agent, :ssh_allow_private_hosts, false) == true
 
     case Destination.resolve(host, allow_private: allow_private) do
       {:ok, addresses} ->
@@ -229,7 +335,7 @@ defmodule SalixAgent.SSH.Connection do
   end
 
   defp options(spec, identity, known, ref) do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     pinned =
       case KnownHosts.pinned_algorithms(known) do
@@ -259,7 +365,9 @@ defmodule SalixAgent.SSH.Connection do
       connect_timeout: @connect_timeout_ms,
       idle_time: :infinity,
       alive: @keepalive,
-      disconnectfun: fn reason -> send(owner, {ref, {:disconnected, reason}}) end
+      disconnectfun: fn reason ->
+        SystemsRuntime.Proc.send(owner, {ref, {:disconnected, reason}})
+      end
     ] ++ pinned
   end
 
@@ -314,7 +422,7 @@ defmodule SalixAgent.SSH.Connection do
   # KeyCallback runs inside the connection process and reports here before
   # `:ssh.connect/4` returns.
   defp receive_host_key(ref) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {^ref, {:host_key, result}} -> result
     after
       0 -> nil
@@ -395,8 +503,14 @@ defmodule SalixAgent.SSH.Connection do
                "host_key_mismatch",
                "auth_failed",
                "blocked_destination",
+               "not_a_lan_gateway",
+               "operations_not_allowed",
                "tailcat_blocked_relay",
-               "tailcat_invalid_address"
+               "tailcat_invalid_address",
+               "tailnet_not_configured",
+               "tailnet_needs_login",
+               "tailnet_destination_not_allowed",
+               "tailnet_host_unknown"
              ] ->
           "rejected"
 
@@ -406,7 +520,12 @@ defmodule SalixAgent.SSH.Connection do
                "known_hosts_unavailable",
                "known_hosts_full",
                "tailcat_unavailable",
-               "tailcat_relay_unavailable"
+               "tailcat_relay_unavailable",
+               "tailnet_unavailable",
+               "tailnet_starting",
+               "gateway_offline",
+               "device_not_found",
+               "device_lookup_failed"
              ] ->
           "unavailable"
 

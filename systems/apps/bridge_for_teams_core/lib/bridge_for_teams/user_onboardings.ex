@@ -111,7 +111,7 @@ defmodule BridgeForTeams.UserOnboardings do
 
   defp finish(onboarding, status) do
     onboarding
-    |> UserOnboarding.changeset(%{status: status, completed_at: DateTime.utc_now()})
+    |> UserOnboarding.changeset(%{status: status, completed_at: SystemsClock.utc_now()})
     |> Repo.update()
   end
 end

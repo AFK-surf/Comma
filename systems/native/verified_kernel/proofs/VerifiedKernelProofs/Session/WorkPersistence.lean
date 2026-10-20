@@ -29,8 +29,8 @@ theorem normalize_format {s t : Term} {format : Int} {j r : List Term}
   obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨_, _, providerWrite, h⟩ := bind_ok h
   obtain ⟨_, _, _, h⟩ := bind_ok h
-  exact (write_field_frame h rfl).trans
-    ((write_field_frame providerWrite rfl).trans ((write_field_frame activityWrite rfl).trans selected))
+  exact (write_field_frame h (by keys_absent)).trans
+    ((write_field_frame providerWrite (by keys_absent)).trans ((write_field_frame activityWrite (by keys_absent)).trans selected))
 
 theorem persistable_queue_frame {s t : Term} {j r : List Term}
     (h : Lifecycle.persistable s j = .ok (t, r)) : QueueFrame s t := by
@@ -67,15 +67,15 @@ theorem prepareWrite_modern {s result : Term} {format : Int} {j r : List Term}
   have supported : (i format == i 2 || i format == i 3) = true := by rcases modern with rfl | rfl <;> rfl
   simp only [notLegacy, Bool.false_eq_true, supported, ↓reduceIte] at h
   obtain ⟨t, _, written, h⟩ := bind_ok h
-  have fields : WorkFieldsPreserved normalized t := ⟨write_field_frame written rfl, write_field_frame written rfl⟩
+  have fields : WorkFieldsPreserved normalized t := ⟨write_field_frame written (by keys_absent), write_field_frame written (by keys_absent)⟩
   have allocation : QueueAllocated t := by
     obtain ⟨items, next, queue, allocator, positive, canonical, bounded, unique⟩ := normalizedReady.1
-    exact ⟨items, next, (write_field_frame written rfl).trans queue,
-      (write_field_frame written rfl).trans allocator, positive, canonical, bounded, unique⟩
+    exact ⟨items, next, (write_field_frame written (by keys_absent)).trans queue,
+      (write_field_frame written (by keys_absent)).trans allocator, positive, canonical, bounded, unique⟩
   have live : QueueUnacked t := by
     obtain ⟨items, ack, queue, watermark, above⟩ := normalizedReady.2.1
-    exact ⟨items, ack, (write_field_frame written rfl).trans queue,
-      (write_field_frame written rfl).trans watermark, above⟩
+    exact ⟨items, ack, (write_field_frame written (by keys_absent)).trans queue,
+      (write_field_frame written (by keys_absent)).trans watermark, above⟩
   refine ⟨t, pure_ok h, ?_, ⟨allocation, live, ?_⟩, ?_⟩
   · obtain ⟨_, written⟩ := write_cons written
     rw [pure_ok written]

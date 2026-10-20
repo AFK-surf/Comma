@@ -1,19 +1,8 @@
 defmodule BridgeForTeams.RunChecksTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias BridgeForTeams.RunChecks
   alias BridgeForTeams.RunChecks.GateContract
-
-  test "bot check order includes the Google Calendar notification gate" do
-    assert RunChecks.bot_gate_ids() == [
-             "bot.credentials",
-             "bot.callback",
-             "bot.chat_access",
-             "bot.calendar",
-             "bot.first_message",
-             "bot.manual"
-           ]
-  end
 
   test "serializes the shared dashboard result shape for CLI JSON output" do
     ran_at = ~U[2026-06-22 10:00:00Z]

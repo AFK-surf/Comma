@@ -18,7 +18,7 @@ defmodule SalixAgent.ActivitySurface do
   historical transport model.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   @table __MODULE__
   @producer_epoch_key {__MODULE__, :producer_epoch}
@@ -28,11 +28,12 @@ defmodule SalixAgent.ActivitySurface do
   # old is treated as gone. Generous enough for long tool runs.
   @stale_after_ms 10 * 60_000
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
   def init(_opts) do
-    _ = :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+    _ = SystemsRuntime.ETS.new(@table, [:named_table, :public, :set, read_concurrency: true])
 
     # `ActivityEvent.sequence` is monotonic only for one runtime incarnation.
     # Publish a new opaque equality fence whenever this surface owner starts so
@@ -40,7 +41,7 @@ defmodule SalixAgent.ActivitySurface do
     # VM/surface sequence. The event hot path reads this immutable projection
     # without a GenServer call.
     producer_epoch = new_producer_epoch()
-    :persistent_term.put(@producer_epoch_key, producer_epoch)
+    SystemsRuntime.PersistentTerm.put(@producer_epoch_key, producer_epoch)
 
     {:ok, %{producer_epoch: producer_epoch}}
   end
@@ -48,7 +49,7 @@ defmodule SalixAgent.ActivitySurface do
   @doc "The opaque equality fence for the current activity producer incarnation."
   @spec producer_epoch() :: String.t() | nil
   def producer_epoch do
-    :persistent_term.get(@producer_epoch_key, nil)
+    SystemsRuntime.PersistentTerm.get(@producer_epoch_key, nil)
   end
 
   @doc """
@@ -60,9 +61,9 @@ defmodule SalixAgent.ActivitySurface do
   def put(%{"agent_id" => agent_id, "session_id" => session_id} = activity)
       when is_binary(agent_id) and is_binary(session_id) do
     if activity["phase"] == "idle" or activity["status"] == "idle" do
-      :ets.delete(@table, {agent_id, session_id})
+      SystemsRuntime.ETS.delete(@table, {agent_id, session_id})
     else
-      :ets.insert(@table, {{agent_id, session_id}, activity, now_ms()})
+      SystemsRuntime.ETS.insert(@table, {{agent_id, session_id}, activity, now_ms()})
     end
 
     :ok
@@ -78,7 +79,7 @@ defmodule SalixAgent.ActivitySurface do
     now = now_ms()
 
     @table
-    |> :ets.match_object({{agent_id, :_}, :_, :_})
+    |> SystemsRuntime.ETS.match_object({{agent_id, :_}, :_, :_})
     |> Enum.flat_map(fn {{_agent_id, _session_id}, activity, at} ->
       if now - at <= @stale_after_ms, do: [activity], else: []
     end)
@@ -93,12 +94,12 @@ defmodule SalixAgent.ActivitySurface do
   @spec get_session(String.t(), String.t()) :: map() | nil
   def get_session(agent_id, session_id)
       when is_binary(agent_id) and is_binary(session_id) do
-    case :ets.lookup(@table, {agent_id, session_id}) do
+    case SystemsRuntime.ETS.lookup(@table, {agent_id, session_id}) do
       [{{^agent_id, ^session_id}, activity, at}] ->
         if now_ms() - at <= @stale_after_ms do
           activity
         else
-          :ets.delete(@table, {agent_id, session_id})
+          SystemsRuntime.ETS.delete(@table, {agent_id, session_id})
           nil
         end
 
@@ -113,9 +114,9 @@ defmodule SalixAgent.ActivitySurface do
 
   defp new_producer_epoch do
     @producer_epoch_bytes
-    |> :crypto.strong_rand_bytes()
+    |> SystemsRuntime.Proc.random_bytes()
     |> Base.url_encode64(padding: false)
   end
 
-  defp now_ms, do: System.monotonic_time(:millisecond)
+  defp now_ms, do: SystemsClock.monotonic_time(:millisecond)
 end

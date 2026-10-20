@@ -1,5 +1,5 @@
 defmodule SalixAnalytics.SlackMirror.ReaderTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAnalytics.SlackMirror.Reader
 
@@ -53,17 +53,17 @@ defmodule SalixAnalytics.SlackMirror.ReaderTest do
       )
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
-    previous = Application.get_env(:salix_analytics, :clickhouse)
+    previous = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
-    Application.put_env(:salix_analytics, :clickhouse,
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
       base_url: "http://127.0.0.1:#{port}/",
       table: "test.analytics_events"
     )
 
     on_exit(fn ->
       if is_nil(previous),
-        do: Application.delete_env(:salix_analytics, :clickhouse),
-        else: Application.put_env(:salix_analytics, :clickhouse, previous)
+        do: SystemsRuntime.delete_env(:salix_analytics, :clickhouse),
+        else: SystemsRuntime.put_env(:salix_analytics, :clickhouse, previous)
     end)
 
     :ok

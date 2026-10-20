@@ -4,17 +4,11 @@ import {
   installNativeBridgeMock,
 } from "@comma/test-utils/native-bridge";
 import { render, waitFor } from "@comma/test-utils/render";
-import { afterEach, expect, it, vi } from "vitest";
-import type { CommaApiClient } from "../../api";
-import { writeActiveWorkspaceId } from "../activeWorkspace";
+import { expect, it, vi } from "vitest";
+import { createScriptedCore, resolvedWorkspace } from "@comma/test-utils/scripted-core";
 import { CommaConnectorRuntimeOwner } from "../useCommaConnectorScope";
 
-afterEach(() => {
-  localStorage.clear();
-});
-
 it("keeps the active workspace Connector alive outside Settings", async () => {
-  writeActiveWorkspaceId("wsp_active");
   const snapshot: ConnectorRuntimeScopeSnapshot = {
     revision: 1,
     scopes: [
@@ -34,17 +28,13 @@ it("keeps the active workspace Connector alive outside Settings", async () => {
     },
     platform: "electron",
   });
-  const api: Pick<CommaApiClient, "listWorkspaces"> = {
-    listWorkspaces: vi.fn(async () => [
-      {
-        group_id: "grp_active",
-        id: "wsp_active",
-        name: "Active Workspace",
-      },
-    ]),
-  };
+  // The core answers the workspace the user selected.
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "workspace" ? resolvedWorkspace("wsp_active") : undefined,
+  });
 
-  render(<CommaConnectorRuntimeOwner api={api} />);
+  render(core.wrap(<CommaConnectorRuntimeOwner />));
 
   await waitFor(() =>
     expect(scope).toHaveBeenCalledWith({ workspaceId: "wsp_active" })

@@ -7,7 +7,7 @@ defmodule SalixMeet.Ports.Memory do
   def project(state) when is_map(state), do: impl().project(state)
 
   defp impl do
-    Application.get_env(:salix_meet, :memory_mod, __MODULE__.None)
+    SystemsRuntime.get_env(:salix_meet, :memory_mod, __MODULE__.None)
   end
 
   defmodule None do

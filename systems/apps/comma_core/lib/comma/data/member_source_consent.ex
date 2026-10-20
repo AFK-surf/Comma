@@ -8,6 +8,10 @@ defmodule Comma.Data.MemberSourceConsent do
     field(:user_id, :string, primary_key: true)
     field(:toolkit, :string, primary_key: true)
     field(:connection_id, :string)
-    timestamps(type: :utc_datetime_usec)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 end

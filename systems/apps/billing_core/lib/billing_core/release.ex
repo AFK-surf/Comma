@@ -57,7 +57,7 @@ defmodule BillingCore.Release do
   end
 
   defp repos do
-    Application.get_env(@app, :ecto_repos, [])
+    SystemsRuntime.get_env(@app, :ecto_repos, [])
   end
 
   defp load_app do

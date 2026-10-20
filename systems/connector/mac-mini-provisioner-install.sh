@@ -176,6 +176,57 @@ install_binary() {
   mv "$temp_binary" "$target_bin"
 }
 
+read_installed_component_digest() {
+  config_path="$1"
+  component="$2"
+
+  [ -f "$config_path" ] || return 0
+
+  python3 - "$config_path" "$component" <<'PY'
+import json
+import sys
+
+path, component = sys.argv[1:3]
+try:
+    with open(path, "r", encoding="utf-8") as handle:
+        digest = json.load(handle)["capabilities"]["component_digests"][component]
+except Exception:
+    raise SystemExit(0)
+if isinstance(digest, str):
+    print(digest)
+PY
+}
+
+# salix-connect runs Computer Use through the helper app beside its binary.
+# The installed runner owns the replacement (lock, signature check, atomic swap),
+# the same code that applies the helper updates later.
+install_computer_use_helper() {
+  url="$1"
+  expected_sha="$2"
+  expected_size="$3"
+  app="$4"
+  installed_sha="$5"
+  temp_dir="$6"
+  runner="$7"
+
+  [ -n "$expected_sha" ] || fail "preflight.computer_use_helper_sha_missing" "Computer Use helper sha256 is required"
+  case "$expected_size" in
+    '' | 0 | *[!0-9]*) fail "preflight.computer_use_helper_size_missing" "Computer Use helper exact artifact size is required" ;;
+  esac
+  if [ "$installed_sha" = "$expected_sha" ] && \
+    "$runner" computer-use-helper check --app "$app" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  archive="$temp_dir/comma-computer-use.tar.gz"
+  download "computer_use_helper" "$url" "$archive" "$expected_size"
+  actual_sha="$(sha256_file "$archive")"
+  [ "$actual_sha" = "$expected_sha" ] || fail "preflight.computer_use_helper_checksum_mismatch" \
+    "Computer Use helper checksum mismatch: expected=$expected_sha got=$actual_sha"
+  "$runner" computer-use-helper install --app "$app" --archive "$archive" || \
+    fail "install.computer_use_helper_install_failed" "Computer Use helper was not installed; the current helper was not changed"
+}
+
 agent_vmm_host_ready() {
   helper="$1"
   observed="$2"
@@ -434,6 +485,9 @@ config = {
         },
     },
 }
+computer_use_helper_sha = os.environ.get("BFT_COMPUTER_USE_HELPER_INSTALLED_SHA256", "")
+if computer_use_helper_sha:
+    config["capabilities"]["component_digests"]["computer-use-helper"] = computer_use_helper_sha
 if token:
     config["runner_token"] = token
 
@@ -875,6 +929,21 @@ PY
   runner_source="download"
   ok "bft-runner installed and verified"
 
+  computer_use_helper_app="$(dirname "$salix_connect_path")/native/macos/Comma Computer Use.app"
+  computer_use_helper_url="$(expand_platform_url "${BFT_COMPUTER_USE_HELPER_URL:-}" "$platform")"
+  computer_use_helper_sha="$(read_installed_component_digest "$config_path" computer-use-helper || true)"
+  if [ -n "$computer_use_helper_url" ]; then
+    install_computer_use_helper "$computer_use_helper_url" "${BFT_COMPUTER_USE_HELPER_SHA256:-}" \
+      "${BFT_COMPUTER_USE_HELPER_SIZE:-}" "$computer_use_helper_app" "$computer_use_helper_sha" "$temp_dir" \
+      "$runner_target"
+    computer_use_helper_sha="$BFT_COMPUTER_USE_HELPER_SHA256"
+    ok "Computer Use helper installed and verified"
+  else
+    # Server releases before the standalone helper do not carry it.
+    [ -d "$computer_use_helper_app" ] || computer_use_helper_sha=""
+    say "Computer Use helper is not part of this server release; skipped"
+  fi
+
   install_fallback_tooling "$platform"
 
   host_name="$(hostname 2>/dev/null || uname -n 2>/dev/null || printf 'runner')"
@@ -894,6 +963,7 @@ PY
   export BFT_RUNNER_NAME="$runner_name"
   export BFT_SALIX_CONNECT_PATH="$salix_connect_path"
   export BFT_SALIX_CONNECT_SOURCE="download"
+  export BFT_COMPUTER_USE_HELPER_INSTALLED_SHA256="$computer_use_helper_sha"
   export BFT_RUNNER_PATH_RESOLVED="$runner_target"
   export BFT_RUNNER_SOURCE="$runner_source"
   export BFT_HOST_RUNTIME_LIFECYCLE_PATH="$agent_vmm_lifecycle"

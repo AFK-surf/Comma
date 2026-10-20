@@ -82,28 +82,22 @@ function sourceContextValue(text, key) {
 }
 
 // Chat Completions only accepts a system message at the beginning, so Salix
-// carries later system-authored context (source context, runtime facts) on a
-// `<system>`-wrapped user message. Returns that text for either shape, or null
-// for a real conversation turn.
+// carries later system-authored context (source context, reminders) as a
+// folded `system_reminder` runtime record. Returns that text for either shape,
+// or null for anything else.
 function systemAuthoredText(message) {
   if (!message) return null;
+  if (message.role === "system") return asText(message.content);
+  if (message.role !== "runtime") return null;
+  if (message.runtime?.type !== "system_reminder") return null;
 
-  const text = asText(message.content);
-  if (message.role === "system") return text;
-  if (message.role !== "user") return null;
-
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("<system>\n") || !trimmed.endsWith("\n</system>")) {
-    return null;
-  }
-
-  return trimmed.slice("<system>\n".length, -"\n</system>".length);
+  const content = message.runtime.content;
+  return typeof content === "string" ? content : JSON.stringify(content);
 }
 
-// A conversation turn from the user, as opposed to system-authored context
-// riding on the user role. Turn boundaries below key off this.
+// A conversation turn from the user. Turn boundaries below key off this.
 function isUserTurn(message) {
-  return message?.role === "user" && systemAuthoredText(message) === null;
+  return message?.role === "user";
 }
 
 function latestSourceContext(messages) {
@@ -225,15 +219,11 @@ function latestAsyncToolResult(messages, target) {
   const lastUserIndex = messages.findLastIndex(isUserTurn);
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (index < lastUserIndex) return null;
-    const content = systemAuthoredText(messages[index]);
-    if (content === null) continue;
-    if (!content.startsWith("<runtime-message>\n")) continue;
-    if (!content.includes("\ntype: tool_call_completed\n")) continue;
+    const runtime =
+      messages[index]?.role === "runtime" ? messages[index].runtime : null;
+    if (runtime?.type !== "tool_call_completed") continue;
 
-    const encoded = content.match(
-      /\ncontent: (?:\[src:[^\]]+\]\n)?(\{.*\})\nsource_refs: /s,
-    )?.[1];
-    const completion = parseJson(encoded);
+    const completion = runtime.content;
 
     if (
       completion?.status === "completed" &&
@@ -245,25 +235,6 @@ function latestAsyncToolResult(messages, target) {
   }
 
   return null;
-}
-
-function findWorkerId(result) {
-  const worker = deepFind(
-    result,
-    (value) =>
-      value &&
-      typeof value === "object" &&
-      typeof value.agent_id === "string" &&
-      (value.role === "worker" || /worker/i.test(value.name || "")),
-  );
-  if (worker?.agent_id) return worker.agent_id;
-
-  const anyAgent = deepFind(
-    result,
-    (value) =>
-      value && typeof value === "object" && typeof value.agent_id === "string",
-  );
-  return anyAgent?.agent_id || null;
 }
 
 function taskListRequest(text) {
@@ -1111,8 +1082,37 @@ function routineContent(input) {
   };
 }
 
+// The provider kernel sends each runtime message as a synthetic
+// `get_runtime_message` call and its result. Fold each pair back into one
+// runtime record so turn and tool-result lookups skip it.
+function foldRuntimeCalls(messages) {
+  const runtimeIds = new Set();
+  const folded = [];
+
+  for (const message of messages) {
+    const calls = message?.tool_calls;
+    if (
+      Array.isArray(calls) &&
+      calls.length > 0 &&
+      calls.every((call) => call?.function?.name === "get_runtime_message")
+    ) {
+      for (const call of calls) runtimeIds.add(call.id);
+      continue;
+    }
+
+    if (message?.role === "tool" && runtimeIds.has(message.tool_call_id)) {
+      folded.push({ role: "runtime", runtime: parseJson(message.content) });
+      continue;
+    }
+
+    folded.push(message);
+  }
+
+  return folded;
+}
+
 export function decide(body) {
-  const messages = body.messages || [];
+  const messages = foldRuntimeCalls(body.messages || []);
   const sourceContext =
     latestSourceContext(messages) || latestProviderContext(messages);
   const latestUserText = asText(messages.findLast(isUserTurn)?.content) || "";
@@ -1188,10 +1188,13 @@ export function decide(body) {
 
     if (unread) {
       if (unread.source.kind !== "composio") {
-        return toolCall(`mcp.${unread.source.bindingAlias}.comma_local_search`, {
-          query: "recent activity for the Comma Center briefing",
-          source: unread.source.bindingAlias,
-        });
+        return toolCall(
+          `mcp.${unread.source.bindingAlias}.comma_local_search`,
+          {
+            query: "recent activity for the Comma Center briefing",
+            source: unread.source.bindingAlias,
+          },
+        );
       }
 
       if (unread.progress.next === "list") {
@@ -1243,20 +1246,30 @@ export function decide(body) {
     });
   }
 
-  if (target === "agent.list") {
-    const workerId = findWorkerId(result);
-    if (!workerId) {
-      return {
-        kind: "text",
-        text: "LOCAL_DEV_ERROR: no worker agent_id returned",
-      };
-    }
-
+  // As the Router prompt asks: read the servable models, then create the Task
+  // without agent_id, so the Workspace's one Worker takes it.
+  if (target === "agent.models") {
+    const models = Array.isArray(result?.models) ? result.models : [];
+    const model =
+      models.find((item) => item?.served_by === "subscription") || models[0];
     return toolCall("im_api.internal.task.create", {
       connect_id: "internal",
-      agent_id: workerId,
       content: "LOCAL_TASK: 完成本地 Task 链路验证，并回报 LOCAL_TASK_DONE。",
       title: "本地 Task 链路验证",
+      ...(model
+        ? {
+            model: {
+              kind: "catalog",
+              model: model.id,
+              ...(model.efforts?.length
+                ? { reasoning_effort: model.efforts[0] }
+                : {}),
+              ...(model.served_by === "subscription"
+                ? {}
+                : { allow_paid: true }),
+            },
+          }
+        : {}),
     });
   }
 
@@ -1399,7 +1412,7 @@ export function decide(body) {
   }
 
   if (/LOCAL_CREATE_TASK|创建任务/i.test(latestUserText)) {
-    return toolCall("agent.list", { limit: 20 });
+    return toolCall("agent.models", {});
   }
 
   const pendingTaskList = pendingTaskListContinuation(messages);
@@ -1620,7 +1633,11 @@ export function createMockServer({
       return;
     }
 
-    if (request.method !== "POST" || request.url !== "/chat/completions") {
+    // Profiles normalize a bare provider URL to /v1; direct local configs may use the root.
+    if (
+      request.method !== "POST" ||
+      !["/chat/completions", "/v1/chat/completions"].includes(request.url)
+    ) {
       response.writeHead(404);
       response.end("not found");
       return;
@@ -1670,7 +1687,10 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
-  const port = Number(process.env.PORT || 43123);
+  // Below Linux's ephemeral range (32768-60999): in a container, Docker's
+  // embedded DNS listens on a random port from it, and a listener there can
+  // find its port taken.
+  const port = Number(process.env.PORT || 23123);
   createMockServer().listen(port, "0.0.0.0", () => {
     console.log(`Comma local mock LLM listening on ${port}`);
   });

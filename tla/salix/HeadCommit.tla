@@ -496,4 +496,33 @@ HandleHonest ==
          /\ head.val.epoch = h[n].epoch
          /\ h[n].next = head.val.seq + 1
 
+-----------------------------------------------------------------------------
+(* TLC state view (`VIEW View` in HeadCommit.cfg).  The spec keeps the   *)
+(* code-shaped counters `uuidCtr` and S3 ETag `ver`, and the ghost `log`. *)
+(* Their exact values are history: guards and invariants read them only   *)
+(* in the ways below, so the view keeps only that part:                   *)
+(*   - ETag: guards compare it only with the live head ETag.  Each applied *)
+(*     write makes a larger ETag, so a stale ETag never matches again.     *)
+(*   - uuid: guards compare only head.val.uuid with loc[n].uuid, and each  *)
+(*     new uuid is fresh.  The view keeps the node whose in-flight uuid   *)
+(*     the head carries, if any.                                           *)
+(*   - log: the next append is checked only against Len(log), the last    *)
+(*     epoch, and whether the earlier log meets the log invariants.        *)
+(* States with equal views have the same enabled steps, the same view     *)
+(* after each step, and the same invariant results.                       *)
+EtagView(x) == IF x = 0 THEN "none" ELSE IF x = S3!ETag(head) THEN "live" ELSE "stale"
+
+HeadUuidHolder ==
+  IF \E n \in Node : loc[n].uuid # 0 /\ loc[n].uuid = head.val.uuid
+  THEN CHOOSE n \in Node : loc[n].uuid # 0 /\ loc[n].uuid = head.val.uuid
+  ELSE NoNode
+
+View ==
+  <<head.present, [head.val EXCEPT !.uuid = HeadUuidHolder], faults, renews, pc,
+    [n \in Node |-> [h[n] EXCEPT !.etag = EtagView(h[n].etag)]],
+    [n \in Node |-> [loc[n] EXCEPT !.etag = EtagView(loc[n].etag),
+                                   !.uuid = (loc[n].uuid # 0)]],
+    <<Len(log), IF log = <<>> THEN 0 ELSE log[Len(log)].epoch,
+      LogSeqContiguous /\ LogEpochMonotone>>>>
+
 =============================================================================

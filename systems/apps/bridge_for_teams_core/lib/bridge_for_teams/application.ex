@@ -14,8 +14,6 @@ defmodule BridgeForTeams.Application do
       (Postgres → S3 control-plane), at-least-once / idempotent.
     * `BridgeForTeams.EnvironmentProvisioning.Reconciler` — reconciles runner-backed
       provision requests against live Salix env attach state and timeout policy.
-    * `BridgeForTeams.EnvironmentRuntimeObserver` — asynchronously projects
-      device runtime changes into agent runtime Operations events.
     * `BridgeForTeams.Observability.Pruner` — runs the shared Operations
       retention pruning boundary on a schedule.
     * `BridgeForTeams.DashboardProjection.Reconciler` — refreshes per-project
@@ -33,11 +31,12 @@ defmodule BridgeForTeams.Application do
   def start(_type, _args) do
     configure_salix_im_diagnostic_sink()
     configure_salix_schedule_diagnostic_sink()
+    SalixStore.StationMembers.register(BridgeForTeams.StationMembers)
 
     children =
       [
         BridgeForTeams.Repo,
-        {Task.Supervisor, name: BridgeForTeams.TaskSupervisor},
+        {SystemsRuntime.TaskSupervisor, name: BridgeForTeams.TaskSupervisor},
         BridgeForTeams.Cache,
         BridgeForTeams.RateLimit,
         BridgeForTeams.Salix.ReadCache
@@ -50,11 +49,10 @@ defmodule BridgeForTeams.Application do
         BridgeForTeams.Salix.Reconciler,
         BridgeForTeams.DashboardProjection.Reconciler,
         BridgeForTeams.EnvironmentProvisioning.Reconciler,
-        BridgeForTeams.EnvironmentRuntimeObserver,
         BridgeForTeams.Observability.Pruner
       ])
       |> maybe_add(
-        Application.get_env(:bridge_for_teams_core, :storage_metering, [])
+        SystemsRuntime.get_env(:bridge_for_teams_core, :storage_metering, [])
         |> Keyword.get(:enabled, false),
         BridgeForTeams.StorageMetering.Reconciler
       )
@@ -64,7 +62,7 @@ defmodule BridgeForTeams.Application do
       )
 
     opts = [strategy: :one_for_one, name: BridgeForTeams.Supervisor]
-    Supervisor.start_link(children, opts)
+    SystemsRuntime.Supervisor.start_link(children, opts)
   end
 
   defp maybe_add(children, true, child), do: children ++ [child]
@@ -72,35 +70,35 @@ defmodule BridgeForTeams.Application do
 
   defp tenant_config_checker_enabled? do
     :bridge_for_teams_core
-    |> Application.get_env(BridgeForTeams.Salix.TenantConfigChecker, [])
+    |> SystemsRuntime.get_env(BridgeForTeams.Salix.TenantConfigChecker, [])
     |> Keyword.get(:enabled, true)
   end
 
   defp slack_history_reconciler_enabled? do
     :bridge_for_teams_core
-    |> Application.get_env(BridgeForTeams.SlackHistoryOnboarding.Reconciler, [])
+    |> SystemsRuntime.get_env(BridgeForTeams.SlackHistoryOnboarding.Reconciler, [])
     |> Keyword.get(:enabled, false)
   end
 
   defp configure_salix_im_diagnostic_sink do
     sink =
-      Application.get_env(
+      SystemsRuntime.get_env(
         :salix_im,
         :diagnostic_sink,
         BridgeForTeams.Observability.SalixIMSink
       )
 
-    Application.put_env(:salix_im, :diagnostic_sink, sink)
+    SystemsRuntime.put_env(:salix_im, :diagnostic_sink, sink)
   end
 
   defp configure_salix_schedule_diagnostic_sink do
     sink =
-      Application.get_env(
+      SystemsRuntime.get_env(
         :salix_cluster,
         :schedule_diagnostic_sink,
         BridgeForTeams.Observability.SalixScheduleSink
       )
 
-    Application.put_env(:salix_cluster, :schedule_diagnostic_sink, sink)
+    SystemsRuntime.put_env(:salix_cluster, :schedule_diagnostic_sink, sink)
   end
 end

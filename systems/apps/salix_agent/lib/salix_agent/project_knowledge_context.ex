@@ -6,7 +6,7 @@ defmodule SalixAgent.ProjectKnowledgeContext do
   database. A successful result becomes a runtime message only when it is
   resolved and contains fully sourced facts. The existing Round commit path
   persists that message atomically with the accepted assistant response, and
-  the request keeps rendering it in place for the rest of that activation.
+  every later request renders it where it was committed.
   """
 
   require Logger
@@ -51,11 +51,12 @@ defmodule SalixAgent.ProjectKnowledgeContext do
   defp handle(_session), do: InternalSession.open(%{})
 
   defp provider do
-    case Application.get_env(:salix_agent, :project_knowledge_provider_mod) do
+    case SystemsRuntime.get_env(:salix_agent, :project_knowledge_provider_mod) do
       provider when is_atom(provider) and not is_nil(provider) ->
-        if Code.ensure_loaded?(provider) and function_exported?(provider, :retrieve, 3),
-          do: provider,
-          else: nil
+        if SystemsRuntime.Proc.ensure_loaded?(provider) and
+             function_exported?(provider, :retrieve, 3),
+           do: provider,
+           else: nil
 
       _other ->
         nil
@@ -63,23 +64,24 @@ defmodule SalixAgent.ProjectKnowledgeContext do
   end
 
   defp safe_retrieve(provider, agent_id, question, session_id) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         invoke_provider(provider, agent_id, question, session_id)
       end)
 
     result =
-      case Task.yield(task, provider_timeout_ms()) || Task.shutdown(task, :brutal_kill) do
+      case SystemsClock.yield(task, provider_timeout_ms()) ||
+             SystemsRuntime.Task.shutdown(task, :brutal_kill) do
         {:ok, result} -> result
         {:exit, reason} -> provider_failure(:exit, reason)
         nil -> {:error, :provider_timeout}
       end
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :project_knowledge, :retrieve, :stop],
-      %{duration: System.monotonic_time() - started_at},
+      %{duration: SystemsClock.monotonic_time() - started_at},
       %{outcome: provider_outcome(result)}
     )
 
@@ -106,7 +108,7 @@ defmodule SalixAgent.ProjectKnowledgeContext do
   end
 
   defp provider_timeout_ms do
-    case Application.get_env(
+    case SystemsRuntime.get_env(
            :salix_agent,
            :project_knowledge_provider_timeout_ms,
            @default_provider_timeout_ms
@@ -304,21 +306,39 @@ defmodule SalixAgent.ProjectKnowledgeContext do
     }
   end
 
-  # SalixLlm serializes these fields into one runtime system block. Budget the
-  # exact wire shape here so evidence cannot overflow outside `content`.
+  # The provider kernel sends this runtime message as a `get_runtime_message`
+  # result (Chat, Responses): these fields as one JSON object with the decoded
+  # content. Anthropic sends it as runtime text: a fixed header and one
+  # `key: value` line per field. Budget the larger wire form so evidence cannot
+  # overflow outside `content`.
   defp runtime_block_bytes(payload) do
-    [
-      "This is system-generated runtime state for the current Salix session.",
-      "It is not a user request.",
-      "runtime_message_id: #{payload["runtime_message_id"]}",
-      "type: #{payload["runtime_message_type"]}",
-      "summary: #{payload["summary"]}",
-      "content: #{payload["content"]}",
-      "source_refs: #{Jason.encode!(payload["source_refs"])}"
-    ]
-    |> Enum.join("\n")
-    |> then(&"<runtime-message>\n#{&1}\n</runtime-message>")
-    |> byte_size()
+    json =
+      %{
+        "runtime_message_id" => payload["runtime_message_id"],
+        "type" => payload["runtime_message_type"],
+        "summary" => payload["summary"],
+        "content" => Jason.decode!(payload["content"]),
+        "source_refs" => payload["source_refs"]
+      }
+      |> Jason.encode!()
+
+    text =
+      Enum.join(
+        [
+          "<runtime-message>",
+          "This is system-generated runtime state for the current Salix session.",
+          "It is not a user request.",
+          "runtime_message_id: " <> payload["runtime_message_id"],
+          "type: " <> payload["runtime_message_type"],
+          "summary: " <> payload["summary"],
+          "content: " <> payload["content"],
+          "source_refs: " <> Jason.encode!(payload["source_refs"]),
+          "</runtime-message>"
+        ],
+        "\n"
+      )
+
+    max(byte_size(json), byte_size(text))
   end
 
   defp encode_content(entities, facts) do
@@ -383,12 +403,11 @@ defmodule SalixAgent.ProjectKnowledgeContext do
   defp already_committed?(session, runtime_message_id),
     do: InternalSession.query(session, :project_knowledge_committed?, runtime_message_id)
 
-  # The request renders the current activation's knowledge blocks where they
-  # were committed (`request_live_messages`). A later round of that activation
-  # retrieving the same facts would add a second copy: stored for nothing, and
-  # rendered once more at the request tail only to vanish from there next round.
-  # Once a new user input starts another activation the block is out of view
-  # again, and the next retrieval commits afresh.
+  # The request renders every knowledge block where it was committed
+  # (`request_live_messages`), and a later block with the same content is a
+  # duplicate the request leaves out. A retrieval of facts already in view
+  # commits nothing. After compaction moves a block out of the live window,
+  # the next retrieval commits it afresh.
   defp already_in_place?(session, content) do
     session
     |> InternalSession.query(:request_live_messages)

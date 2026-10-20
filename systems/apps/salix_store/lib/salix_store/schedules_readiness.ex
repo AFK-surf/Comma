@@ -9,7 +9,7 @@ defmodule SalixStore.SchedulesReadiness do
   directly and never re-check the marker.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   alias SalixStore.SchedulesCutover
 
@@ -17,15 +17,15 @@ defmodule SalixStore.SchedulesReadiness do
   @retry_ms 1_000
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: @name)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: @name)
   end
 
   @doc "True once the schedules cutover marker is present; false otherwise."
   @spec ready?() :: boolean()
   def ready? do
-    case Process.whereis(@name) do
+    case SystemsRuntime.Proc.whereis(@name) do
       nil -> false
-      pid -> GenServer.call(pid, :ready?)
+      pid -> SystemsRuntime.Server.call(pid, :ready?)
     end
   catch
     :exit, _reason -> false
@@ -44,7 +44,7 @@ defmodule SalixStore.SchedulesReadiness do
 
   defp check(state) do
     ready? = SchedulesCutover.marker_present?()
-    unless ready?, do: Process.send_after(self(), :recheck, @retry_ms)
+    unless ready?, do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :recheck, @retry_ms)
     %{state | ready?: ready?}
   end
 end

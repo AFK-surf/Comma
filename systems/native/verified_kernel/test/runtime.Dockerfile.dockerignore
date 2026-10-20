@@ -1,5 +1,6 @@
-.lake/
-.native/
-_build/
-priv/
-erl_crash.dump
+# The image takes only the host-built NIF, its licenses and compiled modules.
+*
+!priv/verified_kernel.so
+!priv/licenses
+!_build/test/lib/salix_verified_kernel/ebin
+!test/runtime_smoke.escript

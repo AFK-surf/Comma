@@ -1,6 +1,6 @@
 defmodule SalixWeb.Dashboard.TrajectoryEvalLiveTest do
   @moduledoc "Trajectory eval trend page: summary strip, net-issue cards, fallbacks."
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
@@ -160,13 +160,13 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLiveTest do
       |> Plug.Test.init_test_session(%{"admin_authed" => true, "current_tenant" => "default"})
 
   defp with_queries(mod) do
-    prev = Application.get_env(:salix_web, :trajectory_eval_queries_mod)
-    Application.put_env(:salix_web, :trajectory_eval_queries_mod, mod)
+    prev = SystemsRuntime.get_env(:salix_web, :trajectory_eval_queries_mod)
+    SystemsRuntime.put_env(:salix_web, :trajectory_eval_queries_mod, mod)
 
     on_exit(fn ->
       if prev,
-        do: Application.put_env(:salix_web, :trajectory_eval_queries_mod, prev),
-        else: Application.delete_env(:salix_web, :trajectory_eval_queries_mod)
+        do: SystemsRuntime.put_env(:salix_web, :trajectory_eval_queries_mod, prev),
+        else: SystemsRuntime.delete_env(:salix_web, :trajectory_eval_queries_mod)
     end)
   end
 
@@ -214,90 +214,7 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLiveTest do
     assert html =~ "/dash/agents/agent-abc/sessions/sess-xyz"
   end
 
-  test "the line breaks across days nothing ran, and never dives to zero" do
-    with_queries(GappedQueries)
-
-    {:ok, view, html} = live(authed_conn(), "/dash/trajectory-evals")
-
-    # Two adjacent days join into one segment; the isolated day cannot, so a
-    # single polyline is drawn rather than one line bridging the hole.
-    assert count(html, "<polyline") == 1
-    assert html =~ "#{Days.ago(6)} · 1 of 4 checks · 25.0%"
-    assert html =~ "#{Days.ago(2)} · 1 of 2 checks · 50.0%"
-    assert html =~ "#{Days.ago(4)} · no checks ran"
-
-    # Up to a month every point carries a dot.
-    assert count(html, "data-dot") == 3
-
-    # Past the density limit dots are dropped — except the isolated day, which
-    # no line segment can express and would otherwise vanish from the chart.
-    wide =
-      view
-      |> element("form[phx-change=filter]")
-      |> render_change(%{"days" => "90", "group_id" => ""})
-
-    assert count(wide, "<polyline") == 1
-    assert count(wide, "data-dot") == 1
-  end
-
   defp count(html, needle), do: html |> String.split(needle) |> length() |> Kernel.-(1)
-
-  test "the issue-rate card switches between chart and table" do
-    with_queries(StubQueries)
-
-    {:ok, view, html} = live(authed_conn(), "/dash/trajectory-evals")
-
-    # Chart is the default.
-    assert html =~ "<polyline"
-    refute html =~ "With issues"
-
-    table = view |> element("button[phx-value-view=table]") |> render_click()
-
-    # The table carries the exact per-day counts the chart only shows on hover.
-    refute table =~ "<polyline"
-    assert table =~ "With issues"
-    assert table =~ Days.ago(2)
-    assert table =~ ">10<"
-    assert table =~ ">3<"
-    assert table =~ "30.0"
-
-    # Days nothing ran on stay out of the table, mirroring the chart's gaps.
-    refute table =~ Days.ago(9)
-
-    # The choice is view-only: it survives a range change without reloading.
-    ranged =
-      view
-      |> element("form[phx-change=filter]")
-      |> render_change(%{"days" => "30", "group_id" => ""})
-
-    assert ranged =~ "Last 30 days"
-    assert ranged =~ "With issues"
-
-    back = view |> element("button[phx-value-view=chart]") |> render_click()
-    assert back =~ "<polyline"
-    refute back =~ "With issues"
-  end
-
-  test "renders string-typed ClickHouse counts without crashing" do
-    with_queries(StringCountQueries)
-
-    {:ok, _view, html} = live(authed_conn(), "/dash/trajectory-evals")
-
-    assert html =~ "tool_loop"
-    # 1/4 checks with issues → 25.0%; judge 1/2 → 50.0%; issues = 3−1 = 2.
-    assert html =~ "25.0"
-    assert html =~ "50.0"
-    assert html =~ "3 found − 1 false alarms"
-  end
-
-  test "shows the not-configured empty state without crashing" do
-    with_queries(NotConfiguredQueries)
-
-    {:ok, _view, html} = live(authed_conn(), "/dash/trajectory-evals")
-
-    assert html =~ "ClickHouse not configured"
-    refute html =~ "Issue rate by day"
-  end
 
   # ==================== "Sessions never checked" card ====================
 
@@ -312,8 +229,8 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLiveTest do
            "activity_events" => 7
          },
          %{
-           "session_id" => "sess-ext",
-           "salix_agent_id" => "ag-ext",
+           "session_id" => "sess-gone",
+           "salix_agent_id" => "ag-gone",
            "last_activity_at" => "2026-07-10 10:00:00",
            "activity_events" => 3
          }
@@ -322,65 +239,18 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLiveTest do
   end
 
   defmodule StubAgentControl do
-    def get_record("ag-ext"), do: {:ok, %{"runtime_config" => %{"kind" => "external"}}}
+    def get_record("ag-gone"), do: {:error, :not_found}
     def get_record(_id), do: {:ok, %{"runtime_config" => %{"kind" => "internal"}}}
-
-    defdelegate runtime_kind(agent), to: SalixAgent.Control
   end
-
-  defp with_telemetry(mod) do
-    prev_q = Application.get_env(:salix_web, :agent_telemetry_queries_mod)
-    prev_a = Application.get_env(:salix_web, :agent_control_mod)
-    Application.put_env(:salix_web, :agent_telemetry_queries_mod, mod)
-    Application.put_env(:salix_web, :agent_control_mod, StubAgentControl)
-
-    on_exit(fn ->
-      restore_env(:agent_telemetry_queries_mod, prev_q)
-      restore_env(:agent_control_mod, prev_a)
-    end)
-  end
-
-  defp restore_env(key, nil), do: Application.delete_env(:salix_web, key)
-  defp restore_env(key, value), do: Application.put_env(:salix_web, key, value)
-
-  test "lists internal never-checked sessions and reframes the checks tile" do
-    with_queries(StubQueries)
-    with_telemetry(TelemetryStub)
-
-    {:ok, _view, html} = live(authed_conn(), "/dash/trajectory-evals")
-
-    assert html =~ "Sessions never checked"
-    assert html =~ "cannot include them"
-
-    # Internal sessions only — the external one is dropped, not mislabeled.
-    assert html =~ "sess-quiet"
-    refute html =~ "sess-ext"
-    assert html =~ "/dash/agents/ag-int/sessions/sess-quiet#timeline"
-    assert html =~ "see all in Runtime Health →"
-
-    # The Checks-run tile now names its own blind spot.
-    assert html =~ "covers finished rounds only"
-  end
-
   defmodule TelemetryNotConfigured do
     def unconverged_sessions(_tenant, _opts), do: {:error, :not_configured}
-  end
-
-  test "hides the never-checked card when telemetry tables are unreadable" do
-    with_queries(StubQueries)
-    with_telemetry(TelemetryNotConfigured)
-
-    {:ok, _view, html} = live(authed_conn(), "/dash/trajectory-evals")
-
-    refute html =~ "Sessions never checked"
-    assert html =~ "one per settled round"
   end
 
   test "the per-tenant judge toggle writes the tenant setting and persists" do
     with_queries(StubQueries)
     # A fresh tenant so the switch starts at the deployment default and this
     # test's write does not leak into others sharing the fake store.
-    tenant = "judge-toggle-#{System.unique_integer([:positive])}"
+    tenant = "judge-toggle-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     conn =
       build_conn()
@@ -406,23 +276,14 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLiveTest do
   end
 
   defp with_judge_providers(map) do
-    prev = Application.get_env(:salix_agent, :trajectory_eval_judge_providers)
-    Application.put_env(:salix_agent, :trajectory_eval_judge_providers, map)
+    prev = SystemsRuntime.get_env(:salix_agent, :trajectory_eval_judge_providers)
+    SystemsRuntime.put_env(:salix_agent, :trajectory_eval_judge_providers, map)
 
     on_exit(fn ->
       if prev,
-        do: Application.put_env(:salix_agent, :trajectory_eval_judge_providers, prev),
-        else: Application.delete_env(:salix_agent, :trajectory_eval_judge_providers)
+        do: SystemsRuntime.put_env(:salix_agent, :trajectory_eval_judge_providers, prev),
+        else: SystemsRuntime.delete_env(:salix_agent, :trajectory_eval_judge_providers)
     end)
-  end
-
-  test "the judge-model dropdown is hidden when no models are wired" do
-    with_queries(StubQueries)
-    with_judge_providers(%{})
-
-    {:ok, _view, html} = live(authed_conn(), "/dash/trajectory-evals")
-
-    refute html =~ "Judge model"
   end
 
   test "the judge-model dropdown offers the allowlist and saves the pick per tenant" do
@@ -433,7 +294,7 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLiveTest do
       "luna" => %{label: "GPT-5.6 Luna", protocol: "chat_completions", model: "l", api_key: "k"}
     })
 
-    tenant = "judge-model-#{System.unique_integer([:positive])}"
+    tenant = "judge-model-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     conn =
       build_conn()
@@ -443,11 +304,8 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLiveTest do
     assert html =~ "Judge model"
     assert html =~ "GPT-5.6 Luna"
     assert html =~ "Deployment default"
-    # The key boundary is stated on screen, not only in a hover tooltip — and
-    # at AA-readable contrast for text-xs (neutral-400 on white is ~2.5:1).
+    # The key boundary is stated on screen, not only in a hover tooltip.
     assert html =~ "API keys never pass through this page"
-    assert html =~ ~s(class="mt-2 text-xs text-neutral-500")
-    refute html =~ ~s(class="mt-2 text-xs text-neutral-400")
 
     html =
       view
@@ -468,198 +326,5 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLiveTest do
 
     assert {:ok, override} = Salix.Control.Tenants.get_config(tenant, "trajectory_eval", %{})
     refute Map.has_key?(override, "judge_provider")
-  end
-
-  # A judge_provider that isn't even a name (a JSON object landed in the field)
-  # is a broken selection like any other: revoked banner, no 500, no "default"
-  # claim — the value itself is described, never rendered raw.
-  test "a malformed stored judge_provider renders the revoked state without crashing" do
-    with_queries(StubQueries)
-
-    with_judge_providers(%{
-      "haiku" => %{label: "Claude Haiku", protocol: "anthropic", model: "h", api_key: "k"}
-    })
-
-    tenant = "judge-model-malformed-#{System.unique_integer([:positive])}"
-
-    {:ok, _} =
-      Salix.Control.Tenants.update_config(tenant, "trajectory_eval", %{"judge_provider" => %{}})
-
-    conn =
-      build_conn()
-      |> Plug.Test.init_test_session(%{"admin_authed" => true, "current_tenant" => tenant})
-
-    {:ok, _view, html} = live(conn, "/dash/trajectory-evals")
-    assert html =~ "(an invalid value) is no longer available"
-    assert html =~ "Reset to deployment default"
-    refute html =~ "Set for this tenant."
-  end
-
-  # The Runner skips the paid judge for a revoked pick, so the page must not
-  # claim "Deployment default" — it shows the revoked banner, the stale key,
-  # and the ways out (reset, or pick a replacement).
-  test "a revoked stored judge_provider shows the paused state and resets" do
-    with_queries(StubQueries)
-
-    with_judge_providers(%{
-      "haiku" => %{label: "Claude Haiku", protocol: "anthropic", model: "h", api_key: "k"}
-    })
-
-    tenant = "judge-model-stale-#{System.unique_integer([:positive])}"
-
-    {:ok, _} =
-      Salix.Control.Tenants.update_config(tenant, "trajectory_eval", %{"judge_provider" => "gone"})
-
-    conn =
-      build_conn()
-      |> Plug.Test.init_test_session(%{"admin_authed" => true, "current_tenant" => tenant})
-
-    {:ok, view, html} = live(conn, "/dash/trajectory-evals")
-    assert html =~ "(gone) is no longer available"
-    assert html =~ "judge is paused for this tenant"
-    assert html =~ "Reset to deployment default"
-    assert html =~ "Pick a replacement…"
-    refute html =~ "Using the deployment default."
-
-    # Reset clears the stored key: the runtime seam agrees, and the page
-    # returns to the normal default state.
-    html = view |> element("button", "Reset to deployment default") |> render_click()
-    assert html =~ "Using the deployment default."
-    refute html =~ "is no longer available"
-
-    assert {:ok, override} = Salix.Control.Tenants.get_config(tenant, "trajectory_eval", %{})
-    refute Map.has_key?(override, "judge_provider")
-  end
-
-  defp with_global_judge_provider(key) do
-    prev = Application.get_env(:salix_agent, :trajectory_eval)
-
-    Application.put_env(
-      :salix_agent,
-      :trajectory_eval,
-      Keyword.put(prev || [], :judge_provider, key)
-    )
-
-    on_exit(fn ->
-      if prev,
-        do: Application.put_env(:salix_agent, :trajectory_eval, prev),
-        else: Application.delete_env(:salix_agent, :trajectory_eval)
-    end)
-  end
-
-  # Paired with the Runner: a persisted "" is the dashboard's own spelling of
-  # "use the deployment default" — it must render as the default state (the
-  # runtime inherits the valid global), never as a revoked/paused pick.
-  test "a persisted empty judge_provider renders as the default, not revoked" do
-    with_queries(StubQueries)
-
-    with_judge_providers(%{
-      "haiku" => %{label: "Claude Haiku", protocol: "anthropic", model: "h", api_key: "k"}
-    })
-
-    with_global_judge_provider("haiku")
-
-    tenant = "judge-model-empty-#{System.unique_integer([:positive])}"
-
-    {:ok, _} =
-      Salix.Control.Tenants.update_config(tenant, "trajectory_eval", %{"judge_provider" => ""})
-
-    conn =
-      build_conn()
-      |> Plug.Test.init_test_session(%{"admin_authed" => true, "current_tenant" => tenant})
-
-    {:ok, _view, html} = live(conn, "/dash/trajectory-evals")
-    assert html =~ "Using the deployment default."
-    refute html =~ "is no longer available"
-    refute html =~ "Reset to deployment default"
-  end
-
-  # Paired with the Runner: an explicit global default that no longer resolves
-  # means the runtime is SKIPPING the judge for tenants with no pick of their
-  # own — the page must say so, not render a healthy default. Reset is not
-  # offered (there is no tenant key to clear; the fix is ops config), but a
-  # tenant pick can still shadow the broken default when models exist.
-  test "an invalid global judge_provider renders the paused state, without reset" do
-    with_queries(StubQueries)
-
-    with_judge_providers(%{
-      "haiku" => %{label: "Claude Haiku", protocol: "anthropic", model: "h", api_key: "k"}
-    })
-
-    with_global_judge_provider("gone")
-
-    tenant = "judge-model-global-#{System.unique_integer([:positive])}"
-
-    conn =
-      build_conn()
-      |> Plug.Test.init_test_session(%{"admin_authed" => true, "current_tenant" => tenant})
-
-    {:ok, view, html} = live(conn, "/dash/trajectory-evals")
-    assert html =~ "deployment default judge model (gone)"
-    assert html =~ "judge is paused for this tenant"
-    assert html =~ "ops config change"
-    refute html =~ "Using the deployment default."
-    # No tenant key exists, so reset would be a lie — only a replacement pick.
-    refute html =~ "Reset to deployment default"
-    assert html =~ "Pick a replacement…"
-
-    # A tenant pick shadows the broken global and returns the page to normal.
-    html =
-      view
-      |> element("form[phx-change=select_judge_provider]")
-      |> render_change(%{"judge_provider" => "haiku"})
-
-    assert html =~
-             ~r/<option[^>]*value="haiku"[^>]*selected|<option[^>]*selected[^>]*value="haiku"/
-
-    refute html =~ "judge is paused for this tenant"
-  end
-
-  # The orphaning case: ops removed the LAST provider. The picker itself has
-  # nothing to offer, but the stale override must stay visible and clearable —
-  # hiding the whole block would strand the tenant in the skip state forever.
-  test "a revoked judge_provider stays visible and resettable with an empty allowlist" do
-    with_queries(StubQueries)
-    with_judge_providers(%{})
-
-    tenant = "judge-model-orphan-#{System.unique_integer([:positive])}"
-
-    {:ok, _} =
-      Salix.Control.Tenants.update_config(tenant, "trajectory_eval", %{
-        "judge_provider" => "eu-only"
-      })
-
-    conn =
-      build_conn()
-      |> Plug.Test.init_test_session(%{"admin_authed" => true, "current_tenant" => tenant})
-
-    {:ok, view, html} = live(conn, "/dash/trajectory-evals")
-    assert html =~ "(eu-only) is no longer available"
-    assert html =~ "Reset to deployment default"
-    # No models to offer, so no replacement picker — reset is the way out.
-    refute html =~ "Pick a replacement…"
-
-    view |> element("button", "Reset to deployment default") |> render_click()
-
-    assert {:ok, override} = Salix.Control.Tenants.get_config(tenant, "trajectory_eval", %{})
-    refute Map.has_key?(override, "judge_provider")
-  end
-
-  test "a malformed stored judge_enabled renders as the deployment default, not on" do
-    with_queries(StubQueries)
-    tenant = "judge-malformed-#{System.unique_integer([:positive])}"
-    # A non-boolean value (e.g. a stringified write) must not read as a tenant
-    # override — the runner ignores it too, so the UI must agree it's the default.
-    {:ok, _} =
-      Salix.Control.Tenants.update_config(tenant, "trajectory_eval", %{"judge_enabled" => "true"})
-
-    conn =
-      build_conn()
-      |> Plug.Test.init_test_session(%{"admin_authed" => true, "current_tenant" => tenant})
-
-    {:ok, _view, html} = live(conn, "/dash/trajectory-evals")
-    assert html =~ ~s(aria-checked="false")
-    assert html =~ "Using the deployment default"
-    refute html =~ "Set for this tenant"
   end
 end

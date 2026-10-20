@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { Dialog as AriaDialog, Modal, ModalOverlay } from "react-aria-components";
+import { uiClock } from "../../clock";
 import { CrossLargeIcon } from "../icons";
 import { NativeSurfaceSuppressor } from "../native-surface/NativeSurfaceSuppressor";
 import { cx } from "../utils";
@@ -51,9 +52,9 @@ export const ChatPanelMediaPreview = ({
   useEffect(() => {
     if (isOpen) setKeyboardClosing(false);
     if (wasOpenRef.current && !isOpen && returnFocusRef?.current) {
-      const focusTimer = setTimeout(() => returnFocusRef.current?.focus(), 0);
+      const focusTimer = uiClock.after(0, () => returnFocusRef.current?.focus());
       wasOpenRef.current = isOpen;
-      return () => clearTimeout(focusTimer);
+      return () => focusTimer();
     }
     wasOpenRef.current = isOpen;
     return undefined;

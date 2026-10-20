@@ -22,7 +22,7 @@ defmodule BridgeForTeams.LoginLinks.Delivery do
 
   @spec impl() :: module()
   def impl do
-    Application.get_env(:bridge_for_teams_core, :login_link_delivery, __MODULE__.Postmark)
+    SystemsRuntime.get_env(:bridge_for_teams_core, :login_link_delivery, __MODULE__.Postmark)
   end
 
   defmodule Postmark do
@@ -53,7 +53,7 @@ defmodule BridgeForTeams.LoginLinks.Delivery do
 
     defp from_email do
       :bridge_for_teams_core
-      |> Application.get_env(:magic_link_from_email)
+      |> SystemsRuntime.get_env(:magic_link_from_email)
       |> to_string()
       |> String.trim()
     end

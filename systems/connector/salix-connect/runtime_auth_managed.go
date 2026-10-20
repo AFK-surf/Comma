@@ -2,21 +2,15 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 )
-
-const managedRuntimeAPIKeyEnv = "SALIX_MANAGED_PROVIDER_API_KEY"
-const managedPiAuthFileLimit = 1 << 20
 
 type managedRuntimeCredential struct {
 	revoked        bool
@@ -37,7 +31,7 @@ func (c *managedRuntimeCredential) sameConfiguration(other *managedRuntimeCreden
 
 func managedRuntimeCredentialFromDelivery(target runtimeProbeTarget, params map[string]any) (*managedRuntimeCredential, error) {
 	oauth := target.provider == "claude" && stringParam(params, "credential_kind") == "subscription_oauth"
-	if !oauth && (stringParam(params, "credential_kind") != "provider_api_key" || (target.provider != "pi" && target.provider != "claude")) {
+	if !oauth && (stringParam(params, "credential_kind") != "provider_api_key" || target.provider != "claude") {
 		return nil, errSubscriptionUnavailable
 	}
 	account := strings.TrimSpace(stringParam(params, "subscription_account_id"))
@@ -63,9 +57,7 @@ func managedRuntimeCredentialFromDelivery(target runtimeProbeTarget, params map[
 		parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, errSubscriptionUnavailable
 	}
-	compatible := target.provider == "pi" && ((protocol == "anthropic_messages" && (authScheme == "bearer" || authScheme == "api_key")) ||
-		((protocol == "openai_completions" || protocol == "openai_responses") && authScheme == "bearer"))
-	compatible = compatible || target.provider == "claude" && protocol == "anthropic_messages" && (authScheme == "bearer" || authScheme == "api_key")
+	compatible := target.provider == "claude" && protocol == "anthropic_messages" && (authScheme == "bearer" || authScheme == "api_key")
 	if !compatible {
 		return nil, errSubscriptionUnavailable
 	}
@@ -156,13 +148,10 @@ func (m *runtimeAuthCoordinator) applyManagedDeliveryLocked(ctx context.Context,
 		m.mu.Unlock()
 		return nil
 	}
-	if m.targetBusy(target) {
-		return errors.New("runtime_busy")
-	}
 	if m.managedPersonalConflict(ctx, target) {
 		return errors.New("personal credential conflict")
 	}
-	if err := m.retireManagedGeneration(ctx, target); err != nil {
+	if err := m.retireManagedGeneration(target); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -187,52 +176,8 @@ func (m *runtimeAuthCoordinator) managedPersonalConflict(ctx context.Context, ta
 		}
 		settings, _, err := runtimeAuthClaudeArgs()
 		return err != nil || len(settings) != 0
-	case "pi":
-		// PI_CODING_AGENT_DIR selects Pi's persistent native state. The Compute
-		// provider sets it for every Pi workload, so its presence is not proof of
-		// a personal credential. The credential file at that resolved location is
-		// the conflict authority. Managed processes still use an isolated
-		// projection below the connector root.
-		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-		_, _, authPath, err := runtimeAuthPiLocation(probeCtx, target.identityMaterial)
-		if err == nil {
-			return managedPiNativeAuthConflict(authPath)
-		}
 	}
 	return false
-}
-
-func managedPiNativeAuthConflict(authPath string) bool {
-	pathInfo, err := os.Lstat(authPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return false
-	}
-	if err != nil || !pathInfo.Mode().IsRegular() || pathInfo.Size() > managedPiAuthFileLimit {
-		return true
-	}
-	file, err := openManagedPiAuthFile(authPath)
-	if err != nil {
-		return true
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || !os.SameFile(pathInfo, info) || !info.Mode().IsRegular() || info.Size() > managedPiAuthFileLimit {
-		return true
-	}
-	data, err := io.ReadAll(io.LimitReader(file, managedPiAuthFileLimit+1))
-	if err != nil || len(data) > managedPiAuthFileLimit {
-		return true
-	}
-	var entries map[string]json.RawMessage
-	if json.Unmarshal(data, &entries) != nil || entries == nil {
-		return true
-	}
-	currentInfo, err := os.Lstat(authPath)
-	if err != nil || !os.SameFile(info, currentInfo) {
-		return true
-	}
-	return len(entries) != 0
 }
 
 func managedClaudeNativeAuthConflict() bool {
@@ -277,7 +222,7 @@ func (m *runtimeAuthCoordinator) revokeManagedCredential(ctx context.Context, ta
 	if current == nil {
 		return nil
 	}
-	if err := m.retireManagedGeneration(ctx, target); err != nil {
+	if err := m.retireManagedGeneration(target); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -286,75 +231,11 @@ func (m *runtimeAuthCoordinator) revokeManagedCredential(ctx context.Context, ta
 	return nil
 }
 
-func (m *runtimeAuthCoordinator) retireManagedGeneration(ctx context.Context, target runtimeProbeTarget) error {
-	var wait <-chan struct{}
-	switch implementation := m.codex.connector.runtimeImplementations[target.provider].(type) {
-	case *piRuntimeImplementation:
-		wait = implementation.retireAuthGeneration()
-	case *claudeRuntimeImplementation:
-		return implementation.retireManagedTarget(ctx, target.identityMaterial)
-	default:
-		return errSubscriptionUnavailable
-	}
-	timeout := m.nativeCancelTimeout
-	if timeout <= 0 {
-		timeout = runtimeAuthNativeCancelTimeout
-	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-wait:
+// Managed Claude credentials are read per native call; no process holds an
+// older generation. Other providers have no managed credential owner.
+func (m *runtimeAuthCoordinator) retireManagedGeneration(target runtimeProbeTarget) error {
+	if _, ok := m.codex.connector.runtimeImplementations[target.provider].(*claudeRuntimeImplementation); ok {
 		return nil
-	case <-ctx.Done():
-		return errSubscriptionUnavailable
-	case <-timer.C:
-		return errors.New("native_writer_unavailable")
 	}
-}
-
-// Work and recovery admission re-read the authoritative binding. Installation
-// and the native-call count are joined by the same target section, so a revoke
-// cannot slip between confirmation and admission.
-func (c *connector) enterRuntimeAuthNativeCallAdmitted(ctx context.Context, provider, command string) (func(), error) {
-	m := c.runtimeAuthCoordinator()
-	target := runtimeProbeTarget{provider: provider, identityMaterial: command}
-	if m == nil {
-		return func() {}, nil
-	}
-	managedConnected := provider == "claude" && (m.managedCredential(target) != nil || slices.Contains(managedRuntimeCommands(provider), command))
-	managedCompute := computeRuntimeIdentityConfigured(c.cfg) && c.cfg.computeRuntimeKind == "external_worker" && (provider == "pi" || provider == "claude")
-	if !managedCompute && !managedConnected {
-		return m.enterNativeCall(target), nil
-	}
-	transport := c.getActiveTransport()
-	result, err := c.subscriptionAccess(ctx, transport, command, "")
-	if err != nil {
-		return nil, errSubscriptionUnavailable
-	}
-	unlock := m.lockTarget(target.key())
-	defer unlock()
-	if result["bound"] == false {
-		if m.managedCredential(target) != nil {
-			return nil, errSubscriptionUnavailable
-		}
-	} else if result["revoked"] == true {
-		if err := m.revokeManagedCredential(ctx, target, stringParam(result, "subscription_account_id"), int64Param(result, "delivery_revision", 0)); err != nil {
-			return nil, err
-		}
-		return nil, errSubscriptionUnavailable
-	} else if err := m.applyManagedDeliveryLocked(ctx, target, result); err != nil {
-		return nil, err
-	}
-	m.mu.Lock()
-	lock := m.locks[target.key()]
-	lock.nativeCalls++
-	m.mu.Unlock()
-	return func() {
-		m.mu.Lock()
-		lock.nativeCalls--
-		if lock.users == 0 && lock.nativeCalls == 0 {
-			delete(m.locks, target.key())
-		}
-		m.mu.Unlock()
-	}, nil
+	return errSubscriptionUnavailable
 }

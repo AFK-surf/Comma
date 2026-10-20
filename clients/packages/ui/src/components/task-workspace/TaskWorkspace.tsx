@@ -3,6 +3,7 @@ import type { CommaLocale } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import {
   memo,
+  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -21,6 +22,7 @@ import {
   Cursor1Icon,
   ExclamationTriangleIcon,
   ListChecksIcon,
+  PlusSmallIcon,
 } from "../icons";
 import { PageLoading } from "../PageLoading";
 import { MarkdownStream, type MarkdownStreamClipboard } from "../markdown-stream";
@@ -367,7 +369,9 @@ export function TaskWorkspace({
             new Set(availableWorkers.filter((worker) => !workers.has(worker)))
           )
         }
-        onViewChange={setView}
+        // The menu closes in this event; the other view mounts every loaded
+        // Task, so it renders without holding that response.
+        onViewChange={(next) => startTransition(() => setView(next))}
         selectedStatuses={selectedStatuses}
         selectedWorkers={selectedWorkers}
         statusCounts={statusCounts}
@@ -375,6 +379,17 @@ export function TaskWorkspace({
         workerFilterOptions={availableWorkers}
         workerCounts={workerCounts}
       />
+      {/* The empty state offers it itself. */}
+      {onCreateTask && !showEmptyState ? (
+        <Button
+          hierarchy="secondary-gray"
+          iconLeading={<PlusSmallIcon className="size-4" />}
+          onPress={onCreateTask}
+          size="sm"
+        >
+          {messages.tasks_create_new()}
+        </Button>
+      ) : null}
     </>
   );
 
@@ -817,7 +832,6 @@ function countTasksByStatus(
   tasks: readonly TaskWorkspaceTask[]
 ): Record<TaskStatusBucket, number> {
   const counts: Record<TaskStatusBucket, number> = {
-    backlog: 0,
     in_progress: 0,
     needs_review: 0,
     done: 0,
@@ -857,7 +871,7 @@ const TaskWorkspaceBoardRow = memo(function TaskWorkspaceBoardRow({
 }: TaskWorkspaceRowProps) {
   return (
     <TaskCardReorderItem id={task.id}>
-      <TaskArchiveMenu action={task.archiveAction}>
+      <TaskArchiveMenu action={task.archiveAction} overlay="task-card">
         <button
           aria-label={taskAriaLabel(task, locale)}
           className="group/task-card w-full border-0 bg-transparent p-0 text-left"
@@ -1073,7 +1087,6 @@ function errorMessage(error: unknown) {
 }
 
 const TASK_STATUS_GROUP_ACCENTS = {
-  backlog: "neutral",
   in_progress: "neutral",
   needs_review: "warning",
   done: "success",

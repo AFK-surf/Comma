@@ -129,7 +129,7 @@ defmodule SalixSignalProto.GroupCall.Frame do
 
     @doc "A send state with a fresh random secret and ratchet counter 0."
     @spec new(Frame.secret()) :: t()
-    def new(secret \\ :crypto.strong_rand_bytes(32)), do: use_key(%__MODULE__{}, 0, secret)
+    def new(secret \\ SystemsRuntime.Proc.random_bytes(32)), do: use_key(%__MODULE__{}, 0, secret)
 
     @doc "Advances the key one ratchet step (section 9.3, devices appeared)."
     @spec advance(t()) :: t()

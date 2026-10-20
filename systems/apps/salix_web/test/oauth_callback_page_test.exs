@@ -1,5 +1,5 @@
 defmodule SalixWeb.OAuthCallbackPageTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixWeb.OAuthCallbackPage
 
@@ -8,6 +8,27 @@ defmodule SalixWeb.OAuthCallbackPageTest do
     html = OAuthCallbackPage.render_mcp("google")
     assert html =~ "Successfully connected to google"
     assert OAuthCallbackPage.render_mcp("  ") =~ "Successfully connected to remote MCP"
+  end
+
+  test "MCP servers on a branded host show the vendor logo, chosen by host not alias" do
+    posthog = OAuthCallbackPage.render_mcp("posthog", nil, "https://mcp.posthog.com/mcp")
+    assert posthog =~ "posthog-p6"
+    refute posthog =~ ~s(aria-label="MCP")
+    assert posthog =~ "Successfully connected to posthog"
+
+    assert OAuthCallbackPage.render_mcp("analytics", nil, "https://MCP-EU.PostHog.com/sse") =~
+             "posthog-p6"
+
+    for url <- [
+          nil,
+          "https://mcp.example.com/mcp",
+          "https://posthog.com.evil.io/mcp",
+          "not a url"
+        ] do
+      html = OAuthCallbackPage.render_mcp("posthog", nil, url)
+      refute html =~ "posthog-p6"
+      assert html =~ ~s(aria-label="MCP")
+    end
   end
 
   test "MCP success escapes the user-controlled alias" do

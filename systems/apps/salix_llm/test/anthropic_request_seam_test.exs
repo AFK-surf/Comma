@@ -1,6 +1,7 @@
 defmodule SalixLlm.AnthropicRequestSeamTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixLlm", "Elixir.SalixLLM"]
   alias SalixLlm.Provider
 
   defmodule MockServer do
@@ -77,19 +78,18 @@ defmodule SalixLlm.AnthropicRequestSeamTest do
     server: server,
     base_url: base_url
   } do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     opts =
       base_opts(base_url)
       |> Map.put(:transport_retry, false)
       |> Map.put(:before_send, fn body ->
-        send(owner, {:observed_body, body})
+        SystemsRuntime.Proc.send(owner, {:observed_body, body})
         :ok
       end)
 
     assert {:final, "ok"} = Provider.complete([%{role: "user", content: "hello"}], [], opts)
-    assert_receive {:observed_body, observed_body}
-
+    settle_receive({:observed_body, observed_body})
     assert [%{raw_body: sent_body, headers: headers}] = requests(server)
     assert observed_body == sent_body
     assert headers["content-type"] == "application/json"

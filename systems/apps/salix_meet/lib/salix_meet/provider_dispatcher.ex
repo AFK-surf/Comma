@@ -10,7 +10,7 @@ defmodule SalixMeet.ProviderDispatcher do
   state remain shared.
   """
 
-  alias SalixMeet.{FeishuProvider, SlackProvider, Store}
+  alias SalixMeet.{CommaProvider, FeishuProvider, LarkProvider, SlackProvider, Store}
 
   @spec handle_event(map(), map()) :: {:ok, :handled} | :ignored | {:error, term()}
   def handle_event(connect, envelope) when is_map(connect) and is_map(envelope) do
@@ -27,6 +27,7 @@ defmodule SalixMeet.ProviderDispatcher do
     case {provider(connect), source["provider"]} do
       {"slack", "slack"} -> SlackProvider.join_from_router(connect, source, params)
       {"feishu", "feishu"} -> FeishuProvider.join_from_router(connect, source, params)
+      {"lark", "lark"} -> LarkProvider.join_from_router(connect, source, params)
       _ -> {:error, :meeting_source_connect_mismatch}
     end
   end
@@ -40,6 +41,8 @@ defmodule SalixMeet.ProviderDispatcher do
       case value(state, "provider") do
         "slack" -> SlackProvider.publish(meeting_agent, payload)
         "feishu" -> FeishuProvider.publish(meeting_agent, payload)
+        "lark" -> LarkProvider.publish(meeting_agent, payload)
+        "comma" -> CommaProvider.publish(meeting_agent, payload)
         provider -> {:error, {:unsupported_meeting_provider, provider}}
       end
     else
@@ -53,6 +56,9 @@ defmodule SalixMeet.ProviderDispatcher do
       when is_binary(meeting_id) and is_map(state) and is_map(event) do
     case value(state, "provider") do
       "feishu" -> FeishuProvider.notify_status(meeting_id, state, event)
+      "lark" -> LarkProvider.notify_status(meeting_id, state, event)
+      "slack" -> SlackProvider.notify_status(meeting_id, state, event)
+      "comma" -> CommaProvider.notify_status(meeting_id, state, event)
       _ -> :ok
     end
   end

@@ -1,6 +1,6 @@
 import { BrowserWindow, screen } from "electron";
+import type { MeetingRecorderValue as MeetingRecorderState } from "@comma/core/contract";
 import type {
-  MeetingRecorderState,
   MeetingRecorderWindowLayout,
   MeetingRecorderWindowDrag,
 } from "@comma/native-bridge";
@@ -119,7 +119,7 @@ export class MeetingRecorderWindow {
           "Could not open the recording controls. Restart Comma and try again.",
           { cause }
         );
-        if (!window.isDestroyed()) window.destroy();
+        destroyHidden(window);
         throw this.#loadFailure;
       })
       .finally(() => {
@@ -257,6 +257,24 @@ export class MeetingRecorderWindow {
     this.#closed = true;
     screen.removeListener("display-metrics-changed", this.#reposition);
     screen.removeListener("display-removed", this.#reposition);
-    this.#window?.destroy();
+    if (this.#window) destroyHidden(this.#window);
   }
 }
+
+/**
+ * Destroys `window` after hiding it. Electron's own listener reads the window on every show, hide, minimize, maximize
+ * and restore event, and macOS can deliver one of them (the `hide` of the order-out) after `destroy()`: Main then
+ * throws `Object has been destroyed`. Whether it arrives before or after depends on the window server, so the window
+ * stops listening for these events before it is destroyed; nothing needs its visibility once it is gone.
+ */
+function destroyHidden(
+  window: Pick<BrowserWindow, "destroy" | "hide" | "isDestroyed" | "removeAllListeners">
+) {
+  if (window.isDestroyed()) return;
+  window.hide();
+  for (const event of VISIBILITY_EVENTS) window.removeAllListeners(event);
+  window.destroy();
+}
+
+// The events Electron's BrowserWindow subscribes its visibility listener to.
+const VISIBILITY_EVENTS = ["show", "hide", "minimize", "maximize", "restore"] as const;

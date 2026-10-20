@@ -1,7 +1,11 @@
 import { useApplicationMenu } from "./application-menu/useApplicationMenu";
 import { useCommaMessages } from "@comma/i18n/react";
-import { getNativeBridge } from "@comma/native-bridge";
-import { DraggableRecorder, MeetingRecordingBlock, toast } from "@comma/ui";
+import { useCall } from "@comma/core-client";
+import {
+  DraggableRecorder,
+  MeetingRecordingBlock,
+} from "@comma/ui/components/meeting-recorder";
+import { toast } from "@comma/ui/components/toast";
 import { useEffect, useRef } from "react";
 import { useMeetingRecorder } from "./useMeetingRecorder";
 import { useRecordingFileActions } from "./useRecordingFileActions";
@@ -13,6 +17,7 @@ export function MeetingRecorderHost({
   const { state, action, error } = useMeetingRecorder();
   const { showSaved } = useRecordingFileActions();
   const messages = useCommaMessages();
+  const call = useCall();
   const visible = state.clientVisible;
   const shownReceipt = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -39,10 +44,10 @@ export function MeetingRecorderHost({
       receipt.archive === "error"
     )
       return;
-    void getNativeBridge().meetingRecorder.acknowledgeSaved({
+    void call("meetingRecorder.acknowledgeSaved", {
       receiptId: receipt.receiptId,
-    });
-  }, [showSaved, state.saved, visible]);
+    }).catch(() => undefined);
+  }, [call, showSaved, state.saved, visible]);
   const issue = error ?? state.error ?? state.taskSync?.error;
   useEffect(() => {
     if (visible && issue) toast.error(issue, { id: "meeting-recorder-action" });

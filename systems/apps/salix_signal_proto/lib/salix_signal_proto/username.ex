@@ -225,7 +225,7 @@ defmodule SalixSignalProto.Username do
   bytes (the default).
   """
   @spec proof(String.t(), <<_::256>>) :: {:ok, proof()} | {:error, syntax_error()}
-  def proof(username, randomness \\ :crypto.strong_rand_bytes(32))
+  def proof(username, randomness \\ SystemsRuntime.Proc.random_bytes(32))
 
   def proof(username, <<_::binary-size(32)>> = randomness) do
     with {:ok, parts} <- parse(username) do
@@ -295,7 +295,7 @@ defmodule SalixSignalProto.Username do
   """
   @spec encrypt_link(String.t(), <<_::256>>, <<_::128>>) ::
           {:ok, binary()} | {:error, syntax_error() | :too_long}
-  def encrypt_link(username, entropy, iv \\ :crypto.strong_rand_bytes(16))
+  def encrypt_link(username, entropy, iv \\ SystemsRuntime.Proc.random_bytes(16))
 
   def encrypt_link(username, <<_::binary-size(32)>> = entropy, <<_::binary-size(16)>> = iv) do
     padding = :binary.copy(<<0>>, max(0, @link_padded_length - byte_size(username)))

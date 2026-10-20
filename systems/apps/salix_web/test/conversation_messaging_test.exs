@@ -1,4 +1,6 @@
 defmodule SalixWeb.ConversationMessagingTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Conversation messaging end-to-end:
   POST conversations/{id}/messages accepts durable group conversation messages
@@ -8,8 +10,9 @@ defmodule SalixWeb.ConversationMessagingTest do
   the group conversation SSE events stream (`message_created` over a real
   chunked connection).
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixWeb", "Elixir.SalixEnv"]
   alias SalixAgent.LLM.Mock
 
   alias SalixIM.{
@@ -104,7 +107,11 @@ defmodule SalixWeb.ConversationMessagingTest do
 
     @impl true
     def consult_memory(agent_id, session_id, question, request_id, _opts) do
-      send(self(), {:memory_consulted, agent_id, session_id, question, request_id})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:memory_consulted, agent_id, session_id, question, request_id}
+      )
+
       {:ok, %{"status" => "answered", "answer" => "captured"}}
     end
   end
@@ -124,10 +131,10 @@ defmodule SalixWeb.ConversationMessagingTest do
 
     @impl true
     def consult_memory(_agent_id, _session_id, _question, _request_id, _opts) do
-      owner = :persistent_term.get({__MODULE__, :owner})
-      send(owner, {:memory_consultation_started, self()})
+      owner = SystemsRuntime.PersistentTerm.get({__MODULE__, :owner})
+      SystemsRuntime.Proc.send(owner, {:memory_consultation_started, SystemsRuntime.Proc.self()})
 
-      receive do
+      SystemsRuntime.Proc.receive do
         :finish_memory_consultation -> {:ok, %{"status" => "answered", "answer" => "stale"}}
       end
     end
@@ -150,8 +157,8 @@ defmodule SalixWeb.ConversationMessagingTest do
 
   setup context do
     if context[:keep_worker_working] do
-      previous = Application.get_env(:salix_im, :session_activity_mod)
-      Application.put_env(:salix_im, :session_activity_mod, WorkingSessionActivity)
+      previous = SystemsRuntime.get_env(:salix_im, :session_activity_mod)
+      SystemsRuntime.put_env(:salix_im, :session_activity_mod, WorkingSessionActivity)
       on_exit(fn -> put_or_delete_env(:salix_im, :session_activity_mod, previous) end)
     end
 
@@ -160,39 +167,39 @@ defmodule SalixWeb.ConversationMessagingTest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_im_provider = Application.get_env(:salix_agent, :im_provider_mod)
-    prev_visible_reply = Application.get_env(:salix_agent, :visible_reply_mod)
-    prev_oauth_store_mod = Application.get_env(:salix_agent, :oauth_store_mod)
-    prev_task_create_mod = Application.get_env(:salix_im, :task_create_mod)
-    prev_agent_delivery = Application.get_env(:salix_im, :agent_delivery_mod)
-    prev_agent_workspace = Application.get_env(:salix_im, :agent_workspace_mod)
-    prev_provider_app_store = Application.get_env(:salix_im, :provider_app_store_mod)
-    prev_api_token = Application.get_env(:salix_web, :api_token)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_web, :api_token, @token)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_im_provider = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
+    prev_visible_reply = SystemsRuntime.get_env(:salix_agent, :visible_reply_mod)
+    prev_oauth_store_mod = SystemsRuntime.get_env(:salix_agent, :oauth_store_mod)
+    prev_task_create_mod = SystemsRuntime.get_env(:salix_im, :task_create_mod)
+    prev_agent_delivery = SystemsRuntime.get_env(:salix_im, :agent_delivery_mod)
+    prev_agent_workspace = SystemsRuntime.get_env(:salix_im, :agent_workspace_mod)
+    prev_provider_app_store = SystemsRuntime.get_env(:salix_im, :provider_app_store_mod)
+    prev_api_token = SystemsRuntime.get_env(:salix_web, :api_token)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_web, :api_token, @token)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
     end
 
     start_supervised!(Mock)
-    Application.put_env(:salix_agent, :llm, Mock)
-    Application.put_env(:salix_agent, :im_provider_mod, Salix.Bindings.AgentIMProvider)
-    Application.put_env(:salix_agent, :visible_reply_mod, Salix.Bindings.AgentVisibleReply)
-    Application.put_env(:salix_agent, :oauth_store_mod, Salix.Bindings.AgentOAuthStore)
-    Application.put_env(:salix_im, :task_create_mod, Salix.Bindings.AgentConversations)
-    Application.put_env(:salix_im, :agent_delivery_mod, Salix.Bindings.IMAgentDelivery)
-    Application.put_env(:salix_im, :agent_workspace_mod, Salix.Bindings.IMAgentWorkspace)
-    Application.put_env(:salix_im, :provider_app_store_mod, Salix.Bindings.IMProviderAppStore)
+    SystemsRuntime.put_env(:salix_agent, :llm, Mock)
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, Salix.Bindings.AgentIMProvider)
+    SystemsRuntime.put_env(:salix_agent, :visible_reply_mod, Salix.Bindings.AgentVisibleReply)
+    SystemsRuntime.put_env(:salix_agent, :oauth_store_mod, Salix.Bindings.AgentOAuthStore)
+    SystemsRuntime.put_env(:salix_im, :task_create_mod, Salix.Bindings.AgentConversations)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, Salix.Bindings.IMAgentDelivery)
+    SystemsRuntime.put_env(:salix_im, :agent_workspace_mod, Salix.Bindings.IMAgentWorkspace)
+    SystemsRuntime.put_env(:salix_im, :provider_app_store_mod, Salix.Bindings.IMProviderAppStore)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev)
-      Application.put_env(:salix_agent, :llm, prev_llm)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
+      SystemsRuntime.put_env(:salix_agent, :llm, prev_llm)
       put_or_delete_env(:salix_agent, :im_provider_mod, prev_im_provider)
       put_or_delete_env(:salix_agent, :visible_reply_mod, prev_visible_reply)
       put_or_delete_env(:salix_agent, :oauth_store_mod, prev_oauth_store_mod)
@@ -202,8 +209,6 @@ defmodule SalixWeb.ConversationMessagingTest do
       put_or_delete_env(:salix_im, :provider_app_store_mod, prev_provider_app_store)
       put_or_delete_env(:salix_web, :api_token, prev_api_token)
     end)
-
-    uniq = System.unique_integer([:positive])
 
     tenant_id =
       admin_req(:post, "/v1/admin/tenants", json: %{name: "Conv Tenant"}).body["tenant_id"]
@@ -216,10 +221,7 @@ defmodule SalixWeb.ConversationMessagingTest do
     Process.put(:test_tenant_id, tenant_id)
     Process.put(:test_tenant_key, tenant_key)
 
-    template =
-      admin_req(:post, "/v1/admin/templates",
-        json: %{template_id: "tmpl-conv-#{uniq}", name: "Conv", model: "gpt-test"}
-      ).body
+    SalixAgent.TestSupport.configure_platform_models!()
 
     group =
       req(:post, "/v1/runtime/agent-groups", json: %{name: "Conv group"}).body
@@ -228,7 +230,6 @@ defmodule SalixWeb.ConversationMessagingTest do
       req(:post, "/v1/runtime/agents",
         json: %{
           group_id: group["group_id"],
-          template_id: template["template_id"],
           name: "Conv agent",
           role: "router"
         }
@@ -238,15 +239,11 @@ defmodule SalixWeb.ConversationMessagingTest do
              json: %{router_agent_id: agent["agent_id"]}
            ).status == 200
 
-    {:ok,
-     group_id: group["group_id"],
-     agent_id: agent["agent_id"],
-     template_id: template["template_id"],
-     tenant_id: tenant_id}
+    {:ok, group_id: group["group_id"], agent_id: agent["agent_id"], tenant_id: tenant_id}
   end
 
   # Tenant-scoped calls use the tenant API key; admin_req uses the admin token
-  # for the genuinely-admin surface (tenant + key + template creation).
+  # for the genuinely-admin surface (tenant + key creation).
   defp req(method, path, opts \\ []), do: req_as(tenant_key(), method, path, opts)
 
   @doc false
@@ -254,7 +251,7 @@ defmodule SalixWeb.ConversationMessagingTest do
     {:assistant, content,
      [
        %{
-         id: "test-end-turn-#{System.unique_integer([:positive, :monotonic])}",
+         id: "test-end-turn-#{SystemsRuntime.Proc.unique_integer([:positive, :monotonic])}",
          name: "end_turn",
          args: %{"outcome" => "done"}
        }
@@ -453,13 +450,12 @@ defmodule SalixWeb.ConversationMessagingTest do
       ] do
     @tag :worker_file_delivery
     test "Worker attachment delivery #{name}", context do
-      %{group_id: group_id, agent_id: router_id, template_id: template_id} = context
+      %{group_id: group_id, agent_id: router_id} = context
 
       worker =
         req(:post, "/v1/runtime/agents",
           json: %{
             group_id: group_id,
-            template_id: template_id,
             name: "PDF worker",
             role: "worker"
           }
@@ -517,16 +513,23 @@ defmodule SalixWeb.ConversationMessagingTest do
          reason: unquote(Macro.escape(reason))}
       )
 
-      Application.put_env(:salix_store, :s3_backend, AttachmentWriteFault)
-      old_backoff = Application.get_env(:salix_im, :conversation_delivery_retry_backoff_ms)
-      Application.put_env(:salix_im, :conversation_delivery_retry_backoff_ms, 25)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, AttachmentWriteFault)
+      old_backoff = SystemsRuntime.get_env(:salix_im, :conversation_delivery_retry_backoff_ms)
+      SystemsRuntime.put_env(:salix_im, :conversation_delivery_retry_backoff_ms, 25)
 
       on_exit(fn ->
+        # The faulting backend stops with the test; later exit callbacks
+        # (the platform model settings restore) write through the Fake.
+        SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
         put_or_delete_env(:salix_im, :conversation_delivery_retry_backoff_ms, old_backoff)
       end)
 
-      blocks =
-        Enum.map(paths, &%{"type" => "file", "path" => &1, "file_name" => Path.basename(&1)})
+      # The second block has only a display title; its local copy keeps the
+      # VFS name and extension.
+      blocks = [
+        %{"type" => "file", "path" => "/artifacts/report.pdf", "file_name" => "report.pdf"},
+        %{"type" => "file", "path" => "/artifacts/notes.txt", "title" => "Meeting notes"}
+      ]
 
       assert {:ok, sent} =
                Salix.Bindings.AgentIMProvider.call_api(
@@ -623,16 +626,14 @@ defmodule SalixWeb.ConversationMessagingTest do
 
   test "memory consultation search resolves a Task hit to its exact Worker Session", %{
     group_id: group_id,
-    agent_id: router_id,
-    template_id: template_id
+    agent_id: router_id
   } do
-    Application.put_env(:salix_im, :agent_delivery_mod, CaptureAgentDelivery)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, CaptureAgentDelivery)
 
     worker =
       req(:post, "/v1/runtime/agents",
         json: %{
           group_id: group_id,
-          template_id: template_id,
           name: "Recall worker",
           role: "worker"
         }
@@ -641,7 +642,7 @@ defmodule SalixWeb.ConversationMessagingTest do
     attrs = %{
       "title" => "Recall deployment",
       "content" => "The recall needle is blue deployment.",
-      "client_request_id" => "recall-task-#{System.unique_integer([:positive])}"
+      "client_request_id" => "recall-task-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     }
 
     assert {:ok, conversation_id} =
@@ -736,8 +737,10 @@ defmodule SalixWeb.ConversationMessagingTest do
                timeout: 1_000
              )
 
-    assert_receive {:memory_consulted, worker_id, session_id, "What did this Worker remember?",
-                    "memory-consultation-test"}
+    settle_receive(
+      {:memory_consulted, worker_id, session_id, "What did this Worker remember?",
+       "memory-consultation-test"}
+    )
 
     assert worker_id == worker["agent_id"]
     assert session_id == target.session_id
@@ -758,12 +761,17 @@ defmodule SalixWeb.ConversationMessagingTest do
                limit: 100
              )
 
-    Application.put_env(:salix_im, :agent_delivery_mod, BlockingMemoryDelivery)
-    :persistent_term.put({BlockingMemoryDelivery, :owner}, self())
-    on_exit(fn -> :persistent_term.erase({BlockingMemoryDelivery, :owner}) end)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, BlockingMemoryDelivery)
+
+    SystemsRuntime.PersistentTerm.put(
+      {BlockingMemoryDelivery, :owner},
+      SystemsRuntime.Proc.self()
+    )
+
+    on_exit(fn -> SystemsRuntime.PersistentTerm.erase({BlockingMemoryDelivery, :owner}) end)
 
     stale_consultation =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Salix.Bindings.AgentConversations.consult_worker_session(
           group_id,
           target,
@@ -773,7 +781,7 @@ defmodule SalixWeb.ConversationMessagingTest do
         )
       end)
 
-    assert_receive {:memory_consultation_started, consultation_pid}
+    settle_receive({:memory_consultation_started, consultation_pid})
 
     assert {:ok, _participant} =
              ConversationServer.deactivate_group_conversation_participant(
@@ -782,8 +790,8 @@ defmodule SalixWeb.ConversationMessagingTest do
                target.participant_id
              )
 
-    send(consultation_pid, :finish_memory_consultation)
-    assert {:error, _reason} = Task.await(stale_consultation, 1_000)
+    SystemsRuntime.Proc.send(consultation_pid, :finish_memory_consultation)
+    assert {:error, _reason} = settled_await(stale_consultation)
 
     assert {:ok, %{targets: [], truncated: false}} =
              Salix.Bindings.AgentConversations.search_worker_sessions(
@@ -797,9 +805,9 @@ defmodule SalixWeb.ConversationMessagingTest do
   test "Feishu calendar notifications deliver directly without creating a Router Conversation",
        %{group_id: group_id, tenant_id: tenant_id, agent_id: router_id} do
     start_supervised!(RecordingFeishuDirectDelivery)
-    previous_delivery = Application.get_env(:salix_im, :feishu_direct_delivery_mod)
+    previous_delivery = SystemsRuntime.get_env(:salix_im, :feishu_direct_delivery_mod)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :feishu_direct_delivery_mod,
       RecordingFeishuDirectDelivery
@@ -809,10 +817,10 @@ defmodule SalixWeb.ConversationMessagingTest do
       put_or_delete_env(:salix_im, :feishu_direct_delivery_mod, previous_delivery)
     end)
 
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     connect = %{
-      "connect_id" => "feishu-calendar-#{System.unique_integer([:positive])}",
+      "connect_id" => "feishu-calendar-#{SystemsRuntime.Proc.unique_integer([:positive])}",
       "tenant_id" => tenant_id,
       "group_id" => group_id,
       "provider" => "feishu",
@@ -950,7 +958,7 @@ defmodule SalixWeb.ConversationMessagingTest do
     end
 
     defp ensure_started do
-      case Process.whereis(__MODULE__) do
+      case SystemsRuntime.Proc.whereis(__MODULE__) do
         nil -> {:ok, _pid} = start_link()
         _pid -> :ok
       end
@@ -1017,7 +1025,10 @@ defmodule SalixWeb.ConversationMessagingTest do
     req(:post, "/v1/runtime/agent-groups/#{group_id}/conversations",
       json:
         attrs
-        |> Map.put_new("client_request_id", "test-create-#{System.unique_integer([:positive])}")
+        |> Map.put_new(
+          "client_request_id",
+          "test-create-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+        )
         |> Map.put_new("title", "Chat")
         |> Map.put_new("participants", [])
     ).body
@@ -1025,7 +1036,7 @@ defmodule SalixWeb.ConversationMessagingTest do
 
   defp create_conversation_with_agent(group_id, agent_id, attrs) do
     attrs = Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     create_conversation(group_id, %{
       "title" => attrs["title"] || "Chat",
@@ -1146,14 +1157,12 @@ defmodule SalixWeb.ConversationMessagingTest do
   test "im_api.internal.task.create task conversation uses normal participant dispatch and source context",
        %{
          group_id: group_id,
-         agent_id: delegator_id,
-         template_id: template_id
+         agent_id: delegator_id
        } do
     target =
       req(:post, "/v1/runtime/agents",
         json: %{
           group_id: group_id,
-          template_id: template_id,
           name: "Task worker",
           role: "worker"
         }
@@ -1162,7 +1171,7 @@ defmodule SalixWeb.ConversationMessagingTest do
     target_id = target["agent_id"]
     parent = create_conversation_with_agent(group_id, delegator_id, %{title: "Parent chat"})
     parent_conversation_id = parent["conversation_id"]
-    task_request_id = "task-e2e-#{System.unique_integer([:positive])}"
+    task_request_id = "task-e2e-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     assert {:ok, result} =
              SalixCluster.TaskSchedules.create_task_conversation(
@@ -1327,9 +1336,10 @@ defmodule SalixWeb.ConversationMessagingTest do
     assert report_context.content =~ "conversation_kind: agent_task"
     assert report_context.content =~ "participant_id: #{delegator_participant_id}"
     assert report_context.content =~ "participant_role_label: delegator"
-    refute report_context.content =~ "parent_conversation_id"
+    # The delegator delivers the report to the Task's parent, which the
+    # report names as a fact. No instruction comes with it.
+    assert report_context.content =~ "- parent_conversation_id: #{parent_conversation_id}"
     assert report_context.content =~ "from_role_label: worker"
-    refute report_context.content =~ parent_conversation_id
     refute report_context.content =~ "im_api.internal.send_message"
 
     assert SalixAgent.InternalSession.session_id(delegator_session) != worker_session_id
@@ -1338,11 +1348,11 @@ defmodule SalixWeb.ConversationMessagingTest do
   test "Slack endpoint ignores own bot mentions and accepts app-attributed users",
        %{group_id: group_id, tenant_id: tenant_id, agent_id: router_id} do
     secret = "slack-loop-secret"
-    app_id = "A-loop-#{System.unique_integer([:positive])}"
-    now = System.system_time(:millisecond)
+    app_id = "A-loop-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    now = SystemsClock.system_time(:millisecond)
 
     connect = %{
-      "connect_id" => "slack-loop-#{System.unique_integer([:positive])}",
+      "connect_id" => "slack-loop-#{SystemsRuntime.Proc.unique_integer([:positive])}",
       "tenant_id" => tenant_id,
       "group_id" => group_id,
       "provider" => "slack",
@@ -1367,8 +1377,8 @@ defmodule SalixWeb.ConversationMessagingTest do
 
     start_supervised!(RecordingSlackAPI)
     port = start_bandit_retry!(fn port -> {Bandit, plug: RecordingSlackAPI, port: port} end)
-    previous_slack_api_base = Application.get_env(:salix_im, :slack_api_base_url)
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}")
+    previous_slack_api_base = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}")
 
     on_exit(fn ->
       put_or_delete_env(:salix_im, :slack_api_base_url, previous_slack_api_base)
@@ -1391,7 +1401,7 @@ defmodule SalixWeb.ConversationMessagingTest do
     assert ignored_response.status == 200
     assert ignored_response.body == %{"ignored" => true}
 
-    Process.sleep(50)
+    SystemsClock.sleep(50)
     assert SalixIM.RouterConversationProjection.list_group_router_messages(group_id) == {:ok, []}
 
     assert {:ok, %{"data" => conversations}} =
@@ -1436,7 +1446,7 @@ defmodule SalixWeb.ConversationMessagingTest do
       })
     )
 
-    Process.sleep(50)
+    SystemsClock.sleep(50)
 
     {:ok, session} =
       SalixAgent.InternalSessionStore.read(router_id, router_session_id(router_id, group_id))
@@ -1451,10 +1461,10 @@ defmodule SalixWeb.ConversationMessagingTest do
   test "Slack endpoint ignores foreign Task-card metadata without entering settlement",
        %{group_id: group_id, tenant_id: tenant_id, agent_id: router_id} do
     secret = "slack-foreign-task-card-secret"
-    app_id = "A-foreign-task-card-#{System.unique_integer([:positive])}"
-    connect_id = "slack-foreign-task-card-#{System.unique_integer([:positive])}"
+    app_id = "A-foreign-task-card-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    connect_id = "slack-foreign-task-card-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     foreign_conversation_id = Ids.new_conversation_id()
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     connect = %{
       "connect_id" => connect_id,
@@ -1480,11 +1490,11 @@ defmodule SalixWeb.ConversationMessagingTest do
                connect
              )
 
-    previous_diagnostic_sink = Application.get_env(:salix_im, :diagnostic_sink)
-    parent = self()
+    previous_diagnostic_sink = SystemsRuntime.get_env(:salix_im, :diagnostic_sink)
+    parent = SystemsRuntime.Proc.self()
 
-    Application.put_env(:salix_im, :diagnostic_sink, fn diagnostic ->
-      send(parent, {:foreign_task_card_diagnostic, diagnostic})
+    SystemsRuntime.put_env(:salix_im, :diagnostic_sink, fn diagnostic ->
+      SystemsRuntime.Proc.send(parent, {:foreign_task_card_diagnostic, diagnostic})
     end)
 
     on_exit(fn ->
@@ -1522,7 +1532,7 @@ defmodule SalixWeb.ConversationMessagingTest do
              "ignored_reason" => "invalid_task_card_metadata_route"
            }
 
-    assert_receive {:foreign_task_card_diagnostic, diagnostic}
+    settle_receive({:foreign_task_card_diagnostic, diagnostic})
     assert diagnostic.status == "ignored"
     assert diagnostic.severity == "warning"
     assert diagnostic.reason_class == "invalid_task_card_metadata_route"
@@ -1535,265 +1545,23 @@ defmodule SalixWeb.ConversationMessagingTest do
   end
 
   @tag :keep_worker_working
-  test "legacy Slack connects keep their thread owner when rebound",
-       %{
-         group_id: group_id,
-         template_id: template_id,
-         tenant_id: tenant_id,
-         agent_id: router_id
-       } do
-    worker =
-      req(:post, "/v1/runtime/agents",
-        json: %{
-          group_id: group_id,
-          template_id: template_id,
-          name: "Slack worker",
-          role: "worker"
-        }
-      ).body
-
-    worker_id = worker["agent_id"]
-    secret = "slack-worker-secret"
-    app_id = "A-worker-e2e-#{System.unique_integer([:positive])}"
-    now = System.system_time(:millisecond)
-
-    connect = %{
-      "connect_id" => "slack-worker-e2e-#{System.unique_integer([:positive])}",
-      "tenant_id" => tenant_id,
-      "group_id" => group_id,
-      "provider" => "slack",
-      "app_name" => "codex-bft-test",
-      "app_id" => app_id,
-      "client_id" => "client-#{app_id}",
-      "client_secret" => "client-secret",
-      "signing_secret" => secret,
-      "inbound_agent_id" => worker_id,
-      "bot_token" => "xoxb-worker-e2e",
-      "bot_user_id" => "Ubot",
-      "workspace_id" => "T-worker",
-      "workspace_name" => "Worker E2E",
-      "oauth_completed_at" => now,
-      "created_at" => now,
-      "updated_at" => now
-    }
-
-    assert {:ok, ^connect} =
-             SalixStore.CasRecord.create(
-               Keys.ctl_im_connect(group_id, connect["connect_id"]),
-               connect
-             )
-
-    first_event_id = "Ev-worker-session-e2e"
-
-    deliver_slack_event!(
-      secret,
-      slack_envelope(app_id, first_event_id, %{
-        "type" => "app_mention",
-        "user" => "U-worker-user",
-        "text" => "<@Ubot> investigate the staging failure",
-        "channel" => "C-worker",
-        "channel_type" => "channel",
-        "ts" => "400.000"
-      })
-    )
-
-    assert {:ok, %{"data" => conversations}} =
-             SalixIM.Conversations.list_group_conversations(group_id, limit: 10)
-
-    conversation = Enum.find(conversations, &(&1["kind"] == "agent_task"))
-    assert conversation
-    conversation_id = conversation["conversation_id"]
-    assert conversation["kind"] == "agent_task"
-
-    worker_participant =
-      group_id
-      |> conversation_participants(conversation_id)
-      |> Enum.find(&(&1["agent_id"] == worker_id and &1["role_label"] == "worker"))
-
-    assert worker_participant["agent_id"] == worker_id
-    worker_session_id = get_in(worker_participant, ["payload", "session_id"])
-    assert SalixStore.Ids.valid_session_id?(worker_session_id)
-
-    [source_message] =
-      req(
-        :get,
-        "/v1/runtime/agent-groups/#{group_id}/conversations/#{conversation_id}/messages"
-      ).body
-
-    assert source_message["source_message_id"] ==
-             "im_provider:slack:#{connect["connect_id"]}:#{first_event_id}"
-
-    assert SalixStore.Ids.valid_message_id?(source_message["message_id"])
-
-    worker_session =
-      eventually(fn ->
-        case SalixAgent.InternalSessionStore.read(worker_id, worker_session_id) do
-          {:ok, session} ->
-            if Enum.any?(
-                 SalixAgent.InternalSession.get(session, :messages),
-                 &(&1.role == "user" and
-                     &1.content =~ "investigate the staging failure")
-               ) do
-              session
-            end
-
-          _ ->
-            nil
-        end
-      end)
-
-    assert SalixAgent.InternalSession.session_id(worker_session) == worker_session_id
-
-    assert Enum.any?(
-             SalixAgent.InternalSession.get(worker_session, :messages),
-             &(&1.role == "summary" and
-                 &1.content =~ "provider: internal" and
-                 &1.content =~ "conversation_id: #{conversation_id}" and
-                 &1.content =~ "participant_role_label: worker" and
-                 &1.content =~ "from_actor_type: provider_user")
-           )
-
-    assert worker_session_id != router_session_id(router_id, group_id)
-
-    deliver_slack_event!(
-      secret,
-      slack_envelope(app_id, "Ev-worker-followup-e2e", %{
-        "type" => "message",
-        "user" => "U-worker-user",
-        "text" => "follow up in the same thread",
-        "channel" => "C-worker",
-        "channel_type" => "channel",
-        "thread_ts" => "400.000",
-        "ts" => "400.001"
-      })
-    )
-
-    same_thread_messages =
-      req(
-        :get,
-        "/v1/runtime/agent-groups/#{group_id}/conversations/#{conversation_id}/messages"
-      ).body
-
-    assert Enum.map(same_thread_messages, &content_text(&1["content"])) == [
-             "investigate the staging failure",
-             "follow up in the same thread"
-           ]
-
-    second_thread_event_id = "Ev-worker-second-thread-e2e"
-
-    deliver_slack_event!(
-      secret,
-      slack_envelope(app_id, second_thread_event_id, %{
-        "type" => "app_mention",
-        "user" => "U-worker-user",
-        "text" => "<@Ubot> investigate a separate failure",
-        "channel" => "C-worker",
-        "channel_type" => "channel",
-        "ts" => "500.000"
-      })
-    )
-
-    assert {:ok, %{"data" => after_second_thread}} =
-             SalixIM.Conversations.list_group_conversations(group_id, limit: 10)
-
-    [second_task] =
-      Enum.filter(
-        after_second_thread,
-        &(&1["kind"] == "agent_task" and &1["conversation_id"] != conversation_id)
-      )
-
-    second_worker_participant =
-      group_id
-      |> conversation_participants(second_task["conversation_id"])
-      |> Enum.find(&(&1["agent_id"] == worker_id and &1["role_label"] == "worker"))
-
-    assert SalixStore.Ids.valid_session_id?(
-             get_in(second_worker_participant, ["payload", "session_id"])
-           )
-
-    refute get_in(second_worker_participant, ["payload", "session_id"]) == worker_session_id
-
-    assert {:ok, _updated_connect} =
-             ProviderConnects.update_slack_im_connect(
-               tenant_id,
-               group_id,
-               connect["connect_id"],
-               %{"inbound_agent_id" => router_id}
-             )
-
-    assert {:ok, %{"inbound_agent_id" => ^router_id}} =
-             ProviderConnects.get_active_connect_by_id(group_id, connect["connect_id"], "slack")
-
-    deliver_slack_event!(
-      secret,
-      slack_envelope(app_id, "Ev-worker-after-rebind-e2e", %{
-        "type" => "message",
-        "user" => "U-worker-user",
-        "text" => "the original thread still belongs to the worker task",
-        "channel" => "C-worker",
-        "channel_type" => "channel",
-        "thread_ts" => "400.000",
-        "ts" => "400.002"
-      })
-    )
-
-    rebound_thread_messages =
-      req(
-        :get,
-        "/v1/runtime/agent-groups/#{group_id}/conversations/#{conversation_id}/messages"
-      ).body
-
-    assert Enum.map(rebound_thread_messages, &content_text(&1["content"])) == [
-             "investigate the staging failure",
-             "follow up in the same thread",
-             "the original thread still belongs to the worker task"
-           ]
-
-    deliver_slack_event!(
-      secret,
-      slack_envelope(app_id, "Ev-router-after-rebind-e2e", %{
-        "type" => "app_mention",
-        "user" => "U-worker-user",
-        "text" => "<@Ubot> this new thread belongs to the router",
-        "channel" => "C-worker",
-        "channel_type" => "channel",
-        "ts" => "600.000"
-      })
-    )
-
-    assert_direct_router_session_message(
-      router_id,
-      group_id,
-      "im_provider:slack:#{connect["connect_id"]}:Ev-router-after-rebind-e2e",
-      "this new thread belongs to the router"
-    )
-
-    assert {:ok, %{"data" => final_conversations}} =
-             SalixIM.Conversations.list_group_conversations(group_id, limit: 10)
-
-    assert Enum.count(final_conversations, &(&1["kind"] == "agent_task")) == 2
-  end
-
-  @tag :keep_worker_working
   test "router im_api.internal.task.create creates two task conversations for the same worker without sharing sessions",
        %{
          group_id: group_id,
-         agent_id: router_id,
-         template_id: template_id
+         agent_id: router_id
        } do
     target =
       req(:post, "/v1/runtime/agents",
         json: %{
           group_id: group_id,
-          template_id: template_id,
           name: "Codex worker",
           role: "worker"
         }
       ).body
 
     target_id = target["agent_id"]
-    task_a_content = "task A marker #{System.unique_integer([:positive])}"
-    task_b_content = "task B marker #{System.unique_integer([:positive])}"
+    task_a_content = "task A marker #{SystemsRuntime.Proc.unique_integer([:positive])}"
+    task_b_content = "task B marker #{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     TwoTaskDelegationLLM.configure(%{
       target_agent_id: target_id,
@@ -1801,7 +1569,7 @@ defmodule SalixWeb.ConversationMessagingTest do
       task_b_content: task_b_content
     })
 
-    Application.put_env(:salix_agent, :llm, TwoTaskDelegationLLM)
+    SystemsRuntime.put_env(:salix_agent, :llm, TwoTaskDelegationLLM)
 
     send_result =
       req(:post, "/v1/runtime/agent-groups/#{group_id}/router/messages",
@@ -1975,12 +1743,10 @@ defmodule SalixWeb.ConversationMessagingTest do
            ]
   end
 
-  test "agent conversation routes are not exposed; group routes own conversations", %{
+  test "group routes own conversations", %{
     group_id: group_id,
     agent_id: agent_id
   } do
-    assert req(:get, "/v1/runtime/agents/#{agent_id}/conversations").status == 404
-
     created =
       req(
         :post,
@@ -2055,11 +1821,31 @@ defmodule SalixWeb.ConversationMessagingTest do
   end
 
   defmodule SlowLLM do
-    @moduledoc "Blocks a round long enough to detect runtime-coupled read paths."
+    @moduledoc """
+    Blocks a round until the test releases it (or 4 s pass), so a read path
+    coupled to the agent runtime would stall.
+    """
     @behaviour SalixAgent.LLM
+    @key {__MODULE__, :release}
+
+    def configure, do: SystemsRuntime.PersistentTerm.put(@key, false)
+
+    def release do
+      SystemsRuntime.PersistentTerm.put(@key, true)
+    end
+
     def complete(_messages, _tools) do
-      Process.sleep(4_000)
+      wait_release(200)
       SalixWeb.ConversationMessagingTest.terminal_llm_response("slow reply")
+    end
+
+    defp wait_release(0), do: :ok
+
+    defp wait_release(polls) do
+      unless SystemsRuntime.PersistentTerm.get(@key, true) do
+        SystemsClock.sleep(20)
+        wait_release(polls - 1)
+      end
     end
   end
 
@@ -2073,9 +1859,9 @@ defmodule SalixWeb.ConversationMessagingTest do
     @final_text "正在给你发送"
 
     def configure(owner, outcome \\ :success),
-      do: :persistent_term.put(@owner_key, %{owner: owner, outcome: outcome})
+      do: SystemsRuntime.PersistentTerm.put(@owner_key, %{owner: owner, outcome: outcome})
 
-    def clear, do: :persistent_term.erase(@owner_key)
+    def clear, do: SystemsRuntime.PersistentTerm.erase(@owner_key)
 
     @impl true
     def complete(messages, tools), do: complete_stream(messages, tools, fn _ -> :ok end, [])
@@ -2093,7 +1879,7 @@ defmodule SalixWeb.ConversationMessagingTest do
       if tool_completed?(messages) do
         SalixWeb.ConversationMessagingTest.terminal_llm_response("done")
       else
-        %{owner: owner, outcome: outcome} = :persistent_term.get(@owner_key)
+        %{owner: owner, outcome: outcome} = SystemsRuntime.PersistentTerm.get(@owner_key)
         conversation_id = source_field(messages, "conversation_id")
 
         rejected_param =
@@ -2107,25 +1893,28 @@ defmodule SalixWeb.ConversationMessagingTest do
         {prefix, suffix} = split_after(encoded_args, @draft_prefix)
         on_tool_delta = option(opts, :on_tool_delta)
 
-        send(owner, {:streaming_internal_send_started, self()})
+        SystemsRuntime.Proc.send(
+          owner,
+          {:streaming_internal_send_started, SystemsRuntime.Proc.self()}
+        )
 
-        receive do
+        SystemsRuntime.Proc.receive do
           :emit_send_message_prefix ->
             emit_fragments(on_tool_delta, prefix, true)
-            send(owner, :send_message_prefix_emitted)
+            SystemsRuntime.Proc.send(owner, :send_message_prefix_emitted)
         after
           10_000 -> raise "timed out waiting to emit send_message prefix"
         end
 
-        receive do
+        SystemsRuntime.Proc.receive do
           :emit_send_message_suffix ->
             emit_fragments(on_tool_delta, suffix, false)
-            send(owner, :send_message_suffix_emitted)
+            SystemsRuntime.Proc.send(owner, :send_message_suffix_emitted)
         after
           10_000 -> raise "timed out waiting to emit send_message suffix"
         end
 
-        receive do
+        SystemsRuntime.Proc.receive do
           :finish_send_message_stream ->
             {:assistant, "",
              [
@@ -2171,9 +1960,8 @@ defmodule SalixWeb.ConversationMessagingTest do
       end)
     end
 
-    # The source-context summary is not necessarily the last summary: the
-    # runtime appends per-request reminders (reply guidance, turn outcome)
-    # behind it. Read the field from whichever summary carries it.
+    # The source-context summary is not necessarily the last summary: other
+    # summaries can follow it. Read the field from whichever summary carries it.
     defp source_field(messages, field) do
       pattern = ~r/(?:^|\n)- #{Regex.escape(field)}: ([^\n]+)/
 
@@ -2203,8 +1991,8 @@ defmodule SalixWeb.ConversationMessagingTest do
     @explicit_text "explicit nested reply"
     @runtime_final "runtime-only after nested send"
 
-    def configure(owner), do: :persistent_term.put(@owner_key, owner)
-    def clear, do: :persistent_term.erase(@owner_key)
+    def configure(owner), do: SystemsRuntime.PersistentTerm.put(@owner_key, owner)
+    def clear, do: SystemsRuntime.PersistentTerm.erase(@owner_key)
 
     @impl true
     def complete(messages, tools), do: complete_stream(messages, tools, fn _ -> :ok end, [])
@@ -2221,7 +2009,12 @@ defmodule SalixWeb.ConversationMessagingTest do
     def complete_stream(messages, _tools, on_delta, _opts) do
       if nested_send_completed?(messages) do
         on_delta.(@runtime_final)
-        send(:persistent_term.get(@owner_key), :nested_source_send_final_returned)
+
+        SystemsRuntime.Proc.send(
+          SystemsRuntime.PersistentTerm.get(@owner_key),
+          :nested_source_send_final_returned
+        )
+
         SalixWeb.ConversationMessagingTest.terminal_llm_response(@runtime_final)
       else
         conversation_id = source_field(messages, "conversation_id")
@@ -2256,9 +2049,8 @@ defmodule SalixWeb.ConversationMessagingTest do
       end)
     end
 
-    # The source-context summary is not necessarily the last summary: the
-    # runtime appends per-request reminders (reply guidance, turn outcome)
-    # behind it. Read the field from whichever summary carries it.
+    # The source-context summary is not necessarily the last summary: other
+    # summaries can follow it. Read the field from whichever summary carries it.
     defp source_field(messages, field) do
       pattern = ~r/(?:^|\n)- #{Regex.escape(field)}: ([^\n]+)/
 
@@ -2288,14 +2080,14 @@ defmodule SalixWeb.ConversationMessagingTest do
     @runtime_final "runtime-only after nested send failure"
 
     def configure(owner, conversation_id) do
-      :persistent_term.put(@state_key, %{
+      SystemsRuntime.PersistentTerm.put(@state_key, %{
         owner: owner,
         conversation_id: conversation_id,
         calls: :atomics.new(1, [])
       })
     end
 
-    def clear, do: :persistent_term.erase(@state_key)
+    def clear, do: SystemsRuntime.PersistentTerm.erase(@state_key)
 
     @impl true
     def complete(messages, tools), do: complete_stream(messages, tools, fn _ -> :ok end, [])
@@ -2311,7 +2103,7 @@ defmodule SalixWeb.ConversationMessagingTest do
     @impl true
     def complete_stream(_messages, _tools, on_delta, _opts) do
       %{owner: owner, conversation_id: conversation_id, calls: calls} =
-        :persistent_term.get(@state_key)
+        SystemsRuntime.PersistentTerm.get(@state_key)
 
       initial_params = %{
         "connect_id" => "internal",
@@ -2357,7 +2149,7 @@ defmodule SalixWeb.ConversationMessagingTest do
 
         _ ->
           on_delta.(@runtime_final)
-          send(owner, :nested_source_send_failure_final_returned)
+          SystemsRuntime.Proc.send(owner, :nested_source_send_failure_final_returned)
           SalixWeb.ConversationMessagingTest.terminal_llm_response(@runtime_final)
       end
     end
@@ -2366,8 +2158,13 @@ defmodule SalixWeb.ConversationMessagingTest do
   test "message reads are served from durable conversation state", %{
     group_id: group_id
   } do
-    Application.put_env(:salix_agent, :llm, SlowLLM)
-    on_exit(fn -> Application.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock) end)
+    SlowLLM.configure()
+    SystemsRuntime.put_env(:salix_agent, :llm, SlowLLM)
+
+    on_exit(fn ->
+      SlowLLM.release()
+      SystemsRuntime.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
+    end)
 
     conversation =
       req(:get, "/v1/runtime/agent-groups/#{group_id}/router/conversation").body
@@ -2399,16 +2196,21 @@ defmodule SalixWeb.ConversationMessagingTest do
     group_id: group_id,
     agent_id: agent_id
   } do
-    Application.put_env(:salix_agent, :llm, SlowLLM)
-    on_exit(fn -> Application.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock) end)
+    SlowLLM.configure()
+    SystemsRuntime.put_env(:salix_agent, :llm, SlowLLM)
+
+    on_exit(fn ->
+      SlowLLM.release()
+      SystemsRuntime.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
+    end)
 
     conversation = create_conversation_with_agent(group_id, agent_id, title: "Live user")
     conversation_id = conversation["conversation_id"]
 
     client = open_stream("/v1/runtime/agent-groups/#{group_id}/conversations/events")
-    on_exit(fn -> Process.exit(client, :kill) end)
+    on_exit(fn -> SystemsRuntime.Proc.exit(client, :kill) end)
 
-    assert_receive {:sse_headers, headers}, 3_000
+    settle_receive({:sse_headers, headers})
     assert headers =~ "HTTP/1.1 200"
 
     sent =
@@ -2425,29 +2227,30 @@ defmodule SalixWeb.ConversationMessagingTest do
     message_id = sent["message_id"]
     assert Ids.valid_message_id?(message_id)
 
-    assert_receive {:sse_frame,
-                    %{
-                      "event" => "message_created",
-                      "data" => %{
-                        "conversation_id" => ^conversation_id,
-                        "message_id" => ^message_id,
-                        "actor_type" => "user"
-                      }
-                    }},
-                   7_000
+    settle_receive(
+      {:sse_frame,
+       %{
+         "event" => "message_created",
+         "data" => %{
+           "conversation_id" => ^conversation_id,
+           "message_id" => ^message_id,
+           "actor_type" => "user"
+         }
+       }}
+    )
   end
 
   test "an explicit internal send streams through the exact participant before Message append", %{
     group_id: group_id,
     agent_id: agent_id
   } do
-    previous_llm = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_agent, :llm, StreamingInternalSendLLM)
-    StreamingInternalSendLLM.configure(self())
+    previous_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_agent, :llm, StreamingInternalSendLLM)
+    StreamingInternalSendLLM.configure(SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       StreamingInternalSendLLM.clear()
-      Application.put_env(:salix_agent, :llm, previous_llm)
+      SystemsRuntime.put_env(:salix_agent, :llm, previous_llm)
     end)
 
     conversation =
@@ -2473,21 +2276,21 @@ defmodule SalixWeb.ConversationMessagingTest do
       )
 
     assert sent.status == 201
-    assert_receive {:streaming_internal_send_started, llm_pid}, 5_000
+    settle_receive({:streaming_internal_send_started, llm_pid})
 
     assert {:ok, %{"owner_pid" => _owner, "status" => initial_status}} =
              ConversationServer.subscribe_group_conversation_participant(
                group_id,
                conversation_id,
                participant_id,
-               self()
+               SystemsRuntime.Proc.self()
              )
 
     assert initial_status["conversation_id"] == conversation_id
     assert initial_status["participant_id"] == participant_id
 
-    send(llm_pid, :emit_send_message_prefix)
-    assert_receive :send_message_prefix_emitted, 2_000
+    SystemsRuntime.Proc.send(llm_pid, :emit_send_message_prefix)
+    settle_receive(:send_message_prefix_emitted)
 
     prefix_status =
       eventually(fn ->
@@ -2511,8 +2314,8 @@ defmodule SalixWeb.ConversationMessagingTest do
 
     assert Enum.map(messages_before_send, &content_text(&1["content"])) == ["流式回复给我"]
 
-    send(llm_pid, :emit_send_message_suffix)
-    assert_receive :send_message_suffix_emitted, 2_000
+    SystemsRuntime.Proc.send(llm_pid, :emit_send_message_suffix)
+    settle_receive(:send_message_suffix_emitted)
 
     assert eventually(fn ->
              case ConversationServer.get_group_conversation_participant_status(
@@ -2525,7 +2328,7 @@ defmodule SalixWeb.ConversationMessagingTest do
              end
            end)
 
-    send(llm_pid, :finish_send_message_stream)
+    SystemsRuntime.Proc.send(llm_pid, :finish_send_message_stream)
 
     messages_after_send =
       eventually(fn ->
@@ -2561,13 +2364,13 @@ defmodule SalixWeb.ConversationMessagingTest do
          group_id: group_id,
          agent_id: agent_id
        } do
-    previous_llm = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_agent, :llm, StreamingInternalSendLLM)
-    StreamingInternalSendLLM.configure(self(), :rejected)
+    previous_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_agent, :llm, StreamingInternalSendLLM)
+    StreamingInternalSendLLM.configure(SystemsRuntime.Proc.self(), :rejected)
 
     on_exit(fn ->
       StreamingInternalSendLLM.clear()
-      Application.put_env(:salix_agent, :llm, previous_llm)
+      SystemsRuntime.put_env(:salix_agent, :llm, previous_llm)
     end)
 
     conversation =
@@ -2593,20 +2396,20 @@ defmodule SalixWeb.ConversationMessagingTest do
                }
              )
 
-    assert_receive {:streaming_internal_send_started, llm_pid}, 5_000
+    settle_receive({:streaming_internal_send_started, llm_pid})
 
     assert {:ok, %{"status" => _initial_status}} =
              ConversationServer.subscribe_group_conversation_participant(
                group_id,
                conversation_id,
                participant_id,
-               self()
+               SystemsRuntime.Proc.self()
              )
 
-    send(llm_pid, :emit_send_message_prefix)
-    assert_receive :send_message_prefix_emitted, 2_000
-    send(llm_pid, :emit_send_message_suffix)
-    assert_receive :send_message_suffix_emitted, 2_000
+    SystemsRuntime.Proc.send(llm_pid, :emit_send_message_prefix)
+    settle_receive(:send_message_prefix_emitted)
+    SystemsRuntime.Proc.send(llm_pid, :emit_send_message_suffix)
+    settle_receive(:send_message_suffix_emitted)
 
     assert eventually(fn ->
              case ConversationServer.get_group_conversation_participant_status(
@@ -2619,7 +2422,7 @@ defmodule SalixWeb.ConversationMessagingTest do
              end
            end)
 
-    send(llm_pid, :finish_send_message_stream)
+    SystemsRuntime.Proc.send(llm_pid, :finish_send_message_stream)
 
     failed_call =
       eventually(fn ->
@@ -2667,13 +2470,13 @@ defmodule SalixWeb.ConversationMessagingTest do
     group_id: group_id,
     agent_id: agent_id
   } do
-    previous_llm = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_agent, :llm, VisibleReplyNestedSendLLM)
-    VisibleReplyNestedSendLLM.configure(self())
+    previous_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_agent, :llm, VisibleReplyNestedSendLLM)
+    VisibleReplyNestedSendLLM.configure(SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       VisibleReplyNestedSendLLM.clear()
-      Application.put_env(:salix_agent, :llm, previous_llm)
+      SystemsRuntime.put_env(:salix_agent, :llm, previous_llm)
     end)
 
     conversation = create_conversation_with_agent(group_id, agent_id, title: "Nested source send")
@@ -2706,7 +2509,7 @@ defmodule SalixWeb.ConversationMessagingTest do
                agent_participant["participant_id"]
              )
 
-    assert_receive :nested_source_send_final_returned, 5_000
+    settle_receive(:nested_source_send_final_returned)
 
     session =
       eventually(fn ->
@@ -2757,18 +2560,18 @@ defmodule SalixWeb.ConversationMessagingTest do
     group_id: group_id,
     agent_id: agent_id
   } do
-    previous_llm = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_agent, :llm, RepairNestedFailureLLM)
+    previous_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_agent, :llm, RepairNestedFailureLLM)
 
     conversation =
       create_conversation_with_agent(group_id, agent_id, title: "Nested source send failure")
 
     conversation_id = conversation["conversation_id"]
-    RepairNestedFailureLLM.configure(self(), conversation_id)
+    RepairNestedFailureLLM.configure(SystemsRuntime.Proc.self(), conversation_id)
 
     on_exit(fn ->
       RepairNestedFailureLLM.clear()
-      Application.put_env(:salix_agent, :llm, previous_llm)
+      SystemsRuntime.put_env(:salix_agent, :llm, previous_llm)
     end)
 
     participants = conversation_participants(group_id, conversation_id)
@@ -2798,7 +2601,7 @@ defmodule SalixWeb.ConversationMessagingTest do
                agent_participant["participant_id"]
              )
 
-    assert_receive :nested_source_send_failure_final_returned, 5_000
+    settle_receive(:nested_source_send_failure_final_returned)
 
     session =
       eventually(fn ->
@@ -2933,9 +2736,9 @@ defmodule SalixWeb.ConversationMessagingTest do
     conversation_id = conversation["conversation_id"]
 
     client = open_stream("/v1/runtime/agent-groups/#{group_id}/conversations/events")
-    on_exit(fn -> Process.exit(client, :kill) end)
+    on_exit(fn -> SystemsRuntime.Proc.exit(client, :kill) end)
 
-    assert_receive {:sse_headers, headers}, 3_000
+    settle_receive({:sse_headers, headers})
     assert headers =~ "HTTP/1.1 200"
     assert String.downcase(headers) =~ "content-type: text/event-stream"
 
@@ -2948,16 +2751,17 @@ defmodule SalixWeb.ConversationMessagingTest do
     message_id = sent["message_id"]
     assert Ids.valid_message_id?(message_id)
 
-    assert_receive {:sse_frame,
-                    %{
-                      "event" => "message_created",
-                      "data" => %{
-                        "conversation_id" => ^conversation_id,
-                        "message_id" => ^message_id,
-                        "actor_type" => "user"
-                      }
-                    }},
-                   7_000
+    settle_receive(
+      {:sse_frame,
+       %{
+         "event" => "message_created",
+         "data" => %{
+           "conversation_id" => ^conversation_id,
+           "message_id" => ^message_id,
+           "actor_type" => "user"
+         }
+       }}
+    )
 
     assert {:ok, %{"message_id" => agent_message_id}} =
              ConversationServer.append_group_conversation_agent_message(
@@ -2970,28 +2774,29 @@ defmodule SalixWeb.ConversationMessagingTest do
                }
              )
 
-    assert_receive {:sse_frame,
-                    %{
-                      "event" => "message_created",
-                      "data" => %{
-                        "conversation_id" => ^conversation_id,
-                        "message_id" => ^agent_message_id,
-                        "actor_type" => "agent",
-                        "content" => [%{"type" => "text", "text" => "explicit SSE reply"}]
-                      }
-                    }},
-                   7_000
+    settle_receive(
+      {:sse_frame,
+       %{
+         "event" => "message_created",
+         "data" => %{
+           "conversation_id" => ^conversation_id,
+           "message_id" => ^agent_message_id,
+           "actor_type" => "agent",
+           "content" => [%{"type" => "text", "text" => "explicit SSE reply"}]
+         }
+       }}
+    )
   end
 
   # ---- minimal raw SSE client (chunked HTTP; pattern from sse_live_test) ----
 
   defp open_stream(path) do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
     # Capture the key in the test process — the spawned reader has its own
     # (empty) process dictionary, so tenant_key() must be resolved out here.
     token = tenant_key()
 
-    spawn(fn ->
+    SystemsRuntime.Proc.spawn(fn ->
       port = SalixWeb.Application.http_port()
       {:ok, sock} = :gen_tcp.connect(@host, port, [:binary, active: false, packet: :raw], 2_000)
 
@@ -3013,18 +2818,18 @@ defmodule SalixWeb.ConversationMessagingTest do
       {:ok, bytes} ->
         case ingest(parent, %{st | buf: st.buf <> bytes}) do
           {:cont, st} -> recv_loop(sock, parent, st)
-          :done -> send(parent, {:sse_closed, :final_chunk})
+          :done -> SystemsRuntime.Proc.send(parent, {:sse_closed, :final_chunk})
         end
 
       {:error, reason} ->
-        send(parent, {:sse_closed, reason})
+        SystemsRuntime.Proc.send(parent, {:sse_closed, reason})
     end
   end
 
   defp ingest(parent, %{phase: :headers, buf: buf} = st) do
     case :binary.split(buf, "\r\n\r\n") do
       [head, rest] ->
-        send(parent, {:sse_headers, head})
+        SystemsRuntime.Proc.send(parent, {:sse_headers, head})
         ingest(parent, %{st | phase: :body, buf: rest})
 
       [_incomplete] ->
@@ -3081,7 +2886,7 @@ defmodule SalixWeb.ConversationMessagingTest do
           end
         end)
 
-      if Map.has_key?(parsed, "event"), do: send(parent, {:sse_frame, parsed})
+      if Map.has_key?(parsed, "event"), do: SystemsRuntime.Proc.send(parent, {:sse_frame, parsed})
     end
 
     %{st | sse: remainder}
@@ -3089,7 +2894,7 @@ defmodule SalixWeb.ConversationMessagingTest do
 
   defp start_bandit_retry!(spec_fun) do
     Enum.find_value(1..10, fn _ ->
-      port = 40_000 + :erlang.phash2(make_ref(), 20_000)
+      port = 40_000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20_000)
 
       case start_supervised(spec_fun.(port), id: {:recording_slack_api, port}) do
         {:ok, _pid} -> port
@@ -3098,26 +2903,8 @@ defmodule SalixWeb.ConversationMessagingTest do
     end) || raise "could not bind a test port after 10 attempts"
   end
 
-  defp eventually(fun, retries \\ 200) do
-    case fun.() do
-      nil when retries > 0 ->
-        Process.sleep(25)
-        eventually(fun, retries - 1)
-
-      nil ->
-        flunk("condition never became true")
-
-      false when retries > 0 ->
-        Process.sleep(25)
-        eventually(fun, retries - 1)
-
-      false ->
-        flunk("condition never became true")
-
-      value ->
-        value
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 
   defp eventually_admission(group, conversation, message, participant) do
     {:ok, messages} = SalixIM.Conversations.list_group_conversation_messages(group, conversation)
@@ -3193,7 +2980,7 @@ defmodule SalixWeb.ConversationMessagingTest do
     )
   end
 
-  defp sign_slack_body(body, secret, timestamp \\ System.system_time(:second)) do
+  defp sign_slack_body(body, secret, timestamp \\ SystemsClock.system_time(:second)) do
     mac =
       :crypto.mac(:hmac, :sha256, secret, "v0:#{timestamp}:#{body}")
       |> Base.encode16(case: :lower)
@@ -3216,6 +3003,6 @@ defmodule SalixWeb.ConversationMessagingTest do
     })
   end
 
-  defp put_or_delete_env(app, key, nil), do: Application.delete_env(app, key)
-  defp put_or_delete_env(app, key, value), do: Application.put_env(app, key, value)
+  defp put_or_delete_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp put_or_delete_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

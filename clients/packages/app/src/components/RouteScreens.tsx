@@ -1,4 +1,7 @@
-import { appendRecommendationPrompt } from "./recommendations/appendRecommendationPrompt";
+import {
+  createChatDraftSnippet,
+  useConversationDraftSnippets,
+} from "./chat/composer/draftSnippets";
 import { beginCommaMessageSend } from "../analytics/client";
 import { acceptedSendPromise } from "./chat/conversation/sendAcceptance";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
@@ -13,8 +16,8 @@ import {
   type ReactNode,
   useContext,
 } from "react";
-import { toast } from "@comma/ui";
-import type { CommaApiClient, CommaConversation, CommaSkill } from "../api";
+import { toast } from "@comma/ui/components/toast";
+import type { CommaConversation, CommaSkill } from "@comma/core/api-schemas";
 import { HomeTasksRail, HomeTasksRailLoading } from "./home/HomeTasksRail";
 import { useHomeRailFolded } from "./home/HomeRailFolds";
 import { HomeRailCollapseHandle } from "./home/HomeRailHandle";
@@ -31,18 +34,14 @@ import {
 import {
   idleConversationChannelState,
   type ChatConversationRef,
-} from "./chat/model/conversationChannel";
+} from "@comma/core/chat";
 import {
   fixedDraftSource,
   useComposerDraftSelector,
   type ComposerDraftSource,
   type ConversationViewState,
 } from "./chat/composer/conversationDraft";
-import {
-  isStaleChatSessionError,
-  useChatApi,
-  useChatRegistry,
-} from "./chat/ChatProvider";
+import { isStaleChatSessionError, useChatRegistry } from "./chat/ChatProvider";
 import {
   resolveWorkspaceChat,
   useWorkspaceChat,
@@ -56,15 +55,20 @@ import { useOnboardingHandoff } from "./onboarding/onboardingHandoff";
 import { useOnboardingOpen } from "./onboarding/onboardingPresence";
 import { useOnboardingAhead } from "./onboarding/useOnboardingAhead";
 import { getUserDisplayName } from "./UserAvatar";
-import { RecommendationRail } from "./recommendations/RecommendationRail";
+import {
+  RecommendationRail,
+  type RecommendationComposerPrompt,
+} from "./recommendations/RecommendationRail";
 
 // Rail geometry updates do not change the conversation or its data sources.
 export const HomeRoute = memo(function HomeRoute({
   onConnectApps,
   surfaceActive = true,
+  workspaceId,
 }: {
   onConnectApps?: (() => void) | undefined;
   surfaceActive?: boolean;
+  workspaceId?: string | undefined;
 } = {}) {
   useEffect(() => {
     if (!import.meta.env.DEV) return undefined;
@@ -76,10 +80,13 @@ export const HomeRoute = memo(function HomeRoute({
 
   const locale = useCommaLocale();
   const messages = useCommaMessages();
-  const api = useChatApi();
   const registry = useChatRegistry();
-  const chat = useWorkspaceChat({ api });
-  const retainedConversationTarget = registry.getHomeConversationTarget();
+  const chat = useWorkspaceChat({ routeWorkspaceId: workspaceId });
+  const rememberedTarget = registry.getHomeConversationTarget();
+  const retainedConversationTarget =
+    !workspaceId || rememberedTarget?.workspaceId === workspaceId
+      ? rememberedTarget
+      : undefined;
   const [pendingDraft, setPendingDraft] = useState("");
   const [pendingError, setPendingError] = useState<string | undefined>();
   const [pendingSend, setPendingSend] = useState(false);
@@ -115,9 +122,10 @@ export const HomeRoute = memo(function HomeRoute({
     const finishAnalytics = beginCommaMessageSend("home");
 
     try {
-      await attempt.run(async (attemptApi, signal) => {
+      await attempt.run(async (signal) => {
         const resolution = await resolveWorkspaceChat({
-          api: attemptApi,
+          core: registry.core,
+          ...(workspaceId ? { workspaceId, exactWorkspace: true } : {}),
           locale,
           session: registry.productLease,
           signal,
@@ -347,14 +355,12 @@ function HomeConversation({
   // restart with each connection.
   const onboardingAhead = useOnboardingAhead();
   const messages = useCommaMessages();
-  const api = useChatApi();
   const registry = useChatRegistry();
   const conversationId = conversationTarget?.conversationId;
   const groupId = conversationTarget?.groupId;
   const workspaceId = conversationTarget?.workspaceId;
   const conversation = useConversation(workspaceId, groupId, conversationId);
-  const recommendationChannel = conversation.channel;
-  const skills = useWorkspaceSkills(api, guest ? "" : (workspaceId ?? ""));
+  const skills = useWorkspaceSkills(guest ? "" : (workspaceId ?? ""));
   const { openBrowser, openChat } = useChatSidebar();
   // The onboarding's "Start chatting" lands on this composer.
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
@@ -372,7 +378,10 @@ function HomeConversation({
     );
   }, [conversationId, conversationSummary, groupId, registry, workspaceId]);
 
+  // Home shows its composer before its conversation loads; a Chat Sidebar the
+  // reader opens in that window stays open once the conversation arrives.
   useRegisterChatSidebarHost(surfaceActive ? conversationTarget : undefined, {
+    awaitingHost: surfaceActive,
     commaCenter: true,
   });
 
@@ -421,13 +430,22 @@ function HomeConversation({
     },
     [conversationId, groupId, openChat, workspaceId]
   );
+  // A Routine prompt is staged above the focused composer as one tile, with
+  // the conversation's other staged snippets.
+  const composerDraftSnippets = useConversationDraftSnippets(conversationId);
+  const { setItems: setComposerSnippets } = composerDraftSnippets;
   const handleUseRecommendationPrompt = useCallback(
-    (prompt: string) => {
+    (prompt: RecommendationComposerPrompt) => {
       onPendingErrorClear();
-      if (recommendationChannel)
-        appendRecommendationPrompt(recommendationChannel, prompt);
+      // A second press on the same row stages nothing new.
+      setComposerSnippets((current) =>
+        current.some((snippet) => snippet.text === prompt.text)
+          ? current
+          : [...current, createChatDraftSnippet({ ...prompt, kind: "routine" })]
+      );
+      setComposerFocusRequest((request) => request + 1);
     },
-    [onPendingErrorClear, recommendationChannel]
+    [onPendingErrorClear, setComposerSnippets]
   );
 
   // Only whether the channel holds a draft matters here, so this surface
@@ -470,6 +488,7 @@ function HomeConversation({
         removeAttachment: conversation.removeAttachment,
         retry: conversation.retry,
         retryAttachment: conversation.retryAttachment,
+        answerQuestion: conversation.answerQuestion,
         send: (text, options) => {
           onPendingErrorClear();
           return conversation.send(text, options);
@@ -510,6 +529,7 @@ function HomeConversation({
   const composerPresentation: ConversationComposerPresentation = {
     disabled: composerDisabled,
     focusRequest: composerFocusRequest,
+    snippets: composerDraftSnippets,
     feedback: (
       <HomeResolutionFeedback
         onRetry={onRetry}
@@ -526,7 +546,6 @@ function HomeConversation({
   return (
     <HomeConversationSurface
       actions={actions}
-      api={api}
       composerPresentation={composerPresentation}
       draftSource={draftSource}
       groupId={groupId}
@@ -537,7 +556,6 @@ function HomeConversation({
         workspaceId && conversationId && !guest ? (
           <RecommendationRail
             active={surfaceActive && !onboardingAhead}
-            api={api}
             greetingName={greetingName}
             onConnectApps={onConnectApps}
             onOpenTask={handleOpenRecommendationTask}
@@ -565,7 +583,6 @@ function HomeConversation({
 
 function HomeConversationSurface({
   actions,
-  api,
   composerPresentation,
   draftSource,
   groupId,
@@ -579,7 +596,6 @@ function HomeConversationSurface({
   workspaceId,
 }: {
   actions: ConversationViewActions;
-  api: CommaApiClient;
   composerPresentation?: ConversationComposerPresentation | undefined;
   draftSource: ComposerDraftSource;
   groupId?: string | undefined;
@@ -597,7 +613,7 @@ function HomeConversationSurface({
   return (
     <ConversationView
       actions={actions}
-      api={api}
+      live
       composerPresentation={composerPresentation}
       draftSource={draftSource}
       groupId={groupId}

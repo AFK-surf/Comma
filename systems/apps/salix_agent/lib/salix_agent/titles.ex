@@ -19,9 +19,8 @@ defmodule SalixAgent.Titles do
       never blocks that session actor; failures are logged and dropped.
 
   Documented divergence: willow uses the cluster-wide summarizer model.
-  Salix resolves the **agent template's `analyze_config`** (the same
-  per-template auxiliary model `salix.analyze` uses, via
-  `SalixAgent.MediaResolver`), falling back to the agent's main LLM config
+  Salix resolves the **agent's `analyze_config`** (the same auxiliary model
+  `salix.analyze` uses, via `SalixAgent.MediaResolver`), falling back to the agent's main LLM config
   when no analyze model is configured. The title lands as a durable
   `session_update` event through the inbox (with `if_unnamed`), so it
   replays exactly and reaches the UI through the ordinary session
@@ -29,7 +28,7 @@ defmodule SalixAgent.Titles do
   NATS stream event.
 
   Enabled by `config :salix_agent, session_titles: true` (off in the test
-  env — a background LLM call would steal scripted mock turns).
+  env — an LLM title call would steal scripted mock turns).
   """
 
   require Logger
@@ -50,9 +49,9 @@ defmodule SalixAgent.Titles do
   @spec placeholder?(term()) :: boolean()
   def placeholder?(name), do: to_string(name || "") in @placeholders
 
-  @doc "Feature flag (`config :salix_agent, :session_titles`)."
+  @doc "Feature flag for LLM titles (`config :salix_agent, :session_titles`)."
   @spec enabled?() :: boolean()
-  def enabled?, do: Application.get_env(:salix_agent, :session_titles, true)
+  def enabled?, do: SystemsRuntime.get_env(:salix_agent, :session_titles, true)
 
   @doc """
   Post-round hook (called by `InternalSessionActor`): spawn a background title
@@ -105,16 +104,10 @@ defmodule SalixAgent.Titles do
         source,
         billing_context \\ %{}
       ) do
-    with {:ok, opts} <- resolve_opts(agent_id),
-         {:ok, title} <-
-           request_title(
-             source,
-             metering_opts(opts, billing_context),
-             agent_id: agent_id,
-             session_id: session_id
-           ) do
-      deliver_title(agent_id, session_id, title)
-    else
+    case generate(agent_id, source, billing_context, session_id: session_id) do
+      {:ok, title} ->
+        deliver_title(agent_id, session_id, title)
+
       {:error, reason} ->
         Logger.warning("title generation failed: agent=#{agent_id} #{inspect(reason)}")
         :ok
@@ -123,6 +116,28 @@ defmodule SalixAgent.Titles do
     kind, reason ->
       Logger.warning("title generation crashed: agent=#{agent_id} #{inspect({kind, reason})}")
       :ok
+  end
+
+  @doc """
+  A title for `source`, from `agent_id`'s analyze model (main LLM fallback)
+  with the session-title prompt and sanitization. The source is capped at
+  #{@max_source_chars} characters. The call is system work billed to
+  `billing_context` and metered under `opts[:entrypoint]` (default
+  `"title_generation"`); `opts[:session_id]` names the session it titles, if
+  any. It waits for the model: a caller that must not wait bounds the call.
+  """
+  @spec generate(String.t(), String.t(), map(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def generate(agent_id, source, billing_context, opts \\ []) do
+    {entrypoint, identity} = Keyword.pop(opts, :entrypoint, "title_generation")
+
+    with {:ok, llm_opts} <- resolve_opts(agent_id) do
+      request_title(
+        truncate_chars(source, @max_source_chars),
+        metering_opts(llm_opts, billing_context, entrypoint),
+        Keyword.put(identity, :agent_id, agent_id)
+      )
+    end
   end
 
   # ---- model resolution (template analyze model, willow-divergence) ----
@@ -187,24 +202,24 @@ defmodule SalixAgent.Titles do
 
   defp with_max_tokens(_opts), do: %{"max_tokens" => @max_tokens}
 
-  defp metering_opts(opts, billing_context) when is_list(opts) do
+  defp metering_opts(opts, billing_context, entrypoint) when is_list(opts) do
     opts
     |> Keyword.put(:billing_context, billing_context || %{})
-    |> Keyword.put(:entrypoint, "title_generation")
+    |> Keyword.put(:entrypoint, entrypoint)
     |> Keyword.put(:actor_type, "system")
   end
 
-  defp metering_opts(opts, billing_context) when is_map(opts) do
+  defp metering_opts(opts, billing_context, entrypoint) when is_map(opts) do
     opts
     |> Map.put("billing_context", billing_context || %{})
-    |> Map.put("entrypoint", "title_generation")
+    |> Map.put("entrypoint", entrypoint)
     |> Map.put("actor_type", "system")
   end
 
-  defp metering_opts(_opts, billing_context) do
+  defp metering_opts(_opts, billing_context, entrypoint) do
     %{
       "billing_context" => billing_context || %{},
-      "entrypoint" => "title_generation",
+      "entrypoint" => entrypoint,
       "actor_type" => "system"
     }
   end
@@ -290,13 +305,10 @@ defmodule SalixAgent.Titles do
 
   defp has_assistant?(session), do: InternalSession.query(session, :title_has_assistant?)
 
-  # The kernel flattens willow's JSON content blocks to their text parts; the
-  # source is capped here because the cap counts graphemes, not bytes.
-  defp first_user_content(session) do
-    session
-    |> InternalSession.query(:title_source_content)
-    |> truncate_chars(@max_source_chars)
-  end
+  # The kernel flattens willow's JSON content blocks to their text parts;
+  # `generate/4` caps the source because the cap counts graphemes, not bytes.
+  defp first_user_content(session),
+    do: InternalSession.query(session, :title_source_content)
 
   # ---- durable apply (inbox → session_update with if_unnamed) ----
 
@@ -306,10 +318,10 @@ defmodule SalixAgent.Titles do
       session_id: session_id,
       name: title,
       if_unnamed: true,
-      updated_at: System.system_time(:second)
+      updated_at: SystemsClock.system_time(:second)
     }
 
-    source = "auto-title:#{session_id}:#{System.unique_integer([:positive])}"
+    source = "auto-title:#{session_id}:#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     case SalixAgent.deliver(agent_id, payload, source_message_id: source, surface: "auto_title") do
       {:ok, _} -> :ok

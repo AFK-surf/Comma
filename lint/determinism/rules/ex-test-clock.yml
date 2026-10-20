@@ -1,0 +1,18 @@
+id: ex-test-clock
+language: elixir
+severity: error
+message: "A test reads the machine clock."
+note: |
+  Read time from SystemsClock under a manual or driven clock, or use a fixed
+  timestamp.
+metadata:
+  category: clock
+rule:
+  all:
+    - kind: call
+    - has:
+        field: target
+        regex: "^(DateTime\\.utc_now|NaiveDateTime\\.utc_now|Date\\.utc_today|Time\\.utc_now|System\\.(monotonic_time|system_time|os_time)|:os\\.(system_time|timestamp)|:erlang\\.(monotonic_time|system_time|now)|:calendar\\.(local_time|universal_time))$"
+files:
+  - "systems/apps/*/test/**/*.exs"
+  - "systems/apps/*/test/**/*.ex"

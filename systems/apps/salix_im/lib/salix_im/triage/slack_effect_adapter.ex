@@ -671,7 +671,7 @@ defmodule SalixIM.Triage.SlackEffectAdapter.Freshness do
       Map.put(
         window,
         "latest_ts_us",
-        max(window["latest_ts_us"], System.system_time(:microsecond))
+        max(window["latest_ts_us"], SystemsClock.system_time(:microsecond))
       )
 
     reader.read_channel(scope, window, limit: 200, max_bytes: 1_048_576)
@@ -985,7 +985,7 @@ defmodule SalixIM.Triage.SlackEffectAdapter.Reply do
   end
 
   defp verify_ambiguous(claim, prepared, opts) do
-    sleep_fun = Keyword.get(opts, :sleep_fun, &Process.sleep/1)
+    sleep_fun = Keyword.get(opts, :sleep_fun, &SystemsClock.sleep/1)
     sleep_fun.(verify_grace_ms(opts))
 
     with {:ok, existing} <- find_existing(prepared, opts) do
@@ -1128,7 +1128,7 @@ defmodule SalixIM.Triage.SlackEffectAdapter.Reply do
     case Keyword.get(
            opts,
            :provider_verify_grace_ms,
-           Application.get_env(:salix_im, :provider_verify_grace_ms, 1_000)
+           SystemsRuntime.get_env(:salix_im, :provider_verify_grace_ms, 1_000)
          ) do
       value when is_integer(value) and value in 0..10_000 -> value
       _invalid -> 1_000

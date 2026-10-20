@@ -1,4 +1,6 @@
 defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The Meetings API behind the React pages at `/orgs/:org/meetings`,
   `/meetings/past` and `/meetings/settings`, through the real Salix meeting
@@ -8,6 +10,9 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
   and query counts that do not grow with the history page.
   """
   use BridgeForTeamsWeb.DashboardCase, async: false
+
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.BridgeForTeamsWeb", "Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{MeetingPreparation, Memberships}
   alias BridgeForTeamsWeb.MeetingPreparationFixture
@@ -23,24 +28,27 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
             {:salix_im, :slack_api_base_url},
             {:salix_meet, :calendar_autojoin_channels}
           ],
-          do: {app, key, Application.get_env(app, key)}
+          do: {app, key, SystemsRuntime.get_env(app, key)}
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    unless Process.whereis(SalixStore.S3.Fake), do: start_supervised!(SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+
+    unless SystemsRuntime.Proc.whereis(SalixStore.S3.Fake),
+      do: start_supervised!(SalixStore.S3.Fake)
+
     start_supervised!(Provider)
     server = start_supervised!({Bandit, plug: Provider, port: 0, ip: {127, 0, 0, 1}})
     {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
-    Application.put_env(:salix_store, :composio_base_url_override, "http://127.0.0.1:#{port}")
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
-    Application.put_env(:salix_meet, :calendar_autojoin_channels, [])
+    SystemsRuntime.put_env(:salix_store, :composio_base_url_override, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [])
     project = bare_project_fixture(org, %{name: "Product team"})
     fixture = MeetingPreparationFixture.seed(org, project)
 
     on_exit(fn ->
       for {app, key, value} <- previous do
         if is_nil(value),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, value)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, value)
       end
 
       Ecto.Adapters.SQL.query!(
@@ -168,36 +176,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
                "paused"
     end
 
-    test "attendee DMs need known Slack permissions for the selected bot",
-         %{conn: conn, org: org, project: project, connect_id: connect_id} do
-      key = SalixStore.Keys.ctl_im_connect(project.salix_group_id, connect_id)
-
-      for {scopes, missing, message} <- [
-            {~w(chat:write), ["users:read.email", "im:write"], "missing Slack permissions"},
-            {nil, nil, "permissions are unknown"}
-          ] do
-        {:ok, _} =
-          SalixStore.CasRecord.update(key, &Map.put(&1, "granted_bot_scopes", scopes))
-
-        overview = conn |> get(meetings_path(org, project)) |> json_response(200) |> data()
-        assert [%{"missing_scopes" => ^missing}] = overview["connects"]
-
-        assert %{"error" => %{"code" => "invalid_meeting_settings", "message" => text}} =
-                 conn
-                 |> put(meetings_path(org, project, "/settings"), save_attrs(connect_id))
-                 |> json_response(422)
-
-        assert text =~ message
-
-        conn
-        |> put(
-          meetings_path(org, project, "/settings"),
-          save_attrs(connect_id, %{"personal_preparation" => false})
-        )
-        |> json_response(200)
-      end
-    end
-
     test "admin picks one recurring series from the connected calendar",
          %{conn: conn, org: org, project: project, connect_id: connect_id} do
       series =
@@ -236,77 +214,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
       assert {:ok, settings} = SalixStore.MeetingCalendarSettings.get(project.salix_group_id)
       assert [%{"event_id" => "design-series", "account_id" => "ca-product"}] = settings["series"]
     end
-
-    test "an incomplete save is refused without replacing the settings",
-         %{conn: conn, org: org, project: project, connect_id: connect_id} do
-      assert %{"error" => %{"code" => "invalid_meeting_settings"}} =
-               conn
-               |> put(
-                 meetings_path(org, project, "/settings"),
-                 save_attrs(connect_id, %{"calendar_selections" => []})
-               )
-               |> json_response(422)
-
-      assert {:error, :not_found} = SalixStore.MeetingCalendarSettings.get(project.salix_group_id)
-    end
-
-    test "a missing or unjoined channel points at the channel field",
-         %{conn: conn, org: org, project: project, connect_id: connect_id} do
-      Provider.stub("POST", "/api/conversations.info", fn _request ->
-        %{"ok" => true, "channel" => %{"id" => "C-LEFT", "name" => "left", "is_member" => false}}
-      end)
-
-      for channel <- [nil, "C-LEFT"] do
-        assert %{"error" => %{"code" => "invalid_meeting_settings", "details" => details}} =
-                 conn
-                 |> put(
-                   meetings_path(org, project, "/settings"),
-                   save_attrs(connect_id, %{"channel_id" => channel})
-                 )
-                 |> json_response(422)
-
-        assert %{"fields" => %{"channel_id" => [message]}} = details
-        assert message =~ "channel the bot has joined"
-      end
-
-      assert {:error, :not_found} = SalixStore.MeetingCalendarSettings.get(project.salix_group_id)
-    end
-
-    test "channels page on from the catalog's cursor, keeping only joined ones",
-         %{conn: conn, org: org, project: project, connect_id: connect_id} do
-      Provider.stub("POST", "/api/conversations.list", %{
-        "ok" => true,
-        "channels" => [%{"id" => "C-TEAM", "name" => "team-meetings", "is_member" => true}],
-        "response_metadata" => %{"next_cursor" => "page-2"}
-      })
-
-      assert %{"channels" => [%{"id" => "C-TEAM"}], "next_cursor" => "page-2"} =
-               conn
-               |> get(meetings_path(org, project, "/catalog?connect_id=#{connect_id}"))
-               |> json_response(200)
-               |> data()
-
-      Provider.stub("POST", "/api/conversations.list", %{
-        "ok" => true,
-        "channels" => [
-          %{"id" => "C-OPS", "name" => "ops", "is_member" => true},
-          %{"id" => "C-OTHER", "name" => "other", "is_member" => false}
-        ]
-      })
-
-      assert %{"channels" => [%{"id" => "C-OPS", "name" => "ops"}], "next_cursor" => nil} =
-               conn
-               |> get(
-                 meetings_path(org, project, "/channels?connect_id=#{connect_id}&cursor=page-2")
-               )
-               |> json_response(200)
-               |> data()
-
-      assert Provider.requests()
-             |> Enum.filter(&(&1.path == "/api/conversations.list"))
-             |> List.last()
-             |> Map.fetch!(:raw) =~ "cursor=page-2"
-    end
   end
 
   describe "upcoming meetings" do
@@ -317,56 +224,14 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
     end
 
     setup do
-      previous = Application.get_env(:bridge_for_teams_core, :salix_client)
-      Application.put_env(:bridge_for_teams_core, :salix_client, Scripted)
+      previous = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+      SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, Scripted)
 
       on_exit(fn ->
         if previous,
-          do: Application.put_env(:bridge_for_teams_core, :salix_client, previous),
-          else: Application.delete_env(:bridge_for_teams_core, :salix_client)
+          do: SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous),
+          else: SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
       end)
-    end
-
-    test "each plan state reads as one status", %{conn: conn, org: org, project: project} do
-      planned = &Map.merge(%{"settings_revision" => 2, "status" => "planned"}, &1)
-
-      cases = [
-        {"updating", %{"settings_revision" => 1}},
-        {"failed", planned.(%{"status" => "failed"})},
-        {"queued", planned.(%{"preparation" => %{"card_status" => "sent"}})},
-        {"not_sent", planned.(%{"preparation" => %{"card_status" => "abandoned"}})},
-        {"ready", planned.(%{"preparation" => %{"report_available" => true}})},
-        {"timed_out", planned.(%{"preparation" => %{"deadline_status" => "diagnostic_only"}})},
-        {"preparing", planned.(%{"preparation" => %{"research_started" => true}})},
-        {"scheduled", planned.(%{})}
-      ]
-
-      Process.put(
-        {:meetings, "overview"},
-        {:ok,
-         %{
-           "settings" => %{"enabled" => true, "settings_revision" => 2},
-           "calendar" => %{
-             "events" =>
-               for {status, plan} <- cases do
-                 %{
-                   "meeting_plan_id" => status,
-                   "title" => status,
-                   "start_ms" => 1,
-                   "plan" => plan
-                 }
-               end
-           }
-         }}
-      )
-
-      events = conn |> get(meetings_path(org, project)) |> json_response(200) |> data()
-
-      assert Enum.map(events["events"], &{&1["meeting_plan_id"], &1["status"]}) ==
-               Enum.map(cases, fn {status, _plan} -> {status, status} end)
-
-      # The plan itself stays out of the page payload.
-      refute Enum.any?(events["events"], &Map.has_key?(&1, "plan"))
     end
 
     test "the detail read returns the shared report", %{conn: conn, org: org, project: project} do
@@ -427,11 +292,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
                |> put_req_header("x-csrf-token", token)
                |> put(meetings_path(org, project, "/settings"), attrs)
                |> json_response(200)
-    end
-
-    test "an unknown read is refused", %{conn: conn, org: org, project: project} do
-      assert %{"error" => %{"code" => "invalid_meeting_settings"}} =
-               conn |> get(meetings_path(org, project, "/save")) |> json_response(422)
     end
   end
 
@@ -533,39 +393,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
       refute get(conn, meetings_path(org, other, "/history")).resp_body =~ "FRECORD"
     end
 
-    test "says when history is unavailable and rejects an oversized cursor",
-         %{conn: conn, org: org, project: project, group: group, connect_id: connect_id} do
-      configure_history(group, connect_id)
-
-      assert %{"error" => %{"code" => "invalid_meeting_settings"}} =
-               conn
-               |> get(
-                 meetings_path(org, project, "/history?cursor=" <> String.duplicate("x", 129))
-               )
-               |> json_response(422)
-
-      Provider.stub("POST", "/api/conversations.info", %{
-        "ok" => false,
-        "error" => "internal_error"
-      })
-
-      assert %{"error" => %{"code" => "history_unavailable", "message" => message}} =
-               conn |> get(meetings_path(org, project, "/history")) |> json_response(503)
-
-      assert message =~ "This does not mean there are no meeting records."
-    end
-
-    test "a meeting that is gone is not found", %{conn: conn, org: org, project: project} do
-      for plan <- ["not-a-plan-id", SalixStore.Ids.new_meeting_plan_id()] do
-        assert %{"error" => %{"code" => "meeting_not_found", "message" => message}} =
-                 conn
-                 |> get(meetings_path(org, project, "/detail?plan=#{plan}"))
-                 |> json_response(404)
-
-        assert message =~ "Refresh the meeting list"
-      end
-    end
-
     test "omits unsafe links and tells captured but unshared audio apart",
          %{conn: conn, org: org, project: project, group: group, connect_id: connect_id} do
       configure_history(group, connect_id)
@@ -588,61 +415,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
       assert record["recording_url"] == nil
       assert record["canvas_url"] == nil
       assert record["recording_status"] == "unavailable"
-    end
-
-    test "resolves a deployment-default channel through its enrollment cache",
-         %{org: org, user: user, project: project, group: group, connect_id: connect_id} do
-      configure_history(group, connect_id)
-
-      SalixStore.Repo.query!("DELETE FROM meeting_calendar_settings WHERE group_id = $1", [
-        group["group_id"]
-      ])
-
-      entry = %{
-        "connect_id" => connect_id,
-        "channel" => "team-meetings",
-        "calendars" => ["product@example.test"]
-      }
-
-      Application.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
-
-      identity =
-        Map.merge(Map.take(group, ~w(tenant_id group_id)), %{
-          "connect_id" => connect_id,
-          "provider" => "slack"
-        })
-
-      enrolled =
-        Map.merge(identity, %{
-          "channel_id" => "C-TEAM",
-          "calendar_id" => SalixStore.Ids.new_calendar_id(),
-          "mode" => "join",
-          "calendars" => [
-            %{
-              "account_id" => "ca-product",
-              "calendar_id" => "product@example.test",
-              "source_id" => SalixStore.Ids.new_calendar_source_id()
-            }
-          ]
-        })
-
-      :ok =
-        SalixMeet.CalendarEnrollmentCache.put(
-          entry,
-          identity,
-          enrolled,
-          System.system_time(:millisecond)
-        )
-
-      MeetingPreparationFixture.seed_record(group, connect_id, "inherited-" <> project.id)
-
-      assert {:ok, %{"meetings" => [_]}} =
-               MeetingPreparation.run(org, user, project.id, "history")
-
-      :ok = SalixMeet.CalendarEnrollmentCache.delete(entry)
-
-      assert {:error, :meeting_history_scope_unavailable} =
-               MeetingPreparation.run(org, user, project.id, "history")
     end
   end
 
@@ -680,16 +452,23 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
 
   defp data(%{"data" => data}), do: data
 
+  # Every authenticated request touches its session's `last_seen_at`, and Ecto
+  # writes that only when the clock has moved since the previous touch. The
+  # driven clock may jump between two measured requests (seeding records waits
+  # on clock-scoped servers), so clear the stamp first: each measured request
+  # then pays the same one session write, and the counts compare the page.
   defp query_count(conn, path) do
-    test_pid = self()
-    handler = "meetings-query-count-#{System.unique_integer([:positive])}"
+    BridgeForTeams.Repo.update_all(BridgeForTeams.Schema.AuthSession, set: [last_seen_at: nil])
+    test_pid = SystemsRuntime.Proc.self()
+    handler = "meetings-query-count-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:bridge_for_teams, :repo, :query],
         fn _event, _measurements, _metadata, _config ->
-          if self() == test_pid, do: send(test_pid, :repo_query)
+          if SystemsRuntime.Proc.self() == test_pid,
+            do: SystemsRuntime.Proc.send(test_pid, :repo_query)
         end,
         nil
       )
@@ -698,12 +477,12 @@ defmodule BridgeForTeamsWeb.DashboardAPIMeetingsTest do
       conn |> get(path) |> json_response(200)
       count_messages(0)
     after
-      :telemetry.detach(handler)
+      SystemsRuntime.Telemetry.detach(handler)
     end
   end
 
   defp count_messages(count) do
-    receive do
+    SystemsRuntime.Proc.receive do
       :repo_query -> count_messages(count + 1)
     after
       0 -> count

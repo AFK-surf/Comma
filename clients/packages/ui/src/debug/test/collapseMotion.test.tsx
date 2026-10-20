@@ -9,6 +9,7 @@ import {
   resetCollapseMotionOnDocument,
   serializeCollapseMotionParams,
 } from "../collapseMotion";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 describe("collapseMotion", () => {
   it("formats cubic-bezier values for display", () => {
@@ -38,9 +39,7 @@ describe("collapseMotion", () => {
 
   it("copies text to the clipboard", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.assign(navigator, {
-      clipboard: { writeText },
-    });
+    stubProperty(navigator, "clipboard", { value: { writeText } });
 
     await copyTextToClipboard('{"container":{}}');
 

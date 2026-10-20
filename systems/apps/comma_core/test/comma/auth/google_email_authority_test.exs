@@ -1,5 +1,5 @@
 defmodule Comma.Auth.GoogleEmailAuthorityTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias Comma.Auth.{GoogleClaims, GoogleEmailAuthority}
 

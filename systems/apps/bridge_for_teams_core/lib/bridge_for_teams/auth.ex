@@ -8,17 +8,19 @@ defmodule BridgeForTeams.Auth do
   email-domain admission. Feishu uses a provider-aware flow because Feishu users
   often have no email address; the durable key is an org-scoped Feishu subject
   recorded in `org_sso_identities`, with mobile/email stored only as profile
-  attributes.
+  attributes. Lark is a provider of its own with the same shape: an org-scoped
+  Lark subject, and App ID and App Secret stored on the org's SSO connection.
 
-  Provider implementations are resolved via `BridgeForTeams.Auth.OIDC.impl/0`
-  and `BridgeForTeams.Auth.Feishu.impl/0`. The per-org IdP config lives in
+  Provider implementations are resolved via `BridgeForTeams.Auth.OIDC.impl/0`,
+  `BridgeForTeams.Auth.Feishu.impl/0` and `BridgeForTeams.Auth.Lark.impl/0`.
+  The per-org IdP config lives in
   `org_sso_connections`; the stored client secret is handed to the provider
   as-is (no encryption at rest).
   """
   import Ecto.Query
   require Logger
 
-  alias BridgeForTeams.Auth.{Feishu, OIDC, Sessions}
+  alias BridgeForTeams.Auth.{Feishu, Lark, OIDC, Sessions}
   alias BridgeForTeams.{Observability, Repo}
 
   alias BridgeForTeams.Schema.{
@@ -83,7 +85,7 @@ defmodule BridgeForTeams.Auth do
   def record_sso_login_failure(org_id, reason, opts) when is_binary(org_id) do
     scope = sso_login_failure_scope(org_id)
     reason_class = auth_reason_class(reason)
-    request_id = Keyword.get(opts, :request_id) || Ecto.UUID.generate()
+    request_id = Keyword.get(opts, :request_id) || SystemsRuntime.Proc.uuid()
     stage = Keyword.get(opts, :stage, "callback")
 
     case Observability.create_event(%{
@@ -100,7 +102,7 @@ defmodule BridgeForTeams.Auth do
            evidence:
              auth_login_failure_evidence(scope.provider, stage, request_id, reason_class, reason),
            correlation_id: request_id,
-           occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now())
+           occurred_at: Keyword.get(opts, :occurred_at, SystemsClock.utc_now())
          }) do
       {:ok, _event} ->
         :ok
@@ -134,6 +136,18 @@ defmodule BridgeForTeams.Auth do
     with provider = Feishu.impl(),
          {:ok, identity} <- provider.fetch_identity(sso, params, opts) do
       provision_from_feishu_identity(conn, identity, Keyword.put_new(opts, :audit, true))
+    end
+  end
+
+  defp callback_with_provider(
+         %OrgSsoConnection{provider: "lark"} = conn,
+         sso,
+         _code,
+         params,
+         opts
+       ) do
+    with {:ok, identity} <- Lark.impl().fetch_identity(sso, params, opts) do
+      provision_from_lark_identity(conn, identity, Keyword.put_new(opts, :audit, true))
     end
   end
 
@@ -290,7 +304,7 @@ defmodule BridgeForTeams.Auth do
   end
 
   defp revoke_api_key_with_optional_audit(%ApiKey{} = api_key, opts) do
-    changeset = ApiKey.changeset(api_key, %{revoked_at: DateTime.utc_now()})
+    changeset = ApiKey.changeset(api_key, %{revoked_at: SystemsClock.utc_now()})
 
     result =
       if audit_enabled?(opts) do
@@ -350,7 +364,7 @@ defmodule BridgeForTeams.Auth do
                    %ApiKey{} |> ApiKey.changeset(replacement_attrs) |> Repo.insert(),
                  {:ok, revoked} <-
                    old_key
-                   |> ApiKey.changeset(%{revoked_at: DateTime.utc_now()})
+                   |> ApiKey.changeset(%{revoked_at: SystemsClock.utc_now()})
                    |> Repo.update(),
                  {:ok, _audit} <-
                    maybe_record_api_key_rotation_audit(old_key, replacement, revoked, opts) do
@@ -421,6 +435,34 @@ defmodule BridgeForTeams.Auth do
   def provision_from_feishu_identity(%OrgSsoConnection{}, _identity, _opts),
     do: {:error, :not_feishu_sso_connection}
 
+  @doc """
+  Just-in-time provision a user and org-scoped SSO identity from a Lark
+  profile. The identity has the provider `"lark"`, so it never matches a Feishu
+  identity. Email is optional and is not the login key.
+  """
+  @spec provision_from_lark_identity(OrgSsoConnection.t(), map(), keyword()) ::
+          {:ok, User.t()} | {:error, term()}
+
+  def provision_from_lark_identity(conn, identity, opts \\ [])
+
+  def provision_from_lark_identity(%OrgSsoConnection{provider: "lark"} = conn, identity, opts) do
+    with {:ok, attrs} <- normalize_lark_identity(identity),
+         :ok <- check_lark_tenant_binding(conn, attrs),
+         :ok <- check_lark_provisioning_policy(conn, attrs) do
+      Repo.transaction(fn ->
+        user = upsert_user_for_lark_identity(conn, attrs)
+
+        case ensure_org_membership(conn, user, opts) do
+          {:ok, _membership} -> user
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+    end
+  end
+
+  def provision_from_lark_identity(%OrgSsoConnection{}, _identity, _opts),
+    do: {:error, :not_lark_sso_connection}
+
   # === private ===
 
   defp sso_connection(org_id) do
@@ -470,6 +512,10 @@ defmodule BridgeForTeams.Auth do
 
   defp authorize_with_provider(%OrgSsoConnection{provider: "feishu"}, sso, opts) do
     Feishu.impl().authorize_url(sso, opts)
+  end
+
+  defp authorize_with_provider(%OrgSsoConnection{provider: "lark"}, sso, opts) do
+    Lark.impl().authorize_url(sso, opts)
   end
 
   defp authorize_with_provider(%OrgSsoConnection{}, sso, opts) do
@@ -740,6 +786,101 @@ defmodule BridgeForTeams.Auth do
     end
   end
 
+  defp normalize_lark_identity(identity) do
+    with {:ok, {subject_type, subject}} <- lark_subject(identity) do
+      {:ok,
+       %{
+         provider: "lark",
+         provider_subject_type: subject_type,
+         provider_subject: subject,
+         email: normalize_optional_email(value(identity, "email")),
+         mobile: normalize_optional(value(identity, "mobile")),
+         display_name:
+           normalize_optional(value(identity, "display_name") || value(identity, "name")),
+         provider_profile: provider_profile(identity)
+       }}
+    end
+  end
+
+  # The login key is one Lark always returns, so that a scope the app gets
+  # later cannot change it: the `union_id`, which is the same person for every
+  # app of one developer, or else the `open_id` of this app. The `user_id`
+  # comes only with a contact scope and is never the key.
+  defp lark_subject(identity) do
+    Enum.find_value(~w(union_id open_id), {:error, :missing_provider_subject}, fn type ->
+      subject = value(identity, type)
+      if valid_subject?(subject), do: {:ok, {type, subject}}
+    end)
+  end
+
+  # An operator can bind the connection to one Lark tenant with
+  # `provider_config["tenant_key"]`. Lark states the user's tenant in the user
+  # info, which the server reads with the token it got for the App Secret. A
+  # user of another tenant gets no session. Without the key, every user the
+  # Lark app lets through is accepted, as before the binding existed.
+  defp check_lark_tenant_binding(%OrgSsoConnection{provider_config: config}, attrs) do
+    expected = config_value(config || %{}, "tenant_key")
+    actual = config_value(attrs.provider_profile || %{}, "tenant_key")
+
+    cond do
+      is_nil(expected) -> :ok
+      actual == expected -> :ok
+      true -> {:error, :lark_tenant_mismatch}
+    end
+  end
+
+  defp check_lark_provisioning_policy(%OrgSsoConnection{} = conn, attrs) do
+    case config_value(conn.provider_config || %{}, "provisioning_policy") do
+      policy when policy in [nil, "jit"] ->
+        :ok
+
+      "existing_identity" ->
+        if is_nil(lark_identity(conn, attrs)),
+          do: {:error, :lark_provisioning_policy_rejected},
+          else: :ok
+
+      _ ->
+        {:error, :unsupported_lark_provisioning_policy}
+    end
+  end
+
+  defp lark_identity(
+         %OrgSsoConnection{org_id: org_id},
+         %{provider_subject_type: subject_type, provider_subject: subject}
+       ) do
+    Repo.get_by(OrgSsoIdentity,
+      org_id: org_id,
+      provider: "lark",
+      provider_subject_type: subject_type,
+      provider_subject: subject
+    )
+  end
+
+  defp upsert_user_for_lark_identity(%OrgSsoConnection{org_id: org_id} = conn, attrs) do
+    case lark_identity(conn, attrs) do
+      %OrgSsoIdentity{} = identity ->
+        user = Repo.get!(User, identity.user_id)
+
+        identity
+        |> OrgSsoIdentity.changeset(Map.merge(attrs, %{org_id: org_id, user_id: user.id}))
+        |> Repo.update!()
+
+        maybe_backfill_user_name(user, attrs.display_name)
+
+      nil ->
+        user =
+          %User{}
+          |> User.changeset(%{email: nil, name: attrs.display_name, status: "active"})
+          |> Repo.insert!()
+
+        %OrgSsoIdentity{}
+        |> OrgSsoIdentity.changeset(Map.merge(attrs, %{org_id: org_id, user_id: user.id}))
+        |> Repo.insert!()
+
+        user
+    end
+  end
+
   defp maybe_backfill_user_name(%User{} = user, name) when is_binary(name) and name != "" do
     if is_nil(user.name) or user.name == "" do
       user |> User.changeset(%{name: name}) |> Repo.update!()
@@ -788,7 +929,7 @@ defmodule BridgeForTeams.Auth do
         resource_id: user.id,
         resource_label: "Org member #{short_id(user.id)}",
         result: "ok",
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         metadata: %{
           "target_user_id" => user.id,
           "new_role" => membership.role,
@@ -819,7 +960,7 @@ defmodule BridgeForTeams.Auth do
       resource_id: api_key.id,
       resource_label: api_key.name || "API key #{short_id(api_key.id)}",
       result: "ok",
-      request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+      request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
       metadata: %{
         "key_id" => api_key.id,
         "name" => api_key.name,
@@ -842,7 +983,7 @@ defmodule BridgeForTeams.Auth do
         resource_id: replacement.id,
         resource_label: replacement.name || "API key #{short_id(replacement.id)}",
         result: "ok",
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         metadata: %{
           "old_key_id" => old_key.id,
           "replacement_key_id" => replacement.id,
@@ -881,7 +1022,7 @@ defmodule BridgeForTeams.Auth do
              resource_label: api_key_attempt_label(attrs, key_id),
              result: "failed",
              reason: reason,
-             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+             request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
              surface: "api_key",
              metadata: api_key_attempt_metadata(attrs, key_id)
            }) do

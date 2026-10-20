@@ -19,8 +19,7 @@ defmodule SalixWeb.Connect do
   also send `X-Salix-Connector-Instance-ID`, which stays stable across socket
   reconnects in one process and changes after process replacement.
 
-  Modeled in `tla/connector/ConnectorCredentialFence.tla`: this upgrade owns
-  the request-side admission/CAS boundary and passes the exact committed run
+  This upgrade owns the request-side admission/CAS boundary and passes the exact committed run
   identity to the socket owner.
   """
 
@@ -90,11 +89,13 @@ defmodule SalixWeb.Connect do
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
 
-    case Registry.connect(
-           to_string(node()),
-           meta,
-           registry_connect_opts(params, scope, process_instance_id)
-         ) do
+    case register(scope, fn ->
+           Registry.connect(
+             to_string(node()),
+             meta,
+             registry_connect_opts(params, scope, process_instance_id)
+           )
+         end) do
       {:ok, transport_id, record} ->
         conn
         |> upgrade_adapter(
@@ -109,6 +110,7 @@ defmodule SalixWeb.Connect do
              owner_user_id: meta["owner_user_id"],
              device_id: meta["device_id"],
              connector_id: meta["connector_id"],
+             managed_compute: Map.has_key?(scope, :workload),
              credential_generation: meta["credential_generation"],
              scope: meta["scope"],
              token_expires_at: Map.get(scope, :token_expires_at),
@@ -166,7 +168,7 @@ defmodule SalixWeb.Connect do
 
       true ->
         with :ok <- validate_connector_token_scope(token, tenant_id, token_group) do
-          name = trimmed(params["name"]) |> default_to(token["name"] || "Group Connector")
+          name = connector_name(token, trimmed(params["name"]))
 
           alias_name =
             trimmed(params["alias"])
@@ -193,8 +195,75 @@ defmodule SalixWeb.Connect do
     end
   end
 
+  # A Compute Workload's station: the Workload's Group Compute record names the
+  # device it is, and the connection takes that device's transport, as a
+  # Cloud VM's always has.
+  defp connector_scope(%{assigns: %{connector_workload: workload}}, tenant_id, _params) do
+    with %SalixStore.Compute.Environment{owner_type: "group", owner_id: group_id} <-
+           SalixStore.Repo.get(SalixStore.Compute.Environment, workload.environment_id),
+         {:ok, %{"tenant_id" => ^tenant_id, "workload_id" => workload_id} = rec}
+         when workload_id == workload.id <- SalixStore.Compute.group_workload(group_id),
+         resource when is_binary(resource) and resource != "" <-
+           rec["provider_resource_name"] || rec["provider_ref"],
+         env_id when is_binary(env_id) and env_id != "" <- rec["env_id"] do
+      name = rec["name"] || "Cloud VM"
+
+      {:ok,
+       %{
+         group_id: group_id,
+         name: name,
+         alias: rec["alias"] || "cloud-vm",
+         workload: %{
+           provider: rec["provider"],
+           env_id: env_id,
+           resource: %{
+             "name" => resource,
+             "profile_key" => get_in(rec, ["provider_spec", "profile_key"])
+           }
+         },
+         meta: %{
+           "device_id" => rec["device_id"],
+           "connector_id" => rec["connector_id"],
+           "provider" => rec["provider"],
+           "provider_resource_name" => resource,
+           "profile_key" => get_in(rec, ["provider_spec", "profile_key"]),
+           "managed_compute" => true,
+           # A station that connects while its VM wakes belongs to that wake.
+           "wake_operation_id" => if(rec["status"] == "waking", do: rec["wake_operation_id"])
+         }
+       }}
+    else
+      _ -> {:error, {403, "this Workload has no device to connect as"}}
+    end
+  end
+
   defp connector_scope(_conn, _tenant_id, _params),
     do: {:error, {403, "connector credential is required"}}
+
+  # A name chosen when the credential was minted wins over the dialed one, so a
+  # client that dials with a fixed product name still shows as its own device.
+  defp connector_name(%{"pinned_name" => true, "name" => name}, _dialed)
+       when is_binary(name) and name != "",
+       do: name
+
+  defp connector_name(token, dialed),
+    do: default_to(dialed, token["name"] || "Group Connector")
+
+  # A Workload's connection registers while its Group still names the same
+  # provider resource, and as the Workload's own transport.
+  defp register(%{workload: workload, group_id: group_id}, connect) do
+    SalixStore.Compute.with_group_provider(
+      group_id,
+      workload.provider,
+      workload.resource,
+      connect
+    )
+  end
+
+  defp register(_scope, connect), do: connect.()
+
+  defp registry_connect_opts(_params, %{workload: workload}, _process_instance_id),
+    do: [transport_id: workload.env_id]
 
   defp registry_connect_opts(_params, scope, ""), do: credential_admission_opts(scope)
 

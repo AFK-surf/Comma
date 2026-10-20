@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="task_status_in_progress">In progress</string>
+    <string name="task_status_needs_review">Needs review</string>
+    <string name="task_status_done">Done</string>
+    <string name="task_status_cancelled">Cancelled</string>
+    <string name="task_status_archived">Archived</string>
+    <string name="task_status_failed">Failed</string>
+    <string name="task_untitled">Untitled task</string>
+    <string name="task_updated_date">Updated %1$s</string>
+    <string name="task_updated_recently">Updated recently</string>
+    <plurals name="task_count">
+        <item quantity="one">%d task</item>
+        <item quantity="other">%d tasks</item>
+    </plurals>
+    <plurals name="task_running_count">
+        <item quantity="one">%d running</item>
+        <item quantity="other">%d running</item>
+    </plurals>
+    <string name="task_counts_joined">%1$s · %2$s</string>
+    <string name="task_panel_title">Tasks in this chat</string>
+    <string name="task_action_hide">Hide</string>
+    <string name="task_action_archive">Archive</string>
+    <string name="task_action_back">Back</string>
+    <string name="task_list_title">Tasks</string>
+    <string name="task_filter_all">All</string>
+    <string name="task_list_empty">No tasks yet</string>
+    <string name="task_list_loading">Loading…</string>
+    <string name="task_list_empty_filtered">No tasks with this label</string>
+    <string name="task_detail_messages_placeholder">The task\'s messages will appear here</string>
+    <string name="task_archive_not_allowed">This task can\'t be archived right now</string>
+    <string name="task_archive_conflict">The task just changed. Try again.</string>
+    <string name="task_archive_unavailable">Couldn\'t archive. Try again later.</string>
+    <string name="task_list_offline">You\'re offline</string>
+    <string name="task_list_problem">Couldn\'t load tasks</string>
+    <string name="task_list_refresh_failed">Couldn\'t refresh. Showing earlier results.</string>
+    <string name="task_detail_loading">Loading…</string>
+    <string name="task_detail_empty">No messages in this task yet</string>
+    <string name="task_detail_not_found">This task doesn\'t exist, or you can\'t view it</string>
+    <string name="task_detail_problem">Couldn\'t load messages.</string>
+    <string name="task_detail_retry">Retry</string>
+    <string name="task_brief_title">Task instructions</string>
+    <string name="task_brief_show_all">Show all</string>
+    <string name="task_brief_show_less">Show less</string>
+    <string name="task_panel_all">All tasks</string>
+</resources>

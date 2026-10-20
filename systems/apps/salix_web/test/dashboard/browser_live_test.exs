@@ -1,5 +1,5 @@
 defmodule SalixWeb.Dashboard.BrowserLiveTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
   alias SalixStore.{BrowserSettings, Repo}
@@ -8,9 +8,9 @@ defmodule SalixWeb.Dashboard.BrowserLiveTest do
   test "dashboard saves a tenant override, masks its token, and can disable it" do
     {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Browser settings"})
     scope = tenant["tenant_id"]
-    old = Application.get_env(:salix_store, :compute_workload_credential_secret)
+    old = SystemsRuntime.get_env(:salix_store, :compute_workload_credential_secret)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_store,
       :compute_workload_credential_secret,
       String.duplicate("dashboard-test", 4)
@@ -20,8 +20,8 @@ defmodule SalixWeb.Dashboard.BrowserLiveTest do
       if row = Repo.get(BrowserSettings.Row, scope), do: Repo.delete!(row, log: false)
 
       if old,
-        do: Application.put_env(:salix_store, :compute_workload_credential_secret, old),
-        else: Application.delete_env(:salix_store, :compute_workload_credential_secret)
+        do: SystemsRuntime.put_env(:salix_store, :compute_workload_credential_secret, old),
+        else: SystemsRuntime.delete_env(:salix_store, :compute_workload_credential_secret)
     end)
 
     conn =

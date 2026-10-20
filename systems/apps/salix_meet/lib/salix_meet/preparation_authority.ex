@@ -278,7 +278,7 @@ defmodule SalixMeet.PreparationAuthority do
          true <- get_in(plan, ["preparation", "dispatch_revision"]) == scope["dispatch_revision"],
          deadline when is_integer(deadline) <-
            get_in(plan, ["preparation", "publish_deadline_at"]),
-         true <- System.system_time(:millisecond) < deadline,
+         true <- SystemsClock.system_time(:millisecond) < deadline,
          :ok <- enrolled(plan) do
       {:ok, plan, group}
     else

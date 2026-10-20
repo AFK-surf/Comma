@@ -1,5 +1,10 @@
 defmodule SalixWeb.ControlStoreConcurrencyTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   alias Salix.Control.Store
 
@@ -25,10 +30,10 @@ defmodule SalixWeb.ControlStoreConcurrencyTest do
     def list(prefix, opts), do: SalixStore.S3.Fake.list(prefix, opts)
 
     def get(@prefix <> _ = key, _opts) do
-      owner = Application.fetch_env!(:salix_web, :control_store_concurrency_test_pid)
-      send(owner, {:get_started, key, self()})
+      owner = SystemsRuntime.fetch_env!(:salix_web, :control_store_concurrency_test_pid)
+      SystemsRuntime.Proc.send(owner, {:get_started, key, SystemsRuntime.Proc.self()})
 
-      receive do
+      SystemsRuntime.Proc.receive do
         :release ->
           if String.ends_with?(key, "05") do
             {:error, :not_found}
@@ -42,33 +47,38 @@ defmodule SalixWeb.ControlStoreConcurrencyTest do
   end
 
   setup do
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, BlockingS3)
-    Application.put_env(:salix_web, :control_store_concurrency_test_pid, self())
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, BlockingS3)
+
+    SystemsRuntime.put_env(
+      :salix_web,
+      :control_store_concurrency_test_pid,
+      SystemsRuntime.Proc.self()
+    )
 
     on_exit(fn ->
-      Application.put_env(:salix_store, :s3_backend, previous_backend)
-      Application.delete_env(:salix_web, :control_store_concurrency_test_pid)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, previous_backend)
+      SystemsRuntime.delete_env(:salix_web, :control_store_concurrency_test_pid)
     end)
   end
 
   test "list record hydration is ordered, error-tolerant, and bounded to eight reads" do
-    reader = Task.async(fn -> Store.list_keyed_records(@prefix) end)
+    reader = SystemsRuntime.Task.async(fn -> Store.list_keyed_records(@prefix) end)
 
     first_wave = collect_started(8)
-    refute_receive {:get_started, _key, _pid}, 50
-    Enum.each(first_wave, fn {_key, pid} -> send(pid, :release) end)
+    settle_refute_receive({:get_started, _key, _pid}, 50)
+    Enum.each(first_wave, fn {_key, pid} -> SystemsRuntime.Proc.send(pid, :release) end)
 
     second_wave = collect_started(2)
-    Enum.each(second_wave, fn {_key, pid} -> send(pid, :release) end)
+    Enum.each(second_wave, fn {_key, pid} -> SystemsRuntime.Proc.send(pid, :release) end)
 
-    records = Task.await(reader)
+    records = settled_await(reader)
     assert Enum.map(records, &elem(&1, 0)) == expected_keys()
   end
 
   defp collect_started(count) do
     for _ <- 1..count do
-      assert_receive {:get_started, key, pid}, 1_000
+      settle_receive({:get_started, key, pid})
       {key, pid}
     end
   end

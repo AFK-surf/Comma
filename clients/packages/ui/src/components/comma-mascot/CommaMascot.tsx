@@ -1,4 +1,13 @@
 /* oxlint-disable jsx-a11y/prefer-tag-over-role -- The mascot is an interactive vector graphic; replacing it with img would remove its mesh interaction. */
+import { uiClock, type CancelUiTimer } from "../../clock";
+import {
+  createSpring,
+  placeSpring,
+  retargetSpring,
+  springAtRest,
+  springStateAt,
+  type Spring,
+} from "../../motion";
 import {
   useCallback,
   useEffect,
@@ -32,6 +41,7 @@ import {
   endSoftBodyDrag,
   moveSoftBodyDrag,
   resetSoftBodyMesh,
+  softBodyStepMs,
   stepSoftBodyMesh,
   warpPoint,
   type Point,
@@ -113,13 +123,13 @@ type EyeAnimation = {
 const useEyePose = (expression: CommaMascotExpression, reducedMotion: boolean) => {
   const currentRef = useRef<EyePose>(eyePoses[expression]);
   const animationRef = useRef<EyeAnimation | null>(null);
-  const frameRef = useRef<number | null>(null);
-  const blinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const frameRef = useRef<CancelUiTimer | null>(null);
+  const blinkTimerRef = useRef<CancelUiTimer | null>(null);
   const [pose, setPose] = useState<EyePose>(eyePoses[expression]);
 
   const cancelFrame = useCallback(() => {
     if (frameRef.current !== null) {
-      window.cancelAnimationFrame(frameRef.current);
+      frameRef.current();
       frameRef.current = null;
     }
   }, []);
@@ -137,7 +147,7 @@ const useEyePose = (expression: CommaMascotExpression, reducedMotion: boolean) =
         duration,
         from: currentRef.current,
         onComplete,
-        startedAt: performance.now(),
+        startedAt: uiClock.monotonic(),
         to: target,
       };
 
@@ -156,7 +166,7 @@ const useEyePose = (expression: CommaMascotExpression, reducedMotion: boolean) =
         currentRef.current = next;
         setPose(next);
         if (progress < 1) {
-          frameRef.current = window.requestAnimationFrame(tick);
+          frameRef.current = uiClock.frame(tick);
           return;
         }
         animationRef.current = null;
@@ -164,7 +174,7 @@ const useEyePose = (expression: CommaMascotExpression, reducedMotion: boolean) =
         animation.onComplete?.();
       };
 
-      frameRef.current = window.requestAnimationFrame(tick);
+      frameRef.current = uiClock.frame(tick);
     },
     [cancelFrame, reducedMotion]
   );
@@ -180,7 +190,8 @@ const useEyePose = (expression: CommaMascotExpression, reducedMotion: boolean) =
     let disposed = false;
     const scheduleBlink = () => {
       const delay = 2_800 + Math.random() * 1_800;
-      blinkTimerRef.current = setTimeout(() => {
+      // motion
+      blinkTimerRef.current = uiClock.after(delay, () => {
         animateTo(eyePoses.blink, blinkCloseDuration, () => {
           animateTo(eyePoses.neutral, blinkOpenDuration, () => {
             if (!disposed) {
@@ -188,13 +199,13 @@ const useEyePose = (expression: CommaMascotExpression, reducedMotion: boolean) =
             }
           });
         });
-      }, delay);
+      });
     };
     scheduleBlink();
     return () => {
       disposed = true;
       if (blinkTimerRef.current) {
-        clearTimeout(blinkTimerRef.current);
+        blinkTimerRef.current();
       }
     };
   }, [animateTo, expression, reducedMotion]);
@@ -203,7 +214,7 @@ const useEyePose = (expression: CommaMascotExpression, reducedMotion: boolean) =
     () => () => {
       cancelFrame();
       if (blinkTimerRef.current) {
-        clearTimeout(blinkTimerRef.current);
+        blinkTimerRef.current();
       }
     },
     [cancelFrame]
@@ -218,18 +229,25 @@ const usePointerGaze = (
   reducedMotion: boolean
 ) => {
   const [gaze, setGaze] = useState<Point>({ x: 0, y: 0 });
-  const currentRef = useRef<Point>({ x: 0, y: 0 });
-  const targetRef = useRef<Point>({ x: 0, y: 0 });
-  const velocityRef = useRef<Point>({ x: 0, y: 0 });
-  const frameRef = useRef<number | null>(null);
-  const previousTimeRef = useRef<number | null>(null);
+  // Each axis of the gaze follows its own spring, computed from the time
+  // since it last started (../../motion): the same at any frame rate.
+  const springsRef = useRef<{ x: Spring; y: Spring }>({
+    x: createSpring(motionMascotElastic, 0, 0),
+    y: createSpring(motionMascotElastic, 0, 0),
+  });
+  const frameRef = useRef<CancelUiTimer | null>(null);
 
   const stop = useCallback(() => {
     if (frameRef.current !== null) {
-      window.cancelAnimationFrame(frameRef.current);
+      frameRef.current();
       frameRef.current = null;
     }
-    previousTimeRef.current = null;
+  }, []);
+
+  const lookAt = useCallback((target: Point) => {
+    const now = uiClock.monotonic();
+    retargetSpring(springsRef.current.x, now, target.x);
+    retargetSpring(springsRef.current.y, now, target.y);
   }, []);
 
   const start = useCallback(() => {
@@ -237,54 +255,41 @@ const usePointerGaze = (
       return;
     }
     const tick = (now: number) => {
-      const previous = previousTimeRef.current ?? now - 1000 / 60;
-      const dt = Math.min((now - previous) / 1000, 1 / 30);
-      previousTimeRef.current = now;
-      const current = currentRef.current;
-      const target = targetRef.current;
-      const velocity = velocityRef.current;
-      const { damping, mass, stiffness } = motionMascotElastic;
-
-      velocity.x +=
-        (((target.x - current.x) * stiffness - velocity.x * damping) / mass) * dt;
-      velocity.y +=
-        (((target.y - current.y) * stiffness - velocity.y * damping) / mass) * dt;
-      current.x += velocity.x * dt;
-      current.y += velocity.y * dt;
-      const gazeDistance = Math.hypot(current.x, current.y);
-      if (gazeDistance > commaMascotMaxGazeDistance) {
-        const scale = commaMascotMaxGazeDistance / gazeDistance;
-        current.x *= scale;
-        current.y *= scale;
-        velocity.x = 0;
-        velocity.y = 0;
-      }
-      setGaze({ ...current });
-
-      const displacement = Math.hypot(target.x - current.x, target.y - current.y);
-      const speed = Math.hypot(velocity.x, velocity.y);
-      if (displacement > 0.01 || speed > 0.02) {
-        frameRef.current = window.requestAnimationFrame(tick);
+      const { x, y } = springsRef.current;
+      const atX = springStateAt(x, now);
+      const atY = springStateAt(y, now);
+      if (
+        springAtRest(atX, x.target, 0.01, 0.02) &&
+        springAtRest(atY, y.target, 0.01, 0.02)
+      ) {
+        placeSpring(x, now, x.target);
+        placeSpring(y, now, y.target);
+        setGaze({ x: x.target, y: y.target });
+        frameRef.current = null;
         return;
       }
-      currentRef.current = { ...target };
-      velocityRef.current = { x: 0, y: 0 };
-      setGaze({ ...target });
-      frameRef.current = null;
-      previousTimeRef.current = null;
+      // An overshoot past the eye's reach holds at its edge.
+      const gazeDistance = Math.hypot(atX.position, atY.position);
+      const scale =
+        gazeDistance > commaMascotMaxGazeDistance
+          ? commaMascotMaxGazeDistance / gazeDistance
+          : 1;
+      setGaze({ x: atX.position * scale, y: atY.position * scale });
+      frameRef.current = uiClock.frame(tick);
     };
-    frameRef.current = window.requestAnimationFrame(tick);
+    frameRef.current = uiClock.frame(tick);
   }, []);
 
   useEffect(() => {
-    targetRef.current = { x: 0, y: 0 };
     if (reducedMotion) {
       stop();
-      currentRef.current = { x: 0, y: 0 };
-      velocityRef.current = { x: 0, y: 0 };
+      const now = uiClock.monotonic();
+      placeSpring(springsRef.current.x, now, 0);
+      placeSpring(springsRef.current.y, now, 0);
       setGaze({ x: 0, y: 0 });
       return;
     }
+    lookAt({ x: 0, y: 0 });
     start();
     if (!enabled) {
       return;
@@ -305,16 +310,16 @@ const usePointerGaze = (
         distance / (Math.max(rect.width, rect.height) * 1.5),
         1
       );
-      targetRef.current = {
+      lookAt({
         x: (deltaX / distance) * commaMascotMaxGazeDistance * strength,
         y: (deltaY / distance) * commaMascotMaxGazeDistance * strength,
-      };
+      });
       start();
     };
 
     window.addEventListener("pointermove", handlePointerMove, { passive: true });
     return () => window.removeEventListener("pointermove", handlePointerMove);
-  }, [enabled, reducedMotion, start, stop, svgRef]);
+  }, [enabled, lookAt, reducedMotion, start, stop, svgRef]);
 
   useEffect(() => stop, [stop]);
   return gaze;
@@ -350,8 +355,10 @@ export const CommaMascot = ({
 }: CommaMascotProps) => {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const meshRef = useRef(createSoftBodyMesh());
-  const meshFrameRef = useRef<number | null>(null);
-  const previousFrameTimeRef = useRef<number | null>(null);
+  const meshFrameRef = useRef<CancelUiTimer | null>(null);
+  // When the mesh started moving and how many steps it has run since; null
+  // while it rests.
+  const meshClockRef = useRef<{ origin: number; steps: number } | null>(null);
   const [, setMeshRevision] = useState(0);
   const [dragging, setDragging] = useState(false);
   const reducedMotion = useSyncExternalStore(
@@ -364,10 +371,26 @@ export const CommaMascot = ({
 
   const stopMeshLoop = useCallback(() => {
     if (meshFrameRef.current !== null) {
-      window.cancelAnimationFrame(meshFrameRef.current);
+      meshFrameRef.current();
       meshFrameRef.current = null;
     }
-    previousFrameTimeRef.current = null;
+    meshClockRef.current = null;
+  }, []);
+
+  // Steps the mesh to `now`, from where it was stepped to: the steps a time
+  // gets are the same whatever frames fell before it. Input steps it first,
+  // so the drag changes from the time it happened.
+  const stepMeshTo = useCallback((now: number) => {
+    const clock = meshClockRef.current;
+    if (clock === null) {
+      meshClockRef.current = { origin: now, steps: 0 };
+      return true;
+    }
+    // Counted from the origin, so rounding never moves a step between frames.
+    const due = Math.floor((now - clock.origin) / softBodyStepMs + 1e-6);
+    const steps = due - clock.steps;
+    clock.steps = due;
+    return stepSoftBodyMesh(meshRef.current, steps);
   }, []);
 
   const startMeshLoop = useCallback(() => {
@@ -375,21 +398,19 @@ export const CommaMascot = ({
       return;
     }
     const tick = (now: number) => {
-      const previous = previousFrameTimeRef.current ?? now - 1000 / 60;
-      previousFrameTimeRef.current = now;
-      const moving = stepSoftBodyMesh(meshRef.current, (now - previous) / 1000);
+      const moving = stepMeshTo(now);
       setMeshRevision((revision) => revision + 1);
       if (moving) {
-        meshFrameRef.current = window.requestAnimationFrame(tick);
+        meshFrameRef.current = uiClock.frame(tick);
         return;
       }
       resetSoftBodyMesh(meshRef.current);
       setMeshRevision((revision) => revision + 1);
       meshFrameRef.current = null;
-      previousFrameTimeRef.current = null;
+      meshClockRef.current = null;
     };
-    meshFrameRef.current = window.requestAnimationFrame(tick);
-  }, []);
+    meshFrameRef.current = uiClock.frame(tick);
+  }, [stepMeshTo]);
 
   useEffect(() => {
     if (!reducedMotion) {
@@ -433,6 +454,7 @@ export const CommaMascot = ({
       return;
     }
     event.currentTarget.setPointerCapture(event.pointerId);
+    stepMeshTo(uiClock.monotonic());
     beginSoftBodyDrag(meshRef.current, point);
     setDragging(true);
     startMeshLoop();
@@ -447,6 +469,7 @@ export const CommaMascot = ({
     if (!point) {
       return;
     }
+    stepMeshTo(uiClock.monotonic());
     moveSoftBodyDrag(meshRef.current, point);
     startMeshLoop();
   };
@@ -458,6 +481,7 @@ export const CommaMascot = ({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    stepMeshTo(uiClock.monotonic());
     endSoftBodyDrag(meshRef.current);
     setDragging(false);
     startMeshLoop();
@@ -467,10 +491,11 @@ export const CommaMascot = ({
     if (!meshRef.current.drag) {
       return;
     }
+    stepMeshTo(uiClock.monotonic());
     endSoftBodyDrag(meshRef.current);
     setDragging(false);
     startMeshLoop();
-  }, [startMeshLoop]);
+  }, [startMeshLoop, stepMeshTo]);
 
   useEffect(() => {
     if (!dragging) {

@@ -40,7 +40,7 @@ export const ImageAttachment = ({
   const thumbnail = attachment.thumbnailSrc ? (
     <img
       alt={attachment.alt ?? attachment.name}
-      className="size-full rounded-md object-cover"
+      className="size-full rounded-xl object-cover"
       src={attachment.thumbnailSrc}
     />
   ) : (
@@ -56,8 +56,27 @@ export const ImageAttachment = ({
       data-testid="image-attachment"
     >
       {state === "loading" ? (
-        <div className={aiInputImageAttachmentLoading} data-state="loading">
-          <LoadingCircleIcon className="size-5 animate-spin" />
+        <div
+          className={cx(aiInputImageAttachmentLoading, "relative")}
+          data-state="loading"
+        >
+          {/* An image still uploading shows its own thumbnail, dimmed under the spinner. */}
+          {attachment.thumbnailSrc ? (
+            <>
+              <img
+                alt=""
+                className="absolute inset-0 size-full rounded-xl object-cover"
+                src={attachment.thumbnailSrc}
+              />
+              <span className="absolute inset-0 rounded-xl bg-overlay-scrim" />
+            </>
+          ) : null}
+          <LoadingCircleIcon
+            className={cx(
+              "relative size-5 animate-spin",
+              attachment.thumbnailSrc && "text-white"
+            )}
+          />
           <span className="sr-only">
             {messages.ui_ai_uploading_named({ name: attachment.name })}
           </span>

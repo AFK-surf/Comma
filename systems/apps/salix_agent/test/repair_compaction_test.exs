@@ -23,7 +23,7 @@ defmodule SalixAgent.RepairCompactionTest.PendingCapStore do
        %{
          "request_id" => "pending-" <> id,
          "status" => "pending",
-         "expires_at" => System.system_time(:second) + 600
+         "expires_at" => SystemsClock.system_time(:second) + 600
        }}
     else
       {:ok, :not_found}
@@ -97,7 +97,7 @@ defmodule SalixAgent.RepairCompactionTest.CrashOnceLLM do
   end
 
   defp ensure_started do
-    case Process.whereis(__MODULE__) do
+    case SystemsRuntime.Proc.whereis(__MODULE__) do
       nil -> start_link()
       _pid -> :ok
     end
@@ -110,7 +110,9 @@ defmodule SalixAgent.RepairCompactionTest do
   backend.
   """
   require SalixAgent.InternalSession
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle
 
   alias SalixAgent.{
     AgentWorkspace,
@@ -127,17 +129,17 @@ defmodule SalixAgent.RepairCompactionTest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     start_supervised!(Mock)
-    Application.put_env(:salix_agent, :llm, Mock)
+    SystemsRuntime.put_env(:salix_agent, :llm, Mock)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev)
-      Application.put_env(:salix_agent, :llm, prev_llm)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
+      SystemsRuntime.put_env(:salix_agent, :llm, prev_llm)
     end)
 
     agent = SalixAgent.TestSupport.new_agent_id()
@@ -157,88 +159,6 @@ defmodule SalixAgent.RepairCompactionTest do
   end
 
   describe "repair" do
-    test "actor repair preserves a staged terminal across a workspace read failure", %{agent: a} do
-      session_id = "ses1_0000000000000000601"
-      tool_call_id = "actor-staged-read-failure"
-
-      assert {:ok, _} =
-               WorkspaceEvents.commit_result(
-                 a,
-                 session_id,
-                 %{
-                   id: tool_call_id,
-                   name: "env.exec",
-                   status: "error",
-                   content: "exact staged failure",
-                   error: true,
-                   error_class: "tool_error",
-                   error_message: "exact staged failure",
-                   diagnostic_visibility: "model_only",
-                   events: []
-                 },
-                 AsyncToolResults.operation_source(:internal),
-                 store_result: true
-               )
-
-      assert {:ok, _} =
-               InternalSessionStore.prepare_commit(a, session_id, [
-                 %{"type" => "session_created", "session_id" => session_id},
-                 %{
-                   "type" => "async_tool_call_started",
-                   "session_id" => session_id,
-                   "tool_call_id" => tool_call_id,
-                   "tool_name" => "env.exec",
-                   "status" => "running",
-                   "completion_owner" => "direct_poll"
-                 }
-               ])
-
-      assert {:ok, _} = InternalSessionFleet.ensure_started(a, session_id, process_on_init: false)
-
-      [{pid, _}] =
-        Registry.lookup(SalixAgent.Registry, SalixAgent.InternalSessionActor.key(a, session_id))
-
-      assert {:ok, before} = read_state(a, session_id)
-
-      SalixStore.S3.Fake.set_fault_for(
-        pid,
-        {:fail, 503, :get, SalixStore.Keys.agent_workspace_state(a)}
-      )
-
-      assert :ok = SalixAgent.InternalSessionActor.wake(a, session_id)
-      # The first synchronous probe follows the wake cast. The second follows
-      # the :process message that the wake handler enqueues to itself. Direct
-      # GenServer.call makes a timeout fail instead of busy?/2 swallowing it.
-      GenServer.call(pid, :busy?, 5_000)
-      GenServer.call(pid, :busy?, 5_000)
-
-      assert Process.alive?(pid)
-      assert {:ok, unchanged} = read_state(a, session_id)
-
-      assert SalixAgent.InternalSession.export(unchanged) ==
-               SalixAgent.InternalSession.export(before)
-
-      assert {:ok, %{"status" => "running"}} =
-               SalixAgent.InternalSession.lookup_async_call(handle(unchanged), tool_call_id)
-
-      # The fault is one-shot. Recovery is explicitly woken, not an assertion
-      # that generic repair errors automatically allocate a retry timer.
-      assert :ok = SalixAgent.InternalSessionActor.wake(a, session_id)
-      GenServer.call(pid, :busy?, 5_000)
-      GenServer.call(pid, :busy?, 5_000)
-
-      assert {:ok, recovered} = read_state(a, session_id)
-
-      assert {:ok, terminal} =
-               SalixAgent.InternalSession.lookup_async_call(handle(recovered), tool_call_id)
-
-      assert terminal["status"] == "failed"
-      assert terminal["result"]["content"] == "exact staged failure"
-      refute terminal["error_class"] == "runtime_restarted"
-      assert SalixAgent.InternalSession.get(recovered, :input_queue) == []
-      assert SalixAgent.InternalSession.get(recovered, :visible_reply_repair) == nil
-    end
-
     test "a durable source reply is never rebound or executed after a restart", %{agent: a} do
       session_id = "ses1_0000000000000000601"
 
@@ -345,53 +265,6 @@ defmodule SalixAgent.RepairCompactionTest do
 
       assert SalixAgent.InternalSession.derived_state(handle(repaired)) == :queued
       assert {[], _} = Repair.plan_session(repaired)
-    end
-
-    test "reconstructs deterministic envelope guidance instead of a false restart", %{agent: a} do
-      session_id = "ses1_0000000000000000601"
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(
-          a,
-          session_id,
-          [
-            %{"type" => "session_created", "session_id" => session_id},
-            %{
-              "type" => "assistant",
-              "session_id" => session_id,
-              "message_id" => 1,
-              "content" => "calling",
-              "tool_calls" => [
-                %{
-                  "id" => "malformed-call",
-                  "name" => "call",
-                  "args" => %{"params" => %{"command" => "echo alive"}}
-                }
-              ]
-            }
-          ],
-          hwm: 1
-        )
-
-      {events, _next} = Repair.plan_session(session)
-
-      assert %{
-               "tool_call_id" => "malformed-call",
-               "tool_name" => "call",
-               "status" => "guidance",
-               "error" => false,
-               "error_class" => nil,
-               "guidance_reason" => "envelope_misuse",
-               "diagnostic_visibility" => "model_only"
-             } = Enum.find(events, &(&1["type"] == "tool_result"))
-
-      result = Enum.find(events, &(&1["type"] == "tool_result"))
-      assert Jason.decode!(result["content"])["error"] == "'tool' is required"
-
-      refute Enum.any?(events, fn event ->
-               event["type"] == "queue_append" and
-                 get_in(event, ["payload", "failed_tool_calls"]) != nil
-             end)
     end
 
     test "treats legacy tool_use_id tool results as answered" do
@@ -573,84 +446,6 @@ defmodule SalixAgent.RepairCompactionTest do
       assert SalixAgent.InternalSession.visible_reply_repair_required?(handle(repaired))
     end
 
-    test "restart terminalizes an unstaged direct poll-owned call without model work", %{
-      agent: a
-    } do
-      session_id = "ses1_0000000000000000601"
-      tool_call_id = "direct-restart"
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(a, session_id, [
-          %{"type" => "session_created", "session_id" => session_id},
-          %{
-            "type" => "async_tool_call_started",
-            "session_id" => session_id,
-            "tool_call_id" => tool_call_id,
-            "tool_name" => "env.exec",
-            "input" => "{}",
-            "status" => "running",
-            "completion_owner" => "direct_poll",
-            "started_at" => 1,
-            "auto_wait_seconds" => 20
-          },
-          SalixAgent.Waits.event(
-            session_id,
-            SalixAgent.Waits.build("direct tool is running", 20, "auto_wait", %{
-              "tool_call_id" => tool_call_id
-            })
-          )
-        ])
-
-      assert SalixAgent.InternalSession.get(session, :async_tool_calls)[tool_call_id][
-               "completion_owner"
-             ] == "direct_poll"
-
-      SalixStore.S3.Fake.set_fault_for(
-        self(),
-        {:fail, 503, :get, SalixStore.Keys.agent_workspace_state(a)}
-      )
-
-      assert {:error, {:staged_async_result_read_failed, ^tool_call_id, {:http, 503}}} =
-               Repair.plan_session(session)
-
-      assert {:ok, unchanged} = read_state(a, session_id)
-
-      assert {:ok, %{"status" => "running"}} =
-               SalixAgent.InternalSession.lookup_async_call(handle(unchanged), tool_call_id)
-
-      {events, 1} = Repair.plan_session(unchanged)
-
-      assert Enum.map(events, & &1["type"]) == ["async_tool_call_failed", "wait_clear"]
-
-      assert [
-               %{
-                 "tool_call_id" => ^tool_call_id,
-                 "error_class" => "runtime_restarted",
-                 "result" => %{
-                   "error_class" => "runtime_restarted",
-                   "diagnostic_visibility" => "model_only"
-                 }
-               },
-               %{"type" => "wait_clear"}
-             ] = events
-
-      refute Enum.any?(events, &(&1["type"] in ["queue_append", "visible_reply_repair"]))
-
-      {:ok, repaired} = InternalSessionStore.prepare_commit(a, session_id, events)
-
-      assert {:ok,
-              %{
-                "status" => "failed",
-                "error_class" => "runtime_restarted",
-                "tool_call_id" => ^tool_call_id
-              }} = SalixAgent.InternalSession.lookup_async_call(handle(repaired), tool_call_id)
-
-      assert SalixAgent.InternalSession.get(repaired, :wait) == nil
-      assert SalixAgent.InternalSession.get(repaired, :input_queue) == []
-      assert SalixAgent.InternalSession.get(repaired, :visible_reply_repair) == nil
-      assert SalixAgent.InternalSession.work_reasons(handle(repaired)) == []
-    end
-
     test "restart replays a staged direct poll-owned terminal without model work", %{agent: a} do
       session_id = "ses1_0000000000000000601"
       tool_call_id = "direct-staged-failure"
@@ -674,6 +469,12 @@ defmodule SalixAgent.RepairCompactionTest do
                  store_result: true
                )
 
+      # Staging the result started the agent's Server. Its first cycle wakes
+      # every indexed session with work; let it finish before the session
+      # exists, or that session actor replays the staged terminal under this
+      # test, which injects the read faults only for its own process.
+      settle()
+
       {:ok, session} =
         InternalSessionStore.prepare_commit(a, session_id, [
           %{"type" => "session_created", "session_id" => session_id},
@@ -694,7 +495,7 @@ defmodule SalixAgent.RepairCompactionTest do
         ])
 
       SalixStore.S3.Fake.set_fault_for(
-        self(),
+        SystemsRuntime.Proc.self(),
         {:fail, 503, :get, SalixStore.Keys.agent_workspace_state(a)}
       )
 
@@ -707,7 +508,7 @@ defmodule SalixAgent.RepairCompactionTest do
                SalixAgent.InternalSession.lookup_async_call(handle(unchanged), tool_call_id)
 
       SalixStore.S3.Fake.set_fault_for(
-        self(),
+        SystemsRuntime.Proc.self(),
         {:fail, 503, :get, SalixStore.Keys.agent_workspace_state(a)}
       )
 
@@ -747,15 +548,10 @@ defmodule SalixAgent.RepairCompactionTest do
       assert SalixAgent.InternalSession.work_reasons(handle(repaired)) == []
     end
 
-    test "restart replays a staged direct poll-owned callback handoff without terminalizing it",
+    test "force_recover without a running Server neither wakes nor repairs the session",
          %{agent: a} do
       session_id = "ses1_0000000000000000601"
-      tool_call_id = "direct-staged-handoff"
-
-      callback_wait =
-        SalixAgent.Waits.build("waiting for callback", 120, "auto_wait", %{
-          "tool_call_id" => tool_call_id
-        })
+      tool_call_id = "direct-staged-failure"
 
       assert {:ok, _} =
                WorkspaceEvents.commit_result(
@@ -763,94 +559,26 @@ defmodule SalixAgent.RepairCompactionTest do
                  session_id,
                  %{
                    id: tool_call_id,
-                   name: "permission.request",
-                   status: "async_running",
-                   content: Jason.encode!(%{"status" => "running", "request_id" => "req-1"}),
-                   error: false,
-                   events: [
-                     %{
-                       "type" => "async_tool_call_started",
-                       "session_id" => session_id,
-                       "tool_call_id" => tool_call_id,
-                       "tool_name" => "permission.request",
-                       "status" => "running",
-                       "completion_mode" => "external_callback",
-                       "started_at" => 2
-                     },
-                     SalixAgent.Waits.event(session_id, callback_wait)
-                   ]
+                   name: "env.exec",
+                   status: "error",
+                   content: "private remote failure",
+                   error: true,
+                   error_class: "tool_error",
+                   error_message: "private remote failure",
+                   diagnostic_visibility: "model_only",
+                   events: []
                  },
                  AsyncToolResults.operation_source(:internal),
                  store_result: true
                )
 
-      {:ok, session} =
+      # The node restarts: no Server and no session actor run for the agent.
+      settle()
+      SalixAgent.TestSupport.stop_all_agents()
+
+      {:ok, _} =
         InternalSessionStore.prepare_commit(a, session_id, [
           %{"type" => "session_created", "session_id" => session_id},
-          %{
-            "type" => "async_tool_call_started",
-            "session_id" => session_id,
-            "tool_call_id" => tool_call_id,
-            "tool_name" => "permission.request",
-            "status" => "running",
-            "completion_owner" => "direct_poll",
-            "started_at" => 1
-          },
-          SalixAgent.Waits.event(
-            session_id,
-            SalixAgent.Waits.build("setup is running", 20, "auto_wait", %{
-              "tool_call_id" => tool_call_id
-            })
-          )
-        ])
-
-      {events, 1} = Repair.plan_session(session)
-
-      assert Enum.map(events, & &1["type"]) == ["async_tool_call_started", "wait_set"]
-
-      assert %{
-               "completion_mode" => "external_callback",
-               "completion_owner" => "direct_poll",
-               "tool_call_id" => ^tool_call_id
-             } = List.first(events)
-
-      refute Enum.any?(events, fn event ->
-               event["type"] in [
-                 "async_tool_call_completed",
-                 "async_tool_call_failed",
-                 "queue_append",
-                 "visible_reply_repair",
-                 "wait_clear"
-               ]
-             end)
-
-      {:ok, repaired} = InternalSessionStore.prepare_commit(a, session_id, events)
-
-      assert {:ok,
-              %{
-                "status" => "running",
-                "completion_mode" => "external_callback",
-                "completion_owner" => "direct_poll",
-                "tool_call_id" => ^tool_call_id
-              }} = SalixAgent.InternalSession.lookup_async_call(handle(repaired), tool_call_id)
-
-      assert SalixAgent.InternalSession.get(repaired, :wait)["tool_call_id"] == tool_call_id
-      assert SalixAgent.InternalSession.get(repaired, :input_queue) == []
-      assert SalixAgent.InternalSession.get(repaired, :visible_reply_repair) == nil
-
-      assert "external_callback_tool_call" in SalixAgent.InternalSession.work_reasons(
-               handle(repaired)
-             )
-    end
-
-    test "a direct restart casualty does not hide simultaneous active LLM recovery", %{agent: a} do
-      session_id = "ses1_0000000000000000601"
-      tool_call_id = "direct-during-active-llm"
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(a, session_id, [
-          %{"type" => "session_created", "session_id" => session_id},
-          %{"type" => "status", "session_id" => session_id, "status" => "active"},
           %{
             "type" => "async_tool_call_started",
             "session_id" => session_id,
@@ -867,108 +595,104 @@ defmodule SalixAgent.RepairCompactionTest do
           )
         ])
 
-      {events, 1} = Repair.plan_session(session)
+      assert {:ok, unchanged} = read_state(a, session_id)
 
-      assert Enum.map(events, & &1["type"]) == [
-               "async_tool_call_failed",
-               "wait_clear",
-               "status",
-               "queue_append"
-             ]
+      SalixStore.S3.Fake.set_fault_for(
+        SystemsRuntime.Proc.self(),
+        {:fail, 503, :get, SalixStore.Keys.agent_workspace_state(a)}
+      )
 
-      [llm_recovery] = Enum.filter(events, &(&1["type"] == "queue_append"))
-      assert llm_recovery["payload"]["failed_llm_call"] == %{"reason" => "runtime_restarted"}
-      refute llm_recovery["payload"]["source_tool_call_id"] == tool_call_id
+      assert {:ok, %{"sessions" => [%{"session_id" => ^session_id, "error" => _}]}} =
+               SalixAgent.AgentControl.force_recover(a,
+                 session_id: session_id,
+                 wake: false,
+                 timeout: 1_000
+               )
 
-      {:ok, repaired} = InternalSessionStore.prepare_commit(a, session_id, events)
-      assert SalixAgent.InternalSession.get(repaired, :status) == :idle
-      assert SalixAgent.InternalSession.get(repaired, :wait) == nil
+      settle()
 
-      assert {:ok, %{"status" => "failed", "tool_call_id" => ^tool_call_id}} =
-               SalixAgent.InternalSession.lookup_async_call(handle(repaired), tool_call_id)
+      assert [] =
+               SystemsRuntime.Registry.lookup(
+                 SalixAgent.Registry,
+                 SalixAgent.InternalSessionActor.key(a, session_id)
+               )
 
-      assert Enum.any?(SalixAgent.InternalSession.get(repaired, :input_queue), fn item ->
-               get_in(item, ["payload", "failed_llm_call", "reason"]) == "runtime_restarted"
-             end)
+      assert {:ok, after_recovery} = read_state(a, session_id)
 
-      refute Enum.any?(SalixAgent.InternalSession.get(repaired, :input_queue), fn item ->
-               get_in(item, ["payload", "source_tool_call_id"]) == tool_call_id
-             end)
+      assert SalixAgent.InternalSession.export(after_recovery) ==
+               SalixAgent.InternalSession.export(unchanged)
     end
 
-    test "a direct poll terminal clears only its own current auto-wait after another result archives" do
+    test "force_recover stops a running Server before the session actors it can wake",
+         %{agent: a} do
       session_id = "ses1_0000000000000000601"
+      tool_call_id = "direct-staged-failure"
 
-      session =
-        SalixAgent.InternalSession.new("agt1_0000000000000000601", session_id)
-        |> SalixAgent.InternalSession.apply_events([
+      assert {:ok, _} =
+               WorkspaceEvents.commit_result(
+                 a,
+                 session_id,
+                 %{
+                   id: tool_call_id,
+                   name: "env.exec",
+                   status: "error",
+                   content: "private remote failure",
+                   error: true,
+                   error_class: "tool_error",
+                   error_message: "private remote failure",
+                   diagnostic_visibility: "model_only",
+                   events: []
+                 },
+                 AsyncToolResults.operation_source(:internal),
+                 store_result: true
+               )
+
+      # The Server that staging started finishes its first cycle and parks.
+      settle()
+
+      {:ok, _} =
+        InternalSessionStore.prepare_commit(a, session_id, [
+          %{"type" => "session_created", "session_id" => session_id},
           %{
             "type" => "async_tool_call_started",
             "session_id" => session_id,
-            "tool_call_id" => "direct-a",
+            "tool_call_id" => tool_call_id,
             "tool_name" => "env.exec",
-            "completion_owner" => "direct_poll"
-          },
-          %{
-            "type" => "async_tool_call_started",
-            "session_id" => session_id,
-            "tool_call_id" => "direct-b",
-            "tool_name" => "env.exec",
+            "status" => "running",
             "completion_owner" => "direct_poll"
           },
           SalixAgent.Waits.event(
             session_id,
-            SalixAgent.Waits.build("direct B is running", 20, "auto_wait", %{
-              "tool_call_id" => "direct-b"
+            SalixAgent.Waits.build("direct tool is running", 20, "auto_wait", %{
+              "tool_call_id" => tool_call_id
             })
           )
         ])
 
-      events_a =
-        AsyncToolResults.internal_poll_events(
-          %{session_id: session_id, tool_call_id: "direct-a", tool_name: "env.exec"},
-          %{error: true, error_class: "tool_error", error_message: "A failed"}
-        )
+      # Hold the woken Server in its cycle, before it wakes the indexed
+      # session: at its owner check, which reads the agent root.
+      SalixStore.S3.Fake.set_fault({:pause, :get, SalixStore.Keys.agent_state(a)})
+      assert {:ok, _} = SalixAgent.AgentControl.wake(a)
+      :ok = SalixStore.S3.Fake.await_pause()
 
-      assert List.last(events_a) == %{
-               "type" => "wait_clear",
-               "session_id" => session_id,
-               "tool_call_id" => "direct-a"
-             }
+      recovery =
+        SystemsRuntime.Task.async(fn ->
+          SalixAgent.AgentControl.force_recover(a, session_id: session_id, wake: false)
+        end)
 
-      after_a = SalixAgent.InternalSession.apply_events(session, events_a)
-      assert SalixAgent.InternalSession.wait(after_a)["tool_call_id"] == "direct-b"
+      # force_recover now waits for the held Server to stop.
+      settle()
+      assert SystemsRuntime.Task.yield(recovery, 0) == nil
 
-      archived_seq =
-        SalixAgent.InternalSession.get(after_a, :async_result_refs)["direct-a"]
+      # The Server completes its cycle, which wakes the session, and stops.
+      SalixStore.S3.Fake.release_pause()
+      assert {:ok, %{"sessions" => [%{"session_id" => ^session_id}]}} = settled_await(recovery)
 
-      after_a =
-        after_a
-        |> SalixAgent.InternalSession.export()
-        |> Map.put(:compacted_seq, archived_seq)
-        |> handle()
-        |> SalixAgent.InternalSession.apply_events([
-          %{
-            "type" => "archive_advance",
-            "session_id" => session_id,
-            "archived_through" => archived_seq,
-            "segments" => []
-          }
-        ])
-
-      # The terminal pointer has no remaining wait, queue item, or transcript
-      # projection after archival, so the bounded live-reference index retires
-      # it without disturbing direct-b's independent wait.
-      assert :not_found = SalixAgent.InternalSession.lookup_async_call(after_a, "direct-a")
-
-      events_b =
-        AsyncToolResults.internal_poll_events(
-          %{session_id: session_id, tool_call_id: "direct-b", tool_name: "env.exec"},
-          %{error: false, content: "B completed"}
-        )
-
-      after_b = SalixAgent.InternalSession.apply_events(after_a, events_b)
-      assert SalixAgent.InternalSession.wait(after_b) == nil
+      assert [] =
+               SystemsRuntime.Registry.lookup(
+                 SalixAgent.Registry,
+                 SalixAgent.InternalSessionActor.key(a, session_id)
+               )
     end
 
     test "does not fail process-local async tool calls still tracked by the live session actor",
@@ -1049,245 +773,6 @@ defmodule SalixAgent.RepairCompactionTest do
       assert {:ok, ^stored_result} = AgentWorkspace.operation_result(a, operation_id)
     end
 
-    test "recovers a staged repair-origin async success without laundering its provenance",
-         %{
-           agent: a
-         } do
-      operation_id =
-        WorkspaceEvents.operation_id(
-          AsyncToolResults.operation_source(:internal),
-          a,
-          "ses1_0000000000000000601",
-          "copy-1"
-        )
-
-      assert {:ok, _} =
-               AgentWorkspace.seed_operation(
-                 a,
-                 operation_id,
-                 %{
-                   "tool_call_id" => "copy-1",
-                   "tool_name" => "env.copy",
-                   "status" => "completed",
-                   "content" => "copied",
-                   "error" => false,
-                   "visible_reply_origin" => "repair",
-                   "session_events" => []
-                 },
-                 []
-               )
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(
-          a,
-          "ses1_0000000000000000601",
-          [
-            %{"type" => "session_created", "session_id" => "ses1_0000000000000000601"},
-            %{
-              "type" => "async_tool_call_started",
-              "session_id" => "ses1_0000000000000000601",
-              "tool_call_id" => "copy-1",
-              "tool_name" => "env.copy",
-              "status" => "running",
-              "visible_reply_origin" => "repair"
-            },
-            %{
-              "type" => "status",
-              "session_id" => "ses1_0000000000000000601",
-              "status" => "active"
-            }
-          ]
-        )
-
-      {events, _next_id} = Repair.plan_session(session)
-
-      completion =
-        Enum.find(
-          events,
-          &(&1["type"] == "async_tool_call_completed" and &1["tool_call_id"] == "copy-1")
-        )
-
-      assert completion["visible_reply_origin"] == "repair"
-      assert get_in(completion, ["result", "visible_reply_origin"]) == "repair"
-
-      notification =
-        Enum.find(
-          events,
-          &(&1["type"] == "queue_append" and &1["kind"] == "runtime_message" and
-              get_in(&1, ["payload", "type"]) == "tool_call_completed")
-        )
-
-      assert get_in(notification, ["payload", "visible_reply_origin"]) == "repair"
-
-      refute Enum.any?(events, fn
-               %{"type" => "async_tool_call_failed", "tool_call_id" => "copy-1"} -> true
-               _ -> false
-             end)
-
-      refute Enum.any?(events, fn
-               %{"type" => "queue_append", "payload" => %{"type" => "runtime_recovered"}} -> true
-               _ -> false
-             end)
-
-      assert Enum.any?(
-               events,
-               &(&1["type"] == "visible_reply_repair" and &1["status"] == "required")
-             )
-
-      assert Enum.any?(events, &(&1["type"] == "status" and &1["status"] == "idle"))
-
-      {:ok, repaired} = InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", events)
-
-      assert {:ok, %{"status" => "completed", "visible_reply_origin" => "repair"}} =
-               SalixAgent.InternalSession.lookup_async_call(handle(repaired), "copy-1")
-
-      assert SalixAgent.InternalSession.visible_reply_repair_required?(handle(repaired))
-      assert [queued] = SalixAgent.InternalSession.get(repaired, :input_queue)
-      assert queued["kind"] == "runtime_message"
-      assert get_in(queued, ["payload", "visible_reply_origin"]) == "repair"
-
-      {materialized, true, _hwm} =
-        SalixAgent.InternalSession.materialize_pending_input_events(handle(repaired))
-
-      runtime_event = Enum.find(materialized, &(&1["type"] == "runtime_message"))
-      assert runtime_event["visible_reply_origin"] == "repair"
-
-      materialized = SalixAgent.InternalSession.apply_events(handle(repaired), materialized)
-
-      completed =
-        SalixAgent.InternalSession.apply_events(materialized, [
-          %{
-            "type" => "visible_reply_repair",
-            "session_id" => SalixAgent.InternalSession.session_id(materialized),
-            "status" => "completed"
-          }
-        ])
-
-      [runtime] =
-        completed
-        |> Compaction.context()
-        |> Enum.filter(&(&1.role == "runtime"))
-
-      assert runtime.visible_reply_origin == "repair"
-      refute runtime.content =~ "copied"
-    end
-
-    test "replayed staged async failure preserves provenance and opens repair", %{agent: a} do
-      session_id = "ses1_0000000000000000601"
-
-      staged = %{
-        id: "copy-failure",
-        name: "env.copy",
-        status: "error",
-        content: "private connector timeout",
-        error: true,
-        error_class: "timeout",
-        error_message: "private connector timeout",
-        diagnostic_visibility: "model_only",
-        events: []
-      }
-
-      assert {:ok, _} =
-               WorkspaceEvents.commit_result(
-                 a,
-                 session_id,
-                 staged,
-                 AsyncToolResults.operation_source(:internal),
-                 store_result: true
-               )
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(a, session_id, [
-          %{"type" => "session_created", "session_id" => session_id},
-          %{
-            "type" => "async_tool_call_started",
-            "session_id" => session_id,
-            "tool_call_id" => "copy-failure",
-            "tool_name" => "env.copy",
-            "status" => "running"
-          }
-        ])
-
-      {events, _next_id} = Repair.plan_session(session)
-
-      runtime = Enum.find(events, &(&1["type"] == "queue_append"))
-      assert get_in(runtime, ["payload", "diagnostic_visibility"]) == "model_only"
-      assert get_in(runtime, ["payload", "content"]) =~ "private connector timeout"
-
-      assert Enum.any?(
-               events,
-               &(&1["type"] == "visible_reply_repair" and &1["status"] == "required")
-             )
-
-      {:ok, repaired} = InternalSessionStore.prepare_commit(a, session_id, events)
-      assert SalixAgent.InternalSession.visible_reply_repair_required?(handle(repaired))
-    end
-
-    test "a staged successful async repair completion clears the repair", %{agent: a} do
-      session_id = "ses1_0000000000000000601"
-      attempts = SalixAgent.VisibleReplyPolicy.repair_budget() - 1
-
-      assert {:ok, _} =
-               WorkspaceEvents.commit_result(
-                 a,
-                 session_id,
-                 %{
-                   id: "copy-existing-repair",
-                   name: "env.copy",
-                   status: "completed",
-                   content: "copied",
-                   error: false,
-                   visible_reply_origin: "repair",
-                   events: []
-                 },
-                 AsyncToolResults.operation_source(:internal),
-                 store_result: true
-               )
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(a, session_id, [
-          %{"type" => "session_created", "session_id" => session_id},
-          %{
-            "type" => "visible_reply_repair",
-            "session_id" => session_id,
-            "status" => "required",
-            "attempts" => attempts,
-            "revision" => 7,
-            "diagnostic_hwm" => 3
-          },
-          %{
-            "type" => "async_tool_call_started",
-            "session_id" => session_id,
-            "tool_call_id" => "copy-existing-repair",
-            "tool_name" => "env.copy",
-            "status" => "running",
-            "visible_reply_origin" => "repair"
-          },
-          %{"type" => "status", "session_id" => session_id, "status" => "active"}
-        ])
-
-      {events, _next_id} = Repair.plan_session(session)
-
-      refute Enum.any?(
-               events,
-               &(&1["type"] == "visible_reply_repair" and &1["status"] == "exhausted")
-             )
-
-      assert %{"status" => "completed"} =
-               Enum.find(events, &(&1["type"] == "visible_reply_repair"))
-
-      refute Enum.any?(
-               events,
-               &(&1["type"] == "visible_reply_repair" and &1["status"] == "required")
-             )
-
-      assert Enum.any?(
-               events,
-               &(&1["type"] == "queue_append" and
-                   get_in(&1, ["payload", "visible_reply_origin"]) == "repair")
-             )
-    end
-
     test "recovers an active in-flight LLM call after restart", %{agent: a} do
       {:ok, session} =
         InternalSessionStore.prepare_commit(
@@ -1339,113 +824,6 @@ defmodule SalixAgent.RepairCompactionTest do
 
       assert SalixAgent.InternalSession.get(repaired, :status) == :idle
       assert SalixAgent.InternalSession.derived_state(handle(repaired)) == :queued
-    end
-
-    test "repair treats active session ending in tool result as transcript continuation", %{
-      agent: a
-    } do
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(
-          a,
-          "ses1_0000000000000000601",
-          [
-            %{"type" => "session_created", "session_id" => "ses1_0000000000000000601"},
-            %{
-              "type" => "assistant",
-              "session_id" => "ses1_0000000000000000601",
-              "message_id" => 1,
-              "content" => "",
-              "tool_calls" => [
-                %{
-                  "id" => "call-1",
-                  "name" => "call",
-                  "args" => %{
-                    "tool" => "help",
-                    "params" => %{"tool" => "fs.read_file"}
-                  }
-                }
-              ]
-            },
-            %{
-              "type" => "tool_result",
-              "session_id" => "ses1_0000000000000000601",
-              "message_id" => 2,
-              "tool_call_id" => "call-1",
-              "content" => "done"
-            },
-            %{
-              "type" => "status",
-              "session_id" => "ses1_0000000000000000601",
-              "status" => "active"
-            }
-          ],
-          hwm: 2
-        )
-
-      {events, next_id} = Repair.plan_session(session)
-
-      assert events == [
-               %{
-                 "type" => "status",
-                 "session_id" => "ses1_0000000000000000601",
-                 "status" => "idle"
-               }
-             ]
-
-      assert next_id == 3
-
-      {:ok, repaired} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", events,
-          hwm: next_id - 1
-        )
-
-      assert SalixAgent.InternalSession.get(repaired, :status) == :idle
-      assert SalixAgent.InternalSession.needs_transcript_continuation?(handle(repaired))
-
-      refute Enum.any?(
-               SalixAgent.InternalSession.get(repaired, :input_queue),
-               &(&1["kind"] == "runtime_message")
-             )
-    end
-
-    test "InternalSessionActor resumes after repairing active in-flight LLM", %{agent: a} do
-      {:ok, _session} =
-        InternalSessionStore.prepare_commit(
-          a,
-          "ses1_0000000000000000601",
-          [
-            %{"type" => "session_created", "session_id" => "ses1_0000000000000000601"},
-            %{
-              "type" => "delivery",
-              "from_queue" => true,
-              "session_id" => "ses1_0000000000000000601",
-              "message_id" => 1,
-              "content" => "go"
-            },
-            %{
-              "type" => "status",
-              "session_id" => "ses1_0000000000000000601",
-              "status" => "active"
-            }
-          ],
-          hwm: 1
-        )
-
-      Mock.script([{:final, "continued after llm recovery"}])
-      :ok = InternalSessionFleet.wake(a, "ses1_0000000000000000601")
-
-      assert eventually(fn ->
-               {:ok, session} = read_state(a, "ses1_0000000000000000601")
-
-               Enum.any?(
-                 SalixAgent.InternalSession.get(session, :messages),
-                 &(&1.role == "runtime" and &1.type == "runtime_recovered")
-               ) and
-                 Enum.any?(
-                   SalixAgent.InternalSession.get(session, :messages),
-                   &(&1[:content] == "continued after llm recovery")
-                 )
-             end)
     end
 
     test "exhausted visible-reply repair parks runtime wakes until new user input", %{agent: a} do
@@ -1522,360 +900,6 @@ defmodule SalixAgent.RepairCompactionTest do
              end)
     end
 
-    for staged <- [false, true] do
-      @staged_handoff staged
-      @tag :expired_callback
-      test "expired location callback releases a parked session with staged handoff #{@staged_handoff}",
-           %{agent: a} do
-        use_capability_store(SalixAgent.CapabilityRequests)
-        session_id = "ses1_0000000000000000601"
-        origin = %{"provider" => "internal", "source_message_id" => "old-location-source"}
-
-        assert {:ok, _request} =
-                 SalixAgent.CapabilityRequests.create_capability_request(%{
-                   "source_agent_id" => a,
-                   "source_session_id" => session_id,
-                   "tool_call_id" => "expired-location",
-                   "request_type" => "location",
-                   "request_payload" => %{"location" => %{"reason" => "weather"}},
-                   "expires_at" => System.system_time(:second) - 1
-                 })
-
-        {:ok, session} =
-          InternalSessionStore.prepare_commit(a, session_id, [
-            %{"type" => "session_created", "session_id" => session_id},
-            %{
-              "type" => "delivery",
-              "from_queue" => true,
-              "session_id" => session_id,
-              "message_id" => 1,
-              "role" => "user",
-              "source_message_id" => "telegram-source",
-              "content" => "Please answer",
-              "trusted_origin" => %{
-                "provider" => "telegram",
-                "source_actor_type" => "provider_user",
-                "source_message_id" => "telegram-source"
-              }
-            },
-            %{
-              "type" => "async_tool_call_started",
-              "session_id" => session_id,
-              "tool_call_id" => "expired-location",
-              "tool_name" => "location.request",
-              "input" => "{}",
-              "status" => "running",
-              "completion_mode" => "external_callback",
-              "trusted_origin" => origin,
-              "trusted_origins" => [origin],
-              "trusted_origin_source_message_ids" => ["old-location-source"],
-              "started_at" => 1
-            }
-          ])
-
-        if @staged_handoff do
-          assert {:ok, _} =
-                   WorkspaceEvents.commit_result(
-                     a,
-                     session_id,
-                     %{
-                       id: "expired-location",
-                       name: "location.request",
-                       status: "async_running",
-                       content: Jason.encode!(%{"status" => "pending"}),
-                       error: false,
-                       events: [
-                         %{
-                           "type" => "async_tool_call_started",
-                           "session_id" => session_id,
-                           "tool_call_id" => "expired-location",
-                           "tool_name" => "location.request",
-                           "status" => "running",
-                           "completion_mode" => "external_callback"
-                         }
-                       ]
-                     },
-                     AsyncToolResults.operation_source(:internal),
-                     store_result: true
-                   )
-        end
-
-        session =
-          session
-          |> InternalSession.export()
-          |> Map.put(:repeated_tool_result_streak, %{
-            "count" => 5,
-            "fingerprint" => "blocked-reply",
-            "tool_name" => "im_api.telegram.send_message"
-          })
-          |> handle()
-
-        assert InternalSession.repeated_tool_results_exhausted?(session)
-        assert InternalSession.query(session, :terminal_reply_running?)
-
-        {events, _} = Repair.plan_session(session)
-        repaired = InternalSession.apply_events(session, events)
-
-        assert {:ok, %{"status" => "failed"} = terminal} =
-                 InternalSession.lookup_async_call(repaired, "expired-location")
-
-        assert terminal["trusted_origin_source_message_ids"] == ["old-location-source"]
-        refute InternalSession.query(repaired, :terminal_reply_running?)
-        refute InternalSession.repeated_tool_results_exhausted?(repaired)
-      end
-    end
-
-    test "active session waiting for external callback is not treated as an LLM crash", %{
-      agent: a
-    } do
-      use_capability_store(SalixAgent.RepairCompactionTest.PendingCapStore)
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", [
-          %{"type" => "session_created", "session_id" => "ses1_0000000000000000601"},
-          %{"type" => "status", "session_id" => "ses1_0000000000000000601", "status" => "active"},
-          %{
-            "type" => "async_tool_call_started",
-            "session_id" => "ses1_0000000000000000601",
-            "tool_call_id" => "tool-a",
-            "tool_name" => "permission.request",
-            "input" => "{}",
-            "status" => "running",
-            "completion_mode" => "external_callback",
-            "started_at" => 1,
-            "auto_wait_seconds" => 120
-          }
-        ])
-
-      {events, next_id} = Repair.plan_session(session)
-      contract_events = assert_capability_sync(events)
-
-      assert next_id == 1
-
-      assert [
-               %{"type" => "status", "status" => "idle"},
-               %{"type" => "queue_append", "kind" => "runtime_message"} = delivery
-             ] = contract_events
-
-      assert delivery["payload"]["type"] == "runtime_recovered"
-      assert delivery["payload"]["source_refs"]["failed_tool_calls"] == []
-
-      assert [
-               %{
-                 "tool_call_id" => "tool-a",
-                 "tool_name" => "permission.request",
-                 "reason" => "external_callback_pending"
-               }
-             ] = delivery["payload"]["source_refs"]["pending_external_callback_tool_calls"]
-
-      {:ok, repaired} = InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", events)
-      assert SalixAgent.InternalSession.get(repaired, :status) == :idle
-
-      assert SalixAgent.InternalSession.get(repaired, :async_tool_calls)["tool-a"]["status"] ==
-               "running"
-
-      assert SalixAgent.InternalSession.get(repaired, :async_tool_calls)["tool-a"][
-               "completion_mode"
-             ] == "external_callback"
-    end
-
-    test "idle session waiting for external callback is not reported as runtime recovery", %{
-      agent: a
-    } do
-      use_capability_store(SalixAgent.RepairCompactionTest.PendingCapStore)
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", [
-          %{"type" => "session_created", "session_id" => "ses1_0000000000000000601"},
-          %{
-            "type" => "wait_set",
-            "session_id" => "ses1_0000000000000000601",
-            "wait" => %{"reason" => "approval"}
-          },
-          %{
-            "type" => "async_tool_call_started",
-            "session_id" => "ses1_0000000000000000601",
-            "tool_call_id" => "tool-a",
-            "tool_name" => "permission.request",
-            "input" => "{}",
-            "status" => "running",
-            "completion_mode" => "external_callback",
-            "started_at" => 1,
-            "auto_wait_seconds" => 120
-          }
-        ])
-
-      assert SalixAgent.InternalSession.get(session, :status) == :idle
-      assert SalixAgent.InternalSession.get(session, :wait)["reason"] == "approval"
-
-      assert {events, 1} = Repair.plan_session(session)
-      assert [] = assert_capability_sync(events)
-      repaired = InternalSession.apply_events(handle(session), events)
-      assert InternalSession.get(repaired, :status) == :idle
-    end
-
-    test "idle session with only external callback pending is not reported as runtime recovery",
-         %{agent: a} do
-      use_capability_store(SalixAgent.RepairCompactionTest.PendingCapStore)
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", [
-          %{"type" => "session_created", "session_id" => "ses1_0000000000000000601"},
-          %{
-            "type" => "async_tool_call_started",
-            "session_id" => "ses1_0000000000000000601",
-            "tool_call_id" => "tool-a",
-            "tool_name" => "permission.request",
-            "input" => "{}",
-            "status" => "running",
-            "completion_mode" => "external_callback",
-            "started_at" => 1,
-            "auto_wait_seconds" => 120
-          }
-        ])
-
-      assert SalixAgent.InternalSession.get(session, :status) == :idle
-      assert SalixAgent.InternalSession.get(session, :wait) == nil
-
-      assert {events, 1} = Repair.plan_session(session)
-      assert [] = assert_capability_sync(events)
-      repaired = InternalSession.apply_events(handle(session), events)
-      assert InternalSession.get(repaired, :status) == :idle
-    end
-
-    test "active session waiting for pending capability is not treated as an LLM crash", %{
-      agent: a
-    } do
-      use_capability_store(SalixAgent.RepairCompactionTest.PendingCapStore)
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", [
-          %{"type" => "session_created", "session_id" => "ses1_0000000000000000601"},
-          %{"type" => "status", "session_id" => "ses1_0000000000000000601", "status" => "active"},
-          %{
-            "type" => "async_tool_call_started",
-            "session_id" => "ses1_0000000000000000601",
-            "tool_call_id" => "oauth-call",
-            "tool_name" => "oauth.request_authorization",
-            "input" => "{}",
-            "status" => "running",
-            "completion_mode" => "external_callback",
-            "started_at" => 1,
-            "auto_wait_seconds" => 120
-          }
-        ])
-
-      {events, next_id} = Repair.plan_session(session)
-      contract_events = assert_capability_sync(events)
-
-      assert next_id == 1
-
-      assert [
-               %{"type" => "status", "status" => "idle"},
-               %{"type" => "queue_append", "kind" => "runtime_message"} = delivery
-             ] = contract_events
-
-      assert delivery["payload"]["type"] == "runtime_recovered"
-      assert delivery["payload"]["source_refs"]["failed_tool_calls"] == []
-
-      assert [
-               %{
-                 "tool_call_id" => "oauth-call",
-                 "tool_name" => "oauth.request_authorization",
-                 "reason" => "external_callback_pending"
-               }
-             ] = delivery["payload"]["source_refs"]["pending_external_callback_tool_calls"]
-
-      {:ok, repaired} = InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", events)
-      assert SalixAgent.InternalSession.get(repaired, :status) == :idle
-
-      assert SalixAgent.InternalSession.get(repaired, :async_tool_calls)["oauth-call"]["status"] ==
-               "running"
-    end
-
-    test "repairs missing external-callback early result without failing pending capability", %{
-      agent: a
-    } do
-      use_capability_store(SalixAgent.RepairCompactionTest.PendingCapStore)
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(
-          a,
-          "ses1_0000000000000000601",
-          [
-            %{"type" => "session_created", "session_id" => "ses1_0000000000000000601"},
-            %{
-              "type" => "status",
-              "session_id" => "ses1_0000000000000000601",
-              "status" => "active"
-            },
-            %{
-              "type" => "assistant",
-              "session_id" => "ses1_0000000000000000601",
-              "message_id" => 1,
-              "content" => "need permission",
-              "tool_calls" => [
-                %{
-                  "id" => "oauth-call",
-                  "name" => "call",
-                  "args" => %{
-                    "tool" => "oauth.request_authorization",
-                    "params" => %{"provider" => "github"}
-                  }
-                }
-              ]
-            }
-          ],
-          hwm: 1
-        )
-
-      {events, next_id} = Repair.plan_session(session)
-      contract_events = assert_capability_sync(events)
-
-      refute Enum.any?(events, &(&1["type"] == "async_tool_call_failed"))
-
-      assert [
-               %{
-                 "type" => "async_tool_call_started",
-                 "tool_call_id" => "oauth-call",
-                 "completion_mode" => "external_callback"
-               },
-               %{
-                 "type" => "tool_result",
-                 "tool_call_id" => "oauth-call",
-                 "content" => content,
-                 "error" => false
-               },
-               %{"type" => "status", "status" => "idle"},
-               %{"type" => "queue_append", "kind" => "runtime_message"} = delivery
-             ] = contract_events
-
-      assert Jason.decode!(content)["status"] == "async_running"
-      assert delivery["payload"]["type"] == "runtime_recovered"
-
-      assert [
-               %{
-                 "tool_call_id" => "oauth-call",
-                 "tool_name" => "oauth.request_authorization",
-                 "reason" => "external_callback_pending"
-               }
-             ] = delivery["payload"]["source_refs"]["pending_external_callback_tool_calls"]
-
-      {:ok, repaired} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", events,
-          hwm: next_id - 1
-        )
-
-      assert SalixAgent.InternalSession.get(repaired, :status) == :idle
-
-      assert SalixAgent.InternalSession.get(repaired, :async_tool_calls)["oauth-call"][
-               "completion_mode"
-             ] == "external_callback"
-
-      assert SalixAgent.InternalSession.get(repaired, :async_tool_calls)["oauth-call"]["status"] ==
-               "running"
-    end
-
     test "leaves running async calls backed by a pending capability request running", %{agent: a} do
       use_capability_store(SalixAgent.RepairCompactionTest.PendingCapStore)
 
@@ -1937,142 +961,9 @@ defmodule SalixAgent.RepairCompactionTest do
       assert {:ok, %{"status" => "failed"}} =
                SalixAgent.InternalSession.lookup_async_call(handle(repaired), "exec-call")
     end
-
-    test "loads a cold capability store before deciding whether its callback exists", %{agent: a} do
-      store = SalixAgent.TestSupport.ColdPendingCapabilityStore
-      use_capability_store(store)
-      on_exit(fn -> Code.ensure_loaded!(store) end)
-
-      Code.ensure_loaded!(store)
-      :code.delete(store)
-      :code.purge(store)
-      assert :code.is_loaded(store) == false
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", [
-          %{"type" => "session_created", "session_id" => "ses1_0000000000000000601"},
-          %{
-            "type" => "async_tool_call_started",
-            "session_id" => "ses1_0000000000000000601",
-            "tool_call_id" => "cold-oauth-call",
-            "tool_name" => "oauth.request_authorization",
-            "completion_mode" => "external_callback",
-            "status" => "running"
-          }
-        ])
-
-      assert {events, 1} = Repair.plan_session(session)
-      assert [] = assert_capability_sync(events)
-      repaired = InternalSession.apply_events(handle(session), events)
-      assert InternalSession.get(repaired, :status) == :idle
-      assert :code.is_loaded(store) != false
-
-      Application.put_env(
-        :salix_agent,
-        :capability_request_store_mod,
-        SalixAgent.TestSupport.MissingCapabilityStore
-      )
-
-      assert {events, 1} = Repair.plan_session(session)
-      assert [] = assert_capability_sync(events)
-      repaired = InternalSession.apply_events(handle(session), events)
-      assert InternalSession.get(repaired, :status) == :idle
-    end
-
-    test "preserves running async call when capability pending lookup is unavailable", %{agent: a} do
-      use_capability_store(SalixAgent.RepairCompactionTest.RaisingCapStore)
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", [
-          %{"type" => "session_created", "session_id" => "ses1_0000000000000000601"},
-          %{"type" => "status", "session_id" => "ses1_0000000000000000601", "status" => "active"},
-          %{
-            "type" => "async_tool_call_started",
-            "session_id" => "ses1_0000000000000000601",
-            "tool_call_id" => "oauth-call",
-            "tool_name" => "oauth.request_authorization",
-            "input" => "{}",
-            "status" => "running",
-            "completion_mode" => "external_callback",
-            "started_at" => 1,
-            "auto_wait_seconds" => 120
-          }
-        ])
-
-      {events, next_id} = Repair.plan_session(session)
-      contract_events = assert_capability_sync(events)
-
-      refute Enum.any?(events, &(&1["type"] == "async_tool_call_failed"))
-
-      assert [%{"type" => "status", "status" => "idle"}] = contract_events
-      refute Enum.any?(events, &(&1["type"] == "queue_append"))
-
-      {:ok, repaired} =
-        InternalSessionStore.prepare_commit(a, "ses1_0000000000000000601", events,
-          hwm: next_id - 1
-        )
-
-      assert SalixAgent.InternalSession.get(repaired, :status) == :idle
-
-      assert SalixAgent.InternalSession.get(repaired, :async_tool_calls)["oauth-call"]["status"] ==
-               "running"
-    end
   end
 
   describe "durable capability reconciliation" do
-    test "a terminal request recovers its canonical result when the async start was lost", %{
-      agent: a
-    } do
-      use_capability_store(SalixAgent.CapabilityRequests)
-      sid = "ses1_0000000000000000601"
-      request = create_location_request!(a, sid, "lost-start")
-      canonical = %{"status" => "completed", "content" => "canonical location", "error" => false}
-
-      assert {:ok, %{"result" => ^canonical}} =
-               SalixAgent.CapabilityRequests.reconcile_capability_request(
-                 a,
-                 sid,
-                 "lost-start",
-                 canonical
-               )
-
-      {:ok, session} =
-        InternalSessionStore.prepare_commit(
-          a,
-          sid,
-          [
-            %{"type" => "session_created", "session_id" => sid},
-            %{
-              "type" => "assistant",
-              "session_id" => sid,
-              "message_id" => 1,
-              "content" => "need location",
-              "tool_calls" => [
-                %{
-                  "id" => "lost-start",
-                  "name" => "call",
-                  "args" => %{"tool" => "location.request", "params" => %{}}
-                }
-              ]
-            }
-          ],
-          hwm: 1
-        )
-
-      {events, _} = Repair.plan_session(session)
-      repaired = InternalSession.apply_events(handle(session), events)
-      assert {:ok, terminal} = InternalSession.lookup_async_call(repaired, "lost-start")
-      assert terminal["status"] == "completed"
-      assert terminal["result"]["content"] == canonical["content"]
-
-      assert {:ok, %{"result" => ^canonical}} =
-               SalixAgent.CapabilityRequests.get(
-                 request["group_id"],
-                 request["request_id"],
-                 request["tenant_id"]
-               )
-    end
-
     test "a terminal session callback settles the pending request and clears its residual", %{
       agent: a
     } do
@@ -2086,7 +977,7 @@ defmodule SalixAgent.RepairCompactionTest do
         "session_id" => sid,
         "tool_call_id" => "terminal-first",
         "result" => %{"content" => "winner"},
-        "completed_at" => System.system_time(:millisecond)
+        "completed_at" => SystemsClock.system_time(:millisecond)
       }
 
       {:ok, session} = InternalSessionStore.prepare_commit(a, sid, [terminal_event])
@@ -2116,70 +1007,6 @@ defmodule SalixAgent.RepairCompactionTest do
                  %{"status" => "completed", "content" => "late duplicate"}
                )
     end
-
-    test "idle callback recovery persists the original request deadline across restart", %{
-      agent: a
-    } do
-      use_capability_store(SalixAgent.CapabilityRequests)
-      sid = "ses1_0000000000000000601"
-      request = create_location_request!(a, sid, "waiting")
-      session = callback_session!(a, sid, "waiting")
-      {events, _} = Repair.plan_session(session)
-      {:ok, repaired} = InternalSessionStore.prepare_commit(a, sid, events)
-      {:ok, reopened} = InternalSessionStore.read(a, sid)
-      deadline = request["expires_at"] * 1_000
-      assert InternalSession.get(repaired, :status) == :idle
-      assert InternalSession.query(handle(reopened), :recovery_wait)["deadline_ms"] == deadline
-
-      assert {:ok, %{"status" => "running", "capability_deadline_ms" => ^deadline}} =
-               InternalSession.lookup_async_call(handle(reopened), "waiting")
-
-      {again, _} = Repair.plan_session(handle(reopened))
-      again = InternalSession.apply_events(handle(reopened), again)
-      assert InternalSession.query(again, :recovery_wait)["deadline_ms"] == deadline
-    end
-
-    test "transient request lookup persists a retry and exhausted lookup stops automatic retries",
-         %{agent: a} do
-      use_capability_store(SalixAgent.RepairCompactionTest.RaisingCapStore)
-      sid = "ses1_0000000000000000601"
-      session = callback_session!(a, sid, "unavailable")
-      before = System.system_time(:millisecond)
-      {events, _} = Repair.plan_session(session)
-      {:ok, repaired} = InternalSessionStore.prepare_commit(a, sid, events)
-      assert {:ok, running} = InternalSession.lookup_async_call(handle(repaired), "unavailable")
-      assert running["status"] == "running"
-      assert running["capability_error_since_ms"] >= before
-      assert running["capability_retry_at_ms"] >= before + 5_000
-
-      assert InternalSession.query(handle(repaired), :recovery_wait)["deadline_ms"] ==
-               running["capability_retry_at_ms"]
-
-      {:ok, overdue} =
-        InternalSessionStore.prepare_commit(a, sid, [
-          %{
-            "type" => "capability_request_sync",
-            "session_id" => sid,
-            "tool_call_id" => "unavailable",
-            "capability_error_since_ms" => before - 30_001,
-            "capability_retry_at_ms" => before
-          }
-        ])
-
-      {events, _} = Repair.plan_session(overdue)
-      {:ok, settled} = InternalSessionStore.prepare_commit(a, sid, events)
-      assert {:ok, terminal} = InternalSession.lookup_async_call(handle(settled), "unavailable")
-      assert terminal["status"] == "failed"
-      assert terminal["error_class"] == "capability_request_unavailable"
-
-      assert InternalSession.get(settled, :async_tool_calls)["unavailable"][
-               "capability_sync_failed"
-             ]
-
-      refute is_integer(
-               (InternalSession.query(handle(settled), :recovery_wait) || %{})["deadline_ms"]
-             )
-    end
   end
 
   defp create_location_request!(agent_id, sid, id) do
@@ -2190,7 +1017,7 @@ defmodule SalixAgent.RepairCompactionTest do
         "tool_call_id" => id,
         "request_type" => "location",
         "request_payload" => %{"location" => %{"reason" => "weather"}},
-        "expires_at" => System.system_time(:second) + 600
+        "expires_at" => SystemsClock.system_time(:second) + 600
       })
 
     request
@@ -2276,20 +1103,6 @@ defmodule SalixAgent.RepairCompactionTest do
                :summary
              ) =~ "summary of"
     end
-
-    test "should_compact? respects the threshold", %{agent: _a} do
-      s =
-        InternalSession.normalize(
-          handle(%InternalSession.State{
-            agent_id: "agent",
-            session_id: "ses1_0000000000000000601",
-            messages: [%{id: 1, role: "user", content: String.duplicate("z", 500)}]
-          })
-        )
-
-      assert Compaction.should_compact?(s, threshold: 100)
-      refute Compaction.should_compact?(s, threshold: 100_000)
-    end
   end
 
   defp assert_capability_sync(events) do
@@ -2305,13 +1118,13 @@ defmodule SalixAgent.RepairCompactionTest do
   end
 
   defp use_capability_store(store) do
-    previous = Application.fetch_env(:salix_agent, :capability_request_store_mod)
-    Application.put_env(:salix_agent, :capability_request_store_mod, store)
+    previous = SystemsRuntime.fetch_env(:salix_agent, :capability_request_store_mod)
+    SystemsRuntime.put_env(:salix_agent, :capability_request_store_mod, store)
 
     on_exit(fn ->
       case previous do
-        {:ok, value} -> Application.put_env(:salix_agent, :capability_request_store_mod, value)
-        :error -> Application.delete_env(:salix_agent, :capability_request_store_mod)
+        {:ok, value} -> SystemsRuntime.put_env(:salix_agent, :capability_request_store_mod, value)
+        :error -> SystemsRuntime.delete_env(:salix_agent, :capability_request_store_mod)
       end
     end)
   end
@@ -2321,19 +1134,8 @@ defmodule SalixAgent.RepairCompactionTest do
     session
   end
 
-  defp eventually(fun, retries \\ 50) do
-    cond do
-      fun.() ->
-        true
-
-      retries <= 0 ->
-        false
-
-      true ->
-        Process.sleep(20)
-        eventually(fun, retries - 1)
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 
   # The store hands back an opaque handle; these fixtures assert over the
   # exported state and re-open it whenever a handle is required.

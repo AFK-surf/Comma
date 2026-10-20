@@ -90,7 +90,7 @@ defmodule SalixIM.SignalConnects do
 
           {:error, {:identity_in_use, _holder}} ->
             # Another writer won the election and is writing its connect.
-            Process.sleep(50)
+            SystemsClock.sleep(50)
             ensure_record(tenant_id, group_id, attempts - 1)
 
           other ->
@@ -216,7 +216,7 @@ defmodule SalixIM.SignalConnects do
   end
 
   defp add_claim(group_id, connect_id, claim, now) do
-    retired_key = {__MODULE__, :retired, make_ref()}
+    retired_key = {__MODULE__, :retired, SystemsRuntime.Proc.make_ref()}
 
     result =
       update_live(group_id, connect_id, fn rec ->
@@ -386,7 +386,7 @@ defmodule SalixIM.SignalConnects do
   end
 
   defp add_binding(group_id, connect_id, binding, also) do
-    entry_key = {__MODULE__, :entry, make_ref()}
+    entry_key = {__MODULE__, :entry, SystemsRuntime.Proc.make_ref()}
 
     result =
       update_live(group_id, connect_id, fn rec ->
@@ -540,7 +540,7 @@ defmodule SalixIM.SignalConnects do
   defp parse_code(_code), do: {:error, :invalid_claim}
 
   defp new_code do
-    for <<byte <- :crypto.strong_rand_bytes(@code_length)>>, into: "" do
+    for <<byte <- SystemsRuntime.Proc.random_bytes(@code_length)>>, into: "" do
       <<Enum.at(@code_alphabet, rem(byte, length(@code_alphabet)))>>
     end
   end
@@ -768,5 +768,5 @@ defmodule SalixIM.SignalConnects do
   defp trim(value) when is_binary(value), do: String.trim(value)
   defp trim(value), do: value |> to_string() |> String.trim()
 
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 end

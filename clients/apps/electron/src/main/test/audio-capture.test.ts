@@ -23,12 +23,32 @@ import type {
 } from "../modules/audio-capture/microphone";
 import {
   MainNativeSessionAdmissionGuard,
-  MainProductCredentialAuthority,
+  MainCredentialGate,
 } from "../modules/session";
+import { acceptVerified } from "../../test-support/session-gate";
+
+// The service removes some files off the caller's path (the scratch M4A once a
+// save's consumers settle), so tests hear each removal it starts.
+const removals = vi.hoisted(() => ({
+  listener: undefined as ((path: string, removed: Promise<void>) => void) | undefined,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    rm: (...args: Parameters<typeof actual.rm>) => {
+      const removed = actual.rm(...args);
+      removals.listener?.(String(args[0]), removed);
+      return removed;
+    },
+  };
+});
 
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {
+  removals.listener = undefined;
   while (temporaryDirectories.length > 0) {
     const directory = temporaryDirectories.pop();
     if (directory) rmSync(directory, { force: true, recursive: true });
@@ -122,8 +142,9 @@ describe("AudioCaptureService", () => {
     // The system tap must never record this app's own output back into itself.
     expect(native.taps[0]?.excludedProcessIds).toEqual([process.pid]);
 
+    // A frame updates the state at once; only its file write is queued, and
+    // finalize or discard drains that queue.
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.5));
-    await settle();
 
     const latest = published.at(-1);
     expect(latest?.status).toBe("recording");
@@ -159,7 +180,6 @@ describe("AudioCaptureService", () => {
 
     await service.start({ source: { kind: "system" } });
     native.taps[0]?.emit(new Float32Array(48 * 2 * 10).fill(0.25));
-    await settle();
     const result = await admitted.stop();
 
     expect(native.taps[0]?.stopped).toBe(true);
@@ -187,7 +207,9 @@ describe("AudioCaptureService", () => {
         space: "comma-drive",
         localRoot: expect.any(String),
       },
-      expect.any(Number)
+      expect.any(Number),
+      // No meeting's: the recording keeps its own name.
+      undefined
     );
     // Drive owns the committed copy; Main keeps no working file behind.
     await expect(readdir(recordingsDir)).resolves.toEqual([]);
@@ -268,6 +290,8 @@ describe("AudioCaptureService", () => {
       ) => gate.promise
     );
     const { admitted, native, recordingsDir, service } = createService({ onSaved });
+    // ASR settling is what clears the scratch M4A.
+    const scratchRemoved = removal(/\.m4a$/);
     await service.start({ source: { kind: "system" } });
     native.taps[0]?.emit(new Float32Array(480 * 2).fill(0.25));
     try {
@@ -283,7 +307,8 @@ describe("AudioCaptureService", () => {
     } finally {
       gate.resolve();
     }
-    await vi.waitFor(async () => expect(await readdir(recordingsDir)).toEqual([]));
+    await scratchRemoved;
+    expect(await readdir(recordingsDir)).toEqual([]);
     expect(await readFile(onSaved.mock.calls[0]![2])).toEqual(
       await driveStoreCopy(recordingsDir)
     );
@@ -296,6 +321,7 @@ describe("AudioCaptureService", () => {
     const { admitted, native, recordingsDir, service } = createService({
       onSaved: directASR,
     });
+    const scratchRemoved = removal(/\.m4a$/);
     await service.start({ source: { kind: "system" } });
     native.taps[0]?.emit(new Float32Array(480 * 2).fill(0.25));
     try {
@@ -306,15 +332,18 @@ describe("AudioCaptureService", () => {
     } finally {
       gate.resolve();
     }
-    await vi.waitFor(async () => expect(await readdir(recordingsDir)).toEqual([]));
+    await scratchRemoved;
+    expect(await readdir(recordingsDir)).toEqual([]);
   });
 
   it("keeps one finalizer and the WAV while compression is pending", async () => {
     const { admitted, native, recordingsDir, service, drive, encoder } =
       createService();
+    const encoding = Promise.withResolvers<void>();
     const pending = Promise.withResolvers<void>();
     const encode = encoder.encode.getMockImplementation()!;
     encoder.encode.mockImplementationOnce(async (path) => {
+      encoding.resolve();
       await pending.promise;
       return encode(path);
     });
@@ -322,7 +351,8 @@ describe("AudioCaptureService", () => {
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.25));
     const stopping = admitted.stop();
     try {
-      await vi.waitFor(() => expect(encoder.encode).toHaveBeenCalledOnce());
+      await encoding.promise;
+      expect(encoder.encode).toHaveBeenCalledOnce();
       await expect(service.state()).resolves.toMatchObject({ status: "finalizing" });
       await expect(admitted.stop()).resolves.toEqual({ status: "unavailable" });
       await expect(service.start({ source: { kind: "system" } })).rejects.toThrow(
@@ -346,15 +376,18 @@ describe("AudioCaptureService", () => {
     const pending = new Promise<void>((resolve) => {
       acknowledge = resolve;
     });
+    const saving = Promise.withResolvers<void>();
     const save = drive.save.getMockImplementation()!;
     drive.save.mockImplementationOnce(async (...args) => {
+      saving.resolve();
       await pending;
       return save(...args);
     });
     await service.start({ source: { kind: "system" } });
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.25));
     const stopping = admitted.stop();
-    await vi.waitFor(() => expect(drive.save).toHaveBeenCalledTimes(1));
+    await saving.promise;
+    expect(drive.save).toHaveBeenCalledTimes(1);
     await expect(service.start({ source: { kind: "system" } })).rejects.toThrow(
       "already in progress"
     );
@@ -377,12 +410,10 @@ describe("AudioCaptureService", () => {
     await service.start({ source: { kind: "system" } });
     const tap = native.taps[0];
     tap?.emit(new Float32Array(48 * 2));
-    await settle();
     await expect(service.state()).resolves.toMatchObject({ permission: "unknown" });
 
     nowMs += 4_100;
     tap?.emit(new Float32Array(48 * 2));
-    await settle();
     await expect(service.state()).resolves.toMatchObject({
       permission: "suspected_denied",
       status: "recording",
@@ -390,7 +421,6 @@ describe("AudioCaptureService", () => {
 
     // Real samples prove the grant exists after all.
     tap?.emit(new Float32Array(48 * 2).fill(0.3));
-    await settle();
     await expect(service.state()).resolves.toMatchObject({ permission: "granted" });
     await service.cancel();
   });
@@ -429,7 +459,6 @@ describe("AudioCaptureService", () => {
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.5));
     microphone.emit(new Float32Array(48).fill(-0.5));
     microphone.emit(new Float32Array(48).fill(-0.5));
-    await settle();
 
     const result = await admitted.stop();
     expect(result.status).toBe("ready");
@@ -469,7 +498,6 @@ describe("AudioCaptureService", () => {
     release?.();
     await starting;
     microphone.emit(new Float32Array(48).fill(-0.5));
-    await settle();
 
     const result = await admitted.stop();
     expect(result.status).toBe("ready");
@@ -491,7 +519,6 @@ describe("AudioCaptureService", () => {
       status: "recording",
     });
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.25));
-    await settle();
     const result = await admitted.stop();
     expect(result.status).toBe("ready");
   });
@@ -511,7 +538,6 @@ describe("AudioCaptureService", () => {
     await service.start({ microphone: true, source: { kind: "system" } });
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.4));
     microphone.emit(new Float32Array(48).fill(0.4));
-    await settle();
     await service.cancel();
     expect(microphone.sessions[0]?.stopped).toBe(true);
     await expect(readdir(recordingsDir)).resolves.toEqual([]);
@@ -522,7 +548,6 @@ describe("AudioCaptureService", () => {
 
     await service.start({ source: { kind: "system" } });
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.4));
-    await settle();
     const state = await service.cancel();
 
     expect(native.taps[0]?.stopped).toBe(true);
@@ -539,7 +564,6 @@ describe("AudioCaptureService", () => {
     await admitted.service.start({ maxDurationMs: 1_000, source: { kind: "system" } });
     nowMs += 1_500;
     native.taps[0]?.emit(new Float32Array(48 * 2 * 10).fill(0.3));
-    await settle();
 
     expect(native.taps[0]?.stopped).toBe(true);
     expect(published.at(-1)).toMatchObject({
@@ -555,7 +579,6 @@ describe("AudioCaptureService", () => {
 
     await service.start({ source: { kind: "system" } });
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.2));
-    await settle();
     await service.close();
 
     expect(native.taps[0]?.stopped).toBe(true);
@@ -613,7 +636,6 @@ describe("AudioCaptureService pause and resume", () => {
 
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.5));
     microphone.emit(new Float32Array(48).fill(-0.5));
-    await settle();
     await expect(service.state()).resolves.toMatchObject({
       durationMs: 1,
       status: "recording",
@@ -626,7 +648,6 @@ describe("AudioCaptureService pause and resume", () => {
     // Neither track advances while paused; the tap and helper stay open.
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.5));
     microphone.emit(new Float32Array(48).fill(-0.5));
-    await settle();
     await expect(service.state()).resolves.toMatchObject({
       durationMs: 1,
       status: "paused",
@@ -637,7 +658,6 @@ describe("AudioCaptureService pause and resume", () => {
     await expect(service.resume()).resolves.toMatchObject({ status: "recording" });
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.5));
     microphone.emit(new Float32Array(48).fill(-0.5));
-    await settle();
 
     const result = await admitted.stop();
     expect(result.status).toBe("ready");
@@ -657,12 +677,10 @@ describe("AudioCaptureService pause and resume", () => {
     for (let i = 0; i < 3; i += 1)
       native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.5));
     microphone.emit(new Float32Array(48).fill(-0.5));
-    await settle();
     await service.pause();
     await service.resume();
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.5));
     microphone.emit(new Float32Array(48).fill(-0.5));
-    await settle();
 
     const result = await admitted.stop();
     expect(result.status).toBe("ready");
@@ -702,7 +720,6 @@ describe("AudioCaptureService pause and resume", () => {
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.5));
     await service.resume();
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.5));
-    await settle();
     openSpy.mockRestore();
 
     const result = await admitted.stop();
@@ -716,14 +733,12 @@ describe("AudioCaptureService pause and resume", () => {
     const { native, service } = createService({ now: () => nowMs });
     await service.start({ maxDurationMs: 5_000, source: { kind: "system" } });
     native.taps[0]?.emit(new Float32Array(48 * 2));
-    await settle();
 
     await service.pause();
     nowMs += 60_000;
     await service.resume();
     nowMs += 1_000;
     native.taps[0]?.emit(new Float32Array(48 * 2));
-    await settle();
     // Only 1 s of wall time counts: no silence suspicion, no length cap.
     await expect(service.state()).resolves.toMatchObject({
       capped: false,
@@ -733,7 +748,6 @@ describe("AudioCaptureService pause and resume", () => {
 
     nowMs += 3_100;
     native.taps[0]?.emit(new Float32Array(48 * 2));
-    await settle();
     await expect(service.state()).resolves.toMatchObject({
       permission: "suspected_denied",
     });
@@ -792,9 +806,14 @@ describe("AudioCaptureService pause and resume", () => {
     const opening = new Promise<{ stop: () => Promise<void> }>((resolve) => {
       ready = resolve;
     });
-    vi.spyOn(microphone, "start").mockReturnValueOnce(opening);
+    const requested = Promise.withResolvers<void>();
+    vi.spyOn(microphone, "start").mockImplementationOnce(() => {
+      requested.resolve();
+      return opening;
+    });
     const changing = admitted.selectMicrophone("built-in");
-    await settle();
+    // Cancel while the new helper is opening, not before it was asked for.
+    await requested.promise;
     const cancelled = service.cancel();
     const lateStop = vi.fn(async () => {});
     ready({ stop: lateStop });
@@ -831,7 +850,6 @@ describe("AudioCaptureService pause and resume", () => {
     const { admitted, native, service } = createService();
     await service.start({ source: { kind: "system" } });
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.25));
-    await settle();
     await service.pause();
 
     const result = await admitted.stop();
@@ -949,15 +967,15 @@ function createService({
 
 /** Runs `stop` inside a real Session admission, the way the gateway does. */
 function createAdmittedService(service: AudioCaptureService, userId = "user-capture") {
-  const authority = new MainProductCredentialAuthority({
-    authorityInstanceId: `authority-capture-${Math.random()}`,
+  const authority = new MainCredentialGate({
+    authorityInstanceId: `authority-${userId}`,
     trustedAudience: "https://api.comma.example",
   });
-  const signedIn = authority.acceptVerifiedCredential({
+  const signedIn = acceptVerified(authority, {
     audience: "https://api.comma.example",
     email: "capture@example.com",
     expiresAtEpochSeconds: 1_900_000_000,
-    sessionId: `session-capture-${Math.random()}`,
+    sessionId: `session-${userId}`,
     token: "main_secret",
     userId,
   });
@@ -1017,9 +1035,13 @@ function tempDirectory() {
   return directory;
 }
 
-/** Capture writes are queued off the callback; let the tail drain. */
-async function settle() {
-  await new Promise((resolve) => setTimeout(resolve, 0));
+/** Settles once the service has removed a path matching `pattern`; arm it first. */
+function removal(pattern: RegExp) {
+  const removed = Promise.withResolvers<void>();
+  removals.listener = (path, done) => {
+    if (pattern.test(path)) void done.then(removed.resolve, removed.reject);
+  };
+  return removed.promise;
 }
 
 describe("capture initialization ownership", () => {
@@ -1041,16 +1063,21 @@ describe("capture initialization ownership", () => {
       const recordingPublished = published.some(
         (state) => state.status === "recording"
       );
-      let done = false;
+      // Cleanup reaches its first removal without any I/O, so a cleanup that
+      // did not wait would remove a file before the sink's open could finish.
+      let removedBeforeOpen = false;
+      removals.listener = () => {
+        if (!sink) removedBeforeOpen = true;
+      };
+      let completedBeforeOpen: boolean | undefined;
       const cancelling = service[action]().then(() => {
-        done = true;
+        completedBeforeOpen = !sink;
       });
-      await settle();
-      const completedBeforeOpen = done;
       gate.resolve();
       await Promise.all([starting, cancelling]);
       try {
         expect(recordingPublished).toBe(false);
+        expect(removedBeforeOpen).toBe(false);
         expect(completedBeforeOpen).toBe(false);
         expect(native.taps[0]?.stopped).toBe(true);
         expect(await readdir(recordingsDir)).toEqual([]);
@@ -1075,8 +1102,8 @@ describe("capture initialization ownership", () => {
     const starting = service.start({ source: { kind: "system" } });
     await entered.promise;
     native.taps[0]?.emit(new Float32Array(48 * 2).fill(0.5));
+    // Admission runs stop at once, so it already waits for the opening sink.
     const stopping = admitted.stop();
-    await settle();
     gate.resolve();
     await starting;
     const result = await stopping;

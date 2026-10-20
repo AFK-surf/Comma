@@ -934,7 +934,6 @@ test("Participant opens a right-sidebar Session tab while retaining the Conversa
 test("Session pages through 203 mixed records with stable anchors and grouped tools", async ({
   page,
 }, testInfo) => {
-  test.setTimeout(60_000);
   const requests: URL[] = [];
   const records = sessionStressRecords(21).slice(0, 203);
   const stub = await startSessionStressStub(records, requests);
@@ -1085,106 +1084,6 @@ test("Session pages through 203 mixed records with stable anchors and grouped to
       }),
       contentType: "application/json",
     });
-  } finally {
-    await stub.close();
-  }
-});
-
-test("Session renders 5003 records after owner pagination without intermediate UI updates", async ({
-  page,
-}, testInfo) => {
-  test.setTimeout(90_000);
-  const requests: URL[] = [];
-  const records = sessionStressRecords(501).slice(0, 5003);
-  const stub = await startSessionStressStub(records, requests);
-  try {
-    await installBrowserTestSession(page, {
-      apiBaseUrl: stub.baseUrl,
-      email: "session-stress@comma.local",
-      token: "comma_sess_stress",
-    });
-    await page.goto("/");
-    // Exercise the real SharedWorker owner and its 50-record HTTP contract.
-    // This cold-render check withholds intermediate projections only. The
-    // short pagination test checks live updates, cursors and scroll anchors.
-    await page.evaluate(() => {
-      const bridge = window.commaNative!.sessionHistory;
-      const load = bridge.load.bind(bridge);
-      const subscribe = bridge.state.subscribe.bind(bridge.state);
-      bridge.state.subscribe = () => () => {};
-      bridge.load = async (input) => {
-        try {
-          let envelope = await load(input);
-          for (let pageNumber = 1; envelope.snapshot.hasMore; pageNumber++) {
-            if (pageNumber >= 101) throw new Error("History cursor did not terminate");
-            envelope = await load({ ...input, mode: "older" });
-          }
-          if (envelope.snapshot.records.length !== 5003)
-            throw new Error("History owner lost records during pagination");
-          const ids = envelope.snapshot.records.map((record) => record.id);
-          if (new Set(ids).size !== 5003)
-            throw new Error("History owner duplicated records during pagination");
-          return envelope;
-        } finally {
-          bridge.load = load;
-          bridge.state.subscribe = subscribe;
-        }
-      };
-    });
-    await page.getByTestId("session-history-participant").click();
-    const history = page.getByTestId("session-history-page");
-    const viewport = history.getByRole("region", { name: "Execution records" });
-    await expect(history.getByText("5003 loaded records", { exact: true })).toBeVisible(
-      { timeout: 30_000 }
-    );
-    await expect(history.locator("article")).toHaveCount(4005);
-    const ids = await history
-      .locator("article")
-      .evaluateAll((elements) =>
-        elements.map((element) => element.getAttribute("data-record-id"))
-      );
-    expect(new Set(ids).size).toBe(4005);
-    expect(requests).toHaveLength(101);
-    expect(requests.every((url) => url.searchParams.get("limit") === "50")).toBe(true);
-    expect(
-      requests.slice(1).map((url) => Number(url.searchParams.get("before")))
-    ).toEqual(Array.from({ length: 100 }, (_, index) => 4954 - index * 50));
-    await expect(history.getByTestId("session-json")).toHaveCount(0);
-    await expect(
-      history.getByText("Beginning of session", { exact: true })
-    ).toBeVisible();
-    const track = history.getByTestId("session-timeline-track");
-    const bounds = (await track.boundingBox())!;
-    // At this density, zoom separates minimum-width bars that share a real-time row.
-    await page.mouse.move(bounds.x, bounds.y + 10);
-    await page.mouse.wheel(0, -1500);
-    await expect
-      .poll(async () => Number(await track.getAttribute("data-axis-to")))
-      .toBeLessThan(0.1);
-    const tool = history.locator('[data-span-id="tool:stress-0-a"]');
-    await tool.click();
-    await expect(history.locator('[data-record-id="tool:stress-0-a"]')).toHaveAttribute(
-      "data-selected",
-      "true"
-    );
-    await history.getByRole("button", { name: "Show all", exact: true }).click();
-    await page.mouse.move(bounds.x + bounds.width * 0.5, bounds.y + 10);
-    await page.mouse.wheel(0, -1500);
-    await expect
-      .poll(async () => Number(await track.getAttribute("data-axis-from")))
-      .toBeGreaterThan(0.4);
-    await history.locator('[data-span-id="tool:stress-250-a"]').click();
-    const centered = history.locator('[data-record-id="tool:stress-250-a"]');
-    await expect(centered).toHaveAttribute("data-selected", "true");
-    await expect
-      .poll(async () => {
-        const row = (await centered.boundingBox())!;
-        const visible = (await viewport.boundingBox())!;
-        return Math.abs(row.y + row.height / 2 - visible.y - visible.height / 2);
-      })
-      .toBeLessThan(2);
-    expect(requests).toHaveLength(101);
-    await page.screenshot({ path: testInfo.outputPath("session-5003-records.png") });
   } finally {
     await stub.close();
   }

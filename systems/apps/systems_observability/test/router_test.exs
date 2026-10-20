@@ -1,5 +1,5 @@
 defmodule SystemsObservability.RouterTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   import Plug.Test
 
   test "metrics endpoint is internal and predictable" do

@@ -8,7 +8,7 @@ defmodule SalixAgent.TestSupport.SessionKernelDriver do
     settle(
       SalixVerifiedKernel.Session.step(
         token,
-        {:observed_config, Application.get_env(:salix_agent, key, default)}
+        {:observed_config, SystemsRuntime.get_env(:salix_agent, key, default)}
       )
     )
   end

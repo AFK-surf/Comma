@@ -8,11 +8,13 @@ import {
 
 describe("Electron security guards", () => {
   it("allows only packaged and configured dev renderer navigation origins", () => {
-    const origins = new Set(allowedRendererOrigins("http://127.0.0.1:5173/some/path"));
+    const origins = new Set(
+      allowedRendererOrigins("https://vite.comma.test/some/path")
+    );
 
     expect(isAllowedUrl("assets://./", origins)).toBe(true);
     expect(isAllowedUrl("assets://./settings", origins)).toBe(true);
-    expect(isAllowedUrl("http://127.0.0.1:5173/app", origins)).toBe(true);
+    expect(isAllowedUrl("https://vite.comma.test/app", origins)).toBe(true);
     expect(isAllowedUrl("https://example.com/phish", origins)).toBe(false);
   });
 

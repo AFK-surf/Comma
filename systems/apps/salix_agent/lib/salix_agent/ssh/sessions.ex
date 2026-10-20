@@ -1,9 +1,11 @@
 defmodule SalixAgent.SSH.Sessions do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Outbound SSH sessions (`SalixAgent.SSH.Session`) of one Agent session.
 
-  Each session actor (`SalixAgent.InternalSessionActor`,
-  `SalixAgent.ExternalSessionActor`) supervises its own SSH sessions. On the
+  Each session actor (`SalixAgent.InternalSessionActor`) supervises its own
+  SSH sessions. On the
   first `ssh.open` it starts one `DynamicSupervisor` linked to itself, so
   every SSH session ends when the actor ends. An actor with SSH session
   processes is not idle and does not stop or get evicted for idleness.
@@ -40,7 +42,7 @@ defmodule SalixAgent.SSH.Sessions do
   end
 
   defp existing_or_admitted(spec) do
-    case Registry.lookup(@registry, key(spec)) do
+    case SystemsRuntime.Registry.lookup(@registry, key(spec)) do
       [{pid, _}] -> {:ok, pid}
       [] -> admit_through_actor(spec)
     end
@@ -52,15 +54,12 @@ defmodule SalixAgent.SSH.Sessions do
         {:internal, pid} ->
           SalixAgent.SessionResidency.call(pid, {:ssh_start, spec}, @actor_timeout_ms)
 
-        {:external, pid} ->
-          GenServer.call(pid, {:ssh_start, spec}, @actor_timeout_ms)
-
         nil ->
           {:error, :no_session_actor}
       end
 
     case result do
-      {:ok, pid} when is_pid(pid) -> {:ok, pid}
+      {:ok, pid} when SystemsRuntime.Proc.is_process(pid) -> {:ok, pid}
       {:error, %{"code" => _} = diagnostic} -> {:error, diagnostic}
       other -> {:error, unavailable(other)}
     end
@@ -69,15 +68,12 @@ defmodule SalixAgent.SSH.Sessions do
   end
 
   defp actor(agent_id, session_id) do
-    case Registry.lookup(SalixAgent.Registry, {:internal_session, agent_id, session_id}) do
-      [{pid, _}] ->
-        {:internal, pid}
-
-      [] ->
-        case Registry.lookup(SalixAgent.Registry, {:external_session, agent_id, session_id}) do
-          [{pid, _}] -> {:external, pid}
-          [] -> nil
-        end
+    case SystemsRuntime.Registry.lookup(
+           SalixAgent.Registry,
+           {:internal_session, agent_id, session_id}
+         ) do
+      [{pid, _}] -> {:internal, pid}
+      [] -> nil
     end
   end
 
@@ -138,7 +134,7 @@ defmodule SalixAgent.SSH.Sessions do
     supervisor = ensure_supervisor(supervisor)
 
     reply =
-      case Registry.lookup(@registry, key(spec)) do
+      case SystemsRuntime.Registry.lookup(@registry, key(spec)) do
         [{pid, _}] ->
           {:ok, pid}
 
@@ -147,11 +143,11 @@ defmodule SalixAgent.SSH.Sessions do
           remove_retained(supervisor, entries)
 
           with :ok <- within_limit(entries) do
-            case DynamicSupervisor.start_child(supervisor, {Session, spec}) do
+            case SystemsRuntime.DynamicSupervisor.start_child(supervisor, {Session, spec}) do
               {:ok, pid} ->
                 # The actor's idle check depends on its SSH sessions; the
                 # monitor wakes it when one exits.
-                Process.monitor(pid)
+                SystemsRuntime.Proc.monitor(pid)
                 {:ok, pid}
 
               {:error, {:already_started, pid}} ->
@@ -168,18 +164,19 @@ defmodule SalixAgent.SSH.Sessions do
 
   @doc "Whether the actor's supervisor holds any SSH session process."
   @spec live?(pid() | nil) :: boolean()
-  def live?(supervisor) when is_pid(supervisor) do
-    DynamicSupervisor.count_children(supervisor).active > 0
+  def live?(supervisor) when SystemsRuntime.Proc.is_process(supervisor) do
+    SystemsRuntime.DynamicSupervisor.count_children(supervisor).active > 0
   catch
     :exit, _ -> false
   end
 
   def live?(_supervisor), do: false
 
-  defp ensure_supervisor(supervisor) when is_pid(supervisor), do: supervisor
+  defp ensure_supervisor(supervisor) when SystemsRuntime.Proc.is_process(supervisor),
+    do: supervisor
 
   defp ensure_supervisor(nil) do
-    {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+    {:ok, supervisor} = SystemsRuntime.DynamicSupervisor.start_link(strategy: :one_for_one)
     supervisor
   end
 
@@ -206,20 +203,22 @@ defmodule SalixAgent.SSH.Sessions do
     |> Enum.reject(fn {_key, _pid, value} -> open?(value) end)
     |> Enum.sort_by(fn {_key, _pid, value} -> value.started_at end, :desc)
     |> Enum.drop(@max_retained - 1)
-    |> Enum.each(fn {_key, pid, _value} -> DynamicSupervisor.terminate_child(supervisor, pid) end)
+    |> Enum.each(fn {_key, pid, _value} ->
+      SystemsRuntime.DynamicSupervisor.terminate_child(supervisor, pid)
+    end)
   end
 
   # ---- helpers --------------------------------------------------------------------
 
   defp lookup(owner, id) do
-    case Registry.lookup(@registry, {owner.agent_id, owner.session_id, id}) do
+    case SystemsRuntime.Registry.lookup(@registry, {owner.agent_id, owner.session_id, id}) do
       [{pid, _}] -> {:ok, pid}
       [] -> {:error, gone(id, :not_found)}
     end
   end
 
   defp entries(owner) do
-    Registry.select(@registry, [
+    SystemsRuntime.Registry.select(@registry, [
       {{{:"$1", :"$2", :"$3"}, :"$4", :"$5"},
        [{:==, :"$1", owner.agent_id}, {:==, :"$2", owner.session_id}],
        [{{{{:"$1", :"$2", :"$3"}}, :"$4", :"$5"}}]}

@@ -3,6 +3,7 @@ import {
   commaChatSidebarMinWidth,
   commaHomeContentMinWidth,
   commaHomeGreetFoldWidth,
+  commaHomeGreetMaxWidth,
   commaHomeTasksFoldWidth,
   commaSidebarRailWidth,
   railFitsFrame,
@@ -78,5 +79,38 @@ describe("railFitsFrame", () => {
 
   it("keeps the rail while the frame is unmeasured", () => {
     expect(homeHoldsRail(0, true)).toBe(true);
+  });
+});
+
+describe("commaHomeGreetMaxWidth", () => {
+  const tasks = { shut: false, width: 300, clearance: 0 };
+
+  it("keeps the chat floor beside open Tasks at its preferred width", () => {
+    expect(commaHomeGreetMaxWidth({ routeWidth: 1440, greetWidth: 300, tasks })).toBe(
+      1440 - 441 - 316
+    );
+  });
+
+  it("stops at the current width once Greeting already squeezes Tasks", () => {
+    expect(commaHomeGreetMaxWidth({ routeWidth: 961, greetWidth: 260, tasks })).toBe(
+      260
+    );
+  });
+
+  it("gives Greeting the route beside shut Tasks, minus its clearance", () => {
+    expect(
+      commaHomeGreetMaxWidth({
+        routeWidth: 961,
+        greetWidth: 300,
+        tasks: { ...tasks, shut: true },
+      })
+    ).toBe(520);
+    expect(
+      commaHomeGreetMaxWidth({
+        routeWidth: 961,
+        greetWidth: 300,
+        tasks: { ...tasks, shut: true, clearance: 12 },
+      })
+    ).toBe(508);
   });
 });

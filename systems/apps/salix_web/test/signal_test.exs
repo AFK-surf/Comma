@@ -5,7 +5,7 @@ defmodule SalixWeb.SignalTest do
   code created through the runtime API binds the Signal sender who sends it,
   and only bound peers ring. Also the Signal dashboard page and Group tab.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
@@ -17,16 +17,16 @@ defmodule SalixWeb.SignalTest do
   @endpoint SalixWeb.DashboardEndpoint
 
   setup do
-    prev_api_token = Application.get_env(:salix_web, :api_token)
-    Application.put_env(:salix_web, :api_token, "test-token")
+    prev_api_token = SystemsRuntime.get_env(:salix_web, :api_token)
+    SystemsRuntime.put_env(:salix_web, :api_token, "test-token")
     {:ok, _} = Settings.set_platform_number(nil)
 
     on_exit(fn ->
       _ = Settings.set_platform_number(nil)
 
       if prev_api_token,
-        do: Application.put_env(:salix_web, :api_token, prev_api_token),
-        else: Application.delete_env(:salix_web, :api_token)
+        do: SystemsRuntime.put_env(:salix_web, :api_token, prev_api_token),
+        else: SystemsRuntime.delete_env(:salix_web, :api_token)
     end)
 
     tenant_id = req(:post, "/v1/admin/tenants", json: %{name: "Signal"}).body["tenant_id"]
@@ -41,7 +41,7 @@ defmodule SalixWeb.SignalTest do
 
   # A registered account with Comma-chosen identifiers; removed after the test.
   defp account!(scope, state \\ :active) do
-    n = :rand.uniform(9_999_999)
+    n = SystemsRuntime.Proc.uniform(9_999_999)
     aci = "00000000-0000-4000-8000-" <> String.pad_leading(Integer.to_string(n), 12, "0")
     number = "+1555" <> String.pad_leading(Integer.to_string(n), 7, "0")
     identity = SalixSignalProto.Keys.ec_keypair()
@@ -70,7 +70,9 @@ defmodule SalixWeb.SignalTest do
   end
 
   defp sender,
-    do: "00000000-0000-4000-8000-0000000000" <> Integer.to_string(10 + :rand.uniform(88))
+    do:
+      "00000000-0000-4000-8000-0000000000" <>
+        Integer.to_string(10 + SystemsRuntime.Proc.uniform(88))
 
   defp text_inbound(sender, text, timestamp) do
     %Inbound{

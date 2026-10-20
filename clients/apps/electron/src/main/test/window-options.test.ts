@@ -3,8 +3,6 @@ import {
   createMainWindowOptions,
   createOnboardingWindowOptions,
   createRuntimeWorkbenchWindowOptions,
-  createSideChatTestWindowOptions,
-  createSideChatWindowOptions,
 } from "../window-options";
 
 describe("createMainWindowOptions", () => {
@@ -74,6 +72,19 @@ describe("createMainWindowOptions", () => {
 
     expect(options).toMatchObject(expected);
   });
+
+  it("leaves Windows' window buttons to the window bar, so none are drawn twice", () => {
+    const options = createMainWindowOptions({
+      platform: "win32",
+      windowId: "win_main",
+      windowRole: "main-window",
+      preloadPath: "/tmp/comma-preload.js",
+      productName: "Comma Test",
+    });
+
+    expect(options.titleBarStyle).toBe("hidden");
+    expect(options.titleBarOverlay).toBeUndefined();
+  });
 });
 
 describe("createRuntimeWorkbenchWindowOptions", () => {
@@ -103,114 +114,6 @@ describe("createRuntimeWorkbenchWindowOptions", () => {
       sandbox: true,
       webSecurity: true,
       additionalArguments: ["--window-id=dev_workbench", "--window-role=dev-workbench"],
-    });
-  });
-});
-
-describe("createSideChatWindowOptions", () => {
-  it("creates an isolated transparent panel that stays hidden until presentation progress arrives", () => {
-    const options = createSideChatWindowOptions({
-      platform: "darwin",
-      windowId: "win_side_chat",
-      windowRole: "side-chat-window",
-      preloadPath: "/tmp/comma-preload.js",
-      productName: "Comma Test",
-    });
-
-    expect(options).toMatchObject({
-      acceptFirstMouse: true,
-      backgroundColor: "#00000000",
-      closable: false,
-      focusable: true,
-      frame: false,
-      fullscreenable: false,
-      hasShadow: false,
-      height: 380,
-      maximizable: false,
-      minimizable: false,
-      movable: false,
-      resizable: false,
-      roundedCorners: false,
-      show: false,
-      skipTaskbar: true,
-      title: "Comma Test Side Chat",
-      transparent: true,
-      type: "panel",
-      width: 523,
-    });
-    expect(options.webPreferences).toMatchObject({
-      backgroundThrottling: false,
-      preload: "/tmp/comma-preload.js",
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      webSecurity: true,
-      additionalArguments: [
-        "--window-id=win_side_chat",
-        "--window-role=side-chat-window",
-      ],
-    });
-  });
-
-  it("uses the localized title template for the Side Chat window", () => {
-    const options = createSideChatWindowOptions({
-      locale: "zh-CN",
-      platform: "darwin",
-      windowId: "win_side_chat",
-      windowRole: "side-chat-window",
-      preloadPath: "/tmp/comma-preload.js",
-      productName: "Comma",
-    });
-
-    expect(options.title).toBe("Comma Side Chat");
-  });
-});
-
-describe("createSideChatTestWindowOptions", () => {
-  it("covers exactly one display with an isolated transparent renderer", () => {
-    const options = createSideChatTestWindowOptions({
-      bounds: { height: 1117, width: 1728, x: -1728, y: 0 },
-      platform: "darwin",
-      windowId: "win_side_chat_test",
-      windowRole: "side-chat-test-window",
-      preloadPath: "/tmp/comma-preload.js",
-      productName: "Comma Test",
-    });
-
-    expect(options).toMatchObject({
-      acceptFirstMouse: true,
-      backgroundColor: "#00000000",
-      closable: false,
-      focusable: true,
-      frame: false,
-      fullscreenable: false,
-      hasShadow: false,
-      height: 1117,
-      maximizable: false,
-      minimizable: false,
-      movable: false,
-      resizable: false,
-      roundedCorners: false,
-      show: false,
-      skipTaskbar: true,
-      title: "Comma Test Side Chat Test",
-      transparent: true,
-      type: "panel",
-      width: 1728,
-      x: -1728,
-      y: 0,
-    });
-    expect(options.webPreferences).toMatchObject({
-      backgroundThrottling: false,
-      preload: "/tmp/comma-preload.js",
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      webSecurity: true,
-      additionalArguments: [
-        "--window-id=win_side_chat_test",
-        "--window-role=side-chat-test-window",
-      ],
     });
   });
 });
@@ -246,6 +149,9 @@ describe("createOnboardingWindowOptions", () => {
     // while Comma is active, so the browser and System Settings come in front.
     expect(options.alwaysOnTop).toBeUndefined();
     expect(options.type).toBeUndefined();
+    // Hidden in Mission Control, AppKit would count no Comma window on its
+    // desktop, and coming back to that desktop would activate another app.
+    expect(options.hiddenInMissionControl).toBeUndefined();
     // Its intro sound plays as it opens, without waiting for a press.
     expect(options.webPreferences).toMatchObject({
       preload: "/tmp/comma-preload.js",

@@ -3,8 +3,38 @@
   "compilerOptions": {
     "lib": ["ES2023", "DOM"],
     "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.electron.utility.tsbuildinfo",
-    "types": ["node", "electron"]
+    "types": ["node", "electron"],
+    "paths": {
+      "@comma/core/node": ["../../packages/core/src/hosts/node.ts"],
+      "@comma/session-contract": ["../../packages/session-contract/src/index.ts"],
+      "@comma/core-kernel": ["../../packages/core-kernel/src/index.ts"],
+      "@comma/core-kernel/client": ["../../packages/core-kernel/src/client/index.ts"],
+      "@comma/core-kernel/testing": ["../../packages/core-kernel/src/testing.ts"],
+      "@comma/core-kernel/node-sql": ["../../packages/core-kernel/src/node-sql.ts"],
+      "@comma/core-kernel/web-worker": [
+        "../../packages/core-kernel/src/worker/relay.ts"
+      ]
+    }
   },
-  "include": ["src/utility.ts", "src/utility/**/*.ts", "src/shared/**/*.ts"],
-  "exclude": ["**/*.test.*", "**/*.spec.*"]
+  "include": ["src/core.ts"],
+  "exclude": [
+    "**/*.test.*",
+    "**/*.spec.*",
+    "../../packages/core/src/hosts/web.ts",
+    "../../packages/core/src/testing/**"
+  ],
+  "references": [
+    {
+      "path": "../../packages/core"
+    },
+    {
+      "path": "../../packages/core-kernel"
+    },
+    {
+      "path": "../../packages/recommendation-contract"
+    },
+    {
+      "path": "../../packages/session-contract"
+    }
+  ]
 }

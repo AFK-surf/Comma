@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { uiClock } from "../../clock";
 
 /**
  * True only once `active` has held for `delayMs`, and false the moment it
@@ -14,8 +15,8 @@ export const useDelayedFlag = (active: boolean, delayMs: number) => {
       setRaised(false);
       return undefined;
     }
-    const timer = setTimeout(() => setRaised(true), delayMs);
-    return () => clearTimeout(timer);
+    const timer = uiClock.after(delayMs, () => setRaised(true));
+    return () => timer();
   }, [active, delayMs]);
 
   return raised && active;

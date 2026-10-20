@@ -1,3 +1,4 @@
+import { uiClock } from "@comma/ui/clock";
 import { memo, useRef } from "react";
 import { Link } from "@tanstack/react-router";
 import {
@@ -7,14 +8,13 @@ import {
   messages as catalog,
   type CommaLocale,
 } from "@comma/i18n";
-import { useCommaLocale } from "@comma/i18n/react";
-import type { ProductInboxItem } from "@comma/native-bridge";
-import {
-  TaskListItem,
-  getMenuPointerOffsets,
-  taskStatusBucket,
-  taskStatusIcon,
-} from "@comma/ui";
+import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import type { ProductInboxItem } from "@comma/core-client";
+import { TaskListItem } from "@comma/ui/components/TaskListItem";
+import { getMenuPointerOffsets } from "@comma/ui/components/menu";
+import { taskStatusBucket, taskStatusIcon } from "@comma/ui/components/task-workspace";
+import { taskLoopFilterKey, taskLoopLabel } from "../tasks/taskLoopLabels";
+import { TaskScheduleChip, useOpenTasksFilter } from "../tasks/taskChips";
 import { InboxItemMenuPopover, useInboxItemMenu } from "./InboxItemMenu";
 
 export type InboxGroupModel = {
@@ -31,6 +31,7 @@ export const InboxRow = memo(function InboxRow({
   status,
   freshness,
   updatedAt,
+  loop,
   selected,
   unread,
   onDelete,
@@ -42,6 +43,8 @@ export const InboxRow = memo(function InboxRow({
   "conversationId" | "groupId" | "workspaceId" | "title" | "status" | "updatedAt"
 > & {
   freshness: ProductInboxItem["freshness"];
+  /** The row names the Loop's trigger type. */
+  loop: ProductInboxItem["loop"];
   selected: boolean;
   unread: boolean;
   minute: number;
@@ -51,8 +54,10 @@ export const InboxRow = memo(function InboxRow({
   onOpen: () => void;
 }) {
   const locale = useCommaLocale();
+  const messages = useCommaMessages();
   const rowRef = useRef<HTMLAnchorElement | null>(null);
   const menu = useInboxItemMenu();
+  const openTasksFilter = useOpenTasksFilter();
   // Every Inbox row is a Task, so it draws the same status glyph as Properties.
   const statusBucket = taskStatusBucket(status);
   const freshnessLabel = contentFreshnessLabel(freshness, locale);
@@ -63,7 +68,13 @@ export const InboxRow = memo(function InboxRow({
       <Link
         aria-current={selected ? "page" : undefined}
         aria-haspopup="menu"
-        aria-label={`${title}${freshnessLabel ? `, ${freshnessLabel}` : ""}`}
+        aria-label={[
+          title,
+          loop ? taskLoopLabel(loop, messages) : undefined,
+          freshnessLabel,
+        ]
+          .filter(Boolean)
+          .join(", ")}
         className="block rounded-xl no-underline outline-none focus-visible:shadow-focus-gray"
         data-freshness={freshness}
         data-task-status={status}
@@ -92,6 +103,17 @@ export const InboxRow = memo(function InboxRow({
         to="/inbox/$workspaceId/$groupId/$conversationId"
       >
         <TaskListItem
+          badges={
+            loop ? (
+              <TaskScheduleChip
+                loop={loop}
+                iconOnly
+                nested
+                onOpen={() => openTasksFilter({ schedule: taskLoopFilterKey(loop) })}
+                testId="inbox-item-schedule"
+              />
+            ) : undefined
+          }
           dot={unread}
           icon={taskStatusIcon(statusBucket)}
           iconKey={statusBucket}
@@ -135,7 +157,7 @@ export const InboxRow = memo(function InboxRow({
 export function groupInboxItems(
   items: ProductInboxItem[],
   locale: CommaLocale,
-  now = Date.now()
+  now = uiClock.now()
 ) {
   const today = startOfDay(now);
   const yesterday = startOfPreviousDay(now);
@@ -169,7 +191,7 @@ export function groupInboxItems(
 export function formatCompactRelative(
   timestamp: number,
   locale: CommaLocale,
-  now = Date.now()
+  now = uiClock.now()
 ): string {
   const seconds = Math.max(0, Math.round((now - normalizeTimestamp(timestamp)) / 1000));
   if (seconds < 60) return catalog.inbox_time_now(undefined, { locale });

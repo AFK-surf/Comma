@@ -1,4 +1,6 @@
 defmodule SalixIM.Triage.ReadModel do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Read-only window over native Slack Triage durable state, for the BFT
   Triage Workbench.
@@ -387,7 +389,7 @@ defmodule SalixIM.Triage.ReadModel do
   """
   def product_heatmap(project_id, group_id, agent_id) do
     hour_ms = 3_600_000
-    now_ms = System.system_time(:millisecond)
+    now_ms = SystemsClock.system_time(:millisecond)
     since_ms = div(now_ms, hour_ms) * hour_ms + hour_ms - @heatmap_window_ms
 
     TriageProductRuntime.outcome_heatmap(project_id, group_id, agent_id, since_ms)
@@ -1616,7 +1618,7 @@ defmodule SalixIM.Triage.ReadModel do
       summary["deadline_at"] >= summary["created_at"] and
       (is_nil(terminal) or
          (is_map(terminal) and
-            terminal["status"] in ~w(evaluated failed skipped_timeout skipped_already_answered) and
+            terminal["status"] in ~w(evaluated failed skipped_timeout skipped_already_answered skipped_source_deleted) and
             positive_timestamp?(terminal["settled_at"]))) and
       (not archived? or
          (summary["archived_membership"] == true and positive_timestamp?(summary["sealed_at"]) and
@@ -1887,7 +1889,7 @@ defmodule SalixIM.Triage.ReadModel do
 
     exact_keys?(terminal, ~w(terminal_id status decision evaluator settled_at)) and
       ULID.valid?(terminal["terminal_id"]) and
-      status in ~w(evaluated failed skipped_timeout skipped_already_answered) and
+      status in ~w(evaluated failed skipped_timeout skipped_already_answered skipped_source_deleted) and
       is_map(decision) and action in ~w(silence reply react delegate remember) and
       is_map(terminal["evaluator"]) and positive_timestamp?(terminal["settled_at"])
   end
@@ -1939,7 +1941,7 @@ defmodule SalixIM.Triage.ReadModel do
       active_evaluations: 0,
       open_buckets: 0,
       scheduled_buckets: 0,
-      observed_at_ms: System.system_time(:millisecond)
+      observed_at_ms: SystemsClock.system_time(:millisecond)
     }
   end
 
@@ -1958,7 +1960,7 @@ defmodule SalixIM.Triage.ReadModel do
   defp product_evaluator_ready?(agent_id) when is_binary(agent_id) do
     agent_id = String.trim(agent_id)
 
-    agent_id != "" and Code.ensure_loaded?(@product_evaluator) and
+    agent_id != "" and SystemsRuntime.Proc.ensure_loaded?(@product_evaluator) and
       function_exported?(@product_evaluator, :ready?, 1) and
       apply(@product_evaluator, :ready?, [agent_id]) == true
   rescue
@@ -2002,17 +2004,17 @@ defmodule SalixIM.Triage.ReadModel do
   end
 
   defp resolve_server(name) when is_atom(name) do
-    case Process.whereis(name) do
+    case SystemsRuntime.Proc.whereis(name) do
       nil -> :not_running
       pid -> {:ok, pid}
     end
   end
 
-  defp resolve_server(pid) when is_pid(pid), do: {:ok, pid}
+  defp resolve_server(pid) when SystemsRuntime.Proc.is_process(pid), do: {:ok, pid}
   defp resolve_server(_ref), do: :not_running
 
   defp ring_call(server, request) do
-    {:ok, GenServer.call(server, request, @ring_call_timeout_ms)}
+    {:ok, SystemsRuntime.Server.call(server, request, @ring_call_timeout_ms)}
   catch
     :exit, _reason -> {:error, :unavailable}
   end

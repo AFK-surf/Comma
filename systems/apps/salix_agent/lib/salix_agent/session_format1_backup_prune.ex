@@ -34,7 +34,7 @@ defmodule SalixAgent.SessionFormat1BackupPrune do
 
   defp check_retention(retention_days) do
     with {:ok, completed_at} <- Cutover.marker_completed_at() do
-      age_days = DateTime.diff(DateTime.utc_now(), to_utc_datetime(completed_at), :day)
+      age_days = DateTime.diff(SystemsClock.utc_now(), to_utc_datetime(completed_at), :day)
 
       if age_days >= retention_days,
         do: :ok,

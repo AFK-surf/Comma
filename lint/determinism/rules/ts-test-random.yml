@@ -1,0 +1,73 @@
+id: ts-test-random
+language: typescript
+severity: error
+message: "A test uses unseeded randomness."
+note: |
+  Use fixed values or a seeded generator, so every run sees the same input.
+metadata:
+  category: random
+rule:
+  any:
+    - pattern: Math.random()
+    - pattern: crypto.randomUUID()
+    - pattern: $G.crypto.randomUUID()
+    - pattern: randomUUID()
+    - pattern: crypto.getRandomValues($$$)
+    - pattern: randomBytes($$$)
+    - pattern: nanoid($$$)
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"
+---
+id: tsx-test-random
+language: tsx
+severity: error
+message: "A test uses unseeded randomness."
+note: |
+  Use fixed values or a seeded generator, so every run sees the same input.
+metadata:
+  category: random
+rule:
+  any:
+    - pattern: Math.random()
+    - pattern: crypto.randomUUID()
+    - pattern: $G.crypto.randomUUID()
+    - pattern: randomUUID()
+    - pattern: crypto.getRandomValues($$$)
+    - pattern: randomBytes($$$)
+    - pattern: nanoid($$$)
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"

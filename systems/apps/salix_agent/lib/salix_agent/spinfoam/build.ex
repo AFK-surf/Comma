@@ -82,7 +82,7 @@ defmodule SalixAgent.Spinfoam.Build do
   @spec compile(map(), String.t()) ::
           {:ok, report()} | {:error, {:build_failed, failure()} | term()}
   def compile(files, entry) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     result =
       case Host.build_compile(files, entry) do
@@ -91,7 +91,7 @@ defmodule SalixAgent.Spinfoam.Build do
         {:error, _} = error -> error
       end
 
-    emit(result, System.monotonic_time() - started)
+    emit(result, SystemsClock.monotonic_time() - started)
     result
   end
 

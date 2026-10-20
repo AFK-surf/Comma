@@ -1,5 +1,5 @@
 defmodule SalixStore.AgentVMMSessionIdentityMigrationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{AgentVMM, Compute, Repo}
 
@@ -76,7 +76,7 @@ defmodule SalixStore.AgentVMMSessionIdentityMigrationTest do
                id: "migration-workload",
                environment_id: environment.id,
                allocation_id: allocation.id,
-               kind: "external_worker",
+               kind: "meeting_runtime",
                generation: 1
              })
 
@@ -89,7 +89,7 @@ defmodule SalixStore.AgentVMMSessionIdentityMigrationTest do
                connection_epoch: "1"
              })
 
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     {1, nil} =
       Repo.insert_all(AgentVMM.Session, [

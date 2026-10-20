@@ -39,7 +39,7 @@ defmodule SalixAgent.Tools.IFC do
   def defs do
     [
       {@tool,
-       "Ask the person who made the current request to confirm carrying named information to a destination that refused it. Use this only after a guidance refusal, with the same tool and params you were refused for, and only for sources that person can already read. The confirmation is durable: once given, retry the original call unchanged.",
+       "Ask the person who made the current request to confirm carrying named information to a destination that refused it.\n\nUse this only after a guidance refusal, with the same tool and params you were refused for, and only for sources that person can already read. The confirmation is durable: once given, retry the original call unchanged.",
        schema(), &__MODULE__.call/2, @wait, [roles: ["router"], safety: "write"]}
     ]
   end
@@ -116,7 +116,7 @@ defmodule SalixAgent.Tools.IFC do
          source_atoms: sources,
          destination_atoms: destination,
          thread_ref: payload["thread_ref"],
-         expires_at_ms: System.system_time(:millisecond) + ttl_ms
+         expires_at_ms: SystemsClock.system_time(:millisecond) + ttl_ms
        }}
     else
       _other -> :error
@@ -166,7 +166,7 @@ defmodule SalixAgent.Tools.IFC do
       "destination" => descriptor,
       "atoms" => atoms,
       "trusted_origin" => Map.get(ctx, :trusted_origin),
-      "now" => System.system_time(:millisecond)
+      "now" => SystemsClock.system_time(:millisecond)
     }
 
     case IFC.resolve(request) do
@@ -234,7 +234,7 @@ defmodule SalixAgent.Tools.IFC do
           "language" => Atom.to_string(SalixAgent.IFC.language(reply))
         }
       },
-      "expires_at" => System.system_time(:second) + @request_ttl_seconds
+      "expires_at" => SystemsClock.system_time(:second) + @request_ttl_seconds
     })
   end
 
@@ -270,7 +270,7 @@ defmodule SalixAgent.Tools.IFC do
          "input" => Jason.encode!(args),
          "status" => "running",
          "completion_mode" => "external_callback",
-         "started_at" => System.system_time(:millisecond),
+         "started_at" => SystemsClock.system_time(:millisecond),
          "auto_wait_seconds" => @wait
        }
        |> Map.merge(CapabilityRequestStore.execution_fields(request)),

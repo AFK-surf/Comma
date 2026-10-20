@@ -247,7 +247,7 @@ defmodule SalixAgent.TrajectoryEval.Judge do
       else
         {:ok,
          %{
-           "judged_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+           "judged_at" => SystemsClock.utc_now() |> DateTime.to_iso8601(),
            "evaluator" => "judge",
            "prompt_version" => @prompt_version,
            "model" => model,
@@ -384,5 +384,5 @@ defmodule SalixAgent.TrajectoryEval.Judge do
     end
   end
 
-  defp config, do: Application.get_env(:salix_agent, :trajectory_eval, [])
+  defp config, do: SystemsRuntime.get_env(:salix_agent, :trajectory_eval, [])
 end

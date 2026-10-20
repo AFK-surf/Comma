@@ -5,18 +5,7 @@ type SelectedInspection = Extract<BrowserSidebarInspectResult, { status: "select
 const maxUserMessageLength = 4_000;
 const maxElementTextLength = 2_000;
 const maxHtmlLength = 4_000;
-const browserElementInspectionContextPattern =
-  /\s*<user-reminder>\s*<browser-element-inspection\s+id="([^"]+)"\s*\/>\s*<browser_element_context>([\s\S]*?)<\/browser_element_context>\s*<\/user-reminder>\s*$/u;
-
-export type BrowserElementInspectionContext = {
-  attributes?: string | undefined;
-  elementText?: string | undefined;
-  inspectionId: string;
-  pageTitle?: string | undefined;
-  pageUrl: string;
-  selector: string;
-  tagName: string;
-};
+const screenshotName = "inspected-element.png";
 
 export function buildBrowserElementInspectionMessage(inspection: SelectedInspection) {
   const userMessage = clipped(inspection.userMessage.trim(), maxUserMessageLength);
@@ -45,6 +34,7 @@ export function buildBrowserElementInspectionMessage(inspection: SelectedInspect
   lines.push(
     `Bounding rect: x=${rounded(rect.x)}, y=${rounded(rect.y)}, width=${rounded(rect.width)}, height=${rounded(rect.height)}`
   );
+  if (inspection.screenshot) lines.push(`Screenshot: attached as ${screenshotName}`);
 
   if (inspection.element.text?.trim()) {
     lines.push(
@@ -67,48 +57,15 @@ export function buildBrowserElementInspectionMessage(inspection: SelectedInspect
   return lines.join("\n");
 }
 
-export function stripBrowserElementInspectionContext(message: string) {
-  return message.replace(browserElementInspectionContextPattern, "").trimEnd();
-}
-
-export function parseBrowserElementInspectionMessage(message: string): {
-  body: string;
-  context?: BrowserElementInspectionContext | undefined;
-} {
-  const match = browserElementInspectionContextPattern.exec(message);
-  if (!match) return { body: message };
-
-  const contextText = match[2] ?? "";
-  const pageUrl = lineValue(contextText, "Page URL");
-  const selector = lineValue(contextText, "Selector");
-  const tagName = lineValue(contextText, "Tag");
-  if (!pageUrl || !selector || !tagName) {
-    return { body: stripBrowserElementInspectionContext(message) };
-  }
-
-  const elementText =
-    /(?:^|\n)Element text:\n([\s\S]*?)(?=\n\nElement HTML excerpt:|\n<\/browser_element_context>|$)/u.exec(
-      contextText
-    )?.[1];
-  return {
-    body: message.slice(0, match.index).trimEnd(),
-    context: {
-      attributes: lineValue(contextText, "Attributes"),
-      elementText: elementText?.trim() || undefined,
-      inspectionId: match[1] ?? "",
-      pageTitle: lineValue(contextText, "Page title"),
-      pageUrl,
-      selector,
-      tagName,
-    },
-  };
-}
-
-function lineValue(context: string, label: string) {
-  const line = context
-    .split("\n")
-    .find((candidate) => candidate.startsWith(`${label}: `));
-  return line?.slice(label.length + 2).trim() || undefined;
+/**
+ * The element's screenshot as a file of its message: the chat shows it, and the agent reads it beside the DOM in the
+ * message's text. None when the element was not on screen.
+ */
+export function browserElementInspectionFiles(inspection: SelectedInspection) {
+  const { screenshot } = inspection;
+  return screenshot
+    ? [{ bytes: screenshot, name: screenshotName, size: screenshot.byteLength }]
+    : [];
 }
 
 function clipped(value: string, maxLength: number) {

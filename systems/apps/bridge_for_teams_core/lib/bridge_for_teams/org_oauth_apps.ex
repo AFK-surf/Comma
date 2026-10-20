@@ -158,7 +158,7 @@ defmodule BridgeForTeams.OrgOAuthApps do
         resource_id: provider,
         resource_label: provider,
         result: "ok",
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         metadata: %{
           "provider" => provider,
           "salix_tenant_id" => org.salix_tenant_id,
@@ -191,7 +191,7 @@ defmodule BridgeForTeams.OrgOAuthApps do
         resource_label: provider,
         result: "failed",
         reason: reason,
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         surface: "oauth",
         metadata: %{
           "provider" => provider,
@@ -231,7 +231,7 @@ defmodule BridgeForTeams.OrgOAuthApps do
              "status" => "unavailable"
            },
            correlation_id: "org:#{org.id}:oauth-provider-apps",
-           occurred_at: DateTime.utc_now()
+           occurred_at: SystemsClock.utc_now()
          }) do
       {:ok, _event} ->
         :ok

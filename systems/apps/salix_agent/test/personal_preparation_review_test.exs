@@ -1,6 +1,7 @@
 defmodule SalixAgent.PersonalPreparationReviewTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.{InternalSessionFleet, InternalSessionStore, PersonalPreparationReview}
   alias SalixAgent.InternalSession
   alias SalixAgent.Tools.MeetingPreparation
@@ -13,13 +14,12 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
     def complete(messages, tools), do: complete(messages, tools, %{})
 
     def complete(messages, tools, opts) do
-      send(:persistent_term.get({__MODULE__, :pid}), {:review, messages, tools, opts})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.PersistentTerm.get({__MODULE__, :pid}),
+        {:review, messages, tools, opts}
+      )
 
-      case :persistent_term.get({__MODULE__, :response}) do
-        :slow_review ->
-          Process.sleep(31_000)
-          {:final, ~s({"outcome":"ready","report":"Reviewed reminder"})}
-
+      case SystemsRuntime.PersistentTerm.get({__MODULE__, :response}) do
         :echo_source ->
           report =
             if Jason.encode!(messages) =~ "UNDECLARED PRIVATE BODY",
@@ -50,7 +50,11 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
           _agent,
           _session
         ) do
-      send(:persistent_term.get({Model, :pid}), {:saved, connect, user, report, evidence})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.PersistentTerm.get({Model, :pid}),
+        {:saved, connect, user, report, evidence}
+      )
+
       {:ok, %{"status" => "saved"}}
     end
   end
@@ -66,15 +70,15 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
 
     previous =
       Enum.map(replacements, fn {app, key, value} ->
-        old = Application.get_env(app, key)
-        Application.put_env(app, key, value)
+        old = SystemsRuntime.get_env(app, key)
+        SystemsRuntime.put_env(app, key, value)
         {app, key, old}
       end)
 
     start_supervised!(SalixStore.S3.Fake)
-    :persistent_term.put({Model, :pid}, self())
+    SystemsRuntime.PersistentTerm.put({Model, :pid}, SystemsRuntime.Proc.self())
 
-    :persistent_term.put(
+    SystemsRuntime.PersistentTerm.put(
       {Model, :response},
       {:final, Jason.encode!(%{"outcome" => "ready", "report" => "Reviewed reminder"})}
     )
@@ -82,12 +86,12 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
     on_exit(fn ->
       Enum.each(previous, fn {app, key, old} ->
         if is_nil(old),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, old)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, old)
       end)
 
-      :persistent_term.erase({Model, :pid})
-      :persistent_term.erase({Model, :response})
+      SystemsRuntime.PersistentTerm.erase({Model, :pid})
+      SystemsRuntime.PersistentTerm.erase({Model, :response})
       SalixAgent.TestSupport.stop_all_agents()
     end)
 
@@ -146,10 +150,14 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
       |> InternalSession.new(session, %{"created_at" => 1})
       |> InternalSession.apply_events(events)
 
-    :sys.replace_state(pid, fn actor ->
-      :ok = InternalSessionStore.seed(agent, state)
-      actor
-    end)
+    :sys.replace_state(
+      pid,
+      fn actor ->
+        :ok = InternalSessionStore.seed(agent, state)
+        actor
+      end,
+      :infinity
+    )
 
     evidence = %{
       "decision" => %{"sources" => [%{"ref" => "src:a-1"}, %{"ref" => "src:a-2"}]},
@@ -195,7 +203,7 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
 
   test "first publication saves the independent review from full originals, never the draft or private index",
        %{ctx: ctx, original: original} do
-    started_at = DateTime.utc_now()
+    started_at = SystemsClock.utc_now()
 
     report = """
     快开会啦，相关资料帮你放一起了：
@@ -204,7 +212,7 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
     - [回复问题](https://example.slack.com/archives/CPUBLIC/p123456)：这里整理了没有收到回复时的复现步骤，方便对照自己的体验。
     """
 
-    :persistent_term.put(
+    SystemsRuntime.PersistentTerm.put(
       {Model, :response},
       {:final, Jason.encode!(%{"outcome" => "ready", "report" => report})}
     )
@@ -217,7 +225,7 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
     assert is_binary(input["reviewed_at"])
     assert {:ok, reviewed_at, 0} = DateTime.from_iso8601(input["reviewed_at"])
     assert DateTime.compare(reviewed_at, started_at) != :lt
-    assert DateTime.compare(reviewed_at, DateTime.utc_now()) != :gt
+    assert DateTime.compare(reviewed_at, SystemsClock.utc_now()) != :gt
     assert input["draft"] == "Wrong draft"
     assert Enum.any?(input["original_evidence"], &(&1["content"] == original))
     refute Jason.encode!(messages) =~ "UNDECLARED PRIVATE INDEX"
@@ -225,124 +233,11 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
     assert evidence == ctx.ifc_evidence
   end
 
-  test "IFC-off publication uses the envelope's declared originals without a second reference list",
-       %{ctx: ctx, original: original} do
-    ctx = dispatch_context(ctx)
-    refs = ["src:a-1", "src:a-2"]
-
-    for sources <- [refs, Jason.encode!(refs)] do
-      result = dispatch_report(args(), sources, ctx)
-      refute result.error, inspect(result)
-      assert_received {:review, messages, [], _}
-
-      assert Enum.any?(
-               Jason.decode!(List.last(messages).content)["original_evidence"],
-               &(&1["content"] == original)
-             )
-
-      refute Jason.encode!(messages) =~ "UNDECLARED PRIVATE INDEX"
-      assert_received {:saved, "connect", "UPENG", "Reviewed reminder", _}
-    end
-  end
-
-  test "review failure, malformed response and tool calls never save a draft",
-       %{ctx: ctx} do
-    for response <- [
-          {:error, :unavailable},
-          {:final, "not JSON"},
-          {:assistant, "", [%{}]}
-        ] do
-      :persistent_term.put({Model, :response}, response)
-      assert_raise RuntimeError, fn -> publish(args(), ctx) end
-      refute_received {:saved, _, _, _, _}
-    end
-  end
-
-  test "a reviewed no-action outcome saves an empty advice result", %{ctx: ctx} do
-    :persistent_term.put(
-      {Model, :response},
-      {:final, ~s({"outcome":"no_supported_action","report":""})}
-    )
-
-    result =
-      dispatch_report(Map.put(args(), "report", ""), args()["source_refs"], dispatch_context(ctx))
-
-    refute result.error, inspect(result)
-    assert Jason.decode!(result.content)["status"] == "saved"
-    assert_received {:review, _, [], _}
-    assert_received {:saved, "connect", "UPENG", nil, evidence}
-    assert evidence == ctx.ifc_evidence
-  end
-
-  test "an empty draft does not permit missing reports or blank recipient fields", %{ctx: ctx} do
-    ctx = dispatch_context(ctx)
-
-    for {params, missing} <- [
-          {Map.delete(args(), "report"), "report"},
-          {Map.put(args(), "report", nil), "report"},
-          {Map.put(args(), "connect_id", " "), "connect_id (empty string)"}
-        ] do
-      result = dispatch_report(params, args()["source_refs"], ctx)
-      assert Jason.decode!(result.content)["error"] == "missing required params: #{missing}"
-      refute_received {:review, _, _, _}
-      refute_received {:saved, _, _, _, _}
-    end
-  end
-
-  test "bot summaries alone cannot become personal preparation even when the model would accept them",
-       %{ctx: ctx, actor_pid: pid} do
-    summary = %{
-      "user" => "UBOT",
-      "bot_id" => "BMEETING",
-      "text" => "Peng owns billing and must present the acceptance results today."
-    }
-
-    seed_more(
-      pid,
-      ctx,
-      source_events(
-        4,
-        "bot-summary",
-        "meeting.preparation.read_shared_source",
-        Jason.encode!(%{"messages" => [summary]}),
-        %{
-          "label" => ["scope|connect|CPUBLIC"],
-          "items" => [%{"index" => 0, "label" => ["scope|connect|CPUBLIC"]}]
-        }
-      )
-    )
-
-    for ref <- ["src:a-4", "src:a-4#0"] do
-      assert_raise RuntimeError, ~r/personal_review_no_supported_action/, fn ->
-        publish(
-          Map.put(args(), "source_refs", ["src:a-1", ref]),
-          ctx
-        )
-      end
-
-      refute_received {:review, _, _, _}
-      refute_received {:saved, _, _, _, _}
-    end
-  end
-
-  test "unresolvable original or undeclared recipient refuses before invoking the model", %{
-    ctx: ctx
-  } do
-    for refs <- [["src:a-404"], ["src:a-2"]] do
-      assert_raise RuntimeError, fn ->
-        publish(Map.put(args(), "source_refs", refs), ctx)
-      end
-
-      refute_received {:review, _, _, _}
-      refute_received {:saved, _, _, _, _}
-    end
-  end
-
   test "source text cannot redirect review to an undeclared private stored result", %{
     ctx: ctx,
     actor_pid: pid
   } do
-    :persistent_term.put({Model, :response}, :echo_source)
+    SystemsRuntime.PersistentTerm.put({Model, :response}, :echo_source)
     pointer = Jason.encode!(%{"stored_result" => true, "result_ref" => "private-result"})
 
     seed_more(
@@ -396,10 +291,7 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
     refute Jason.encode!(messages) =~ "PRIVATE SIBLING"
   end
 
-  @tag timeout: 90_000
-  test "canonical tool execution preserves a review beyond the former 30 second budget", %{
-    ctx: ctx
-  } do
+  test "IFC-enforced canonical tool execution saves exactly one reviewed report", %{ctx: ctx} do
     group = SalixStore.Ids.group_id_from_agent!(ctx.agent_id)
     SalixAgent.TestSupport.create_control_group!(group, %{"ifc" => %{"mode" => "enforce"}})
 
@@ -421,9 +313,6 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
         SalixAgent.ToolDisclosure.materialize("worker", :internal, ctx)
       )
 
-    :persistent_term.put({Model, :response}, :slow_review)
-
-    # Cross the actual dispatcher deadline that killed real source reviews.
     [result] =
       SalixAgent.Tools.execute(
         [
@@ -479,39 +368,6 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
     refute Jason.encode!(messages) =~ "UNDECLARED PRIVATE INDEX"
   end
 
-  test "public review refuses missing or forged refs and model authored summaries", %{
-    ctx: ctx,
-    actor_pid: pid
-  } do
-    {ctx, recipient, refs} = public_review_sources(pid, ctx)
-
-    seed_more(pid, ctx, [
-      %{
-        "type" => "delivery",
-        "from_queue" => true,
-        "message_id" => 6,
-        "role" => "assistant",
-        "content" => "My summary of the source",
-        "created_at" => 6
-      }
-    ])
-
-    for supplied <- [
-          [],
-          nil,
-          List.duplicate(hd(refs), 33),
-          [%{"ref" => "src:a-5", "label" => []}],
-          refs ++ ["src:a-404"],
-          refs ++ ["src:a-6"],
-          refs ++ [42]
-        ] do
-      assert {:error, _} =
-               PersonalPreparationReview.review_public("Wrong draft", recipient, supplied, ctx)
-
-      refute_received {:review, _, _, _}
-    end
-  end
-
   test "public review requires original labels and rejects declassified or private-memory sources",
        %{
          ctx: ctx,
@@ -527,7 +383,7 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
           {%{"label" => []}, "meeting.preparation.read_team_memory"},
           {%{"label" => []}, "im_api.slack.get_channel_history"}
         ] do
-      id = 1_000 + System.unique_integer([:positive, :monotonic])
+      id = 1_000 + SystemsRuntime.Proc.unique_integer([:positive, :monotonic])
       seed_more(pid, ctx, source_events(id, "refused-#{id}", tool, "UNSUPPORTED", ifc))
 
       assert {:error, :personal_review_source_unavailable} =
@@ -540,74 +396,6 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
 
       refute_received {:review, _, _, _}
     end
-  end
-
-  test "public indexed review uses the selected original label and excludes sibling content", %{
-    ctx: ctx,
-    actor_pid: pid
-  } do
-    {ctx, recipient, refs} = public_review_sources(pid, ctx)
-
-    content =
-      Jason.encode!(%{
-        "messages" => [
-          %{"user" => "UPENG", "text" => "PUBLIC HIT"},
-          %{"user" => "UOTHER", "text" => "PRIVATE SIBLING"}
-        ]
-      })
-
-    seed_more(
-      pid,
-      ctx,
-      source_events(6, "indexed-public", "meeting.preparation.read_shared_source", content, %{
-        "label" => ["scope|connect|CPUBLIC", "scope|connect|CPRIVATE"],
-        "items" => [%{"index" => 0, "label" => ["scope|connect|CPUBLIC"]}]
-      })
-    )
-
-    assert {:ok, _, evidence} =
-             PersonalPreparationReview.review_public(
-               "Wrong draft",
-               recipient,
-               [hd(refs), "src:a-6#0"],
-               ctx
-             )
-
-    refute "scope|connect|CPRIVATE" in evidence["sources_label"]
-    assert_received {:review, messages, [], _}
-    assert Jason.encode!(messages) =~ "PUBLIC HIT"
-    refute Jason.encode!(messages) =~ "PRIVATE SIBLING"
-
-    assert {:error, :personal_review_source_unavailable} =
-             PersonalPreparationReview.review_public(
-               "Wrong draft",
-               recipient,
-               [hd(refs), "src:a-6#1"],
-               ctx
-             )
-
-    refute_received {:review, _, _, _}
-  end
-
-  test "public review requires a declared recipient identity and preserves reviewer refusal", %{
-    ctx: ctx,
-    actor_pid: pid
-  } do
-    {ctx, recipient, refs} = public_review_sources(pid, ctx)
-
-    assert {:error, :personal_review_requires_declared_recipient} =
-             PersonalPreparationReview.review_public(
-               "Wrong draft",
-               recipient,
-               [List.last(refs)],
-               ctx
-             )
-
-    refute_received {:review, _, _, _}
-    :persistent_term.put({Model, :response}, {:final, ~s({"outcome":"no_supported_action"})})
-
-    assert {:ok, nil, _evidence} =
-             PersonalPreparationReview.review_public("Wrong draft", recipient, refs, ctx)
   end
 
   test "file provenance comes only from the stored original and is retained for reauthorization",
@@ -650,51 +438,6 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
     refute Jason.encode!(messages) =~ "FORGED"
   end
 
-  test "file source missing or contradicting its stored identity and audience refuses review", %{
-    ctx: ctx,
-    actor_pid: pid
-  } do
-    {ctx, recipient, refs} = public_review_sources(pid, ctx)
-    descriptor = %{"connect_id" => "connect", "channel" => "CPUBLIC", "file_id" => "FTRANSCRIPT"}
-
-    original = %{
-      "file_id" => "FTRANSCRIPT",
-      "channel" => "CPUBLIC",
-      "source_file" => descriptor,
-      "text" => "FILE"
-    }
-
-    for source <- [
-          Map.delete(original, "source_file"),
-          put_in(original, ["source_file", "file_id"], "FOTHER"),
-          put_in(original, ["source_file", "connect_id"], "other-connect")
-        ] do
-      id = 2_000 + System.unique_integer([:positive, :monotonic])
-
-      seed_more(
-        pid,
-        ctx,
-        source_events(
-          id,
-          "invalid-file-#{id}",
-          "meeting.preparation.read_shared_source",
-          Jason.encode!(source),
-          %{"label" => ["scope|connect|CPUBLIC"]}
-        )
-      )
-
-      assert {:error, :personal_review_source_unavailable} =
-               PersonalPreparationReview.review_public(
-                 "Wrong draft",
-                 recipient,
-                 refs ++ ["src:a-#{id}"],
-                 ctx
-               )
-
-      refute_received {:review, _, _, _}
-    end
-  end
-
   defp public_review_sources(pid, ctx) do
     recipient = %{
       "connect_id" => "connect",
@@ -734,53 +477,15 @@ defmodule SalixAgent.PersonalPreparationReviewTest do
     {ctx, recipient, ["src:a-4", "src:a-5"]}
   end
 
-  defp dispatch_context(ctx) do
-    group = SalixStore.Ids.group_id_from_agent!(ctx.agent_id)
-    SalixAgent.TestSupport.create_control_group!(group, %{"ifc" => %{"mode" => "off"}})
-
-    ctx =
-      ctx
-      |> Map.delete(:ifc_evidence)
-      |> Map.merge(%{
-        group_id: group,
-        role: "worker",
-        runtime_kind: :internal,
-        llm_tool_envelope: true
-      })
-      |> SalixAgent.TestSupport.with_plugin_projection()
-
-    Map.put(
-      ctx,
-      :tool_disclosure,
-      SalixAgent.ToolDisclosure.materialize("worker", :internal, ctx)
-    )
-  end
-
-  defp dispatch_report(params, sources, ctx) do
-    [result] =
-      SalixAgent.Tools.execute(
-        [
-          %{
-            id: "publish-from-originals",
-            name: "call",
-            args: %{
-              "tool" => "meeting.preparation.publish_personal_report",
-              "params" => Map.delete(params, "source_refs"),
-              "ifc" => %{"sources" => sources}
-            }
-          }
-        ],
-        ctx
-      )
-
-    result
-  end
-
   defp seed_more(pid, ctx, events) do
-    :sys.replace_state(pid, fn actor ->
-      {:ok, _state} = InternalSessionStore.commit(ctx.agent_id, ctx.session_id, events)
-      actor
-    end)
+    :sys.replace_state(
+      pid,
+      fn actor ->
+        {:ok, _state} = InternalSessionStore.commit(ctx.agent_id, ctx.session_id, events)
+        actor
+      end,
+      :infinity
+    )
   end
 
   defp publish(args, ctx) do

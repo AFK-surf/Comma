@@ -24,7 +24,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,14 +37,14 @@ import (
 )
 
 const (
-	maxOutput                        = 64 * 1024
-	maxProcessBytes                  = 2 * 1024 * 1024
-	maxFile                          = 10 * 1024 * 1024
-	chunkSize                        = 256 * 1024
-	maxArchiveBytes                  = 64 * 1024 * 1024
-	maxArchiveFile                   = 32 * 1024 * 1024
-	componentName                    = "salix-connect"
-	externalRuntimeStateRelativePath = "external-runtime/state.db"
+	maxOutput                = 64 * 1024
+	maxProcessBytes          = 2 * 1024 * 1024
+	maxFile                  = 10 * 1024 * 1024
+	chunkSize                = 256 * 1024
+	maxArchiveBytes          = 64 * 1024 * 1024
+	maxArchiveFile           = 32 * 1024 * 1024
+	componentName            = "salix-connect"
+	legacyExternalRuntimeDir = "external-runtime"
 
 	// scopeLocalFileRead restricts the connector to serving read_ref for the
 	// Electron-managed local attachment index. Every other remote method is
@@ -54,16 +53,14 @@ const (
 	// only as a trusted routing/readiness projection.
 	scopeLocalFileRead = "local_file_read"
 
-	minReconnectBackoff          = time.Second
-	maxReconnectBackoff          = 30 * time.Second
-	externalInputCatchupTimeout  = 30 * time.Second
-	externalRuntimeCheckInterval = 10 * time.Second
-	webSocketReadTimeout         = 45 * time.Second
-	maxWebSocketMessageBytes     = 16 * 1024 * 1024
-	maxConcurrentRequests        = 16
-	maxConcurrentStreamWrites    = 4
-	maxPendingWriteStreams       = 16
-	connectorInstanceHeader      = "X-Salix-Connector-Instance-ID"
+	minReconnectBackoff       = time.Second
+	maxReconnectBackoff       = 30 * time.Second
+	webSocketReadTimeout      = 45 * time.Second
+	maxWebSocketMessageBytes  = 16 * 1024 * 1024
+	maxConcurrentRequests     = 16
+	maxConcurrentStreamWrites = 4
+	maxPendingWriteStreams    = 16
+	connectorInstanceHeader   = "X-Salix-Connector-Instance-ID"
 )
 
 var (
@@ -94,6 +91,9 @@ type config struct {
 	alias               string
 	root                string
 	reconnect           bool
+	// dial connects to the Server's address; nil is the network's own
+	// dialer. Tests set an in-memory network.
+	dial func(ctx context.Context, network, address string) (net.Conn, error)
 
 	computerUseHelperApp   string
 	computerUseSocketPath  string
@@ -119,10 +119,6 @@ type config struct {
 	computeRuntimeProjectID      string
 
 	systemInfoInterval time.Duration
-
-	workspaceArchiveEnabled        bool
-	workspaceArchiveIdle           time.Duration
-	workspaceArchiveRestoreTimeout time.Duration
 
 	androidEnabled      bool
 	androidSDKRoot      string
@@ -164,6 +160,7 @@ type connector struct {
 	connectionMu              sync.Mutex
 	activeConnection          *connectionSession
 	beforeRequestAdmission    func(*connectionSession, message)
+	afterRequestFinished      func(message)
 	afterConnectionPublished  func(*connectionSession)
 	cleanupQueue              chan io.Closer
 	requestSlots              chan struct{}
@@ -188,32 +185,21 @@ type connector struct {
 	runtimePending         map[string]runtimePendingRequest
 	runtimeRequestSequence atomic.Uint64
 	runtimeProxySlots      chan struct{}
-	runtimeImplementations map[string]externalRuntimeImplementation
-	computeExecutionMu     sync.Mutex
-	computeExecutionTarget map[string]any
-	runtimeExecutionSlots  map[string]chan struct{}
-	runtimeOperations      runtimeOperationCoordinator
-	// Consecutive failed recovery checks per obligation key; owned by the
-	// externalRuntimeHealthLoop goroutine (applyRecoveryFailureBudget).
-	externalRuntimeRecoveryFailures map[string]externalRuntimeRecoveryStreak
-	externalRuntimeIdentityPruneAt  time.Time
-	bridgeMu                        sync.Mutex
-	bridgeURL                       string
-	bridgeServer                    *http.Server
-	runtimeRoutes                   map[string]string
-	salixCLIDirs                    map[string]string
-	externalRuntimeState            *externalRuntimeState
-	externalWorkspaceRoot           string
-	externalWorkspaceError          error
-	workspaceArchiver               *workspaceArchiver
-
-	workspaceNoticeMu       sync.Mutex
-	workspaceRuntimeNotices map[string]string
+	runtimeImplementations map[string]runtimeImplementation
+	runtimeWorkspaceRoot   string
+	runtimeWorkspaceError  error
+	runtimeStateLock       *os.File
+	backgroundMu           sync.Mutex
+	backgroundCtx          context.Context
+	backgroundCancel       context.CancelFunc
+	backgroundClosed       bool
+	background             sync.WaitGroup
 
 	computerUseImageMu         sync.Mutex
 	computerUseImagesScheduled bool
 	computerUseMu              sync.Mutex
 	computerUseAuthToken       string
+	screenStreams              screenStreamRegistry
 	android                    *androidProvider
 
 	meetMu           sync.Mutex
@@ -229,10 +215,9 @@ type connector struct {
 }
 
 type runtimeTransport struct {
-	send        contextMessageSender
-	done        chan struct{}
-	closeOnce   sync.Once
-	catchupOnce sync.Once
+	send      contextMessageSender
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 type runtimePendingRequest struct {
@@ -337,29 +322,26 @@ type managedProcess struct {
 }
 
 type codexRuntime struct {
-	diagnostics     *harnessDiagnosticBuffer
-	implementation  *codexRuntimeImplementation
-	command         string
-	generation      string
-	cmd             *exec.Cmd
-	listenURL       string
-	connectTimeout  time.Duration
-	readLimit       int64
-	ws              *websocket.Conn
-	wsMu            sync.Mutex
-	exited          chan struct{}
-	done            chan struct{}
-	doneOnce        sync.Once
-	stopOnce        sync.Once
-	initMu          sync.Mutex
-	nativeVersion   string
-	versionObserved bool
-	versionError    string
-	// Codex's own model list and per-directory config, cached for this process.
-	defaultsMu  sync.Mutex
-	catalog     *codexModelCatalog
-	configByCwd map[string]codexConfigDefaults
-
+	// Set when the WebSocket ended, before any caller is released: the process is then stopped and reaped.
+	transportGone                  atomic.Bool
+	diagnostics                    *harnessDiagnosticBuffer
+	implementation                 *codexRuntimeImplementation
+	command                        string
+	generation                     string
+	cmd                            *exec.Cmd
+	listenURL                      string
+	connectTimeout                 time.Duration
+	readLimit                      int64
+	ws                             *websocket.Conn
+	wsMu                           sync.Mutex
+	exited                         chan struct{}
+	done                           chan struct{}
+	doneOnce                       sync.Once
+	stopOnce                       sync.Once
+	initMu                         sync.Mutex
+	nativeVersion                  string
+	versionObserved                bool
+	versionError                   string
 	writeMu                        sync.Mutex
 	mu                             sync.Mutex
 	nextID                         int
@@ -373,7 +355,6 @@ type codexRuntime struct {
 	subscriptionNeedsLogin         bool
 	subscriptionAccountID          string
 	subscriptionChatGPTID          string
-	// Modeled in tla/connector/RuntimeAuthReadiness.tla.
 	// fullReadinessProven means the cached overall readiness fields were
 	// committed by a full probe of this exact process generation while auth was
 	// ready. Incremental non-ready auth evidence invalidates the proof.
@@ -395,52 +376,17 @@ func (e *codexRPCError) Error() string {
 	return fmt.Sprintf("codex %s: %s", e.method, e.message)
 }
 
-type codexRuntimeSession struct {
-	inputMu                  sync.Mutex // holds the complete batch until the native thread is ready
-	mu                       sync.Mutex
-	sessionID                string
-	token                    string
-	threadID                 string
-	activeTurnID             string
-	lastCompletedTurnID      string
-	lastCompletedDispatchID  string
-	lastCompletedExecutionID string
-	dispatchID               string
-	executionID              string
-	workState                string
-	failureIssue             string
-	failureMessage           string
-	turnStartedSeq           uint64
-	recoveryPending          bool
-	recoveryMessage          string
-	persistencePending       bool
-	runtime                  *codexRuntime
-	threadRuntime            *codexRuntime // generation that completed native start/resume
-	recoveryInput            externalRuntimeInput
-	stopDone                 chan struct{}
-}
-
+// codexRuntimeImplementation owns the shared Codex app-server processes that
+// serve readiness probes, account login and subscription credentials.
 type codexRuntimeImplementation struct {
-	connector        *connector
-	activityMu       sync.RWMutex
-	activityRevision atomic.Uint64
-	mu               sync.Mutex
-	startupMu        sync.Mutex
-	runtimes         map[string]*codexRuntime
-	sessions         map[string]*codexRuntimeSession
-	sessionOrder     []string
-	sessionIndex     map[string]int
-	threads          map[string]string
-	auth             *runtimeAuthCoordinator
-	authQuarantined  map[string]bool
-	connectTimeout   time.Duration
-	closed           bool
-}
-
-func (i *codexRuntimeImplementation) beginActivity() func() {
-	i.activityMu.RLock()
-	i.activityRevision.Add(1)
-	return i.activityMu.RUnlock
+	connector       *connector
+	mu              sync.Mutex
+	startupMu       sync.Mutex
+	runtimes        map[string]*codexRuntime
+	auth            *runtimeAuthCoordinator
+	authQuarantined map[string]bool
+	connectTimeout  time.Duration
+	closed          bool
 }
 
 type processOutput struct {
@@ -464,10 +410,13 @@ type message struct {
 	Result               any            `json:"result,omitempty"`
 	Error                string         `json:"error,omitempty"`
 	Stream               *streamData    `json:"stream,omitempty"`
-	Capabilities         map[string]any `json:"capabilities,omitempty"`
-	Skills               *[]any         `json:"skills,omitempty"`
-	SystemInfo           map[string]any `json:"system_info,omitempty"`
-	ConnectorHealth      map[string]any `json:"connector_health,omitempty"`
+	// Seq and DataB64 belong to a response_chunk frame.
+	Seq             *int           `json:"seq,omitempty"`
+	DataB64         string         `json:"data_b64,omitempty"`
+	Capabilities    map[string]any `json:"capabilities,omitempty"`
+	Skills          *[]any         `json:"skills,omitempty"`
+	SystemInfo      map[string]any `json:"system_info,omitempty"`
+	ConnectorHealth map[string]any `json:"connector_health,omitempty"`
 }
 
 var codexAppBundleCommandPaths = defaultCodexAppBundleCommandPaths
@@ -511,9 +460,9 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "runtime-cli" {
-		if err := runSalixRuntimeCLI(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "salix: %v\n", err)
+	if len(os.Args) > 1 && os.Args[1] == "screen-stream-demo" {
+		if err := runScreenStreamDemo(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "salix-connect screen-stream-demo: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -532,7 +481,7 @@ func main() {
 		fatal(err)
 	}
 	defer c.shutdownComputerUseDaemon()
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if cfg.parentLifelineFD >= 3 || cfg.parentLifelinePipe != "" {
@@ -549,8 +498,6 @@ func main() {
 	if cfg.shutdownRequestPath != "" {
 		go watchShutdownRequest(ctx, cfg.shutdownRequestPath, cfg.runNonce, stop)
 	}
-	go c.externalRuntimeHealthLoop(ctx, externalRuntimeCheckInterval)
-	go c.externalRuntimeWorkspaceArchiveLoop(ctx)
 
 	if cfg.stdio {
 		logf("salix-connect stdio: root=%s", c.root)
@@ -569,10 +516,6 @@ func main() {
 		logf("salix-connect %s: listen=%s root=%s", mode, cfg.listen, c.root)
 		if cfg.runtimeAgent && computeRuntimeConfigured(cfg) {
 			go func() {
-				if err := c.prepareComputeRuntime(ctx); err != nil {
-					logf("compute runtime initialization failed: %v", err)
-					return
-				}
 				c.computeRuntimeInputLoop(ctx)
 			}()
 		}
@@ -640,9 +583,9 @@ func runRuntimeProbeCommand(args []string) error {
 }
 
 func runtimeProbeReport() map[string]any {
-	workspaceRoot, workspaceErr := resolveExternalRuntimeWorkspaceRoot()
+	workspaceRoot, workspaceErr := resolveRuntimeWorkspaceRoot()
 	if workspaceErr == nil {
-		workspaceErr = prepareExternalRuntimeWorkspace(workspaceRoot)
+		workspaceErr = prepareRuntimeWorkspace(workspaceRoot)
 	}
 	runtimes := detectAgentRuntimes(workspaceErr)
 	ready := false
@@ -723,7 +666,6 @@ func parseFlags() config {
 	flag.StringVar(&cfg.parentLifelinePipe, "parent-lifeline-pipe", getenv("SALIX_CONNECTOR_PARENT_LIFELINE_PIPE", ""), "Windows named pipe closed when Electron Main exits")
 	flag.StringVar(&cfg.shutdownRequestPath, "shutdown-request-file", getenv("SALIX_CONNECTOR_SHUTDOWN_REQUEST_FILE", ""), "nonce-authenticated cooperative shutdown request file")
 	flag.BoolVar(&cfg.stdio, "stdio", false, "serve connector protocol on stdin/stdout")
-	flag.BoolVar(&cfg.workspaceArchiveEnabled, "workspace-archive", getenvBool("SALIX_WORKSPACE_ARCHIVE", true), "archive external runtime workspaces idle for the configured threshold and restore them on next input")
 	flag.BoolVar(&cfg.vmServer, "vm-server", getenvBool("SALIX_VM_CONNECT_SERVER", false), "serve connector protocol over HTTP/WebSocket for cloud VM gateways")
 	flag.BoolVar(&cfg.runtimeAgent, "runtime-agent", getenvBool("SALIX_RUNTIME_AGENT", false), "serve the shared External Worker Runtime Agent over HTTP/WebSocket")
 	flag.StringVar(&cfg.listen, "listen", getenv("SALIX_RUNTIME_AGENT_LISTEN", getenv("SALIX_VM_CONNECT_LISTEN", ":8080")), "listen address for --runtime-agent")
@@ -759,13 +701,9 @@ func parseFlags() config {
 	cfg.computeRuntimeTenantID = getenv("SALIX_COMPUTE_TENANT_ID", "")
 	cfg.computeRuntimeProjectID = getenv("SALIX_COMPUTE_PROJECT_ID", "")
 	intervalSec := flag.Int("system-info-interval", getenvInt("SALIX_CONNECTOR_SYSTEM_INFO_INTERVAL", 300), "seconds between periodic system-info reports (0 disables)")
-	workspaceArchiveIdleSec := flag.Int("workspace-archive-idle-seconds", getenvInt("SALIX_WORKSPACE_ARCHIVE_IDLE_SECONDS", int(workspaceArchiveIdleDefault/time.Second)), "seconds of inactivity before an external runtime workspace is archived (0 uses the default)")
-	workspaceArchiveRestoreTimeoutSec := flag.Int("workspace-archive-restore-timeout-seconds", getenvInt("SALIX_WORKSPACE_ARCHIVE_RESTORE_TIMEOUT_SECONDS", int(workspaceArchiveRestoreTimeoutDefault/time.Second)), "seconds to wait for a workspace archive restore before treating it as failed (0 uses the default)")
 	flag.BoolVar(&cfg.deviceMode, "device", false, "Connect a Comma-managed device with read-only access by default")
 	flag.Parse()
 	cfg.systemInfoInterval = time.Duration(*intervalSec) * time.Second
-	cfg.workspaceArchiveIdle = time.Duration(*workspaceArchiveIdleSec) * time.Second
-	cfg.workspaceArchiveRestoreTimeout = time.Duration(*workspaceArchiveRestoreTimeoutSec) * time.Second
 	explicit := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) {
 		explicit[f.Name] = true
@@ -929,6 +867,14 @@ var retiredFlags = []string{
 	"fin-evidence-jsonl",
 	"fin-sedarwin",
 	"direct-file-ops",
+	"workspace-archive-idle-seconds",
+	"workspace-archive-restore-timeout-seconds",
+}
+
+// retiredBoolFlags are retired flags that were booleans, so they may appear
+// without a value.
+var retiredBoolFlags = []string{
+	"workspace-archive",
 }
 
 type discardFlagValue struct{}
@@ -936,9 +882,16 @@ type discardFlagValue struct{}
 func (discardFlagValue) String() string   { return "" }
 func (discardFlagValue) Set(string) error { return nil }
 
+type discardBoolFlagValue struct{ discardFlagValue }
+
+func (discardBoolFlagValue) IsBoolFlag() bool { return true }
+
 func registerRetiredFlags(fs *flag.FlagSet) {
 	for _, name := range retiredFlags {
 		fs.Var(discardFlagValue{}, name, "")
+	}
+	for _, name := range retiredBoolFlags {
+		fs.Var(discardBoolFlagValue{}, name, "")
 	}
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage of %s:\n", fs.Name())
@@ -955,112 +908,6 @@ func registerRetiredFlags(fs *flag.FlagSet) {
 
 func (cfg config) mode() string {
 	return "static"
-}
-
-func runSalixRuntimeCLI(args []string) error {
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		printSalixRuntimeCLIUsage()
-		return nil
-	}
-	if args[0] == "version" || args[0] == "--version" || args[0] == "-v" {
-		fmt.Fprintln(os.Stdout, "salix runtime cli")
-		return nil
-	}
-	if args[0] == "computer-use" {
-		return runComputerUseRuntimeCLI(args[1:])
-	}
-
-	runtimeContext := strings.TrimSpace(os.Getenv("SALIX_RUNTIME_CONTEXT"))
-	if runtimeContext == "" {
-		return errors.New("SALIX_RUNTIME_CONTEXT is not set; run salix inside an external runtime session")
-	}
-
-	bridgeURL := strings.TrimRight(os.Getenv("SALIX_CONNECT_URL"), "/")
-	if bridgeURL == "" {
-		return errors.New("SALIX_CONNECT_URL is not set")
-	}
-
-	switch args[0] {
-	case "tools":
-		return salixRuntimeCLIRequest("GET", bridgeURL+"/runtime/"+url.PathEscape(runtimeContext)+"/tools", nil)
-	case "tool":
-		if len(args) < 3 || args[1] != "call" {
-			return errors.New("usage: salix tool call <tool_name> --json '{...}'")
-		}
-		toolName := args[2]
-		body := "{}"
-		for i := 3; i < len(args); i++ {
-			if args[i] == "-h" || args[i] == "--help" || args[i] == "help" {
-				helpBody, _ := json.Marshal(map[string]string{"tool": toolName})
-				return salixRuntimeCLIRequest(
-					"POST",
-					bridgeURL+"/runtime/"+url.PathEscape(runtimeContext)+"/tool/help",
-					strings.NewReader(string(helpBody)),
-				)
-			}
-			if args[i] == "--json" {
-				if i+1 >= len(args) {
-					return errors.New("--json requires a JSON object")
-				}
-				body = args[i+1]
-				i++
-			}
-		}
-		if !json.Valid([]byte(body)) {
-			return errors.New("--json must be valid JSON")
-		}
-		return salixRuntimeCLIRequest(
-			"POST",
-			bridgeURL+"/runtime/"+url.PathEscape(runtimeContext)+"/tool/"+url.PathEscape(toolName),
-			strings.NewReader(body),
-		)
-	default:
-		return fmt.Errorf("unknown salix command: %s", args[0])
-	}
-}
-
-func printSalixRuntimeCLIUsage() {
-	fmt.Fprintln(os.Stdout, "usage: salix tools | salix tool call <tool_name> --json '{...}' | salix computer-use <action> [--config path] [--json '{...}'")
-	fmt.Fprintln(os.Stdout, "examples:")
-	fmt.Fprintln(os.Stdout, "  salix tools")
-	fmt.Fprintln(os.Stdout, "  salix tool call help --json '{\"tool\":\"im_api.internal.send_message\"}'")
-	fmt.Fprintln(os.Stdout, "  salix tool call im_api.internal.send_message --json '{\"connect_id\":\"internal\",\"conversation_id\":\"task-...\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}'")
-}
-
-func salixRuntimeCLIRequest(method, endpoint string, body io.Reader) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
-	if err != nil {
-		return err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if len(raw) > 0 {
-		_, _ = os.Stdout.Write(raw)
-		if raw[len(raw)-1] != '\n' {
-			_, _ = os.Stdout.Write([]byte("\n"))
-		}
-	}
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("tool gateway returned HTTP %d", resp.StatusCode)
-	}
-	return nil
 }
 
 func newConnector(cfg config) (*connector, error) {
@@ -1093,37 +940,32 @@ func newConnector(cfg config) (*connector, error) {
 			return nil, err
 		}
 	}
-	externalWorkspaceRoot, externalWorkspaceError := resolveExternalRuntimeWorkspaceRoot()
+	runtimeWorkspaceRoot, runtimeWorkspaceError := resolveRuntimeWorkspaceRoot()
 	commandContext, cancelCommandContext := context.WithCancel(context.Background())
 	if cfg.scope == scopeLocalFileRead {
 		cancelCommandContext()
 	}
 	c := &connector{
-		cfg:                             cfg,
-		root:                            root,
-		scope:                           cfg.scope,
-		commandContext:                  commandContext,
-		cancelCommandContext:            cancelCommandContext,
-		processStartedAt:                time.Now().UnixMilli(),
-		cleanupQueue:                    make(chan io.Closer, cleanupQueueSize),
-		requestSlots:                    make(chan struct{}, maxConcurrentRequests),
-		requestOperations:               map[string]*requestOperation{},
-		processInstanceID:               randomHex(16),
-		fatalErrors:                     make(chan error, 1),
-		fatalSignal:                     make(chan struct{}),
-		processes:                       map[string]*managedProcess{},
-		runtimeInventory:                newRuntimeInventory(),
-		runtimeAuthSlots:                make(chan struct{}, runtimeAuthConcurrency),
-		runtimeControlSlots:             make(chan struct{}, runtimeControlConcurrency),
-		runtimePending:                  map[string]runtimePendingRequest{},
-		externalRuntimeRecoveryFailures: map[string]externalRuntimeRecoveryStreak{},
-		runtimeProxySlots:               make(chan struct{}, maxConcurrentRequests),
-		runtimeRoutes:                   map[string]string{},
-		salixCLIDirs:                    map[string]string{},
-		externalWorkspaceRoot:           externalWorkspaceRoot,
-		externalWorkspaceError:          externalWorkspaceError,
-		workspaceArchiver:               newWorkspaceArchiver(externalWorkspaceRoot, cfg.workspaceArchiveEnabled, cfg.workspaceArchiveIdle, cfg.workspaceArchiveRestoreTimeout),
-		workspaceRuntimeNotices:         map[string]string{},
+		cfg:                   cfg,
+		root:                  root,
+		scope:                 cfg.scope,
+		commandContext:        commandContext,
+		cancelCommandContext:  cancelCommandContext,
+		processStartedAt:      time.Now().UnixMilli(),
+		cleanupQueue:          make(chan io.Closer, cleanupQueueSize),
+		requestSlots:          make(chan struct{}, maxConcurrentRequests),
+		requestOperations:     map[string]*requestOperation{},
+		processInstanceID:     randomHex(16),
+		fatalErrors:           make(chan error, 1),
+		fatalSignal:           make(chan struct{}),
+		processes:             map[string]*managedProcess{},
+		runtimeInventory:      newRuntimeInventory(),
+		runtimeAuthSlots:      make(chan struct{}, runtimeAuthConcurrency),
+		runtimeControlSlots:   make(chan struct{}, runtimeControlConcurrency),
+		runtimePending:        map[string]runtimePendingRequest{},
+		runtimeProxySlots:     make(chan struct{}, maxConcurrentRequests),
+		runtimeWorkspaceRoot:  runtimeWorkspaceRoot,
+		runtimeWorkspaceError: runtimeWorkspaceError,
 	}
 	androidCfg := cfg
 	androidCfg.root = root
@@ -1131,42 +973,36 @@ func newConnector(cfg config) (*connector, error) {
 		androidCfg.androidRuntimeRoot = filepath.Join(root, androidCfg.androidRuntimeRoot)
 	}
 	c.android = newAndroidProvider(androidCfg)
-	c.runtimeInventory.workspaceReadiness = c.externalRuntimeWorkspaceReadiness
+	c.runtimeInventory.workspaceReadiness = c.runtimeWorkspaceReadiness
 	if err := c.loadDeviceAccess(); err != nil {
 		return nil, err
 	}
 	c.discoverDeviceRuntimes()
 
-	// A scope-limited connector serves read_ref only. It must not open the
-	// host-wide external runtime database (whose exclusive lock would break
-	// concurrent scoped connectors sharing one --root), start recovery
-	// workers, or instantiate any agent runtime implementation.
+	// A scope-limited connector serves read_ref only. It must not instantiate
+	// any agent runtime implementation.
 	if cfg.scope == scopeLocalFileRead && !cfg.deviceMode {
-		c.externalRuntimeState = newDisabledExternalRuntimeState(c)
-		c.runtimeImplementations = map[string]externalRuntimeImplementation{}
+		c.runtimeImplementations = map[string]runtimeImplementation{}
 		go c.cleanupLoop()
 		return c, nil
 	}
 
-	_, priorStateErr := os.Lstat(filepath.Join(c.runtimeStateRoot(), "external-runtime"))
-	freshExternalState := errors.Is(priorStateErr, os.ErrNotExist)
-	state, err := newExternalRuntimeState(c)
-	if err != nil {
-		return nil, fmt.Errorf("open external runtime state: %w", err)
-	}
-	c.externalRuntimeState = state
-	if err := c.loadCloudRuntimeControl(freshExternalState); err != nil {
-		state.close()
+	// Earlier releases kept External Session state under external-runtime/.
+	// That directory is no longer read or written; it is left in place and
+	// never archived. Its presence still means this disk admitted work.
+	_, legacyStateErr := os.Lstat(filepath.Join(c.runtimeStateRoot(), legacyExternalRuntimeDir))
+	if err := c.acquireRuntimeStateLock(); err != nil {
 		return nil, err
 	}
-	c.workspaceArchiver.runtimeState = state
+	if err := c.loadCloudRuntimeControl(errors.Is(legacyStateErr, os.ErrNotExist)); err != nil {
+		c.closeRuntimes()
+		return nil, err
+	}
 	go c.cleanupLoop()
 	codexImplementation := newCodexRuntimeImplementation(c)
-	c.runtimeImplementations = map[string]externalRuntimeImplementation{
+	c.runtimeImplementations = map[string]runtimeImplementation{
 		"codex":  codexImplementation,
-		"pi":     newPiRuntimeImplementation(c),
-		"kimi":   newKimiRuntimeImplementation(c),
-		"claude": newClaudeRuntimeImplementation(c),
+		"claude": newClaudeRuntimeImplementation(),
 	}
 	c.runtimeInventory.run = func(target runtimeProbeTarget) map[string]any {
 		c.cloudRuntimeMu.Lock()
@@ -1185,21 +1021,9 @@ func newConnector(cfg config) (*connector, error) {
 		if target.provider == "codex" {
 			return codexImplementation.probeRuntimeTarget(target)
 		}
-		if target.provider == "claude" && c.cfg.runtimeAgent &&
-			c.cfg.computeRuntimeKind == "external_worker" && c.cfg.computeRuntimeProvider == "claude" {
-			return portableRuntimeEntryWithClaudeIsolation("claude", target.identityMaterial, "agent-sdk-stream-json", []string{"stdio"}, true)
-		}
 		return probeAgentRuntimeTarget(target)
 	}
 	c.runtimeInventory.commitGuard = codexImplementation.commitRuntimeProbe
-	if err := c.externalRuntimeState.load(); err != nil {
-		c.closeExternalRuntimes()
-		return nil, fmt.Errorf("load external runtime recovery state: %w", err)
-	}
-	if err := c.loadRecoveryArchiveNotice(); err != nil {
-		c.closeExternalRuntimes()
-		return nil, err
-	}
 	// A pinned meetnative callback port must be receivable from process
 	// start: terminal callbacks for meetings joined before a restart arrive
 	// before any new join would lazily re-create the listener. Failing to
@@ -1211,7 +1035,7 @@ func newConnector(cfg config) (*connector, error) {
 	// no meeting runtime.
 	if meetingRuntimeConfigured(cfg) && cfg.meetCallbackPort > 0 {
 		if _, err := c.ensureMeetingCallback(); err != nil {
-			c.closeExternalRuntimes()
+			c.closeRuntimes()
 			return nil, fmt.Errorf("bind pinned meeting callback port %d: %w", cfg.meetCallbackPort, err)
 		}
 	}
@@ -1277,8 +1101,7 @@ func openParentLifeline(cfg config) (*os.File, error) {
 	return nil, fmt.Errorf("open --parent-lifeline-pipe: %w", lastErr)
 }
 
-// Modeled in tla/connector/ConnectorProcessContainment.tla: the lifeline and
-// exact-nonce shutdown request are independent process-containment evidence;
+// The lifeline and exact-nonce shutdown request are independent process-containment evidence;
 // recovery still needs a fresh complete absence observation before cleanup.
 // watchParentLifeline converts the inherited pipe's EOF into connector
 // cancellation. Electron Main owns the other end; normal close, crash, and
@@ -1399,6 +1222,7 @@ func (c *connector) setCurrentScope(scope string) error {
 		}
 		c.abortActivePendingWritesForScope("write_stream cancelled: connector scope restricted")
 		c.stopManagedProcesses()
+		c.screenStreams.stopAll()
 		if c.cfg.deviceMode {
 			c.deviceRuntimeMu.Lock()
 			for _, implementation := range c.runtimeImplementations {
@@ -1419,9 +1243,6 @@ func (c *connector) setCurrentScope(scope string) error {
 	c.commandContext = ctx
 	c.cancelCommandContext = cancel
 	c.scopeMu.Unlock()
-	if c.cfg.deviceMode && c.externalRuntimeState != nil {
-		c.externalRuntimeState.wake()
-	}
 	return nil
 }
 
@@ -1569,7 +1390,7 @@ func (c *connector) runRemoteOnce(ctx context.Context) (resultErr error) {
 	header.Set("Authorization", "Bearer "+c.cfg.token)
 	header.Set(connectorInstanceHeader, c.processInstanceID)
 
-	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second}
+	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second, NetDialContext: c.cfg.dial}
 	ws, resp, err := dialer.DialContext(ctx, wsURL, header)
 	if err != nil {
 		if resp != nil {
@@ -1622,7 +1443,6 @@ func (c *connector) runRemoteOnce(ctx context.Context) (resultErr error) {
 
 	deactivate := c.activateRuntimeTransport(session.sendCtx)
 	defer deactivate()
-	runtimeTransport := c.getActiveTransport()
 
 	done := make(chan struct{})
 	defer close(done)
@@ -1649,7 +1469,6 @@ func (c *connector) runRemoteOnce(ctx context.Context) (resultErr error) {
 				c.markRemoteConnected()
 				logf("connected: connector_run_id=%s", connectorRunID)
 				c.writeStatus("connected", c.cfg.server, nil)
-				c.onRuntimeConnected(session.ctx, runtimeTransport)
 			}
 		case "heartbeat":
 			if err := writer.Enqueue(message{Type: "heartbeat"}); err != nil {
@@ -1957,7 +1776,6 @@ func (c *connector) runStdio(ctx context.Context) error {
 	}()
 	deactivate := c.activateRuntimeTransport(session.sendCtx)
 	defer deactivate()
-	runtimeTransport := c.getActiveTransport()
 	inputDone := make(chan error, 1)
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
@@ -1977,7 +1795,6 @@ func (c *connector) runStdio(ctx context.Context) error {
 				if connectorRunID != "" {
 					c.setIdentity(session, connectorRunID, msg.DeviceID, msg.ConnectorID, msg.OwnerUserID, msg.ConnectionGeneration)
 					logf("connected (stdio): connector_run_id=%s", connectorRunID)
-					c.onRuntimeConnected(session.ctx, runtimeTransport)
 				}
 			case "heartbeat":
 				_ = session.send(message{Type: "heartbeat"})
@@ -2133,7 +1950,6 @@ func (c *connector) serveVMWebSocket(ctx context.Context, ws *websocket.Conn, ar
 	}
 	deactivate := c.activateRuntimeTransport(session.sendCtx)
 	defer deactivate()
-	runtimeTransport := c.getActiveTransport()
 
 	done := make(chan struct{})
 	defer close(done)
@@ -2158,7 +1974,6 @@ func (c *connector) serveVMWebSocket(ctx context.Context, ws *websocket.Conn, ar
 					continue
 				}
 				logf("connected (runtime-agent): connector_run_id=%s", connectorRunID)
-				c.onRuntimeConnected(session.ctx, runtimeTransport)
 				c.startRestoredDependencyInstall()
 			}
 		case "heartbeat":
@@ -2191,7 +2006,8 @@ func (c *connector) handleVMArchive(w http.ResponseWriter, r *http.Request) {
 		c.handleProviderMigrationImport(w, r)
 		return
 	}
-	var state *externalRuntimeState
+	// A managed runtime archives its own root without its local control files.
+	var owner *connector
 	restoreOperation := r.URL.Query().Get("operation")
 	restoreReceipt := filepath.Join(c.runtimeStateRoot(), "provider-import", "archive-restore.json")
 	managed := strings.TrimSpace(os.Getenv("SALIX_MANAGED_RUNTIME_ROOT")) != ""
@@ -2199,7 +2015,7 @@ func (c *connector) handleVMArchive(w http.ResponseWriter, r *http.Request) {
 		c.cloudRuntimeMu.Lock()
 		defer c.cloudRuntimeMu.Unlock()
 		c.expireCloudRuntimeQuiesce()
-		state = c.externalRuntimeState
+		owner = c
 		if r.Method == http.MethodGet && (!c.cloudRuntimeQuiesced || c.cloudRuntimeReleased) {
 			http.Error(w, "managed archive requires quiescence", http.StatusConflict)
 			return
@@ -2227,7 +2043,7 @@ func (c *connector) handleVMArchive(w http.ResponseWriter, r *http.Request) {
 			}
 			c.connectionMu.Lock()
 			defer c.connectionMu.Unlock()
-			if c.activeConnection != nil || !state.emptyArchiveTarget() {
+			if c.activeConnection != nil {
 				http.Error(w, "restore requires an unused connector", http.StatusConflict)
 				return
 			}
@@ -2244,7 +2060,7 @@ func (c *connector) handleVMArchive(w http.ResponseWriter, r *http.Request) {
 		}
 		defer os.Remove(archive.Name())
 		defer archive.Close()
-		err = writeTarGzState(&archiveLimitWriter{writer: archive, remaining: maxArchiveBytes}, c.root, state)
+		err = writeTarGzOwned(&archiveLimitWriter{writer: archive, remaining: maxArchiveBytes}, c.root, owner)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -2264,7 +2080,7 @@ func (c *connector) handleVMArchive(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxArchiveBytes)
-		if err := restoreTarGzState(r.Body, c.root, state); err != nil {
+		if err := restoreTarGzOwned(r.Body, c.root, owner); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -2335,68 +2151,37 @@ func writeJSONResponse(w http.ResponseWriter, status int, body map[string]any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-func writeTarGz(w io.Writer, root string) error { return writeTarGzState(w, root, nil) }
+func writeTarGz(w io.Writer, root string) error { return writeTarGzOwned(w, root, nil) }
 
-func writeTarGzState(w io.Writer, root string, state *externalRuntimeState) error {
-	return writeTarGzTrees(context.Background(), w, []archiveTree{{root, "."}}, state, maxArchiveFile)
+func writeTarGzOwned(w io.Writer, root string, owner *connector) error {
+	return writeTarGzTrees(context.Background(), w, []archiveTree{{root, "."}}, owner, maxArchiveFile)
 }
 
 // Every source root and destination prefix is supplied by its archive owner.
 // The migration uses this same codec with an explicit, reviewed scope.
 type archiveTree struct{ source, prefix string }
 
-func writeTarGzTrees(ctx context.Context, w io.Writer, trees []archiveTree, state *externalRuntimeState, fileLimit int64) error {
-	return writeTarTrees(ctx, w, trees, state, fileLimit, "gzip")
+func writeTarGzTrees(ctx context.Context, w io.Writer, trees []archiveTree, owner *connector, fileLimit int64) error {
+	return writeTarTrees(ctx, w, trees, owner, fileLimit, "gzip")
 }
 
-func writeTarZstTrees(ctx context.Context, w io.Writer, trees []archiveTree, state *externalRuntimeState, fileLimit int64) error {
-	return writeTarTrees(ctx, w, trees, state, fileLimit, "zstd")
+func writeTarZstTrees(ctx context.Context, w io.Writer, trees []archiveTree, owner *connector, fileLimit int64) error {
+	return writeTarTrees(ctx, w, trees, owner, fileLimit, "zstd")
 }
 
-func writeTarTrees(ctx context.Context, w io.Writer, trees []archiveTree, state *externalRuntimeState, fileLimit int64, codec string) error {
-	return writeTarTreesScope(ctx, w, trees, state, fileLimit, codec, "full")
-}
-
-func writeTarTreesScope(ctx context.Context, w io.Writer, trees []archiveTree, state *externalRuntimeState, fileLimit int64, codec, scope string) error {
-	var exclusions, retained []string
+// A non-nil owner archives its own Connector root: the owner's local control
+// files, spools and legacy state stay out of the archive.
+func writeTarTrees(ctx context.Context, w io.Writer, trees []archiveTree, owner *connector, fileLimit int64, codec string) error {
 	var err error
-	if scope == "recovery" {
-		if state == nil {
-			return errors.New("recovery archive requires runtime state")
-		}
-		control := state.connector.cloudRuntimeControl
-		if control == nil || !control.Sealed || !control.RecoveryValidated {
-			return errors.New("recovery archive requires a validated seal")
-		}
-		retained = append(retained, control.RecoveryPaths...)
-		for _, path := range retained {
-			real, err := filepath.EvalSymlinks(path)
-			if err != nil || !inArchivePath(real, state.connector.root) {
-				return errors.New("retained archive path changed")
-			}
-		}
-		exclusions, err = state.connector.recoveryArchiveExclusions()
-		if err != nil {
-			return err
-		}
-	} else if scope != "full" {
-		return errors.New("invalid archive scope")
-	}
-
 	for i := range trees {
 		trees[i].source, err = filepath.EvalSymlinks(trees[i].source)
 		if err != nil {
 			return err
 		}
 	}
-	snapshotPath := ""
 	stateRoot := ""
-	if state != nil {
-		stateRoot, err = filepath.EvalSymlinks(state.connector.runtimeStateRoot())
-		if err != nil {
-			return err
-		}
-		snapshotPath, err = filepath.EvalSymlinks(state.db.Path())
+	if owner != nil {
+		stateRoot, err = filepath.EvalSymlinks(owner.runtimeStateRoot())
 		if err != nil {
 			return err
 		}
@@ -2418,22 +2203,6 @@ func writeTarTreesScope(ctx context.Context, w io.Writer, trees []archiveTree, s
 	defer tw.Close()
 
 	seen := map[string]bool{}
-	if state != nil {
-		projection := archiveProjection{Scope: scope, RecoveryNotice: scope == "recovery"}
-		previous, err := state.connector.readArchiveProjection()
-		if err != nil {
-			return err
-		}
-		projection.RecoveryNotice = projection.RecoveryNotice || previous.RecoveryNotice || previous.Scope == "recovery"
-		scopeBody, _ := json.Marshal(projection)
-		if err := tw.WriteHeader(&tar.Header{Name: archiveScopeRelativePath, Typeflag: tar.TypeReg, Mode: 0600, Size: int64(len(scopeBody))}); err != nil {
-			return err
-		}
-		if _, err := tw.Write(scopeBody); err != nil {
-			return err
-		}
-		seen[archiveScopeRelativePath] = true
-	}
 	var expanded int64
 	for _, tree := range trees {
 		root := tree.source
@@ -2455,36 +2224,22 @@ func writeTarTreesScope(ctx context.Context, w io.Writer, trees []archiveTree, s
 			if rel == "." || strings.HasPrefix(rel, "../") || rel == ".." {
 				return nil
 			}
-			for _, excluded := range exclusions {
-				if inArchivePath(path, excluded) && !recoveryArchiveKeeps(path, retained) {
-					if d.IsDir() {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-			}
-			if state != nil && filepath.ToSlash(filepath.Join(tree.prefix, rel)) == archiveScopeRelativePath {
+			if owner != nil && owner.localControlArchivePath(path) {
 				return nil
 			}
-			if state != nil && (state.connector.localControlArchivePath(path) || filepath.Clean(path) == filepath.Join(stateRoot, archiveScopeRelativePath)) {
-				return nil
-			}
-			if state != nil && filepath.Clean(path) == snapshotPath {
-				return nil
-			}
-			if state != nil && (path == filepath.Join(stateRoot, "provider-import") || path == filepath.Join(stateRoot, "provider-migration") || path == filepath.Join(stateRoot, "provider-migration.json") || path == filepath.Join(stateRoot, "durable-archive")) {
+			if owner != nil && (path == filepath.Join(stateRoot, legacyExternalRuntimeDir) || path == filepath.Join(stateRoot, "provider-import") || path == filepath.Join(stateRoot, "provider-migration") || path == filepath.Join(stateRoot, "provider-migration.json") || path == filepath.Join(stateRoot, "durable-archive")) {
 				if d.IsDir() {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if isExternalRuntimeStatePath(rel) {
+			if isLegacyExternalRuntimePath(rel) {
 				if d.IsDir() {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if !recoveryArchiveKeeps(path, retained) && skipRegenerableArchiveCache(filepath.ToSlash(filepath.Join(tree.prefix, rel)), path, d) {
+			if skipRegenerableArchiveCache(filepath.ToSlash(filepath.Join(tree.prefix, rel)), path, d) {
 				if d.IsDir() {
 					return filepath.SkipDir
 				}
@@ -2495,8 +2250,8 @@ func writeTarTreesScope(ctx context.Context, w io.Writer, trees []archiveTree, s
 				return err
 			}
 			var archiveContent []byte
-			if state != nil && filepath.Clean(path) == state.connector.dependencyManifestPath() {
-				archiveContent, err = state.connector.archivedDependencyManifest()
+			if owner != nil && filepath.Clean(path) == owner.dependencyManifestPath() {
+				archiveContent, err = owner.archivedDependencyManifest()
 				if err != nil {
 					return err
 				}
@@ -2572,11 +2327,6 @@ func writeTarTreesScope(ctx context.Context, w io.Writer, trees []archiveTree, s
 			return walkErr
 		}
 	}
-	if state != nil {
-		if err := state.writeArchiveSnapshot(tw, migrationByteLimit-expanded); err != nil {
-			return err
-		}
-	}
 	if err := tw.Close(); err != nil {
 		return err
 	}
@@ -2636,42 +2386,28 @@ func archiveTreeDestination(trees []archiveTree, path string) (string, error) {
 	return "", errors.New("archive path is outside the selected source roots")
 }
 
-func restoreTarGz(r io.Reader, root string) error { return restoreTarGzState(r, root, nil) }
+func restoreTarGz(r io.Reader, root string) error { return restoreTarGzOwned(r, root, nil) }
 
-func restoreTarGzState(r io.Reader, root string, state *externalRuntimeState) error {
-	return restoreTarGzStateLimit(r, root, state, maxArchiveFile)
+func restoreTarGzOwned(r io.Reader, root string, owner *connector) error {
+	return restoreTarGzLimit(r, root, owner, maxArchiveFile)
 }
 
-func restoreTarGzStateLimit(r io.Reader, root string, state *externalRuntimeState, fileLimit int64) error {
-	return restoreTarStateLimit(r, root, state, fileLimit, "gzip")
+func restoreTarGzLimit(r io.Reader, root string, owner *connector, fileLimit int64) error {
+	return restoreTarLimit(r, root, owner, fileLimit, "gzip")
 }
 
-func restoreTarZstStateLimit(r io.Reader, root string, state *externalRuntimeState, fileLimit int64) error {
-	return restoreTarStateLimit(r, root, state, fileLimit, "zstd")
+func restoreTarZstLimit(r io.Reader, root string, owner *connector, fileLimit int64) error {
+	return restoreTarLimit(r, root, owner, fileLimit, "zstd")
 }
 
-func restoreTarStateLimit(r io.Reader, root string, state *externalRuntimeState, fileLimit int64, codec string) error {
+// A non-nil owner restores into its own Connector root and refuses archives
+// that would overwrite its local control files.
+func restoreTarLimit(r io.Reader, root string, owner *connector, fileLimit int64, codec string) error {
 	var canonicalErr error
 	root, canonicalErr = filepath.EvalSymlinks(root)
 	if canonicalErr != nil {
 		return canonicalErr
 	}
-	snapshotPath := ""
-	if state != nil {
-		snapshotPath, canonicalErr = filepath.EvalSymlinks(state.db.Path())
-		if canonicalErr != nil {
-			return canonicalErr
-		}
-	}
-	projection := archiveProjection{Scope: "full"}
-	scopeSeen := false
-	var snapshot *os.File
-	defer func() {
-		if snapshot != nil {
-			snapshot.Close()
-			os.Remove(snapshot.Name())
-		}
-	}()
 	var stream io.Reader
 	switch codec {
 	case "gzip":
@@ -2737,26 +2473,6 @@ func restoreTarStateLimit(r io.Reader, root string, state *externalRuntimeState,
 			if err := syncRestoredDirectories(changedDirectories); err != nil {
 				return err
 			}
-			if projection.Scope == "recovery" && (state == nil || snapshot == nil) {
-				return errors.New("recovery archive lacks managed state snapshot")
-			}
-			if state != nil && snapshot != nil {
-				if err := snapshot.Close(); err != nil {
-					return err
-				}
-				if err := state.restoreArchiveSnapshot(snapshot.Name()); err != nil {
-					return err
-				}
-			}
-			if state != nil {
-				projection.RecoveryNotice = projection.RecoveryNotice || projection.Scope == "recovery"
-				if err := state.connector.saveArchiveProjection(projection); err != nil {
-					return err
-				}
-				if projection.RecoveryNotice {
-					state.connector.noteRecoveryArchive()
-				}
-			}
 			return nil
 		}
 		if err != nil {
@@ -2771,37 +2487,11 @@ func restoreTarStateLimit(r io.Reader, root string, state *externalRuntimeState,
 			return err
 		}
 		rel, _ := filepath.Rel(root, target)
-		if filepath.ToSlash(rel) == archiveScopeRelativePath {
-			if scopeSeen || header.Typeflag != tar.TypeReg || header.Size > 128 {
-				return errors.New("invalid archive scope")
-			}
-			var manifest archiveProjection
-			if json.NewDecoder(io.LimitReader(tr, header.Size)).Decode(&manifest) != nil || (manifest.Scope != "full" && manifest.Scope != "recovery") {
-				return errors.New("invalid archive scope")
-			}
-			projection, scopeSeen = manifest, true
-			continue
-		}
-		if state != nil && state.connector.localControlArchivePath(target) {
+		if owner != nil && owner.localControlArchivePath(target) {
 			return errors.New("archive contains runtime control")
 		}
-		if state != nil && filepath.ToSlash(rel) == externalRuntimeStateRelativePath {
-			if snapshot != nil || header.Typeflag != tar.TypeReg || header.Size < 0 || header.Size > fileLimit {
-				return errors.New("invalid managed state snapshot")
-			}
-			snapshot, err = os.CreateTemp("", "salix-state-*")
-			if err != nil {
-				return err
-			}
-			if _, err := io.CopyN(snapshot, tr, header.Size); err != nil {
-				return err
-			}
-			continue
-		}
-		if state != nil && filepath.Clean(target) == snapshotPath {
-			return errors.New("archive cannot overwrite live runtime state")
-		}
-		if isExternalRuntimeStatePath(rel) {
+		// Archives from earlier releases may carry External Session state.
+		if isLegacyExternalRuntimePath(rel) {
 			continue
 		}
 		switch header.Typeflag {
@@ -2873,10 +2563,10 @@ func syncRestoredDirectories(changed map[string]struct{}) error {
 	return nil
 }
 
-func isExternalRuntimeStatePath(path string) bool {
+// The legacy External Session state directory is never archived or restored.
+func isLegacyExternalRuntimePath(path string) bool {
 	path = strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
-	return path == externalRuntimeStateRelativePath || path == "external-runtime/active" ||
-		strings.HasPrefix(path, "external-runtime/active/")
+	return path == legacyExternalRuntimeDir || strings.HasPrefix(path, legacyExternalRuntimeDir+"/")
 }
 
 func skipRegenerableArchiveCache(path, sourcePath string, entry os.DirEntry) bool {
@@ -2914,12 +2604,34 @@ func skipRegenerableArchiveCache(path, sourcePath string, entry os.DirEntry) boo
 	case ".tox", ".nox", ".pixi", "__pypackages__":
 		return false
 	default:
-		return workspaceArchiveSkipDirs[entry.Name()]
+		return archiveRegenerableDirs[entry.Name()]
 	}
 }
 
+// Regenerable directories never enter an archive. Universal names only:
+// generic names such as bin/obj/Library are project-type specific and stay
+// archived to avoid dropping non-regenerable content by accident.
+var archiveRegenerableDirs = map[string]bool{
+	".angular": true, ".expo": true, ".metro": true,
+	".turbo": true, ".next": true, ".nuxt": true,
+	".cache": true, ".elixir-tools": true,
+	".elixir_ls": true, ".lexical": true,
+	".xwin-cache": true, ".build": true,
+	"DerivedData": true, "__pycache__": true, "__pypackages__": true,
+	".pytest_cache": true, ".mypy_cache": true, ".ruff_cache": true, ".tox": true,
+	".nox": true, ".pixi": true, ".ipynb_checkpoints": true,
+	".gradle": true, ".stack-work": true,
+	"zig-cache": true, ".zig-cache": true,
+	"cmake-build-debug": true, "cmake-build-release": true,
+	".godot-cache": true,
+	".dart_tool":   true, ".parcel-cache": true, ".vite": true, ".svelte-kit": true,
+	".cxx": true, ".externalNativeBuild": true, ".kotlin": true, "CMakeFiles": true,
+}
+
 var archiveHomeCacheDirs = map[string]bool{
-	".cache": true, ".ccache": true, ".npm/_cacache": true,
+	// Codex rebuilds temporary launch links, which can point outside the workspace.
+	".codex/tmp": true,
+	".cache":     true, ".ccache": true, ".npm/_cacache": true,
 	".cargo/registry/cache": true, ".cargo/registry/src": true, ".cargo/git/checkouts": true,
 	".gradle/caches": true, ".gradle/daemon": true, ".gradle/wrapper/dists": true,
 	".android/cache": true, ".android/build-cache": true,
@@ -3047,6 +2759,7 @@ func (c *connector) metadataWithRuntimeProbeEvidence(probed []map[string]any) me
 			"host_access_required":     false,
 			"execution_boundary":       "local-file-read-only",
 			"runtime_probe":            false,
+			"runtime_models":           false,
 			"meeting_runtime":          false,
 			"local_file_import_v1":     c.localFileImportAvailable(),
 			"local_file_index_version": localFileIndexVersion,
@@ -3060,6 +2773,9 @@ func (c *connector) metadataWithRuntimeProbeEvidence(probed []map[string]any) me
 		if c.cfg.deviceMode {
 			capabilities["agent_runtimes"] = c.deviceRuntimeObservations()
 			capabilities["device_access"] = true
+			// Advertised while read-only so the server can tell the user to
+			// allow operations; the scope gate still refuses the request.
+			capabilities["lan_gateway"] = lanGatewayCapability()
 		}
 		return message{
 			Type:            "metadata",
@@ -3071,13 +2787,12 @@ func (c *connector) metadataWithRuntimeProbeEvidence(probed []map[string]any) me
 	}
 
 	agentRuntimes := []map[string]any{}
-	if c.externalRuntimesEnabled() {
+	if c.runtimesEnabled() {
 		agentRuntimes = c.runtimeInventory.snapshot()
 		for _, entry := range agentRuntimes {
 			c.projectManagedRuntimeReadiness(entry)
 		}
 		attachRuntimeProbeEvidence(agentRuntimes, probed)
-		c.externalRuntimeState.attachRuntimeSessionSnapshots(agentRuntimes)
 		agentRuntimes = append(agentRuntimes, c.detectMeetingRuntime()...)
 	}
 	capabilities := map[string]any{
@@ -3087,8 +2802,8 @@ func (c *connector) metadataWithRuntimeProbeEvidence(probed []map[string]any) me
 		"android_device_tool":      c.android.available(),
 		"host_access_required":     false,
 		"execution_boundary":       "connector-direct",
-		"runtime_probe":            c.externalRuntimesEnabled(),
-		"meeting_runtime":          c.externalRuntimesEnabled() && meetingRuntimeConfigured(c.cfg),
+		"runtime_probe":            c.runtimesEnabled(),
+		"meeting_runtime":          c.runtimesEnabled() && meetingRuntimeConfigured(c.cfg),
 		"local_file_import_v1":     c.localFileImportAvailable(),
 		"local_file_index_version": localFileIndexVersion,
 		"component_versions": map[string]any{
@@ -3101,12 +2816,13 @@ func (c *connector) metadataWithRuntimeProbeEvidence(probed []map[string]any) me
 	if c.android.configured() {
 		capabilities["android"] = c.android.metadata()
 	}
-	if c.externalRuntimesEnabled() {
+	if c.runtimesEnabled() {
 		capabilities["agent_runtimes"] = agentRuntimes
 	}
 	if c.cfg.deviceMode {
 		capabilities["device_access"] = true
 	}
+	capabilities["lan_gateway"] = lanGatewayCapability()
 	if runtimeAuthAvailable(agentRuntimes) {
 		capabilities["runtime_auth_v1"] = true
 	}
@@ -3196,8 +2912,7 @@ func (c *connector) publishCachedMetadata() error {
 // systemInfoLoop periodically publishes the current host observation through
 // the same metadata path as connect. The timer must not run the full runtime
 // inventory probe: that work can start external processes and exceed the
-// system-info interval. Retry/close semantics are checked by
-// tla/connector/PeriodicSystemInfoRetry.tla.
+// system-info interval.
 func (c *connector) systemInfoLoop(send func(message) error, done <-chan struct{}, server string) {
 	c.systemInfoLoopWithPublish(
 		func() error {
@@ -3237,7 +2952,7 @@ func (c *connector) probeAndPublish(ctx context.Context, trigger string, send fu
 	// probing can launch runtime processes (e.g. a Codex app-server), which a
 	// read_ref-only runtime has no authority to do. Publish the minimal
 	// scoped metadata instead.
-	if c.currentScope() == scopeLocalFileRead || !c.externalRuntimesEnabled() {
+	if c.currentScope() == scopeLocalFileRead || !c.runtimesEnabled() {
 		c.discoverDeviceRuntimes()
 		return send(c.metadata())
 	}
@@ -3255,7 +2970,7 @@ func (c *connector) methodRuntimeProbe(
 ) (map[string]any, error) {
 	provider := strings.TrimSpace(stringParam(params, "provider"))
 	identityMaterial := strings.TrimSpace(stringParam(params, "identity_material"))
-	if provider != "" && provider != "codex" && provider != "pi" && provider != "kimi" && provider != "claude" {
+	if provider != "" && provider != "codex" && provider != "claude" {
 		return nil, errors.New("unsupported runtime provider")
 	}
 	runtimes, err := c.runtimeInventory.probe(ctx, provider, identityMaterial, "operator")
@@ -3292,36 +3007,22 @@ func (c *connector) connectorHealth() map[string]any {
 	c.processMu.Lock()
 	managedProcesses := len(c.processes)
 	c.processMu.Unlock()
-	resumable, recoverable, inputBatches, runtimeEvents := c.externalRuntimeState.healthCounts()
-	settlementActionRequired, oldestSettlementSeconds :=
-		c.externalRuntimeState.executionBudgetHealth(time.Now())
-	hostOrphans, hostOrphansActionRequired := c.externalRuntimeState.hostOrphanBudgetHealth()
 	return map[string]any{
-		"schema_version":                       1,
-		"observed_at":                          time.Now().UnixMilli(),
-		"process_started_at":                   c.processStartedAt,
-		"request_inflight":                     len(c.requestSlots),
-		"request_capacity":                     cap(c.requestSlots),
-		"runtime_proxy_inflight":               len(c.runtimeProxySlots),
-		"runtime_proxy_capacity":               cap(c.runtimeProxySlots),
-		"managed_processes":                    managedProcesses,
-		"resumable_runtime_sessions":           resumable,
-		"recoverable_runtime_sessions":         recoverable,
-		"pending_input_batches":                inputBatches,
-		"pending_runtime_events":               runtimeEvents,
-		"runtime_settlements_action_required":  settlementActionRequired,
-		"oldest_runtime_settlement_seconds":    oldestSettlementSeconds,
-		"runtime_host_orphans":                 hostOrphans,
-		"runtime_host_orphans_action_required": hostOrphansActionRequired,
+		"schema_version":         1,
+		"observed_at":            time.Now().UnixMilli(),
+		"process_started_at":     c.processStartedAt,
+		"request_inflight":       len(c.requestSlots),
+		"request_capacity":       cap(c.requestSlots),
+		"runtime_proxy_inflight": len(c.runtimeProxySlots),
+		"runtime_proxy_capacity": cap(c.runtimeProxySlots),
+		"managed_processes":      managedProcesses,
 	}
 }
 
 func detectAgentRuntimes(workspaceErr error) []map[string]any {
 	paths := detectCodexCommands()
 	runtimes := codexRuntimeEntries(paths)
-	runtimes = append(runtimes, detectPortableRuntime("pi", "pi", "rpc", []string{"stdio"}, nil)...)
-	runtimes = append(runtimes, detectPortableRuntime("kimi", "kimi", "server", []string{"http", "ws"}, defaultKimiCommandPaths())...)
-	runtimes = append(runtimes, detectPortableRuntime("claude", "claude", "agent-sdk-stream-json", []string{"stdio"}, defaultClaudeCommandPaths())...)
+	runtimes = append(runtimes, detectPortableRuntime("claude", "claude", "agent-sdk-stream-json", []string{"stdio"}, claudeCommandPaths())...)
 	applyExternalRuntimeWorkspaceReadiness(runtimes, workspaceErr)
 	return runtimes
 }
@@ -3334,7 +3035,7 @@ func applyExternalRuntimeWorkspaceReadiness(runtimes []map[string]any, workspace
 		runtime["ready"] = false
 		runtime["status"] = "unavailable"
 		runtime["readiness_issue"] = "workspace_unavailable"
-		runtime["readiness_message"] = externalRuntimeWorkspaceReadinessMessage(workspaceErr)
+		runtime["readiness_message"] = runtimeWorkspaceReadinessMessage(workspaceErr)
 		runtime["last_error"] = workspaceErr.Error()
 	}
 }
@@ -3692,13 +3393,28 @@ func putNonEmpty(m map[string]any, key string, value any) {
 
 func codexAppServerReadiness(path, configuredModel string) (map[string]any, bool, string) {
 	failedAuth := codexAuthIssueSnapshot("auth_probe_failed", time.Now().UnixMilli())
-	listenURL, err := reserveLocalWebsocketURL()
-	if err != nil {
-		return failedAuth, false, "reserve app-server listener failed: " + diagnosticMessage(err, "")
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+
+	var auth map[string]any
+	failure := withCodexAppServer(ctx, path, func(ws *websocket.Conn) (err error) {
+		auth, err = probeCodexAppServer(ctx, ws, configuredModel)
+		return err
+	})
+	if failure != "" {
+		return failedAuth, false, failure
+	}
+	return auth, true, ""
+}
+
+// withCodexAppServer starts a private `codex app-server` for one bounded
+// exchange over its websocket and stops it afterwards. It answers "" when use
+// succeeded, otherwise why the server or the exchange failed.
+func withCodexAppServer(ctx context.Context, path string, use func(*websocket.Conn) error) string {
+	listenURL, err := reserveLocalWebsocketURL()
+	if err != nil {
+		return "reserve app-server listener failed: " + diagnosticMessage(err, "")
+	}
 
 	cmd := exec.CommandContext(ctx, codexExecutionPath(path), codexAppServerArgs(listenURL)...)
 	configureProcessGroup(cmd)
@@ -3706,7 +3422,7 @@ func codexAppServerReadiness(path, configuredModel string) (map[string]any, bool
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	if err := cmd.Start(); err != nil {
-		return failedAuth, false, "app-server start failed: " + diagnosticMessage(err, "")
+		return "app-server start failed: " + diagnosticMessage(err, "")
 	}
 
 	done := make(chan error, 1)
@@ -3731,12 +3447,12 @@ func codexAppServerReadiness(path, configuredModel string) (map[string]any, bool
 	for {
 		ws, _, err := dialer.DialContext(ctx, listenURL, nil)
 		if err == nil {
-			auth, probeErr := probeCodexAppServer(ctx, ws, configuredModel)
+			useErr := use(ws)
 			_ = ws.Close()
-			if probeErr != nil {
-				return failedAuth, false, "app-server protocol probe failed: " + diagnosticMessage(probeErr, output.String())
+			if useErr != nil {
+				return "app-server protocol probe failed: " + diagnosticMessage(useErr, output.String())
 			}
-			return auth, true, ""
+			return ""
 		}
 		lastErr = err
 
@@ -3744,14 +3460,14 @@ func codexAppServerReadiness(path, configuredModel string) (map[string]any, bool
 		case waitErr := <-done:
 			finished = true
 			if waitErr == nil {
-				return failedAuth, false, "app-server exited before accepting websocket"
+				return "app-server exited before accepting websocket"
 			}
-			return failedAuth, false, "app-server exited before accepting websocket: " + diagnosticMessage(waitErr, output.String())
+			return "app-server exited before accepting websocket: " + diagnosticMessage(waitErr, output.String())
 		case <-ctx.Done():
 			killProcessGroup(cmd)
 			waitErr := <-done
 			finished = true
-			return failedAuth, false, "app-server websocket probe timed out: " + diagnosticMessage(defaultError(lastErr, defaultError(waitErr, ctx.Err())), output.String())
+			return "app-server websocket probe timed out: " + diagnosticMessage(defaultError(lastErr, defaultError(waitErr, ctx.Err())), output.String())
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
@@ -4068,6 +3784,8 @@ func (c *connector) dispatchSession(ctx context.Context, session *connectionSess
 		return c.methodGrep(params)
 	case "computer_use":
 		return c.methodComputerUse(ctx, params), nil
+	case "screen_stream":
+		return c.methodScreenStream(ctx, params), nil
 	case "android":
 		return c.android.handle(ctx, id, params), nil
 	case "read_stream":
@@ -4075,7 +3793,7 @@ func (c *connector) dispatchSession(ctx context.Context, session *connectionSess
 	case "read_ref":
 		return c.methodReadRefFrames(ctx, session, id, params)
 	case "meeting_artifact_read":
-		if err := c.ensureExternalRuntimesAvailable(); err != nil {
+		if err := c.ensureRuntimesAvailable(); err != nil {
 			return nil, err
 		}
 		return c.methodMeetingArtifactReadStreamFrames(ctx, session, id, params)
@@ -4095,45 +3813,39 @@ func (c *connector) dispatchSession(ctx context.Context, session *connectionSess
 		return c.methodDependencyInstallations(params)
 	case "http_request":
 		return c.methodHTTPRequest(ctx, params)
+	case "lan_http_request":
+		if stringParam(params, "response_mode") == "chunks" {
+			return c.methodLANHTTPRequestChunks(ctx, session, id, params)
+		}
+		return c.methodLANHTTPRequest(ctx, params)
+	case "lan_tcp_dial":
+		return c.methodLANTCPDial(ctx, session, id, params)
+	case "udp_request":
+		return c.methodUDPRequest(ctx, params)
 	case "cloud_runtime_quiesce", "cloud_runtime_release", "cloud_runtime_resume":
 		return c.methodCloudRuntimeLifecycle(ctx, method, params)
-	case "agent_runtime_input":
-		if err := c.ensureExternalRuntimesAvailable(); err != nil {
-			return nil, err
-		}
-		return c.methodAgentRuntimeInput(ctx, params)
-	case "agent_runtime_stop":
-		if err := c.ensureExternalRuntimesAvailable(); err != nil {
-			return nil, err
-		}
-		return c.methodAgentRuntimeStop(ctx, params)
-	case "session_migration_prepare", "session_migration_export", "session_migration_import", "session_migration_retire", "session_migration_status", "session_migration_discard":
-		if err := c.ensureExternalRuntimesAvailable(); err != nil {
-			return nil, err
-		}
-		return c.methodSessionMigration(ctx, strings.TrimPrefix(method, "session_migration_"), params)
 	case "runtime_probe":
-		if err := c.ensureExternalRuntimesAvailable(); err != nil {
+		if err := c.ensureRuntimesAvailable(); err != nil {
 			return nil, err
 		}
 		return c.methodRuntimeProbe(ctx, session, params)
 	case "runtime_auth_status", "runtime_auth_verify", "runtime_auth_input_begin", "runtime_auth_input_submit", "runtime_auth_input_cancel":
-		if err := c.ensureExternalRuntimesAvailable(); err != nil {
+		if err := c.ensureRuntimesAvailable(); err != nil {
 			return nil, err
 		}
 		return c.connectedPrivateRuntimeAuth(ctx, session, method, params)
 	case "runtime_auth_subscription":
-		if err := c.ensureExternalRuntimesAvailable(); err != nil {
+		if err := c.ensureRuntimesAvailable(); err != nil {
 			return nil, err
 		}
 		return c.methodRuntimeAuthSubscription(ctx, session, params)
 	case "runtime_auth_read":
-		if err := c.ensureExternalRuntimesAvailable(); err != nil {
+		if err := c.ensureRuntimesAvailable(); err != nil {
 			return nil, err
 		}
 		return c.methodRuntimeAuthRead(ctx, params)
 	case "runtime_auth_login_start":
-		if err := c.ensureExternalRuntimesAvailable(); err != nil {
+		if err := c.ensureRuntimesAvailable(); err != nil {
 			return nil, err
 		}
 		if len(mapParam(params, "target")) > 0 {
@@ -4141,17 +3853,17 @@ func (c *connector) dispatchSession(ctx context.Context, session *connectionSess
 		}
 		return c.methodRuntimeAuthLoginStart(ctx, params)
 	case "runtime_auth_login_cancel":
-		if err := c.ensureExternalRuntimesAvailable(); err != nil {
+		if err := c.ensureRuntimesAvailable(); err != nil {
 			return nil, err
 		}
 		return c.methodRuntimeAuthLoginCancel(ctx, params)
 	case "meeting_join":
-		if err := c.ensureExternalRuntimesAvailable(); err != nil {
+		if err := c.ensureRuntimesAvailable(); err != nil {
 			return nil, err
 		}
 		return c.methodMeetingJoin(ctx, params)
 	case "meeting_send_chat":
-		if err := c.ensureExternalRuntimesAvailable(); err != nil {
+		if err := c.ensureRuntimesAvailable(); err != nil {
 			return nil, err
 		}
 		return c.methodMeetingSendChat(ctx, params)
@@ -4162,14 +3874,16 @@ func (c *connector) dispatchSession(ctx context.Context, session *connectionSess
 	}
 }
 
-func (c *connector) ensureExternalRuntimesAvailable() error {
-	if !c.externalRuntimesEnabled() {
-		return errors.New("external runtimes are disabled for this Connector process")
+// Runtime probes, runtime auth and meetings run only in a Connector process
+// started with runtime authority.
+func (c *connector) ensureRuntimesAvailable() error {
+	if !c.runtimesEnabled() {
+		return errors.New("runtimes are disabled for this Connector process")
 	}
 	return nil
 }
 
-func (c *connector) externalRuntimesEnabled() bool {
+func (c *connector) runtimesEnabled() bool {
 	// Attachment-only startup stays restricted. Device mode owns native
 	// adapters, but execution still requires the current access grant.
 	return c.cfg.deviceMode || strings.TrimSpace(c.cfg.scope) != scopeLocalFileRead
@@ -4279,28 +3993,61 @@ func (c *connector) methodExec(ctx context.Context, _ string, params map[string]
 }
 
 func (c *connector) methodHTTPRequest(ctx context.Context, params map[string]any) (map[string]any, error) {
+	return performHTTPRequest(ctx, params, httpRequestLimits{
+		defaultTimeout: 120 * time.Second,
+		maxBytes:       maxFile,
+		client: &http.Client{
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+	})
+}
+
+type httpRequestLimits struct {
+	defaultTimeout time.Duration
+	// maxTimeout bounds the caller's timeout_seconds when positive.
+	maxTimeout time.Duration
+	maxBytes   int64
+	client     *http.Client
+}
+
+func performHTTPRequest(ctx context.Context, params map[string]any, limits httpRequestLimits) (map[string]any, error) {
+	result, raw, err := performHTTPRequestBytes(ctx, params, limits)
+	if err != nil {
+		return nil, err
+	}
+	result["body"] = string(raw)
+	return result, nil
+}
+
+// performHTTPRequestBytes sends the request and returns the result without
+// its body, and the body bytes.
+func performHTTPRequestBytes(ctx context.Context, params map[string]any, limits httpRequestLimits) (map[string]any, []byte, error) {
 	rawMethod := strings.ToUpper(defaultString(stringParam(params, "method"), http.MethodPost))
 	switch rawMethod {
 	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
 	default:
-		return nil, fmt.Errorf("unsupported HTTP method: %s", rawMethod)
+		return nil, nil, fmt.Errorf("unsupported HTTP method: %s", rawMethod)
 	}
 
 	rawURL := stringParam(params, "url")
 	if rawURL == "" {
-		return nil, errors.New("'url' is required")
+		return nil, nil, errors.New("'url' is required")
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return nil, errors.New("'url' must be an absolute http or https URL")
+		return nil, nil, errors.New("'url' must be an absolute http or https URL")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, errors.New("'url' must use http or https")
+		return nil, nil, errors.New("'url' must use http or https")
 	}
-
-	timeout := time.Duration(intParam(params, "timeout_seconds", 120)) * time.Second
+	timeout := time.Duration(intParam(params, "timeout_seconds", 0)) * time.Second
 	if timeout <= 0 {
-		timeout = 120 * time.Second
+		timeout = limits.defaultTimeout
+	}
+	if limits.maxTimeout > 0 && timeout > limits.maxTimeout {
+		timeout = limits.maxTimeout
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -4308,7 +4055,7 @@ func (c *connector) methodHTTPRequest(ctx context.Context, params map[string]any
 	body := stringParam(params, "body")
 	req, err := http.NewRequestWithContext(runCtx, rawMethod, rawURL, strings.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for key, value := range mapParam(params, "headers") {
 		if key == "" {
@@ -4320,24 +4067,19 @@ func (c *connector) methodHTTPRequest(ctx context.Context, params map[string]any
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := client.Do(req)
+	resp, err := limits.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 
-	limit := int64(intParam(params, "max_bytes", maxFile))
-	if limit <= 0 || limit > maxFile {
-		limit = maxFile
+	limit := int64(intParam(params, "max_bytes", int(limits.maxBytes)))
+	if limit <= 0 || limit > limits.maxBytes {
+		limit = limits.maxBytes
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	truncated := int64(len(raw)) > limit
 	if truncated {
@@ -4356,12 +4098,11 @@ func (c *connector) methodHTTPRequest(ctx context.Context, params map[string]any
 	return map[string]any{
 		"status":     resp.StatusCode,
 		"headers":    headers,
-		"body":       string(raw),
 		"truncated":  truncated,
 		"final_url":  resp.Request.URL.String(),
 		"method":     rawMethod,
 		"body_bytes": len(raw),
-	}, nil
+	}, raw, nil
 }
 
 func execEnv(raw any) []string {
@@ -4817,77 +4558,6 @@ func (c *connector) prepareWriteStream(ctx context.Context, session *connectionS
 	return map[string]any{"status": "ready"}, nil
 }
 
-func (c *connector) ensureRuntimeBridge() (string, error) {
-	c.bridgeMu.Lock()
-	defer c.bridgeMu.Unlock()
-
-	if c.bridgeURL != "" {
-		return c.bridgeURL, nil
-	}
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", err
-	}
-
-	server := &http.Server{Handler: http.HandlerFunc(c.handleRuntimeBridgeHTTP)}
-	c.bridgeServer = server
-	c.bridgeURL = "http://" + ln.Addr().String()
-
-	go func() {
-		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logf("runtime bridge stopped: %v", err)
-		}
-	}()
-
-	return c.bridgeURL, nil
-}
-
-func (c *connector) handleRuntimeBridgeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.EscapedPath(), "/")
-	token, route, ok := c.runtimeBridgeTokenAndRoute(path)
-	if !ok || token == "" || route == "" {
-		http.Error(w, "runtime context is not associated with a Salix runtime session", http.StatusNotFound)
-		return
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxFile+1))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if len(body) > maxFile {
-		http.Error(w, "request body exceeds 10MB cap", http.StatusRequestEntityTooLarge)
-		return
-	}
-
-	params := map[string]any{
-		"capability_token": token,
-		"method":           r.Method,
-		"route_path":       "/" + route,
-		"raw_query":        r.URL.RawQuery,
-		"headers":          runtimeProxyHeaders(r.Header),
-		"body_base64":      base64.StdEncoding.EncodeToString(body),
-	}
-
-	result, err := c.sendRuntimeProxy(r.Context(), params)
-	if err != nil {
-		if errors.Is(err, errRuntimeTransportUnavailable) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"code":  "connector_offline",
-				"error": err.Error(),
-			})
-			return
-		}
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-
-	writeRuntimeBridgeResult(w, result)
-}
-
 func writeRuntimeBridgeResult(w http.ResponseWriter, result map[string]any) {
 	for key, value := range mapParam(result, "headers") {
 		if text := fmt.Sprint(value); text != "" {
@@ -4911,52 +4581,6 @@ func writeRuntimeBridgeResult(w http.ResponseWriter, result map[string]any) {
 	}
 }
 
-func (c *connector) runtimeBridgeTokenAndRoute(path string) (string, string, bool) {
-	first, rest, ok := strings.Cut(path, "/")
-	if !ok || first == "" || rest == "" {
-		return "", "", false
-	}
-
-	if first != "runtime" {
-		return "", "", false
-	}
-
-	runtimeContext, route, ok := strings.Cut(rest, "/")
-	if !ok || runtimeContext == "" || route == "" {
-		return "", "", false
-	}
-	c.bridgeMu.Lock()
-	token := c.runtimeRoutes[runtimeContext]
-	c.bridgeMu.Unlock()
-	if token == "" {
-		return "", "", false
-	}
-	return token, route, true
-}
-
-func (c *connector) registerRuntimeRoute(runtimeContext, token string) {
-	if runtimeContext == "" || token == "" {
-		return
-	}
-	c.bridgeMu.Lock()
-	c.runtimeRoutes[runtimeContext] = token
-	c.bridgeMu.Unlock()
-}
-
-func (c *connector) removeRuntimeRoute(runtimeContext string) {
-	c.bridgeMu.Lock()
-	delete(c.runtimeRoutes, runtimeContext)
-	c.bridgeMu.Unlock()
-}
-
-func runtimeProxyHeaders(headers http.Header) map[string]any {
-	out := map[string]any{}
-	for key, values := range headers {
-		out[strings.ToLower(key)] = strings.Join(values, ",")
-	}
-	return out
-}
-
 func (c *connector) activateRuntimeTransport(send contextMessageSender) func() {
 	transport := &runtimeTransport{
 		send: send,
@@ -4965,9 +4589,6 @@ func (c *connector) activateRuntimeTransport(send contextMessageSender) func() {
 	c.sendMu.Lock()
 	c.activeTransport = transport
 	c.sendMu.Unlock()
-	if c.externalRuntimeState != nil {
-		c.externalRuntimeState.wake()
-	}
 	return func() {
 		c.sendMu.Lock()
 		if c.activeTransport == transport {
@@ -4979,38 +4600,6 @@ func (c *connector) activateRuntimeTransport(send contextMessageSender) func() {
 		if auth := c.runtimeAuthCoordinator(); auth != nil {
 			auth.runtimeCarrierClosed(transport)
 		}
-	}
-}
-
-func (c *connector) onRuntimeConnected(ctx context.Context, transport *runtimeTransport) {
-	// Only an executable device can request pending server input. A later
-	// grant requests catch-up through refreshDeviceRuntimes.
-	if !c.externalRuntimesEnabled() || c.currentScope() == scopeLocalFileRead {
-		return
-	}
-	go c.replayRuntimeObservations()
-	transport.catchupOnce.Do(func() { go c.catchUpExternalRuntimeInputs(ctx, transport) })
-}
-
-// catchUpExternalRuntimeInputs sends one payload-free hint per connection
-// generation. Server wakes the normal Session owners, which still deliver
-// messages through agent_runtime_input and Connector's durable inbox.
-func (c *connector) catchUpExternalRuntimeInputs(ctx context.Context, transport *runtimeTransport) {
-	requestCtx, cancel := context.WithTimeout(ctx, externalInputCatchupTimeout)
-	defer cancel()
-	reply, err := c.sendRuntimeRequest(requestCtx, transport, nil, message{
-		ID:     c.nextRuntimeRequestID("runtime_catchup_"),
-		Type:   "request",
-		Method: "agent_runtime_catchup",
-	})
-	if err == nil && reply.Type != "error" && reply.Error == "" {
-		return
-	}
-	if err == nil {
-		err = errors.New(defaultString(reply.Error, "reconnect catch-up rejected"))
-	}
-	if ctx.Err() == nil && !errors.Is(err, errRuntimeTransportUnavailable) {
-		logf("external runtime reconnect catch-up unavailable: %v", err)
 	}
 }
 
@@ -5131,491 +4720,11 @@ func newCodexRuntimeImplementation(c *connector) *codexRuntimeImplementation {
 	implementation := &codexRuntimeImplementation{
 		connector:       c,
 		runtimes:        map[string]*codexRuntime{},
-		sessions:        map[string]*codexRuntimeSession{},
-		sessionIndex:    map[string]int{},
-		threads:         map[string]string{},
 		authQuarantined: map[string]bool{},
 		connectTimeout:  10 * time.Second,
 	}
 	implementation.auth = newRuntimeAuthCoordinator(implementation)
 	return implementation
-}
-
-func (i *codexRuntimeImplementation) Send(ctx context.Context, input externalRuntimeInput) (map[string]any, string, error) {
-	defer i.beginActivity()()
-	c := i.connector
-	nativeInput := codexRuntimeInput(input.messages)
-	session := i.session(input.sessionID)
-	session.inputMu.Lock()
-	defer session.inputMu.Unlock()
-	if err := i.persistSessionRecovery(session); err != nil {
-		return nil, "", err
-	}
-	session.mu.Lock()
-	previousRuntime := session.runtime
-	threadRuntime := session.threadRuntime
-	previousCommand := session.recoveryInput.command
-	if (previousRuntime != nil && previousRuntime.command != input.command) ||
-		(previousCommand != "" && previousCommand != input.command) {
-		session.mu.Unlock()
-		return nil, "", errors.New("external runtime session command changed")
-	}
-	threadID := session.threadID
-	activeTurnID := session.activeTurnID
-	recoveryPending := session.recoveryPending
-	recoveryMessage := session.recoveryMessage
-	executionID := session.executionID
-	workState := session.workState
-	session.mu.Unlock()
-	// Keep lazy identity resume distinct from an interrupted active execution:
-	// only the latter carries a recovery
-	// instruction into the native turn.
-	if !recoveryPending {
-		recoveryMessage = ""
-	}
-	runtime, err := i.ensureRuntime(ctx, input, session)
-	if err != nil {
-		return nil, "", err
-	}
-	if err := runtime.ensureTaskInitialized(ctx); err != nil {
-		return nil, "", err
-	}
-	bindThread := false
-	if threadID != "" && previousRuntime == runtime && threadRuntime == runtime {
-		ready, probeErr := runtime.threadReady(ctx, threadID)
-		if probeErr != nil {
-			if !isCodexAppServerUnavailable(probeErr) {
-				return nil, "", probeErr
-			}
-			if err := stopExternalRuntime(ctx, runtime.terminate, runtime.done); err != nil {
-				return nil, "", err
-			}
-			runtime, err = i.ensureRuntime(ctx, input, session)
-			if err != nil {
-				return nil, "", err
-			}
-			if err := runtime.ensureTaskInitialized(ctx); err != nil {
-				return nil, "", err
-			}
-		} else if !ready {
-			if boolParam(input.payload, "require_native_resume") {
-				return nil, "", errors.New("migrated native Codex thread is missing; restore its files before retrying")
-			}
-			threadID, err = runtime.startNewThread(ctx, input)
-			if err != nil {
-				return nil, "", err
-			}
-			if recoveryPending {
-				recoveryMessage = externalRuntimeRecreatedMessage
-			}
-			bindThread = true
-		}
-	}
-	if !bindThread && (threadID == "" || previousRuntime != runtime || threadRuntime != runtime) {
-		recoveryMessage = ""
-		candidateThreadID := threadID
-		if candidateThreadID == "" {
-			candidateThreadID = stringParam(input.payload, "thread_id")
-		}
-		if candidateThreadID == "" {
-			if boolParam(input.payload, "require_native_resume") {
-				return nil, "", errors.New("migrated Codex Session has no native identity")
-			}
-			threadID, err = runtime.startNewThread(ctx, input)
-		} else {
-			var recreated bool
-			threadID, recreated, err = i.resumeOrRecreateThread(ctx, runtime, input, candidateThreadID)
-			if recoveryPending {
-				recoveryMessage = externalRuntimeRecoveryMessage
-				if recreated {
-					recoveryMessage = externalRuntimeRecreatedMessage
-				}
-			}
-		}
-		if err != nil {
-			return nil, "", err
-		}
-		bindThread = true
-	}
-	if bindThread {
-		activeTurnID = ""
-	}
-	if input.executionID == "" {
-		return nil, "", errors.New("prepared execution id is required")
-	}
-	if activeTurnID != "" && executionID != "" && executionID != input.executionID {
-		return nil, "", errors.New("prepared execution id changed during active codex execution")
-	}
-	executionID = input.executionID
-	input.executionID = executionID
-	if bindThread {
-		if err := i.bindSessionThread(session, runtime, input, threadID, recoveryMessage); err != nil {
-			return nil, "", err
-		}
-	} else {
-		session.mu.Lock()
-		if session.runtime != runtime {
-			session.mu.Unlock()
-			return nil, "", errors.New("codex app-server exited")
-		}
-		session.token = input.token
-		session.recoveryInput = externalRuntimeRecoveryInput(input, "thread_id", threadID)
-		session.persistencePending = true
-		session.dispatchID = input.dispatchID
-		session.executionID = executionID
-		if activeTurnID == "" || workState != "running" {
-			session.workState = "starting"
-			session.failureIssue = ""
-			session.failureMessage = ""
-		}
-		session.mu.Unlock()
-		if err := i.persistSessionRecovery(session); err != nil {
-			return nil, "", err
-		}
-	}
-	c.registerRuntimeRoute(threadID, input.token)
-
-	if activeTurnID != "" {
-		if err := runtime.steer(ctx, threadID, activeTurnID, nativeInput); err != nil {
-			return nil, "", err
-		}
-	} else {
-		if recoveryMessage != "" {
-			nativeInput = append([]map[string]any{textInput(recoveryMessage)}, nativeInput...)
-		}
-		session.mu.Lock()
-		turnStartedSeq := session.turnStartedSeq
-		session.mu.Unlock()
-		turnID, err := runtime.startTurn(ctx, threadID, nativeInput, input.workspace, input.model, input.reasoningEffort)
-		if err != nil {
-			if recoveryMessage != "" {
-				session.mu.Lock()
-				accepted := session.runtime == runtime && session.turnStartedSeq > turnStartedSeq
-				if accepted {
-					session.recoveryPending = false
-					session.recoveryMessage = ""
-				}
-				session.mu.Unlock()
-				if accepted {
-					if err := c.externalRuntimeState.markExecutionRecovered("codex", input.sessionID, input.token); err != nil {
-						logf("persist accepted runtime recovery failed: %v", err)
-					}
-					return map[string]any{"thread_id": threadID}, executionID, nil
-				}
-			}
-			return nil, "", err
-		}
-		session.mu.Lock()
-		if recoveryMessage != "" {
-			session.recoveryPending = false
-			session.recoveryMessage = ""
-		}
-		if session.lastCompletedTurnID != turnID {
-			session.activeTurnID = turnID
-		}
-		session.mu.Unlock()
-		if recoveryMessage != "" {
-			if err := c.externalRuntimeState.markExecutionRecovered("codex", input.sessionID, input.token); err != nil {
-				logf("persist accepted runtime recovery failed: %v", err)
-			}
-		}
-	}
-
-	return map[string]any{"thread_id": threadID}, executionID, nil
-}
-
-func (i *codexRuntimeImplementation) ReplayObservations() {
-	i.mu.Lock()
-	sessions := make([]*codexRuntimeSession, 0, len(i.sessions))
-	for _, session := range i.sessions {
-		sessions = append(sessions, session)
-	}
-	i.mu.Unlock()
-	for _, session := range sessions {
-		session.mu.Lock()
-		if session.workState == "running" || session.workState == "settled" || session.workState == "failed" {
-			event := standardRuntimeEvent("codex", "status", "connector/reconnected")
-			event["state"] = session.workState
-			if session.workState == "failed" {
-				event["issue"] = session.failureIssue
-				event["message"] = session.failureMessage
-			}
-			i.connector.forwardRuntimeEvent(
-				session.token,
-				attachRuntimeIdentity(event, session.dispatchID, session.executionID, session.workState),
-			)
-		}
-		session.mu.Unlock()
-	}
-}
-
-func (i *codexRuntimeImplementation) Restore(input externalRuntimeInput) error {
-	defer i.beginActivity()()
-	// Persistence creates the recovery obligation before any app-server attach
-	// or thread resume attempt. Connector recovery tests cover this local owner.
-	threadID := stringParam(input.payload, "thread_id")
-	session := i.session(input.sessionID)
-	session.mu.Lock()
-	session.token = input.token
-	session.threadID = threadID
-	session.dispatchID = input.dispatchID
-	session.executionID = input.executionID
-	if input.executionID != "" {
-		session.workState = "starting"
-		session.failureIssue = ""
-		session.failureMessage = ""
-	}
-	session.recoveryInput = input
-	session.recoveryPending = true
-	session.recoveryMessage = externalRuntimeRecoveryMessage
-	session.persistencePending = false
-	session.mu.Unlock()
-	if threadID != "" {
-		i.registerThread(input.sessionID, threadID)
-		i.connector.registerRuntimeRoute(threadID, input.token)
-	} else {
-		// Retain this Session's recovery obligation without preventing other
-		// Sessions from loading. Recovery needs the original durable input.
-		logf("codex recovery requires its durable input batch session=%s execution=%s", input.sessionID, input.executionID)
-	}
-	return nil
-}
-
-func (i *codexRuntimeImplementation) Check(ctx context.Context, sessionID string) error {
-	defer i.beginActivity()()
-	i.mu.Lock()
-	session := i.sessions[sessionID]
-	i.mu.Unlock()
-	if session == nil {
-		return nil
-	}
-	if !session.inputMu.TryLock() {
-		return nil
-	}
-	defer session.inputMu.Unlock()
-	session.mu.Lock()
-	missingThread := session.threadID == ""
-	session.mu.Unlock()
-	if missingThread {
-		return errors.New("Unstarted Codex execution has no matching durable input batch. Restore the original input before recovery.")
-	}
-	if err := i.persistSessionRecovery(session); err != nil {
-		return err
-	}
-	session.mu.Lock()
-	runtime := session.runtime
-	threadRuntime := session.threadRuntime
-	input := session.recoveryInput
-	threadID := session.threadID
-	session.mu.Unlock()
-	if runtime != nil && runtime.isRunning() && threadRuntime == runtime {
-		// ExternalRuntimeRecovery retries every provider handshake step while the
-		// persisted recovery obligation remains outstanding.
-		if err := runtime.ensureTaskInitialized(ctx); err != nil {
-			return err
-		}
-		ready, err := runtime.threadReady(ctx, threadID)
-		if err != nil {
-			if !isCodexAppServerUnavailable(err) {
-				return err
-			}
-			if err := stopExternalRuntime(ctx, runtime.terminate, runtime.done); err != nil {
-				return err
-			}
-		} else if ready {
-			session.mu.Lock()
-			pending := session.recoveryPending
-			session.mu.Unlock()
-			if !pending {
-				return nil
-			}
-			return i.continueSessionRecovery(ctx, session, runtime, input, threadID)
-		} else {
-			threadID, err = runtime.startNewThread(ctx, input)
-			if err != nil {
-				return err
-			}
-			if err := i.bindSessionThread(session, runtime, input, threadID, externalRuntimeRecreatedMessage); err != nil {
-				return err
-			}
-			return i.continueSessionRecovery(ctx, session, runtime, input, threadID)
-		}
-	}
-	if !i.connector.externalRuntimeState.watched("codex", sessionID) {
-		return nil
-	}
-	if input.command == "" || threadID == "" {
-		return nil
-	}
-	runtime, err := i.ensureRuntime(ctx, input, session)
-	if err != nil {
-		return err
-	}
-	if err := runtime.ensureTaskInitialized(ctx); err != nil {
-		return err
-	}
-	threadID, recreated, err := i.resumeOrRecreateThread(ctx, runtime, input, threadID)
-	if err != nil {
-		return err
-	}
-	recoveryMessage := externalRuntimeRecoveryMessage
-	if recreated {
-		recoveryMessage = externalRuntimeRecreatedMessage
-	}
-	if err := i.bindSessionThread(session, runtime, input, threadID, recoveryMessage); err != nil {
-		return err
-	}
-	return i.continueSessionRecovery(ctx, session, runtime, input, threadID)
-}
-
-func (i *codexRuntimeImplementation) continueSessionRecovery(
-	ctx context.Context,
-	session *codexRuntimeSession,
-	runtime *codexRuntime,
-	input externalRuntimeInput,
-	threadID string,
-) error {
-	session.mu.Lock()
-	recoveryMessage := session.recoveryMessage
-	turnStartedSeq := session.turnStartedSeq
-	session.mu.Unlock()
-	if recoveryMessage == "" {
-		recoveryMessage = externalRuntimeRecoveryMessage
-	}
-	turnID, err := runtime.startTurn(
-		ctx,
-		threadID,
-		[]map[string]any{textInput(recoveryMessage)},
-		input.workspace,
-		input.model,
-		input.reasoningEffort,
-	)
-	if err != nil {
-		session.mu.Lock()
-		accepted := session.runtime == runtime && session.turnStartedSeq > turnStartedSeq
-		if accepted {
-			session.recoveryPending = false
-			session.recoveryMessage = ""
-		}
-		session.mu.Unlock()
-		if accepted {
-			if settleErr := i.connector.externalRuntimeState.markExecutionRecovered(
-				"codex", input.sessionID, input.token,
-			); settleErr != nil {
-				return settleErr
-			}
-			return nil
-		}
-		return err
-	}
-	session.mu.Lock()
-	session.recoveryPending = false
-	session.recoveryMessage = ""
-	if session.lastCompletedTurnID != turnID {
-		session.activeTurnID = turnID
-	}
-	session.mu.Unlock()
-	if err := i.connector.externalRuntimeState.markExecutionRecovered(
-		"codex", input.sessionID, input.token,
-	); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (i *codexRuntimeImplementation) resumeOrRecreateThread(
-	ctx context.Context,
-	runtime *codexRuntime,
-	input externalRuntimeInput,
-	threadID string,
-) (string, bool, error) {
-	if _, err := runtime.resumeThread(ctx, input, threadID); err != nil {
-		if !isCodexMissingThread(err) || boolParam(input.payload, "require_native_resume") {
-			return "", false, err
-		}
-		newThreadID, startErr := runtime.startNewThread(ctx, input)
-		if startErr != nil {
-			return "", false, startErr
-		}
-		return newThreadID, true, nil
-	}
-	return threadID, false, nil
-}
-
-// bindSessionThread makes the connector's in-memory thread authoritative before
-// attempting persistence. A failed write is retried for this same thread by the
-// next Send or Check instead of creating another native thread.
-func (i *codexRuntimeImplementation) bindSessionThread(
-	session *codexRuntimeSession,
-	runtime *codexRuntime,
-	input externalRuntimeInput,
-	threadID string,
-	recoveryMessage string,
-) error {
-	recoveryInput := externalRuntimeRecoveryInput(input, "thread_id", threadID)
-	session.mu.Lock()
-	if session.runtime != runtime {
-		session.mu.Unlock()
-		return errCodexAppServerUnavailable
-	}
-	previousThreadID := session.threadID
-	session.threadRuntime = runtime
-	session.token = input.token
-	session.threadID = threadID
-	session.activeTurnID = ""
-	session.dispatchID = input.dispatchID
-	session.executionID = input.executionID
-	if input.executionID != "" {
-		session.workState = "starting"
-		session.failureIssue = ""
-		session.failureMessage = ""
-	}
-	session.recoveryInput = recoveryInput
-	session.persistencePending = true
-	session.recoveryPending = recoveryMessage != ""
-	session.recoveryMessage = recoveryMessage
-	session.mu.Unlock()
-	i.mu.Lock()
-	if i.threads[previousThreadID] == session.sessionID {
-		delete(i.threads, previousThreadID)
-	}
-	i.threads[threadID] = session.sessionID
-	i.mu.Unlock()
-	if previousThreadID != threadID {
-		i.connector.removeRuntimeRoute(previousThreadID)
-	}
-	i.connector.registerRuntimeRoute(threadID, input.token)
-	return i.persistSessionRecovery(session)
-}
-
-// persistSessionRecovery is called with inputMu held, so a successful write can
-// clear the pending bit without racing another recovery-input update.
-func (i *codexRuntimeImplementation) persistSessionRecovery(session *codexRuntimeSession) error {
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	if !session.persistencePending {
-		return nil
-	}
-	if err := i.connector.watchExternalRuntime("codex", session.recoveryInput); err != nil {
-		return err
-	}
-	session.persistencePending = false
-	return nil
-}
-
-func isCodexMissingThread(err error) bool {
-	var rpcErr *codexRPCError
-	if !errors.As(err, &rpcErr) ||
-		(rpcErr.method != "thread/read" && rpcErr.method != "thread/resume") {
-		return false
-	}
-	message := strings.ToLower(rpcErr.message)
-	return strings.Contains(message, "no rollout found for thread id") ||
-		strings.Contains(message, "thread not found")
-}
-
-func isCodexAppServerUnavailable(err error) bool {
-	return errors.Is(err, errCodexAppServerUnavailable)
 }
 
 func (i *codexRuntimeImplementation) Close() {
@@ -5640,78 +4749,12 @@ func (i *codexRuntimeImplementation) pause() {
 	}
 }
 
-func codexRuntimeInput(messages []map[string]any) []map[string]any {
-	input := make([]map[string]any, 0, len(messages))
-	for _, message := range messages {
-		input = append(input, textInput(stringParam(message, "content")))
-	}
-	return input
-}
-
-func (i *codexRuntimeImplementation) session(sessionID string) *codexRuntimeSession {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	session := i.sessions[sessionID]
-	if session == nil {
-		session = &codexRuntimeSession{sessionID: sessionID}
-		i.sessions[sessionID] = session
-		appendRuntimeSessionID(&i.sessionOrder, &i.sessionIndex, sessionID)
-	}
-	return session
-}
-
-func (i *codexRuntimeImplementation) ensureRuntime(
-	ctx context.Context,
-	input externalRuntimeInput,
-	session *codexRuntimeSession,
-) (*codexRuntime, error) {
-	runtime, err := i.ensureCodexRuntime(ctx, input.command)
-	if err != nil {
-		var stopped *codexStartupNormalExit
-		if runtime != nil && errors.As(err, &stopped) && i.connector.externalRuntimeState.watched("codex", input.sessionID) {
-			session.mu.Lock()
-			restored := session.recoveryPending && session.threadID != "" &&
-				session.executionID != "" && session.executionID == input.executionID &&
-				session.recoveryInput.executionID == input.executionID &&
-				session.recoveryInput.command == input.command
-			if restored {
-				session.runtime = runtime
-			}
-			session.mu.Unlock()
-			if restored {
-				// The process exited before admission could attach the restored
-				// Session. Apply its existing normal-exit lifecycle exactly once.
-				i.finishSession(runtime, session, "codex app-server exited", false)
-			}
-		}
-		return runtime, err
-	}
-	session.mu.Lock()
-	session.runtime = runtime
-	session.token = input.token
-	session.mu.Unlock()
-	return runtime, nil
-}
-
-func (i *codexRuntimeImplementation) startRuntime(input externalRuntimeInput, bridgeURL string) (*codexRuntime, error) {
-	return i.startRuntimeAtHome(input, bridgeURL, "")
-}
-
-func (i *codexRuntimeImplementation) startRuntimeAtHome(input externalRuntimeInput, bridgeURL, home string) (*codexRuntime, error) {
-	return i.startRuntimeCommand(input, bridgeURL, home, input.command)
-}
-
-func (i *codexRuntimeImplementation) startRuntimeCommand(input externalRuntimeInput, bridgeURL, home, launchCommand string) (*codexRuntime, error) {
+func (i *codexRuntimeImplementation) startRuntimeCommand(command, launchCommand string) (*codexRuntime, error) {
 	c := i.connector
-	cliDir, err := c.ensureSalixCLI("codex")
-	if err != nil {
-		return nil, err
-	}
-	command := input.command
 	if command == "" {
-		return nil, errors.New("agent_runtime_input requires discovered codex command")
+		return nil, errors.New("codex app-server requires a discovered codex command")
 	}
-	listenURL, err := reserveLocalWebsocketURL()
+	listenURL, err := reserveCodexListenURL()
 	if err != nil {
 		return nil, err
 	}
@@ -5719,15 +4762,9 @@ func (i *codexRuntimeImplementation) startRuntimeCommand(input externalRuntimeIn
 	configureProcessGroup(cmd)
 	cmd.Dir = c.root
 	cmd.Env = execEnv(map[string]any{
-		"SALIX_CONNECT_URL": bridgeURL,
-		"SALIX_CLI":         filepath.Join(cliDir, "salix"),
-		"SALIX_ENV_ROOT":    c.root,
-		"PATH":              runtimeCommandPath(launchCommand, cliDir),
+		"SALIX_ENV_ROOT": c.root,
+		"PATH":           runtimeCommandPath(launchCommand),
 	})
-
-	if home != "" {
-		cmd.Env = append(cmd.Env, "CODEX_HOME="+home)
-	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -5787,44 +4824,11 @@ func (r *codexRuntime) connect(ctx context.Context) error {
 	return nil
 }
 
-func (c *connector) ensureSalixCLI(provider string) (string, error) {
-	c.bridgeMu.Lock()
-	defer c.bridgeMu.Unlock()
-	if dir := c.salixCLIDirs[provider]; dir != "" {
-		return dir, nil
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	tempRoot := ""
-	if c.cfg.runtimeAgent && c.cfg.computeRuntimeKind == "external_worker" {
-		// Agent VMM containers keep the image root read-only. Their product
-		// workspace is the writable boundary for runtime-owned shims. Use the
-		// stable runtime role here because the one-time bootstrap token is
-		// cleared after the carrier connects, before a provider's first Session.
-		tempRoot = c.root
-	}
-	dir, err := os.MkdirTemp(tempRoot, ".salix-connect-cli-"+provider+"-")
-	if err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, "salix")
-	prefix := ""
-	if provider == "codex" {
-		prefix = "SALIX_RUNTIME_CONTEXT=\"$CODEX_THREAD_ID\"; export SALIX_RUNTIME_CONTEXT\n"
-	}
-	script := "#!/bin/sh\n" + prefix + "exec " + shellQuote(exe) + " runtime-cli \"$@\"\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		return "", err
-	}
-	c.salixCLIDirs[provider] = dir
-	return dir, nil
-}
-
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
-}
+// reserveCodexListenURL chooses the address a launched app-server listens on.
+// The reserved port is released before the child binds it, so another process
+// can take it first and connect would reach that process. Tests that need an
+// exact startup outcome replace it with a port they keep.
+var reserveCodexListenURL = reserveLocalWebsocketURL
 
 func reserveLocalWebsocketURL() (string, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -5870,13 +4874,9 @@ func (r *codexRuntime) isRunning() bool {
 }
 
 func (r *codexRuntime) wait() {
-	err := r.cmd.Wait()
+	_ = r.cmd.Wait()
 	close(r.exited)
-	reason := "codex app-server exited"
-	if err != nil {
-		reason = "codex app-server exited: " + err.Error()
-	}
-	r.finish(reason, err != nil)
+	r.finish()
 }
 
 func (r *codexRuntime) close() {
@@ -5897,15 +4897,25 @@ func (r *codexRuntime) terminate() {
 	})
 }
 
-func (r *codexRuntime) finish(reason string, recover bool) {
+func (r *codexRuntime) finish() {
 	r.doneOnce.Do(func() {
 		r.terminate()
 		r.closePending()
 		if r.implementation != nil {
-			r.implementation.handleRuntimeClosed(r, reason, recover)
+			r.implementation.handleRuntimeClosed(r)
 		}
 		close(r.done)
 	})
+}
+
+func (i *codexRuntimeImplementation) handleRuntimeClosed(runtime *codexRuntime) {
+	i.auth.runtimeClosed(runtime)
+	i.mu.Lock()
+	delete(i.authQuarantined, runtime.generation)
+	if i.runtimes[runtime.command] == runtime {
+		delete(i.runtimes, runtime.command)
+	}
+	i.mu.Unlock()
 }
 
 func configureProcessGroup(cmd *exec.Cmd) {
@@ -5931,13 +4941,6 @@ func killProcessGroup(cmd *exec.Cmd) {
 		return
 	}
 	_ = cmd.Process.Kill()
-}
-
-func (r *codexRuntime) ensureTaskInitialized(ctx context.Context) error {
-	if err := r.ensureInitialized(ctx); err != nil {
-		return err
-	}
-	return r.ensureSubscription(ctx)
 }
 
 func (r *codexRuntime) ensureInitialized(ctx context.Context) error {
@@ -5968,121 +4971,6 @@ func (r *codexRuntime) ensureInitialized(ctx context.Context) error {
 	r.nativeVersion = strings.TrimSpace(stringParam(result, "userAgent"))
 	r.initialized = true
 	return nil
-}
-
-func (r *codexRuntime) startNewThread(ctx context.Context, input externalRuntimeInput) (string, error) {
-	result, err := r.rpc(ctx, "thread/start", map[string]any{
-		"approvalPolicy":        "never",
-		"sandbox":               "danger-full-access",
-		"serviceName":           "salix",
-		"cwd":                   input.workspace,
-		"baseInstructions":      input.systemPrompt,
-		"developerInstructions": codexDeveloperInstructions(),
-		// Persist the thread so the canonical external session can resume after reconnects.
-		"ephemeral": false,
-	}, 30*time.Second)
-	if err != nil {
-		return "", err
-	}
-	thread := mapParam(result, "thread")
-	threadID := stringParam(thread, "id")
-	if threadID == "" {
-		return "", errors.New("thread/start returned no thread id")
-	}
-	return threadID, nil
-}
-
-func (r *codexRuntime) resumeThread(ctx context.Context, input externalRuntimeInput, threadID string) (string, error) {
-	result, err := r.rpc(ctx, "thread/resume", map[string]any{
-		"threadId":              threadID,
-		"approvalPolicy":        "never",
-		"sandbox":               "danger-full-access",
-		"cwd":                   input.workspace,
-		"baseInstructions":      input.systemPrompt,
-		"developerInstructions": codexDeveloperInstructions(),
-	}, 30*time.Second)
-	if err != nil {
-		return "", err
-	}
-	resumedThreadID := stringParam(mapParam(result, "thread"), "id")
-	if resumedThreadID == "" {
-		return "", errors.New("thread/resume returned no thread id")
-	}
-	if resumedThreadID != threadID {
-		return "", fmt.Errorf("thread/resume returned thread id %q, want %q", resumedThreadID, threadID)
-	}
-	return resumedThreadID, nil
-}
-
-func (r *codexRuntime) threadReady(ctx context.Context, threadID string) (bool, error) {
-	probeCtx, cancel := context.WithTimeout(ctx, externalRuntimeProbeTimeout)
-	defer cancel()
-	result, err := r.rpc(
-		probeCtx,
-		"thread/read",
-		map[string]any{"threadId": threadID, "includeTurns": false},
-		externalRuntimeProbeTimeout,
-	)
-	if err == nil {
-		actualThreadID := stringParam(mapParam(result, "thread"), "id")
-		if actualThreadID != threadID {
-			return false, fmt.Errorf("codex thread/read returned thread id %q, want %q", actualThreadID, threadID)
-		}
-		return true, nil
-	}
-	if ctx.Err() != nil {
-		return false, ctx.Err()
-	}
-	if isCodexMissingThread(err) {
-		return false, nil
-	}
-	return false, err
-}
-
-// startTurn sends the effective model and reasoning effort on every turn.
-// Codex app-server `turn/start` takes `effort` as a non-empty string or null
-// (checked against codex-cli 0.153.0, the version the runtime image pins).
-// Both override "this turn and subsequent turns", and null does not clear an
-// override. So a blank choice sends Codex's own default explicitly: a return
-// to the runtime default then replaces an earlier override in the same thread.
-// A field Codex reports no default for is omitted. The default comes from
-// `config/read` for the thread's cwd, not from thread/resume, which reports the
-// thread's current values, earlier overrides included. An effort the model
-// does not list as supported is mapped to the closest supported one.
-func (r *codexRuntime) startTurn(ctx context.Context, threadID string, input []map[string]any, cwd, model, effort string) (string, error) {
-	model, effort = r.turnSettings(ctx, cwd, model, effort)
-	params := map[string]any{
-		"threadId":       threadID,
-		"input":          input,
-		"approvalPolicy": "never",
-	}
-	if model != "" {
-		params["model"] = model
-	}
-	if effort != "" {
-		params["effort"] = effort
-	}
-	result, err := r.rpc(ctx, "turn/start", params, 30*time.Second)
-	if err != nil {
-		return "", err
-	}
-	turnID := stringParam(mapParam(result, "turn"), "id")
-	if turnID == "" {
-		return "", errors.New("turn/start returned no turn id")
-	}
-	return turnID, nil
-}
-
-func (r *codexRuntime) steer(ctx context.Context, threadID, activeTurnID string, input []map[string]any) error {
-	if threadID == "" || activeTurnID == "" {
-		return errors.New("no active codex turn to steer")
-	}
-	_, err := r.rpc(ctx, "turn/steer", map[string]any{
-		"threadId":       threadID,
-		"expectedTurnId": activeTurnID,
-		"input":          input,
-	}, 30*time.Second)
-	return err
 }
 
 func (r *codexRuntime) rpc(ctx context.Context, method string, params map[string]any, timeout time.Duration) (map[string]any, error) {
@@ -6142,6 +5030,7 @@ func (r *codexRuntime) readLoop(ws *websocket.Conn) {
 	for {
 		var msg map[string]any
 		if err := ws.ReadJSON(&msg); err != nil {
+			r.transportGone.Store(true)
 			// Release any RPC caller before taking the per-target auth fence below.
 			r.closePending()
 			if r.implementation != nil {
@@ -6191,7 +5080,7 @@ func (r *codexRuntime) handleCodexMessage(msg map[string]any) {
 			_ = r.writeCodexResponse(id, response)
 		}
 		if r.implementation != nil {
-			r.implementation.forwardRuntimeEvent(r, msg)
+			r.implementation.auth.handleNotification(r, msg)
 		}
 	}
 }
@@ -6260,397 +5149,6 @@ func (r *codexRuntime) sendCodexMessage(ctx context.Context, payload map[string]
 		return errCodexAppServerUnavailable
 	}
 	return nil
-}
-
-func (i *codexRuntimeImplementation) registerThread(sessionKey, threadID string) {
-	if threadID == "" {
-		return
-	}
-	i.mu.Lock()
-	i.threads[threadID] = sessionKey
-	i.mu.Unlock()
-}
-
-func (i *codexRuntimeImplementation) forwardEvent(event map[string]any) {
-	i.forwardRuntimeEvent(nil, event)
-}
-
-func (i *codexRuntimeImplementation) forwardRuntimeEvent(runtime *codexRuntime, event map[string]any) {
-	if runtime != nil {
-		i.auth.handleNotification(runtime, event)
-	}
-	threadID := codexEventThreadID(event)
-
-	i.mu.Lock()
-	sessionKey := i.threads[threadID]
-	session := i.sessions[sessionKey]
-	i.mu.Unlock()
-	if session == nil {
-		return
-	}
-
-	standard := codexStandardEvent(event)
-	session.mu.Lock()
-	method := stringFromAny(event["method"])
-	turnID := codexEventTurnID(event)
-	dispatchID := session.dispatchID
-	executionID := session.executionID
-	workState := ""
-	oldTurn := turnID != "" && turnID == session.lastCompletedTurnID
-	currentTurn := turnID != "" && turnID == session.activeTurnID
-	if oldTurn {
-		dispatchID = session.lastCompletedDispatchID
-		executionID = session.lastCompletedExecutionID
-	} else if method == "turn/started" && turnID != "" &&
-		(session.activeTurnID == "" || currentTurn) {
-		session.activeTurnID = turnID
-		session.turnStartedSeq++
-		session.recoveryPending = false
-		session.workState = "running"
-		session.failureIssue = ""
-		session.failureMessage = ""
-		workState = "running"
-		currentTurn = true
-	} else if method == "turn/completed" && turnID != "" &&
-		(currentTurn || (session.activeTurnID == "" && session.workState == "starting")) {
-		session.lastCompletedTurnID = turnID
-		session.lastCompletedDispatchID = dispatchID
-		session.lastCompletedExecutionID = executionID
-		if currentTurn {
-			session.activeTurnID = ""
-		}
-		status := strings.ToLower(stringParam(mapParam(mapParam(event, "params"), "turn"), "status"))
-		if status == "failed" || status == "error" {
-			session.workState = "failed"
-			workState = "failed"
-			if standard != nil && session.failureIssue != "" {
-				standard["issue"] = session.failureIssue
-				standard["message"] = session.failureMessage
-			}
-		} else {
-			session.workState = "settled"
-			session.failureIssue = ""
-			session.failureMessage = ""
-			workState = "settled"
-		}
-	} else if standard != nil && session.workState == "running" &&
-		(standard["type"] == "message" || standard["type"] == "thinking" || standard["type"] == "operation") &&
-		(turnID == "" || currentTurn) {
-		workState = "running"
-	} else if turnID != "" && !currentTurn {
-		dispatchID = ""
-		executionID = ""
-	}
-	if standard != nil && standard["type"] == "error" && (turnID == "" || currentTurn) {
-		session.failureIssue, session.failureMessage = normalizeRuntimeFailure(
-			"codex", stringParam(standard, "code"), stringParam(standard, "message"),
-		)
-	}
-	if method == "turn/completed" && (workState == "settled" || workState == "failed") && session.stopDone != nil {
-		close(session.stopDone)
-		session.stopDone = nil
-	}
-	token := session.token
-	session.mu.Unlock()
-
-	if standard != nil {
-		transition := ""
-		if method == "turn/started" && workState == externalRuntimeExecutionRunning {
-			transition = externalRuntimeExecutionRunning
-		} else if method == "turn/completed" &&
-			(workState == externalRuntimeExecutionSettled || workState == "failed") {
-			transition = externalRuntimeExecutionSettled
-		}
-		i.connector.forwardRuntimeExecutionEvent(
-			"codex",
-			session.sessionID,
-			token,
-			attachRuntimeIdentity(standard, dispatchID, executionID, workState),
-			transition,
-		)
-	}
-}
-
-func (i *codexRuntimeImplementation) handleRuntimeClosed(runtime *codexRuntime, reason string, recover bool) {
-	i.auth.runtimeClosed(runtime)
-	i.mu.Lock()
-	delete(i.authQuarantined, runtime.generation)
-	if i.runtimes[runtime.command] == runtime {
-		delete(i.runtimes, runtime.command)
-	}
-	allSessions := make([]*codexRuntimeSession, 0, len(i.sessions))
-	for _, session := range i.sessions {
-		if session != nil {
-			allSessions = append(allSessions, session)
-		}
-	}
-	i.mu.Unlock()
-
-	for _, session := range allSessions {
-		i.finishSession(runtime, session, reason, recover)
-	}
-}
-
-// finishSession is the only Codex session transition for a runtime process
-// exit, including exits before the app-server WebSocket or native thread exist.
-// Its active recover branch retains an unexpected-exit obligation; an idle
-// identity has no recovery obligation.
-func (i *codexRuntimeImplementation) finishSession(
-	runtime *codexRuntime,
-	session *codexRuntimeSession,
-	reason string,
-	recover bool,
-) {
-	session.mu.Lock()
-	if session.runtime != runtime {
-		session.mu.Unlock()
-		return
-	}
-	sessionID := session.sessionID
-	threadID := session.threadID
-	stoppedToken := session.token
-	activeToken := ""
-	dispatchID := ""
-	executionID := ""
-	recoveryPending := session.recoveryPending
-	if session.workState == "starting" || session.workState == "running" {
-		activeToken = session.token
-		dispatchID = session.dispatchID
-		executionID = session.executionID
-		session.workState = "failed"
-	}
-	session.runtime = nil
-	session.activeTurnID = ""
-	recoveryPending = recover && (recoveryPending || activeToken != "")
-	session.recoveryPending = recoveryPending
-	if recoveryPending && session.recoveryMessage == "" {
-		session.recoveryMessage = externalRuntimeRecoveryMessage
-	}
-	if !recoveryPending {
-		session.recoveryMessage = ""
-	}
-	if !recover {
-		session.token = ""
-		session.threadID = ""
-		session.lastCompletedTurnID = ""
-		session.recoveryMessage = ""
-		session.persistencePending = false
-		session.recoveryInput = externalRuntimeInput{}
-	}
-	session.mu.Unlock()
-
-	i.connector.removeRuntimeRoute(threadID)
-	if activeToken != "" {
-		transition := ""
-		if recover {
-			transition = externalRuntimeExecutionInterrupted
-		}
-		i.connector.forwardRuntimeExecutionEvent("codex", sessionID, activeToken, attachRuntimeIdentity(map[string]any{
-			"type":     "error",
-			"provider": "codex",
-			"message":  reason,
-		}, dispatchID, executionID, "failed"), transition)
-	}
-	if recover {
-		return
-	}
-	i.mu.Lock()
-	if i.threads[threadID] == sessionID {
-		delete(i.threads, threadID)
-	}
-	i.mu.Unlock()
-	i.connector.forgetExternalRuntime("codex", sessionID)
-	event := standardRuntimeEvent("codex", "status", "runtime_stopped")
-	event["state"] = "stopped"
-	i.connector.forwardRuntimeEvent(stoppedToken, event)
-}
-
-// AbandonRecovery explicitly stops one execution whose recovery failure budget
-// is exhausted. The durable obligation is
-// removed first, gated on the sampled execution fence, so a replacement
-// execution that started after the budget tripped is never the one abandoned.
-// The in-memory session then detaches (mirroring finishSession's
-// recover=false clearing, without its forwarding or forget, both already
-// owned here), and the shared terminal observations are announced from the
-// durable record — the failed execution event for work that never announced
-// its interruption, then runtime_stopped. Pending inbox rows survive and
-// redeliver into a fresh native thread on the next delivery pass.
-func (i *codexRuntimeImplementation) AbandonRecovery(record externalRuntimeRecoveryRecord, reason string) bool {
-	// An unstarted input must survive temporary Host or persistence failures.
-	// Exhaustion cannot discard its claim and bypass the saved execution right.
-	if stringParam(record.Payload, "thread_id") == "" {
-		return false
-	}
-	sessionID := record.SessionID
-	i.mu.Lock()
-	session := i.sessions[sessionID]
-	i.mu.Unlock()
-	if session == nil {
-		return i.connector.abandonRuntimeObligation(record, reason)
-	}
-	if !session.inputMu.TryLock() {
-		return false
-	}
-	defer session.inputMu.Unlock()
-	_, removed, err := i.connector.externalRuntimeState.forgetExecution(record)
-	if err != nil {
-		return false
-	}
-	if !removed {
-		return true
-	}
-	session.mu.Lock()
-	threadID := session.threadID
-	if session.workState == "starting" || session.workState == "running" {
-		session.workState = "failed"
-	}
-	session.runtime = nil
-	session.activeTurnID = ""
-	session.token = ""
-	session.threadID = ""
-	session.lastCompletedTurnID = ""
-	session.recoveryPending = false
-	session.recoveryMessage = ""
-	session.persistencePending = false
-	session.recoveryInput = externalRuntimeInput{}
-	session.mu.Unlock()
-	i.connector.removeRuntimeRoute(threadID)
-	i.mu.Lock()
-	if i.threads[threadID] == sessionID {
-		delete(i.threads, threadID)
-	}
-	i.mu.Unlock()
-	i.connector.announceAbandonedRecovery(record, reason)
-	return true
-}
-
-func codexEventThreadID(event map[string]any) string {
-	return stringParam(mapParam(event, "params"), "threadId")
-}
-
-func codexEventTurnID(event map[string]any) string {
-	params := mapParam(event, "params")
-	return defaultString(stringParam(params, "turnId"), stringParam(mapParam(params, "turn"), "id"))
-}
-
-func codexStandardEvent(native map[string]any) map[string]any {
-	method := stringParam(native, "method")
-	params := mapParam(native, "params")
-
-	switch method {
-	case "item/started", "item/completed":
-		item := mapParam(params, "item")
-		itemType := stringParam(item, "type")
-		switch itemType {
-		case "userMessage":
-			return nil
-		case "agentMessage":
-			if method != "item/completed" {
-				return nil
-			}
-			event := standardRuntimeEvent("codex", "message", itemType)
-			event["role"] = "assistant"
-			event["content"] = stringParam(item, "text")
-			return event
-		case "reasoning":
-			if method != "item/completed" {
-				return nil
-			}
-			event := standardRuntimeEvent("codex", "thinking", itemType)
-			event["content"] = strings.TrimSpace(textList(item["summary"]) + "\n" + textList(item["content"]))
-			return event
-		default:
-			if itemType == "" {
-				return nil
-			}
-			event := standardRuntimeEvent("codex", "operation", itemType)
-			event["operation_id"] = stringParam(item, "id")
-			event["status"] = defaultString(stringParam(item, "status"), strings.TrimPrefix(method, "item/"))
-			if command := stringParam(item, "command"); command != "" {
-				event["input"] = map[string]any{"command": command, "cwd": stringParam(item, "cwd")}
-			} else if input := item["input"]; input != nil {
-				event["input"] = input
-			}
-			if output := item["aggregatedOutput"]; output != nil {
-				event["output"] = output
-			} else if output := item["output"]; output != nil {
-				event["output"] = output
-			}
-			return event
-		}
-
-	case "turn/started", "turn/completed":
-		turn := mapParam(params, "turn")
-		event := standardRuntimeEvent("codex", "status", method)
-		event["state"] = defaultString(stringParam(turn, "status"), strings.TrimPrefix(method, "turn/"))
-		if usage := mapParam(turn, "usage"); len(usage) > 0 {
-			event["usage"] = usage
-		}
-		return event
-
-	case "thread/tokenUsage/updated":
-		event := standardRuntimeEvent("codex", "usage", method)
-		event["usage"] = params
-		return event
-
-	case "error":
-		err := mapParam(params, "error")
-		event := standardRuntimeEvent("codex", "error", method)
-		event["code"] = stringParam(err, "code")
-		event["message"] = defaultString(stringParam(err, "message"), stringParam(params, "message"))
-		return event
-
-	case "warning", "config/warning", "thread/status/changed", "context/compacted":
-		event := standardRuntimeEvent("codex", "status", method)
-		event["state"] = method
-		return event
-	default:
-		return nil
-	}
-}
-
-func codexDeveloperInstructions() string {
-	return "You are running as an external Salix worker runtime.\n" +
-		"Salix owns agent/session identity and tool authorization.\n" +
-		externalRuntimeHostInstructions() + "\n" +
-		"Assistant text is recorded only in the Salix runtime session; it is not visible in a Salix conversation.\n" +
-		"Use `\"$SALIX_CLI\" tools` and `\"$SALIX_CLI\" tool call <tool_name> --json '{...}'` for Salix operations. SALIX_CLI is the absolute Connector-managed executable path and remains valid when a login shell resets PATH.\n" +
-		"Send every user-visible IM reply through the relevant Salix tool before finishing the turn; ordinary assistant text is not a conversation reply.\n" +
-		"Use the current runtime message context for source and session metadata.\n" +
-		"Do not invent agent_id or session_id fields."
-}
-
-func externalRuntimeSystemPrompt(systemPrompt string) string {
-	parts := []string{}
-	if prompt := strings.TrimSpace(systemPrompt); prompt != "" {
-		parts = append(parts, prompt)
-	}
-	parts = append(parts, externalRuntimeHostInstructions())
-	return strings.Join(parts, "\n\n")
-}
-
-func externalRuntimeHostInstructions() string {
-	return "Run commands on this connector host directly with your native shell.\n" +
-		"The current working directory is an isolated session workspace and may be empty. " +
-		"SALIX_ENV_ROOT is the Connector-managed local environment root. " +
-		"When work needs an existing local project, inspect SALIX_ENV_ROOT first. Before modifying project files, use or create a task-specific worktree in the current session workspace; " +
-		"do not guess from unrelated temporary directories or another session's workspace.\n" +
-		"Use env.exec only for a different connected environment. Local shell execution does not go through FIN."
-}
-
-func sliceMapParam(params map[string]any, key string) []map[string]any {
-	items, _ := params[key].([]any)
-	out := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		if m, ok := item.(map[string]any); ok {
-			out = append(out, m)
-		}
-	}
-	return out
-}
-
-func textInput(text string) map[string]any {
-	return map[string]any{"type": "text", "text": text, "text_elements": []any{}}
 }
 
 func (c *connector) methodProcessStart(ctx context.Context, params map[string]any, send func(message) error) (map[string]any, error) {
@@ -7255,178 +5753,4 @@ func (c *connector) deviceSystemInfo() map[string]any {
 	}
 	info["client_source"] = source
 	return info
-}
-
-// codexModelCatalog is Codex's own model list for one app-server process.
-type codexModelCatalog struct {
-	listedDefault string
-	efforts       map[string]string
-	supported     map[string][]string
-}
-
-// codexConfigDefaults is the effective config for one working directory.
-type codexConfigDefaults struct {
-	model  string
-	effort string
-}
-
-const (
-	codexDefaultsPageLimit   = 5
-	codexConfigCacheLimit    = 64
-	codexDefaultsReadTimeout = 10 * time.Second
-)
-
-// Codex reasoning efforts from least to most.
-var codexEffortOrder = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
-
-// turnSettings fills a blank model or effort with Codex's own default and
-// maps an effort the model does not support to its closest supported one.
-// The workspace config wins over the model catalog, as it does in Codex.
-func (r *codexRuntime) turnSettings(ctx context.Context, cwd, model, effort string) (string, string) {
-	catalog := r.modelCatalog(ctx)
-	if model == "" || effort == "" {
-		config := r.configDefaults(ctx, cwd)
-		if model == "" {
-			model = config.model
-			if model == "" && catalog != nil {
-				model = catalog.listedDefault
-			}
-		}
-		if effort == "" {
-			effort = config.effort
-			if effort == "" && catalog != nil {
-				effort = catalog.efforts[model]
-			}
-		}
-	}
-	if catalog != nil && effort != "" {
-		if supported := catalog.supported[model]; len(supported) > 0 {
-			if mapped := closestCodexEffort(effort, supported); mapped != effort {
-				logf("codex effort %q is not supported by model %q; sending %q", effort, model, mapped)
-				effort = mapped
-			}
-		}
-	}
-	return model, effort
-}
-
-// closestCodexEffort returns effort when supported, else the nearest supported
-// effort (the lower one on a tie), or "" when effort is not a known level.
-func closestCodexEffort(effort string, supported []string) string {
-	if slices.Contains(supported, effort) {
-		return effort
-	}
-	want := slices.Index(codexEffortOrder, effort)
-	if want < 0 {
-		return ""
-	}
-	best, bestDistance := "", len(codexEffortOrder)
-	for _, candidate := range supported {
-		index := slices.Index(codexEffortOrder, candidate)
-		if index < 0 {
-			continue
-		}
-		distance := want - index
-		if distance < 0 {
-			distance = -distance
-		}
-		if distance < bestDistance || (distance == bestDistance && index < want) {
-			best, bestDistance = candidate, distance
-		}
-	}
-	return best
-}
-
-// modelCatalog reads `model/list` once for this app-server process. The lock
-// is not held across the request. A failed read is not cached: a later turn
-// retries it, and the fields it would fill stay omitted meanwhile.
-func (r *codexRuntime) modelCatalog(ctx context.Context) *codexModelCatalog {
-	r.defaultsMu.Lock()
-	cached := r.catalog
-	r.defaultsMu.Unlock()
-	if cached != nil {
-		return cached
-	}
-	catalog := &codexModelCatalog{efforts: map[string]string{}, supported: map[string][]string{}}
-	cursor := ""
-	for page := 0; page < codexDefaultsPageLimit; page++ {
-		params := map[string]any{"limit": 100, "includeHidden": true}
-		if cursor != "" {
-			params["cursor"] = cursor
-		}
-		list, err := r.rpc(ctx, "model/list", params, codexDefaultsReadTimeout)
-		if err != nil {
-			return nil
-		}
-		items, _ := list["data"].([]any)
-		for _, item := range items {
-			entry, _ := item.(map[string]any)
-			names := []string{stringParam(entry, "model"), stringParam(entry, "id")}
-			var supported []string
-			options, _ := entry["supportedReasoningEfforts"].([]any)
-			for _, option := range options {
-				value, _ := option.(map[string]any)
-				if effort := stringParam(value, "reasoningEffort"); effort != "" {
-					supported = append(supported, effort)
-				}
-			}
-			for _, name := range names {
-				if name == "" {
-					continue
-				}
-				if effort := stringParam(entry, "defaultReasoningEffort"); effort != "" {
-					catalog.efforts[name] = effort
-				}
-				if len(supported) > 0 {
-					catalog.supported[name] = supported
-				}
-			}
-			if entry["isDefault"] == true && catalog.listedDefault == "" {
-				catalog.listedDefault = defaultString(names[0], names[1])
-			}
-		}
-		cursor = stringParam(list, "nextCursor")
-		if cursor == "" {
-			break
-		}
-	}
-	r.defaultsMu.Lock()
-	defer r.defaultsMu.Unlock()
-	if r.catalog == nil {
-		r.catalog = catalog
-	}
-	return r.catalog
-}
-
-// configDefaults reads `config/read` for the thread's working directory, so a
-// workspace `.codex/config.toml` applies. It is cached per directory for this
-// process, without holding the lock across the request. A failed read is not
-// cached.
-func (r *codexRuntime) configDefaults(ctx context.Context, cwd string) codexConfigDefaults {
-	r.defaultsMu.Lock()
-	cached, ok := r.configByCwd[cwd]
-	r.defaultsMu.Unlock()
-	if ok {
-		return cached
-	}
-	params := map[string]any{}
-	if cwd != "" {
-		params["cwd"] = cwd
-	}
-	result, err := r.rpc(ctx, "config/read", params, codexDefaultsReadTimeout)
-	if err != nil {
-		return codexConfigDefaults{}
-	}
-	values := mapParam(result, "config")
-	config := codexConfigDefaults{
-		model:  strings.TrimSpace(stringParam(values, "model")),
-		effort: strings.TrimSpace(stringParam(values, "model_reasoning_effort")),
-	}
-	r.defaultsMu.Lock()
-	defer r.defaultsMu.Unlock()
-	if r.configByCwd == nil || len(r.configByCwd) >= codexConfigCacheLimit {
-		r.configByCwd = map[string]codexConfigDefaults{}
-	}
-	r.configByCwd[cwd] = config
-	return config
 }

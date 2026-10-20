@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -22,6 +22,7 @@ import {
 import { isMacOS } from "./os";
 import { getCommaReleaseConfig } from "../release-config";
 import { openWaitTargetAlreadyExited } from "./open-wait";
+import { stationPath } from "./station";
 
 interface CommandResult {
   code: number;
@@ -59,11 +60,32 @@ const connectorRuntimeStatusSchema = z.object({
 
 type ConnectorRuntimeStatusFile = z.output<typeof connectorRuntimeStatusSchema>;
 
+/** This machine's station as the static connector runs it (./station: LocalStation). */
+export interface ConnectorStation {
+  /** The release (`bundle.sh`'s DIR). */
+  readonly dir: string;
+  /** Its data directory. */
+  readonly data: string;
+  readonly instancesDir: string;
+  /** Stops the app's own station: launchd runs the machine's from now on. */
+  release(): Promise<void>;
+  /** Starts the app's own station again once launchd's has stopped. */
+  resume(): void;
+}
+
+/** The static connector's connection: an instance of the station's, beside the Workspaces' (connector-runtime). */
+const STATIC_INSTANCE = "static.json";
+
 export interface ConnectorServiceOptions {
   appBundleId: string;
   runtimeNamespace?: string | undefined;
-  binaryPath?: string;
+  station: ConnectorStation;
+  /** The static connector's connection file (default: the station's `static.json` instance). */
   configPath?: string;
+  /** Where builds before the station kept it (default: `<userData>/connector.json`). */
+  legacyConfigPath?: string | undefined;
+  /** The Computer Use helper the app carries. */
+  computerUseHelperApp?: string;
   logDir?: string;
   platform?: NodeJS.Platform | string;
   plistPath?: string;
@@ -92,14 +114,14 @@ export class ConnectorService {
       );
     }
 
-    const binaryPath = this.resolveBinaryPath();
+    const binaryPath = this.launcherPath();
     const plistPath = this.plistPath();
     const configPath = this.configPath();
     const installed = existsSync(plistPath);
     const configured = existsSync(configPath);
     const running = installed ? await this.isRunning() : false;
     const connectorBinaryHash = existsSync(binaryPath)
-      ? await this.connectorBinaryHash()
+      ? await this.connectorBinaryHash().catch(() => undefined)
       : undefined;
     const status: ConnectorStatus = {
       available: existsSync(binaryPath),
@@ -116,7 +138,7 @@ export class ConnectorService {
     }
 
     if (!status.available) {
-      status.reason = `salix-connect binary was not found at ${binaryPath}. Run pnpm --filter @comma/electron build:native.`;
+      status.reason = `The station was not found at ${binaryPath}. Run pnpm --filter @comma/electron build:native.`;
     }
 
     if (configured) {
@@ -139,13 +161,14 @@ export class ConnectorService {
    * configurations (custom server + token) remain untouched.
    */
   async retireManagedLaunchAgent(): Promise<boolean> {
-    if (!this.isMacOS() || !existsSync(this.configPath())) {
+    const legacy = this.legacyConfigPath();
+    if (!this.isMacOS() || !legacy || !existsSync(legacy)) {
       return false;
     }
 
     let config: SalixConnectorFileConfig;
     try {
-      config = await readConnectorConfig(this.configPath());
+      config = await readConnectorConfig(legacy);
     } catch {
       return false;
     }
@@ -155,8 +178,8 @@ export class ConnectorService {
       await this.bootout();
       await rm(this.plistPath(), { force: true });
     }
-    await rm(this.configPath(), { force: true });
-    await rm(`${this.configPath()}.status.json`, { force: true });
+    await rm(legacy, { force: true });
+    await rm(`${legacy}.status.json`, { force: true });
     log.info("retired legacy managed salix-connect launch agent");
     return true;
   }
@@ -181,6 +204,8 @@ export class ConnectorService {
       await this.writeLaunchAgent();
     }
 
+    // One station per machine: launchd's takes the data directory over from the app's.
+    await this.options.station.release();
     await this.bootstrap();
     await this.kickstart();
     return this.status();
@@ -190,6 +215,7 @@ export class ConnectorService {
     if (this.isMacOS() && existsSync(this.plistPath())) {
       await this.bootout();
     }
+    this.options.station.resume();
 
     return this.status();
   }
@@ -230,12 +256,8 @@ export class ConnectorService {
     }
 
     try {
-      const helperApp = join(
-        dirname(this.resolveBinaryPath()),
-        "native",
-        "macos",
-        `${getCommaReleaseConfig().productName} Computer Use.app`
-      );
+      const helperApp =
+        this.options.computerUseHelperApp ?? resolveComputerUseHelperApp();
       const executable = join(helperApp, "Contents", "MacOS", "CommaComputerUseDaemon");
       if (!existsSync(executable)) {
         throw new Error(
@@ -322,7 +344,13 @@ export class ConnectorService {
     }
   }
 
+  /**
+   * Keeps an installed static connector on the bundled station. One an earlier
+   * build configured (salix-connect with `<userData>/connector.json`) moves to
+   * the station's instance file.
+   */
   async reconcileBundledConnector() {
+    await this.adoptLegacyConfig();
     if (
       !this.isMacOS() ||
       !existsSync(this.plistPath()) ||
@@ -333,7 +361,11 @@ export class ConnectorService {
 
     const config = await readConnectorConfig(this.configPath());
     const currentHash = await this.connectorBinaryHash();
-    if (config.electron?.connector_binary_sha256 === currentHash) {
+    const plist = await readFile(this.plistPath(), "utf8").catch(() => "");
+    if (
+      config.electron?.connector_binary_sha256 === currentHash &&
+      plist === this.launchAgentPlist()
+    ) {
       return this.status();
     }
 
@@ -350,7 +382,7 @@ export class ConnectorService {
     await this.writeLaunchAgent();
 
     if (await this.isRunning()) {
-      await this.stop();
+      await this.bootout();
       return this.start();
     }
 
@@ -373,9 +405,9 @@ export class ConnectorService {
       throw new Error("Background connector service is only supported on macOS.");
     }
 
-    const binaryPath = this.resolveBinaryPath();
+    const binaryPath = this.launcherPath();
     if (!existsSync(binaryPath)) {
-      throw new Error(`salix-connect binary was not found at ${binaryPath}`);
+      throw new Error(`The station was not found at ${binaryPath}`);
     }
 
     const plistPath = this.plistPath();
@@ -408,8 +440,21 @@ export class ConnectorService {
     };
   }
 
+  /** The bundled station's release (its VERSION). */
   private async connectorBinaryHash() {
-    return sha256(await readFile(this.resolveBinaryPath()));
+    return sha256(await readFile(join(this.options.station.dir, "VERSION")));
+  }
+
+  private async adoptLegacyConfig() {
+    const legacy = this.legacyConfigPath();
+    if (!legacy || !existsSync(legacy)) return;
+    if (!existsSync(this.configPath())) {
+      await mkdir(dirname(this.configPath()), { recursive: true, mode: 0o700 });
+      await rename(legacy, this.configPath());
+    } else {
+      await rm(legacy, { force: true });
+    }
+    await rm(`${legacy}.status.json`, { force: true });
   }
 
   private async bootstrap() {
@@ -466,18 +511,28 @@ export class ConnectorService {
   <string>${escapeXml(this.serviceLabel)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${escapeXml(this.resolveBinaryPath())}</string>
-    <string>--config</string>
-    <string>${escapeXml(this.configPath())}</string>
+    <string>${escapeXml(this.launcherPath())}</string>
+    <string>run</string>
+    <string>--app</string>
+    <string>${escapeXml(this.options.station.dir)}</string>
+    <string>--data</string>
+    <string>${escapeXml(this.options.station.data)}</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>STILLFAIL_DATA</key>
+    <string>${escapeXml(this.options.station.data)}</string>
+    <key>PATH</key>
+    <string>${escapeXml(stationPath("/usr/sbin:/sbin"))}</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${escapeXml(join(this.logDir(), "salix-connect.out.log"))}</string>
+  <string>${escapeXml(join(this.logDir(), "station.out.log"))}</string>
   <key>StandardErrorPath</key>
-  <string>${escapeXml(join(this.logDir(), "salix-connect.err.log"))}</string>
+  <string>${escapeXml(join(this.logDir(), "station.err.log"))}</string>
 </dict>
 </plist>
 `;
@@ -499,12 +554,21 @@ export class ConnectorService {
     return `gui/${this.options.userId ?? process.getuid?.() ?? 0}`;
   }
 
-  private resolveBinaryPath() {
-    return resolveConnectorBinaryPath({ binaryPath: this.options.binaryPath });
+  private launcherPath() {
+    return stationLauncherPath(this.options.station.dir);
   }
 
   private configPath() {
-    return this.options.configPath ?? connectorConfigPath();
+    return (
+      this.options.configPath ??
+      join(this.options.station.instancesDir, STATIC_INSTANCE)
+    );
+  }
+
+  /** Where builds before the station kept the static connector's config. */
+  private legacyConfigPath() {
+    if ("legacyConfigPath" in this.options) return this.options.legacyConfigPath;
+    return this.options.configPath ? undefined : connectorConfigPath();
   }
 
   private isMacOS() {
@@ -512,46 +576,37 @@ export class ConnectorService {
   }
 }
 
-export function resolveConnectorBinaryPath(
-  options: { binaryPath?: string | undefined } = {}
-) {
-  if (options.binaryPath) {
-    return options.binaryPath;
-  }
-
-  const binaryName =
-    process.platform === "win32" ? "salix-connect.exe" : "salix-connect";
-  if (app.isPackaged) {
-    return join(
-      process.resourcesPath,
-      "native",
-      process.platform,
-      process.arch,
-      binaryName
-    );
-  }
-
-  const devBinaryPath = join(
-    process.cwd(),
-    "dist",
-    "native",
-    process.platform,
-    process.arch,
-    binaryName
+export function stationLauncherPath(dir: string) {
+  return join(
+    dir,
+    "mesh",
+    "target",
+    "release",
+    process.platform === "win32" ? "stillfail-station.exe" : "stillfail-station"
   );
-  const candidates = [
-    devBinaryPath,
-    join(
-      app.getAppPath(),
-      "dist",
-      "native",
-      process.platform,
-      process.arch,
-      binaryName
-    ),
-  ];
+}
 
-  return candidates.find((candidate) => existsSync(candidate)) ?? devBinaryPath;
+/** The station release the app carries (`build-native.ts`: `dist/native/station`). */
+export function resolveStationDir() {
+  if (app.isPackaged) return join(process.resourcesPath, "native", "station");
+  const candidates = [
+    join(process.cwd(), "dist", "native", "station"),
+    join(app.getAppPath(), "dist", "native", "station"),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
+}
+
+/** The Computer Use helper the app carries beside its native parts. */
+export function resolveComputerUseHelperApp() {
+  const name = `${getCommaReleaseConfig().productName} Computer Use.app`;
+  const native = (root: string) =>
+    join(root, "native", process.platform, process.arch, "native", "macos", name);
+  if (app.isPackaged) return native(process.resourcesPath);
+  const candidates = [
+    native(join(process.cwd(), "dist")),
+    native(join(app.getAppPath(), "dist")),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
 }
 
 function applyConfigStatus(status: ConnectorStatus, config: SalixConnectorFileConfig) {
@@ -675,7 +730,7 @@ function commandOutput(result: CommandResult) {
 function parseComputerUseCLIResponse(output: string): ComputerUseCLIResponse {
   const trimmed = output.trim();
   if (!trimmed) {
-    throw new Error("salix-connect returned an empty ComputerUse response.");
+    throw new Error("ComputerUse returned an empty response.");
   }
   return JSON.parse(trimmed) as ComputerUseCLIResponse;
 }

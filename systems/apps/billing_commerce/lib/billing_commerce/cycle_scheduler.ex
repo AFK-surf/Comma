@@ -1,12 +1,12 @@
 defmodule BillingCommerce.CycleScheduler do
   @moduledoc false
 
-  use GenServer
+  use SystemsRuntime.Server
 
   alias BillingCommerce.Subscriptions
 
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @impl true
@@ -27,5 +27,6 @@ defmodule BillingCommerce.CycleScheduler do
     {:noreply, state}
   end
 
-  defp schedule(interval_ms), do: Process.send_after(self(), :run, interval_ms)
+  defp schedule(interval_ms),
+    do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :run, interval_ms)
 end

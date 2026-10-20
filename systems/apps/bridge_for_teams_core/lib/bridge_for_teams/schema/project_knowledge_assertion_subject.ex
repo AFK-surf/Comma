@@ -5,7 +5,12 @@ defmodule BridgeForTeams.Schema.ProjectKnowledgeAssertionSubject do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at, updated_at: false]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    updated_at: false,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   schema "project_knowledge_assertion_subjects" do
     belongs_to(:assertion, BridgeForTeams.Schema.ProjectKnowledgeAssertion)

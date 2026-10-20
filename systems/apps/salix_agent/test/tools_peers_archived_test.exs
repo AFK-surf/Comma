@@ -3,7 +3,7 @@ defmodule SalixAgent.ToolsPeersArchivedTest do
   Regression coverage for BRI-1638: archived peer-agent control records must not
   be listed.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{AgentControl, AgentManagement}
   alias SalixStore.{Keys, S3}
@@ -12,7 +12,7 @@ defmodule SalixAgent.ToolsPeersArchivedTest do
     @moduledoc false
     @behaviour SalixAgent.OAuthStore
 
-    defp cfg, do: Application.get_env(:salix_agent, :archived_oauth_store_stub, %{})
+    defp cfg, do: SystemsRuntime.get_env(:salix_agent, :archived_oauth_store_stub, %{})
 
     @impl true
     def agent_oauth_context(_agent_id), do: {:ok, cfg().context}
@@ -45,24 +45,24 @@ defmodule SalixAgent.ToolsPeersArchivedTest do
     ensure_registry_started()
     SalixAgent.TestSupport.stop_all_agents()
 
-    prev_s3 = Application.get_env(:salix_store, :s3_backend)
-    prev_oauth_mod = Application.get_env(:salix_agent, :oauth_store_mod)
-    prev_oauth_stub = Application.get_env(:salix_agent, :archived_oauth_store_stub)
-    prev_placement = Application.get_env(:salix_agent, :placement)
+    prev_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_oauth_mod = SystemsRuntime.get_env(:salix_agent, :oauth_store_mod)
+    prev_oauth_stub = SystemsRuntime.get_env(:salix_agent, :archived_oauth_store_stub)
+    prev_placement = SystemsRuntime.get_env(:salix_agent, :placement)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
 
     tenant_id = SalixAgent.TestSupport.new_tenant_id()
     group_id = SalixStore.Ids.new_group_id(tenant_id)
 
-    Application.put_env(:salix_agent, :oauth_store_mod, OAuthStubStore)
+    SystemsRuntime.put_env(:salix_agent, :oauth_store_mod, OAuthStubStore)
 
-    Application.put_env(:salix_agent, :archived_oauth_store_stub, %{
+    SystemsRuntime.put_env(:salix_agent, :archived_oauth_store_stub, %{
       context: %{tenant: tenant_id, group_id: group_id}
     })
 
-    Application.put_env(:salix_agent, :placement, NoopPlacement)
+    SystemsRuntime.put_env(:salix_agent, :placement, NoopPlacement)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
@@ -77,15 +77,15 @@ defmodule SalixAgent.ToolsPeersArchivedTest do
   end
 
   defp ensure_registry_started do
-    if Process.whereis(SalixAgent.Registry) do
+    if SystemsRuntime.Proc.whereis(SalixAgent.Registry) do
       :ok
     else
       start_supervised!({Registry, keys: :unique, name: SalixAgent.Registry})
     end
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp seed_agent(id, record), do: {:ok, _} = S3.put(Keys.ctl_agent(id), Jason.encode!(record))
 

@@ -18,7 +18,6 @@ set -euo pipefail
 # environment lifecycle.
 #
 # Required env, usually sourced from the repo-local .env:
-#   BRIDGE_TOB_ADMIN_API_TOKEN        admin-only token for /v1/admin/* setup repair
 #   BRIDGE_TOB_FEISHU_SECRET_ENV      0600 shell env file with Feishu verification token
 #   BRIDGE_TOB_FEISHU_WEBHOOK_URL_FILE
 #   BRIDGE_TOB_LOCAL_LLM_BASE_URL
@@ -57,7 +56,6 @@ print_env_template() {
 
 # Admin-only token for /v1/admin/* setup repair. Local dev usually mirrors
 # SALIX_API_TOKEN; runtime and connector calls must not use this token.
-BRIDGE_TOB_ADMIN_API_TOKEN=
 
 # 0600 shell env file containing:
 #   BRIDGE_FEISHU_VERIFICATION_TOKEN=...
@@ -252,7 +250,6 @@ PY
 
 load_env_file "$ENV_FILE"
 
-BRIDGE_TOB_ADMIN_API_TOKEN="${BRIDGE_TOB_ADMIN_API_TOKEN:-${SALIX_API_TOKEN:-}}"
 BRIDGE_TOB_FEISHU_SECRET_ENV="${BRIDGE_TOB_FEISHU_SECRET_ENV:-${THREAD_A_FEISHU_WEBHOOK_SECRET_ENV:-}}"
 BRIDGE_TOB_FEISHU_WEBHOOK_URL_FILE="${BRIDGE_TOB_FEISHU_WEBHOOK_URL_FILE:-${THREAD_A_FEISHU_WEBHOOK_URL_FILE:-}}"
 BRIDGE_TOB_LOCAL_LLM_BASE_URL="${BRIDGE_TOB_LOCAL_LLM_BASE_URL:-${THREAD_A_LOCAL_LLM_BASE_URL:-}}"
@@ -269,7 +266,6 @@ LAST_EVENT_PATH="${BRIDGE_TOB_LAST_EVENT_PATH:-${THREAD_A_LAST_EVENT_PATH:-/tmp/
 TOKEN_VAR="${BRIDGE_TOB_FEISHU_VERIFICATION_TOKEN_VAR:-${THREAD_A_FEISHU_VERIFICATION_TOKEN_VAR:-BRIDGE_FEISHU_VERIFICATION_TOKEN}}"
 
 require_env \
-  BRIDGE_TOB_ADMIN_API_TOKEN \
   BRIDGE_TOB_FEISHU_SECRET_ENV \
   BRIDGE_TOB_FEISHU_WEBHOOK_URL_FILE \
   BRIDGE_TOB_LOCAL_LLM_BASE_URL \
@@ -316,32 +312,10 @@ curl -fsS "$SALIX_BASE_URL/health" >/dev/null
 echo "checking public callback health..."
 curl -fsS "$PUBLIC_HEALTH_URL" >/dev/null
 
-echo "self-repairing local default template to fake LLM..."
-template_body="$(
-  jq -n \
-    --arg model "$BRIDGE_TOB_LOCAL_LLM_MODEL" \
-    --arg base "$BRIDGE_TOB_LOCAL_LLM_BASE_URL" \
-    --arg key "$BRIDGE_TOB_LOCAL_LLM_API_KEY" \
-    '{model:$model, provider:"openai", provider_config:{protocol:"chat_completions", base_url:$base, api_key:$key}}'
-)"
-template_body_file="$WORK_DIR/template-body.json"
-admin_curl_config="$WORK_DIR/admin.curl"
-printf '%s' "$template_body" | write_private_file "$template_body_file"
-{
-  printf 'header = "authorization: Bearer %s"\n' "$BRIDGE_TOB_ADMIN_API_TOKEN"
-  printf 'header = "content-type: application/json"\n'
-} | write_private_file "$admin_curl_config"
-
-http_status="$(
-  curl -sS -o "$WORK_DIR/template-update.json" -w '%{http_code}' \
-    --config "$admin_curl_config" \
-    -X PATCH "$SALIX_BASE_URL/v1/admin/templates/default" \
-    --data-binary "@$template_body_file"
-)"
-if [[ "$http_status" != "200" ]]; then
-  json_error "$WORK_DIR/template-update.json" >&2
-  die "template update failed with HTTP $http_status"
-fi
+# The smoke Router follows the platform model of its role. Salix has no HTTP
+# API for it: configure the router tier on the dashboard's Platform model page
+# with the fake LLM endpoint and model before running this harness.
+echo "expecting the platform router model at BRIDGE_TOB_LOCAL_LLM_BASE_URL ($BRIDGE_TOB_LOCAL_LLM_MODEL)"
 
 echo "verifying Feishu URL challenge through public callback..."
 challenge="bridge-tob-challenge-$(date +%s)-$RANDOM"

@@ -45,7 +45,7 @@ defmodule CommaWeb.SessionCookie do
       secure: secure?(),
       same_site: "Lax",
       path: "/",
-      max_age: max(expires_at - System.system_time(:second), 0)
+      max_age: max(expires_at - SystemsClock.system_time(:second), 0)
     )
   end
 
@@ -60,7 +60,7 @@ defmodule CommaWeb.SessionCookie do
       same_site: "None",
       extra: "Partitioned",
       path: "/",
-      max_age: max(expires_at - System.system_time(:second), 0)
+      max_age: max(expires_at - SystemsClock.system_time(:second), 0)
     )
   end
 
@@ -78,13 +78,18 @@ defmodule CommaWeb.SessionCookie do
       secure: secure?(),
       same_site: "Lax",
       path: @guest_claim_path,
-      max_age: max(expires_at - System.system_time(:second), 0)
+      max_age: max(expires_at - SystemsClock.system_time(:second), 0)
     )
   end
 
   @spec fetch_guest_claim(Plug.Conn.t()) :: String.t() | nil
   def fetch_guest_claim(conn),
-    do: conn |> fetch_cookies() |> Map.get(:req_cookies) |> Map.get(@guest_claim_cookie_name) |> normalize_token()
+    do:
+      conn
+      |> fetch_cookies()
+      |> Map.get(:req_cookies)
+      |> Map.get(@guest_claim_cookie_name)
+      |> normalize_token()
 
   @spec clear_guest_claim(Plug.Conn.t()) :: Plug.Conn.t()
   def clear_guest_claim(conn) do
@@ -120,7 +125,7 @@ defmodule CommaWeb.SessionCookie do
   end
 
   defp secure? do
-    Application.get_env(:comma_web, :session_cookie, [])[:secure] != false
+    SystemsRuntime.get_env(:comma_web, :session_cookie, [])[:secure] != false
   end
 
   defp normalize_token(value) when is_binary(value) do

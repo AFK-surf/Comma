@@ -1,4 +1,8 @@
 defmodule SalixWeb.ConnectorRecovery do
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
   @moduledoc """
   Retries one ordinary connector RPC across WebSocket replacement.
 
@@ -98,7 +102,7 @@ defmodule SalixWeb.ConnectorRecovery do
     if wait_ms == 0 do
       {:error, :disconnected}
     else
-      receive do
+      SystemsClock.vreceive do
         {:connector_ready, ^topic, ready} ->
           if same_process?(target, ready),
             do: dispatch(ready, message, deadline),
@@ -130,7 +134,7 @@ defmodule SalixWeb.ConnectorRecovery do
   end
 
   defp reconnect_grace_ms do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :salix_web,
       :connector_reconnect_grace_ms,
       @default_reconnect_grace_ms
@@ -138,10 +142,10 @@ defmodule SalixWeb.ConnectorRecovery do
   end
 
   defp remaining(deadline), do: max(deadline - monotonic_ms(), 0)
-  defp monotonic_ms, do: System.monotonic_time(:millisecond)
+  defp monotonic_ms, do: SystemsClock.monotonic_time(:millisecond)
 
   defp flush_ready(topic) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:connector_ready, ^topic, _target} -> flush_ready(topic)
     after
       0 -> :ok

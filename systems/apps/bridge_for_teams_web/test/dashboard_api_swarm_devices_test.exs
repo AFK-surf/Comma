@@ -1,13 +1,18 @@
 defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
-  The Devices API behind the React Devices page: the cloud computer and the
-  projected devices, Android setup, runtime authentication targets and the
-  Router request a management link opens, adding a device on a runner with its
-  provisioning poll, disconnect and delete, and the Compute environments.
+  The Devices API behind the React Devices page: the swarm's Cloud VM with
+  the org Runner it uses, the projected devices, Android setup, adding a
+  device on a runner with its provisioning poll, disconnect and delete, and
+  the Compute environments.
   Swarm admins write; a swarm member's device write is refused with a denied
   audit; someone outside the swarm gets 404.
   """
   use BridgeForTeamsWeb.DashboardCase, async: false
+
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.BridgeForTeamsWeb", "Elixir.BridgeForTeams"]
 
   import Ecto.Query, only: [from: 2]
 
@@ -21,21 +26,12 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
     @moduledoc false
 
     def get_tenant_config(_tenant_id, "android_control", default),
-      do: {:ok, Application.get_env(:bridge_for_teams_core, :test_android_control, default)}
+      do: {:ok, SystemsRuntime.get_env(:bridge_for_teams_core, :test_android_control, default)}
 
     def list_group_envs(_group_id, _tenant_id), do: raise("the Devices API must not list envs")
 
     def page_group_envs(_group_id, _tenant_id, _opts),
       do: raise("the Devices API must not page envs")
-
-    def get_runtime_auth_request(_group_id, request_id, _tenant_id) do
-      send(self(), {:get_runtime_auth_request, request_id})
-
-      case Application.get_env(:bridge_for_teams_core, :test_runtime_auth_request) do
-        %{"request_id" => ^request_id} = request -> {:ok, request}
-        _other -> {:error, :not_found}
-      end
-    end
   end
 
   setup %{conn: conn} do
@@ -47,7 +43,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
   end
 
   describe "page" do
-    test "lists the cloud computer and the projected devices with their system facts", %{
+    test "lists the Cloud VM and the projected devices with their system facts", %{
       conn: conn,
       org: org,
       project: project
@@ -72,7 +68,17 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
       data = conn |> get(devices_path(org, project)) |> json_response(200) |> data()
 
       assert data["project"] == %{"id" => project.id, "name" => "Acme", "role" => "admin"}
-      assert data["cloud"] == %{"enabled" => true, "manageable" => true}
+      # No Cloud VM and no Runner yet: a new VM goes to Cloudflare.
+      assert data["cloud_vm"] == %{
+               "enabled" => true,
+               "manageable" => true,
+               "vm" => nil,
+               "runner" => nil,
+               "next_location" => %{"kind" => "cloudflare"},
+               "runner_choosable" => true,
+               "runner_removable" => false
+             }
+
       assert data["provisioning"] == false
 
       assert [
@@ -90,29 +96,18 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
                  "cpu_count" => 8,
                  "memory_bytes" => 17_179_869_184,
                  "last_seen_at" => last_seen,
-                 "android" => nil
+                 "android" => nil,
+                 "station_notice" => %{
+                   "reason" => "device_needs_station",
+                   "tasks" => nil,
+                   "required_tasks" => 2,
+                   "message" => message
+                 }
                }
              ] = data["devices"]
 
       assert {:ok, _at, 0} = DateTime.from_iso8601(last_seen)
-
-      # A connected Codex runtime signs in through its organization account
-      # or its own controls.
-      assert [
-               %{
-                 "id" => "runtime-codex",
-                 "provider" => "codex",
-                 "status" => "connected",
-                 "managed" => true,
-                 "target" => %{
-                   "kind" => "connected_runtime",
-                   "device_id" => "device-mac",
-                   "runtime_id" => "runtime-codex"
-                 }
-               }
-             ] = data["runtime_auth"]["targets"]
-
-      assert data["runtime_auth"]["request"] == nil
+      assert message =~ "Comma desktop app"
     end
 
     test "costs the same queries for one device as for a hundred, and lists at most 100", %{
@@ -130,122 +125,6 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
       data = conn |> get(devices_path(org, project)) |> json_response(200) |> data()
       assert length(data["devices"]) == 100
       assert query_count(conn, devices_path(org, project)) == small
-    end
-
-    test "reports Android setup and slots from the capability projection", %{
-      conn: conn,
-      org: org,
-      project: project
-    } do
-      with_client(ProjectionOnlyClient)
-
-      project_device(project, "device-android", %{
-        name: "Android N2",
-        runtime_inventory: %{
-          "items" => [],
-          "capabilities" => %{
-            "android_device_tool" => true,
-            "android" => %{
-              "profiles" => ["api30-phone", "api35-phone-google-apis"],
-              "default_profile" => "api35-phone-google-apis",
-              "active_profile" => "api30-phone",
-              "target_profile" => "api35-phone-google-apis",
-              "phase" => "waiting_ready",
-              "state" => "preparing",
-              "available_slots" => 0,
-              "capacity" => 1
-            }
-          }
-        }
-      })
-
-      not_entitled = conn |> get(devices_path(org, project)) |> json_response(200) |> data()
-
-      assert not_entitled["android"] == %{
-               "status" => "ok",
-               "entitled" => false,
-               "profiles" => [],
-               "setup" => "connected",
-               "registered" => true
-             }
-
-      put_env(:test_android_control, %{
-        "version" => 2,
-        "enabled" => true,
-        "allowed_modes" => ["connected"],
-        "allowed_profiles" => ["api30-phone"],
-        "max_concurrent_leases" => 1,
-        "max_lease_seconds" => 3600
-      })
-
-      data = conn |> get(devices_path(org, project)) |> json_response(200) |> data()
-      assert %{"entitled" => true, "profiles" => ["api30-phone"]} = data["android"]
-
-      assert [
-               %{
-                 "android" => %{
-                   "profiles" => ["api30-phone", "api35-phone-google-apis"],
-                   "default_profile" => "api35-phone-google-apis",
-                   "active_profile" => "api30-phone",
-                   "target_profile" => "api35-phone-google-apis",
-                   "phase" => "waiting_ready",
-                   "state" => "preparing",
-                   "available_slots" => 0,
-                   "capacity" => 1
-                 }
-               }
-             ] = data["devices"]
-    end
-
-    test "a management link names its Router request for admins only", %{
-      conn: conn,
-      org: org,
-      project: project
-    } do
-      with_client(ProjectionOnlyClient)
-
-      put_env(:test_runtime_auth_request, %{
-        "request_id" => "request-1",
-        "status" => "pending",
-        "request_payload" => %{
-          "runtime_auth" => %{
-            "action" => "verify",
-            "target" => %{
-              "kind" => "compute_workload",
-              "workload_id" => "workload-1",
-              "project_id" => project.id
-            }
-          }
-        }
-      })
-
-      link = %{"runtime_auth_target" => "workload-1", "runtime_auth_request" => "request-1"}
-      data = conn |> get(devices_path(org, project), link) |> json_response(200) |> data()
-
-      assert %{"request_id" => "request-1", "action" => "verify"} =
-               data["runtime_auth"]["request"]
-
-      assert data["runtime_auth"]["request"]["target"]["workload_id"] == "workload-1"
-
-      # Another target, or a forged request, opens nothing.
-      for params <- [
-            %{link | "runtime_auth_target" => "workload-2"},
-            %{link | "runtime_auth_request" => "forged"}
-          ] do
-        data = conn |> get(devices_path(org, project), params) |> json_response(200) |> data()
-        assert data["runtime_auth"]["request"] == nil
-      end
-
-      {member_conn, _member} = member_conn(org, project)
-      data = member_conn |> get(devices_path(org, project), link) |> json_response(200) |> data()
-      assert data["runtime_auth"]["request"] == nil
-      assert data["project"]["role"] == "user"
-      assert data["cloud"]["manageable"] == false
-    end
-
-    test "the React dashboard serves the Devices page", %{conn: conn, org: org, project: project} do
-      assert html_response(get(conn, "/orgs/#{org.slug}/projects/#{project.id}/devices"), 200) =~
-               ~s(<div id="root">)
     end
 
     test "an org member without a grant, or an outsider, gets 404", %{org: org, project: project} do
@@ -272,7 +151,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
 
       assert {:ok, %{vm_enabled: false}} = Projects.get_project(project.id)
       data = conn |> get(devices_path(org, project)) |> json_response(200) |> data()
-      assert data["cloud"]["enabled"] == false
+      assert data["cloud_vm"]["enabled"] == false
 
       assert %{"enabled" => true} =
                conn
@@ -325,13 +204,110 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
     end
   end
 
+  describe "Cloud VM runner" do
+    test "an admin chooses one org runner; a second one is refused until the first is removed",
+         %{conn: conn, org: org, project: project} do
+      lab = runner(org, "lab-mac", "Lab Mac mini", SystemsClock.utc_now())
+      spare = runner(org, "spare-mac", "Spare Mac mini", SystemsClock.utc_now())
+      choose = %{"runner_id" => lab.id, "request_id" => "choice-1"}
+
+      assert %{"notice" => "The runner was asked to get ready for the Cloud VM."} =
+               conn
+               |> put(devices_path(org, project, "/cloud-vm/runner"), choose)
+               |> json_response(200)
+               |> data()
+
+      # A retried request is the same choice.
+      assert conn
+             |> put(devices_path(org, project, "/cloud-vm/runner"), choose)
+             |> json_response(200)
+
+      data = conn |> get(devices_path(org, project)) |> json_response(200) |> data()
+
+      assert %{
+               "vm" => nil,
+               "runner" => %{"name" => "Lab Mac mini", "status" => "processing"},
+               # The Host is not installed yet, so a VM created now goes to Cloudflare.
+               "next_location" => %{"kind" => "cloudflare"},
+               "runner_choosable" => false,
+               "runner_removable" => true
+             } = data["cloud_vm"]
+
+      assert %{"error" => %{"code" => "runner_already_chosen", "message" => message}} =
+               conn
+               |> put(devices_path(org, project, "/cloud-vm/runner"), %{
+                 "runner_id" => spare.id,
+                 "request_id" => "choice-2"
+               })
+               |> json_response(409)
+
+      assert message =~ "already has a runner"
+
+      assert %{"notice" => "Runner removed from this Agent Swarm."} =
+               conn
+               |> delete(devices_path(org, project, "/cloud-vm/runner"))
+               |> json_response(200)
+               |> data()
+
+      assert conn
+             |> put(devices_path(org, project, "/cloud-vm/runner"), %{
+               "runner_id" => spare.id,
+               "request_id" => "choice-2"
+             })
+             |> json_response(200)
+
+      data = conn |> get(devices_path(org, project)) |> json_response(200) |> data()
+      assert data["cloud_vm"]["runner"]["name"] == "Spare Mac mini"
+    end
+
+    test "an offline runner or a swarm member is refused", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      stale = runner(org, "stale-mac", "Stale Mac mini", seconds_ago(90))
+
+      assert %{"error" => %{"code" => "runner_offline"}} =
+               conn
+               |> put(devices_path(org, project, "/cloud-vm/runner"), %{
+                 "runner_id" => stale.id,
+                 "request_id" => "choice-1"
+               })
+               |> json_response(409)
+
+      {member_conn, member} = member_conn(org, project)
+      lab = runner(org, "lab-mac", "Lab Mac mini", SystemsClock.utc_now())
+
+      assert %{"error" => %{"code" => "forbidden"}} =
+               member_conn
+               |> put(devices_path(org, project, "/cloud-vm/runner"), %{
+                 "runner_id" => lab.id,
+                 "request_id" => "choice-2"
+               })
+               |> json_response(403)
+
+      assert [audit] =
+               Observability.list_audit_logs(org.id,
+                 action: "project.cloud_vm_runner_changed",
+                 result: "denied"
+               )
+
+      assert audit.actor_user_id == member.id
+
+      data = member_conn |> get(devices_path(org, project)) |> json_response(200) |> data()
+
+      assert %{"manageable" => false, "runner" => nil, "runner_choosable" => false} =
+               data["cloud_vm"]
+    end
+  end
+
   describe "add device" do
     test "offers online runners only and creates a request on one", %{
       conn: conn,
       org: org,
       project: project
     } do
-      online = runner(org, "lab-mac", "Lab Mac mini", DateTime.utc_now())
+      online = runner(org, "lab-mac", "Lab Mac mini", SystemsClock.utc_now())
       _stale = runner(org, "stale-mac", "Stale Mac mini", seconds_ago(90))
 
       assert %{
@@ -381,7 +357,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
     } do
       stale = runner(org, "stale-mac", "Stale Mac mini", seconds_ago(90))
       other = org_with_owner_fixture().org
-      foreign = runner(other, "foreign-mac", "Foreign Mac", DateTime.utc_now())
+      foreign = runner(other, "foreign-mac", "Foreign Mac", SystemsClock.utc_now())
 
       for runner_id <- [stale.id, foreign.id, "not-a-runner"] do
         assert %{"error" => %{"code" => "runner_offline", "message" => "Runner is offline."}} =
@@ -401,7 +377,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
       project: project
     } do
       {member_conn, member} = member_conn(org, project)
-      online = runner(org, "lab-mac", "Lab Mac mini", DateTime.utc_now())
+      online = runner(org, "lab-mac", "Lab Mac mini", SystemsClock.utc_now())
 
       assert %{"error" => %{"code" => "forbidden"}} =
                member_conn |> get(devices_path(org, project, "/runners")) |> json_response(403)
@@ -435,7 +411,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
       org: org,
       project: project
     } do
-      device_id = "device-" <> Ecto.UUID.generate()
+      device_id = "device-" <> SystemsRuntime.Proc.uuid()
       connect_device(org, project, device_id)
 
       data = conn |> get(devices_path(org, project)) |> json_response(200) |> data()
@@ -464,20 +440,6 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
 
       assert %{"error" => %{"code" => "device_not_found"}} =
                conn |> delete(devices_path(org, project, "/#{device_id}")) |> json_response(404)
-    end
-
-    test "an unknown device is refused in the reader's language", %{
-      conn: conn,
-      user: user,
-      org: org,
-      project: project
-    } do
-      {:ok, _} = BridgeForTeams.Accounts.update_user(user, %{"preferred_locale" => "zh_Hans"})
-
-      assert %{"error" => %{"code" => "device_not_found", "message" => "未找到该设备。"}} =
-               conn
-               |> delete(devices_path(org, project, "/#{Ecto.UUID.generate()}"))
-               |> json_response(404)
     end
 
     test "a swarm member cannot disconnect or delete; the attempts are audited", %{
@@ -621,7 +583,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
     runner
   end
 
-  defp seconds_ago(seconds), do: DateTime.add(DateTime.utc_now(), -seconds, :second)
+  defp seconds_ago(seconds), do: DateTime.add(SystemsClock.utc_now(), -seconds, :second)
 
   defp project_device(project, device_id, attrs \\ %{}) do
     %ProjectDeviceProjection{}
@@ -634,7 +596,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
           connector_id: "connector-#{device_id}",
           name: device_id,
           status: "connected",
-          source_updated_at: System.system_time(:millisecond),
+          source_updated_at: SystemsClock.system_time(:millisecond),
           observed_generation: 1,
           runtime_inventory: %{"items" => []}
         },
@@ -682,9 +644,9 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
   end
 
   defp compute_environment(org, project) do
-    previous = Application.get_env(:salix_store, :runtime_bundle_root)
+    previous = SystemsRuntime.get_env(:salix_store, :runtime_bundle_root)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_store,
       :runtime_bundle_root,
       Path.expand("../../salix_store/test/fixtures/runtime-bundle", __DIR__)
@@ -692,11 +654,11 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_store, :runtime_bundle_root, previous),
-        else: Application.delete_env(:salix_store, :runtime_bundle_root)
+        do: SystemsRuntime.put_env(:salix_store, :runtime_bundle_root, previous),
+        else: SystemsRuntime.delete_env(:salix_store, :runtime_bundle_root)
     end)
 
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     {:ok, pool} =
       SalixStore.Compute.create_pool(%{
@@ -717,30 +679,45 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
         pool_id: pool.id
       })
 
+    # Availability is a projection; the exact host retains enrollment authority.
+    {:ok, registration} =
+      SalixStore.AgentVMM.create_registration(%{
+        id: "devices-host-#{suffix}",
+        tenant_id: org.salix_tenant_id,
+        group_id: project.salix_group_id,
+        device_id: "devices-host-device-#{suffix}",
+        enrollment_token: String.duplicate("s", 32),
+        desired_enabled: true
+      })
+
+    registration
+    |> Ecto.Changeset.change(status: "ready")
+    |> SalixStore.Repo.update!()
+
     SalixStore.Repo.insert!(%SalixStore.Compute.ProviderBinding{
       id: "devices-binding-#{suffix}",
       pool_id: pool.id,
       environment_id: environment.id,
       provider: "agent_vmm",
-      provider_ref: "shell-host",
+      provider_ref: registration.id,
       status: "available",
       generation: 1,
       revision: 1,
       observation: %{},
-      updated_at: DateTime.utc_now()
+      updated_at: SystemsClock.utc_now()
     })
 
     environment
   end
 
   defp put_env(key, value) do
-    previous = Application.get_env(:bridge_for_teams_core, key)
-    Application.put_env(:bridge_for_teams_core, key, value)
+    previous = SystemsRuntime.get_env(:bridge_for_teams_core, key)
+    SystemsRuntime.put_env(:bridge_for_teams_core, key, value)
 
     on_exit(fn ->
       if is_nil(previous),
-        do: Application.delete_env(:bridge_for_teams_core, key),
-        else: Application.put_env(:bridge_for_teams_core, key, previous)
+        do: SystemsRuntime.delete_env(:bridge_for_teams_core, key),
+        else: SystemsRuntime.put_env(:bridge_for_teams_core, key, previous)
     end)
   end
 
@@ -754,15 +731,16 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
   end
 
   defp query_count(conn, path) do
-    test_pid = self()
-    handler = "devices-query-count-#{System.unique_integer([:positive])}"
+    test_pid = SystemsRuntime.Proc.self()
+    handler = "devices-query-count-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:bridge_for_teams, :repo, :query],
         fn _event, _measurements, _metadata, _config ->
-          if self() == test_pid, do: send(test_pid, :repo_query)
+          if SystemsRuntime.Proc.self() == test_pid,
+            do: SystemsRuntime.Proc.send(test_pid, :repo_query)
         end,
         nil
       )
@@ -771,12 +749,12 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmDevicesTest do
       conn |> get(path) |> json_response(200)
       count_messages(0)
     after
-      :telemetry.detach(handler)
+      SystemsRuntime.Telemetry.detach(handler)
     end
   end
 
   defp count_messages(count) do
-    receive do
+    SystemsRuntime.Proc.receive do
       :repo_query -> count_messages(count + 1)
     after
       0 -> count

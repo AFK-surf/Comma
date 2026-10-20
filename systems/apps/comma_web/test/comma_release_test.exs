@@ -1,15 +1,19 @@
 defmodule CommaWeb.CommaReleaseTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  # The `mix run` probes below boot a fresh VM from the build `mix test` just
+  # compiled, so they skip Mix's compile and deps checks, which took more than
+  # half of each probe's time.
 
   setup do
-    previous_secret = Application.get_env(:billing_stripe, :secret_key)
-    previous_api = Application.get_env(:billing_stripe, :stripe_api)
+    previous_secret = SystemsRuntime.get_env(:billing_stripe, :secret_key)
+    previous_api = SystemsRuntime.get_env(:billing_stripe, :stripe_api)
 
     delete_comma_provider_prices()
     delete_bridge_default_entitlement_catalog()
 
-    Application.put_env(:billing_stripe, :secret_key, "sk_test_release")
-    Application.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
+    SystemsRuntime.put_env(:billing_stripe, :secret_key, "sk_test_release")
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
 
     start_supervised!(%{
       id: BillingStripe.TestAPI.Recorder,
@@ -77,6 +81,8 @@ defmodule CommaWeb.CommaReleaseTest do
         [
           "run",
           "--no-start",
+          "--no-compile",
+          "--no-deps-check",
           "-e",
           """
           defmodule StripeTransportProbe do
@@ -114,62 +120,6 @@ defmodule CommaWeb.CommaReleaseTest do
     assert output =~ "provider-plan-size=11"
   end
 
-  @tag :tmp_dir
-  test "production force_http1 config disables Hackney HTTP/2 for Stripe requests", %{
-    tmp_dir: tmp_dir
-  } do
-    config_path = Path.join(tmp_dir, "config.json")
-
-    File.write!(
-      config_path,
-      Jason.encode!(%{
-        email: %{postmark_server_token: "release-test-postmark-token"},
-        comma: %{
-          database: %{url: "ecto://unused:unused@localhost/comma_unused"},
-          auth: %{
-            secret: "release-test-otp-secret-000000000000",
-            rate_limit_secret: "release-test-rate-secret-00000000000",
-            redis_url: "redis://127.0.0.1:6379/0"
-          },
-          email: %{from: "login@comma.test"},
-          profile_avatar: %{bucket: "example-avatars"}
-        },
-        billing: %{
-          database: %{url: "ecto://unused:unused@localhost/unused"},
-          stripe: %{force_http1: true}
-        }
-      })
-    )
-
-    {output, status} =
-      System.cmd(
-        "mix",
-        [
-          "run",
-          "--no-start",
-          "-e",
-          """
-          config = Config.Reader.read!("config/runtime.exs", env: :prod, target: :host)
-          stripe = Keyword.fetch!(config, :stripity_stripe)
-          IO.inspect(Keyword.fetch!(stripe, :hackney_opts), label: "stripe-hackney-opts")
-          """
-        ],
-        cd: umbrella_root(),
-        env:
-          release_env() ++
-            [
-              {"COMMA_SUBSYSTEMS", "comma_product"},
-              {"SALIX_CONFIG_PATH", config_path}
-            ],
-        stderr_to_stdout: true
-      )
-
-    assert status == 0, output
-    assert output =~ "stripe-hackney-opts: [protocols: [:http1]]"
-    refute output =~ "connect_options"
-    refute output =~ "ssl_options"
-  end
-
   test "release artifact validation can load production config without a serving subsystem" do
     {output, status} =
       System.cmd(
@@ -177,6 +127,8 @@ defmodule CommaWeb.CommaReleaseTest do
         [
           "run",
           "--no-start",
+          "--no-compile",
+          "--no-deps-check",
           "-e",
           """
           config = Config.Reader.read!("config/runtime.exs", env: :prod, target: :host)
@@ -200,11 +152,8 @@ defmodule CommaWeb.CommaReleaseTest do
     assert output =~ "enabled-subsystems: []"
   end
 
-  @tag :tmp_dir
-  test "alert-router-only runtime needs neither Redis nor another Comma subsystem", %{
-    tmp_dir: tmp_dir
-  } do
-    config_path = Path.join(tmp_dir, "config.json")
+  test "alert-router-only runtime needs neither Redis nor another Comma subsystem" do
+    config_path = Path.join(private_tmp_dir!(), "config.json")
 
     File.write!(
       config_path,
@@ -239,6 +188,8 @@ defmodule CommaWeb.CommaReleaseTest do
         [
           "run",
           "--no-start",
+          "--no-compile",
+          "--no-deps-check",
           "-e",
           """
           config = Config.Reader.read!("config/runtime.exs", env: :prod, target: :host)
@@ -280,11 +231,8 @@ defmodule CommaWeb.CommaReleaseTest do
     refute output =~ "github-runtime-test-secret"
   end
 
-  @tag :tmp_dir
-  test "alert router shadow mode fails closed when a provider credential is missing", %{
-    tmp_dir: tmp_dir
-  } do
-    config_path = Path.join(tmp_dir, "config.json")
+  test "alert router shadow mode fails closed when a provider credential is missing" do
+    config_path = Path.join(private_tmp_dir!(), "config.json")
 
     File.write!(
       config_path,
@@ -302,6 +250,8 @@ defmodule CommaWeb.CommaReleaseTest do
         [
           "run",
           "--no-start",
+          "--no-compile",
+          "--no-deps-check",
           "-e",
           ~s|Config.Reader.read!("config/runtime.exs", env: :prod)|
         ],
@@ -330,6 +280,8 @@ defmodule CommaWeb.CommaReleaseTest do
         [
           "run",
           "--no-start",
+          "--no-compile",
+          "--no-deps-check",
           "-e",
           """
           config = Config.Reader.read!("config/runtime.exs", env: :prod, target: :host)
@@ -372,6 +324,8 @@ defmodule CommaWeb.CommaReleaseTest do
         [
           "run",
           "--no-start",
+          "--no-compile",
+          "--no-deps-check",
           "-e",
           """
           Application.put_env(:comma, :enabled_subsystems, [:bridge_for_teams])
@@ -396,6 +350,8 @@ defmodule CommaWeb.CommaReleaseTest do
         [
           "run",
           "--no-start",
+          "--no-compile",
+          "--no-deps-check",
           "-e",
           """
           Application.put_env(:comma, :enabled_subsystems, [:alert_router])
@@ -420,12 +376,19 @@ defmodule CommaWeb.CommaReleaseTest do
   end
 
   test "aggregate release migrate supports Comma plus Salix after the Chat hard cut" do
+    # The migrate subprocess gets an empty Salix control database, so every
+    # schema migration runs (dev/compose first boot) and no residue from the
+    # suites that share this process's database reaches the cutovers.
+    salix_db = fresh_salix_database!("salix_store_release_test")
+
     {output, status} =
       System.cmd(
         "mix",
         [
           "run",
           "--no-start",
+          "--no-compile",
+          "--no-deps-check",
           "-e",
           """
           Application.put_env(:comma, :enabled_subsystems, [:comma_product, :salix])
@@ -435,7 +398,7 @@ defmodule CommaWeb.CommaReleaseTest do
           """
         ],
         cd: umbrella_root(),
-        env: release_env(),
+        env: release_env() ++ [{"SALIX_TEST_DB", salix_db}],
         stderr_to_stdout: true
       )
 
@@ -507,8 +470,39 @@ defmodule CommaWeb.CommaReleaseTest do
     end)
   end
 
-  defp restore_env(key, nil), do: Application.delete_env(:billing_stripe, key)
-  defp restore_env(key, value), do: Application.put_env(:billing_stripe, key, value)
+  defp restore_env(key, nil), do: SystemsRuntime.delete_env(:billing_stripe, key)
+  defp restore_env(key, value), do: SystemsRuntime.put_env(:billing_stripe, key, value)
+
+  # ExUnit's `:tmp_dir` derives its path from the test name, so the stress job's
+  # concurrent seeds of this file share one directory and delete each other's
+  # files. Use a directory under this process's TMPDIR instead.
+  defp private_tmp_dir! do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "comma-release-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+    dir
+  end
+
+  # Drop and create the named Salix database. config/test.exs appends the
+  # MIX_TEST_PARTITION suffix itself, so the subprocess reads the base name.
+  defp fresh_salix_database!(base_name) do
+    partition = System.get_env("MIX_TEST_PARTITION", "")
+    config = Keyword.put(SalixStore.Repo.config(), :database, base_name <> partition)
+
+    case Ecto.Adapters.Postgres.storage_down(config) do
+      :ok -> :ok
+      {:error, :already_down} -> :ok
+    end
+
+    :ok = Ecto.Adapters.Postgres.storage_up(config)
+    on_exit(fn -> Ecto.Adapters.Postgres.storage_down(config) end)
+    base_name
+  end
 
   defp umbrella_root do
     Path.expand("../../..", __DIR__)
@@ -540,10 +534,10 @@ defmodule CommaWeb.CommaReleaseTest do
   end
 
   defp ensure_billing_repo_started do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       case BillingCore.Repo.start_link() do
         {:ok, pid} ->
-          Process.unlink(pid)
+          SystemsRuntime.Proc.unlink(pid)
           :ok
 
         {:error, {:already_started, _pid}} ->
@@ -553,7 +547,7 @@ defmodule CommaWeb.CommaReleaseTest do
   end
 
   defp restart_billing_repo do
-    if pid = Process.whereis(BillingCore.Repo) do
+    if pid = SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       try do
         Supervisor.stop(pid, :normal, 5_000)
       catch

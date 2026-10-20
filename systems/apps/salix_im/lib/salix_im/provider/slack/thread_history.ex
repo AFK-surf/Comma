@@ -3,7 +3,7 @@ defmodule SalixIM.Provider.Slack.ThreadHistory do
 
   import SalixIM.Provider.Util, only: [str: 1]
 
-  alias SalixIM.Provider.Slack.{MessageReferences, TaskCards}
+  alias SalixIM.Provider.Slack.{MessageReferences, TableBlocks, TaskCards}
 
   @spec result(map(), keyword()) :: map()
   def result(response, opts \\ []) when is_map(response) do
@@ -101,9 +101,11 @@ defmodule SalixIM.Provider.Slack.ThreadHistory do
 
     # File history keeps metadata; selected bytes are staged by slack.fetch_file.
     # Native Task output and forwarded references keep bounded visible text and
-    # visible output links. Raw blocks, actions and private file URLs stay out.
+    # visible output links. Tables keep their cells as Markdown. Raw blocks,
+    # actions and private file URLs stay out.
     base
     |> maybe_put_files(message["files"])
+    |> maybe_put_tables(TableBlocks.from_message(message))
     |> maybe_put_source_references(MessageReferences.from_message(message))
     |> maybe_put_task_cards(TaskCards.from_message(message))
   end
@@ -114,6 +116,9 @@ defmodule SalixIM.Provider.Slack.ThreadHistory do
       files -> Map.put(base, "files", Enum.map(files, &file_metadata/1))
     end
   end
+
+  defp maybe_put_tables(base, []), do: base
+  defp maybe_put_tables(base, tables), do: Map.put(base, "tables", tables)
 
   defp maybe_put_task_cards(base, []), do: base
   defp maybe_put_task_cards(base, cards), do: Map.put(base, "task_cards", cards)

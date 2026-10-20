@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base colors. -->
+    <color name="token_bg_primary">#0F0F10</color>
+    <color name="token_bg_secondary">#18191B</color>
+    <color name="token_bg_tertiary">#27282B</color>
+    <color name="token_bg_quaternary">#343538</color>
+    <color name="token_bg_brand_solid">#3B7CFF</color>
+    <color name="token_bg_brand_solid_hover">#1040F2</color>
+    <color name="token_bg_overlay">#27282B</color>
+    <color name="token_text_primary">#F6F6F6</color>
+    <color name="token_text_secondary">#D1D1D1</color>
+    <color name="token_text_tertiary">#A4A5A9</color>
+    <color name="token_text_quaternary">#A4A5A9</color>
+    <color name="token_text_placeholder">#7E8187</color>
+    <color name="token_text_error_primary">#F97066</color>
+    <color name="token_border_primary">#343538</color>
+    <color name="token_border_secondary">#27282B</color>
+    <color name="token_fg_primary">#FFFFFF</color>
+    <color name="token_fg_quaternary">#A4A5A9</color>
+
+    <!-- Comma's mark on the home screen: the brand's white circle and black logo in both
+         themes, the circle a step dimmer so it does not glare on the dark page. -->
+    <color name="token_mark_bg">#E8E8E8</color>
+    <color name="token_mark_fg">#000000</color>
+
+    <!-- The chat composer: a raised card on the page. Eight-digit values use AARRGGBB. -->
+    <color name="token_composer_bg">#303030</color>
+    <color name="token_composer_border">#4F4F4F</color>
+    <!-- No shadow on the dark page; the lighter fill and the edge set it apart. -->
+    <color name="token_composer_shadow_ambient">#00000000</color>
+    <color name="token_composer_shadow_spot">#00000000</color>
+
+    <!-- Message colors. Eight-digit values use Android AARRGGBB order. -->
+    <color name="token_markdown_text_primary">#F6F6F6</color>
+    <color name="token_markdown_text_secondary">#A4A5A9</color>
+    <color name="token_markdown_text_inline_code">#F6F6F6</color>
+    <color name="token_markdown_bg_inline_code">#222326</color>
+    <color name="token_markdown_text_link">#619EFF</color>
+    <color name="token_markdown_bg_message">#343538</color>
+    <color name="token_markdown_bg_table">#343538</color>
+    <color name="token_markdown_border_table">#4A4C50</color>
+    <color name="token_markdown_image_bg_primary">#B20C111D</color>
+    <color name="token_markdown_image_hover">#1AFFFFFF</color>
+    <color name="token_markdown_image_bar_border">#343538</color>
+
+    <!-- Foreground status colors: Success/500 and Error/500. -->
+    <color name="token_fg_success">#17B26A</color>
+    <color name="token_fg_error">#F04438</color>
+    <!-- No semantic attention token exists; use the Yellow/400 palette entry. -->
+    <color name="token_fg_attention">#FAC515</color>
+    <color name="token_bg_error_primary">#F04438</color>
+    <color name="token_border_error">#F97066</color>
+    <!-- The minimized call: a dark card hanging from the top of the screen in both themes.
+         Light: the dark theme's page colour. Dark: a step up from the page, with an edge.
+         Its controls use the dark theme's quaternary fill and primary text. -->
+    <color name="token_call_card_bg">#18191B</color>
+    <color name="token_call_card_border">#343538</color>
+    <color name="token_call_card_control">#343538</color>
+    <color name="token_call_card_control_on">#F6F6F6</color>
+    <color name="token_call_card_fg">#FFFFFF</color>
+
+    <!-- The tab shell, sheets and grouped surfaces, as the iOS app draws them. -->
+    <color name="token_card_primary">#18191B</color>
+    <color name="token_glass_over_page">#EB343538</color>
+    <color name="token_glass_frosted">#A6343538</color>
+    <color name="token_glass_selection">#1FFFFFFF</color>
+    <color name="token_glass_border">#1FFFFFFF</color>
+    <color name="token_sidebar_item">#222326</color>
+    <color name="token_sidebar_icon">#B6B8BB</color>
+    <color name="token_cancelled">#F04438</color>
+    <color name="token_surface_ink">#0FF6F6F6</color>
+</resources>

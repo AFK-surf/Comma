@@ -16,9 +16,9 @@ defmodule SalixAgent.PlatformCapabilities do
 
     case origin["provider"] do
       "telegram" ->
-        mod = Application.get_env(:salix_agent, :telegram_interaction_mod)
+        mod = SystemsRuntime.get_env(:salix_agent, :telegram_interaction_mod)
 
-        if is_atom(mod) and not is_nil(mod) and Code.ensure_loaded?(mod) and
+        if is_atom(mod) and not is_nil(mod) and SystemsRuntime.Proc.ensure_loaded?(mod) and
              function_exported?(mod, :capabilities, 1), do: mod.capabilities(ctx), else: %{}
 
       provider when provider in [nil, "internal"] ->
@@ -46,12 +46,6 @@ defmodule SalixAgent.PlatformCapabilities do
       else: config
   end
 
-  def request_prompt(prompt, disclosure, origin),
-    do:
-      SalixAgent.InternalSession.request_projection(
-        {:platform_prompt, prompt, disclosure, origin}
-      )
-
   defp external_source?(origin), do: (origin || %{})["provider"] not in [nil, "internal"]
 
   defp scope_external_config(config, ctx) do
@@ -75,14 +69,28 @@ defmodule SalixAgent.PlatformCapabilities do
 
   # Only Telegram exposes location to an external source. Reuse the existing
   # disclosed-parameter validator; internal host requests keep their schema.
-  defp location_schema(%{"name" => "location.request", "input_schema" => schema} = entry)
-       when is_map(schema) do
-    schema = Map.update(schema, "required", ["locale"], &Enum.uniq(&1 ++ ["locale"]))
-    Map.put(entry, "input_schema", schema)
+  # The rewritten schema differs from the registry, so the entry carries it
+  # inline, with the examples of the registry schema as before.
+  defp location_schema(%{"name" => "location.request"} = entry) do
+    case SalixAgent.ToolDisclosure.entry_schema(entry) do
+      schema when is_map(schema) ->
+        examples = SalixAgent.ToolDisclosure.entry_examples(entry)
+        schema = Map.update(schema, "required", ["locale"], &Enum.uniq(&1 ++ ["locale"]))
+        entry |> Map.put("input_schema", schema) |> Map.put("examples", examples)
+
+      _missing ->
+        entry
+    end
   end
 
   defp location_schema(entry), do: entry
 
+  @doc "The interactive tools that `disclosure` offers the current source."
+  def interaction_tools(disclosure),
+    do:
+      for(%{"name" => name} <- (disclosure || %{})["tools"] || [], name in @interactive, do: name)
+
+  @doc "The model guidance for the interactive tools that `disclosure` offers."
   def reminder(disclosure),
     do: SalixAgent.InternalSession.request_projection({:platform_reminder, disclosure})
 end

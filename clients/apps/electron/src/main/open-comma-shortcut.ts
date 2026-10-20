@@ -1,4 +1,4 @@
-import type { SideChatShortcutBinding } from "@comma/native-bridge";
+import type { GlobalShortcutBinding } from "@comma/native-bridge";
 
 export interface OpenCommaShortcutPlatform {
   register(accelerator: string, callback: () => void): boolean;
@@ -6,7 +6,7 @@ export interface OpenCommaShortcutPlatform {
 }
 
 /** The Electron accelerator for a stored global-shortcut binding. */
-export function shortcutAccelerator(shortcut: SideChatShortcutBinding) {
+export function shortcutAccelerator(shortcut: GlobalShortcutBinding) {
   return shortcut === null
     ? undefined
     : [
@@ -33,7 +33,7 @@ export class OpenCommaShortcut {
     private readonly open: () => void
   ) {}
 
-  set(shortcut: SideChatShortcutBinding) {
+  set(shortcut: GlobalShortcutBinding) {
     const accelerator = shortcutAccelerator(shortcut);
     if (accelerator === this.#accelerator) return;
     if (accelerator && !this.platform.register(accelerator, this.open)) {

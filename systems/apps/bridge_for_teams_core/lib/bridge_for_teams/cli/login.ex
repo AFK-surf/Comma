@@ -179,7 +179,7 @@ defmodule BridgeForTeams.CLI.Login do
 
   @spec refresh_cli_session(AuthSession.t()) :: {:ok, AuthSession.t()} | {:error, term()}
   def refresh_cli_session(%AuthSession{device: @cli_session_device} = session) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     try do
       session
@@ -242,7 +242,7 @@ defmodule BridgeForTeams.CLI.Login do
     if org_ids == [] do
       {:error, :missing_org_grants}
     else
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       rows =
         Enum.map(org_ids, fn org_id ->
@@ -280,7 +280,7 @@ defmodule BridgeForTeams.CLI.Login do
   @spec revoke_cli_session_org(AuthSession.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, [Organization.t()]} | {:error, :not_found}
   def revoke_cli_session_org(%AuthSession{} = session, org_id, revoked_by_user_id) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     {count, _} =
       from(g in CliSessionOrgGrant,
@@ -327,7 +327,7 @@ defmodule BridgeForTeams.CLI.Login do
 
         auth ->
           auth = expire_if_needed(auth)
-          now = DateTime.utc_now()
+          now = SystemsClock.utc_now()
 
           with :ok <- ensure_poll_flow(auth, session) do
             case auth.status do
@@ -378,7 +378,7 @@ defmodule BridgeForTeams.CLI.Login do
 
   defp create_device_authorization(attrs, attempts_left) do
     device_code = Sessions.generate_token()
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     attrs = %{
       user_code: generate_user_code(),
@@ -422,7 +422,7 @@ defmodule BridgeForTeams.CLI.Login do
 
       case Repo.one(query) do
         nil -> Repo.rollback(:not_found)
-        auth -> fun.(auth, DateTime.utc_now())
+        auth -> fun.(auth, SystemsClock.utc_now())
       end
     end)
     |> unwrap_transaction()
@@ -513,7 +513,7 @@ defmodule BridgeForTeams.CLI.Login do
 
   defp expire_if_needed(%CliDeviceAuthorization{status: status} = auth)
        when status in ["pending", "approved"] do
-    expire_if_needed(auth, DateTime.utc_now())
+    expire_if_needed(auth, SystemsClock.utc_now())
   end
 
   defp expire_if_needed(auth), do: auth
@@ -609,7 +609,7 @@ defmodule BridgeForTeams.CLI.Login do
   defp unwrap_transaction({:error, reason}), do: {:error, reason}
 
   defp generate_user_code do
-    :crypto.strong_rand_bytes(5)
+    SystemsRuntime.Proc.random_bytes(5)
     |> Base.encode32(case: :upper, padding: false)
     |> binary_part(0, 8)
   end

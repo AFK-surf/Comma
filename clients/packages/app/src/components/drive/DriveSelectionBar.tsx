@@ -1,12 +1,10 @@
 import { useCommaMessages } from "@comma/i18n/react";
+import { Cursor1Icon, DownloadIcon, TrashCanIcon } from "@comma/ui/components/icons";
+import { cx } from "@comma/ui/components/utils";
 import {
-  Cursor1Icon,
-  cx,
-  DownloadIcon,
   SelectionBar,
   selectionBarButtonClasses,
-  TrashCanIcon,
-} from "@comma/ui";
+} from "@comma/ui/components/selection-bar";
 
 /** The selection bar over the file list (Figma 1371:19684) with Drive's actions. */
 export function DriveSelectionBar({

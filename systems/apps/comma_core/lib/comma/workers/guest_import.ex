@@ -75,9 +75,14 @@ defmodule Comma.Workers.GuestImport do
       end
 
     case result do
-      {:ok, evidence} -> succeed(operation, evidence)
-      {:busy, seconds} -> retry(operation, "target_workspace_provisioning", seconds, {:busy, seconds})
-      {:error, reason} -> fail(operation, reason, final_attempt?)
+      {:ok, evidence} ->
+        succeed(operation, evidence)
+
+      {:busy, seconds} ->
+        retry(operation, "target_workspace_provisioning", seconds, {:busy, seconds})
+
+      {:error, reason} ->
+        fail(operation, reason, final_attempt?)
     end
   end
 
@@ -91,10 +96,16 @@ defmodule Comma.Workers.GuestImport do
     with {:ok, _file} <- Comma.Salix.Client.impl().write_agent_file(workspace, path, transcript),
          {:ok, chat} <- AssistantChats.ensure_chat(target, session, workspace["default_group_id"]),
          {:ok, _conversation} <-
-           Conversations.send_message(target, session, workspace["default_group_id"], chat["id"], %{
-             "client_request_id" => "guest-import:" <> operation.operation_id,
-             "text" => message_text(path)
-           }) do
+           Conversations.send_message(
+             target,
+             session,
+             workspace["default_group_id"],
+             chat["id"],
+             %{
+               "client_request_id" => "guest-import:" <> operation.operation_id,
+               "text" => message_text(path)
+             }
+           ) do
       {:ok, %{"messages" => count}}
     end
   end
@@ -217,7 +228,7 @@ defmodule Comma.Workers.GuestImport do
   end
 
   defp retry(operation, error_class, seconds, result) do
-    next_attempt_at = DateTime.add(DateTime.utc_now(), seconds, :second)
+    next_attempt_at = DateTime.add(SystemsClock.utc_now(), seconds, :second)
 
     case Operations.retryable(operation.operation_id, @generation, error_class, next_attempt_at) do
       {:ok, _transition} -> result

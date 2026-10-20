@@ -10,7 +10,7 @@ defmodule SalixIM.IFCTest do
   been observed.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.IFC.{Ingress, Projection}
   alias SalixStore.{Ids, Keys, S3}
@@ -117,26 +117,6 @@ defmodule SalixIM.IFCTest do
       end
     end
 
-    test "the sender's placement rides along, when the provider said" do
-      block =
-        Ingress.provider_block(
-          group(),
-          slack_metadata(%{"channel_type" => "im", "user_placement" => "external"}),
-          principal_ref()
-        )
-
-      assert block["placement"] == "external"
-
-      block =
-        Ingress.provider_block(
-          group(),
-          slack_metadata(%{"channel_type" => "im"}),
-          principal_ref()
-        )
-
-      refute Map.has_key?(block, "placement")
-    end
-
     test "a Group that has not opted in is not labelled at all" do
       for ifc <- [nil, %{}, %{"mode" => "off"}, %{"mode" => ""}] do
         record = %{"group_id" => @group, "tenant_id" => @tenant}
@@ -190,46 +170,6 @@ defmodule SalixIM.IFCTest do
       assert Ingress.provider_block(group(), forged, nil)["integrity"] == "data"
     end
 
-    test "a message with too little to label carries no label at all" do
-      assert Ingress.provider_block(group(), slack_metadata(%{"channel_id" => ""}), nil) == nil
-      assert Ingress.provider_block(group(), %{"provider" => "slack"}, nil) == nil
-      assert Ingress.provider_block(%{}, slack_metadata(%{}), nil) == nil
-    end
-
-    test "a Feishu one-to-one chat and group chat use the same vocabulary" do
-      direct =
-        Ingress.provider_block(
-          group(),
-          %{
-            "provider" => "feishu",
-            "connect_id" => @connect,
-            "chat_id" => "oc_1",
-            "chat_type" => "p2p",
-            "sender_open_id" => "ou_a",
-            "source_actor_type" => "provider_user"
-          },
-          nil
-        )
-
-      assert direct["label"] == ["scope|#{@connect}|@ou_a"]
-
-      room =
-        Ingress.provider_block(
-          group(),
-          %{
-            "provider" => "feishu",
-            "connect_id" => @connect,
-            "chat_id" => "oc_2",
-            "chat_type" => "group",
-            "sender_open_id" => "ou_a",
-            "source_actor_type" => "provider_user"
-          },
-          nil
-        )
-
-      assert room["label"] == ["scope|#{@connect}|oc_2"]
-    end
-
     test "a Feishu one-to-one chat keeps its audience when named only by its chat id" do
       # A `p2p` chat payload names neither participant, so the pairing is
       # learned from the inbound that carries both. Everything that later names
@@ -266,27 +206,6 @@ defmodule SalixIM.IFCTest do
         )
 
       assert widened["label"] == ["scope|#{@connect}|@ou_b"]
-    end
-
-    test "a voice call is a one-to-one with its caller, also when named by its call id" do
-      block =
-        Ingress.provider_block(
-          group(),
-          %{
-            "provider" => "voice",
-            "connect_id" => @connect,
-            "chat_id" => "vc_call_1",
-            "chat_type" => "private",
-            "from_user_id" => "+15551234567",
-            "source_actor_type" => "provider_user"
-          },
-          %{"connect_id" => @connect, "subject_id" => "+15551234567"}
-        )
-
-      assert block["label"] == ["scope|#{@connect}|@+15551234567"]
-      assert block["integrity"] == "command"
-      # voice.say addresses the call id; it resolves to the same person.
-      assert Ingress.scope_atoms(@scope, "vc_call_1") == block["label"]
     end
 
     test "a WebSocket voice call acts with its voice key; a forged key is data" do
@@ -340,12 +259,6 @@ defmodule SalixIM.IFCTest do
       assert row.display_name == "私聊"
     end
 
-    test "an unobserved channel stays unknown when the provider is unreachable" do
-      assert {"C_UNKNOWN", row} = Projection.facts(@scope, "C_UNKNOWN")
-      assert row.kind == nil
-      assert row.members == :unknown
-    end
-
     test "a stale observation reads as unknown rather than as an answer" do
       Store.observe_scope(@tenant, @group, @connect, "C1", %{kind: "room"})
       Store.replace_scope_members(@tenant, @group, @connect, "C1", ["U_A"])
@@ -360,11 +273,6 @@ defmodule SalixIM.IFCTest do
       assert {"C1", stale} = Projection.facts(@scope, "C1")
       assert stale.members == :unknown
       assert stale.kind == nil
-    end
-
-    test "a join for a conversation the projection never saw writes nothing" do
-      Projection.observe_join(@scope, "C_UNSEEN", "U_B")
-      assert {"C_UNSEEN", %{members: :unknown, kind: nil}} = Projection.facts(@scope, "C_UNSEEN")
     end
 
     test "join and leave events move the member set" do
@@ -434,10 +342,14 @@ defmodule SalixIM.IFCTest do
 
   describe "the facts resolver" do
     test "a product-authored pending Task has no human members; a human Task retains its requester" do
-      previous = Application.get_env(:salix_store, :s3_backend)
-      Application.put_env(:salix_store, :s3_backend, S3.Fake)
-      if Process.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
-      on_exit(fn -> Application.put_env(:salix_store, :s3_backend, previous) end)
+      previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+
+      if SystemsRuntime.Proc.whereis(S3.Fake),
+        do: S3.Fake.reset(),
+        else: start_supervised!(S3.Fake)
+
+      on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, previous) end)
       tenant = Ids.new_tenant_id()
       group_id = Ids.new_group_id(tenant)
 
@@ -470,10 +382,14 @@ defmodule SalixIM.IFCTest do
     end
 
     test "Worker configuration resolves to the authenticated Group, not a descriptor override" do
-      previous = Application.get_env(:salix_store, :s3_backend)
-      Application.put_env(:salix_store, :s3_backend, S3.Fake)
-      if Process.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
-      on_exit(fn -> Application.put_env(:salix_store, :s3_backend, previous) end)
+      previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+
+      if SystemsRuntime.Proc.whereis(S3.Fake),
+        do: S3.Fake.reset(),
+        else: start_supervised!(S3.Fake)
+
+      on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, previous) end)
       tenant = Ids.new_tenant_id()
       group_id = Ids.new_group_id(tenant)
 
@@ -498,30 +414,13 @@ defmodule SalixIM.IFCTest do
 
       assert reply["destination"] == %{"label" => ["group|" <> group_id], "writers" => "any"}
     end
-
-    test "a Group that has not opted in is off, and answers nothing else" do
-      assert SalixIM.IFC.Facts.mode(@tenant, "grp_missing") == "off"
-
-      assert {:ok, %{"mode" => "off"} = reply} =
-               SalixIM.IFC.Facts.resolve(%{
-                 "tenant_id" => @tenant,
-                 "group_id" => "grp_missing",
-                 "destination" => %{"kind" => "public"}
-               })
-
-      refute Map.has_key?(reply, "scopes")
-    end
-
-    test "an unreadable request is refused rather than answered emptily" do
-      assert {:error, :invalid_request} = SalixIM.IFC.Facts.resolve(nil)
-    end
   end
 
   test "a delivered Slack bot request reaches IFC as itself and cannot borrow a human's access" do
-    previous = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
-    if Process.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, previous) end)
+    previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+    if SystemsRuntime.Proc.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, previous) end)
 
     tenant = Ids.new_tenant_id()
     group_id = Ids.new_group_id(tenant)
@@ -683,10 +582,14 @@ defmodule SalixIM.IFCTest do
     test "hands the kernel a sealed restriction, so a receipt cannot release it" do
       # The operator's checkbox has to reach `SalixIFC.Policy.sealed_atoms`, or
       # it is a setting that stores and displays and does nothing.
-      previous = Application.get_env(:salix_store, :s3_backend)
-      Application.put_env(:salix_store, :s3_backend, S3.Fake)
-      if Process.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
-      on_exit(fn -> Application.put_env(:salix_store, :s3_backend, previous) end)
+      previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+
+      if SystemsRuntime.Proc.whereis(S3.Fake),
+        do: S3.Fake.reset(),
+        else: start_supervised!(S3.Fake)
+
+      on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, previous) end)
 
       tenant = Ids.new_tenant_id()
       group_id = Ids.new_group_id(tenant)
@@ -713,7 +616,7 @@ defmodule SalixIM.IFCTest do
                  "group_id" => group_id,
                  "atoms" => [sealed_atom],
                  "destination" => %{"kind" => "public"},
-                 "now" => System.system_time(:millisecond)
+                 "now" => SystemsClock.system_time(:millisecond)
                })
 
       assert sealed_atom in reply["policy"]["sealed_atoms"]

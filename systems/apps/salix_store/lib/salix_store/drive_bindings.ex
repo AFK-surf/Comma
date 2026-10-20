@@ -88,7 +88,8 @@ defmodule SalixStore.DriveBindings do
     :ok
   end
 
-  defp to_record(%Row{} = row) do
+  @doc false
+  def to_record(%Row{} = row) do
     %{
       "group_id" => row.group_id,
       "base_url" => row.base_url || "",
@@ -104,7 +105,8 @@ defmodule SalixStore.DriveBindings do
     }
   end
 
-  defp from_record(group_id, record) do
+  @doc false
+  def from_record(group_id, record) do
     %Row{
       group_id: group_id,
       base_url: record["base_url"] || "",

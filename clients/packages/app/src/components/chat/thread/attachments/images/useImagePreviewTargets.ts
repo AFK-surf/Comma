@@ -1,6 +1,6 @@
 import { useMemo } from "react";
-import type { ChatAttachment } from "../../../model/conversationChannel";
-import { isGroupImagePreviewPath } from "../../../model/protocol";
+import type { ChatAttachment, ChatImagePreviewRef } from "@comma/core/chat";
+import { draftUploadPreviewRef, isGroupImagePreviewPath } from "@comma/core/chat";
 import {
   isLocalFilePreviewRef,
   type LocalFilePreviewLoader,
@@ -22,13 +22,15 @@ export function useImagePreviewTargets({
   onPreviewLocalFile: LocalFilePreviewLoader | undefined;
   showImages: boolean;
 }) {
-  // A promoted file block must already have a byte source: an image with none
-  // would hold the group's placeholder open where a file card used to be.
+  // An image needs a byte source to join the group: one with none (a platform
+  // send recorded by name only) would hold the placeholder open forever, so it
+  // shows as a file card instead.
   const imagePositions = useMemo(
     () =>
       new Set(
         attachments.flatMap((attachment, position) =>
-          attachment.blockType === "image" ||
+          (attachment.blockType === "image" &&
+            imagePreviewRef(attachment) !== undefined) ||
           (inlineMediaSection &&
             onPreviewLocalFile !== undefined &&
             agentBlobImagePreviewRef(attachment) !== undefined)
@@ -41,17 +43,11 @@ export function useImagePreviewTargets({
   const previewImages = useMemo(
     () =>
       attachments.flatMap((attachment, position) => {
-        const previewRef =
-          agentBlobImagePreviewRef(attachment) ??
-          attachment.localFileRef ??
-          attachment.workspacePath;
+        const previewRef = imagePreviewRef(attachment);
         if (
           !showImages ||
           !imagePositions.has(position) ||
           !previewRef ||
-          (typeof previewRef === "string" &&
-            !isLocalFilePreviewRef(previewRef) &&
-            !isGroupImagePreviewPath(previewRef)) ||
           !onPreviewLocalFile
         ) {
           return [];
@@ -68,4 +64,26 @@ export function useImagePreviewTargets({
     [attachments, imagePositions, messageId, onPreviewLocalFile, showImages]
   );
   return { imagePositions, previewImages };
+}
+
+/** Where an image attachment's bytes can be read from, if anywhere. */
+function imagePreviewRef(attachment: ChatAttachment): ChatImagePreviewRef | undefined {
+  // An image still uploading shows from the bytes the core holds.
+  const uploadingRef = attachment.uploadingId
+    ? draftUploadPreviewRef(attachment.uploadingId)
+    : undefined;
+  const previewRef =
+    agentBlobImagePreviewRef(attachment) ??
+    uploadingRef ??
+    attachment.localFileRef ??
+    attachment.workspacePath;
+  if (
+    typeof previewRef === "string" &&
+    previewRef !== uploadingRef &&
+    !isLocalFilePreviewRef(previewRef) &&
+    !isGroupImagePreviewPath(previewRef)
+  ) {
+    return undefined;
+  }
+  return previewRef || undefined;
 }

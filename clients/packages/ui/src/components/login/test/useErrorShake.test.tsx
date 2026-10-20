@@ -5,12 +5,7 @@ import {
   commaReducedMotionAttribute,
   motionLoginCodeError,
 } from "../../../tokens/motion";
-import {
-  isErrorShakeResting,
-  stepErrorShake,
-  useErrorShake,
-  type ErrorShakeState,
-} from "../useErrorShake";
+import { isErrorShakeResting, sampleErrorShake, useErrorShake } from "../useErrorShake";
 
 const Probe = ({
   active,
@@ -44,7 +39,7 @@ const readTranslateX = (element: Element | null) => {
 };
 
 describe("error shake spring", () => {
-  it("uses the tuned login-code error tokens as the integrator inputs", () => {
+  it("uses the tuned login-code error tokens as the spring's inputs", () => {
     expect(motionLoginCodeError).toEqual({
       amplitude: 12,
       damping: 18,
@@ -54,11 +49,7 @@ describe("error shake spring", () => {
   });
 
   it("starts from the amplitude and accelerates toward rest", () => {
-    const next = stepErrorShake(
-      { position: motionLoginCodeError.amplitude, velocity: 0 },
-      0.016,
-      motionLoginCodeError
-    );
+    const next = sampleErrorShake(0.016, motionLoginCodeError);
 
     expect(next.position).toBeLessThan(motionLoginCodeError.amplitude);
     expect(next.velocity).toBeLessThan(0);
@@ -67,21 +58,11 @@ describe("error shake spring", () => {
   });
 
   it("oscillates through rest before settling with the tuned damping", () => {
-    let state: ErrorShakeState = {
-      position: motionLoginCodeError.amplitude,
-      velocity: 0,
-    };
     let crossedRest = false;
-
-    for (let step = 0; step < 40; step += 1) {
-      state = stepErrorShake(state, 0.016, motionLoginCodeError);
-      if (state.position < 0) {
-        crossedRest = true;
-        break;
-      }
-    }
-
+    for (let frame = 1; frame <= 40 && !crossedRest; frame += 1)
+      crossedRest = sampleErrorShake(frame * 0.016, motionLoginCodeError).position < 0;
     expect(crossedRest).toBe(true);
+    expect(isErrorShakeResting(sampleErrorShake(1, motionLoginCodeError))).toBe(true);
   });
 });
 
@@ -153,6 +134,25 @@ describe("useErrorShake", () => {
 
     expect(positions[0]).toBeLessThan(positions[1]!);
     expect(positions[1]).toBeLessThan(positions[2]!);
+  });
+
+  it("shakes each cell to the same place at a moment whatever the frame rate before it", () => {
+    const cellsAt200ms = (frames: number[]) => {
+      const view = render(<Probe active count={3} />);
+      for (const frame of frames) flushFrame(frame);
+      const positions = Array.from({ length: 3 }, (_, index) =>
+        readTranslateX(document.querySelector(`[data-shake-cell="${index}"]`))
+      );
+      view.unmount();
+      now = 0;
+      frameCallbacks = [];
+      return positions;
+    };
+    const at60fps = cellsAt200ms([...Array.from({ length: 12 }, () => 16), 8]);
+    expect(at60fps[0]).not.toBe(0);
+    expect(cellsAt200ms([100, 100])).toEqual(at60fps);
+    // One frame, at 200ms: straight to the moment.
+    expect(cellsAt200ms([200])).toEqual(at60fps);
   });
 
   it("leaves cells still when reduced motion is enabled", () => {

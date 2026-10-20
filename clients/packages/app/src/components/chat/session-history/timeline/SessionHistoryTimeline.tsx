@@ -1,14 +1,25 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { SessionHistoryRecord } from "../../../../runtime-chat/sessionHistoryBridge";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
+import type { SessionHistoryRecord } from "../useSessionHistory";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import { Button, ScrollArea, Tooltip } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { Tooltip } from "@comma/ui/components/tooltip";
 import type { SessionItemPresentation } from "../model/sessionHistoryPresentation";
 import { useSessionHistoryClock } from "./sessionHistoryClock";
 import { useSessionTimelineHover } from "./SessionTimelineHover";
 import {
   sessionTimeline,
   sessionTimelineAxis,
-  sessionTimelineBars,
+  sessionTimelineScale,
   sessionIdleMarkers,
   sessionZoomAxis,
   sessionWheelWindow,
@@ -47,7 +58,18 @@ export function SessionHistoryTimeline({
   const baseAxis = useMemo(() => sessionTimelineAxis(complete), [complete]);
   const trackRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
-  const measure = useCallback(() => setWidth(trackRef.current?.clientWidth ?? 0), []);
+  // The painted window of the last commit, for bar placement outside a render.
+  const paintedWindow = useRef({ origin: 0, scale: 0 });
+  const measure = useCallback(() => {
+    const track = trackRef.current;
+    const next = track?.clientWidth ?? 0;
+    setWidth(next);
+    // A resized track moves its bars in the frame that resized it, in that
+    // frame's write phase. Pointer targets must not lag a render behind the
+    // layout.
+    if (track)
+      return () => placeSessionTimelineBars(track, paintedWindow.current, next);
+  }, []);
   const [zoom, setZoom] = useState<{ start: number; end: number }>();
   const model = useMemo(
     () =>
@@ -113,6 +135,14 @@ export function SessionHistoryTimeline({
     paintProjection.current = { records, items, zoom, width, axis, model };
   }
   const { axis: paintAxis, model: paintModel } = paintProjection.current!;
+  const { origin: paintOrigin, scale: paintScale } = sessionTimelineScale(paintAxis);
+  // Bars keep their active time; the painted window places them. A new record
+  // rescales the window, so it moves bars here instead of rendering each bar.
+  useLayoutEffect(() => {
+    paintedWindow.current = { origin: paintOrigin, scale: paintScale };
+    const track = trackRef.current;
+    if (track) placeSessionTimelineBars(track, paintedWindow.current, width);
+  }, [paintModel, paintOrigin, paintScale, width]);
   const inspector = useSessionTimelineHover(model.spans, records, items);
   const idleMarkers = useMemo(() => sessionIdleMarkers(axis, width), [axis, width]);
   const highlightedIdle = idleMarkers.find((marker) => marker.start === activeIdle);
@@ -246,6 +276,7 @@ export function SessionHistoryTimeline({
         className="comma-session-overview-scroll"
         style={{ height: Math.min(plotHeight, 280) }}
         onViewportResize={measure}
+        notifyViewportResizeDuringWindowResize
       >
         <div className="comma-session-overview-plot" style={{ height: plotHeight }}>
           <div className="comma-session-overview-labels" aria-hidden>
@@ -414,7 +445,6 @@ export function SessionHistoryTimeline({
             <SessionTimelineBars
               model={paintModel}
               axis={paintAxis}
-              width={width}
               records={records}
               items={items}
               selected={selected}
@@ -458,7 +488,6 @@ export function SessionHistoryTimeline({
 const SessionTimelineBars = memo(function SessionTimelineBars({
   model,
   axis: paintAxis,
-  width,
   records,
   items,
   selected,
@@ -470,7 +499,6 @@ const SessionTimelineBars = memo(function SessionTimelineBars({
 }: {
   model: ReturnType<typeof sessionTimeline>;
   axis: ReturnType<typeof sessionZoomAxis>;
-  width: number;
   records: readonly SessionHistoryRecord[];
   items: readonly SessionItemPresentation[];
   selected: string | undefined;
@@ -480,19 +508,17 @@ const SessionTimelineBars = memo(function SessionTimelineBars({
   active: boolean;
   clockOffsetMs: number;
 }) {
-  const bars = sessionTimelineBars(model, paintAxis, width);
   const heights = model.tracks.map((count) => count * 24 + 8);
   const offsets = heights.map((_, index) =>
     heights.slice(0, index).reduce((sum, height) => sum + height, 16)
   );
-  return bars.map((span) => {
+  return model.spans.map((span) => {
     const record = records[span.index]!;
     const execution = record.execution;
     const firstToken =
       span.lane === 1 && execution?.lane === "model"
         ? execution.first_token_at_ms
         : null;
-    const left = Math.round(span.left);
     return (
       <SessionTimelineBar
         key={span.id}
@@ -508,17 +534,21 @@ const SessionTimelineBars = memo(function SessionTimelineBars({
         end={record.execution?.live ? record.execution.observed_at_ms : span.end}
         active={active && record.execution?.live === true}
         clockOffsetMs={clockOffsetMs}
-        left={left}
-        width={Math.round(span.left + span.width) - left}
+        foldedStart={paintAxis.folded(span.start)}
+        foldedEnd={paintAxis.folded(span.end)}
         top={offsets[span.lane]! + 4 + span.track * 24}
         selected={selected !== undefined && span.recordIds.includes(selected)}
         startVisible={execution != null && execution.started_at_ms >= model.start}
         endVisible={
           execution?.completed_at_ms != null && execution.completed_at_ms <= model.end
         }
-        firstTokenLeft={
+        firstTokenShare={
           firstToken != null && firstToken >= model.start && firstToken <= model.end
-            ? Math.round(paintAxis.position(firstToken) * width) - left
+            ? share(
+                paintAxis.folded(span.start),
+                paintAxis.folded(firstToken),
+                paintAxis.folded(span.end)
+              )
             : undefined
         }
         bind={bind}
@@ -528,6 +558,28 @@ const SessionTimelineBars = memo(function SessionTimelineBars({
     );
   });
 });
+
+/** Pixel edges for each bar's active time on the painted window. Left edges
+ * stay on the track, bars keep at least 4px, and both edges round to pixels. */
+function placeSessionTimelineBars(
+  track: HTMLElement,
+  { origin, scale }: { origin: number; scale: number },
+  width: number
+) {
+  for (const bar of track.querySelectorAll<HTMLElement>(":scope > [data-span-id]")) {
+    const from = Math.max(0, (Number(bar.dataset.foldedStart) - origin) * scale);
+    const to = Math.min(1, (Number(bar.dataset.foldedEnd) - origin) * scale);
+    const visible = Math.min(width, Math.max(4, (to - from) * width));
+    const edge = Math.min(from * width, width - visible);
+    const left = `${Math.round(edge)}px`;
+    const size = `${Math.round(edge + visible) - Math.round(edge)}px`;
+    if (bar.style.left !== left) bar.style.left = left;
+    if (bar.style.width !== size) bar.style.width = size;
+  }
+}
+
+const share = (from: number, at: number, to: number) =>
+  to > from ? Math.min(1, Math.max(0, (at - from) / (to - from))) : 0;
 
 // Keep historical buttons stable while the presentation clock extends live work.
 // Only paint coordinates are pixel-aligned; all times retain their precision.
@@ -544,13 +596,13 @@ const SessionTimelineBar = memo(function SessionTimelineBar({
   end: observedEnd,
   active,
   clockOffsetMs,
-  left,
-  width,
+  foldedStart,
+  foldedEnd,
   top,
   selected,
   startVisible,
   endVisible,
-  firstTokenLeft,
+  firstTokenShare,
   bind,
   dismiss,
   onSelect,
@@ -567,13 +619,15 @@ const SessionTimelineBar = memo(function SessionTimelineBar({
   end: number;
   active: boolean;
   clockOffsetMs: number;
-  left: number;
-  width: number;
+  /** Active time before the span's edges; the timeline places them on the window. */
+  foldedStart: number;
+  foldedEnd: number;
   top: number;
   selected: boolean;
   startVisible: boolean;
   endVisible: boolean;
-  firstTokenLeft: number | undefined;
+  /** Where the first token falls along the bar, from 0 to 1. */
+  firstTokenShare: number | undefined;
   bind: ReturnType<typeof useSessionTimelineHover>["bind"];
   dismiss(): void;
   onSelect(id: string): void;
@@ -590,26 +644,42 @@ const SessionTimelineBar = memo(function SessionTimelineBar({
     shape === "open" ||
     (request && !measuredRequest) ||
     (shape === "point" && item.kind === "running");
-  const timing =
-    shape === "point"
-      ? m.session_timeline_point()
-      : `${end - start} ms${shape === "open" ? ` · ${m.session_timeline_open()}` : ""}`;
-  const phases = measuredRequest
-    ? [
-        `${m.session_request_start()}: ${new Date(execution.started_at_ms).toISOString()}`,
-        firstToken != null
-          ? m.session_request_ttft({
-              duration: firstToken - execution.started_at_ms,
-            })
-          : null,
-        execution.completed_at_ms != null
-          ? `${m.session_request_end()}: ${new Date(execution.completed_at_ms).toISOString()}`
-          : m.session_timeline_open(),
-      ]
-        .filter(Boolean)
-        .join("\n")
-    : "";
-  const label = `${request ? m.session_item_model() : `${item.label} · ${item.tools.join(" · ")} ${item.summary}`}\n${new Date(start).toISOString()} · ${timing}${phases ? `\n${phases}` : ""}${unknownEnd && !measuredRequest ? `\n${m.session_timeline_open()}` : ""}`;
+  // Hover and selection render every bar. The label depends only on the
+  // record and its times, so those renders do not format it again.
+  const label = useMemo(() => {
+    const timing =
+      shape === "point"
+        ? m.session_timeline_point()
+        : `${end - start} ms${shape === "open" ? ` · ${m.session_timeline_open()}` : ""}`;
+    const phases =
+      measuredRequest && execution
+        ? [
+            `${m.session_request_start()}: ${new Date(execution.started_at_ms).toISOString()}`,
+            firstToken != null
+              ? m.session_request_ttft({
+                  duration: firstToken - execution.started_at_ms,
+                })
+              : null,
+            execution.completed_at_ms != null
+              ? `${m.session_request_end()}: ${new Date(execution.completed_at_ms).toISOString()}`
+              : m.session_timeline_open(),
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : "";
+    return `${request ? m.session_item_model() : `${item.label} · ${item.tools.join(" · ")} ${item.summary}`}\n${new Date(start).toISOString()} · ${timing}${phases ? `\n${phases}` : ""}${unknownEnd && !measuredRequest ? `\n${m.session_timeline_open()}` : ""}`;
+  }, [
+    m,
+    shape,
+    end,
+    start,
+    measuredRequest,
+    execution,
+    firstToken,
+    request,
+    item,
+    unknownEnd,
+  ]);
   return (
     <button
       type="button"
@@ -626,7 +696,9 @@ const SessionTimelineBar = memo(function SessionTimelineBar({
       aria-label={label}
       {...bind(id)}
       aria-pressed={selected}
-      style={{ left, width, top }}
+      data-folded-start={foldedStart}
+      data-folded-end={foldedEnd}
+      style={{ top }}
       onClick={() => {
         dismiss();
         onSelect(targetId);
@@ -641,7 +713,7 @@ const SessionTimelineBar = memo(function SessionTimelineBar({
               title={m.session_request_start()}
             />
           )}
-          {firstTokenLeft !== undefined && firstToken != null && (
+          {firstTokenShare !== undefined && firstToken != null && (
             <span
               className="comma-session-request-phase"
               data-phase="ttft"
@@ -649,7 +721,7 @@ const SessionTimelineBar = memo(function SessionTimelineBar({
               title={m.session_request_ttft({
                 duration: firstToken - execution.started_at_ms,
               })}
-              style={{ left: firstTokenLeft }}
+              style={{ "--session-span-phase": firstTokenShare } as CSSProperties}
             />
           )}
           {endVisible && (

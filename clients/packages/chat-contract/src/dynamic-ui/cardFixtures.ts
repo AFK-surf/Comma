@@ -18,7 +18,7 @@ export const forecastFixture: ForecastData = {
   title: "杭州 · 未来 7 天",
   location: "杭州",
   source: "中国天气网",
-  updatedAt: "17:05 更新",
+  observedAt: "2026-09-22T09:05:00Z",
   current: {
     temperature: 26,
     condition: "partly-cloudy",
@@ -93,7 +93,7 @@ export const trainOptionsFixture: OptionsData = {
   title: "杭州东 → 上海虹桥 · 今晚",
   meta: "5 班",
   source: "12306",
-  updatedAt: "17:02 查询",
+  observedAt: "2026-09-22T09:02:00Z",
   filters: [
     { key: "all", label: "全部" },
     { key: "available", label: "有票" },
@@ -162,7 +162,7 @@ export const hotelOptionsFixture: OptionsData = {
   title: "静安寺附近 · 今晚 1 晚 · 2 人",
   meta: "3 家",
   source: "携程",
-  updatedAt: "16:58 查询",
+  observedAt: "2026-09-22T08:58:00Z",
   items: [
     {
       id: "shangri-la",
@@ -255,7 +255,7 @@ export const trendFixture: TrendData = {
   title: "比特币 BTC / USD",
   brand: "bitcoin",
   source: "CoinGecko",
-  updatedAt: "17:04",
+  observedAt: "2026-09-22T09:04:00Z",
   value: "$63,240",
   delta: { value: "2.8% 今日", direction: "up", good: true },
   ranges: [
@@ -298,7 +298,7 @@ export const trendFixture: TrendData = {
 export const barTrendFixture: TrendData = {
   title: "近 14 天 API 调用量",
   source: "Comma 控制台",
-  updatedAt: "今天 17:00",
+  observedAt: "2026-09-22T09:00:00Z",
   value: "1.38 万",
   delta: { value: "21% 较日均", direction: "up", good: true },
   bars: {
@@ -504,7 +504,7 @@ export const itineraryFixture: ScheduleData = {
 export const stagesFixture: ScheduleData = {
   title: "订单 #A2931 · AirPods Pro",
   source: "顺丰速运",
-  updatedAt: "17:01 更新",
+  observedAt: "2026-09-22T09:01:00Z",
   summary: "预计 9 月 25 日 送达",
   stages: [
     { label: "已下单", detail: "9/20", state: "done" },
@@ -604,7 +604,7 @@ export const storageFixture: CompositionData = {
 export const placeFixture: PlaceData = {
   title: "附近的咖啡馆",
   source: "高德地图",
-  updatedAt: "17:03",
+  observedAt: "2026-09-22T09:03:00Z",
   places: [
     {
       name: "Blue Bottle 兴业太古汇店",
@@ -653,7 +653,7 @@ export const placeFixture: PlaceData = {
 export const newsFixture: FeedData = {
   title: "今日 AI 要闻",
   source: "5 个订阅源",
-  updatedAt: "17:00 汇总",
+  observedAt: "2026-09-22T09:00:00Z",
   items: [
     {
       source: "Apple Newsroom",
@@ -687,7 +687,8 @@ export const newsFixture: FeedData = {
 
 export const digestFixture: FeedData = {
   title: "下午好 · 你离开期间",
-  updatedAt: "13:00–17:00",
+  updatedAt: "离开 4 小时",
+  observedAt: "2026-09-22T09:00:00Z",
   groups: [
     {
       source: "Gmail",

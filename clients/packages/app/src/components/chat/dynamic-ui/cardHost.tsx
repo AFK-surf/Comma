@@ -12,18 +12,17 @@ import {
 import {
   ArrowRightIcon,
   ArrowUpIcon,
-  brandMarks,
   CheckIcon,
   CheckLargeIcon,
   ChevronRightSmallIcon,
   CloudIcon,
   CloudySunIcon,
-  isBrandKey,
   MoonIcon,
   RainIcon,
   SnowIcon,
   SunIcon,
-} from "@comma/ui";
+} from "@comma/ui/components/icons";
+import { brandMarks, isBrandKey } from "@comma/ui/components/icons/brandMarks";
 
 /**
  * Host side of the `comma.card` templates: the glyphs, logos, copy and theme

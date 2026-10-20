@@ -1,5 +1,5 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import type { ConversationErrorKind } from "../model/conversationChannel";
+import type { ConversationErrorKind } from "@comma/core/chat";
 
 export function ChatBanner({
   errorKind,

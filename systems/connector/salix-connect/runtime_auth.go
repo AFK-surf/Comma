@@ -25,11 +25,6 @@ func (e *runtimeAuthNativeOutcomeUnknownError) Error() string {
 
 func (e *runtimeAuthNativeOutcomeUnknownError) Unwrap() error { return e.cause }
 
-func runtimeAuthNativeOutcomeUnknown(err error) bool {
-	var unknown *runtimeAuthNativeOutcomeUnknownError
-	return errors.As(err, &unknown)
-}
-
 func runtimeAuthUnknown(cause error) error {
 	return &runtimeAuthNativeOutcomeUnknownError{cause: cause}
 }
@@ -75,14 +70,13 @@ type codexAuthNotificationState struct {
 }
 
 type runtimeAuthTargetLock struct {
-	mutex       sync.Mutex
-	users       int
-	nativeCalls int
+	mutex sync.Mutex
+	users int
 }
 
 // One target owner serializes native ceremonies and private file commits.
-// RuntimeAuth.tla covers native login fencing; RuntimeAuthInput.tla covers
-// private input consumption and the final commit section.
+// It fences native login, private input consumption, and the final commit
+// section.
 type runtimeAuthCoordinator struct {
 	codex *codexRuntimeImplementation
 
@@ -318,10 +312,6 @@ func (m *runtimeAuthCoordinator) startScoped(ctx context.Context, target runtime
 	if !current() {
 		return nil, errors.New("runtime auth target changed")
 	}
-	if m.targetBusy(target) {
-		return nil, errors.New("runtime_busy")
-	}
-
 	if expired := m.takeExpiredAttempt(target.key()); expired != nil {
 		m.retireExpiredAttempt(target, expired)
 	}
@@ -512,9 +502,8 @@ func (m *runtimeAuthCoordinator) finishUnconfirmedCancel(
 		m.codex.fenceRuntimeGeneration(attempt.runtime)
 	}
 	// The request did not confirm native cancellation. Whether the response was
-	// lost, rejected, or malformed, quarantine a session-bound generation for
-	// auth or terminate an unbound one so it cannot influence auth state or race
-	// a retry through this Connector generation.
+	// lost, rejected, or malformed, terminate the generation so it cannot
+	// influence auth state or race a retry through this Connector generation.
 	return map[string]any{
 		"attempt_id": attempt.attemptID,
 		"canceled":   true,
@@ -829,9 +818,8 @@ func (m *runtimeAuthCoordinator) cancelSupersededAttemptWithTerminal(
 	status := stringParam(result, "status")
 	if err != nil || (status != "canceled" && status != "notFound") {
 		// An ambiguous cancel cannot prove that the native device flow stopped.
-		// Fence auth on this exact generation. Unbound runtimes are terminated so
-		// a retry uses a fresh app-server; session-bound runtimes keep serving
-		// their sessions but remain quarantined from further auth operations.
+		// Fence auth on this exact generation and terminate it, so a retry uses
+		// a fresh app-server.
 		if terminal != nil {
 			m.publishTerminalAndFence(attempt.runtime, terminal)
 		} else {
@@ -876,7 +864,7 @@ func (m *runtimeAuthCoordinator) tryLockTarget(key string) (func(), bool) {
 	if !lock.mutex.TryLock() {
 		m.mu.Lock()
 		lock.users--
-		if lock.users == 0 && lock.nativeCalls == 0 {
+		if lock.users == 0 {
 			delete(m.locks, key)
 		}
 		m.mu.Unlock()
@@ -886,7 +874,7 @@ func (m *runtimeAuthCoordinator) tryLockTarget(key string) (func(), bool) {
 		lock.mutex.Unlock()
 		m.mu.Lock()
 		lock.users--
-		if lock.users == 0 && lock.nativeCalls == 0 {
+		if lock.users == 0 {
 			delete(m.locks, key)
 		}
 		m.mu.Unlock()
@@ -907,55 +895,11 @@ func (m *runtimeAuthCoordinator) lockTarget(key string) func() {
 		lock.mutex.Unlock()
 		m.mu.Lock()
 		lock.users--
-		if lock.users == 0 && lock.nativeCalls == 0 {
+		if lock.users == 0 {
 			delete(m.locks, key)
 		}
 		m.mu.Unlock()
 	}
-}
-
-// Native Send/recovery admission and auth commit share this target section.
-// Calls do not hold the section while waiting on native I/O: the count keeps
-// auth busy even if a fast terminal event removes its durable execution before
-// the original native RPC returns. RuntimeAuthMutation.tla models this seam.
-func (m *runtimeAuthCoordinator) enterNativeCall(target runtimeProbeTarget) func() {
-	unlock := m.lockTarget(target.key())
-	m.mu.Lock()
-	lock := m.locks[target.key()]
-	lock.nativeCalls++
-	m.mu.Unlock()
-	unlock()
-	return func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		lock.nativeCalls--
-		if lock.users == 0 && lock.nativeCalls == 0 {
-			delete(m.locks, target.key())
-		}
-	}
-}
-
-func (c *connector) enterRuntimeAuthNativeCall(provider, command string) func() {
-	if owner := c.runtimeAuthCoordinator(); owner != nil {
-		return owner.enterNativeCall(runtimeProbeTarget{provider: provider, identityMaterial: command})
-	}
-	// Scope-limited connectors and non-native test implementations expose no
-	// auth owner or private-input capability.
-	return func() {}
-}
-
-// Caller holds the target section, which excludes new native call admission.
-// The existing execution owner supplies its indexed count, including durable
-// recovery obligations. This path performs no session scan or child RPC.
-func (m *runtimeAuthCoordinator) targetBusy(target runtimeProbeTarget) bool {
-	m.mu.Lock()
-	lock := m.locks[target.key()]
-	busy := lock != nil && lock.nativeCalls > 0
-	m.mu.Unlock()
-	if !busy && m.codex != nil && m.codex.connector.externalRuntimeState != nil {
-		busy = m.codex.connector.externalRuntimeState.targetHasActiveExecution(target)
-	}
-	return busy
 }
 
 func (m *runtimeAuthCoordinator) attempt(key string) *runtimeAuthAttempt {
@@ -1141,9 +1085,8 @@ func (i *codexRuntimeImplementation) enqueueAuthNotificationIfCurrent(
 	return true
 }
 
-// updateAuthSnapshotForRuntime is modeled in tla/connector/RuntimeAuth.tla as
-// the atomic snapshot/epoch publication boundary and in
-// tla/connector/RuntimeAuthReadiness.tla as the generation-owned readiness proof.
+// updateAuthSnapshotForRuntime is the atomic snapshot/epoch publication
+// boundary and the generation-owned readiness proof.
 func (i *codexRuntimeImplementation) updateAuthSnapshotForRuntime(
 	target runtimeProbeTarget,
 	runtime *codexRuntime,
@@ -1177,8 +1120,7 @@ func (i *codexRuntimeImplementation) updateAuthSnapshotForRuntime(
 	return true
 }
 
-// commitRuntimeProbe's generation/epoch fence is modeled in
-// tla/connector/RuntimeAuth.tla and tla/connector/RuntimeAuthReadiness.tla.
+// commitRuntimeProbe applies the generation/epoch fence.
 func (i *codexRuntimeImplementation) commitRuntimeProbe(
 	target runtimeProbeTarget,
 	generation string,
@@ -1220,8 +1162,7 @@ func (i *codexRuntimeImplementation) commitRuntimeProbe(
 	return true
 }
 
-// fenceRuntimeGeneration is modeled in tla/connector/RuntimeAuth.tla as the
-// terminate-or-quarantine generation fence.
+// fenceRuntimeGeneration is the terminate-or-quarantine generation fence.
 func (i *codexRuntimeImplementation) fenceRuntimeGeneration(runtime *codexRuntime) {
 	i.fenceRuntimeGenerationWithSnapshot(runtime, nil)
 }
@@ -1245,23 +1186,6 @@ func (i *codexRuntimeImplementation) fenceRuntimeGenerationWithSnapshot(
 			}
 			published = true
 		}
-	}
-	bound := false
-	for _, session := range i.sessions {
-		if session == nil {
-			continue
-		}
-		session.mu.Lock()
-		bound = session.runtime == runtime
-		session.mu.Unlock()
-		if bound {
-			break
-		}
-	}
-	if bound {
-		i.authQuarantined[runtime.generation] = true
-		i.mu.Unlock()
-		return published
 	}
 	if current == runtime {
 		delete(i.runtimes, runtime.command)
@@ -1302,8 +1226,7 @@ func (i *codexRuntimeImplementation) retireRuntimeTransport(
 	return published
 }
 
-// retireUnusableRuntimeGeneration is modeled in tla/connector/RuntimeAuth.tla
-// as RetireUnusableRuntime. It is the nonblocking admission fence for a Codex
+// retireUnusableRuntimeGeneration is the nonblocking admission fence for a Codex
 // connection that never became usable or whose initialize outcome is
 // ambiguous. It removes only the exact current generation, publishes a safe
 // auth error while that generation still owns the cache, and leaves session

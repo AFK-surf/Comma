@@ -137,7 +137,9 @@ defmodule SalixStore.ComposioSettings do
     }
   end
 
-  defp to_record(%Row{} = row) do
+  @doc false
+  # Shared with the memory implementation.
+  def to_record(%Row{} = row) do
     %{
       "api_key" => row.api_key,
       "webhook_secret" => row.webhook_secret,
@@ -147,7 +149,8 @@ defmodule SalixStore.ComposioSettings do
     }
   end
 
-  defp from_record(scope, record) do
+  @doc false
+  def from_record(scope, record) do
     %Row{
       scope: scope,
       api_key: record["api_key"],

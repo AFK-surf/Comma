@@ -1,4 +1,6 @@
 defmodule SalixWeb.CapabilityRequestSSE do
+  require SystemsClock
+
   @moduledoc """
   Live durable capability request stream for agent groups.
 
@@ -16,7 +18,7 @@ defmodule SalixWeb.CapabilityRequestSSE do
   @spec serve(Plug.Conn.t(), String.t(), String.t()) :: Plug.Conn.t()
   def serve(conn, group_id, tenant_id) do
     with {:ok, _group} <- Groups.get(group_id, tenant_id) do
-      if Process.whereis(SalixWeb.PubSub) do
+      if SystemsRuntime.Proc.whereis(SalixWeb.PubSub) do
         Phoenix.PubSub.subscribe(
           SalixWeb.PubSub,
           CapabilityRequests.topic(group_id)
@@ -56,7 +58,7 @@ defmodule SalixWeb.CapabilityRequestSSE do
   end
 
   defp loop(conn, group_id, tenant_id) do
-    receive do
+    SystemsClock.vreceive do
       {:capability_request_event, ^group_id, request_id} ->
         case CapabilityRequests.get(group_id, request_id, tenant_id) do
           {:ok, request} ->

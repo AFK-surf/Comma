@@ -1,8 +1,24 @@
 // @vitest-environment jsdom
 
 import type { BrowserSidebarInspectResult } from "@comma/native-bridge";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserSidebarElementInspectorSource } from "../modules/browser-sidebar/element-inspector";
+
+// The inspector's shadow root is closed; the tests keep it to see its outline.
+let inspectorShadow: ShadowRoot | undefined;
+
+// The file's timers run on the test's clock: a test moves it.
+beforeEach(() => {
+  vi.useFakeTimers();
+  const attachShadow = HTMLElement.prototype.attachShadow;
+  vi.spyOn(HTMLElement.prototype, "attachShadow").mockImplementation(function (
+    this: HTMLElement,
+    init: ShadowRootInit
+  ) {
+    inspectorShadow = attachShadow.call(this, init);
+    return inspectorShadow;
+  });
+});
 
 type SelectedInspection = Extract<BrowserSidebarInspectResult, { status: "selected" }>;
 
@@ -10,6 +26,8 @@ describe("browser sidebar element inspector", () => {
   afterEach(() => {
     globalThis.commaBrowserSidebarElementInspector?.cancel();
     globalThis.commaBrowserSidebarElementInspector = undefined;
+    inspectorShadow = undefined;
+    vi.restoreAllMocks();
     document.documentElement.replaceChildren(
       document.createElement("head"),
       document.createElement("body")
@@ -93,17 +111,107 @@ describe("browser sidebar element inspector", () => {
     expect(selected.element.outerHTML).toContain("...[truncated]");
     expect(selected.element.outerHTML?.length).toBeLessThanOrEqual(6_015);
   });
+
+  it("draws no outline from the click until Main has captured the element", async () => {
+    document.body.innerHTML = `<button id="target">Buy</button>`;
+    const target = document.querySelector("#target");
+    if (!target) throw new Error("Inspection fixture element is missing");
+    vi.spyOn(target, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ height: 20, width: 40, x: 10, y: 10 })
+    );
+
+    const selection = startInspection();
+    target.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, composed: true })
+    );
+    // A scroll before the capture leaves the outline off the page.
+    globalThis.dispatchEvent(new Event("scroll"));
+    expect(outlineDisplay()).toBe("none");
+    expect((await settle(selection)).status).toBe("selected");
+    globalThis.dispatchEvent(new Event("scroll"));
+    expect(outlineDisplay()).toBe("none");
+
+    globalThis.commaBrowserSidebarElementInspector?.highlight();
+    expect(outlineDisplay()).toBe("block");
+  });
+
+  it("can still be cancelled while the selection waits for its frame", async () => {
+    document.body.innerHTML = `<button id="target">Buy</button>`;
+    const selection = startInspection();
+    document
+      .querySelector("#target")
+      ?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, composed: true })
+      );
+
+    globalThis.commaBrowserSidebarElementInspector?.cancel();
+
+    expect(await settle(selection)).toEqual({ status: "cancelled" });
+  });
+
+  it("cancels on Escape while the selection waits for its frame", async () => {
+    document.body.innerHTML = `<button id="target">Buy</button>`;
+    const selection = startInspection();
+    document
+      .querySelector("#target")
+      ?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, composed: true })
+      );
+
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, key: "Escape" })
+    );
+
+    expect(await settle(selection)).toEqual({ status: "cancelled" });
+  });
+
+  it("reports where the selected element is now", async () => {
+    document.body.innerHTML = `<button id="target">Buy</button>`;
+    const target = document.querySelector("#target");
+    if (!target) throw new Error("Inspection fixture element is missing");
+    const place = vi
+      .spyOn(target, "getBoundingClientRect")
+      .mockReturnValue(DOMRect.fromRect({ height: 20, width: 40, x: 10, y: 10 }));
+    const selected = await selectElement(target);
+    expect(selected.element.rect).toEqual({ height: 20, width: 40, x: 10, y: 10 });
+
+    // The page scrolls after the click.
+    place.mockReturnValue(DOMRect.fromRect({ height: 20, width: 40, x: 10, y: -30 }));
+
+    expect(globalThis.commaBrowserSidebarElementInspector?.rect()).toEqual({
+      height: 20,
+      width: 40,
+      x: 10,
+      y: -30,
+    });
+  });
 });
+
+function startInspection() {
+  return globalThis.eval(
+    browserSidebarElementInspectorSource
+  ) as Promise<BrowserSidebarInspectResult>;
+}
+
+/** The selection once the frames it waits for have been painted. */
+async function settle(selection: Promise<BrowserSidebarInspectResult>) {
+  vi.advanceTimersToNextFrame();
+  vi.advanceTimersToNextFrame();
+  return await selection;
+}
+
+function outlineDisplay() {
+  return inspectorShadow?.querySelector<HTMLElement>(".comma-inspector-box")?.style
+    .display;
+}
 
 async function selectElement(element: Element | null) {
   if (!element) throw new Error("Inspection fixture element is missing");
-  const selection = globalThis.eval(
-    browserSidebarElementInspectorSource
-  ) as Promise<BrowserSidebarInspectResult>;
+  const selection = startInspection();
   element.dispatchEvent(
     new MouseEvent("click", { bubbles: true, cancelable: true, composed: true })
   );
-  const result = await selection;
+  const result = await settle(selection);
   if (result.status !== "selected") {
     throw new Error(`Expected selected inspection, received ${result.status}`);
   }

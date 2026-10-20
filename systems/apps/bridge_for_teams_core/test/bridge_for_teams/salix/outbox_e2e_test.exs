@@ -14,26 +14,26 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
   temporarily override Salix node discovery.
   """
   use BridgeForTeams.DataCase, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{Agents, Environments, Orgs, ProjectIMConnects, Projects, Repo}
   alias BridgeForTeams.Salix.{Reconciler, TenantConfigChecker}
   alias BridgeForTeams.Schema.{ProjectDeviceProjection, ReconcileOutbox}
-  alias SalixStore.RuntimeIds
 
   setup do
     SalixStore.S3.Fake.reset()
-    prev_salix_vm = Application.get_env(:bridge_for_teams_core, :salix_vm)
+    prev_salix_vm = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_vm)
 
     on_exit(fn ->
-      Application.delete_env(:bridge_for_teams_core, :salix_nodes_override)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_nodes_override)
       restore_env(:bridge_for_teams_core, :salix_vm, prev_salix_vm)
     end)
 
     :ok
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp drain_all do
     # Drain repeatedly until quiescent (each call claims one batch).
@@ -47,150 +47,18 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
     Repo.all(ReconcileOutbox) |> Enum.map(& &1.status) |> Enum.uniq()
   end
 
-  test "direct online rollout rejects early canonical writes and resumes bounded handoff" do
-    {org, project, owned} = audit_fixture()
-
-    legacy =
-      SalixAgent.TestSupport.create_legacy_control_agent_in_group!(
-        org.salix_tenant_id,
-        project.salix_group_id,
-        %{"role" => "worker", "name" => "Old native Worker"}
-      )
-
-    SalixStore.Repo.query!(
-      "DELETE FROM salix_cutover_markers WHERE name = 'agent_configuration_writers_v1'"
-    )
-
-    on_exit(fn ->
-      :ok = SalixStore.AgentConfigurationRollout.open()
-      :ok = SalixStore.AgentConfigurationRollout.complete()
-    end)
-
-    assert {:error, :agent_configuration_rollout_pending} =
-             Agents.update_agent(owned, %{"name" => "Must not be acknowledged"})
-
-    assert {:error, :agent_configuration_rollout_pending} =
-             Agents.transfer_configuration(legacy["agent_id"])
-
-    assert {:error, :agent_configuration_rollout_pending} =
-             SalixAgent.Control.create(
-               %{"group_id" => project.salix_group_id, "role" => "worker"},
-               org.salix_tenant_id
-             )
-
-    assert {:error, :agent_configuration_rollout_pending} =
-             SalixAgent.Control.archive_permanently(owned.salix_agent_id, org.salix_tenant_id)
-
-    # Read and message admission stay usable while management is unavailable.
-    assert {:ok, current} = SalixAgent.Control.get(owned.salix_agent_id)
-    assert current["name"] == "Worker"
-
-    assert {:ok, _} =
-             SalixAgent.deliver(
-               owned.salix_agent_id,
-               %{
-                 "session_id" => SalixStore.Ids.new_session_id(),
-                 "role" => "user",
-                 "content" => "Online handoff admission test"
-               },
-               source_message_id: "handoff-ordinary-message"
-             )
-
-    # A retained old-wire write still runs before the rollout boundary; its
-    # current value, never the old BFT snapshot, must survive transfer.
-    assert {:ok, _} =
-             SalixAgent.Control.update(
-               legacy["agent_id"],
-               %{"name" => "Last old write"},
-               org.salix_tenant_id
-             )
-
-    assert {:ok, :blocked} = SalixStore.AgentConfigurationRollout.state()
-
-    # The release runner publishes only after core success. A page is bounded
-    # and independently retryable; the existing native inventory includes rows
-    # absent from the BFT association table.
-    :ok = SalixStore.AgentConfigurationRollout.open()
-
-    Repo.update!(
-      Ecto.Changeset.change(Repo.get!(BridgeForTeams.Schema.Agent, owned.id),
-        configuration_authority: "legacy"
-      )
-    )
-
-    Repo.update_all(from(r in ReconcileOutbox, where: r.aggregate_id == ^owned.id),
-      set: [status: "pending"]
-    )
-
-    assert {:error, {:agent_transfer_failed, failed_id, :drain_agent_configuration_outbox}} =
-             BridgeForTeams.Agents.ConfigurationTransfer.page(nil)
-
-    assert failed_id == owned.id
-    assert {:ok, :ready} = SalixStore.AgentConfigurationRollout.state()
-    assert {:ok, _} = SalixAgent.Control.get(owned.salix_agent_id)
-    drain_all()
-    assert {:ok, first} = release_transfer_page(nil)
-    assert first.processed <= 20
-    assert {:ok, replay} = release_transfer_page(nil)
-    assert replay == first
-    finish_transfer_pages(first.next_cursor)
-    assert {:ok, :complete} = SalixStore.AgentConfigurationRollout.state()
-
-    assert {:ok, _} = Agents.update_agent(owned, %{"name" => "Canonical after rollout"})
-
-    assert {:ok, %{"name" => "Last old write", "configuration_authority" => "salix"}} =
-             SalixAgent.Control.get(legacy["agent_id"])
-
-    assert {:error, :configuration_authority_transferred} =
-             SalixAgent.Control.update(
-               legacy["agent_id"],
-               %{"name" => "Delayed stale request"},
-               org.salix_tenant_id
-             )
-
-    assert {:ok, _} =
-             SalixAgent.Control.create(
-               %{"group_id" => project.salix_group_id, "role" => "worker"},
-               org.salix_tenant_id
-             )
-  end
-
-  defp release_transfer_page(cursor) do
-    encoded = if cursor, do: cursor |> Jason.encode!() |> Base.encode64()
-
-    output =
-      ExUnit.CaptureIO.capture_io(fn ->
-        :ok = Comma.Release.transfer_agent_configuration_page(encoded)
-      end)
-
-    line =
-      output
-      |> String.split("\n")
-      |> Enum.find(&String.starts_with?(&1, "COMMA_AGENT_TRANSFER_RESULT:"))
-
-    summary = line |> String.replace_prefix("COMMA_AGENT_TRANSFER_RESULT:", "") |> Jason.decode!()
-
-    next =
-      if summary["next_cursor"], do: summary["next_cursor"] |> Base.decode64!() |> Jason.decode!()
-
-    {:ok, %{processed: summary["processed"], next_cursor: next}}
-  end
-
-  defp finish_transfer_pages(nil), do: :ok
-
-  defp finish_transfer_pages(cursor) do
-    assert {:ok, page} = release_transfer_page(cursor)
-    assert page.processed <= 20
-    finish_transfer_pages(page.next_cursor)
-  end
-
   test "authority transfer drains old obligations and fences delayed configuration" do
     {:ok, org} = Orgs.create_org(%{"name" => "Authority", "slug" => "authority"})
 
     {:ok, project} =
       Projects.create_project(org.id, %{"name" => "Authority", "slug" => "authority"})
 
-    {:ok, agent} = Agents.create_agent(project.id, %{"name" => "Before", "role" => "worker"})
+    {:ok, agent} =
+      BridgeForTeams.TestSupport.LegacyWorker.create(project.id, %{
+        "name" => "Before",
+        "role" => "worker"
+      })
+
     # Representative pre-rollout row and immutable legacy outbox command.
     Repo.update!(
       Ecto.Changeset.change(Repo.get!(BridgeForTeams.Schema.Agent, agent.id),
@@ -201,7 +69,8 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
     {:ok, legacy_id} = Ecto.UUID.dump(agent.id)
     Repo.query!("UPDATE agents SET name = 'Before' WHERE id = $1", [legacy_id])
 
-    assert {:error, :agent_configuration_transfer_required} =
+    # The dashboard writes no Worker, whoever holds its configuration.
+    assert {:error, :workers_retired} =
              Agents.update_agent(agent, %{"name" => "Blocked legacy write"})
 
     Repo.update_all(from(r in ReconcileOutbox, where: r.aggregate_id == ^agent.id),
@@ -230,15 +99,14 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
 
     count = Repo.aggregate(ReconcileOutbox, :count)
 
-    assert {:ok, updated} =
-             Agents.update_agent(agent, %{
-               "name" => "Canonical",
-               "system_prompt" => "Current instructions"
-             })
+    assert {:ok, _configured} =
+             SalixAgent.Control.configure(
+               agent.salix_agent_id,
+               %{"name" => "Canonical", "system_prompt" => "Current instructions"},
+               org.salix_tenant_id
+             )
 
-    assert updated.salix["name"] == "Canonical"
-    assert {:ok, canonical} = SalixAgent.Control.get(agent.salix_agent_id)
-    assert updated.salix == canonical
+    assert {:ok, %{"name" => "Canonical"}} = SalixAgent.Control.get(agent.salix_agent_id)
     assert Repo.get!(BridgeForTeams.Schema.Agent, agent.id).salix == %{}
     assert Repo.aggregate(ReconcileOutbox, :count) == count
     assert Repo.query!("SELECT name FROM agents WHERE id = $1", [legacy_id]).rows == [["Before"]]
@@ -256,96 +124,16 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
              SalixAgent.Control.get(agent.salix_agent_id)
   end
 
-  test "an unacknowledged claim freezes BFT writes and resumes without restoring the old snapshot" do
-    {:ok, org} = Orgs.create_org(%{"name" => "Claim retry", "slug" => "claim-retry"})
-
-    {:ok, project} =
-      Projects.create_project(org.id, %{"name" => "Claim retry", "slug" => "claim-retry"})
-
-    {:ok, agent} = Agents.create_agent(project.id, %{"name" => "Old", "role" => "worker"})
-    drain_all()
-
-    Repo.update!(
-      Ecto.Changeset.change(Repo.get!(BridgeForTeams.Schema.Agent, agent.id),
-        configuration_authority: "moving"
-      )
-    )
-
-    Repo.query!(
-      "UPDATE agents SET name = $1 WHERE id = $2",
-      ["Stale product name", Ecto.UUID.dump!(agent.id)]
-    )
-
-    assert {:error, :agent_configuration_transfer_in_progress} =
-             Agents.update_agent(agent, %{"name" => "Blocked"})
-
-    assert {:error, :agent_configuration_transfer_in_progress} = Agents.archive_agent(agent)
-
-    assert {:ok, _} =
-             SalixAgent.Control.configure(
-               agent.salix_agent_id,
-               %{"name" => "Changed after claim"},
-               org.salix_tenant_id
-             )
-
-    assert {:ok, %{configuration_authority: "salix"}} = Agents.transfer_configuration(agent.id)
-    assert {:ok, %{salix: %{"name" => "Changed after claim"}}} = Agents.get_agent(agent.id)
-
-    assert %{rows: [["Stale product name"]]} =
-             Repo.query!("SELECT name FROM agents WHERE id = $1", [Ecto.UUID.dump!(agent.id)])
-  end
-
-  test "transfer preserves a legacy soft archive and canonical restore ignores its old BFT shadow" do
-    {:ok, org} = Orgs.create_org(%{"name" => "Archive transfer", "slug" => "archive-transfer"})
-    {:ok, project} = Projects.create_project(org.id, %{"name" => "Archive", "slug" => "archive"})
-    {:ok, agent} = Agents.create_agent(project.id, %{"name" => "Archived", "role" => "worker"})
-
-    Repo.update_all(from(r in ReconcileOutbox, where: r.aggregate_id == ^agent.id),
-      set: [op: "create_agent"]
-    )
-
-    drain_all()
-    archived_at = DateTime.utc_now()
-
-    Repo.update!(
-      Ecto.Changeset.change(Repo.get!(BridgeForTeams.Schema.Agent, agent.id),
-        configuration_authority: "legacy"
-      )
-    )
-
-    {:ok, legacy_id} = Ecto.UUID.dump(agent.id)
-
-    Repo.query!("UPDATE agents SET status = 'archived', archived_at = $1 WHERE id = $2", [
-      DateTime.to_naive(archived_at),
-      legacy_id
-    ])
-
-    assert {:ok, _} = Agents.transfer_configuration(agent.id)
-    assert {:ok, %{salix: %{"archived_at" => actual_archive}}} = Agents.get_agent(agent.id)
-    assert actual_archive == DateTime.to_unix(archived_at)
-    assert {:error, :not_found} = Agents.get_project_agent(project.id, agent.id)
-    assert {:ok, _} = SalixAgent.Control.unarchive(agent.salix_agent_id, org.salix_tenant_id)
-
-    assert {:ok, restored} = Agents.get_project_agent(project.id, agent.id)
-    refute Map.has_key?(restored.salix, "archived_at")
-  end
-
-  defp audit_fixture do
-    n = System.unique_integer([:positive])
-    {:ok, org} = Orgs.create_org(%{"name" => "Transfer fixture", "slug" => "transfer-#{n}"})
-
-    {:ok, project} =
-      Projects.create_project(org.id, %{"name" => "Transfer", "slug" => "transfer"})
-
-    {:ok, agent} = Agents.create_agent(project.id, %{"name" => "Worker", "role" => "worker"})
-    drain_all()
-    {org, project, agent}
-  end
-
   test "BFT audits its own writes while Router commands stay inside Salix" do
     {:ok, org} = Orgs.create_org(%{"name" => "Audit boundary", "slug" => "audit-boundary"})
     {:ok, project} = Projects.create_project(org.id, %{"name" => "Audit", "slug" => "audit"})
-    {:ok, agent} = Agents.create_agent(project.id, %{"name" => "Worker", "role" => "worker"})
+
+    {:ok, agent} =
+      BridgeForTeams.TestSupport.LegacyWorker.create(project.id, %{
+        "name" => "Worker",
+        "role" => "worker"
+      })
+
     drain_all()
     {:ok, router} = Agents.current_router(project)
     {:ok, record} = SalixAgent.Control.get(router.salix_agent_id)
@@ -368,7 +156,7 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
     assert Repo.aggregate(BridgeForTeams.Schema.AuditLog, :count) == count
 
     assert {:ok, _} =
-             Agents.update_agent(agent, %{"name" => "Product change"},
+             Agents.update_agent(router, %{"name" => "Product change"},
                actor_label: "owner@example.test"
              )
 
@@ -379,154 +167,13 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
              )
 
     assert audit.actor_label == "owner@example.test"
-    assert audit.redacted_diff["name"] == %{"from" => "Router change", "to" => "Product change"}
+    assert audit.resource_id == router.id
+    assert audit.redacted_diff["name"]["to"] == "Product change"
   end
 
-  test "operator native inventory transfers Salix-only legacy Workers without inventing a BFT owner" do
-    {org, project, _owned} = audit_fixture()
-
-    legacy =
-      SalixAgent.TestSupport.create_legacy_control_agent_in_group!(
-        org.salix_tenant_id,
-        project.salix_group_id,
-        %{"role" => "worker", "name" => "Legacy Salix Worker"}
-      )
-
-    id = legacy["agent_id"]
-    count = Repo.aggregate(BridgeForTeams.Schema.Agent, :count)
-    assert {:ok, page} = Agents.page_agents(project, limit: 50)
-    assert Enum.any?(page.items, &(&1.id == id))
-    assert Repo.aggregate(BridgeForTeams.Schema.Agent, :count) == count
-    assert {:ok, ref} = Agents.get_project_agent(project.id, id)
-
-    assert {:error, :agent_configuration_transfer_required} =
-             Agents.update_agent(ref, %{"name" => "Premature"})
-
-    assert {:error, :not_found} =
-             Agents.get_project_agent(
-               project.id,
-               SalixStore.Ids.new_agent_id(project.salix_group_id)
-             )
-
-    previous_shell = Mix.shell()
-    Mix.shell(Mix.Shell.Process)
-    on_exit(fn -> Mix.shell(previous_shell) end)
-
-    Mix.Tasks.BridgeForTeams.Agents.TransferConfiguration.run([
-      "--project",
-      project.id,
-      "--limit",
-      "50"
-    ])
-
-    assert_receive {:mix_shell, :info, [json]}
-    result = Jason.decode!(json)
-    assert Enum.find(result["results"], &(&1["salix_agent_id"] == id))["needs_transfer"]
-    assert Repo.aggregate(BridgeForTeams.Schema.Agent, :count) == count
-    Mix.Tasks.BridgeForTeams.Agents.TransferConfiguration.run(["--apply", "--agent", id])
-    assert_receive {:mix_shell, :info, [applied]}
-
-    assert [%{"authority" => "salix", "needs_transfer" => false}] =
-             Jason.decode!(applied)["results"]
-
-    assert {:ok, %{"name" => "Legacy Salix Worker", "configuration_authority" => "salix"}} =
-             SalixAgent.Control.get(id)
-
-    assert Repo.aggregate(BridgeForTeams.Schema.Agent, :count) == count
-
-    assert {:ok, _} =
-             SalixAgent.Control.configure(
-               id,
-               %{"name" => "Canonical update"},
-               org.salix_tenant_id
-             )
-  end
-
-  test "legacy archive key presence stays archived even without a timestamp" do
-    {_org, project, agent} = audit_fixture()
-
-    assert {:ok, _} =
-             SalixStore.CasRecord.update(
-               SalixStore.Keys.ctl_agent(agent.salix_agent_id),
-               &Map.put(&1, "archived_at", nil)
-             )
-
-    assert {:ok, %{salix: %{"archived_at" => nil}}} = Agents.get_agent(agent.id)
-    assert {:error, :not_found} = Agents.get_project_agent(project.id, agent.id)
-    assert {:error, :agent_archived} = Agents.update_agent(agent, %{"name" => "Must not change"})
-  end
-
-  test "legacy Salix-owned Workers in a BFT Group remain manageable without product adoption" do
-    {:ok, org} = Orgs.create_org(%{"name" => "Legacy Workers", "slug" => "legacy-workers"})
-    {:ok, project} = Projects.create_project(org.id, %{"name" => "Legacy", "slug" => "legacy"})
-    drain_all()
-    router = Repo.get_by!(BridgeForTeams.Schema.Agent, project_id: project.id, role: "router")
-    {:ok, record} = SalixAgent.Control.get(router.salix_agent_id)
-
-    worker =
-      SalixAgent.TestSupport.create_control_agent_in_group!(
-        org.salix_tenant_id,
-        project.salix_group_id,
-        %{"name" => "Legacy Worker"}
-      )
-
-    id = worker["agent_id"]
-    assert {:ok, _} = SalixAgent.Control.claim_configuration(id, org.salix_tenant_id)
-
-    ctx = %{
-      agent_id: record["agent_id"],
-      session_id: record["router_session_id"],
-      tool_call_id: "legacy-update"
-    }
-
-    product_count = Repo.aggregate(BridgeForTeams.Schema.Agent, :count)
-
-    assert {:ok, %{"agent" => detail}} =
-             SalixAgent.AgentManagement.run(:get, %{"agent_id" => id}, ctx)
-
-    assert detail["agent_id"] == id
-
-    assert {:ok, updated} =
-             SalixAgent.AgentManagement.run(
-               :update,
-               %{"agent_id" => id, "name" => "Named legacy Worker", "purpose" => "Existing work"},
-               ctx
-             )
-
-    assert updated["agent"]["name"] == "Named legacy Worker"
-
-    assert {:ok, renamed} =
-             SalixAgent.Control.configure(
-               id,
-               %{"name" => "Dashboard rename"},
-               org.salix_tenant_id
-             )
-
-    assert renamed["name"] == "Dashboard rename"
-
-    assert {:ok, archived} =
-             SalixAgent.AgentManagement.run(
-               :archive,
-               %{"agent_id" => id, "user_confirmed" => true},
-               ctx
-             )
-
-    assert archived["agent"]["permanent"]
-    assert Repo.aggregate(BridgeForTeams.Schema.Agent, :count) == product_count
-    refute Repo.get_by(BridgeForTeams.Schema.Agent, salix_agent_id: id)
-    assert {:ok, %{"name" => "Dashboard rename"}} = SalixAgent.Control.get_record(id)
-  end
-
-  test "Router and dashboard metadata converge through the Salix owner, then archive is permanent" do
-    {:ok, template} =
-      SalixAgent.Templates.create(%{
-        "name" => "Product Worker",
-        "model" => "worker-model",
-        "provider" => "mock"
-      })
-
+  test "Router metadata converges through the Salix owner, the dashboard writes no Worker, and archive is permanent" do
+    SalixAgent.TestSupport.configure_platform_models!()
     {:ok, org} = Orgs.create_org(%{"name" => "Management", "slug" => "management"})
-    org = Repo.update!(Ecto.Changeset.change(org, default_template_id: template["template_id"]))
     {:ok, project} = Projects.create_project(org.id, %{"name" => "Managed", "slug" => "managed"})
     drain_all()
     router = Repo.get_by!(BridgeForTeams.Schema.Agent, project_id: project.id, role: "router")
@@ -552,7 +199,8 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
     refute Repo.get_by(BridgeForTeams.Schema.Agent, salix_agent_id: id)
     assert {:ok, product_agent} = Agents.get_project_agent(project.id, id)
     assert product_agent.project_id == project.id
-    assert product_agent.salix["template_id"] == template["template_id"]
+    # A Worker that a Router creates follows the platform Worker model.
+    refute product_agent.salix["model"]
 
     assert {:ok, replayed} = SalixAgent.AgentManagement.run(:create, input, ctx)
     assert replayed["replayed"]
@@ -562,7 +210,7 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
     assert {:ok, %{"agent" => detail}} =
              SalixAgent.AgentManagement.run(:get, %{"agent_id" => id}, ctx)
 
-    assert detail["model"]["model_id"] == "worker-model"
+    assert detail["model"]["source"] == "platform_default"
 
     assert {:ok, accepted} =
              SalixAgent.AgentManagement.run(:update, %{"agent_id" => id, "name" => "A"}, %{
@@ -571,17 +219,12 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
              })
 
     assert accepted["result"] == "applied"
-    # A stale dashboard struct submits a patch to the canonical owner.
-    assert {:ok, _newer} =
+    # The dashboard writes no Worker: the Router's change stands.
+    assert {:error, :workers_retired} =
              Agents.update_agent(product_agent, %{"name" => "B", "purpose" => "Backend"})
 
-    assert Repo.get!(BridgeForTeams.Schema.Agent, product_agent.id).salix["name"] == nil
     assert {:ok, after_b} = SalixAgent.Control.get(id)
-
-    assert Map.take(after_b, ~w(name management_purpose)) == %{
-             "name" => "B",
-             "management_purpose" => "Backend"
-           }
+    assert after_b["name"] == "A"
 
     drain_all()
     assert {:ok, ^after_b} = SalixAgent.Control.get(id)
@@ -595,10 +238,9 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
 
     assert archive["agent"]["lifecycle"] == "archived"
 
-    assert {:error, :agent_archived} =
+    assert {:error, :workers_retired} =
              Agents.update_agent(product_agent, %{"name" => "stale writer"})
 
-    assert {:error, :not_found} = Agents.archive_agent(product_agent)
     drain_all()
 
     assert {:ok, %{"agent" => archived}} =
@@ -615,7 +257,7 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
              SalixAgent.Control.unarchive(id, org.salix_tenant_id)
   end
 
-  test "disclosed Compute targets create and rebind a BFT Worker without provisioning resources" do
+  test "a Router creates and moves a station-bound BFT Worker without provisioning resources" do
     {:ok, org} =
       Orgs.create_org(%{"name" => "Compute Management", "slug" => "compute-management"})
 
@@ -640,80 +282,56 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
         SalixAgent.ToolDisclosure.materialize("router", :internal, ctx)
       )
 
-    prefix = "management-#{System.unique_integer([:positive])}"
-
-    first =
-      SalixStore.TestSupport.ExternalWorkerTargetFixture.create(
-        prefix <> "-a",
-        project.id,
-        project.salix_group_id,
-        "codex",
-        org.salix_tenant_id
-      )
-
-    second =
-      SalixStore.TestSupport.ExternalWorkerTargetFixture.add_workload(first, prefix <> "-b", "pi")
-
     counts = compute_counts()
 
-    [item] =
-      management_tool!(
-        "env.runtime_targets",
-        %{"kind" => "compute", "provider" => "codex"},
-        ctx,
-        "targets-a"
-      )["items"]
-
-    assert item["selectable"]
-    assert item["target"]["workload_id"] == first.workload.id
-
     create_args = %{
-      "name" => "Compute reviewer",
+      "name" => "Station reviewer",
       "purpose" => "Execute the test responsibility",
       "creation_reason" => "This test needs an independent Worker",
-      "runtime" => item["target"]
+      "runtime" => %{"kind" => "station", "device_id" => "dev-laptop"},
+      "model" => %{"kind" => "runtime", "provider" => "codex"}
     }
 
-    created = management_tool!("agent.create_worker", create_args, ctx, "create-compute")
+    created = management_tool!("agent.create_worker", create_args, ctx, "create-station")
     assert created["result"] == "applied"
     id = created["agent"]["agent_id"]
     drain_all()
     detail = management_tool!("agent.get", %{"agent_id" => id}, ctx, "get-created")["agent"]
 
     assert detail["runtime"] == %{
-             "kind" => "compute",
-             "provider" => "codex",
-             "workload_id" => first.workload.id
+             "kind" => "station",
+             "runs_on" => %{"kind" => "station", "device_id" => "dev-laptop"},
+             "provider" => "codex"
            }
 
-    assert management_tool!("agent.create_worker", create_args, ctx, "create-compute")["agent"][
+    assert management_tool!("agent.create_worker", create_args, ctx, "create-station")["agent"][
              "agent_id"
            ] == id
 
-    [next] =
-      management_tool!(
-        "env.runtime_targets",
-        %{"kind" => "compute", "provider" => "pi"},
-        ctx,
-        "targets-b"
-      )["items"]
-
     rebind_args = %{
       "agent_id" => id,
-      "target" => next["target"],
+      "target" => %{"kind" => "cloud_vm"},
       "expected_binding_revision" => detail["binding_revision"]
     }
 
-    rebound = management_tool!("agent.rebind_runtime", rebind_args, ctx, "rebind-compute")
+    rebound = management_tool!("agent.rebind_runtime", rebind_args, ctx, "rebind-station")
     assert rebound["result"] == "applied"
-    assert rebound["agent"]["runtime"]["workload_id"] == second.workload.id
     drain_all()
     detail = management_tool!("agent.get", %{"agent_id" => id}, ctx, "get-rebound")["agent"]
-    assert detail["runtime"]["workload_id"] == second.workload.id
+    assert detail["runtime"]["runs_on"] == %{"kind" => "cloud_vm"}
 
     [conflict] =
       SalixAgent.Tools.execute(
-        [%{"id" => "stale-decision", "name" => "agent.rebind_runtime", "args" => rebind_args}],
+        [
+          %{
+            "id" => "stale-decision",
+            "name" => "agent.rebind_runtime",
+            "args" => %{
+              rebind_args
+              | "target" => %{"kind" => "station", "device_id" => "dev-desk"}
+            }
+          }
+        ],
         ctx
       )
 
@@ -726,8 +344,7 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
     for schema <- [
           SalixStore.Compute.Environment,
           SalixStore.Compute.Allocation,
-          SalixStore.Compute.Workload,
-          SalixStore.Compute.ExternalWorkerOperation
+          SalixStore.Compute.Workload
         ],
         do: SalixStore.Repo.aggregate(schema, :count)
   end
@@ -738,23 +355,8 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
     Jason.decode!(result.content)
   end
 
-  defp eventually(fun, retries \\ 100)
-  defp eventually(_fun, 0), do: nil
-
-  defp eventually(fun, retries) do
-    case fun.() do
-      nil ->
-        Process.sleep(20)
-        eventually(fun, retries - 1)
-
-      false ->
-        Process.sleep(20)
-        eventually(fun, retries - 1)
-
-      value ->
-        value
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 
   test "org creation reconciles a Salix tenant and its conversation link config" do
     vm_config = %{
@@ -768,7 +370,7 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
       }
     }
 
-    Application.put_env(:bridge_for_teams_core, :salix_vm, vm_config)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_vm, vm_config)
 
     {:ok, org} = Orgs.create_org(%{"name" => "Acme", "slug" => "acme"})
 
@@ -781,7 +383,7 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
 
     base_url =
       :bridge_for_teams_web
-      |> Application.fetch_env!(:public_base_url)
+      |> SystemsRuntime.fetch_env!(:public_base_url)
       |> String.trim_trailing("/")
 
     assert {:ok, %{"conversation_url_template" => template}} =
@@ -808,7 +410,7 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
       }
     }
 
-    Application.put_env(:bridge_for_teams_core, :salix_vm, vm_config)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_vm, vm_config)
 
     {:ok, org} = Orgs.create_org(%{"name" => "Checker", "slug" => "checker"})
 
@@ -837,7 +439,7 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
 
     base_url =
       :bridge_for_teams_web
-      |> Application.fetch_env!(:public_base_url)
+      |> SystemsRuntime.fetch_env!(:public_base_url)
       |> String.trim_trailing("/")
 
     assert template ==
@@ -934,14 +536,8 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
     assert statuses() in [["done"], []]
   end
 
-  test "agent creation reconciles its template under tenant and group" do
-    {:ok, template} =
-      SalixAgent.Templates.create(%{
-        "name" => "Creation",
-        "provider" => "mock",
-        "model" => "claude-x"
-      })
-
+  test "agent creation reconciles its model under tenant and group" do
+    choice = %{"kind" => "catalog", "model" => "claude-opus-4-8", "allow_paid" => false}
     {:ok, org} = Orgs.create_org(%{"name" => "Acme", "slug" => "acme"})
     {:ok, project} = Projects.create_project(org.id, %{"name" => "P", "slug" => "p"})
 
@@ -949,7 +545,7 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
       Agents.create_agent(project.id, %{
         "role" => "router",
         "name" => "Router",
-        "template_id" => template["template_id"]
+        "model" => choice
       })
 
     drain_all()
@@ -963,7 +559,7 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
     assert attrs["group_id"] == project.salix_group_id
     assert attrs["tenant_id"] == org.salix_tenant_id
     assert attrs["role"] == "router"
-    assert attrs["template_id"] == template["template_id"]
+    assert attrs["model"] == choice
 
     assert {:ok, _state} = SalixAgent.get_state(agent.salix_agent_id)
 
@@ -987,10 +583,13 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
     assert {:ok, router} =
              SalixAgent.Control.get(router_agent.salix_agent_id, org.salix_tenant_id)
 
-    assert router["vm"]["enabled"] == true
-    assert router["vm"]["provider"] == "cloudflare"
+    assert SalixAgent.CloudVM.allowed?(router)
 
-    assert {:ok, %{"billing_owner" => %{"vm_profile_key" => "cf-standard-2"}}} =
+    assert {:ok,
+            %{
+              "billing_owner" => %{"vm_profile_key" => "cf-standard-2"},
+              "cloud_vm_enabled" => true
+            }} =
              Salix.Control.Groups.get(project.salix_group_id)
 
     assert {:error, :not_found} =
@@ -999,143 +598,58 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
     assert statuses() == ["done"]
   end
 
-  test "external Codex agent creation reconciles runtime_config into Salix" do
+  test "station-bound worker creation reconciles its binding into Salix" do
     {:ok, org} = Orgs.create_org(%{"name" => "Acme", "slug" => "acme"})
     {:ok, project} = Projects.create_project(org.id, %{"name" => "P", "slug" => "p"})
     drain_all()
 
     device_id = SalixStore.Ids.new_device_id()
-    runtime_id = "runtime-codex"
-    device_runtime_id = RuntimeIds.device_runtime_id(device_id, "codex", runtime_id)
-    checked_at = System.system_time(:millisecond)
 
     {:ok, _transport_id, env} =
       SalixEnv.Registry.connect("nonode@nohost", %{
         "tenant_id" => org.salix_tenant_id,
         "group_id" => project.salix_group_id,
         "device_id" => device_id,
-        "connector_id" => "connector-#{System.unique_integer([:positive])}",
-        "name" => "Mac Studio",
-        "agent_runtimes" => [
-          %{
-            "kind" => "external",
-            "provider" => "codex",
-            "runtime_id" => runtime_id,
-            "device_runtime_id" => device_runtime_id,
-            "status" => "ready",
-            "command" => "/usr/local/bin/codex",
-            "version" => "codex-cli test",
-            "version_detected" => true,
-            "auth_ready" => true,
-            "native_server_startable" => true,
-            "ready" => true,
-            "readiness_checked_at" => checked_at,
-            "readiness_valid_until" => checked_at + 60_000
-          }
-        ]
+        "connector_id" => "connector-#{SystemsRuntime.Proc.unique_integer([:positive])}",
+        "name" => "Mac Studio"
       })
+
+    {:ok, _} =
+      SalixEnv.Registry.update_meta(
+        env["connector_run_id"],
+        &Map.put(&1, "capabilities", %{"tasks" => 2})
+      )
 
     refresh_device_projection(project.id, device_id)
 
-    runtime_config = %{
-      "kind" => "external",
-      "provider" => "codex",
-      "device_id" => device_id,
-      "runtime_id" => runtime_id,
-      "device_runtime_id" => device_runtime_id
-    }
-
     {:ok, agent} =
-      Agents.create_agent(project.id, %{
-        "role" => "worker",
-        "name" => "codex-worker",
-        "runtime_config" => runtime_config
-      })
+      BridgeForTeams.TestSupport.LegacyWorker.create_station(
+        project,
+        %{"name" => "station-worker"},
+        %{
+          "kind" => "station",
+          "device_id" => device_id,
+          "runtime" => "claude"
+        }
+      )
 
-    # Salix agent control stores stable runtime binding facts. It must not reject
-    # create_agent just because the live connector run disconnected between BFT's
-    # product-side validation and asynchronous outbox reconcile.
+    # Salix keeps the binding whether or not the station is connected: a Task
+    # checks the station when it is made.
     assert {:ok, %{"status" => "disconnected"}} =
              SalixEnv.Registry.mark_disconnected(env["connector_run_id"])
 
     drain_all()
 
-    assert {:ok, attrs} =
-             SalixAgent.Control.get(agent.salix_agent_id, org.salix_tenant_id)
-
-    assert attrs["role"] == "worker"
-    assert attrs["runtime_config"] == runtime_config
-    assert statuses() == ["done"]
-  end
-
-  test "canonical Connected worker creation accepts the complete initial binding atomically" do
-    {:ok, org} = Orgs.create_org(%{"name" => "Canonical", "slug" => "canonical"})
-    {:ok, project} = Projects.create_project(org.id, %{"name" => "P", "slug" => "p"})
-    drain_all()
-
-    device_id = SalixStore.Ids.new_device_id()
-    runtime_id = "runtime-codex"
-    device_runtime_id = RuntimeIds.device_runtime_id(device_id, "codex", runtime_id)
-    checked_at = System.system_time(:millisecond)
-
-    {:ok, _transport_id, _env} =
-      SalixEnv.Registry.connect("nonode@nohost", %{
-        "tenant_id" => org.salix_tenant_id,
-        "group_id" => project.salix_group_id,
-        "device_id" => device_id,
-        "connector_id" => "connector-#{System.unique_integer([:positive])}",
-        "agent_runtimes" => [
-          %{
-            "kind" => "external",
-            "provider" => "codex",
-            "runtime_id" => runtime_id,
-            "device_runtime_id" => device_runtime_id,
-            "status" => "ready",
-            "command" => "/usr/local/bin/codex",
-            "version" => "codex-cli test",
-            "version_detected" => true,
-            "auth_ready" => true,
-            "native_server_startable" => true,
-            "ready" => true,
-            "readiness_checked_at" => checked_at,
-            "readiness_valid_until" => checked_at + 60_000
-          }
-        ]
-      })
-
-    refresh_device_projection(project.id, device_id)
-
-    assert {:ok, agent} =
-             Agents.create_external_agent(
-               project,
-               %{"name" => "canonical-worker"},
-               %{
-                 "kind" => "connected_runtime",
-                 "device_runtime_id" => device_runtime_id
-               }
-             )
-
-    create_row =
-      Repo.get_by!(ReconcileOutbox,
-        aggregate: "agent",
-        aggregate_id: agent.id,
-        op: "create_owned_agent"
-      )
-
-    assert create_row.payload["attrs"]["runtime_config"] == agent.salix["runtime_config"]
-    refute Map.has_key?(create_row.payload, "external_binding")
-    refute Repo.get!(BridgeForTeams.Schema.Agent, agent.id).salix["runtime_config"]
-
-    drain_all()
-
     assert {:ok, attrs} = SalixAgent.Control.get(agent.salix_agent_id, org.salix_tenant_id)
-    assert attrs["runtime_config"] == agent.salix["runtime_config"]
-    assert attrs["runtime_config"]["binding_revision"] == 1
+    assert attrs["role"] == "worker"
 
-    assert attrs["runtime_config"]["owner_scope"] == %{
-             "type" => "group",
-             "id" => project.salix_group_id
+    assert attrs["station_binding"] == %{
+             "runs_on" => %{"kind" => "station", "device_id" => device_id},
+             "model" => %{"kind" => "runtime", "provider" => "claude"},
+             "binding_revision" => 1
            }
+
+    assert statuses() == ["done"]
   end
 
   defp refresh_device_projection(project_id, device_id, attempts \\ 20)
@@ -1173,7 +687,7 @@ defmodule BridgeForTeams.Salix.OutboxE2ETest do
   test "a transient client error defers the row for retry (stays pending)" do
     {:ok, _org} = Orgs.create_org(%{"name" => "Acme", "slug" => "acme"})
     # :unavailable / :timeout are transient — the row is deferred, not failed.
-    Application.put_env(:bridge_for_teams_core, :salix_nodes_override, [])
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_nodes_override, [])
 
     assert {:ok, 0} = Reconciler.drain_once()
 

@@ -1,0 +1,41 @@
+# Client unit test files that still do real IO: their IO is reported, not
+# refused, and they stay outside the deterministic unit suite
+# (clients/packages/test-utils/src/setup-node.ts).
+# Every other unit test file runs with its temporary directory in memory, and
+# fails at its first real IO (clients/packages/test-utils/src/io-guard.ts).
+# A file leaves this list once it does no real IO; none joins it.
+#
+# Some run their real-IO tests only where a native helper or archive is
+# built (macOS build jobs); elsewhere those tests skip.
+clients/apps/electron/src/main/test/airdrop-chat-intake.test.ts
+clients/apps/electron/src/main/test/airdrop-sender.test.ts
+clients/apps/electron/src/main/test/airdrop.test.ts
+clients/apps/electron/src/main/test/app-module.test.ts
+clients/apps/electron/src/main/test/browser-import.test.ts
+clients/apps/electron/src/main/test/client-control-api.test.ts
+clients/apps/electron/src/main/test/compute-node-host-maintenance.test.ts
+clients/apps/electron/src/main/test/compute-node-host-preparation.test.ts
+clients/apps/electron/src/main/test/compute-node-maintenance-protocol.test.ts
+clients/apps/electron/src/main/test/compute-node-service.test.ts
+clients/apps/electron/src/main/test/connector.test.ts
+clients/apps/electron/src/main/test/google-desktop-auth.test.ts
+clients/apps/electron/src/main/test/hybrid-passkeys.test.ts
+clients/apps/electron/src/main/test/local-file-snapshot-store.test.ts
+clients/apps/electron/src/main/test/meeting-recorder-main.test.ts
+clients/apps/electron/src/main/test/microphone-process.test.ts
+clients/apps/electron/src/main/test/native-audio-loader.test.ts
+clients/apps/electron/src/main/test/notch.test.ts
+clients/apps/electron/src/main/test/onboarding-window-surface.test.ts
+clients/apps/electron/src/main/test/recommendation-media.test.ts
+clients/apps/electron/src/main/test/session-host.test.ts
+clients/apps/electron/src/main/test/synchronicity-control.test.ts
+clients/apps/electron/src/main/test/synchronicity.test.ts
+clients/apps/electron/test/close-electron-test-app.test.ts
+clients/apps/electron/test/native-build.test.ts
+clients/apps/electron/test/native-file-applications.test.ts
+clients/apps/electron/test/opendropkit-release.test.ts
+clients/apps/electron/test/release-storage.test.ts
+clients/apps/web/test/vite-config.test.ts
+clients/packages/core/test/image-transcoder.test.ts
+clients/packages/native-bridge/src/test/native-partner-contracts.test.ts
+clients/scripts/prepare-typecheck-cache.test.ts

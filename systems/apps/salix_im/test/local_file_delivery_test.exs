@@ -1,6 +1,7 @@
 defmodule SalixIM.LocalFileDeliveryTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixIM.ConversationDelivery
 
   defmodule Import do
@@ -8,9 +9,12 @@ defmodule SalixIM.LocalFileDeliveryTest do
 
     @impl true
     def materialize_delivery(agent_id, delivery) do
-      send(:persistent_term.get({__MODULE__, :owner}), {:materialize, agent_id, delivery})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.PersistentTerm.get({__MODULE__, :owner}),
+        {:materialize, agent_id, delivery}
+      )
 
-      case :persistent_term.get({__MODULE__, :result}) do
+      case SystemsRuntime.PersistentTerm.get({__MODULE__, :result}) do
         :success ->
           file = %{
             "file_name" => "report.txt",
@@ -29,13 +33,13 @@ defmodule SalixIM.LocalFileDeliveryTest do
   end
 
   setup do
-    previous_import = Application.get_env(:salix_im, :local_file_import_mod)
-    Application.put_env(:salix_im, :local_file_import_mod, Import)
-    :persistent_term.put({Import, :owner}, self())
+    previous_import = SystemsRuntime.get_env(:salix_im, :local_file_import_mod)
+    SystemsRuntime.put_env(:salix_im, :local_file_import_mod, Import)
+    SystemsRuntime.PersistentTerm.put({Import, :owner}, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
-      :persistent_term.erase({Import, :owner})
-      :persistent_term.erase({Import, :result})
+      SystemsRuntime.PersistentTerm.erase({Import, :owner})
+      SystemsRuntime.PersistentTerm.erase({Import, :result})
       restore(:local_file_import_mod, previous_import)
     end)
 
@@ -43,12 +47,12 @@ defmodule SalixIM.LocalFileDeliveryTest do
   end
 
   test "delivers only the materialized VFS file and never the opaque local ref" do
-    :persistent_term.put({Import, :result}, :success)
+    SystemsRuntime.PersistentTerm.put({Import, :result}, :success)
     delivery = delivery()
     agent_id = delivery["participant_agent_id"]
 
     assert {:ok, ^agent_id, payload, _opts} = ConversationDelivery.materialize_agent(delivery)
-    assert_receive {:materialize, ^agent_id, ^delivery}
+    settle_receive({:materialize, ^agent_id, ^delivery})
 
     assert [
              %{
@@ -68,7 +72,7 @@ defmodule SalixIM.LocalFileDeliveryTest do
   end
 
   test "device unavailability remains retryable under the delivery owner's bounded lease" do
-    :persistent_term.put({Import, :result}, :unavailable)
+    SystemsRuntime.PersistentTerm.put({Import, :result}, :unavailable)
 
     assert {:error, :local_file_unavailable, true} =
              ConversationDelivery.materialize_agent(delivery())
@@ -103,6 +107,6 @@ defmodule SalixIM.LocalFileDeliveryTest do
     }
   end
 
-  defp restore(key, nil), do: Application.delete_env(:salix_im, key)
-  defp restore(key, value), do: Application.put_env(:salix_im, key, value)
+  defp restore(key, nil), do: SystemsRuntime.delete_env(:salix_im, key)
+  defp restore(key, value), do: SystemsRuntime.put_env(:salix_im, key, value)
 end

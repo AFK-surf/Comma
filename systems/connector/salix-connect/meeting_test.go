@@ -89,13 +89,9 @@ func TestMeetingSendChatForwardsStableMessageID(t *testing.T) {
 		t.Fatalf("methodMeetingSendChat: %v", err)
 	}
 
-	select {
-	case body := <-received:
-		if body["message_id"] != "chat-message-1" || body["text"] != "hello" {
-			t.Fatalf("forwarded body = %#v", body)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for meetnative request")
+	body := <-received
+	if body["message_id"] != "chat-message-1" || body["text"] != "hello" {
+		t.Fatalf("forwarded body = %#v", body)
 	}
 }
 
@@ -115,13 +111,9 @@ func TestMeetingLeaveRequiresAndClearsActiveSession(t *testing.T) {
 		t.Fatalf("methodMeetingLeave: %v", err)
 	}
 
-	select {
-	case path := <-requests:
-		if path != "/v1/meetings/session-1/leave" {
-			t.Fatalf("leave path=%q", path)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for leave request")
+	path := <-requests
+	if path != "/v1/meetings/session-1/leave" {
+		t.Fatalf("leave path=%q", path)
 	}
 
 	if got := c.meetingSession("m1"); got != "" {
@@ -258,11 +250,7 @@ func TestMeetingCallbackStreamsOnlyAuthorizedImmutableArtifact(t *testing.T) {
 	}
 
 	var event map[string]any
-	select {
-	case event = <-events.ch:
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for forwarded meeting event")
-	}
+	event = <-events.ch
 	artifacts, ok := event["artifacts"].([]any)
 	if !ok || len(artifacts) != 1 {
 		t.Fatalf("artifacts=%#v", event["artifacts"])
@@ -383,21 +371,16 @@ func acknowledgeMeetingEvents(c *connector, send func(message) error) func(messa
 
 func (s *meetingEventSink) expect(t *testing.T, want []string) {
 	t.Helper()
-	timeout := time.After(3 * time.Second)
 	for i, w := range want {
-		select {
-		case ev := <-s.ch:
-			if stringFromAny(ev["type"]) != w {
-				t.Fatalf("event %d: want %s got %v", i, w, ev["type"])
-			}
-			if stringFromAny(ev["meeting_id"]) != "m1" {
-				t.Fatalf("meeting_id not stamped: %v", ev)
-			}
-			if stringFromAny(ev["runtime_token"]) != "tok" {
-				t.Fatalf("runtime_token not stamped: %v", ev)
-			}
-		case <-timeout:
-			t.Fatalf("timed out waiting for event %d (%s)", i, w)
+		ev := <-s.ch
+		if stringFromAny(ev["type"]) != w {
+			t.Fatalf("event %d: want %s got %v", i, w, ev["type"])
+		}
+		if stringFromAny(ev["meeting_id"]) != "m1" {
+			t.Fatalf("meeting_id not stamped: %v", ev)
+		}
+		if stringFromAny(ev["runtime_token"]) != "tok" {
+			t.Fatalf("runtime_token not stamped: %v", ev)
 		}
 	}
 }
@@ -502,20 +485,14 @@ func TestMeetingCallbacksShareBoundedRuntimeAdmissionAndRecover(t *testing.T) {
 
 	held := make([]message, 0, maxConcurrentRequests)
 	for len(held) < maxConcurrentRequests {
-		select {
-		case request := <-requests:
-			held = append(held, request)
-		case <-time.After(3 * time.Second):
-			t.Fatalf("only %d callbacks reached the runtime", len(held))
-		}
+		request := <-requests
+		held = append(held, request)
 	}
 
-	started := time.Now()
+	// A callback that waited for a slot would wait for the held requests,
+	// which this test releases only after it returns.
 	if got := post("saturated"); got != http.StatusServiceUnavailable {
 		t.Fatalf("saturated callback: want 503 got %d", got)
-	}
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
-		t.Fatalf("saturated callback waited %s instead of failing immediately", elapsed)
 	}
 
 	for _, request := range held {
@@ -534,16 +511,12 @@ func TestMeetingCallbacksShareBoundedRuntimeAdmissionAndRecover(t *testing.T) {
 	recovered := make(chan int, 1)
 	go func() { recovered <- post("recovered") }()
 
-	select {
-	case request := <-requests:
-		c.completeRuntimeProxy(message{
-			ID:     request.ID,
-			Type:   "response",
-			Result: map[string]any{"ok": true},
-		})
-	case <-time.After(3 * time.Second):
-		t.Fatal("callback admission did not recover after slots were released")
-	}
+	request := <-requests
+	c.completeRuntimeProxy(message{
+		ID:     request.ID,
+		Type:   "response",
+		Result: map[string]any{"ok": true},
+	})
 
 	if got := <-recovered; got != http.StatusAccepted {
 		t.Fatalf("recovered callback: want 202 got %d", got)
@@ -865,13 +838,9 @@ func TestMeetingCallbackForwardsPresentedTokenOnCacheMiss(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("cache-miss callback status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	select {
-	case ev := <-events.ch:
-		if stringFromAny(ev["runtime_token"]) != "join-time-token" {
-			t.Fatalf("forwarded token=%v", ev["runtime_token"])
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for forwarded event")
+	ev := <-events.ch
+	if stringFromAny(ev["runtime_token"]) != "join-time-token" {
+		t.Fatalf("forwarded token=%v", ev["runtime_token"])
 	}
 }
 
@@ -998,7 +967,7 @@ func TestPinnedCallbackPortReceivesCacheMissCallbackBeforeAnyJoin(t *testing.T) 
 	if err != nil {
 		t.Fatalf("newConnector: %v", err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	defer func() {
 		if c.meetServer != nil {
 			_ = c.meetServer.Close()
@@ -1031,13 +1000,9 @@ func TestPinnedCallbackPortReceivesCacheMissCallbackBeforeAnyJoin(t *testing.T) 
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("callback status=%d", resp.StatusCode)
 	}
-	select {
-	case ev := <-events.ch:
-		if stringFromAny(ev["runtime_token"]) != "join-time-token" || stringFromAny(ev["status"]) != "done" {
-			t.Fatalf("forwarded event=%#v", ev)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for forwarded terminal event")
+	ev := <-events.ch
+	if stringFromAny(ev["runtime_token"]) != "join-time-token" || stringFromAny(ev["status"]) != "done" {
+		t.Fatalf("forwarded event=%#v", ev)
 	}
 }
 

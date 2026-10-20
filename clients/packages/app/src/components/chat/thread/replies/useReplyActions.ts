@@ -1,5 +1,4 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
-import type { CommaApiClient } from "../../../../api";
 import type { ConversationLayout } from "../layout/conversationLayout";
 import type { RevealTurn } from "../navigation/useTurnReveal";
 import type { useStickToBottom } from "../scroll/useStickToBottom";
@@ -9,15 +8,16 @@ import type { useReplyHistory } from "./useReplyHistory";
 
 /** What a reply preview can do. Its identity holds while a reply streams. */
 export function useReplyActions({
-  api,
   canonicalLayout,
   conversationId,
   follow: { stopFollowing },
   history: { loadReplyTarget },
   replyChain: { hover, leave, beginReveal },
+  live,
   revealTurn,
 }: {
-  api: CommaApiClient | undefined;
+  /** The transcript reads the core's live data, so a reply can load the message it quotes. */
+  live: boolean;
   canonicalLayout: ConversationLayout;
   conversationId: string | undefined;
   follow: Pick<ReturnType<typeof useStickToBottom>, "stopFollowing">;
@@ -66,7 +66,7 @@ export function useReplyActions({
       revealReplyTargetRef.current(messageId, sourceId),
     []
   );
-  const canLoad = Boolean(api && conversationId);
+  const canLoad = live && Boolean(conversationId);
   return useMemo(
     () => ({ canLoad, hover, leave, reveal }),
     [canLoad, hover, leave, reveal]

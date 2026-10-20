@@ -388,7 +388,7 @@ defmodule BillingCommerce.RedeemCodes do
     end
   end
 
-  defp resolve_command_datetime(:now), do: {:ok, DateTime.utc_now()}
+  defp resolve_command_datetime(:now), do: {:ok, SystemsClock.utc_now()}
   defp resolve_command_datetime(%DateTime{} = value), do: {:ok, value}
   defp resolve_command_datetime(_value), do: {:error, :invalid_redeem_request}
 
@@ -557,7 +557,7 @@ defmodule BillingCommerce.RedeemCodes do
   defp project_redemption(%{redemption: redemption, idempotent: false} = result) do
     Projection.emit(%{
       source_key: "redemption:#{redemption.id}:#{redemption.status}",
-      occurred_at: DateTime.utc_now(),
+      occurred_at: SystemsClock.utc_now(),
       surface: redemption.surface,
       billing_account_id: redemption.billing_account_id,
       product_owner_type: redemption.product_owner_type,
@@ -676,7 +676,7 @@ defmodule BillingCommerce.RedeemCodes do
     do: normalize_code(code) |> String.slice(0, 8)
 
   defp random_code,
-    do: "COMMA-" <> (:crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false))
+    do: "COMMA-" <> (SystemsRuntime.Proc.random_bytes(18) |> Base.url_encode64(padding: false))
 
   defp row_to_code([
          id,
@@ -749,7 +749,7 @@ defmodule BillingCommerce.RedeemCodes do
   defp repo(%{repo: repo}) when not is_nil(repo), do: repo
 
   defp repo(attrs) when is_map(attrs),
-    do: Map.get(attrs, "repo") || Application.fetch_env!(:billing_commerce, :repo)
+    do: Map.get(attrs, "repo") || SystemsRuntime.fetch_env!(:billing_commerce, :repo)
 
   defp sql(%{sql_runner: sql}) when not is_nil(sql), do: sql
 
@@ -760,7 +760,7 @@ defmodule BillingCommerce.RedeemCodes do
   defp clamp_limit(_limit), do: 100
 
   defp id(prefix),
-    do: "#{prefix}_" <> (:crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower))
+    do: "#{prefix}_" <> (SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower))
 
   defp decode_json(value) when is_binary(value), do: Jason.decode!(value)
   defp decode_json(value), do: value

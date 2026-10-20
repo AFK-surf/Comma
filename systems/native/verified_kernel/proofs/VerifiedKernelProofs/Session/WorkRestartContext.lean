@@ -1,4 +1,5 @@
 import VerifiedKernelProofs.Session.WorkRestartProducers
+import VerifiedKernelProofs.Session.WorkCatalogBacking
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

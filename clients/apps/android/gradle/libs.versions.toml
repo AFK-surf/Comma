@@ -1,0 +1,77 @@
+[versions]
+agp = "9.3.1"
+coreKtx = "1.19.0"
+junit = "4.13.2"
+junitVersion = "1.3.0"
+espressoCore = "3.7.0"
+lifecycleRuntimeKtx = "2.11.0"
+activityKtx = "1.13.0"
+kotlin = "2.2.10"
+coroutines = "1.9.0"
+recyclerView = "1.3.0"
+okhttp = "4.12.0"
+orgJson = "20240303"
+sqliteJdbc = "3.53.4.0"
+media3 = "1.8.0"
+credentials = "1.6.0"
+googleid = "1.2.0"
+# React Native's release whose Hermes runs the client core (:core). Its hermesc compiles the core's script.
+hermes = "0.81.4"
+sqlite = "2.7.1"
+
+[libraries]
+# Google sign-in: Credential Manager, its Play services provider, and the Google ID token option.
+androidx-credentials = { module = "androidx.credentials:credentials", version.ref = "credentials" }
+androidx-credentials-play-services-auth = { module = "androidx.credentials:credentials-play-services-auth", version.ref = "credentials" }
+googleid = { module = "com.google.android.libraries.identity.googleid:googleid", version.ref = "googleid" }
+# Plays fully downloaded local video files; the backend does not serve byte ranges.
+androidx-media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }
+androidx-dynamicanimation = { module = "androidx.dynamicanimation:dynamicanimation", version = "1.1.0" }
+material = { module = "com.google.android.material:material", version = "1.13.0" }
+androidx-work-runtime = { module = "androidx.work:work-runtime", version = "2.11.2" }
+androidx-metrics-performance = { module = "androidx.metrics:metrics-performance", version = "1.0.0" }
+androidx-profileinstaller = { module = "androidx.profileinstaller:profileinstaller", version = "1.4.1" }
+androidx-benchmark-macro = { module = "androidx.benchmark:benchmark-macro-junit4", version = "1.4.1" }
+androidx-uiautomator = { module = "androidx.test.uiautomator:uiautomator", version = "2.3.0" }
+androidx-test-runner = { module = "androidx.test:runner", version = "1.7.0" }
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+robolectric = { module = "org.robolectric:robolectric", version = "4.17" }
+androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
+androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
+androidx-lifecycle-process = { group = "androidx.lifecycle", name = "lifecycle-process", version.ref = "lifecycleRuntimeKtx" }
+androidx-lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-ktx", version.ref = "lifecycleRuntimeKtx" }
+androidx-activity-ktx = { group = "androidx.activity", name = "activity-ktx", version.ref = "activityKtx" }
+androidx-annotation = { group = "androidx.annotation", name = "annotation", version = "1.9.1" }
+androidx-collection = { group = "androidx.collection", name = "collection", version = "1.4.5" }
+androidx-core = { group = "androidx.core", name = "core", version = "1.13.1" }
+androidx-customview = { group = "androidx.customview", name = "customview", version = "1.1.0" }
+androidx-customview-poolingcontainer = { group = "androidx.customview", name = "customview-poolingcontainer", version = "1.0.0" }
+androidx-recyclerview = { group = "androidx.recyclerview", name = "recyclerview", version.ref = "recyclerView" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
+org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
+# Lays out LaTeX math (a Rust port of KaTeX's layout, MIT; KaTeX fonts, OFL-1.1). Runs only in
+# the isolated math process; see chat/math/MathLayoutService.
+ratex-android = { module = "io.github.erweixin:ratex-android", version = "0.1.14" }
+# JVM unit tests only: runs the conversation schema migration against a real SQLite.
+sqlite-jdbc = { group = "org.xerial", name = "sqlite-jdbc", version.ref = "sqliteJdbc" }
+
+# The client core's databases: SQLite with its own prepared-statement API, the same build on every device (Apache-2.0).
+androidx-sqlite-bundled = { module = "androidx.sqlite:sqlite-bundled", version.ref = "sqlite" }
+# The JavaScript engine the client core runs in (MIT). Used without React Native.
+hermes-android = { module = "com.facebook.react:hermes-android", version.ref = "hermes" }
+# The same release's JSI (prefab `ReactAndroid::jsi` and libjsi.so), which libhermes.so is built against.
+react-android = { module = "com.facebook.react:react-android", version.ref = "hermes" }
+# The loader fbjni's Java classes load their library through (Apache-2.0); the version fbjni 0.7.0 takes.
+nativeloader = { module = "com.facebook.soloader:nativeloader", version = "0.10.5" }
+
+[plugins]
+android-test = { id = "com.android.test", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+android-application = { id = "com.android.application", version.ref = "agp" }
+# Generates the open-source license list for the settings page at build time (Apache-2.0).
+aboutlibraries = { id = "com.mikepenz.aboutlibraries.plugin.android", version = "15.2.0" }

@@ -70,5 +70,5 @@ defmodule SalixSignalProto.Group.InviteLink do
 
   @doc "A new 16-byte link password."
   @spec new_password() :: binary()
-  def new_password, do: :crypto.strong_rand_bytes(16)
+  def new_password, do: SystemsRuntime.Proc.random_bytes(16)
 end

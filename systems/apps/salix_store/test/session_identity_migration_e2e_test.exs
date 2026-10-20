@@ -1,19 +1,19 @@
 defmodule SalixStore.SessionIdentityMigrationE2ETest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{Codec, Crypto, Ids, Keys, S3, SessionIdMigration, Timers}
   alias SalixStore.Migrations.SessionIdentity
 
   setup do
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
     case Process.whereis(SalixStore.S3.Fake) do
       nil -> start_supervised!(SalixStore.S3.Fake)
       _pid -> SalixStore.S3.Fake.reset()
     end
 
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, previous_backend) end)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, previous_backend) end)
     :ok
   end
 

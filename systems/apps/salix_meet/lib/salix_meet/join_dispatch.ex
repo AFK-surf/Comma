@@ -131,10 +131,10 @@ defmodule SalixMeet.JoinDispatch do
   end
 
   defp random_generation do
-    18 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    18 |> SystemsRuntime.Proc.random_bytes() |> Base.url_encode64(padding: false)
   end
 
   defp default_claimed_by do
-    "#{node()}:#{inspect(self())}"
+    "#{node()}:#{inspect(SystemsRuntime.Proc.self())}"
   end
 end

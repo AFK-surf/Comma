@@ -1,4 +1,6 @@
 defmodule SalixLlm.MockSSEServer do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   A tiny Plug impersonating the Anthropic Messages **streaming** API for tests
   (companion to `SalixLlm.MockAnthropic`). It `send_chunked/2`-streams a canned
@@ -88,11 +90,11 @@ defmodule SalixLlm.MockSSEServer do
   end
 
   defp stream_chunk({:barrier, piece, owner, tag}, conn)
-       when is_binary(piece) and is_pid(owner) do
+       when is_binary(piece) and SystemsRuntime.Proc.is_process(owner) do
     {:ok, conn} = chunk(conn, piece)
-    send(owner, {:mock_sse_barrier, tag, self()})
+    SystemsRuntime.Proc.send(owner, {:mock_sse_barrier, tag, SystemsRuntime.Proc.self()})
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {:release_mock_sse_barrier, ^tag} -> conn
     after
       5_000 -> conn
@@ -101,7 +103,7 @@ defmodule SalixLlm.MockSSEServer do
 
   defp stream_chunk(piece, conn) when is_binary(piece) do
     {:ok, conn} = chunk(conn, piece)
-    Process.sleep(2)
+    SystemsRuntime.Proc.sleep(2)
     conn
   end
 

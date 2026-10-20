@@ -1,6 +1,6 @@
 import { assertMaintenanceCapable } from "./host-maintenance-protocol";
 import { createHash, randomUUID } from "node:crypto";
-import { constants, createReadStream, realpathSync } from "node:fs";
+import { constants, realpathSync } from "node:fs";
 import { access, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -8,6 +8,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import extract from "extract-zip";
 import { DatabaseSync } from "node:sqlite";
+import { clockTimeoutSignal, realMainClock, type MainClock } from "../../clock";
 import type { ComputeNodeState } from "@comma/native-bridge";
 import { getPublishedAssetUrl } from "../../../release-config";
 import publishedHost from "../../../../../../../.github/agent-vmm-host.json";
@@ -15,6 +16,9 @@ import publishedHost from "../../../../../../../.github/agent-vmm-host.json";
 const APP_NAME = "Agent VMM Host.app";
 const MAX_ARCHIVE_BYTES = 2 * 1024 ** 3;
 const MAX_EXTRACTED_BYTES = 8 * 1024 ** 3;
+const DOWNLOAD_TIMEOUT_MS = 15 * 60_000;
+const LOCK_WAIT_MS = DOWNLOAD_TIMEOUT_MS;
+const LOCK_POLL_MS = 250;
 export type HostPreparationState = NonNullable<ComputeNodeState["preparation"]>;
 export type HostCommand = (
   command: string,
@@ -97,10 +101,12 @@ export interface HostPreparation {
 export class AgentVMMHostPreparation implements HostPreparation {
   private buildReleaseId?: string;
   private phase: HostPreparationState["phase"] = "idle";
+  private failure: string | undefined;
   constructor(
     readonly config: HostConfiguration,
     private readonly run: HostCommand,
-    private readonly fetcher: typeof fetch = fetch
+    private readonly fetcher: typeof fetch = fetch,
+    private readonly clock: MainClock = realMainClock
   ) {}
 
   state(): HostPreparationState {
@@ -110,7 +116,23 @@ export class AgentVMMHostPreparation implements HostPreparation {
         this.config.sourcePath || displayDownloadLocation(this.config.downloadUrl),
       instance: this.config.instance,
       phase: this.phase,
+      ...(this.phase === "failed" && this.failure ? { error: this.failure } : {}),
     };
+  }
+
+  /** Each phase change starts or ends an attempt; only a failure keeps its error, until the next attempt. */
+  private setPhase(
+    value: HostPreparationState["phase"],
+    report: (state: HostPreparationState) => void,
+    error?: unknown
+  ) {
+    this.phase = value;
+    this.failure =
+      value === "failed"
+        ? (error instanceof Error ? error.message : String(error)).slice(-4096) ||
+          undefined
+        : undefined;
+    report(this.state());
   }
 
   ensure(report: (state: HostPreparationState) => void) {
@@ -144,14 +166,12 @@ export class AgentVMMHostPreparation implements HostPreparation {
   }> {
     if (!/^[a-f0-9-]{36}$/.test(requestId))
       throw new Error("Invalid maintenance request.");
-    const phase = (value: HostPreparationState["phase"]) => {
-      this.phase = value;
-      report(this.state());
-    };
+    const phase = (value: HostPreparationState["phase"]) =>
+      this.setPhase(value, report);
     await mkdir(this.config.directory, { recursive: true, mode: 0o700 });
-    const lock = new DatabaseSync(join(this.config.directory, ".prepare.sqlite"));
+    let lock: DatabaseSync | undefined;
     try {
-      lock.exec("BEGIN IMMEDIATE");
+      lock = await this.acquireLock();
       const sourceDirectory = join(this.config.directory, `.maintenance-${requestId}`);
       if (
         (await pathExists(sourceDirectory)) &&
@@ -160,25 +180,21 @@ export class AgentVMMHostPreparation implements HostPreparation {
         throw new Error("Maintenance bundle directory cannot be a symbolic link.");
       const sourceApp = join(sourceDirectory, APP_NAME);
       const prepared = join(this.config.directory, ".prepared");
+      // One signature check per bundle before it is used: a retained bundle is checked
+      // when it is reused, a new bundle when it lands.
+      let version: { release_id: string } | undefined;
       if (await pathExists(sourceApp)) {
         try {
           await this.verifyBundle(sourceApp);
-          if (!this.config.sourcePath) {
-            const helper = join(
-              sourceApp,
-              "Contents",
-              "Helpers",
-              "agent-vmm-lifecycle"
-            );
-            const version = JSON.parse(await this.run(helper, ["version", "--json"]));
-            if (version.release_id !== artifact.release_id)
-              throw new Error("Cached maintenance bundle has a different release.");
-          }
+          version = await this.bundleVersion(sourceApp);
+          if (!this.config.sourcePath && version.release_id !== artifact.release_id)
+            throw new Error("Cached maintenance bundle has a different release.");
         } catch {
+          version = undefined;
           await rm(sourceApp, { recursive: true, force: true });
         }
       }
-      if (!(await pathExists(sourceApp))) {
+      if (!version) {
         await mkdir(sourceDirectory, { recursive: true, mode: 0o700 });
         await mkdir(prepared, { recursive: true, mode: 0o700 });
         const staged = this.config.sourcePath
@@ -186,10 +202,8 @@ export class AgentVMMHostPreparation implements HostPreparation {
           : await this.download(prepared, phase, artifact);
         await this.verifyBundle(staged);
         await rename(staged, sourceApp);
+        version = await this.bundleVersion(sourceApp);
       }
-      await this.verifyBundle(sourceApp);
-      const helper = join(sourceApp, "Contents", "Helpers", "agent-vmm-lifecycle");
-      const version = JSON.parse(await this.run(helper, ["version", "--json"]));
       const targetReleaseId = this.config.sourcePath
         ? (this.buildReleaseId ?? version.release_id)
         : artifact.release_id;
@@ -205,10 +219,43 @@ export class AgentVMMHostPreparation implements HostPreparation {
       await execute?.(bundle);
       return bundle;
     } catch (error) {
-      phase("failed");
+      this.setPhase("failed", report, error);
       throw error;
     } finally {
-      lock.close();
+      lock?.close();
+    }
+  }
+
+  private async bundleVersion(appPath: string): Promise<{ release_id: string }> {
+    return JSON.parse(
+      await this.run(join(appPath, "Contents", "Helpers", "agent-vmm-lifecycle"), [
+        "version",
+        "--json",
+      ])
+    );
+  }
+
+  /** SQLite releases the cross-process lock on process exit, so no stale lock deletion is needed.
+   * A second preparer waits for the current one, up to the download bound. One waiter per process
+   * polls once per {@link LOCK_POLL_MS}; it opens no network connection while it waits.
+   */
+  private async acquireLock() {
+    const deadline = this.clock.now() + LOCK_WAIT_MS;
+    for (;;) {
+      const lock = new DatabaseSync(join(this.config.directory, ".prepare.sqlite"));
+      try {
+        lock.exec("BEGIN IMMEDIATE");
+        return lock;
+      } catch (error) {
+        lock.close();
+        if (!isBusy(error)) throw error;
+        if (this.clock.now() >= deadline)
+          throw new Error(
+            "Another Comma process is still preparing this Host. Try again later.",
+            { cause: error }
+          );
+      }
+      await new Promise<void>((wake) => this.clock.setTimer(LOCK_POLL_MS, wake));
     }
   }
 
@@ -229,23 +276,16 @@ export class AgentVMMHostPreparation implements HostPreparation {
     rebuild: boolean,
     report: (state: HostPreparationState) => void
   ) {
-    const phase = (value: HostPreparationState["phase"]) => {
-      this.phase = value;
-      report(this.state());
-    };
+    const phase = (value: HostPreparationState["phase"]) =>
+      this.setPhase(value, report);
     phase("checking");
     await mkdir(this.config.directory, { recursive: true, mode: 0o700 });
-    // SQLite releases the cross-process lock on process exit. No timer, stale
-    // lock deletion, or automatic retry is needed after an interrupted download.
-    const lock = new DatabaseSync(join(this.config.directory, ".prepare.sqlite"));
+    let lock: DatabaseSync;
     try {
-      lock.exec("BEGIN IMMEDIATE");
-    } catch {
-      lock.close();
-      phase("failed");
-      throw new Error(
-        "Another Comma process is preparing this Host. Retry after it finishes."
-      );
+      lock = await this.acquireLock();
+    } catch (error) {
+      this.setPhase("failed", report, error);
+      throw error;
     }
     try {
       await this.assertSetupAllowed();
@@ -317,7 +357,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
       phase("ready");
     } catch (error) {
       const failedPhase = this.phase;
-      phase("failed");
+      this.setPhase("failed", report, error);
       throw new Error(
         `${failedPhase}: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error }
@@ -425,19 +465,18 @@ export class AgentVMMHostPreparation implements HostPreparation {
     }
     const archive = join(directory, "Host.zip");
     const metadata = join(directory, "download.json");
+    const pinned = url.href === getPublishedAssetUrl(selected.path);
     let cached = false;
     try {
+      // The archive was checked against the pin when it landed; the record names that pin.
+      const record = JSON.parse(await readFile(metadata, "utf8"));
       cached =
-        JSON.parse(await readFile(metadata, "utf8")).url === url.href &&
+        record.url === url.href &&
+        (!pinned ||
+          (record.sha256 === selected.sha256 && record.size === selected.size)) &&
         (await pathExists(archive));
     } catch {
       /* Download only after an explicit action. */
-    }
-    if (cached && url.href === getPublishedAssetUrl(selected.path)) {
-      const digest = await archiveDigest(archive);
-      cached =
-        digest.artifactSha256 === selected.sha256 &&
-        digest.artifactSize === selected.size;
     }
     if (!cached) {
       phase("downloading");
@@ -469,10 +508,8 @@ export class AgentVMMHostPreparation implements HostPreparation {
       } finally {
         await file.close();
       }
-      if (
-        url.href === getPublishedAssetUrl(selected.path) &&
-        (bytes !== selected.size || digest.digest("hex") !== selected.sha256)
-      ) {
+      const sha256 = digest.digest("hex");
+      if (pinned && (bytes !== selected.size || sha256 !== selected.sha256)) {
         throw new Error(
           "Host download does not match the selected published artifact. Retry the download."
         );
@@ -480,7 +517,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
       await rename(partial, archive);
       const record = await open(metadata, "w", 0o600);
       try {
-        await record.writeFile(JSON.stringify({ url: url.href }));
+        await record.writeFile(JSON.stringify({ url: url.href, sha256, size: bytes }));
       } finally {
         await record.close();
       }
@@ -519,7 +556,7 @@ export class AgentVMMHostPreparation implements HostPreparation {
 
   private async fetchArchive(initialUrl: URL) {
     let url = initialUrl;
-    const signal = AbortSignal.timeout(15 * 60_000);
+    const signal = clockTimeoutSignal(this.clock, DOWNLOAD_TIMEOUT_MS);
     for (let redirects = 0; redirects <= 5; redirects += 1) {
       if (url.protocol !== "https:" || url.username || url.password) {
         throw new Error(
@@ -602,12 +639,7 @@ function displayDownloadLocation(value: string) {
   }
 }
 
-async function archiveDigest(path: string) {
-  const hash = createHash("sha256");
-  let bytes = 0;
-  for await (const chunk of createReadStream(path)) {
-    hash.update(chunk);
-    bytes += chunk.length;
-  }
-  return { artifactSha256: hash.digest("hex"), artifactSize: bytes };
+function isBusy(error: unknown) {
+  const code = (error as { errcode?: unknown; code?: unknown } | null)?.errcode;
+  return code === 5 || /database is locked|SQLITE_BUSY/i.test(String(error));
 }

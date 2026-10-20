@@ -1,10 +1,13 @@
-import type { MessageSendMotionConfig } from "@comma/ui";
-import type { ChatMessage } from "../../model/conversationChannel";
+import type { MessageSendMotionConfig } from "@comma/ui/tokens";
+import type { ChatMessage } from "@comma/core/chat";
 import type {
   OutgoingBubbleFrame,
   OutgoingBubblePlaybackRate,
 } from "../../motion/outgoingBubbleMotion";
-import { conversationMessageTurnKey as messageTurnKey } from "../../model/visibleReplyPresentation";
+import {
+  QUICK_CHAT_MESSAGE_TYPE,
+  conversationMessageTurnKey as messageTurnKey,
+} from "@comma/core/chat";
 
 export type ChatOutgoingLaunch = {
   playbackRate?: OutgoingBubblePlaybackRate | undefined;
@@ -13,7 +16,6 @@ export type ChatOutgoingLaunch = {
   expiresAt: number;
   id: number;
   sourceFrame: OutgoingBubbleFrame;
-  startedFromEmpty: boolean;
   text: string;
 };
 
@@ -44,7 +46,13 @@ export function resolveOutgoingPresentations(
     const message =
       lockedMessage ??
       messages.find((candidate) => {
-        if (candidate.role !== "user" || candidate.platformSource) return false;
+        // Another platform's message or a Quick Chat was not sent from this composer.
+        if (
+          candidate.role !== "user" ||
+          candidate.platformSource ||
+          candidate.messageType === QUICK_CHAT_MESSAGE_TYPE
+        )
+          return false;
         const turnKey = messageTurnKey(candidate);
         return !launch.existingTurnKeys.has(turnKey) && !claimedTurnKeys.has(turnKey);
       });

@@ -1,0 +1,3 @@
+#!/bin/sh
+# The fake codex (codex.mjs), started as the real one is: by name on PATH.
+exec node "$(dirname "$0")/codex.mjs" "$@"

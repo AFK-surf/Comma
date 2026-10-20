@@ -22,7 +22,7 @@ command -v sha256sum >/dev/null
 jq -e '
   .schemaVersion == 3 and
   (.sourceRevision | type == "string" and length > 0) and
-  ([.images[].class] | sort == ["external", "meeting", "shell"]) and
+  ([.images[].class] | sort == ["meeting", "shell", "station"]) and
   (all(.images[]; . as $image |
     ($image.inputDigest | test("^sha256:[0-9a-f]{64}$")) and
     ($image.manifestDigest | test("^sha256:[0-9a-f]{64}$")) and
@@ -44,12 +44,22 @@ while IFS=$'\t' read -r class expected size; do
   fi
 
   if ! aws --endpoint-url "$endpoint" s3api head-object --bucket "$CLOUDFLARE_R2_BUCKET" --key "$key" >/dev/null 2>&1; then
-    aws --endpoint-url "$endpoint" s3api put-object \
+    # The key is the archive's digest. Another run publishing the same
+    # archive can write it between the check above and this conditional put;
+    # then the put fails and the object of the expected size is already there.
+    if ! aws --endpoint-url "$endpoint" s3api put-object \
       --bucket "$CLOUDFLARE_R2_BUCKET" \
       --key "$key" \
       --body "$archive" \
       --content-type application/vnd.oci.image.layer.v1.tar \
       --cache-control public,max-age=31536000,immutable \
-      --if-none-match '*' >/dev/null
+      --if-none-match '*' >/dev/null; then
+      published_size="$(aws --endpoint-url "$endpoint" s3api head-object \
+        --bucket "$CLOUDFLARE_R2_BUCKET" --key "$key" --query ContentLength --output text)"
+      if [[ "$published_size" != "$size" ]]; then
+        echo "runtime bundle upload failed: $class" >&2
+        exit 1
+      fi
+    fi
   fi
 done < <(jq -r '.images[] | [.class, .archiveSha256, (.archiveSize | tostring)] | @tsv' "$manifest")

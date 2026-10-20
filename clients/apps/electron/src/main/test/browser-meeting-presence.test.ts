@@ -1,9 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BrowserMeetingProbe,
   googleMeetRoom,
   type BrowserMeetingPage,
 } from "../modules/browser-sidebar/meeting-presence";
+
+// The file's timers run on the test's clock: a test moves it.
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 
 function page(id: string, joined = false, visible = false): BrowserMeetingPage {
   return {

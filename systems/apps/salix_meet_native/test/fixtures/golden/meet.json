@@ -1,0 +1,19 @@
+{
+ "create_device_space": "spaces/wX2H3CbLP8oB",
+ "create_device_substituted": "0a137370616365732f775832483343624c50386f4212401205574b426f74200192010104b2010b6d7369642d6e6174697665c80101b00201ba021c0311020c1412040a0515160f100106091c1b17181a1d1e1f24222123",
+ "knock_device_substituted": "0a137370616365732f44716755764f6b76384c30421246120b4e617469766550726f6265200192010104b2010b6d7369642d6e6174697665c80101b00201ba021c0311020c1412040a0515160f100106091c1b17181a1d1e1f24222123",
+ "managed_dirs": {
+  "": "meeting-encoded-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "a/b": "meeting-encoded-c14cddc033f64b9dea80ea675cf280a015e672516090a5626781153dc68fea11",
+  "meeting-encoded-x": "meeting-encoded-18c05cb12b05a98f68e4c45cfcc8184762381b55c2b5d1920f4ccb232025b106",
+  "mtg_123": "mtg_123"
+ },
+ "meeting_codes": {
+  "": "meeting",
+  "abc-defg-hij": "abc-defg-hij",
+  "https://meet.google.com/": "meeting",
+  "https://meet.google.com/a b/c": "a-b",
+  "https://meet.google.com/abc-defg-hij?authuser=1": "abc-defg-hij",
+  "meet.google.com/abc-defg-hij": "abc-defg-hij"
+ }
+}

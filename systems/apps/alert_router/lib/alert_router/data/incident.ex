@@ -52,7 +52,11 @@ defmodule AlertRouter.Data.Incident do
     field(:delivery_lease_revision, :integer)
     field(:delivery_lease_expires_at, :utc_datetime_usec)
     field(:last_error_class, :string)
-    timestamps(type: :utc_datetime_usec)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 
   @type t :: %__MODULE__{}

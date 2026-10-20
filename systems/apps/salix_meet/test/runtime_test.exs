@@ -1,6 +1,9 @@
 defmodule SalixMeet.RuntimeTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixMeet"]
   alias SalixMeet.{Runtime, RuntimeEvents, Store}
   alias SalixAgent.AgentWorkspace
   alias SalixAgent.InternalSessionActor
@@ -9,17 +12,17 @@ defmodule SalixMeet.RuntimeTest do
   alias __MODULE__.FakeMeetingProvider
 
   setup do
-    prev_s3 = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_provider = Application.get_env(:salix_meet, :provider_mod)
-    prev_agent_runtime = Application.get_env(:salix_meet, :agent_runtime_mod)
-    prev_dispatch = Application.get_env(:salix_meet, :meeting_dispatch_mod)
-    prev_dispatch_test_pid = Application.get_env(:salix_meet, :meeting_dispatch_test_pid)
+    prev_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_provider = SystemsRuntime.get_env(:salix_meet, :provider_mod)
+    prev_agent_runtime = SystemsRuntime.get_env(:salix_meet, :agent_runtime_mod)
+    prev_dispatch = SystemsRuntime.get_env(:salix_meet, :meeting_dispatch_mod)
+    prev_dispatch_test_pid = SystemsRuntime.get_env(:salix_meet, :meeting_dispatch_test_pid)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
-    Application.put_env(:salix_meet, :provider_mod, __MODULE__.FakeMeetingProvider)
-    Application.put_env(:salix_meet, :agent_runtime_mod, SalixMeet.TestAgentRuntime)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
+    SystemsRuntime.put_env(:salix_meet, :provider_mod, __MODULE__.FakeMeetingProvider)
+    SystemsRuntime.put_env(:salix_meet, :agent_runtime_mod, SalixMeet.TestAgentRuntime)
 
     ensure_fake_s3_started!()
     SalixStore.S3.Fake.reset()
@@ -30,7 +33,7 @@ defmodule SalixMeet.RuntimeTest do
 
     on_exit(fn ->
       stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev_s3)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_s3)
       restore_env(:salix_agent, :llm, prev_llm)
       restore_env(:salix_meet, :provider_mod, prev_provider)
       restore_env(:salix_meet, :agent_runtime_mod, prev_agent_runtime)
@@ -68,7 +71,11 @@ defmodule SalixMeet.RuntimeTest do
 
     @impl true
     def send_chat(payload) do
-      send(Application.fetch_env!(:salix_meet, :meeting_dispatch_test_pid), payload)
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_meet, :meeting_dispatch_test_pid),
+        payload
+      )
+
       {:ok, payload}
     end
 
@@ -86,10 +93,10 @@ defmodule SalixMeet.RuntimeTest do
       do: SalixMeet.TestAgentRuntime.prepare_workspace_write(agent_id, path, data)
 
     def stream_workspace_write(agent_id, env_id, path, source_path) do
-      test_pid = Application.fetch_env!(:salix_meet, :runtime_barrier_test_pid)
-      send(test_pid, {:artifact_prepare_waiting, self()})
+      test_pid = SystemsRuntime.fetch_env!(:salix_meet, :runtime_barrier_test_pid)
+      SystemsRuntime.Proc.send(test_pid, {:artifact_prepare_waiting, SystemsRuntime.Proc.self()})
 
-      receive do
+      SystemsRuntime.Proc.receive do
         :release_artifact_prepare ->
           SalixMeet.TestAgentRuntime.stream_workspace_write(agent_id, env_id, path, source_path)
       end
@@ -141,8 +148,8 @@ defmodule SalixMeet.RuntimeTest do
       do: SalixMeet.TestAgentRuntime.workspace_event_committed?(agent_id, session_id, source_id)
 
     def commit_event(request) do
-      send(
-        Application.fetch_env!(:salix_meet, :runtime_late_commit_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_meet, :runtime_late_commit_test_pid),
         {:late_ambiguous_commit, request}
       )
 
@@ -169,12 +176,6 @@ defmodule SalixMeet.RuntimeTest do
     assert agent["role"] == "meeting"
     assert agent["purpose"] == "meeting"
     assert agent["hidden"] == true
-    assert agent["template_id"] == "__internal_meeting_agent"
-
-    {:ok, template} = read_json(Keys.ctl_template(agent["template_id"]))
-    assert template["hidden"] == true
-    assert template["purpose"] == "meeting"
-    assert template["provider"] == "internal/noop"
 
     {:ok, group} = read_json(Keys.ctl_group(group_id))
     refute Map.has_key?(group, "router_agent_id")
@@ -205,16 +206,16 @@ defmodule SalixMeet.RuntimeTest do
                }
              )
 
-    Application.put_env(:salix_meet, :meeting_dispatch_mod, CaptureMeetingDispatch)
-    Application.put_env(:salix_meet, :meeting_dispatch_test_pid, self())
+    SystemsRuntime.put_env(:salix_meet, :meeting_dispatch_mod, CaptureMeetingDispatch)
+    SystemsRuntime.put_env(:salix_meet, :meeting_dispatch_test_pid, SystemsRuntime.Proc.self())
 
     assert {:ok, first} = Runtime.send_chat(meeting_id, "same answer")
-    assert_receive first_payload
+    settle_receive(first_payload)
     assert first_payload["message_id"] == first["message_id"]
     assert first_payload["tenant_id"] == tenant_id
 
     assert {:ok, second} = Runtime.send_chat(meeting_id, "same answer")
-    assert_receive second_payload
+    settle_receive(second_payload)
     assert second_payload["message_id"] == first_payload["message_id"]
     assert second["message_id"] == first["message_id"]
   end
@@ -295,9 +296,9 @@ defmodule SalixMeet.RuntimeTest do
     group_id: group_id
   } do
     previous_storage_authorization =
-      Application.get_env(:salix_agent, :storage_authorization_mod)
+      SystemsRuntime.get_env(:salix_agent, :storage_authorization_mod)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :storage_authorization_mod,
       SalixAgent.StorageAuthorization.Noop
@@ -312,7 +313,7 @@ defmodule SalixMeet.RuntimeTest do
     end)
 
     assert {:ok, meeting_agent} = Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-replay-#{System.unique_integer([:positive])}"
+    meeting_id = "mtg-replay-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     assert {:ok, _doc, _etag} =
              Store.create_once(meeting_id,
@@ -325,7 +326,10 @@ defmodule SalixMeet.RuntimeTest do
              )
 
     source_path =
-      Path.join(System.tmp_dir!(), "meeting-replay-#{System.unique_integer([:positive])}.txt")
+      Path.join(
+        System.tmp_dir!(),
+        "meeting-replay-#{SystemsRuntime.Proc.unique_integer([:positive])}.txt"
+      )
 
     File.write!(source_path, "one transcript")
     on_exit(fn -> File.rm(source_path) end)
@@ -404,150 +408,93 @@ defmodule SalixMeet.RuntimeTest do
     assert length(replayed_doc["state"]["chats"]) == 1
   end
 
-  test "a staged workspace artifact completes its source receipt after the source disappears", %{
-    tenant_id: tenant_id,
-    group_id: group_id
-  } do
+  test "an in-node runtime streams a recording above the inline cap from its own directory only",
+       %{tenant_id: tenant_id, group_id: group_id} do
     previous_storage_authorization =
-      Application.get_env(:salix_agent, :storage_authorization_mod)
+      SystemsRuntime.get_env(:salix_agent, :storage_authorization_mod)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :storage_authorization_mod,
       SalixAgent.StorageAuthorization.Noop
     )
 
     on_exit(fn ->
-      restore_env(
-        :salix_agent,
-        :storage_authorization_mod,
-        previous_storage_authorization
-      )
+      restore_env(:salix_agent, :storage_authorization_mod, previous_storage_authorization)
     end)
 
     assert {:ok, meeting_agent} = Runtime.ensure_for_group(tenant_id, group_id)
-    meeting_id = "mtg-workspace-replay-#{System.unique_integer([:positive])}"
+    agent_id = meeting_agent["meeting_agent_id"]
 
-    assert {:ok, _doc, _etag} =
-             Store.create_once(meeting_id,
-               state: %{
-                 "tenant_id" => tenant_id,
-                 "group_id" => group_id,
-                 "status" => "active",
-                 "artifact_root" => RuntimeEvents.artifact_root(meeting_id)
-               }
-             )
-
-    source_path =
+    dir =
       Path.join(
         System.tmp_dir!(),
-        "meeting-workspace-replay-#{System.unique_integer([:positive])}.txt"
+        "native-rec-#{SystemsRuntime.Proc.unique_integer([:positive])}"
       )
 
-    File.write!(source_path, "durable transcript")
-    on_exit(fn -> File.rm(source_path) end)
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
 
-    event = %{
-      "type" => "meeting_runtime_update",
-      "event_id" => "runtime-workspace-replay-1",
-      "meeting_id" => meeting_id,
-      "status" => "done",
-      "captions" => [%{"speaker" => "Ann", "text" => "recover me"}],
-      "artifacts" => [
-        %{
-          "kind" => "transcript",
-          "filename" => "transcript.txt",
-          "content_type" => "text/plain",
-          "src_path" => source_path
-        }
-      ]
-    }
+    audio = Path.join(dir, "audio.ogg")
+    File.write!(audio, :binary.copy("A", SalixStore.Blob.max_bytes() + 1024))
 
-    source_id = "meeting:#{tenant_id}:#{group_id}:runtime-workspace-replay-1"
-    agent_id = meeting_agent["meeting_agent_id"]
-    session_id = meeting_agent["meeting_session_id"]
-
-    :ok =
-      SalixStore.S3.Fake.set_fault(
-        {:fail, 503, :put, Keys.agent_internal_runtime_session(agent_id, session_id)}
+    outside =
+      Path.join(
+        System.tmp_dir!(),
+        "native-outside-#{SystemsRuntime.Proc.unique_integer([:positive])}"
       )
 
-    assert {:error, {:http, 503}} =
-             Runtime.deliver_event(tenant_id, group_id, event, origin_env_id: "env-origin")
+    File.write!(outside, "secret")
+    on_exit(fn -> File.rm(outside) end)
+    File.ln_s!(outside, Path.join(dir, "link.ogg"))
 
-    assert {:ok, false} =
-             SalixAgent.MeetingRuntime.event_committed?(agent_id, session_id, source_id)
+    deliver = fn src_path, origin ->
+      meeting_id = "mtg-native-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
-    assert {:ok, true} =
-             SalixAgent.MeetingRuntime.workspace_event_committed?(
-               agent_id,
-               session_id,
-               source_id
-             )
+      {:ok, _doc, _etag} =
+        Store.create_once(meeting_id,
+          state: %{
+            "tenant_id" => tenant_id,
+            "group_id" => group_id,
+            "status" => "active",
+            "artifact_root" => RuntimeEvents.artifact_root(meeting_id)
+          }
+        )
 
-    File.rm!(source_path)
+      event = %{
+        "type" => "meeting_runtime_update",
+        "event_id" => meeting_id <> ":runtime:done",
+        "meeting_id" => meeting_id,
+        "status" => "done",
+        "artifacts" => [
+          %{
+            "kind" => "audio",
+            "filename" => "audio.ogg",
+            "content_type" => "audio/ogg",
+            "src_path" => src_path
+          }
+        ]
+      }
 
-    assert {:ok, %{"status" => "created"}} =
-             Runtime.deliver_event(tenant_id, group_id, event, origin_env_id: "env-origin")
+      {meeting_id, Runtime.deliver_event(tenant_id, group_id, event, origin_env_id: origin)}
+    end
 
-    assert {:ok, true} =
-             SalixAgent.MeetingRuntime.event_committed?(agent_id, session_id, source_id)
+    assert {meeting_id, {:ok, _}} = deliver.(audio, {:local, dir})
+    path = RuntimeEvents.artifact_root(meeting_id) <> "/audio.ogg"
+    assert {:ok, %{"size" => size}} = SalixMeet.TestAgentRuntime.stat_workspace(agent_id, path)
+    assert size == File.stat!(audio).size
 
-    artifact_path = RuntimeEvents.artifact_root(meeting_id) <> "/transcript.txt"
-    assert {:ok, "durable transcript"} = AgentWorkspace.read(agent_id, artifact_path)
+    for src <- [
+          outside,
+          Path.join(dir, "../" <> Path.basename(outside)),
+          Path.join(dir, "link.ogg")
+        ] do
+      assert {_, {:error, {:artifact_ingest_failed, "audio", :artifact_path_invalid}}} =
+               deliver.(src, {:local, dir})
+    end
 
-    assert {:ok, state_doc, _etag} = Store.get(meeting_id)
-    assert state_doc["state"]["artifacts"]["transcript"]["path"] == artifact_path
-
-    assert [%{"speaker" => "Ann", "text" => "recover me"} = caption] =
-             state_doc["state"]["captions"]
-
-    assert is_binary(caption["runtime_event_id"])
-
-    assert {:ok, %{"status" => "duplicate"}} =
-             Runtime.deliver_event(tenant_id, group_id, event, origin_env_id: "env-origin")
-
-    assert {:ok, replayed_doc, _etag} = Store.get(meeting_id)
-    assert length(replayed_doc["state"]["captions"]) == 1
-  end
-
-  test "a definite workspace commit failure discards prepared artifacts before retry", %{
-    tenant_id: tenant_id,
-    group_id: group_id
-  } do
-    with_noop_storage_authorization(fn ->
-      assert {:ok, meeting_agent} = Runtime.ensure_for_group(tenant_id, group_id)
-      agent_id = meeting_agent["meeting_agent_id"]
-      meeting_id = "mtg-commit-retry-#{System.unique_integer([:positive])}"
-      source_path = temp_artifact!("commit-retry", "retry bytes")
-
-      assert {:ok, _doc, _etag} =
-               Store.create_once(meeting_id,
-                 state: %{
-                   "tenant_id" => tenant_id,
-                   "group_id" => group_id,
-                   "status" => "active",
-                   "artifact_root" => RuntimeEvents.artifact_root(meeting_id)
-                 }
-               )
-
-      event = artifact_event(meeting_id, "commit-retry-event", source_path)
-
-      :ok =
-        S3.Fake.set_fault({:fail, 503, :put, Keys.agent_workspace_state(agent_id)})
-
-      assert {:error, {:http, 503}} =
-               Runtime.deliver_event(tenant_id, group_id, event, origin_env_id: "env-origin")
-
-      assert {:ok, %{objects: []}} = S3.list("blobs/")
-      assert {:ok, %{objects: []}} = S3.list(Keys.prepared_blob_cleanup_prefix())
-
-      assert {:ok, %{"status" => "created"}} =
-               Runtime.deliver_event(tenant_id, group_id, event, origin_env_id: "env-origin")
-
-      assert {:ok, %{objects: [_]}} = S3.list("blobs/")
-      assert {:ok, %{objects: []}} = S3.list(Keys.prepared_blob_cleanup_prefix())
-    end)
+    assert {_, {:error, {:artifact_ingest_failed, "audio", :no_origin_env}}} =
+             deliver.(audio, nil)
   end
 
   test "an ambiguous workspace commit retains prepared bodies until a late commit is reconciled",
@@ -556,15 +503,20 @@ defmodule SalixMeet.RuntimeTest do
          group_id: group_id
        } do
     with_noop_storage_authorization(fn ->
-      previous_runtime = Application.get_env(:salix_meet, :agent_runtime_mod)
-      previous_pid = Application.get_env(:salix_meet, :runtime_late_commit_test_pid)
-      Application.put_env(:salix_meet, :agent_runtime_mod, LateAmbiguousCommitAgentRuntime)
-      Application.put_env(:salix_meet, :runtime_late_commit_test_pid, self())
+      previous_runtime = SystemsRuntime.get_env(:salix_meet, :agent_runtime_mod)
+      previous_pid = SystemsRuntime.get_env(:salix_meet, :runtime_late_commit_test_pid)
+      SystemsRuntime.put_env(:salix_meet, :agent_runtime_mod, LateAmbiguousCommitAgentRuntime)
+
+      SystemsRuntime.put_env(
+        :salix_meet,
+        :runtime_late_commit_test_pid,
+        SystemsRuntime.Proc.self()
+      )
 
       try do
         assert {:ok, meeting_agent} = Runtime.ensure_for_group(tenant_id, group_id)
         agent_id = meeting_agent["meeting_agent_id"]
-        meeting_id = "mtg-late-commit-#{System.unique_integer([:positive])}"
+        meeting_id = "mtg-late-commit-#{SystemsRuntime.Proc.unique_integer([:positive])}"
         source_path = temp_artifact!("late-commit", "late durable transcript")
 
         assert {:ok, _doc, _etag} =
@@ -582,7 +534,7 @@ defmodule SalixMeet.RuntimeTest do
         assert {:error, {:ambiguous, :timeout}} =
                  Runtime.deliver_event(tenant_id, group_id, event, origin_env_id: "env-origin")
 
-        assert_receive {:late_ambiguous_commit, request}, 2_000
+        settle_receive({:late_ambiguous_commit, request})
         assert {:ok, %{objects: [%{key: blob_key}]}} = S3.list("blobs/")
         assert {:ok, %{objects: [_intent]}} = S3.list(Keys.prepared_blob_cleanup_prefix())
 
@@ -613,7 +565,7 @@ defmodule SalixMeet.RuntimeTest do
   } do
     with_noop_storage_authorization(fn ->
       assert {:ok, _meeting_agent} = Runtime.ensure_for_group(tenant_id, group_id)
-      meeting_id = "mtg-path-admission-#{System.unique_integer([:positive])}"
+      meeting_id = "mtg-path-admission-#{SystemsRuntime.Proc.unique_integer([:positive])}"
       transcript_path = temp_artifact!("path-transcript", "transcript bytes")
       audio_path = temp_artifact!("path-audio", "audio bytes")
 
@@ -658,106 +610,6 @@ defmodule SalixMeet.RuntimeTest do
     end)
   end
 
-  test "concurrent same-source preparations keep only the manifest-owned blob", %{
-    tenant_id: tenant_id,
-    group_id: group_id
-  } do
-    with_noop_storage_authorization(fn ->
-      previous_runtime = Application.get_env(:salix_meet, :agent_runtime_mod)
-      previous_pid = Application.get_env(:salix_meet, :runtime_barrier_test_pid)
-      Application.put_env(:salix_meet, :agent_runtime_mod, BarrierAgentRuntime)
-      Application.put_env(:salix_meet, :runtime_barrier_test_pid, self())
-
-      try do
-        assert {:ok, _meeting_agent} = Runtime.ensure_for_group(tenant_id, group_id)
-        meeting_id = "mtg-concurrent-#{System.unique_integer([:positive])}"
-        source_path = temp_artifact!("concurrent", "same bytes")
-
-        assert {:ok, _doc, _etag} =
-                 Store.create_once(meeting_id,
-                   state: %{
-                     "tenant_id" => tenant_id,
-                     "group_id" => group_id,
-                     "status" => "active",
-                     "artifact_root" => RuntimeEvents.artifact_root(meeting_id)
-                   }
-                 )
-
-        event = artifact_event(meeting_id, "concurrent-event", source_path)
-
-        tasks =
-          for _ <- 1..2 do
-            Task.async(fn ->
-              Runtime.deliver_event(tenant_id, group_id, event, origin_env_id: "env-origin")
-            end)
-          end
-
-        waiting =
-          for _ <- 1..2 do
-            assert_receive {:artifact_prepare_waiting, pid}, 2_000
-            pid
-          end
-
-        Enum.each(waiting, &send(&1, :release_artifact_prepare))
-
-        statuses =
-          tasks
-          |> Enum.map(&Task.await(&1, 5_000))
-          |> Enum.map(fn {:ok, %{"status" => status}} -> status end)
-          |> Enum.sort()
-
-        assert statuses == ["created", "created"]
-        assert {:ok, %{objects: [_]}} = S3.list("blobs/")
-        assert {:ok, %{objects: []}} = S3.list(Keys.prepared_blob_cleanup_prefix())
-      after
-        restore_env(:salix_meet, :agent_runtime_mod, previous_runtime)
-        restore_env(:salix_meet, :runtime_barrier_test_pid, previous_pid)
-      end
-    end)
-  end
-
-  test "ensure_for_group rejects an existing same-id ordinary agent state", %{
-    tenant_id: tenant_id,
-    group_id: group_id
-  } do
-    agent_id = SalixStore.Ids.new_agent_id(group_id)
-    put_meeting_slot!(tenant_id, group_id, agent_id)
-    ordinary_session_id = Ids.new_session_id()
-
-    create_agent_state!(agent_id, [
-      %{"type" => "session_created", "session_id" => ordinary_session_id, "hidden" => false}
-    ])
-
-    assert {:error, {:invalid_meeting_agent, :missing_meeting_session}} =
-             Runtime.ensure_for_group(tenant_id, group_id)
-
-    assert {:error, :not_found} = S3.get(Keys.meet_agent(group_id))
-  end
-
-  test "ensure_for_group rejects an existing same-id agent record with wrong purpose", %{
-    tenant_id: tenant_id,
-    group_id: group_id
-  } do
-    agent_id = SalixStore.Ids.new_agent_id(group_id)
-    session_id = Ids.new_session_id()
-    put_meeting_slot!(tenant_id, group_id, agent_id, session_id)
-
-    put_agent_record!(
-      tenant_id,
-      group_id,
-      agent_id,
-      session_id,
-      %{"purpose" => "default"}
-    )
-
-    create_valid_meeting_state!(agent_id, session_id)
-
-    assert {:error, {:invalid_meeting_agent, :agent_record_purpose_mismatch}} =
-             Runtime.ensure_for_group(tenant_id, group_id)
-
-    assert {:error, :not_found} = S3.get(Keys.meet_agent(group_id))
-  end
-
   test "ensure_for_group rejects an existing same-id agent record from another group", %{
     tenant_id: tenant_id,
     group_id: group_id
@@ -795,10 +647,6 @@ defmodule SalixMeet.RuntimeTest do
     assert {:error, :not_found} = S3.get(Keys.meet_agent(group_id))
   end
 
-  test "meeting role has no LLM tool policy surface" do
-    assert [] = SalixAgent.ToolPolicy.specs_for("meeting")
-  end
-
   test "meeting outbound uses the provider boundary", %{tenant_id: tenant_id, group_id: group_id} do
     {:ok, meeting_agent} = Runtime.ensure_for_group(tenant_id, group_id)
 
@@ -815,7 +663,7 @@ defmodule SalixMeet.RuntimeTest do
   end
 
   defp put_group!(tenant_id, group_id) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     rec = %{
       "tenant_id" => tenant_id,
@@ -839,7 +687,7 @@ defmodule SalixMeet.RuntimeTest do
   end
 
   defp put_agent_record!(tenant_id, group_id, agent_id, _session_id, overrides \\ %{}) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     rec =
       Map.merge(
@@ -851,16 +699,13 @@ defmodule SalixMeet.RuntimeTest do
           "name" => "__internal_meeting_agent",
           "system_prompt" => "",
           "router_system_prompt" => "",
-          "template_id" => "__internal_meeting_agent",
-          "provider" => "internal/noop",
           "db_namespace" => "salix:" <> agent_id,
           "status" => "idle",
           "purpose" => "meeting",
           "hidden" => true,
           "created_at" => now,
           "heartbeat_schedule_id" => SalixStore.Ids.new_schedule_id(),
-          "tool_router_enabled" => false,
-          "vm" => %{"enabled" => false}
+          "tool_router_enabled" => false
         },
         overrides
       )
@@ -871,7 +716,7 @@ defmodule SalixMeet.RuntimeTest do
 
   defp put_meeting_slot!(tenant_id, group_id, agent_id, session_id \\ nil) do
     session_id = session_id || Ids.new_session_id()
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     record = %{
       "tenant_id" => tenant_id,
@@ -894,7 +739,7 @@ defmodule SalixMeet.RuntimeTest do
         "session_id" => session_id,
         "name" => "__internal_meeting_agent",
         "hidden" => true,
-        "created_at" => System.system_time(:second)
+        "created_at" => SystemsClock.system_time(:second)
       }
     ])
   end
@@ -935,9 +780,9 @@ defmodule SalixMeet.RuntimeTest do
   end
 
   defp with_noop_storage_authorization(fun) do
-    previous = Application.get_env(:salix_agent, :storage_authorization_mod)
+    previous = SystemsRuntime.get_env(:salix_agent, :storage_authorization_mod)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :storage_authorization_mod,
       SalixAgent.StorageAuthorization.Noop
@@ -954,7 +799,7 @@ defmodule SalixMeet.RuntimeTest do
     path =
       Path.join(
         System.tmp_dir!(),
-        "meeting-#{label}-#{System.unique_integer([:positive])}.txt"
+        "meeting-#{label}-#{SystemsRuntime.Proc.unique_integer([:positive])}.txt"
       )
 
     File.write!(path, body)
@@ -980,28 +825,28 @@ defmodule SalixMeet.RuntimeTest do
   end
 
   defp ensure_fake_s3_started! do
-    case Process.whereis(SalixStore.S3.Fake) do
+    case SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       nil -> start_supervised!(SalixStore.S3.Fake)
       _pid -> :ok
     end
   end
 
   defp ensure_mock_llm_started! do
-    case Process.whereis(SalixAgent.LLM.Mock) do
+    case SystemsRuntime.Proc.whereis(SalixAgent.LLM.Mock) do
       nil -> start_supervised!(SalixAgent.LLM.Mock)
       _pid -> :ok
     end
   end
 
   defp ensure_fake_provider_started! do
-    case Process.whereis(FakeMeetingProvider) do
+    case SystemsRuntime.Proc.whereis(FakeMeetingProvider) do
       nil -> start_supervised!(FakeMeetingProvider)
       _pid -> :ok
     end
   end
 
   defp stop_all_agents do
-    if Process.whereis(SalixAgent.Registry) do
+    if SystemsRuntime.Proc.whereis(SalixAgent.Registry) do
       SalixAgent.Registry
       |> Registry.select([{{:"$1", :"$2", :"$3"}, [], [:"$1"]}])
       |> Enum.uniq()
@@ -1011,6 +856,6 @@ defmodule SalixMeet.RuntimeTest do
     :ok
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

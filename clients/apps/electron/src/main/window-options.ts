@@ -9,16 +9,7 @@ export interface RendererWindowIdentityOptions {
     | "meeting-recorder-window"
     | "dev-workbench"
     | "main-window"
-    | "onboarding-window"
-    | "side-chat-test-window"
-    | "side-chat-window";
-}
-
-export interface SideChatTestWindowBounds {
-  height: number;
-  width: number;
-  x: number;
-  y: number;
+    | "onboarding-window";
 }
 
 export function createMainWindowOptions({
@@ -57,7 +48,14 @@ export function createMainWindowOptions({
           // geometric middle for the optical alignment the titlebar used.
           trafficLightPosition: { x: 12, y: 15 },
         }
-      : {}),
+      : platform === "win32"
+        ? {
+            // No native frame, menu bar or window buttons: the renderer's
+            // window bar is the title bar and draws the minimise, maximise and
+            // close buttons itself (WindowBar.tsx).
+            titleBarStyle: "hidden" as const,
+          }
+        : {}),
     webPreferences: {
       preload: preloadPath,
       sandbox: true,
@@ -111,104 +109,6 @@ export function createRuntimeWorkbenchWindowOptions({
   };
 }
 
-export function createSideChatWindowOptions({
-  locale = baseLocale,
-  platform = process.platform,
-  preloadPath,
-  productName,
-  windowId,
-  windowRole,
-}: {
-  locale?: CommaLocale;
-  platform?: NodeJS.Platform;
-  preloadPath: string;
-  productName: string;
-} & RendererWindowIdentityOptions): BrowserWindowConstructorOptions {
-  return {
-    acceptFirstMouse: true,
-    backgroundColor: "#00000000",
-    closable: false,
-    focusable: true,
-    frame: false,
-    fullscreenable: false,
-    hasShadow: false,
-    height: 380,
-    maximizable: false,
-    minimizable: false,
-    movable: false,
-    resizable: false,
-    roundedCorners: false,
-    show: false,
-    skipTaskbar: true,
-    title: messages.electron_side_chat_title({ productName }, { locale }),
-    transparent: true,
-    width: 523,
-    ...(platform === "darwin" ? { type: "panel" as const } : {}),
-    webPreferences: {
-      backgroundThrottling: false,
-      preload: preloadPath,
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: true,
-      additionalArguments: createRendererWindowIdentityArguments({
-        windowId,
-        windowRole,
-      }),
-    },
-  };
-}
-
-export function createSideChatTestWindowOptions({
-  bounds,
-  platform = process.platform,
-  preloadPath,
-  productName,
-  windowId,
-  windowRole,
-}: {
-  bounds: SideChatTestWindowBounds;
-  platform?: NodeJS.Platform;
-  preloadPath: string;
-  productName: string;
-} & RendererWindowIdentityOptions): BrowserWindowConstructorOptions {
-  return {
-    acceptFirstMouse: true,
-    backgroundColor: "#00000000",
-    closable: false,
-    focusable: true,
-    frame: false,
-    fullscreenable: false,
-    hasShadow: false,
-    height: bounds.height,
-    maximizable: false,
-    minimizable: false,
-    movable: false,
-    resizable: false,
-    roundedCorners: false,
-    show: false,
-    skipTaskbar: true,
-    title: `${productName} Side Chat Test`,
-    transparent: true,
-    width: bounds.width,
-    x: bounds.x,
-    y: bounds.y,
-    ...(platform === "darwin" ? { type: "panel" as const } : {}),
-    webPreferences: {
-      backgroundThrottling: false,
-      preload: preloadPath,
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: true,
-      additionalArguments: createRendererWindowIdentityArguments({
-        windowId,
-        windowRole,
-      }),
-    },
-  };
-}
-
 /**
  * The first-launch onboarding: a transparent sheet over the display that holds
  * the main window, below its menu bar and over its Dock. It is created at the
@@ -242,14 +142,19 @@ export function createOnboardingWindowOptions({
     frame: false,
     fullscreenable: false,
     hasShadow: false,
-    hiddenInMissionControl: true,
+    // Left visible in Mission Control (no `hiddenInMissionControl`): hidden,
+    // AppKit treats the sheet as transient, with no window of Comma's on its
+    // desktop. Coming back to that desktop from a browser on another one
+    // would then activate some other app, whose windows cover the onboarding.
     maximizable: false,
     minimizable: false,
     movable: false,
     resizable: false,
     roundedCorners: false,
     show: false,
-    skipTaskbar: true,
+    // Windows has no Dock to bring Comma back: while the onboarding holds the
+    // main window, its taskbar button is the onboarding's.
+    skipTaskbar: process.platform === "darwin",
     title: messages.electron_onboarding_window_title({ productName }, { locale }),
     transparent: true,
     webPreferences: {

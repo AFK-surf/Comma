@@ -1,4 +1,4 @@
-import { spacing } from "@comma/ui";
+import { spacing } from "@comma/ui/tokens";
 
 /**
  * Shared geometry for pointer-driven row reordering. A list that lifts a row

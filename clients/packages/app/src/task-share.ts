@@ -1,4 +1,4 @@
-export { defaultApiBaseUrl } from "./api";
+export { defaultApiBaseUrl } from "./apiBaseUrl";
 export { PublicTaskShareApp } from "./components/share/PublicTaskShareApp";
 export {
   createPublicShareClient,

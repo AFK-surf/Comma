@@ -1,16 +1,11 @@
 # Differential tests against the external oracle run only with
 # `--include signal_oracle` and COMMA_SIGNAL_ORACLE set.
-#
-# The waits are upper bounds, not expectations: a bare `assert_receive`
-# returns as soon as its message arrives, and on a loaded CI runner a TLS
-# handshake or a scheduler delay can take seconds. Tests that prove a
-# timing rule state their own windows.
-ExUnit.start(exclude: [:signal_oracle], assert_receive_timeout: 10_000, timeout: 180_000)
+ExUnit.start(exclude: [:signal_oracle], timeout: 180_000)
 
 # Development hosts and the default CI image link OpenSSL 3.0, without
 # ML-KEM; tests may run secret-key KEM operations in plain Elixir
 # (SalixSignalProto.KemBackend).
-Application.put_env(:salix_signal_proto, :plain_kem_in_tests, true)
+SystemsRuntime.put_env(:salix_signal_proto, :plain_kem_in_tests, true)
 
 SalixStore.RepoTestSetup.ensure!()
 

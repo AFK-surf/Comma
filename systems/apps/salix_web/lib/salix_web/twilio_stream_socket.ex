@@ -28,7 +28,7 @@ defmodule SalixWeb.TwilioStreamSocket do
     if SalixCluster.NodeLifecycle.draining?() do
       {:stop, :normal, {1001, "draining"}, %{token: token, call_id: args[:call_id], call: nil}}
     else
-      Process.send_after(self(), :start_timeout, @start_timeout_ms)
+      SystemsClock.send_after(self(), :start_timeout, @start_timeout_ms)
 
       {:ok,
        %{
@@ -144,7 +144,7 @@ defmodule SalixWeb.TwilioStreamSocket do
   defp hangup_call(state, _reason), do: state
 
   defp maybe_rest_hangup(%{call_sid: call_sid}) when is_binary(call_sid) do
-    Task.Supervisor.start_child(SalixVoice.TaskSupervisor, fn ->
+    SystemsRuntime.TaskSupervisor.start_child(SalixVoice.TaskSupervisor, fn ->
       with {:ok, settings} <- SalixVoice.Settings.get(),
            {:error, reason} <- SalixWeb.TwilioClient.hangup(settings, call_sid) do
         Logger.debug("twilio hangup skipped call=#{call_sid} reason=#{inspect(reason)}")

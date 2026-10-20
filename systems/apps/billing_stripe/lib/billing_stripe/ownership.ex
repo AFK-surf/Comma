@@ -23,7 +23,7 @@ defmodule BillingStripe.Ownership do
   end
 
   defp local_surfaces(object, type) do
-    repo = Application.fetch_env!(:billing_stripe, :repo)
+    repo = SystemsRuntime.fetch_env!(:billing_stripe, :repo)
     customer = id(object["customer"])
     pi = id(object["payment_intent"])
 
@@ -229,8 +229,8 @@ defmodule BillingStripe.Ownership do
   defp id(value) when is_binary(value), do: value
   defp id(%{"id" => value}), do: value
   defp id(_), do: nil
-  defp api, do: Application.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
+  defp api, do: SystemsRuntime.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
 
   defp opts,
-    do: [api_key: Application.fetch_env!(:billing_stripe, :secret_key), response_as: :map]
+    do: [api_key: SystemsRuntime.fetch_env!(:billing_stripe, :secret_key), response_as: :map]
 end

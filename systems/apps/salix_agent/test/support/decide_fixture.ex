@@ -4,13 +4,7 @@ defmodule SalixAgent.DecideFixture do
   @behaviour Plug
 
   def start_provider do
-    server =
-      start_supervised!(
-        {Bandit, plug: {__MODULE__, self()}, ip: {127, 0, 0, 1}, port: 0, startup_log: false}
-      )
-
-    {:ok, {_, port}} = ThousandIsland.listener_info(server)
-    endpoint = "http://127.0.0.1:#{port}/v1/systemone"
+    endpoint = provider_endpoint()
 
     json =
       Jason.decode!(
@@ -30,15 +24,31 @@ defmodule SalixAgent.DecideFixture do
     endpoint
   end
 
-  def put_env(key, value) do
-    old = Application.get_env(:salix_agent, key)
-    Application.put_env(:salix_agent, key, value)
+  defp provider_endpoint do
+    server =
+      start_supervised!(
+        {Bandit,
+         plug: {__MODULE__, SystemsRuntime.Proc.self()},
+         ip: {127, 0, 0, 1},
+         port: 0,
+         startup_log: false}
+      )
 
-    on_exit(fn ->
+    {:ok, {_, port}} = ThousandIsland.listener_info(server)
+    "http://127.0.0.1:#{port}/v1/systemone"
+  end
+
+  def put_env(key, value) do
+    old = SystemsRuntime.get_env(:salix_agent, key)
+    SystemsRuntime.put_env(:salix_agent, key, value)
+
+    cleanup = fn ->
       if is_nil(old),
-        do: Application.delete_env(:salix_agent, key),
-        else: Application.put_env(:salix_agent, key, old)
-    end)
+        do: SystemsRuntime.delete_env(:salix_agent, key),
+        else: SystemsRuntime.put_env(:salix_agent, key, old)
+    end
+
+    on_exit(cleanup)
   end
 
   def args(state \\ "meeting decisions") do
@@ -67,7 +77,7 @@ defmodule SalixAgent.DecideFixture do
     {:ok, raw, conn} = Plug.Conn.read_body(conn)
     body = Jason.decode!(raw)
 
-    send(
+    SystemsRuntime.Proc.send(
       pid,
       {:decision_request, conn.request_path, Plug.Conn.get_req_header(conn, "authorization"),
        body}
@@ -79,7 +89,12 @@ defmodule SalixAgent.DecideFixture do
         value -> value
       end
 
-    if state == "slow", do: Process.sleep(3_000)
+    if state == "slow", do: SystemsRuntime.Proc.sleep(3_000)
+
+    case SystemsRuntime.get_env(:salix_agent, :decide_fixture_delay_ms) do
+      delay when is_integer(delay) -> SystemsRuntime.Proc.sleep(delay)
+      _ -> :ok
+    end
 
     cond do
       state == "redirect" ->
@@ -110,8 +125,10 @@ defmodule SalixAgent.DecideFixture do
                   }
 
                 "noul" ->
+                  fixed = SystemsRuntime.get_env(:salix_agent, :decide_noul_probabilities, %{})
+
                   relevant =
-                    case Application.get_env(:salix_agent, :decide_selected_miniskill) do
+                    case SystemsRuntime.get_env(:salix_agent, :decide_selected_miniskill) do
                       nil ->
                         state != "no-match"
 
@@ -121,7 +138,10 @@ defmodule SalixAgent.DecideFixture do
                         end)
                     end
 
-                  %{"type" => "noul", "noul" => if(relevant, do: 0.92349, else: 0.1)}
+                  probability =
+                    Map.get_lazy(fixed, key, fn -> if(relevant, do: 0.92349, else: 0.1) end)
+
+                  %{"type" => "noul", "noul" => probability}
 
                 "score" ->
                   %{
@@ -143,6 +163,11 @@ defmodule SalixAgent.DecideFixture do
           "usage" => %{"input_tokens" => 123, "output_tokens" => 7}
         }
 
+        response =
+          if state == "cloudflare",
+            do: %{"success" => true, "errors" => [], "messages" => [], "result" => response},
+            else: response
+
         conn
         |> Plug.Conn.put_resp_content_type("application/json")
         |> Plug.Conn.send_resp(200, Jason.encode!(response))
@@ -151,19 +176,31 @@ defmodule SalixAgent.DecideFixture do
 
   defmodule Meter do
     def before_llm_call(fact) do
-      send(Application.fetch_env!(:salix_agent, :decide_test_pid), {:decision_meter_before, fact})
-      if Application.get_env(:salix_agent, :decide_test_deny), do: {:error, :denied}, else: :ok
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :decide_test_pid),
+        {:decision_meter_before, fact}
+      )
+
+      if SystemsRuntime.get_env(:salix_agent, :decide_test_deny), do: {:error, :denied}, else: :ok
     end
 
     def after_llm_call(fact) do
-      send(Application.fetch_env!(:salix_agent, :decide_test_pid), {:decision_meter_after, fact})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :decide_test_pid),
+        {:decision_meter_after, fact}
+      )
+
       :ok
     end
   end
 
   defmodule Archive do
     def record(fact) do
-      send(Application.fetch_env!(:salix_agent, :decide_test_pid), {:decision_archive, fact})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :decide_test_pid),
+        {:decision_archive, fact}
+      )
+
       :ok
     end
   end

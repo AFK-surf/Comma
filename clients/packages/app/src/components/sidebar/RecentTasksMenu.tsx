@@ -1,12 +1,7 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import {
-  Menu,
-  MenuItem,
-  MenuPopover,
-  MenuTrigger,
-  NativeSurfaceSuppressor,
-  taskStatusIcon,
-} from "@comma/ui";
+import { Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui/components/menu";
+import { NativeSurfaceSuppressor } from "@comma/ui/components/native-surface/NativeSurfaceSuppressor";
+import { taskStatusIcon } from "@comma/ui/components/task-workspace";
 import { useNavigate } from "@tanstack/react-router";
 import { Collection, Header, MenuSection } from "react-aria-components";
 import { ShellIconButton } from "../ShellIconButton";

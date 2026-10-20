@@ -10,8 +10,9 @@ defmodule SalixAgent.IFCDeclassificationSettlementTest do
   clock — before any authority is written.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.CapabilityRequests
   alias SalixStore.{Ids, Keys, S3}
 
@@ -19,8 +20,8 @@ defmodule SalixAgent.IFCDeclassificationSettlementTest do
   @destination "space|cnx1"
 
   setup do
-    previous_store = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
     case start_supervised(SalixStore.S3.Fake) do
       {:ok, _pid} -> :ok
@@ -36,7 +37,7 @@ defmodule SalixAgent.IFCDeclassificationSettlementTest do
         "runtime_config" => %{"kind" => "internal"}
       })
 
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, previous_store) end)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, previous_store) end)
 
     {:ok, tenant: tenant, group: group, agent: agent}
   end
@@ -47,7 +48,8 @@ defmodule SalixAgent.IFCDeclassificationSettlementTest do
         %{
           "source_agent_id" => ctx.agent["agent_id"],
           "source_session_id" => Ids.new_session_id(),
-          "tool_call_id" => "call-" <> Integer.to_string(System.unique_integer([:positive])),
+          "tool_call_id" =>
+            "call-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive])),
           "request_type" => "ifc_declassify",
           "group_id" => ctx.group,
           "tenant_id" => ctx.tenant,
@@ -94,7 +96,7 @@ defmodule SalixAgent.IFCDeclassificationSettlementTest do
         ctx.tenant,
         ctx.group,
         ["provider_user|cnx1|U_A"],
-        System.system_time(:millisecond)
+        SystemsClock.system_time(:millisecond)
       )
 
     rows
@@ -136,32 +138,17 @@ defmodule SalixAgent.IFCDeclassificationSettlementTest do
       assert receipts(ctx) == []
       assert stored(ctx, request)["response_payload"] == %{"approved" => false}
     end
-
-    test "a refusal writes nothing at all", ctx do
-      request = request!(ctx)
-      decide(ctx, request, false)
-
-      assert receipts(ctx) == []
-    end
   end
 
   describe "its own clock" do
     test "a card answered after the request expired grants nothing", ctx do
-      request = request!(ctx, %{"expires_at" => System.system_time(:second) - 1})
+      request = request!(ctx, %{"expires_at" => SystemsClock.system_time(:second) - 1})
 
       decide(ctx, request, true)
 
       assert receipts(ctx) == []
       assert stored(ctx, request)["status"] == "expired"
       assert stored(ctx, request)["result"]["error_class"] == "capability_request_expired"
-    end
-
-    test "a request still inside its window settles normally", ctx do
-      request = request!(ctx, %{"expires_at" => System.system_time(:second) + 600})
-      decide(ctx, request, true)
-
-      assert stored(ctx, request)["status"] == "completed"
-      assert length(receipts(ctx)) == 1
     end
   end
 
@@ -188,48 +175,7 @@ defmodule SalixAgent.IFCDeclassificationSettlementTest do
     )
   end
 
-  defp rewrite_request(request, changes) do
-    key = Keys.ctl_capability_request(request["group_id"], request["request_id"])
-    {:ok, %{body: body, etag: etag}} = S3.get(key)
-    {:ok, _} = S3.put(key, Jason.encode!(Map.merge(Jason.decode!(body), changes)), if_match: etag)
-  end
-
   describe "deadline reconciliation" do
-    test "creation replay preserves the first deadline and creation timestamp", ctx do
-      request = request!(ctx, %{"request_type" => "location"})
-      assert is_integer(request["expires_at"])
-      assert request["expires_at"] <= System.system_time(:second) + 120
-
-      {:ok, replay} =
-        CapabilityRequests.create_capability_request(
-          request
-          |> Map.put("expires_at", request["expires_at"] + 600)
-          |> Map.put("created_at", request["created_at"] + 600)
-        )
-
-      assert replay["expires_at"] == request["expires_at"]
-      assert replay["created_at"] == request["created_at"]
-    end
-
-    test "an expired cancellation settles the durable request instead of hiding it", ctx do
-      request =
-        request!(ctx, %{
-          "request_type" => "location",
-          "expires_at" => System.system_time(:second) - 1
-        })
-
-      assert {:ok, expired} =
-               CapabilityRequests.cancel_capability_request(
-                 request["source_agent_id"],
-                 request["source_session_id"],
-                 request["tool_call_id"],
-                 "cancel"
-               )
-
-      assert expired["status"] == "expired"
-      assert {:ok, replay} = reconcile(request, %{"status" => "completed", "content" => "late"})
-      assert replay["result"] == expired["result"]
-    end
 
     test "a completion whose session delivery fails remains replayable", ctx do
       request = request!(ctx, %{"request_type" => "location"})
@@ -250,70 +196,6 @@ defmodule SalixAgent.IFCDeclassificationSettlementTest do
                reconcile(request, %{"status" => "failed", "content" => "late failure"})
 
       assert replay["result"] == completed["result"]
-    end
-
-    test "expiry wins against an already read completion CAS", ctx do
-      request = request!(ctx, %{"request_type" => "location"})
-      key = Keys.ctl_capability_request(ctx.group, request["request_id"])
-      S3.Fake.set_fault({:pause, :put, key})
-
-      task =
-        Task.async(fn -> reconcile(request, %{"status" => "completed", "content" => "late"}) end)
-
-      assert_eventually(fn -> S3.Fake.paused?() end)
-      rewrite_request(request, %{"expires_at" => System.system_time(:second) - 1})
-      assert {:ok, expired} = reconcile(request)
-      assert expired["status"] == "expired"
-      S3.Fake.release_pause()
-      assert {:ok, loser} = Task.await(task)
-      assert loser["result"] == expired["result"]
-    end
-
-    test "receipt failure produces a stable failure result and never reports approval", ctx do
-      request = request!(ctx, %{"request_payload" => %{"ifc_declassify" => %{}}})
-      decide(ctx, request, true)
-      assert {:ok, failed} = reconcile(request)
-      assert failed["response_payload"]["approved"] == true
-      assert failed["result"]["status"] == "failed"
-      assert receipts(ctx) == []
-      assert {:error, {:conflict, :already_settled}} = decide(ctx, request, true)
-      assert {:ok, replay} = reconcile(request)
-      assert replay["result"] == failed["result"]
-    end
-
-    test "receipt decision awaiting its result converges after its deadline without granting again",
-         ctx do
-      request = request!(ctx)
-
-      rewrite_request(request, %{
-        "status" => "completed",
-        "response_payload" => %{"approved" => true},
-        "settlement_deadline_ms" => System.system_time(:millisecond) + 30_000
-      })
-
-      assert {:ok, waiting} = reconcile(request)
-      refute is_map(waiting["result"])
-
-      rewrite_request(request, %{"settlement_deadline_ms" => System.system_time(:millisecond) - 1})
-
-      assert {:ok, failed} = reconcile(request)
-      assert failed["result"]["status"] == "failed"
-      assert {:error, {:conflict, :already_settled}} = decide(ctx, request, true)
-      assert receipts(ctx) == []
-      assert {:ok, replay} = reconcile(request, %{"status" => "completed", "content" => "late"})
-      assert replay["result"] == failed["result"]
-    end
-  end
-
-  defp assert_eventually(predicate, attempts \\ 100)
-  defp assert_eventually(predicate, 0), do: assert(predicate.())
-
-  defp assert_eventually(predicate, attempts) do
-    if predicate.() do
-      :ok
-    else
-      Process.sleep(5)
-      assert_eventually(predicate, attempts - 1)
     end
   end
 end

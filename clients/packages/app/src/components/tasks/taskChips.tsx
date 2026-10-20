@@ -1,7 +1,25 @@
-import type { TaskStatusBucket } from "@comma/ui";
+import type { TaskStatusBucket } from "@comma/ui/components/task-workspace";
 import { useCommaMessages } from "@comma/i18n/react";
+import type { TaskLoop } from "@comma/core-client";
+import type { TaskFilterOption } from "@comma/ui/components/task-workspace";
+import {
+  CalendarIcon,
+  EyeIcon,
+  InfinityIcon,
+  MacbookIcon,
+} from "@comma/ui/components/icons";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, type MouseEvent, type ReactNode } from "react";
+import { useCallback, type MouseEvent, type ReactElement, type ReactNode } from "react";
+import { HoverCard, type HoverCardProps } from "@comma/ui/components/hover-card";
+import { TaskLoopHoverDetails } from "./TaskLoopHoverDetails";
+import {
+  TASK_LOOP_FILTER_KEYS,
+  taskLoopFilterKey,
+  taskLoopFilterLabel,
+  taskLoopLabel,
+  type TaskLoopFilterKey,
+  type TaskLoopFilterCounts,
+} from "./taskLoopLabels";
 import { LabelDot } from "./labelColor";
 import { TaskOriginIcon, type TaskOriginKey } from "./taskOrigin";
 
@@ -10,7 +28,10 @@ export type TasksFilterLink =
   | { label: string }
   | { platform: TaskOriginKey }
   | { status: TaskStatusBucket }
-  | { clientPlatform: string };
+  | { clientPlatform: string }
+  /** A Loop trigger type, or Tasks without a Loop. */
+  | { schedule: TaskLoopFilterKey }
+  | { loopRule: string };
 
 /** Opens Tasks with the selected property as its filter. */
 export function useOpenTasksFilter(): (filter: TasksFilterLink) => void {
@@ -26,7 +47,8 @@ export function useOpenTasksFilter(): (filter: TasksFilterLink) => void {
 /**
  * The chip either is a button of its own (Task properties panel) or sits
  * inside a card that is already a button, where it stays a plain span whose
- * click just does not reach the card.
+ * click just does not reach the card. A span chip opens its hover card on
+ * pointer hover only: it is not a tab stop inside the card's button or link.
  */
 function Chip({
   children,
@@ -36,18 +58,33 @@ function Chip({
   onOpen,
   size,
   testId,
+  ariaLabel,
+  hoverContent,
+  hoverClassName = "",
+  hoverPlacement,
 }: {
   children: ReactNode;
   className: string;
-  kind: "label" | "platform";
+  kind: "label" | "platform" | "schedule";
   nested?: boolean | undefined;
   onOpen?: (() => void) | undefined;
   size?: "md" | "sm" | undefined;
   testId?: string | undefined;
+  ariaLabel?: string | undefined;
+  hoverContent?: ReactNode;
+  hoverClassName?: string | undefined;
+  hoverPlacement?: HoverCardProps["placement"] | undefined;
 }) {
+  const open = (event: MouseEvent) => {
+    event.stopPropagation();
+    event.preventDefault();
+    onOpen?.();
+  };
+  let chip: ReactElement;
   if (!onOpen) {
-    return (
+    chip = (
       <span
+        aria-label={ariaLabel}
         className={className}
         data-chip={kind}
         data-size={size}
@@ -56,17 +93,10 @@ function Chip({
         {children}
       </span>
     );
-  }
-  const open = (event: MouseEvent) => {
-    event.stopPropagation();
-    event.preventDefault();
-    onOpen();
-  };
-  if (nested) {
-    // Inside the card's button the chip is a pointer-only shortcut: keyboard
-    // users reach the same narrowing through the filter menu, and the chip's
-    // text stays part of the card's own name.
-    return (
+  } else if (nested) {
+    // A chip inside the card's button stays a pointer-only filter shortcut.
+    // Keyboard users open Properties through the card or use the filter menu.
+    chip = (
       <span
         className={className}
         data-interactive="true"
@@ -78,18 +108,32 @@ function Chip({
         {children}
       </span>
     );
+  } else {
+    chip = (
+      <button
+        aria-label={ariaLabel}
+        className={className}
+        data-interactive="true"
+        data-chip={kind}
+        data-testid={testId}
+        onClick={open}
+        type="button"
+      >
+        {children}
+      </button>
+    );
   }
-  return (
-    <button
-      className={className}
-      data-interactive="true"
-      data-chip={kind}
-      data-testid={testId}
-      onClick={open}
-      type="button"
+  return hoverContent ? (
+    <HoverCard
+      className={hoverClassName}
+      content={hoverContent}
+      pointerOnly={!onOpen || nested}
+      {...(hoverPlacement ? { placement: hoverPlacement } : {})}
     >
-      {children}
-    </button>
+      {chip}
+    </HoverCard>
+  ) : (
+    chip
   );
 }
 
@@ -149,6 +193,96 @@ export function TaskPlatformChip({
       <span className="comma-task-label-chip-text">{label}</span>
     </Chip>
   );
+}
+
+/**
+ * Where a Task a station hosts runs: on which machine, with which model, and whether the machine is offline (where
+ * this device knows).
+ */
+export function TaskHostChip({
+  host,
+  nested,
+  testId,
+}: {
+  host: { machine: string | null; online: boolean | null; model: string | null };
+  nested?: boolean;
+  testId?: string | undefined;
+}) {
+  const messages = useCommaMessages();
+  const where = [host.machine, host.model].filter(Boolean).join(" · ");
+  return (
+    <Chip
+      className="comma-task-label-chip comma-task-platform-chip"
+      kind="platform"
+      nested={nested}
+      testId={testId}
+    >
+      <MacbookIcon />
+      <span className="comma-task-label-chip-text">
+        {where ? messages.station_task_on({ where }) : messages.station_task_hosted()}
+        {host.online === false ? ` · ${messages.station_task_offline()}` : ""}
+      </span>
+    </Chip>
+  );
+}
+
+/** A Loop's trigger label on cards, or its icon in the compact Inbox rail. */
+export function TaskScheduleChip({
+  loop,
+  iconOnly = false,
+  nested,
+  onOpen,
+  testId,
+}: {
+  loop: TaskLoop;
+  iconOnly?: boolean;
+  nested?: boolean;
+  onOpen?: (() => void) | undefined;
+  testId?: string | undefined;
+}) {
+  const messages = useCommaMessages();
+  const label = taskLoopLabel(loop, messages);
+  return (
+    <Chip
+      className={`comma-task-label-chip comma-task-schedule-chip${iconOnly ? " comma-task-schedule-chip-icon" : ""}`}
+      kind="schedule"
+      nested={nested}
+      onOpen={onOpen}
+      testId={testId}
+      ariaLabel={iconOnly ? label : undefined}
+      hoverClassName="comma-task-loop-hover-card"
+      hoverContent={<TaskLoopHoverDetails loop={loop} />}
+      // In the Inbox the icons stack one row apart: the preview opens beside
+      // the icon, so it never covers the icon of the row below.
+      hoverPlacement={iconOnly ? "end" : undefined}
+    >
+      <TaskLoopTypeIcon kind={taskLoopFilterKey(loop)} />
+      {iconOnly ? null : <span className="comma-task-label-chip-text">{label}</span>}
+    </Chip>
+  );
+}
+
+function TaskLoopTypeIcon({ kind }: { kind: TaskLoopFilterKey }) {
+  if (kind === "scheduled") return <CalendarIcon />;
+  if (kind === "event_triggered") return <EyeIcon />;
+  if (kind === "unknown") return <InfinityIcon />;
+  return <span aria-hidden className="size-md" />;
+}
+
+/** Tasks and Inbox offer the same cadence choices and keep unknown cadences separate. */
+export function taskLoopFilterOptions(
+  counts: TaskLoopFilterCounts,
+  messages: ReturnType<typeof useCommaMessages>,
+  selected?: ReadonlySet<string>
+): TaskFilterOption[] {
+  return TASK_LOOP_FILTER_KEYS.filter(
+    (key) => key !== "unknown" || counts.unknown > 0 || selected?.has(key)
+  ).map((key) => ({
+    id: key,
+    count: counts[key],
+    label: taskLoopFilterLabel(key, messages),
+    icon: <TaskLoopTypeIcon kind={key} />,
+  }));
 }
 
 /**

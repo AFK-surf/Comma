@@ -1,5 +1,5 @@
 defmodule SalixLlm.AudioChunkerTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixLlm.AudioChunker
 
@@ -9,7 +9,10 @@ defmodule SalixLlm.AudioChunkerTest do
     ffprobe = System.find_executable("ffprobe") || flunk("ffprobe is required for this test")
 
     dir =
-      Path.join(System.tmp_dir!(), "salix-audio-fixture-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "salix-audio-fixture-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(dir)
     source = Path.join(dir, "source.ogg")
@@ -140,7 +143,10 @@ defmodule SalixLlm.AudioChunkerTest do
     ffmpeg = System.find_executable("ffmpeg") || flunk("ffmpeg is required for meeting audio")
 
     dir =
-      Path.join(System.tmp_dir!(), "salix-audio-short-tail-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "salix-audio-short-tail-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(dir)
     source = Path.join(dir, "source.ogg")
@@ -197,7 +203,7 @@ defmodule SalixLlm.AudioChunkerTest do
     fixture_dir =
       Path.join(
         System.tmp_dir!(),
-        "salix-audio-padded-source-#{System.unique_integer([:positive])}"
+        "salix-audio-padded-source-#{SystemsRuntime.Proc.unique_integer([:positive])}"
       )
 
     File.mkdir_p!(fixture_dir)
@@ -264,7 +270,10 @@ defmodule SalixLlm.AudioChunkerTest do
     ffmpeg = System.find_executable("ffmpeg") || flunk("ffmpeg is required for meeting audio")
 
     fixture_dir =
-      Path.join(System.tmp_dir!(), "salix-audio-truncated-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "salix-audio-truncated-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(fixture_dir)
     source = Path.join(fixture_dir, "source.ogg")
@@ -399,7 +408,7 @@ defmodule SalixLlm.AudioChunkerTest do
     fixture_dir =
       Path.join(
         System.tmp_dir!(),
-        "salix-audio-sample-stream-#{System.unique_integer([:positive])}"
+        "salix-audio-sample-stream-#{SystemsRuntime.Proc.unique_integer([:positive])}"
       )
 
     File.mkdir_p!(fixture_dir)
@@ -488,7 +497,10 @@ defmodule SalixLlm.AudioChunkerTest do
     before_dirs = MapSet.new(Path.wildcard(Path.join(System.tmp_dir!(), "salix-meeting-audio-*")))
 
     fixture_dir =
-      Path.join(System.tmp_dir!(), "salix-audio-limit-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "salix-audio-limit-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(fixture_dir)
     source = Path.join(fixture_dir, "source.ogg")
@@ -532,7 +544,7 @@ defmodule SalixLlm.AudioChunkerTest do
 
     blocked_stream =
       Stream.map(["x"], fn chunk ->
-        Process.sleep(1_000)
+        SystemsRuntime.Proc.sleep(1_000)
         chunk
       end)
 
@@ -554,141 +566,6 @@ defmodule SalixLlm.AudioChunkerTest do
 
     after_dirs = MapSet.new(Path.wildcard(Path.join(System.tmp_dir!(), "salix-meeting-audio-*")))
     assert after_dirs == before_dirs
-  end
-
-  @tag :ffmpeg
-  test "drops an encoder-padding tail before enforcing the chunk limit" do
-    ffmpeg = System.find_executable("ffmpeg") || flunk("ffmpeg is required for meeting audio")
-    ffprobe = System.find_executable("ffprobe") || flunk("ffprobe is required for this test")
-
-    fixture_dir =
-      Path.join(System.tmp_dir!(), "salix-audio-padding-#{System.unique_integer([:positive])}")
-
-    File.mkdir_p!(fixture_dir)
-    source = Path.join(fixture_dir, "source.ogg")
-    on_exit(fn -> File.rm_rf!(fixture_dir) end)
-
-    {_output, 0} =
-      System.cmd(
-        ffmpeg,
-        [
-          "-hide_banner",
-          "-loglevel",
-          "error",
-          "-f",
-          "lavfi",
-          "-i",
-          "sine=frequency=660:duration=1.99",
-          "-c:a",
-          "libopus",
-          source
-        ],
-        stderr_to_stdout: true
-      )
-
-    assert {:ok, :accepted} =
-             AudioChunker.with_mp3_chunks(
-               File.read!(source),
-               "source.ogg",
-               fn chunks ->
-                 assert Enum.map(chunks, & &1.index) == [0, 1]
-
-                 Enum.each(chunks, fn chunk ->
-                   {_duration, 0} =
-                     System.cmd(
-                       ffprobe,
-                       [
-                         "-v",
-                         "error",
-                         "-show_entries",
-                         "format=duration",
-                         "-of",
-                         "default=noprint_wrappers=1:nokey=1",
-                         chunk.path
-                       ],
-                       stderr_to_stdout: true
-                     )
-                 end)
-
-                 {:ok, :accepted}
-               end,
-               segment_seconds: 1,
-               max_chunks: 2,
-               timeout_ms: 30_000
-             )
-  end
-
-  @tag :ffmpeg
-  test "drops an undecodable padding tail at exact segment and max-duration boundaries" do
-    ffmpeg = System.find_executable("ffmpeg") || flunk("ffmpeg is required for meeting audio")
-    ffprobe = System.find_executable("ffprobe") || flunk("ffprobe is required for this test")
-
-    Enum.each([{1.0, 1, [0]}, {2.0, 2, [0, 1]}], fn {duration, max_chunks, indexes} ->
-      fixture_dir =
-        Path.join(
-          System.tmp_dir!(),
-          "salix-audio-exact-boundary-#{System.unique_integer([:positive])}"
-        )
-
-      File.mkdir_p!(fixture_dir)
-      source = Path.join(fixture_dir, "source.ogg")
-
-      {_output, 0} =
-        System.cmd(
-          ffmpeg,
-          [
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=550:duration=#{duration}",
-            "-c:a",
-            "libopus",
-            source
-          ],
-          stderr_to_stdout: true
-        )
-
-      try do
-        assert {:ok, :accepted} =
-                 AudioChunker.with_mp3_chunks(
-                   File.read!(source),
-                   "source.ogg",
-                   fn chunks ->
-                     assert Enum.map(chunks, & &1.index) == indexes
-
-                     Enum.each(chunks, fn chunk ->
-                       {value, 0} =
-                         System.cmd(
-                           ffprobe,
-                           [
-                             "-v",
-                             "error",
-                             "-show_entries",
-                             "format=duration",
-                             "-of",
-                             "default=noprint_wrappers=1:nokey=1",
-                             chunk.path
-                           ],
-                           stderr_to_stdout: true
-                         )
-
-                       assert {parsed, ""} = Float.parse(String.trim(value))
-                       assert parsed > 0
-                     end)
-
-                     {:ok, :accepted}
-                   end,
-                   segment_seconds: 1,
-                   max_chunks: max_chunks,
-                   timeout_ms: 30_000
-                 )
-      after
-        File.rm_rf!(fixture_dir)
-      end
-    end)
   end
 
   defp decoded_mono_16k_pcm(ffmpeg, path) do

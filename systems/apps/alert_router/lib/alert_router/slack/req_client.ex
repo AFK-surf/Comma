@@ -200,7 +200,7 @@ defmodule AlertRouter.Slack.ReqClient do
     do: config() |> Keyword.get(:base_url, "https://slack.com/api") |> String.trim_trailing("/")
 
   defp timeout, do: Keyword.get(config(), :request_timeout_ms, 8_000)
-  defp config, do: Application.get_env(:alert_router, :slack, [])
+  defp config, do: SystemsRuntime.get_env(:alert_router, :slack, [])
 
   defp retry_after(response) do
     case Req.Response.get_header(response, "retry-after") do

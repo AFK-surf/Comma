@@ -1,5 +1,5 @@
 defmodule BillingCore.Metering.PendingChargeSweepTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias BillingCore.Metering.PricingBackfill
 
@@ -18,9 +18,10 @@ defmodule BillingCore.Metering.PendingChargeSweepTest do
   end
 
   setup_all do
-    unless Process.whereis(@repo) do
-      {:ok, _pid} = @repo.start_link()
-    end
+    # Supervised by ExUnit, the Repo stops before the next module starts. A
+    # linked Repo stopped asynchronously after the module, while the next
+    # module could already have found it running.
+    unless SystemsRuntime.Proc.whereis(@repo), do: start_supervised!(@repo)
 
     Ecto.Migrator.run(@repo, :up, all: true)
     Ecto.Adapters.SQL.Sandbox.mode(@repo, :manual)
@@ -219,7 +220,7 @@ defmodule BillingCore.Metering.PendingChargeSweepTest do
   # Inserts a pending charge with no matching pricing catalog row so the sweep
   # keeps it pending (missing_pricing) and applies backoff.
   defp seed_pending(account_id, source_key, opts \\ []) do
-    id = "pending_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+    id = "pending_" <> Base.encode16(SystemsRuntime.Proc.random_bytes(8), case: :lower)
     metered_at = Keyword.get(opts, :metered_at, ~U[2026-07-01 00:00:00Z])
     expires_at = BillingCore.Time.add_one_month(metered_at)
     attempts = Keyword.get(opts, :attempts, 0)

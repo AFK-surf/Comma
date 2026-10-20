@@ -95,6 +95,23 @@ defmodule SalixIM.TaskExecution do
     end
   end
 
+  # A Loop Task delegates setup to its assigned Worker. This admits only
+  # Agent-private Loop persistence, under the Agent principal and Task label.
+  # loop.create retains that evidence for later Loop calls and wakes.
+  def ifc_request(name, args, ctx) when name in ["loop.build", "loop.create"] do
+    with {:ok, scope, task, source} <- assigned_command(ctx),
+         {:ok, view} <- SalixIM.TaskLoop.get(task["agent_group_id"], task["conversation_id"]),
+         true <- SalixIM.TaskLoop.running?(view),
+         false <-
+           name == "loop.build" and
+             SalixAgent.DriveMount.matches?(args["path"] || "/loops/main.elf"),
+         {:ok, principal} <- SalixIFC.Codec.encode_principal({:agent, scope.agent_id}) do
+      {:ok, source, principal}
+    else
+      _ -> :none
+    end
+  end
+
   def ifc_request(_name, _args, _ctx), do: :none
 
   # An ordinary Task assigns work even when it grants no external IM effects.
@@ -102,6 +119,18 @@ defmodule SalixIM.TaskExecution do
   # The canonical assignment and consumed delegator message are the authority.
   # Source labels still pass through the same IFC kernel and provider checks.
   defp report_request("internal.send_message", args, ctx) do
+    with {:ok, scope, _task, source} <- assigned_command(ctx),
+         :ok <- permitted_effect(scope, ctx, "internal.send_message", args),
+         {:ok, principal} <- SalixIFC.Codec.encode_principal({:agent, scope.agent_id}) do
+      {:ok, source, principal}
+    else
+      _ -> :none
+    end
+  end
+
+  defp report_request(_api, _args, _ctx), do: :none
+
+  defp assigned_command(ctx) do
     origin = value(ctx, :trusted_origin) || %{}
     source_id = value(ctx, :source_message_id)
 
@@ -110,7 +139,6 @@ defmodule SalixIM.TaskExecution do
          "internal" <- origin["provider"],
          "agent_task" <- origin["conversation_kind"],
          true <- origin["agent_group_id"] == scope.group_id,
-         :ok <- permitted_effect(scope, ctx, "internal.send_message", args),
          true <- source_id in List.wrap(value(ctx, :source_message_ids)),
          {:ok, identity} <-
            ConversationSourceIdentity.decode(source_id, origin["conversation_id"]),
@@ -139,15 +167,12 @@ defmodule SalixIM.TaskExecution do
            ),
          "agent" <- command["actor_type"],
          delegator when is_binary(delegator) and delegator != "" <- task["created_by_agent_id"],
-         true <- command["agent_id"] == delegator,
-         {:ok, principal} <- SalixIFC.Codec.encode_principal({:agent, scope.agent_id}) do
-      {:ok, source_id, principal}
+         true <- command["agent_id"] == delegator do
+      {:ok, scope, task, source_id}
     else
       _ -> :none
     end
   end
-
-  defp report_request(_api, _args, _ctx), do: :none
 
   defp permitted_effect(_scope, ctx, "internal.send_message", args) do
     if args["connect_id"] == "internal" and
@@ -322,7 +347,7 @@ defmodule SalixIM.TaskExecution do
   end
 
   defp authorize_owner(group_id, user_id) do
-    case Application.get_env(:salix_im, :task_execution_owner_mod) do
+    case SystemsRuntime.get_env(:salix_im, :task_execution_owner_mod) do
       nil -> {:error, :task_execution_owner_unavailable}
       mod -> mod.authorize_owner(group_id, user_id)
     end

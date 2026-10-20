@@ -7,7 +7,7 @@ defmodule BridgeForTeamsWeb.Dashboard.DevLoginGuardTest do
   use BridgeForTeamsWeb.DashboardCase, async: true
 
   test "GET /dev/login returns 404 when the dev_login flag is off", %{conn: conn} do
-    refute Application.get_env(:bridge_for_teams_web, :dev_login, false)
+    refute SystemsRuntime.get_env(:bridge_for_teams_web, :dev_login, false)
 
     conn = get(conn, "/dev/login?email=nobody@example.com")
 

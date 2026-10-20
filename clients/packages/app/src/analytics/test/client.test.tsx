@@ -4,8 +4,8 @@ import {
   createSessionProblem,
   type SessionLifecycleSnapshot,
 } from "@comma/session-contract";
-import type { SessionBridge } from "@comma/native-bridge";
-import { createElectronSessionHostController } from "../../session/electron/electron-session-host-controller";
+import type { CoreClient } from "@comma/core-client";
+import { createCoreSessionHostController } from "../../session/core-session-host-controller";
 import {
   beginCommaMessageSend,
   captureCommaPageView,
@@ -23,6 +23,8 @@ const sdk = vi.hoisted(() => ({
   captureException: vi.fn(),
   identify: vi.fn(),
   register: vi.fn(),
+  register_once: vi.fn(),
+  get_property: vi.fn((_key: string): unknown => undefined),
   reset: vi.fn(),
   get_distinct_id: vi.fn(() => "anonymous"),
 }));
@@ -64,8 +66,10 @@ function preventDefault(event: ErrorEvent) {
 
 let dispose = () => {};
 beforeEach(() => {
+  localStorage.clear();
   vi.clearAllMocks();
   sdk.init.mockImplementation(() => sdk);
+  sdk.get_property.mockReset();
   vi.stubGlobal("COMMA_DEFINED_POSTHOG_KEY", "phc_test");
   vi.stubGlobal("COMMA_DEFINED_POSTHOG_HOST", "https://posthog.comma.test");
   vi.stubGlobal("COMMA_DEFINED_APP_VERSION", "1.2.3");
@@ -74,6 +78,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   dispose();
+  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
 
@@ -94,6 +99,72 @@ function start(userId?: string, initialSnapshot = session(userId)) {
 }
 
 describe("Comma client analytics", () => {
+  it("captures Main's launch once after session resolution", async () => {
+    const launch = { kind: "new_profile" as const, eventId: "stable-main-launch" };
+    let publish!: (snapshot: SessionLifecycleSnapshot) => void;
+    const initializing = {
+      ...session(),
+      phase: "initializing" as const,
+      principal: null,
+      session: null,
+    };
+    dispose = startCommaAnalytics({
+      runtime: "electron",
+      desktopLaunch: Promise.resolve(launch),
+      lifecycle: {
+        getSnapshotSync: () => initializing,
+        subscribe: (listener) => {
+          publish = listener;
+          return () => {};
+        },
+      },
+    });
+    await Promise.resolve();
+    expect(
+      sdk.capture.mock.calls.some(([name]) => name === "comma_desktop_launched")
+    ).toBe(false);
+    publish(session());
+    publish(session("new-user"));
+    expect(
+      sdk.capture.mock.calls.filter(([name]) => name === "comma_desktop_launched")
+    ).toEqual([["comma_desktop_launched", { launch_kind: "new_profile" }]]);
+  });
+
+  it.each([
+    { name: "development", flavor: "dev", selfhost: undefined, key: undefined },
+    { name: "self-hosted", flavor: "prod", selfhost: "true", key: undefined },
+    { name: "explicitly disabled", flavor: "prod", selfhost: undefined, key: "" },
+  ])(
+    "keeps the $name Web build from starting the SDK",
+    async ({ flavor, selfhost, key }) => {
+      vi.stubEnv("COMMA_BUILD_FLAVOR", flavor);
+      vi.stubEnv("COMMA_SELFHOST_BUILD", selfhost);
+      vi.stubEnv("COMMA_POSTHOG_KEY", key);
+      vi.stubEnv("COMMA_POSTHOG_HOST", undefined);
+      vi.stubEnv("GITHUB_SHA", "a".repeat(40));
+      // Vite loads build plugins in Node, outside this test's DOM module runner.
+      const { loadConfigFromFile } = await import("vite");
+      const loaded = await loadConfigFromFile(
+        // Forge adds its own required fields to the workspace's Vite types;
+        // a standalone Web build uses the original Vite environment.
+        { command: "build", mode: "production" } as Parameters<
+          typeof loadConfigFromFile
+        >[0],
+        "apps/web/vite.config.ts",
+        undefined,
+        "silent",
+        undefined,
+        "runner"
+      );
+      for (const name of ["COMMA_DEFINED_POSTHOG_KEY", "COMMA_DEFINED_POSTHOG_HOST"])
+        vi.stubGlobal(name, JSON.parse(loaded!.config.define![name]));
+      start("user-a");
+      expect(sdk.init).not.toHaveBeenCalled();
+      expect(sdk.identify).not.toHaveBeenCalled();
+      expect(sdk.capture).not.toHaveBeenCalled();
+    }
+  );
+
   it("reports terminal login infrastructure failures without credentials and ignores cancellation", () => {
     start();
     for (const code of [
@@ -141,18 +212,21 @@ describe("Comma client analytics", () => {
               problem: createSessionProblem("session_probe_unavailable", "initialize"),
             }
           : session(phase === "signed_in" ? "user-a" : undefined);
-      const bridge = {
-        state: Object.assign(async () => actual, {
-          get: async () => actual,
-          subscribe: (listener: (snapshot: SessionLifecycleSnapshot) => void) => {
-            publish = listener;
-            return () => {
-              publish = undefined;
-            };
-          },
-        }),
-      } as SessionBridge;
-      const controller = createElectronSessionHostController({ bridge });
+      // The core's `session` topic, as an Electron window hears it: nothing until the core answers.
+      const core = {
+        call: async () => null,
+        subscribe: (_topic: unknown, onValue: (value: unknown) => void) => {
+          publish = (lifecycle) => onValue({ phase: "unknown", lifecycle });
+          return () => {
+            publish = undefined;
+          };
+        },
+      } as unknown as CoreClient;
+      const controller = createCoreSessionHostController({
+        apiBaseUrl: "assets://.",
+        core,
+        host: "electron",
+      });
       const stop = startCommaAnalytics({
         runtime: "electron",
         lifecycle: controller.lifecycle,
@@ -162,9 +236,10 @@ describe("Comma client analytics", () => {
         controller.dispose?.();
       };
       markCommaClientReady();
-      expect(controller.lifecycle.getSnapshotSync().authority.authorityInstanceId).toBe(
-        "electron-renderer-uninitialized"
-      );
+      expect(controller.lifecycle.getSnapshotSync()).toMatchObject({
+        authority: { authorityInstanceId: "core" },
+        phase: "initializing",
+      });
       expect(sdk.reset).not.toHaveBeenCalled();
       expect(sdk.capture).not.toHaveBeenCalled();
       publish?.(actual);
@@ -189,6 +264,9 @@ describe("Comma client analytics", () => {
   );
 
   it("waits for session resolution before using persisted identity and restores common properties after reset", () => {
+    sdk.get_property.mockImplementation((key) =>
+      key === "$user_id" ? "previous-user" : undefined
+    );
     const host = start(undefined, {
       ...session(),
       phase: "initializing",
@@ -211,13 +289,15 @@ describe("Comma client analytics", () => {
   it("identifies only the stable user id, resets on logout and drops an old account's pending result", () => {
     const host = start("user-a");
     host.publish("user-a");
-    expect(sdk.identify.mock.calls).toEqual([["user-a"]]);
+    expect(sdk.identify.mock.calls).toEqual([
+      ["user-a", undefined, expect.objectContaining({ initial_landing_page: "/app" })],
+    ]);
     const finish = beginCommaMessageSend("home");
     host.publish();
     host.publish("user-b");
     finish("accepted", "runtime");
     expect(sdk.reset).toHaveBeenCalledWith(true);
-    expect(sdk.identify.mock.calls).toEqual([["user-a"], ["user-b"]]);
+    expect(sdk.identify.mock.calls.map(([id]) => id)).toEqual(["user-a", "user-b"]);
     expect(
       sdk.capture.mock.calls.some(([name]) => name === "comma_message_send_accepted")
     ).toBe(false);
@@ -265,6 +345,7 @@ describe("Comma client analytics", () => {
         $referrer: "https://private.test",
         $set_once: { email: "private@example.com" },
         text: "private message",
+        source_message_id: "msg1_1234567890123456789",
         email: "private@example.com",
         $elements: [{ text: "private" }],
       },
@@ -282,6 +363,23 @@ describe("Comma client analytics", () => {
     expect(JSON.stringify(result)).not.toContain("private");
     expect(sanitizeCommaAnalyticsEvent({ ...event, event: "$autocapture" })).toBeNull();
     expect(sanitizeCommaAnalyticsEvent({ ...event, event: "$snapshot" })).toBeNull();
+  });
+
+  it("allows only canonical source Message IDs on visible replies", () => {
+    const event: CaptureResult = {
+      uuid: "event-1",
+      event: "comma_reply_first_visible",
+      properties: { source_message_id: "msg1_1234567890123456789" },
+    };
+    expect(sanitizeCommaAnalyticsEvent(event)?.properties.source_message_id).toBe(
+      "msg1_1234567890123456789"
+    );
+    expect(
+      sanitizeCommaAnalyticsEvent({
+        ...event,
+        properties: { source_message_id: "private prompt" },
+      })?.properties
+    ).toEqual({});
   });
 
   it("reports readiness once, only after both UI commit and session resolution", () => {

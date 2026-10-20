@@ -121,7 +121,7 @@ defmodule BridgeForTeamsWeb.MeetingPreparationFixture do
             "summary" => "Technical Design",
             "status" => "confirmed",
             "hangoutLink" => "https://meet.google.com/abc-defg-hij",
-            "start" => %{"dateTime" => DateTime.to_iso8601(DateTime.utc_now())}
+            "start" => %{"dateTime" => DateTime.to_iso8601(SystemsClock.utc_now())}
           },
           %{
             "id" => "without-meet",

@@ -8,7 +8,12 @@ defmodule BridgeForTeams.Schema.AuthSession do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at, updated_at: false]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    updated_at: false,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   schema "auth_sessions" do
     field(:token_hash, :string)

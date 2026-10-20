@@ -1,5 +1,5 @@
 defmodule SalixStore.GuardETFTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias SalixStore.{GuardETF, Codec, BoundedSnapshot}
 
   test "preserves all values except the two targeted event payload fields across ETF wrappers" do

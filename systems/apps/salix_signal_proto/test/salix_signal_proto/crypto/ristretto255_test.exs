@@ -1,5 +1,5 @@
 defmodule SalixSignalProto.Crypto.Ristretto255Test do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.Crypto.Ristretto255, as: R

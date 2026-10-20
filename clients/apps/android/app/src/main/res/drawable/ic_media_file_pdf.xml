@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Central Icons (commercially licensed): IconFilePdf, round-outlined-radius-2-stroke-2.
+    Not for redistribution; see ui/icons/IconSources.kt. Tinted in code.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M5 11V6C5 4.89543 5.89543 4 7 4H14.1716C14.702 4 15.2107 4.21071 15.5858 4.58579L18.4142 7.41421C18.7893 7.78929 19 8.29799 19 8.82843V11M14 5V7C14 8.10457 14.8954 9 16 9H18"
+        android:strokeColor="#FF000000" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M4 20V15H5.75C6.57843 15 7.25 15.6716 7.25 16.5C7.25 17.3284 6.57843 18 5.75 18H4.5"
+        android:strokeColor="#FF000000" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M10 15V20H11.25C12.3333 20 14 19.5 14 17.5C14 15.5 12.3333 15 11.25 15H10Z"
+        android:strokeColor="#FF000000" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M20 15H17V20"
+        android:strokeColor="#FF000000" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M17 18H19"
+        android:strokeColor="#FF000000" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+</vector>

@@ -1,0 +1,35 @@
+{
+  "extends": "../../tsconfig.react.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.core-client.tsbuildinfo",
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "paths": {
+      "@comma/core/contract": ["../core/src/contract.ts"],
+      "@comma/core-kernel": ["../../packages/core-kernel/src/index.ts"],
+      "@comma/core-kernel/client": ["../../packages/core-kernel/src/client/index.ts"],
+      "@comma/core-kernel/testing": ["../../packages/core-kernel/src/testing.ts"],
+      "@comma/core-kernel/node-sql": ["../../packages/core-kernel/src/node-sql.ts"],
+      "@comma/core-kernel/web-worker": [
+        "../../packages/core-kernel/src/worker/relay.ts"
+      ],
+      "@comma/core/chat": ["../core/src/chat/public.ts"],
+      "@comma/core/markdown": ["../core/src/markdown/index.ts"],
+      "@comma/core/api-schemas": ["../core/src/comma/api-schemas.ts"]
+    },
+    "noEmit": false
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.json"],
+  "exclude": ["**/*.test.*", "**/*.spec.*", "**/*.stories.*"],
+  "references": [
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../core-kernel"
+    }
+  ]
+}

@@ -9,7 +9,7 @@ defmodule SalixLlm.AnthropicThinkingReplayTest do
   ordering/signature 400s — so a signature that survives capture but not replay
   is the same defect as not capturing it.
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixLlm.{Convert, Stream}
 

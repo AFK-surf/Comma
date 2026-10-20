@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from "@comma/test-utils/render";
-import { describe, expect, it } from "vitest";
+import { act, fireEvent, render, screen } from "@comma/test-utils/render";
+import { describe, expect, it, vi } from "vitest";
 import { TaskBoard, TaskBoardColumn, TASK_BOARD_COLUMN_WIDTH } from "../TaskBoard";
 import { TaskCard } from "../TaskCard";
 
@@ -54,7 +54,7 @@ describe("TaskBoard", () => {
     setElementMetric(columnViewport, "scrollHeight", 300);
     // Let the board measure its overflow, which is what arms its wheel mapping.
     fireEvent.scroll(boardViewport);
-    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    await act(() => vi.advanceTimersToNextFrame());
 
     // The board maps an ordinary mouse wheel to a sideways scroll...
     expect(fireEvent.wheel(boardViewport, { deltaY: 60 })).toBe(false);

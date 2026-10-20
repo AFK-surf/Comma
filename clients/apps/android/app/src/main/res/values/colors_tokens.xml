@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base colors. -->
+    <color name="token_bg_primary">#FFFFFF</color>
+    <color name="token_bg_secondary">#FAFAFA</color>
+    <color name="token_bg_tertiary">#F5F5F5</color>
+    <color name="token_bg_quaternary">#F1F1F1</color>
+    <color name="token_bg_brand_solid">#205BFF</color>
+    <color name="token_bg_brand_solid_hover">#1040F2</color>
+    <color name="token_bg_overlay">#111213</color>
+    <color name="token_text_primary">#1A1B1E</color>
+    <color name="token_text_secondary">#4A4C50</color>
+    <color name="token_text_tertiary">#5B5E63</color>
+    <color name="token_text_quaternary">#7F8286</color>
+    <color name="token_text_placeholder">#B6B8BB</color>
+    <color name="token_text_error_primary">#D92D20</color>
+    <color name="token_border_primary">#DFE0E2</color>
+    <color name="token_border_secondary">#F1F1F1</color>
+    <color name="token_fg_primary">#1A1B1E</color>
+    <color name="token_fg_quaternary">#7F8286</color>
+
+    <!-- Comma's mark on the home screen: the brand's white circle and black logo in both themes. -->
+    <color name="token_mark_bg">#FFFFFF</color>
+    <color name="token_mark_fg">#000000</color>
+
+    <!-- The chat composer: a raised card on the page. Eight-digit values use AARRGGBB. -->
+    <color name="token_composer_bg">#FFFFFF</color>
+    <color name="token_composer_border">#0A000000</color>
+    <!-- Elevation shadow colours; the alpha scales the theme's shadow alphas. -->
+    <color name="token_composer_shadow_ambient">#99000000</color>
+    <color name="token_composer_shadow_spot">#33000000</color>
+
+    <!-- Message colors. Eight-digit values use Android AARRGGBB order. -->
+    <color name="token_markdown_text_primary">#1A1B1E</color>
+    <color name="token_markdown_text_secondary">#7F8286</color>
+    <color name="token_markdown_text_inline_code">#1A1B1E</color>
+    <color name="token_markdown_bg_inline_code">#F5F5F5</color>
+    <color name="token_markdown_text_link">#3B7CFF</color>
+    <color name="token_markdown_bg_message">#F1F1F1</color>
+    <color name="token_markdown_bg_table">#F5F5F5</color>
+    <color name="token_markdown_border_table">#DFE0E2</color>
+    <color name="token_markdown_image_bg_primary">#B2FFFFFF</color>
+    <color name="token_markdown_image_hover">#1A000000</color>
+    <color name="token_markdown_image_bar_border">#DFE0E2</color>
+
+    <!-- Foreground status colors: Success/600 and Error/600. -->
+    <color name="token_fg_success">#079455</color>
+    <color name="token_fg_error">#D92D20</color>
+    <!-- No semantic attention token exists; use the Yellow/500 palette entry. -->
+    <color name="token_fg_attention">#EAAA08</color>
+
+    <!-- Task labels use the same palette in light and dark themes. -->
+    <color name="token_label_gray">#B6B8BB</color>
+    <color name="token_label_blue">#0BA5EC</color>
+    <color name="token_label_indigo">#6172F3</color>
+    <color name="token_label_purple">#7A5AF8</color>
+    <color name="token_label_pink">#F670C7</color>
+    <color name="token_label_orange">#F38744</color>
+    <color name="token_label_warning">#FAC515</color>
+    <color name="token_label_success">#47CD89</color>
+    <color name="token_label_error">#F97066</color>
+    <color name="token_label_brand">#205BFF</color>
+    <color name="token_bg_error_primary">#FEF3F2</color>
+    <color name="token_border_error">#FDA29B</color>
+    <!-- The minimized call: a dark card hanging from the top of the screen in both themes.
+         Light: the dark theme's page colour. Dark: a step up from the page, with an edge.
+         Its controls use the dark theme's quaternary fill and primary text. -->
+    <color name="token_call_card_bg">#0F0F10</color>
+    <color name="token_call_card_border">#00000000</color>
+    <color name="token_call_card_control">#343538</color>
+    <color name="token_call_card_control_on">#F6F6F6</color>
+    <color name="token_call_card_fg">#FFFFFF</color>
+
+    <!-- The tab shell, sheets and grouped surfaces, as the iOS app draws them. -->
+    <!-- A sheet's own surface, and cards on the page. -->
+    <color name="token_card_primary">#FFFFFF</color>
+    <!-- The colour a glass control shows over the page; Android draws the glass as this fill. -->
+    <color name="token_glass_over_page">#EBFAFAFA</color>
+    <!-- Glass over a frosted backdrop (the tab bar, the status switcher): the blur shows through it. -->
+    <color name="token_glass_frosted">#A6FAFAFA</color>
+    <!-- The selected segment inside glass: the tab bar's and the status switcher's pill. -->
+    <color name="token_glass_selection">#14000000</color>
+    <!-- A glass control's hairline edge. -->
+    <color name="token_glass_border">#14000000</color>
+    <!-- A pressed Task row. -->
+    <color name="token_sidebar_item">#DFE0E2</color>
+    <!-- Quiet glyphs: Backlog and In progress, and a platform without a logo. -->
+    <color name="token_sidebar_icon">#7F8286</color>
+    <!-- Cancelled Tasks, in both themes. -->
+    <color name="token_cancelled">#F04438</color>
+    <!-- Ink over a grouped surface: a pressed row, chips and the search capsule (6% of the text colour). -->
+    <color name="token_surface_ink">#0F1A1B1E</color>
+</resources>

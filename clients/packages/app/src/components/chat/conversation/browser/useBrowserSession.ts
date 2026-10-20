@@ -1,185 +1,83 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { CommaApiClient } from "../../../../api";
+import { useCall, useTopic } from "@comma/core-client";
+import { useEffect, useRef, useState } from "react";
 import type {
-  BrowserBinding,
-  BrowserInput,
-  BrowserResult,
-} from "../../../../api/browser";
-import type { BrowserError, BrowserStatus } from "./browserMessages";
+  BrowserViewInput as BrowserInput,
+  SessionBrowserBinding as BrowserBinding,
+} from "@comma/core/contract";
 import { useBrowserStream } from "./useBrowserStream";
+
+const ignore = () => undefined;
 
 /**
  * One viewer's session with an agent's browser: the tab it shows, who controls
- * that tab, and the reader's input while they do. The parent keys the viewer
- * by browser, so a different browser mounts a new session.
+ * that tab, and the reader's input while they do. The core reads the tabs,
+ * streams the tab and sends the input (`browserView`); the parent keys the
+ * viewer by browser, so a different browser mounts a new session.
  */
 export function useBrowserSession(
-  api: CommaApiClient,
   workspaceId: string,
   binding: BrowserBinding,
   onRefresh: () => void
 ) {
+  const call = useCall();
   const [viewerId] = useState(() => crypto.randomUUID());
   const [browser] = useState(binding);
-  const [tabs, setTabs] = useState<NonNullable<BrowserResult["tabs"]>>([]);
-  const [tab, setTab] = useState("");
-  const [status, setStatus] = useState<BrowserStatus>("loading");
-  const [error, setError] = useState<BrowserError>();
-  const [storageError, setStorageError] = useState(binding.storage_error);
-  const [controlling, setControlling] = useState(false);
-  const [pending, setPending] = useState(false);
-  const [refresh, setRefresh] = useState(0);
-  const controlVersion = useRef("");
+  const view = {
+    workspace: workspaceId,
+    agent: browser.agent_id,
+    session: browser.session_id,
+    viewer: viewerId,
+  };
+  // The stream stops as soon as the panel closes.
+  const { value } = useTopic({ topic: "browserView", ...view }, { lingerMs: 0 });
   const alive = useRef(true);
-  const inputQueue = useRef<BrowserInput[]>([]);
-  const draining = useRef(false);
-  const controls = useRef(false);
-  controls.current = controlling;
-  const target = useRef("");
-  target.current = `${browser?.agent_id}/${browser?.session_id}/${tab}`;
-  const clearInput = useCallback(() => {
-    inputQueue.current = [];
-  }, []);
-
   useEffect(() => {
     alive.current = true;
     return () => {
       alive.current = false;
-      inputQueue.current = [];
     };
   }, []);
+  const { canvas, viewport } = useBrowserStream(value?.frame ?? null);
+  const controlling = value?.controlling ?? false;
 
-  useEffect(() => {
-    controlVersion.current = "";
-    setTab("");
-    setTabs([]);
-    setControlling(false);
-    inputQueue.current = [];
-    if (!browser) return;
-    let current = true;
-    api
-      .browserCommand(workspaceId, browser, viewerId, "tabs")
-      .then((result) => {
-        if (!current) return;
-        setTabs(result.tabs ?? []);
-        setTab(result.tabs?.[0]?.tab_id ?? "");
-      })
-      .catch(() => {
-        if (current) setError("tabs");
-      });
-    return () => {
-      current = false;
-    };
-  }, [api, workspaceId, browser, viewerId, refresh]);
-
-  const { canvas, viewport } = useBrowserStream({
-    api,
-    browser,
-    clearInput,
-    controlVersion,
-    refresh,
-    setControlling,
-    setError,
-    setStatus,
-    setStorageError,
-    tab,
-    viewerId,
-    workspaceId,
-  });
-
-  const command = async (operation: string) => {
-    if (!browser || pending) return;
-    setPending(true);
-    const captured = target.current;
-    setError(undefined);
-    try {
-      const result = await api.browserCommand(
-        workspaceId,
-        browser,
-        viewerId,
-        operation,
-        {
-          tab_id: tab,
-        }
-      );
-      if (alive.current && target.current === captured) {
-        controlVersion.current = result.updated_at;
-        setControlling(operation === "take_control");
-        setStorageError(result.storage_error);
-        if (result.status === "closed") onRefresh();
-      }
-    } catch {
-      if (alive.current) setError("control");
-    } finally {
-      if (alive.current) setPending(false);
-    }
-  };
-  // Input reaches the tab one command at a time, in order, while this reader
-  // still controls the same tab.
-  const send = (input: BrowserInput) => {
-    if (!browser || !controls.current) return;
-    if (inputQueue.current.length >= 32) {
-      setError("queueFull");
-      return;
-    }
-    inputQueue.current.push(input);
-    if (draining.current) return;
-    draining.current = true;
-    const captured = target.current;
-    void (async () => {
-      try {
-        while (
-          alive.current &&
-          controls.current &&
-          captured === target.current &&
-          inputQueue.current.length
-        ) {
-          const next = inputQueue.current.shift();
-          if (!next) break;
-          await api.browserCommand(workspaceId, browser, viewerId, "input", {
-            tab_id: tab,
-            input: next,
-          });
-        }
-      } catch {
-        if (alive.current) {
-          setControlling(false);
-          setError("input");
-        }
-      } finally {
-        inputQueue.current = [];
-        draining.current = false;
-      }
-    })();
+  const command = (
+    operation: "take_control" | "return_control" | "close" | "clear_storage"
+  ) => {
+    void call("browserView.command", { ...view, operation }).then(({ closed }) => {
+      if (closed && alive.current) onRefresh();
+    }, ignore);
   };
 
   return {
     browser,
     canvas,
-    clearStorage: () => void command("clear_storage"),
-    closeBrowser: () => void command("close"),
+    clearStorage: () => command("clear_storage"),
+    closeBrowser: () => command("close"),
     controlling,
-    error,
-    pending,
+    error: value?.error ?? undefined,
+    pending: value?.pending ?? false,
     reconnect: () => {
-      setControlling(false);
-      inputQueue.current = [];
-      setRefresh((value) => value + 1);
+      void call("browserView.reconnect", view).catch(ignore);
       onRefresh();
     },
     selectTab: (tabId: string) => {
-      setControlling(false);
-      setTab(tabId);
+      void call("browserView.selectTab", { ...view, tab: tabId }).catch(ignore);
     },
-    send,
+    // Input reaches the tab one command at a time, in order, while this reader
+    // still controls the same tab.
+    send: (input: BrowserInput) => {
+      if (!controlling) return;
+      void call("browserView.input", { ...view, input }).catch(ignore);
+    },
     // Logins and site storage are shared across the Workspace's tasks unless
     // this browser runs with temporary storage.
     sharedStorage: browser.shared_storage !== false,
-    status,
-    storageError,
-    tab,
-    tabs,
-    toggleControl: () => void command(controlling ? "return_control" : "take_control"),
+    status: value?.status ?? "loading",
+    storageError:
+      value && "storageError" in value ? value.storageError : binding.storage_error,
+    tab: value?.tab ?? "",
+    tabs: value?.tabs ?? [],
+    toggleControl: () => command(controlling ? "return_control" : "take_control"),
     viewport,
   };
 }

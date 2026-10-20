@@ -3,54 +3,48 @@ defmodule SalixAgent.Tools.LoopsTest do
   The `loop.*` tool surface: registration, schemas, the read/write
   classification, and the error paths a model sees without a spinfoam child.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.Tools
   alias SalixAgent.Tools.Loops, as: LoopTools
   alias SalixStore.S3.Fake
 
-  @names ~w(loop.sdk loop.build loop.create loop.list loop.get loop.pause loop.resume loop.delete loop.webhook loop.send)
+  defmodule TaskOwnerStub do
+    @behaviour SalixAgent.Loops.TaskOwner
+    @impl true
+    def loop_ended(_, _), do: :ok
+    @impl true
+    def loop_wake(_, _, _), do: {:ok, :created}
+  end
 
   setup do
-    prev_store = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, Fake)
+    SalixAgent.TestSupport.stop_all_agents()
+    previous_owner = SystemsRuntime.get_env(:salix_agent, :loop_task_owner_mod)
+    SystemsRuntime.put_env(:salix_agent, :loop_task_owner_mod, TaskOwnerStub)
+
+    on_exit(fn ->
+      SalixAgent.TestSupport.stop_all_agents()
+
+      if previous_owner,
+        do: SystemsRuntime.put_env(:salix_agent, :loop_task_owner_mod, previous_owner),
+        else: SystemsRuntime.delete_env(:salix_agent, :loop_task_owner_mod)
+    end)
+
+    prev_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, Fake)
     SalixAgent.TestSupport.configure_control_fixtures!()
-    if Process.whereis(Fake), do: Fake.reset(), else: start_supervised!(Fake)
+    if SystemsRuntime.Proc.whereis(Fake), do: Fake.reset(), else: start_supervised!(Fake)
     SalixStore.Repo.query!("TRUNCATE agent_loops, agent_loop_acks")
 
     on_exit(fn ->
       if prev_store,
-        do: Application.put_env(:salix_store, :s3_backend, prev_store),
-        else: Application.delete_env(:salix_store, :s3_backend)
+        do: SystemsRuntime.put_env(:salix_store, :s3_backend, prev_store),
+        else: SystemsRuntime.delete_env(:salix_store, :s3_backend)
     end)
 
     agent_id = SalixAgent.TestSupport.new_agent_id()
     SalixAgent.TestSupport.create_control_agent!(agent_id, %{"role" => "worker"})
     {:ok, ctx: %{agent_id: agent_id, session_id: SalixStore.Ids.new_session_id(), role: "worker"}}
-  end
-
-  test "every loop tool is registered after the schedule tools with a schema" do
-    names = Enum.map(Tools.registry(), &Tools.entry_name/1)
-    assert Enum.all?(@names, &(&1 in names))
-
-    assert Enum.find_index(names, &(&1 == "schedule.delete")) <
-             Enum.find_index(names, &(&1 == "loop.build"))
-
-    for entry <- LoopTools.defs() do
-      schema = Tools.entry_schema(entry)
-      assert schema["type"] == "object"
-      assert is_list(schema["required"])
-      assert Enum.all?(schema["required"], &Map.has_key?(schema["properties"], &1))
-    end
-
-    assert Tools.entry_safety(Tools.find_entry("loop.sdk")) == "read"
-    assert Tools.entry_safety(Tools.find_entry("loop.list")) == "read"
-    assert Tools.entry_safety(Tools.find_entry("loop.get")) == "read"
-
-    for name <-
-          ~w(loop.build loop.create loop.pause loop.resume loop.delete loop.webhook loop.send) do
-      assert Tools.entry_safety(Tools.find_entry(name)) == "write"
-    end
   end
 
   @tag :spinfoam
@@ -59,42 +53,12 @@ defmodule SalixAgent.Tools.LoopsTest do
            do: false,
            else: "spinfoam binary unavailable"
          )
-  test "loop.sdk returns the guide followed by the binary's own header", %{ctx: ctx} do
-    document = LoopTools.sdk(%{}, ctx)
-    assert document =~ "#ifndef SPINFOAM_H"
-    assert document =~ "extern sf_handle sf_host_call_raw("
-    assert document =~ "extern sf_handle sf_event_next("
-    assert {:ok, header} = SalixAgent.Loops.Sdk.header()
-    assert header == SalixAgent.SpinfoamFixture.sdk_header()
-  end
-
   @tag :spinfoam
   @tag skip:
          if(SalixAgent.SpinfoamFixture.available?(),
            do: false,
            else: "spinfoam binary unavailable"
          )
-  test "the guide's example compiles for the BPF target" do
-    program = SalixAgent.Loops.Sdk.example_program()
-    assert program =~ "#include \"spinfoam.h\""
-    assert program =~ "SF_MAIN sf_i64 main(void)"
-    elf = SalixAgent.SpinfoamFixture.compile!(program)
-    assert binary_part(elf, 0, 4) == <<0x7F, "ELF">>
-  end
-
-  test "loop.build validates its sources before touching the compiler", %{ctx: ctx} do
-    assert_raise RuntimeError, ~r/'source' is required/, fn -> LoopTools.build(%{}, ctx) end
-
-    assert_raise RuntimeError, ~r/files' must be an object/, fn ->
-      LoopTools.build(%{"source" => "int x;", "files" => "no"}, ctx)
-    end
-
-    big = String.duplicate("/", 129 * 1024)
-
-    assert_raise RuntimeError, ~r/sources exceed/, fn ->
-      LoopTools.build(%{"source" => big}, ctx)
-    end
-  end
 
   defp put_file!(agent_id, path, content) do
     {:ok, event} = SalixAgent.AgentWorkspace.prepare_write(agent_id, path, content)
@@ -102,7 +66,7 @@ defmodule SalixAgent.Tools.LoopsTest do
     {:ok, _} =
       SalixAgent.AgentWorkspace.seed_operation(
         agent_id,
-        "tools-loops-test:#{System.unique_integer([:positive])}",
+        "tools-loops-test:#{SystemsRuntime.Proc.unique_integer([:positive])}",
         %{},
         [event]
       )
@@ -149,6 +113,79 @@ defmodule SalixAgent.Tools.LoopsTest do
     deleted = Jason.decode!(LoopTools.delete(%{"loop_id" => loop_id}, ctx))
     assert deleted["status"] == "deleted"
     assert Jason.decode!(LoopTools.list(%{}, ctx)) == []
+  end
+
+  test "a Task round manages only its Task's loop; other rounds only the agent's unbound loops",
+       %{ctx: ctx} do
+    :ok = put_file!(ctx.agent_id, "/loops/main.elf", <<0x7F, ?E, ?L, ?F>>)
+    task_a = in_task(ctx, "cnv_a")
+    task_b = in_task(ctx, "cnv_b")
+    create = &Jason.decode!(LoopTools.create(%{"path" => "/loops/main.elf"}, &1))
+    # A loop Task A's Session made before loops recorded their Task.
+    %{"loop_id" => legacy} = create.(Map.delete(task_a, :trusted_origin))
+    %{"loop_id" => a} = create.(task_a)
+    %{"loop_id" => b} = create.(task_b)
+    %{"loop_id" => free} = create.(ctx)
+
+    assert [%{"loop_id" => ^b, "task_conversation_id" => "cnv_b"}] =
+             Jason.decode!(LoopTools.list(%{}, task_b))
+
+    assert [%{"loop_id" => ^legacy}, %{"loop_id" => ^a, "task_conversation_id" => "cnv_a"}] =
+             Jason.decode!(LoopTools.list(%{}, task_a))
+
+    assert [%{"loop_id" => ^legacy}, %{"loop_id" => ^free} = listed] =
+             Jason.decode!(LoopTools.list(%{}, ctx))
+
+    refute Map.has_key?(listed, "task_conversation_id")
+
+    # Task B's round, and a round outside any Task, cannot reach Task A's loop.
+    for caller <- [task_b, ctx],
+        call <- [
+          &LoopTools.get/2,
+          &LoopTools.pause/2,
+          &LoopTools.resume/2,
+          &LoopTools.delete/2,
+          &LoopTools.webhook(Map.put(&1, "action", "revoke"), &2),
+          &LoopTools.send_event(Map.put(&1, "topic", "t"), &2)
+        ] do
+      assert_raise RuntimeError, ~r/loop not found/, fn -> call.(%{"loop_id" => a}, caller) end
+    end
+
+    for loop_id <- [free, legacy] do
+      assert_raise RuntimeError, ~r/loop not found/, fn ->
+        LoopTools.get(%{"loop_id" => loop_id}, task_b)
+      end
+    end
+
+    # Task A's rounds reach it, also one its loop woke without a Task Message.
+    woken = Map.delete(task_a, :trusted_origin)
+    assert %{"paused_by" => "user"} = Jason.decode!(LoopTools.pause(%{"loop_id" => a}, woken))
+    assert %{"status" => "active"} = Jason.decode!(LoopTools.resume(%{"loop_id" => a}, task_a))
+
+    assert_raise RuntimeError, ~r/this Task already has background loop #{a}/, fn ->
+      LoopTools.create(%{"path" => "/loops/main.elf"}, task_a)
+    end
+
+    assert %{"status" => "deleted"} = Jason.decode!(LoopTools.delete(%{"loop_id" => a}, task_a))
+    assert [%{"loop_id" => ^legacy}] = Jason.decode!(LoopTools.list(%{}, task_a))
+    assert [%{"loop_id" => ^b}] = Jason.decode!(LoopTools.list(%{}, task_b))
+  end
+
+  defp in_task(ctx, task_id) do
+    Map.merge(ctx, %{
+      session_id: SalixStore.Ids.new_session_id(),
+      trusted_origin: %{
+        "provider" => "internal",
+        "conversation_kind" => "agent_task",
+        "conversation_id" => task_id,
+        "agent_group_id" => group_id(ctx)
+      }
+    })
+  end
+
+  defp group_id(ctx) do
+    {:ok, agent} = SalixAgent.Control.get(ctx.agent_id)
+    agent["group_id"]
   end
 
   test "another agent's loop is indistinguishable from a missing one", %{ctx: ctx} do

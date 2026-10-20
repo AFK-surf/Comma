@@ -2,9 +2,9 @@ defmodule AlertRouter.Web.GrafanaHMAC do
   @moduledoc "Grafana webhook HMAC-SHA256 verifier with timestamp replay bound."
 
   @spec verify(Plug.Conn.t(), binary(), DateTime.t()) :: :ok | {:error, term()}
-  def verify(conn, raw_body, now \\ DateTime.utc_now())
+  def verify(conn, raw_body, now \\ SystemsClock.utc_now())
       when is_binary(raw_body) and is_struct(now, DateTime) do
-    config = Application.get_env(:alert_router, :grafana_webhook, [])
+    config = SystemsRuntime.get_env(:alert_router, :grafana_webhook, [])
 
     with secret when is_binary(secret) and byte_size(secret) >= 32 <- config[:secret],
          {:ok, signature} <- one_header(conn, config[:signature_header]),

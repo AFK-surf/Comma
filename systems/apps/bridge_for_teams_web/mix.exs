@@ -28,6 +28,7 @@ defmodule BridgeForTeamsWeb.MixProject do
 
   defp deps do
     [
+      {:systems_clock, in_umbrella: true},
       {:systems_observability, in_umbrella: true},
       {:bridge_for_teams_core, in_umbrella: true},
       # Contract E2E: authenticated BFT HTTP consumes the actual Salix
@@ -36,8 +37,9 @@ defmodule BridgeForTeamsWeb.MixProject do
       {:bandit, "~> 1.5"},
       {:plug, "~> 1.16"},
       {:jason, "~> 1.4"},
-      # Dashboard LiveView stack (port 4101). Reuses phoenix_pubsub already in
-      # the umbrella; Bandit is the adapter.
+      # Dashboard Phoenix stack (port 4101). Reuses phoenix_pubsub already in
+      # the umbrella; Bandit is the adapter. phoenix_live_view provides
+      # Phoenix.Component and HEEx for the server-rendered login pages.
       {:phoenix, "~> 1.7.14"},
       {:phoenix_ecto, "~> 4.6"},
       {:phoenix_html, "~> 4.1"},
@@ -48,8 +50,7 @@ defmodule BridgeForTeamsWeb.MixProject do
       {:mdex, "~> 0.13"},
       {:tailwind, "~> 0.2", runtime: Mix.env() == :dev},
       {:esbuild, "~> 0.8", runtime: Mix.env() == :dev},
-      {:phoenix_live_reload, "~> 1.5", only: :dev},
-      {:lazy_html, ">= 0.1.0", only: :test}
+      {:phoenix_live_reload, "~> 1.5", only: :dev}
     ]
   end
 end

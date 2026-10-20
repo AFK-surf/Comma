@@ -341,35 +341,6 @@ defmodule SalixAgent.EventArchive.Emit do
     safe(fn -> record(:egress, payload, from_context(context, session_id), reservation) end)
   end
 
-  @doc """
-  Boundary 6, external-runtime arm — what an off-node loop asserted back to us.
-
-  An external-runtime agent runs its own loop on the customer's infrastructure.
-  Its provider traffic (boundaries 2 and 3) happens where we cannot see it, and
-  no amount of instrumentation here will change that — that limit is stated in
-  `systems/AGENTS.md` rather than papered over. What DOES cross into this
-  system is the events the runtime commits, and those are its outputs: they are
-  what a reader would otherwise have to take on trust.
-
-  `kind` distinguishes the commit paths (`:commit`, `:append`) so a reader can
-  tell a batch from a single appended event.
-  """
-  def external_runtime_events(agent_id, session_id, kind, events) do
-    safe(fn ->
-      payload = %{
-        "external_runtime" => true,
-        "commit" => to_string(kind),
-        "events" => events
-      }
-
-      record(:egress, payload,
-        agent_id: agent_id,
-        session_id: session_id,
-        tenant_id: tenant_from_agent(agent_id)
-      )
-    end)
-  end
-
   # `EventArchive.record/1` wraps only the ADAPTER call. Everything else —
   # sanitize/1, scrub_credentials/1, shape_response/1, context extraction —
   # runs in the LOOP's own process, and argument expressions are evaluated

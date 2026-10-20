@@ -22,12 +22,10 @@ theorem admitted_inner_ledger_frame {s e t : Term} {j r : List Term}
   have notConsume : (e.get (b "type") == b "queue_consume") = false :=
     Bool.eq_false_iff.mpr (fun h => excluded.2.1 (binary_beq_true h))
   have notArchive : (e.get (b "type") == b "archive_advance") = false :=
-    Bool.eq_false_iff.mpr (fun h => excluded.2.2.1 (binary_beq_true h))
-  have notCompact : (e.get (b "type") == b "session_microcompact") = false :=
-    Bool.eq_false_iff.mpr (fun h => excluded.2.2.2 (binary_beq_true h))
+    Bool.eq_false_iff.mpr (fun h => excluded.2.2 (binary_beq_true h))
   unfold inner at h
   simp only [notAppend, notLog, notSeed, notRuntime, notDelivery, notAck, notConsume, notArchive,
-    notCompact, Bool.false_and, Bool.false_eq_true, ↓reduceIte, ite_ok_iff] at h
+    Bool.false_and, Bool.false_eq_true, ↓reduceIte, ite_ok_iff] at h
   ledger_frame_walk h
 
 end VerifiedKernel.Session.WorkConservation

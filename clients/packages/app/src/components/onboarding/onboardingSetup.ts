@@ -1,9 +1,8 @@
-import type { SideChatShortcut } from "@comma/native-bridge";
 import type { OutgoingBubbleFrame } from "../chat/motion/outgoingBubbleMotion";
 
 /**
- * `overlay`: inside the product window (web). The experience covers the app
- * shell and blurs it.
+ * `overlay`: inside the product window (the desktop app off macOS). The
+ * experience covers the app shell and blurs it.
  * `window`: the Electron full-screen onboarding window. The page is
  * transparent over the desktop; the experience paints its own light.
  */
@@ -101,11 +100,6 @@ export type OnboardingLine =
   /** Answers the user's reply, line by line, before the next question. */
   | { kind: "bridge"; result: OnboardingItemResult; index: number }
   /**
-   * Once every item is answered, where the Side Chat can be brought out (the
-   * macOS app, with its shortcut set): what it is and the shortcut for it.
-   */
-  | { kind: "side-chat"; shortcut: SideChatShortcut }
-  /**
    * Once every item is answered: what the user left off (apps not connected,
    * grants not allowed), so they know what to turn on later.
    */
@@ -129,7 +123,7 @@ export function onboardingMissing(results: OnboardingResults): OnboardingMissing
 type Sent = {
   /** Its place in the thread; messages are only ever added. */
   id: number;
-  /** When it was sent and when it landed, on the `performance.now()` clock. */
+  /** When it was sent and when it landed, on the UI clock (`uiClock.monotonic()`). */
   sentAt: number;
   landedAt: number | undefined;
   /**
@@ -186,14 +180,14 @@ export type OnboardingStart =
 
 /**
  * The Open Comma shortcut step: when the user had pressed every key of the
- * shortcut, on the `performance.now()` clock.
+ * shortcut, on the UI clock (`uiClock.monotonic()`).
  */
 export type OnboardingShortcutStep = { pressedAt: number | undefined };
 
 export type OnboardingThread = {
   items: readonly OnboardingItemId[];
   phase: OnboardingPhase;
-  /** When the conversation started, on the `performance.now()` clock. */
+  /** When the conversation started, on the UI clock (`uiClock.monotonic()`). */
   startedAt: number;
   messages: readonly OnboardingMessage[];
   /** The item whose card is up, under its question. */
@@ -202,16 +196,11 @@ export type OnboardingThread = {
   finishing: { result: OnboardingItemResult; at: number } | undefined;
   results: OnboardingResults;
   /**
-   * The Open Comma shortcut step, where it is offered; none elsewhere (the
-   * web, no Open Comma shortcut set), and the welcome page follows the
+   * The Open Comma shortcut step, where it is offered; none elsewhere (off
+   * macOS, no Open Comma shortcut set), and the welcome page follows the
    * conversation.
    */
   shortcut: OnboardingShortcutStep | undefined;
-  /**
-   * The Side Chat shortcut, where Comma tells of the Side Chat once every
-   * item is answered; none elsewhere (the web, no Side Chat shortcut set).
-   */
-  sideChat: SideChatShortcut | undefined;
 };
 
 export type OnboardingThreadAction =
@@ -257,8 +246,6 @@ export type OnboardingThreadAction =
    * or not; it can change until the conversation is over.
    */
   | { type: "offer-shortcut"; offered: boolean }
-  /** The Side Chat shortcut Comma tells of, as it is set; it can change until then. */
-  | { type: "offer-side-chat"; shortcut: SideChatShortcut | undefined }
   /** The conversation is over: the Open Comma shortcut step starts. */
   | { type: "shortcut"; at: number }
   /** The user has pressed every key of the shortcut. */
@@ -295,10 +282,7 @@ export function pendingOnboardingLine(
   const item = nextOnboardingItem(thread);
   if (item) return { kind: "question", item };
   if (line.kind === "recap") return undefined;
-  // The last item answered: the Side Chat first, then what is still off.
-  if (thread.sideChat && line.kind !== "side-chat") {
-    return { kind: "side-chat", shortcut: thread.sideChat };
-  }
+  // The last item answered: what is still off.
   const missing = onboardingMissing(thread.results);
   return missing.length > 0 ? { kind: "recap", missing } : undefined;
 }
@@ -335,9 +319,9 @@ export type OnboardingStep =
   | { type: "welcome" };
 
 /**
- * The onboarding's next step and when it is due, on the `performance.now()`
- * clock; none while it waits for the user (a card is up, the Side Chat
- * shortcut not pressed yet) or for a message to land.
+ * The onboarding's next step and when it is due, on the UI clock
+ * (`uiClock.monotonic()`); none while it waits for the user (a card is up,
+ * the Open Comma shortcut not pressed yet) or for a message to land.
  */
 export function nextOnboardingStep(
   thread: OnboardingThread,
@@ -443,7 +427,6 @@ export function initialOnboardingThread({
   items,
   results = {},
   shortcut = false,
-  sideChat,
   speaker,
   start = "intro",
 }: {
@@ -452,8 +435,6 @@ export function initialOnboardingThread({
   results?: OnboardingResults | undefined;
   /** Whether the Open Comma shortcut step is offered. */
   shortcut?: boolean | undefined;
-  /** The Side Chat shortcut Comma tells of, where it does. */
-  sideChat?: SideChatShortcut | undefined;
   /** The assistant's name as the flow starts. */
   speaker: string;
   start?: OnboardingStart | undefined;
@@ -466,7 +447,6 @@ export function initialOnboardingThread({
     phase: "conversation",
     results: {},
     shortcut: shortcut ? unstartedShortcut : undefined,
-    sideChat,
     startedAt: at,
   };
   if (start === "intro") return { ...thread, phase: "intro" };
@@ -482,13 +462,12 @@ export function initialOnboardingThread({
     };
   }
   if (start === "shortcut") {
-    // Every item answered, the Side Chat and the recap said: the
-    // conversation has stepped back.
+    // Every item answered and the recap said: the conversation has stepped
+    // back.
     let said = initialOnboardingThread({
       at,
       items,
       results,
-      sideChat,
       speaker,
       start: `after-${items.at(-1) ?? "apps"}`,
     });
@@ -546,12 +525,6 @@ export function onboardingThreadReducer(
       thread.phase === "shortcut"
       ? { ...thread, messages: landAll(thread.messages, action.at), phase: "welcome" }
       : thread;
-  }
-  if (action.type === "offer-side-chat") {
-    if (thread.phase !== "intro" && thread.phase !== "conversation") return thread;
-    return action.shortcut === thread.sideChat
-      ? thread
-      : { ...thread, sideChat: action.shortcut };
   }
   if (action.type === "offer-shortcut") {
     if (thread.phase !== "intro" && thread.phase !== "conversation") return thread;

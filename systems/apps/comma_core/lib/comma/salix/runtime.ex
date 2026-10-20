@@ -18,7 +18,7 @@ defmodule Comma.Salix.Runtime do
   def get_workspace_agent_models(_workspace), do: {:error, :salix_client_not_configured}
 
   @impl true
-  def update_workspace_agent_model(_workspace, _role, _template_id),
+  def update_workspace_agent_model(_workspace, _role, _model),
     do: {:error, :salix_client_not_configured}
 
   @impl true
@@ -44,6 +44,9 @@ defmodule Comma.Salix.Runtime do
 
   @impl true
   def list_group_conversations(_workspace, _opts), do: {:error, :salix_client_not_configured}
+
+  @impl true
+  def list_group_activity_tasks(_workspace), do: {:error, :salix_client_not_configured}
 
   @impl true
   def search_group_tasks(_workspace, _query, _opts),
@@ -94,6 +97,16 @@ defmodule Comma.Salix.Runtime do
     do: {:error, :salix_client_not_configured}
 
   @impl true
+  def list_station_tasks(_workspace), do: {:error, :salix_client_not_configured}
+
+  @impl true
+  def subscribe_station_tasks(_workspace, _subscriber), do: {:error, :salix_client_not_configured}
+
+  @impl true
+  def subscribe_group_conversation_mutations(_workspace, _subscriber),
+    do: {:error, :salix_client_not_configured}
+
+  @impl true
   def subscribe_group_conversation_participant(
         _workspace,
         _conversation_id,
@@ -132,6 +145,9 @@ defmodule Comma.Salix.Runtime do
 
   @impl true
   def set_task_archived(_, _, _, _), do: {:error, :salix_client_not_configured}
+
+  @impl true
+  def set_task_status(_, _, _, _, _), do: {:error, :salix_client_not_configured}
 
   @impl true
   def accept_task_review(_workspace, _conversation_id, _review_version),

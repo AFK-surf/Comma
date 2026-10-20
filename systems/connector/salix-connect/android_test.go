@@ -26,7 +26,7 @@ func TestAndroidRealLifecycle(t *testing.T) {
 		androidSerial:       os.Getenv("SALIX_ANDROID_SERIAL"),
 		androidGPU:          "swiftshader",
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	start := p.handle(ctx, "real-lifecycle", map[string]any{"action": "start", "lease_seconds": 60})
 	if start["ok"] != true {

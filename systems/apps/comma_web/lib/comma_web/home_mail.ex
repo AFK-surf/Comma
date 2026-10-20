@@ -17,7 +17,8 @@ defmodule CommaWeb.HomeMail do
           |> Map.put("provider", CommaWeb.ProactiveWatch.provider(value["read"]))
         end)
 
-      now = System.system_time(:millisecond)
+      # The Home Conversation records each spend on this clock.
+      now = SystemsClock.system_time(:millisecond)
 
       {:ok,
        %{
@@ -26,19 +27,32 @@ defmodule CommaWeb.HomeMail do
            budget(MailInteraction.automatic_budget(conversation, user["id"], now)),
          "notification_budget" =>
            budget(MailInteraction.notification_budget(conversation, user["id"], now)),
-         "monitors" =>
-           Enum.map(monitors, fn row ->
-             %{"loop_id" => row["id"], "status" => row["status"], "error" => row["failure"]}
-           end),
+         "monitors" => Enum.map(monitors, &monitor/1),
          "sources" => entries,
          # Whether the owner used the desktop App in the last ten minutes.
          "app_active" => Comma.Accounts.present?(user["id"]),
          # Where a notify also reaches the owner while the App is not in use.
          "personal_targets" => CommaWeb.ProactiveDelivery.personal_targets(workspace, user["id"]),
-         # The owner's notebook in their Drive, when it exists.
+         # The owner's notebook in the Router's VFS, when it exists.
          "notebook" => CommaWeb.ProactiveNotebook.locate(ctx)
        }}
     end
+  end
+
+  # Enough for the Router to tell which matter a watch follows and confirm it.
+  defp monitor(row) do
+    config = row["config"] || %{}
+
+    %{
+      "loop_id" => row["id"],
+      "key" => Path.basename(row["elf_path"] || "", ".elf"),
+      "name" => row["name"],
+      "source_ref" => config["source_ref"],
+      "provider" => CommaWeb.ProactiveWatch.provider(config["source"]),
+      "poll_interval_ms" => config["poll_interval_ms"],
+      "status" => row["status"],
+      "error" => row["failure"]
+    }
   end
 
   defp budget({:open, remaining}), do: %{"remaining" => remaining, "next_at" => nil}
@@ -117,7 +131,7 @@ defmodule CommaWeb.HomeMail do
          "mail" => decision_mail(mail),
          "home" => projected,
          "home_incomplete" => length(history) > 12 or Enum.any?(projected, & &1["truncated"]),
-         "now" => DateTime.utc_now() |> DateTime.to_iso8601()
+         "now" => SystemsClock.utc_now() |> DateTime.to_iso8601()
        }}
     end
   end
@@ -146,7 +160,7 @@ defmodule CommaWeb.HomeMail do
          true <- authorized.agent_id == ctx.agent_id and authorized.session_id == ctx.session_id,
          reason when is_binary(reason) and byte_size(reason) in 1..1000 <- args["reason"],
          {:ok, run_at, _} <- DateTime.from_iso8601(args["run_at"] || ""),
-         true <- DateTime.to_unix(run_at, :millisecond) > System.system_time(:millisecond),
+         true <- DateTime.to_unix(run_at, :millisecond) > SystemsClock.system_time(:millisecond),
          {:ok, mail} <- schedule_mail(args, ctx),
          {:ok, value} <- ensure_tracked(mail, user, ctx, home) do
       key = MailInteraction.key(mail["source"]["connection_id"], mail["thread_id"])
@@ -181,7 +195,7 @@ defmodule CommaWeb.HomeMail do
     with {:ok, workspace, user} <- ProactiveMail.scope(ctx),
          true <- ctx.agent_id == workspace["router_agent_id"],
          {:ok, home} <- home_id(ctx.group_id),
-         {:ok, mail} <- ProactiveMail.read(Map.take(args, ["message_id"]), ctx),
+         {:ok, mail} <- ProactiveMail.read(Map.take(args, ~w(message_id connection_id)), ctx),
          key = MailInteraction.key(mail["source"]["connection_id"], mail["thread_id"]),
          {:ok, value, ^user} <- entry(ctx, home, key) do
       mutate(ctx, home, %{
@@ -204,7 +218,8 @@ defmodule CommaWeb.HomeMail do
     end
   end
 
-  defp schedule_mail(args, ctx), do: ProactiveMail.read(Map.take(args, ["message_id"]), ctx)
+  defp schedule_mail(args, ctx),
+    do: ProactiveMail.read(Map.take(args, ~w(message_id connection_id)), ctx)
 
   defp ensure_tracked(mail, user, ctx, home) do
     key = MailInteraction.key(mail["source"]["connection_id"], mail["thread_id"])
@@ -286,7 +301,11 @@ defmodule CommaWeb.HomeMail do
   end
 
   defp read_value(value, ctx) do
-    with {:ok, mail} <- ProactiveMail.read(%{"message_id" => value["message_id"]}, ctx),
+    with {:ok, mail} <-
+           ProactiveMail.read(
+             %{"message_id" => value["message_id"], "connection_id" => value["account_id"]},
+             ctx
+           ),
          true <-
            mail["source"]["connection_id"] == value["account_id"] and
              mail["thread_id"] == value["thread_id"] do
@@ -331,7 +350,6 @@ defmodule CommaWeb.HomeMail do
   defp create_draft(workspace, owner, home, value, mail) do
     group = workspace["default_group_id"]
     router = workspace["router_agent_id"]
-    worker = workspace["default_worker_agent_id"]
     request = value["delegate_request_id"]
 
     command =
@@ -384,8 +402,10 @@ defmodule CommaWeb.HomeMail do
       {:ok, %{"conversation_id" => id}} ->
         Conversations.get_group_conversation(group, id)
 
+      # Choose the Task agent only for a new Task: a recovered one keeps its own.
       {:ok, %{"disposition" => "not_created"}} ->
-        SalixCluster.TaskSchedules.create_task_conversation(group, router, worker, attrs)
+        with {:ok, worker} <- CommaWeb.AgentManagement.workspace_task_agent(workspace),
+             do: SalixCluster.TaskSchedules.create_task_conversation(group, router, worker, attrs)
 
       {:ok, %{"disposition" => "reserved_task_unavailable"}} ->
         {:error, :draft_task_unavailable}
@@ -421,7 +441,7 @@ defmodule CommaWeb.HomeMail do
 
   defp valid_action_target(%{"action" => "snooze", "run_at" => at}, _ctx) when is_integer(at),
     do:
-      if(at > System.system_time(:millisecond),
+      if(at > SystemsClock.system_time(:millisecond),
         do: :ok,
         else: {:error, :future_mail_reminder_required}
       )

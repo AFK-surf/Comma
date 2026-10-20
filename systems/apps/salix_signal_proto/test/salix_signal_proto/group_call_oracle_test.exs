@@ -5,7 +5,7 @@ defmodule SalixSignalProto.GroupCallOracleTest do
   # HMAC-SHA256) on the same random inputs. The IV, MAC input, truncation and
   # frame layout are the CRS-14 rules; only the primitive steps are oracle
   # evidence. Run with `--include signal_oracle` and COMMA_SIGNAL_ORACLE set.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.GroupCall

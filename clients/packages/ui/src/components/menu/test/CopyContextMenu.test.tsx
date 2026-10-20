@@ -7,6 +7,7 @@ import { HoverCard } from "../../hover-card";
 import { CopyContextMenu } from "../CopyContextMenu";
 import { CONTEXT_SELECTION_HIGHLIGHT } from "../preserveTextSelection";
 import { useTextEditContextMenuState } from "../useTextEditContextMenuState";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 const FakeHighlight = class extends Set<AbstractRange> {
   constructor(...ranges: Range[]) {
@@ -163,11 +164,8 @@ describe("CopyContextMenu", () => {
 
   it("paints the text selection after the menu receives focus", async () => {
     const highlights = new Map<string, Highlight>();
-    Object.defineProperty(window, "Highlight", {
-      configurable: true,
-      value: FakeHighlight,
-    });
-    Object.defineProperty(CSS, "highlights", {
+    vi.stubGlobal("Highlight", FakeHighlight);
+    stubProperty(CSS, "highlights", {
       configurable: true,
       value: highlights,
     });

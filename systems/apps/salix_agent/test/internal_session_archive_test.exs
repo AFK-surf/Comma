@@ -4,7 +4,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
   fixtures. Fixture construction writes the retired layout directly; production
   business commits always use the current writer.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{
     Compaction,
@@ -20,7 +20,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
   @session "ses1_0000000000000000800"
 
   setup do
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     SalixStore.Repo.query!("TRUNCATE session_work_candidates")
     :ok
@@ -146,7 +146,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
   end
 
   test "a live-referenced result stays reachable through the archive; ack retires it to not_found" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     events =
       Enum.map(1..511, &deliver/1) ++
@@ -354,47 +354,6 @@ defmodule SalixAgent.InternalSessionArchiveTest do
     assert Enum.count(ArchiveLog.decode!(archive_bytes), &(&1.kind == "tool_result")) == 1
   end
 
-  test "format-2 microcompact is a read-side overlay and archives the original bytes" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
-    seed_format2(agent_id, Enum.map(1..300, &deliver/1))
-
-    assert {:ok, masked} =
-             InternalSessionStore.commit(agent_id, @session, [
-               %{
-                 "type" => "session_microcompact",
-                 "session_id" => @session,
-                 "message_ids" => [10],
-                 "new_content" => "[redacted]"
-               }
-             ])
-
-    raw = Enum.find(InternalSession.get(masked, :messages), &(&1[:id] == 10))
-    assert raw[:content] == "input 10"
-
-    assert [%{"seq" => 10, "replacement" => "[redacted]"}] =
-             InternalSession.get(masked, :redactions)
-
-    assert Enum.find(InternalSession.masked_messages(masked), &(&1[:id] == 10))[:content] ==
-             "[redacted]"
-
-    masked_in_context = Enum.find(Compaction.context(masked), &(&1[:id] == 10))
-    assert stringify(masked_in_context[:content]) == "[redacted]"
-
-    assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(300)])
-
-    assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
-
-    # The archived chunk carries the ORIGINAL bytes; masking stays read-side.
-    assert {:ok, %{body: bytes}} = S3.get(archive_key(agent_id))
-    archived = ArchiveLog.decode!(bytes) |> Enum.find(&(&1.seq == 10))
-    assert archived.data["content"] == "input 10"
-
-    # The overlay outlives archival for read-side masking of the archive.
-    assert {:ok, session} = InternalSessionStore.read(agent_id, @session)
-    assert [%{"seq" => 10}] = InternalSession.get(session, :redactions)
-  end
-
   # The consequence the pinned watermark exists to prevent, driven through
   # the real store: commit -> archive -> queue ack -> get_result.
   #
@@ -473,29 +432,8 @@ defmodule SalixAgent.InternalSessionArchiveTest do
     session
   end
 
-  test "an unpinned recovery summary swallows a result it never covered" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
-    seed_covered_message(agent_id)
-    land_result_and_notification(agent_id)
-
-    # No pin: the reducer derives the watermark at apply time. Every message
-    # is covered, so it falls back to last_seq — which now counts the async
-    # result that landed after the summarizer's snapshot.
-    assert {:ok, compacted} =
-             InternalSessionStore.commit(agent_id, @session, [recovery_compaction(%{})])
-
-    assert InternalSession.get(compacted, :compacted_seq) == 2
-
-    archive_then_ack(agent_id)
-
-    # Archived and its pointer retired: the model can no longer reach a
-    # result that no summary ever described.
-    assert {:error, :not_found} =
-             InternalAgentRuntime.get_async_tool_call(agent_id, @session, "call-late")
-  end
-
   test "the pinned recovery summary leaves that result reachable" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     seed_covered_message(agent_id)
 
     # The pin is taken from the snapshot the summarizer actually saw —
@@ -522,7 +460,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
   end
 
   test "message search is a live-window surface that names unsearched archive" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     seed_format2(agent_id, Enum.map(1..300, &deliver/1))
 
     assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(280)])
@@ -539,33 +477,19 @@ defmodule SalixAgent.InternalSessionArchiveTest do
     assert {:ok, %{"results" => [], "archived_not_searched" => true, "scope" => "live_window"}} =
              InternalAgentRuntime.search_messages(agent_id, "input 42")
 
-    # The window is searched masked: redacting a live message removes the
-    # original text from results and surfaces the replacement.
-    assert {:ok, _} =
-             InternalSessionStore.commit(agent_id, @session, [
-               %{
-                 "type" => "session_microcompact",
-                 "session_id" => @session,
-                 "message_ids" => [290],
-                 "new_content" => "[REDACTED-290]"
-               }
-             ])
+    assert {:ok, %{"results" => [hit]}} =
+             InternalAgentRuntime.search_messages(agent_id, "input 290")
 
-    assert {:ok, %{"results" => []}} = InternalAgentRuntime.search_messages(agent_id, "input 290")
-
-    assert {:ok, %{"results" => [masked]}} =
-             InternalAgentRuntime.search_messages(agent_id, "REDACTED-290")
-
-    assert masked["message_id"] == 290
+    assert hit["message_id"] == 290
 
     # The full transcript still reaches the archived original through the
-    # logical view (dashboard scope), masked where redacted.
+    # logical view (dashboard scope).
     assert {:ok, transcript} = InternalSessionStore.transcript(agent_id, session, :full)
     assert Enum.any?(transcript.messages, &((&1["id"] || &1[:id]) == 42))
   end
 
   test "the compaction recovery file completes its body from the archive" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     recovery_event = %{
       "type" => "compaction_recovery",
@@ -604,7 +528,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
   end
 
   test "tail and before pages read only the spans they need" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     seed_format2(agent_id, Enum.map(1..600, &deliver/1))
 
     assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(500)])
@@ -644,7 +568,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
   end
 
   test "records appended past the watermark stay outside the committed read" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     seed_format2(agent_id, Enum.map(1..300, &deliver/1))
 
     assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(280)])
@@ -684,7 +608,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
   end
 
   test "a missing archive object is a hard error, not a shortened history" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     seed_format2(agent_id, Enum.map(1..600, &deliver/1))
 
     assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(600)])
@@ -701,202 +625,6 @@ defmodule SalixAgent.InternalSessionArchiveTest do
              InternalSessionStore.transcript(agent_id, session, :full)
   end
 
-  test "microcompact fails loudly when the archive is unreadable, then succeeds after repair" do
-    agent_id = SalixAgent.TestSupport.new_agent_id()
-    SalixAgent.TestSupport.create_control_agent!(agent_id)
-
-    tool_message = %{
-      "type" => "delivery",
-      "from_queue" => true,
-      "message_id" => 5,
-      "role" => "tool",
-      "content" => "tool payload STILL-SECRET",
-      "source_message_id" => "src-tool-5b",
-      "created_at" => 1_005
-    }
-
-    events = Enum.map(1..4, &deliver/1) ++ [tool_message] ++ Enum.map(6..300, &deliver/1)
-    seed_format2(agent_id, events)
-    assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(280)])
-
-    assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
-
-    # The HWM predicate needs NO archive discovery: even with a committed
-    # chunk unreadable, the control covers every current tool message by
-    # range — there is no partial cleanup to falsely certify.
-    assert {:ok, %{body: chunk_bytes}} = S3.get(archive_key(agent_id))
-    assert :ok = S3.delete(archive_key(agent_id))
-
-    assert {:ok, %{"status" => "microcompacted"}} =
-             InternalAgentRuntime.microcompact_session_local(agent_id, @session)
-
-    assert {:ok, after_control} = InternalSessionStore.read(agent_id, @session)
-
-    assert Enum.any?(
-             InternalSession.get(after_control, :redactions),
-             &(&1["kind"] == "tool_messages_through" and (&1["through_id"] || 0) >= 5)
-           )
-
-    # Restore the chunk: the archived original masks read-side as usual.
-    {:ok, _} = S3.put(archive_key(agent_id), chunk_bytes)
-
-    assert {:ok, transcript} =
-             InternalSessionStore.transcript(agent_id, after_control, :full)
-
-    masked = Enum.find(transcript.messages, &((&1["id"] || &1[:id]) == 5))
-    assert (masked["content"] || masked[:content]) == "[microcompacted]"
-  end
-
-  test "the real microcompact control reaches archived tool messages" do
-    agent_id = SalixAgent.TestSupport.new_agent_id()
-    SalixAgent.TestSupport.create_control_agent!(agent_id)
-
-    tool_message = %{
-      "type" => "delivery",
-      "from_queue" => true,
-      "message_id" => 5,
-      "role" => "tool",
-      "content" => "tool payload SECRET-BODY",
-      "source_message_id" => "src-tool-5",
-      "created_at" => 1_005
-    }
-
-    events =
-      Enum.map(1..4, &deliver/1) ++ [tool_message] ++ Enum.map(6..300, &deliver/1)
-
-    seed_format2(agent_id, events)
-    assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(280)])
-
-    assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
-
-    assert {:ok, session} = InternalSessionStore.read(agent_id, @session)
-    assert InternalSession.archived_through(session) == 280
-    refute Enum.any?(InternalSession.get(session, :messages), &(&1[:id] == 5))
-
-    # The production entrypoint (stage_control -> actor selector -> reducer),
-    # not a hand-fed reducer event.
-    assert {:ok, %{"status" => "microcompacted"}} =
-             InternalAgentRuntime.microcompact_session_local(agent_id, @session)
-
-    assert {:ok, after_control} = InternalSessionStore.read(agent_id, @session)
-
-    # One range predicate covers the archived tool message — overlay growth
-    # is O(1) per control, not O(historical tool messages).
-    assert [%{"kind" => "tool_messages_through"} = predicate] =
-             InternalSession.get(after_control, :redactions)
-
-    assert predicate["through_id"] >= 5
-
-    # A repeated control merges instead of accumulating entries.
-    assert {:ok, _} = InternalAgentRuntime.microcompact_session_local(agent_id, @session)
-    assert {:ok, again} = InternalSessionStore.read(agent_id, @session)
-    assert length(InternalSession.get(again, :redactions)) == 1
-
-    # The archived original is masked out of every logical reader.
-    assert {:ok, transcript} = InternalSessionStore.transcript(agent_id, after_control, :full)
-    masked = Enum.find(transcript.messages, &((&1["id"] || &1[:id]) == 5))
-    assert (masked["content"] || masked[:content]) == "[microcompacted]"
-
-    # Original bytes stay in the archive underneath.
-    assert {:ok, %{body: bytes}} = S3.get(archive_key(agent_id))
-    assert bytes =~ "SECRET-BODY"
-  end
-
-  test "emergency compact masks oversized historical non-model messages across archive and window" do
-    agent_id = SalixAgent.TestSupport.new_agent_id()
-    SalixAgent.TestSupport.create_control_agent!(agent_id)
-
-    oversized = "HISTORICAL-SECRET-" <> String.duplicate("x", 1_100)
-    exact_limit = String.duplicate("y", 1_000)
-    oversized_tool = "TOOL-SECRET-" <> String.duplicate("z", 1_100)
-    oversized_runtime = "RUNTIME-SECRET-" <> String.duplicate("r", 1_100)
-    oversized_assistant = "ASSISTANT-KEPT-" <> String.duplicate("a", 1_100)
-    oversized_summary = "SUMMARY-SECRET-" <> String.duplicate("s", 1_100)
-
-    events =
-      Enum.map(1..4, &deliver/1) ++
-        [
-          deliver(5) |> Map.put("content", oversized),
-          deliver(6) |> Map.put("content", exact_limit),
-          deliver(7) |> Map.merge(%{"role" => "tool", "content" => oversized_tool}),
-          deliver(8)
-          |> Map.merge(%{
-            "role" => "runtime",
-            "content" => oversized_runtime,
-            "no_wake" => true
-          }),
-          deliver(9) |> Map.merge(%{"role" => "assistant", "content" => oversized_assistant}),
-          deliver(10)
-          |> Map.merge(%{
-            "role" => "summary",
-            "content" => oversized_summary,
-            "no_wake" => true
-          })
-        ] ++ Enum.map(11..300, &deliver/1)
-
-    seed_format2(agent_id, events)
-    assert {:ok, _} = InternalSessionStore.commit(agent_id, @session, [compaction(280)])
-
-    assert {:ok, :archived} =
-             SalixAgent.TestSupport.LegacySessionArchive.write(agent_id, @session)
-
-    assert {:ok, %{"status" => "emergency_compacted", "through_id" => 300}} =
-             InternalAgentRuntime.emergency_compact_session_local(agent_id, @session)
-
-    assert {:ok, after_control} = InternalSessionStore.read(agent_id, @session)
-
-    assert [predicate] =
-             Enum.filter(
-               InternalSession.get(after_control, :redactions),
-               &(&1["kind"] == "non_model_messages_over_bytes_through")
-             )
-
-    assert predicate["through_id"] == 300
-    assert predicate["max_bytes"] == 1_000
-
-    future = "FUTURE-SECRET-" <> String.duplicate("q", 1_100)
-
-    assert {:ok, after_future} =
-             InternalSessionStore.commit(agent_id, @session, [
-               deliver(301) |> Map.put("content", future)
-             ])
-
-    assert {:ok, transcript} = InternalSessionStore.transcript(agent_id, after_future, :full)
-    by_id = Map.new(transcript.messages, &{&1["id"] || &1[:id], &1["content"] || &1[:content]})
-
-    placeholder = "[emergency-compacted non-model message over 1000 bytes]"
-
-    assert by_id[5] == placeholder
-    assert by_id[6] == exact_limit
-    assert by_id[7] == placeholder
-    assert by_id[8] == placeholder
-    assert by_id[9] == oversized_assistant
-    assert by_id[10] == placeholder
-    assert by_id[301] == future
-
-    assert {:ok, %{"status" => "emergency_compacted", "through_id" => 301}} =
-             InternalAgentRuntime.emergency_compact_session_local(agent_id, @session)
-
-    assert {:ok, again} = InternalSessionStore.read(agent_id, @session)
-
-    assert 1 ==
-             Enum.count(
-               InternalSession.get(again, :redactions),
-               &(&1["kind"] == "non_model_messages_over_bytes_through")
-             )
-
-    assert {:ok, transcript} = InternalSessionStore.transcript(agent_id, again, :full)
-    future_message = Enum.find(transcript.messages, &((&1["id"] || &1[:id]) == 301))
-
-    assert (future_message["content"] || future_message[:content]) == placeholder
-
-    assert {:ok, %{body: raw_archive}} = S3.get(archive_key(agent_id))
-    assert raw_archive =~ "HISTORICAL-SECRET-"
-    assert raw_archive =~ "RUNTIME-SECRET-"
-  end
-
   # The async-result pointer contract, pinned end to end through the REAL
   # completion event builder and a real store round trip. Two review rounds
   # have asked whether acking the completion notification can strand the
@@ -904,7 +632,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
   test "acking the completion notification does not retire the result pointer" do
     agent_id = SalixAgent.TestSupport.new_agent_id()
     SalixAgent.TestSupport.create_control_agent!(agent_id)
-    marker = "PINNED-MARKER-#{System.unique_integer([:positive])}"
+    marker = "PINNED-MARKER-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, _} =
       InternalSessionStore.prepare_commit(agent_id, @session, [
@@ -1011,7 +739,7 @@ defmodule SalixAgent.InternalSessionArchiveTest do
   end
 
   test "a page over a sparse archive transfers only the spans holding messages" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     # 256 messages, then three spans' worth of facts, then more messages: a
     # one-message page must not transfer the fact-only spans in between.

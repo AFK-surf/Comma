@@ -1,16 +1,20 @@
 import type { ConversationViewState } from "../components/chat/composer/conversationDraft";
-import { sourceOwnerTurnKey } from "../components/chat/model/visibleReplyPresentation";
+import { sourceOwnerTurnKey } from "@comma/core/chat";
+import { uiClock } from "@comma/ui/clock";
 import {
   captureCommaExperience,
   commaAnalyticsIdentity,
   type ChatSurface,
 } from "./client";
 
-/** Observes one visible surface. Raw turn IDs stay in this in-memory observer. */
+/**
+ * Observes one visible surface. Only canonical source Message IDs leave the observer.
+ * Each duration ends when the window shows something, so the UI clock measures it.
+ */
 export function createConversationAnalytics(surface: ChatSurface) {
   let previous: ConversationViewState | undefined;
   let identity = commaAnalyticsIdentity();
-  let openedAt = performance.now();
+  let openedAt = uiClock.monotonic();
   let ready = false;
   let reconnectAt: number | undefined;
   let awaiting:
@@ -29,11 +33,11 @@ export function createConversationAnalytics(surface: ChatSurface) {
       awaiting = undefined;
       reconnectAt = undefined;
       ready = false;
-      openedAt = performance.now();
+      openedAt = uiClock.monotonic();
       identity = currentIdentity;
     }
     if (!visible) return;
-    const now = performance.now();
+    const now = uiClock.monotonic();
     const wasReady = ready;
     if (!ready && state.status === "ready") {
       ready = true;
@@ -78,6 +82,13 @@ export function createConversationAnalytics(surface: ChatSurface) {
           awaiting.firstVisible = true;
           captureCommaExperience("comma_reply_first_visible", {
             surface,
+            source_message_id: draft.sourceMessageIds
+              .toReversed()
+              .find((id) =>
+                state.messages.some(
+                  (message) => message.role === "user" && message.messageId === id
+                )
+              ),
             duration_ms: Math.round(now - awaiting.startedAt),
           });
         }

@@ -62,7 +62,7 @@ defmodule SalixStore.ReadScope do
         {ready, pending} =
           Enum.reduce(memo, {%{}, %{}}, fn
             {key, {:pending, task}}, {ready, pending} ->
-              case Task.yield(task, 0) do
+              case SystemsRuntime.Task.yield(task, 0) do
                 {:ok, {:ok, _value} = result} -> {Map.put(ready, key, result), pending}
                 {:ok, _other} -> {ready, pending}
                 {:exit, _reason} -> {ready, pending}
@@ -93,7 +93,7 @@ defmodule SalixStore.ReadScope do
         if Map.has_key?(memo, key) do
           :ok
         else
-          Process.put(@key, Map.put(memo, key, {:pending, Task.async(read)}))
+          Process.put(@key, Map.put(memo, key, {:pending, SystemsRuntime.Task.async(read)}))
           :ok
         end
     end
@@ -102,7 +102,8 @@ defmodule SalixStore.ReadScope do
   # A read that is not back by the deadline is dropped: the next `fetch/2`
   # of its key reads again, inside whatever budget that caller has.
   defp join_pending(%Task{} = task) do
-    case Task.yield(task, @join_timeout_ms) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, @join_timeout_ms) ||
+           SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, {:ok, _value} = result} -> result
       _other -> :none
     end
@@ -112,7 +113,7 @@ defmodule SalixStore.ReadScope do
   # in the owner's mailbox after the unit of work that started it.
   defp stop_pending(memo) when is_map(memo) do
     Enum.each(memo, fn
-      {_key, {:pending, %Task{} = task}} -> Task.shutdown(task, :brutal_kill)
+      {_key, {:pending, %Task{} = task}} -> SystemsRuntime.Task.shutdown(task, :brutal_kill)
       _entry -> :ok
     end)
   end

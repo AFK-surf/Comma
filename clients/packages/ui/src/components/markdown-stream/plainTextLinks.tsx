@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { getMarkdown } from "stream-markdown-parser";
 
-// Use the same URL recognizer as MarkdownStream, without rendering Markdown or HTML.
+// Recognize URLs (linkify-it) in plain text, without rendering Markdown or HTML.
 const markdown = getMarkdown("comma-plain-text-links");
 type Range = { start: number; end: number };
 // The parser exposes plugin fields as unknown. This is linkify-it's match API.

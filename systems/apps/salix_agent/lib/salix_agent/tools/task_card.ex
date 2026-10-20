@@ -1,4 +1,6 @@
 defmodule SalixAgent.Tools.TaskCard do
+  require SystemsRuntime.Proc
+
   @moduledoc false
 
   # Use the same authorization, archive, timeout and provider delivery path as
@@ -36,6 +38,98 @@ defmodule SalixAgent.Tools.TaskCard do
           else: receipt
 
       Map.put(result, "task_topic", receipt)
+    else
+      result
+    end
+  end
+
+  def after_create(result, %{trusted_origin: %{"provider" => "qq"} = origin} = ctx) do
+    target = origin["provider_context"] || %{}
+
+    if result["created"] == true and origin["source_actor_type"] == "provider_user" and
+         is_nil(origin["triage_delegation"]) and origin["agent_group_id"] == ctx[:group_id] and
+         present?(origin["source_message_id"]) and
+         origin["source_message_id"] == ctx[:source_message_id] and
+         target["app_authored"] != true and present?(target["connect_id"]) and
+         present?(target["chat_id"]) do
+      call = %{
+        id: to_string(ctx[:tool_call_id]) <> ":task-card",
+        name: "im_api.qq.post_task_card",
+        ifc: ctx[:ifc_declaration],
+        args: %{
+          "connect_id" => target["connect_id"],
+          "conversation_id" => result["conversation_id"],
+          "chat_id" => target["chat_id"]
+        }
+      }
+
+      Map.put(result, "task_card", publish_with_budget(call, ctx))
+    else
+      result
+    end
+  end
+
+  def after_create(result, %{trusted_origin: %{"provider" => "feishu"} = origin} = ctx) do
+    target = origin["provider_context"] || %{}
+    chat_type = if target["chat_type"] == "p2p", do: "p2p", else: "group"
+
+    reply_to =
+      Enum.find([target["root_message_id"], target["message_id"]], &(is_binary(&1) and &1 != ""))
+
+    if result["created"] == true and origin["source_actor_type"] == "provider_user" and
+         is_nil(origin["triage_delegation"]) and origin["agent_group_id"] == ctx[:group_id] and
+         is_binary(origin["source_message_id"]) and
+         origin["source_message_id"] == ctx[:source_message_id] and
+         target["app_authored"] != true and present?(target["connect_id"]) and
+         present?(target["chat_id"]) and is_binary(reply_to) do
+      call = %{
+        id: to_string(ctx[:tool_call_id]) <> ":task-card",
+        name: "im_api.feishu.post_task_card",
+        ifc: ctx[:ifc_declaration],
+        args: %{
+          "connect_id" => target["connect_id"],
+          "conversation_id" => result["conversation_id"],
+          "chat_id" => target["chat_id"],
+          "message_id" => reply_to,
+          "chat_type" => chat_type
+        }
+      }
+
+      Map.put(result, "task_card", publish_with_budget(call, ctx))
+    else
+      result
+    end
+  end
+
+  # A Task a person asked for in Lark gets its card under that message, or
+  # under the root message of its thread.
+  def after_create(result, %{trusted_origin: %{"provider" => "lark"} = origin} = ctx) do
+    target = origin["provider_context"] || %{}
+    chat_type = if target["chat_type"] == "p2p", do: "p2p", else: "group"
+
+    reply_to =
+      Enum.find([target["root_message_id"], target["message_id"]], &(is_binary(&1) and &1 != ""))
+
+    if result["created"] == true and origin["source_actor_type"] == "provider_user" and
+         is_nil(origin["triage_delegation"]) and origin["agent_group_id"] == ctx[:group_id] and
+         is_binary(origin["source_message_id"]) and
+         origin["source_message_id"] == ctx[:source_message_id] and
+         target["app_authored"] != true and present?(target["connect_id"]) and
+         present?(target["chat_id"]) and is_binary(reply_to) do
+      call = %{
+        id: to_string(ctx[:tool_call_id]) <> ":task-card",
+        name: "im_api.lark.post_task_card",
+        ifc: ctx[:ifc_declaration],
+        args: %{
+          "connect_id" => target["connect_id"],
+          "conversation_id" => result["conversation_id"],
+          "chat_id" => target["chat_id"],
+          "message_id" => reply_to,
+          "chat_type" => chat_type
+        }
+      }
+
+      Map.put(result, "task_card", publish_with_budget(call, ctx))
     else
       result
     end
@@ -80,31 +174,34 @@ defmodule SalixAgent.Tools.TaskCard do
   # deadline. Bound the whole child dispatch, including authorization.
   defp publish_with_budget(call, ctx) do
     remaining =
-      (ctx[:tool_deadline_ms] || System.monotonic_time(:millisecond)) -
-        System.monotonic_time(:millisecond) - 1_000
+      (ctx[:tool_deadline_ms] || SystemsClock.monotonic_time(:millisecond)) -
+        SystemsClock.monotonic_time(:millisecond) - 1_000
 
     if remaining > 0 do
-      previous = Process.flag(:trap_exit, true)
-      task = Task.async(fn -> publish(call, ctx) end)
+      previous = SystemsRuntime.Proc.trap_exit(true)
+      task = SystemsRuntime.Task.async(fn -> publish(call, ctx) end)
 
       try do
-        case Task.yield(task, remaining) || Task.shutdown(task, :brutal_kill) do
+        case SystemsClock.yield(task, remaining) ||
+               SystemsRuntime.Task.shutdown(task, :brutal_kill) do
           {:ok, receipt} -> receipt
           _ -> failed_delivery()
         end
       after
-        receive do
+        SystemsRuntime.Proc.receive do
           {:EXIT, pid, _} when pid == task.pid -> :ok
         after
           0 -> :ok
         end
 
-        Process.flag(:trap_exit, previous)
+        SystemsRuntime.Proc.trap_exit(previous)
       end
     else
       failed_delivery()
     end
   end
+
+  defp present?(value), do: is_binary(value) and value != ""
 
   defp failed_delivery do
     %{

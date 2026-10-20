@@ -7,14 +7,14 @@ import { TaskWorkspace, type TaskWorkspaceProps, type TaskWorkspaceTask } from "
 
 const storyTasks: TaskWorkspaceTask[] = [
   {
-    activityStatus: "idle",
-    conversationId: "conversation-backlog",
+    activityStatus: "ready_for_review",
+    conversationId: "conversation-feedback",
     groupId: "group-comma",
     updatedAt: 1_777_939_200,
     freshness: "fresh",
-    id: "task-backlog",
+    id: "task-feedback",
     messages: [],
-    statusBucket: "backlog",
+    statusBucket: "needs_review",
     title: "Summarize the latest product feedback into themes",
     worker: "codex",
     workspaceId: "workspace-comma",
@@ -167,7 +167,7 @@ export const Empty: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("No tasks")).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Create new task" })).toBeVisible();
-    await expect(canvas.queryByText("Backlog")).not.toBeInTheDocument();
+    await expect(canvas.queryByText("In progress")).not.toBeInTheDocument();
   },
 };
 
@@ -284,17 +284,18 @@ function PersistedOrderPlayground(args: TaskWorkspaceProps) {
 export const PersistedOrder: Story = {
   name: "Persisted order",
   args: {
+    // The Needs Review column holds exactly the two cards the order spec drags.
     tasks: [
-      ...storyTasks,
+      ...storyTasks.filter((task) => task.id !== "task-review"),
       {
-        activityStatus: "idle",
-        conversationId: "conversation-backlog-2",
+        activityStatus: "ready_for_review",
+        conversationId: "conversation-design-tokens",
         groupId: "group-comma",
         updatedAt: 1_777_852_800,
         freshness: "fresh",
-        id: "task-backlog-2",
+        id: "task-design-tokens",
         messages: [],
-        statusBucket: "backlog",
+        statusBucket: "needs_review",
         title: "Collect design tokens for the marketing refresh",
         worker: "claude",
         workspaceId: "workspace-comma",

@@ -1,3 +1,5 @@
+import { uiClock } from "../../clock";
+import { springAt } from "../../motion";
 import { useLayoutEffect, useSyncExternalStore, type RefObject } from "react";
 import {
   isReducedMotionEnabled,
@@ -5,8 +7,6 @@ import {
   subscribeToReducedMotion,
 } from "../../tokens/motion";
 
-const INTEGRATION_STEP_SECONDS = 1 / 240;
-const MAX_SAMPLED_SECONDS = 1;
 const REST_POSITION = 0.05;
 const REST_VELOCITY = 0.5;
 const reducedMotionServerSnapshot = () => false;
@@ -23,38 +23,21 @@ export type ErrorShakeConfig = {
   stiffness: number;
 };
 
-export const stepErrorShake = (
-  state: ErrorShakeState,
-  dtSeconds: number,
-  config: Pick<ErrorShakeConfig, "damping" | "stiffness">
-): ErrorShakeState => {
-  const acceleration =
-    -config.stiffness * state.position - config.damping * state.velocity;
-  const velocity = state.velocity + acceleration * dtSeconds;
-  const position = state.position + velocity * dtSeconds;
-  return { position, velocity };
-};
-
 /**
- * Samples the spring from its initial displacement using small, bounded steps.
- * Sampling from per-cell elapsed time keeps the stagger and spring curve stable
- * when animation frames are delayed or arrive at different display cadences.
+ * The spring `elapsedSeconds` after it left its initial displacement,
+ * computed from that time alone (../../motion): each cell's stagger and curve
+ * are the same whenever and however often frames arrive.
  */
 export const sampleErrorShake = (
   elapsedSeconds: number,
   config: Pick<ErrorShakeConfig, "amplitude" | "damping" | "stiffness">
-): ErrorShakeState => {
-  let state: ErrorShakeState = { position: config.amplitude, velocity: 0 };
-  let remainingSeconds = Math.min(Math.max(elapsedSeconds, 0), MAX_SAMPLED_SECONDS);
-
-  while (remainingSeconds > Number.EPSILON) {
-    const dtSeconds = Math.min(remainingSeconds, INTEGRATION_STEP_SECONDS);
-    state = stepErrorShake(state, dtSeconds, config);
-    remainingSeconds -= dtSeconds;
-  }
-
-  return state;
-};
+): ErrorShakeState =>
+  springAt(
+    config,
+    { position: config.amplitude, velocity: 0 },
+    0,
+    Math.max(elapsedSeconds, 0)
+  );
 
 export const isErrorShakeResting = (state: ErrorShakeState) =>
   Math.abs(state.position) < REST_POSITION && Math.abs(state.velocity) < REST_VELOCITY;
@@ -105,8 +88,8 @@ export const useErrorShake = ({
       return;
     }
 
-    const startedAt = performance.now();
-    let frameId = 0;
+    const startedAt = uiClock.monotonic();
+    let cancelFrame = () => {};
 
     const tick = (now: number) => {
       const elapsedMs = now - startedAt;
@@ -127,16 +110,16 @@ export const useErrorShake = ({
       }
 
       if (remaining) {
-        frameId = window.requestAnimationFrame(tick);
+        cancelFrame = uiClock.frame(tick);
         return;
       }
 
       resetShakeTransforms(cells);
     };
 
-    frameId = window.requestAnimationFrame(tick);
+    cancelFrame = uiClock.frame(tick);
     return () => {
-      window.cancelAnimationFrame(frameId);
+      cancelFrame();
       resetShakeTransforms(cells);
     };
   }, [active, cellsRef, config, count, reducedMotion, replayKey]);

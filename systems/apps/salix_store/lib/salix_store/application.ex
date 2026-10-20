@@ -3,7 +3,8 @@ defmodule SalixStore.Application do
   Storage-kernel supervision root.
 
   Starts the shared `SalixStore.Finch` default pool used by the S3 backend and
-  other Salix HTTP paths. The fake backend needs an ETS table owner, which is
+  other Salix HTTP paths, and the PubSub station changes are told through
+  (`SalixStore.Stations.Events`). The fake backend needs an ETS table owner, which is
   started only when that backend is selected.
   """
 
@@ -18,6 +19,9 @@ defmodule SalixStore.Application do
     children =
       repo_children() ++
         [
+          # Station changes are told through it from every node that can write
+          # the roster (SalixStore.Stations.Events).
+          {Phoenix.PubSub, name: SalixStore.Stations.Events.pubsub()},
           SalixStore.Ids,
           SalixStore.Inflight.Poller,
           # The shared CommaLog JSONL logger is started by the :comma_log application
@@ -30,7 +34,7 @@ defmodule SalixStore.Application do
         ] ++ fake_children()
 
     opts = [strategy: :one_for_one, name: SalixStore.Supervisor]
-    Supervisor.start_link(children, opts)
+    SystemsRuntime.Supervisor.start_link(children, opts)
   end
 
   # The control-plane Postgres repo (docs/storage-search.md).
@@ -44,8 +48,8 @@ defmodule SalixStore.Application do
   # until each control-metadata cutover marker exists (mirrors how comma_core
   # starts Comma.SchemaReadiness after Comma.Repo). One probe per migrated dataset.
   defp repo_children do
-    if Application.get_env(:salix_store, :start_repo, false) and
-         is_nil(Process.whereis(SalixStore.Repo)) do
+    if SystemsRuntime.get_env(:salix_store, :start_repo, false) and
+         is_nil(SystemsRuntime.Proc.whereis(SalixStore.Repo)) do
       [
         SalixStore.Repo,
         SalixStore.TenantApiKeyReadiness,
@@ -57,7 +61,7 @@ defmodule SalixStore.Application do
         SalixStore.SlackRouterThreadParticipationSweeper,
         {SalixStore.AgentVMMSettlementSweeper,
          interval_ms:
-           Application.get_env(:salix_store, :agent_vmm_settlement_sweep_interval_ms, 5_000)}
+           SystemsRuntime.get_env(:salix_store, :agent_vmm_settlement_sweep_interval_ms, 5_000)}
       ]
     else
       []

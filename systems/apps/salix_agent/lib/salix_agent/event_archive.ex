@@ -170,7 +170,7 @@ defmodule SalixAgent.EventArchive do
   defp direction(boundary) when boundary in @inbound, do: :in
   defp direction(_boundary), do: :out
 
-  defp impl, do: Application.get_env(:salix_agent, :event_archive_mod, __MODULE__.Noop)
+  defp impl, do: SystemsRuntime.get_env(:salix_agent, :event_archive_mod, __MODULE__.Noop)
 
   defp safe_call(fact) do
     impl().record(fact)

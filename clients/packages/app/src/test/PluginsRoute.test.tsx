@@ -1,97 +1,193 @@
 import userEvent from "@testing-library/user-event";
 import { CommaI18nProvider } from "@comma/i18n/react";
 import {
-  act,
   fireEvent,
   render as renderUI,
   screen,
-  waitFor,
   within,
 } from "@comma/test-utils/render";
+import { advance, flush } from "@comma/test-utils/fake-clock";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
-import { Toaster } from "@comma/ui";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OnboardingHandoff } from "@comma/native-bridge";
-import { CommaApiError, type CommaApiClient, type CommaPlugin } from "../api";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import type {
+  Plugin as CommaPlugin,
+  PluginActivity,
+  PluginCategory,
+  PluginInstallAnswer,
+  PluginNotice,
+  PluginsValue,
+  SessionValue,
+  Skill,
+  SkillDetail,
+  SkillsValue,
+} from "@comma/core-client";
+import { Toaster } from "@comma/ui/components/toast";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
-import { OnboardingPluginHandoff } from "../components/onboarding/OnboardingPluginHandoff";
 import { useOnboardingPlugins } from "../components/onboarding/useOnboardingPlugins";
-import { PluginInstallProvider } from "../components/plugins/PluginInstallProvider";
+import { PluginNotices } from "../components/plugins/pluginInstall";
 import { PluginsRoute } from "../components/plugins/PluginsRoute";
-import { resetWorkspaceSkillsCacheForTest } from "../components/chat/useWorkspaceSkills";
 
-const harness = vi.hoisted(() => {
-  const getWorkspaceSkill = vi.fn();
-  const getWorkspaceSkillFile = vi.fn();
-  const getPluginPersonalSources = vi.fn();
-  const preparePluginAccountConfirmation = vi.fn();
-  const confirmPluginAccount = vi.fn();
-  const cancelPluginOperation = vi.fn();
-  const reauthorizeWorkspacePlugin = vi.fn();
-  const installWorkspacePlugin = vi.fn();
-  const listWorkspacePlugins = vi.fn();
-  const listWorkspaceSkills = vi.fn();
-  const listWorkspaces = vi.fn();
-  const uninstallWorkspacePlugin = vi.fn();
-
-  return {
-    api: {
-      getWorkspaceSkill,
-      getWorkspaceSkillFile,
-      getPluginPersonalSources,
-      preparePluginAccountConfirmation,
-      confirmPluginAccount,
-      cancelPluginOperation,
-      reauthorizeWorkspacePlugin,
-      installWorkspacePlugin,
-      listWorkspacePlugins,
-      listWorkspaceSkills,
-      listWorkspaces,
-      uninstallWorkspacePlugin,
-    },
-    getWorkspaceSkill,
-    getWorkspaceSkillFile,
-    getPluginPersonalSources,
-    preparePluginAccountConfirmation,
-    confirmPluginAccount,
-    cancelPluginOperation,
-    reauthorizeWorkspacePlugin,
-    installWorkspacePlugin,
-    listWorkspacePlugins,
-    listWorkspaceSkills,
-    listWorkspaces,
-    navigate: vi.fn(),
-    openNativePlatformExternalUrl: vi.fn(),
-    uninstallWorkspacePlugin,
-  };
-});
+const harness = vi.hoisted(() => ({
+  navigate: vi.fn(),
+  openNativePlatformExternalUrl: vi.fn(),
+}));
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   useNavigate: () => harness.navigate,
 }));
 
-vi.mock("../runtime-chat/nativePlatformActions", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../runtime-chat/nativePlatformActions")>()),
+vi.mock("../nativePlatformActions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../nativePlatformActions")>()),
   openNativePlatformExternalUrl: harness.openNativePlatformExternalUrl,
 }));
 
-vi.mock("../components/chat/ChatProvider", () => ({
-  useChatApi: () => harness.api,
-}));
+const WS = "wsp_1";
+
+/** Plugins the core keeps off the Plugins page's lists (core test: "keeps Feishu off the Plugins page's lists"). */
+const UNLISTED = new Set(["feishu", "lark"]);
+
+/**
+ * What the core says the Plugins page shows: each plugin with what is under way
+ * for it, the installed ones, and the rest by category.
+ */
+function catalogValue(
+  plugins: readonly CommaPlugin[],
+  activity: Record<string, PluginActivity>
+): PluginsValue {
+  const listed = plugins.filter((plugin) => !UNLISTED.has(plugin.id));
+  const categories = new Map<string, PluginCategory>();
+  for (const plugin of listed) {
+    if (plugin.installed) continue;
+    const name = plugin.category.trim() || "Integrations";
+    let category = categories.get(name);
+    if (!category) {
+      category = {
+        id: name.toLowerCase(),
+        name: name === "Integrations" ? null : name,
+        plugins: [],
+      };
+      categories.set(name, category);
+    }
+    category.plugins.push(plugin.id);
+  }
+  return {
+    status: "ready",
+    workspace: WS,
+    plugins: plugins.map((plugin) => ({
+      ...plugin,
+      activity: activity[plugin.id] ?? "idle",
+    })),
+    installed: listed.filter((plugin) => plugin.installed).map((plugin) => plugin.id),
+    categories: [...categories.values()],
+  };
+}
+
+/** What the scripted core says now; a test changes it with `say`. */
+type Script = {
+  /** The catalog as read, or the `plugins` value before there is one. */
+  catalog: readonly CommaPlugin[] | Exclude<PluginsValue, { status: "ready" }>;
+  activity: Record<string, PluginActivity>;
+  notices: PluginNotice[];
+  skills: SkillsValue;
+  session: SessionValue;
+};
+
+let script: Script;
+let core: ReturnType<typeof createScriptedCore>;
+/** How the core answers each call, by name (a call with none answers null). */
+let answers: Record<string, (params: Record<string, unknown>) => unknown>;
+/** The topics the UI subscribed to. */
+let subscribed: Record<string, unknown>[];
+let nextNotice = 0;
+
+const signedIn = (userId: string): SessionValue => ({
+  phase: "signed_in",
+  userId,
+  audience: "https://api.comma.test",
+  sessionId: `session-${userId}`,
+});
+
+/** Changes what the core says, and sends it to each subscriber (they get it on the next `flush`). */
+function say(change: Partial<Script>) {
+  Object.assign(script, change);
+  for (const topic of ["plugins", "pluginNotices", "skills", "session"])
+    core.changed(topic);
+}
+
+/** The core says something went wrong (or what to open next), for one window to say. */
+function notify(notice: Omit<PluginNotice, "id">) {
+  say({ notices: [...script.notices, { ...notice, id: ++nextNotice }] });
+}
+
+function installed(plugin: CommaPlugin): CommaPlugin {
+  return { ...plugin, installed: true };
+}
+
+/** The catalog with `plugin` as the core last read it. */
+function withPlugin(plugin: CommaPlugin) {
+  const catalog = script.catalog as readonly CommaPlugin[];
+  return catalog.map((p) => (p.id === plugin.id ? plugin : p));
+}
+
+function scriptedCore() {
+  return createScriptedCore({
+    values: (topic) => {
+      switch (topic.topic) {
+        case "plugins":
+          return Array.isArray(script.catalog)
+            ? catalogValue(script.catalog, script.activity)
+            : script.catalog;
+        case "pluginNotices":
+          return { notices: script.notices };
+        case "skills":
+          return topic.workspace === WS ? script.skills : undefined;
+        case "session":
+          return script.session;
+        default:
+          return undefined;
+      }
+    },
+    calls: (name, params) => answers[name]?.(params as Record<string, unknown>) ?? null,
+    onSubscribe: (topic) => subscribed.push(topic),
+  });
+}
+
+/** A window on the test's core: its UI, and the core's notices said in it. */
+function inWindow(ui: ReactNode) {
+  return core.wrap(
+    <>
+      <PluginNotices />
+      {ui}
+    </>
+  );
+}
 
 function render(ui: ReactNode) {
-  return renderUI(
-    <PluginInstallProvider api={harness.api as unknown as CommaApiClient}>
-      {ui}
-    </PluginInstallProvider>
-  );
+  return renderUI(inWindow(ui));
+}
+
+/** A user whose waits run on the fake clock. */
+function setupUser() {
+  return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+}
+
+/** Presses a button and lets what it starts finish. */
+async function press(element: Element) {
+  fireEvent.click(element);
+  await flush();
+}
+
+/** The window gets the focus back from the browser. */
+async function focusWindow() {
+  window.dispatchEvent(new Event("focus"));
+  await flush();
 }
 
 /** The onboarding's apps card, down to its Connect for Linear. */
 function OnboardingConnectLinear() {
   const { connect } = useOnboardingPlugins({
-    api: harness.api as unknown as CommaApiClient,
     workspace: { status: "ready", workspaceId: "wsp_1" },
   });
   return (
@@ -179,211 +275,201 @@ const availablePlugins = [
   },
 ] satisfies readonly CommaPlugin[];
 
+const skills: Skill[] = [
+  {
+    description: "Summarize a long thread",
+    location: "skills/summarize/SKILL.md",
+    name: "summarize",
+    skill_id: "summarize",
+    source: "custom",
+  },
+  {
+    description: "Draft a weekly report",
+    location: "skills/report/SKILL.md",
+    name: "weekly-report",
+    skill_id: "weekly-report",
+    source: "system",
+  },
+];
+
+const weeklyReport: SkillDetail = {
+  content:
+    "---\nname: weekly-report\ndescription: Draft a weekly report\n---\n\n# Reporting steps\n\nCollect finished tasks.",
+  description: "Draft a weekly report",
+  files: ["SKILL.md", "references/format.md"],
+  location: "skills/report/SKILL.md",
+  name: "weekly-report",
+  skill_id: "weekly-report",
+  source: "system",
+};
+
+/** An install the core has not answered yet: `answer` ends it as the core would. */
+function pendingInstall() {
+  const { promise, resolve, reject } = Promise.withResolvers<PluginInstallAnswer>();
+  return { promise, answer: resolve, fail: reject };
+}
+
 describe("PluginsRoute", () => {
   beforeEach(() => {
-    localStorage.clear();
-    harness.installWorkspacePlugin.mockReset();
-    harness.getPluginPersonalSources.mockReset();
-    harness.getPluginPersonalSources.mockResolvedValue({
-      pluginId: "notion",
-      sources: [],
-    });
-    harness.preparePluginAccountConfirmation.mockReset();
-    harness.confirmPluginAccount.mockReset();
-    harness.cancelPluginOperation.mockReset();
-    harness.reauthorizeWorkspacePlugin.mockReset();
-    harness.listWorkspacePlugins.mockReset();
-    harness.listWorkspaces.mockReset();
+    nextNotice = 0;
+    subscribed = [];
+    script = {
+      catalog: [notionPlugin, linearPlugin],
+      activity: {},
+      notices: [],
+      skills: { status: "ready", skills },
+      session: signedIn("user-1"),
+    };
+    answers = {
+      // A notice goes to the one window that claims it.
+      "plugin.notice.claim": ({ id }) => {
+        say({ notices: script.notices.filter((notice) => notice.id !== id) });
+        return true;
+      },
+      "plugin.install": () => {
+        say({ catalog: withPlugin(installed(linearPlugin)) });
+        return {};
+      },
+      "plugin.uninstall": () => {
+        say({ catalog: withPlugin({ ...notionPlugin, installed: false }) });
+        return null;
+      },
+      "skills.detail": () => weeklyReport,
+      "skills.file": () => ({
+        content: "# Report format\n\nOne section per project.",
+        path: "references/format.md",
+      }),
+    };
+    core = scriptedCore();
     harness.navigate.mockReset();
-    harness.uninstallWorkspacePlugin.mockReset();
-    harness.listWorkspaces.mockResolvedValue([
-      { id: "wsp_1", name: "Main", status: "ready" },
-    ]);
-    harness.listWorkspacePlugins.mockResolvedValue([notionPlugin, linearPlugin]);
-    resetWorkspaceSkillsCacheForTest();
-    harness.listWorkspaceSkills.mockReset();
-    harness.listWorkspaceSkills.mockResolvedValue([
-      {
-        description: "Summarize a long thread",
-        location: "skills/summarize/SKILL.md",
-        name: "summarize",
-        skill_id: "summarize",
-        source: "custom",
-      },
-      {
-        description: "Draft a weekly report",
-        location: "skills/report/SKILL.md",
-        name: "weekly-report",
-        skill_id: "weekly-report",
-        source: "system",
-      },
-    ]);
-    harness.getWorkspaceSkill.mockReset();
-    harness.getWorkspaceSkill.mockResolvedValue({
-      content:
-        "---\nname: weekly-report\ndescription: Draft a weekly report\n---\n\n# Reporting steps\n\nCollect finished tasks.",
-      description: "Draft a weekly report",
-      files: ["SKILL.md", "references/format.md"],
-      location: "skills/report/SKILL.md",
-      name: "weekly-report",
-      skill_id: "weekly-report",
-      source: "system",
-    });
-    harness.getWorkspaceSkillFile.mockReset();
-    harness.getWorkspaceSkillFile.mockResolvedValue({
-      content: "# Report format\n\nOne section per project.",
-      path: "references/format.md",
-    });
-    harness.installWorkspacePlugin.mockResolvedValue({
-      authorization: null,
-      plugin: { ...linearPlugin, installed: true },
-    });
     harness.openNativePlatformExternalUrl.mockReset();
     harness.openNativePlatformExternalUrl.mockResolvedValue(undefined);
-    harness.uninstallWorkspacePlugin.mockResolvedValue({
-      ...notionPlugin,
-      installed: false,
-    });
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    localStorage.clear();
-    Reflect.deleteProperty(globalThis, "commaNative");
   });
 
   it("reports loading until the plugin catalog is ready", async () => {
-    const catalog = Promise.withResolvers<CommaPlugin[]>();
-    harness.listWorkspacePlugins.mockReturnValueOnce(catalog.promise);
+    script.catalog = { status: "loading" };
     render(<PluginsRoute />);
+    await flush();
 
     const loading = screen.getByRole("status");
     expect(loading).toHaveAccessibleName("Loading…");
     expect(loading).toHaveAttribute("aria-busy", "true");
 
-    await act(async () => catalog.resolve([notionPlugin, linearPlugin]));
-    expect(await screen.findByRole("heading", { name: "Installed" })).toBeVisible();
+    say({ catalog: [notionPlugin, linearPlugin] });
+    await flush();
+    expect(screen.getByRole("heading", { name: "Installed" })).toBeVisible();
     expect(loading).not.toBeInTheDocument();
   });
 
   it("releases a stalled first request and ignores its late success after retry", async () => {
-    vi.useFakeTimers();
-    const first = Promise.withResolvers<unknown>();
-    harness.installWorkspacePlugin.mockReturnValueOnce(first.promise);
+    // The core gives a request with no answer up after 30 s and keeps nothing of
+    // its late answer (core test: "lets an install that never answered go after
+    // 30 s, and keeps nothing of its late answer").
+    const first = pendingInstall();
+    answers["plugin.install"] = () => {
+      say({ activity: { linear: "installing" } });
+      return first.promise;
+    };
     render(
       <>
         <PluginsRoute />
         <Toaster />
       </>
     );
-    await act(async () => Promise.resolve());
-    fireEvent.click(screen.getByRole("button", { name: "Add Linear" }));
-    await act(async () => vi.advanceTimersByTimeAsync(30_000));
-    await act(async () => vi.advanceTimersByTimeAsync(100));
+    await flush();
+    await press(screen.getByRole("button", { name: "Add Linear" }));
+    expect(core.sentTo("plugin.install")).toEqual([
+      { plugin: "linear", workspace: WS },
+    ]);
+    expect(screen.getByRole("button", { name: "Add Linear" })).toBeDisabled();
+
+    say({ activity: {} });
+    notify({ kind: "install_timed_out", origin: "plugins", plugin: "linear" });
+    first.answer({});
+    await flush();
     expect(screen.getByRole("button", { name: "Add Linear" })).not.toBeDisabled();
-    expect(harness.installWorkspacePlugin.mock.calls[0]?.[2]?.signal.aborted).toBe(
-      true
-    );
     expect(
       screen.getByText("The connection request timed out. Try adding the plugin again.")
     ).toBeVisible();
-    await act(async () =>
-      first.resolve({
-        authorization: null,
-        plugin: { ...linearPlugin, installed: true },
-      })
-    );
+    expect(screen.getByRole("button", { name: "Add Linear" })).toBeVisible();
     expect(harness.navigate).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Add Linear" }));
-    await act(async () => Promise.resolve());
+
+    answers["plugin.install"] = () => {
+      say({ catalog: withPlugin(installed(linearPlugin)), activity: {} });
+      return {};
+    };
+    await press(screen.getByRole("button", { name: "Add Linear" }));
     // The confirmed retry stays in Plugins and shows the plugin as added.
     expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull();
+    expect(core.sentTo("plugin.install")).toHaveLength(2);
     expect(harness.navigate).not.toHaveBeenCalled();
   });
 
   it("continues authorization while Plugins is unmounted and completes after returning", async () => {
-    vi.useFakeTimers();
-    harness.installWorkspacePlugin
-      .mockResolvedValueOnce({
-        authorization: {
-          state: "route-state",
-          authorizationUrl: "https://linear.app/oauth",
-        },
-        plugin: linearPlugin,
-      })
-      .mockResolvedValueOnce({
-        authorization: { state: "route-state" },
-        plugin: linearPlugin,
-      })
-      .mockResolvedValueOnce({
-        authorization: null,
-        plugin: { ...linearPlugin, installed: true },
-      });
-    const view = (show: boolean) => (
-      <PluginInstallProvider api={harness.api as unknown as CommaApiClient}>
-        {show ? <PluginsRoute /> : <div>Home</div>}
-      </PluginInstallProvider>
-    );
+    answers["plugin.install"] = () => {
+      say({ activity: { linear: "authorizing" } });
+      return { authorizationUrl: "https://linear.app/oauth" };
+    };
+    const view = (show: boolean) => inWindow(show ? <PluginsRoute /> : <div>Home</div>);
     const page = renderUI(view(true));
-    await act(async () => Promise.resolve());
-    fireEvent.click(screen.getByRole("button", { name: "Add Linear" }));
-    await act(async () => Promise.resolve());
+    await flush();
+    await press(screen.getByRole("button", { name: "Add Linear" }));
+    expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
+    expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledWith(
+      "https://linear.app/oauth"
+    );
     page.rerender(view(false));
-    await act(async () => vi.advanceTimersByTimeAsync(2_000));
-    expect(harness.installWorkspacePlugin).toHaveBeenCalledTimes(2);
+    await flush();
+    // The core goes on checking with no page showing the catalog, and finds the
+    // browser done (core test: "keeps checking an authorization while no page
+    // shows the catalog").
+    say({ catalog: withPlugin(installed(linearPlugin)), activity: {} });
+    await flush();
     page.rerender(view(true));
-    await act(async () => Promise.resolve());
-    await act(async () => vi.advanceTimersByTimeAsync(2_000));
-    expect(harness.installWorkspacePlugin).toHaveBeenCalledTimes(3);
+    await flush();
+    expect(
+      screen.getByRole("button", { name: "View Linear plugin details" })
+    ).toBeVisible();
+    expect(core.sentTo("plugin.install")).toHaveLength(1);
     expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull();
     expect(harness.navigate).not.toHaveBeenCalled();
   });
 
   it("cancels the old account's request when its session ends", async () => {
-    vi.useFakeTimers();
-    const session = new AbortController();
-    const first = Promise.withResolvers<unknown>();
-    harness.installWorkspacePlugin.mockReturnValueOnce(first.promise);
-    renderUI(
-      <PluginInstallProvider
-        api={harness.api as unknown as CommaApiClient}
-        sessionSignal={session.signal}
-      >
-        <PluginsRoute />
-      </PluginInstallProvider>
-    );
-    await act(async () => Promise.resolve());
-    fireEvent.click(screen.getByRole("button", { name: "Add Linear" }));
-    await act(async () => session.abort());
-    await act(async () =>
-      first.resolve({
-        authorization: null,
-        plugin: { ...linearPlugin, installed: true },
-      })
-    );
-    expect(harness.installWorkspacePlugin.mock.calls[0]?.[2]?.signal.aborted).toBe(
-      true
-    );
+    // The core stops the old account's request (core test: "stops an install
+    // under way when another account signs in, and says nothing of it").
+    const first = pendingInstall();
+    answers["plugin.install"] = () => {
+      say({ activity: { linear: "installing" } });
+      return first.promise;
+    };
+    render(<PluginsRoute />);
+    await flush();
+    await press(screen.getByRole("button", { name: "Add Linear" }));
+    expect(core.sentTo("plugin.install")).toHaveLength(1);
+    say({ session: signedIn("someone-else"), activity: {} });
+    first.fail(Object.assign(new Error("cancelled"), { code: "cancelled" }));
+    await flush();
     expect(harness.navigate).not.toHaveBeenCalled();
     expect(harness.openNativePlatformExternalUrl).not.toHaveBeenCalled();
   });
 
   it("keeps a plugin uninstalled until its install authorization completes", async () => {
-    const user = userEvent.setup();
-    const firstInstall = Promise.withResolvers<{
-      authorization: { authorizationUrl: string; state: string };
-      plugin: CommaPlugin;
-    }>();
-    harness.installWorkspacePlugin
-      .mockReturnValueOnce(firstInstall.promise)
-      .mockResolvedValueOnce({
-        authorization: null,
-        plugin: { ...linearPlugin, installed: true },
-      });
+    const user = setupUser();
+    const firstInstall = pendingInstall();
+    answers["plugin.install"] = () => {
+      say({ activity: { linear: "installing" } });
+      return firstInstall.promise;
+    };
+    answers["plugin.authorization.check"] = () => {
+      say({ catalog: withPlugin(installed(linearPlugin)), activity: {} });
+      return null;
+    };
     render(<PluginsRoute />);
+    await flush();
 
-    expect(await screen.findByRole("heading", { name: "Plugins" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Plugins" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Installed" })).toBeVisible();
     expect(
       document.querySelector(
@@ -397,46 +483,32 @@ describe("PluginsRoute", () => {
     ).not.toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Add Linear" }));
+    await flush();
 
     expect(screen.getByRole("button", { name: "Add Linear" })).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "Add Linear" }).querySelector(".animate-spin")
     ).not.toBeNull();
-    firstInstall.resolve({
-      authorization: {
-        authorizationUrl: "https://linear.app/oauth/authorize?state=state-1",
-        state: "state-1",
-      },
-      plugin: linearPlugin,
+    say({ activity: { linear: "authorizing" } });
+    firstInstall.answer({
+      authorizationUrl: "https://linear.app/oauth/authorize?state=state-1",
     });
+    await flush();
 
-    await waitFor(() =>
-      expect(harness.installWorkspacePlugin).toHaveBeenCalledWith("wsp_1", "linear", {
-        signal: expect.any(AbortSignal),
-      })
-    );
+    expect(core.sentTo("plugin.install")).toEqual([
+      { plugin: "linear", workspace: WS },
+    ]);
     expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledWith(
       "https://linear.app/oauth/authorize?state=state-1"
     );
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Add Linear" })).not.toBeDisabled()
-    );
+    expect(screen.getByRole("button", { name: "Add Linear" })).not.toBeDisabled();
 
-    window.dispatchEvent(new Event("focus"));
+    // The core checks the authorization at once (core test: "checks an
+    // authorization at once when a window gets the focus back").
+    await focusWindow();
 
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull()
-    );
-    expect(harness.installWorkspacePlugin).toHaveBeenNthCalledWith(
-      2,
-      "wsp_1",
-      "linear",
-      {
-        authorizationState: "state-1",
-        verifyOnly: true,
-        signal: expect.any(AbortSignal),
-      }
-    );
+    expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull();
+    expect(core.sentTo("plugin.authorization.check")).toEqual([{}]);
     expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
     expect(harness.navigate).not.toHaveBeenCalled();
     expect(
@@ -445,93 +517,85 @@ describe("PluginsRoute", () => {
   });
 
   it("installs an app the onboarding window left authorizing once the user finishes in the browser", async () => {
-    let handoff: ((payload: OnboardingHandoff) => void) | undefined;
-    installNativeBridgeMock({
-      onboarding: {
-        onHandoff: (listener: (payload: OnboardingHandoff) => void) => {
-          handoff = listener;
-          return () => {
-            handoff = undefined;
-          };
-        },
-      },
-    });
-    harness.installWorkspacePlugin.mockResolvedValueOnce({
-      authorization: null,
-      plugin: { ...linearPlugin, installed: true },
-    });
-    render(
-      <>
-        <OnboardingPluginHandoff />
-        <PluginsRoute />
-      </>
-    );
-    expect(await screen.findByRole("button", { name: "Add Linear" })).toBeEnabled();
+    const user = setupUser();
+    answers["plugin.install"] = () => {
+      say({ activity: { linear: "authorizing" } });
+      return {
+        authorizationUrl: "https://linear.app/oauth/authorize?state=onboarding-state",
+      };
+    };
+    answers["plugin.authorization.check"] = () => {
+      say({ catalog: withPlugin(installed(linearPlugin)), activity: {} });
+      return null;
+    };
+    const onboardingWindow = renderUI(inWindow(<OnboardingConnectLinear />));
+    render(<PluginsRoute />);
+    await flush();
+    expect(screen.getByRole("button", { name: "Add Linear" })).toBeEnabled();
 
-    // The onboarding window closed with Linear's consent still open in the
-    // browser; the user then finishes it there and comes back.
-    act(() =>
-      handoff?.({
-        pluginAuthorization: {
-          authorizationState: "onboarding-state",
-          expiresAt: Date.now() + 60_000,
-          pluginId: "linear",
-          workspaceId: "wsp_1",
-        },
-      })
-    );
-    window.dispatchEvent(new Event("focus"));
+    // The onboarding window opens Linear's consent, then closes with it still
+    // open in the browser; the user finishes it there and comes back.
+    await user.click(screen.getByRole("button", { name: "Connect Linear" }));
+    await flush();
+    expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
+    expect(core.sentTo("plugin.install")).toEqual([
+      { origin: "onboarding", plugin: "linear", workspace: WS },
+    ]);
+    onboardingWindow.unmount();
+    await focusWindow();
 
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull()
-    );
-    expect(harness.installWorkspacePlugin).toHaveBeenCalledExactlyOnceWith(
-      "wsp_1",
-      "linear",
-      {
-        authorizationState: "onboarding-state",
-        verifyOnly: true,
-        signal: expect.any(AbortSignal),
-      }
-    );
-    expect(harness.openNativePlatformExternalUrl).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull();
+    expect(core.sentTo("plugin.authorization.check")).toEqual([{}]);
+    expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
   });
 
   it("says why an install failed in the reader's words, never the server's code", async () => {
-    const user = userEvent.setup();
-    harness.installWorkspacePlugin
-      .mockRejectedValueOnce(
-        new CommaApiError(503, "upstream_unavailable", {
-          error: "upstream_unavailable",
-        })
-      )
-      .mockRejectedValueOnce(
-        new CommaApiError(500, "internal_error", { error: "internal_error" })
-      );
+    // The core words the server's code (core test: "words a refused install by
+    // the server's code, and an unanswered one as timed out after 30 s").
+    const user = setupUser();
+    const reasons = ["unavailable", "generic"] as const;
+    answers["plugin.install"] = () => {
+      notify({
+        kind: "install_failed",
+        origin: "plugins",
+        plugin: "linear",
+        reason: reasons[core.sentTo("plugin.install").length - 1]!,
+      });
+      return {};
+    };
     render(
       <>
         <PluginsRoute />
         <Toaster />
       </>
     );
+    await flush();
 
-    await user.click(await screen.findByRole("button", { name: "Add Linear" }));
-    expect(await screen.findByText("Couldn’t add the plugin.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Add Linear" }));
+    await flush();
+    expect(screen.getByText("Couldn’t add the plugin.")).toBeVisible();
     expect(
       screen.getByText("The service isn’t available right now. Try again in a moment.")
     ).toBeVisible();
 
     // A code with no wording of its own reads as a general failure.
     await user.click(screen.getByRole("button", { name: "Add Linear" }));
-    expect(await screen.findByText("Something went wrong. Try again.")).toBeVisible();
+    await flush();
+    expect(screen.getByText("Something went wrong. Try again.")).toBeVisible();
     expect(screen.queryByText(/upstream_unavailable|internal_error/)).toBeNull();
   });
 
   it("words a failure started from the onboarding for its apps, without sending the user to Plugins", async () => {
-    const user = userEvent.setup();
-    harness.installWorkspacePlugin.mockRejectedValueOnce(
-      new CommaApiError(503, "upstream_unavailable", { error: "upstream_unavailable" })
-    );
+    const user = setupUser();
+    answers["plugin.install"] = () => {
+      notify({
+        kind: "install_failed",
+        origin: "onboarding",
+        plugin: "linear",
+        reason: "unavailable",
+      });
+      return {};
+    };
     render(
       <>
         <OnboardingConnectLinear />
@@ -540,7 +604,11 @@ describe("PluginsRoute", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Connect Linear" }));
-    expect(await screen.findByText("Couldn’t connect the app.")).toBeVisible();
+    await flush();
+    expect(core.sentTo("plugin.install")).toEqual([
+      { origin: "onboarding", plugin: "linear", workspace: WS },
+    ]);
+    expect(screen.getByText("Couldn’t connect the app.")).toBeVisible();
     expect(
       screen.getByText("The service isn’t available right now. Try again in a moment.")
     ).toBeVisible();
@@ -548,337 +616,216 @@ describe("PluginsRoute", () => {
   });
 
   it("words an onboarding authorization that times out in another window for its apps", async () => {
-    let handoff: ((payload: OnboardingHandoff) => void) | undefined;
-    installNativeBridgeMock({
-      onboarding: {
-        onHandoff: (listener: (payload: OnboardingHandoff) => void) => {
-          handoff = listener;
-          return () => {
-            handoff = undefined;
-          };
-        },
-      },
-    });
-    render(
-      <>
-        <OnboardingPluginHandoff />
-        <Toaster />
-      </>
-    );
+    const user = setupUser();
+    answers["plugin.install"] = () => {
+      say({ activity: { linear: "authorizing" } });
+      return {};
+    };
+    const onboardingWindow = renderUI(inWindow(<OnboardingConnectLinear />));
+    render(<Toaster />);
 
     // The onboarding window closed with Linear's consent open, which the user
     // never finishes.
-    act(() =>
-      handoff?.({
-        pluginAuthorization: {
-          authorizationState: "onboarding-state",
-          expiresAt: Date.now() + 50,
-          pluginId: "linear",
-          workspaceId: "wsp_1",
-        },
-      })
-    );
+    await user.click(screen.getByRole("button", { name: "Connect Linear" }));
+    await flush();
+    expect(core.sentTo("plugin.install")).toHaveLength(1);
+    onboardingWindow.unmount();
+    await flush();
+    // Two minutes on, the core gives it up, for the window still open to say
+    // (core test: "gives an authorization up after two minutes, and one window
+    // says so").
+    say({ activity: {} });
+    notify({
+      kind: "authorization_timed_out",
+      origin: "onboarding",
+      plugin: "linear",
+    });
+    await flush();
 
     expect(
-      await screen.findByText("Authorization timed out. Try connecting the app again.")
+      screen.getByText("Authorization timed out. Try connecting the app again.")
     ).toBeVisible();
     expect(screen.queryByText(/Plugins/)).toBeNull();
   });
 
   it("retries pending authorization without focus or reopening the browser", async () => {
-    const user = userEvent.setup();
-    harness.installWorkspacePlugin
-      .mockResolvedValueOnce({
-        authorization: {
-          authorizationUrl: "https://linear.app/oauth",
-          state: "pending-state",
-        },
-        plugin: linearPlugin,
-      })
-      .mockResolvedValueOnce({
-        authorization: { state: "pending-state" },
-        plugin: linearPlugin,
-      })
-      .mockResolvedValueOnce({
-        authorization: null,
-        plugin: { ...linearPlugin, installed: true },
-      });
+    answers["plugin.install"] = () => {
+      say({ activity: { linear: "authorizing" } });
+      return { authorizationUrl: "https://linear.app/oauth" };
+    };
     render(<PluginsRoute />);
-    await user.click(await screen.findByRole("button", { name: "Add Linear" }));
-    await waitFor(
-      () => expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull(),
-      { timeout: 6_000 }
-    );
-    expect(harness.installWorkspacePlugin).toHaveBeenCalledTimes(3);
-    expect(harness.installWorkspacePlugin).toHaveBeenNthCalledWith(
-      3,
-      "wsp_1",
-      "linear",
-      {
-        authorizationState: "pending-state",
-        verifyOnly: true,
-        signal: expect.any(AbortSignal),
-      }
-    );
+    await flush();
+    await press(screen.getByRole("button", { name: "Add Linear" }));
     expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
-  }, 8_000);
-
-  it("stops automatic verification after two minutes", async () => {
-    vi.useFakeTimers();
-    harness.installWorkspacePlugin
-      .mockResolvedValueOnce({
-        authorization: {
-          authorizationUrl: "https://linear.app/oauth",
-          state: "pending-state",
-        },
-        plugin: linearPlugin,
-      })
-      .mockResolvedValue({
-        authorization: { state: "pending-state" },
-        plugin: linearPlugin,
-      });
-    render(<PluginsRoute />);
-    await act(async () => Promise.resolve());
-    fireEvent.click(screen.getByRole("button", { name: "Add Linear" }));
-    await act(async () => Promise.resolve());
-    for (let check = 0; check < 61; check += 1) {
-      await act(async () => vi.advanceTimersByTimeAsync(2_000));
-    }
-    const calls = harness.installWorkspacePlugin.mock.calls.length;
-    expect(calls).toBeGreaterThan(1);
-    expect(calls).toBeLessThanOrEqual(61);
-    await act(async () => vi.advanceTimersByTimeAsync(120_000));
-    expect(harness.installWorkspacePlugin).toHaveBeenCalledTimes(calls);
+    // The core checks every 2 s by itself (core test: "opens its authorization,
+    // checks it every 2 s, and shows it installed once the browser is done").
+    say({ activity: { linear: "verifying" } });
+    await flush();
+    say({ activity: { linear: "authorizing" } });
+    await flush();
+    say({ catalog: withPlugin(installed(linearPlugin)), activity: {} });
+    await flush();
+    expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull();
+    expect(core.sentTo("plugin.install")).toHaveLength(1);
+    expect(core.sentTo("plugin.authorization.check")).toEqual([]);
     expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: "Add Linear" })).not.toBeDisabled();
   });
 
   it("releases a hanging verification at the deadline and ignores its late success", async () => {
-    vi.useFakeTimers();
-    let finishVerification!: (value: unknown) => void;
-    let finishNewAttempt!: (value: unknown) => void;
-    harness.installWorkspacePlugin
-      .mockResolvedValueOnce({
-        authorization: { state: "pending-state" },
-        plugin: linearPlugin,
-      })
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            finishVerification = resolve;
-          })
-      )
-      .mockImplementation(() => new Promise(() => {}));
+    // The core lets the check go at the authorization's deadline and keeps
+    // nothing of its late answer (core test: "lets a check still under way at
+    // the deadline go, and keeps nothing of its late answer").
+    answers["plugin.install"] = () => {
+      say({ activity: { linear: "authorizing" } });
+      return {};
+    };
     render(<PluginsRoute />);
-    await act(async () => Promise.resolve());
-    fireEvent.click(screen.getByRole("button", { name: "Add Linear" }));
-    await act(async () => Promise.resolve());
-    await act(async () => vi.advanceTimersByTimeAsync(2_000));
+    await flush();
+    await press(screen.getByRole("button", { name: "Add Linear" }));
+    say({ activity: { linear: "verifying" } });
+    await flush();
     expect(screen.getByRole("button", { name: "Add Linear" })).toBeDisabled();
-    await act(async () => vi.advanceTimersByTimeAsync(118_000));
+    say({ activity: {} });
+    notify({ kind: "authorization_timed_out", origin: "plugins", plugin: "linear" });
+    await flush();
     expect(screen.getByRole("button", { name: "Add Linear" })).not.toBeDisabled();
-    harness.installWorkspacePlugin.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finishNewAttempt = resolve;
-        })
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Add Linear" }));
-    await act(async () => Promise.resolve());
-    await act(async () =>
-      finishVerification({
-        authorization: null,
-        plugin: { ...linearPlugin, installed: true },
-      })
-    );
+    const newAttempt = pendingInstall();
+    answers["plugin.install"] = () => {
+      say({ activity: { linear: "installing" } });
+      return newAttempt.promise;
+    };
+    await press(screen.getByRole("button", { name: "Add Linear" }));
+    expect(core.sentTo("plugin.install")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Add Linear" })).toBeDisabled();
-    await act(async () =>
-      finishNewAttempt({
-        authorization: null,
-        plugin: linearPlugin,
-      })
-    );
+    say({ activity: {} });
+    newAttempt.answer({});
+    await flush();
     expect(screen.getByRole("button", { name: "Add Linear" })).not.toBeDisabled();
   });
 
   it("retains the attempt after a transient verification failure", async () => {
-    const user = userEvent.setup();
-    harness.installWorkspacePlugin
-      .mockResolvedValueOnce({
-        authorization: {
-          authorizationUrl: "https://linear.app/oauth",
-          state: "pending-state",
-        },
-        plugin: linearPlugin,
-      })
-      .mockRejectedValueOnce(new Error("provider unavailable"))
-      .mockResolvedValueOnce({
-        authorization: null,
-        plugin: { ...linearPlugin, installed: true },
-      });
+    answers["plugin.install"] = () => {
+      say({ activity: { linear: "authorizing" } });
+      return { authorizationUrl: "https://linear.app/oauth" };
+    };
     render(<PluginsRoute />);
-    await user.click(await screen.findByRole("button", { name: "Add Linear" }));
-    await waitFor(() =>
-      expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1)
-    );
-    window.dispatchEvent(new Event("focus"));
-    await waitFor(() =>
-      expect(harness.installWorkspacePlugin).toHaveBeenCalledTimes(2)
-    );
-    await waitFor(
-      () => expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull(),
-      { timeout: 4_000 }
-    );
+    await flush();
+    await press(screen.getByRole("button", { name: "Add Linear" }));
+    expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
+    // The check the focus starts fails; the core keeps the attempt and checks it
+    // again 2 s on (core test: "checks the same attempt again after a check that
+    // failed").
+    await focusWindow();
+    expect(core.sentTo("plugin.authorization.check")).toEqual([{}]);
+    expect(screen.getByRole("button", { name: "Add Linear" })).toBeVisible();
+    say({ catalog: withPlugin(installed(linearPlugin)), activity: {} });
+    await flush();
+    expect(screen.queryByRole("button", { name: "Add Linear" })).toBeNull();
     expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
   });
 
   it("treats closing an unfinished authorization page as cancellation", async () => {
-    const user = userEvent.setup();
-    harness.installWorkspacePlugin
-      .mockResolvedValueOnce({
-        authorization: {
-          authorizationUrl: "https://linear.app/oauth/authorize?state=state-1",
-          state: "state-1",
-        },
-        plugin: linearPlugin,
-      })
-      .mockResolvedValueOnce({ authorization: null, plugin: linearPlugin });
+    // The core ends the authorization when a check finds the attempt not
+    // finished, and checks nothing more (core test: "lets an authorization go
+    // when a check finds it unfinished, and checks nothing more").
+    const user = setupUser();
+    answers["plugin.install"] = () => {
+      say({ activity: { linear: "authorizing" } });
+      return { authorizationUrl: "https://linear.app/oauth/authorize?state=state-1" };
+    };
+    answers["plugin.authorization.check"] = () => {
+      say({ activity: {} });
+      return null;
+    };
     render(<PluginsRoute />);
+    await flush();
 
-    await user.click(await screen.findByRole("button", { name: "Add Linear" }));
-    await waitFor(() =>
-      expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1)
-    );
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Add Linear" })).not.toBeDisabled()
-    );
+    await user.click(screen.getByRole("button", { name: "Add Linear" }));
+    await flush();
+    expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Add Linear" })).not.toBeDisabled();
 
-    window.dispatchEvent(new Event("focus"));
+    await focusWindow();
 
-    await waitFor(() =>
-      expect(harness.installWorkspacePlugin).toHaveBeenCalledTimes(2)
-    );
-    expect(harness.installWorkspacePlugin).toHaveBeenNthCalledWith(
-      2,
-      "wsp_1",
-      "linear",
-      {
-        authorizationState: "state-1",
-        verifyOnly: true,
-        signal: expect.any(AbortSignal),
-      }
-    );
+    expect(core.sentTo("plugin.authorization.check")).toEqual([{}]);
     expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Add Linear" })).toBeVisible();
 
-    window.dispatchEvent(new Event("focus"));
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-    expect(harness.installWorkspacePlugin).toHaveBeenCalledTimes(2);
+    await focusWindow();
+    expect(core.sentTo("plugin.install")).toHaveLength(1);
     expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Add Linear" })).toBeVisible();
   });
 
   it("opens the next authorization after a completed partial install", async () => {
-    const user = userEvent.setup();
-    harness.installWorkspacePlugin
-      .mockResolvedValueOnce({
-        authorization: {
-          authorizationUrl: "https://accounts.google.com/gmail?state=gmail-state",
-          state: "gmail-state",
-        },
-        plugin: {
-          ...linearPlugin,
-          brand: "google",
-          id: "google",
-          name: "Google",
-        },
-      })
-      .mockResolvedValueOnce({
-        authorization: {
-          authorizationUrl: "https://accounts.google.com/calendar?state=calendar-state",
-          state: "calendar-state",
-        },
-        plugin: {
-          ...linearPlugin,
-          brand: "google",
-          id: "google",
-          name: "Google",
-        },
-      })
-      .mockResolvedValueOnce({
-        authorization: null,
-        plugin: {
-          ...linearPlugin,
-          brand: "google",
-          id: "google",
-          installed: true,
-          name: "Google",
-        },
+    // A check that finds the next account's attempt has the core say where to
+    // authorize it (core test: "has one window open the next attempt a check
+    // finds, and checks that one").
+    const user = setupUser();
+    const google: CommaPlugin = {
+      ...linearPlugin,
+      brand: "google",
+      id: "google",
+      name: "Google",
+    };
+    script.catalog = [google];
+    answers["plugin.install"] = () => {
+      say({ activity: { google: "authorizing" } });
+      return {
+        authorizationUrl: "https://accounts.google.com/gmail?state=gmail-state",
+      };
+    };
+    answers["plugin.authorization.check"] = () => {
+      notify({
+        kind: "authorize",
+        origin: "plugins",
+        plugin: "google",
+        url: "https://accounts.google.com/calendar?state=calendar-state",
       });
-    harness.listWorkspacePlugins.mockResolvedValue([
-      { ...linearPlugin, brand: "google", id: "google", name: "Google" },
-    ]);
+      answers["plugin.authorization.check"] = () => {
+        say({ catalog: [installed(google)], activity: {} });
+        return null;
+      };
+      return null;
+    };
     render(<PluginsRoute />);
+    await flush();
 
-    await user.click(await screen.findByRole("button", { name: "Add Google" }));
-    await waitFor(() =>
-      expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledWith(
-        "https://accounts.google.com/gmail?state=gmail-state"
-      )
-    );
-
-    window.dispatchEvent(new Event("focus"));
-    await waitFor(() =>
-      expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledWith(
-        "https://accounts.google.com/calendar?state=calendar-state"
-      )
-    );
-    expect(harness.installWorkspacePlugin).toHaveBeenNthCalledWith(
-      2,
-      "wsp_1",
-      "google",
-      {
-        authorizationState: "gmail-state",
-        verifyOnly: true,
-        signal: expect.any(AbortSignal),
-      }
+    await user.click(screen.getByRole("button", { name: "Add Google" }));
+    await flush();
+    expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledWith(
+      "https://accounts.google.com/gmail?state=gmail-state"
     );
 
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Add Google" })).not.toBeDisabled()
+    await focusWindow();
+    expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledWith(
+      "https://accounts.google.com/calendar?state=calendar-state"
     );
+    expect(core.sentTo("plugin.authorization.check")).toEqual([{}]);
+    expect(screen.getByRole("button", { name: "Add Google" })).not.toBeDisabled();
 
-    window.dispatchEvent(new Event("focus"));
-    await waitFor(() =>
-      expect(harness.installWorkspacePlugin).toHaveBeenCalledTimes(3)
-    );
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Add Google" })).toBeNull()
-    );
-    expect(harness.installWorkspacePlugin).toHaveBeenNthCalledWith(
-      3,
-      "wsp_1",
-      "google",
-      {
-        authorizationState: "calendar-state",
-        verifyOnly: true,
-        signal: expect.any(AbortSignal),
-      }
-    );
+    await focusWindow();
+    expect(core.sentTo("plugin.authorization.check")).toEqual([{}, {}]);
+    expect(screen.queryByRole("button", { name: "Add Google" })).toBeNull();
+    expect(core.sentTo("plugin.install")).toEqual([
+      { plugin: "google", workspace: WS },
+    ]);
     expect(harness.openNativePlatformExternalUrl).toHaveBeenCalledTimes(2);
   });
 
   it("uses the supplied Google artwork throughout the plugin catalog and detail", async () => {
     const name = "Google";
     const logo = "google";
-    const user = userEvent.setup();
-    harness.listWorkspacePlugins.mockResolvedValue([
+    const user = setupUser();
+    script.catalog = [
       { ...notionPlugin, id: "feishu", brand: "feishu", name: "Feishu" },
       notionPlugin,
       ...availablePlugins,
-    ]);
+    ];
 
     const { container } = render(<PluginsRoute />);
-    expect(await screen.findByRole("heading", { name: "Plugins" })).toBeVisible();
+    await flush();
+    expect(screen.getByRole("heading", { name: "Plugins" })).toBeVisible();
 
     for (const brand of ["github", "google", "linear", "notion", "slack"]) {
       expect(
@@ -894,6 +841,7 @@ describe("PluginsRoute", () => {
     await user.click(
       screen.getByRole("button", { name: `View ${name} plugin details` })
     );
+    await flush();
     expect(
       container.querySelector(
         `[data-slot="plugin-detail"] [data-provider-logo="${logo}"]`
@@ -902,14 +850,17 @@ describe("PluginsRoute", () => {
   });
 
   it("keeps unreleased Feishu out of catalog browsing and search", async () => {
-    const user = userEvent.setup();
-    harness.listWorkspacePlugins.mockResolvedValue([
+    // The core keeps it off the lists it gives the page (core test: "keeps
+    // Feishu off the Plugins page's lists").
+    const user = setupUser();
+    script.catalog = [
       { ...notionPlugin, id: "feishu", brand: "feishu", name: "Feishu" },
       ...availablePlugins,
-    ]);
+    ];
     render(<PluginsRoute />);
+    await flush();
     await user.click(
-      await screen.findByRole("button", { name: "Show all Integrations plugins" })
+      screen.getByRole("button", { name: "Show all Integrations plugins" })
     );
     expect(
       screen.getByRole("button", { name: "View Google plugin details" })
@@ -919,14 +870,15 @@ describe("PluginsRoute", () => {
     ).toBeNull();
     await user.type(screen.getByRole("textbox", { name: "Search plugins" }), "Feishu");
     expect(screen.getByText("No plugins found")).toBeVisible();
-    expect(harness.installWorkspacePlugin).not.toHaveBeenCalled();
+    expect(core.sentTo("plugin.install")).toEqual([]);
   });
 
   it("shows a skill loading state instead of an empty catalog", async () => {
-    const user = userEvent.setup();
-    harness.listWorkspaceSkills.mockReturnValue(new Promise(() => {}));
+    const user = setupUser();
+    script.skills = { status: "loading", skills: [] };
     render(<PluginsRoute />);
-    await user.click(await screen.findByRole("tab", { name: "Skills" }));
+    await flush();
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
     expect(screen.queryByText("No skills found")).toBeNull();
     expect(screen.getByRole("status", { name: "Loading…" })).toHaveAttribute(
       "aria-busy",
@@ -935,54 +887,72 @@ describe("PluginsRoute", () => {
   });
 
   it("retries failed skill loads without poisoning the catalog cache", async () => {
-    const user = userEvent.setup();
-    harness.listWorkspaceSkills.mockRejectedValueOnce(new Error("503 unavailable"));
+    // The core keeps nothing of a failed read and reads again at once on
+    // `skills.refresh` (core test: "says a failed read failed, keeps nothing for
+    // it, and reads again at once on retry").
+    const user = setupUser();
+    script.skills = { status: "error", skills: [] };
+    answers["skills.refresh"] = () => {
+      say({ skills: { status: "ready", skills } });
+      return null;
+    };
     render(<PluginsRoute />);
-    await user.click(await screen.findByRole("tab", { name: "Skills" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t load skills.");
+    await flush();
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t load skills.");
     expect(screen.queryByText("No skills found")).toBeNull();
     await user.click(screen.getByRole("tab", { name: "Plugins" }));
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByText("Notion")).toBeVisible();
     await user.click(screen.getByRole("tab", { name: "Skills" }));
     await user.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByText("summarize")).toBeVisible();
-    expect(harness.listWorkspaceSkills).toHaveBeenCalledTimes(2);
+    await flush();
+    expect(screen.getByText("summarize")).toBeVisible();
+    expect(core.sentTo("skills.refresh")).toEqual([{ workspace: WS }]);
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("refetches immediately after reopening a failed skill catalog", async () => {
-    const user = userEvent.setup();
-    harness.listWorkspaceSkills.mockRejectedValueOnce(new Error("503 unavailable"));
+    const user = setupUser();
+    script.skills = { status: "error", skills: [] };
+    answers["skills.refresh"] = () => {
+      say({ skills: { status: "ready", skills } });
+      return null;
+    };
     const first = render(<PluginsRoute />);
-    await user.click(await screen.findByRole("tab", { name: "Skills" }));
-    await screen.findByRole("alert");
+    await flush();
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t load skills.");
+    expect(core.sentTo("skills.refresh")).toEqual([]);
     first.unmount();
     render(<PluginsRoute />);
-    await user.click(await screen.findByRole("tab", { name: "Skills" }));
-    expect(await screen.findByText("summarize")).toBeVisible();
-    expect(harness.listWorkspaceSkills).toHaveBeenCalledTimes(2);
+    await flush();
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+    expect(screen.getByText("summarize")).toBeVisible();
+    expect(core.sentTo("skills.refresh")).toEqual([{ workspace: WS }]);
   });
 
   it("shows the empty skill state only after a successful empty response", async () => {
-    const user = userEvent.setup();
-    harness.listWorkspaceSkills.mockResolvedValue([]);
+    const user = setupUser();
+    script.skills = { status: "ready", skills: [] };
     render(<PluginsRoute />);
-    await user.click(await screen.findByRole("tab", { name: "Skills" }));
-    expect(await screen.findByText("No skills found")).toBeVisible();
+    await flush();
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+    expect(screen.getByText("No skills found")).toBeVisible();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
   it("lists, categorizes, and searches workspace skills on the Skills tab", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<PluginsRoute />);
+    await flush();
 
-    await user.click(await screen.findByRole("tab", { name: "Skills" }));
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
 
-    expect(harness.listWorkspaceSkills).toHaveBeenCalledWith("wsp_1");
+    expect(subscribed).toContainEqual({ topic: "skills", workspace: WS });
     expect(screen.getByRole("heading", { level: 1, name: "Skills" })).toBeVisible();
-    expect(await screen.findByText("summarize")).toBeVisible();
+    expect(screen.getByText("summarize")).toBeVisible();
     expect(screen.queryByText("weekly-report")).toBeNull();
     expect(screen.queryByText("Notion")).toBeNull();
 
@@ -1000,42 +970,43 @@ describe("PluginsRoute", () => {
   });
 
   it("opens a skill as a second-level page with its rendered instructions", async () => {
-    const user = userEvent.setup();
+    // The core reads them (core test: "reads one skill and one of its files when
+    // a page opens them").
+    const user = setupUser();
     const { container } = render(<PluginsRoute />);
+    await flush();
 
-    await user.click(await screen.findByRole("tab", { name: "Skills" }));
-    await user.click(await screen.findByRole("button", { name: "System" }));
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+    await user.click(screen.getByRole("button", { name: "System" }));
     await user.click(
       screen.getByRole("button", { name: "View weekly-report skill details" })
     );
 
-    expect(harness.getWorkspaceSkill).toHaveBeenCalledWith(
-      "wsp_1",
-      "weekly-report",
-      expect.anything()
-    );
+    expect(core.sentTo("skills.detail")).toEqual([
+      { workspace: WS, skill: "weekly-report" },
+    ]);
     expect(
       screen.getByRole("heading", { level: 1, name: "weekly-report" })
     ).toBeVisible();
+    // The skill's file arrives after the detail page opens.
     expect(await screen.findByText("Reporting steps")).toBeVisible();
     const fileContent = container.querySelector('[data-slot="skill-file-content"]');
     expect(fileContent).not.toHaveTextContent("name: weekly-report");
 
     // Source view shows the raw file, front matter included.
     await user.click(screen.getByRole("button", { name: "Source" }));
+    await flush();
     expect(fileContent).toHaveTextContent("name: weekly-report");
     expect(fileContent).toHaveTextContent("# Reporting steps");
 
     // A reference file loads on demand and keeps the chosen view.
     await user.click(screen.getByRole("button", { name: "format.md" }));
-    expect(harness.getWorkspaceSkillFile).toHaveBeenCalledWith(
-      "wsp_1",
-      "weekly-report",
-      "references/format.md",
-      expect.anything()
-    );
+    expect(core.sentTo("skills.file")).toEqual([
+      { workspace: WS, skill: "weekly-report", path: "references/format.md" },
+    ]);
+    await flush();
     // Highlighting splits a source line into token spans, so read the line as text.
-    await waitFor(() => expect(fileContent).toHaveTextContent("# Report format"));
+    expect(fileContent).toHaveTextContent("# Report format");
     await user.click(screen.getByRole("button", { name: "Rendered" }));
     expect(screen.getByRole("heading", { name: "Report format" })).toBeVisible();
 
@@ -1066,49 +1037,58 @@ describe("PluginsRoute", () => {
       os: "macos",
       platform: "electron",
     });
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<PluginsRoute />);
+    await flush();
 
-    await user.click(await screen.findByRole("tab", { name: "Skills" }));
-    await user.click(await screen.findByRole("button", { name: "System" }));
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+    await user.click(screen.getByRole("button", { name: "System" }));
     await user.click(
       screen.getByRole("button", { name: "View weekly-report skill details" })
     );
-    await screen.findByText("Reporting steps");
+    // The skill's file arrives after the detail page opens.
+    expect(await screen.findByText("Reporting steps")).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Skill actions" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Open" }));
-    await waitFor(() => expect(openDownload).toHaveBeenCalledWith({ downloadRef }));
+    await flush();
+    await user.click(screen.getByRole("menuitem", { name: "Open" }));
+    await flush();
+    expect(openDownload).toHaveBeenCalledWith({ downloadRef });
     expect(saveDownload).toHaveBeenCalledWith(
       expect.objectContaining({ fileName: "weekly-report.md" })
     );
 
     await user.click(screen.getByRole("button", { name: "Skill actions" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Reveal in Finder" }));
-    await waitFor(() => expect(revealDownload).toHaveBeenCalledWith({ downloadRef }));
+    await flush();
+    await user.click(screen.getByRole("menuitem", { name: "Reveal in Finder" }));
+    await flush();
+    expect(revealDownload).toHaveBeenCalledWith({ downloadRef });
     // The second action reuses the copy the first one placed in Downloads.
     expect(saveDownload).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: "Skill actions" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Copy Markdown" }));
-    await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith({
-        text: expect.stringContaining("# Reporting steps"),
-      })
-    );
+    await flush();
+    await user.click(screen.getByRole("menuitem", { name: "Copy Markdown" }));
+    await flush();
+    expect(writeText).toHaveBeenCalledWith({
+      text: expect.stringContaining("# Reporting steps"),
+    });
   });
 
   it("opens an installed plugin detail and uninstalls it", async () => {
-    const user = userEvent.setup();
+    // The core asks the server and keeps what it answers (core test:
+    // "uninstalls, and says what the server said when it could not").
+    const user = setupUser();
     const { container } = render(<PluginsRoute />);
+    await flush();
 
-    await screen.findByRole("heading", { name: "Plugins" });
+    expect(screen.getByRole("heading", { name: "Plugins" })).toBeVisible();
     expect(container.querySelector('[data-slot="plugin-catalog"]')).toHaveClass(
       "comma-plugins-route"
     );
 
     await user.click(
-      await screen.findByRole("button", { name: "View Notion plugin details" })
+      screen.getByRole("button", { name: "View Notion plugin details" })
     );
     expect(container.querySelector('[data-slot="plugin-detail"]')).toHaveClass(
       "comma-plugins-route"
@@ -1122,71 +1102,66 @@ describe("PluginsRoute", () => {
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Uninstall Notion" }));
+    await flush();
 
-    await waitFor(() =>
-      expect(harness.uninstallWorkspacePlugin).toHaveBeenCalledWith("wsp_1", "notion")
-    );
-    expect(
-      await screen.findByRole("button", { name: "Add to Comma Notion" })
-    ).toBeVisible();
+    expect(core.sentTo("plugin.uninstall")).toEqual([
+      { plugin: "notion", workspace: WS },
+    ]);
+    expect(screen.getByRole("button", { name: "Add to Comma Notion" })).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Back to plugins" }));
     expect(screen.getByRole("heading", { name: "Plugins" })).toBeVisible();
   });
 
-  it("does not expose a separate connection action for an installed plugin", async () => {
-    const user = userEvent.setup();
-    const githubPlugin: CommaPlugin = {
-      ...linearPlugin,
-      brand: "github",
-      id: "github",
-      installed: true,
-      mcps: [{ id: "github-mcp", name: "github" }],
-      name: "GitHub",
-    };
-    harness.listWorkspacePlugins.mockResolvedValue([githubPlugin]);
-
-    render(<PluginsRoute />);
-    await user.click(
-      await screen.findByRole("button", { name: "View GitHub plugin details" })
-    );
-
-    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Uninstall GitHub" })).toBeVisible();
-  });
-
   it("shows a retryable error when the catalog request fails", async () => {
-    const user = userEvent.setup();
-    harness.listWorkspacePlugins.mockRejectedValueOnce(new Error("offline"));
+    // The core says why its read failed (core test: "says why a first read
+    // failed, and reads again every 10 s until it can").
+    const user = setupUser();
+    script.catalog = {
+      status: "error",
+      workspace: WS,
+      error: { code: "failed", message: "offline" },
+    };
+    answers["plugins.refresh"] = () => {
+      say({ catalog: [notionPlugin, linearPlugin] });
+      return null;
+    };
     render(
       <>
         <Toaster />
         <PluginsRoute />
       </>
     );
+    await flush();
 
-    const errorToast = await screen.findByTestId("plugins-load-error");
+    const errorToast = screen.getByTestId("plugins-load-error");
     expect(errorToast).toHaveTextContent("Couldn’t load plugins.");
     expect(errorToast).toHaveTextContent("offline");
     await user.click(
       within(errorToast).getByRole("button", { name: "Dismiss notification" })
     );
-    await waitFor(() => expect(screen.queryByTestId("plugins-load-error")).toBeNull());
+    // A closed toast leaves after its exit animation, which starts once the
+    // close has rendered.
+    await advance(300);
+    await advance(300);
+    expect(screen.queryByTestId("plugins-load-error")).toBeNull();
 
     // Dismissing transient feedback must not remove the only recovery path.
     await user.click(screen.getByRole("button", { name: "Retry" }));
+    await flush();
 
-    expect(await screen.findByRole("heading", { name: "Plugins" })).toBeVisible();
-    expect(harness.listWorkspacePlugins).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("heading", { name: "Plugins" })).toBeVisible();
+    expect(core.sentTo("plugins.refresh")).toEqual([{ workspace: WS }]);
   });
 
   it("shows one remaining plugin directly without Show all", async () => {
     const plugins = availablePlugins.slice(0, 4);
-    harness.listWorkspacePlugins.mockResolvedValue([notionPlugin, ...plugins]);
+    script.catalog = [notionPlugin, ...plugins];
 
     render(<PluginsRoute />);
+    await flush();
 
-    expect(await screen.findByRole("heading", { name: "Integrations" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Integrations" })).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "Show all Integrations plugins" })
     ).toBeNull();
@@ -1207,13 +1182,14 @@ describe("PluginsRoute", () => {
       name: "caps the preview at three plugins when more than two remain",
     },
   ])("$name", async ({ availableCount, expectedPreviewIds }) => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const plugins = availablePlugins.slice(0, availableCount);
-    harness.listWorkspacePlugins.mockResolvedValue([notionPlugin, ...plugins]);
+    script.catalog = [notionPlugin, ...plugins];
 
     render(<PluginsRoute />);
+    await flush();
 
-    expect(await screen.findByRole("heading", { name: "Integrations" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Integrations" })).toBeVisible();
     const showAllButton = screen.getByRole("button", {
       name: "Show all Integrations plugins",
     });
@@ -1238,19 +1214,17 @@ describe("PluginsRoute", () => {
   });
 
   it("localizes the catalog, detail actions, and dynamic accessibility copy", async () => {
-    const user = userEvent.setup();
-    harness.listWorkspacePlugins.mockResolvedValue([
-      notionPlugin,
-      ...availablePlugins.slice(0, 5),
-    ]);
+    const user = setupUser();
+    script.catalog = [notionPlugin, ...availablePlugins.slice(0, 5)];
 
     render(
       <CommaI18nProvider locale="zh-CN">
         <PluginsRoute />
       </CommaI18nProvider>
     );
+    await flush();
 
-    expect(await screen.findByRole("heading", { name: "插件" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "插件" })).toBeVisible();
     const searchInput = screen.getByRole("textbox", { name: "搜索插件" });
     expect(searchInput).toHaveAttribute("placeholder", "搜索插件…");
     expect(screen.getByRole("heading", { name: "已安装" })).toBeVisible();
@@ -1278,23 +1252,10 @@ describe("PluginsRoute", () => {
     expect(screen.getByRole("button", { name: "在聊天中试用 Notion" })).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "卸载 Notion" }));
+    await flush();
 
     expect(
-      await screen.findByRole("button", { name: "将 Notion 添加到 Comma" })
+      screen.getByRole("button", { name: "将 Notion 添加到 Comma" })
     ).toBeVisible();
-  });
-
-  it("localizes the plugin route status region accessibility label", () => {
-    harness.listWorkspaces.mockReturnValue(new Promise<never>(() => undefined));
-
-    render(
-      <CommaI18nProvider locale="zh-CN">
-        <PluginsRoute />
-      </CommaI18nProvider>
-    );
-
-    expect(screen.getByRole("region", { name: "插件" })).toContainElement(
-      screen.getByRole("status", { name: "加载中…" })
-    );
   });
 });

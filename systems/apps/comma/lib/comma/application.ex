@@ -6,7 +6,7 @@ defmodule Comma.Application do
 
   @impl true
   def start(_type, _args) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
     enabled = Comma.enabled_subsystems()
     validate!(enabled)
     :ok = Comma.PodLifecycle.boot(enabled)
@@ -38,13 +38,13 @@ defmodule Comma.Application do
     # The launcher owns no children of its own; the subsystems run under their
     # own application supervision trees. A trivial supervisor satisfies the
     # Application start contract.
-    Supervisor.start_link([], strategy: :one_for_one, name: Comma.Supervisor)
+    SystemsRuntime.Supervisor.start_link([], strategy: :one_for_one, name: Comma.Supervisor)
   end
 
   defp emit_startup(started_at) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:comma_system, :startup, :stop],
-      %{duration: System.monotonic_time() - started_at},
+      %{duration: SystemsClock.monotonic_time() - started_at},
       %{}
     )
   end

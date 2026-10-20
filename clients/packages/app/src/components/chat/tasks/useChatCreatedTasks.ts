@@ -1,22 +1,17 @@
-import type { CommaApiClient } from "../../../api";
-import { useSyncExternalStore, useCallback } from "react";
+import { useTaskSummaries } from "../../tasks/useTaskArchive";
 import {
-  readTaskSummary,
-  requestTaskSummary,
-  subscribeTaskSummaries,
-  taskSummaryRevision,
-} from "../../tasks/taskArchiveState";
-import { useTaskFactsRevalidation } from "../../tasks/useTaskArchive";
-import { taskStatusBucket, type TaskStatusBucket } from "@comma/ui";
+  taskStatusBucket,
+  type TaskStatusBucket,
+} from "@comma/ui/components/task-workspace";
 import { useEffect, useMemo, useRef } from "react";
 import { useProductInboxSnapshot } from "../../../product-inbox/react";
 import {
   taskReviewNeedsAttention,
   useTaskReviewSeenMarks,
 } from "../../tasks/taskReviewAttention";
-import { restorePanelTask, useDismissedPanelTasks } from "./chatTaskPanelDismissals";
-import type { ChatMessage } from "../model/conversationChannel";
-import { conversationMessageTurnKey } from "../model/visibleReplyPresentation";
+import { useDismissedPanelTasks } from "./chatTaskPanelDismissals";
+import type { ChatMessage } from "@comma/core/chat";
+import { asksRouter, conversationMessageTurnKey } from "@comma/core/chat";
 
 export type ChatCreatedTask = {
   /**
@@ -25,39 +20,57 @@ export type ChatCreatedTask = {
    */
   archiveVersion: number | undefined;
   conversationId: string;
-  /** Assistant message that announced the task; the reveal highlights it. */
+  /** Message that announced the task; the reveal highlights it. */
   messageId: string | undefined;
   /** Needs review and unseen since it last updated; drives the blue dot. */
   needsAttention: boolean;
+  /**
+   * The turn of the person's last request to the Router before the task was
+   * announced; a Quick Chat's own task has the Quick Chat's turn. The reply
+   * slot's wait reads it.
+   */
+  requestTurnKey?: string | undefined;
   statusBucket: TaskStatusBucket;
+  /** The Task waits for its person (`escalated`), e.g. on a question its Worker asked. */
+  needsInput: boolean;
   title: string;
   /** Turn that announced the task; undefined for agent-only leading turns. */
   turnKey: string | undefined;
+  /**
+   * When the Task's latest run started (`run_started_at`, Unix milliseconds)
+   * as this chat knows it; 0 for a Task from before the server kept it. A
+   * Dismiss acknowledges this run.
+   */
+  version: number;
 };
 
 const NO_TASKS: readonly ChatCreatedTask[] = [];
-const NO_RESTORES: readonly string[] = [];
 
 type CreatedTaskRef = {
   conversationId: string;
   messageId: string | undefined;
+  requestTurnKey: string | undefined;
   title: string | undefined;
   turnKey: string | undefined;
   updatedAt: number | undefined;
 };
 
 /**
- * Tasks the agent created in this conversation, in transcript order. A task
- * arrives as a `conversation_ref` on a committed assistant message (inline
- * part or block ref), so scanning non-user messages both defines creation
- * order and skips user-authored `comma:task` mentions. Status is overlaid from
- * the live ProductInbox projection so the panel tracks lifecycle changes
- * without polling. Unconfirmed references stay hidden; message snapshots are
- * never authoritative lifecycle facts.
+ * Tasks created in this conversation, in transcript order: the core names
+ * each message's (`ChatMessage.createdTasks`). An agent's message and a
+ * person's Quick Chat announce Tasks; a person's `comma:task` mention is
+ * none. A Quick Chat Task belongs to its own turn, and a Task the agent
+ * announces after a Quick Chat still answers the request before it. Status is
+ * overlaid from the live ProductInbox projection so the panel tracks
+ * lifecycle changes without polling. Unconfirmed references stay hidden;
+ * message snapshots are never authoritative lifecycle facts.
  *
  * Settled tasks acknowledged through "Reveal in Chat" or "Dismiss" are
- * filtered out until the task is observed running again (see
- * chatTaskPanelDismissals).
+ * filtered out until they run again: a running task always shows, and one
+ * whose latest run started after the run acknowledged shows again. A rename,
+ * a label or a review acceptance starts no run, so it does not bring a row
+ * back. Nothing lifts an acknowledgement, so a device that never saw the task
+ * run cannot keep its next result hidden.
  *
  * The list is derived only when one of its sources changes, and a task whose
  * facts did not change keeps its object. A long-lived conversation docks every
@@ -65,60 +78,32 @@ type CreatedTaskRef = {
  * re-render of the list.
  */
 export function useChatCreatedTasks({
-  api,
   groupId,
   messages,
 }: {
-  api?: CommaApiClient | undefined;
   groupId: string;
   messages: readonly ChatMessage[];
 }): readonly ChatCreatedTask[] {
   const productInbox = useProductInboxSnapshot();
-  useTaskFactsRevalidation(api);
-  const revision = useSyncExternalStore(
-    useCallback(
-      (listener: () => void) =>
-        api ? subscribeTaskSummaries(api, listener) : () => {},
-      [api]
-    ),
-    () => (api ? taskSummaryRevision(api) : 0),
-    () => 0
-  );
   const seenReviewMarks = useTaskReviewSeenMarks();
   const dismissed = useDismissedPanelTasks();
   const createdRefs = useMemo(() => {
     const seen = new Set<string>();
     const refs: CreatedTaskRef[] = [];
-    let currentTurnKey: string | undefined;
+    // Every turn is a person's request to the Router, their Quick Chat included.
+    let requestTurnKey: string | undefined;
     for (const message of messages) {
-      if (message.role === "user") {
-        currentTurnKey = conversationMessageTurnKey(message);
-        continue;
-      }
-      for (const part of message.parts ?? []) {
-        if (part.kind !== "inline-task") continue;
-        const conversationId = part.task.conversationId;
-        if (!conversationId || part.task.unavailable || seen.has(conversationId)) {
-          continue;
-        }
-        seen.add(conversationId);
+      if (asksRouter(message)) requestTurnKey = conversationMessageTurnKey(message);
+      for (const task of message.createdTasks ?? []) {
+        if (seen.has(task.conversationId)) continue;
+        seen.add(task.conversationId);
         refs.push({
-          conversationId,
+          conversationId: task.conversationId,
           messageId: message.messageId,
-          title: part.task.title,
-          turnKey: currentTurnKey,
-          updatedAt: part.task.updatedAt,
-        });
-      }
-      for (const ref of message.refs) {
-        if (ref.kind !== "agent_task" || seen.has(ref.conversationId)) continue;
-        seen.add(ref.conversationId);
-        refs.push({
-          conversationId: ref.conversationId,
-          messageId: message.messageId,
-          title: ref.title,
-          turnKey: currentTurnKey,
-          updatedAt: undefined,
+          requestTurnKey,
+          title: task.title,
+          turnKey: requestTurnKey,
+          updatedAt: task.updatedAt,
         });
       }
     }
@@ -127,7 +112,7 @@ export function useChatCreatedTasks({
 
   // One pass over the projection per snapshot; every reference then resolves
   // its task in constant time instead of scanning the whole Inbox.
-  const projectedItems = productInbox?.snapshot.items;
+  const projectedItems = productInbox?.items;
   const projectedTasks = useMemo(() => {
     const tasks = new Map<string, NonNullable<typeof projectedItems>[number]>();
     if (createdRefs.length === 0) return tasks;
@@ -139,61 +124,53 @@ export function useChatCreatedTasks({
     return tasks;
   }, [createdRefs, groupId, projectedItems]);
 
-  useEffect(() => {
-    if (api)
-      for (const ref of createdRefs)
-        // The owner already supplied versioned facts for Tasks in its loaded page.
-        // References outside that page still use the bounded summary request lane.
-        if (!projectedTasks.get(ref.conversationId)?.archiveVersion)
-          requestTaskSummary(api, groupId, ref.conversationId);
-  }, [api, groupId, createdRefs, projectedTasks, revision]);
+  // The core asks the summary lane for the Tasks the list has no version of,
+  // and says which facts are newer: the list's or the summary's.
+  const summaries = useTaskSummaries(
+    groupId,
+    useMemo(() => createdRefs.map((ref) => ref.conversationId), [createdRefs])
+  );
 
   const previousRef = useRef(NO_TASKS);
-  const { restore, visible } = useMemo(() => {
-    if (createdRefs.length === 0) {
-      return { restore: NO_RESTORES, visible: NO_TASKS };
-    }
+  const visible = useMemo(() => {
+    if (createdRefs.length === 0) return NO_TASKS;
     const previous = previousRef.current;
     let previousById: Map<string, ChatCreatedTask> | undefined;
     const next: ChatCreatedTask[] = [];
-    const running: string[] = [];
     for (const ref of createdRefs) {
       const projected = projectedTasks.get(ref.conversationId);
-      const canonical = api
-        ? readTaskSummary(api, groupId, ref.conversationId)
-        : undefined;
-      if (!canonical && !projected) continue;
-      const useProjected =
-        projected && (projected.archiveVersion ?? 0) >= (canonical?.updated_at ?? 0);
-      const status = useProjected
-        ? projected.status
-        : (canonical?.status ?? projected!.status);
+      const known = summaries.get(ref.conversationId);
+      if (!known && !projected) continue;
+      const status = known?.status ?? projected!.status;
       if (status === "archived") continue;
       const statusBucket = taskStatusBucket(status);
+      const needsInput = status === "escalated";
       const updatedAt = projected?.updatedAt ?? ref.updatedAt ?? 0;
-      if (statusBucket === "in_progress") {
-        // A running task always docks; observing it running also lifts an old
-        // acknowledgement so its next settle asks to be revealed again.
-        if (dismissed.has(ref.conversationId)) running.push(ref.conversationId);
-      } else if (dismissed.has(ref.conversationId)) {
-        // Settled and acknowledged via "Reveal in Chat" or "Dismiss" — stays cleared.
+      const version = Math.max(
+        known?.run_started_at ?? 0,
+        projected?.runStartedAt ?? 0
+      );
+      // Settled and acknowledged at this run or a later one via "Reveal in
+      // Chat" or "Dismiss": stays cleared. A running task always docks.
+      if (
+        statusBucket !== "in_progress" &&
+        (dismissed.get(ref.conversationId) ?? -1) >= version
+      ) {
         continue;
       }
-      // Keep the same authority for status, title and the archive precondition.
-      // Invalidating cached summaries must not remove controls backed by current owner facts.
-      const archiveVersion = useProjected
-        ? projected.archiveAvailability?.allowed
-          ? projected.archiveVersion
+      // The same facts give the status, the title and the archive precondition.
+      // Facts the core no longer confirms come without archive permission.
+      const archiveVersion = known
+        ? known.archive_availability?.allowed
+          ? known.updated_at
           : undefined
-        : canonical?.archive_availability?.allowed
-          ? canonical.updated_at
+        : projected?.archiveAvailability?.allowed
+          ? projected.archiveVersion
           : undefined;
       const needsAttention =
         statusBucket === "needs_review" &&
         taskReviewNeedsAttention(seenReviewMarks, ref.conversationId, updatedAt);
-      const title = useProjected
-        ? projected.title
-        : (canonical?.title ?? projected?.title ?? ref.title ?? "");
+      const title = known?.title ?? projected?.title ?? ref.title ?? "";
       // A task whose facts held keeps its object. Tasks rarely move, so the
       // same slot is tried first and the index is only built when it misses.
       let before = previous[next.length];
@@ -206,39 +183,35 @@ export function useChatCreatedTasks({
           before.archiveVersion === archiveVersion &&
           before.messageId === ref.messageId &&
           before.needsAttention === needsAttention &&
+          before.requestTurnKey === ref.requestTurnKey &&
           before.statusBucket === statusBucket &&
+          before.needsInput === needsInput &&
           before.title === title &&
-          before.turnKey === ref.turnKey
+          before.turnKey === ref.turnKey &&
+          before.version === version
           ? before
           : {
               archiveVersion,
               conversationId: ref.conversationId,
               messageId: ref.messageId,
               needsAttention,
+              requestTurnKey: ref.requestTurnKey,
               statusBucket,
+              needsInput,
               title,
               turnKey: ref.turnKey,
+              version,
             }
       );
     }
     const unchanged =
       next.length === previous.length &&
       next.every((task, index) => task === previous[index]);
-    return {
-      restore: running.length > 0 ? running : NO_RESTORES,
-      visible: unchanged ? previous : next,
-    };
-    // `revision` is the summary cache's version: `readTaskSummary` reads the
-    // cache, so a new revision is what makes this derivation stale.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, createdRefs, dismissed, groupId, projectedTasks, revision, seenReviewMarks]);
+    return unchanged ? previous : next;
+  }, [createdRefs, dismissed, projectedTasks, seenReviewMarks, summaries]);
   useEffect(() => {
     previousRef.current = visible;
   }, [visible]);
-
-  useEffect(() => {
-    for (const conversationId of restore) restorePanelTask(conversationId);
-  }, [restore]);
 
   return visible;
 }

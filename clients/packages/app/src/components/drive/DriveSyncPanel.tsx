@@ -1,14 +1,14 @@
 import { useCommaMessages } from "@comma/i18n/react";
+import { Button } from "@comma/ui/components/Button";
 import {
-  Button,
   CloudCheckIcon,
   CloudOffIcon,
-  cx,
   FolderOpenIcon,
   HistoryIcon,
-  menuSurfaceClasses,
-  Toggle,
-} from "@comma/ui";
+} from "@comma/ui/components/icons";
+import { cx } from "@comma/ui/components/utils";
+import { menuSurfaceClasses } from "@comma/ui/components/menu";
+import { Toggle } from "@comma/ui/components/toggle";
 import { useState } from "react";
 import {
   Button as AriaButton,

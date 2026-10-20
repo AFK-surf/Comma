@@ -2,7 +2,7 @@ defmodule SalixSignalProto.PreKeyBundleTest do
   # Pre-key bundles from the service JSON (CRS-03 §9.5, §9.6) against the
   # CRS-03 vectors prekey-bundle-processing.json,
   # kem-public-key-no-modulus-check.json and device-id-range.json.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.{Address, Keys, PreKeyBundle, Session}
   alias SalixSignalProto.Session.PreKeyMessage

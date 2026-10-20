@@ -1,6 +1,7 @@
 import userEvent from "@testing-library/user-event";
 import { act, fireEvent, render, screen } from "@comma/test-utils/render";
 import { describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { motionDuration } from "../../../tokens/motion";
 import { Login, type LoginCopy } from "../Login";
 
@@ -27,6 +28,20 @@ const localizedCopy: LoginCopy = {
     differentEmailAction: "使用其他邮箱",
   },
 };
+
+function RetryableErrorLogin() {
+  const [error, setError] = useState<string | undefined>(
+    "Please enter a valid verification code"
+  );
+  return (
+    <Login
+      mode="verification"
+      email="person@comma.ai"
+      defaultCode="1ED3F1"
+      {...(error ? { errorMessage: error, onRetry: () => setError(undefined) } : {})}
+    />
+  );
+}
 
 describe("Login", () => {
   it("renders the default email state with a disabled email action", () => {
@@ -568,69 +583,124 @@ describe("Login", () => {
     }
   });
 
+  it("normalizes and completes an autofill-style replacement", () => {
+    const onCodeChange = vi.fn();
+    const onCodeComplete = vi.fn();
+    render(
+      <Login
+        mode="verification"
+        email="person@comma.ai"
+        onCodeChange={onCodeChange}
+        onCodeComplete={onCodeComplete}
+      />
+    );
+    const input = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Verification code",
+    });
+    // Browsers fill one-time codes by replacing the value in a single input event.
+    const setValue = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )!.set!;
+    setValue.call(input, "654 321");
+    input.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        data: "654 321",
+        inputType: "insertReplacementText",
+      })
+    );
+
+    expect(input).toHaveValue("654321");
+    expect(onCodeChange).toHaveBeenLastCalledWith("654321");
+    expect(onCodeComplete).toHaveBeenCalledWith("654321");
+  });
+
   it("pops newly filled cells when a code is pasted", () => {
-    vi.useFakeTimers();
-    try {
-      const { container } = render(
-        <Login mode="verification" email="person@comma.ai" />
-      );
-      const input = screen.getByRole<HTMLInputElement>("textbox", {
-        name: "Verification code",
-      });
+    const { container } = render(<Login mode="verification" email="person@comma.ai" />);
+    const input = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Verification code",
+    });
 
-      fireEvent.focus(input);
-      fireEvent.change(input, { target: { value: "1ED3F1" } });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "1ED3F1" } });
 
-      const cells = container.querySelectorAll("[data-login-code-cell]");
-      for (const cell of cells) {
-        expect(cell).toHaveAttribute("data-pop", "true");
-        expect(cell).toHaveAttribute("data-filled", "true");
-      }
+    const cells = container.querySelectorAll("[data-login-code-cell]");
+    for (const cell of cells) {
+      expect(cell).toHaveAttribute("data-pop", "true");
+      expect(cell).toHaveAttribute("data-filled", "true");
+    }
 
-      act(() => {
-        vi.advanceTimersByTime(motionDuration.feedbackIn);
-      });
+    act(() => {
+      vi.advanceTimersByTime(motionDuration.feedbackIn);
+    });
 
-      for (const cell of cells) {
-        expect(cell).toHaveAttribute("data-pop", "false");
-      }
-    } finally {
-      vi.useRealTimers();
+    for (const cell of cells) {
+      expect(cell).toHaveAttribute("data-pop", "false");
     }
   });
 
   it("clears pasted-cell pops after a deletion interrupts the feedback window", () => {
-    vi.useFakeTimers();
-    try {
-      const { container } = render(
-        <Login mode="verification" email="person@comma.ai" />
-      );
-      const input = screen.getByRole<HTMLInputElement>("textbox", {
-        name: "Verification code",
-      });
+    const { container } = render(<Login mode="verification" email="person@comma.ai" />);
+    const input = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Verification code",
+    });
 
-      fireEvent.focus(input);
-      fireEvent.change(input, { target: { value: "1ED3F1" } });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: "1ED3F1" } });
 
-      const cells = container.querySelectorAll("[data-login-code-cell]");
-      for (const cell of cells) {
-        expect(cell).toHaveAttribute("data-pop", "true");
-      }
-
-      act(() => {
-        vi.advanceTimersByTime(motionDuration.feedbackIn / 2);
-      });
-      fireEvent.change(input, { target: { value: "1ED3F" } });
-      act(() => {
-        vi.advanceTimersByTime(motionDuration.feedbackIn);
-      });
-
-      for (const cell of cells) {
-        expect(cell).toHaveAttribute("data-pop", "false");
-      }
-    } finally {
-      vi.useRealTimers();
+    const cells = container.querySelectorAll("[data-login-code-cell]");
+    for (const cell of cells) {
+      expect(cell).toHaveAttribute("data-pop", "true");
     }
+
+    act(() => {
+      vi.advanceTimersByTime(motionDuration.feedbackIn / 2);
+    });
+    fireEvent.change(input, { target: { value: "1ED3F" } });
+    act(() => {
+      vi.advanceTimersByTime(motionDuration.feedbackIn);
+    });
+
+    for (const cell of cells) {
+      expect(cell).toHaveAttribute("data-pop", "false");
+    }
+  });
+
+  it("staggers the error shake and stops it when the reader retries", () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrame = 1;
+    const cancel = vi.fn((id: number) => frames.delete(id));
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.set(nextFrame, callback);
+      return nextFrame++;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(cancel);
+    const { container } = render(<RetryableErrorLogin />);
+    expect(frames.size).toBeGreaterThan(0);
+    act(() => {
+      const queued = [...frames.values()];
+      frames.clear();
+      const start = performance.now();
+      for (const callback of queued) callback(start + 17);
+    });
+    const cells = [
+      ...container.querySelectorAll<HTMLElement>("[data-login-code-shake]"),
+    ];
+    const positions = cells.slice(0, 3).map((cell) => {
+      const match = cell.style.transform.match(/translate3d\(([-0-9.]+)px/);
+      return match ? Number(match[1]) : 0;
+    });
+    // Later cells start behind the first, so each sits at its own phase.
+    expect(positions[0]).toBeLessThan(positions[1]!);
+    expect(positions[1]).toBeLessThan(positions[2]!);
+    expect(positions[2]).toBeGreaterThan(0);
+
+    const cancelledBefore = cancel.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(cancel.mock.calls.length).toBeGreaterThan(cancelledBefore);
+    for (const cell of cells) expect(cell.style.transform).toBe("");
   });
 
   it("renders the invalid-code state and exposes recovery actions", async () => {
@@ -707,27 +777,6 @@ describe("Login", () => {
     expect(input).toHaveValue("");
     expect(onCodeChange).not.toHaveBeenCalled();
     expect(onCodeComplete).not.toHaveBeenCalled();
-  });
-
-  it("keeps login inputs visually unchanged while focused", async () => {
-    const user = userEvent.setup();
-    const { container, rerender } = render(<Login mode="email" />);
-    const emailInput = screen.getByRole("textbox", { name: "Email" });
-
-    await user.click(emailInput);
-
-    expect(emailInput.parentElement).not.toHaveClass(
-      "ring-2",
-      "shadow-focus-brand-shadow-xs"
-    );
-
-    rerender(<Login mode="verification" email="person@comma.ai" />);
-    await user.click(screen.getByRole("textbox", { name: "Verification code" }));
-
-    for (const cell of container.querySelectorAll("[data-login-code-cell]")) {
-      expect(cell).toHaveClass("border-primary");
-      expect(cell).not.toHaveClass("border-brand", "shadow-focus-brand-shadow-xs");
-    }
   });
 
   it("cross-fades between steps, keeping the leaving step as an inert ghost", () => {

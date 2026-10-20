@@ -1,4 +1,4 @@
-import { PageLoading } from "@comma/ui";
+import { PageLoading } from "@comma/ui/components/PageLoading";
 import {
   defaultRangeExtractor,
   useVirtualizer,
@@ -11,19 +11,19 @@ import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import {
   ArrowUpIcon,
   BranchIcon,
-  Checkbox,
   CloudCheckIcon,
   CloudSimpleUploadIcon,
-  cx,
   DownloadIcon,
   ExclamationTriangleIcon,
   Folder1Icon,
   FolderOpenIcon,
-  getMenuPointerOffsets,
   MoreHorizontalIcon,
-  ScrollArea,
-  Tooltip,
-} from "@comma/ui";
+} from "@comma/ui/components/icons";
+import { Checkbox } from "@comma/ui/components/checkbox";
+import { cx } from "@comma/ui/components/utils";
+import { getMenuPointerOffsets } from "@comma/ui/components/menu";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { Tooltip } from "@comma/ui/components/tooltip";
 import {
   memo,
   useCallback,
@@ -35,7 +35,7 @@ import {
 } from "react";
 import { Focusable } from "react-aria-components";
 import { drivePrimaryButton } from "./driveButtonStyles";
-import { driveFileKind, type DriveNodeStatus } from "./driveStore";
+import { driveFileKind, type DriveSnapshot } from "./driveStore";
 import { DriveFileName } from "./DriveFileName";
 import {
   DriveFileMenuPopover,
@@ -309,6 +309,7 @@ const DriveFileRow = memo(function DriveFileRow({
   onOpen,
   onSelectionMenuAction,
   onToggleSelected,
+  pinnable,
   selected,
   selecting,
   selectionKeptOffline,
@@ -318,12 +319,14 @@ const DriveFileRow = memo(function DriveFileRow({
   onDownload: (file: DriveFile) => void;
   onMenuAction: (action: DriveFileMenuAction, file: DriveFile) => void;
   onMenuOpenChange: (fileId: string, open: boolean) => void;
-  /** Present with a backend: an image row on screen asks for its thumbnail. */
+  /** An image row on screen asks for its thumbnail through this. */
   onNeedThumbnail: ((file: DriveFile) => void) | undefined;
   onOpen: (file: DriveFile) => void;
   /** Present when this row is one of several selected: the menu then acts on all of them. */
   onSelectionMenuAction: ((action: DriveSelectionMenuAction) => void) | undefined;
   onToggleSelected: (file: DriveFile, selected: boolean) => void;
+  /** Whether the files here can be kept on this device (a space the device's node holds). */
+  pinnable: boolean;
   selected: boolean;
   /** True while a selection is under way: the row's press joins it. */
   selecting: boolean;
@@ -343,6 +346,17 @@ const DriveFileRow = memo(function DriveFileRow({
   });
   const rowRef = useRef<HTMLDivElement | null>(null);
   const menu = useDriveContextMenu();
+  // A non-modal menu closes when an ancestor scrolls. The windowed list keeps
+  // this row mounted while its menu is open, so the menu outlives a scroll of
+  // the list, such as a recording reveal.
+  const { onOpenChange: setMenuOpen } = menu;
+  const onMenuPopoverOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open && window.event?.type === "scroll") return;
+      setMenuOpen(open);
+    },
+    [setMenuOpen]
+  );
   useEffect(() => {
     if (!menu.isOpen) return;
     onMenuOpenChange(file.id, true);
@@ -532,12 +546,14 @@ const DriveFileRow = memo(function DriveFileRow({
           downloadAllLabel={messages.drive_download_all()}
           isOpen={menu.isOpen}
           keepOfflineLabel={
-            selectionKeptOffline
-              ? messages.drive_file_menu_stop_keeping_offline()
-              : messages.drive_file_menu_keep_offline()
+            !pinnable
+              ? undefined
+              : selectionKeptOffline
+                ? messages.drive_file_menu_stop_keeping_offline()
+                : messages.drive_file_menu_keep_offline()
           }
           onAction={onSelectionMenuAction}
-          onOpenChange={menu.onOpenChange}
+          onOpenChange={onMenuPopoverOpenChange}
           pointerOffsets={menu.pointerOffsets}
           triggerRef={rowRef}
           writable={writable}
@@ -549,15 +565,17 @@ const DriveFileRow = memo(function DriveFileRow({
           downloadLabel={messages.drive_file_menu_download()}
           isOpen={menu.isOpen}
           keepOfflineLabel={
-            file.keepOffline
-              ? messages.drive_file_menu_stop_keeping_offline()
-              : messages.drive_file_menu_keep_offline()
+            !pinnable
+              ? undefined
+              : file.keepOffline
+                ? messages.drive_file_menu_stop_keeping_offline()
+                : messages.drive_file_menu_keep_offline()
           }
           onAction={(action) => onMenuAction(action, file)}
-          onOpenChange={menu.onOpenChange}
+          onOpenChange={onMenuPopoverOpenChange}
           pointerOffsets={menu.pointerOffsets}
           triggerRef={rowRef}
-          writable={writable}
+          writable={file.writable ?? writable}
         />
       )}
     </>
@@ -573,7 +591,7 @@ function DriveNodeState({
   node,
   onRetry,
 }: {
-  node: DriveNodeStatus;
+  node: DriveSnapshot["node"];
   onRetry: () => void;
 }) {
   const messages = useCommaMessages();
@@ -690,6 +708,7 @@ export function DriveFileList({
   onToggleFiles,
   onToggleSelected,
   onUploadFiles,
+  pinnable,
   revealFileId,
   selectedFileIds,
   selecting,
@@ -704,7 +723,7 @@ export function DriveFileList({
   /** Move the list to a folder depth (breadcrumb) or into a subfolder (row). */
   onNavigate: (folderPath: readonly string[]) => void;
   onMenuAction: (action: DriveFileMenuAction, file: DriveFile) => void;
-  /** With a backend, an image row on screen asks for its thumbnail through this. */
+  /** An image row on screen asks for its thumbnail through this. */
   onNeedThumbnail?: ((file: DriveFile) => void) | undefined;
   onOpen: (file: DriveFile) => void;
   /** The whole-selection actions: the bar's, plus Keep Offline in the menu. */
@@ -717,9 +736,11 @@ export function DriveFileList({
   onToggleFiles: (files: readonly DriveFile[], selected: boolean) => void;
   onToggleSelected: (file: DriveFile, selected: boolean) => void;
   /** The node behind the list, shown while it has nothing else to show. */
-  node: DriveNodeStatus;
+  node: DriveSnapshot["node"];
   onRetryNode: () => void;
   onUploadFiles: () => void;
+  /** Whether the files here can be kept on this device (a space the device's node holds). */
+  pinnable: boolean;
   /** Keep a requested recording mounted until its owner scrolls and focuses it. */
   revealFileId?: string | undefined;
   selectedFileIds: ReadonlySet<string>;
@@ -986,6 +1007,7 @@ export function DriveFileList({
                             : undefined
                         }
                         onToggleSelected={onToggleSelected}
+                        pinnable={pinnable}
                         selected={selectedFileIds.has(file.id)}
                         selecting={selecting}
                         selectionKeptOffline={selectionKeptOffline}

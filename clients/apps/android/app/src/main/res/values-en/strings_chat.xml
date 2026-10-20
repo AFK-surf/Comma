@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="chat_task_ref">Task</string>
+    <string name="chat_task_unavailable">Task unavailable</string>
+    <string name="chat_interactive_unavailable">Interactive content isn\'t available yet</string>
+    <string name="chat_file">File</string>
+    <string name="chat_send_not_ready">Unable to send yet. Please try again.</string>
+    <string name="chat_paused">Offline · Tap to retry</string>
+    <string name="chat_account">Account</string>
+    <string name="chat_send_failed_note">Not sent · Tap to retry</string>
+    <string name="chat_retry">Retry</string>
+    <string name="chat_delete">Delete</string>
+    <string name="chat_reply_error_title">Something went wrong</string>
+    <!-- Between shown history and the newest messages while the messages in between load. -->
+    <string name="chat_history_gap">Loading missed messages…</string>
+    <string name="chat_reply_error_detail">Please try again later.</string>
+    <string name="chat_send_failed_icon">Not sent, show options</string>
+    <string name="chat_session_retry">Offline · Tap to retry</string>
+    <string name="chat_scroll_to_latest">Jump to latest</string>
+    <string name="chat_reply_copy">Copy</string>
+    <!-- An Agent's question card under its message, and the receipt it closes into. -->
+    <string name="chat_question_recommended">Recommended</string>
+    <string name="chat_question_multi">Choose any</string>
+    <string name="chat_question_other">Other</string>
+    <string name="chat_question_other_placeholder">Write your answer, or paste an image</string>
+    <string name="chat_question_add_image">Add image</string>
+    <string name="chat_question_remove_image">Remove %1$s</string>
+    <string name="chat_question_uploading">Uploading</string>
+    <string name="chat_question_upload_failed">Upload failed</string>
+    <string name="chat_question_skip">Skip</string>
+    <string name="chat_question_send">Send</string>
+    <string name="chat_question_pick_one">Choose one, or write your answer in Other.</string>
+    <string name="chat_question_pick_any">Choose at least one, or write your answer in Other.</string>
+    <string name="chat_question_other_empty">Write your answer in Other or add an image, or choose above.</string>
+    <string name="chat_question_wait_upload">The answer sends when the images finish uploading.</string>
+    <string name="chat_question_failed">Not sent. Your choice is kept.</string>
+    <string name="chat_question_retry">Retry</string>
+    <string name="chat_question_sending">Sending</string>
+    <string name="chat_question_replied">Answered in the chat</string>
+    <string name="chat_question_skipped">Skipped. The agent decides.</string>
+    <string name="chat_question_replaced">Replaced by a newer question</string>
+</resources>

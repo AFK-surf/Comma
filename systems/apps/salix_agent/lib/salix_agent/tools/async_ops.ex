@@ -38,8 +38,6 @@ defmodule SalixAgent.Tools.AsyncOps do
   alias SalixAgent.{
     AsyncToolResults,
     CapabilityRequestStore,
-    Control,
-    ExternalSessionStore,
     InternalSessionStore,
     Runtime,
     Waits
@@ -235,7 +233,7 @@ defmodule SalixAgent.Tools.AsyncOps do
         "tool_call_id" => tool_call_id,
         "request_type" => "location",
         "request_payload" => %{"location" => %{"reason" => reason}},
-        "expires_at" => System.system_time(:second) + timeout
+        "expires_at" => SystemsClock.system_time(:second) + timeout
       })
 
     content =
@@ -367,7 +365,7 @@ defmodule SalixAgent.Tools.AsyncOps do
     id = required_tool_call_id(args)
     reason = arg(args, "reason")
     sid = session_id(args, ctx)
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     case async_record(ctx, id) do
       nil ->
@@ -428,7 +426,7 @@ defmodule SalixAgent.Tools.AsyncOps do
          auto_wait_seconds,
          request
        ) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     wait =
       Waits.build(reason, auto_wait_seconds, "auto_wait", %{
@@ -538,19 +536,9 @@ defmodule SalixAgent.Tools.AsyncOps do
   end
 
   defp wait_and_async_calls(agent_id, sid) when is_binary(agent_id) and is_binary(sid) do
-    with {:ok, agent} <- Control.get_record(agent_id) do
-      case Control.runtime_kind(agent) do
-        "external" ->
-          with {:ok, session} <- ExternalSessionStore.get_session_record(agent_id, sid) do
-            {:ok, session["wait"], session["async_tool_calls"] || %{}}
-          end
-
-        _ ->
-          with {:ok, session} <- InternalSessionStore.read(agent_id, sid) do
-            {:ok, SalixAgent.InternalSession.wait(session),
-             SalixAgent.InternalSession.get(session, :async_tool_calls) || %{}}
-          end
-      end
+    with {:ok, session} <- InternalSessionStore.read(agent_id, sid) do
+      {:ok, SalixAgent.InternalSession.wait(session),
+       SalixAgent.InternalSession.get(session, :async_tool_calls) || %{}}
     end
   end
 
@@ -676,7 +664,7 @@ defmodule SalixAgent.Tools.AsyncOps do
     end
   end
 
-  defp random_id, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower)
 
   defp put_optional_nonblank(map, _key, ""), do: map
   defp put_optional_nonblank(map, _key, nil), do: map

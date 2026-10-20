@@ -2,6 +2,7 @@ import VerifiedKernelProofs.IFC.Transfer
 import VerifiedKernelProofs.AgentLoop.Dispatch
 import VerifiedKernelProofs.Provider.Dispatch
 import VerifiedKernelProofs.Session.WorkRevisionExpiry
+import VerifiedKernelProofs.Session.WorkPendingInput
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data
@@ -27,7 +28,7 @@ theorem activation_inner_frames {state event next : Term} {journal rest : List T
     QueueFrame state next ∧ TranscriptExtends state next := by
   rcases allowed with kind | kind | kind | kind
   all_goals
-    refine ⟨inner_queue_frame ?_ ?_ ?_ ?_ call, inner_extends ?_ ?_ call⟩
+    refine ⟨inner_queue_frame ?_ ?_ ?_ ?_ call, inner_extends ?_ call⟩
     all_goals simp +decide [kind]
 
 theorem activation_resident_frames {state event next : Term}

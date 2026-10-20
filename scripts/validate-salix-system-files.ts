@@ -82,7 +82,6 @@ interface MiniskillEntry {
 // Runtime limits from SalixAgent.SkillFrontmatter and SalixAgent.MiniskillSelector.
 // An invalid built-in miniskill stops BuiltinSkills from loading, and an oversized selection
 // request disables miniskill selection for every message.
-const miniskillBodyBytes = 2048;
 const miniskillMessageBytes = 2048;
 const miniskillRecentMessages = 6;
 const miniskillCatalogBytes = 48 * 1024;
@@ -129,21 +128,10 @@ function validateSkillDirectory(
   if (activation !== "regular" && activation !== "per-message") {
     issues.push(`${label}: activation must be regular or per-message`);
   } else if (activation === "per-message") {
-    const bodyBytes = Buffer.byteLength(skillBody(contents), "utf8");
-    if (bodyBytes > miniskillBodyBytes) {
-      issues.push(
-        `${label}: miniskill instructions are ${bodyBytes} bytes; the limit is ${miniskillBodyBytes}`,
-      );
-    }
     miniskills.push({ name: unquote(name), description: unquote(description) });
   }
 
   return issues;
-}
-
-function skillBody(contents: string): string {
-  const match = contents.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/);
-  return match ? contents.slice(match[0].length) : contents;
 }
 
 function unquote(value: string): string {

@@ -13,6 +13,7 @@ import {
   type UIEventHandler,
   type WheelEventHandler,
 } from "react";
+import { scheduleLayoutRead, uiClock, type CancelUiTimer } from "../../clock";
 import { cx } from "../utils";
 
 export type ScrollAreaOrientation = "vertical" | "horizontal" | "both";
@@ -118,8 +119,18 @@ export interface ScrollAreaProps extends Omit<
    * logic around scroll areas.
    */
   onContentResize?: () => void;
-  /** Notified from the same shared observer whenever the viewport resizes. */
-  onViewportResize?: () => void;
+  /**
+   * Notified from the same shared observer whenever the viewport resizes, in
+   * the frame's layout read phase. Return the writes it decides on; they run
+   * in that frame's write phase.
+   */
+  onViewportResize?: () => (() => void) | void;
+  /**
+   * Also notify `onViewportResize` while an OS window resize is in progress.
+   * By default a vertical area waits until the resize settles. Use this when
+   * the callback places pointer targets: they must follow the new size.
+   */
+  notifyViewportResizeDuringWindowResize?: boolean;
 }
 
 type StyleWithVars = CSSProperties & Record<`--${string}`, string | number>;
@@ -318,21 +329,19 @@ function observeElementResize(element: Element, callback: ResizeCallback) {
   };
 }
 
-function requestMeasureFrame(callback: () => void) {
-  if (typeof window !== "undefined" && window.requestAnimationFrame) {
-    return window.requestAnimationFrame(callback);
+function requestMeasureFrame(callback: () => void): CancelUiTimer {
+  if (
+    typeof window !== "undefined" &&
+    typeof window.requestAnimationFrame === "function"
+  ) {
+    return uiClock.frame(callback);
   }
 
-  return globalThis.setTimeout(callback, 16) as unknown as number;
+  return uiClock.after(16, callback);
 }
 
-function cancelMeasureFrame(frame: number) {
-  if (typeof window !== "undefined" && window.cancelAnimationFrame) {
-    window.cancelAnimationFrame(frame);
-    return;
-  }
-
-  globalThis.clearTimeout(frame);
+function cancelMeasureFrame(frame: CancelUiTimer) {
+  frame();
 }
 
 function resolveEdgeAxis(orientation: ScrollAreaOrientation): ScrollAreaEdgeAxis {
@@ -492,6 +501,7 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
       onMetricsChange,
       onContentResize,
       onViewportResize,
+      notifyViewportResizeDuringWindowResize = false,
       onPointerEnter,
       style,
       ...rootProps
@@ -506,12 +516,12 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
     const verticalThumbRef = useRef<HTMLDivElement>(null);
     const horizontalThumbRef = useRef<HTMLDivElement>(null);
     const contentScrollSizeRef = useRef<number | null>(null);
-    const measureFrameRef = useRef<number | null>(null);
+    const measureFrameRef = useRef<CancelUiTimer | null>(null);
     const metricsMeasurePendingRef = useRef(false);
     const pendingViewportResizeRef = useRef(false);
     const pendingContentResizeNotificationRef = useRef(false);
-    const scrollEndTimeoutRef = useRef<number | null>(null);
-    const windowResizeEndTimeoutRef = useRef<number | null>(null);
+    const scrollEndTimeoutRef = useRef<CancelUiTimer | null>(null);
+    const windowResizeEndTimeoutRef = useRef<CancelUiTimer | null>(null);
     const windowResizingRef = useRef(false);
     const dragCleanupRef = useRef<(() => void) | null>(null);
     const viewportBlockSizeRef = useRef(0);
@@ -527,7 +537,7 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
     const edgeBlurEndRef = useRef<HTMLDivElement | null>(null);
     const edgeTransitionRef = useRef<{
       armed: boolean;
-      frame: number | null;
+      frame: CancelUiTimer | null;
       state: string | null;
     }>({ armed: false, frame: null, state: null });
     const onViewportResizeRef = useRef(onViewportResize);
@@ -604,7 +614,7 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
       setScrolling(false);
 
       if (scrollEndTimeoutRef.current !== null && typeof window !== "undefined") {
-        window.clearTimeout(scrollEndTimeoutRef.current);
+        scrollEndTimeoutRef.current();
         scrollEndTimeoutRef.current = null;
       }
     }, [setScrolling]);
@@ -653,20 +663,20 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
       });
     }, []);
 
-    const updateMetrics = useCallback(() => {
+    // Reads every layout-dependent value and returns the writes. A scheduled
+    // measurement runs in the frame's shared read phase (`scheduleLayoutRead`),
+    // so the areas of a transcript read one layout instead of each forcing a
+    // new one with the writes of the area measured before it.
+    const readMetrics = useCallback(() => {
       const root = rootRef.current;
       const viewport = viewportRef.current;
 
       if (!root || !viewport) {
-        return;
+        return undefined;
       }
 
       const supportsX = canScrollAxis(orientation, "horizontal");
       const supportsY = canScrollAxis(orientation, "vertical");
-      // Read every layout-dependent value before mutating datasets or inline
-      // styles. Interleaving these reads with writes forces synchronous layout
-      // repeatedly when wrapping content changes its scroll height during a
-      // window resize.
       const viewportClientWidth = viewport.clientWidth;
       const viewportClientHeight = viewport.clientHeight;
       const viewportScrollWidth = viewport.scrollWidth;
@@ -683,9 +693,6 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
       const maxScrollY = Math.max(0, viewportScrollHeight - viewportClientHeight);
       const hasOverflowX = supportsX && maxScrollX > 1;
       const hasOverflowY = supportsY && maxScrollY > 1;
-      if (!hasOverflowX && !hasOverflowY) {
-        clearScrollingState();
-      }
       const edgeMaxScroll = edgeAxis === "vertical" ? maxScrollY : maxScrollX;
       const edgeScrollPosition =
         edgeAxis === "vertical" ? viewportScrollTop : viewportScrollLeft;
@@ -698,49 +705,6 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
       const isAtEdgeStart = !edgeHasOverflow || edgeScrollPosition <= startThreshold;
       const isAtEdgeEnd =
         !edgeHasOverflow || edgeScrollPosition >= edgeMaxScroll - endThreshold;
-
-      onMetricsChangeRef.current?.({
-        clientHeight: viewportClientHeight,
-        maxScrollTop: maxScrollY,
-        scrollHeight: viewportScrollHeight,
-        scrollTop: viewportScrollTop,
-      });
-
-      // Resize consumers read transcript geometry and may restore its scroll
-      // position. Notify them while this measurement's layout is still clean,
-      // before scrollbar and edge writes invalidate descendant styles.
-      if (viewportBlockSizeRef.current !== viewportClientHeight) {
-        viewportBlockSizeRef.current = viewportClientHeight;
-        onViewportResizeRef.current?.();
-      }
-
-      setDatasetBoolean(root, "hasOverflowX", hasOverflowX);
-      setDatasetBoolean(root, "hasOverflowY", hasOverflowY);
-      syncEdgeTransition(edgeHasOverflow ? `${isAtEdgeStart}|${isAtEdgeEnd}` : null);
-      setEdgeVisible(
-        root,
-        { element: edgeBlurStartRef.current, enabled: blurConfig.enabled },
-        "edgeStartVisible",
-        edgeHasOverflow && !isAtEdgeStart
-      );
-      setEdgeVisible(
-        root,
-        { element: edgeBlurEndRef.current, enabled: blurConfig.enabled },
-        "edgeEndVisible",
-        edgeHasOverflow && !isAtEdgeEnd
-      );
-      setDatasetBoolean(root, "scrollXStart", !hasOverflowX || viewportScrollLeft <= 1);
-      setDatasetBoolean(
-        root,
-        "scrollXEnd",
-        !hasOverflowX || viewportScrollLeft >= maxScrollX - 1
-      );
-      setDatasetBoolean(root, "scrollYStart", !hasOverflowY || viewportScrollTop <= 1);
-      setDatasetBoolean(
-        root,
-        "scrollYEnd",
-        !hasOverflowY || viewportScrollTop >= maxScrollY - 1
-      );
 
       const trackInset = scrollbarConfig.inset;
       const verticalTrackLength = Math.max(0, viewportClientHeight - trackInset * 2);
@@ -770,48 +734,106 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
             Math.max(0, horizontalTrackLength - horizontalThumbSize)
           : 0;
 
-      // These dimensions belong to the thumb. An inherited variable on the
-      // root invalidates the document subtree whenever animated content grows.
-      const verticalThumb = verticalThumbRef.current;
-      if (verticalThumb) {
-        setStyleProperty(verticalThumb, "height", px(verticalThumbSize));
-        setStyleProperty(
-          verticalThumb,
-          "transform",
-          `translate3d(0, ${px(verticalThumbOffset)}, 0)`
-        );
-      }
-      const horizontalThumb = horizontalThumbRef.current;
-      if (horizontalThumb) {
-        setStyleProperty(horizontalThumb, "width", px(horizontalThumbSize));
-        setStyleProperty(
-          horizontalThumb,
-          "transform",
-          `translate3d(${px(horizontalThumbOffset)}, 0, 0)`
-        );
-      }
-      // The viewport's size is never published as a custom property: on the
-      // root it would inherit into the whole scrolled subtree and restyle every
-      // descendant each time the viewport's height steps. Content that sizes
-      // against the scrollport makes the viewport a size container instead.
-      setStyleProperty(
-        viewport,
-        "--scroll-area-edge-mask-start",
-        px(maskConfig.enabled && !isAtEdgeStart ? maskConfig.startSize : 0)
-      );
-      setStyleProperty(
-        viewport,
-        "--scroll-area-edge-mask-end",
-        px(maskConfig.enabled && !isAtEdgeEnd ? maskConfig.endSize : 0)
-      );
+      onMetricsChangeRef.current?.({
+        clientHeight: viewportClientHeight,
+        maxScrollTop: maxScrollY,
+        scrollHeight: viewportScrollHeight,
+        scrollTop: viewportScrollTop,
+      });
 
-      viewportInlineSizeRef.current = viewportClientWidth;
-      viewportScrollSizeRef.current = viewportScrollHeight;
-      syncWheelMappingRef.current?.(hasOverflowX);
-
-      if (contentScrollSize !== null) {
-        contentScrollSizeRef.current = contentScrollSize;
+      // Resize consumers read transcript geometry and may restore its scroll
+      // position. Notify them while the layout is still clean: before any
+      // area's scrollbar and edge writes invalidate descendant styles.
+      let writeViewportResize: (() => void) | void = undefined;
+      if (viewportBlockSizeRef.current !== viewportClientHeight) {
+        viewportBlockSizeRef.current = viewportClientHeight;
+        writeViewportResize = onViewportResizeRef.current?.();
       }
+
+      return () => {
+        writeViewportResize?.();
+        if (!hasOverflowX && !hasOverflowY) {
+          clearScrollingState();
+        }
+        setDatasetBoolean(root, "hasOverflowX", hasOverflowX);
+        setDatasetBoolean(root, "hasOverflowY", hasOverflowY);
+        syncEdgeTransition(edgeHasOverflow ? `${isAtEdgeStart}|${isAtEdgeEnd}` : null);
+        setEdgeVisible(
+          root,
+          { element: edgeBlurStartRef.current, enabled: blurConfig.enabled },
+          "edgeStartVisible",
+          edgeHasOverflow && !isAtEdgeStart
+        );
+        setEdgeVisible(
+          root,
+          { element: edgeBlurEndRef.current, enabled: blurConfig.enabled },
+          "edgeEndVisible",
+          edgeHasOverflow && !isAtEdgeEnd
+        );
+        setDatasetBoolean(
+          root,
+          "scrollXStart",
+          !hasOverflowX || viewportScrollLeft <= 1
+        );
+        setDatasetBoolean(
+          root,
+          "scrollXEnd",
+          !hasOverflowX || viewportScrollLeft >= maxScrollX - 1
+        );
+        setDatasetBoolean(
+          root,
+          "scrollYStart",
+          !hasOverflowY || viewportScrollTop <= 1
+        );
+        setDatasetBoolean(
+          root,
+          "scrollYEnd",
+          !hasOverflowY || viewportScrollTop >= maxScrollY - 1
+        );
+
+        // These dimensions belong to the thumb. An inherited variable on the
+        // root invalidates the document subtree whenever animated content grows.
+        const verticalThumb = verticalThumbRef.current;
+        if (verticalThumb) {
+          setStyleProperty(verticalThumb, "height", px(verticalThumbSize));
+          setStyleProperty(
+            verticalThumb,
+            "transform",
+            `translate3d(0, ${px(verticalThumbOffset)}, 0)`
+          );
+        }
+        const horizontalThumb = horizontalThumbRef.current;
+        if (horizontalThumb) {
+          setStyleProperty(horizontalThumb, "width", px(horizontalThumbSize));
+          setStyleProperty(
+            horizontalThumb,
+            "transform",
+            `translate3d(${px(horizontalThumbOffset)}, 0, 0)`
+          );
+        }
+        // The viewport's size is never published as a custom property: on the
+        // root it would inherit into the whole scrolled subtree and restyle every
+        // descendant each time the viewport's height steps. Content that sizes
+        // against the scrollport makes the viewport a size container instead.
+        setStyleProperty(
+          viewport,
+          "--scroll-area-edge-mask-start",
+          px(maskConfig.enabled && !isAtEdgeStart ? maskConfig.startSize : 0)
+        );
+        setStyleProperty(
+          viewport,
+          "--scroll-area-edge-mask-end",
+          px(maskConfig.enabled && !isAtEdgeEnd ? maskConfig.endSize : 0)
+        );
+
+        viewportInlineSizeRef.current = viewportClientWidth;
+        viewportScrollSizeRef.current = viewportScrollHeight;
+        syncWheelMappingRef.current?.(hasOverflowX);
+
+        if (contentScrollSize !== null) {
+          contentScrollSizeRef.current = contentScrollSize;
+        }
+      };
     }, [
       blurConfig.enabled,
       blurConfig.endThreshold,
@@ -829,6 +851,10 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
       syncEdgeTransition,
     ]);
 
+    const updateMetrics = useCallback(() => {
+      readMetrics()?.();
+    }, [readMetrics]);
+
     const scheduleMeasure = useCallback(
       (measureMetrics = true) => {
         if (measureMetrics) {
@@ -838,29 +864,33 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
           return;
         }
 
-        measureFrameRef.current = requestMeasureFrame(() => {
+        measureFrameRef.current = scheduleLayoutRead(() => {
           measureFrameRef.current = null;
           const measurePendingMetrics = metricsMeasurePendingRef.current;
           metricsMeasurePendingRef.current = false;
           const notifyViewportResize = pendingViewportResizeRef.current;
           pendingViewportResizeRef.current = false;
           const previousBlockSize = viewportBlockSizeRef.current;
-          if (measurePendingMetrics) {
-            updateMetrics();
-          }
-          if (
-            notifyViewportResize &&
-            viewportBlockSizeRef.current === previousBlockSize
-          ) {
-            onViewportResizeRef.current?.();
-          }
+          const writeMetrics = measurePendingMetrics ? readMetrics() : undefined;
+          const writeViewportResize =
+            notifyViewportResize && viewportBlockSizeRef.current === previousBlockSize
+              ? onViewportResizeRef.current?.()
+              : undefined;
+          return () => {
+            writeMetrics?.();
+            writeViewportResize?.();
+          };
         });
       },
-      [updateMetrics]
+      [readMetrics]
     );
 
     const scheduleViewportMeasure = useCallback(() => {
-      if (orientation === "vertical" && windowResizingRef.current) {
+      if (
+        orientation === "vertical" &&
+        windowResizingRef.current &&
+        !notifyViewportResizeDuringWindowResize
+      ) {
         pendingViewportResizeRef.current = true;
         metricsMeasurePendingRef.current = true;
         return;
@@ -874,7 +904,7 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
         viewport.clientHeight !== viewportBlockSizeRef.current ||
         viewport.scrollHeight !== viewportScrollSizeRef.current;
       scheduleMeasure(requiresMetrics);
-    }, [orientation, scheduleMeasure]);
+    }, [notifyViewportResizeDuringWindowResize, orientation, scheduleMeasure]);
 
     const scheduleContentMeasure = useCallback(() => {
       if (orientation === "vertical" && windowResizingRef.current) {
@@ -920,13 +950,13 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
       setScrolling(true);
 
       if (scrollEndTimeoutRef.current !== null) {
-        window.clearTimeout(scrollEndTimeoutRef.current);
+        scrollEndTimeoutRef.current();
       }
 
-      scrollEndTimeoutRef.current = window.setTimeout(() => {
+      scrollEndTimeoutRef.current = uiClock.after(normalizedScrollbarHideDelay, () => {
         scrollEndTimeoutRef.current = null;
         setScrolling(false);
-      }, normalizedScrollbarHideDelay);
+      });
     }, [
       clearScrollingState,
       normalizedScrollbarHideDelay,
@@ -943,7 +973,7 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
         // it is the application's, and stays hidden.
         if (
           scrollbarRevealSource === "all" ||
-          performance.now() - lastWheelInputAtRef.current <= WHEEL_SCROLL_WINDOW_MS
+          uiClock.monotonic() - lastWheelInputAtRef.current <= WHEEL_SCROLL_WINDOW_MS
         ) {
           markScrolling();
         }
@@ -955,7 +985,7 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
     const handleViewportWheel = useCallback<WheelEventHandler<HTMLDivElement>>(
       (event) => {
         if (scrollbarRevealSource === "interaction") {
-          lastWheelInputAtRef.current = performance.now();
+          lastWheelInputAtRef.current = uiClock.monotonic();
         }
         viewportOnWheel?.(event);
       },
@@ -1169,7 +1199,11 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
       [onPointerEnter, orientation, scheduleMeasure]
     );
 
-    useImperativeHandle(forwardedRef, () => viewportRef.current as HTMLDivElement);
+    // The viewport element lives as long as the scroll area, so the handle is set once
+    // (React sets it again for a new ref). A handle without dependencies is cleared and
+    // set again on every render, after the children's layout effects: a child reading
+    // the ref in its layout effect found nothing.
+    useImperativeHandle(forwardedRef, () => viewportRef.current as HTMLDivElement, []);
 
     // Edge elements that mount later take the current edge state with them.
     useIsomorphicLayoutEffect(() => {
@@ -1314,9 +1348,9 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
         }
 
         if (windowResizeEndTimeoutRef.current !== null) {
-          window.clearTimeout(windowResizeEndTimeoutRef.current);
+          windowResizeEndTimeoutRef.current();
         }
-        windowResizeEndTimeoutRef.current = window.setTimeout(() => {
+        windowResizeEndTimeoutRef.current = uiClock.after(120, () => {
           windowResizeEndTimeoutRef.current = null;
           windowResizingRef.current = false;
           const currentRoot = rootRef.current;
@@ -1334,7 +1368,7 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
             pendingContentResizeNotificationRef.current = false;
             onContentResizeRef.current?.();
           }
-        }, 120);
+        });
       };
 
       window.addEventListener("resize", handleWindowResize);
@@ -1350,7 +1384,7 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
           mountedRoot.style.removeProperty("--scroll-area-resize-content-inline-size");
         }
         if (windowResizeEndTimeoutRef.current !== null) {
-          window.clearTimeout(windowResizeEndTimeoutRef.current);
+          windowResizeEndTimeoutRef.current();
           windowResizeEndTimeoutRef.current = null;
         }
       };
@@ -1412,14 +1446,14 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(
         dragCleanupRef.current?.();
 
         if (scrollEndTimeoutRef.current !== null && typeof window !== "undefined") {
-          window.clearTimeout(scrollEndTimeoutRef.current);
+          scrollEndTimeoutRef.current();
         }
 
         if (
           windowResizeEndTimeoutRef.current !== null &&
           typeof window !== "undefined"
         ) {
-          window.clearTimeout(windowResizeEndTimeoutRef.current);
+          windowResizeEndTimeoutRef.current();
         }
       };
     }, []);

@@ -32,7 +32,7 @@ defmodule SalixAgent.Tools.ComposioTriggers do
       ),
       tool(
         "create_trigger",
-        "Create or reuse a trigger for an ACTIVE connected account and bind it to your Loop. Configure the project's secret webhook through the Composio settings API first. Replaces this Loop's previous binding. Repeated identical provider configuration reuses and enables the shared trigger. Existing triggers remain until explicitly disabled or deleted.",
+        "Create or reuse a trigger for an ACTIVE connected account and bind it to your Loop.\n\nConfigure the project's secret webhook through the Composio settings API first. Replaces this Loop's previous binding. Repeated identical provider configuration reuses and enables the shared trigger. Existing triggers remain until explicitly disabled or deleted.",
         %{
           loop_id: string(),
           connected_account_id: string(),
@@ -127,7 +127,7 @@ defmodule SalixAgent.Tools.ComposioTriggers do
       do: raise("Invalid trigger_config")
 
     with :ok <- webhook_ready(settings),
-         {:ok, _} <- Loops.get_agent_owned(loop_id, ctx.agent_id),
+         {:ok, _} <- owned_loop(ctx, loop_id),
          {:ok, _} <- owned_account(settings, group, account, true),
          {:ok, %{"trigger_id" => id}} when is_binary(id) and byte_size(id) in 1..256 <-
            client().upsert_trigger(settings, group, account, slug, config),
@@ -148,7 +148,7 @@ defmodule SalixAgent.Tools.ComposioTriggers do
     {settings, group} = context!(ctx)
     loop_id = required!(args, "loop_id")
 
-    with {:ok, _} <- Loops.get_agent_owned(loop_id, ctx.agent_id),
+    with {:ok, _} <- owned_loop(ctx, loop_id),
          {:ok, value} <- binding_for(settings, group, args["trigger_id"]),
          {:ok, row} <- Loops.bind_composio_trigger(loop_id, ctx.agent_id, value) do
       result({:ok, SalixAgent.Loops.public(row)}, ctx)
@@ -169,6 +169,11 @@ defmodule SalixAgent.Tools.ComposioTriggers do
     else
       error -> result(error, ctx)
     end
+  end
+
+  # A Task round binds only its Task's Loop (`SalixAgent.Loops.scope/1`).
+  defp owned_loop(ctx, loop_id) do
+    with {:ok, scope} <- SalixAgent.Loops.scope(ctx), do: SalixAgent.Loops.fetch(scope, loop_id)
   end
 
   defp binding_for(_settings, _group, nil), do: {:ok, nil}
@@ -255,5 +260,5 @@ defmodule SalixAgent.Tools.ComposioTriggers do
     do: raise("Composio trigger operation failed: #{inspect(reason)}")
 
   defp result(_, _ctx), do: raise("Invalid Composio trigger response")
-  defp client, do: Application.get_env(:salix_agent, :composio_client_mod, SalixStore.Composio)
+  defp client, do: SystemsRuntime.get_env(:salix_agent, :composio_client_mod, SalixStore.Composio)
 end

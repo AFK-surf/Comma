@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: the developer section of the settings. -->
+<resources>
+    <string name="settings_developer">开发者</string>
+    <string name="settings_developer_backend">后端地址</string>
+    <string name="settings_developer_build">构建</string>
+    <string name="settings_developer_generation">会话代号</string>
+    <string name="settings_developer_network_log">网络错误日志</string>
+    <string name="settings_developer_network_log_empty">还没有网络错误。</string>
+    <string name="settings_developer_unset">无</string>
+    <item name="settings_developer" type="id" />
+    <item name="settings_developer_backend" type="id" />
+    <item name="settings_developer_network_log" type="id" />
+    <item name="settings_developer_network_log_text" type="id" />
+</resources>

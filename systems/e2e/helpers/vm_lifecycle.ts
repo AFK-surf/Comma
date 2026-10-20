@@ -1,3 +1,9 @@
+import { once } from "node:events";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { connect } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 const SALIX_ROOT = new URL("../..", import.meta.url).pathname;
 const WORKER_ROOT = new URL(
   "../../cloudflare/salix-vm-gateway",
@@ -20,11 +26,11 @@ type ProviderEnv = {
 
 export type RunOptions = {
   cwd?: string;
-  env?: Record<string, string>;
+  env?: Record<string, string | undefined>;
   timeoutMs?: number;
   allowFailure?: boolean;
-  stdout?: "piped" | "inherit" | "null";
-  stderr?: "piped" | "inherit" | "null";
+  stdout?: "pipe" | "inherit" | "ignore";
+  stderr?: "pipe" | "inherit" | "ignore";
 };
 
 export async function runVmLifecycle(
@@ -42,7 +48,7 @@ export async function runVmLifecycle(
       cwd: SALIX_ROOT,
       timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       env: {
-        ...Deno.env.toObject(),
+        ...process.env,
         ...providerEnv.env,
         PATH: pathWithAsdf(),
         MIX_ENV: "test",
@@ -52,7 +58,7 @@ export async function runVmLifecycle(
         SALIX_VM_E2E_SURFACE: surface,
         SALIX_VM_E2E_PROVIDER: provider,
         SALIX_VM_E2E_TIMEOUT_MS:
-          Deno.env.get("SALIX_VM_E2E_TIMEOUT_MS") ?? "300000",
+          process.env.SALIX_VM_E2E_TIMEOUT_MS ?? "300000",
       },
     });
   } finally {
@@ -68,13 +74,13 @@ export async function resolveProviderEnv(
   const cleanup: Array<() => Promise<void>> = [];
 
   if (providers.includes("cloudflare")) {
-    const configuredBase = Deno.env.get("SALIX_E2E_CF_GATEWAY_BASE_URL");
-    const configuredSecret = Deno.env.get("SALIX_E2E_CF_GATEWAY_SECRET");
+    const configuredBase = process.env.SALIX_E2E_CF_GATEWAY_BASE_URL;
+    const configuredSecret = process.env.SALIX_E2E_CF_GATEWAY_SECRET;
 
     if (configuredBase && configuredSecret) {
       env.SALIX_E2E_CF_GATEWAY_BASE_URL = configuredBase;
       env.SALIX_E2E_CF_GATEWAY_SECRET = configuredSecret;
-    } else if (Deno.env.get("SALIX_VM_E2E_ENABLE_CLOUDFLARE") === "1") {
+    } else if (process.env.SALIX_VM_E2E_ENABLE_CLOUDFLARE === "1") {
       const gateway = await startWranglerGateway();
       env.SALIX_E2E_CF_GATEWAY_BASE_URL = gateway.baseUrl;
       env.SALIX_E2E_CF_GATEWAY_SECRET = gateway.secret;
@@ -115,8 +121,8 @@ export async function startPostgres() {
       ["exec", name, "pg_isready", "-U", "postgres"],
       {
         allowFailure: true,
-        stdout: "null",
-        stderr: "null",
+        stdout: "ignore",
+        stderr: "ignore",
       },
     );
     if (result.success) break;
@@ -155,13 +161,13 @@ async function createDatabase(containerName: string, database: string) {
 
 async function startWranglerGateway() {
   const port = await freePort();
-  const persistDir = await Deno.makeTempDir({ prefix: "salix-vm-gateway-" });
+  const persistDir = await mkdtemp(join(tmpdir(), "salix-vm-gateway-"));
   const secret = `vm-e2e-${crypto.randomUUID()}`;
-  let child: Deno.ChildProcess | undefined;
+  let child: Bun.Subprocess | undefined;
 
   try {
     try {
-      await Deno.stat(`${WORKER_ROOT}/node_modules`);
+      await stat(`${WORKER_ROOT}/node_modules`);
     } catch {
       await run("npm", ["ci"], { cwd: WORKER_ROOT, timeoutMs: 180_000 });
     }
@@ -171,9 +177,9 @@ async function startWranglerGateway() {
       timeoutMs: 180_000,
     });
 
-    child = new Deno.Command("npx", {
-      cwd: WORKER_ROOT,
-      args: [
+    child = Bun.spawn(
+      [
+        "npx",
         "wrangler",
         "dev",
         "--env",
@@ -189,13 +195,16 @@ async function startWranglerGateway() {
         `SALIX_VM_GATEWAY_SECRET:${secret}`,
         "--show-interactive-dev-session=false",
       ],
-      env: {
-        ...Deno.env.toObject(),
-        PATH: pathWithAsdf(),
+      {
+        cwd: WORKER_ROOT,
+        env: {
+          ...process.env,
+          PATH: pathWithAsdf(),
+        },
+        stdout: "inherit",
+        stderr: "inherit",
       },
-      stdout: "inherit",
-      stderr: "inherit",
-    }).spawn();
+    );
 
     const baseUrl = `http://127.0.0.1:${port}`;
     await waitForHttp(`${baseUrl}/healthz`, "Cloudflare Worker gateway");
@@ -210,8 +219,8 @@ async function startWranglerGateway() {
         } catch {
           // Already exited.
         }
-        await wrangler.status.catch(() => {});
-        await Deno.remove(persistDir, { recursive: true }).catch(() => {});
+        await wrangler.exited.catch(() => {});
+        await rm(persistDir, { recursive: true }).catch(() => {});
       },
     };
   } catch (error) {
@@ -221,9 +230,9 @@ async function startWranglerGateway() {
       } catch {
         // Already exited.
       }
-      await child.status.catch(() => {});
+      await child.exited.catch(() => {});
     }
-    await Deno.remove(persistDir, { recursive: true }).catch(() => {});
+    await rm(persistDir, { recursive: true }).catch(() => {});
     throw error;
   }
 }
@@ -248,29 +257,24 @@ async function rawHttpOk(target: URL) {
   }
 
   const port = Number(target.port || "80");
-  const conn = await Deno.connect({ hostname: target.hostname, port });
+  const conn = connect({ host: target.hostname, port });
 
   try {
+    await once(conn, "connect");
     const path = `${target.pathname}${target.search}`;
     const request = `GET ${path} HTTP/1.1\r\nHost: ${target.host}\r\nConnection: close\r\n\r\n`;
-    await conn.write(new TextEncoder().encode(request));
+    conn.write(request);
 
-    const buffer = new Uint8Array(512);
-    const read = await Promise.race<number | null>([
-      conn.read(buffer),
+    const head = await Promise.race<string | null>([
+      once(conn, "data").then(([chunk]) => String(chunk)),
       delay(1_000).then(() => null),
     ]);
 
-    if (!read) return false;
+    if (!head) return false;
 
-    const head = new TextDecoder().decode(buffer.subarray(0, read));
     return /^HTTP\/1\.[01] 2\d\d\b/.test(head);
   } finally {
-    try {
-      conn.close();
-    } catch {
-      // Already closed.
-    }
+    conn.destroy();
   }
 }
 
@@ -279,18 +283,17 @@ export async function run(
   args: string[],
   opts: RunOptions = {},
 ) {
-  const stdoutMode = opts.stdout ?? "piped";
-  const stderrMode = opts.stderr ?? "piped";
+  const stdoutMode = opts.stdout ?? "pipe";
+  const stderrMode = opts.stderr ?? "pipe";
 
-  let child: Deno.ChildProcess;
+  let child: Bun.Subprocess<"ignore", typeof stdoutMode, typeof stderrMode>;
   try {
-    child = new Deno.Command(command, {
-      args,
+    child = Bun.spawn([command, ...args], {
       cwd: opts.cwd,
-      env: opts.env,
+      env: { ...process.env, ...opts.env },
       stdout: stdoutMode,
       stderr: stderrMode,
-    }).spawn();
+    });
   } catch (error) {
     if (!opts.allowFailure) throw error;
 
@@ -314,32 +317,28 @@ export async function run(
     }
   }, opts.timeoutMs ?? 60_000);
 
-  const output = await child.output();
+  const [stdout, stderr, code] = await Promise.all([
+    child.stdout ? new Response(child.stdout).text() : "",
+    child.stderr ? new Response(child.stderr).text() : "",
+    child.exited,
+  ]);
   clearTimeout(timer);
 
-  const stdout =
-    stdoutMode === "piped" && output.stdout
-      ? new TextDecoder().decode(output.stdout)
-      : "";
-  const stderr =
-    stderrMode === "piped" && output.stderr
-      ? new TextDecoder().decode(output.stderr)
-      : "";
   const combined = stdout + stderr;
 
-  if ((!output.success || timedOut) && !opts.allowFailure) {
+  if ((code !== 0 || timedOut) && !opts.allowFailure) {
     throw new Error(
       [
         `command failed: ${command} ${args.join(" ")}`,
-        `code=${output.code} timedOut=${timedOut}`,
+        `code=${code} timedOut=${timedOut}`,
         combined,
       ].join("\n"),
     );
   }
 
   return {
-    success: output.success,
-    code: output.code,
+    success: code === 0,
+    code,
     stdout,
     stderr,
     combined,
@@ -347,20 +346,24 @@ export async function run(
 }
 
 async function freePort() {
-  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
-  const port = (listener.addr as Deno.NetAddr).port;
-  listener.close();
+  const listener = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: { data() {} },
+  });
+  const port = listener.port;
+  listener.stop(true);
   return port;
 }
 
 function skipOrThrow(message: string) {
-  if (Deno.env.get("SALIX_VM_E2E_STRICT") === "1") throw new Error(message);
+  if (process.env.SALIX_VM_E2E_STRICT === "1") throw new Error(message);
   console.log(`VM_LIFECYCLE_E2E: SKIP ${message}`);
 }
 
 export function pathWithAsdf() {
-  const path = Deno.env.get("PATH") ?? "";
-  const home = Deno.env.get("HOME");
+  const path = process.env.PATH ?? "";
+  const home = process.env.HOME;
   if (!home) return path;
   return `${home}/.asdf/shims:${path}`;
 }

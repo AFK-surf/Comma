@@ -77,9 +77,9 @@ defmodule SalixWeb.Dashboard.Router do
       live("/tenants", TenantLive.Index, :index)
       live("/tenants/:id", TenantLive.Show, :show)
       live("/account-pool", AccountPoolLive, :index)
-      live("/templates", TemplateLive.Index, :index)
-      live("/templates/new", TemplateLive.Form, :new)
-      live("/templates/:id", TemplateLive.Form, :edit)
+      live("/platform-profiles", PlatformProfileLive, :index)
+      live("/media-settings", MediaSettingsLive, :index)
+      live("/platform-model", PlatformModelsLive, :index)
       live("/groups", GroupLive.Index, :index)
       live("/groups/:id", GroupLive.Show, :show)
       live("/groups/:id/slack/:connect_id/commands", SlackCommandsLive, :index)
@@ -116,7 +116,6 @@ defmodule SalixWeb.Dashboard.Router do
       live("/environments/:group_id/:id", EnvironmentLive.Show, :show)
       live("/compute-nodes", ComputeNodeLive.Index, :index)
       live("/compute-nodes/:id", ComputeNodeLive.Show, :show)
-      live("/agent-defaults", AgentDefaultsLive, :index)
     end
   end
 end

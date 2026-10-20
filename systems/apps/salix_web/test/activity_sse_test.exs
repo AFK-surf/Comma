@@ -8,21 +8,24 @@ defmodule SalixWeb.ActivitySSETest do
   topic is framed as an `activity` SSE event on `/v1/runtime/agent-activities/
   stream` while preserving its agent/session identity.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   @host {127, 0, 0, 1}
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev = Application.get_env(:salix_store, :s3_backend)
-    prev_api_token = Application.get_env(:salix_web, :api_token)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_web, :api_token, "test-token")
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_api_token = SystemsRuntime.get_env(:salix_web, :api_token)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_web, :api_token, "test-token")
     start_supervised!(SalixStore.S3.Fake)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
       restore_env(:salix_web, :api_token, prev_api_token)
     end)
 
@@ -32,23 +35,15 @@ defmodule SalixWeb.ActivitySSETest do
     tenant_key = key_resp.body["key"]
     Process.put(:test_tenant_key, tenant_key)
 
-    suffix = System.unique_integer([:positive])
-    template_id = "tmpl-actsse-#{suffix}"
-
     %{status: 201, body: group} =
       treq(:post, "/v1/runtime/agent-groups", json: %{name: "ActSSE Group"})
 
     group_id = group["group_id"]
 
-    %{status: 201} =
-      req(:post, "/v1/admin/templates",
-        json: %{template_id: template_id, name: "T", provider: "openai", model: "gpt-test"}
-      )
+    SalixAgent.TestSupport.configure_platform_models!()
 
     %{status: 201, body: agent} =
-      treq(:post, "/v1/runtime/agents",
-        json: %{group_id: group_id, template_id: template_id, name: "A"}
-      )
+      treq(:post, "/v1/runtime/agents", json: %{group_id: group_id, name: "A"})
 
     agent_id = agent["agent_id"]
     {:ok, group: group_id, agent: agent_id}
@@ -62,8 +57,8 @@ defmodule SalixWeb.ActivitySSETest do
     agents_prefix = SalixStore.Keys.ctl_agents_prefix_for_tenant(tenant_id)
     SalixStore.S3.Fake.reset_read_log()
     client = open_activity_stream("/v1/runtime/agent-activities/stream")
-    on_exit(fn -> Process.exit(client, :kill) end)
-    assert_receive {:sse_headers, headers}, 3_000
+    on_exit(fn -> SystemsRuntime.Proc.exit(client, :kill) end)
+    settle_receive({:sse_headers, headers})
     assert headers =~ "text/event-stream"
 
     assert Enum.count(
@@ -82,12 +77,12 @@ defmodule SalixWeb.ActivitySSETest do
       "tool_name" => "echo",
       "tool_call_id" => "t1",
       "sequence" => 1,
-      "updated_at" => System.system_time(:millisecond) / 1000
+      "updated_at" => SystemsClock.system_time(:millisecond) / 1000
     }
 
     SalixWeb.PubSubNotifier.notify(agent_id, {:activity, activity})
 
-    assert_receive {:sse_frame, %{"event" => "activity", "data" => data}}, 3_000
+    settle_receive({:sse_frame, %{"event" => "activity", "data" => data}})
     assert data["agent_id"] == agent_id
     assert data["session_id"] == session_id
     assert data["phase"] == "execution"
@@ -99,8 +94,8 @@ defmodule SalixWeb.ActivitySSETest do
   } do
     SalixStore.S3.Fake.reset_read_log()
     client = open_activity_stream("/v1/runtime/agents/#{agent_id}/activities/stream")
-    on_exit(fn -> Process.exit(client, :kill) end)
-    assert_receive {:sse_headers, headers}, 3_000
+    on_exit(fn -> SystemsRuntime.Proc.exit(client, :kill) end)
+    settle_receive({:sse_headers, headers})
     assert headers =~ "text/event-stream"
 
     assert Enum.count(
@@ -112,7 +107,7 @@ defmodule SalixWeb.ActivitySSETest do
 
     :ok = SalixAgent.ActivityEvent.thinking(agent_id, session_id, "Inspecting the request")
 
-    assert_receive {:sse_frame, %{"event" => "activity", "data" => data}}, 3_000
+    settle_receive({:sse_frame, %{"event" => "activity", "data" => data}})
     assert data["agent_id"] == agent_id
     assert data["session_id"] == session_id
     assert data["phase"] == "thinking"
@@ -121,7 +116,7 @@ defmodule SalixWeb.ActivitySSETest do
 
     :ok = SalixAgent.ActivityEvent.llm_failed(agent_id, session_id)
 
-    assert_receive {:sse_frame, %{"event" => "activity", "data" => failure}}, 3_000
+    settle_receive({:sse_frame, %{"event" => "activity", "data" => failure}})
     assert failure["phase"] == "thinking"
     assert failure["status"] == "failed"
     assert failure["summary_class"] == "generic"
@@ -132,7 +127,7 @@ defmodule SalixWeb.ActivitySSETest do
   test "snapshot replay preserves the canonical session identity", %{
     agent: agent_id
   } do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
     session_id = SalixStore.Ids.new_session_id()
 
     # Seed a non-idle (waiting) session so the activity snapshot includes it.
@@ -162,11 +157,10 @@ defmodule SalixWeb.ActivitySSETest do
       ])
 
     client = open_activity_stream("/v1/runtime/agents/#{agent_id}/activities/stream")
-    on_exit(fn -> Process.exit(client, :kill) end)
-    assert_receive {:sse_headers, _headers}, 3_000
-
+    on_exit(fn -> SystemsRuntime.Proc.exit(client, :kill) end)
+    settle_receive({:sse_headers, _headers})
     # The first frame is the current session activity snapshot.
-    assert_receive {:sse_frame, %{"event" => "activity", "data" => data}}, 3_000
+    settle_receive({:sse_frame, %{"event" => "activity", "data" => data}})
     assert data["session_id"] == session_id
   end
 
@@ -183,16 +177,16 @@ defmodule SalixWeb.ActivitySSETest do
     )
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   # ---- raw streaming SSE client (gen_tcp + chunked-transfer + SSE parsing) ----
 
   defp open_activity_stream(path) do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
     token = tenant_key()
 
-    spawn(fn ->
+    SystemsRuntime.Proc.spawn(fn ->
       port = SalixWeb.Application.http_port()
       {:ok, sock} = :gen_tcp.connect(@host, port, [:binary, active: false, packet: :raw], 2_000)
 
@@ -208,7 +202,11 @@ defmodule SalixWeb.ActivitySSETest do
       try do
         recv_loop(sock, parent, %{phase: :headers, buf: "", sse: ""})
       rescue
-        e -> send(parent, {:sse_client_error, Exception.format(:error, e, __STACKTRACE__)})
+        e ->
+          SystemsRuntime.Proc.send(
+            parent,
+            {:sse_client_error, Exception.format(:error, e, __STACKTRACE__)}
+          )
       after
         :gen_tcp.close(sock)
       end
@@ -220,18 +218,18 @@ defmodule SalixWeb.ActivitySSETest do
       {:ok, bytes} ->
         case ingest(parent, %{st | buf: st.buf <> bytes}) do
           {:cont, st} -> recv_loop(sock, parent, st)
-          :done -> send(parent, {:sse_closed, :final_chunk})
+          :done -> SystemsRuntime.Proc.send(parent, {:sse_closed, :final_chunk})
         end
 
       {:error, reason} ->
-        send(parent, {:sse_closed, reason})
+        SystemsRuntime.Proc.send(parent, {:sse_closed, reason})
     end
   end
 
   defp ingest(parent, %{phase: :headers, buf: buf} = st) do
     case :binary.split(buf, "\r\n\r\n") do
       [head, rest] ->
-        send(parent, {:sse_headers, head})
+        SystemsRuntime.Proc.send(parent, {:sse_headers, head})
         ingest(parent, %{st | phase: :body, buf: rest})
 
       [_incomplete] ->
@@ -280,7 +278,7 @@ defmodule SalixWeb.ActivitySSETest do
       parsed = parse_frame(frame)
 
       if Map.has_key?(parsed, "event") or Map.has_key?(parsed, "data") do
-        send(parent, {:sse_frame, parsed})
+        SystemsRuntime.Proc.send(parent, {:sse_frame, parsed})
       end
     end
 

@@ -293,7 +293,7 @@ defmodule SalixAnalytics.Sink.ClickHouseTyped do
   defp qualified_table(cfg, suffix), do: "#{cfg.database}.#{suffix}"
 
   defp config(opts \\ []) do
-    cfg = Keyword.merge(Application.get_env(:salix_analytics, :clickhouse, []), opts)
+    cfg = Keyword.merge(SystemsRuntime.get_env(:salix_analytics, :clickhouse, []), opts)
     table = cfg[:table] || "salix_analytics.events"
 
     database =

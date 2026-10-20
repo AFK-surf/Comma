@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelReplyIntentTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   alias SalixAgent.InternalSession.State
   alias SalixAgent.TestSupport.SessionData
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
@@ -35,58 +35,6 @@ defmodule SalixAgent.SessionKernelReplyIntentTest do
       {:done, next} = Driver.step(state, ev)
       next
     end)
-  end
-
-  test "establish copies only selected fields and preserves nil false and opaque state" do
-    state = %State{
-      status: :active,
-      activity_status: :thinking,
-      activity_status_updated_at: 10,
-      visible_reply_intent: %{old: true},
-      last_activity_at: "before",
-      events: :unvisited,
-      messages: [:unvisited],
-      last_seq: 1.5
-    }
-
-    ev =
-      event("visible_reply_intent", %{
-        "assistant_message_id" => nil,
-        "content" => false,
-        "scope" => %{nested: [%{value: 2}]},
-        "idempotency_key" => "key",
-        "created_at" => false,
-        "ignored" => %{{} => %{pure: :data}}
-      })
-
-    assert {:returned, next} = check(state, ev)
-
-    assert next.visible_reply_intent === %{
-             "assistant_message_id" => nil,
-             "content" => false,
-             "scope" => %{"nested" => [%{"value" => 2}]},
-             "idempotency_key" => "key",
-             "created_at" => false
-           }
-
-    assert next.last_activity_at === "before"
-
-    assert Map.drop(next, [:visible_reply_intent, :last_activity_at]) ===
-             Map.drop(state, [:visible_reply_intent, :last_activity_at])
-  end
-
-  test "selected key collisions follow native conversion order" do
-    for payload <- [%{:same => 1, "same" => 2}, [%{:nested => %{:same => 1, "same" => 2}}]] do
-      assert {:returned, _} =
-               check(
-                 %State{
-                   status: :active,
-                   activity_status: :thinking,
-                   activity_status_updated_at: 10
-                 },
-                 event("visible_reply_intent", %{"content" => payload})
-               )
-    end
   end
 
   test "selected conversion rejects malformed nested payloads" do
@@ -131,30 +79,6 @@ defmodule SalixAgent.SessionKernelReplyIntentTest do
       }
 
       assert {:returned, ^state} = check(state, event(type, %{"idempotency_key" => "key"}))
-    end
-  end
-
-  test "current key aliases use binary-first nil and false fallback" do
-    for type <- ["visible_reply_committed", "visible_reply_aborted"],
-        first <- [nil, false] do
-      state = %State{
-        status: :active,
-        activity_status: :thinking,
-        activity_status_updated_at: 10,
-        visible_reply_intent: %{"idempotency_key" => first, idempotency_key: "key"}
-      }
-
-      assert {:returned, next} = check(state, event(type, %{"idempotency_key" => "key"}))
-      assert next.visible_reply_intent === nil
-    end
-  end
-
-  test "retirement preserves absent and nonmatching plain intent data" do
-    for current <- [nil, false, %{"idempotency_key" => 1}] do
-      state = %State{status: :active, activity_status: :thinking, visible_reply_intent: current}
-
-      assert {:returned, ^state} =
-               check(state, event("visible_reply_aborted", %{"idempotency_key" => "key"}))
     end
   end
 

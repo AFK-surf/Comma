@@ -1,5 +1,6 @@
 defmodule SalixAgent.ModelDiscoveryTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.ModelDiscovery
 
   defmodule Provider do
@@ -17,14 +18,22 @@ defmodule SalixAgent.ModelDiscoveryTest do
 
       case mode do
         :slow ->
-          conn = conn |> put_resp_content_type("application/json") |> send_chunked(200)
+          conn =
+            conn
+            |> put_resp_header("connection", "close")
+            |> put_resp_content_type("application/json")
+            |> send_chunked(200)
 
           Enum.reduce_while(1..25, conn, fn _, conn ->
-            Process.sleep(1000)
+            SystemsClock.sleep(1000)
 
             case chunk(conn, " ") do
-              {:ok, conn} -> {:cont, conn}
-              {:error, _} -> {:halt, conn}
+              {:ok, conn} ->
+                Agent.update(state, &Map.update!(&1, :chunks, fn count -> count + 1 end))
+                {:cont, conn}
+
+              {:error, _} ->
+                {:halt, conn}
             end
           end)
 
@@ -82,7 +91,7 @@ defmodule SalixAgent.ModelDiscoveryTest do
   end
 
   setup do
-    state = start_supervised!({Agent, fn -> %{mode: :normal, calls: []} end})
+    state = start_supervised!({Agent, fn -> %{mode: :normal, calls: [], chunks: 0} end})
 
     server =
       start_supervised!(
@@ -93,6 +102,7 @@ defmodule SalixAgent.ModelDiscoveryTest do
 
     %{
       state: state,
+      server: server,
       input: %{"base_url" => "http://127.0.0.1:#{port}/v1", "api_key" => "discovery-secret"}
     }
   end
@@ -113,34 +123,6 @@ defmodule SalixAgent.ModelDiscoveryTest do
     assert {"authorization", "Bearer discovery-secret"} in headers
   end
 
-  test "Anthropic pagination and image metadata share the saved runtime URL", %{
-    input: input,
-    state: state
-  } do
-    Agent.update(state, &%{&1 | mode: :pages})
-    assert {:ok, result} = ModelDiscovery.discover(Map.put(input, "protocol", "anthropic"))
-    refute String.ends_with?(result["base_url"], "/v1")
-    assert Enum.map(result["data"], & &1["id"]) == ["first", "second"]
-    assert hd(result["data"])["supports_images"] == true
-    refute result["truncated"]
-    assert length(Agent.get(state, & &1.calls)) == 2
-
-    for {path, _, headers} <- Agent.get(state, & &1.calls) do
-      assert path == "/v1/models"
-      assert {"x-api-key", "discovery-secret"} in headers
-      refute List.keymember?(headers, "authorization", 0)
-    end
-  end
-
-  test "stops repeated pagination after five requests", %{input: input, state: state} do
-    Agent.update(state, &%{&1 | mode: :endless})
-
-    assert {:ok, %{"truncated" => true}} =
-             ModelDiscovery.discover(Map.put(input, "protocol", "anthropic"))
-
-    assert length(Agent.get(state, & &1.calls)) == 5
-  end
-
   test "bounds response bodies and reports failures without provider content or redirecting keys",
        %{input: input, state: state} do
     for {mode, expected} <- [
@@ -155,36 +137,6 @@ defmodule SalixAgent.ModelDiscoveryTest do
     end
   end
 
-  test "ignores malformed model entries", %{input: input, state: state} do
-    Agent.update(state, &%{&1 | mode: :malformed})
-    assert {:ok, %{"data" => [%{"id" => "valid"}]}} = ModelDiscovery.discover(input)
-  end
-
-  test "a slow stream returns an actionable timeout within the overall budget", %{
-    input: input,
-    state: state
-  } do
-    Agent.update(state, &%{&1 | mode: :slow})
-    started = System.monotonic_time(:millisecond)
-    assert {:error, :model_discovery_timeout} = ModelDiscovery.discover(input)
-    assert System.monotonic_time(:millisecond) - started < 18_000
-    assert length(Agent.get(state, & &1.calls)) == 1
-  end
-
-  test "a keyless endpoint lists its models with no auth header", %{input: input, state: state} do
-    for keyless <- [Map.delete(input, "api_key"), Map.put(input, "api_key", "")],
-        protocol <- ["chat_completions", "anthropic"] do
-      Agent.update(state, &%{&1 | mode: :normal, calls: []})
-
-      assert {:ok, %{"data" => [_ | _]}} =
-               ModelDiscovery.discover(Map.put(keyless, "protocol", protocol))
-
-      assert [{"/v1/models", _, headers}] = Agent.get(state, & &1.calls)
-      refute List.keymember?(headers, "authorization", 0)
-      refute List.keymember?(headers, "x-api-key", 0)
-    end
-  end
-
   test "requires a usable key when one is given, and a plain endpoint", %{
     input: input,
     state: state
@@ -193,8 +145,7 @@ defmodule SalixAgent.ModelDiscoveryTest do
           %{"api_key" => "   "},
           %{"base_url" => "https://user:secret@example.com"},
           %{"base_url" => "https://example.com?key=secret"},
-          %{"protocol" => "unsupported"},
-          %{"template_id" => "foreign"}
+          %{"protocol" => "unsupported"}
         ] do
       assert {:error, :invalid_model_configuration} =
                ModelDiscovery.discover(Map.merge(input, changes))

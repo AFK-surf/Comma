@@ -1,10 +1,12 @@
 defmodule SalixWeb.MeetingIngressSupervisor do
+  require SystemsRuntime.Proc
+
   @moduledoc false
 
   use Supervisor
 
   def start_link(opts \\ []) do
-    Supervisor.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
+    SystemsRuntime.Supervisor.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
   end
 
   @impl true
@@ -19,7 +21,7 @@ defmodule SalixWeb.MeetingIngressSupervisor do
 
   @doc false
   def calendar_autojoin_children do
-    case Application.get_env(:salix_meet, :calendar_autojoin) do
+    case SystemsRuntime.get_env(:salix_meet, :calendar_autojoin) do
       opts when is_list(opts) ->
         unless SalixMeet.RuntimeDriver.configured?() do
           raise "calendar autojoin requires a configured meeting runtime driver"
@@ -41,8 +43,8 @@ defmodule SalixWeb.MeetingIngressSupervisor do
 
   @doc false
   def start_calendar_autojoin(opts, listener \\ SalixWeb.HTTPServer) do
-    with pid when is_pid(pid) <- Process.whereis(listener),
-         true <- Process.alive?(pid),
+    with pid when SystemsRuntime.Proc.is_process(pid) <- SystemsRuntime.Proc.whereis(listener),
+         true <- SystemsRuntime.Proc.alive?(pid),
          {:ok, {_address, port}} when is_integer(port) and port > 0 <-
            ThousandIsland.listener_info(listener) do
       SalixMeet.CalendarAutojoin.start_link(opts)

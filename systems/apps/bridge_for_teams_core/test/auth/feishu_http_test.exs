@@ -3,7 +3,7 @@ defmodule BridgeForTeams.Auth.Feishu.HTTPTest do
   Exercises the real Feishu HTTP adapter against a local mock server. No network
   or real Feishu credentials are used.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias BridgeForTeams.Auth.Feishu.HTTP
   alias BridgeForTeams.TestBandit

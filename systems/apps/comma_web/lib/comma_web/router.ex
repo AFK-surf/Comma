@@ -1,4 +1,6 @@
 defmodule CommaWeb.Router do
+  require SystemsRuntime.Proc
+
   require Logger
 
   @moduledoc """
@@ -6,6 +8,7 @@ defmodule CommaWeb.Router do
   """
 
   use Plug.Router
+  require SystemsClock
 
   @local_recommendation_mock_compiled Application.compile_env(
                                         :comma_web,
@@ -42,6 +45,7 @@ defmodule CommaWeb.Router do
     :budget_exhausted,
     :invalid_conversation_title,
     :invalid_review_version,
+    :invalid_task_status,
     :tool_not_allowed,
     :exists,
     :unsupported_for_kind
@@ -105,6 +109,7 @@ defmodule CommaWeb.Router do
 
       String.starts_with?(conn.request_path, "/v1/comma/auth/") or
         String.starts_with?(conn.request_path, "/v1/comma/integrations/telegram/") or
+        String.starts_with?(conn.request_path, "/v1/comma/integrations/linear/") or
           String.starts_with?(conn.request_path, "/oauth2/") ->
         register_before_send(conn, &put_resp_header(&1, "cache-control", "no-store"))
 
@@ -649,6 +654,19 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  get "/v1/comma/me/task-panel-dismissals" do
+    with_session_management(conn, fn user, _session ->
+      task_panel_result(conn, Comma.TaskPanelDismissals.list(user["id"]))
+    end)
+  end
+
+  post "/v1/comma/me/task-panel-dismissals" do
+    with_session_management(conn, fn user, _session ->
+      dismissals = (conn.body_params || %{})["dismissals"]
+      task_panel_result(conn, Comma.TaskPanelDismissals.dismiss(user["id"], dismissals))
+    end)
+  end
+
   get "/v1/comma/me/synchronicity/status" do
     with_profile_management(conn, fn user, _session ->
       case Comma.Synchronicity.status(user["id"]) do
@@ -810,6 +828,10 @@ defmodule CommaWeb.Router do
       case Comma.Admin.list_audit_events(
              limit: parse_int(conn.query_params["limit"], 50),
              cursor: conn.query_params["cursor"],
+             action: conn.query_params["action"],
+             actor_email: conn.query_params["actor_email"],
+             target_type: conn.query_params["target_type"],
+             target_id: conn.query_params["target_id"],
              cursor_secret: conn.assigns[:auth_token]
            ) do
         {:ok, page} ->
@@ -820,9 +842,37 @@ defmodule CommaWeb.Router do
         {:error, :invalid_cursor} ->
           send_error(conn, 400, :invalid_cursor)
 
+        {:error, :invalid_filter} ->
+          send_error(conn, 400, :invalid_filter)
+
         {:error, reason} ->
           send_error(conn, 500, reason)
       end
+    end)
+  end
+
+  # The accounts a search names (Comma.Admin.lookup/1): bounded exact and prefix reads.
+  get "/v1/comma/admin/lookup" do
+    with_admin_query(conn, fn ->
+      case Comma.Admin.lookup(conn.query_params["q"]) do
+        {:ok, result} ->
+          conn
+          |> put_resp_header("cache-control", "no-store")
+          |> send_json(200, result)
+
+        {:error, :invalid_filter} ->
+          send_error(conn, 400, :invalid_filter)
+      end
+    end)
+  end
+
+  get "/v1/comma/admin/stats/users" do
+    with_admin_query(conn, fn ->
+      {:ok, stats} = Comma.Admin.user_stats()
+
+      conn
+      |> put_resp_header("cache-control", "no-store")
+      |> send_json(200, stats)
     end)
   end
 
@@ -832,6 +882,7 @@ defmodule CommaWeb.Router do
              limit: parse_int(conn.query_params["limit"], 100),
              cursor: conn.query_params["cursor"],
              email: conn.query_params["email"],
+             query: conn.query_params["query"],
              cursor_secret: conn.assigns[:auth_token]
            ) do
         {:ok, page} -> send_json(conn, 200, page)
@@ -856,7 +907,10 @@ defmodule CommaWeb.Router do
     with_admin_query(conn, fn ->
       case Comma.Admin.list_user_sessions(id,
              limit: parse_int(conn.query_params["limit"], 50),
-             cursor: conn.query_params["cursor"]
+             cursor: conn.query_params["cursor"],
+             status: conn.query_params["status"],
+             client_kind: conn.query_params["client_kind"],
+             sort: conn.query_params["sort"]
            ) do
         {:ok, page} ->
           conn
@@ -865,6 +919,9 @@ defmodule CommaWeb.Router do
 
         {:error, :invalid_cursor} ->
           send_error(conn, 400, :invalid_cursor)
+
+        {:error, :invalid_filter} ->
+          send_error(conn, 400, :invalid_filter)
 
         {:error, :not_found} ->
           send_error(conn, 404, :not_found)
@@ -1120,10 +1177,12 @@ defmodule CommaWeb.Router do
   put "/v1/comma/admin/users/:id/workspaces/agent-models/:role" do
     attrs = conn.body_params || %{}
 
-    template_id =
-      case attrs["template_id"] do
+    # The expected command names the model the request chooses; "default"
+    # follows the platform model of the role.
+    model_key =
+      case attrs["model"] do
         nil -> "default"
-        value when is_binary(value) -> String.trim(value)
+        %{"kind" => kind} = model -> "#{kind}:#{model["model"] || model["tier"]}"
         _invalid -> "invalid"
       end
 
@@ -1133,12 +1192,12 @@ defmodule CommaWeb.Router do
         "update_workspace_agent_model",
         "user_workspace",
         id,
-        "workspace-agent-model:#{id}:#{role}:#{template_id}",
+        "workspace-agent-model:#{id}:#{role}:#{model_key}",
         fn _actor, command_attrs ->
           Comma.Admin.update_user_workspace_agent_model(
             id,
             role,
-            command_attrs["template_id"]
+            command_attrs["model"]
           )
         end
       )
@@ -1302,50 +1361,6 @@ defmodule CommaWeb.Router do
         {:error, reason} -> send_error(conn, 503, reason)
       end
     end)
-  end
-
-  get "/v1/comma/admin/model-selection-policy" do
-    with_admin_query(conn, fn ->
-      case Comma.ModelSelectionPolicy.get() do
-        {:ok, policy} -> send_json(conn, 200, policy)
-        {:error, reason} -> send_error(conn, 503, reason)
-      end
-    end)
-  end
-
-  get "/v1/comma/admin/model-selection-policy/templates" do
-    with_admin_query(conn, fn ->
-      case SalixAgent.Templates.list_public_bounded(100) do
-        {:ok, templates} ->
-          send_json(conn, 200, %{"data" => SalixAgent.AgentDefaults.selectable(templates)})
-
-        {:error, reason} ->
-          send_error(conn, 503, reason)
-      end
-    end)
-  end
-
-  put "/v1/comma/admin/model-selection-policy" do
-    result =
-      run_admin_command(
-        conn,
-        "update_model_selection_policy",
-        "model_selection_policy",
-        "comma",
-        "update-model-selection-policy:comma",
-        fn _actor, attrs -> Comma.ModelSelectionPolicy.update(attrs) end
-      )
-
-    case result do
-      {:ok, policy} ->
-        send_json(conn, 200, policy)
-
-      {:error, :model_selection_policy_conflict} ->
-        send_error(conn, 409, :model_selection_policy_conflict)
-
-      {:error, reason} ->
-        admin_command_error(conn, reason)
-    end
   end
 
   put "/v1/comma/admin/billing/free-router-models" do
@@ -1526,6 +1541,126 @@ defmodule CommaWeb.Router do
     end
   end
 
+  # Photon iMessage webhooks wake the Photon receiver. Authenticated by the
+  # destination's HMAC signature over the raw body; see docs/messaging-voice.md.
+  post "/v1/comma/integrations/imessage/photon/webhook" do
+    result =
+      CommaWeb.IMessageIntegration.photon_webhook(
+        conn.assigns[:raw_body] || "",
+        conn |> get_req_header("webhook-id") |> List.first(""),
+        conn |> get_req_header("webhook-timestamp") |> List.first(""),
+        conn |> get_req_header("webhook-signature") |> Enum.join(" ")
+      )
+
+    case result do
+      :ok -> send_json(conn, 200, %{ok: true})
+      {:error, :unauthorized} -> send_error(conn, 401, :unauthorized)
+      {:error, _reason} -> send_error(conn, 503, :imessage_unavailable)
+    end
+  end
+
+  # Linear agent webhooks (CommaWeb.LinearIntegration). Authenticated by the
+  # application's HMAC signature over the raw body; see docs/tools-integrations.md.
+  post "/v1/comma/integrations/linear/webhook" do
+    result =
+      CommaWeb.LinearIntegration.handle_webhook(
+        conn.assigns[:raw_body] || "",
+        get_req_header(conn, "linear-signature"),
+        conn.body_params || %{}
+      )
+
+    case result do
+      :ok -> send_json(conn, 200, %{ok: true})
+      {:error, :ignored} -> send_json(conn, 200, %{ok: true, ignored: true})
+      {:error, :unauthorized} -> send_error(conn, 401, :unauthorized)
+      {:error, :linear_agent_unavailable} -> send_error(conn, 503, :linear_agent_unavailable)
+      {:error, _reason} -> send_error(conn, 503, :linear_delivery_unavailable)
+    end
+  end
+
+  get "/v1/comma/integrations/linear/connect/callback" do
+    conn = fetch_query_params(conn)
+    state = conn.query_params["state"]
+
+    case CommaWeb.LinearIntegration.complete_connect(conn.query_params["code"], state) do
+      # The person is known; their organization still needs Comma installed:
+      # on to that authorization in the same window.
+      {:ok, %{"outcome" => "install", "authorization_url" => url}} ->
+        conn
+        |> put_resp_header("cache-control", "no-store")
+        |> put_resp_header("location", url)
+        |> send_resp(302, "")
+
+      {:ok, result} ->
+        send_linear_callback_page(conn, true, state, result["workspace_id"])
+
+      {:error, reason} ->
+        send_linear_callback_page(conn, false, state, nil, reason)
+    end
+  end
+
+  # Station control plane (CommaWeb.StationEndpoints). Install, releases and
+  # enrollment are public; connect and notify are station-signed.
+  get "/stations/install.sh" do
+    CommaWeb.StationEndpoints.install_script(conn)
+  end
+
+  get "/stations/releases/station.json" do
+    CommaWeb.StationEndpoints.releases(conn)
+  end
+
+  get "/stations/releases/station-beta.json" do
+    CommaWeb.StationEndpoints.beta_releases(conn)
+  end
+
+  post "/v1/comma/stations/enroll" do
+    CommaWeb.StationEndpoints.enroll(conn)
+  end
+
+  get "/v1/comma/stations/connect" do
+    CommaWeb.StationEndpoints.connect(conn)
+  end
+
+  post "/v1/comma/stations/notify" do
+    CommaWeb.StationEndpoints.notify(conn)
+  end
+
+  get "/v1/comma/station-relay" do
+    CommaWeb.StationEndpoints.relay(conn)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/station-relay" do
+    CommaWeb.StationEndpoints.relay_ticket(conn, workspace_id)
+  end
+
+  get "/v1/comma/stations/me" do
+    CommaWeb.StationEndpoints.me(conn)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/stations/enrollments" do
+    CommaWeb.StationEndpoints.create_enrollment(conn, workspace_id)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/stations" do
+    CommaWeb.StationEndpoints.list(conn, workspace_id)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/stations/events" do
+    CommaWeb.StationEndpoints.events(conn, workspace_id)
+  end
+
+  patch "/v1/comma/workspaces/:workspace_id/stations/:station_id" do
+    CommaWeb.StationEndpoints.rename(conn, workspace_id, station_id)
+  end
+
+  delete "/v1/comma/workspaces/:workspace_id/stations/:station_id" do
+    CommaWeb.StationEndpoints.delete(conn, workspace_id, station_id)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/station-credential" do
+    CommaWeb.StationEndpoints.credential(conn, workspace_id)
+  end
+
   post "/v1/comma/notifications/devices" do
     CommaWeb.NativePushEndpoints.register(conn, "device")
   end
@@ -1546,6 +1681,18 @@ defmodule CommaWeb.Router do
     CommaWeb.NativePushEndpoints.unregister(conn, id)
   end
 
+  get "/v1/comma/groups/:group_id/task-activity" do
+    CommaWeb.NativeNotificationStateEndpoints.activity(conn, group_id)
+  end
+
+  get "/v1/comma/groups/:group_id/router-notifications" do
+    CommaWeb.NativeNotificationStateEndpoints.router(conn, group_id)
+  end
+
+  post "/v1/comma/groups/:group_id/router-notifications/read" do
+    CommaWeb.NativeNotificationStateEndpoints.read(conn, group_id)
+  end
+
   get "/v1/comma/workspaces" do
     with_user(conn, fn user, session ->
       case Comma.Workspaces.list_for_user(user["id"], session) do
@@ -1564,7 +1711,10 @@ defmodule CommaWeb.Router do
       conn
       |> put_resp_header("cache-control", "private, max-age=300")
       |> send_json(200, %{
-        "sources" => SalixAgent.Models.sources(),
+        "sources" =>
+          Map.reject(SalixAgent.Models.sources(), fn {_id, source} ->
+            source["platform_only"] == true
+          end),
         "models" => SalixAgent.Models.list()
       })
     end)
@@ -1613,6 +1763,62 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  # Nearby unprovisioned Comma devices that a member's phone found. A new one
+  # gets a setup offer in Home (CommaWeb.DeviceSetupOffers).
+  post "/v1/comma/workspaces/:workspace_id/nearby-devices" do
+    with_user(conn, fn user, session ->
+      case CommaWeb.DeviceSetupOffers.report(user, session, workspace_id, conn.body_params || %{}) do
+        {:ok, result} -> send_json(conn, 202, result)
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/nearby-devices/offers/:offer_id" do
+    with_user(conn, fn user, session ->
+      case CommaWeb.DeviceSetupOffers.get(user, session, workspace_id, offer_id) do
+        {:ok, result} -> send_json(conn, 200, result)
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/nearby-devices/offers/:offer_id" do
+    with_user(conn, fn user, session ->
+      case CommaWeb.DeviceSetupOffers.resolve(
+             user,
+             session,
+             workspace_id,
+             offer_id,
+             conn.body_params || %{}
+           ) do
+        {:ok, result} -> send_json(conn, 200, result)
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  # Saved secrets for devices on the user's network (miIO tokens). Values are
+  # write-only: the agent saves them, and these routes list metadata and
+  # delete.
+  get "/v1/comma/workspaces/:workspace_id/device-secrets" do
+    with_device_secrets(conn, workspace_id, fn group_id ->
+      with {:ok, secrets} <- SalixAgent.DeviceSecrets.list(group_id),
+           do: {:ok, %{"secrets" => secrets}}
+    end)
+  end
+
+  delete "/v1/comma/workspaces/:workspace_id/device-secrets/:name" do
+    with_device_secrets(conn, workspace_id, fn group_id ->
+      case SalixAgent.DeviceSecrets.delete(group_id, name) do
+        {:ok, nil} -> {:error, :not_found}
+        {:ok, secret} -> {:ok, %{"deleted" => true, "secret" => secret}}
+        {:error, :invalid_name} -> {:error, :not_found}
+        error -> error
+      end
+    end)
+  end
+
   post "/v1/comma/workspaces/:workspace_id/subscription-accounts/:id/quota/reset" do
     with_subscription_accounts(conn, workspace_id, fn tenant ->
       SalixAgent.AccountPool.reset_quota(tenant, id, conn.body_params)
@@ -1637,106 +1843,41 @@ defmodule CommaWeb.Router do
     end)
   end
 
-  get "/v1/comma/workspaces/:workspace_id/model-templates" do
-    with_user(conn, fn user, session ->
-      with :ok <- full_workspace_session(session),
-           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
-           {:ok, result} <- CommaWeb.ModelTemplates.list(workspace) do
-        conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
-      else
-        {:error, {:conflict, _}} -> send_error(conn, 409, :model_template_in_use)
-        {:error, reason} -> comma_error(conn, reason)
-      end
-    end)
-  end
-
-  post "/v1/comma/workspaces/:workspace_id/model-templates" do
-    with_user(conn, fn user, session ->
-      with :ok <- full_workspace_session(session),
-           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
-           {:ok, result} <- CommaWeb.ModelTemplates.create(workspace, conn.body_params) do
-        conn |> put_resp_header("cache-control", "no-store") |> send_json(201, result)
-      else
-        {:error, {:conflict, _}} -> send_error(conn, 409, :model_template_in_use)
-        {:error, reason} -> comma_error(conn, reason)
-      end
-    end)
-  end
-
-  post "/v1/comma/workspaces/:workspace_id/model-templates/resolve-subscription" do
-    with_user(conn, fn user, session ->
-      with :ok <- full_workspace_session(session),
-           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
-           {:ok, result} <-
-             CommaWeb.ModelTemplates.resolve_subscription(workspace, conn.body_params) do
-        conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
-      else
-        {:error, reason} -> comma_error(conn, reason)
-      end
-    end)
-  end
-
-  patch "/v1/comma/workspaces/:workspace_id/model-templates/:template_id" do
-    with_user(conn, fn user, session ->
-      with :ok <- full_workspace_session(session),
-           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
-           {:ok, result} <-
-             CommaWeb.ModelTemplates.update(workspace, template_id, conn.body_params) do
-        conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
-      else
-        {:error, {:conflict, _}} -> send_error(conn, 409, :model_template_in_use)
-        {:error, reason} -> comma_error(conn, reason)
-      end
-    end)
-  end
-
-  delete "/v1/comma/workspaces/:workspace_id/model-templates/:template_id" do
-    with_user(conn, fn user, session ->
-      with :ok <- full_workspace_session(session),
-           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
-           {:ok, result} <- CommaWeb.ModelTemplates.delete(workspace, template_id) do
-        conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
-      else
-        {:error, {:conflict, _}} -> send_error(conn, 409, :model_template_in_use)
-        {:error, reason} -> comma_error(conn, reason)
-      end
-    end)
-  end
-
   get "/v1/comma/workspaces/:workspace_id/agent-models" do
     with_user(conn, fn user, session ->
       with :ok <- full_workspace_session(session),
            {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
-           {:ok, result} <- CommaWeb.SalixClient.get_user_workspace_agent_models(workspace) do
+           {:ok, result} <- Comma.Salix.Client.get_workspace_agent_models(workspace) do
         conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
       else
-        {:error, {:conflict, _}} -> send_error(conn, 409, :model_template_in_use)
         {:error, reason} -> comma_error(conn, reason)
       end
     end)
   end
 
+  # Kept only for old clients: desktop apps already shipped page through the
+  # Workspace's Workers here. Settings > Models lists none now.
   get "/v1/comma/workspaces/:workspace_id/agent-models/workers" do
     with_user(conn, fn user, session ->
       with :ok <- full_workspace_session(session),
-           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
-           {:ok, result} <-
-             CommaWeb.SalixClient.workspace_worker_models(workspace, conn.params["cursor"]) do
-        conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
+           {:ok, _workspace} <- Comma.Workspaces.authorize(user, session, workspace_id) do
+        conn
+        |> put_resp_header("cache-control", "no-store")
+        |> send_json(200, CommaWeb.SalixClient.empty_worker_page())
       else
         {:error, reason} -> comma_error(conn, reason)
       end
     end)
   end
 
-  put "/v1/comma/workspaces/:workspace_id/agent-models/worker-default" do
+  put "/v1/comma/workspaces/:workspace_id/task-model" do
     with_user(conn, fn user, session ->
       with :ok <- full_workspace_session(session),
            {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
            {:ok, result} <-
-             CommaWeb.SalixClient.update_user_workspace_worker_default(
+             CommaWeb.SalixClient.update_workspace_task_model(
                workspace,
-               conn.body_params["template_id"]
+               conn.body_params["selection"]
              ) do
         conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
       else
@@ -1745,19 +1886,32 @@ defmodule CommaWeb.Router do
     end)
   end
 
-  put "/v1/comma/workspaces/:workspace_id/agent-models/:role" do
+  put "/v1/comma/workspaces/:workspace_id/reply-style" do
     with_user(conn, fn user, session ->
       with :ok <- full_workspace_session(session),
            {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
            {:ok, result} <-
-             CommaWeb.SalixClient.update_user_workspace_agent_model(
+             CommaWeb.SalixClient.update_workspace_reply_style(
                workspace,
-               role,
-               conn.body_params["template_id"]
+               conn.body_params["reply_style"]
              ) do
         conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
       else
-        {:error, {:conflict, _}} -> send_error(conn, 409, :model_template_in_use)
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  put "/v1/comma/workspaces/:workspace_id/task-place" do
+    with_user(conn, fn user, session ->
+      place = conn.body_params["place"]
+
+      with :ok <- full_workspace_session(session),
+           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
+           :ok <- workspace_station(user, session, workspace_id, place),
+           {:ok, result} <- CommaWeb.SalixClient.update_workspace_task_place(workspace, place) do
+        conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
+      else
         {:error, reason} -> comma_error(conn, reason)
       end
     end)
@@ -1793,6 +1947,55 @@ defmodule CommaWeb.Router do
         conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
       else
         {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/integrations/linear" do
+    with_user(conn, fn user, session ->
+      case CommaWeb.LinearIntegration.state(user, session, workspace_id) do
+        {:ok, state} -> send_json(conn, 200, state)
+        {:error, reason} -> linear_integration_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/integrations/linear/connect" do
+    with_user(conn, fn user, session ->
+      case CommaWeb.LinearIntegration.start_connect(
+             user,
+             session,
+             workspace_id,
+             conn.body_params["environment"]
+           ) do
+        {:ok, attempt} -> send_json(conn, 201, attempt)
+        {:error, reason} -> linear_integration_error(conn, reason)
+      end
+    end)
+  end
+
+  patch "/v1/comma/workspaces/:workspace_id/integrations/linear" do
+    with_user(conn, fn user, session ->
+      case CommaWeb.LinearIntegration.update_settings(
+             user,
+             session,
+             workspace_id,
+             conn.body_params || %{}
+           ) do
+        {:ok, installation} -> send_json(conn, 200, installation)
+        {:error, reason} -> linear_integration_error(conn, reason)
+      end
+    end)
+  end
+
+  delete "/v1/comma/workspaces/:workspace_id/integrations/linear" do
+    conn = fetch_query_params(conn)
+    scope = conn.query_params["scope"] || "member"
+
+    with_user(conn, fn user, session ->
+      case CommaWeb.LinearIntegration.disconnect(user, session, workspace_id, scope) do
+        {:ok, result} -> send_json(conn, 200, result)
+        {:error, reason} -> linear_integration_error(conn, reason)
       end
     end)
   end
@@ -1908,7 +2111,8 @@ defmodule CommaWeb.Router do
       case CommaWeb.IMessageIntegration.start_connect(
              user,
              session,
-             workspace_id
+             workspace_id,
+             conn.body_params || %{}
            ) do
         {:ok, attempt} -> send_json(conn, 201, attempt)
         {:error, reason} -> imessage_integration_error(conn, reason)
@@ -1972,7 +2176,7 @@ defmodule CommaWeb.Router do
 
   get "/v1/comma/workspaces/:workspace_id/devices" do
     with_user(conn, fn user, session ->
-      case Comma.Devices.page(user, session, workspace_id, conn.query_params) do
+      case Comma.Devices.computers(user, session, workspace_id, conn.query_params) do
         {:ok, page} -> send_json(conn, 200, page)
         {:error, reason} -> comma_error(conn, reason)
       end
@@ -2030,9 +2234,31 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  post "/v1/comma/workspaces/:workspace_id/devices/:device_id/screen-stream" do
+    with_user(conn, fn user, session ->
+      case Comma.Devices.screen_stream(
+             user,
+             session,
+             workspace_id,
+             device_id,
+             conn.body_params || %{}
+           ) do
+        {:ok, result} -> send_json(conn, 200, result)
+        {:error, {:conflict, message}} -> send_json(conn, 409, %{error: message})
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
   post "/v1/comma/workspaces/:workspace_id/connector-token" do
     with_user(conn, fn user, session ->
-      case create_workspace_connector_token(user, session, workspace_id, conn.body_params || %{}) do
+      case create_workspace_connector_token(
+             user,
+             session,
+             workspace_id,
+             conn.body_params || %{},
+             CommaWeb.StationOrigin.of(conn)
+           ) do
         {:ok, token} -> send_json(conn, 201, public_connector_token(token))
         {:error, reason} -> comma_error(conn, reason)
       end
@@ -2257,6 +2483,48 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  # Settings › Tailscale: the workspace Group's node in the owner's own
+  # tailnet (SalixAgent.Tailnet). The login link is in the status while the
+  # node waits for a tailnet admin.
+  get "/v1/comma/workspaces/:workspace_id/integrations/tailnet" do
+    with_workspace_tailnet(conn, workspace_id, fn workspace, _user ->
+      Salix.Control.Tailnet.status(workspace["default_group_id"], workspace["salix_tenant_id"])
+    end)
+  end
+
+  put "/v1/comma/workspaces/:workspace_id/integrations/tailnet" do
+    with_workspace_tailnet(conn, workspace_id, fn workspace, user ->
+      Salix.Control.Tailnet.connect(
+        workspace["default_group_id"],
+        workspace["salix_tenant_id"],
+        conn.body_params || %{},
+        "comma_user:" <> user["id"]
+      )
+    end)
+  end
+
+  delete "/v1/comma/workspaces/:workspace_id/integrations/tailnet" do
+    with_workspace_tailnet(conn, workspace_id, fn workspace, user ->
+      Salix.Control.Tailnet.disconnect(
+        workspace["default_group_id"],
+        workspace["salix_tenant_id"],
+        "comma_user:" <> user["id"]
+      )
+    end)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/integrations/tailnet/peers" do
+    cursor = parse_int(conn.query_params["cursor"], 0)
+
+    with_workspace_tailnet(conn, workspace_id, fn workspace, _user ->
+      Salix.Control.Tailnet.peers(
+        workspace["default_group_id"],
+        workspace["salix_tenant_id"],
+        max(cursor, 0)
+      )
+    end)
+  end
+
   post "/v1/comma/groups/:group_id/meeting-tasks" do
     with_user(conn, fn user, session ->
       case Comma.MeetingTasks.enter(user, session, group_id, conn.body_params || %{}) do
@@ -2332,6 +2600,60 @@ defmodule CommaWeb.Router do
     with_user(conn, fn user, session ->
       case Comma.Compute.create_workload(user, session, workspace_id, conn.body_params || %{}) do
         {:ok, result} -> send_json(conn, 201, result)
+        {:error, reason} -> compute_error(conn, reason)
+      end
+    end)
+  end
+
+  get "/v1/comma/workspaces/:workspace_id/compute/workloads/:workload_id" do
+    with_user(conn, fn user, session ->
+      case Comma.Compute.get_workload(user, session, workspace_id, workload_id) do
+        {:ok, result} -> send_json(conn, 200, result)
+        {:error, reason} -> compute_error(conn, reason)
+      end
+    end)
+  end
+
+  patch "/v1/comma/workspaces/:workspace_id/compute/workloads/:workload_id" do
+    with_user(conn, fn user, session ->
+      case Comma.Compute.rename_workload(
+             user,
+             session,
+             workspace_id,
+             workload_id,
+             conn.body_params || %{}
+           ) do
+        {:ok, result} -> send_json(conn, 200, result)
+        {:error, reason} -> compute_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/compute/workloads/:workload_id/retry" do
+    with_user(conn, fn user, session ->
+      case Comma.Compute.retry_workload(
+             user,
+             session,
+             workspace_id,
+             workload_id,
+             conn.body_params || %{}
+           ) do
+        {:ok, result} -> send_json(conn, 202, result)
+        {:error, reason} -> compute_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/workspaces/:workspace_id/compute/workloads/:workload_id/deletion" do
+    with_user(conn, fn user, session ->
+      case Comma.Compute.delete_workload(
+             user,
+             session,
+             workspace_id,
+             workload_id,
+             conn.body_params || %{}
+           ) do
+        {:ok, result} -> send_json(conn, 202, result)
         {:error, reason} -> compute_error(conn, reason)
       end
     end)
@@ -2878,14 +3200,12 @@ defmodule CommaWeb.Router do
     with_user(conn, fn user, session ->
       with :ok <- full_workspace_session(session),
            {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
-           {:ok, profile} <-
-             Comma.Recommendations.get_runtime_profile(workspace["id"], user["id"]),
            {:ok, preview} <-
-             CommaWeb.RecommendationLinkPreview.preview(
+             CommaWeb.RecommendationLinkPreview.preview_connected(
                workspace,
-               profile.sources,
                conn.query_params["href"],
-               conn.query_params["sourceId"]
+               conn.query_params["sourceId"],
+               user["id"]
              ) do
         send_json(conn, 200, preview)
       else
@@ -2980,6 +3300,41 @@ defmodule CommaWeb.Router do
 
           {:error, reason} ->
             group_file_read_error(conn, reason)
+        end
+      else
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  # Read-only Drive for clients without a Synchronicity node: the hosted
+  # replica's tree and bytes, through the Workspace's Drive binding.
+  get "/v1/comma/groups/:group_id/drive/tree" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, _group_scope} <- Comma.Workspaces.authorize_group(user, session, group_id) do
+        case CommaWeb.DriveBrowse.tree(group_id) do
+          {:ok, tree} ->
+            conn
+            |> put_resp_header("cache-control", "private, no-store")
+            |> send_json(200, tree)
+
+          {:error, reason} ->
+            drive_error(conn, reason)
+        end
+      else
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  get "/v1/comma/groups/:group_id/drive/file" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, _group_scope} <- Comma.Workspaces.authorize_group(user, session, group_id) do
+        case CommaWeb.DriveBrowse.open_file(group_id, conn.query_params["path"]) do
+          {:ok, stream, _size} -> send_drive_file(conn, stream)
+          {:error, reason} -> drive_error(conn, reason)
         end
       else
         {:error, reason} -> comma_error(conn, reason)
@@ -3240,13 +3595,63 @@ defmodule CommaWeb.Router do
     with_user(conn, fn user, session ->
       wait_ms = task_list_sse_wait_ms(conn.query_params["wait"])
 
-      case Comma.Conversations.list_events(
-             user,
-             session,
-             group_id,
-             conn.query_params["conversation_id"]
-           ) do
-        {:ok, stream_context} -> send_task_list_sse(conn, stream_context, wait_ms)
+      if conn.query_params["changes"] == "1" do
+        send_group_changes(conn, user, session, group_id, wait_ms)
+      else
+        send_task_list_events(conn, user, session, group_id, wait_ms)
+      end
+    end)
+  end
+
+  defp send_group_changes(conn, user, session, group_id, wait_ms) do
+    if conn.query_params["conversation_id"] in [nil, ""] do
+      case Comma.Conversations.change_events(user, session, group_id) do
+        {:ok, context} -> send_group_change_sse(conn, context, wait_ms)
+        {:error, reason} -> conversation_error(conn, reason)
+      end
+    else
+      send_json(conn, 400, %{error: "changes_feed_takes_no_conversation_id"})
+    end
+  end
+
+  defp send_task_list_events(conn, user, session, group_id, wait_ms) do
+    case Comma.Conversations.list_events(
+           user,
+           session,
+           group_id,
+           conn.query_params["conversation_id"]
+         ) do
+      {:ok, stream_context} ->
+        stream_context = with_station_tasks(stream_context, conn.query_params["with"])
+        send_task_list_sse(conn, stream_context, wait_ms)
+
+      {:error, reason} ->
+        conversation_error(conn, reason)
+    end
+  end
+
+  # `?with=station_tasks`: the stream also says when the Group's
+  # station-hosted Tasks changed (`station_tasks_invalidated`). Only clients
+  # that ask get the event; one that cannot subscribe gets the stream without it.
+  defp with_station_tasks(%{conversation_id: nil} = stream_context, with)
+       when is_binary(with) do
+    if "station_tasks" in String.split(with, ","),
+      do:
+        Map.put(
+          stream_context,
+          :station_tasks,
+          Comma.Conversations.subscribe_station_tasks(stream_context.workspace) == :ok
+        ),
+      else: stream_context
+  end
+
+  defp with_station_tasks(stream_context, _with), do: stream_context
+
+  # The Tasks the Group's stations host, as they last reported them.
+  get "/v1/comma/groups/:group_id/station-tasks" do
+    with_user(conn, fn user, session ->
+      case Comma.Conversations.station_tasks(user, session, group_id) do
+        {:ok, result} -> send_json_with_etag(conn, 200, result)
         {:error, reason} -> conversation_error(conn, reason)
       end
     end)
@@ -3487,6 +3892,98 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  get "/v1/comma/groups/:group_id/condensed-workspace" do
+    with_user(conn, fn user, session ->
+      case Comma.CondensedWorkspace.get(user, session, group_id) do
+        {:ok, result} -> send_json(conn, 200, result)
+        {:error, reason} -> condensed_workspace_error(conn, reason)
+      end
+    end)
+  end
+
+  put "/v1/comma/groups/:group_id/condensed-workspace/settings" do
+    with_user(conn, fn user, session ->
+      case Comma.CondensedWorkspace.update_settings(
+             user,
+             session,
+             group_id,
+             conn.body_params || %{}
+           ) do
+        {:ok, result} -> send_json(conn, 200, result)
+        {:error, reason} -> condensed_workspace_error(conn, reason)
+      end
+    end)
+  end
+
+  post "/v1/comma/groups/:group_id/condensed-workspace/operations" do
+    with_user(conn, fn user, session ->
+      case Comma.CondensedWorkspace.update(user, session, group_id, conn.body_params || %{}) do
+        {:ok, result} -> send_json(conn, 200, result)
+        {:error, reason} -> condensed_workspace_error(conn, reason)
+      end
+    end)
+  end
+
+  # Drive's System Files space (`Comma.SystemFiles`): the Router's memory and
+  # import archive, plus its effective instructions.
+  get "/v1/comma/groups/:group_id/system-files" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, page} <- Comma.SystemFiles.list(user, session, group_id, conn.query_params) do
+        conn |> put_resp_header("cache-control", "no-store") |> send_json(200, page)
+      else
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  get "/v1/comma/groups/:group_id/system-files/content" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, file} <-
+             Comma.SystemFiles.read(user, session, group_id, conn.query_params["path"]) do
+        conn |> put_resp_header("cache-control", "no-store") |> send_json(200, file)
+      else
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  put "/v1/comma/groups/:group_id/system-files/content" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, file} <-
+             Comma.SystemFiles.write(user, session, group_id, conn.body_params || %{}) do
+        send_json(conn, 200, file)
+      else
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  delete "/v1/comma/groups/:group_id/system-files/content" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, result} <-
+             Comma.SystemFiles.delete(user, session, group_id, conn.query_params) do
+        send_json(conn, 200, result)
+      else
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
+  get "/v1/comma/groups/:group_id/system-files/instructions" do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, result} <- Comma.SystemFiles.instructions(user, session, group_id) do
+        conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
+      else
+        {:error, reason} -> comma_error(conn, reason)
+      end
+    end)
+  end
+
   patch "/v1/comma/groups/:group_id/task-labels/policy" do
     with_user(conn, fn user, session ->
       case Comma.TaskLabels.update_policy(user, session, group_id, conn.body_params || %{}) do
@@ -3563,6 +4060,22 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  post "/v1/comma/groups/:group_id/conversations/:conversation_id/status" do
+    with_user(conn, fn user, session ->
+      case Comma.Conversations.set_task_status(
+             user,
+             session,
+             group_id,
+             conversation_id,
+             conn.body_params || %{},
+             conversation_transcript_options(conn)
+           ) do
+        {:ok, conversation} -> send_json(conn, 200, conversation)
+        {:error, reason} -> conversation_error(conn, reason)
+      end
+    end)
+  end
+
   post "/v1/comma/groups/:group_id/conversations/:conversation_id/accept" do
     with_user(conn, fn user, session ->
       case Comma.Conversations.accept_task_review(
@@ -3586,7 +4099,8 @@ defmodule CommaWeb.Router do
           before: conn.query_params["before"],
           after: conn.query_params["after"],
           around: conn.query_params["around"],
-          limit: conn.query_params["limit"]
+          limit: conn.query_params["limit"],
+          view: conn.query_params["view"]
         ]
         |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
 
@@ -3980,7 +4494,7 @@ defmodule CommaWeb.Router do
   end
 
   defp observe_admin_command(action, fun) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     try do
       result = fun.()
@@ -3988,7 +4502,7 @@ defmodule CommaWeb.Router do
       CommaProduct.Telemetry.emit_admin_command(
         action,
         admin_command_outcome(result),
-        System.monotonic_time() - started
+        SystemsClock.monotonic_time() - started
       )
 
       result
@@ -3997,7 +4511,7 @@ defmodule CommaWeb.Router do
         CommaProduct.Telemetry.emit_admin_command(
           action,
           :error,
-          System.monotonic_time() - started
+          SystemsClock.monotonic_time() - started
         )
 
         reraise exception, __STACKTRACE__
@@ -4025,7 +4539,6 @@ defmodule CommaWeb.Router do
               :invalid_redeem_code_type,
               :invalid_redeem_request,
               :invalid_manual_grant,
-              :invalid_model_template,
               :unsupported_admin_command,
               :invalid_workspace_vm,
               :invalid_workspace_agent_model,
@@ -4172,8 +4685,18 @@ defmodule CommaWeb.Router do
 
   defp with_user(conn, fun) do
     case {conn.assigns[:comma_user], conn.assigns[:comma_session]} do
-      {user, session} when is_map(user) and is_map(session) -> fun.(user, session)
-      _ -> send_error(conn, 401, :unauthorized)
+      {user, session} when is_map(user) and is_map(session) ->
+        previous = Process.get(:comma_analytics_suppressed, false)
+        Process.put(:comma_analytics_suppressed, "1" in get_req_header(conn, "dnt"))
+
+        try do
+          fun.(user, session)
+        after
+          Process.put(:comma_analytics_suppressed, previous)
+        end
+
+      _ ->
+        send_error(conn, 401, :unauthorized)
     end
   end
 
@@ -4193,6 +4716,13 @@ defmodule CommaWeb.Router do
 
   defp bootstrap_error(conn, :not_found), do: send_error(conn, 404, :not_found)
   defp bootstrap_error(conn, _internal_reason), do: send_error(conn, 503, :workspace_unavailable)
+
+  defp task_panel_result(conn, {:ok, data}), do: send_json(conn, 200, %{"data" => data})
+
+  defp task_panel_result(conn, {:error, {:bad_request, _} = reason}),
+    do: comma_error(conn, reason)
+
+  defp task_panel_result(conn, {:error, reason}), do: send_error(conn, 503, reason)
 
   defp synchronicity_error(conn, :not_configured),
     do: send_error(conn, 503, :synchronicity_unavailable)
@@ -4260,7 +4790,37 @@ defmodule CommaWeb.Router do
   defp compute_error(conn, :revision_conflict),
     do: send_error(conn, 409, :revision_conflict)
 
+  defp compute_error(conn, reason) when reason in [:invalid_name, :invalid_deletion_request],
+    do: send_error(conn, 400, reason)
+
+  defp compute_error(conn, reason)
+       when reason in [
+              :deletion_in_progress,
+              :business_owner_required,
+              :unknown_outcome,
+              :shared_allocation,
+              :allocation_scope_changed,
+              :update_in_progress,
+              :unsupported_provider,
+              :stale_generation
+            ],
+       do: send_error(conn, 409, reason)
+
   defp compute_error(conn, :already_exists), do: send_error(conn, 409, :already_exists)
+
+  defp compute_error(conn, :capacity_unavailable),
+    do: send_error(conn, 409, :capacity_unavailable)
+
+  defp compute_error(conn, :node_offline), do: send_error(conn, 409, :node_offline)
+
+  defp compute_error(conn, reason)
+       when reason in [
+              :runtime_bundle_unavailable,
+              :runtime_bundle_incomplete,
+              :unsupported_runtime_template,
+              :runtime_template_required
+            ],
+       do: send_error(conn, 503, :runtime_template_unavailable)
 
   defp compute_error(conn, :unavailable), do: send_error(conn, 503, :compute_unavailable)
 
@@ -4277,7 +4837,7 @@ defmodule CommaWeb.Router do
 
   defp install_descriptor(conn, descriptor) do
     request_uri =
-      case Application.get_env(:salix_web, :public_base_url) do
+      case SystemsRuntime.get_env(:salix_web, :public_base_url) do
         value when is_binary(value) and value != "" -> URI.parse(value)
         _ -> conn |> request_url() |> URI.parse()
       end
@@ -4305,20 +4865,30 @@ defmodule CommaWeb.Router do
   # Label catalog errors come from Salix as plain product reasons: a missing
   # label/proposal, a rejected field, or a conflict (duplicate name, already
   # resolved). Everything else is a workspace/auth failure `comma_error` owns.
+  defp condensed_workspace_error(conn, {:conflict, %{} = body}), do: send_json(conn, 409, body)
+  defp condensed_workspace_error(conn, reason), do: task_label_error(conn, reason)
+
   defp task_label_error(conn, :not_found), do: send_error(conn, 404, :not_found)
   defp task_label_error(conn, {:bad_request, _message} = reason), do: comma_error(conn, reason)
   defp task_label_error(conn, {:conflict, message}), do: send_json(conn, 409, %{error: message})
   defp task_label_error(conn, reason), do: comma_error(conn, reason)
+
+  # A station a Workspace's Tasks run on by default is one of its devices.
+  defp workspace_station(user, session, workspace_id, %{
+         "kind" => "station",
+         "device_id" => device_id
+       })
+       when is_binary(device_id) do
+    with {:ok, _device} <- Comma.Devices.get(user, session, workspace_id, device_id), do: :ok
+  end
+
+  defp workspace_station(_user, _session, _workspace_id, _place), do: :ok
 
   defp comma_error(conn, :not_found), do: send_error(conn, 404, :not_found)
   defp comma_error(conn, :forbidden), do: send_error(conn, 403, :forbidden)
 
   defp comma_error(conn, :model_not_user_selectable),
     do: send_error(conn, 403, :model_not_user_selectable)
-
-  defp comma_error(conn, reason)
-       when reason in [:model_selection_policy_missing, :model_selection_policy_unavailable],
-       do: send_error(conn, 503, :model_selection_policy_unavailable)
 
   defp comma_error(conn, :workspace_provisioning), do: send_workspace_provisioning(conn)
 
@@ -4338,6 +4908,13 @@ defmodule CommaWeb.Router do
   defp comma_error(conn, :expired), do: send_error(conn, 401, :expired)
   defp comma_error(conn, :skills_unavailable), do: send_error(conn, 503, :skills_unavailable)
   defp comma_error(conn, :plugins_unavailable), do: send_error(conn, 503, :plugins_unavailable)
+
+  defp comma_error(conn, :plugin_credential_rejected),
+    do: send_error(conn, 422, :plugin_credential_rejected)
+
+  defp comma_error(conn, :plugin_connection_unavailable),
+    do: send_error(conn, 503, :plugin_connection_unavailable)
+
   defp comma_error(conn, :rate_limited), do: send_error(conn, 429, :rate_limited)
   defp comma_error(conn, :file_required), do: send_error(conn, 400, :file_required)
 
@@ -4395,6 +4972,24 @@ defmodule CommaWeb.Router do
   defp telegram_integration_error(conn, _reason),
     do: send_error(conn, 502, :telegram_integration_unavailable)
 
+  defp linear_integration_error(conn, reason) when reason in [:not_found, :forbidden],
+    do: comma_error(conn, reason)
+
+  defp linear_integration_error(conn, :linear_agent_unavailable),
+    do: send_error(conn, 503, :linear_agent_unavailable)
+
+  defp linear_integration_error(conn, :invalid_linear_install_attempt),
+    do: send_error(conn, 400, :invalid_linear_install_attempt)
+
+  defp linear_integration_error(conn, :linear_organization_mismatch),
+    do: send_error(conn, 400, :linear_organization_mismatch)
+
+  defp linear_integration_error(conn, {:bad_request, _message} = reason),
+    do: comma_error(conn, reason)
+
+  defp linear_integration_error(conn, _reason),
+    do: send_error(conn, 502, :linear_integration_unavailable)
+
   defp wechat_result(conn, result, status \\ 200)
 
   defp wechat_result(conn, {:ok, result}, status),
@@ -4436,8 +5031,59 @@ defmodule CommaWeb.Router do
   defp imessage_integration_error(conn, :imessage_link_busy),
     do: send_error(conn, 409, :imessage_link_busy)
 
+  defp imessage_integration_error(conn, :invalid_imessage_handle),
+    do: send_error(conn, 400, :invalid_imessage_handle)
+
+  defp imessage_integration_error(conn, :imessage_capacity_reached),
+    do: send_error(conn, 409, :imessage_capacity_reached)
+
   defp imessage_integration_error(conn, _reason),
     do: send_error(conn, 502, :imessage_integration_unavailable)
+
+  # The bytes arrive as the control plane sends them. A download that breaks
+  # after the headers can only end the response early.
+  defp send_drive_file(conn, stream) do
+    conn =
+      conn
+      |> put_resp_header("cache-control", "private, no-store")
+      |> put_resp_header("content-type", "application/octet-stream")
+      |> put_resp_header("x-content-type-options", "nosniff")
+      |> send_chunked(200)
+
+    try do
+      Enum.reduce_while(stream, conn, fn bytes, conn ->
+        case chunk(conn, bytes) do
+          {:ok, conn} -> {:cont, conn}
+          {:error, _closed} -> {:halt, conn}
+        end
+      end)
+    rescue
+      _error -> conn
+    end
+  end
+
+  # Drive refusals cross `/v1` only as these codes; the binding's own reasons
+  # can name its org, network or key.
+  defp drive_error(conn, :invalid_path), do: send_error(conn, 400, :invalid_drive_path)
+  defp drive_error(conn, :not_found), do: send_error(conn, 404, :not_found)
+
+  # The control plane refused the path itself, such as a directory read as a file.
+  defp drive_error(conn, {:invalid, {:bad_request, _code}}),
+    do: send_error(conn, 400, :invalid_drive_path)
+
+  defp drive_error(conn, reason)
+       when reason in [
+              :drive_not_configured,
+              :not_configured,
+              :missing_group_id,
+              :browse_disabled,
+              :hosting_disabled,
+              :no_device_attached,
+              :no_cloud_attached
+            ],
+       do: send_error(conn, 409, :drive_unavailable)
+
+  defp drive_error(conn, _reason), do: send_error(conn, 503, :drive_unreachable)
 
   defp group_file_read_error(conn, :not_found), do: send_error(conn, 404, :not_found)
 
@@ -4459,6 +5105,8 @@ defmodule CommaWeb.Router do
               "At most 50 ids are allowed",
               "ids must contain strings",
               "Invalid archive filter",
+              "Invalid quick chat message",
+              "Unknown message type",
               "Task and positive expected_updated_at are required",
               "expected_updated_at must be a positive integer",
               "q is required",
@@ -4471,12 +5119,23 @@ defmodule CommaWeb.Router do
               "before must be a positive integer",
               "after must be a positive integer",
               "around must be a positive integer",
-              "at most one of before, after, around is allowed"
+              "at most one of before, after, around is allowed",
+              "view must be activity"
             ],
        do: comma_error(conn, reason)
 
+  # A refused answer to a question card names what to fix; the card shows it.
+  defp conversation_error(conn, {:bad_request, message} = reason) when is_binary(message) do
+    if SalixIM.ConversationQuestion.answer_error?(message),
+      do: comma_error(conn, reason),
+      else: send_error(conn, 503, :conversation_unavailable)
+  end
+
   defp conversation_error(conn, :invalid_cursor),
     do: send_error(conn, 400, :invalid_cursor)
+
+  defp conversation_error(conn, :idempotency_conflict),
+    do: send_error(conn, 409, :idempotency_conflict)
 
   defp conversation_error(conn, {:conflict, _internal_message} = reason),
     do: comma_error(conn, reason)
@@ -4496,7 +5155,7 @@ defmodule CommaWeb.Router do
 
   defp conversation_error(conn, {:unsupported_for_kind, kind, operation} = reason)
        when kind in ["user_chat", "agent_task"] and
-              operation in ["patch", "cancel", "events", "accept", "pin", "unpin"],
+              operation in ["patch", "cancel", "events", "accept", "status", "pin", "unpin"],
        do: comma_error(conn, reason)
 
   defp conversation_error(conn, {:billing_unavailable, decision}),
@@ -4565,25 +5224,28 @@ defmodule CommaWeb.Router do
 
   defp extract_upload(_params), do: {:error, :file_required}
 
-  defp create_workspace_connector_token(user, session, workspace_id, attrs) do
+  defp create_workspace_connector_token(user, session, workspace_id, attrs, station_origin) do
     with :ok <- full_workspace_session(session),
          {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
          {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
          {:ok, token} <-
-           mint_workspace_connector(workspace, user, attrs) do
+           mint_workspace_connector(workspace, user, attrs, station_origin) do
       {:ok, token}
     end
   end
 
-  defp mint_workspace_connector(workspace, user, %{"installation" => true} = attrs) do
+  defp mint_workspace_connector(workspace, user, %{"installation" => true} = attrs, origin) do
+    token_attrs = connector_token_attrs(attrs, workspace, user)
+
     SalixEnv.DeviceInstall.create_token_command(
       workspace["salix_tenant_id"],
       workspace["default_group_id"],
-      connector_token_attrs(attrs, workspace, user)
+      Map.put_new(token_attrs, "name", token_attrs["default_name"]),
+      origin: origin
     )
   end
 
-  defp mint_workspace_connector(workspace, user, attrs) do
+  defp mint_workspace_connector(workspace, user, attrs, _origin) do
     SalixEnv.ConnectorTokens.create_group_connector_token(
       workspace["default_group_id"],
       workspace["salix_tenant_id"],
@@ -4700,6 +5362,43 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  defp with_workspace_tailnet(conn, workspace_id, operation) do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
+           {:ok, workspace} <- Comma.Salix.Client.impl().resolve_workspace_scope(workspace),
+           {:ok, result} <- operation.(workspace, user) do
+        conn
+        |> put_resp_header("cache-control", "no-store")
+        |> send_json(200, public_tailnet(result))
+      else
+        {:error, reason} -> tailnet_error(conn, reason)
+      end
+    end)
+  end
+
+  # Salix node, lease and actor details stay inside Comma's API.
+  defp public_tailnet(%{"peers" => peers} = page),
+    do: %{"tailnet" => page["tailnet"], "peers" => peers, "next" => page["next"] || 0}
+
+  defp public_tailnet(status), do: Map.drop(status, ["owner", "updated_by", "status_updated_at"])
+
+  defp tailnet_error(conn, reason)
+       when reason in [:invalid_tags, :invalid_accept_routes, :invalid_expected_tailnet],
+       do: send_error(conn, 422, reason)
+
+  defp tailnet_error(conn, %{"code" => code, "message" => message})
+       when code in ["tailnet_not_configured", "tailnet_needs_login"],
+       do: send_json(conn, 409, %{error: code, message: message})
+
+  defp tailnet_error(conn, %{"code" => code, "message" => message}),
+    do: send_json(conn, 503, %{error: code, message: message})
+
+  defp tailnet_error(conn, {:tailnet_config_unavailable, _reason}),
+    do: send_error(conn, 503, :tailnet_unavailable)
+
+  defp tailnet_error(conn, reason), do: comma_error(conn, reason)
+
   defp signal_number_param(%{"number" => number}) when is_binary(number), do: String.trim(number)
   defp signal_number_param(_attrs), do: ""
 
@@ -4807,6 +5506,19 @@ defmodule CommaWeb.Router do
     end)
   end
 
+  defp with_device_secrets(conn, workspace_id, operation) do
+    with_user(conn, fn user, session ->
+      with :ok <- full_workspace_session(session),
+           {:ok, workspace} <- Comma.Workspaces.authorize(user, session, workspace_id),
+           {:ok, result} <- operation.(workspace["default_group_id"]) do
+        conn |> put_resp_header("cache-control", "no-store") |> send_json(200, result)
+      else
+        {:error, reason} when reason in [:not_found, :forbidden] -> comma_error(conn, reason)
+        {:error, _} -> send_error(conn, 503, :unavailable)
+      end
+    end)
+  end
+
   defp full_workspace_session(%{"restricted" => true}), do: {:error, :forbidden}
   defp full_workspace_session(_session), do: :ok
 
@@ -4826,13 +5538,12 @@ defmodule CommaWeb.Router do
     do: full_workspace_session(session)
 
   defp connector_token_attrs(attrs, workspace, user) do
-    name = nonblank(attrs["name"], workspace["name"] <> " Connector")
-    alias_name = nonblank(attrs["alias"], "comma")
-
     %{
-      "name" => name,
-      "alias" => alias_name,
+      "name" => nonblank(attrs["name"], nil),
+      "default_name" => workspace["name"] <> " Connector",
+      "alias" => nonblank(attrs["alias"], "comma"),
       "expires_in_seconds" => attrs["expires_in_seconds"],
+      "registration_expires_in_seconds" => attrs["registration_expires_in_seconds"],
       "scope" => attrs["scope"],
       "stable_device_id" => attrs["stable_device_id"],
       "meta" => %{
@@ -5325,7 +6036,7 @@ defmodule CommaWeb.Router do
 
   defp billing_summary(workspace) do
     account_id = workspace["billing_account_id"]
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     %{rows: [[credits]]} =
       Ecto.Adapters.SQL.query!(
@@ -5346,7 +6057,8 @@ defmodule CommaWeb.Router do
       Ecto.Adapters.SQL.query!(
         BillingCore.Repo,
         """
-        SELECT id, package_code, package_version, remaining_credits, valid_from, expires_at, source_type, source_id
+        SELECT id, package_code, package_version, original_credits, remaining_credits, valid_from,
+               expires_at, source_type, source_id
         FROM credit_grants
         WHERE billing_account_id = $1
           AND status = 'active'
@@ -5375,6 +6087,7 @@ defmodule CommaWeb.Router do
                             id,
                             package_code,
                             package_version,
+                            original,
                             remaining,
                             valid_from,
                             expires_at,
@@ -5385,6 +6098,7 @@ defmodule CommaWeb.Router do
             "id" => id,
             "package_code" => package_code,
             "package_version" => package_version,
+            "original_credits" => original,
             "remaining_credits" => remaining,
             "valid_from" => DateTime.to_iso8601(valid_from),
             "expires_at" => if(expires_at, do: DateTime.to_iso8601(expires_at)),
@@ -5460,7 +6174,7 @@ defmodule CommaWeb.Router do
          wait_ms,
          stream_window_ms
        ) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     stream_context = monitor_stream_owners(stream_context)
     participant_status = stream_context[:participant_status] || %{}
 
@@ -5507,7 +6221,7 @@ defmodule CommaWeb.Router do
     CommaProduct.Telemetry.emit_operation(
       :sse_connect,
       :ok,
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     conn =
@@ -5516,7 +6230,7 @@ defmodule CommaWeb.Router do
           CommaProduct.Telemetry.emit_operation(
             :sse_first_event,
             :ok,
-            System.monotonic_time() - started
+            SystemsClock.monotonic_time() - started
           )
 
           with {:ok, conn} <- chunk_events(conn, events),
@@ -5529,7 +6243,7 @@ defmodule CommaWeb.Router do
                  ),
                {:ok, conn, draft_state} <-
                  chunk_started_participant_draft(conn, initial_draft, stream_context) do
-            now_ms = System.monotonic_time(:millisecond)
+            now_ms = SystemsClock.monotonic_time(:millisecond)
 
             comma_sse_loop(
               conn,
@@ -5546,7 +6260,7 @@ defmodule CommaWeb.Router do
           CommaProduct.Telemetry.emit_operation(
             :sse_first_event,
             :error,
-            System.monotonic_time() - started
+            SystemsClock.monotonic_time() - started
           )
 
           conn
@@ -5558,15 +6272,18 @@ defmodule CommaWeb.Router do
   defp send_task_list_sse(conn, stream_context, wait_ms) do
     participants =
       Map.new(stream_context.task_participants, fn {id, participant} ->
-        {id, Map.put(participant, :owner_ref, Process.monitor(participant.owner_pid))}
+        {id, Map.put(participant, :owner_ref, SystemsRuntime.Proc.monitor(participant.owner_pid))}
       end)
 
     stream_context = %{stream_context | task_participants: participants}
 
     owner_ref =
       case stream_context[:owner_pid] do
-        owner_pid when is_pid(owner_pid) -> Process.monitor(owner_pid)
-        _other -> nil
+        owner_pid when SystemsRuntime.Proc.is_process(owner_pid) ->
+          SystemsRuntime.Proc.monitor(owner_pid)
+
+        _other ->
+          nil
       end
 
     conn =
@@ -5579,7 +6296,7 @@ defmodule CommaWeb.Router do
 
     with {:ok, conn} <- chunk_task_list_resync(conn, stream_context),
          {:ok, conn} <- chunk_task_participant_statuses(conn, stream_context) do
-      now_ms = System.monotonic_time(:millisecond)
+      now_ms = SystemsClock.monotonic_time(:millisecond)
       deadline_ms = if wait_ms == :infinity, do: nil, else: now_ms + wait_ms
 
       task_list_sse_loop(
@@ -5591,6 +6308,98 @@ defmodule CommaWeb.Router do
       )
     else
       _error -> conn
+    end
+  end
+
+  # The Group change feed (`?changes=1`): a resync barrier, then one frame per
+  # mutation the session may see. Owner loss closes the stream; the client
+  # reconnects and resyncs, which is the only recovery for lost wakeups.
+  defp send_group_change_sse(conn, context, wait_ms) do
+    owner_ref =
+      if SystemsRuntime.Proc.is_process(context.owner_pid),
+        do: SystemsRuntime.Proc.monitor(context.owner_pid)
+
+    conn =
+      conn
+      |> put_resp_header("cache-control", "no-cache")
+      |> put_resp_header("connection", "keep-alive")
+      |> put_resp_header("x-accel-buffering", "no")
+      |> put_resp_content_type("text/event-stream")
+      |> send_chunked(200)
+
+    resync = %{
+      "type" => "conversation_changes_resync_required",
+      "group_id" => context.group_id,
+      "version" => context.version
+    }
+
+    case chunk_event(conn, resync["type"], resync) do
+      {:ok, conn} ->
+        now_ms = SystemsClock.monotonic_time(:millisecond)
+        deadline_ms = if wait_ms == :infinity, do: nil, else: now_ms + wait_ms
+
+        group_change_loop(
+          conn,
+          deadline_ms,
+          context,
+          owner_ref,
+          now_ms + comma_sse_heartbeat_ms()
+        )
+
+      _error ->
+        conn
+    end
+  end
+
+  defp group_change_loop(conn, deadline_ms, context, owner_ref, heartbeat_at_ms) do
+    now_ms = SystemsClock.monotonic_time(:millisecond)
+
+    cond do
+      is_integer(deadline_ms) and now_ms >= deadline_ms ->
+        conn
+
+      heartbeat_at_ms <= now_ms ->
+        case chunk_heartbeat(conn) do
+          {:ok, conn} ->
+            next_heartbeat = now_ms + comma_sse_heartbeat_ms()
+            group_change_loop(conn, deadline_ms, context, owner_ref, next_heartbeat)
+
+          _error ->
+            conn
+        end
+
+      true ->
+        timeout =
+          if is_integer(deadline_ms),
+            do: min(deadline_ms - now_ms, heartbeat_at_ms - now_ms),
+            else: heartbeat_at_ms - now_ms
+
+        SystemsClock.vreceive do
+          {:group_conversation_mutated, group_id, mutation, version}
+          when group_id == context.group_id ->
+            case Comma.Conversations.change_frame(context, mutation, version) do
+              nil ->
+                group_change_loop(conn, deadline_ms, context, owner_ref, heartbeat_at_ms)
+
+              frame ->
+                case chunk_event(conn, frame["type"], frame) do
+                  {:ok, conn} ->
+                    group_change_loop(conn, deadline_ms, context, owner_ref, heartbeat_at_ms)
+
+                  _error ->
+                    conn
+                end
+            end
+
+          {:DOWN, ^owner_ref, :process, _owner_pid, _reason} when is_reference(owner_ref) ->
+            conn
+
+          _unrelated ->
+            group_change_loop(conn, deadline_ms, context, owner_ref, heartbeat_at_ms)
+        after
+          timeout ->
+            group_change_loop(conn, deadline_ms, context, owner_ref, heartbeat_at_ms)
+        end
     end
   end
 
@@ -5618,7 +6427,7 @@ defmodule CommaWeb.Router do
   end
 
   defp task_list_sse_loop(conn, deadline_ms, stream_context, owner_ref, heartbeat_at_ms) do
-    now_ms = System.monotonic_time(:millisecond)
+    now_ms = SystemsClock.monotonic_time(:millisecond)
 
     cond do
       is_integer(deadline_ms) and now_ms >= deadline_ms ->
@@ -5645,7 +6454,7 @@ defmodule CommaWeb.Router do
             do: min(deadline_ms - now_ms, heartbeat_at_ms - now_ms),
             else: heartbeat_at_ms - now_ms
 
-        receive do
+        SystemsClock.vreceive do
           {:group_conversation_list_invalidated, group_id, kind, _conversation_id, version} ->
             if group_id == stream_context[:group_id] and kind == stream_context[:kind] do
               case chunk_task_list_invalidation(conn, stream_context, version) do
@@ -5669,6 +6478,28 @@ defmodule CommaWeb.Router do
                 owner_ref,
                 heartbeat_at_ms
               )
+            end
+
+          {:station_tasks_invalidated, group_id} ->
+            if stream_context[:station_tasks] == true and group_id == stream_context[:group_id] do
+              case chunk_event(conn, "station_tasks_invalidated", %{
+                     "type" => "station_tasks_invalidated",
+                     "group_id" => group_id
+                   }) do
+                {:ok, conn} ->
+                  task_list_sse_loop(
+                    conn,
+                    deadline_ms,
+                    stream_context,
+                    owner_ref,
+                    heartbeat_at_ms
+                  )
+
+                _error ->
+                  conn
+              end
+            else
+              task_list_sse_loop(conn, deadline_ms, stream_context, owner_ref, heartbeat_at_ms)
             end
 
           {:DOWN, ^owner_ref, :process, _owner_pid, _reason} when is_reference(owner_ref) ->
@@ -5741,7 +6572,7 @@ defmodule CommaWeb.Router do
   end
 
   defp comma_sse_loop(conn, deadline_ms, stream_context, draft_state, heartbeat_at_ms) do
-    now_ms = System.monotonic_time(:millisecond)
+    now_ms = SystemsClock.monotonic_time(:millisecond)
 
     cond do
       now_ms >= deadline_ms ->
@@ -5765,7 +6596,7 @@ defmodule CommaWeb.Router do
       true ->
         timeout = min(deadline_ms - now_ms, heartbeat_at_ms - now_ms)
 
-        receive do
+        SystemsClock.vreceive do
           {:conversation_message_created, _group_id, _salix_id, _message_id, _salix_seq} ->
             chunk_conversation_invalidation(
               conn,
@@ -6053,7 +6884,7 @@ defmodule CommaWeb.Router do
          is_binary(text) and is_list(source_message_ids) and source_message_ids != [] and
          length(canonical_source_message_ids) == length(source_message_ids) do
       %{
-        draft_id: "draft_" <> Ecto.UUID.generate(),
+        draft_id: "draft_" <> SystemsRuntime.Proc.uuid(),
         response_identity: response_identity,
         revision: revision,
         source_message_ids: canonical_source_message_ids,
@@ -6097,8 +6928,8 @@ defmodule CommaWeb.Router do
 
   defp monitor_stream_owner(stream_context, pid_key, ref_key) do
     case stream_context[pid_key] do
-      owner_pid when is_pid(owner_pid) ->
-        Map.put(stream_context, ref_key, Process.monitor(owner_pid))
+      owner_pid when SystemsRuntime.Proc.is_process(owner_pid) ->
+        Map.put(stream_context, ref_key, SystemsRuntime.Proc.monitor(owner_pid))
 
       _other ->
         stream_context
@@ -6136,7 +6967,7 @@ defmodule CommaWeb.Router do
 
   defp comma_sse_heartbeat_ms do
     :comma_web
-    |> Application.get_env(:comma_sse_heartbeat_ms, @default_comma_sse_heartbeat_ms)
+    |> SystemsRuntime.get_env(:comma_sse_heartbeat_ms, @default_comma_sse_heartbeat_ms)
     |> parse_int(@default_comma_sse_heartbeat_ms)
     |> max(1)
   end
@@ -6159,6 +6990,29 @@ defmodule CommaWeb.Router do
         )
 
     html = CommaWeb.TelegramCallbackPage.render(client, deep_link, success?, reason)
+
+    conn
+    |> put_resp_header("cache-control", "no-store")
+    |> put_resp_header(
+      "content-security-policy",
+      CommaWeb.AppReturnPage.content_security_policy()
+    )
+    |> put_resp_content_type("text/html")
+    |> send_resp(if(success?, do: 200, else: 400), html)
+  end
+
+  defp send_linear_callback_page(conn, success?, state, workspace_id, reason \\ nil) do
+    {:ok, client} =
+      billing_return_client(CommaWeb.LinearIntegration.callback_environment(state))
+
+    deep_link =
+      "#{client.scheme}://linear/return" <>
+        if(is_binary(workspace_id),
+          do: "?workspace_id=" <> URI.encode_www_form(workspace_id),
+          else: ""
+        )
+
+    html = CommaWeb.TelegramCallbackPage.render(client, deep_link, success?, reason, "Linear")
 
     conn
     |> put_resp_header("cache-control", "no-store")
@@ -6438,7 +7292,7 @@ defmodule CommaWeb.Router do
 
   defp seconds_until_utc_midnight do
     tomorrow = Date.utc_today() |> Date.add(1) |> DateTime.new!(~T[00:00:00], "Etc/UTC")
-    DateTime.diff(tomorrow, DateTime.utc_now())
+    DateTime.diff(tomorrow, SystemsClock.utc_now())
   end
 
   defp send_unavailable(conn, reason, retry_after) do

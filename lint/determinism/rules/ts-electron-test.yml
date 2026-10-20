@@ -1,0 +1,194 @@
+id: ts-electron-test-launch
+language: typescript
+severity: error
+message: "An Electron spec launches its app without the test framework."
+note: |
+  Playwright's own launcher starts an app without what every Electron test
+  relies on: trust in the test servers' certificate, one color scheme for Main
+  and the renderers, the macOS launch defaults, failure diagnostics and the
+  check for an app left running. Launch with `electron.launch`
+  (clients/apps/electron/e2e/electron-test.ts).
+metadata:
+  category: electron-environment
+rule:
+  any:
+    - pattern: _electron.launch($$$)
+    - all:
+        - kind: import_specifier
+        - has:
+            field: name
+            regex: "^_electron$"
+files:
+  - "clients/apps/electron/e2e/**/*.ts"
+  - "clients/e2e/p0/electron-*.ts"
+  - "clients/e2e/setup/**/*.ts"
+ignores:
+  - "clients/apps/electron/e2e/electron-test.ts"
+---
+id: ts-electron-test-trust
+language: typescript
+severity: error
+message: "An Electron spec gives its app trust in a certificate itself."
+note: |
+  Trust given while the app runs reaches its network service later than a
+  request may, and trust in every certificate hides what the test serves.
+  Serve the test certificate (`startElectronTlsTestServer`, or
+  `electronTestCertificate`): every app launched with `electron.launch` trusts
+  it from its start.
+metadata:
+  category: electron-environment
+rule:
+  any:
+    - pattern: $SESSION.setCertificateVerifyProc($$$)
+    - pattern: $APP.on("certificate-error", $$$)
+    - all:
+        - kind: string_fragment
+        - regex: "ignore-certificate-errors"
+files:
+  - "clients/apps/electron/e2e/**/*.ts"
+  - "clients/e2e/p0/electron-*.ts"
+  - "clients/e2e/setup/**/*.ts"
+ignores:
+  - "clients/apps/electron/e2e/electron-test.ts"
+---
+id: ts-electron-test-running-app
+language: typescript
+severity: error
+message: "An Electron spec configures an app that already runs."
+note: |
+  A session handler, a cookie, a path or the Dock icon set through an
+  `evaluate` reaches the app after code of the app has run without it, and
+  some of it lands in another process later still. Give it at launch
+  (`electron.launch({ main: { beforeApp, whenReady } })`); store a cookie with
+  `setElectronCookie` (clients/apps/electron/e2e/electron-operations.ts).
+metadata:
+  category: electron-environment
+rule:
+  all:
+    - kind: call_expression
+    - has:
+        field: function
+        any:
+          - regex: "(^|\\.)protocol[!?]*\\.(handle|unhandle|registerSchemesAsPrivileged|intercept[A-Za-z]*Protocol|register[A-Za-z]*Protocol)$"
+          - regex: "\\.cookies[!?]*\\.(set|remove|flushStore)$"
+          - regex: "\\.webRequest[!?]*\\.on[A-Z][A-Za-z]*$"
+          - regex: "\\.(setPermissionRequestHandler|setPermissionCheckHandler|setDevicePermissionHandler|setDisplayMediaRequestHandler|setProxy|setUserAgent|clearStorageData|clearCache|setPath|setActivationPolicy)$"
+          - regex: "\\.dock[!?]*\\.(hide|show)$"
+    # What a launch gives Main is not a change to a running app.
+    - not:
+        inside:
+          stopBy: end
+          kind: pair
+          has:
+            field: key
+            regex: "^(beforeApp|whenReady)$"
+files:
+  - "clients/apps/electron/e2e/**/*.spec.ts"
+  - "clients/e2e/p0/electron-*.spec.ts"
+---
+id: ts-electron-test-raw-change
+language: typescript
+severity: error
+message: "An Electron spec changes a window or the theme of a running app directly."
+note: |
+  The change lands in the window server, in a renderer, or in Main on a later
+  turn, after the call returned: the test then reads or acts before it. Use
+  the function that returns once the effect is there
+  (clients/apps/electron/e2e/electron-operations.ts: setElectronWindowBounds,
+  setElectronWindowContentSize, setElectronWindowFullScreen,
+  showElectronWindow, hideElectronWindow, focusElectronWindow,
+  closeElectronWindow, destroyElectronWindow, quitElectronApp,
+  setElectronNativeTheme, clickElectronMenuItem, openElectronDevTools,
+  closeElectronDevTools).
+metadata:
+  category: electron-environment
+rule:
+  any:
+    # Names only a native window, WebContents or theme has.
+    - all:
+        - kind: call_expression
+        - has:
+            field: function
+            kind: member_expression
+            has:
+              field: property
+              regex: "^(setBounds|setContentBounds|setSize|setContentSize|setPosition|setFullScreen|setSimpleFullScreen|minimize|maximize|unmaximize|showInactive|openDevTools|closeDevTools)$"
+    - all:
+        - kind: assignment_expression
+        - has:
+            field: left
+            regex: "\\.themeSource$"
+    # Names a page's own objects have too: only in a function that runs in
+    # Main, which an `evaluate` gives Electron's modules or a window.
+    - all:
+        - kind: call_expression
+        - has:
+            field: function
+            kind: member_expression
+            has:
+              field: property
+              regex: "^(show|hide|focus|blur|close|destroy|restore|quit|click)$"
+        - inside:
+            stopBy: end
+            kind: arrow_function
+            all:
+              - inside:
+                  kind: arguments
+                  inside:
+                    kind: call_expression
+                    has:
+                      field: function
+                      kind: member_expression
+                      has:
+                        field: property
+                        regex: "^evaluate(Handle)?$"
+              - any:
+                  - has:
+                      field: parameter
+                      regex: "^(window|win|browserWindow|nativeWindow)$"
+                  - has:
+                      field: parameters
+                      has:
+                        kind: required_parameter
+                        has:
+                          field: pattern
+                          any:
+                            - kind: identifier
+                              regex: "^(window|win|browserWindow|nativeWindow)$"
+                            - kind: object_pattern
+                              has:
+                                any:
+                                  - kind: shorthand_property_identifier_pattern
+                                    regex: "^(app|BrowserWindow|BaseWindow|WebContentsView|webContents|Menu|nativeTheme|session|screen|dialog|shell|clipboard)$"
+                                  - kind: pair_pattern
+                                    has:
+                                      field: key
+                                      regex: "^(app|BrowserWindow|BaseWindow|WebContentsView|webContents|Menu|nativeTheme|session|screen|dialog|shell|clipboard)$"
+files:
+  - "clients/apps/electron/e2e/**/*.spec.ts"
+  - "clients/e2e/p0/electron-*.spec.ts"
+---
+id: ts-electron-test-server
+language: typescript
+severity: error
+message: "An Electron spec starts an HTTP server of its own."
+note: |
+  A server a spec builds by hand is not recorded as the test's: left
+  listening, it outlives the test unnoticed. Start it with
+  `startElectronTestServer` or, over HTTPS with the trusted test certificate,
+  `startElectronTlsTestServer`
+  (clients/apps/electron/e2e/electron-test-server.ts): it listens on a
+  system-picked port and fails a test that leaves it open.
+metadata:
+  category: electron-environment
+rule:
+  any:
+    - pattern: createServer($$$)
+    - pattern: createHttpsServer($$$)
+    - pattern: http.createServer($$$)
+    - pattern: https.createServer($$$)
+files:
+  - "clients/apps/electron/e2e/**/*.ts"
+ignores:
+  - "clients/apps/electron/e2e/electron-test-server.ts"
+  - "clients/apps/electron/e2e/fixtures/**"

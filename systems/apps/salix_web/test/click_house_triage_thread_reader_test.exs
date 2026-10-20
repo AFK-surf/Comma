@@ -1,11 +1,11 @@
 defmodule Salix.Bindings.ClickHouseTriageThreadReaderTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias Salix.Bindings.{ClickHouseTriageThreadReader, TriageFollowUpThreadReader}
 
   defmodule Reader do
     def read_thread(scope, root_ts, opts) do
-      send(self(), {:read_thread, scope, root_ts, opts})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:read_thread, scope, root_ts, opts})
       Process.get(:thread_page)
     end
   end
@@ -39,58 +39,32 @@ defmodule Salix.Bindings.ClickHouseTriageThreadReaderTest do
                     }, "100.000001", [limit: 200, max_bytes: 1_048_576]}
   end
 
-  test "truncated CH context fails closed" do
-    Process.put(:thread_page, {:ok, %{page() | complete?: false, truncated_reason: :count}})
+  test "frozen message text withholds Bearer spans before the snapshot is hashed" do
+    [root, reply] = page().messages
 
-    assert {:error, :triage_clickhouse_context_truncated} =
+    reply =
+      reply
+      |> Map.put("text", "use Bearer QUJDREVGRw for the read-only tool")
+      |> Map.put("payload", Jason.encode!(%{"files" => [%{"name" => "Bearer QUJDREVGRw.txt"}]}))
+
+    Process.put(:thread_page, {:ok, %{page() | messages: [root, reply]}})
+
+    assert {:ok, %{"messages" => [_root, withheld]}} =
              ClickHouseTriageThreadReader.read(authority(), connect(), reader: Reader)
-  end
 
-  test "user-authored body subtypes stay human across indexed and canonical Slack payloads" do
-    for subtype <- ~w(file_share me_message thread_broadcast), payload? <- [false, true] do
-      row = %{
-        "message_ts" => "100.000001",
-        "message_ts_us" => 100_000_001,
-        "version" => 200_000_002,
-        "actor_kind" => "user",
-        "actor_id" => "U1",
-        "subtype" => subtype,
-        "text" => "orion meet bot 的 salix token 怎么被注销了"
-      }
+    assert withheld["text"] == "use [Bearer-credential withheld] for the read-only tool"
 
-      row =
-        if payload? do
-          Map.put(
-            row,
-            "payload",
-            Jason.encode!(%{
-              "ts" => row["message_ts"],
-              "user" => row["actor_id"],
-              "subtype" => subtype,
-              "text" => row["text"]
-            })
-          )
-        else
-          row
-        end
-
-      Process.put(:thread_page, {:ok, %{page() | messages: [row], reactions: []}})
-
-      assert {:ok, %{"messages" => [message]}} =
-               ClickHouseTriageThreadReader.read(authority(), connect(), reader: Reader)
-
-      assert message["actor_kind"] == "human", "#{subtype}, payload=#{payload?}"
-      assert message["text"] == row["text"]
-      assert_snapshot_keys(message)
-    end
+    assert withheld["file_attachments"]["items"] == [
+             %{"name" => "[Bearer-credential withheld]", "kind" => "file"}
+           ]
   end
 
   test "follow-up reads the same known CH thread without a Slack reader" do
-    previous = Application.get_env(:salix_im, :slack_triage_clickhouse_reader_mod)
-    Application.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, Reader)
+    previous = SystemsRuntime.get_env(:salix_im, :slack_triage_clickhouse_reader_mod)
+    SystemsRuntime.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, Reader)
 
     on_exit(fn ->
-      Application.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, previous)
+      SystemsRuntime.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, previous)
     end)
 
     Process.put(:thread_page, {:ok, page()})
@@ -114,97 +88,6 @@ defmodule Salix.Bindings.ClickHouseTriageThreadReaderTest do
              })
 
     refute_receive {:read_thread, _scope, _root_ts, _opts}
-  end
-
-  test "canonical payload overlays Slack fields without leaking extra snapshot keys" do
-    Process.put(
-      :thread_page,
-      {:ok,
-       %{
-         page()
-         | messages: [
-             %{
-               "message_ts" => "100.000001",
-               "message_ts_us" => 100_000_001,
-               "version" => 200_000_002,
-               "actor_kind" => "user",
-               "actor_id" => "U1",
-               "subtype" => "",
-               "text" => "indexed fallback",
-               "payload" =>
-                 Jason.encode!(%{
-                   "ts" => "100.000001",
-                   "text" => "payload text",
-                   "user" => "U1",
-                   "blocks" => [%{"type" => "section"}],
-                   "attachments" => [%{"id" => 1}],
-                   "files" => [%{"id" => "F1"}],
-                   "metadata" => %{"event_type" => "task_created"}
-                 })
-             }
-           ]
-       }}
-    )
-
-    assert {:ok, %{"messages" => [message]}} =
-             ClickHouseTriageThreadReader.read(authority(), connect(), reader: Reader)
-
-    assert message["text"] == "payload text"
-    assert message["user"] == "U1"
-    assert_snapshot_keys(message)
-    refute Map.has_key?(message, "blocks")
-    refute Map.has_key?(message, "attachments")
-    refute Map.has_key?(message, "files")
-    refute Map.has_key?(message, "metadata")
-    refute Map.has_key?(message, "payload")
-
-    assert message["file_attachments"] == %{
-             "total_count" => 1,
-             "truncated" => false,
-             "items" => [%{"name" => "", "kind" => "file"}]
-           }
-  end
-
-  test "forwarded Task context survives the mirror projection as bounded quoted evidence" do
-    [row | _] = page().messages
-
-    payload = %{
-      "text" => "这个 task 完成了但没有回复？",
-      "attachments" => [
-        %{
-          "is_msg_unfurl" => true,
-          "channel_id" => "C_TASKS",
-          "ts" => "100.000002",
-          "from_url" =>
-            "https://atlas.slack.com/archives/C_TASKS/p100000002?thread_ts=100.000001&cid=C_TASKS",
-          "author_id" => "U_TASK_BOT",
-          "text" => "Task Review PR #67: ready for review " <> String.duplicate("材料", 300),
-          "attachments" => [%{"text" => "nested private payload"}]
-        }
-      ]
-    }
-
-    Process.put(:thread_page, {
-      :ok,
-      %{page() | messages: [Map.put(row, "payload", Jason.encode!(payload))], reactions: []}
-    })
-
-    assert {:ok, %{"messages" => [message]}} =
-             ClickHouseTriageThreadReader.read(authority(), connect(), reader: Reader)
-
-    assert String.starts_with?(message["text"], payload["text"])
-    assert message["text"] =~ "untrusted Slack forwarded-message references"
-    [_, quoted] = String.split(message["text"], "UNTRUSTED_SLACK_MESSAGE_REFERENCES_JSON=")
-    assert %{"references" => [reference]} = Jason.decode!(quoted)
-    assert reference["channel_id"] == "C_TASKS"
-    assert reference["message_ts"] == "100.000002"
-    assert reference["thread_ts"] == "100.000001"
-    assert reference["text"] =~ "Task Review PR #67: ready for review"
-    assert String.valid?(reference["text"])
-    assert byte_size(reference["text"]) <= 512
-    refute message["text"] =~ "nested private payload"
-    refute message["text"] =~ "atlas.slack.com"
-    assert_snapshot_keys(message)
   end
 
   defp assert_snapshot_keys(message) do

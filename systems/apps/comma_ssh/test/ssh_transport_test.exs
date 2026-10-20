@@ -1,4 +1,6 @@
 defmodule CommaSSH.TestClientKey do
+  require SystemsRuntime.Proc
+
   @behaviour :ssh_client_key_api
   def is_host_key(_, _, _, _, _), do: true
   def add_host_key(_, _, _, _), do: :ok
@@ -19,16 +21,18 @@ defmodule CommaSSH.TestClientKey do
   end
 
   def user_key(_, _), do: {:error, :unsupported}
-  def sign(_, _, _), do: :crypto.strong_rand_bytes(64)
+  def sign(_, _, _), do: SystemsRuntime.Proc.random_bytes(64)
 end
 
 defmodule CommaSSH.TransportTest do
+  require SystemsRuntime.Proc
+
   use Comma.DataCase, async: false
   alias Comma.Accounts.SSHIdentities
 
   setup do
     Comma.AuthChallengeStore.Memory.reset!()
-    Process.register(self(), :comma_email_delivery_test)
+    Process.register(SystemsRuntime.Proc.self(), :comma_email_delivery_test)
     key = :public_key.generate_key({:namedCurve, :ed25519})
     host = :public_key.generate_key({:namedCurve, :ed25519})
     {:ok, daemon} = :ssh.daemon(0, CommaSSH.Listener.daemon_options(host))
@@ -48,9 +52,9 @@ defmodule CommaSSH.TransportTest do
 
     assert :ok = :ssh_connection.shell(ssh, channel)
     assert read_until(ssh, channel, "Email:") =~ "Sign in"
-    email = "ssh-transport-#{System.unique_integer([:positive])}@example.com"
+    email = "ssh-transport-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"
     :ok = :ssh_connection.send(ssh, channel, email <> "\r")
-    assert_receive {:comma_login_code, ^email, code}, 5_000
+    assert_receive {:comma_login_code, ^email, code}
     read_until(ssh, channel, "six-digit")
     :ok = :ssh_connection.send(ssh, channel, code <> "\r")
     assert read_until(ssh, channel, "Workspace setup is in progress") =~ "Workspace"
@@ -70,29 +74,26 @@ defmodule CommaSSH.TransportTest do
   end
 
   test "PTY chat reads and sends the canonical Router Conversation", %{port: port, key: key} do
-    unless Process.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
-    unless Process.whereis(SalixStore.S3.Fake), do: start_supervised!(SalixStore.S3.Fake)
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
+
+    unless SystemsRuntime.Proc.whereis(SalixStore.S3.Fake),
+      do: start_supervised!(SalixStore.S3.Fake)
+
     owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
 
-    {:ok, user} =
-      Comma.Accounts.get_or_create_user_by_email(
-        "ssh-chat-#{System.unique_integer([:positive])}@example.com"
-      )
-
-    workspace = create_ready_workspace!(user, %{"name" => "Primary workspace"})
+    {user, workspace, chat, unready} = chat_with_unready_task_list_owner!()
     {:ok, _} = SSHIdentities.enroll(user, :ssh_message.ssh2_pubkey_encode(key))
     {:ok, token} = SSHIdentities.login(:ssh_message.ssh2_pubkey_encode(key))
     {:ok, _, session} = Comma.Accounts.resolve_session(token)
-    {:ok, chat} = Comma.AssistantChats.ensure_chat(user, session, workspace["default_group_id"])
 
     {:ok, _} =
       BillingCore.Credits.issue_grant(%{
         repo: BillingCore.Repo,
         billing_account_id: "comma-ba-#{workspace["id"]}",
         credits: 100,
-        valid_from: DateTime.add(DateTime.utc_now(), -60),
-        expires_at: DateTime.add(DateTime.utc_now(), 3600),
+        valid_from: DateTime.add(SystemsClock.utc_now(), -60),
+        expires_at: DateTime.add(SystemsClock.utc_now(), 3600),
         source_type: "manual_contract",
         source_id: workspace["id"],
         source_event_id: workspace["id"],
@@ -121,11 +122,34 @@ defmodule CommaSSH.TransportTest do
         chat["id"],
         %{
           "content" => "hello from Comma",
-          "client_request_id" => Ecto.UUID.generate()
+          "client_request_id" => SystemsRuntime.Proc.uuid()
         }
       )
 
     read_until(ssh, channel, "hello from Comma")
+
+    # The Task list owner exits when placement moves it, and the replacement
+    # can be unready: the ring places the Group on a node that does not serve
+    # it yet. The keeper releases the local owner, the terminal's subscription
+    # fails and retries, and the count returns once placement is local again.
+    # The screen holds "Tasks unavailable" until then, so no transient frame
+    # is awaited.
+    group_id = workspace["default_group_id"]
+    ring = SystemsRuntime.Proc.whereis(SalixCluster.Ring)
+
+    assert [{list_owner, _}] =
+             Registry.lookup(
+               SalixIM.ConversationRegistry,
+               SalixIM.ConversationGroupActor.key(group_id)
+             )
+
+    list_owner_ref = SystemsRuntime.Proc.monitor(list_owner)
+    on_exit(fn -> SystemsRuntime.Proc.send(ring, {:nodedown, unready, %{}}) end)
+    SystemsRuntime.Proc.send(ring, {:nodeup, unready, %{}})
+    assert_receive {:DOWN, ^list_owner_ref, :process, ^list_owner, :normal}
+    read_until(ssh, channel, "Tasks unavailable")
+    SystemsRuntime.Proc.send(ring, {:nodedown, unready, %{}})
+    read_until(ssh, channel, "0 running")
 
     # A second workspace restores the picker; the reader chooses again.
     _second = create_additional_ready_workspace!(user, %{"name" => "Second workspace"})
@@ -144,7 +168,10 @@ defmodule CommaSSH.TransportTest do
 
   test "OpenSSH completes enrollment with a pinned host key", %{port: port, host: host} do
     directory =
-      Path.join(System.tmp_dir!(), "comma-openssh-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "comma-openssh-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(directory)
     on_exit(fn -> File.rm_rf!(directory) end)
@@ -187,9 +214,9 @@ defmodule CommaSSH.TransportTest do
 
     on_exit(fn -> if Port.info(client), do: Port.close(client) end)
     read_port(client, "Email:")
-    email = "openssh-#{System.unique_integer([:positive])}@example.com"
+    email = "openssh-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"
     Port.command(client, email <> "\r")
-    assert_receive {:comma_login_code, ^email, code}, 5_000
+    assert_receive {:comma_login_code, ^email, code}
     read_port(client, "six-digit")
     Port.command(client, code <> "\r")
     read_port(client, "Workspace setup is in progress")
@@ -198,7 +225,7 @@ defmodule CommaSSH.TransportTest do
     Port.command(client, "/quit\r")
     restored = read_port(client, "\e[?1049l")
     assert restored =~ "\e[?2004l"
-    assert_receive {^client, {:exit_status, 0}}, 5_000
+    assert_receive {^client, {:exit_status, 0}}
   end
 
   test "bad signatures and foreign usernames cannot reach the TUI", %{port: port, key: key} do
@@ -277,7 +304,7 @@ defmodule CommaSSH.TransportTest do
     if String.contains?(acc, text) do
       acc
     else
-      receive do
+      SystemsRuntime.Proc.receive do
         {^port, {:data, bytes}} -> read_port(port, text, acc <> bytes)
         {^port, {:exit_status, status}} -> flunk("OpenSSH exited #{status}: #{acc}")
       after
@@ -286,11 +313,43 @@ defmodule CommaSSH.TransportTest do
     end
   end
 
+  # A node that would own the Group's Task list but not the Router chat.
+  # No added node can take the Task list while the chat stays local when no
+  # vnode of this node lies between the chat's and the Group's ring positions
+  # (about 1 in 130 id pairs). Such a pair gets a fresh user and workspace.
+  defp chat_with_unready_task_list_owner!(attempts \\ 5) do
+    {:ok, user} =
+      Comma.Accounts.get_or_create_user_by_email(
+        "ssh-chat-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"
+      )
+
+    workspace = create_ready_workspace!(user, %{"name" => "Primary workspace"})
+    {:ok, session} = Comma.Accounts.create_session(user["id"])
+    {:ok, chat} = Comma.AssistantChats.ensure_chat(user, session, workspace["default_group_id"])
+
+    case unready_group_owner(workspace["default_group_id"], chat["id"]) do
+      nil when attempts > 1 -> chat_with_unready_task_list_owner!(attempts - 1)
+      nil -> flunk("no unready node places only the Task list")
+      unready -> {user, workspace, chat, unready}
+    end
+  end
+
+  defp unready_group_owner(group_id, conversation_id) do
+    Enum.find_value(1..1_000, fn n ->
+      unready = :"comma-ssh-unready-#{n}@127.0.0.1"
+      ring = HashRing.new() |> HashRing.add_node(node()) |> HashRing.add_node(unready)
+
+      if HashRing.key_to_node(ring, "conversation-group:" <> group_id) == unready and
+           HashRing.key_to_node(ring, group_id <> ":" <> conversation_id) == node(),
+         do: unready
+    end)
+  end
+
   defp read_until(ssh, channel, text, acc \\ "") do
     if String.contains?(acc, text) do
       acc
     else
-      receive do
+      SystemsRuntime.Proc.receive do
         {:ssh_cm, ^ssh, {:data, ^channel, _, bytes}} ->
           read_until(ssh, channel, text, acc <> bytes)
 
@@ -303,7 +362,7 @@ defmodule CommaSSH.TransportTest do
   end
 
   defp assert_closed(ssh, channel) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:ssh_cm, ^ssh, {:closed, ^channel}} -> :ok
       {:ssh_cm, ^ssh, _} -> assert_closed(ssh, channel)
     after

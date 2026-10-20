@@ -21,20 +21,20 @@ defmodule SalixIM.Provider.Slack.MessageSearch do
     context = SystemsObservability.Context.capture()
 
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         SystemsObservability.Context.run(context, fn ->
           do_search(scope, connect_id, params, default_mode)
         end)
       end)
 
-    case Task.yield(task, 10_000) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, 10_000) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
       _ -> {:error, "Message search timed out; narrow the search or retry later."}
     end
   end
 
   defp do_search(scope, connect_id, params, default_mode) do
-    reader = Application.get_env(:salix_im, :slack_message_search_reader)
+    reader = SystemsRuntime.get_env(:salix_im, :slack_message_search_reader)
 
     with true <- is_atom(reader) and not is_nil(reader) and reader.active?(),
          {:ok, request, candidates, expires_at} <-
@@ -176,7 +176,7 @@ defmodule SalixIM.Provider.Slack.MessageSearch do
          true <- is_binary(sender) and byte_size(sender) <= 128,
          true <- kind == "" or kind in @kinds,
          {:ok, oldest} <- bound(params["oldest"], 0),
-         {:ok, latest} <- bound(params["latest"], System.os_time(:microsecond)),
+         {:ok, latest} <- bound(params["latest"], SystemsClock.system_time(:microsecond)),
          true <- oldest >= 0 and oldest < latest do
       {:ok,
        %{

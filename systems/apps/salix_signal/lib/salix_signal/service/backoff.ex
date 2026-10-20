@@ -16,7 +16,7 @@ defmodule SalixSignal.Service.Backoff do
 
   @doc "The delay before attempt `attempt`. `random` in `[0, 1)` picks the jitter."
   @spec delay_ms(non_neg_integer(), opts(), float()) :: non_neg_integer()
-  def delay_ms(attempt, opts \\ [], random \\ :rand.uniform())
+  def delay_ms(attempt, opts \\ [], random \\ SystemsRuntime.Proc.uniform())
       when is_integer(attempt) and attempt >= 0 do
     base = Keyword.get(opts, :base_ms, @default_base_ms)
     max = Keyword.get(opts, :max_ms, @default_max_ms)

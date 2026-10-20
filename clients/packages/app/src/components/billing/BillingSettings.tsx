@@ -1,40 +1,14 @@
-import { Button, InputField } from "@comma/ui";
-import type { CommaBillingPlan, CommaBillingSummary } from "../../api";
+import { Button } from "@comma/ui/components/Button";
+import { InputField } from "@comma/ui/components/input";
+import type {
+  BillingPlan as CommaBillingPlan,
+  CreditAllowance,
+} from "@comma/core-client";
 import { panelTabButton } from "../panelTabButton";
 
 export type BillingPeriod = "month" | "year";
 
 export const billingPeriods: readonly BillingPeriod[] = ["month", "year"];
-
-export interface CreditAllowance {
-  percent: number;
-  total: number;
-}
-
-/** Measure remaining credits only when every active grant has a known original amount. */
-export function creditAllowance(
-  summary: CommaBillingSummary | undefined,
-  plans: readonly CommaBillingPlan[]
-): CreditAllowance | undefined {
-  if (!summary) return undefined;
-  let total = 0;
-  for (const grant of summary.active_grants) {
-    const currentPlan = summary.active_subscription?.plan;
-    const plan = [currentPlan, ...plans].find(
-      (item) =>
-        item &&
-        item.package_code === grant.package_code &&
-        item.package_version === grant.package_version
-    );
-    if (!plan) return undefined;
-    total += plan.grant_credits;
-  }
-  if (total <= 0) return undefined;
-  const percent = Math.round(
-    Math.max(0, Math.min(1, summary.current_credits / total)) * 100
-  );
-  return { percent, total };
-}
 
 export function formatPrice(plan: CommaBillingPlan, locale: string) {
   return new Intl.NumberFormat(locale, {

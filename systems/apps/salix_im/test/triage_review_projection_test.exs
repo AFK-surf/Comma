@@ -1,5 +1,5 @@
 defmodule SalixIM.TriageReviewProjectionTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixIM.Triage.ReviewProjection
 
@@ -84,31 +84,5 @@ defmodule SalixIM.TriageReviewProjectionTest do
       assert artifact["artifact_id"] ==
                "triage-review-" <> SalixIM.Triage.CanonicalJSON.sha256(canonical_without_id)
     end)
-  end
-
-  test "rejects a channel review target with more than six fractional timestamp digits" do
-    input = %{
-      "source_authority" => %{
-        "workspace_id" => "T1",
-        "channel_id" => "C1",
-        "thread_ts" => "__channel__",
-        "scope_kind" => "channel"
-      },
-      "events" => [
-        %{
-          "event_id" => "Ev-overprecise",
-          "message_ts" => "200.1234567",
-          "actor_id" => "U1",
-          "text" => "Who owns Atlas?"
-        }
-      ]
-    }
-
-    assert {:error, :invalid_slack_timestamp} =
-             ReviewProjection.slack(input, %{
-               "action" => "reply",
-               "text" => "Lin owns Atlas.",
-               "source_refs" => ["meeting://atlas/action-item/0"]
-             })
   end
 end

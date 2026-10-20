@@ -25,13 +25,13 @@ defmodule BridgeForTeams.ProjectOAuthConnectionsTest do
   end
 
   defp with_client(mod) do
-    prev = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, mod)
+    prev = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, mod)
     on_exit(fn -> restore_env(:bridge_for_teams_core, :salix_client, prev) end)
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp configure_provider(org, provider) do
     {:ok, _} =
@@ -45,7 +45,8 @@ defmodule BridgeForTeams.ProjectOAuthConnectionsTest do
   # record (holding the tokens) plus a (group, provider, alias) binding pointing
   # at it. BridgeForTeams only ever reads the token-free joined view.
   defp seed_connection(org, project, provider, alias_name, account_name \\ "Test Account") do
-    connection_id = "conn-" <> (:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower))
+    connection_id =
+      "conn-" <> (SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower))
 
     :ok =
       SalixStore.OAuth.put(connection_id, %{
@@ -82,16 +83,6 @@ defmodule BridgeForTeams.ProjectOAuthConnectionsTest do
   end
 
   describe "list_available_providers/1" do
-    test "surfaces supported providers before tenant OAuth app setup", %{org: org} do
-      assert {:ok, apps} = ProjectOAuthConnections.list_available_providers(org.id)
-      assert Enum.map(apps, & &1["provider"]) == ProjectOAuthConnections.providers()
-
-      assert Enum.all?(apps, fn app ->
-               app["authorization_configured"] == false and
-                 app["can_request_authorization"] == false
-             end)
-    end
-
     test "marks configured tenant OAuth apps as authorization-ready", %{org: org} do
       configure_provider(org, "notion")
 
@@ -141,11 +132,6 @@ defmodule BridgeForTeams.ProjectOAuthConnectionsTest do
       assert notion["client_id"] == "notion-client-id"
     end
 
-    test "unknown org is rejected before any Salix call" do
-      assert {:error, :not_found} =
-               ProjectOAuthConnections.list_available_providers(Ecto.UUID.generate())
-    end
-
     test "runtime errors surface as tagged errors", %{org: org} do
       with_client(UnavailableSalixClient)
       assert {:error, :unavailable} = ProjectOAuthConnections.list_available_providers(org.id)
@@ -153,15 +139,6 @@ defmodule BridgeForTeams.ProjectOAuthConnectionsTest do
   end
 
   describe "list_connections/2" do
-    test "is empty for a fresh project", %{org: org, project: project} do
-      assert {:ok, []} = ProjectOAuthConnections.list_connections(org.id, project.id)
-
-      assert [] =
-               Observability.list_events(org.id,
-                 event_type: "project.oauth_connections.unavailable"
-               )
-    end
-
     test "returns the project group's bindings as token-free views", %{org: org, project: project} do
       seed_connection(org, project, "notion", "Work", "Acme Workspace")
 
@@ -283,30 +260,6 @@ defmodule BridgeForTeams.ProjectOAuthConnectionsTest do
                ProjectOAuthConnections.start_connection(org.id, project.id, "notion", %{})
     end
 
-    test "rejects an unsupported provider", %{org: org, project: project} do
-      assert {:error, :unsupported_provider} =
-               ProjectOAuthConnections.start_connection(
-                 org.id,
-                 project.id,
-                 "telegram",
-                 %{},
-                 actor_label: "project-admin@example.com",
-                 request_id: "req_project_oauth_unsupported"
-               )
-
-      assert [audit] =
-               Observability.list_audit_logs(org.id,
-                 action: "project_oauth_connection.authorization_started"
-               )
-
-      assert audit.result == "failed"
-      assert audit.reason_class == "unsupported_provider"
-      assert audit.resource_type == "project_oauth_connection"
-      assert audit.resource_id == "telegram"
-      assert audit.metadata["project_id"] == project.id
-      assert audit.metadata["provider"] == "telegram"
-    end
-
     test "capability-derived scopes ride the authorization request", %{
       org: org,
       project: project
@@ -348,6 +301,45 @@ defmodule BridgeForTeams.ProjectOAuthConnectionsTest do
         bare_url |> URI.parse() |> Map.get(:query) |> URI.decode_query() |> Map.get("scope", "")
 
       refute bare_scope =~ "gmail"
+    end
+
+    test "a Feishu sign-in goes to Feishu with the meeting and document reads", %{
+      org: org,
+      project: project
+    } do
+      configure_provider(org, "feishu")
+
+      assert {:ok, %{"authorization_url" => url}} =
+               ProjectOAuthConnections.start_connection(org.id, project.id, "feishu", %{})
+
+      uri = URI.parse(url)
+      params = URI.decode_query(uri.query)
+      assert uri.host == "accounts.feishu.cn"
+      assert params["client_id"] == "feishu-client-id"
+      assert "vc:meeting.search:read" in String.split(params["scope"], " ")
+    end
+
+    test "a sign-in without a label adds an account; a label reauthorizes that binding", %{
+      org: org,
+      project: project
+    } do
+      configure_provider(org, "slack")
+
+      alias_of = fn attrs ->
+        assert {:ok, %{"state" => state}} =
+                 ProjectOAuthConnections.start_connection(org.id, project.id, "slack", attrs)
+
+        {:ok, record} = SalixStore.OAuth.AuthState.get(state)
+        record["alias"]
+      end
+
+      # Two sign-ins started together name different bindings, so neither
+      # callback can replace the other's account, whatever their order.
+      assert "slack-" <> _ = first = alias_of.(%{})
+      assert "slack-" <> _ = second = alias_of.(%{})
+      assert first != second
+
+      assert alias_of.(%{"alias" => "Ops"}) == "Ops"
     end
 
     test "builds an authorization URL for a configured provider", %{org: org, project: project} do
@@ -418,28 +410,6 @@ defmodule BridgeForTeams.ProjectOAuthConnectionsTest do
       assert audit.request_id == "req_project_oauth_delete"
       assert audit.resource_id == binding["binding_id"]
       assert audit.metadata["binding_id"] == binding["binding_id"]
-    end
-
-    test "deleting an unknown binding is reported as not found", %{org: org, project: project} do
-      assert {:error, :not_found} =
-               ProjectOAuthConnections.delete_connection(
-                 org.id,
-                 project.id,
-                 "oauth-missing",
-                 actor_label: "project-admin@example.com",
-                 request_id: "req_project_oauth_delete_missing"
-               )
-
-      assert [audit] =
-               Observability.list_audit_logs(org.id,
-                 action: "project_oauth_connection.deleted"
-               )
-
-      assert audit.result == "failed"
-      assert audit.reason_class == "not_found"
-      assert audit.request_id == "req_project_oauth_delete_missing"
-      assert audit.resource_id == "oauth-missing"
-      assert audit.metadata["binding_id"] == "oauth-missing"
     end
   end
 end

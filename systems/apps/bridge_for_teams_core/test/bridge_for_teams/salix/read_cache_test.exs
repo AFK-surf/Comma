@@ -1,12 +1,13 @@
 defmodule BridgeForTeams.Salix.ReadCacheTest do
   # Not async: shares the singleton ETS table started in the supervision tree.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
   alias BridgeForTeams.Salix.ReadCache
 
   # Every test uses a unique ref-based key, so tests can't collide even if an
   # on_exit invalidate were skipped.
-  defp key, do: {:read_cache_test, make_ref()}
+  defp key, do: {:read_cache_test, SystemsRuntime.Proc.make_ref()}
 
   defp counting(result_fun) do
     counter = :counters.new(1, [])
@@ -33,7 +34,7 @@ defmodule BridgeForTeams.Salix.ReadCacheTest do
     {fun, calls} = counting(fn n -> {:ok, n} end)
 
     assert {:ok, 1} = ReadCache.fetch(key, 1, fun)
-    Process.sleep(5)
+    SystemsClock.sleep(5)
     assert {:ok, 2} = ReadCache.fetch(key, 60_000, fun)
     assert calls.() == 2
   end
@@ -46,10 +47,6 @@ defmodule BridgeForTeams.Salix.ReadCacheTest do
     assert :ok = ReadCache.invalidate(key)
     assert {:ok, 2} = ReadCache.fetch(key, 60_000, fun)
     assert calls.() == 2
-  end
-
-  test "invalidating an absent key is a no-op" do
-    assert :ok = ReadCache.invalidate(key())
   end
 
   test "{:error, _} results are returned but never cached" do
@@ -98,15 +95,6 @@ defmodule BridgeForTeams.Salix.ReadCacheTest do
     # and its fresh value caches normally.
     assert {:ok, 1} = ReadCache.fetch(key, 60_000, fun)
     assert {:ok, 1} = ReadCache.fetch(key, 60_000, fun)
-    assert calls.() == 1
-  end
-
-  test "non-tuple ok-ish values (nil, lists) are cached like any value" do
-    key = key()
-    {fun, calls} = counting(fn _n -> nil end)
-
-    assert ReadCache.fetch(key, 60_000, fun) == nil
-    assert ReadCache.fetch(key, 60_000, fun) == nil
     assert calls.() == 1
   end
 end

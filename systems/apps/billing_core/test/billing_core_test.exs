@@ -1,5 +1,8 @@
 defmodule BillingCoreTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+  use SystemsClock.Test, scope: ["Elixir.SalixStore", "Elixir.BillingCore"]
   import ExUnit.CaptureLog
 
   alias BillingCore.{Charges, FeeControl, LLMMetering, ResourceMetering, State}
@@ -13,7 +16,11 @@ defmodule BillingCoreTest do
     def enqueue(rows, _opts), do: insert(rows) |> then(fn _ -> :ok end)
 
     def insert(rows) do
-      send(Application.fetch_env!(:billing_core, :contract_test_pid), {:typed_rows, rows})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:billing_core, :contract_test_pid),
+        {:typed_rows, rows}
+      )
+
       {:ok, length(rows)}
     end
   end
@@ -24,7 +31,10 @@ defmodule BillingCoreTest do
 
   defmodule FakeRepo do
     def transaction(fun) do
-      send(Application.fetch_env!(:billing_core, :contract_test_pid), :repo_transaction)
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:billing_core, :contract_test_pid),
+        :repo_transaction
+      )
 
       try do
         {:ok, fun.()}
@@ -34,7 +44,11 @@ defmodule BillingCoreTest do
     end
 
     def rollback(reason) do
-      send(Application.fetch_env!(:billing_core, :contract_test_pid), {:repo_rollback, reason})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:billing_core, :contract_test_pid),
+        {:repo_rollback, reason}
+      )
+
       throw({:rollback, reason})
     end
   end
@@ -59,7 +73,10 @@ defmodule BillingCoreTest do
 
   defmodule FakeSQL do
     def query!(_repo, query, params, _opts \\ []) do
-      send(Application.fetch_env!(:billing_core, :contract_test_pid), {:sql_query, query, params})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:billing_core, :contract_test_pid),
+        {:sql_query, query, params}
+      )
 
       SQLAccountFixture.query(query, params) ||
         cond do
@@ -92,7 +109,10 @@ defmodule BillingCoreTest do
 
   defmodule UnlimitedSQL do
     def query!(_repo, query, params, _opts \\ []) do
-      send(Application.fetch_env!(:billing_core, :contract_test_pid), {:sql_query, query, params})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:billing_core, :contract_test_pid),
+        {:sql_query, query, params}
+      )
 
       SQLAccountFixture.query(query, params) ||
         cond do
@@ -136,7 +156,10 @@ defmodule BillingCoreTest do
 
   defmodule MissingPricingSQL do
     def query!(_repo, query, params, _opts \\ []) do
-      send(Application.fetch_env!(:billing_core, :contract_test_pid), {:sql_query, query, params})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:billing_core, :contract_test_pid),
+        {:sql_query, query, params}
+      )
 
       SQLAccountFixture.query(query, params) ||
         cond do
@@ -177,7 +200,10 @@ defmodule BillingCoreTest do
 
   defmodule MapSnapshotPendingSQL do
     def query!(_repo, query, params, _opts \\ []) do
-      send(Application.fetch_env!(:billing_core, :contract_test_pid), {:sql_query, query, params})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:billing_core, :contract_test_pid),
+        {:sql_query, query, params}
+      )
 
       SQLAccountFixture.query(query, params) ||
         cond do
@@ -230,7 +256,10 @@ defmodule BillingCoreTest do
 
   defmodule PagedGrantSQL do
     def query!(_repo, query, params, _opts \\ []) do
-      send(Application.fetch_env!(:billing_core, :contract_test_pid), {:sql_query, query, params})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:billing_core, :contract_test_pid),
+        {:sql_query, query, params}
+      )
 
       SQLAccountFixture.query(query, params) ||
         cond do
@@ -260,14 +289,14 @@ defmodule BillingCoreTest do
   end
 
   setup do
-    previous = Application.get_env(:billing_core, :contract_test_pid)
-    Application.put_env(:billing_core, :contract_test_pid, self())
+    previous = SystemsRuntime.get_env(:billing_core, :contract_test_pid)
+    SystemsRuntime.put_env(:billing_core, :contract_test_pid, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       if previous do
-        Application.put_env(:billing_core, :contract_test_pid, previous)
+        SystemsRuntime.put_env(:billing_core, :contract_test_pid, previous)
       else
-        Application.delete_env(:billing_core, :contract_test_pid)
+        SystemsRuntime.delete_env(:billing_core, :contract_test_pid)
       end
     end)
   end
@@ -325,14 +354,16 @@ defmodule BillingCoreTest do
     assert :ok = LLMMetering.before_llm_call(fact)
     assert :ok = deliver_llm(fact)
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "billing_account_id" => "empty-account",
-                        "model" => "gpt-5",
-                        "charge_status" => "not_billable"
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "billing_account_id" => "empty-account",
+           "model" => "gpt-5",
+           "charge_status" => "not_billable"
+         }
+       ]}
+    )
   end
 
   test "LLM metering subtracts cached tokens from ordinary input and infers provider" do
@@ -373,7 +404,7 @@ defmodule BillingCoreTest do
              {:cache_write, 10}
            ]
 
-    assert_receive {:typed_rows, [%{"provider" => "openai", "sku" => "gpt-x"}]}
+    settle_receive({:typed_rows, [%{"provider" => "openai", "sku" => "gpt-x"}]})
   end
 
   test "Jev usage charges input tokens at the seeded price and keeps output free" do
@@ -397,7 +428,7 @@ defmodule BillingCoreTest do
 
     assert charge.charged_credits == 42_000
     assert remaining(state.grants, "ba_1") == 58_000
-    assert_receive {:typed_rows, [%{"provider" => "typesafe", "sku" => "jev-1.13.0"}]}
+    settle_receive({:typed_rows, [%{"provider" => "typesafe", "sku" => "jev-1.13.0"}]})
   end
 
   for {alias_model, source_key} <- [
@@ -428,7 +459,7 @@ defmodule BillingCoreTest do
       assert charge.provider == "openai"
       assert charge.sku == "gpt-5.6-sol"
 
-      assert_receive {:typed_rows, [%{"provider" => "openai", "sku" => "gpt-5.6-sol"}]}
+      settle_receive({:typed_rows, [%{"provider" => "openai", "sku" => "gpt-5.6-sol"}]})
     end
   end
 
@@ -478,16 +509,18 @@ defmodule BillingCoreTest do
     assert {:ok, charge, _state} = Charges.charge_meter_event(event)
     assert charge.charged_credits == 20
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "resource_kind" => "charge",
-                        "billing_account_id" => "ba_1",
-                        "source_key" => "src_1",
-                        "charged_credits" => 20,
-                        "entrypoint" => "conversation_send"
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "resource_kind" => "charge",
+           "billing_account_id" => "ba_1",
+           "source_key" => "src_1",
+           "charged_credits" => 20,
+           "entrypoint" => "conversation_send"
+         }
+       ]}
+    )
   end
 
   test "charge path reports typed charge event sink failures without crashing" do
@@ -543,15 +576,17 @@ defmodule BillingCoreTest do
 
     assert charge.charged_credits == 60
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "resource_kind" => "llm",
-                        "billing_account_id" => "ba_1",
-                        "source_key" => "llm:req_1",
-                        "entrypoint" => "conversation_send"
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "resource_kind" => "llm",
+           "billing_account_id" => "ba_1",
+           "source_key" => "llm:req_1",
+           "entrypoint" => "conversation_send"
+         }
+       ]}
+    )
   end
 
   test "LLM metering adapter records unattributed rows without charging" do
@@ -568,14 +603,16 @@ defmodule BillingCoreTest do
                usage: %{"prompt_tokens" => 1}
              })
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "billing_account_id" => "unattributed",
-                        "charge_status" => "unattributed",
-                        "quality" => quality
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "billing_account_id" => "unattributed",
+           "charge_status" => "unattributed",
+           "quality" => quality
+         }
+       ]}
+    )
 
     assert Jason.decode!(quality) == ["billing_owner_missing"]
   end
@@ -605,24 +642,31 @@ defmodule BillingCoreTest do
                llm_error: %{"category" => "retryable_provider_error", "status" => 429}
              })
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "duration_ms" => 321,
-                        "started_at" => ^expected_started_at,
-                        "first_token_ms" => 45,
-                        "attempts" => 3,
-                        "response_kind" => "error",
-                        "app_revision" => "2026.07.08",
-                        "error_type" => "retryable_provider_error",
-                        "http_status" => 429
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "duration_ms" => 321,
+           "started_at" => ^expected_started_at,
+           "first_token_ms" => 45,
+           "attempts" => 3,
+           "response_kind" => "error",
+           "app_revision" => "2026.07.08",
+           "error_type" => "retryable_provider_error",
+           "http_status" => 429
+         }
+       ]}
+    )
   end
 
   test "agent observability logs timeout discards" do
-    previous_sink = Application.get_env(:billing_core, :agent_observability_typed_sink)
-    Application.put_env(:billing_core, :agent_observability_typed_sink, TimeoutObservabilitySink)
+    previous_sink = SystemsRuntime.get_env(:billing_core, :agent_observability_typed_sink)
+
+    SystemsRuntime.put_env(
+      :billing_core,
+      :agent_observability_typed_sink,
+      TimeoutObservabilitySink
+    )
 
     try do
       log =
@@ -725,16 +769,18 @@ defmodule BillingCoreTest do
     assert charge.grant_debits == []
     assert charge.balance_after == 0
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "resource_kind" => "charge",
-                        "status" => "unlimited_metered",
-                        "entitlement_mode" => "unlimited_metered",
-                        "charged_credits" => 0,
-                        "grace_credits" => 0
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "resource_kind" => "charge",
+           "status" => "unlimited_metered",
+           "entitlement_mode" => "unlimited_metered",
+           "charged_credits" => 0,
+           "grace_credits" => 0
+         }
+       ]}
+    )
 
     queries = flush_sql_queries()
 
@@ -772,15 +818,17 @@ defmodule BillingCoreTest do
 
     assert charge.charged_credits == 40
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "resource_kind" => "charge",
-                        "billing_account_id" => "ba_repo_charge",
-                        "source_key" => "src_repo_charge",
-                        "charged_credits" => 40
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "resource_kind" => "charge",
+           "billing_account_id" => "ba_repo_charge",
+           "source_key" => "src_repo_charge",
+           "charged_credits" => 40
+         }
+       ]}
+    )
   end
 
   test "repo charge keeps PG transaction when billing charge event sink fails" do
@@ -886,17 +934,19 @@ defmodule BillingCoreTest do
 
     assert charge.charged_credits == 40
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "resource_kind" => "llm",
-                        "billing_account_id" => "ba_nested",
-                        "surface" => "bridge",
-                        "group_id" => "group_nested",
-                        "entrypoint" => "im_router",
-                        "actor_type" => "external_user"
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "resource_kind" => "llm",
+           "billing_account_id" => "ba_nested",
+           "surface" => "bridge",
+           "group_id" => "group_nested",
+           "entrypoint" => "im_router",
+           "actor_type" => "external_user"
+         }
+       ]}
+    )
   end
 
   test "resource metering uses repo charge path when no in-memory state is supplied" do
@@ -935,14 +985,16 @@ defmodule BillingCoreTest do
 
     assert charge.charged_credits == 40
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "resource_kind" => "vm",
-                        "source_key" => "vm:req_quantity_only",
-                        "duration_seconds" => 20
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "resource_kind" => "vm",
+           "source_key" => "vm:req_quantity_only",
+           "duration_seconds" => 20
+         }
+       ]}
+    )
   end
 
   test "fee-control miss performs bounded repo balance probe when repo is supplied" do
@@ -1034,13 +1086,13 @@ defmodule BillingCoreTest do
   end
 
   test "repo pricing backfill accepts jsonb map snapshots" do
-    previous_sink = Application.get_env(:billing_core, :charge_typed_sink, :unset)
-    Application.put_env(:billing_core, :charge_typed_sink, RaisingSink)
+    previous_sink = SystemsRuntime.get_env(:billing_core, :charge_typed_sink, :unset)
+    SystemsRuntime.put_env(:billing_core, :charge_typed_sink, RaisingSink)
 
     on_exit(fn ->
       case previous_sink do
-        :unset -> Application.delete_env(:billing_core, :charge_typed_sink)
-        sink -> Application.put_env(:billing_core, :charge_typed_sink, sink)
+        :unset -> SystemsRuntime.delete_env(:billing_core, :charge_typed_sink)
+        sink -> SystemsRuntime.put_env(:billing_core, :charge_typed_sink, sink)
       end
     end)
 
@@ -1052,10 +1104,9 @@ defmodule BillingCoreTest do
                limit: 25
              })
 
-    assert_receive :repo_transaction
-    assert_receive :repo_transaction
-    refute_receive :repo_transaction, 0
-
+    settle_receive(:repo_transaction)
+    settle_receive(:repo_transaction)
+    settle_refute_receive(:repo_transaction, 0)
     queries = flush_sql_queries()
     assert find_query(queries, "DELETE FROM pending_meter_charges")
   end
@@ -1161,7 +1212,7 @@ defmodule BillingCoreTest do
     state = State.new()
 
     query_fun = fn ->
-      send(self(), :fee_control_query)
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :fee_control_query)
       %{balance_snapshot: 5}
     end
 
@@ -1188,13 +1239,13 @@ defmodule BillingCoreTest do
   end
 
   test "fee-control server keeps TTL cache and writes typed checks" do
-    name = :"fee_control_#{System.unique_integer([:positive])}"
+    name = :"fee_control_#{SystemsRuntime.Proc.unique_integer([:positive])}"
     start_supervised!({BillingCore.FeeControl.Server, name: name}, id: name)
 
-    test_pid = self()
+    test_pid = SystemsRuntime.Proc.self()
 
     query_fun = fn ->
-      send(test_pid, :server_fee_control_query)
+      SystemsRuntime.Proc.send(test_pid, :server_fee_control_query)
       %{balance_snapshot: 0}
     end
 
@@ -1221,28 +1272,32 @@ defmodule BillingCoreTest do
     assert first.query_performed == true
     assert_received :server_fee_control_query
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "resource_kind" => "fee_control",
-                        "would_block" => true,
-                        "query_performed" => true
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "resource_kind" => "fee_control",
+           "would_block" => true,
+           "query_performed" => true
+         }
+       ]}
+    )
 
     assert {:ok, second} = BillingCore.FeeControl.check_cached(attrs, server: name)
     assert second.cache_hit == true
     assert second.query_performed == false
     refute_received :server_fee_control_query
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "resource_kind" => "fee_control",
-                        "cache_hit" => true,
-                        "query_performed" => false
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "resource_kind" => "fee_control",
+           "cache_hit" => true,
+           "query_performed" => false
+         }
+       ]}
+    )
   end
 
   test "resource metering writes typed VM row before charging" do
@@ -1278,20 +1333,23 @@ defmodule BillingCoreTest do
     assert charge.charged_credits == 50
     assert remaining(state.grants, "ba_1") == 50
 
-    assert_receive {:typed_rows,
-                    [%{"resource_kind" => "fee_control", "source_key" => "fee:vm:vm_1"}]}
+    settle_receive(
+      {:typed_rows, [%{"resource_kind" => "fee_control", "source_key" => "fee:vm:vm_1"}]}
+    )
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "resource_kind" => "vm",
-                        "duration_seconds" => 5,
-                        "env_id" => "env_vm_1",
-                        "sprite_name" => "cloud-vm",
-                        "interval_start" => ^interval_start,
-                        "interval_end" => ^interval_end
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "resource_kind" => "vm",
+           "duration_seconds" => 5,
+           "env_id" => "env_vm_1",
+           "sprite_name" => "cloud-vm",
+           "interval_start" => ^interval_start,
+           "interval_end" => ^interval_end
+         }
+       ]}
+    )
   end
 
   test "resource metering writes unattributed storage row without charging missing owner" do
@@ -1311,15 +1369,17 @@ defmodule BillingCoreTest do
                metered_at: @now
              })
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "resource_kind" => "storage",
-                        "byte_seconds" => 10,
-                        "bucket" => "comma-storage",
-                        "prefix" => "agents/a1/"
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "resource_kind" => "storage",
+           "byte_seconds" => 10,
+           "bucket" => "comma-storage",
+           "prefix" => "agents/a1/"
+         }
+       ]}
+    )
   end
 
   test "resource metering does not charge storage when tier is unknown" do
@@ -1345,14 +1405,16 @@ defmodule BillingCoreTest do
                owner_snapshot: owner()
              })
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "resource_kind" => "storage",
-                        "charge_status" => "pending_pricing",
-                        "storage_tier" => "unknown"
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "resource_kind" => "storage",
+           "charge_status" => "pending_pricing",
+           "storage_tier" => "unknown"
+         }
+       ]}
+    )
   end
 
   defp meter_event(attrs) do
@@ -1411,15 +1473,15 @@ defmodule BillingCoreTest do
   end
 
   defp flush_sql_queries(acc \\ []) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:sql_query, query, params} -> flush_sql_queries([{query, params} | acc])
     after
       0 -> Enum.reverse(acc)
     end
   end
 
-  defp restore_billing_env(key, nil), do: Application.delete_env(:billing_core, key)
-  defp restore_billing_env(key, value), do: Application.put_env(:billing_core, key, value)
+  defp restore_billing_env(key, nil), do: SystemsRuntime.delete_env(:billing_core, key)
+  defp restore_billing_env(key, value), do: SystemsRuntime.put_env(:billing_core, key, value)
 
   defp agent_observation_run_fact do
     %{
@@ -1443,7 +1505,7 @@ defmodule BillingCoreTest do
   end
 
   defp start_fee_control_server do
-    unless Process.whereis(BillingCore.FeeControl.Server) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.FeeControl.Server) do
       start_supervised!(BillingCore.FeeControl.Server)
     end
 

@@ -8,5 +8,5 @@ defmodule Salix.Bindings.AgentLlmResolver do
 
   @impl true
   def resolve_record(agent_record),
-    do: SalixAgent.Templates.resolve_llm_for_record(agent_record)
+    do: SalixAgent.AgentModel.resolve_llm(agent_record)
 end

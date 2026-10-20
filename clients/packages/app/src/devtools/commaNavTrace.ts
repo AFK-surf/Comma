@@ -1,3 +1,4 @@
+import { uiClock } from "@comma/ui/clock";
 export type CommaNavTraceEvent = {
   at: string;
   t: number;
@@ -20,18 +21,11 @@ type CommaNavTraceReport = {
   longtaskCount: number;
   longtaskMs: number;
   origin: CommaNavTraceEvent | undefined;
-  workspaceResolves: CommaNavTraceEvent[];
 };
 
 const MAX_EVENTS = 500;
 const TRACE_WINDOW_MS = 15_000;
-const CONSOLE_SIGNAL_TYPES = new Set([
-  "home-mount",
-  "home-unmount",
-  "longtask",
-  "workspace-chat-resolve-end",
-  "workspace-chat-resolve-start",
-]);
+const CONSOLE_SIGNAL_TYPES = new Set(["home-mount", "home-unmount", "longtask"]);
 
 const events: CommaNavTraceEvent[] = [];
 let installed = false;
@@ -43,8 +37,8 @@ function isCommaNavTraceEnabled() {
 export function traceCommaNav(type: string, data: Record<string, unknown> = {}) {
   if (!isCommaNavTraceEnabled()) return;
   const event: CommaNavTraceEvent = {
-    at: new Date().toISOString(),
-    t: Math.round(performance.now()),
+    at: new Date(uiClock.now()).toISOString(),
+    t: Math.round(uiClock.monotonic()),
     type,
     ...data,
   };
@@ -130,9 +124,6 @@ function report(): CommaNavTraceReport {
     longtaskCount: longtasks.length,
     longtaskMs: longtasks.reduce((sum, event) => sum + Number(event.duration ?? 0), 0),
     origin,
-    workspaceResolves: windowEvents.filter(
-      (event) => event.type === "workspace-chat-resolve-end"
-    ),
   };
 }
 

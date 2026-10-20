@@ -34,6 +34,20 @@ defmodule SalixMeet.MeetingState do
     new_provider(meeting_id, meeting_agent, attrs, "feishu", "feishu_ref")
   end
 
+  @doc "Build the complete state for a Google Meet a person started from Lark."
+  @spec new_lark(String.t(), map(), map()) :: {:ok, map()} | {:error, term()}
+  def new_lark(meeting_id, meeting_agent, attrs)
+      when is_binary(meeting_id) and is_map(meeting_agent) and is_map(attrs) do
+    new_provider(meeting_id, meeting_agent, attrs, "lark", "lark_ref")
+  end
+
+  @doc "Build the complete state for a Google Meet a person sent in a Comma chat."
+  @spec new_comma(String.t(), map(), map()) :: {:ok, map()} | {:error, term()}
+  def new_comma(meeting_id, meeting_agent, attrs)
+      when is_binary(meeting_id) and is_map(meeting_agent) and is_map(attrs) do
+    new_provider(meeting_id, meeting_agent, attrs, "comma", "comma_ref")
+  end
+
   defp new_provider(meeting_id, meeting_agent, attrs, provider, provider_ref_key) do
     with {:ok, runtime_source} <- SalixMeet.MeetingRuntimePolicy.select(attrs) do
       state = %{
@@ -54,7 +68,7 @@ defmodule SalixMeet.MeetingState do
         "runtime_token" => runtime_token(),
         "runtime_ref" => Map.fetch!(meeting_agent, "meeting_session_id"),
         "runtime_source" => runtime_source,
-        "runtime_policy" => %{"source" => runtime_source},
+        "runtime_policy" => runtime_policy(runtime_source, attrs),
         "artifact_root" => RuntimeEvents.artifact_root(meeting_id),
         provider_ref_key => Map.fetch!(attrs, provider_ref_key),
         "source" => Map.fetch!(attrs, "source"),
@@ -73,8 +87,13 @@ defmodule SalixMeet.MeetingState do
     end
   end
 
+  defp runtime_policy(source, %{"join_as" => "guest"}),
+    do: %{"source" => source, "join_as" => "guest"}
+
+  defp runtime_policy(source, _attrs), do: %{"source" => source}
+
   defp runtime_token do
-    32 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    32 |> SystemsRuntime.Proc.random_bytes() |> Base.url_encode64(padding: false)
   end
 
   defp maybe_put(state, key, attrs) do

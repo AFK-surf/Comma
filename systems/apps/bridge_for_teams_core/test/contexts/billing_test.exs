@@ -13,11 +13,11 @@ defmodule BridgeForTeams.BillingTest do
 
   test "Bridge org receives manual contract grants without Stripe config", %{org: org} do
     {valid_from, expires_at} = current_period()
-    previous_secret_key = Application.get_env(:billing_stripe, :secret_key)
-    previous_webhook_secret = Application.get_env(:billing_stripe, :webhook_secret)
+    previous_secret_key = SystemsRuntime.get_env(:billing_stripe, :secret_key)
+    previous_webhook_secret = SystemsRuntime.get_env(:billing_stripe, :webhook_secret)
 
-    Application.delete_env(:billing_stripe, :secret_key)
-    Application.delete_env(:billing_stripe, :webhook_secret)
+    SystemsRuntime.delete_env(:billing_stripe, :secret_key)
+    SystemsRuntime.delete_env(:billing_stripe, :webhook_secret)
 
     try do
       assert {:ok, %{grant: grant, manual_grant: source, idempotent: false}} =
@@ -118,7 +118,7 @@ defmodule BridgeForTeams.BillingTest do
         operator: %{id: "ops_1", reason: "summary"}
       })
 
-    assert {:ok, summary} = Billing.org_billing_summary(org.id, at: DateTime.utc_now())
+    assert {:ok, summary} = Billing.org_billing_summary(org.id, at: SystemsClock.utc_now())
     assert summary.billing_account_id == org.billing_account_id
     assert summary.entitlement_mode == "unlimited_metered"
     assert summary.current_credits >= 800
@@ -135,7 +135,7 @@ defmodule BridgeForTeams.BillingTest do
 
   defp current_period do
     valid_from =
-      DateTime.utc_now()
+      SystemsClock.utc_now()
       |> DateTime.add(-1, :day)
       |> DateTime.truncate(:second)
 
@@ -188,8 +188,8 @@ defmodule BridgeForTeams.BillingTest do
   defp decode_json(value) when is_binary(value), do: Jason.decode!(value)
   defp decode_json(value), do: value
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
-  defp uniq, do: System.unique_integer([:positive])
+  defp uniq, do: SystemsRuntime.Proc.unique_integer([:positive])
 end

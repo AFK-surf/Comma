@@ -5,7 +5,11 @@ defmodule BridgeForTeams.Schema.User do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   # Dashboard locales the user may prefer. Mirrors BridgeForTeamsWeb.I18n /
   # the Gettext config; nil means "no explicit choice" (fall through to

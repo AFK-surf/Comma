@@ -10,10 +10,10 @@ defmodule SalixIM.WeChatAPI do
   @base_url "https://ilinkai.weixin.qq.com"
   @version "2.4.8"
 
-  def base_url, do: Application.get_env(:salix_im, :wechat_api_base_url, @base_url)
+  def base_url, do: SystemsRuntime.get_env(:salix_im, :wechat_api_base_url, @base_url)
 
   def headers(token \\ nil) do
-    <<uin::32>> = :crypto.strong_rand_bytes(4)
+    <<uin::32>> = SystemsRuntime.Proc.random_bytes(4)
 
     headers = [
       {"ilink-app-id", "bot"},

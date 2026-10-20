@@ -407,7 +407,7 @@ defmodule SalixSignalProto.Message.Content do
 
   @doc "A null message with `padding` (CRS-05 §6.5)."
   @spec null_message(binary()) :: binary()
-  def null_message(padding \\ :crypto.strong_rand_bytes(16)) when is_binary(padding) do
+  def null_message(padding \\ SystemsRuntime.Proc.random_bytes(16)) when is_binary(padding) do
     Wire.Content.encode(%Wire.Content{null_message: %Wire.NullMessage{padding: padding}})
   end
 

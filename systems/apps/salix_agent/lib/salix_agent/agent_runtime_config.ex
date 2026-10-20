@@ -67,6 +67,7 @@ defmodule SalixAgent.AgentRuntimeConfig do
         %{}
         |> put_prompt("system_prompt", agent["system_prompt"])
         |> put_prompt("router_system_prompt", agent["router_system_prompt"])
+        |> put_prompt("reply_style", agent["reply_style"])
     }
   end
 

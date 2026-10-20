@@ -2,8 +2,8 @@ defmodule BridgeForTeams.ProviderScopes do
   @moduledoc """
   Derive the OAuth scopes a provider connection should request from the
   capabilities the user actually granted during onboarding
-  (`user_onboardings.capabilities` — the boolean grant map from
-  `BridgeForTeamsWeb.Dashboard.OnboardingLive.Catalog`).
+  (`user_onboardings.capabilities` — the boolean grant map the onboarding
+  wizard saves through `BridgeForTeamsWeb.DashboardOnboardingWizard`).
 
   Scope minimization is the point: the consent screen asks only for what the
   granted capabilities need, and later grants widen the connection through

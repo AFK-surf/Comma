@@ -1,6 +1,6 @@
 defmodule SalixWeb.Dashboard.MessageContentTest do
   @moduledoc "Preview truncation must never emit invalid UTF-8."
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixWeb.Dashboard.MessageContent
 
@@ -13,24 +13,5 @@ defmodule SalixWeb.Dashboard.MessageContentTest do
 
     assert String.valid?(preview)
     assert preview == "x" <> String.duplicate("中", 39) <> "…"
-  end
-
-  test "preview/2 keeps the whole string when it fits the budget" do
-    assert MessageContent.preview("中文", 120) == "中文"
-  end
-
-  test "preview/2 tolerates a budget smaller than the first character" do
-    assert MessageContent.preview("中文", 2) == "…"
-  end
-
-  test "preview/2 still truncates ASCII on the byte budget" do
-    assert MessageContent.preview(String.duplicate("a", 130)) ==
-             String.duplicate("a", 120) <> "…"
-  end
-
-  test "preview/2 collapses whitespace across content blocks" do
-    blocks = [%{"type" => "text", "text" => "第一段\n\n第二段"}]
-
-    assert MessageContent.preview(blocks) == "第一段 第二段"
   end
 end

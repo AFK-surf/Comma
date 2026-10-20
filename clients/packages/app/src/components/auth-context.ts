@@ -1,19 +1,8 @@
 import { createContext, useContext } from "react";
 import type { SessionProductLease } from "@comma/session-contract";
-import type {
-  CommaApiClient,
-  CommaApiSessionTransport,
-  CommaUserProfile,
-} from "../api";
+import type { CommaApiSessionTransport } from "../session/controller";
 
 export type CommaAuthContextValue = {
-  /**
-   * The API client for this product lease, built once from its transport. A
-   * new lease (a sign-in, an account switch, or a reconcile that bumps the
-   * generation) replaces it. Product surfaces reach it through the chat
-   * session, which fences each call to the current lease generation.
-   */
-  api: CommaApiClient;
   apiBaseUrl: string;
   avatarRevision?: string;
   authenticated: boolean;
@@ -30,7 +19,6 @@ export type CommaAuthContextValue = {
   productLease: SessionProductLease;
   sessionSignal: AbortSignal;
   sessionTransport: CommaApiSessionTransport;
-  publishProfile?: (profile: CommaUserProfile) => void;
   signOut: () => void;
   userId?: string;
   userDisplayName?: string;

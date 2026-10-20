@@ -5,6 +5,9 @@ defmodule Salix.Bindings.MeetingCalendarNotifier do
   It posts the configured event title, time, and Google Meet URL directly to
   the configured Feishu chat. It is not the T-30 research/Task flow and never
   creates or mutates a Router Conversation or Router Session.
+
+  A Lark connect gets the same notice in its Lark chat, from
+  `Salix.Bindings.LarkMeetingCalendarNotifier`.
   """
 
   @behaviour SalixMeet.Ports.CalendarNotifier
@@ -42,6 +45,10 @@ defmodule Salix.Bindings.MeetingCalendarNotifier do
       other -> {:error, {:calendar_notification_invalid_result, other}}
     end
   end
+
+  def notify(%{"provider" => "lark", "mode" => "notify"} = group, event, occurrence_id)
+      when is_map(event) and is_binary(occurrence_id),
+      do: Salix.Bindings.LarkMeetingCalendarNotifier.notify(group, event, occurrence_id)
 
   def notify(_group, _event, _occurrence_id),
     do: {:error, :calendar_notification_unsupported_target}

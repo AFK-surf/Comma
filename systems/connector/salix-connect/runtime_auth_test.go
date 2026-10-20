@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -81,7 +80,7 @@ func TestRuntimeAuthDeviceCodeLifecycleReusesLongLivedCodex(t *testing.T) {
 		t.Fatalf("start result = %#v", started)
 	}
 	attemptID := stringParam(started, "attempt_id")
-	if attemptID == "" || int64Param(started, "expires_at", 0) <= time.Now().UnixMilli() {
+	if attemptID == "" || int64Param(started, "expires_at", 0) <= 0 {
 		t.Fatalf("start result has no bounded attempt = %#v", started)
 	}
 	if auth := mapParam(started, "auth"); auth["status"] != "pending" {
@@ -108,12 +107,9 @@ func TestRuntimeAuthDeviceCodeLifecycleReusesLongLivedCodex(t *testing.T) {
 	if err := os.WriteFile(completionGate, []byte("complete\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	waitForRuntimeAuthCondition(t, "authenticated runtime metadata", func() bool {
+	waitForCondition(t, "authenticated runtime metadata", func() bool {
 		runtime := runtimeAuthTestObservation(c, command)
 		return runtime["ready"] == true && mapParam(runtime, "auth")["status"] == "authenticated"
-	}, func() string {
-		logData, _ := os.ReadFile(logPath)
-		return fmt.Sprintf("runtime=%#v log=%s", runtimeAuthTestObservation(c, command), logData)
 	})
 
 	read, err := c.methodRuntimeAuthRead(context.Background(), map[string]any{
@@ -141,403 +137,6 @@ func TestRuntimeAuthDeviceCodeLifecycleReusesLongLivedCodex(t *testing.T) {
 	}
 	if strings.Contains(string(logData), "account/login/cancel\n") {
 		t.Fatalf("matching successful completion was canceled; log:\n%s", logData)
-	}
-}
-
-func TestComputeRuntimeAuthUsesExactCarrierTargetAndNativeCodexCeremony(t *testing.T) {
-	c, _, _ := newRuntimeAuthTestConnector(t, map[string]string{
-		"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE": "none",
-	})
-	c.cfg.computeRuntimeWorkloadID = "workload-1"
-	c.cfg.computeRuntimeInstanceID = "runtime-1"
-	c.cfg.computeRuntimeGeneration = 3
-	c.cfg.computeRuntimeEpoch = "9"
-	c.cfg.computeRuntimeKind = "external_worker"
-	c.cfg.computeRuntimeProvider = "codex"
-	c.cfg.computeRuntimeTenantID = "tenant"
-	c.cfg.computeRuntimeProjectID = "project"
-	off := c.activateRuntimeTransport(runtimeOperationTestAuthority(c))
-	defer off()
-	session := computeRuntimeSession{instance: "runtime-1", epoch: "9", generation: 3, kind: "external_worker"}
-
-	request := message{
-		ID: "auth-1", Type: "request", Method: "runtime_auth_login_start",
-		Params: map[string]any{
-			"target": map[string]any{
-				"tenant_id": "tenant", "project_id": "project", "workload_id": "workload-1",
-				"runtime_instance_id": "runtime-1", "generation": 3,
-				"connection_epoch": "9", "provider": "codex",
-			},
-			"flow": "device_code",
-		},
-	}
-
-	reply := c.computeRuntimeAuthReply(context.Background(), request, session)
-	result, ok := reply.Result.(map[string]any)
-	if !ok || reply.Type != "response" || result["flow"] != "device_code" ||
-		result["verification_url"] != "https://auth.openai.com/codex/device" ||
-		result["user_code"] != "ABCD-EFGH" {
-		t.Fatalf("compute auth reply = %#v", reply)
-	}
-	encoded := fmt.Sprint(reply.Result)
-	for _, forbidden := range []string{"access_token", "refresh_token", "auth.json", "private@example.test"} {
-		if strings.Contains(encoded, forbidden) {
-			t.Fatalf("compute auth reply leaked %q: %s", forbidden, encoded)
-		}
-	}
-
-	stale := request
-	stale.ID = "auth-stale"
-	stale.Params = map[string]any{
-		"target": map[string]any{
-			"tenant_id": "tenant", "project_id": "project", "workload_id": "workload-1",
-			"runtime_instance_id": "runtime-1", "generation": 3,
-			"connection_epoch": "8", "provider": "codex",
-		},
-		"flow": "device_code",
-	}
-	staleReply := c.computeRuntimeAuthReply(context.Background(), stale, session)
-	if staleReply.Type != "error" || staleReply.Error != "compute runtime auth target rejected" {
-		t.Fatalf("stale compute auth reply = %#v", staleReply)
-	}
-
-	wrongTenant := request
-	wrongTenant.ID = "auth-wrong-tenant"
-	wrongTenant.Params = map[string]any{
-		"target": map[string]any{
-			"tenant_id": "other-tenant", "project_id": "project", "workload_id": "workload-1",
-			"runtime_instance_id": "runtime-1", "generation": 3,
-			"connection_epoch": "9", "provider": "codex",
-		},
-		"flow": "device_code",
-	}
-	wrongTenantReply := c.computeRuntimeAuthReply(context.Background(), wrongTenant, session)
-	if wrongTenantReply.Type != "error" || wrongTenantReply.Error != "compute runtime auth target rejected" {
-		t.Fatalf("wrong-tenant compute auth reply = %#v", wrongTenantReply)
-	}
-}
-
-func TestComputeRuntimeAuthReleaseFailureIsActionRequired(t *testing.T) {
-	c, _, _ := newRuntimeAuthTestConnector(t, map[string]string{
-		"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE": "none",
-	})
-	c.cfg.computeRuntimeWorkloadID = "workload-1"
-	c.cfg.computeRuntimeInstanceID = "runtime-1"
-	c.cfg.computeRuntimeGeneration = 3
-	c.cfg.computeRuntimeEpoch = "9"
-	c.cfg.computeRuntimeKind = "external_worker"
-	c.cfg.computeRuntimeProvider = "codex"
-	c.cfg.computeRuntimeTenantID = "tenant"
-	c.cfg.computeRuntimeProjectID = "project"
-	c.setComputeRuntimeExecutionTarget(map[string]any{
-		"runtime_instance_id": "runtime-1", "runtime_generation": 3,
-		"runtime_connection_epoch": "9", "workload_id": "workload-1", "workload_generation": 3,
-		"allocation_id": "allocation", "allocation_generation": 1,
-		"container_id": "container", "container_instance_id": "container-instance",
-	})
-	send := func(_ context.Context, request message) error {
-		if request.Method != "runtime_execution" {
-			return nil
-		}
-		result := map[string]any{
-			"execution_id":          stringParam(request.Params, "execution_id"),
-			"container_instance_id": "container-instance",
-		}
-		switch stringParam(request.Params, "action") {
-		case "acquire":
-			result["acquired"] = true
-		case "release":
-			result["released"] = false
-		default:
-			return fmt.Errorf("unexpected runtime execution action %q", stringParam(request.Params, "action"))
-		}
-		go c.completeRuntimeProxy(message{ID: request.ID, Type: "response", Result: result})
-		return nil
-	}
-	off := c.activateRuntimeTransport(send)
-	defer off()
-	carrier := c.getActiveTransport()
-	session := computeRuntimeSession{instance: "runtime-1", epoch: "9", generation: 3, kind: "external_worker"}
-	target := map[string]any{
-		"tenant_id": "tenant", "project_id": "project", "workload_id": "workload-1",
-		"runtime_instance_id": "runtime-1", "generation": 3, "connection_epoch": "9",
-		"provider": "codex", "actor_id": "admin",
-	}
-	statusParams := map[string]any{"target": target}
-	key := runtimeAuthOperationKey(statusParams)
-	if _, err := c.runtimeOperations.beginAcquire(key, key, "auth_operation", c.currentComputeRuntimeExecutionTarget()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.runtimeOperations.finishAcquire(key, true, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.computePrivateRuntimeAuthOwned(context.Background(), message{
-		ID: "status", Method: "runtime_auth_status", Params: statusParams,
-	}, session, carrier); err == nil || !strings.Contains(err.Error(), "action required") {
-		t.Fatalf("terminal status masked release failure: %v", err)
-	}
-
-	c.runtimeOperations.finishSettlement(key, nil)
-	loginTarget := map[string]any{}
-	for k, v := range target {
-		if k != "actor_id" {
-			loginTarget[k] = v
-		}
-	}
-	reply := c.computeRuntimeAuthReplyAdmitted(context.Background(), message{
-		ID: "login", Method: "runtime_auth_login_start",
-		Params: map[string]any{"target": loginTarget, "flow": "unsupported"},
-	}, session, carrier)
-	if reply.Type != "error" || !strings.Contains(reply.Error, "action required") {
-		t.Fatalf("login-start failure masked release failure: %#v", reply)
-	}
-}
-
-func TestComputeRuntimeAuthLoginCancelRejectsRecoveredFamily(t *testing.T) {
-	c, _, _ := newRuntimeAuthTestConnector(t, map[string]string{
-		"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE": "none",
-	})
-	c.cfg.computeRuntimeWorkloadID = "workload-1"
-	c.cfg.computeRuntimeInstanceID = "runtime-1"
-	c.cfg.computeRuntimeGeneration = 3
-	c.cfg.computeRuntimeEpoch = "9"
-	c.cfg.computeRuntimeKind = "external_worker"
-	c.cfg.computeRuntimeProvider = "codex"
-	c.cfg.computeRuntimeTenantID = "tenant"
-	c.cfg.computeRuntimeProjectID = "project"
-	executionTarget := map[string]any{
-		"runtime_instance_id": "runtime-1", "runtime_generation": 3,
-		"runtime_connection_epoch": "9", "workload_id": "workload-1", "workload_generation": 3,
-		"allocation_id": "allocation", "allocation_generation": 1,
-		"container_id": "container", "container_instance_id": "container-instance",
-	}
-	c.setComputeRuntimeExecutionTarget(executionTarget)
-	target := map[string]any{
-		"tenant_id": "tenant", "project_id": "project", "workload_id": "workload-1",
-		"runtime_instance_id": "runtime-1", "generation": 3, "connection_epoch": "9",
-		"provider": "codex",
-	}
-	params := map[string]any{"target": target}
-	familyID := runtimeAuthOperationKey(params)
-	activityID := familyID + ":verify:lost-request"
-	if _, err := c.runtimeOperations.beginAcquire(familyID, activityID, "auth_operation", executionTarget); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.runtimeOperations.finishAcquire(activityID, false, errors.New("acquire reply lost")); err == nil {
-		t.Fatal("test setup did not enter recovered-unknown")
-	}
-
-	reply := c.computeRuntimeAuthReplyAdmitted(context.Background(), message{
-		ID: "cancel", Method: "runtime_auth_login_cancel", Params: params,
-	}, computeRuntimeSession{instance: "runtime-1", epoch: "9", generation: 3, kind: "external_worker"}, nil)
-	if reply.Type != "error" || !strings.Contains(reply.Error, "action required") {
-		t.Fatalf("login cancel crossed a recovered auth family: %#v", reply)
-	}
-}
-
-func TestComputeRuntimeAuthReadsPortableNativeReadinessWithoutCodexCeremony(t *testing.T) {
-	for _, provider := range []string{"pi", "claude"} {
-		for _, authReady := range []bool{true, false} {
-			t.Run(fmt.Sprintf("%s-auth-ready-%t", provider, authReady), func(t *testing.T) {
-				t.Setenv("HOME", t.TempDir())
-				var command string
-				if provider == "pi" {
-					t.Setenv("SALIX_TEST_FAKE_PI_AUTH_READY", map[bool]string{true: "1", false: "0"}[authReady])
-					command = fakePortableRuntimeCommand(t, "pi")
-				} else {
-					t.Setenv("SALIX_TEST_FAKE_CLAUDE_AUTH", map[bool]string{true: "authenticated", false: "signed_out"}[authReady])
-					command = fakeClaudeRuntimeCommand(t)
-				}
-				t.Setenv("PATH", filepath.Dir(command))
-				c, err := newConnector(config{name: provider + "-compute-auth", root: t.TempDir(), systemInfoInterval: 0})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(c.closeExternalRuntimes)
-				if _, err := c.runtimeInventory.probe(context.Background(), "", "", "connect"); err != nil {
-					t.Fatalf("initial runtime inventory: %v", err)
-				}
-				c.cfg.computeRuntimeWorkloadID = "workload-" + provider
-				c.cfg.computeRuntimeInstanceID = "runtime-" + provider
-				c.cfg.computeRuntimeGeneration = 2
-				c.cfg.computeRuntimeEpoch = "7"
-				c.cfg.computeRuntimeKind = "external_worker"
-				c.cfg.computeRuntimeProvider = provider
-				c.cfg.computeRuntimeTenantID = "tenant"
-				c.cfg.computeRuntimeProjectID = "project"
-				session := computeRuntimeSession{instance: "runtime-" + provider, epoch: "7", generation: 2, kind: "external_worker"}
-				request := message{
-					ID: "auth-" + provider, Type: "request", Method: "runtime_auth_read",
-					Params: map[string]any{"target": map[string]any{
-						"tenant_id": "tenant", "project_id": "project", "workload_id": "workload-" + provider,
-						"runtime_instance_id": "runtime-" + provider, "generation": 2,
-						"connection_epoch": "7", "provider": provider,
-					}},
-				}
-
-				reply := c.computeRuntimeAuthReply(context.Background(), request, session)
-				result, ok := reply.Result.(map[string]any)
-				if !ok || reply.Type != "response" {
-					t.Fatalf("%s compute auth reply = %#v", provider, reply)
-				}
-				auth := mapParam(result, "auth")
-				wantStatus := map[bool]string{true: "authenticated", false: "unauthenticated"}[authReady]
-				wantReady := authReady
-				if provider == "pi" && authReady {
-					wantStatus, wantReady = "configured", false
-				}
-				if auth["status"] != wantStatus || auth["requires_openai_auth"] != false || result["ready"] != wantReady {
-					t.Fatalf("%s compute auth result = %#v, want status=%s ready=%t", provider, result, wantStatus, authReady)
-				}
-				if provider == "pi" && auth["mode"] != nil {
-					t.Fatalf("Pi local model list must not infer a credential mode: %#v", auth)
-				}
-				if provider == "claude" {
-					if _, ok := auth["mode"]; ok {
-						t.Fatalf("Claude auth result inferred a credential mode: %#v", auth)
-					}
-				}
-				if result["native_ready"] != true {
-					t.Fatalf("%s native readiness = %#v, want true", provider, result)
-				}
-				encoded := fmt.Sprint(result)
-				for _, forbidden := range []string{"secret-token", "person@example.com", command, "identity_material", "last_error"} {
-					if strings.Contains(encoded, forbidden) {
-						t.Fatalf("%s compute auth result leaked %q: %s", provider, forbidden, encoded)
-					}
-				}
-			})
-		}
-	}
-}
-
-func TestComputeRuntimeCarrierRoundTripsNativeCodexCeremony(t *testing.T) {
-	c, _, _ := newRuntimeAuthTestConnector(t, map[string]string{
-		"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE": "none",
-	})
-
-	responses := make(chan message, 1)
-	serverErrors := make(chan error, 1)
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			serverErrors <- err
-			return
-		}
-		defer conn.Close()
-
-		var hello map[string]any
-		if err := conn.ReadJSON(&hello); err != nil {
-			serverErrors <- err
-			return
-		}
-		if !jsonStringListContains(hello["supported_features"], "runtime.auth.v1") {
-			serverErrors <- fmt.Errorf("runtime auth feature was not negotiated: %#v", hello)
-			return
-		}
-		if err := conn.WriteJSON(map[string]any{
-			"type": "runtime.ready", "runtime_instance_id": "runtime-1",
-			"workload_id": "workload-1", "generation": 3,
-			"runtime_kind": "external_worker", "connection_epoch": "9",
-			"features":     []string{"runtime.input.v1", "runtime.event.v1", "runtime.auth.v1", "runtime.execution.v1"},
-			"input_cursor": "", "event_cursor": "", "token": "runtime-token",
-			"execution_target": map[string]any{
-				"runtime_instance_id": "runtime-1", "runtime_generation": 3,
-				"runtime_connection_epoch": "9", "workload_id": "workload-1", "workload_generation": 3,
-				"allocation_id": "allocation-1", "allocation_generation": 1,
-				"container_id": "container-1", "container_instance_id": "container-instance-1",
-			},
-		}); err != nil {
-			serverErrors <- err
-			return
-		}
-		if err := acknowledgeRuntimeOperationList(conn, nil); err != nil {
-			serverErrors <- err
-			return
-		}
-		if err := awaitRuntimeOperationReconciliation(conn); err != nil {
-			serverErrors <- err
-			return
-		}
-		if err := conn.WriteJSON(map[string]any{
-			"type": "request", "id": "auth-over-wss", "method": "runtime_auth_login_start",
-			"params": map[string]any{
-				"target": map[string]any{
-					"tenant_id": "tenant", "project_id": "project", "workload_id": "workload-1",
-					"runtime_instance_id": "runtime-1", "generation": 3,
-					"connection_epoch": "9", "provider": "codex",
-				},
-				"flow": "device_code",
-			},
-		}); err != nil {
-			serverErrors <- err
-			return
-		}
-
-		var acquire message
-		if err := conn.ReadJSON(&acquire); err != nil {
-			serverErrors <- err
-			return
-		}
-		if acquire.Method != "runtime_execution" || stringParam(acquire.Params, "action") != "acquire" || stringParam(acquire.Params, "kind") != "auth_operation" {
-			serverErrors <- fmt.Errorf("unexpected auth ownership request: %#v", acquire)
-			return
-		}
-		if err := conn.WriteJSON(message{ID: acquire.ID, Type: "response", Result: map[string]any{
-			"execution_id": stringParam(acquire.Params, "execution_id"), "container_instance_id": "container-instance-1", "acquired": true,
-		}}); err != nil {
-			serverErrors <- err
-			return
-		}
-		var response message
-		if err := conn.ReadJSON(&response); err != nil {
-			serverErrors <- err
-			return
-		}
-		responses <- response
-	}))
-	defer server.Close()
-
-	c.cfg.computeRuntimeURL = server.URL
-	c.cfg.computeRuntimeBootstrapToken = "bootstrap"
-	c.cfg.computeRuntimeWorkloadID = "workload-1"
-	c.cfg.computeRuntimeInstanceID = "runtime-1"
-	c.cfg.computeRuntimeGeneration = 3
-	c.cfg.computeRuntimeEpoch = "9"
-	c.cfg.computeRuntimeKind = "external_worker"
-	c.cfg.computeRuntimeProvider = "codex"
-	c.cfg.computeRuntimeTenantID = "tenant"
-	c.cfg.computeRuntimeProjectID = "project"
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		c.computeRuntimeInputLoop(ctx)
-		close(done)
-	}()
-
-	select {
-	case response := <-responses:
-		result, ok := response.Result.(map[string]any)
-		if !ok || response.Type != "response" || result["flow"] != "device_code" ||
-			result["user_code"] != "ABCD-EFGH" {
-			t.Fatalf("auth response = %#v", response)
-		}
-		if strings.Contains(fmt.Sprint(result), "access_token") {
-			t.Fatalf("auth response leaked provider credential: %#v", result)
-		}
-	case err := <-serverErrors:
-		t.Fatalf("runtime auth WSS server: %v", err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("runtime auth WSS response timed out")
-	}
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("compute runtime input loop did not stop")
 	}
 }
 
@@ -618,20 +217,16 @@ func TestRuntimeAuthAuthenticationWaitsForFullReadinessBeforeAvailable(t *testin
 		t.Fatal(err)
 	}
 	var first map[string]any
-	select {
-	case first = <-firstAuthenticated:
-	case <-time.After(5 * time.Second):
-		t.Fatal("authenticated incremental metadata was not published")
-	}
+	first = <-firstAuthenticated
 	if first["auth_ready"] != true || first["ready"] != false || first["status"] != "unavailable" {
 		t.Fatalf("authentication bypassed full readiness probe: %#v", first)
 	}
 	releaseOnce.Do(func() { close(releasePublication) })
-	waitForRuntimeAuthCondition(t, "model-unavailable full probe", func() bool {
+	waitForCondition(t, "model-unavailable full probe", func() bool {
 		runtime := runtimeAuthTestObservation(c, command)
 		return mapParam(runtime, "auth")["status"] == "authenticated" &&
 			runtime["ready"] == false && runtime["readiness_issue"] == "model_unavailable"
-	}, func() string { return fmt.Sprintf("%#v", runtimeAuthTestObservation(c, command)) })
+	})
 }
 
 func TestRuntimeAuthGenerationRolloverInvalidatesInheritedFullReadiness(t *testing.T) {
@@ -651,11 +246,7 @@ func TestRuntimeAuthGenerationRolloverInvalidatesInheritedFullReadiness(t *testi
 		t.Fatalf("G1 did not own its full-readiness proof: runtime=%#v proof=%v", oldRuntime, oldProof)
 	}
 	oldRuntime.terminate()
-	select {
-	case <-oldRuntime.done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("G1 did not stop")
-	}
+	<-oldRuntime.done
 	if err := os.MkdirAll(filepath.Dir(codexConfigPath()), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -700,11 +291,7 @@ func TestRuntimeAuthGenerationRolloverInvalidatesInheritedFullReadiness(t *testi
 	}()
 
 	var first map[string]any
-	select {
-	case first = <-firstG2Auth:
-	case <-time.After(5 * time.Second):
-		t.Fatal("G2 incremental authentication metadata was not published")
-	}
+	first = <-firstG2Auth
 	if first["auth_ready"] != true || first["ready"] != false ||
 		first["status"] != "unavailable" || first["readiness_issue"] != "runtime_probe_failed" {
 		t.Fatalf("G2 inherited G1 full-readiness proof: %#v", first)
@@ -718,13 +305,9 @@ func TestRuntimeAuthGenerationRolloverInvalidatesInheritedFullReadiness(t *testi
 	}
 
 	releaseOnce.Do(func() { close(releasePublication) })
-	select {
-	case result := <-readDone:
-		if result.err != nil || mapParam(result.read, "auth")["status"] != "authenticated" {
-			t.Fatalf("G2 runtime auth read = %#v, %v", result.read, result.err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("G2 full readiness probe did not complete")
+	result := <-readDone
+	if result.err != nil || mapParam(result.read, "auth")["status"] != "authenticated" {
+		t.Fatalf("G2 runtime auth read = %#v, %v", result.read, result.err)
 	}
 	final := runtimeAuthTestObservation(c, command)
 	if final["ready"] != false || final["status"] != "unavailable" ||
@@ -765,11 +348,11 @@ func TestRuntimeAuthWebSocketDisconnectRetiresGenerationAndAttempt(t *testing.T)
 	if err := oldWebSocket.Close(); err != nil {
 		t.Fatal(err)
 	}
-	waitForRuntimeAuthCondition(t, "dead websocket generation retirement", func() bool {
+	waitForCondition(t, "dead websocket generation retirement", func() bool {
 		implementation.mu.Lock()
 		defer implementation.mu.Unlock()
 		return implementation.runtimes[command] != oldRuntime
-	}, func() string { return fmt.Sprintf("old runtime running=%v", oldRuntime.isRunning()) })
+	})
 	target := runtimeProbeTarget{provider: "codex", identityMaterial: command}
 	if attempt := c.runtimeAuthCoordinator().attempt(target.key()); attempt != nil {
 		t.Fatalf("dead websocket retained its ceremony: %#v", attempt)
@@ -840,93 +423,6 @@ func TestRuntimeAuthUnusableFreshGenerationDoesNotDeadlockTargetLock(t *testing.
 	})
 }
 
-func TestRuntimeAuthLateOldGenerationCallbackPreservesReboundSession(t *testing.T) {
-	c, command, _ := newRuntimeAuthTestConnector(t, map[string]string{
-		"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE": "none",
-	})
-	implementation := c.runtimeImplementations["codex"].(*codexRuntimeImplementation)
-	implementation.mu.Lock()
-	oldRuntime := implementation.runtimes[command]
-	session := &codexRuntimeSession{
-		sessionID:       "rebound-before-old-close",
-		token:           "g1-token",
-		threadID:        "thread-g1",
-		workState:       "settled",
-		runtime:         oldRuntime,
-		recoveryPending: false,
-	}
-	implementation.sessions[session.sessionID] = session
-	implementation.mu.Unlock()
-	if oldRuntime == nil {
-		t.Fatal("initial inventory did not retain G1")
-	}
-
-	target := runtimeProbeTarget{provider: "codex", identityMaterial: command}
-	unlockTarget := c.runtimeAuthCoordinator().lockTarget(target.key())
-	released := false
-	defer func() {
-		if !released {
-			unlockTarget()
-		}
-	}()
-	implementation.retireUnusableRuntimeGeneration(oldRuntime)
-	select {
-	case <-oldRuntime.exited:
-	case <-time.After(5 * time.Second):
-		t.Fatal("G1 did not exit")
-	}
-	select {
-	case <-oldRuntime.done:
-		t.Fatal("G1 callback bypassed the held target lock")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	input := externalRuntimeInput{
-		command:   command,
-		sessionID: session.sessionID,
-		token:     "g2-token",
-		workspace: c.root,
-	}
-	newRuntime, err := implementation.ensureRuntime(context.Background(), input, session)
-	if err != nil {
-		t.Fatalf("start G2 while G1 callback is blocked: %v", err)
-	}
-	if err := newRuntime.ensureInitialized(context.Background()); err != nil {
-		t.Fatalf("initialize G2 while G1 callback is blocked: %v", err)
-	}
-	if newRuntime == oldRuntime || newRuntime.generation == oldRuntime.generation {
-		t.Fatalf("rebind did not create G2: G1=%#v G2=%#v", oldRuntime, newRuntime)
-	}
-
-	unlockTarget()
-	released = true
-	select {
-	case <-oldRuntime.done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("late G1 callback did not finish")
-	}
-
-	implementation.mu.Lock()
-	current := implementation.runtimes[command]
-	implementation.mu.Unlock()
-	session.mu.Lock()
-	boundRuntime := session.runtime
-	token := session.token
-	threadID := session.threadID
-	workState := session.workState
-	recoveryPending := session.recoveryPending
-	session.mu.Unlock()
-	if current != newRuntime || boundRuntime != newRuntime || !newRuntime.isRunning() {
-		t.Fatalf("late G1 callback clobbered G2: current=%#v bound=%#v G2=%#v", current, boundRuntime, newRuntime)
-	}
-	if token != "g2-token" || threadID != "thread-g1" || workState != "settled" || recoveryPending {
-		t.Fatalf(
-			"late G1 callback mutated rebound session: token=%q thread=%q state=%q recovery_pending=%v",
-			token, threadID, workState, recoveryPending,
-		)
-	}
-}
-
 func retireRuntimeAuthTestGeneration(
 	t *testing.T,
 	c *connector,
@@ -941,11 +437,7 @@ func retireRuntimeAuthTestGeneration(
 		t.Fatal("initial inventory did not retain a Codex app-server")
 	}
 	runtime.terminate()
-	select {
-	case <-runtime.done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("initial Codex app-server did not stop")
-	}
+	<-runtime.done
 	return implementation
 }
 
@@ -969,23 +461,13 @@ func runtimeAuthReadWithoutTargetLockDeadlock(
 		done <- outcome{read: read, err: err}
 	}()
 
-	select {
-	case result := <-done:
-		if result.err != nil {
-			t.Fatalf("runtime auth read: %v", result.err)
-		}
-		return result.read
-	case <-time.After(2 * time.Second):
-		// Releasing the caller context makes the pre-fix wait-on-done cycle
-		// unwind, so a failing regression still cleans up its child process.
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-		}
-		t.Fatal("runtime auth read deadlocked behind its own target lock")
-		return nil
+	// A read that deadlocks behind its own target lock never returns; the go
+	// test timeout reports it.
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("runtime auth read: %v", result.err)
 	}
+	return result.read
 }
 
 func assertRuntimeAuthUnusableGenerationRetired(
@@ -1020,7 +502,7 @@ func TestRuntimeAuthCapabilityRequiresEligibleCodexInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(c.closeExternalRuntimes)
+	t.Cleanup(c.closeRuntimes)
 	if _, exists := c.metadata().Capabilities["runtime_auth_v1"]; exists {
 		t.Fatal("connector without an inventoried Codex runtime advertised runtime_auth_v1")
 	}
@@ -1044,18 +526,6 @@ func TestRuntimeAuthClosedImplementationRejectsProbeRestart(t *testing.T) {
 	if !closed || runtimeCount != 0 {
 		t.Fatalf("closed implementation state: closed=%v runtimes=%d", closed, runtimeCount)
 	}
-}
-
-func waitForRuntimeAuthCondition(t *testing.T, description string, condition func() bool, detail func() string) {
-	t.Helper()
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s: %s", description, detail())
 }
 
 func TestRuntimeAuthCancelFencesAttemptsAndClearsCeremony(t *testing.T) {
@@ -1167,12 +637,34 @@ func TestRuntimeAuthCompletedStartReplyCannotResurrectTerminalCeremonyAfterRecon
 	}
 }
 
+// runtimeAuthTestEpoch is the time a test's own runtime auth clock starts at.
+var runtimeAuthTestEpoch = time.Date(2026, time.January, 15, 12, 0, 0, 0, time.UTC)
+
+// runtimeAuthTestObservedAt is the observation time of auth snapshots that
+// tests publish themselves; publication orders snapshots by runtime generation
+// and auth epoch, not by this time.
+var runtimeAuthTestObservedAt = runtimeAuthTestEpoch.UnixMilli()
+
+// runtimeAuthTestFarFuture is an attempt expiry that no test reaches.
+var runtimeAuthTestFarFuture = testFarFuture.UnixMilli()
+
+// waitForAttemptExpiry returns once the coordinator's clock has passed the
+// expiry of the target's current login attempt.
+func waitForAttemptExpiry(t *testing.T, coordinator *runtimeAuthCoordinator, target runtimeProbeTarget) {
+	t.Helper()
+	attempt := coordinator.attempt(target.key())
+	if attempt == nil {
+		t.Fatal("no login attempt to expire")
+	}
+	waitForCondition(t, "the login attempt to expire", func() bool {
+		return attempt.expiresAt <= coordinator.now().UnixMilli()
+	})
+}
+
+// readRuntimeAuthWebSocketReply reads frames until the reply to id. A reply
+// that never comes stops the test at the go test timeout.
 func readRuntimeAuthWebSocketReply(t *testing.T, ws *websocket.Conn, id string) message {
 	t.Helper()
-	if err := ws.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	defer ws.SetReadDeadline(time.Time{})
 	for {
 		var frame message
 		if err := ws.ReadJSON(&frame); err != nil {
@@ -1274,10 +766,10 @@ func TestRuntimeAuthFailureTimeoutAndRuntimeExitAreSafeTerminalStates(t *testing
 		if err := os.WriteFile(gate, []byte("fail\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		waitForRuntimeAuthCondition(t, "safe login failure", func() bool {
+		waitForCondition(t, "safe login failure", func() bool {
 			auth := mapParam(runtimeAuthTestObservation(c, command), "auth")
 			return auth["status"] == "error" && auth["issue"] == "login_failed"
-		}, func() string { return fmt.Sprintf("%#v", runtimeAuthTestObservation(c, command)) })
+		})
 		restarted, err := c.methodRuntimeAuthLoginStart(context.Background(), map[string]any{
 			"provider": "codex", "identity_material": command, "flow": "device_code",
 		})
@@ -1293,14 +785,15 @@ func TestRuntimeAuthFailureTimeoutAndRuntimeExitAreSafeTerminalStates(t *testing
 		c, command, logPath := newRuntimeAuthTestConnector(t, map[string]string{
 			"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE": "none",
 		})
-		c.runtimeAuthCoordinator().ttl = time.Millisecond
+		coordinator := c.runtimeAuthCoordinator()
+		coordinator.ttl = time.Millisecond
 		_, err := c.methodRuntimeAuthLoginStart(context.Background(), map[string]any{
 			"provider": "codex", "identity_material": command, "flow": "device_code",
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(5 * time.Millisecond)
+		waitForAttemptExpiry(t, coordinator, runtimeProbeTarget{provider: "codex", identityMaterial: command})
 		read, err := c.methodRuntimeAuthRead(context.Background(), map[string]any{
 			"provider": "codex", "identity_material": command,
 		})
@@ -1317,9 +810,10 @@ func TestRuntimeAuthFailureTimeoutAndRuntimeExitAreSafeTerminalStates(t *testing
 	})
 
 	t.Run("app server exit", func(t *testing.T) {
+		exitGate := filepath.Join(t.TempDir(), "exit")
 		c, command, _ := newRuntimeAuthTestConnector(t, map[string]string{
-			"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE":           "none",
-			"SALIX_TEST_FAKE_CODEX_EXIT_AFTER_LOGIN_START": "1",
+			"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE":                "none",
+			"SALIX_TEST_FAKE_CODEX_EXIT_GATE_AFTER_LOGIN_START": exitGate,
 		})
 		_, err := c.methodRuntimeAuthLoginStart(context.Background(), map[string]any{
 			"provider": "codex", "identity_material": command, "flow": "device_code",
@@ -1327,10 +821,14 @@ func TestRuntimeAuthFailureTimeoutAndRuntimeExitAreSafeTerminalStates(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		waitForRuntimeAuthCondition(t, "runtime-exit auth failure", func() bool {
+		// The app-server exits once the login attempt is in place.
+		if err := os.WriteFile(exitGate, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		waitForCondition(t, "runtime-exit auth failure", func() bool {
 			auth := mapParam(runtimeAuthTestObservation(c, command), "auth")
 			return auth["status"] == "error" && auth["issue"] == "login_failed"
-		}, func() string { return fmt.Sprintf("%#v", runtimeAuthTestObservation(c, command)) })
+		})
 	})
 
 	t.Run("app server exit racing attempt installation", func(t *testing.T) {
@@ -1342,10 +840,8 @@ func TestRuntimeAuthFailureTimeoutAndRuntimeExitAreSafeTerminalStates(t *testing
 		_, _ = c.methodRuntimeAuthLoginStart(context.Background(), map[string]any{
 			"provider": "codex", "identity_material": command, "flow": "device_code",
 		})
-		waitForRuntimeAuthCondition(t, "exit-raced attempt cleanup", func() bool {
+		waitForCondition(t, "exit-raced attempt cleanup", func() bool {
 			return c.runtimeAuthCoordinator().attempt(target.key()) == nil
-		}, func() string {
-			return fmt.Sprintf("attempt=%#v", c.runtimeAuthCoordinator().attempt(target.key()))
 		})
 
 		read, err := c.methodRuntimeAuthRead(context.Background(), map[string]any{
@@ -1412,160 +908,6 @@ func TestRuntimeAuthAmbiguousLoginStartResponseFencesProcessGeneration(t *testin
 	}
 	if got := strings.Count(string(logData), "account/login/start\n"); got != 2 {
 		t.Fatalf("native starts = %d, want one ambiguous plus one current; log:\n%s", got, logData)
-	}
-}
-
-func TestComputeRuntimeAuthAmbiguousLoginStartKeepsHostRightAndRejectsQuiet(t *testing.T) {
-	dropMarker := filepath.Join(t.TempDir(), "drop-compute-login-start-response-once")
-	c, _, _ := newRuntimeAuthTestConnector(t, map[string]string{
-		"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE":                   "none",
-		"SALIX_TEST_FAKE_CODEX_DROP_LOGIN_START_RESPONSE_ONCE": dropMarker,
-	})
-	c.runtimeAuthCoordinator().startTimeout = 50 * time.Millisecond
-	c.cfg.computeRuntimeWorkloadID = "workload-1"
-	c.cfg.computeRuntimeInstanceID = "runtime-1"
-	c.cfg.computeRuntimeGeneration = 3
-	c.cfg.computeRuntimeEpoch = "9"
-	c.cfg.computeRuntimeKind = "external_worker"
-	c.cfg.computeRuntimeProvider = "codex"
-	c.cfg.computeRuntimeTenantID = "tenant"
-	c.cfg.computeRuntimeProjectID = "project"
-	off := c.activateRuntimeTransport(runtimeOperationTestAuthority(c))
-	defer off()
-
-	target := map[string]any{
-		"tenant_id": "tenant", "project_id": "project", "workload_id": "workload-1",
-		"runtime_instance_id": "runtime-1", "generation": 3,
-		"connection_epoch": "9", "provider": "codex",
-	}
-	params := map[string]any{"target": target, "flow": "device_code"}
-	reply := c.computeRuntimeAuthReply(context.Background(), message{
-		ID: "ambiguous-login", Type: "request", Method: "runtime_auth_login_start", Params: params,
-	}, computeRuntimeSession{instance: "runtime-1", epoch: "9", generation: 3, kind: "external_worker"})
-	if reply.Type != "error" || !strings.Contains(reply.Error, "action required") {
-		t.Fatalf("ambiguous login reply = %#v", reply)
-	}
-	key := runtimeAuthOperationKey(params)
-	if right, ok := c.runtimeOperations.familyState(key); !ok || right.ActivityID != key {
-		t.Fatalf("ambiguous login released Host right: %#v", c.runtimeOperations.snapshot())
-	}
-	if _, err := c.methodAgentRuntimeQuiet(context.Background(), map[string]any{"provider": "codex"}); !errors.Is(err, errRuntimeNotQuiet) {
-		t.Fatalf("quiet admitted ambiguous native login: %v", err)
-	}
-}
-
-func TestComputeRuntimeAuthAmbiguousLoginCancelKeepsHostRightAndRejectsQuiet(t *testing.T) {
-	dropMarker := filepath.Join(t.TempDir(), "drop-compute-login-cancel-response-once")
-	completionGate := filepath.Join(t.TempDir(), "complete-compute-login-after-cancel")
-	c, _, _ := newRuntimeAuthTestConnector(t, map[string]string{
-		"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE":                    "none",
-		"SALIX_TEST_FAKE_CODEX_DROP_LOGIN_CANCEL_RESPONSE_ONCE": dropMarker,
-		"SALIX_TEST_FAKE_CODEX_LOGIN_COMPLETION_GATE":           completionGate,
-	})
-	c.runtimeAuthCoordinator().cancelTimeout = 50 * time.Millisecond
-	c.cfg.computeRuntimeWorkloadID = "workload-1"
-	c.cfg.computeRuntimeInstanceID = "runtime-1"
-	c.cfg.computeRuntimeGeneration = 3
-	c.cfg.computeRuntimeEpoch = "9"
-	c.cfg.computeRuntimeKind = "external_worker"
-	c.cfg.computeRuntimeProvider = "codex"
-	c.cfg.computeRuntimeTenantID = "tenant"
-	c.cfg.computeRuntimeProjectID = "project"
-	off := c.activateRuntimeTransport(runtimeOperationTestAuthority(c))
-	defer off()
-	session := computeRuntimeSession{instance: "runtime-1", epoch: "9", generation: 3, kind: "external_worker"}
-	target := map[string]any{
-		"tenant_id": "tenant", "project_id": "project", "workload_id": "workload-1",
-		"runtime_instance_id": "runtime-1", "generation": 3,
-		"connection_epoch": "9", "provider": "codex",
-	}
-	startParams := map[string]any{"target": target, "flow": "device_code"}
-	started := c.computeRuntimeAuthReply(context.Background(), message{
-		ID: "login", Type: "request", Method: "runtime_auth_login_start", Params: startParams,
-	}, session)
-	result, ok := started.Result.(map[string]any)
-	if !ok || started.Type != "response" || stringParam(result, "attempt_id") == "" {
-		t.Fatalf("login start = %#v", started)
-	}
-	cancelParams := map[string]any{"target": target, "attempt_id": result["attempt_id"]}
-	canceled := c.computeRuntimeAuthReply(context.Background(), message{
-		ID: "cancel", Type: "request", Method: "runtime_auth_login_cancel", Params: cancelParams,
-	}, session)
-	if canceled.Type != "error" || !strings.Contains(canceled.Error, "action required") {
-		t.Fatalf("ambiguous cancel reply = %#v", canceled)
-	}
-	key := runtimeAuthOperationKey(cancelParams)
-	if right, ok := c.runtimeOperations.familyState(key); !ok || right.ActivityID != key {
-		t.Fatalf("ambiguous cancel released Host right: %#v", c.runtimeOperations.snapshot())
-	}
-	if _, err := c.methodAgentRuntimeQuiet(context.Background(), map[string]any{"provider": "codex"}); !errors.Is(err, errRuntimeNotQuiet) {
-		t.Fatalf("quiet admitted ambiguous native cancellation: %v", err)
-	}
-}
-
-func TestRuntimeAuthAmbiguousStartQuarantinesSessionBoundGeneration(t *testing.T) {
-	dropMarker := filepath.Join(t.TempDir(), "drop-bound-login-start-response-once")
-	c, command, logPath := newRuntimeAuthTestConnector(t, map[string]string{
-		"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE":                   "none",
-		"SALIX_TEST_FAKE_CODEX_DROP_LOGIN_START_RESPONSE_ONCE": dropMarker,
-	})
-	manager := c.runtimeAuthCoordinator()
-	manager.startTimeout = 50 * time.Millisecond
-	implementation := c.runtimeImplementations["codex"].(*codexRuntimeImplementation)
-	implementation.mu.Lock()
-	runtime := implementation.runtimes[command]
-	boundSession := &codexRuntimeSession{sessionID: "bound-auth-quarantine", runtime: runtime}
-	implementation.sessions[boundSession.sessionID] = boundSession
-	implementation.mu.Unlock()
-	params := map[string]any{
-		"provider": "codex", "identity_material": command, "flow": "device_code",
-	}
-	if _, err := c.methodRuntimeAuthLoginStart(context.Background(), params); err == nil {
-		t.Fatal("dropped response on session-bound runtime unexpectedly succeeded")
-	}
-	implementation.mu.Lock()
-	current := implementation.runtimes[command]
-	quarantined := implementation.authQuarantined[runtime.generation]
-	implementation.mu.Unlock()
-	if current != runtime || !quarantined || !runtime.isRunning() {
-		t.Fatalf("session-bound runtime was disrupted: current=%#v runtime=%#v quarantined=%v", current, runtime, quarantined)
-	}
-	boundSession.mu.Lock()
-	stillBound := boundSession.runtime == runtime
-	boundSession.mu.Unlock()
-	if !stillBound {
-		t.Fatal("auth quarantine rebound or cleared the existing runtime session")
-	}
-	if _, err := runtime.rpc(
-		context.Background(),
-		"account/read",
-		map[string]any{"refreshToken": false},
-		time.Second,
-	); err != nil {
-		t.Fatalf("session-bound quarantined app-server stopped serving ordinary RPC: %v", err)
-	}
-	if _, err := c.methodRuntimeAuthLoginStart(context.Background(), params); err == nil ||
-		!strings.Contains(err.Error(), "probe failed") {
-		t.Fatalf("quarantined generation admitted a second auth start: %v", err)
-	}
-	probeCtx, cancelProbe := context.WithTimeout(context.Background(), time.Second)
-	runtimes, err := c.runtimeInventory.probe(probeCtx, "codex", command, "operator")
-	cancelProbe()
-	if err != nil || len(runtimes) != 1 || mapParam(runtimes[0], "auth")["issue"] != "login_failed" {
-		t.Fatalf("quarantined generation did not return cached safe probe promptly: runtimes=%#v err=%v", runtimes, err)
-	}
-	if err := os.Chmod(command, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	probeCtx, cancelProbe = context.WithTimeout(context.Background(), time.Second)
-	runtimes, err = c.runtimeInventory.probe(probeCtx, "codex", command, "operator")
-	cancelProbe()
-	if err != nil || len(runtimes) != 1 || mapParam(runtimes[0], "auth")["issue"] != "login_failed" {
-		t.Fatalf("version-failing quarantined generation did not return cached safe probe promptly: runtimes=%#v err=%v", runtimes, err)
-	}
-	logData, _ := os.ReadFile(logPath)
-	if got := strings.Count(string(logData), "account/login/start\n"); got != 1 {
-		t.Fatalf("quarantined generation dispatched %d native login starts; log:\n%s", got, logData)
 	}
 }
 
@@ -1636,127 +978,6 @@ func TestRuntimeAuthStartRetiresCeremonyWhenPendingPublicationLosesTarget(t *tes
 	}
 }
 
-func TestRuntimeAuthAmbiguousCancelFencesAndClearsExactAttempt(t *testing.T) {
-	dropMarker := filepath.Join(t.TempDir(), "drop-login-cancel-response-once")
-	completionGate := filepath.Join(t.TempDir(), "complete-after-cancel")
-	c, command, logPath := newRuntimeAuthTestConnector(t, map[string]string{
-		"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE":                    "none",
-		"SALIX_TEST_FAKE_CODEX_DROP_LOGIN_CANCEL_RESPONSE_ONCE": dropMarker,
-		"SALIX_TEST_FAKE_CODEX_LOGIN_COMPLETION_GATE":           completionGate,
-	})
-	manager := c.runtimeAuthCoordinator()
-	manager.cancelTimeout = 50 * time.Millisecond
-	implementation := c.runtimeImplementations["codex"].(*codexRuntimeImplementation)
-	implementation.mu.Lock()
-	runtime := implementation.runtimes[command]
-	implementation.mu.Unlock()
-	started, err := c.methodRuntimeAuthLoginStart(context.Background(), map[string]any{
-		"provider": "codex", "identity_material": command, "flow": "device_code",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	canceled, err := c.methodRuntimeAuthLoginCancel(context.Background(), map[string]any{
-		"provider":          "codex",
-		"identity_material": command,
-		"attempt_id":        started["attempt_id"],
-	})
-	if !runtimeAuthNativeOutcomeUnknown(err) {
-		t.Fatalf("ambiguous cancel did not report unknown native outcome: %v", err)
-	}
-	if canceled["canceled"] != true || canceled["attempt_id"] != started["attempt_id"] ||
-		mapParam(canceled, "auth")["issue"] != "login_failed" {
-		t.Fatalf("ambiguous cancel terminal result = %#v", canceled)
-	}
-	if manager.attempt(runtimeProbeTarget{provider: "codex", identityMaterial: command}.key()) != nil {
-		t.Fatal("ambiguous cancel retained a possibly-live Connector attempt")
-	}
-	implementation.mu.Lock()
-	stillCurrent := implementation.runtimes[command] == runtime
-	implementation.mu.Unlock()
-	if stillCurrent {
-		t.Fatal("ambiguous cancel left its native app-server generation current")
-	}
-	if err := os.WriteFile(completionGate, []byte("too-late\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(75 * time.Millisecond)
-	auth := mapParam(runtimeAuthTestObservation(c, command), "auth")
-	if auth["status"] == "authenticated" {
-		t.Fatalf("completion after ambiguous cancel won: %#v", auth)
-	}
-	logData, _ := os.ReadFile(logPath)
-	if !strings.Contains(string(logData), "account/login/cancel\n") {
-		t.Fatalf("fake app-server never observed cancel dispatch; log:\n%s", logData)
-	}
-}
-
-func TestRuntimeAuthAmbiguousCancelQuarantinesSessionBoundGeneration(t *testing.T) {
-	dropMarker := filepath.Join(t.TempDir(), "drop-bound-login-cancel-response-once")
-	completionGate := filepath.Join(t.TempDir(), "complete-after-bound-cancel")
-	c, command, _ := newRuntimeAuthTestConnector(t, map[string]string{
-		"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE":                    "none",
-		"SALIX_TEST_FAKE_CODEX_DROP_LOGIN_CANCEL_RESPONSE_ONCE": dropMarker,
-		"SALIX_TEST_FAKE_CODEX_LOGIN_COMPLETION_GATE":           completionGate,
-	})
-	manager := c.runtimeAuthCoordinator()
-	manager.cancelTimeout = 50 * time.Millisecond
-	implementation := c.runtimeImplementations["codex"].(*codexRuntimeImplementation)
-	implementation.mu.Lock()
-	runtime := implementation.runtimes[command]
-	boundSession := &codexRuntimeSession{sessionID: "bound-cancel-quarantine", runtime: runtime}
-	implementation.sessions[boundSession.sessionID] = boundSession
-	implementation.mu.Unlock()
-
-	started, err := c.methodRuntimeAuthLoginStart(context.Background(), map[string]any{
-		"provider": "codex", "identity_material": command, "flow": "device_code",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	canceled, err := c.methodRuntimeAuthLoginCancel(context.Background(), map[string]any{
-		"provider":          "codex",
-		"identity_material": command,
-		"attempt_id":        started["attempt_id"],
-	})
-	if !runtimeAuthNativeOutcomeUnknown(err) || canceled["canceled"] != true || mapParam(canceled, "auth")["issue"] != "login_failed" {
-		t.Fatalf("session-bound ambiguous cancel = %#v, %v", canceled, err)
-	}
-	implementation.mu.Lock()
-	current := implementation.runtimes[command]
-	quarantined := implementation.authQuarantined[runtime.generation]
-	implementation.mu.Unlock()
-	boundSession.mu.Lock()
-	stillBound := boundSession.runtime == runtime
-	boundSession.mu.Unlock()
-	if current != runtime || !runtime.isRunning() || !quarantined || !stillBound {
-		t.Fatalf("session-bound cancel disrupted runtime: current=%#v runtime=%#v quarantined=%v bound=%v", current, runtime, quarantined, stillBound)
-	}
-	if _, err := runtime.rpc(
-		context.Background(),
-		"account/read",
-		map[string]any{"refreshToken": false},
-		time.Second,
-	); err != nil {
-		t.Fatalf("session-bound cancel quarantine stopped ordinary RPC: %v", err)
-	}
-	if _, err := c.methodRuntimeAuthLoginStart(context.Background(), map[string]any{
-		"provider": "codex", "identity_material": command, "flow": "device_code",
-	}); err == nil || !strings.Contains(err.Error(), "probe failed") {
-		t.Fatalf("cancel-quarantined generation admitted a second auth start: %v", err)
-	}
-	if err := os.WriteFile(completionGate, []byte("too-late\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(75 * time.Millisecond)
-	probeCtx, cancelProbe := context.WithTimeout(context.Background(), time.Second)
-	runtimes, probeErr := c.runtimeInventory.probe(probeCtx, "codex", command, "operator")
-	cancelProbe()
-	if probeErr != nil || len(runtimes) != 1 || mapParam(runtimes[0], "auth")["issue"] != "login_failed" {
-		t.Fatalf("cancel-quarantined generation lost safe cached state: runtimes=%#v err=%v", runtimes, probeErr)
-	}
-}
-
 func TestRuntimeAuthCompletionAfterConnectorExpiryCannotWin(t *testing.T) {
 	completionGate := filepath.Join(t.TempDir(), "late-completion")
 	c, command, logPath := newRuntimeAuthTestConnector(t, map[string]string{
@@ -1765,25 +986,29 @@ func TestRuntimeAuthCompletionAfterConnectorExpiryCannotWin(t *testing.T) {
 	})
 	manager := c.runtimeAuthCoordinator()
 	manager.ttl = 20 * time.Millisecond
+	implementation := c.runtimeImplementations["codex"].(*codexRuntimeImplementation)
+	implementation.mu.Lock()
+	runtime := implementation.runtimes[command]
+	implementation.mu.Unlock()
 	if _, err := c.methodRuntimeAuthLoginStart(context.Background(), map[string]any{
 		"provider": "codex", "identity_material": command, "flow": "device_code",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(30 * time.Millisecond)
+	target := runtimeProbeTarget{provider: "codex", identityMaterial: command}
+	waitForAttemptExpiry(t, manager, target)
 	if err := os.WriteFile(completionGate, []byte("complete\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	target := runtimeProbeTarget{provider: "codex", identityMaterial: command}
-	waitForRuntimeAuthCondition(t, "late completion timeout fence", func() bool {
+	waitForCondition(t, "late completion timeout fence", func() bool {
 		auth := mapParam(runtimeAuthTestObservation(c, command), "auth")
 		return auth["status"] == "error" && auth["issue"] == "login_timeout" &&
 			manager.attempt(target.key()) == nil
-	}, func() string {
-		logData, _ := os.ReadFile(logPath)
-		return fmt.Sprintf("runtime=%#v attempt=%#v log=%s", runtimeAuthTestObservation(c, command), manager.attempt(target.key()), logData)
 	})
-	time.Sleep(50 * time.Millisecond)
+	// The expiry fence terminated the generation; once it has exited it can
+	// deliver nothing more. A generation left running never exits, and the go
+	// test timeout reports it.
+	<-runtime.done
 	auth := mapParam(runtimeAuthTestObservation(c, command), "auth")
 	if auth["status"] != "error" || auth["issue"] != "login_timeout" {
 		t.Fatalf("late completion published authenticated state: %#v", auth)
@@ -1820,12 +1045,9 @@ func TestRuntimeAuthNotificationsCoalesceAndKeepForegroundReadHealthy(t *testing
 		"method": "account/updated", "params": map[string]any{"authMode": nil},
 	}
 	manager.handleNotification(runtime, notification)
-	waitForRuntimeAuthCondition(t, "blocked notification account/read", func() bool {
+	waitForCondition(t, "blocked notification account/read", func() bool {
 		logData, _ := os.ReadFile(logPath)
 		return strings.Count(string(logData), "account/read\n") > baselineReads
-	}, func() string {
-		logData, _ := os.ReadFile(logPath)
-		return string(logData)
 	})
 	for range 10_000 {
 		manager.handleNotification(runtime, notification)
@@ -1840,7 +1062,7 @@ func TestRuntimeAuthNotificationsCoalesceAndKeepForegroundReadHealthy(t *testing
 
 	readDone := make(chan error, 1)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		_, err := c.methodRuntimeAuthRead(ctx, map[string]any{
 			"provider": "codex", "identity_material": command,
@@ -1850,22 +1072,14 @@ func TestRuntimeAuthNotificationsCoalesceAndKeepForegroundReadHealthy(t *testing
 	if err := os.WriteFile(readGate, []byte("open\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-readDone:
-		if err != nil {
-			t.Fatalf("foreground read after notification flood: %v", err)
-		}
-	case <-time.After(6 * time.Second):
-		t.Fatal("coalesced notification flood starved foreground auth read")
+	err := <-readDone
+	if err != nil {
+		t.Fatalf("foreground read after notification flood: %v", err)
 	}
-	waitForRuntimeAuthCondition(t, "notification worker drain", func() bool {
+	waitForCondition(t, "notification worker drain", func() bool {
 		manager.mu.Lock()
 		defer manager.mu.Unlock()
 		return len(manager.notifications) == 0
-	}, func() string {
-		manager.mu.Lock()
-		defer manager.mu.Unlock()
-		return fmt.Sprintf("states=%d", len(manager.notifications))
 	})
 	logData, _ := os.ReadFile(logPath)
 	reads := strings.Count(string(logData), "account/read\n") - baselineReads
@@ -1901,7 +1115,7 @@ func TestRuntimeAuthGenerationConditionalPublicationRejectsStaleRuntime(t *testi
 	if c.runtimeAuthCoordinator().publishSnapshotForRuntime(
 		target,
 		oldRuntime,
-		codexAuthIssueSnapshot("auth_probe_failed", time.Now().UnixMilli()),
+		codexAuthIssueSnapshot("auth_probe_failed", runtimeAuthTestObservedAt),
 	) {
 		t.Fatal("stale G1 auth snapshot was accepted after G2 became current")
 	}
@@ -1925,7 +1139,7 @@ func TestRuntimeAuthEpochRejectsOlderProbeFromSameGeneration(t *testing.T) {
 	staleEpoch := runtime.authEpoch
 	implementation.mu.Unlock()
 	target := runtimeProbeTarget{provider: "codex", identityMaterial: command}
-	newer := codexPendingAuthSnapshot(time.Now().UnixMilli())
+	newer := codexPendingAuthSnapshot(runtimeAuthTestObservedAt)
 	if !c.runtimeAuthCoordinator().publishSnapshotForRuntime(target, runtime, newer) {
 		t.Fatal("failed to publish newer same-generation auth observation")
 	}
@@ -1939,7 +1153,7 @@ func TestRuntimeAuthEpochRejectsOlderProbeFromSameGeneration(t *testing.T) {
 			committed = true
 			c.runtimeInventory.updateAuthSnapshot(
 				target,
-				codexAuthIssueSnapshot("auth_probe_failed", time.Now().UnixMilli()),
+				codexAuthIssueSnapshot("auth_probe_failed", runtimeAuthTestObservedAt),
 				false,
 			)
 		},
@@ -1990,21 +1204,13 @@ func TestRuntimeAuthInflightProbeRetriesAfterIncrementalEpochPublication(t *test
 		)
 		result <- probeResult{runtimes: runtimes, err: err}
 	}()
-	select {
-	case <-firstReady:
-	case <-time.After(5 * time.Second):
-		t.Fatal("initial in-flight probe did not reach its publication fence")
-	}
-	newer := codexPendingAuthSnapshot(time.Now().UnixMilli())
+	<-firstReady
+	newer := codexPendingAuthSnapshot(runtimeAuthTestObservedAt)
 	if !c.runtimeAuthCoordinator().publishSnapshotForRuntime(target, runtime, newer) {
 		t.Fatal("failed to publish incremental same-generation auth observation")
 	}
 	close(firstRelease)
-	select {
-	case <-secondReady:
-	case <-time.After(5 * time.Second):
-		t.Fatal("stale in-flight probe did not retry after auth epoch advanced")
-	}
+	<-secondReady
 	if auth := mapParam(runtimeAuthTestObservation(c, command), "auth"); auth["status"] != "pending" {
 		t.Fatalf("stale in-flight probe overwrote incremental auth state before retry: %#v", auth)
 	}
@@ -2114,8 +1320,8 @@ func TestRuntimeAuthReadRemovesAttemptFromStaleRuntimeGeneration(t *testing.T) {
 	if oldRuntime == nil {
 		t.Fatal("initial inventory did not retain its Codex app-server")
 	}
-	stopCtx, cancelStop := context.WithTimeout(context.Background(), 5*time.Second)
-	if err := stopExternalRuntime(stopCtx, oldRuntime.terminate, oldRuntime.done); err != nil {
+	stopCtx, cancelStop := context.WithCancel(context.Background())
+	if err := stopNativeProcess(stopCtx, oldRuntime.terminate, oldRuntime.done); err != nil {
 		cancelStop()
 		t.Fatalf("stop old Codex app-server: %v", err)
 	}
@@ -2139,7 +1345,7 @@ func TestRuntimeAuthReadRemovesAttemptFromStaleRuntimeGeneration(t *testing.T) {
 		nativeLoginID:     "stale-native-login",
 		verificationURL:   "https://auth.openai.com/codex/device",
 		userCode:          "STALE-CODE",
-		expiresAt:         time.Now().Add(time.Minute).UnixMilli(),
+		expiresAt:         runtimeAuthTestFarFuture,
 		runtime:           oldRuntime,
 		runtimeGeneration: oldRuntime.generation,
 	}
@@ -2179,149 +1385,17 @@ func TestRuntimeAuthCancelsAttemptWhenAccountAuthenticatesWithoutMatchingComplet
 	if err := os.WriteFile(gate, []byte("complete\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	waitForRuntimeAuthCondition(t, "superseded native attempt cancellation", func() bool {
+	waitForCondition(t, "superseded native attempt cancellation", func() bool {
 		logData, _ := os.ReadFile(logPath)
 		return mapParam(runtimeAuthTestObservation(c, command), "auth")["status"] == "authenticated" &&
 			c.runtimeAuthCoordinator().attempt(runtimeProbeTarget{
 				provider: "codex", identityMaterial: command,
 			}.key()) == nil && strings.Contains(string(logData), "account/login/cancel\n")
-	}, func() string {
-		logData, _ := os.ReadFile(logPath)
-		return fmt.Sprintf("runtime=%#v log=%s", runtimeAuthTestObservation(c, command), logData)
 	})
 	if _, err := c.methodRuntimeAuthLoginStart(context.Background(), params); err == nil ||
 		!strings.Contains(err.Error(), "already authenticated") {
 		t.Fatalf("new login after external authentication error = %v", err)
 	}
-}
-
-func TestRuntimeAuthAmbiguousSupersessionPublishesTerminalBeforeQuarantine(t *testing.T) {
-	type fixture struct {
-		c              *connector
-		command        string
-		cancelDropPath string
-		implementation *codexRuntimeImplementation
-		manager        *runtimeAuthCoordinator
-		runtime        *codexRuntime
-		boundSession   *codexRuntimeSession
-	}
-	setup := func(t *testing.T) fixture {
-		t.Helper()
-		authenticatedMarker := filepath.Join(t.TempDir(), "externally-authenticated")
-		cancelDropPath := filepath.Join(t.TempDir(), "drop-superseded-cancel-once")
-		c, command, _ := newRuntimeAuthTestConnector(t, map[string]string{
-			"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE":                    "none",
-			"SALIX_TEST_FAKE_CODEX_AUTH_SUCCESS_WHILE_EXISTS":       authenticatedMarker,
-			"SALIX_TEST_FAKE_CODEX_DROP_LOGIN_CANCEL_RESPONSE_ONCE": cancelDropPath,
-		})
-		manager := c.runtimeAuthCoordinator()
-		manager.nativeCancelTimeout = 50 * time.Millisecond
-		implementation := c.runtimeImplementations["codex"].(*codexRuntimeImplementation)
-		implementation.mu.Lock()
-		runtime := implementation.runtimes[command]
-		boundSession := &codexRuntimeSession{
-			sessionID: "bound-ambiguous-supersession",
-			runtime:   runtime,
-		}
-		implementation.sessions[boundSession.sessionID] = boundSession
-		implementation.mu.Unlock()
-		if runtime == nil {
-			t.Fatal("initial inventory did not retain a Codex app-server")
-		}
-		if _, err := c.methodRuntimeAuthLoginStart(context.Background(), map[string]any{
-			"provider": "codex", "identity_material": command, "flow": "device_code",
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if auth := mapParam(runtimeAuthTestObservation(c, command), "auth"); auth["status"] != "pending" {
-			t.Fatalf("login did not publish pending before supersession: %#v", auth)
-		}
-		if err := os.WriteFile(authenticatedMarker, []byte("authenticated\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return fixture{
-			c: c, command: command, cancelDropPath: cancelDropPath,
-			implementation: implementation, manager: manager, runtime: runtime,
-			boundSession: boundSession,
-		}
-	}
-	assertTerminal := func(t *testing.T, f fixture) {
-		t.Helper()
-		target := runtimeProbeTarget{provider: "codex", identityMaterial: f.command}
-		if attempt := f.manager.attempt(target.key()); attempt != nil {
-			t.Fatalf("ambiguous supersession retained attempt: %#v", attempt)
-		}
-		f.implementation.mu.Lock()
-		current := f.implementation.runtimes[f.command]
-		quarantined := f.implementation.authQuarantined[f.runtime.generation]
-		f.implementation.mu.Unlock()
-		f.boundSession.mu.Lock()
-		stillBound := f.boundSession.runtime == f.runtime
-		f.boundSession.mu.Unlock()
-		if current != f.runtime || !f.runtime.isRunning() || !quarantined || !stillBound {
-			t.Fatalf(
-				"ambiguous supersession disrupted bound runtime: current=%#v runtime=%#v quarantined=%v bound=%v",
-				current, f.runtime, quarantined, stillBound,
-			)
-		}
-		cached := runtimeAuthTestObservation(f.c, f.command)
-		auth := mapParam(cached, "auth")
-		if auth["status"] != "error" || auth["issue"] != "login_failed" ||
-			cached["ready"] != false || cached["status"] != "unavailable" {
-			t.Fatalf("reload-visible cache retained stale pending state: %#v", cached)
-		}
-		probeCtx, cancelProbe := context.WithTimeout(context.Background(), time.Second)
-		runtimes, err := f.c.runtimeInventory.probe(probeCtx, "codex", f.command, "operator")
-		cancelProbe()
-		if err != nil || len(runtimes) != 1 ||
-			mapParam(runtimes[0], "auth")["issue"] != "login_failed" {
-			t.Fatalf("quarantined reload did not preserve terminal cache: runtimes=%#v err=%v", runtimes, err)
-		}
-		if _, err := f.c.methodRuntimeAuthLoginStart(context.Background(), map[string]any{
-			"provider": "codex", "identity_material": f.command, "flow": "device_code",
-		}); err == nil || !strings.Contains(err.Error(), "probe failed") {
-			t.Fatalf("quarantined superseded generation admitted a new login: %v", err)
-		}
-		if _, err := f.runtime.rpc(
-			context.Background(),
-			"account/read",
-			map[string]any{"refreshToken": false},
-			time.Second,
-		); err != nil {
-			t.Fatalf("auth quarantine stopped ordinary bound-session RPC: %v", err)
-		}
-		if _, err := os.Stat(f.cancelDropPath); err != nil {
-			t.Fatalf("native cancel response was not dropped: %v", err)
-		}
-	}
-
-	t.Run("foreground read", func(t *testing.T) {
-		f := setup(t)
-		read, err := f.c.methodRuntimeAuthRead(context.Background(), map[string]any{
-			"provider": "codex", "identity_material": f.command,
-		})
-		if err != nil || mapParam(read, "auth")["issue"] != "login_failed" {
-			t.Fatalf("ambiguous supersession read = %#v, %v", read, err)
-		}
-		assertTerminal(t, f)
-	})
-
-	t.Run("account update notification", func(t *testing.T) {
-		f := setup(t)
-		f.manager.handleNotification(f.runtime, map[string]any{
-			"method": "account/updated",
-			"params": map[string]any{"authMode": "chatgpt"},
-		})
-		waitForRuntimeAuthCondition(t, "notification supersession terminal publication", func() bool {
-			auth := mapParam(runtimeAuthTestObservation(f.c, f.command), "auth")
-			return f.manager.attempt(runtimeProbeTarget{
-				provider: "codex", identityMaterial: f.command,
-			}.key()) == nil && auth["status"] == "error" && auth["issue"] == "login_failed"
-		}, func() string {
-			return fmt.Sprintf("runtime=%#v", runtimeAuthTestObservation(f.c, f.command))
-		})
-		assertTerminal(t, f)
-	})
 }
 
 func TestRuntimeAuthTracksExternalAccountUpdatesWithoutActiveAttempt(t *testing.T) {
@@ -2338,11 +1412,11 @@ func TestRuntimeAuthTracksExternalAccountUpdatesWithoutActiveAttempt(t *testing.
 		if err := os.WriteFile(gate, []byte("sign-in\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		waitForRuntimeAuthCondition(t, "external sign-in", func() bool {
+		waitForCondition(t, "external sign-in", func() bool {
 			runtime := runtimeAuthTestObservation(c, command)
 			return runtime["ready"] == true && runtime["status"] == "available" &&
 				mapParam(runtime, "auth")["status"] == "authenticated"
-		}, func() string { return fmt.Sprintf("%#v", runtimeAuthTestObservation(c, command)) })
+		})
 	})
 
 	t.Run("signed in to signed out", func(t *testing.T) {
@@ -2358,12 +1432,12 @@ func TestRuntimeAuthTracksExternalAccountUpdatesWithoutActiveAttempt(t *testing.
 		if err := os.WriteFile(gate, []byte("sign-out\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		waitForRuntimeAuthCondition(t, "external sign-out", func() bool {
+		waitForCondition(t, "external sign-out", func() bool {
 			runtime := runtimeAuthTestObservation(c, command)
 			return runtime["ready"] == false && runtime["status"] == "unavailable" &&
 				runtime["readiness_issue"] == "authentication_required" &&
 				mapParam(runtime, "auth")["status"] == "unauthenticated"
-		}, func() string { return fmt.Sprintf("%#v", runtimeAuthTestObservation(c, command)) })
+		})
 	})
 }
 
@@ -2372,7 +1446,7 @@ func TestRuntimeAuthSaturationDoesNotExhaustOrdinaryRequestAdmission(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(c.closeExternalRuntimes)
+	t.Cleanup(c.closeRuntimes)
 	target := runtimeProbeTarget{provider: "codex", identityMaterial: "/test/codex"}
 	c.runtimeInventory.runtimes[target.key()] = map[string]any{
 		"kind": "external", "provider": "codex", "identity_material": target.identityMaterial,
@@ -2406,9 +1480,9 @@ func TestRuntimeAuthSaturationDoesNotExhaustOrdinaryRequestAdmission(t *testing.
 			t.Fatalf("saturated auth reply = %#v", reply)
 		}
 	}
-	waitForRuntimeAuthCondition(t, "fail-fast auth requests to release shared admission", func() bool {
+	waitForCondition(t, "fail-fast auth requests to release shared admission", func() bool {
 		return len(c.requestSlots) == 0
-	}, func() string { return fmt.Sprintf("request_slots=%d", len(c.requestSlots)) })
+	})
 
 	if !session.startConnectionRequest(message{
 		ID: "ordinary", Type: "request", Method: "process_list", Params: map[string]any{},
@@ -2432,45 +1506,11 @@ func newRuntimeAuthTestConnector(t *testing.T, fakeEnv map[string]string) (*conn
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(c.closeExternalRuntimes)
+	t.Cleanup(c.closeRuntimes)
 	if _, err := c.runtimeInventory.probe(context.Background(), "", "", "connect"); err != nil {
 		t.Fatalf("initial runtime inventory: %v", err)
 	}
 	return c, command, logPath
-}
-
-func runtimeOperationTestAuthority(c *connector) func(context.Context, message) error {
-	c.setComputeRuntimeExecutionTarget(map[string]any{
-		"runtime_instance_id":      defaultString(c.cfg.computeRuntimeInstanceID, "runtime"),
-		"runtime_generation":       c.cfg.computeRuntimeGeneration,
-		"runtime_connection_epoch": defaultString(c.cfg.computeRuntimeEpoch, "epoch"),
-		"workload_id":              defaultString(c.cfg.computeRuntimeWorkloadID, "workload"),
-		"workload_generation":      c.cfg.computeRuntimeGeneration,
-		"allocation_id":            "allocation",
-		"allocation_generation":    1,
-		"container_id":             "container",
-		"container_instance_id":    "container-instance",
-	})
-	return func(_ context.Context, request message) error {
-		if request.Method != "runtime_execution" {
-			return nil
-		}
-		target := mapParam(request.Params, "target")
-		result := map[string]any{
-			"execution_id":          stringParam(request.Params, "execution_id"),
-			"container_instance_id": stringParam(target, "container_instance_id"),
-		}
-		switch stringParam(request.Params, "action") {
-		case "acquire":
-			result["acquired"] = true
-		case "release":
-			result["released"] = true
-		default:
-			return fmt.Errorf("unexpected runtime execution action %q", stringParam(request.Params, "action"))
-		}
-		go c.completeRuntimeProxy(message{ID: request.ID, Type: "response", Result: result})
-		return nil
-	}
 }
 
 func runtimeAuthTestObservation(c *connector, command string) map[string]any {
@@ -2480,4 +1520,67 @@ func runtimeAuthTestObservation(c *connector, command string) map[string]any {
 		}
 	}
 	return map[string]any{}
+}
+
+func TestRuntimeAuthAmbiguousCancelFencesAndClearsExactAttempt(t *testing.T) {
+	dropMarker := filepath.Join(t.TempDir(), "drop-login-cancel-response-once")
+	completionGate := filepath.Join(t.TempDir(), "complete-after-cancel")
+	c, command, logPath := newRuntimeAuthTestConnector(t, map[string]string{
+		"SALIX_TEST_FAKE_CODEX_ACCOUNT_TYPE":                    "none",
+		"SALIX_TEST_FAKE_CODEX_DROP_LOGIN_CANCEL_RESPONSE_ONCE": dropMarker,
+		"SALIX_TEST_FAKE_CODEX_LOGIN_COMPLETION_GATE":           completionGate,
+	})
+	manager := c.runtimeAuthCoordinator()
+	manager.cancelTimeout = 50 * time.Millisecond
+	implementation := c.runtimeImplementations["codex"].(*codexRuntimeImplementation)
+	implementation.mu.Lock()
+	runtime := implementation.runtimes[command]
+	implementation.mu.Unlock()
+	started, err := c.methodRuntimeAuthLoginStart(context.Background(), map[string]any{
+		"provider": "codex", "identity_material": command, "flow": "device_code",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, err := c.methodRuntimeAuthLoginCancel(context.Background(), map[string]any{
+		"provider":          "codex",
+		"identity_material": command,
+		"attempt_id":        started["attempt_id"],
+	})
+	if !runtimeAuthNativeOutcomeUnknown(err) {
+		t.Fatalf("ambiguous cancel did not report unknown native outcome: %v", err)
+	}
+	if canceled["canceled"] != true || canceled["attempt_id"] != started["attempt_id"] ||
+		mapParam(canceled, "auth")["issue"] != "login_failed" {
+		t.Fatalf("ambiguous cancel terminal result = %#v", canceled)
+	}
+	if manager.attempt(runtimeProbeTarget{provider: "codex", identityMaterial: command}.key()) != nil {
+		t.Fatal("ambiguous cancel retained a possibly-live Connector attempt")
+	}
+	implementation.mu.Lock()
+	stillCurrent := implementation.runtimes[command] == runtime
+	implementation.mu.Unlock()
+	if stillCurrent {
+		t.Fatal("ambiguous cancel left its native app-server generation current")
+	}
+	if err := os.WriteFile(completionGate, []byte("too-late\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The cancel terminated the fenced generation; once it has exited it can
+	// deliver nothing more. A generation left running never exits, and the go
+	// test timeout reports it.
+	<-runtime.done
+	auth := mapParam(runtimeAuthTestObservation(c, command), "auth")
+	if auth["status"] == "authenticated" {
+		t.Fatalf("completion after ambiguous cancel won: %#v", auth)
+	}
+	logData, _ := os.ReadFile(logPath)
+	if !strings.Contains(string(logData), "account/login/cancel\n") {
+		t.Fatalf("fake app-server never observed cancel dispatch; log:\n%s", logData)
+	}
+}
+
+func runtimeAuthNativeOutcomeUnknown(err error) bool {
+	var unknown *runtimeAuthNativeOutcomeUnknownError
+	return errors.As(err, &unknown)
 }

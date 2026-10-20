@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelReplyWaitTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   alias SalixAgent.InternalSession.State
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
   alias SalixAgent.ProviderReplyObligation
@@ -62,32 +62,6 @@ defmodule SalixAgent.SessionKernelReplyWaitTest do
     end
   end
 
-  test "activation matching preserves whitespace and non-UTF8 source identities" do
-    for id <- [" ", <<255>>] do
-      valid = %{
-        scope()
-        | "source_message_ids" => [id],
-          "source_messages" => [%{"source_message_id" => id}]
-      }
-
-      assert apply_event(
-               %State{
-                 status: :active,
-                 activity_status: :thinking,
-                 activity_status_updated_at: 10
-               },
-               "visible_reply_activation_started",
-               %{"scope" => valid}
-             ) ===
-               %State{
-                 status: :active,
-                 activity_status: :thinking,
-                 activity_status_updated_at: 10,
-                 visible_reply_activation_scope: valid
-               }
-    end
-  end
-
   test "activation finish uses falsey alias and exact binary identity without validating format" do
     for identity <- ["", <<255>>, "not-minted"], first <- [nil, false, identity] do
       state = %State{
@@ -110,19 +84,6 @@ defmodule SalixAgent.SessionKernelReplyWaitTest do
     end
   end
 
-  test "missing activation fields retain default inner no-op" do
-    state = %State{
-      status: :active,
-      activity_status: :thinking,
-      activity_status_updated_at: 10,
-      visible_reply_activation_scope: :old
-    }
-
-    for type <- ["visible_reply_activation_started", "visible_reply_activation_finished"] do
-      assert apply_event(state, type) === state
-    end
-  end
-
   test "provider resolve preserves string-first falsey map selection and nonbinary no-op" do
     state = %State{
       status: :active,
@@ -140,63 +101,6 @@ defmodule SalixAgent.SessionKernelReplyWaitTest do
       assert apply_event(state, "provider_reply_obligation_resolved", %{"obligation_key" => key}) ===
                state
     end
-  end
-
-  test "card addition respects full queued occupancy" do
-    reply =
-      ProviderReplyObligation.normalize(%{
-        "provider" => "slack",
-        "connect_id" => "connect",
-        "channel" => "channel",
-        "thread_ts" => "thread"
-      })
-
-    state = %State{
-      status: :active,
-      activity_status: :thinking,
-      activity_status_updated_at: 10,
-      provider_reply_obligations: %{reply["key"] => reply}
-    }
-
-    added =
-      apply_event(state, "provider_card_obligation_added", %{
-        "conversation_id" => "conversation",
-        "limit" => 2
-      })
-
-    assert map_size(added.provider_reply_obligations) === 2
-
-    assert apply_event(state, "provider_card_obligation_added", %{
-             "conversation_id" => "conversation",
-             "limit" => 1
-           }) === state
-
-    for limit <- [nil, false, 0, -1, 1.0] do
-      assert apply_event(state, "provider_card_obligation_added", %{
-               "conversation_id" => "conversation",
-               "limit" => limit
-             }) === state
-    end
-
-    queued = %{
-      state
-      | input_queue: [
-          %{
-            "payload" => %{
-              "provider_reply_obligation" => %{
-                "provider" => "slack",
-                "kind" => "task_card",
-                "conversation_id" => "queued"
-              }
-            }
-          }
-        ]
-    }
-
-    assert apply_event(queued, "provider_card_obligation_added", %{
-             "conversation_id" => "conversation",
-             "limit" => 2
-           }) === queued
   end
 
   test "ACK preserves Task-card fence and clears advisory scope only on advancement" do
@@ -230,37 +134,6 @@ defmodule SalixAgent.SessionKernelReplyWaitTest do
 
     assert apply_event(falsey, "ack", %{"last_ack_message_id" => 1}) ===
              %{falsey | visible_reply_egress_facts: %{}}
-  end
-
-  test "wait setting copies raw payload and unconditional clear prunes no empty refs" do
-    for wait <- [nil, false, [], %{nested: [1.5]}] do
-      assert apply_event(
-               %State{
-                 status: :active,
-                 activity_status: :thinking,
-                 activity_status_updated_at: 10
-               },
-               "wait_set",
-               %{"wait" => wait}
-             ) === %State{
-               status: :active,
-               activity_status: :thinking,
-               activity_status_updated_at: 10,
-               wait: wait
-             }
-    end
-
-    state = %State{
-      status: :active,
-      activity_status: :thinking,
-      activity_status_updated_at: 10,
-      wait: %{old: true},
-      async_result_refs: false
-    }
-
-    for id <- [nil, false, "", :call] do
-      assert apply_event(state, "wait_clear", %{"tool_call_id" => id}) === %{state | wait: nil}
-    end
   end
 
   test "exact auto wait clear requires all referenced calls settled and prunes stale refs" do

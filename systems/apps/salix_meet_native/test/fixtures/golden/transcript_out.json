@@ -1,0 +1,1 @@
+{"empty":"","multi":"## Google\n[07:30:30@Google] A: google one\n\n## Live\n[07:30:31@Live] B: live zero\n[07:30:31@Live] B: live one\n\n## Whisper\n[Whisper] C: custom\n\n## Unlabeled\n[07:30:35] D: unlabeled\n","single":"[07:30:30@Google] luoan chen: 第一句\n[07:30:40@Google] luoan chen: 第二句\n[07:30:50@Google] no speaker\n"}

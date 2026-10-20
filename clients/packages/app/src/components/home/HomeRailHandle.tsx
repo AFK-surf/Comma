@@ -7,10 +7,17 @@ import {
   useState,
 } from "react";
 import { Button as AriaButton } from "react-aria-components";
-import { TooltipBubble } from "@comma/ui";
+import { TooltipBubble } from "@comma/ui/components/tooltip";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { createPortal } from "react-dom";
 import { useCommaMessages } from "@comma/i18n/react";
-import { commaHomeRailMinWidth, type CommaHomeRailName } from "../shellGeometry";
+import { useOptionalChatSidebar } from "../chat-sidebar/ChatSidebarContext";
+import {
+  commaHomeChatMinWidth,
+  commaHomeGreetMaxWidth,
+  commaHomeRailMinWidth,
+  type CommaHomeRailName,
+} from "../shellGeometry";
 import { useHomeRailCollapse } from "./HomeRailFolds";
 
 function preventResizeSelection(event: Event) {
@@ -44,7 +51,7 @@ export function HomeRailCollapseHandle({
   name: CommaHomeRailName;
 }) {
   const messages = useCommaMessages();
-  const { autoFolded, collapsed, toggleCollapsed, setWidth } =
+  const { autoFolded, collapsed, toggleCollapsed, setWidth, shut, tasksWidth } =
     useHomeRailCollapse(name);
   const handleRef = useRef<HTMLButtonElement | null>(null);
   const stopResizeRef = useRef<(() => void) | null>(null);
@@ -53,8 +60,42 @@ export function HomeRailCollapseHandle({
   const tooltipId = useId();
   const [tooltipOpen, setTooltipOpen] = useState(false);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
-  const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tooltipTimer = useRef<CancelUiTimer | null>(null);
   const pointerPosition = useRef({ x: 0, y: 0 });
+  const pendingTrailingWidth = useOptionalChatSidebar()?.pendingTrailingWidth;
+  // The chat column keeps its floor beside the other rail as it is at rest.
+  // Greeting's bound is derived from settled values: a Tasks fold or the Chat
+  // Sidebar may still be moving when the seam is grabbed, and the chat
+  // column's box at that frame would bound the whole drag.
+  const maxWidthOf = (rail: HTMLElement) => {
+    const route = rail.closest<HTMLElement>(".comma-chat-route");
+    const layout = rail.closest<HTMLElement>(".comma-home-layout");
+    const width = rail.getBoundingClientRect().width;
+    if (name === "greet" && route && layout) {
+      return commaHomeGreetMaxWidth({
+        routeWidth: route.clientWidth - (pendingTrailingWidth?.(route) ?? 0),
+        greetWidth: width,
+        tasks: {
+          shut: shut.tasks,
+          width: tasksWidth,
+          clearance: shut.tasks
+            ? Number.parseFloat(
+                getComputedStyle(layout).getPropertyValue(
+                  "--comma-home-tasks-shell-clearance"
+                )
+              ) || 0
+            : 0,
+        },
+      });
+    }
+    const chat = layout
+      ?.querySelector(".comma-home-chat")
+      ?.getBoundingClientRect().width;
+    return Math.max(
+      commaHomeRailMinWidth,
+      width + (chat ?? commaHomeChatMinWidth) - commaHomeChatMinWidth
+    );
+  };
   const positionTooltip = useCallback(() => {
     const tooltip = tooltipRef.current;
     if (!tooltip) return;
@@ -72,7 +113,7 @@ export function HomeRailCollapseHandle({
     tooltip.style.transform = `translate3d(${left}px, ${top}px, 0)`;
   }, [name]);
   const cancelTooltipTimer = useCallback(() => {
-    if (tooltipTimer.current !== null) clearTimeout(tooltipTimer.current);
+    if (tooltipTimer.current !== null) tooltipTimer.current();
     tooltipTimer.current = null;
   }, []);
   const hideTooltip = useCallback(() => {
@@ -94,27 +135,36 @@ export function HomeRailCollapseHandle({
 
     // At most one timer per expanded rail. Content movement does not renew it.
     // Only the handle changes, without layout reads or content renders.
-    let hintTimer: ReturnType<typeof setTimeout> | undefined;
+    let hintTimer: CancelUiTimer | undefined;
+    // One hint per visit, and only pointerleave ends a visit. When the content
+    // under the mouse is replaced (the briefing loads, a list refreshes), the
+    // browser fires pointerenter on the rail again without a pointerleave.
+    let visiting = false;
     const hide = () => {
-      clearTimeout(hintTimer);
+      hintTimer?.();
       handle.dataset.regionHint = "false";
     };
     const reveal = () => {
-      clearTimeout(hintTimer);
+      visiting = true;
+      hintTimer?.();
       handle.dataset.regionHint = "true";
-      hintTimer = setTimeout(hide, 3000);
+      hintTimer = uiClock.after(3000, hide);
     };
     const enter = (event: PointerEvent) => {
-      if (event.pointerType === "mouse") reveal();
+      if (event.pointerType === "mouse" && !visiting) reveal();
+    };
+    const leave = () => {
+      visiting = false;
+      hide();
     };
     rail.addEventListener("pointerenter", enter);
-    rail.addEventListener("pointerleave", hide);
+    rail.addEventListener("pointerleave", leave);
     // An opening rail can arrive underneath a stationary mouse.
     if (rail.matches(":hover")) reveal();
     return () => {
-      clearTimeout(hintTimer);
+      hintTimer?.();
       rail.removeEventListener("pointerenter", enter);
-      rail.removeEventListener("pointerleave", hide);
+      rail.removeEventListener("pointerleave", leave);
       delete handle.dataset.regionHint;
     };
   }, [autoFolded, collapsed, controls]);
@@ -124,13 +174,13 @@ export function HomeRailCollapseHandle({
     if (!handle || autoFolded || !collapsed) return;
 
     // At most two local timers/listeners, one per collapsed Home rail.
-    let idleTimer: ReturnType<typeof setTimeout>;
+    let idleTimer: CancelUiTimer | undefined;
     const reveal = () => {
       handle.dataset.mouseActive = "true";
-      clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => {
+      idleTimer?.();
+      idleTimer = uiClock.after(1000, () => {
         handle.dataset.mouseActive = "false";
-      }, 1000);
+      });
     };
     const track = (event: PointerEvent) => {
       if (event.pointerType === "mouse") reveal();
@@ -139,7 +189,7 @@ export function HomeRailCollapseHandle({
     reveal();
     window.addEventListener("pointermove", track, { capture: true, passive: true });
     return () => {
-      clearTimeout(idleTimer);
+      idleTimer?.();
       window.removeEventListener("pointermove", track, true);
       delete handle.dataset.mouseActive;
     };
@@ -166,10 +216,10 @@ export function HomeRailCollapseHandle({
           if (event.pointerType !== "mouse" || event.buttons !== 0) return;
           pointerPosition.current = { x: event.clientX, y: event.clientY };
           cancelTooltipTimer();
-          tooltipTimer.current = setTimeout(() => {
+          tooltipTimer.current = uiClock.after(300, () => {
             tooltipTimer.current = null;
             setTooltipOpen(true);
-          }, 300);
+          });
         }}
         onPointerMove={(event) => {
           pointerPosition.current = { x: event.clientX, y: event.clientY };
@@ -199,23 +249,19 @@ export function HomeRailCollapseHandle({
           let anchorX = event.clientX;
           let anchorWidth = rail.getBoundingClientRect().width;
           const pointerId = event.pointerId;
-          const chat = layout.querySelector<HTMLElement>(".comma-home-chat");
-          const maxWidth = Math.max(
-            commaHomeRailMinWidth,
-            anchorWidth + (chat?.getBoundingClientRect().width ?? 393) - 393
-          );
+          const maxWidth = maxWidthOf(rail);
           document.addEventListener("selectstart", preventResizeSelection, true);
           layout.dataset.resizing = name;
           // Preview only the latest width per frame on its layout owner. Keeping
           // those frames out of React avoids rendering the shell and both rails
           // for each pointer move; release commits the final preference once.
           const widthProperty = `--comma-home-${name}-preferred`;
-          let resizeFrame: number | undefined;
+          let resizeFrame: CancelUiTimer | undefined;
           let pendingWidth: number | undefined;
           let previewedWidth: number | undefined;
           let stopped = false;
           const flushWidth = () => {
-            if (resizeFrame !== undefined) cancelAnimationFrame(resizeFrame);
+            if (resizeFrame !== undefined) resizeFrame();
             resizeFrame = undefined;
             if (pendingWidth === undefined) return;
             const width = pendingWidth;
@@ -261,7 +307,7 @@ export function HomeRailCollapseHandle({
               return;
             }
             pendingWidth = Math.min(maxWidth, requested);
-            resizeFrame ??= requestAnimationFrame(flushWidth);
+            resizeFrame ??= uiClock.frame(flushWidth);
             // At the upper bound, reversing direction must respond immediately.
             if (requested > maxWidth) {
               anchorX = moveEvent.clientX;
@@ -291,20 +337,15 @@ export function HomeRailCollapseHandle({
           event.preventDefault();
           const rail = document.getElementById(controls);
           const current = rail?.getBoundingClientRect().width ?? commaHomeRailMinWidth;
-          const chatWidth =
-            rail
-              ?.closest(".comma-home-layout")
-              ?.querySelector(".comma-home-chat")
-              ?.getBoundingClientRect().width ?? 393;
           const delta =
             (event.key === "ArrowRight" ? 16 : -16) * (name === "greet" ? 1 : -1);
           setWidth(
             name,
-            event.key === "Home"
+            event.key === "Home" || !rail
               ? commaHomeRailMinWidth
               : Math.max(
                   commaHomeRailMinWidth,
-                  Math.min(current + chatWidth - 393, current + delta)
+                  Math.min(maxWidthOf(rail), current + delta)
                 )
           );
         }}

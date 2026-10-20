@@ -1,20 +1,20 @@
 defmodule SalixAgent.SubscriptionQuotaWorker do
   @moduledoc false
-  use GenServer
+  use SystemsRuntime.Server
   alias SalixAgent.{AccountPool, SubscriptionStore}
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
   def init(_), do: {:ok, schedule()}
-  defp schedule, do: Process.send_after(self(), :poll, 30_000)
+  defp schedule, do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :poll, 30_000)
 
   def handle_info(:poll, _state) do
-    if Application.get_env(:salix_agent, :subscription_storage_key) do
+    if SystemsRuntime.get_env(:salix_agent, :subscription_storage_key) do
       # Each node claims at most four due rows. The claim skips rows another
       # worker holds; network work occurs after the short transaction commits.
       sql = """
       WITH due AS (
         SELECT tenant_id,id FROM subscription_accounts
-        WHERE next_poll_at<=now() AND value->>'credential_kind'='subscription_oauth'
-          AND value->>'disabled'='false' AND value->>'status'='active'
+        WHERE next_poll_at<=now() AND value->>'credential'='subscription'
+          AND value->>'disabled'='false' AND value->>'status'='ok'
         ORDER BY next_poll_at,tenant_id,id LIMIT 4 FOR UPDATE SKIP LOCKED
       ) UPDATE subscription_accounts a SET next_poll_at=now()+interval '5 minutes'
         FROM due WHERE a.tenant_id=due.tenant_id AND a.id=due.id RETURNING a.tenant_id,a.id
@@ -22,7 +22,7 @@ defmodule SalixAgent.SubscriptionQuotaWorker do
 
       case SubscriptionStore.query(sql, []) do
         {:ok, %{rows: rows}} ->
-          Task.async_stream(
+          SystemsClock.async_stream(
             rows,
             fn [tenant, id] ->
               case AccountPool.quota(tenant, id) do

@@ -1,8 +1,11 @@
-import { HomeTasks, type TaskStatusBucket } from "@comma/ui";
+import { HomeTasks } from "@comma/ui/components/home-tasks";
+import { openTaskTarget } from "../tasks/openTaskTarget";
+import type { VisibleTaskStatusBucket } from "@comma/i18n";
+import { uiClock } from "@comma/ui/clock";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { useChatApi } from "../chat/ChatProvider";
 import { useOpenTasksFilter } from "../tasks/taskChips";
+import { TaskStepCards } from "../tasks/taskSteps";
 import { useTaskBadges } from "../tasks/useTaskBadges";
 import { useTaskOrder } from "../tasks/useTaskOrder";
 import { useWorkspaceTasks, type TaskViewModel } from "../tasks/useWorkspaceTasks";
@@ -14,14 +17,20 @@ const MANUAL_SELECTION_HOLD_MS = 8_000;
  * Work in flight outranks an archive: the freshest Task is often the one that
  * just finished, and opening Home on "done" hides the ones still running.
  */
-const FOLLOW_PRIORITY: readonly TaskStatusBucket[] = [
+const FOLLOW_PRIORITY: readonly VisibleTaskStatusBucket[] = [
   "in_progress",
   "needs_review",
-  "backlog",
   "done",
   "cancelled",
 ];
 const EMPTY_TASKS: readonly TaskViewModel[] = [];
+
+type RailTask = TaskViewModel & { statusBucket: VisibleTaskStatusBucket };
+
+/** The rail shows the Tasks of the status switcher's buckets; its source already leaves archived ones out. */
+function shownOnRail(task: TaskViewModel): task is RailTask {
+  return task.statusBucket !== "archived";
+}
 
 /**
  * Keeps the Home Tasks surface stable before Workspace Chat has resolved,
@@ -34,7 +43,7 @@ export function HomeTasksRailLoading() {
       onOpenTask={() => undefined}
       onStatusChange={() => undefined}
       ready={false}
-      status="backlog"
+      status="in_progress"
       tasks={EMPTY_TASKS}
     />
   );
@@ -60,25 +69,21 @@ export const HomeTasksRail = memo(function HomeTasksRail({
     meetingTask?: string;
     meetingGroup?: string;
   };
-  const api = useChatApi();
   const { activeGroupId, activeWorkspaceId, loading, result, taskLoadError, tasks } =
     useWorkspaceTasks({
       enabled,
+      stationTasks: true,
       includeTask:
         search.meetingTask && search.meetingGroup
           ? { conversationId: search.meetingTask, groupId: search.meetingGroup }
           : undefined,
     });
-  const { orders, setBucketOrder } = useTaskOrder(api, activeGroupId, tasks);
-  // The Tasks board's label and platform chips, so a card reads the same here.
+  const { orders, setBucketOrder } = useTaskOrder(activeGroupId, tasks);
+  // The Tasks board's Loops, label and platform chips, so a card reads the
+  // same here.
   const openTasksFilter = useOpenTasksFilter();
-  const { renderTaskBadges } = useTaskBadges(
-    api,
-    activeGroupId,
-    tasks,
-    openTasksFilter
-  );
-  const [status, setStatus] = useState<TaskStatusBucket>("backlog");
+  const { renderTaskBadges } = useTaskBadges(activeGroupId, tasks, openTasksFilter);
+  const [status, setStatus] = useState<VisibleTaskStatusBucket>("in_progress");
   const manualAtRef = useRef(0);
   /** True while the visible status is the user's own pick, not the rail's. */
   const manualStatusRef = useRef(false);
@@ -86,8 +91,8 @@ export const HomeTasksRail = memo(function HomeTasksRail({
   const knownWorkspaceRef = useRef(activeWorkspaceId);
   const requestedMeetingRef = useRef<string | undefined>(undefined);
 
-  const handleStatusChange = useCallback((bucket: TaskStatusBucket) => {
-    manualAtRef.current = Date.now();
+  const handleStatusChange = useCallback((bucket: VisibleTaskStatusBucket) => {
+    manualAtRef.current = uiClock.now();
     manualStatusRef.current = true;
     setStatus(bucket);
   }, []);
@@ -114,13 +119,14 @@ export const HomeTasksRail = memo(function HomeTasksRail({
       return;
     }
 
-    const ids = new Set(tasks.map((task) => task.id));
+    const shownTasks = tasks.filter(shownOnRail);
+    const ids = new Set(shownTasks.map((task) => task.id));
     const known = knownIdsRef.current;
     knownIdsRef.current = ids;
 
-    let arrived: TaskViewModel | undefined;
+    let arrived: RailTask | undefined;
     if (known !== null) {
-      for (const task of tasks) {
+      for (const task of shownTasks) {
         if (known.has(task.id)) continue;
         if (!arrived || task.updatedAt > arrived.updatedAt) arrived = task;
       }
@@ -130,7 +136,7 @@ export const HomeTasksRail = memo(function HomeTasksRail({
       requestedMeetingRef.current = requestedMeeting;
       manualStatusRef.current = false;
     }
-    const selectedMeeting = tasks.find(
+    const selectedMeeting = shownTasks.find(
       (task) =>
         task.conversationId === search.meetingTask &&
         task.groupId === search.meetingGroup
@@ -140,7 +146,7 @@ export const HomeTasksRail = memo(function HomeTasksRail({
       return;
     }
     if (arrived) {
-      if (Date.now() - manualAtRef.current < MANUAL_SELECTION_HOLD_MS) return;
+      if (uiClock.now() - manualAtRef.current < MANUAL_SELECTION_HOLD_MS) return;
       manualStatusRef.current = false;
       setStatus(arrived.statusBucket);
       return;
@@ -153,11 +159,11 @@ export const HomeTasksRail = memo(function HomeTasksRail({
     // follow. Either way the rail would sit on an empty bucket claiming "No
     // tasks" while Tasks exist. Follow the Tasks that are still moving; a
     // status the user picked themselves is theirs to keep.
-    if (manualStatusRef.current || tasks.length === 0) return;
-    if (tasks.some((task) => task.statusBucket === status)) return;
+    if (manualStatusRef.current || shownTasks.length === 0) return;
+    if (shownTasks.some((task) => task.statusBucket === status)) return;
 
-    let target = tasks[0]!;
-    for (const task of tasks) {
+    let target = shownTasks[0]!;
+    for (const task of shownTasks) {
       const rank = FOLLOW_PRIORITY.indexOf(task.statusBucket);
       const best = FOLLOW_PRIORITY.indexOf(target.statusBucket);
       if (rank < best || (rank === best && task.updatedAt > target.updatedAt)) {
@@ -177,57 +183,53 @@ export const HomeTasksRail = memo(function HomeTasksRail({
 
   const openTask = useCallback(
     (task: TaskViewModel) => {
-      void navigate({
-        params: {
-          conversationId: task.conversationId,
-          groupId: task.groupId,
-          workspaceId: task.workspaceId,
-        },
-        to: "/tasks/$workspaceId/$groupId/$conversationId",
-      });
+      void navigate(openTaskTarget(task));
     },
     [navigate]
   );
 
+  // Running cards show their Workers' latest steps while Home shows.
   return (
-    <HomeTasks
-      onOpenTask={openTask}
-      onStatusChange={handleStatusChange}
-      onTaskOrderChange={setBucketOrder}
-      ready={!loading && taskLoadError === undefined}
-      renderTaskBadges={renderTaskBadges}
-      status={status}
-      taskOrder={
-        search.meetingTask &&
-        tasks.some(
-          (task) =>
-            task.conversationId === search.meetingTask &&
-            task.groupId === search.meetingGroup
-        )
-          ? {
-              ...orders,
-              [status]: [
-                ...tasks
-                  .filter(
-                    (task) =>
-                      task.conversationId === search.meetingTask &&
-                      task.groupId === search.meetingGroup
-                  )
-                  .map((task) => task.id),
-                ...(orders[status] ?? []).filter(
-                  (id) =>
-                    !tasks.some(
+    <TaskStepCards active={enabled}>
+      <HomeTasks
+        onOpenTask={openTask}
+        onStatusChange={handleStatusChange}
+        onTaskOrderChange={setBucketOrder}
+        ready={!loading && taskLoadError === undefined}
+        renderTaskBadges={renderTaskBadges}
+        status={status}
+        taskOrder={
+          search.meetingTask &&
+          tasks.some(
+            (task) =>
+              task.conversationId === search.meetingTask &&
+              task.groupId === search.meetingGroup
+          )
+            ? {
+                ...orders,
+                [status]: [
+                  ...tasks
+                    .filter(
                       (task) =>
-                        task.id === id &&
                         task.conversationId === search.meetingTask &&
                         task.groupId === search.meetingGroup
                     )
-                ),
-              ],
-            }
-          : orders
-      }
-      tasks={tasks}
-    />
+                    .map((task) => task.id),
+                  ...(orders[status] ?? []).filter(
+                    (id) =>
+                      !tasks.some(
+                        (task) =>
+                          task.id === id &&
+                          task.conversationId === search.meetingTask &&
+                          task.groupId === search.meetingGroup
+                      )
+                  ),
+                ],
+              }
+            : orders
+        }
+        tasks={tasks}
+      />
+    </TaskStepCards>
   );
 });

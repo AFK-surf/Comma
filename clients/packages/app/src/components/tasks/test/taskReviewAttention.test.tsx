@@ -1,64 +1,82 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flush } from "@comma/test-utils/fake-clock";
+import { act, renderHook } from "@comma/test-utils/render";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import { describe, expect, it } from "vitest";
 import {
-  markTaskReviewSeen,
-  readTaskReviewSeenMarks,
-  subscribeTaskReviewSeen,
   taskReviewNeedsAttention,
+  useMarkTaskReviewSeen,
+  useTaskReviewSeenMarks,
 } from "../taskReviewAttention";
 
-describe("taskReviewAttention", () => {
-  beforeEach(() => {
-    // The module cache keys off the raw stored string, so clearing storage
-    // is enough to invalidate marks left by earlier tests.
-    window.localStorage.clear();
+/** The hooks over a core whose `taskReviewSeen` marks are `marks` (the test changes them with `say`). */
+function seenMarks(initial: Record<string, number> = {}) {
+  let marks = initial;
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "marks" && topic.kind === "taskReviewSeen"
+        ? { marks }
+        : undefined,
   });
+  const view = renderHook(
+    () => ({ marks: useTaskReviewSeenMarks(), mark: useMarkTaskReviewSeen() }),
+    { wrapper: ({ children }) => core.wrap(children) }
+  );
+  const say = (next: Record<string, number>) => {
+    marks = next;
+    act(() => core.changed("marks"));
+  };
+  return { view, core, say };
+}
 
-  it("needs attention until viewed, then re-arms on a newer update", () => {
-    const before = readTaskReviewSeenMarks();
-    expect(taskReviewNeedsAttention(before, "cnv-1", 100)).toBe(true);
+describe("taskReviewAttention", () => {
+  it("needs attention until viewed, then re-arms on a newer update", async () => {
+    const { view, core, say } = seenMarks();
+    await flush();
+    expect(taskReviewNeedsAttention(view.result.current.marks, "cnv-1", 100)).toBe(
+      true
+    );
 
-    markTaskReviewSeen("cnv-1", 100);
-    const seen = readTaskReviewSeenMarks();
+    act(() => view.result.current.mark("cnv-1", 100));
+    await flush();
+    expect(core.sentTo("marks.mark")).toEqual([
+      { kind: "taskReviewSeen", entries: [["cnv-1", 100]] },
+    ]);
+    say({ "cnv-1": 100 });
+    await flush();
+    const seen = view.result.current.marks;
     expect(taskReviewNeedsAttention(seen, "cnv-1", 100)).toBe(false);
     expect(taskReviewNeedsAttention(seen, "cnv-1", 101)).toBe(true);
     expect(taskReviewNeedsAttention(seen, "cnv-other", 1)).toBe(true);
   });
 
-  it("never moves a mark backwards", () => {
-    markTaskReviewSeen("cnv-1", 200);
-    markTaskReviewSeen("cnv-1", 150);
-    expect(readTaskReviewSeenMarks().get("cnv-1")).toBe(200);
+  it("keeps the marks object while nothing changes", async () => {
+    const { view } = seenMarks({ "cnv-1": 100 });
+    await flush();
+    const first = view.result.current.marks;
+    view.rerender();
+    expect(view.result.current.marks).toBe(first);
   });
 
-  it("notifies subscribers and keeps snapshot identity stable between writes", () => {
-    const listener = vi.fn();
-    const unsubscribe = subscribeTaskReviewSeen(listener);
-    const first = readTaskReviewSeenMarks();
-    expect(readTaskReviewSeenMarks()).toBe(first);
-
-    markTaskReviewSeen("cnv-1", 100);
-    expect(listener).toHaveBeenCalledTimes(1);
-    expect(readTaskReviewSeenMarks()).not.toBe(first);
-
-    unsubscribe();
-    markTaskReviewSeen("cnv-2", 100);
-    expect(listener).toHaveBeenCalledTimes(1);
+  it("hands marks kept in localStorage before the core to it once, and drops them", async () => {
+    window.localStorage.setItem(
+      "comma.taskReviewSeen",
+      JSON.stringify({ "cnv-1": 100 })
+    );
+    const { core } = seenMarks();
+    await flush();
+    expect(core.sentTo("marks.mark")).toEqual([
+      { kind: "taskReviewSeen", entries: [["cnv-1", 100]] },
+    ]);
+    expect(window.localStorage.getItem("comma.taskReviewSeen")).toBeNull();
   });
 
-  it("survives a corrupted stored payload", () => {
+  it("hands over nothing from a corrupted stored payload", async () => {
     window.localStorage.setItem("comma.taskReviewSeen", "{not json");
-    expect(readTaskReviewSeenMarks().size).toBe(0);
-    markTaskReviewSeen("cnv-1", 100);
-    expect(readTaskReviewSeenMarks().get("cnv-1")).toBe(100);
-  });
-
-  it("evicts the oldest marks past the cap", () => {
-    for (let index = 0; index < 301; index += 1) {
-      markTaskReviewSeen(`cnv-${index}`, index + 1);
-    }
-    const marks = readTaskReviewSeenMarks();
-    expect(marks.size).toBe(300);
-    expect(marks.has("cnv-0")).toBe(false);
-    expect(marks.get("cnv-300")).toBe(301);
+    const { view, core } = seenMarks();
+    await flush();
+    expect(core.sentTo("marks.mark")).toEqual([
+      { kind: "taskReviewSeen", entries: [] },
+    ]);
+    expect(view.result.current.marks.size).toBe(0);
   });
 });

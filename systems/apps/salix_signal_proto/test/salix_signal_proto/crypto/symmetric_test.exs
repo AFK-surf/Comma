@@ -1,5 +1,5 @@
 defmodule SalixSignalProto.Crypto.SymmetricTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   import Bitwise
@@ -48,8 +48,8 @@ defmodule SalixSignalProto.Crypto.SymmetricTest do
     end
 
     test "rejects empty, partial-block and badly padded ciphertexts" do
-      key = :crypto.strong_rand_bytes(32)
-      iv = :crypto.strong_rand_bytes(16)
+      key = SystemsRuntime.Proc.random_bytes(32)
+      iv = SystemsRuntime.Proc.random_bytes(16)
       raw = fn block -> :crypto.crypto_one_time(:aes_256_cbc, key, iv, block, true) end
 
       assert AesCbc.decrypt(key, iv, "") == {:error, :invalid}

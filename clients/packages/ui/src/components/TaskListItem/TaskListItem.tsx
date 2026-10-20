@@ -17,6 +17,7 @@ import {
   type MenuPointerOffsets,
   type MenuProps,
 } from "../menu";
+import { afterAnimations } from "../../tokens/motion";
 import { cx } from "../utils";
 import {
   taskListItemDisabled,
@@ -68,7 +69,7 @@ export interface TaskListItemProps extends Omit<
   iconKey?: Key;
   dot?: boolean;
   title: ReactNode;
-  /** Chips shown after the title, ahead of the tail (content layout only). */
+  /** Chips shown after the title, ahead of the tail. */
   badges?: ReactNode;
   /** Sits ahead of the status icon (content layout only): a selection checkbox. */
   leading?: ReactNode;
@@ -118,6 +119,7 @@ const TaskListItemIconSlot = ({
     previous: null as IconSnapshot | null,
   });
   const [, setRenderVersion] = useState(0);
+  const slotRef = useRef<HTMLSpanElement>(null);
   const snapshot = snapshotRef.current;
 
   if (Object.is(snapshot.currentKey, resolvedKey)) {
@@ -127,29 +129,34 @@ const TaskListItemIconSlot = ({
   useEffect(() => {
     if (Object.is(snapshot.currentKey, resolvedKey)) {
       snapshot.currentIcon = icon;
-      return undefined;
+      return;
     }
 
     snapshot.previous = { key: snapshot.currentKey, node: snapshot.currentIcon };
     snapshot.currentKey = resolvedKey;
     snapshot.currentIcon = icon;
     setRenderVersion((value) => value + 1);
-
-    const timeout = window.setTimeout(() => {
-      snapshot.previous = null;
-      setRenderVersion((value) => value + 1);
-    }, iconAnimationDurationMs);
-
-    return () => window.clearTimeout(timeout);
   }, [icon, resolvedKey, snapshot]);
   const currentIcon = { key: snapshot.currentKey, node: snapshot.currentIcon };
   const previousIcon = snapshot.previous;
+
+  // The swap ends when its exit and enter animations do.
+  useEffect(() => {
+    const slot = slotRef.current;
+    if (!previousIcon || !slot) return undefined;
+    return afterAnimations(slot, iconAnimationDurationMs, () => {
+      if (snapshot.previous !== previousIcon) return;
+      snapshot.previous = null;
+      setRenderVersion((value) => value + 1);
+    });
+  }, [previousIcon, snapshot]);
 
   return (
     <span
       aria-hidden
       className={cx(taskListItemIconSlot, taskListItemIconSlotByLayout[layout])}
       data-slot="task-list-item-icon"
+      ref={slotRef}
     >
       {previousIcon ? (
         <span
@@ -357,6 +364,11 @@ export const TaskListItem = ({
                 {title}
               </span>
             </div>
+            {badges ? (
+              <span className={taskListItemBadges} data-slot="task-list-item-badges">
+                {badges}
+              </span>
+            ) : null}
             {tail ? (
               <span
                 className={cx(taskListItemTailByLayout[layout], tailClassName)}

@@ -9,6 +9,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useCommaMessages } from "@comma/i18n/react";
+import { uiClock, type CancelUiTimer } from "../../clock";
 import { isReducedMotionEnabled, spacing } from "../../tokens";
 import {
   CheckIcon,
@@ -99,6 +100,8 @@ export interface ChatPanelVideoProps {
   poster: string;
   previewTitle?: string;
   src: string;
+  /** `anonymous` for a CORS-enabled source whose frames must stay readable. */
+  crossOrigin?: "anonymous" | undefined;
   onContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
 }
 
@@ -303,7 +306,7 @@ export const ChatPanelImage = ({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewInstantMotion, setPreviewInstantMotion] = useState(false);
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetTimerRef = useRef<CancelUiTimer | null>(null);
   const keyboardFocusMotion = useKeyboardFocusMotion();
   const buttonPressFeedback = usePointerPressFeedback<HTMLButtonElement>();
   const downloadController = useChatPanelMediaDownloadController({
@@ -314,7 +317,7 @@ export const ChatPanelImage = ({
 
   useEffect(
     () => () => {
-      if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+      if (resetTimerRef.current) resetTimerRef.current();
     },
     []
   );
@@ -327,12 +330,12 @@ export const ChatPanelImage = ({
         await copyImageSource(src);
       }
       setCopyState("copied");
-      if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
-      resetTimerRef.current = setTimeout(() => setCopyState("idle"), 1400);
+      if (resetTimerRef.current) resetTimerRef.current();
+      resetTimerRef.current = uiClock.after(1400, () => setCopyState("idle"));
     } catch {
       setCopyState("error");
-      if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
-      resetTimerRef.current = setTimeout(() => setCopyState("idle"), 2000);
+      if (resetTimerRef.current) resetTimerRef.current();
+      resetTimerRef.current = uiClock.after(2000, () => setCopyState("idle"));
     }
   };
 
@@ -479,6 +482,7 @@ export const ChatPanelVideo = ({
   poster,
   previewTitle = "Generated video preview",
   src,
+  crossOrigin,
   onContextMenu,
 }: ChatPanelVideoProps) => {
   const messages = useCommaMessages();
@@ -666,6 +670,7 @@ export const ChatPanelVideo = ({
     <video
       aria-label={alt}
       className="chat-panel-video-content"
+      crossOrigin={crossOrigin}
       data-media-context-menu={onContextMenu ? "true" : undefined}
       onContextMenu={onContextMenu}
       onCanPlay={controller.handleCanPlay}

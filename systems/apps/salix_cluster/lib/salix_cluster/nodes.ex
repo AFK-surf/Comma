@@ -164,7 +164,7 @@ defmodule SalixCluster.Nodes do
   end
 
   defp local_running_agents do
-    Registry.count(SalixAgent.Registry)
+    SystemsRuntime.Registry.count(SalixAgent.Registry)
   rescue
     _ -> 0
   end
@@ -231,6 +231,6 @@ defmodule SalixCluster.Nodes do
   defp put_optional(map, _key, nil), do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)
 
-  defp random_id, do: :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
-  defp now, do: System.system_time(:second)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower)
+  defp now, do: SystemsClock.system_time(:second)
 end

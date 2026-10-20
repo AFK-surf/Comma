@@ -157,7 +157,7 @@ defmodule SalixSignalProto.Session do
              plaintext,
              context.local_address,
              context.remote_address,
-             Keyword.get_lazy(opts, :pq_random, fn -> :crypto.strong_rand_bytes(64) end)
+             Keyword.get_lazy(opts, :pq_random, fn -> SystemsRuntime.Proc.random_bytes(64) end)
            ) do
       {:ok, message, %{record | current: state}}
     end
@@ -372,6 +372,6 @@ defmodule SalixSignalProto.Session do
   defp effects(identity_key),
     do: %{identity_key: identity_key, used_one_time_pre_key: nil, used_kem_pre_key: nil}
 
-  defp random32, do: :crypto.strong_rand_bytes(32)
-  defp now_ms, do: System.system_time(:millisecond)
+  defp random32, do: SystemsRuntime.Proc.random_bytes(32)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 end

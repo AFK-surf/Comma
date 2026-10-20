@@ -1,4 +1,6 @@
 defmodule SalixIM.Triage.Runtime do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Process owner for native Triage serialization, timers, workers, monitors,
   capabilities, ports, and message routing.
@@ -33,7 +35,7 @@ defmodule SalixIM.Triage.Runtime do
   reconciliation is modeled in `tla/salix/TriageBucketRecovery.tla`.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -93,6 +95,7 @@ defmodule SalixIM.Triage.Runtime do
     :before_seal_hook,
     :context_port,
     :debounce_ms,
+    :draining?,
     :evaluation_timeout_ms,
     :evaluator_port,
     :id,
@@ -108,8 +111,8 @@ defmodule SalixIM.Triage.Runtime do
 
   def start_link(opts) when is_list(opts) do
     case opts[:name] do
-      nil -> GenServer.start_link(__MODULE__, opts)
-      name -> GenServer.start_link(__MODULE__, opts, name: name)
+      nil -> SystemsRuntime.Server.start_link(__MODULE__, opts)
+      name -> SystemsRuntime.Server.start_link(__MODULE__, opts, name: name)
     end
   end
 
@@ -131,8 +134,8 @@ defmodule SalixIM.Triage.Runtime do
   application lifetime, so the table cannot vanish with any crashable worker.
   """
   def create_table! do
-    if :ets.whereis(@admission_config_table) == :undefined do
-      :ets.new(@admission_config_table, [
+    if SystemsRuntime.ETS.whereis(@admission_config_table) == :undefined do
+      SystemsRuntime.ETS.new(@admission_config_table, [
         :named_table,
         :public,
         :set,
@@ -189,13 +192,13 @@ defmodule SalixIM.Triage.Runtime do
   defp admission_config(server) do
     case published_admission_config(server) do
       {:ok, config} -> config
-      :error -> GenServer.call(server, :admission_config)
+      :error -> SystemsRuntime.Server.call(server, :admission_config)
     end
   end
 
   defp published_admission_config(server) do
-    with pid when is_pid(pid) <- GenServer.whereis(server),
-         [{^pid, config}] <- :ets.lookup(@admission_config_table, pid) do
+    with pid when SystemsRuntime.Proc.is_process(pid) <- SystemsRuntime.Server.whereis(server),
+         [{^pid, config}] <- SystemsRuntime.ETS.lookup(@admission_config_table, pid) do
       {:ok, config}
     else
       _unpublished -> :error
@@ -209,25 +212,31 @@ defmodule SalixIM.Triage.Runtime do
 
     # Rows are keyed by pid and always rewritten at init, so a reused pid can
     # never read a predecessor's config; the sweep only keeps the table small.
-    :ets.foldl(
+    SystemsRuntime.ETS.foldl(
       fn {pid, _config}, :ok ->
-        unless Process.alive?(pid), do: :ets.delete(@admission_config_table, pid)
+        unless SystemsRuntime.Proc.alive?(pid),
+          do: SystemsRuntime.ETS.delete(@admission_config_table, pid)
+
         :ok
       end,
       :ok,
       @admission_config_table
     )
 
-    :ets.insert(@admission_config_table, {self(), config})
+    SystemsRuntime.ETS.insert(@admission_config_table, {SystemsRuntime.Proc.self(), config})
     :ok
   rescue
     ArgumentError -> :ok
   end
 
-  def ledger_records(server), do: GenServer.call(server, :ledger_records)
-  def replay(server, run_id), do: GenServer.call(server, {:replay, run_id})
-  def lookup_run(server, selector), do: GenServer.call(server, {:lookup_run, selector})
-  def lookup_runs(server, range, opts), do: GenServer.call(server, {:lookup_runs, range, opts})
+  def ledger_records(server), do: SystemsRuntime.Server.call(server, :ledger_records)
+  def replay(server, run_id), do: SystemsRuntime.Server.call(server, {:replay, run_id})
+
+  def lookup_run(server, selector),
+    do: SystemsRuntime.Server.call(server, {:lookup_run, selector})
+
+  def lookup_runs(server, range, opts),
+    do: SystemsRuntime.Server.call(server, {:lookup_runs, range, opts})
 
   def claim_identity_observation(handle, claim),
     do: IdentityFence.claim_observation(handle, claim)
@@ -310,7 +319,7 @@ defmodule SalixIM.Triage.Runtime do
          observability_context
        )
        when is_map(durable) do
-    GenServer.cast(server, {:admitted, receipt, durable, observability_context})
+    SystemsRuntime.Server.cast(server, {:admitted, receipt, durable, observability_context})
     :ok
   end
 
@@ -335,6 +344,7 @@ defmodule SalixIM.Triage.Runtime do
       context_port: Keyword.get(opts, :context_port),
       evaluator_port: Keyword.get(opts, :evaluator_port),
       before_seal_hook: Keyword.get(opts, :before_seal_hook),
+      draining?: Keyword.get(opts, :draining?),
       recovery_page_size: Keyword.get(opts, :recovery_page_size, 50),
       recovery_cursor: Recovery.cursor(idle_ms: Keyword.get(opts, :recovery_idle_ms, 5_000)),
       recovery_work: nil,
@@ -360,12 +370,12 @@ defmodule SalixIM.Triage.Runtime do
     }
 
     if valid_options?(opts, state) do
-      {:ok, background_supervisor} = Task.Supervisor.start_link()
+      {:ok, background_supervisor} = SystemsRuntime.TaskSupervisor.start_link()
       state = %{state | background_supervisor: background_supervisor}
       publish_admission_config(state)
 
       if evaluation_enabled?(state) do
-        send(self(), :recover_open_fences)
+        SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :recover_open_fences)
       end
 
       {:ok, maybe_schedule_projection_convergence(state, 100)}
@@ -382,6 +392,7 @@ defmodule SalixIM.Triage.Runtime do
          (is_integer(state.max_wait_ms) and state.max_wait_ms >= 0)) and
       is_integer(state.evaluation_timeout_ms) and state.evaluation_timeout_ms > 0 and
       is_integer(state.recovery_page_size) and state.recovery_page_size > 0 and
+      (is_nil(state.draining?) or is_function(state.draining?, 0)) and
       is_integer(state.agent_round_budget) and state.agent_round_budget >= 0
   end
 
@@ -392,7 +403,7 @@ defmodule SalixIM.Triage.Runtime do
   be spent. The live-mode PR is what consumes it, at the action-execution seam.
   """
   @spec agent_round_budget(GenServer.server()) :: non_neg_integer()
-  def agent_round_budget(server), do: GenServer.call(server, :agent_round_budget)
+  def agent_round_budget(server), do: SystemsRuntime.Server.call(server, :agent_round_budget)
 
   @doc "Returns the bounded, product-facing state of this runtime."
   @spec status(GenServer.server()) :: %{
@@ -404,7 +415,7 @@ defmodule SalixIM.Triage.Runtime do
           scheduled_buckets: non_neg_integer(),
           observed_at_ms: integer()
         }
-  def status(server), do: GenServer.call(server, :status)
+  def status(server), do: SystemsRuntime.Server.call(server, :status)
 
   @impl true
   def handle_call(:agent_round_budget, _from, state),
@@ -607,7 +618,7 @@ defmodule SalixIM.Triage.Runtime do
   def handle_info({:converge_triage_recovery, _stale_id}, state), do: {:noreply, state}
 
   def handle_info({:triage_recovery_page, id, result}, %{recovery_work: %{id: id} = work} = state) do
-    Process.demonitor(work.ref, [:flush])
+    SystemsRuntime.Proc.demonitor(work.ref, [:flush])
     {:noreply, receive_recovery_page(state, work.cursor, result)}
   end
 
@@ -627,7 +638,7 @@ defmodule SalixIM.Triage.Runtime do
             :fences -> recover_fence_records(state, [record])
           end
 
-        send(self(), {:recover_record, id})
+        SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:recover_record, id})
         {:noreply, state}
 
       [] ->
@@ -663,7 +674,7 @@ defmodule SalixIM.Triage.Runtime do
         {:triage_projection_result, id, result},
         %{projection_worker: %{id: id} = work} = state
       ) do
-    Process.demonitor(work.ref, [:flush])
+    SystemsRuntime.Proc.demonitor(work.ref, [:flush])
     state = %{state | projection_worker: nil}
     limit = min(state.recovery_page_size, 100)
 
@@ -778,8 +789,17 @@ defmodule SalixIM.Triage.Runtime do
           "triage_runtime_result stage=received match=current result=#{runtime_result_class(result)}"
         )
 
-        {:noreply,
-         complete_active_evaluation(state, scope_key, generation, run_id, result, active)}
+        # A draining node's context dependencies stop before this process, so
+        # an error here may be the shutdown, not the run. Release it if it
+        # never started transport; otherwise settle it as before.
+        with true <- match?({:error, _reason}, result) and draining?(state),
+             {:released, state} <- release_active(state, scope_key, active) do
+          {:noreply, state}
+        else
+          _settle ->
+            {:noreply,
+             complete_active_evaluation(state, scope_key, generation, run_id, result, active)}
+        end
 
       _not_active ->
         Logger.info(
@@ -808,8 +828,8 @@ defmodule SalixIM.Triage.Runtime do
         if Map.has_key?(state.active, scope_key) do
           {delay, state} = retry_delay(state, {:settle, scope_key, run_id}, @retry_base_ms)
 
-          Process.send_after(
-            self(),
+          SystemsClock.send_after(
+            SystemsRuntime.Proc.self(),
             {:triage_evaluation_timeout, scope_key, generation, run_id},
             delay
           )
@@ -871,7 +891,13 @@ defmodule SalixIM.Triage.Runtime do
   def handle_info({:DOWN, ref, :process, pid, reason}, state) do
     case matching_identity_active(state, ref, pid) do
       {scope_key, active} when reason != :normal ->
-        {:noreply, close_interrupted_identity_active(state, scope_key, active)}
+        with true <- draining?(state),
+             {:released, state} <- release_active(state, scope_key, active) do
+          {:noreply, state}
+        else
+          _recover ->
+            {:noreply, close_interrupted_identity_active(state, scope_key, active)}
+        end
 
       _not_interrupted_identity ->
         active =
@@ -910,8 +936,9 @@ defmodule SalixIM.Triage.Runtime do
     # The linked supervisor also exits on an abnormal Runtime death. Explicit
     # shutdown covers a normal stop, so no page reader/projector outlives its
     # owner or races a restarted Runtime's background work.
-    if is_pid(state.background_supervisor) and Process.alive?(state.background_supervisor),
-      do: Supervisor.stop(state.background_supervisor)
+    if SystemsRuntime.Proc.is_process(state.background_supervisor) and
+         SystemsRuntime.Proc.alive?(state.background_supervisor),
+       do: SystemsRuntime.Supervisor.stop(state.background_supervisor)
 
     :ok
   end
@@ -1018,11 +1045,15 @@ defmodule SalixIM.Triage.Runtime do
          %IdentityFenceHandle{runtime: runtime, capability: capability},
          caller
        )
-       when runtime == self() and is_reference(capability) do
-    Enum.find_value(state.active, :error, fn {scope_key, active} ->
-      if active[:identity_capability] == capability and active[:worker_pid] == caller,
-        do: {:ok, scope_key, active}
-    end)
+       when is_reference(capability) do
+    if runtime == SystemsRuntime.Proc.self() do
+      Enum.find_value(state.active, :error, fn {scope_key, active} ->
+        if active[:identity_capability] == capability and active[:worker_pid] == caller,
+          do: {:ok, scope_key, active}
+      end)
+    else
+      :error
+    end
   end
 
   defp identity_active(_state, _handle, _caller), do: :error
@@ -1064,8 +1095,35 @@ defmodule SalixIM.Triage.Runtime do
     end)
   end
 
+  # Triage owner decision, 2026-10-09: on a draining node, a run interrupted
+  # before transport is released, not settled. A serving node's bucket recovery
+  # lane runs the generation again under a new fence epoch. Off drain, an
+  # interrupted run keeps its terminal failure.
+  defp release_active(state, scope_key, active) do
+    case RunFence.release(active) do
+      {:ok, _released} ->
+        _ = SystemsClock.cancel_timer(active.timeout_ref)
+
+        Logger.info(
+          "triage run released: scope_ref=#{sha256(scope_key)} generation=#{active.generation}; " <>
+            "the bucket recovery lane evaluates it again"
+        )
+
+        state = %{
+          state
+          | active: Map.delete(state.active, scope_key),
+            late_wait: Map.delete(state.late_wait, active.run_id)
+        }
+
+        {:released, request_recovery_lane(state, :buckets)}
+
+      {:error, _reason} ->
+        :not_released
+    end
+  end
+
   defp close_interrupted_identity_active(state, scope_key, active) do
-    _ = Process.cancel_timer(active.timeout_ref)
+    _ = SystemsClock.cancel_timer(active.timeout_ref)
 
     state = %{
       state
@@ -1148,8 +1206,13 @@ defmodule SalixIM.Triage.Runtime do
          %{attempts_left: attempts_left} = pending
        )
        when attempts_left > 0 do
-    capability = make_ref()
-    Process.send_after(self(), {:retry_interrupted_identity_recovery, capability}, 25)
+    capability = SystemsRuntime.Proc.make_ref()
+
+    SystemsClock.send_after(
+      SystemsRuntime.Proc.self(),
+      {:retry_interrupted_identity_recovery, capability},
+      25
+    )
 
     %{
       state
@@ -1259,14 +1322,36 @@ defmodule SalixIM.Triage.Runtime do
   defp do_start_evaluation(state, scope_key, sealed) do
     generation = sealed["generation"]
 
-    if evaluation_enabled?(state) do
-      case Pipeline.build_input(sealed) do
-        {:ok, input} -> start_authorized_evaluation(state, scope_key, generation, input)
-        {:error, reason} -> park_invalid_sealed_input(state, scope_key, generation, reason)
-      end
-    else
-      log_evaluation_disabled(state)
+    cond do
+      not evaluation_enabled?(state) ->
+        log_evaluation_disabled(state)
+
+      draining?(state) ->
+        defer_draining_evaluation(state, scope_key, generation)
+
+      true ->
+        case Pipeline.build_input(sealed) do
+          {:ok, input} -> start_authorized_evaluation(state, scope_key, generation, input)
+          {:error, reason} -> park_invalid_sealed_input(state, scope_key, generation, reason)
+        end
     end
+  end
+
+  # A draining node must not win a run fence: its context dependencies stop
+  # before this process. The sealed generation stays fence-less, so the bucket
+  # recovery lane of a serving node evaluates it. A run already holding its
+  # fence is released if drain interrupts it before transport; shutdown is
+  # not delayed for Triage.
+  defp draining?(%{draining?: nil}), do: false
+  defp draining?(%{draining?: draining?}), do: draining?.() == true
+
+  defp defer_draining_evaluation(state, scope_key, generation) do
+    Logger.info(
+      "triage evaluation deferred: node draining scope_ref=#{sha256(scope_key)} " <>
+        "generation=#{generation}; the bucket recovery lane evaluates it"
+    )
+
+    drop_local_generation_state(state, scope_key, generation)
   end
 
   defp start_authorized_evaluation(state, scope_key, generation, input) do
@@ -1344,11 +1429,12 @@ defmodule SalixIM.Triage.Runtime do
 
   defp start_worker(state, scope_key, generation, run_id, input, created) do
     identity_diagnostic? = created.identity?
-    capability = if identity_diagnostic?, do: make_ref()
+    capability = if identity_diagnostic?, do: SystemsRuntime.Proc.make_ref()
     transport_attempt_id = if identity_diagnostic?, do: ULID.generate()
 
     handle =
-      if identity_diagnostic?, do: %IdentityFenceHandle{runtime: self(), capability: capability}
+      if identity_diagnostic?,
+        do: %IdentityFenceHandle{runtime: SystemsRuntime.Proc.self(), capability: capability}
 
     case identity_ports(state, handle) do
       {:ok, context_port, evaluator_port} ->
@@ -1379,7 +1465,7 @@ defmodule SalixIM.Triage.Runtime do
     fence = created.record
     identity_diagnostic? = ports.identity?
     source_mode = input["source_mode"]
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
     capability = ports.capability
     transport_attempt_id = ports.transport_attempt_id
     handle = ports.handle
@@ -1387,7 +1473,7 @@ defmodule SalixIM.Triage.Runtime do
     evaluator_port = ports.evaluator_port
     review_projection = state.review_projection
     snapshot_authority = if identity_diagnostic?, do: handle, else: fence_key
-    result_capability = if identity_diagnostic?, do: make_ref()
+    result_capability = if identity_diagnostic?, do: SystemsRuntime.Proc.make_ref()
     context_key = {scope_key, generation}
 
     observability_context =
@@ -1428,7 +1514,7 @@ defmodule SalixIM.Triage.Runtime do
             "triage_runtime_worker stage=evaluation_complete result=#{runtime_result_class(result)}"
           )
 
-          send(parent, result_message)
+          SystemsRuntime.Proc.send(parent, result_message)
 
           Logger.info(
             "triage_runtime_worker stage=result_sent result=#{runtime_result_class(result)}"
@@ -1437,8 +1523,8 @@ defmodule SalixIM.Triage.Runtime do
       end)
 
     timeout_ref =
-      Process.send_after(
-        self(),
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
         {:triage_evaluation_timeout, scope_key, generation, run_id},
         state.evaluation_timeout_ms
       )
@@ -1447,6 +1533,7 @@ defmodule SalixIM.Triage.Runtime do
       generation: generation,
       run_id: run_id,
       fence_key: fence_key,
+      fence_epoch: RunFence.fence_epoch(fence),
       monitor_ref: monitor_ref,
       timeout_ref: timeout_ref,
       worker_pid: worker_pid,
@@ -1548,6 +1635,12 @@ defmodule SalixIM.Triage.Runtime do
   defp runtime_result_class({:ok, _decision, _proof}), do: "ok"
   defp runtime_result_class({:terminal, _terminal}), do: "terminal"
   defp runtime_result_class({:error, reason}) when is_atom(reason), do: "error_#{reason}"
+  # A context boundary failure names its fixed boundary and catch kind; the
+  # caught reason stays private.
+  defp runtime_result_class({:error, {boundary, kind, _private}})
+       when is_atom(boundary) and kind in [:exception, :exit, :throw, :error],
+       do: "error_private boundary=#{boundary} kind=#{kind}"
+
   defp runtime_result_class({:error, _private}), do: "error_private"
   defp runtime_result_class(_other), do: "invalid"
 
@@ -1571,7 +1664,7 @@ defmodule SalixIM.Triage.Runtime do
         end
 
       {delay, state} = retry_delay(state, {:settle, scope_key, run_id}, @retry_base_ms)
-      Process.send_after(self(), result_message, delay)
+      SystemsClock.send_after(SystemsRuntime.Proc.self(), result_message, delay)
       state
     else
       state
@@ -1631,7 +1724,7 @@ defmodule SalixIM.Triage.Runtime do
       {:ok, settlement} ->
         fence = settlement.fence
         terminal = settlement.requested_terminal
-        _ = Process.cancel_timer(active.timeout_ref)
+        _ = SystemsClock.cancel_timer(active.timeout_ref)
         authoritative? = settlement.outcome == :requested
         authority_status = get_in(fence, ["terminal", "status"])
 
@@ -1693,7 +1786,7 @@ defmodule SalixIM.Triage.Runtime do
           "triage_runtime_settlement_failed reason=identity_diagnostic_invalid_fence"
         )
 
-        _ = Process.cancel_timer(active.timeout_ref)
+        _ = SystemsClock.cancel_timer(active.timeout_ref)
         emit_active_phase(:terminal, :rejected, active, started_at)
         {%{state | active: Map.delete(state.active, scope_key)}, false}
 
@@ -1790,9 +1883,9 @@ defmodule SalixIM.Triage.Runtime do
     )
 
     Telemetry.emit(:terminal, :unavailable, :other, :bft, Telemetry.start())
-    capability = make_ref()
+    capability = SystemsRuntime.Proc.make_ref()
     {delay, state} = retry_delay(state, {:late_result, late.run_id}, @retry_base_ms)
-    Process.send_after(self(), {:retry_late_result, capability}, delay)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), {:retry_late_result, capability}, delay)
 
     %{
       state
@@ -1844,7 +1937,7 @@ defmodule SalixIM.Triage.Runtime do
         state
 
       %{timer_ref: timer_ref} ->
-        _ = Process.cancel_timer(timer_ref)
+        _ = SystemsClock.cancel_timer(timer_ref)
         put_flush_schedule(state, scope_key, bucket, fire_at)
 
       nil ->
@@ -1853,11 +1946,11 @@ defmodule SalixIM.Triage.Runtime do
   end
 
   defp put_flush_schedule(state, scope_key, bucket, fire_at) do
-    id = make_ref()
+    id = SystemsRuntime.Proc.make_ref()
 
     timer_ref =
-      Process.send_after(
-        self(),
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
         {:flush, scope_key, bucket.token, bucket.generation, id},
         max(0, fire_at - now())
       )
@@ -1876,7 +1969,7 @@ defmodule SalixIM.Triage.Runtime do
   defp cancel_flush_schedule(state, scope_key) do
     case state.flush_schedules[scope_key] do
       %{timer_ref: timer_ref} ->
-        _ = Process.cancel_timer(timer_ref)
+        _ = SystemsClock.cancel_timer(timer_ref)
         %{state | flush_schedules: Map.delete(state.flush_schedules, scope_key)}
 
       nil ->
@@ -1921,20 +2014,20 @@ defmodule SalixIM.Triage.Runtime do
     do: %{state | recovery_requests: Enum.uniq(state.recovery_requests ++ [lane])}
 
   defp start_recovery_step(%{recovery_work: nil} = state, cursor) do
-    if state.recovery_schedule, do: Process.cancel_timer(state.recovery_schedule.timer_ref)
-    owner = self()
-    id = make_ref()
+    if state.recovery_schedule, do: SystemsClock.cancel_timer(state.recovery_schedule.timer_ref)
+    owner = SystemsRuntime.Proc.self()
+    id = SystemsRuntime.Proc.make_ref()
     namespace = state.namespace
     page_size = state.recovery_page_size
     active = state.active
 
     {:ok, pid} =
-      Task.Supervisor.start_child(state.background_supervisor, fn ->
+      SystemsRuntime.TaskSupervisor.start_child(state.background_supervisor, fn ->
         result = read_recovery_page(namespace, page_size, cursor, active)
-        send(owner, {:triage_recovery_page, id, result})
+        SystemsRuntime.Proc.send(owner, {:triage_recovery_page, id, result})
       end)
 
-    ref = Process.monitor(pid)
+    ref = SystemsRuntime.Proc.monitor(pid)
 
     %{
       state
@@ -2013,7 +2106,7 @@ defmodule SalixIM.Triage.Runtime do
         )
 
         id = state.recovery_work.id
-        send(self(), {:recover_record, id})
+        SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:recover_record, id})
 
         %{
           state
@@ -2048,8 +2141,15 @@ defmodule SalixIM.Triage.Runtime do
         )
 
       [] ->
-        id = make_ref()
-        timer_ref = Process.send_after(self(), {:converge_triage_recovery, id}, delay)
+        id = SystemsRuntime.Proc.make_ref()
+
+        timer_ref =
+          SystemsClock.send_after(
+            SystemsRuntime.Proc.self(),
+            {:converge_triage_recovery, id},
+            delay
+          )
+
         %{state | recovery_schedule: %{id: id, timer_ref: timer_ref}}
     end
   end
@@ -2064,7 +2164,7 @@ defmodule SalixIM.Triage.Runtime do
           :present ->
             state
 
-          :missing ->
+          status when status in [:missing, :released] ->
             if Map.has_key?(state.active, scope),
               do: state,
               else: do_start_evaluation(state, scope, sealed)
@@ -2086,6 +2186,10 @@ defmodule SalixIM.Triage.Runtime do
           if TriageRecordStore.atomic_authoritative?(),
             do: state,
             else: recover_identity_fence(state, key, fence)
+
+        # The bucket lane owns a released generation.
+        {:identity, :released} ->
+          state
 
         {:identity, _fence_state} ->
           recover_identity_fence(state, key, fence)
@@ -2117,8 +2221,8 @@ defmodule SalixIM.Triage.Runtime do
           delay = max(0, fence["deadline_at"] - now())
 
           timeout_ref =
-            Process.send_after(
-              self(),
+            SystemsClock.send_after(
+              SystemsRuntime.Proc.self(),
               {:triage_evaluation_timeout, scope_key, fence["generation"], fence["run_id"]},
               delay
             )
@@ -2247,8 +2351,15 @@ defmodule SalixIM.Triage.Runtime do
         state
 
       nil ->
-        id = make_ref()
-        timer_ref = Process.send_after(self(), {:project_terminal, fence_key, id}, max(0, delay))
+        id = SystemsRuntime.Proc.make_ref()
+
+        timer_ref =
+          SystemsClock.send_after(
+            SystemsRuntime.Proc.self(),
+            {:project_terminal, fence_key, id},
+            max(0, delay)
+          )
+
         schedule = %{id: id, timer_ref: timer_ref}
 
         %{
@@ -2262,10 +2373,14 @@ defmodule SalixIM.Triage.Runtime do
   defp maybe_schedule_projection_convergence(state, delay) do
     if TriageRecordStore.atomic_authoritative?() and
          is_nil(state.projection_convergence_schedule) and is_nil(state.projection_worker) do
-      id = make_ref()
+      id = SystemsRuntime.Proc.make_ref()
 
       timer_ref =
-        Process.send_after(self(), {:converge_projection_obligations, id}, max(0, delay))
+        SystemsClock.send_after(
+          SystemsRuntime.Proc.self(),
+          {:converge_projection_obligations, id},
+          max(0, delay)
+        )
 
       %{state | projection_convergence_schedule: %{id: id, timer_ref: timer_ref}}
     else
@@ -2274,18 +2389,18 @@ defmodule SalixIM.Triage.Runtime do
   end
 
   defp start_projection_worker(%{projection_worker: nil} = state) do
-    owner = self()
-    id = make_ref()
+    owner = SystemsRuntime.Proc.self()
+    id = SystemsRuntime.Proc.make_ref()
     namespace = state.namespace
     limit = min(state.recovery_page_size, 100)
 
     {:ok, pid} =
-      Task.Supervisor.start_child(state.background_supervisor, fn ->
+      SystemsRuntime.TaskSupervisor.start_child(state.background_supervisor, fn ->
         result = ProjectionProjector.converge(namespace, limit)
-        send(owner, {:triage_projection_result, id, result})
+        SystemsRuntime.Proc.send(owner, {:triage_projection_result, id, result})
       end)
 
-    ref = Process.monitor(pid)
+    ref = SystemsRuntime.Proc.monitor(pid)
 
     %{state | projection_worker: %{id: id, pid: pid, ref: ref}}
   end
@@ -2295,7 +2410,7 @@ defmodule SalixIM.Triage.Runtime do
   defp maybe_expedite_projection_convergence(state) do
     if TriageRecordStore.atomic_authoritative?() do
       case state.projection_convergence_schedule do
-        %{timer_ref: timer_ref} -> _ = Process.cancel_timer(timer_ref)
+        %{timer_ref: timer_ref} -> _ = SystemsClock.cancel_timer(timer_ref)
         nil -> :ok
       end
 
@@ -2377,5 +2492,5 @@ defmodule SalixIM.Triage.Runtime do
     |> CanonicalJSON.sha256()
   end
 
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 end

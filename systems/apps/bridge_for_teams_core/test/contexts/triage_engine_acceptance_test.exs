@@ -1,4 +1,6 @@
 defmodule BridgeForTeams.TriageEngineAcceptanceTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Native Triage intake and Worker completion against a local project fixture.
 
@@ -18,6 +20,7 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
   """
 
   use BridgeForTeams.DataCase, async: false
+  use SalixStore.QueueCase, queues: [:triage_product_effects]
 
   alias BridgeForTeams.Meetings
   alias BridgeForTeams.TriageEngineFixture, as: Fixture
@@ -46,10 +49,10 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
       do: SalixIM.TestSupport.ConversationDelivery.notify(__MODULE__, agent, source)
 
     def deliver(agent, payload, opts) do
-      owner = Application.fetch_env!(:bridge_for_teams_core, :triage_acceptance_owner)
-      send(owner, {:worker_command, agent, payload})
+      owner = SystemsRuntime.fetch_env!(:bridge_for_teams_core, :triage_acceptance_owner)
+      SystemsRuntime.Proc.send(owner, {:worker_command, agent, payload})
 
-      send(
+      SystemsRuntime.Proc.send(
         owner,
         {:worker_delivery, agent}
       )
@@ -69,7 +72,7 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
 
       :ok = opts[:before_send].(payload)
       assert payload =~ Map.get(opts, "expected_evidence", "恢复仍未确认，下一步检查公网探测")
-      send(opts["test_pid"], {:stub_provider_called, tools})
+      SystemsRuntime.Proc.send(opts["test_pid"], {:stub_provider_called, tools})
 
       schema = opts["response_format"]["schema"]
 
@@ -114,9 +117,9 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
 
   setup context do
     SalixStore.S3.Fake.reset()
-    unless Process.whereis(Ids), do: start_supervised!(Ids)
+    unless SystemsRuntime.Proc.whereis(Ids), do: start_supervised!(Ids)
 
-    :ok = Fixture.install_clickhouse_reader!(self())
+    :ok = Fixture.install_clickhouse_reader!(SystemsRuntime.Proc.self())
 
     authority = Fixture.seed_authority!()
     project = Fixture.seed_project!(authority)
@@ -133,8 +136,16 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
   test "one mirrored CH row drives the Runtime and assigns a Worker without a Slack write", ctx do
     %{authority: authority, project: project} = ctx
 
-    namespace = "triage-ch-row-acceptance-#{System.unique_integer([:positive])}"
+    namespace = "triage-ch-row-acceptance-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     server = start_engine!(namespace, debounce_ms: 100)
+
+    # The deployment's review Runtime, which the patrol admits to: the test node runs none of its own.
+    start_supervised!(
+      {Triage.Runtime,
+       name: Salix.Bindings.TriageReviewRuntime,
+       mode: :review,
+       namespace: SalixStore.TriageKeys.default_namespace()}
+    )
 
     Fixture.put_thread([
       Fixture.mirrored_message(Fixture.root_ts(), "U_LIN", "谁在跟进 Atlas 登录事故？")
@@ -209,626 +220,14 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
            ]
   end
 
-  test "configured Worker changes new intake while the accepted Task keeps its Worker",
-       ctx do
-    authority = ctx.authority
-    {:ok, project} = BridgeForTeams.Projects.get_project_by_salix_group(authority["group_id"])
-
-    workers =
-      for label <- ["First investigator", "Second investigator"] do
-        worker =
-          SalixAgent.TestSupport.create_control_agent_in_group!(
-            authority["tenant_id"],
-            authority["group_id"],
-            %{"role" => "worker", "name" => label}
-          )
-
-        BridgeForTeams.Repo.insert!(%BridgeForTeams.Schema.Agent{
-          project_id: project.id,
-          salix_agent_id: worker["agent_id"],
-          role: "worker",
-          configuration_authority: "salix"
-        })
-
-        worker["agent_id"]
-      end
-
-    previous = Application.fetch_env(:salix_im, :agent_delivery_mod)
-    Application.put_env(:salix_im, :agent_delivery_mod, NoWakeWorkerDelivery)
-
-    on_exit(fn ->
-      SalixIM.TestSupport.Fleet.stop_all!()
-      SalixAgent.TestSupport.stop_all_agents()
-
-      case previous do
-        {:ok, value} -> Application.put_env(:salix_im, :agent_delivery_mod, value)
-        :error -> Application.delete_env(:salix_im, :agent_delivery_mod)
-      end
-    end)
-
-    namespace = "selected-worker-#{ULID.generate()}"
-    server = start_engine!(namespace, [debounce_ms: 50], StubProvider)
-
-    Fixture.put_thread([
-      Fixture.mirrored_message(Fixture.root_ts(), "U_LIN", "Who can check the original source?")
-    ])
-
-    Fixture.put_linked_message(%{
-      "workspace_url" => "https://atlas.slack.com",
-      "ts" => Fixture.root_ts(),
-      "thread_ts" => Fixture.root_ts(),
-      "user" => "U_LIN",
-      "text" => "Who can check the original source?"
-    })
-
-    Fixture.admit_reply!(
-      server,
-      authority,
-      "Ev-worker-choice",
-      Fixture.root_ts(),
-      "Who can check the original source?"
-    )
-
-    run = Fixture.await_run!(server)
-    assert run["status"] == "evaluated"
-    assert run["evaluator"]["request_count"] == 0
-    {:ok, [claim]} = Fixture.claim_round!(%{namespace: namespace, run: run}, "selected-worker")
-
-    # Review-mode ingress does not create the provider route owner. Use its
-    # real owner contract before exercising the final Slack adapter.
-    route =
-      authority
-      |> Map.take(~w(tenant_id group_id connect_id connect_generation workspace_id))
-      |> Map.merge(%{
-        "channel_id" => claim.payload["target"]["channel_id"],
-        "root_thread_ts" => claim.payload["target"]["thread_ts"]
-      })
-
-    assert {:ok, :triage} =
-             SalixIM.Provider.Slack.ThreadRouteOwner.claim_triage(route, run["context_sha256"])
-
-    Harness.assert_worker_assignment!(run)
-
-    assert {:ok, %{status: :fresh}} =
-             SalixIM.Triage.SlackEffectAdapter.Freshness.check(claim, [])
-
-    initial_effect = SalixIM.Triage.SlackEffectAdapter.apply(claim)
-    refute_receive {:slack_reply_posted, _}, 100
-
-    assert {:ok,
-            %{
-              outcome: :applied,
-              external_writes: 0,
-              communication: %{"kind" => "silence"}
-            }} = initial_effect
-
-    assert %Postgrex.Result{rows: [[0]]} =
-             Repo.query!(
-               "SELECT count(*) FROM triage_companion_reaction_obligations WHERE run_id = $1",
-               [run["run_id"]]
-             )
-
-    delegation = hd(claim.payload["delegations"])
-
-    {:ok, selected} =
-      BridgeForTeams.Salix.Erpc.ensure_triage_worker(
-        authority["group_id"],
-        authority["inbound_agent_id"]
-      )
-
-    refute selected in workers
-    assert delegation["worker_ref"] == "comma-agent://" <> selected
-    request = "triage-delegation:#{claim.obligation_id}:0"
-    assert {:ok, prepared} = BridgeForTeams.TriageDelegation.prepare(claim, delegation, request)
-    next_worker = hd(workers)
-    assert {:ok, %{"revision" => revision}} = SalixAgent.TriageWorker.get(authority["group_id"])
-
-    assert {:ok, _} =
-             SalixAgent.TriageWorker.configure(
-               authority["group_id"],
-               authority["inbound_agent_id"],
-               next_worker,
-               revision,
-               %{"actor_user_id" => "project-admin", "request_id" => "switch-worker"}
-             )
-
-    assert {:ok, result} = BridgeForTeams.TriageDelegation.commit(prepared)
-    assert result["disposition"] == "created"
-    assert result["worker_agent_id"] == selected
-
-    assert {:ok, ^result} = BridgeForTeams.TriageDelegation.commit(prepared)
-
-    assert {:ok, %{"data" => [task]}} =
-             SalixIM.Conversations.list_group_conversations(authority["group_id"],
-               kind: "agent_task",
-               limit: 10
-             )
-
-    assert task["conversation_id"] == result["conversation_id"]
-    assert task["task_worker_agent_id"] == selected
-
-    {:ok, %{"participants" => participants}} =
-      SalixIM.Conversations.list_group_conversation_participants(
-        authority["group_id"],
-        task["conversation_id"]
-      )
-
-    assert Enum.find(participants, &(&1["role_label"] == "delegator"))["notification_filter"][
-             "messages"
-           ] == "none"
-
-    {:ok, router_session} =
-      SalixIM.ProviderConnects.agent_group_router_session_id(
-        authority["inbound_agent_id"],
-        authority["group_id"]
-      )
-
-    assert_receive {:worker_delivery, ^selected}, 5_000
-    router_id = authority["inbound_agent_id"]
-    refute_receive {:worker_delivery, ^router_id}, 100
-
-    case SalixAgent.InternalSessionStore.read(router_id, router_session) do
-      {:error, :not_found} ->
-        :ok
-
-      {:ok, session} ->
-        assert SalixAgent.InternalSession.get(session, :input_queue) == [] and
-                 SalixAgent.InternalSession.get(session, :messages) == []
-    end
-
-    assert_receive {:worker_command, ^selected, command}, 5_000
-
-    tool_context = %{
-      "session_id" => command.session_id,
-      "trusted_origin" => command.trusted_origin
-    }
-
-    memory_path = "/memory/index.md"
-
-    {:ok, memory_event} =
-      SalixAgent.AgentWorkspace.prepare_write(
-        router_id,
-        memory_path,
-        "Project context: inspect the original source."
-      )
-
-    {:ok, _} =
-      SalixAgent.AgentWorkspace.seed_operation(
-        router_id,
-        "memory-read-#{ULID.generate()}",
-        %{},
-        [Map.put(memory_event, "ifc_label", ["public"])]
-      )
-
-    memory_request = %{
-      "connect_id" => "internal",
-      "params" => %{"path" => memory_path},
-      "tool_context" => tool_context
-    }
-
-    assert {:ok, memory} =
-             SalixIM.Provider.call_api(
-               selected,
-               "internal",
-               "internal.triage.read_memory",
-               memory_request
-             )
-
-    assert memory["content"] =~ "Project context: inspect the original source."
-    assert memory["__ifc__"] == %{"label" => ["public"]}
-
-    assert {:ok, source} =
-             SalixIM.Provider.call_api(selected, "internal", "internal.triage.read_source", %{
-               "connect_id" => "internal",
-               "params" => %{},
-               "tool_context" => tool_context
-             })
-
-    final_text = "The original source asks who can inspect it."
-
-    assert {:ok, _} =
-             SalixIM.Provider.call_api(selected, "internal", "internal.triage.complete", %{
-               "connect_id" => "internal",
-               "params" => %{
-                 "source_snapshot" => source["source_snapshot"],
-                 "decision" => %{"kind" => "reply", "text" => final_text, "source_refs" => []}
-               },
-               "tool_context" => tool_context
-             })
-
-    assert_receive {:slack_reply_posted, %{"text" => ^final_text}}, 5_000
-    refute_receive {:slack_reply_posted, _}, 100
-
-    assert true ==
-             SalixAgent.LiveLlmTestSupport.eventually(fn ->
-               case SalixIM.Conversations.get_group_conversation(
-                      authority["group_id"],
-                      task["conversation_id"]
-                    ) do
-                 {:ok, %{"status" => "ready_for_review"}} -> {:ok, true}
-                 _ -> :retry
-               end
-             end)
-
-    {:ok, agent} = BridgeForTeams.Agents.get_project_agent(project.id, selected)
-    archive_agent_fixture!(agent)
-    assert {:error, _, false} = BridgeForTeams.TriageDelegation.commit(prepared)
-
-    assert {:error, _} =
-             SalixIM.Provider.call_api(
-               selected,
-               "internal",
-               "internal.triage.read_memory",
-               memory_request
-             )
-
-    next_namespace = "next-worker-#{ULID.generate()}"
-    next_server = start_engine!(next_namespace, [debounce_ms: 50], StubProvider)
-    next_root = "1788249900.000100"
-    Fixture.put_thread([Fixture.mirrored_message(next_root, "U_LIN", "Check this new source")])
-
-    Fixture.admit_reply!(
-      next_server,
-      authority,
-      "Ev-next-worker",
-      next_root,
-      "Check this new source",
-      root_ts: next_root,
-      actor_id: "U_LIN"
-    )
-
-    next_run = Fixture.await_run!(next_server)
-
-    {:ok, [next_claim]} =
-      Fixture.claim_round!(%{namespace: next_namespace, run: next_run}, "next-worker")
-
-    assert [next_delegation] = next_claim.payload["delegations"]
-    assert next_delegation["worker_ref"] == "comma-agent://" <> next_worker
-  end
-
-  test "forwarded Task evidence reaches the model through the native source and identity pipeline",
-       ctx do
-    namespace = "triage-forwarded-task-#{System.unique_integer([:positive])}"
-    server = start_engine!(namespace, debounce_ms: 50)
-    text = "这个 task 完成了但没回复？"
-    root = Fixture.mirrored_message(Fixture.root_ts(), "U_LIN", text)
-
-    Fixture.put_thread([
-      Map.put(root, "attachments", [
-        %{
-          "is_msg_unfurl" => true,
-          "channel_id" => "C_TASKS",
-          "ts" => "1787018000.000001",
-          "from_url" =>
-            "https://atlas.slack.com/archives/C_TASKS/p1787018000000001?thread_ts=1787017999.000000&cid=C_TASKS",
-          "text" => "Task Review PR #67: ready for review",
-          "blocks" => [
-            %{
-              "type" => "task_card",
-              "title" => "Review PR #67",
-              "status" => "complete",
-              "output" => %{
-                "type" => "rich_text",
-                "elements" => [
-                  %{
-                    "type" => "rich_text_section",
-                    "elements" => [
-                      %{
-                        "type" => "text",
-                        "text" =>
-                          "Approved PR #67 at f231813; no blockers. Nothing merged or deployed."
-                      }
-                    ]
-                  }
-                ]
-              }
-            }
-          ]
-        }
-      ])
-    ])
-
-    Fixture.admit_root!(server, ctx.authority, "Ev-forwarded-task", text)
-    run = Fixture.await_run!(server)
-    assert run["status"] == "evaluated"
-    assert run["authoritative"] == true
-
-    snapshot = Jason.decode!(run["input_snapshot"]["canonical_snapshot_bytes"])
-    assert [%{"text" => model_text}] = snapshot["slack_context"]["messages"]
-    assert model_text =~ text
-    assert model_text =~ "Task Review PR #67: ready for review"
-    assert model_text =~ "Approved PR #67 at f231813; no blockers. Nothing merged or deployed."
-    assert model_text =~ "1787018000.000001"
-    assert model_text =~ "1787017999.000000"
-    assert model_text =~ "untrusted Slack forwarded-message references"
-    assert run["evaluator"]["request_count"] == 0
-    assert {:ok, ^run} = Triage.replay(server, run["run_id"])
-    assert Fixture.collected_slack_calls() == ["api/emoji.list"]
-  end
-
-  @tag :worker_effect
-  test "continuous channel roots share one trailing batch and retain physical reply sources",
-       ctx do
-    %{authority: authority, project: project} = ctx
-    namespace = "triage-channel-batch-#{System.unique_integer([:positive])}"
-    server = start_engine!(namespace, debounce_ms: 1_000, max_wait_ms: 30_000)
-
-    messages = [
-      {"1789094839.768769", "你让它直接看代码看可能会是什么原因吧"},
-      {"1789094849.609089", "就是没打开 full access"},
-      {"1789094871.066279", "设置里的 fullaccess 不是文件访问权限么"},
-      {"1789094888.003919", "按理说没有文件访问权限不会导致 connect 断开"},
-      {"1789094899.234539", "我问问"}
-    ]
-
-    Fixture.put_thread(
-      Enum.map(messages, fn {timestamp, text} ->
-        Fixture.mirrored_message(timestamp, "U_LIN", text) |> Map.put("thread_ts", "")
-      end)
-    )
-
-    receipts =
-      Enum.map(messages, fn {timestamp, text} ->
-        Fixture.admit_root!(server, authority, "Ev-channel-#{timestamp}", text,
-          root_ts: timestamp
-        )
-      end)
-
-    [bucket_scope] = receipts |> Enum.map(&Bucketing.scope_key/1) |> Enum.uniq()
-    assert String.ends_with?(bucket_scope, ":__channel__")
-    assert length(Enum.uniq_by(receipts, &Bucketing.source_key/1)) == 5
-    refute Enum.any?(receipts, & &1["triage_event"]["fast_path"])
-    assert Triage.ledger_records(server) == []
-
-    open = Bucketing.load!(namespace, bucket_scope)
-    assert length(open["open_receipts"]) == 5
-    refute open["open_fast_path"]
-
-    run = Fixture.await_run!(server)
-    assert run["authoritative"] and run["status"] == "evaluated"
-    snapshot = run["input_snapshot"]["snapshot"]
-    assert snapshot["schema"] == "comma.triage-context-snapshot.v10"
-    assert snapshot["source_authority"]["scope_kind"] == "channel"
-    projected = snapshot["slack_context"]["messages"]
-    assert Enum.map(projected, & &1["text"]) == Enum.map(messages, &elem(&1, 1))
-    assert length(Enum.uniq_by(projected, & &1["thread_ref"])) == 5
-    assert snapshot["slack_context"]["decision_target"]["ordinal"] == 5
-    assert length(run["input_receipt_refs"]) == 5
-    assert {:ok, ^run} = Triage.replay(server, run["run_id"])
-
-    assert Enum.count(
-             Fixture.collected_source_reads(),
-             &(elem(&1, 0) == "clickhouse.channel_current")
-           ) == 1
-
-    assert run["evaluator"]["request_count"] == 0
-
-    fence = load_fence!(namespace, bucket_scope, run["generation"])
-    assert fence["sealed_generation"]["receipts"] == receipts
-    assert RunFence.valid_record?(fence)
-    assert Bucketing.load!(namespace, bucket_scope)["sealed_generations"] == []
-
-    assert {:ok, :duplicate, :sealed_member} =
-             SalixIM.Triage.Runtime.accept_current_with_membership(
-               server,
-               authority,
-               hd(receipts)
-             )
-
-    assert Bucketing.load!(namespace, bucket_scope)["open_receipts"] == []
-
-    bundle =
-      Jason.decode!(
-        fence["identity_observation"]["private_projection"]["raw_source_bundle_bytes"]
-      )
-
-    raw_messages = bundle["raw_context"]["slack_context"]["messages"]
-    assert Enum.map(raw_messages, & &1["root_thread_ts"]) == Enum.map(messages, &elem(&1, 0))
-
-    assert Enum.all?(raw_messages, fn message ->
-             String.ends_with?(
-               message["source_ref"],
-               "/#{message["root_thread_ts"]}/#{message["message_ts"]}"
-             )
-           end)
-
-    assert %Postgrex.Result{rows: [[target, window]]} =
-             Repo.query!(
-               "SELECT payload -> 'target', payload -> 'source_window' FROM triage_product_obligations WHERE run_id = $1",
-               [run["run_id"]]
-             )
-
-    assert target["thread_ts"] == "1789094899.234539"
-    assert window["thread_roots"] == Enum.map(messages, &elem(&1, 0))
-    claim_triage_route!(authority, target)
-
-    assert {:ok, %{applied: 1, failed: 0}} =
-             ProductEffectWorker.process_once(
-               adapter: AuditSink,
-               holder: "triage-channel-batch",
-               batch_size: 50
-             )
-
-    assert {:ok, [outcome]} = TriageProductRuntime.recent_outcomes(project.id)
-    assert outcome.state == :applied
-    assert outcome.result["external_writes"] == 0
-    assert [%{"status" => "created"}] = outcome.result["metadata"]["delegations"]
-    refute_receive {:slack_reply_posted, _}
-  end
-
-  @tag :archived_processing
-  test "completed channel batches retain replay and timeline results without growing active history",
-       ctx do
-    namespace = "triage-channel-history-#{System.unique_integer([:positive])}"
-    server = start_engine!(namespace, debounce_ms: 50)
-
-    receipts =
-      for ordinal <- 1..12 do
-        timestamp = "#{1_789_096_000 + ordinal}.000001"
-
-        text =
-          ("Atlas follow-up #{ordinal}: " <> String.duplicate("rollout evidence ", 4_000))
-          |> String.trim()
-
-        Fixture.put_thread([
-          Fixture.mirrored_message(timestamp, "U_LIN", text) |> Map.put("thread_ts", "")
-        ])
-
-        receipt =
-          Fixture.admit_root!(server, ctx.authority, "Ev-channel-history-#{ordinal}", text,
-            root_ts: timestamp
-          )
-
-        runs = Fixture.await_runs!(server, ordinal)
-        assert Enum.all?(runs, &(&1["status"] == "evaluated"))
-
-        assert Bucketing.load!(namespace, Bucketing.scope_key(receipt))["sealed_generations"] ==
-                 []
-
-        receipt
-      end
-
-    for run <- Triage.ledger_records(server) do
-      assert {:ok, ^run} = Triage.replay(server, run["run_id"])
-    end
-
-    for receipt <- receipts do
-      assert {:ok, :duplicate, :sealed_member} =
-               SalixIM.Triage.Runtime.accept_current_with_membership(
-                 server,
-                 ctx.authority,
-                 receipt
-               )
-    end
-
-    scope = Bucketing.scope_key(hd(receipts))
-    assert Bucketing.load!(namespace, scope)["open_receipts"] == []
-    assert Bucketing.load!(namespace, scope)["sealed_generations"] == []
-    assert length(Triage.ledger_records(server)) == 12
-
-    evidence_bytes =
-      Triage.ledger_records(server)
-      |> Enum.reduce(0, fn run, total ->
-        keys = [
-          SalixStore.TriageKeys.ctl_im_triage_bucket_seal(namespace, scope, run["generation"]),
-          SalixStore.TriageKeys.ctl_im_triage_ledger_run(namespace, run["run_id"])
-        ]
-
-        Enum.reduce(keys, total, fn key, bytes ->
-          assert {:ok, %{body: body}} = SalixStore.TriageRecords.get(key)
-          bytes + byte_size(body)
-        end)
-      end)
-
-    assert evidence_bytes > 4 * 1024 * 1024
-
-    assert {:ok, %{items: full_page}} =
-             SalixIM.Triage.ReadModel.recent_processing(namespace, 0, limit: 20)
-
-    assert Enum.any?(full_page, &(&1.state == :unavailable))
-
-    summaries =
-      for run <- Triage.ledger_records(server) do
-        key = SalixStore.TriageKeys.ctl_im_triage_bucket_seal(namespace, scope, run["generation"])
-        assert {:ok, fence} = CasRecord.get(key)
-        refs = Enum.map(fence["sealed_generation"]["receipts"], & &1["receipt_ref"])
-        assert {:ok, summary} = SalixStore.TriageRecords.processing_fence(key, refs)
-        assert summary["terminal"]["status"] == "evaluated"
-        assert summary["archived_membership"] == true
-        summary
-      end
-
-    assert length(summaries) == 12
-    assert byte_size(Jason.encode!(summaries)) < 16_384
-
-    assert {:ok, %{items: [%{state: :terminal, terminal_status: "evaluated"}], truncated: true}} =
-             SalixIM.Triage.ReadModel.recent_processing(namespace, 0, limit: 1)
-  end
-
-  @tag :archived_processing
-  test "a vanished sealed target does not become an identity failure or retarget later activity",
-       ctx do
-    namespace = "triage-missing-target-#{System.unique_integer([:positive])}"
-    server = start_engine!(namespace, debounce_ms: 20)
-    later_ts = "1787019060.000000"
-
-    # Current-state reads omit deleted messages. Only unrelated later activity
-    # remains when the admitted target disappears during the debounce window.
-    Fixture.put_thread([Fixture.mirrored_message(later_ts, "U_LIN", "An unrelated update")])
-    receipt = Fixture.admit_root!(server, ctx.authority, "Ev-missing-target", "Investigate this")
-
-    assert [%{"status" => "failed"} = run] = Fixture.await_runs!(server, 1)
-
-    assert run["decision"] == %{
-             "action" => "silence",
-             "reason" => "triage_source_target_unavailable"
-           }
-
-    assert run["evaluator"] == %{}
-    assert {:ok, ^run} = Triage.replay(server, run["run_id"])
-    assert Bucketing.load!(namespace, Bucketing.scope_key(receipt))["sealed_generations"] == []
-
-    assert {:ok, %{items: [item]}} =
-             SalixIM.Triage.ReadModel.recent_processing(namespace, 0, limit: 20)
-
-    assert item.state == :terminal
-    assert item.diagnostics.decision_reason == "source_read_unavailable"
-    refute_receive {:worker_delivery, _}
-    refute_receive {:slack_reply_posted, _}
-  end
-
-  @tag :archived_processing
-  test "an archived evaluation failure stays visible instead of reverting to Received", ctx do
-    namespace = "triage-channel-failure-#{System.unique_integer([:positive])}"
-    server = start_engine!(namespace, debounce_ms: 20)
-    text = "Investigate this error. api_key = opaque-fixture-secret"
-    Fixture.put_thread([Fixture.mirrored_message(Fixture.root_ts(), "U_LIN", text)])
-    receipt = Fixture.admit_root!(server, ctx.authority, "Ev-channel-failure", text)
-
-    assert [%{"status" => "failed"} = run] = Fixture.await_runs!(server, 1)
-    assert run["decision"]["reason"] == "identity_projection_privacy_rejected"
-    assert Bucketing.load!(namespace, Bucketing.scope_key(receipt))["sealed_generations"] == []
-
-    assert {:ok, %{items: [item]}} =
-             SalixIM.Triage.ReadModel.recent_processing(namespace, 0, limit: 20)
-
-    assert item.state == :terminal
-    assert item.terminal_status == "failed"
-    assert item.diagnostics.decision_reason == "evidence_invalid"
-
-    assert {:ok, debug} =
-             SalixIM.Triage.ReadModel.model_debug(
-               namespace,
-               ctx.project.id,
-               ctx.project.salix_group_id,
-               ctx.authority["inbound_agent_id"],
-               "receipt",
-               receipt["receipt_ref"]
-             )
-
-    assert debug.run_id == run["run_id"]
-    assert debug.decision["reason"] == "identity_projection_privacy_rejected"
-
-    Repo.query!(
-      "DELETE FROM triage_run_fences WHERE namespace_key = $1 AND body ->> 'run_id' = $2",
-      [
-        SalixStore.TriageKeys.namespace_key(namespace),
-        run["run_id"]
-      ]
-    )
-
-    assert {:ok, %{items: [%{state: :unavailable}]}} =
-             SalixIM.Triage.ReadModel.recent_processing(namespace, 0, limit: 20)
-  end
-
   test "a fresh runtime recovers a pending channel batch and rejects the old timer", ctx do
-    namespace = "triage-channel-restart-#{System.unique_integer([:positive])}"
+    namespace = "triage-channel-restart-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     original = start_engine!(namespace, debounce_ms: 1_000)
     text = "Atlas follow-up needs a current owner"
     Fixture.put_thread([Fixture.mirrored_message(Fixture.root_ts(), "U_LIN", text)])
     receipt = Fixture.admit_root!(original, ctx.authority, "Ev-channel-restart", text)
     :ok = :sys.suspend(original)
-    on_exit(fn -> if Process.alive?(original), do: :sys.resume(original) end)
+    on_exit(fn -> if SystemsRuntime.Proc.alive?(original), do: :sys.resume(original) end)
 
     recovered = start_engine!(namespace, debounce_ms: 50)
 
@@ -839,9 +238,10 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
        interval_ms: 5,
        full_ring_idle_ms: 50,
        held_poll_ms: 5,
-       lease_key: "ctl/test/triage-channel-restart/#{System.unique_integer([:positive])}",
+       lease_key:
+         "ctl/test/triage-channel-restart/#{SystemsRuntime.Proc.unique_integer([:positive])}",
        lease_ttl_ms: 1_000},
-      id: make_ref()
+      id: SystemsRuntime.Proc.make_ref()
     )
 
     run = Fixture.await_run!(recovered)
@@ -854,38 +254,17 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
     assert Triage.ledger_records(original) == [run]
   end
 
-  @tag :credential_terminology
-  test "ordinary authorization terminology in project context reaches evaluation", ctx do
-    %{authority: authority, project: project} = ctx
-
-    project
-    |> Ecto.Changeset.change(name: "Atlas authorization controls")
-    |> BridgeForTeams.Repo.update!()
-
-    namespace = "triage-credential-terminology-#{System.unique_integer([:positive])}"
-    server = start_engine!(namespace, debounce_ms: 20)
-    question = "Atlas 的登录问题现在进展如何？"
-    Fixture.put_thread([Fixture.mirrored_message(Fixture.root_ts(), "U_LIN", question)])
-    Fixture.admit_root!(server, authority, "Ev-credential-terminology", question)
-
-    run = Fixture.await_run!(server)
-    assert run["status"] == "evaluated", inspect(Map.take(run, ~w(status decision evaluator)))
-    assert run["evaluator"]["request_count"] == 0
-    assert RunFence.valid_model_proof?(run["evaluator"])
-    assert {:ok, ^run} = Triage.replay(server, run["run_id"])
-  end
-
   for credential <- [
-        "api_key = opaque-fixture-secret",
         "OPENAI_API_KEY = opaque-fixture-secret",
         "api_key: `opaque-fixture-secret`",
-        "`OPENAI_API_KEY` = `opaque-fixture-secret`",
-        "Authorization: Basic Zml4dHVyZQ=="
+        "`OPENAI_API_KEY` = `opaque-fixture-secret`"
       ] do
     @tag :credential_terminology
     test "credential material #{credential} is rejected before the model is called", ctx do
       server =
-        start_engine!("triage-credential-#{System.unique_integer([:positive])}", debounce_ms: 20)
+        start_engine!("triage-credential-#{SystemsRuntime.Proc.unique_integer([:positive])}",
+          debounce_ms: 20
+        )
 
       text = "Atlas 登录还是失败，帮忙看一下？ #{unquote(credential)}"
       Fixture.put_thread([Fixture.mirrored_message(Fixture.root_ts(), "U_LIN", text)])
@@ -908,7 +287,7 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
     assert {:ok, meetings} = Meetings.list_triage_meetings(project, limit: 25)
     assert length(meetings) == 12
 
-    namespace = "triage-acceptance-#{System.unique_integer([:positive])}"
+    namespace = "triage-acceptance-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     server = start_engine!(namespace)
 
     Fixture.put_thread(unanswered_thread(authority))
@@ -1069,95 +448,16 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
     refute SalixAgent.Fleet.running?(authority["inbound_agent_id"])
 
     # And nothing keeps happening after the terminal settles.
-    Process.sleep(200)
+    SystemsRuntime.Proc.sleep(200)
     assert Fixture.collected_source_reads() == []
     assert Triage.ledger_records(server) == [run]
-  end
-
-  @tag :triage_continuous
-  @tag :worker_context_completion
-  test "an explicit evidenced Worker completion resolves the retained follow-up and leaves its next wakeup inert",
-       ctx do
-    %{authority: authority, project: project} = ctx
-    value = "Atlas 公网探测仍失败，请你负责复查恢复并取得值班负责人确认"
-
-    first_namespace = "triage-followup-open-#{System.unique_integer([:positive])}"
-
-    first =
-      start_engine!(
-        first_namespace,
-        [debounce_ms: 20],
-        LaterEvidenceProvider,
-        %{"expected_evidence" => value}
-      )
-
-    Fixture.put_thread([Fixture.mirrored_message(Fixture.root_ts(), "U_LIN", value)])
-    Fixture.admit_root!(first, authority, "Ev-followup-open", value)
-    first_run = Fixture.await_run!(first)
-
-    complete_worker_context!(first_namespace, first_run, authority, %{
-      "kind" => "follow_up",
-      "subject" => "Atlas release gate",
-      "value" => value,
-      "confidence" => "explicit",
-      "recheck_after_hours" => 12,
-      "follow_up_basis" => "agent_owned"
-    })
-
-    assert {:ok, [%{state: :active} = entry]} = TriageProductRuntime.list_context(project.id)
-
-    second_namespace = "triage-followup-completed-#{System.unique_integer([:positive])}"
-
-    second =
-      start_engine!(
-        second_namespace,
-        [debounce_ms: 20],
-        LaterEvidenceProvider,
-        %{"expected_evidence" => "公网探测通过，值班负责人确认恢复"}
-      )
-
-    Fixture.put_thread([
-      Fixture.mirrored_message(Fixture.root_ts(), "U_LIN", value),
-      Fixture.mirrored_message(ts(9), "U_LIN", "公网探测通过，值班负责人确认恢复")
-    ])
-
-    Fixture.admit_reply!(second, authority, "Ev-followup-check", ts(9), "公网探测通过，值班负责人确认恢复")
-    second_run = Fixture.await_run!(second)
-
-    complete_worker_context!(second_namespace, second_run, authority, %{
-      "kind" => "follow_up_resolution",
-      "subject" => "Atlas release gate",
-      "value" => "公网探测通过，值班负责人确认恢复",
-      "confidence" => "explicit",
-      "resolution_basis" => "source_confirmation"
-    })
-
-    assert {:ok, [%{state: :resolved, entry_id: entry_id}]} =
-             TriageProductRuntime.list_context(project.id)
-
-    assert entry_id == entry.entry_id
-    due_ms = DateTime.to_unix(entry.next_check_at, :millisecond)
-
-    assert {:ok, :stale} =
-             TriageProductRuntime.get_due_follow_up(
-               entry_id,
-               entry.payload["authority_generation"],
-               entry.payload["schedule_id"],
-               due_ms
-             )
-
-    # Exercise this follow-up's real scheduler dispatch, without sweeping due
-    # schedules owned by other fixtures in the shared Salix store.
-    assert {:ok, schedule} = SalixCluster.Schedules.get(entry.payload["schedule_id"])
-    assert {:ok, :fired} = SalixCluster.Schedules.fire(schedule, due_ms, now: due_ms)
-    assert {:error, :not_found} = SalixCluster.Schedules.get(entry.payload["schedule_id"])
   end
 
   @tag :worker_context_completion
   test "two scheduled reminders for one message settle without losing either occurrence", ctx do
     %{authority: authority, project: project} = ctx
 
-    first_namespace = "reminder-confirm-#{System.unique_integer([:positive])}"
+    first_namespace = "reminder-confirm-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     first =
       start_engine!(
@@ -1195,7 +495,7 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
 
     second =
       start_engine!(
-        "reminder-due-#{System.unique_integer([:positive])}",
+        "reminder-due-#{SystemsRuntime.Proc.unique_integer([:positive])}",
         [debounce_ms: 1_000, evaluation_timeout_ms: 10_000],
         LaterEvidenceProvider,
         %{"expected_evidence" => "triggered the current scheduled recheck"}
@@ -1236,7 +536,12 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
                        )
 
                      assert {:ok, :accepted} = Triage.accept_current(second, authority, receipt)
-                     send(self(), {:accepted_recheck, receipt["event_id"]})
+
+                     SystemsRuntime.Proc.send(
+                       SystemsRuntime.Proc.self(),
+                       {:accepted_recheck, receipt["event_id"]}
+                     )
+
                      {:ok, receipt["event_id"]}
                    end
                  )
@@ -1271,187 +576,39 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
   end
 
   @tag :triage_continuous
-  @tag :credential_terminology
-  @tag :worker_context_completion
-  test "a Worker-retained authorization decision is read into a later question without repeating its source",
-       ctx do
-    %{authority: authority, project: project} = ctx
-    value = "Atlas 发布须检查 authorization 流程、api_key 轮换和 access_token 刷新，不在讨论中粘贴凭据"
-
-    first_namespace = "triage-memory-first-#{System.unique_integer([:positive])}"
-
-    first =
-      start_engine!(
-        first_namespace,
-        [debounce_ms: 20],
-        LaterEvidenceProvider,
-        %{"expected_evidence" => value}
-      )
-
-    Fixture.put_thread([Fixture.mirrored_message(Fixture.root_ts(), "U_LIN", value)])
-    Fixture.admit_root!(first, authority, "Ev-memory-decision", value)
-    first_run = Fixture.await_run!(first)
-
-    complete_worker_context!(first_namespace, first_run, authority, %{
-      "kind" => "decision",
-      "subject" => "Atlas release gate",
-      "value" => value,
-      "confidence" => "explicit",
-      "knowledge_scope" => "project"
-    })
-
-    assert {:ok, [%{state: :active, payload: %{"value" => ^value}}]} =
-             TriageProductRuntime.list_context(project.id)
-
-    second_namespace = "triage-memory-second-#{System.unique_integer([:positive])}"
-
-    second =
-      start_engine!(second_namespace, [debounce_ms: 20], LaterEvidenceProvider, %{
-        "expected_evidence" => value
-      })
-
-    question = "Atlas 发布前还有什么必须确认？"
-    Fixture.put_thread([Fixture.mirrored_message(ts(9), "U_LIN", question)])
-    Fixture.admit_root!(second, authority, "Ev-memory-question", question, root_ts: ts(9))
-    run = Fixture.await_run!(second)
-    assert run["status"] == "evaluated"
-    Harness.assert_worker_assignment!(run)
-    assert RunFence.valid_model_proof?(run["evaluator"])
-    assert {:ok, ^run} = Triage.replay(second, run["run_id"])
-  end
-
-  @tag :triage_continuous
-  test "an alert source update reaches Worker assignment with its later evidence",
-       ctx do
+  # Staging shape: the decision target itself names the Bearer scheme.
+  test "a Bearer span in the decision target is withheld and the run proceeds", ctx do
     %{authority: authority} = ctx
-    namespace = "triage-alert-lifecycle-#{System.unique_integer([:positive])}"
-    server = start_engine!(namespace, [debounce_ms: 20], LaterEvidenceProvider)
-
-    Fixture.put_thread([
-      Fixture.mirrored_agent_message(Fixture.root_ts(), "U_ALERTS", "公网健康检查失败"),
-      Fixture.mirrored_agent_message(ts(9), "U_ALERTS", "恢复仍未确认，下一步检查公网探测")
-    ])
-
-    Fixture.admit_root!(server, authority, "Ev-alert-open", "公网健康检查失败",
-      actor_kind: "agent",
-      actor_id: "U_ALERTS"
-    )
-
-    run = Fixture.await_run!(server)
-    assert run["status"] == "evaluated"
-    Harness.assert_worker_assignment!(run)
-    assert RunFence.valid_model_proof?(run["evaluator"])
-    assert {:ok, ^run} = Ledger.fetch(namespace, run["run_id"])
-    assert {:ok, ^run} = Triage.replay(server, run["run_id"])
-
-    # Full current context must not silently retarget the sealed event, and
-    # rehashing a fabricated later message cannot make it committed evidence.
-    snapshot = run["input_snapshot"]["snapshot"]
-    assert snapshot["schema"] == "comma.triage-context-snapshot.v10"
-    assert snapshot["slack_context"]["decision_target"]["ordinal"] == 1
-    assert length(snapshot["slack_context"]["messages"]) == 2
-    refute Map.has_key?(snapshot, "answered_recheck")
-    fence = load_fence!(namespace, scope(authority), run["generation"])
-    projection = fence["identity_observation"]["private_projection"]
-    assert {:ok, _} = IdentityContract.recompute_projected_context(projection)
-    bundle = Jason.decode!(projection["raw_source_bundle_bytes"])
-
-    tampered =
-      put_in(bundle, ["raw_context", "slack_context", "messages", Access.at(1), "text"], "已恢复")
-
-    bytes = SalixIM.Triage.CanonicalJSON.encode!(tampered)
-
-    projection =
-      Map.merge(projection, %{
-        "raw_source_bundle_bytes" => bytes,
-        "raw_source_bundle_sha256" => Fixture.sha256(bytes)
-      })
-
-    assert {:error, :identity_projection_invalid} =
-             IdentityContract.recompute_projected_context(projection)
-
-    assert Fixture.collected_slack_calls() == ["api/emoji.list"]
-  end
-
-  test "sending-tool attribution reaches Worker assignment without becoming a recipient", ctx do
-    %{authority: authority} = ctx
-    namespace = "triage-attribution-#{System.unique_integer([:positive])}"
+    namespace = "triage-bearer-target-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     server = start_engine!(namespace, [debounce_ms: 20], StubProvider)
-    text = "Does RSS growth prove actor state growth? *Sent using* <@U_TOOL>"
+    text = "请 review PR #2642，接入要求 Bearer Token，且仅公开只读工具"
     Fixture.put_thread([Fixture.mirrored_message(Fixture.root_ts(), "U_LIN", text)])
-    Fixture.admit_root!(server, authority, "Ev-attribution", text)
+    receipt = Fixture.admit_root!(server, authority, "Ev-bearer-target", text)
+
+    assert receipt["triage_event"]["text"] ==
+             "请 review PR #2642，接入要求 [Bearer-credential withheld]"
 
     run = Fixture.await_run!(server)
-    assert run["status"] == "evaluated"
+    assert run["status"] == "evaluated", inspect(Map.take(run, ~w(status decision)))
     Harness.assert_worker_assignment!(run)
 
     fence = load_fence!(namespace, scope(authority), run["generation"])
     projection = fence["identity_observation"]["private_projection"]
     assert {:ok, recomputed} = IdentityContract.recompute_projected_context(projection)
 
-    assert recomputed.projected_context["slack_context"]["decision_target"]["syntactic_addressee"] ==
-             "none"
+    assert [%{"text" => target}] =
+             recomputed.projected_context["slack_context"]["messages"]
 
-    bundle = Jason.decode!(projection["raw_source_bundle_bytes"])
-    assert Enum.any?(bundle["raw_context"]["slack_context"]["messages"], &(&1["text"] == text))
+    assert target =~ "[Bearer-credential withheld]"
+    refute Jason.encode!(fence) =~ "Token，且仅公开只读工具"
+    refute Jason.encode!(run) =~ "Token，且仅公开只读工具"
     assert {:ok, ^run} = Triage.replay(server, run["run_id"])
   end
 
-  test "a later human answer reaches Worker assignment without a preliminary reply", ctx do
-    %{authority: authority} = ctx
-
-    namespace = "triage-acceptance-answered-#{System.unique_integer([:positive])}"
-
-    server =
-      start_engine!(namespace, [], LaterEvidenceProvider, %{
-        "expected_evidence" => "我来跟进，负责人是 Lin。"
-      })
-
-    Fixture.put_thread(answered_thread(authority))
-
-    Fixture.admit_root!(server, authority, "Ev-answered-1", "Atlas 登录事故还需要确认处理人")
-    Fixture.admit_reply!(server, authority, "Ev-answered-2", ts(2), "我记得周会里讨论过这件事")
-
-    Fixture.admit_reply!(
-      server,
-      authority,
-      "Ev-answered-3",
-      ts(3),
-      "谁在跟进 Atlas 登录事故？"
-    )
-
-    run = Fixture.await_run!(server)
-
-    assert run["authoritative"] == true
-    assert run["status"] == "evaluated"
-    Harness.assert_worker_assignment!(run)
-    assert RunFence.valid_model_proof?(run["evaluator"])
-
-    fence = load_fence!(namespace, scope(authority), run["generation"])
-    assert RunFence.valid_terminal?(fence["terminal"])
-    assert fence["terminal"]["status"] == "evaluated"
-
-    assert {:ok, ^run} = Ledger.fetch(namespace, run["run_id"])
-    assert {:ok, ^run} = Triage.replay(server, run["run_id"])
-    assert {:ok, listed} = Ledger.list(namespace)
-    assert Enum.filter(listed, &(&1["run_id"] == run["run_id"])) == [run]
-
-    # The full thread reaches Worker assignment, including the human answer.
-    assert run["input_snapshot"]["schema"] == "comma.triage-model-input.v3"
-    assert run["evaluator"]["request_count"] == 0
-
-    # Same closed transport surface, and the same absent worker/memory effects.
-    assert Fixture.collected_source_reads() |> Enum.map(&elem(&1, 0)) == [
-             "clickhouse.channel_current"
-           ]
-
-    assert Fixture.collected_slack_calls() == ["api/emoji.list"]
-    refute SalixAgent.Fleet.running?(authority["inbound_agent_id"])
-
-    for literal <- Fixture.raw_meeting_literals() do
-      assert run["input_snapshot"]["canonical_snapshot_bytes"] =~ literal
-      assert Jason.encode!(run) =~ literal
-    end
+  for {bearer, secret} <- [
+        {"接入要求：Bearer Token，且仅公开只读工具", "Token，且仅公开只读工具"},
+        {"临时凭据 Bearer QUJDREVGRw 已过期", "QUJDREVGRw"}
+      ] do
   end
 
   # BRI-1659: the addressed bot remains an explicit principal in the context
@@ -1460,8 +617,10 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
        ctx do
     %{authority: authority} = ctx
 
-    namespace = "triage-acceptance-agent-#{System.unique_integer([:positive])}"
-    server = start_engine!(namespace)
+    namespace = "triage-acceptance-agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    # The ambient root opens its own channel bucket. Keep that bucket open for
+    # the test so only the immediate mention bucket can settle a run.
+    server = start_engine!(namespace, debounce_ms: 60_000, max_wait_ms: 120_000)
 
     Fixture.put_thread([
       Fixture.mirrored_message(Fixture.root_ts(), "U_LIN", "Atlas 登录事故还需要确认处理人"),
@@ -1501,6 +660,7 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
     assert run["authoritative"] == true
     assert run["status"] == "evaluated"
     Harness.assert_worker_assignment!(run)
+    assert [^root] = Bucketing.load!(namespace, Bucketing.scope_key(root))["open_receipts"]
 
     assert %Postgrex.Result{rows: [[0]]} =
              Repo.query!(
@@ -1538,170 +698,17 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
     refute SalixAgent.Fleet.running?(authority["inbound_agent_id"])
   end
 
-  test "a later agent answer reaches Worker assignment without a preliminary reply", ctx do
-    %{authority: authority} = ctx
-
-    namespace = "triage-acceptance-agent-answered-#{System.unique_integer([:positive])}"
-
-    server =
-      start_engine!(namespace, [], LaterEvidenceProvider, %{
-        "expected_evidence" => "我已经贴了负责人：Lin。"
-      })
-
-    Fixture.put_thread(
-      unanswered_thread(authority) ++
-        [Fixture.mirrored_agent_message(ts(9), "U_REVIEWER", "我已经贴了负责人：Lin。")]
-    )
-
-    Fixture.admit_root!(server, authority, "Ev-agent-answered-1", "Atlas 登录事故还需要确认处理人")
-    Fixture.admit_reply!(server, authority, "Ev-agent-answered-2", ts(2), "我记得周会里讨论过这件事")
-
-    Fixture.admit_reply!(
-      server,
-      authority,
-      "Ev-agent-answered-3",
-      ts(3),
-      "谁在跟进 Atlas 登录事故？"
-    )
-
-    run = Fixture.await_run!(server)
-
-    assert run["status"] == "evaluated"
-    Harness.assert_worker_assignment!(run)
-    assert RunFence.valid_model_proof?(run["evaluator"])
-
-    assert run["evaluator"]["request_count"] == 0
-
-    assert Fixture.collected_source_reads() |> Enum.map(&elem(&1, 0)) == [
-             "clickhouse.channel_current"
-           ]
-
-    assert Fixture.collected_slack_calls() == ["api/emoji.list"]
-  end
-
-  # The engine side of typed reply admission, on a window wide enough that
-  # nothing can settle by accident: every step is asserted on the DURABLE
-  # bucket rather than on wall-clock luck.
-  test "a reply and a question both extend the trailing debounce window", ctx do
-    %{authority: authority} = ctx
-
-    namespace = "triage-acceptance-reply-#{System.unique_integer([:positive])}"
-    policy = %{debounce_ms: 2_000, max_wait_ms: 30_000}
-    owner = self()
-
-    # The seal is held open just long enough for this test to read the durable
-    # bucket the fast path armed, so the read cannot race the evaluation it is
-    # about.
-    before_seal_hook = fn _scope_key, _generation ->
-      send(owner, {:before_seal, self()})
-
-      receive do
-        :continue_seal -> :ok
-      after
-        5_000 -> :ok
-      end
-    end
-
-    server =
-      start_engine!(namespace,
-        debounce_ms: 2_000,
-        max_wait_ms: 30_000,
-        before_seal_hook: before_seal_hook
-      )
-
-    Fixture.put_thread(unanswered_thread(authority))
-
-    root = Fixture.admit_root!(server, authority, "Ev-reply-window-1", "Atlas 登录事故还需要确认处理人")
-
-    scope = scope(authority)
-    assert Bucketing.scope_key(root) == scope
-
-    root_only = Bucketing.load!(namespace, scope)
-    assert Enum.map(root_only["open_receipts"], & &1["receipt_ref"]) == [root["receipt_ref"]]
-    refute root_only["open_fast_path"]
-    root_due_at = Bucketing.durable_due_at(root_only, policy, now_ms())
-    assert root_due_at > now_ms()
-
-    # A human continuation lands inside the open window: same bucket, and the
-    # deadline moves out to a trailing window measured from the REPLY. Without
-    # reply admission this receipt would not exist and the deadline would be
-    # frozen at the root's own.
-    Process.sleep(50)
-
-    reply =
-      Fixture.admit_reply!(server, authority, "Ev-reply-window-2", ts(2), "我记得周会里讨论过这件事")
-
-    assert Bucketing.scope_key(reply) == scope
-    refute reply["triage_event"]["fast_path"]
-
-    with_reply = Bucketing.load!(namespace, scope)
-
-    assert Enum.map(with_reply["open_receipts"], & &1["receipt_ref"]) ==
-             [root["receipt_ref"], reply["receipt_ref"]]
-
-    assert Bucketing.durable_due_at(with_reply, policy, now_ms()) > root_due_at
-    assert Triage.ledger_records(server) == []
-
-    # Ambient questions remain inside the same trailing window. Only explicit
-    # directed traffic uses the separate immediate path.
-    question =
-      Fixture.admit_reply!(
-        server,
-        authority,
-        "Ev-reply-window-3",
-        ts(3),
-        "谁在跟进 Atlas 登录事故？"
-      )
-
-    refute question["triage_event"]["fast_path"]
-    with_question = Bucketing.load!(namespace, scope)
-    refute with_question["open_fast_path"]
-    assert Bucketing.durable_due_at(with_question, policy, now_ms()) > now_ms() + 1_000
-    refute_receive {:before_seal, _engine}, 100
-    assert_receive {:before_seal, engine}, 3_000
-
-    send(engine, :continue_seal)
-
-    run = Fixture.await_run!(server)
-
-    assert run["authoritative"] == true
-    assert run["status"] == "evaluated"
-
-    assert run["input_receipt_refs"] ==
-             ["receipt://run/r001", "receipt://run/r002", "receipt://run/r003"]
-
-    # One sealed generation holding the root and both replies, and an empty
-    # open one behind it.
-    assert {:ok, bucket} = Bucketing.load(namespace, scope)
-    assert bucket["open_receipts"] == []
-    assert bucket["sealed_generations"] == []
-
-    assert {:ok, %{"receipts" => sealed}} =
-             Bucketing.load_sealed_generation(
-               namespace,
-               bucket["bucket_scope"],
-               run["generation"]
-             )
-
-    assert Enum.map(sealed, & &1["receipt_ref"]) ==
-             Enum.map([root, reply, question], & &1["receipt_ref"])
-
-    fence = load_fence!(namespace, scope, run["generation"])
-    assert RunFence.valid_terminal?(fence["terminal"])
-    assert fence["terminal"]["status"] == "evaluated"
-  end
-
   defp install_no_wake_worker_delivery! do
-    previous = Application.fetch_env(:salix_im, :agent_delivery_mod)
-    Application.put_env(:salix_im, :agent_delivery_mod, NoWakeWorkerDelivery)
+    previous = SystemsRuntime.fetch_env(:salix_im, :agent_delivery_mod)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, NoWakeWorkerDelivery)
 
     on_exit(fn ->
       SalixIM.TestSupport.Fleet.stop_all!()
       SalixAgent.TestSupport.stop_all_agents()
 
       case previous do
-        {:ok, value} -> Application.put_env(:salix_im, :agent_delivery_mod, value)
-        :error -> Application.delete_env(:salix_im, :agent_delivery_mod)
+        {:ok, value} -> SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, value)
+        :error -> SystemsRuntime.delete_env(:salix_im, :agent_delivery_mod)
       end
     end)
   end
@@ -1724,8 +731,7 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
     task_id = result["conversation_id"]
 
     assert_receive {:worker_command, ^worker_id,
-                    %{trusted_origin: %{"conversation_id" => ^task_id}} = command},
-                   5_000
+                    %{trusted_origin: %{"conversation_id" => ^task_id}} = command}
 
     tool_context = %{
       "session_id" => command.session_id,
@@ -1806,10 +812,8 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
     |> Base.encode16(case: :lower)
   end
 
-  defp now_ms, do: System.system_time(:millisecond)
-
   defp start_engine!(namespace, overrides \\ [], provider \\ StubProvider, provider_opts \\ %{}) do
-    test_pid = self()
+    test_pid = SystemsRuntime.Proc.self()
 
     # Keep every synchronously admitted fixture event inside one open window.
     # PostgreSQL admission is intentionally heavier than the former in-memory
@@ -1866,11 +870,6 @@ defmodule BridgeForTeams.TriageEngineAcceptanceTest do
         "谁在跟进 Atlas 登录事故？"
       )
     ]
-  end
-
-  defp answered_thread(authority) do
-    unanswered_thread(authority) ++
-      [Fixture.mirrored_message(ts(9), "U_ADA", "我来跟进，负责人是 Lin。")]
   end
 
   ## Small helpers

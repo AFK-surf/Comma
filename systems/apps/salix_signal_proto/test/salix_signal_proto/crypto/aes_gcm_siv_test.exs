@@ -3,7 +3,7 @@ defmodule SalixSignalProto.Crypto.AesGcmSivTest do
   # group blob ciphertexts of CRS-09a section 9 (vectors/CRS-09/
   # blob-encryption.json): the blob key of the master key, the nonce and
   # the padded plaintext `be32(n) ‖ m ‖ 0^n` give the listed ciphertext.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.Crypto.AesGcmSiv

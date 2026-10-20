@@ -1,51 +1,16 @@
 import { expect, test as baseTest } from "@playwright/test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { build, preview } from "vite";
-import { fileURLToPath } from "node:url";
+import { serveAppFixtures } from "../../../e2e/helpers/app-fixtures";
 // Build the real chat surface in production mode; timings carry no network.
 const test = baseTest.extend<{}, { mediaBaseURL: string }>({
   mediaBaseURL: [
     // Playwright requires fixture dependencies to use object destructuring.
     // eslint-disable-next-line no-empty-pattern
     async ({}, use) => {
-      const root = fileURLToPath(new URL("../../../apps/web/", import.meta.url));
-      const cacheDir = await mkdtemp(join(tmpdir(), "comma-media-retention-"));
-      const previousCwd = process.cwd();
-      let server: Awaited<ReturnType<typeof preview>> | undefined;
+      const fixtures = await serveAppFixtures();
       try {
-        // The web app config resolves workspace source aliases from its own cwd.
-        process.chdir(root);
-        const configFile = join(root, "vite.config.ts");
-        await build({
-          root: fileURLToPath(new URL("./fixtures/", import.meta.url)),
-          configFile,
-          logLevel: "error",
-          build: {
-            outDir: cacheDir,
-            emptyOutDir: true,
-            rollupOptions: {
-              input: fileURLToPath(
-                new URL("./fixtures/media-retention.html", import.meta.url)
-              ),
-            },
-          },
-        });
-        server = await preview({
-          root,
-          configFile,
-          build: { outDir: cacheDir },
-          preview: { host: "127.0.0.1", port: 0, strictPort: false },
-        });
+        await use(fixtures.url);
       } finally {
-        process.chdir(previousCwd);
-      }
-      try {
-        await use(server.resolvedUrls!.local[0]!);
-      } finally {
-        await new Promise<void>((resolve) => server.httpServer.close(() => resolve()));
-        await rm(cacheDir, { recursive: true, force: true });
+        await fixtures.close();
       }
     },
     { scope: "worker" },
@@ -175,7 +140,6 @@ test("sixty sequentially viewed images remain available without repeat loads and
   page,
   mediaBaseURL,
 }) => {
-  test.setTimeout(180_000);
   await page.goto(new URL("/media-retention.html?images=60", mediaBaseURL).href);
   const viewport = page.locator('[data-slot="scroll-area-viewport"]').first();
   await viewport.hover();

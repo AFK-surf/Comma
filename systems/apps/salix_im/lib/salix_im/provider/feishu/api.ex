@@ -12,7 +12,7 @@ defmodule SalixIM.Provider.Feishu.API do
   details.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   alias SalixIM.Ports.ProviderAppStore
 
@@ -26,12 +26,12 @@ defmodule SalixIM.Provider.Feishu.API do
   @resource_ref_key_domain "salix-im/feishu/resource-ref/v2/signing-key"
 
   @doc false
-  def start_link(_opts), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
+  def start_link(_opts), do: SystemsRuntime.Server.start_link(__MODULE__, :ok, name: __MODULE__)
 
   @impl true
   def init(:ok) do
     table =
-      :ets.new(@token_cache_table, [
+      SystemsRuntime.ETS.new(@token_cache_table, [
         :named_table,
         :public,
         :set,
@@ -42,7 +42,21 @@ defmodule SalixIM.Provider.Feishu.API do
     {:ok, %{token_cache_table: table}}
   end
 
+  @doc """
+  The connect acting as one person who signed in to its app
+  (`SalixIM.Ports.FeishuUserAccounts`): every call made with it carries that
+  person's user access token instead of the app's tenant access token, so
+  Feishu answers with what that person may see.
+  """
+  @spec as_user(map(), String.t()) :: map()
+  def as_user(connect, user_access_token) when is_map(connect) and is_binary(user_access_token),
+    do: Map.put(connect, "user_access_token", user_access_token)
+
   @spec tenant_access_token(map()) :: {:ok, String.t()} | {:error, String.t()}
+  def tenant_access_token(%{"user_access_token" => token})
+      when is_binary(token) and token != "",
+      do: {:ok, token}
+
   def tenant_access_token(%{"tenant_access_token" => token})
       when is_binary(token) and token != "",
       do: {:ok, token}
@@ -77,9 +91,9 @@ defmodule SalixIM.Provider.Feishu.API do
 
   @doc false
   def reset_token_cache do
-    case :ets.whereis(@token_cache_table) do
+    case SystemsRuntime.ETS.whereis(@token_cache_table) do
       :undefined -> :ok
-      table -> :ets.delete_all_objects(table)
+      table -> SystemsRuntime.ETS.delete_all_objects(table)
     end
 
     :ok
@@ -92,11 +106,25 @@ defmodule SalixIM.Provider.Feishu.API do
   @spec post(map(), String.t(), map()) :: {:ok, map()} | {:error, String.t()}
   def post(connect, path, body), do: request(connect, :post, path, json: body)
 
+  @doc """
+  A POST that only reads, such as a document fetch. It gets the bounded read
+  retries of `get/3`, because a repeat cannot change provider state.
+  """
+  @spec post_read(map(), String.t(), map()) :: {:ok, map()} | {:error, String.t()}
+  def post_read(connect, path, body),
+    do: request(connect, :post, path, json: body, read_retries: @read_retries, safe_retry: true)
+
   @spec put(map(), String.t(), map()) :: {:ok, map()} | {:error, String.t()}
   def put(connect, path, body), do: request(connect, :put, path, json: body)
 
+  @spec patch(map(), String.t(), map()) :: {:ok, map()} | {:error, String.t()}
+  def patch(connect, path, body), do: request(connect, :patch, path, json: body)
+
   @spec delete(map(), String.t()) :: {:ok, map()} | {:error, String.t()}
   def delete(connect, path), do: request(connect, :delete, path)
+
+  @spec delete(map(), String.t(), map()) :: {:ok, map()} | {:error, String.t()}
+  def delete(connect, path, body), do: request(connect, :delete, path, json: body)
 
   @spec upload_image(map(), String.t(), Enumerable.t(), non_neg_integer()) ::
           {:ok, String.t()} | {:error, String.t()}
@@ -106,7 +134,7 @@ defmodule SalixIM.Provider.Feishu.API do
       image: {stream, filename: Path.basename(filename), size: size}
     }
 
-    request(connect, :post, "/im/v1/images", form_multipart: fields)
+    request(connect, :post, "/im/v1/images", form_multipart: fields, plugins: [SalixIM.Multipart])
     |> extract_key("image_key", "Feishu image upload response missing image_key")
   end
 
@@ -119,8 +147,39 @@ defmodule SalixIM.Provider.Feishu.API do
       file: {stream, filename: Path.basename(filename), size: size}
     }
 
-    request(connect, :post, "/im/v1/files", form_multipart: fields)
+    request(connect, :post, "/im/v1/files", form_multipart: fields, plugins: [SalixIM.Multipart])
     |> extract_key("file_key", "Feishu upload response missing file_key")
+  end
+
+  @doc """
+  Upload one image or file into a cloud document. `parent_node` is the empty
+  document block that receives it, and the document id routes the upload.
+  """
+  @spec upload_doc_media(
+          map(),
+          String.t(),
+          Enumerable.t(),
+          non_neg_integer(),
+          String.t(),
+          String.t(),
+          String.t()
+        ) :: {:ok, String.t()} | {:error, String.t()}
+  def upload_doc_media(connect, filename, stream, size, parent_type, parent_node, document_id)
+      when parent_type in ["docx_image", "docx_file"] do
+    fields = %{
+      file_name: Path.basename(filename),
+      parent_type: parent_type,
+      parent_node: parent_node,
+      size: Integer.to_string(size),
+      extra: Jason.encode!(%{"drive_route_token" => document_id}),
+      file: {stream, filename: Path.basename(filename), size: size}
+    }
+
+    request(connect, :post, "/drive/v1/medias/upload_all",
+      form_multipart: fields,
+      plugins: [SalixIM.Multipart]
+    )
+    |> extract_key("file_token", "Feishu media upload response missing file_token")
   end
 
   @doc "Authenticated streaming download for a resource embedded in a Feishu message."
@@ -133,29 +192,26 @@ defmodule SalixIM.Provider.Feishu.API do
         ) :: {:ok, Req.Response.t()} | {:error, term()}
   def stream_message_resource(connect, message_id, file_key, resource_type, into)
       when resource_type in ["image", "file"] and is_function(into, 2) do
+    stream_get(
+      connect,
+      "/im/v1/messages/#{segment(message_id)}/resources/#{segment(file_key)}",
+      %{type: resource_type},
+      into
+    )
+  end
+
+  @doc "Authenticated streaming GET for a binary resource, such as cloud-document media."
+  @spec stream_get(map(), String.t(), map(), function()) ::
+          {:ok, Req.Response.t()} | {:error, term()}
+  def stream_get(connect, path, params, into) when is_function(into, 2) do
     with {:ok, token} <- tenant_access_token(connect) do
-      result =
-        do_stream_message_resource(
-          connect,
-          message_id,
-          file_key,
-          resource_type,
-          into,
-          token
-        )
+      result = do_stream_get(connect, path, params, into, token)
 
       if stream_token_rejected?(result) and refreshable_token?(connect) do
         invalidate_cached_token(connect)
 
         with {:ok, refreshed_token} <- tenant_access_token(connect) do
-          do_stream_message_resource(
-            connect,
-            message_id,
-            file_key,
-            resource_type,
-            into,
-            refreshed_token
-          )
+          do_stream_get(connect, path, params, into, refreshed_token)
         end
       else
         result
@@ -163,17 +219,28 @@ defmodule SalixIM.Provider.Feishu.API do
     end
   end
 
-  defp do_stream_message_resource(
-         connect,
-         message_id,
-         file_key,
-         resource_type,
-         into,
-         token
-       ) do
+  @doc """
+  Streaming GET of a pre-signed HTTPS URL that Feishu returned, such as a
+  Minutes media link. The URL carries its own authorization, so no app token
+  is sent to it.
+  """
+  @spec stream_signed_url(String.t(), function()) :: {:ok, Req.Response.t()} | {:error, term()}
+  def stream_signed_url("https://" <> _ = signed_url, into) when is_function(into, 2) do
+    Req.get(signed_url,
+      retry: false,
+      redirect: false,
+      receive_timeout: @resource_receive_timeout_ms,
+      decode_body: false,
+      into: into
+    )
+  end
+
+  def stream_signed_url(_url, _into), do: {:error, "Feishu download URL must use HTTPS"}
+
+  defp do_stream_get(connect, path, params, into, token) do
     Req.get(
-      url(connect, "/im/v1/messages/#{segment(message_id)}/resources/#{segment(file_key)}"),
-      params: %{type: resource_type},
+      url(connect, path),
+      params: compact(params),
       headers: auth(token),
       retry: false,
       receive_timeout: @resource_receive_timeout_ms,
@@ -219,11 +286,11 @@ defmodule SalixIM.Provider.Feishu.API do
       {:ok, %{status: status}}
       when (method == :get or safe_retry?) and retries_left > 0 and
              (status == 429 or status in 500..599) ->
-        Process.sleep(25 * (@read_retries - retries_left + 1))
+        SystemsClock.sleep(25 * (@read_retries - retries_left + 1))
         execute_request(connect, method, path, opts, retries_left - 1, safe_retry?)
 
       {:error, _reason} when (method == :get or safe_retry?) and retries_left > 0 ->
-        Process.sleep(25 * (@read_retries - retries_left + 1))
+        SystemsClock.sleep(25 * (@read_retries - retries_left + 1))
         execute_request(connect, method, path, opts, retries_left - 1, safe_retry?)
 
       response ->
@@ -239,12 +306,15 @@ defmodule SalixIM.Provider.Feishu.API do
         {:ok, token}
 
       :miss ->
-        :global.trans({{__MODULE__, :tenant_token, key}, self()}, fn ->
-          case read_cached_token(key) do
-            {:ok, token} -> {:ok, token}
-            :miss -> mint_and_cache_tenant_access_token(connect, app_id, app_secret, key)
+        SystemsRuntime.Proc.global_trans(
+          {{__MODULE__, :tenant_token, key}, SystemsRuntime.Proc.self()},
+          fn ->
+            case read_cached_token(key) do
+              {:ok, token} -> {:ok, token}
+              :miss -> mint_and_cache_tenant_access_token(connect, app_id, app_secret, key)
+            end
           end
-        end)
+        )
     end
   end
 
@@ -276,11 +346,11 @@ defmodule SalixIM.Provider.Feishu.API do
 
   defp read_cached_token(key) do
     table = token_cache_table()
-    now_ms = System.monotonic_time(:millisecond)
+    now_ms = SystemsClock.monotonic_time(:millisecond)
 
-    case :ets.lookup(table, key) do
+    case SystemsRuntime.ETS.lookup(table, key) do
       [{^key, token, expires_at_ms}] when expires_at_ms > now_ms -> {:ok, token}
-      [_expired] -> :ets.delete(table, key) && :miss
+      [_expired] -> SystemsRuntime.ETS.delete(table, key) && :miss
       [] -> :miss
     end
   end
@@ -292,8 +362,8 @@ defmodule SalixIM.Provider.Feishu.API do
       |> max(@token_expiry_skew_seconds + 1)
       |> Kernel.-(@token_expiry_skew_seconds)
 
-    expires_at_ms = System.monotonic_time(:millisecond) + ttl_seconds * 1_000
-    true = :ets.insert(token_cache_table(), {key, token, expires_at_ms})
+    expires_at_ms = SystemsClock.monotonic_time(:millisecond) + ttl_seconds * 1_000
+    true = SystemsRuntime.ETS.insert(token_cache_table(), {key, token, expires_at_ms})
     :ok
   end
 
@@ -306,14 +376,14 @@ defmodule SalixIM.Provider.Feishu.API do
     with {:ok, app} <- tenant_app(connect) do
       app_id = app_id_for(connect, app)
       app_secret = str(app["app_secret"])
-      :ets.delete(token_cache_table(), token_cache_key(connect, app_id, app_secret))
+      SystemsRuntime.ETS.delete(token_cache_table(), token_cache_key(connect, app_id, app_secret))
     end
 
     :ok
   end
 
   defp token_cache_table do
-    case :ets.whereis(@token_cache_table) do
+    case SystemsRuntime.ETS.whereis(@token_cache_table) do
       :undefined ->
         raise "Feishu tenant token cache is not started"
 
@@ -323,7 +393,11 @@ defmodule SalixIM.Provider.Feishu.API do
   end
 
   defp refreshable_token?(connect),
-    do: not (is_binary(connect["tenant_access_token"]) and connect["tenant_access_token"] != "")
+    do:
+      not Enum.any?(
+        [connect["user_access_token"], connect["tenant_access_token"]],
+        &(is_binary(&1) and &1 != "")
+      )
 
   defp token_rejected?({:error, message}) when is_binary(message),
     do: Enum.any?(@token_rejection_codes, &String.contains?(message, "error #{&1} "))
@@ -359,7 +433,7 @@ defmodule SalixIM.Provider.Feishu.API do
        do: {:ok, body}
 
   defp decode_response({:ok, %{status: status}}, method)
-       when method in [:post, :put, :delete] and status in 500..599,
+       when method in [:post, :put, :patch, :delete] and status in 500..599,
        do:
          {:error,
           "Feishu write outcome unknown after HTTP #{status}; do not blindly retry without a read-after-write check"}
@@ -373,7 +447,7 @@ defmodule SalixIM.Provider.Feishu.API do
   defp decode_response({:ok, %{status: status}}, _method),
     do: {:error, "Feishu HTTP #{status}"}
 
-  defp decode_response({:error, reason}, method) when method in [:post, :put, :delete],
+  defp decode_response({:error, reason}, method) when method in [:post, :put, :patch, :delete],
     do:
       {:error,
        "Feishu write outcome unknown; do not blindly retry without a read-after-write check: #{inspect(reason)}"}
@@ -422,6 +496,15 @@ defmodule SalixIM.Provider.Feishu.API do
         code when code in [230_050, 234_040] ->
           " The bot cannot see this message; check whether new members may view chat history."
 
+        code when code in [2_889_902, 1_770_032, 1_063_002, 131_006] ->
+          " This app cannot open the document. Share the document with a chat that includes the bot, or add the app to the document (... > More > Add document app). Do not retry unchanged."
+
+        code when code in [2_889_906, 2_889_914, 1_770_002, 131_005] ->
+          " The document does not exist, was deleted, or the token is wrong. Check the link."
+
+        99_991_400 ->
+          " Feishu rate limit reached; wait before retrying."
+
         _ ->
           ""
       end
@@ -467,7 +550,7 @@ defmodule SalixIM.Provider.Feishu.API do
 
   defp base_url(_connect) do
     :salix_im
-    |> Application.get_env(:feishu_api_base_url, @default_base)
+    |> SystemsRuntime.get_env(:feishu_api_base_url, @default_base)
     |> str()
     |> case do
       "" -> @default_base

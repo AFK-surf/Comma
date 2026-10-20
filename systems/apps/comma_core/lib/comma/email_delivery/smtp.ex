@@ -4,7 +4,7 @@ defmodule Comma.EmailDelivery.SMTP do
 
   @impl true
   def send_login_code(email, code, opts) do
-    mail = Application.get_env(:comma_core, :mail, [])
+    mail = SystemsRuntime.get_env(:comma_core, :mail, [])
     host = System.get_env("COMMA_MAIL_HOST") || Keyword.get(mail, :host, "localhost")
     port = System.get_env("COMMA_MAIL_PORT") || Keyword.get(mail, :port, 1025)
     from = System.get_env("COMMA_MAIL_FROM") || Keyword.get(mail, :from, "no-reply@comma.local")
@@ -54,7 +54,7 @@ defmodule Comma.EmailDelivery.SMTP do
           else: options
 
       task =
-        Task.async(fn ->
+        SystemsRuntime.Task.async(fn ->
           try do
             case :gen_smtp_client.send_blocking({from, [email], message}, options) do
               receipt when is_binary(receipt) -> :ok
@@ -67,7 +67,8 @@ defmodule Comma.EmailDelivery.SMTP do
           end
         end)
 
-      case Task.yield(task, 15_000) || Task.shutdown(task, :brutal_kill) do
+      case SystemsRuntime.Task.yield(task, 15_000) ||
+             SystemsRuntime.Task.shutdown(task, :brutal_kill) do
         {:ok, result} -> result
         _ -> {:error, :provider_unavailable}
       end

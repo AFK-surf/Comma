@@ -37,6 +37,8 @@ export interface SettingsSidebarProps {
   /** "tabs" lays the categories out as one scrolling row above the content. */
   layout?: SettingsSidebarLayout;
   onSearchChange?: (value: string) => void;
+  /** False shows no search field. */
+  searchable?: boolean;
   searchAriaLabel?: string;
   searchEmptyDescription?: string;
   searchEmptyTitle?: string;
@@ -97,6 +99,7 @@ export const SettingsSidebar = memo(function SettingsSidebar({
   items = [],
   layout = "rail",
   onSearchChange,
+  searchable = true,
   searchAriaLabel = "Search settings",
   searchEmptyDescription,
   searchEmptyTitle = "No settings found",
@@ -116,7 +119,10 @@ export const SettingsSidebar = memo(function SettingsSidebar({
   // render results for.
   const tabRow = layout === "tabs";
   const showSearchResults =
-    !tabRow && normalizedSearchValue.length > 0 && searchGroups !== undefined;
+    !tabRow &&
+    searchable &&
+    normalizedSearchValue.length > 0 &&
+    searchGroups !== undefined;
   const navRef = useRef<HTMLElement | null>(null);
   // The row is still settling when the selected tab first scrolls to itself:
   // its viewport narrows once the scroll area lays out its own chrome, and
@@ -143,7 +149,7 @@ export const SettingsSidebar = memo(function SettingsSidebar({
       )}
       data-layout={layout}
     >
-      {tabRow ? null : (
+      {tabRow || !searchable ? null : (
         <form className="mb-xl px-none" onSubmit={(event) => event.preventDefault()}>
           <InputField
             aria-label={searchAriaLabel}

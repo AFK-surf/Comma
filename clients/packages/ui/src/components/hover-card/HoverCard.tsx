@@ -1,6 +1,8 @@
 import {
   OverlayContainer,
   mergeProps,
+  mergeRefs,
+  useFocusable,
   useOverlayPosition,
   useTooltip,
 } from "react-aria";
@@ -13,9 +15,12 @@ import {
   cloneElement,
   type ComponentProps,
   type HTMLAttributes,
+  type PointerEvent,
   type ReactElement,
   type ReactNode,
+  type Ref,
   type RefObject,
+  type SyntheticEvent,
 } from "react";
 import {
   Focusable,
@@ -27,9 +32,13 @@ import {
   type TooltipProps as AriaTooltipProps,
 } from "react-aria-components";
 import { cx } from "../utils";
+import { uiClock } from "../../clock";
 import { spacing } from "../../tokens/spacing";
 
 type FocusableChild = ComponentProps<typeof Focusable>["children"];
+type TriggerProps = HTMLAttributes<HTMLElement> & {
+  ref?: Ref<HTMLElement> | undefined;
+};
 
 type ActiveHoverCard = {
   id: symbol;
@@ -79,13 +88,34 @@ export interface HoverCardProps {
   defaultOpen?: boolean;
   delay?: number;
   onOpenChange?: (open: boolean) => void;
+  /**
+   * Reports a hover the trigger cannot observe, such as a link inside a widget
+   * frame. `delay` and `closeDelay` still apply, and the card stays open while
+   * the pointer is over it.
+   */
+  open?: boolean | undefined;
   placement?: NonNullable<AriaTooltipProps["placement"]>;
+  /**
+   * Opens the card on pointer hover only. The trigger gets no tab stop, no
+   * focus or keyboard handlers and no `aria-describedby`, so it can be a plain
+   * element inside another control, such as a chip inside a card's button or
+   * link. Give keyboard users the same details in another place.
+   */
+  pointerOnly?: boolean | undefined;
 }
 
 /**
  * A non-interactive rich preview for a link or button. React Aria owns hover,
  * keyboard focus, Escape dismissal, portal placement, and screen-reader
  * tooltip semantics; Focusable bridges those props onto arbitrary triggers.
+ *
+ * The card is not part of the control under its trigger. React sends events
+ * from the card's portal to the trigger's ancestors, so presses in the card
+ * stop at its root: a Task card's button, context menu or drag gesture does
+ * not see them. Native defaults, such as text selection, still apply.
+ * Stopping a React event also stops the native one at the portal's container,
+ * so a document or window listener sees presses in a card only in the
+ * capture phase.
  */
 export function HoverCard({
   anchorRef,
@@ -97,7 +127,9 @@ export function HoverCard({
   defaultOpen = false,
   delay = 250,
   onOpenChange,
+  open: hoverOpen,
   placement = "bottom start",
+  pointerOnly = false,
 }: HoverCardProps) {
   const pointerOverCard = useRef(false);
   const dismissedByPress = useRef(false);
@@ -143,6 +175,16 @@ export function HoverCard({
     if (!open && pointerOverCard.current) return;
     updateOpen(open);
   };
+  const handleOpenChangeRef = useRef(handleOpenChange);
+  handleOpenChangeRef.current = handleOpenChange;
+
+  useEffect(() => {
+    if (hoverOpen === undefined) return;
+    const timer = uiClock.after(hoverOpen ? delay : closeDelay, () =>
+      handleOpenChangeRef.current(hoverOpen)
+    );
+    return () => timer();
+  }, [closeDelay, delay, hoverOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -156,7 +198,9 @@ export function HoverCard({
     return () => document.removeEventListener("keydown", handleEscape, true);
   }, [isOpen, updateOpen]);
 
-  const trigger = children as ReactElement<HTMLAttributes<HTMLElement>>;
+  const trigger = children as ReactElement<TriggerProps>;
+  // A press keeps the card closed until the trigger loses focus. A pointer-only
+  // trigger never takes focus, so the pointer leaving it ends the press.
   const dismissibleTrigger = cloneElement(trigger, {
     onClick: (event) => {
       dismissedByPress.current = true;
@@ -167,6 +211,14 @@ export function HoverCard({
       dismissedByPress.current = false;
       trigger.props.onBlur?.(event);
     },
+    ...(pointerOnly
+      ? {
+          onPointerLeave: (event: PointerEvent<HTMLElement>) => {
+            dismissedByPress.current = false;
+            trigger.props.onPointerLeave?.(event);
+          },
+        }
+      : {}),
   });
   return (
     <AriaTooltipTrigger
@@ -175,7 +227,11 @@ export function HoverCard({
       isOpen={isOpen}
       onOpenChange={handleOpenChange}
     >
-      <Focusable>{dismissibleTrigger as FocusableChild}</Focusable>
+      {pointerOnly ? (
+        <PointerTrigger>{dismissibleTrigger}</PointerTrigger>
+      ) : (
+        <Focusable>{dismissibleTrigger as FocusableChild}</Focusable>
+      )}
       <HoverCardTooltip
         className={cx(
           "comma-hover-card z-50 w-[320px] rounded-xl border-[0.5px] border-primary bg-popup-primary p-sm shadow-lg outline-none",
@@ -202,6 +258,38 @@ export function HoverCard({
   );
 }
 
+/**
+ * Gives a pointer-only trigger the hover and press handlers of React Aria's
+ * tooltip trigger, and makes its element the card's anchor. The tab stop, the
+ * focus and keyboard handlers and `aria-describedby` are left out.
+ */
+function PointerTrigger({ children }: { children: ReactElement<TriggerProps> }) {
+  const ref = useRef<HTMLElement | null>(null);
+  // useFocusable reads the tooltip trigger's props and syncs its anchor ref.
+  const { focusableProps } = useFocusable({}, ref);
+  const pointerProps = Object.fromEntries(
+    Object.entries(focusableProps).filter(([name]) =>
+      /^on(?:Pointer|Mouse|Touch)/.test(name)
+    )
+  );
+  return cloneElement(children, {
+    ...mergeProps(pointerProps, children.props),
+    ref: mergeRefs(children.props.ref, ref),
+  });
+}
+
+const stopBubbling = (event: SyntheticEvent) => event.stopPropagation();
+
+/** Presses in the card stop at its root. They keep their native defaults. */
+const cardPressHandlers = {
+  onAuxClick: stopBubbling,
+  onClick: stopBubbling,
+  onContextMenu: stopBubbling,
+  onDoubleClick: stopBubbling,
+  onMouseDown: stopBubbling,
+  onPointerDown: stopBubbling,
+};
+
 type HoverCardTooltipProps = Omit<
   ComponentProps<typeof AriaTooltip>,
   "children" | "className"
@@ -213,7 +301,7 @@ type HoverCardTooltipProps = Omit<
 };
 
 function HoverCardTooltip({ boundaryRef, ...props }: HoverCardTooltipProps) {
-  if (!boundaryRef) return <AriaTooltip {...props} />;
+  if (!boundaryRef) return <AriaTooltip {...props} {...cardPressHandlers} />;
   return <BoundedTooltip {...props} boundaryRef={boundaryRef} />;
 }
 
@@ -259,7 +347,7 @@ function BoundedTooltipContent({
     onClose: () => state.close(true),
   });
   const { tooltipProps } = useTooltip(props, state);
-  const merged = mergeProps(tooltipProps, {
+  const merged = mergeProps(tooltipProps, cardPressHandlers, {
     onMouseEnter: props.onMouseEnter,
     onMouseLeave: props.onMouseLeave,
   });

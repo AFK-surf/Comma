@@ -13,7 +13,7 @@ defmodule Salix.Bindings.MeetingActivationCapability do
     with published_at when is_integer(published_at) and published_at > 0 <-
            get_in(state, ["delivery", "published_at"]),
          expires_at = published_at + @ttl_seconds,
-         true <- expires_at >= System.system_time(:second),
+         true <- expires_at >= SystemsClock.system_time(:second),
          {:ok, connect} <-
            SalixIM.ProviderConnects.get_active_connect_by_id(group_id, connect_id, "feishu"),
          {:ok, signing_key} <- API.resource_ref_signing_key(connect) do

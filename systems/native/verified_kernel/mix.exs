@@ -3,6 +3,18 @@ defmodule Mix.Tasks.Compile.VerifiedKernel do
   @source __DIR__
 
   def run(_args) do
+    # CI sets this after restoring the build cached under this source's exact
+    # hash; the native library is then current and the build only replays.
+    if System.get_env("VERIFIED_KERNEL_PREBUILT") == "1" and
+         File.exists?(Path.join(@source, "priv/verified_kernel.so")) do
+      Mix.Project.build_structure()
+      {:ok, []}
+    else
+      build()
+    end
+  end
+
+  defp build do
     case System.cmd("bash", [Path.join(@source, "scripts/build.sh")], stderr_to_stdout: true) do
       {output, 0} ->
         Mix.shell().info(output)

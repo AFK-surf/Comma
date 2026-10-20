@@ -1,0 +1,62 @@
+id: rust-test-sleep
+language: rust
+severity: error
+message: "A test sleeps real time."
+note: |
+  Wait for the event, or use tokio's paused clock (start_paused) and advance it.
+metadata:
+  category: sleep
+rule:
+  all:
+    - kind: call_expression
+    - has:
+        field: function
+        regex: "(^|::)(thread::sleep|sleep)$"
+files:
+  - "**/tests/**/*.rs"
+  - "**/*_test.rs"
+  - "**/test/**/*.rs"
+ignores:
+  - "**/vendor/**"
+---
+id: rust-test-clock
+language: rust
+severity: error
+message: "A test reads the machine clock."
+note: |
+  Pass the code a clock or a fixed instant.
+metadata:
+  category: clock
+rule:
+  all:
+    - kind: call_expression
+    - has:
+        field: function
+        regex: "(^|::)(Instant|SystemTime)::now$"
+files:
+  - "**/tests/**/*.rs"
+  - "**/*_test.rs"
+  - "**/test/**/*.rs"
+ignores:
+  - "**/vendor/**"
+---
+id: rust-test-deadline
+language: rust
+severity: error
+message: "A test bounds a wait by real time."
+note: |
+  Await the result itself, or use tokio's paused clock.
+metadata:
+  category: deadline
+rule:
+  all:
+    - kind: call_expression
+    - has:
+        field: function
+        regex: "(^|::)(timeout|recv_timeout|wait_timeout|set_read_timeout|set_write_timeout)$"
+files:
+  - "**/tests/**/*.rs"
+  - "**/*_test.rs"
+  - "**/test/**/*.rs"
+ignores:
+  - "**/vendor/**"

@@ -18,9 +18,6 @@ defmodule Comma.Synchronicity do
   (`SalixAgent.DriveMount`) is what reads it. Comma reads the row as stored
   (`drive_binding/1`), not the enabled handle the mount uses, so a row an
   operator disabled or took over is a row that exists and is left alone.
-
-  The remote-present/local-missing retry boundary is modeled in
-  `tla/comma_synchronicity/WorkspaceProvisioning.tla`.
   """
 
   import Ecto.Query
@@ -331,11 +328,11 @@ defmodule Comma.Synchronicity do
 
   @doc "Whether provisioning is configured on this deployment."
   @spec configured?() :: boolean()
-  def configured?, do: Application.get_env(:comma_core, :synchronicity) != nil
+  def configured?, do: SystemsRuntime.get_env(:comma_core, :synchronicity) != nil
 
   @doc false
   def config! do
-    case Application.get_env(:comma_core, :synchronicity) do
+    case SystemsRuntime.get_env(:comma_core, :synchronicity) do
       nil ->
         raise "Synchronicity provisioning is not configured (set comma.synchronicity in config.json)"
 
@@ -392,7 +389,7 @@ defmodule Comma.Synchronicity do
            set: [
              sync_org_id: org_id,
              sync_network_id: network_id,
-             updated_at: DateTime.utc_now()
+             updated_at: SystemsClock.timestamp(:utc_datetime_usec)
            ]
          ) do
       {1, _} -> :ok
@@ -549,7 +546,7 @@ defmodule Comma.Synchronicity do
 
   @doc false
   def measured(operation, fun) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     try do
       result = fun.()
@@ -566,7 +563,7 @@ defmodule Comma.Synchronicity do
     CommaProduct.Telemetry.emit_operation(
       operation,
       outcome,
-      System.monotonic_time() - started_at
+      SystemsClock.monotonic_time() - started_at
     )
   end
 
@@ -597,5 +594,6 @@ defmodule Comma.Synchronicity do
   defp outcome(:ok), do: :ok
   defp outcome(_result), do: :other
 
-  defp client, do: Application.get_env(:comma_core, :synchronicity_client, Comma.Synchronicity.HTTP)
+  defp client,
+    do: SystemsRuntime.get_env(:comma_core, :synchronicity_client, Comma.Synchronicity.HTTP)
 end

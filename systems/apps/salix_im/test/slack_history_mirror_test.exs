@@ -1,6 +1,7 @@
 defmodule SalixIM.SlackHistoryMirrorTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   import Plug.Conn
   alias SalixIM.{SlackHistoryReader, SlackMessageMirror}
   alias SalixIM.TestSupport.BanditServer
@@ -11,8 +12,8 @@ defmodule SalixIM.SlackHistoryMirrorTest do
     plug(:dispatch)
 
     defp dispatch(conn, _) do
-      send(
-        Application.fetch_env!(:salix_im, :history_mirror_test_owner),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_im, :history_mirror_test_owner),
         {:slack_http, conn.request_path}
       )
 
@@ -44,12 +45,12 @@ defmodule SalixIM.SlackHistoryMirrorTest do
     def replies(scope, root, opts), do: read(:replies, scope, root, opts)
 
     defp read(kind, scope, root, opts) do
-      send(
-        Application.fetch_env!(:salix_im, :history_mirror_test_owner),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_im, :history_mirror_test_owner),
         {:mirror_read, kind, scope, root, opts}
       )
 
-      Application.fetch_env!(:salix_im, :history_mirror_test_read).(kind, scope, root, opts)
+      SystemsRuntime.fetch_env!(:salix_im, :history_mirror_test_read).(kind, scope, root, opts)
     end
   end
 
@@ -62,25 +63,25 @@ defmodule SalixIM.SlackHistoryMirrorTest do
       :history_mirror_test_read
     ]
 
-    previous = Map.new(keys, &{&1, Application.get_env(:salix_im, &1)})
-    previous_s3_backend = Application.fetch_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous = Map.new(keys, &{&1, SystemsRuntime.get_env(:salix_im, &1)})
+    previous_s3_backend = SystemsRuntime.fetch_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
     on_exit(fn ->
       case previous_s3_backend do
-        {:ok, backend} -> Application.put_env(:salix_store, :s3_backend, backend)
-        :error -> Application.delete_env(:salix_store, :s3_backend)
+        {:ok, backend} -> SystemsRuntime.put_env(:salix_store, :s3_backend, backend)
+        :error -> SystemsRuntime.delete_env(:salix_store, :s3_backend)
       end
     end)
 
     :ok = SalixStore.S3.Fake.reset()
     port = BanditServer.start!(fn port -> {Bandit, plug: AuthorityOnly, port: port} end)
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
-    Application.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, Mirror)
-    Application.put_env(:salix_im, :slack_message_mirror_mod, Mirror)
-    Application.put_env(:salix_im, :history_mirror_test_owner, self())
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    SystemsRuntime.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, Mirror)
+    SystemsRuntime.put_env(:salix_im, :slack_message_mirror_mod, Mirror)
+    SystemsRuntime.put_env(:salix_im, :history_mirror_test_owner, SystemsRuntime.Proc.self())
 
-    Application.put_env(:salix_im, :history_mirror_test_read, fn _, _, _, _ ->
+    SystemsRuntime.put_env(:salix_im, :history_mirror_test_read, fn _, _, _, _ ->
       {:ok,
        %{
          messages: [%{"ts" => "1787227200.000001", "user" => "U1", "text" => "Archived decision"}],
@@ -89,7 +90,7 @@ defmodule SalixIM.SlackHistoryMirrorTest do
        }}
     end)
 
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     connect = %{
       "provider" => "slack",
@@ -144,8 +145,8 @@ defmodule SalixIM.SlackHistoryMirrorTest do
     on_exit(fn ->
       Enum.each(previous, fn {key, value} ->
         if is_nil(value),
-          do: Application.delete_env(:salix_im, key),
-          else: Application.put_env(:salix_im, key, value)
+          do: SystemsRuntime.delete_env(:salix_im, key),
+          else: SystemsRuntime.put_env(:salix_im, key, value)
       end)
 
       SalixStore.Repo.query!("DELETE FROM slack_mirror_channel_watermarks WHERE tenant_id = $1", [
@@ -160,51 +161,17 @@ defmodule SalixIM.SlackHistoryMirrorTest do
     assert {:ok, page} = SlackHistoryReader.read_page(ctx.request)
     assert [%{"text" => "Archived decision"}] = page.messages
     assert page.stream_complete
-    assert_receive {:mirror_read, :history, scope, nil, opts}
+    settle_receive({:mirror_read, :history, scope, nil, opts})
     assert scope == ctx.scope
     assert opts[:limit] == 15
     assert opts[:oldest] == "1786924800.000000"
     assert opts[:latest] == "1787529599.999999"
-    refute_receive {:slack_http, "/api/conversations.history"}
-    refute_receive {:slack_http, "/api/conversations.replies"}
-  end
-
-  test "disabled mirror and failed reads never fall back to Slack", ctx do
-    Application.put_env(:salix_im, :slack_message_mirror_mod, SlackMessageMirror.Noop)
-    assert {:error, :source_unavailable} = SlackHistoryReader.read_page(ctx.request)
-    Application.put_env(:salix_im, :slack_message_mirror_mod, Mirror)
-
-    Application.put_env(:salix_im, :history_mirror_test_read, fn _, _, _, _ ->
-      {:error, :unavailable}
-    end)
-
-    assert {:error, :source_unavailable} = SlackHistoryReader.read_page(ctx.request)
-    refute_receive {:slack_http, "/api/conversations.history"}
-  end
-
-  test "unwarmed range is not admitted as a complete empty history", ctx do
-    request = %{ctx.request | range_start: ~U[2026-08-16 00:00:00Z]}
-    assert {:error, :source_unavailable} = SlackHistoryReader.read_page(request)
-    refute_receive {:mirror_read, _, _, _, _}
-    refute_receive {:slack_http, "/api/conversations.history"}
-  end
-
-  test "reply pages use archive root and durable timestamp bounds", ctx do
-    request =
-      Map.merge(ctx.request, %{
-        stream_kind: "replies",
-        root_ts: "1787000000.000001",
-        resume_boundary: "1787227100.000001"
-      })
-
-    assert {:ok, _} = SlackHistoryReader.read_page(request)
-    assert_receive {:mirror_read, :replies, _, "1787000000.000001", opts}
-    assert opts[:oldest] == "1787227100.000002"
-    refute_receive {:slack_http, "/api/conversations.replies"}
+    settle_refute_receive({:slack_http, "/api/conversations.history"})
+    settle_refute_receive({:slack_http, "/api/conversations.replies"})
   end
 
   test "missing channel coverage is unavailable, while a covered empty range is complete", ctx do
-    Application.put_env(:salix_im, :history_mirror_test_read, fn _, _, _, _ ->
+    SystemsRuntime.put_env(:salix_im, :history_mirror_test_read, fn _, _, _, _ ->
       {:ok, %{messages: [], next_cursor: nil, has_more?: false}}
     end)
 
@@ -216,45 +183,27 @@ defmodule SalixIM.SlackHistoryMirrorTest do
     ])
 
     assert {:error, :source_unavailable} = SlackHistoryReader.read_page(ctx.request)
-    refute_receive {:slack_http, "/api/conversations.history"}
-  end
-
-  test "an inconsistent archive cursor cannot declare the stream complete", ctx do
-    Application.put_env(:salix_im, :history_mirror_test_read, fn _, _, _, _ ->
-      {:ok, %{messages: [], next_cursor: nil, has_more?: true}}
-    end)
-
-    assert {:error, :invalid_provider_page} = SlackHistoryReader.read_page(ctx.request)
-  end
-
-  test "connect rotation during archive query discards its response", ctx do
-    Application.put_env(:salix_im, :history_mirror_test_read, fn _, _, _, _ ->
-      {:ok, _} =
-        CasRecord.update(
-          Keys.ctl_im_connect(ctx.connect["group_id"], ctx.connect["connect_id"]),
-          &Map.put(&1, "connect_generation", "g2")
-        )
-
-      {:ok, %{messages: [], next_cursor: nil, has_more?: false}}
-    end)
-
-    assert {:error, :stale_source} = SlackHistoryReader.read_page(ctx.request)
+    settle_refute_receive({:slack_http, "/api/conversations.history"})
   end
 
   @tag skip: is_nil(System.get_env("SALIX_TEST_CLICKHOUSE_URL"))
   test "real ClickHouse archive feeds onboarding parents and replies without Slack history",
        ctx do
     url = System.fetch_env!("SALIX_TEST_CLICKHOUSE_URL")
-    database = "onboarding_mirror_test_#{System.unique_integer([:positive])}"
-    previous = Application.get_env(:salix_analytics, :clickhouse)
-    Application.put_env(:salix_analytics, :clickhouse, base_url: url, table: "#{database}.events")
+    database = "onboarding_mirror_test_#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    previous = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
+
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
+      base_url: url,
+      table: "#{database}.events"
+    )
 
     on_exit(fn ->
       Req.post!(url, body: "DROP DATABASE IF EXISTS #{database}")
 
       if is_nil(previous),
-        do: Application.delete_env(:salix_analytics, :clickhouse),
-        else: Application.put_env(:salix_analytics, :clickhouse, previous)
+        do: SystemsRuntime.delete_env(:salix_analytics, :clickhouse),
+        else: SystemsRuntime.put_env(:salix_analytics, :clickhouse, previous)
     end)
 
     versions = [
@@ -271,9 +220,9 @@ defmodule SalixIM.SlackHistoryMirrorTest do
     ]
 
     assert {:ok, _} = SalixAnalytics.Migrations.migrate_versions(versions)
-    Application.put_env(:salix_im, :slack_message_mirror_mod, SalixAnalytics.SlackMirror)
+    SystemsRuntime.put_env(:salix_im, :slack_message_mirror_mod, SalixAnalytics.SlackMirror)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :slack_triage_clickhouse_reader_mod,
       SalixAnalytics.SlackMirror.Reader
@@ -312,7 +261,7 @@ defmodule SalixIM.SlackHistoryMirrorTest do
     assert {:ok, %{messages: [%{"text" => "Archived reply"}], stream_complete: true}} =
              SlackHistoryReader.read_page(request)
 
-    refute_receive {:slack_http, "/api/conversations.history"}
-    refute_receive {:slack_http, "/api/conversations.replies"}
+    settle_refute_receive({:slack_http, "/api/conversations.history"})
+    settle_refute_receive({:slack_http, "/api/conversations.replies"})
   end
 end

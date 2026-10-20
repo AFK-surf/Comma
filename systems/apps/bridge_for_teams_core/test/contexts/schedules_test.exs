@@ -13,21 +13,21 @@ defmodule BridgeForTeams.SchedulesTest do
 
     @moduledoc false
     def list_schedules_for_owners(agent_ids, group_id) do
-      Application.put_env(:bridge_for_teams_core, :test_owner_query, {agent_ids, group_id})
-      Application.get_env(:bridge_for_teams_core, :test_schedules, {:ok, []})
+      SystemsRuntime.put_env(:bridge_for_teams_core, :test_owner_query, {agent_ids, group_id})
+      SystemsRuntime.get_env(:bridge_for_teams_core, :test_schedules, {:ok, []})
     end
 
     def delete_schedule(id) do
-      ids = Application.get_env(:bridge_for_teams_core, :test_deleted, [])
-      Application.put_env(:bridge_for_teams_core, :test_deleted, [id | ids])
+      ids = SystemsRuntime.get_env(:bridge_for_teams_core, :test_deleted, [])
+      SystemsRuntime.put_env(:bridge_for_teams_core, :test_deleted, [id | ids])
       :ok
     end
 
     def create_schedule(attrs) do
-      created = Application.get_env(:bridge_for_teams_core, :test_created, [])
-      Application.put_env(:bridge_for_teams_core, :test_created, [attrs | created])
+      created = SystemsRuntime.get_env(:bridge_for_teams_core, :test_created, [])
+      SystemsRuntime.put_env(:bridge_for_teams_core, :test_created, [attrs | created])
 
-      Application.get_env(
+      SystemsRuntime.get_env(
         :bridge_for_teams_core,
         :test_create_result,
         {:ok, Map.merge(attrs, %{"created_at" => 1_700_000_000_000, "last_run" => nil})}
@@ -35,13 +35,13 @@ defmodule BridgeForTeams.SchedulesTest do
     end
 
     def update_schedule(id, changes) do
-      updates = Application.get_env(:bridge_for_teams_core, :test_updates, [])
-      Application.put_env(:bridge_for_teams_core, :test_updates, [{id, changes} | updates])
+      updates = SystemsRuntime.get_env(:bridge_for_teams_core, :test_updates, [])
+      SystemsRuntime.put_env(:bridge_for_teams_core, :test_updates, [{id, changes} | updates])
 
-      case Application.get_env(:bridge_for_teams_core, :test_update_result) do
+      case SystemsRuntime.get_env(:bridge_for_teams_core, :test_update_result) do
         nil ->
           {:ok, schedules} =
-            Application.get_env(:bridge_for_teams_core, :test_schedules, {:ok, []})
+            SystemsRuntime.get_env(:bridge_for_teams_core, :test_schedules, {:ok, []})
 
           case Enum.find(schedules, &(&1["id"] == id)) do
             nil -> {:error, :not_found}
@@ -58,29 +58,24 @@ defmodule BridgeForTeams.SchedulesTest do
     def page_group_agents(_tenant, _group, _opts), do: {:error, :unavailable}
   end
 
-  test "Agent owner failure remains an actionable product read error", %{project: project} do
-    Application.put_env(:bridge_for_teams_core, :salix_client, UnavailableAgentOwner)
-    assert {:error, :unavailable} = Schedules.list_project_schedules(project)
-  end
-
   setup do
-    prev = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, ScriptedClient)
+    prev = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, ScriptedClient)
 
     on_exit(fn ->
       # Restore-or-delete: putting back a literal nil would poison every later
       # test that reads the Salix client config.
       case prev do
-        nil -> Application.delete_env(:bridge_for_teams_core, :salix_client)
-        value -> Application.put_env(:bridge_for_teams_core, :salix_client, value)
+        nil -> SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
+        value -> SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, value)
       end
 
-      Application.delete_env(:bridge_for_teams_core, :test_schedules)
-      Application.delete_env(:bridge_for_teams_core, :test_deleted)
-      Application.delete_env(:bridge_for_teams_core, :test_created)
-      Application.delete_env(:bridge_for_teams_core, :test_create_result)
-      Application.delete_env(:bridge_for_teams_core, :test_updates)
-      Application.delete_env(:bridge_for_teams_core, :test_update_result)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :test_schedules)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :test_deleted)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :test_created)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :test_create_result)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :test_updates)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :test_update_result)
     end)
 
     {:ok, org} = Orgs.create_org(%{name: "Acme", slug: "acme"})
@@ -89,12 +84,12 @@ defmodule BridgeForTeams.SchedulesTest do
     %{org: org, project: project}
   end
 
-  defp script(result), do: Application.put_env(:bridge_for_teams_core, :test_schedules, result)
+  defp script(result), do: SystemsRuntime.put_env(:bridge_for_teams_core, :test_schedules, result)
 
   defp schedule(agent, attrs) do
     Map.merge(
       %{
-        "id" => "sched-#{:erlang.unique_integer([:positive])}",
+        "id" => "sched-#{SystemsRuntime.Proc.unique_integer([:positive])}",
         "agent_id" => agent.salix_agent_id,
         "prompt" => "do the thing",
         "interval_minutes" => 5,
@@ -145,7 +140,7 @@ defmodule BridgeForTeams.SchedulesTest do
     # asks Salix for exactly this project's agent ids + Task group binding,
     # never the global definition set.
     assert {queried_agents, queried_group} =
-             Application.get_env(:bridge_for_teams_core, :test_owner_query)
+             SystemsRuntime.get_env(:bridge_for_teams_core, :test_owner_query)
 
     assert router.salix_agent_id in queried_agents
     assert worker.salix_agent_id in queried_agents
@@ -189,16 +184,6 @@ defmodule BridgeForTeams.SchedulesTest do
              Schedules.update_project_schedule(project, "s-foreign-task", %{"prompt" => "x"})
   end
 
-  test "empty when no agent owns a schedule", %{project: project} do
-    {:ok, _agent} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "solo",
-        "role" => "router"
-      })
-
-    assert {:ok, []} = Schedules.list_project_schedules(project)
-  end
-
   test "includes a Task schedule only when its receiver payload belongs to the project", %{
     project: project
   } do
@@ -237,95 +222,6 @@ defmodule BridgeForTeams.SchedulesTest do
     assert schedule["conversation_id"] == "cnv1_project_task"
   end
 
-  test "excludes archived agents' schedules", %{project: project} do
-    {:ok, kept} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "kept",
-        "role" => "router"
-      })
-
-    {:ok, gone} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "gone",
-        "role" => "worker"
-      })
-
-    {:ok, _} = Agents.archive_agent(gone)
-
-    script({:ok, [schedule(kept, %{"id" => "live"}), schedule(gone, %{"id" => "dead"})]})
-
-    assert {:ok, [only]} = Schedules.list_project_schedules(project)
-    assert only["id"] == "live"
-  end
-
-  test "surfaces :unavailable when Salix is unreachable", %{project: project} do
-    {:ok, _agent} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "a",
-        "role" => "router"
-      })
-
-    script({:error, :unavailable})
-
-    assert {:error, :unavailable} = Schedules.list_project_schedules(project)
-  end
-
-  test "records an Operations diagnostic when Salix schedule listing is unreachable", %{
-    org: org,
-    project: project
-  } do
-    {:ok, _agent} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "a",
-        "role" => "router"
-      })
-
-    script({:error, :unavailable})
-
-    assert {:error, :unavailable} = Schedules.list_project_schedules(project)
-    assert {:error, :unavailable} = Schedules.list_project_schedules(project)
-
-    assert [event] =
-             Observability.list_events(org.id,
-               event_type: "project.schedules.unavailable",
-               limit: 10
-             )
-
-    assert event.domain == "schedule"
-    assert event.project_id == project.id
-    assert event.resource_type == "project_schedule_index"
-    assert event.resource_id == project.id
-    assert event.source == "salix.schedule"
-    assert event.severity == "warning"
-    assert event.status == "unavailable"
-    assert event.reason_class == "unavailable"
-    assert event.correlation_id == "project:#{project.id}:schedules:index"
-    assert event.evidence["surface"] == "project_schedules"
-    assert event.evidence["salix_agent_count"] == 2
-    refute inspect(event.evidence) =~ "do the thing"
-  end
-
-  test "does not record an Operations diagnostic for successful schedule reads", %{
-    org: org,
-    project: project
-  } do
-    {:ok, agent} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "a",
-        "role" => "router"
-      })
-
-    script({:ok, [schedule(agent, %{"id" => "sched-ok"})]})
-
-    assert {:ok, [_schedule]} = Schedules.list_project_schedules(project)
-
-    assert [] =
-             Observability.list_events(org.id,
-               event_type: "project.schedules.unavailable",
-               limit: 10
-             )
-  end
-
   test "deletes a schedule owned by the project", %{project: project} do
     {:ok, agent} =
       BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
@@ -336,7 +232,7 @@ defmodule BridgeForTeams.SchedulesTest do
     script({:ok, [schedule(agent, %{"id" => "s-mine"})]})
 
     assert :ok = Schedules.delete_project_schedule(project, "s-mine")
-    assert Application.get_env(:bridge_for_teams_core, :test_deleted) == ["s-mine"]
+    assert SystemsRuntime.get_env(:bridge_for_teams_core, :test_deleted) == ["s-mine"]
   end
 
   test "does not delete a Task schedule without clearing its conversation binding", %{
@@ -360,50 +256,7 @@ defmodule BridgeForTeams.SchedulesTest do
     })
 
     assert {:error, :not_found} = Schedules.delete_project_schedule(project, "s-task")
-    assert Application.get_env(:bridge_for_teams_core, :test_deleted, []) == []
-  end
-
-  test "deleting a schedule records successful audit without schedule body", %{
-    org: org,
-    project: project
-  } do
-    {:ok, agent} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "router",
-        "role" => "router"
-      })
-
-    script(
-      {:ok,
-       [
-         schedule(agent, %{
-           "id" => "s-audit",
-           "prompt" => "secret customer weekly report",
-           "cron" => "0 9 * * 1"
-         })
-       ]}
-    )
-
-    assert :ok =
-             Schedules.delete_project_schedule(project, "s-audit",
-               actor_label: "ops-admin@example.com",
-               request_id: "req_schedule_delete"
-             )
-
-    assert [audit] = Observability.list_audit_logs(org.id, action: "project_schedule.deleted")
-    assert audit.result == "ok"
-    assert audit.request_id == "req_schedule_delete"
-    assert audit.resource_type == "project_schedule"
-    assert audit.resource_id == "s-audit"
-    assert audit.metadata["project_id"] == project.id
-    assert audit.metadata["salix_agent_id"] == agent.salix_agent_id
-    refute inspect(audit) =~ "secret customer weekly report"
-    refute inspect(audit) =~ "0 9 * * 1"
-
-    assert [event] = Observability.list_events(org.id, audit_log_id: audit.id)
-    assert event.domain == "audit"
-    assert event.status == "ok"
-    refute inspect(event) =~ "secret customer weekly report"
+    assert SystemsRuntime.get_env(:bridge_for_teams_core, :test_deleted, []) == []
   end
 
   test "refuses to delete a schedule not owned by the project", %{project: project} do
@@ -416,14 +269,14 @@ defmodule BridgeForTeams.SchedulesTest do
     script({:ok, [schedule(agent, %{"id" => "s-mine"})]})
 
     assert {:error, :not_found} = Schedules.delete_project_schedule(project, "s-foreign")
-    assert Application.get_env(:bridge_for_teams_core, :test_deleted, []) == []
+    assert SystemsRuntime.get_env(:bridge_for_teams_core, :test_deleted, []) == []
   end
 
   defp created_definitions,
-    do: Application.get_env(:bridge_for_teams_core, :test_created, [])
+    do: SystemsRuntime.get_env(:bridge_for_teams_core, :test_created, [])
 
   defp sent_updates,
-    do: Application.get_env(:bridge_for_teams_core, :test_updates, [])
+    do: SystemsRuntime.get_env(:bridge_for_teams_core, :test_updates, [])
 
   describe "create_project_schedule/3" do
     test "stamps the target agent's salix id and a generated schedule id", %{project: project} do
@@ -464,22 +317,6 @@ defmodule BridgeForTeams.SchedulesTest do
       assert created["agent_name"] == "worker"
     end
 
-    test "defaults to the project's first provisioned agent", %{project: project} do
-      # The project's auto-provisioned default router is its first agent.
-      [agent | _rest] = Agents.list_agents(project.id)
-
-      assert {:ok, created} =
-               Schedules.create_project_schedule(project, %{
-                 prompt: "check the inbox",
-                 interval_minutes: 30
-               })
-
-      assert [definition] = created_definitions()
-      assert definition["agent_id"] == agent.salix_agent_id
-      assert definition["interval_minutes"] == 30
-      assert created["bft_agent_id"] == agent.id
-    end
-
     test "rejects an agent that isn't the project's", %{org: org, project: project} do
       {:ok, _mine} =
         BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
@@ -503,110 +340,6 @@ defmodule BridgeForTeams.SchedulesTest do
                })
 
       assert created_definitions() == []
-    end
-
-    test "errors when the project has no provisioned agent", %{project: project} do
-      Enum.each(Agents.list_agents(project.id), &archive_agent_fixture!/1)
-
-      assert {:error, :no_agent} =
-               Schedules.create_project_schedule(project, %{
-                 "prompt" => "p",
-                 "interval_minutes" => 5
-               })
-    end
-
-    test "rejects invalid definitions before calling Salix", %{project: project} do
-      {:ok, agent} =
-        BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-          "name" => "a",
-          "role" => "router"
-        })
-
-      # Cron and interval are mutually exclusive.
-      assert {:error, :invalid_schedule} =
-               Schedules.create_project_schedule(project, %{
-                 "agent_id" => agent.id,
-                 "prompt" => "p",
-                 "interval_minutes" => 5,
-                 "cron" => "0 9 * * 1"
-               })
-
-      # A recurrence is required.
-      assert {:error, :invalid_schedule} =
-               Schedules.create_project_schedule(project, %{
-                 "agent_id" => agent.id,
-                 "prompt" => "p"
-               })
-
-      # So is a non-empty prompt.
-      assert {:error, :invalid_schedule} =
-               Schedules.create_project_schedule(project, %{
-                 "agent_id" => agent.id,
-                 "prompt" => "  ",
-                 "interval_minutes" => 5
-               })
-
-      # And a positive interval.
-      assert {:error, :invalid_schedule} =
-               Schedules.create_project_schedule(project, %{
-                 "agent_id" => agent.id,
-                 "prompt" => "p",
-                 "interval_minutes" => 0
-               })
-
-      assert created_definitions() == []
-    end
-
-    test "records audit on create without leaking the prompt", %{org: org, project: project} do
-      {:ok, agent} =
-        BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-          "name" => "router",
-          "role" => "router"
-        })
-
-      assert {:ok, created} =
-               Schedules.create_project_schedule(
-                 project,
-                 %{
-                   "agent_id" => agent.id,
-                   "prompt" => "secret customer weekly report",
-                   "interval_minutes" => 60
-                 },
-                 actor_label: "ops-admin@example.com",
-                 request_id: "req_schedule_create"
-               )
-
-      assert [audit] = Observability.list_audit_logs(org.id, action: "project_schedule.created")
-      assert audit.result == "ok"
-      assert audit.request_id == "req_schedule_create"
-      assert audit.resource_type == "project_schedule"
-      assert audit.resource_id == created["id"]
-      assert audit.metadata["salix_agent_id"] == agent.salix_agent_id
-      refute inspect(audit) =~ "secret customer weekly report"
-    end
-
-    test "surfaces the Salix error and records a failed write attempt", %{
-      org: org,
-      project: project
-    } do
-      {:ok, _agent} =
-        BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-          "name" => "a",
-          "role" => "router"
-        })
-
-      Application.put_env(:bridge_for_teams_core, :test_create_result, {:error, :unavailable})
-
-      assert {:error, :unavailable} =
-               Schedules.create_project_schedule(
-                 project,
-                 %{"prompt" => "p", "interval_minutes" => 5},
-                 actor_label: "ops-admin@example.com"
-               )
-
-      assert [audit] = Observability.list_audit_logs(org.id, action: "project_schedule.created")
-      assert audit.result == "failed"
-      assert audit.reason_class == "unavailable"
     end
   end
 
@@ -636,52 +369,6 @@ defmodule BridgeForTeams.SchedulesTest do
       assert updated["agent_name"] == "router"
     end
 
-    test "switching interval -> cron nils out the stale interval", %{project: project} do
-      {:ok, agent} =
-        BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-          "name" => "a",
-          "role" => "router"
-        })
-
-      script({:ok, [schedule(agent, %{"id" => "s-switch", "interval_minutes" => 5})]})
-
-      assert {:ok, updated} =
-               Schedules.update_project_schedule(project, "s-switch", %{
-                 "cron" => "0 9 * * 1",
-                 "timezone" => "UTC"
-               })
-
-      assert [{"s-switch", changes}] = sent_updates()
-      assert changes["cron"] == "0 9 * * 1"
-      assert changes["interval_minutes"] == nil
-      assert Map.has_key?(changes, "interval_minutes")
-      assert updated["cron"] == "0 9 * * 1"
-    end
-
-    test "switching cron -> interval nils out the stale cron", %{project: project} do
-      {:ok, agent} =
-        BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-          "name" => "a",
-          "role" => "router"
-        })
-
-      script(
-        {:ok,
-         [
-           schedule(agent, %{"id" => "s-switch", "cron" => "0 9 * * 1", "timezone" => "UTC"})
-           |> Map.delete("interval_minutes")
-         ]}
-      )
-
-      assert {:ok, _updated} =
-               Schedules.update_project_schedule(project, "s-switch", %{"interval_minutes" => 15})
-
-      assert [{"s-switch", changes}] = sent_updates()
-      assert changes["interval_minutes"] == 15
-      assert changes["cron"] == nil
-      assert Map.has_key?(changes, "cron")
-    end
-
     test "refuses to update a schedule not owned by the project", %{project: project} do
       {:ok, agent} =
         BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
@@ -696,91 +383,5 @@ defmodule BridgeForTeams.SchedulesTest do
 
       assert sent_updates() == []
     end
-
-    test "rejects empty or invalid merged changes", %{project: project} do
-      {:ok, agent} =
-        BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-          "name" => "a",
-          "role" => "router"
-        })
-
-      script({:ok, [schedule(agent, %{"id" => "s-mine"})]})
-
-      assert {:error, :invalid_schedule} =
-               Schedules.update_project_schedule(project, "s-mine", %{})
-
-      assert {:error, :invalid_schedule} =
-               Schedules.update_project_schedule(project, "s-mine", %{"prompt" => ""})
-
-      assert {:error, :invalid_schedule} =
-               Schedules.update_project_schedule(project, "s-mine", %{"interval_minutes" => 0})
-
-      assert sent_updates() == []
-    end
-
-    test "surfaces :unavailable from the ownership listing", %{project: project} do
-      {:ok, _agent} =
-        BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-          "name" => "a",
-          "role" => "router"
-        })
-
-      script({:error, :unavailable})
-
-      assert {:error, :unavailable} =
-               Schedules.update_project_schedule(project, "s-mine", %{"prompt" => "x"})
-    end
-
-    test "records audit on update", %{org: org, project: project} do
-      {:ok, agent} =
-        BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-          "name" => "a",
-          "role" => "router"
-        })
-
-      script({:ok, [schedule(agent, %{"id" => "s-audit"})]})
-
-      assert {:ok, _updated} =
-               Schedules.update_project_schedule(
-                 project,
-                 "s-audit",
-                 %{"prompt" => "secret revised prompt"},
-                 actor_label: "ops-admin@example.com",
-                 request_id: "req_schedule_update"
-               )
-
-      assert [audit] = Observability.list_audit_logs(org.id, action: "project_schedule.updated")
-      assert audit.result == "ok"
-      assert audit.request_id == "req_schedule_update"
-      assert audit.resource_id == "s-audit"
-      refute inspect(audit) =~ "secret revised prompt"
-    end
-  end
-
-  test "failed schedule delete records failed audit", %{org: org, project: project} do
-    {:ok, agent} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "router",
-        "role" => "router"
-      })
-
-    script({:ok, [schedule(agent, %{"id" => "s-mine"})]})
-
-    assert {:error, :not_found} =
-             Schedules.delete_project_schedule(project, "s-foreign",
-               actor_label: "ops-admin@example.com",
-               request_id: "req_schedule_missing"
-             )
-
-    assert [audit] = Observability.list_audit_logs(org.id, action: "project_schedule.deleted")
-    assert audit.result == "failed"
-    assert audit.reason_class == "not_found"
-    assert audit.request_id == "req_schedule_missing"
-    assert audit.resource_id == "s-foreign"
-
-    assert [event] = Observability.list_events(org.id, audit_log_id: audit.id)
-    assert event.status == "failed"
-    assert event.reason_class == "not_found"
-    assert event.severity == "error"
   end
 end

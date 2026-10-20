@@ -113,7 +113,9 @@ defmodule SalixStore.TenantApiKeys do
     }
   end
 
-  defp to_record(%Row{} = row) do
+  @doc false
+  # Shared with the memory implementation.
+  def to_record(%Row{} = row) do
     %{
       "key_hash" => row.key_hash,
       "tenant_id" => row.tenant_id,
@@ -122,7 +124,8 @@ defmodule SalixStore.TenantApiKeys do
     }
   end
 
-  defp from_record(record) do
+  @doc false
+  def from_record(record) do
     %Row{
       key_hash: record["key_hash"],
       tenant_id: record["tenant_id"],

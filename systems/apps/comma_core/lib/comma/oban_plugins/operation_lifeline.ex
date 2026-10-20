@@ -7,14 +7,15 @@ defmodule Comma.ObanPlugins.OperationLifeline do
   a process death must leave enough Oban budget for the operation to re-enter
   and make that decision itself.
 
-  Routine jobs use their own eight-minute rescue threshold. A rescued
+  Routine and proactive jobs use an eight-minute rescue threshold. A rescued
   generation checks its original deadline before any source or model call.
+  Proactive jobs have shorter execution timeouts and resume their existing work.
   Each rescue pass selects at most 1,000 jobs from each class.
   """
 
   @behaviour Oban.Plugin
 
-  use GenServer
+  use SystemsRuntime.Server
 
   import Ecto.Query
 
@@ -31,7 +32,7 @@ defmodule Comma.ObanPlugins.OperationLifeline do
   @impl Oban.Plugin
   def start_link(opts) do
     {name, opts} = Keyword.pop(opts, :name)
-    GenServer.start_link(__MODULE__, struct!(__MODULE__, opts), name: name)
+    SystemsRuntime.Server.start_link(__MODULE__, struct!(__MODULE__, opts), name: name)
   end
 
   @impl Oban.Plugin
@@ -56,6 +57,7 @@ defmodule Comma.ObanPlugins.OperationLifeline do
         fn ->
           rescue_jobs(state.conf, state.rescue_after, state.limit)
           rescue_recommendation_jobs(state.conf, state.limit)
+          Comma.Analytics.ProfileSweep.rescue_jobs(state.conf)
         end,
         on_exhausted: :log
       )
@@ -72,7 +74,7 @@ defmodule Comma.ObanPlugins.OperationLifeline do
   @doc false
   def rescue_jobs(conf, rescue_after, limit)
       when is_integer(rescue_after) and rescue_after > 0 and is_integer(limit) and limit > 0 do
-    cutoff = DateTime.add(DateTime.utc_now(), -rescue_after, :millisecond)
+    cutoff = DateTime.add(SystemsClock.utc_now(), -rescue_after, :millisecond)
 
     candidates =
       from(job in Oban.Job,
@@ -113,16 +115,24 @@ defmodule Comma.ObanPlugins.OperationLifeline do
   def rescue_recommendation_jobs(conf, limit \\ 1_000) do
     # A process lost with its Pod cannot report an Oban failure. Only after the
     # full run budget can it be rescued without overlapping a valid producer.
-    # Its next execution settles the run before any provider/model call.
+    # Routine generation settles its run before any provider/model call.
+    # Proactive jobs resume after their shorter Oban execution timeouts.
     cutoff =
-      DateTime.add(DateTime.utc_now(), -Comma.RecommendationBudgets.run_hard_cap_seconds(), :second)
+      DateTime.add(
+        SystemsClock.utc_now(),
+        -Comma.RecommendationBudgets.run_hard_cap_seconds(),
+        :second
+      )
 
     workers =
       Enum.map(
         [
           Comma.Workers.RecommendationGenerate,
           Comma.Workers.RecommendationRunTimeout,
-          Comma.Workers.RecommendationReconcile
+          Comma.Workers.RecommendationReconcile,
+          CommaWeb.MemberSourceIngest,
+          CommaWeb.ProactiveCheck,
+          CommaWeb.ProactiveNotebook
         ],
         &(Atom.to_string(&1) |> String.replace_prefix("Elixir.", ""))
       )
@@ -152,6 +162,6 @@ defmodule Comma.ObanPlugins.OperationLifeline do
   end
 
   defp schedule(state) do
-    %{state | timer: Process.send_after(self(), :rescue, state.interval)}
+    %{state | timer: SystemsClock.send_after(SystemsRuntime.Proc.self(), :rescue, state.interval)}
   end
 end

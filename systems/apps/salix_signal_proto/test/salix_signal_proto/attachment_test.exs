@@ -1,7 +1,7 @@
 defmodule SalixSignalProto.AttachmentTest do
   # Level 1: CRS-10 vectors for attachment padding, encryption, the
   # incremental MAC and the pointer codec.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   import Bitwise
@@ -134,8 +134,8 @@ defmodule SalixSignalProto.AttachmentTest do
   end
 
   test "a validator releases each prefix once its chunk boundary MAC matches" do
-    key = :crypto.strong_rand_bytes(32)
-    data = :crypto.strong_rand_bytes(100)
+    key = SystemsRuntime.Proc.random_bytes(32)
+    data = SystemsRuntime.Proc.random_bytes(100)
     macs = IncrementalMac.compute(key, data, 16)
     {:ok, validator} = IncrementalMac.validator(key, 16, macs)
 

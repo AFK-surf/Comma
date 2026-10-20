@@ -109,7 +109,8 @@ export class BrowserMeetingProbe {
             this.#observed.set(page.id, {
               id: `${page.id}:${room}`,
               tabId: page.tabId,
-              name: `Google Meet · ${room!.slice(1)}`,
+              // The platform, as a meeting app's name is: the Task and the recording's file add the times.
+              name: "Google Meet",
               processId,
             });
           } else this.#observed.delete(page.id);

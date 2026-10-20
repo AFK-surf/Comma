@@ -15,7 +15,15 @@ systems/doc/
 systems/tmp/
 erl_crash.dump
 *.ez
+# The runtime bundle's station build installs pnpm dependencies in the checkout;
+# image stages install their own.
+**/node_modules/
 
+systems/private/*/_build/
+systems/private/*/deps/
+systems/profiles/target/
+systems/profiles/nif/target/
+systems/apps/salix_agent/priv/native/
 systems/native/verified_kernel/.lake/
 systems/native/verified_kernel/.native/
 systems/native/verified_kernel/_build/
@@ -30,6 +38,8 @@ systems/install-artifacts-*/
 systems/apps/salix_agent/priv/subscription_worker
 systems/apps/salix_agent/priv/tailcat_gateway
 systems/apps/salix_agent/priv/tailcat_testpeer
+systems/apps/salix_agent/priv/tailnet_gateway
+systems/apps/salix_agent/priv/tailnet_testpeer
 systems/account-proxy/.upstream/
 systems/account-proxy/.data/
 systems/account-proxy/salix-account-proxy

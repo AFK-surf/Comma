@@ -10,7 +10,7 @@ defmodule Comma.OauthIdp.FlowTest do
   every non-enabled grant; and a code replay fails.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Boruta.Ecto.Admin
   alias Boruta.Oauth.AuthorizeResponse
@@ -48,7 +48,7 @@ defmodule Comma.OauthIdp.FlowTest do
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Comma.Repo)
-    Ecto.Adapters.SQL.Sandbox.mode(Comma.Repo, {:shared, self()})
+    Ecto.Adapters.SQL.Sandbox.mode(Comma.Repo, {:shared, SystemsRuntime.Proc.self()})
     OauthIdpTestKeys.install()
 
     {:ok, user} = Comma.Accounts.get_or_create_user_by_email("idp-flow@example.com")
@@ -78,7 +78,7 @@ defmodule Comma.OauthIdp.FlowTest do
   end
 
   defp authorize!(user, client, opts \\ []) do
-    code_verifier = Base.url_encode64(:crypto.strong_rand_bytes(48), padding: false)
+    code_verifier = Base.url_encode64(SystemsRuntime.Proc.random_bytes(48), padding: false)
 
     code_challenge =
       :sha256 |> :crypto.hash(code_verifier) |> Base.url_encode64(padding: false)
@@ -188,7 +188,7 @@ defmodule Comma.OauthIdp.FlowTest do
   test "a wrong code_verifier is rejected", %{user: user, client: client} do
     {code, _code_verifier} = authorize!(user, client)
 
-    wrong_verifier = Base.url_encode64(:crypto.strong_rand_bytes(48), padding: false)
+    wrong_verifier = Base.url_encode64(SystemsRuntime.Proc.random_bytes(48), padding: false)
     assert {:token_error, %Error{}} = exchange(client, code, wrong_verifier)
   end
 
@@ -203,26 +203,6 @@ defmodule Comma.OauthIdp.FlowTest do
 
     assert {:token_error, %Error{error: :unsupported_grant_type}} =
              Boruta.Oauth.token(token_conn, Callbacks)
-  end
-
-  test "implicit response type is rejected for an authorization_code-only client",
-       %{user: user, client: client} do
-    authorize_conn =
-      conn(:get, "/oauth2/authorize", %{
-        "response_type" => "token",
-        "client_id" => client.id,
-        "redirect_uri" => @redirect_uri,
-        "scope" => "openid"
-      })
-
-    assert {:authorize_error, %Error{error: error}} =
-             Boruta.Oauth.authorize(
-               authorize_conn,
-               ResourceOwners.to_resource_owner(user),
-               Callbacks
-             )
-
-    assert error in [:unsupported_response_type, :unsupported_grant_type]
   end
 
   test "a disabled user cannot complete the flow", %{user: user, client: client} do

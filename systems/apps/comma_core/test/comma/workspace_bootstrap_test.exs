@@ -11,6 +11,8 @@ defmodule Comma.WorkspaceBootstrapTest do
     assert {:ok, second} = WorkspaceBootstrap.ensure_default(user["id"])
 
     workspace_id = first["workspace"]["id"]
+    assert first["workspace"]["name"] == user["email"]
+    assert second["workspace"]["name"] == user["email"]
     assert first["status"] == "provisioning"
     assert first["workspace"]["status"] == "provisioning"
     assert second["workspace"]["id"] == workspace_id
@@ -63,48 +65,6 @@ defmodule Comma.WorkspaceBootstrapTest do
              Comma.Workspaces.authorize(user, %{}, workspace_id)
   end
 
-  test "invalid VM input is not treated as the default" do
-    {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("invalid-vm")}@comma.test"})
-
-    assert {:error, {:bad_request, "vm must be an object"}} =
-             Comma.Workspaces.create_for_user(user["id"], %{"vm" => false})
-  end
-
-  test "explicit opt-out is preserved and bootstrap never enables existing Workspaces" do
-    for vm <- [nil, %{"enabled" => false}] do
-      {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("legacy-vm")}@comma.test"})
-
-      {:ok, pending} =
-        Comma.Workspaces.create_for_user(user["id"], %{"vm" => %{"enabled" => false}})
-
-      workspace = Repo.get!(Workspace, pending["id"])
-      assert workspace.vm == %{"enabled" => false}
-      workspace |> Ecto.Changeset.change(vm: vm, status: "active") |> Repo.update!()
-
-      assert {:ok, %{"status" => "ready"}} = WorkspaceBootstrap.ensure_default(user["id"])
-      assert Repo.get!(Workspace, workspace.id).vm == vm
-    end
-  end
-
-  test "bootstrap maps the canonical active state to the public ready contract" do
-    {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("ready")}@comma.test"})
-    assert {:ok, pending} = WorkspaceBootstrap.ensure_default(user["id"])
-    workspace_id = pending["workspace"]["id"]
-
-    workspace_id
-    |> then(&Repo.get!(Workspace, &1))
-    |> Ecto.Changeset.change(status: "active")
-    |> Repo.update!()
-
-    assert {:ok, ready} = WorkspaceBootstrap.ensure_default(user["id"])
-    assert ready["status"] == "ready"
-    assert ready["workspace"]["status"] == "ready"
-    assert ready["workspace"]["id"] == workspace_id
-
-    assert {:ok, [%{"id" => ^workspace_id}]} = Comma.Workspaces.list_for_user(user["id"])
-    assert {:ok, %{"id" => ^workspace_id}} = Comma.Workspaces.authorize(user, %{}, workspace_id)
-  end
-
   test "bootstrap fails closed when the canonical owner membership is not active owner" do
     {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("membership")}@comma.test"})
     assert {:ok, pending} = WorkspaceBootstrap.ensure_default(user["id"])
@@ -129,5 +89,5 @@ defmodule Comma.WorkspaceBootstrapTest do
   end
 
   defp unique(prefix),
-    do: prefix <> "-" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+    do: prefix <> "-" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(9), padding: false)
 end

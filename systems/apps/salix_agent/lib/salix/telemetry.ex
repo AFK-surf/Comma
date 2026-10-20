@@ -7,6 +7,12 @@ defmodule Salix.Telemetry do
   @llm [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600]
   @vm [0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600]
   @voice_call [1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600]
+  @station_reply [1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200]
+  # SalixIM.StationTaskWatch: why a station Task's delegation waits (phase),
+  # what kind of station runs it (kind), and whether the Task is the Cloud VM
+  # canary (canary, "true" or "false").
+  @station_task_phases ~w(vm_not_ready station_offline not_given given_no_reply idle_no_reply cannot_start other)
+  @station_task_kinds ~w(cloud_vm device other)
   @voice_transports ~w(twilio websocket other)
   @voice_call_reasons ~w(completed caller_hangup agent_hangup busy timeout model_error carrier_error revoked draining other)
   @voice_delegation_outcomes ~w(answered failed abandoned other)
@@ -24,8 +30,6 @@ defmodule Salix.Telemetry do
     # counts spinfoam child restarts (alert past 5/h).
     # round_config_refresh: how long background configuration reads take and
     # whether failures are keeping sessions on their previous snapshots.
-    # external_session_migration: do bounded operator steps finish, or fail
-    # while the Agent creation freeze remains in place? IDs stay out of labels.
     # decide: do runtime classifiers fail, hit budgets, or exceed expected latency?
     # web_http_request: do agent-authored API calls (`web.http_request`) get
     # answers (ok), get refused by the remote (rejected = 4xx, failed = 5xx),
@@ -40,12 +44,12 @@ defmodule Salix.Telemetry do
     # missing gateway or a full one. Hosts, users, addresses and fingerprints
     # stay out of labels.
     "salix_agent" =>
-      ~w(browser_command browser_storage_checkpoint conversation_log_consume conversation_log_admit ifc_decide external_session_migration round_config_refresh session_kernel session_history_recent session_history_index session_history_discovery activation round lease claim schedule prepared_blob_cleanup external_runtime_event_batch provider_reply_obligation_rejection router_wait_yield session_work_notification_admission session_work_notification_wake loop_host_call loop_notify loop_event loop_build loop_reconcile loop_host_restart spinfoam_build script_run web_http_request ssh_connect ssh_connect_tailcat decide other),
+      ~w(browser_command browser_storage_checkpoint conversation_log_consume conversation_log_admit ifc_decide round_config_refresh session_kernel session_history_recent session_history_index session_history_discovery activation round lease claim schedule prepared_blob_cleanup provider_reply_obligation_rejection router_wait_yield session_work_notification_admission session_work_notification_wake loop_host_call loop_notify loop_event loop_build loop_reconcile loop_host_restart spinfoam_build script_run web_http_request ssh_connect ssh_connect_tailcat decide other),
     "salix_env" =>
       ~w(connector_metadata connector_heartbeat runtime_auth_read runtime_auth_status runtime_auth_verify runtime_auth_login_start runtime_auth_login_cancel runtime_auth_input_begin runtime_auth_input_submit runtime_auth_input_cancel other),
     "salix_calendar" => ~w(source_sync source_transition watch other),
     "salix_meet" =>
-      ~w(calendar_enrollment calendar_enrollment_group calendar_scan calendar_scan_group calendar_join calendar_join_group calendar_join_dispatch calendar_join_dispatch_skip meeting_artifact meeting_asr meeting_delivery meeting_delivery_claim meeting_runtime_late_event meeting_watchdog meeting_stuck_nonterminal other),
+      ~w(calendar_enrollment calendar_enrollment_group calendar_scan calendar_scan_group calendar_join calendar_join_group calendar_join_dispatch calendar_join_dispatch_skip meeting_artifact meeting_asr dictation_asr meeting_delivery meeting_delivery_claim meeting_runtime_late_event meeting_watchdog meeting_stuck_nonterminal other),
     "salix_mcp" => ~w(tool mcp other),
     # conversation_log_recovery: are indexed candidates completing, retained, or failing?
     # conversation_log_recovery_claim: can each Pod discover due work within its poll budget?
@@ -53,7 +57,7 @@ defmodule Salix.Telemetry do
     # Which internal send stage accounts for latency or failure? Queue timing is local only.
     # Placement, call and actor are nested totals; do not sum all stages.
     "salix_im" =>
-      ~w(conversation_log_recovery conversation_log_recovery_claim provider_log_delivery im_send_total im_send_authorize im_send_conversation im_send_attachments im_send_participant im_send_placement im_send_call im_send_queue im_send_actor im_send_membership im_send_sender im_send_sender_fence im_send_prepare im_send_commit im_send_delivery im_send_result im_ingress provider_poll imessage_receive imessage_request telegram_send_message private_chat_status private_chat_status_start telegram_interaction_prompt telegram_interaction_response telegram_interaction_card slack_api_retry slack_task_card control_command conversation_search_delete_admission other),
+      ~w(conversation_log_recovery conversation_log_recovery_claim provider_log_delivery im_send_total im_send_authorize im_send_conversation im_send_attachments im_send_participant im_send_placement im_send_call im_send_queue im_send_actor im_send_membership im_send_sender im_send_sender_fence im_send_prepare im_send_commit im_send_delivery im_send_result im_ingress provider_poll imessage_receive imessage_request telegram_send_message private_chat_status private_chat_status_start telegram_interaction_prompt telegram_interaction_response telegram_interaction_card slack_api_retry slack_task_card feishu_task_card lark_task_card control_command conversation_search_delete_admission other),
     "salix_store" =>
       ~w(store_get store_put store_list compute_mutation compute_migration service_route other),
     # The agents' `/drive` mount: every list, read, write, delete and status
@@ -72,7 +76,8 @@ defmodule Salix.Telemetry do
       slack_mirror_tail slack_mirror_changes slack_mirror_latest_states
       slack_mirror_thread slack_mirror_thread_reactions
       slack_semantic_search slack_message_search slack_semantic_index slack_semantic_file_index
-      slack_semantic_enqueue slack_semantic_reconcile
+      slack_semantic_enqueue slack_semantic_reconcile feishu_mirror_search qq_mirror_search
+      lark_mirror_search
     ),
     "salix_cluster" =>
       ~w(schedule cluster_membership placement drain session_work_recovery session_work_notification_connection session_work_notification_catch_up session_work_notification_dispatch other),
@@ -85,7 +90,6 @@ defmodule Salix.Telemetry do
   @router_inbox_outcomes ~w(queued unauthorized invalid not_found router_not_configured rate_limited unavailable other)
   @vm_record_batch_outcomes ~w(ok error other)
   @vm_record_persist_outcomes ~w(ok conflict ambiguous_settled indeterminate error other)
-  @external_status_projection_outcomes ~w(ok failed other)
   # Implementation names are registered here as their PRs land (the finite
   # label contract); unregistered names normalize to "other".
   @convergence_names ~w(other)
@@ -94,11 +98,8 @@ defmodule Salix.Telemetry do
   @settlement_outcomes ~w(ok created landed exists precondition_failed indeterminate error other)
   @im_identity_providers ~w(slack feishu other)
   @im_identity_resolutions ~w(fast_hit fallback_hit fallback_miss rejected error other)
-  @dependency_job_kinds ~w(llm compaction external_runtime tool other)
+  @dependency_job_kinds ~w(llm compaction tool loop_control other)
   @dependency_job_outcomes ~w(ok error timeout saturated cancelled crashed other)
-  @connector_external_event_outcomes ~w(
-    accepted queued duplicate cache_hit conflict timeout completed terminal retry saturated cancelled other
-  )
   @connector_transports ~w(websocket sprites cloudflare other)
   @connector_pending_rpc_outcomes ~w(
     accepted completed cancelled caller_down timeout saturated conflict socket_closed late_reply other
@@ -150,7 +151,7 @@ defmodule Salix.Telemetry do
         unit: {:native, :second},
         reporter_options: [buckets: @http]
       ),
-      distribution("salix.miniskill.instructions.bytes",
+      distribution("salix.miniskill.metadata.bytes",
         event_name: [:salix, :miniskill, :stop],
         measurement: :bytes,
         reporter_options: [buckets: [0, 2048, 4096, 8192, 10240]]
@@ -214,6 +215,35 @@ defmodule Salix.Telemetry do
         unit: {:millisecond, :second},
         reporter_options: [buckets: @operation]
       ),
+      # Station Tasks (docs/salix/tasks-background-execution.md): how many
+      # delegations a station's Worker left unanswered past a stage threshold,
+      # and how long each delegation waited for its first Worker Message.
+      counter("salix.station_tasks.stalled.total",
+        event_name: [:salix_im, :station_task, :stalled],
+        tags: [:phase, :kind, :canary],
+        tag_values: &station_task_tags/1
+      ),
+      distribution("salix.station_tasks.first_reply.seconds",
+        event_name: [:salix_im, :station_task, :answered],
+        measurement: :duration,
+        unit: {:millisecond, :second},
+        tags: [:kind, :canary],
+        tag_values: &station_task_tags/1,
+        reporter_options: [buckets: @station_reply]
+      ),
+      # Is the historical Task display-index rebuild progressing or failing,
+      # and how long does one bounded inventory page take?
+      counter("salix.task_activity.rebuild_pages.total",
+        event_name: [:salix_im, :task_activity, :rebuild_page],
+        tags: [:outcome]
+      ),
+      distribution("salix.task_activity.rebuild_page.duration.seconds",
+        event_name: [:salix_im, :task_activity, :rebuild_page],
+        measurement: :duration,
+        unit: {:native, :second},
+        tags: [:outcome],
+        reporter_options: [buckets: @operation]
+      ),
       counter("salix.operations.total", operation_options),
       distribution(
         "salix.operations.duration.seconds",
@@ -275,6 +305,11 @@ defmodule Salix.Telemetry do
         tags: [:surface, :provider, :model_key, :kind],
         tag_values: &llm_usage_tags/1,
         reporter_options: [prometheus_type: :counter]
+      ),
+      counter("salix.llm.input_transformations.total",
+        event_name: [:salix, :llm, :input_transformation],
+        tags: [:surface, :provider, :model_key, :kind, :reason],
+        tag_values: &llm_input_transformation_tags/1
       ),
       last_value(
         "salix.reporting.queue.depth",
@@ -349,6 +384,81 @@ defmodule Salix.Telemetry do
         tags: [:outcome],
         tag_values: &slack_mirror_backfill_tags/1
       ),
+      # The Feishu mirror has the same three signals as the Slack mirror above:
+      # webhook events lost to a failed outbox insert, rows drained versus
+      # deferred, and the age of the oldest undrained row.
+      sum(
+        "salix.feishu_mirror.dropped.rows.total",
+        event_name: [:salix, :feishu_mirror, :dropped],
+        measurement: :count,
+        tags: [:reason],
+        tag_values: &slack_mirror_drop_tags/1,
+        reporter_options: [prometheus_type: :counter]
+      ),
+      sum(
+        "salix.feishu_mirror.outbox.rows.total",
+        event_name: [:salix, :feishu_mirror, :outbox, :batch],
+        measurement: :count,
+        tags: [:outcome],
+        tag_values: &slack_mirror_outbox_tags/1,
+        reporter_options: [prometheus_type: :counter]
+      ),
+      last_value("salix.feishu_mirror.outbox.oldest.age.seconds",
+        event_name: [:salix, :feishu_mirror, :outbox, :lag],
+        measurement: :oldest_age_seconds
+      ),
+      # The record of Lark messages: callbacks whose outbox insert failed (the
+      # callback fails too, so Lark delivers again), rows drained versus
+      # deferred, and the age of the oldest undrained row.
+      sum(
+        "salix.lark_mirror.dropped.rows.total",
+        event_name: [:salix, :lark_mirror, :dropped],
+        measurement: :count,
+        tags: [:reason],
+        tag_values: &slack_mirror_drop_tags/1,
+        reporter_options: [prometheus_type: :counter]
+      ),
+      sum(
+        "salix.lark_mirror.outbox.rows.total",
+        event_name: [:salix, :lark_mirror, :outbox, :batch],
+        measurement: :count,
+        tags: [:outcome],
+        tag_values: &slack_mirror_outbox_tags/1,
+        reporter_options: [prometheus_type: :counter]
+      ),
+      last_value("salix.lark_mirror.outbox.oldest.age.seconds",
+        event_name: [:salix, :lark_mirror, :outbox, :lag],
+        measurement: :oldest_age_seconds
+      ),
+      # The record of QQ group messages: rows drained versus deferred, and the
+      # age of the oldest undrained row. A failed outbox insert fails the QQ
+      # callback and shows as an IM ingress error.
+      sum(
+        "salix.qq_mirror.outbox.rows.total",
+        event_name: [:salix, :qq_mirror, :outbox, :batch],
+        measurement: :count,
+        tags: [:outcome],
+        tag_values: &slack_mirror_outbox_tags/1,
+        reporter_options: [prometheus_type: :counter]
+      ),
+      last_value("salix.qq_mirror.outbox.oldest.age.seconds",
+        event_name: [:salix, :qq_mirror, :outbox, :lag],
+        measurement: :oldest_age_seconds
+      ),
+      counter(
+        "salix.feishu_mirror.backfill.passes.total",
+        event_name: [:salix, :feishu_mirror, :backfill, :pass],
+        tags: [:outcome],
+        tag_values: &slack_mirror_backfill_tags/1
+      ),
+      # Lark history backfill passes by outcome. `error` or `retry` rising with
+      # `more` flat is a walk that stopped making progress.
+      counter(
+        "salix.lark_mirror.backfill.passes.total",
+        event_name: [:salix, :lark_mirror, :backfill, :pass],
+        tags: [:outcome],
+        tag_values: &slack_mirror_backfill_tags/1
+      ),
       last_value("salix.semantic_queue.oldest.age.seconds",
         event_name: [:salix, :semantic_queue, :backlog],
         measurement: :age_seconds,
@@ -412,11 +522,6 @@ defmodule Salix.Telemetry do
         tag_values: &vm_record_batch_tags/1,
         reporter_options: [buckets: @actor_queue]
       ),
-      counter("salix.external.status.projections.total",
-        event_name: [:salix, :external_status_projection, :result],
-        tags: [:outcome],
-        tag_values: &external_status_projection_tags/1
-      ),
       counter("salix.dependency.jobs.total",
         event_name: [:salix, :dependency_job, :stop],
         tags: [:kind, :outcome],
@@ -427,15 +532,6 @@ defmodule Salix.Telemetry do
         measurement: :value,
         tags: [:kind],
         tag_values: &dependency_job_active_tags/1
-      ),
-      counter("salix.connector.external_events.total",
-        event_name: [:salix, :connector, :external_event],
-        tags: [:outcome],
-        tag_values: &connector_external_event_tags/1
-      ),
-      last_value("salix.connector.external_event.queue.depth",
-        event_name: [:salix, :connector, :external_event_queue],
-        measurement: :value
       ),
       counter("salix.connector.pending_rpcs.total",
         event_name: [:salix, :connector, :pending_rpc],
@@ -582,13 +678,21 @@ defmodule Salix.Telemetry do
           "selected"
       end
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :miniskill, :stop],
       %{
         duration: duration,
         wait: wait,
         selected: length(skills),
-        bytes: Enum.reduce(skills, 0, &(byte_size(&1["content"]) + &2))
+        bytes:
+          Enum.reduce(skills, 0, fn skill, total ->
+            total +
+              Enum.reduce(
+                ["skill_id", "name", "description"],
+                0,
+                &(byte_size(skill[&1] || "") + &2)
+              )
+          end)
       },
       %{outcome: outcome}
     )
@@ -599,7 +703,11 @@ defmodule Salix.Telemetry do
   end
 
   def emit_conversation_log_sample(backlog, age) do
-    :telemetry.execute([:salix, :conversation_log, :sample], %{backlog: backlog, age: age}, %{})
+    SystemsRuntime.Telemetry.execute(
+      [:salix, :conversation_log, :sample],
+      %{backlog: backlog, age: age},
+      %{}
+    )
   rescue
     _ -> :ok
   catch
@@ -607,7 +715,7 @@ defmodule Salix.Telemetry do
   end
 
   def emit_operation(component, operation, surface, outcome, duration) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
       %{duration: duration},
       %{
@@ -620,7 +728,7 @@ defmodule Salix.Telemetry do
   end
 
   def emit_llm_request(metadata) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :llm, :request, :stop],
       %{},
       normalize_metadata_surface(metadata)
@@ -637,7 +745,7 @@ defmodule Salix.Telemetry do
           %{duration: duration}
       end
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :llm, :attempt, :stop],
       measurements,
       normalize_metadata_surface(metadata)
@@ -645,15 +753,23 @@ defmodule Salix.Telemetry do
   end
 
   def emit_llm_usage(metadata, value) when is_number(value) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :llm, :usage],
       %{value: value},
       normalize_metadata_surface(metadata)
     )
   end
 
+  def emit_llm_input_transformation(metadata) do
+    SystemsRuntime.Telemetry.execute(
+      [:salix, :llm, :input_transformation],
+      %{count: 1},
+      normalize_metadata_surface(metadata)
+    )
+  end
+
   def emit_vm_operation(metadata, duration) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :vm, :operation, :stop],
       %{duration: duration},
       normalize_metadata_surface(metadata)
@@ -663,7 +779,7 @@ defmodule Salix.Telemetry do
   def emit_vm_transition(metadata, old_state, new_state) when old_state != new_state do
     metadata = normalize_metadata_surface(metadata)
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :vm, :transition],
       %{},
       Map.put(metadata, :state, normalize_vm_state(new_state))
@@ -675,7 +791,7 @@ defmodule Salix.Telemetry do
   def emit_vm_recovery(metadata, scanned) when is_integer(scanned) do
     metadata = normalize_metadata_surface(metadata)
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :vm, :recovery],
       %{value: scanned},
       metadata
@@ -684,16 +800,8 @@ defmodule Salix.Telemetry do
     )
   end
 
-  def emit_external_status_projection(outcome) do
-    :telemetry.execute(
-      [:salix, :external_status_projection, :result],
-      %{},
-      %{outcome: outcome}
-    )
-  end
-
   def emit_dependency_job(kind, outcome) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :dependency_job, :stop],
       %{},
       %{kind: kind, outcome: outcome}
@@ -701,32 +809,15 @@ defmodule Salix.Telemetry do
   end
 
   def emit_dependency_job_active(kind, value) when is_integer(value) and value >= 0 do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :dependency_job, :active],
       %{value: value},
       %{kind: kind}
     )
   end
 
-  def emit_connector_external_event(outcome) do
-    :telemetry.execute(
-      [:salix, :connector, :external_event],
-      %{},
-      %{outcome: outcome}
-    )
-  end
-
-  def emit_connector_external_event_queue_depth(depth)
-      when is_integer(depth) and depth >= 0 do
-    :telemetry.execute(
-      [:salix, :connector, :external_event_queue],
-      %{value: depth},
-      %{}
-    )
-  end
-
   def emit_connector_pending_rpc(outcome, transport \\ :websocket) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :connector, :pending_rpc],
       %{},
       %{outcome: outcome, transport: transport}
@@ -734,7 +825,7 @@ defmodule Salix.Telemetry do
   end
 
   def emit_connector_read_stream(outcome, transport \\ :websocket) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :connector, :read_stream],
       %{},
       %{outcome: outcome, transport: transport}
@@ -742,7 +833,7 @@ defmodule Salix.Telemetry do
   end
 
   def emit_connector_write_stream(outcome, transport \\ :websocket) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :connector, :write_stream],
       %{},
       %{outcome: outcome, transport: transport}
@@ -752,7 +843,7 @@ defmodule Salix.Telemetry do
   def emit_runtime_probe(runtime) do
     duration = max(runtime["probe_duration_ms"] || 0, 0)
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :runtime_probe, :stop],
       %{duration: System.convert_time_unit(duration, :millisecond, :native)},
       %{
@@ -835,6 +926,16 @@ defmodule Salix.Telemetry do
     |> Map.put(:kind, finite(metadata[:kind], ~w(input output cache_read cache_write other)))
   end
 
+  defp llm_input_transformation_tags(metadata) do
+    metadata
+    |> llm_tags()
+    |> Map.delete(:outcome)
+    |> Map.merge(%{
+      kind: finite(metadata[:kind], ~w(thinking_dropped thinking_mismatch_allowed other)),
+      reason: finite(metadata[:reason], ~w(prefix_binding_mismatch model_binding_mismatch other))
+    })
+  end
+
   defp sink_tags(metadata), do: %{sink: finite(metadata[:sink], ~w(reporting llm_usage other))}
 
   defp reporting_result_tags(metadata) do
@@ -872,6 +973,14 @@ defmodule Salix.Telemetry do
     %{outcome: finite(metadata[:outcome], @router_inbox_outcomes)}
   end
 
+  defp station_task_tags(metadata) do
+    %{
+      phase: finite(metadata[:phase], @station_task_phases),
+      kind: finite(metadata[:kind], @station_task_kinds),
+      canary: if(metadata[:canary] == true, do: "true", else: "false")
+    }
+  end
+
   defp vm_record_cache_tags(metadata) do
     %{outcome: finite(metadata[:outcome], @vm_record_cache_outcomes)}
   end
@@ -882,10 +991,6 @@ defmodule Salix.Telemetry do
 
   defp vm_record_persist_tags(metadata) do
     %{outcome: finite(metadata[:outcome], @vm_record_persist_outcomes)}
-  end
-
-  defp external_status_projection_tags(metadata) do
-    %{outcome: finite(metadata[:outcome], @external_status_projection_outcomes)}
   end
 
   defp dependency_job_tags(metadata) do
@@ -904,10 +1009,6 @@ defmodule Salix.Telemetry do
 
   defp dependency_job_active_tags(metadata) do
     %{kind: finite(metadata[:kind], @dependency_job_kinds)}
-  end
-
-  defp connector_external_event_tags(metadata) do
-    %{outcome: finite(metadata[:outcome], @connector_external_event_outcomes)}
   end
 
   defp connector_pending_rpc_tags(metadata) do
@@ -970,7 +1071,7 @@ defmodule Salix.Telemetry do
   defp normalize_vm_state(value), do: finite(value, @vm_states)
 
   defp model_keys do
-    Application.get_env(:systems_observability, :model_keys, [])
+    SystemsRuntime.get_env(:systems_observability, :model_keys, [])
     |> Enum.take(7)
     |> Enum.map(&to_string/1)
     |> Kernel.++(["other"])

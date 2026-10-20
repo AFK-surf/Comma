@@ -59,7 +59,7 @@ const ToggleVisual = ({
       {...(slim ? { className: "mt-0.5" } : {})}
     />
     {(label || hint) && (
-      <div className="flex flex-col gap-0.5">
+      <div className="flex min-w-0 flex-col gap-0.5 [overflow-wrap:anywhere]">
         {label && (
           <p
             className={cx(
@@ -110,7 +110,7 @@ export const Toggle = ({
         } as ChangeEvent<HTMLInputElement>);
       }}
       className={cx(
-        "relative flex w-max items-start",
+        "relative flex w-max max-w-full items-start",
         disabled && "cursor-not-allowed",
         labelStyles[size].root,
         className

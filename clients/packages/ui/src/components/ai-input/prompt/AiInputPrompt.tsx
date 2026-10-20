@@ -54,7 +54,7 @@ export const AiInputPrompt = ({
   clipboard,
   currentValue,
   disabled,
-  filePaste: { handlePaste, pasteFilesFromMenu },
+  filePaste: { handlePaste, pasteFromMenu },
   isSmall,
   maxLength,
   menuRegistrations,
@@ -65,7 +65,7 @@ export const AiInputPrompt = ({
     placeholder,
     required = false,
     richEditorClassName,
-    spellCheck,
+    spellCheck = false,
     textareaClassName,
     ...textareaProps
   },
@@ -115,7 +115,7 @@ export const AiInputPrompt = ({
         ariaLabel={promptLabel}
         className={cx(promptClassName, richEditorClassName)}
         clipboard={clipboard}
-        onPasteFilesFromMenu={pasteFilesFromMenu}
+        onPasteFromMenu={pasteFromMenu}
         disabled={disabled}
         editorProps={getRichEditorProps({
           ...textareaProps,

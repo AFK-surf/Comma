@@ -1,0 +1,15 @@
+[package]
+name = "comma-profiles-nif"
+edition = "2024"
+version = "0.1.0"
+publish = false
+description = "The Profiles' logic (systems/profiles) for Salix: SalixAgent.Profiles.Native, JSON in and out as a station's mesh addon takes it."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+comma-profiles = { path = ".." }
+rustler = { version = "=0.34.0", default-features = false, features = ["nif_version_2_15"] }
+serde_json = "1"
+serde = "1"

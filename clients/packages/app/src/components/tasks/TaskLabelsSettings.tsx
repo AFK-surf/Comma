@@ -1,20 +1,22 @@
-import { LoadingIndicator } from "@comma/ui";
+import { LoadingIndicator } from "@comma/ui/components/LoadingIndicator";
 import type { CommaLocale } from "@comma/i18n";
 import { useCommaMessages } from "@comma/i18n/react";
+import { Button } from "@comma/ui/components/Button";
 import {
-  Button,
   EditBigIcon,
   FlashcardsIcon,
-  InputField,
+  MoreHorizontalIcon,
+  PlusIcon,
+  TrashCanIcon,
+} from "@comma/ui/components/icons";
+import { InputField } from "@comma/ui/components/input";
+import {
   Menu,
   MenuItem,
   MenuPopover,
   MenuSeparator,
   MenuTrigger,
-  MoreHorizontalIcon,
-  PlusIcon,
-  TrashCanIcon,
-} from "@comma/ui";
+} from "@comma/ui/components/menu";
 import {
   useEffect,
   useMemo,
@@ -30,7 +32,7 @@ import type {
   CommaTaskLabel,
   CommaTaskLabelCatalog,
   CommaTaskLabelProposal,
-} from "../../api";
+} from "@comma/core/api-schemas";
 import { LabelProposalList } from "./LabelProposalList";
 
 export type TaskLabelDraft = { name: string; color: string; description?: string };

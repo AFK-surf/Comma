@@ -1,6 +1,7 @@
 defmodule SalixStore.OAuthAppsCutoverTest do
   # Shares the node-global Fake bucket and control tables; keep serial.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SystemsClock.Test, scope: ["Elixir.SalixStore"]
 
   import ExUnit.CaptureLog
 
@@ -157,7 +158,7 @@ defmodule SalixStore.OAuthAppsCutoverTest do
     alias SalixStore.S3.Fake
 
     def get(key, opts) do
-      Process.sleep(400)
+      SystemsClock.sleep(400)
       Fake.get(key, opts)
     end
 
@@ -174,18 +175,18 @@ defmodule SalixStore.OAuthAppsCutoverTest do
     # transaction, so transaction/statement timeouts alone never see a slow
     # object store. The outer monotonic deadline must kill the whole step.
     seed_provider_app("ten_slow", "github")
-    Application.put_env(:salix_store, :oauth_apps_cutover_timeout_ms, 100)
-    Application.put_env(:salix_store, :s3_backend, SlowGetBackend)
+    SystemsRuntime.put_env(:salix_store, :oauth_apps_cutover_timeout_ms, 100)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SlowGetBackend)
 
     on_exit(fn ->
-      Application.delete_env(:salix_store, :oauth_apps_cutover_timeout_ms)
-      Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+      SystemsRuntime.delete_env(:salix_store, :oauth_apps_cutover_timeout_ms)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     end)
 
     assert {:error, {:budget_exceeded, 100}} = OAuthAppsCutover.run()
     assert [] = OAuthProviderApps.all_scoped_records()
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     refute OAuthAppsCutover.marker_present?()
   end
 
@@ -194,26 +195,26 @@ defmodule SalixStore.OAuthAppsCutoverTest do
     # the enumeration, so it too must live inside the outer deadline — an
     # ACCESS EXCLUSIVE lock on the marker table stalls it past the budget.
     seed_provider_app("ten_locked", "github")
-    Application.put_env(:salix_store, :oauth_apps_cutover_timeout_ms, 100)
-    on_exit(fn -> Application.delete_env(:salix_store, :oauth_apps_cutover_timeout_ms) end)
+    SystemsRuntime.put_env(:salix_store, :oauth_apps_cutover_timeout_ms, 100)
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_store, :oauth_apps_cutover_timeout_ms) end)
 
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     locker =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Repo.transaction(
           fn ->
             Repo.query!("LOCK TABLE salix_cutover_markers IN ACCESS EXCLUSIVE MODE")
-            send(parent, :locked)
-            Process.sleep(500)
+            SystemsRuntime.Proc.send(parent, :locked)
+            SystemsClock.sleep(500)
           end,
           timeout: 10_000
         )
       end)
 
-    assert_receive :locked, 2_000
+    settle_receive(:locked)
     assert {:error, {:budget_exceeded, 100}} = OAuthAppsCutover.run()
-    Task.await(locker, 10_000)
+    settled_await(locker)
 
     assert [] = OAuthProviderApps.all_scoped_records()
     refute OAuthAppsCutover.marker_present?()
@@ -222,8 +223,8 @@ defmodule SalixStore.OAuthAppsCutoverTest do
   test "an importable count above the preflight bound aborts before any PG write" do
     seed_provider_app("ten_a", "github")
     seed_provider_app("ten_b", "github")
-    Application.put_env(:salix_store, :oauth_apps_cutover_max_objects, 1)
-    on_exit(fn -> Application.delete_env(:salix_store, :oauth_apps_cutover_max_objects) end)
+    SystemsRuntime.put_env(:salix_store, :oauth_apps_cutover_max_objects, 1)
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_store, :oauth_apps_cutover_max_objects) end)
 
     assert {:error, {:preflight_bound_exceeded, 2, 1}} = OAuthAppsCutover.run()
     assert [] = OAuthProviderApps.all_scoped_records()
@@ -232,8 +233,8 @@ defmodule SalixStore.OAuthAppsCutoverTest do
 
   test "a slow marker insert within the budget still commits (long transaction timeout)" do
     seed_provider_app("ten_a", "github")
-    Application.put_env(:salix_store, :oauth_apps_cutover_timeout_ms, 30_000)
-    on_exit(fn -> Application.delete_env(:salix_store, :oauth_apps_cutover_timeout_ms) end)
+    SystemsRuntime.put_env(:salix_store, :oauth_apps_cutover_timeout_ms, 30_000)
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_store, :oauth_apps_cutover_timeout_ms) end)
 
     install_marker_insert_delay("0.5")
 
@@ -246,8 +247,8 @@ defmodule SalixStore.OAuthAppsCutoverTest do
     # 200ms budget vs a ~1s marker insert delay: the query times out, and the
     # whole transaction rolls back — no marker, no imported rows (default Ecto's
     # 15s timeout would instead let this commit, which is exactly the P1).
-    Application.put_env(:salix_store, :oauth_apps_cutover_timeout_ms, 200)
-    on_exit(fn -> Application.delete_env(:salix_store, :oauth_apps_cutover_timeout_ms) end)
+    SystemsRuntime.put_env(:salix_store, :oauth_apps_cutover_timeout_ms, 200)
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_store, :oauth_apps_cutover_timeout_ms) end)
 
     install_marker_insert_delay("1")
 

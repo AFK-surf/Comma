@@ -1,11 +1,11 @@
+import { useCall } from "@comma/core-client";
 import { useParams } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import {
   useChatSidebar,
   useRegisterChatSidebarHost,
 } from "../../chat-sidebar/ChatSidebarContext";
-import { useChatApi } from "../ChatProvider";
-import type { ChatConversationRef } from "../model/conversationChannel";
+import type { ChatConversationRef } from "@comma/core/chat";
 import { useConversation } from "./useConversation";
 import { ConversationView, type ConversationViewActions } from "./ConversationView";
 import { useWorkspaceSkills } from "../useWorkspaceSkills";
@@ -20,9 +20,9 @@ export function ConversationRoute() {
   const workspaceId = params.workspaceId ?? "";
   const groupId = params.groupId ?? "";
   const conversationId = params.conversationId ?? "";
-  const api = useChatApi();
+  const call = useCall();
   const conversation = useConversation(workspaceId, groupId, conversationId);
-  const skills = useWorkspaceSkills(api, workspaceId);
+  const skills = useWorkspaceSkills(workspaceId);
   const openTasksFilter = useOpenTasksFilter();
   const { openBrowser, openChat } = useChatSidebar();
   const host = { conversationId, groupId, workspaceId };
@@ -54,14 +54,17 @@ export function ConversationRoute() {
 
   const {
     acceptTaskReview,
+    setTaskStatus,
     attachFiles,
     discard,
     pickAttachments,
     previewLocalFile,
+    readTaskActivity,
     refresh,
     removeAttachment,
     retry,
     retryAttachment,
+    answerQuestion,
     send,
     setDraft,
   } = conversation;
@@ -70,9 +73,14 @@ export function ConversationRoute() {
   const actions: ConversationViewActions = useMemo(
     () => ({
       acceptTaskReview,
+      setTaskStatus,
       setTaskLabels: async (labelIds) => {
         try {
-          await api.setTaskLabels(groupId, conversationId, labelIds);
+          await call("taskLabels.assign", {
+            group: groupId,
+            conversation: conversationId,
+            labels: [...labelIds],
+          });
         } finally {
           await refresh();
         }
@@ -81,22 +89,27 @@ export function ConversationRoute() {
       discard,
       ...(pickAttachments ? { pickAttachments } : {}),
       ...(previewLocalFile ? { previewLocalFile } : {}),
+      readTaskActivity,
       refresh,
       removeAttachment,
       retry,
       retryAttachment,
+      answerQuestion,
       send,
       setDraft,
     }),
     [
+      answerQuestion,
       acceptTaskReview,
-      api,
+      setTaskStatus,
+      call,
       attachFiles,
       conversationId,
       discard,
       groupId,
       pickAttachments,
       previewLocalFile,
+      readTaskActivity,
       refresh,
       removeAttachment,
       retry,
@@ -109,7 +122,7 @@ export function ConversationRoute() {
   return (
     <ConversationView
       actions={actions}
-      api={api}
+      live
       conversationId={conversationId}
       draftSource={conversation.draftSource}
       onOpenConversationRef={handleOpenConversationRef}

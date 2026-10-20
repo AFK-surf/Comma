@@ -192,7 +192,7 @@ defmodule SalixAgent.TrajectoryEval.JudgeProviders do
   defp normalize(_entry), do: %{}
 
   defp config do
-    case Application.get_env(:salix_agent, :trajectory_eval_judge_providers, %{}) do
+    case SystemsRuntime.get_env(:salix_agent, :trajectory_eval_judge_providers, %{}) do
       %{} = providers -> providers
       _ -> %{}
     end

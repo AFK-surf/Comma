@@ -1,5 +1,5 @@
 defmodule BillingCore.Metering.PricingBackfillTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias BillingCore.{Charges, State}
   alias BillingCore.Metering.PricingBackfill

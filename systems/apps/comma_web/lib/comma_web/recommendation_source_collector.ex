@@ -8,14 +8,14 @@ defmodule CommaWeb.RecommendationSourceCollector do
   @max_data_bytes 12_000
 
   def collect(workspace, sources, opts \\ []) when is_map(workspace) and is_list(sources) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
 
     selected =
       sources
       |> Enum.filter(&(&1["enabled"] == true))
       |> Enum.take(RecommendationBudgets.max_sources())
 
-    now = Keyword.get(opts, :now, DateTime.utc_now())
+    now = Keyword.get(opts, :now, SystemsClock.utc_now())
 
     settings =
       if is_nil(opts[:member_user_id]) and Enum.any?(selected, &(&1["kind"] == "composio")),
@@ -23,7 +23,8 @@ defmodule CommaWeb.RecommendationSourceCollector do
         else: {:ok, %{}}
 
     with {:ok, collection} <- collect_selected(selected, workspace, settings, now, opts) do
-      {:ok, Map.put(collection, :duration_ms, System.monotonic_time(:millisecond) - started)}
+      {:ok,
+       Map.put(collection, :duration_ms, SystemsClock.monotonic_time(:millisecond) - started)}
     end
   end
 
@@ -62,7 +63,7 @@ defmodule CommaWeb.RecommendationSourceCollector do
     # wrapper cancellation makes admission stop the provider and release its slot.
     results =
       sources
-      |> Task.async_stream(
+      |> SystemsClock.async_stream(
         fn source ->
           # Member reads return what they read before the job is stopped.
           deadline = RecommendationMemberRead.deadline(effective_timeout_ms)
@@ -98,7 +99,9 @@ defmodule CommaWeb.RecommendationSourceCollector do
         max_concurrency: max_concurrency,
         ordered: true,
         on_timeout: :kill_task,
-        timeout: effective_timeout_ms
+        # The job's own timer, on the clock, ends each read at the same span;
+        # this bound is the BEAM's backstop, and a test's clock lifts it.
+        timeout: SystemsClock.timeout(effective_timeout_ms)
       )
       |> Enum.to_list()
 
@@ -135,24 +138,41 @@ defmodule CommaWeb.RecommendationSourceCollector do
   defp collect_selected_source(source, workspace, _settings, now, user_id, deadline) do
     with {:ok, data, subject} <-
            read_member(workspace, user_id, source, now, deadline) do
-      {warnings, data} = Map.pop(data, :source_warnings, [])
-      {data, contexts} = CommaWeb.RecommendationSourceContext.separate(data)
-      {bounded, bound} = bound_data_with_counts(data)
-
-      {:ok,
-       %{
-         "appId" => source["appId"],
-         "appName" => source["appName"],
-         "collectedAt" => DateTime.to_unix(now, :millisecond),
-         "data" => bounded,
-         "bound" => bound,
-         "sourceId" => source["connectionId"],
-         "toolkit" => source["appId"],
-         "toolSlug" => "member." <> source["appId"],
-         "contexts" => CommaWeb.RecommendationSourceContext.retain(contexts, bounded),
-         "memberSubject" => subject
-       }, warnings}
+      member_fact(source, data, subject, now)
     end
+  end
+
+  @doc """
+  The collected fact of one member read: its data bounded, its contexts kept
+  apart, and its partial-read warnings. The proactive replay builds facts the
+  same way.
+  """
+  def member_fact(source, data, subject, now) do
+    {warnings, data} = Map.pop(data, :source_warnings, [])
+    {data, contexts} = CommaWeb.RecommendationSourceContext.separate(data)
+    {data, quotes} = CommaWeb.RecommendationSourceQuote.separate(data)
+    {data, identities} = separate_identities(data)
+    {bounded, bound} = bound_data_with_counts(data)
+    bounded = restore_identities(bounded, identities)
+
+    # A record the bound cuts is not read; the run reports the source as partial.
+    warnings =
+      if bound["dropped"] > 0, do: warnings ++ [:member_source_truncated], else: warnings
+
+    {:ok,
+     %{
+       "appId" => source["appId"],
+       "appName" => source["appName"],
+       "collectedAt" => DateTime.to_unix(now, :millisecond),
+       "data" => bounded,
+       "bound" => bound,
+       "sourceId" => source["connectionId"],
+       "toolkit" => source["appId"],
+       "toolSlug" => "member." <> source["appId"],
+       "contexts" => CommaWeb.RecommendationSourceContext.retain(contexts, bounded),
+       "quotes" => CommaWeb.RecommendationSourceQuote.retain(quotes, bounded),
+       "memberSubject" => subject
+     }, warnings}
   end
 
   defp read_member(workspace, user_id, %{"kind" => "composio"} = source, now, deadline),
@@ -518,6 +538,55 @@ defmodule CommaWeb.RecommendationSourceCollector do
     if encoded_bytes <= budget, do: {value, encoded_bytes, false}, else: :omit
   end
 
+  # A member record's link and provider IDs name it; the Router reads only its
+  # facts. They wait outside the byte bound under a short token, so long Graph
+  # IDs and links cannot displace records. The source's record limit bounds them.
+  @identity_keys ~w(id messageId threadId)
+
+  defp separate_identities(data) do
+    {data, {identities, _count}} = separate_identities(data, {%{}, 0})
+    {data, identities}
+  end
+
+  defp separate_identities(%{} = record, acc) do
+    {record, {identities, count}} =
+      Enum.reduce(record, {%{}, acc}, fn {key, value}, {record, acc} ->
+        {value, acc} = separate_identities(value, acc)
+        {Map.put(record, key, value), acc}
+      end)
+
+    case Enum.find(@link_keys, &is_binary(record[&1])) do
+      nil ->
+        {record, {identities, count}}
+
+      link ->
+        token = "~#{count + 1}"
+        identity = Map.take(record, [link | @identity_keys])
+
+        {record |> Map.drop(@identity_keys) |> Map.put(link, token),
+         {Map.put(identities, token, identity), count + 1}}
+    end
+  end
+
+  defp separate_identities(list, acc) when is_list(list),
+    do: Enum.map_reduce(list, acc, &separate_identities/2)
+
+  defp separate_identities(value, acc), do: {value, acc}
+
+  defp restore_identities(%{} = record, identities) do
+    record = Map.new(record, fn {key, value} -> {key, restore_identities(value, identities)} end)
+
+    case Enum.find_value(@link_keys, &Map.get(identities, record[&1])) do
+      nil -> record
+      identity -> Map.merge(record, identity)
+    end
+  end
+
+  defp restore_identities(list, identities) when is_list(list),
+    do: Enum.map(list, &restore_identities(&1, identities))
+
+  defp restore_identities(value, _identities), do: value
+
   @reconnect_codes ~w(missing_scope invalid_auth not_authed token_revoked token_expired account_inactive)
   # `Salix.Bindings.MCPCredentials` reports an unusable grant as text.
   @reconnect_credential_errors [
@@ -560,7 +629,7 @@ defmodule CommaWeb.RecommendationSourceCollector do
 
   defp settings_store,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :comma_web,
         :recommendation_composio_settings_mod,
         SalixAgent.ComposioStore
@@ -568,10 +637,10 @@ defmodule CommaWeb.RecommendationSourceCollector do
 
   defp composio_client,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :comma_web,
         :recommendation_composio_client_mod,
-        Application.get_env(:salix_agent, :composio_client_mod, SalixStore.Composio)
+        SystemsRuntime.get_env(:salix_agent, :composio_client_mod, SalixStore.Composio)
       )
 
   defp clean(nil), do: ""

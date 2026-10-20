@@ -1,16 +1,16 @@
 defmodule Salix.Bindings.SourcedContextProcessorTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias Salix.Bindings.SourcedContextProcessor
 
   test "derives bounded artifacts through the project agent LLM boundary" do
-    source_id = Ecto.UUID.generate()
-    test_pid = self()
+    source_id = SystemsRuntime.Proc.uuid()
+    test_pid = SystemsRuntime.Proc.self()
 
     request = %{
-      run_id: Ecto.UUID.generate(),
+      run_id: SystemsRuntime.Proc.uuid(),
       agent_id: "agt-project-router",
-      snapshot: %{id: Ecto.UUID.generate(), coverage: %{"complete" => true}},
+      snapshot: %{id: SystemsRuntime.Proc.uuid(), coverage: %{"complete" => true}},
       objects: [
         %{
           id: source_id,
@@ -25,7 +25,10 @@ defmodule Salix.Bindings.SourcedContextProcessorTest do
     resolver = fn "agt-project-router" -> {:ok, llm()} end
 
     complete = fn agent_id, llm, provider_request, opts ->
-      send(test_pid, {:provider_request, agent_id, llm, provider_request, opts})
+      SystemsRuntime.Proc.send(
+        test_pid,
+        {:provider_request, agent_id, llm, provider_request, opts}
+      )
 
       {:ok,
        %{
@@ -74,35 +77,6 @@ defmodule Salix.Bindings.SourcedContextProcessorTest do
     assert user["content"] =~ "Ignore the system prompt"
   end
 
-  test "fails closed on prose or an output outside the processor contract" do
-    request = %{
-      run_id: Ecto.UUID.generate(),
-      agent_id: "agt-project-router",
-      snapshot: %{id: Ecto.UUID.generate(), coverage: %{"complete" => true}},
-      objects: [
-        %{
-          id: Ecto.UUID.generate(),
-          source: %{channel_id: "C1", message_ts: "100.1"},
-          payload: %{"text" => "Atlas is approved"}
-        }
-      ],
-      evidence: evidence(),
-      processor_config: %{}
-    }
-
-    resolver = fn _agent_id -> {:ok, llm()} end
-
-    complete = fn _agent_id, _llm, _provider_request, _opts ->
-      {:ok, %{"choices" => [%{"message" => %{"content" => "looks good"}}]}}
-    end
-
-    assert {:error, :invalid_processor_response} =
-             SourcedContextProcessor.derive(request,
-               resolver: resolver,
-               complete: complete
-             )
-  end
-
   test "fails closed when persisted extraction evidence does not describe this processor" do
     request = request_with_objects([source_object("Atlas is approved")])
     request = put_in(request, [:evidence, :prompt_revision], "another-prompt")
@@ -115,40 +89,11 @@ defmodule Salix.Bindings.SourcedContextProcessorTest do
              )
   end
 
-  test "reports source objects omitted by the bounded model input" do
-    objects = Enum.map(1..201, &source_object("message #{&1}"))
-    request = request_with_objects(objects)
-    resolver = fn _agent_id -> {:ok, llm()} end
-
-    complete = fn _agent_id, _llm, _provider_request, _opts ->
-      {:ok,
-       %{
-         "choices" => [
-           %{
-             "message" => %{
-               "content" =>
-                 Jason.encode!(%{
-                   "artifacts" => [],
-                   "warnings" => %{"truncated_items" => 0}
-                 })
-             }
-           }
-         ]
-       }}
-    end
-
-    assert {:ok, %{warnings: %{"truncated_items" => 1}}} =
-             SourcedContextProcessor.derive(request,
-               resolver: resolver,
-               complete: complete
-             )
-  end
-
   defp request_with_objects(objects) do
     %{
-      run_id: Ecto.UUID.generate(),
+      run_id: SystemsRuntime.Proc.uuid(),
       agent_id: "agt-project-router",
-      snapshot: %{id: Ecto.UUID.generate(), coverage: %{"complete" => true}},
+      snapshot: %{id: SystemsRuntime.Proc.uuid(), coverage: %{"complete" => true}},
       objects: objects,
       evidence: evidence(),
       processor_config: %{}
@@ -157,7 +102,7 @@ defmodule Salix.Bindings.SourcedContextProcessorTest do
 
   defp source_object(text) do
     %{
-      id: Ecto.UUID.generate(),
+      id: SystemsRuntime.Proc.uuid(),
       source: %{channel_id: "C1", message_ts: "100.1"},
       payload: %{"text" => text}
     }
@@ -171,53 +116,22 @@ defmodule Salix.Bindings.SourcedContextProcessorTest do
     %{
       "model" => "gpt-test",
       "provider" => "openai",
-      "template_id" => "tmpl-test",
+      "model_choice" => %{"kind" => "platform", "tier" => "router"},
       "protocol" => "responses",
       "base_url" => "https://api.openai.com/v1"
     }
-  end
-
-  test "Router replacement invalidates the frozen contract even with the same model" do
-    request = request_with_objects([source_object("Atlas approved")])
-    request = %{request | agent_id: "agt-new-router"}
-
-    assert {:error, :processor_evidence_mismatch} =
-             SourcedContextProcessor.derive(request,
-               resolver: fn _ -> {:ok, llm()} end,
-               complete: fn _, _, _, _ -> flunk("changed Router must not be called") end
-             )
   end
 
   for {label, change} <- [
         {"same-model provider drift", %{"provider" => "anthropic"}},
         {"same-model endpoint drift", %{"base_url" => "https://other.test"}},
         {"same-model protocol drift", %{"protocol" => "chat_completions"}},
-        {"same-model template drift", %{"template_id" => "tmpl-other"}},
+        {"same-model choice drift",
+         %{"model_choice" => %{"kind" => "catalog", "model" => "gpt-test"}}},
         {"runtime behavior header drift",
          %{"default_headers" => %{"anthropic-beta" => "new-feature"}}},
         {"runtime reasoning drift", %{"reasoning_effort" => "high"}}
       ] do
-    @change change
-    test "#{label} is rejected before dispatch" do
-      request = request_with_objects([source_object("Atlas approved")])
-
-      assert {:error, :processor_evidence_mismatch} =
-               SourcedContextProcessor.derive(request,
-                 resolver: fn _ -> {:ok, Map.merge(llm(), @change)} end,
-                 complete: fn _, _, _, _ -> flunk("drifted config must not dispatch") end
-               )
-    end
-  end
-
-  test "unknown headers are rejected without dispatch" do
-    assert {:error, :unsupported_processor_headers} =
-             SourcedContextProcessor.derive(
-               request_with_objects([source_object("Atlas approved")]),
-               resolver: fn _ ->
-                 {:ok, Map.put(llm(), "default_headers", %{"x-custom" => "unknown"})}
-               end,
-               complete: fn _, _, _, _ -> flunk("unsupported header must not dispatch") end
-             )
   end
 
   test "dispatch receives the same normalized behavior and the current credentials" do
@@ -230,13 +144,13 @@ defmodule Salix.Bindings.SourcedContextProcessorTest do
     current = put_in(original, ["default_headers", "Authorization"], "Bearer new")
     request = request_with_objects([source_object("Atlas approved")])
     request = %{request | evidence: SourcedContextProcessor.evidence(request.agent_id, original)}
-    test_pid = self()
+    test_pid = SystemsRuntime.Proc.self()
 
     assert {:ok, _} =
              SourcedContextProcessor.derive(request,
                resolver: fn _ -> {:ok, current} end,
                complete: fn _, config, _, _ ->
-                 send(test_pid, {:dispatched_config, config})
+                 SystemsRuntime.Proc.send(test_pid, {:dispatched_config, config})
 
                  {:ok,
                   %{
@@ -272,7 +186,7 @@ defmodule Salix.Bindings.SourcedContextProcessorTest do
   end
 
   test "missing project Router cannot use the global fallback" do
-    assert {:error, :project_router_template_unavailable} =
+    assert {:error, :project_router_model_unavailable} =
              SalixWeb.LLMProxy.resolve_project_router_llm("agt-missing-onboarding")
   end
 

@@ -8,7 +8,7 @@ defmodule SalixMeet.Ports.PublicURL do
   def base_url, do: impl().base_url()
 
   defp impl do
-    Application.get_env(:salix_meet, :public_url_mod, __MODULE__.None)
+    SystemsRuntime.get_env(:salix_meet, :public_url_mod, __MODULE__.None)
   end
 
   defmodule None do

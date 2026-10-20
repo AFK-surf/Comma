@@ -1,5 +1,5 @@
 defmodule CommaWeb.RecommendationSourceContextTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias CommaWeb.RecommendationSourceContext, as: Context
 
   test "long contextual prose cannot displace candidates, exceed its budget, or enter references" do

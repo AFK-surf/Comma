@@ -1,4 +1,6 @@
 defmodule SalixWeb.ConnectorSocket do
+  require SystemsClock
+
   @moduledoc """
   The connector-side of the bridge — a `WebSock` handler that owns one
   `salix-connect` WebSocket.
@@ -6,9 +8,7 @@ defmodule SalixWeb.ConnectorSocket do
   This process is the socket owner registered in `SalixEnv.Bridge` (the local
   `SalixEnv.Bridges` registry) under the live connector run id. The underlying
   storage key is still named `env_id` in `SalixEnv.Registry`, but connector wire
-  frames use `connector_run_id`; external agent binding uses stable device
-  runtime identity and resolves to the current connector run when dispatching
-  work.
+  frames use `connector_run_id`.
 
   `SalixEnv.Bridge.rpc/3` — invoked locally or via `:erpc` from the node running
   the agent — delivers a request envelope as `{:env_rpc, ref, from, message}`; we
@@ -26,10 +26,7 @@ defmodule SalixWeb.ConnectorSocket do
     * `terminate/2` — flip the durable record to `disconnected` and fail every
       in-flight RPC so no caller hangs past the socket.
 
-  Legacy external-event coordination is modeled in
-  `tla/salix/ConnectorExternalEvent.tla`; Connector-owned durable batch
-  delivery and per-item acknowledgement are modeled in
-  `tla/salix/ExternalRuntimeEventBatch.tla`. Write-stream ownership is modeled
+  Write-stream ownership is modeled
   in `tla/salix/ConnectorWriteStream.tla`; pending RPCs have an independent
   bounded map, and read-stream ownership is modeled in
   `tla/salix/ConnectorReadStream.tla`.
@@ -37,27 +34,28 @@ defmodule SalixWeb.ConnectorSocket do
   Meeting callback admission deduplicates the business `event_id` across the
   active request and bounded FIFO as modeled in
   `tla/salix/MeetingRuntimeEventQueue.tla`.
-
-  Exact-run owner initialization and use-time credential fencing are modeled
-  in `tla/connector/ConnectorCredentialFence.tla`.
-  Persist-before-wake runtime readiness catch-up is modeled in
-  `tla/salix/RuntimeReadinessCatchUp.tla`.
   """
   @behaviour WebSock
 
   require Logger
   alias SalixEnv.{FrameStream, Protocol, Registry, RuntimeProxy}
-  alias SalixStore.{Ids, RuntimeIds}
+  alias SalixWeb.ConnectorResponseChunks
+  alias SalixStore.RuntimeIds
 
   @max_meeting_artifacts 2
   @max_meeting_artifact_bytes 30 * 1024 * 1024
   @max_meeting_event_bytes 32 * 1024 * 1024
-  @max_external_runtime_events 64
+  @tunnel_channels ~w(tcp tcp_ack)
+  @max_chunked_response_bytes 4 * 1024 * 1024
+  # A gateway's longest HTTP timeout, for a request that names none.
+  @default_chunked_http_seconds 30
 
   defmodule State do
     @moduledoc false
     # pending: %{request_id => %{from: pid, ref: reference, caller_monitor: reference,
-    #                            timer: reference}}
+    #                            timer: reference, chunks: ConnectorResponseChunks | nil,
+    #                            chunk_idle: {timer, lease} | nil,
+    #                            chunk_wait_ms: pos_integer | nil}}
     # read_streams: %{request_id => %{receiver: pid, from: pid, ref: reference,
     #                                 caller_monitor: reference, absolute_timer: reference,
     #                                 absolute_token: reference}}
@@ -72,7 +70,6 @@ defmodule SalixWeb.ConnectorSocket do
       :tenant_id,
       :group_id,
       :managed_compute,
-      :archive_repair,
       :owner_user_id,
       :scope,
       :last_peer_heartbeat_ms,
@@ -80,7 +77,6 @@ defmodule SalixWeb.ConnectorSocket do
       control_pending: nil,
       control_job: nil,
       control_retry_timer: nil,
-      external_input_catchup_started: false,
       request_tasks: %{},
       stream_tasks: %{},
       meeting_events: %{
@@ -92,7 +88,11 @@ defmodule SalixWeb.ConnectorSocket do
       pending: %{},
       read_streams: %{},
       read_stream_cancellations: %{},
-      write_streams: %{}
+      write_streams: %{},
+      tunnels: %{},
+      relay_challenge: nil,
+      relay: nil,
+      task_index_window: nil
     ]
   end
 
@@ -113,7 +113,6 @@ defmodule SalixWeb.ConnectorSocket do
       tenant_id: Keyword.get(opts, :tenant_id),
       group_id: Keyword.get(opts, :group_id),
       managed_compute: Keyword.get(opts, :managed_compute, false),
-      archive_repair: Keyword.get(opts, :archive_repair, false),
       owner_user_id: Keyword.get(opts, :owner_user_id),
       scope: Keyword.get(opts, :scope),
       last_peer_heartbeat_ms: monotonic_ms()
@@ -179,7 +178,6 @@ defmodule SalixWeb.ConnectorSocket do
   defp finish_admitted_init(env_id, opts, state) do
     schedule_heartbeat()
     schedule_token_expiry(Keyword.get(opts, :token_expires_at))
-    refresh_external_event_lane(state)
 
     SalixWeb.ConnectorRecovery.notify_ready(%{
       connector_run_id: state.connector_run_id,
@@ -191,6 +189,16 @@ defmodule SalixWeb.ConnectorSocket do
 
     Logger.info("connector socket up: env=#{env_id} group=#{state.group_id} node=#{node()}")
 
+    # The station proves its iroh endpoint id against this challenge to use Salix as its relay of last resort.
+    challenge = SalixWeb.StationRelay.challenge()
+
+    # A Workload's station is given the workspace's accounts it runs with, once it is connected,
+    # and is placed in its Group's station roster (SalixWeb.StationPlace).
+    if state.managed_compute do
+      send(self(), :push_station_profiles)
+      send(self(), :push_station_place)
+    end
+
     {:push,
      {:text,
       Protocol.encode(%{
@@ -199,8 +207,29 @@ defmodule SalixWeb.ConnectorSocket do
         "device_id" => state.device_id,
         "connector_id" => state.connector_id,
         "owner_user_id" => state.owner_user_id,
-        "connection_generation" => state.connection_generation
-      })}, state}
+        "connection_generation" => state.connection_generation,
+        "relay_challenge" => challenge
+      })}, %{state | relay_challenge: challenge}}
+  end
+
+  defp push_station_profiles(state) do
+    connection = Map.take(state, [:tenant_id, :group_id, :device_id, :connector_run_id])
+    run = connection.connector_run_id
+
+    SystemsRuntime.TaskSupervisor.start_child(SalixWeb.ConnectorRequestTaskSupervisor, fn ->
+      case SalixWeb.StationProfiles.push(connection) do
+        :ok -> :ok
+        error -> Logger.warning("station profiles not sent: run=#{run} #{inspect(error)}")
+      end
+    end)
+  end
+
+  defp push_station_place(state) do
+    connection = Map.take(state, [:tenant_id, :group_id, :connector_run_id, :connector_id])
+
+    SystemsRuntime.TaskSupervisor.start_child(SalixWeb.ConnectorRequestTaskSupervisor, fn ->
+      SalixWeb.StationPlace.push(connection)
+    end)
   end
 
   # ---- frames from the connector ----
@@ -213,7 +242,11 @@ defmodule SalixWeb.ConnectorSocket do
     end
   end
 
-  def handle_in({_data, [opcode: _binary]}, state), do: {:ok, state}
+  # Binary frames are iroh packets for Salix to forward (SalixWeb.StationRelay).
+  def handle_in({data, [opcode: :binary]}, state),
+    do: {:ok, %{state | relay: SalixWeb.StationRelay.outgoing(state.relay, data)}}
+
+  def handle_in({_data, [opcode: _other]}, state), do: {:ok, state}
 
   defp handle_message(%{"type" => "metadata"} = m, state) do
     # Refresh the durable record's surface (capabilities / skills / system info)
@@ -234,20 +267,6 @@ defmodule SalixWeb.ConnectorSocket do
     {:ok, enqueue_control(%{kind: :heartbeat}, state)}
   end
 
-  defp handle_message(
-         %{"type" => "request", "method" => method, "id" => id},
-         %State{archive_repair: true} = state
-       )
-       when is_binary(id) and method not in ~w(external_runtime_event external_runtime_events) do
-    reply = %{
-      "id" => id,
-      "type" => "error",
-      "error" => "archive repair connection forbids requests"
-    }
-
-    {:push, {:text, Protocol.encode(reply)}, state}
-  end
-
   # Connector-originated runtime/meeting lanes are refused for scoped runs
   # before any specific handler can match: a local_file_read connector may
   # exchange metadata, heartbeats, and read_ref stream frames — nothing else.
@@ -256,7 +275,7 @@ defmodule SalixWeb.ConnectorSocket do
          %State{scope: "local_file_read"} = state
        )
        when is_binary(id) and
-              method in ~w(runtime_subscription_access runtime_proxy external_runtime_event external_runtime_events agent_runtime_catchup meeting_runtime_event meeting_runtime_capabilities) do
+              method in ~w(runtime_subscription_access runtime_proxy agent_runtime_catchup meeting_runtime_event meeting_runtime_capabilities task.post task.hello task.index relay_register) do
     reply = %{
       "id" => id,
       "type" => "error",
@@ -272,63 +291,106 @@ defmodule SalixWeb.ConnectorSocket do
        )
        when is_binary(id) do
     params = m["params"] || %{}
-    start_request_reply(id, state, fn -> runtime_proxy_reply(id, params, state) end)
+    view = task_view(state)
+    start_request_reply(id, state, fn -> runtime_proxy_reply(id, params, view) end)
   end
 
-  defp handle_message(
-         %{"type" => "request", "method" => "external_runtime_event", "id" => id} = m,
-         state
-       )
-       when is_binary(id) do
-    params = m["params"] || %{}
-
-    case external_event_lane_key(state) do
-      {:ok, lane_key} ->
-        case SalixWeb.ConnectorExternalEventCoordinator.submit(
-               self(),
-               lane_key,
-               state.connection_generation,
-               id,
-               params,
-               external_event_context(state)
-             ) do
-          {:wait, _waiter_ref} ->
-            {:ok, state}
-
-          {:reply, reply} ->
-            {:push, {:text, Protocol.encode(reply)}, state}
-
-          {:error, _reason} ->
-            {:push, {:text, Protocol.encode(external_event_coordinator_retry(id))}, state}
-        end
-
-      {:error, :missing_stable_device_identity} ->
-        {:push, {:text, Protocol.encode(external_event_identity_retry(id))}, state}
-    end
-  end
-
-  defp handle_message(
-         %{"type" => "request", "method" => "external_runtime_events", "id" => id} = m,
-         state
-       )
-       when is_binary(id) do
-    params = m["params"] || %{}
-    start_request_reply(id, state, fn -> external_runtime_events_reply(id, params, state) end)
-  end
-
+  # A Connector still asks for external-runtime input catch-up after it
+  # connects. External Sessions are retired, so there is no input to catch up.
   defp handle_message(
          %{"type" => "request", "method" => "agent_runtime_catchup", "id" => id},
          state
        )
        when is_binary(id) do
-    if state.external_input_catchup_started do
-      reply = %{"id" => id, "type" => "response", "result" => %{"accepted" => true}}
-      {:push, {:text, Protocol.encode(reply)}, state}
-    else
-      case start_request_reply(id, state, fn -> agent_runtime_catchup_reply(id, state) end) do
-        {:ok, next} -> {:ok, %{next | external_input_catchup_started: true}}
-        other -> other
+    reply = %{"id" => id, "type" => "response", "result" => %{"accepted" => true}}
+    {:push, {:text, Protocol.encode(reply)}, state}
+  end
+
+  defp handle_message(
+         %{"type" => "request", "method" => "relay_register", "id" => id} = m,
+         state
+       )
+       when is_binary(id) do
+    scope = {state.tenant_id, state.group_id}
+
+    case SalixWeb.StationRelay.register(
+           state.connector_run_id,
+           state.relay_challenge,
+           m["params"] || %{},
+           scope
+         ) do
+      {:ok, relay} ->
+        reply = %{"id" => id, "type" => "response", "result" => %{"ok" => true}}
+        # The proven endpoint id is the station's id: the Device records which station it runs.
+        patch = %{"station_id" => SalixWeb.StationTaskIndex.station_id(relay)}
+        state = enqueue_control(%{kind: :metadata, patch: patch}, %{state | relay: relay})
+        {:push, {:text, Protocol.encode(reply)}, state}
+
+      {:error, reason} ->
+        reply = %{"id" => id, "type" => "error", "error" => to_string(reason)}
+        {:push, {:text, Protocol.encode(reply)}, state}
+    end
+  end
+
+  # A Workload's station asks for what Salix lends it of the workspace's accounts (SalixWeb.StationProfiles).
+  defp handle_message(
+         %{"type" => "request", "method" => "share." <> _ = method, "id" => id} = m,
+         %State{managed_compute: true} = state
+       )
+       when is_binary(id) do
+    connection = Map.take(state, [:tenant_id, :group_id, :device_id, :connector_run_id])
+
+    start_request_reply(id, state, fn ->
+      case SalixWeb.StationProfiles.handle(connection, method, m["params"] || %{}) do
+        {:ok, result} -> %{"id" => id, "type" => "response", "result" => result}
+        {:error, reason} -> %{"id" => id, "type" => "error", "error" => reason}
       end
+    end)
+  end
+
+  # A Task kept here that a Session of this device's station takes part in
+  # (`SalixWeb.StationTasks`).
+  defp handle_message(
+         %{"type" => "request", "method" => method, "id" => id} = m,
+         state
+       )
+       when is_binary(id) and method in ["task.post", "task.hello"] do
+    params = m["params"] || %{}
+    view = %{tenant_id: state.tenant_id, group_id: state.group_id, device_id: state.device_id}
+
+    start_request_reply(id, state, fn ->
+      result =
+        if method == "task.hello",
+          do: SalixWeb.StationTasks.hello(view, params),
+          else: SalixWeb.StationTasks.post(view, params)
+
+      case result do
+        {:ok, result} -> %{"id" => id, "type" => "response", "result" => result}
+        {:error, reason} -> %{"id" => id, "type" => "error", "error" => inspect(reason)}
+      end
+    end)
+  end
+
+  # A page of the station's Task index (`SalixWeb.StationTaskIndex`), from
+  # the station this run proved with `relay_register`.
+  defp handle_message(%{"type" => "request", "method" => "task.index", "id" => id} = m, state)
+       when is_binary(id) do
+    case SalixWeb.StationTaskIndex.admit(state.task_index_window, monotonic_ms()) do
+      {:ok, window} ->
+        station_id = SalixWeb.StationTaskIndex.station_id(state.relay)
+        view = %{tenant_id: state.tenant_id, group_id: state.group_id, device_id: state.device_id}
+        params = m["params"] || %{}
+
+        start_request_reply(id, %{state | task_index_window: window}, fn ->
+          case SalixWeb.StationTaskIndex.receive_page(station_id, view, params) do
+            {:ok, held} -> %{"id" => id, "type" => "response", "result" => held}
+            {:error, reason} -> %{"id" => id, "type" => "error", "error" => to_string(reason)}
+          end
+        end)
+
+      {:error, reason} ->
+        reply = %{"id" => id, "type" => "error", "error" => to_string(reason)}
+        {:push, {:text, Protocol.encode(reply)}, state}
     end
   end
 
@@ -354,6 +416,26 @@ defmodule SalixWeb.ConnectorSocket do
       })}, state}
   end
 
+  defp handle_message(
+         %{"type" => "stream", "id" => id, "stream" => %{"channel" => channel} = stream} = m,
+         state
+       )
+       when is_binary(id) and channel in @tunnel_channels do
+    case state.tunnels[id] do
+      %{relay: relay} = tunnel ->
+        frame = Map.take(stream, ~w(channel data eof seq))
+        frame = if present?(m["error"]), do: Map.put(frame, "error", m["error"]), else: frame
+        send(relay, {:env_tunnel_frame, id, frame})
+
+        if frame["eof"] == true,
+          do: {:ok, drop_tunnel(state, id, tunnel)},
+          else: {:ok, state}
+
+      nil ->
+        {:ok, state}
+    end
+  end
+
   defp handle_message(%{"type" => "stream", "id" => id, "stream" => stream} = m, state)
        when is_binary(id) and is_map(stream) do
     handle_stream_frame(id, stream, m["error"], state)
@@ -363,11 +445,13 @@ defmodule SalixWeb.ConnectorSocket do
          %{"type" => "request", "method" => "runtime_subscription_access", "id" => id} = m,
          state
        ) do
+    view = task_view(state)
+
     start_request_reply(id, state, fn ->
       # Only fixed errors leave this boundary. Never serialize credential exceptions.
       result =
         try do
-          SalixWeb.SubscriptionRuntimeAuth.access(state, m["params"] || %{})
+          SalixWeb.SubscriptionRuntimeAuth.access(view, m["params"] || %{})
         rescue
           _ -> {:error, :subscription_access_unavailable}
         catch
@@ -379,6 +463,24 @@ defmodule SalixWeb.ConnectorSocket do
         _ -> %{"id" => id, "type" => "error", "error" => "subscription_access_unavailable"}
       end
     end)
+  end
+
+  defp handle_message(%{"type" => "response_chunk", "id" => id} = m, state) when is_binary(id) do
+    case state.pending[id] do
+      %{chunks: %ConnectorResponseChunks{} = chunks} = entry ->
+        case ConnectorResponseChunks.add(chunks, m["seq"], m["data_b64"]) do
+          {:ok, chunks} ->
+            entry = entry |> Map.put(:chunks, chunks) |> renew_chunk_idle(id)
+            {:ok, %{state | pending: Map.put(state.pending, id, entry)}}
+
+          {:error, reason} ->
+            complete_pending(id, {:error, reason}, state, false)
+        end
+
+      # A late frame of a request that already ended.
+      _ ->
+        {:ok, state}
+    end
   end
 
   defp handle_message(%{"id" => id} = m, state) when is_binary(id) do
@@ -395,12 +497,31 @@ defmodule SalixWeb.ConnectorSocket do
       Map.has_key?(state.read_streams, id) ->
         {:ok, state}
 
+      Map.has_key?(state.tunnels, id) and (m["type"] == "error" or present?(m["error"])) ->
+        state = drop_tunnel(state, id, state.tunnels[id])
+        complete_pending(id, Protocol.outcome(m), state, true)
+
       true ->
-        complete_pending(id, Protocol.outcome(m), state, m["type"] in ["response", "error"])
+        complete_pending(
+          id,
+          chunked_outcome(state.pending[id], m),
+          state,
+          m["type"] in ["response", "error"]
+        )
     end
   end
 
   defp handle_message(_other, state), do: {:ok, state}
+
+  # The final frame of a chunked request carries the body's checks.
+  defp chunked_outcome(%{chunks: %ConnectorResponseChunks{} = chunks}, m) do
+    case Protocol.outcome(m) do
+      {:ok, result} -> ConnectorResponseChunks.finish(chunks, result)
+      error -> error
+    end
+  end
+
+  defp chunked_outcome(_entry, m), do: Protocol.outcome(m)
 
   defp runtime_proxy_reply(id, params, state) do
     safe_request_reply(id, fn ->
@@ -423,6 +544,24 @@ defmodule SalixWeb.ConnectorSocket do
     kind, reason -> %{"id" => id, "type" => "error", "error" => format_error({kind, reason})}
   end
 
+  # Request and control tasks read the connection identity. They get the
+  # state without this actor's bookkeeping of other requests and streams.
+  defp task_view(%State{} = state) do
+    %State{
+      state
+      | control_pending: nil,
+        control_job: nil,
+        control_retry_timer: nil,
+        request_tasks: %{},
+        stream_tasks: %{},
+        meeting_events: %State{}.meeting_events,
+        pending: %{},
+        read_streams: %{},
+        read_stream_cancellations: %{},
+        write_streams: %{}
+    }
+  end
+
   defp start_request_reply(id, state, reply_fun) do
     if map_size(state.request_tasks) >= socket_request_task_limit() do
       push_request_overload(id, state)
@@ -433,7 +572,7 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp start_request_task(id, kind, state, reply_fun, timeout_ms \\ nil) do
-    token = make_ref()
+    token = SystemsRuntime.Proc.make_ref()
     socket = self()
 
     starter =
@@ -448,7 +587,7 @@ defmodule SalixWeb.ConnectorSocket do
       )
 
     timer =
-      Process.send_after(
+      SystemsClock.send_after(
         self(),
         {:connector_task_timeout, :request, token},
         timeout_ms || request_task_timeout_ms(kind)
@@ -585,10 +724,10 @@ defmodule SalixWeb.ConnectorSocket do
   defp meeting_runtime_event_id(_params), do: nil
 
   defp request_task_timeout_ms(:meeting_event),
-    do: Application.get_env(:salix_web, :connector_meeting_event_task_timeout_ms, 120_000)
+    do: SystemsRuntime.get_env(:salix_web, :connector_meeting_event_task_timeout_ms, 120_000)
 
   defp request_task_timeout_ms(_kind),
-    do: Application.get_env(:salix_web, :connector_request_task_timeout_ms, 60_000)
+    do: SystemsRuntime.get_env(:salix_web, :connector_request_task_timeout_ms, 60_000)
 
   @doc false
   def meeting_event_timeout_ms(params) do
@@ -604,7 +743,7 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp meeting_event_queue_limit,
-    do: Application.get_env(:salix_web, :connector_meeting_event_queue_limit, 64)
+    do: SystemsRuntime.get_env(:salix_web, :connector_meeting_event_queue_limit, 64)
 
   defp push_request_overload(id, state) do
     reply = %{"id" => id, "type" => "error", "error" => "server request capacity exhausted"}
@@ -651,14 +790,22 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp socket_request_task_limit,
-    do: Application.get_env(:salix_web, :connector_socket_request_task_limit, 8)
+    do: SystemsRuntime.get_env(:salix_web, :connector_socket_request_task_limit, 8)
 
   # A socket may accept `read_stream_limit/0` independent streams. Give each
   # accepted stream one frame-consumer slot by default so an ordinary burst is
   # not rejected by a lower, contradictory per-socket limit. The app-wide
   # admission counter remains the hard cross-socket bound.
   defp socket_stream_task_limit,
-    do: Application.get_env(:salix_web, :connector_socket_stream_task_limit, read_stream_limit())
+    do:
+      SystemsRuntime.get_env(:salix_web, :connector_socket_stream_task_limit, read_stream_limit())
+
+  defp drop_tunnel(state, id, %{monitor: monitor}) do
+    Process.demonitor(monitor, [:flush])
+    %{state | tunnels: Map.delete(state.tunnels, id)}
+  end
+
+  defp tunnel_limit, do: SystemsRuntime.get_env(:salix_web, :connector_socket_tunnel_limit, 8)
 
   # Server-authoritative capability gate derived from the connector token's
   # scope at connect time. A local_file_read connector may only serve the
@@ -695,23 +842,92 @@ defmodule SalixWeb.ConnectorSocket do
   # connects: the socket closes itself when the admitting token expires, so a
   # pre-expiry WebSocket cannot keep serving indefinitely.
   defp schedule_token_expiry(expires_at) when is_integer(expires_at) do
-    delay_ms = max(expires_at - System.system_time(:second), 0) * 1_000
-    Process.send_after(self(), :connector_token_expired, delay_ms)
+    delay_ms = max(expires_at - SystemsClock.system_time(:second), 0) * 1_000
+    SystemsClock.send_after(self(), :connector_token_expired, delay_ms)
     :ok
   end
 
   defp schedule_token_expiry(_expires_at), do: :ok
 
   defp pending_rpc_limit do
-    case Application.get_env(:salix_web, :connector_socket_pending_rpc_limit, 256) do
+    case SystemsRuntime.get_env(:salix_web, :connector_socket_pending_rpc_limit, 256) do
       value when is_integer(value) and value > 0 -> value
       _invalid -> 256
     end
   end
 
+  defp chunked_request?(%{"method" => method, "params" => %{"response_mode" => "chunks"}}),
+    do: method in ["http_request", "lan_http_request"]
+
+  defp chunked_request?(_message), do: false
+
+  defp chunked_pending_count(state),
+    do: Enum.count(state.pending, fn {_id, entry} -> entry[:chunks] != nil end)
+
+  # A chunked request buffers up to 4 MiB until its final frame, so only a few
+  # may be open on one socket at a time.
+  defp chunked_response_limit do
+    case SystemsRuntime.get_env(:salix_web, :connector_chunked_response_limit, 2) do
+      value when is_integer(value) and value > 0 -> value
+      _invalid -> 2
+    end
+  end
+
+  # The gap allowed between frames.
+  defp chunk_idle_timeout_ms do
+    case SystemsRuntime.get_env(:salix_web, :connector_chunk_idle_timeout_ms, 20_000) do
+      value when is_integer(value) and value > 0 -> value
+      _invalid -> 20_000
+    end
+  end
+
+  defp put_chunks(entry, message, id) do
+    if chunked_request?(message) do
+      max_bytes =
+        case message["params"]["max_bytes"] do
+          n when is_integer(n) and n > 0 -> min(n, @max_chunked_response_bytes)
+          _ -> @max_chunked_response_bytes
+        end
+
+      entry
+      |> Map.put(:chunks, ConnectorResponseChunks.new(max_bytes))
+      |> renew_chunk_idle(id, first_chunk_timeout_ms(message["params"]))
+    else
+      entry
+    end
+  end
+
+  # The gateway sends its first frame only after it has read the whole HTTP
+  # body, so the wait for it is the request's own budget, as
+  # `SalixEnv.Protocol.timeout/2` counts it for `timeout_seconds`, and at least
+  # the gap allowed between frames.
+  defp first_chunk_timeout_ms(%{"timeout_seconds" => secs}) when is_integer(secs) and secs > 0,
+    do: max(chunk_idle_timeout_ms(), secs * 1000 + 5_000)
+
+  defp first_chunk_timeout_ms(_params),
+    do: max(chunk_idle_timeout_ms(), @default_chunked_http_seconds * 1000 + 5_000)
+
+  defp renew_chunk_idle(entry, id, ms \\ chunk_idle_timeout_ms()) do
+    case entry[:chunk_idle] do
+      {timer, _lease} -> SystemsClock.cancel_timer(timer)
+      nil -> :ok
+    end
+
+    lease = SystemsRuntime.Proc.make_ref()
+
+    timer =
+      SystemsClock.send_after(
+        self(),
+        {:connector_chunk_idle_timeout, id, lease},
+        ms
+      )
+
+    entry |> Map.put(:chunk_idle, {timer, lease}) |> Map.put(:chunk_wait_ms, ms)
+  end
+
   defp pending_rpc_timeout_ms(message) do
     configured =
-      Application.get_env(:salix_web, :connector_pending_rpc_absolute_timeout_ms, 120_000)
+      SystemsRuntime.get_env(:salix_web, :connector_pending_rpc_absolute_timeout_ms, 120_000)
 
     method = message["method"] || ""
     params = if is_map(message["params"]), do: message["params"], else: %{}
@@ -724,7 +940,7 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp read_stream_limit do
-    case Application.get_env(:salix_web, :connector_socket_read_stream_limit, 16) do
+    case SystemsRuntime.get_env(:salix_web, :connector_socket_read_stream_limit, 16) do
       value when is_integer(value) and value > 0 -> value
       _invalid -> 16
     end
@@ -732,7 +948,7 @@ defmodule SalixWeb.ConnectorSocket do
 
   defp read_stream_absolute_timeout_ms(message) do
     configured =
-      case Application.get_env(:salix_web, :connector_read_stream_absolute_timeout_ms, 300_000) do
+      case SystemsRuntime.get_env(:salix_web, :connector_read_stream_absolute_timeout_ms, 300_000) do
         value when is_integer(value) and value > 0 -> value
         _invalid -> 300_000
       end
@@ -744,21 +960,21 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp write_stream_limit do
-    case Application.get_env(:salix_web, :connector_socket_write_stream_limit, 16) do
+    case SystemsRuntime.get_env(:salix_web, :connector_socket_write_stream_limit, 16) do
       value when is_integer(value) and value > 0 -> value
       _invalid -> 16
     end
   end
 
   defp write_stream_timeout_ms do
-    case Application.get_env(:salix_web, :connector_write_stream_idle_timeout_ms, 180_000) do
+    case SystemsRuntime.get_env(:salix_web, :connector_write_stream_idle_timeout_ms, 180_000) do
       value when is_integer(value) and value > 0 -> value
       _invalid -> 180_000
     end
   end
 
   defp start_supervised_task(supervisor, fun) do
-    case Task.Supervisor.start_child(supervisor, fun) do
+    case SystemsRuntime.TaskSupervisor.start_child(supervisor, fun) do
       {:ok, pid} -> {:ok, pid}
       {:error, :max_children} -> {:error, :overloaded}
       {:error, reason} -> log_task_start_error(supervisor, reason)
@@ -775,206 +991,6 @@ defmodule SalixWeb.ConnectorSocket do
     {:error, :overloaded}
   end
 
-  defp refresh_external_event_lane(state) do
-    case external_event_lane_key(state) do
-      {:ok, lane_key} ->
-        SalixWeb.ConnectorExternalEventCoordinator.refresh_lane(
-          self(),
-          lane_key,
-          state.connection_generation,
-          external_event_context(state)
-        )
-
-      {:error, :missing_stable_device_identity} ->
-        :ok
-    end
-  end
-
-  defp external_event_lane_key(state) do
-    case state.device_id || state.connector_id do
-      stable_id when is_binary(stable_id) and stable_id != "" ->
-        {:ok, {state.tenant_id, state.group_id, stable_id}}
-
-      _missing ->
-        {:error, :missing_stable_device_identity}
-    end
-  end
-
-  defp external_event_context(state) do
-    {:connector_context, state.connector_run_id,
-     %{"tenant_id" => state.tenant_id, "group_id" => state.group_id}}
-  end
-
-  defp external_event_identity_retry(id) do
-    %{
-      "id" => id,
-      "type" => "error",
-      "error" => "stable connector device identity is unavailable",
-      "error_code" => "external_runtime_event_retry"
-    }
-  end
-
-  defp external_event_coordinator_retry(id) do
-    %{
-      "id" => id,
-      "type" => "error",
-      "error" => "external runtime event coordinator is unavailable",
-      "error_code" => "external_runtime_event_retry"
-    }
-  end
-
-  defp external_runtime_events_reply(id, params, state) do
-    started = System.monotonic_time()
-
-    reply =
-      safe_request_reply(id, fn ->
-        with true <- is_map(params),
-             events when is_list(events) <- params["events"],
-             true <- events != [] and length(events) <= @max_external_runtime_events,
-             :ok <- validate_external_runtime_event_batch(events) do
-          meta = %{"tenant_id" => state.tenant_id, "group_id" => state.group_id}
-
-          handler =
-            Application.get_env(
-              :salix_web,
-              :connector_external_runtime_handler,
-              SalixWeb.ExternalRuntime
-            )
-
-          outcomes =
-            call_external_runtime_event_batch_handler(
-              handler,
-              state.connector_run_id,
-              events,
-              meta
-            )
-
-          {accepted_event_ids, permanently_rejected_events} =
-            Enum.zip(events, outcomes)
-            |> Enum.reduce({[], []}, fn {event_params, outcome}, {accepted, rejected} ->
-              event_id = event_params["event_id"]
-
-              case outcome do
-                {:ok, _result} ->
-                  Salix.Telemetry.emit_connector_external_event(:completed)
-                  {[event_id | accepted], rejected}
-
-                {:error, reason} ->
-                  case SalixWeb.ConnectorExternalEventCoordinator.batch_failure_disposition(
-                         state.connector_run_id,
-                         state.connection_generation,
-                         reason
-                       ) do
-                    {:permanently_rejected, error_code} ->
-                      Salix.Telemetry.emit_connector_external_event(:terminal)
-
-                      {accepted,
-                       [%{"event_id" => event_id, "error_code" => error_code} | rejected]}
-
-                    :retry ->
-                      Salix.Telemetry.emit_connector_external_event(:retry)
-
-                      Logger.warning(
-                        "external runtime event batch item deferred: event_id=#{inspect(event_id)} reason_class=handler_rejected"
-                      )
-
-                      {accepted, rejected}
-                  end
-              end
-            end)
-
-          {:ok,
-           %{
-             "accepted_event_ids" => Enum.reverse(accepted_event_ids),
-             "permanently_rejected_events" => Enum.reverse(permanently_rejected_events)
-           }}
-        else
-          _ -> {:error, {:bad_request, "invalid external runtime event batch"}}
-        end
-      end)
-
-    outcome = if reply["type"] == "response", do: "ok", else: "error"
-
-    Salix.Telemetry.emit_operation(
-      "salix_agent",
-      "external_runtime_event_batch",
-      "system",
-      outcome,
-      System.monotonic_time() - started
-    )
-
-    reply
-  end
-
-  defp validate_external_runtime_event_batch(events) do
-    ids =
-      Enum.flat_map(events, fn
-        %{"event_id" => event_id} when is_binary(event_id) and event_id != "" -> [event_id]
-        _ -> []
-      end)
-
-    if length(ids) == length(events) and MapSet.size(MapSet.new(ids)) == length(ids),
-      do: :ok,
-      else: {:error, {:bad_request, "invalid external runtime event batch"}}
-  end
-
-  defp call_external_runtime_event_handler(handler, connector_run_id, params, meta) do
-    case handler.handle_connector_event(connector_run_id, params, meta) do
-      {:ok, _result} = ok -> ok
-      {:error, _reason} = error -> error
-      _other -> {:error, :invalid_external_runtime_event_response}
-    end
-  rescue
-    error -> {:error, {:exception, error.__struct__}}
-  catch
-    kind, _reason -> {:error, {:caught, kind}}
-  end
-
-  defp call_external_runtime_event_batch_handler(handler, connector_run_id, events, meta) do
-    outcomes =
-      if Code.ensure_loaded?(handler) and
-           function_exported?(handler, :handle_connector_events, 3) do
-        handler.handle_connector_events(connector_run_id, events, meta)
-      else
-        Enum.map(
-          events,
-          &call_external_runtime_event_handler(handler, connector_run_id, &1, meta)
-        )
-      end
-
-    if is_list(outcomes) and length(outcomes) == length(events) do
-      Enum.map(outcomes, fn
-        {:ok, _result} = ok -> ok
-        {:error, _reason} = error -> error
-        _other -> {:error, :invalid_external_runtime_event_response}
-      end)
-    else
-      List.duplicate({:error, :invalid_external_runtime_event_response}, length(events))
-    end
-  rescue
-    error -> List.duplicate({:error, {:exception, error.__struct__}}, length(events))
-  catch
-    kind, _reason -> List.duplicate({:error, {:caught, kind}}, length(events))
-  end
-
-  defp agent_runtime_catchup_reply(id, state) do
-    safe_request_reply(id, fn ->
-      with group_id when is_binary(group_id) and group_id != "" <- state.group_id,
-           device_id when is_binary(device_id) and device_id != "" <- state.device_id do
-        handler =
-          Application.get_env(
-            :salix_web,
-            :connector_external_runtime_handler,
-            SalixWeb.ExternalRuntime
-          )
-
-        handler.catch_up_inputs(group_id, device_id)
-      else
-        _ -> {:error, {:bad_request, "connector device identity is required"}}
-      end
-    end)
-  end
-
   defp meeting_ctx(state) do
     # Meeting artifact streaming uses the storage env id to route back to this
     # socket owner. Public connector identity still flows through connector_run_id.
@@ -986,7 +1002,7 @@ defmodule SalixWeb.ConnectorSocket do
       meta = %{"tenant_id" => ctx.tenant_id, "group_id" => ctx.group_id}
 
       handler =
-        Application.get_env(
+        SystemsRuntime.get_env(
           :salix_web,
           :connector_meeting_runtime_handler,
           SalixWeb.MeetingRuntime
@@ -1036,7 +1052,12 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp clear_pending_tracking(entry, demonitor?) do
-    if entry.timer, do: Process.cancel_timer(entry.timer)
+    if entry.timer, do: SystemsClock.cancel_timer(entry.timer)
+
+    case entry[:chunk_idle] do
+      {timer, _lease} -> SystemsClock.cancel_timer(timer)
+      nil -> :ok
+    end
 
     if demonitor? and entry.caller_monitor,
       do: Process.demonitor(entry.caller_monitor, [:flush])
@@ -1103,7 +1124,7 @@ defmodule SalixWeb.ConnectorSocket do
         if map_size(state.stream_tasks) >= socket_stream_task_limit() do
           fail_overloaded_read_stream(id, sender, stream, state)
         else
-          token = make_ref()
+          token = SystemsRuntime.Proc.make_ref()
           socket = self()
 
           starter =
@@ -1118,7 +1139,7 @@ defmodule SalixWeb.ConnectorSocket do
             )
 
           timer =
-            Process.send_after(
+            SystemsClock.send_after(
               self(),
               {:connector_task_timeout, :stream, token},
               read_stream_idle_timeout_ms()
@@ -1205,8 +1226,9 @@ defmodule SalixWeb.ConnectorSocket do
          %State{control_job: nil, control_retry_timer: nil, control_pending: operation} = state
        )
        when not is_nil(operation) do
-    token = make_ref()
+    token = SystemsRuntime.Proc.make_ref()
     socket = self()
+    view = task_view(state)
 
     {starter, starter_monitor, admission} =
       case SalixWeb.ConnectorTaskAdmission.acquire(:control, socket) do
@@ -1216,7 +1238,7 @@ defmodule SalixWeb.ConnectorSocket do
               result =
                 start_supervised_task(SalixWeb.ConnectorControlTaskSupervisor, fn ->
                   await_task_authorization(socket, {:control_task_ready, token}, token, fn ->
-                    result = safe_execute_control(operation, state)
+                    result = safe_execute_control(operation, view)
                     send(socket, {:control_task_complete, token, self(), result})
                   end)
                 end)
@@ -1233,7 +1255,7 @@ defmodule SalixWeb.ConnectorSocket do
       end
 
     timer =
-      Process.send_after(
+      SystemsClock.send_after(
         self(),
         {:connector_task_timeout, :control, token},
         control_task_timeout_ms()
@@ -1266,7 +1288,7 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp safe_execute_control(operation, state) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     result =
       try do
@@ -1285,14 +1307,14 @@ defmodule SalixWeb.ConnectorSocket do
       kind,
       "system",
       outcome,
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     result
   end
 
   defp execute_control(operation, state) do
-    case Application.get_env(:salix_web, :connector_control_executor) do
+    case SystemsRuntime.get_env(:salix_web, :connector_control_executor) do
       fun when is_function(fun, 1) ->
         fun.(
           operation
@@ -1339,14 +1361,31 @@ defmodule SalixWeb.ConnectorSocket do
   defp control_persisted?(_), do: false
 
   defp control_task_timeout_ms,
-    do: Application.get_env(:salix_web, :connector_control_task_timeout_ms, 30_000)
+    do: SystemsRuntime.get_env(:salix_web, :connector_control_task_timeout_ms, 30_000)
 
   defp control_retry_ms,
-    do: Application.get_env(:salix_web, :connector_control_retry_ms, 1_000)
+    do: SystemsRuntime.get_env(:salix_web, :connector_control_retry_ms, 1_000)
 
   # ---- messages from SalixEnv.Bridge / the heartbeat timer ----
 
   @impl true
+  def handle_info(:push_station_profiles, state) do
+    _ = push_station_profiles(state)
+    {:ok, state}
+  end
+
+  def handle_info(:push_station_place, state) do
+    _ = push_station_place(state)
+    {:ok, state}
+  end
+
+  def handle_info({:station_relay_packet, from, scope, packet}, state) do
+    case SalixWeb.StationRelay.incoming(state.relay, from, scope, packet) do
+      nil -> {:ok, state}
+      frame -> {:push, {:binary, frame}, state}
+    end
+  end
+
   def handle_info({:env_read_stream, ref, from, message}, state) do
     id = message["id"] || Protocol.new_id()
     message = Map.put(message, "id", id) |> Map.delete("transfer")
@@ -1456,26 +1495,70 @@ defmodule SalixWeb.ConnectorSocket do
         Salix.Telemetry.emit_connector_pending_rpc(:conflict)
         {:ok, state}
 
+      chunked_request?(message) and chunked_pending_count(state) >= chunked_response_limit() ->
+        send(from, {:env_rpc_reply, ref, {:error, :connector_chunked_capacity_exhausted}})
+        Salix.Telemetry.emit_connector_pending_rpc(:saturated)
+        {:ok, state}
+
       true ->
         caller_monitor = Process.monitor(from)
 
         timer =
-          Process.send_after(
+          SystemsClock.send_after(
             self(),
             {:connector_pending_rpc_timeout, id, ref},
             pending_rpc_timeout_ms(message)
           )
 
-        pending =
-          Map.put(state.pending, id, %{
-            from: from,
-            ref: ref,
-            caller_monitor: caller_monitor,
-            timer: timer
-          })
+        entry =
+          %{from: from, ref: ref, caller_monitor: caller_monitor, timer: timer}
+          |> put_chunks(message, id)
+
+        pending = Map.put(state.pending, id, entry)
 
         Salix.Telemetry.emit_connector_pending_rpc(:accepted)
         {:push, {:text, Protocol.encode(message)}, %{state | pending: pending}}
+    end
+  end
+
+  # A tunnel opens through an ordinary pending RPC (`lan_tcp_dial`) that
+  # replies to `from`; its frames then pass between the connector and `relay`
+  # by id. The relay owns flow control: this process only forwards frames.
+  def handle_info({:env_tunnel_open, ref, from, relay, message}, state) do
+    id = message["id"]
+
+    cond do
+      not is_binary(id) or Map.has_key?(state.tunnels, id) or Map.has_key?(state.pending, id) ->
+        send(from, {:env_rpc_reply, ref, {:error, :connector_tunnel_id_conflict}})
+        {:ok, state}
+
+      map_size(state.tunnels) >= tunnel_limit() ->
+        send(from, {:env_rpc_reply, ref, {:error, :connector_tunnel_capacity_exhausted}})
+        {:ok, state}
+
+      true ->
+        tunnel = %{relay: relay, monitor: Process.monitor(relay)}
+        state = %{state | tunnels: Map.put(state.tunnels, id, tunnel)}
+
+        case handle_info({:env_rpc, ref, from, message}, state) do
+          {:push, _frame, _state} = pushed -> pushed
+          {:ok, state} -> {:ok, drop_tunnel(state, id, tunnel)}
+        end
+    end
+  end
+
+  def handle_info({:env_tunnel_send, relay, id, frame}, state) when is_map(frame) do
+    case state.tunnels[id] do
+      %{relay: ^relay} = tunnel ->
+        frame = Map.take(frame, ~w(channel data eof seq))
+        push = {:text, Protocol.encode(%{"id" => id, "type" => "stream", "stream" => frame})}
+
+        if frame["eof"] == true,
+          do: {:push, push, drop_tunnel(state, id, tunnel)},
+          else: {:push, push, state}
+
+      _ ->
+        {:ok, state}
     end
   end
 
@@ -1487,6 +1570,23 @@ defmodule SalixWeb.ConnectorSocket do
       {_entry, pending} ->
         Salix.Telemetry.emit_connector_pending_rpc(:cancelled)
         {:ok, %{state | pending: pending}}
+    end
+  end
+
+  def handle_info({:connector_chunk_idle_timeout, id, lease}, state) do
+    case state.pending[id] do
+      %{chunk_idle: {_timer, ^lease}} = entry ->
+        Salix.Telemetry.emit_connector_pending_rpc(:timeout)
+
+        complete_pending(
+          id,
+          {:error, "chunked response stalled: no frame for #{entry.chunk_wait_ms} ms"},
+          state,
+          false
+        )
+
+      _stale ->
+        {:ok, state}
     end
   end
 
@@ -1821,11 +1921,6 @@ defmodule SalixWeb.ConnectorSocket do
     end
   end
 
-  def handle_info({:connector_external_event_reply, _waiter_ref, reply}, state)
-      when is_map(reply) do
-    {:push, {:text, Protocol.encode(reply)}, state}
-  end
-
   def handle_info({:connector_task_timeout, :request, token}, state) do
     case pop_tracked_task(state.request_tasks, token) do
       {nil, _tasks} ->
@@ -1866,6 +1961,54 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   def handle_info({:DOWN, monitor, :process, _pid, reason}, state) do
+    case Enum.find(state.tunnels, fn {_id, tunnel} -> tunnel.monitor == monitor end) do
+      {id, tunnel} ->
+        eof = %{"id" => id, "type" => "stream", "stream" => %{"channel" => "tcp", "eof" => true}}
+        {:push, {:text, Protocol.encode(eof)}, drop_tunnel(state, id, tunnel)}
+
+      nil ->
+        handle_down(monitor, reason, state)
+    end
+  end
+
+  def handle_info(:heartbeat, state) do
+    if monotonic_ms() - state.last_peer_heartbeat_ms >= heartbeat_timeout_ms() do
+      {:stop, {:shutdown, :connector_heartbeat_timeout}, state}
+    else
+      schedule_heartbeat()
+      {:push, {:text, Protocol.encode(%{"type" => "heartbeat"})}, state}
+    end
+  end
+
+  def handle_info({:env_owner_takeover, env_id, _new_owner}, %State{env_id: env_id} = state) do
+    {:stop, {:shutdown, {:connector_replaced, env_id}}, state}
+  end
+
+  def handle_info({:connector_drain, from, ref}, state) when is_pid(from) do
+    context =
+      Map.take(state, [
+        :tenant_id,
+        :group_id,
+        :device_id,
+        :connector_id,
+        :connector_run_id,
+        :credential_generation,
+        :connection_generation
+      ])
+
+    send(from, {:connector_drain, ref, context})
+    {:stop, {:shutdown, :connector_draining}, state}
+  end
+
+  def handle_info(:connector_token_expired, state) do
+    {:stop, {:shutdown, :connector_token_expired}, state}
+  end
+
+  def handle_info({:push_encoded_frame, encoded}, state), do: {:push, {:text, encoded}, state}
+
+  def handle_info(_other, state), do: {:ok, state}
+
+  defp handle_down(monitor, reason, state) do
     case pop_pending_by_monitor(state.pending, monitor) do
       {entry, pending} when not is_nil(entry) ->
         Salix.Telemetry.emit_connector_pending_rpc(:caller_down)
@@ -1919,43 +2062,6 @@ defmodule SalixWeb.ConnectorSocket do
     end
   end
 
-  def handle_info(:heartbeat, state) do
-    if monotonic_ms() - state.last_peer_heartbeat_ms >= heartbeat_timeout_ms() do
-      {:stop, {:shutdown, :connector_heartbeat_timeout}, state}
-    else
-      schedule_heartbeat()
-      {:push, {:text, Protocol.encode(%{"type" => "heartbeat"})}, state}
-    end
-  end
-
-  def handle_info({:env_owner_takeover, env_id, _new_owner}, %State{env_id: env_id} = state) do
-    {:stop, {:shutdown, {:connector_replaced, env_id}}, state}
-  end
-
-  def handle_info({:connector_drain, from, ref}, state) when is_pid(from) do
-    context =
-      Map.take(state, [
-        :tenant_id,
-        :group_id,
-        :device_id,
-        :connector_id,
-        :connector_run_id,
-        :credential_generation,
-        :connection_generation
-      ])
-
-    send(from, {:connector_drain, ref, context})
-    {:stop, {:shutdown, :connector_draining}, state}
-  end
-
-  def handle_info(:connector_token_expired, state) do
-    {:stop, {:shutdown, :connector_token_expired}, state}
-  end
-
-  def handle_info({:push_encoded_frame, encoded}, state), do: {:push, {:text, encoded}, state}
-
-  def handle_info(_other, state), do: {:ok, state}
-
   defp maybe_advance_meeting_events(%{kind: :meeting_event}, state),
     do: advance_meeting_events(state)
 
@@ -2002,7 +2108,7 @@ defmodule SalixWeb.ConnectorSocket do
     monitor = Process.monitor(socket)
     send(socket, Tuple.insert_at(ready, tuple_size(ready), self()))
 
-    receive do
+    SystemsClock.vreceive do
       {:run_connector_task, ^token} ->
         Process.link(socket)
         Process.demonitor(monitor, [:flush])
@@ -2016,7 +2122,7 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp task_authorization_timeout_ms,
-    do: Application.get_env(:salix_web, :connector_task_authorization_timeout_ms, 5_000)
+    do: SystemsRuntime.get_env(:salix_web, :connector_task_authorization_timeout_ms, 5_000)
 
   defp handle_control_task_down(monitor, reason, state) do
     case state.control_job do
@@ -2043,13 +2149,13 @@ defmodule SalixWeb.ConnectorSocket do
     if state.control_retry_timer do
       %{state | control_pending: pending}
     else
-      timer = Process.send_after(self(), :retry_connector_control, control_retry_ms())
+      timer = SystemsClock.send_after(self(), :retry_connector_control, control_retry_ms())
       %{state | control_pending: pending, control_retry_timer: timer}
     end
   end
 
   defp clear_control_job(state, job) do
-    Process.cancel_timer(job.timer)
+    SystemsClock.cancel_timer(job.timer)
     if job.starter_monitor, do: Process.demonitor(job.starter_monitor, [:flush])
     if job.worker_monitor, do: Process.demonitor(job.worker_monitor, [:flush])
     SalixWeb.ConnectorTaskAdmission.release(job.admission)
@@ -2081,7 +2187,7 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp cancel_task_tracking(task, demonitor?) do
-    Process.cancel_timer(task.timer)
+    SystemsClock.cancel_timer(task.timer)
 
     if demonitor? do
       if task.starter_monitor, do: Process.demonitor(task.starter_monitor, [:flush])
@@ -2176,13 +2282,13 @@ defmodule SalixWeb.ConnectorSocket do
     end
 
     if state.control_job do
-      Process.cancel_timer(state.control_job.timer)
+      SystemsClock.cancel_timer(state.control_job.timer)
       if is_pid(state.control_job.starter), do: Process.exit(state.control_job.starter, :kill)
       if is_pid(state.control_job.worker), do: Process.exit(state.control_job.worker, :kill)
       SalixWeb.ConnectorTaskAdmission.release(state.control_job.admission)
     end
 
-    if state.control_retry_timer, do: Process.cancel_timer(state.control_retry_timer)
+    if state.control_retry_timer, do: SystemsClock.cancel_timer(state.control_retry_timer)
 
     Logger.info("connector socket down: env=#{state.env_id} reason=#{disconnect_reason(reason)}")
     :ok
@@ -2205,15 +2311,15 @@ defmodule SalixWeb.ConnectorSocket do
   defp disconnect_reason(:normal), do: :normal
   defp disconnect_reason(_), do: :other
 
-  defp schedule_heartbeat, do: Process.send_after(self(), :heartbeat, heartbeat_ms())
+  defp schedule_heartbeat, do: SystemsClock.send_after(self(), :heartbeat, heartbeat_ms())
 
   defp heartbeat_ms,
-    do: Application.get_env(:salix_web, :connector_heartbeat_ms, 15_000)
+    do: SystemsRuntime.get_env(:salix_web, :connector_heartbeat_ms, 15_000)
 
   defp heartbeat_timeout_ms,
-    do: Application.get_env(:salix_web, :connector_heartbeat_timeout_ms, 45_000)
+    do: SystemsRuntime.get_env(:salix_web, :connector_heartbeat_timeout_ms, 45_000)
 
-  defp monotonic_ms, do: System.monotonic_time(:millisecond)
+  defp monotonic_ms, do: SystemsClock.monotonic_time(:millisecond)
 
   defp metadata_patch(message, state) do
     with {:ok, agent_runtimes} <- agent_runtimes_from_metadata(message, state) do
@@ -2223,7 +2329,6 @@ defmodule SalixWeb.ConnectorSocket do
         |> maybe_put_connector_scope(message, state)
         |> maybe_put("skills", message["skills"])
         |> maybe_put("agent_runtimes", agent_runtimes)
-        |> maybe_put_runtime_session_snapshot_generation(message, agent_runtimes, state)
         |> maybe_put_runtime_auth_generation(message, agent_runtimes, state)
         |> maybe_put_connector_health(message["connector_health"])
         |> maybe_put_system_info(message["system_info"])
@@ -2270,25 +2375,6 @@ defmodule SalixWeb.ConnectorSocket do
 
   defp maybe_put_connector_scope(patch, _message, _state), do: patch
 
-  defp maybe_put_runtime_session_snapshot_generation(
-         patch,
-         %{"capabilities" => capabilities},
-         runtimes,
-         state
-       )
-       when is_map(capabilities) do
-    generation =
-      if is_list(runtimes) and
-           Enum.any?(runtimes, &is_map(&1["session_snapshot"])),
-         do: state.connection_generation,
-         else: nil
-
-    Map.put(patch, "runtime_session_snapshot_generation", generation)
-  end
-
-  defp maybe_put_runtime_session_snapshot_generation(patch, _message, _runtimes, _state),
-    do: patch
-
   # A reconnect reuses the stable device record. Fence auth capability/state to
   # metadata accepted from this exact connector generation so an older full
   # Connector cannot make a replacement/attachment-only Connector appear able
@@ -2316,9 +2402,8 @@ defmodule SalixWeb.ConnectorSocket do
   @connector_health_required_fields ~w(
     schema_version observed_at process_started_at request_inflight request_capacity
     runtime_proxy_inflight runtime_proxy_capacity managed_processes
-    recoverable_runtime_sessions pending_input_batches pending_runtime_events
   )
-  @connector_health_fields @connector_health_required_fields ++ ~w(resumable_runtime_sessions)
+  @connector_health_fields @connector_health_required_fields
 
   @connector_health_max_count 1_000_000_000
   @connector_health_max_timestamp 9_999_999_999_999
@@ -2330,7 +2415,7 @@ defmodule SalixWeb.ConnectorSocket do
              Enum.all?(snapshot, &valid_connector_health_field?/1) do
           meta
           |> Map.put("connector_health", snapshot)
-          |> Map.put("connector_health_updated_at", System.system_time(:millisecond))
+          |> Map.put("connector_health_updated_at", SystemsClock.system_time(:millisecond))
         else
           meta
         end
@@ -2360,7 +2445,7 @@ defmodule SalixWeb.ConnectorSocket do
         end
 
       {:ok, _invalid} ->
-        {:error, :invalid_runtime_session_snapshot}
+        {:error, :invalid_agent_runtimes}
 
       :error ->
         {:ok, nil}
@@ -2375,15 +2460,8 @@ defmodule SalixWeb.ConnectorSocket do
     kind provider command identity_material version version_detected auth_ready
     app_server_startable native_server_startable ready status readiness_issue
     readiness_message readiness_checked_at readiness_valid_until protocol_versions transports last_error
-    model model_provider reasoning_effort id probe_trigger probe_duration_ms session_snapshot auth
+    model model_provider reasoning_effort id probe_trigger probe_duration_ms auth
   )
-
-  @runtime_session_snapshot_fields ~w(
-    schema_version observed_at session_count session_ids truncated
-  )
-  @max_runtime_session_ids 64
-  @max_metadata_session_ids 256
-  @max_runtime_session_timestamp 9_999_999_999_999
 
   @runtime_string_fields ~w(
     kind provider command identity_material version status readiness_issue readiness_message last_error
@@ -2399,23 +2477,22 @@ defmodule SalixWeb.ConnectorSocket do
 
   defp validate_agent_runtimes(runtimes) when length(runtimes) <= @max_agent_runtimes do
     runtimes
-    |> Enum.reduce_while({0, MapSet.new()}, &validate_agent_runtime/2)
+    |> Enum.reduce_while(MapSet.new(), &validate_agent_runtime/2)
     |> case do
-      {_total, _targets} -> :ok
-      :error -> {:error, :invalid_runtime_session_snapshot}
+      :error -> {:error, :invalid_agent_runtimes}
+      _targets -> :ok
     end
   end
 
-  defp validate_agent_runtimes(_runtimes), do: {:error, :invalid_runtime_session_snapshot}
+  defp validate_agent_runtimes(_runtimes), do: {:error, :invalid_agent_runtimes}
 
-  defp validate_agent_runtime(runtime, {total, targets}) when is_map(runtime) do
+  defp validate_agent_runtime(runtime, targets) when is_map(runtime) do
     runtime = stringify_keys(runtime)
 
     with true <- valid_runtime_field_types?(runtime),
          {:ok, target} <- runtime_target(runtime),
-         false <- not is_nil(target) and MapSet.member?(targets, target),
-         {:ok, count} <- validate_runtime_session_snapshot(runtime, target, total) do
-      {:cont, {total + count, if(target, do: MapSet.put(targets, target), else: targets)}}
+         false <- not is_nil(target) and MapSet.member?(targets, target) do
+      {:cont, if(target, do: MapSet.put(targets, target), else: targets)}
     else
       _ -> {:halt, :error}
     end
@@ -2482,46 +2559,6 @@ defmodule SalixWeb.ConnectorSocket do
     end
   end
 
-  defp validate_runtime_session_snapshot(%{"session_snapshot" => nil}, _target, _total),
-    do: {:ok, 0}
-
-  defp validate_runtime_session_snapshot(runtime, target, total) do
-    case runtime["session_snapshot"] do
-      nil ->
-        {:ok, 0}
-
-      snapshot when is_map(snapshot) ->
-        snapshot = stringify_keys(snapshot)
-        provider = runtime["provider"] |> String.trim()
-
-        if not is_nil(target) and valid_runtime_session_snapshot?(snapshot) and
-             RuntimeIds.external_runtime_provider?(provider) and
-             total + length(snapshot["session_ids"]) <= @max_metadata_session_ids do
-          {:ok, length(snapshot["session_ids"])}
-        else
-          :error
-        end
-
-      _other ->
-        :error
-    end
-  end
-
-  defp valid_runtime_session_snapshot?(snapshot) do
-    ids = snapshot["session_ids"]
-    count = snapshot["session_count"]
-
-    Map.keys(snapshot) |> Enum.sort() == Enum.sort(@runtime_session_snapshot_fields) and
-      snapshot["schema_version"] == 1 and
-      is_integer(snapshot["observed_at"]) and snapshot["observed_at"] > 0 and
-      snapshot["observed_at"] <= @max_runtime_session_timestamp and
-      is_integer(count) and count >= 0 and is_list(ids) and
-      length(ids) <= @max_runtime_session_ids and count >= length(ids) and
-      Enum.all?(ids, &Ids.valid_session_id?/1) and ids == Enum.sort(ids) and
-      length(ids) == MapSet.size(MapSet.new(ids)) and
-      snapshot["truncated"] == count > length(ids)
-  end
-
   defp normalize_agent_runtimes(runtimes, state) do
     normalized =
       runtimes
@@ -2570,7 +2607,7 @@ defmodule SalixWeb.ConnectorSocket do
           |> Map.put("runtime_id", runtime_id)
           |> Map.put("device_runtime_id", device_runtime_id)
           |> Map.put("device_id", device_id)
-          |> Map.put("updated_at", System.system_time(:second))
+          |> Map.put("updated_at", SystemsClock.system_time(:second))
         ]
     end
   end
@@ -2583,7 +2620,7 @@ defmodule SalixWeb.ConnectorSocket do
   defp maybe_put_system_info(meta, info) when is_map(info) and map_size(info) > 0 do
     meta
     |> Map.put("system_info", info)
-    |> Map.put("system_info_updated_at", System.system_time(:millisecond))
+    |> Map.put("system_info_updated_at", SystemsClock.system_time(:millisecond))
   end
 
   defp maybe_put_system_info(meta, _info), do: meta
@@ -2640,7 +2677,7 @@ defmodule SalixWeb.ConnectorSocket do
   defp maybe_finish_read_stream(_sender, false), do: :ok
 
   defp read_stream_idle_timeout_ms do
-    case Application.get_env(:salix_web, :connector_read_stream_idle_timeout_ms, 30_000) do
+    case SystemsRuntime.get_env(:salix_web, :connector_read_stream_idle_timeout_ms, 30_000) do
       value when is_integer(value) and value > 0 -> value
       _invalid -> 30_000
     end
@@ -2698,10 +2735,10 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp new_read_stream_info(id, receiver, from, ref, message) do
-    absolute_token = make_ref()
+    absolute_token = SystemsRuntime.Proc.make_ref()
 
     absolute_timer =
-      Process.send_after(
+      SystemsClock.send_after(
         self(),
         {:connector_read_stream_absolute_timeout, id, ref, absolute_token},
         read_stream_absolute_timeout_ms(message)
@@ -2738,7 +2775,7 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp clear_read_stream_tracking(info, demonitor? \\ true) do
-    if info[:absolute_timer], do: Process.cancel_timer(info.absolute_timer)
+    if info[:absolute_timer], do: SystemsClock.cancel_timer(info.absolute_timer)
 
     if demonitor? and info[:caller_monitor] do
       Process.demonitor(info.caller_monitor, [:flush])
@@ -2851,7 +2888,7 @@ defmodule SalixWeb.ConnectorSocket do
   end
 
   defp clear_write_stream_tracking(info) do
-    if info[:timeout_timer], do: Process.cancel_timer(info.timeout_timer)
+    if info[:timeout_timer], do: SystemsClock.cancel_timer(info.timeout_timer)
     Enum.each([:begin, :chunk, :finish], &clear_write_waiter(info[&1]))
     :ok
   end
@@ -2864,12 +2901,12 @@ defmodule SalixWeb.ConnectorSocket do
   defp clear_write_waiter(_waiter), do: :ok
 
   defp reset_write_stream_timeout(info, id) do
-    if info[:timeout_timer], do: Process.cancel_timer(info.timeout_timer)
+    if info[:timeout_timer], do: SystemsClock.cancel_timer(info.timeout_timer)
 
-    timeout_token = make_ref()
+    timeout_token = SystemsRuntime.Proc.make_ref()
 
     timeout_timer =
-      Process.send_after(
+      SystemsClock.send_after(
         self(),
         {:connector_write_stream_timeout, id, timeout_token},
         write_stream_timeout_ms()

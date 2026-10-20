@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Central Icons (commercially licensed): IconCall, round-filled-radius-2-stroke-2.
+    Not for redistribution; see ui/icons/IconSources.kt. Tinted in code.
+    Path unchanged; the group turns the handset 135 degrees about (12, 12) so it lies face down.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <group android:pivotX="12" android:pivotY="12" android:rotation="135">
+        <path android:pathData="M6.00053 3C4.3817 3 2.91046 4.34355 3.13147 6.11952C4.08907 13.8145 10.186 19.9115 17.881 20.8691C19.657 21.0901 21.0005 19.6188 21.0005 18V16.6881C21.0005 15.3632 20.1315 14.1953 18.8626 13.8146L17.332 13.3554C16.3365 13.0568 15.2575 13.3288 14.5226 14.0637C14.2561 14.3303 13.9133 14.347 13.696 14.2125C12.11 13.2312 10.7693 11.8905 9.788 10.3046C9.65349 10.0872 9.67027 9.74447 9.93683 9.47791C10.6717 8.74303 10.9438 7.66399 10.6451 6.66855L10.1859 5.13796C9.80526 3.86901 8.63729 3 7.31247 3H6.00053Z"
+            android:fillColor="#FF000000" />
+    </group>
+</vector>

@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import * as messages from "./paraglide/messages.js";
+import * as messages from "#messages";
 import {
   baseLocale,
   resolveLocalePreference,

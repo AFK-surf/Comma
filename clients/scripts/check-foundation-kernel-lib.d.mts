@@ -20,3 +20,8 @@ export function findNativeSessionAdmissionViolations(
     sessionAdmissionRationale?: string | undefined;
   }>
 ): string[];
+
+export function findHasBeforeUniversalSubjects(
+  css: string,
+  filename?: string
+): string[];

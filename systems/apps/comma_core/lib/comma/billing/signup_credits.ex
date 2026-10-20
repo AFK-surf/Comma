@@ -16,7 +16,7 @@ defmodule Comma.Billing.SignupCredits do
       "currency" => "usd",
       "credits" => @credits,
       "enabled" =>
-        not Application.get_env(:comma_core, :selfhost, false) and daily_cap() >= @credits,
+        not SystemsRuntime.get_env(:comma_core, :selfhost, false) and daily_cap() >= @credits,
       "conditions" => [
         "eligible_email_address",
         "registration_utc_day",
@@ -26,13 +26,13 @@ defmodule Comma.Billing.SignupCredits do
   end
 
   defp daily_cap,
-    do: Application.get_env(:comma_core, :signup_credit_daily_cap_usd, 2_000) * 1_000_000
+    do: SystemsRuntime.get_env(:comma_core, :signup_credit_daily_cap_usd, 2_000) * 1_000_000
 
   defp eligible_email?(email) do
     [local, domain] = email |> String.downcase() |> String.split("@", parts: 2)
 
     excluded =
-      Application.get_env(:comma_core, :signup_credit_excluded_domains, @excluded_domains)
+      SystemsRuntime.get_env(:comma_core, :signup_credit_excluded_domains, @excluded_domains)
 
     not String.contains?(local, "+") and
       not (domain == "gmail.com" and String.contains?(local, ".")) and
@@ -44,7 +44,7 @@ defmodule Comma.Billing.SignupCredits do
 
   @doc "Complete registration gifts after old Workspace workers leave the rollout."
   def converge do
-    if Application.get_env(:comma_core, :selfhost, false), do: :ok, else: converge_after(nil)
+    if SystemsRuntime.get_env(:comma_core, :selfhost, false), do: :ok, else: converge_after(nil)
   end
 
   defp converge_after(cursor) do
@@ -96,7 +96,7 @@ defmodule Comma.Billing.SignupCredits do
   end
 
   def ensure(workspace) do
-    if Application.get_env(:comma_core, :selfhost, false) do
+    if SystemsRuntime.get_env(:comma_core, :selfhost, false) do
       :ok
     else
       case Repo.transaction(fn -> ensure_locked(workspace) end) do

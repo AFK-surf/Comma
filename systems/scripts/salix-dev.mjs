@@ -110,7 +110,7 @@ export function renderConfig(sandbox) {
         context_tokens: 32768,
         provider_config: {
           protocol: "chat_completions",
-          base_url: "http://llm-mock:43123",
+          base_url: "http://llm-mock:23123",
           api_key: "local-dev-only",
         },
       },

@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   commaReducedMotionAttribute,
+  cssTimeMs,
   isReducedMotionEnabled,
   subscribeToReducedMotion,
 } from "../motion";
@@ -53,5 +54,12 @@ describe("reduced motion preference", () => {
 
     unsubscribe();
     expect(mediaQuery.removeEventListener).toHaveBeenCalledWith("change", onChange);
+  });
+});
+
+describe("CSS time read back from a custom property", () => {
+  it("keeps milliseconds whether or not minified CSS rewrote them as seconds", () => {
+    expect(cssTimeMs("180ms")).toBe(180);
+    expect(cssTimeMs(" .18s")).toBe(180);
   });
 });

@@ -34,6 +34,19 @@ defmodule SalixStore.Loops do
       field(:name, :string)
       field(:webhook_secret, :string, redact: true)
       field(:composio_trigger, :map)
+      field(:task_conversation_id, :string)
+      field(:trigger, :map)
+      field(:max_runs, :integer)
+      field(:ends_at, :integer)
+      field(:stop_condition, :string)
+      field(:run_count, :integer)
+      field(:last_run_at, :integer)
+      field(:last_run_source, :string)
+      field(:next_run_at, :integer)
+      field(:started_at, :integer)
+      field(:ended_at, :integer)
+      field(:ended_reason, :string)
+      field(:task_settle_pending, :boolean)
       field(:elf_sha256, :string)
       field(:elf_path, :string)
       field(:config, :map)
@@ -73,9 +86,12 @@ defmodule SalixStore.Loops do
 
   @summary_fields Row.__schema__(:fields) -- [:pending_events]
 
+  @doc false
+  def summary_fields, do: @summary_fields
+
   @type loop_record :: %{optional(String.t()) => term()}
 
-  @statuses ~w(active paused failed)
+  @statuses ~w(pending active paused failed ended)
 
   @doc "Statuses a Loop row can hold."
   @spec statuses() :: [String.t()]
@@ -164,6 +180,81 @@ defmodule SalixStore.Loops do
         where: r.agent_id == ^agent_id,
         order_by: [asc: r.created_at, asc: r.id],
         select: struct(r, ^@summary_fields)
+      )
+      |> Repo.all()
+      |> Enum.map(&to_record/1)
+
+    {:ok, rows}
+  rescue
+    _ -> {:error, :unavailable}
+  end
+
+  @doc """
+  The Loops of the Tasks `conversation_ids` in `group_id`, read through the
+  Task index. A Task has at most one Loop, so the result holds at most one
+  row per id. The caller bounds the id list.
+  """
+  @spec list_by_tasks(String.t(), [String.t()]) ::
+          {:ok, [loop_record()]} | {:error, :unavailable}
+  def list_by_tasks(group_id, conversation_ids)
+      when is_binary(group_id) and is_list(conversation_ids) do
+    rows =
+      from(r in Row,
+        where: r.group_id == ^group_id and r.task_conversation_id in ^conversation_ids,
+        select: struct(r, ^@summary_fields)
+      )
+      |> Repo.all()
+      |> Enum.map(&to_record/1)
+
+    {:ok, rows}
+  rescue
+    _ -> {:error, :unavailable}
+  end
+
+  @doc "The Task whose Loop the Session `session_id` of `agent_id` runs, or nil."
+  @spec session_task(String.t(), String.t()) :: {:ok, String.t() | nil} | {:error, :unavailable}
+  def session_task(agent_id, session_id) when is_binary(agent_id) and is_binary(session_id) do
+    {:ok,
+     Repo.one(
+       from(r in Row,
+         where:
+           r.agent_id == ^agent_id and r.session_id == ^session_id and
+             not is_nil(r.task_conversation_id),
+         select: r.task_conversation_id,
+         limit: 1
+       )
+     )}
+  rescue
+    _ -> {:error, :unavailable}
+  end
+
+  @doc """
+  One bounded page of ended Task Loops whose Task has not yet taken the end
+  (`task_settle_pending`), after `after_id`.
+  """
+  def unsettled_task_ends(after_id, limit) when limit > 0 and limit <= 200 do
+    query =
+      from(r in Row,
+        where: r.task_settle_pending == true,
+        order_by: [asc: r.id],
+        select: struct(r, ^@summary_fields),
+        limit: ^limit
+      )
+
+    query = if after_id, do: from(r in query, where: r.id > ^after_id), else: query
+    {:ok, Repo.all(query) |> Enum.map(&to_record/1)}
+  rescue
+    _ -> {:error, :unavailable}
+  end
+
+  @doc "At most `limit` active Loops whose `ends_at` is at or before `now_ms`."
+  def past_end(now_ms, limit) when is_integer(now_ms) and limit > 0 and limit <= 200 do
+    rows =
+      from(r in Row,
+        where: r.status == "active" and not is_nil(r.ends_at) and r.ends_at <= ^now_ms,
+        order_by: [asc: r.ends_at, asc: r.id],
+        select: struct(r, ^@summary_fields),
+        limit: ^limit
       )
       |> Repo.all()
       |> Enum.map(&to_record/1)
@@ -400,6 +491,9 @@ defmodule SalixStore.Loops do
   Group serialize on the lock, so the count they read is the count they
   commit against. A refused admission is `{:error, {:quota, :agent | :group,
   limit}}`; an error from the mutation rolls the transaction back.
+
+  A created Loop that belongs to a Task is refused with
+  `{:error, {:task_loop_exists, loop_id}}` while that Task has a Loop.
   """
   @spec admit_active(
           String.t(),
@@ -414,9 +508,14 @@ defmodule SalixStore.Loops do
       {agent_count, group_count} = active_counts!(agent_id, group_id)
 
       cond do
-        agent_count >= max_agent -> Repo.rollback({:quota, :agent, max_agent})
-        group_count >= max_group -> Repo.rollback({:quota, :group, max_group})
-        true -> apply_mutation!(mutation)
+        agent_count >= max_agent ->
+          Repo.rollback({:quota, :agent, max_agent})
+
+        group_count >= max_group ->
+          Repo.rollback({:quota, :group, max_group})
+
+        true ->
+          apply_mutation!(mutation)
       end
     end)
   rescue
@@ -424,6 +523,8 @@ defmodule SalixStore.Loops do
   end
 
   defp apply_mutation!({:create, %{"id" => id} = record}) do
+    one_loop_per_task!(record)
+
     case Repo.insert_all(Row, [row_map(record)],
            on_conflict: :nothing,
            conflict_target: [:id],
@@ -442,6 +543,25 @@ defmodule SalixStore.Loops do
 
   defp apply_mutation!({:update, id, fun}) when is_binary(id) and is_function(fun, 1),
     do: locked_update!(id, fun)
+
+  # A Task runs one Loop. Every creation holds the Group lock, so this check
+  # and the insert cannot interleave with another creation for the Task; the
+  # unique Task index holds the same rule in the table.
+  defp one_loop_per_task!(%{"group_id" => group_id, "task_conversation_id" => task})
+       when is_binary(task) do
+    case Repo.one(
+           from(r in Row,
+             where: r.group_id == ^group_id and r.task_conversation_id == ^task,
+             select: r.id,
+             limit: 1
+           )
+         ) do
+      nil -> :ok
+      existing -> Repo.rollback({:task_loop_exists, existing})
+    end
+  end
+
+  defp one_loop_per_task!(_record), do: :ok
 
   @doc """
   Serialized read-modify-write under a row lock. `fun` receives the current
@@ -485,16 +605,76 @@ defmodule SalixStore.Loops do
     end
   end
 
-  @doc "Atomic owner-scoped delete."
-  @spec delete_agent_owned(String.t(), String.t()) ::
-          :ok | {:error, :not_found} | {:error, :unavailable}
+  @doc "Delete one Loop and its acknowledgements."
   def delete_agent_owned(id, agent_id) when is_binary(id) and is_binary(agent_id) do
-    case Repo.delete_all(from(r in Row, where: r.id == ^id and r.agent_id == ^agent_id)) do
-      {1, _} -> :ok
-      {0, _} -> {:error, :not_found}
+    case Repo.transaction(fn ->
+           case Repo.one(
+                  from(r in Row,
+                    where: r.id == ^id and r.agent_id == ^agent_id,
+                    lock: "FOR UPDATE"
+                  )
+                ) do
+             nil ->
+               Repo.rollback(:not_found)
+
+             row ->
+               Repo.delete_all(from(a in AckRow, where: a.loop_id == ^id))
+               Repo.delete!(row)
+               :ok
+           end
+         end) do
+      {:ok, :ok} -> :ok
+      error -> error
     end
   rescue
     _ -> {:error, :unavailable}
+  end
+
+  @doc """
+  Give the Task `record["task_conversation_id"]` its requested Loop: a
+  `pending` row that the Task's Worker later binds to a program. Under the
+  Group lock, a Task that has no Loop, or whose Loop has ended, gets
+  `record`; the ended row and its acknowledgements are deleted. A Task whose
+  Loop is still pending keeps it, so a repeated request answers the same
+  row. A Task whose Loop runs is refused with `{:error, {:task_loop_exists,
+  loop_id}}`.
+  """
+  @spec put_task_request(loop_record()) :: {:ok, loop_record()} | {:error, term()}
+  def put_task_request(
+        %{"group_id" => group_id, "task_conversation_id" => task, "status" => "pending"} = record
+      )
+      when is_binary(group_id) and is_binary(task) do
+    Repo.transaction(fn ->
+      Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", ["agent_loops:" <> group_id])
+
+      case Repo.one(
+             from(r in Row,
+               where: r.group_id == ^group_id and r.task_conversation_id == ^task,
+               lock: "FOR UPDATE"
+             )
+           ) do
+        %Row{status: "pending"} = row ->
+          to_record(row)
+
+        %Row{status: "ended", id: old_id} = row ->
+          Repo.delete_all(from(a in AckRow, where: a.loop_id == ^old_id))
+          Repo.delete!(row)
+          insert_new!(record)
+
+        %Row{id: existing} ->
+          Repo.rollback({:task_loop_exists, existing})
+
+        nil ->
+          insert_new!(record)
+      end
+    end)
+  rescue
+    _ -> {:error, :unavailable}
+  end
+
+  defp insert_new!(%{"id" => id} = record) do
+    {1, _} = Repo.insert_all(Row, [row_map(record)], log: false)
+    to_record(Repo.one!(from(r in Row, where: r.id == ^id)))
   end
 
   @doc """
@@ -644,18 +824,20 @@ defmodule SalixStore.Loops do
 
   # ---- codecs --------------------------------------------------------------
 
-  @fields ~w(id tenant_id group_id agent_id session_id name webhook_secret composio_trigger elf_sha256 elf_path config status paused_by failure exit_code checkpoint pending_events incarnation incarnation_node incarnation_session object_id notify_window_start_ms notify_window_count notify_limited_since_ms restart_window_start_ms restart_count ifc created_at updated_at last_notified_at)
+  @fields ~w(id tenant_id group_id agent_id session_id name webhook_secret composio_trigger task_conversation_id trigger max_runs ends_at stop_condition run_count last_run_at last_run_source next_run_at started_at ended_at ended_reason task_settle_pending elf_sha256 elf_path config status paused_by failure exit_code checkpoint pending_events incarnation incarnation_node incarnation_session object_id notify_window_start_ms notify_window_count notify_limited_since_ms restart_window_start_ms restart_count ifc created_at updated_at last_notified_at)
 
   @doc false
   def fields, do: @fields
 
-  defp to_record(%Row{} = row) do
+  @doc false
+  def to_record(%Row{} = row) do
     Enum.reduce(@fields, %{}, fn field, acc ->
       Map.put(acc, field, Map.get(row, String.to_existing_atom(field)))
     end)
   end
 
-  defp row_map(record) do
+  @doc false
+  def row_map(record) do
     %{
       id: record["id"],
       tenant_id: record["tenant_id"],
@@ -665,6 +847,19 @@ defmodule SalixStore.Loops do
       name: record["name"],
       webhook_secret: record["webhook_secret"],
       composio_trigger: record["composio_trigger"],
+      task_conversation_id: record["task_conversation_id"],
+      trigger: record["trigger"],
+      max_runs: record["max_runs"],
+      ends_at: record["ends_at"],
+      stop_condition: record["stop_condition"],
+      run_count: record["run_count"] || 0,
+      last_run_at: record["last_run_at"],
+      last_run_source: record["last_run_source"],
+      next_run_at: record["next_run_at"],
+      started_at: record["started_at"],
+      ended_at: record["ended_at"],
+      ended_reason: record["ended_reason"],
+      task_settle_pending: record["task_settle_pending"] == true,
       elf_sha256: record["elf_sha256"],
       elf_path: record["elf_path"],
       config: record["config"] || %{},

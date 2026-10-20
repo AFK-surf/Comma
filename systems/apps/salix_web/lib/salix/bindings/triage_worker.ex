@@ -6,6 +6,19 @@ defmodule Salix.Bindings.TriageWorker do
   defdelegate configure(group_id, router_id, worker_id, expected_revision, audit),
     to: SalixAgent.TriageWorker
 
+  @doc """
+  Whether the Group's plugins allow each Triage tool a Triage Task uses
+  (BridgeForTeams Triage settings).
+  """
+  def tools(group_id) do
+    with {:ok, group} <- Salix.Control.Groups.get(group_id) do
+      case capabilities(group) do
+        nil -> {:error, :unavailable}
+        tools -> {:ok, tools}
+      end
+    end
+  end
+
   def view(group_id, opts) do
     with {:ok, group} <- Salix.Control.Groups.get(group_id),
          {:ok, binding} <- get(group_id),

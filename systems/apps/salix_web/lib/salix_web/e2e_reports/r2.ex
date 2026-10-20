@@ -82,7 +82,7 @@ defmodule SalixWeb.E2EReports.R2 do
   defp method_atom("DELETE"), do: :delete
 
   defp config do
-    env = Application.get_env(:salix_web, :e2e_reports_r2, [])
+    env = SystemsRuntime.get_env(:salix_web, :e2e_reports_r2, [])
 
     cfg = %SalixStore.Config{
       endpoint: pick(env, :endpoint),

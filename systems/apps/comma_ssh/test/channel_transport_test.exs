@@ -1,4 +1,6 @@
 defmodule CommaSSH.ChannelTransportTest.HostKey do
+  require SystemsRuntime.Proc
+
   @behaviour :ssh_server_key_api
   def host_key(:"ssh-ed25519", options), do: {:ok, options[:key_cb_private][:key]}
   def host_key(_, _), do: {:error, :unsupported}
@@ -6,6 +8,8 @@ defmodule CommaSSH.ChannelTransportTest.HostKey do
 end
 
 defmodule CommaSSH.ChannelTransportTest.Shell do
+  require SystemsRuntime.Proc
+
   @behaviour :ssh_server_channel
   # Isolate the real terminal channel from account/storage services. Enrollment
   # and canonical chat have separate coverage in ssh_transport_test.exs.
@@ -21,7 +25,8 @@ defmodule CommaSSH.ChannelTransportTest.Shell do
     :ssh_connection.send(state.connection, state.channel, CommaTUI.Screen.enter())
 
     timer =
-      if state.test_mode == :timeout, do: :erlang.start_timer(100, self(), :operation_timeout)
+      if state.test_mode == :timeout,
+        do: :erlang.start_timer(100, SystemsRuntime.Proc.self(), :operation_timeout)
 
     lines =
       case state.test_mode do
@@ -44,19 +49,19 @@ defmodule CommaSSH.ChannelTransportTest.Shell do
 
     {model, []} = CommaSSH.Model.update({:chat, "Test", lines}, state.model)
     model = %{model | busy: timer != nil}
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     backend =
-      spawn(fn ->
-        Process.monitor(owner)
+      SystemsRuntime.Proc.spawn(fn ->
+        SystemsRuntime.Proc.monitor(owner)
         test_backend(owner, lines)
       end)
 
-    send(self(), :render)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :render)
 
     if state.test_mode == :task_count do
-      send(
-        self(),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
         {:ui,
          {:task_count,
           CommaSSH.Chat.task_count(%{
@@ -76,7 +81,7 @@ defmodule CommaSSH.ChannelTransportTest.Shell do
   def terminate(reason, state), do: CommaSSH.Channel.terminate(reason, state)
 
   defp test_backend(owner, lines) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:"$gen_cast", {:submit, :chat, text}} ->
         lines =
           lines ++
@@ -85,14 +90,14 @@ defmodule CommaSSH.ChannelTransportTest.Shell do
               %{"actor_type" => "agent", "content" => "Sent: " <> text}
             ])
 
-        send(owner, {:ui, {:chat, "Test", lines}})
+        SystemsRuntime.Proc.send(owner, {:ui, {:chat, "Test", lines}})
 
-        send(
+        SystemsRuntime.Proc.send(
           owner,
           {:ui, {:task_count, CommaSSH.Chat.task_count(%{"data" => [], "has_more" => false})}}
         )
 
-        send(owner, :done)
+        SystemsRuntime.Proc.send(owner, :done)
         test_backend(owner, lines)
 
       {:DOWN, _, :process, ^owner, _} ->
@@ -102,7 +107,9 @@ defmodule CommaSSH.ChannelTransportTest.Shell do
 end
 
 defmodule CommaSSH.ChannelTransportTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
 
   test "real PTY remains responsive after a wheel burst over a full transcript" do
     {ssh, channel} = connect(:long_navigation)
@@ -222,11 +229,11 @@ defmodule CommaSSH.ChannelTransportTest do
     {ssh, channel}
   end
 
-  defp read_until(ssh, channel, expected, output \\ "", timeout \\ 5_000) do
+  defp read_until(ssh, channel, expected, output \\ "", timeout \\ 30_000) do
     if String.contains?(output, expected) do
       output
     else
-      receive do
+      SystemsRuntime.Proc.receive do
         {:ssh_cm, ^ssh, {:data, ^channel, _, bytes}} ->
           read_until(ssh, channel, expected, output <> bytes, timeout)
 

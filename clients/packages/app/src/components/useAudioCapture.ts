@@ -19,10 +19,10 @@ const SYSTEM_AUDIO: AudioCaptureSource = { kind: "system" };
  */
 export function useAudioCapture({ enabled = true }: { enabled?: boolean } = {}) {
   const bridge = getNativeBridge();
-  // Composer also renders in signed-out shells (Side Chat) and in tests without
+  // Composer also renders in signed-out shells and in tests without
   // CommaAuthGate. A product lease is required to begin and claim a recording.
   const productLease = useContext(CommaAuthContext)?.productLease;
-  // Surfaces that never show the voice control (Side Chat, threads) pass
+  // Surfaces that never show the voice control (threads) pass
   // `enabled: false` so they neither subscribe nor trip that window's
   // permission allowlist.
   const platformSupported = enabled && bridge.platform === "electron";

@@ -1,0 +1,21 @@
+<resources>
+    <string name="connection_offline_title">你似乎离线了</string>
+    <string name="connection_offline_detail">检查 Wi-Fi 或移动网络。网络恢复后，我们会自动重试。</string>
+    <string name="connection_unreachable_title">暂时无法连接</string>
+    <string name="connection_unreachable_detail">无法连接到服务器。请稍后重试。</string>
+    <string name="connection_service_title">服务暂时不可用</string>
+    <string name="connection_service_detail">服务器暂时无法响应。请稍后重试。</string>
+    <string name="connection_rate_title">请稍等片刻</string>
+    <string name="connection_rate_detail">请求过于频繁。请稍后重试。</string>
+    <string name="connection_workspace_title">工作区尚未就绪</string>
+    <string name="connection_chat_title">无法打开对话</string>
+    <string name="connection_chat_detail">暂时无法访问此对话。请重试，或检查你的账号。</string>
+    <string name="connection_retrying">正在重试…</string>
+    <item name="connection_error_page" type="id" />
+    <item name="connection_error_badge" type="id" />
+    <item name="connection_error_title" type="id" />
+    <item name="connection_error_detail" type="id" />
+    <item name="connection_error_retry" type="id" />
+    <item name="connection_error_progress" type="id" />
+    <item name="connection_error_account" type="id" />
+</resources>

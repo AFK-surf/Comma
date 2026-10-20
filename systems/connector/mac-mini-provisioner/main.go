@@ -226,6 +226,8 @@ func runMain(args []string) int {
 		err = runLogs(parseStatusArgs(args))
 	case "service":
 		err = runService(args)
+	case "computer-use-helper":
+		err = runComputerUseHelperCommand(args)
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return 0
@@ -273,6 +275,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Low-level worker entrypoints:")
 	fmt.Fprintln(w, "  bft-runner run [--config path]")
+	fmt.Fprintln(w, "  bft-runner computer-use-helper check --app path")
+	fmt.Fprintln(w, "  bft-runner computer-use-helper install --app path --archive path")
 	fmt.Fprintln(w, "  bft-runner claim [--config path]")
 }
 
@@ -652,8 +656,8 @@ func provisionerCapabilities(config map[string]any) map[string]any {
 	return capabilities
 }
 
-// salixConnectBuildInfo and applyProvisionerUpdates implement
-// tla/connector/ManagedConnectorRelease.tla: unknown is not a mismatch.
+// salixConnectBuildInfo and applyProvisionerUpdates treat an unknown build as
+// not a mismatch.
 func salixConnectBuildInfo(config map[string]any) (map[string]any, bool) {
 	path, err := requirePath(config, "salix_connect")
 	if err != nil || path == "" {
@@ -1240,7 +1244,6 @@ func materializeManagedConnectors(opts runOptions, config map[string]any, stateD
 	return nil
 }
 
-// Modeled in tla/connector/ManagedConnectorSupervisor.tla.
 func reapConnectors(stateDir, workerStatusPath, provisionerID string, statusReporter *statusReporter, connectors map[string]*managedConnector) error {
 	if err := consumeConnectorExits(workerStatusPath, provisionerID, connectors); err != nil {
 		return err
@@ -1414,13 +1417,15 @@ func applyProvisionerUpdates(opts runOptions, config map[string]any, stateDir, w
 		}
 		advisory = result
 	}
-	update := mapValue(updates, "salix-connect")
-	if len(update) == 0 {
-		return false, advisory, nil
+	if update := mapValue(updates, "salix-connect"); len(update) != 0 {
+		updated, err := applySalixConnectUpdate(opts, config, stateDir, workerStatusPath, connectors, update)
+		if err != nil || updated {
+			return updated, nil, err
+		}
 	}
-	updated, err := applySalixConnectUpdate(opts, config, stateDir, workerStatusPath, connectors, update)
-	if err != nil || updated {
-		return updated, nil, err
+	// The helper update does not restart connectors, so runner work continues.
+	if update := mapValue(updates, computerUseHelperComponent); len(update) != 0 {
+		applyComputerUseHelperUpdate(opts, config, stateDir, workerStatusPath, update)
 	}
 	return false, advisory, nil
 }
@@ -2859,7 +2864,15 @@ func runWorkerIteration(opts runOptions, config map[string]any, stateDir, worker
 	if err := claimOnce(opts, config, stateDir, workerStatusPath, apiBaseURL, token, orgID, provisionerID, statusReporter, connectors); err != nil {
 		return err
 	}
-	return retainWorkerStatusAdvisory(workerStatusPath, "agent_vmm_update", updateAdvisory)
+	return retainUpdateAdvisories(workerStatusPath, updateAdvisory)
+}
+
+// claimOnce rewrites the whole worker status; put back what the update step reported.
+func retainUpdateAdvisories(workerStatusPath string, agentVMMAdvisory map[string]any) error {
+	if err := retainWorkerStatusAdvisory(workerStatusPath, "agent_vmm_update", agentVMMAdvisory); err != nil {
+		return err
+	}
+	return retainWorkerStatusAdvisory(workerStatusPath, "computer_use_helper_update", lastComputerUseHelperUpdate)
 }
 
 func keepRunningAfterControlError(opts runOptions, err error) bool {

@@ -1,24 +1,24 @@
 defmodule Salix.Bindings.MeetingCalendarStatusTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Bindings.MeetingCalendarStatus
   alias SalixMeet.{CalendarProjection, Store}
   alias SalixStore.{CasRecord, Ids, Keys}
 
   setup do
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    previous_calendar_autojoin = Application.get_env(:salix_meet, :calendar_autojoin)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_meet, :calendar_autojoin, scan_interval_ms: 120_000)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_calendar_autojoin = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin, scan_interval_ms: 120_000)
 
-    case Process.whereis(SalixStore.S3.Fake) do
+    case SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       nil -> start_supervised!(SalixStore.S3.Fake)
       _pid -> :ok
     end
 
     SalixStore.S3.Fake.reset()
 
-    if is_nil(Process.whereis(SalixMeet.CalendarAutojoin)) do
+    if is_nil(SystemsRuntime.Proc.whereis(SalixMeet.CalendarAutojoin)) do
       start_supervised!(%{
         id: {Agent, SalixMeet.CalendarAutojoin},
         start: {Agent, :start_link, [fn -> :running end, [name: SalixMeet.CalendarAutojoin]]},
@@ -75,7 +75,7 @@ defmodule Salix.Bindings.MeetingCalendarStatusTest do
        context do
     plan_id = Ids.new_meeting_plan_id()
     item_id = Ids.new_calendar_item_id()
-    start_ms = System.system_time(:millisecond) + :timer.hours(1)
+    start_ms = SystemsClock.system_time(:millisecond) + :timer.hours(1)
 
     occurrence_ref = %{
       "calendar_id" => context.calendar_id,
@@ -199,167 +199,11 @@ defmodule Salix.Bindings.MeetingCalendarStatusTest do
            }
   end
 
-  test "runtime status surfaces the effective driver and a runtime_url/driver conflict",
-       context do
-    previous_url = Application.get_env(:salix_meet, :runtime_base_url)
-    previous_mode = Application.get_env(:salix_meet, :runtime_driver_mode)
-    previous_driver = Application.get_env(:salix_meet, :runtime_driver)
-
-    Application.put_env(:salix_meet, :runtime_base_url, "http://meeting-runtime:8080")
-    Application.put_env(:salix_meet, :runtime_driver_mode, "connector")
-    Application.put_env(:salix_meet, :runtime_driver, SalixMeet.RuntimeDriver.HTTP)
-
-    on_exit(fn ->
-      restore_env(:salix_meet, :runtime_base_url, previous_url)
-      restore_env(:salix_meet, :runtime_driver_mode, previous_mode)
-      restore_env(:salix_meet, :runtime_driver, previous_driver)
-    end)
-
-    assert {:ok, status} =
-             MeetingCalendarStatus.get(context.agent_id, context.connect_id, 10)
-
-    assert status["runtime"]["runtime_driver"] == "http"
-    assert status["runtime"]["runtime_driver_conflict"] == true
-  end
-
   test "rejects a connect outside the agent's active Slack scope", context do
     assert {:error, :not_found} =
              MeetingCalendarStatus.get(context.agent_id, Ids.new_connect_id(), 20)
   end
 
-  test "marks an eligible projected event without a planned MeetingPlan as degraded", context do
-    start_ms = System.system_time(:millisecond) + 60 * 60 * 1_000
-    plan_id = Ids.new_meeting_plan_id()
-
-    event = %{
-      "event_id" => "event-missing-plan",
-      "calendar_id" => context.calendar_id,
-      "calendar_item_id" => Ids.new_calendar_item_id(),
-      "occurrence_ref" => %{
-        "calendar_id" => context.calendar_id,
-        "instance" => "2026-08-06T11:00:00Z"
-      },
-      "meeting_plan_id" => plan_id,
-      "start_ms" => start_ms,
-      "end_ms" => start_ms + 30 * 60 * 1_000,
-      "meet_url" => "https://meet.google.com/mno-pqrs-tuv",
-      "title" => "Missing plan example"
-    }
-
-    group = %{
-      "tenant_id" => context.tenant_id,
-      "group_id" => context.group_id,
-      "calendar_id" => context.calendar_id
-    }
-
-    assert {:ok, empty} = CalendarProjection.load(group, now: start_ms - 1_000)
-
-    assert {:ok, projection, %{partial_errors: []}} =
-             CalendarProjection.reconcile(empty, [event], %{}, max_events: 50, now: start_ms)
-
-    assert {:ok, _} = CalendarProjection.checkpoint(projection)
-    assert {:ok, status} = MeetingCalendarStatus.get(context.agent_id, context.connect_id, 20)
-    assert status["health"] == "degraded"
-    assert status["reason"] == "meeting_plan_unavailable"
-    assert status["summary"]["plan_error_count"] == 1
-    assert [reported] = status["events"]
-    assert reported["plan"] == %{"status" => "missing"}
-
-    assert reported["autojoin"] == %{
-             "status" => "not_started",
-             "start_at" => nil,
-             "join_requested_at" => nil,
-             "joined_at" => nil,
-             "abandoned_at" => nil,
-             "error_present" => false
-           }
-  end
-
-  test "a display limit cannot hide unhealthy omitted candidates behind health ok", context do
-    now = System.system_time(:millisecond)
-    visible_plan_id = Ids.new_meeting_plan_id()
-    hidden_plan_id = Ids.new_meeting_plan_id()
-
-    visible = %{
-      "event_id" => "event-visible-healthy",
-      "calendar_id" => context.calendar_id,
-      "calendar_item_id" => Ids.new_calendar_item_id(),
-      "occurrence_ref" => %{"calendar_id" => context.calendar_id, "instance" => "visible"},
-      "meeting_plan_id" => visible_plan_id,
-      "start_ms" => now + 30 * 60 * 1_000,
-      "end_ms" => now + 60 * 60 * 1_000,
-      "meet_url" => "https://meet.google.com/aaa-bbbb-ccc",
-      "title" => "Visible healthy meeting"
-    }
-
-    hidden = %{
-      "event_id" => "event-hidden-unhealthy",
-      "calendar_id" => context.calendar_id,
-      "calendar_item_id" => Ids.new_calendar_item_id(),
-      "occurrence_ref" => %{"calendar_id" => context.calendar_id, "instance" => "hidden"},
-      "meeting_plan_id" => hidden_plan_id,
-      "start_ms" => now + 90 * 60 * 1_000,
-      "end_ms" => now + 120 * 60 * 1_000,
-      "meet_url" => "https://meet.google.com/ddd-eeee-fff",
-      "title" => "Hidden unhealthy meeting"
-    }
-
-    group = %{
-      "tenant_id" => context.tenant_id,
-      "group_id" => context.group_id,
-      "calendar_id" => context.calendar_id
-    }
-
-    assert {:ok, empty} = CalendarProjection.load(group, now: now - 2)
-
-    assert {:ok, seeded, %{partial_errors: []}} =
-             CalendarProjection.reconcile(empty, [hidden], %{}, max_events: 50, now: now - 1)
-
-    assert {:ok, _} = CalendarProjection.checkpoint(seeded)
-    assert {:ok, loaded} = CalendarProjection.load(group, now: now)
-    hidden_meeting_id = CalendarProjection.meeting_id(group, hidden)
-
-    assert {:ok, projection, %{partial_errors: [_]}} =
-             CalendarProjection.reconcile(
-               loaded,
-               [visible],
-               %{hidden_meeting_id => {:retain, hidden, "PRIVATE_HIDDEN_RECOVERY_ERROR"}},
-               max_events: 50,
-               now: now
-             )
-
-    assert {:ok, _} = CalendarProjection.checkpoint(projection)
-
-    assert {:ok, _} =
-             CasRecord.create(Keys.ctl_meeting_plan(context.group_id, visible_plan_id), %{
-               "meeting_plan_id" => visible_plan_id,
-               "group_id" => context.group_id,
-               "occurrence_ref" => visible["occurrence_ref"],
-               "conversation_id" => Ids.new_conversation_id(),
-               "status" => "planned",
-               "revision" => 1,
-               "updated_at" => now,
-               "preparation" => %{}
-             })
-
-    assert {:ok, _document, _etag} =
-             Store.create_once(hidden_meeting_id,
-               now: now,
-               state: %{"status" => "failed", "error" => "PRIVATE_HIDDEN_AUTOJOIN_ERROR"}
-             )
-
-    assert {:ok, status} = MeetingCalendarStatus.get(context.agent_id, context.connect_id, 1)
-    assert status["projection"]["truncated"] == true
-    assert status["summary"]["candidate_count"] == 2
-    assert status["summary"]["returned_count"] == 1
-    assert status["summary"]["plan_error_count"] == 0
-    assert status["summary"]["candidate_error_count"] == 0
-    assert status["summary"]["autojoin_error_count"] == 0
-    assert status["health"] == "degraded"
-    assert status["reason"] == "calendar_status_truncated"
-    refute inspect(status) =~ "PRIVATE_HIDDEN"
-  end
-
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

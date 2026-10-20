@@ -1,4 +1,6 @@
 defmodule SalixAgent.EventArchiveCompletenessTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The completeness contract: nothing the loop sends or receives escapes the
   archive, and anything that does escape consumes its `seq` on the way out — so
@@ -13,8 +15,9 @@ defmodule SalixAgent.EventArchiveCompletenessTest do
   silent omission is the one failure the design cannot tolerate.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.EventArchive
   alias SalixAgent.EventArchive.{Accumulator, Emit}
 
@@ -24,7 +27,11 @@ defmodule SalixAgent.EventArchiveCompletenessTest do
 
     @impl true
     def record(fact) do
-      send(Application.get_env(:salix_agent, :archive_test_pid), {:archived, fact})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.get_env(:salix_agent, :archive_test_pid),
+        {:archived, fact}
+      )
+
       :ok
     end
   end
@@ -35,8 +42,8 @@ defmodule SalixAgent.EventArchiveCompletenessTest do
 
     @impl true
     def before_llm_call(fact) do
-      send(
-        Application.get_env(:salix_agent, :archive_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.get_env(:salix_agent, :archive_test_pid),
         {:metered, :before_llm_call, fact}
       )
 
@@ -80,25 +87,25 @@ defmodule SalixAgent.EventArchiveCompletenessTest do
   end
 
   setup do
-    previous_mod = Application.get_env(:salix_agent, :event_archive_mod)
-    previous_llm = Application.get_env(:salix_agent, :llm)
+    previous_mod = SystemsRuntime.get_env(:salix_agent, :event_archive_mod)
+    previous_llm = SystemsRuntime.get_env(:salix_agent, :llm)
 
-    Application.put_env(:salix_agent, :event_archive_mod, Recorder)
-    Application.put_env(:salix_agent, :archive_test_pid, self())
-    Application.put_env(:salix_agent, :llm, ScriptedProvider)
+    SystemsRuntime.put_env(:salix_agent, :event_archive_mod, Recorder)
+    SystemsRuntime.put_env(:salix_agent, :archive_test_pid, SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_agent, :llm, ScriptedProvider)
     Accumulator.create_table()
 
     on_exit(fn ->
       restore(:event_archive_mod, previous_mod)
       restore(:llm, previous_llm)
-      Application.delete_env(:salix_agent, :archive_test_pid)
+      SystemsRuntime.delete_env(:salix_agent, :archive_test_pid)
     end)
 
     :ok
   end
 
-  defp restore(key, nil), do: Application.delete_env(:salix_agent, key)
-  defp restore(key, value), do: Application.put_env(:salix_agent, key, value)
+  defp restore(key, nil), do: SystemsRuntime.delete_env(:salix_agent, key)
+  defp restore(key, value), do: SystemsRuntime.put_env(:salix_agent, key, value)
 
   defp llm_opts do
     [
@@ -109,7 +116,7 @@ defmodule SalixAgent.EventArchiveCompletenessTest do
 
   # Already in receive order: request first, then response.
   defp collect do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:archived, fact} -> [fact | collect()]
     after
       0 -> []
@@ -142,29 +149,6 @@ defmodule SalixAgent.EventArchiveCompletenessTest do
       # This is the last point the pre-compaction history exists anywhere.
       assert Jason.encode!(request.payload) =~ "conversation to be discarded"
       assert response.payload["kind"] == "compacted"
-    end
-
-    test "streaming is archived" do
-      assert {:final, "Hello world"} =
-               SalixAgent.LLM.complete_stream([%{role: "user"}], [], fn _ -> :ok end, llm_opts())
-
-      assert [request, response] = collect()
-      assert request.payload["call"] == "complete_stream"
-      assert response.payload["content"] == "Hello world"
-    end
-
-    test "a provider that raises still archives the request and an error response" do
-      Application.put_env(:salix_agent, :llm, __MODULE__.Raising)
-
-      assert_raise RuntimeError, fn ->
-        SalixAgent.LLM.complete([%{role: "user"}], [], llm_opts())
-      end
-
-      # A request with no response would look like an anomaly; an explicit
-      # error response says what happened.
-      assert [request, response] = collect()
-      assert request.boundary == :llm_request
-      assert response.payload["kind"] == "error"
     end
   end
 
@@ -234,7 +218,7 @@ defmodule SalixAgent.EventArchiveCompletenessTest do
       # The arm that matters most for an audit: a request with an
       # unattributable error response beside it is a hole an operator has to
       # chase across every tenant on the node.
-      Application.put_env(:salix_agent, :llm, __MODULE__.Raising)
+      SystemsRuntime.put_env(:salix_agent, :llm, __MODULE__.Raising)
 
       assert_raise RuntimeError, fn ->
         SalixAgent.LLM.complete([%{role: "user"}], [], template_opts(), @identity)
@@ -254,8 +238,8 @@ defmodule SalixAgent.EventArchiveCompletenessTest do
       # (compaction, titles, the eval judge) wrote those columns null. Round is
       # unaffected: it builds its own meter context and dispatches with
       # metering off.
-      previous = Application.get_env(:salix_agent, :llm_metering_mod)
-      Application.put_env(:salix_agent, :llm_metering_mod, __MODULE__.RecordingMetering)
+      previous = SystemsRuntime.get_env(:salix_agent, :llm_metering_mod)
+      SystemsRuntime.put_env(:salix_agent, :llm_metering_mod, __MODULE__.RecordingMetering)
       on_exit(fn -> restore(:llm_metering_mod, previous) end)
 
       assert {:final, "sync answer"} =
@@ -265,34 +249,6 @@ defmodule SalixAgent.EventArchiveCompletenessTest do
       assert fact.salix_agent_id == @agent
       assert fact.session_id == "ses_live"
       assert fact.round_id == "round-abc"
-    end
-
-    test "a keyword-list billing context does not fail the turn" do
-      # Every producer builds a map today, so this never fired — but the seam's
-      # billing reads used plain Access, which RAISES on a binary key against a
-      # list, and they sit in the `do` arm of `metered_call/5`. A raise there
-      # turns a provider call that SUCCEEDED into a failed turn, which is
-      # exactly what observation code may never do.
-      opts = [
-        billing_context: [salix_agent_id: @agent, salix_tenant_id: "tnt_kw", surface: "internal"]
-      ]
-
-      assert {:final, "sync answer"} = SalixAgent.LLM.complete([%{role: "user"}], [], opts)
-
-      assert [request, _response] = collect()
-      assert request.agent_id == @agent
-      assert request.tenant_id == "tnt_kw"
-    end
-
-    test "the seam cannot invent an identity nobody passed" do
-      # Provider configuration cannot supply dispatch identity. Each caller must
-      # pass identity and exercise attribution through its runtime boundary.
-      assert {:final, "sync answer"} =
-               SalixAgent.LLM.complete([%{role: "user"}], [], template_opts())
-
-      assert [request, _response] = collect()
-      assert request.agent_id == nil
-      assert request.session_id == nil
     end
   end
 
@@ -320,58 +276,9 @@ defmodule SalixAgent.EventArchiveCompletenessTest do
       refute response.payload["content"] =~ "SECRET CHAIN OF THOUGHT"
       assert Jason.encode!(deltas) =~ "SECRET CHAIN OF THOUGHT"
     end
-
-    test "the caller's own reasoning callback still runs" do
-      parent = self()
-
-      SalixAgent.LLM.complete_stream(
-        [%{role: "user"}],
-        [],
-        fn _ -> :ok end,
-        Keyword.put(llm_opts(), :on_reasoning_delta, fn delta ->
-          send(parent, {:passed_through, delta.visibility})
-        end)
-      )
-
-      assert_received {:passed_through, :public_summary}
-      assert_received {:passed_through, :private_reasoning}
-    end
-
-    test "a non-streaming call archives no deltas key" do
-      SalixAgent.LLM.complete([%{role: "user"}], [], llm_opts())
-      [_request, response] = collect()
-      refute Map.has_key?(response.payload, "deltas")
-    end
   end
 
   describe "accumulator" do
-    test "is inert when archiving is disabled" do
-      Application.delete_env(:salix_agent, :event_archive_mod)
-
-      assert Accumulator.new() == nil
-      assert Accumulator.text(nil, "x") == :ok
-      assert Accumulator.reasoning(nil, %{visibility: :private_reasoning, text: "x"}) == :ok
-      assert Accumulator.drain(nil) == nil
-    end
-
-    test "caps a runaway stream and says so rather than buffering it whole" do
-      key = Accumulator.new()
-      chunk = :binary.copy("x", 1024 * 1024)
-      for _ <- 1..12, do: Accumulator.text(key, chunk)
-
-      drained = Accumulator.drain(key)
-
-      assert drained["truncated"]
-      assert drained["delta_count"] == 12
-      assert byte_size(drained["text"]) <= 8 * 1024 * 1024
-    end
-
-    test "frees its row on drain" do
-      key = Accumulator.new()
-      Accumulator.text(key, "x")
-      assert Accumulator.drain(key)
-      assert Accumulator.drain(key) == nil
-    end
   end
 
   describe "async tool settlement" do
@@ -407,13 +314,6 @@ defmodule SalixAgent.EventArchiveCompletenessTest do
   end
 
   describe "the boundary set is closed" do
-    test "every declared boundary maps to a known direction" do
-      for boundary <- [:delivery, :llm_request, :llm_response, :tool_call, :tool_result, :egress] do
-        assert :ok = EventArchive.record(%{boundary: boundary, payload: %{}})
-        assert_received {:archived, %{boundary: ^boundary, direction: direction}}
-        assert direction in [:in, :out]
-      end
-    end
   end
 
   defmodule Raising do

@@ -24,7 +24,7 @@ defmodule BridgeForTeams.AccountsTest do
   end
 
   test "get_user not found" do
-    assert {:error, :not_found} = Accounts.get_user(Ecto.UUID.generate())
+    assert {:error, :not_found} = Accounts.get_user(SystemsRuntime.Proc.uuid())
   end
 
   describe "provision_from_claims/2" do

@@ -278,6 +278,8 @@ const CommandPaletteStory = ({
 };
 
 const meta = {
+  // Asserts scroll geometry, the computed backdrop and media queries.
+  tags: ["browser"],
   title: "App components/Search/Command Palette",
   parameters: {
     layout: "fullscreen",

@@ -69,7 +69,7 @@ theorem projected_batch_extends {s t : Term} {raw normalized j r : List Term}
   | @cons s middle next final raw event events normalized j r after rest prepared activity tail ih =>
     obtain ⟨_, _, _, reduced⟩ := prepareTrusted_stringify prepared
     have kind := ordinary event (by simp)
-    exact extends_trans (inner_extends kind.1 kind.2 reduced)
+    exact extends_trans (inner_extends kind reduced)
       (extends_trans (afterEvent_extends activity)
         (ih (fun event member => ordinary event (List.mem_cons_of_mem _ member))))
 

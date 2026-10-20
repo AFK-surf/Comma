@@ -19,6 +19,9 @@ const (
 	maxModelResponseBytes = 2 * 1024 * 1024
 	maxDiscoveredModels   = 1000
 	maxModelPages         = 5
+	// The provider selects the Codex catalog by client version; older versions
+	// omit newer models. Inference keeps the SDK executor's own User-Agent.
+	codexDiscoveryClientVersion = "0.159.0"
 )
 
 type discoveredModel struct {
@@ -65,7 +68,7 @@ func queryModelsWithRequester(ctx context.Context, a *auth.Auth, request modelRe
 	cursors := map[string]bool{}
 	seen := map[string]bool{}
 	for page := 0; page < maxModelPages; page++ {
-		endpoint := "https://chatgpt.com/backend-api/codex/models?client_version=0.153.3"
+		endpoint := "https://chatgpt.com/backend-api/codex/models?client_version=" + codexDiscoveryClientVersion
 		if a.Provider == "claude" {
 			params := url.Values{"limit": {"1000"}}
 			if cursor != "" {
@@ -83,7 +86,7 @@ func queryModelsWithRequester(ctx context.Context, a *auth.Auth, request modelRe
 			req.Header.Set("anthropic-version", "2023-06-01")
 		} else {
 			req.Header.Set("Originator", "codex_cli_rs")
-			req.Header.Set("User-Agent", "codex_cli_rs/0.153.3 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9")
+			req.Header.Set("User-Agent", "codex_cli_rs/"+codexDiscoveryClientVersion)
 			if id, ok := a.Metadata["account_id"].(string); ok {
 				req.Header.Set("Chatgpt-Account-Id", id)
 			}

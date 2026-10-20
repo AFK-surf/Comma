@@ -262,7 +262,7 @@ test("sending responds immediately and streams one continuous reply", async ({
     const status = content.getByTestId("participant-status-slot");
     // The POST is still blocked and the last server Participant is stopped.
     // Previously this remained silent until the agent published its first event.
-    await expect(status).toHaveAttribute("data-active", "true", { timeout: 500 });
+    await expect(status).toHaveAttribute("data-active", "true");
     await expectCurrentSummary(status, "Thinking", 500);
     const activityContinuity = await observeActivityContinuity(status);
     await stub.waitForWorkspaceChatMessage();

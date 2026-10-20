@@ -1,3 +1,4 @@
+import { uiClock } from "@comma/ui/clock";
 import {
   motionDistance,
   motionDuration,
@@ -5,7 +6,7 @@ import {
   motionMessageSend,
   motionScale,
   type MessageSendMotionConfig,
-} from "@comma/ui";
+} from "@comma/ui/tokens";
 
 /**
  * The chat's send motion, a step quicker. The onboarding's composer sits at
@@ -87,8 +88,8 @@ export function playThreadMove(
   // frames on (outgoingBubbleMotion.ts); the move keeps that clock.
   animation.pause();
   animation.currentTime = 0;
-  requestAnimationFrame(() =>
-    requestAnimationFrame(() => {
+  uiClock.frame(() =>
+    uiClock.frame(() => {
       if (animation.playState !== "paused") return;
       const startTime = document.timeline?.currentTime;
       animation.play();
@@ -367,10 +368,10 @@ export function stopLogoThinking(mark: Element, withinMs: number) {
     }
     const restAt = Number(animation.currentTime) + remaining;
     animation.updatePlaybackRate(rate);
-    window.setTimeout(() => {
+    uiClock.after(settleMs, () => {
       animation.pause();
       animation.currentTime = restAt;
-    }, settleMs);
+    });
   }
   return settleMs;
 }

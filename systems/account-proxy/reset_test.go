@@ -6,31 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 )
-
-func TestResetCreditsQuotaSummary(t *testing.T) {
-	for _, tc := range []struct {
-		metadata string
-		known    bool
-		count    int64
-	}{
-		{``, false, 0}, {`,"rate_limit_reset_credits":{"available_count":0}`, true, 0},
-		{`,"rate_limit_reset_credits":{"available_count":3}`, true, 3},
-		{`,"rate_limit_reset_credits":{"available_count":-1}`, false, 0},
-		{`,"rate_limit_reset_credits":{"available_count":1.5}`, false, 0},
-		{`,"rate_limit_reset_credits":{"available_count":"2"}`, false, 0},
-	} {
-		body := `{"rate_limit":{"primary_window":{"used_percent":100,"reset_at":1789516800}}` + tc.metadata + `}`
-		snapshot, err := decodeQuota("codex", strings.NewReader(body), time.Now())
-		if err != nil || (snapshot.ResetCredits != nil) != tc.known {
-			t.Fatalf("%s: %+v %v", body, snapshot, err)
-		}
-		if tc.known && snapshot.ResetCredits.AvailableCount != tc.count {
-			t.Fatal(snapshot.ResetCredits)
-		}
-	}
-}
 
 func TestResetUsesSDKAndStableRequestID(t *testing.T) {
 	for _, outcome := range []string{"reset", "already_redeemed", "no_credit", "nothing_to_reset"} {

@@ -208,3 +208,43 @@ describe("runner reads and writes", () => {
     });
   });
 });
+
+/** An API answering each request with the next of `replies`, and a write counter. */
+function watched(...replies: Response[]) {
+  const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+    const reply = replies.shift();
+    if (!reply) throw new Error("unexpected request");
+    return reply;
+  });
+  const api = createBftApi({ fetch, assignLocation: vi.fn(), csrfToken: () => "t" });
+  const listener = vi.fn();
+  api.onWrite(listener);
+  return { api, listener };
+}
+
+describe("onWrite", () => {
+  it("fires after a successful write only", async () => {
+    const { api, listener } = watched(
+      json(500, { ok: false, error: { code: "boom", message: "Failed" } }),
+      json(200, { ok: true, data: membersPage })
+    );
+    await expect(api.removeMember("acme", "u2")).rejects.toBeInstanceOf(BftApiError);
+    expect(listener).not.toHaveBeenCalled();
+    await api.removeMember("acme", "u2");
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fire for POSTs that only read", async () => {
+    const { api, listener } = watched(
+      json(200, { ok: true, data: { status: "pending", interval: 5 } }),
+      json(200, { ok: true, data: { messages: {} } }),
+      json(200, { ok: true, data: { status: "connected", interval: null } })
+    );
+    await api.completeAccountOAuth("acme", "attempt-1", "");
+    await api.revealTriageText("acme", "agt-1", ["r1"], null);
+    expect(listener).not.toHaveBeenCalled();
+
+    await api.completeAccountOAuth("acme", "attempt-1", "");
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+});

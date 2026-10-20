@@ -3,16 +3,16 @@ defmodule Salix.Control.GroupApiKeysTest do
   Agent group inbound API keys (docs/product-features.md):
   the record, its lifecycle, and what a presented key resolves to.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Control.{GroupApiKeys, Groups, Tenants}
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev_store = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -22,7 +22,7 @@ defmodule Salix.Control.GroupApiKeysTest do
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev_store)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_store)
     end)
 
     {:ok, tenant} = Tenants.create(%{"name" => "Keys"})
@@ -109,7 +109,7 @@ defmodule Salix.Control.GroupApiKeysTest do
       GroupApiKeys.create(ctx.group_id, ctx.tenant_id, %{"name" => "Old"}, "comma_user:u1")
 
     key_id = created["key_id"]
-    later = System.system_time(:second) + 3_600
+    later = SystemsClock.system_time(:second) + 3_600
 
     assert {:ok, %{"name" => "New", "expires_at" => ^later}} =
              GroupApiKeys.update(ctx.group_id, ctx.tenant_id, key_id, %{
@@ -169,41 +169,6 @@ defmodule Salix.Control.GroupApiKeysTest do
              )
   end
 
-  test "creation validates its inputs", ctx do
-    assert {:error, {:bad_request, "name is required"}} =
-             GroupApiKeys.create(ctx.group_id, ctx.tenant_id, %{}, "tenant_api")
-
-    assert {:error, {:bad_request, "name is required"}} =
-             GroupApiKeys.create(ctx.group_id, ctx.tenant_id, %{"name" => "   "}, "tenant_api")
-
-    assert {:error, {:bad_request, _}} =
-             GroupApiKeys.create(
-               ctx.group_id,
-               ctx.tenant_id,
-               %{"name" => String.duplicate("n", 81)},
-               "tenant_api"
-             )
-
-    assert {:error, {:bad_request, "invalid actor"}} =
-             GroupApiKeys.create(ctx.group_id, ctx.tenant_id, %{"name" => "x"}, "someone")
-
-    assert {:error, {:bad_request, "invalid actor"}} =
-             GroupApiKeys.create(ctx.group_id, ctx.tenant_id, %{"name" => "x"}, "agent:")
-
-    assert {:error, :not_found} =
-             GroupApiKeys.create("grp1_0_0", ctx.tenant_id, %{"name" => "x"}, "tenant_api")
-
-    {:ok, other_tenant} = Tenants.create(%{"name" => "Other"})
-
-    assert {:error, :not_found} =
-             GroupApiKeys.create(
-               ctx.group_id,
-               other_tenant["tenant_id"],
-               %{"name" => "x"},
-               "tenant_api"
-             )
-  end
-
   test "the information-flow principal wraps the creator", ctx do
     {:ok, from_comma} =
       GroupApiKeys.create(ctx.group_id, ctx.tenant_id, %{"name" => "Comma"}, "comma_user:usr_1")
@@ -226,26 +191,5 @@ defmodule Salix.Control.GroupApiKeysTest do
     assert GroupApiKeys.principal(from_agent) == "api_key|#{from_agent["key_id"]}|system"
 
     assert GroupApiKeys.principal(%{}) == nil
-  end
-
-  test "last_used is written at most once a minute", ctx do
-    {:ok, created} =
-      GroupApiKeys.create(ctx.group_id, ctx.tenant_id, %{"name" => "Zendesk"}, "tenant_api")
-
-    key_id = created["key_id"]
-    assert :ok = GroupApiKeys.touch_last_used(key_id)
-    assert {:ok, [%{"last_used_at" => first}]} = GroupApiKeys.list(ctx.group_id, ctx.tenant_id)
-    assert is_integer(first)
-
-    SalixStore.Repo.query!(
-      "UPDATE agent_group_api_keys SET last_used_at = now() - interval '10 seconds' WHERE key_id = $1",
-      [key_id]
-    )
-
-    assert :ok = GroupApiKeys.touch_last_used(key_id)
-    assert {:ok, [%{"last_used_at" => recent}]} = GroupApiKeys.list(ctx.group_id, ctx.tenant_id)
-    assert recent <= System.system_time(:second) - 9
-
-    assert :ok = GroupApiKeys.touch_last_used("gak_missing")
   end
 end

@@ -15,25 +15,28 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
   alias BridgeForTeamsWeb.DashboardEndpoint
 
   setup do
-    previous_salix_public_base_url = Application.get_env(:salix_web, :public_base_url)
-    Application.put_env(:salix_web, :public_base_url, "https://salix.example.test")
+    previous_salix_public_base_url = SystemsRuntime.get_env(:salix_web, :public_base_url)
+    SystemsRuntime.put_env(:salix_web, :public_base_url, "https://salix.example.test")
 
     on_exit(fn ->
       case previous_salix_public_base_url do
-        nil -> Application.delete_env(:salix_web, :public_base_url)
-        value -> Application.put_env(:salix_web, :public_base_url, value)
+        nil -> SystemsRuntime.delete_env(:salix_web, :public_base_url)
+        value -> SystemsRuntime.put_env(:salix_web, :public_base_url, value)
       end
     end)
 
     SalixStore.S3.Fake.reset()
 
     {:ok, org} =
-      Orgs.create_org(%{"name" => "Org", "slug" => "org-#{System.unique_integer([:positive])}"})
+      Orgs.create_org(%{
+        "name" => "Org",
+        "slug" => "org-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      })
 
     {:ok, project} =
       Projects.create_project(org.id, %{
         "name" => "Proj",
-        "slug" => "proj-#{System.unique_integer([:positive])}"
+        "slug" => "proj-#{SystemsRuntime.Proc.unique_integer([:positive])}"
       })
 
     drain_all()
@@ -49,7 +52,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
   end
 
   defp api_key_for(org, scopes \\ ["runners:write"]) do
-    raw = "prov-#{System.unique_integer([:positive])}"
+    raw = "prov-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     %ApiKey{}
     |> ApiKey.changeset(%{
@@ -64,7 +67,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
   end
 
   defp bound_api_key_for(org, stable_id) do
-    raw = "bound-prov-#{System.unique_integer([:positive])}"
+    raw = "bound-prov-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     api_key =
       %ApiKey{}
@@ -76,7 +79,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
       })
       |> Repo.insert!()
 
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     %MacMiniInstallCode{}
     |> MacMiniInstallCode.changeset(%{
@@ -109,7 +112,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
 
   defp register_provisioner(org, token, attrs \\ %{}, headers \\ []) do
     base = %{
-      "stable_id" => "mac-mini-#{System.unique_integer([:positive])}",
+      "stable_id" => "mac-mini-#{SystemsRuntime.Proc.unique_integer([:positive])}",
       "name" => "Lab Mac mini",
       "host_identity" => "lab-host",
       "os_summary" => "macOS",
@@ -239,7 +242,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
     project: project,
     api_key: api_key
   } do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
     first = register_provisioner(org, api_key, %{"stable_id" => "runner-first-#{suffix}"})
     second = register_provisioner(org, api_key, %{"stable_id" => "runner-second-#{suffix}"})
 
@@ -297,7 +300,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
     project: project,
     api_key: api_key
   } do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
     runner = register_provisioner(org, api_key, %{"stable_id" => "runner-failure-#{suffix}"})
 
     assert {:ok, operation} =
@@ -550,7 +553,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerFlowTest do
     {:ok, other_org} =
       Orgs.create_org(%{
         "name" => "Other",
-        "slug" => "other-#{System.unique_integer([:positive])}"
+        "slug" => "other-#{SystemsRuntime.Proc.unique_integer([:positive])}"
       })
 
     conn =

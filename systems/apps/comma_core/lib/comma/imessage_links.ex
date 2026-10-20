@@ -50,15 +50,26 @@ defmodule Comma.IMessageLinks do
     end
   end
 
-  def create_claim(user, session, workspace_id) do
+  @doc """
+  Creates the Workspace's one connection attempt. A Photon attempt also names
+  the handle that must answer it, its assigned line and the assignment ID.
+  """
+  def create_claim(user, session, workspace_id, attrs \\ %{}) do
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id) do
-      expires_at = DateTime.add(DateTime.utc_now(), @claim_ttl_seconds, :second)
-      create_claim(workspace, user["id"], expires_at, 0)
+      expires_at = DateTime.add(SystemsClock.utc_now(), @claim_ttl_seconds, :second)
+      create_claim(workspace, user["id"], expires_at, Map.new(attrs), 0)
     end
   end
 
-  def take_claim(code) when is_binary(code) do
-    now = DateTime.utc_now()
+  @doc """
+  Consumes an attempt. The attempt must belong to the event's transport.
+  A Photon attempt also requires the handle that the person entered.
+  A mismatch leaves the attempt unconsumed.
+  """
+  def take_claim(code, transport \\ "relay", sender_handle \\ nil)
+
+  def take_claim(code, transport, sender_handle) when is_binary(code) do
+    now = SystemsClock.utc_now()
     normalized_code = normalize_code(code)
 
     Repo.transaction(fn ->
@@ -70,6 +81,11 @@ defmodule Comma.IMessageLinks do
             lock: "FOR UPDATE"
           )
         ) || Repo.rollback(:invalid_imessage_claim)
+
+      unless claim.transport == transport and
+               (transport != "photon" or claim.sender_handle == normalize_user_id(sender_handle)) do
+        Repo.rollback(:invalid_imessage_claim)
+      end
 
       claim = claim |> Ecto.Changeset.change(consumed_at: now) |> Repo.update!()
 
@@ -83,7 +99,48 @@ defmodule Comma.IMessageLinks do
     |> unwrap_transaction()
   end
 
-  def take_claim(_code), do: {:error, :invalid_imessage_claim}
+  def take_claim(_code, _transport, _sender_handle), do: {:error, :invalid_imessage_claim}
+
+  @doc "Whether `text` is the code of an open Photon attempt for this handle."
+  def photon_claim_code?(sender_handle, text) when is_binary(text) do
+    now = SystemsClock.utc_now()
+    code = normalize_code(text)
+    sender = normalize_user_id(sender_handle)
+
+    code != "" and sender != "" and
+      Repo.exists?(
+        from(row in IMessageDMClaimCode,
+          where:
+            row.code == ^code and row.transport == "photon" and row.sender_handle == ^sender and
+              row.expires_at > ^now and is_nil(row.consumed_at)
+        )
+      )
+  end
+
+  def photon_claim_code?(_sender_handle, _text), do: false
+
+  @doc "Handles that a Photon binding or an open Photon attempt uses."
+  def photon_handles_in_use do
+    now = SystemsClock.utc_now()
+
+    links =
+      Repo.all(
+        from(link in IMessageDMLink,
+          where: link.transport == "photon",
+          select: link.sender_handle
+        )
+      )
+
+    claims =
+      Repo.all(
+        from(row in IMessageDMClaimCode,
+          where: row.transport == "photon" and row.expires_at > ^now,
+          select: row.sender_handle
+        )
+      )
+
+    MapSet.new(links ++ claims)
+  end
 
   def validate_connection_attempt(user_id, workspace_id, proof) do
     Repo.transaction(fn ->
@@ -155,6 +212,7 @@ defmodule Comma.IMessageLinks do
     %{
       "sender_handle" => link.sender_handle,
       "sender_label" => link.sender_label,
+      "transport" => link.transport,
       "connection_id" => link.connect_id,
       "connected_at" => unix(link.inserted_at),
       "updated_at" => unix(link.updated_at)
@@ -164,7 +222,20 @@ defmodule Comma.IMessageLinks do
   def public_claim(nil), do: nil
 
   def public_claim(%IMessageDMClaimCode{} = claim) do
-    %{"code" => claim.code, "expires_at" => unix(claim.expires_at)}
+    %{
+      "code" => claim.code,
+      "expires_at" => unix(claim.expires_at),
+      "transport" => claim.transport
+    }
+    |> then(fn public ->
+      if claim.transport == "photon",
+        do:
+          Map.merge(public, %{
+            "sender_handle" => claim.sender_handle,
+            "line_handle" => claim.line_handle
+          }),
+        else: public
+    end)
   end
 
   def get_link(workspace_id), do: Repo.get(IMessageDMLink, workspace_id)
@@ -201,7 +272,7 @@ defmodule Comma.IMessageLinks do
     do: Repo.get_by(IMessageDMLink, sender_handle: normalize_user_id(sender_handle))
 
   def get_active_claim(workspace_id) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     Repo.one(
       from(claim in IMessageDMClaimCode,
@@ -212,20 +283,22 @@ defmodule Comma.IMessageLinks do
     )
   end
 
-  defp create_claim(workspace, user_id, expires_at, attempts) when attempts < 3 do
-    code = :crypto.strong_rand_bytes(@claim_bytes) |> Base.url_encode64(padding: false)
+  defp create_claim(workspace, user_id, expires_at, attrs, attempts) when attempts < 3 do
+    code = SystemsRuntime.Proc.random_bytes(@claim_bytes) |> Base.url_encode64(padding: false)
 
     Repo.transaction(fn ->
       lock_workspace!(workspace["id"])
       clear_attempts(workspace["id"])
 
       %IMessageDMClaimCode{}
-      |> IMessageDMClaimCode.changeset(%{
-        code: code,
-        workspace_id: workspace["id"],
-        owner_user_id: user_id,
-        expires_at: expires_at
-      })
+      |> IMessageDMClaimCode.changeset(
+        Map.merge(attrs, %{
+          code: code,
+          workspace_id: workspace["id"],
+          owner_user_id: user_id,
+          expires_at: expires_at
+        })
+      )
       |> Repo.insert()
       |> case do
         {:ok, claim} -> claim
@@ -233,13 +306,18 @@ defmodule Comma.IMessageLinks do
       end
     end)
     |> case do
-      {:ok, claim} -> {:ok, workspace, claim}
-      {:error, %Ecto.Changeset{}} -> create_claim(workspace, user_id, expires_at, attempts + 1)
-      {:error, reason} -> {:error, reason}
+      {:ok, claim} ->
+        {:ok, workspace, claim}
+
+      {:error, %Ecto.Changeset{}} ->
+        create_claim(workspace, user_id, expires_at, attrs, attempts + 1)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  defp create_claim(_workspace, _user_id, _expires_at, _attempts),
+  defp create_claim(_workspace, _user_id, _expires_at, _attrs, _attempts),
     do: {:error, :imessage_claim_unavailable}
 
   defp lock_workspace!(workspace_id) do
@@ -254,7 +332,7 @@ defmodule Comma.IMessageLinks do
   defp require_current_attempt!(%module{} = proof, workspace_id, user_id)
        when module == IMessageDMClaimCode do
     [{key, value}] = Ecto.primary_key(proof)
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     current = Repo.get_by(module, [{key, value}])
 
@@ -294,7 +372,9 @@ defmodule Comma.IMessageLinks do
         sender_handle: sender_handle,
         sender_label: sender_label,
         chat_guid: identity["chat_guid"],
-        connect_id: String.trim(connect_id)
+        connect_id: String.trim(connect_id),
+        transport: identity["transport"] || "relay",
+        assignment_id: identity["assignment_id"]
       })
       |> Repo.insert()
       |> case do

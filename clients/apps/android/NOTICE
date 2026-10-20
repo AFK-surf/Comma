@@ -1,0 +1,47 @@
+comma scroll module — third-party notices
+
+AndroidX RecyclerView
+https://android.googlesource.com/platform/frameworks/support/+/androidx-main/recyclerview/
+Copyright The Android Open Source Project
+License: Apache License, Version 2.0 (Apache-2.0)
+修改：改名、删减、重构和缺陷修复
+
+Helixform/FluidRecyclerView
+https://github.com/Helixform/FluidRecyclerView
+Copyright (C) 2023 Helixform
+License: Apache License, Version 2.0 (Apache-2.0)
+修改：改名、删减、重构和缺陷修复
+
+ktiays/fluid-scroll (scroll physics)
+https://github.com/ktiays/fluid-scroll
+Copyright ktiays
+License: Apache License, Version 2.0 (Apache-2.0)
+修改：改名、删减、重构和缺陷修复
+
+Modified by the comma authors.
+The original copyright and license headers are retained in the source files.
+The Apache-2.0 license text is included in
+app/src/main/assets/licenses/Apache-2.0.txt (assets/licenses/Apache-2.0.txt in the app).
+https://www.apache.org/licenses/LICENSE-2.0
+
+comma core module — third-party notices
+
+React Native JSI (com.facebook.react:react-android, its JSI library only)
+https://github.com/facebook/react-native
+Copyright (c) Meta Platforms, Inc. and affiliates.
+License: MIT
+
+Hermes (com.facebook.react:hermes-android, used as a library)
+https://github.com/facebook/hermes
+Copyright (c) Meta Platforms, Inc. and affiliates.
+License: MIT
+
+fbjni (com.facebook.fbjni:fbjni, used as a library)
+https://github.com/facebookincubator/fbjni
+Copyright (c) Meta Platforms, Inc. and affiliates.
+License: Apache License, Version 2.0 (Apache-2.0)
+
+SoLoader NativeLoader (com.facebook.soloader:nativeloader, used as a library)
+https://github.com/facebook/SoLoader
+Copyright (c) Meta Platforms, Inc. and affiliates.
+License: Apache License, Version 2.0 (Apache-2.0)

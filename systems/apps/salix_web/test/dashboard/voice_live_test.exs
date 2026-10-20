@@ -4,7 +4,7 @@ defmodule SalixWeb.Dashboard.VoiceLiveTest do
   settings round-trip with write-only secrets, voice keys are shown once and
   managed, and verified caller numbers take a PIN and can be removed.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest

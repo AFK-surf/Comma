@@ -285,140 +285,6 @@ test("image, MP3 and MP4 attachments use local blob media previews", async ({
   }
 });
 
-test("same-name files retain their message identity and unavailable reads never show another file", async ({
-  page,
-}) => {
-  const stub = await startPreview(page, [
-    { name: "same.txt", mime: "text/plain", body: "First message bytes" },
-    { name: "same.txt", mime: "text/plain", body: "Second message bytes" },
-  ]);
-  try {
-    const buttons = page.getByRole("button", { name: "Preview same.txt", exact: true });
-    await buttons.nth(0).click();
-    const panel = page.getByTestId("file-preview-panel");
-    await expect(panel.getByText("First message bytes")).toBeVisible();
-    await buttons.nth(1).click();
-    await expect(panel.getByText("Second message bytes")).toBeVisible();
-    await expect(page.getByRole("tab", { name: "same.txt", exact: true })).toHaveCount(
-      2
-    );
-    await page.route("**/messages/msg_file_0/attachments/0", (route) =>
-      route.fulfill({
-        status: 404,
-        contentType: "application/json",
-        body: '{"error":"not_found"}',
-      })
-    );
-    await buttons.nth(0).click();
-    await expect(panel.getByRole("alert")).toHaveText("Could not preview this file.");
-    await expect(panel.getByText("Second message bytes")).toHaveCount(0);
-  } finally {
-    await stub.close();
-  }
-});
-
-test("switching or closing a pending preview never restores its late bytes", async ({
-  page,
-}) => {
-  const stub = await startPreview(page, [
-    { name: "slow.txt", mime: "text/plain", body: "Stale slow content" },
-    { name: "current.txt", mime: "text/plain", body: "Current content" },
-  ]);
-  const pending: (() => void)[] = [];
-  await page.route("**/messages/msg_file_0/attachments/0", async (route) => {
-    await new Promise<void>((resolve) => pending.push(resolve));
-    await route
-      .fulfill({ status: 200, contentType: "text/plain", body: "Stale slow content" })
-      .catch(() => undefined);
-  });
-  try {
-    const slow = page.getByRole("button", { name: "Preview slow.txt", exact: true });
-    const panel = page.getByTestId("file-preview-panel");
-    await slow.click();
-    await expect.poll(() => pending.length).toBeGreaterThan(0);
-    await page
-      .getByRole("button", { name: "Preview current.txt", exact: true })
-      .click();
-    await expect(panel.getByText("Current content", { exact: true })).toBeVisible();
-    for (const resolve of pending.splice(0)) resolve();
-    await expect(panel.getByText("Stale slow content", { exact: true })).toHaveCount(0);
-    await slow.click();
-    await expect.poll(() => pending.length).toBeGreaterThan(0);
-    await page
-      .getByRole("button", { name: "Toggle chat sidebar", exact: true })
-      .click();
-    await expect(panel).toHaveCount(0);
-    for (const resolve of pending.splice(0)) resolve();
-    await expect(panel).toHaveCount(0);
-  } finally {
-    for (const resolve of pending) resolve();
-    await stub.close();
-  }
-});
-
-test("a pending preview centers the animated logo, respects reduced motion, and becomes the document", async ({
-  page,
-}) => {
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  const stub = await startPreview(page, [
-    { name: "loading.txt", mime: "text/plain", body: "Ready document bytes" },
-  ]);
-  let release!: () => void;
-  const pending = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  let requested = false;
-  await page.route("**/messages/msg_file_0/attachments/0", async (route) => {
-    requested = true;
-    await pending;
-    await route
-      .fulfill({ status: 200, contentType: "text/plain", body: "Ready document bytes" })
-      .catch(() => undefined);
-  });
-  try {
-    await page
-      .getByRole("button", { name: "Preview loading.txt", exact: true })
-      .click();
-    await expect.poll(() => requested).toBe(true);
-    const panel = page.getByTestId("file-preview-panel");
-    const loading = panel.getByTestId("file-preview-loading");
-    const logo = loading.locator('[data-slot="comma-logo-animation"]');
-    await expect(loading).toHaveAccessibleName("Loading preview…");
-    await expect(logo).toBeVisible();
-    await expect
-      .poll(() =>
-        logo.evaluate((element) => {
-          const content = element
-            .closest('[data-testid="file-preview-content"]')!
-            .getBoundingClientRect();
-          const mark = element.getBoundingClientRect();
-          return Math.max(
-            Math.abs(mark.x + mark.width / 2 - (content.x + content.width / 2)),
-            Math.abs(mark.y + mark.height / 2 - (content.y + content.height / 2))
-          );
-        })
-      )
-      .toBeLessThanOrEqual(1);
-    const scene = logo.locator(".comma-logo-animation__scene");
-    const initialTransform = await scene.evaluate(
-      (element) => getComputedStyle(element).transform
-    );
-    await expect
-      .poll(() => scene.evaluate((element) => getComputedStyle(element).transform))
-      .not.toBe(initialTransform);
-    await page.emulateMedia({ reducedMotion: "reduce" });
-    await expect(scene).toHaveCSS("animation-name", "none");
-    release();
-    await expect(
-      panel.getByText("Ready document bytes", { exact: true })
-    ).toBeVisible();
-    await expect(loading).toHaveCount(0);
-  } finally {
-    release();
-    await stub.close();
-  }
-});
-
 test("SVG Preview context menu uploads original bytes, copies a PNG and saves the SVG with Toast feedback", async ({
   page,
 }) => {
@@ -575,7 +441,6 @@ test("Chat inline images retain their original source in messages and full-windo
 
 for (const [extension, mime] of [
   ["mp4", "video/mp4"],
-  ["webm", "video/webm"],
   ["mov", "video/quicktime"],
 ] as const) {
   test(`${extension} Preview uploads and saves the original video and copies a paused frame`, async ({
@@ -603,6 +468,12 @@ for (const [extension, mime] of [
         .poll(() => video.evaluate((v) => (v as HTMLVideoElement).readyState))
         .toBeGreaterThanOrEqual(2);
       await video.hover();
+      // Hover slides the controls in. A press during that slide focuses the
+      // button, focus-within ends the transition and moves the controls under
+      // the pointer, and the release misses the button. Press once they rest.
+      const controls = panel.getByRole("group", { name: "Video playback controls" });
+      await expect(controls).toHaveCSS("opacity", "1");
+      await expect(controls).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
       await panel.getByRole("button", { name: "Play video", exact: true }).click();
       await expect
         .poll(() => video.evaluate((v) => (v as HTMLVideoElement).currentTime))

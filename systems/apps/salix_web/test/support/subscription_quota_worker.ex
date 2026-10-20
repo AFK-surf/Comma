@@ -9,14 +9,14 @@ defmodule SalixWeb.TestSubscriptionQuotaWorker do
   # the provider when account creation reads subscription details.
   def handle_call({:start, id, data, reply_to} = request, _from, worker) do
     if Jason.decode!(data)["op"] == "/quota" do
-      snapshot = %{"plan_type" => "pro", "windows" => []}
+      snapshot = %{"body" => %{"plan_type" => "pro"}}
 
-      send(
+      SystemsRuntime.Proc.send(
         reply_to,
         {:subscription, id, %{"type" => "data", "data" => Base.encode64(Jason.encode!(snapshot))}}
       )
 
-      send(reply_to, {:subscription, id, %{"type" => "done"}})
+      SystemsRuntime.Proc.send(reply_to, {:subscription, id, %{"type" => "done"}})
       {:reply, :ok, worker}
     else
       {:reply, GenServer.call(worker, request), worker}
@@ -24,7 +24,7 @@ defmodule SalixWeb.TestSubscriptionQuotaWorker do
   end
 
   def handle_cast({kind, id, _caller}, worker) when kind in [:ack, :cancel] do
-    GenServer.cast(worker, {kind, id, self()})
+    GenServer.cast(worker, {kind, id, SystemsRuntime.Proc.self()})
     {:noreply, worker}
   end
 end

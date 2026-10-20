@@ -8,7 +8,7 @@ defmodule SalixAgent.TestSupport.ColdPendingCapabilityStore do
      %{
        "request_id" => "cold-" <> tool_call_id,
        "status" => "pending",
-       "expires_at" => System.system_time(:second) + 600
+       "expires_at" => SystemsClock.system_time(:second) + 600
      }}
   end
 end

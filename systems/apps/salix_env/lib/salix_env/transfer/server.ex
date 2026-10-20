@@ -1,4 +1,6 @@
 defmodule SalixEnv.Transfer.Server do
+  require SystemsClock
+
   @moduledoc """
   Inbound byte-stream listener — the h2c transfer server's role in
   the BEAM rewrite. Bulk bytes never ride Erlang distribution (head-of-line
@@ -59,17 +61,17 @@ defmodule SalixEnv.Transfer.Server do
   defp maybe_deliver(owner, token, chunk), do: deliver(owner, token, {:chunk, chunk})
 
   defp deliver(owner, token, {:chunk, chunk}) do
-    send(owner, {:transfer_chunk, token, self(), chunk})
+    SystemsRuntime.Proc.send(owner, {:transfer_chunk, token, SystemsRuntime.Proc.self(), chunk})
     await_ack(token)
   end
 
   defp deliver(owner, token, :eof) do
-    send(owner, {:transfer_eof, token, self()})
+    SystemsRuntime.Proc.send(owner, {:transfer_eof, token, SystemsRuntime.Proc.self()})
     await_ack(token)
   end
 
   defp await_ack(token) do
-    receive do
+    SystemsClock.vreceive do
       {:transfer_ack, ^token} -> :ok
     after
       180_000 -> {:error, :transfer_ack_timeout}
@@ -77,7 +79,7 @@ defmodule SalixEnv.Transfer.Server do
   end
 
   defp await_completion(token) do
-    receive do
+    SystemsClock.vreceive do
       {:transfer_complete, ^token, envelope} when is_map(envelope) -> {:ok, envelope}
     after
       180_000 -> {:error, :transfer_completion_timeout}

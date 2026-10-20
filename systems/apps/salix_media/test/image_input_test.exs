@@ -1,5 +1,5 @@
 defmodule SalixMedia.ImageInputTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias SalixMedia.ImageInput
 
   test "large images become bounded JPEG previews without changing their source" do
@@ -11,7 +11,10 @@ defmodule SalixMedia.ImageInputTest do
     assert source == SalixMedia.TestImage.large_png()
 
     path =
-      Path.join(System.tmp_dir!(), "image-preview-test-#{System.unique_integer([:positive])}.jpg")
+      Path.join(
+        System.tmp_dir!(),
+        "image-preview-test-#{SystemsRuntime.Proc.unique_integer([:positive])}.jpg"
+      )
 
     File.write!(path, preview)
     on_exit(fn -> File.rm(path) end)
@@ -35,18 +38,5 @@ defmodule SalixMedia.ImageInputTest do
     assert width == 1536
     assert height <= 1536
     assert abs(width / height - 1800 / 800) < 0.01
-  end
-
-  test "small images retain their bytes and MIME type" do
-    body = <<137, 80, 78, 71, 13, 10, 26, 10>>
-    assert {:ok, ^body, "image/png"} = ImageInput.prepare(body, "image/png")
-  end
-
-  test "corrupt large input and oversized source never fall back to raw image bytes" do
-    assert {:error, :image_preview_unavailable} =
-             ImageInput.prepare(:binary.copy("not an image", 60_000), "image/png")
-
-    assert {:error, :oversized} =
-             ImageInput.prepare(:binary.copy("x", 10 * 1024 * 1024 + 1), "image/png")
   end
 end

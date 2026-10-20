@@ -1,11 +1,9 @@
 import { createContext } from "react";
-import type { CommaApiClient } from "../../../api";
 import type { ConversationFileSource } from "../../../runtime-files/fileSources";
 import type { UserAvatarProps } from "../../UserAvatar";
-import type { ChatMessage } from "../model/conversationChannel";
+import type { ChatMessage } from "@comma/core/chat";
 
 export type ThreadFileSource = {
-  api: CommaApiClient;
   groupId: string;
   conversationId: string;
   open?: ((source: ConversationFileSource) => void) | undefined;
@@ -28,6 +26,8 @@ export const ThreadFileSourceContext = createContext<ThreadFileSource | undefine
 );
 export const ThreadDefaultActorRoleContext =
   createContext<ChatMessage["actorRole"]>(undefined);
+/** In a Task: the maker of the model its Worker runs, whose mark stands for the Worker's messages. */
+export const ThreadWorkerVendorContext = createContext<string | undefined>(undefined);
 export const ThreadUserAvatarContext = createContext<ThreadUserAvatar | undefined>(
   undefined
 );

@@ -18,7 +18,7 @@ defmodule Comma.Salix.Client do
   @callback update_workspace_agent_model(
               workspace :: map(),
               role :: String.t(),
-              template_id :: String.t() | nil
+              model :: map() | nil
             ) :: {:ok, map()} | {:error, term()}
 
   @callback update_workspace_vm(workspace :: map(), vm :: map()) :: :ok | {:error, term()}
@@ -39,6 +39,7 @@ defmodule Comma.Salix.Client do
               {:ok, map()} | {:error, term()}
   @callback list_group_conversations(workspace :: map(), opts :: keyword()) ::
               {:ok, map()} | {:error, term()}
+  @callback list_group_activity_tasks(workspace :: map()) :: {:ok, map()} | {:error, term()}
   @callback search_group_tasks(
               workspace :: map(),
               query :: String.t(),
@@ -90,6 +91,13 @@ defmodule Comma.Salix.Client do
               kind :: String.t(),
               subscriber :: pid()
             ) :: {:ok, map()} | {:error, term()}
+  @callback subscribe_group_conversation_mutations(
+              workspace :: map(),
+              subscriber :: pid()
+            ) :: {:ok, map()} | {:error, term()}
+  @callback list_station_tasks(workspace :: map()) :: {:ok, [map()]} | {:error, term()}
+  @callback subscribe_station_tasks(workspace :: map(), subscriber :: pid()) ::
+              :ok | {:error, term()}
   @callback subscribe_group_conversation_participant(
               workspace :: map(),
               conversation_id :: String.t(),
@@ -125,6 +133,14 @@ defmodule Comma.Salix.Client do
   @callback set_task_archived(map(), String.t(), :archive | :unarchive, pos_integer()) ::
               {:ok, map()} | {:error, term()}
 
+  @callback set_task_status(
+              workspace :: map(),
+              conversation_id :: String.t(),
+              status :: String.t(),
+              expected_updated_at :: pos_integer(),
+              user_id :: String.t()
+            ) :: {:ok, map()} | {:error, term()}
+
   @callback accept_task_review(
               workspace :: map(),
               conversation_id :: String.t(),
@@ -138,6 +154,23 @@ defmodule Comma.Salix.Client do
   @callback task_activity_participants(workspace :: map(), conversation_id :: String.t()) ::
               {:ok, [map()]} | {:error, term()}
   @optional_callbacks task_activity_participants: 2
+
+  @doc """
+  Where a Task runs and the model it runs (`place`, `model`), which Task
+  panels show instead of its Agent.
+  """
+  @callback task_run(workspace :: map(), conversation_id :: String.t()) ::
+              {:ok, map()} | {:error, term()}
+  @optional_callbacks task_run: 2
+
+  @doc """
+  The Background Loops of at most 50 Tasks of the Workspace's default Group,
+  in one indexed read: `%{conversation_id => view}` (`SalixIM.Ports.TaskLoops`).
+  A Task without a Loop is absent.
+  """
+  @callback task_loops(workspace :: map(), conversation_ids :: [String.t()]) ::
+              {:ok, %{String.t() => map()}} | {:error, term()}
+  @optional_callbacks task_loops: 2
 
   @callback conversation_activity_context(workspace :: map(), conversation_id :: String.t()) ::
               {:ok, map()} | {:error, term()}
@@ -166,6 +199,67 @@ defmodule Comma.Salix.Client do
             ) ::
               {:ok, binary()} | {:error, term()}
 
+  @doc """
+  One page of the Router VFS files under `dir` (a `/`-terminated prefix), in
+  path order, as seen by the Comma user `opts[:reader]`: a file the user may
+  not read is left out. `opts[:cursor]` is the last path of the previous page.
+  Answers `%{"files" => [%{"path", "size", "hash", "modified_at"}], "next_cursor" => path | nil}`.
+  """
+  @callback list_agent_files(workspace :: map(), dir :: String.t(), opts :: keyword()) ::
+              {:ok, map()} | {:error, term()}
+
+  @doc """
+  Reads one Router VFS file as the Comma user `reader`, as
+  `%{"content" => binary, "hash" => hash}`; `:not_found` when they may not read it.
+  """
+  @callback read_agent_file_as(
+              workspace :: map(),
+              path :: String.t(),
+              max_bytes :: pos_integer(),
+              reader :: String.t()
+            ) :: {:ok, map()} | {:error, term()}
+
+  @doc """
+  Replaces (or creates) one Router VFS file for the Comma user `opts[:reader]`.
+  The file keeps the audience it already had. With `opts[:expected_hash]`, a
+  file whose content changed (or is absent) answers `{:conflict, _}`. The
+  result carries the new `"hash"`.
+  """
+  @callback write_agent_file_as(
+              workspace :: map(),
+              path :: String.t(),
+              body :: binary(),
+              opts :: keyword()
+            ) :: {:ok, map()} | {:error, term()}
+
+  @doc """
+  Deletes one Router VFS file for the Comma user `opts[:reader]`, with the same
+  `opts[:expected_hash]` precondition; `:not_found` when they may not read it.
+  """
+  @callback delete_agent_file(workspace :: map(), path :: String.t(), opts :: keyword()) ::
+              {:ok, map()} | {:error, term()}
+
+  @doc """
+  The Router's effective instructions: its `router_system_prompt`, else its
+  `system_prompt`, else `""`.
+  """
+  @callback get_router_instructions(workspace :: map()) ::
+              {:ok, String.t()} | {:error, term()}
+
+  @optional_callbacks list_agent_files: 3,
+                      read_agent_file_as: 4,
+                      write_agent_file_as: 4,
+                      delete_agent_file: 3,
+                      get_router_instructions: 1
+
+  @callback get_group_condensed_workspace(workspace :: map()) :: {:ok, map()} | {:error, term()}
+  @callback set_group_condensed_workspace_enabled(workspace :: map(), enabled :: boolean()) ::
+              {:ok, map()} | {:error, term()}
+  @callback update_group_condensed_workspace(
+              workspace :: map(),
+              operations :: list(),
+              user_id :: String.t()
+            ) :: {:ok, map()} | {:error, term()}
   @callback list_group_task_labels(workspace :: map()) :: {:ok, map()} | {:error, term()}
   @callback update_group_task_label_policy(workspace :: map(), policy :: String.t()) ::
               {:ok, map()} | {:error, term()}
@@ -183,6 +277,9 @@ defmodule Comma.Salix.Client do
 
   @optional_callbacks conversation_uses_private_model?: 2,
                       verify_workspace_scope: 1,
+                      get_group_condensed_workspace: 1,
+                      set_group_condensed_workspace_enabled: 2,
+                      update_group_condensed_workspace: 3,
                       list_group_task_labels: 1,
                       create_group_task_label: 2,
                       update_group_task_label_policy: 2,
@@ -196,6 +293,7 @@ defmodule Comma.Salix.Client do
                       append_group_router_conversation_message: 2,
                       reserve_group_conversation_message: 3,
                       list_group_conversations: 2,
+                      list_group_activity_tasks: 1,
                       search_group_tasks: 3,
                       get_group_conversation: 2,
                       list_group_conversation_pins: 1,
@@ -208,9 +306,13 @@ defmodule Comma.Salix.Client do
                       list_group_conversation_message_page: 3,
                       subscribe_group_conversation: 3,
                       subscribe_group_conversation_list: 3,
+                      subscribe_group_conversation_mutations: 2,
+                      list_station_tasks: 1,
+                      subscribe_station_tasks: 2,
                       subscribe_group_conversation_participant: 4,
                       get_group_conversation_participant_status: 3,
                       accept_task_review: 3,
+                      set_task_status: 5,
                       set_task_archived: 4,
                       ensure_group_conversation_user_participant: 3,
                       reconcile_group_conversation_router_participant: 2,
@@ -236,7 +338,7 @@ defmodule Comma.Salix.Client do
 
   @optional_callbacks drive_binding: 1, put_drive_binding: 2
 
-  def impl, do: Application.get_env(:comma_core, :salix_client, Comma.Salix.Runtime)
+  def impl, do: SystemsRuntime.get_env(:comma_core, :salix_client, Comma.Salix.Runtime)
 
   def conversation_uses_private_model?(workspace, conversation) do
     module = impl()
@@ -244,6 +346,14 @@ defmodule Comma.Salix.Client do
     Code.ensure_loaded?(module) and
       function_exported?(module, :conversation_uses_private_model?, 2) and
       module.conversation_uses_private_model?(workspace, conversation)
+  end
+
+  # A client without the Loop runtime has no Loops, as `SalixIM.Ports.TaskLoops` without a binding.
+  def task_loops(workspace, conversation_ids) do
+    case call_optional(:task_loops, [workspace, conversation_ids]) do
+      {:error, :salix_client_not_configured} -> {:ok, %{}}
+      result -> result
+    end
   end
 
   def drive_binding(workspace), do: call_optional(:drive_binding, [workspace])
@@ -255,9 +365,33 @@ defmodule Comma.Salix.Client do
     call_optional(:get_workspace_agent_models, [workspace])
   end
 
-  def update_workspace_agent_model(workspace, role, template_id) do
-    call_optional(:update_workspace_agent_model, [workspace, role, template_id])
+  def update_workspace_agent_model(workspace, role, model) do
+    call_optional(:update_workspace_agent_model, [workspace, role, model])
   end
+
+  def list_agent_files(workspace, dir, opts),
+    do: call_optional(:list_agent_files, [workspace, dir, opts])
+
+  def read_agent_file_as(workspace, path, max_bytes, reader),
+    do: call_optional(:read_agent_file_as, [workspace, path, max_bytes, reader])
+
+  def write_agent_file_as(workspace, path, body, opts),
+    do: call_optional(:write_agent_file_as, [workspace, path, body, opts])
+
+  def delete_agent_file(workspace, path, opts),
+    do: call_optional(:delete_agent_file, [workspace, path, opts])
+
+  def get_router_instructions(workspace),
+    do: call_optional(:get_router_instructions, [workspace])
+
+  def get_group_condensed_workspace(workspace),
+    do: call_optional(:get_group_condensed_workspace, [workspace])
+
+  def set_group_condensed_workspace_enabled(workspace, enabled),
+    do: call_optional(:set_group_condensed_workspace_enabled, [workspace, enabled])
+
+  def update_group_condensed_workspace(workspace, operations, user_id),
+    do: call_optional(:update_group_condensed_workspace, [workspace, operations, user_id])
 
   def list_group_task_labels(workspace) do
     call_optional(:list_group_task_labels, [workspace])

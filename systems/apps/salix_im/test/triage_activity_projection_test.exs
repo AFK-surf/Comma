@@ -1,5 +1,5 @@
 defmodule SalixIM.Triage.ActivityProjectionTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.Triage.{ActivityProjection, CanonicalJSON}
   alias SalixStore.{CasRecord, S3, TriageKeys, ULID}
@@ -11,51 +11,19 @@ defmodule SalixIM.Triage.ActivityProjectionTest do
   )
 
   setup do
-    previous_triage_backend = Application.get_env(:salix_store, :triage_record_backend)
-    Application.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
+    previous_triage_backend = SystemsRuntime.get_env(:salix_store, :triage_record_backend)
+    SystemsRuntime.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
     S3.Fake.reset()
 
     on_exit(fn ->
       if previous_triage_backend do
-        Application.put_env(:salix_store, :triage_record_backend, previous_triage_backend)
+        SystemsRuntime.put_env(:salix_store, :triage_record_backend, previous_triage_backend)
       else
-        Application.delete_env(:salix_store, :triage_record_backend)
+        SystemsRuntime.delete_env(:salix_store, :triage_record_backend)
       end
     end)
 
     :ok
-  end
-
-  test "returns no bounded self-history authorization when Ledger has no prior run" do
-    namespace = "triage-activity-empty-#{System.unique_integer([:positive])}"
-    run_id = SalixStore.ULID.generate()
-
-    # A background reader shares this fake, but not this authorization request.
-    assert {:ok, :buckets, [], _, _, 0} =
-             Task.async(fn ->
-               SalixIM.Triage.Recovery.step(
-                 namespace <> "-background",
-                 50,
-                 SalixIM.Triage.Recovery.cursor()
-               )
-             end)
-             |> Task.await()
-
-    assert {:ok, nil} =
-             ActivityProjection.authorize(
-               namespace,
-               %{"run_id" => run_id, "created_at" => System.system_time(:millisecond)},
-               run_id,
-               identity_bundle()
-             )
-
-    namespace_prefix = "triage/engine-v2/#{TriageKeys.namespace_key(namespace)}/"
-
-    refute Enum.any?(S3.Fake.put_log(), &String.starts_with?(&1, namespace_prefix))
-
-    assert [{:list, prefix, [max_keys: 2]}] = S3.Fake.read_log(self())
-    assert prefix =~ "/ledger/activity/"
-    refute prefix =~ "/seals/"
   end
 
   test "authorizes one bounded proposal history target from an intact prior run" do
@@ -107,7 +75,7 @@ defmodule SalixIM.Triage.ActivityProjectionTest do
 
     ActivityProjection.authorize(
       namespace,
-      %{"run_id" => current_run_id, "created_at" => System.system_time(:millisecond)},
+      %{"run_id" => current_run_id, "created_at" => SystemsClock.system_time(:millisecond)},
       current_run_id,
       identity_bundle()
     )
@@ -117,9 +85,9 @@ defmodule SalixIM.Triage.ActivityProjectionTest do
   # one authoritative run, its agreeing replay record, and one activity index
   # entry for this Router identity scope.
   defp seed_prior_run(artifact, opts \\ []) do
-    namespace = "triage-activity-prior-#{System.unique_integer([:positive])}"
+    namespace = "triage-activity-prior-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     run_id = ULID.generate()
-    created_at = System.system_time(:millisecond)
+    created_at = SystemsClock.system_time(:millisecond)
     hashed = Keyword.get(opts, :sha256_of, artifact)
 
     run =

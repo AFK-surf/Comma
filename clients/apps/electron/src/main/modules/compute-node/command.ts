@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { realMainClock, type MainClock } from "../../clock";
 
 export class ComputeNodeCommandError extends Error {
   constructor(
@@ -36,11 +37,12 @@ export function runCommand(
   args: string[],
   stdin?: string,
   timeoutMs = 15_000,
-  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; clock?: MainClock } = {}
 ): Promise<string> {
+  const { clock = realMainClock, ...spawnOptions } = options;
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, {
-      ...options,
+      ...spawnOptions,
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -50,7 +52,7 @@ export function runCommand(
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
+      cancelTimeout();
       callback();
     };
     const signalProcessTree = (signal: NodeJS.Signals) => {
@@ -66,10 +68,9 @@ export function runCommand(
     };
     const terminate = () => {
       signalProcessTree("SIGTERM");
-      const force = setTimeout(() => signalProcessTree("SIGKILL"), 1_000);
-      force.unref();
+      clock.setTimer(1_000, () => signalProcessTree("SIGKILL"));
     };
-    const timeout = setTimeout(() => {
+    const cancelTimeout = clock.setTimer(timeoutMs, () => {
       terminate();
       finish(() =>
         reject(
@@ -79,8 +80,7 @@ export function runCommand(
           )
         )
       );
-    }, timeoutMs);
-    timeout.unref();
+    });
     child.stdout.on("data", (chunk: Buffer) => appendCommandOutput(stdout, chunk));
     child.stderr.on("data", (chunk: Buffer) => appendCommandOutput(stderr, chunk));
     child.once("error", (error) => finish(() => reject(error)));
@@ -108,9 +108,19 @@ function readNativeCommandError(
   try {
     const value = JSON.parse(stdout) as {
       error?: { code?: unknown; reason?: unknown };
+      failureCode?: unknown;
+      failureStage?: unknown;
     };
     if (typeof value.error?.code === "string" && typeof value.error.reason === "string")
       return { code: value.error.code, reason: value.error.reason };
+    if (typeof value.failureCode === "string")
+      return {
+        code: value.failureCode,
+        reason:
+          typeof value.failureStage === "string"
+            ? value.failureStage
+            : "operation_failed",
+      };
   } catch {
     /* Old helpers do not return structured errors. Their outcome remains unavailable. */
   }

@@ -1,4 +1,6 @@
-import { commaThemeChromaGainMax, oklchChromaEnvelope } from "@comma/ui";
+import { installUiClock } from "@comma/ui/clock";
+import { createVirtualUiClock } from "@comma/ui/clock/virtual";
+import { commaThemeChromaGainMax, oklchChromaEnvelope } from "@comma/ui/tokens";
 import { CommaI18nProvider } from "@comma/i18n/react";
 import { initializeCommaI18n } from "@comma/i18n";
 import {
@@ -7,7 +9,14 @@ import {
   type AppPreferences,
   type AppPreferencesPatch,
 } from "@comma/native-bridge";
-import { act, fireEvent, render, screen, waitFor } from "@comma/test-utils/render";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@comma/test-utils/render";
 import {
   createNativeStateBridgeMock,
   installNativeBridgeMock,
@@ -547,6 +556,41 @@ describe("CustomThemeStudio", () => {
 
     fireEvent.keyDown(chroma, { key: "Home" });
     expect(chroma).toHaveAttribute("aria-valuenow", "0");
+  });
+
+  it("settles an indicator to the same place at a moment whatever the frame rate before it", () => {
+    // Hue is dragged past the pad's edge and let go at 400ms; at 600ms it is
+    // still springing back.
+    const hueAt600ms = (frameMs: number) => {
+      const clock = createVirtualUiClock({ frameMs });
+      const restore = installUiClock(clock);
+      try {
+        const pad = renderStudio(separatedColor);
+        act(() => clock.advance(200));
+        const rest = channelCenter(
+          "hue",
+          separatedColor.hue,
+          separatedColor.chroma,
+          separatedColor.lightness,
+          200,
+          100
+        );
+        fireEvent.pointerDown(pad, { clientX: rest.x, clientY: rest.y, pointerId: 1 });
+        fireEvent.pointerMove(pad, { clientX: 290, clientY: 40, pointerId: 1 });
+        act(() => clock.advance(200));
+        fireEvent.pointerUp(pad, { clientX: 290, clientY: 40, pointerId: 1 });
+        act(() => clock.advance(200));
+        const transform = indicatorsByChannel(pad).hue.style.transform;
+        cleanup();
+        return transform;
+      } finally {
+        restore();
+      }
+    };
+    const at60fps = hueAt600ms(1000 / 60);
+    expect(hueAt600ms(100)).toBe(at60fps);
+    // One frame after the release, at 600ms: straight to the moment.
+    expect(hueAt600ms(200)).toBe(at60fps);
   });
 
   it("implements the complete bounded Hue slider keyboard range", () => {

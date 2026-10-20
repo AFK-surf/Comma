@@ -1,5 +1,5 @@
 defmodule BillingCore.Gpt61FireworksPricingTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   Code.require_file(
     "../../priv/repo/migrations/20260930000001_seed_gpt61_sol_and_fireworks_glm52_pricing.exs",

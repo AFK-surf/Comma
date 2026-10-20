@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="task_action_hide" type="id" />
+    <item name="task_ref_directory" type="id" />
+</resources>

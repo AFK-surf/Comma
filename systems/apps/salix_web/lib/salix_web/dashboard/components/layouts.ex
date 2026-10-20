@@ -8,8 +8,8 @@ defmodule SalixWeb.Dashboard.Layouts do
   The `app/1` layout is the LiveView layout (`{Layouts, :app}`). It reads:
 
     * `@active_nav`  — atom marking the active sidebar item
-      (`:home | :cluster | :tenants | :templates | :groups | :initial_agents |
-        :agents | :environments | :im | :oauth | :composio | :drive | :cloud_vm | :voice | :signal | :config`)
+      (`:home | :cluster | :tenants | :groups | :initial_agents |
+        :agents | :environments | :im | :oauth | :composio | :drive | :cloud_vm | :voice | :signal`)
     * `@breadcrumbs` — list of `{label, path | nil}` for the topbar; default `[]`
     * `@flash`       — the flash map (always present in LiveView)
 
@@ -141,7 +141,9 @@ defmodule SalixWeb.Dashboard.Layouts do
         <.nav_item label="Cluster" icon="server" navigate="/dash/cluster" active={@active_nav == :cluster} />
         <.nav_item label="Tenants" icon="building-office" navigate="/dash/tenants" active={@active_nav == :tenants} />
         <.nav_item label="Subscription Proxy" icon="key" navigate="/dash/account-pool" active={@active_nav == :account_pool} />
-        <.nav_item label="Templates" icon="template" navigate="/dash/templates" active={@active_nav == :templates} />
+        <.nav_item label="Platform Profiles" icon="key" navigate="/dash/platform-profiles" active={@active_nav == :platform_profiles} />
+        <.nav_item label="Platform model" icon="template" navigate="/dash/platform-model" active={@active_nav == :platform_models} />
+        <.nav_item label="Media settings" icon="template" navigate="/dash/media-settings" active={@active_nav == :media_settings} />
         <.nav_item label="Agent Groups" icon="folder" navigate="/dash/groups" active={@active_nav == :groups} />
         <.nav_item label="Initial Agents" icon="cube" navigate="/dash/initial-agents" active={@active_nav == :initial_agents} />
         <.nav_item label="Agents" icon="cube" navigate="/dash/agents" active={@active_nav == :agents} />
@@ -164,7 +166,6 @@ defmodule SalixWeb.Dashboard.Layouts do
         />
         <.nav_item label="Voice" icon="chat" navigate="/dash/voice" active={@active_nav == :voice} />
         <.nav_item label="Signal" icon="chat" navigate="/dash/signal" active={@active_nav == :signal} />
-        <.nav_item label="Config" icon="cog" navigate="/dash/agent-defaults" active={@active_nav == :config} />
         <.nav_item label="LiveDashboard" icon="server" navigate="/dash/live-dashboard" active={@active_nav == :live_dashboard} />
       </nav>
 

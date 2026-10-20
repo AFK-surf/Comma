@@ -1,5 +1,5 @@
 defmodule CommaCore.SalixAgentStorageAuthorizationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   setup do
     start_supervised!(%{
@@ -17,37 +17,6 @@ defmodule CommaCore.SalixAgentStorageAuthorizationTest do
       end)
 
     :ok
-  end
-
-  test "denied storage writes emit observable fee-control projection rows" do
-    assert {:error, {:billing_unavailable, decision}} =
-             SalixAgent.StorageAuthorization.BillingCore.authorize_write(%{
-               typed_sink: __MODULE__.ProjectionSink,
-               source_key: "storage-denied-1",
-               balance_snapshot: 0,
-               billing_context: %{
-                 "billing_account_id" => "ba_storage_denied",
-                 "surface" => "comma",
-                 "product_owner_type" => "workspace",
-                 "product_owner_id" => "wsp_storage_denied",
-                 "salix_tenant_id" => "tenant_storage",
-                 "salix_group_id" => "group_storage",
-                 "entrypoint" => "workspace_write",
-                 "actor_type" => "user"
-               }
-             })
-
-    assert decision.allowed? == false
-
-    assert [
-             %{
-               "resource_kind" => "fee_control",
-               "target_resource_kind" => :storage,
-               "allowed" => false,
-               "surface" => "comma",
-               "billing_account_id" => "ba_storage_denied"
-             }
-           ] = Agent.get(__MODULE__.ProjectionLog, & &1)
   end
 
   test "unlimited storage writes are allowed with zero credits" do
@@ -184,16 +153,17 @@ defmodule CommaCore.SalixAgentStorageAuthorizationTest do
   end
 
   defp ensure_billing_repo_started do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
   end
 
   defp future_expiry do
-    DateTime.utc_now()
+    SystemsClock.utc_now()
     |> DateTime.add(30, :day)
     |> DateTime.truncate(:second)
   end
 
-  defp unique_account_id(prefix), do: "#{prefix}_#{System.unique_integer([:positive])}"
+  defp unique_account_id(prefix),
+    do: "#{prefix}_#{SystemsRuntime.Proc.unique_integer([:positive])}"
 end

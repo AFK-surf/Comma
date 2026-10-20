@@ -1,28 +1,10 @@
-import { z } from "zod";
+import type { LocalFileRegistrationFailure } from "@comma/core/contract";
 import { getCurrentNativeSessionAdmission } from "../session/native-session-admission";
 import {
   LocalFileSnapshotError,
-  LocalFileSnapshotStore,
+  type LocalFileSnapshotStore,
   type LocalFileSnapshot,
 } from "./snapshot-store";
-
-const registrationResponseSchema = z
-  .object({
-    local_file_ref: z.string().regex(/^lfi1_[A-Za-z0-9_-]{43}$/),
-    state: z.literal("registered"),
-  })
-  .strict();
-
-const ownerUpgradeRequiredResponseSchema = z
-  .object({
-    action: z.literal("reissue_connector_token"),
-    connector_token_endpoint: z.string().min(1),
-    error: z.literal("connector_reconfiguration_required"),
-    reason: z.literal("connector_owner_missing"),
-  })
-  .strict();
-
-const REGISTRATION_TIMEOUT_MS = 15_000;
 
 export interface LocalFileRouteRegistrar {
   /**
@@ -30,12 +12,17 @@ export interface LocalFileRouteRegistrar {
    * workspace connector can start connecting while the native dialog is open.
    */
   prewarm?(workspaceId: string): void;
+  /** `intakeId`: the chat intake the file is for (the core checks it is still the draft's before each request). */
   register(
     workspaceId: string,
     snapshot: LocalFileSnapshot,
-    assertRegistrationAllowed: () => void
+    assertRegistrationAllowed: () => void,
+    intakeId?: string
   ): Promise<void>;
 }
+
+/** A call to the client core (Main's own client). */
+export type CoreCall = (name: string, params: unknown) => Promise<unknown>;
 
 export interface LocalFileRegistrationTarget {
   connectorRunId: string;
@@ -67,36 +54,34 @@ export class LocalFileRouteRegistrationError extends LocalFileSnapshotError {
 }
 
 /**
- * Main-only authenticated ref registration. The request carries the product
- * workspace, opaque ref, and the exact V2 Connector status target observed by
- * Main. It never carries a host path, file bytes, or connection generation.
- * The server derives the owner from the exact Session credential, authorizes
- * registration only against the current Registry run, and derives the read
- * generation later at admission time.
+ * A local file's route, registered by the client core (`localFiles.register`: the request, its retry and what its
+ * failure means for the bytes). Main resolves the exact V2 Connector target it runs, checks the caller's fence, and
+ * marks the snapshot registered once the core answers. Nothing but the workspace, the opaque ref and the target goes
+ * to the core: no host path, no bytes.
  */
 export class LocalFileRouteRegistrationService implements LocalFileRouteRegistrar {
-  readonly #fetch: typeof fetch;
+  readonly #call: CoreCall;
   readonly #onConnectorReconfigurationRequired:
     | ((workspaceId: string) => void)
     | undefined;
   readonly #prewarmTarget: ((workspaceId: string) => void) | undefined;
   readonly #resolveTarget: ResolveLocalFileRegistrationTarget;
-  readonly #store: LocalFileSnapshotStore;
+  readonly #store: Pick<LocalFileSnapshotStore, "markRegistered">;
 
   constructor({
-    fetch: fetchImplementation = fetch,
+    call,
     onConnectorReconfigurationRequired,
     prewarmTarget,
     resolveTarget,
     store,
   }: {
-    fetch?: typeof fetch;
+    call: CoreCall;
     onConnectorReconfigurationRequired?: (workspaceId: string) => void;
     prewarmTarget?: (workspaceId: string) => void;
     resolveTarget: ResolveLocalFileRegistrationTarget;
-    store: LocalFileSnapshotStore;
+    store: Pick<LocalFileSnapshotStore, "markRegistered">;
   }) {
-    this.#fetch = fetchImplementation;
+    this.#call = call;
     this.#onConnectorReconfigurationRequired = onConnectorReconfigurationRequired;
     this.#prewarmTarget = prewarmTarget;
     this.#resolveTarget = resolveTarget;
@@ -112,10 +97,10 @@ export class LocalFileRouteRegistrationService implements LocalFileRouteRegistra
   async register(
     workspaceId: string,
     snapshot: LocalFileSnapshot,
-    assertRegistrationAllowed: () => void
+    assertRegistrationAllowed: () => void,
+    intakeId?: string
   ) {
-    const admission = getCurrentNativeSessionAdmission();
-    const credential = admission.credential;
+    const { credential } = getCurrentNativeSessionAdmission();
     const normalizedWorkspaceId = workspaceId.trim();
     if (!normalizedWorkspaceId || normalizedWorkspaceId.length > 160) {
       throw unavailable("rejected");
@@ -142,113 +127,51 @@ export class LocalFileRouteRegistrationService implements LocalFileRouteRegistra
         true
       );
     }
-
-    const url = new URL(
-      `/v1/comma/workspaces/${encodeURIComponent(normalizedWorkspaceId)}/local-file-refs`,
-      credential.audience
-    );
-    if (url.origin !== credential.audience) throw unavailable("rejected");
-
-    const body = JSON.stringify({
-      connector_run_id: connectorRunId,
-      local_file_index_version: 2,
-      local_file_ref: snapshot.localFileRef,
-      stable_device_id: deviceId,
-    });
-    let mayHaveCommitted = false;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      if (credential.signal.aborted) {
-        throw unavailable(mayHaveCommitted ? "ambiguous" : "rejected");
-      }
-      // resolveTarget and prior attempts cross async boundaries. Revalidate
-      // the exact Chat intake claim after all of them and immediately before
-      // every possible HTTP dispatch.
-      try {
-        assertRegistrationAllowed();
-      } catch {
-        // Before the first dispatch this is a definite local rejection and
-        // the draft may be released. After an ambiguous dispatch, preserve
-        // the snapshot even though the stale fence forbids any retry.
-        throw unavailable(mayHaveCommitted ? "ambiguous" : "rejected");
-      }
-      let response: Response;
-      try {
-        response = await this.#fetch(url, {
-          body,
-          credentials: "omit",
-          headers: {
-            accept: "application/json",
-            authorization: `Bearer ${credential.token}`,
-            "content-type": "application/json",
-          },
-          method: "POST",
-          redirect: "manual",
-          signal: AbortSignal.any([
-            credential.signal,
-            AbortSignal.timeout(REGISTRATION_TIMEOUT_MS),
-          ]),
-        });
-      } catch {
-        // Once a request was dispatched, a transport failure cannot prove
-        // that the server did not commit it. A later definite rejection must
-        // not erase that ambiguity and authorize deletion of the local bytes.
-        mayHaveCommitted = true;
-        if (attempt === 0 && !credential.signal.aborted) continue;
-        throw unavailable("ambiguous");
-      }
-      if (!response.ok || response.status < 200 || response.status >= 300) {
-        if (response.status >= 500) {
-          mayHaveCommitted = true;
-          if (attempt === 0) continue;
-        }
-        const ownerUpgradeRequired =
-          response.status === 409
-            ? ownerUpgradeRequiredResponseSchema.safeParse(
-                await response.json().catch(() => null)
-              )
-            : undefined;
-        if (
-          ownerUpgradeRequired?.success &&
-          ownerUpgradeRequired.data.connector_token_endpoint ===
-            `/v1/comma/workspaces/${encodeURIComponent(normalizedWorkspaceId)}/connector-token`
-        ) {
+    // Resolution crossed async boundaries: the caller's fence holds still, or nothing goes.
+    try {
+      assertRegistrationAllowed();
+    } catch {
+      throw unavailable("rejected");
+    }
+    try {
+      await this.#call("localFiles.register", {
+        workspace: normalizedWorkspaceId,
+        localFileRef: snapshot.localFileRef,
+        connectorRunId,
+        deviceId,
+        ...(intakeId ? { intakeId } : {}),
+      });
+    } catch (error) {
+      const { code, detail, message } = (error ?? {}) as {
+        code?: unknown;
+        detail?: Partial<LocalFileRegistrationFailure>;
+        message?: string;
+      };
+      if (code === "local_file_unavailable" && detail?.outcome) {
+        if (detail.remediation === "reissue_connector_token")
           // Recycling restarts the workspace connector with a freshly minted
           // token in the background, so the user's next selection succeeds
           // without any manual reconnect step.
           this.#onConnectorReconfigurationRequired?.(normalizedWorkspaceId);
-          throw unavailable(
-            mayHaveCommitted ? "ambiguous" : "rejected",
-            "Reconnect this workspace's Comma Connector with a newly issued token, then select the file again.",
-            "reissue_connector_token",
-            true
-          );
-        }
         throw unavailable(
-          mayHaveCommitted ? "ambiguous" : "rejected",
-          undefined,
-          undefined,
-          response.status === 408 || response.status === 429 || response.status >= 500
+          detail.outcome,
+          message,
+          detail.remediation,
+          detail.retryable ?? detail.outcome === "ambiguous"
         );
       }
-      const responseBody = await response.json().catch(() => null);
-      const parsed = registrationResponseSchema.safeParse(responseBody);
-      if (!parsed.success || parsed.data.local_file_ref !== snapshot.localFileRef) {
-        mayHaveCommitted = true;
-        if (attempt === 0) continue;
-        throw unavailable("ambiguous");
-      }
-
-      try {
-        await this.#store.markRegistered(snapshot.localFileRef);
-      } catch {
-        // The authenticated server already returned success. A local
-        // transition/fsync failure must not delete the bytes behind that
-        // durable route; bounded reconciliation/cleanup owns settlement.
-        throw unavailable("ambiguous", undefined, undefined, false);
-      }
-      return;
+      // The core refused the call itself: nothing went out. Without its answer (it went away), a request may have.
+      throw unavailable(typeof code === "string" ? "rejected" : "ambiguous");
     }
-    throw unavailable("ambiguous");
+
+    try {
+      await this.#store.markRegistered(snapshot.localFileRef);
+    } catch {
+      // The authenticated server already returned success. A local
+      // transition/fsync failure must not delete the bytes behind that
+      // durable route; bounded reconciliation/cleanup owns settlement.
+      throw unavailable("ambiguous", undefined, undefined, false);
+    }
   }
 }
 

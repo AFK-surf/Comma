@@ -1,9 +1,9 @@
 import type { BrowserSidebarInspectResult } from "@comma/native-bridge";
 import { describe, expect, it } from "vitest";
+import { stripBrowserElementInspectionContext } from "@comma/core/chat";
 import {
+  browserElementInspectionFiles,
   buildBrowserElementInspectionMessage,
-  parseBrowserElementInspectionMessage,
-  stripBrowserElementInspectionContext,
 } from "../browserElementInspection";
 
 const inspection = {
@@ -33,21 +33,26 @@ describe("browser element inspection context", () => {
     expect(message).toContain("Bounding rect: x=20, y=40.1, width=80, height=32");
   });
 
+  it("sends the element's screenshot as the message's image and names it in the context", () => {
+    const screenshot = new Uint8Array([137, 80, 78, 71]);
+    const withScreenshot = { ...inspection, screenshot };
+
+    expect(browserElementInspectionFiles(withScreenshot)).toEqual([
+      { bytes: screenshot, name: "inspected-element.png", size: 4 },
+    ]);
+    expect(buildBrowserElementInspectionMessage(withScreenshot)).toContain(
+      "Screenshot: attached as inspected-element.png"
+    );
+    // An element that was not on screen goes with its DOM context alone.
+    expect(browserElementInspectionFiles(inspection)).toEqual([]);
+    expect(buildBrowserElementInspectionMessage(inspection)).not.toContain(
+      "Screenshot:"
+    );
+  });
+
   it("separates the visible prompt from structured inspection context", () => {
     const message = buildBrowserElementInspectionMessage(inspection);
 
     expect(stripBrowserElementInspectionContext(message)).toBe("Explain this control");
-    expect(parseBrowserElementInspectionMessage(message)).toEqual({
-      body: "Explain this control",
-      context: {
-        attributes: "aria-label=Save, role=button",
-        elementText: "Save",
-        inspectionId: "inspection-1",
-        pageTitle: "Example",
-        pageUrl: "https://example.com/docs",
-        selector: "main > button",
-        tagName: "button",
-      },
-    });
   });
 });

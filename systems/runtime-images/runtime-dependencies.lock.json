@@ -1,11 +1,12 @@
 {
   "schemaVersion": 1,
   "baseImages": {
-    "go": "golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36",
+    "go": "golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c",
     "shell": "alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40",
-    "external": "node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df",
-    "meeting": "debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132"
+    "meeting": "debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132",
+    "station": "node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df"
   },
+  "packageSnapshot": "20261016T120546Z",
   "npm": {
     "package": "npm",
     "version": "11.19.0",
@@ -52,13 +53,13 @@
   },
   "claude": {
     "package": "@anthropic-ai/claude-code",
-    "version": "2.1.258",
+    "version": "2.1.296",
     "license": "SEE LICENSE IN README.md",
-    "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.258.tgz",
-    "integrity": "sha512-Zis1AYrHuCcK4V1tXJUkzJdklFsTvvqIcj7gk4K8lyEeJOW99ZoQH/E+WxugMqDEO7xncYZ41gydxlkSTmj/2Q==",
+    "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.296.tgz",
+    "integrity": "sha512-OX/k/rpcthMqnFKOWcpNcbiLsMKtAjLOpQNJHlYiDCFUznWCIwdRTyl/p9SdHVrsrzZuPMCNqZjnpakIni6upw==",
     "platformPackage": "@anthropic-ai/claude-code-linux-arm64",
-    "platformTarball": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64/-/claude-code-linux-arm64-2.1.258.tgz",
-    "platformIntegrity": "sha512-cbzsJZ4gMDp30eOlhA6qM+s0plv0TTKLhWX/y4CwNRspSQI8wPO5T1UafhimU4fTeznpPxH38m3k3vYkA9ypHw=="
+    "platformTarball": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64/-/claude-code-linux-arm64-2.1.296.tgz",
+    "platformIntegrity": "sha512-Q6Qh6qFmwuBG9rQFiDR6bY3XkFnwTN9AAPrnnDgBvr9sbg1Ql5wrf0lfoCDiV369EUHOzxI4i5OdHW9Vf2/oeA=="
   },
   "pi": {
     "package": "@earendil-works/pi-coding-agent",
@@ -69,13 +70,20 @@
   },
   "meetnative": {
     "repository": "https://github.com/afk-surf/meetnative.git",
-    "revision": "7f90984c6dd17cd4b63d01f534361e889806f25c"
+    "revision": "f65f8ccfb804c90bc59f5d8690a29706b87f8239"
   },
   "claudeAmd64": {
     "package": "@anthropic-ai/claude-code-linux-x64",
-    "version": "2.1.258",
-    "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.258.tgz",
-    "integrity": "sha512-y1O9xbBzr/2J3cojc5aecHmJzpihx3BMBXnFTHdYU+4gpDkjpEvn4xXSfoKe3UzdUrMCSMdkPD0Ru6byQ3vojA=="
+    "version": "2.1.296",
+    "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.296.tgz",
+    "integrity": "sha512-+m01urgelnI+VJxPaKPEK0wixgq42uZ8PeCaUk5tX/8YoDBvSmC/REVQG2jQfJAr8dxunpjJ600FvLrcj1WWTw=="
+  },
+  "silkV3Decoder": {
+    "repository": "https://github.com/kn007/silk-v3-decoder",
+    "revision": "507be6bca8ce1fb977a061481f1d79e8c610e309",
+    "license": "MIT",
+    "tarball": "https://codeload.github.com/kn007/silk-v3-decoder/tar.gz/507be6bca8ce1fb977a061481f1d79e8c610e309",
+    "integrity": "sha512-twjdjYUpmUv0rQ8jeTPjl9N2VXa2jDUR8E5TlfS2Oj2M2aIoNyunYJzEd2gT2os/5s1tQKXy3IRuZoaH9o0SjA=="
   },
   "uv": {
     "version": "0.12.22",

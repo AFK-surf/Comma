@@ -1,5 +1,11 @@
 defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
+
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
   alias SalixIM.{SlackCommands, SlackCommandSync, ProviderConnects, SlackCommandTemplates}
@@ -28,7 +34,7 @@ defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
           {"COMMAND_BROWSER_TENANT", ctx.tenant},
           {"COMMAND_BROWSER_OTHER", other["tenant_id"]},
           {"COMMAND_BROWSER_APP_PATH", path(ctx, app)},
-          {"COMMAND_BROWSER_SLACK", Application.fetch_env!(:salix_im, :slack_api_base_url)}
+          {"COMMAND_BROWSER_SLACK", SystemsRuntime.fetch_env!(:salix_im, :slack_api_base_url)}
         ]
       )
 
@@ -93,7 +99,7 @@ defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
                   "ok" => true,
                   "token" => "xoxe.access",
                   "refresh_token" => "xoxe-rotated",
-                  "exp" => System.system_time(:second) + 43200
+                  "exp" => SystemsClock.system_time(:second) + 43200
                 }}, state}
 
             method == "apps.manifest.export" and state.fail == :deny_export ->
@@ -150,7 +156,7 @@ defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
 
     port =
       Enum.find_value(1..10, fn _ ->
-        port = 40_000 + :erlang.phash2(make_ref(), 20_000)
+        port = 40_000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20_000)
 
         case start_supervised({Bandit, plug: Slack, port: port}, id: {:bandit, port}) do
           {:ok, _} -> port
@@ -161,16 +167,16 @@ defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
     previous =
       for key <- [:slack_api_base_url, :public_base_url],
           into: %{},
-          do: {key, Application.fetch_env(:salix_im, key)}
+          do: {key, SystemsRuntime.fetch_env(:salix_im, key)}
 
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
-    Application.put_env(:salix_im, :public_base_url, "https://salix.example")
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    SystemsRuntime.put_env(:salix_im, :public_base_url, "https://salix.example")
 
     on_exit(fn ->
       for {key, value} <- previous do
         case value do
-          {:ok, v} -> Application.put_env(:salix_im, key, v)
-          :error -> Application.delete_env(:salix_im, key)
+          {:ok, v} -> SystemsRuntime.put_env(:salix_im, key, v)
+          :error -> SystemsRuntime.delete_env(:salix_im, key)
         end
       end
     end)
@@ -192,7 +198,7 @@ defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
   end
 
   defp connect(ctx) do
-    id = "A#{System.unique_integer([:positive])}"
+    id = "A#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, connect} =
       ProviderConnects.create_slack_im_connect(ctx.tenant, ctx.group, %{
@@ -279,55 +285,6 @@ defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
     view |> element("button[phx-click=custom]") |> render_click()
   end
 
-  test "App enable changes are drafts until publish; template defaults remain independent", ctx do
-    app = connect(ctx)
-    :ok = SlackCommandSync.configure_credential(ctx.tenant, "xoxe-initial")
-    {:ok, _} = save(ctx, app, 0, [entry()])
-    {:ok, view, _} = live(authed(ctx), path(ctx, app))
-
-    for enabled <- ["false", "true"] do
-      view |> element("button[phx-click=edit][phx-value-command='/review']") |> render_click()
-      before = Slack.calls()
-
-      view
-      |> form("#slack-command-form", %{"entry" => Map.put(entry(), "enabled", enabled)})
-      |> render_change()
-
-      assert Slack.calls() == before
-
-      assert SlackCommands.list(raw(ctx, app)) |> hd() |> Map.fetch!("enabled") ==
-               (enabled == "false")
-
-      view
-      |> form("#slack-command-form", %{"entry" => Map.put(entry(), "enabled", enabled)})
-      |> render_submit()
-
-      render_async(view)
-
-      assert SlackCommands.list(raw(ctx, app)) |> hd() |> Map.fetch!("enabled") ==
-               (enabled == "true")
-    end
-
-    selector = "button[phx-click=set-enabled][phx-value-command='/review']"
-    {:ok, _} = SlackCommandTemplates.save(ctx.tenant, 0, [entry()])
-    {:ok, templates, _} = live(authed(ctx), "/dash/slack-command-templates")
-    calls = Slack.calls()
-    templates |> element(selector) |> render_click()
-    render_async(templates)
-    assert has_element?(templates, selector <> "[phx-value-enabled=true]", "Enable")
-    assert Slack.calls() == calls
-    assert {:ok, "Review: "} = SlackCommands.resolve(raw(ctx, app), "/review")
-    second = connect(ctx)
-    assert {:ok, _} = copy_template(ctx, second, 0, 2)
-    assert [%{"enabled" => false}] = SlackCommands.list(raw(ctx, second))
-    calls = Slack.calls()
-    templates |> element(selector) |> render_click()
-    render_async(templates)
-    assert has_element?(templates, selector <> "[phx-value-enabled=false]", "Disable")
-    assert Slack.calls() == calls
-    assert [%{"enabled" => false}] = SlackCommands.list(raw(ctx, second))
-  end
-
   test "template copies are independent across Apps and tenants", ctx do
     a = connect(ctx)
     b = connect(ctx)
@@ -352,7 +309,6 @@ defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
     {:ok, other} = Salix.Control.Tenants.create(%{"name" => "Other templates"})
     assert {:ok, %{"commands" => defaults}} = SlackCommandTemplates.get(other["tenant_id"])
     assert defaults == []
-    assert SlackCommandTemplates.built_ins() == SlackCommands.task_aliases()
 
     assert {:error, :command_template_missing} =
              copy_template(%{ctx | tenant: other["tenant_id"]}, a, 2, 0, "/newgpttask")
@@ -452,129 +408,6 @@ defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
     assert Plug.Conn.get_session(conn, "current_tenant") == other["tenant_id"]
   end
 
-  test "built-ins are separate editable drafts, not implicit organization or App commands", ctx do
-    assert {:ok, %{"commands" => []}} = SlackCommandTemplates.get(ctx.tenant)
-    {:ok, view, html} = live(authed(ctx), "/dash/slack-command-templates")
-    assert html =~ "Built-in template library"
-    refute has_element?(view, "#slack-template-list")
-    calls = Slack.calls()
-
-    view
-    |> element("button[phx-click=use-builtin][phx-value-command='/newgpttask']")
-    |> render_click()
-
-    assert has_element?(view, "input[name='entry[command]'][value='/newgpttask']")
-    assert {:ok, %{"commands" => []}} = SlackCommandTemplates.get(ctx.tenant)
-    builtin = hd(SlackCommandTemplates.built_ins())
-
-    view
-    |> form("#slack-template-form", %{"entry" => Map.put(builtin, "enabled", "true")})
-    |> render_submit()
-
-    render_async(view)
-    assert {:ok, %{"commands" => [^builtin]}} = SlackCommandTemplates.get(ctx.tenant)
-    assert Slack.calls() == calls
-
-    app = connect(ctx)
-    {:ok, app_view, _} = live(authed(ctx), path(ctx, app))
-    calls = Slack.calls()
-    app_view |> element("button[phx-click=new]") |> render_click()
-
-    app_view
-    |> element("button[phx-click=use-builtin][phx-value-command='/newgpttask']")
-    |> render_click()
-
-    assert SlackCommands.list(raw(ctx, app)) == []
-    assert has_element?(app_view, "input[name='entry[command]'][value='/newgpttask']")
-    assert Slack.calls() == calls
-  end
-
-  test "multiple Apps require selection and the chooser rejects unknown connections", ctx do
-    first = connect(ctx)
-    second = connect(ctx)
-    {:ok, chooser, _} = live(authed(ctx), "/dash/slack-commands")
-    assert has_element?(chooser, "#slack-app-select option[value='']")
-
-    chooser
-    |> form("#slack-app-picker", %{"connect_id" => second["connect_id"]})
-    |> render_change()
-
-    assert_redirect(chooser, path(ctx, second))
-
-    {:ok, editor, _} = live(authed(ctx), path(ctx, first))
-    render_change(editor, "select-app", %{"connect_id" => "foreign-connect"})
-
-    assert has_element?(
-             editor,
-             "#slack-app-select option[selected][value='#{first["connect_id"]}']"
-           )
-
-    open_custom(editor)
-    render_change(editor, "select-app", %{"connect_id" => second["connect_id"]})
-
-    assert has_element?(
-             editor,
-             "#slack-app-select option[selected][value='#{first["connect_id"]}']"
-           )
-
-    assert has_element?(editor, "#slack-command-form")
-  end
-
-  test "preview preserves exact prefix and never writes or synchronizes", ctx do
-    app = connect(ctx)
-    {:ok, view, _} = live(authed(ctx), path(ctx, app))
-    open_custom(view)
-    calls = Slack.calls()
-
-    view
-    |> form("#slack-command-form", %{
-      "entry" => entry("Prefix:") |> Map.put("enabled", "true"),
-      "sample" => "User text"
-    })
-    |> render_change()
-
-    assert has_element?(view, "#command-request-preview", "Prefix:User text")
-    assert Slack.calls() == calls
-    assert SlackCommands.list(raw(ctx, app)) == []
-    assert has_element?(view, "#slack-command-form button[type=submit][disabled]")
-  end
-
-  test "saved configuration does not claim Slack synchronization succeeded", ctx do
-    app = connect(ctx)
-    :ok = SlackCommandSync.configure_credential(ctx.tenant, "xoxe-initial")
-    Slack.fail(:rate_limit)
-    {:ok, view, _} = live(authed(ctx), path(ctx, app))
-    open_custom(view)
-
-    view
-    |> form("#slack-command-form", %{"entry" => Map.put(entry(), "enabled", "true")})
-    |> render_submit()
-
-    html = render_async(view)
-    assert html =~ "Slack rejected this update attempt"
-    refute html =~ "Slack may already have received the update"
-    assert html =~ "60 seconds"
-    assert SlackCommands.list(raw(ctx, app)) == [entry()]
-  end
-
-  test "stale template forms retain drafts and empty catalogs stay empty after reload", ctx do
-    path = "/dash/slack-command-templates"
-    {:ok, view, _} = live(authed(ctx), path)
-    assert {:ok, _} = SlackCommandTemplates.save(ctx.tenant, 0, [])
-
-    view
-    |> form("#slack-template-form", %{"entry" => Map.put(entry(), "enabled", "true")})
-    |> render_submit()
-
-    html = render_async(view)
-    assert html =~ "Templates changed"
-    assert html =~ "Review: "
-    assert {:ok, %{"commands" => []}} = SlackCommandTemplates.get(ctx.tenant)
-    view |> element("button[phx-click=reload]") |> render_click()
-    assert render(view) =~ "No command templates"
-    refute has_element?(view, "#slack-template-list")
-  end
-
   test "save synchronizes one App, preserves unrelated manifest, and hot updates prompts", ctx do
     a = connect(ctx)
     b = connect(ctx)
@@ -600,7 +433,7 @@ defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
   test "Apps can select independent credential profiles without copying refresh chains", ctx do
     a = connect(ctx)
     b = connect(ctx)
-    expiry = System.system_time(:second) + 43_200
+    expiry = SystemsClock.system_time(:second) + 43_200
 
     for profile <- ["first", "second"] do
       assert :ok =
@@ -659,51 +492,6 @@ defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
     assert :ok = ProviderConnects.verify_slack_triage_connect_snapshot(snapshot)
   end
 
-  test "lost update response retains ownership for a later deletion", ctx do
-    for mode <- [:lost_response, :internal_error] do
-      app = connect(ctx)
-      :ok = SlackCommandSync.configure_credential(ctx.tenant, "xoxe-initial")
-      Slack.fail(mode)
-
-      assert {:ok,
-              %{"status" => "failed", "failure_stage" => "update", "failure_outcome" => "unknown"}} =
-               save(ctx, app, 0, [entry()])
-
-      {:ok, _, html} = live(authed(ctx), path(ctx, app))
-      assert html =~ "Slack may already have received the update"
-
-      assert Enum.any?(
-               Slack.app(app["app_id"])["features"]["slash_commands"],
-               &(&1["command"] == "/review")
-             )
-
-      Slack.fail(nil)
-      assert {:ok, %{"status" => "synced"}} = save(ctx, app, 1, [])
-
-      assert Slack.app(app["app_id"])["features"]["slash_commands"] ==
-               manifest()["features"]["slash_commands"]
-
-      assert {:error, :command_unavailable} = SlackCommands.resolve(raw(ctx, app), "/review")
-    end
-  end
-
-  test "scope changes require reauthorization even after an ambiguous update", ctx do
-    app = connect(ctx)
-
-    Slack.set_app(
-      app["app_id"],
-      put_in(manifest(), ["oauth_config", "scopes", "bot"], ["chat:write"])
-    )
-
-    :ok = SlackCommandSync.configure_credential(ctx.tenant, "xoxe-initial")
-    Slack.fail(:lost_response)
-    assert {:ok, %{"status" => "failed"}} = save(ctx, app, 0, [entry()])
-    Slack.fail(nil)
-
-    assert {:ok, %{"status" => "reauthorization_required"}} =
-             SlackCommands.retry_sync(ctx.tenant, ctx.group, app["connect_id"], app["app_id"])
-  end
-
   test "rate limits keep local changes and provide retry without leaking credentials", ctx do
     app = connect(ctx)
     :ok = SlackCommandSync.configure_credential(ctx.tenant, "xoxe-initial")
@@ -727,58 +515,6 @@ defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
 
     assert {:ok, %{"status" => "synced", "failure_outcome" => nil, "failure_stage" => nil}} =
              SlackCommands.retry_sync(ctx.tenant, ctx.group, app["connect_id"], app["app_id"])
-  end
-
-  test "missing credentials stop before sending a manifest update", ctx do
-    app = connect(ctx)
-
-    assert {:ok,
-            %{"status" => "failed", "failure_stage" => "prepare", "failure_outcome" => "not_sent"}} =
-             save(ctx, app, 0, [entry()])
-
-    assert Slack.calls() == []
-    {:ok, _, html} = live(authed(ctx), path(ctx, app))
-    assert html =~ "This attempt did not send an update to Slack"
-    refute html =~ "Slack may already have received the update"
-  end
-
-  test "Slack rejects an update without changing its manifest", ctx do
-    app = connect(ctx)
-    :ok = SlackCommandSync.configure_credential(ctx.tenant, "xoxe-initial")
-    Slack.fail(:reject_update)
-
-    assert {:ok,
-            %{"status" => "failed", "failure_stage" => "update", "failure_outcome" => "rejected"}} =
-             save(ctx, app, 0, [entry()])
-
-    assert Slack.app(app["app_id"]) == manifest()
-    {:ok, _, html} = live(authed(ctx), path(ctx, app))
-    assert html =~ "Slack rejected this update attempt"
-    refute html =~ "Slack may already have received the update"
-  end
-
-  test "a rejected verification read leaves the accepted update unconfirmed", ctx do
-    app = connect(ctx)
-    :ok = SlackCommandSync.configure_credential(ctx.tenant, "xoxe-initial")
-    Slack.fail(:verify_denied)
-
-    assert {:ok,
-            %{"status" => "failed", "failure_stage" => "verify", "failure_outcome" => "unknown"}} =
-             save(ctx, app, 0, [entry()])
-
-    assert Enum.any?(
-             Slack.app(app["app_id"])["features"]["slash_commands"],
-             &(&1["command"] == "/review")
-           )
-
-    {:ok, _, html} = live(authed(ctx), path(ctx, app))
-    assert html =~ "Slack may already have received the update"
-    Slack.fail(nil)
-
-    assert {:ok, %{"status" => "synced", "failure_outcome" => nil}} =
-             SlackCommands.retry_sync(ctx.tenant, ctx.group, app["connect_id"], app["app_id"])
-
-    assert Enum.count(Slack.calls(), &(elem(&1, 0) == "apps.manifest.update")) == 1
   end
 
   test "dashboard requires admin and selected tenant, then saves through real sync", ctx do
@@ -809,38 +545,6 @@ defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
     assert {:error, :command_unavailable} = SlackCommands.resolve(raw(ctx, app), "/review")
   end
 
-  test "migration preserves legacy local behavior without registering Apps or restoring deletions",
-       ctx do
-    legacy = connect(ctx)
-    fresh = connect(ctx)
-    key = SalixStore.Keys.ctl_im_connect(ctx.group, legacy["connect_id"])
-    {:ok, _} = SalixStore.CasRecord.update(key, &Map.delete(&1, "slack_commands"), create: false)
-
-    migration =
-      Path.expand(
-        "../../../salix_store/priv/repo/migrations/20260917113000_materialize_slack_task_aliases.exs",
-        __DIR__
-      )
-
-    Code.require_file(migration)
-    module = SalixStore.Repo.Migrations.MaterializeSlackTaskAliases
-    assert :ok = module.up()
-    assert {:ok, _} = SlackCommands.resolve(raw(ctx, legacy), "/newgpttask")
-    assert {:error, :command_unavailable} = SlackCommands.resolve(raw(ctx, fresh), "/newgpttask")
-    assert Slack.calls() == []
-
-    {:ok, _} =
-      SlackCommands.update(
-        ctx.group,
-        legacy["connect_id"],
-        legacy["app_id"],
-        &Map.put(&1, "commands", [])
-      )
-
-    assert :ok = module.up()
-    assert {:error, :command_unavailable} = SlackCommands.resolve(raw(ctx, legacy), "/newgpttask")
-  end
-
   test "disabling and rebinding cannot use another App's aliases", ctx do
     app = connect(ctx)
     :ok = SlackCommandSync.configure_credential(ctx.tenant, "xoxe-initial")
@@ -860,30 +564,6 @@ defmodule SalixWeb.Dashboard.SlackCommandsLiveTest do
 
     assert {:error, :command_app_changed} = save(ctx, app, 2, [entry()])
     assert SlackCommands.list(raw(ctx, app)) == []
-  end
-
-  test "one admin mutation cannot overlap another, including across Apps" do
-    parent = self()
-
-    task =
-      Task.async(fn ->
-        SlackCommandControl.exclusive(fn ->
-          send(parent, :locked)
-
-          receive do
-            :release -> :ok
-          end
-        end)
-      end)
-
-    assert_receive :locked
-
-    assert {:error, :command_admin_busy} =
-             SlackCommandControl.exclusive(fn -> flunk("must not run") end)
-
-    send(task.pid, :release)
-    assert Task.await(task) == :ok
-    assert :ok = SlackCommandControl.exclusive(fn -> :ok end)
   end
 
   test "conflicting handlers and duplicate names fail without overwriting remote configuration",

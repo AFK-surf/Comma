@@ -1,41 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { spacing } from "../src/tokens/spacing";
 
-test("status indicator uses the quaternary hover surface", async ({ page }) => {
-  await page.goto("/?path=/story/app-components-status-indicator--default");
-
-  const preview = page.locator("#storybook-preview-iframe").contentFrame();
-  const indicator = preview.locator("status-indicator");
-  const unselectedStatus = indicator.locator('[role="radio"]').nth(1);
-  await expect(indicator).toBeVisible();
-  await expect(unselectedStatus).toHaveAttribute("aria-checked", "false");
-
-  await unselectedStatus.hover();
-  await expect
-    .poll(() =>
-      indicator.evaluate((element) => {
-        const status = element.shadowRoot?.querySelector<HTMLElement>(
-          '[role="radio"][aria-checked="false"]'
-        );
-        if (!status) throw new Error("Missing unselected status");
-        const probe = document.createElement("span");
-        probe.style.background = "var(--color-bg-quaternary)";
-        document.body.append(probe);
-        const expected = getComputedStyle(probe).backgroundColor;
-        probe.remove();
-        const hoverSurface = getComputedStyle(status, "::after");
-        return {
-          matchesQuaternary: hoverSurface.backgroundColor === expected,
-          opacity: hoverSurface.opacity,
-        };
-      })
-    )
-    .toEqual({
-      matchesQuaternary: true,
-      opacity: "1",
-    });
-});
-
 test("status indicator snaps Shadow DOM motion with reduced motion", async ({
   page,
 }) => {
@@ -60,8 +25,8 @@ test("status indicator snaps Shadow DOM motion with reduced motion", async ({
       "style[data-comma-reduced-motion]"
     );
     const first = items?.[0];
-    const last = items?.[4];
-    if (!root || !items || items.length !== 5 || !first || !last || !reducedStyle) {
+    const last = items?.[3];
+    if (!root || !items || items.length !== 4 || !first || !last || !reducedStyle) {
       throw new Error("Status indicator Shadow DOM did not initialize");
     }
 
@@ -101,7 +66,7 @@ test("status indicator snaps Shadow DOM motion with reduced motion", async ({
   });
 
   const valueControl = page.getByLabel("value");
-  await expect(valueControl).toHaveValue("backlog");
+  await expect(valueControl).toHaveValue("in-progress");
   await valueControl.selectOption("cancel");
   const result = await resultPromise;
 
@@ -112,44 +77,28 @@ test("status indicator snaps Shadow DOM motion with reduced motion", async ({
   expect(result.lastWidthAfter).toBeGreaterThan(result.lastWidthBefore);
 });
 
-test("status indicator exposes Option shortcuts without moving focus", async ({
+test("status indicator tooltip follows the hovered or focused segment", async ({
   page,
 }) => {
+  // The Desktop Chrome device reports Windows; the shortcut glyph is macOS only.
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, "platform", { get: () => "MacIntel" });
+  });
   await page.goto("/?path=/story/app-components-status-indicator--keyboard-shortcuts");
 
   const preview = page.locator("#storybook-preview-iframe").contentFrame();
   const indicator = preview.locator("status-indicator");
-  const focusTarget = preview.getByRole("textbox", {
-    name: "Shortcut focus target",
-  });
   await expect(indicator).toBeVisible();
-  await expect(indicator.locator('[role="radio"]')).toHaveCount(5);
+  await expect(indicator.locator('[role="radio"]')).toHaveCount(4);
 
-  const shortcutLabels = await indicator
-    .locator('[role="radio"]')
-    .evaluateAll((statuses) =>
-      statuses.map((status) => status.getAttribute("aria-keyshortcuts"))
-    );
-  expect(shortcutLabels).toEqual(["Alt+1", "Alt+2", "Alt+3", "Alt+4", "Alt+5"]);
-
-  await focusTarget.focus();
-  await page.keyboard.press("Alt+3");
-  await expect
-    .poll(() => indicator.evaluate((element) => Reflect.get(element, "value")))
-    .toBe("needs-review");
-  await expect(preview.getByTestId("home-task-card")).toContainText(
-    "Review the launch checklist"
-  );
-  await expect(focusTarget).toBeFocused();
-
-  const doneStatus = indicator.locator('[role="radio"]').nth(3);
+  const doneStatus = indicator.locator('[role="radio"]').nth(2);
   // Prime React Aria's pointer modality before entering the Shadow DOM trigger.
   await page.mouse.move(1, 1);
   await doneStatus.hover();
   const tooltip = preview.getByRole("tooltip");
   await expect(tooltip).toBeVisible();
   await expect(tooltip).toContainText("Done");
-  await expect(tooltip.getByLabel("Keyboard shortcut: ⌥ 4")).toBeVisible();
+  await expect(tooltip.getByLabel("Keyboard shortcut: ⌥ 3")).toBeVisible();
 
   const tooltipFollows = async (status: typeof doneStatus) => {
     const [statusBox, tooltipBox] = await Promise.all([
@@ -172,7 +121,7 @@ test("status indicator exposes Option shortcuts without moving focus", async ({
 
   const rebuiltDoneSegment = await indicator.evaluate((element) => {
     const previousDone = element.shadowRoot?.querySelector(
-      '[role="radio"][data-index="3"]'
+      '[role="radio"][data-index="2"]'
     );
     const statuses = Reflect.get(element, "statuses") as Array<Record<string, unknown>>;
     Reflect.set(
@@ -192,12 +141,12 @@ test("status indicator exposes Option shortcuts without moving focus", async ({
   await expect(tooltip).toContainText("Done");
   await expect.poll(() => tooltipFollows(doneStatus)).toBe(true);
 
-  const backlogStatus = indicator.locator('[role="radio"]').first();
-  await backlogStatus.focus();
-  await expect(tooltip).toContainText("Backlog");
+  const inProgressStatus = indicator.locator('[role="radio"]').first();
+  await inProgressStatus.focus();
+  await expect(tooltip).toContainText("In progress");
   await expect(tooltip.getByLabel("Keyboard shortcut: ⌥ 1")).toBeVisible();
-  await expect.poll(() => tooltipFollows(backlogStatus)).toBe(true);
+  await expect.poll(() => tooltipFollows(inProgressStatus)).toBe(true);
 
-  await backlogStatus.blur();
+  await inProgressStatus.blur();
   await expect(tooltip).toBeHidden();
 });

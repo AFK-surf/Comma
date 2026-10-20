@@ -18,8 +18,8 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
 
   test "device account entry accepts unready inventory and protects organization configuration",
        %{org: org, project: project, user: user, conn: conn} do
-    device = "binding-device-" <> Ecto.UUID.generate()
-    runtime = "binding-runtime-" <> Ecto.UUID.generate()
+    device = "binding-device-" <> SystemsRuntime.Proc.uuid()
+    runtime = "binding-runtime-" <> SystemsRuntime.Proc.uuid()
 
     {:ok, _, _} =
       SalixEnv.Registry.connect(
@@ -28,7 +28,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
           "tenant_id" => org.salix_tenant_id,
           "group_id" => project.salix_group_id,
           "device_id" => device,
-          "connector_id" => Ecto.UUID.generate(),
+          "connector_id" => SystemsRuntime.Proc.uuid(),
           "name" => "Unready Mac",
           "agent_runtimes" => [
             %{
@@ -40,12 +40,12 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
               "auth_ready" => false,
               "native_server_startable" => true,
               "ready" => false,
-              "readiness_checked_at" => System.system_time(:millisecond),
-              "readiness_valid_until" => System.system_time(:millisecond) + 600_000
+              "readiness_checked_at" => SystemsClock.system_time(:millisecond),
+              "readiness_valid_until" => SystemsClock.system_time(:millisecond) + 600_000
             }
           ]
         },
-        transport_id: Ecto.UUID.generate()
+        transport_id: SystemsRuntime.Proc.uuid()
       )
 
     path =
@@ -59,8 +59,8 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
     assert auth["actions"] == ["bind"]
 
     # Listing accounts is optional when the binding state is already known.
-    key = Application.get_env(:salix_agent, :subscription_storage_key)
-    Application.delete_env(:salix_agent, :subscription_storage_key)
+    key = SystemsRuntime.get_env(:salix_agent, :subscription_storage_key)
+    SystemsRuntime.delete_env(:salix_agent, :subscription_storage_key)
 
     try do
       degraded = owner |> recycle() |> get(path)
@@ -71,7 +71,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
       assert auth["accounts_unavailable"]
       assert auth["accounts"] == []
     after
-      Application.put_env(:salix_agent, :subscription_storage_key, key)
+      SystemsRuntime.put_env(:salix_agent, :subscription_storage_key, key)
     end
 
     reader = user_fixture()
@@ -106,140 +106,6 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
     assert missing.status == 404
   end
 
-  test "managed-auth HTTP binds a compatible account and never returns its key", %{
-    org: org,
-    project: project,
-    user: user,
-    conn: conn
-  } do
-    {:ok, _} =
-      Compute.configure_default_provider(org, %{
-        "provider" => "cloudflare",
-        "config_ref" => "test"
-      })
-
-    {:ok, environment} = Compute.create_environment(org, project, %{})
-
-    {:ok, %{"workload" => workload}} =
-      Compute.create_workload(org, project, %{
-        "environment_id" => environment.id,
-        "kind" => "external_worker"
-      })
-
-    workload.id
-    |> then(&Repo.get!(SalixStore.Compute.Workload, &1))
-    |> Ecto.Changeset.change(template_key: "external.pi")
-    |> Repo.update!()
-
-    {:ok, account} =
-      SalixAgent.AccountPool.create(org.salix_tenant_id, %{
-        "credential_kind" => "provider_api_key",
-        "name" => "Team provider",
-        "connection" => %{
-          "endpoint" => "https://models.example.test",
-          "protocol" => "openai_responses",
-          "auth_scheme" => "bearer"
-        },
-        "credentials" => %{"api_key" => "never-return-this-key"}
-      })
-
-    path =
-      "/dashboard/orgs/#{org.slug}/projects/#{project.slug}/workloads/#{workload.id}/managed-auth"
-
-    conn = log_in_user(conn, user)
-    read = get(conn, path)
-    assert read.status == 200
-    assert get_resp_header(read, "cache-control") == ["no-store"]
-    body = Jason.decode!(read.resp_body)
-    assert get_in(body, ["data", "managed_auth", "state"]) == "unbound"
-    assert [%{"id" => account_id}] = get_in(body, ["data", "managed_auth", "accounts"])
-    assert account_id == account["id"]
-    refute read.resp_body =~ "never-return-this-key"
-
-    bound =
-      read
-      |> recycle()
-      |> put_req_header("content-type", "application/json")
-      |> put(
-        path,
-        Jason.encode!(%{
-          "account_id" => account["id"],
-          "expected_account_version" => account["version"],
-          "expected_binding" => nil
-        })
-      )
-
-    assert bound.status == 202
-    bound_auth = bound.resp_body |> Jason.decode!() |> get_in(["data", "managed_auth"])
-    assert bound_auth["source"] == "organization"
-    assert bound_auth["state"] == "installing"
-    refute bound.resp_body =~ "never-return-this-key"
-
-    removed =
-      bound
-      |> recycle()
-      |> put_req_header("content-type", "application/json")
-      |> delete(path, Jason.encode!(%{"expected_binding" => bound_auth["binding"]}))
-
-    assert removed.status in [200, 202]
-    refute removed.resp_body =~ "never-return-this-key"
-  end
-
-  test "managed-auth readers get redacted state and writes require organization administration",
-       %{
-         org: org,
-         project: project,
-         conn: conn
-       } do
-    {:ok, _} =
-      Compute.configure_default_provider(org, %{
-        "provider" => "cloudflare",
-        "config_ref" => "test"
-      })
-
-    {:ok, environment} = Compute.create_environment(org, project, %{})
-
-    {:ok, %{"workload" => workload}} =
-      Compute.create_workload(org, project, %{
-        "environment_id" => environment.id,
-        "kind" => "external_worker"
-      })
-
-    workload.id
-    |> then(&Repo.get!(SalixStore.Compute.Workload, &1))
-    |> Ecto.Changeset.change(template_key: "external.claude")
-    |> Repo.update!()
-
-    reader = user_fixture()
-    {:ok, _} = Memberships.put_org_member(org.id, reader.id, "member")
-    {:ok, _} = Memberships.put_project_member(project.id, reader.id, "admin")
-
-    path =
-      "/dashboard/orgs/#{org.slug}/projects/#{project.slug}/workloads/#{workload.id}/managed-auth"
-
-    conn = log_in_user(conn, reader)
-    read = get(conn, path)
-    assert read.status == 200
-    auth = read.resp_body |> Jason.decode!() |> get_in(["data", "managed_auth"])
-
-    assert auth == %{
-             "source" => "self_configured",
-             "state" => "unbound",
-             "provider" => "claude",
-             "issue" => nil,
-             "can_configure" => false
-           }
-
-    denied =
-      read
-      |> recycle()
-      |> put_req_header("content-type", "application/json")
-      |> put(path, Jason.encode!(%{"account_id" => "not-authorized"}))
-
-    assert denied.status == 403
-    assert get_resp_header(denied, "cache-control") == ["no-store"]
-  end
-
   test "project and org APIs drive one bounded Compute domain without exposing provider identity",
        %{org: org, project: project, token: token} do
     org_path = "/v1/orgs/#{org.slug}/compute"
@@ -268,7 +134,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
     workload =
       api_json(:post, project_path <> "/workloads", token, %{
         "environment_id" => environment["id"],
-        "kind" => "external_worker",
+        "kind" => "service",
         "capability_requirements" => ["runtime_exec"]
       })
       |> json_data()
@@ -311,7 +177,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
 
   test "Agent VMM install API binds an exact online runner and never returns its ticket secret",
        %{org: org, project: project, token: token} do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     assert {:ok, runner} =
              Environments.register_mac_mini_provisioner(org.id, %{
@@ -349,6 +215,19 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
 
     refute retried.resp_body =~ "one_time_secret"
 
+    # A project uses one runner: another install request is refused until this one is revoked.
+    second =
+      :post
+      |> build_conn(path, Jason.encode!(%{"runner_id" => runner.stable_id}))
+      |> put_req_header("accept", "application/json")
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer #{token}")
+      |> put_req_header("idempotency-key", "install-api-second-#{suffix}")
+      |> DashboardEndpoint.call([])
+
+    assert second.status == 409
+    assert %{"error" => %{"code" => "project_runner_bound"}} = Jason.decode!(second.resp_body)
+
     revoked = api_json(:post, path <> "/#{operation["id"]}/revoke", token, %{})
     assert revoked.status == 200
 
@@ -360,7 +239,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
 
   test "terminal Agent VMM retry is actionable without rotating handoff identity",
        %{org: org, project: project, token: token} do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     assert {:ok, runner} =
              Environments.register_mac_mini_provisioner(org.id, %{
@@ -384,7 +263,7 @@ defmodule BridgeForTeamsWeb.ProjectComputeControllerTest do
     operation = created.resp_body |> Jason.decode!() |> get_in(["data", "compute"])
 
     before = Repo.get!(AgentVMMInstallations.Operation, operation["id"])
-    terminal_at = DateTime.utc_now()
+    terminal_at = SystemsClock.utc_now()
 
     assert {:ok, _terminal} =
              before

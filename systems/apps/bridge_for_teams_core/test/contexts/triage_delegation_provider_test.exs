@@ -1,4 +1,6 @@
 defmodule BridgeForTeams.TriageDelegationProviderTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Deterministic production integration from an immutable PG obligation through
   the BFT Router handoff, Provider authorization and canonical Task owner.
@@ -54,8 +56,8 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
     def complete_stream(_, _, _, _), do: unexpected_call()
 
     defp unexpected_call do
-      send(
-        Application.fetch_env!(:bridge_for_teams_core, :triage_delegation_provider_owner),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:bridge_for_teams_core, :triage_delegation_provider_owner),
         :unexpected_model_call
       )
 
@@ -76,23 +78,25 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
 
     def call_api(agent_id, provider, method, args) do
       record_call(provider, method, args)
+      owner = SystemsRuntime.fetch_env!(:bridge_for_teams_core, :triage_delegation_provider_owner)
+      # The test decides when a paused call continues; on a loaded runner its
+      # steps in between can take seconds, so the pause ends only with the test.
+      monitor = SystemsRuntime.Proc.monitor(owner)
+      SystemsRuntime.Proc.send(owner, {:paused_provider, SystemsRuntime.Proc.self(), args})
 
-      send(Application.fetch_env!(:bridge_for_teams_core, :triage_delegation_provider_owner), {
-        :paused_provider,
-        self(),
-        args
-      })
+      SystemsRuntime.Proc.receive do
+        :continue_provider ->
+          SystemsRuntime.Proc.demonitor(monitor, [:flush])
+          SalixIM.Provider.call_api(agent_id, provider, method, args)
 
-      receive do
-        :continue_provider -> SalixIM.Provider.call_api(agent_id, provider, method, args)
-      after
-        5_000 -> {:error, :test_provider_pause_timeout}
+        {:DOWN, ^monitor, :process, _, _} ->
+          {:error, :test_owner_exited}
       end
     end
 
     defp record_call(provider, method, args) do
-      send(
-        Application.fetch_env!(:bridge_for_teams_core, :triage_delegation_provider_owner),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:bridge_for_teams_core, :triage_delegation_provider_owner),
         {:provider_call, provider, method, args}
       )
     end
@@ -100,7 +104,9 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
 
   setup_all do
     # Keep the fake alive through the fixture's per-test source retirement.
-    unless Process.whereis(SalixStore.S3.Fake), do: start_supervised!(SalixStore.S3.Fake)
+    unless SystemsRuntime.Proc.whereis(SalixStore.S3.Fake),
+      do: start_supervised!(SalixStore.S3.Fake)
+
     :ok
   end
 
@@ -110,7 +116,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
 
     overrides = [
       {:bridge_for_teams_core, :salix_client, BridgeForTeams.Salix.Erpc},
-      {:bridge_for_teams_core, @owner_key, self()},
+      {:bridge_for_teams_core, @owner_key, SystemsRuntime.Proc.self()},
       {:salix_store, :s3_backend, SalixStore.S3.Fake},
       {:salix_agent, :group_context_mod, SalixAgent.TestSupport.GroupContext},
       {:salix_agent, :llm, NoModel},
@@ -123,16 +129,16 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
 
     previous =
       Enum.map(overrides, fn {app, key, value} ->
-        old = Application.fetch_env(app, key)
-        Application.put_env(app, key, value)
+        old = SystemsRuntime.fetch_env(app, key)
+        SystemsRuntime.put_env(app, key, value)
         {app, key, old}
       end)
 
     on_exit(fn ->
       for {app, key, old} <- previous do
         case old do
-          {:ok, value} -> Application.put_env(app, key, value)
-          :error -> Application.delete_env(app, key)
+          {:ok, value} -> SystemsRuntime.put_env(app, key, value)
+          :error -> SystemsRuntime.delete_env(app, key)
         end
       end
     end)
@@ -140,7 +146,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
     # Runtime normally loads its reader before creating an obligation. This
     # seeded-obligation test starts at the Provider boundary instead.
     Code.ensure_loaded!(Fixture.ClickHouseReader)
-    :ok = Fixture.install_clickhouse_reader!(self())
+    :ok = Fixture.install_clickhouse_reader!(SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       SalixIM.TestSupport.Fleet.stop_all!()
@@ -441,7 +447,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
     assert {[early_a], [pending_a]} =
              Tools.execute_with_async_window([call.("source-a", a)], ctx_a)
 
-    assert_receive {:paused_provider, pid_a, args_a}, 1_000
+    assert_receive {:paused_provider, pid_a, args_a}
     assert args_a["tool_context"]["trusted_origin"] == origin_a
 
     Fixture.put_thread([source_b])
@@ -457,14 +463,14 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
     assert {[early_b], [pending_b]} =
              Tools.execute_with_async_window([call.("source-b", b)], ctx_ab)
 
-    assert_receive {:paused_provider, pid_b, args_b}, 1_000
+    assert_receive {:paused_provider, pid_b, args_b}
     assert args_b["tool_context"]["trusted_origin"] == origin_b
-    send(pid_b, :continue_provider)
+    SystemsRuntime.Proc.send(pid_b, :continue_provider)
     assert {:ok, result_b} = DependencyJob.yield(pending_b.dependency_job, 2_000)
     refute result_b.error
 
     Fixture.put_thread([source_a])
-    send(pid_a, :continue_provider)
+    SystemsRuntime.Proc.send(pid_a, :continue_provider)
     assert {:ok, result_a} = DependencyJob.yield(pending_a.dependency_job, 2_000)
     refute result_a.error
 
@@ -674,7 +680,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
 
     paused =
       for _ <- 1..2 do
-        assert_receive {:paused_provider, pid, args}, 1_000
+        assert_receive {:paused_provider, pid, args}
         {args["tool_context"]["source_message_id"], {pid, args}}
       end
       |> Map.new()
@@ -688,7 +694,7 @@ defmodule BridgeForTeams.TriageDelegationProviderTest do
         assert args["tool_context"]["trusted_origin"] == expected_origin
         assert args["tool_context"]["trusted_origins"] == [expected_origin]
         assert args["tool_context"]["source_message_ids"] == [source]
-        send(pid, :continue_provider)
+        SystemsRuntime.Proc.send(pid, :continue_provider)
         assert {:ok, result} = DependencyJob.yield(pending.dependency_job, 2_000)
         refute result.error
 

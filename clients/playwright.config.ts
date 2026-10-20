@@ -1,5 +1,6 @@
 import { defineConfig, devices, type ReporterDescription } from "@playwright/test";
 import { fileURLToPath } from "node:url";
+import { browserNetworkArgs } from "../scripts/test-network-browser.mjs";
 import { webBaseURL } from "./e2e/p0/smoke-env";
 
 // Electron has no Playwright headless launch option. The app consumes this
@@ -27,17 +28,35 @@ process.env.NO_PROXY = Array.from(noProxyHosts).join(",");
 process.env.no_proxy = process.env.NO_PROXY;
 
 const skipWebServer = process.env.COMMA_PLAYWRIGHT_SKIP_WEB_SERVER === "1";
+// Chromium resolves no host but this machine's (docs/testing.md#no-real-network).
+const offlineChromium = {
+  launchOptions: { args: browserNetworkArgs([new URL(webBaseURL).hostname]) },
+};
 const recordAll = process.env.COMMA_PLAYWRIGHT_RECORD_ALL === "1";
 const realChatSmoke = process.env.COMMA_ELECTRON_REAL_CHAT_SMOKE === "1";
-// Avoid recording every successful CI attempt. Failure screenshots remain on;
-// the existing first retry captures the trace/video, and RECORD_ALL is unchanged.
+// Tests do not retry. A failure keeps its screenshot and error-context.md in
+// CI; recording a trace and video of every test costs Browser E2E about a
+// third of its time, so CI records them only with PLAYWRIGHT_TRACE=1
+// (for a replay of a failure). Local runs keep both for a failed test, and
+// RECORD_ALL records every test.
+const recordFailures = !process.env.CI || process.env.PLAYWRIGHT_TRACE === "1";
+// A failure in CI keeps a trace of its actions, network and console without
+// DOM snapshots or screencast, which cost little, so the failure can be read
+// as it happened instead of rerun.
+const failureTrace = {
+  mode: "retain-on-failure",
+  screenshots: false,
+  snapshots: false,
+  sources: false,
+} as const;
 const recordingMode = realChatSmoke
   ? "off"
   : recordAll
     ? "on"
-    : process.env.CI
-      ? "on-first-retry"
-      : "retain-on-failure";
+    : recordFailures
+      ? "retain-on-failure"
+      : "off";
+const electronScreenshot = realChatSmoke || !recordAll ? "off" : "on";
 const reportDir = process.env.COMMA_PLAYWRIGHT_REPORT_DIR;
 const jsonReportFile = process.env.COMMA_PLAYWRIGHT_JSON_REPORT_FILE;
 const outputDir = process.env.COMMA_PLAYWRIGHT_OUTPUT_DIR ?? "test-results/playwright";
@@ -75,20 +94,26 @@ const webServer = skipWebServer
     };
 
 export default defineConfig({
+  // Test startup must not invoke Git or request repository credentials.
+  captureGitInfo: { commit: false, diff: false },
   testDir: ".",
-  timeout: 45_000,
+  // A wait has no deadline of its own (docs/testing.md#deterministic-tests):
+  // an assertion waits until it holds, and a test that hangs stops at the
+  // test's limit. On CI that is two minutes, several times the slowest
+  // passing test; a local machine can be far slower, so there it is ten.
+  timeout: process.env.CI ? 120_000 : 600_000,
   expect: {
-    timeout: 8_000,
+    timeout: 0,
   },
   fullyParallel: false,
   workers: 1,
-  retries: process.env.CI ? 1 : 0,
+  retries: 0,
   reporter,
   outputDir,
   use: {
     baseURL: webBaseURL,
     // Real provider content and its OTP must not be persisted in test artifacts.
-    trace: recordingMode,
+    trace: recordingMode === "off" && !realChatSmoke ? failureTrace : recordingMode,
     screenshot: realChatSmoke ? "off" : recordAll ? "on" : "only-on-failure",
     video: recordingMode,
   },
@@ -101,35 +126,23 @@ export default defineConfig({
     {
       name: "web-chromium",
       testMatch: /apps\/[^/]+\/test\/.*\.spec\.ts/,
-      use: { ...devices["Desktop Chrome"] },
+      use: { ...devices["Desktop Chrome"], ...offlineChromium },
     },
     {
       name: "app-shell",
-      // Analytics owns its server; wall-clock benchmarks run separately in CI.
+      // Analytics owns its server.
       testIgnore: [
         /packages\/app\/e2e\/analytics\//,
-        /packages\/app\/e2e\/(inbox|chat-task-panel|drive|plugins|session-history|task-workspace|theme-studio)-performance\.spec\.ts/,
+        /packages\/app\/e2e\/compute-visual\//,
       ],
       testMatch: /packages\/app\/e2e\/.*\.spec\.ts/,
+      // Specs split by test. A spec whose worker fixture builds or serves the
+      // app keeps its tests on one worker, or shares one build across workers.
+      fullyParallel: true,
       use: {
         ...devices["Desktop Chrome"],
+        ...offlineChromium,
         viewport: { width: 1280, height: 800 },
-      },
-    },
-    {
-      name: "app-shell-performance",
-      testMatch: [
-        /packages\/app\/e2e\/(inbox|chat-task-panel|drive|plugins|session-history|task-workspace|theme-studio)-performance\.spec\.ts/,
-        /e2e\/app-shell\/markdown-stream\.spec\.ts/,
-      ],
-      grep: /(inbox|chat-task-panel|drive|plugins|session-history|task-workspace|theme-studio)-performance\.spec\.ts|@frame-budget/,
-      workers: 1,
-      use: {
-        ...devices["Desktop Chrome"],
-        viewport: { width: 1280, height: 800 },
-        // Recording changes the wall-clock timings this project measures.
-        trace: "off",
-        video: "off",
       },
     },
     {
@@ -143,10 +156,10 @@ export default defineConfig({
     },
     {
       name: "app-shell-regression",
-      grepInvert: /@frame-budget/,
       testMatch: /e2e\/app-shell\/.*\.spec\.ts/,
       use: {
         ...devices["Desktop Chrome"],
+        ...offlineChromium,
         viewport: { width: 1280, height: 800 },
       },
     },
@@ -154,17 +167,34 @@ export default defineConfig({
       name: "computer-use",
       testMatch: /apps\/electron\/e2e\/computer-use-permissions\.spec\.ts/,
     },
+    // The tests on a worker's shared app (`sharedElectron`, tagged @shared-app) run
+    // together, so the app launches once for them; the rest launch their own.
+    // Playwright's failure screenshot is taken of every window each time an app
+    // closes, passed or not, and waits 5 s for a window that draws no frame (a
+    // hidden one); the Electron framework screenshots a failed test's windows
+    // itself (`electronFailureDiagnostics`).
+    {
+      name: "electron-shell-shared",
+      dependencies: ["electron-runtime-setup"],
+      testMatch: /apps\/electron\/e2e\/.*\.spec\.ts/,
+      testIgnore: /computer-use-permissions\.spec\.ts/,
+      grep: /@shared-app/,
+      use: { screenshot: electronScreenshot },
+    },
     {
       name: "electron-shell",
       dependencies: ["electron-runtime-setup"],
       testMatch: /apps\/electron\/e2e\/.*\.spec\.ts/,
       testIgnore: /computer-use-permissions\.spec\.ts/,
+      grepInvert: /@shared-app/,
+      use: { screenshot: electronScreenshot },
     },
     {
       name: "web",
       testMatch: /e2e\/p0\/(web-smoke|oauth-resume)\.spec\.ts/,
       use: {
         ...devices["Desktop Chrome"],
+        ...offlineChromium,
         viewport: { width: 1280, height: 800 },
       },
     },

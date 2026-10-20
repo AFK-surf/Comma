@@ -191,6 +191,40 @@ it("clears an active reveal on the same content-to-compiled-nodes completion", (
   expect(paint.ranges()).toHaveLength(0);
 });
 
+// Every reply in a transcript renders through reveal. Only text the painter can
+// paint may match its rules, so the stream's sheet never restyles other replies.
+it("marks only the live tail's text for reveal paint, and none once complete", () => {
+  const paint = paintHarness();
+  const mark = "[data-comma-text-reveal]";
+  const paintsMarked = () =>
+    paint.ranges().every((range) => range.startContainer.parentElement?.matches(mark));
+  const text = "A settled paragraph.\n\nThe arriving *live* tail.";
+  const grown = `${text}\n\nNext`;
+  const { container, rerender } = render(inputModeView("content", text));
+  const [settled, live] = container.querySelectorAll("p");
+  expect(settled!.querySelectorAll(mark)).toHaveLength(0);
+  expect(live!.querySelectorAll(mark)).toHaveLength(3);
+  expect(paint.ranges().length).toBeGreaterThan(0);
+  expect(paintsMarked()).toBe(true);
+  // A following root settles the previous tail.
+  rerender(inputModeView("content", grown));
+  expect(live!.querySelectorAll(mark)).toHaveLength(0);
+  expect(container.querySelectorAll(mark)).toHaveLength(1);
+  expect(paintsMarked()).toBe(true);
+  rerender(
+    <MarkdownStream
+      streamId="input-mode-reveal"
+      nodes={createMarkdownStreamDocumentNodes([{ type: "markdown", text: grown }])}
+      animation="reveal"
+      final
+    />
+  );
+  expect(container.querySelectorAll("p")[1]).toBe(live);
+  expect(container.querySelectorAll(mark)).toHaveLength(0);
+  expect(container.querySelector("style")).toBeNull();
+  expect(paint.ranges()).toHaveLength(0);
+});
+
 const longReferenceView = (text: string) => (
   <MarkdownStream streamId="long-root-reference" content={text} animation="reveal" />
 );

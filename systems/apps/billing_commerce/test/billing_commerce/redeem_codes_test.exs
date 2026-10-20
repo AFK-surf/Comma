@@ -1,5 +1,5 @@
 defmodule BillingCommerce.RedeemCodesTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias BillingCommerce.{PackageCatalog, RedeemCodes, Subscriptions}
 
@@ -11,10 +11,14 @@ defmodule BillingCommerce.RedeemCodesTest do
       start: {Agent, :start_link, [fn -> [] end, [name: __MODULE__.ProjectionLog]]}
     })
 
-    Application.put_env(:billing_commerce, :billing_source_typed_sink, __MODULE__.ProjectionSink)
+    SystemsRuntime.put_env(
+      :billing_commerce,
+      :billing_source_typed_sink,
+      __MODULE__.ProjectionSink
+    )
 
     on_exit(fn ->
-      Application.delete_env(:billing_commerce, :billing_source_typed_sink)
+      SystemsRuntime.delete_env(:billing_commerce, :billing_source_typed_sink)
     end)
 
     seed_package("comma_redeem_once", "comma", "one_time")
@@ -51,7 +55,7 @@ defmodule BillingCommerce.RedeemCodesTest do
 
   test "admin command id deduplicates code creation without replaying plaintext" do
     attrs = %{
-      admin_command_id: Ecto.UUID.generate(),
+      admin_command_id: SystemsRuntime.Proc.uuid(),
       code: "comma-admin-command-once",
       package_code: "comma_redeem_once",
       package_version: "2026-06",
@@ -358,7 +362,12 @@ defmodule BillingCommerce.RedeemCodesTest do
         valid_from: ~U[2026-06-01 00:00:00Z]
       })
 
-    insert_billing_account!("example-ba-wsp_existing_redeem", "comma", "workspace", "wsp_existing")
+    insert_billing_account!(
+      "example-ba-wsp_existing_redeem",
+      "comma",
+      "workspace",
+      "wsp_existing"
+    )
 
     assert {:error, :billing_account_surface_mismatch} =
              RedeemCodes.apply_code(

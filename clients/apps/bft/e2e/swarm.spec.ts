@@ -31,8 +31,38 @@ const firstPage = (role = "admin") => ({
     task(3, "active", { title: null, kind: "user_chat" }),
   ],
   next_cursor: "page-2",
-  agents: { status: "ok", items: [{ id: "a-1", name: "Front desk" }] },
 });
+
+// Where a new Task can run: Salix (the swarm's default here), the Cloud VM
+// and one station; and the models inside Salix.
+const taskTargets = {
+  places: [
+    { id: "salix", kind: "salix", label: "Salix", default: true, models: {} },
+    {
+      id: "cloud_vm",
+      kind: "cloud_vm",
+      label: "The Cloud VM",
+      default: false,
+      models: { codex: ["gpt-5.5"], claude: [] },
+    },
+    {
+      id: "dev-1",
+      kind: "station",
+      device_id: "dev-1",
+      label: "Mac Studio / dev-1",
+      default: false,
+      models: { codex: ["gpt-5.5", "gpt-5.5-mini"], claude: [] },
+    },
+  ],
+  models: [
+    { key: "", choice: null, label: "Swarm default (GPT-5.5)" },
+    {
+      key: "platform:worker",
+      choice: { kind: "platform", tier: "worker" },
+      label: "Platform model",
+    },
+  ],
+};
 
 const schedules = (rows = 2) => ({
   project,
@@ -125,7 +155,6 @@ test("Tasks groups by status, searches, filters and pages in more", async ({
   const main = page.getByRole("main");
   await expect(main.getByRole("heading", { level: 1, name: "Tasks" })).toBeVisible();
   await expect(main.getByText("Work items and chats in Support Desk.")).toBeVisible();
-  // The detail is a LiveView page, linked for a full page load.
   await expect(main.getByRole("link", { name: "Investigate webhook" })).toHaveAttribute(
     "href",
     `${base}/tasks/cnv1_1`
@@ -242,53 +271,132 @@ test("the sidebar's Tasks link leaves the Scheduled view for All", async ({ page
   await expect(main.getByRole("link", { name: "Investigate webhook" })).toBeVisible();
 });
 
-test("New task creates a task for the chosen agent and opens it", async ({ page }) => {
+const createdTask = {
+  project,
+  task: {
+    id: "cnv1_new",
+    title: "Launch support",
+    status: "active",
+    kind: "agent_task",
+    scheduled: false,
+    schedulable: true,
+    review_version: null,
+    terminal: false,
+    updated_at: null,
+  },
+  schedule: {
+    status: "none",
+    recurrence: null,
+    command: null,
+    form: {
+      mode: "cron",
+      interval_value: "1",
+      interval_unit: "days",
+      cron: "",
+      timezone: "UTC",
+      command: "",
+    },
+  },
+  participants: [],
+  messages: [],
+  has_older: false,
+};
+
+const created = {
+  status: 201,
+  body: { ok: true, data: { id: "cnv1_new", href: `${base}/tasks/cnv1_new` } },
+};
+
+test("New task runs on the station and model chosen, and opens it", async ({
+  page,
+}) => {
   const requests = await open(page, `${base}/tasks`, (request) => {
+    if (request.path === "/orgs/acme/projects/p-1/tasks/targets")
+      return ok(taskTargets);
+    if (request.path === "/orgs/acme/projects/p-1/tasks/cnv1_new")
+      return ok(createdTask);
     if (request.path !== "/orgs/acme/projects/p-1/tasks") return undefined;
-    return request.method === "POST"
-      ? { status: 201, body: { ok: true, data: { id: "cnv1_new", href: "/created" } } }
-      : ok(firstPage());
+    return request.method === "POST" ? created : ok(firstPage());
   });
-  await page.route("**/created", (route) =>
-    route.fulfill({ status: 200, body: "<title>Task detail</title>" })
-  );
 
   await page.getByRole("button", { name: "New task" }).click();
   const dialog = page.getByRole("dialog", { name: "New task" });
   await dialog.getByLabel("Title").fill("Launch support");
+  await dialog.getByLabel("What to do").fill("Draft the launch support plan.");
+
+  // The swarm's default place and Task model come first.
+  await expect(
+    dialog.getByRole("button", { name: /Salix \(default\) Run on/ })
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: /Swarm default \(GPT-5.5\) Model/ })
+  ).toBeVisible();
+
+  await dialog.getByRole("button", { name: /Run on/ }).click();
+  await page.getByRole("option", { name: "Mac Studio / dev-1" }).press("Enter");
+  await dialog.getByRole("button", { name: /Station default Model/ }).click();
+  await page.getByRole("option", { name: "gpt-5.5-mini" }).press("Enter");
   await dialog.getByRole("button", { name: "Create task" }).click();
 
-  await expect(page).toHaveURL(/\/created$/);
+  // Task detail opens in place.
+  await expect(page).toHaveURL(new RegExp(`${base}/tasks/cnv1_new$`));
+  await expect(
+    page.getByRole("main").getByRole("heading", { level: 1, name: "Launch support" })
+  ).toBeVisible();
   expect(writes(requests)).toEqual([
     expect.objectContaining({
       method: "POST",
       csrf,
-      body: { title: "Launch support", agent_id: "a-1" },
+      body: {
+        title: "Launch support",
+        content: "Draft the launch support plan.",
+        runs_on: { kind: "station", device_id: "dev-1" },
+        model: { kind: "runtime", provider: "codex", model: "gpt-5.5-mini" },
+      },
     }),
   ]);
 });
 
-test("a swarm member sees tasks without New task, and an empty swarm asks for an agent", async ({
+test("a swarm member creates a task at the swarm's defaults, asking again while Salix updates", async ({
   page,
 }) => {
-  await open(page, `${base}/tasks`, (request) =>
-    request.path === "/orgs/acme/projects/p-1/tasks"
-      ? ok({
-          ...firstPage("user"),
-          tasks: [],
-          next_cursor: null,
-          agents: { status: "ok", items: [] },
-        })
-      : undefined
-  );
+  let updating = true;
+  const requests = await open(page, `${base}/tasks`, (request) => {
+    if (request.path === "/orgs/acme/projects/p-1/tasks/targets")
+      return ok(taskTargets);
+    if (request.path === "/orgs/acme/projects/p-1/tasks/cnv1_new")
+      return ok(createdTask);
+    if (request.path !== "/orgs/acme/projects/p-1/tasks") return undefined;
+    if (request.method !== "POST") return ok({ ...firstPage("user"), tasks: [] });
+    if (!updating) return created;
+    updating = false;
+    return {
+      status: 503,
+      body: {
+        ok: false,
+        error: {
+          code: "runtime_unavailable",
+          message: "Could not create the task. Salix is unavailable — retry shortly.",
+        },
+      },
+    };
+  });
 
-  const main = page.getByRole("main");
-  await expect(main.getByText(/Create an agent first/)).toBeVisible();
-  await expect(main.getByRole("link", { name: "Manage agents" })).toHaveAttribute(
-    "href",
-    `${base}/agents`
-  );
-  await expect(main.getByRole("button", { name: "New task" })).toHaveCount(0);
+  await page.getByRole("button", { name: "New task" }).click();
+  const dialog = page.getByRole("dialog", { name: "New task" });
+  await dialog.getByLabel("What to do").fill("Summarize the week.");
+  await dialog.getByRole("button", { name: "Create task" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("retry shortly");
+
+  await dialog.getByRole("button", { name: "Create task" }).click();
+  await expect(page).toHaveURL(new RegExp(`${base}/tasks/cnv1_new$`));
+
+  const body = {
+    title: "",
+    content: "Summarize the week.",
+    runs_on: { kind: "salix" },
+  };
+  expect(writes(requests).map((request) => request.body)).toEqual([body, body]);
 });
 
 test("the retired Schedules page opens the Scheduled view, which deletes behind a confirmation", async ({
@@ -461,6 +569,108 @@ test("Settings renames, copies runtime ids and manages access", async ({ page })
       token: csrf,
     },
   ]);
+});
+
+test("Settings picks the default place to run Tasks from the swarm's places", async ({
+  page,
+}) => {
+  const placeOf = (place: Record<string, unknown>, label: string) => ({
+    ...settings(),
+    task_place: { status: "ok", place, label },
+  });
+  let current = placeOf({ kind: "salix" }, "Salix");
+  const requests = await open(page, `${base}/settings`, (request) => {
+    if (request.path === "/orgs/acme/projects/p-1/settings") return ok(current);
+    if (request.path === "/orgs/acme/projects/p-1/agents/targets")
+      return ok({
+        stations: [
+          {
+            id: "dev-1",
+            label: "Mac Studio / dev-1",
+            connected: true,
+            selectable: true,
+            issue: null,
+            models: {},
+          },
+          {
+            id: "dev-old",
+            label: "Linux CI / dev-old",
+            connected: true,
+            selectable: false,
+            issue: "This device runs an old connector. Update it to run a station.",
+            models: {},
+          },
+        ],
+        cloud_vm: {
+          selectable: false,
+          issue: "The Cloud VM is turned off for this swarm.",
+          models: {},
+        },
+      });
+    if (request.path === "/orgs/acme/projects/p-1/settings/task-place") {
+      current = placeOf({ kind: "station", device_id: "dev-1" }, "Mac Studio");
+      return ok(current);
+    }
+    return undefined;
+  });
+
+  const section = page.getByRole("region", { name: "Default place to run Tasks" });
+  const save = section.getByRole("button", { name: "Save" });
+  await expect(section.getByRole("button", { name: /Salix Run on/ })).toBeVisible();
+  await expect(save).toBeDisabled();
+
+  await section.getByRole("button", { name: /Salix Run on/ }).click();
+  // The Cloud VM is turned off for this swarm: shown, not chosen.
+  await expect(page.getByRole("option", { name: /The Cloud VM/ })).toBeDisabled();
+  // The section sits at the bottom of the viewport, where the list moves up
+  // to fit after it opens: a click could land on the row that moved under it.
+  await page.getByRole("option", { name: "A device's station" }).press("Enter");
+
+  const stations = section.getByRole("group", { name: "Stations" });
+  await expect(stations.getByRole("radio", { name: /Linux CI/ })).toBeDisabled();
+  // No station chosen yet: nothing to save.
+  await expect(save).toBeDisabled();
+  await stations.getByRole("radio", { name: /Mac Studio/ }).check();
+  await save.click();
+  await expect(section.getByText("Saved")).toBeVisible();
+  await expect(save).toBeDisabled();
+
+  expect(
+    writes(requests).map(({ method, path, body, csrf: token }) => ({
+      method,
+      path,
+      body,
+      token,
+    }))
+  ).toEqual([
+    {
+      method: "PUT",
+      path: "/orgs/acme/projects/p-1/settings/task-place",
+      body: { place: { kind: "station", device_id: "dev-1" } },
+      token: csrf,
+    },
+  ]);
+});
+
+test("a swarm member sees the default place to run Tasks by its name", async ({
+  page,
+}) => {
+  await open(page, `${base}/settings`, (request) =>
+    request.path === "/orgs/acme/projects/p-1/settings"
+      ? ok({
+          ...settings("user", [grants[0]!]),
+          task_place: {
+            status: "ok",
+            place: { kind: "cloud_vm" },
+            label: "The Cloud VM",
+          },
+        })
+      : undefined
+  );
+
+  const section = page.getByRole("region", { name: "Default place to run Tasks" });
+  await expect(section.getByText("The Cloud VM")).toBeVisible();
+  await expect(section.getByRole("button")).toHaveCount(0);
 });
 
 test("an admin who demotes themselves loses the admin controls", async ({ page }) => {

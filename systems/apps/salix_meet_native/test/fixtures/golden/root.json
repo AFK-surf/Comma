@@ -1,0 +1,235 @@
+{
+ "ack_operation": "0a1d0a147370616365732f6162632f646576696365732f37ca020408051002",
+ "bulk_admit": "0a0a7370616365732f61626312147370616365732f6162632f646576696365732f371a022001220c0a0a6a6f696e5f7374617465",
+ "caption_enable": "0a3f123d08a8461a380a164a140a0b636d6e2d48616e732d434e1205656e2d5553121e0a1c636c69656e745f636f6e6669672e63617074696f6e5f636f6e666967",
+ "dcrpc_refresh_counter": "0a7108b9011a6c0a460a020835122a0a11626f715f686c616e6538304134353639352215626f715f686c616e655f73497931334130676f4b762205656e2d55533a0d080110aa03180120012808380110021a1c71736e37394835377731443473776f4b4141694b59696743494151512a02082a",
+ "dcrpc_refresh_nil": "0a6f08b7011a6a0a460a020835122a0a11626f715f686c616e6538304134353639352215626f715f686c616e655f73497931334130676f4b762205656e2d55533a0d080110aa03180120012808380110011a1c71736e37394835377731443473776f4b4141694b59696743494151512a00",
+ "events": {
+  "chat-gif-collections.bin": [
+   {
+    "t": "native",
+    "type": "chat",
+    "actor": "test",
+    "payload": {
+     "attachments": [
+      {
+       "mime": "image/gif",
+       "url": "https://media.tenor.com/6eEZEJELyrwAAAAC/innocent.gif"
+      }
+     ],
+     "device": "spaces/XT7lrvk7PSAB/devices/208",
+     "id": "message-1",
+     "reactions": [
+      {
+       "count": 1,
+       "emoji": "🙏"
+      }
+     ],
+     "text": "test"
+    },
+    "source": "collections",
+    "confidence": "mapped"
+   }
+  ],
+  "chat-reaction-collections.bin": [
+   {
+    "t": "native",
+    "type": "chat",
+    "actor": "test",
+    "payload": {
+     "attachments": [
+      {
+       "mime": "image/gif",
+       "url": "https://media.tenor.com/6eEZEJELyrwAAAAC/innocent.gif"
+      }
+     ],
+     "device": "spaces/XT7lrvk7PSAB/devices/208",
+     "id": "message-1",
+     "reactions": [
+      {
+       "count": 1,
+       "emoji": "🙏"
+      }
+     ],
+     "text": "test"
+    },
+    "source": "collections",
+    "confidence": "mapped"
+   }
+  ],
+  "meet_messages-in.bin": [
+   {
+    "t": "native",
+    "type": "chat",
+    "actor": "test",
+    "payload": {
+     "attachments": [
+      {
+       "mime": "image/gif",
+       "url": "https://media.tenor.com/6eEZEJELyrwAAAAC/innocent.gif"
+      }
+     ],
+     "device": "spaces/XT7lrvk7PSAB/devices/208",
+     "id": "message-1",
+     "reactions": [
+      {
+       "count": 1,
+       "emoji": "🙏"
+      }
+     ],
+     "text": "test"
+    },
+    "source": "meet_messages",
+    "confidence": "mapped"
+   }
+  ]
+ },
+ "hand_raise_create": "0a0a7370616365732f6162631200",
+ "hand_raise_delete": "0a177370616365732f6162632f68616e645261697365732f33",
+ "mark_joined": "0a270a147370616365732f6162632f646576696365732f372001b201066d7369642d31c80101b0020112460a10636c6f75645f73657373696f6e5f69640a0a6a6f696e5f73746174650a126d656469615f636170747572655f747970650a1270617274696369706174696f6e5f6d6f6465",
+ "mark_left": "0a180a147370616365732f6162632f646576696365732f372006120c0a0a6a6f696e5f7374617465",
+ "media_answer": {
+  "SessionID": "mediasessions/0fCMBujh1CLZ9QoKAAiKYigCIAQQ",
+  "SFUFingerprint": "F3:6E:86:1C:48:ED:10:FB:F0:93:FA:98:4F:5C:6E:CF:12:A1:2C:5A:3E:B5:0D:90:63:57:76:EC:5B:6D:43:25",
+  "SFUSetupRole": 2,
+  "ICEUfrag": "0fCMBujh1CLZ9QoKAAiKYigCIAQQ",
+  "ICEPwd": "eQXtylsTswySnFYgfA5dZsTnWMc=",
+  "Candidates": [
+   {
+    "TransportType": 1,
+    "IP": "74.125.250.255",
+    "Port": 3478,
+    "Priority": 2113932036
+   },
+   {
+    "TransportType": 1,
+    "IP": "2001:4860:4864:5:4000::13",
+    "Port": 3478,
+    "Priority": 2113939716
+   },
+   {
+    "TransportType": 1,
+    "IP": "74.125.250.255",
+    "Port": 19305,
+    "Priority": 2113932031
+   },
+   {
+    "TransportType": 2,
+    "IP": "74.125.250.135",
+    "Port": 19305,
+    "Priority": 2113932030
+   },
+   {
+    "TransportType": 3,
+    "IP": "74.125.250.135",
+    "Port": 443,
+    "Priority": 2113932029
+   },
+   {
+    "TransportType": 1,
+    "IP": "2001:4860:4864:5:4000::13",
+    "Port": 19305,
+    "Priority": 2113939711
+   },
+   {
+    "TransportType": 2,
+    "IP": "2001:4860:4864:5:8000::7",
+    "Port": 19305,
+    "Priority": 2113939710
+   },
+   {
+    "TransportType": 3,
+    "IP": "2001:4860:4864:5:8000::7",
+    "Port": 443,
+    "Priority": 2113939709
+   }
+  ],
+  "DataChannels": [
+   {
+    "Label": "reactions",
+    "ID": 115,
+    "Ordered": false,
+    "MaxPacketLifeTime": 0
+   },
+   {
+    "Label": "copresent",
+    "ID": 119,
+    "Ordered": false,
+    "MaxPacketLifeTime": 0
+   },
+   {
+    "Label": "media-director",
+    "ID": 131,
+    "Ordered": true,
+    "MaxPacketLifeTime": 0
+   },
+   {
+    "Label": "dcrpc",
+    "ID": 113,
+    "Ordered": false,
+    "MaxPacketLifeTime": 40000
+   },
+   {
+    "Label": "audio-mesh",
+    "ID": 151,
+    "Ordered": false,
+    "MaxPacketLifeTime": 2000
+   },
+   {
+    "Label": "video-processing",
+    "ID": 145,
+    "Ordered": false,
+    "MaxPacketLifeTime": 0
+   },
+   {
+    "Label": "media-session",
+    "ID": 143,
+    "Ordered": true,
+    "MaxPacketLifeTime": 0
+   },
+   {
+    "Label": "meeting-agent",
+    "ID": 149,
+    "Ordered": false,
+    "MaxPacketLifeTime": 1000
+   },
+   {
+    "Label": "agenda",
+    "ID": 159,
+    "Ordered": false,
+    "MaxPacketLifeTime": 1000
+   },
+   {
+    "Label": "cohort",
+    "ID": 141,
+    "Ordered": false,
+    "MaxPacketLifeTime": 0
+   },
+   {
+    "Label": "meet_messages",
+    "ID": 137,
+    "Ordered": false,
+    "MaxPacketLifeTime": 20000
+   },
+   {
+    "Label": "meet-p2p-signaling",
+    "ID": 129,
+    "Ordered": true,
+    "MaxPacketLifeTime": 0
+   }
+  ]
+ },
+ "preferred_candidate": {
+  "TransportType": 1,
+  "IP": "74.125.250.255",
+  "Port": 19305,
+  "Priority": 2113932031
+ },
+ "sapisidhash": "SAPISIDHASH 1791000000_2e15a34cd52cf00ea955a0e0d71d0b0f757fa579 SAPISID1PHASH 1791000000_eccc41ac0f9fded896d0b8c669e1ae6652239baf SAPISID3PHASH 1791000000_35ea40bdafbd13389383fbae51ef945ca84a13b1",
+ "streams": {},
+ "sync_request_cursors": "0a0a7370616365732f616263120208051a020809",
+ "sync_request_empty": "0a0a7370616365732f616263",
+ "sync_request_zero_cursor": "0a0a7370616365732f6162631a00",
+ "video_subscribe": "08091285040a460a020835122a0a11626f715f686c616e6544344146443245342215626f715f686c616e655f6c69706c7938396d64623822057a682d434e3a0d080110aa031801200128083801226b080110021a066d7369642d3122093235323039323535342a066d7369642d31321f7370616365732f4b33784a72716d4e4a5167422f646576696365732f343131421d088ac19a7808f2ede6890712100a03464944108ac19a7810f2ede689074a0a1001420608800a10d005226e080110021a066d7369642d31220a313735323737353633342a066d7369642d31321f7370616365732f4b33784a72716d4e4a5167422f646576696365732f343132421f08d2f7e4c30608af83bdb40712110a0346494410d2f7e4c30610af83bdb4074a0a1001420608800a10d005226e080110021a066d7369642d31220a313538363038333634372a066d7369642d31321f7370616365732f4b33784a72716d4e4a5167422f646576696365732f343136421f08bfeea6f40508a2d597a20f12110a0346494410bfeea6f40510a2d597a20f4a0a1001420608800a10d005226e080110021a066d7369642d31220a333533353936393939322a066d7369642d31321f7370616365732f4b33784a72716d4e4a5167422f646576696365732f343137421f08c8bd8a960d08aedc8e820812110a0346494410c8bd8a960d10aedc8e82084a0a1001420608800a10d005",
+ "video_subscribe_reencode": "080512fb050a460a020835122a0a11626f715f686c616e6544344146443245342215626f715f686c616e655f6c69706c7938396d64623822057a682d434e3a0d080110aa03180120012808380122a101080110021a1c6f5a7a68666337483650584468416f4b4141694b596967434941515122093235323039323535342a2633544f5171376a567635433045346a2d3755456d447849594f41494969674967414267454341321f7370616365732f4b33784a72716d4e4a5167422f646576696365732f343131421d088ac19a7808f2ede6890712100a03464944108ac19a7810f2ede689074a0a1001420608b00410c60222b001080110021a1c6f5a7a68666337483650584468416f4b4141694b5969674349415151220a313735323737353633342a2633544f5171376a567635433045346a2d3755456d447849594f41494969674967414267454341321f7370616365732f4b33784a72716d4e4a5167422f646576696365732f343132421f08d2f7e4c30608af83bdb40712110a0346494410d2f7e4c30610af83bdb4074a161001421208c40410c6021a0a0d6666663f159a99993f22a401080110021a1c6f5a7a68666337483650584468416f4b4141694b5969674349415151220a313538363038333634372a2633544f5171376a567635433045346a2d3755456d447849594f41494969674967414267454341321f7370616365732f4b33784a72716d4e4a5167422f646576696365732f343136421f08bfeea6f40508a2d597a20f12110a0346494410bfeea6f40510a2d597a20f4a0a1001420608b00410c60222b001080110021a1c6f5a7a68666337483650584468416f4b4141694b5969674349415151220a333533353936393939322a2633544f5171376a567635433045346a2d3755456d447849594f41494969674967414267454341321f7370616365732f4b33784a72716d4e4a5167422f646576696365732f343137421f08c8bd8a960d08aedc8e820812110a0346494410c8bd8a960d10aedc8e82084a161001421208b40d10c6071a0a0d6666663f159a99993f1a00"
+}

@@ -10,6 +10,8 @@ export interface CardEnv {
   /** Stable identity of the widget; with the element id it picks each card's layout. */
   seed: string;
   locale: string;
+  /** The viewer's IANA time zone for ISO times; empty uses the frame's own zone. */
+  timeZone?: string | undefined;
   /** Localized chrome text; missing entries fall back to English. */
   copy: Partial<CardCopy>;
   /** Host-rendered SVG glyphs the templates draw with. */
@@ -80,6 +82,8 @@ export function cardEngine(env: CardEnv): CardEngine {
     source?: string | undefined;
     sourceBrand?: string | undefined;
     updatedAt?: string | undefined;
+    /** The observation time on the viewer's clock. */
+    observedAt?: string | undefined;
     actions: Array<{ label: string; prompt: string }>;
   };
   type Built = { root: HTMLElement; cleanup?: () => void; sync?: () => void };
@@ -195,12 +199,64 @@ export function cardEngine(env: CardEnv): CardEngine {
     isRecord(value) && text(value.label, 40)
       ? { label: text(value.label, 40)!, tone: toneOf(value.tone) }
       : undefined;
+  // An ISO time with an offset names one moment; anything else is not a moment.
+  const momentOf = (value: unknown) => {
+    if (
+      typeof value !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/i.test(
+        value
+      )
+    )
+      return undefined;
+    const moment = Date.parse(value);
+    return Number.isFinite(moment) ? moment : undefined;
+  };
+  // A moment on the viewer's clock: the time today, the date before that, and
+  // the year too outside this year.
+  const clockFor = (timeZone: string | undefined) => {
+    const at = (options: Intl.DateTimeFormatOptions) =>
+      new Intl.DateTimeFormat(env.locale || undefined, {
+        timeZone,
+        hour: "2-digit",
+        minute: "2-digit",
+        ...options,
+      });
+    const day = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const time = at({});
+    const date = at({ month: "numeric", day: "numeric" });
+    const full = at({ year: "numeric", month: "numeric", day: "numeric" });
+    return (moment: number) => {
+      const today = day.format(Date.now());
+      const then = day.format(moment);
+      if (then === today) return time.format(moment);
+      return then.slice(0, 4) === today.slice(0, 4)
+        ? date.format(moment)
+        : full.format(moment);
+    };
+  };
+  let clockOf: (moment: number) => string;
+  try {
+    clockOf = clockFor(env.timeZone || undefined);
+  } catch {
+    // An unknown zone name falls back to the frame's own zone.
+    clockOf = clockFor(undefined);
+  }
+  const momentText = (value: unknown) => {
+    const moment = momentOf(value);
+    return moment === undefined ? undefined : clockOf(moment);
+  };
   const frameOf = (data: Record<string, unknown>): Frame => ({
     title: need(data.title, "a title"),
     meta: text(data.meta, 60),
     source: text(data.source, 120),
     sourceBrand: brandOf(data.sourceBrand),
     updatedAt: text(data.updatedAt, 60),
+    observedAt: momentText(data.observedAt),
     actions: list(data.actions, 2, (action) =>
       isRecord(action) && text(action.label, 40) && text(action.prompt, 4000)
         ? { label: text(action.label, 40)!, prompt: text(action.prompt, 4000)! }
@@ -488,6 +544,40 @@ export function cardEngine(env: CardEnv): CardEngine {
     return group;
   };
 
+  type FilterOption = { key: string; label: string };
+  const filtersOf = (value: unknown) =>
+    list(value, 4, (filter): FilterOption | undefined =>
+      isRecord(filter) && text(filter.key, 40) && text(filter.label, 20)
+        ? { key: text(filter.key, 40)!, label: text(filter.label, 20)! }
+        : undefined
+    );
+  const filterKeysOf = (value: unknown) =>
+    Array.isArray(value) ? list(value, 8, (key) => text(key, 40)) : undefined;
+  /**
+   * Fills `rows` with the items a local filter shows, and returns the filter
+   * control. An item without filterKeys shows under every filter. A filter
+   * that matches no item is left out, so no choice empties the list; with
+   * fewer than two left there is no control and every item shows.
+   */
+  const filtered = <T extends { filterKeys?: string[] | undefined }>(
+    label: string,
+    filters: FilterOption[],
+    items: T[],
+    rows: HTMLElement,
+    draw: (item: T) => Node
+  ) => {
+    const shows = (item: T, key: string) =>
+      !key || (item.filterKeys?.includes(key) ?? true);
+    const usable = filters.filter((filter) =>
+      items.some((item) => shows(item, filter.key))
+    );
+    const render = (key: string) =>
+      rows.replaceChildren(...items.filter((item) => shows(item, key)).map(draw));
+    const first = usable.length > 1 ? usable[0]!.key : "";
+    render(first);
+    return usable.length > 1 ? segmented(label, usable, first, render) : null;
+  };
+
   /** A row that opens an HTTPS page through the runtime's link handling; plain content otherwise. */
   const row = (href: string | undefined, className: string, ...children: Child[]) => {
     const node = put(
@@ -516,7 +606,9 @@ export function cardEngine(env: CardEnv): CardEngine {
         )
       );
     put(root, children);
-    const provenance = [frame.source, frame.updatedAt].filter(Boolean).join(" · ");
+    const provenance = [frame.source, frame.updatedAt, frame.observedAt]
+      .filter(Boolean)
+      .join(" · ");
     if (provenance || frame.actions.length) {
       const glyph =
         frame.sourceBrand && frame.source ? hidden(h("span", "wc-glyph")) : null;
@@ -842,7 +934,7 @@ export function cardEngine(env: CardEnv): CardEngine {
   };
   type Options = {
     frame: Frame;
-    filters: Array<{ key: string; label: string }>;
+    filters: FilterOption[];
     items: Option[];
   };
   const optionsOf = (data: Record<string, unknown>): Options => {
@@ -860,9 +952,7 @@ export function cardEngine(env: CardEnv): CardEngine {
             tags: list(item.tags, 3, (tag) => text(tag, 20)),
             reason: text(item.reason, 240),
             recommended: item.recommended === true,
-            filterKeys: Array.isArray(item.filterKeys)
-              ? list(item.filterKeys, 8, (value) => text(value, 40))
-              : undefined,
+            filterKeys: filterKeysOf(item.filterKeys),
           }
         : undefined
     );
@@ -870,11 +960,7 @@ export function cardEngine(env: CardEnv): CardEngine {
       fail(unread(data.items, "items", "primary text") ?? "Card data needs items");
     return {
       frame: frameOf(data),
-      filters: list(data.filters, 4, (filter) =>
-        isRecord(filter) && text(filter.key, 40) && text(filter.label, 20)
-          ? { key: text(filter.key, 40)!, label: text(filter.label, 20)! }
-          : undefined
-      ),
+      filters: filtersOf(data.filters),
       items,
     };
   };
@@ -943,43 +1029,33 @@ export function cardEngine(env: CardEnv): CardEngine {
       timed,
       (data) => {
         const rows = h("ul", "wc-list");
-        const render = (filter: string) => {
-          const visible = filter
-            ? data.items.filter((item) => item.filterKeys?.includes(filter) ?? true)
-            : data.items;
-          rows.replaceChildren(
-            ...visible.map((item) =>
+        const control = filtered(
+          data.frame.title,
+          data.filters,
+          data.items,
+          rows,
+          (item) =>
+            h(
+              "li",
+              "wc-opt-dense",
               h(
-                "li",
-                "wc-opt-dense",
-                h(
-                  "span",
-                  "wc-opt-times wc-sm wc-w5 wc-c1 wc-num",
-                  item.primary,
-                  h("span", "wc-c4", " – "),
-                  item.secondary ?? ""
-                ),
-                h(
-                  "span",
-                  "wc-grow wc-xs wc-c3 wc-clip",
-                  [item.meta?.split(" · ")[0], item.span].filter(Boolean).join(" · ")
-                ),
-                item.recommended && badge(copy.recommended, "brand"),
-                item.status && status(item.status),
-                h("span", "wc-opt-price wc-sm wc-w5 wc-c1 wc-num", item.price ?? "")
-              )
+                "span",
+                "wc-opt-times wc-sm wc-w5 wc-c1 wc-num",
+                item.primary,
+                h("span", "wc-c4", " – "),
+                item.secondary ?? ""
+              ),
+              h(
+                "span",
+                "wc-grow wc-xs wc-c3 wc-clip",
+                [item.meta?.split(" · ")[0], item.span].filter(Boolean).join(" · ")
+              ),
+              item.recommended && badge(copy.recommended, "brand"),
+              item.status && status(item.status),
+              h("span", "wc-opt-price wc-sm wc-w5 wc-c1 wc-num", item.price ?? "")
             )
-          );
-        };
-        const first = data.filters[0]?.key ?? "";
-        render(first);
-        return {
-          root: card(data.frame, [
-            data.filters.length > 1 &&
-              segmented(data.frame.title, data.filters, first, render),
-            rows,
-          ]),
-        };
+        );
+        return { root: card(data.frame, [control, rows]) };
       },
     ],
     [
@@ -2418,8 +2494,11 @@ export function cardEngine(env: CardEnv): CardEngine {
       excerpt?: string | undefined;
       time?: string | undefined;
       status?: { label: string; tone: Tone } | undefined;
+      tags: string[];
       href?: string | undefined;
+      filterKeys?: string[] | undefined;
     }>;
+    filters: FilterOption[];
     groups: Array<{
       source: string;
       brand?: string | undefined;
@@ -2438,12 +2517,15 @@ export function cardEngine(env: CardEnv): CardEngine {
               brand: brandOf(item.brand),
               title: text(item.title, 160)!,
               excerpt: text(item.excerpt, 160),
-              time: text(item.time, 30),
+              time: momentText(item.at) ?? text(item.time, 30),
               status: statusOf(item.status),
+              tags: list(item.tags, 3, (tag) => text(tag, 20)),
               href: httpsOf(item.href),
+              filterKeys: filterKeysOf(item.filterKeys),
             }
           : undefined
       ),
+      filters: filtersOf(data.filters),
       groups: list(data.groups, 6, (group) =>
         isRecord(group) && text(group.source, 40) && text(group.summary, 160)
           ? {
@@ -2468,41 +2550,43 @@ export function cardEngine(env: CardEnv): CardEngine {
     [
       "news",
       (data) => data.items.length > 0,
-      (data) => ({
-        root: card(data.frame, [
-          h(
-            "ul",
-            "wc-list",
-            ...data.items.map((item) =>
-              h(
-                "li",
-                "wc-divided",
-                row(
-                  item.href,
-                  "wc-news",
-                  mark(item.brand, item.source),
+      (data) => {
+        const rows = h("ul", "wc-list");
+        const control = filtered(
+          data.frame.title,
+          data.filters,
+          data.items,
+          rows,
+          (item) =>
+            h(
+              "li",
+              "wc-divided",
+              row(
+                item.href,
+                "wc-news",
+                mark(item.brand, item.source),
+                h(
+                  "span",
+                  "wc-col wc-gap-xxs wc-grow",
+                  h("span", "wc-sm wc-w5 wc-c1 wc-clamp-2", item.title),
+                  item.excerpt && h("span", "wc-xs wc-c2 wc-clamp-1", item.excerpt),
                   h(
                     "span",
-                    "wc-col wc-gap-xxs wc-grow",
-                    h("span", "wc-sm wc-w5 wc-c1 wc-clamp-2", item.title),
-                    item.excerpt && h("span", "wc-xs wc-c2 wc-clamp-1", item.excerpt),
+                    "wc-row-center wc-wrap wc-gap-sm wc-xs wc-c3",
+                    item.status && status(item.status),
+                    ...item.tags.map((tag) => badge(tag, "gray")),
                     h(
                       "span",
-                      "wc-row-center wc-gap-sm wc-xs wc-c3",
-                      item.status && status(item.status),
-                      h(
-                        "span",
-                        null,
-                        [item.source, item.time].filter(Boolean).join(" · ")
-                      )
+                      null,
+                      [item.source, item.time].filter(Boolean).join(" · ")
                     )
                   )
                 )
               )
             )
-          ),
-        ]),
-      }),
+        );
+        return { root: card(data.frame, [control, rows]) };
+      },
     ],
     [
       "digest",

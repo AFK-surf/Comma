@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -19,115 +20,7 @@ const releaseStorageScript = resolve(
 );
 const testDirectories: string[] = [];
 
-const fakeAwsSource = String.raw`#!/usr/bin/env node
-const {
-  appendFileSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  statSync,
-} = require("node:fs");
-const { dirname, resolve } = require("node:path");
-
-const values = process.argv.slice(2);
-if (values[0] === "--endpoint-url") {
-  values.splice(0, 2);
-}
-
-appendFileSync(
-  process.env.FAKE_AWS_LOG,
-  JSON.stringify({ arguments: values }) + "\n"
-);
-
-function parseRemote(value) {
-  const match = /^s3:\/\/([^/]+)\/?(.*)$/.exec(value);
-  if (!match) return undefined;
-  return {
-    bucket: match[1],
-    key: match[2],
-    path: resolve(process.env.FAKE_R2_ROOT, match[1], match[2]),
-  };
-}
-
-function copy(source, destination) {
-  mkdirSync(dirname(destination), { recursive: true });
-  copyFileSync(source, destination);
-}
-
-function fail(message) {
-  process.stderr.write(message + "\n");
-  process.exit(1);
-}
-
-if (values[0] === "s3api" && values[1] === "head-object") {
-  const bucket = values[values.indexOf("--bucket") + 1];
-  const key = values[values.indexOf("--key") + 1];
-  const path = resolve(process.env.FAKE_R2_ROOT, bucket, key);
-  if (!existsSync(path)) fail("not found: " + key);
-  process.stdout.write(JSON.stringify({ ContentLength: statSync(path).size }));
-  process.exit(0);
-}
-
-if (values[0] !== "s3") fail("unsupported fake aws command");
-
-if (values[1] === "sync") {
-  const source = values[2];
-  const destination = parseRemote(values[3]);
-  const excluded = new Set();
-  for (let index = 4; index < values.length; index += 1) {
-    if (values[index] === "--exclude") {
-      excluded.add(values[index + 1]);
-      index += 1;
-    }
-  }
-
-  for (const fileName of readdirSync(source)) {
-    const sourcePath = resolve(source, fileName);
-    if (!statSync(sourcePath).isFile() || excluded.has(fileName)) continue;
-    const key = destination.key + "/" + fileName;
-    if (process.env.FAKE_AWS_SKIP_UPLOAD_KEY === key) continue;
-    copy(sourcePath, resolve(process.env.FAKE_R2_ROOT, destination.bucket, key));
-  }
-  process.exit(0);
-}
-
-if (values[1] === "cp") {
-  const source = values[2];
-  const destination = values[3];
-  const remoteSource = parseRemote(source);
-  const remoteDestination = parseRemote(destination);
-
-  if (remoteSource && !existsSync(remoteSource.path)) {
-    fail("not found: " + remoteSource.key);
-  }
-
-  if (remoteSource && destination === "-") {
-    process.stdout.write(readFileSync(remoteSource.path));
-    process.exit(0);
-  }
-
-  if (remoteSource && remoteDestination) {
-    copy(remoteSource.path, remoteDestination.path);
-    process.exit(0);
-  }
-
-  if (remoteSource) {
-    copy(remoteSource.path, destination);
-    process.exit(0);
-  }
-
-  if (remoteDestination) {
-    if (process.env.FAKE_AWS_SKIP_UPLOAD_KEY !== remoteDestination.key) {
-      copy(source, remoteDestination.path);
-    }
-    process.exit(0);
-  }
-}
-
-fail("unsupported fake aws arguments: " + values.join(" "));
-`;
+const fakeAwsScript = resolve(import.meta.dirname, "fixtures/fake-aws.sh");
 
 interface ReleaseHarness {
   bucket: string;
@@ -153,7 +46,7 @@ function createHarness(prefix: string): ReleaseHarness {
   writeFileSync(logPath, "");
 
   const fakeAwsPath = resolve(fakeBin, "aws");
-  writeFileSync(fakeAwsPath, fakeAwsSource);
+  copyFileSync(fakeAwsScript, fakeAwsPath);
   chmodSync(fakeAwsPath, 0o755);
 
   return {
@@ -192,7 +85,8 @@ function getReleaseAsset(fileName: string, content: string) {
 function runReleaseStorage(
   harness: ReleaseHarness,
   command: "promote-production" | "publish-staging",
-  extraEnvironment: NodeJS.ProcessEnv = {}
+  extraEnvironment: NodeJS.ProcessEnv = {},
+  extraArguments: string[] = []
 ) {
   const cliArguments = [
     releaseStorageScript,
@@ -208,6 +102,7 @@ function runReleaseStorage(
   if (command === "publish-staging") {
     cliArguments.push("--release-dir", harness.releaseDir);
   }
+  cliArguments.push(...extraArguments);
 
   return spawnSync(process.execPath, cliArguments, {
     encoding: "utf8",
@@ -268,6 +163,14 @@ describe("release storage publication", () => {
     });
 
     expect(failed.status).not.toBe(0);
+    // The failure says what the bucket holds of this release: the sync sent the
+    // portable zip, not the package.
+    const listing = failed.stderr.slice(failed.stderr.indexOf("The bucket holds"));
+    expect(listing).toContain(
+      `The bucket holds under ${harness.prefix}/Comma-1.2.3-staging.456*:`
+    );
+    expect(listing).toContain(`${harness.prefix}/${portableName} 8 bytes`);
+    expect(listing).not.toContain(packageName);
     expect(readFileSync(getRemotePath(harness, "releases.staging.json"), "utf8")).toBe(
       oldFeed
     );
@@ -359,5 +262,40 @@ describe("release storage publication", () => {
     expect(finalOperation?.[1]).toBe("cp");
     expect(finalOperation?.[2]).toContain("releases.prod.pending.json");
     expect(finalOperation?.[3]).toContain("releases.prod.json");
+  });
+
+  it("promotes a Windows production feed, which has an installer and no DMG", () => {
+    const harness = createHarness("comma/electron/prod/win32");
+    const packageName = "Comma-1.2.3-full.nupkg";
+    const packageContent = "windows full package";
+    const installer = "Comma-1.2.3-Setup.exe";
+    const pendingFeed = `${JSON.stringify({
+      Assets: [getReleaseAsset(packageName, packageContent)],
+    })}\n`;
+    writeRemote(harness, "releases.prod.pending.json", pendingFeed);
+    writeRemote(harness, packageName, packageContent);
+    writeRemote(harness, "setup.prod.pending.txt", `${installer}\n`);
+
+    // The installer the pointer names must be there before anything is promoted.
+    const missing = runReleaseStorage(harness, "promote-production", {}, [
+      "--dmg",
+      "none",
+    ]);
+    expect(missing.status).not.toBe(0);
+    expect(existsSync(getRemotePath(harness, "releases.prod.json"))).toBe(false);
+
+    writeRemote(harness, installer, "windows installer");
+    const promoted = runReleaseStorage(harness, "promote-production", {}, [
+      "--dmg",
+      "none",
+    ]);
+    expect(promoted.status, promoted.stderr).toBe(0);
+    expect(readFileSync(getRemotePath(harness, "releases.prod.json"), "utf8")).toBe(
+      pendingFeed
+    );
+    expect(readFileSync(getRemotePath(harness, "setup.prod.txt"), "utf8")).toBe(
+      `${installer}\n`
+    );
+    expect(existsSync(getRemotePath(harness, "dmg.prod.txt"))).toBe(false);
   });
 });

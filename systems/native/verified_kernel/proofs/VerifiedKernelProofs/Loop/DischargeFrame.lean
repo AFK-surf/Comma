@@ -100,7 +100,7 @@ macro_rules
   | `(tactic| reply_frame_step $h:ident) =>
     `(tactic| first
       | (head_is $h [write]; simp only [write_reply_frame_step] at $h:ident; obtain ⟨_, kept⟩ := $h
-         refine reply_frame_trans (kept rfl rfl) ?_)
+         refine reply_frame_trans (kept (by keys_absent) (by keys_absent)) ?_)
       | (head_step $h "_reply_frame_step"; obtain ⟨_, kept⟩ := $h; refine reply_frame_trans kept ?_))
 
 syntax "reply_frame_walk" ident : tactic
@@ -210,7 +210,7 @@ theorem historyCompaction_reply_frame {s e t : Term} {provider : Bool} {j r : Li
        obtain ⟨value, _, prior, h⟩ := bound
        first
          | (execution_head_is prior "VerifiedKernel.Data.write"
-            refine reply_frame_trans (write_reply_frame prior rfl rfl) ?_)
+            refine reply_frame_trans (write_reply_frame prior (by keys_absent) (by keys_absent)) ?_)
          | (execution_head_is prior "VerifiedKernel.Session.pruneResultRefs"
             refine reply_frame_trans (pruneResultRefs_reply_frame prior) ?_)
          | (execution_head_is prior "VerifiedKernel.Session.pruneCompactResults"
@@ -237,7 +237,7 @@ cheaper than a walk over every branch of `runtimeAppend`. -/
 theorem runtimeAppend_reply_frame {state event next : Term} {journal rest : List Term}
     (call : runtimeAppend state event journal = .ok (next, rest)) : ReplyFrame state next := by
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops call
-  exact reply_frame_trans (appendFields_reply_frame appended) (reply_frame_trans (write_reply_frame written rfl rfl)
+  exact reply_frame_trans (appendFields_reply_frame appended) (reply_frame_trans (write_reply_frame written (by keys_absent) (by keys_absent))
     (reply_frame_trans (bumpHwm_reply_frame bumped) (resetFresh_reply_frame reset)))
 
 theorem runtimeAppend_reply_frame_step {state event next : Term} {journal rest : List Term} :
@@ -245,7 +245,16 @@ theorem runtimeAppend_reply_frame_step {state event next : Term} {journal rest :
       Except.ok (next, rest) = runtimeAppend state event journal ∧ ReplyFrame state next :=
   step_iff runtimeAppend_reply_frame
 reply_rule transcriptRuntime (state event)
-reply_rule transcriptSeed (state event)
+/-- Compose the two writes of `transcriptSeed` (`transcriptSeed_ops`). -/
+theorem transcriptSeed_reply_frame {state event next : Term} {journal rest : List Term}
+    (call : transcriptSeed state event journal = .ok (next, rest)) : ReplyFrame state next := by
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, seeded, bytes⟩ := transcriptSeed_ops call
+  exact reply_frame_trans (write_reply_frame seeded (by keys_absent) (by keys_absent)) (write_reply_frame bytes (by keys_absent) (by keys_absent))
+
+theorem transcriptSeed_reply_frame_step {state event next : Term} {journal rest : List Term} :
+    transcriptSeed state event journal = .ok (next, rest) ↔
+      Except.ok (next, rest) = transcriptSeed state event journal ∧ ReplyFrame state next :=
+  step_iff transcriptSeed_reply_frame
 reply_rule queueAppend (state event)
 reply_rule queueAck (state event)
 reply_rule queueConsume (state event)
@@ -283,30 +292,6 @@ theorem sessionEvent_reply_frame_step {state event next : Term} {journal rest : 
       Except.ok (next, rest) = sessionEvent state event journal ∧ ReplyFrame state next :=
   step_iff sessionEvent_reply_frame
 
-theorem mergePredicate_reply_frame {s kind through replacement extra t : Term} {j r : List Term}
-    (h : mergePredicate s kind through replacement extra j = .ok (t, r)) : ReplyFrame s t := by
-  unfold mergePredicate at h
-  repeat' first
-    | exact write_reply_frame h rfl rfl
-    | split at h
-    | (obtain ⟨_, _, _, h⟩ := bind_ok h)
-
-theorem mergePredicate_reply_frame_step {s kind through replacement extra t : Term} {j r : List Term} :
-    mergePredicate s kind through replacement extra j = .ok (t, r) ↔
-      Except.ok (t, r) = mergePredicate s kind through replacement extra j ∧ ReplyFrame s t :=
-  step_iff mergePredicate_reply_frame
-
-theorem microcompactIds_reply_frame {s replacement e t : Term} {ids j r : List Term}
-    (h : microcompactIds s ids replacement e j = .ok (t, r)) : ReplyFrame s t := by
-  unfold microcompactIds at h
-  reply_frame_walk h
-
-theorem microcompactIds_reply_frame_step {s replacement e t : Term} {ids j r : List Term} :
-    microcompactIds s ids replacement e j = .ok (t, r) ↔
-      Except.ok (t, r) = microcompactIds s ids replacement e j ∧ ReplyFrame s t :=
-  step_iff microcompactIds_reply_frame
-
-reply_rule microcompact (state event)
 reply_rule capabilitySync (state event)
 reply_rule archiveAdvance (state event)
 
@@ -371,7 +356,7 @@ theorem write_obligations {s t v : Term} {j r : List Term}
     (h : write s [("provider_reply_obligations", v)] j = .ok (t, r)) (map : v.isMap = true) :
     ackOf t = ackOf s ∧
       (obligationMap t = obligationMap s ∨ obligationMap t = v) := by
-  have ack : ackOf t = ackOf s := write_field_frame h rfl
+  have ack : ackOf t = ackOf s := write_field_frame h (by keys_absent)
   have binary : t.get (b "provider_reply_obligations") = s.get (b "provider_reply_obligations") :=
     write_binary_frame h
   obtain ⟨j', h'⟩ := write_cons h
@@ -404,9 +389,10 @@ syntax "keys_kept_step" ident : tactic
 macro_rules
   | `(tactic| keys_kept_step $h:ident) =>
     `(tactic| first
-      | (head_is $h [write]; refine keys_kept_trans (write_obligations_put $h) ?_)
+      -- `keys_absent` fails at once when the write sets the obligations, so try it first.
       | (head_is $h [write]; simp only [write_keys_kept_step] at $h:ident; obtain ⟨_, kept⟩ := $h
-         refine keys_kept_trans (kept rfl rfl) ?_)
+         refine keys_kept_trans (kept (by keys_absent) (by keys_absent)) ?_)
+      | (head_is $h [write]; refine keys_kept_trans (write_obligations_put $h) ?_)
       | (head_step $h "_keys_kept_step"; obtain ⟨_, kept⟩ := $h; refine keys_kept_trans kept ?_)
       | (head_step $h "_reply_frame_step"; obtain ⟨_, kept⟩ := $h; refine keys_kept_trans kept.kept ?_))
 

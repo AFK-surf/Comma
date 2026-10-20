@@ -30,6 +30,8 @@ defmodule BridgeForTeamsCore.MixProject do
   defp deps do
     [
       {:systems_observability, in_umbrella: true},
+      {:systems_clock, in_umbrella: true},
+      {:systems_runtime, in_umbrella: true},
       {:billing_core, in_umbrella: true},
       {:billing_commerce, in_umbrella: true},
       # S3 reuse: SalixStore.Blob / SalixStore.S3 / SalixStore.Lease.
@@ -55,7 +57,12 @@ defmodule BridgeForTeamsCore.MixProject do
     [
       "ecto.setup": ["ecto.create", "ecto.migrate"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
-      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"]
+      test: [&prepare_test_database/1, "test"]
     ]
+  end
+
+  defp prepare_test_database(_args) do
+    Mix.Task.run("ecto.create", ["--quiet"])
+    Mix.Task.run("ecto.migrate", ["--quiet"])
   end
 end

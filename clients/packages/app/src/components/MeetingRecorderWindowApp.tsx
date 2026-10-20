@@ -1,6 +1,7 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import { getNativeBridge, type AudioCaptureMicrophones } from "@comma/native-bridge";
-import { MeetingRecorder } from "@comma/ui";
+import { MeetingRecorder } from "@comma/ui/components/meeting-recorder";
+import { useCall } from "@comma/core-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNativeRecorderWindow } from "./useNativeRecorderWindow";
 import { useMeetingRecorder } from "./useMeetingRecorder";
@@ -10,6 +11,7 @@ export function MeetingRecorderWindowApp() {
   const bridge = getNativeBridge();
   const m = useCommaMessages();
   const { state, action, error } = useMeetingRecorder();
+  const call = useCall();
   const [devices, setDevices] = useState<AudioCaptureMicrophones["devices"]>([]);
   const [loading, setLoading] = useState(false);
   const [microphoneError, setMicrophoneError] = useState<string>();
@@ -104,7 +106,7 @@ export function MeetingRecorderWindowApp() {
     if (!state.meeting) return;
     setMicrophoneError(undefined);
     try {
-      await bridge.meetingRecorder.selectMicrophone({
+      await call("meetingRecorder.selectMicrophone", {
         deviceId,
         meetingKey: state.meeting.key,
         generation: state.generation,

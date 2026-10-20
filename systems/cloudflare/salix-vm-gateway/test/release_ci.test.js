@@ -28,6 +28,56 @@ import {
   validateHealthzPayload,
 } from "../scripts/release-ci.mjs";
 import { signRequest } from "../src/auth";
+import { ContainerControl } from "../src/control";
+
+// Exercise the release client with the real durable command protocol. The
+// provider stops the first Container once, as an image rollout does.
+function imageProbeRollout(blocked) {
+  let saved, running = false, statuses = 0;
+  const starts = [];
+  const control = new ContainerControl({
+    read: () => saved,
+    write: (state) => { saved = structuredClone(state); },
+    sync: async () => {},
+  });
+  const request = async (_base, _secret, method, path, body) => {
+    const url = new URL(path, "https://gateway.test");
+    const action = url.pathname.split("/").pop();
+    const permit = JSON.parse(url.searchParams.get("salix_control"));
+    try {
+      if (action === "control") {
+        if (method === "POST") await control[body.action](body.control);
+        const observed = structuredClone(control.observe());
+        if (method === "GET" && blocked === "changed-owner") observed.owner_id = "another-release";
+        if (method === "GET" && blocked === "other-receipt") observed.last_terminal.claim_id = "another-start";
+        return Response.json({ running, control: observed });
+      }
+      if (action === "ensure") {
+        await control.run(permit, "ensure", async () => {
+          starts.push({ permit, station: body.station });
+          running = true;
+        }, () => ({}));
+        if (starts.length === 1 && blocked === "pending") {
+          saved = { ...saved, pending: { ...permit, action: "ensure" } };
+        }
+        return Response.json({ status: "running" });
+      }
+      if (action === "status") {
+        statuses++;
+        if (starts.length === 1 && statuses === 2 || blocked === "never-converges" && statuses % 3 === 0) {
+          running = false;
+          if (blocked === "sealed") await control.seal(permit);
+        }
+        return Response.json({ status: running ? "running" : "stopped" });
+      }
+      await control.run(permit, action, async () => { if (action === "destroy") running = false; }, () => ({}), { sealed: true });
+      return Response.json({ ok: true });
+    } catch (error) {
+      return Response.json({ error: { code: error.code || "gateway_error" } }, { status: error.status || 500 });
+    }
+  };
+  return { request, starts, state: () => control.observe() };
+}
 
 describe("release CI helpers", () => {
   test("Worker-only changes reuse the Container image while Connector changes require release", () => {
@@ -52,6 +102,7 @@ describe("release CI helpers", () => {
       const published = commit("published image");
       write("docs/release.md", "operator note\n");
       write("systems/connector/salix-connect/main_test.go", "package main\n");
+      write("systems/station/test/connector.test.ts", "test\n");
       const docs = commit("docs and tests");
       expect(sameSandboxRuntimeSources(published, docs, root)).toBe(true);
       let previous = docs;
@@ -59,12 +110,22 @@ describe("release CI helpers", () => {
         "systems/runtime-images/runtime-dependencies.lock.json",
         "systems/cloudflare/salix-vm-gateway/scripts/install-harnesses.mjs",
         "systems/cloudflare/salix-vm-gateway/scripts/build-connector.sh",
+        "systems/runtime-images/station/silk2wav",
+        "systems/runtime-images/station/file-tools-packages",
+        "systems/runtime-images/station/file-tools-requirements.txt",
       ]) {
         write(path, "changed harness material\n");
         const revision = commit("update harness material");
         const sameSources = sameSandboxRuntimeSources(previous, revision, root);
         expect(imageReleasePlan({ comma_source_revision: revision }, revision, {}, "release-1", sameSources)).toBe("publish");
         expect(inferWorkerReleaseKind({ commits: [{ modified: [path] }] })).toBe("sandbox_image");
+        previous = revision;
+      }
+      // The station in the image, and the toolchain its Linux parts are built with.
+      for (const path of ["systems/station/src/main.ts", ".github/actions/station-zig/action.yml"]) {
+        write(path, "changed station material\n");
+        const revision = commit("update station material");
+        expect(sameSandboxRuntimeSources(previous, revision, root)).toBe(false);
         previous = revision;
       }
       write("systems/cloudflare/salix-vm-gateway/src/index.ts", "export const worker = true;\n");
@@ -248,11 +309,13 @@ describe("release CI helpers", () => {
     }
   });
 
-  test("a verified image probe disables keepAlive and does not wait for cleanup", async () => {
+  test("a probe that keeps running disables keepAlive and does not wait for cleanup", async () => {
+    vi.useFakeTimers();
     const calls = [];
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await probeImageContainer({
+      const probe = probeImageContainer({
         baseUrl: "https://gateway.test", secret: "test-secret", profileKey: "cf-standard-2",
         maintenanceId: "sandbox-image-123-staging", sourceRevision: "a".repeat(40),
       }, async (...args) => {
@@ -260,12 +323,18 @@ describe("release CI helpers", () => {
         const path = new URL(args[3], args[0]).pathname;
         if (path.endsWith("/keepalive")) throw new Error("request timeout");
         if (path.endsWith("/destroy")) return { ok: false, status: 500 };
-        return { ok: true, json: async () => ({ status: "ready", connector_build_revision: "a".repeat(40) }) };
+        return { ok: true, json: async () => ({ status: "running" }) };
       });
+      await vi.advanceTimersByTimeAsync(60_000);
+      await probe;
       const action = (call) => new URL(call[3], call[0]).pathname.split("/").pop();
-      expect(calls.map(action)).toEqual(["control", "ensure", "status", "readyz", "control", "keepalive", "destroy"]);
-      expect(calls[4][4].action).toBe("seal");
-      expect(calls[5][4]).toEqual({ keep_alive: false });
+      const actions = calls.map(action);
+      expect(actions.slice(0, 2)).toEqual(["control", "ensure"]);
+      expect(actions.slice(-3)).toEqual(["control", "keepalive", "destroy"]);
+      expect(actions.slice(2, -3).every((a) => a === "status")).toBe(true);
+      expect(calls[1][4].station).toMatchObject({ server: expect.stringMatching(/^wss:/), credential: expect.any(String) });
+      expect(calls.at(-3)[4].action).toBe("seal");
+      expect(calls.at(-2)[4]).toEqual({ keep_alive: false });
       expect(calls.every((call) => JSON.parse(new URL(call[3], call[0]).searchParams.get("salix_control")).owner_id === "sandbox-image-123-staging")).toBe(true);
       const failedRequest = vi.fn(async (...call) => action(call) === "ensure"
         ? { ok: false, status: 401 } : { ok: true });
@@ -274,23 +343,122 @@ describe("release CI helpers", () => {
         maintenanceId: "sandbox-image-456-staging", sourceRevision: "a".repeat(40),
       }, failedRequest)).rejects.toThrow("Fresh Sandbox ensure returned HTTP 401");
       expect(failedRequest.mock.calls.map(action))
-        .toEqual(["control", "ensure", "control", "keepalive", "destroy"]);
+        .toEqual(["control", "ensure", "control", "control", "keepalive", "destroy"]);
     } finally {
       warning.mockRestore();
+      reported.mockRestore();
+      vi.useRealTimers();
     }
   });
 
-  test("an issued probe start waits for readiness after the first port refusal", async () => {
+  test.each(["cf-standard-1", "cf-standard-2"])("image probe restarts a settled Container after rollout in %s", async (profileKey) => {
+    vi.useFakeTimers();
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+    const provider = imageProbeRollout();
+    try {
+      const result = probeImageContainer({ baseUrl: "https://gateway.test", secret: "test-secret",
+        profileKey, maintenanceId: "release-rollout", sourceRevision: "new-revision" }, provider.request)
+        .then(() => null, (error) => error);
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      expect(await result).toBeNull();
+      expect(provider.starts).toHaveLength(2);
+      expect(provider.starts[1].permit.claim_id).not.toBe(provider.starts[0].permit.claim_id);
+      expect(provider.state()).toMatchObject({ sealed: true, pending: null, last_terminal: { action: "destroy" } });
+    } finally {
+      reported.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  test.each(["pending", "sealed", "changed-owner", "other-receipt"])("image probe does not restart a stopped Container with %s control", async (blocked) => {
+    vi.useFakeTimers();
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const provider = imageProbeRollout(blocked);
+    try {
+      const result = probeImageContainer({ baseUrl: "https://gateway.test", secret: "test-secret",
+        profileKey: "cf-standard-2", maintenanceId: "release-rollout", sourceRevision: "new-revision" }, provider.request)
+        .then(() => null, (error) => error);
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      expect((await result).message).toBe("Fresh Sandbox did not keep running");
+      expect(provider.starts).toHaveLength(1);
+    } finally {
+      warning.mockRestore();
+      reported.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  test("repeated rollout stops do not renew the image probe deadline", async () => {
+    vi.useFakeTimers();
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+    const provider = imageProbeRollout("never-converges");
+    const startedAt = Date.now();
+    try {
+      const result = probeImageContainer({ baseUrl: "https://gateway.test", secret: "test-secret",
+        profileKey: "cf-standard-2", maintenanceId: "release-rollout", sourceRevision: "new-revision" }, provider.request)
+        .then(() => null, (error) => error);
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      expect((await result).message).toBe("Fresh Sandbox did not keep running");
+      expect(Date.now() - startedAt).toBe(15 * 60_000);
+      expect(provider.starts.length).toBeGreaterThan(1);
+      expect(provider.starts.length).toBeLessThanOrEqual(180);
+    } finally {
+      reported.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  test("malformed successful status preserves the original failure and cleanup", async () => {
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
     const calls = [];
-    await probeImageContainer({ baseUrl: "https://gateway.test", secret: "test-secret",
-      profileKey: "cf-standard-1", maintenanceId: "release-cold-start", sourceRevision: "b".repeat(40) },
-      async (...call) => {
-        const action = new URL(call[3], call[0]).pathname.split("/").pop();
-        calls.push(action);
-        return action === "ensure" ? { ok: false, status: 503 } :
-          { ok: true, json: async () => ({ status: "ready", connector_build_revision: "b".repeat(40) }) };
-      });
-    expect(calls).toEqual(["control", "ensure", "status", "readyz", "control", "keepalive", "destroy"]);
+    try {
+      await expect(probeImageContainer({ baseUrl: "https://gateway.test", secret: "test-secret",
+        profileKey: "cf-standard-2", maintenanceId: "malformed-status", sourceRevision: "revision" },
+        async (_url, _secret, method, path) => {
+          const action = new URL(path, "https://gateway.test").pathname.split("/").pop();
+          calls.push(`${method}:${action}`);
+          return action === "status" ? new Response("invalid JSON") : Response.json({ ok: true });
+        })).rejects.toBeInstanceOf(SyntaxError);
+      expect(calls).toEqual(["POST:control", "POST:ensure", "GET:status", "GET:control", "POST:control", "POST:keepalive", "POST:destroy"]);
+    } finally {
+      reported.mockRestore();
+    }
+  });
+
+  test("failed probe retains its last status and exact control evidence before cleanup", async () => {
+    vi.useFakeTimers();
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+    const calls = [];
+    const secret = "must-not-appear-in-probe-evidence";
+    try {
+      const result = probeImageContainer({ baseUrl: "https://gateway.test", secret,
+        profileKey: "cf-standard-2", maintenanceId: "release-evidence", sourceRevision: "new-revision" },
+        async (_url, _secret, method, path) => {
+          const action = new URL(path, "https://gateway.test").pathname.split("/").pop();
+          calls.push(`${method}:${action}`);
+          if (action === "ensure") return Response.json({ error: { code: "gateway_error", message: secret } }, { status: 500 });
+          if (action === "status") return Response.json({ status: "stopped", token: secret });
+          if (action === "control" && method === "GET") return Response.json({ running: false,
+            secret, control: { pending: { action: "ensure", claim_id: "exact-start", secret },
+              last_terminal: { action: "ensure", outcome: "completed" } } });
+          return Response.json({ ok: true });
+        }).then(() => null, (error) => error);
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      expect((await result).message).toBe("Fresh Sandbox did not keep running");
+      expect(reported).toHaveBeenCalledTimes(1);
+      const output = reported.mock.calls[0][0];
+      expect(output).not.toContain(secret);
+      const evidence = JSON.parse(output.slice(output.indexOf("{")));
+      expect(evidence.ensure).toEqual({ http_status: 500, code: "gateway_error" });
+      expect(evidence.status).toEqual({ http_status: 200, status: "stopped" });
+      expect(evidence.control).toMatchObject({ running: false, pending: { action: "ensure", claim_id: "exact-start" } });
+      expect(calls.slice(-4)).toEqual(["GET:control", "POST:control", "POST:keepalive", "POST:destroy"]);
+      expect(calls.filter((call) => call === "POST:ensure")).toHaveLength(1);
+    } finally {
+      reported.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   test("release drain requires an owner for every running instance", () => {

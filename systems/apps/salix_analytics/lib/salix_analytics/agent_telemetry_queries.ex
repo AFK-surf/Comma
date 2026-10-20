@@ -171,7 +171,8 @@ defmodule SalixAnalytics.AgentTelemetryQueries do
           WHERE #{scope(opts)} AND #{round_scoped()}
             AND phase IN ('miniskill', 'delivery_wait', 'activation', 'prepare', 'response_commit',
                           'tool_commit', 'boundary', 'finalize',
-                          'async_pickup', 'async_commit', 'async_config')
+                          'async_pickup', 'async_commit', 'async_config',
+                          'cw_evidence', 'cw_wait')
         )
         GROUP BY session_id, round_id
       ),
@@ -327,7 +328,7 @@ defmodule SalixAnalytics.AgentTelemetryQueries do
     end
 
     stale_before =
-      opts[:stale_before] || DateTime.add(DateTime.utc_now(), -@stale_grace_seconds, :second)
+      opts[:stale_before] || DateTime.add(SystemsClock.utc_now(), -@stale_grace_seconds, :second)
 
     ClickHouseRead.run(
       sql,
@@ -1236,7 +1237,7 @@ defmodule SalixAnalytics.AgentTelemetryQueries do
   defp maybe_bind(binds, name, value), do: binds ++ [{name, value}]
 
   defp window(opts) do
-    to = opts[:to] || DateTime.utc_now()
+    to = opts[:to] || SystemsClock.utc_now()
     from = opts[:from] || DateTime.add(to, -24 * 3600, :second)
     {from, to}
   end

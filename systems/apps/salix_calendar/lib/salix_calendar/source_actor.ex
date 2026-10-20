@@ -1,7 +1,11 @@
 defmodule SalixCalendar.SourceActor do
+  require SystemsRuntime.Proc
+
   @moduledoc "The aggregate, lifecycle and persistence owner for one CalendarSource."
 
-  use GenServer
+  use SystemsRuntime.Server
+
+  require SystemsClock
 
   alias SalixCalendar.{Item, Query, Recurrence, SourceSyncOutcome}
   alias SalixStore.{CasRecord, Crypto, Ids, JSON, Keys, Lease, S3}
@@ -32,7 +36,10 @@ defmodule SalixCalendar.SourceActor do
     group_id = Keyword.fetch!(opts, :group_id)
     calendar_id = Keyword.fetch!(opts, :calendar_id)
     source_id = Keyword.fetch!(opts, :source_id)
-    GenServer.start_link(__MODULE__, opts, name: via(group_id, calendar_id, source_id))
+
+    SystemsRuntime.Server.start_link(__MODULE__, opts,
+      name: via(group_id, calendar_id, source_id)
+    )
   end
 
   def key(group_id, calendar_id, source_id),
@@ -41,11 +48,13 @@ defmodule SalixCalendar.SourceActor do
   def read_source(g, c, s), do: get_record(Keys.ctl_calendar_source(g, c, s))
 
   defp via(group_id, calendar_id, source_id),
-    do: {:via, Registry, {SalixCalendar.Registry, key(group_id, calendar_id, source_id)}}
+    do:
+      {:via, SystemsRuntime.Registry,
+       {SalixCalendar.Registry, key(group_id, calendar_id, source_id)}}
 
   @impl true
   def init(opts) do
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
     group_id = Keyword.fetch!(opts, :group_id)
     calendar_id = Keyword.fetch!(opts, :calendar_id)
     source_id = Keyword.fetch!(opts, :source_id)
@@ -160,11 +169,11 @@ defmodule SalixCalendar.SourceActor do
   end
 
   defp start_provider(%{busy: busy} = state) do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
     flow = busy.flow
 
     worker =
-      spawn_link(fn ->
+      SystemsRuntime.Proc.spawn_link(fn ->
         result =
           case flow.kind do
             :refresh ->
@@ -174,12 +183,15 @@ defmodule SalixCalendar.SourceActor do
               flow.adapter.exact_refresh(flow.source, flow.item, flow.occurrence)
           end
 
-        send(owner, {:source_provider_result, self(), result})
+        SystemsRuntime.Proc.send(
+          owner,
+          {:source_provider_result, SystemsRuntime.Proc.self(), result}
+        )
       end)
 
     timeout_ref =
-      Process.send_after(
-        self(),
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
         {:source_provider_timeout, worker},
         operation_timeout_ms()
       )
@@ -196,7 +208,7 @@ defmodule SalixCalendar.SourceActor do
         {:source_provider_result, worker, result},
         %{busy: %{worker: worker} = busy} = state
       ) do
-    Process.unlink(worker)
+    SystemsRuntime.Proc.unlink(worker)
     cancel_timer(busy.timeout_ref)
     commit_provider_result(state, busy, result)
   end
@@ -205,7 +217,7 @@ defmodule SalixCalendar.SourceActor do
         {:source_provider_timeout, worker},
         %{busy: %{worker: worker} = busy} = state
       ) do
-    Process.exit(worker, :kill)
+    SystemsRuntime.Proc.exit(worker, :kill)
     finish_operation(state, %{busy | timeout_ref: nil}, {:error, :source_operation_timeout})
   end
 
@@ -217,7 +229,9 @@ defmodule SalixCalendar.SourceActor do
         %{lease_guard: guard, busy: busy} = state
       )
       when is_map(busy) do
-    if is_pid(busy.worker), do: Process.exit(busy.worker, :kill)
+    if SystemsRuntime.Proc.is_process(busy.worker),
+      do: SystemsRuntime.Proc.exit(busy.worker, :kill)
+
     finish_operation(state, busy, {:error, {:source_lease_failed, reason}})
   end
 
@@ -294,9 +308,9 @@ defmodule SalixCalendar.SourceActor do
   defp finish_operation(state, busy, result) do
     result = settle_refresh_outcome(state, busy, result)
     cancel_timer(busy.timeout_ref)
-    if is_pid(busy.worker), do: Process.unlink(busy.worker)
+    if SystemsRuntime.Proc.is_process(busy.worker), do: SystemsRuntime.Proc.unlink(busy.worker)
     stop_lease_guard(state.lease_guard)
-    if busy.from, do: GenServer.reply(busy.from, result)
+    if busy.from, do: SystemsRuntime.Server.reply(busy.from, result)
 
     state = %{state | busy: nil, lease_guard: nil}
 
@@ -397,7 +411,7 @@ defmodule SalixCalendar.SourceActor do
 
   defp enqueue(state, from, command) do
     if :queue.len(state.pending) >= 50 do
-      GenServer.reply(from, {:error, :sync_source_busy})
+      SystemsRuntime.Server.reply(from, {:error, :sync_source_busy})
       state
     else
       %{state | pending: :queue.in({from, command}, state.pending)}
@@ -1258,7 +1272,7 @@ defmodule SalixCalendar.SourceActor do
   end
 
   defp deliver_retirement(state, key, candidate) do
-    sink = Application.get_env(:salix_calendar, :retirement_sink)
+    sink = SystemsRuntime.get_env(:salix_calendar, :retirement_sink)
 
     with :ok <- require_lease(state) do
       result =
@@ -1339,7 +1353,7 @@ defmodule SalixCalendar.SourceActor do
     do: with(:ok <- require_lease(state), do: S3.delete(key))
 
   defp adapter(source) do
-    adapters = Application.get_env(:salix_calendar, :source_adapters, %{})
+    adapters = SystemsRuntime.get_env(:salix_calendar, :source_adapters, %{})
 
     case adapters[source["adapter"]] do
       module when is_atom(module) and not is_nil(module) ->
@@ -1423,11 +1437,11 @@ defmodule SalixCalendar.SourceActor do
 
   defp start_lease_guard(state) do
     with {:ok, lease} <- acquire_lease(state) do
-      owner = self()
+      owner = SystemsRuntime.Proc.self()
       interval = lease_renew_interval_ms()
 
       {:ok,
-       spawn_link(fn ->
+       SystemsRuntime.Proc.spawn_link(fn ->
          lease_guard(owner, lease, interval, monotonic_ms() + interval)
        end)}
     end
@@ -1436,25 +1450,30 @@ defmodule SalixCalendar.SourceActor do
   defp lease_guard(owner, lease, interval, renew_at) do
     wait_ms = max(renew_at - monotonic_ms(), 0)
 
-    receive do
+    SystemsClock.vreceive do
       {:assert_source_lease, caller, ref} ->
         # Every durable mutation proves the live ETag. Renew only once per
         # interval (or synchronously after the deadline) so a large bootstrap
         # remains fenced without exceeding object-store per-key mutation limits.
         case renew_source_lease_if_due(lease, interval, renew_at) do
           {:ok, current, next_renew_at} ->
-            send(caller, {ref, :ok})
+            SystemsRuntime.Proc.send(caller, {ref, :ok})
             lease_guard(owner, current, interval, next_renew_at)
 
           {:error, reason} ->
-            send(caller, {ref, {:error, reason}})
-            send(owner, {:source_lease_lost, self(), reason})
+            SystemsRuntime.Proc.send(caller, {ref, {:error, reason}})
+
+            SystemsRuntime.Proc.send(
+              owner,
+              {:source_lease_lost, SystemsRuntime.Proc.self(), reason}
+            )
+
             lost_lease_guard(reason)
         end
 
       {:stop_source_lease, caller, ref} ->
         Lease.release(lease)
-        send(caller, ref)
+        SystemsRuntime.Proc.send(caller, ref)
     after
       wait_ms ->
         case renew_source_lease(lease, interval) do
@@ -1462,7 +1481,11 @@ defmodule SalixCalendar.SourceActor do
             lease_guard(owner, renewed, interval, next_renew_at)
 
           {:error, reason} ->
-            send(owner, {:source_lease_lost, self(), reason})
+            SystemsRuntime.Proc.send(
+              owner,
+              {:source_lease_lost, SystemsRuntime.Proc.self(), reason}
+            )
+
             lost_lease_guard(reason)
         end
     end
@@ -1487,22 +1510,22 @@ defmodule SalixCalendar.SourceActor do
   end
 
   defp lost_lease_guard(reason) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:assert_source_lease, caller, ref} ->
-        send(caller, {ref, {:error, reason}})
+        SystemsRuntime.Proc.send(caller, {ref, {:error, reason}})
         lost_lease_guard(reason)
 
       {:stop_source_lease, caller, ref} ->
-        send(caller, ref)
+        SystemsRuntime.Proc.send(caller, ref)
     end
   end
 
-  defp require_lease(%{lease_guard: guard}) when is_pid(guard) do
-    if Process.alive?(guard) do
-      ref = make_ref()
-      send(guard, {:assert_source_lease, self(), ref})
+  defp require_lease(%{lease_guard: guard}) when SystemsRuntime.Proc.is_process(guard) do
+    if SystemsRuntime.Proc.alive?(guard) do
+      ref = SystemsRuntime.Proc.make_ref()
+      SystemsRuntime.Proc.send(guard, {:assert_source_lease, SystemsRuntime.Proc.self(), ref})
 
-      receive do
+      SystemsClock.vreceive do
         {^ref, :ok} -> :ok
         {^ref, {:error, reason}} -> {:error, {:source_lease_failed, reason}}
       after
@@ -1515,11 +1538,16 @@ defmodule SalixCalendar.SourceActor do
 
   defp require_lease(_state), do: {:error, {:source_lease_failed, :not_owned}}
 
-  defp stop_lease_guard(guard) when is_pid(guard) do
-    if Process.alive?(guard) do
-      ref = make_ref()
-      send(guard, {:stop_source_lease, self(), ref})
-      receive do: (^ref -> :ok), after: (5_000 -> :ok)
+  defp stop_lease_guard(guard) when SystemsRuntime.Proc.is_process(guard) do
+    if SystemsRuntime.Proc.alive?(guard) do
+      ref = SystemsRuntime.Proc.make_ref()
+      SystemsRuntime.Proc.send(guard, {:stop_source_lease, SystemsRuntime.Proc.self(), ref})
+
+      SystemsClock.vreceive do
+        ^ref -> :ok
+      after
+        5_000 -> :ok
+      end
     end
   end
 
@@ -1532,21 +1560,25 @@ defmodule SalixCalendar.SourceActor do
     do: bounded_config(:source_operation_timeout_ms, @default_operation_timeout_ms)
 
   defp bounded_config(key, maximum) do
-    case Application.get_env(:salix_calendar, key) do
+    case SystemsRuntime.get_env(:salix_calendar, key) do
       value when is_integer(value) and value > 0 -> min(value, maximum)
       _ -> maximum
     end
   end
 
   defp cancel_timer(nil), do: :ok
-  defp cancel_timer(ref), do: Process.cancel_timer(ref, async: false, info: false)
 
-  defp monotonic_ms, do: System.monotonic_time(:millisecond)
+  defp cancel_timer(ref) do
+    SystemsClock.cancel_timer(ref)
+    :ok
+  end
+
+  defp monotonic_ms, do: SystemsClock.monotonic_time(:millisecond)
 
   defp lease_holder,
     do:
-      "#{Node.self()}:#{inspect(self())}:" <>
-        Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      "#{Node.self()}:#{inspect(SystemsRuntime.Proc.self())}:" <>
+        Base.encode16(SystemsRuntime.Proc.random_bytes(8), case: :lower)
 
   defp bump(record, now),
     do: record |> Map.put("updated_at", now) |> Map.update("revision", 1, &(&1 + 1))
@@ -1554,5 +1586,5 @@ defmodule SalixCalendar.SourceActor do
   defp digest(value),
     do: value |> JSON.stringify() |> :erlang.term_to_binary([:deterministic]) |> Crypto.hex()
 
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 end

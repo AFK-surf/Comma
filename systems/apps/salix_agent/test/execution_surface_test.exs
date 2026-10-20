@@ -1,18 +1,21 @@
 defmodule SalixAgent.ExecutionSurfaceTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.{ExecutionSurface, ExecutionTiming}
 
   test "parallel jobs remain independent and owner death freezes an unknown end" do
     context = %{
-      agent_id: "history-test-#{System.unique_integer([:positive])}",
+      agent_id: "history-test-#{SystemsRuntime.Proc.unique_integer([:positive])}",
       session_id: "session"
     }
 
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     jobs =
       for id <- ["a", "b"] do
-        spawn(fn ->
+        SystemsRuntime.Proc.spawn(fn ->
           timing = ExecutionTiming.start()
 
           ExecutionSurface.observe(
@@ -22,9 +25,9 @@ defmodule SalixAgent.ExecutionSurfaceTest do
 
           # Same sender's read is a barrier for its cast before notifying the test.
           ExecutionSurface.get(context.agent_id, context.session_id)
-          send(parent, {:started, id})
+          SystemsRuntime.Proc.send(parent, {:started, id})
 
-          receive do
+          SystemsRuntime.Proc.receive do
             :finish ->
               ExecutionSurface.observe(
                 context,
@@ -32,13 +35,13 @@ defmodule SalixAgent.ExecutionSurfaceTest do
               )
 
               ExecutionSurface.get(context.agent_id, context.session_id)
-              send(parent, {:finished, id})
+              SystemsRuntime.Proc.send(parent, {:finished, id})
           end
         end)
       end
 
-    assert_receive {:started, "a"}
-    assert_receive {:started, "b"}
+    settle_receive({:started, "a"})
+    settle_receive({:started, "b"})
 
     assert Enum.all?(
              ExecutionSurface.get(context.agent_id, context.session_id),
@@ -46,9 +49,9 @@ defmodule SalixAgent.ExecutionSurfaceTest do
            )
 
     [a, b] = jobs
-    Process.exit(a, :kill)
-    send(b, :finish)
-    assert_receive {:finished, "b"}
+    SystemsRuntime.Proc.exit(a, :kill)
+    SystemsRuntime.Proc.send(b, :finish)
+    settle_receive({:finished, "b"})
     wait_frozen(context, 100)
 
     records =
@@ -71,7 +74,7 @@ defmodule SalixAgent.ExecutionSurfaceTest do
          ExecutionSurface.get(context.agent_id, context.session_id),
          & &1["execution"]["live"]
        ) do
-      Process.sleep(5)
+      SystemsClock.sleep(5)
       wait_frozen(context, attempts - 1)
     end
   end

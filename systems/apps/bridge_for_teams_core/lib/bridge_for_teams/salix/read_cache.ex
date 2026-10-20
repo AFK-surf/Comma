@@ -24,7 +24,7 @@ defmodule BridgeForTeams.Salix.ReadCache do
   a full TTL, defeating exactly the freshness signal `invalidate/1` exists
   to deliver.
   """
-  use GenServer
+  use SystemsRuntime.Server
 
   @table __MODULE__
   @sweep_interval_ms 60_000
@@ -32,7 +32,7 @@ defmodule BridgeForTeams.Salix.ReadCache do
   @doc "Start the cache table owner."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc """
@@ -47,11 +47,11 @@ defmodule BridgeForTeams.Salix.ReadCache do
   def fetch(key, ttl_ms, fun) when is_integer(ttl_ms) and ttl_ms > 0 and is_function(fun, 0) do
     case lookup(key) do
       {:ok, value} ->
-        :telemetry.execute([:bridge_for_teams, :read_cache], %{}, %{result: "hit"})
+        SystemsRuntime.Telemetry.execute([:bridge_for_teams, :read_cache], %{}, %{result: "hit"})
         value
 
       :miss ->
-        :telemetry.execute([:bridge_for_teams, :read_cache], %{}, %{result: "miss"})
+        SystemsRuntime.Telemetry.execute([:bridge_for_teams, :read_cache], %{}, %{result: "miss"})
         fill(key, generation(key), ttl_ms, fun.())
     end
   end
@@ -62,20 +62,20 @@ defmodule BridgeForTeams.Salix.ReadCache do
     # Bump the generation FIRST, then drop the value: a filler that read the
     # old generation can no longer insert (mismatch), and a filler that just
     # inserted is deleted here — either interleaving leaves no stale entry.
-    :ets.update_counter(@table, {:gen, key}, 1, {{:gen, key}, 0})
-    :ets.delete(@table, key)
+    SystemsRuntime.ETS.update_counter(@table, {:gen, key}, 1, {{:gen, key}, 0})
+    SystemsRuntime.ETS.delete(@table, key)
     :ok
   rescue
     ArgumentError -> :ok
   end
 
   defp lookup(key) do
-    case :ets.lookup(@table, key) do
+    case SystemsRuntime.ETS.lookup(@table, key) do
       [{^key, value, expires_at}] ->
         if now_ms() < expires_at do
           {:ok, value}
         else
-          :ets.delete(@table, key)
+          SystemsRuntime.ETS.delete(@table, key)
           :miss
         end
 
@@ -88,7 +88,7 @@ defmodule BridgeForTeams.Salix.ReadCache do
 
   # The per-key invalidation generation a fill must still match to insert.
   defp generation(key) do
-    case :ets.lookup(@table, {:gen, key}) do
+    case SystemsRuntime.ETS.lookup(@table, {:gen, key}) do
       [{{:gen, ^key}, generation}] -> generation
       [] -> 0
     end
@@ -104,7 +104,7 @@ defmodule BridgeForTeams.Salix.ReadCache do
     # An invalidate/1 that landed while `fun` ran bumped the generation: this
     # value is already stale, so return it uncached rather than pin it.
     if generation(key) == generation do
-      :ets.insert(@table, {key, value, now_ms() + ttl_ms})
+      SystemsRuntime.ETS.insert(@table, {key, value, now_ms() + ttl_ms})
     end
 
     value
@@ -114,7 +114,7 @@ defmodule BridgeForTeams.Salix.ReadCache do
 
   @impl true
   def init(_opts) do
-    table = :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+    table = SystemsRuntime.ETS.new(@table, [:named_table, :public, :set, read_concurrency: true])
     schedule_sweep()
     {:ok, %{table: table}}
   end
@@ -122,12 +122,13 @@ defmodule BridgeForTeams.Salix.ReadCache do
   @impl true
   def handle_info(:sweep, state) do
     now = now_ms()
-    :ets.select_delete(@table, [{{:_, :_, :"$1"}, [{:<, :"$1", now}], [true]}])
+    SystemsRuntime.ETS.select_delete(@table, [{{:_, :_, :"$1"}, [{:<, :"$1", now}], [true]}])
     schedule_sweep()
     {:noreply, state}
   end
 
-  defp schedule_sweep, do: Process.send_after(self(), :sweep, @sweep_interval_ms)
+  defp schedule_sweep,
+    do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :sweep, @sweep_interval_ms)
 
-  defp now_ms, do: System.monotonic_time(:millisecond)
+  defp now_ms, do: SystemsClock.monotonic_time(:millisecond)
 end

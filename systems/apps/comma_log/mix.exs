@@ -28,6 +28,7 @@ defmodule CommaLog.MixProject do
 
   defp deps do
     [
+      {:systems_clock, in_umbrella: true},
       {:systems_observability, in_umbrella: true},
       {:jason, "~> 1.4"},
       {:opentelemetry_api, "~> 1.5"}

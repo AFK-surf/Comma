@@ -6,7 +6,7 @@ defmodule SalixMeet.Ports.Copilot do
   def maybe_speak(meeting_id), do: impl().maybe_speak(meeting_id)
 
   defp impl do
-    Application.get_env(:salix_meet, :copilot_mod, __MODULE__.None)
+    SystemsRuntime.get_env(:salix_meet, :copilot_mod, __MODULE__.None)
   end
 
   defmodule None do

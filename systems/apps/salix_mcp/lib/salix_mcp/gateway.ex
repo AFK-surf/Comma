@@ -39,13 +39,14 @@ defmodule SalixMCP.Gateway do
        ) do
     with _ <- Connection.stop(binding),
          :ok <- enabled(binding),
-         {:ok, _config} <- Config.resolve(definition, binding),
+         {:ok, config} <- Config.resolve(definition, binding),
          {:ok, initialize_info} <- Connection.initialize(binding, definition),
          {:ok, discovered, discovery_errors} <-
            discover(binding, definition, initialize_info, redactions),
          discovered <-
            previous_connection
            |> stable_discovery(discovered, discovery_errors)
+           |> Config.restrict_tools(config)
            |> redact_value(redactions),
          {:ok, connection} <-
            Store.put_connection(binding, %{
@@ -202,6 +203,9 @@ defmodule SalixMCP.Gateway do
         {:error, :cancelled} ->
           {:ok,
            %{"status" => "cancelled", "content" => Jason.encode!(%{"status" => "cancelled"})}}
+
+        {:error, :mcp_tool_not_allowed} = error ->
+          error
 
         {:error, reason} ->
           status = status_for_error(reason)
@@ -717,7 +721,7 @@ defmodule SalixMCP.Gateway do
     |> Base.encode16(case: :lower)
   end
 
-  defp now, do: System.system_time(:second)
+  defp now, do: SystemsClock.system_time(:second)
 
   defp maybe_refresh_created_binding(
          _tenant_id,

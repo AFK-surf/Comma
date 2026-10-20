@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="media_viewer_title">图片</string>
+    <string name="media_viewer_close">关闭</string>
+    <string name="media_viewer_save">保存到相册</string>
+    <string name="media_viewer_saved">已保存到相册</string>
+    <string name="media_viewer_save_failed">保存失败</string>
+    <string name="media_viewer_counter">%1$d / %2$d</string>
+    <string name="media_viewer_load_failed">图片加载失败，轻点重试</string>
+    <string name="media_video_play">播放视频</string>
+    <string name="media_video_download">下载视频</string>
+    <string name="media_video_cancel">取消下载</string>
+    <string name="media_video_retry">视频下载失败，轻点重试</string>
+    <string name="media_video_unavailable">视频已不可用</string>
+    <string name="media_video_progress">正在下载 %1$d%%</string>
+    <string name="media_video_cannot_play">无法播放这个视频</string>
+    <string name="media_file_meta">%1$s · %2$s</string>
+    <string name="media_file_downloading">正在下载 %1$d%%</string>
+    <string name="media_file_downloading_unknown">正在下载…</string>
+    <string name="media_file_failed">下载失败，轻点重试</string>
+    <string name="media_file_unavailable">文件已不可用</string>
+    <string name="media_file_no_app">没有可以打开这个文件的应用</string>
+    <string name="media_file_kind_image">图片</string>
+    <string name="media_file_kind_video">视频</string>
+    <string name="media_file_kind_audio">音频</string>
+    <string name="media_file_kind_pdf">PDF</string>
+    <string name="media_file_kind_text">文档</string>
+    <string name="media_file_kind_code">代码</string>
+    <string name="media_file_kind_archive">压缩包</string>
+    <string name="media_file_kind_other">文件</string>
+</resources>

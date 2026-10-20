@@ -1,13 +1,13 @@
 defmodule SalixAgent.ConversationConsumer do
   @moduledoc false
 
-  alias SalixAgent.{AgentActor, ExternalSessionStore, InternalSession, InternalSessionStore}
+  alias SalixAgent.{AgentActor, InternalSession, InternalSessionStore}
   alias SalixAgent.AgentActor.SessionDelivery
 
-  def adapter, do: Application.get_env(:salix_agent, :conversation_source_mod)
+  def adapter, do: SystemsRuntime.get_env(:salix_agent, :conversation_source_mod)
 
   def consume(agent_id, source, owner, cached_progress \\ nil) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     result =
       SalixStore.ReadScope.run(fn ->
@@ -29,7 +29,7 @@ defmodule SalixAgent.ConversationConsumer do
         do: "ok",
         else: "error"
       ),
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     result
@@ -104,7 +104,7 @@ defmodule SalixAgent.ConversationConsumer do
         reject(adapter, agent, binding, message, result, owner, runtime)
 
       _ when attempts > 1 ->
-        Process.sleep(100)
+        SystemsClock.sleep(100)
         admit(adapter, agent, source, binding, message, owner, runtime, attempts - 1)
 
       _ ->
@@ -172,7 +172,7 @@ defmodule SalixAgent.ConversationConsumer do
     oldest =
       case messages do
         [%{"created_at" => at} | _] when is_integer(at) ->
-          max(System.system_time(:millisecond) - at, 0)
+          max(SystemsClock.system_time(:millisecond) - at, 0)
 
         _ ->
           0
@@ -190,16 +190,12 @@ defmodule SalixAgent.ConversationConsumer do
 
   # tla/salix/RpcDeliver.tla: SourceFrontierImpliesDurable maps to the Session CAS below.
   defp stage(agent_id, entry, owner, binding, runtime) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     entry = Map.put(entry, :activate_on_admission, true)
 
     result =
       if binding.agent["role"] == "router" and runtime == :internal do
-        SessionDelivery.stage(
-          agent_id,
-          Map.put(entry, :require_runtime, :internal),
-          router_owner: owner
-        )
+        SessionDelivery.stage(agent_id, entry, router_owner: owner)
       else
         case AgentActor.stage_delivery(agent_id, entry) do
           {:ok, :committed, _targets} -> {:ok, :committed, []}
@@ -212,7 +208,7 @@ defmodule SalixAgent.ConversationConsumer do
       "conversation_log_admit",
       "salix",
       if(elem(result, 0) == :ok, do: "ok", else: "error"),
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     result
@@ -224,11 +220,7 @@ defmodule SalixAgent.ConversationConsumer do
         {:ok, InternalSession.conversation_sources(session), :internal}
 
       {:error, :not_found} ->
-        case ExternalSessionStore.get_session_record(agent_id, session_id) do
-          {:ok, session} -> {:ok, session["conversation_sources"] || %{}, :external}
-          {:error, :not_found} -> {:ok, %{}, :new}
-          error -> error
-        end
+        {:ok, %{}, :new}
 
       error ->
         error
@@ -251,7 +243,7 @@ defmodule SalixAgent.ConversationConsumer do
   # hints and every retry start fresh; source identity never contains authority.
   def notify(%{source_task: nil, source_pending: []} = data, source, {scope, sent_at}) do
     if Map.get(data, :switch_pending) == true or
-         System.monotonic_time(:millisecond) - sent_at > 50,
+         SystemsClock.monotonic_time(:millisecond) - sent_at > 50,
        do: notify(data, source),
        else: start(%{data | source_pending: [source]}, scope)
   end
@@ -279,24 +271,27 @@ defmodule SalixAgent.ConversationConsumer do
       data
     else
       [source | rest] = data.source_pending
-      owner = self()
+      owner = SystemsRuntime.Proc.self()
+      # Bound here so the task captures these values, not the actor state.
+      agent_id = data.agent_id
+      progress = data.source_progress[source]
 
       case SalixAgent.AgentReplyTask.start({owner, {:conversation_consumed, source}}, fn ->
              SalixStore.ReadScope.run(scope || %{}, fn ->
-               consume(data.agent_id, source, owner, data.source_progress[source])
+               consume(agent_id, source, owner, progress)
              end)
            end) do
         {:ok, pid} ->
           %{
             data
-            | source_task: {pid, Process.monitor(pid)},
+            | source_task: {pid, SystemsRuntime.Proc.monitor(pid)},
               source_ref: source,
               source_pending: rest,
               source_result: nil
           }
 
         {:error, _} ->
-          Process.send_after(owner, {:retry_conversation_source, source}, 5_000)
+          SystemsClock.send_after(owner, {:retry_conversation_source, source}, 5_000)
           start(%{data | source_pending: rest})
       end
     end
@@ -329,7 +324,12 @@ defmodule SalixAgent.ConversationConsumer do
         start(data)
 
       _ ->
-        Process.send_after(self(), {:retry_conversation_source, source}, 5_000)
+        SystemsClock.send_after(
+          SystemsRuntime.Proc.self(),
+          {:retry_conversation_source, source},
+          5_000
+        )
+
         start(data)
     end
   end

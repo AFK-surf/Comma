@@ -1,0 +1,1867 @@
+{
+ "userId": "e2e-user:smoke@comma.local",
+ "seed": 726842127,
+ "start": {
+  "session": {
+   "email": "smoke@comma.local",
+   "token": "web-app-session"
+  },
+  "stub": {
+   "taskStatus": "in_progress",
+   "workspaceTranscript": [
+    {
+     "actor_type": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Book a table for four tonight"
+      },
+      {
+       "type": "conversation_ref",
+       "conversation_id": "cnv_public_task_smoke",
+       "kind": "agent_task",
+       "presentation": "inline"
+      }
+     ],
+     "created_at": 1720000001,
+     "kind": "message",
+     "message_id": "msg-quick-chat",
+     "metadata": {
+      "source": "group_router",
+      "message_type": "quick_chat"
+     }
+    }
+   ]
+  }
+ },
+ "entries": [
+  {
+   "at": 0,
+   "dir": "out",
+   "data": {
+    "id": 1,
+    "subscribe": {
+     "topic": "session"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 48,
+   "dir": "rest"
+  },
+  {
+   "at": 48,
+   "dir": "in",
+   "data": {
+    "id": 1,
+    "value": {
+     "phase": "unknown",
+     "lifecycle": {
+      "authority": {
+       "authorityInstanceId": "e56e85e8-215d-b6fe-880b-f0af2142a58e",
+       "kind": "web_cookie"
+      },
+      "cleanup": {
+       "revocation": "idle"
+      },
+      "contractVersion": 1,
+      "generation": 0,
+      "phase": "initializing",
+      "principal": null,
+      "revision": 0,
+      "session": null
+     },
+     "attempt": null,
+     "emailCooldown": null,
+     "guestImports": 0
+    }
+   }
+  },
+  {
+   "at": 48,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "due"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 1,
+    "delta": [
+     {
+      "path": [
+       "audience"
+      ],
+      "set": "http://comma-stub.test"
+     },
+     {
+      "path": [
+       "lifecycle",
+       "generation"
+      ],
+      "set": 1
+     },
+     {
+      "path": [
+       "lifecycle",
+       "phase"
+      ],
+      "set": "signed_in"
+     },
+     {
+      "path": [
+       "lifecycle",
+       "principal"
+      ],
+      "set": {
+       "email": "smoke@comma.local",
+       "userId": "e2e-user:smoke@comma.local"
+      }
+     },
+     {
+      "path": [
+       "lifecycle",
+       "revision"
+      ],
+      "set": 1
+     },
+     {
+      "path": [
+       "lifecycle",
+       "session"
+      ],
+      "set": {
+       "audience": "http://comma-stub.test",
+       "expiresAtEpochSeconds": 4102444800,
+       "sessionId": "e2e-session:smoke@comma.local"
+      }
+     },
+     {
+      "path": [
+       "phase"
+      ],
+      "set": "signed_in"
+     },
+     {
+      "path": [
+       "sessionId"
+      ],
+      "set": "e2e-session:smoke@comma.local"
+     },
+     {
+      "path": [
+       "userId"
+      ],
+      "set": "e2e-user:smoke@comma.local"
+     }
+    ]
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 2,
+    "subscribe": {
+     "topic": "pluginNotices"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 3,
+    "subscribe": {
+     "topic": "session"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 4,
+    "subscribe": {
+     "topic": "workspace"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 5,
+    "subscribe": {
+     "topic": "tasks",
+     "workspace": ""
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 6,
+    "subscribe": {
+     "topic": "marks",
+     "kind": "inboxDeleted"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 7,
+    "subscribe": {
+     "topic": "marks",
+     "kind": "inboxUnread"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 8,
+    "subscribe": {
+     "topic": "marks",
+     "kind": "taskReviewSeen"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 9,
+    "subscribe": {
+     "topic": "marks",
+     "kind": "chatTaskDismissed"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 10,
+    "subscribe": {
+     "topic": "workspaceChat"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 11,
+    "subscribe": {
+     "topic": "meetingRecorder"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "out",
+   "data": {
+    "id": 12,
+    "subscribe": {
+     "topic": "profile"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 3,
+    "value": {
+     "phase": "signed_in",
+     "userId": "e2e-user:smoke@comma.local",
+     "audience": "http://comma-stub.test",
+     "sessionId": "e2e-session:smoke@comma.local",
+     "lifecycle": {
+      "authority": {
+       "authorityInstanceId": "e56e85e8-215d-b6fe-880b-f0af2142a58e",
+       "kind": "web_cookie"
+      },
+      "cleanup": {
+       "revocation": "idle"
+      },
+      "contractVersion": 1,
+      "generation": 1,
+      "revision": 1,
+      "phase": "signed_in",
+      "principal": {
+       "email": "smoke@comma.local",
+       "userId": "e2e-user:smoke@comma.local"
+      },
+      "session": {
+       "audience": "http://comma-stub.test",
+       "expiresAtEpochSeconds": 4102444800,
+       "sessionId": "e2e-session:smoke@comma.local"
+      }
+     },
+     "attempt": null,
+     "emailCooldown": null,
+     "guestImports": 0
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 2,
+    "value": {
+     "notices": []
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 4,
+    "value": {
+     "status": "loading",
+     "workspace": null,
+     "selected": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 5,
+    "value": null
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 6,
+    "value": {
+     "marks": {}
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 7,
+    "value": {
+     "marks": {}
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 8,
+    "value": {
+     "marks": {}
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 9,
+    "value": {
+     "marks": {}
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 10,
+    "value": {
+     "status": "loading",
+     "chat": null,
+     "kept": false
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 11,
+    "value": {
+     "clientVisible": false,
+     "phase": "idle",
+     "revision": 1,
+     "generation": 0,
+     "meeting": null,
+     "capture": {
+      "available": false,
+      "capped": false,
+      "channels": 0,
+      "durationMs": 0,
+      "level": 0,
+      "microphone": "off",
+      "permission": "unknown",
+      "reason": "Audio capture is unavailable in this runtime.",
+      "revision": 1,
+      "sampleRate": 0,
+      "status": "unavailable"
+     },
+     "saved": null
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "in",
+   "data": {
+    "id": 12,
+    "value": {
+     "status": "loading",
+     "profile": null
+    }
+   }
+  },
+  {
+   "at": 50,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "due"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 4,
+    "value": {
+     "status": "ready",
+     "workspace": {
+      "id": "ws-smoke",
+      "groupId": "grp-smoke",
+      "name": "Smoke Workspace"
+     },
+     "selected": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 13,
+    "subscribe": {
+     "topic": "tasks",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 14,
+    "call": "tasks.focus",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 15,
+    "call": "tasks.focus",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 16,
+    "call": "tasks.focus",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 17,
+    "subscribe": {
+     "topic": "stationTasks",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 18,
+    "subscribe": {
+     "topic": "router",
+     "workspace": "ws-smoke",
+     "read": "0"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 5,
+    "value": {
+     "activeWorkspaceId": "ws-smoke",
+     "workspaces": [
+      {
+       "group_id": "grp-smoke",
+       "id": "ws-smoke",
+       "name": "Smoke Workspace"
+      }
+     ],
+     "hasMore": false,
+     "items": [],
+     "lastSyncedAt": 1768478400050,
+     "source": "live-sync"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 12,
+    "value": {
+     "status": "ready",
+     "profile": {
+      "avatar_id": null,
+      "email": "smoke@comma.local",
+      "id": "e2e-user:smoke@comma.local",
+      "name": null
+     }
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 19,
+    "call": "profile.update",
+    "params": {
+     "locale": "en"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 10,
+    "value": {
+     "status": "ready",
+     "chat": {
+      "workspaceId": "ws-smoke",
+      "groupId": "grp-smoke",
+      "conversationId": "cnv_public_chat_smoke",
+      "createdAt": 1720000000,
+      "updatedAt": 1720000000
+     },
+     "kept": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 20,
+    "subscribe": {
+     "topic": "recommendations",
+     "workspace": "ws-smoke",
+     "timezone": "UTC",
+     "locale": "en"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 21,
+    "subscribe": {
+     "topic": "creditWarning",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 22,
+    "subscribe": {
+     "topic": "mentionTasks",
+     "group": "grp-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 23,
+    "subscribe": {
+     "topic": "recommendations",
+     "workspace": "ws-smoke",
+     "reads": "once"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 24,
+    "subscribe": {
+     "topic": "plugins",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 25,
+    "subscribe": {
+     "topic": "taskLabels",
+     "group": "grp-smoke",
+     "key": "",
+     "mode": ""
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 26,
+    "subscribe": {
+     "topic": "chatView",
+     "workspace": "ws-smoke",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_chat_smoke",
+     "surface": "web:8b9d102e-0779-4328-9e75-65087076f771"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 27,
+    "subscribe": {
+     "topic": "skills",
+     "workspace": "ws-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 28,
+    "call": "workspace.select",
+    "params": {
+     "workspace": "ws-smoke"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 14,
+    "ok": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 15,
+    "ok": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 16,
+    "ok": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 28,
+    "ok": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 13,
+    "value": {
+     "activeWorkspaceId": "ws-smoke",
+     "workspaces": [
+      {
+       "group_id": "grp-smoke",
+       "id": "ws-smoke",
+       "name": "Smoke Workspace"
+      }
+     ],
+     "hasMore": false,
+     "items": [],
+     "lastSyncedAt": 1768478400050,
+     "source": "live-sync"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 29,
+    "subscribe": {
+     "topic": "taskOrder",
+     "group": "grp-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 17,
+    "value": {
+     "state": "kept",
+     "tasks": []
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 18,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 12,
+    "delta": [
+     {
+      "path": [
+       "profile",
+       "locale"
+      ],
+      "set": "en"
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 20,
+    "value": {
+     "workspace": "ws-smoke",
+     "envelope": null,
+     "failure": null,
+     "discovering": false,
+     "refreshing": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 21,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 22,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 23,
+    "value": {
+     "workspace": "ws-smoke",
+     "envelope": null,
+     "failure": null,
+     "discovering": false,
+     "refreshing": false
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 24,
+    "value": {
+     "status": "loading"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "value": {
+     "catalog": null,
+     "error": false,
+     "loading": true
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "value": {
+     "session": {
+      "sessionId": "e2e-session:smoke@comma.local",
+      "audience": "http://comma-stub.test"
+     },
+     "revision": 3,
+     "draftEpoch": 0,
+     "lease": {
+      "leaseId": "5cc23b6c-3304-47d7-bf4e-90f81fdef998",
+      "subscriberId": "web:8b9d102e-0779-4328-9e75-65087076f771:grp-smoke/cnv_public_chat_smoke"
+     },
+     "state": {
+      "awaitingReply": false,
+      "awaitingTimedOut": false,
+      "connection": "connecting",
+      "draft": "",
+      "draftAttachments": [],
+      "lastBackoffMs": 0,
+      "locallyAwaitingReply": false,
+      "messages": [],
+      "pending": [],
+      "reply": {
+       "coming": false,
+       "thinking": false,
+       "streaming": false,
+       "working": false,
+       "failed": false,
+       "timedOut": false
+      },
+      "serverMessages": [],
+      "status": "loading"
+     }
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "value": {
+     "status": "loading",
+     "skills": []
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 4,
+    "delta": [
+     {
+      "path": [
+       "selected"
+      ],
+      "set": true
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 19,
+    "ok": {
+     "avatar_id": null,
+     "email": "smoke@comma.local",
+     "id": "e2e-user:smoke@comma.local",
+     "name": null,
+     "locale": "en"
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 17,
+    "delta": [
+     {
+      "path": [
+       "failed"
+      ],
+      "set": true
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 20,
+    "delta": [
+     {
+      "path": [
+       "envelope"
+      ],
+      "set": {
+       "settings": {
+        "autoEnableNewSources": true,
+        "schedule": {
+         "enabled": true,
+         "hour": 8,
+         "minute": 0,
+         "timezone": "UTC"
+        },
+        "sourcesCheckedAt": "2026-01-01T00:00:00.000Z",
+        "sourceRevision": 1,
+        "sources": []
+       },
+       "snapshot": null,
+       "state": "empty"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 22,
+    "value": []
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 23,
+    "delta": [
+     {
+      "path": [
+       "envelope"
+      ],
+      "set": {
+       "settings": {
+        "autoEnableNewSources": true,
+        "schedule": {
+         "enabled": true,
+         "hour": 8,
+         "minute": 0,
+         "timezone": "UTC"
+        },
+        "sourcesCheckedAt": "2026-01-01T00:00:00.000Z",
+        "sourceRevision": 1,
+        "sources": []
+       },
+       "snapshot": null,
+       "state": "empty"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 4
+     },
+     {
+      "path": [
+       "state",
+       "conversation"
+      ],
+      "set": {
+       "created_at": 1720000000,
+       "group_id": "grp-smoke",
+       "id": "cnv_public_chat_smoke",
+       "kind": "user_chat",
+       "messages": [],
+       "status": "active",
+       "title": "聊天",
+       "updated_at": 1720000000
+      }
+     },
+     {
+      "path": [
+       "state",
+       "messages"
+      ],
+      "key": [
+       "messageId"
+      ],
+      "put": {
+       "actorType": "user",
+       "attachments": [],
+       "blocksKey": "[{\"type\":\"text\",\"text\":\"Book a table for four tonight\"},{\"type\":\"conversation_ref\",\"conversation_id\":\"cnv_public_task_smoke\",\"kind\":\"agent_task\",\"presentation\":\"inline\"}]",
+       "createdAt": 1720000001,
+       "delivery": "sent",
+       "display": {
+        "body": "Book a table for four tonight",
+        "quotes": [],
+        "files": []
+       },
+       "messageId": "msg-quick-chat",
+       "messageType": "quick_chat",
+       "parts": [
+        {
+         "kind": "markdown",
+         "text": "Book a table for four tonight"
+        },
+        {
+         "kind": "inline-task",
+         "task": {
+          "conversationId": "cnv_public_task_smoke",
+          "unavailable": false
+         }
+        }
+       ],
+       "refs": [],
+       "role": "user",
+       "source": "server",
+       "status": "committed",
+       "text": "Book a table for four tonight",
+       "createdTasks": [
+        {
+         "conversationId": "cnv_public_task_smoke"
+        }
+       ]
+      },
+      "before": null
+     },
+     {
+      "path": [
+       "state",
+       "serverMessages"
+      ],
+      "key": [
+       "messageId"
+      ],
+      "put": {
+       "actorType": "user",
+       "attachments": [],
+       "blocksKey": "[{\"type\":\"text\",\"text\":\"Book a table for four tonight\"},{\"type\":\"conversation_ref\",\"conversation_id\":\"cnv_public_task_smoke\",\"kind\":\"agent_task\",\"presentation\":\"inline\"}]",
+       "createdAt": 1720000001,
+       "delivery": "sent",
+       "display": {
+        "body": "Book a table for four tonight",
+        "quotes": [],
+        "files": []
+       },
+       "messageId": "msg-quick-chat",
+       "messageType": "quick_chat",
+       "parts": [
+        {
+         "kind": "markdown",
+         "text": "Book a table for four tonight"
+        },
+        {
+         "kind": "inline-task",
+         "task": {
+          "conversationId": "cnv_public_task_smoke",
+          "unavailable": false
+         }
+        }
+       ],
+       "refs": [],
+       "role": "user",
+       "source": "server",
+       "status": "committed",
+       "text": "Book a table for four tonight",
+       "createdTasks": [
+        {
+         "conversationId": "cnv_public_task_smoke"
+        }
+       ]
+      },
+      "before": null
+     },
+     {
+      "path": [
+       "state",
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 30,
+    "subscribe": {
+     "topic": "taskSummaries",
+     "group": "grp-smoke",
+     "ids": "cnv_public_task_smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 31,
+    "subscribe": {
+     "topic": "taskLabels",
+     "group": "grp-smoke",
+     "key": "",
+     "mode": "known"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 32,
+    "subscribe": {
+     "topic": "taskWorkers",
+     "group": "grp-smoke",
+     "ids": "cnv_public_task_smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 29,
+    "value": {
+     "orders": {},
+     "sections": [
+      {
+       "bucket": "in_progress",
+       "ids": []
+      },
+      {
+       "bucket": "needs_review",
+       "ids": []
+      },
+      {
+       "bucket": "done",
+       "ids": []
+      },
+      {
+       "bucket": "cancelled",
+       "ids": []
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 5,
+    "delta": [
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400100
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 13,
+    "delta": [
+     {
+      "path": [
+       "lastSyncedAt"
+      ],
+      "set": 1768478400100
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 24,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": {
+       "code": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "message": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins",
+       "status": 404,
+       "detail": {
+        "error": "unhandled GET /v1/comma/workspaces/ws-smoke/plugins"
+       }
+      }
+     },
+     {
+      "path": [
+       "status"
+      ],
+      "set": "error"
+     },
+     {
+      "path": [
+       "workspace"
+      ],
+      "set": "ws-smoke"
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "delta": [
+     {
+      "path": [
+       "error"
+      ],
+      "set": true
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 27,
+    "value": {
+     "status": "ready",
+     "skills": [
+      {
+       "skill_id": "weekly-summary",
+       "name": "周会总结",
+       "description": "整理会议要点和后续事项",
+       "location": "salix://skills/weekly-summary"
+      },
+      {
+       "skill_id": "code-review",
+       "name": "代码审查",
+       "description": "检查实现风险和测试缺口",
+       "location": "salix://skills/code-review"
+      },
+      {
+       "skill_id": "weekly-reminder",
+       "name": "周会提醒",
+       "description": "提醒周会议程",
+       "location": "salix://skills/weekly-reminder",
+       "activation": "per-message"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 8
+     },
+     {
+      "path": [
+       "state",
+       "connection"
+      ],
+      "set": "live"
+     },
+     {
+      "path": [
+       "state",
+       "participantStatus"
+      ],
+      "set": {
+       "conversationId": "cnv_public_chat_smoke",
+       "participantId": "ptp-router-smoke",
+       "state": "stopped",
+       "status": "",
+       "updatedAt": 1
+      }
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "out",
+   "data": {
+    "id": 33,
+    "subscribe": {
+     "topic": "sessionBrowser",
+     "workspace": "ws-smoke",
+     "conversation": "cnv_public_chat_smoke",
+     "participant": "ptp-router-smoke"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 30,
+    "value": {
+     "summaries": []
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 31,
+    "value": {
+     "catalog": null,
+     "error": true,
+     "loading": true
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 32,
+    "value": {}
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 25,
+    "delta": [
+     {
+      "path": [
+       "loading"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 31,
+    "delta": [
+     {
+      "path": [
+       "loading"
+      ],
+      "set": false
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 32,
+    "value": {
+     "cnv_public_task_smoke": null
+    }
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 33,
+    "value": null
+   }
+  },
+  {
+   "at": 100,
+   "dir": "in",
+   "data": {
+    "id": 30,
+    "delta": [
+     {
+      "path": [
+       "summaries"
+      ],
+      "key": [
+       "id"
+      ],
+      "put": {
+       "archive_availability": {
+        "allowed": false,
+        "reason": null
+       },
+       "group_id": "grp-smoke",
+       "id": "cnv_public_task_smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "冒烟任务",
+       "updated_at": 1720000003,
+       "status_bucket": "in_progress",
+       "status_failed": false
+      },
+      "before": null
+     }
+    ]
+   }
+  },
+  {
+   "at": 100,
+   "dir": "rest"
+  },
+  {
+   "at": 150,
+   "dir": "due"
+  },
+  {
+   "at": 150,
+   "dir": "in",
+   "data": {
+    "id": 33,
+    "value": {
+     "browser": null
+    }
+   }
+  },
+  {
+   "at": 150,
+   "dir": "rest"
+  },
+  {
+   "at": 160,
+   "dir": "out",
+   "data": {
+    "id": 34,
+    "subscribe": {
+     "topic": "taskSummaries",
+     "group": "grp-smoke",
+     "ids": "cnv_public_task_smoke",
+     "peek": "1"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 160,
+   "dir": "out",
+   "data": {
+    "id": 35,
+    "subscribe": {
+     "topic": "chatView",
+     "workspace": "ws-smoke",
+     "group": "grp-smoke",
+     "conversation": "cnv_public_task_smoke",
+     "surface": "web:8b9d102e-0779-4328-9e75-65087076f771"
+    },
+    "keyed": true
+   }
+  },
+  {
+   "at": 160,
+   "dir": "rest"
+  },
+  {
+   "at": 160,
+   "dir": "in",
+   "data": {
+    "id": 34,
+    "value": {
+     "summaries": [
+      {
+       "archive_availability": {
+        "allowed": false,
+        "reason": null
+       },
+       "group_id": "grp-smoke",
+       "id": "cnv_public_task_smoke",
+       "kind": "agent_task",
+       "status": "in_progress",
+       "title": "冒烟任务",
+       "updated_at": 1720000003,
+       "status_bucket": "in_progress",
+       "status_failed": false
+      }
+     ]
+    }
+   }
+  },
+  {
+   "at": 160,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 10
+     }
+    ]
+   }
+  },
+  {
+   "at": 160,
+   "dir": "in",
+   "data": {
+    "id": 35,
+    "value": {
+     "session": {
+      "sessionId": "e2e-session:smoke@comma.local",
+      "audience": "http://comma-stub.test"
+     },
+     "revision": 10,
+     "draftEpoch": 0,
+     "lease": {
+      "leaseId": "239366b4-d5a1-4646-8b3f-192f186af72c",
+      "subscriberId": "web:8b9d102e-0779-4328-9e75-65087076f771:grp-smoke/cnv_public_task_smoke"
+     },
+     "state": {
+      "awaitingReply": false,
+      "awaitingTimedOut": false,
+      "connection": "connecting",
+      "draft": "",
+      "draftAttachments": [],
+      "lastBackoffMs": 0,
+      "locallyAwaitingReply": false,
+      "messages": [],
+      "pending": [],
+      "reply": {
+       "coming": false,
+       "thinking": false,
+       "streaming": false,
+       "working": false,
+       "failed": false,
+       "timedOut": false
+      },
+      "serverMessages": [],
+      "status": "loading"
+     }
+    }
+   }
+  },
+  {
+   "at": 160,
+   "dir": "rest"
+  },
+  {
+   "at": 160,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 11
+     }
+    ]
+   }
+  },
+  {
+   "at": 160,
+   "dir": "in",
+   "data": {
+    "id": 35,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 11
+     },
+     {
+      "path": [
+       "state",
+       "connection"
+      ],
+      "set": "live"
+     },
+     {
+      "path": [
+       "state",
+       "conversation"
+      ],
+      "set": {
+       "created_at": 1720000002,
+       "group_id": "grp-smoke",
+       "id": "cnv_public_task_smoke",
+       "kind": "agent_task",
+       "messages": [],
+       "status": "in_progress",
+       "title": "冒烟任务",
+       "updated_at": 1720000003
+      }
+     },
+     {
+      "path": [
+       "state",
+       "status"
+      ],
+      "set": "ready"
+     }
+    ]
+   }
+  },
+  {
+   "at": 160,
+   "dir": "rest"
+  },
+  {
+   "at": 160,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 12
+     }
+    ]
+   }
+  },
+  {
+   "at": 160,
+   "dir": "in",
+   "data": {
+    "id": 35,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 12
+     }
+    ]
+   }
+  },
+  {
+   "at": 160,
+   "dir": "rest"
+  },
+  {
+   "at": 160,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 13
+     }
+    ]
+   }
+  },
+  {
+   "at": 160,
+   "dir": "in",
+   "data": {
+    "id": 35,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 13
+     }
+    ]
+   }
+  },
+  {
+   "at": 160,
+   "dir": "rest"
+  },
+  {
+   "at": 160,
+   "dir": "in",
+   "data": {
+    "id": 26,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 14
+     }
+    ]
+   }
+  },
+  {
+   "at": 160,
+   "dir": "in",
+   "data": {
+    "id": 35,
+    "delta": [
+     {
+      "path": [
+       "revision"
+      ],
+      "set": 14
+     },
+     {
+      "path": [
+       "state",
+       "participantStatuses"
+      ],
+      "set": []
+     }
+    ]
+   }
+  },
+  {
+   "at": 160,
+   "dir": "rest"
+  }
+ ]
+}

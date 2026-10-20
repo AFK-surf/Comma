@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { settle } from "@comma/test-utils/settle";
 
 import {
   HelperMicrophoneCapture,
@@ -10,6 +11,11 @@ import {
 } from "../modules/audio-capture/microphone";
 import { mixMono } from "../modules/audio-capture/mix";
 
+// The file's timers run on the test's clock: a test moves it.
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
 class FakeHost extends EventEmitter implements MicrophoneHostProcess {
   exitCode: number | null = null;
   killed = false;
@@ -17,13 +23,9 @@ class FakeHost extends EventEmitter implements MicrophoneHostProcess {
   stdin = new PassThrough();
   stdout = new PassThrough();
   signals: string[] = [];
-  stdinEnded = false;
 
-  constructor() {
-    super();
-    this.stdin.on("finish", () => {
-      this.stdinEnded = true;
-    });
+  get stdinEnded() {
+    return this.stdin.writableEnded;
   }
 
   kill(signal?: NodeJS.Signals) {
@@ -113,11 +115,15 @@ describe("HelperMicrophoneCapture", () => {
     const spawn = vi.fn(() => host);
     const capture = new HelperMicrophoneCapture({ executablePath, spawn });
     const frames: Float32Array[] = [];
+    const delivered = Promise.withResolvers<void>();
     const onError = vi.fn();
 
     const pending = capture.start({
       onError,
-      onFrames: (f) => frames.push(f),
+      onFrames: (f) => {
+        frames.push(f);
+        delivered.resolve();
+      },
       sampleRate: 24_000,
     });
     expect(spawn).toHaveBeenCalledWith(executablePath, ["--sample-rate", "24000"]);
@@ -125,11 +131,11 @@ describe("HelperMicrophoneCapture", () => {
     const session = await pending;
 
     host.stdout.write(int16Bytes([0x4000, -0x4000]));
-    await new Promise((resolve) => setImmediate(resolve));
+    await delivered.promise;
     expect(frames.map((chunk) => Array.from(chunk))).toEqual([[0.5, -0.5]]);
 
+    // EOF on stdin is the helper's stop signal, sent as stop begins.
     const stopped = session.stop();
-    await new Promise((resolve) => setImmediate(resolve));
     expect(host.stdinEnded).toBe(true);
     host.exit(0);
     await stopped;
@@ -229,7 +235,7 @@ describe("HelperMicrophoneCapture", () => {
       spawn: () => host,
     });
     await expect(
-      capture.start({ onError: vi.fn(), onFrames: vi.fn(), sampleRate: 48_000 })
+      settle(capture.start({ onError: vi.fn(), onFrames: vi.fn(), sampleRate: 48_000 }))
     ).rejects.toThrow(/did not become ready/);
     expect(host.killed).toBe(true);
   });

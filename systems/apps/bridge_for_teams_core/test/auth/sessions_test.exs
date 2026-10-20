@@ -7,7 +7,10 @@ defmodule BridgeForTeams.Auth.SessionsTest do
 
   defp user! do
     %User{}
-    |> User.changeset(%{email: "s#{System.unique_integer([:positive])}@example.test", name: "S"})
+    |> User.changeset(%{
+      email: "s#{SystemsRuntime.Proc.unique_integer([:positive])}@example.test",
+      name: "S"
+    })
     |> Repo.insert!()
   end
 
@@ -19,7 +22,7 @@ defmodule BridgeForTeams.Auth.SessionsTest do
     assert session.token_hash == Sessions.hash_token(token)
     refute session.token_hash == token
     assert session.user_id == user.id
-    assert DateTime.compare(session.expires_at, DateTime.utc_now()) == :gt
+    assert DateTime.compare(session.expires_at, SystemsClock.utc_now()) == :gt
   end
 
   test "create accepts a user id and custom ttl/device" do
@@ -30,13 +33,13 @@ defmodule BridgeForTeams.Auth.SessionsTest do
 
     assert session.device == "cli"
     assert session.client_name == "local"
-    assert DateTime.diff(session.expires_at, DateTime.utc_now()) <= 61
+    assert DateTime.diff(session.expires_at, SystemsClock.utc_now()) <= 61
   end
 
   test "fetch resolves a valid token and touches last_seen_at" do
     user = user!()
     {:ok, %{token: token, session: created}} = Sessions.create(user)
-    Process.sleep(2)
+    SystemsRuntime.Proc.sleep(2)
 
     assert {:ok, fetched} = Sessions.fetch(token)
     assert fetched.id == created.id

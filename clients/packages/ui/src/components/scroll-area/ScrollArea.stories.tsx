@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { Radio, RadioGroup } from "react-aria-components";
 import { ScrollArea } from "../index";
 import type {
   ScrollAreaEdgeEffect,
@@ -357,4 +358,37 @@ export const Horizontal: Story = {
     itemHeight: 148,
   },
   render: renderPlayground,
+};
+
+/**
+ * Rows whose real `<input>` is a visually hidden, absolutely positioned box
+ * (react-aria `Radio`) with no positioned ancestor of its own. The content
+ * layer is that input's containing block, so it scrolls with its row; a row
+ * clicked after a scroll focuses an input that is still inside the viewport.
+ */
+export const HiddenInputRows: Story = {
+  render: () => (
+    <ScrollArea
+      className="h-52 w-80 rounded-lg border border-primary bg-primary"
+      contentClassName="p-2"
+      orientation="vertical"
+    >
+      <RadioGroup
+        aria-label="Pick a row"
+        className="flex flex-col"
+        defaultValue="row-1"
+      >
+        {Array.from({ length: 24 }, (_, index) => (
+          <Radio
+            className="flex w-full cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-sm text-primary outline-none data-[selected]:bg-secondary"
+            data-testid={`scroll-area-radio-row-${index + 1}`}
+            key={index}
+            value={`row-${index + 1}`}
+          >
+            {sampleNames[index % sampleNames.length]} #{index + 1}
+          </Radio>
+        ))}
+      </RadioGroup>
+    </ScrollArea>
+  ),
 };

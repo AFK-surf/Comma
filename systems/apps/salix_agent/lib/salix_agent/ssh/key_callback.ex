@@ -25,7 +25,7 @@ defmodule SalixAgent.SSH.KeyCallback do
     # :normal. Storage requests use linked tasks, so run them outside the SSH
     # process. S3 bounds its requests; SSH retains its negotiation timeout.
     result =
-      Task.Supervisor.async_nolink(SalixAgent.TaskSup, fn ->
+      SystemsRuntime.TaskSupervisor.async_nolink(SalixAgent.TaskSup, fn ->
         KnownHosts.check(
           Keyword.fetch!(opts, :group_id),
           Keyword.fetch!(opts, :host),
@@ -34,9 +34,13 @@ defmodule SalixAgent.SSH.KeyCallback do
           Keyword.get(opts, :agent_id)
         )
       end)
-      |> Task.await(:infinity)
+      |> SystemsRuntime.Task.await(:infinity)
 
-    send(Keyword.fetch!(opts, :owner), {Keyword.fetch!(opts, :ref), {:host_key, result}})
+    SystemsRuntime.Proc.send(
+      Keyword.fetch!(opts, :owner),
+      {Keyword.fetch!(opts, :ref), {:host_key, result}}
+    )
+
     match?({:ok, _status, _entry}, result)
   end
 

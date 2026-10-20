@@ -6,8 +6,10 @@ defmodule SalixAgent.MultimodalReadTest do
   runtime notification in the NEXT LLM request is projected request-only as
   user/native content with the image inlined as a base64 data URL.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  require SystemsClock
 
+  use SalixAgent.TestSupport.Settle
   alias SalixStore.Keys
   alias SalixAgent.{AgentWorkspace, Fleet, Server}
 
@@ -17,7 +19,7 @@ defmodule SalixAgent.MultimodalReadTest do
   defmodule SeeingLLM do
     @moduledoc "Reads /pic.png on the first turn; reports what it saw after."
     def complete(messages, _specs) do
-      send(:multimodal_read_test, {:llm_saw, messages})
+      SystemsRuntime.Proc.send(:multimodal_read_test, {:llm_saw, messages})
 
       case Enum.count(messages, &((&1[:role] || &1["role"]) == "tool")) do
         0 ->
@@ -54,31 +56,31 @@ defmodule SalixAgent.MultimodalReadTest do
     @behaviour SalixAgent.MediaResolver
 
     @impl true
-    def resolve(agent_id), do: SalixAgent.Templates.resolve_media_for_agent(agent_id)
+    def resolve(agent_id), do: SalixAgent.AgentModel.resolve_media_for_agent(agent_id)
   end
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_media_resolver = Application.get_env(:salix_agent, :media_resolver)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_media_resolver = SystemsRuntime.get_env(:salix_agent, :media_resolver)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
-    Application.put_env(:salix_agent, :llm, SeeingLLM)
-    Application.put_env(:salix_agent, :media_resolver, TemplateMediaResolver)
-    Process.register(self(), :multimodal_read_test)
+    SystemsRuntime.put_env(:salix_agent, :llm, SeeingLLM)
+    SystemsRuntime.put_env(:salix_agent, :media_resolver, TemplateMediaResolver)
+    Process.register(SystemsRuntime.Proc.self(), :multimodal_read_test)
     agent = SalixAgent.TestSupport.new_agent_id()
 
     on_exit(fn ->
       if SalixStore.S3.Fake.paused?(), do: SalixStore.S3.Fake.release_pause()
       _ = SalixAgent.TestSupport.await_session_quiet(agent, @session_id)
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev_backend)
-      Application.put_env(:salix_agent, :llm, prev_llm)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_backend)
+      SystemsRuntime.put_env(:salix_agent, :llm, prev_llm)
 
       if is_nil(prev_media_resolver),
-        do: Application.delete_env(:salix_agent, :media_resolver),
-        else: Application.put_env(:salix_agent, :media_resolver, prev_media_resolver)
+        do: SystemsRuntime.delete_env(:salix_agent, :media_resolver),
+        else: SystemsRuntime.put_env(:salix_agent, :media_resolver, prev_media_resolver)
     end)
 
     {:ok, agent: agent}
@@ -110,7 +112,7 @@ defmodule SalixAgent.MultimodalReadTest do
     # The three LLM observations are explicit progress signals for this round.
     # Once the final continuation starts, drain only this session's actor work
     # before reading its durable terminal state.
-    deadline = System.monotonic_time(:millisecond) + 10_000
+    deadline = SystemsClock.monotonic_time(:millisecond) + 10_000
     [first] = await_llm_requests!(a, 1, deadline)
     await_paused_blob_read!(deadline)
     early = await_early_async_boundary!(a, deadline)
@@ -174,9 +176,9 @@ defmodule SalixAgent.MultimodalReadTest do
 
   defp await_llm_requests!(agent, count, deadline) do
     Enum.map(1..count, fn request_number ->
-      remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+      remaining = max(deadline - SystemsClock.monotonic_time(:millisecond), 0)
 
-      receive do
+      SystemsClock.vreceive do
         {:llm_saw, messages} ->
           messages
       after
@@ -190,7 +192,7 @@ defmodule SalixAgent.MultimodalReadTest do
   end
 
   defp await_session_quiet!(agent, deadline) do
-    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    remaining = max(deadline - SystemsClock.monotonic_time(:millisecond), 0)
 
     case SalixAgent.TestSupport.await_session_quiet(agent, @session_id, remaining) do
       :ok ->
@@ -229,10 +231,10 @@ defmodule SalixAgent.MultimodalReadTest do
         value
 
       :retry ->
-        if System.monotonic_time(:millisecond) >= deadline do
+        if SystemsClock.monotonic_time(:millisecond) >= deadline do
           flunk(message)
         else
-          Process.sleep(5)
+          SystemsClock.sleep(5)
           await_until!(deadline, message, fun)
         end
     end

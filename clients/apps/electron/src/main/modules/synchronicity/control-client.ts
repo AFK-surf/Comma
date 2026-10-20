@@ -85,6 +85,7 @@ export type SynchControlCommand =
     }
   | { daemonStop: Record<string, never> }
   | { domainSet: { delegate: boolean; domain: string } }
+  | { domainRefresh: Record<string, never> }
   | { id: Record<string, never> }
   | { peerLs: Record<string, never> }
   | { pinAdd: { select?: string | undefined; target: string } }
@@ -282,7 +283,7 @@ export class SynchControlClient implements SynchControlClientLike {
     space: string;
     startAfter?: string | undefined;
   }): Promise<{ entries: SynchControlEntry[]; nextCursor: string }> {
-    return this.#retryRead(async (client) => {
+    return this.#retry(retryableRead, async (client, metadata) => {
       const stream = client.list(
         {
           ...(input.limit === undefined ? {} : { limit: input.limit }),
@@ -291,7 +292,7 @@ export class SynchControlClient implements SynchControlClientLike {
           space: input.space,
           ...(input.startAfter ? { startAfter: input.startAfter } : {}),
         },
-        await this.#metadata(),
+        metadata,
         this.#streamOptions()
       );
       const entries: SynchControlEntry[] = [];
@@ -317,8 +318,7 @@ export class SynchControlClient implements SynchControlClientLike {
     policy?: string | undefined;
     space: string;
   }): Promise<SynchControlEntry> {
-    return this.#retryRead(async (client) => {
-      const metadata = await this.#metadata();
+    return this.#retry(retryableRead, async (client, metadata) => {
       const response = await unaryCall<RawEntry>((callback) =>
         client.resolve(
           {
@@ -345,8 +345,10 @@ export class SynchControlClient implements SynchControlClientLike {
     let attempt = 0;
     let yielded = false;
     for (;;) {
-      const client = this.#clientForCall();
+      let client: RawControlClient | undefined;
       try {
+        const metadata = await this.#metadata();
+        client = this.#clientForCall();
         const stream = client.read(
           {
             ...(input.len === undefined ? {} : { len: input.len }),
@@ -355,7 +357,7 @@ export class SynchControlClient implements SynchControlClientLike {
             space: input.space,
             start: input.start,
           },
-          await this.#metadata(),
+          metadata,
           this.#streamOptions()
         );
         for await (const raw of stream) {
@@ -369,7 +371,7 @@ export class SynchControlClient implements SynchControlClientLike {
       } catch (error) {
         if (yielded || attempt > 0 || !retryableRead(error)) throw controlError(error);
         attempt += 1;
-        this.#reconnect(client);
+        if (client) this.#reconnect(client);
       }
     }
   }
@@ -382,9 +384,11 @@ export class SynchControlClient implements SynchControlClientLike {
     let stream: grpc.ClientDuplexStream<unknown, unknown> | undefined;
     let responses: Promise<RawWritten[]> | undefined;
     for (let attempt = 0; ; attempt += 1) {
-      const client = this.#clientForCall();
+      let client: RawControlClient | undefined;
       try {
-        stream = client.put(await this.#metadata(), this.#streamOptions());
+        const metadata = await this.#metadata();
+        client = this.#clientForCall();
+        stream = client.put(metadata, this.#streamOptions());
         responses = collectStream<RawWritten>(stream);
         void responses.catch(() => undefined);
         // Listen before the header write: a local daemon can accept it and
@@ -401,7 +405,7 @@ export class SynchControlClient implements SynchControlClientLike {
         stream?.cancel();
         await responses?.catch(() => []);
         if (attempt > 0 || !retryableRead(error)) throw controlError(error);
-        this.#reconnect(client);
+        if (client) this.#reconnect(client);
       }
     }
     try {
@@ -445,70 +449,43 @@ export class SynchControlClient implements SynchControlClientLike {
     path: string;
     space: string;
   }): Promise<{ stillPublished: boolean }> {
-    const attempt = async (client: RawControlClient) => {
-      const metadata = await this.#metadata();
-      return unaryCall<{ stillPublished?: boolean }>((callback) =>
+    const result = await this.#retry(retryableAuthentication, (client, metadata) =>
+      unaryCall<{ stillPublished?: boolean }>((callback) =>
         client.delete(input, metadata, this.#options(), callback)
-      );
-    };
-    const client = this.#clientForCall();
-    try {
-      const result = await attempt(client);
-      return { stillPublished: result.stillPublished ?? false };
-    } catch (error) {
-      if (!retryableAuthentication(error)) throw controlError(error);
-      this.#reconnect(client);
-      try {
-        const result = await attempt(this.#clientForCall());
-        return { stillPublished: result.stillPublished ?? false };
-      } catch (retryError) {
-        throw controlError(retryError);
-      }
-    }
+      )
+    );
+    return { stillPublished: result.stillPublished ?? false };
   }
 
   async listSpaces(): Promise<SynchControlSpace[]> {
-    return this.#retryRead(async (client) => {
-      const stream = client.listSpaces(
-        {},
-        await this.#metadata(),
-        this.#streamOptions()
-      );
+    return this.#retry(retryableRead, async (client, metadata) => {
+      const stream = client.listSpaces({}, metadata, this.#streamOptions());
       return (await collectStream<RawSpace>(stream)).map(mapSpace);
     });
   }
 
   async run(command: SynchControlCommand): Promise<SynchControlCommandResult> {
-    const attempt = async (client: RawControlClient) => {
-      const stream = client.run(command, await this.#metadata(), this.#streamOptions());
-      const frames = await collectStream<RawFrame>(stream);
-      const lines: string[] = [];
-      const chunks: Uint8Array[] = [];
-      const progress: string[] = [];
-      for (const frame of frames) {
-        if (frame.payload === "line") lines.push(frame.line ?? "");
-        if (frame.payload === "chunk" && frame.chunk) chunks.push(frame.chunk);
-        if (frame.payload === "progress") progress.push(frame.progress ?? "");
+    return this.#retry(
+      (error) => retryableRun(command, error),
+      async (client, metadata) => {
+        const stream = client.run(command, metadata, this.#streamOptions());
+        const frames = await collectStream<RawFrame>(stream);
+        const lines: string[] = [];
+        const chunks: Uint8Array[] = [];
+        const progress: string[] = [];
+        for (const frame of frames) {
+          if (frame.payload === "line") lines.push(frame.line ?? "");
+          if (frame.payload === "chunk" && frame.chunk) chunks.push(frame.chunk);
+          if (frame.payload === "progress") progress.push(frame.progress ?? "");
+        }
+        return {
+          chunks,
+          lines,
+          progress,
+          stdout: lines.length > 0 ? `${lines.join("\n")}\n` : "",
+        };
       }
-      return {
-        chunks,
-        lines,
-        progress,
-        stdout: lines.length > 0 ? `${lines.join("\n")}\n` : "",
-      };
-    };
-    const client = this.#clientForCall();
-    try {
-      return await attempt(client);
-    } catch (error) {
-      if (!retryableRun(command, error)) throw controlError(error);
-      this.#reconnect(client);
-      try {
-        return await attempt(this.#clientForCall());
-      } catch (retryError) {
-        throw controlError(retryError);
-      }
-    }
+    );
   }
 
   async #metadata(): Promise<grpc.Metadata> {
@@ -569,17 +546,26 @@ export class SynchControlClient implements SynchControlClientLike {
     this.#client = undefined;
   }
 
-  async #retryRead<T>(operation: (client: RawControlClient) => Promise<T>): Promise<T> {
-    const client = this.#clientForCall();
-    try {
-      return await operation(client);
-    } catch (error) {
-      if (!retryableRead(error)) throw controlError(error);
-      this.#reconnect(client);
+  /**
+   * Runs one call, and once more on a fresh channel when `retryable` accepts
+   * its failure. The channel is taken after the token read, and the call is
+   * started in the same turn: a concurrent call that fails during that read
+   * closes the channel it used, and a call started on it would fail with
+   * "Channel has been shut down".
+   */
+  async #retry<T>(
+    retryable: (error: unknown) => boolean,
+    operation: (client: RawControlClient, metadata: grpc.Metadata) => Promise<T>
+  ): Promise<T> {
+    for (let attempt = 0; ; attempt += 1) {
+      let client: RawControlClient | undefined;
       try {
-        return await operation(this.#clientForCall());
-      } catch (retryError) {
-        throw controlError(retryError);
+        const metadata = await this.#metadata();
+        client = this.#clientForCall();
+        return await operation(client, metadata);
+      } catch (error) {
+        if (attempt > 0 || !retryable(error)) throw controlError(error);
+        if (client) this.#reconnect(client);
       }
     }
   }

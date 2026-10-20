@@ -1,6 +1,10 @@
 defmodule SalixWeb.VoiceSocket do
   @moduledoc """
-  `comma.voice.v1` WebSocket voice session (docs/messaging-voice.md).
+  `comma.voice.v1` session callbacks (docs/messaging-voice.md).
+
+  VoiceHTTP runs the same callbacks in its streaming request process. Accepted
+  uploads replace WebSocket pongs. Both carriers use the same CallActor,
+  admission, media pacing, revocation and billing identity.
 
   The route authenticates the voice agent key, checks that its Group is the
   path Group, and ensures the Group's voice connect before the upgrade. The
@@ -10,10 +14,11 @@ defmodule SalixWeb.VoiceSocket do
 
     * no `session.start` within 10 s, no caller audio for 60 s, or no pong
       within 45 s of the last one (pings every 15 s): close 4408;
-    * caller audio faster than 1.25x real time over 5 s, or a bad frame:
-      close 4400;
+    * caller audio faster than 1.25x real time beyond a 5 s catch-up burst
+      after a stall, or a bad frame: close 4400;
     * agent audio is written at most 500 ms ahead of playback; a client more
-      than 2 s behind (`output.played` for the pacing marks): close 4410;
+      than `slow_reader_ms` (8 s) behind (`output.played` for the pacing
+      marks): close 4410;
     * the Group already has a call: close 4409; draining or an unavailable
       model: close 4503; the key disabled, deleted or expired, or its Group
       deleted: close 4401.
@@ -21,9 +26,19 @@ defmodule SalixWeb.VoiceSocket do
   A refusal or limit sends `error {code, message}` before the close. A call
   that ends sends `session.ended {reason, duration_s}`, then closes with the
   reason's code (1000 for a normal end).
+
+  Each `session.ended` or `error` close logs the call id, pod, app revision, raw reason and code. A 4410
+  also logs the pacing diagnostics: the cause, the threshold, held audio, the oldest
+  unconfirmed mark and its deadline, the last confirmed mark, and a bounded
+  trail of mark, played and clear events. Times are milliseconds since
+  `session.started`. Trail entries are `m<seq>@<sent>/d<deadline>+<written ms>`,
+  `p<seq>@<at>` (`?` when no pending mark matched) and `c<dropped marks>@<at>`.
+  Logs hold no audio, transcript or key material.
   """
 
   @behaviour WebSock
+
+  require Logger
 
   alias SalixVoice.Carrier.{Pacing, WebSocket}
 
@@ -33,7 +48,8 @@ defmodule SalixWeb.VoiceSocket do
     ping_ms: 15_000,
     pong_timeout_ms: 45_000,
     ending_ms: 3_000,
-    mark_check_ms: 500
+    mark_check_ms: 500,
+    slow_reader_ms: 8_000
   }
 
   @impl true
@@ -41,7 +57,7 @@ defmodule SalixWeb.VoiceSocket do
     timers =
       Map.merge(
         @default_timers,
-        Map.new(Application.get_env(:salix_web, :voice_socket_timers, []))
+        Map.new(SystemsRuntime.get_env(:salix_web, :voice_socket_timers, []))
       )
 
     state = %{
@@ -49,6 +65,7 @@ defmodule SalixWeb.VoiceSocket do
       group_id: args.group_id,
       connect_id: args.connect_id,
       key: args.key,
+      transport: Map.get(args, :transport, :websocket),
       timers: timers,
       codec: WebSocket.new(),
       phase: :await_start,
@@ -67,8 +84,8 @@ defmodule SalixWeb.VoiceSocket do
     if SalixCluster.NodeLifecycle.draining?() do
       close_error(state, :draining, "the node is draining; reconnect")
     else
-      Process.send_after(self(), :start_timeout, timers.start_timeout_ms)
-      Process.send_after(self(), :ping, timers.ping_ms)
+      SystemsClock.send_after(self(), :start_timeout, timers.start_timeout_ms)
+      SystemsClock.send_after(self(), :ping, timers.ping_ms)
       {:ok, state}
     end
   end
@@ -122,7 +139,7 @@ defmodule SalixWeb.VoiceSocket do
 
   defp event({:hangup, reason}, %{phase: :live} = state) do
     send(state.call, {:voice_carrier, :hangup, reason})
-    Process.send_after(self(), :ending_timeout, state.timers.ending_ms)
+    SystemsClock.send_after(self(), :ending_timeout, state.timers.ending_ms)
     {:ok, %{state | phase: :ending}}
   end
 
@@ -167,7 +184,8 @@ defmodule SalixWeb.VoiceSocket do
           call_ref: Process.monitor(pid),
           audio_format: start.audio_format,
           inbound: Pacing.inbound(start.audio_format),
-          outbound: Pacing.outbound(start.audio_format),
+          outbound:
+            Pacing.outbound(start.audio_format, slow_reader_ms: state.timers.slow_reader_ms),
           attached_mono: now(),
           last_audio_mono: now()
       }
@@ -256,6 +274,7 @@ defmodule SalixWeb.VoiceSocket do
       do: push(state, [{:transcript, role, text, final?}])
 
   def handle_info({:voice_call, :end, reason}, %{call: pid} = state) when is_pid(pid) do
+    log_close(state, "session ended", reason)
     {frames, codec} = WebSocket.encode({:end, reason, duration_s(state)}, state.codec)
 
     {:stop, :normal, {WebSocket.close_code(reason), WebSocket.reason_name(reason)}, frames,
@@ -277,7 +296,7 @@ defmodule SalixWeb.VoiceSocket do
         close_error(state, :pong_timeout, "no pong for 45 s")
 
       true ->
-        Process.send_after(self(), :ping, state.timers.ping_ms)
+        SystemsClock.send_after(self(), :ping, state.timers.ping_ms)
         {:push, {:ping, ""}, state}
     end
   end
@@ -285,7 +304,13 @@ defmodule SalixWeb.VoiceSocket do
   def handle_info(:ending_timeout, %{phase: :ending} = state),
     do: {:stop, :normal, {1000, "caller_hangup"}, state}
 
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{call_ref: ref} = state) do
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{call_ref: ref} = state) do
+    if state.phase != :ended,
+      do:
+        Logger.info(
+          "voice call exited call=#{state.call_id || "none"} #{identity()} exit=#{exit_class(reason)}"
+        )
+
     state = %{state | call: nil, call_ref: nil}
     close_error(state, :unavailable, "the call ended unexpectedly")
   end
@@ -308,6 +333,7 @@ defmodule SalixWeb.VoiceSocket do
     state = %{state | outbound: outbound}
 
     if Pacing.slow_reader?(outbound, now) do
+      log_slow_reader(state, now)
       close_error(state, :slow_reader, "the client stopped reading agent audio")
     else
       commands =
@@ -326,7 +352,7 @@ defmodule SalixWeb.VoiceSocket do
       end
 
     if delay,
-      do: %{state | pace_ref: Process.send_after(self(), :pace, delay)},
+      do: %{state | pace_ref: SystemsClock.send_after(self(), :pace, delay)},
       else: state
   end
 
@@ -361,13 +387,78 @@ defmodule SalixWeb.VoiceSocket do
   # then the close. The call hears a hangup first so its end reason reaches
   # billing promptly.
   defp close_error(state, reason, message) do
+    # The call's exit can still arrive after the close; that end is already
+    # logged.
+    if state.phase != :ended, do: log_close(state, "socket closed", reason)
     if is_pid(state.call), do: send(state.call, {:voice_carrier, :hangup, reason})
 
     {frames, codec} = WebSocket.encode({:error, reason, message}, state.codec)
 
     {:stop, :normal, {WebSocket.close_code(reason), WebSocket.reason_name(reason)}, frames,
-     %{state | call: nil, codec: codec}}
+     %{state | call: nil, codec: codec, phase: :ended}}
   end
+
+  defp log_close(state, event, reason) do
+    Logger.info(
+      "voice #{event} call=#{state.call_id || "none"} #{identity()} " <>
+        "reason=#{WebSocket.reason_name(reason)} code=#{WebSocket.close_code(reason)} " <>
+        "duration_s=#{duration_s(state)} transport=#{state.transport}"
+    )
+  end
+
+  defp log_slow_reader(state, now) do
+    d = Pacing.diagnostics(state.outbound, now)
+    start = System.convert_time_unit(state.attached_mono, :native, :millisecond)
+    t = fn ms -> ms - start end
+
+    {oldest, overdue} =
+      case d.oldest_mark do
+        {seq, deadline} -> {"pace:#{seq} oldest_deadline_ms=#{t.(deadline)}", now - deadline}
+        nil -> {"none", 0}
+      end
+
+    last_played =
+      case d.last_played do
+        {seq, at} -> "pace:#{seq}@#{t.(at)}"
+        nil -> "none"
+      end
+
+    trail =
+      Enum.map_join(d.trail, " ", fn
+        {:mark, seq, sent, deadline, written} -> "m#{seq}@#{t.(sent)}/d#{t.(deadline)}+#{written}"
+        {:played, seq, at, true} -> "p#{seq}@#{t.(at)}"
+        {:played, seq, at, false} -> "p#{seq}?@#{t.(at)}"
+        {:clear, dropped, at} -> "c#{dropped}@#{t.(at)}"
+      end)
+
+    started_at =
+      (SystemsClock.system_time(:millisecond) - (now - start))
+      |> DateTime.from_unix!(:millisecond)
+      |> DateTime.to_iso8601()
+
+    Logger.warning(
+      "voice slow reader call=#{state.call_id} #{identity()} cause=#{d.cause} " <>
+        "slow_reader_ms=#{d.slow_reader_ms} " <>
+        "started_at=#{started_at} at_ms=#{t.(now)} held_ms=#{d.held_ms} " <>
+        "pending_marks=#{d.pending_marks} last_sent=pace:#{d.last_sent_seq} " <>
+        "oldest_mark=#{oldest} overdue_ms=#{overdue} last_played=#{last_played} " <>
+        "trail=#{trail} transport=#{state.transport}"
+    )
+  end
+
+  # The exit's class only: the full term can hold call state.
+  defp exit_class(reason) when reason in [:normal, :shutdown, :killed, :noproc, :noconnection],
+    do: reason
+
+  defp exit_class({:shutdown, _detail}), do: "shutdown"
+  defp exit_class({%{__exception__: true} = error, _stack}), do: inspect(error.__struct__)
+  defp exit_class(%{__exception__: true} = error), do: inspect(error.__struct__)
+  defp exit_class({reason, _stack}) when is_atom(reason), do: reason
+  defp exit_class(_reason), do: "other"
+
+  defp identity,
+    do:
+      "pod=#{SystemsObservability.Resource.current().pod} app_revision=#{SalixAgent.AppRevision.value()}"
 
   defp admit_reason(%{"error_class" => "billing_unavailable"}), do: :billing_unavailable
 
@@ -393,6 +484,6 @@ defmodule SalixWeb.VoiceSocket do
   defp expires_at_ms(_seconds), do: nil
 
   defp elapsed_ms(mono), do: System.convert_time_unit(now() - mono, :native, :millisecond)
-  defp now, do: System.monotonic_time()
-  defp now_ms, do: System.monotonic_time(:millisecond)
+  defp now, do: SystemsClock.monotonic_time()
+  defp now_ms, do: SystemsClock.monotonic_time(:millisecond)
 end

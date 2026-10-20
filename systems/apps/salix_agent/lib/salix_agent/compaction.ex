@@ -1,4 +1,6 @@
 defmodule SalixAgent.Compaction do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Context compaction — the port of Willow's
   `ContextBuffer.Compact` / `shouldRunCompaction` (`internal/agent/context.go`,
@@ -52,8 +54,6 @@ defmodule SalixAgent.Compaction do
   `config :salix_agent, :summarizer` (a 2-arity fun or `{mod, fun}` taking
   `(prev_summary, live_messages)`) bypasses the LLM entirely; test config
   pins `deterministic_summary/2` so replay-parity suites stay stable.
-
-  Microcompaction is intentionally NOT ported.
   """
 
   require Logger
@@ -198,7 +198,7 @@ defmodule SalixAgent.Compaction do
         {:answer, prepare_facts(host.opts), host, driver}
 
       :compaction_config ->
-        case compaction_llm_opts(host.context, host.opts) do
+        case compaction_llm_opts(host) do
           {:ok, llm_opts} ->
             host = %{host | opts: Keyword.put(host.opts, :llm_opts, llm_opts)}
             {:answer, {:ok, kernel_config(llm_opts)}, host, driver}
@@ -334,7 +334,7 @@ defmodule SalixAgent.Compaction do
       "overflow_recovery" => Keyword.get(opts, :context_overflow_recovery, false),
       "strategy" => [
         opts[:compaction_strategy],
-        Application.get_env(:salix_agent, :compaction_strategy)
+        SystemsRuntime.get_env(:salix_agent, :compaction_strategy)
       ],
       "source_message_id" => opts[:result_source_message_id]
     }
@@ -343,6 +343,27 @@ defmodule SalixAgent.Compaction do
       nil -> facts
       llm_opts -> Map.put(facts, "config", kernel_config(llm_opts))
     end
+  end
+
+  @doc false
+  # The part of a prepared plan that `execute_prepared/1` reads. The plan also
+  # holds the round context and the session configuration with its tool
+  # catalog; the dependency job gets this part only.
+  def job_plan(plan) do
+    session_config = plan.opts[:runtime_session_config] || %{}
+
+    plan
+    |> Map.take([:agent_id, :session_id, :session, :kernel, :prompt])
+    |> Map.put(:context, Map.take(plan.context, [:agent_id]))
+    |> Map.put(
+      :opts,
+      plan.opts
+      |> Keyword.take([:summarizer, :llm_opts])
+      |> Keyword.put(
+        :runtime_session_config,
+        Map.take(session_config, [:tool_specs, :tenant_id, :group_id])
+      )
+    )
   end
 
   @doc false
@@ -424,7 +445,9 @@ defmodule SalixAgent.Compaction do
   # Kernel terms carry data only. A process, reference, port, or function in
   # a failure reason crosses as its inspected text.
   defp kernel_term(value)
-       when is_pid(value) or is_reference(value) or is_port(value) or is_function(value),
+       when SystemsRuntime.Proc.is_process(value) or SystemsRuntime.Proc.is_ref(value) or
+              is_port(value) or
+              is_function(value),
        do: inspect(value)
 
   defp kernel_term(value) when is_list(value), do: kernel_list(value)
@@ -447,12 +470,12 @@ defmodule SalixAgent.Compaction do
   # ---- the summary ----
 
   defp summarize(plan) do
-    summarizer = plan.opts[:summarizer] || Application.get_env(:salix_agent, :summarizer)
+    summarizer = plan.opts[:summarizer] || SystemsRuntime.get_env(:salix_agent, :summarizer)
 
     if summarizer && plan.kernel["strategy"] != "openai_responses" do
       {:summary, run_summarizer(summarizer, plan.kernel["summary"], plan.kernel["live"])}
     else
-      with {:ok, llm_opts} <- compaction_llm_opts(plan.context, plan.opts) do
+      with {:ok, llm_opts} <- compaction_llm_opts(plan) do
         request =
           InternalSession.query(
             plan.session,
@@ -523,10 +546,10 @@ defmodule SalixAgent.Compaction do
     end
   end
 
-  defp compaction_llm_opts(context, opts) do
+  defp compaction_llm_opts(%{context: context, session: session, opts: opts}) do
     case Keyword.get(opts, :llm_opts) do
       nil ->
-        case SalixAgent.LlmResolver.resolve_runtime(context.agent_id) do
+        case SalixAgent.LlmResolver.resolve_session(context.agent_id, session) do
           {:ok, llm} -> {:ok, llm}
           {:error, reason} -> {:error, {:session_config, reason}}
         end

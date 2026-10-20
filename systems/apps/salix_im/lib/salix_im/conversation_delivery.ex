@@ -12,10 +12,11 @@ defmodule SalixIM.ConversationDelivery do
   alias SalixIM.ProviderRouterGuidance
   alias SalixIM.Provider.Feishu
   alias SalixIM.Provider.Feishu.MeetingActivationAuthorization
+  alias SalixIM.Provider.Lark
   alias SalixIM.Provider.Slack
   alias SalixIM.Ports.SlackConversationDelivery
   alias SalixIM.ProviderConnects
-  alias SalixIM.SlackTaskCard
+  alias SalixIM.{FeishuTaskCard, LarkTaskCard, SlackTaskCard}
   alias SalixIM.MessageRenderer.Surface
   alias SalixStore.Ids
 
@@ -82,8 +83,11 @@ defmodule SalixIM.ConversationDelivery do
           role: "user",
           created_at: rec["message_created_at"],
           source_sent_at_ms: rec["message_created_at"],
+          source_timezone: source_timezone(rec),
           name: rec["delivery_session_name"] || rec["conversation_title"] || "Conversation",
           billing_context: rec["delivery_billing_context"],
+          # Read only when this delivery creates the Session.
+          model: participant_payload(rec)["session_model"],
           trusted_origin: agent_trusted_origin(rec, source_id),
           pre_deliveries: [source_context_delivery(rec, source_id, trusted_inline_task_ref_ids)]
         }
@@ -156,7 +160,7 @@ defmodule SalixIM.ConversationDelivery do
            rec
        )
        when is_integer(deadline) do
-    if System.system_time(:millisecond) >= deadline,
+    if SystemsClock.system_time(:millisecond) >= deadline,
       do: {:error, :meeting_publication_window_passed, false},
       else: deliver_provider_unexpired(rec)
   end
@@ -170,7 +174,10 @@ defmodule SalixIM.ConversationDelivery do
       case rec["participant_provider"] do
         "slack" -> deliver_slack(rec)
         "feishu" -> deliver_feishu(rec)
+        "lark" -> deliver_lark(rec)
+        "qq" -> deliver_qq(rec)
         "telegram" -> deliver_telegram(rec)
+        "linear" -> deliver_linear(rec)
         "wechat" -> deliver_personal(rec, "wechat")
         provider -> {:error, {:unsupported_provider, provider}, false}
       end
@@ -214,7 +221,7 @@ defmodule SalixIM.ConversationDelivery do
     payload = participant_payload(rec)
 
     with module when is_atom(module) and not is_nil(module) <-
-           Application.get_env(:salix_im, :task_status_personal_adapter),
+           SystemsRuntime.get_env(:salix_im, :task_status_personal_adapter),
          {:ok, group} <- required_string(rec, "agent_group_id"),
          {:ok, connect_id} <- required_string(payload, "connect_id"),
          {:ok, connect} <-
@@ -232,9 +239,40 @@ defmodule SalixIM.ConversationDelivery do
     end
   end
 
+  # The Comma product owns the Linear installation, its token and the agent
+  # session mapping. This path only hands the record to that adapter and maps
+  # its outcome; Linear has no per-message receipt lookup for thoughts.
+  defp deliver_linear(rec) do
+    case SystemsRuntime.get_env(:salix_im, :linear_agent_session_adapter) do
+      module when is_atom(module) and not is_nil(module) ->
+        case module.deliver(rec) do
+          {:ok, receipt} -> {:ok, receipt}
+          {:unknown, status, reason} -> {:unknown, status, reason}
+          {:error, reason, retryable?} -> {:error, reason, retryable?}
+          {:error, reason} -> {:error, reason, false}
+        end
+
+      _ ->
+        {:error, :linear_agent_session_adapter_unavailable, false}
+    end
+  end
+
   # Old personal reminder Participants may still have queued effects. Only
   # ordinary Router reply tools can send reminders now. Never replay these.
   defp deliver_personal(_rec, _provider), do: {:error, :router_reply_required, false}
+
+  defp deliver_qq(rec) do
+    with {:ok, connect} <-
+           ProviderConnects.get_active_connect_by_id(
+             rec["agent_group_id"],
+             participant_payload(rec)["connect_id"],
+             "qq"
+           ) do
+      SalixIM.QQTaskCard.deliver(connect, rec)
+    else
+      {:error, reason} -> {:error, reason, false}
+    end
+  end
 
   defp deliver_slack(rec) do
     payload = participant_payload(rec)
@@ -275,6 +313,37 @@ defmodule SalixIM.ConversationDelivery do
     do: {:error, reason, retryable_failure?(:error, reason)}
 
   defp deliver_feishu(rec) do
+    if FeishuTaskCard.delivery?(rec),
+      do: deliver_feishu_task_card(rec),
+      else: deliver_feishu_message(rec)
+  end
+
+  defp deliver_feishu_task_card(rec) do
+    payload = participant_payload(rec)
+
+    with {:ok, group_id} <- required_string(rec, "agent_group_id"),
+         {:ok, connect_id} <- required_string(payload, "connect_id"),
+         {:ok, connect} <-
+           ProviderConnects.get_active_connect_by_id(group_id, connect_id, "feishu") do
+      case FeishuTaskCard.deliver(connect, rec) do
+        {:ok, status} ->
+          {:ok, status}
+
+        {:error, {:retry_after, _delay_ms, _reason} = reason} ->
+          {:error, reason, true}
+
+        {:error, {:ambiguous, reason}} ->
+          {:unknown, %{"status" => "provider_outcome_ambiguous"}, reason}
+
+        {:error, reason} ->
+          {:error, reason, retryable_failure?(:error, reason)}
+      end
+    else
+      {:error, reason} -> {:error, reason, false}
+    end
+  end
+
+  defp deliver_feishu_message(rec) do
     with {:ok, payload} <- feishu_delivery_payload(rec),
          {:ok, group_id} <- required_string(rec, "agent_group_id"),
          {:ok, connect_id} <- required_string(payload, "connect_id"),
@@ -330,6 +399,96 @@ defmodule SalixIM.ConversationDelivery do
     end
   end
 
+  defp deliver_lark(rec) do
+    if LarkTaskCard.delivery?(rec),
+      do: deliver_lark_task_card(rec),
+      else: deliver_lark_message(rec)
+  end
+
+  defp deliver_lark_task_card(rec) do
+    payload = participant_payload(rec)
+
+    with {:ok, group_id} <- required_string(rec, "agent_group_id"),
+         {:ok, connect_id} <- required_string(payload, "connect_id"),
+         {:ok, connect} <-
+           ProviderConnects.get_active_connect_by_id(group_id, connect_id, "lark") do
+      case LarkTaskCard.deliver(connect, rec) do
+        {:ok, status} ->
+          {:ok, status}
+
+        {:error, {:retry_after, _delay_ms, _reason} = reason} ->
+          {:error, reason, true}
+
+        {:error, {:ambiguous, reason}} ->
+          {:unknown, %{"status" => "provider_outcome_ambiguous"}, reason}
+
+        {:error, reason} ->
+          {:error, reason, retryable_failure?(:error, reason)}
+      end
+    else
+      {:error, reason} -> {:error, reason, false}
+    end
+  end
+
+  # A Conversation message to a Lark chat goes out through
+  # `lark.send_message`, like a send of the Agent. The operation ref is the
+  # tool call ID, so Lark gets the same `uuid` for the same delivery and a
+  # repeated request sends no second message.
+  defp deliver_lark_message(rec) do
+    with {:ok, payload} <- lark_delivery_payload(rec),
+         {:ok, group_id} <- required_string(rec, "agent_group_id"),
+         {:ok, connect_id} <- required_string(payload, "connect_id"),
+         {:ok, chat_id} <- required_string(payload, "chat_id"),
+         {:ok, delivery} <- provider_message_delivery(rec),
+         {:ok, connect} <-
+           ProviderConnects.get_active_connect_by_id(group_id, connect_id, "lark") do
+      case deliver_lark_conversation_message(connect, rec, chat_id, payload, delivery) do
+        {:ok, status} ->
+          {:ok, status}
+
+        {:error, reason} ->
+          cond do
+            ambiguous_lark_outcome?(reason) ->
+              {:unknown, %{"status" => "provider_outcome_ambiguous"}, reason}
+
+            lark_file_permission_failure?(delivery, reason) ->
+              {:error, {:lark_file_permission_denied, reason}, false,
+               {:provider_notice, lark_permission_notice(rec)}}
+
+            true ->
+              {:error, reason, retryable_failure?(:error, reason)}
+          end
+      end
+    else
+      {:error, reason} -> {:error, reason, false}
+    end
+  end
+
+  # What the people of the chat are told when Lark refused a file for a
+  # missing permission. The message that failed carries the text.
+  defp lark_permission_notice(rec) do
+    notice =
+      rec
+      |> get_in(["message_metadata", "artifact_permission_notice"])
+      |> to_string()
+      |> String.trim()
+
+    if notice == "" do
+      %{}
+    else
+      %{
+        "idempotency_key" =>
+          "provider-permission-notice:" <> to_string(rec["operation_ref"] || rec["message_id"]),
+        "content" => [%{"type" => "text", "text" => notice}],
+        "mentions" => %{"mode" => "none", "users" => []},
+        "metadata" => %{
+          "source" => "meeting_artifact_failure_notice",
+          "failed_operation_ref" => rec["operation_ref"]
+        }
+      }
+    end
+  end
+
   defp verify_provider_delivery(%{"participant_provider" => "slack"} = rec) do
     payload = participant_payload(rec)
 
@@ -346,6 +505,19 @@ defmodule SalixIM.ConversationDelivery do
       {:error, reason} -> {:unknown, reason}
     end
   end
+
+  defp verify_provider_delivery(%{"participant_provider" => "linear"} = rec) do
+    case SystemsRuntime.get_env(:salix_im, :linear_agent_session_adapter) do
+      module when is_atom(module) and not is_nil(module) -> module.verify(rec)
+      _ -> {:unknown, :linear_agent_session_adapter_unavailable}
+    end
+  end
+
+  defp verify_provider_delivery(%{"participant_provider" => "feishu"} = rec),
+    do: FeishuTaskCard.verify(rec)
+
+  defp verify_provider_delivery(%{"participant_provider" => "lark"} = rec),
+    do: LarkTaskCard.verify(rec)
 
   defp verify_provider_delivery(_rec), do: {:unknown, :stale_provider_delivery_unverified}
 
@@ -500,6 +672,102 @@ defmodule SalixIM.ConversationDelivery do
     do: Map.put(params, "mention_all", true)
 
   defp feishu_mention_params(params, _payload), do: params
+
+  # Text and files are separate Lark messages. A message with both is
+  # refused, so a failure between them cannot leave half of it sent.
+  defp deliver_lark_conversation_message(connect, rec, chat_id, payload, delivery) do
+    cond do
+      delivery.files == [] ->
+        with {:ok, text_status} <-
+               deliver_lark_text(connect, rec, chat_id, payload, delivery.text) do
+          {:ok, %{"text" => text_status, "files" => []}}
+        end
+
+      delivery.explicit_text? ->
+        {:error, :lark_mixed_text_and_file_delivery_requires_separate_messages}
+
+      true ->
+        with {:ok, file_statuses} <-
+               deliver_lark_files(connect, rec, chat_id, payload, delivery.files) do
+          {:ok, %{"text" => nil, "files" => file_statuses}}
+        end
+    end
+  end
+
+  defp ambiguous_lark_outcome?(reason) when is_binary(reason),
+    do: String.contains?(reason, "write outcome unknown")
+
+  defp ambiguous_lark_outcome?(_reason), do: false
+
+  defp lark_file_permission_failure?(%{files: files}, reason) when files != [] do
+    reason = reason |> inspect() |> String.downcase()
+
+    Enum.any?(["permission", "scope"], &String.contains?(reason, &1))
+  end
+
+  defp lark_file_permission_failure?(_delivery, _reason), do: false
+
+  defp deliver_lark_text(_connect, _rec, _chat_id, _payload, ""), do: {:ok, nil}
+
+  defp deliver_lark_text(connect, rec, chat_id, payload, text) do
+    params =
+      chat_id
+      |> lark_message_target(payload, %{"text" => text})
+      |> lark_mention_params(payload)
+
+    Lark.call(nil, connect, "lark.send_message", params, tool_call_id: rec["operation_ref"])
+  end
+
+  defp deliver_lark_files(connect, rec, chat_id, payload, files) do
+    with {:ok, agent_id} <- required_string(rec, "source_agent_id") do
+      files
+      |> Enum.with_index()
+      |> Enum.reduce_while({:ok, []}, fn {file, index}, {:ok, statuses} ->
+        params =
+          lark_message_target(
+            chat_id,
+            payload,
+            %{"path" => file["path"]}
+            |> maybe_put_param("blob_ref", file["blob_ref"])
+          )
+
+        operation_ref = "#{rec["operation_ref"]}:file:#{index}"
+
+        case Lark.call(agent_id, connect, "lark.send_message", params,
+               tool_call_id: operation_ref
+             ) do
+          {:ok, status} -> {:cont, {:ok, statuses ++ [status]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    end
+  end
+
+  # A message of the Participant's thread answers its root message, and in a
+  # group it goes into the thread. Without a message to answer it is a new
+  # message of the chat.
+  defp lark_message_target(chat_id, payload, params) do
+    params = Map.put(params, "chat_id", chat_id)
+
+    case provider_reply_message_id(payload) do
+      "" ->
+        params
+
+      message_id ->
+        Map.merge(params, %{
+          "reply_to" => message_id,
+          "reply_in_thread" => provider_chat_type(payload) == "group"
+        })
+    end
+  end
+
+  defp lark_mention_params(params, %{"mentions" => %{"mode" => "users", "users" => users}}),
+    do: Map.put(params, "mentions", users)
+
+  defp lark_mention_params(params, %{"mentions" => %{"mode" => "all"}}),
+    do: Map.put(params, "mention_all", true)
+
+  defp lark_mention_params(params, _payload), do: params
 
   defp deliver_slack_conversation_message(
          connect,
@@ -792,6 +1060,39 @@ defmodule SalixIM.ConversationDelivery do
 
   defp valid_feishu_delivery_mention?(_mention), do: false
 
+  # The mentions of one delivery, checked again before they replace what the
+  # Participant holds: they belong to the message, not to the chat.
+  defp lark_delivery_payload(rec) do
+    payload = participant_payload(rec)
+
+    case get_in(rec, ["message_metadata", "delivery_mentions"]) do
+      nil ->
+        {:ok, payload}
+
+      %{"mode" => "none", "users" => []} ->
+        {:ok, Map.delete(payload, "mentions")}
+
+      %{"mode" => "users", "users" => users} = mentions when is_list(users) ->
+        if users != [] and Enum.all?(users, &valid_lark_delivery_mention?/1) do
+          {:ok, Map.put(payload, "mentions", mentions)}
+        else
+          {:error, :invalid_lark_delivery_mentions}
+        end
+
+      _ ->
+        {:error, :invalid_lark_delivery_mentions}
+    end
+  end
+
+  defp valid_lark_delivery_mention?(%{"user_id" => "ou_" <> rest, "name" => name})
+       when is_binary(name) do
+    rest != "" and byte_size(rest) <= 128 and
+      String.match?(rest, ~r/\A[A-Za-z0-9_-]+\z/) and
+      String.trim(name) != "" and String.length(String.trim(name)) <= 100
+  end
+
+  defp valid_lark_delivery_mention?(_mention), do: false
+
   defp required_string(rec, key) do
     case rec[key] do
       value when is_binary(value) and value != "" -> {:ok, value}
@@ -1021,6 +1322,12 @@ defmodule SalixIM.ConversationDelivery do
       "message_id" => rec["message_id"],
       "participant_id" => rec["participant_id"],
       "source_actor_type" => rec["source_actor_type"],
+      # When the source Message entered its Conversation, sealed by the owner.
+      "source_sent_at_ms" =>
+        if(is_integer(rec["message_created_at"]), do: rec["message_created_at"]),
+      # The timezone of the human request this message serves. Messages the
+      # Agent sends from this turn carry it on (internal.send_message).
+      "source_timezone" => source_timezone(rec),
       "agent_group_id" => rec["agent_group_id"],
       "principal_ref" => sealed_principal_ref(rec),
       "task_schedule" => scheduled_task_invocation(rec),
@@ -1053,7 +1360,7 @@ defmodule SalixIM.ConversationDelivery do
   end
 
   defp with_meeting_authority(origin, rec) do
-    case Application.get_env(:salix_im, :meeting_preparation_authority_mod) do
+    case SystemsRuntime.get_env(:salix_im, :meeting_preparation_authority_mod) do
       nil ->
         origin
 
@@ -1118,8 +1425,10 @@ defmodule SalixIM.ConversationDelivery do
          "- message_id: #{rec["message_id"]}",
          "- agent_group_id: #{rec["agent_group_id"]}",
          source_context_line("participant_id", rec["participant_id"]),
-         source_context_line("participant_role_label", rec["participant_role_label"])
+         source_context_line("participant_role_label", rec["participant_role_label"]),
+         task_parent_context_line(rec)
        ] ++
+         quick_chat_context_lines(rec) ++
          source_actor_context_lines_for_target(rec) ++
          client_device_context_lines(rec) ++ provider_context_lines_for_target(rec))
       |> Enum.reject(&is_nil/1)
@@ -1127,9 +1436,11 @@ defmodule SalixIM.ConversationDelivery do
 
     [
       source_lines,
+      SalixIM.ReplyTargetContext.content(rec),
       SalixIM.TaskReplySource.content(rec),
       known_task_context_guidance(trusted_inline_task_ref_ids),
       dynamic_ui_result_guidance(rec),
+      loop_task_guidance(rec),
       SalixIM.Triage.ReadSourceContext.content(rec),
       redelivery_guidance(rec),
       source_context_guidance(rec)
@@ -1151,6 +1462,18 @@ defmodule SalixIM.ConversationDelivery do
   end
 
   defp dynamic_ui_result_guidance(_), do: ""
+
+  # The command that starts a Loop request tells the Worker how to run it.
+  defp loop_task_guidance(
+         %{
+           "participant_role_label" => "worker",
+           "conversation_kind" => "agent_task",
+           "task_loop_request" => %{} = loop
+         } = rec
+       ),
+       do: SalixIM.TaskLoop.worker_guidance(loop, rec["conversation_id"])
+
+  defp loop_task_guidance(_rec), do: ""
 
   defp redelivery_guidance(%{"source_message_id_suffix" => "redelivery:" <> _digest}),
     do:
@@ -1181,6 +1504,10 @@ defmodule SalixIM.ConversationDelivery do
       rec["source_actor_type"] == "provider_user" and
           get_in(rec, ["message_metadata", "provider"]) == "feishu" ->
         feishu_visible_reply_guidance(rec["message_metadata"] || %{})
+
+      rec["source_actor_type"] == "provider_user" and
+          get_in(rec, ["message_metadata", "provider"]) == "lark" ->
+        lark_visible_reply_guidance(rec["message_metadata"] || %{})
 
       rec["source_actor_type"] == "provider_system" and
         get_in(rec, ["message_metadata", "provider"]) == "feishu" and
@@ -1237,6 +1564,36 @@ defmodule SalixIM.ConversationDelivery do
     ProviderRouterGuidance.feishu(metadata)
   end
 
+  # How the Agent answers a person who wrote in Lark, with the IDs of this
+  # message. Its own text reaches nobody in Lark.
+  defp lark_visible_reply_guidance(metadata) do
+    connect_id = metadata["connect_id"]
+    message_id = metadata["message_id"]
+    chat_id = metadata["chat_id"]
+    chat_type = metadata["chat_type"]
+
+    card_message_id =
+      if metadata["root_message_id"] in [nil, ""],
+        do: message_id,
+        else: metadata["root_message_id"]
+
+    thread_instruction =
+      if chat_type == "p2p",
+        do: "This is a private chat: the reply opens no thread.",
+        else:
+          "In a group the reply goes into the thread of that message, and people go on there without mentioning the bot again."
+
+    [
+      "This is a Lark provider message. For a visible reply, call im_api.lark.send_message with connect_id=#{connect_id}, chat_id=#{chat_id}, reply_to=#{message_id}, and the reply text; do not use im_api.internal.send_message for the external reply.",
+      thread_instruction,
+      "If this human request creates a Task with im_api.internal.task.create, the runtime publishes its live Task card as a reply to this source. Check task_card.status in the result; do not publish again when it is queued. If publication failed, retry only im_api.lark.post_task_card with connect_id=#{connect_id}, the existing conversation_id, chat_id=#{chat_id}, message_id=#{card_message_id} and chat_type=#{chat_type}; never create another Task to repair the card.",
+      "When the request depends on earlier messages, read them with im_api.lark.get_chat_history, a thread with im_api.lark.get_thread_replies, or search with im_api.lark.search_messages. Read help for im_api.lark operations before their first call.",
+      Lark.RouterGuidance.meetings_and_calendar(metadata),
+      "Plain assistant text is only a runtime transcript entry and is not visible in Lark. A requested reply is incomplete until the Lark tool call succeeds. It is valid to stay silent when no reply is needed."
+    ]
+    |> Enum.join(" ")
+  end
+
   defp feishu_meeting_activation_reply_guidance_from_metadata(metadata) do
     connect_id = metadata["connect_id"]
     message_id = metadata["message_id"]
@@ -1291,6 +1648,33 @@ defmodule SalixIM.ConversationDelivery do
   defp source_context_line(_key, ""), do: nil
   defp source_context_line(key, value), do: "- #{key}: #{value}"
 
+  # A Task's delegator delivers the Worker's result, or its question, to the
+  # Conversation the Task was made from. That Conversation is a stored Task
+  # fact (`source_refs.parent_conversation_id`), named here beside the other
+  # source facts so the delegator reads it from the report that wakes it, not
+  # from a turn it remembers. It is a routing fact, not authorization: a send
+  # to it passes the checks every send passes. The Worker sees only its Task.
+  defp task_parent_context_line(
+         %{"conversation_kind" => "agent_task", "participant_role_label" => "delegator"} = rec
+       ) do
+    source_context_line(
+      "parent_conversation_id",
+      get_in(rec, ["conversation_source_refs", "parent_conversation_id"])
+    )
+  end
+
+  defp task_parent_context_line(_rec), do: nil
+
+  # Input method only: Quick Chat has the same routing and authority as a
+  # typed user Message. Historical Task references remain ordinary content.
+  defp quick_chat_context_lines(%{"source_actor_type" => "user"} = rec) do
+    if get_in(rec, ["message_metadata", "message_type"]) == "quick_chat",
+      do: ["- message_type: quick_chat"],
+      else: []
+  end
+
+  defp quick_chat_context_lines(_rec), do: []
+
   defp source_actor_context_lines_for_target(%{
          "participant_role_label" => "worker",
          "source_actor_type" => "provider_user"
@@ -1320,6 +1704,30 @@ defmodule SalixIM.ConversationDelivery do
   end
 
   defp client_device_context_lines(_rec), do: []
+
+  # A human sender's device timezone. Other senders, such as the Router and
+  # the Task Worker, act for a human request: they use the timezone of the
+  # request their message served, then the Task requester's timezone.
+  # SalixAgent.InputTime validates each one.
+  defp source_timezone(%{"source_actor_type" => "user"} = rec) do
+    case get_in(rec, ["message_metadata", "client_timezone"]) do
+      zone when is_binary(zone) -> zone
+      _ -> nil
+    end
+  end
+
+  defp source_timezone(rec) do
+    case rec["message_metadata"] do
+      %{"requester_timezone" => zone} when is_binary(zone) and zone != "" ->
+        zone
+
+      _ ->
+        case rec["conversation_origin_timezone"] do
+          zone when is_binary(zone) -> zone
+          _ -> nil
+        end
+    end
+  end
 
   defp provider_context_lines_for_target(
          %{

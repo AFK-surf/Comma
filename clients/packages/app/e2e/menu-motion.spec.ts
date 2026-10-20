@@ -1,71 +1,37 @@
 import { expect, test as baseTest } from "@playwright/test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createServer } from "vite";
-import { fileURLToPath } from "node:url";
+import { serveAppFixtures } from "../../../e2e/helpers/app-fixtures";
 import { waitForSettledMotion } from "../../../e2e/helpers/motion";
-// A source server exercises the shared menu components with production CSS.
+// The shared app fixture build exercises the menu components with production CSS.
 type MenuTransition = { exiting: boolean; property: string; duration: string };
 declare global {
   interface Window {
     menuTransitions: MenuTransition[];
   }
 }
-const test = baseTest.extend<{}, { menuBaseURL: string }>({
-  menuBaseURL: [
+const test = baseTest.extend<{}, { menuURL: string }>({
+  menuURL: [
     // Playwright requires fixture dependencies to use object destructuring.
     // eslint-disable-next-line no-empty-pattern
     async ({}, use) => {
-      const root = fileURLToPath(new URL("../../../apps/web/", import.meta.url));
-      const cacheDir = await mkdtemp(join(tmpdir(), "comma-menu-vite-"));
-      const previousCwd = process.cwd();
-      let server: Awaited<ReturnType<typeof createServer>> | undefined;
+      const fixtures = await serveAppFixtures();
       try {
-        // The web app config resolves workspace source aliases from its own cwd.
-        process.chdir(root);
-        server = await createServer({
-          root,
-          configFile: join(root, "vite.config.ts"),
-          cacheDir,
-          server: {
-            host: "127.0.0.1",
-            port: 0,
-            strictPort: false,
-            hmr: false,
-            watch: null,
-          },
-          optimizeDeps: { include: ["eventsource-parser", "shiki", "mermaid"] },
-          logLevel: "error",
-        });
-        await server.listen();
+        await use(new URL("menu-motion.html", fixtures.url).href);
       } finally {
-        process.chdir(previousCwd);
-      }
-      try {
-        await use(server.resolvedUrls!.local[0]!);
-      } finally {
-        await server.close();
-        await rm(cacheDir, { recursive: true, force: true });
+        await fixtures.close();
       }
     },
     { scope: "worker" },
   ],
 });
 
+// The worker fixture above builds or serves the app; this file's tests stay
+// on one worker so that happens once.
+test.describe.configure({ mode: "default" });
+
 for (const trigger of ["Left menu", "Right menu"] as const) {
-  test(`${trigger} uses shared enter and exit motion`, async ({
-    page,
-    menuBaseURL,
-  }) => {
+  test(`${trigger} uses shared enter and exit motion`, async ({ page, menuURL }) => {
     await page.emulateMedia({ reducedMotion: "no-preference" });
-    await page.route("**/menu-motion-fixture", (route) =>
-      route.fulfill({
-        contentType: "text/html",
-        body: `<!doctype html><html><body><div id="root"></div><script type="module">import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>t=>t;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/@fs${encodeURI(fileURLToPath(new URL("./fixtures/menu-motion.tsx", import.meta.url)))}"></script></body></html>`,
-      })
-    );
-    await page.goto(new URL("/menu-motion-fixture", menuBaseURL).href);
+    await page.goto(menuURL);
     // Capture real transitions even when the short animation ends before an assertion.
     await page.evaluate(() => {
       window.menuTransitions = [];
@@ -127,16 +93,10 @@ for (const { name, triggerName, popupSelector, triggerSelector } of [
 ]) {
   test(`${name} opens opaque over its hidden trigger and fades only on exit`, async ({
     page,
-    menuBaseURL,
+    menuURL,
   }) => {
     await page.emulateMedia({ reducedMotion: "no-preference" });
-    await page.route("**/menu-motion-fixture", (route) =>
-      route.fulfill({
-        contentType: "text/html",
-        body: `<!doctype html><html><body><div id="root"></div><script type="module">import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>t=>t;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/@fs${encodeURI(fileURLToPath(new URL("./fixtures/menu-motion.tsx", import.meta.url)))}"></script></body></html>`,
-      })
-    );
-    await page.goto(new URL("/menu-motion-fixture", menuBaseURL).href);
+    await page.goto(menuURL);
     // The popup replaces the hidden trigger label. Hold any entry fade
     // open so a dimmed label cannot slip between two samples.
     await page.addStyleTag({ content: ":root { --motion-duration-menu-enter: 1s; }" });
@@ -213,16 +173,10 @@ for (const { name, triggerName, popupSelector, triggerSelector } of [
 
 test("a closing selection cannot capture input while the next selection opens", async ({
   page,
-  menuBaseURL,
+  menuURL,
 }) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.route("**/menu-motion-fixture", (route) =>
-    route.fulfill({
-      contentType: "text/html",
-      body: `<!doctype html><html><body><div id="root"></div><script type="module">import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>t=>t;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/@fs${encodeURI(fileURLToPath(new URL("./fixtures/menu-motion.tsx", import.meta.url)))}"></script></body></html>`,
-    })
-  );
-  await page.goto(new URL("/menu-motion-fixture", menuBaseURL).href);
+  await page.goto(menuURL);
   // Hold a real exit transition open so the assertion cannot miss the short
   // overlap on a fast machine. The normal 80ms duration is covered above.
   await page.addStyleTag({ content: ":root { --motion-duration-menu-exit: 1s; }" });
@@ -286,16 +240,10 @@ test("a closing selection cannot capture input while the next selection opens", 
 
 test("a closing menu takes no pointer input while its pixels fade", async ({
   page,
-  menuBaseURL,
+  menuURL,
 }) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.route("**/menu-motion-fixture", (route) =>
-    route.fulfill({
-      contentType: "text/html",
-      body: `<!doctype html><html><body><div id="root"></div><script type="module">import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>t=>t;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/@fs${encodeURI(fileURLToPath(new URL("./fixtures/menu-motion.tsx", import.meta.url)))}"></script></body></html>`,
-    })
-  );
-  await page.goto(new URL("/menu-motion-fixture", menuBaseURL).href);
+  await page.goto(menuURL);
   // Hold the exit open so the assertion cannot miss the 80ms window.
   await page.addStyleTag({ content: ":root { --motion-duration-menu-exit: 1s; }" });
   await page.getByRole("button", { name: "Left menu", exact: true }).click();
@@ -321,15 +269,9 @@ test("a closing menu takes no pointer input while its pixels fade", async ({
 
 test("select restores its trigger focus inside a modal after choosing an option", async ({
   page,
-  menuBaseURL,
+  menuURL,
 }) => {
-  await page.route("**/menu-motion-fixture", (route) =>
-    route.fulfill({
-      contentType: "text/html",
-      body: `<!doctype html><html><body><div id="root"></div><script type="module">import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>t=>t;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/@fs${encodeURI(fileURLToPath(new URL("./fixtures/menu-motion.tsx", import.meta.url)))}"></script></body></html>`,
-    })
-  );
-  await page.goto(new URL("/menu-motion-fixture", menuBaseURL).href);
+  await page.goto(menuURL);
 
   await page.getByRole("button", { name: "Open settings fixture" }).click();
   const trigger = page.getByRole("button", { name: /Fixture theme/ });
@@ -355,15 +297,9 @@ test("select restores its trigger focus inside a modal after choosing an option"
 
 test("Inbox actions dismiss on blank content and remain usable after reopening", async ({
   page,
-  menuBaseURL,
+  menuURL,
 }) => {
-  await page.route("**/menu-motion-fixture", (route) =>
-    route.fulfill({
-      contentType: "text/html",
-      body: `<!doctype html><html><body><div id="root"></div><script type="module">import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>t=>t;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/@fs${encodeURI(fileURLToPath(new URL("./fixtures/menu-motion.tsx", import.meta.url)))}"></script></body></html>`,
-    })
-  );
-  await page.goto(new URL("/menu-motion-fixture", menuBaseURL).href);
+  await page.goto(menuURL);
   const trigger = page.getByTestId("inbox-actions-trigger");
   await trigger.click();
   await expect(
@@ -384,15 +320,9 @@ test("Inbox actions dismiss on blank content and remain usable after reopening",
 
 test("submenu motion preserves targets and keyboard return focus", async ({
   page,
-  menuBaseURL,
+  menuURL,
 }) => {
-  await page.route("**/menu-motion-fixture", (route) =>
-    route.fulfill({
-      contentType: "text/html",
-      body: `<!doctype html><html><body><div id="root"></div><script type="module">import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>t=>t;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/@fs${encodeURI(fileURLToPath(new URL("./fixtures/menu-motion.tsx", import.meta.url)))}"></script></body></html>`,
-    })
-  );
-  await page.goto(new URL("/menu-motion-fixture", menuBaseURL).href);
+  await page.goto(menuURL);
   await page.getByRole("button", { name: "Left menu", exact: true }).click();
   const parent = page.getByRole("menuitem", { name: "Arrange", exact: true });
   await parent.focus();
@@ -429,15 +359,9 @@ test("submenu motion preserves targets and keyboard return focus", async ({
 for (const placement of ["bottom", "top", "right", "left"] as const) {
   test(`root menu enters from its resolved ${placement} anchor without blur`, async ({
     page,
-    menuBaseURL,
+    menuURL,
   }) => {
-    await page.route("**/menu-motion-fixture", (route) =>
-      route.fulfill({
-        contentType: "text/html",
-        body: `<!doctype html><html><body><div id="root"></div><script type="module">import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>t=>t;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/@fs${encodeURI(fileURLToPath(new URL("./fixtures/menu-motion.tsx", import.meta.url)))}"></script></body></html>`,
-      })
-    );
-    await page.goto(new URL("/menu-motion-fixture", menuBaseURL).href);
+    await page.goto(menuURL);
     const horizontal = placement === "left" || placement === "right";
     const trigger = page.getByRole("button", {
       name: horizontal ? "Right menu" : "Left menu",
@@ -497,15 +421,9 @@ for (const placement of ["bottom", "top", "right", "left"] as const) {
 
 test("composer menu enters from the caret with shared motion and remains keyboard usable", async ({
   page,
-  menuBaseURL,
+  menuURL,
 }) => {
-  await page.route("**/menu-motion-fixture", (route) =>
-    route.fulfill({
-      contentType: "text/html",
-      body: `<!doctype html><html><body><div id="root"></div><script type="module">import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>t=>t;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/@fs${encodeURI(fileURLToPath(new URL("./fixtures/menu-motion.tsx", import.meta.url)))}"></script></body></html>`,
-    })
-  );
-  await page.goto(new URL("/menu-motion-fixture", menuBaseURL).href);
+  await page.goto(menuURL);
   await page.evaluate(() => {
     const samples: string[] = [];
     Object.assign(window, { composerTravel: samples });
@@ -526,7 +444,9 @@ test("composer menu enters from the caret with shared motion and remains keyboar
       )
     )
     .toContain("0px 2px");
-  await expect(menu).toHaveCSS("translate", "0px");
+  // The production CSS minifier folds the resting `translate: 0 0` into
+  // `transform`, so the settled menu has no separate translate.
+  await expect(menu).toHaveCSS("translate", "none");
   await expect(menu).toHaveCSS("filter", "none");
   await expect(menu).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
   const menuBox = await menu.boundingBox();
@@ -551,20 +471,9 @@ test("composer menu enters from the caret with shared motion and remains keyboar
 for (const level of ["list", "browse"] as const) {
   test(`composer ${level} keeps repeated keyboard navigation stable under a resting pointer`, async ({
     page,
-    menuBaseURL,
+    menuURL,
   }) => {
-    // Every held-key step waits for two painted frames. Allow slower runners
-    // to complete the full wraparound without weakening the per-step assertions.
-    test.setTimeout(120_000);
-    await page.route("**/menu-motion-fixture?*", (route) =>
-      route.fulfill({
-        contentType: "text/html",
-        body: `<!doctype html><html><body><div id="root"></div><script type="module">import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>t=>t;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/@fs${encodeURI(fileURLToPath(new URL("./fixtures/menu-motion.tsx", import.meta.url)))}"></script></body></html>`,
-      })
-    );
-    await page.goto(
-      new URL(`/menu-motion-fixture?navigation=${level}`, menuBaseURL).href
-    );
+    await page.goto(`${menuURL}?navigation=${level}`);
     const editor = page.getByRole("textbox", { name: "AI prompt", exact: true });
     await editor.click();
     await page.keyboard.type("@");
@@ -638,18 +547,10 @@ for (const level of ["list", "browse"] as const) {
 for (const level of ["list", "browse"] as const) {
   test(`composer ${level} paints exactly one full highlight during repeated keys`, async ({
     page,
-    menuBaseURL,
+    menuURL,
   }) => {
     await page.emulateMedia({ reducedMotion: "no-preference" });
-    await page.route("**/menu-motion-fixture?*", (route) =>
-      route.fulfill({
-        contentType: "text/html",
-        body: `<!doctype html><html><body><div id="root"></div><script type="module">import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>t=>t;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/@fs${encodeURI(fileURLToPath(new URL("./fixtures/menu-motion.tsx", import.meta.url)))}"></script></body></html>`,
-      })
-    );
-    await page.goto(
-      new URL(`/menu-motion-fixture?navigation=${level}`, menuBaseURL).href
-    );
+    await page.goto(`${menuURL}?navigation=${level}`);
     const editor = page.getByRole("textbox", { name: "AI prompt", exact: true });
     await editor.click();
     await page.keyboard.type("@");

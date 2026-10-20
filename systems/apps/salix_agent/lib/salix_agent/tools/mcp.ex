@@ -637,7 +637,7 @@ defmodule SalixAgent.Tools.MCP do
 
   defp id_schema(desc), do: %{"type" => "string", "description" => desc}
 
-  defp provider, do: Application.get_env(:salix_agent, :mcp_provider_mod)
+  defp provider, do: SystemsRuntime.get_env(:salix_agent, :mcp_provider_mod)
 
   defp seam!, do: provider() || raise("mcp provider is not configured")
 

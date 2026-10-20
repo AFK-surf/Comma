@@ -1,0 +1,18 @@
+id: go-test-port
+language: go
+severity: error
+message: "A test uses a fixed network port."
+note: |
+  Listen on port 0 (":0" or "127.0.0.1:0") and pass the assigned address.
+metadata:
+  category: port
+rule:
+  all:
+    - kind: interpreted_string_literal_content
+    - regex: "^(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::1\\])?:[1-9][0-9]{1,4}$"
+files:
+  - "**/*_test.go"
+# Live tests reach real services and skip unless their credentials are given;
+# CI never runs them.
+ignores:
+  - "**/*_live_test.go"

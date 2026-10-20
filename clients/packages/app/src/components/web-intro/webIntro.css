@@ -1,0 +1,921 @@
+/*
+ * The web intro card (WebIntroCard) and its illustrations (WebIntroMotion).
+ *
+ * Every scene element's own style is its finished state. A step's animation
+ * runs a bounded number of times from `--comma-web-intro-at` and fills
+ * backwards (never forwards) until then, so normal motion and either
+ * reduced-motion signal (which the app turns into 0s animations) show the same
+ * finished scene. Nothing here animates forever.
+ */
+
+/*
+ * The card's stroke is a true hairline: a 0.5px border paints 1px. It rises
+ * out of its corner and leaves down into it along the same path, a little
+ * faster. The move keeps the strong ease-out; the fade takes the calm curve so
+ * it spreads over the whole duration instead of landing in a frame or two.
+ */
+.comma-web-intro-card {
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-lg);
+  transition:
+    opacity var(--motion-duration-toast-enter) var(--motion-easing-calm-out),
+    translate var(--motion-duration-toast-enter) var(--motion-easing-smooth-out);
+
+  @starting-style {
+    opacity: 0;
+    translate: 0 var(--motion-distance-reveal-item);
+  }
+}
+
+.comma-web-intro-card[data-leaving] {
+  pointer-events: none;
+  opacity: 0;
+  translate: 0 var(--motion-distance-reveal-item);
+  transition-duration: var(--motion-duration-toast-exit);
+}
+
+/*
+ * The tips' copy and scenes are stacked layers. On a change the outgoing layer
+ * leaves towards the edge it is passing to while the incoming one arrives from
+ * the other edge, so the step reads in its direction. The two cross-fade
+ * through a small blur: their combined ink dips by less than a fifth, so there
+ * is no blank frame between tips, and the blur keeps the overlap from reading
+ * as two texts. The calm curve spreads each fade over its whole duration; a sharper
+ * ease-out lands an opacity change in one or two frames, which reads as a cut.
+ * These are transitions, so a quick run of steps retargets each layer from
+ * where it stands. `visibility` flips at the end of the exit so a hidden layer
+ * leaves the accessibility tree.
+ */
+.comma-web-intro-layer {
+  transition:
+    opacity var(--motion-duration-state-swap-enter) var(--motion-easing-calm-out),
+    translate var(--motion-duration-state-swap-enter) var(--motion-easing-calm-out),
+    filter var(--motion-duration-state-swap-enter) var(--motion-easing-calm-out),
+    visibility 0s;
+}
+
+.comma-web-intro-layer:not([data-position="current"]) {
+  visibility: hidden;
+  opacity: 0;
+  filter: blur(var(--motion-blur-menu-enter));
+  transition:
+    opacity var(--motion-duration-state-swap-exit) var(--motion-easing-calm-out),
+    translate var(--motion-duration-state-swap-exit) var(--motion-easing-calm-out),
+    filter var(--motion-duration-state-swap-exit) var(--motion-easing-calm-out),
+    visibility 0s linear var(--motion-duration-state-swap-exit);
+}
+
+.comma-web-intro-layer[data-position="before"] {
+  translate: calc(var(--motion-distance-reveal-item) * -1) 0;
+}
+
+.comma-web-intro-layer[data-position="after"] {
+  translate: var(--motion-distance-reveal-item) 0;
+}
+
+/* A scene shown for the first time arrives from the edge its tip comes from,
+   the way the copy does. */
+.comma-web-intro-canvas[data-arrive="after"] {
+  @starting-style {
+    translate: var(--motion-distance-reveal-item) 0;
+  }
+}
+
+.comma-web-intro-canvas[data-arrive="before"] {
+  @starting-style {
+    translate: calc(var(--motion-distance-reveal-item) * -1) 0;
+  }
+}
+
+/* A scene leaves at the pace the next layer arrives, so on a revisit the two
+   fades add up to a full well. A scene shown for the first time is at full
+   opacity at once and builds through its own steps, so the well pales for a
+   moment but never empties. */
+.comma-web-intro-stage > .comma-web-intro-layer:not([data-position="current"]) {
+  transition:
+    opacity var(--motion-duration-state-swap-enter) var(--motion-easing-calm-out),
+    translate var(--motion-duration-state-swap-enter) var(--motion-easing-calm-out),
+    filter var(--motion-duration-state-swap-enter) var(--motion-easing-calm-out),
+    visibility 0s linear var(--motion-duration-state-swap-enter);
+}
+
+/* The footer action trades places beside the primary as the primary's own
+   label does: a cross-fade through the blur without travel, so it never
+   closes the gap to Next. */
+.comma-web-intro-action[data-position] {
+  translate: none;
+}
+
+/* The step indicator, also a way back: the tip on show is the long pill. */
+.comma-web-intro-dot {
+  position: relative;
+  width: var(--spacing-sm);
+  height: var(--spacing-sm);
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--color-fg-quinary);
+  cursor: pointer;
+  /* In step with the copy it points at. */
+  transition:
+    width var(--motion-duration-state-swap-enter) var(--motion-easing-calm-out),
+    background-color var(--motion-duration-state-swap-enter)
+      var(--motion-easing-calm-out);
+}
+
+/* A comfortable target around the small pill. */
+.comma-web-intro-dot::before {
+  position: absolute;
+  inset: calc(var(--spacing-md) * -1) calc(var(--spacing-xxs) * -1);
+  content: "";
+}
+
+.comma-web-intro-dot[data-current="true"] {
+  width: var(--spacing-xl);
+  background: var(--color-fg-secondary);
+  cursor: default;
+}
+
+/* The card's other controls show the token halo; the outline paints only in
+   forced colours, where box-shadow is dropped. */
+.comma-web-intro-dot:focus-visible {
+  outline: var(--border-width-default) solid transparent;
+  box-shadow: var(--shadow-focus-brand);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .comma-web-intro-dot[data-current="false"]:hover {
+    background: var(--color-fg-tertiary);
+  }
+}
+
+/* A press shows at once; after the hover rule so it also shows under a mouse. */
+.comma-web-intro-dot[data-current="false"]:active {
+  background: var(--color-fg-secondary);
+}
+
+/* The stage is a recessed well; the scenes' surfaces sit raised on it in both
+   themes. It is decoration: no text cursor, no selection. */
+.comma-web-intro-stage {
+  --comma-web-intro-ease: var(--motion-easing-smooth-out);
+  position: relative;
+  height: 136px;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  cursor: default;
+  font-size: var(--text-micro);
+  line-height: var(--text-micro--line-height);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Each scene is one centred column, so every scene keeps even margins. */
+.comma-web-intro-canvas {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  padding-inline: var(--spacing-xl);
+}
+
+.comma-web-intro-rise,
+.comma-web-intro-fade,
+.comma-web-intro-dispatch,
+.comma-web-intro-idle,
+.comma-web-intro-pending,
+.comma-web-intro-done {
+  animation-delay: var(--comma-web-intro-at, 0s);
+  animation-fill-mode: backwards;
+  animation-timing-function: var(--comma-web-intro-ease);
+}
+
+.comma-web-intro-rise {
+  animation-name: comma-web-intro-rise;
+  animation-duration: 0.45s;
+}
+
+/* A container fades in place and only its rows move, so each row moves once. */
+.comma-web-intro-fade {
+  animation-name: comma-web-intro-fade;
+  animation-duration: 0.45s;
+}
+
+/* A Task goes out from the Router, so it arrives from the Router's side. */
+.comma-web-intro-dispatch {
+  animation-name: comma-web-intro-dispatch;
+  animation-duration: 0.45s;
+}
+
+/* Surfaces shared by the scenes. */
+.comma-web-intro-panel {
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-popup-secondary);
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-xs);
+}
+
+.comma-web-intro-line {
+  height: 5px;
+  flex: 1;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-quaternary);
+}
+
+.comma-web-intro-swap {
+  display: inline-grid;
+  place-items: center;
+}
+
+.comma-web-intro-swap > * {
+  display: inline-flex;
+  grid-area: 1 / 1;
+}
+
+.comma-web-intro-idle,
+.comma-web-intro-pending {
+  opacity: 0;
+}
+
+/* Spinners start with their scene, not their step. Four turns outlast the last
+   pending step, so every spinner stops; one can turn hidden before and after
+   its own step. */
+.comma-web-intro-pending .animate-spin {
+  animation-iteration-count: 4;
+}
+
+/* Router: the request, the Router handing it out as Tasks to Workers that run
+   side by side, the results coming back up the links, and the Router's answer. */
+.comma-web-intro-bubble {
+  display: flex;
+  width: 148px;
+  height: var(--spacing-3xl);
+  align-self: flex-end;
+  align-items: center;
+  padding-inline: var(--spacing-lg);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-brand-solid);
+  transform-origin: bottom right;
+}
+
+.comma-web-intro-bubble span {
+  width: 78%;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--color-fg-white);
+  opacity: 0.8;
+}
+
+/* The Router and the Workers it hands Tasks to, joined by links. */
+.comma-web-intro-team {
+  position: relative;
+  display: flex;
+  align-self: stretch;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+/* The status starts on the Task chips' edge: 16px mark + 8px gap. */
+.comma-web-intro-router-row {
+  display: flex;
+  height: var(--spacing-xl);
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+/* The Router's mark, as a chat message draws it: the static logo. */
+.comma-web-intro-router {
+  display: grid;
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  flex: none;
+  place-items: center;
+  color: var(--color-text-primary);
+}
+
+.comma-web-intro-router svg {
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+.comma-web-intro-router-status {
+  display: grid;
+  flex: 1;
+  align-items: center;
+}
+
+.comma-web-intro-router-status > * {
+  grid-area: 1 / 1;
+}
+
+/* Thinking until the results are back, then the answer. */
+.comma-web-intro-thinking {
+  opacity: 0;
+  animation: comma-web-intro-out var(--motion-duration-state-change)
+    var(--comma-web-intro-ease) var(--comma-web-intro-at, 0s) backwards;
+}
+
+/* The highlight is a translate on a clipped layer, so it runs on the
+   compositor and is off the bar before, between and after its sweeps. */
+.comma-web-intro-shimmer {
+  position: relative;
+  display: block;
+  width: 92px;
+  height: 5px;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-quaternary);
+}
+
+.comma-web-intro-shimmer::after {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 40%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--color-bg-quaternary), var(--color-bg-brand-solid) 40%),
+    transparent
+  );
+  content: "";
+  transform: translateX(-100%);
+  animation: comma-web-intro-shimmer var(--motion-duration-loading-shine) linear
+    var(--comma-web-intro-at, 0s) 2 backwards;
+}
+
+.comma-web-intro-reply {
+  width: 70%;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--color-fg-quaternary);
+}
+
+/* Links from the Router to each Worker: each draws as its Task goes out, a
+   pulse rides it down, and another rides it back when the Worker is done. */
+.comma-web-intro-links {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--spacing-3xl);
+  height: 82px;
+  overflow: visible;
+  fill: none;
+  stroke-linecap: round;
+}
+
+/* The gaps run past the path's ends, so no dash (and no round cap) shows
+   outside the drawn part. */
+.comma-web-intro-link {
+  stroke: var(--color-fg-quinary);
+  stroke-dasharray: 1 2;
+  stroke-width: 1.25;
+  animation: comma-web-intro-draw 0.3s var(--motion-easing-calm-out)
+    var(--comma-web-intro-at, 0s) backwards;
+}
+
+/* A 6px bead (`--comma-web-intro-bead`, a share of its link) that takes the
+   same time on every link. At rest it waits just before the link's start, out
+   of sight. The offsets are precomputed numbers: a calc() offset does not
+   interpolate. */
+.comma-web-intro-pulse {
+  stroke: var(--color-bg-brand-solid);
+  stroke-dasharray: var(--comma-web-intro-bead) 2;
+  stroke-dashoffset: var(--comma-web-intro-hide);
+  stroke-width: 1.75;
+  animation: comma-web-intro-pulse 0.4s var(--motion-easing-soft-in-out)
+    var(--comma-web-intro-at, 0s) backwards;
+}
+
+/* Positioned after the links, so the chips paint over the links' ends. */
+.comma-web-intro-tasks {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  padding-inline-start: var(--spacing-3xl);
+}
+
+/* A Task as it goes out: its Worker, its work filling in, its status. */
+.comma-web-intro-task {
+  display: flex;
+  height: 18px;
+  align-items: center;
+  gap: var(--spacing-sm);
+  /* The avatar and the status sit 3px from every edge of the 18px chip. */
+  padding-inline: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-popup-secondary);
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-xs);
+}
+
+/* A Worker's avatar, the product's own mesh for that Worker. */
+.comma-web-intro-worker {
+  width: var(--spacing-lg);
+  height: var(--spacing-lg);
+  flex: none;
+}
+
+.comma-web-intro-task .comma-web-intro-line {
+  flex: none;
+  width: 55%;
+  overflow: hidden;
+}
+
+.comma-web-intro-task:nth-child(2) .comma-web-intro-line {
+  width: 42%;
+}
+
+.comma-web-intro-task:nth-child(3) .comma-web-intro-line {
+  width: 50%;
+}
+
+/* The work fills in, all three Workers at once, each at its own pace. */
+.comma-web-intro-work {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-fg-quinary);
+  transform-origin: left;
+  animation: comma-web-intro-work var(--comma-web-intro-for, 1s)
+    var(--motion-easing-calm-in-out) var(--comma-web-intro-at, 0s) backwards;
+}
+
+.comma-web-intro-task .comma-web-intro-swap {
+  margin-inline-start: auto;
+}
+
+.comma-web-intro-task .comma-web-intro-swap svg {
+  width: var(--spacing-lg);
+  height: var(--spacing-lg);
+}
+
+.comma-web-intro-task .comma-web-intro-pending {
+  color: var(--color-markdown-icon-primary);
+  animation-name: comma-web-intro-icon-out;
+  animation-duration: var(--motion-duration-icon-swap);
+  animation-timing-function: var(--motion-easing-icon-swap);
+}
+
+.comma-web-intro-task .comma-web-intro-done {
+  color: var(--color-fg-success-primary);
+  animation-name: comma-web-intro-icon-in;
+  animation-duration: var(--motion-duration-icon-swap);
+  animation-timing-function: var(--motion-easing-icon-swap);
+}
+
+/* Apps: the plugin rows, each connected in turn. */
+.comma-web-intro-apps {
+  display: flex;
+  align-self: stretch;
+  flex-direction: column;
+  padding: var(--spacing-xs);
+}
+
+.comma-web-intro-app {
+  display: flex;
+  height: 36px;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding-inline: var(--spacing-sm);
+}
+
+.comma-web-intro-artwork {
+  display: grid;
+  width: var(--spacing-3xl);
+  height: var(--spacing-3xl);
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-popup-secondary);
+  box-shadow: inset 0 0 0 var(--border-width-0-5) var(--color-border-primary);
+}
+
+.comma-web-intro-artwork svg {
+  width: 14px;
+  height: 14px;
+}
+
+.comma-web-intro-app-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.comma-web-intro-app-name {
+  font-weight: var(--font-weight-medium);
+}
+
+.comma-web-intro-app-copy .comma-web-intro-line {
+  flex: none;
+  width: 72%;
+}
+
+.comma-web-intro-app:nth-child(2) .comma-web-intro-line {
+  width: 58%;
+}
+
+.comma-web-intro-app:nth-child(3) .comma-web-intro-line {
+  width: 66%;
+}
+
+/* The row's action: Connect presses, spins while it signs in, then the button
+   gives way to the product's Connected state. The cell holds the wider state
+   and each state hugs the row's end, as the product's row action does. */
+.comma-web-intro-connect {
+  display: inline-grid;
+  flex-shrink: 0;
+  place-items: center end;
+  font-weight: var(--font-weight-medium);
+}
+
+.comma-web-intro-connect > * {
+  grid-area: 1 / 1;
+}
+
+.comma-web-intro-connect svg {
+  width: var(--spacing-lg);
+  height: var(--spacing-lg);
+}
+
+.comma-web-intro-connect-button {
+  display: inline-grid;
+  min-width: 44px;
+  height: 22px;
+  place-items: center;
+  padding-inline: var(--spacing-md);
+  border-radius: var(--radius-sm);
+  background: var(--color-plugin-bg-button);
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-xs);
+  opacity: 0; /* At rest the app is connected and the button is gone. */
+  animation:
+    comma-web-intro-press 0.3s var(--motion-easing-press-travel)
+      var(--comma-web-intro-at, 0s) backwards,
+    comma-web-intro-icon-out var(--motion-duration-icon-swap)
+      var(--motion-easing-icon-swap) calc(var(--comma-web-intro-at, 0s) + 0.65s)
+      backwards;
+}
+
+.comma-web-intro-connect .comma-web-intro-idle {
+  animation-name: comma-web-intro-out;
+  animation-duration: var(--motion-duration-state-change);
+}
+
+.comma-web-intro-connect .comma-web-intro-pending {
+  color: var(--color-fg-tertiary);
+  animation-name: comma-web-intro-blip;
+  animation-duration: 0.75s;
+}
+
+/* The product's Connected check is a little larger than its label. */
+.comma-web-intro-connect .comma-web-intro-done svg {
+  width: 14px;
+  height: 14px;
+}
+
+.comma-web-intro-connect .comma-web-intro-done {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--color-text-success-primary);
+  white-space: nowrap;
+  animation-name: comma-web-intro-icon-in;
+  animation-duration: var(--motion-duration-icon-swap);
+  animation-timing-function: var(--motion-easing-icon-swap);
+  animation-delay: calc(var(--comma-web-intro-at, 0s) + 0.65s);
+}
+
+/* Mac: the meeting recorder, computer use, and voice input. */
+.comma-web-intro-recorder {
+  display: flex;
+  width: 176px;
+  height: 28px;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding-inline: var(--spacing-lg) var(--spacing-sm);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-popup-secondary);
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-sm);
+}
+
+/* Two pulses once the recorder has landed, then a steady dot. */
+.comma-web-intro-rec {
+  width: var(--spacing-md);
+  height: var(--spacing-md);
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-fg-error-primary);
+  animation: comma-web-intro-rec 1.4s var(--motion-easing-calm-in-out)
+    calc(var(--comma-web-intro-at, 0s) + 0.45s) 2 backwards;
+}
+
+.comma-web-intro-timer {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-medium);
+}
+
+.comma-web-intro-stop {
+  width: var(--spacing-4xl);
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-error-solid);
+}
+
+/* A window with a toolbar button; the containing block of the target and the
+   cursor. */
+.comma-web-intro-window {
+  position: relative;
+  display: flex;
+  width: 132px;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-popup-secondary);
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-xs);
+}
+
+/* The title bar row, as tall as the toolbar button at its end. */
+.comma-web-intro-traffic {
+  display: flex;
+  height: var(--spacing-lg);
+  align-items: center;
+  gap: 3px;
+}
+
+.comma-web-intro-traffic span {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-quaternary);
+}
+
+.comma-web-intro-window .comma-web-intro-line {
+  flex: none;
+  width: 70%;
+}
+
+.comma-web-intro-window .comma-web-intro-line + .comma-web-intro-line {
+  width: 45%;
+}
+
+/* Computer use: once the window has landed, the cursor travels up from the
+   window's content to the toolbar button and clicks it (at the window's step
+   + 1.8s); both rest in the clicked state, the pointer's tip on the button's
+   centre and its body inside the window. */
+.comma-web-intro-target {
+  position: absolute;
+  top: var(--spacing-sm);
+  right: var(--spacing-md);
+  width: 34px;
+  height: var(--spacing-lg);
+  border-radius: var(--radius-xs);
+  background-color: var(--color-bg-brand-solid);
+  animation: comma-web-intro-click var(--motion-duration-state-change)
+    var(--comma-web-intro-ease) calc(var(--comma-web-intro-at, 0s) + 1.8s) backwards;
+}
+
+/* The glyph's tip sits 2px into its 14px box, so the press scales about the
+   tip and the tip stays on the button. */
+.comma-web-intro-cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  transform-origin: 2px 2px;
+  translate: 105px 10px;
+  animation: comma-web-intro-cursor 1.2s var(--motion-easing-spatial-move)
+    calc(var(--comma-web-intro-at, 0s) + 0.9s) backwards;
+}
+
+/* The macOS pointer in both themes: a black arrow with a white edge, so it
+   reads over the button it clicks. The glyph's own outline becomes the edge,
+   painted under the fill. */
+.comma-web-intro-cursor path {
+  fill: var(--color-alpha-black-100);
+  stroke: var(--color-alpha-white-100);
+  stroke-width: 3;
+  paint-order: stroke;
+}
+
+.comma-web-intro-composer {
+  display: flex;
+  height: 30px;
+  align-self: stretch;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding-inline: var(--spacing-lg) var(--spacing-sm);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-popup-secondary);
+  box-shadow:
+    inset 0 0 0 var(--border-width-0-5) var(--color-border-primary),
+    var(--shadow-xs);
+}
+
+.comma-web-intro-wave {
+  display: flex;
+  height: 14px;
+  flex: 1;
+  align-items: center;
+  gap: 3px;
+}
+
+/* Voice input speaks a few beats after the click, then rests on a waveform:
+   each bar's own height is its resting level. */
+.comma-web-intro-wave span {
+  width: 2px;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--color-text-primary);
+  transform: scaleY(0.5);
+  animation: comma-web-intro-wave 0.8s var(--motion-easing-calm-in-out)
+    calc(var(--comma-web-intro-at, 0s) + 1s) 3 backwards;
+}
+
+.comma-web-intro-wave span:nth-child(6n + 2) {
+  transform: scaleY(0.85);
+  animation-delay: calc(var(--comma-web-intro-at, 0s) + 1.08s);
+}
+
+.comma-web-intro-wave span:nth-child(6n + 3) {
+  transform: scaleY(0.6);
+  animation-delay: calc(var(--comma-web-intro-at, 0s) + 1.16s);
+}
+
+.comma-web-intro-wave span:nth-child(6n + 4) {
+  transform: scaleY(1);
+  animation-delay: calc(var(--comma-web-intro-at, 0s) + 1.24s);
+}
+
+.comma-web-intro-wave span:nth-child(6n + 5) {
+  transform: scaleY(0.45);
+  animation-delay: calc(var(--comma-web-intro-at, 0s) + 1.32s);
+}
+
+.comma-web-intro-wave span:nth-child(6n) {
+  transform: scaleY(0.75);
+  animation-delay: calc(var(--comma-web-intro-at, 0s) + 1.4s);
+}
+
+.comma-web-intro-control {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  margin-inline: 3px;
+  color: var(--color-fg-tertiary);
+}
+
+@keyframes comma-web-intro-rise {
+  from {
+    opacity: 0;
+    transform: translateY(var(--spacing-sm)) scale(var(--motion-scale-reveal-item));
+  }
+}
+
+@keyframes comma-web-intro-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes comma-web-intro-dispatch {
+  from {
+    opacity: 0;
+    transform: translateX(calc(var(--spacing-sm) * -1));
+  }
+}
+
+@keyframes comma-web-intro-draw {
+  from {
+    stroke-dashoffset: 1.01;
+  }
+}
+
+@keyframes comma-web-intro-pulse {
+  from {
+    stroke-dashoffset: var(--comma-web-intro-hide);
+  }
+  to {
+    stroke-dashoffset: -1.01;
+  }
+}
+
+@keyframes comma-web-intro-work {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+@keyframes comma-web-intro-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* The product's icon swap: opacity, a small blur and a pressed scale. */
+@keyframes comma-web-intro-icon-in {
+  from {
+    opacity: 0;
+    filter: blur(var(--motion-blur-menu-enter));
+    transform: scale(var(--motion-scale-action-pressed));
+  }
+}
+
+@keyframes comma-web-intro-icon-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+    filter: blur(var(--motion-blur-menu-enter));
+    transform: scale(var(--motion-scale-action-pressed));
+  }
+}
+
+@keyframes comma-web-intro-blip {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  15%,
+  85% {
+    opacity: 1;
+  }
+}
+
+/* A click: fast travel in, a short hold so it reads, then a release that
+   settles without overshoot. */
+@keyframes comma-web-intro-press {
+  17% {
+    scale: var(--motion-scale-action-pressed);
+    animation-timing-function: linear;
+  }
+  50% {
+    scale: var(--motion-scale-action-pressed);
+    animation-timing-function: var(--motion-easing-smooth-out);
+  }
+}
+
+@keyframes comma-web-intro-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@keyframes comma-web-intro-rec {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@keyframes comma-web-intro-wave {
+  50% {
+    transform: scaleY(0.3);
+  }
+}
+
+@keyframes comma-web-intro-cursor {
+  from {
+    translate: 30px 24px;
+  }
+  60% {
+    translate: 105px 10px;
+    scale: 1;
+    animation-timing-function: var(--motion-easing-press-travel);
+  }
+  75% {
+    scale: 0.8;
+    animation-timing-function: var(--motion-easing-smooth-out);
+  }
+}
+
+@keyframes comma-web-intro-click {
+  from {
+    background-color: var(--color-bg-quaternary);
+  }
+}

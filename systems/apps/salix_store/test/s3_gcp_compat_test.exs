@@ -6,7 +6,7 @@ defmodule SalixStore.S3GCPCompatTest do
   rejects requests that mix `x-amz-*` and `x-goog-*` headers, so this also
   checks that GCP mode uses the `GOOG4-HMAC-SHA256` signing namespace.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.S3.AWS
 
@@ -64,20 +64,20 @@ defmodule SalixStore.S3GCPCompatTest do
       :s3_conditional_delete
     ]
 
-    prev = Map.new(keys, &{&1, Application.fetch_env(:salix_store, &1)})
+    prev = Map.new(keys, &{&1, SystemsRuntime.fetch_env(:salix_store, &1)})
 
-    Application.put_env(:salix_store, :s3_endpoint, "http://127.0.0.1:#{port}")
-    Application.put_env(:salix_store, :s3_region, "auto")
-    Application.put_env(:salix_store, :s3_bucket, "bucket")
-    Application.put_env(:salix_store, :s3_access_key_id, "access")
-    Application.put_env(:salix_store, :s3_secret_access_key, "secret")
-    Application.put_env(:salix_store, :s3_atomic_operations, :gcp)
-    Application.put_env(:salix_store, :s3_conditional_delete, :emulate)
+    SystemsRuntime.put_env(:salix_store, :s3_endpoint, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:salix_store, :s3_region, "auto")
+    SystemsRuntime.put_env(:salix_store, :s3_bucket, "bucket")
+    SystemsRuntime.put_env(:salix_store, :s3_access_key_id, "access")
+    SystemsRuntime.put_env(:salix_store, :s3_secret_access_key, "secret")
+    SystemsRuntime.put_env(:salix_store, :s3_atomic_operations, :gcp)
+    SystemsRuntime.put_env(:salix_store, :s3_conditional_delete, :emulate)
 
     on_exit(fn ->
       Enum.each(prev, fn
-        {key, {:ok, value}} -> Application.put_env(:salix_store, key, value)
-        {key, :error} -> Application.delete_env(:salix_store, key)
+        {key, {:ok, value}} -> SystemsRuntime.put_env(:salix_store, key, value)
+        {key, :error} -> SystemsRuntime.delete_env(:salix_store, key)
       end)
     end)
 
@@ -140,7 +140,7 @@ defmodule SalixStore.S3GCPCompatTest do
 
   defp start_bandit_retry! do
     Enum.find_value(1..10, fn _ ->
-      port = 40_000 + :erlang.phash2(make_ref(), 20_000)
+      port = 40_000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20_000)
 
       case start_supervised({Bandit, plug: MockGCS, port: port, ip: {127, 0, 0, 1}},
              id: {:gcp_compat_bandit, port}

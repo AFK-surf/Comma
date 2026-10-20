@@ -10,13 +10,14 @@ defmodule SalixIM.SlackUserProfileCache do
   cached; an empty or failed lookup is retried on the next message.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   @table __MODULE__
   @default_ttl_ms :timer.minutes(10)
 
   # The table needs an owner that outlives the ingress tasks that fill it.
-  def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
+  def start_link(_opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, :ok, name: __MODULE__)
 
   @impl true
   def init(:ok) do
@@ -27,7 +28,7 @@ defmodule SalixIM.SlackUserProfileCache do
   @spec fetch(term(), String.t(), (-> map())) :: map()
   def fetch(scope, user_id, resolve) when is_function(resolve, 0) do
     key = {scope, user_id}
-    now = System.monotonic_time(:millisecond)
+    now = SystemsClock.monotonic_time(:millisecond)
 
     case lookup(key, now) do
       {:ok, profile} ->
@@ -42,7 +43,7 @@ defmodule SalixIM.SlackUserProfileCache do
 
   @spec ttl_ms() :: pos_integer()
   def ttl_ms do
-    case Application.get_env(:salix_im, :slack_user_profile_cache_ttl_ms) do
+    case SystemsRuntime.get_env(:salix_im, :slack_user_profile_cache_ttl_ms) do
       ms when is_integer(ms) and ms >= 0 -> ms
       _ -> @default_ttl_ms
     end
@@ -50,14 +51,14 @@ defmodule SalixIM.SlackUserProfileCache do
 
   @spec clear() :: :ok
   def clear do
-    :ets.delete_all_objects(table())
+    SystemsRuntime.ETS.delete_all_objects(table())
     :ok
   end
 
   defp store(key, profile, now) do
     case ttl_ms() do
       0 -> :ok
-      ttl -> :ets.insert(table(), {key, profile, now + ttl})
+      ttl -> SystemsRuntime.ETS.insert(table(), {key, profile, now + ttl})
     end
 
     :ok
@@ -74,10 +75,10 @@ defmodule SalixIM.SlackUserProfileCache do
   defp cacheable?(_profile), do: false
 
   defp table do
-    case :ets.whereis(@table) do
+    case SystemsRuntime.ETS.whereis(@table) do
       :undefined ->
         try do
-          :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+          SystemsRuntime.ETS.new(@table, [:named_table, :public, :set, read_concurrency: true])
         rescue
           ArgumentError -> @table
         end
@@ -91,7 +92,7 @@ defmodule SalixIM.SlackUserProfileCache do
   # tree) the table lives with whoever created it; lookups still work and a
   # lost table simply means a miss.
   defp lookup(key, now) do
-    case :ets.lookup(table(), key) do
+    case SystemsRuntime.ETS.lookup(table(), key) do
       [{^key, profile, expires_at}] when expires_at > now -> {:ok, profile}
       _ -> :miss
     end

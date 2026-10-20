@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,7 +12,6 @@ import (
 	"strconv"
 	"sync"
 	"testing"
-	"time"
 )
 
 type archiveRoundTripper func(*http.Request) (*http.Response, error)
@@ -50,9 +48,7 @@ func TestZstdStreamArchiveRoundTrip(t *testing.T) {
 	source := t.TempDir()
 	destination := t.TempDir()
 	data := make([]byte, 36<<20)
-	if _, err := rand.Read(data); err != nil {
-		t.Fatal(err)
-	}
+	incompressibleBytes(data)
 	if err := os.WriteFile(filepath.Join(source, "user-data"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +80,7 @@ func TestZstdStreamArchiveRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	if err := restoreTarZstStateLimit(reader, destination, nil, migrationByteLimit); err != nil {
+	if err := restoreTarZstLimit(reader, destination, nil, migrationByteLimit); err != nil {
 		t.Fatal(err)
 	}
 	restored, err := os.ReadFile(filepath.Join(destination, "user-data"))
@@ -131,13 +127,11 @@ func TestZstdStreamArchiveHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer source.closeExternalRuntimes()
+	defer source.closeRuntimes()
 	source.cloudRuntimeQuiesced = true
-	source.cloudRuntimeParkUntil = time.Now().Add(time.Minute)
+	source.cloudRuntimeParkUntil = testFarFuture
 	data := make([]byte, 9<<20)
-	if _, err := rand.Read(data); err != nil {
-		t.Fatal(err)
-	}
+	incompressibleBytes(data)
 	if err := os.WriteFile(filepath.Join(sourceRoot, "owned.bin"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +151,30 @@ func TestZstdStreamArchiveHandlers(t *testing.T) {
 		t.Fatal(err)
 	}
 	operation := "zstd-handler-roundtrip"
+	// Codex recreates its temporary launch links from the installed harness.
+	codexHome := filepath.Join(".salix", "sprite-home", ".local", "share", "salix", "connector-home", ".codex")
+	codexTemp := filepath.Join(codexHome, "tmp")
+	launchLink := filepath.Join(sourceRoot, codexTemp, "arg0", "codex-arg0", "apply_patch")
+	if err := os.MkdirAll(filepath.Dir(launchLink), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "codex"), launchLink); err != nil {
+		t.Fatal(err)
+	}
+	retainedCodexFiles := []string{
+		filepath.Join(codexHome, "auth.json"),
+		filepath.Join(codexHome, "sessions", "session.jsonl"),
+		filepath.Join("project", ".codex", "tmp", "user-notes.txt"),
+	}
+	for _, name := range retainedCodexFiles {
+		path := filepath.Join(sourceRoot, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("retain"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	transfers := make([]signedArchiveTransfer, 1024)
 	for index := range transfers {
 		partURL := "https://archive.r2.cloudflarestorage.com/part/" + strconv.Itoa(index) + "?X-Amz-Signature=test"
@@ -169,21 +187,17 @@ func TestZstdStreamArchiveHandlers(t *testing.T) {
 		t.Fatalf("start export: %d %s", out.Code, out.Body.String())
 	}
 	var status durableArchiveExport
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	waitForCondition(t, "the export to finish", func() bool {
 		out = httptest.NewRecorder()
 		source.handleDurableArchiveExport(out, httptest.NewRequest(http.MethodGet, "/archive/export?operation="+operation, nil))
 		if out.Code != http.StatusOK || json.Unmarshal(out.Body.Bytes(), &status) != nil {
 			t.Fatalf("export status: %d %s", out.Code, out.Body.String())
 		}
-		if status.Phase == "exported" {
-			break
-		}
-		if status.Phase == "failed" || time.Now().After(deadline) {
+		if status.Phase == "failed" {
 			t.Fatalf("export did not complete: %+v", status)
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return status.Phase == "exported"
+	})
 	if status.Format != "tar_zst" || status.Bytes != status.UploadedBytes || status.Bytes <= 2*providerMigrationChunkSize {
 		t.Fatalf("unexpected export status: %+v", status)
 	}
@@ -200,7 +214,7 @@ func TestZstdStreamArchiveHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer target.closeExternalRuntimes()
+	defer target.closeRuntimes()
 	count := int((status.Bytes + providerMigrationChunkSize - 1) / providerMigrationChunkSize)
 	parts := make([]signedArchivePart, count)
 	for index := range parts {
@@ -222,6 +236,14 @@ func TestZstdStreamArchiveHandlers(t *testing.T) {
 	if link, err := os.Readlink(filepath.Join(targetRoot, commandLink)); err != nil || link != "../../.cache/codex" {
 		t.Fatalf("restored command link differs: %q %v", link, err)
 	}
+	if _, err := os.Stat(filepath.Join(targetRoot, codexTemp)); !os.IsNotExist(err) {
+		t.Fatalf("Codex temporary launch files restored: %v", err)
+	}
+	for _, name := range retainedCodexFiles {
+		if content, err := os.ReadFile(filepath.Join(targetRoot, name)); err != nil || string(content) != "retain" {
+			t.Fatalf("Codex or project data changed: %s: %q %v", name, content, err)
+		}
+	}
 	if _, err := os.Stat(filepath.Join(targetRoot, commandLink)); !os.IsNotExist(err) {
 		t.Fatalf("omitted command must remain absent: %v", err)
 	}
@@ -230,7 +252,7 @@ func TestZstdStreamArchiveHandlers(t *testing.T) {
 		t.Fatalf("archive restored workspace: %v", err)
 	}
 	nextRoot := t.TempDir()
-	if err := restoreTarZstStateLimit(&nextArchive, nextRoot, nil, migrationByteLimit); err != nil {
+	if err := restoreTarZstLimit(&nextArchive, nextRoot, nil, migrationByteLimit); err != nil {
 		t.Fatalf("restore next archive: %v", err)
 	}
 	if link, err := os.Readlink(filepath.Join(nextRoot, commandLink)); err != nil || link != "../../.cache/codex" {
@@ -239,19 +261,12 @@ func TestZstdStreamArchiveHandlers(t *testing.T) {
 	assertStreamReceipt := func(target *connector, outcome string) {
 		t.Helper()
 		statusBody, _ := json.Marshal(map[string]any{"operation": operation, "action": "status"})
-		deadline := time.Now().Add(time.Second)
-		for {
+		waitForCondition(t, outcome+" restore timing", func() bool {
 			saved := httptest.NewRecorder()
 			target.handleVMArchive(saved, httptest.NewRequest(http.MethodPost, "/archive", bytes.NewReader(statusBody)))
 			var receipt cloudProviderMigration
-			if saved.Code == http.StatusOK && json.Unmarshal(saved.Body.Bytes(), &receipt) == nil && receipt.Diagnostics != nil && receipt.Diagnostics.Outcome == outcome && receipt.Diagnostics.TotalMS >= receipt.Diagnostics.DecoderWaitMS {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s restore timing unavailable: %d %s", outcome, saved.Code, saved.Body.String())
-			}
-			time.Sleep(time.Millisecond)
-		}
+			return saved.Code == http.StatusOK && json.Unmarshal(saved.Body.Bytes(), &receipt) == nil && receipt.Diagnostics != nil && receipt.Diagnostics.Outcome == outcome && receipt.Diagnostics.TotalMS >= receipt.Diagnostics.DecoderWaitMS
+		})
 	}
 	assertStreamReceipt(target, "restored")
 	mu.Lock()
@@ -263,7 +278,7 @@ func TestZstdStreamArchiveHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer failedTarget.closeExternalRuntimes()
+	defer failedTarget.closeRuntimes()
 	out = httptest.NewRecorder()
 	failedTarget.handleVMArchive(out, httptest.NewRequest(http.MethodPost, "/archive", bytes.NewReader(importBody)))
 	if out.Code != http.StatusConflict {

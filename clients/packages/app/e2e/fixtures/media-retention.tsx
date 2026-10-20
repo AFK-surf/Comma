@@ -6,11 +6,11 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
+import { CoreClient, CoreProvider } from "@comma/core-client";
 import { initializeCommaI18n } from "@comma/i18n";
-import type { CommaApiClient } from "../../src/api";
 import { ConversationThread } from "../../src/components/chat/thread/ConversationThread";
-import type { ChatMessage } from "../../src/components/chat/model/conversationChannel";
-import { LocalFilePreviewCache } from "../../src/runtime-chat/channel/preview/LocalFilePreviewCache";
+import type { ChatMessage } from "@comma/core/chat";
+import { LocalFilePreviewCache } from "../../src/components/chat/channel/LocalFilePreviewCache";
 import "../../src/styles.css";
 
 initializeCommaI18n(["en"]);
@@ -37,12 +37,26 @@ const loadPreview = async (...args: Parameters<typeof cache.acquire>) => {
     },
   };
 };
-const api = {
-  fetchConversationAttachment: async () => {
-    metrics.videoLoads += 1;
-    return (await fetch(videoSource)).blob();
-  },
-} as unknown as CommaApiClient;
+/** A core that answers only `files.read`, with the sample video, counting each read. */
+const filesCore = new CoreClient(
+  (onMessage) => ({
+    post(raw) {
+      const asked = raw as { id: number; call?: string };
+      if (asked.call !== "files.read") return;
+      metrics.videoLoads += 1;
+      void fetch(videoSource)
+        .then((response) => response.arrayBuffer())
+        .then((bytes) =>
+          onMessage({
+            id: asked.id,
+            ok: { bytes: new Uint8Array(bytes), type: "video/mp4" },
+          })
+        );
+    },
+    close() {},
+  }),
+  { schedule: () => undefined }
+);
 function message(messageId: string, text: string, role = "assistant"): ChatMessage {
   return {
     attachments: [],
@@ -123,7 +137,7 @@ function Fixture() {
     <div style={{ display: "flex", height: "100vh" }}>
       {mounted ? (
         <ConversationThread
-          api={api}
+          live
           conversationId="conversation"
           groupId="group"
           workspaceId="workspace"
@@ -141,4 +155,8 @@ const router = createRouter({
   routeTree: route,
   history: createMemoryHistory({ initialEntries: ["/"] }),
 });
-createRoot(document.getElementById("root")!).render(<RouterProvider router={router} />);
+createRoot(document.getElementById("root")!).render(
+  <CoreProvider client={filesCore}>
+    <RouterProvider router={router} />
+  </CoreProvider>
+);

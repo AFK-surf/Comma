@@ -1,19 +1,23 @@
 defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The scheduler around backfill passes: discovery records installations, a
   work tick claims the one due the longest, and the pass's answer decides when
   it is due again. The pass itself is scripted; its rules are tested in
   `SalixIM.SlackMessageMirrorBackfillTest`.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixStore.QueueCase, queues: [:slack_mirror_backfill]
 
+  use SalixAgent.TestSupport.Settle
   alias SalixIM.SlackMessageMirror.BackfillRunner
   alias SalixStore.{Repo, SlackMirrorBackfillLedger, ULID}
 
   defmodule FakeConnects do
     @moduledoc false
     def list_slack_mirror_backfill_connects(_limit, cursor) do
-      case {Application.get_env(:salix_im, :runner_test_connects, []), cursor} do
+      case {SystemsRuntime.get_env(:salix_im, :runner_test_connects, []), cursor} do
         {[], _cursor} ->
           {:ok, %{candidates: [], next_cursor: nil, scan_complete: true}}
 
@@ -30,7 +34,7 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
 
     def get_active_connect_by_id(_group_id, connect_id, "slack") do
       case Enum.find(
-             Application.get_env(:salix_im, :runner_test_connects, []),
+             SystemsRuntime.get_env(:salix_im, :runner_test_connects, []),
              &(&1["connect_id"] == connect_id)
            ) do
         nil -> {:error, :not_found}
@@ -45,7 +49,7 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
   defmodule Reader do
     @moduledoc false
     def conversations(credential, _opts) do
-      case Application.get_env(:salix_im, :runner_test_answers, %{})[credential] do
+      case SystemsRuntime.get_env(:salix_im, :runner_test_answers, %{})[credential] do
         nil -> {:ok, [], nil}
         answer -> answer
       end
@@ -64,13 +68,13 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
   end
 
   setup do
-    Repo.query!("TRUNCATE slack_mirror_channel_watermarks, slack_mirror_backfill_connects")
-    previous_mirror = Application.get_env(:salix_im, :slack_message_mirror_mod)
-    Application.put_env(:salix_im, :slack_message_mirror_mod, EnabledMirror)
+    Repo.query!("TRUNCATE slack_mirror_channel_watermarks")
+    previous_mirror = SystemsRuntime.get_env(:salix_im, :slack_message_mirror_mod)
+    SystemsRuntime.put_env(:salix_im, :slack_message_mirror_mod, EnabledMirror)
 
     on_exit(fn ->
-      Application.delete_env(:salix_im, :runner_test_connects)
-      Application.delete_env(:salix_im, :runner_test_answers)
+      SystemsRuntime.delete_env(:salix_im, :runner_test_connects)
+      SystemsRuntime.delete_env(:salix_im, :runner_test_answers)
       restore_env(:salix_im, :slack_message_mirror_mod, previous_mirror)
     end)
 
@@ -80,7 +84,7 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
   describe "discovery" do
     test "records every page of installations and reports when the scan is complete" do
       connects = [connect(), connect(), connect()]
-      Application.put_env(:salix_im, :runner_test_connects, connects)
+      SystemsRuntime.put_env(:salix_im, :runner_test_connects, connects)
 
       assert {:ok, %{next_cursor: cursor, scan_complete: false}} = discover(nil)
       assert {:ok, %{next_cursor: cursor, scan_complete: false}} = discover(cursor)
@@ -98,7 +102,7 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
   describe "a work tick" do
     test "claims the installation due the longest, runs a pass, and defers it when idle" do
       connect = connect()
-      Application.put_env(:salix_im, :runner_test_connects, [connect])
+      SystemsRuntime.put_env(:salix_im, :runner_test_connects, [connect])
       :ok = SlackMirrorBackfillLedger.upsert_connects([connect])
 
       assert {:ok, :idle} = run_once()
@@ -112,10 +116,10 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
 
     test "an installation with history left is due again at once" do
       connect = connect()
-      Application.put_env(:salix_im, :runner_test_connects, [connect])
+      SystemsRuntime.put_env(:salix_im, :runner_test_connects, [connect])
       # A channel whose walk can never finish, because the page budget is
       # zero, is the cheapest way to make a real pass answer `:more`.
-      Application.put_env(:salix_im, :runner_test_answers, %{
+      SystemsRuntime.put_env(:salix_im, :runner_test_answers, %{
         connect["bot_token"] => {:ok, [%{"id" => "C1"}], nil}
       })
 
@@ -135,9 +139,9 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
 
     test "a token Slack refuses is recorded and the installation backs off" do
       connect = connect()
-      Application.put_env(:salix_im, :runner_test_connects, [connect])
+      SystemsRuntime.put_env(:salix_im, :runner_test_connects, [connect])
 
-      Application.put_env(:salix_im, :runner_test_answers, %{
+      SystemsRuntime.put_env(:salix_im, :runner_test_answers, %{
         connect["bot_token"] => {:error, {:slack, "invalid_auth"}}
       })
 
@@ -154,22 +158,22 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
 
     test "each pass outcome reaches the counter" do
       connect = connect()
-      Application.put_env(:salix_im, :runner_test_connects, [connect])
+      SystemsRuntime.put_env(:salix_im, :runner_test_connects, [connect])
       :ok = SlackMirrorBackfillLedger.upsert_connects([connect])
 
-      handler = "backfill-pass-#{System.unique_integer([:positive])}"
-      parent = self()
+      handler = "backfill-pass-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      parent = SystemsRuntime.Proc.self()
 
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:salix, :slack_mirror, :backfill, :pass],
         fn _event, _measurements, metadata, _config ->
-          send(parent, {:pass, metadata.outcome})
+          SystemsRuntime.Proc.send(parent, {:pass, metadata.outcome})
         end,
         nil
       )
 
-      on_exit(fn -> :telemetry.detach(handler) end)
+      on_exit(fn -> SystemsRuntime.Telemetry.detach(handler) end)
 
       assert {:ok, :idle} = run_once()
       assert_received {:pass, :idle}
@@ -177,13 +181,24 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
   end
 
   describe "the scheduler process" do
-    test "a crashing pass does not take the scheduler down" do
+    test "a crashing pass does not take the scheduler down and backs off" do
       defmodule CrashingLedger do
-        def claim_due_connect(_ttl), do: raise("ledger unavailable")
+        def claim_due_connect(_ttl) do
+          SystemsRuntime.Proc.send(
+            SystemsRuntime.fetch_env!(:salix_im, :runner_test_parent),
+            :backfill_claimed
+          )
+
+          raise("ledger unavailable")
+        end
+
         def upsert_connects(_connects), do: :ok
       end
 
-      supervisor = start_supervised!({Task.Supervisor, name: __MODULE__.Tasks})
+      SystemsRuntime.put_env(:salix_im, :runner_test_parent, SystemsRuntime.Proc.self())
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :runner_test_parent) end)
+
+      supervisor = start_supervised!({SystemsRuntime.TaskSupervisor, name: __MODULE__.Tasks})
 
       runner =
         start_supervised!(
@@ -195,24 +210,53 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
            start_delay_ms: 0}
         )
 
-      Process.sleep(200)
-      assert Process.alive?(runner)
+      SystemsClock.sleep(200)
+      assert SystemsRuntime.Proc.alive?(runner)
+      assert_received :backfill_claimed
+      # The passes the start and the first discovery began have all crashed;
+      # each waits out the backoff, so nothing claims again before it ends.
+      drain_claims()
+      SystemsClock.sleep(200)
+      refute_received :backfill_claimed
+    end
+
+    test "one tick fills every free slot and does not tick again" do
+      defmodule EmptyLedger do
+        def claim_due_connect(_ttl), do: :empty
+      end
+
+      supervisor = start_supervised!({SystemsRuntime.TaskSupervisor, name: __MODULE__.Tasks})
+
+      state = %{
+        opts: [ledger: EmptyLedger, task_supervisor: supervisor, max_concurrent_passes: 3],
+        passes: %{},
+        discover_task: nil,
+        discover_cursor: nil
+      }
+
+      assert {:noreply, %{passes: passes}} = BackfillRunner.handle_info(:work_tick, state)
+      assert map_size(passes) == 3
+      # A tick it sent itself would start another pass whenever one had ended.
+      refute_received :work_tick
     end
 
     test "runs no more passes at once than it is allowed" do
       connects = [connect(), connect(), connect()]
-      Application.put_env(:salix_im, :runner_test_connects, connects)
+      SystemsRuntime.put_env(:salix_im, :runner_test_connects, connects)
       :ok = SlackMirrorBackfillLedger.upsert_connects(connects)
 
-      parent = self()
+      parent = SystemsRuntime.Proc.self()
 
       # A reader that parks every pass until told to continue, so the number
       # in flight can be observed.
       defmodule ParkingReader do
         def conversations(_credential, _opts) do
-          send(Application.fetch_env!(:salix_im, :runner_test_parent), {:parked, self()})
+          SystemsRuntime.Proc.send(
+            SystemsRuntime.fetch_env!(:salix_im, :runner_test_parent),
+            {:parked, SystemsRuntime.Proc.self()}
+          )
 
-          receive do
+          SystemsRuntime.Proc.receive do
             :continue -> {:ok, [], nil}
           end
         end
@@ -221,10 +265,10 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
         def replies(_credential, _channel_id, _root_ts, _opts), do: {:ok, [], ""}
       end
 
-      Application.put_env(:salix_im, :runner_test_parent, parent)
-      on_exit(fn -> Application.delete_env(:salix_im, :runner_test_parent) end)
+      SystemsRuntime.put_env(:salix_im, :runner_test_parent, parent)
+      on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :runner_test_parent) end)
 
-      supervisor = start_supervised!({Task.Supervisor, name: __MODULE__.Tasks})
+      supervisor = start_supervised!({SystemsRuntime.TaskSupervisor, name: __MODULE__.Tasks})
 
       _runner =
         start_supervised!(
@@ -241,14 +285,21 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
 
       # Two passes park; a third tick has no slot and so no third pass parks
       # while they are held.
-      assert_receive {:parked, first}, 1_000
-      assert_receive {:parked, second}, 1_000
-      refute_receive {:parked, _third}, 200
+      settle_receive({:parked, first})
+      settle_receive({:parked, second})
+      settle_refute_receive({:parked, _third}, 200)
+      SystemsRuntime.Proc.send(first, :continue)
+      SystemsRuntime.Proc.send(second, :continue)
+      settle_receive({:parked, third})
+      SystemsRuntime.Proc.send(third, :continue)
+    end
+  end
 
-      send(first, :continue)
-      send(second, :continue)
-      assert_receive {:parked, third}, 1_000
-      send(third, :continue)
+  defp drain_claims do
+    receive do
+      :backfill_claimed -> drain_claims()
+    after
+      0 -> :ok
     end
   end
 
@@ -264,18 +315,18 @@ defmodule SalixIM.SlackMessageMirrorBackfillRunnerTest do
   end
 
   test "a disabled mirror does not claim installations or discover connects" do
-    Application.delete_env(:salix_im, :slack_message_mirror_mod)
+    SystemsRuntime.delete_env(:salix_im, :slack_message_mirror_mod)
     candidate = connect()
-    Application.put_env(:salix_im, :runner_test_connects, [candidate])
+    SystemsRuntime.put_env(:salix_im, :runner_test_connects, [candidate])
 
     assert :empty = run_once()
     assert {:ok, %{scan_complete: true}} = discover(nil)
     assert {:error, :not_found} = SlackMirrorBackfillLedger.connect(candidate["connect_id"])
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
 
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp connect do
     id = ULID.generate()

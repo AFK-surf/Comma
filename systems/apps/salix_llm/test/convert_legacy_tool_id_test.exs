@@ -1,5 +1,5 @@
 defmodule SalixLlm.ConvertLegacyToolIdTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixLlm.{Convert, ConvertOpenAI}
 

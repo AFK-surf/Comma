@@ -1,5 +1,5 @@
 defmodule SalixAgent.TranscriptUtf8RobustnessTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.InternalSessionStore
 
@@ -12,14 +12,14 @@ defmodule SalixAgent.TranscriptUtf8RobustnessTest do
   @truncated_cjk binary_part("接入", 0, 4)
 
   setup do
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     SalixStore.Repo.query!("TRUNCATE session_work_candidates")
     :ok
   end
 
   test "commit scrubs invalid UTF-8 out of every transcript-bound event field" do
-    agent_id = "agt1_" <> Integer.to_string(System.unique_integer([:positive]))
+    agent_id = "agt1_" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
 
     corrupt_prompt = "You are an agent.\n- 通过 Slack " <> @truncated_cjk
     corrupt_summary = "<compacted-context>\n当有人说" <> @truncated_cjk <> "\n</compacted-context>"

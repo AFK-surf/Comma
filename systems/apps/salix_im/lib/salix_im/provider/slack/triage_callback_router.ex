@@ -38,7 +38,11 @@ defmodule SalixIM.Provider.Slack.TriageCallbackRouter do
   def route_human_command(connect, envelope, deliver)
       when is_map(connect) and is_map(envelope) and is_function(deliver, 1) do
     if human_command?(connect, envelope) do
-      case select_human_command_route(connect, envelope) do
+      case SystemsObservability.Trace.with_span(
+             :salix_im_ingress,
+             %{component: "salix_im", operation: "im_ingress_route"},
+             fn -> select_human_command_route(connect, envelope) end
+           ) do
         {:ok, route} -> deliver.(route)
         other -> other
       end

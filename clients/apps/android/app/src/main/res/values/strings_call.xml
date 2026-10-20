@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="call_open">通话</string>
+    <string name="call_calling">正在呼叫…</string>
+    <string name="call_ending">正在结束…</string>
+    <string name="call_ended">通话已结束</string>
+    <string name="call_failed">通话失败</string>
+    <string name="call_interrupted">通话中断</string>
+    <string name="call_not_connected">未接通</string>
+    <string name="call_disabled">此工作区已关闭语音通话。</string>
+    <string name="call_microphone_settings">请在 Android 设置里允许使用麦克风，然后重试。</string>
+    <string name="call_output_failed">无法切换音频输出。</string>
+    <string name="call_minimize">缩小通话</string>
+    <string name="call_expand">展开通话</string>
+    <string name="call_mute">静音</string>
+    <string name="call_unmute">取消静音</string>
+    <string name="call_end">挂断</string>
+    <string name="call_output_title">更改音频输出</string>
+    <string name="call_output_headphones">耳机</string>
+    <string name="call_output_bluetooth">蓝牙</string>
+    <string name="call_output_speaker">扬声器</string>
+    <string name="call_output_phone">手机</string>
+    <string name="call_output_selected">已选择</string>
+    <string name="call_log_ended">%1$s · 通话已结束</string>
+    <string name="call_end_call">结束通话</string>
+</resources>

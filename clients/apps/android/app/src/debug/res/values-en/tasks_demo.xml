@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="tasks_demo_title">Tasks demo</string>
+    <string name="tasks_demo_tab_chat">Chat card</string>
+    <string name="tasks_demo_tab_panel">Chat tasks</string>
+    <string name="tasks_demo_tab_list">Task list</string>
+    <string name="tasks_demo_tab_detail">Task detail</string>
+    <string name="tasks_demo_user_message">Can you take care of this?</string>
+    <string name="tasks_demo_agent_message">Sure, I created a task:</string>
+    <string name="tasks_demo_panel_hint">Tap the pill above the composer to open this chat\'s task panel. It opens at half height; drag up for full screen, drag down to close.</string>
+    <string name="tasks_demo_composer_placeholder">Message…</string>
+</resources>

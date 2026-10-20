@@ -64,15 +64,15 @@ defmodule SalixAnalytics.ClickHouseRead do
   """
   @spec run((String.t() -> String.t()), keyword(), keyword()) :: result()
   def run(sql_fn, binds, opts \\ []) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = do_run(sql_fn, binds, opts[:format] || :json_each_row)
 
     # A dashboard read is a synchronous dependency with a hard 15s ceiling;
     # without this the only symptom of a slow or failing query is a blank
     # panel. Emitted after the call so telemetry never sits on the request.
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{
         component: "salix_analytics",
         operation: opts[:query] || "other",
@@ -220,7 +220,7 @@ defmodule SalixAnalytics.ClickHouseRead do
   defp headers(_), do: []
 
   defp config do
-    cfg = Application.get_env(:salix_analytics, :clickhouse, [])
+    cfg = SystemsRuntime.get_env(:salix_analytics, :clickhouse, [])
     base_url = cfg[:base_url]
     table = cfg[:table] || "salix_analytics.events"
     database = table |> to_string() |> String.split(".", parts: 2) |> hd()

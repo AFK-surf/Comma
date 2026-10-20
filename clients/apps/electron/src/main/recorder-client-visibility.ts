@@ -24,8 +24,7 @@ export function bindRecorderClientVisibility(
   const update = (visible: boolean) => {
     if (isCurrent()) publish(visible && !window.isDestroyed());
   };
-  // RecorderVisibility.tla Show/Hide maps to MeetingRecorder.tla Visibility:
-  // shown/restored versus hidden/minimized/closed.
+  // Visible means shown/restored. Hidden means hidden/minimized/closed.
   // isVisible() can still report the old occlusion state inside a show callback.
   window.on("show", () => update(true));
   window.on("restore", () => update(true));
@@ -34,7 +33,7 @@ export function bindRecorderClientVisibility(
   window.on("closed", () => update(false));
   const reconcile = () =>
     update(!window.isDestroyed() && window.isVisible() && !window.isMinimized());
-  // RecorderVisibility.tla Command: completion can occur without its event.
+  // A window command can complete without its event.
   // Reconcile only after the real command returns; system-driven changes still
   // use the listeners above. No timer, synthetic event, or focus fallback.
   for (const method of [

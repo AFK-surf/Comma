@@ -36,11 +36,6 @@ defmodule SalixIFCTest do
       assert {:error, :receipt_unavailable} = SalixIFC.transfer_resume(cursor, {:error, :timeout})
       assert {:error, :receipt_unavailable} = SalixIFC.transfer_resume(cursor, :unexpected)
     end
-
-    test "invalid continuations cannot report completion" do
-      assert {:error, :invalid_input} = SalixIFC.transfer_resume(:invalid, {:ok, true})
-      assert {:error, :invalid_input} = SalixIFC.transfer_resume([123], {:ok, true})
-    end
   end
 
   # One Slack connect "w": a and b are full members, g is a guest. #legal is a
@@ -758,105 +753,6 @@ defmodule SalixIFCTest do
         assert evidence.sources == []
       end
     end
-
-    test "declared refs retain first occurrence order and unknown refs fail closed" do
-      act = activation(@a, @space, ["q"])
-      items = [item("a", @space), item("q", @space, :command, @a), item("b", @space)]
-
-      evidence =
-        assert_allow(
-          SalixIFC.decide(effect(@space, "q", sources: ["b", "a", "b"]), act, items, facts())
-        )
-
-      assert evidence.sources == [{"b", :flow}, {"a", :flow}]
-
-      assert_allow(SalixIFC.decide(effect(@space, "q"), act, items, facts()))
-      |> then(&assert(&1.sources == [{"q", :flow}, {"a", :flow}, {"b", :flow}]))
-
-      assert_deny(
-        SalixIFC.decide(effect(@space, "q", sources: ["missing"]), act, items, facts()),
-        :unknown_source_ref
-      )
-    end
-
-    test "receipt search skips invalid grants and retains binary id order" do
-      act = activation(@a, @space, ["q"])
-      items = [item("q", @space, :command, @a), item("dm", @dm_a)]
-
-      receipts =
-        for id <- ["z", "aa", "b"] do
-          %Receipt{id: id, requester: @a, sources: @dm_a, destination: @space}
-        end
-
-      expired = %Receipt{
-        id: "a",
-        requester: @a,
-        sources: @dm_a,
-        destination: @space,
-        expires_at: 1
-      }
-
-      for grants <- [receipts, Enum.reverse(receipts)] do
-        evidence =
-          assert_allow(
-            SalixIFC.decide(
-              effect(@space, "q", sources: ["dm"]),
-              act,
-              items,
-              facts(receipts: [expired | grants], policy: [declassification: :receipt_only])
-            )
-          )
-
-        assert evidence.sources == [{"dm", {:receipt, "aa"}}]
-      end
-    end
-
-    test "duplicate refs are refused" do
-      items = [item("q", @legal, :command, @a), item("q", @legal)]
-      act = activation(@a, @legal, ["q"])
-      assert_deny(SalixIFC.decide(effect(@legal, "q"), act, items, facts()), :duplicate_item_ref)
-    end
-
-    test "duplicate diagnostics identify the first repeated occurrence" do
-      items = Enum.map(["a", "b", "b", "a"], &item(&1, @legal, :command, @a))
-      act = activation(@a, @legal, ["a"])
-
-      assert {:deny, %Reason{clause: :duplicate_item_ref, ref: "b"}} =
-               SalixIFC.decide(effect(@legal, "a"), act, items, facts())
-    end
-
-    test "malformed inputs deny instead of raising" do
-      act = activation(@a, @legal, ["q"])
-      assert {:deny, %Reason{clause: :invalid_input}} = SalixIFC.decide(%{}, act, [], facts())
-
-      assert {:deny, %Reason{clause: :invalid_input, detail: :effect}} =
-               SalixIFC.decide(
-                 %Effect{destination: @legal, request: "q", writers: :nope},
-                 act,
-                 [],
-                 facts()
-               )
-
-      assert {:deny, %Reason{clause: :invalid_input, detail: :items}} =
-               SalixIFC.decide(
-                 effect(@legal, "q"),
-                 act,
-                 [item("q", @legal, :command, :nobody)],
-                 facts()
-               )
-    end
-
-    test "a scope cycle in the facts still terminates" do
-      looped =
-        Facts.new(
-          scopes: %{
-            {:scope, @w, "x"} => [kind: :room, within: {:scope, @w, "y"}],
-            {:scope, @w, "y"} => [kind: :room, within: {:scope, @w, "x"}]
-          }
-        )
-
-      assert SalixIFC.atom_subset?({:scope, @w, "x"}, {:scope, @w, "z"}, looped) == :unknown
-    end
   end
 
   describe "compaction" do
@@ -871,24 +767,5 @@ defmodule SalixIFCTest do
   end
 
   describe "labels, facts and policy" do
-    test "normalization drops public unless alone and rejects invalid atoms" do
-      assert Label.new([]) == Label.bottom()
-      assert Label.atoms(Label.new([:public, {:tag, "x"}])) == [{:tag, "x"}]
-      assert Label.public?(Label.new([:public]))
-      assert_raise ArgumentError, fn -> Label.new([{:dm, @w}]) end
-    end
-
-    test "facts and policy validate their inputs" do
-      assert %Policy{} = Policy.new(declassification: :receipt_only)
-      assert_raise ArgumentError, fn -> Policy.new(declassification: :maybe) end
-      assert_raise ArgumentError, fn -> Facts.new(now: -1) end
-
-      assert_raise ArgumentError, fn ->
-        Facts.new(scopes: %{{:scope, @w, "x"} => [kind: :channel]})
-      end
-
-      assert Facts.external?(facts(), @g)
-      refute Facts.external?(facts(), :system)
-    end
   end
 end

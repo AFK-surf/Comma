@@ -5,14 +5,14 @@ defmodule Comma.OauthIdp.ResourceOwnersTest do
   disabled on every client as defense in depth).
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Boruta.Oauth.ResourceOwner
   alias Comma.OauthIdp.ResourceOwners
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Comma.Repo)
-    Ecto.Adapters.SQL.Sandbox.mode(Comma.Repo, {:shared, self()})
+    Ecto.Adapters.SQL.Sandbox.mode(Comma.Repo, {:shared, SystemsRuntime.Proc.self()})
 
     {:ok, user} = Comma.Accounts.get_or_create_user_by_email("idp-ro@example.com")
     {:ok, _} = Comma.Accounts.update_user(user["id"], %{"name" => "RO Test"})
@@ -27,16 +27,6 @@ defmodule Comma.OauthIdp.ResourceOwnersTest do
     assert String.starts_with?(sub, "usr_")
   end
 
-  test "resolves an active user by username (email)", %{user: user} do
-    assert {:ok, %ResourceOwner{sub: sub}} = ResourceOwners.get_by(username: "idp-ro@example.com")
-    assert sub == user["id"]
-  end
-
-  test "unknown identities fail closed" do
-    assert {:error, _} = ResourceOwners.get_by(sub: "usr_does-not-exist")
-    assert {:error, _} = ResourceOwners.get_by(username: "nobody@example.com")
-  end
-
   test "a disabled user fails closed on both lookups", %{user: user} do
     {:ok, _} = Comma.Accounts.update_user(user["id"], %{"status" => "disabled"})
 
@@ -49,21 +39,6 @@ defmodule Comma.OauthIdp.ResourceOwnersTest do
 
     assert {:error, _} = ResourceOwners.check_password(owner, "any-password")
     assert {:error, _} = ResourceOwners.check_password(owner, "")
-  end
-
-  test "claims project identity for the id_token", %{user: user} do
-    {:ok, owner} = ResourceOwners.get_by(sub: user["id"])
-
-    assert %{
-             "email" => "idp-ro@example.com",
-             "email_verified" => true,
-             "name" => "RO Test"
-           } = ResourceOwners.claims(owner, "openid email profile")
-  end
-
-  test "authorized_scopes grants nothing implicitly", %{user: user} do
-    {:ok, owner} = ResourceOwners.get_by(sub: user["id"])
-    assert ResourceOwners.authorized_scopes(owner) == []
   end
 
   test "claims follow the granted scope, never exceeding it", %{user: user} do

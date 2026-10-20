@@ -1,4 +1,6 @@
-import { Button, Dialog, ScrollArea } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Dialog } from "@comma/ui/components/dialog";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
 import { useState } from "react";
 import { BftApiError, type BftInstallCommand, type BftRunnerOnboarding } from "./api";
 import { CodeBlock, CopyButton, DialogError, writeErrorMessage } from "./dialogs";

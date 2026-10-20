@@ -8,7 +8,7 @@
 # The user session is minted through the product session command rather than
 # the OTP HTTP flow: the flow under test is the OIDC surface, not login.
 # Everything from /oauth2/authorize onward happens over real HTTP driven by an
-# unmodified OIDC client library on the Deno side.
+# unmodified OIDC client library on the Bun side.
 
 redirect_uri = System.get_env("CANARY_REDIRECT_URI") || "http://127.0.0.1:8765/canary/callback"
 

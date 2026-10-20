@@ -7,22 +7,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
-	"runtime"
 	"strings"
 	"time"
 )
 
 const runtimeAuthClaudeSettingsName = "salix-auth-settings.json"
 const runtimeAuthClaudeCredentialsName = ".credentials.json"
-const runtimeAuthClaudeVersion = "2.1.258"
-
-var runtimeAuthClaudeRateLimitTier = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
-
-func runtimeAuthClaudeVersionSupported(version string) bool {
-	fields := strings.Fields(strings.TrimSpace(version))
-	return len(fields) > 0 && fields[0] == runtimeAuthClaudeVersion
-}
 
 // The native --settings carrier contains only the approved authentication
 // subset. Managed settings retain native precedence; this parser does not
@@ -60,93 +50,6 @@ func parseRuntimeAuthClaudeBackend(data []byte, backend string) (map[string]stri
 	return values, nil
 }
 
-func runtimeAuthClaudeSettings(backend, key string) ([]byte, error) {
-	if !runtimeAuthCodexToken(key) {
-		return nil, errRuntimeAuthInputInvalid
-	}
-	env := map[string]string{"ANTHROPIC_API_KEY": key}
-	if backend == "openrouter" {
-		env = map[string]string{
-			"ANTHROPIC_BASE_URL":   "https://openrouter.ai/api",
-			"ANTHROPIC_AUTH_TOKEN": key,
-			"ANTHROPIC_API_KEY":    "",
-		}
-	} else if backend != "anthropic" {
-		return nil, errRuntimeAuthInputInvalid
-	}
-	return json.Marshal(map[string]any{"env": env})
-}
-
-// Claude Code 2.1.258's Linux file store writes this native OAuth record. The
-// adapter preserves accepted bytes and never mints or converts provider tokens.
-// macOS keychain material is intentionally outside this file-mode contract.
-func parseRuntimeAuthClaudeCredentials(data []byte) error {
-	root, err := runtimeAuthJSONObject(data, "claudeAiOauth")
-	if err != nil || len(root) != 1 {
-		return errRuntimeAuthInputInvalid
-	}
-	fields, err := runtimeAuthJSONObject(root["claudeAiOauth"],
-		"accessToken", "refreshToken", "expiresAt", "refreshTokenExpiresAt", "scopes",
-		"clientId", "subscriptionType", "rateLimitTier")
-	if err != nil {
-		return errRuntimeAuthInputInvalid
-	}
-	for _, name := range []string{"accessToken", "refreshToken"} {
-		var value string
-		if json.Unmarshal(fields[name], &value) != nil || !runtimeAuthCodexToken(value) {
-			return errRuntimeAuthInputInvalid
-		}
-	}
-	var expiresAt int64
-	if json.Unmarshal(fields["expiresAt"], &expiresAt) != nil || expiresAt <= 0 || expiresAt > 9_999_999_999_999 {
-		return errRuntimeAuthInputInvalid
-	}
-	if raw, ok := fields["refreshTokenExpiresAt"]; ok {
-		var value int64
-		if json.Unmarshal(raw, &value) != nil || value <= 0 || value > 9_999_999_999_999 {
-			return errRuntimeAuthInputInvalid
-		}
-	}
-	var scopes []string
-	if json.Unmarshal(fields["scopes"], &scopes) != nil || len(scopes) == 0 || len(scopes) > 16 {
-		return errRuntimeAuthInputInvalid
-	}
-	inference := false
-	seenScopes := make(map[string]struct{}, len(scopes))
-	for _, scope := range scopes {
-		if !runtimeAuthCodexToken(scope) || len(scope) > 128 || !strings.HasPrefix(scope, "user:") {
-			return errRuntimeAuthInputInvalid
-		}
-		if _, duplicate := seenScopes[scope]; duplicate {
-			return errRuntimeAuthInputInvalid
-		}
-		seenScopes[scope] = struct{}{}
-		inference = inference || scope == "user:inference" || scope == "user:ccr_inference"
-	}
-	if !inference {
-		return errRuntimeAuthInputInvalid
-	}
-	if raw, ok := fields["clientId"]; ok {
-		var value string
-		if json.Unmarshal(raw, &value) != nil || !runtimeAuthCodexToken(value) {
-			return errRuntimeAuthInputInvalid
-		}
-	}
-	if raw, ok := fields["subscriptionType"]; ok && string(raw) != "null" {
-		var value string
-		if json.Unmarshal(raw, &value) != nil || (value != "max" && value != "pro" && value != "team" && value != "enterprise") {
-			return errRuntimeAuthInputInvalid
-		}
-	}
-	if raw, ok := fields["rateLimitTier"]; ok && string(raw) != "null" {
-		var value string
-		if json.Unmarshal(raw, &value) != nil || !runtimeAuthClaudeRateLimitTier.MatchString(value) {
-			return errRuntimeAuthInputInvalid
-		}
-	}
-	return nil
-}
-
 // Compute Claude workloads set HOME to their stable provider_state volume.
 func runtimeAuthClaudeLocation() (string, error) {
 	directory := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
@@ -161,24 +64,6 @@ func runtimeAuthClaudeLocation() (string, error) {
 		return "", errors.New("claude native auth layout is unsupported")
 	}
 	return filepath.Join(directory, runtimeAuthClaudeSettingsName), nil
-}
-
-func runtimeAuthClaudeCredentialsLocation() (string, error) {
-	if runtime.GOOS != "linux" {
-		return "", errors.New("claude native credential file is unsupported")
-	}
-	directory := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
-	if directory == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || !filepath.IsAbs(home) {
-			return "", errors.New("claude native auth layout is unsupported")
-		}
-		directory = filepath.Join(home, ".claude")
-	}
-	if !filepath.IsAbs(directory) {
-		return "", errors.New("claude native auth layout is unsupported")
-	}
-	return filepath.Join(directory, runtimeAuthClaudeCredentialsName), nil
 }
 
 // A missing Salix carrier preserves existing native Claude behavior. An
@@ -247,131 +132,6 @@ func runtimeAuthClaudeExecEnv(raw map[string]any, isolateProfile bool) []string 
 		}
 	}
 	return filtered
-}
-
-func runtimeAuthClaudeManagedExecEnv(raw map[string]any, credential *managedRuntimeCredential) []string {
-	// Filter every inherited carrier first, then add exactly one credential
-	// source plus the selected endpoint. This ordering prevents a personal
-	// settings or shell value from replacing the organization selection.
-	delete(raw, "ANTHROPIC_API_KEY")
-	delete(raw, "ANTHROPIC_AUTH_TOKEN")
-	delete(raw, "ANTHROPIC_BASE_URL")
-	delete(raw, "CLAUDE_CODE_OAUTH_TOKEN")
-	environment := runtimeAuthClaudeExecEnv(raw, true)
-	environment = append(environment, "ANTHROPIC_BASE_URL="+credential.endpoint)
-	if credential.oauth {
-		environment = append(environment, "CLAUDE_CODE_OAUTH_TOKEN="+credential.apiKey)
-	} else if credential.authScheme == "bearer" {
-		environment = append(environment, "ANTHROPIC_AUTH_TOKEN="+credential.apiKey)
-	} else {
-		environment = append(environment, "ANTHROPIC_API_KEY="+credential.apiKey)
-	}
-	return environment
-}
-
-func stageRuntimeAuthClaude(ctx context.Context, authPath string, data []byte, valid func([]byte) error, commit func(string) runtimeAuthSaveOutcome) runtimeAuthSaveOutcome {
-	if valid == nil || valid(data) != nil {
-		return runtimeAuthSaveOutcome{SaveResult: "not_committed", Issue: "invalid_format"}
-	}
-	directory := filepath.Dir(authPath)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return runtimeAuthSaveOutcome{SaveResult: "not_committed", Issue: "storage_prepare_failed"}
-	}
-	stage, err := os.CreateTemp(directory, ".auth-input-*")
-	if err != nil {
-		return runtimeAuthSaveOutcome{SaveResult: "not_committed", Issue: "storage_prepare_failed"}
-	}
-	stagePath := stage.Name()
-	defer os.Remove(stagePath)
-	if err := stage.Chmod(0o600); err == nil {
-		_, err = stage.Write(data)
-	}
-	if err == nil {
-		err = stage.Sync()
-	}
-	if closeErr := stage.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return runtimeAuthSaveOutcome{SaveResult: "not_committed", Issue: "storage_prepare_failed"}
-	}
-	if ctx.Err() != nil || commit == nil {
-		return runtimeAuthSaveOutcome{SaveResult: "not_committed", Issue: "target_changed"}
-	}
-	return commit(stagePath)
-}
-
-func saveRuntimeAuthClaude(ctx context.Context, authPath string, data []byte, backend string, commit func(string) runtimeAuthSaveOutcome) runtimeAuthSaveOutcome {
-	return stageRuntimeAuthClaude(ctx, authPath, data, func(data []byte) error {
-		_, err := parseRuntimeAuthClaudeBackend(data, backend)
-		return err
-	}, commit)
-}
-
-func saveRuntimeAuthClaudeCredentials(ctx context.Context, authPath string, data []byte, commit func(string) runtimeAuthSaveOutcome) runtimeAuthSaveOutcome {
-	return stageRuntimeAuthClaude(ctx, authPath, data, parseRuntimeAuthClaudeCredentials, commit)
-}
-
-// The settings carrier has explicit precedence over Claude's native OAuth
-// store. A successful native-file commit therefore removes only the Salix-owned
-// settings file under the same fenced generation. Failure never removes the
-// newly committed provider credentials and is reported as a post-commit issue.
-func commitRuntimeAuthClaudeCredentials(ctx context.Context, stagePath, authPath string) runtimeAuthSaveOutcome {
-	outcome := commitRuntimeAuthFile(ctx, stagePath, authPath)
-	if outcome.SaveResult != "committed" || outcome.Issue != "" {
-		return outcome
-	}
-	settingsPath, err := runtimeAuthClaudeLocation()
-	if err != nil {
-		outcome.Issue = "storage_sync_failed"
-		return outcome
-	}
-	if err := os.Remove(settingsPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		outcome.Issue = "storage_sync_failed"
-		return outcome
-	}
-	directory, err := os.Open(filepath.Dir(settingsPath))
-	if err != nil {
-		outcome.Issue = "storage_sync_failed"
-		return outcome
-	}
-	defer directory.Close()
-	if directory.Sync() != nil {
-		outcome.Issue = "storage_sync_failed"
-	}
-	return outcome
-}
-
-func savePrivateClaude(ctx context.Context, m *runtimeAuthCoordinator, target runtimeProbeTarget, expected runtimeAuthInputContext, envelope runtimeAuthInputEnvelope, implementation *claudeRuntimeImplementation, authPath string, current func() bool, withCarrier func(func() runtimeAuthSaveOutcome) runtimeAuthSaveOutcome) runtimeAuthSaveOutcome {
-	if implementation == nil || withCarrier == nil {
-		return runtimeAuthSaveOutcome{SaveResult: "not_committed", Issue: "target_changed"}
-	}
-	return m.savePrivateInput(ctx, target, expected, envelope, current, func(data []byte, commit func(string) runtimeAuthSaveOutcome) runtimeAuthSaveOutcome {
-		if expected.Form == "api_key" {
-			key, err := parseRuntimeAuthAPIKey(data)
-			if err != nil {
-				return runtimeAuthSaveOutcome{SaveResult: "not_committed", Issue: "invalid_format"}
-			}
-			data, err = runtimeAuthClaudeSettings(expected.Backend, key)
-			if err != nil {
-				return runtimeAuthSaveOutcome{SaveResult: "not_committed", Issue: "invalid_format"}
-			}
-			defer clear(data)
-		}
-		if expected.Form == "claude_credentials_file" {
-			return saveRuntimeAuthClaudeCredentials(ctx, authPath, data, commit)
-		}
-		return saveRuntimeAuthClaude(ctx, authPath, data, expected.Backend, commit)
-	}, func(stage string) runtimeAuthSaveOutcome {
-		return implementation.commitAuthSettings(ctx, expected.NativeGeneration, expected.AuthEpoch, func() runtimeAuthSaveOutcome {
-			return withCarrier(func() runtimeAuthSaveOutcome {
-				if expected.Form == "claude_credentials_file" {
-					return commitRuntimeAuthClaudeCredentials(ctx, stage, authPath)
-				}
-				return commitRuntimeAuthFile(ctx, stage, authPath)
-			})
-		})
-	})
 }
 
 func verifyRuntimeAuthClaude(ctx context.Context, command, expectedBackend, model string) runtimeAuthVerificationOutcome {

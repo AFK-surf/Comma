@@ -1,8 +1,14 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { CircleCheckIcon, CommandPalette, type CommandPaletteGroup } from "@comma/ui";
-import { useState } from "react";
+import { CoreClient, CoreProvider } from "@comma/core-client";
+import { normalizeServerMessages } from "@comma/core/chat";
+import { CircleCheckIcon } from "@comma/ui/components/icons";
+import {
+  CommandPalette,
+  type CommandPaletteGroup,
+} from "@comma/ui/components/command-palette";
+import { useState, type ReactNode } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
-import type { CommaApiClient, CommaConversation, SalixMessage } from "../../api";
+import type { CommaConversation, SalixMessage } from "@comma/core/api-schemas";
 import "../../styles.css";
 import { TaskConversationPreview } from "./TaskConversationPreview";
 import {
@@ -108,12 +114,40 @@ const previewConversation: CommaConversation = {
   updated_at: previewUpdatedAt,
 };
 
-const previewApi = {
-  pollConversation: async () => ({
-    conversation: previewConversation,
-    notModified: false,
-  }),
-} as Partial<CommaApiClient> as CommaApiClient;
+/** A core for the story: it keeps the preview's Task read (`taskConversation`), as the core projects it. */
+function PreviewStoryCore({ children }: { children: ReactNode }) {
+  const [client] = useState(
+    () =>
+      new CoreClient(
+        (onMessage) => ({
+          post(raw) {
+            const message = raw as {
+              id: number;
+              call?: string;
+              subscribe?: { topic: string };
+            };
+            const answer = (data: unknown) => queueMicrotask(() => onMessage(data));
+            if (message.subscribe?.topic === "taskConversation")
+              answer({
+                id: message.id,
+                value: {
+                  status: "ready",
+                  messages: normalizeServerMessages(
+                    previewMessages,
+                    [],
+                    previewConversation.kind
+                  ),
+                },
+              });
+            else if (message.call) answer({ id: message.id, ok: null });
+          },
+          close() {},
+        }),
+        { schedule: () => undefined }
+      )
+  );
+  return <CoreProvider client={client}>{children}</CoreProvider>;
+}
 
 const previewTask: TaskConversationPreviewTarget = {
   conversationId,
@@ -156,11 +190,9 @@ function ProductionTaskPreviewStory() {
         open
         placeholder="Search tasks"
         preview={
-          <TaskConversationPreview
-            apiClient={previewApi}
-            searchQuery={query}
-            task={previewTask}
-          />
+          <PreviewStoryCore>
+            <TaskConversationPreview searchQuery={query} task={previewTask} />
+          </PreviewStoryCore>
         }
         previewLabel="Task preview"
         query={query}
@@ -170,6 +202,8 @@ function ProductionTaskPreviewStory() {
 }
 
 const meta = {
+  // Asserts the preview's rendered size and computed pointer events.
+  tags: ["browser"],
   component: ProductionTaskPreviewStory,
   parameters: {
     layout: "fullscreen",

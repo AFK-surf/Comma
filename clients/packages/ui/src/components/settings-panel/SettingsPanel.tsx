@@ -24,8 +24,8 @@ import {
   SharedSubmenu,
   SharedSubmenuScope,
 } from "../menu";
-import { ArrowUpIcon, ChevronDownIcon } from "../icons";
-import { ModelVendorIcon } from "../model-templates/ModelVendorIcon";
+import { ArrowUpRightIcon, ChevronDownIcon } from "../icons";
+import { ModelVendorIcon } from "../model-icons/ModelVendorIcon";
 import { ScrollArea } from "../scroll-area";
 import { Tooltip } from "../tooltip";
 import {
@@ -165,6 +165,10 @@ export type SettingsControl =
 export interface SettingsPanelItem {
   id: string;
   title: string;
+  onPressTitle?: () => void;
+  /** Names the title button when the title alone repeats another control's name. */
+  onPressTitleLabel?: string;
+  density?: "compact";
   /** Decorative identity beside the row's searchable text. */
   icon?: ReactNode;
   /** Identity, state and account facts for a connected-service card. */
@@ -212,6 +216,7 @@ export interface SettingsPanelItem {
 export interface SettingsPanelSection {
   id: string;
   title: string;
+  titleAction?: ReactNode;
   items: SettingsPanelItem[];
 }
 
@@ -272,12 +277,10 @@ const defaultSections: SettingsPanelSection[] = [
 const Control = ({
   control,
   label,
-  withinIntegration = false,
   fullWidth = false,
 }: {
   control?: SettingsControl;
   label: string;
-  withinIntegration?: boolean;
   /** A form row's control spans the row rather than sizing to its content. */
   fullWidth?: boolean;
 }) => {
@@ -533,7 +536,6 @@ const Control = ({
   if (control.type === "button") {
     return (
       <Button
-        {...definedProps({ className: withinIntegration ? "min-h-10" : undefined })}
         hierarchy={control.tone === "danger" ? "secondary-color" : "secondary-gray"}
         size="sm"
         {...definedProps({
@@ -648,6 +650,11 @@ const SettingsRowView = ({
     (item.control?.type === "dropdown" && item.control.width === "fixed");
 
   if (item.integration) {
+    const { integration } = item;
+    const hasIcon = item.icon !== undefined && item.icon !== null;
+    // A neutral state needs no signal; any other reads in its dot's colour.
+    const neutral = integration.status.color === "gray";
+    const hasSubtitle = Boolean(item.descriptionLoading || item.description);
     return (
       <div
         className="@container/integration w-full scroll-m-7xl outline-none"
@@ -656,30 +663,58 @@ const SettingsRowView = ({
         data-slot="settings-row"
         tabIndex={-1}
       >
-        <div className="grid grid-cols-[32px_minmax(0,1fr)_auto] items-start gap-x-xl gap-y-xl p-2xl">
-          <span
-            aria-hidden="true"
-            className="mt-xs inline-flex size-4xl items-center justify-center [&_svg]:size-full"
-          >
-            {item.icon}
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-x-lg gap-y-xs">
-              <p className="text-base font-medium text-primary">{item.title}</p>
+        {/* The header names the service, its state and its action. Everything
+            under it hangs off the title's text edge: who is connected, the
+            service's own settings, then the fine print. One hairline parts the
+            header from the rest; space parts the groups, and an empty group
+            takes no room. The inset is the other settings rows' inset, so the
+            mark lines up with the page title. */}
+        <div
+          className={cx(
+            // Rows part by the grid's gap: the control that drops under a
+            // narrow title and the body below each sit one gap down.
+            "grid items-center gap-x-lg gap-y-md p-xl",
+            hasIcon
+              ? "grid-cols-[var(--spacing-3xl)_minmax(0,1fr)_auto]"
+              : "grid-cols-[minmax(0,1fr)_auto]"
+          )}
+          data-slot="settings-integration"
+        >
+          {hasIcon ? (
+            <span
+              aria-hidden="true"
+              className="inline-flex size-3xl items-center justify-center [&_svg]:size-full"
+            >
+              {item.icon}
+            </span>
+          ) : null}
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-md gap-y-xxs">
+              <p className="text-md font-medium text-primary">{item.title}</p>
               <Badge
-                className="border-0 bg-transparent p-0 font-normal text-tertiary"
-                color={item.integration.status.color}
-                dot
+                className={cx(
+                  "border-0 bg-transparent p-0 font-normal",
+                  neutral && "text-tertiary"
+                )}
+                color={integration.status.color}
+                dot={!neutral}
                 size="sm"
               >
-                {item.integration.status.loading ? (
-                  <LoadingIndicator label={item.integration.status.label} />
+                {integration.status.loading ? (
+                  <LoadingIndicator label={integration.status.label} />
                 ) : (
-                  item.integration.status.label
+                  integration.status.label
                 )}
               </Badge>
             </div>
-            <output className="mt-xs block text-pretty text-sm leading-5 text-tertiary">
+            {/* Only trouble or progress fills the subtitle. It stays mounted while
+                empty so its live region announces what arrives. */}
+            <output
+              className={cx(
+                "block text-pretty text-sm text-tertiary",
+                hasSubtitle && "mt-xxs"
+              )}
+            >
               {item.descriptionLoading ? (
                 <LoadingIndicator label={item.description ?? item.title} />
               ) : (
@@ -687,53 +722,65 @@ const SettingsRowView = ({
               )}
             </output>
           </div>
-          <div className="-mr-md @max-[360px]/integration:col-start-2 @max-[360px]/integration:-ml-lg @max-[360px]/integration:justify-self-start">
-            {item.control ? (
-              <Control control={item.control} label={item.title} withinIntegration />
-            ) : null}
-          </div>
-          {item.integration.content ? (
-            <div className="col-span-2 col-start-2 border-t-[0.5px] border-primary pt-xl @max-[360px]/integration:col-span-3 @max-[360px]/integration:col-start-1">
-              {item.integration.content}
+          {item.control ? (
+            <div
+              className={cx(
+                "justify-self-end @max-[360px]/integration:col-span-2 @max-[360px]/integration:justify-self-start",
+                hasIcon && "@max-[360px]/integration:col-start-2"
+              )}
+            >
+              <Control control={item.control} label={item.title} />
             </div>
           ) : null}
-          <dl className="col-span-2 col-start-2 m-0 grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,200px),1fr))] gap-x-xl gap-y-md border-t-[0.5px] border-primary pt-xl @max-[360px]/integration:col-span-3 @max-[360px]/integration:col-start-1">
-            {item.integration.details.map((detail) => {
-              const value = detail.onPress ? (
-                <Button
-                  aria-label={
-                    detail.actionLabel
-                      ? `${detail.actionLabel} (${detail.value})`
-                      : detail.value
-                  }
-                  className="-ml-md min-h-10 max-w-full justify-start gap-sm px-sm text-left font-normal whitespace-normal [&>span:first-child]:min-w-0 [&>span:first-child]:[overflow-wrap:anywhere]"
-                  hierarchy="tertiary-gray"
-                  iconTrailing={<ArrowUpIcon className="rotate-45 text-quaternary" />}
-                  onPress={detail.onPress}
-                  size="sm"
-                >
-                  {detail.value}
-                </Button>
-              ) : (
-                <span className="[overflow-wrap:anywhere]">{detail.value}</span>
-              );
-              return (
-                <div key={detail.label} className="min-w-0">
-                  <dt className="text-xs leading-5 text-quaternary">{detail.label}</dt>
-                  <dd className="m-0 flex min-h-10 min-w-0 items-center text-sm leading-5 text-primary">
-                    {detail.onPress && detail.actionLabel ? (
-                      <Tooltip content={detail.actionLabel}>{value}</Tooltip>
-                    ) : (
-                      value
-                    )}
-                  </dd>
-                </div>
-              );
-            })}
-          </dl>
-          <p className="col-span-2 col-start-2 -mt-sm text-pretty text-xs leading-5 text-quaternary @max-[360px]/integration:col-span-3 @max-[360px]/integration:col-start-1">
-            {item.integration.note}
-          </p>
+          <div
+            className={cx(
+              "col-span-2 mt-md flex min-w-0 flex-col gap-xl border-t-[0.5px] border-primary pt-xl",
+              hasIcon && "col-start-2"
+            )}
+          >
+            {integration.details.length > 0 ? (
+              <dl className="m-0 grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,200px),1fr))] gap-x-xl gap-y-lg">
+                {integration.details.map((detail) => {
+                  // A link keeps a 24px target; its margin gives back the extra height so
+                  // its text sits on the same line as a plain value beside it.
+                  const value = detail.onPress ? (
+                    <Button
+                      aria-label={
+                        detail.actionLabel
+                          ? `${detail.actionLabel} (${detail.value})`
+                          : detail.value
+                      }
+                      className="-my-xxs min-h-6 max-w-full justify-start gap-xs rounded-xs text-left font-normal whitespace-normal text-primary underline-offset-2 hover:text-primary hover:underline [&>span:first-child]:min-w-0 [&>span:first-child]:px-0 [&>span:first-child]:[overflow-wrap:anywhere]"
+                      hierarchy="link-gray"
+                      iconTrailing={<ArrowUpRightIcon className="text-quaternary" />}
+                      onPress={detail.onPress}
+                      size="sm"
+                    >
+                      {detail.value}
+                    </Button>
+                  ) : (
+                    <span className="[overflow-wrap:anywhere]">{detail.value}</span>
+                  );
+                  return (
+                    <div key={detail.label} className="flex min-w-0 flex-col gap-xxs">
+                      <dt className="text-xs text-quaternary">{detail.label}</dt>
+                      <dd className="m-0 flex min-w-0 text-sm text-primary">
+                        {detail.onPress && detail.actionLabel ? (
+                          <Tooltip content={detail.actionLabel}>{value}</Tooltip>
+                        ) : (
+                          value
+                        )}
+                      </dd>
+                    </div>
+                  );
+                })}
+              </dl>
+            ) : null}
+            {integration.content ? (
+              <div className="min-w-0">{integration.content}</div>
+            ) : null}
+            <p className="text-pretty text-xs text-quaternary">{integration.note}</p>
+          </div>
         </div>
       </div>
     );
@@ -743,15 +790,19 @@ const SettingsRowView = ({
     <div
       className={cx(
         "flex w-full scroll-m-7xl border-b-[0.5px] border-primary bg-main-panel-item-bg outline-none last:border-b-0",
-        stacked
-          ? "flex-col items-stretch gap-md px-lg py-lg"
-          : "min-h-[calc(var(--spacing-7xl)+var(--spacing-lg))] items-center gap-xl px-xl py-xl",
+        // A field row shares a card with plain rows, so it keeps their inset.
+        field
+          ? "flex-col items-stretch gap-md px-xl py-xl"
+          : stacked
+            ? "flex-col items-stretch gap-md px-lg py-lg"
+            : "min-h-[calc(var(--spacing-7xl)+var(--spacing-lg))] items-center gap-xl px-xl py-xl",
         // The slot's own padding opens with it, so a shut slot adds no gap.
         hasContent && !stacked && "flex-wrap gap-y-0",
         fixedDropdown &&
           !stacked &&
           "@max-[500px]/settings-section:flex-col @max-[500px]/settings-section:items-stretch",
-        item.errorMessage && !stacked && "flex-wrap gap-y-sm"
+        item.errorMessage && !stacked && "flex-wrap gap-y-sm",
+        item.density === "compact" && "min-h-0 py-[15px]"
       )}
       data-active={active ? "true" : "false"}
       data-setting-id={item.id}
@@ -789,7 +840,20 @@ const SettingsRowView = ({
           className="flex min-w-0 flex-1 flex-col gap-xxs text-sm leading-5 tracking-normal"
           data-slot="settings-copy"
         >
-          <p className="truncate text-primary">{item.title}</p>
+          {item.onPressTitle ? (
+            <button
+              type="button"
+              className="w-fit max-w-full truncate text-left text-primary outline-none focus-visible:ring-2 focus-visible:ring-brand"
+              onClick={item.onPressTitle}
+              {...(item.onPressTitleLabel
+                ? { "aria-label": item.onPressTitleLabel }
+                : {})}
+            >
+              {item.title}
+            </button>
+          ) : (
+            <p className="truncate text-primary">{item.title}</p>
+          )}
           {item.description && (
             <p className="line-clamp-2 text-pretty text-quaternary">
               {item.descriptionLoading ? (
@@ -866,13 +930,14 @@ export const SettingsSectionView = ({
       className="@container/settings-section flex w-full flex-col gap-md"
     >
       {section.title ? (
-        <div className="flex min-h-6 w-full items-center px-xl">
+        <div className="flex min-h-6 w-full flex-wrap items-center gap-sm px-xl">
           <h2
-            className="min-w-0 flex-1 text-balance text-sm font-medium text-quaternary"
+            className="min-w-24 flex-1 text-balance text-sm font-medium text-quaternary"
             id={titleId}
           >
             {section.title}
           </h2>
+          {section.titleAction}
         </div>
       ) : null}
       <div

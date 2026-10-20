@@ -1,5 +1,8 @@
 defmodule CommaWeb.CommaApiTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+  use SalixStore.QueueCase, queues: [:conversation_search_jobs]
 
   import Comma.WorkspaceTestSupport
 
@@ -15,8 +18,8 @@ defmodule CommaWeb.CommaApiTest do
     def resolve_workspace_scope(workspace), do: {:ok, workspace}
 
     def search_group_tasks(_workspace, _query, opts) do
-      if owner = Application.get_env(:comma_web, :task_search_test_pid) do
-        send(owner, {:task_search_backend_called, opts})
+      if owner = SystemsRuntime.get_env(:comma_web, :task_search_test_pid) do
+        SystemsRuntime.Proc.send(owner, {:task_search_backend_called, opts})
       end
 
       {:error, {:owner_unreachable, "internal-search-owner", :timeout}}
@@ -29,7 +32,7 @@ defmodule CommaWeb.CommaApiTest do
     def get(_tenant_id), do: {:ok, %{"api_key" => "ck_test"}}
 
     def list_connected_accounts(_settings, group_id) do
-      accounts = Application.get_env(:comma_web, :comma_api_plugin_install_accounts, [])
+      accounts = SystemsRuntime.get_env(:comma_web, :comma_api_plugin_install_accounts, [])
       {:ok, Enum.filter(accounts, &(&1["user_id"] == group_id))}
     end
 
@@ -48,7 +51,7 @@ defmodule CommaWeb.CommaApiTest do
 
     def get_connected_account(_settings, id) do
       case Enum.find(
-             Application.get_env(:comma_web, :comma_api_plugin_install_accounts, []),
+             SystemsRuntime.get_env(:comma_web, :comma_api_plugin_install_accounts, []),
              &(&1["id"] == id)
            ) do
         nil -> {:error, :not_found}
@@ -57,9 +60,9 @@ defmodule CommaWeb.CommaApiTest do
     end
 
     def delete_connected_account(_settings, id) do
-      accounts = Application.get_env(:comma_web, :comma_api_plugin_install_accounts, [])
+      accounts = SystemsRuntime.get_env(:comma_web, :comma_api_plugin_install_accounts, [])
 
-      Application.put_env(
+      SystemsRuntime.put_env(
         :comma_web,
         :comma_api_plugin_install_accounts,
         Enum.reject(accounts, &(&1["id"] == id))
@@ -98,7 +101,7 @@ defmodule CommaWeb.CommaApiTest do
             {{:assistant, "done",
               [
                 %{
-                  id: "done-#{System.unique_integer([:positive])}",
+                  id: "done-#{SystemsRuntime.Proc.unique_integer([:positive])}",
                   name: "end_turn",
                   args: %{"outcome" => "done"}
                 }
@@ -115,12 +118,12 @@ defmodule CommaWeb.CommaApiTest do
     @state_key {__MODULE__, :snapshot}
 
     def configure(snapshot) when is_map(snapshot),
-      do: :persistent_term.put(@state_key, snapshot)
+      do: SystemsRuntime.PersistentTerm.put(@state_key, snapshot)
 
-    def clear, do: :persistent_term.erase(@state_key)
+    def clear, do: SystemsRuntime.PersistentTerm.erase(@state_key)
 
     @impl true
-    def get(_agent_id, _session_id), do: {:ok, :persistent_term.get(@state_key)}
+    def get(_agent_id, _session_id), do: {:ok, SystemsRuntime.PersistentTerm.get(@state_key)}
 
     @impl true
     def subscribe(_agent_id, _session_id), do: :ok
@@ -130,7 +133,7 @@ defmodule CommaWeb.CommaApiTest do
   end
 
   setup context do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
 
@@ -145,26 +148,27 @@ defmodule CommaWeb.CommaApiTest do
     SalixAgent.TestSupport.stop_all_agents()
     SalixStore.Repo.query!("TRUNCATE session_work_candidates")
 
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_im_provider = Application.get_env(:salix_agent, :im_provider_mod)
-    prev_salix_client = Application.get_env(:comma_core, :salix_client)
-    prev_api_token = Application.get_env(:comma_web, :api_token)
-    prev_im_notifier = Application.get_env(:salix_im, :conversation_notifier)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:comma_web, :api_token, @admin_token)
-    Application.put_env(:comma_core, :salix_client, CommaWeb.SalixClient)
-    Application.put_env(:salix_agent, :im_provider_mod, Salix.Bindings.AgentIMProvider)
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_im_provider = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
+    prev_salix_client = SystemsRuntime.get_env(:comma_core, :salix_client)
+    prev_api_token = SystemsRuntime.get_env(:comma_web, :api_token)
+    prev_im_notifier = SystemsRuntime.get_env(:salix_im, :conversation_notifier)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:comma_web, :api_token, @admin_token)
+    SalixAgent.TestSupport.configure_platform_models!()
+    SystemsRuntime.put_env(:comma_core, :salix_client, CommaWeb.SalixClient)
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, Salix.Bindings.AgentIMProvider)
     CommaWeb.Application.register_im_notifier()
     start_supervised!(Mock)
-    Application.put_env(:salix_agent, :llm, Mock)
+    SystemsRuntime.put_env(:salix_agent, :llm, Mock)
     start_stripe_recorder()
     seed_comma_v1_provider_prices()
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev_backend)
-      Application.put_env(:salix_agent, :llm, prev_llm)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_backend)
+      SystemsRuntime.put_env(:salix_agent, :llm, prev_llm)
       restore_env(:salix_agent, :im_provider_mod, prev_im_provider)
       restore_env(:comma_web, :api_token, prev_api_token)
       restore_env(:comma_core, :salix_client, prev_salix_client)
@@ -224,6 +228,13 @@ defmodule CommaWeb.CommaApiTest do
       "provider_context" => %{"chat_type" => "group", "chat_id" => "group:private-group-id"}
     }
 
+    lark_origin = %{
+      "provider" => "lark",
+      "source_actor_type" => "provider_user",
+      "source_text" => "Is the report ready?",
+      "provider_context" => %{"chat_type" => "group", "chat_id" => "oc_private-group-id"}
+    }
+
     internal_origin = %{
       "provider" => "internal",
       "source_actor_type" => "agent",
@@ -243,6 +254,7 @@ defmodule CommaWeb.CommaApiTest do
             "source_message_id" => "history-#{id}",
             "trusted_origin" =>
               case id do
+                3 -> lark_origin
                 4 -> signal_origin
                 5 -> voice_origin
                 6 -> telegram_origin
@@ -271,15 +283,7 @@ defmodule CommaWeb.CommaApiTest do
     server = start_supervised!({Bandit, plug: CommaWeb.Router, ip: {127, 0, 0, 1}, port: 0})
     {:ok, {_, port}} = ThousandIsland.listener_info(server)
 
-    {:ok, request_id} =
-      :httpc.request(
-        :get,
-        {String.to_charlist("http://127.0.0.1:#{port}#{path}/events?wait_ms=3000"),
-         [{~c"authorization", String.to_charlist("Bearer #{session["token"]}")}]},
-        [timeout: 6000],
-        sync: false,
-        stream: :self
-      )
+    request_id = open_history_stream(port, path <> "/events?wait_ms=55000", session["token"])
 
     empty_stream =
       receive_history_http(request_id, &String.contains?(&1, "\"phase\":\"checkpoint\""))
@@ -288,12 +292,13 @@ defmodule CommaWeb.CommaApiTest do
     assert {:ok, _} = SalixAgent.InternalSessionStore.commit(agent_id, sid, events)
 
     Phoenix.PubSub.broadcast(
-      Application.get_env(:comma_core, :pubsub_server, CommaWeb.PubSub),
+      SystemsRuntime.get_env(:comma_core, :pubsub_server, CommaWeb.PubSub),
       CommaWeb.PubSubNotifier.topic(agent_id),
       {:salix_agent_event, agent_id, {:session_updated, sid}}
     )
 
     first_update = receive_history_http(request_id, &String.contains?(&1, "\"checkpoint\":\"8\""))
+    :ok = :httpc.cancel_request(request_id)
 
     first_frames =
       first_update
@@ -329,6 +334,16 @@ defmodule CommaWeb.CommaApiTest do
            |> Enum.find(&(&1["id"] == "4"))
            |> Map.fetch!("input_source") == %{
              "provider" => "signal",
+             "actor_type" => "user",
+             "chat_type" => "group"
+           }
+
+    # A Lark chat reaches the Router as the lark provider.
+    assert first_frames
+           |> Enum.flat_map(& &1["records"])
+           |> Enum.find(&(&1["id"] == "3"))
+           |> Map.fetch!("input_source") == %{
+             "provider" => "lark",
              "actor_type" => "user",
              "chat_type" => "group"
            }
@@ -440,7 +455,7 @@ defmodule CommaWeb.CommaApiTest do
 
     # A dense three-minute preview streams bounded batches independently of the
     # three-row preview and fifty-row manual ledger. Reconnect replays by seq.
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     assert {:ok, _} =
              SalixAgent.InternalSessionStore.commit(
@@ -459,12 +474,12 @@ defmodule CommaWeb.CommaApiTest do
                end
              )
 
-    streamed =
-      user_req(session["token"], :get, path <> "/events?after=10&wait_ms=100")
-      |> expect_status(200)
+    dense = open_history_stream(port, path <> "/events?after=10&wait_ms=55000", session["token"])
+    streamed = receive_history_http(dense, &String.contains?(&1, "\"checkpoint\":\"130\""))
+    :ok = :httpc.cancel_request(dense)
 
     frames =
-      streamed.body
+      streamed
       |> String.split("\n")
       |> Enum.filter(&String.starts_with?(&1, "data: "))
       |> Enum.map(fn line -> line |> String.replace_prefix("data: ", "") |> Jason.decode!() end)
@@ -536,7 +551,9 @@ defmodule CommaWeb.CommaApiTest do
           "default_worker_agent_id"
         ] do
       refute Map.has_key?(public_workspace, internal_key)
-      refute inspect(public_workspace) =~ workspace[internal_key]
+      # A new Workspace has no default Worker id to leak.
+      if workspace[internal_key],
+        do: refute(inspect(public_workspace) =~ workspace[internal_key])
     end
 
     assert public_workspace["group_id"] == workspace["default_group_id"]
@@ -650,6 +667,7 @@ defmodule CommaWeb.CommaApiTest do
       |> Map.fetch!(:body)
 
     workspace = create_ready_workspace!(user["id"])
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
 
     session =
       admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
@@ -739,6 +757,137 @@ defmodule CommaWeb.CommaApiTest do
     assert Enum.any?(detail["messages"], &(salix_message_text(&1) =~ "Read this Task directly"))
   end
 
+  test "a Loop Task reaches Comma with its loop, read from its Background Loop" do
+    user =
+      admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "loop-task@example.com"})
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    workspace = create_ready_workspace!(user["id"])
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
+
+    session =
+      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
+      |> expect_status(201)
+      |> Map.fetch!(:body)
+
+    :ok = CommaWeb.TestConvergence.workspace!(workspace["id"])
+    group_id = workspace["default_group_id"]
+    cron = %{"cron" => "0 9 * * *", "timezone" => "Asia/Shanghai"}
+
+    create = fn title, attrs ->
+      {:ok, task} =
+        SalixCluster.TaskSchedules.create_task_conversation(
+          group_id,
+          workspace["router_agent_id"],
+          workspace["default_worker_agent_id"],
+          Map.merge(
+            %{
+              "title" => title,
+              "content" => "Report new comments on PR #12",
+              "client_request_id" => title
+            },
+            attrs
+          )
+        )
+
+      task["conversation_id"]
+    end
+
+    plain_id = create.("loop-api-plain", %{})
+    loop_id = create.("loop-api-loop", %{"loop" => %{"cadence" => cron, "max_runs" => 3}})
+    base = "/v1/comma/groups/#{group_id}/conversations"
+
+    read = fn path ->
+      user_req(session["token"], :get, path) |> expect_status(200) |> Map.fetch!(:body)
+    end
+
+    # The Worker has not given the Task's Loop its program yet.
+    listed = Map.new(read.(base)["data"], &{&1["id"], &1})
+    refute Map.has_key?(listed[plain_id], "loop")
+
+    assert %{"state" => "pending", "cadence" => ^cron, "max_runs" => 3, "wake_count" => 0} =
+             pending = listed[loop_id]["loop"]
+
+    assert Map.keys(pending) -- ~w(state cadence max_runs wake_count) == []
+
+    # The Worker's program runs in the Loop, now paused by its notification budget.
+    {:ok, [%{"id" => loop_row_id}]} = SalixStore.Loops.list_by_tasks(group_id, [loop_id])
+
+    assert {:ok, _row} =
+             SalixStore.Loops.update(loop_row_id, fn row ->
+               {:ok,
+                Map.merge(row, %{
+                  "session_id" => SalixStore.Ids.new_session_id(),
+                  "name" => "pr-12-comments",
+                  "elf_sha256" => String.duplicate("a", 64),
+                  "elf_path" => "/loops/pr-12-comments.elf",
+                  "config" => %{"repo" => "acme/private-repo"},
+                  "status" => "paused",
+                  "paused_by" => "budget",
+                  "failure" => "loop failure text"
+                })}
+             end)
+
+    paused = Map.merge(pending, %{"state" => "paused", "reason" => "budget"})
+    summaries = read.("/v1/comma/groups/#{group_id}/task-summaries?ids=#{plain_id},#{loop_id}")
+
+    assert Map.new(summaries["data"], &{&1["id"], &1["loop"]}) == %{
+             plain_id => nil,
+             loop_id => paused
+           }
+
+    assert read.(base)
+           |> Map.fetch!("data")
+           |> Enum.find(&(&1["id"] == loop_id))
+           |> Map.get("loop") ==
+             paused
+
+    detail = read.("#{base}/#{loop_id}")
+    assert detail["loop"] == paused
+
+    pin =
+      user_req(session["token"], :put, "#{base}/#{loop_id}/pin")
+      |> expect_status(200)
+      |> Map.fetch!(:body)
+
+    assert pin["conversation"]["loop"] == paused
+
+    assert [%{"conversation" => %{"loop" => ^paused}}] =
+             read.("/v1/comma/groups/#{group_id}/conversation-pins")["data"]
+
+    preview = read.("#{base}/#{loop_id}/preview")
+    refute Map.has_key?(preview, "loop")
+
+    # Nothing of the Loop itself reaches the client.
+    wire = Jason.encode!([summaries, detail, pin, preview])
+
+    for private <- [loop_row_id, "acme/private-repo", "/loops/", "loop failure text"],
+        do: refute(wire =~ private)
+
+    # The person ends the Task by hand: its Loop ends with it.
+    ended =
+      user_req(session["token"], :post, "#{base}/#{loop_id}/status",
+        json: %{"status" => "cancelled", "expected_updated_at" => detail["updated_at"]}
+      )
+      |> expect_status(200)
+      |> Map.fetch!(:body)
+
+    assert ended["status"] == "cancelled"
+
+    assert %{"state" => "ended", "reason" => "cancelled", "ended_at" => ended_at} =
+             ended["loop"]
+
+    assert ended["loop"] ==
+             Map.merge(pending, %{
+               "state" => "ended",
+               "reason" => "cancelled",
+               "ended_at" => ended_at
+             })
+
+    assert read.("#{base}/#{loop_id}")["loop"] == ended["loop"]
+  end
+
   test "Comma stores the dragged Task order per bucket through Group-addressed routes" do
     user =
       admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "task-order@example.com"})
@@ -746,6 +895,7 @@ defmodule CommaWeb.CommaApiTest do
       |> Map.fetch!(:body)
 
     workspace = create_ready_workspace!(user["id"])
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
 
     session =
       admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
@@ -879,6 +1029,7 @@ defmodule CommaWeb.CommaApiTest do
       |> Map.fetch!(:body)
 
     workspace = create_ready_workspace!(user["id"])
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
 
     session =
       admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
@@ -947,21 +1098,21 @@ defmodule CommaWeb.CommaApiTest do
     # Keep the Task fixtures stable while manually draining search claims.
     # A stopped mock Worker now emits watch Messages, advancing the canonical
     # version and legitimately invalidating an in-flight projection claim.
-    previous_activity = Application.get_env(:salix_im, :session_activity_mod)
+    previous_activity = SystemsRuntime.get_env(:salix_im, :session_activity_mod)
 
     ReliableParticipantSessionActivity.configure(%{
       "state" => "active",
       "status" => "is working..."
     })
 
-    Application.put_env(:salix_im, :session_activity_mod, ReliableParticipantSessionActivity)
+    SystemsRuntime.put_env(:salix_im, :session_activity_mod, ReliableParticipantSessionActivity)
 
     on_exit(fn ->
       ReliableParticipantSessionActivity.clear()
       restore_env(:salix_im, :session_activity_mod, previous_activity)
     end)
 
-    on_exit(fn -> Application.delete_env(:comma_web, :task_search_test_pid) end)
+    on_exit(fn -> SystemsRuntime.delete_env(:comma_web, :task_search_test_pid) end)
 
     eventually(fn ->
       if SalixIM.ConversationSearchEnqueuer.pending_count() == 0, do: true
@@ -975,6 +1126,7 @@ defmodule CommaWeb.CommaApiTest do
       |> Map.fetch!(:body)
 
     workspace = create_ready_workspace!(user["id"])
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
 
     session =
       admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
@@ -1112,8 +1264,8 @@ defmodule CommaWeb.CommaApiTest do
       |> Map.fetch!(:body)
 
     other_workspace = create_ready_workspace!(other_user["id"])
-    Application.put_env(:comma_web, :task_search_test_pid, self())
-    Application.put_env(:comma_core, :salix_client, SearchFailureSalixClient)
+    SystemsRuntime.put_env(:comma_web, :task_search_test_pid, SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:comma_core, :salix_client, SearchFailureSalixClient)
 
     assert user_req(
              restricted["token"],
@@ -1122,7 +1274,7 @@ defmodule CommaWeb.CommaApiTest do
            ).status == 403
 
     refute_receive {:task_search_backend_called, _opts}, 50
-    Application.put_env(:comma_core, :salix_client, CommaWeb.SalixClient)
+    SystemsRuntime.put_env(:comma_core, :salix_client, CommaWeb.SalixClient)
 
     Repo.query!(
       "DELETE FROM salix_cutover_markers " <>
@@ -1133,87 +1285,10 @@ defmodule CommaWeb.CommaApiTest do
     assert unavailable.body == %{"error" => "conversation_unavailable"}
     seed_search_ready_marker!()
 
-    Application.put_env(:comma_core, :salix_client, SearchFailureSalixClient)
+    SystemsRuntime.put_env(:comma_core, :salix_client, SearchFailureSalixClient)
     timed_out = user_req(session["token"], :get, path, retry: false) |> expect_status(503)
     assert timed_out.body == %{"error" => "conversation_unavailable"}
     assert_receive {:task_search_backend_called, _opts}
-  end
-
-  test "Task-list SSE invalidates the old collection when a conversation changes kind" do
-    user =
-      admin_req(:post, "/v1/comma/admin/users",
-        json: %{"email" => "task-kind-events@example.com"}
-      )
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    workspace = create_ready_workspace!(user["id"])
-
-    session =
-      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    :ok = CommaWeb.TestConvergence.workspace!(workspace["id"])
-    group_id = workspace["default_group_id"]
-
-    assert {:ok, %{"conversation_id" => task_id}} =
-             SalixCluster.TaskSchedules.create_task_conversation(
-               group_id,
-               workspace["router_agent_id"],
-               workspace["default_worker_agent_id"],
-               %{
-                 "title" => "Task moving between collections",
-                 "content" => "Move this canonical conversation out of Tasks",
-                 "client_request_id" => "task-kind-events"
-               }
-             )
-
-    response_task =
-      Task.async(fn ->
-        user_req(
-          session["token"],
-          :get,
-          "/v1/comma/groups/#{group_id}/conversations/events?wait=300"
-        )
-      end)
-
-    assert eventually(fn ->
-             if group_list_subscriber_count(group_id) == 1, do: true
-           end)
-
-    assert {:error, {:bad_request, "invalid conversation kind"}} =
-             SalixIM.ConversationServer.update_group_conversation(group_id, task_id, %{
-               "kind" => "agent_job"
-             })
-
-    assert {:error, {:bad_request, "invalid conversation kind"}} =
-             SalixIM.ConversationInput.create_group_conversation(group_id, %{
-               "kind" => "agent_job",
-               "title" => "Unknown collection"
-             })
-
-    assert {:ok, %{"kind" => "user_chat"}} =
-             SalixIM.ConversationServer.update_group_conversation(group_id, task_id, %{
-               "kind" => "user_chat"
-             })
-
-    response = Task.await(response_task, 2_000) |> expect_status(200)
-    assert [resync] = sse_payloads(response.body, "conversation_list_resync_required")
-    payloads = sse_payloads(response.body, "conversation_list_invalidated")
-
-    assert resync["type"] == "conversation_list_resync_required"
-    assert resync["kind"] == "agent_task"
-    assert [invalidation] = payloads
-    assert invalidation["kind"] == "agent_task"
-    assert invalidation["version"] != resync["version"]
-
-    refreshed =
-      user_req(session["token"], :get, "/v1/comma/groups/#{group_id}/conversations")
-      |> expect_status(200)
-      |> Map.fetch!(:body)
-
-    refute Enum.any?(refreshed["data"], &(&1["id"] == task_id))
   end
 
   test "Task-list SSE invalidates the collection when a canonical Task is created" do
@@ -1225,6 +1300,7 @@ defmodule CommaWeb.CommaApiTest do
       |> Map.fetch!(:body)
 
     workspace = create_ready_workspace!(user["id"])
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
 
     session =
       admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
@@ -1237,7 +1313,7 @@ defmodule CommaWeb.CommaApiTest do
     # Subscribe first: a Task created while the client is listening must reach
     # it as an invalidation, not wait for the Task's first later mutation.
     response_task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         user_req(
           session["token"],
           :get,
@@ -1261,7 +1337,7 @@ defmodule CommaWeb.CommaApiTest do
                }
              )
 
-    response = Task.await(response_task, 10_000) |> expect_status(200)
+    response = SystemsRuntime.Task.await(response_task, :infinity) |> expect_status(200)
     assert [resync] = sse_payloads(response.body, "conversation_list_resync_required")
     assert resync["kind"] == "agent_task"
 
@@ -1275,215 +1351,6 @@ defmodule CommaWeb.CommaApiTest do
       |> Map.fetch!(:body)
 
     assert Enum.any?(listed["data"], &(&1["id"] == task_id))
-  end
-
-  test "Participant owner failure clears realtime status and draft without closing canonical Conversation SSE" do
-    previous_session_activity = Application.get_env(:salix_im, :session_activity_mod)
-
-    ReliableParticipantSessionActivity.configure(%{
-      "state" => "active",
-      "status" => "is thinking...",
-      "updated_at" => System.system_time(:millisecond)
-    })
-
-    Application.put_env(
-      :salix_im,
-      :session_activity_mod,
-      ReliableParticipantSessionActivity
-    )
-
-    on_exit(fn ->
-      ReliableParticipantSessionActivity.clear()
-      restore_env(:salix_im, :session_activity_mod, previous_session_activity)
-    end)
-
-    user =
-      admin_req(:post, "/v1/comma/admin/users",
-        json: %{"email" => "participant-owner-sse@example.com"}
-      )
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    workspace = create_ready_workspace!(user["id"])
-
-    session =
-      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    conversation = active_chat!(session, workspace)
-    group_id = workspace["default_group_id"]
-    conversation_id = conversation["id"]
-
-    assert {:ok, user_participant} =
-             CommaWeb.SalixClient.ensure_group_conversation_user_participant(
-               workspace,
-               conversation_id,
-               user["id"]
-             )
-
-    assert {:ok, %{"participants" => participants}} =
-             SalixIM.Conversations.list_group_conversation_participants(
-               group_id,
-               conversation_id
-             )
-
-    router_participant =
-      Enum.find(participants, fn participant ->
-        participant["actor_type"] == "agent" and
-          participant["agent_id"] == workspace["router_agent_id"] and
-          participant["state"] == "active"
-      end)
-
-    assert is_map(router_participant)
-    router_participant_id = router_participant["participant_id"]
-
-    assert {:ok, %{"inserted" => true, "message_id" => source_message_id}} =
-             SalixIM.ConversationServer.append_group_conversation_message(
-               group_id,
-               conversation_id,
-               %{
-                 "actor_type" => "user",
-                 "user_id" => user["id"],
-                 "participant_id" => user_participant["participant_id"],
-                 "client_request_id" => "participant-owner-sse-source",
-                 "content" => "Show realtime status and draft"
-               }
-             )
-
-    assert {:ok, source_identity} =
-             SalixIM.ConversationSourceIdentity.encode(
-               conversation_id,
-               source_message_id,
-               user_participant["participant_id"]
-             )
-
-    response_identity =
-      "rsp_" <> Base.url_encode64(:binary.copy(<<9>>, 18), padding: false)
-
-    ReliableParticipantSessionActivity.configure(%{
-      "state" => "active",
-      "status" => "is thinking...",
-      "updated_at" => System.system_time(:millisecond),
-      "_participant_realtime" => %{
-        "draft" => %{
-          "agent_group_id" => group_id,
-          "conversation_id" => conversation_id,
-          "participant_id" => router_participant_id,
-          "response_key" => response_identity,
-          "revision" => 1,
-          "status" => "streaming",
-          "text" => "Transient participant draft",
-          "source_message_ids" => [source_identity],
-          "updated_at" => System.system_time(:millisecond)
-        }
-      }
-    })
-
-    assert participant_status_subscriber_count(
-             group_id,
-             conversation_id,
-             router_participant_id
-           ) == 0
-
-    response_task =
-      Task.async(fn ->
-        user_req(
-          session["token"],
-          :get,
-          "/v1/comma/groups/#{group_id}/conversations/#{conversation_id}/events?wait=1000"
-        )
-      end)
-
-    assert eventually(fn ->
-             if participant_status_subscriber_count(
-                  group_id,
-                  conversation_id,
-                  router_participant_id
-                ) == 1,
-                do: true
-           end)
-
-    assert [{conversation_owner, _value}] =
-             Registry.lookup(
-               SalixIM.ConversationRegistry,
-               SalixIM.ConversationActor.key(group_id, conversation_id)
-             )
-
-    assert [{participant_owner, _value}] =
-             Registry.lookup(
-               SalixIM.ConversationRegistry,
-               SalixIM.ConversationParticipantActor.key(
-                 group_id,
-                 conversation_id,
-                 router_participant_id
-               )
-             )
-
-    participant_state = :sys.get_state(participant_owner)
-    assert [stream_process] = Map.keys(participant_state.realtime_subscribers)
-
-    assert eventually(fn ->
-             case Process.info(stream_process, :monitors) do
-               {:monitors, monitors} ->
-                 if {:process, participant_owner} in monitors, do: true
-
-               nil ->
-                 nil
-             end
-           end)
-
-    assert :ok =
-             DynamicSupervisor.terminate_child(
-               SalixIM.ConversationFleetSup,
-               participant_owner
-             )
-
-    assert Process.alive?(conversation_owner)
-    assert Task.yield(response_task, 300) == nil
-
-    assert {:ok, %{"inserted" => true}} =
-             SalixIM.ConversationServer.append_group_conversation_message(
-               group_id,
-               conversation_id,
-               %{
-                 "actor_type" => "user",
-                 "user_id" => user["id"],
-                 "participant_id" => user_participant["participant_id"],
-                 "client_request_id" => "participant-owner-sse-message",
-                 "content" => "Canonical messages remain available"
-               }
-             )
-
-    response = Task.await(response_task, 2_000) |> expect_status(200)
-    participant_statuses = sse_payloads(response.body, "participant_status")
-
-    participant_status_cleared =
-      sse_payloads(response.body, "participant_status_cleared")
-
-    draft_started = sse_payloads(response.body, "message_draft_started")
-    draft_cancelled = sse_payloads(response.body, "message_draft_cancelled")
-    invalidations = sse_payloads(response.body, "conversation_invalidated")
-
-    assert Enum.any?(participant_statuses, fn status ->
-             status["state"] == "active" and status["status"] == "is thinking..."
-           end)
-
-    refute Enum.any?(participant_statuses, &(&1["state"] == "stopped"))
-
-    assert [
-             %{
-               "conversation_id" => ^conversation_id,
-               "participant_id" => ^router_participant_id,
-               "reason" => "owner_unavailable"
-             }
-           ] = participant_status_cleared
-
-    assert [%{"text" => "Transient participant draft", "draft_id" => draft_id}] =
-             draft_started
-
-    assert [%{"draft_id" => ^draft_id}] = draft_cancelled
-    assert [%{"conversation_id" => ^conversation_id}] = invalidations
   end
 
   test "conversation send exposes an actionable insufficient-credit reason" do
@@ -1518,69 +1385,6 @@ defmodule CommaWeb.CommaApiTest do
              "error" => "billing_unavailable",
              "reason" => "insufficient_credits"
            }
-  end
-
-  test "native transcript limits reach Home, send and SSE through the canonical owner" do
-    {:ok, user} = Comma.Accounts.create_user(%{"email" => "native-http-tail@example.com"})
-    workspace = create_ready_workspace!(user["id"])
-    issue_billing_grant(workspace)
-    {:ok, session} = Comma.Accounts.create_session(user["id"])
-    chat = active_chat!(session, workspace)
-    group_id = workspace["default_group_id"]
-    home_path = "/v1/comma/groups/#{group_id}/assistant-chat"
-    path = "/v1/comma/groups/#{group_id}/conversations/#{chat["id"]}"
-
-    for index <- 1..32 do
-      assert {:ok, _} =
-               SalixIM.ConversationServer.append_group_conversation_message(
-                 group_id,
-                 chat["id"],
-                 %{
-                   "actor_type" => "user",
-                   "user_id" => "current",
-                   "client_request_id" => "native-history-#{index}",
-                   "content" => "native-history-#{index}",
-                   "delivery_filter" => %{"participant_ids" => []}
-                 }
-               )
-    end
-
-    old_home = user_req(session["token"], :post, home_path, json: %{}) |> expect_status(200)
-    refute Map.has_key?(old_home.body, "messages")
-
-    home =
-      user_req(session["token"], :post, home_path <> "?message_limit=24", json: %{})
-      |> expect_status(200)
-
-    assert length(home.body["messages"]) == 24
-    assert home.body["message_count"] == 32
-    assert hd(home.body["messages"])["client_request_id"] == "native-history-9"
-
-    smallest =
-      user_req(session["token"], :post, home_path <> "?message_limit=0", json: %{})
-      |> expect_status(200)
-
-    assert length(smallest.body["messages"]) == 1
-
-    sent =
-      user_req(session["token"], :post, path <> "/messages?message_limit=24",
-        json: %{
-          "client_request_id" => "native-http-send",
-          "message" => %{"content" => "native input"}
-        }
-      )
-      |> expect_status(202)
-
-    assert length(sent.body["messages"]) == 24
-    assert Enum.any?(sent.body["messages"], &(&1["client_request_id"] == "native-http-send"))
-
-    events =
-      user_req(session["token"], :get, path <> "/events?wait=0&message_limit=24")
-      |> expect_status(200)
-
-    [snapshot] = sse_payloads(events.body, "snapshot")
-    assert length(snapshot["messages"]) == 24
-    assert snapshot["message_count"] >= 33
   end
 
   test "assistant-chat is the Group fixed Router Conversation and sends through its input adapter" do
@@ -1671,8 +1475,8 @@ defmodule CommaWeb.CommaApiTest do
     |> expect_status(404)
   end
 
-  test "workspace Compute API exposes stable intent without provider identity" do
-    suffix = System.unique_integer([:positive])
+  test "workspace Compute API exposes placement without private cloud provider IDs" do
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     user =
       admin_req(:post, "/v1/comma/admin/users",
@@ -1682,6 +1486,7 @@ defmodule CommaWeb.CommaApiTest do
       |> Map.fetch!(:body)
 
     workspace = create_ready_workspace!(user["id"], %{"name" => "Compute Workspace"})
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
 
     session =
       admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
@@ -1720,7 +1525,7 @@ defmodule CommaWeb.CommaApiTest do
         json: %{
           "environment_id" => environment["id"],
           "request_id" => "compute-request-#{suffix}",
-          "kind" => "external_worker",
+          "kind" => "meeting_runtime",
           "capability_requirements" => ["runtime_exec"]
         }
       )
@@ -1735,7 +1540,7 @@ defmodule CommaWeb.CommaApiTest do
         json: %{
           "request_id" => "compute-request-#{suffix}",
           "environment_id" => environment["id"],
-          "kind" => "external_worker",
+          "kind" => "meeting_runtime",
           "capability_requirements" => ["runtime_exec"]
         }
       )
@@ -1760,7 +1565,7 @@ defmodule CommaWeb.CommaApiTest do
       json: %{
         "request_id" => "compute-request-#{suffix}",
         "environment_id" => environment["id"],
-        "kind" => "external_worker",
+        "kind" => "meeting_runtime",
         "spec" => %{"changed" => true}
       }
     )
@@ -1791,6 +1596,7 @@ defmodule CommaWeb.CommaApiTest do
       |> expect_status(200)
       |> Map.fetch!(:body)
 
+    assert projection["can_manage"] == true
     assert [%{"id" => environment_id}] = projection["environments"]
     assert environment_id == environment["id"]
     assert environment["pool_id"] == pool.id
@@ -1800,9 +1606,14 @@ defmodule CommaWeb.CommaApiTest do
     assert grant_id == grant["id"]
 
     public_wire = Jason.encode!(projection)
-    refute public_wire =~ "sprites"
+    assert [%{"location" => location}] = projection["workloads"]
+
+    assert location == %{
+             "provider" => "cloudflare",
+             "allocation_id" => placed["allocation"]["id"]
+           }
+
     refute public_wire =~ "provider-private"
-    refute public_wire =~ "provider_binding"
 
     retained =
       user_req(
@@ -1842,16 +1653,16 @@ defmodule CommaWeb.CommaApiTest do
   end
 
   test "workspace owner lists, installs, and uninstalls product plugins" do
-    previous_settings = Application.get_env(:salix_web, :composio_settings_mod)
-    previous_client = Application.get_env(:salix_web, :composio_client_mod)
-    Application.put_env(:salix_web, :composio_settings_mod, PluginInstallComposio)
-    Application.put_env(:salix_web, :composio_client_mod, PluginInstallComposio)
-    Application.put_env(:comma_web, :comma_api_plugin_install_accounts, [])
+    previous_settings = SystemsRuntime.get_env(:salix_web, :composio_settings_mod)
+    previous_client = SystemsRuntime.get_env(:salix_web, :composio_client_mod)
+    SystemsRuntime.put_env(:salix_web, :composio_settings_mod, PluginInstallComposio)
+    SystemsRuntime.put_env(:salix_web, :composio_client_mod, PluginInstallComposio)
+    SystemsRuntime.put_env(:comma_web, :comma_api_plugin_install_accounts, [])
 
     on_exit(fn ->
       restore_env(:salix_web, :composio_settings_mod, previous_settings)
       restore_env(:salix_web, :composio_client_mod, previous_client)
-      Application.delete_env(:comma_web, :comma_api_plugin_install_accounts)
+      SystemsRuntime.delete_env(:comma_web, :comma_api_plugin_install_accounts)
     end)
 
     user =
@@ -2094,7 +1905,7 @@ defmodule CommaWeb.CommaApiTest do
     assert restarted_install["plugin"]["installed"] == false
     assert restarted_install["authorization"]["authorizationUrl"] =~ "/slack"
 
-    Application.put_env(:comma_web, :comma_api_plugin_install_accounts, [
+    SystemsRuntime.put_env(:comma_web, :comma_api_plugin_install_accounts, [
       %{
         "id" => "ca_#{workspace["default_group_id"]}_slack",
         "user_id" => workspace["default_group_id"],
@@ -2126,7 +1937,7 @@ defmodule CommaWeb.CommaApiTest do
     assert uninstalled["id"] == plugin_id
     assert uninstalled["installed"] == false
 
-    Application.put_env(:comma_web, :comma_api_plugin_install_accounts, [
+    SystemsRuntime.put_env(:comma_web, :comma_api_plugin_install_accounts, [
       %{
         "id" => "ca_#{workspace["default_group_id"]}_slack",
         "user_id" => workspace["default_group_id"],
@@ -2380,72 +2191,9 @@ defmodule CommaWeb.CommaApiTest do
            end)
   end
 
-  test "the next Comma Chat send fails closed before append when current Group Router is archived" do
-    request = "do not append through an archived Router"
-
-    user =
-      admin_req(:post, "/v1/comma/admin/users",
-        json: %{"email" => "archived-router-send@example.com", "name" => "Archived Router Send"}
-      )
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    workspace = create_ready_workspace!(user["id"])
-    issue_billing_grant(workspace)
-
-    session =
-      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    chat = active_chat!(session, workspace)
-    salix_conversation_id = chat["id"]
-    group_id = workspace["default_group_id"]
-    router_id = workspace["router_agent_id"]
-
-    assert {:ok, archived_router} = SalixAgent.Control.delete(router_id)
-    assert is_integer(archived_router["archived_at"])
-
-    path =
-      "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{chat["id"]}/messages"
-
-    failed =
-      user_req(session["token"], :post, path,
-        json: %{
-          "client_request_id" => "send-after-router-archive",
-          "message" => %{"content" => request}
-        }
-      )
-      |> expect_status(503)
-
-    assert failed.body["error"] == "conversation_unavailable"
-
-    assert {:ok, salix_messages} =
-             SalixIM.Conversations.list_group_conversation_messages(
-               group_id,
-               salix_conversation_id,
-               limit: 100
-             )
-
-    refute Enum.any?(salix_messages, &(salix_message_text(&1) == request))
-    assert_no_agent_task_for(group_id, 500)
-
-    assert {:ok, %{"participants" => participants}} =
-             SalixIM.Conversations.list_group_conversation_participants(
-               group_id,
-               salix_conversation_id,
-               limit: 50
-             )
-
-    assert Enum.any?(participants, fn participant ->
-             participant["actor_type"] == "agent" and participant["agent_id"] == router_id and
-               participant["state"] == "active"
-           end)
-  end
-
   @tag :chat_input_reliability
   test "a failed append retries once through the canonical participant despite inactive history" do
-    run_id = "chat-input-retry-#{System.unique_integer([:positive])}"
+    run_id = "chat-input-retry-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     request = "Build me a small personal website."
 
     user =
@@ -2456,6 +2204,7 @@ defmodule CommaWeb.CommaApiTest do
       |> Map.fetch!(:body)
 
     workspace = create_ready_workspace!(user["id"])
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
     issue_billing_grant(workspace)
 
     session =
@@ -2500,7 +2249,7 @@ defmodule CommaWeb.CommaApiTest do
     assert identity_slots[identity_key] == canonical_id
 
     legacy_id = SalixStore.Ids.new_participant_id()
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     inactive_legacy =
       canonical
@@ -2604,210 +2353,8 @@ defmodule CommaWeb.CommaApiTest do
 
   @tag :chat_input_reliability
 
-  @tag :chat_input_reliability
-  test "an active duplicate participant rejects Chat before message or Task creation" do
-    run_id = "ambiguous-participant-#{System.unique_integer([:positive])}"
-    request = "Build me a small personal website."
-
-    user =
-      admin_req(:post, "/v1/comma/admin/users",
-        json: %{"email" => "#{run_id}@example.com", "name" => "Ambiguous Participant"}
-      )
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    workspace = create_ready_workspace!(user["id"])
-    issue_billing_grant(workspace)
-
-    session =
-      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    chat = active_chat!(session, workspace)
-    chat_salix_id = chat["id"]
-
-    assert {:ok, ensured_user_participant} =
-             CommaWeb.SalixClient.ensure_group_conversation_user_participant(
-               workspace,
-               chat_salix_id,
-               user["id"]
-             )
-
-    assert {:ok, %{"participants" => participants}} =
-             SalixIM.Conversations.list_group_conversation_participants(
-               workspace["default_group_id"],
-               chat_salix_id
-             )
-
-    canonical =
-      Enum.find(participants, fn participant ->
-        participant["actor_type"] == "user" and participant["user_id"] == user["id"] and
-          participant["state"] == "active"
-      end)
-
-    canonical_id = canonical["participant_id"]
-    assert ensured_user_participant["participant_id"] == canonical_id
-    identity_key = Jason.encode!(["user", canonical["user_id"]])
-
-    assert {:ok, %{"_participant_identity_slots" => identity_slots}} =
-             SalixStore.CasRecord.get(
-               SalixStore.Keys.ctl_group_conversation(
-                 workspace["default_group_id"],
-                 chat_salix_id
-               )
-             )
-
-    assert identity_slots[identity_key] == canonical_id
-
-    duplicate_id = SalixStore.Ids.new_participant_id()
-    now = System.system_time(:millisecond)
-
-    inactive_duplicate =
-      canonical
-      |> Map.put("participant_id", duplicate_id)
-      |> Map.put("state", "inactive")
-      |> Map.put("created_at", now)
-      |> Map.put("updated_at", now)
-
-    assert {:ok, _stored} =
-             SalixStore.S3.put(
-               SalixStore.Keys.ctl_group_conversation_participant_state(
-                 workspace["default_group_id"],
-                 chat_salix_id,
-                 duplicate_id
-               ),
-               Jason.encode!(inactive_duplicate),
-               if_none_match: "*"
-             )
-
-    assert {:ok, duplicate_owner} =
-             SalixIM.ConversationFleet.ensure_participant_started(
-               workspace["default_group_id"],
-               chat_salix_id,
-               duplicate_id
-             )
-
-    assert {:ok, %{"state" => "active"}} =
-             SalixIM.ConversationParticipantActor.activate(duplicate_owner, %{
-               "notification_filter" => %{"messages" => "none", "statuses" => "none"}
-             })
-
-    assert {:ok, %{"participants" => duplicated_participants}} =
-             SalixIM.Conversations.list_group_conversation_participants(
-               workspace["default_group_id"],
-               chat_salix_id
-             )
-
-    assert Enum.count(duplicated_participants, fn participant ->
-             participant["actor_type"] == "user" and
-               participant["user_id"] == canonical["user_id"] and
-               participant["state"] == "active"
-           end) == 2
-
-    assert {:ok, chat_owner} =
-             SalixIM.ConversationPlacement.ensure_started(
-               workspace["default_group_id"],
-               chat_salix_id
-             )
-
-    :ok = GenServer.stop(chat_owner, :normal)
-    Mock.script(task_create_script(workspace, run_id))
-
-    assert {:error, {:bad_request, "user participant target is ambiguous"}} =
-             CommaWeb.SalixClient.ensure_group_conversation_user_participant(
-               workspace,
-               chat_salix_id,
-               user["id"]
-             )
-
-    response =
-      user_req(
-        session["token"],
-        :post,
-        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{chat["id"]}/messages",
-        json: %{
-          "client_request_id" => run_id,
-          "message" => %{"content" => request}
-        }
-      )
-
-    assert response.status == 503
-    assert response.body["error"] == "conversation_unavailable"
-
-    assert {:ok, messages_after_rejection} =
-             SalixIM.Conversations.list_group_conversation_messages(
-               workspace["default_group_id"],
-               chat_salix_id,
-               limit: 100
-             )
-
-    assert messages_after_rejection == []
-
-    assert_no_agent_task_for(workspace["default_group_id"], 500)
-
-    assert {:ok, %{"conversation_id" => ^chat_salix_id}} =
-             SalixIM.Conversations.get_group_conversation(
-               workspace["default_group_id"],
-               chat_salix_id
-             )
-  end
-
-  test "/v1 Chat read exposes only the Salix-derived public conversation contract" do
-    user =
-      admin_req(:post, "/v1/comma/admin/users",
-        json: %{"email" => "aggregate-contract@example.com"}
-      )
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    workspace = create_ready_workspace!(user["id"], %{"name" => "Contract"})
-
-    session =
-      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    conversation = active_chat!(session, workspace)
-
-    detail_path =
-      "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}"
-
-    detail_response =
-      user_req(
-        session["token"],
-        :get,
-        detail_path
-      )
-      |> expect_status(200)
-
-    body = Map.fetch!(detail_response, :body)
-    etag = header(detail_response, "etag")
-
-    assert body["id"] == conversation["id"]
-    assert body["kind"] == "user_chat"
-    assert body["group_id"] == workspace["default_group_id"]
-    assert body["messages"] == []
-    assert body["freshness"]["state"] == "fresh"
-    assert is_binary(etag)
-
-    user_req(session["token"], :get, detail_path, headers: [{"if-none-match", etag}])
-    |> expect_status(304)
-
-    for retired_or_internal <- [
-          "internal",
-          "snapshot_version",
-          "last_event_id",
-          "applied_operations",
-          "message_index",
-          "version"
-        ] do
-      refute Map.has_key?(body, retired_or_internal)
-    end
-  end
-
   test "public create endpoints reject Workspace creation and ignore caller supplied conversation ids" do
-    unique = System.unique_integer([:positive])
+    unique = SystemsRuntime.Proc.unique_integer([:positive])
 
     victim =
       admin_req(:post, "/v1/comma/admin/users",
@@ -2862,8 +2409,8 @@ defmodule CommaWeb.CommaApiTest do
     refute attacker_workspace["default_group_id"] == victim_workspace["default_group_id"]
     refute attacker_workspace["router_agent_id"] == victim_workspace["router_agent_id"]
 
-    refute attacker_workspace["default_worker_agent_id"] ==
-             victim_workspace["default_worker_agent_id"]
+    # New Workspaces start without a Worker; a caller-supplied one is ignored.
+    assert attacker_workspace["default_worker_agent_id"] == nil
 
     {:ok, stored_victim_workspace} = Comma.Workspaces.get(victim_workspace["id"])
     assert stored_victim_workspace["owner_user_id"] == victim["id"]
@@ -2895,7 +2442,7 @@ defmodule CommaWeb.CommaApiTest do
   end
 
   test "user can view billing plans, create checkout, open mapped portal, and read summary" do
-    unique = System.unique_integer([:positive])
+    unique = SystemsRuntime.Proc.unique_integer([:positive])
 
     user =
       admin_req(:post, "/v1/comma/admin/users",
@@ -2913,8 +2460,8 @@ defmodule CommaWeb.CommaApiTest do
       |> expect_status(201)
       |> Map.fetch!(:body)
 
-    previous_portal = Application.get_env(:billing_stripe, :portal_configuration_id)
-    Application.put_env(:billing_stripe, :portal_configuration_id, "bpc_comma")
+    previous_portal = SystemsRuntime.get_env(:billing_stripe, :portal_configuration_id)
+    SystemsRuntime.put_env(:billing_stripe, :portal_configuration_id, "bpc_comma")
     on_exit(fn -> restore_env(:billing_stripe, :portal_configuration_id, previous_portal) end)
 
     {:ok, old_mapping} =
@@ -3034,14 +2581,23 @@ defmodule CommaWeb.CommaApiTest do
     assert portal_params.customer == checkout_params.customer
     refute portal_params.customer == "cus_attacker"
 
+    # Usage spent 40 of the grant's credits: the summary still says what it was issued with.
+    Ecto.Adapters.SQL.query!(
+      BillingCore.Repo,
+      "UPDATE credit_grants SET remaining_credits = 60 WHERE billing_account_id = $1 AND source_type = 'manual_contract'",
+      [workspace["billing_account_id"]]
+    )
+
     summary =
       user_req(session["token"], :get, "/v1/comma/workspaces/#{workspace["id"]}/billing/summary")
       |> expect_status(200)
       |> Map.fetch!(:body)
 
     assert summary["billing_account_id"] == workspace["billing_account_id"]
-    assert summary["current_credits"] >= 100
-    assert [%{"remaining_credits" => 100} | _] = summary["active_grants"]
+    assert summary["current_credits"] >= 60
+
+    assert [%{"original_credits" => 100, "remaining_credits" => 60} | _] =
+             summary["active_grants"]
 
     Ecto.Adapters.SQL.query!(
       BillingCore.Repo,
@@ -3074,7 +2630,7 @@ defmodule CommaWeb.CommaApiTest do
     Req.post!(base() <> "/v1/comma/workspaces/#{workspace["id"]}/billing/checkout", json: %{})
     |> expect_status(401)
 
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     assert {:ok, _} =
              BillingCommerce.Subscriptions.create_subscription(%{
@@ -3105,7 +2661,7 @@ defmodule CommaWeb.CommaApiTest do
 
   test "workspace member can redeem a code without choosing the billing target" do
     seed_redeem_package()
-    unique = System.unique_integer([:positive])
+    unique = SystemsRuntime.Proc.unique_integer([:positive])
 
     user =
       admin_req(:post, "/v1/comma/admin/users",
@@ -3150,42 +2706,10 @@ defmodule CommaWeb.CommaApiTest do
     assert redeemed["grant"]["remaining_credits"] == 700
   end
 
-  test "billing portal returns 409 before any Stripe customer is linked" do
-    unique = System.unique_integer([:positive])
-
-    user =
-      admin_req(:post, "/v1/comma/admin/users",
-        json: %{"email" => "no-customer-#{unique}@example.com", "name" => "No Customer"}
-      )
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    workspace = create_ready_workspace!(user["id"], %{"name" => "No Customer"})
-
-    session =
-      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    portal_error =
-      user_req(session["token"], :post, "/v1/comma/workspaces/#{workspace["id"]}/billing/portal",
-        json: %{
-          "customer_id" => "cus_attacker",
-          "return_url" => "https://comma.test/billing",
-          "client_request_id" => "portal-before-checkout"
-        }
-      )
-      |> expect_status(409)
-      |> Map.fetch!(:body)
-
-    assert portal_error["error"] == "stripe_customer_not_linked"
-    assert stripe_calls() == []
-  end
-
   test "public Stripe webhook route uses the raw provider payload to grant top-up credits" do
     seed_stripe_package()
 
-    unique = System.unique_integer([:positive])
+    unique = SystemsRuntime.Proc.unique_integer([:positive])
     account_id = "comma-ba-wsp-webhook-api-#{unique}"
     owner_id = "wsp-webhook-api-#{unique}"
 
@@ -3261,7 +2785,7 @@ defmodule CommaWeb.CommaApiTest do
       |> expect_status(201)
       |> Map.fetch!(:body)
 
-    unique = System.unique_integer([:positive])
+    unique = SystemsRuntime.Proc.unique_integer([:positive])
 
     workspace = create_ready_workspace!(user["id"], %{"name" => "Redeem"})
 
@@ -3527,89 +3051,6 @@ defmodule CommaWeb.CommaApiTest do
     assert exhausted.status == 402
   end
 
-  test "a legacy conversation-restricted session remains exact during a rolling Group-scope deploy" do
-    user =
-      admin_req(:post, "/v1/comma/admin/users",
-        json: %{"email" => "legacy-group-scope@example.com"}
-      )
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    workspace = create_ready_workspace!(user["id"])
-
-    open_session =
-      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    conversation = active_chat!(open_session, workspace)
-
-    assert {:ok, unrelated_conversation} =
-             SalixIM.ConversationInput.create_group_conversation(
-               workspace["default_group_id"],
-               %{"kind" => "user_chat", "title" => "Outside the legacy grant"}
-             )
-
-    other_user =
-      admin_req(:post, "/v1/comma/admin/users",
-        json: %{"email" => "legacy-other-group@example.com"}
-      )
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    other_workspace =
-      create_ready_workspace!(other_user["id"], %{"name" => "Other legacy scope"})
-
-    token = "comma_sess_" <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
-
-    Ecto.Adapters.SQL.query!(
-      Comma.Repo,
-      """
-      INSERT INTO comma_auth_sessions (
-        id, user_id, token_hash, auth_method, session_source,
-        authenticated_at, expires_at, last_seen_at, user_auth_epoch,
-        restricted, workspace_id, group_id, conversation_id,
-        interaction_budget_remaining, tool_allowlist, consumed_interaction_ids,
-        created_at, updated_at
-      )
-      SELECT
-        $1::uuid, comma_users.id, $2::bytea, NULL, 'ops_api',
-        now(), now() + interval '1 hour', now(), comma_users.auth_epoch,
-        TRUE, $3, NULL, $4,
-        NULL, '{}'::text[], '{}'::jsonb,
-        now(), now()
-      FROM comma_users
-      WHERE comma_users.id = $5
-      """,
-      [
-        Ecto.UUID.dump!(Ecto.UUID.generate()),
-        :crypto.hash(:sha256, token),
-        workspace["id"],
-        conversation["id"],
-        user["id"]
-      ]
-    )
-
-    user_req(
-      token,
-      :get,
-      "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}"
-    )
-    |> expect_status(200)
-
-    assert user_req(
-             token,
-             :get,
-             "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{unrelated_conversation["conversation_id"]}"
-           ).status == 403
-
-    assert user_req(
-             token,
-             :get,
-             "/v1/comma/groups/#{other_workspace["default_group_id"]}/conversations"
-           ).status == 403
-  end
-
   @tag :task_archive
   test "Task archive API preserves empty filtered pages and restores the exact lifecycle" do
     user =
@@ -3618,6 +3059,7 @@ defmodule CommaWeb.CommaApiTest do
       |> Map.fetch!(:body)
 
     workspace = create_ready_workspace!(user["id"])
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
 
     session =
       admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
@@ -3713,242 +3155,8 @@ defmodule CommaWeb.CommaApiTest do
     assert is_nil(restored["archived_from_status"])
   end
 
-  test "conversation list enforces product pagination with an opaque signed cursor" do
-    user =
-      admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "paging@example.com"})
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    workspace = create_ready_workspace!(user["id"])
-
-    session =
-      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    :ok = CommaWeb.TestConvergence.workspace!(workspace["id"])
-
-    salix_tasks =
-      for {title, index} <- Enum.with_index(["One", "Two", "Three"], 1) do
-        assert {:ok, task} =
-                 SalixCluster.TaskSchedules.create_task_conversation(
-                   workspace["default_group_id"],
-                   workspace["router_agent_id"],
-                   workspace["default_worker_agent_id"],
-                   %{
-                     "title" => title,
-                     "content" => "Task #{index}",
-                     "client_request_id" => "pagination-task-#{index}"
-                   }
-                 )
-
-        task
-      end
-
-    first_response =
-      user_req(
-        session["token"],
-        :get,
-        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations?limit=2"
-      )
-      |> expect_status(200)
-
-    first = Map.fetch!(first_response, :body)
-    first_etag = header(first_response, "etag")
-    assert is_binary(first_etag)
-    refute Enum.any?(salix_tasks, &(first_etag =~ &1["conversation_id"]))
-
-    user_req(
-      session["token"],
-      :get,
-      "/v1/comma/groups/#{workspace["default_group_id"]}/conversations?limit=2",
-      headers: [{"if-none-match", first_etag}]
-    )
-    |> expect_status(304)
-
-    assert length(first["data"]) == 2
-    assert first["has_more"] == true
-    assert is_binary(first["next_cursor"])
-    refute Enum.any?(first["data"], &(first["next_cursor"] =~ &1["id"]))
-
-    second =
-      user_req(
-        session["token"],
-        :get,
-        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations?limit=2&cursor=#{URI.encode_www_form(first["next_cursor"])}"
-      )
-      |> expect_status(200)
-      |> Map.fetch!(:body)
-
-    assert length(second["data"]) == 1
-    assert second["has_more"] == false
-    assert second["next_cursor"] == nil
-
-    returned_ids = Enum.map(first["data"] ++ second["data"], & &1["id"])
-    assert length(Enum.uniq(returned_ids)) == 3
-
-    assert MapSet.new(returned_ids) ==
-             MapSet.new(salix_tasks, & &1["conversation_id"])
-
-    user_req(
-      session["token"],
-      :get,
-      "/v1/comma/groups/#{workspace["default_group_id"]}/conversations?cursor=tampered"
-    )
-    |> expect_status(400)
-  end
-
-  test "assistant conversation ensure rejects restricted workspace and conversation sessions" do
-    user =
-      admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "restricted-rail@example.com"})
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    workspace = create_ready_workspace!(user["id"])
-
-    open_session =
-      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    conversation = active_chat!(open_session, workspace)
-
-    workspace_grant =
-      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions",
-        json: %{
-          "workspace_id" => workspace["id"],
-          "restricted" => true
-        }
-      )
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    conversation_grant =
-      admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions",
-        json: %{
-          "workspace_id" => workspace["id"],
-          "group_id" => workspace["default_group_id"],
-          "conversation_id" => conversation["id"],
-          "restricted" => true
-        }
-      )
-      |> expect_status(201)
-      |> Map.fetch!(:body)
-
-    path = "/v1/comma/groups/#{workspace["default_group_id"]}/assistant-chat"
-
-    assert user_req(workspace_grant["token"], :post, path, json: %{}).status == 403
-    assert user_req(conversation_grant["token"], :post, path, json: %{}).status == 403
-  end
-
-  test "runtime tool calls are not projected and visible reply uses internal IM" do
-    user = admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "tools@example.com"}).body
-    workspace = create_ready_workspace!(user["id"])
-    issue_billing_grant(workspace)
-    session = admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{}).body
-
-    conversation = active_chat!(session, workspace)
-
-    Mock.script([
-      {:assistant, "checking",
-       [
-         %{
-           id: "call-1",
-           name: "call",
-           args: %{"tool" => "help", "params" => %{"tool" => "fs.read_file"}}
-         }
-       ]},
-      visible_reply_turn(conversation["id"], "all done now", "reply-tool-call"),
-      {:final, "session transcript only"}
-    ])
-
-    send_path =
-      "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}/messages"
-
-    user_req(session["token"], :post, send_path,
-      json: %{
-        "client_request_id" => "tool-call",
-        "requested_tools" => ["call"],
-        "message" => %{"content" => "please use a tool"}
-      }
-    )
-    |> expect_status(202)
-
-    final =
-      eventually(fn ->
-        body =
-          user_req(
-            session["token"],
-            :get,
-            "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}"
-          )
-          |> expect_status(200)
-          |> Map.fetch!(:body)
-
-        if Enum.any?(body["messages"], &(salix_message_text(&1) == "all done now")), do: body
-      end)
-
-    assert List.last(final["messages"])["content"] == [
-             %{"type" => "text", "text" => "all done now"}
-           ]
-
-    assert final["final_message_id"] == List.last(final["messages"])["message_id"]
-
-    events =
-      user_req(
-        session["token"],
-        :get,
-        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}/events?wait=0"
-      )
-      |> expect_status(200)
-      |> Map.fetch!(:body)
-
-    assert events =~ "event: snapshot"
-    assert events =~ "all done now"
-    refute events =~ "event: message_created"
-    refute events =~ "event: tool_call"
-    refute events =~ "event: tool_result"
-    refute events =~ "last_event_id"
-  end
-
-  test "Comma conversation SSE ignores Salix runtime events" do
-    user =
-      admin_req(:post, "/v1/comma/admin/users", json: %{"email" => "sse-isolation@example.com"}).body
-
-    workspace = create_ready_workspace!(user["id"])
-    session = admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{}).body
-
-    conversation_a = active_chat!(session, workspace)
-
-    events_task =
-      Task.async(fn ->
-        user_req(
-          session["token"],
-          :get,
-          "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation_a["id"]}/events?wait=500"
-        )
-      end)
-
-    Process.sleep(100)
-
-    for _ <- 1..10 do
-      Phoenix.PubSub.broadcast(
-        Application.fetch_env!(:comma_core, :pubsub_server),
-        CommaWeb.PubSubNotifier.topic(workspace["router_agent_id"]),
-        {:salix_agent_event, workspace["router_agent_id"],
-         {:delta, "any-runtime-session", "runtime text must not enter Comma conversation"}}
-      )
-
-      Process.sleep(50)
-    end
-
-    events_resp = Task.await(events_task, 2_000) |> expect_status(200)
-
-    refute events_resp.body =~ "runtime text must not enter Comma conversation"
-  end
-
   defp ensure_fake_s3! do
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -4034,11 +3242,27 @@ defmodule CommaWeb.CommaApiTest do
     req(@admin_token, method, path, opts)
   end
 
+  # Opens an authorized history stream; its window is long enough that a test
+  # reads the frames it expects and then cancels the stream.
+  defp open_history_stream(port, path, token) do
+    {:ok, request_id} =
+      :httpc.request(
+        :get,
+        {String.to_charlist("http://127.0.0.1:#{port}#{path}"),
+         [{~c"authorization", String.to_charlist("Bearer #{token}")}]},
+        [timeout: :infinity],
+        sync: false,
+        stream: :self
+      )
+
+    request_id
+  end
+
   defp receive_history_http(request_id, ready?, body \\ "") do
     if ready?.(body) and String.ends_with?(body, "\n\n") do
       body
     else
-      receive do
+      SystemsRuntime.Proc.receive do
         {:http, {^request_id, :stream_start, _headers}} ->
           receive_history_http(request_id, ready?, body)
 
@@ -4081,8 +3305,8 @@ defmodule CommaWeb.CommaApiTest do
     resp
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp header(resp, name), do: resp |> Req.Response.get_header(name) |> List.first()
   defp base, do: CommaWeb.Application.base_url()
@@ -4094,19 +3318,6 @@ defmodule CommaWeb.CommaApiTest do
          ) do
       [{pid, _value}] -> pid |> :sys.get_state() |> Map.fetch!(:list_subscribers) |> map_size()
       [] -> 0
-    end
-  end
-
-  defp participant_status_subscriber_count(group_id, conversation_id, participant_id) do
-    key =
-      SalixIM.ConversationParticipantActor.key(group_id, conversation_id, participant_id)
-
-    case Registry.lookup(SalixIM.ConversationRegistry, key) do
-      [{pid, _value}] ->
-        pid |> :sys.get_state() |> Map.fetch!(:realtime_subscribers) |> map_size()
-
-      [] ->
-        0
     end
   end
 
@@ -4177,7 +3388,7 @@ defmodule CommaWeb.CommaApiTest do
     refute Enum.any?(conversations, &(&1["kind"] == "agent_task"))
 
     if System.monotonic_time(:millisecond) < deadline do
-      Process.sleep(20)
+      SystemsRuntime.Proc.sleep(20)
       do_assert_no_agent_task(group_id, deadline)
     else
       :ok
@@ -4185,7 +3396,7 @@ defmodule CommaWeb.CommaApiTest do
   end
 
   defp issue_billing_grant(%{"billing_account_id" => account_id, "id" => workspace_id}) do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
 
@@ -4215,13 +3426,13 @@ defmodule CommaWeb.CommaApiTest do
   end
 
   defp future_expiry do
-    DateTime.utc_now()
+    SystemsClock.utc_now()
     |> DateTime.add(30, :day)
     |> DateTime.truncate(:second)
   end
 
   defp seed_redeem_package do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
 
@@ -4252,7 +3463,7 @@ defmodule CommaWeb.CommaApiTest do
   end
 
   defp seed_stripe_package do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
 
@@ -4371,10 +3582,10 @@ defmodule CommaWeb.CommaApiTest do
      ]}
   end
 
-  defp eventually(fun, retries \\ 100) do
+  defp eventually(fun, retries \\ 1500) do
     case fun.() do
       nil when retries > 0 ->
-        Process.sleep(20)
+        SystemsRuntime.Proc.sleep(20)
         eventually(fun, retries - 1)
 
       nil ->

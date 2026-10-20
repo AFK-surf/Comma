@@ -1,4 +1,6 @@
 defmodule SalixIM.Triage.ReceiptRecovery do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Bounded global recovery ring for durable typed Slack Triage receipts.
 
@@ -9,7 +11,7 @@ defmodule SalixIM.Triage.ReceiptRecovery do
   Modeled in `tla/salix/TriageReceiptRecovery.tla`.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   alias SalixIM.Triage.Runtime
   alias SalixIM.{ProviderConnects, ProviderReceipts}
@@ -32,7 +34,7 @@ defmodule SalixIM.Triage.ReceiptRecovery do
   end
 
   def start_link(opts) when is_list(opts) do
-    GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: Keyword.get(opts, :name))
   end
 
   @impl true
@@ -76,7 +78,7 @@ defmodule SalixIM.Triage.ReceiptRecovery do
     if Enum.any?(Keyword.keys(opts), &(&1 not in allowed)) or not valid_state?(state) do
       {:stop, :invalid_triage_receipt_recovery_options}
     else
-      send(self(), :tick)
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :tick)
       {:ok, state}
     end
   end
@@ -256,12 +258,13 @@ defmodule SalixIM.Triage.ReceiptRecovery do
   end
 
   defp schedule(state, delay) do
-    Process.send_after(self(), :tick, delay)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, delay)
     state
   end
 
   defp valid_state?(state) do
-    (is_pid(state.runtime) or is_atom(state.runtime)) and is_binary(state.lease_key) and
+    (SystemsRuntime.Proc.is_process(state.runtime) or is_atom(state.runtime)) and
+      is_binary(state.lease_key) and
       state.lease_key != "" and
       Enum.all?(
         [

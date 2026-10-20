@@ -8,6 +8,8 @@
  * also what lets the service be tested without the addon.
  */
 
+import { Worker } from "node:worker_threads";
+
 export interface NativeAudioApplication {
   bundleIdentifier: string;
   name: string;
@@ -53,7 +55,7 @@ type RecappiSession = {
 
 type RecappiStreamCallback = (error: Error | null, frames: Float32Array) => void;
 
-type RecappiModule = {
+export type RecappiModule = {
   getPlatformCapabilities(): { tapAudio: boolean; tapGlobalAudio: boolean };
   ShareableContent: {
     applications(): RecappiApplicationInfo[];
@@ -70,21 +72,81 @@ type RecappiModule = {
   };
 };
 
-let cachedLoad: Promise<NativeAudioCapture | undefined> | undefined;
-
-/**
- * Resolves the platform tap once per process. A missing addon, a platform
- * without tap support, and a load failure are all the same answer: undefined.
- */
-export function loadNativeAudioCapture(): Promise<NativeAudioCapture | undefined> {
-  cachedLoad ??= importNativeAudioCapture();
-  return cachedLoad;
+export interface NativeAudioLogger {
+  info(message: string, context: Record<string, unknown>): void;
+  warn(message: string, context: Record<string, unknown>): void;
 }
 
-async function importNativeAudioCapture(): Promise<NativeAudioCapture | undefined> {
+export interface NativeAudioCaptureLoaderDeps {
+  importSdk?: () => Promise<RecappiModule>;
+  /**
+   * Makes the SDK's first CoreAudio call off Main's thread and settles when it
+   * returns. Absent where that call costs nothing (other platforms).
+   */
+  firstCoreAudioCall?: (() => Promise<void>) | undefined;
+  logger?: NativeAudioLogger | undefined;
+  now?: () => number;
+}
+
+/**
+ * The first CoreAudio call in a process sets up CoreAudio's client side,
+ * which asks tccd for microphone access synchronously. That took from 13 ms
+ * to 39 s, with the calling thread blocked throughout; CoreAudio does the
+ * setup once per process. A worker thread makes that call, so Main's thread
+ * never waits on tccd; Main imports and calls the SDK only after the worker's
+ * call has settled. If the worker fails, Main makes the first call itself, as
+ * it did before.
+ */
+export function createNativeAudioCaptureLoader({
+  importSdk = importRecappiSdk,
+  firstCoreAudioCall = process.platform === "darwin"
+    ? makeFirstCoreAudioCallInWorker
+    : undefined,
+  logger,
+  now = () => Date.now(),
+}: NativeAudioCaptureLoaderDeps = {}): () => Promise<NativeAudioCapture | undefined> {
+  let load: Promise<NativeAudioCapture | undefined> | undefined;
+  return () => {
+    load ??= (async () => {
+      if (firstCoreAudioCall) {
+        const startedAt = now();
+        try {
+          await firstCoreAudioCall();
+          logger?.info("first CoreAudio call finished off Main's thread", {
+            durationMs: now() - startedAt,
+            source: "native-audio",
+          });
+        } catch (error) {
+          logger?.warn("first CoreAudio call failed off Main's thread; Main makes it", {
+            durationMs: now() - startedAt,
+            error: error instanceof Error ? error.message : String(error),
+            source: "native-audio",
+          });
+        }
+      }
+      return importNativeAudioCapture(importSdk);
+    })();
+    return load;
+  };
+}
+
+/** Resolves the platform tap once per process, with no logger. */
+export const loadNativeAudioCapture = createNativeAudioCaptureLoader();
+
+async function importRecappiSdk(): Promise<RecappiModule> {
+  return (await import("@recappi/sdk")) as unknown as RecappiModule;
+}
+
+/**
+ * A missing addon, a platform without tap support, and a load failure are all
+ * the same answer: undefined.
+ */
+async function importNativeAudioCapture(
+  importSdk: () => Promise<RecappiModule>
+): Promise<NativeAudioCapture | undefined> {
   let recappi: RecappiModule;
   try {
-    recappi = (await import("@recappi/sdk")) as unknown as RecappiModule;
+    recappi = await importSdk();
   } catch {
     return undefined;
   }
@@ -97,6 +159,35 @@ async function importNativeAudioCapture(): Promise<NativeAudioCapture | undefine
   }
 
   return createRecappiAudioCapture(recappi);
+}
+
+// Listing the audio processes reaches CoreAudio's system object, which sets
+// up the client side for the whole process.
+const FIRST_CORE_AUDIO_CALL = `
+const { parentPort, workerData } = require("node:worker_threads");
+require(workerData.sdkPath).ShareableContent.applications();
+parentPort.postMessage("done");
+`;
+
+/** Runs the SDK's first CoreAudio call in a worker thread. */
+export async function makeFirstCoreAudioCallInWorker(
+  sdkPath: string = require.resolve("@recappi/sdk")
+): Promise<void> {
+  const worker = new Worker(FIRST_CORE_AUDIO_CALL, {
+    eval: true,
+    workerData: { sdkPath },
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      worker.once("message", () => resolve());
+      worker.once("error", reject);
+      worker.once("exit", (code) =>
+        reject(new Error(`The CoreAudio worker exited with code ${code}.`))
+      );
+    });
+  } finally {
+    await worker.terminate();
+  }
 }
 
 function toTap(session: RecappiSession): NativeAudioTap {

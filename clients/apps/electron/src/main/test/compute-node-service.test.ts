@@ -1,16 +1,19 @@
 import { createServer } from "node:http";
+import { mainCoreRequests } from "../../test-support/main-core-requests";
 import { AccountComputeNodeService } from "../modules/compute-node/account-service";
+import type { ComputeNodeState } from "@comma/native-bridge";
 import { signedInSessionSnapshotSchema } from "@comma/session-contract";
 import { ComputeNodeAuthorizationNotFoundError } from "../modules/compute-node/install-authorization";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { LocalHostMaintenance } from "../modules/compute-node/host-maintenance";
 import {
   AgentVMMHostPreparation,
+  type HostPreparationState,
   resolveHostConfiguration,
 } from "../modules/compute-node/host-preparation";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AgentVMMCommandAdapter,
   ComputeNodeCommandError,
@@ -153,11 +156,35 @@ const testInstallAuthorization = {
   revoke: vi.fn(async () => "removed" as const),
 };
 
+/**
+ * Resolves with the first state a service publishes that `matches`, such as
+ * the result of the reconcile that `ComputeNodeService.open` starts.
+ */
+function publishedState(matches: (state: ComputeNodeState) => boolean) {
+  const published = Promise.withResolvers<ComputeNodeState>();
+  return {
+    state: published.promise,
+    onStateChanged: (state: ComputeNodeState) => {
+      if (matches(state)) published.resolve(state);
+    },
+  };
+}
+
 describe("ComputeNodeService", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "comma-compute-node-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { force: true, recursive: true });
+  });
+
   it("closes only the confirmed unfinished request before a new connection and never removes local resources", async () => {
     const runtime = new FakeRuntime();
     runtime.failRepair = true;
-    const filePath = join(tmpdir(), `comma-abandon-${crypto.randomUUID()}.json`);
+    const filePath = join(tempDir, "abandon.json");
     const owner = {
       ...testInstallAuthorization,
       authorize: vi.fn(async (_input: { requestId: string; workspaceId: string }) => ({
@@ -220,10 +247,7 @@ describe("ComputeNodeService", () => {
     const resume = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const filePath = join(
-      tmpdir(),
-      `comma-late-authorization-${crypto.randomUUID()}.json`
-    );
+    const filePath = join(tempDir, "late-authorization.json");
     const owner = {
       ...testInstallAuthorization,
       authorize: vi.fn(async () => {
@@ -278,10 +302,7 @@ describe("ComputeNodeService", () => {
     "preserves corrupt or oversized account intent instead of replacing it with a new binding (%#)",
     async (original) => {
       const runtime = new FakeRuntime();
-      const filePath = join(
-        tmpdir(),
-        `comma-corrupt-intent-${crypto.randomUUID()}.json`
-      );
+      const filePath = join(tempDir, "corrupt-intent.json");
       await writeFile(filePath, original);
       const service = await ComputeNodeService.open({
         adapter: runtime,
@@ -318,7 +339,7 @@ describe("ComputeNodeService", () => {
         return "stopped" as const;
       }),
     };
-    const filePath = join(tmpdir(), `comma-fence-${crypto.randomUUID()}.json`);
+    const filePath = join(tempDir, "fence.json");
     const service = await ComputeNodeService.open({
       adapter: runtime,
       filePath,
@@ -391,7 +412,7 @@ describe("ComputeNodeService", () => {
       return new Response("{}", { status: 404 });
     });
     const runtime = new FakeRuntime();
-    const filePath = join(tmpdir(), `comma-lost-request-${crypto.randomUUID()}.json`);
+    const filePath = join(tempDir, "lost-request.json");
     await writeFile(
       filePath,
       JSON.stringify({
@@ -417,7 +438,10 @@ describe("ComputeNodeService", () => {
       filePath,
       platform: "darwin",
       arch: "arm64",
-      installAuthorization: new ComputeNodeInstallAuthorization(session, fetcher),
+      installAuthorization: new ComputeNodeInstallAuthorization(
+        session,
+        mainCoreRequests(session, fetcher)
+      ),
       accountOwner: { audience, subject: "original-A" },
       authorityGeneration: () => "A:3",
     });
@@ -505,7 +529,7 @@ describe("ComputeNodeService", () => {
       registration: "present",
       registrationState: "enabled",
     };
-    const filePath = join(tmpdir(), `comma-http-late-${crypto.randomUUID()}.json`);
+    const filePath = join(tempDir, "http-late.json");
     await writeFile(
       filePath,
       JSON.stringify({
@@ -524,7 +548,10 @@ describe("ComputeNodeService", () => {
       filePath,
       platform: "darwin" as const,
       arch: "arm64",
-      installAuthorization: new ComputeNodeInstallAuthorization(session),
+      installAuthorization: new ComputeNodeInstallAuthorization(
+        session,
+        mainCoreRequests(session)
+      ),
       authorityGeneration: () => generation,
       accountOwner: { audience, subject: "original-A" },
     };
@@ -575,7 +602,7 @@ describe("ComputeNodeService", () => {
     const revoke = vi.fn(testInstallAuthorization.revoke);
     const service = await ComputeNodeService.open({
       adapter: runtime,
-      filePath: join(tmpdir(), `comma-revision-${crypto.randomUUID()}.json`),
+      filePath: join(tempDir, "revision.json"),
       platform: "darwin",
       arch: "arm64",
       installAuthorization: { ...testInstallAuthorization, revoke },
@@ -602,7 +629,7 @@ describe("ComputeNodeService", () => {
     const service = new AccountComputeNodeService(
       {
         adapter: runtime,
-        filePath: join(tmpdir(), `comma-account-${crypto.randomUUID()}.json`),
+        filePath: join(tempDir, "account.json"),
         platform: "darwin",
         arch: "arm64",
         installAuthorization: { ...testInstallAuthorization, revoke },
@@ -634,6 +661,120 @@ describe("ComputeNodeService", () => {
     await service.refresh();
     expect(service.state().bindingWorkspaceId).toBeUndefined();
   });
+
+  it.each([false, true])(
+    "finishes exact cloud removal after reset without replaying a consumed install (enrollment interrupted: %s)",
+    async (interrupted) => {
+      const directory = await mkdtemp(join(tmpdir(), "comma-reset-binding-"));
+      const runtime = new FakeRuntime();
+      runtime.provisioned = true;
+      const policyDirectory = join(directory, "maintenance");
+      const maintenance = new LocalHostMaintenance(
+        new AgentVMMHostPreparation(
+          resolveHostConfiguration("prod", {}, directory),
+          vi.fn()
+        ),
+        policyDirectory,
+        vi.fn()
+      );
+      const revoke = vi.fn(async () => "removed" as const);
+      let installation = 0;
+      const authorize = vi.fn(async () => ({
+        descriptor: "{}",
+        operationId: `install-${++installation}`,
+        registrationId: `registration-${installation}`,
+      }));
+      const options = {
+        adapter: runtime,
+        filePath: join(directory, "intent.json"),
+        platform: "darwin" as const,
+        arch: "arm64",
+        installAuthorization: { ...testInstallAuthorization, authorize, revoke },
+      };
+      const open = () =>
+        new AccountComputeNodeService(
+          options,
+          accountSession("A", 1),
+          undefined,
+          maintenance
+        );
+      try {
+        let service = open();
+        runtime.failRepair = interrupted;
+        const initial = service.configure({
+          desiredEnabled: true,
+          workspaceId: "workspace-A",
+        });
+        if (interrupted)
+          await expect(initial).rejects.toThrow("bundle verification failed");
+        else await initial;
+        runtime.failRepair = false;
+        // The local owner reset the Host, permanently fencing its old install request.
+        // Cloud handoff remains accepted. Neither an absent registration nor a restart revokes it.
+        await mkdir(policyDirectory, { recursive: true });
+        await writeFile(
+          join(policyDirectory, "state.json"),
+          JSON.stringify({
+            version: 1,
+            uninstalled: false,
+            blockedInstalls: { "install-1": true },
+          })
+        );
+        runtime.observation = {
+          host: "ready",
+          connector: "absent",
+          salix: "unregistered",
+          readability: "readable",
+          registration: "absent",
+        };
+        const calls = [...runtime.calls];
+        service = open();
+        const blocked = await service.refresh();
+        expect(blocked).toMatchObject({
+          status: "action_required",
+          issue: "removal_incomplete",
+          recoveryActions: ["finish_remove", "check_status"],
+          bindingInstallationId: "install-1",
+        });
+        expect(blocked.canAbandonRequest).toBe(false);
+        await service.configure({ desiredEnabled: true, workspaceId: "workspace-A" });
+        expect(runtime.calls).toEqual(calls);
+        expect(authorize).toHaveBeenCalledTimes(1);
+        expect(revoke).not.toHaveBeenCalled();
+        const confirmation = {
+          workspaceId: "workspace-A",
+          installationId: "install-1",
+          bindingRevision: service.state().bindingRevision!,
+          confirmationId: service.state().confirmationId,
+        };
+        revoke.mockRejectedValueOnce(new Error("cloud unavailable"));
+        await expect(service.remove(confirmation)).rejects.toThrow("cloud unavailable");
+        expect(service.state().bindingInstallationId).toBe("install-1");
+        const removed = await service.remove({
+          ...confirmation,
+          bindingRevision: service.state().bindingRevision!,
+        });
+        expect(removed.status).toBe("removed");
+        expect(revoke).toHaveBeenLastCalledWith({
+          operationId: "install-1",
+          workspaceId: "workspace-A",
+        });
+        expect(runtime.calls).toEqual(calls); // Already absent. Do not touch other local registrations.
+        await service.configure({ desiredEnabled: true, workspaceId: "workspace-A" });
+        expect(service.state()).toMatchObject({
+          status: "ready",
+          bindingInstallationId: "install-2",
+        });
+        expect(authorize).toHaveBeenCalledTimes(2);
+        expect(
+          JSON.parse(await readFile(join(policyDirectory, "state.json"), "utf8"))
+            .blockedInstalls["install-1"]
+        ).toBe(true);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
 
   it.each([
     ["configure", false],
@@ -705,7 +846,7 @@ describe("ComputeNodeService", () => {
   it.each(["inaccessible", "revoked"] as const)(
     "completes exact absent binding cleanup when remote is %s and permits an explicit new setup",
     async (remote) => {
-      const filePath = join(tmpdir(), `comma-absent-${crypto.randomUUID()}.json`);
+      const filePath = join(tempDir, "absent.json");
       await writeFile(
         filePath,
         JSON.stringify({
@@ -774,7 +915,7 @@ describe("ComputeNodeService", () => {
   it("preserves the exact binding when the local registration cannot be read", async () => {
     const runtime = new FakeRuntime();
     runtime.provisioned = true;
-    const filePath = join(tmpdir(), `comma-unreadable-${crypto.randomUUID()}.json`);
+    const filePath = join(tempDir, "unreadable.json");
     const service = await ComputeNodeService.open({
       adapter: runtime,
       filePath,
@@ -797,7 +938,7 @@ describe("ComputeNodeService", () => {
   it("persists remote revocation before local failure and resumes it without cloud authority", async () => {
     const runtime = new FakeRuntime();
     runtime.provisioned = true;
-    const filePath = join(tmpdir(), `comma-revocation-${crypto.randomUUID()}.json`);
+    const filePath = join(tempDir, "revocation.json");
     const revoke = vi.fn(async () => "removed" as const);
     const authorization = { ...testInstallAuthorization, revoke };
     const options = {
@@ -827,7 +968,7 @@ describe("ComputeNodeService", () => {
   it("coalesces fresh reads without changing lifecycle intent or stopping independent work", async () => {
     const runtime = new FakeRuntime();
     runtime.provisioned = true;
-    const filePath = join(tmpdir(), `comma-read-${Date.now()}.json`);
+    const filePath = join(tempDir, "read.json");
     const service = await ComputeNodeService.open({
       adapter: runtime,
       filePath,
@@ -857,25 +998,79 @@ describe("ComputeNodeService", () => {
   it("does not create or retry a workload when node readiness times out", async () => {
     const runtime = new FakeRuntime();
     runtime.provisioned = true;
-    const initializeWorkload = vi.fn(async () => {});
+    // The core waits for the node on its Clock and gives up without initializing (core/test/compute-node-operations).
+    const initializeWorkload = vi.fn(async () => {
+      throw new Error(
+        "Compute node workload initialization could not complete. Check the node connection, then select Continue / Retry."
+      );
+    });
     const service = await ComputeNodeService.open({
       adapter: runtime,
       initializationWaitMs: 0,
-      filePath: join(tmpdir(), `comma-init-timeout-${Date.now()}.json`),
+      filePath: join(tempDir, "init-timeout.json"),
       platform: "darwin",
       arch: "arm64",
       installAuthorization: {
         ...testInstallAuthorization,
-        observe: vi.fn(async () => "processing" as const),
         initializeWorkload,
       },
     });
     await expect(
       service.configure({ desiredEnabled: true, workspaceId: "workspace" })
     ).rejects.toThrow("Check the node connection");
-    expect(initializeWorkload).not.toHaveBeenCalled();
+    expect(initializeWorkload).toHaveBeenCalledOnce();
+    expect(initializeWorkload).toHaveBeenCalledWith(
+      expect.objectContaining({ waitMs: 0 })
+    );
     expect(service.state().status).toBe("action_required");
     vi.clearAllMocks();
+  });
+
+  it("keeps Shell preparation separate from connection and retries a failed Shell without reenrollment", async () => {
+    const runtime = new FakeRuntime();
+    runtime.provisioned = true;
+    let shellPhase: "preparing" | "failed" | "ready" = "preparing";
+    const initializeWorkload = vi.fn(async () => {});
+    const owner = {
+      ...testInstallAuthorization,
+      initializeWorkload,
+      inspect: vi.fn(async () => ({
+        authorizationStatus: "handed_off" as const,
+        status: "ready" as const,
+        workActivity: "idle" as const,
+        shellPhase,
+      })),
+    };
+    const service = await ComputeNodeService.open({
+      adapter: runtime,
+      filePath: join(tempDir, "shell-phase.json"),
+      platform: "darwin",
+      arch: "arm64",
+      installAuthorization: owner,
+    });
+    await service.configure({ desiredEnabled: true, workspaceId: "workspace" });
+    expect(service.state()).toMatchObject({
+      status: "ready",
+      setup: { connection: "ready", shell: "preparing" },
+      recoveryActions: ["check_status"],
+    });
+    owner.inspect.mockRejectedValueOnce(new Error("Temporary status timeout"));
+    const unavailable = await service.refresh();
+    expect(unavailable.observationFresh).toBe(false);
+    expect(unavailable.setup?.connection).toBe("unknown");
+    await service.refresh();
+    expect(service.state().setup?.connection).toBe("ready");
+    shellPhase = "failed";
+    await service.refresh();
+    expect(service.state().recoveryActions).toEqual(["continue_shell", "check_status"]);
+    runtime.calls = [];
+    await service.configure({ desiredEnabled: true, workspaceId: "workspace" });
+    expect(runtime.calls).not.toContain("enable");
+    expect(runtime.calls).not.toContain("install");
+    expect(initializeWorkload).toHaveBeenCalledTimes(2);
+    shellPhase = "ready";
+    await service.refresh();
+    expect(service.state().setup?.shell).toBe("ready");
   });
 
   it("initializes once after enable and exposes failure for explicit retry", async () => {
@@ -887,7 +1082,7 @@ describe("ComputeNodeService", () => {
       .mockResolvedValue(undefined);
     const service = await ComputeNodeService.open({
       adapter: runtime,
-      filePath: join(tmpdir(), `comma-init-${Date.now()}.json`),
+      filePath: join(tempDir, "init.json"),
       platform: "darwin",
       arch: "arm64",
       installAuthorization: { ...testInstallAuthorization, initializeWorkload },
@@ -924,20 +1119,24 @@ describe("ComputeNodeService", () => {
       authorize: vi.fn(testInstallAuthorization.authorize),
     };
     let unavailable = true;
+    const idle: HostPreparationState = {
+      source: "download",
+      location: "https://example.test/Host.zip",
+      instance: "shared",
+      phase: "idle",
+    };
     const preparation = {
-      state: () => ({
-        source: "download" as const,
-        location: "https://example.test/Host.zip",
-        instance: "shared",
-        phase: "idle" as const,
-      }),
-      ensure: vi.fn(async () => {
-        if (unavailable) throw new Error("download unavailable");
+      state: () => idle,
+      ensure: vi.fn(async (report: (state: HostPreparationState) => void) => {
+        if (unavailable) {
+          report({ ...idle, phase: "failed", error: "download unavailable" });
+          throw new Error("download unavailable");
+        }
         expect(authorization.authorize).not.toHaveBeenCalled();
       }),
       rebuild: vi.fn(async () => {}),
     };
-    const filePath = join(tmpdir(), `comma-preparation-${Date.now()}.json`);
+    const filePath = join(tempDir, "preparation.json");
     const options = {
       adapter: runtime,
       preparation,
@@ -952,6 +1151,11 @@ describe("ComputeNodeService", () => {
     ).rejects.toThrow("download unavailable");
     expect(runtime.calls).toEqual([]);
     expect(authorization.authorize).not.toHaveBeenCalled();
+    // A later refresh keeps the failure's own error beside the generic issue.
+    expect(await service.refresh()).toMatchObject({
+      issue: "preparation_failed",
+      preparation: { phase: "failed", error: "download unavailable" },
+    });
     service = await ComputeNodeService.open(options);
     expect(preparation.ensure).toHaveBeenCalledTimes(1);
     unavailable = false;
@@ -1050,6 +1254,180 @@ describe("ComputeNodeService", () => {
       "--registration-id",
       "comma-registration",
     ]);
+  });
+
+  it("reads lifecycle failure stage without exposing its private message", async () => {
+    const result = {
+      failureCode: "install_failed",
+      failureStage: "install-managed",
+      failureMessage: "private-native-token",
+    };
+    await expect(
+      runCommand(process.execPath, [
+        "-e",
+        `process.stdout.write(${JSON.stringify(JSON.stringify(result))}); process.exit(1)`,
+      ])
+    ).rejects.toMatchObject({
+      native: { code: "install_failed", reason: "install-managed" },
+    });
+  });
+
+  it("keeps failed cloud setup on the same request and marks the connection step failed", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "comma-cloud-failure-"));
+    const runtime = new FakeRuntime();
+    runtime.observation.host = "ready";
+    const authorize = vi.fn(async () => {
+      throw new ComputeNodeCommandError(
+        "Workspace service unavailable.",
+        "outcome_unknown",
+        { code: "cloud_unavailable", reason: "cloud_unavailable" }
+      );
+    });
+    try {
+      const service = new AccountComputeNodeService(
+        {
+          adapter: runtime,
+          filePath: join(directory, "intent.json"),
+          platform: "darwin",
+          arch: "arm64",
+          installAuthorization: { ...testInstallAuthorization, authorize },
+        },
+        accountSession("A", 1)
+      );
+      await expect(
+        service.configure({ desiredEnabled: true, workspaceId: "workspace" })
+      ).rejects.toMatchObject({ code: "COMPUTE_CLOUD_UNAVAILABLE" });
+      expect(service.state()).toMatchObject({
+        setup: { components: "ready", connection: "failed" },
+        operation: { kind: "configure", outcome: "unknown" },
+      });
+      const request = service.state().operation?.requestId;
+      await expect(
+        service.configure({ desiredEnabled: true, workspaceId: "workspace" })
+      ).rejects.toThrow();
+      expect(service.state().operation?.requestId).toBe(request);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reports local enrollment failure after components are installed without leaking native details", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "comma-enrollment-failure-"));
+    const runtime = new FakeRuntime();
+    runtime.observation.host = "ready";
+    runtime.install = async () => {
+      throw new ComputeNodeCommandError(
+        "private TLS endpoint and token",
+        "command_failed",
+        {
+          code: "transient_unavailable",
+          reason: "register",
+        }
+      );
+    };
+    try {
+      const service = new AccountComputeNodeService(
+        {
+          adapter: runtime,
+          filePath: join(directory, "intent.json"),
+          platform: "darwin",
+          arch: "arm64",
+          installAuthorization: testInstallAuthorization,
+        },
+        accountSession("A", 1)
+      );
+      await expect(
+        service.configure({ desiredEnabled: true, workspaceId: "workspace" })
+      ).rejects.toMatchObject({ code: "COMPUTE_CONNECTION_FAILED" });
+      expect(service.state().setup).toMatchObject({
+        components: "ready",
+        connection: "failed",
+      });
+      expect(service.state().operation?.outcome).toBe("failed");
+      expect(service.state().problem).toBe("operation_failed");
+      expect(JSON.stringify(service.state())).not.toContain(
+        "private TLS endpoint and token"
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reads exact Native retry exhaustion after restart and never resumes a terminal install", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "comma-terminal-install-"));
+    const filePath = join(directory, "intent.json");
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        version: 3,
+        revision: 1,
+        desiredEnabled: true,
+        workspaceId: "workspace",
+        installOperationId: "vmm_install_test",
+        registrationId: "registration-test",
+      })
+    );
+    let operationId = "unrelated-install";
+    let retryable = false;
+    const run = vi.fn(async (_file: string, args: string[]) => {
+      if (args[0] !== "status")
+        throw new Error("must not resume terminal installation");
+      return JSON.stringify({
+        hostInstalled: true,
+        hostLoaded: true,
+        hostReadable: true,
+        hostHealthy: true,
+        connectorInstalled: true,
+        connectorLoaded: false,
+        registrationRead: "present",
+        registrationState: "enabled",
+        operation: {
+          operationId,
+          kind: "install-managed",
+          outcome: "failed",
+          failureStage: "register",
+          failureCode: retryable ? "transient_unavailable" : "retry_limit_reached",
+          ...(retryable ? { retryable: true } : {}),
+          attempt: retryable ? 2 : 3,
+          failureMessage: "private-endpoint-token",
+        },
+      });
+    });
+    const options = {
+      filePath,
+      adapter: new AgentVMMCommandAdapter("/unused", run),
+      platform: "darwin" as const,
+      arch: "arm64",
+      installAuthorization: {
+        ...testInstallAuthorization,
+        observe: vi.fn(async () => "processing" as const),
+      },
+    };
+    try {
+      const service = await ComputeNodeService.open(options);
+      expect((await service.refresh()).problem).not.toBe("connection_retry_limit");
+      operationId = "vmm_install_test";
+      retryable = true;
+      const recoverable = await ComputeNodeService.open(options);
+      const pending = await recoverable.refresh();
+      expect(pending.recoveryActions).toEqual(["continue_enable", "check_status"]);
+      expect(pending.problem).toBe("connection_failed");
+      retryable = false;
+      const restarted = await ComputeNodeService.open(options);
+      const state = await restarted.refresh();
+      expect(state.status).toBe("action_required");
+      expect(state.setup?.connection).toBe("failed");
+      expect(state.recoveryActions).toEqual(["check_status"]);
+      expect(state.problem).toBe("connection_retry_limit");
+      expect(JSON.stringify(state)).not.toContain("private-endpoint-token");
+      await restarted.configure({ desiredEnabled: true, workspaceId: "workspace" });
+      expect(run.mock.calls.every(([, args]) => args[0] === "status")).toBe(true);
+      expect(JSON.parse(await readFile(filePath, "utf8")).installOperationId).toBe(
+        "vmm_install_test"
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("bounds a hung lifecycle helper", async () => {
@@ -1169,7 +1547,7 @@ describe("ComputeNodeService", () => {
       installAuthorization: testInstallAuthorization,
       adapter: runtime,
       arch: "arm64",
-      filePath: join(tmpdir(), `.compute-node-unknown-${crypto.randomUUID()}.json`),
+      filePath: join(tempDir, "unknown.json"),
       platform: "darwin",
     });
 
@@ -1186,7 +1564,7 @@ describe("ComputeNodeService", () => {
   it("persists desired intent and reconciles restart and drain", async () => {
     const runtime = new FakeRuntime();
     runtime.provisioned = true;
-    const filePath = join(tmpdir(), `.compute-node-${crypto.randomUUID()}.json`);
+    const filePath = join(tempDir, "intent.json");
     const service = await ComputeNodeService.open({
       installAuthorization: testInstallAuthorization,
       adapter: runtime,
@@ -1206,16 +1584,19 @@ describe("ComputeNodeService", () => {
     });
     expect(runtime.calls).toEqual(["install"]);
 
+    const reconciled = publishedState((state) => state.status === "ready");
     const restarted = await ComputeNodeService.open({
       installAuthorization: testInstallAuthorization,
       adapter: runtime,
       arch: "arm64",
       filePath,
       platform: "darwin",
+      onStateChanged: reconciled.onStateChanged,
     });
-    await vi.waitFor(() =>
-      expect(restarted.state()).toMatchObject({ desiredEnabled: true, status: "ready" })
-    );
+    expect(await reconciled.state).toMatchObject({
+      desiredEnabled: true,
+      status: "ready",
+    });
     await expect(restarted.drain()).resolves.toMatchObject({ status: "stopped" });
     await restarted.configure({ desiredEnabled: true, workspaceId: "wsp_test" });
     await expect(restarted.drain()).resolves.toMatchObject({ status: "stopped" });
@@ -1230,6 +1611,87 @@ describe("ComputeNodeService", () => {
       },
       status: "stopped",
     });
+  });
+
+  it("resumes an acknowledged install after enrollment failure without replacing its identity", async () => {
+    const runtime = new FakeRuntime();
+    runtime.provisioned = true;
+    runtime.install = async () => {
+      runtime.calls.push("install");
+      runtime.observation = {
+        ...runtime.observation,
+        host: "ready",
+        connector: "stopped",
+      };
+      throw new ComputeNodeCommandError(
+        "enrollment transport failed",
+        "command_failed"
+      );
+    };
+    const authorize = vi.fn(async () => ({
+      descriptor: "{}",
+      operationId: "vmm_install_test",
+      registrationId: "registration-test",
+    }));
+    const filePath = join(tempDir, "ack.json");
+    const options = {
+      adapter: runtime,
+      arch: "arm64",
+      platform: "darwin" as const,
+      filePath,
+      installAuthorization: { ...testInstallAuthorization, authorize },
+    };
+    const service = await ComputeNodeService.open(options);
+    await expect(
+      service.configure({ desiredEnabled: true, workspaceId: "wsp_test" })
+    ).rejects.toThrow("enrollment");
+    // Match the existing shipped intent that classified an ACK as a lost receipt.
+    const intent = JSON.parse(await readFile(filePath, "utf8"));
+    await writeFile(filePath, JSON.stringify({ ...intent, receiptMissing: true }));
+    const restarted = await ComputeNodeService.open(options);
+    await restarted.refresh();
+    expect(restarted.state().recoveryActions).toContain("continue_enable");
+    await expect(
+      restarted.configure({ desiredEnabled: true, workspaceId: "wsp_test" })
+    ).resolves.toMatchObject({ status: "ready" });
+    expect(runtime.calls).toEqual(["install", "resume", "enable"]);
+    expect(authorize).toHaveBeenCalledTimes(1);
+    const completed = JSON.parse(await readFile(filePath, "utf8"));
+    expect(completed.installOperationId).toBe(intent.installOperationId);
+    expect(completed.registrationId).toBe(intent.registrationId);
+    expect(completed.receiptMissing).toBeUndefined();
+  });
+
+  it("re-enables a stopped registration even when its existing Shell is ready", async () => {
+    const runtime = new FakeRuntime();
+    runtime.provisioned = true;
+    const configure = vi.fn(async ({ enabled }: { enabled: boolean }) =>
+      enabled ? ("processing" as const) : ("stopped" as const)
+    );
+    const service = await ComputeNodeService.open({
+      adapter: runtime,
+      arch: "arm64",
+      platform: "darwin",
+      filePath: join(tempDir, "shell-enable.json"),
+      installAuthorization: {
+        ...testInstallAuthorization,
+        configure,
+        inspect: async () => ({
+          authorizationStatus: "handed_off" as const,
+          status: "ready" as const,
+          shellPhase: "ready" as const,
+          workActivity: "unknown" as const,
+        }),
+      },
+    });
+    await service.configure({ desiredEnabled: true, workspaceId: "wsp_test" });
+    await service.drain();
+    configure.mockClear();
+    await service.configure({ desiredEnabled: true, workspaceId: "wsp_test" });
+    expect(configure).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: true, operationId: "vmm_install_test" })
+    );
+    expect(runtime.calls).toEqual(["install", "drain", "enable"]);
   });
 
   it("closes server admission before exact local drain or removal", async () => {
@@ -1301,7 +1763,7 @@ describe("ComputeNodeService", () => {
     const service = await ComputeNodeService.open({
       adapter: runtime,
       arch: "arm64",
-      filePath: join(tmpdir(), `.compute-node-order-${crypto.randomUUID()}.json`),
+      filePath: join(tempDir, "order.json"),
       installAuthorization: authorization,
       platform: "darwin",
     });
@@ -1354,7 +1816,7 @@ describe("ComputeNodeService", () => {
       const service = await ComputeNodeService.open({
         adapter: runtime,
         arch: "arm64",
-        filePath: join(tmpdir(), `.compute-node-fence-${crypto.randomUUID()}.json`),
+        filePath: join(tempDir, "rebinding.json"),
         installAuthorization: authorization,
         platform: "darwin",
       });
@@ -1400,7 +1862,7 @@ describe("ComputeNodeService", () => {
     const service = await ComputeNodeService.open({
       adapter: runtime,
       arch: "arm64",
-      filePath: join(tmpdir(), `.compute-node-auth-loss-${crypto.randomUUID()}.json`),
+      filePath: join(tempDir, "auth-loss.json"),
       installAuthorization: authorization,
       platform: "darwin",
     });
@@ -1415,10 +1877,7 @@ describe("ComputeNodeService", () => {
   });
 
   it("checks an unknown exchange-committed result read-only then permits explicit same-operation resume", async () => {
-    const filePath = join(
-      tmpdir(),
-      `.compute-node-exchange-${crypto.randomUUID()}.json`
-    );
+    const filePath = join(tempDir, "exchange.json");
     await writeFile(
       filePath,
       JSON.stringify({
@@ -1472,7 +1931,7 @@ describe("ComputeNodeService", () => {
   it("persists the enabled target before the helper side effect and recovers it", async () => {
     const runtime = new FakeRuntime();
     runtime.provisioned = true;
-    const filePath = join(tmpdir(), `.compute-node-crash-${crypto.randomUUID()}.json`);
+    const filePath = join(tempDir, "crash.json");
     let persistedAtSideEffect!: {
       desiredEnabled: boolean;
       operation: { outcome: string; kind: string };
@@ -1508,16 +1967,19 @@ describe("ComputeNodeService", () => {
     // Restore the last durable record as if the client exited at the side
     // effect boundary. A fresh service must recover toward the stored target.
     await writeFile(filePath, JSON.stringify(persistedAtSideEffect));
-    const restarted = await ComputeNodeService.open({
+    const recovered = publishedState((state) => state.status === "ready");
+    await ComputeNodeService.open({
       installAuthorization: testInstallAuthorization,
       adapter: runtime,
       arch: "arm64",
       filePath,
       platform: "darwin",
+      onStateChanged: recovered.onStateChanged,
     });
-    await vi.waitFor(() =>
-      expect(restarted.state()).toMatchObject({ desiredEnabled: true, status: "ready" })
-    );
+    expect(await recovered.state).toMatchObject({
+      desiredEnabled: true,
+      status: "ready",
+    });
   });
 
   it("explicitly detaches an inaccessible registration before switching workspace", async () => {
@@ -1527,11 +1989,11 @@ describe("ComputeNodeService", () => {
       throw new Error("server unavailable");
     });
     const authorization = { ...testInstallAuthorization, revoke };
-    const filePath = join(tmpdir(), `.compute-node-detach-${crypto.randomUUID()}.json`);
+    const filePath = join(tempDir, "detach.json");
     const service = await ComputeNodeService.open({
       adapter: runtime,
       arch: "arm64",
-      platform: "darwin",
+      platform: "darwin" as const,
       filePath,
       installAuthorization: authorization,
     });
@@ -1551,7 +2013,7 @@ describe("ComputeNodeService", () => {
     runtime.observation.registration = "absent";
     expect(await service.remove()).toMatchObject({
       status: "removed",
-      problem: expect.stringContaining("remote revocation is not confirmed"),
+      problem: "remote_revocation_unconfirmed",
     });
     expect(JSON.parse(await readFile(filePath, "utf8")).workspaceId).toBeUndefined();
     await service.configure({ desiredEnabled: true, workspaceId: "new" });
@@ -1561,7 +2023,7 @@ describe("ComputeNodeService", () => {
   it("does not settle an unknown remove when the installed host is only stopped", async () => {
     const runtime = new FakeRuntime();
     runtime.provisioned = true;
-    const filePath = join(tmpdir(), `.compute-node-remove-${crypto.randomUUID()}.json`);
+    const filePath = join(tempDir, "remove.json");
     const service = await ComputeNodeService.open({
       installAuthorization: testInstallAuthorization,
       adapter: runtime,
@@ -1574,21 +2036,21 @@ describe("ComputeNodeService", () => {
     runtime.removeUnknown = true;
     await expect(service.remove()).rejects.toThrow("timed out");
 
+    const reconciled = publishedState((state) => state.status === "action_required");
     const restarted = await ComputeNodeService.open({
       installAuthorization: testInstallAuthorization,
       adapter: runtime,
       arch: "arm64",
       filePath,
       platform: "darwin",
+      onStateChanged: reconciled.onStateChanged,
     });
 
-    await vi.waitFor(() =>
-      expect(restarted.state()).toMatchObject({
-        observed: { connector: "ready", host: "stopped" },
-        operation: { kind: "remove", outcome: "unknown" },
-        status: "action_required",
-      })
-    );
+    expect(await reconciled.state).toMatchObject({
+      observed: { connector: "ready", host: "stopped" },
+      operation: { kind: "remove", outcome: "unknown" },
+      status: "action_required",
+    });
     expect(restarted.state().status).not.toBe("removed");
   });
 
@@ -1604,7 +2066,7 @@ describe("ComputeNodeService", () => {
       installAuthorization: { ...testInstallAuthorization, inspect },
       adapter: runtime,
       arch: "arm64",
-      filePath: join(tmpdir(), `.compute-node-activity-${crypto.randomUUID()}.json`),
+      filePath: join(tempDir, "activity.json"),
       platform: "darwin",
     });
     await expect(
@@ -1625,7 +2087,46 @@ describe("ComputeNodeService", () => {
     expect(runtime.calls).not.toContain("drain");
   });
 
-  it("bounds a stalled product observation without stopping independent work", async () => {
+  it("keeps an accepted cloud request unknown when its response body is interrupted", async () => {
+    const session = {
+      state: () => ({
+        phase: "signed_in",
+        authority: { authorityInstanceId: "main" },
+        generation: 1,
+        session: { audience: "https://api.example.test", sessionId: "session" },
+      }),
+      acquireProductCredential: () => ({
+        audience: "https://api.example.test",
+        authorityInstanceId: "main",
+        generation: 1,
+        sessionId: "session",
+        signal: new AbortController().signal,
+        token: "main-only-token",
+      }),
+      isCurrentProductCredential: () => true,
+      reportUnauthorized: async () => undefined,
+    } as never;
+    const fetcher = vi.fn(async () => {
+      const response = new Response("{}", { status: 200 });
+      vi.spyOn(response, "json").mockRejectedValue(
+        new TypeError("private response token")
+      );
+      return response;
+    });
+    const owner = new ComputeNodeInstallAuthorization(
+      session,
+      mainCoreRequests(session, fetcher)
+    );
+    await expect(
+      owner.authorize({ requestId: "original-request", workspaceId: "workspace" })
+    ).rejects.toMatchObject({
+      reason: "outcome_unknown",
+      native: { code: "cloud_unavailable" },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an observation the core gave up on as unknown activity without stopping independent work", async () => {
     const runtime = new FakeRuntime();
     runtime.provisioned = true;
     const session = {
@@ -1638,32 +2139,16 @@ describe("ComputeNodeService", () => {
           sessionId: "session-1",
         },
       }),
-      acquireProductCredential: vi.fn(() => ({
-        audience: "https://api.comma.example",
-        authorityInstanceId: "authority-1",
-        generation: 1,
-        sessionId: "session-1",
-        signal: new AbortController().signal,
-        token: "session-token",
-      })),
-      isCurrentProductCredential: vi.fn(() => true),
-      reportUnauthorized: vi.fn(async () => undefined),
     } as never;
-    const fetcher = vi.fn(
-      (_input: RequestInfo | URL, init?: RequestInit) =>
-        new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener(
-            "abort",
-            () => reject(new DOMException("The operation was aborted.", "AbortError")),
-            { once: true }
-          );
-        })
-    ) as unknown as typeof fetch;
-    const authorization = new ComputeNodeInstallAuthorization(session, fetcher, 10);
-    const filePath = join(
-      tmpdir(),
-      `.compute-node-activity-timeout-${crypto.randomUUID()}.json`
+    // The core bounds the request on its Clock (core/test/compute-node-operations.test.ts) and answers `timeout`.
+    const call = vi.fn(async () => {
+      throw Object.assign(new Error("took too long"), { code: "timeout" });
+    });
+    const authorization = new ComputeNodeInstallAuthorization(
+      session,
+      () => ({ call }) as never
     );
+    const filePath = join(tempDir, "activity-timeout.json");
     runtime.observation = {
       connector: "ready",
       host: "ready",
@@ -1696,7 +2181,7 @@ describe("ComputeNodeService", () => {
       status: "action_required",
       facets: { workActivity: "unknown" },
     });
-    expect(fetcher).toHaveBeenCalled();
+    expect(call).toHaveBeenCalled();
     expect(runtime.calls).toEqual([]);
   });
 
@@ -1715,7 +2200,7 @@ describe("ComputeNodeService", () => {
       installAuthorization: testInstallAuthorization,
       adapter: runtime,
       arch: "arm64",
-      filePath: join(tmpdir(), `.prompt-${crypto.randomUUID()}.json`),
+      filePath: join(tempDir, "prompt.json"),
       platform: "darwin",
     });
 
@@ -1729,7 +2214,7 @@ describe("ComputeNodeService", () => {
       installAuthorization: testInstallAuthorization,
       adapter: runtime,
       arch: "x64",
-      filePath: join(tmpdir(), `.unsupported-${crypto.randomUUID()}.json`),
+      filePath: join(tempDir, "unsupported.json"),
       platform: "darwin",
     });
     expect(unsupported.state().status).toBe("action_required");
@@ -1740,7 +2225,7 @@ describe("ComputeNodeService", () => {
       installAuthorization: testInstallAuthorization,
       adapter: runtime,
       arch: "arm64",
-      filePath: join(tmpdir(), `.degraded-${crypto.randomUUID()}.json`),
+      filePath: join(tempDir, "degraded.json"),
       platform: "darwin",
     });
     await expect(
@@ -1748,7 +2233,8 @@ describe("ComputeNodeService", () => {
     ).rejects.toThrow("bundle verification failed");
     expect(degraded.state()).toMatchObject({
       desiredEnabled: true,
-      problem: "bundle verification failed",
+      problem: "operation_failed",
+      problemDetail: "bundle verification failed",
       status: "action_required",
     });
   });
@@ -1759,7 +2245,7 @@ describe("ComputeNodeService", () => {
       installAuthorization: testInstallAuthorization,
       adapter: runtime,
       arch: "arm64",
-      filePath: join(tmpdir(), `.unenrolled-${crypto.randomUUID()}.json`),
+      filePath: join(tempDir, "unenrolled.json"),
       platform: "darwin",
     });
 
@@ -1774,117 +2260,330 @@ describe("ComputeNodeService", () => {
   });
 });
 
+/** Main's session double, signed in to session-1. */
+const signedInSession = () =>
+  ({
+    state: () => ({
+      phase: "signed_in",
+      authority: { authorityInstanceId: "authority-1" },
+      generation: 1,
+      session: { audience: "https://api.comma.example", sessionId: "session-1" },
+    }),
+  }) as never;
+
 describe("ComputeNodeInstallAuthorization", () => {
-  it("uses the Main-owned bearer and exact server registration identity", async () => {
-    const reportUnauthorized = vi.fn(async () => undefined);
-    const session = {
-      state: () => ({
-        phase: "signed_in",
-        authority: { authorityInstanceId: "authority-1" },
-        generation: 1,
-        session: {
-          audience: "https://api.comma.example",
-          sessionId: "session-1",
-        },
-      }),
-      acquireProductCredential: vi.fn(() => ({
+  it("asks the core for the session Main holds, and gives the one-time descriptor back", async () => {
+    const call = vi.fn(async (_name: string, _params: unknown) => ({
+      descriptor: '{"one_time_secret":"ticket-secret"}',
+      operationId: "vmm-install-1",
+      registrationId: "external-registration-1",
+    }));
+    const owner = new ComputeNodeInstallAuthorization(
+      signedInSession(),
+      () => ({ call }) as never
+    );
+    await expect(
+      owner.authorize({ requestId: "request-1", workspaceId: "workspace-1" })
+    ).resolves.toEqual({
+      descriptor: '{"one_time_secret":"ticket-secret"}',
+      operationId: "vmm-install-1",
+      registrationId: "external-registration-1",
+    });
+    expect(call).toHaveBeenCalledWith("computeNode.authorize", {
+      requestId: "request-1",
+      workspaceId: "workspace-1",
+      lease: {
         audience: "https://api.comma.example",
         authorityInstanceId: "authority-1",
         generation: 1,
         sessionId: "session-1",
-        signal: new AbortController().signal,
-        token: "main-only-token",
-      })),
-      isCurrentProductCredential: vi.fn(() => true),
-      reportUnauthorized,
-    } as never;
+      },
+    });
+  });
+
+  it("names an unreachable or unreadable answer, a scoped 404 and a changed session", async () => {
+    const failing = (error: Record<string, unknown>) =>
+      new ComputeNodeInstallAuthorization(
+        signedInSession(),
+        () =>
+          ({
+            call: async () => {
+              throw Object.assign(new Error("refused"), error);
+            },
+          }) as never
+      );
+    const input = { operationId: "vmm-install-1", workspaceId: "workspace-1" };
+    for (const code of ["network", "timeout", "bad_response"])
+      await expect(failing({ code }).inspect(input)).rejects.toMatchObject({
+        reason: "outcome_unknown",
+        native: { code: "cloud_unavailable" },
+      });
+    await expect(
+      failing({ code: "http_404", status: 404 }).revoke(input)
+    ).rejects.toBeInstanceOf(ComputeNodeAuthorizationNotFoundError);
+    await expect(
+      failing({ code: "http_404", status: 404 }).authorize({
+        requestId: "request-1",
+        workspaceId: "workspace-1",
+      })
+    ).rejects.toThrow("Compute node authorization failed (404).");
+    await expect(failing({ code: "session_changed" }).inspect(input)).rejects.toThrow(
+      "Compute node status session changed."
+    );
+  });
+
+  it("makes its requests through a core over HTTP", async () => {
     const fetcher = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response(
           JSON.stringify({
-            descriptor: {
-              exchange_url:
-                "https://api.comma.example/v1/compute/agent-vmm/install-operations/exchange",
-              expires_at: "2026-08-25T00:00:00Z",
-              one_time_secret: "ticket-secret",
-              operation_id: "vmm-install-1",
-              version: 1,
-            },
+            operation: { authorization_status: "handed_off", status: "ready" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+    ) as unknown as typeof fetch;
+    const owner = new ComputeNodeInstallAuthorization(
+      signedInSession(),
+      mainCoreRequests(signedInSession(), fetcher)
+    );
+    await expect(
+      owner.inspect({ operationId: "vmm-install-1", workspaceId: "workspace-1" })
+    ).resolves.toMatchObject({ status: "ready", workActivity: "unknown" });
+    expect(String(vi.mocked(fetcher).mock.calls[0]![0])).toBe(
+      "https://api.comma.example/v1/comma/workspaces/workspace-1/compute-nodes/agent-vmm/install-operations/vmm-install-1"
+    );
+  });
+
+  it("keeps the server's failure code of an action-required operation", async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
             operation: {
-              id: "vmm-install-1",
-              registration_id: "external-registration-1",
+              authorization_status: "action_required",
+              status: "action_required",
+              error_code: "material_handoff_expired",
             },
           }),
           { status: 200, headers: { "content-type": "application/json" } }
         )
     ) as unknown as typeof fetch;
-    const owner = new ComputeNodeInstallAuthorization(session, fetcher);
-
-    await expect(
-      owner.authorize({
-        requestId: "request-1",
-        workspaceId: "workspace-1",
-      })
-    ).resolves.toMatchObject({
-      operationId: "vmm-install-1",
-      registrationId: "external-registration-1",
-    });
-
-    const [url, init] = vi.mocked(fetcher).mock.calls[0]!;
-    expect(String(url)).toBe(
-      "https://api.comma.example/v1/comma/workspaces/workspace-1/compute-nodes/agent-vmm/install-operations"
+    const owner = new ComputeNodeInstallAuthorization(
+      signedInSession(),
+      mainCoreRequests(signedInSession(), fetcher)
     );
-    expect(init?.headers).toMatchObject({
-      authorization: "Bearer main-only-token",
-      "idempotency-key": "request-1",
+    await expect(
+      owner.inspect({ operationId: "vmm-install-1", workspaceId: "workspace-1" })
+    ).resolves.toMatchObject({
+      authorizationStatus: "action_required",
+      errorCode: "material_handoff_expired",
     });
-    expect(init?.body).toBe(JSON.stringify({}));
+  });
+});
 
-    vi.mocked(fetcher).mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          operation: { authorization_status: "handed_off", status: "ready" },
-        }),
-        { status: 200 }
+describe("ComputeNodeService expired material handoff", () => {
+  let tempDir: string;
+  let filePath: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "comma-handoff-expired-"));
+    filePath = join(tempDir, "intent.json");
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { force: true, recursive: true });
+  });
+
+  const expiredIntent = (extra: Record<string, unknown> = {}) =>
+    writeFile(
+      filePath,
+      JSON.stringify({
+        version: 3,
+        revision: 2,
+        desiredEnabled: true,
+        workspaceId: "workspace",
+        installOperationId: "vmm_install_expired",
+        registrationId: "registration-expired",
+        operation: {
+          connectionEpoch: "1",
+          kind: "configure",
+          leaseGeneration: 0,
+          operationId: "vmm_install_expired",
+          outcome: "unknown",
+          requestId: "req_original",
+          targetRef: "compute-node/local",
+          targetRevision: 1,
+        },
+        ...extra,
+      })
+    );
+
+  /** The server: the listed operations expired their handoff; every new install becomes ready. */
+  function server(expired: Set<string>, errorCode = "material_handoff_expired") {
+    let next = 0;
+    const authorize = vi.fn(
+      async (_input: { requestId: string; workspaceId: string }) => {
+        next++;
+        return {
+          descriptor: JSON.stringify({ version: 1 }),
+          operationId: `vmm_install_new_${next}`,
+          registrationId: `registration-new-${next}`,
+        };
+      }
+    );
+    const inspect = vi.fn(async ({ operationId }: { operationId: string }) =>
+      expired.has(operationId)
+        ? {
+            authorizationStatus: "action_required" as const,
+            status: "action_required" as const,
+            workActivity: "unknown" as const,
+            errorCode,
+          }
+        : {
+            authorizationStatus: "handed_off" as const,
+            status: "ready" as const,
+            workActivity: "idle" as const,
+          }
+    );
+    return {
+      authorize,
+      inspect,
+      owner: { ...testInstallAuthorization, authorize, inspect },
+    };
+  }
+
+  const open = (
+    owner: ReturnType<typeof server>["owner"],
+    runtime = new FakeRuntime(),
+    extra: Partial<Parameters<typeof ComputeNodeService.open>[0]> = {}
+  ) =>
+    ComputeNodeService.open({
+      adapter: runtime,
+      filePath,
+      platform: "darwin",
+      arch: "arm64",
+      installAuthorization: owner,
+      ...extra,
+    });
+
+  it("starts one new installation with a new request id and archives the expired one", async () => {
+    await expiredIntent();
+    const { authorize, owner } = server(new Set(["vmm_install_expired"]));
+    const runtime = new FakeRuntime();
+    runtime.provisioned = true;
+    const service = await open(owner, runtime);
+    const state = await service.refresh();
+
+    expect(authorize).toHaveBeenCalledTimes(1);
+    expect(authorize.mock.calls[0]![0]).toMatchObject({ workspaceId: "workspace" });
+    expect(authorize.mock.calls[0]![0].requestId).not.toBe("req_original");
+    expect(runtime.calls).toContain("install");
+    expect(state).toMatchObject({
+      status: "ready",
+      bindingInstallationId: "vmm_install_new_1",
+    });
+    const archived = JSON.parse(
+      await readFile(
+        join(
+          `${filePath}.removals`,
+          `${Buffer.from("vmm_install_expired").toString("base64url")}.json`
+        ),
+        "utf8"
       )
     );
-    await owner.initializeWorkload({
-      operationId: "vmm-install-1",
-      workspaceId: "workspace-1",
+    expect(archived).toMatchObject({
+      installOperationId: "vmm_install_expired",
+      registrationId: "registration-expired",
     });
-    const [initializeUrl, initializeRequest] = vi.mocked(fetcher).mock.calls[1]!;
-    expect(String(initializeUrl)).toBe(
-      "https://api.comma.example/v1/comma/workspaces/workspace-1/compute-nodes/agent-vmm/install-operations/vmm-install-1/initialize-workload"
-    );
-    expect(initializeRequest?.method).toBe("POST");
-    expect(initializeRequest?.headers).toMatchObject({
-      authorization: "Bearer main-only-token",
+  });
+
+  it("stops after a second expiry, asks the user to continue, and Continue starts again", async () => {
+    await expiredIntent();
+    const expired = new Set(["vmm_install_expired", "vmm_install_new_1"]);
+    const { authorize, owner } = server(expired);
+    const service = await open(owner);
+    await service.refresh();
+    const stopped = await service.refresh();
+
+    expect(authorize).toHaveBeenCalledTimes(1);
+    expect(stopped).toMatchObject({
+      status: "action_required",
+      issue: "enable_incomplete",
+      problem: "setup_handoff_expired",
+      bindingInstallationId: "vmm_install_new_1",
     });
-    const input = { operationId: "vmm-install-1", workspaceId: "workspace-1" };
-    for (const [field, expected] of [
-      [undefined, "unknown"],
-      ["active", "active"],
-    ] as const) {
-      vi.mocked(fetcher).mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            operation: {
-              authorization_status: "handed_off",
-              status: "ready",
-              work_activity: field,
-            },
-          }),
-          { status: 200 }
-        )
+    expect(stopped.recoveryActions).toContain("continue_enable");
+
+    await service.configure({ desiredEnabled: true, workspaceId: "workspace" });
+    expect(authorize).toHaveBeenCalledTimes(2);
+    const requests = authorize.mock.calls.map(([input]) => input.requestId);
+    expect(new Set(["req_original", ...requests]).size).toBe(3);
+    expect(service.state().bindingInstallationId).toBe("vmm_install_new_2");
+  });
+
+  it("does not restart again after a relaunch that already used its restart", async () => {
+    await expiredIntent({ handoffRestartUsed: true });
+    const { authorize, owner } = server(new Set(["vmm_install_expired"]));
+    const service = await open(owner);
+    const state = await service.refresh();
+    expect(authorize).not.toHaveBeenCalled();
+    expect(state).toMatchObject({
+      issue: "enable_incomplete",
+      problem: "setup_handoff_expired",
+      bindingInstallationId: "vmm_install_expired",
+    });
+  });
+
+  it("does not restart for another failure code, a disabled target, or Host maintenance", async () => {
+    await expiredIntent();
+    const other = server(new Set(["vmm_install_expired"]), "ticket_retry_exhausted");
+    await (await open(other.owner)).refresh();
+    expect(other.authorize).not.toHaveBeenCalled();
+
+    await expiredIntent({ desiredEnabled: false });
+    const disabled = server(new Set(["vmm_install_expired"]));
+    await (await open(disabled.owner)).refresh();
+    expect(disabled.authorize).not.toHaveBeenCalled();
+
+    await expiredIntent();
+    const maintained = server(new Set(["vmm_install_expired"]));
+    const service = await open(maintained.owner, new FakeRuntime(), {
+      assertInstallationAllowed: async () => {
+        throw new Error("Continue local Host maintenance first.");
+      },
+    });
+    expect((await service.refresh()).issue).toBe("enable_incomplete");
+    expect(maintained.authorize).not.toHaveBeenCalled();
+  });
+
+  it("logs a failed setup stage with a bounded, redacted message", async () => {
+    const lines: string[] = [];
+    const runtime = new FakeRuntime();
+    runtime.install = async () => {
+      throw new Error(
+        `lifecycle helper failed: one_time_secret=s3cr3t-value Bearer abc.def token ${"Q".repeat(40)} ${"x ".repeat(600)}`
       );
-      await expect(owner.inspect(input)).resolves.toMatchObject({
-        status: "ready",
-        workActivity: expected,
-      });
-    }
-    expect(reportUnauthorized).not.toHaveBeenCalled();
-    vi.mocked(fetcher).mockResolvedValueOnce(new Response("{}", { status: 401 }));
-    await expect(owner.inspect(input)).rejects.toThrow("401");
-    expect(reportUnauthorized).toHaveBeenCalledOnce();
+    };
+    const service = await ComputeNodeService.open({
+      adapter: runtime,
+      filePath,
+      platform: "darwin",
+      arch: "arm64",
+      installAuthorization: testInstallAuthorization,
+      log: (line) => lines.push(line),
+    });
+    await expect(
+      service.configure({ desiredEnabled: true, workspaceId: "workspace" })
+    ).rejects.toThrow("lifecycle helper failed");
+    expect(lines).toHaveLength(1);
+    const [line] = lines as [string];
+    expect(line).toContain("problem=setup_failed");
+    expect(line).toContain("stage=install");
+    expect(line).toContain("lifecycle helper failed");
+    expect(line.length).toBeLessThan(700);
+    expect(line).not.toContain("s3cr3t-value");
+    expect(line).not.toContain("abc.def");
+    expect(line).not.toContain("Q".repeat(40));
+    expect(line).not.toContain("version");
   });
 });

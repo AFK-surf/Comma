@@ -25,7 +25,7 @@ defmodule SalixIM.Ports.SessionActivity do
   def unsubscribe(agent_id, session_id), do: impl().unsubscribe(agent_id, session_id)
 
   defp impl,
-    do: Application.get_env(:salix_im, :session_activity_mod, __MODULE__.Unconfigured)
+    do: SystemsRuntime.get_env(:salix_im, :session_activity_mod, __MODULE__.Unconfigured)
 
   defmodule Unconfigured do
     @moduledoc false

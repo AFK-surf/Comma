@@ -43,4 +43,4 @@ Connector continues running until the target computer restarts.
 Use the device name or the localized term for target computer.
 Reserve this computer for the client identified by the initiating Message.
 Report empty agent discovery accurately. Registration and file access do not prove a Worker completed a task.
-When the user enables operations, use `env.runtime_targets` and the existing Worker flow.
+When the user wants work to run on this computer, give each such Task `runs_on` `{kind: station, device_id}` and a model of kind runtime in `im_api.internal.task.create`. No Worker is created or bound to it.

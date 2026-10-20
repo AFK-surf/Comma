@@ -1,5 +1,5 @@
 defmodule BillingCore.Claude55PricingTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   Code.require_file(
     "../../priv/repo/migrations/20260930000002_seed_claude_55_pricing.exs",

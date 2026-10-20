@@ -1,5 +1,5 @@
 defmodule CommaWeb.TaskExecutionOwnerTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Comma.Data.{Workspace, WorkspaceMembership}
   alias SalixStore.{CasRecord, Ids, Keys}
@@ -10,12 +10,12 @@ defmodule CommaWeb.TaskExecutionOwnerTest do
     SalixStore.RepoTestSetup.ensure!()
     start_supervised!(SalixStore.S3.Fake)
     SalixAgent.TestSupport.configure_control_fixtures!()
-    old_backend = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    old_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
     on_exit(fn ->
       Ecto.Adapters.SQL.Sandbox.stop_owner(owner)
-      Application.put_env(:salix_store, :s3_backend, old_backend)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, old_backend)
     end)
 
     tenant = SalixAgent.TestSupport.new_tenant_id()
@@ -37,13 +37,13 @@ defmodule CommaWeb.TaskExecutionOwnerTest do
 
     {:ok, user} =
       Comma.Accounts.create_user(%{
-        "email" => "task-#{System.unique_integer([:positive])}@comma.test"
+        "email" => "task-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     workspace =
       Comma.Repo.insert!(
         Workspace.changeset(%Workspace{}, %{
-          id: "wsp_task_#{System.unique_integer([:positive])}",
+          id: "wsp_task_#{SystemsRuntime.Proc.unique_integer([:positive])}",
           owner_user_id: user["id"],
           salix_tenant_id: tenant,
           salix_group_id: group,

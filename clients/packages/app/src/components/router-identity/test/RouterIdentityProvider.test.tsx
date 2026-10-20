@@ -1,15 +1,12 @@
 import { CommaI18nProvider } from "@comma/i18n/react";
 import { initializeCommaI18n } from "@comma/i18n";
 import type { NativeStateBridge, OnboardingWindowState } from "@comma/native-bridge";
+import { createScriptedCore, resolvedWorkspace } from "@comma/test-utils/scripted-core";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { act, render, screen, waitFor } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CommaApiClient } from "../../../api";
-import type { AgentModels } from "../../../api/modelCatalog";
-import { writeActiveWorkspaceId } from "../../activeWorkspace";
-import { CommaAuthContext, type CommaAuthContextValue } from "../../auth-context";
-import type { ChatParticipantStatus } from "../../chat/model/conversationChannel";
+import type { ChatParticipantStatus } from "@comma/core/chat";
 import { ParticipantStatusSlot } from "../../chat/thread/activity/ActivityLine";
 import {
   RouterIdentityProvider,
@@ -17,17 +14,8 @@ import {
   useRouterRenamed,
 } from "../RouterIdentityProvider";
 
-const routerModel = (name: string) => ({
-  agent_id: "agent_router",
-  name,
-  role: "router" as const,
-});
-
-const agentModels = (routerName: string): AgentModels => ({
-  workspace_id: "wsp_home",
-  agents: { router: routerModel(routerName) },
-  workers: { items: [], next_cursor: null },
-});
+/** The core's `router` topic: the Router Agent as read, or nothing while the read waits. */
+const routerRead = (name: string) => ({ agent: "agent_router", name });
 
 // Task Participants keep the Agent name from when they joined the Task.
 const participant = (
@@ -69,16 +57,31 @@ function SettingsRenameButton({ name }: { name: string }) {
   );
 }
 
-function renderIdentity(
-  api: Partial<CommaApiClient>,
-  rename = "Atlas",
-  workspaceId?: string
-) {
-  const auth = { api } as unknown as CommaAuthContextValue;
-  return render(
-    <CommaI18nProvider locale="en">
-      <CommaAuthContext.Provider value={auth}>
-        <RouterIdentityProvider {...(workspaceId ? { workspaceId } : {})}>
+/**
+ * The provider over a scripted core: `name` answers each `router` read (none
+ * while it is undefined); the core's reads and calls are recorded.
+ */
+function renderIdentity(name: () => string | undefined, rename = "Atlas") {
+  const reads: Record<string, unknown>[] = [];
+  const calls: [string, unknown][] = [];
+  const core = createScriptedCore({
+    values: (topic) => {
+      if (topic.topic === "workspace") return resolvedWorkspace("wsp_home");
+      const current = topic.topic === "router" ? name() : undefined;
+      return current === undefined ? undefined : routerRead(current);
+    },
+    calls: (call, params) => {
+      calls.push([call, params]);
+      return null;
+    },
+    onSubscribe: (topic) => {
+      if (topic.topic === "router") reads.push(topic);
+    },
+  });
+  const view = render(
+    core.wrap(
+      <CommaI18nProvider locale="en">
+        <RouterIdentityProvider>
           <RenameButton name={rename} />
           <SettingsRenameButton name="Mira" />
           <ParticipantStatusSlot
@@ -86,24 +89,22 @@ function renderIdentity(
             participantStatuses={taskParticipants}
           />
         </RouterIdentityProvider>
-      </CommaAuthContext.Provider>
-    </CommaI18nProvider>
+      </CommaI18nProvider>
+    )
   );
+  return { view, reads, calls, core };
 }
 
 describe("RouterIdentityProvider", () => {
   beforeEach(() => {
     initializeCommaI18n(["en"]);
-    writeActiveWorkspaceId("wsp_home");
   });
   afterEach(() => {
     localStorage.clear();
   });
 
   it("labels the Router by its stored name and by the name a rename returns", async () => {
-    const getAgentModels = vi.fn(async () => agentModels("Juno"));
-    const renameAgent = vi.fn(async () => undefined);
-    renderIdentity({ getAgentModels, renameAgent });
+    const { reads, calls } = renderIdentity(() => "Juno");
 
     // The stored name replaces the Task Participant's joining snapshot.
     await waitFor(() =>
@@ -118,14 +119,15 @@ describe("RouterIdentityProvider", () => {
         "Atlas and 2 workers are thinking"
       )
     );
-    // The Router is renamed as its Agent, by the id its read gave.
-    expect(renameAgent).toHaveBeenCalledWith("wsp_home", "agent_router", "Atlas");
-    expect(getAgentModels).toHaveBeenCalledTimes(1);
+    // The core renames the workspace's Router Agent.
+    expect(calls).toEqual([
+      ["models.renameAgent", { workspace: "wsp_home", name: "Atlas" }],
+    ]);
+    expect(reads).toHaveLength(1);
   });
 
   it("shows a Router renamed in Settings at once, without reading it again", async () => {
-    const getAgentModels = vi.fn(async () => agentModels("Juno"));
-    renderIdentity({ getAgentModels });
+    const { reads } = renderIdentity(() => "Juno");
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent(
         "Juno and 2 workers are thinking"
@@ -138,20 +140,12 @@ describe("RouterIdentityProvider", () => {
         "Mira and 2 workers are thinking"
       )
     );
-    expect(getAgentModels).toHaveBeenCalledOnce();
+    expect(reads).toHaveLength(1);
   });
 
   it("keeps a rename when the initial read resolves after it", async () => {
-    let resolveRead!: (models: AgentModels) => void;
-    // The initial read hangs; the rename reads the Router's Agent id itself.
-    const getAgentModels = vi
-      .fn<() => Promise<AgentModels>>()
-      .mockImplementationOnce(
-        () => new Promise<AgentModels>((resolve) => (resolveRead = resolve))
-      )
-      .mockResolvedValue(agentModels("Default workspace Router"));
-    const renameAgent = vi.fn(async () => undefined);
-    renderIdentity({ getAgentModels, renameAgent });
+    // The initial read waits; the rename goes ahead without it.
+    const { core } = renderIdentity(() => undefined);
     expect(screen.getByRole("status")).toHaveTextContent(
       "Comma and 2 workers are thinking"
     );
@@ -162,15 +156,13 @@ describe("RouterIdentityProvider", () => {
         "Atlas and 2 workers are thinking"
       )
     );
-    resolveRead(agentModels("Default workspace Router"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await act(async () => core.emit("router", routerRead("Default workspace Router")));
     expect(screen.getByRole("status")).toHaveTextContent(
       "Atlas and 2 workers are thinking"
     );
   });
 
   it("shows the name given in the onboarding window once that window closes", async () => {
-    // A Side Chat Task window, bound to its Task's workspace.
     const onboardingWindow = onboardingWindowState();
     installNativeBridgeMock({
       os: "macos",
@@ -178,9 +170,8 @@ describe("RouterIdentityProvider", () => {
       onboarding: { window: onboardingWindow.state },
     });
     let routerName = "Default workspace Router";
-    const getAgentModels = vi.fn(async () => agentModels(routerName));
-    renderIdentity({ getAgentModels }, "Atlas", "wsp_home");
-    await waitFor(() => expect(getAgentModels).toHaveBeenCalledOnce());
+    const { reads } = renderIdentity(() => routerName);
+    await waitFor(() => expect(reads).toHaveLength(1));
 
     // The onboarding opens over the display and names the Router there.
     onboardingWindow.publish({ open: true });
@@ -195,8 +186,11 @@ describe("RouterIdentityProvider", () => {
         "Atlas and 2 workers are thinking"
       )
     );
-    expect(getAgentModels).toHaveBeenCalledTimes(2);
-    expect(getAgentModels).toHaveBeenLastCalledWith("wsp_home", expect.anything());
+    // One read more, of the active workspace.
+    expect(reads).toEqual([
+      { topic: "router", workspace: "wsp_home", read: "0" },
+      { topic: "router", workspace: "wsp_home", read: "1" },
+    ]);
   });
 });
 

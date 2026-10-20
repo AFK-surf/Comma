@@ -1,7 +1,7 @@
 /* oxlint-disable jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- The keep cell only fences clicks so pressing the button never doubles as the row's own selection gesture; the button inside it carries the keyboard behaviour. */
 import { formatDate } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import { cx } from "@comma/ui";
+import { cx } from "@comma/ui/components/utils";
 import { useState } from "react";
 import { Button as AriaButton, Radio, RadioGroup } from "react-aria-components";
 import { driveSecondaryButton } from "./driveButtonStyles";

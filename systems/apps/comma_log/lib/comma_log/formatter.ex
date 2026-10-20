@@ -200,6 +200,8 @@ defmodule CommaLog.Formatter do
   end
 
   defp iso8601(_other) do
-    System.system_time(:microsecond) |> DateTime.from_unix!(:microsecond) |> DateTime.to_iso8601()
+    SystemsClock.system_time(:microsecond)
+    |> DateTime.from_unix!(:microsecond)
+    |> DateTime.to_iso8601()
   end
 end

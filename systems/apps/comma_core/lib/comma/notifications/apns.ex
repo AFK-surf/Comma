@@ -34,7 +34,7 @@ defmodule Comma.Notifications.APNs do
   end
 
   defp profile(environment) when environment in ["sandbox", "production"] do
-    config = Application.get_env(:comma_core, :apns, [])
+    config = SystemsRuntime.get_env(:comma_core, :apns, [])
     profiles = config[:profiles] || %{}
     selected = profiles[environment]
 
@@ -64,13 +64,13 @@ defmodule Comma.Notifications.APNs do
   end
 
   def send(target, payload) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = do_send(target, payload)
 
     CommaProduct.Telemetry.emit_operation(
       :apns_delivery,
       outcome(result),
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     result
@@ -89,7 +89,7 @@ defmodule Comma.Notifications.APNs do
         {"apns-topic", topic},
         {"apns-push-type", if(activity, do: "liveactivity", else: "alert")},
         {"apns-priority", if(activity and payload["aps"]["alert"] == nil, do: "5", else: "10")},
-        {"apns-expiration", Integer.to_string(System.system_time(:second) + 120)}
+        {"apns-expiration", Integer.to_string(SystemsClock.system_time(:second) + 120)}
       ]
 
       options = [
@@ -123,16 +123,16 @@ end
 
 defmodule Comma.Notifications.APNs.ProviderToken do
   @moduledoc "Per-signing-identity APNs provider JWT cache; no request owns Apple signing material."
-  use GenServer
+  use SystemsRuntime.Server
 
-  def start_link(_opts), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
-  def get(config), do: GenServer.call(__MODULE__, {:get, config}, 5_000)
+  def start_link(_opts), do: SystemsRuntime.Server.start_link(__MODULE__, nil, name: __MODULE__)
+  def get(config), do: SystemsRuntime.Server.call(__MODULE__, {:get, config}, 5_000)
   @impl true
   def init(_), do: {:ok, %{}}
 
   @impl true
   def handle_call({:get, config}, _from, cached) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
     identity = {config[:team_id], config[:key_id], config[:private_key]}
 
     # Switching sandbox/production must reuse each independently signed JWT.
@@ -141,7 +141,7 @@ defmodule Comma.Notifications.APNs.ProviderToken do
 
     case cached[identity] do
       %{token: token} = entry ->
-        next = Map.put(cached, identity, %{entry | used_at: System.monotonic_time()})
+        next = Map.put(cached, identity, %{entry | used_at: use_order()})
         {:reply, {:ok, token}, next}
 
       nil ->
@@ -150,7 +150,7 @@ defmodule Comma.Notifications.APNs.ProviderToken do
             next =
               Map.put(cached, identity, %{
                 issued_at: now,
-                used_at: System.monotonic_time(),
+                used_at: use_order(),
                 token: token
               })
               |> Enum.sort_by(fn {_identity, entry} -> entry.used_at end, :desc)
@@ -164,6 +164,10 @@ defmodule Comma.Notifications.APNs.ProviderToken do
         end
     end
   end
+
+  # Uses are ordered by a counter, not by the clock: two uses at one clock
+  # reading would tie, and the identity kept would then be arbitrary.
+  defp use_order, do: SystemsRuntime.Proc.unique_integer([:monotonic])
 
   defp sign(config, now) do
     # Apple authorizes this independently issued developer key for the app topic.

@@ -9,14 +9,15 @@ defmodule SalixAgent.CompactionRecoveryPinTest do
   hand — so it cannot catch this producer omitting the pin, which is exactly
   what happened in the first cut. This drives the real producer.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.{Compaction, InternalAgentRuntime, InternalSessionStore}
 
   @session "ses1_0000000000000000960"
 
   defmodule ControlTemplateResolver do
-    def resolve(agent_id), do: SalixAgent.Templates.resolve_llm_for_agent(agent_id)
+    def resolve(agent_id), do: SalixAgent.AgentModel.resolve_llm_for_agent(agent_id)
   end
 
   # Lands the second writer from INSIDE the model call — i.e. after the
@@ -31,7 +32,7 @@ defmodule SalixAgent.CompactionRecoveryPinTest do
 
     @impl true
     def complete(_messages, _tools, _opts) do
-      {agent_id, session_id} = :persistent_term.get({__MODULE__, :target})
+      {agent_id, session_id} = SystemsRuntime.PersistentTerm.get({__MODULE__, :target})
 
       {:ok, _} =
         SalixAgent.InternalSessionStore.prepare_commit(agent_id, session_id, [
@@ -59,29 +60,29 @@ defmodule SalixAgent.CompactionRecoveryPinTest do
   end
 
   setup do
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_resolver = Application.get_env(:salix_agent, :llm_resolver)
-    prev_summarizer = Application.get_env(:salix_agent, :summarizer)
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_resolver = SystemsRuntime.get_env(:salix_agent, :llm_resolver)
+    prev_summarizer = SystemsRuntime.get_env(:salix_agent, :summarizer)
     # `create_control_agent!/1` below installs a test GroupContext into the
     # GLOBAL app env. Capture it too, or this suite leaves it behind and
     # later synchronous tests behave differently depending on file order.
-    prev_group_context = Application.get_env(:salix_agent, :group_context_mod)
+    prev_group_context = SystemsRuntime.get_env(:salix_agent, :group_context_mod)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    if Process.whereis(SalixStore.S3.Fake),
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake),
       do: SalixStore.S3.Fake.reset(),
       else: start_supervised!(SalixStore.S3.Fake)
 
     SalixStore.Repo.query!("TRUNCATE session_work_candidates")
 
-    Application.put_env(:salix_agent, :llm, LateWriterLLM)
-    Application.put_env(:salix_agent, :llm_resolver, ControlTemplateResolver)
-    Application.delete_env(:salix_agent, :summarizer)
+    SystemsRuntime.put_env(:salix_agent, :llm, LateWriterLLM)
+    SystemsRuntime.put_env(:salix_agent, :llm_resolver, ControlTemplateResolver)
+    SystemsRuntime.delete_env(:salix_agent, :summarizer)
 
     on_exit(fn ->
-      Application.put_env(:salix_store, :s3_backend, prev_backend)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_backend)
       restore(:llm, prev_llm)
       restore(:llm_resolver, prev_resolver)
       restore(:summarizer, prev_summarizer)
@@ -119,15 +120,15 @@ defmodule SalixAgent.CompactionRecoveryPinTest do
 
     # The session actor compacts, and the model call runs in its dependency
     # job, so the late writer finds its target here.
-    :persistent_term.put({LateWriterLLM, :target}, {agent_id, @session})
-    on_exit(fn -> :persistent_term.erase({LateWriterLLM, :target}) end)
+    SystemsRuntime.PersistentTerm.put({LateWriterLLM, :target}, {agent_id, @session})
+    on_exit(fn -> SystemsRuntime.PersistentTerm.erase({LateWriterLLM, :target}) end)
 
     {:ok, agent_id: agent_id}
   end
 
   defp restore(key, value, app \\ :salix_agent)
-  defp restore(key, nil, app), do: Application.delete_env(app, key)
-  defp restore(key, value, app), do: Application.put_env(app, key, value)
+  defp restore(key, nil, app), do: SystemsRuntime.delete_env(app, key)
+  defp restore(key, value, app), do: SystemsRuntime.put_env(app, key, value)
 
   test "the recovery summary never covers a record that landed while it was failing", %{
     agent_id: agent_id
@@ -166,8 +167,8 @@ defmodule SalixAgent.CompactionRecoveryPinTest do
     # And the consequence it protects: after archival the result is still
     # reachable rather than moved out of the window under a summary that
     # never described it.
-    Application.put_env(:salix_store, :seal_line_bytes, 1)
-    on_exit(fn -> Application.delete_env(:salix_store, :seal_line_bytes) end)
+    SystemsRuntime.put_env(:salix_store, :seal_line_bytes, 1)
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_store, :seal_line_bytes) end)
     # Archival writes as the session's owner: the actor that compacted it.
     [{owner, _}] =
       Registry.lookup(
@@ -175,14 +176,22 @@ defmodule SalixAgent.CompactionRecoveryPinTest do
         SalixAgent.InternalSessionActor.key(agent_id, @session)
       )
 
-    test = self()
+    test = SystemsRuntime.Proc.self()
 
-    :sys.replace_state(owner, fn state ->
-      send(test, {:archived, InternalSessionStore.archive_compacted(agent_id, @session)})
-      state
-    end)
+    :sys.replace_state(
+      owner,
+      fn state ->
+        SystemsRuntime.Proc.send(
+          test,
+          {:archived, InternalSessionStore.archive_compacted(agent_id, @session)}
+        )
 
-    assert_receive {:archived, {:ok, :archived}}
+        state
+      end,
+      :infinity
+    )
+
+    settle_receive({:archived, {:ok, :archived}})
 
     assert {:ok, record} =
              InternalAgentRuntime.get_async_tool_call(agent_id, @session, "call-late")

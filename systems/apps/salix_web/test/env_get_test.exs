@@ -1,5 +1,5 @@
 defmodule SalixWeb.EnvGetTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Control.{Groups, Tenants}
   alias SalixEnv.{Control, Registry}
@@ -8,10 +8,10 @@ defmodule SalixWeb.EnvGetTest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    previous = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -37,7 +37,7 @@ defmodule SalixWeb.EnvGetTest do
   end
 
   test "exact public device read projects canonical runtime availability without listing", ctx do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
     {connector_run_id, binding} = connect_runtime!(ctx.tenant_id, ctx.group_id, now)
     device_key = Keys.ctl_group_device(ctx.tenant_id, ctx.group_id, binding["device_id"])
 
@@ -79,8 +79,16 @@ defmodule SalixWeb.EnvGetTest do
              "schema_version" => 1
            }
 
-    assert Enum.any?(SalixStore.S3.Fake.read_log(self()), &(&1 == {:get, device_key}))
-    refute Enum.any?(SalixStore.S3.Fake.read_log(self()), &match?({:list, _, _}, &1))
+    assert Enum.any?(
+             SalixStore.S3.Fake.read_log(SystemsRuntime.Proc.self()),
+             &(&1 == {:get, device_key})
+           )
+
+    refute Enum.any?(
+             SalixStore.S3.Fake.read_log(SystemsRuntime.Proc.self()),
+             &match?({:list, _, _}, &1)
+           )
+
     refute_private_fields(ready)
 
     update_runtime!(connector_run_id, binding, now + 1, %{"auth_ready" => false})
@@ -129,7 +137,7 @@ defmodule SalixWeb.EnvGetTest do
   test "a disconnected Cloudflare device does not expose private Workload data",
        ctx do
     {run, binding} =
-      connect_runtime!(ctx.tenant_id, ctx.group_id, System.system_time(:millisecond))
+      connect_runtime!(ctx.tenant_id, ctx.group_id, SystemsClock.system_time(:millisecond))
 
     {:ok, _} = Registry.mark_disconnected(run)
 
@@ -184,7 +192,7 @@ defmodule SalixWeb.EnvGetTest do
 
   test "SalixEnv owns one recursively typed public device DTO for exact, list, HTTP, and device.get",
        ctx do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
     binding = connect_public_dto_boundary_fixture!(ctx.tenant_id, ctx.group_id, now)
 
     assert {:ok, exact} =
@@ -280,7 +288,7 @@ defmodule SalixWeb.EnvGetTest do
   end
 
   test "missing, cross-scope, mismatched, and failed exact device reads do not fall back", ctx do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
     {_connector_run_id, binding} = connect_runtime!(ctx.tenant_id, ctx.group_id, now)
     missing_device_id = Ids.new_device_id()
 
@@ -299,7 +307,10 @@ defmodule SalixWeb.EnvGetTest do
     assert {:error, :not_found} =
              EnvDispatch.get_device(other_agent["agent_id"], binding["device_id"])
 
-    refute Enum.any?(SalixStore.S3.Fake.read_log(self()), &match?({:list, _, _}, &1))
+    refute Enum.any?(
+             SalixStore.S3.Fake.read_log(SystemsRuntime.Proc.self()),
+             &match?({:list, _, _}, &1)
+           )
 
     device_key = Keys.ctl_group_device(ctx.tenant_id, ctx.group_id, binding["device_id"])
     assert {:ok, %{body: body, etag: etag}} = S3.get(device_key)
@@ -404,7 +415,7 @@ defmodule SalixWeb.EnvGetTest do
             "last_error" => "private-health-error"
           }
         },
-        transport_id: "env-get-#{System.unique_integer([:positive])}",
+        transport_id: "env-get-#{SystemsRuntime.Proc.unique_integer([:positive])}",
         process_instance_id: "private-process-instance",
         now: now
       )
@@ -500,7 +511,7 @@ defmodule SalixWeb.EnvGetTest do
             }
           ]
         },
-        transport_id: "public-dto-#{System.unique_integer([:positive])}",
+        transport_id: "public-dto-#{SystemsRuntime.Proc.unique_integer([:positive])}",
         process_instance_id: "private-dto-process",
         now: now
       )
@@ -646,6 +657,6 @@ defmodule SalixWeb.EnvGetTest do
     walk.(walk, value)
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

@@ -1,4 +1,3 @@
-import { defaultSideChatShortcut } from "@comma/native-bridge";
 import { describe, expect, it } from "vitest";
 import {
   fitOnboardingAppRows,
@@ -41,9 +40,7 @@ const said = (thread: OnboardingThread) =>
               ? `:${message.line.item}`
               : message.line.kind === "recap"
                 ? `:${message.line.missing.join(",")}`
-                : message.line.kind === "side-chat"
-                  ? ""
-                  : `:${message.line.result.item}${message.line.index}`
+                : `:${message.line.result.item}${message.line.index}`
         }`
   );
 /** Runs the conversation's own steps until it waits for the user. */
@@ -224,47 +221,6 @@ describe("onboarding thread", () => {
     expect(run(waiting, { type: "welcome", at: 70_000 }).phase).toBe("welcome");
   });
 
-  it("tells of the Side Chat after the last answer, before what is still off", () => {
-    const thread = initialOnboardingThread({
-      at: 0,
-      items: mac,
-      speaker: "Atlas",
-      start: "permissions",
-    });
-    const skipped = {
-      type: "finish",
-      at: 1000,
-      result: {
-        item: "permissions",
-        allowed: 0,
-        total: 3,
-        computerUse: false,
-        missing: ["accessibility", "screenRecording", "notifications"],
-      },
-    } as const;
-    // Where the Side Chat has no shortcut, Comma does not tell of it.
-    expect(said(play(run(thread, skipped), "Atlas")).at(-2)).toBe(
-      "Atlas:bridge:permissions0"
-    );
-    // Its shortcut set while Comma still talks: told after the grants' answer.
-    const told = play(
-      run(
-        thread,
-        { type: "offer-side-chat", shortcut: defaultSideChatShortcut },
-        skipped
-      ),
-      "Atlas"
-    );
-    expect(said(told).slice(-3)).toEqual([
-      "Atlas:bridge:permissions0",
-      "Atlas:side-chat",
-      "Atlas:recap:apps,accessibility,screenRecording,notifications",
-    ]);
-    expect(told.messages.at(-2)).toMatchObject({
-      line: { kind: "side-chat", shortcut: defaultSideChatShortcut },
-    });
-  });
-
   it("offers the Open Comma shortcut only until the conversation is over", () => {
     const thread = initialOnboardingThread({
       at: 0,
@@ -374,7 +330,7 @@ describe("onboarding thread", () => {
     // An item passed without a result was skipped.
     expect(thread.results.apps).toEqual({ item: "apps", connected: [] });
 
-    // At the Side Chat shortcut, every item is answered and the recap said.
+    // At the Open Comma shortcut, every item is answered and the recap said.
     const shortcut = initialOnboardingThread({
       at: 0,
       items: mac,
@@ -433,7 +389,7 @@ describe("onboardingMissing", () => {
 });
 
 describe("onboardingLightDepth", () => {
-  it("deepens the light one even step per finished item, the Side Chat shortcut and the welcome page deepest", () => {
+  it("deepens the light one even step per finished item, the Open Comma shortcut and the welcome page deepest", () => {
     for (const items of [mac, onboardingItemsFor({ permissions: false })]) {
       const at = (start: OnboardingStart) =>
         onboardingLightDepth(

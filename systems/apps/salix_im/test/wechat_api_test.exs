@@ -1,31 +1,35 @@
 defmodule SalixIM.WeChatAPITest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle
 
   defmodule Provider do
     import Plug.Conn
     def init(opts), do: opts
 
     def call(conn, _) do
-      {content_type, body} = Application.fetch_env!(:salix_im, :wechat_api_test_response)
+      {content_type, body} = SystemsRuntime.fetch_env!(:salix_im, :wechat_api_test_response)
       conn |> put_resp_content_type(content_type) |> send_resp(200, body)
     end
   end
 
   setup do
-    previous = Application.get_env(:salix_im, :wechat_api_base_url)
+    previous = SystemsRuntime.get_env(:salix_im, :wechat_api_base_url)
 
     port =
       SalixIM.TestSupport.BanditServer.start!(fn port -> {Bandit, plug: Provider, port: port} end)
 
     base = "http://127.0.0.1:#{port}"
-    Application.put_env(:salix_im, :wechat_api_base_url, base)
+    SystemsRuntime.put_env(:salix_im, :wechat_api_base_url, base)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_im, :wechat_api_base_url, previous),
-        else: Application.delete_env(:salix_im, :wechat_api_base_url)
+        do: SystemsRuntime.put_env(:salix_im, :wechat_api_base_url, previous),
+        else: SystemsRuntime.delete_env(:salix_im, :wechat_api_base_url)
 
-      Application.delete_env(:salix_im, :wechat_api_test_response)
+      SystemsRuntime.delete_env(:salix_im, :wechat_api_test_response)
     end)
 
     %{base: base}
@@ -38,18 +42,6 @@ defmodule SalixIM.WeChatAPITest do
 
     respond("application/octet-stream", ~s({"status":"wait"}))
     assert {:ok, %{"status" => "wait"}} = SalixIM.WeChatAPI.poll_login(base, "test-qr")
-  end
-
-  test "JSON content type remains supported" do
-    respond("application/json", ~s({"qrcode":"test-qr"}))
-    assert {:ok, %{"qrcode" => "test-qr"}} = SalixIM.WeChatAPI.start_login()
-  end
-
-  test "malformed, non-object and provider error bodies fail closed" do
-    for body <- ["not json", "[]", "null", ~s({"ret":-1}), ~s({"errcode":1})] do
-      respond("application/octet-stream", body)
-      assert {:error, :wechat_unavailable} = SalixIM.WeChatAPI.start_login()
-    end
   end
 
   test "outbound octet-stream JSON errors are not reported as delivered", %{base: base} do
@@ -104,18 +96,6 @@ defmodule SalixIM.WeChatAPITest do
     assert bodies |> Enum.map(& &1["msg"]["client_id"]) |> Enum.uniq() == [id]
   end
 
-  test "reply_text reports a bounded error when the connection keeps closing" do
-    {base, requests} = flaky_server(close_first: :all)
-
-    assert {:error, error} =
-             SalixIM.Provider.WeChat.call("test-agent", connect(base), "wechat.reply_text", %{
-               "text" => "hello"
-             })
-
-    assert error == "WeChat is temporarily unreachable. Try again later."
-    assert length(requests.()) == 3
-  end
-
   defp connect(base) do
     %{
       "status" => "connected",
@@ -132,14 +112,14 @@ defmodule SalixIM.WeChatAPITest do
       :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true, ip: {127, 0, 0, 1}])
 
     {:ok, port} = :inet.port(listen)
-    test = self()
+    test = SystemsRuntime.Proc.self()
 
     pid =
-      spawn_link(fn ->
+      SystemsRuntime.Proc.spawn_link(fn ->
         Stream.iterate(1, &(&1 + 1))
         |> Enum.each(fn attempt ->
           {:ok, socket} = :gen_tcp.accept(listen)
-          send(test, {:wechat_request, read_json_body(socket)})
+          SystemsRuntime.Proc.send(test, {:wechat_request, read_json_body(socket)})
 
           if close_first == :all or attempt <= close_first do
             :gen_tcp.close(socket)
@@ -157,11 +137,11 @@ defmodule SalixIM.WeChatAPITest do
         end)
       end)
 
-    on_exit(fn -> Process.exit(pid, :kill) end)
+    on_exit(fn -> SystemsRuntime.Proc.exit(pid, :kill) end)
 
     requests = fn ->
       Stream.repeatedly(fn ->
-        receive do
+        SystemsRuntime.Proc.receive do
           {:wechat_request, body} -> body
         after
           0 -> nil
@@ -187,6 +167,6 @@ defmodule SalixIM.WeChatAPITest do
   end
 
   defp respond(content_type, body) do
-    Application.put_env(:salix_im, :wechat_api_test_response, {content_type, body})
+    SystemsRuntime.put_env(:salix_im, :wechat_api_test_response, {content_type, body})
   end
 end

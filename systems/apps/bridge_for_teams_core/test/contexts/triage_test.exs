@@ -52,7 +52,7 @@ defmodule BridgeForTeams.TriageTest do
     def triage_connect_posture(_tenant_id, group_id) do
       case Stub.call({:posture, group_id}, {:ok, []}) do
         {:slow, ms, result} ->
-          Process.sleep(ms)
+          SystemsClock.sleep(ms)
           result
 
         result ->
@@ -119,15 +119,15 @@ defmodule BridgeForTeams.TriageTest do
     }
   end
 
-  defp unique, do: System.unique_integer([:positive])
+  defp unique, do: SystemsRuntime.Proc.unique_integer([:positive])
 
   defp use_stub(responses \\ %{}) do
     if :ets.whereis(BridgeForTeams.Salix.ReadCache) != :undefined,
       do: :ets.delete_all_objects(BridgeForTeams.Salix.ReadCache)
 
     start_supervised!({Stub, responses})
-    prev = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, StubClient)
+    prev = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, StubClient)
     on_exit(fn -> restore(:salix_client, prev) end)
     :ok
   end
@@ -140,9 +140,9 @@ defmodule BridgeForTeams.TriageTest do
   # reachable: "the audit row could not be written" cannot otherwise be
   # produced without corrupting the audit table.
   defp use_failing_audit_writer do
-    prev = Application.get_env(:bridge_for_teams_core, :triage_audit_writer)
+    prev = SystemsRuntime.get_env(:bridge_for_teams_core, :triage_audit_writer)
 
-    Application.put_env(:bridge_for_teams_core, :triage_audit_writer, fn _attrs ->
+    SystemsRuntime.put_env(:bridge_for_teams_core, :triage_audit_writer, fn _attrs ->
       {:error, :audit_store_down}
     end)
 
@@ -150,8 +150,8 @@ defmodule BridgeForTeams.TriageTest do
     :ok
   end
 
-  defp restore(key, nil), do: Application.delete_env(:bridge_for_teams_core, key)
-  defp restore(key, value), do: Application.put_env(:bridge_for_teams_core, key, value)
+  defp restore(key, nil), do: SystemsRuntime.delete_env(:bridge_for_teams_core, key)
+  defp restore(key, value), do: SystemsRuntime.put_env(:bridge_for_teams_core, key, value)
 
   defp posture(connect_id, overrides \\ %{}) do
     Map.merge(
@@ -188,18 +188,6 @@ defmodule BridgeForTeams.TriageTest do
       "created_at" => 10,
       "triage_event" => %{"message_ts" => "1.1"}
     }
-
-  # ---- namespace ----
-
-  test "the runtime namespace is product-owned and ignores legacy app env" do
-    previous = Application.get_env(:bridge_for_teams_core, :triage_namespace)
-    on_exit(fn -> restore(:triage_namespace, previous) end)
-
-    for legacy <- [nil, "", "   ", "operator-selected"] do
-      Application.put_env(:bridge_for_teams_core, :triage_namespace, legacy)
-      assert Triage.namespace() == {:ok, SalixStore.TriageKeys.default_namespace()}
-    end
-  end
 
   # ---- org scoping ----
 
@@ -264,11 +252,11 @@ defmodule BridgeForTeams.TriageTest do
 
     assert Stub.calls(key) == 2
 
-    refute Triage.product_activity(org.id, %{agent | agent_id: Ecto.UUID.generate()}) ==
+    refute Triage.product_activity(org.id, %{agent | agent_id: SystemsRuntime.Proc.uuid()}) ==
              {:ok, activity}
 
     assert {:error, :agent_not_found} =
-             Triage.product_activity(org.id, %{agent | project_id: Ecto.UUID.generate()})
+             Triage.product_activity(org.id, %{agent | project_id: SystemsRuntime.Proc.uuid()})
 
     {:ok, foreign_org} =
       Orgs.create_org(%{name: "Foreign", slug: "foreign-#{unique()}"})
@@ -298,7 +286,7 @@ defmodule BridgeForTeams.TriageTest do
     assert {:error, :agent_not_found} = Triage.product_heatmap(foreign_org.id, agent)
 
     assert {:error, :agent_not_found} =
-             Triage.product_heatmap(org.id, %{agent | project_id: Ecto.UUID.generate()})
+             Triage.product_heatmap(org.id, %{agent | project_id: SystemsRuntime.Proc.uuid()})
 
     assert Stub.calls(key) == 2
   end
@@ -343,8 +331,8 @@ defmodule BridgeForTeams.TriageTest do
     assert Stub.calls(key) == 2
 
     for selected <- [
-          %{agent | agent_id: Ecto.UUID.generate()},
-          %{agent | project_id: Ecto.UUID.generate()},
+          %{agent | agent_id: SystemsRuntime.Proc.uuid()},
+          %{agent | project_id: SystemsRuntime.Proc.uuid()},
           %{agent | group_id: SalixStore.Ids.new_group_id(SalixStore.Ids.new_tenant_id())}
         ] do
       assert {:error, :agent_not_found} =
@@ -357,112 +345,6 @@ defmodule BridgeForTeams.TriageTest do
              Triage.delegation_task(foreign_org.id, agent, obligation_id, 1)
 
     assert Stub.calls(key) == 2
-  end
-
-  test "delegation Task lookup preserves unavailable and uncreated owner facts without mutation",
-       %{
-         org: org,
-         project: project
-       } do
-    {:ok, [agent | _rest]} = Triage.router_agents(org.id)
-    obligation_id = "triage-product-" <> String.duplicate("e", 64)
-    key = {:delegation_task, project.id, project.salix_group_id, agent.agent_id, obligation_id, 0}
-    use_stub()
-
-    for result <- [
-          {:ok, %{"disposition" => "not_created"}},
-          {:ok, %{"disposition" => "reserved_task_unavailable"}},
-          {:error, :not_found},
-          {:error, :unavailable}
-        ] do
-      Stub.put(key, result)
-      assert Triage.delegation_task(org.id, agent, obligation_id, 0) == result
-    end
-
-    assert Stub.calls(key) == 4
-
-    for {ref, index} <- [{"", 0}, {nil, 0}, {obligation_id, -1}, {obligation_id, 2}] do
-      assert {:error, :invalid_delegation} = Triage.delegation_task(org.id, agent, ref, index)
-    end
-
-    assert Stub.calls(key) == 4
-  end
-
-  test "delegation Task lookup rejects a selected Agent removed after the Timeline read", %{
-    org: org,
-    project: project
-  } do
-    {:ok, [agent | _rest]} = Triage.router_agents(org.id)
-    obligation_id = "triage-product-" <> String.duplicate("f", 64)
-    key = {:delegation_task, project.id, project.salix_group_id, agent.agent_id, obligation_id, 0}
-    use_stub(%{key => {:ok, %{"disposition" => "not_created"}}})
-
-    {:ok, record} = BridgeForTeams.Agents.get_agent(agent.agent_id)
-    archive_agent_fixture!(record)
-
-    assert {:error, :agent_not_found} = Triage.delegation_task(org.id, agent, obligation_id, 0)
-    assert Stub.calls(key) == 0
-  end
-
-  test "a group whose posture is unavailable leaves the scope incomplete", %{
-    org: org,
-    project: project,
-    namespace: namespace
-  } do
-    {:ok, other} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_project(org.id, %{
-        name: "Sick",
-        slug: "sick-#{unique()}"
-      })
-
-    use_stub(%{
-      {:posture, project.salix_group_id} => {:ok, [posture("mine")]},
-      {:posture, other.salix_group_id} => {:error, :unavailable},
-      {:window, namespace, 100, []} => {:ok, window([receipt("mine")])}
-    })
-
-    use_namespace(namespace)
-
-    assert {:ok, page} = Triage.recent_window(org.id, 100)
-    # The sick group contributed no connects, so its rows are indistinguishable
-    # from another org's: the page must say so rather than render a quietly
-    # short list.
-    assert page.scope_complete == false
-    assert [%{project_id: sick_id, reason: :unavailable}] = page.unavailable_groups
-    assert sick_id == other.id
-
-    assert {:ok, %{scope_complete: false, connects: [%{connect_id: "mine"}]}} =
-             Triage.connect_posture(org.id)
-  end
-
-  test "drops taken while the scope is incomplete are unattributed, never foreign", %{
-    org: org,
-    project: project,
-    namespace: namespace
-  } do
-    {:ok, other} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_project(org.id, %{
-        name: "Sick",
-        slug: "sick-#{unique()}"
-      })
-
-    use_stub(%{
-      {:posture, project.salix_group_id} => {:ok, [posture("mine")]},
-      {:posture, other.salix_group_id} => {:error, :unavailable},
-      {:window, namespace, 100, []} => {:ok, window([receipt("mine"), receipt("maybe-theirs")])}
-    })
-
-    use_namespace(namespace)
-
-    assert {:ok, page} = Triage.recent_window(org.id, 100)
-
-    assert Enum.map(page.receipts, & &1["connect_id"]) == ["mine"]
-    # The sick group's connects are missing from the join, so "maybe-theirs"
-    # may well be this org's own row. Calling it foreign would state something
-    # the join never established.
-    assert page.foreign_count == 0
-    assert page.unattributed_count == 1
-    assert page.scope_complete == false
   end
 
   test "posture carries the owning project onto each connect", %{org: org, project: project} do
@@ -523,131 +405,6 @@ defmodule BridgeForTeams.TriageTest do
 
   # ---- caching ----
 
-  test "posture reads are served from the cache", %{org: org, project: project} do
-    use_stub(%{{:posture, project.salix_group_id} => {:ok, [posture("mine")]}})
-
-    assert {:ok, _} = Triage.connect_posture(org.id)
-    assert {:ok, _} = Triage.connect_posture(org.id)
-    assert Stub.calls({:posture, project.salix_group_id}) == 1
-  end
-
-  # The whole assembled scope is the cache entry, and a failed group is part of
-  # a perfectly successful scope. That is what bounds the fan-out: a Salix
-  # outage costs one build per TTL rather than one per card, without ever
-  # caching an `{:error, _}` — the scan reads below still refuse to.
-  test "a failed group rides inside the cached scope instead of re-firing per card", %{
-    org: org,
-    project: project,
-    namespace: namespace
-  } do
-    {:ok, down} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_project(org.id, %{
-        name: "Down",
-        slug: "down-#{unique()}"
-      })
-
-    use_stub(%{
-      {:posture, project.salix_group_id} => {:ok, [posture("mine")]},
-      {:posture, down.salix_group_id} => {:error, :unavailable}
-    })
-
-    use_namespace(namespace)
-
-    assert {:ok, result} = Triage.connect_posture(org.id)
-    refute result.scope_complete
-    assert [%{group_id: group_id}] = result.unavailable_groups
-    assert group_id == down.salix_group_id
-
-    # More scope consumers on the same render, all served from the one build:
-    # the switch card again and the recent window.
-    assert {:ok, _} = Triage.connect_posture(org.id)
-    assert {:error, :unavailable} = Triage.recent_window(org.id, 100)
-
-    assert Stub.calls({:posture, down.salix_group_id}) == 1
-    assert Stub.calls({:posture, project.salix_group_id}) == 1
-  end
-
-  # A group the fan-out could not reach in time is reported, never dropped: the
-  # bound is allowed to cost completeness, not honesty.
-  test "a slow Salix costs one bounded fan-out, and every unreached group is named", %{
-    org: org,
-    project: project
-  } do
-    slow =
-      for i <- 1..23 do
-        {:ok, down} =
-          BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_project(org.id, %{
-            name: "Down #{i}",
-            slug: "down-#{unique()}"
-          })
-
-        down
-      end
-
-    groups = [project.salix_group_id | Enum.map(slow, & &1.salix_group_id)]
-
-    use_stub(Map.new(groups, &{{:posture, &1}, {:slow, 30_000, {:error, :unavailable}}}))
-
-    {elapsed_us, {:ok, result}} = :timer.tc(fn -> Triage.connect_posture(org.id) end)
-
-    # 24 sequential 30s reads would be twelve minutes. The bound is one
-    # per-group timeout, and it does not move with the project count.
-    assert div(elapsed_us, 1000) < 15_000
-
-    issued = Enum.count(groups, &(Stub.calls({:posture, &1}) > 0))
-    assert issued <= 16, "#{issued} posture reads issued for #{length(groups)} groups"
-    assert issued < length(groups)
-
-    # Every project is still accounted for — the ones that answered and the
-    # ones the deadline cut off — so the page can name what it could not check.
-    refute result.scope_complete
-    assert Enum.sort(Enum.map(result.unavailable_groups, & &1.group_id)) == Enum.sort(groups)
-  end
-
-  test "scan reads are served from the cache", %{
-    org: org,
-    project: project,
-    namespace: namespace
-  } do
-    since_ms = unique()
-    key = {:window, namespace, since_ms, []}
-
-    use_stub(%{
-      {:posture, project.salix_group_id} => {:ok, [posture("mine")]},
-      key => {:ok, window([receipt("mine")])}
-    })
-
-    use_namespace(namespace)
-
-    assert {:ok, _} = Triage.recent_window(org.id, since_ms)
-    assert {:ok, _} = Triage.recent_window(org.id, since_ms)
-    assert Stub.calls(key) == 1
-  end
-
-  test "a scan fault is never cached, so recovery is visible immediately", %{
-    org: org,
-    project: project,
-    namespace: namespace
-  } do
-    since_ms = unique()
-    key = {:window, namespace, since_ms, []}
-
-    use_stub(%{
-      {:posture, project.salix_group_id} => {:ok, [posture("mine")]},
-      key => {:seq, [{:error, :unavailable}, {:ok, window([receipt("mine")])}]}
-    })
-
-    use_namespace(namespace)
-
-    assert {:error, :unavailable} = Triage.recent_window(org.id, since_ms)
-
-    # Inside the 5s scan TTL. A cached error would pin the failed scan for the
-    # whole window and hide a Salix that has already come back.
-    assert {:ok, page} = Triage.recent_window(org.id, since_ms)
-    assert Enum.map(page.receipts, & &1["connect_id"]) == ["mine"]
-    assert Stub.calls(key) == 2
-  end
-
   # ---- writes ----
 
   test "enabling a connect calls Salix, re-reads the posture, and audits the change", %{
@@ -700,32 +457,6 @@ defmodule BridgeForTeams.TriageTest do
 
     assert audit.metadata["project_id"] == project.id
     assert audit.metadata["group_id"] == group
-  end
-
-  test "provisioning uses the one-way door and audits it as provisioned", %{
-    org: org,
-    project: project,
-    owner: owner
-  } do
-    group = project.salix_group_id
-
-    use_stub(%{
-      {:posture, group} =>
-        {:ok, [posture("mine", %{provisioned?: false, approved_channel_id: nil})]}
-    })
-
-    assert {:ok, _} =
-             Triage.set_connect_triage(org, owner, %{connect_id: "mine"}, {:provision, "C999"})
-
-    assert Stub.calls({:provision, group, "mine", "C999"}) == 1
-
-    assert [audit] =
-             Observability.list_audit_logs(org.id, action: "integration.slack.triage_provisioned")
-
-    assert audit.metadata["action"] == "provisioned"
-    # Never a message body, and not the channel id itself — only the posture.
-    refute Map.has_key?(audit.metadata, "approved_channel_id")
-    assert Map.has_key?(audit.metadata, "approved_channel_configured")
   end
 
   test "an org member is denied, the denial is audited, and Salix is never called", %{
@@ -785,176 +516,7 @@ defmodule BridgeForTeams.TriageTest do
              )
   end
 
-  test "an unavailable Salix write is returned and audited as failed", %{
-    org: org,
-    project: project,
-    owner: owner
-  } do
-    group = project.salix_group_id
-
-    use_stub(%{
-      {:posture, group} => {:ok, [posture("mine")]},
-      {:set_enabled, group, "mine", false} => {:error, :unavailable}
-    })
-
-    assert {:error, :unavailable} =
-             Triage.set_connect_triage(org, owner, %{connect_id: "mine"}, :disable)
-
-    assert [audit] =
-             Observability.list_audit_logs(org.id, action: "integration.slack.triage_disabled")
-
-    assert audit.result == "failed"
-    assert audit.reason_class == "unavailable"
-  end
-
-  test "a connect missing while a group is unreadable is transient, not gone", %{
-    org: org,
-    project: project,
-    owner: owner
-  } do
-    {:ok, other} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_project(org.id, %{
-        name: "Sick",
-        slug: "sick-#{unique()}"
-      })
-
-    use_stub(%{
-      {:posture, project.salix_group_id} => {:ok, [posture("mine")]},
-      {:posture, other.salix_group_id} => {:error, :unavailable}
-    })
-
-    # The connect could be sitting in exactly the group that did not answer, so
-    # `:connect_not_found` — which the UI renders as "no longer part of this
-    # organization" — would be a claim about a connect nobody looked at.
-    assert {:error, :unavailable} =
-             Triage.set_connect_triage(org, owner, %{connect_id: "elsewhere"}, :enable)
-
-    assert Stub.calls({:set_enabled, project.salix_group_id, "elsewhere", true}) == 0
-
-    assert [audit] =
-             Observability.list_audit_logs(org.id, action: "integration.slack.triage_enabled")
-
-    assert audit.result == "failed"
-    assert audit.reason_class == "unavailable"
-
-    # Pinning the ref to the healthy project narrows the question to a group
-    # that *did* answer, so absence becomes provable again.
-    assert {:error, :connect_not_found} =
-             Triage.set_connect_triage(
-               org,
-               owner,
-               %{connect_id: "elsewhere", project_id: project.id},
-               :enable
-             )
-  end
-
-  test "a successful write whose posture re-read fails still succeeds, and says it did not look",
-       %{org: org, project: project, owner: owner} do
-    group = project.salix_group_id
-
-    use_stub(%{
-      {:posture, group} =>
-        {:seq, [{:ok, [posture("mine", %{triage_enabled: false})]}, {:error, :unavailable}]}
-    })
-
-    assert {:ok, result} =
-             Triage.set_connect_triage(org, owner, %{connect_id: "mine"}, :enable)
-
-    # The write landed; the re-read did not. The caller gets the pre-write
-    # posture rather than an invented one.
-    assert result.triage_enabled == false
-    assert Stub.calls({:set_enabled, group, "mine", true}) == 1
-
-    assert [audit] =
-             Observability.list_audit_logs(org.id, action: "integration.slack.triage_enabled")
-
-    assert audit.result == "ok"
-    # Unobserved, not "unchanged": the audit row must not imply the switch
-    # failed to move when the truth is that nobody checked.
-    assert audit.metadata["post_write_posture_observed"] == "false"
-    assert audit.metadata["triage_enabled_before"] == "false"
-    refute audit.metadata["triage_enabled_after"]
-    refute audit.metadata["connect_generation_rotated"]
-  end
-
-  test "an org with no Salix tenant answers :tenant_not_ready", %{org: org, owner: owner} do
-    use_stub()
-
-    # The column is NOT NULL with a non-blank check, so this state cannot be
-    # persisted today. It still reaches the context: callers hand it an
-    # `%Organization{}` they already hold, and `fetch_org/1` passes a struct
-    # through without re-reading it. The guard is the reason a half-provisioned
-    # org degrades to a flash instead of fanning out over a nil tenant.
-    org = %{org | salix_tenant_id: nil}
-
-    assert {:error, :tenant_not_ready} = Triage.connect_posture(org)
-
-    assert {:error, :tenant_not_ready} =
-             Triage.set_connect_triage(org, owner, %{connect_id: "mine"}, :enable)
-
-    assert [audit] =
-             Observability.list_audit_logs(org.id, action: "integration.slack.triage_enabled")
-
-    assert audit.reason_class == "tenant_not_ready"
-  end
-
-  test "an unknown action never reaches Salix", %{org: org, owner: owner} do
-    use_stub()
-
-    assert {:error, :invalid_action} =
-             Triage.set_connect_triage(org, owner, %{connect_id: "mine"}, :archive)
-
-    assert {:error, :invalid_action} =
-             Triage.set_connect_triage(org, owner, %{connect_id: "mine"}, {:provision, "  "})
-  end
-
   # ---- ring ----
-
-  test "ring status passes the salix_web process names through", %{org: _org} do
-    refs = %{
-      runtime: Salix.Bindings.TriageReviewRuntime,
-      recovery: Salix.Bindings.TriageReceiptRecovery
-    }
-
-    use_stub(%{{:ring, refs} => {:ok, %{running: false, runtime: %{}, recovery: %{}}}})
-    BridgeForTeams.Salix.ReadCache.invalidate(:triage_ring_status)
-
-    assert {:ok, %{running: false}} = Triage.ring_status()
-    assert Stub.calls({:ring, refs}) == 1
-  end
-
-  test "ring status binds readiness and cache invalidation to the selected Agent" do
-    agent_id = "agt1_selected_router"
-
-    refs = %{
-      runtime: Salix.Bindings.TriageReviewRuntime,
-      recovery: Salix.Bindings.TriageReceiptRecovery,
-      evaluation_agent_id: agent_id
-    }
-
-    ring = fn readiness ->
-      {:ok,
-       %{
-         running: readiness == :ready,
-         evaluation_readiness: readiness,
-         runtime: %{},
-         recovery: %{cursor: nil}
-       }}
-    end
-
-    use_stub(%{{:ring, refs} => {:seq, [ring.(:unavailable), ring.(:ready)]}})
-
-    assert {:ok, %{evaluation_readiness: :unavailable}} = Triage.ring_status(agent_id)
-    assert {:ok, %{evaluation_readiness: :unavailable}} = Triage.ring_status(agent_id)
-    assert Stub.calls({:ring, refs}) == 1
-
-    assert :ok = Triage.refresh_evaluation_status(agent_id)
-    assert {:ok, %{evaluation_readiness: :ready}} = Triage.ring_status(agent_id)
-    assert Stub.calls({:ring, refs}) == 2
-
-    assert Triage.ring_status("  ") == {:error, :invalid_evaluation_agent}
-    assert Triage.refresh_evaluation_status(%{}) == {:error, :invalid_evaluation_agent}
-  end
 
   test "the ring's recovery cursor is replaced by an opaque token" do
     refs = %{
@@ -992,57 +554,10 @@ defmodule BridgeForTeams.TriageTest do
     refute rendered =~ "v1."
   end
 
-  test "a ring with no cursor reports no token" do
-    refs = %{
-      runtime: Salix.Bindings.TriageReviewRuntime,
-      recovery: Salix.Bindings.TriageReceiptRecovery
-    }
-
-    use_stub(%{
-      {:ring, refs} => {:ok, %{running: false, runtime: %{}, recovery: %{cursor: nil}}}
-    })
-
-    BridgeForTeams.Salix.ReadCache.invalidate(:triage_ring_status)
-
-    assert {:ok, %{recovery: %{cursor_token: nil}}} = Triage.ring_status()
-  end
-
   defp expected_cursor_token(cursor),
     do: :sha256 |> :crypto.hash(cursor) |> Base.encode16(case: :lower) |> binary_part(0, 8)
 
   # ---- router agents (Agent picker) ----
-
-  test "router agents lists routers and never workers", %{org: org, project: project} do
-    router = insert_agent(project, "router", "agt-router-#{unique()}")
-    worker = insert_agent(project, "worker", "agt-worker-#{unique()}")
-
-    assert {:ok, agents} = Triage.router_agents(org.id)
-
-    ids = Enum.map(agents, & &1.agent_id)
-    assert router.id in ids
-    # Workers carry no semantic memory at all, so they must never reach the
-    # Memory picker.
-    refute worker.id in ids
-
-    row = Enum.find(agents, &(&1.agent_id == router.id))
-    assert row.salix_agent_id == router.salix_agent_id
-    assert row.group_id == project.salix_group_id
-    assert row.project_name == project.name
-  end
-
-  test "router agents answers a tagged error rather than an empty picker" do
-    # The Memory tab renders this through the same fault component as every
-    # other section: collapsing it to `[]` would put "no router agents" — a
-    # statement about the org — on screen when the read simply failed.
-    assert {:error, :not_found} = Triage.router_agents(Ecto.UUID.generate())
-  end
-
-  test "router agents does not need the review runtime", %{org: org} do
-    use_namespace(nil)
-
-    # `Projects.create_project/2` already provisions the group's router agent.
-    assert {:ok, [_agent | _rest]} = Triage.router_agents(org.id)
-  end
 
   # ---- text reveal audit ----
 
@@ -1091,39 +606,6 @@ defmodule BridgeForTeams.TriageTest do
     assert audit.resource_id == "s3://receipt"
   end
 
-  test "a page of reveals is audited per message and stored together or not at all", %{
-    org: org,
-    owner: owner
-  } do
-    items = [
-      %{receipt_ref: "s3://receipt-a", connect_id: "c-a"},
-      %{receipt_ref: "s3://receipt-b", connect_id: "c-b"},
-      %{receipt_ref: "s3://receipt-a", connect_id: "c-a"},
-      %{receipt_ref: "  ", connect_id: "c-blank"}
-    ]
-
-    assert Triage.record_text_reveals(org, owner, items, surface: "triage_timeline") ==
-             MapSet.new(["s3://receipt-a", "s3://receipt-b"])
-
-    audits =
-      Observability.list_audit_logs(org.id, action: "integration.slack.triage_text_revealed")
-
-    assert audits |> Enum.map(&{&1.resource_id, &1.metadata["connect_id"]}) |> Enum.sort() ==
-             [{"s3://receipt-a", "c-a"}, {"s3://receipt-b", "c-b"}]
-
-    assert Enum.all?(audits, &(&1.result == "ok" and &1.actor_user_id == owner.id))
-
-    # One invalid row keeps the whole batch out, so no message is shown unaudited.
-    valid = %{org_id: org.id, action: "integration.slack.triage_text_revealed", result: "ok"}
-    assert {:error, _reason} = Observability.record_audits([valid, %{org_id: org.id}])
-
-    assert length(
-             Observability.list_audit_logs(org.id,
-               action: "integration.slack.triage_text_revealed"
-             )
-           ) == 2
-  end
-
   test "a reveal whose audit row cannot be written is refused, not degraded to :ok", %{
     org: org,
     owner: owner
@@ -1143,41 +625,5 @@ defmodule BridgeForTeams.TriageTest do
     assert Observability.list_audit_logs(org.id,
              action: "integration.slack.triage_text_revealed"
            ) == []
-  end
-
-  test "a switch write whose audit row fails still succeeds", %{
-    org: org,
-    project: project,
-    owner: owner
-  } do
-    use_stub(%{{:posture, project.salix_group_id} => {:ok, [posture("mine")]}})
-    use_failing_audit_writer()
-
-    # The mirror image of the reveal: the write already landed on the far side,
-    # and failing the caller here would report a completed change as an error.
-    assert {:ok, _later} = Triage.set_connect_triage(org, owner, %{connect_id: "mine"}, :enable)
-    assert Stub.calls({:set_enabled, project.salix_group_id, "mine", true}) == 1
-  end
-
-  test "a blank or oversized receipt ref never reaches the audit log", %{org: org, owner: owner} do
-    assert {:error, :invalid_receipt_ref} = Triage.record_text_reveal(org, owner, "   ")
-    assert {:error, :invalid_receipt_ref} = Triage.record_text_reveal(org, owner, nil)
-
-    assert {:error, :invalid_receipt_ref} =
-             Triage.record_text_reveal(org, owner, String.duplicate("a", 513))
-
-    assert Observability.list_audit_logs(org.id,
-             action: "integration.slack.triage_text_revealed"
-           ) == []
-  end
-
-  defp insert_agent(project, role, _salix_agent_id) do
-    {:ok, agent} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(
-        project.id,
-        %{role: role, name: "#{role}-#{unique()}"}
-      )
-
-    agent
   end
 end

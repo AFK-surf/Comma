@@ -82,7 +82,7 @@ defmodule BillingCore.Credits do
             "suspended"
 
           status in ["active", "suspended"] and remaining > 0 and
-              (is_nil(expires_at) or DateTime.compare(expires_at, DateTime.utc_now()) == :gt) ->
+              (is_nil(expires_at) or DateTime.compare(expires_at, SystemsClock.utc_now()) == :gt) ->
             "active"
 
           status == "suspended" ->
@@ -111,7 +111,7 @@ defmodule BillingCore.Credits do
   """
   @spec reduce_grant(map()) :: {:ok, map()} | {:error, term()}
   def reduce_grant(attrs) when is_map(attrs) do
-    repo = attrs[:repo] || attrs["repo"] || Application.fetch_env!(:billing_core, :repo)
+    repo = attrs[:repo] || attrs["repo"] || SystemsRuntime.fetch_env!(:billing_core, :repo)
     sql = attrs[:sql_runner] || attrs["sql_runner"] || Ecto.Adapters.SQL
     account_id = required(attrs, :billing_account_id)
     grant_id = required(attrs, :credit_grant_id)
@@ -223,7 +223,7 @@ defmodule BillingCore.Credits do
       nil ->
         with {:ok, policy} <-
                Policy.normalize(attrs[:policy_snapshot] || attrs["policy_snapshot"]) do
-          now = attrs[:now] || DateTime.utc_now()
+          now = attrs[:now] || SystemsClock.utc_now()
           credits = required(attrs, :credits)
           expires_at = attrs[:expires_at] || attrs["expires_at"]
 
@@ -508,5 +508,5 @@ defmodule BillingCore.Credits do
   end
 
   defp id(prefix),
-    do: prefix <> "_" <> (:crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower))
+    do: prefix <> "_" <> (SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower))
 end

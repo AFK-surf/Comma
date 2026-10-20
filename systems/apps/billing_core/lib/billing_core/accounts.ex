@@ -2,7 +2,7 @@ defmodule BillingCore.Accounts do
   @moduledoc "Billing account provisioning helpers."
 
   def ensure_account(attrs) when is_map(attrs) do
-    repo = attrs[:repo] || Application.get_env(:billing_core, :repo, BillingCore.Repo)
+    repo = attrs[:repo] || SystemsRuntime.get_env(:billing_core, :repo, BillingCore.Repo)
     sql = attrs[:sql_runner] || Ecto.Adapters.SQL
 
     if repo_started?(repo) or attrs[:repo] do
@@ -14,7 +14,7 @@ defmodule BillingCore.Accounts do
 
   @doc "Verify that an existing Billing account still belongs to the expected product owner."
   def verify_account(attrs) when is_map(attrs) do
-    repo = attrs[:repo] || Application.get_env(:billing_core, :repo, BillingCore.Repo)
+    repo = attrs[:repo] || SystemsRuntime.get_env(:billing_core, :repo, BillingCore.Repo)
     sql = attrs[:sql_runner] || Ecto.Adapters.SQL
 
     if repo_started?(repo) or attrs[:repo] do
@@ -238,7 +238,7 @@ defmodule BillingCore.Accounts do
     end
   end
 
-  defp repo_started?(repo) when is_atom(repo), do: Process.whereis(repo) != nil
+  defp repo_started?(repo) when is_atom(repo), do: SystemsRuntime.Proc.whereis(repo) != nil
   defp repo_started?(_repo), do: false
 
   defp enforce_product_owner_identity?(attrs),

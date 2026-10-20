@@ -1,5 +1,5 @@
 defmodule SalixIM.Migrations.RetireTaskGraphTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias SalixIM.Migrations.RetireTaskGraph
 
   defp record(status) do

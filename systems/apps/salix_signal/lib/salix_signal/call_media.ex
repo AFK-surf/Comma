@@ -23,7 +23,10 @@ defmodule SalixSignal.CallMedia do
     with {:ok, servers, relay} <- prepare_relay(opts) do
       opts = Map.merge(opts, %{ice_servers: servers, tls_relay: relay, relay_only: relay != nil})
 
-      case DynamicSupervisor.start_child(SalixSignal.CallMedia.Supervisor, {Connection, opts}) do
+      case SystemsRuntime.DynamicSupervisor.start_child(
+             SalixSignal.CallMedia.Supervisor,
+             {Connection, opts}
+           ) do
         {:ok, _} = result ->
           result
 

@@ -981,5 +981,5 @@ defmodule SalixStore.IFC do
 
   defp nonblank(_value), do: nil
 
-  defp now, do: DateTime.utc_now()
+  defp now, do: SystemsClock.utc_now()
 end

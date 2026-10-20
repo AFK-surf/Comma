@@ -585,7 +585,7 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
         conversationId: String,
         groupId: String,
         id: String,
-        status: CommaNotchScenePayloadTaskStatus = .inProgress,
+        status: CommaNotchScenePayloadTaskStatus,
         subtitle: String,
         title: String,
         updatedAt: Double,
@@ -607,13 +607,6 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
         self.groupId = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: 256)
         self.id = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .id, minimumLength: 1, maximumLength: 256)
         self.status = try container.decode(CommaNotchScenePayloadTaskStatus.self, forKey: .status)
-        guard self.status == .inProgress else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .status,
-                in: container,
-                debugDescription: "Unexpected constant value for status."
-            )
-        }
         self.subtitle = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .subtitle, minimumLength: nil, maximumLength: 2048)
         self.title = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .title, minimumLength: nil, maximumLength: 2048)
         self.updatedAt = try container.decode(Double.self, forKey: .updatedAt)
@@ -628,15 +621,6 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
         try container.encode(self.groupId, forKey: .groupId)
         try CommaNativeContractValidation.validateStringForEncoding(id, minimumLength: 1, maximumLength: 256, codingPath: container.codingPath + [CodingKeys.id])
         try container.encode(self.id, forKey: .id)
-        guard self.status == .inProgress else {
-            throw EncodingError.invalidValue(
-                self.status,
-                EncodingError.Context(
-                    codingPath: container.codingPath + [CodingKeys.status],
-                    debugDescription: "Unexpected constant value for status."
-                )
-            )
-        }
         try container.encode(self.status, forKey: .status)
         try CommaNativeContractValidation.validateStringForEncoding(subtitle, minimumLength: nil, maximumLength: 2048, codingPath: container.codingPath + [CodingKeys.subtitle])
         try container.encode(self.subtitle, forKey: .subtitle)
@@ -661,1958 +645,23 @@ public struct CommaNotchScenePayloadTask: Codable, Equatable, Sendable {
 
 public enum CommaNotchScenePayloadTaskStatus: String, Codable, Equatable, Sendable {
     case inProgress = "in_progress"
-}
-
-public struct CommaChatSnapshotEnvelope: Codable, Equatable, Sendable {
-    public let kind: CommaChatSnapshotEnvelopeKind
-    public let protocolVersion: CommaChatProtocolVersion
-    public let snapshot: CommaSideChatSnapshot
-
-    public init(
-        kind: CommaChatSnapshotEnvelopeKind = .chatSnapshot,
-        protocolVersion: CommaChatProtocolVersion = .v3,
-        snapshot: CommaSideChatSnapshot
-    ) {
-        self.kind = kind
-        self.protocolVersion = protocolVersion
-        self.snapshot = snapshot
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.kind = try container.decode(CommaChatSnapshotEnvelopeKind.self, forKey: .kind)
-        guard self.kind == .chatSnapshot else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .kind,
-                in: container,
-                debugDescription: "Unexpected constant value for kind."
-            )
-        }
-        self.protocolVersion = try container.decode(CommaChatProtocolVersion.self, forKey: .protocolVersion)
-        guard self.protocolVersion == .v3 else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .protocolVersion,
-                in: container,
-                debugDescription: "Unexpected constant value for protocolVersion."
-            )
-        }
-        self.snapshot = try container.decode(CommaSideChatSnapshot.self, forKey: .snapshot)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        guard self.kind == .chatSnapshot else {
-            throw EncodingError.invalidValue(
-                self.kind,
-                EncodingError.Context(
-                    codingPath: container.codingPath + [CodingKeys.kind],
-                    debugDescription: "Unexpected constant value for kind."
-                )
-            )
-        }
-        try container.encode(self.kind, forKey: .kind)
-        guard self.protocolVersion == .v3 else {
-            throw EncodingError.invalidValue(
-                self.protocolVersion,
-                EncodingError.Context(
-                    codingPath: container.codingPath + [CodingKeys.protocolVersion],
-                    debugDescription: "Unexpected constant value for protocolVersion."
-                )
-            )
-        }
-        try container.encode(self.protocolVersion, forKey: .protocolVersion)
-        try container.encode(self.snapshot, forKey: .snapshot)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case kind = "kind"
-        case protocolVersion = "protocolVersion"
-        case snapshot = "snapshot"
-    }
-}
-
-public enum CommaChatSnapshotEnvelopeKind: String, Codable, Equatable, Sendable {
-    case chatSnapshot = "chat.snapshot"
-}
-
-public struct CommaSideChatSnapshot: Codable, Equatable, Sendable {
-    public let error: String?
-    public let protocolVersion: CommaChatProtocolVersion
-    public let retryAt: Double?
-    public let revision: Int
-    public let session: CommaSideChatSession?
-    public let sessionEpoch: Int
-    public let status: CommaSideChatSnapshotStatus
-
-    public init(
-        error: String? = nil,
-        protocolVersion: CommaChatProtocolVersion = .v3,
-        retryAt: Double? = nil,
-        revision: Int,
-        session: CommaSideChatSession? = nil,
-        sessionEpoch: Int,
-        status: CommaSideChatSnapshotStatus
-    ) {
-        self.error = error
-        self.protocolVersion = protocolVersion
-        self.retryAt = retryAt
-        self.revision = revision
-        self.session = session
-        self.sessionEpoch = sessionEpoch
-        self.status = status
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.error = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .error)
-        self.protocolVersion = try container.decode(CommaChatProtocolVersion.self, forKey: .protocolVersion)
-        guard self.protocolVersion == .v3 else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .protocolVersion,
-                in: container,
-                debugDescription: "Unexpected constant value for protocolVersion."
-            )
-        }
-        self.retryAt = try CommaNativeContractValidation.decodeOptional(Double.self, from: container, forKey: .retryAt)
-        self.revision = try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .revision, minimum: 0, maximum: 9007199254740991)
-        self.session = try CommaNativeContractValidation.decodeOptional(CommaSideChatSession.self, from: container, forKey: .session)
-        self.sessionEpoch = try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991)
-        self.status = try container.decode(CommaSideChatSnapshotStatus.self, forKey: .status)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(self.error, forKey: .error)
-        guard self.protocolVersion == .v3 else {
-            throw EncodingError.invalidValue(
-                self.protocolVersion,
-                EncodingError.Context(
-                    codingPath: container.codingPath + [CodingKeys.protocolVersion],
-                    debugDescription: "Unexpected constant value for protocolVersion."
-                )
-            )
-        }
-        try container.encode(self.protocolVersion, forKey: .protocolVersion)
-        try container.encodeIfPresent(self.retryAt, forKey: .retryAt)
-        try CommaNativeContractValidation.validateIntegerForEncoding(revision, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.revision])
-        try container.encode(self.revision, forKey: .revision)
-        try container.encodeIfPresent(self.session, forKey: .session)
-        try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-        try container.encode(self.sessionEpoch, forKey: .sessionEpoch)
-        try container.encode(self.status, forKey: .status)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case error = "error"
-        case protocolVersion = "protocolVersion"
-        case retryAt = "retryAt"
-        case revision = "revision"
-        case session = "session"
-        case sessionEpoch = "sessionEpoch"
-        case status = "status"
-    }
-}
-
-public struct CommaSideChatSession: Codable, Equatable, Sendable {
-    public let conversationId: String
-    public let groupId: String
-    public let revision: Int
-    public let state: CommaSideChatConversationProjection
-    public let workspaceId: String
-
-    public init(
-        conversationId: String,
-        groupId: String,
-        revision: Int,
-        state: CommaSideChatConversationProjection,
-        workspaceId: String
-    ) {
-        self.conversationId = conversationId
-        self.groupId = groupId
-        self.revision = revision
-        self.state = state
-        self.workspaceId = workspaceId
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.conversationId = try container.decode(String.self, forKey: .conversationId)
-        self.groupId = try container.decode(String.self, forKey: .groupId)
-        self.revision = try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .revision, minimum: 0, maximum: 9007199254740991)
-        self.state = try container.decode(CommaSideChatConversationProjection.self, forKey: .state)
-        self.workspaceId = try container.decode(String.self, forKey: .workspaceId)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(self.conversationId, forKey: .conversationId)
-        try container.encode(self.groupId, forKey: .groupId)
-        try CommaNativeContractValidation.validateIntegerForEncoding(revision, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.revision])
-        try container.encode(self.revision, forKey: .revision)
-        try container.encode(self.state, forKey: .state)
-        try container.encode(self.workspaceId, forKey: .workspaceId)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case conversationId = "conversationId"
-        case groupId = "groupId"
-        case revision = "revision"
-        case state = "state"
-        case workspaceId = "workspaceId"
-    }
-}
-
-public struct CommaSideChatConversationProjection: Codable, Equatable, Sendable {
-    public let assistantDraft: CommaChatAssistantDraft?
-    public let awaitingReply: Bool
-    public let errorKind: CommaChatErrorKind?
-    public let messages: [CommaChatMessage]
-
-    public init(
-        assistantDraft: CommaChatAssistantDraft? = nil,
-        awaitingReply: Bool,
-        errorKind: CommaChatErrorKind? = nil,
-        messages: [CommaChatMessage]
-    ) {
-        self.assistantDraft = assistantDraft
-        self.awaitingReply = awaitingReply
-        self.errorKind = errorKind
-        self.messages = messages
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.assistantDraft = try CommaNativeContractValidation.decodeOptional(CommaChatAssistantDraft.self, from: container, forKey: .assistantDraft)
-        self.awaitingReply = try container.decode(Bool.self, forKey: .awaitingReply)
-        self.errorKind = try CommaNativeContractValidation.decodeOptional(CommaChatErrorKind.self, from: container, forKey: .errorKind)
-        self.messages = try CommaNativeContractValidation.decodeArray([CommaChatMessage].self, from: container, forKey: .messages, minimumItems: nil, maximumItems: 200)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(self.assistantDraft, forKey: .assistantDraft)
-        try container.encode(self.awaitingReply, forKey: .awaitingReply)
-        try container.encodeIfPresent(self.errorKind, forKey: .errorKind)
-        try CommaNativeContractValidation.validateArrayForEncoding(messages, minimumItems: nil, maximumItems: 200, codingPath: container.codingPath + [CodingKeys.messages])
-        try container.encode(self.messages, forKey: .messages)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case assistantDraft = "assistantDraft"
-        case awaitingReply = "awaitingReply"
-        case errorKind = "errorKind"
-        case messages = "messages"
-    }
-}
-
-public struct CommaChatAssistantDraft: Codable, Equatable, Sendable {
-    public let conversationId: String
-    public let draftId: String
-    public let responseKey: String
-    public let revision: Int?
-    public let sourceMessageIds: [String]
-    public let status: CommaChatAssistantDraftStatus
-    public let text: String
-
-    public init(
-        conversationId: String,
-        draftId: String,
-        responseKey: String,
-        revision: Int? = nil,
-        sourceMessageIds: [String],
-        status: CommaChatAssistantDraftStatus,
-        text: String
-    ) {
-        self.conversationId = conversationId
-        self.draftId = draftId
-        self.responseKey = responseKey
-        self.revision = revision
-        self.sourceMessageIds = sourceMessageIds
-        self.status = status
-        self.text = text
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.conversationId = try container.decode(String.self, forKey: .conversationId)
-        self.draftId = try container.decode(String.self, forKey: .draftId)
-        self.responseKey = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .responseKey, minimumLength: 1, maximumLength: nil)
-        self.revision = try CommaNativeContractValidation.decodeOptionalInteger(Int.self, from: container, forKey: .revision, minimum: 0, maximum: 9007199254740991)
-        self.sourceMessageIds = try CommaNativeContractValidation.decodeArray([String].self, from: container, forKey: .sourceMessageIds, minimumItems: 1, maximumItems: nil)
-        self.status = try container.decode(CommaChatAssistantDraftStatus.self, forKey: .status)
-        self.text = try container.decode(String.self, forKey: .text)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(self.conversationId, forKey: .conversationId)
-        try container.encode(self.draftId, forKey: .draftId)
-        try CommaNativeContractValidation.validateStringForEncoding(responseKey, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.responseKey])
-        try container.encode(self.responseKey, forKey: .responseKey)
-        if let value = revision {
-            try CommaNativeContractValidation.validateIntegerForEncoding(value, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.revision])
-        }
-        try container.encodeIfPresent(self.revision, forKey: .revision)
-        try CommaNativeContractValidation.validateArrayForEncoding(sourceMessageIds, minimumItems: 1, maximumItems: nil, codingPath: container.codingPath + [CodingKeys.sourceMessageIds])
-        try container.encode(self.sourceMessageIds, forKey: .sourceMessageIds)
-        try container.encode(self.status, forKey: .status)
-        try container.encode(self.text, forKey: .text)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case conversationId = "conversationId"
-        case draftId = "draftId"
-        case responseKey = "responseKey"
-        case revision = "revision"
-        case sourceMessageIds = "sourceMessageIds"
-        case status = "status"
-        case text = "text"
-    }
-}
-
-public enum CommaChatAssistantDraftStatus: String, Codable, Equatable, Sendable {
-    case streaming = "streaming"
-    case completed = "completed"
-}
-
-public enum CommaChatErrorKind: String, Codable, Equatable, Sendable {
-    case network = "network"
-    case unauthorized = "unauthorized"
-    case notFound = "not-found"
-    case forbidden = "forbidden"
-}
-
-public struct CommaChatMessage: Codable, Equatable, Sendable {
-    public let actorId: String?
-    public let actorRole: CommaChatMessageActorRole?
-    public let attachments: [CommaChatAttachment]
-    public let blocksKey: String?
-    public let clientRequestId: String?
-    public let createdAt: Double?
-    public let createdBy: String?
-    public let delivery: CommaChatMessageDelivery
-    public let error: String?
-    public let failureAction: CommaChatMessageFailureAction?
-    public let messageId: String
-    public let parts: [CommaChatMessagePart]?
-    public let platformSource: String?
-    public let refs: [CommaChatConversationRef]
-    public let replyToMessageId: String?
-    public let role: String
-    public let source: CommaChatMessageSource
-    public let status: String?
-    public let text: String
-    public let threadRootMessageId: String?
-
-    public init(
-        actorId: String? = nil,
-        actorRole: CommaChatMessageActorRole? = nil,
-        attachments: [CommaChatAttachment],
-        blocksKey: String? = nil,
-        clientRequestId: String? = nil,
-        createdAt: Double? = nil,
-        createdBy: String? = nil,
-        delivery: CommaChatMessageDelivery,
-        error: String? = nil,
-        failureAction: CommaChatMessageFailureAction? = nil,
-        messageId: String,
-        parts: [CommaChatMessagePart]? = nil,
-        platformSource: String? = nil,
-        refs: [CommaChatConversationRef],
-        replyToMessageId: String? = nil,
-        role: String,
-        source: CommaChatMessageSource,
-        status: String? = nil,
-        text: String,
-        threadRootMessageId: String? = nil
-    ) {
-        self.actorId = actorId
-        self.actorRole = actorRole
-        self.attachments = attachments
-        self.blocksKey = blocksKey
-        self.clientRequestId = clientRequestId
-        self.createdAt = createdAt
-        self.createdBy = createdBy
-        self.delivery = delivery
-        self.error = error
-        self.failureAction = failureAction
-        self.messageId = messageId
-        self.parts = parts
-        self.platformSource = platformSource
-        self.refs = refs
-        self.replyToMessageId = replyToMessageId
-        self.role = role
-        self.source = source
-        self.status = status
-        self.text = text
-        self.threadRootMessageId = threadRootMessageId
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.actorId = try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .actorId, minimumLength: 1, maximumLength: nil)
-        self.actorRole = try CommaNativeContractValidation.decodeOptional(CommaChatMessageActorRole.self, from: container, forKey: .actorRole)
-        self.attachments = try container.decode([CommaChatAttachment].self, forKey: .attachments)
-        self.blocksKey = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .blocksKey)
-        self.clientRequestId = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .clientRequestId)
-        self.createdAt = try CommaNativeContractValidation.decodeOptional(Double.self, from: container, forKey: .createdAt)
-        self.createdBy = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .createdBy)
-        self.delivery = try container.decode(CommaChatMessageDelivery.self, forKey: .delivery)
-        self.error = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .error)
-        self.failureAction = try CommaNativeContractValidation.decodeOptional(CommaChatMessageFailureAction.self, from: container, forKey: .failureAction)
-        self.messageId = try container.decode(String.self, forKey: .messageId)
-        self.parts = try CommaNativeContractValidation.decodeOptional([CommaChatMessagePart].self, from: container, forKey: .parts)
-        self.platformSource = try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .platformSource, minimumLength: 1, maximumLength: 64)
-        self.refs = try container.decode([CommaChatConversationRef].self, forKey: .refs)
-        self.replyToMessageId = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .replyToMessageId)
-        self.role = try container.decode(String.self, forKey: .role)
-        self.source = try container.decode(CommaChatMessageSource.self, forKey: .source)
-        self.status = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .status)
-        self.text = try container.decode(String.self, forKey: .text)
-        self.threadRootMessageId = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .threadRootMessageId)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        if let value = actorId {
-            try CommaNativeContractValidation.validateStringForEncoding(value, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.actorId])
-        }
-        try container.encodeIfPresent(self.actorId, forKey: .actorId)
-        try container.encodeIfPresent(self.actorRole, forKey: .actorRole)
-        try container.encode(self.attachments, forKey: .attachments)
-        try container.encodeIfPresent(self.blocksKey, forKey: .blocksKey)
-        try container.encodeIfPresent(self.clientRequestId, forKey: .clientRequestId)
-        try container.encodeIfPresent(self.createdAt, forKey: .createdAt)
-        try container.encodeIfPresent(self.createdBy, forKey: .createdBy)
-        try container.encode(self.delivery, forKey: .delivery)
-        try container.encodeIfPresent(self.error, forKey: .error)
-        try container.encodeIfPresent(self.failureAction, forKey: .failureAction)
-        try container.encode(self.messageId, forKey: .messageId)
-        try container.encodeIfPresent(self.parts, forKey: .parts)
-        if let value = platformSource {
-            try CommaNativeContractValidation.validateStringForEncoding(value, minimumLength: 1, maximumLength: 64, codingPath: container.codingPath + [CodingKeys.platformSource])
-        }
-        try container.encodeIfPresent(self.platformSource, forKey: .platformSource)
-        try container.encode(self.refs, forKey: .refs)
-        try container.encodeIfPresent(self.replyToMessageId, forKey: .replyToMessageId)
-        try container.encode(self.role, forKey: .role)
-        try container.encode(self.source, forKey: .source)
-        try container.encodeIfPresent(self.status, forKey: .status)
-        try container.encode(self.text, forKey: .text)
-        try container.encodeIfPresent(self.threadRootMessageId, forKey: .threadRootMessageId)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case actorId = "actorId"
-        case actorRole = "actorRole"
-        case attachments = "attachments"
-        case blocksKey = "blocksKey"
-        case clientRequestId = "clientRequestId"
-        case createdAt = "createdAt"
-        case createdBy = "createdBy"
-        case delivery = "delivery"
-        case error = "error"
-        case failureAction = "failureAction"
-        case messageId = "messageId"
-        case parts = "parts"
-        case platformSource = "platformSource"
-        case refs = "refs"
-        case replyToMessageId = "replyToMessageId"
-        case role = "role"
-        case source = "source"
-        case status = "status"
-        case text = "text"
-        case threadRootMessageId = "threadRootMessageId"
-    }
-}
-
-public enum CommaChatMessageActorRole: String, Codable, Equatable, Sendable {
-    case router = "router"
-    case worker = "worker"
-}
-
-public struct CommaChatAttachment: Codable, Equatable, Sendable {
-    public let agentId: String?
-    public let attachmentIndex: Int?
-    public let blobRef: CommaChatAttachmentBlobRef?
-    public let blockType: CommaChatAttachmentBlockType
-    public let fileName: String?
-    public let localFileRef: String?
-    public let mimeType: String?
-    public let size: Double?
-    public let title: String?
-    public let workspacePath: String?
-
-    public init(
-        agentId: String? = nil,
-        attachmentIndex: Int? = nil,
-        blobRef: CommaChatAttachmentBlobRef? = nil,
-        blockType: CommaChatAttachmentBlockType,
-        fileName: String? = nil,
-        localFileRef: String? = nil,
-        mimeType: String? = nil,
-        size: Double? = nil,
-        title: String? = nil,
-        workspacePath: String? = nil
-    ) {
-        self.agentId = agentId
-        self.attachmentIndex = attachmentIndex
-        self.blobRef = blobRef
-        self.blockType = blockType
-        self.fileName = fileName
-        self.localFileRef = localFileRef
-        self.mimeType = mimeType
-        self.size = size
-        self.title = title
-        self.workspacePath = workspacePath
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.agentId = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .agentId)
-        self.attachmentIndex = try CommaNativeContractValidation.decodeOptionalInteger(Int.self, from: container, forKey: .attachmentIndex, minimum: 0, maximum: 9007199254740991)
-        self.blobRef = try CommaNativeContractValidation.decodeOptional(CommaChatAttachmentBlobRef.self, from: container, forKey: .blobRef)
-        self.blockType = try container.decode(CommaChatAttachmentBlockType.self, forKey: .blockType)
-        self.fileName = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .fileName)
-        self.localFileRef = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .localFileRef)
-        self.mimeType = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .mimeType)
-        self.size = try CommaNativeContractValidation.decodeOptional(Double.self, from: container, forKey: .size)
-        self.title = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .title)
-        self.workspacePath = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .workspacePath)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(self.agentId, forKey: .agentId)
-        if let value = attachmentIndex {
-            try CommaNativeContractValidation.validateIntegerForEncoding(value, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.attachmentIndex])
-        }
-        try container.encodeIfPresent(self.attachmentIndex, forKey: .attachmentIndex)
-        try container.encodeIfPresent(self.blobRef, forKey: .blobRef)
-        try container.encode(self.blockType, forKey: .blockType)
-        try container.encodeIfPresent(self.fileName, forKey: .fileName)
-        try container.encodeIfPresent(self.localFileRef, forKey: .localFileRef)
-        try container.encodeIfPresent(self.mimeType, forKey: .mimeType)
-        try container.encodeIfPresent(self.size, forKey: .size)
-        try container.encodeIfPresent(self.title, forKey: .title)
-        try container.encodeIfPresent(self.workspacePath, forKey: .workspacePath)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case agentId = "agentId"
-        case attachmentIndex = "attachmentIndex"
-        case blobRef = "blobRef"
-        case blockType = "blockType"
-        case fileName = "fileName"
-        case localFileRef = "localFileRef"
-        case mimeType = "mimeType"
-        case size = "size"
-        case title = "title"
-        case workspacePath = "workspacePath"
-    }
-}
-
-public struct CommaChatAttachmentBlobRef: Codable, Equatable, Sendable {
-    public let hash: String
-    public let kind: CommaChatAttachmentBlobRefKind
-    public let size: Int
-    public let uuid: String
-
-    public init(
-        hash: String,
-        kind: CommaChatAttachmentBlobRefKind = .blob,
-        size: Int,
-        uuid: String
-    ) {
-        self.hash = hash
-        self.kind = kind
-        self.size = size
-        self.uuid = uuid
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.hash = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .hash, minimumLength: 64, maximumLength: 64)
-        self.kind = try container.decode(CommaChatAttachmentBlobRefKind.self, forKey: .kind)
-        guard self.kind == .blob else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .kind,
-                in: container,
-                debugDescription: "Unexpected constant value for kind."
-            )
-        }
-        self.size = try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .size, minimum: 0, maximum: 536870912)
-        self.uuid = try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .uuid, minimumLength: 32, maximumLength: 32)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try CommaNativeContractValidation.validateStringForEncoding(hash, minimumLength: 64, maximumLength: 64, codingPath: container.codingPath + [CodingKeys.hash])
-        try container.encode(self.hash, forKey: .hash)
-        guard self.kind == .blob else {
-            throw EncodingError.invalidValue(
-                self.kind,
-                EncodingError.Context(
-                    codingPath: container.codingPath + [CodingKeys.kind],
-                    debugDescription: "Unexpected constant value for kind."
-                )
-            )
-        }
-        try container.encode(self.kind, forKey: .kind)
-        try CommaNativeContractValidation.validateIntegerForEncoding(size, minimum: 0, maximum: 536870912, codingPath: container.codingPath + [CodingKeys.size])
-        try container.encode(self.size, forKey: .size)
-        try CommaNativeContractValidation.validateStringForEncoding(uuid, minimumLength: 32, maximumLength: 32, codingPath: container.codingPath + [CodingKeys.uuid])
-        try container.encode(self.uuid, forKey: .uuid)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case hash = "hash"
-        case kind = "kind"
-        case size = "size"
-        case uuid = "uuid"
-    }
-}
-
-public enum CommaChatAttachmentBlobRefKind: String, Codable, Equatable, Sendable {
-    case blob = "blob"
-}
-
-public enum CommaChatAttachmentBlockType: String, Codable, Equatable, Sendable {
-    case file = "file"
-    case image = "image"
-}
-
-public enum CommaChatMessageDelivery: String, Codable, Equatable, Sendable {
-    case sent = "sent"
-    case sending = "sending"
     case failed = "failed"
+    case sent = "sent"
 }
 
-public enum CommaChatMessageFailureAction: String, Codable, Equatable, Sendable {
-    case billing = "billing"
-}
-
-public enum CommaChatMessagePart: Codable, Equatable, Sendable {
-    case dynamicUi(
-        conversationId: String,
-        attachmentIndex: Int,
-        contentId: String,
-        messageId: String,
-        originTaskId: String?,
-        summary: String,
-        uiRef: String,
-        version: Int
-    )
-    case markdown(
-        text: String
-    )
-    case inlineTask(
-        task: CommaChatInlineTask
-    )
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let kind = try container.decode(String.self, forKey: .kind)
-
-
-        switch kind {
-        case "dynamic-ui":
-            self = .dynamicUi(
-                conversationId: try container.decode(String.self, forKey: .conversationId),
-                attachmentIndex: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .attachmentIndex, minimum: 0, maximum: 9007199254740991),
-                contentId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .contentId, minimumLength: 1, maximumLength: nil),
-                messageId: try container.decode(String.self, forKey: .messageId),
-                originTaskId: try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .originTaskId),
-                summary: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .summary, minimumLength: nil, maximumLength: 4000),
-                uiRef: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .uiRef, minimumLength: 1, maximumLength: 100),
-                version: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .version, minimum: -9007199254740991, maximum: 9007199254740991)
-            )
-        case "markdown":
-            guard !container.contains(.task) else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .task,
-                    in: container,
-                    debugDescription: "task is not allowed for markdown."
-                )
-            }
-            self = .markdown(
-                text: try container.decode(String.self, forKey: .text)
-            )
-        case "inline-task":
-            guard !container.contains(.text) else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .text,
-                    in: container,
-                    debugDescription: "text is not allowed for inline-task."
-                )
-            }
-            self = .inlineTask(
-                task: try container.decode(CommaChatInlineTask.self, forKey: .task)
-            )
-        default:
-            throw DecodingError.dataCorruptedError(
-                forKey: .kind,
-                in: container,
-                debugDescription: "Unknown CommaChatMessagePart kind: \(kind)"
-            )
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-
-        switch self {
-        case let .dynamicUi(
-            conversationId,
-            attachmentIndex,
-            contentId,
-            messageId,
-            originTaskId,
-            summary,
-            uiRef,
-            version
-        ):
-            try container.encode("dynamic-ui", forKey: .kind)
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(attachmentIndex, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.attachmentIndex])
-            try container.encode(attachmentIndex, forKey: .attachmentIndex)
-            try CommaNativeContractValidation.validateStringForEncoding(contentId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.contentId])
-            try container.encode(contentId, forKey: .contentId)
-            try container.encode(messageId, forKey: .messageId)
-            try container.encodeIfPresent(originTaskId, forKey: .originTaskId)
-            try CommaNativeContractValidation.validateStringForEncoding(summary, minimumLength: nil, maximumLength: 4000, codingPath: container.codingPath + [CodingKeys.summary])
-            try container.encode(summary, forKey: .summary)
-            try CommaNativeContractValidation.validateStringForEncoding(uiRef, minimumLength: 1, maximumLength: 100, codingPath: container.codingPath + [CodingKeys.uiRef])
-            try container.encode(uiRef, forKey: .uiRef)
-            try CommaNativeContractValidation.validateIntegerForEncoding(version, minimum: -9007199254740991, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.version])
-            try container.encode(version, forKey: .version)
-        case let .markdown(
-            text
-        ):
-            try container.encode("markdown", forKey: .kind)
-            try container.encode(text, forKey: .text)
-        case let .inlineTask(
-            task
-        ):
-            try container.encode("inline-task", forKey: .kind)
-            try container.encode(task, forKey: .task)
-        }
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case kind = "kind"
-        case attachmentIndex = "attachmentIndex"
-        case contentId = "contentId"
-        case conversationId = "conversationId"
-        case messageId = "messageId"
-        case originTaskId = "originTaskId"
-        case summary = "summary"
-        case task = "task"
-        case text = "text"
-        case uiRef = "uiRef"
-        case version = "version"
-    }
-}
-
-public struct CommaChatInlineTask: Codable, Equatable, Sendable {
-    public let activityStatus: String?
-    public let conversationId: String?
-    public let freshness: CommaChatInlineTaskFreshness?
-    public let status: String?
-    public let title: String?
-    public let unavailable: Bool
-    public let updatedAt: Double?
-
-    public init(
-        activityStatus: String? = nil,
-        conversationId: String? = nil,
-        freshness: CommaChatInlineTaskFreshness? = nil,
-        status: String? = nil,
-        title: String? = nil,
-        unavailable: Bool,
-        updatedAt: Double? = nil
-    ) {
-        self.activityStatus = activityStatus
-        self.conversationId = conversationId
-        self.freshness = freshness
-        self.status = status
-        self.title = title
-        self.unavailable = unavailable
-        self.updatedAt = updatedAt
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.activityStatus = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .activityStatus)
-        self.conversationId = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .conversationId)
-        self.freshness = try CommaNativeContractValidation.decodeOptional(CommaChatInlineTaskFreshness.self, from: container, forKey: .freshness)
-        self.status = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .status)
-        self.title = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .title)
-        self.unavailable = try container.decode(Bool.self, forKey: .unavailable)
-        self.updatedAt = try CommaNativeContractValidation.decodeOptional(Double.self, from: container, forKey: .updatedAt)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(self.activityStatus, forKey: .activityStatus)
-        try container.encodeIfPresent(self.conversationId, forKey: .conversationId)
-        try container.encodeIfPresent(self.freshness, forKey: .freshness)
-        try container.encodeIfPresent(self.status, forKey: .status)
-        try container.encodeIfPresent(self.title, forKey: .title)
-        try container.encode(self.unavailable, forKey: .unavailable)
-        try container.encodeIfPresent(self.updatedAt, forKey: .updatedAt)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case activityStatus = "activityStatus"
-        case conversationId = "conversationId"
-        case freshness = "freshness"
-        case status = "status"
-        case title = "title"
-        case unavailable = "unavailable"
-        case updatedAt = "updatedAt"
-    }
-}
-
-public enum CommaChatInlineTaskFreshness: String, Codable, Equatable, Sendable {
-    case fresh = "fresh"
-    case stale = "stale"
-    case unknown = "unknown"
-}
-
-public struct CommaChatConversationRef: Codable, Equatable, Sendable {
-    public let conversationId: String
-    public let kind: String?
-    public let title: String?
-
-    public init(
-        conversationId: String,
-        kind: String? = nil,
-        title: String? = nil
-    ) {
-        self.conversationId = conversationId
-        self.kind = kind
-        self.title = title
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.conversationId = try container.decode(String.self, forKey: .conversationId)
-        self.kind = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .kind)
-        self.title = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .title)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(self.conversationId, forKey: .conversationId)
-        try container.encodeIfPresent(self.kind, forKey: .kind)
-        try container.encodeIfPresent(self.title, forKey: .title)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case conversationId = "conversationId"
-        case kind = "kind"
-        case title = "title"
-    }
-}
-
-public enum CommaChatMessageSource: String, Codable, Equatable, Sendable {
-    case server = "server"
-    case pending = "pending"
-}
-
-public enum CommaSideChatSnapshotStatus: String, Codable, Equatable, Sendable {
-    case signedOut = "signed-out"
-    case resolving = "resolving"
-    case ready = "ready"
-    case error = "error"
-    case unavailable = "unavailable"
-}
-
-public enum CommaSideChatCommand: Codable, Equatable, Sendable {
-    case ready(
-        requestId: String
-    )
-    case retain(
-        workspaceId: String,
-        conversationId: String,
+public enum CommaStatusMenuHostFrame: Codable, Equatable, Sendable {
+    case show(
         requestId: String,
-        groupId: String,
-        sessionEpoch: Int,
-        subscriberId: String
-    )
-    case release(
-        workspaceId: String,
-        conversationId: String,
-        requestId: String,
-        groupId: String,
-        sessionEpoch: Int,
-        subscriberId: String
-    )
-    case setDraft(
-        workspaceId: String,
-        conversationId: String,
-        requestId: String,
-        draft: String,
-        groupId: String,
-        sessionEpoch: Int,
-        surfaceId: String
-    )
-    case send(
-        workspaceId: String,
-        conversationId: String,
-        requestId: String,
-        consumeDraft: Bool?,
-        groupId: String,
-        replyToMessageId: String?,
-        sendIntentId: String,
-        sessionEpoch: Int,
-        skills: [CommaChatSkillReference]?,
-        surfaceId: String,
-        text: String
-    )
-    case refresh(
-        workspaceId: String,
-        conversationId: String,
-        requestId: String,
-        groupId: String,
-        sessionEpoch: Int
-    )
-    case retry(
-        workspaceId: String,
-        conversationId: String,
-        requestId: String,
-        clientRequestId: String,
-        groupId: String,
-        sessionEpoch: Int
-    )
-    case discard(
-        workspaceId: String,
-        conversationId: String,
-        requestId: String,
-        clientRequestId: String,
-        groupId: String,
-        sessionEpoch: Int
-    )
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let kind = try container.decode(String.self, forKey: .kind)
-        let protocolVersion = try container.decode(CommaChatProtocolVersion.self, forKey: .protocolVersion)
-
-        switch kind {
-        case "side-chat.ready":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.ready; expected 3."
-                )
-            }
-            self = .ready(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil)
-            )
-        case "chat.retain":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.retain; expected 3."
-                )
-            }
-            self = .retain(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991),
-                subscriberId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .subscriberId, minimumLength: 1, maximumLength: nil)
-            )
-        case "chat.release":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.release; expected 3."
-                )
-            }
-            self = .release(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991),
-                subscriberId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .subscriberId, minimumLength: 1, maximumLength: nil)
-            )
-        case "chat.set-draft":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.set-draft; expected 3."
-                )
-            }
-            self = .setDraft(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                draft: try container.decode(String.self, forKey: .draft),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991),
-                surfaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .surfaceId, minimumLength: 1, maximumLength: nil)
-            )
-        case "chat.send":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.send; expected 3."
-                )
-            }
-            self = .send(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                consumeDraft: try CommaNativeContractValidation.decodeOptional(Bool.self, from: container, forKey: .consumeDraft),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                replyToMessageId: try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .replyToMessageId),
-                sendIntentId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .sendIntentId, minimumLength: 8, maximumLength: 128),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991),
-                skills: try CommaNativeContractValidation.decodeOptional([CommaChatSkillReference].self, from: container, forKey: .skills),
-                surfaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .surfaceId, minimumLength: 1, maximumLength: nil),
-                text: try container.decode(String.self, forKey: .text)
-            )
-        case "chat.refresh":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.refresh; expected 3."
-                )
-            }
-            self = .refresh(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991)
-            )
-        case "chat.retry":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.retry; expected 3."
-                )
-            }
-            self = .retry(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                clientRequestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .clientRequestId, minimumLength: 1, maximumLength: nil),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991)
-            )
-        case "chat.discard":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.discard; expected 3."
-                )
-            }
-            self = .discard(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                clientRequestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .clientRequestId, minimumLength: 1, maximumLength: nil),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991)
-            )
-        default:
-            throw DecodingError.dataCorruptedError(
-                forKey: .kind,
-                in: container,
-                debugDescription: "Unknown CommaSideChatCommand kind: \(kind)"
-            )
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-
-        switch self {
-        case let .ready(
-            requestId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.ready", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-        case let .retain(
-            workspaceId,
-            conversationId,
-            requestId,
-            groupId,
-            sessionEpoch,
-            subscriberId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.retain", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-            try CommaNativeContractValidation.validateStringForEncoding(subscriberId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.subscriberId])
-            try container.encode(subscriberId, forKey: .subscriberId)
-        case let .release(
-            workspaceId,
-            conversationId,
-            requestId,
-            groupId,
-            sessionEpoch,
-            subscriberId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.release", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-            try CommaNativeContractValidation.validateStringForEncoding(subscriberId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.subscriberId])
-            try container.encode(subscriberId, forKey: .subscriberId)
-        case let .setDraft(
-            workspaceId,
-            conversationId,
-            requestId,
-            draft,
-            groupId,
-            sessionEpoch,
-            surfaceId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.set-draft", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try container.encode(draft, forKey: .draft)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-            try CommaNativeContractValidation.validateStringForEncoding(surfaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.surfaceId])
-            try container.encode(surfaceId, forKey: .surfaceId)
-        case let .send(
-            workspaceId,
-            conversationId,
-            requestId,
-            consumeDraft,
-            groupId,
-            replyToMessageId,
-            sendIntentId,
-            sessionEpoch,
-            skills,
-            surfaceId,
-            text
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.send", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try container.encodeIfPresent(consumeDraft, forKey: .consumeDraft)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try container.encodeIfPresent(replyToMessageId, forKey: .replyToMessageId)
-            try CommaNativeContractValidation.validateStringForEncoding(sendIntentId, minimumLength: 8, maximumLength: 128, codingPath: container.codingPath + [CodingKeys.sendIntentId])
-            try container.encode(sendIntentId, forKey: .sendIntentId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-            try container.encodeIfPresent(skills, forKey: .skills)
-            try CommaNativeContractValidation.validateStringForEncoding(surfaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.surfaceId])
-            try container.encode(surfaceId, forKey: .surfaceId)
-            try container.encode(text, forKey: .text)
-        case let .refresh(
-            workspaceId,
-            conversationId,
-            requestId,
-            groupId,
-            sessionEpoch
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.refresh", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-        case let .retry(
-            workspaceId,
-            conversationId,
-            requestId,
-            clientRequestId,
-            groupId,
-            sessionEpoch
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.retry", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try CommaNativeContractValidation.validateStringForEncoding(clientRequestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.clientRequestId])
-            try container.encode(clientRequestId, forKey: .clientRequestId)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-        case let .discard(
-            workspaceId,
-            conversationId,
-            requestId,
-            clientRequestId,
-            groupId,
-            sessionEpoch
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.discard", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try CommaNativeContractValidation.validateStringForEncoding(clientRequestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.clientRequestId])
-            try container.encode(clientRequestId, forKey: .clientRequestId)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-        }
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case kind = "kind"
-        case protocolVersion = "protocolVersion"
-        case clientRequestId = "clientRequestId"
-        case consumeDraft = "consumeDraft"
-        case conversationId = "conversationId"
-        case draft = "draft"
-        case groupId = "groupId"
-        case replyToMessageId = "replyToMessageId"
-        case requestId = "requestId"
-        case sendIntentId = "sendIntentId"
-        case sessionEpoch = "sessionEpoch"
-        case skills = "skills"
-        case subscriberId = "subscriberId"
-        case surfaceId = "surfaceId"
-        case text = "text"
-        case workspaceId = "workspaceId"
-    }
-}
-
-public struct CommaChatSkillReference: Codable, Equatable, Sendable {
-    public let location: String
-
-    public init(
-        location: String
-    ) {
-        self.location = location
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.location = try container.decode(String.self, forKey: .location)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(self.location, forKey: .location)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case location = "location"
-    }
-}
-
-public struct CommaSideChatCommandResult: Codable, Equatable, Sendable {
-    public let error: String?
-    public let kind: CommaSideChatCommandResultKind
-    public let ok: Bool
-    public let protocolVersion: CommaChatProtocolVersion
-    public let requestId: String
-
-    public init(
-        error: String? = nil,
-        kind: CommaSideChatCommandResultKind = .commandResult,
-        ok: Bool,
-        protocolVersion: CommaChatProtocolVersion = .v3,
-        requestId: String
-    ) {
-        self.error = error
-        self.kind = kind
-        self.ok = ok
-        self.protocolVersion = protocolVersion
-        self.requestId = requestId
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.error = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .error)
-        self.kind = try container.decode(CommaSideChatCommandResultKind.self, forKey: .kind)
-        guard self.kind == .commandResult else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .kind,
-                in: container,
-                debugDescription: "Unexpected constant value for kind."
-            )
-        }
-        self.ok = try container.decode(Bool.self, forKey: .ok)
-        self.protocolVersion = try container.decode(CommaChatProtocolVersion.self, forKey: .protocolVersion)
-        guard self.protocolVersion == .v3 else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .protocolVersion,
-                in: container,
-                debugDescription: "Unexpected constant value for protocolVersion."
-            )
-        }
-        self.requestId = try container.decode(String.self, forKey: .requestId)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(self.error, forKey: .error)
-        guard self.kind == .commandResult else {
-            throw EncodingError.invalidValue(
-                self.kind,
-                EncodingError.Context(
-                    codingPath: container.codingPath + [CodingKeys.kind],
-                    debugDescription: "Unexpected constant value for kind."
-                )
-            )
-        }
-        try container.encode(self.kind, forKey: .kind)
-        try container.encode(self.ok, forKey: .ok)
-        guard self.protocolVersion == .v3 else {
-            throw EncodingError.invalidValue(
-                self.protocolVersion,
-                EncodingError.Context(
-                    codingPath: container.codingPath + [CodingKeys.protocolVersion],
-                    debugDescription: "Unexpected constant value for protocolVersion."
-                )
-            )
-        }
-        try container.encode(self.protocolVersion, forKey: .protocolVersion)
-        try container.encode(self.requestId, forKey: .requestId)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case error = "error"
-        case kind = "kind"
-        case ok = "ok"
-        case protocolVersion = "protocolVersion"
-        case requestId = "requestId"
-    }
-}
-
-public enum CommaSideChatCommandResultKind: String, Codable, Equatable, Sendable {
-    case commandResult = "command.result"
-}
-
-public struct CommaSideChatProtocolError: Codable, Equatable, Sendable {
-    public let error: String
-    public let expectedProtocolVersion: CommaChatProtocolVersion
-    public let frameKind: String?
-    public let kind: CommaSideChatProtocolErrorKind
-    public let protocolVersion: CommaChatProtocolVersion
-    public let receivedProtocolVersion: Int?
-
-    public init(
-        error: String,
-        expectedProtocolVersion: CommaChatProtocolVersion = .v3,
-        frameKind: String? = nil,
-        kind: CommaSideChatProtocolErrorKind = .sideChatProtocolError,
-        protocolVersion: CommaChatProtocolVersion = .v3,
-        receivedProtocolVersion: Int? = nil
-    ) {
-        self.error = error
-        self.expectedProtocolVersion = expectedProtocolVersion
-        self.frameKind = frameKind
-        self.kind = kind
-        self.protocolVersion = protocolVersion
-        self.receivedProtocolVersion = receivedProtocolVersion
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.error = try container.decode(String.self, forKey: .error)
-        self.expectedProtocolVersion = try container.decode(CommaChatProtocolVersion.self, forKey: .expectedProtocolVersion)
-        guard self.expectedProtocolVersion == .v3 else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .expectedProtocolVersion,
-                in: container,
-                debugDescription: "Unexpected constant value for expectedProtocolVersion."
-            )
-        }
-        self.frameKind = try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .frameKind)
-        self.kind = try container.decode(CommaSideChatProtocolErrorKind.self, forKey: .kind)
-        guard self.kind == .sideChatProtocolError else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .kind,
-                in: container,
-                debugDescription: "Unexpected constant value for kind."
-            )
-        }
-        self.protocolVersion = try container.decode(CommaChatProtocolVersion.self, forKey: .protocolVersion)
-        guard self.protocolVersion == .v3 else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .protocolVersion,
-                in: container,
-                debugDescription: "Unexpected constant value for protocolVersion."
-            )
-        }
-        self.receivedProtocolVersion = try CommaNativeContractValidation.decodeOptionalInteger(Int.self, from: container, forKey: .receivedProtocolVersion, minimum: -9007199254740991, maximum: 9007199254740991)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(self.error, forKey: .error)
-        guard self.expectedProtocolVersion == .v3 else {
-            throw EncodingError.invalidValue(
-                self.expectedProtocolVersion,
-                EncodingError.Context(
-                    codingPath: container.codingPath + [CodingKeys.expectedProtocolVersion],
-                    debugDescription: "Unexpected constant value for expectedProtocolVersion."
-                )
-            )
-        }
-        try container.encode(self.expectedProtocolVersion, forKey: .expectedProtocolVersion)
-        try container.encodeIfPresent(self.frameKind, forKey: .frameKind)
-        guard self.kind == .sideChatProtocolError else {
-            throw EncodingError.invalidValue(
-                self.kind,
-                EncodingError.Context(
-                    codingPath: container.codingPath + [CodingKeys.kind],
-                    debugDescription: "Unexpected constant value for kind."
-                )
-            )
-        }
-        try container.encode(self.kind, forKey: .kind)
-        guard self.protocolVersion == .v3 else {
-            throw EncodingError.invalidValue(
-                self.protocolVersion,
-                EncodingError.Context(
-                    codingPath: container.codingPath + [CodingKeys.protocolVersion],
-                    debugDescription: "Unexpected constant value for protocolVersion."
-                )
-            )
-        }
-        try container.encode(self.protocolVersion, forKey: .protocolVersion)
-        if let value = receivedProtocolVersion {
-            try CommaNativeContractValidation.validateIntegerForEncoding(value, minimum: -9007199254740991, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.receivedProtocolVersion])
-        }
-        try container.encodeIfPresent(self.receivedProtocolVersion, forKey: .receivedProtocolVersion)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case error = "error"
-        case expectedProtocolVersion = "expectedProtocolVersion"
-        case frameKind = "frameKind"
-        case kind = "kind"
-        case protocolVersion = "protocolVersion"
-        case receivedProtocolVersion = "receivedProtocolVersion"
-    }
-}
-
-public enum CommaSideChatProtocolErrorKind: String, Codable, Equatable, Sendable {
-    case sideChatProtocolError = "side-chat.protocol-error"
-}
-
-public enum CommaSideChatSurfaceControl: Codable, Equatable, Sendable {
-    case open(
-        requestId: String
-    )
-    case close(
-        requestId: String
-    )
-    case toggle(
-        requestId: String
-    )
-    case settings(
-        requestId: String
-    )
-    case layout(
-        requestId: String,
-        debugSettings: CommaSideChatLayoutDebugSettings,
-        height: Double,
-        width: Double
-    )
-    case interactiveProgress(
-        requestId: String,
-        progress: Double
-    )
-    case interactiveComplete(
-        requestId: String,
-        shouldOpen: Bool
-    )
-    case shortcut(
-        requestId: String,
-        keyCode: Int?,
-        modifiers: Int
-    )
-    case stop(
-        requestId: String
-    )
-    case enabled(
-        requestId: String,
-        enabled: Bool
-    )
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let kind = try container.decode(String.self, forKey: .kind)
-        let protocolVersion = try container.decode(CommaChatProtocolVersion.self, forKey: .protocolVersion)
-
-        switch kind {
-        case "side-chat.open":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.open; expected 3."
-                )
-            }
-            self = .open(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil)
-            )
-        case "side-chat.close":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.close; expected 3."
-                )
-            }
-            self = .close(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil)
-            )
-        case "side-chat.toggle":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.toggle; expected 3."
-                )
-            }
-            self = .toggle(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil)
-            )
-        case "side-chat.settings":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.settings; expected 3."
-                )
-            }
-            self = .settings(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil)
-            )
-        case "side-chat.layout":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.layout; expected 3."
-                )
-            }
-            self = .layout(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                debugSettings: try container.decode(CommaSideChatLayoutDebugSettings.self, forKey: .debugSettings),
-                height: try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .height, minimum: 40, maximum: 4096),
-                width: try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .width, minimum: 120, maximum: 1024)
-            )
-        case "side-chat.interactive-progress":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.interactive-progress; expected 3."
-                )
-            }
-            self = .interactiveProgress(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                progress: try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .progress, minimum: 0, maximum: 1)
-            )
-        case "side-chat.interactive-complete":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.interactive-complete; expected 3."
-                )
-            }
-            self = .interactiveComplete(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                shouldOpen: try container.decode(Bool.self, forKey: .shouldOpen)
-            )
-        case "side-chat.shortcut":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.shortcut; expected 3."
-                )
-            }
-            self = .shortcut(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                keyCode: try CommaNativeContractValidation.decodeOptionalInteger(Int.self, from: container, forKey: .keyCode, minimum: 0, maximum: 127),
-                modifiers: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .modifiers, minimum: 0, maximum: 65535)
-            )
-        case "side-chat.stop":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.stop; expected 3."
-                )
-            }
-            self = .stop(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil)
-            )
-        case "side-chat.enabled":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.enabled; expected 3."
-                )
-            }
-            self = .enabled(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                enabled: try container.decode(Bool.self, forKey: .enabled)
-            )
-        default:
-            throw DecodingError.dataCorruptedError(
-                forKey: .kind,
-                in: container,
-                debugDescription: "Unknown CommaSideChatSurfaceControl kind: \(kind)"
-            )
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-
-        switch self {
-        case let .open(
-            requestId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.open", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-        case let .close(
-            requestId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.close", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-        case let .toggle(
-            requestId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.toggle", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-        case let .settings(
-            requestId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.settings", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-        case let .layout(
-            requestId,
-            debugSettings,
-            height,
-            width
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.layout", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try container.encode(debugSettings, forKey: .debugSettings)
-            try CommaNativeContractValidation.validateNumberForEncoding(height, minimum: 40, maximum: 4096, codingPath: container.codingPath + [CodingKeys.height])
-            try container.encode(height, forKey: .height)
-            try CommaNativeContractValidation.validateNumberForEncoding(width, minimum: 120, maximum: 1024, codingPath: container.codingPath + [CodingKeys.width])
-            try container.encode(width, forKey: .width)
-        case let .interactiveProgress(
-            requestId,
-            progress
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.interactive-progress", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try CommaNativeContractValidation.validateNumberForEncoding(progress, minimum: 0, maximum: 1, codingPath: container.codingPath + [CodingKeys.progress])
-            try container.encode(progress, forKey: .progress)
-        case let .interactiveComplete(
-            requestId,
-            shouldOpen
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.interactive-complete", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try container.encode(shouldOpen, forKey: .shouldOpen)
-        case let .shortcut(
-            requestId,
-            keyCode,
-            modifiers
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.shortcut", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            if let value = keyCode {
-                try CommaNativeContractValidation.validateIntegerForEncoding(value, minimum: 0, maximum: 127, codingPath: container.codingPath + [CodingKeys.keyCode])
-            }
-            try container.encodeIfPresent(keyCode, forKey: .keyCode)
-            try CommaNativeContractValidation.validateIntegerForEncoding(modifiers, minimum: 0, maximum: 65535, codingPath: container.codingPath + [CodingKeys.modifiers])
-            try container.encode(modifiers, forKey: .modifiers)
-        case let .stop(
-            requestId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.stop", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-        case let .enabled(
-            requestId,
-            enabled
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.enabled", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try container.encode(enabled, forKey: .enabled)
-        }
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case kind = "kind"
-        case protocolVersion = "protocolVersion"
-        case debugSettings = "debugSettings"
-        case enabled = "enabled"
-        case height = "height"
-        case keyCode = "keyCode"
-        case modifiers = "modifiers"
-        case progress = "progress"
-        case requestId = "requestId"
-        case shouldOpen = "shouldOpen"
-        case width = "width"
-    }
-}
-
-public struct CommaSideChatLayoutDebugSettings: Codable, Equatable, Sendable {
-    public let bottomFeather: Double
-    public let bottomOffset: Double
-    public let closedExtraOffset: Double
-    public let contentOffsetX: Double
-    public let contentOffsetY: Double
-    public let contentWidth: Double
-    public let leftFeather: Double
-    public let openXOffset: Double
-    public let rightFeather: Double
-    public let solidOutsetBottom: Double
-    public let solidOutsetLeft: Double
-    public let solidOutsetRight: Double
-    public let solidOutsetTop: Double
-    public let topFeather: Double
-
-    public init(
-        bottomFeather: Double,
-        bottomOffset: Double,
-        closedExtraOffset: Double,
-        contentOffsetX: Double,
-        contentOffsetY: Double,
-        contentWidth: Double,
-        leftFeather: Double,
-        openXOffset: Double,
-        rightFeather: Double,
-        solidOutsetBottom: Double,
-        solidOutsetLeft: Double,
-        solidOutsetRight: Double,
-        solidOutsetTop: Double,
-        topFeather: Double
-    ) {
-        self.bottomFeather = bottomFeather
-        self.bottomOffset = bottomOffset
-        self.closedExtraOffset = closedExtraOffset
-        self.contentOffsetX = contentOffsetX
-        self.contentOffsetY = contentOffsetY
-        self.contentWidth = contentWidth
-        self.leftFeather = leftFeather
-        self.openXOffset = openXOffset
-        self.rightFeather = rightFeather
-        self.solidOutsetBottom = solidOutsetBottom
-        self.solidOutsetLeft = solidOutsetLeft
-        self.solidOutsetRight = solidOutsetRight
-        self.solidOutsetTop = solidOutsetTop
-        self.topFeather = topFeather
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.bottomFeather = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .bottomFeather, minimum: 0, maximum: 220)
-        self.bottomOffset = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .bottomOffset, minimum: -160, maximum: 160)
-        self.closedExtraOffset = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .closedExtraOffset, minimum: 0, maximum: 260)
-        self.contentOffsetX = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .contentOffsetX, minimum: -160, maximum: 160)
-        self.contentOffsetY = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .contentOffsetY, minimum: -160, maximum: 160)
-        self.contentWidth = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .contentWidth, minimum: 260, maximum: 620)
-        self.leftFeather = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .leftFeather, minimum: 0, maximum: 220)
-        self.openXOffset = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .openXOffset, minimum: -220, maximum: 120)
-        self.rightFeather = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .rightFeather, minimum: 0, maximum: 220)
-        self.solidOutsetBottom = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .solidOutsetBottom, minimum: -120, maximum: 160)
-        self.solidOutsetLeft = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .solidOutsetLeft, minimum: -120, maximum: 160)
-        self.solidOutsetRight = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .solidOutsetRight, minimum: -120, maximum: 160)
-        self.solidOutsetTop = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .solidOutsetTop, minimum: -120, maximum: 160)
-        self.topFeather = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .topFeather, minimum: 0, maximum: 220)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try CommaNativeContractValidation.validateNumberForEncoding(bottomFeather, minimum: 0, maximum: 220, codingPath: container.codingPath + [CodingKeys.bottomFeather])
-        try container.encode(self.bottomFeather, forKey: .bottomFeather)
-        try CommaNativeContractValidation.validateNumberForEncoding(bottomOffset, minimum: -160, maximum: 160, codingPath: container.codingPath + [CodingKeys.bottomOffset])
-        try container.encode(self.bottomOffset, forKey: .bottomOffset)
-        try CommaNativeContractValidation.validateNumberForEncoding(closedExtraOffset, minimum: 0, maximum: 260, codingPath: container.codingPath + [CodingKeys.closedExtraOffset])
-        try container.encode(self.closedExtraOffset, forKey: .closedExtraOffset)
-        try CommaNativeContractValidation.validateNumberForEncoding(contentOffsetX, minimum: -160, maximum: 160, codingPath: container.codingPath + [CodingKeys.contentOffsetX])
-        try container.encode(self.contentOffsetX, forKey: .contentOffsetX)
-        try CommaNativeContractValidation.validateNumberForEncoding(contentOffsetY, minimum: -160, maximum: 160, codingPath: container.codingPath + [CodingKeys.contentOffsetY])
-        try container.encode(self.contentOffsetY, forKey: .contentOffsetY)
-        try CommaNativeContractValidation.validateNumberForEncoding(contentWidth, minimum: 260, maximum: 620, codingPath: container.codingPath + [CodingKeys.contentWidth])
-        try container.encode(self.contentWidth, forKey: .contentWidth)
-        try CommaNativeContractValidation.validateNumberForEncoding(leftFeather, minimum: 0, maximum: 220, codingPath: container.codingPath + [CodingKeys.leftFeather])
-        try container.encode(self.leftFeather, forKey: .leftFeather)
-        try CommaNativeContractValidation.validateNumberForEncoding(openXOffset, minimum: -220, maximum: 120, codingPath: container.codingPath + [CodingKeys.openXOffset])
-        try container.encode(self.openXOffset, forKey: .openXOffset)
-        try CommaNativeContractValidation.validateNumberForEncoding(rightFeather, minimum: 0, maximum: 220, codingPath: container.codingPath + [CodingKeys.rightFeather])
-        try container.encode(self.rightFeather, forKey: .rightFeather)
-        try CommaNativeContractValidation.validateNumberForEncoding(solidOutsetBottom, minimum: -120, maximum: 160, codingPath: container.codingPath + [CodingKeys.solidOutsetBottom])
-        try container.encode(self.solidOutsetBottom, forKey: .solidOutsetBottom)
-        try CommaNativeContractValidation.validateNumberForEncoding(solidOutsetLeft, minimum: -120, maximum: 160, codingPath: container.codingPath + [CodingKeys.solidOutsetLeft])
-        try container.encode(self.solidOutsetLeft, forKey: .solidOutsetLeft)
-        try CommaNativeContractValidation.validateNumberForEncoding(solidOutsetRight, minimum: -120, maximum: 160, codingPath: container.codingPath + [CodingKeys.solidOutsetRight])
-        try container.encode(self.solidOutsetRight, forKey: .solidOutsetRight)
-        try CommaNativeContractValidation.validateNumberForEncoding(solidOutsetTop, minimum: -120, maximum: 160, codingPath: container.codingPath + [CodingKeys.solidOutsetTop])
-        try container.encode(self.solidOutsetTop, forKey: .solidOutsetTop)
-        try CommaNativeContractValidation.validateNumberForEncoding(topFeather, minimum: 0, maximum: 220, codingPath: container.codingPath + [CodingKeys.topFeather])
-        try container.encode(self.topFeather, forKey: .topFeather)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case bottomFeather = "bottomFeather"
-        case bottomOffset = "bottomOffset"
-        case closedExtraOffset = "closedExtraOffset"
-        case contentOffsetX = "contentOffsetX"
-        case contentOffsetY = "contentOffsetY"
-        case contentWidth = "contentWidth"
-        case leftFeather = "leftFeather"
-        case openXOffset = "openXOffset"
-        case rightFeather = "rightFeather"
-        case solidOutsetBottom = "solidOutsetBottom"
-        case solidOutsetLeft = "solidOutsetLeft"
-        case solidOutsetRight = "solidOutsetRight"
-        case solidOutsetTop = "solidOutsetTop"
-        case topFeather = "topFeather"
-    }
-}
-
-public enum CommaSideChatHostFrame: Codable, Equatable, Sendable {
-    case snapshot(
-        snapshot: CommaSideChatSnapshot
-    )
-    case open(
-        requestId: String
-    )
-    case close(
-        requestId: String
-    )
-    case toggle(
-        requestId: String
-    )
-    case settings(
-        requestId: String
-    )
-    case layout(
-        requestId: String,
-        debugSettings: CommaSideChatLayoutDebugSettings,
-        height: Double,
-        width: Double
-    )
-    case interactiveProgress(
-        requestId: String,
-        progress: Double
-    )
-    case interactiveComplete(
-        requestId: String,
-        shouldOpen: Bool
-    )
-    case shortcut(
-        requestId: String,
-        keyCode: Int?,
-        modifiers: Int
-    )
-    case stop(
-        requestId: String
-    )
-    case enabled(
-        requestId: String,
-        enabled: Bool
-    )
-    case statusMenuShow(
-        requestId: String,
+        clickId: String?,
+        closeId: String?,
         iconPath: String,
+        openId: String?,
         rows: [CommaStatusMenuShowRow],
         toolTip: String,
         width: Double
     )
-    case statusMenuHide(
+    case hide(
         requestId: String
-    )
-    case result(
-        requestId: String,
-        error: String?,
-        ok: Bool
     )
 
     public init(from decoder: Decoder) throws {
@@ -2621,135 +670,6 @@ public enum CommaSideChatHostFrame: Codable, Equatable, Sendable {
         let protocolVersion = try container.decode(CommaChatProtocolVersion.self, forKey: .protocolVersion)
 
         switch kind {
-        case "chat.snapshot":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.snapshot; expected 3."
-                )
-            }
-            self = .snapshot(
-                snapshot: try container.decode(CommaSideChatSnapshot.self, forKey: .snapshot)
-            )
-        case "side-chat.open":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.open; expected 3."
-                )
-            }
-            self = .open(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil)
-            )
-        case "side-chat.close":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.close; expected 3."
-                )
-            }
-            self = .close(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil)
-            )
-        case "side-chat.toggle":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.toggle; expected 3."
-                )
-            }
-            self = .toggle(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil)
-            )
-        case "side-chat.settings":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.settings; expected 3."
-                )
-            }
-            self = .settings(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil)
-            )
-        case "side-chat.layout":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.layout; expected 3."
-                )
-            }
-            self = .layout(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                debugSettings: try container.decode(CommaSideChatLayoutDebugSettings.self, forKey: .debugSettings),
-                height: try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .height, minimum: 40, maximum: 4096),
-                width: try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .width, minimum: 120, maximum: 1024)
-            )
-        case "side-chat.interactive-progress":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.interactive-progress; expected 3."
-                )
-            }
-            self = .interactiveProgress(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                progress: try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .progress, minimum: 0, maximum: 1)
-            )
-        case "side-chat.interactive-complete":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.interactive-complete; expected 3."
-                )
-            }
-            self = .interactiveComplete(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                shouldOpen: try container.decode(Bool.self, forKey: .shouldOpen)
-            )
-        case "side-chat.shortcut":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.shortcut; expected 3."
-                )
-            }
-            self = .shortcut(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                keyCode: try CommaNativeContractValidation.decodeOptionalInteger(Int.self, from: container, forKey: .keyCode, minimum: 0, maximum: 127),
-                modifiers: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .modifiers, minimum: 0, maximum: 65535)
-            )
-        case "side-chat.stop":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.stop; expected 3."
-                )
-            }
-            self = .stop(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil)
-            )
-        case "side-chat.enabled":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.enabled; expected 3."
-                )
-            }
-            self = .enabled(
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                enabled: try container.decode(Bool.self, forKey: .enabled)
-            )
         case "status-menu.show":
             guard protocolVersion == .v3 else {
                 throw DecodingError.dataCorruptedError(
@@ -2758,9 +678,12 @@ public enum CommaSideChatHostFrame: Codable, Equatable, Sendable {
                     debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for status-menu.show; expected 3."
                 )
             }
-            self = .statusMenuShow(
+            self = .show(
                 requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
+                clickId: try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .clickId, minimumLength: 1, maximumLength: 256),
+                closeId: try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .closeId, minimumLength: 1, maximumLength: 256),
                 iconPath: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .iconPath, minimumLength: 1, maximumLength: 4096),
+                openId: try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .openId, minimumLength: 1, maximumLength: 256),
                 rows: try CommaNativeContractValidation.decodeArray([CommaStatusMenuShowRow].self, from: container, forKey: .rows, minimumItems: nil, maximumItems: 64),
                 toolTip: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .toolTip, minimumLength: nil, maximumLength: 256),
                 width: try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .width, minimum: 120, maximum: 1200)
@@ -2773,27 +696,14 @@ public enum CommaSideChatHostFrame: Codable, Equatable, Sendable {
                     debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for status-menu.hide; expected 3."
                 )
             }
-            self = .statusMenuHide(
+            self = .hide(
                 requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil)
-            )
-        case "command.result":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for command.result; expected 3."
-                )
-            }
-            self = .result(
-                requestId: try container.decode(String.self, forKey: .requestId),
-                error: try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .error),
-                ok: try container.decode(Bool.self, forKey: .ok)
             )
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .kind,
                 in: container,
-                debugDescription: "Unknown CommaSideChatHostFrame kind: \(kind)"
+                debugDescription: "Unknown CommaStatusMenuHostFrame kind: \(kind)"
             )
         }
     }
@@ -2802,108 +712,12 @@ public enum CommaSideChatHostFrame: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
 
         switch self {
-        case let .snapshot(
-            snapshot
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.snapshot", forKey: .kind)
-            try container.encode(snapshot, forKey: .snapshot)
-        case let .open(
-            requestId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.open", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-        case let .close(
-            requestId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.close", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-        case let .toggle(
-            requestId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.toggle", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-        case let .settings(
-            requestId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.settings", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-        case let .layout(
+        case let .show(
             requestId,
-            debugSettings,
-            height,
-            width
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.layout", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try container.encode(debugSettings, forKey: .debugSettings)
-            try CommaNativeContractValidation.validateNumberForEncoding(height, minimum: 40, maximum: 4096, codingPath: container.codingPath + [CodingKeys.height])
-            try container.encode(height, forKey: .height)
-            try CommaNativeContractValidation.validateNumberForEncoding(width, minimum: 120, maximum: 1024, codingPath: container.codingPath + [CodingKeys.width])
-            try container.encode(width, forKey: .width)
-        case let .interactiveProgress(
-            requestId,
-            progress
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.interactive-progress", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try CommaNativeContractValidation.validateNumberForEncoding(progress, minimum: 0, maximum: 1, codingPath: container.codingPath + [CodingKeys.progress])
-            try container.encode(progress, forKey: .progress)
-        case let .interactiveComplete(
-            requestId,
-            shouldOpen
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.interactive-complete", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try container.encode(shouldOpen, forKey: .shouldOpen)
-        case let .shortcut(
-            requestId,
-            keyCode,
-            modifiers
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.shortcut", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            if let value = keyCode {
-                try CommaNativeContractValidation.validateIntegerForEncoding(value, minimum: 0, maximum: 127, codingPath: container.codingPath + [CodingKeys.keyCode])
-            }
-            try container.encodeIfPresent(keyCode, forKey: .keyCode)
-            try CommaNativeContractValidation.validateIntegerForEncoding(modifiers, minimum: 0, maximum: 65535, codingPath: container.codingPath + [CodingKeys.modifiers])
-            try container.encode(modifiers, forKey: .modifiers)
-        case let .stop(
-            requestId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.stop", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-        case let .enabled(
-            requestId,
-            enabled
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.enabled", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try container.encode(enabled, forKey: .enabled)
-        case let .statusMenuShow(
-            requestId,
+            clickId,
+            closeId,
             iconPath,
+            openId,
             rows,
             toolTip,
             width
@@ -2912,83 +726,98 @@ public enum CommaSideChatHostFrame: Codable, Equatable, Sendable {
             try container.encode("status-menu.show", forKey: .kind)
             try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
             try container.encode(requestId, forKey: .requestId)
+            if let value = clickId {
+                try CommaNativeContractValidation.validateStringForEncoding(value, minimumLength: 1, maximumLength: 256, codingPath: container.codingPath + [CodingKeys.clickId])
+            }
+            try container.encodeIfPresent(clickId, forKey: .clickId)
+            if let value = closeId {
+                try CommaNativeContractValidation.validateStringForEncoding(value, minimumLength: 1, maximumLength: 256, codingPath: container.codingPath + [CodingKeys.closeId])
+            }
+            try container.encodeIfPresent(closeId, forKey: .closeId)
             try CommaNativeContractValidation.validateStringForEncoding(iconPath, minimumLength: 1, maximumLength: 4096, codingPath: container.codingPath + [CodingKeys.iconPath])
             try container.encode(iconPath, forKey: .iconPath)
+            if let value = openId {
+                try CommaNativeContractValidation.validateStringForEncoding(value, minimumLength: 1, maximumLength: 256, codingPath: container.codingPath + [CodingKeys.openId])
+            }
+            try container.encodeIfPresent(openId, forKey: .openId)
             try CommaNativeContractValidation.validateArrayForEncoding(rows, minimumItems: nil, maximumItems: 64, codingPath: container.codingPath + [CodingKeys.rows])
             try container.encode(rows, forKey: .rows)
             try CommaNativeContractValidation.validateStringForEncoding(toolTip, minimumLength: nil, maximumLength: 256, codingPath: container.codingPath + [CodingKeys.toolTip])
             try container.encode(toolTip, forKey: .toolTip)
             try CommaNativeContractValidation.validateNumberForEncoding(width, minimum: 120, maximum: 1200, codingPath: container.codingPath + [CodingKeys.width])
             try container.encode(width, forKey: .width)
-        case let .statusMenuHide(
+        case let .hide(
             requestId
         ):
             try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
             try container.encode("status-menu.hide", forKey: .kind)
             try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
             try container.encode(requestId, forKey: .requestId)
-        case let .result(
-            requestId,
-            error,
-            ok
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("command.result", forKey: .kind)
-            try container.encode(requestId, forKey: .requestId)
-            try container.encodeIfPresent(error, forKey: .error)
-            try container.encode(ok, forKey: .ok)
         }
     }
 
     private enum CodingKeys: String, CodingKey {
         case kind = "kind"
         case protocolVersion = "protocolVersion"
-        case debugSettings = "debugSettings"
-        case enabled = "enabled"
-        case error = "error"
-        case height = "height"
+        case clickId = "clickId"
+        case closeId = "closeId"
         case iconPath = "iconPath"
-        case keyCode = "keyCode"
-        case modifiers = "modifiers"
-        case ok = "ok"
-        case progress = "progress"
+        case openId = "openId"
         case requestId = "requestId"
         case rows = "rows"
-        case shouldOpen = "shouldOpen"
-        case snapshot = "snapshot"
         case toolTip = "toolTip"
         case width = "width"
     }
 }
 
 public struct CommaStatusMenuShowRow: Codable, Equatable, Sendable {
+    public let detail: String?
+    public let fraction: Double?
     public let id: String?
     public let kind: CommaStatusMenuShowRowKind
     public let shortcut: String?
     public let title: String?
+    public let tone: CommaStatusMenuShowRowTone?
 
     public init(
+        detail: String? = nil,
+        fraction: Double? = nil,
         id: String? = nil,
         kind: CommaStatusMenuShowRowKind,
         shortcut: String? = nil,
-        title: String? = nil
+        title: String? = nil,
+        tone: CommaStatusMenuShowRowTone? = nil
     ) {
+        self.detail = detail
+        self.fraction = fraction
         self.id = id
         self.kind = kind
         self.shortcut = shortcut
         self.title = title
+        self.tone = tone
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.detail = try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .detail, minimumLength: 1, maximumLength: 128)
+        self.fraction = try CommaNativeContractValidation.decodeOptionalNumber(Double.self, from: container, forKey: .fraction, minimum: 0, maximum: 1)
         self.id = try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .id, minimumLength: 1, maximumLength: 256)
         self.kind = try container.decode(CommaStatusMenuShowRowKind.self, forKey: .kind)
         self.shortcut = try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .shortcut, minimumLength: 1, maximumLength: 64)
         self.title = try CommaNativeContractValidation.decodeOptionalString(String.self, from: container, forKey: .title, minimumLength: nil, maximumLength: 1024)
+        self.tone = try CommaNativeContractValidation.decodeOptional(CommaStatusMenuShowRowTone.self, from: container, forKey: .tone)
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        if let value = detail {
+            try CommaNativeContractValidation.validateStringForEncoding(value, minimumLength: 1, maximumLength: 128, codingPath: container.codingPath + [CodingKeys.detail])
+        }
+        try container.encodeIfPresent(self.detail, forKey: .detail)
+        if let value = fraction {
+            try CommaNativeContractValidation.validateNumberForEncoding(value, minimum: 0, maximum: 1, codingPath: container.codingPath + [CodingKeys.fraction])
+        }
+        try container.encodeIfPresent(self.fraction, forKey: .fraction)
         if let value = id {
             try CommaNativeContractValidation.validateStringForEncoding(value, minimumLength: 1, maximumLength: 256, codingPath: container.codingPath + [CodingKeys.id])
         }
@@ -3002,13 +831,17 @@ public struct CommaStatusMenuShowRow: Codable, Equatable, Sendable {
             try CommaNativeContractValidation.validateStringForEncoding(value, minimumLength: nil, maximumLength: 1024, codingPath: container.codingPath + [CodingKeys.title])
         }
         try container.encodeIfPresent(self.title, forKey: .title)
+        try container.encodeIfPresent(self.tone, forKey: .tone)
     }
 
     private enum CodingKeys: String, CodingKey {
+        case detail = "detail"
+        case fraction = "fraction"
         case id = "id"
         case kind = "kind"
         case shortcut = "shortcut"
         case title = "title"
+        case tone = "tone"
     }
 }
 
@@ -3016,85 +849,19 @@ public enum CommaStatusMenuShowRowKind: String, Codable, Equatable, Sendable {
     case header = "header"
     case item = "item"
     case separator = "separator"
+    case meter = "meter"
 }
 
-public enum CommaSideChatClientFrame: Codable, Equatable, Sendable {
+public enum CommaStatusMenuShowRowTone: String, Codable, Equatable, Sendable {
+    case normal = "normal"
+    case critical = "critical"
+}
+
+public enum CommaStatusMenuClientFrame: Codable, Equatable, Sendable {
     case ready(
         requestId: String
     )
-    case retain(
-        workspaceId: String,
-        conversationId: String,
-        requestId: String,
-        groupId: String,
-        sessionEpoch: Int,
-        subscriberId: String
-    )
-    case release(
-        workspaceId: String,
-        conversationId: String,
-        requestId: String,
-        groupId: String,
-        sessionEpoch: Int,
-        subscriberId: String
-    )
-    case setDraft(
-        workspaceId: String,
-        conversationId: String,
-        requestId: String,
-        draft: String,
-        groupId: String,
-        sessionEpoch: Int,
-        surfaceId: String
-    )
-    case send(
-        workspaceId: String,
-        conversationId: String,
-        requestId: String,
-        consumeDraft: Bool?,
-        groupId: String,
-        replyToMessageId: String?,
-        sendIntentId: String,
-        sessionEpoch: Int,
-        skills: [CommaChatSkillReference]?,
-        surfaceId: String,
-        text: String
-    )
-    case refresh(
-        workspaceId: String,
-        conversationId: String,
-        requestId: String,
-        groupId: String,
-        sessionEpoch: Int
-    )
-    case retry(
-        workspaceId: String,
-        conversationId: String,
-        requestId: String,
-        clientRequestId: String,
-        groupId: String,
-        sessionEpoch: Int
-    )
-    case discard(
-        workspaceId: String,
-        conversationId: String,
-        requestId: String,
-        clientRequestId: String,
-        groupId: String,
-        sessionEpoch: Int
-    )
-    case presentation(
-        availableContentHeight: Double,
-        contentFrame: CommaSideChatPresentationContentFrame,
-        displayId: Int,
-        offsetX: Double,
-        phase: CommaSideChatPresentationPhase,
-        progress: Double,
-        revision: Int,
-        screenFrame: CommaSideChatPresentationScreenFrame,
-        windowFrame: CommaSideChatPresentationWindowFrame
-    )
-    case statusMenuSelect(
+    case select(
         requestId: String,
         id: String
     )
@@ -3115,152 +882,16 @@ public enum CommaSideChatClientFrame: Codable, Equatable, Sendable {
         let protocolVersion = try container.decode(CommaChatProtocolVersion.self, forKey: .protocolVersion)
 
         switch kind {
-        case "side-chat.ready":
+        case "status-menu.ready":
             guard protocolVersion == .v3 else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .protocolVersion,
                     in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.ready; expected 3."
+                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for status-menu.ready; expected 3."
                 )
             }
             self = .ready(
                 requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil)
-            )
-        case "chat.retain":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.retain; expected 3."
-                )
-            }
-            self = .retain(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991),
-                subscriberId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .subscriberId, minimumLength: 1, maximumLength: nil)
-            )
-        case "chat.release":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.release; expected 3."
-                )
-            }
-            self = .release(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991),
-                subscriberId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .subscriberId, minimumLength: 1, maximumLength: nil)
-            )
-        case "chat.set-draft":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.set-draft; expected 3."
-                )
-            }
-            self = .setDraft(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                draft: try container.decode(String.self, forKey: .draft),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991),
-                surfaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .surfaceId, minimumLength: 1, maximumLength: nil)
-            )
-        case "chat.send":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.send; expected 3."
-                )
-            }
-            self = .send(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                consumeDraft: try CommaNativeContractValidation.decodeOptional(Bool.self, from: container, forKey: .consumeDraft),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                replyToMessageId: try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .replyToMessageId),
-                sendIntentId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .sendIntentId, minimumLength: 8, maximumLength: 128),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991),
-                skills: try CommaNativeContractValidation.decodeOptional([CommaChatSkillReference].self, from: container, forKey: .skills),
-                surfaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .surfaceId, minimumLength: 1, maximumLength: nil),
-                text: try container.decode(String.self, forKey: .text)
-            )
-        case "chat.refresh":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.refresh; expected 3."
-                )
-            }
-            self = .refresh(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991)
-            )
-        case "chat.retry":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.retry; expected 3."
-                )
-            }
-            self = .retry(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                clientRequestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .clientRequestId, minimumLength: 1, maximumLength: nil),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991)
-            )
-        case "chat.discard":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for chat.discard; expected 3."
-                )
-            }
-            self = .discard(
-                workspaceId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .workspaceId, minimumLength: 1, maximumLength: nil),
-                conversationId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .conversationId, minimumLength: 1, maximumLength: nil),
-                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
-                clientRequestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .clientRequestId, minimumLength: 1, maximumLength: nil),
-                groupId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .groupId, minimumLength: 1, maximumLength: nil),
-                sessionEpoch: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .sessionEpoch, minimum: 0, maximum: 9007199254740991)
-            )
-        case "side-chat.presentation":
-            guard protocolVersion == .v3 else {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .protocolVersion,
-                    in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.presentation; expected 3."
-                )
-            }
-            self = .presentation(
-                availableContentHeight: try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .availableContentHeight, minimum: 0, maximum: nil),
-                contentFrame: try container.decode(CommaSideChatPresentationContentFrame.self, forKey: .contentFrame),
-                displayId: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .displayId, minimum: 0, maximum: 9007199254740991),
-                offsetX: try container.decode(Double.self, forKey: .offsetX),
-                phase: try container.decode(CommaSideChatPresentationPhase.self, forKey: .phase),
-                progress: try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .progress, minimum: 0, maximum: 1),
-                revision: try CommaNativeContractValidation.decodeInteger(Int.self, from: container, forKey: .revision, minimum: 0, maximum: 9007199254740991),
-                screenFrame: try container.decode(CommaSideChatPresentationScreenFrame.self, forKey: .screenFrame),
-                windowFrame: try container.decode(CommaSideChatPresentationWindowFrame.self, forKey: .windowFrame)
             )
         case "status-menu.select":
             guard protocolVersion == .v3 else {
@@ -3270,29 +901,29 @@ public enum CommaSideChatClientFrame: Codable, Equatable, Sendable {
                     debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for status-menu.select; expected 3."
                 )
             }
-            self = .statusMenuSelect(
+            self = .select(
                 requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
                 id: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .id, minimumLength: 1, maximumLength: 256)
             )
-        case "command.result":
+        case "status-menu.result":
             guard protocolVersion == .v3 else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .protocolVersion,
                     in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for command.result; expected 3."
+                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for status-menu.result; expected 3."
                 )
             }
             self = .result(
-                requestId: try container.decode(String.self, forKey: .requestId),
+                requestId: try CommaNativeContractValidation.decodeString(String.self, from: container, forKey: .requestId, minimumLength: 1, maximumLength: nil),
                 error: try CommaNativeContractValidation.decodeOptional(String.self, from: container, forKey: .error),
                 ok: try container.decode(Bool.self, forKey: .ok)
             )
-        case "side-chat.protocol-error":
+        case "status-menu.protocol-error":
             guard protocolVersion == .v3 else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .protocolVersion,
                     in: container,
-                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for side-chat.protocol-error; expected 3."
+                    debugDescription: "Unexpected protocolVersion \(protocolVersion.rawValue) for status-menu.protocol-error; expected 3."
                 )
             }
             let decodedExpectedProtocolVersion = try container.decode(CommaChatProtocolVersion.self, forKey: .expectedProtocolVersion)
@@ -3312,7 +943,7 @@ public enum CommaSideChatClientFrame: Codable, Equatable, Sendable {
             throw DecodingError.dataCorruptedError(
                 forKey: .kind,
                 in: container,
-                debugDescription: "Unknown CommaSideChatClientFrame kind: \(kind)"
+                debugDescription: "Unknown CommaStatusMenuClientFrame kind: \(kind)"
             )
         }
     }
@@ -3325,200 +956,10 @@ public enum CommaSideChatClientFrame: Codable, Equatable, Sendable {
             requestId
         ):
             try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.ready", forKey: .kind)
+            try container.encode("status-menu.ready", forKey: .kind)
             try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
             try container.encode(requestId, forKey: .requestId)
-        case let .retain(
-            workspaceId,
-            conversationId,
-            requestId,
-            groupId,
-            sessionEpoch,
-            subscriberId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.retain", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-            try CommaNativeContractValidation.validateStringForEncoding(subscriberId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.subscriberId])
-            try container.encode(subscriberId, forKey: .subscriberId)
-        case let .release(
-            workspaceId,
-            conversationId,
-            requestId,
-            groupId,
-            sessionEpoch,
-            subscriberId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.release", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-            try CommaNativeContractValidation.validateStringForEncoding(subscriberId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.subscriberId])
-            try container.encode(subscriberId, forKey: .subscriberId)
-        case let .setDraft(
-            workspaceId,
-            conversationId,
-            requestId,
-            draft,
-            groupId,
-            sessionEpoch,
-            surfaceId
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.set-draft", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try container.encode(draft, forKey: .draft)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-            try CommaNativeContractValidation.validateStringForEncoding(surfaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.surfaceId])
-            try container.encode(surfaceId, forKey: .surfaceId)
-        case let .send(
-            workspaceId,
-            conversationId,
-            requestId,
-            consumeDraft,
-            groupId,
-            replyToMessageId,
-            sendIntentId,
-            sessionEpoch,
-            skills,
-            surfaceId,
-            text
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.send", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try container.encodeIfPresent(consumeDraft, forKey: .consumeDraft)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try container.encodeIfPresent(replyToMessageId, forKey: .replyToMessageId)
-            try CommaNativeContractValidation.validateStringForEncoding(sendIntentId, minimumLength: 8, maximumLength: 128, codingPath: container.codingPath + [CodingKeys.sendIntentId])
-            try container.encode(sendIntentId, forKey: .sendIntentId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-            try container.encodeIfPresent(skills, forKey: .skills)
-            try CommaNativeContractValidation.validateStringForEncoding(surfaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.surfaceId])
-            try container.encode(surfaceId, forKey: .surfaceId)
-            try container.encode(text, forKey: .text)
-        case let .refresh(
-            workspaceId,
-            conversationId,
-            requestId,
-            groupId,
-            sessionEpoch
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.refresh", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-        case let .retry(
-            workspaceId,
-            conversationId,
-            requestId,
-            clientRequestId,
-            groupId,
-            sessionEpoch
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.retry", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try CommaNativeContractValidation.validateStringForEncoding(clientRequestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.clientRequestId])
-            try container.encode(clientRequestId, forKey: .clientRequestId)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-        case let .discard(
-            workspaceId,
-            conversationId,
-            requestId,
-            clientRequestId,
-            groupId,
-            sessionEpoch
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("chat.discard", forKey: .kind)
-            try CommaNativeContractValidation.validateStringForEncoding(workspaceId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.workspaceId])
-            try container.encode(workspaceId, forKey: .workspaceId)
-            try CommaNativeContractValidation.validateStringForEncoding(conversationId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.conversationId])
-            try container.encode(conversationId, forKey: .conversationId)
-            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
-            try container.encode(requestId, forKey: .requestId)
-            try CommaNativeContractValidation.validateStringForEncoding(clientRequestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.clientRequestId])
-            try container.encode(clientRequestId, forKey: .clientRequestId)
-            try CommaNativeContractValidation.validateStringForEncoding(groupId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.groupId])
-            try container.encode(groupId, forKey: .groupId)
-            try CommaNativeContractValidation.validateIntegerForEncoding(sessionEpoch, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.sessionEpoch])
-            try container.encode(sessionEpoch, forKey: .sessionEpoch)
-        case let .presentation(
-            availableContentHeight,
-            contentFrame,
-            displayId,
-            offsetX,
-            phase,
-            progress,
-            revision,
-            screenFrame,
-            windowFrame
-        ):
-            try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.presentation", forKey: .kind)
-            try CommaNativeContractValidation.validateNumberForEncoding(availableContentHeight, minimum: 0, maximum: nil, codingPath: container.codingPath + [CodingKeys.availableContentHeight])
-            try container.encode(availableContentHeight, forKey: .availableContentHeight)
-            try container.encode(contentFrame, forKey: .contentFrame)
-            try CommaNativeContractValidation.validateIntegerForEncoding(displayId, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.displayId])
-            try container.encode(displayId, forKey: .displayId)
-            try container.encode(offsetX, forKey: .offsetX)
-            try container.encode(phase, forKey: .phase)
-            try CommaNativeContractValidation.validateNumberForEncoding(progress, minimum: 0, maximum: 1, codingPath: container.codingPath + [CodingKeys.progress])
-            try container.encode(progress, forKey: .progress)
-            try CommaNativeContractValidation.validateIntegerForEncoding(revision, minimum: 0, maximum: 9007199254740991, codingPath: container.codingPath + [CodingKeys.revision])
-            try container.encode(revision, forKey: .revision)
-            try container.encode(screenFrame, forKey: .screenFrame)
-            try container.encode(windowFrame, forKey: .windowFrame)
-        case let .statusMenuSelect(
+        case let .select(
             requestId,
             id
         ):
@@ -3534,7 +975,8 @@ public enum CommaSideChatClientFrame: Codable, Equatable, Sendable {
             ok
         ):
             try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("command.result", forKey: .kind)
+            try container.encode("status-menu.result", forKey: .kind)
+            try CommaNativeContractValidation.validateStringForEncoding(requestId, minimumLength: 1, maximumLength: nil, codingPath: container.codingPath + [CodingKeys.requestId])
             try container.encode(requestId, forKey: .requestId)
             try container.encodeIfPresent(error, forKey: .error)
             try container.encode(ok, forKey: .ok)
@@ -3544,7 +986,7 @@ public enum CommaSideChatClientFrame: Codable, Equatable, Sendable {
             receivedProtocolVersion
         ):
             try container.encode(CommaChatProtocolVersion.v3, forKey: .protocolVersion)
-            try container.encode("side-chat.protocol-error", forKey: .kind)
+            try container.encode("status-menu.protocol-error", forKey: .kind)
             try container.encode(CommaChatProtocolVersion.v3, forKey: .expectedProtocolVersion)
             try container.encode(error, forKey: .error)
             try container.encodeIfPresent(frameKind, forKey: .frameKind)
@@ -3558,174 +1000,12 @@ public enum CommaSideChatClientFrame: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case kind = "kind"
         case protocolVersion = "protocolVersion"
-        case availableContentHeight = "availableContentHeight"
-        case clientRequestId = "clientRequestId"
-        case consumeDraft = "consumeDraft"
-        case contentFrame = "contentFrame"
-        case conversationId = "conversationId"
-        case displayId = "displayId"
-        case draft = "draft"
         case error = "error"
         case expectedProtocolVersion = "expectedProtocolVersion"
         case frameKind = "frameKind"
-        case groupId = "groupId"
         case id = "id"
-        case offsetX = "offsetX"
         case ok = "ok"
-        case phase = "phase"
-        case progress = "progress"
         case receivedProtocolVersion = "receivedProtocolVersion"
-        case replyToMessageId = "replyToMessageId"
         case requestId = "requestId"
-        case revision = "revision"
-        case screenFrame = "screenFrame"
-        case sendIntentId = "sendIntentId"
-        case sessionEpoch = "sessionEpoch"
-        case skills = "skills"
-        case subscriberId = "subscriberId"
-        case surfaceId = "surfaceId"
-        case text = "text"
-        case windowFrame = "windowFrame"
-        case workspaceId = "workspaceId"
-    }
-}
-
-public struct CommaSideChatPresentationContentFrame: Codable, Equatable, Sendable {
-    public let height: Double
-    public let width: Double
-    public let x: Double
-    public let y: Double
-
-    public init(
-        height: Double,
-        width: Double,
-        x: Double,
-        y: Double
-    ) {
-        self.height = height
-        self.width = width
-        self.x = x
-        self.y = y
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.height = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .height, minimum: 0, maximum: nil)
-        self.width = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .width, minimum: 0, maximum: nil)
-        self.x = try container.decode(Double.self, forKey: .x)
-        self.y = try container.decode(Double.self, forKey: .y)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try CommaNativeContractValidation.validateNumberForEncoding(height, minimum: 0, maximum: nil, codingPath: container.codingPath + [CodingKeys.height])
-        try container.encode(self.height, forKey: .height)
-        try CommaNativeContractValidation.validateNumberForEncoding(width, minimum: 0, maximum: nil, codingPath: container.codingPath + [CodingKeys.width])
-        try container.encode(self.width, forKey: .width)
-        try container.encode(self.x, forKey: .x)
-        try container.encode(self.y, forKey: .y)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case height = "height"
-        case width = "width"
-        case x = "x"
-        case y = "y"
-    }
-}
-
-public enum CommaSideChatPresentationPhase: String, Codable, Equatable, Sendable {
-    case closed = "closed"
-    case opening = "opening"
-    case interactive = "interactive"
-    case open = "open"
-    case closing = "closing"
-}
-
-public struct CommaSideChatPresentationScreenFrame: Codable, Equatable, Sendable {
-    public let height: Double
-    public let width: Double
-    public let x: Double
-    public let y: Double
-
-    public init(
-        height: Double,
-        width: Double,
-        x: Double,
-        y: Double
-    ) {
-        self.height = height
-        self.width = width
-        self.x = x
-        self.y = y
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.height = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .height, minimum: 0, maximum: nil)
-        self.width = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .width, minimum: 0, maximum: nil)
-        self.x = try container.decode(Double.self, forKey: .x)
-        self.y = try container.decode(Double.self, forKey: .y)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try CommaNativeContractValidation.validateNumberForEncoding(height, minimum: 0, maximum: nil, codingPath: container.codingPath + [CodingKeys.height])
-        try container.encode(self.height, forKey: .height)
-        try CommaNativeContractValidation.validateNumberForEncoding(width, minimum: 0, maximum: nil, codingPath: container.codingPath + [CodingKeys.width])
-        try container.encode(self.width, forKey: .width)
-        try container.encode(self.x, forKey: .x)
-        try container.encode(self.y, forKey: .y)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case height = "height"
-        case width = "width"
-        case x = "x"
-        case y = "y"
-    }
-}
-
-public struct CommaSideChatPresentationWindowFrame: Codable, Equatable, Sendable {
-    public let height: Double
-    public let width: Double
-    public let x: Double
-    public let y: Double
-
-    public init(
-        height: Double,
-        width: Double,
-        x: Double,
-        y: Double
-    ) {
-        self.height = height
-        self.width = width
-        self.x = x
-        self.y = y
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.height = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .height, minimum: 0, maximum: nil)
-        self.width = try CommaNativeContractValidation.decodeNumber(Double.self, from: container, forKey: .width, minimum: 0, maximum: nil)
-        self.x = try container.decode(Double.self, forKey: .x)
-        self.y = try container.decode(Double.self, forKey: .y)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try CommaNativeContractValidation.validateNumberForEncoding(height, minimum: 0, maximum: nil, codingPath: container.codingPath + [CodingKeys.height])
-        try container.encode(self.height, forKey: .height)
-        try CommaNativeContractValidation.validateNumberForEncoding(width, minimum: 0, maximum: nil, codingPath: container.codingPath + [CodingKeys.width])
-        try container.encode(self.width, forKey: .width)
-        try container.encode(self.x, forKey: .x)
-        try container.encode(self.y, forKey: .y)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case height = "height"
-        case width = "width"
-        case x = "x"
-        case y = "y"
     }
 }

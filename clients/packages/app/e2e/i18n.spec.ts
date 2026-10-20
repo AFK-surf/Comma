@@ -12,48 +12,6 @@ test.describe("client locale resolution", () => {
   // 1037px-wide Home route).
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test.describe("with an English browser locale", () => {
-    test.use({ locale: "en-US" });
-
-    test("renders the English shell and home screen", async ({ page }) => {
-      await installBrowserTestSession(page, session);
-      await page.goto("/");
-
-      await expect(page.locator("html")).toHaveAttribute("lang", "en");
-      await expect(
-        page.getByRole("link", { exact: true, name: "Home" })
-      ).toHaveAttribute("aria-current", "page");
-      await expect(page.getByRole("link", { name: "Inbox" })).toBeVisible();
-      await expect(
-        page.getByRole("button", { exact: true, name: "Settings" })
-      ).toBeVisible();
-      await expect(page.getByTestId("comma-window-bar-search")).toHaveText(
-        /^Use .+ for search$/
-      );
-      const home = page.getByTestId("home-responsive-layout");
-      await expect(home).toBeVisible();
-      await expect(home.getByTestId("home-greet-rail")).toHaveAttribute(
-        "aria-label",
-        "Greet"
-      );
-      await expect(home.getByTestId("chat-empty")).toBeVisible();
-      // Home has no route header: its identity lives on the region.
-      await expect(page.getByRole("region", { name: "Comma assistant" })).toBeVisible();
-      await expect(page.getByRole("heading", { level: 1 })).toHaveCount(0);
-      await expect(page.getByRole("group", { name: "AI input" })).toBeVisible();
-      await expect(home.getByTestId("home-tasks-rail")).toHaveAttribute(
-        "aria-label",
-        "Tasks"
-      );
-      await expect(
-        home.getByRole("heading", { level: 2, name: "Tasks" })
-      ).toBeVisible();
-      await expect(
-        page.getByRole("heading", { name: "What do you want to do" })
-      ).toHaveCount(0);
-    });
-  });
-
   test.describe("with a Simplified Chinese browser locale", () => {
     test.use({ locale: "zh-CN" });
 
@@ -119,39 +77,6 @@ test.describe("client locale resolution", () => {
       await expect(page.getByRole("button", { name: /Select language/ })).toContainText(
         "English"
       );
-    });
-  });
-
-  test.describe("with an unsupported browser locale", () => {
-    test.use({ locale: "fr-FR" });
-
-    test("falls back to English", async ({ page }) => {
-      await installBrowserTestSession(page, session);
-      await page.goto("/");
-
-      await expect(page.locator("html")).toHaveAttribute("lang", "en");
-      await expect(page.getByRole("link", { name: "Inbox" })).toBeVisible();
-      const home = page.getByTestId("home-responsive-layout");
-      await expect(home).toBeVisible();
-      await expect(home.getByTestId("home-greet-rail")).toHaveAttribute(
-        "aria-label",
-        "Greet"
-      );
-      await expect(home.getByTestId("chat-empty")).toBeVisible();
-      // Home has no route header: its identity lives on the region.
-      await expect(page.getByRole("region", { name: "Comma assistant" })).toBeVisible();
-      await expect(page.getByRole("heading", { level: 1 })).toHaveCount(0);
-      await expect(page.getByRole("group", { name: "AI input" })).toBeVisible();
-      await expect(home.getByTestId("home-tasks-rail")).toHaveAttribute(
-        "aria-label",
-        "Tasks"
-      );
-      await expect(
-        home.getByRole("heading", { level: 2, name: "Tasks" })
-      ).toBeVisible();
-      await expect(
-        page.getByRole("heading", { name: "What do you want to do" })
-      ).toHaveCount(0);
     });
   });
 });

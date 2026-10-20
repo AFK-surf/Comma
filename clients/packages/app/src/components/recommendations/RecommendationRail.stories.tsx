@@ -5,8 +5,9 @@ import type {
   RecommendationGeneratedCard,
 } from "@comma/recommendation-contract";
 import previewImage from "../../../../ui/src/components/chat-panel/assets/generated-image-preview.png";
-import type { CommaApiClient } from "../../api";
+import type { CommaRecommendationLinkPreview } from "@comma/core/api-schemas";
 import type React from "react";
+import { RailStoryCore } from "./RailStoryCore";
 import "../../styles.css";
 import {
   RecommendationCardView,
@@ -281,45 +282,37 @@ const driveFilePreview = {
   title: "Launch metrics",
 };
 
-const railApi = (railEnvelope: RecommendationEnvelope) =>
-  ({
-    getRecommendationLinkPreview: async (
-      _workspaceId: string,
-      link: { href: string }
-    ) => {
-      if (link.href.includes("linear.app/"))
-        return { ...linearIssuePreview, href: link.href };
-      if (link.href.includes("notion.so/"))
-        return { ...notionPagePreview, href: link.href };
-      if (link.href.includes("calendar/event")) {
-        return { ...calendarEventPreview, href: link.href };
-      }
-      if (link.href.includes(".slack.com/archives/"))
-        return { ...slackMessagePreview, href: link.href };
-      if (
-        link.href.includes("docs.google.com/") ||
-        link.href.includes("drive.google.com/")
-      ) {
-        return { ...driveFilePreview, href: link.href };
-      }
-      if (/\/pull\/\d+/.test(link.href)) {
-        return {
-          ...pullRequestPreview,
-          href: link.href,
-          number: Number(
-            /\/pull\/(\d+)/.exec(link.href)?.[1] ?? pullRequestPreview.number
-          ),
-        };
-      }
-      throw new Error("no preview");
-    },
-    getRecommendations: async () => railEnvelope,
-    refreshRecommendations: async () => ({
-      envelope: railEnvelope,
-      run: { id: "run-1" },
-    }),
-  }) as unknown as CommaApiClient;
-const api = railApi(envelope);
+// The rich previews the story core answers hovers with.
+const previewOf = (href: string): CommaRecommendationLinkPreview | undefined => {
+  const link = { href };
+  {
+    if (link.href.includes("linear.app/"))
+      return { ...linearIssuePreview, href: link.href };
+    if (link.href.includes("notion.so/"))
+      return { ...notionPagePreview, href: link.href };
+    if (link.href.includes("calendar/event")) {
+      return { ...calendarEventPreview, href: link.href };
+    }
+    if (link.href.includes(".slack.com/archives/"))
+      return { ...slackMessagePreview, href: link.href };
+    if (
+      link.href.includes("docs.google.com/") ||
+      link.href.includes("drive.google.com/")
+    ) {
+      return { ...driveFilePreview, href: link.href };
+    }
+    if (/\/pull\/\d+/.test(link.href)) {
+      return {
+        ...pullRequestPreview,
+        href: link.href,
+        number: Number(
+          /\/pull\/(\d+)/.exec(link.href)?.[1] ?? pullRequestPreview.number
+        ),
+      };
+    }
+    return undefined;
+  }
+};
 
 // Nothing connected yet (Figma 1204:13306): sample app marks, copy and the
 // "Connect apps" action, centered like the Tasks rail's "No tasks".
@@ -335,8 +328,8 @@ const generatingEnvelope = {
   snapshot: null,
   state: "refreshing",
 } satisfies RecommendationEnvelope;
-// A briefing is on screen and a refresh is regenerating it: the greeting stays,
-// the summary body and cards show the command palette preview's skeleton.
+// A briefing is on screen and a refresh is regenerating it: the briefing stays
+// in place and the header's refresh control spins.
 const refreshingEnvelope = {
   ...envelope,
   state: "refreshing",
@@ -355,16 +348,27 @@ const readyEnvelope = {
   state: "fresh",
 } satisfies RecommendationEnvelope;
 
-const RailFrame = ({ children }: { children: React.ReactNode }) => (
-  <div
-    style={{
-      blockSize: 820,
-      display: "flex",
-      inlineSize: 350,
-    }}
-  >
-    {children}
-  </div>
+// The briefing comes from the core; none leaves the rail loading.
+const RailFrame = ({
+  children,
+  envelope: shown,
+}: {
+  children: React.ReactNode;
+  envelope?: RecommendationEnvelope;
+}) => (
+  <RailStoryCore envelope={shown} previewOf={previewOf}>
+    <div
+      style={{
+        blockSize: 820,
+        display: "flex",
+        // A column, as on Home: a long row label cannot widen the rail.
+        flexDirection: "column",
+        inlineSize: 350,
+      }}
+    >
+      {children}
+    </div>
+  </RailStoryCore>
 );
 
 export default {
@@ -405,17 +409,19 @@ export const TextList = {
 
 export const Summary = {
   render: () => (
-    <RecommendationLinkPreviewProvider api={api} workspaceId="wsp_story">
-      <div style={{ inlineSize: 350 }}>
-        <RecommendationSummary
-          fallbackTitle="Good morning."
-          onOpenTask={noop}
-          onOpenUrl={noop}
-          parts={summary}
-          sources={envelope.settings.sources}
-        />
-      </div>
-    </RecommendationLinkPreviewProvider>
+    <RailStoryCore previewOf={previewOf}>
+      <RecommendationLinkPreviewProvider workspaceId="wsp_story">
+        <div style={{ inlineSize: 350 }}>
+          <RecommendationSummary
+            fallbackTitle="Good morning."
+            onOpenTask={noop}
+            onOpenUrl={noop}
+            parts={summary}
+            sources={envelope.settings.sources}
+          />
+        </div>
+      </RecommendationLinkPreviewProvider>
+    </RailStoryCore>
   ),
 };
 
@@ -423,115 +429,206 @@ export const Summary = {
 // card at all (mail is private). Hover each chip.
 export const LinkPreviews = {
   render: () => (
-    <RecommendationLinkPreviewProvider api={api} workspaceId="wsp_story">
-      <div style={{ inlineSize: 350 }}>
-        <RecommendationSummary
-          fallbackTitle="Good morning."
-          onOpenTask={noop}
-          onOpenUrl={noop}
-          parts={[
-            { kind: "markdown", text: "Good morning.\n\nGitHub needs your review on " },
-            {
-              kind: "inline-link",
-              link: {
-                href: "https://github.com/AFK-surf/Comma/pull/1003",
-                label: "#1003",
-                sourceId: "github",
+    <RailStoryCore previewOf={previewOf}>
+      <RecommendationLinkPreviewProvider workspaceId="wsp_story">
+        <div style={{ inlineSize: 350 }}>
+          <RecommendationSummary
+            fallbackTitle="Good morning."
+            onOpenTask={noop}
+            onOpenUrl={noop}
+            parts={[
+              {
+                kind: "markdown",
+                text: "Good morning.\n\nGitHub needs your review on ",
               },
-            },
-            { kind: "markdown", text: ". Linear moved " },
-            {
-              kind: "inline-link",
-              link: {
-                href: "https://linear.app/comma/issue/COMMA-143",
-                label: "COMMA-143",
-                sourceId: "linear",
+              {
+                kind: "inline-link",
+                link: {
+                  href: "https://github.com/AFK-surf/Comma/pull/1003",
+                  label: "#1003",
+                  sourceId: "github",
+                },
               },
-            },
-            { kind: "markdown", text: " to In Progress, the " },
-            {
-              kind: "inline-link",
-              link: {
-                href: "https://www.notion.so/comma/Q3-plan-4b8e7d0d9f1a4ed89d6ba8d11080a812",
-                label: "Q3 plan",
-                sourceId: "notion",
+              { kind: "markdown", text: ". Linear moved " },
+              {
+                kind: "inline-link",
+                link: {
+                  href: "https://linear.app/comma/issue/COMMA-143",
+                  label: "COMMA-143",
+                  sourceId: "linear",
+                },
               },
-            },
-            { kind: "markdown", text: " was edited, and " },
-            {
-              kind: "inline-link",
-              link: {
-                href: "https://www.google.com/calendar/event?eid=ZXZ0MTIzIHphbndlaUBjb21tYS5sb2NhbA",
-                label: "Launch review",
-                sourceId: "googlecalendar",
+              { kind: "markdown", text: " to In Progress, the " },
+              {
+                kind: "inline-link",
+                link: {
+                  href: "https://www.notion.so/comma/Q3-plan-4b8e7d0d9f1a4ed89d6ba8d11080a812",
+                  label: "Q3 plan",
+                  sourceId: "notion",
+                },
               },
-            },
-            { kind: "markdown", text: " starts in five hours. Dana posted " },
-            {
-              kind: "inline-link",
-              link: {
-                href: "https://comma-local.slack.com/archives/C01234567/p1786900000000000",
-                label: "the deploy update",
-                sourceId: "slack",
+              { kind: "markdown", text: " was edited, and " },
+              {
+                kind: "inline-link",
+                link: {
+                  href: "https://www.google.com/calendar/event?eid=ZXZ0MTIzIHphbndlaUBjb21tYS5sb2NhbA",
+                  label: "Launch review",
+                  sourceId: "googlecalendar",
+                },
               },
-            },
-            { kind: "markdown", text: " in #eng-core, " },
-            {
-              kind: "inline-link",
-              link: {
-                href: "https://docs.google.com/spreadsheets/d/1AbC_dEf-9/edit",
-                label: "Launch metrics",
-                sourceId: "googledrive",
+              { kind: "markdown", text: " starts in five hours. Dana posted " },
+              {
+                kind: "inline-link",
+                link: {
+                  href: "https://comma-local.slack.com/archives/C01234567/p1786900000000000",
+                  label: "the deploy update",
+                  sourceId: "slack",
+                },
               },
-            },
-            { kind: "markdown", text: " changed, and Dana’s " },
-            {
-              kind: "inline-link",
-              link: {
-                href: "https://mail.google.com/mail/#all/198f2ab4c7d3e011",
-                label: "launch approval email",
-                sourceId: "gmail",
+              { kind: "markdown", text: " in #eng-core, " },
+              {
+                kind: "inline-link",
+                link: {
+                  href: "https://docs.google.com/spreadsheets/d/1AbC_dEf-9/edit",
+                  label: "Launch metrics",
+                  sourceId: "googledrive",
+                },
               },
-            },
-            { kind: "markdown", text: " is waiting." },
-          ]}
-          sources={(
-            [
-              "github",
-              "linear",
-              "notion",
-              "googlecalendar",
-              "slack",
-              "googledrive",
-              "gmail",
-            ] as const
-          ).map((appId) => ({
-            appId,
-            appName: {
-              github: "GitHub",
-              gmail: "Gmail",
-              googlecalendar: "Google Calendar",
-              googledrive: "Google Drive",
-              linear: "Linear",
-              notion: "Notion",
-              slack: "Slack",
-            }[appId],
-            connectionId: appId,
-            enabled: true,
-            kind: "composio" as const,
-            label: appId,
-          }))}
-        />
-      </div>
-    </RecommendationLinkPreviewProvider>
+              { kind: "markdown", text: " changed, and Dana’s " },
+              {
+                kind: "inline-link",
+                link: {
+                  href: "https://mail.google.com/mail/#all/198f2ab4c7d3e011",
+                  label: "launch approval email",
+                  sourceId: "gmail",
+                },
+              },
+              { kind: "markdown", text: " is waiting." },
+            ]}
+            sources={(
+              [
+                "github",
+                "linear",
+                "notion",
+                "googlecalendar",
+                "slack",
+                "googledrive",
+                "gmail",
+              ] as const
+            ).map((appId) => ({
+              appId,
+              appName: {
+                github: "GitHub",
+                gmail: "Gmail",
+                googlecalendar: "Google Calendar",
+                googledrive: "Google Drive",
+                linear: "Linear",
+                notion: "Notion",
+                slack: "Slack",
+              }[appId],
+              connectionId: appId,
+              enabled: true,
+              kind: "composio" as const,
+              label: appId,
+            }))}
+          />
+        </div>
+      </RecommendationLinkPreviewProvider>
+    </RailStoryCore>
+  ),
+};
+
+// A routine row that is only its source link, as a mail suggestion is. Hover
+// the row or the briefing's source chip: the card leads with the task the row
+// starts, quotes the mail (a long bare URL included) and names the source.
+const outlookMessageUrl =
+  "https://outlook.live.com/mail/0/inbox/id/AQMkADAwATM0MDAAMS1";
+const sourceContextCard = {
+  fallbackText: "Check whether disabling Find My on pengx17 was intentional",
+  id: "outlook",
+  items: [
+    {
+      action: {
+        label: "Check whether disabling Find My on pengx17 was intentional",
+        prompt: `Check whether disabling Find My on pengx17 and Xiao’s Apple Watch was intentional.\n\n${outlookMessageUrl}`,
+        requiresConfirmation: false,
+        type: "open_task_form",
+      },
+      id: "find-my",
+      parts: [
+        {
+          kind: "inline-link",
+          link: {
+            href: outlookMessageUrl,
+            label:
+              "Check whether disabling Find My on pengx17 and Xiao’s Apple Watch was intentional",
+            previewText:
+              "Find My has been disabled on pengx17\nFind My: Find My has been disabled on pengx17 and Xiao’s Apple Watch. With Find My disabled, these devices can no longer be located, put in Lost Mode or erased remotely.\nIf you did not make this change, turn Find My back on at https://www.icloud.com/settings/find-my-device-security-options and change your Apple Account password.",
+            sourceId: "outlook",
+            taskPrompt: `Check whether disabling Find My on pengx17 and Xiao’s Apple Watch was intentional.\n\n${outlookMessageUrl}`,
+          },
+        },
+      ],
+    },
+  ],
+  sourceIds: ["outlook"],
+  template: "text-list@1",
+  title: "Microsoft Outlook",
+} satisfies RecommendationGeneratedCard;
+
+const sourceContextEnvelope = {
+  ...envelope,
+  settings: {
+    ...envelope.settings,
+    sources: [
+      ...envelope.settings.sources,
+      {
+        appId: "outlook",
+        appName: "Microsoft Outlook",
+        connectionId: "outlook",
+        enabled: true,
+        kind: "native_mcp_oauth",
+        label: "Microsoft Outlook",
+      },
+    ],
+  },
+  snapshot: {
+    ...envelope.snapshot,
+    cards: [sourceContextCard, textListCard],
+    summary: [
+      {
+        kind: "markdown",
+        text: "Good afternoon, Zanwei.\n\nHere is what I suggest you focus on: Check whether disabling Find My on pengx17 and Xiao’s Apple Watch was intentional ",
+      },
+      {
+        kind: "inline-link",
+        link: {
+          ...sourceContextCard.items[0]!.parts[0]!.link,
+          label: "Microsoft Outlook source",
+        },
+      },
+      { kind: "markdown", text: "." },
+    ],
+  },
+} satisfies RecommendationEnvelope;
+
+export const SourceContext = {
+  render: () => (
+    <RailFrame envelope={sourceContextEnvelope}>
+      <RecommendationRail
+        onOpenTask={noop}
+        onOpenUrl={noop}
+        onUsePrompt={noop}
+        workspaceId="storybook-workspace-source-context"
+      />
+    </RailFrame>
   ),
 };
 
 export const FullRail = {
   render: () => (
-    <RailFrame>
+    <RailFrame envelope={envelope}>
       <RecommendationRail
-        api={api}
         onOpenTask={noop}
         onOpenUrl={noop}
         onUsePrompt={noop}
@@ -543,9 +640,8 @@ export const FullRail = {
 
 export const EmptyState = {
   render: () => (
-    <RailFrame>
+    <RailFrame envelope={emptyEnvelope}>
       <RecommendationRail
-        api={railApi(emptyEnvelope)}
         onConnectApps={noop}
         onOpenTask={noop}
         onOpenUrl={noop}
@@ -558,9 +654,8 @@ export const EmptyState = {
 
 export const Generating = {
   render: () => (
-    <RailFrame>
+    <RailFrame envelope={generatingEnvelope}>
       <RecommendationRail
-        api={railApi(generatingEnvelope)}
         onOpenTask={noop}
         onOpenUrl={noop}
         onUsePrompt={noop}
@@ -574,12 +669,6 @@ export const InitialLoad = {
   render: () => (
     <RailFrame>
       <RecommendationRail
-        api={
-          {
-            ...railApi(envelope),
-            getRecommendations: () => new Promise(() => {}),
-          } as unknown as CommaApiClient
-        }
         greetingName="Zanwei"
         onOpenTask={noop}
         onOpenUrl={noop}
@@ -592,9 +681,8 @@ export const InitialLoad = {
 
 export const Refreshing = {
   render: () => (
-    <RailFrame>
+    <RailFrame envelope={refreshingEnvelope}>
       <RecommendationRail
-        api={railApi(refreshingEnvelope)}
         onOpenTask={noop}
         onOpenUrl={noop}
         onUsePrompt={noop}
@@ -606,9 +694,8 @@ export const Refreshing = {
 
 export const Unavailable = {
   render: () => (
-    <RailFrame>
+    <RailFrame envelope={unavailableEnvelope}>
       <RecommendationRail
-        api={railApi(unavailableEnvelope)}
         onOpenTask={noop}
         onOpenUrl={noop}
         onUsePrompt={noop}
@@ -620,9 +707,8 @@ export const Unavailable = {
 
 export const ReadyToGenerate = {
   render: () => (
-    <RailFrame>
+    <RailFrame envelope={readyEnvelope}>
       <RecommendationRail
-        api={railApi(readyEnvelope)}
         onOpenTask={noop}
         onOpenUrl={noop}
         onUsePrompt={noop}

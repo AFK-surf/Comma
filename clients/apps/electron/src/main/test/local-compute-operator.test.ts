@@ -110,11 +110,13 @@ describe("trusted local operator management", () => {
 
   it("cancels without effects and rejects a target changed while native confirmation is open", async () => {
     const run = runner();
+    let shown = Promise.withResolvers<void>();
     let decision!: (value: boolean) => void;
     const confirm = vi.fn(
       () =>
         new Promise<boolean>((resolve) => {
           decision = resolve;
+          shown.resolve();
         })
     );
     const local = new LocalComputeOperator({
@@ -125,12 +127,15 @@ describe("trusted local operator management", () => {
     });
     const page = await local.overview({});
     const pending = local.dispose({ key: page.environments[0]!.key });
-    await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+    await shown.promise;
+    expect(confirm).toHaveBeenCalledTimes(1);
     decision(false);
     expect(await pending).toEqual({ outcome: "cancelled" });
     expect(run.mock.calls.some(([, args]) => args[0] === "local-execute")).toBe(false);
+    shown = Promise.withResolvers<void>();
     const next = local.dispose({ key: page.environments[0]!.key });
-    await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(2));
+    await shown.promise;
+    expect(confirm).toHaveBeenCalledTimes(2);
     run.mockImplementationOnce(async () =>
       JSON.stringify({
         collectedAt: disk.collectedAt,

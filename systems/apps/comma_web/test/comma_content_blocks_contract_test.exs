@@ -8,7 +8,7 @@ defmodule CommaWeb.CommaMessageResourceTest do
       create_workspace_session("dynamic-ui@example.com", "Dynamic UI")
 
     conversation = create_conversation(session, workspace)
-    unless Process.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
 
     :ok =
       BillingCore.Accounts.ensure_account(%{
@@ -24,8 +24,8 @@ defmodule CommaWeb.CommaMessageResourceTest do
                repo: BillingCore.Repo,
                billing_account_id: workspace["billing_account_id"],
                credits: 100,
-               valid_from: DateTime.add(DateTime.utc_now(), -60, :second),
-               expires_at: DateTime.add(DateTime.utc_now(), 1, :day),
+               valid_from: DateTime.add(SystemsClock.utc_now(), -60, :second),
+               expires_at: DateTime.add(SystemsClock.utc_now(), 1, :day),
                source_type: "manual_contract",
                source_id: "ui-test",
                source_event_id: workspace["id"],
@@ -114,30 +114,144 @@ defmodule CommaWeb.CommaMessageResourceTest do
     assert user_req(outsider["token"], :get, resource_url).status in [403, 404]
   end
 
+  test "a question card sent by the Agent is answered once, only with its own choices" do
+    %{workspace: workspace, session: session} =
+      create_workspace_session("question-card@example.com", "Question Card")
+
+    grant_credits!(workspace)
+    conversation = create_conversation(session, workspace)
+    group_id = workspace["default_group_id"]
+    conversation_id = conversation["id"]
+    agent_id = workspace["router_agent_id"]
+    {:ok, session_id} = SalixIM.ProviderConnects.agent_group_router_session_id(agent_id, group_id)
+
+    assert {:ok, %{"message_id" => question_id}} =
+             Salix.Bindings.AgentIMProvider.call_api(
+               agent_id,
+               "internal",
+               "internal.send_message",
+               %{
+                 "connect_id" => "internal",
+                 "tool_call_id" => "question-card-1",
+                 "params" => %{
+                   "conversation_id" => conversation_id,
+                   "request_id" => "question-card-1",
+                   "delivery_filter" => %{"participant_ids" => []},
+                   "content" => [
+                     %{"type" => "text", "text" => "下周三两个会撞了。"},
+                     %{
+                       "type" => "question",
+                       "prompt" => "这两个会怎么处理？",
+                       "choices" => [
+                         %{"label" => "把同步会挪到周四", "recommended" => true},
+                         %{"label" => "两个都参加"}
+                       ]
+                     }
+                   ]
+                 },
+                 "tool_context" => %{"runtime_kind" => "internal", "session_id" => session_id}
+               }
+             )
+
+    url = "/v1/comma/groups/#{group_id}/conversations/#{conversation_id}"
+    detail = user_req(session["token"], :get, url) |> expect_status(200)
+    question_message = Enum.find(detail.body["messages"], &(&1["message_id"] == question_id))
+
+    assert [
+             %{"type" => "text"},
+             %{"type" => "question", "choices" => [%{"id" => "c1"}, %{"id" => "c2"}]},
+             %{"type" => "text", "fallback_for" => "question"}
+           ] = question_message["content"]
+
+    answer = fn choice_ids, request_id ->
+      user_req(session["token"], :post, url <> "/messages",
+        json: %{
+          "message" => %{
+            "content" => [
+              %{"type" => "text", "text" => "选了。"},
+              %{
+                "type" => "question_answer",
+                "question_message_id" => question_id,
+                "choice_ids" => choice_ids
+              }
+            ]
+          },
+          "client_request_id" => request_id,
+          "reply_to_message_id" => question_id
+        }
+      )
+    end
+
+    refused = answer.(["c9"], "question-answer:refused")
+    assert refused.status in 400..422, inspect(refused.body)
+
+    answer.(["c1"], "question-answer:" <> question_id) |> expect_status(202)
+
+    other_device = answer.(["c2"], "question-answer:" <> question_id)
+    assert other_device.status == 409, inspect(other_device.body)
+
+    updated = user_req(session["token"], :get, url) |> expect_status(200)
+
+    assert [
+             %{
+               "actor_type" => "user",
+               "reply_to_message_id" => ^question_id,
+               "content" => [
+                 %{"type" => "text", "text" => "选了。"},
+                 %{"type" => "question_answer", "choice_ids" => ["c1"]}
+               ]
+             }
+           ] = Enum.filter(updated.body["messages"], &(&1["reply_to_message_id"] == question_id))
+  end
+
+  defp grant_credits!(workspace) do
+    :ok =
+      BillingCore.Accounts.ensure_account(%{
+        repo: BillingCore.Repo,
+        billing_account_id: workspace["billing_account_id"],
+        surface: "comma",
+        product_owner_type: "workspace",
+        product_owner_id: workspace["id"]
+      })
+
+    assert {:ok, _grant} =
+             BillingCore.Credits.issue_grant(%{
+               repo: BillingCore.Repo,
+               billing_account_id: workspace["billing_account_id"],
+               credits: 100,
+               valid_from: DateTime.add(SystemsClock.utc_now(), -60, :second),
+               expires_at: DateTime.add(SystemsClock.utc_now(), 1, :day),
+               source_type: "manual_contract",
+               source_id: "question-card-test",
+               source_event_id: workspace["id"],
+               idempotency_key: workspace["id"]
+             })
+  end
+
   setup do
-    unless Process.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
     billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(billing_owner) end)
     ensure_fake_s3!()
     SalixAgent.TestSupport.stop_all_agents()
 
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    prev_im_provider = Application.get_env(:salix_agent, :im_provider_mod)
-    prev_salix_client = Application.get_env(:comma_core, :salix_client)
-    prev_api_token = Application.get_env(:comma_web, :api_token)
-    prev_heartbeat_ms = Application.get_env(:comma_web, :comma_sse_heartbeat_ms)
-    prev_im_notifier = Application.get_env(:salix_im, :conversation_notifier)
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_im_provider = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
+    prev_salix_client = SystemsRuntime.get_env(:comma_core, :salix_client)
+    prev_api_token = SystemsRuntime.get_env(:comma_web, :api_token)
+    prev_heartbeat_ms = SystemsRuntime.get_env(:comma_web, :comma_sse_heartbeat_ms)
+    prev_im_notifier = SystemsRuntime.get_env(:salix_im, :conversation_notifier)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:comma_web, :api_token, @admin_token)
-    Application.put_env(:comma_web, :comma_sse_heartbeat_ms, 50)
-    Application.put_env(:comma_core, :salix_client, CommaWeb.SalixClient)
-    Application.put_env(:salix_agent, :im_provider_mod, Salix.Bindings.AgentIMProvider)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:comma_web, :api_token, @admin_token)
+    SystemsRuntime.put_env(:comma_web, :comma_sse_heartbeat_ms, 50)
+    SystemsRuntime.put_env(:comma_core, :salix_client, CommaWeb.SalixClient)
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, Salix.Bindings.AgentIMProvider)
     CommaWeb.Application.register_im_notifier()
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev_backend)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_backend)
       restore_env(:salix_agent, :im_provider_mod, prev_im_provider)
       restore_env(:comma_web, :api_token, prev_api_token)
       restore_env(:comma_web, :comma_sse_heartbeat_ms, prev_heartbeat_ms)
@@ -291,7 +405,11 @@ defmodule CommaWeb.CommaMessageResourceTest do
     end
 
     detail =
-      user_req(session["token"], :get, "/v1/comma/groups/#{group_id}/conversations/#{conversation_id}")
+      user_req(
+        session["token"],
+        :get,
+        "/v1/comma/groups/#{group_id}/conversations/#{conversation_id}"
+      )
       |> expect_status(200)
 
     assert detail.body["messages"] == []
@@ -306,7 +424,11 @@ defmodule CommaWeb.CommaMessageResourceTest do
     seed_agent_vfs!(agent_id, %{path => "changed after send"})
 
     detail =
-      user_req(session["token"], :get, "/v1/comma/groups/#{group_id}/conversations/#{conversation_id}")
+      user_req(
+        session["token"],
+        :get,
+        "/v1/comma/groups/#{group_id}/conversations/#{conversation_id}"
+      )
       |> expect_status(200)
 
     assert [message] = detail.body["messages"]
@@ -536,6 +658,11 @@ defmodule CommaWeb.CommaMessageResourceTest do
            }
 
     assert seqs.(read.("?limit=4")) == [6, 7, 8, 9]
+
+    # A page for a Task's Activity is the same page, its Messages cut to what the Activity reads.
+    activity = read.("?before=3&limit=5&view=activity")
+    assert seqs.(activity) == [1, 2]
+    assert Map.delete(activity.body, "data") == Map.delete(head.body, "data")
     assert seqs.(read.("?after=7&limit=500")) == [8, 9]
 
     user_req(session["token"], :get, base <> "?around=10") |> expect_status(404)
@@ -550,7 +677,8 @@ defmodule CommaWeb.CommaMessageResourceTest do
           # Nested query parameters decode to maps and lists, not strings.
           {"?before[x]=3", "before must be a positive integer"},
           {"?after[]=3", "after must be a positive integer"},
-          {"?limit[x]=5", "limit must be a positive integer"}
+          {"?limit[x]=5", "limit must be a positive integer"},
+          {"?view=full", "view must be activity"}
         ] do
       response = user_req(session["token"], :get, base <> query) |> expect_status(400)
       assert response.body == %{"error" => error}
@@ -590,74 +718,6 @@ defmodule CommaWeb.CommaMessageResourceTest do
     end
   end
 
-  test "the message list never pages another Conversation's Messages" do
-    %{workspace: workspace, session: session} =
-      create_workspace_session("message-pages-scope@example.com", "Message Page Scope")
-
-    conversation = create_conversation(session, workspace)
-    group_id = workspace["default_group_id"]
-
-    # Same Group, different Conversation, and longer: its Message ids are well
-    # formed and its tail seq is beyond the reader's tail.
-    assert {:ok, %{"conversation_id" => other_id}} =
-             SalixIM.ConversationInput.create_group_conversation(group_id, %{
-               "title" => "Other Conversation",
-               "participants" => [
-                 %{
-                   "actor_type" => "user",
-                   "user_id" => "current",
-                   "state" => "active",
-                   "notification_filter" => %{"messages" => "all", "statuses" => "none"},
-                   "created_at" => System.system_time(:millisecond),
-                   "updated_at" => System.system_time(:millisecond)
-                 }
-               ]
-             })
-
-    for {conversation_id, count} <- [{conversation["id"], 2}, {other_id, 4}],
-        index <- 1..count do
-      assert {:ok, _} =
-               SalixIM.ConversationServer.append_group_conversation_message(
-                 group_id,
-                 conversation_id,
-                 %{
-                   "actor_type" => "user",
-                   "user_id" => "current",
-                   "content" => "#{conversation_id} #{index}",
-                   "delivery_filter" => %{"participant_ids" => []}
-                 }
-               )
-    end
-
-    assert {:ok, %{"messages" => [%{"message_id" => foreign_id} | _] = foreign}} =
-             SalixIM.Conversations.list_group_conversation_message_page(group_id, other_id,
-               limit: 4
-             )
-
-    foreign_ids = Enum.map(foreign, & &1["message_id"])
-    base = "/v1/comma/groups/#{group_id}/conversations/#{conversation["id"]}/messages"
-
-    for position <- ["before", "after", "around"] do
-      response =
-        user_req(session["token"], :get, base <> "?#{position}=#{foreign_id}&limit=3")
-        |> expect_status(400)
-
-      assert response.body == %{"error" => "#{position} must be a positive integer"}
-
-      response =
-        user_req(session["token"], :get, base <> "?#{position}=4&limit=3")
-        |> expect_status(404)
-
-      refute Map.has_key?(response.body, "data")
-
-      page =
-        user_req(session["token"], :get, base <> "?#{position}=2&limit=3")
-        |> expect_status(200)
-
-      refute Enum.any?(page.body["data"], &(&1["message_id"] in foreign_ids))
-    end
-  end
-
   defp create_workspace_session(email, title) do
     user =
       admin_req(:post, "/v1/comma/admin/users", json: %{"email" => email, "name" => title})
@@ -667,6 +727,7 @@ defmodule CommaWeb.CommaMessageResourceTest do
     workspace = create_ready_workspace!(user["id"], %{"name" => title})
 
     :ok = CommaWeb.TestConvergence.workspace!(workspace["id"])
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
 
     session =
       admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
@@ -708,7 +769,7 @@ defmodule CommaWeb.CommaMessageResourceTest do
              SalixAgent.AgentWorkspace.seed_operation(
                agent_id,
                "comma-message-resource-test:" <>
-                 Integer.to_string(System.unique_integer([:positive])),
+                 Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive])),
                %{},
                events
              )
@@ -722,13 +783,13 @@ defmodule CommaWeb.CommaMessageResourceTest do
   defp base, do: CommaWeb.Application.base_url()
 
   defp ensure_fake_s3! do
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
     end
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

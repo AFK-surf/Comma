@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { uiClock } from "../../clock";
 import { suspendHoverCards } from "../hover-card/HoverCard";
 import { getMenuPointerOffsets, type MenuPointerOffsets } from "./pointerPosition";
 import {
@@ -54,7 +55,7 @@ export const useTextEditContextMenuState = ({
         if (
           pointerUpIsOnTrigger &&
           pointerUpAt !== null &&
-          Date.now() - pointerUpAt < 100
+          uiClock.now() - pointerUpAt < 100
         ) {
           // React Aria can treat the native right-button pointerup that
           // follows contextmenu as an outside dismissal. The menu was opened
@@ -133,7 +134,7 @@ export const useTextEditContextMenuState = ({
         target instanceof Node &&
         (target === trigger || trigger.contains(target))
       ) {
-        contextPointerUpAtRef.current = Date.now();
+        contextPointerUpAtRef.current = uiClock.now();
         contextPointerUpTargetRef.current = target;
       }
     };

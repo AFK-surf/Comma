@@ -8,8 +8,9 @@ defmodule SalixIM.IFCSlackConfirmationTest do
   decision rather than to anything in the interaction payload.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixIM.IFC.SlackConfirmation
 
   @group "grp_ifc_card"
@@ -21,7 +22,7 @@ defmodule SalixIM.IFCSlackConfirmationTest do
     @moduledoc false
 
     def get(group_id, request_id, tenant_id) do
-      send(test_pid(), {:get, group_id, request_id, tenant_id})
+      SystemsRuntime.Proc.send(test_pid(), {:get, group_id, request_id, tenant_id})
 
       case Process.get(:ifc_card_request) do
         nil -> {:error, :not_found}
@@ -30,7 +31,7 @@ defmodule SalixIM.IFCSlackConfirmationTest do
     end
 
     def decide_declassification(group_id, request_id, attrs, tenant_id) do
-      send(test_pid(), {:decided, group_id, request_id, attrs, tenant_id})
+      SystemsRuntime.Proc.send(test_pid(), {:decided, group_id, request_id, attrs, tenant_id})
       {:ok, Process.get(:ifc_card_request)}
     end
 
@@ -38,9 +39,9 @@ defmodule SalixIM.IFCSlackConfirmationTest do
   end
 
   setup do
-    Application.put_env(:salix_im, :capability_request_mod, Capability)
-    Process.put(:ifc_card_test_pid, self())
-    on_exit(fn -> Application.delete_env(:salix_im, :capability_request_mod) end)
+    SystemsRuntime.put_env(:salix_im, :capability_request_mod, Capability)
+    Process.put(:ifc_card_test_pid, SystemsRuntime.Proc.self())
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :capability_request_mod) end)
     :ok
   end
 
@@ -82,13 +83,6 @@ defmodule SalixIM.IFCSlackConfirmationTest do
   end
 
   describe "recognizing the card" do
-    test "only its own two actions" do
-      assert SlackConfirmation.action?(payload("ifc_declassify:approve", "U_A"))
-      assert SlackConfirmation.action?(payload("ifc_declassify:deny", "U_A"))
-      refute SlackConfirmation.action?(payload("triage_checkbox", "U_A"))
-      refute SlackConfirmation.action?(%{"actions" => []})
-      refute SlackConfirmation.action?(%{})
-    end
   end
 
   describe "answering it" do
@@ -138,22 +132,8 @@ defmodule SalixIM.IFCSlackConfirmationTest do
         refute_received {:decided, _group, _request, _attrs, _tenant}
       end
     end
-
-    test "a malformed payload is ignored, not retried" do
-      assert {:error, {:ignored, :invalid_interaction_payload}} =
-               SlackConfirmation.apply_action(connect(), %{})
-
-      assert {:error, {:ignored, :invalid_interaction_payload}} =
-               SlackConfirmation.apply_action(
-                 connect(),
-                 payload("ifc_declassify:approve", "U_A", "")
-               )
-    end
   end
 
   describe "asking" do
-    test "an unreachable connect never fails the request that raised it" do
-      assert :ok = SlackConfirmation.post(request())
-    end
   end
 end

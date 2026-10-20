@@ -1,16 +1,16 @@
 defmodule SalixStore.ComputeMigrationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   alias SalixStore.{Compute, ComputeMigration, Ids, Keys, Repo, S3}
   @marker "group_compute_authority_v1"
 
   setup do
-    previous = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
-    if Process.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
+    previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+    if SystemsRuntime.Proc.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
     Repo.query!("DELETE FROM salix_cutover_markers WHERE name = $1", [@marker])
 
     on_exit(fn ->
-      Application.put_env(:salix_store, :s3_backend, previous)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, previous)
 
       Repo.query!(
         "INSERT INTO salix_cutover_markers (name, completed_at, evidence) VALUES ($1, now(), '{\"phase\":\"complete\"}') ON CONFLICT (name) DO UPDATE SET evidence = EXCLUDED.evidence",

@@ -1,24 +1,20 @@
+import {
+  useCall,
+  type ModelProfile,
+  type SubscriptionSignIn,
+} from "@comma/core-client";
 import { getNativeBridge } from "@comma/native-bridge";
-import { useCallback, useContext, useEffect, useRef, useState } from "react";
-import type { CommaApiClient } from "../../api";
-import type {
-  SubscriptionAccount,
-  SubscriptionOAuth,
-} from "../../api/subscriptionAccounts";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   openNativePlatformExternalUrl,
   openNativePlatformExternalUrlFromUserAction,
-} from "../../runtime-chat/nativePlatformActions";
-import { CommaAuthContext } from "../auth-context";
-
-/** Sources that sign in on the web with a device code. */
-const deviceSources = new Set(["codex", "grok", "kimi-code", "github-copilot"]);
+} from "../../nativePlatformActions";
 
 /** Sources whose loopback callback the desktop app can receive itself. */
 const nativeSources = new Set(["codex", "claude"]);
 
 export type SignInState = {
-  attempt: SubscriptionOAuth | undefined;
+  attempt: SubscriptionSignIn | undefined;
   /** The desktop app is waiting for the browser to return to it. */
   native: boolean;
   busy: boolean;
@@ -27,37 +23,32 @@ export type SignInState = {
 };
 
 /**
- * Signs a subscription in through OAuth. The desktop app receives the
- * callback for Codex and Claude itself; elsewhere the backend chooses a device
- * code, which is polled, or a callback code the reader pastes back.
- * `onComplete` receives the new account when the backend returns it.
+ * Signs a subscription in through OAuth. In the desktop app the browser
+ * returns Codex and Claude to the core's loopback listener
+ * (`models.signIn.loopback`, which waits for it); elsewhere the core starts
+ * the sign-in: a device code, which the core waits on, or a callback code the
+ * reader pastes back. `onComplete` receives the new account when the
+ * backend returns it; the core has read the profiles again by then.
  */
 export function useSubscriptionSignIn(
-  api: CommaApiClient,
   workspace: string | undefined,
-  onComplete: (account: SubscriptionAccount | undefined) => void | Promise<void>
+  onComplete: (account: ModelProfile | undefined) => void | Promise<void>
 ) {
-  const productLease = useContext(CommaAuthContext)?.productLease;
-  const [attempt, setAttempt] = useState<SubscriptionOAuth>();
+  const call = useCall();
+  const [attempt, setAttempt] = useState<SubscriptionSignIn>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>();
   const [code, setCode] = useState("");
   const generation = useRef(0);
-  const nativeRequest = useRef<string | undefined>(undefined);
+  /** The desktop sign-in under way: aborting it cancels the core's call (its listener closes). */
+  const nativeRequest = useRef<AbortController | undefined>(undefined);
   const completed = useRef(onComplete);
   completed.current = onComplete;
 
   const cancelNative = useCallback(() => {
-    if (nativeRequest.current && productLease) {
-      void getNativeBridge()
-        .subscriptionAuthorization.cancel({
-          session: productLease,
-          requestId: nativeRequest.current,
-        })
-        .catch(() => undefined);
-    }
+    nativeRequest.current?.abort();
     nativeRequest.current = undefined;
-  }, [productLease]);
+  }, []);
 
   const reset = useCallback(() => {
     generation.current += 1;
@@ -71,7 +62,7 @@ export function useSubscriptionSignIn(
   useEffect(() => reset, [reset, workspace]);
 
   const finish = useCallback(
-    async (current: number, account: SubscriptionAccount | undefined) => {
+    async (current: number, account: ModelProfile | undefined) => {
       if (current !== generation.current) return;
       nativeRequest.current = undefined;
       setAttempt(undefined);
@@ -92,56 +83,54 @@ export function useSubscriptionSignIn(
   );
 
   /**
-   * Starts a sign-in. `reconnect` names the account it renews, so a fresh
-   * sign-in replaces that account's credential instead of adding another.
+   * Starts a sign-in. `device`: the plan signs in with a device code, shown
+   * here first. `reconnect` names the account it renews, so a fresh sign-in
+   * replaces that account's credential instead of adding another.
    */
   const begin = useCallback(
-    (source: string, reconnect?: { account_id: string; version: string }) => {
+    (
+      source: string,
+      options: { device: boolean; reconnect?: { account_id: string; version: string } }
+    ) => {
       if (!workspace || busy) return;
+      const { device, reconnect } = options;
       const current = ++generation.current;
       setBusy(true);
       setError(undefined);
+      const started = () =>
+        call("models.signIn.begin", {
+          workspace,
+          provider: source,
+          ...(reconnect
+            ? { account: reconnect.account_id, version: reconnect.version }
+            : {}),
+        });
       void (async () => {
         const bridge = getNativeBridge();
         if (bridge.platform === "electron" && nativeSources.has(source)) {
-          if (!productLease) throw new Error("authorization_unavailable");
-          const requestId = crypto.randomUUID();
-          nativeRequest.current = requestId;
-          const result = await bridge.subscriptionAuthorization.start({
-            session: productLease,
-            requestId,
-            workspaceId: workspace,
-            provider: source as "codex" | "claude",
-            ...(reconnect
-              ? { accountId: reconnect.account_id, version: reconnect.version }
-              : {}),
-          });
-          if (current !== generation.current) return;
-          if (result.status === "failed") throw new Error(result.error);
-          if (result.status === "complete") {
-            await finish(current, undefined);
-            return;
-          }
-          setAttempt({
-            id: requestId,
-            url: "",
-            mode: "callback",
-            expires_at: new Date(Date.now() + 900_000).toISOString(),
-          });
-        } else if (deviceSources.has(source)) {
+          const controller = new AbortController();
+          nativeRequest.current = controller;
+          setAttempt({ id: "loopback", url: "", mode: "callback", expires_at: "" });
+          setBusy(false);
+          const account = await call(
+            "models.signIn.loopback",
+            {
+              workspace,
+              provider: source as "codex" | "claude",
+              ...(reconnect
+                ? { account: reconnect.account_id, version: reconnect.version }
+                : {}),
+            },
+            controller.signal
+          );
+          if (current === generation.current) await finish(current, account);
+        } else if (device) {
           // A device code is shown first; the reader opens the page with it.
-          const result = await api.beginSubscriptionOAuth(workspace, {
-            provider: source,
-            mode: "device",
-            ...reconnect,
-          });
+          const result = await started();
           if (current === generation.current) setAttempt(result);
         } else {
           await openNativePlatformExternalUrlFromUserAction(async () => {
-            const result = await api.beginSubscriptionOAuth(workspace, {
-              provider: source,
-              ...reconnect,
-            });
+            const result = await started();
             if (current !== generation.current)
               throw new Error("Authorization cancelled");
             setAttempt(result);
@@ -154,47 +143,26 @@ export function useSubscriptionSignIn(
           if (current === generation.current) setBusy(false);
         });
     },
-    [api, busy, fail, finish, productLease, workspace]
+    [busy, call, fail, finish, workspace]
   );
 
-  // Device codes and the desktop callback finish on their own; poll them.
+  // A device code finishes on its own: the core asks about it until it does.
   useEffect(() => {
-    if (!attempt || !workspace) return;
-    const native = nativeRequest.current;
-    if (attempt.mode !== "device" && !native) return;
+    if (!attempt || !workspace || attempt.mode !== "device") return;
     const current = generation.current;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        if (Date.now() >= Date.parse(attempt.expires_at))
-          throw new Error("authorization_expired");
-        if (native) {
-          if (!productLease) throw new Error("authorization_unavailable");
-          const result = await getNativeBridge().subscriptionAuthorization.status({
-            session: productLease,
-            requestId: native,
-          });
-          if (stopped) return;
-          if (result.status === "pending") timer = setTimeout(poll, 1000);
-          else if (result.status === "complete") await finish(current, undefined);
-          else throw new Error(result.error ?? "authorization_failed");
-          return;
-        }
-        const result = await api.pollSubscriptionOAuth(workspace, attempt.id);
-        if (stopped) return;
-        if ("id" in result) await finish(current, result);
-        else timer = setTimeout(poll, result.interval * 1000);
-      } catch (reason) {
-        if (!stopped) fail(current, reason);
+    const controller = new AbortController();
+    call(
+      "models.signIn.wait",
+      { workspace, attempt: attempt.id },
+      controller.signal
+    ).then(
+      (account) => finish(current, account),
+      (reason: unknown) => {
+        if (!controller.signal.aborted) fail(current, reason);
       }
-    };
-    timer = setTimeout(poll, native ? 1000 : (attempt.interval ?? 5) * 1000);
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-  }, [api, attempt, fail, finish, productLease, workspace]);
+    );
+    return () => controller.abort();
+  }, [attempt, call, fail, finish, workspace]);
 
   /** Finishes a callback sign-in with the pasted code, or `pasted` when given. */
   const complete = useCallback(
@@ -203,15 +171,14 @@ export function useSubscriptionSignIn(
       if (!workspace || !attempt || !value.trim() || busy) return;
       const current = generation.current;
       setBusy(true);
-      void api
-        .completeSubscriptionOAuth(workspace, attempt.id, value)
+      call("models.signIn.complete", { workspace, attempt: attempt.id, code: value })
         .then((account) => finish(current, account))
         .catch((reason: unknown) => fail(current, reason))
         .finally(() => {
           if (current === generation.current) setBusy(false);
         });
     },
-    [api, attempt, busy, code, fail, finish, workspace]
+    [attempt, busy, call, code, fail, finish, workspace]
   );
 
   const openAuthorization = useCallback(() => {

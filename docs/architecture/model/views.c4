@@ -160,7 +160,6 @@ views '03 · 概念到实现' {
     include impl_participant
     include impl_router_actor
     include impl_internal_session
-    include impl_external_session
   }
 
   view worker_session_implementation {
@@ -175,24 +174,22 @@ views '03 · 概念到实现' {
     include impl_participant
     include impl_worker_actor
     include impl_internal_session
-    include impl_external_session
+    include impl_retired_session
   }
 
 
   view compute_implementation {
-    title '07D · Compute、External Worker 与 Service Route'
-    description 'Comma/BFT 只拥有产品 ACL/intent；SalixStore.Compute 是共享执行 SSOT，三个 Provider adapter 共用 contract，External Worker 只接受两类稳定 binding，ServiceRoute 每次访问重查 generation 与 capability。'
+    title '07D · Compute 与 Service Route'
+    description 'Comma/BFT 只拥有产品 ACL/intent；SalixStore.Compute 是共享执行 SSOT，三个 Provider adapter 共用 contract，ServiceRoute 每次访问重查 generation 与 capability。'
     autoLayout LeftRight
 
     include product_agent_scope
     include product_compute_environment
     include product_compute_workload
-    include product_external_worker
     include product_service_route
     include product_compute_node
     include impl_compute
     include impl_compute_provider
-    include impl_runtime_binding
     include impl_service_route
     include impl_compute_node
   }
@@ -344,13 +341,12 @@ views '05 · 关键动态路径' {
     title '16 · Electron 已认证产品命令'
     description '这里的 Session 是登录/设备 Session，不是 Router Runtime Session；Renderer 从不接收 bearer。'
 
-    comma_user -> comma_platform.clients.electron.renderer '触发 Chat/Inbox 命令'
+    comma_user -> comma_platform.clients.electron.renderer '触发 Chat 命令'
     comma_platform.clients.electron.renderer -> comma_platform.clients.electron.preload '调用生成式、无 Token 的 Bridge'
     comma_platform.clients.electron.preload -> comma_platform.clients.electron.ipc_gateway '校验 Schema、Caller 与 Permission'
     comma_platform.clients.electron.ipc_gateway -> comma_platform.clients.electron.main_session '校验捕获的 Auth Session Lease'
     comma_platform.clients.electron.ipc_gateway -> comma_platform.clients.electron.main_product '分派产品命令'
     comma_platform.clients.electron.main_product -> comma_platform.systems.comma_product.comma_web 'Main 注入 bearer 与预期 Auth Session'
-    comma_platform.clients.electron.main_product -> comma_platform.clients.electron.sqlite_utility '受 Lease 约束的 Cache 读写'
     comma_platform.clients.electron.renderer <- comma_platform.clients.electron.ipc_gateway '已结算、无 Token 的结果/状态'
   }
 

@@ -1,5 +1,5 @@
 import { LocalComputeLoginEntry } from "./LocalComputeLoginEntry";
-import { PluginInstallProvider } from "./plugins/PluginInstallProvider";
+import { PluginNotices } from "./plugins/pluginInstall";
 import { useCommaMessages } from "@comma/i18n/react";
 import {
   Outlet,
@@ -11,9 +11,9 @@ import { getNativeBridge, type NativeInfo } from "@comma/native-bridge";
 import {
   ChatPanelVideoPictureInPictureProvider,
   ChatPanelVideoSurfaceProvider,
-  OverlayPortalProvider,
-  Toaster,
-} from "@comma/ui";
+} from "@comma/ui/components/chat-panel";
+import { OverlayPortalProvider } from "@comma/ui/components/portal";
+import { Toaster } from "@comma/ui/components/toast";
 import {
   Suspense,
   useCallback,
@@ -27,9 +27,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { scrubLegacyRendererAuthMetadata } from "../api/config";
+import { scrubLegacyRendererAuthMetadata } from "../apiBaseUrl";
 import { AutomaticUpdates } from "./AutomaticUpdates";
-import { DesktopAppPromptHost } from "./DesktopAppPrompt";
+import { DesktopAppPromptHost, needsDesktopApp } from "./DesktopAppPrompt";
 import { AppSettingsRoute } from "./AppSettingsRoute";
 import { CommaAuthGate, useCommaAuth } from "./AuthGate";
 import { WindowBar } from "./WindowBar";
@@ -75,11 +75,13 @@ import {
 import { AppProductShortcutListener } from "./shortcuts/useAppShortcutListener";
 import { MeetingRecorderHost } from "./MeetingRecorderHost";
 import { NotchTaskSync } from "./tasks/NotchTaskSync";
+import { TaskStepsProvider } from "./tasks/taskSteps";
 import { MessageNotificationSync } from "./notifications/MessageNotificationSync";
 import { AirDropToasts } from "./airdrop/AirDropToasts";
 import { CommaConnectorRuntimeOwner } from "./useCommaConnectorScope";
-import { OnboardingPluginHandoff } from "./onboarding/OnboardingPluginHandoff";
 import { OnboardingHost } from "./onboarding/OnboardingHost";
+import { WebIntroCard } from "./web-intro/WebIntroCard";
+import { LegacyActiveWorkspace } from "./activeWorkspace";
 
 declare const COMMA_DEFINED_BUILD_FLAVOR: string | undefined;
 
@@ -157,7 +159,7 @@ export function CommaRootLayout() {
 // Outlet. The Outlet always renders the product route host; Settings is a
 // location inside that host, never a sibling match that tears an
 // already-committed Home down (that remounts Home and flashes the empty
-// "Do anything" starter).
+// Home starter).
 export function CommaAuthenticatedLayout() {
   return (
     <CommaAuthGate localManagementEntry={<LocalComputeLoginEntry />}>
@@ -167,22 +169,19 @@ export function CommaAuthenticatedLayout() {
 }
 
 function CommaAuthenticatedSession() {
-  const { api, isGuest = false, productLease, sessionSignal } = useCommaAuth();
+  const { isGuest = false, productLease, sessionSignal } = useCommaAuth();
 
   return (
-    <ChatSessionProvider
-      api={api}
-      productLease={productLease}
-      sessionSignal={sessionSignal}
-    >
+    <ChatSessionProvider productLease={productLease} sessionSignal={sessionSignal}>
       <RouterIdentityProvider>
-        <PluginInstallProvider api={api} sessionSignal={sessionSignal}>
-          <OnboardingPluginHandoff />
-          <CommandPaletteProvider>
-            {/* A guest Session has only its Router chat: no Connector, Tasks,
+        <LegacyActiveWorkspace />
+        <PluginNotices />
+        <CommandPaletteProvider>
+          {/* A guest Session has only its Router chat: no Connector, Tasks,
                 or AirDrop owners. */}
-            {isGuest ? null : <CommaConnectorRuntimeOwner api={api} />}
-            <CommaCenterStatusProvider>
+          {isGuest ? null : <CommaConnectorRuntimeOwner />}
+          <CommaCenterStatusProvider>
+            <TaskStepsProvider>
               <ChatConsumerBoundary>
                 {isGuest ? null : <NotchTaskSync />}
                 <MessageNotificationSync />
@@ -191,9 +190,9 @@ function CommaAuthenticatedSession() {
                 <CommaCenterStatusOwner />
               </ChatConsumerBoundary>
               <Outlet />
-            </CommaCenterStatusProvider>
-          </CommandPaletteProvider>
-        </PluginInstallProvider>
+            </TaskStepsProvider>
+          </CommaCenterStatusProvider>
+        </CommandPaletteProvider>
       </RouterIdentityProvider>
     </ChatSessionProvider>
   );
@@ -230,10 +229,17 @@ export function CommaProductLayout() {
       <div className="h-screen min-h-0 w-full">
         <div data-comma-product-portal-host="" ref={setProductPortalHost} />
         {productSessionLayout}
-        {/* First-launch onboarding: route-independent, beside the shell and
-            outside its content containment, one per signed-in account. A
-            guest Session has only its Router chat, so it has none. */}
-        {userId && !isGuest ? <OnboardingHost key={userId} userId={userId} /> : null}
+        {/* First-launch introduction: route-independent, beside the shell and
+            outside its content containment, one per signed-in account. The
+            desktop app shows the onboarding; the web shows a small card
+            instead. A guest Session has only its Router chat, so it has none. */}
+        {userId && !isGuest ? (
+          needsDesktopApp() ? (
+            <WebIntroCard key={userId} userId={userId} />
+          ) : (
+            <OnboardingHost key={userId} userId={userId} />
+          )
+        ) : null}
       </div>
     </OverlayPortalProvider>
   );
@@ -389,6 +395,12 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   });
+  const routeWorkspace = useRouterState({
+    select: (state) => {
+      const search = state.location.search as { workspace?: unknown };
+      return typeof search.workspace === "string" ? search.workspace : undefined;
+    },
+  });
   const accountKey = useProductAccountKey();
   const homeVisible = isHomePath(pathname);
   const { open: settingsOpen } = useCommaSettingsOverlay();
@@ -405,6 +417,7 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
   const [homeSurface, setHomeSurface] = useState(() => ({
     accountKey,
     mounted: homeVisible,
+    workspace: routeWorkspace,
   }));
   const homeSurfaceRef = useRef<HTMLDivElement | null>(null);
   const [railFolds, setRailFolds] = useState(commaHomeRailFoldsOpen);
@@ -432,8 +445,11 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
     [railCollapsed, railFolds, railWidths, setRailWidth]
   );
 
-  if (homeSurface.accountKey !== accountKey || (homeVisible && !homeSurface.mounted)) {
-    setHomeSurface({ accountKey, mounted: homeVisible });
+  if (
+    homeSurface.accountKey !== accountKey ||
+    (homeVisible && (!homeSurface.mounted || homeSurface.workspace !== routeWorkspace))
+  ) {
+    setHomeSurface({ accountKey, mounted: homeVisible, workspace: routeWorkspace });
   }
   const homeMounted = homeSurface.mounted;
 
@@ -472,6 +488,7 @@ function CommaContent({ frameElement }: { frameElement: HTMLElement | null }) {
                 >
                   <HomeRailFoldProvider state={railState}>
                     <HomeRoute
+                      workspaceId={homeSurface.workspace}
                       onConnectApps={handleConnectApps}
                       surfaceActive={homeVisible}
                     />

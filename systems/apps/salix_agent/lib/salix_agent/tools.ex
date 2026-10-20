@@ -1,4 +1,6 @@
 defmodule SalixAgent.Tools do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Tool registry and dispatcher. Ships the canonical
   product tools that route through
@@ -20,6 +22,7 @@ defmodule SalixAgent.Tools do
   alias SalixAgent.Tools.{AsyncPolicy, Schemas}
 
   @normal_auto_wait_seconds AsyncPolicy.normal_tool_auto_wait_seconds()
+  @runtime_message_name "get_runtime_message"
 
   # Registration order is pinned. Never reorder without accepting prompt-cache
   # churn.
@@ -38,7 +41,7 @@ defmodule SalixAgent.Tools do
     {"fs.delete_file", "Delete a visible file path (body retained).", &__MODULE__.delete_file/2,
      @normal_auto_wait_seconds},
     {"script.run",
-     "Run a small C program once, compiled to eBPF by spinfoam's embedded compiler and executed in a sandbox on this node. Call script.sdk first: it gives the exact spinfoam.h, the limits (integer C only, 4 KiB stack, 16 KiB JSON values, no libc) and the compiler rules. The program includes \"spinfoam.h\", defines SF_MAIN sf_i64 main(void), calls any Salix tool through sf_host_call(\"salix.call\", {\"tool\": name, \"args\": {...}}, timeout_ms) with the same canonical names and authorization as a normal round, sets its return value with script.result {\"value\": ...} and appends console lines with script.log {\"message\": ...}. Return 0 for success; a non-zero return, a fault or the 5 s wall limit fails the call. Recursive script.run/script.run_file calls are rejected.",
+     "Run a small C program once, compiled to eBPF by spinfoam's embedded compiler and executed in a sandbox on this node.\n\nCall script.sdk first: it gives the exact spinfoam.h, the limits (integer C only, 4 KiB stack, 16 KiB JSON values, no libc) and the compiler rules. The program includes \"spinfoam.h\", defines SF_MAIN sf_i64 main(void), calls any Salix tool through sf_host_call(\"salix.call\", {\"tool\": name, \"args\": {...}}, timeout_ms) with the same canonical names and authorization as a normal round, sets its return value with script.result {\"value\": ...} and appends console lines with script.log {\"message\": ...}. Return 0 for success; a non-zero return, a fault or the 5 s wall limit fails the call. Recursive script.run/script.run_file calls are rejected.",
      &__MODULE__.script_run/2, @normal_auto_wait_seconds, [safety: "write"]},
     {"fs.edit_file",
      "Change part of a visible file: replace the first occurrence of old text with new text. The way to modify an existing file; make old unique and include a few lines of context. Decoded framed text views are read-only.",
@@ -122,6 +125,7 @@ defmodule SalixAgent.Tools do
   @video_generation_timeout_ms 600_000
   @audio_transcription_timeout_ms 615_000
   @mcp_tool_timeout_ms 600_000
+  @station_tool_timeout_ms 75_000
   @android_tool_timeout_ms 221_000
   # Exec carries its own `timeout` (seconds); the outer dispatcher deadline is
   # derived from it so a long command isn't brutal-killed at the flat default.
@@ -148,6 +152,8 @@ defmodule SalixAgent.Tools do
   # grant/deny execution based on diagnostic-repair state.
   @read_safety_tools ~w(
     help
+    station.list
+    station.fs
     fs.read_file
     fs.list_files
     fs.grep
@@ -169,7 +175,7 @@ defmodule SalixAgent.Tools do
     device.get
     agent.list
     agent.get
-    env.runtime_targets
+    agent.models
     calendar.list_items
     calendar.get_item
     meeting.get
@@ -181,6 +187,8 @@ defmodule SalixAgent.Tools do
     schedule.list
     oauth.list_credentials
     oauth.complete_authorization
+    tailnet.status
+    tailnet.peers
     composio.list_connections
     composio.check_connection
     composio.list_tools
@@ -215,11 +223,10 @@ defmodule SalixAgent.Tools do
       SalixAgent.Tools.Web.defs() ++
       SalixAgent.Decide.defs() ++
       SalixAgent.Tools.Memory.entries() ++
+      SalixAgent.Tools.Migration.entries() ++
       SalixAgent.Tools.Peers.defs() ++
       SalixAgent.Tools.DependencyInstallations.defs() ++
       SalixAgent.Tools.AgentManagement.defs() ++
-      SalixAgent.Tools.RuntimeTargets.defs() ++
-      SalixAgent.Tools.CloudRuntime.defs() ++
       SalixAgent.Tools.Calendar.defs() ++
       SalixAgent.Tools.MeetingPreparation.defs() ++
       SalixAgent.Tools.ImRouter.defs() ++
@@ -230,7 +237,6 @@ defmodule SalixAgent.Tools do
       SalixAgent.Tools.Media.defs() ++
       SalixAgent.Tools.Preview.defs() ++
       SalixAgent.Tools.DynamicUI.defs() ++
-      SalixAgent.Tools.RuntimeAuth.defs() ++
       SalixAgent.Tools.Compute.defs() ++
       SalixAgent.Tools.Composio.defs() ++
       SalixAgent.Tools.ComposioTriggers.defs() ++
@@ -244,7 +250,15 @@ defmodule SalixAgent.Tools do
       SalixAgent.Tools.RemoteShell.defs() ++
       SalixAgent.Tools.DeviceConnection.defs() ++
       SalixAgent.Tools.InboundApi.defs() ++
-      SalixAgent.Tools.SSH.defs()
+      SalixAgent.Tools.SSH.defs() ++
+      SalixAgent.CondensedWorkspace.defs() ++
+      SalixAgent.Tools.Stations.defs() ++
+      SalixAgent.Tools.CloudVM.defs() ++
+      SalixAgent.Tools.LanGateway.defs() ++
+      SalixAgent.Tools.Miio.defs() ++
+      SalixAgent.Tools.Gree.defs() ++
+      SalixAgent.Tools.DeviceSecrets.defs() ++
+      SalixAgent.Tools.Tailnet.defs()
   end
 
   @doc """
@@ -322,7 +336,7 @@ defmodule SalixAgent.Tools do
     # the cap within ONE batch are rejected without executing.
     prepared = enforce_caps(calls)
     executable = executable_calls(prepared)
-    started_at = System.system_time(:millisecond)
+    started_at = SystemsClock.system_time(:millisecond)
     observability_context = SystemsObservability.Context.capture()
 
     executed =
@@ -381,7 +395,7 @@ defmodule SalixAgent.Tools do
     SalixAgent.EventArchive.Emit.tool_calls(ctx, calls)
     prepared = enforce_caps(calls)
     calls = executable_calls(prepared)
-    started_at = System.system_time(:millisecond)
+    started_at = SystemsClock.system_time(:millisecond)
     observability_context = SystemsObservability.Context.capture()
 
     jobs =
@@ -460,7 +474,7 @@ defmodule SalixAgent.Tools do
   # with the assistant intent before executing any tool dependency.
   @doc false
   def planned_async_results(calls, ctx) do
-    started_at = System.system_time(:millisecond)
+    started_at = SystemsClock.system_time(:millisecond)
 
     Enum.reduce_while(calls, {:ok, []}, fn call, {:ok, results} ->
       with false <- guidance_call?(call),
@@ -527,7 +541,7 @@ defmodule SalixAgent.Tools do
         # surfaces cannot return async_running before the authorization result.
         {:inline, run_tool_dependency(call, ctx, observability_context)}
 
-      is_reference(admission_context) ->
+      SystemsRuntime.Proc.is_ref(admission_context) ->
         # A script host call is a leaf of the already-admitted outer script.run
         # dependency. Reusing that admission avoids self-saturation at a
         # per-tenant limit of one while retaining the outer actor-owned deadline.
@@ -544,17 +558,22 @@ defmodule SalixAgent.Tools do
   defp runtime_ownership_check(_ctx), do: :ok
 
   defp start_new_tool_dependency(call, ctx, observability_context) do
-    admission_context = make_ref()
+    admission_context = SystemsRuntime.Proc.make_ref()
     admitted_ctx = Map.put(ctx, @dependency_admission_context_key, admission_context)
 
     dependency = fn ->
       run_tool_dependency(call, admitted_ctx, observability_context)
     end
 
-    timeout_ms =
-      tool_timeout_ms(call[:name] || call["name"], call[:args] || call["args"] || %{}) + 1_000
+    name = call[:name] || call["name"]
+    timeout_ms = tool_timeout_ms(name, call[:args] || call["args"] || %{}) + 1_000
 
-    case DependencyJob.start(:tool, dependency_tenant_id(ctx), dependency, timeout_ms: timeout_ms) do
+    case DependencyJob.start(
+           dependency_kind(name),
+           dependency_tenant_id(ctx),
+           dependency,
+           timeout_ms: timeout_ms
+         ) do
       {:ok, job} ->
         {:ok, job}
 
@@ -589,6 +608,17 @@ defmodule SalixAgent.Tools do
         end
       )
     end)
+  end
+
+  # A session's send to a Conversation, or its update of one, is a bounded
+  # Store write (`input_round_cap` bounds the calls of a round) that must land
+  # while model rounds hold the Tenant's slots: a report or a status that
+  # waited for a slot would reach the person as "admission is saturated". It
+  # is tracked without a slot, as a Loop's own writes are (`DependencyJob`).
+  @unmetered_tools ~w(im_api.internal.send_message im_api.internal.update_conversation)
+
+  defp dependency_kind(name) do
+    if to_string(name || "") in @unmetered_tools, do: :loop_control, else: :tool
   end
 
   defp dependency_tenant_id(%{tenant_id: tenant_id})
@@ -681,7 +711,7 @@ defmodule SalixAgent.Tools do
     name = to_string(name)
 
     :salix_agent
-    |> Application.get_env(:tool_timeouts, %{})
+    |> SystemsRuntime.get_env(:tool_timeouts, %{})
     |> configured_tool_timeout_ms(name)
     |> case do
       # Operator config wins; otherwise honor a per-call timeout (Exec), then
@@ -730,6 +760,10 @@ defmodule SalixAgent.Tools do
   defp call_tool_timeout_ms("ssh." <> _ = name, args) when is_map(args),
     do: SalixAgent.Tools.SSH.dispatch_timeout_ms(name, args)
 
+  # A binary body arrives in chunks over up to two minutes (the connector's
+  # `http_request_chunks` timeout), plus a Digest challenge round trip.
+  defp call_tool_timeout_ms("device.lan_request", %{"response" => "binary"}), do: 165_000
+
   defp call_tool_timeout_ms(_name, _args), do: nil
 
   defp exec_arg_timeout_ms(args) when is_map(args) do
@@ -771,6 +805,13 @@ defmodule SalixAgent.Tools do
   defp default_tool_timeout_ms("env.copy"), do: @copy_timeout_ms
   defp default_tool_timeout_ms("env.android"), do: @android_tool_timeout_ms
   defp default_tool_timeout_ms("memory.ask_worker"), do: 30_000
+  # The gateway's 30 s request ceiling plus connector round-trip slack.
+  defp default_tool_timeout_ms("device.lan_request"),
+    do: SalixAgent.Tools.LanGateway.max_timeout_seconds() * 1_000 + 15_000
+
+  # Up to two hello and command round trips through the gateway.
+  defp default_tool_timeout_ms("device.miio_request"), do: 65_000
+
   # A build (15 s deadline in spinfoam) plus the run's wall limit and slack.
   defp default_tool_timeout_ms("script." <> _),
     do: 15_000 + SalixAgent.ScriptRun.wall_timeout_ms() + 2_000
@@ -782,6 +823,9 @@ defmodule SalixAgent.Tools do
   defp default_tool_timeout_ms("video.generate"), do: @video_generation_timeout_ms
   defp default_tool_timeout_ms("audio.transcribe"), do: @audio_transcription_timeout_ms
   defp default_tool_timeout_ms("mcp." <> _), do: @mcp_tool_timeout_ms
+  # Above the station gateway's 60 s request deadline, so its timeout answer
+  # (outcome unknown) reaches the model instead of a dispatcher kill.
+  defp default_tool_timeout_ms("station." <> _), do: @station_tool_timeout_ms
   defp default_tool_timeout_ms(_name), do: @default_tool_timeout_ms
 
   defp configured_tool_timeout_ms(overrides, name) when is_map(overrides) do
@@ -969,7 +1013,7 @@ defmodule SalixAgent.Tools do
   defp run_one_with_timeout(call, ctx) do
     name = call[:name] || call["name"]
     timeout = tool_timeout_ms(name, call[:args] || call["args"] || %{})
-    started_at = System.system_time(:millisecond)
+    started_at = SystemsClock.system_time(:millisecond)
 
     CommaLog.log("tool_start", %{
       agent_id: Map.get(ctx, :agent_id),
@@ -980,7 +1024,7 @@ defmodule SalixAgent.Tools do
       timeout_ms: timeout
     })
 
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
     timing = {started_at, started}
 
     SalixAgent.ExecutionSurface.observe(
@@ -1001,7 +1045,7 @@ defmodule SalixAgent.Tools do
 
     result = run_linked_tool(call, ctx, timeout)
 
-    duration_ms = System.monotonic_time(:millisecond) - started
+    duration_ms = SystemsClock.monotonic_time(:millisecond) - started
 
     status =
       cond do
@@ -1021,7 +1065,7 @@ defmodule SalixAgent.Tools do
     result =
       result
       |> Map.delete(:status_hint)
-      |> Map.put(:input, Jason.encode!(call[:args] || call["args"] || %{}))
+      |> Map.put(:input, recorded_input(call))
       |> Map.put(:output, result.content)
       |> Map.put(:status, status)
       |> Map.put(:duration_ms, duration_ms)
@@ -1063,6 +1107,15 @@ defmodule SalixAgent.Tools do
     result
   end
 
+  @doc """
+  A call's arguments as its result, its async record and its completion
+  notification keep them.
+  """
+  def recorded_input(call),
+    do: recorded_input(call[:name] || call["name"], call[:args] || call["args"])
+
+  def recorded_input(_name, args), do: Jason.encode!(args || %{})
+
   # The live overlay needs operation context before the canonical result arrives.
   # Keep its payload bounded: at most 16 known strings of 320 characters, never
   # credentials or arbitrary result/file bodies. Full arguments stay in the ledger.
@@ -1079,14 +1132,14 @@ defmodule SalixAgent.Tools do
   # to turn crashes into terminal tool results, then drain the exact link signal
   # before restoring the owner's prior exit policy.
   defp run_linked_tool(call, ctx, timeout) do
-    previous_trap_exit = Process.flag(:trap_exit, true)
-    deadline = System.monotonic_time(:millisecond) + timeout
+    previous_trap_exit = SystemsRuntime.Proc.trap_exit(true)
+    deadline = SystemsClock.monotonic_time(:millisecond) + timeout
     ctx = Map.put(ctx, :tool_deadline_ms, min(ctx[:tool_deadline_ms] || deadline, deadline))
-    task = Task.async(fn -> run_one(call, ctx) end)
+    task = SystemsRuntime.Task.async(fn -> run_one(call, ctx) end)
 
     try do
       result =
-        case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+        case SystemsClock.yield(task, timeout) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
           {:ok, result} -> result
           {:exit, reason} -> error_result(call, "tool crashed: #{inspect(reason)}", "crashed")
           nil -> error_result(call, "tool timed out after #{format_timeout(timeout)}", "timeout")
@@ -1095,12 +1148,12 @@ defmodule SalixAgent.Tools do
       drain_link_exit(task.pid)
       result
     after
-      Process.flag(:trap_exit, previous_trap_exit)
+      SystemsRuntime.Proc.trap_exit(previous_trap_exit)
     end
   end
 
   defp drain_link_exit(pid) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:EXIT, ^pid, _reason} -> :ok
     after
       0 -> :ok
@@ -1205,7 +1258,7 @@ defmodule SalixAgent.Tools do
     |> error_result("tool crashed: #{inspect(reason)}", "crashed")
     |> Map.merge(%{
       started_at: started_at,
-      duration_ms: max(System.system_time(:millisecond) - started_at, 0)
+      duration_ms: max(SystemsClock.system_time(:millisecond) - started_at, 0)
     })
   end
 
@@ -1215,11 +1268,11 @@ defmodule SalixAgent.Tools do
       name: call[:name] || call["name"],
       content: msg,
       error: true,
-      input: Jason.encode!(call[:args] || call["args"] || %{}),
+      input: recorded_input(call),
       output: msg,
       status: "error",
       duration_ms: 0,
-      started_at: System.system_time(:millisecond),
+      started_at: SystemsClock.system_time(:millisecond),
       call_index: call[:call_index] || call["call_index"],
       error_class: error_class,
       error_message: msg,
@@ -1434,7 +1487,7 @@ defmodule SalixAgent.Tools do
   defp async_running_result(call, tool_call_id, wait, started_at, ctx) do
     name = call[:name] || call["name"]
     args = call[:args] || call["args"] || %{}
-    duration_ms = System.system_time(:millisecond) - started_at
+    duration_ms = SystemsClock.system_time(:millisecond) - started_at
 
     content =
       Jason.encode!(%{
@@ -1451,7 +1504,7 @@ defmodule SalixAgent.Tools do
       name: name,
       content: content,
       error: false,
-      input: Jason.encode!(args),
+      input: recorded_input(name, args),
       output: content,
       status: "async_running",
       duration_ms: duration_ms,
@@ -1465,7 +1518,7 @@ defmodule SalixAgent.Tools do
           "session_id" => wait["session_id"],
           "tool_call_id" => tool_call_id,
           "tool_name" => name,
-          "input" => Jason.encode!(args),
+          "input" => recorded_input(name, args),
           "status" => "running",
           "started_at" => started_at,
           "auto_wait_seconds" => wait["timeout_seconds"]
@@ -1632,7 +1685,7 @@ defmodule SalixAgent.Tools do
   defp format_timeout(ms) when rem(ms, 1_000) == 0, do: "#{div(ms, 1_000)}s"
   defp format_timeout(ms), do: "#{ms}ms"
 
-  defp random_id, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower)
 
   defp lookup(name) do
     case to_string(name || "") do
@@ -1675,6 +1728,14 @@ defmodule SalixAgent.Tools do
   def entry_description({_name, desc, _fun, _auto_wait_seconds}), do: desc
   def entry_description({_name, desc, _third, _fourth, _fifth}), do: desc
   def entry_description({_name, desc, _schema, _fun, _auto_wait_seconds, _opts}), do: desc
+
+  @doc """
+  The prompt summary of a registry entry: the first paragraph of its
+  description. The full description stays the tool's help manual.
+  """
+  def entry_summary(entry) do
+    entry |> entry_description() |> String.split("\n\n", parts: 2) |> hd() |> String.trim()
+  end
 
   @doc false
   def entry_schema({_name, _desc, schema, fun, _auto_wait_seconds})
@@ -1768,9 +1829,8 @@ defmodule SalixAgent.Tools do
     |> Keyword.get(:runtimes, [])
     |> List.wrap()
     |> Enum.flat_map(fn
-      value when value in [:internal, :external, :script] -> [value]
+      value when value in [:internal, :script] -> [value]
       "internal" -> [:internal]
-      "external" -> [:external]
       "script" -> [:script]
       _unsupported -> []
     end)
@@ -1889,18 +1949,21 @@ defmodule SalixAgent.Tools do
       nil ->
         {:error, "unknown tool: #{tool}"}
 
-      %{"input_schema" => schema} = entry when is_map(schema) ->
-        {:ok,
-         %{
-           "name" => tool,
-           "summary" => entry["summary"] || "",
-           "manual" => entry["manual"] || entry["summary"] || "",
-           "input_schema" => schema,
-           "examples" => entry["examples"] || %{}
-         }}
+      entry ->
+        case SalixAgent.ToolDisclosure.entry_schema(entry) do
+          schema when is_map(schema) ->
+            {:ok,
+             %{
+               "name" => tool,
+               "summary" => entry["summary"] || "",
+               "manual" => entry["manual"] || entry["summary"] || "",
+               "input_schema" => schema,
+               "examples" => SalixAgent.ToolDisclosure.entry_examples(entry)
+             }}
 
-      %{} ->
-        {:error, "tool disclosure schema is missing"}
+          _missing ->
+            {:error, "tool disclosure schema is missing"}
+        end
     end
   end
 
@@ -1913,7 +1976,6 @@ defmodule SalixAgent.Tools do
         "tool" => "call",
         "arguments" => %{"tool" => tool, "params" => params}
       },
-      "external_runtime" => %{"tool" => tool, "arguments" => params},
       "script" => %{"source" => script_example(tool, params)}
     }
   end
@@ -1952,7 +2014,7 @@ defmodule SalixAgent.Tools do
   end
 
   # Guidance keeps its closed reason beside the content, as
-  # guidance_tool_result/3 does, so a redacted failure record retains it.
+  # guidance_tool_result/3 does.
   defp put_guidance_reason(result, "guidance", content) do
     case Jason.decode(content) do
       {:ok, %{"guidance_reason" => reason}} when is_binary(reason) ->
@@ -1976,14 +2038,14 @@ defmodule SalixAgent.Tools do
     args = normalize_tool_params(target, args)
 
     case SalixAgent.ToolDisclosure.find_disclosure_entry(ctx, target) do
-      %{"input_schema" => schema} when is_map(schema) ->
-        validate_schema(args, schema)
-
-      %{} ->
-        {:error, "tool disclosure schema is missing"}
-
       nil ->
         {:error, "tool is not disclosed in this session"}
+
+      entry ->
+        case SalixAgent.ToolDisclosure.entry_schema(entry) do
+          schema when is_map(schema) -> validate_schema(args, schema)
+          _missing -> {:error, "tool disclosure schema is missing"}
+        end
     end
   end
 
@@ -2011,16 +2073,14 @@ defmodule SalixAgent.Tools do
     guidance_reason = guidance_reason(call)
 
     content =
-      Jason.encode!(%{
+      %{
         "status" => "guidance",
         "error" => reason,
         "tool" => tool,
-        "guidance_reason" => guidance_reason,
-        "help_tool" => "help",
-        "help_params" => %{"tool" => tool},
-        "next_action" =>
-          "Read this tool's manual through the current runtime envelope, then retry with params matching that schema."
-      })
+        "guidance_reason" => guidance_reason
+      }
+      |> Map.merge(guidance_next_step(tool))
+      |> Jason.encode!()
 
     %{
       id: tool_call_id(call),
@@ -2028,13 +2088,28 @@ defmodule SalixAgent.Tools do
       content: content,
       error: false,
       status_hint: "guidance",
-      input: Jason.encode!(args),
+      input: recorded_input(tool, args),
       output: content,
       guidance_reason: guidance_reason,
       duration_ms: 0,
       error_class: nil,
       error_message: nil,
       events: []
+    }
+  end
+
+  # The runtime shows its own messages as `get_runtime_message` calls
+  # (`VerifiedKernel.Provider.Messages.runtimeToolName`). It has no manual, so
+  # its guidance carries no help call; the kernel's error text names wait_for
+  # and end_turn instead.
+  defp guidance_next_step(@runtime_message_name), do: %{}
+
+  defp guidance_next_step(tool) do
+    %{
+      "help_tool" => "help",
+      "help_params" => %{"tool" => tool},
+      "next_action" =>
+        "Read this tool's manual through the current runtime envelope, then retry with params matching that schema."
     }
   end
 
@@ -3215,7 +3290,7 @@ defmodule SalixAgent.Tools do
     if query == "", do: raise("web.search: missing query")
 
     api_key =
-      Application.get_env(:salix_agent, :exa_api_key) ||
+      SystemsRuntime.get_env(:salix_agent, :exa_api_key) ||
         raise "web.search: no Exa API key configured (:salix_agent, :exa_api_key)"
 
     body = %{query: query, numResults: 5, contents: %{text: %{maxCharacters: 1500}}}

@@ -70,7 +70,7 @@ theorem queueAppend_ledger_header {state event next : Term} {journal rest : List
       obtain ⟨_, _, _, call⟩ := bind_ok call
       iterate 3 obtain ⟨_, call⟩ := write_cons call
       unfold LedgerHeader
-      rw [write_field_frame call rfl, get_put_same]
+      rw [write_field_frame call (by keys_absent), get_put_same]
       exact kept
 
 theorem transcriptLog_ledger_header {state event next : Term} {journal rest : List Term}
@@ -123,7 +123,7 @@ theorem runtimeAppend_ledger_header {state event next : Term} {journal rest : Li
       have finalFrame : LedgerFrame updated next := by ledger_frame_walk call
       obtain ⟨_, written⟩ := write_cons written
       unfold LedgerHeader
-      rw [finalFrame, write_field_frame written rfl, get_put_same]
+      rw [finalFrame, write_field_frame written (by keys_absent), get_put_same]
       exact kept
 
 theorem transcriptRuntime_ledger_header {state event next : Term} {journal rest : List Term}
@@ -167,7 +167,7 @@ theorem transcriptDelivery_ledger_header {state event next : Term} {journal rest
         have finalFrame : LedgerFrame updated next := by ledger_frame_walk call
         iterate 2 obtain ⟨_, written⟩ := write_cons written
         unfold LedgerHeader
-        rw [finalFrame, write_field_frame written rfl, get_put_same]
+        rw [finalFrame, write_field_frame written (by keys_absent), get_put_same]
         exact kept
 
 theorem seed_step_ledger_header {event raw : Term}

@@ -19,12 +19,13 @@ defmodule SalixStore.MixProject do
 
   defp aliases do
     [
-      test: [
-        "ecto.create --quiet -r SalixStore.Repo",
-        "ecto.migrate --quiet -r SalixStore.Repo",
-        "test"
-      ]
+      test: [&prepare_test_database/1, "test"]
     ]
+  end
+
+  defp prepare_test_database(_args) do
+    Mix.Task.run("ecto.create", ~w(--quiet -r SalixStore.Repo))
+    Mix.Task.run("ecto.migrate", ~w(--quiet -r SalixStore.Repo))
   end
 
   def application do
@@ -41,13 +42,17 @@ defmodule SalixStore.MixProject do
     [
       {:comma_log, in_umbrella: true},
       {:systems_observability, in_umbrella: true},
+      {:systems_clock, in_umbrella: true},
+      {:systems_runtime, in_umbrella: true},
       {:ecto_sql, "~> 3.12"},
       {:oban, "~> 2.23"},
+      {:phoenix_pubsub, "~> 2.1"},
       {:postgrex, "~> 0.19"},
       {:protobuf, "~> 0.17"},
       {:req, "~> 0.5"},
       {:finch, "~> 0.19"},
       {:jason, "~> 1.4"},
+      {:redix, "~> 1.5"},
       {:stream_data, "~> 1.1", only: [:dev, :test]},
       {:bandit, "~> 1.5", only: :test},
       {:plug, "~> 1.16", only: :test}

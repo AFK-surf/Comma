@@ -8,7 +8,7 @@ defmodule SalixSignal.Account.RegistrationRequestsTest do
   #
   # The "check SVR2 credentials" case is not run: registration lock and
   # secure value recovery are deferred (CRS-02, Comma decision 2).
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   # Upper bounds on a loaded machine, not expectations: a TLS connect and
   # upgrade (the chat client's own connect timeout is 10 s), and any other
@@ -33,11 +33,19 @@ defmodule SalixSignal.Account.RegistrationRequestsTest do
 
   setup %{chain: chain} do
     {:ok, upgrades} = Agent.start_link(fn -> [] end)
-    server = start_supervised!({Bandit, FakeChat.bandit_options(self(), chain, upgrades)})
+
+    server =
+      start_supervised!(
+        {Bandit, FakeChat.bandit_options(SystemsRuntime.Proc.self(), chain, upgrades)}
+      )
 
     chat =
       start_supervised!(
-        {Chat, owner: self(), host: "localhost", port: FakeChat.port(server), roots: [chain.root]}
+        {Chat,
+         owner: SystemsRuntime.Proc.self(),
+         host: "localhost",
+         port: FakeChat.port(server),
+         roots: [chain.root]}
       )
 
     assert_receive {:signal_chat, ^chat, {:connected, _}}, @connect_ms
@@ -48,7 +56,7 @@ defmodule SalixSignal.Account.RegistrationRequestsTest do
   # Runs `fun` in a task, checks the request it sends against the vector and
   # answers with the vector's reply.
   defp exchange(%{socket: socket}, vector, fun, check_body) do
-    task = Task.async(fun)
+    task = SystemsRuntime.Task.async(fun)
     expected = vector["outputs"]["request"]
     assert_receive {:fake_chat, :frame, ^socket, %Frame.Request{} = request}, @wait_ms
 
@@ -62,12 +70,12 @@ defmodule SalixSignal.Account.RegistrationRequestsTest do
 
     reply = JSON.encode!(vector["outputs"]["server_reply_used"])
 
-    send(
+    SystemsRuntime.Proc.send(
       socket,
       {:send, Frame.encode_response(%Frame.Response{id: request.id, status: 200, body: reply})}
     )
 
-    Task.await(task, @wait_ms)
+    SystemsRuntime.Task.await(task, :infinity)
   end
 
   defp same(actual, expected), do: assert(actual == expected)

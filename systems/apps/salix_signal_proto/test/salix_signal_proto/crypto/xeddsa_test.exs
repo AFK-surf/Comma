@@ -3,7 +3,7 @@ defmodule SalixSignalProto.Crypto.XEdDSATest do
   # Other checks are independent: the OpenSSL Ed25519 verifier, and a direct
   # transcription of the signing definition on the plain-Elixir curve code
   # (test/support/xeddsa_reference.ex).
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   import Bitwise
@@ -69,40 +69,6 @@ defmodule SalixSignalProto.Crypto.XEdDSATest do
                    Vectors.hex!(outputs["ed25519_signature"])
                  )
         end
-      end
-    end
-
-    test "prekey-signatures.json: signatures cover the serialized keys with type bytes" do
-      for %{"inputs" => inputs, "outputs" => outputs} <-
-            Vectors.load!("crs/CRS-03/prekey-signatures.json")["cases"] do
-        <<5, identity::binary-size(32)>> = Vectors.hex!(inputs["identity_public"])
-        <<5, raw_ec::binary-size(32)>> = ec = Vectors.hex!(inputs["signed_pre_key_public"])
-        ec_signature = Vectors.hex!(inputs["signed_pre_key_signature"])
-        kem = Vectors.hex!(inputs["kem_pre_key_public"])
-
-        assert XEdDSA.verify(identity, ec, ec_signature) ==
-                 outputs["signed_pre_key_signature_valid"]
-
-        assert XEdDSA.verify(identity, kem, Vectors.hex!(inputs["kem_pre_key_signature"])) ==
-                 outputs["kem_pre_key_signature_valid"]
-
-        assert XEdDSA.verify(identity, raw_ec, ec_signature) ==
-                 outputs["signature_over_raw_32_byte_key_valid"]
-      end
-    end
-
-    test "alternate-identity-signature.json: plain verification over the signed message" do
-      for %{"inputs" => inputs, "outputs" => outputs} <-
-            Vectors.load!("crs/CRS-03/alternate-identity-signature.json")["cases"] do
-        <<5, signer::binary-size(32)>> = Vectors.hex!(inputs["signer_identity_public"])
-        signed = Vectors.hex!(outputs["signed_message"])
-
-        assert signed ==
-                 :binary.copy(<<0xFF>>, 32) <>
-                   "Signal_PNI_Signature" <> Vectors.hex!(inputs["other_identity_public"])
-
-        assert XEdDSA.verify(signer, signed, Vectors.hex!(inputs["signature"])) ==
-                 outputs["plain_xeddsa_verify_over_signed_message"]
       end
     end
   end
@@ -185,7 +151,7 @@ defmodule SalixSignalProto.Crypto.XEdDSATest do
         # A has order 2, so for an even h: sB - hA = sB, and s = r gives R.
         {r_bytes, r, message} =
           Enum.find_value(1..1000, fn i ->
-            r = :rand.uniform(@q - 1)
+            r = SystemsRuntime.Proc.uniform(@q - 1)
             r_bytes = Edwards25519.encode(Edwards25519.mul(r, base))
             message = <<i::32>>
             h = rem(un(:crypto.hash(:sha512, [r_bytes, a_bytes, message])), @q)

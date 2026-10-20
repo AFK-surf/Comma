@@ -1,7 +1,8 @@
 ---------------------- MODULE ComputeCapacityAction ----------------------
 (***************************************************************************)
-(* A workload import that exhausts Guest storage or the single import slot *)
-(* becomes action_required. Periodic reconciler passes cannot retry it.     *)
+(* A workload import that exhausts Guest storage headroom becomes          *)
+(* action_required. Periodic reconciler passes cannot retry it. A busy      *)
+(* import slot is transient concurrency and retries outside this model.     *)
 (* A later operator action can retry only after capacity is available.      *)
 (***************************************************************************)
 EXTENDS Naturals

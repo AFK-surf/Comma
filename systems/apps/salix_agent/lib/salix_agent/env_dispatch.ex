@@ -37,8 +37,11 @@ defmodule SalixAgent.EnvDispatch do
   @callback list_devices(String.t(), keyword()) ::
               {:ok, %{devices: [map()], next_cursor: String.t() | nil}} | {:error, term()}
 
-  @callback create_device_install(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  @optional_callbacks create_device_install: 2
+  # `requester` is the tool ctx subset (`tenant_id`, `group_id`,
+  # `trusted_origin`) naming the member who asked, or nil.
+  @callback create_device_install(String.t(), String.t(), map() | nil) ::
+              {:ok, map()} | {:error, term()}
+  @optional_callbacks create_device_install: 3
 
   @callback list_envs(agent_id :: String.t()) :: {:ok, [env_entry()]} | {:error, term()}
   @callback get_device(agent_id :: String.t(), device_id :: String.t()) ::
@@ -55,6 +58,15 @@ defmodule SalixAgent.EnvDispatch do
               {:ok, map()} | {:error, term()}
 
   @optional_callbacks request: 4
+
+  @doc """
+  Open a connector TCP tunnel (`lan_tcp_dial` with `params`) for `relay`.
+  Returns the socket owner the relay exchanges frames with, and the dial
+  result. See `SalixAgent.SSH.DeviceRelay`.
+  """
+  @callback open_tunnel(String.t(), target(), String.t(), map(), pid()) ::
+              {:ok, %{owner: pid(), result: map()}} | {:error, term()}
+  @optional_callbacks open_tunnel: 5
 
   @callback computer_use(
               agent_id :: String.t(),
@@ -117,6 +129,11 @@ defmodule SalixAgent.EnvDispatch do
   def request(agent_id, target, method, params),
     do: impl().request(agent_id, target, method, params)
 
+  @spec open_tunnel(String.t(), target(), String.t(), map(), pid()) ::
+          {:ok, %{owner: pid(), result: map()}} | {:error, term()}
+  def open_tunnel(agent_id, target, id, params, relay),
+    do: impl().open_tunnel(agent_id, target, id, params, relay)
+
   @spec computer_use(String.t(), target(), map()) :: {:ok, map()} | {:error, term()}
   def computer_use(agent_id, target, action),
     do: impl().computer_use(agent_id, target, action)
@@ -148,9 +165,10 @@ defmodule SalixAgent.EnvDispatch do
   def write_stream(agent_id, target, path, stream),
     do: impl().write_stream(agent_id, target, path, stream)
 
-  def create_device_install(agent_id, name), do: impl().create_device_install(agent_id, name)
+  def create_device_install(agent_id, name, requester \\ nil),
+    do: impl().create_device_install(agent_id, name, requester)
 
-  defp impl, do: Application.get_env(:salix_agent, :env_dispatch, __MODULE__.None)
+  defp impl, do: SystemsRuntime.get_env(:salix_agent, :env_dispatch, __MODULE__.None)
 
   defmodule None do
     @moduledoc """
@@ -160,7 +178,7 @@ defmodule SalixAgent.EnvDispatch do
     @behaviour SalixAgent.EnvDispatch
 
     @impl true
-    def create_device_install(_agent_id, _name), do: {:error, :no_environment}
+    def create_device_install(_agent_id, _name, _requester), do: {:error, :no_environment}
 
     @impl true
     def list_devices(_agent_id, _opts), do: {:error, :no_environment}
@@ -176,6 +194,9 @@ defmodule SalixAgent.EnvDispatch do
 
     @impl true
     def request(_agent_id, _target, _method, _params), do: {:error, :no_environment}
+
+    @impl true
+    def open_tunnel(_agent_id, _target, _id, _params, _relay), do: {:error, :no_environment}
 
     @impl true
     def computer_use(_agent_id, _target, _action), do: {:error, :no_environment}

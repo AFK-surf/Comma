@@ -41,7 +41,7 @@ defmodule SalixIM.ConversationStore.RequestIO do
         keys
         |> Enum.uniq()
         |> Enum.reject(&Map.has_key?(capture(), {&1, []}))
-        |> Task.async_stream(fn key -> {key, S3.get(key)} end,
+        |> SystemsClock.async_stream(fn key -> {key, S3.get(key)} end,
           max_concurrency: 6,
           timeout: 30_000,
           on_timeout: :kill_task

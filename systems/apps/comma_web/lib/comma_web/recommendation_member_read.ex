@@ -16,9 +16,9 @@ defmodule CommaWeb.RecommendationMemberRead do
 
   @doc "Runs one request, returning its result or a deadline error by the deadline."
   def within(deadline, fun) do
-    task = Task.async(fun)
+    task = SystemsRuntime.Task.async(fun)
 
-    case Task.yield(task, max(deadline - now(), 0)) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, max(deadline - now(), 0)) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
       {:exit, reason} -> exit(reason)
       nil -> {:error, :member_read_deadline}
@@ -43,7 +43,7 @@ defmodule CommaWeb.RecommendationMemberRead do
             error
 
           throttled?(reason) and remaining > 3 * spent ->
-            Process.sleep(spent)
+            SystemsClock.sleep(spent)
             within(deadline, fun)
 
           remaining > 2 * spent ->
@@ -61,7 +61,7 @@ defmodule CommaWeb.RecommendationMemberRead do
   @doc "Maps independent requests concurrently. Each result arrives by its own deadline."
   def map(items, fun, concurrency) do
     items
-    |> Task.async_stream(fun, max_concurrency: concurrency, timeout: :infinity)
+    |> SystemsClock.async_stream(fun, max_concurrency: concurrency, timeout: :infinity)
     |> Enum.map(fn {:ok, result} -> result end)
   end
 
@@ -82,5 +82,5 @@ defmodule CommaWeb.RecommendationMemberRead do
   defp throttled?({_kind, 429}), do: true
   defp throttled?(_reason), do: false
 
-  defp now, do: System.monotonic_time(:millisecond)
+  defp now, do: SystemsClock.monotonic_time(:millisecond)
 end

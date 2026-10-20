@@ -3,7 +3,7 @@ import type {
   ChatImagePreviewRef,
   ChatMessage,
   LocalFilePreview,
-} from "../../model/conversationChannel";
+} from "@comma/core/chat";
 import { MessageAttachments } from "../attachments/MessageAttachments";
 import { ConversationRefCard } from "./ConversationRefCard";
 

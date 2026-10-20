@@ -4,7 +4,7 @@ defmodule SalixAgent.Tools.DependencyInstallations do
   def defs do
     [
       {"env.dependency_installations",
-       "List, declare, or remove dependency installation directories on this Group VM. Declarations distinguish repository packages from manually installed tools; they do not decide which files an archive omits. After a restore, supported installations run in the background. Use list for the current path and elapsed time; cancel stops that installer and leaves normal shell access available. A directory deleted before the next archive is removed from declarations. Use action=start to retry a failed installation or action=remove to stop future automatic installation for one path.",
+       "List, declare, or remove dependency installation directories on this Group VM.\n\nDeclarations distinguish repository packages from manually installed tools; they do not decide which files an archive omits. After a restore, supported installations run in the background. Use list for the current path and elapsed time; cancel stops that installer and leaves normal shell access available. A directory deleted before the next archive is removed from declarations. Use action=start to retry a failed installation or action=remove to stop future automatic installation for one path.",
        schema(), &__MODULE__.call/2, SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds()}
     ]
   end

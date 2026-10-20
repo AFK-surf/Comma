@@ -1,4 +1,4 @@
-import { isReducedMotionEnabled, subscribeToReducedMotion } from "@comma/ui";
+import { isReducedMotionEnabled, subscribeToReducedMotion } from "@comma/ui/tokens";
 import { useSyncExternalStore } from "react";
 
 const serverSnapshot = () => false;

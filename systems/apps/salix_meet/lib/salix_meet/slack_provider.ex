@@ -188,6 +188,47 @@ defmodule SalixMeet.SlackProvider do
 
   defp runtime_driver_configured?, do: SalixMeet.RuntimeDriver.configured?()
 
+  @doc "Best-effort in-meeting status notice in the meeting's Slack thread."
+  def notify_status(meeting_id, state, event)
+      when is_binary(meeting_id) and is_map(state) and is_map(event) do
+    state = stringify(state)
+    channel = get_in(state, ["slack_ref", "channel_id"]) || ""
+    thread = get_in(state, ["slack_ref", "thread_ts"]) || ""
+
+    with text when is_binary(text) <- status_notice_text(stringify(event)),
+         true <- channel != "" and thread != "",
+         {:ok, connect} <- read_connect(state["group_id"], state["connect_id"]),
+         :ok <- connect_publishable?(connect) do
+      _ = API.post_message(API.installation(connect), channel, text, thread_ts: thread)
+      :ok
+    else
+      {:error, reason} ->
+        Logger.warning("meeting #{meeting_id} status notice skipped: #{inspect(reason)}")
+        :ok
+
+      _ ->
+        :ok
+    end
+  rescue
+    e ->
+      Logger.warning("meeting #{meeting_id} status notice failed: #{Exception.message(e)}")
+      :ok
+  end
+
+  defp status_notice_text(%{"type" => "status", "status" => "waiting_room"}),
+    do: ":hourglass_flowing_sand: Waiting for a host to admit me."
+
+  defp status_notice_text(%{"type" => "status", "status" => "in_meeting"}),
+    do: ":white_check_mark: Joined the meeting."
+
+  defp status_notice_text(%{"type" => "status", "status" => "guest_fallback"}),
+    do: ":warning: Google sign-in expired, joining as a guest."
+
+  defp status_notice_text(%{"type" => "status", "status" => "left"}),
+    do: ":wave: Left the meeting."
+
+  defp status_notice_text(_event), do: nil
+
   @doc "Meeting provider boundary used by `SalixMeet.Runtime.publish/2`."
   def publish(meeting_agent, payload) when is_map(meeting_agent) and is_map(payload) do
     payload = stringify(payload)
@@ -617,7 +658,7 @@ defmodule SalixMeet.SlackProvider do
          thread
        ) do
     meeting_id = meeting_id(connect, envelope, event, channel, thread, request["meet_url"])
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
     caption_language = infer_caption_language(request["context_texts"])
 
     with {:ok, state} <-
@@ -632,7 +673,7 @@ defmodule SalixMeet.SlackProvider do
              "caption_language" => caption_language,
              "start_at" => now,
              "end_at" => now + 3600,
-             "runtime_source" => "connected_runtime",
+             "runtime_source" => SalixMeet.MeetingRuntimePolicy.default_source(),
              "source" => %{
                "event_id" => trim(envelope["event_id"]),
                "event_ts" => trim(event["event_ts"]),
@@ -723,11 +764,11 @@ defmodule SalixMeet.SlackProvider do
           :ok
 
         {:error, :not_leader} ->
-          Process.sleep(10)
+          SystemsClock.sleep(10)
           request_meeting_join(meeting_id, retries - 1)
 
         {:error, :not_running} ->
-          Process.sleep(10)
+          SystemsClock.sleep(10)
           request_meeting_join(meeting_id, retries - 1)
 
         {:error, _} = err ->
@@ -1206,7 +1247,7 @@ defmodule SalixMeet.SlackProvider do
          kind,
          opts \\ []
        ) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     visible_at =
       case get_in(delivery, ["notes_delivery", "visible_at"]) do
@@ -1410,7 +1451,7 @@ defmodule SalixMeet.SlackProvider do
   defp build_fallback_manifest(meeting_id, fallback_text, fallback_parts) do
     part_count = length(fallback_parts)
     content_kind = fallback_manifest_content_kind(part_count)
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     parts =
       fallback_parts
@@ -1586,7 +1627,7 @@ defmodule SalixMeet.SlackProvider do
       part
       |> Map.put("status", "posting")
       |> Map.update("post_attempts", 1, &(&1 + 1))
-      |> Map.put("last_attempted_at", System.system_time(:second))
+      |> Map.put("last_attempted_at", SystemsClock.system_time(:second))
 
     case checkpoint_fallback_part(meeting_id, fence, manifest, posting) do
       {:ok, staged_manifest} -> {:ok, staged_manifest, posting}
@@ -1721,7 +1762,7 @@ defmodule SalixMeet.SlackProvider do
           end
 
         [] ->
-          now = System.system_time(:second)
+          now = SystemsClock.system_time(:second)
 
           if message_reconciliation_expired?(part, attempts, now) do
             if (part["post_attempts"] || 0) < 2 do
@@ -2116,7 +2157,7 @@ defmodule SalixMeet.SlackProvider do
   defp ensure_owns_claim(meeting_id, fence), do: Store.check_delivery_claim(meeting_id, fence)
 
   defp mark_published(meeting_id, fence, message_ts, canvas_id, canvas_url, uploads) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     checkpoint(meeting_id, fence, %{
       "provider" => "slack",
@@ -2125,13 +2166,13 @@ defmodule SalixMeet.SlackProvider do
       "canvas_id" => canvas_id,
       "canvas_url" => canvas_url,
       "artifacts" => uploads,
-      "published_at" => System.system_time(:second),
+      "published_at" => SystemsClock.system_time(:second),
       "notes_delivery" => %{
         "status" => "visible",
         "surface" => "canvas",
         "kind" => "summary",
         "message_ts" => message_ts,
-        "visible_at" => System.system_time(:second)
+        "visible_at" => SystemsClock.system_time(:second)
       },
       "activation" => %{
         "status" => "pending",
@@ -2539,7 +2580,7 @@ defmodule SalixMeet.SlackProvider do
          failure_kind,
          reason
        ) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
     attempt = artifact_attempt(intent, path)
     attempt_count = attempt.attempt_count + 1
 
@@ -2624,7 +2665,7 @@ defmodule SalixMeet.SlackProvider do
     started_at =
       if same_path? and is_integer(intent["started_at"]) and intent["started_at"] > 0,
         do: intent["started_at"],
-        else: System.system_time(:second)
+        else: SystemsClock.system_time(:second)
 
     attempt_count =
       if same_path? and is_integer(intent["attempt_count"]) and intent["attempt_count"] >= 0,
@@ -2635,7 +2676,7 @@ defmodule SalixMeet.SlackProvider do
   end
 
   defp artifact_attempt(_intent, _path),
-    do: %{started_at: System.system_time(:second), attempt_count: 0}
+    do: %{started_at: SystemsClock.system_time(:second), attempt_count: 0}
 
   defp artifact_retry_expired?(attempt_count, started_at, now) do
     attempt_count >= @artifact_retry_min_attempts and
@@ -2734,7 +2775,7 @@ defmodule SalixMeet.SlackProvider do
     completing =
       intent
       |> Map.put("status", "completing")
-      |> Map.put_new("started_at", System.system_time(:second))
+      |> Map.put_new("started_at", SystemsClock.system_time(:second))
       |> Map.put_new("reconcile_attempts", 0)
 
     intents2 = Map.put(intents, kind, completing)
@@ -2895,7 +2936,7 @@ defmodule SalixMeet.SlackProvider do
          reason
        ) do
     attempts = (intent["reconcile_attempts"] || 0) + 1
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     if artifact_reconciliation_expired?(intent, attempts, now) do
       abandon_artifact_reconciliation(
@@ -3191,8 +3232,8 @@ defmodule SalixMeet.SlackProvider do
   end
 
   defp stage_canvas_create(meeting_id, fence, token, bot_user_id, state, uploads) do
-    ref = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
-    now = System.system_time(:second)
+    ref = Base.url_encode64(SystemsRuntime.Proc.random_bytes(16), padding: false)
+    now = SystemsClock.system_time(:second)
     {markdown, body_probe} = canvas_content_with_body_probe(canvas_markdown(state, uploads))
 
     intent =
@@ -3225,7 +3266,7 @@ defmodule SalixMeet.SlackProvider do
   end
 
   defp retry_canvas_create(meeting_id, fence, token, bot_user_id, state, uploads, intent) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     creating =
       intent
@@ -3491,8 +3532,8 @@ defmodule SalixMeet.SlackProvider do
             "observed_fingerprint" => observed,
             "observed_bytes" => byte_size(content),
             "attempt_count" => attempts,
-            "started_at" => verification["started_at"] || System.system_time(:second),
-            "verified_at" => System.system_time(:millisecond)
+            "started_at" => verification["started_at"] || SystemsClock.system_time(:second),
+            "verified_at" => SystemsClock.system_time(:millisecond)
           }
           |> put_canvas_body_probe(body_probe)
 
@@ -3570,7 +3611,7 @@ defmodule SalixMeet.SlackProvider do
          body_probe,
          reason
        ) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
     started_at = verification["started_at"] || now
 
     if attempts >= @canvas_body_min_attempts and
@@ -3619,8 +3660,8 @@ defmodule SalixMeet.SlackProvider do
       |> Map.put("verification_contract", canvas_body_verification_contract(body_probe))
       |> Map.put("submitted_fingerprint", submitted)
       |> Map.put("attempt_count", attempts)
-      |> Map.put("started_at", verification["started_at"] || System.system_time(:second))
-      |> Map.put("last_checked_at", System.system_time(:second))
+      |> Map.put("started_at", verification["started_at"] || SystemsClock.system_time(:second))
+      |> Map.put("last_checked_at", SystemsClock.system_time(:second))
       |> Map.put("last_error", reason)
       |> put_canvas_body_probe(body_probe)
 
@@ -3809,7 +3850,7 @@ defmodule SalixMeet.SlackProvider do
     attempts = (intent["reconcile_attempts"] || 0) + 1
 
     intent["content_variant"] != "plain" and intent["retry_create_after_empty"] == true and
-      canvas_reconciliation_expired?(intent, attempts, System.system_time(:second))
+      canvas_reconciliation_expired?(intent, attempts, SystemsClock.system_time(:second))
   end
 
   defp authorize_canvas_create_retry(meeting_id, fence, intent) do
@@ -3817,7 +3858,7 @@ defmodule SalixMeet.SlackProvider do
       intent
       |> Map.put("status", canvas_retryable_status(intent))
       |> Map.put("reconcile_attempts", (intent["reconcile_attempts"] || 0) + 1)
-      |> Map.put("last_reconciled_at", System.system_time(:second))
+      |> Map.put("last_reconciled_at", SystemsClock.system_time(:second))
       |> Map.put("last_error", "No Canvas was found after bounded legacy reconciliation")
       |> Map.delete("retry_create_after_empty")
 
@@ -3857,7 +3898,7 @@ defmodule SalixMeet.SlackProvider do
 
   defp advance_canvas_reconciliation(meeting_id, fence, intent, reason, error_result) do
     attempts = (intent["reconcile_attempts"] || 0) + 1
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     if canvas_reconciliation_expired?(intent, attempts, now) do
       abandon_canvas_reconciliation(meeting_id, fence, intent, attempts, reason)
@@ -4441,7 +4482,7 @@ defmodule SalixMeet.SlackProvider do
       |> stringify()
       |> Map.put("status", "resolved")
       |> Map.put("source", source)
-      |> Map.put("resolved_at", System.system_time(:second))
+      |> Map.put("resolved_at", SystemsClock.system_time(:second))
       |> maybe_put_canvas_link_error(fallback_reason)
 
     attrs = %{
@@ -4482,7 +4523,7 @@ defmodule SalixMeet.SlackProvider do
 
   defp retry_canvas_link(meeting_id, fence, delivery, reason) do
     link = stringify(delivery["canvas_link"] || %{})
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
     attempts = (link["attempt_count"] || 0) + 1
     started_at = link["started_at"] || now
 
@@ -4634,7 +4675,7 @@ defmodule SalixMeet.SlackProvider do
         "event_type" => event_type,
         "metadata" => metadata,
         "status" => "posting",
-        "started_at" => System.system_time(:second),
+        "started_at" => SystemsClock.system_time(:second),
         "reconcile_attempts" => 0
       }
       |> maybe_put_nonblank("content_kind", content_kind)
@@ -4823,7 +4864,7 @@ defmodule SalixMeet.SlackProvider do
           end
 
         [] ->
-          now = System.system_time(:second)
+          now = SystemsClock.system_time(:second)
 
           if message_reconciliation_expired?(intent, attempts, now) do
             abandon_message_post(
@@ -5050,7 +5091,7 @@ defmodule SalixMeet.SlackProvider do
            checkpoint(meeting_id, fence, %{
              "status" => "published",
              "meeting_status" => status,
-             "published_at" => System.system_time(:second)
+             "published_at" => SystemsClock.system_time(:second)
            }) do
       {:ok, %{"published" => true, "message_ts" => message_ts}}
     end
@@ -5868,12 +5909,12 @@ defmodule SalixMeet.SlackProvider do
   end
 
   defp default_bot_name do
-    blank_default(Application.get_env(:salix_meet, :default_bot_name), @default_bot_name)
+    blank_default(SystemsRuntime.get_env(:salix_meet, :default_bot_name), @default_bot_name)
   end
 
   defp default_caption_language do
     blank_default(
-      Application.get_env(:salix_meet, :default_caption_language),
+      SystemsRuntime.get_env(:salix_meet, :default_caption_language),
       @default_caption_language
     )
   end

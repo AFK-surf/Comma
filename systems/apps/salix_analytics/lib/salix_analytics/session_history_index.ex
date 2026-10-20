@@ -78,7 +78,7 @@ defmodule SalixAnalytics.SessionHistoryIndex do
   end
 
   defp request(sql, params) do
-    cfg = Application.get_env(:salix_analytics, :clickhouse, [])
+    cfg = SystemsRuntime.get_env(:salix_analytics, :clickhouse, [])
 
     database =
       cfg[:database] || (cfg[:table] || "salix_analytics.events") |> String.split(".") |> hd()

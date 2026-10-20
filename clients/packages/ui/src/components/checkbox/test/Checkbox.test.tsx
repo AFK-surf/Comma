@@ -1,6 +1,6 @@
 import userEvent from "@testing-library/user-event";
 import { render, screen } from "@comma/test-utils/render";
-import { Checkbox } from "@comma/ui";
+import { Checkbox } from "@comma/ui/components/checkbox";
 import { describe, expect, it, vi } from "vitest";
 
 describe("Checkbox", () => {

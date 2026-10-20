@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SynchronicityState } from "@comma/native-bridge";
 import {
   SynchronicityNodeService,
   parseSynchAdoptTree,
@@ -143,9 +144,43 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
+/** Settles at the service's next change notice. */
+function nextChange(service: SynchronicityNodeService) {
+  return new Promise<void>((resolve) => {
+    const stop = service.subscribeChanges(() => {
+      stop();
+      resolve();
+    });
+  });
+}
+
+/** The service's state at its first change notice from now on where `ready` holds of it. */
+function changedTo(
+  service: SynchronicityNodeService,
+  ready: (state: SynchronicityState) => boolean
+) {
+  return new Promise<SynchronicityState>((resolve) => {
+    const stop = service.subscribeChanges(() => {
+      void service.state().then((state) => {
+        if (!ready(state)) return;
+        stop();
+        resolve(state);
+      });
+    });
+  });
+}
+
 const idOutput = [
   "origin:    key:mk6tw5zohhabc",
   "named by:  this device key (no domain yet)",
+  "",
+].join("\n");
+
+/** What `id` answers while the daemon waits for its zone to name it (synch v0.1.16). */
+const pendingIdOutput = [
+  "origin: none — this node has no name yet",
+  "  mk6tw5zohhabc (active)",
+  "waiting on: default.acme.example",
   "",
 ].join("\n");
 
@@ -903,6 +938,59 @@ describe("SynchronicityNodeService", () => {
       await rm(tempDir, { force: true, recursive: true });
     });
 
+    it("imports a staged file by its reference, and refuses one released or never a file", async () => {
+      const tempDir = await mkdtemp(join(tmpdir(), "comma-synch-stage-"));
+      const sourcePath = join(tempDir, "notes.txt");
+      await writeFile(sourcePath, "staged");
+      const put: string[] = [];
+      const { service } = readyService({
+        put: (input, bytes) => {
+          put.push(`${input.space}/${input.path}:${bytes.toString("utf8")}`);
+          return entry({
+            path: input.path,
+            size: bytes.byteLength,
+            space: input.space,
+          });
+        },
+      });
+
+      const staged = await service.stageImport({ sourcePath });
+      expect(staged).toEqual({
+        status: "staged",
+        ref: expect.any(String),
+        name: "notes.txt",
+        size: 6,
+      });
+      if (staged.status !== "staged") throw new Error("not staged");
+      // The path stays in Main: the reference names it.
+      expect(staged.ref).not.toContain(tempDir);
+      await expect(
+        service.importStaged({
+          path: "docs/notes.txt",
+          ref: staged.ref,
+          space: "comma-drive",
+        })
+      ).resolves.toEqual({ status: "done" });
+      expect(put).toEqual(["comma-drive/docs/notes.txt:staged"]);
+
+      await service.releaseStaged({ refs: [staged.ref] });
+      await expect(
+        service.importStaged({
+          path: "again.txt",
+          ref: staged.ref,
+          space: "comma-drive",
+        })
+      ).rejects.toThrow("no longer kept");
+      await expect(service.stageImport({ sourcePath: tempDir })).resolves.toEqual({
+        status: "unavailable",
+      });
+      await expect(service.stageImport({ sourcePath: "notes.txt" })).resolves.toEqual({
+        status: "unavailable",
+      });
+      service.close();
+      await rm(tempDir, { force: true, recursive: true });
+    });
+
     it("surfaces local import source read failures through the Put promise", async () => {
       const { service } = readyService();
 
@@ -1384,6 +1472,106 @@ describe("SynchronicityNodeService space management", () => {
       commands.calls.filter((call) => call.join(" ") === "daemon start")
     ).toHaveLength(1);
     await service.close();
+  });
+
+  it("waits in starting for its zone to name a node, then publishes and reports ready", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { control, service, table } = readyService();
+      table.id = pendingIdOutput;
+      await service.start();
+
+      const waiting = await service.state();
+      expect(waiting).toMatchObject({ domain: "", origin: "", status: "starting" });
+      expect(waiting.reason).toContain("default.acme.example");
+      const commands = () =>
+        control.calls
+          .filter((call) => call.method === "run")
+          .map((call) => Object.keys(call.input as object)[0]);
+      expect(commands()).toEqual(["id", "domainRefresh"]);
+
+      // Still unnamed at the next check: it keeps waiting rather than failing.
+      const rechecked = nextChange(service);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await rechecked;
+      expect(commands()).toEqual(["id", "domainRefresh", "id", "domainRefresh"]);
+      expect((await service.state()).status).toBe("starting");
+
+      table.id = [
+        "origin:    studio@default.acme.example",
+        "named by:  default.acme.example (zone)",
+        "",
+      ].join("\n");
+      const named = nextChange(service);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await named;
+      expect(await service.state()).toMatchObject({
+        domain: "default.acme.example",
+        origin: "studio@default.acme.example",
+        status: "ready",
+      });
+      expect(commands()).toContain("sourceLs");
+      await service.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a node its zone never names as failed after the wait times out", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const { service, table } = readyService();
+      table.id = pendingIdOutput;
+      await service.start();
+      expect((await service.state()).status).toBe("starting");
+
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+      expect((await service.state()).status).toBe("starting");
+      // Each check publishes a change; the one at five minutes gives up.
+      const failed = changedTo(service, (state) => state.status === "error");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await failed;
+      expect((await service.state()).reason).toContain(
+        "default.acme.example has not named this device after 5 minutes"
+      );
+
+      // Try again starts a fresh wait, and a record that has appeared since is taken.
+      table.id = [
+        "origin:    studio@default.acme.example",
+        "named by:  default.acme.example (zone)",
+        "",
+      ].join("\n");
+      expect((await service.restart()).status).toBe("ready");
+      await service.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for the zone after a domain restart instead of reporting a node it cannot use", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { service, table } = readyService();
+      await service.start();
+      expect((await service.state()).status).toBe("ready");
+      table.id = pendingIdOutput;
+
+      const restarted = await service.setDomain({ domain: "default.acme.example" });
+      expect(restarted).toMatchObject({ origin: "", status: "starting" });
+
+      table.id = [
+        "origin:    studio@default.acme.example",
+        "named by:  default.acme.example (zone)",
+        "",
+      ].join("\n");
+      const named = nextChange(service);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await named;
+      expect((await service.state()).status).toBe("ready");
+      await service.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("continues a domain restart when the daemon exits before CLI fallback", async () => {

@@ -1,9 +1,13 @@
-import type { SideChatShortcut } from "@comma/native-bridge";
-import { isMediaMuteShortcut } from "@comma/ui";
+import type { GlobalShortcut } from "@comma/native-bridge";
+import { isMediaMuteShortcut } from "@comma/ui/components/chat-panel";
+import {
+  detectAppKeybindingPlatform,
+  type AppKeybindingPlatform,
+} from "@comma/ui/components/settings-shortcut";
 
 export type OnboardingKeycapId = "control" | "alt" | "shift" | "meta" | "key";
 
-/** One key of the Side Chat shortcut, as the Mac keyboard prints it. */
+/** One key of the Open Comma shortcut, as this machine's keyboard prints it. */
 export type OnboardingKeycap = {
   id: OnboardingKeycapId;
   /** The `KeyboardEvent.code` positions that press it. */
@@ -59,6 +63,27 @@ const modifierKeycaps = [
   },
 ] as const satisfies readonly OnboardingKeycap[];
 
+/** The same modifiers as a Windows or Linux keyboard prints them: names, no symbols. */
+const pcModifierNames = {
+  control: { label: "ctrl", name: "Ctrl" },
+  alt: { label: "alt", name: "Alt" },
+  shift: { label: "shift", name: "Shift" },
+  meta: { label: "win", name: "Windows" },
+} as const;
+
+const modifierKeycapsFor = (
+  platform: AppKeybindingPlatform
+): readonly OnboardingKeycap[] =>
+  platform === "macos"
+    ? modifierKeycaps
+    : modifierKeycaps.map((keycap) => ({
+        ...keycap,
+        glyph: undefined,
+        ...(platform === "linux" && keycap.id === "meta"
+          ? { label: "super", name: "Super" }
+          : pcModifierNames[keycap.id]),
+      }));
+
 const modifierCodes = new Set<string>(modifierKeycaps.flatMap(({ codes }) => codes));
 
 /**
@@ -67,8 +92,9 @@ const modifierCodes = new Set<string>(modifierKeycaps.flatMap(({ codes }) => cod
  * words around the keys use, come from the catalog.
  */
 export function onboardingKeycaps(
-  shortcut: SideChatShortcut,
-  { comma: commaName, space: spaceName }: { comma: string; space: string }
+  shortcut: GlobalShortcut,
+  { comma: commaName, space: spaceName }: { comma: string; space: string },
+  platform: AppKeybindingPlatform = detectAppKeybindingPlatform()
 ): OnboardingKeycap[] {
   const key: OnboardingKeycap =
     shortcut.key === "space"
@@ -104,7 +130,12 @@ export function onboardingKeycaps(
             wide: false,
             bar: false,
           };
-  return [...modifierKeycaps.filter(({ id }) => shortcut.modifiers[id]), key];
+  return [
+    ...modifierKeycapsFor(platform).filter(
+      ({ id }) => shortcut.modifiers[id as keyof GlobalShortcut["modifiers"]]
+    ),
+    key,
+  ];
 }
 
 /**

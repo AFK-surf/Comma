@@ -18,7 +18,14 @@ defmodule CommaWeb.ProactiveRoutine do
          true <- agent["router_session_id"] == ctx[:session_id],
          {:ok, envelope} <-
            Comma.Recommendations.read_existing(%{"id" => owner}, %{}, workspace["id"]) do
-      select(args, if(args == %{}, do: project(envelope, workspace), else: envelope))
+      case select(args, if(args == %{}, do: project(envelope, workspace), else: envelope)) do
+        {:error, reason}
+        when reason in [:routine_source_not_current, :routine_result_not_fresh] ->
+          pooled(args, workspace, owner, reason)
+
+        result ->
+          result
+      end
     else
       false -> {:error, :comma_home_router_required}
       error -> error
@@ -78,6 +85,48 @@ defmodule CommaWeb.ProactiveRoutine do
 
   defp select(_, _), do: {:error, :routine_result_not_fresh}
 
+  # The check hands pool items to the Router between briefings. Until a
+  # snapshot names one, the Router reads the evidence that the check judged.
+  defp pooled(%{"source_id" => source_id, "source_url" => url}, workspace, owner, reason) do
+    case Comma.MemberSourceItems.find(workspace["id"], owner, source_id, url) do
+      %Comma.Data.MemberSourceItem{} = item -> {:ok, pool_item(item)}
+      nil -> {:error, reason}
+    end
+  end
+
+  defp pooled(_args, _workspace, _owner, reason), do: {:error, reason}
+
+  defp pool_item(item) do
+    body =
+      [item.excerpt, get_in(item.context || %{}, ["text"])]
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.join("\n")
+
+    %{
+      "evidence" => %{
+        "kind" => "member_source_pool",
+        "changed_at" => DateTime.to_iso8601(item.changed_at)
+      },
+      "source_id" => item.source_id,
+      "title" => item.title,
+      "body" => body,
+      "relationship" => item.relationship,
+      "url" => item.url,
+      "task_id" => nil
+    }
+    |> Map.merge(
+      reference(
+        item.source_id,
+        item.url,
+        item.prompt_context,
+        item.provider_ids["threadId"],
+        item.provider_ids["messageId"],
+        item.fingerprint,
+        item.toolkit
+      )
+    )
+  end
+
   # Store only selected matters, before the UI replaces mail links with Tasks.
   # This value shares snapshot publication/invalidation, not reminder ownership.
   def attach(snapshot, facts) do
@@ -113,7 +162,7 @@ defmodule CommaWeb.ProactiveRoutine do
         do: Map.put(item, "sourceVersion", pooled["sourceVersion"]),
         else: item
 
-    if fact["toolkit"] == "gmail" do
+    if fact["toolkit"] in ~w(gmail outlook) do
       original = fact["data"] || %{}
       data = if is_map(original["_comma"]), do: original["value"] || %{}, else: original
 
@@ -123,6 +172,7 @@ defmodule CommaWeb.ProactiveRoutine do
           Map.merge(item, %{
             "threadId" => thread,
             "messageId" => message,
+            "toolkit" => fact["toolkit"],
             "taskId" => get_in(fact, ["mailTasks", link["href"], "conversation_id"])
           })
 
@@ -157,7 +207,8 @@ defmodule CommaWeb.ProactiveRoutine do
           item["context"],
           item["threadId"],
           item["messageId"],
-          item["sourceVersion"]
+          item["sourceVersion"],
+          item["toolkit"]
         )
       )
     end)
@@ -170,9 +221,25 @@ defmodule CommaWeb.ProactiveRoutine do
   without a pool version use their quoted source excerpt.
   Routine and the proactive check share these keys.
   """
-  def reference(source_id, url, context, thread, message, version \\ nil)
+  def reference(source_id, url, context, thread, message, version \\ nil, toolkit \\ "gmail")
 
-  def reference(source_id, url, _context, thread, message, _version)
+  def reference(source_id, url, _context, thread, message, _version, "outlook")
+      when is_binary(thread) and is_binary(message),
+      do: %{
+        "source_ref" => thread,
+        "observation_id" => message,
+        "live_read" => %{
+          "tool" => "composio.execute",
+          "arguments" => %{
+            "tool_slug" => "OUTLOOK_OUTLOOK_GET_MESSAGE",
+            "connected_account_id" => source_id,
+            "arguments" => %{"user_id" => "me", "message_id" => message}
+          }
+        },
+        "read" => routine_read(source_id, url)
+      }
+
+  def reference(source_id, url, _context, thread, message, _version, "gmail")
       when is_binary(thread) and is_binary(message),
       do: %{
         "source_ref" => thread,
@@ -188,7 +255,7 @@ defmodule CommaWeb.ProactiveRoutine do
         "read" => routine_read(source_id, url)
       }
 
-  def reference(source_id, url, context, _thread, _message, version),
+  def reference(source_id, url, context, _thread, _message, version, _toolkit),
     do: %{
       "source_ref" => "routine:" <> fingerprint([source_id, url]),
       "observation_id" => version || fingerprint([source_id, url, context]),

@@ -1,4 +1,6 @@
 defmodule Salix.Drive.Files do
+  require SystemsClock
+
   @moduledoc """
   The Synchronicity control-plane file API, driven with a group's Drive
   binding (`Salix.Drive.Handle`): one directory listing, one path's versions,
@@ -181,9 +183,10 @@ defmodule Salix.Drive.Files do
   end
 
   @doc """
-  Whether the network can serve reads and take writes right now: browsing on
-  with a member attached (`devices`), and the hosted replica's write tunnel
-  attached (`writes.attached`).
+  Whether browsing is enabled, an attached reader holds the bound space,
+  and the network has an attached write tunnel. A write still requires the
+  hosted replica to hold the space. Network attachment alone does not prove
+  that the bound space exists.
   """
   @spec status(Handle.t()) ::
           {:ok, %{browse_enabled: boolean(), attached: boolean(), writes: boolean()}} | error()
@@ -196,7 +199,7 @@ defmodule Salix.Drive.Files do
           {:ok,
            %{
              browse_enabled: body["enabled"] == true,
-             attached: attached?(body),
+             attached: attached?(body, drive.space),
              writes: writes["enabled"] == true and writes["attached"] == true
            }}
 
@@ -229,6 +232,8 @@ defmodule Salix.Drive.Files do
       {507, _} -> :over_budget
       {503, "no-cloud-attached"} -> :no_cloud_attached
       {503, "no-device-attached"} -> :no_device_attached
+      # The download route returns this routing refusal without a code prefix.
+      {503, "no attached daemon holds " <> _space} -> :no_device_attached
       {status, _} when status == 429 or status in 500..599 -> {:retryable, {:status, status}}
       {400, code} -> {:invalid, {:bad_request, code}}
       {status, _} -> {:invalid, {:unexpected_status, status}}
@@ -328,7 +333,7 @@ defmodule Salix.Drive.Files do
   defp chunk_stream(%Req.Response{body: body}), do: [IO.iodata_to_binary(body)]
 
   defp next_chunks(response) do
-    receive do
+    SystemsClock.vreceive do
       message ->
         case Req.parse_message(response, message) do
           {:ok, parts} ->
@@ -390,11 +395,16 @@ defmodule Salix.Drive.Files do
     end
   end
 
-  # `browse_api.status` lists the members attached for reads under `devices`
-  # (control-plane `api/browse_api.gleam`, `status`); the hosted replica is
-  # one of them once it has attached its browse tunnel.
-  defp attached?(%{"devices" => devices}) when is_list(devices), do: devices != []
-  defp attached?(_body), do: false
+  # Match browse_api.pick/3: a reader must advertise the requested space.
+  # A newly provisioned cloud replica can be attached with no spaces.
+  defp attached?(%{"devices" => devices}, space) when is_list(devices) do
+    Enum.any?(devices, fn
+      %{"spaces" => spaces} when is_list(spaces) -> space in spaces
+      _ -> false
+    end)
+  end
+
+  defp attached?(_body, _space), do: false
 
   # ---- shapes ----
 
@@ -448,7 +458,7 @@ defmodule Salix.Drive.Files do
   # One bounded operation label for every file call; the outcome vocabulary
   # is `Salix.Telemetry`'s.
   defp measured(fun) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     try do
       result = fun.()
@@ -467,7 +477,7 @@ defmodule Salix.Drive.Files do
       "drive_files",
       :salix,
       outcome,
-      System.monotonic_time() - started_at
+      SystemsClock.monotonic_time() - started_at
     )
   end
 

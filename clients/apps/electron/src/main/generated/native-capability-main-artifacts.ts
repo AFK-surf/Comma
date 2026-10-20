@@ -10,24 +10,19 @@ import type {
   ClipboardProvider,
   ComputeNodeProvider,
   ConnectorRuntimeProvider,
-  LocalDataStatusProvider,
+  CoreProvider,
   NativeChatProvider,
   NativeInfoProvider,
-  NativeSessionHistoryProvider,
   NotchProvider,
   PeersProvider,
-  ProductInboxProvider,
   SessionProvider,
   ShellProvider,
-  SideChatProvider,
   SurfaceListProvider,
   TransportStatusProvider,
   WindowAppearanceProvider,
   WindowsProvider,
 } from "../modules/native/index";
 import type { OnboardingWindowProvider } from "../onboarding-window";
-import type { SubscriptionAuthorizationService } from "../subscription-authorization";
-import type { TokenDanceAuthorizationService } from "../tokendance-authorization";
 import type { FilesProvider } from "../modules/files/downloads";
 import type { RecommendationMediaProvider } from "../modules/recommendation-media/index";
 import type { BrowserSidebarProvider } from "../modules/browser-sidebar/index";
@@ -35,9 +30,8 @@ import type { SitePermissionMenuProvider } from "../site-permission-menu-window"
 import type { LocalFilePickerProvider } from "../modules/local-files/picker";
 import type { AudioCaptureProvider } from "../modules/audio-capture/index";
 import type { MeetingPresenceProvider } from "../modules/meeting-presence/index";
-import type { MeetingRecorderProvider } from "../modules/meeting-recorder/index";
+import type { MeetingRecorderWindowProvider } from "../modules/meeting-recorder/index";
 import type { AirDropReceptionProvider } from "../modules/airdrop/reception";
-import type { DriveCatalogService } from "../modules/synchronicity/catalog";
 import type { SynchronicityProvider } from "../modules/synchronicity/index";
 
 interface NativeGatewayLike {
@@ -67,28 +61,22 @@ export type NativeCapabilityProviderMap = {
   windows: WindowsProvider;
   onboardingWindow: OnboardingWindowProvider;
   clipboard: ClipboardProvider;
-  subscriptionAuthorization: SubscriptionAuthorizationService;
-  tokenDanceAuthorization: TokenDanceAuthorizationService;
   shell: ShellProvider;
   files: FilesProvider;
   recommendationMedia: RecommendationMediaProvider;
   browserSidebar: BrowserSidebarProvider;
   sitePermissionMenu: SitePermissionMenuProvider;
   peers: PeersProvider;
+  core: CoreProvider;
   session: SessionProvider;
   localFiles: LocalFilePickerProvider;
-  localData: LocalDataStatusProvider;
   transport: TransportStatusProvider;
   computeNode: ComputeNodeProvider;
-  sessionHistory: NativeSessionHistoryProvider;
-  productInbox: ProductInboxProvider;
   chat: NativeChatProvider;
-  sideChat: SideChatProvider;
   audioCapture: AudioCaptureProvider;
   meetingPresence: MeetingPresenceProvider;
-  meetingRecorder: MeetingRecorderProvider;
+  meetingRecorder: MeetingRecorderWindowProvider;
   airDrop: AirDropReceptionProvider;
-  driveCatalog: DriveCatalogService;
   synchronicity: SynchronicityProvider;
 };
 
@@ -121,6 +109,8 @@ export type NativeCapabilityHandlerTypeMap = {
   "notch.stop": NotchProvider["stop"];
   "surfaces.state": SurfaceListProvider["state"];
   "surfaces.windowFullScreen": SurfaceListProvider["windowFullScreen"];
+  "surfaces.windowMaximized": SurfaceListProvider["windowMaximized"];
+  "surfaces.windowControl": SurfaceListProvider["windowControl"];
   "windows.create": WindowsProvider["create"];
   "windows.focus": WindowsProvider["focus"];
   "windows.close": WindowsProvider["close"];
@@ -132,13 +122,6 @@ export type NativeCapabilityHandlerTypeMap = {
   "clipboard.readImage": ClipboardProvider["readImage"];
   "clipboard.writeText": ClipboardProvider["writeText"];
   "clipboard.writeImage": ClipboardProvider["writeImage"];
-  "subscriptionAuthorization.start": SubscriptionAuthorizationService["start"];
-  "tokenDanceAuthorization.start": TokenDanceAuthorizationService["start"];
-  "tokenDanceAuthorization.status": TokenDanceAuthorizationService["status"];
-  "tokenDanceAuthorization.save": TokenDanceAuthorizationService["save"];
-  "tokenDanceAuthorization.cancel": TokenDanceAuthorizationService["cancel"];
-  "subscriptionAuthorization.status": SubscriptionAuthorizationService["status"];
-  "subscriptionAuthorization.cancel": SubscriptionAuthorizationService["cancel"];
   "shell.openExternal": ShellProvider["openExternal"];
   "files.saveDownload": FilesProvider["saveDownload"];
   "files.copyDownload": FilesProvider["copyDownload"];
@@ -152,21 +135,17 @@ export type NativeCapabilityHandlerTypeMap = {
   "browserSidebar.navigate": BrowserSidebarProvider["navigate"];
   "browserSidebar.close": BrowserSidebarProvider["close"];
   "browserSidebar.inspect": BrowserSidebarProvider["inspect"];
+  "browserSidebar.dismissPasskey": BrowserSidebarProvider["dismissPasskey"];
   "browserSidebar.showPermissions": BrowserSidebarProvider["showPermissions"];
+  "browserSidebar.listImportProfiles": BrowserSidebarProvider["listImportProfiles"];
+  "browserSidebar.importCookies": BrowserSidebarProvider["importCookies"];
   "sitePermissionMenu.state": SitePermissionMenuProvider["read"];
   "sitePermissionMenu.act": SitePermissionMenuProvider["act"];
   "peers.connect": PeersProvider["connect"];
+  "core.open": CoreProvider["open"];
   "session.state": SessionProvider["state"];
-  "session.requestEmailLogin": SessionProvider["requestEmailLogin"];
-  "session.verifyEmailLogin": SessionProvider["verifyEmailLogin"];
-  "session.signInWithGoogle": SessionProvider["signInWithGoogle"];
-  "session.verifyGoogleLink": SessionProvider["verifyGoogleLink"];
-  "session.cancelAuthAttempt": SessionProvider["cancelAuthAttempt"];
-  "session.reconcile": SessionProvider["reconcile"];
-  "session.signOut": SessionProvider["signOut"];
   "localFiles.pick": LocalFilePickerProvider["pick"];
   "localFiles.preview": LocalFilePickerProvider["preview"];
-  "localData.status": LocalDataStatusProvider["status"];
   "transport.status": TransportStatusProvider["status"];
   "computeNode.state": ComputeNodeProvider["state"];
   "computeNode.configure": ComputeNodeProvider["configure"];
@@ -185,49 +164,7 @@ export type NativeCapabilityHandlerTypeMap = {
   "computeNode.drain": ComputeNodeProvider["drain"];
   "computeNode.remove": ComputeNodeProvider["remove"];
   "computeNode.abandon": ComputeNodeProvider["abandon"];
-  "sessionHistory.state": NativeSessionHistoryProvider["state"];
-  "sessionHistory.load": NativeSessionHistoryProvider["load"];
-  "sessionHistory.retain": NativeSessionHistoryProvider["retain"];
-  "sessionHistory.release": NativeSessionHistoryProvider["release"];
-  "productInbox.state": ProductInboxProvider["state"];
-  "productInbox.retain": ProductInboxProvider["retain"];
-  "productInbox.release": ProductInboxProvider["release"];
-  "productInbox.refresh": ProductInboxProvider["refresh"];
-  "chat.state": NativeChatProvider["state"];
-  "chat.drafts": NativeChatProvider["drafts"];
-  "sideChat.presentation": SideChatProvider["presentation"];
-  "sideChat.debugSettings": SideChatProvider["debugSettings"];
-  "sideChat.updateDebugSettings": SideChatProvider["updateDebugSettings"];
-  "sideChat.resetDebugSettings": SideChatProvider["resetDebugSettings"];
-  "sideChat.setContentSize": SideChatProvider["setContentSize"];
-  "sideChat.setInteractiveProgress": SideChatProvider["setInteractiveProgress"];
-  "sideChat.finishInteractiveProgress": SideChatProvider["finishInteractiveProgress"];
-  "sideChat.updateShortcut": SideChatProvider["updateShortcut"];
-  "sideChat.close": SideChatProvider["close"];
-  "sideChat.openSettings": SideChatProvider["openSettings"];
-  "sideChat.openTestWindow": SideChatProvider["openTestWindow"];
-  "sideChat.closeTestWindow": SideChatProvider["closeTestWindow"];
-  "chat.retain": NativeChatProvider["retain"];
-  "chat.release": NativeChatProvider["release"];
-  "chat.clearPresentation": NativeChatProvider["clearPresentation"];
-  "chat.setDraft": NativeChatProvider["setDraft"];
-  "chat.beginSendIntent": NativeChatProvider["beginSendIntent"];
-  "chat.cancelSendIntent": NativeChatProvider["cancelSendIntent"];
-  "chat.send": NativeChatProvider["send"];
-  "chat.retry": NativeChatProvider["retry"];
-  "chat.discard": NativeChatProvider["discard"];
-  "chat.acceptTaskReview": NativeChatProvider["acceptTaskReview"];
-  "chat.refresh": NativeChatProvider["refresh"];
-  "chat.attach": NativeChatProvider["attach"];
-  "chat.attachLocalFiles": NativeChatProvider["attachLocalFiles"];
   "chat.pickAttachments": NativeChatProvider["pickAttachments"];
-  "chat.presentInSideChat": NativeChatProvider["presentInSideChat"];
-  "chat.resolveWorkspaceChat": NativeChatProvider["resolveWorkspaceChat"];
-  "chat.listSkills": NativeChatProvider["listSkills"];
-  "chat.readGroupImage": NativeChatProvider["readGroupImage"];
-  "chat.removeAttachment": NativeChatProvider["removeAttachment"];
-  "chat.retryAttachment": NativeChatProvider["retryAttachment"];
-  "chat.acknowledgeIntakeFailures": NativeChatProvider["acknowledgeIntakeFailures"];
   "audioCapture.state": AudioCaptureProvider["state"];
   "audioCapture.sources": AudioCaptureProvider["sources"];
   "audioCapture.microphones": AudioCaptureProvider["microphones"];
@@ -241,27 +178,21 @@ export type NativeCapabilityHandlerTypeMap = {
   "audioCapture.openPermissionSettings": AudioCaptureProvider["openPermissionSettings"];
   "meetingPresence.state": MeetingPresenceProvider["state"];
   "meetingPresence.icon": MeetingPresenceProvider["icon"];
-  "meetingRecorder.state": MeetingRecorderProvider["state"];
-  "meetingRecorder.action": MeetingRecorderProvider["action"];
-  "meetingRecorder.retryTaskSync": MeetingRecorderProvider["retryTaskSync"];
-  "meetingRecorder.selectMicrophone": MeetingRecorderProvider["selectMicrophone"];
-  "meetingRecorder.acknowledgeSaved": MeetingRecorderProvider["acknowledgeSaved"];
-  "meetingRecorder.setInteractive": MeetingRecorderProvider["setInteractive"];
-  "meetingRecorder.layoutWindow": MeetingRecorderProvider["layoutWindow"];
-  "meetingRecorder.dragWindow": MeetingRecorderProvider["dragWindow"];
+  "meetingRecorder.setInteractive": MeetingRecorderWindowProvider["setInteractive"];
+  "meetingRecorder.layoutWindow": MeetingRecorderWindowProvider["layoutWindow"];
+  "meetingRecorder.dragWindow": MeetingRecorderWindowProvider["dragWindow"];
   "airDrop.state": AirDropReceptionProvider["state"];
   "airDrop.act": AirDropReceptionProvider["act"];
   "airDrop.preview": AirDropReceptionProvider["preview"];
-  "driveCatalog.query": DriveCatalogService["query"];
-  "driveCatalog.state": DriveCatalogService["state"];
   "synchronicity.state": SynchronicityProvider["state"];
   "synchronicity.list": SynchronicityProvider["list"];
   "synchronicity.read": SynchronicityProvider["read"];
   "synchronicity.saveDownload": SynchronicityProvider["saveDownload"];
+  "synchronicity.openStream": SynchronicityProvider["openStream"];
   "synchronicity.openLocalRoot": SynchronicityProvider["openLocalRoot"];
   "synchronicity.versions": SynchronicityProvider["versions"];
   "synchronicity.write": SynchronicityProvider["write"];
-  "synchronicity.importFile": SynchronicityProvider["importFile"];
+  "synchronicity.stageImport": SynchronicityProvider["stageImport"];
   "synchronicity.delete": SynchronicityProvider["delete"];
   "synchronicity.adopt": SynchronicityProvider["adopt"];
   "synchronicity.scan": SynchronicityProvider["scan"];
@@ -332,6 +263,9 @@ export function registerGeneratedNativeMainBindings({
     "surfaces.state": async (input) => providers.surfaces.state(input),
     "surfaces.windowFullScreen": async (input) =>
       providers.surfaces.windowFullScreen(input),
+    "surfaces.windowMaximized": async (input) =>
+      providers.surfaces.windowMaximized(input),
+    "surfaces.windowControl": async (input) => providers.surfaces.windowControl(input),
     "windows.create": async (input) => providers.windows.create(input),
     "windows.focus": async (input) => providers.windows.focus(input),
     "windows.close": async (input) => providers.windows.close(input),
@@ -346,20 +280,6 @@ export function registerGeneratedNativeMainBindings({
     "clipboard.readImage": async (input) => providers.clipboard.readImage(input),
     "clipboard.writeText": async (input) => providers.clipboard.writeText(input),
     "clipboard.writeImage": async (input) => providers.clipboard.writeImage(input),
-    "subscriptionAuthorization.start": async (input) =>
-      providers.subscriptionAuthorization.start(input),
-    "tokenDanceAuthorization.start": async (input) =>
-      providers.tokenDanceAuthorization.start(input),
-    "tokenDanceAuthorization.status": async (input) =>
-      providers.tokenDanceAuthorization.status(input),
-    "tokenDanceAuthorization.save": async (input) =>
-      providers.tokenDanceAuthorization.save(input),
-    "tokenDanceAuthorization.cancel": async (input) =>
-      providers.tokenDanceAuthorization.cancel(input),
-    "subscriptionAuthorization.status": async (input) =>
-      providers.subscriptionAuthorization.status(input),
-    "subscriptionAuthorization.cancel": async (input) =>
-      providers.subscriptionAuthorization.cancel(input),
     "shell.openExternal": async (input) => providers.shell.openExternal(input),
     "files.saveDownload": async (input) => providers.files.saveDownload(input),
     "files.copyDownload": async (input) => providers.files.copyDownload(input),
@@ -376,28 +296,22 @@ export function registerGeneratedNativeMainBindings({
       providers.browserSidebar.navigate(input),
     "browserSidebar.close": async (input) => providers.browserSidebar.close(input),
     "browserSidebar.inspect": async (input) => providers.browserSidebar.inspect(input),
+    "browserSidebar.dismissPasskey": async (input) =>
+      providers.browserSidebar.dismissPasskey(input),
     "browserSidebar.showPermissions": async (input) =>
       providers.browserSidebar.showPermissions(input),
+    "browserSidebar.listImportProfiles": async (input) =>
+      providers.browserSidebar.listImportProfiles(input),
+    "browserSidebar.importCookies": async (input) =>
+      providers.browserSidebar.importCookies(input),
     "sitePermissionMenu.state": async (input) =>
       providers.sitePermissionMenu.read(input),
     "sitePermissionMenu.act": async (input) => providers.sitePermissionMenu.act(input),
     "peers.connect": async (input) => providers.peers.connect(input),
+    "core.open": async (input) => providers.core.open(input),
     "session.state": async (input) => providers.session.state(input),
-    "session.requestEmailLogin": async (input) =>
-      providers.session.requestEmailLogin(input),
-    "session.verifyEmailLogin": async (input) =>
-      providers.session.verifyEmailLogin(input),
-    "session.signInWithGoogle": async (input) =>
-      providers.session.signInWithGoogle(input),
-    "session.verifyGoogleLink": async (input) =>
-      providers.session.verifyGoogleLink(input),
-    "session.cancelAuthAttempt": async (input) =>
-      providers.session.cancelAuthAttempt(input),
-    "session.reconcile": async (input) => providers.session.reconcile(input),
-    "session.signOut": async (input) => providers.session.signOut(input),
     "localFiles.pick": async (input) => providers.localFiles.pick(input),
     "localFiles.preview": async (input) => providers.localFiles.preview(input),
-    "localData.status": async (input) => providers.localData.status(input),
     "transport.status": async (input) => providers.transport.status(input),
     "computeNode.state": async (input) => providers.computeNode.state(input),
     "computeNode.configure": async (input) => providers.computeNode.configure(input),
@@ -424,59 +338,7 @@ export function registerGeneratedNativeMainBindings({
     "computeNode.drain": async (input) => providers.computeNode.drain(input),
     "computeNode.remove": async (input) => providers.computeNode.remove(input),
     "computeNode.abandon": async (input) => providers.computeNode.abandon(input),
-    "sessionHistory.state": async (input) => providers.sessionHistory.state(input),
-    "sessionHistory.load": async (input) => providers.sessionHistory.load(input),
-    "sessionHistory.retain": async (input) => providers.sessionHistory.retain(input),
-    "sessionHistory.release": async (input) => providers.sessionHistory.release(input),
-    "productInbox.state": async (input) => providers.productInbox.state(input),
-    "productInbox.retain": async (input) => providers.productInbox.retain(input),
-    "productInbox.release": async (input) => providers.productInbox.release(input),
-    "productInbox.refresh": async (input) => providers.productInbox.refresh(input),
-    "chat.state": async (input) => providers.chat.state(input),
-    "chat.drafts": async (input) => providers.chat.drafts(input),
-    "sideChat.presentation": async (input) => providers.sideChat.presentation(input),
-    "sideChat.debugSettings": async (input) => providers.sideChat.debugSettings(input),
-    "sideChat.updateDebugSettings": async (input) =>
-      providers.sideChat.updateDebugSettings(input),
-    "sideChat.resetDebugSettings": async (input) =>
-      providers.sideChat.resetDebugSettings(input),
-    "sideChat.setContentSize": async (input) =>
-      providers.sideChat.setContentSize(input),
-    "sideChat.setInteractiveProgress": async (input) =>
-      providers.sideChat.setInteractiveProgress(input),
-    "sideChat.finishInteractiveProgress": async (input) =>
-      providers.sideChat.finishInteractiveProgress(input),
-    "sideChat.updateShortcut": async (input) =>
-      providers.sideChat.updateShortcut(input),
-    "sideChat.close": async (input) => providers.sideChat.close(input),
-    "sideChat.openSettings": async (input) => providers.sideChat.openSettings(input),
-    "sideChat.openTestWindow": async (input) =>
-      providers.sideChat.openTestWindow(input),
-    "sideChat.closeTestWindow": async (input) =>
-      providers.sideChat.closeTestWindow(input),
-    "chat.retain": async (input) => providers.chat.retain(input),
-    "chat.release": async (input) => providers.chat.release(input),
-    "chat.clearPresentation": async (input) => providers.chat.clearPresentation(input),
-    "chat.setDraft": async (input) => providers.chat.setDraft(input),
-    "chat.beginSendIntent": async (input) => providers.chat.beginSendIntent(input),
-    "chat.cancelSendIntent": async (input) => providers.chat.cancelSendIntent(input),
-    "chat.send": async (input) => providers.chat.send(input),
-    "chat.retry": async (input) => providers.chat.retry(input),
-    "chat.discard": async (input) => providers.chat.discard(input),
-    "chat.acceptTaskReview": async (input) => providers.chat.acceptTaskReview(input),
-    "chat.refresh": async (input) => providers.chat.refresh(input),
-    "chat.attach": async (input) => providers.chat.attach(input),
-    "chat.attachLocalFiles": async (input) => providers.chat.attachLocalFiles(input),
     "chat.pickAttachments": async (input) => providers.chat.pickAttachments(input),
-    "chat.presentInSideChat": async (input) => providers.chat.presentInSideChat(input),
-    "chat.resolveWorkspaceChat": async (input) =>
-      providers.chat.resolveWorkspaceChat(input),
-    "chat.listSkills": async (input) => providers.chat.listSkills(input),
-    "chat.readGroupImage": async (input) => providers.chat.readGroupImage(input),
-    "chat.removeAttachment": async (input) => providers.chat.removeAttachment(input),
-    "chat.retryAttachment": async (input) => providers.chat.retryAttachment(input),
-    "chat.acknowledgeIntakeFailures": async (input) =>
-      providers.chat.acknowledgeIntakeFailures(input),
     "audioCapture.state": async (input) => providers.audioCapture.state(input),
     "audioCapture.sources": async (input) => providers.audioCapture.sources(input),
     "audioCapture.microphones": async (input) =>
@@ -493,14 +355,6 @@ export function registerGeneratedNativeMainBindings({
       providers.audioCapture.openPermissionSettings(input),
     "meetingPresence.state": async (input) => providers.meetingPresence.state(input),
     "meetingPresence.icon": async (input) => providers.meetingPresence.icon(input),
-    "meetingRecorder.state": async (input) => providers.meetingRecorder.state(input),
-    "meetingRecorder.action": async (input) => providers.meetingRecorder.action(input),
-    "meetingRecorder.retryTaskSync": async (input) =>
-      providers.meetingRecorder.retryTaskSync(input),
-    "meetingRecorder.selectMicrophone": async (input) =>
-      providers.meetingRecorder.selectMicrophone(input),
-    "meetingRecorder.acknowledgeSaved": async (input) =>
-      providers.meetingRecorder.acknowledgeSaved(input),
     "meetingRecorder.setInteractive": async (input) =>
       providers.meetingRecorder.setInteractive(input),
     "meetingRecorder.layoutWindow": async (input) =>
@@ -510,19 +364,19 @@ export function registerGeneratedNativeMainBindings({
     "airDrop.state": async (input) => providers.airDrop.state(input),
     "airDrop.act": async (input) => providers.airDrop.act(input),
     "airDrop.preview": async (input) => providers.airDrop.preview(input),
-    "driveCatalog.query": async (input) => providers.driveCatalog.query(input),
-    "driveCatalog.state": async (input) => providers.driveCatalog.state(input),
     "synchronicity.state": async (input) => providers.synchronicity.state(input),
     "synchronicity.list": async (input) => providers.synchronicity.list(input),
     "synchronicity.read": async (input) => providers.synchronicity.read(input),
     "synchronicity.saveDownload": async (input) =>
       providers.synchronicity.saveDownload(input),
+    "synchronicity.openStream": async (input) =>
+      providers.synchronicity.openStream(input),
     "synchronicity.openLocalRoot": async (input) =>
       providers.synchronicity.openLocalRoot(input),
     "synchronicity.versions": async (input) => providers.synchronicity.versions(input),
     "synchronicity.write": async (input) => providers.synchronicity.write(input),
-    "synchronicity.importFile": async (input) =>
-      providers.synchronicity.importFile(input),
+    "synchronicity.stageImport": async (input) =>
+      providers.synchronicity.stageImport(input),
     "synchronicity.delete": async (input) => providers.synchronicity.delete(input),
     "synchronicity.adopt": async (input) => providers.synchronicity.adopt(input),
     "synchronicity.scan": async (input) => providers.synchronicity.scan(input),

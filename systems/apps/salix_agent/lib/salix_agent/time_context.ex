@@ -5,7 +5,7 @@ defmodule SalixAgent.TimeContext do
 
   # Reads only the already loaded, bounded live context/input batch. No history
   # lookup, per-source RPC, timer, or idle wake is needed for a clock refresh.
-  def prepare(session, known, now \\ DateTime.utc_now()) do
+  def prepare(session, known, now \\ SystemsClock.utc_now()) do
     sampled_at = DateTime.to_unix(now)
     messages = value(session, :input_messages) || value(session, :messages) || []
     users = Enum.filter(messages, &(value(&1, :role) == "user"))
@@ -57,7 +57,7 @@ defmodule SalixAgent.TimeContext do
       """
 
       payload = %{
-        "runtime_message_id" => "time-context:" <> Ecto.UUID.generate(),
+        "runtime_message_id" => "time-context:" <> SystemsRuntime.Proc.uuid(),
         "runtime_message_type" => "time_context",
         "content_kind" => "model_context",
         "summary" => "current time context",

@@ -1,4 +1,5 @@
-import { Button, CheckIcon, LoaderIcon } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { CheckIcon, LoaderIcon } from "@comma/ui/components/icons";
 import { useLayoutEffect, useRef } from "react";
 import { OnboardingSwap } from "./OnboardingCard";
 

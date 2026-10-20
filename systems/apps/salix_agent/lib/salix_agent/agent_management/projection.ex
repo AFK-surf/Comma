@@ -1,24 +1,21 @@
 defmodule SalixAgent.AgentManagement.Projection do
   @moduledoc false
-  alias SalixAgent.{Control, Templates}
+  alias SalixAgent.{AgentModel, Control, StationBinding}
 
-  def runtime(%{"kind" => kind} = binding) when kind in ~w(external connected_runtime) do
-    %{
-      "kind" => "connected",
-      "provider" => binding["provider"],
-      "device_id" => binding["device_id"],
-      "device_runtime_id" => binding["device_runtime_id"]
-    }
+  @doc "Where a Worker record runs, as Router tools and products show it."
+  def worker_runtime(record) do
+    case StationBinding.get(record) do
+      nil ->
+        %{"kind" => "internal"}
+
+      binding ->
+        %{
+          "kind" => "station",
+          "runs_on" => binding["runs_on"],
+          "provider" => get_in(binding, ["model", "provider"])
+        }
+    end
   end
-
-  def runtime(%{"kind" => "compute_workload"} = binding),
-    do: %{
-      "kind" => "compute",
-      "provider" => get_in(binding, ["runtime_spec", "provider"]),
-      "workload_id" => binding["workload_id"]
-    }
-
-  def runtime(_), do: %{"kind" => "internal"}
 
   def summary(record) do
     %{
@@ -26,12 +23,8 @@ defmodule SalixAgent.AgentManagement.Projection do
       "name" => record["name"],
       "purpose" => record["management_purpose"] || "",
       "lifecycle" => if(Control.archived?(record), do: "archived", else: "unarchived"),
-      "runtime" => runtime(record["runtime_config"]),
-      "binding_revision" =>
-        if(Control.external_runtime?(record),
-          do: get_in(record, ["runtime_config", "binding_revision"]) || 0,
-          else: nil
-        ),
+      "runtime" => worker_runtime(record),
+      "binding_revision" => binding_revision(record),
       "archived_at" => record["archived_at"],
       "permanent" => Control.permanently_archived?(record)
     }
@@ -43,33 +36,34 @@ defmodule SalixAgent.AgentManagement.Projection do
     |> Map.put("creation_audit", record["management_creation_audit"])
   end
 
+  defp binding_revision(record) do
+    if StationBinding.bound?(record),
+      do: get_in(record, ["station_binding", "binding_revision"]) || 0
+  end
+
+  defp model(%{"station_binding" => %{"runs_on" => %{}, "model" => model}}) do
+    %{
+      "source" => if(model["model"], do: "agent_config", else: "runtime_default"),
+      "model_id" => model["model"],
+      "provider" => model["provider"],
+      "reasoning_effort" => model["reasoning_effort"]
+    }
+  end
+
+  # `source` says whether the Agent chose this model or follows its role's
+  # platform model; the remaining fields describe the model it runs.
   defp model(record) do
-    if Control.external_runtime?(record) do
-      runtime = record["runtime_config"] || %{}
-      settings = runtime["runtime_spec"] || runtime
+    case AgentModel.resolve_public(record) do
+      {:ok, model, source} ->
+        %{
+          "source" => Atom.to_string(source),
+          "name" => model["name"],
+          "model_id" => model["model"],
+          "provider" => model["provider"]
+        }
 
-      %{
-        "source" => if(settings["model"], do: "agent_config", else: "runtime_default"),
-        "model_id" => settings["model"],
-        "provider" => settings["model_provider"],
-        "reasoning_effort" => settings["reasoning_effort"]
-      }
-    else
-      # `source` says whether the Agent pins this template or follows a role
-      # default; the remaining fields always describe the effective template.
-      case Templates.resolve_public_template_for_record(record) do
-        {:ok, template, source} ->
-          %{
-            "source" => Atom.to_string(source),
-            "template_id" => template["template_id"],
-            "name" => template["name"],
-            "model_id" => template["model"],
-            "provider" => template["provider"]
-          }
-
-        _ ->
-          %{"source" => "unavailable"}
-      end
+      _ ->
+        %{"source" => "unavailable"}
     end
   end
 end

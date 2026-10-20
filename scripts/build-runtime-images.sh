@@ -16,11 +16,12 @@ command -v docker >/dev/null
 command -v jq >/dev/null
 
 mkdir -p "${output_dir}"
-rm -f "${output_dir}/external.oci.tar" "${output_dir}/meeting.oci.tar" "${output_dir}/shell.oci.tar" "${output_dir}/manifest.json" "${output_dir}/inputs.json"
+rm -f "${output_dir}/meeting.oci.tar" "${output_dir}/shell.oci.tar" "${output_dir}/station.oci.tar" "${output_dir}/manifest.json" "${output_dir}/inputs.json"
 build_context="$(mktemp -d)"
 meetnative_context="$(mktemp -d)"
+station_context="$(mktemp -d)"
 cleanup() {
-  rm -rf "${build_context}" "${meetnative_context}"
+  rm -rf "${build_context}" "${meetnative_context}" "${station_context}"
 }
 trap cleanup EXIT
 
@@ -37,6 +38,13 @@ cp \
 cp -R \
   "${repository_root}/systems/runtime-images/cmd" \
   "${build_context}/systems/runtime-images/cmd"
+mkdir -p "${build_context}/systems/runtime-images/station"
+cp \
+  "${repository_root}/systems/runtime-images/station/entrypoint.sh" \
+  "${repository_root}/systems/runtime-images/station/silk2wav" \
+  "${repository_root}/systems/runtime-images/station/file-tools-packages" \
+  "${repository_root}/systems/runtime-images/station/file-tools-requirements.txt" \
+  "${build_context}/systems/runtime-images/station/"
 
 lock_value() {
   jq -er "${1}" "${lock_file}"
@@ -44,8 +52,9 @@ lock_value() {
 
 go_image="$(lock_value '.baseImages.go')"
 shell_image="$(lock_value '.baseImages.shell')"
-external_image="$(lock_value '.baseImages.external')"
 meeting_image="$(lock_value '.baseImages.meeting')"
+station_image="$(lock_value '.baseImages.station')"
+package_snapshot="$(lock_value '.packageSnapshot')"
 npm_version="$(lock_value '.npm.version')"
 npm_tarball="$(lock_value '.npm.tarball')"
 npm_integrity="$(lock_value '.npm.integrity')"
@@ -68,8 +77,8 @@ claude_tarball="$(lock_value '.claude.tarball')"
 claude_integrity="$(lock_value '.claude.integrity')"
 claude_platform_tarball="$(lock_value '.claude.platformTarball')"
 claude_platform_integrity="$(lock_value '.claude.platformIntegrity')"
-pi_tarball="$(lock_value '.pi.tarball')"
-pi_integrity="$(lock_value '.pi.integrity')"
+silk_v3_decoder_tarball="$(lock_value '.silkV3Decoder.tarball')"
+silk_v3_decoder_integrity="$(lock_value '.silkV3Decoder.integrity')"
 meetnative_repository="$(lock_value '.meetnative.repository')"
 meetnative_revision="$(lock_value '.meetnative.revision')"
 
@@ -111,13 +120,26 @@ build_archive() {
     --tag "comma.local/runtime/${image_class}:sha256-${input_digest#sha256:}" \
     --output "type=oci,dest=${output_dir}/${image_class}.oci.tar" \
     --build-arg "GO_IMAGE=${go_image}" \
+    --build-arg "PACKAGE_SNAPSHOT=${package_snapshot}" \
     "$@" \
     "${build_context}"
 }
 
 build_archive shell --build-arg "SHELL_IMAGE=${shell_image}"
-build_archive external \
-  --build-arg "EXTERNAL_IMAGE=${external_image}" \
+build_archive meeting \
+  --build-context "meetnative=${meetnative_context}" \
+  --build-arg "MEETING_IMAGE=${meeting_image}"
+
+# The station release (systems/station/scripts/bundle.sh) is built only when the
+# station archive is not reused: it needs the station's pnpm dependencies and
+# its published linux-arm64 native parts.
+if [[ ! -f "${output_dir}/station.oci.tar" ]]; then
+  rm -rf "${station_context}"
+  sh "${repository_root}/systems/station/scripts/bundle.sh" "${station_context}" linux-arm64
+fi
+build_archive station \
+  --build-context "station=${station_context}" \
+  --build-arg "STATION_IMAGE=${station_image}" \
   --build-arg "NPM_VERSION=${npm_version}" \
   --build-arg "NPM_TARBALL=${npm_tarball}" \
   --build-arg "NPM_INTEGRITY=${npm_integrity}" \
@@ -140,16 +162,13 @@ build_archive external \
   --build-arg "CLAUDE_INTEGRITY=${claude_integrity}" \
   --build-arg "CLAUDE_PLATFORM_TARBALL=${claude_platform_tarball}" \
   --build-arg "CLAUDE_PLATFORM_INTEGRITY=${claude_platform_integrity}" \
-  --build-arg "PI_TARBALL=${pi_tarball}" \
-  --build-arg "PI_INTEGRITY=${pi_integrity}"
-build_archive meeting \
-  --build-context "meetnative=${meetnative_context}" \
-  --build-arg "MEETING_IMAGE=${meeting_image}"
+  --build-arg "SILK_V3_DECODER_TARBALL=${silk_v3_decoder_tarball}" \
+  --build-arg "SILK_V3_DECODER_INTEGRITY=${silk_v3_decoder_integrity}"
 
 go -C "${repository_root}/systems/runtime-images" run ./cmd/bundle-manifest \
   --revision "${release_revision}" \
   --inputs "${output_dir}/inputs.json" \
   --output "${output_dir}/manifest.json" \
   --image "shell=${output_dir}/shell.oci.tar" \
-  --image "external=${output_dir}/external.oci.tar" \
-  --image "meeting=${output_dir}/meeting.oci.tar"
+  --image "meeting=${output_dir}/meeting.oci.tar" \
+  --image "station=${output_dir}/station.oci.tar"

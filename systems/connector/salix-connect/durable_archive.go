@@ -34,7 +34,6 @@ type archiveDiagnostics struct {
 }
 
 type durableArchiveExport struct {
-	Scope         string              `json:"scope,omitempty"`
 	Diagnostics   *archiveDiagnostics `json:"diagnostics,omitempty"`
 	Operation     string              `json:"operation"`
 	Format        string              `json:"format,omitempty"`
@@ -51,15 +50,8 @@ func (s durableArchiveExport) response() map[string]any {
 	return map[string]any{
 		"operation": s.Operation, "phase": s.Phase, "bytes": s.Bytes,
 		"packed_bytes": s.PackedBytes, "uploaded_bytes": s.UploadedBytes, "progress_at": s.ProgressAt,
-		"sessions": s.Sessions, "format": s.format(), "diagnostics": s.Diagnostics, "scope": s.scope(),
+		"sessions": s.Sessions, "format": s.format(), "diagnostics": s.Diagnostics, "scope": "full",
 	}
-}
-
-func (s durableArchiveExport) scope() string {
-	if s.Scope == "recovery" {
-		return "recovery"
-	}
-	return "full"
 }
 
 func (s durableArchiveExport) format() string {
@@ -81,7 +73,7 @@ func (c *connector) durableArchiveDir() string {
 }
 
 func (c *connector) handleDurableArchiveExport(w http.ResponseWriter, r *http.Request) {
-	if c.externalRuntimeState == nil || os.Getenv("SALIX_MANAGED_RUNTIME_ROOT") == "" {
+	if os.Getenv("SALIX_MANAGED_RUNTIME_ROOT") == "" {
 		http.Error(w, "managed runtime connector required", http.StatusConflict)
 		return
 	}
@@ -100,11 +92,7 @@ func (c *connector) handleDurableArchiveExport(w http.ResponseWriter, r *http.Re
 		http.Error(w, "invalid archive format", http.StatusBadRequest)
 		return
 	}
-	requestedScope := r.URL.Query().Get("scope")
-	if requestedScope == "" {
-		requestedScope = "full"
-	}
-	if requestedScope != "full" && requestedScope != "recovery" {
+	if scope := r.URL.Query().Get("scope"); scope != "" && scope != "full" {
 		http.Error(w, "invalid archive scope", 400)
 		return
 	}
@@ -128,7 +116,7 @@ func (c *connector) handleDurableArchiveExport(w http.ResponseWriter, r *http.Re
 			return
 		}
 		if state.Operation == operation && (state.Phase == "preparing" || state.Phase == "exported") {
-			if state.format() != requestedFormat || state.scope() != requestedScope {
+			if state.format() != requestedFormat {
 				http.Error(w, "archive format changed", http.StatusConflict)
 				return
 			}
@@ -164,16 +152,13 @@ func (c *connector) handleDurableArchiveExport(w http.ResponseWriter, r *http.Re
 				return
 			}
 		}
-		if requestedScope == "recovery" && (c.cloudRuntimeControl == nil || !c.cloudRuntimeControl.Sealed || c.cloudRuntimeControl.OperationID != operation || !c.cloudRuntimeControl.RecoveryValidated) {
-			http.Error(w, "recovery checkpoint requires an exact validated seal", 409)
-			return
-		}
-		state = durableArchiveExport{Operation: operation, Format: requestedFormat, Scope: requestedScope, Phase: "preparing", StartedAt: time.Now().UnixMilli()}
+		state = durableArchiveExport{Operation: operation, Format: requestedFormat, Phase: "preparing", StartedAt: time.Now().UnixMilli()}
 		if err := writeDurableArchiveExport(statePath, state); err != nil {
 			http.Error(w, "archive export state unavailable", 500)
 			return
 		}
-		go c.buildDurableArchive(statePath, archivePath, state, transfers)
+		// Closing the runtimes cancels the build and waits for it.
+		c.goBackground(func(ctx context.Context) { c.buildDurableArchive(ctx, statePath, archivePath, state, transfers) })
 		writeJSONResponse(w, http.StatusAccepted, map[string]any{"operation": operation, "phase": "preparing"})
 		return
 	}
@@ -418,11 +403,11 @@ func putSignedArchiveChunk(ctx context.Context, putURL, getURL string, part []by
 	return nil
 }
 
-func (c *connector) buildDurableArchive(statePath, archivePath string, state durableArchiveExport, transfers []signedArchiveTransfer) {
+func (c *connector) buildDurableArchive(ctx context.Context, statePath, archivePath string, state durableArchiveExport, transfers []signedArchiveTransfer) {
 	startedAt := time.Now()
 	c.cloudRuntimeMu.Lock()
 	defer c.cloudRuntimeMu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
 	cancelPath := filepath.Join(filepath.Dir(statePath), "cancel-"+state.Operation)
 	watchDone := make(chan struct{})
@@ -475,11 +460,8 @@ func (c *connector) buildDurableArchive(statePath, archivePath string, state dur
 				lastProgress = time.Now()
 			}
 		}}
-		c.externalRuntimeState.mu.Lock()
-		state.Sessions = len(c.externalRuntimeState.identities)
-		c.externalRuntimeState.mu.Unlock()
 		packStart := time.Now()
-		err = writeTarTreesScope(ctx, packed, []archiveTree{{c.root, "."}}, c.externalRuntimeState, migrationByteLimit, "zstd", state.scope())
+		err = writeTarTrees(ctx, packed, []archiveTree{{c.root, "."}}, c, migrationByteLimit, "zstd")
 		packDuration := time.Since(packStart)
 		state.Diagnostics.PackMS = packDuration.Milliseconds()
 		if err == nil {
@@ -518,9 +500,6 @@ func (c *connector) buildDurableArchive(statePath, archivePath string, state dur
 		finish("failed")
 		return
 	}
-	c.externalRuntimeState.mu.Lock()
-	state.Sessions = len(c.externalRuntimeState.identities)
-	c.externalRuntimeState.mu.Unlock()
 	lastProgress := time.Now()
 	packed := &durableArchiveProgressWriter{writer: &archiveLimitWriter{writer: f, remaining: durableArchiveCompressedLimit}, report: func(n int64) {
 		state.PackedBytes = n
@@ -531,9 +510,9 @@ func (c *connector) buildDurableArchive(statePath, archivePath string, state dur
 		}
 	}}
 	if state.format() == "tar_zst" {
-		err = writeTarTreesScope(ctx, packed, []archiveTree{{c.root, "."}}, c.externalRuntimeState, migrationByteLimit, "zstd", state.scope())
+		err = writeTarTrees(ctx, packed, []archiveTree{{c.root, "."}}, c, migrationByteLimit, "zstd")
 	} else {
-		err = writeTarTreesScope(ctx, packed, []archiveTree{{c.root, "."}}, c.externalRuntimeState, migrationByteLimit, "gzip", state.scope())
+		err = writeTarTrees(ctx, packed, []archiveTree{{c.root, "."}}, c, migrationByteLimit, "gzip")
 	}
 	packDuration := time.Since(startedAt)
 	state.Diagnostics.PackMS = packDuration.Milliseconds()

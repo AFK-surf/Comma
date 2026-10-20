@@ -145,11 +145,11 @@ func execute(ctx context.Context, op string, body json.RawMessage, credential Cr
 			}
 			return emitJSON(emit, result)
 		case "/quota":
-			q, err := queryQuota(ctx, c.Provider, e, a)
+			b, err := queryQuota(ctx, c.Provider, e, a)
 			if err != nil {
 				return &operationError{502, "quota_unavailable"}
 			}
-			return emitJSON(emit, q)
+			return emitJSON(emit, map[string]json.RawMessage{"body": b})
 		}
 		if op == "/normalize" && c.Provider == "github-copilot" {
 			// An imported Copilot credential gets the same identity as a
@@ -172,11 +172,14 @@ func needsRefresh(a *auth.Auth, lead time.Duration) bool {
 	expiry, err := time.Parse(time.RFC3339, raw)
 	return token != "" && (err != nil || time.Until(expiry) < lead)
 }
-func queryQuota(ctx context.Context, provider string, e auth.ProviderExecutor, a *auth.Auth) (Snapshot, error) {
+
+// The provider's answer as it gave it: Salix reads it with the Profiles' logic
+// (systems/profiles quota.rs), as a station reads its own.
+func queryQuota(ctx context.Context, provider string, e auth.ProviderExecutor, a *auth.Auth) ([]byte, error) {
 	if provider == "github-copilot" {
-		return copilotQuota(ctx, a, time.Now())
+		return copilotQuota(ctx, a)
 	}
-	method, endpoint, decode := "GET", "", func(r io.Reader, now time.Time) (Snapshot, error) { return decodeQuota(provider, r, now) }
+	method, endpoint := "GET", ""
 	var body io.Reader
 	switch provider {
 	case "codex":
@@ -186,17 +189,17 @@ func queryQuota(ctx context.Context, provider string, e auth.ProviderExecutor, a
 	case "gemini":
 		project, _ := a.Metadata["project_id"].(string)
 		data, _ := json.Marshal(map[string]string{"project": project})
-		method, endpoint, decode, body = "POST", "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels", decodeGeminiQuota, bytes.NewReader(data)
+		method, endpoint, body = "POST", "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels", bytes.NewReader(data)
 	case "grok":
-		endpoint, decode = "https://cli-chat-proxy.grok.com/v1/billing?format=credits", decodeGrokQuota
+		endpoint = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 	case "kimi-code":
-		endpoint, decode = "https://api.kimi.com/coding/v1/usages", decodeKimiQuota
+		endpoint = "https://api.kimi.com/coding/v1/usages"
 	default:
-		return Snapshot{}, fmt.Errorf("quota unsupported")
+		return nil, fmt.Errorf("quota unsupported")
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
-		return Snapshot{}, err
+		return nil, err
 	}
 	switch provider {
 	case "claude":
@@ -217,11 +220,11 @@ func queryQuota(ctx context.Context, provider string, e auth.ProviderExecutor, a
 	}
 	resp, err := e.HttpRequest(ctx, a, req)
 	if err != nil {
-		return Snapshot{}, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return Snapshot{}, fmt.Errorf("quota HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("quota HTTP %d", resp.StatusCode)
 	}
-	return decode(resp.Body, time.Now())
+	return readQuotaBody(resp.Body)
 }

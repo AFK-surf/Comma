@@ -1,20 +1,16 @@
-import { authorize, stripControlPlaneHeaders, type AuthEnv } from "./auth";
+import { authorize, type AuthEnv } from "./auth";
 import { sandboxIdFromPath, parseSandboxId } from "./ids";
 import { errorJson, json, readJsonObject } from "./json";
-import { ControlError, parseControlPermit, requestControlPermit, type ControlPermit, type ControlAction } from "./control";
-import type { ManagedSandbox, ControlObservation } from "./managed_sandbox";
+import { ControlError, parseControlPermit, requestControlPermit, type ControlPermit } from "./control";
+import type { ManagedSandbox, ControlObservation, StationEnv } from "./managed_sandbox";
 
 export type SandboxHandle = {
   salixObserve(): Promise<ControlObservation> | ControlObservation;
   salixOpen(permit: ControlPermit): Promise<ControlObservation>;
   salixSeal(permit: ControlPermit): Promise<ControlObservation>;
-  salixEnsure(permit: ControlPermit, keepAlive: boolean): Promise<Response>;
-  salixStatus(permit: ControlPermit): Promise<Response>;
-  salixReceipt(permit: ControlPermit, operation: string): Promise<Response>;
-  salixForward(permit: ControlPermit, request: Request, action: ControlAction | "observe", archiveOperation?: string): Promise<Response>;
+  salixEnsure(permit: ControlPermit, keepAlive: boolean, station: StationEnv): Promise<ControlObservation>;
   salixKeepAlive(permit: ControlPermit, keepAlive: boolean): Promise<void>;
-  salixDestroy(permit: ControlPermit): Promise<ControlObservation>;
-  fetch(request: Request): Promise<Response>;
+  salixDestroy(permit: ControlPermit, discard?: boolean): Promise<ControlObservation>;
 };
 
 export type GatewayEnv = AuthEnv & {
@@ -81,30 +77,27 @@ async function route<EnvType extends GatewayEnv>(request: Request, env: EnvType,
 
   if (parsed.suffix === "/checkpoint" || parsed.suffix === "/restore") {
     // SDK backups are a separate auto-start carrier. Managed Group recovery
-    // uses Connector archive/import and must not fall back to that carrier.
+    // uses the station's archive (exported over its connection, restored by
+    // the Container's start) and must not fall back to that carrier.
     return errorJson("provider_archive_required", 409);
   }
 
-  if (parsed.suffix.startsWith("/proxy/") && !proxyDiagnosticPath(parsed.suffix)) return errorJson("proxy_path_forbidden", 403);
   const permit = body?.control ? parseControlPermit(body.control) : requestControlPermit(request);
   switch (parsed.suffix) {
     case "/ensure": {
       if (request.method !== "POST") return errorJson("method_not_allowed", 405);
       body ??= await readJsonObject(request);
-      const response = await sandbox().salixEnsure(permit, body.keep_alive === true);
-      if (!response.ok) return response;
-      logGatewayEvent("sandbox_ensure", env, { sandbox_id: parsed.id, request_id: requestId, ready_status: response.status });
-      return result({ status: "ready" });
+      const station = stationEnv(body.station);
+      if (!station) return errorJson("invalid_station", 400, "station needs its server and credential, and a restore Salix encoded", requestId);
+      const observation = await sandbox().salixEnsure(permit, body.keep_alive === true, station);
+      logGatewayEvent("sandbox_ensure", env, { sandbox_id: parsed.id, request_id: requestId, running: observation.running, restore: station.SALIX_RESTORE_ARCHIVE !== undefined });
+      // Issuing the one native start completes the command; the station connects once it runs.
+      return result({ status: "started", running: observation.running });
     }
     case "/status": {
       if (request.method !== "GET" && request.method !== "POST") return errorJson("method_not_allowed", 405);
-      const response = await sandbox().salixStatus(permit);
-      logGatewayEvent("sandbox_status", env, { sandbox_id: parsed.id, request_id: requestId, health_status: response.status });
-      return result({ status: response.ok ? "ready" : "starting", health_status: response.status });
-    }
-    case "/receipt": {
-      if (request.method !== "GET") return errorJson("method_not_allowed", 405);
-      return containerResponse(await sandbox().salixReceipt(permit, url.searchParams.get("operation") ?? ""));
+      const observation = await sandbox().salixObserve();
+      return result({ status: observation.running ? "running" : "stopped" });
     }
     case "/keepalive": {
       if (request.method !== "POST") return errorJson("method_not_allowed", 405);
@@ -115,60 +108,36 @@ async function route<EnvType extends GatewayEnv>(request: Request, env: EnvType,
     }
     case "/destroy": {
       if (request.method !== "POST" && request.method !== "DELETE") return errorJson("method_not_allowed", 405);
-      const observation = await sandbox().salixDestroy(permit);
+      body ??= await readJsonObject(request);
+      const observation = await sandbox().salixDestroy(permit, body.discard === true);
       logGatewayEvent("sandbox_destroy", env, { sandbox_id: parsed.id, request_id: requestId });
       return result({ ...observation });
     }
-    case "/connect": {
-      if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return errorJson("upgrade_required", 426, "websocket upgrade required", requestId, { upgrade: "websocket" });
-      const target = new URL("http://localhost:8080/connect");
-      target.searchParams.set("salix_control", JSON.stringify(permit));
-      if (url.searchParams.get("archive_repair") === "true") target.searchParams.set("archive_repair", "true");
-      logGatewayEvent("sandbox_connect", env, { sandbox_id: parsed.id, request_id: requestId });
-      return sandbox().fetch(new Request(target, forwardInit(request)));
-    }
-    default: {
-      if (!parsed.suffix.startsWith("/proxy/")) return errorJson("not_found", 404);
-      const path = proxyDiagnosticPath(parsed.suffix)!;
-      const target = new URL(`http://localhost:8080${path}`);
-      target.search = url.search;
-      target.searchParams.delete("salix_control");
-      let action: ControlAction | "observe" = "observe";
-      let archiveOperation: string | undefined;
-      if (path === "/archive" && request.method === "POST") {
-        const importBody = await readJsonObject(request.clone());
-        archiveOperation = typeof importBody.operation === "string" ? importBody.operation : undefined;
-        action = importBody.action === "status" ? "observe" : "import";
-      } else if (request.method !== "GET" && request.method !== "HEAD") {
-        if (path === "/archive") action = "import";
-        else if (path === "/archive/export") action = "export";
-        else if (path === "/control" && request.method === "POST") action = "connector_control";
-        else return errorJson("proxy_method_forbidden", 405);
-      }
-      return containerResponse(await sandbox().salixForward(permit, new Request(target, forwardInit(request)), action, archiveOperation));
-    }
+    default:
+      return errorJson("not_found", 404);
   }
 }
 
-function containerResponse(response: Response): Response {
-  const headers = new Headers(response.headers);
-  headers.set("x-salix-container-response", "1");
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-}
+/** The most a restore may be as one environment string: it is the same small size for every archive. */
+const RESTORE_VALUE_LIMIT = 8 * 1024;
 
-function proxyDiagnosticPath(suffix: string): string | undefined {
-  const raw = suffix.slice("/proxy/".length);
-  if (!raw || /%(2e|2f|5c)/i.test(raw) || raw.includes("\\")) return undefined;
-  const segments = raw.split("/");
-  if (segments.some((s) => s === "." || s === ".." || s === "")) return undefined;
-  const path = `/${segments.join("/")}`;
-  if (["/healthz", "/readyz", "/archive", "/archive/export", "/control"].includes(path)) return path;
-  if (segments[0] === "diagnostics" && segments.length > 1) return path;
-  return undefined;
-}
-
-function forwardInit(request: Request): RequestInit {
-  return { method: request.method, headers: stripControlPlaneHeaders(request.headers), redirect: "manual", ...request.method !== "GET" && request.method !== "HEAD" && { body: request.body } };
+/**
+ * What the Container starts its station with, from Salix: the station's server (a wss URL, or ws to a loopback address
+ * in tests) and its credential, and, when the disk is to be an archive, that archive (`restore`: Salix's encoding of
+ * one short-lived signed read URL, of the manifest of its parts; opaque here), which the image unpacks before it
+ * starts the station.
+ */
+function stationEnv(value: unknown): StationEnv | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const { server, credential, restore } = value as Record<string, unknown>;
+  if (typeof server !== "string" || typeof credential !== "string") return null;
+  if (credential.length < 1 || credential.length > 4096 || /[\x00-\x20\x7f]/.test(credential)) return null;
+  let url: URL;
+  try { url = new URL(server); } catch { return null; }
+  if (url.protocol !== "wss:" && !(url.protocol === "ws:" && ["127.0.0.1", "localhost"].includes(url.hostname))) return null;
+  if (restore === undefined) return { SALIX_SERVER: server, SALIX_WORKLOAD_CREDENTIAL: credential };
+  if (typeof restore !== "string" || restore.length < 1 || restore.length > RESTORE_VALUE_LIMIT || !/^[A-Za-z0-9+/]+={0,2}$/.test(restore)) return null;
+  return { SALIX_SERVER: server, SALIX_WORKLOAD_CREDENTIAL: credential, SALIX_RESTORE_ARCHIVE: restore };
 }
 
 function versionMetadata(env: GatewayEnv) {

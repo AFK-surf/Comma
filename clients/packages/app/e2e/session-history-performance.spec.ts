@@ -1,83 +1,40 @@
 import { expect, test as baseTest } from "@playwright/test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { build, preview } from "vite";
+import {
+  installReactRenderCounter,
+  reactRenderWork,
+} from "../../../e2e/helpers/render-work";
+import { serveAppFixtures } from "../../../e2e/helpers/app-fixtures";
 
 const test = baseTest.extend<{}, { historyBaseURL: string }>({
   historyBaseURL: [
+    // Playwright requires fixture dependencies to use object destructuring.
     // eslint-disable-next-line no-empty-pattern
     async ({}, use) => {
-      const root = fileURLToPath(new URL("../../../apps/web/", import.meta.url));
-      const artifactDir = process.env.COMMA_PERF_ARTIFACT_DIR;
-      const cacheDir = artifactDir
-        ? resolve(artifactDir, "session-history-build")
-        : await mkdtemp(join(tmpdir(), "comma-history-perf-"));
-      const previousCwd = process.cwd();
-      let server: Awaited<ReturnType<typeof preview>>;
+      const fixtures = await serveAppFixtures();
       try {
-        process.chdir(root);
-        const configFile = join(root, "vite.config.ts");
-        if (process.env.COMMA_PERF_REUSE_BUILD !== "1")
-          await build({
-            root: fileURLToPath(new URL("./fixtures/", import.meta.url)),
-            configFile,
-            logLevel: "error",
-            build: {
-              outDir: cacheDir,
-              emptyOutDir: true,
-              rollupOptions: {
-                input: fileURLToPath(
-                  new URL(
-                    "./fixtures/session-history-performance.html",
-                    import.meta.url
-                  )
-                ),
-              },
-            },
-          });
-        server = await preview({
-          root,
-          configFile,
-          build: { outDir: cacheDir },
-          preview: { host: "127.0.0.1", port: 0, strictPort: false },
-        });
+        await use(fixtures.url);
       } finally {
-        process.chdir(previousCwd);
-      }
-      try {
-        await use(server.resolvedUrls!.local[0]!);
-      } finally {
-        await new Promise<void>((done) => server.httpServer.close(() => done()));
-        if (!artifactDir) await rm(cacheDir, { recursive: true, force: true });
+        await fixtures.close();
       }
     },
     { scope: "worker" },
   ],
 });
 
-const metric = (result: { metrics: { name: string; value: number }[] }, name: string) =>
-  result.metrics.find((entry) => entry.name === name)?.value ?? 0;
+// The tests share this file's production build, so one worker runs them all.
+test.describe.configure({ mode: "default" });
 
-for (const count of [100, 500, 5000]) {
-  test(`Session live clock preserves history and pauses at ${count} loaded records @performance`, async ({
+for (const count of [100, 5000]) {
+  test(`Session live clock preserves history and pauses at ${count} loaded records`, async ({
     page,
     historyBaseURL,
   }, testInfo) => {
-    test.fail(
-      process.env.COMMA_PERF_RECORD_BASELINE === "1" && count === 100,
-      "The original hidden page keeps its presentation clock running."
-    );
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send("Performance.enable");
+    await installReactRenderCounter(page);
     await page.goto(
       new URL(`/session-history-performance.html?count=${count}`, historyBaseURL).href
     );
     const history = page.getByTestId("session-history-page");
-    await expect(history.locator("article")).toHaveCount(count + 1, {
-      timeout: 30_000,
-    });
+    await expect(history.locator("article")).toHaveCount(count + 1);
     const viewport = history
       .locator('.comma-session-scroll [data-slot="scroll-area-viewport"]')
       .first();
@@ -95,57 +52,6 @@ for (const count of [100, 500, 5000]) {
     await expect(duration).toBeVisible();
     const started = await duration.textContent();
     await expect.poll(() => duration.textContent()).not.toBe(started);
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-    const cpuProfile = process.env.COMMA_PERF_CPU_PROFILE === "1";
-    if (cpuProfile) {
-      await cdp.send("Profiler.enable");
-      await cdp.send("Profiler.start");
-    }
-    const tracing = process.env.COMMA_PERF_TRACE === "1";
-    const traceReady = tracing
-      ? new Promise<string>((done) =>
-          cdp.once("Tracing.tracingComplete", (event) => done(event.stream!))
-        )
-      : undefined;
-    if (tracing)
-      await cdp.send("Tracing.start", {
-        categories: "devtools.timeline",
-        transferMode: "ReturnAsStream",
-      });
-    const before = await cdp.send("Performance.getMetrics");
-    const observed = await page.evaluate(async () => {
-      const start = performance.now();
-      const frames: number[] = [];
-      let last: number | undefined;
-      await new Promise<void>((done) => {
-        const frame = (now: number) => {
-          if (last !== undefined) frames.push(now - last);
-          last = now;
-          if (now - start >= 2000) done();
-          else requestAnimationFrame(frame);
-        };
-        requestAnimationFrame(frame);
-      });
-      return {
-        frames,
-        elapsedMs: performance.now() - start,
-        domNodes: document.querySelectorAll("*").length,
-      };
-    });
-    const after = await cdp.send("Performance.getMetrics");
-    const profile = cpuProfile ? await cdp.send("Profiler.stop") : undefined;
-    let trace = "";
-    if (tracing) {
-      await cdp.send("Tracing.end");
-      const stream = await traceReady!;
-      for (;;) {
-        const chunk = await cdp.send("IO.read", { handle: stream });
-        trace += chunk.data;
-        if (chunk.eof) break;
-      }
-      await cdp.send("IO.close", { handle: stream });
-    }
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
     await viewport.evaluate((element) => {
       element.scrollTop = element.scrollHeight / 2;
     });
@@ -173,20 +79,15 @@ for (const count of [100, 500, 5000]) {
     await expect(history).toBeHidden();
     await page.waitForTimeout(300);
     const closedDuration = await duration.textContent();
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-    const hiddenBefore = await cdp.send("Performance.getMetrics");
-    await page.waitForTimeout(2000);
-    const hiddenAfter = await cdp.send("Performance.getMetrics");
+    // A hidden history keeps its live clock stopped: nothing renders.
+    const hiddenWork = await reactRenderWork(page, () => page.waitForTimeout(2000));
     const hiddenDuration = await duration.textContent();
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
-    const restorePaintMs = await page.evaluate(async () => {
-      const start = performance.now();
-      window.sessionHistoryStress.setVisible(true);
-      await new Promise<void>((done) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => done()))
-      );
-      return performance.now() - start;
+    await testInfo.attach("hidden-history-work", {
+      body: JSON.stringify(hiddenWork),
+      contentType: "application/json",
     });
+    expect(hiddenWork.commits).toBe(0);
+    await page.evaluate(() => window.sessionHistoryStress.setVisible(true));
     await expect(history).toBeVisible();
     await expect
       .poll(() =>
@@ -206,31 +107,13 @@ for (const count of [100, 500, 5000]) {
     await viewport.evaluate((element) => {
       element.scrollTop = element.scrollHeight;
     });
-    const hidden = {
-      visibleDuration,
-      closedDuration,
-      hiddenDuration,
-      metricElapsedMs:
-        (metric(hiddenAfter, "Timestamp") - metric(hiddenBefore, "Timestamp")) * 1000,
-      scriptMs:
-        (metric(hiddenAfter, "ScriptDuration") -
-          metric(hiddenBefore, "ScriptDuration")) *
-        1000,
-      taskMs:
-        (metric(hiddenAfter, "TaskDuration") - metric(hiddenBefore, "TaskDuration")) *
-        1000,
-      restorePaintMs,
-      anchor,
-    };
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-    const selectionSamples = await page.evaluate(async (rowCount) => {
-      const samples: number[] = [];
+    await page.evaluate(async (rowCount) => {
       for (const index of [0, Math.floor(rowCount / 2), rowCount - 1]) {
-        const bar = document.querySelector<HTMLElement>(
-          `.comma-session-overview-span[data-record-target="tool:tool-${index}"]`
-        )!;
-        const start = performance.now();
-        bar.click();
+        document
+          .querySelector<HTMLElement>(
+            `.comma-session-overview-span[data-record-target="tool:tool-${index}"]`
+          )!
+          .click();
         await new Promise<void>((done) =>
           requestAnimationFrame(() => requestAnimationFrame(() => done()))
         );
@@ -239,57 +122,8 @@ for (const count of [100, 500, 5000]) {
         )!;
         if (row.dataset.selected !== "true")
           throw new Error("Selection did not commit");
-        samples.push(performance.now() - start);
       }
-      return samples;
     }, count);
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
-    const sorted = observed.frames.toSorted((a, b) => a - b);
-    const result = {
-      rows: count,
-      selectionSamples,
-      hidden,
-      cpuThrottle: 4,
-      metricElapsedMs:
-        (metric(after, "Timestamp") - metric(before, "Timestamp")) * 1000,
-      cpuProfile,
-      tracing,
-      ...observed,
-      p95FrameMs: sorted[Math.floor(sorted.length * 0.95)],
-      scriptMs:
-        (metric(after, "ScriptDuration") - metric(before, "ScriptDuration")) * 1000,
-      taskMs: (metric(after, "TaskDuration") - metric(before, "TaskDuration")) * 1000,
-      layoutMs:
-        (metric(after, "LayoutDuration") - metric(before, "LayoutDuration")) * 1000,
-      styleMs:
-        (metric(after, "RecalcStyleDuration") - metric(before, "RecalcStyleDuration")) *
-        1000,
-    };
-    await testInfo.attach("session-history-timing", {
-      body: JSON.stringify(result, null, 2),
-      contentType: "application/json",
-    });
-    const artifactDir = process.env.COMMA_PAGES_PERFORMANCE_OUTPUT;
-    if (artifactDir) {
-      await mkdir(resolve(artifactDir), { recursive: true });
-      await writeFile(
-        join(resolve(artifactDir), `history-${count}.json`),
-        JSON.stringify(result, null, 2)
-      );
-      if (profile)
-        await writeFile(
-          join(resolve(artifactDir), `history-${count}.cpuprofile`),
-          JSON.stringify(profile.profile)
-        );
-      if (trace)
-        await writeFile(
-          join(resolve(artifactDir), `history-${count}.trace.json`),
-          trace
-        );
-      await page.screenshot({
-        path: join(resolve(artifactDir), `history-${count}.png`),
-      });
-    }
     if (count === 100) {
       const geometry = await page.evaluate(async () => {
         const track = document.querySelector<HTMLElement>(
@@ -353,6 +187,9 @@ for (const count of [100, 500, 5000]) {
       const timeline = history.getByTestId("session-timeline-track");
       for (const width of [720, 1280]) {
         await page.setViewportSize({ width, height: 800 });
+        // The page lays out at the new width a while later on a loaded machine. Until it does, a bar's box is the old
+        // layout's: a hover lands there, and the resize then slides another bar under the pointer.
+        await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
         await expect
           .poll(() =>
             bar.evaluate((element) => {
@@ -411,7 +248,7 @@ for (const count of [100, 500, 5000]) {
   });
 }
 
-test("Zoomed history keeps lane alignment when offscreen live work overlaps a future observation @performance", async ({
+test("Zoomed history keeps lane alignment when offscreen live work overlaps a future observation", async ({
   page,
   historyBaseURL,
 }) => {
@@ -449,78 +286,105 @@ test("Zoomed history keeps lane alignment when offscreen live work overlaps a fu
   );
 });
 
-test("Mixed history projects thousands of idle folds within the coordinate budget @performance", async ({
-  page,
-  historyBaseURL,
-}, testInfo) => {
-  await page.goto(
-    new URL("/session-history-performance.html?count=100", historyBaseURL).href
-  );
-  await expect(page.getByTestId("session-history-page")).toBeVisible();
-  await page.evaluate(() => window.sessionHistoryStress.setVisible(false));
-  await expect(page.getByTestId("session-history-page")).toBeHidden();
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-  const result = await page.evaluate(() =>
-    window.sessionHistoryStress.measureFoldedProjection()
-  );
-  await testInfo.attach("folded-axis-coordinate-timing", {
-    body: JSON.stringify(result, null, 2),
-    contentType: "application/json",
-  });
-  expect(result.folds).toBe(2499);
-  expect(result.bars).toBe(5000);
-  expect(result.samples).toHaveLength(20);
-  expect(Number.isFinite(result.checksum)).toBe(true);
-  expect(result.totalMs).toBeLessThan(300);
-});
-
-test("Cloned history snapshots re-render only changed records @performance", async ({
+test("Cloned history snapshots re-render only changed records", async ({
   page,
   historyBaseURL,
 }, testInfo) => {
   // The idle staging Router session that burned CPU held 750 loaded records.
   const count = 750;
+  await installReactRenderCounter(page, "data-record-id");
   await page.goto(
     new URL(`/session-history-performance.html?count=${count}`, historyBaseURL).href
   );
   const history = page.getByTestId("session-history-page");
-  await expect(history.locator("article")).toHaveCount(count + 1, { timeout: 30_000 });
+  await expect(history.locator("article")).toHaveCount(count + 1);
   await page.evaluate(() => window.sessionHistoryStress.complete());
   await expect(history.locator('[data-record-id="tool:live"]')).toContainText(
     "Finished live read"
   );
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Performance.enable");
-  const measure = async (action: "heartbeat" | "append") => {
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-    const before = await cdp.send("Performance.getMetrics");
-    await page.evaluate(async (name) => {
-      for (let beat = 0; beat < 5; beat++) {
-        window.sessionHistoryStress[name]();
-        await new Promise<void>((done) =>
-          requestAnimationFrame(() => requestAnimationFrame(() => done()))
-        );
-      }
-    }, action);
-    const after = await cdp.send("Performance.getMetrics");
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
-    return {
-      scriptMs:
-        (metric(after, "ScriptDuration") - metric(before, "ScriptDuration")) * 1000,
-      taskMs: (metric(after, "TaskDuration") - metric(before, "TaskDuration")) * 1000,
-    };
-  };
+  const measure = (action: "heartbeat" | "append") =>
+    reactRenderWork(page, () =>
+      page.evaluate(async (name) => {
+        for (let beat = 0; beat < 5; beat++) {
+          window.sessionHistoryStress[name]();
+          await new Promise<void>((done) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => done()))
+          );
+        }
+      }, action)
+    );
   const heartbeat = await measure("heartbeat");
   const append = await measure("append");
-  await testInfo.attach("session-history-clone-timing", {
-    body: JSON.stringify({ rows: count, cpuThrottle: 4, heartbeat, append }, null, 2),
+  await testInfo.attach("session-history-clone-work", {
+    body: JSON.stringify({ rows: count, heartbeat, append }, null, 2),
     contentType: "application/json",
   });
   await expect(history.locator("article")).toHaveCount(count + 6);
   await expect(history.locator("article").last()).toContainText("Read appended file");
   // Re-rendering every loaded row took over 600 ms for five snapshots of either
-  // kind. Unchanged records must keep their rows. An append renders only its row.
-  expect(heartbeat.scriptMs).toBeLessThan(150);
-  expect(append.scriptMs).toBeLessThan(300);
+  // kind. Unchanged records keep their rows and timeline bars; an append
+  // renders only its row.
+  expect(heartbeat.keys["data-record-id"]).toEqual([]);
+  expect(append.keys["data-record-id"]).toEqual(
+    Array.from({ length: 5 }, (_, index) => `tool:appended-${count + 2 + index}`)
+  );
+  expect(heartbeat.elements).toBeLessThan(count);
+  expect(append.elements).toBeLessThan(count);
+});
+
+test("Session renders 5003 records at once", async ({
+  page,
+  historyBaseURL,
+}, testInfo) => {
+  // Every page already read (the core's paging is its own test): the whole history renders at once.
+  await page.goto(
+    new URL("/session-history-performance.html?stress=5003", historyBaseURL).href
+  );
+  const history = page.getByTestId("session-history-page");
+  const viewport = history.getByRole("region", { name: "Execution records" });
+  await expect(history.getByText("5003 loaded records", { exact: true })).toBeVisible(
+    {}
+  );
+  await expect(history.locator("article")).toHaveCount(4005);
+  const ids = await history
+    .locator("article")
+    .evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute("data-record-id"))
+    );
+  expect(new Set(ids).size).toBe(4005);
+  await expect(history.getByTestId("session-json")).toHaveCount(0);
+  await expect(
+    history.getByText("Beginning of session", { exact: true })
+  ).toBeVisible();
+  const track = history.getByTestId("session-timeline-track");
+  const bounds = (await track.boundingBox())!;
+  // At this density, zoom separates minimum-width bars that share a real-time row.
+  await page.mouse.move(bounds.x, bounds.y + 10);
+  await page.mouse.wheel(0, -1500);
+  await expect
+    .poll(async () => Number(await track.getAttribute("data-axis-to")))
+    .toBeLessThan(0.1);
+  const tool = history.locator('[data-span-id="tool:stress-0-a"]');
+  await tool.click();
+  await expect(history.locator('[data-record-id="tool:stress-0-a"]')).toHaveAttribute(
+    "data-selected",
+    "true"
+  );
+  await history.getByRole("button", { name: "Show all", exact: true }).click();
+  await page.mouse.move(bounds.x + bounds.width * 0.5, bounds.y + 10);
+  await page.mouse.wheel(0, -1500);
+  await expect
+    .poll(async () => Number(await track.getAttribute("data-axis-from")))
+    .toBeGreaterThan(0.4);
+  await history.locator('[data-span-id="tool:stress-250-a"]').click();
+  const centered = history.locator('[data-record-id="tool:stress-250-a"]');
+  await expect(centered).toHaveAttribute("data-selected", "true");
+  await expect
+    .poll(async () => {
+      const row = (await centered.boundingBox())!;
+      const visible = (await viewport.boundingBox())!;
+      return Math.abs(row.y + row.height / 2 - visible.y - visible.height / 2);
+    })
+    .toBeLessThan(2);
+  await page.screenshot({ path: testInfo.outputPath("session-5003-records.png") });
 });

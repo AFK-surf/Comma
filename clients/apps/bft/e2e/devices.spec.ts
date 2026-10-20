@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import {
   context,
@@ -12,17 +11,6 @@ import {
 const base = "/orgs/acme/projects/p-1/devices";
 const api = "/orgs/acme/projects/p-1/devices";
 const project = { id: "p-1", name: "Support Desk", role: "admin" };
-
-// The native owner's HPKE fixture: a real one-time key and its context.
-const fixture = JSON.parse(
-  readFileSync(
-    new URL(
-      "../../../../systems/connector/salix-connect/testdata/runtime-auth/hpke-js.json",
-      import.meta.url
-    ),
-    "utf8"
-  )
-) as { Context: Record<string, unknown>; Public: string };
 
 const device = (id: string, name: string, extra: Record<string, unknown> = {}) => ({
   id,
@@ -41,19 +29,22 @@ const device = (id: string, name: string, extra: Record<string, unknown> = {}) =
   ...extra,
 });
 
-const computeTarget = (id: string, provider = "pi", managed = false) => ({
-  id,
-  provider,
-  status: "running",
-  target: { kind: "compute_workload", workload_id: id },
-  managed,
+const cloudVm = (overrides: Record<string, unknown> = {}) => ({
+  enabled: true,
+  manageable: true,
+  vm: { status: "ready", location: { kind: "runner", name: "Lab Mac mini" } },
+  runner: { name: "Lab Mac mini", status: "ready" },
+  next_location: { kind: "runner", name: "Lab Mac mini" },
+  runner_choosable: false,
+  runner_removable: false,
+  ...overrides,
 });
 
 type Data = ReturnType<typeof page1>;
 
 const page1 = (overrides: Record<string, unknown> = {}) => ({
   project,
-  cloud: { enabled: true, manageable: true },
+  cloud_vm: cloudVm(),
   devices: [
     device("dev-mac", "Mac Studio", {
       runtimes: [{ id: "rt-codex", provider: "codex", version: "codex-cli 1.4.2" }],
@@ -79,24 +70,6 @@ const page1 = (overrides: Record<string, unknown> = {}) => ({
       { id: "env-1", desired_state: "ready", observed_state: "ready", revision: 3 },
     ],
     workloads: [{ id: "wl-shell", kind: "shell", observed_state: "pending" }],
-  },
-  runtime_auth: {
-    targets: [
-      computeTarget("wl-router", "codex", true),
-      {
-        id: "rt-codex",
-        provider: "codex",
-        status: "connected",
-        target: {
-          kind: "connected_runtime",
-          device_id: "dev-mac",
-          runtime_id: "rt-codex",
-        },
-        managed: true,
-      },
-      computeTarget("workload-a"),
-    ],
-    request: null,
   },
   ...overrides,
 });
@@ -130,49 +103,9 @@ async function open(
   return requests;
 }
 
-interface AuthRequest {
-  method: string;
-  path: string;
-  body: Record<string, unknown> | undefined;
-  raw: string;
-  csrf: string | undefined;
-}
-
-/**
- * The browser-owned runtime-auth endpoints under `/dashboard/orgs/...`; a
- * reply of "abort" drops the connection as a lost response does.
- */
-async function routeAuth(page: Page, handle: (request: AuthRequest) => unknown) {
-  const requests: AuthRequest[] = [];
-  await page.route("**/dashboard/orgs/**", async (route) => {
-    const request = route.request();
-    const url = new URL(request.url());
-    const raw = request.postData() ?? "";
-    const recorded: AuthRequest = {
-      method: request.method(),
-      path: url.pathname.replace("/dashboard/orgs/acme/projects/p-1", "") + url.search,
-      body: raw ? (JSON.parse(raw) as Record<string, unknown>) : undefined,
-      raw,
-      csrf: (await request.allHeaders())["x-csrf-token"],
-    };
-    requests.push(recorded);
-    const reply = handle(recorded);
-    if (reply === "abort") return route.abort("failed");
-    if (reply === undefined && recorded.path.startsWith("/runtime-auth/requests"))
-      return route.fulfill({
-        json: { ok: true, data: { runtime_auth_requests: [], next_cursor: null } },
-      });
-    if (reply === undefined)
-      return route.fulfill({
-        status: 404,
-        json: { ok: false, error: { code: "not_found", message: "Not found" } },
-      });
-    return route.fulfill({ json: { ok: true, data: reply } });
-  });
-  return requests;
-}
-
 const main = (page: Page) => page.getByRole("main");
+const cloudVmSection = (page: Page) =>
+  main(page).getByRole("region", { name: "Cloud VM" });
 const writes = (requests: RecordedRequest[]) =>
   requests.filter((request) => request.method !== "GET");
 const pageReads = (requests: RecordedRequest[]) =>
@@ -180,22 +113,26 @@ const pageReads = (requests: RecordedRequest[]) =>
 const polls = (requests: RecordedRequest[]) =>
   requests.filter((request) => request.path === `${api}/provisioning`);
 
-test("lists the cloud computer, the devices, Compute and Android setup", async ({
-  page,
-}) => {
-  await routeAuth(page, () => undefined);
+test("lists the Cloud VM, the devices, Compute and Android setup", async ({ page }) => {
   await open(page);
 
   const m = main(page);
   await expect(
     m.getByText("Computers and runtimes the agents of Support Desk can use.")
   ).toBeVisible();
-  const cloud = m.getByRole("row", { name: /Cloud computer/ });
-  await expect(cloud.getByText("Fixed · managed by Comma")).toBeVisible();
-  await expect(cloud.getByText("Enabled")).toBeVisible();
+  const vm = cloudVmSection(page);
+  await expect(vm.getByText("Ready")).toHaveCount(2);
+  await expect(vm.getByText("Runner Lab Mac mini")).toBeVisible();
   await expect(
-    cloud.getByRole("switch", { name: "Use the cloud computer in this Agent Swarm" })
+    vm.getByRole("switch", { name: "Use the Cloud VM in this Agent Swarm" })
   ).toBeChecked();
+  // The VM exists, so its runner is shown and cannot be changed.
+  await expect(
+    vm.getByText(
+      "The runner choice applies when the Cloud VM is first created. An existing Cloud VM stays where it is."
+    )
+  ).toBeVisible();
+  await expect(vm.getByRole("button")).toHaveCount(0);
 
   const mac = m.getByRole("row", { name: /Mac Studio/ });
   await expect(mac.getByText("Connected")).toBeVisible();
@@ -224,10 +161,46 @@ test("lists the cloud computer, the devices, Compute and Android setup", async (
   ).toHaveAttribute("aria-current", "page");
 });
 
+test("a device that cannot take tasks says how to upgrade it", async ({ page }) => {
+  const needsStation =
+    "This device runs the old connector, which cannot take tasks. Install the Comma desktop app on it (it includes the station), or install the station with the command from Add station in Comma.";
+  const outdated =
+    "This device's station is too old to take tasks. Update the Comma desktop app, or on a standalone station run `stillfail update` or use its Updates page.";
+  await open(page, undefined, () =>
+    page1({
+      devices: [
+        device("dev-mac", "Mac Studio"),
+        device("dev-old", "Old connector box", {
+          station_notice: {
+            reason: "device_needs_station",
+            tasks: null,
+            required_tasks: 2,
+            message: needsStation,
+          },
+        }),
+        device("dev-outdated", "Outdated station", {
+          station_notice: {
+            reason: "station_outdated",
+            tasks: 1,
+            required_tasks: 2,
+            message: outdated,
+          },
+        }),
+      ],
+    })
+  );
+
+  const notes = main(page).getByRole("note");
+  await expect(notes).toHaveCount(2);
+  await expect(notes.nth(0)).toContainText("Cannot take tasks: install the station");
+  await expect(notes.nth(0)).toContainText(needsStation);
+  await expect(notes.nth(1)).toContainText("Cannot take tasks: update the station");
+  await expect(notes.nth(1)).toContainText(outdated);
+});
+
 test("an entitled swarm shows its Android connector, profiles and slots", async ({
   page,
 }) => {
-  await routeAuth(page, () => undefined);
   await open(page, undefined, () =>
     page1({
       devices: [
@@ -278,8 +251,7 @@ test("an entitled swarm shows its Android connector, profiles and slots", async 
   ).toBeVisible();
 });
 
-test("turns the cloud computer off and reads the page again", async ({ page }) => {
-  await routeAuth(page, () => undefined);
+test("turns the Cloud VM off and reads the page again", async ({ page }) => {
   let enabled = true;
   const requests = await open(
     page,
@@ -293,10 +265,13 @@ test("turns the cloud computer off and reads the page again", async ({ page }) =
       }
       return undefined;
     },
-    () => page1({ cloud: { enabled, manageable: true } })
+    () =>
+      page1({
+        cloud_vm: cloudVm({ enabled, ...(enabled ? {} : { vm: null, runner: null }) }),
+      })
   );
 
-  const cloud = main(page).getByRole("row", { name: /Cloud computer/ });
+  const cloud = cloudVmSection(page);
   // The switch input is visually hidden inside its label; click the label like a user.
   await cloud
     .locator("label")
@@ -305,7 +280,7 @@ test("turns the cloud computer off and reads the page again", async ({ page }) =
   await expect(
     page.getByText("Cloud computer disabled for this Agent Swarm.")
   ).toBeVisible();
-  await expect(cloud.getByText("Disabled")).toBeVisible();
+  await expect(cloud.getByText("Turned off")).toBeVisible();
   await expect(cloud.getByRole("switch")).not.toBeChecked();
   expect(writes(requests)).toEqual([
     expect.objectContaining({ method: "PUT", csrf, body: { enabled: false } }),
@@ -316,7 +291,6 @@ test("adds a device on a runner, then polls only until it is provisioned", async
   page,
 }) => {
   await page.clock.install();
-  await routeAuth(page, () => undefined);
   let provisioning = false;
   let answers = [true, false];
   const requests = await open(
@@ -388,7 +362,6 @@ test("the provisioning poll waits for each reply, pauses while hidden and stops 
   page,
 }) => {
   await page.clock.install();
-  await routeAuth(page, () => undefined);
   const requests = await open(
     page,
     (request) =>
@@ -440,7 +413,6 @@ test("the provisioning poll waits for each reply, pauses while hidden and stops 
 test("without an online runner the dialog links Runners and checks again", async ({
   page,
 }) => {
-  await routeAuth(page, () => undefined);
   const requests = await open(page, (request) =>
     request.path === `${api}/runners`
       ? ok({ runners: [], runners_href: "/orgs/acme/fin" })
@@ -465,7 +437,6 @@ test("without an online runner the dialog links Runners and checks again", async
 });
 
 test("disconnects and deletes a device after confirming", async ({ page }) => {
-  await routeAuth(page, () => undefined);
   const requests = await open(page, (request) => {
     if (request.method === "POST" && request.path === `${api}/dev-mac/disconnect`)
       return ok({ notice: "Device disconnected." });
@@ -508,7 +479,6 @@ test("disconnects and deletes a device after confirming", async ({ page }) => {
 test("Compute: a Shell workload after confirming; drain and revoke carry the revision", async ({
   page,
 }) => {
-  await routeAuth(page, () => undefined);
   const requests = await open(page, (request) => {
     if (request.path === "/orgs/acme/projects/p-1/compute/env-1/shell")
       return {
@@ -562,512 +532,163 @@ test("Compute: a Shell workload after confirming; drain and revoke carry the rev
 });
 
 test("a swarm member reads the page without admin controls", async ({ page }) => {
-  await routeAuth(page, (request) =>
-    request.path.startsWith("/runtime-auth/requests")
-      ? {
-          runtime_auth_requests: [
-            {
-              request_id: "req-1",
-              action: "verify",
-              target: { workload_id: "wl-router" },
-            },
-          ],
-          next_cursor: null,
-        }
-      : undefined
-  );
   await open(page, undefined, () =>
     page1({
       project: { ...project, role: "user" },
-      cloud: { enabled: true, manageable: false },
+      cloud_vm: cloudVm({
+        manageable: false,
+        vm: { status: "archived", location: { kind: "cloudflare" } },
+        runner: null,
+      }),
     })
   );
 
   const m = main(page);
   await expect(m.getByRole("row", { name: /Mac Studio/ })).toBeVisible();
+  await expect(cloudVmSection(page).getByText("Sleeping")).toBeVisible();
+  await expect(cloudVmSection(page).getByText("Cloudflare")).toBeVisible();
   await expect(page.getByRole("button", { name: "Add device" })).toHaveCount(0);
   await expect(m.getByRole("switch")).toHaveCount(0);
+  await expect(m.getByRole("button", { name: "Choose runner" })).toHaveCount(0);
   await expect(m.getByRole("button", { name: /^Actions for/ })).toHaveCount(0);
-  // Organization-managed targets can be viewed; the rest need an admin.
-  await expect(m.getByRole("button", { name: "View wl-router" })).toBeVisible();
-  await expect(
-    m.getByRole("row", { name: /workload-a/ }).getByText("An admin must finish this")
-  ).toBeVisible();
-  await expect(
-    m
-      .getByRole("region", { name: "Router requests waiting for an admin" })
-      .getByText("An admin must finish this")
-  ).toBeVisible();
-  await expect(m.getByRole("button", { name: "Handle" })).toHaveCount(0);
 });
 
-test("binding an organization account survives a lost response", async ({ page }) => {
-  let state = "unbound";
-  const account = { id: "acct-1", version: "v1", name: "Team ChatGPT" };
-  const auth = await routeAuth(page, (request) => {
-    if (!request.path.startsWith("/workloads/wl-router/managed-auth")) return undefined;
-    if (request.method === "PUT") {
-      state = "configured";
-      return "abort";
-    }
-    const binding =
-      state === "unbound" ? null : { id: 7, account_id: account.id, enabled: true };
-    return {
-      mode: "managed_auth",
-      managed_auth: {
-        state,
-        provider: "codex",
-        binding,
-        account: binding ? account : null,
-        accounts: [account],
-        actions: state === "unbound" ? ["bind"] : ["refresh", "unbind"],
-        can_configure: true,
-      },
-    };
-  });
-  await open(page);
-
-  await page.getByRole("button", { name: "Manage wl-router" }).click();
-  const dialog = page.getByRole("dialog", { name: "Manage runtime authentication" });
-  await expect(
-    dialog.getByText("This runtime uses its own configuration.")
-  ).toBeVisible();
-  await dialog.getByRole("button", { name: /Credential source/ }).click();
-  await page.getByRole("option", { name: "Organization account" }).click();
-  await dialog.getByRole("button", { name: "Bind account" }).click();
-
-  await expect(dialog.getByText("Organization account configured.")).toBeVisible();
-  await expect(dialog.getByRole("status").first()).toHaveText(
-    "The result is uncertain. The current state was read again."
-  );
-  const puts = auth.filter((request) => request.method === "PUT");
-  expect(puts).toHaveLength(1);
-  expect(puts[0]?.body).toEqual({
-    account_id: "acct-1",
-    expected_account_version: "v1",
-    expected_binding: null,
-  });
-  expect(puts[0]?.csrf).toBe(csrf);
-  expect(await page.evaluate(() => localStorage.length)).toBe(0);
-});
-
-test("an API key is sealed once and a lost submit stays unknown", async ({ page }) => {
-  const marker = "synthetic-browser-private-marker";
-  let statusReads = 0;
-  const auth = await routeAuth(page, (request) => {
-    if (request.path !== "/runtime-auth") return undefined;
-    expect(request.raw).not.toContain(marker);
-    expect(request.body?.target).toEqual({
-      kind: "compute_workload",
-      workload_id: "workload-a",
-    });
-    switch (request.body?.action) {
-      case "status":
-        statusReads += 1;
-        return {
-          runtime_auth: {
-            provider: "pi",
-            auth: { status: statusReads > 1 ? "configured" : "unauthenticated" },
-            native_ready: true,
-            dispatch_ready: false,
-            methods: [
-              { backend: "openrouter", method: "credential_import", form: "api_key" },
-            ],
-            attempt: null,
-          },
-        };
-      case "input_begin":
-        return {
-          runtime_auth: {
-            public_key: fixture.Public,
-            context: { ...fixture.Context, expires_at: Date.now() + 60_000 },
-          },
-        };
-      case "input_submit":
-        return "abort";
-      default:
-        return undefined;
-    }
-  });
-  await open(page);
-
-  await page.getByRole("button", { name: "Manage workload-a" }).click();
-  const dialog = page.getByRole("dialog", { name: "Manage runtime authentication" });
-  const secret = dialog.getByRole("textbox", { name: "API key" });
-  await expect(secret).toBeEnabled();
-  await secret.fill(marker);
-  await dialog.getByRole("button", { name: "Save to runtime" }).dblclick();
-
-  await expect(dialog.getByRole("status")).toContainText("The save result is unknown");
-  await expect(secret).toHaveValue("");
-  const submits = auth.filter((request) => request.body?.action === "input_submit");
-  expect(submits).toHaveLength(1);
-  const envelope = JSON.parse(String(submits[0]?.body?.envelope)) as Record<
-    string,
-    string
-  >;
-  expect(Object.keys(envelope).toSorted()).toEqual(["ciphertext", "enc"]);
-  expect(submits[0]?.body?.attempt_id).toBe("attempt-a");
-
-  await dialog.getByRole("button", { name: "Check again" }).click();
-  await expect(dialog.getByText("Saved, not verified", { exact: true })).toBeVisible();
-  expect(
-    auth.filter((request) => request.body?.action === "input_submit")
-  ).toHaveLength(1);
-  expect(auth.every((request) => !request.raw.includes(marker))).toBe(true);
-  expect(await page.evaluate(() => localStorage.length)).toBe(0);
-});
-
-for (const end of ["close", "expiry"] as const) {
-  test(`a provider device code is cleared on ${end}`, async ({ page }) => {
-    await page.clock.install();
-    await routeAuth(page, (request) =>
-      request.path === "/runtime-auth"
-        ? {
-            runtime_auth: {
-              provider: "pi",
-              auth: { status: "pending" },
-              native_ready: true,
-              dispatch_ready: false,
-              methods: [],
-              attempt: {
-                owned: true,
-                attempt_id: "attempt",
-                phase: "completed",
-                expires_at: Date.now() + 60_000,
-                ceremony: {
-                  verification_url: "https://auth.openai.com/codex/device",
-                  user_code: "SYNTHETIC-CODE",
-                },
-              },
-            },
-          }
-        : undefined
-    );
-    await open(page);
-
-    await page.getByRole("button", { name: "Manage workload-a" }).click();
-    const dialog = page.getByRole("dialog", { name: "Manage runtime authentication" });
-    await expect(dialog.getByText("SYNTHETIC-CODE")).toBeVisible();
-    await expect(
-      dialog.getByRole("link", { name: "Open the provider sign-in page" })
-    ).toHaveAttribute("href", "https://auth.openai.com/codex/device");
-    if (end === "close") {
-      await dialog.getByRole("button", { name: "Close" }).click();
-      await expect(dialog).toHaveCount(0);
-    } else {
-      await page.clock.runFor(61_000);
-      await expect(dialog.getByRole("status")).toHaveText(
-        "The sign-in expired. Check again."
-      );
-    }
-    await expect(page.getByText("SYNTHETIC-CODE")).toHaveCount(0);
-    await expect(
-      page.getByRole("link", { name: "Open the provider sign-in page" })
-    ).toHaveCount(0);
-  });
-}
-
-test("changing the input method clears an entered API key", async ({ page }) => {
-  await routeAuth(page, (request) => {
-    if (request.path !== "/runtime-auth") return undefined;
-    if (request.body?.action !== "status") return undefined;
-    return {
-      runtime_auth: {
-        provider: "pi",
-        auth: { status: "unauthenticated" },
-        native_ready: true,
-        dispatch_ready: false,
-        methods: [
-          { backend: "openrouter", method: "credential_import", form: "api_key" },
-          { backend: "anthropic", method: "credential_import", form: "api_key" },
-        ],
-        attempt: null,
-      },
-    };
-  });
-  await open(page);
-
-  await page.getByRole("button", { name: "Manage workload-a" }).click();
-  const dialog = page.getByRole("dialog", { name: "Manage runtime authentication" });
-  const secret = dialog.getByRole("textbox", { name: "API key" });
-  await expect(secret).toBeEnabled();
-  await secret.fill("key-for-openrouter");
-  await dialog.getByRole("button", { name: /Input method/ }).click();
-  await page.getByRole("option", { name: "anthropic · Enter an API key" }).click();
-  await expect(secret).toHaveValue("");
-});
-
-test("a Claude authorization code is sealed before it completes the sign-in", async ({
+test("before the Cloud VM exists, an admin chooses its runner once", async ({
   page,
 }) => {
-  const marker = "synthetic-claude-authorization-code";
-  const url =
-    "https://claude.com/cai/oauth/authorize?code=true&client_id=client&response_type=code&scope=user%3Ainference&state=state";
-  const signIn = {
-    ...fixture.Context,
-    provider: "claude",
-    backend: "anthropic",
-    method: "native_login",
-    form: "authorization_code",
-    expires_at: Date.now() + 60_000,
-  };
-  const offer = { context: signIn, public_key: fixture.Public, phase: "awaiting_user" };
-  let started = false;
-  let authenticated = false;
-  const auth = await routeAuth(page, (request) => {
-    if (request.path !== "/runtime-auth") return undefined;
-    expect(request.raw).not.toContain(marker);
-    const action = request.body?.action;
-    if (action === "login_start") {
-      started = true;
-      return { runtime_auth: { ...offer, verification_url: url } };
-    }
-    if (action === "input_submit") {
-      authenticated = true;
-      return { runtime_auth: { save_result: "committed", issue: "" } };
-    }
-    return {
-      runtime_auth: authenticated
-        ? {
-            provider: "claude",
-            auth: { status: "authenticated" },
-            methods: [],
-            attempt: null,
-          }
-        : started
-          ? {
-              provider: "claude",
-              auth: { status: "pending" },
-              methods: [],
-              attempt: {
-                owned: true,
-                attempt_id: fixture.Context.attempt_id,
-                expires_at: signIn.expires_at,
-                phase: "completed",
-                ceremony: { verification_url: url, user_code: "", input: offer },
-              },
-            }
-          : {
-              provider: "claude",
-              auth: { status: "unauthenticated" },
-              methods: [
-                {
-                  backend: "anthropic",
-                  method: "native_login",
-                  form: "authorization_code",
-                },
-              ],
-              attempt: null,
-            },
-    };
-  });
-  await open(page);
-
-  await page.getByRole("button", { name: "Manage workload-a" }).click();
-  const dialog = page.getByRole("dialog", { name: "Manage runtime authentication" });
-  await dialog.getByRole("button", { name: "Use provider sign-in" }).click();
-  const code = dialog.getByLabel("Authorization code from the sign-in page");
-  await expect(code).toBeVisible();
-  await code.fill(marker);
-  await dialog.getByRole("button", { name: "Submit code" }).click();
-
-  await expect(
-    dialog.getByText("Authenticated; the runtime is not ready yet", { exact: true })
-  ).toBeVisible();
-  const submits = auth.filter((request) => request.body?.action === "input_submit");
-  expect(submits).toHaveLength(1);
-  expect(submits[0]?.body?.attempt_id).toBe("attempt-a");
-});
-
-test("a Router request is finished once as saved but not verified", async ({
-  page,
-}) => {
-  const auth = await routeAuth(page, (request) => {
-    if (request.path.startsWith("/runtime-auth/requests/req-1/complete"))
-      return { runtime_auth_request: { status: "completed" } };
-    if (request.path.startsWith("/runtime-auth/requests"))
-      return {
-        runtime_auth_requests: [
-          { request_id: "req-1", action: "verify", target: { workload_id: "wl-gone" } },
-        ],
-        next_cursor: null,
-      };
-    if (request.path === "/workloads/wl-gone/managed-auth")
-      return {
-        managed_auth: {
-          state: "unbound",
-          binding: null,
-          accounts: [],
-          actions: ["bind"],
-          can_configure: true,
-        },
-      };
-    if (request.path === "/runtime-auth")
-      return {
-        runtime_auth: {
-          provider: "claude",
-          auth: { status: "configured" },
-          methods: [],
-          attempt: null,
-        },
-      };
-    return undefined;
-  });
-  await open(page);
-
-  const requests = main(page).getByRole("region", {
-    name: "Router requests waiting for an admin",
-  });
-  await expect(requests.getByText("verify · wl-gone")).toBeVisible();
-  await requests.getByRole("button", { name: "Handle" }).click();
-  const dialog = page.getByRole("dialog", { name: "Manage runtime authentication" });
-  await expect(
-    dialog.getByText("Not read yet · Agents that use this runtime share this change.")
-  ).toBeVisible();
-  const finish = dialog.getByRole("button", { name: "Finish (saved, not verified)" });
-  await finish.dblclick();
-  await expect(dialog.getByRole("status").last()).toHaveText(
-    "The requester was told the configuration is saved but not verified."
-  );
-  await expect(finish).toHaveCount(0);
-  const completions = auth.filter((request) => request.path.endsWith("/complete"));
-  expect(completions.map((request) => request.body)).toEqual([
-    { outcome: "saved_unverified" },
-  ]);
-});
-
-test("a handled Router request leaves the list when its dialog closes", async ({
-  page,
-}) => {
-  let completed = false;
-  await routeAuth(page, (request) => {
-    if (request.path.startsWith("/runtime-auth/requests/req-1/complete")) {
-      completed = true;
-      return { runtime_auth_request: { status: "completed" } };
-    }
-    if (request.path.startsWith("/runtime-auth/requests"))
-      return {
-        runtime_auth_requests: completed
-          ? []
-          : [
-              {
-                request_id: "req-1",
-                action: "verify",
-                target: { workload_id: "wl-gone" },
-              },
-            ],
-        next_cursor: null,
-      };
-    if (request.path === "/workloads/wl-gone/managed-auth")
-      return {
-        managed_auth: {
-          state: "unbound",
-          binding: null,
-          accounts: [],
-          actions: ["bind"],
-          can_configure: true,
-        },
-      };
-    if (request.path === "/runtime-auth")
-      return {
-        runtime_auth: {
-          provider: "claude",
-          auth: { status: "configured" },
-          methods: [],
-          attempt: null,
-        },
-      };
-    return undefined;
-  });
-  await open(page);
-
-  const requests = main(page).getByRole("region", {
-    name: "Router requests waiting for an admin",
-  });
-  await requests.getByRole("button", { name: "Handle" }).click();
-  const dialog = page.getByRole("dialog", { name: "Manage runtime authentication" });
-  await dialog.getByRole("button", { name: "Finish (saved, not verified)" }).click();
-  await expect(dialog.getByRole("status").last()).toHaveText(
-    "The requester was told the configuration is saved but not verified."
-  );
-  await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(0);
-  await expect(requests).toHaveCount(0);
-});
-
-test("Router requests page on even when a page is empty", async ({ page }) => {
-  await routeAuth(page, (request) => {
-    if (request.path === "/runtime-auth/requests")
-      return { runtime_auth_requests: [], next_cursor: "page-two" };
-    if (request.path === "/runtime-auth/requests?cursor=page-two")
-      return {
-        runtime_auth_requests: [
-          {
-            request_id: "req-2",
-            action: "login",
-            target: { workload_id: "wl-router" },
-          },
-        ],
-        next_cursor: null,
-      };
-    return undefined;
-  });
-  await open(page);
-
-  const requests = main(page).getByRole("region", {
-    name: "Router requests waiting for an admin",
-  });
-  await requests.getByRole("button", { name: "Next page" }).click();
-  await expect(requests.getByText("login · wl-router")).toBeVisible();
-  await expect(requests.getByRole("button", { name: "Next page" })).toHaveCount(0);
-});
-
-test("a management link opens its target and leaves the address when closed", async ({
-  page,
-}) => {
-  await routeAuth(page, (request) =>
-    request.path === "/runtime-auth"
-      ? {
-          runtime_auth: {
-            provider: "pi",
-            auth: { status: "unauthenticated" },
-            methods: [],
-            attempt: null,
-          },
-        }
-      : undefined
-  );
+  let runner: { name: string; status: string } | null = null;
   const requests = await open(
     page,
-    undefined,
+    (request) => {
+      if (request.path === `${api}/runners`)
+        return ok({
+          runners: [
+            { id: "run-1", label: "Lab Mac mini" },
+            { id: "run-2", label: "Spare Mac mini" },
+          ],
+          runners_href: "/orgs/acme/fin",
+        });
+      if (request.method === "PUT" && request.path === `${api}/cloud-vm/runner`) {
+        // The first answer is lost; the retry repeats the same request.
+        if (writes(requests).length === 1) return { status: 503, body: {} };
+        runner = { name: "Spare Mac mini", status: "processing" };
+        return ok({ notice: "The runner was asked to get ready for the Cloud VM." });
+      }
+      return undefined;
+    },
     () =>
       page1({
-        runtime_auth: {
-          ...page1().runtime_auth,
-          request: {
-            request_id: "req-9",
-            action: "verify",
-            target: { workload_id: "workload-a" },
-          },
-        },
-      }),
-    `${base}?runtime_auth_target=workload-a&runtime_auth_request=req-9`
+        cloud_vm: cloudVm({
+          vm: null,
+          runner,
+          next_location: { kind: "cloudflare" },
+          runner_choosable: runner === null,
+          runner_removable: runner !== null,
+        }),
+      })
   );
 
-  const dialog = page.getByRole("dialog", { name: "Manage runtime authentication" });
-  await expect(dialog.getByText("workload-a", { exact: true })).toBeVisible();
-  expect(pageReads(requests)[0]?.search).toBe(
-    "?runtime_auth_target=workload-a&runtime_auth_request=req-9"
-  );
-  await dialog.getByRole("button", { name: "Close" }).click();
-  await expect(page).toHaveURL(new RegExp(`${base}$`));
+  const vm = cloudVmSection(page);
+  await expect(vm.getByText("Not created yet")).toBeVisible();
+  await expect(vm.getByText("A new Cloud VM runs on")).toBeVisible();
+  await expect(vm.getByText("Cloudflare")).toBeVisible();
+  await vm.getByRole("button", { name: "Choose runner" }).click();
+  const dialog = page.getByRole("dialog", { name: "Choose a runner for the Cloud VM" });
+  await dialog.getByRole("button", { name: /Runner/ }).click();
+  await page.getByRole("option", { name: "Spare Mac mini" }).click();
+  await dialog.getByRole("button", { name: "Use this runner" }).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await dialog.getByRole("button", { name: "Use this runner" }).click();
+
+  await expect(
+    page.getByText("The runner was asked to get ready for the Cloud VM.")
+  ).toBeVisible();
   await expect(dialog).toHaveCount(0);
+  await expect(vm.getByText("Installing")).toBeVisible();
+  await expect(vm.getByRole("button", { name: "Choose runner" })).toHaveCount(0);
+  const [first, second] = writes(requests);
+  expect(first).toEqual(
+    expect.objectContaining({
+      method: "PUT",
+      csrf,
+      body: { runner_id: "run-2", request_id: expect.any(String) },
+    })
+  );
+  expect(second?.body).toEqual(first?.body);
+});
+
+test("a second runner is refused with the server's reason", async ({ page }) => {
+  await open(
+    page,
+    (request) => {
+      if (request.path === `${api}/runners`)
+        return ok({
+          runners: [{ id: "run-1", label: "Lab Mac mini" }],
+          runners_href: "/orgs/acme/fin",
+        });
+      if (request.method === "PUT" && request.path === `${api}/cloud-vm/runner`)
+        return failure(
+          409,
+          "runner_already_chosen",
+          "This Agent Swarm already has a runner. Remove it before you choose another runner."
+        );
+      return undefined;
+    },
+    () =>
+      page1({
+        cloud_vm: cloudVm({
+          vm: null,
+          runner: null,
+          next_location: { kind: "cloudflare" },
+          runner_choosable: true,
+        }),
+      })
+  );
+
+  await cloudVmSection(page).getByRole("button", { name: "Choose runner" }).click();
+  const dialog = page.getByRole("dialog", { name: "Choose a runner for the Cloud VM" });
+  await dialog.getByRole("button", { name: "Use this runner" }).click();
+  await expect(
+    dialog.getByText(
+      "This Agent Swarm already has a runner. Remove it before you choose another runner."
+    )
+  ).toBeVisible();
+});
+
+test("removes a runner that no Cloud VM runs on after confirming", async ({ page }) => {
+  const requests = await open(
+    page,
+    (request) =>
+      request.method === "DELETE" && request.path === `${api}/cloud-vm/runner`
+        ? ok({ notice: "Runner removed from this Agent Swarm." })
+        : undefined,
+    () =>
+      page1({
+        cloud_vm: cloudVm({
+          vm: null,
+          runner: { name: "Lab Mac mini", status: "action_required" },
+          next_location: { kind: "cloudflare" },
+          runner_removable: true,
+        }),
+      })
+  );
+
+  const vm = cloudVmSection(page);
+  await expect(vm.getByText("Needs attention")).toBeVisible();
+  await vm.getByRole("button", { name: "Remove runner" }).click();
+  const confirm = page.getByRole("dialog", { name: "Remove runner" });
+  await expect(
+    confirm.getByText(/Remove Lab Mac mini from this Agent Swarm\?/)
+  ).toBeVisible();
+  await confirm.getByRole("button", { name: "Remove runner" }).click();
+  await expect(page.getByText("Runner removed from this Agent Swarm.")).toBeVisible();
+  expect(writes(requests).map(({ method, path }) => [method, path])).toEqual([
+    ["DELETE", `${api}/cloud-vm/runner`],
+  ]);
 });
 
 test("the page fits a 900px window", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 700 });
-  await routeAuth(page, () => undefined);
   await open(page);
   await expect(main(page).getByRole("row", { name: /Mac Studio/ })).toBeVisible();
   expect(

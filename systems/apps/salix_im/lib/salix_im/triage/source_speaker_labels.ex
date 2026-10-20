@@ -190,7 +190,7 @@ defmodule SalixIM.Triage.SourceSpeakerLabels do
   defp cache_lookup(key, now_ms, true) do
     table = ensure_cache()
 
-    case :ets.lookup(table, key) do
+    case SystemsRuntime.ETS.lookup(table, key) do
       [{^key, expires_at, :missing}] when expires_at > now_ms ->
         {:hit, nil}
 
@@ -198,7 +198,7 @@ defmodule SalixIM.Triage.SourceSpeakerLabels do
         {:hit, label}
 
       [{^key, _expired, _label}] ->
-        :ets.delete(table, key)
+        SystemsRuntime.ETS.delete(table, key)
         :miss
 
       [] ->
@@ -211,19 +211,20 @@ defmodule SalixIM.Triage.SourceSpeakerLabels do
   defp cache_store(key, label, now_ms, true) do
     table = ensure_cache()
 
-    if :ets.member(table, key) or :ets.info(table, :size) < @max_cache_entries do
+    if SystemsRuntime.ETS.member(table, key) or
+         SystemsRuntime.ETS.info(table, :size) < @max_cache_entries do
       ttl = if is_binary(label), do: @cache_ttl_ms, else: @negative_cache_ttl_ms
-      :ets.insert(table, {key, now_ms + ttl, label || :missing})
+      SystemsRuntime.ETS.insert(table, {key, now_ms + ttl, label || :missing})
     end
 
     :ok
   end
 
   defp ensure_cache do
-    case :ets.whereis(@cache_table) do
+    case SystemsRuntime.ETS.whereis(@cache_table) do
       :undefined ->
         try do
-          :ets.new(@cache_table, [
+          SystemsRuntime.ETS.new(@cache_table, [
             :named_table,
             :public,
             :set,
@@ -240,7 +241,7 @@ defmodule SalixIM.Triage.SourceSpeakerLabels do
   end
 
   defp now_ms(opts) do
-    Keyword.get(opts, :now_ms_fun, fn -> System.monotonic_time(:millisecond) end).()
+    Keyword.get(opts, :now_ms_fun, fn -> SystemsClock.monotonic_time(:millisecond) end).()
   end
 
   defp nonempty?(value), do: is_binary(value) and String.trim(value) != ""

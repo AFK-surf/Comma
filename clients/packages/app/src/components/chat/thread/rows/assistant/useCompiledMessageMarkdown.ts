@@ -1,57 +1,53 @@
-import type { ChatMessagePart } from "@comma/chat-contract";
 import { useRef } from "react";
-import type { CommaApiClient } from "../../../../../api";
-import type { ChatMessage } from "../../../model/conversationChannel";
+import type { ChatMessage } from "@comma/core/chat";
 import {
-  compileMessageMarkdown,
-  messagePartsHaveInlineElements,
+  messageMarkdownElements,
   sameMessageParts,
   type CompiledMessageMarkdown,
 } from "../../inline/MessageInlineElements";
 
 /**
- * Compiles a committed message's inline elements exactly once per parts VALUE.
- *
- * Messages without inline elements skip compilation entirely and render their
- * plain markdown text, so they never receive an inlineElements Map and the
- * memoized MarkdownStream can bail on value-equal string props alone. For
- * element-bearing messages the compiled result (content string + elements Map)
- * is cached against the parts' value equality, not the message object
- * identity: snapshot projections (Electron bridge IPC echoes, poll refreshes)
- * legitimately re-materialize equal message objects, and that identity churn
- * must not re-create the Map and force a full markdown re-parse per row.
+ * A committed message's Markdown as the core parsed it (`ChatMessage.markdown`),
+ * with its Task chips and cards drawn in place. It is made again only when the
+ * tree's or the parts' VALUE changes, not their identity: snapshot projections
+ * (Electron bridge IPC echoes, poll refreshes) re-materialize equal messages,
+ * and that churn must not hand the memoized MarkdownStream new nodes.
  */
 export function useCompiledMessageMarkdown(
   message: ChatMessage | undefined,
-  api: CommaApiClient | undefined,
+  live: boolean,
   groupId: string,
   workspaceId: string
 ) {
   const cacheRef = useRef<{
-    api: CommaApiClient | undefined;
-    compiled: CompiledMessageMarkdown;
+    compiled: CompiledMessageMarkdown | undefined;
+    live: boolean;
     groupId: string;
-    parts: readonly ChatMessagePart[];
+    markdown: string;
+    parts: ChatMessage["parts"];
     workspaceId: string;
   } | null>(null);
-
-  const parts = message?.parts;
-  if (!messagePartsHaveInlineElements(parts)) {
-    return undefined;
-  }
-
+  if (!message?.markdown) return undefined;
+  const markdown = JSON.stringify(message.markdown);
   const cache = cacheRef.current;
   if (
     cache &&
-    cache.api === api &&
+    cache.live === live &&
     cache.groupId === groupId &&
     cache.workspaceId === workspaceId &&
-    sameMessageParts(cache.parts, parts)
+    cache.markdown === markdown &&
+    sameMessageParts(cache.parts ?? [], message.parts ?? [])
   ) {
     return cache.compiled;
   }
-
-  const compiled = compileMessageMarkdown(parts, { api, groupId, workspaceId });
-  cacheRef.current = { api, compiled, groupId, parts, workspaceId };
+  const compiled = messageMarkdownElements(message, { live, groupId, workspaceId });
+  cacheRef.current = {
+    compiled,
+    groupId,
+    live,
+    markdown,
+    parts: message.parts,
+    workspaceId,
+  };
   return compiled;
 }

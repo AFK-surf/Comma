@@ -38,7 +38,7 @@ defmodule SalixEnv.LocalFileRefs do
   @spec register(String.t(), String.t(), String.t(), String.t(), String.t(), keyword()) ::
           {:ok, route()} | {:error, term()}
   def register(tenant_id, group_id, owner_user_id, device_id, ref, opts \\ []) do
-    now = opts[:now] || System.system_time(:millisecond)
+    now = opts[:now] || SystemsClock.system_time(:millisecond)
 
     with {:ok, registration_target} <- registration_target(opts),
          :ok <- validate_scope(tenant_id, group_id, owner_user_id, device_id, ref),
@@ -95,7 +95,7 @@ defmodule SalixEnv.LocalFileRefs do
   @spec resolve_committed(String.t(), String.t(), map(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def resolve_committed(group_id, conversation_id, message, ref, opts \\ []) do
-    now = opts[:now] || System.system_time(:millisecond)
+    now = opts[:now] || SystemsClock.system_time(:millisecond)
 
     with true <- valid_ref?(ref),
          :ok <- require_bind_identity(group_id, conversation_id, message),
@@ -139,7 +139,13 @@ defmodule SalixEnv.LocalFileRefs do
   @doc "Revoke a route without deleting or rebinding its identity."
   @spec revoke(String.t(), String.t(), String.t(), String.t()) :: :ok | {:error, term()}
   def revoke(group_id, owner_user_id, device_id, ref) do
-    case Store.revoke(ref, group_id, owner_user_id, device_id, System.system_time(:millisecond)) do
+    case Store.revoke(
+           ref,
+           group_id,
+           owner_user_id,
+           device_id,
+           SystemsClock.system_time(:millisecond)
+         ) do
       {:error, :not_found} -> {:error, :local_file_unavailable}
       result -> result
     end
@@ -147,14 +153,14 @@ defmodule SalixEnv.LocalFileRefs do
 
   @doc "Bounded expiry retirement for registered (24h), bound (7d), and revoked routes."
   @spec cleanup_expired(integer(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
-  def cleanup_expired(now \\ System.system_time(:millisecond), opts \\ []) do
+  def cleanup_expired(now \\ SystemsClock.system_time(:millisecond), opts \\ []) do
     Store.cleanup_expired(now, opts)
   end
 
   defp create_or_reuse(record), do: Store.insert_registration(record)
 
   defp bind_ref(ref, group_id, conversation_id, message) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     case Store.bind(
            ref,

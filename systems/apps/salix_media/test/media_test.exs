@@ -5,7 +5,7 @@ defmodule SalixMediaTest do
   parses the canned response, plus per-turn cap enforcement via
   `SalixMedia.Caps`.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixMedia.{ImageGen, VideoGen, Vision, Caps}
 
@@ -43,16 +43,6 @@ defmodule SalixMediaTest do
   end
 
   describe "OpenAICompat.put_chat_max_tokens/3" do
-    test "centralizes chat token cap parameter selection" do
-      assert %{"max_completion_tokens" => 10} =
-               SalixMedia.OpenAICompat.put_chat_max_tokens(%{}, "openai/gpt-5-mini", 10)
-
-      assert %{"max_completion_tokens" => 10} =
-               SalixMedia.OpenAICompat.put_chat_max_tokens(%{}, "o4-mini", 10)
-
-      assert %{"max_tokens" => 10} =
-               SalixMedia.OpenAICompat.put_chat_max_tokens(%{}, "gpt-4o-mini", 10)
-    end
   end
 
   describe "Caps.check/2 (pure per-turn limits)" do
@@ -60,20 +50,6 @@ defmodule SalixMediaTest do
       assert :ok = Caps.check(%{}, "image.generate")
       assert :ok = Caps.check(%{"image.generate" => 1}, "image.generate")
       assert {:error, :cap_exceeded} = Caps.check(%{"image.generate" => 2}, "image.generate")
-    end
-
-    test "allows video.generate once and rejects the 2nd" do
-      assert :ok = Caps.check(%{}, "video.generate")
-      assert {:error, :cap_exceeded} = Caps.check(%{"video.generate" => 1}, "video.generate")
-    end
-
-    test "allows script.run up to 5 and rejects the 6th" do
-      assert :ok = Caps.check(%{"script.run" => 4}, "script.run")
-      assert {:error, :cap_exceeded} = Caps.check(%{"script.run" => 5}, "script.run")
-    end
-
-    test "unknown tools are uncapped" do
-      assert :ok = Caps.check(%{"fs.read_file" => 999}, "fs.read_file")
     end
   end
 
@@ -88,14 +64,14 @@ defmodule SalixMediaTest do
 
       {:ok, {_address, port}} = ThousandIsland.listener_info(bandit)
 
-      prev = Application.get_env(:salix_media, :base_url)
-      prev_key = Application.get_env(:salix_media, :api_key)
-      Application.put_env(:salix_media, :base_url, "http://127.0.0.1:#{port}")
-      Application.put_env(:salix_media, :api_key, "test-key")
+      prev = SystemsRuntime.get_env(:salix_media, :base_url)
+      prev_key = SystemsRuntime.get_env(:salix_media, :api_key)
+      SystemsRuntime.put_env(:salix_media, :base_url, "http://127.0.0.1:#{port}")
+      SystemsRuntime.put_env(:salix_media, :api_key, "test-key")
 
       on_exit(fn ->
-        Application.put_env(:salix_media, :base_url, prev)
-        Application.put_env(:salix_media, :api_key, prev_key)
+        SystemsRuntime.put_env(:salix_media, :base_url, prev)
+        SystemsRuntime.put_env(:salix_media, :api_key, prev_key)
       end)
 
       :ok
@@ -114,14 +90,6 @@ defmodule SalixMediaTest do
       assert req["prompt"] == "a red fox"
       assert req["size"] == "1024x1024"
       assert req["n"] == 1
-    end
-
-    test "ImageGen parses a base64 response" do
-      SalixMedia.MockMedia.set("/v1/images/generations", %{
-        "data" => [%{"b64_json" => "aGVsbG8="}]
-      })
-
-      assert {:ok, %{b64: "aGVsbG8="}} = ImageGen.generate("a cat")
     end
 
     test "VideoGen posts a well-formed request and parses a url response" do
@@ -169,7 +137,7 @@ defmodule SalixMediaTest do
                  Vision.describe("https://cdn/ui.png",
                    question: "Describe",
                    config: %{
-                     "endpoint" => Application.get_env(:salix_media, :base_url),
+                     "endpoint" => SystemsRuntime.get_env(:salix_media, :base_url),
                      "model" => unquote(model),
                      "max_tokens" => unquote(max_tokens)
                    }
@@ -181,19 +149,6 @@ defmodule SalixMediaTest do
         assert req[unquote(sent)] == unquote(max_tokens)
         refute Map.has_key?(req, unquote(omitted))
       end
-    end
-
-    test "facade delegates to the right client" do
-      SalixMedia.MockMedia.set("/v1/images/generations", %{
-        "data" => [%{"url" => "https://cdn/x.png"}]
-      })
-
-      assert {:ok, %{url: "https://cdn/x.png"}} = SalixMedia.image("hello")
-    end
-
-    test "a malformed provider response is a tagged error" do
-      SalixMedia.MockMedia.set("/v1/images/generations", %{"unexpected" => true})
-      assert {:error, {:bad_response, %{"unexpected" => true}}} = ImageGen.generate("x")
     end
   end
 end

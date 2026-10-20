@@ -1,4 +1,6 @@
 defmodule SalixSignal.Carrier do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The Signal carrier of the voice call core (`salix_voice`, PLAN
   "Workstream A" and C10).
@@ -26,7 +28,8 @@ defmodule SalixSignal.Carrier do
   Returns the voice call ID, or the admission error of `SalixVoice.admit/1`.
   """
   @spec admit(pid(), map()) :: {:ok, String.t()} | {:error, term()}
-  def admit(connection, attrs) when is_pid(connection) and is_map(attrs) do
+  def admit(connection, attrs)
+      when SystemsRuntime.Proc.is_process(connection) and is_map(attrs) do
     admission = %{
       carrier: :signal,
       tenant_id: attrs.tenant_id,
@@ -55,7 +58,8 @@ defmodule SalixSignal.Carrier do
   "value" => base64url group identifier}`.
   """
   @spec admit_group_call(pid(), map()) :: {:ok, String.t()} | {:error, term()}
-  def admit_group_call(session, attrs) when is_pid(session) and is_map(attrs) do
+  def admit_group_call(session, attrs)
+      when SystemsRuntime.Proc.is_process(session) and is_map(attrs) do
     group = Base.url_encode64(attrs.signal_group_id, padding: false)
 
     admission = %{

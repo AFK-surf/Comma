@@ -1,0 +1,63 @@
+/* A Task card's More button (TaskArchiveMenu overlay="task-card").
+
+   The card pads its content by --spacing-md on top and --spacing-lg at the
+   sides (taskCardRoot), and its title line is 20px tall. The 20px button pads
+   its 16px glyph by --spacing-xxs, so placing it --spacing-md from the top
+   centres the glyph on the title's first line, and --spacing-lg less
+   --spacing-xxs from the right ends the glyph at the content edge, where
+   the card's text ends. */
+.comma-task-card-action {
+  position: absolute;
+  top: var(--spacing-md);
+  right: calc(var(--spacing-lg) - var(--spacing-xxs));
+}
+
+/* The title leaves the button's room: the glyph's 16px plus the button's
+   inner --spacing-xxs on the title side, and a --spacing-xs gap. A long title
+   wraps before the button instead of running under it. */
+[data-task-card-action] [data-slot="task-card-title"] {
+  padding-inline-end: calc(var(--spacing-xl) + var(--spacing-xxs) + var(--spacing-xs));
+}
+
+/* A running Task's progress line (TaskProgressText).
+
+   Both lines share one grid cell. A new line rises in from below while the
+   old one leaves upward, the same direction as the Notch's step line, and
+   the two cross-fade through a small blur so the overlap reads as one line
+   changing rather than two texts. The calm curve spreads each fade over its
+   whole duration; a sharp ease-out lands the opacity change in a frame or
+   two, which reads as a cut. Exit is shorter than entry so the new words
+   lead. These are transitions, so a quick run of changes retargets the
+   leaving line from where it stands. Only opacity, translate and a small
+   filter move. Reduced motion zeroes every duration (src/styles.css), so the
+   words then change in place. */
+
+.comma-task-progress-text {
+  display: grid;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.comma-task-progress-line {
+  grid-area: 1 / 1;
+  transition:
+    opacity var(--motion-duration-state-swap-enter) var(--motion-easing-calm-out),
+    translate var(--motion-duration-state-swap-enter) var(--motion-easing-calm-out),
+    filter var(--motion-duration-state-swap-enter) var(--motion-easing-calm-out);
+}
+
+.comma-task-progress-line[data-state="entering"] {
+  @starting-style {
+    opacity: 0;
+    translate: 0 var(--motion-distance-reveal-item);
+    filter: blur(var(--motion-blur-menu-enter));
+  }
+}
+
+.comma-task-progress-line[data-state="leaving"] {
+  opacity: 0;
+  translate: 0 calc(var(--motion-distance-reveal-item) * -1);
+  filter: blur(var(--motion-blur-menu-enter));
+  pointer-events: none;
+  transition-duration: var(--motion-duration-state-swap-exit);
+}

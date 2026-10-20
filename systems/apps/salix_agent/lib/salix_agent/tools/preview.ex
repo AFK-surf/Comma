@@ -23,7 +23,7 @@ defmodule SalixAgent.Tools.Preview do
   @max_versions 20
 
   @description """
-  Publish or update a website through Bridge's canonical verified website path. This is the single publishing entrypoint for an interactive HTML page, web demo, mini-app, or multi-file site. Provide complete inline html, one absolute VFS source_path, or an absolute VFS source_root containing index.html. Reusing the exact canonical site_name updates the same URL and automatically snapshots the previous public version; a different canonical site_name creates a different website. source_root mirrors the public site, while html and source_path replace only index.html. Do not hand-write bridge-sites URLs or send data:text/html links; return the URL produced by this tool.
+  Publish or update a website through Bridge's canonical verified website path. This is the single publishing entrypoint for an interactive HTML page, web demo, mini-app, or multi-file site.\n\nProvide complete inline html, one absolute VFS source_path, or an absolute VFS source_root containing index.html. Reusing the exact canonical site_name updates the same URL and automatically snapshots the previous public version; a different canonical site_name creates a different website. source_root mirrors the public site, while html and source_path replace only index.html. Do not hand-write bridge-sites URLs or send data:text/html links; return the URL produced by this tool.
   """
 
   @normal_auto_wait_seconds SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds()

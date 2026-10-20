@@ -1,0 +1,15 @@
+id: ts-test-deadline
+valid:
+  # No deadline of its own: the job's hang guard bounds the wait.
+  - |
+    await app.waitForEvent("window", { timeout: 0 });
+  - |
+    await page.waitForSelector("#ready");
+invalid:
+  - |
+    await app.waitForEvent("window", { timeout: 250 });
+  # A deadline a helper computes is still a real-time deadline.
+  - |
+    await app.waitForEvent("window", { timeout: Math.min(remainingMs, 250) });
+  - |
+    await locator.click({ timeout: timeoutMs });

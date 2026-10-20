@@ -182,6 +182,15 @@ export const aiInputSmallCompactShell = "rounded-[19px] px-xs pt-0 pb-0";
 /** Expanded small keeps the tighter shell spacing from the compact composer. */
 export const aiInputSmallExpandedShell = "px-xs pt-sm pb-0";
 
+/*
+ * With attachments staged, the shell's top inset plus the attachment row's
+ * pt-xs (its focus-ring room) equals the side inset, so the first tile sits as
+ * far from the top edge as from the leading edge.
+ */
+export const aiInputAttachmentShell = "px-lg pt-md pb-md";
+
+export const aiInputSmallAttachmentShell = "px-xs pt-0 pb-0";
+
 export const aiInputSmallShellMotion = "ai-input-small-shell-motion";
 
 /** Prompt and toolbar share one resize surface so attachments stay fixed above them. */
@@ -259,7 +268,22 @@ export const aiInputVoiceRecordingControl =
  * rather than showing it.
  */
 export const aiInputQuoteAttachment =
-  "flex size-12 items-center justify-center overflow-clip rounded-md bg-panel-bg-file text-ai-input-header-text-secondary outline-none focus-visible:shadow-focus-gray";
+  "flex size-12 items-center justify-center overflow-clip rounded-xl bg-panel-bg-file text-ai-input-header-text-secondary outline-none focus-visible:shadow-focus-gray";
+
+/**
+ * A block of text staged for the next message, such as a Routine row. It is the
+ * file chip's footprint widened for a title and the "Show in text field"
+ * control, so a mixed row keeps one 48px height.
+ */
+export const aiInputSnippetAttachment =
+  "flex w-60 items-start gap-sm rounded-xl bg-popup-primary p-sm shadow-[inset_0_0_0_var(--border-width-0-5)_var(--color-border-primary)]";
+
+/** The file chip's icon surface; a brand mark sits on it at glyph size. */
+export const aiInputSnippetIconSurface =
+  "flex w-9 shrink-0 items-center justify-center self-stretch rounded-sm bg-panel-bg-file text-ai-input-header-text-secondary [&>img]:size-5 [&>svg]:size-5";
+
+export const aiInputSnippetExpand =
+  "inline-flex max-w-full items-center gap-xxs self-start rounded-xs text-ai-input-panel-text-attachment-secondary outline-none hover:text-ai-input-panel-text-attachment-primary focus-visible:shadow-focus-gray";
 
 /** Quote hover detail — the routine-item hover card's tighter padding. */
 export const aiInputQuoteHoverCard = "px-md py-sm";
@@ -279,7 +303,7 @@ export const aiInputQuotePreviewText =
  * as an upload settles.
  */
 export const aiInputImageAttachmentTile =
-  "flex size-12 items-center justify-center overflow-clip rounded-md";
+  "flex size-12 items-center justify-center overflow-clip rounded-xl";
 
 /** A settled thumbnail keeps the attachment fill and hairline it always had. */
 export const aiInputImageAttachmentReady = `${aiInputImageAttachmentTile} border-[0.5px] border-primary bg-ai-input-panel-bg-attachment`;

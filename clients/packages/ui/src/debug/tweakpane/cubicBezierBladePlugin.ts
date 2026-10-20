@@ -1,3 +1,4 @@
+import { uiClock, type CancelUiTimer } from "../../clock";
 import {
   BladeApi,
   BladeController,
@@ -77,7 +78,7 @@ class CubicBezierView implements View {
   private readonly anchorEnd: SVGCircleElement;
   private readonly readoutText: HTMLElement;
   private readonly copyButton: HTMLButtonElement;
-  private copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+  private copyFeedbackTimer: CancelUiTimer | null = null;
   private dragHandle: "p1" | "p2" | null = null;
 
   constructor(config: CubicBezierViewConfig) {
@@ -200,14 +201,13 @@ class CubicBezierView implements View {
       textarea.remove();
     }
 
-    if (this.copyFeedbackTimer) {
-      clearTimeout(this.copyFeedbackTimer);
-    }
+    this.copyFeedbackTimer?.();
     this.copyButton.textContent = "copied";
-    this.copyFeedbackTimer = setTimeout(() => {
+    // motion
+    this.copyFeedbackTimer = uiClock.after(1200, () => {
       this.copyButton.textContent = "copy";
       this.copyFeedbackTimer = null;
-    }, 1200);
+    });
   }
 
   render(value: CubicBezier) {

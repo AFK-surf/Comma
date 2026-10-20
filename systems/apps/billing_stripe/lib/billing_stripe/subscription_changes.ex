@@ -25,7 +25,7 @@ defmodule BillingStripe.SubscriptionChanges do
       {:ok, target} = target_plan(attrs)
       same_period!(plan, target)
       purchasable_target!(plan, target)
-      at = System.system_time(:second)
+      at = SystemsClock.system_time(:second)
 
       if target.grant_credits > plan.grant_credits do
         case api().preview_invoice(
@@ -155,7 +155,7 @@ defmodule BillingStripe.SubscriptionChanges do
                 get_in(current, ["items", "data", Access.at(0), "current_period_start"])
 
             if not is_integer(attrs[:proration_date]) or attrs.proration_date < period_start or
-                 attrs.proration_date > System.system_time(:second),
+                 attrs.proration_date > SystemsClock.system_time(:second),
                do: repo().rollback(:subscription_quote_changed)
 
             schedule = current["schedule"]
@@ -171,7 +171,7 @@ defmodule BillingStripe.SubscriptionChanges do
               "current_price_id" => plan.provider_price_id,
               "period_end" => period_end(current),
               "schedule_id" => downgrade,
-              "created_at" => System.system_time(:second),
+              "created_at" => SystemsClock.system_time(:second),
               "params" => %{
                 "metadata" => %{"comma_upgrade_key" => attrs.idempotency_key},
                 "items" => [%{"id" => item["id"], "price" => target.provider_price_id}],
@@ -283,7 +283,7 @@ defmodule BillingStripe.SubscriptionChanges do
              invoice["billing_reason"] == "subscription_update" do
           {:ok, invoice["id"]}
         else
-          if System.system_time(:second) - operation["created_at"] >= 23 * 3600 do
+          if SystemsClock.system_time(:second) - operation["created_at"] >= 23 * 3600 do
             {:error, :stripe_upgrade_result_unknown}
           else
             with {:ok, updated} <-
@@ -640,11 +640,11 @@ defmodule BillingStripe.SubscriptionChanges do
     )
   end
 
-  defp repo, do: Application.fetch_env!(:billing_stripe, :repo)
-  defp api, do: Application.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
+  defp repo, do: SystemsRuntime.fetch_env!(:billing_stripe, :repo)
+  defp api, do: SystemsRuntime.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
 
   defp opts,
-    do: [api_key: Application.fetch_env!(:billing_stripe, :secret_key), response_as: :map]
+    do: [api_key: SystemsRuntime.fetch_env!(:billing_stripe, :secret_key), response_as: :map]
 
   defp write_opts(key), do: Keyword.put(opts(), :idempotency_key, key)
 end

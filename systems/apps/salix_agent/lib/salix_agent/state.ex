@@ -2,11 +2,10 @@ defmodule SalixAgent.State do
   @moduledoc """
   Agent root state shell used by the generic lease/claim store.
 
-  Runtime session state does not live here. Internal sessions are owned by
-  `SalixAgent.InternalSessionStore` / `SalixAgent.InternalSessionActor`; external
-  runtime sessions are owned by `SalixAgent.ExternalAgentRuntime` /
-  `SalixAgent.ExternalSessionActor`. This module intentionally ignores runtime
-  session events so new code cannot rebuild the old agent-global session map.
+  Runtime session state does not live here. Sessions are owned by
+  `SalixAgent.InternalSessionStore` / `SalixAgent.InternalSessionActor`. This
+  module intentionally ignores runtime session events so new code cannot
+  rebuild the old agent-global session map.
   """
 
   @behaviour SalixStore.StateMachine

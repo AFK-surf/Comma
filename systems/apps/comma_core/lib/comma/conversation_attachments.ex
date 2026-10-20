@@ -144,12 +144,5 @@ defmodule Comma.ConversationAttachments do
     end
   end
 
-  # The HTTP download filename uses the sender's name or workspace basename.
-  # Canonical Message content separately retains its original path.
-  defp file_name(block) do
-    [block["file_name"], block["title"], Path.basename(to_string(block["path"] || ""))]
-    |> Enum.map(&String.trim(to_string(&1 || "")))
-    |> Enum.find("attachment", &(&1 != "" and &1 not in [".", "..", "/"]))
-    |> Path.basename()
-  end
+  defp file_name(block), do: SalixIM.ConversationAttachments.file_name(block)
 end

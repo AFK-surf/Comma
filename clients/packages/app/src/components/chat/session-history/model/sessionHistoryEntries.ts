@@ -1,5 +1,4 @@
-import { sameSessionHistoryValue } from "@comma/session-history-runtime/records";
-import type { SessionHistoryRecord } from "../../../../runtime-chat/sessionHistoryBridge";
+import type { SessionHistoryRecord } from "../useSessionHistory";
 import {
   argumentSummary,
   sessionDataObject,
@@ -55,9 +54,30 @@ export function sameSessionHistoryEntry(
 const entryOrderKey = (id: string) =>
   /^\d{1,20}$/.test(id) ? id.padStart(32, "0") : id;
 
+// The ledger and its timeline project the same window, and the timeline does
+// so again on every clock tick. Entries are read-only, so they share one result.
+let lastEntries:
+  | {
+      records: readonly SessionHistoryRecord[];
+      items: readonly SessionItemPresentation[];
+      entries: readonly SessionHistoryEntry[];
+    }
+  | undefined;
+
 /** A loaded-window projection. Only explicit call ids join lifecycle records;
  * names and adjacency never join concurrent calls or unrelated runtime notices. */
 export function sessionHistoryEntries(
+  records: readonly SessionHistoryRecord[],
+  items: readonly SessionItemPresentation[]
+): readonly SessionHistoryEntry[] {
+  if (lastEntries?.records === records && lastEntries.items === items)
+    return lastEntries.entries;
+  const entries = projectSessionHistoryEntries(records, items);
+  lastEntries = { records, items, entries };
+  return entries;
+}
+
+function projectSessionHistoryEntries(
   records: readonly SessionHistoryRecord[],
   items: readonly SessionItemPresentation[]
 ): SessionHistoryEntry[] {
@@ -185,4 +205,28 @@ export function sessionHistoryEntries(
     const bId = entryOrderKey(b.id);
     return time || (aId < bId ? -1 : aId > bId ? 1 : 0);
   });
+}
+
+/** Structural equality for JSON-like history values: records and the plain items projected from them. */
+export function sameSessionHistoryValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null)
+    return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let index = 0; index < a.length; index++)
+      if (!sameSessionHistoryValue(a[index], b[index])) return false;
+    return true;
+  }
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  let keys = 0;
+  for (const key in left) {
+    if (!Object.hasOwn(left, key)) continue;
+    keys++;
+    if (!Object.hasOwn(right, key) || !sameSessionHistoryValue(left[key], right[key]))
+      return false;
+  }
+  for (const key in right) if (Object.hasOwn(right, key)) keys--;
+  return keys === 0;
 }

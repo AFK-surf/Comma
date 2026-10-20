@@ -13,7 +13,7 @@ defmodule BridgeForTeams.SlackHistoryOnboarding.Reconciler do
   this driver introduces no second workflow state machine.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   import Ecto.Query
   require Logger
@@ -39,13 +39,15 @@ defmodule BridgeForTeams.SlackHistoryOnboarding.Reconciler do
 
   @spec start_link(keyword()) :: GenServer.on_start() | :ignore
   def start_link(opts \\ []) do
-    if enabled?(), do: GenServer.start_link(__MODULE__, opts, name: @name), else: :ignore
+    if enabled?(),
+      do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: @name),
+      else: :ignore
   end
 
   @doc "Wake the background driver after a run is created."
   @spec notify(Ecto.UUID.t()) :: :ok
   def notify(run_id) when is_binary(run_id) do
-    if Process.whereis(@name), do: GenServer.cast(@name, {:run, run_id})
+    if SystemsRuntime.Proc.whereis(@name), do: SystemsRuntime.Server.cast(@name, {:run, run_id})
     :ok
   end
 
@@ -59,7 +61,7 @@ defmodule BridgeForTeams.SlackHistoryOnboarding.Reconciler do
   @spec processor_configured?() :: boolean()
   def processor_configured? do
     valid_derivation_evidence?(config(:derivation_evidence, nil)) and
-      valid_processor?(Application.get_env(:bridge_for_teams_core, :sourced_context_processor))
+      valid_processor?(SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_processor))
   end
 
   @doc "Advance one selected or oldest runnable import by at most one durable step."
@@ -109,7 +111,7 @@ defmodule BridgeForTeams.SlackHistoryOnboarding.Reconciler do
   def handle_info(:drain, state), do: {:noreply, %{state | timer_ref: nil}}
 
   def handle_info({ref, result}, %{task: ref} = state) when is_reference(ref) do
-    Process.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
     log_result(result)
 
     delay = if match?({:ok, %{advanced?: true}}, result), do: 0, else: state.interval_ms
@@ -129,7 +131,7 @@ defmodule BridgeForTeams.SlackHistoryOnboarding.Reconciler do
     preferred_run_id = state.preferred_run_id
 
     task =
-      Task.Supervisor.async_nolink(BridgeForTeams.TaskSupervisor, fn ->
+      SystemsRuntime.TaskSupervisor.async_nolink(BridgeForTeams.TaskSupervisor, fn ->
         if preferred_run_id, do: run_once(run_id: preferred_run_id), else: run_once()
       end)
 
@@ -138,13 +140,13 @@ defmodule BridgeForTeams.SlackHistoryOnboarding.Reconciler do
 
   defp schedule_drain(state, delay_ms) do
     state = cancel_scheduled_drain(state)
-    %{state | timer_ref: Process.send_after(self(), :drain, delay_ms)}
+    %{state | timer_ref: SystemsClock.send_after(SystemsRuntime.Proc.self(), :drain, delay_ms)}
   end
 
   defp cancel_scheduled_drain(%{timer_ref: nil} = state), do: state
 
   defp cancel_scheduled_drain(%{timer_ref: timer_ref} = state) do
-    Process.cancel_timer(timer_ref)
+    SystemsClock.cancel_timer(timer_ref)
     %{state | timer_ref: nil}
   end
 
@@ -186,7 +188,7 @@ defmodule BridgeForTeams.SlackHistoryOnboarding.Reconciler do
   end
 
   defp oldest_runnable do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     case Repo.one(
            from(run in SlackHistoryImportRun,
@@ -267,7 +269,7 @@ defmodule BridgeForTeams.SlackHistoryOnboarding.Reconciler do
         :error -> []
       end
 
-    worker_id = "slack-history:#{node()}:#{System.unique_integer([:positive])}"
+    worker_id = "slack-history:#{node()}:#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     case Derivations.process(run.derivation_id, worker_id, processor_opts) do
       {:ok, %{run: next_run}} -> result(run, next_run, true)
@@ -347,7 +349,7 @@ defmodule BridgeForTeams.SlackHistoryOnboarding.Reconciler do
 
   defp config(key, default) do
     :bridge_for_teams_core
-    |> Application.get_env(__MODULE__, [])
+    |> SystemsRuntime.get_env(__MODULE__, [])
     |> Keyword.get(key, default)
   end
 

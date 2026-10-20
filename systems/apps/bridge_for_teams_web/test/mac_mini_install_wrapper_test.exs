@@ -6,7 +6,10 @@ defmodule BridgeForTeamsWeb.MacMiniInstallWrapperTest do
 
   setup do
     {:ok, org} =
-      Orgs.create_org(%{"name" => "Org", "slug" => "org-#{System.unique_integer([:positive])}"})
+      Orgs.create_org(%{
+        "name" => "Org",
+        "slug" => "org-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      })
 
     %{org: org}
   end
@@ -41,7 +44,10 @@ defmodule BridgeForTeamsWeb.MacMiniInstallWrapperTest do
 
   defp execute_response(script) do
     root =
-      Path.join(System.tmp_dir!(), "bft-wrapper-response-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "bft-wrapper-response-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
 
     path = Path.join(root, "response.sh")
     File.mkdir_p!(root)

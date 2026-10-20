@@ -6,7 +6,7 @@ defmodule SalixSignalProto.SessionOracleTest do
   # internal randomness, so every check is a round trip: what one side sends,
   # the other must decrypt to the same plaintext. Run with
   # `--include signal_oracle` and COMMA_SIGNAL_ORACLE=host:port.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   import SalixSignalProto.Test.SessionFixtures, only: [context: 4, responder: 0]
@@ -23,7 +23,8 @@ defmodule SalixSignalProto.SessionOracleTest do
   @peer Address.new("00000000-0000-4000-8000-000000000012", 2)
 
   setup do
-    {:ok, oracle: Oracle.connect!(), store: "peer-#{System.unique_integer([:positive])}"}
+    {:ok,
+     oracle: Oracle.connect!(), store: "peer-#{SystemsRuntime.Proc.unique_integer([:positive])}"}
   end
 
   defp wire_address(%Address{name: name, device_id: device_id}),
@@ -40,7 +41,7 @@ defmodule SalixSignalProto.SessionOracleTest do
   end
 
   defp comma_context(registration_id \\ 1234) do
-    context(:crypto.strong_rand_bytes(32), registration_id, @comma, @peer)
+    context(SystemsRuntime.Proc.random_bytes(32), registration_id, @comma, @peer)
   end
 
   # --- The oracle sends and receives on its session with Comma ---
@@ -101,7 +102,7 @@ defmodule SalixSignalProto.SessionOracleTest do
               schedule <- list_of(schedule_step(), min_length: 100, max_length: 140),
               max_runs: 2
             ) do
-        store = "#{store}-#{System.unique_integer([:positive])}"
+        store = "#{store}-#{SystemsRuntime.Proc.unique_integer([:positive])}"
         {_peer_identity, bundle, _kem} = oracle_bundle(oracle, store, true)
         ctx = comma_context()
         {:ok, record} = Session.process_bundle(nil, bundle, ctx)
@@ -123,7 +124,7 @@ defmodule SalixSignalProto.SessionOracleTest do
       store = "#{store}-#{form}"
       {_peer_identity, bundle, kem} = oracle_bundle(oracle, store, false)
       ctx = comma_context()
-      ciphertext = <<8>> <> :crypto.strong_rand_bytes(1568)
+      ciphertext = <<8>> <> SystemsRuntime.Proc.random_bytes(1568)
       <<8, raw_ciphertext::binary>> = ciphertext
       z = binary_part(kem.secret, 1 + 3136, 32)
       text_form = shake256([z, :crypto.hash(:sha3_256, raw_ciphertext)])
@@ -160,14 +161,14 @@ defmodule SalixSignalProto.SessionOracleTest do
         local_identity: ctx.identity.public,
         remote_identity: bundle.identity_key,
         base_key: ephemeral.public,
-        ratchet_private: :crypto.strong_rand_bytes(32),
+        ratchet_private: SystemsRuntime.Proc.random_bytes(32),
         signed_pre_key: bundle.signed_pre_key,
         pending: %{
           one_time_pre_key_id: nil,
           signed_pre_key_id: bundle.signed_pre_key_id,
           kem_pre_key_id: bundle.kem_pre_key_id,
           kem_ciphertext: kem_ciphertext,
-          created_at_ms: System.system_time(:millisecond)
+          created_at_ms: SystemsClock.system_time(:millisecond)
         },
         local_registration_id: ctx.registration_id,
         remote_registration_id: bundle.registration_id,
@@ -260,7 +261,7 @@ defmodule SalixSignalProto.SessionOracleTest do
               schedule <- list_of(schedule_step(), min_length: 100, max_length: 140),
               max_runs: 2
             ) do
-        store = "#{store}-#{System.unique_integer([:positive])}"
+        store = "#{store}-#{SystemsRuntime.Proc.unique_integer([:positive])}"
         {record, ctx, keys} = oracle_starts(oracle, store)
         converse(oracle, store, %{record: record, oracle_ready: true}, ctx, keys, schedule)
       end
@@ -356,13 +357,13 @@ defmodule SalixSignalProto.SessionOracleTest do
     do: send_from(:comma, state, oracle, store, ctx)
 
   defp send_from(:comma, state, _oracle, _store, ctx) do
-    plaintext = "comma #{System.unique_integer([:positive])}"
+    plaintext = "comma #{SystemsRuntime.Proc.unique_integer([:positive])}"
     {:ok, message, record} = Session.encrypt(state.record, plaintext, ctx)
     %{state | record: record, to_oracle: [{message, plaintext} | state.to_oracle]}
   end
 
   defp send_from(:oracle, state, oracle, store, _ctx) do
-    plaintext = "oracle #{System.unique_integer([:positive])}"
+    plaintext = "oracle #{SystemsRuntime.Proc.unique_integer([:positive])}"
     %{state | to_comma: [{oracle_encrypt(oracle, store, plaintext), plaintext} | state.to_comma]}
   end
 

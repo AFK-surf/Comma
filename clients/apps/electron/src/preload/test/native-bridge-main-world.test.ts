@@ -158,7 +158,7 @@ describe("installCommaNativeMainWorldBridge", () => {
     };
     const snapshot = {
       session: input.session,
-      snapshot: { items: [], source: "cache" },
+      snapshot: { sessions: [] },
     };
     const get = vi.fn(async () => snapshot);
     const subscribe = vi.fn(
@@ -178,16 +178,16 @@ describe("installCommaNativeMainWorldBridge", () => {
       },
       stateChannels: {
         get,
-        paths: [{ method: "state", namespace: "productInbox" }],
+        paths: [{ method: "state", namespace: "chat" }],
         subscribe,
       },
-      productInbox: { state: vi.fn() },
+      chat: { state: vi.fn() },
     };
 
     installCommaNativeMainWorldBridge(preloadKey, publicKey);
 
     const bridge = testRoot()[publicKey] as {
-      productInbox: {
+      chat: {
         state: {
           (input: unknown): Promise<unknown>;
           get(input: unknown): Promise<unknown>;
@@ -200,22 +200,22 @@ describe("installCommaNativeMainWorldBridge", () => {
     };
     const listener = vi.fn();
 
-    await expect(bridge.productInbox.state(input)).resolves.toEqual(snapshot);
-    await expect(bridge.productInbox.state.get(input)).resolves.toEqual(snapshot);
-    bridge.productInbox.state.subscribe(listener, input);
+    await expect(bridge.chat.state(input)).resolves.toEqual(snapshot);
+    await expect(bridge.chat.state.get(input)).resolves.toEqual(snapshot);
+    bridge.chat.state.subscribe(listener, input);
 
     expect(get).toHaveBeenNthCalledWith(
       1,
-      { method: "state", namespace: "productInbox" },
+      { method: "state", namespace: "chat" },
       input
     );
     expect(get).toHaveBeenNthCalledWith(
       2,
-      { method: "state", namespace: "productInbox" },
+      { method: "state", namespace: "chat" },
       input
     );
     expect(subscribe).toHaveBeenCalledWith(
-      { method: "state", namespace: "productInbox" },
+      { method: "state", namespace: "chat" },
       listener,
       input
     );

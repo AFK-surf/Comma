@@ -2,7 +2,7 @@ defmodule SalixSignalProto.RegistrationTest do
   # Registration and account-attribute bodies (CRS-02 §3, §5) and the
   # service rules on them that a peer can see (CRS-02 §3.1 validation rules,
   # CRS-15 §3.3).
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.{AccountKeys, Keys, Registration}
   alias SalixSignalProto.PreKeys.Store

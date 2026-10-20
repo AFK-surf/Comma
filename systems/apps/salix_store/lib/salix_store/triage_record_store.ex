@@ -122,8 +122,9 @@ defmodule SalixStore.TriageRecordStore do
   end
 
   defp backend,
-    do: Application.get_env(:salix_store, :triage_record_backend, TriageRecords)
+    do: SystemsRuntime.get_env(:salix_store, :triage_record_backend, TriageRecords)
 
   defp supports?(backend, function, arity),
-    do: Code.ensure_loaded?(backend) and function_exported?(backend, function, arity)
+    do:
+      SystemsRuntime.Proc.ensure_loaded?(backend) and function_exported?(backend, function, arity)
 end

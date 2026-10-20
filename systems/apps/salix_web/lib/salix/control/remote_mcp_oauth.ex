@@ -538,7 +538,7 @@ defmodule Salix.Control.RemoteMCPOAuth do
       )
 
     with {:ok, redirect_after} <- validate_redirect_after(params["redirect_after"]) do
-      now = System.system_time(:millisecond)
+      now = SystemsClock.system_time(:millisecond)
 
       record = %{
         "state" => state,
@@ -928,7 +928,7 @@ defmodule Salix.Control.RemoteMCPOAuth do
     case OAuth.valid_token(
            connection_id,
            fn record -> refresh_tokens(tenant_id, record) end,
-           now: System.system_time(:millisecond) + @refresh_leeway_ms
+           now: SystemsClock.system_time(:millisecond) + @refresh_leeway_ms
          ) do
       {:ok, token} ->
         {:ok, token}
@@ -953,7 +953,7 @@ defmodule Salix.Control.RemoteMCPOAuth do
   defp should_refresh?(conn) do
     case conn["expires_at"] do
       expires_at when is_integer(expires_at) and expires_at > 0 ->
-        System.system_time(:millisecond) >= expires_at - @refresh_leeway_ms
+        SystemsClock.system_time(:millisecond) >= expires_at - @refresh_leeway_ms
 
       _ ->
         false
@@ -1325,7 +1325,7 @@ defmodule Salix.Control.RemoteMCPOAuth do
   defp split_scope(_scopes), do: []
 
   defp expires_at_ms(expires_in) when is_number(expires_in) and expires_in > 0,
-    do: System.system_time(:millisecond) + trunc(expires_in) * 1000
+    do: SystemsClock.system_time(:millisecond) + trunc(expires_in) * 1000
 
   defp expires_at_ms(_expires_in), do: nil
 
@@ -1351,8 +1351,8 @@ defmodule Salix.Control.RemoteMCPOAuth do
       "/v1/oauth/mcp/callback"
   end
 
-  defp new_token, do: Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
-  defp new_state, do: Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+  defp new_token, do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
+  defp new_state, do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(16), padding: false)
 
   defp code_challenge_s256(verifier),
     do: Base.url_encode64(:crypto.hash(:sha256, verifier), padding: false)
@@ -1374,7 +1374,9 @@ defmodule Salix.Control.RemoteMCPOAuth do
       true ->
         status = if error_message, do: 400, else: 200
         service = (auth && auth["alias"]) || "remote MCP"
-        {:page, status, SalixWeb.OAuthCallbackPage.render_mcp(service, error_message)}
+        server_url = auth && get_in(auth, ["oauth_metadata", "resource_server_url"])
+
+        {:page, status, SalixWeb.OAuthCallbackPage.render_mcp(service, error_message, server_url)}
     end
   end
 
@@ -1484,7 +1486,7 @@ defmodule Salix.Control.RemoteMCPOAuth do
   defp oauth_return_base_urls do
     [
       SalixWeb.Application.public_base_url()
-      | Application.get_env(:salix_web, :oauth_return_base_urls, [])
+      | SystemsRuntime.get_env(:salix_web, :oauth_return_base_urls, [])
     ]
     |> Enum.map(&string/1)
     |> Enum.reject(&(&1 == ""))

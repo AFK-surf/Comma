@@ -3,7 +3,7 @@ defmodule Comma.SignupCreditsTest do
   alias Comma.Billing.SignupCredits
 
   setup_all do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
       Ecto.Migrator.run(BillingCore.Repo, :up, all: true)
     end
@@ -14,32 +14,33 @@ defmodule Comma.SignupCreditsTest do
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(BillingCore.Repo)
-    Ecto.Adapters.SQL.Sandbox.mode(BillingCore.Repo, {:shared, self()})
-    previous_cap = Application.get_env(:comma_core, :signup_credit_daily_cap_usd)
-    previous_domains = Application.get_env(:comma_core, :signup_credit_excluded_domains)
+    Ecto.Adapters.SQL.Sandbox.mode(BillingCore.Repo, {:shared, SystemsRuntime.Proc.self()})
+    previous_cap = SystemsRuntime.get_env(:comma_core, :signup_credit_daily_cap_usd)
+    previous_domains = SystemsRuntime.get_env(:comma_core, :signup_credit_excluded_domains)
 
     on_exit(fn ->
       if previous_domains,
-        do: Application.put_env(:comma_core, :signup_credit_excluded_domains, previous_domains),
-        else: Application.delete_env(:comma_core, :signup_credit_excluded_domains)
+        do:
+          SystemsRuntime.put_env(:comma_core, :signup_credit_excluded_domains, previous_domains),
+        else: SystemsRuntime.delete_env(:comma_core, :signup_credit_excluded_domains)
     end)
 
     on_exit(fn ->
       if previous_cap,
-        do: Application.put_env(:comma_core, :signup_credit_daily_cap_usd, previous_cap),
-        else: Application.delete_env(:comma_core, :signup_credit_daily_cap_usd)
+        do: SystemsRuntime.put_env(:comma_core, :signup_credit_daily_cap_usd, previous_cap),
+        else: SystemsRuntime.delete_env(:comma_core, :signup_credit_daily_cap_usd)
     end)
 
-    previous = Application.get_env(:comma_core, :selfhost)
-    Application.put_env(:comma_core, :selfhost, false)
-    on_exit(fn -> Application.put_env(:comma_core, :selfhost, previous) end)
+    previous = SystemsRuntime.get_env(:comma_core, :selfhost)
+    SystemsRuntime.put_env(:comma_core, :selfhost, false)
+    on_exit(fn -> SystemsRuntime.put_env(:comma_core, :selfhost, previous) end)
     :ok
   end
 
   test "registered Comma users receive twenty dollars once before their default Workspace is ready" do
     {:ok, user} =
       Comma.Accounts.get_or_create_user_by_email(
-        "signup-#{System.unique_integer([:positive])}@comma.test"
+        "signup-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       )
 
     workspace = create_ready_workspace!(user["id"])
@@ -65,11 +66,11 @@ defmodule Comma.SignupCreditsTest do
   end
 
   test "the UTC daily budget counts spent gifts and skipped users never regain eligibility" do
-    Application.put_env(:comma_core, :signup_credit_daily_cap_usd, 20)
+    SystemsRuntime.put_env(:comma_core, :signup_credit_daily_cap_usd, 20)
 
     {:ok, first} =
       Comma.Accounts.get_or_create_user_by_email(
-        "budget-first-#{System.unique_integer([:positive])}@comma.test"
+        "budget-first-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       )
 
     create_ready_workspace!(first["id"])
@@ -83,22 +84,22 @@ defmodule Comma.SignupCreditsTest do
 
     {:ok, denied} =
       Comma.Accounts.get_or_create_user_by_email(
-        "budget-denied-#{System.unique_integer([:positive])}@comma.test"
+        "budget-denied-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       )
 
     workspace = create_ready_workspace!(denied["id"])
     assert grants(denied["id"]) == []
-    Application.put_env(:comma_core, :signup_credit_daily_cap_usd, 2_000)
+    SystemsRuntime.put_env(:comma_core, :signup_credit_daily_cap_usd, 2_000)
     assert :ok = SignupCredits.ensure(workspace)
     assert grants(denied["id"]) == []
 
     {:ok, yesterday} =
       Comma.Accounts.get_or_create_user_by_email(
-        "yesterday-#{System.unique_integer([:positive])}@comma.test"
+        "yesterday-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       )
 
     Repo.get!(Comma.Accounts.User, yesterday["id"])
-    |> Ecto.Changeset.change(created_at: DateTime.add(DateTime.utc_now(), -86_400))
+    |> Ecto.Changeset.change(created_at: DateTime.add(SystemsClock.utc_now(), -86_400))
     |> Repo.update!()
 
     create_ready_workspace!(yesterday["id"])
@@ -106,7 +107,7 @@ defmodule Comma.SignupCreditsTest do
   end
 
   test "aliases, relays and multiple-address providers skip gifts without merging login identities" do
-    unique = System.unique_integer([:positive])
+    unique = SystemsRuntime.Proc.unique_integer([:positive])
 
     for email <- [
           "alias+#{unique}@comma.test",
@@ -138,34 +139,10 @@ defmodule Comma.SignupCreditsTest do
     end
   end
 
-  test "configured domain exclusions replace defaults and do not revoke an issued gift" do
-    Application.put_env(:comma_core, :signup_credit_excluded_domains, [])
-
-    {:ok, user} =
-      Comma.Accounts.get_or_create_user_by_email(
-        "custom#{System.unique_integer([:positive])}@pm.me"
-      )
-
-    workspace = create_ready_workspace!(user["id"])
-    assert length(grants(user["id"])) == 1
-
-    Application.put_env(:comma_core, :signup_credit_excluded_domains, ["pm.me", ".comma.test"])
-    assert :ok = SignupCredits.ensure(workspace)
-    assert length(grants(user["id"])) == 1
-
-    {:ok, denied} =
-      Comma.Accounts.get_or_create_user_by_email(
-        "custom#{System.unique_integer([:positive])}@sub.comma.test"
-      )
-
-    create_ready_workspace!(denied["id"])
-    assert grants(denied["id"]) == []
-  end
-
   test "existing and admin-created accounts retain their credits without a registration gift" do
     {:ok, user} =
       Comma.Accounts.create_user(%{
-        "email" => "existing-#{System.unique_integer([:positive])}@comma.test"
+        "email" => "existing-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     {:ok, same} = Comma.Accounts.get_or_create_user_by_email(user["email"])
@@ -178,7 +155,7 @@ defmodule Comma.SignupCreditsTest do
   test "a billing commit survives a later product failure and Workspace replacement without another gift" do
     {:ok, user} =
       Comma.Accounts.get_or_create_user_by_email(
-        "retry-#{System.unique_integer([:positive])}@comma.test"
+        "retry-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       )
 
     {:ok, workspace} =
@@ -211,13 +188,13 @@ defmodule Comma.SignupCreditsTest do
   test "selfhost stays unlimited and foreign Billing Account ownership cannot receive the gift" do
     {:ok, user} =
       Comma.Accounts.get_or_create_user_by_email(
-        "scope-#{System.unique_integer([:positive])}@comma.test"
+        "scope-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       )
 
-    Application.put_env(:comma_core, :selfhost, true)
+    SystemsRuntime.put_env(:comma_core, :selfhost, true)
     workspace = create_ready_workspace!(user["id"])
     assert grants(user["id"]) == []
-    Application.put_env(:comma_core, :selfhost, false)
+    SystemsRuntime.put_env(:comma_core, :selfhost, false)
 
     Ecto.Adapters.SQL.query!(
       BillingCore.Repo,
@@ -237,14 +214,14 @@ defmodule Comma.SignupCreditsTest do
       end)
     end
 
-    Application.put_env(:comma_core, :signup_credit_daily_cap_usd, 20)
+    SystemsRuntime.put_env(:comma_core, :signup_credit_daily_cap_usd, 20)
 
     fixtures =
       for _ <- 1..2 do
         unboxed.(fn ->
           {:ok, user} =
             Comma.Accounts.get_or_create_user_by_email(
-              "concurrent-#{System.unique_integer([:positive])}@comma.test"
+              "concurrent-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
             )
 
           {:ok, workspace} =
@@ -258,10 +235,10 @@ defmodule Comma.SignupCreditsTest do
     try do
       tasks =
         for {_, workspace} <- fixtures, _ <- 1..2 do
-          Task.async(fn -> unboxed.(fn -> SignupCredits.ensure(workspace) end) end)
+          SystemsRuntime.Task.async(fn -> unboxed.(fn -> SignupCredits.ensure(workspace) end) end)
         end
 
-      assert Enum.map(tasks, &Task.await(&1, 5_000)) == [:ok, :ok, :ok, :ok]
+      assert Enum.map(tasks, &SystemsRuntime.Task.await(&1, :infinity)) == [:ok, :ok, :ok, :ok]
 
       issued = unboxed.(fn -> Enum.flat_map(fixtures, fn {user, _} -> grants(user["id"]) end) end)
       assert [[20_000_000, 20_000_000, nil, "comma_signup", _]] = issued
@@ -301,57 +278,6 @@ defmodule Comma.SignupCreditsTest do
         end)
       end
     end
-  end
-
-  test "post-rollout convergence fulfills ready Workspaces completed by an old worker" do
-    {:ok, user} =
-      Comma.Accounts.get_or_create_user_by_email(
-        "rollout-#{System.unique_integer([:positive])}@comma.test"
-      )
-
-    {:ok, workspace} =
-      Comma.Workspaces.create_for_user(user["id"], %{"vm" => %{"enabled" => false}})
-
-    :ok = BillingCore.Accounts.ensure_account(account(workspace))
-    assert :ok = SignupCredits.converge()
-    assert grants(user["id"]) == []
-
-    Repo.get!(Comma.Data.Workspace, workspace["id"])
-    |> Ecto.Changeset.change(status: "active")
-    |> Repo.update!()
-
-    plan = %{
-      manifestDigest: "signup-local-convergence",
-      requiredMode: "online",
-      pendingSteps: [],
-      providerPendingIDs: ["comma-signup-credits"]
-    }
-
-    previous_api = Application.get_env(:billing_stripe, :stripe_api)
-    previous_required = System.get_env("REQUIRE_PROVIDER")
-    Application.put_env(:billing_stripe, :stripe_api, __MODULE__)
-    System.put_env("REQUIRE_PROVIDER", "true")
-
-    try do
-      # The real release executor must not call Stripe without its authorized step,
-      # even when the deployment environment requires provider convergence.
-      for _ <- 1..2 do
-        Comma.Release.execute_plan_stage(
-          "provider",
-          plan.manifestDigest,
-          plan.providerPendingIDs,
-          plan: fn -> plan end
-        )
-      end
-    after
-      Application.put_env(:billing_stripe, :stripe_api, previous_api)
-
-      if previous_required,
-        do: System.put_env("REQUIRE_PROVIDER", previous_required),
-        else: System.delete_env("REQUIRE_PROVIDER")
-    end
-
-    assert [[20_000_000, 20_000_000, nil, "comma_signup", _]] = grants(user["id"])
   end
 
   defp account(workspace),

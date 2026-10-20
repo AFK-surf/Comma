@@ -14,6 +14,7 @@ import { Button } from "../Button";
 import { InputBase } from "../input/InputBase";
 import { InputField } from "../input";
 import { Text } from "../Text";
+import { uiClock } from "../../clock";
 import { motionDuration } from "../../tokens/motion";
 import { cx, isImeKeyEvent } from "../utils";
 import { LoadingCircleIcon } from "../icons";
@@ -80,6 +81,7 @@ export type LoginEmailProps = LoginCommonProps & {
   defaultEmail?: string;
   onEmailChange?: (email: string) => void;
   onContinueWithEmail?: (email: string) => void;
+  continueDisabled?: boolean;
   googlePending?: boolean;
   googleErrorMessage?: string;
   onContinueWithGoogle?: () => void;
@@ -138,10 +140,10 @@ export const Login = (props: LoginProps) => {
       }
     };
     element?.addEventListener("animationend", release);
-    const timer = setTimeout(() => setExitingStage(null), STAGE_EXIT_FALLBACK_MS);
+    const timer = uiClock.after(STAGE_EXIT_FALLBACK_MS, () => setExitingStage(null));
     return () => {
       element?.removeEventListener("animationend", release);
-      clearTimeout(timer);
+      timer();
     };
   }, [exitingStage]);
 
@@ -197,6 +199,7 @@ const EmailLogin = ({
   disabled = false,
   onEmailChange,
   onContinueWithEmail,
+  continueDisabled = false,
   googlePending = false,
   googleErrorMessage,
   onContinueWithGoogle,
@@ -222,7 +225,7 @@ const EmailLogin = ({
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const trimmedEmail = email.trim();
-    if (disabled || !trimmedEmail) {
+    if (disabled || continueDisabled || !trimmedEmail) {
       return;
     }
     if (!EMAIL_PATTERN.test(trimmedEmail)) {
@@ -312,7 +315,11 @@ const EmailLogin = ({
           {...(hasValidationError ? { errorMessage: copy.email.invalidError } : {})}
           onChange={handleEmailChange}
         />
-        <Button type="submit" className="w-full" disabled={disabled || !email.trim()}>
+        <Button
+          type="submit"
+          className="w-full"
+          disabled={disabled || continueDisabled || !email.trim()}
+        >
           {copy.email.continueAction}
         </Button>
       </form>
@@ -421,7 +428,7 @@ const VerificationLogin = ({
         </div>
       )}
 
-      {onResend && !errorMessage && (
+      {onResend && (
         <Text size="textSm" weight="regular" className="text-center text-primary">
           <span className="text-quaternary">{copy.verification.codeNotReceived} </span>
           {resendSeconds > 0 ? (
@@ -534,10 +541,10 @@ const VerificationCodeInput = ({
     }
 
     setPoppingIndexes(entering);
-    const timer = window.setTimeout(() => {
+    const timer = uiClock.after(motionDuration.feedbackIn, () => {
       setPoppingIndexes(new Set());
-    }, motionDuration.feedbackIn);
-    return () => window.clearTimeout(timer);
+    });
+    return () => timer();
   }, [disabled, value]);
 
   // Moves the hidden input to a cell. A filled cell is selected as a whole

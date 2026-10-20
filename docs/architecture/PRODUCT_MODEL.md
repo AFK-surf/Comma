@@ -31,7 +31,7 @@ The broader [domain concept inventory](DOMAIN_CONCEPTS.md) records current conce
 | Participant         | Conversation 的接收目标                                | 决定消息通知谁；Participant 不是 Message sender 的同义词                                        |
 | Runtime Session     | Agent 处理输入、执行模型和工具的上下文                 | Session 属于 Agent runtime；已配置 Router 是 1:1，Worker 是 0:N                                 |
 | 工作结果 / Artifact | Task 或主动工作产生的可见结果                          | 由 Task 产生，可以继续被用户或 Agent 使用                                                       |
-| Comma Center Recommendation | 当前 Workspace 成员的结构化 briefing 产品 projection | 不是 Conversation Message；prompt action 只填充 composer 草稿，用户手动发送才进入 Assistant Chat path |
+| Comma Center Recommendation | 当前 Workspace 成员的结构化 briefing 产品 projection | 不是 Conversation Message；prompt action 只把文本暂存到 composer，用户手动发送才进入 Assistant Chat path |
 
 概念的主干组织关系如下：
 
@@ -78,11 +78,38 @@ Assistant Chat / Agent Task
 A Task is an `agent_task` Conversation with one responsible Worker.
 The Router creates it with `im_api.internal.task.create`, using `agent_id` and self-contained `content`.
 The Worker publishes ordinary result Messages. The Router owns Conversation status changes.
-The owning Router may complete a plain one-shot Task after verified delivery with no remaining work or human decision.
-This path excludes recurring, product-assigned Triage and legacy Workflow Tasks.
+The owning Router may complete a plain one-shot Task after verified delivery with no remaining work or human decision, and a Loop Task as described below.
+This path excludes Schedule-bound, product-assigned Triage and legacy Workflow Tasks.
 Human acceptance remains a separate, version-checked operation. A completed status alone does not prove human acceptance.
 Tasks retain their identity, history, source authority, and participant-owned Sessions.
 See [Tasks](../salix/tasks-background-execution.md).
+
+Delegated work that repeats or keeps watching something becomes one [Loop Task](DOMAIN_CONCEPTS.md#loop-tasks).
+Examples are "every morning at 9", "every 6 hours, 5 times" and "watch PR #12, handle each new comment, stop when it is merged".
+The Router passes `loop` in the same `task.create` call. It never creates one Task for each run and never uses `schedule` for this work.
+It never calls `loop.build` or `loop.create` itself: the Task's Worker runs the work with one Background Loop in the Task.
+
+- The cadence is `cron` with an IANA `timezone` for clock times and days, `every_minutes` for a stated interval, or `events` for "when X happens".
+- `events` is a label of at most 32 characters. It names only the source and the change, such as `New comments on PR #12` or `PR #12 新评论`. The conditions, the people and the work go in `content`, and the stop condition goes in `until`.
+- When the user names no timezone, the Router omits it. The server then uses the requester's device or source timezone.
+- When the request gives no cadence, or a day without a clock time, the Router asks once and proposes a concrete one, such as every day at 09:00. It creates nothing before the answer.
+- `max_runs` comes only from a stated count, `ends_at` only from a stated end date or duration, and `until` only from a stated stop condition. The Router never invents a limit.
+- `content` describes the work of one run with its conditions and people. The cadence and the limits (`max_runs`, `ends_at`, `until`) go only in `loop`.
+- A Loop Task runs with every client closed. The Router omits `runs_on` or uses the Group Cloud VM, never a person's own computer. `task.create` refuses a person's desktop station for a Loop Task.
+- `proactive.watch` stays for following one existing matter for the owner in Home, with no delegated work. `schedule.create` stays for a reminder or message that the Router sends itself.
+
+These recognition rules are Router policy. The server checks only the `loop` value and the placement.
+
+The `loop` value becomes the Task's Background Loop. The Loop holds the cadence, the limits and the runs; the Task shows it.
+A Loop Task stays `active` between runs. Each Worker report is one run, and one failed run does not fail the Task.
+The server refuses `ready_for_review` while the Task's Loop has not ended. `escalated` does not pause the Loop.
+The server ends the Loop and completes the Task at the run limit or the end time, and sends the Router one runtime notice.
+The Router completes the Task when the Worker reports that the stop condition holds, or when the user asks.
+When the Loop stops on its own, the Worker says why in the Task. The Task stays `active` and shows the paused Loop.
+Completing, cancelling, failing or archiving the Task ends its Loop for good. Users can end a Loop Task with Done or Cancel.
+A later user request can give an ended Loop Task a new Loop through `task.update` with `loop` and `command`.
+The server writes the new Loop, sets the Task active and delivers the new Worker command. The new Loop has no runs.
+The Task and its Messages stay. A status change alone does not give the Task a new Loop.
 
 ## Single Session 到底是什么
 
@@ -142,27 +169,27 @@ Router-bound Slack、Feishu、Telegram、WeChat、Signal 直接入站不创建 C
 
 这也是架构图把 `16 · Electron 已认证产品命令` 中的 Session 明确写成 Auth Session 的原因。
 
-## Compute、External Worker 与 Service Route
+## Compute 与 Service Route
 
 Comma Workspace 与 BFT Agent Swarm（代码历史名 `Project`）是 Compute Environment 的唯一产品 owner。产品层保存 ACL、intent 和有界 projection；普通成员不能选择 Cloudflare 或 Agent VMM。共享 Salix Compute SSOT 持有 `ComputePool → ProviderBinding/Allocation → Environment → Workload → RuntimeInstance`，并以 exact revision、generation、connection epoch 与 current authority 拒绝迟到结果。
 
-External Worker Binding 恰好有两种稳定形态：`connected_runtime(device_runtime_id)` 与 `compute_workload(workload_id, runtime_spec)`。Provider-native endpoint、registration 或 container 不进入 Agent or Message。活跃 External Session 保持原 stable target；新的 RuntimeInstance connection epoch 只有完成 durable catch-up 后才能签发 exact session/runtime/epoch capability。
+External Runtime 已退役：Worker 绑定 station，已存的 External Session 只读保留。Provider-native endpoint、registration 或 container 不进入 Agent or Message。
 
 Service Route 是 Workload 间的 capability-gated authority，不是某个 Provider 的 service 记录。prepare/activate/renew/drain/revoke/expiry 由同一 provider-neutral ledger 表达；每次访问都重查 source/destination Workload generation、Environment authority、exact route capability 与 expiry。Unsupported hosting capability fail closed。
 
 Comma Desktop 的“将此 Mac 作为计算节点”是显式 opt-in 的 Compute capacity。Electron Main 按 audience 和原 subject 保存接入意图，并冻结每次云操作的当前 Session 代次。Renderer 只消费生成式 native capability。合法启用负责安装和注册，再由原 owner 准备初始 Shell。本机安装成功不证明 Salix ready。同账号重新登录通过专用设备持有证明恢复原接入。正常移除先确认云撤销，再把同注册环境停止到 Retained，保留私有数据。可信本机 operator 可另行确认强制清除精确本地环境或整个 registration。这不授予云内容读取权。资源页只读取有界本机磁盘摘要和环境缓存。
 
-`07D · Compute、External Worker 与 Service Route` 展示产品 owner、共享 SSOT、Provider contract、runtime binding、ServiceRoute 和桌面 Compute Node 的落点。协议语义与迁移边界以 [`compute-behavior-baseline.md`](../salix/compute-behavior-baseline.md)、[`runtime-agent.md`](../salix/runtime-agent.md) 和 [`compute-migration-runbook.md`](../salix/compute-migration-runbook.md) 为准。
+`07D · Compute 与 Service Route` 展示产品 owner、共享 SSOT、Provider contract、ServiceRoute 和桌面 Compute Node 的落点。协议语义与迁移边界以 [`compute-behavior-baseline.md`](../salix/compute-behavior-baseline.md)、[`runtime-agent.md`](../salix/runtime-agent.md) 和 [`compute-migration-runbook.md`](../salix/compute-migration-runbook.md) 为准。
 
 ## Comma Center Recommendation
 
-Comma Center Recommendation 是 `Member × Workspace` 的产品 projection，不是 Salix Conversation Message，也不引入第二条 Conversation mutation path。`Comma.Recommendations` 及其 `RecommendationProfile/RecommendationRun` PostgreSQL 记录是设置、source revision、generation、active run、current snapshot 和 freshness 的唯一产品 SSOT。`send_to_comma` 与 `open_task_form` action 在客户端统一为填充 composer 草稿——用户在输入框里手动发送后才进入既有 Comma Assistant Chat path；`open_url` 也只能使用版本化 contract 注册的字段。
+Comma Center Recommendation 是 `Member × Workspace` 的产品 projection，不是 Salix Conversation Message，也不引入第二条 Conversation mutation path。`Comma.Recommendations` 及其 `RecommendationProfile/RecommendationRun` PostgreSQL 记录是设置、source revision、generation、active run、current snapshot 和 freshness 的唯一产品 SSOT。`send_to_comma` 与 `open_task_form` action 在客户端统一把文本暂存到 composer：输入框上方显示为一张附件卡，"Show in text field" 把它转为草稿文本；发送时附件卡文本以 `Attached text from <App>:` 块（各行 `>` 前缀）放在草稿文本之前，Agent 读到的仍是这段文本；会话里这条消息把它显示为单行附件胶囊（来源图标 + 首行），hover 显示全文。用户在输入框里手动发送后才进入既有 Comma Assistant Chat path。简报摘要里带任务 prompt 的来源链接同样暂存其 prompt。成员任务的 `send_to_comma` 带有来源 URL（如 Linear issue、Gmail 邮件）；以附件卡发送后，客户端在侧栏浏览器打开该来源；`open_url` 也只能使用版本化 contract 注册的字段。
 
 刷新请求先在 profile 行锁下分配单调 generation，并固定当时的 `source_revision`。Comma Web 最多收集 12 个已选择的 exact source，限制为 4 路并发、每 source 10 秒和整轮 30 秒。GitHub、Linear、Notion 使用 Salix Group OAuth binding ID，凭证由 Salix 解析并刷新后直接请求 provider；其他 source 使用 Composio connected-account ID，凭证由 Composio 管理：generic 模式执行固定只读 recipe；member 模式经绑定该账号的代理会话直接调用 provider 官方 API，不依赖 Composio 工具。原生应用的 enabled 选择属于 Member×Workspace Profile，跨连接缺失保留；缺失的连接不参与采集。Server 在调用模型前持久化 bounded source evidence marker。member 模式由成员的 Router 以自身模板发起一次有界、无工具的模型请求，完成选择、排序和建议命名；运维配置的 Routine 模板只替换模型。服务端逐行校验，无效行单独丢弃；响应不是选择结果或返回行全部无效时本轮失败，并保留上一份有效快照。generic 模式仍为单次 Worker 模型请求。两者均不运行隐藏会话 Agent，旧 Agent capability 入口拒绝调用。发布校验 run、generation 和 source revision；新 generation 或 source 变更会使迟到结果 `superseded`。
 
 客户端 contract 只注册 `text-list@1` 和 `media-list@1`。未知或 malformed generated card 不作为当前模板执行。Electron 的可选图片增强经生成式 `recommendationMedia.load` 进入 Main：只接受 credential-free HTTPS，执行 public-DNS pin/redirect 重验、总 deadline、图片尺寸与格式检查，并把解码重编码后的 bounded PNG 返回 Renderer。Web 不做无法完整验证 DNS 的远程图片 fallback，只保留相同 text/action。媒体失败不会改变权威 recommendation snapshot。
 
-`03B · Comma Center Recommendation 是产品 Projection`、`07E · Recommendation SSOT 与 Runtime`、`07F · Recommendation 客户端 Contract 与媒体`、`16B · Recommendation 刷新与事实收集`、`16C · Recommendation 远程媒体安全边界` 和 `16D · Recommendation 发布与行锁结算` 分别展示产品边界、实现 Owner、客户端契约与动态路径。发布与 runtime materialization 使用实现回归测试；旧 `tla/recommendations/` 模型仅为历史证据，当前模型范围见 `tla/README.md`。
+`03B · Comma Center Recommendation 是产品 Projection`、`07E · Recommendation SSOT 与 Runtime`、`07F · Recommendation 客户端 Contract 与媒体`、`16B · Recommendation 刷新与事实收集`、`16C · Recommendation 远程媒体安全边界` 和 `16D · Recommendation 发布与行锁结算` 分别展示产品边界、实现 Owner、客户端契约与动态路径。发布与 runtime materialization 使用实现回归测试。
 
 ## 从产品概念落到当前实现
 
@@ -182,10 +209,8 @@ Comma Center Recommendation 是 `Member × Workspace` 的产品 projection，不
 | Comma 控制面显式重新指定 Group Router | [`Comma.Conversations.send_message/5`](../../systems/apps/comma_core/lib/comma/conversations.ex#L185) + [`RouterConversationInput`](../../systems/apps/salix_im/lib/salix_im/router_conversation_input.ex#L1) | 下一次发送通过固定 Router Conversation input reconcile Router Participant；保留同一 Conversation 与历史 |
 | Group 固定 Router Chat              | [`SalixIM.RouterConversationInput`](../../systems/apps/salix_im/lib/salix_im/router_conversation_input.ex#L18)                                                                             | 会 reconcile Router Participant；这是 Group 固定 Conversation，不是 Comma Assistant Chat |
 | Internal Session Owner              | [`SalixAgent.InternalSessionActor`](../../systems/apps/salix_agent/lib/salix_agent/internal_session_actor.ex#L1)                                                                           | `{agent_id, session_id}` 的 internal runtime 单写者                                    |
-| External Session Owner              | [`SalixAgent.ExternalSessionActor`](../../systems/apps/salix_agent/lib/salix_agent/external_session_actor.ex#L1)                                                                           | `{agent_id, session_id}` 的 external runtime 单写者；Salix 平台也支持 external Router  |
 | Compute SSOT                        | [`SalixStore.Compute`](../../systems/apps/salix_store/lib/salix_store/compute.ex#L1)                                                                                                       | Pool/Environment/Allocation/Workload/RuntimeInstance/Grant/command 的唯一共享写者      |
 | Compute Provider                    | [`SalixEnv.ComputeProvider`](../../systems/apps/salix_env/lib/salix_env/compute_provider.ex#L1)                                                                                            | Cloudflare 和 Agent VMM 的统一 contract 与 conformance surface                  |
-| External Worker Binding             | [`SalixAgent.RuntimeBindingResolver`](../../systems/apps/salix_agent/lib/salix_agent/runtime_binding_resolver.ex#L1)                                                                       | 精确两种 binding；stable target 与 live epoch 分离                                     |
 | Service Route Authority             | [`SalixStore.ServiceRoutes`](../../systems/apps/salix_store/lib/salix_store/service_routes.ex#L1)                                                                                          | 每次访问重查两端 generation、环境 authority、capability 与 expiry                      |
 | Desktop Compute Node                | [`ComputeNodeService`](../../clients/apps/electron/src/main/modules/compute-node/index.ts#L1)                                                                                              | Main-owned account intent/recovery/remove；operator disposal/summary；generated bridge      |
 | Comma Recommendation SSOT             | [`Comma.Recommendations`](../../systems/apps/comma_core/lib/comma/recommendations.ex#L1)                                                                                                         | Member×Workspace profile/run、generation/source revision 与 current snapshot 的唯一产品 owner |

@@ -1,7 +1,8 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { CreatedSecretPanel, Dialog } from "@comma/ui";
+import { CreatedSecretPanel } from "@comma/ui/components/settings";
+import { Dialog } from "@comma/ui/components/dialog";
 import { useState } from "react";
-import type { CommaVoiceApiKeyCreated } from "../../api";
+import type { VoiceKeyCreated as CommaVoiceApiKeyCreated } from "@comma/core-client";
 
 const E164 = /^\+[1-9]\d{6,14}$/;
 const PIN = /^\d{4,8}$/;

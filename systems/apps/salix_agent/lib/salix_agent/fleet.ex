@@ -1,4 +1,6 @@
 defmodule SalixAgent.Fleet do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Spawn-on-demand for agent Servers. `ensure_started/2` starts a
   `SalixAgent.Server` for an agent if one isn't already running on this node, and
@@ -29,14 +31,14 @@ defmodule SalixAgent.Fleet do
   end
 
   defp start_child(opts) do
-    DynamicSupervisor.start_child(SalixAgent.FleetSup, {Server, opts})
+    SystemsRuntime.DynamicSupervisor.start_child(SalixAgent.FleetSup, {Server, opts})
   catch
     :exit, reason -> {:error, {:exit, reason}}
   end
 
   defp maybe_retry_start(agent_id, opts, attempts, reason) do
     if retryable_start_error?(reason) do
-      Process.sleep(20)
+      SystemsClock.sleep(20)
       ensure_started(agent_id, opts, attempts - 1)
     else
       {:error, reason}
@@ -69,7 +71,7 @@ defmodule SalixAgent.Fleet do
   """
   @spec server_running?(String.t()) :: boolean()
   def server_running?(agent_id) when is_binary(agent_id),
-    do: Registry.lookup(SalixAgent.Registry, agent_id) != []
+    do: SystemsRuntime.Registry.lookup(SalixAgent.Registry, agent_id) != []
 
   @doc """
   Best-effort wait for the local Server's claim to reach the ownership cell,
@@ -83,15 +85,15 @@ defmodule SalixAgent.Fleet do
   """
   @spec await_ownership_installed(String.t(), non_neg_integer()) :: :ok
   def await_ownership_installed(agent_id, timeout_ms \\ 500) when is_binary(agent_id) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    deadline = SystemsClock.monotonic_time(:millisecond) + timeout_ms
     await_ownership_loop(agent_id, deadline)
   end
 
   defp await_ownership_loop(agent_id, deadline) do
     case SalixAgent.OwnershipCell.fetch(agent_id) do
       :absent ->
-        if System.monotonic_time(:millisecond) < deadline and server_running?(agent_id) do
-          Process.sleep(10)
+        if SystemsClock.monotonic_time(:millisecond) < deadline and server_running?(agent_id) do
+          SystemsClock.sleep(10)
           await_ownership_loop(agent_id, deadline)
         else
           :ok
@@ -104,7 +106,7 @@ defmodule SalixAgent.Fleet do
 
   @doc """
   THE start boundary for session actors. Every creation path — the
-  Internal/External session fleets, the Router owner's canonical start —
+  internal session fleet, the Router owner's canonical start —
   creates its actor through this function, never through a bare
   `DynamicSupervisor.start_child`, so the generation contract holds on all
   of them: a NEW actor binds its immutable generation at init by reading
@@ -140,7 +142,7 @@ defmodule SalixAgent.Fleet do
     # Server's in-flight claim so the eventual binding sees the installed
     # claim.
     needs_await =
-      case Registry.lookup(SalixAgent.Registry, key) do
+      case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) do
         [{_pid, %{runtime_epoch: frozen}}] when is_integer(frozen) -> false
         _absent_or_unbound -> true
       end
@@ -153,12 +155,12 @@ defmodule SalixAgent.Fleet do
     # Resource pressure must not restart-loop a crashed transient child.
     admission =
       if module == SalixAgent.InternalSessionActor and
-           Registry.lookup(SalixAgent.Registry, key) == [],
+           SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) == [],
          do: SalixAgent.SessionResidency.admission(),
          else: :ok
 
     with :ok <- admission do
-      case DynamicSupervisor.start_child(SalixAgent.FleetSup, {module, opts}) do
+      case SystemsRuntime.DynamicSupervisor.start_child(SalixAgent.FleetSup, {module, opts}) do
         {:ok, pid} -> {:ok, pid}
         {:error, {:already_started, pid}} -> {:ok, pid}
         {:error, reason} -> {:error, reason}
@@ -185,14 +187,8 @@ defmodule SalixAgent.Fleet do
     |> session_actor_keys()
     |> Enum.any?(fn
       {:internal_session, _agent, _session} = key ->
-        case Registry.lookup(SalixAgent.Registry, key) do
+        case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) do
           [{pid, _}] -> SalixAgent.InternalSessionActor.busy?(pid)
-          [] -> false
-        end
-
-      {:external_session, _agent, _session} = key ->
-        case Registry.lookup(SalixAgent.Registry, key) do
-          [{pid, _}] -> SalixAgent.ExternalSessionActor.busy?(pid)
           [] -> false
         end
     end)
@@ -332,7 +328,7 @@ defmodule SalixAgent.Fleet do
     |> session_actor_keys()
     |> Enum.each(fn key ->
       frozen =
-        case Registry.lookup(SalixAgent.Registry, key) do
+        case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) do
           [{_pid, %{runtime_epoch: frozen}}] when is_integer(frozen) -> frozen
           [{_pid, _}] -> 0
           [] -> nil
@@ -346,7 +342,7 @@ defmodule SalixAgent.Fleet do
 
   @spec stop(term()) :: :ok
   def stop(key) do
-    case Registry.lookup(SalixAgent.Registry, key) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) do
       [{pid, _}] -> terminate_child(pid)
       [] -> :ok
     end
@@ -367,7 +363,7 @@ defmodule SalixAgent.Fleet do
   @doc false
   @spec stop_server(String.t(), keyword()) :: :ok | {:error, term()}
   def stop_server(agent_id, opts \\ []) when is_binary(agent_id) and is_list(opts) do
-    case Registry.lookup(SalixAgent.Registry, agent_id) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, agent_id) do
       [{pid, _}] -> stop_pid(pid, opts)
       [] -> :ok
     end
@@ -375,16 +371,16 @@ defmodule SalixAgent.Fleet do
 
   @doc false
   @spec stop_pid(pid(), keyword()) :: :ok | {:error, term()}
-  def stop_pid(pid, opts \\ []) when is_pid(pid) and is_list(opts) do
+  def stop_pid(pid, opts \\ []) when SystemsRuntime.Proc.is_process(pid) and is_list(opts) do
     reason = Keyword.get(opts, :reason, :normal)
     timeout = Keyword.get(opts, :timeout, :infinity)
 
     try do
-      :gen_statem.stop(pid, reason, timeout)
+      SystemsRuntime.StateMachine.stop(pid, reason, timeout)
     catch
       :exit, {:timeout, _} ->
         if Keyword.get(opts, :force, false) do
-          Process.exit(pid, :kill)
+          SystemsRuntime.Proc.exit(pid, :kill)
           :ok
         else
           {:error, :timeout}
@@ -397,8 +393,8 @@ defmodule SalixAgent.Fleet do
 
   @doc false
   @spec terminate_child(pid()) :: :ok | {:error, :not_found}
-  def terminate_child(pid) when is_pid(pid) do
-    DynamicSupervisor.terminate_child(SalixAgent.FleetSup, pid)
+  def terminate_child(pid) when SystemsRuntime.Proc.is_process(pid) do
+    SystemsRuntime.DynamicSupervisor.terminate_child(SalixAgent.FleetSup, pid)
   catch
     :exit, _ -> :ok
   end
@@ -428,18 +424,9 @@ defmodule SalixAgent.Fleet do
   end
 
   defp session_actor_keys(agent_id) do
-    internal =
-      Registry.select(SalixAgent.Registry, [
-        {{{:internal_session, agent_id, :"$1"}, :"$2", :"$3"}, [],
-         [{{:internal_session, agent_id, :"$1"}}]}
-      ])
-
-    external =
-      Registry.select(SalixAgent.Registry, [
-        {{{:external_session, agent_id, :"$1"}, :"$2", :"$3"}, [],
-         [{{:external_session, agent_id, :"$1"}}]}
-      ])
-
-    Enum.uniq(internal ++ external)
+    SystemsRuntime.Registry.select(SalixAgent.Registry, [
+      {{{:internal_session, agent_id, :"$1"}, :"$2", :"$3"}, [],
+       [{{:internal_session, agent_id, :"$1"}}]}
+    ])
   end
 end

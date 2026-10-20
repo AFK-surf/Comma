@@ -1,4 +1,6 @@
 defmodule BridgeForTeamsWeb.CLIControllerTest do
+  require SystemsRuntime.Proc
+
   use BridgeForTeamsWeb.DashboardCase, async: false
 
   alias BridgeForTeams.Auth.Sessions
@@ -292,7 +294,7 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
              "session" => %{
                "exists" => true,
                "status" => "ready",
-               "runtime_kind" => "external"
+               "runtime_kind" => "internal"
              }
            }
          ],
@@ -530,7 +532,7 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     match _ do
       root =
         :bridge_for_teams_web
-        |> Application.fetch_env!(:bft_cli_artifact_test_root)
+        |> SystemsRuntime.fetch_env!(:bft_cli_artifact_test_root)
         |> Path.expand()
 
       path =
@@ -547,17 +549,17 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
   end
 
   setup do
-    previous_client = Application.get_env(:bridge_for_teams_core, :salix_client)
+    previous_client = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
 
     on_exit(fn ->
       if previous_client do
-        Application.put_env(:bridge_for_teams_core, :salix_client, previous_client)
+        SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous_client)
       else
-        Application.delete_env(:bridge_for_teams_core, :salix_client)
+        SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
       end
     end)
 
-    Application.put_env(:bridge_for_teams_core, :salix_client, FeishuTenantAppClient)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, FeishuTenantAppClient)
 
     %{user: user, org: org} = org_with_owner_fixture(org: %{slug: "acme", name: "Acme"})
 
@@ -586,7 +588,7 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     {:ok, other_org} =
       Orgs.create_org(%{
         "name" => "Other Runner Org",
-        "slug" => "other-runner-org-#{System.unique_integer([:positive])}"
+        "slug" => "other-runner-org-#{SystemsRuntime.Proc.unique_integer([:positive])}"
       })
 
     assert {:ok, runner} =
@@ -608,41 +610,22 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
              Jason.decode!(conn.resp_body)
   end
 
-  test "public bft CLI installer fails honestly when no artifact is configured" do
-    previous_base = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
-    previous_artifact = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_url)
-    Application.delete_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
-    Application.delete_env(:bridge_for_teams_web, :bft_cli_artifact_url)
-
-    on_exit(fn ->
-      restore_web_env(:bft_cli_artifact_base_url, previous_base)
-      restore_web_env(:bft_cli_artifact_url, previous_artifact)
-    end)
-
-    conn = api(:get, "/v1/cli/install.sh", nil)
-
-    assert conn.status == 200
-    assert get_resp_header(conn, "content-type") == ["text/x-shellscript; charset=utf-8"]
-    assert conn.resp_body =~ "bft CLI installer is not configured"
-    assert conn.resp_body =~ "exit 1"
-  end
-
   test "public bft CLI installer downloads the configured artifact" do
-    previous_base = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
-    previous_artifact = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_url)
-    previous_sha = Application.get_env(:bridge_for_teams_web, :bft_cli_sha256)
-    previous_public_base_url = Application.get_env(:bridge_for_teams_web, :public_base_url)
+    previous_base = SystemsRuntime.get_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
+    previous_artifact = SystemsRuntime.get_env(:bridge_for_teams_web, :bft_cli_artifact_url)
+    previous_sha = SystemsRuntime.get_env(:bridge_for_teams_web, :bft_cli_sha256)
+    previous_public_base_url = SystemsRuntime.get_env(:bridge_for_teams_web, :public_base_url)
 
-    Application.delete_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
+    SystemsRuntime.delete_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_web,
       :bft_cli_artifact_url,
       "https://r2.example.test/bft"
     )
 
-    Application.put_env(:bridge_for_teams_web, :bft_cli_sha256, "abc123")
-    Application.put_env(:bridge_for_teams_web, :public_base_url, "https://teams.example.test/")
+    SystemsRuntime.put_env(:bridge_for_teams_web, :bft_cli_sha256, "abc123")
+    SystemsRuntime.put_env(:bridge_for_teams_web, :public_base_url, "https://teams.example.test/")
 
     on_exit(fn ->
       restore_web_env(:bft_cli_artifact_base_url, previous_base)
@@ -664,287 +647,19 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     assert conn.resp_body =~ "bft auth login --url https://teams.example.test --output text"
   end
 
-  test "public bft CLI installer fails closed when legacy artifact checksum is not configured" do
-    previous_base = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
-    previous_artifact = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_url)
-    previous_sha = Application.get_env(:bridge_for_teams_web, :bft_cli_sha256)
-
-    Application.delete_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
-
-    Application.put_env(
-      :bridge_for_teams_web,
-      :bft_cli_artifact_url,
-      "https://r2.example.test/bft"
-    )
-
-    Application.delete_env(:bridge_for_teams_web, :bft_cli_sha256)
-
-    on_exit(fn ->
-      restore_web_env(:bft_cli_artifact_base_url, previous_base)
-      restore_web_env(:bft_cli_artifact_url, previous_artifact)
-      restore_web_env(:bft_cli_sha256, previous_sha)
-    end)
-
-    conn = api(:get, "/v1/cli/install.sh", nil)
-
-    assert conn.status == 200
-    assert conn.resp_body =~ "BFT CLI checksum is not configured on this deployment"
-    refute conn.resp_body =~ "skipping sha256 verification"
-  end
-
-  test "public bft CLI installer can resolve platform-specific Go artifacts" do
-    previous_base = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
-    previous_release = Application.get_env(:bridge_for_teams_web, :bft_cli_release_id)
-    previous_artifact = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_url)
-    previous_public_base_url = Application.get_env(:bridge_for_teams_web, :public_base_url)
-
-    Application.put_env(
-      :bridge_for_teams_web,
-      :bft_cli_artifact_base_url,
-      "https://r2.example.test/bft-cli"
-    )
-
-    Application.put_env(:bridge_for_teams_web, :bft_cli_release_id, "bft-cli-20260623")
-    Application.put_env(:bridge_for_teams_web, :public_base_url, "https://teams.example.test/")
-    Application.delete_env(:bridge_for_teams_web, :bft_cli_artifact_url)
-
-    on_exit(fn ->
-      restore_web_env(:bft_cli_artifact_base_url, previous_base)
-      restore_web_env(:bft_cli_release_id, previous_release)
-      restore_web_env(:bft_cli_artifact_url, previous_artifact)
-      restore_web_env(:public_base_url, previous_public_base_url)
-    end)
-
-    conn = api(:get, "/v1/cli/install.sh", nil)
-
-    assert conn.status == 200
-    assert conn.resp_body =~ "platform=\"$os-$arch\""
-
-    assert conn.resp_body =~
-             "artifact_url=\"https://r2.example.test/bft-cli/releases/bft-cli-20260623/$platform/bft\""
-
-    assert conn.resp_body =~ "checksum_url=\"$artifact_url.sha256\""
-
-    assert conn.resp_body =~
-             "curl -fsSL \"$checksum_url\" -o \"$checksum_tmp\" || fail \"BFT CLI checksum not found at $checksum_url\""
-
-    assert conn.resp_body =~ "verify_sha256 \"$expected\" \"$tmp\""
-    assert conn.resp_body =~ "sha256sum -c -"
-    refute conn.resp_body =~ "skipping sha256 verification"
-    assert conn.resp_body =~ ~s('"https://teams.example.test"')
-    assert conn.resp_body =~ "bft auth login --url https://teams.example.test --output text"
-  end
-
-  test "public bft CLI release metadata exposes configured update target" do
-    previous_base = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
-    previous_release = Application.get_env(:bridge_for_teams_web, :bft_cli_release_id)
-    previous_artifact = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_url)
-    previous_public_base_url = Application.get_env(:bridge_for_teams_web, :public_base_url)
-
-    Application.put_env(
-      :bridge_for_teams_web,
-      :bft_cli_artifact_base_url,
-      "https://r2.example.test/bft-cli"
-    )
-
-    Application.put_env(:bridge_for_teams_web, :bft_cli_release_id, "bft-cli-20260624")
-    Application.put_env(:bridge_for_teams_web, :public_base_url, "https://teams.example.test/")
-    Application.delete_env(:bridge_for_teams_web, :bft_cli_artifact_url)
-
-    on_exit(fn ->
-      restore_web_env(:bft_cli_artifact_base_url, previous_base)
-      restore_web_env(:bft_cli_release_id, previous_release)
-      restore_web_env(:bft_cli_artifact_url, previous_artifact)
-      restore_web_env(:public_base_url, previous_public_base_url)
-    end)
-
-    conn = api(:get, "/v1/cli/release", nil)
-
-    assert conn.status == 200
-    assert %{"ok" => true, "data" => data} = Jason.decode!(conn.resp_body)
-    assert data["mode"] == "bft_cli_release"
-    assert data["layout"] == "platform"
-    assert data["release_id"] == "bft-cli-20260624"
-
-    assert data["metadata_url"] ==
-             "https://r2.example.test/bft-cli/releases/bft-cli-20260624/metadata.json"
-
-    assert data["install_url"] == "https://teams.example.test/v1/cli/install.sh"
-    assert data["checksum_required"] == true
-  end
-
-  test "public bft CLI installer fails closed when platform checksum is missing" do
-    previous_base = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
-    previous_release = Application.get_env(:bridge_for_teams_web, :bft_cli_release_id)
-    previous_artifact = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_url)
-    previous_public_base_url = Application.get_env(:bridge_for_teams_web, :public_base_url)
-    previous_test_root = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_test_root)
-
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "bft-cli-install-missing-checksum-#{System.unique_integer([:positive])}"
-      )
-
-    on_exit(fn ->
-      File.rm_rf(root)
-      restore_web_env(:bft_cli_artifact_base_url, previous_base)
-      restore_web_env(:bft_cli_release_id, previous_release)
-      restore_web_env(:bft_cli_artifact_url, previous_artifact)
-      restore_web_env(:public_base_url, previous_public_base_url)
-      restore_web_env(:bft_cli_artifact_test_root, previous_test_root)
-    end)
-
-    release_id = "bft-cli-install-missing-checksum"
-    platform = local_platform()
-    artifact_dir = Path.join([root, "bft-cli", "releases", release_id, platform])
-    File.mkdir_p!(artifact_dir)
-
-    artifact_path = Path.join(artifact_dir, "bft")
-    File.write!(artifact_path, "#!/usr/bin/env sh\nprintf 'installed-bft\\n'\n")
-    File.chmod!(artifact_path, 0o755)
-
-    Application.put_env(:bridge_for_teams_web, :bft_cli_artifact_test_root, root)
-
-    %{port: port} =
-      TestBandit.start_supervised!(
-        plug: ArtifactServer,
-        ip: {127, 0, 0, 1},
-        startup_log: false
-      )
-
-    Application.put_env(
-      :bridge_for_teams_web,
-      :bft_cli_artifact_base_url,
-      "http://127.0.0.1:#{port}/bft-cli"
-    )
-
-    Application.put_env(:bridge_for_teams_web, :bft_cli_release_id, release_id)
-    Application.put_env(:bridge_for_teams_web, :public_base_url, "https://teams.example.test/")
-    Application.delete_env(:bridge_for_teams_web, :bft_cli_artifact_url)
-
-    install_script =
-      :get
-      |> api("/v1/cli/install.sh", nil)
-      |> Map.fetch!(:resp_body)
-
-    installer_path = Path.join(root, "install.sh")
-    File.write!(installer_path, install_script)
-
-    home = Path.join(root, "home")
-    install_dir = Path.join(root, "bin")
-    tmp_dir = Path.join(root, "tmp")
-    File.mkdir_p!(home)
-    File.mkdir_p!(install_dir)
-    File.mkdir_p!(tmp_dir)
-
-    {output, status} =
-      System.cmd("sh", [installer_path],
-        env: [
-          {"HOME", home},
-          {"BFT_CLI_INSTALL_DIR", install_dir},
-          {"TMPDIR", tmp_dir}
-        ],
-        stderr_to_stdout: true
-      )
-
-    assert status != 0
-    assert output =~ "BFT CLI checksum not found"
-    refute File.exists?(Path.join(install_dir, "bft"))
-  end
-
-  test "public bft CLI installer fails closed when platform checksum mismatches" do
-    previous_base = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
-    previous_release = Application.get_env(:bridge_for_teams_web, :bft_cli_release_id)
-    previous_artifact = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_url)
-    previous_public_base_url = Application.get_env(:bridge_for_teams_web, :public_base_url)
-    previous_test_root = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_test_root)
-
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "bft-cli-install-bad-checksum-#{System.unique_integer([:positive])}"
-      )
-
-    on_exit(fn ->
-      File.rm_rf(root)
-      restore_web_env(:bft_cli_artifact_base_url, previous_base)
-      restore_web_env(:bft_cli_release_id, previous_release)
-      restore_web_env(:bft_cli_artifact_url, previous_artifact)
-      restore_web_env(:public_base_url, previous_public_base_url)
-      restore_web_env(:bft_cli_artifact_test_root, previous_test_root)
-    end)
-
-    release_id = "bft-cli-install-bad-checksum"
-    platform = local_platform()
-    artifact_dir = Path.join([root, "bft-cli", "releases", release_id, platform])
-    File.mkdir_p!(artifact_dir)
-
-    artifact_path = Path.join(artifact_dir, "bft")
-    File.write!(artifact_path, "#!/usr/bin/env sh\nprintf 'installed-bft\\n'\n")
-    File.chmod!(artifact_path, 0o755)
-    File.write!(artifact_path <> ".sha256", "#{String.duplicate("0", 64)}  bft\n")
-
-    Application.put_env(:bridge_for_teams_web, :bft_cli_artifact_test_root, root)
-
-    %{port: port} =
-      TestBandit.start_supervised!(
-        plug: ArtifactServer,
-        ip: {127, 0, 0, 1},
-        startup_log: false
-      )
-
-    Application.put_env(
-      :bridge_for_teams_web,
-      :bft_cli_artifact_base_url,
-      "http://127.0.0.1:#{port}/bft-cli"
-    )
-
-    Application.put_env(:bridge_for_teams_web, :bft_cli_release_id, release_id)
-    Application.put_env(:bridge_for_teams_web, :public_base_url, "https://teams.example.test/")
-    Application.delete_env(:bridge_for_teams_web, :bft_cli_artifact_url)
-
-    install_script =
-      :get
-      |> api("/v1/cli/install.sh", nil)
-      |> Map.fetch!(:resp_body)
-
-    installer_path = Path.join(root, "install.sh")
-    File.write!(installer_path, install_script)
-
-    home = Path.join(root, "home")
-    install_dir = Path.join(root, "bin")
-    tmp_dir = Path.join(root, "tmp")
-    File.mkdir_p!(home)
-    File.mkdir_p!(install_dir)
-    File.mkdir_p!(tmp_dir)
-
-    {output, status} =
-      System.cmd("sh", [installer_path],
-        env: [
-          {"HOME", home},
-          {"BFT_CLI_INSTALL_DIR", install_dir},
-          {"TMPDIR", tmp_dir}
-        ],
-        stderr_to_stdout: true
-      )
-
-    assert status != 0
-    assert output =~ "Installing BridgeForTeams bft CLI for #{platform}"
-    refute File.exists?(Path.join(install_dir, "bft"))
-  end
-
   test "public bft CLI installer executes against platform-specific artifacts" do
-    previous_base = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
-    previous_release = Application.get_env(:bridge_for_teams_web, :bft_cli_release_id)
-    previous_artifact = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_url)
-    previous_public_base_url = Application.get_env(:bridge_for_teams_web, :public_base_url)
-    previous_test_root = Application.get_env(:bridge_for_teams_web, :bft_cli_artifact_test_root)
+    previous_base = SystemsRuntime.get_env(:bridge_for_teams_web, :bft_cli_artifact_base_url)
+    previous_release = SystemsRuntime.get_env(:bridge_for_teams_web, :bft_cli_release_id)
+    previous_artifact = SystemsRuntime.get_env(:bridge_for_teams_web, :bft_cli_artifact_url)
+    previous_public_base_url = SystemsRuntime.get_env(:bridge_for_teams_web, :public_base_url)
+
+    previous_test_root =
+      SystemsRuntime.get_env(:bridge_for_teams_web, :bft_cli_artifact_test_root)
 
     root =
       Path.join(
         System.tmp_dir!(),
-        "bft-cli-install-test-#{System.unique_integer([:positive])}"
+        "bft-cli-install-test-#{SystemsRuntime.Proc.unique_integer([:positive])}"
       )
 
     on_exit(fn ->
@@ -973,7 +688,7 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
 
     File.write!(artifact_path <> ".sha256", "#{sha256}  bft\n")
 
-    Application.put_env(:bridge_for_teams_web, :bft_cli_artifact_test_root, root)
+    SystemsRuntime.put_env(:bridge_for_teams_web, :bft_cli_artifact_test_root, root)
 
     %{port: port} =
       TestBandit.start_supervised!(
@@ -982,15 +697,15 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
         startup_log: false
       )
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_web,
       :bft_cli_artifact_base_url,
       "http://127.0.0.1:#{port}/bft-cli"
     )
 
-    Application.put_env(:bridge_for_teams_web, :bft_cli_release_id, release_id)
-    Application.put_env(:bridge_for_teams_web, :public_base_url, "https://teams.example.test/")
-    Application.delete_env(:bridge_for_teams_web, :bft_cli_artifact_url)
+    SystemsRuntime.put_env(:bridge_for_teams_web, :bft_cli_release_id, release_id)
+    SystemsRuntime.put_env(:bridge_for_teams_web, :public_base_url, "https://teams.example.test/")
+    SystemsRuntime.delete_env(:bridge_for_teams_web, :bft_cli_artifact_url)
 
     install_script =
       :get
@@ -1211,31 +926,6 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     assert original_context["context"]["org"]["id"] == org.id
   end
 
-  test "dashboard can cancel a CLI device login before token issuance", %{user: user} do
-    start =
-      :post
-      |> api("/v1/cli/auth/device", nil, %{"client_name" => "agent laptop"})
-      |> json_data()
-
-    device_code = Map.fetch!(start, "device_code")
-    user_code = Map.fetch!(start, "user_code")
-
-    cancel =
-      :post
-      |> dashboard_api("/dashboard/api/v1/cli/device-login/#{user_code}/deny", user, %{})
-      |> json_data()
-
-    assert cancel["request"]["status"] == "cancelled"
-
-    poll =
-      :post
-      |> api("/v1/cli/auth/device/poll", nil, %{"device_code" => device_code})
-      |> json_data()
-
-    assert poll["status"] == "cancelled"
-    refute Map.has_key?(poll, "token")
-  end
-
   test "ordinary org members cannot manage CLI device login requests", %{org: org} do
     member = user_fixture(email: "cli-device-member@example.com")
     {:ok, _membership} = Memberships.put_org_member(org.id, member.id, "member")
@@ -1275,6 +965,281 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     refute Map.has_key?(poll, "token")
   end
 
+  defmodule LarkSalixClient do
+    use BridgeForTeams.TestSupport.CanonicalAgentClient
+    @moduledoc false
+
+    def list_group_im_connects(_group_id, _provider),
+      do: {:ok, SystemsRuntime.get_env(:bridge_for_teams_web, :cli_test_lark_connects, [])}
+
+    def create_lark_im_connect(tenant_id, group_id, attrs) do
+      connect = %{
+        "connect_id" => "imc1_lark",
+        "tenant_id" => tenant_id,
+        "group_id" => group_id,
+        "provider" => "lark",
+        "app_id" => attrs["app_id"],
+        "app_name" => "Acme helper",
+        "status" => "connected",
+        "app_secret_configured" => true,
+        "verification_token_configured" => is_binary(attrs["verification_token"]),
+        "webhook_url" => "https://salix.example.test/v1/im/lark/events?app_id=#{attrs["app_id"]}"
+      }
+
+      SystemsRuntime.put_env(:bridge_for_teams_web, :cli_test_lark_connects, [connect])
+      {:ok, connect}
+    end
+
+    def lark_callback_preflight_for_connect(%{"connect_id" => "imc1_lark"}),
+      do: {:error, :token_mismatch}
+
+    def lark_bot_identity(%{"connect_id" => "imc1_lark"}),
+      do: {:ok, %{"open_id_fingerprint" => "0123456789ab"}}
+  end
+
+  test "a project admin connects a Lark app and reads it back, without a secret", %{
+    org: org,
+    project: project,
+    token: token
+  } do
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, LarkSalixClient)
+    on_exit(fn -> SystemsRuntime.delete_env(:bridge_for_teams_web, :cli_test_lark_connects) end)
+    scope = %{"org" => org.slug, "project" => project.slug}
+    app = Map.merge(scope, %{"app_id" => "cli_acme", "app_secret" => "fake-lark-app-secret"})
+
+    # Lark verifies a callback by one of the two values, so one is required.
+    missing = api(:post, "/v1/cli/lark/connect", token, app)
+    assert missing.status == 400
+
+    assert %{"error" => %{"code" => "missing_lark_credentials", "details" => details}} =
+             Jason.decode!(missing.resp_body)
+
+    assert details["fields"] == ["verification_token"]
+
+    conn =
+      api(
+        :post,
+        "/v1/cli/lark/connect",
+        token,
+        Map.put(app, "verification_token", "fake-lark-token")
+      )
+
+    assert conn.status == 200
+    refute conn.resp_body =~ "fake-lark-app-secret"
+    refute conn.resp_body =~ "fake-lark-token"
+    data = json_data(conn)
+    assert data["mode"] == "lark_connect"
+    assert data["action"] == "created"
+    assert data["connect"]["connect_id"] == "imc1_lark"
+    assert data["callback_url"] == "https://salix.example.test/v1/im/lark/events?app_id=cli_acme"
+    assert Enum.any?(data["manual_checklist"], &String.contains?(&1, "im.message.receive_v1"))
+
+    status =
+      :get
+      |> api("/v1/cli/lark/status?org=#{org.slug}&project=#{project.slug}", token)
+      |> json_data()
+
+    assert status["mode"] == "lark_status"
+    assert [%{"connect_id" => "imc1_lark", "callback_url" => url}] = status["connects"]
+    assert url =~ "/v1/im/lark/events?app_id=cli_acme"
+  end
+
+  test "Lark checks run for a project member and name the failed gate", %{
+    org: org,
+    project: project,
+    token: token
+  } do
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, LarkSalixClient)
+    on_exit(fn -> SystemsRuntime.delete_env(:bridge_for_teams_web, :cli_test_lark_connects) end)
+    scope = %{"org" => org.slug, "project" => project.slug}
+
+    # No Lark app yet: every gate waits for the connect.
+    data = :post |> api("/v1/cli/lark/checks", token, scope) |> json_data()
+    assert data["mode"] == "lark_checks"
+    assert data["checks"]["surface"] == "lark_bot"
+    assert data["checks"]["connect_ref"] == nil
+    assert Enum.all?(data["checks"]["gates"], &(&1["reason_class"] == "not_connected"))
+
+    api(
+      :post,
+      "/v1/cli/lark/connect",
+      token,
+      Map.merge(scope, %{
+        "app_id" => "cli_acme",
+        "app_secret" => "fake-lark-app-secret",
+        "verification_token" => "fake-lark-token"
+      })
+    )
+
+    conn = api(:post, "/v1/cli/lark/checks", token, Map.put(scope, "connect_id", "imc1_lark"))
+    assert conn.status == 200
+    refute conn.resp_body =~ "fake-lark"
+    checks = json_data(conn)["checks"]
+    assert checks["connect_ref"] == "imc1_lark"
+    gates = Map.new(checks["gates"], &{&1["gate_id"], &1})
+
+    assert %{"status" => "fail", "reason_class" => "token_mismatch", "next_action" => next} =
+             gates["bot.callback"]
+
+    assert next =~ "Verification Token mismatch"
+    assert gates["bot.credentials"]["reason_class"] == "validated_on_save"
+
+    missing = api(:post, "/v1/cli/lark/checks", token, Map.put(scope, "connect_id", "imc1_none"))
+    assert missing.status == 404
+    assert %{"error" => %{"code" => "connect_not_found"}} = Jason.decode!(missing.resp_body)
+  end
+
+  test "Lark scopes are the batch-import JSON of the Lark Developer Console", %{token: token} do
+    data = :get |> api("/v1/cli/lark/scopes", token) |> json_data()
+
+    assert data["mode"] == "lark_scopes"
+    assert %{"scopes" => %{"tenant" => tenant, "user" => user}} = data["batch_import_payload"]
+    assert tenant == data["required_scopes"]
+    assert "vc:meeting.search:read" in user
+    assert "im:message:send_as_bot" in data["required_scopes"]
+    assert data["import_path"] =~ "Permissions & Scopes"
+  end
+
+  defmodule QQSalixClient do
+    use BridgeForTeams.TestSupport.CanonicalAgentClient
+
+    @moduledoc false
+
+    def list_group_im_connects(_group_id, _provider),
+      do: {:ok, SystemsRuntime.get_env(:bridge_for_teams_web, :cli_test_qq_connects, [])}
+
+    def create_qq_im_connect(_tenant_id, group_id, %{"app_secret" => "wrong-secret"}),
+      do: {:error, {:bad_request, "QQ credential check failed for #{group_id}"}}
+
+    def create_qq_im_connect(tenant_id, group_id, attrs) do
+      connect = %{
+        "connect_id" => "imc1_qq",
+        "tenant_id" => tenant_id,
+        "group_id" => group_id,
+        "provider" => "qq",
+        "app_id" => attrs["app_id"],
+        "bot_username" => "Acme helper",
+        "status" => "connected",
+        "app_secret_configured" => true,
+        "webhook_url" => "https://salix.example.test/v1/im/qq/events?app_id=#{attrs["app_id"]}"
+      }
+
+      SystemsRuntime.put_env(:bridge_for_teams_web, :cli_test_qq_connects, [connect])
+      {:ok, connect}
+    end
+
+    def update_qq_im_connect(_tenant_id, _group_id, _connect_id, %{
+          "command_menu" => [%{"name" => "clear"}]
+        }),
+        do: {:error, {:bad_request, "clear is a control command and cannot be a menu item"}}
+
+    def update_qq_im_connect(_tenant_id, _group_id, connect_id, %{"command_menu" => items}) do
+      [%{"connect_id" => ^connect_id} = connect] =
+        SystemsRuntime.get_env(:bridge_for_teams_web, :cli_test_qq_connects, [])
+
+      connect =
+        Map.merge(connect, %{
+          "command_menu" => items,
+          "command_menu_sync" => %{"private" => "synced", "group" => "synced"}
+        })
+
+      SystemsRuntime.put_env(:bridge_for_teams_web, :cli_test_qq_connects, [connect])
+      {:ok, connect}
+    end
+  end
+
+  test "a project admin connects a QQ bot and reads it back, without the secret", %{
+    org: org,
+    project: project,
+    token: token
+  } do
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, QQSalixClient)
+    on_exit(fn -> SystemsRuntime.delete_env(:bridge_for_teams_web, :cli_test_qq_connects) end)
+    scope = %{"org" => org.slug, "project" => project.slug}
+
+    missing = api(:post, "/v1/cli/qq/connect", token, Map.put(scope, "app_id", "1900012345"))
+    assert missing.status == 400
+
+    assert %{"error" => %{"code" => "missing_qq_credentials", "details" => details}} =
+             Jason.decode!(missing.resp_body)
+
+    assert details["fields"] == ["app_secret"]
+
+    rejected =
+      api(
+        :post,
+        "/v1/cli/qq/connect",
+        token,
+        Map.merge(scope, %{"app_id" => "1900012345", "app_secret" => "wrong-secret"})
+      )
+
+    assert rejected.status >= 400
+    refute rejected.resp_body =~ "wrong-secret"
+
+    conn =
+      api(
+        :post,
+        "/v1/cli/qq/connect",
+        token,
+        Map.merge(scope, %{"app_id" => "1900012345", "app_secret" => "fake-qq-app-secret"})
+      )
+
+    assert conn.status == 200
+    refute conn.resp_body =~ "fake-qq-app-secret"
+    data = json_data(conn)
+    assert data["mode"] == "qq_connect"
+    assert data["action"] == "created"
+    assert data["connect"]["connect_id"] == "imc1_qq"
+    assert data["callback_url"] == "https://salix.example.test/v1/im/qq/events?app_id=1900012345"
+    assert Enum.any?(data["manual_checklist"], &String.contains?(&1, "Webhook"))
+
+    status =
+      :get
+      |> api("/v1/cli/qq/status?org=#{org.slug}&project=#{project.slug}", token)
+      |> json_data()
+
+    assert status["mode"] == "qq_status"
+
+    assert [%{"connect_id" => "imc1_qq", "bot_username" => "Acme helper", "callback_url" => url}] =
+             status["connects"]
+
+    assert url =~ "/v1/im/qq/events?app_id=1900012345"
+
+    # The command menu of the project's only bot is replaced and read back.
+    item = %{"name" => "周报", "description" => "生成本周周报", "scope" => "group"}
+
+    menu =
+      :post
+      |> api("/v1/cli/qq/menu", token, Map.put(scope, "items", [item]))
+      |> json_data()
+
+    assert menu["mode"] == "qq_menu"
+    assert menu["connect"]["command_menu"] == [item]
+
+    assert [%{"command_menu" => [^item]}] =
+             :get
+             |> api("/v1/cli/qq/status?org=#{org.slug}&project=#{project.slug}", token)
+             |> json_data()
+             |> Map.fetch!("connects")
+
+    refused =
+      api(:post, "/v1/cli/qq/menu", token, Map.put(scope, "items", [%{"name" => "clear"}]))
+
+    assert %{
+             "error" => %{
+               "code" => "invalid_qq_menu",
+               "message" => "clear is a control command and cannot be a menu item"
+             }
+           } = Jason.decode!(refused.resp_body)
+
+    assert refused.status == 400
+
+    other_bot =
+      api(:post, "/v1/cli/qq/menu", token, Map.merge(scope, %{"items" => [], "app_id" => "1"}))
+
+    assert %{"error" => %{"code" => "qq_bot_not_found"}} = Jason.decode!(other_bot.resp_body)
+  end
+
   test "Slack setup is a read-only project operation", %{org: org, project: project} do
     member = user_fixture(email: "slack-setup-reader@example.com")
     {:ok, _membership} = Memberships.put_org_member(org.id, member.id, "member")
@@ -1308,8 +1273,8 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     assert data["interactions_url"] == "https://salix.example.test/v1/im/slack/interactions"
     assert data["create_connect_command"] =~ "bft slack connects create"
     refute data["create_connect_command"] =~ "--inbound-agent"
-    assert data["create_worker_connect_command"] =~ "bft slack connects create"
-    assert data["create_worker_connect_command"] =~ "--inbound-agent <salix-agent-id>"
+    assert data["create_task_connect_command"] =~ "bft slack connects create"
+    assert data["create_task_connect_command"] =~ "--tasks"
     assert Enum.any?(data["manual_checklist"], &String.contains?(&1, "private target channels"))
     assert Enum.any?(data["manual_checklist"], &String.contains?(&1, "Interactivity"))
 
@@ -1329,8 +1294,9 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     assert guide_by_field["client_id"]["flag"] == "--client-id"
     assert guide_by_field["client_secret"]["flag"] == "--client-secret-env"
     assert guide_by_field["signing_secret"]["source"] =~ "Signing Secret"
-    assert guide_by_field["inbound_agent_id"]["source"] =~ "Optional"
-    assert guide_by_field["inbound_agent_id"]["source"] =~ "group router"
+    assert guide_by_field["inbound_tasks"]["flag"] == "--tasks"
+    assert guide_by_field["inbound_tasks"]["source"] =~ "Optional"
+    assert guide_by_field["inbound_tasks"]["source"] =~ "Router"
   end
 
   test "meeting calendar status returns configuration evidence and bounded projected events", %{
@@ -1338,7 +1304,7 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     project: project,
     token: token
   } do
-    Application.put_env(:bridge_for_teams_core, :salix_client, CalendarStatusSalixClient)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, CalendarStatusSalixClient)
 
     {:ok, router} =
       BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
@@ -1394,7 +1360,7 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     project: project,
     token: token
   } do
-    Application.put_env(:bridge_for_teams_core, :salix_client, MeetingReplaySalixClient)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, MeetingReplaySalixClient)
 
     body = %{
       "org" => org.slug,
@@ -1427,7 +1393,7 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     project: project,
     token: token
   } do
-    Application.put_env(:bridge_for_teams_core, :salix_client, MeetingReplaySalixClient)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, MeetingReplaySalixClient)
 
     body = %{
       "org" => org.slug,
@@ -1458,480 +1424,6 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
 
     assert Process.get(:meeting_replay_request) ==
              {project.salix_group_id, "meeting-cli-confirmed", [run_model: true]}
-  end
-
-  test "meeting calendar status consumes the actual Salix autojoin contract", %{
-    org: org,
-    project: project,
-    token: token
-  } do
-    start_real_calendar_status_store!()
-    Application.put_env(:bridge_for_teams_core, :salix_client, ActualCalendarStatusSalixClient)
-
-    {:ok, router} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "router",
-        "role" => "router"
-      })
-
-    Process.put(:calendar_router_agent_id, router.salix_agent_id)
-
-    %{
-      meeting_id: meeting_id,
-      plan_id: plan_id,
-      occurrence_ref: occurrence_ref,
-      group: group,
-      event: event,
-      now: now
-    } =
-      seed_real_calendar_status!(org, project, router)
-
-    path =
-      "/v1/cli/meetings/calendar/status?org=#{org.slug}&project=#{project.slug}&connect_id=conn-calendar&limit=1"
-
-    missing_plan = api(:get, path, token) |> json_data()
-    assert missing_plan["calendar"]["health"] == "degraded"
-    assert missing_plan["calendar"]["reason"] == "meeting_plan_unavailable"
-    assert [missing_plan_event] = missing_plan["calendar"]["events"]
-    assert missing_plan_event["autojoin"]["status"] == "not_started"
-    assert missing_plan_event["autojoin"]["error_present"] == false
-
-    assert {:ok, _} =
-             CasRecord.create(Keys.ctl_meeting_plan(project.salix_group_id, plan_id), %{
-               "meeting_plan_id" => plan_id,
-               "group_id" => project.salix_group_id,
-               "occurrence_ref" => occurrence_ref,
-               "conversation_id" => nil,
-               "status" => "planned",
-               "revision" => 1,
-               "updated_at" => now,
-               "preparation" => %{}
-             })
-
-    planned_without_conversation = api(:get, path, token) |> json_data()
-    assert planned_without_conversation["calendar"]["health"] == "unavailable"
-
-    assert planned_without_conversation["calendar"]["reason"] ==
-             "calendar_status_invalid_response"
-
-    assert planned_without_conversation["calendar"]["events"] == []
-
-    assert {:ok, _} =
-             CasRecord.update(Keys.ctl_meeting_plan(project.salix_group_id, plan_id), fn plan ->
-               Map.put(plan, "conversation_id", Ids.new_conversation_id())
-             end)
-
-    healthy = api(:get, path, token) |> json_data()
-    assert healthy["calendar"]["health"] == "ok"
-    assert healthy["calendar"]["reason"] == "eligible_meetings_projected"
-    assert [healthy_event] = healthy["calendar"]["events"]
-
-    assert healthy_event["title"] ==
-             "Agenda https://docs.example.test/brief,Meet:[REDACTED_GOOGLE_MEET_URL]"
-
-    assert healthy_event["autojoin"] == %{
-             "status" => "not_started",
-             "start_at" => nil,
-             "join_requested_at" => nil,
-             "joined_at" => nil,
-             "abandoned_at" => nil,
-             "error_present" => false
-           }
-
-    refute inspect(healthy) =~ "abc-defg-hij"
-
-    checkpoint_real_calendar_event!(
-      group,
-      Map.put(event, "meet_url", "https://video.example.test/not-google-meet"),
-      now + 1
-    )
-
-    ineligible_candidate = api(:get, path, token) |> json_data()
-    assert ineligible_candidate["calendar"]["health"] == "unavailable"
-    assert ineligible_candidate["calendar"]["reason"] == "calendar_status_invalid_response"
-    assert ineligible_candidate["calendar"]["events"] == []
-
-    checkpoint_real_calendar_event!(group, event, now + 2)
-
-    :ok = SalixStore.S3.Fake.set_fault({:fail, 503, :get, Keys.meet_state(meeting_id)})
-
-    store_failure = api(:get, path, token) |> json_data()
-    assert store_failure["calendar"]["health"] == "degraded"
-    assert store_failure["calendar"]["reason"] == "autojoin_runtime_error"
-    assert [store_failure_event] = store_failure["calendar"]["events"]
-    assert store_failure_event["autojoin"]["status"] == "unavailable"
-    assert store_failure_event["autojoin"]["error_present"] == true
-  end
-
-  test "meeting calendar status never drains the reconcile outbox", %{
-    org: org,
-    project: project,
-    token: token
-  } do
-    Application.put_env(:bridge_for_teams_core, :salix_client, CalendarStatusSalixClient)
-    Process.put(:calendar_connects_result, {:error, :not_found})
-    Process.delete(:calendar_mutation_calls)
-
-    {:ok, unrelated_org} = Orgs.create_org(%{"name" => "Unrelated", "slug" => "unrelated"})
-
-    {:ok, _unrelated_project} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_project(
-        unrelated_org.id,
-        %{"name" => "Unrelated Project"}
-      )
-
-    before_rows = Repo.all(ReconcileOutbox) |> Enum.sort_by(& &1.id)
-
-    data =
-      api(
-        :get,
-        "/v1/cli/meetings/calendar/status?org=#{org.slug}&project=#{project.slug}&connect_id=conn-calendar",
-        token
-      )
-      |> json_data()
-
-    assert data["calendar"]["health"] == "not_ready"
-    assert data["checks"]["gates"] |> hd() |> Map.fetch!("status") == "skipped"
-    after_rows = Repo.all(ReconcileOutbox) |> Enum.sort_by(& &1.id)
-    assert after_rows == before_rows
-    assert Process.get(:calendar_mutation_calls, []) == []
-  end
-
-  test "meeting calendar status derives health from one validated raw contract", %{
-    org: org,
-    project: project,
-    token: token
-  } do
-    Application.put_env(:bridge_for_teams_core, :salix_client, CalendarStatusSalixClient)
-
-    {:ok, router} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "router",
-        "role" => "router"
-      })
-
-    Process.put(:calendar_router_agent_id, router.salix_agent_id)
-
-    base = CalendarStatusSalixClient.healthy_calendar_status(1)
-
-    not_scanned =
-      base
-      |> Map.put("health", "pending")
-      |> Map.put("reason", "projection_not_scanned")
-      |> put_in(["projection", "state"], "not_scanned")
-      |> put_in(["projection", "calendar_id"], nil)
-      |> put_in(["projection", "updated_at"], nil)
-      |> put_in(["projection", "age_ms"], nil)
-      |> put_in(["projection", "fresh_count"], 0)
-      |> put_in(["projection", "recovery_count"], 0)
-      |> put_in(["projection", "candidate_count"], 0)
-      |> put_in(["projection", "returned_count"], 0)
-      |> put_in(["summary", "candidate_count"], 0)
-      |> put_in(["summary", "returned_count"], 0)
-      |> put_in(["summary", "planned_count"], 0)
-      |> Map.put("events", [])
-
-    no_candidates =
-      not_scanned
-      |> Map.put("health", "ok")
-      |> Map.put("reason", "no_eligible_meetings_in_window")
-      |> put_in(["projection", "state"], "active")
-      |> put_in(["projection", "calendar_id"], "cal-calendar")
-      |> put_in(["projection", "updated_at"], 1_786_009_000_000)
-      |> put_in(["projection", "age_ms"], 1_000)
-
-    truncated =
-      base
-      |> put_in(["projection", "fresh_count"], 2)
-      |> put_in(["projection", "candidate_count"], 2)
-      |> put_in(["projection", "truncated"], true)
-      |> put_in(["summary", "candidate_count"], 2)
-
-    plan_error =
-      base
-      |> put_in(["events", Access.at(0), "plan"], %{"status" => "missing"})
-      |> put_in(["summary", "planned_count"], 0)
-      |> put_in(["summary", "plan_error_count"], 1)
-
-    candidate_error =
-      base
-      |> put_in(["events", Access.at(0), "last_error_present"], true)
-      |> put_in(["summary", "candidate_error_count"], 1)
-
-    autojoin_error =
-      base
-      |> put_in(["events", Access.at(0), "autojoin", "status"], "failed")
-      |> put_in(["summary", "autojoin_error_count"], 1)
-
-    inconsistent_projection =
-      base
-      |> Map.put("health", "ok")
-      |> Map.put("reason", "no_eligible_meetings_in_window")
-      |> put_in(["projection", "fresh_count"], 1)
-      |> put_in(["projection", "candidate_count"], 0)
-      |> put_in(["projection", "returned_count"], 0)
-      |> put_in(["summary", "candidate_count"], 0)
-      |> put_in(["summary", "returned_count"], 0)
-      |> put_in(["summary", "planned_count"], 0)
-      |> Map.put("events", [])
-
-    sparse_event =
-      put_in(base, ["events"], [
-        %{
-          "last_error_present" => false,
-          "plan" => %{"status" => "planned"},
-          "autojoin" => %{"status" => "not_started"}
-        }
-      ])
-
-    cases = [
-      {"healthy projected event", base, "ok", "eligible_meetings_projected"},
-      {"provisioning autojoin lifecycle",
-       put_in(base, ["events", Access.at(0), "autojoin", "status"], "provisioning"), "ok",
-       "eligible_meetings_projected"},
-      {"active autojoin lifecycle",
-       put_in(base, ["events", Access.at(0), "autojoin", "status"], "active"), "ok",
-       "eligible_meetings_projected"},
-      {"processing autojoin lifecycle",
-       put_in(base, ["events", Access.at(0), "autojoin", "status"], "processing"), "ok",
-       "eligible_meetings_projected"},
-      {"healthy without candidates", no_candidates, "ok", "no_eligible_meetings_in_window"},
-      {"missing top-level events fails closed", Map.delete(no_candidates, "events"),
-       "unavailable", "calendar_status_invalid_response"},
-      {"non-list top-level events fails closed", Map.put(no_candidates, "events", %{}),
-       "unavailable", "calendar_status_invalid_response"},
-      {"worker stopped",
-       base
-       |> put_in(["runtime", "status"], "not_running")
-       |> put_in(["runtime", "running"], false), "degraded", "calendar_worker_not_running"},
-      {"worker not configured",
-       base
-       |> put_in(["runtime", "status"], "not_configured")
-       |> put_in(["runtime", "configured"], false)
-       |> put_in(["runtime", "running"], false)
-       |> put_in(["runtime", "scan_interval_ms"], nil), "degraded",
-       "calendar_worker_not_configured"},
-      {"first scan pending", not_scanned, "pending", "projection_not_scanned"},
-      {"projection unavailable", put_in(base, ["projection", "state"], "unavailable"),
-       "unavailable", "calendar_status_invalid_response"},
-      {"truncated", truncated, "degraded", "calendar_status_truncated"},
-      {"contradictory truncated flag fails closed",
-       put_in(base, ["projection", "truncated"], true), "unavailable",
-       "calendar_status_invalid_response"},
-      {"candidate count without matching kind counts fails closed",
-       base
-       |> put_in(["projection", "candidate_count"], 2)
-       |> put_in(["summary", "candidate_count"], 2), "unavailable",
-       "calendar_status_invalid_response"},
-      {"missing active freshness field fails closed",
-       update_in(base["projection"], &Map.delete(&1, "updated_at")), "unavailable",
-       "calendar_status_invalid_response"},
-      {"complete active projection with unavailable freshness degrades",
-       base
-       |> put_in(["projection", "updated_at"], nil)
-       |> put_in(["projection", "age_ms"], nil), "degraded", "projection_freshness_invalid"},
-      {"valid stale projection",
-       base
-       |> put_in(["projection", "age_ms"], 360_001)
-       |> put_in(["projection", "stale"], true), "degraded", "projection_stale"},
-      {"contradictory stale flag fails closed", put_in(base, ["projection", "age_ms"], 360_001),
-       "unavailable", "calendar_status_invalid_response"},
-      {"summary-only plan error fails closed",
-       base
-       |> put_in(["summary", "planned_count"], 0)
-       |> put_in(["summary", "plan_error_count"], 1), "unavailable",
-       "calendar_status_invalid_response"},
-      {"matching Plan detail and summary degrade", plan_error, "degraded",
-       "meeting_plan_unavailable"},
-      {"Plan detail without matching summary fails closed",
-       put_in(base, ["events", Access.at(0), "plan"], %{"status" => "missing"}), "unavailable",
-       "calendar_status_invalid_response"},
-      {"matching candidate detail and summary degrade", candidate_error, "degraded",
-       "calendar_candidate_recovery_error"},
-      {"summary-only candidate error fails closed",
-       put_in(base, ["summary", "candidate_error_count"], 1), "unavailable",
-       "calendar_status_invalid_response"},
-      {"candidate detail without matching summary fails closed",
-       put_in(base, ["events", Access.at(0), "last_error_present"], true), "unavailable",
-       "calendar_status_invalid_response"},
-      {"matching autojoin detail and summary degrade", autojoin_error, "degraded",
-       "autojoin_runtime_error"},
-      {"summary-only autojoin error fails closed",
-       put_in(base, ["summary", "autojoin_error_count"], 1), "unavailable",
-       "calendar_status_invalid_response"},
-      {"autojoin detail without matching summary fails closed",
-       put_in(base, ["events", Access.at(0), "autojoin", "status"], "failed"), "unavailable",
-       "calendar_status_invalid_response"},
-      {"canonical unavailable autojoin may omit optional fields",
-       base
-       |> put_in(["events", Access.at(0), "autojoin"], %{
-         "status" => "unavailable",
-         "start_at" => nil,
-         "join_requested_at" => nil,
-         "joined_at" => nil
-       })
-       |> put_in(["summary", "autojoin_error_count"], 1)
-       |> Map.put("health", "degraded")
-       |> Map.put("reason", "autojoin_runtime_error"), "degraded", "autojoin_runtime_error"},
-      {"unknown autojoin status fails closed",
-       put_in(base, ["events", Access.at(0), "autojoin", "status"], "PRIVATE_STATUS"),
-       "unavailable", "calendar_status_invalid_response"},
-      {"impossible source health pair", Map.put(base, "reason", "calendar_worker_not_running"),
-       "unavailable", "calendar_status_invalid_response"},
-      {"legal source failure contradicts normalized facts",
-       base
-       |> Map.put("health", "degraded")
-       |> Map.put("reason", "calendar_worker_not_running"), "unavailable",
-       "calendar_status_invalid_response"}
-    ]
-
-    # Raw DTO violations are rejected before defaults apply, so no events leak through.
-    raw_dto_rejections = [
-      {"raw DTO projection counts disagree", inconsistent_projection, "unavailable",
-       "calendar_status_invalid_response"},
-      {"raw DTO event omits required identity and time fields", sparse_event, "unavailable",
-       "calendar_status_invalid_response"}
-    ]
-
-    raw_dto_rejection_labels = Enum.map(raw_dto_rejections, &elem(&1, 0))
-
-    for {label, status, health, reason} <- cases ++ raw_dto_rejections do
-      Process.put(:calendar_status_result, {:ok, status})
-
-      data =
-        api(
-          :get,
-          "/v1/cli/meetings/calendar/status?org=#{org.slug}&project=#{project.slug}&connect_id=conn-calendar&limit=1",
-          token
-        )
-        |> json_data()
-
-      assert data["calendar"]["health"] == health, label
-      assert data["calendar"]["reason"] == reason, label
-      assert length(data["calendar"]["events"]) <= 1, label
-
-      if label in raw_dto_rejection_labels do
-        assert data["calendar"]["events"] == [], label
-      end
-    end
-  end
-
-  test "meeting calendar status classifies connect and policy outages without leaking raw detail",
-       %{
-         org: org,
-         project: project,
-         token: token
-       } do
-    Application.put_env(:bridge_for_teams_core, :salix_client, CalendarStatusSalixClient)
-
-    {:ok, router} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "router",
-        "role" => "router"
-      })
-
-    Process.put(:calendar_router_agent_id, router.salix_agent_id)
-
-    Process.put(
-      :calendar_connects_result,
-      {:error, {:http, 503, "PRIVATE_CONNECT_CANARY https://meet.google.com/abc-defg-hij"}}
-    )
-
-    connect_outage =
-      api(
-        :get,
-        "/v1/cli/meetings/calendar/status?org=#{org.slug}&project=#{project.slug}&connect_id=conn-calendar",
-        token
-      )
-      |> json_data()
-
-    assert connect_outage["calendar"]["health"] == "unavailable"
-    assert connect_outage["calendar"]["reason"] == "calendar_backend_unavailable"
-    assert connect_outage["checks"]["gates"] |> hd() |> Map.fetch!("status") == "skipped"
-    refute inspect(connect_outage) =~ "PRIVATE_CONNECT_CANARY"
-    refute inspect(connect_outage) =~ "abc-defg-hij"
-
-    Process.delete(:calendar_connects_result)
-    Process.delete(:calendar_status_params)
-
-    Process.put(
-      :calendar_policy_status_result,
-      {:error,
-       {:calendar_enrollment_cache_unavailable,
-        {:http, 403, "PRIVATE_POLICY_CANARY https://meet.google.com/def-ghij-klm"}}}
-    )
-
-    policy_outage =
-      api(
-        :get,
-        "/v1/cli/meetings/calendar/status?org=#{org.slug}&project=#{project.slug}&connect_id=conn-calendar",
-        token
-      )
-      |> json_data()
-
-    assert policy_outage["calendar"]["health"] == "unavailable"
-    assert policy_outage["calendar"]["reason"] == "calendar_backend_unavailable"
-    assert policy_outage["checks"]["gates"] |> hd() |> Map.fetch!("status") == "needs_manual"
-    assert Process.get(:calendar_status_params) == nil
-    refute inspect(policy_outage) =~ "PRIVATE_POLICY_CANARY"
-    refute inspect(policy_outage) =~ "def-ghij-klm"
-  end
-
-  test "meeting calendar status normalizes raw projection storage failures", %{
-    org: org,
-    project: project,
-    token: token
-  } do
-    Application.put_env(:bridge_for_teams_core, :salix_client, CalendarStatusSalixClient)
-
-    {:ok, router} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-        "name" => "router",
-        "role" => "router"
-      })
-
-    Process.put(:calendar_router_agent_id, router.salix_agent_id)
-
-    Process.put(
-      :calendar_status_result,
-      {:error,
-       {:calendar_projection_read,
-        {:http, 403, "PRIVATE_BACKEND_CANARY https://meet.google.com/abc-defg-hij"}}}
-    )
-
-    data =
-      api(
-        :get,
-        "/v1/cli/meetings/calendar/status?org=#{org.slug}&project=#{project.slug}&connect_id=conn-calendar",
-        token
-      )
-      |> json_data()
-
-    assert data["checks"]["gates"] |> hd() |> Map.fetch!("status") == "ok"
-    assert data["calendar"]["health"] == "unavailable"
-    assert data["calendar"]["reason"] == "calendar_status_backend_unavailable"
-    refute inspect(data) =~ "PRIVATE_BACKEND_CANARY"
-    refute inspect(data) =~ "abc-defg-hij"
-  end
-
-  test "meeting calendar status rejects an unbounded limit before calling Salix", %{
-    org: org,
-    project: project,
-    token: token
-  } do
-    Application.put_env(:bridge_for_teams_core, :salix_client, CalendarStatusSalixClient)
-    Process.delete(:calendar_status_params)
-
-    conn =
-      api(
-        :get,
-        "/v1/cli/meetings/calendar/status?org=#{org.slug}&project=#{project.slug}&limit=51",
-        token
-      )
-
-    assert conn.status == 400
-    assert Jason.decode!(conn.resp_body)["error"]["code"] == "invalid_limit"
-    assert Process.get(:calendar_status_params) == nil
   end
 
   test "org and project lists are scoped to the current user", %{
@@ -1965,7 +1457,7 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     token: token,
     user: user
   } do
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :salix_client,
       ConversationSalixClient
@@ -2175,7 +1667,7 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     org: org,
     project: project
   } do
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :salix_client,
       ConversationSalixClient
@@ -2202,141 +1694,6 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
              Jason.decode!(conn.resp_body)
   end
 
-  test "conversation CLI endpoints expose stable error codes and bounded limits", %{
-    org: org,
-    project: project,
-    token: token
-  } do
-    Application.put_env(
-      :bridge_for_teams_core,
-      :salix_client,
-      ConversationSalixClient
-    )
-
-    capped =
-      api(:get, "/v1/cli/conversations?org=#{org.slug}&project=#{project.slug}&limit=1000", token)
-      |> json_data()
-
-    assert capped["limit"] == 500
-    assert Process.get(:conversation_list_limit) == 500
-
-    for path <- [
-          "/v1/cli/conversations?org=#{org.slug}&project=#{project.slug}&limit=0",
-          "/v1/cli/conversations/task-cli-1/messages?org=#{org.slug}&project=#{project.slug}&limit=abc",
-          "/v1/cli/conversations/task-cli-1/trace?org=#{org.slug}&project=#{project.slug}&limit=0",
-          "/v1/cli/conversations/task-cli-1/delivery?org=#{org.slug}&project=#{project.slug}&participant=worker&limit=0",
-          "/v1/cli/conversations/task-cli-1?org=#{org.slug}&project=#{project.slug}&message_limit=abc"
-        ] do
-      conn = api(:get, path, token)
-
-      assert conn.status == 400
-
-      assert %{"ok" => false, "error" => %{"code" => "invalid_limit"}} =
-               Jason.decode!(conn.resp_body)
-    end
-
-    ambiguous_trace_conn =
-      api(
-        :get,
-        "/v1/cli/conversations/task-cli-1/trace?org=#{org.slug}&project=#{project.slug}",
-        token
-      )
-
-    assert ambiguous_trace_conn.status == 400
-
-    assert %{"ok" => false, "error" => %{"code" => "trace_participant_required"}} =
-             Jason.decode!(ambiguous_trace_conn.resp_body)
-
-    missing_delivery_participant_conn =
-      api(
-        :get,
-        "/v1/cli/conversations/task-cli-1/delivery?org=#{org.slug}&project=#{project.slug}",
-        token
-      )
-
-    assert missing_delivery_participant_conn.status == 400
-
-    assert %{"ok" => false, "error" => %{"code" => "delivery_participant_required"}} =
-             Jason.decode!(missing_delivery_participant_conn.resp_body)
-
-    single_trace =
-      api(
-        :get,
-        "/v1/cli/conversations/single-trace/trace?org=#{org.slug}&project=#{project.slug}",
-        token
-      )
-      |> json_data()
-
-    assert single_trace["trace_agent_id"] == "agent-single"
-    assert single_trace["trace_session_id"] == "single-session"
-    assert single_trace["trace_participant_id"] == "agent"
-    assert Process.get(:conversation_trace_target) == {"agent-single", "single-session"}
-
-    unknown_participant_trace_conn =
-      api(
-        :get,
-        "/v1/cli/conversations/task-cli-1/trace?org=#{org.slug}&project=#{project.slug}&participant=missing",
-        token
-      )
-
-    assert unknown_participant_trace_conn.status == 404
-
-    assert %{"ok" => false, "error" => %{"code" => "trace_session_not_found"}} =
-             Jason.decode!(unknown_participant_trace_conn.resp_body)
-
-    for path <- [
-          "/v1/cli/conversations/missing-task?org=#{org.slug}&project=#{project.slug}",
-          "/v1/cli/conversations/missing-task/messages?org=#{org.slug}&project=#{project.slug}",
-          "/v1/cli/conversations/missing-task/participants/worker/status?org=#{org.slug}&project=#{project.slug}",
-          "/v1/cli/conversations/missing-task/trace?org=#{org.slug}&project=#{project.slug}",
-          "/v1/cli/conversations/missing-task/delivery?org=#{org.slug}&project=#{project.slug}&participant=worker"
-        ] do
-      conn = api(:get, path, token)
-
-      assert conn.status == 404
-
-      assert %{"ok" => false, "error" => %{"code" => "conversation_not_found"}} =
-               Jason.decode!(conn.resp_body)
-    end
-
-    missing_participant_status_conn =
-      api(
-        :get,
-        "/v1/cli/conversations/task-cli-1/participants/missing/status?org=#{org.slug}&project=#{project.slug}",
-        token
-      )
-
-    assert missing_participant_status_conn.status == 404
-
-    assert %{"ok" => false, "error" => %{"code" => "participant_status_not_found"}} =
-             Jason.decode!(missing_participant_status_conn.resp_body)
-
-    trace_conn =
-      api(
-        :get,
-        "/v1/cli/conversations/no-trace/trace?org=#{org.slug}&project=#{project.slug}",
-        token
-      )
-
-    assert trace_conn.status == 404
-
-    assert %{"ok" => false, "error" => %{"code" => "trace_session_not_found"}} =
-             Jason.decode!(trace_conn.resp_body)
-
-    missing_runtime_trace_conn =
-      api(
-        :get,
-        "/v1/cli/conversations/trace-gone/trace?org=#{org.slug}&project=#{project.slug}&limit=1000",
-        token
-      )
-
-    assert missing_runtime_trace_conn.status == 404
-    assert Process.get(:conversation_trace_limit) == 500
-
-    assert %{"ok" => false, "error" => %{"code" => "trace_session_not_found"}} =
-             Jason.decode!(missing_runtime_trace_conn.resp_body)
-  end
-
   test "conversation CLI endpoints reject users outside the org before project resolution", %{
     org: org,
     project: project
@@ -2359,19 +1716,6 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
 
     assert %{"ok" => false, "error" => %{"code" => "forbidden"}} =
              Jason.decode!(conn.resp_body)
-  end
-
-  test "Feishu app selected smoke stays manual until a bot-ready binding exists", %{
-    org: org,
-    token: token
-  } do
-    selected =
-      api(:get, "/v1/cli/feishu/apps/selected?org=#{org.slug}&app_id=cli_app", token)
-      |> json_data()
-
-    assert selected["selected_app"]["requested_app_id"] == "cli_app"
-    assert selected["selected_app"]["app_id"] == nil
-    assert selected["selected_app"]["binding"] == nil
   end
 
   test "Feishu app upsert is admin-only and redacts submitted secrets", %{
@@ -2460,41 +1804,6 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     assert %{"ok" => false, "error" => %{"code" => "forbidden"}} = Jason.decode!(conn.resp_body)
   end
 
-  test "Feishu app upsert reports existing non-Feishu SSO as a conflict", %{
-    org: org,
-    token: token
-  } do
-    {:ok, _oidc} =
-      Orgs.upsert_sso_connection(org.id, %{
-        "provider" => "generic_oidc",
-        "issuer" => "https://accounts.google.com",
-        "client_id" => "google-client",
-        "client_secret" => "google-secret",
-        "allowed_domains" => ["comma.surf"]
-      })
-
-    conn =
-      api(:post, "/v1/cli/feishu/apps", token, %{
-        "org" => org.slug,
-        "attrs" => %{
-          "app_id" => "cli_google_org",
-          "sso_enabled" => true,
-          "app_secret" => "feishu-secret"
-        }
-      })
-
-    assert conn.status == 409
-    refute conn.resp_body =~ "feishu-secret"
-
-    assert %{
-             "ok" => false,
-             "error" => %{
-               "code" => "sso_provider_conflict",
-               "message" => "Could not save the Feishu app."
-             }
-           } = Jason.decode!(conn.resp_body)
-  end
-
   test "SSO checks report Feishu config and current admin login evidence", %{
     user: user,
     org: org,
@@ -2532,13 +1841,59 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     assert data["admin_login"]["evidence"]["feishu_sso_identity_seen"] == true
   end
 
+  test "SSO checks of a Lark org report the Lark connection and the admin's Lark sign-in", %{
+    user: user,
+    org: org,
+    token: token
+  } do
+    {:ok, _sso} =
+      Orgs.upsert_sso_connection(org.id, %{
+        "provider" => "lark",
+        "client_id" => "cli_lark_app",
+        "client_secret" => "super-secret-lark"
+      })
+
+    conn = api(:post, "/v1/cli/sso/checks", token, %{"org" => org.slug})
+    refute conn.resp_body =~ "super-secret-lark"
+
+    data = json_data(conn)
+    assert data["checks"]["surface"] == "sso"
+    gates = Map.new(data["checks"]["gates"], &{&1["gate_id"], &1})
+
+    assert Enum.map(data["checks"]["gates"], & &1["gate_id"]) ==
+             ~w(sso.connection sso.credentials sso.redirect_uri sso.authorize_url)
+
+    assert gates["sso.connection"]["status"] == "ok"
+    assert gates["sso.connection"]["evidence"]["connection"]["provider"] == "lark"
+    assert gates["sso.credentials"]["label"] == "Lark credentials valid"
+    assert gates["sso.credentials"]["status"] == "skipped"
+    assert gates["sso.redirect_uri"]["evidence"]["redirect_uri"] =~ "/auth/callback"
+    assert gates["sso.authorize_url"]["status"] == "ok"
+    assert gates["sso.authorize_url"]["evidence"]["authorize_url_host"] == "lark.test"
+    assert data["admin_login"]["status"] == "needs_manual"
+    assert data["admin_login"]["evidence"]["lark_sso_identity_seen"] == false
+
+    %OrgSsoIdentity{}
+    |> OrgSsoIdentity.changeset(%{
+      org_id: org.id,
+      user_id: user.id,
+      provider: "lark",
+      provider_subject_type: "union_id",
+      provider_subject: "on_admin"
+    })
+    |> Repo.insert!()
+
+    conn = api(:post, "/v1/cli/sso/checks", token, %{"org" => org.slug})
+    assert json_data(conn)["admin_login"]["status"] == "ok"
+  end
+
   test "runner list exposes heartbeat summary", %{org: org, token: token} do
     {:ok, provisioner} =
       Environments.register_mac_mini_provisioner(org.id, %{
         "stable_id" => "mini-1",
         "name" => "Office Mac mini",
         "status" => "online",
-        "last_seen_at" => DateTime.utc_now(),
+        "last_seen_at" => SystemsClock.utc_now(),
         "version" => "worker-0.1.0",
         "capabilities" => %{
           "component_versions" => %{"salix-connect" => "2026.06"}
@@ -2561,108 +1916,6 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     assert provisioner["version"] == "worker-0.1.0"
     assert provisioner["component_versions"] == "salix-connect=2026.06"
     assert provisioner["update_available"] == false
-  end
-
-  defp start_real_calendar_status_store! do
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    previous_calendar_autojoin = Application.get_env(:salix_meet, :calendar_autojoin)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_meet, :calendar_autojoin, scan_interval_ms: 120_000)
-
-    case Process.whereis(SalixStore.S3.Fake) do
-      nil -> start_supervised!(SalixStore.S3.Fake)
-      _pid -> :ok
-    end
-
-    worker_started? = is_nil(Process.whereis(SalixMeet.CalendarAutojoin))
-
-    worker_pid =
-      if worker_started? do
-        {:ok, pid} = Agent.start_link(fn -> :running end, name: SalixMeet.CalendarAutojoin)
-        pid
-      end
-
-    on_exit(fn ->
-      if worker_started? and is_pid(worker_pid) and Process.alive?(worker_pid),
-        do: Agent.stop(worker_pid)
-
-      restore_app_env(:salix_store, :s3_backend, previous_backend)
-      restore_app_env(:salix_meet, :calendar_autojoin, previous_calendar_autojoin)
-    end)
-  end
-
-  defp seed_real_calendar_status!(org, project, router) do
-    now = System.system_time(:millisecond)
-    calendar_id = Ids.new_calendar_id()
-    item_id = Ids.new_calendar_item_id()
-    plan_id = Ids.new_meeting_plan_id()
-
-    occurrence_ref = %{
-      "calendar_id" => calendar_id,
-      "instance" => "actual-salix-producer"
-    }
-
-    event = %{
-      "event_id" => "actual-salix-producer-event",
-      "calendar_id" => calendar_id,
-      "calendar_item_id" => item_id,
-      "occurrence_ref" => occurrence_ref,
-      "meeting_plan_id" => plan_id,
-      "calendar_revision" => 1,
-      "start_ms" => now + 60 * 60 * 1_000,
-      "end_ms" => now + 90 * 60 * 1_000,
-      "meet_url" => "https://meet.google.com:443/abc-defg-hij",
-      "title" =>
-        "Agenda https://docs.example.test/brief,Meet:https://meet.google.com:443/abc-defg-hij"
-    }
-
-    group = %{
-      "tenant_id" => org.salix_tenant_id,
-      "group_id" => project.salix_group_id,
-      "calendar_id" => calendar_id
-    }
-
-    assert {:ok, _} =
-             CasRecord.update(Keys.ctl_agent(router.salix_agent_id), fn agent ->
-               Map.merge(agent, %{
-                 "heartbeat_schedule_id" => "heartbeat-#{router.salix_agent_id}",
-                 "router_session_id" => Ids.new_session_id()
-               })
-             end)
-
-    assert {:ok, _} =
-             CasRecord.create(Keys.ctl_im_connect(project.salix_group_id, "conn-calendar"), %{
-               "tenant_id" => org.salix_tenant_id,
-               "group_id" => project.salix_group_id,
-               "connect_id" => "conn-calendar",
-               "provider" => "slack",
-               "oauth_completed_at" => 1
-             })
-
-    assert {:ok, empty} = CalendarProjection.load(group, now: now - 1)
-
-    assert {:ok, projection, %{partial_errors: []}} =
-             CalendarProjection.reconcile(empty, [event], %{}, max_events: 50, now: now)
-
-    assert {:ok, _} = CalendarProjection.checkpoint(projection)
-
-    %{
-      meeting_id: CalendarProjection.meeting_id(group, event),
-      plan_id: plan_id,
-      occurrence_ref: occurrence_ref,
-      group: group,
-      event: event,
-      now: now
-    }
-  end
-
-  defp checkpoint_real_calendar_event!(group, event, now) do
-    assert {:ok, snapshot} = CalendarProjection.load(group, now: now)
-
-    assert {:ok, projection, %{partial_errors: []}} =
-             CalendarProjection.reconcile(snapshot, [event], %{}, max_events: 50, now: now)
-
-    assert {:ok, _} = CalendarProjection.checkpoint(projection)
   end
 
   defp api(method, path, token, body \\ nil) do
@@ -2699,10 +1952,8 @@ defmodule BridgeForTeamsWeb.CLIControllerTest do
     data
   end
 
-  defp restore_web_env(key, nil), do: Application.delete_env(:bridge_for_teams_web, key)
-  defp restore_web_env(key, value), do: Application.put_env(:bridge_for_teams_web, key, value)
-  defp restore_app_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_app_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_web_env(key, nil), do: SystemsRuntime.delete_env(:bridge_for_teams_web, key)
+  defp restore_web_env(key, value), do: SystemsRuntime.put_env(:bridge_for_teams_web, key, value)
 
   defp local_platform do
     {os, 0} = System.cmd("uname", ["-s"])

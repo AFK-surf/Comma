@@ -32,7 +32,7 @@ defmodule SalixIM.IFC.ReadLabels do
 
   require Logger
 
-  alias SalixIM.IFC.{Facts, Ingress}
+  alias SalixIM.IFC.{Facts, Ingress, Projection}
   alias SalixIFC.{Codec, Label}
 
   @doc """
@@ -78,6 +78,67 @@ defmodule SalixIM.IFC.ReadLabels do
   end
 
   def for_scopes(_connect, _scope_ids), do: nil
+
+  @doc """
+  The `ifc` block for a Feishu cloud document read.
+
+  `audience` is called only when this Group is labelling, so a Group with the
+  check off makes no permission lookups. It returns the document's link
+  setting and collaborators (`SalixIM.Provider.Feishu.Docs.audience/2`).
+
+  A label must not name more readers than the document really has:
+
+    * a link open to anyone is `public`; a link open inside the tenant is
+      the whole space;
+    * otherwise the label is the join of every collaborating chat and person,
+      each labelled as its conversation would be. People reached only
+      through a department, a wiki space, or a parent folder are not added:
+      leaving them out makes the label more restrictive, never less;
+    * no collaborator this resolver can name, or an audience Feishu would not
+      disclose (listing collaborators needs share permission), is the
+      fail-closed label.
+  """
+  @spec for_document(map(), (-> {:ok, map()} | {:error, term()})) :: map() | nil
+  def for_document(connect, audience) when is_map(connect) and is_function(audience, 0) do
+    case labelling_scope(connect) do
+      %{} = scope -> %{"label" => document_label(scope, audience.())}
+      _off -> nil
+    end
+  end
+
+  def for_document(_connect, _audience), do: nil
+
+  defp document_label(scope, {:ok, %{} = audience}) do
+    link = text(audience["link_share_entity"])
+
+    cond do
+      String.starts_with?(link, "anyone") ->
+        ["public"]
+
+      String.starts_with?(link, "tenant") or String.starts_with?(link, "partner_tenant") ->
+        encoded_atoms([{:space, scope.connect_id}])
+
+      true ->
+        scope_ids =
+          List.wrap(audience["chat_ids"]) ++
+            Enum.map(List.wrap(audience["user_ids"]), &Projection.direct_scope_id/1)
+
+        case scope_ids |> Enum.map(&text/1) |> Enum.reject(&(&1 == "")) |> Enum.uniq() do
+          [] -> private()
+          ids -> join(Enum.map(ids, &scope_label(scope, &1)))
+        end
+    end
+  end
+
+  defp document_label(_scope, _unknown), do: private()
+
+  defp encoded_atoms(atoms) do
+    encoded = Enum.map(atoms, &Codec.encode_atom/1)
+
+    if Enum.all?(encoded, &match?({:ok, _}, &1)),
+      do: Enum.map(encoded, &elem(&1, 1)),
+      else: private()
+  end
 
   @doc """
   The `ifc` block for a read whose hits come from different scopes.

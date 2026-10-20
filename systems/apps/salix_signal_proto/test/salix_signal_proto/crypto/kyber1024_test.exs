@@ -2,7 +2,7 @@ defmodule SalixSignalProto.Crypto.Kyber1024Test do
   # Kyber1024 round 3 (CRS-03 §6.2) against the CRS-03 vectors
   # kyber1024-decapsulate.json, kyber1024-keys-from-seed.json and
   # kyber1024-implicit-rejection.json.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.Crypto.Kyber1024

@@ -425,7 +425,7 @@ defmodule BridgeForTeams.SourcedContext.Previews do
          normalized_artifacts,
          artifacts_by_identity
        ) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     revision_number = next_revision(run.id)
 
     if revision_number > bound(:run_review_revisions, 50) do
@@ -450,7 +450,7 @@ defmodule BridgeForTeams.SourcedContext.Previews do
     Enum.each(normalized_artifacts, fn normalized ->
       identity = {normalized["kind"], normalized["stable_key"]}
       artifact = Map.fetch!(artifacts_by_identity, identity)
-      id = Ecto.UUID.generate()
+      id = SystemsRuntime.Proc.uuid()
       {:ok, sealed} = Payloads.seal(:review_item, id, normalized["payload"])
 
       %SourcedContextReviewItem{id: id}
@@ -718,13 +718,13 @@ defmodule BridgeForTeams.SourcedContext.Previews do
   end
 
   defp bound(key, default) do
-    Application.get_env(:bridge_for_teams_core, :sourced_context_bounds, [])
+    SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_bounds, [])
     |> Keyword.get(key, default)
   end
 
   defp feature_enabled do
     if Keyword.get(
-         Application.get_env(:bridge_for_teams_core, :sourced_context_features, []),
+         SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_features, []),
          :derivation,
          false
        ),

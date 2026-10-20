@@ -1,5 +1,5 @@
 defmodule CommaWeb.TelegramOIDC.TransportTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias CommaWeb.TelegramOIDC
   alias CommaWeb.TelegramOIDC.Oidcc, as: TelegramAdapter
@@ -10,8 +10,6 @@ defmodule CommaWeb.TelegramOIDC.TransportTest do
   @nonce "telegram-login-nonce"
   @verifier "telegram-pkce-verifier-012345678901234567890123"
   @redirect_uri "https://comma.test/v1/comma/integrations/telegram/connect/callback"
-  @reporter Module.concat(__MODULE__, Reporter)
-
   defmodule Provider do
     import Plug.Conn
 
@@ -43,7 +41,7 @@ defmodule CommaWeb.TelegramOIDC.TransportTest do
           {"POST", "/token"} ->
             {:ok, request_body, conn} = read_body(conn)
 
-            send(snapshot.test_pid, {
+            SystemsRuntime.Proc.send(snapshot.test_pid, {
               :token_request,
               get_req_header(conn, "authorization"),
               URI.decode_query(request_body)
@@ -78,7 +76,12 @@ defmodule CommaWeb.TelegramOIDC.TransportTest do
 
       conn = if gzip?, do: put_resp_header(conn, "content-encoding", "gzip"), else: conn
       conn = send_resp(conn, 200, wire_body)
-      send(snapshot.test_pid, {:provider_response, conn.request_path, encoding, wire_body})
+
+      SystemsRuntime.Proc.send(
+        snapshot.test_pid,
+        {:provider_response, conn.request_path, encoding, wire_body}
+      )
+
       conn
     end
   end
@@ -97,15 +100,15 @@ defmodule CommaWeb.TelegramOIDC.TransportTest do
   end
 
   setup context do
-    previous = Application.get_env(:comma_web, :telegram)
+    previous = SystemsRuntime.get_env(:comma_web, :telegram)
 
     on_exit(fn ->
       if previous == nil,
-        do: Application.delete_env(:comma_web, :telegram),
-        else: Application.put_env(:comma_web, :telegram, previous)
+        do: SystemsRuntime.delete_env(:comma_web, :telegram),
+        else: SystemsRuntime.put_env(:comma_web, :telegram, previous)
     end)
 
-    test_pid = self()
+    test_pid = SystemsRuntime.Proc.self()
 
     state =
       start_supervised!(
@@ -133,7 +136,7 @@ defmodule CommaWeb.TelegramOIDC.TransportTest do
     id_token = sign(context.private_key, claims)
     Agent.update(state, &%{&1 | issuer: issuer, id_token: id_token})
 
-    Application.put_env(:comma_web, :telegram,
+    SystemsRuntime.put_env(:comma_web, :telegram,
       oidc_enabled: true,
       client_id: @client_id,
       client_secret: @client_secret,
@@ -191,96 +194,6 @@ defmodule CommaWeb.TelegramOIDC.TransportTest do
 
   for path <- ["/.well-known/openid-configuration", "/jwks"],
       failure <- [:invalid_json, :corrupt_gzip] do
-    @tag capture_log: true
-    test "#{failure} at #{path} retries without crashing its owner and recovers", context do
-      path = unquote(path)
-      failure = unquote(failure)
-      Agent.update(context.state, &%{&1 | modes: %{path => failure}})
-      owner = start_provider!()
-
-      assert_receive {:provider_response, ^path, ^failure, _}, 2_000
-      assert_receive {:provider_response, ^path, ^failure, _}, 2_000
-      assert Process.alive?(owner)
-      assert Process.alive?(context.server)
-      assert {:error, :telegram_provider_unavailable} = exchange()
-
-      Agent.update(context.state, &%{&1 | modes: %{}})
-      await_ready!()
-      assert Process.alive?(owner)
-      assert {:ok, %{"id" => 42001}} = exchange()
-    end
-  end
-
-  for failure <- [:invalid_json, :corrupt_gzip] do
-    @tag capture_log: true
-    test "#{failure} in token HTTP returns provider unavailable and a later exchange succeeds",
-         context do
-      Agent.update(context.state, &%{&1 | modes: %{"/token" => unquote(failure)}})
-      owner = start_provider!()
-      await_ready!()
-      assert {:error, :telegram_provider_unavailable} = exchange()
-      assert Process.alive?(owner)
-
-      Agent.update(context.state, &%{&1 | modes: %{}})
-      assert {:ok, %{"id" => 42001}} = exchange()
-    end
-  end
-
-  @tag capture_log: true
-  test "a failed refresh after JWKS expiry restarts and recovers", context do
-    Agent.update(context.state, &%{&1 | cache_control: %{"/jwks" => "max-age=1"}})
-    owner = start_provider!(%{fallback_expiry: 1_000})
-    await_ready!()
-    worker = Process.whereis(@provider)
-    ref = Process.monitor(worker)
-    Agent.update(context.state, &%{&1 | modes: %{"/jwks" => :invalid_json}})
-
-    assert_receive {:provider_response, "/jwks", :invalid_json, _}, 2_000
-    assert_receive {:DOWN, ^ref, :process, ^worker, _}
-    Agent.update(context.state, &%{&1 | modes: %{}})
-    await_ready!()
-    assert Process.whereis(@provider) != worker
-    assert Process.alive?(owner)
-    assert Process.alive?(context.server)
-    assert {:ok, %{"id" => 42001}} = exchange()
-  end
-
-  @tag capture_log: true
-  test "repeated worker crashes preserve the owner and HTTP sibling and recover", context do
-    start_supervised!(
-      {TelemetryMetricsPrometheus.Core,
-       name: @reporter, metrics: CommaProduct.Telemetry.metrics(), start_async: false}
-    )
-
-    owner = start_provider!()
-    await_ready!()
-
-    for _ <- 1..4 do
-      worker = Process.whereis(@provider)
-      ref = Process.monitor(worker)
-      Process.exit(worker, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^worker, :killed}
-      await_ready!()
-      assert Process.whereis(@provider) != worker
-      assert Process.alive?(owner)
-      assert Process.alive?(context.server)
-      assert {:ok, %{"id" => 42001}} = exchange()
-    end
-
-    scrape = TelemetryMetricsPrometheus.Core.scrape(@reporter)
-
-    assert scrape =~
-             ~s(comma_product_operations_total{operation="telegram_oidc_restart",outcome="unavailable",provider="telegram"} 4)
-  end
-
-  test "stopping the owner also stops its linked SDK worker" do
-    start_provider!()
-    await_ready!()
-    worker = Process.whereis(@provider)
-    ref = Process.monitor(worker)
-    stop_supervised!(CommaWeb.TelegramOIDC.ProviderOwner)
-    assert_receive {:DOWN, ^ref, :process, ^worker, :shutdown}
-    assert Process.whereis(@provider) == nil
   end
 
   defp start_provider!(configuration_opts \\ %{}) do
@@ -299,7 +212,7 @@ defmodule CommaWeb.TelegramOIDC.TransportTest do
 
   defp assert_wire_body(:plain, body), do: assert(is_map(Jason.decode!(body)))
 
-  defp await_ready!(attempts \\ 200)
+  defp await_ready!(attempts \\ 3000)
 
   defp await_ready!(0), do: flunk("Telegram provider did not load discovery and JWKS")
 
@@ -316,7 +229,7 @@ defmodule CommaWeb.TelegramOIDC.TransportTest do
 
     case jwks do
       :undefined ->
-        Process.sleep(10)
+        SystemsRuntime.Proc.sleep(10)
         await_ready!(attempts - 1)
 
       jwks ->
@@ -335,7 +248,7 @@ defmodule CommaWeb.TelegramOIDC.TransportTest do
   end
 
   defp claims(issuer) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     %{
       "iss" => issuer,

@@ -7,9 +7,10 @@ import {
   type PluginCategory,
   type PluginDefinition,
   type PluginDetailCopy,
-} from "@comma/ui";
+} from "@comma/ui/components/plugins";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { fixtureSearch } from "../../../support/search";
 
 const FixtureIcon = ({ label }: { label: string }) => (
   <svg aria-label={label} viewBox="0 0 24 24">
@@ -96,7 +97,7 @@ const hiddenPlugins = [
   },
 ] satisfies readonly PluginDefinition[];
 
-const fixtureSearchParams = new URLSearchParams(window.location.search);
+const fixtureSearchParams = new URLSearchParams(fixtureSearch());
 const requestedHiddenPluginCount = fixtureSearchParams.get("hiddenPluginCount");
 const parsedHiddenPluginCount =
   requestedHiddenPluginCount === null ? Number.NaN : Number(requestedHiddenPluginCount);
@@ -150,7 +151,6 @@ const zhCN = fixtureSearchParams.get("locale") === "zh-CN";
 document.documentElement.lang = zhCN ? "zh-CN" : "en";
 
 function PluginsFixture() {
-  const [openedPluginId, setOpenedPluginId] = useState<string | null>(null);
   const [detailInstalled, setDetailInstalled] = useState(false);
   const localizedCategories = zhCN
     ? categories.map((category) => ({
@@ -167,12 +167,9 @@ function PluginsFixture() {
         className="h-[720px] w-[702px]"
         installedPlugins={[notionPlugin]}
         onPluginInstall={() => undefined}
-        onPluginOpen={(plugin) => setOpenedPluginId(plugin.id)}
+        onPluginOpen={() => undefined}
         {...(zhCN ? { copy: zhCatalogCopy } : {})}
       />
-      <output aria-live="polite">
-        {openedPluginId ? `Opened plugin: ${openedPluginId}` : ""}
-      </output>
       <PluginDetail
         className="h-[720px] w-[702px]"
         plugin={linearPlugin}

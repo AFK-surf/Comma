@@ -1,3 +1,4 @@
+import { NativeOperationError } from "./operation-error";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { SessionAdmissionFailure } from "@comma/session-contract";
 import type {
@@ -22,8 +23,6 @@ export interface NativeCallerContext {
     | "main-window"
     | "dev-workbench"
     | "onboarding-window"
-    | "side-chat-test-window"
-    | "side-chat-window"
     | "playground"
     | "panel"
     | "unknown";
@@ -76,6 +75,7 @@ interface IpcMainLike {
     channel: string,
     listener: (event: unknown, input: unknown) => Promise<NativeCommandResult<unknown>>
   ): void;
+  removeHandler(channel: string): void;
 }
 
 interface SenderPolicy {
@@ -630,10 +630,20 @@ export class IpcGateway {
     this.#senderPolicy = senderPolicy;
   }
 
+  /** The channels this gateway answers, until it closes. */
+  readonly #channels = new Set<string>();
+
+  /** Stops answering every channel it registered: another gateway may register them. */
+  close() {
+    for (const channel of this.#channels) this.#ipcMain.removeHandler(channel);
+    this.#channels.clear();
+  }
+
   register<Input, Output>(
     contract: NativeCommandContract<Input, Output>,
     handler: (input: Input) => Promise<Output> | Output
   ) {
+    this.#channels.add(contract.channel);
     this.#ipcMain.handle(contract.channel, async (event, rawInput) => {
       const caller = this.#resolveCallerContext(event);
       const capabilityId = contract.id ?? contract.channel;
@@ -747,6 +757,10 @@ export class IpcGateway {
             value: outputResult.data,
           } satisfies NativeCommandResult<Output>;
         } catch (error) {
+          if (error instanceof NativeOperationError) {
+            observe("handler-error", { error });
+            return errorEnvelope({ code: error.code, message: error.message });
+          }
           if (error instanceof NativeSessionAdmissionError) {
             this.#logger.warn("Native command Session admission denied.", {
               caller,

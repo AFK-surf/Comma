@@ -1,8 +1,10 @@
 defmodule SalixEnv.VM.Providers.Cloudflare.ClientTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixEnv.VM.Providers.Cloudflare.{Client, MockGateway}
   alias SalixStore.Compute
+
+  @station %{"server" => "wss://salix.example", "credential" => "connect-credential"}
 
   setup do
     mock = start_supervised!(MockGateway)
@@ -13,26 +15,22 @@ defmodule SalixEnv.VM.Providers.Cloudflare.ClientTest do
     %{mock: mock, client: client}
   end
 
-  test "ensure/status/destroy/checkpoint/restore/keepalive call versioned worker contract", %{
+  test "ensure/status/keepalive/destroy call versioned worker contract", %{
     mock: mock,
     client: client
   } do
     assert {:ok,
             %{
               "sandbox_id" => "sb-1",
-              "status" => "ready",
+              "status" => "started",
               "worker_version_id" => "version-1",
               "worker_version_tag" => "tag-1",
               "gateway_build_id" => "build-1",
               "connector_image_version" => "connector-1"
             }} =
-             Client.ensure(client, "sb-1", keep_alive: true)
+             Client.ensure(client, "sb-1", keep_alive: true, station: @station)
 
-    assert {:ok, %{"status" => "ready"}} = Client.status(client, "sb-1")
-    assert {:ok, %{"archive" => %{"id" => "a1"}}} = Client.checkpoint(client, "sb-1")
-
-    assert {:ok, %{"restore" => %{"restored" => true}}} =
-             Client.restore(client, "sb-1", %{"id" => "a1"})
+    assert {:ok, %{"status" => "running"}} = Client.status(client, "sb-1")
 
     assert {:ok, %{"keep_alive" => false}} = Client.keepalive(client, "sb-1", false)
     assert :ok = Client.destroy(client, "sb-1")
@@ -41,12 +39,9 @@ defmodule SalixEnv.VM.Providers.Cloudflare.ClientTest do
              %{
                op: :ensure,
                sandbox_id: "sb-1",
-               body: %{"sandbox_id" => "sb-1", "keep_alive" => true}
+               body: %{"sandbox_id" => "sb-1", "keep_alive" => true, "station" => @station}
              },
              %{op: :status, sandbox_id: "sb-1"},
-             %{op: :proxy, sandbox_id: "sb-1", path: "/internal/v1/sandboxes/sb-1/proxy/archive"},
-             %{op: :checkpoint, sandbox_id: "sb-1"},
-             %{op: :restore, sandbox_id: "sb-1"},
              %{op: :keepalive, sandbox_id: "sb-1", body: %{"keep_alive" => false}},
              %{op: :destroy, sandbox_id: "sb-1"}
            ] = MockGateway.calls(mock)
@@ -58,77 +53,6 @@ defmodule SalixEnv.VM.Providers.Cloudflare.ClientTest do
       assert call.request_id
       assert call.worker_version_key == "sb-1"
     end
-  end
-
-  test "connect_request returns signed websocket endpoint", %{client: client} do
-    request = Client.connect_request(client, "sb-1")
-    assert request.url =~ ~r|^ws://127\.0\.0\.1:\d+/internal/v1/sandboxes/sb-1/connect$|
-
-    assert {"x-salix-signature", "sha256=" <> _} =
-             List.keyfind(request.headers, "x-salix-signature", 0)
-
-    assert {"Cloudflare-Workers-Version-Key", "sb-1"} =
-             List.keyfind(request.headers, "Cloudflare-Workers-Version-Key", 0)
-  end
-
-  test "standard-1 signs and routes every operation through its profile path", %{mock: mock} do
-    client =
-      Client.new(
-        base_url: MockGateway.base_url(mock),
-        secret: "test-secret",
-        profile_key: "cf-standard-1"
-      )
-
-    assert {:ok, _} = Client.ensure(client, "sb-shared")
-    assert {:ok, _} = Client.status(client, "sb-shared")
-    assert :ok = Client.destroy(client, "sb-shared")
-
-    assert Enum.all?(MockGateway.calls(mock), fn call ->
-             String.starts_with?(
-               call.path,
-               "/internal/v1/profiles/cf-standard-1/sandboxes"
-             )
-           end)
-
-    assert Client.connect_request(client, "sb-shared").url =~
-             "/internal/v1/profiles/cf-standard-1/sandboxes/sb-shared/connect"
-  end
-
-  test "an unresolved profile fails closed without using the standard-2 path", %{mock: mock} do
-    client =
-      Client.new(
-        base_url: MockGateway.base_url(mock),
-        secret: "test-secret",
-        profile_key: nil,
-        max_retries: 0
-      )
-
-    assert {:error, _} = Client.ensure(client, "sb-legacy")
-    assert [%{path: "/internal/v1/profiles/unknown/sandboxes"}] = MockGateway.calls(mock)
-  end
-
-  test "a Gateway without the profile collection fails closed on the first ensure", %{
-    mock: mock
-  } do
-    client =
-      Client.new(
-        base_url: MockGateway.base_url(mock),
-        secret: "test-secret",
-        profile_key: "cf-standard-1",
-        max_retries: 2
-      )
-
-    # A pre-profile Worker answers its unknown-path body for the profile collection.
-    :ok =
-      MockGateway.set_error(mock, 404, %{
-        "ok" => false,
-        "error" => %{"code" => "not_found", "message" => "not_found"}
-      })
-
-    assert {:error, {:gateway_profile_unsupported, "cf-standard-1"}} =
-             Client.ensure(client, "sb-new")
-
-    assert [%{path: "/internal/v1/profiles/cf-standard-1/sandboxes"}] = MockGateway.calls(mock)
   end
 
   test "a transport failure keeps the start claim until release reconciliation", %{mock: mock} do
@@ -161,101 +85,96 @@ defmodule SalixEnv.VM.Providers.Cloudflare.ClientTest do
     assert {:ok, %{"active_operation_count" => 1}} = Compute.group_workload(group)
   end
 
-  test "adds optional worker version override header", %{mock: mock} do
-    client =
-      Client.new(
-        base_url: MockGateway.base_url(mock),
-        secret: "test-secret",
-        worker_name: "salix-vm-verify",
-        worker_version_id: "candidate-version",
-        backoff_ms: 1
-      )
-
-    assert {:ok, %{"sandbox_id" => "sb-1"}} = Client.ensure(client, "sb-1")
-
-    assert [
-             %{
-               worker_version_key: "sb-1",
-               worker_version_overrides: "salix-vm-verify=\"candidate-version\""
-             }
-           ] = MockGateway.calls(mock)
+  test "signatures match the Worker canonical request format" do
+    assert Client.signature("secret", :post, "/internal/v1/sandboxes", "123", "nonce", "{}") ==
+             "sha256=3df2bb52d5944d88507b72a5542b58d6bb3dc4e8c568a43b46708c5493a2c254"
   end
 
-  test "proxy calls diagnostic path with signed headers", %{mock: mock, client: client} do
-    assert {:ok, %Req.Response{status: 200}} = Client.proxy(client, "sb-1", "/readyz")
+  @tag :disposable_reset
+  test "nonrunning does not settle an unknown native destroy and stale owner never calls it", %{
+    mock: mock
+  } do
+    {client, before, prepared} = prepare_discard(mock, "cf-standard-2", 0)
+    observation = discarded_observation(prepared)
 
-    assert [%{op: :proxy, path: "/internal/v1/sandboxes/sb-1/proxy/readyz"}] =
-             MockGateway.calls(mock)
+    unknown =
+      put_in(observation, ["control", "pending"], observation["control"]["last_terminal"])
+      |> put_in(["control", "last_terminal"], nil)
+
+    :ok =
+      MockGateway.set_responses(mock, [
+        {200, unknown},
+        {200, unknown},
+        {409, %{"error" => "control_command_unsettled"}},
+        {200, unknown}
+      ])
+
+    assert {:error, {:cloudflare_discard_unconfirmed, _}} =
+             Client.discard(client, "sb-discard", prepared)
+
+    assert {:error, :cloudflare_discard_target_changed} =
+             Client.discard(client, "sb-discard", before)
+
+    assert length(MockGateway.calls(mock)) == 4
+    assert {:ok, current} = Compute.group_workload(client.group_id)
+    assert current["generation"] == before["generation"]
   end
 
-  test "a completed proxy error settles its Gateway attempt", %{mock: mock} do
+  defp prepare_discard(mock, profile, claims) do
     tenant = SalixStore.Ids.new_tenant_id()
     group = SalixStore.Ids.new_group_id(tenant)
 
-    assert {:ok, _, :created} =
-             Compute.ensure_group_workload(%{
-               "tenant_id" => tenant,
-               "group_id" => group,
-               "provider" => "cloudflare",
-               "provider_resource_id" => "sb-proxy-error",
-               "status" => "ready",
-               "created_at" => 1234
-             })
+    {:ok, _, :created} =
+      Compute.ensure_group_workload(%{
+        "tenant_id" => tenant,
+        "group_id" => group,
+        "provider" => "cloudflare",
+        "provider_resource_id" => "sb-discard",
+        "provider_resource_name" => "sb-discard",
+        "provider_spec" => %{"profile_key" => profile},
+        "status" => "ready",
+        "created_at" => 1234
+      })
 
-    client =
-      Client.new(base_url: MockGateway.base_url(mock), secret: "test-secret", group_id: group)
+    target = profile <> ":sb-discard"
+    {:ok, _} = Compute.prepare_cloudflare_control(group, target, :open)
 
-    :ok = MockGateway.set_error(mock, 503, %{"error" => "connector unavailable"})
+    if claims > 0 do
+      for n <- 1..claims do
+        {:ok, _} = Compute.begin_cloudflare_gateway_attempt(group, "legacy-#{n}", :normal, target)
+      end
+    end
 
-    assert {:ok, %Req.Response{status: 503}} = Client.proxy(client, "sb-proxy-error", "/readyz")
-    assert {:ok, %{"active_operation_count" => 0}} = Compute.group_workload(group)
-  end
-
-  test "a rejected managed request settles its Gateway attempt", %{mock: mock} do
-    tenant = SalixStore.Ids.new_tenant_id()
-    group = SalixStore.Ids.new_group_id(tenant)
-
-    assert {:ok, _, :created} =
-             Compute.ensure_group_workload(%{
-               "tenant_id" => tenant,
-               "group_id" => group,
-               "provider" => "cloudflare",
-               "provider_resource_id" => "sb-rejected",
-               "status" => "ready",
-               "created_at" => 1234
-             })
+    {:ok, before} = Compute.group_workload(group)
+    {:ok, prepared} = Compute.begin_cloudflare_discard(group, before)
 
     client =
       Client.new(
         base_url: MockGateway.base_url(mock),
         secret: "test-secret",
         group_id: group,
-        max_retries: 0
+        profile_key: profile,
+        max_retries: 2,
+        backoff_ms: 1
       )
 
-    :ok =
-      MockGateway.set_error(mock, 401, %{
-        "ok" => false,
-        "error" => %{"code" => "bad_signature", "message" => "invalid signature"}
-      })
-
-    assert {:error, {:api_error, 401, "bad_signature", _}} = Client.status(client, "sb-rejected")
-    assert {:ok, %{"active_operation_count" => 0}} = Compute.group_workload(group)
+    {client, before, prepared}
   end
 
-  test "maps structured worker errors", %{mock: mock, client: client} do
-    :ok =
-      MockGateway.set_error(mock, 401, %{
-        "ok" => false,
-        "error" => %{"code" => "bad_signature", "message" => "invalid signature"}
-      })
+  defp discarded_observation(prepared) do
+    terminal =
+      prepared["cloudflare_control"]
+      |> Map.put("claim_id", prepared["archive_operation_id"])
+      |> Map.put("action", "destroy")
+      |> Map.put("outcome", "completed")
 
-    assert {:error, {:api_error, 401, "bad_signature", "invalid signature"}} =
-             Client.status(client, "sb-1")
-  end
-
-  test "signatures match the Worker canonical request format" do
-    assert Client.signature("secret", :post, "/internal/v1/sandboxes", "123", "nonce", "{}") ==
-             "sha256=3df2bb52d5944d88507b72a5542b58d6bb3dc4e8c568a43b46708c5493a2c254"
+    %{
+      "running" => false,
+      "managed_commands_settled" => true,
+      "control" =>
+        prepared["cloudflare_control"]
+        |> Map.put("pending", nil)
+        |> Map.put("last_terminal", terminal)
+    }
   end
 end

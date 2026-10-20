@@ -161,7 +161,7 @@ defmodule BridgeForTeams.Auth.OIDC.HTTP do
   end
 
   defp validate_claims(claims, issuer, client_id) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     cond do
       claims["iss"] && claims["iss"] != issuer ->
@@ -191,7 +191,7 @@ defmodule BridgeForTeams.Auth.OIDC.HTTP do
   end
 
   defp random_url_token(bytes \\ 32),
-    do: Base.url_encode64(:crypto.strong_rand_bytes(bytes), padding: false)
+    do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(bytes), padding: false)
 
   # --- HTTP ---
 

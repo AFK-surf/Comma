@@ -80,7 +80,7 @@ cheaper than a walk over every branch of `runtimeAppend`. -/
 theorem runtimeAppend_owner_control_frame {state event next : Term} {journal rest : List Term}
     (call : runtimeAppend state event journal = .ok (next, rest)) : OwnerControlFrame state next := by
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops call
-  exact owner_control_frame_trans (appendFields_owner_control_frame appended) (owner_control_frame_trans (write_owner_control_frame written rfl)
+  exact owner_control_frame_trans (appendFields_owner_control_frame appended) (owner_control_frame_trans (write_owner_control_frame written (by keys_absent))
     (owner_control_frame_trans (bumpHwm_owner_control_frame bumped) (resetFresh_owner_control_frame reset)))
 
 theorem runtimeAppend_owner_control_frame_step {state event next : Term} {journal rest : List Term} :
@@ -94,14 +94,23 @@ theorem transcriptDelivery_owner_control_frame {state event next : Term} {journa
     (call : transcriptDelivery state event journal = .ok (next, rest)) : OwnerControlFrame state next := by
   rcases transcriptDelivery_ops call with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, obligated, bumped, reset⟩
   · exact owner_control_frame_refl _
-  · exact owner_control_frame_trans (appendFields_owner_control_frame appended) (owner_control_frame_trans (write_owner_control_frame written rfl)
+  · exact owner_control_frame_trans (appendFields_owner_control_frame appended) (owner_control_frame_trans (write_owner_control_frame written (by keys_absent))
       (owner_control_frame_trans (addObligation_owner_control_frame obligated) (owner_control_frame_trans (bumpHwm_owner_control_frame bumped) (resetFresh_owner_control_frame reset))))
 
 theorem transcriptDelivery_owner_control_frame_step {state event next : Term} {journal rest : List Term} :
     transcriptDelivery state event journal = .ok (next, rest) ↔
       Except.ok (next, rest) = transcriptDelivery state event journal ∧ OwnerControlFrame state next :=
   step_iff transcriptDelivery_owner_control_frame
-owner_control_rule transcriptSeed (state event)
+/-- Compose the two writes of `transcriptSeed` (`transcriptSeed_ops`). -/
+theorem transcriptSeed_owner_control_frame {state event next : Term} {journal rest : List Term}
+    (call : transcriptSeed state event journal = .ok (next, rest)) : OwnerControlFrame state next := by
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, seeded, bytes⟩ := transcriptSeed_ops call
+  exact owner_control_frame_trans (write_owner_control_frame seeded (by keys_absent)) (write_owner_control_frame bytes (by keys_absent))
+
+theorem transcriptSeed_owner_control_frame_step {state event next : Term} {journal rest : List Term} :
+    transcriptSeed state event journal = .ok (next, rest) ↔
+      Except.ok (next, rest) = transcriptSeed state event journal ∧ OwnerControlFrame state next :=
+  step_iff transcriptSeed_owner_control_frame
 owner_control_rule queueAppend (state event)
 owner_control_rule queueAck (state event)
 owner_control_rule queueConsume (state event)
@@ -115,30 +124,6 @@ theorem sessionEvent_owner_control_frame_step {state event next : Term} {journal
     sessionEvent state event journal = .ok (next, rest) ↔
       Except.ok (next, rest) = sessionEvent state event journal ∧ OwnerControlFrame state next :=
   step_iff sessionEvent_owner_control_frame
-theorem mergePredicate_owner_control_frame {state kind through replacement extra next : Term} {journal rest : List Term}
-    (call : mergePredicate state kind through replacement extra journal = .ok (next, rest)) : OwnerControlFrame state next := by
-  unfold mergePredicate at call
-  repeat' first
-    | exact write_owner_control_frame call rfl
-    | split at call
-    | (obtain ⟨_, _, _, call⟩ := bind_ok call)
-
-theorem mergePredicate_owner_control_frame_step {state kind through replacement extra next : Term} {journal rest : List Term} :
-    mergePredicate state kind through replacement extra journal = .ok (next, rest) ↔
-      Except.ok (next, rest) = mergePredicate state kind through replacement extra journal ∧ OwnerControlFrame state next :=
-  step_iff mergePredicate_owner_control_frame
-
-theorem microcompactIds_owner_control_frame {state replacement event next : Term} {ids journal rest : List Term}
-    (call : microcompactIds state ids replacement event journal = .ok (next, rest)) : OwnerControlFrame state next := by
-  unfold microcompactIds at call
-  owner_control_frame_walk call
-
-theorem microcompactIds_owner_control_frame_step {state replacement event next : Term} {ids journal rest : List Term} :
-    microcompactIds state ids replacement event journal = .ok (next, rest) ↔
-      Except.ok (next, rest) = microcompactIds state ids replacement event journal ∧ OwnerControlFrame state next :=
-  step_iff microcompactIds_owner_control_frame
-
-owner_control_rule microcompact (state event)
 
 theorem afterEvent_owner_control_frame {previous state event next : Term} {journal rest : List Term}
     (call : afterEvent previous state event journal = .ok (next, rest)) : OwnerControlFrame state next := by

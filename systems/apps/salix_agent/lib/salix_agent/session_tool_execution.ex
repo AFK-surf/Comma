@@ -13,7 +13,6 @@ defmodule SalixAgent.SessionToolExecution do
     AgentActor,
     AsyncToolResults,
     Compaction,
-    ExternalSessionStore,
     InternalSessionStore,
     ProviderReplyObligation,
     SessionToolDispatch,
@@ -417,7 +416,7 @@ defmodule SalixAgent.SessionToolExecution do
         {:ok, drop_tool_result_projection(result)}
 
       true ->
-        stored_at_ms = System.system_time(:millisecond)
+        stored_at_ms = SystemsClock.system_time(:millisecond)
 
         events =
           AsyncToolResults.internal_events(
@@ -745,9 +744,6 @@ defmodule SalixAgent.SessionToolExecution do
     SalixAgent.ToolTelemetry.emit_tool_call(result, attrs)
   end
 
-  defp session_context(agent_id, session_id, :external),
-    do: ExternalSessionStore.session_context(agent_id, session_id)
-
   defp session_context(agent_id, session_id, :internal),
     do: InternalSessionStore.read(agent_id, session_id)
 
@@ -760,9 +756,8 @@ defmodule SalixAgent.SessionToolExecution do
          config,
          context
        ) do
-    # The external runtime crosses the same authorization boundary as an
-    # internal round, so it carries the same labelled activation
-    # (docs/verification.md).
+    # A direct tool call crosses the same authorization boundary as a round,
+    # so it carries the same labelled activation (docs/verification.md).
     ifc_mode = SalixAgent.IFC.mode_for(config.tenant_id, config.group_id)
 
     %{
@@ -815,8 +810,6 @@ defmodule SalixAgent.SessionToolExecution do
     pending = Enum.map(pending, &Map.put(&1, :completion_owner, @direct_poll_owner))
     {result, pending}
   end
-
-  defp stamp_direct_poll_ownership(result, pending, _runtime_kind), do: {result, pending}
 
   defp update_result_events(result, fun) do
     cond do
@@ -880,9 +873,6 @@ defmodule SalixAgent.SessionToolExecution do
   defp validate_result(result),
     do: SalixAgent.ToolSideEffects.validate_events(result[:events] || result["events"] || [])
 
-  defp async_events(:external, pending, result),
-    do: SalixAgent.AsyncToolResults.external_events(pending, result)
-
   defp async_events(:internal, pending, result),
     do: SalixAgent.AsyncToolResults.internal_events(pending, result)
 
@@ -941,18 +931,7 @@ defmodule SalixAgent.SessionToolExecution do
 
     notification = callback_handoff_notification(runtime_kind, pending, result)
 
-    case runtime_kind do
-      # Modeled in tla/salix/ExternalRuntimeToolWake.tla. The wakeable delivery
-      # clears the external session's durable wait. Keep the independently
-      # stored status projection in the same transition by journaling that
-      # clear explicitly before the notification.
-      :external ->
-        side_effects ++
-          [%{"type" => "wait_clear", "session_id" => value(pending, "session_id")}, notification]
-
-      :internal ->
-        side_effects ++ [notification]
-    end
+    side_effects ++ [notification]
   end
 
   defp direct_poll_handoff_events(pending, result) do
@@ -1001,7 +980,7 @@ defmodule SalixAgent.SessionToolExecution do
           "kind" => "runtime_message",
           "dedupe_key" => runtime_message_id,
           "wake" => true,
-          "created_at" => System.system_time(:second),
+          "created_at" => SystemsClock.system_time(:second),
           "payload" =>
             %{
               "runtime_message_id" => runtime_message_id,
@@ -1012,36 +991,8 @@ defmodule SalixAgent.SessionToolExecution do
             }
             |> SalixAgent.ToolCallProvenance.inherit(pending)
         }
-
-      :external ->
-        %{
-          "type" => "delivery",
-          "session_id" => session_id,
-          "source_message_id" => runtime_message_id,
-          "role" => "runtime",
-          "kind" => "runtime_message",
-          "runtime_message_id" => runtime_message_id,
-          "runtime_message_type" => "tool_call_handoff",
-          "source_tool_call_id" => tool_call_id,
-          "summary" => "tool #{tool_name || "tool"} is awaiting external completion",
-          "content" => content,
-          "created_at" => System.system_time(:second)
-        }
-        |> put_optional(
-          "trusted_origin",
-          value(pending, "trusted_origin")
-        )
-        |> put_optional("trusted_origins", value(pending, "trusted_origins"))
-        |> put_optional(
-          "trusted_origin_source_message_ids",
-          value(pending, "trusted_origin_source_message_ids")
-        )
     end
   end
-
-  defp visible_reply_policy_events(events, _agent_id, _session_id, runtime_kind, _result)
-       when runtime_kind != :internal,
-       do: events
 
   defp visible_reply_policy_events(events, agent_id, session_id, :internal, result) do
     case InternalSessionStore.read(agent_id, session_id) do
@@ -1058,7 +1009,6 @@ defmodule SalixAgent.SessionToolExecution do
 
   defp runtime_notification?(_event), do: false
 
-  defp operation_source(:external, suffix), do: "external-" <> suffix
   defp operation_source(:internal, suffix), do: suffix
 
   defp normalize_surface_result(result, tool_call_id, meta) do
@@ -1090,12 +1040,8 @@ defmodule SalixAgent.SessionToolExecution do
 
   defp value(_map, _key), do: nil
 
-  defp put_optional(map, _key, nil), do: map
-  defp put_optional(map, _key, ""), do: map
-  defp put_optional(map, key, value), do: Map.put(map, key, value)
-
   defp normalize_source_ids(ids),
     do: ids |> List.wrap() |> Enum.filter(&(is_binary(&1) and &1 != "")) |> Enum.uniq()
 
-  defp random_id, do: :crypto.strong_rand_bytes(12) |> Base.encode16(case: :lower)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(12) |> Base.encode16(case: :lower)
 end

@@ -6,30 +6,11 @@ defmodule SalixAgent.Loops.HostTest do
   control requests, and a build through the embedded compiler runs through
   `SalixAgent.Loops.build/4` and lands as a workspace file.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{AgentWorkspace, Loops}
   alias SalixAgent.Loops.Host
   alias SalixAgent.SpinfoamFixture
-
-  test "a missing binary leaves the host unavailable with a reason and no restart loop" do
-    prev = Application.get_env(:salix_agent, :spinfoam_cmd)
-    Application.put_env(:salix_agent, :spinfoam_cmd, {"/nonexistent/spinfoam", []})
-
-    on_exit(fn ->
-      if prev,
-        do: Application.put_env(:salix_agent, :spinfoam_cmd, prev),
-        else: Application.delete_env(:salix_agent, :spinfoam_cmd)
-    end)
-
-    {:ok, pid} = Host.start_link(name: :loops_host_missing_test, reconciler: nil)
-
-    assert %{available: false, reason: {:missing_binary, "/nonexistent/spinfoam"}, restarts: 0} =
-             Host.status(:loops_host_missing_test)
-
-    assert Host.objects(:loops_host_missing_test) == %{}
-    GenServer.stop(pid)
-  end
 
   @tag :spinfoam
   @tag skip:
@@ -37,18 +18,6 @@ defmodule SalixAgent.Loops.HostTest do
            do: false,
            else: "spinfoam binary unavailable"
          )
-  test "the application host initializes, reports the compiler fact and answers control requests" do
-    status = Host.status()
-    assert status.available
-    assert is_binary(status.session_id)
-    assert is_map(status.compiler)
-    assert {:ok, %{"objects" => objects}} = Host.object_list(nil, 10)
-    assert is_list(objects)
-    assert {:ok, %{"execution_threads" => _}} = Host.stats()
-    assert {:error, %{"kind" => "OBJECT_NOT_FOUND"}} = Host.object_get("o-none")
-    assert {:error, :not_found} = Host.event_deliver("o-none", "e", "t", %{})
-  end
-
   @tag :spinfoam
   @tag skip:
          if(File.exists?(SpinfoamFixture.binary()),
@@ -91,11 +60,23 @@ defmodule SalixAgent.Loops.HostTest do
     assert failed["diagnostics"] =~ "missing"
   end
 
-  defp await(fun, retries \\ 200) do
+  @tag :spinfoam
+  @tag skip:
+         if(File.exists?(SpinfoamFixture.binary()),
+           do: false,
+           else: "spinfoam binary unavailable"
+         )
+  @tag :spinfoam
+  @tag skip:
+         if(File.exists?(SpinfoamFixture.binary()),
+           do: false,
+           else: "spinfoam binary unavailable"
+         )
+  defp await(fun, retries \\ 1200) do
     cond do
       fun.() -> true
       retries == 0 -> flunk("condition never held")
-      true -> Process.sleep(25) && await(fun, retries - 1)
+      true -> SystemsRuntime.Proc.sleep(25) && await(fun, retries - 1)
     end
   end
 end

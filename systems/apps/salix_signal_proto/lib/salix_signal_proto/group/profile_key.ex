@@ -133,7 +133,7 @@ defmodule SalixSignalProto.Group.ProfileKey do
 
   @doc "A new random profile key (section 8.5)."
   @spec generate(<<_::256>>) :: profile_key()
-  def generate(randomness \\ :crypto.strong_rand_bytes(32)) do
+  def generate(randomness \\ SystemsRuntime.Proc.random_bytes(32)) do
     {key, _state} = @generate_label |> Sho.derive(randomness) |> Sho.squeeze(32)
     key
   end

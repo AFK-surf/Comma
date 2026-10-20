@@ -14,35 +14,22 @@ defmodule CommaWeb.ProactiveWatch do
     "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID" => "gmail",
     "GMAIL_FETCH_MESSAGE_BY_THREAD_ID" => "gmail",
     "GMAIL_FETCH_EMAILS" => "gmail",
-    "GITHUB_GET_A_PULL_REQUEST" => "github",
-    "GITHUB_GET_AN_ISSUE" => "github",
-    "LINEAR_GET_LINEAR_ISSUE" => "linear",
-    "SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION" => "slack"
+    "OUTLOOK_OUTLOOK_GET_MESSAGE" => "outlook",
+    "OUTLOOK_OUTLOOK_LIST_MESSAGES" => "outlook",
+    "GOOGLECALENDAR_EVENTS_LIST" => "googlecalendar",
+    "GOOGLEDRIVE_LIST_FILES" => "googledrive"
   }
 
-  def ensure(args, ctx) do
-    with {:ok, workspace, user} <- CommaWeb.Proactive.scope(ctx),
-         {:ok, binding} <- source_binding(args["source"], workspace, user) do
-      case Store.get_by_agent_path(ctx.agent_id, "/loops/proactive/" <> args["key"] <> ".elf") do
-        {:ok, row} ->
-          if row["status"] == "active" and row["session_id"] == ctx.session_id and
-               row["config"]["comma_proactive"] == binding and same_input?(row, binding, args) and
-               row["config"]["source_ref"] == args["source_ref"] and
-               row["config"]["poll_interval_ms"] == (args["poll_interval_ms"] || 0) and
-               (is_nil(args["trigger"]) or is_map(row["composio_trigger"])) do
-            {:ok, Loops.public(row)}
-          else
-            install(args, ctx)
-          end
-
-        {:error, :not_found} ->
-          install(args, ctx)
-
-        error ->
-          error
-      end
-    end
-  end
+  # Slack, GitHub, Linear and Notion reads use the Comma plugin's MCP
+  # (`mcp.<provider>.*`), never a Composio account. The watch pins the plugin's
+  # managed user OAuth binding, which proves the owner's member identity; the
+  # Notion MCP itself calls with the same plugin's native MCP grant.
+  @managed_mcp %{
+    "slack" => "Slack",
+    "github" => "GitHub",
+    "linear" => "Linear",
+    "notion" => "Notion"
+  }
 
   def install(args, ctx) do
     with {:ok, workspace, user} <- CommaWeb.Proactive.scope(ctx),
@@ -51,11 +38,57 @@ defmodule CommaWeb.ProactiveWatch do
          :ok <- valid_args(args),
          {:ok, binding} <- source_binding(args["source"], workspace, user),
          :ok <- related_binding(args["related"], workspace, user, binding),
-         {:ok, row} <- program(args, ctx, workspace, user, home, binding),
-         {:ok, row} <- bind_trigger(row, args["trigger"], ctx),
-         {:ok, result} <- resume(ctx, row) do
+         :ok <- trigger_supported(args["trigger"], binding),
+         {:ok, row, prior} <- program(args, ctx, workspace, user, home, binding),
+         {:ok, result} <- enable(row, prior, args["trigger"], ctx) do
       {:ok, Map.take(result, ~w(loop_id status name))}
     end
+  end
+
+  # A new watch that cannot start leaves no paused Loop behind. A replaced
+  # watch that cannot start returns to its earlier recipe and status, with its
+  # pending events and checkpoint.
+  defp enable(row, prior, trigger, ctx) do
+    with {:ok, row} <- bind_trigger(row, trigger, ctx),
+         {:ok, result} <- resume(ctx, row) do
+      {:ok, result}
+    else
+      error ->
+        _ = restore(prior, row, ctx)
+        error
+    end
+  end
+
+  defp restore(:created, row, ctx), do: Loops.delete(ctx.agent_id, row["id"])
+  defp restore(:existing, _row, _ctx), do: :ok
+
+  defp restore({:replaced, old}, row, ctx) do
+    with {:ok, restored} <-
+           Store.update_mail_binding(row["id"], fn current ->
+             {:ok,
+              Map.merge(
+                current,
+                Map.take(old, ~w(name elf_path elf_sha256 composio_trigger config session_id))
+              )}
+           end),
+         true <- old["status"] == "active" do
+      resume(ctx, restored)
+    else
+      false -> :ok
+      error -> error
+    end
+  end
+
+  # Composio triggers belong to Composio accounts. Plugin MCP, internal and
+  # Routine reads poll; reject a trigger before an existing watch is paused.
+  defp trigger_supported(nil, _binding), do: :ok
+
+  defp trigger_supported(trigger, binding) do
+    if binding["toolkit"] != "internal" and binding["kind"] != "managed_oauth" and
+         is_binary(trigger["slug"]) and
+         String.starts_with?(trigger["slug"], String.upcase(binding["toolkit"]) <> "_"),
+       do: :ok,
+       else: {:error, :proactive_trigger_unavailable}
   end
 
   @doc """
@@ -272,7 +305,38 @@ defmodule CommaWeb.ProactiveWatch do
     end
   end
 
+  # The plugin MCP reads a watch pinned: the Loop may load and call only these
+  # dynamic tools, each with its exact pinned arguments (`authorize/3`).
+  def pinned_tools(row) do
+    config = row["config"] || %{}
+
+    if is_map(config["comma_proactive"]) do
+      for %{"tool" => tool} <- [config["source"], config["related"]],
+          match?({:ok, _}, managed_toolkit(tool)),
+          uniq: true,
+          do: tool
+    else
+      []
+    end
+  end
+
   def current_consent(%{"toolkit" => "internal"}), do: :ok
+
+  # The managed grant is current while the same connection still backs
+  # the Group's active binding. A reconnect or removal retires the watch.
+  def current_consent(%{"kind" => "managed_oauth"} = binding) do
+    expected = Map.take(binding, ~w(binding_id connection_id))
+
+    case managed_binding(binding["group_id"], binding["toolkit"]) do
+      {:ok, current} when map_size(expected) == 2 ->
+        if Map.take(current, ~w(binding_id connection_id)) == expected,
+          do: :ok,
+          else: {:error, :proactive_source_revoked}
+
+      _ ->
+        {:error, :proactive_source_revoked}
+    end
+  end
 
   def current_consent(binding) do
     if Comma.MemberSourceConsents.binding(
@@ -335,7 +399,64 @@ defmodule CommaWeb.ProactiveWatch do
     end
   end
 
+  # A managed MCP watch reads through the plugin's MCP with the owner's managed
+  # user token. The binding pins the Group's active grant and the owner's member
+  # identity on it; the Loop may call only this exact tool and arguments.
+  def source_binding(%{"tool" => "mcp." <> _ = tool, "arguments" => args}, workspace, user)
+      when is_map(args) do
+    group = workspace["default_group_id"]
+
+    with {:ok, toolkit} <- managed_toolkit(tool),
+         {:ok, binding} <- managed_binding(group, toolkit),
+         source = %{
+           "kind" => "managed_oauth",
+           "appId" => toolkit,
+           "connectionId" => binding["binding_id"]
+         },
+         {:ok, identity} <- CommaWeb.RecommendationMemberIdentity.resolve(workspace, user, source),
+         true <- identity["connection_id"] == binding["connection_id"] do
+      {:ok,
+       %{
+         "kind" => "managed_oauth",
+         "toolkit" => toolkit,
+         "binding_id" => binding["binding_id"],
+         "connection_id" => binding["connection_id"],
+         "group_id" => group,
+         "workspace_id" => workspace["id"],
+         "user_id" => user
+       }}
+    else
+      {:error, :proactive_source_required} = error -> error
+      _ -> {:error, :consented_source_required}
+    end
+  end
+
   def source_binding(_, _, _), do: {:error, :proactive_source_required}
+
+  defp managed_toolkit("mcp." <> rest) do
+    case String.split(rest, ".", parts: 2) do
+      [toolkit, tool] when is_map_key(@managed_mcp, toolkit) and tool != "" -> {:ok, toolkit}
+      _ -> {:error, :proactive_source_required}
+    end
+  end
+
+  defp managed_toolkit(_tool), do: {:error, :proactive_source_required}
+
+  defp managed_binding(group, provider) when is_binary(group) and is_binary(provider) do
+    group
+    |> Salix.Control.OAuthBindings.list()
+    |> Enum.find(fn binding ->
+      binding["provider"] == provider and binding["alias"] == provider and
+        binding["status"] == "active" and binding["enabled"] != false and
+        is_binary(binding["connection_id"]) and binding["connection_id"] != ""
+    end)
+    |> case do
+      nil -> {:error, :consented_source_required}
+      binding -> {:ok, binding}
+    end
+  end
+
+  defp managed_binding(_group, _provider), do: {:error, :consented_source_required}
 
   def read(spec, ctx) do
     with {:ok, workspace, user} <- CommaWeb.Proactive.scope(ctx),
@@ -351,6 +472,17 @@ defmodule CommaWeb.ProactiveWatch do
   defp execute(spec, ctx) do
     ctx = Map.merge(ctx, %{role: "router", runtime_kind: :internal, llm_tool_envelope: false})
 
+    # The pinned managed MCP read is the one dynamic MCP tool this read may use.
+    mcp_entries =
+      case managed_toolkit(spec["tool"]) do
+        {:ok, _toolkit} ->
+          name = spec["tool"]
+          Enum.filter(SalixAgent.Tools.MCP.dynamic_disclosure_entries(ctx), &(&1["name"] == name))
+
+        _ ->
+          []
+      end
+
     ctx =
       Map.put_new_lazy(ctx, :tool_disclosure, fn ->
         SalixAgent.ToolDisclosure.materialize_prepared(
@@ -358,7 +490,7 @@ defmodule CommaWeb.ProactiveWatch do
           :internal,
           ctx,
           SalixAgent.Tools.ImRouter.internal_read_disclosure_entries(ctx),
-          []
+          mcp_entries
         )
       end)
 
@@ -374,7 +506,7 @@ defmodule CommaWeb.ProactiveWatch do
              ctx
            ),
          false <- result[:error] == true or result["error"] == true,
-         {:ok, data} <- Jason.decode(result[:content] || result["content"] || ""),
+         {:ok, data} <- decode_read(spec["tool"], result[:content] || result["content"] || ""),
          true <- is_map(data),
          true <-
            data["successful"] != false and data["error"] in [nil, false] and
@@ -385,16 +517,40 @@ defmodule CommaWeb.ProactiveWatch do
     end
   end
 
+  defp decode_read(tool, content) do
+    case managed_toolkit(tool) do
+      {:ok, _} -> {:ok, CommaWeb.ProactiveSourceProjection.project(content)}
+      _ -> Jason.decode(content)
+    end
+  end
+
+  @doc """
+  The Loop host's result hook: a pinned plugin MCP read reaches the watch
+  program as one bounded JSON object. Other results pass unchanged.
+  """
+  def project_result(row, tool, content) do
+    if tool in pinned_tools(row),
+      do: Jason.encode!(CommaWeb.ProactiveSourceProjection.project(content)),
+      else: content
+  end
+
   def provider(%{"tool" => "recommendation.read"}), do: "Routine"
   def provider(nil), do: "Gmail"
   def provider(%{"tool" => "im_api.internal.read_conversation"}), do: "Comma"
 
+  def provider(%{"tool" => "mcp." <> _ = tool}) do
+    case managed_toolkit(tool) do
+      {:ok, toolkit} -> @managed_mcp[toolkit]
+      _ -> "Comma"
+    end
+  end
+
   def provider(spec) do
     case @reads[get_in(spec, ["arguments", "tool_slug"])] do
       "gmail" -> "Gmail"
-      "github" -> "GitHub"
-      "linear" -> "Linear"
-      "slack" -> "Slack"
+      "outlook" -> "Microsoft Outlook"
+      "googlecalendar" -> "Google Calendar"
+      "googledrive" -> "Google Drive"
       _ -> "Comma"
     end
   end
@@ -431,9 +587,9 @@ defmodule CommaWeb.ProactiveWatch do
             |> Enum.map_join("\n", &(&1["text"] || ""))
 
         message = %{
-          "message_id" => row["message_id"] || row["id"] || "source",
-          "body" => body,
-          "from" => if(is_binary(row["from"]), do: row["from"], else: "")
+          "message_id" => to_string(row["message_id"] || row["id"] || "source"),
+          "body" => headline(row, body),
+          "from" => author(row)
         }
 
         if internal? do
@@ -452,6 +608,38 @@ defmodule CommaWeb.ProactiveWatch do
 
     result = if internal?, do: Map.take(result, ~w(conversation_id)), else: result
     Map.put(result, "messages", messages)
+  end
+
+  # A pull request, issue or page names its title and state above its text.
+  defp headline(row, body) do
+    title = Enum.find(List.wrap(row["title"]) ++ List.wrap(row["name"]), &is_binary/1)
+
+    state =
+      Enum.find_value([row["state"], dig(row, ["state", "name"]), row["status"]], fn
+        value when is_binary(value) -> value
+        _ -> nil
+      end)
+
+    head =
+      case {title, state} do
+        {nil, _} -> nil
+        {title, nil} -> title
+        {title, state} -> "#{title} (#{state})"
+      end
+
+    Enum.join(Enum.reject([head, body], &(&1 in [nil, ""])), "\n\n")
+  end
+
+  defp dig(value, []), do: value
+  defp dig(%{} = map, [key | rest]), do: dig(map[key], rest)
+  defp dig(_value, _keys), do: nil
+
+  defp author(row) do
+    Enum.find_value(
+      [row["from"], dig(row, ["user", "login"]), dig(row, ["creator", "name"])],
+      "",
+      fn value -> if is_binary(value), do: value end
+    )
   end
 
   defp mime_preview(%{"payload" => %{}, "threadId" => thread} = message) do
@@ -528,33 +716,47 @@ defmodule CommaWeb.ProactiveWatch do
         },
         "ifc" => %{"creator" => SalixIFC.Codec.encode_principal!({:comma_user, user})},
         "status" => "paused",
-        "updated_at" => System.system_time(:millisecond)
+        "updated_at" => SystemsClock.system_time(:millisecond)
       }
 
-      if old do
-        Store.update_mail_binding(id, fn current ->
-          with :ok <- replaceable(current, binding, args, user),
-               true <-
-                 current["status"] == "paused" and current["session_id"] == old["session_id"] do
-            # Accepted work stays on the same Loop. A settled comparison
-            # observation cannot supply evidence under a different source receipt.
-            checkpoint = current["checkpoint"] || %{}
+      written =
+        if old do
+          Store.update_mail_binding(id, fn current ->
+            with :ok <- replaceable(current, binding, args, user),
+                 true <-
+                   current["status"] == "paused" and current["session_id"] == old["session_id"] do
+              # Accepted work stays on the same Loop. A settled comparison
+              # observation cannot supply evidence under a different source receipt.
+              checkpoint = current["checkpoint"] || %{}
 
-            checkpoint =
-              if same_input?(current, binding, args),
-                do: checkpoint,
-                else: Map.delete(checkpoint, "observation")
+              checkpoint =
+                if same_input?(current, binding, args),
+                  do: checkpoint,
+                  else: Map.delete(checkpoint, "observation")
 
-            {:ok, current |> Map.merge(record) |> Map.put("checkpoint", checkpoint)}
-          else
-            false -> {:error, :proactive_watch_changed}
-            error -> error
+              {:ok, current |> Map.merge(record) |> Map.put("checkpoint", checkpoint)}
+            else
+              false -> {:error, :proactive_watch_changed}
+              error -> error
+            end
+          end)
+        else
+          Store.create_paused_by_path(
+            Map.put(record, "created_at", SystemsClock.system_time(:millisecond))
+          )
+        end
+
+      # Only a row this call created may be removed when the watch cannot
+      # start; a replaced row returns to its earlier recipe.
+      with {:ok, row} <- written do
+        prior =
+          cond do
+            old -> {:replaced, old}
+            row["id"] == id -> :created
+            true -> :existing
           end
-        end)
-      else
-        Store.create_paused_by_path(
-          Map.put(record, "created_at", System.system_time(:millisecond))
-        )
+
+        {:ok, row, prior}
       end
     else
       {:ok, _, _} -> {:error, :proactive_build_failed}
@@ -614,9 +816,7 @@ defmodule CommaWeb.ProactiveWatch do
   defp bind_trigger(row, trigger, ctx) do
     binding = row["config"]["comma_proactive"]
 
-    with true <-
-           binding["toolkit"] != "internal" and
-             String.starts_with?(trigger["slug"], String.upcase(binding["toolkit"]) <> "_"),
+    with :ok <- trigger_supported(trigger, binding),
          {:ok, _} <-
            execute(
              %{
@@ -632,9 +832,6 @@ defmodule CommaWeb.ProactiveWatch do
            ),
          :ok <- current_consent(binding) do
       Store.get_agent_owned(row["id"], ctx.agent_id)
-    else
-      false -> {:error, :proactive_trigger_unavailable}
-      error -> error
     end
   end
 
@@ -659,6 +856,27 @@ defmodule CommaWeb.ProactiveWatch do
 
   defp bounded_read?(%{"tool_slug" => "GMAIL_FETCH_EMAILS", "arguments" => args}),
     do: args["max_results"] in 1..20
+
+  # Keep optional Outlook watches inside the same existing Loop and bounded
+  # to this owner’s account; never allow a delegated mailbox as a read recipe.
+  defp bounded_read?(%{"tool_slug" => "OUTLOOK_OUTLOOK_GET_MESSAGE", "arguments" => args}),
+    do:
+      args["user_id"] in [nil, "me"] and is_binary(args["message_id"]) and
+        byte_size(args["message_id"]) in 1..512
+
+  defp bounded_read?(%{"tool_slug" => "OUTLOOK_OUTLOOK_LIST_MESSAGES", "arguments" => args}),
+    do:
+      args["user_id"] in [nil, "me"] and args["top"] in 1..40 and
+        args["folder"] in [nil, "inbox", "Inbox", "sentitems", "SentItems"]
+
+  # Composio exposes no get-one Calendar event or Drive file action. A watch
+  # pins a filtered list read (an event's iCalUID or a file query) with a few
+  # results, so the read stays inside the Loop's evidence limits.
+  defp bounded_read?(%{"tool_slug" => "GOOGLECALENDAR_EVENTS_LIST", "arguments" => args}),
+    do: is_binary(args["calendarId"]) and args["maxResults"] in 1..10
+
+  defp bounded_read?(%{"tool_slug" => "GOOGLEDRIVE_LIST_FILES", "arguments" => args}),
+    do: is_binary(args["q"]) and args["pageSize"] in 1..10
 
   defp bounded_read?(_), do: true
 
@@ -714,7 +932,7 @@ defmodule CommaWeb.ProactiveWatch do
   end
 
   defp settings,
-    do: Application.get_env(:salix_web, :composio_settings_mod, Salix.Control.ComposioSettings)
+    do: SystemsRuntime.get_env(:salix_web, :composio_settings_mod, Salix.Control.ComposioSettings)
 
-  defp client, do: Application.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
+  defp client, do: SystemsRuntime.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
 end

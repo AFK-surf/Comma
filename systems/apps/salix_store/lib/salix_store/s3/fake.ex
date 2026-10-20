@@ -53,13 +53,14 @@ defmodule SalixStore.S3.Fake do
   one-shot fault. `set_fault_for/2` further limits consumption to operations
   issued directly by one caller process.
   """
-  use GenServer
+  use SystemsRuntime.Server
+  import SystemsRuntime.Proc, only: [is_process: 1]
   @behaviour SalixStore.S3
 
   # ---- lifecycle ----
 
   def start_link(_ \\ []) do
-    case GenServer.start_link(__MODULE__, %{}, name: __MODULE__) do
+    case SystemsRuntime.Server.start_link(__MODULE__, %{}, name: __MODULE__) do
       {:error, {:already_started, _pid}} ->
         reset()
         :ignore
@@ -69,31 +70,36 @@ defmodule SalixStore.S3.Fake do
     end
   end
 
+  # An operation waits as long as the fake takes, as a paused or delayed
+  # request on a test clock can: the caller's own budget bounds it.
+  defp op_call(message), do: SystemsRuntime.Server.call(__MODULE__, message, :infinity)
+
   @doc "Wipe all objects and pending faults (test setup)."
-  def reset, do: GenServer.call(__MODULE__, :reset)
+  def reset, do: SystemsRuntime.Server.call(__MODULE__, :reset)
 
   @doc "Install a one-shot fault. See moduledoc."
-  def set_fault(spec), do: GenServer.call(__MODULE__, {:set_fault, spec})
+  def set_fault(spec), do: SystemsRuntime.Server.call(__MODULE__, {:set_fault, spec})
 
   @doc "Install a one-shot fault consumable only by one direct caller process."
-  def set_fault_for(owner, spec) when is_pid(owner),
-    do: GenServer.call(__MODULE__, {:set_fault_for, owner, spec})
+  def set_fault_for(owner, spec) when is_process(owner),
+    do: SystemsRuntime.Server.call(__MODULE__, {:set_fault_for, owner, spec})
 
   @doc """
   Install a **persistent** fault (a blackhole): it matches every operation of the
   given kind until `clear_blackhole/0`, modeling a sustained S3 outage for chaos
   tests. Same spec shape as `set_fault/1`.
   """
-  def blackhole(spec), do: GenServer.call(__MODULE__, {:blackhole, spec})
+  def blackhole(spec), do: SystemsRuntime.Server.call(__MODULE__, {:blackhole, spec})
 
   @doc "Remove all persistent faults."
-  def clear_blackhole, do: GenServer.call(__MODULE__, :clear_blackhole)
+  def clear_blackhole, do: SystemsRuntime.Server.call(__MODULE__, :clear_blackhole)
 
   @doc "Raw object dump for assertions."
-  def dump, do: GenServer.call(__MODULE__, :dump)
+  def dump, do: SystemsRuntime.Server.call(__MODULE__, :dump)
 
   @doc "Number of incomplete multipart uploads, for lifecycle assertions."
-  def pending_multipart_uploads, do: GenServer.call(__MODULE__, :pending_multipart_uploads)
+  def pending_multipart_uploads,
+    do: SystemsRuntime.Server.call(__MODULE__, :pending_multipart_uploads)
 
   @doc """
   Keys of every `put`/`multipart_create` *attempt* since the last reset, oldest
@@ -101,41 +107,47 @@ defmodule SalixStore.S3.Fake do
   assert that a write was (or was not) issued, e.g. that an unchanged
   content-addressed session object is never re-encoded/re-PUT.
   """
-  def put_log, do: GenServer.call(__MODULE__, :put_log)
+  def put_log, do: SystemsRuntime.Server.call(__MODULE__, :put_log)
 
   @doc "True once a `{:pause, :get | :put, key}` fault has parked an operation."
-  def paused?, do: GenServer.call(__MODULE__, :paused?)
+  def paused?, do: SystemsRuntime.Server.call(__MODULE__, :paused?)
+
+  @doc "Wait until a `{:pause, :get | :put, key}` fault has parked an operation."
+  def await_pause, do: SystemsRuntime.Server.call(__MODULE__, :await_pause, :infinity)
 
   @doc "Release the parked operation and reply to its caller."
-  def release_pause, do: GenServer.call(__MODULE__, :release_pause)
+  def release_pause, do: SystemsRuntime.Server.call(__MODULE__, :release_pause)
+
+  @doc "Answer the parked PUT with an HTTP-status error, without applying it."
+  def fail_pause(status), do: SystemsRuntime.Server.call(__MODULE__, {:fail_pause, status})
 
   @doc "Clear the put log without touching stored objects or faults."
-  def reset_put_log, do: GenServer.call(__MODULE__, :reset_put_log)
+  def reset_put_log, do: SystemsRuntime.Server.call(__MODULE__, :reset_put_log)
 
   @doc "Every GET/HEAD/LIST attempt since the last reset, oldest first."
-  def read_log, do: GenServer.call(__MODULE__, :read_log)
+  def read_log, do: SystemsRuntime.Server.call(__MODULE__, :read_log)
 
   @doc false
-  def read_log(owner) when is_pid(owner),
-    do: GenServer.call(__MODULE__, {:read_log, owner})
+  def read_log(owner) when is_process(owner),
+    do: SystemsRuntime.Server.call(__MODULE__, {:read_log, owner})
 
   @doc "Clear the read log without touching stored objects or faults."
-  def reset_read_log, do: GenServer.call(__MODULE__, :reset_read_log)
+  def reset_read_log, do: SystemsRuntime.Server.call(__MODULE__, :reset_read_log)
 
   # ---- behaviour ----
 
   @impl SalixStore.S3
   def put(key, body, opts),
-    do: GenServer.call(__MODULE__, {:put, key, IO.iodata_to_binary(body), opts})
+    do: op_call({:put, key, IO.iodata_to_binary(body), opts})
 
   @impl SalixStore.S3
   def put_stream(key, stream, opts) do
     body = stream |> Enum.into([]) |> IO.iodata_to_binary()
-    GenServer.call(__MODULE__, {:put, key, body, opts})
+    op_call({:put, key, body, opts})
   end
 
   @impl SalixStore.S3
-  def get(key, opts), do: GenServer.call(__MODULE__, {:get, key, opts})
+  def get(key, opts), do: op_call({:get, key, opts})
 
   @impl SalixStore.S3
   def stream(key, opts) do
@@ -146,36 +158,32 @@ defmodule SalixStore.S3.Fake do
   end
 
   @impl SalixStore.S3
-  def head(key), do: GenServer.call(__MODULE__, {:head, key})
+  def head(key), do: op_call({:head, key})
 
   @impl SalixStore.S3
-  def delete(key, opts), do: GenServer.call(__MODULE__, {:delete, key, opts})
+  def delete(key, opts), do: op_call({:delete, key, opts})
 
   @impl SalixStore.S3
-  def list(prefix, opts), do: GenServer.call(__MODULE__, {:list, prefix, opts})
+  def list(prefix, opts), do: op_call({:list, prefix, opts})
 
   @impl SalixStore.S3
-  def multipart_create(key, opts), do: GenServer.call(__MODULE__, {:multipart_create, key, opts})
+  def multipart_create(key, opts), do: op_call({:multipart_create, key, opts})
 
   @impl SalixStore.S3
   def multipart_upload_part(key, upload_id, part_number, body),
-    do:
-      GenServer.call(
-        __MODULE__,
-        {:multipart_upload_part, key, upload_id, part_number, IO.iodata_to_binary(body)}
-      )
+    do: op_call({:multipart_upload_part, key, upload_id, part_number, IO.iodata_to_binary(body)})
 
   @impl SalixStore.S3
   def multipart_complete(key, upload_id, parts),
-    do: GenServer.call(__MODULE__, {:multipart_complete, key, upload_id, parts})
+    do: op_call({:multipart_complete, key, upload_id, parts})
 
   @impl SalixStore.S3
   def multipart_abort(key, upload_id),
-    do: GenServer.call(__MODULE__, {:multipart_abort, key, upload_id})
+    do: op_call({:multipart_abort, key, upload_id})
 
   @impl SalixStore.S3
   def multipart_uploads(prefix, opts),
-    do: GenServer.call(__MODULE__, {:multipart_uploads, prefix, opts})
+    do: op_call({:multipart_uploads, prefix, opts})
 
   # ---- server ----
 
@@ -200,7 +208,7 @@ defmodule SalixStore.S3.Fake do
     # from under it would strand that process until its own call timeout —
     # a hang in whichever suite happens to run next, blamed on anything but
     # this. Fail it explicitly instead.
-    if state[:paused], do: GenServer.reply(state.paused.from, {:error, :fake_reset})
+    if state[:paused], do: SystemsRuntime.Server.reply(state.paused.from, {:error, :fake_reset})
 
     {:reply, :ok,
      %{
@@ -220,6 +228,12 @@ defmodule SalixStore.S3.Fake do
 
   def handle_call(:paused?, _from, state), do: {:reply, state.paused != nil, state}
 
+  def handle_call(:await_pause, from, state) do
+    if state.paused,
+      do: {:reply, :ok, state},
+      else: {:noreply, Map.update(state, :pause_waiters, [from], &[from | &1])}
+  end
+
   def handle_call(:release_pause, _from, %{paused: nil} = state),
     do: {:reply, {:error, :no_paused_write}, state}
 
@@ -227,12 +241,17 @@ defmodule SalixStore.S3.Fake do
     {:reply, reply, state} =
       apply_put(%{state | paused: nil}, paused.key, paused.body, paused.opts, nil)
 
-    GenServer.reply(paused.from, reply)
+    SystemsRuntime.Server.reply(paused.from, reply)
     {:reply, :ok, state}
   end
 
+  def handle_call({:fail_pause, status}, _from, %{paused: %{op: :put} = paused} = state) do
+    SystemsRuntime.Server.reply(paused.from, {:error, {:http, status}})
+    {:reply, :ok, %{state | paused: nil}}
+  end
+
   def handle_call(:release_pause, _from, %{paused: %{op: :get} = paused} = state) do
-    GenServer.reply(paused.from, paused.reply)
+    SystemsRuntime.Server.reply(paused.from, paused.reply)
     {:reply, :ok, %{state | paused: nil}}
   end
 
@@ -299,11 +318,11 @@ defmodule SalixStore.S3.Fake do
       # as it is THEN, which is what makes a stale precondition observable.
       {{:pause, _, _}, state} ->
         paused = %{op: :put, from: from, key: key, body: body, opts: opts}
-        {:noreply, %{state | paused: paused}}
+        {:noreply, parked(state, paused)}
 
       # Slow write: the request succeeds, late.
       {{:delay, ms, _, _}, state} ->
-        Process.sleep(ms)
+        SystemsClock.sleep(ms)
         apply_put(state, key, body, opts, nil)
 
       {fault, state} ->
@@ -321,13 +340,13 @@ defmodule SalixStore.S3.Fake do
       # Slow read: the response arrives, late. (The GenServer sleeping also
       # serializes the delay, which is fine for cadence tests.)
       {{:delay, ms, _, _}, state} ->
-        Process.sleep(ms)
+        SystemsClock.sleep(ms)
         {:reply, do_get(state, key, opts), state}
 
       {{:pause, _, _}, state} ->
         reply = do_get(state, key, opts)
         state = land_late_write(state, key)
-        {:noreply, %{state | paused: %{op: :get, from: from, reply: reply}}}
+        {:noreply, parked(state, %{op: :get, from: from, reply: reply})}
 
       {_, state} ->
         reply = do_get(state, key, opts)
@@ -565,6 +584,11 @@ defmodule SalixStore.S3.Fake do
 
   # Match the 3-tuple forms ({:ambiguous_after|:ambiguous_before, op, target})
   # and the 4-tuple {:fail, status, op, target} / {:delay, ms, op, target} forms.
+  defp parked(state, paused) do
+    state |> Map.get(:pause_waiters, []) |> Enum.each(&SystemsRuntime.Server.reply(&1, :ok))
+    %{state | paused: paused} |> Map.put(:pause_waiters, [])
+  end
+
   defp fault_matches?({:fail, _status, op, target}, op, key),
     do: fault_target_matches?(target, key)
 
@@ -652,9 +676,9 @@ defmodule SalixStore.S3.Fake do
   defp etag_for(body),
     do: "\"" <> (:crypto.hash(:md5, body) |> Base.encode16(case: :lower)) <> "\""
 
-  defp now_iso, do: DateTime.utc_now() |> DateTime.to_iso8601()
+  defp now_iso, do: SystemsClock.utc_now() |> DateTime.to_iso8601()
 
-  defp random_hex, do: :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+  defp random_hex, do: SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower)
 
   defp binary_part_safe(bin, start, len) do
     max = byte_size(bin)

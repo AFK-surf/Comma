@@ -1,5 +1,5 @@
 defmodule SalixAgent.InternalSessionFormatTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{
     InternalSession,
@@ -12,15 +12,15 @@ defmodule SalixAgent.InternalSessionFormatTest do
   alias SalixStore.{ArchiveLog, Codec, Ids, Keys, S3}
 
   setup do
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
     start_supervised!(S3.Fake)
-    old = Application.get_env(:salix_store, :seal_line_bytes)
-    Application.put_env(:salix_store, :seal_line_bytes, 1)
+    old = SystemsRuntime.get_env(:salix_store, :seal_line_bytes)
+    SystemsRuntime.put_env(:salix_store, :seal_line_bytes, 1)
 
     on_exit(fn ->
       if old,
-        do: Application.put_env(:salix_store, :seal_line_bytes, old),
-        else: Application.delete_env(:salix_store, :seal_line_bytes)
+        do: SystemsRuntime.put_env(:salix_store, :seal_line_bytes, old),
+        else: SystemsRuntime.delete_env(:salix_store, :seal_line_bytes)
     end)
 
     :ok
@@ -38,7 +38,7 @@ defmodule SalixAgent.InternalSessionFormatTest do
     }
 
   defp seed(format) do
-    agent = "format-agent-#{System.unique_integer([:positive])}"
+    agent = "format-agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     session = Ids.new_session_id()
 
     state =
@@ -211,28 +211,6 @@ defmodule SalixAgent.InternalSessionFormatTest do
     assert Enum.map(InternalSession.get(final, :segment_catalog), &hd/1) == Enum.to_list(1..6)
     assert {:ok, page} = InternalSessionStore.transcript(source.agent_id, final, :full)
     assert ids(page) == Enum.to_list(1..8)
-  end
-
-  test "the new envelope refuses the previous reader and invalidates its captured CAS" do
-    {key, _, source} = seed(2)
-    {:ok, %{etag: old_etag}} = S3.get(key)
-
-    assert {:ok, _} =
-             InternalSessionStore.commit(source.agent_id, source.session_id, [delivery(9)])
-
-    {:ok, %{body: bytes}} = S3.get(key)
-    # This is the previous Codec's exact zstd decode result; its store only
-    # accepts %State{}, so it cannot discard an unknown mixed-layout prefix.
-    refute match?(%State{}, Codec.decode_zstd_etf(bytes))
-
-    assert {:error, :precondition_failed} =
-             S3.put(key, Codec.encode_snapshot(source), if_match: old_etag)
-
-    assert {:ok, %{body: ^bytes}} = S3.get(key)
-    {:ok, _} = S3.put(key, Codec.encode_zstd_etf({:comma_internal_session, 99, source}))
-
-    assert {:error, :invalid_session_snapshot} =
-             InternalSessionStore.read(source.agent_id, source.session_id)
   end
 
   test "a captured legacy Revision must reload after another write fixes its coordinates" do

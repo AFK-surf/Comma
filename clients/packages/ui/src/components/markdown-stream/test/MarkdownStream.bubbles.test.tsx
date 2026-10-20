@@ -250,6 +250,39 @@ describe("MarkdownStream bubble presentation", () => {
     }
   });
 
+  it("marks the bubble of the document's last slot as the document grows", () => {
+    const props = {
+      streamId: "bubble-last-slot",
+      blockPresentation: "bubbles" as const,
+    };
+    const intro = "Intro.\n\n```text\nready\n```";
+    const { container, rerender } = render(
+      <MarkdownStream {...props} content={intro} />
+    );
+    const marked = () =>
+      [...container.querySelectorAll<HTMLElement>("[data-last-slot]")].map((bubble) => [
+        bubble.dataset.kind,
+        bubble.closest(".node-slot") ===
+          container.querySelector(".node-slot:last-child"),
+      ]);
+    expect(marked()).toEqual([["code_block", true]]);
+    rerender(<MarkdownStream {...props} content={`${intro}\n\nAfter.`} />);
+    expect(marked()).toEqual([["prose", true]]);
+    // A trusted block has no bubble: when it ends the document, none is marked.
+    rerender(
+      <MarkdownStream
+        {...props}
+        nodes={createMarkdownStreamDocumentNodes([
+          { type: "markdown", text: intro },
+          { type: "block", key: "card" },
+        ])}
+        inlineElements={new Map([["card", <section key="card">Card</section>]])}
+        final
+      />
+    );
+    expect(marked()).toEqual([]);
+  });
+
   it.each([
     ["blockquote", "> Context.\n>\n> ```text\n> Quoted example\n> ```"],
     ["list", "3. Context.\n\n   ```text\n   Listed example\n   ```"],

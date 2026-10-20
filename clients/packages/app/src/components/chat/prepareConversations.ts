@@ -1,4 +1,5 @@
-import type { ChatRegistry } from "./ChatProvider";
+import type { CallFn } from "@comma/core-client";
+import type { ChatContextValue } from "./ChatProvider";
 
 export type ConversationPreparationTarget = {
   conversationId: string;
@@ -6,16 +7,19 @@ export type ConversationPreparationTarget = {
   updatedAt?: number | undefined;
 };
 
-// Per mounted list: six visible targets, two one-shot requests, 24 messages each.
-// The existing session seed store retains at most 16 snapshots. No live channels,
-// timers, polling, or retry loops are started by preparation.
+// Per mounted list: six visible targets, two one-shot core reads (`chat.prepare`),
+// 24 messages each. The existing session seed store retains at most 16 snapshots.
+// No live channels, timers, polling, or retry loops are started by preparation.
 export class ConversationPreparation {
   private targets: readonly ConversationPreparationTarget[] = [];
   private active = new Map<string, AbortController>();
   private attempted = new Map<string, number>();
   private disposed = false;
 
-  constructor(private registry: ChatRegistry) {}
+  constructor(
+    private registry: ChatContextValue,
+    private call: CallFn
+  ) {}
 
   update(targets: readonly ConversationPreparationTarget[]) {
     this.targets = targets.slice(0, 6);
@@ -60,15 +64,25 @@ export class ConversationPreparation {
         return;
       }
       void attempt
-        .run((api, signal) =>
-          api.getConversation(target.groupId, target.conversationId, {
-            messageLimit: 24,
-            signal: AbortSignal.any([signal, controller.signal]),
-          })
+        .run((signal) =>
+          this.call(
+            "chat.prepare",
+            {
+              session: this.registry.productLease,
+              groupId: target.groupId,
+              conversationId: target.conversationId,
+            },
+            AbortSignal.any([signal, controller.signal])
+          )
         )
-        .then((conversation) => {
-          if (!this.disposed && !controller.signal.aborted && attempt.isCurrent()) {
-            this.registry.rememberConversationSnapshot(conversation);
+        .then((prepared) => {
+          if (
+            prepared &&
+            !this.disposed &&
+            !controller.signal.aborted &&
+            attempt.isCurrent()
+          ) {
+            this.registry.rememberConversationSnapshot(prepared);
           }
         })
         .catch(() => {})

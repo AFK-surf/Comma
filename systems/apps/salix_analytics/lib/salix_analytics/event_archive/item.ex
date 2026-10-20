@@ -241,7 +241,7 @@ defmodule SalixAnalytics.EventArchive.Item do
     |> String.slice(0, @identifier_max)
   end
 
-  defp timestamp(nil), do: DateTime.utc_now() |> DateTime.to_iso8601()
+  defp timestamp(nil), do: SystemsClock.utc_now() |> DateTime.to_iso8601()
   defp timestamp(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp timestamp(value) when is_binary(value), do: value
 

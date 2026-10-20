@@ -1,0 +1,27 @@
+id: go-test-deadline
+language: go
+severity: error
+message: "A test bounds a wait by real time outside a synctest bubble."
+note: |
+  Run the test in synctest.Test, where deadlines run on virtual time, or wait
+  for the event with no deadline of its own.
+metadata:
+  category: deadline
+rule:
+  all:
+    - kind: selector_expression
+    - regex: "^(context\\.(WithTimeout|WithDeadline|WithTimeoutCause|WithDeadlineCause)|.*\\.Set(Read|Write)?Deadline)$"
+
+    - not:
+        inside:
+          kind: call_expression
+          has:
+            field: function
+            regex: "^synctest\\.(Test|Run)$"
+          stopBy: end
+files:
+  - "**/*_test.go"
+# Live tests reach real services and skip unless their credentials are given;
+# CI never runs them.
+ignores:
+  - "**/*_live_test.go"

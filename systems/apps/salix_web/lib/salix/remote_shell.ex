@@ -12,7 +12,7 @@ defmodule Salix.RemoteShell do
   @salt "comma-temporary-shell-v1"
 
   def call(group, scope, args) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     result =
       with {:ok, handle} <- DriveBindings.handle(group) do
@@ -26,7 +26,7 @@ defmodule Salix.RemoteShell do
       "remote_shell",
       :salix,
       outcome,
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     result
@@ -121,7 +121,11 @@ defmodule Salix.RemoteShell do
            ),
          device = %{key: key, expires: expires, controller: controller},
          {:ok, host_key} <-
-           Transport.pin(handle, device, min(20, expires - System.system_time(:second)) * 1000) do
+           Transport.pin(
+             handle,
+             device,
+             min(20, expires - SystemsClock.system_time(:second)) * 1000
+           ) do
       device = device |> Map.put(:host_key, host_key) |> Map.put(:request_id, request_id)
 
       token =
@@ -179,7 +183,7 @@ defmodule Salix.RemoteShell do
           handle,
           device,
           command,
-          min(timeout, device.expires - System.system_time(:second)) * 1000
+          min(timeout, device.expires - SystemsClock.system_time(:second)) * 1000
         )
       end
     else
@@ -221,8 +225,8 @@ defmodule Salix.RemoteShell do
   def valid_key?(key), do: is_binary(key) and Regex.match?(@key, key)
 
   defp valid_deadline?(expires) do
-    is_integer(expires) and expires > System.system_time(:second) and
-      expires <= System.system_time(:second) + 3600
+    is_integer(expires) and expires > SystemsClock.system_time(:second) and
+      expires <= SystemsClock.system_time(:second) + 3600
   end
 
   defp revoke_delegation(handle, key), do: request(handle, :delete, "delegations/" <> key)

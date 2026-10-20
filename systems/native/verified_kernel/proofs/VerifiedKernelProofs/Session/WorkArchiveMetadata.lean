@@ -1,4 +1,3 @@
-import VerifiedKernelProofs.Session.WorkArchiveCommit
 import VerifiedKernelProofs.Session.WorkCommitMetadata
 
 namespace VerifiedKernel.Session.ArchivePublication
@@ -26,7 +25,7 @@ syntax "archive_frame_walk" ident : tactic
 macro_rules
   | `(tactic| archive_frame_walk $h:ident) =>
     `(tactic| repeat' first
-      | (head_is $h [write]; exact write_archive_frame $h rfl rfl rfl)
+      | (head_is $h [write]; exact write_archive_frame $h (by keys_absent) (by keys_absent) (by keys_absent))
       | (head_is $h [Pure.pure]; rw [pure_ok $h]; exact ArchiveFrame.refl _)
       | (head_is $h [VerifiedKernel.fail, argumentError, inspectedError]; exact (fail_ok $h).elim)
       | split at $h:ident

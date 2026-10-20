@@ -82,7 +82,7 @@ defmodule SalixAnalytics.Sink.ClickHouse do
   defp headers(_), do: []
 
   defp config do
-    cfg = Application.get_env(:salix_analytics, :clickhouse, [])
+    cfg = SystemsRuntime.get_env(:salix_analytics, :clickhouse, [])
 
     %{
       base_url: cfg[:base_url] || "http://127.0.0.1:8123",

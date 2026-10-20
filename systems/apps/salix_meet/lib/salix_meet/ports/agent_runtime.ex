@@ -15,6 +15,8 @@ defmodule SalixMeet.Ports.AgentRuntime do
   @callback prepare_workspace_write(String.t(), String.t(), binary()) ::
               {:ok, map()} | {:error, term()}
   @callback discard_prepared_workspace_write(map()) :: :ok | {:error, term()}
+  @callback prepare_workspace_write_stream(String.t(), String.t(), Enumerable.t()) ::
+              {:ok, map()} | {:error, term()}
   @callback stream_workspace_write(String.t(), String.t(), String.t(), String.t()) ::
               {:ok, map()} | {:error, term()}
   @callback stream_meeting_artifact_write(
@@ -40,7 +42,8 @@ defmodule SalixMeet.Ports.AgentRuntime do
                       workspace_event_committed?: 3,
                       stream_meeting_artifact_write: 6,
                       stream_workspace_read: 2,
-                      discard_prepared_workspace_write: 1
+                      discard_prepared_workspace_write: 1,
+                      prepare_workspace_write_stream: 3
 
   def ensure_preparation_worker(group_id, router_id) do
     runtime = impl()
@@ -62,6 +65,15 @@ defmodule SalixMeet.Ports.AgentRuntime do
     if function_exported?(runtime, :discard_prepared_workspace_write, 1),
       do: runtime.discard_prepared_workspace_write(event),
       else: :ok
+  end
+
+  def prepare_workspace_write_stream(agent_id, path, stream) do
+    runtime = impl()
+
+    if Code.ensure_loaded?(runtime) and
+         function_exported?(runtime, :prepare_workspace_write_stream, 3),
+       do: runtime.prepare_workspace_write_stream(agent_id, path, stream),
+       else: {:error, :agent_runtime_not_configured}
   end
 
   def stream_workspace_write(agent_id, env_id, dst_path, src_path),
@@ -126,7 +138,7 @@ defmodule SalixMeet.Ports.AgentRuntime do
   def commit_event(request), do: impl().commit_event(request)
 
   defp impl do
-    Application.get_env(:salix_meet, :agent_runtime_mod, __MODULE__.None)
+    SystemsRuntime.get_env(:salix_meet, :agent_runtime_mod, __MODULE__.None)
   end
 
   defmodule None do

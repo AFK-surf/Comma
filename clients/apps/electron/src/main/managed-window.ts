@@ -4,9 +4,7 @@ type ManagedWindowRole =
   | "meeting-recorder-window"
   | "dev-workbench"
   | "main-window"
-  | "onboarding-window"
-  | "side-chat-test-window"
-  | "side-chat-window";
+  | "onboarding-window";
 
 interface ManagedBrowserWindowLike {
   webContents: { id: number };
@@ -54,6 +52,21 @@ interface ManagedWindowRegistry {
   ): void;
 }
 
+/**
+ * A managed window's tie to Main's services. A reset of the app (`app.reset`) keeps the window and ties it to the new
+ * services with `rebind`.
+ */
+export interface ManagedWindowBinding {
+  /**
+   * Takes the window out of the services it is registered with, registers it with `next`, and loads its page again:
+   * the renderer starts as it does in a new window, with the new services. Resolves once the page has loaded.
+   */
+  rebind(next: {
+    surfaces: ManagedWindowSurfaces;
+    webContentsRegistry: ManagedWindowRegistry;
+  }): Promise<void>;
+}
+
 export async function configureManagedWindow({
   browserWindow,
   failureLabel,
@@ -67,6 +80,7 @@ export async function configureManagedWindow({
   showInactiveOnReady = false,
   surfaces,
   webContentsRegistry,
+  onBound,
 }: {
   browserWindow: ManagedBrowserWindowLike;
   failureLabel: string;
@@ -80,12 +94,16 @@ export async function configureManagedWindow({
   showInactiveOnReady?: boolean | undefined;
   surfaces: ManagedWindowSurfaces;
   webContentsRegistry: ManagedWindowRegistry;
-}) {
+  /** Takes the window's binding once it is registered and loading (see `ManagedWindowBinding`). */
+  onBound?: (binding: ManagedWindowBinding) => void;
+}): Promise<void> {
   let closed = false;
-  const cleanupRegistration = async () => {
-    webContentsRegistry.unregisterWindow(id, browserWindow);
+  // The services the window is registered with now; a rebind moves it to others.
+  let services = { surfaces, webContentsRegistry };
+  const cleanupRegistration = async (from = services) => {
+    from.webContentsRegistry.unregisterWindow(id, browserWindow);
     try {
-      await surfaces.unregisterWindow(id, browserWindow);
+      await from.surfaces.unregisterWindow(id, browserWindow);
     } catch (error: unknown) {
       logger.warn(`${failureLabel} surface unregister failed: ${errorMessage(error)}`);
     }
@@ -95,7 +113,13 @@ export async function configureManagedWindow({
     closed = true;
     void cleanupRegistration();
   });
+  // Electron also forwards `ready-to-show` from every hosted WebContentsView,
+  // such as an in-app browser tab, on each new document. Only the window's
+  // first paint shows it; later ones must not raise a background app.
+  let readyToShowHandled = false;
   browserWindow.on("ready-to-show", () => {
+    if (readyToShowHandled) return;
+    readyToShowHandled = true;
     if (!showOnReady) return;
     if (showInactiveOnReady) {
       browserWindow.showInactive();
@@ -104,21 +128,18 @@ export async function configureManagedWindow({
     browserWindow.show();
   });
 
-  try {
-    installWindowSecurity();
-    if (closed) return;
-
-    webContentsRegistry.registerWindow({
+  const register = async () => {
+    services.webContentsRegistry.registerWindow({
       id,
       role,
       window: browserWindow,
     });
     if (closed) {
       await cleanupRegistration();
-      return;
+      return false;
     }
 
-    await surfaces.registerWindow({
+    await services.surfaces.registerWindow({
       id,
       role,
       route,
@@ -128,26 +149,67 @@ export async function configureManagedWindow({
       // A registration implementation may only publish after its promise settles.
       // Clean again so a close during that pending work cannot leave a ghost entry.
       await cleanupRegistration();
-      return;
+      return false;
     }
-  } catch (error: unknown) {
-    await cleanupRegistration();
-    throw error;
-  }
+    return true;
+  };
 
-  let loadPromise: Promise<unknown>;
+  /** Starts the page's load. `loaded` is its end: a failed load is logged and unregisters the window. */
+  const load = async (): Promise<{ loaded: Promise<void> }> => {
+    let loadPromise: Promise<unknown>;
+    try {
+      loadPromise = browserWindow.loadURL(loadUrl);
+    } catch (error: unknown) {
+      logger.error(`${failureLabel} load failed: ${errorMessage(error)}`);
+      await cleanupRegistration();
+      throw error;
+    }
+
+    return {
+      loaded: loadPromise.then(
+        () => undefined,
+        async (error: unknown) => {
+          // A navigation of the window's own page (a reload, say) replaced this load; the window goes on loading.
+          if (isAbortedLoad(error)) return;
+          logger.error(`${failureLabel} load failed: ${errorMessage(error)}`);
+          await cleanupRegistration();
+        }
+      ),
+    };
+  };
+
   try {
-    loadPromise = browserWindow.loadURL(loadUrl);
+    installWindowSecurity();
+    if (closed) return;
+    if (!(await register())) return;
   } catch (error: unknown) {
-    logger.error(`${failureLabel} load failed: ${errorMessage(error)}`);
     await cleanupRegistration();
     throw error;
   }
+  await load();
 
-  void loadPromise.catch(async (error: unknown) => {
-    logger.error(`${failureLabel} load failed: ${errorMessage(error)}`);
-    await cleanupRegistration();
+  onBound?.({
+    async rebind(next) {
+      if (closed) return;
+      const previous = services;
+      services = next;
+      await cleanupRegistration(previous);
+      try {
+        if (!(await register())) return;
+      } catch (error: unknown) {
+        await cleanupRegistration();
+        throw error;
+      }
+      await (
+        await load()
+      ).loaded;
+    },
   });
+}
+
+/** Electron rejects `loadURL` with `ERR_ABORTED` when another navigation of the page replaces the load. */
+function isAbortedLoad(error: unknown) {
+  return (error as { code?: unknown } | null)?.code === "ERR_ABORTED";
 }
 
 function errorMessage(error: unknown) {

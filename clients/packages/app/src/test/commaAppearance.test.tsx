@@ -1,5 +1,5 @@
 import userEvent from "@testing-library/user-event";
-import { commaThemeLightnessMax, commaThemeLightnessMin } from "@comma/ui";
+import { commaThemeLightnessMax, commaThemeLightnessMin } from "@comma/ui/tokens";
 import {
   defaultCommaClientSettings,
   type CommaClientSettings,

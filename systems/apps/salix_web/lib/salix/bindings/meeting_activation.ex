@@ -62,6 +62,15 @@ defmodule Salix.Bindings.MeetingActivation do
         %{}
       end
 
+    lark_owners =
+      if snapshot_complete? and provider == "lark" do
+        snapshot
+        |> SalixMeet.OwnerAttributionSnapshot.provider_identities_for(summary, "lark")
+        |> keep_rendered_lark_owners(indexed_action_lines)
+      else
+        %{}
+      end
+
     cond do
       not enabled?(provider) ->
         :skip
@@ -72,7 +81,7 @@ defmodule Salix.Bindings.MeetingActivation do
       trim(state["status"]) != "done" ->
         :skip
 
-      provider not in ["slack", "feishu"] ->
+      provider not in ["slack", "feishu", "lark"] ->
         :skip
 
       not provider_context_valid?(state, provider) ->
@@ -92,7 +101,8 @@ defmodule Salix.Bindings.MeetingActivation do
           group_id,
           action_lines,
           slack_ids,
-          feishu_owners
+          feishu_owners,
+          lark_owners
         )
     end
   rescue
@@ -112,11 +122,20 @@ defmodule Salix.Bindings.MeetingActivation do
          group_id,
          action_lines,
          slack_ids,
-         feishu_owners
+         feishu_owners,
+         lark_owners
        ) do
     case SalixIM.ProviderConnects.enqueue_group_router_im_provider_message(
            group_id,
-           build_content(state, summary, meeting_id, action_lines, slack_ids, feishu_owners),
+           build_content(
+             state,
+             summary,
+             meeting_id,
+             action_lines,
+             slack_ids,
+             feishu_owners,
+             lark_owners
+           ),
            metadata(state, meeting_id),
            "meeting-activation:" <> meeting_id
          ) do
@@ -174,9 +193,34 @@ defmodule Salix.Bindings.MeetingActivation do
     }
   end
 
+  defp provider_metadata(state, "lark") do
+    ref = state["lark_ref"] || %{}
+
+    %{
+      "provider" => "lark",
+      "connect_id" => trim(state["connect_id"]),
+      "chat_id" => trim(ref["chat_id"]),
+      "chat_type" => trim(ref["chat_type"]),
+      "message_id" => lark_reply_message_id(ref),
+      "message_thread_id" => trim(ref["thread_id"]),
+      "root_message_id" => trim(ref["root_message_id"]),
+      "trigger_message_id" => trim(ref["trigger_message_id"]),
+      "event_type" => "meeting.completed",
+      "router_activation_mode" => "context_only"
+    }
+  end
+
   defp provider_metadata(_state, _provider), do: %{}
 
-  defp build_content(state, summary, meeting_id, action_lines, slack_ids, feishu_owners) do
+  defp build_content(
+         state,
+         summary,
+         meeting_id,
+         action_lines,
+         slack_ids,
+         feishu_owners,
+         lark_owners
+       ) do
     title = present(is_map(summary) && summary["title"]) || present(state["title"]) || "Meeting"
 
     sections =
@@ -201,6 +245,7 @@ defmodule Salix.Bindings.MeetingActivation do
       ] ++
         resolved_owner_lines(slack_ids) ++
         resolved_feishu_owner_lines(feishu_owners) ++
+        resolved_lark_owner_lines(lark_owners) ++
         [instructions(state)]
 
     Enum.join(parts, "\n\n")
@@ -263,6 +308,27 @@ defmodule Salix.Bindings.MeetingActivation do
     end
   end
 
+  defp resolved_lark_owner_lines(lark_owners) do
+    lines =
+      lark_owners
+      |> Enum.sort_by(fn {index, _owner} -> index end)
+      |> Enum.map(fn {index, owner} ->
+        mention = %{"user_id" => owner["user_id"], "name" => owner["display_name"]}
+        "- Action item ##{index + 1} → " <> Jason.encode!(mention)
+      end)
+
+    case lines do
+      [] ->
+        []
+
+      _ ->
+        [
+          "Resolved Lark owners (product-generated exact mappings; only these may be used in structured mentions):\n" <>
+            Enum.join(lines, "\n")
+        ]
+    end
+  end
+
   defp instructions(_state) do
     """
     This meeting.completed notification is context only. It authorizes no
@@ -283,6 +349,14 @@ defmodule Salix.Bindings.MeetingActivation do
     trim(state["connect_id"]) != "" and trim(ref["chat_id"]) != "" and
       trim(ref["chat_type"]) in ["group", "p2p"] and
       feishu_reply_message_id(ref) != ""
+  end
+
+  defp provider_context_valid?(state, "lark") do
+    ref = state["lark_ref"] || %{}
+
+    trim(state["connect_id"]) != "" and trim(ref["chat_id"]) != "" and
+      trim(ref["chat_type"]) in ["group", "p2p"] and
+      lark_reply_message_id(ref) != ""
   end
 
   defp provider_context_valid?(_state, _provider), do: false
@@ -319,6 +393,10 @@ defmodule Salix.Bindings.MeetingActivation do
     Map.take(feishu_owners, Enum.map(indexed_action_lines, &elem(&1, 0)))
   end
 
+  defp keep_rendered_lark_owners(lark_owners, indexed_action_lines) do
+    Map.take(lark_owners, Enum.map(indexed_action_lines, &elem(&1, 0)))
+  end
+
   defp action_line(%{} = item) do
     desc = trim(item["description"])
     owner = trim(item["owner"])
@@ -342,8 +420,8 @@ defmodule Salix.Bindings.MeetingActivation do
     |> Enum.reject(&(&1 == ""))
   end
 
-  defp enabled?(provider) when provider in ["slack", "feishu"],
-    do: Application.get_env(:salix_meet, :meeting_activation_enabled, true)
+  defp enabled?(provider) when provider in ["slack", "feishu", "lark"],
+    do: SystemsRuntime.get_env(:salix_meet, :meeting_activation_enabled, true)
 
   defp enabled?(_provider), do: false
 
@@ -351,6 +429,11 @@ defmodule Salix.Bindings.MeetingActivation do
     do: present(ref["root_message_id"]) || trim(ref["trigger_message_id"])
 
   defp feishu_reply_message_id(_ref), do: ""
+
+  defp lark_reply_message_id(ref) when is_map(ref),
+    do: present(ref["root_message_id"]) || trim(ref["trigger_message_id"])
+
+  defp lark_reply_message_id(_ref), do: ""
 
   defp present(value) do
     case trim(value) do

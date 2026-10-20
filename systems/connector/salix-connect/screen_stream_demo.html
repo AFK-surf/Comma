@@ -1,0 +1,117 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Screen stream</title>
+<style>
+  body { margin: 0; font: 13px -apple-system, sans-serif; background: #16171a; color: #e8e8ea; }
+  header { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: #202226; }
+  input[type="text"] { width: 160px; }
+  #status { margin-left: auto; opacity: 0.7; }
+  #stage { display: flex; justify-content: center; padding: 12px; }
+  video { max-width: 100%; max-height: calc(100vh - 70px); background: #000; border-radius: 8px; outline: none; }
+</style>
+<header>
+  <button id="app">App</button>
+  <input id="apps" type="text" placeholder="app name (empty: frontmost)" />
+  <button id="display">Desktop</button>
+  <label><input id="control" type="checkbox" checked /> control</label>
+  <button id="stop">Stop</button>
+  <span id="status">idle</span>
+</header>
+<div id="stage"><video id="video" autoplay playsinline muted tabindex="0"></video></div>
+<script>
+  const video = document.getElementById("video");
+  const status = document.getElementById("status");
+  let pc, channel, streamId;
+
+  async function call(body) {
+    const response = await fetch("/screen_stream", { method: "POST", body: JSON.stringify(body) });
+    return response.json();
+  }
+
+  async function stop() {
+    if (streamId) await call({ op: "stop", stream_id: streamId });
+    pc?.close();
+    pc = channel = streamId = undefined;
+    video.srcObject = null;
+    status.textContent = "idle";
+  }
+
+  async function start(target) {
+    await stop();
+    status.textContent = "connecting";
+    pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }] });
+    const transceiver = pc.addTransceiver("video", { direction: "recvonly" });
+    if ("jitterBufferTarget" in transceiver.receiver) transceiver.receiver.jitterBufferTarget = 0;
+    channel = pc.createDataChannel("input");
+    channel.onmessage = (event) => {
+      const meta = JSON.parse(event.data);
+      if (meta.type !== "ready" && meta.type !== "geometry") return;
+      status.textContent = `${meta.target} ${(meta.apps ?? []).join(", ")} ${meta.width}x${meta.height}`;
+    };
+    pc.ontrack = (event) => (video.srcObject = event.streams[0] ?? new MediaStream([event.track]));
+    pc.onconnectionstatechange = () => {
+      if (pc && pc.connectionState !== "connected") status.textContent = pc.connectionState;
+    };
+    await pc.setLocalDescription(await pc.createOffer());
+    await new Promise((resolve) => {
+      if (pc.iceGatheringState === "complete") return resolve();
+      pc.addEventListener("icegatheringstatechange", () => pc.iceGatheringState === "complete" && resolve());
+      setTimeout(resolve, 3000);
+    });
+    const apps = document.getElementById("apps").value.split(",").map((name) => name.trim()).filter(Boolean);
+    const answer = await call({
+      op: "start",
+      sdp: pc.localDescription.sdp,
+      target,
+      apps,
+      control: document.getElementById("control").checked,
+    });
+    if (!answer.ok) {
+      status.textContent = answer.error;
+      return;
+    }
+    streamId = answer.stream_id;
+    await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+  }
+
+  function send(message) {
+    if (channel?.readyState === "open") channel.send(JSON.stringify(message));
+  }
+  function mods(event) {
+    return [event.shiftKey && "shift", event.ctrlKey && "ctrl", event.altKey && "alt", event.metaKey && "meta"].filter(Boolean);
+  }
+  function pointer(type, event, extra) {
+    const rect = video.getBoundingClientRect();
+    send({
+      type,
+      x: (event.clientX - rect.left) / rect.width,
+      y: (event.clientY - rect.top) / rect.height,
+      mods: mods(event),
+      ...extra,
+    });
+  }
+  video.addEventListener("pointermove", (event) => pointer("move", event));
+  video.addEventListener("pointerdown", (event) => {
+    video.focus();
+    video.setPointerCapture(event.pointerId);
+    pointer("down", event, { button: event.button === 2 ? 1 : event.button === 1 ? 2 : 0, clicks: event.detail || 1 });
+  });
+  video.addEventListener("pointerup", (event) =>
+    pointer("up", event, { button: event.button === 2 ? 1 : event.button === 1 ? 2 : 0, clicks: event.detail || 1 })
+  );
+  video.addEventListener("contextmenu", (event) => event.preventDefault());
+  video.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    pointer("scroll", event, { dx: event.deltaX, dy: event.deltaY });
+  }, { passive: false });
+  for (const type of ["keydown", "keyup"]) {
+    video.addEventListener(type, (event) => {
+      event.preventDefault();
+      send({ type, code: event.code, mods: mods(event) });
+    });
+  }
+
+  document.getElementById("app").onclick = () => start("app");
+  document.getElementById("display").onclick = () => start("display");
+  document.getElementById("stop").onclick = stop;
+</script>

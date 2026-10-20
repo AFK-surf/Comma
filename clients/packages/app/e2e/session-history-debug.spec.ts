@@ -141,9 +141,15 @@ test("Session history is opt-in, releases open views when disabled and remembers
     await page.getByRole("textbox", { name: "AI prompt" }).click();
     await participant.hover();
     await expect(preview).toBeVisible();
-    await page.evaluate(() => {
-      location.hash = "#/settings?category=debug";
-    });
+    // The rail opens Settings as a modal over Home. The `/settings` deep link
+    // would leave Home and close the Chat Sidebar with the Session in it.
+    await page
+      .locator(".comma-sidebar-body")
+      .getByRole("button", { name: "Settings", exact: true })
+      .click();
+    await page
+      .locator('[data-slot="settings-sidebar-item"]', { hasText: "Debug" })
+      .click();
     await expect(toggle).toBeChecked();
     // The Settings modal retains the already open Session until the switch changes.
     await expect(history).toHaveCount(1);

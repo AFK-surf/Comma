@@ -109,7 +109,7 @@ defmodule BridgeForTeams.Sites do
   defp do_list_project_sites(project, agents) do
     result =
       agents
-      |> Task.async_stream(
+      |> SystemsClock.async_stream(
         fn agent -> {agent, Client.impl().list_agent_sites(agent.salix_agent_id)} end,
         max_concurrency: @list_sites_max_concurrency,
         timeout: @list_sites_task_timeout_ms,
@@ -165,7 +165,7 @@ defmodule BridgeForTeams.Sites do
         "status" => "unavailable"
       },
       correlation_id: "project:#{project.id}:websites:index",
-      occurred_at: DateTime.utc_now()
+      occurred_at: SystemsClock.utc_now()
     }
 
     case Observability.create_event(attrs) do

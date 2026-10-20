@@ -192,7 +192,7 @@ defmodule SalixStore.TenantConfigsCutover do
   end
 
   defp mark!(evidence) when is_map(evidence) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     case Repo.query(
            "INSERT INTO salix_cutover_markers (name, completed_at, evidence) VALUES ($1, $2, $3) ON CONFLICT (name) DO NOTHING",

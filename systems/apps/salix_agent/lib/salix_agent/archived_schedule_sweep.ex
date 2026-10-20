@@ -56,7 +56,7 @@ defmodule SalixAgent.ArchivedScheduleSweep do
   @spec run(keyword()) :: {:ok, summary()} | {:error, summary() | term()}
   def run(opts \\ []) do
     dry_run? = Keyword.get(opts, :dry_run, false)
-    now_ms = Keyword.get(opts, :now_ms) || System.system_time(:millisecond)
+    now_ms = Keyword.get(opts, :now_ms) || SystemsClock.system_time(:millisecond)
 
     with {:ok, objects} <- S3.list_all(Keys.ctl_agents_prefix()),
          {:ok, records} <- read_records(objects) do
@@ -123,7 +123,7 @@ defmodule SalixAgent.ArchivedScheduleSweep do
   # {agent_id, archived?, epoch} per readable control record.
   defp read_records(objects) do
     objects
-    |> Task.async_stream(fn %{key: key} -> read_record(key) end,
+    |> SystemsClock.async_stream(fn %{key: key} -> read_record(key) end,
       max_concurrency: @read_concurrency,
       ordered: false,
       timeout: :infinity

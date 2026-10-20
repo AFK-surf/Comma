@@ -9,7 +9,7 @@ defmodule SalixAgent.Migrations.AgentCreationDefaults do
   the release runner. Records created after their listing page are not revisited.
   No Agent, session, credential, or tenant configuration is deleted.
   """
-  alias SalixAgent.{AgentDefaults, Templates}
+  alias SalixAgent.Migrations.TemplateRecords
   alias SalixStore.{Keys, S3}
 
   def run, do: page(nil, 0)
@@ -32,9 +32,9 @@ defmodule SalixAgent.Migrations.AgentCreationDefaults do
     with {:ok, %{body: body, etag: etag}} <- S3.get(key),
          {:ok, agent} <- Jason.decode(body) do
       if agent["role"] in ["router", "worker"] and agent["template_id"] in [nil, ""] do
-        with {:ok, id} <- AgentDefaults.creation_template(agent["role"], agent["tenant_id"]) do
+        with {:ok, id} <- TemplateRecords.tenant_default(agent["role"], agent["tenant_id"]) do
           if id do
-            with {:ok, template} <- Templates.get(id, agent["tenant_id"]),
+            with {:ok, template} <- TemplateRecords.get(id, agent["tenant_id"]),
                  updated =
                    agent
                    |> Map.put("template_id", id)

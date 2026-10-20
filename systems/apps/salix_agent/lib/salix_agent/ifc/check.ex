@@ -125,7 +125,7 @@ defmodule SalixAgent.IFC.Check do
     ctx = delegated_request_context(name, args, ctx)
 
     destinations = [
-      Destination.describe(name, args, ctx) | Destination.additional_destinations(name, args)
+      Destination.describe(name, args, ctx) | Destination.additional_destinations(name, args, ctx)
     ]
 
     Enum.reduce_while(destinations, {:execute, call}, fn
@@ -141,9 +141,10 @@ defmodule SalixAgent.IFC.Check do
   end
 
   defp delegated_request_context(name, args, ctx) do
-    mod = Application.get_env(:salix_agent, :im_provider_mod)
+    mod = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
 
-    if mod && Code.ensure_loaded?(mod) && function_exported?(mod, :task_execution_request, 3) do
+    if mod && SystemsRuntime.Proc.ensure_loaded?(mod) &&
+         function_exported?(mod, :task_execution_request, 3) do
       case mod.task_execution_request(name, args, ctx) do
         {:ok, source_id, principal, source_scope} ->
           Map.update(ctx, :ifc, nil, fn wire ->
@@ -407,7 +408,7 @@ defmodule SalixAgent.IFC.Check do
       "destination" => descriptor,
       "atoms" => atoms(declaration, items, wire),
       "trusted_origin" => Map.get(ctx, :trusted_origin) || Map.get(ctx, "trusted_origin"),
-      "now" => System.system_time(:millisecond)
+      "now" => SystemsClock.system_time(:millisecond)
     }
   end
 
@@ -488,7 +489,7 @@ defmodule SalixAgent.IFC.Check do
   # ---------------------------------------------------------------------------
 
   defp kernel_decide(effect, activation, items, facts) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     try do
       result = SalixIFC.decide(effect, activation, items, facts)
@@ -514,7 +515,7 @@ defmodule SalixAgent.IFC.Check do
       "ifc_decide",
       SystemsObservability.Context.current_surface(),
       outcome,
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
   rescue
     _ -> :ok

@@ -1,4 +1,3 @@
-import VerifiedKernelProofs.Session.WorkCurrentConfirmation
 import VerifiedKernelProofs.Session.WorkPhysicalArchive
 
 namespace VerifiedKernel.Session.ArchivePublication
@@ -58,7 +57,7 @@ theorem nonretiring_batch_extends {state next : Term} {events : List Term}
       obtain ⟨_, read, _, call⟩ := prepareTrusted_stringify prepared
       have same := shallowStringify_binary_keys (canonical _ List.mem_cons_self) read
       subst normalized
-      exact extends_trans (nonretiring_inner_extends format (safe _ List.mem_cons_self) call)
+      exact extends_trans (nonretiring_inner_extends (safe _ List.mem_cons_self) call)
         (activity_frame_extends activity)
 
 theorem PhysicalHistory.record_frame {framing : CodecFraming} {objects : Objects}
@@ -156,7 +155,7 @@ theorem prepareWrite_records {state next record : Term} {journal rest : List Ter
   have same : next = written := by
     simpa only [Term.tuple.injEq, List.cons.injEq, and_true, true_and] using pure_ok call
   subst written
-  simpa only [ContainsRecord, write_field_frame (key := "messages") writeCall rfl] using stored
+  simpa only [ContainsRecord, write_field_frame (key := "messages") writeCall (by keys_absent)] using stored
 
 theorem PhysicalHistory.prepare_records {framing : CodecFraming} {objects : Objects}
     {owner session : ByteArray} {state next : Term} {sealed journal rest : List Term}

@@ -81,6 +81,22 @@ defmodule BridgeForTeams.FeishuAppBindings do
     )
   end
 
+  @doc """
+  The org's binding enabled for the group bot, or nil. Saving allows one
+  bot-enabled binding per org; should an older build have left more, the most
+  recently saved one wins.
+  """
+  @spec latest_bot_binding(Ecto.UUID.t()) :: FeishuAppBinding.t() | nil
+  def latest_bot_binding(org_id) do
+    Repo.one(
+      from(b in FeishuAppBinding,
+        where: b.org_id == ^org_id and b.bot_enabled == true,
+        order_by: [desc: coalesce(b.updated_at, b.created_at), desc: b.id],
+        limit: 1
+      )
+    )
+  end
+
   @doc "Fetch one binding scoped to its org."
   @spec get_binding(Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, FeishuAppBinding.t()} | {:error, :not_found}
@@ -227,7 +243,7 @@ defmodule BridgeForTeams.FeishuAppBindings do
         resource_id: binding.id,
         resource_label: binding.display_name || binding.app_id,
         result: "ok",
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         metadata: binding_audit_metadata(binding, attrs),
         redacted_diff: binding_diff(existing, binding, attrs)
       })
@@ -247,7 +263,7 @@ defmodule BridgeForTeams.FeishuAppBindings do
         resource_id: binding.id,
         resource_label: binding.display_name || binding.app_id,
         result: "ok",
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         metadata: binding_audit_metadata(binding, %{}),
         redacted_diff: %{"deleted" => %{"from" => false, "to" => true}}
       })
@@ -268,7 +284,7 @@ defmodule BridgeForTeams.FeishuAppBindings do
         resource_label: validation_binding_label({:error, reason}, attrs),
         result: "failed",
         reason: reason,
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         surface: "feishu",
         metadata: binding_write_attempt_metadata(attrs, reason)
       })
@@ -289,7 +305,7 @@ defmodule BridgeForTeams.FeishuAppBindings do
         resource_label: id,
         result: "failed",
         reason: reason,
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         surface: "feishu",
         metadata: %{"binding_id" => id}
       })
@@ -481,7 +497,7 @@ defmodule BridgeForTeams.FeishuAppBindings do
 
   defp ensure_audit_request_id(opts) do
     if audit_enabled?(opts) and not present?(Keyword.get(opts, :request_id)) do
-      Keyword.put(opts, :request_id, Ecto.UUID.generate())
+      Keyword.put(opts, :request_id, SystemsRuntime.Proc.uuid())
     else
       opts
     end
@@ -566,7 +582,7 @@ defmodule BridgeForTeams.FeishuAppBindings do
   end
 
   defp disable_other_sso_bindings(binding) do
-    now = DateTime.utc_now(:microsecond)
+    now = SystemsClock.utc_now()
 
     Repo.update_all(
       from(b in FeishuAppBinding,
@@ -625,7 +641,7 @@ defmodule BridgeForTeams.FeishuAppBindings do
   end
 
   defp other_bot_binding?(org_id, app_id, existing) do
-    existing_id = (existing && existing.id) || Ecto.UUID.generate()
+    existing_id = (existing && existing.id) || SystemsRuntime.Proc.uuid()
 
     Repo.exists?(
       from(b in FeishuAppBinding,

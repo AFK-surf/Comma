@@ -1,4 +1,6 @@
 defmodule SalixIM.SlackMessageMirror do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Seam for mirroring observed Slack messages into ClickHouse.
 
@@ -134,7 +136,11 @@ defmodule SalixIM.SlackMessageMirror do
 
   defp persist_failed(reason, detail) do
     Logger.warning("slack message mirror persist failed (#{reason}): #{detail}")
-    :telemetry.execute([:salix, :slack_mirror, :dropped], %{count: 1}, %{reason: reason})
+
+    SystemsRuntime.Telemetry.execute([:salix, :slack_mirror, :dropped], %{count: 1}, %{
+      reason: reason
+    })
+
     {:error, reason}
   rescue
     _exception -> {:error, :outbox_unavailable}
@@ -232,8 +238,8 @@ defmodule SalixIM.SlackMessageMirror do
          trim(event["user"]) == bot do
       _ = SlackMirrorBackfillLedger.kick_connect(connect)
 
-      case Process.whereis(SalixIM.SlackMessageMirror.BackfillRunner) do
-        pid when is_pid(pid) -> send(pid, :work_tick)
+      case SystemsRuntime.Proc.whereis(SalixIM.SlackMessageMirror.BackfillRunner) do
+        pid when SystemsRuntime.Proc.is_process(pid) -> SystemsRuntime.Proc.send(pid, :work_tick)
         nil -> :ok
       end
     end
@@ -250,7 +256,8 @@ defmodule SalixIM.SlackMessageMirror do
   defp trim(value) when is_binary(value), do: String.trim(value)
   defp trim(_value), do: ""
 
-  defp impl, do: Application.get_env(:salix_im, :slack_message_mirror_mod, Noop)
+  defp impl, do: SystemsRuntime.get_env(:salix_im, :slack_message_mirror_mod, Noop)
 
-  defp outbox, do: Application.get_env(:salix_im, :slack_message_mirror_outbox, SlackMirrorOutbox)
+  defp outbox,
+    do: SystemsRuntime.get_env(:salix_im, :slack_message_mirror_outbox, SlackMirrorOutbox)
 end

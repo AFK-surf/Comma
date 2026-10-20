@@ -77,7 +77,7 @@ defmodule Salix.Control.DriveBindings do
          network: rec["network"],
          space: rec["space"],
          token: rec["api_key"],
-         req_options: Application.get_env(:salix_web, :drive_req_options, [])
+         req_options: SystemsRuntime.get_env(:salix_web, :drive_req_options, [])
        }}
     end
   end

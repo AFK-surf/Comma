@@ -1,0 +1,7 @@
+# Keep only the APK audit evidence for credential/backend isolation; names may be obfuscated.
+-keep,allowobfuscation class surf.comma.android.BuildConfig {
+    public static final java.lang.String DOUBAO_ASR_API_KEY;
+    public static final java.lang.String DOUBAO_ASR_RESOURCE_ID;
+    public static final java.lang.String BACKEND_BASE_URL;
+    public static final java.lang.String BUILD_TYPE;
+}

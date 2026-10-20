@@ -7,7 +7,7 @@ defmodule SalixStore.SlackRouterThreadParticipationSweeper do
   the read path, so cleanup delay or failure cannot grant admission.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -16,7 +16,8 @@ defmodule SalixStore.SlackRouterThreadParticipationSweeper do
   @interval_ms :timer.hours(1)
   @batch_size 1_000
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
   def init(_opts) do
@@ -45,5 +46,5 @@ defmodule SalixStore.SlackRouterThreadParticipationSweeper do
     end
   end
 
-  defp schedule, do: Process.send_after(self(), :sweep, @interval_ms)
+  defp schedule, do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :sweep, @interval_ms)
 end

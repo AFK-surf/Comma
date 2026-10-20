@@ -24,7 +24,7 @@ defmodule SalixSignalProto.Group.Blob do
         %Params{blob_key: key},
         plaintext,
         padding \\ 0,
-        randomness \\ :crypto.strong_rand_bytes(32)
+        randomness \\ SystemsRuntime.Proc.random_bytes(32)
       )
       when is_binary(plaintext) and is_integer(padding) and padding in 0..0xFFFFFFFF and
              byte_size(randomness) == 32 do

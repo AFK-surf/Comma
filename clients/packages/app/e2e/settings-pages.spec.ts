@@ -10,7 +10,6 @@ const metric = (result: { metrics: { name: string; value: number }[] }, name: st
 test("web routes and every Settings category open, scroll and can be revisited", async ({
   page,
 }, testInfo) => {
-  test.setTimeout(90_000);
   const stub = await startChatSmokeStub();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));

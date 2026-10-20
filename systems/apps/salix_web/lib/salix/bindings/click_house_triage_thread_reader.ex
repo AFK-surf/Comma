@@ -8,7 +8,7 @@ defmodule Salix.Bindings.ClickHouseTriageThreadReader do
   product authority.
   """
 
-  alias SalixIM.Provider.Slack.{MessageReferences, TaskCards}
+  alias SalixIM.Provider.Slack.{MessageReferences, TableBlocks, TaskCards}
 
   alias SalixIM.Triage.{
     CanonicalJSON,
@@ -168,7 +168,7 @@ defmodule Salix.Bindings.ClickHouseTriageThreadReader do
   defp thread(snapshot) do
     %{
       "checked_at" =>
-        DateTime.utc_now() |> DateTime.truncate(:millisecond) |> DateTime.to_iso8601(),
+        SystemsClock.utc_now() |> DateTime.truncate(:millisecond) |> DateTime.to_iso8601(),
       "messages" => snapshot["messages"],
       "source_snapshot" => snapshot_summary(snapshot)
     }
@@ -282,9 +282,12 @@ defmodule Salix.Bindings.ClickHouseTriageThreadReader do
     raw = %{
       "ts" => slack_string(message, "ts", row["message_ts"]),
       "text" =>
-        slack_string(message, "text", row["text"]) <>
-          MessageReferences.content_suffix(message) <>
-          TaskCards.content_suffix(message),
+        IdentityContract.withhold_bearer_credentials(
+          slack_string(message, "text", row["text"]) <>
+            TableBlocks.content_suffix(message) <>
+            MessageReferences.content_suffix(message) <>
+            TaskCards.content_suffix(message)
+        ),
       "subtype" => slack_string(message, "subtype", row["subtype"]),
       "user" =>
         slack_string(
@@ -305,7 +308,17 @@ defmodule Salix.Bindings.ClickHouseTriageThreadReader do
           if(row["actor_kind"] == "app", do: row["actor_id"], else: "")
         ),
       "bot_profile_name" => actor_label(row),
-      "file_attachments" => FileAttachments.from_slack(message["files"])
+      "file_attachments" =>
+        message["files"]
+        |> FileAttachments.from_slack()
+        |> Map.update!("items", fn items ->
+          Enum.map(
+            items,
+            &Map.update!(&1, "name", fn name ->
+              IdentityContract.withhold_bearer_credentials(name)
+            end)
+          )
+        end)
     }
 
     raw =

@@ -21,6 +21,9 @@ erl_crash.dump
 # config/config.example.json for committed examples.
 /config.json
 
+# Private build inputs, placed from private/sources.lock.json.
+/private/*/
+
 # Also ignore archive artifacts (built via "mix archive.build").
 *.ez
 
@@ -57,6 +60,8 @@ docker-compose.local.yml
 
 # Native spinfoam runtime (built by mix compile / the release image).
 /apps/salix_agent/priv/spinfoam
+# The Profiles' NIF (systems/profiles/nif; mix compile / the release image).
+/apps/salix_agent/priv/native
 
 # Per-app build dirs appear when mix runs inside an app directory.
 /apps/*/_build/

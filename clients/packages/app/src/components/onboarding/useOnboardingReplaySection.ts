@@ -1,5 +1,5 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import type { SettingsCategoryDefinition } from "@comma/ui";
+import type { SettingsCategoryDefinition } from "@comma/ui/components/settings";
 import { useCommaAuth } from "../auth-context";
 import {
   useCommaClientSettings,

@@ -47,8 +47,8 @@ defmodule Mix.Tasks.Salix.Vm.CloudflarePreflight do
         {:ok, config}
 
       _ ->
-        case Application.get_env(:salix_web, :platform_vm) ||
-               Application.get_env(:comma_core, :salix_vm) do
+        case SystemsRuntime.get_env(:salix_web, :platform_vm) ||
+               SystemsRuntime.get_env(:comma_core, :salix_vm) do
           config when is_map(config) and map_size(config) > 0 -> {:ok, stringify(config)}
           _ -> {:error, :platform_vm_not_configured}
         end
@@ -97,7 +97,7 @@ defmodule Mix.Tasks.Salix.Vm.CloudflarePreflight do
 
   defp probe_sandbox(sandbox_id, opts) do
     operation_id =
-      "preflight-" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+      "preflight-" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(12), padding: false)
 
     with {:ok, config} <- platform_config(),
          {:ok, section} <- cloudflare_section(config),
@@ -106,7 +106,13 @@ defmodule Mix.Tasks.Salix.Vm.CloudflarePreflight do
            SalixStore.Compute.begin_cloudflare_direct_gateway_attempt(operation_id) do
       result =
         with :ok <- check_probe_status(client, sandbox_id),
-             {:ok, _} <- Client.ensure(client, sandbox_id, keep_alive: false),
+             # The probe Container's station has nothing to connect to (the
+             # discard port on its own loopback); it keeps retrying.
+             {:ok, _} <-
+               Client.ensure(client, sandbox_id,
+                 keep_alive: false,
+                 station: %{"server" => "ws://127.0.0.1:9", "credential" => "preflight"}
+               ),
              :ok <- maybe_destroy_probe_sandbox(client, sandbox_id, opts) do
           :ok
         end

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="chat_brand_name" translatable="false">Comma</string>
+    <string name="chat_open_sidebar">打开侧栏</string>
+    <string name="chat_close_sidebar">关闭侧栏</string>
+    <string name="chat_sidebar_view_all">查看全部</string>
+</resources>

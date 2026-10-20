@@ -2,6 +2,7 @@ defmodule SalixIM.MailInteraction do
   @moduledoc "Bounded mail interaction values owned by the Home Conversation."
   @key "mail_interactions"
   @limit 128
+  @max_bytes 256_000
 
   # Two budgets per owner. Automatic handoffs wake the Router with evidence;
   # their daily cap bounds its cost. Notifications are the Router's decisions to
@@ -189,7 +190,7 @@ defmodule SalixIM.MailInteraction do
       is_nil(current) and command["action"] not in ~w(present track) ->
         {:error, :mail_source_not_found}
 
-      is_nil(current) and map_size(values) >= @limit ->
+      is_nil(current) and map_size(values) >= @limit and evictable(values) == [] ->
         {:error, :mail_tracking_capacity}
 
       is_map(current) and command["generation"] != current["generation"] ->
@@ -297,6 +298,15 @@ defmodule SalixIM.MailInteraction do
           "automatic" =>
             if(action == "present", do: command["automatic"] == true, else: base["automatic"]),
           "urgency" => if(action == "present", do: command["urgency"], else: base["urgency"]),
+          # What happens if the owner does nothing, and the earlier matter this
+          # one continues, as the latest automatic handoff judged them.
+          "assessment" =>
+            if(action == "present", do: command["assessment"], else: base["assessment"]),
+          "continues" =>
+            if(action == "present",
+              do: command["continues"] || base["continues"],
+              else: base["continues"]
+            ),
           # The latest Loop wakes on this matter, so a redelivered older wake is
           # recognized as a duplicate instead of re-presenting the matter.
           "loop_requests" =>
@@ -327,12 +337,36 @@ defmodule SalixIM.MailInteraction do
   end
 
   def commit(conversation, key, value, timestamp) do
-    metadata =
-      Map.put(conversation["metadata"] || %{}, @key, Map.put(entries(conversation), key, value))
+    values = conversation |> entries() |> Map.put(key, value) |> fit(key)
+    metadata = Map.put(conversation["metadata"] || %{}, @key, values)
 
-    if byte_size(Jason.encode!(metadata[@key])) <= 256_000,
+    if byte_size(Jason.encode!(values)) <= @max_bytes,
       do: conversation |> Map.put("metadata", metadata) |> Map.put("updated_at", timestamp),
       else: {:error, :mail_tracking_capacity}
+  end
+
+  # A full store makes room for a new matter by dropping the oldest settled
+  # matters: handled, quiet or failed, with nothing pending, scheduled or
+  # linked to a Task. Matters still followed are never dropped.
+  defp fit(values, key) do
+    if map_size(values) <= @limit and byte_size(Jason.encode!(values)) <= @max_bytes do
+      values
+    else
+      case values |> Map.delete(key) |> evictable() do
+        [oldest | _] -> values |> Map.delete(oldest) |> fit(key)
+        [] -> values
+      end
+    end
+  end
+
+  defp evictable(values) do
+    values
+    |> Enum.filter(fn {_key, value} ->
+      value["state"] in ~w(handled quiet failed) and is_nil(value["pending"]) and
+        is_nil(value["schedule_id"]) and is_nil(value["task_id"])
+    end)
+    |> Enum.sort_by(fn {_key, value} -> value["changed_at"] || 0 end)
+    |> Enum.map(&elem(&1, 0))
   end
 
   def public(value),

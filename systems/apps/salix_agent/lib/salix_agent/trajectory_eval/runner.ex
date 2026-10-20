@@ -76,7 +76,7 @@ defmodule SalixAgent.TrajectoryEval.Runner do
         agent_id = context.agent_id
 
         _ =
-          Task.Supervisor.start_child(SalixAgent.TaskSup, fn ->
+          SystemsRuntime.TaskSupervisor.start_child(SalixAgent.TaskSup, fn ->
             eval_now(agent_id, session_id, outcome, :dependency)
           end)
 
@@ -335,7 +335,7 @@ defmodule SalixAgent.TrajectoryEval.Runner do
   # which can return 0.0 for some generator states.
   defp sampled?(rate) when rate <= 0.0, do: false
   defp sampled?(rate) when rate >= 1.0, do: true
-  defp sampled?(rate), do: :rand.uniform() < rate
+  defp sampled?(rate), do: SystemsRuntime.Proc.uniform() < rate
 
   defp probability?(value), do: is_number(value) and value >= 0 and value <= 1
 
@@ -378,7 +378,7 @@ defmodule SalixAgent.TrajectoryEval.Runner do
 
   defp entry(result, outcome) do
     %{
-      "evaluated_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "evaluated_at" => SystemsClock.utc_now() |> DateTime.to_iso8601(),
       "evaluator" => @evaluator,
       "evaluator_version" => @evaluator_version,
       "outcome" => outcome_label(outcome),
@@ -423,5 +423,5 @@ defmodule SalixAgent.TrajectoryEval.Runner do
   defp stringify(list) when is_list(list), do: Enum.map(list, &stringify/1)
   defp stringify(other), do: other
 
-  defp config, do: Application.get_env(:salix_agent, :trajectory_eval, [])
+  defp config, do: SystemsRuntime.get_env(:salix_agent, :trajectory_eval, [])
 end

@@ -132,7 +132,7 @@ defmodule BridgeForTeamsWeb.Dashboard.OperationsExportController do
   defp request_id do
     case Logger.metadata()[:request_id] do
       request_id when is_binary(request_id) and request_id != "" -> request_id
-      _ -> Ecto.UUID.generate()
+      _ -> SystemsRuntime.Proc.uuid()
     end
   end
 

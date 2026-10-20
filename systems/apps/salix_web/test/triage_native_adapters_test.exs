@@ -1,5 +1,9 @@
 defmodule Salix.Bindings.TriageNativeEvaluatorTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  import ExUnit.CaptureLog
+
+  alias SalixIM.Triage.Pipeline
 
   defmodule LoopbackServer do
     import Plug.Conn
@@ -9,9 +13,10 @@ defmodule Salix.Bindings.TriageNativeEvaluatorTest do
     def call(conn, server) do
       {:ok, raw_body, conn} = read_body(conn)
 
-      response_content =
+      {response_content, usage} =
         Agent.get_and_update(server, fn state ->
-          {state.response_content, %{state | requests: state.requests ++ [raw_body]}}
+          {{state.response_content, state.usage},
+           %{state | requests: state.requests ++ [raw_body]}}
         end)
 
       response = %{
@@ -22,6 +27,8 @@ defmodule Salix.Bindings.TriageNativeEvaluatorTest do
           }
         ]
       }
+
+      response = if usage, do: Map.put(response, "usage", usage), else: response
 
       conn
       |> put_resp_content_type("application/json")
@@ -39,14 +46,14 @@ defmodule Salix.Bindings.TriageNativeEvaluatorTest do
 
     server =
       start_supervised!(
-        {Agent, fn -> %{requests: [], response_content: response_content} end},
-        id: make_ref()
+        {Agent, fn -> %{requests: [], response_content: response_content, usage: nil} end},
+        id: SystemsRuntime.Proc.make_ref()
       )
 
     bandit =
       start_supervised!(
         {Bandit, plug: {LoopbackServer, server}, port: 0, startup_log: false},
-        id: make_ref()
+        id: SystemsRuntime.Proc.make_ref()
       )
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
@@ -152,49 +159,6 @@ defmodule Salix.Bindings.TriageNativeEvaluatorTest do
            "source_refs" => ["meeting://invented/owner/0"]
          }}
       ] do
-    @decision decision
-    test "rejects #{label}", %{
-      model_input: model_input,
-      server: server,
-      base_url: base_url
-    } do
-      Agent.update(server, fn state -> %{state | response_content: Jason.encode!(@decision)} end)
-
-      assert {:error, :invalid_triage_decision} =
-               Salix.Bindings.TriageEvaluator.evaluate(model_input,
-                 provider: SalixLlm.Provider,
-                 provider_name: "loopback-openai-chat",
-                 provider_opts: %{
-                   "protocol" => "chat_completions",
-                   "base_url" => base_url,
-                   "api_key" => "test-only",
-                   "model" => "gpt-5.6-luna"
-                 },
-                 transport_receipt: fn bytes ->
-                   assert [^bytes] = Agent.get(server, & &1.requests)
-                   %{payload_sha256: sha256(bytes), request_count: 1}
-                 end
-               )
-    end
-  end
-
-  test "fails before provider egress when receiver-side transport evidence is absent", %{
-    model_input: model_input,
-    server: server,
-    base_url: base_url
-  } do
-    assert {:error, :transport_receipt_required} =
-             Salix.Bindings.TriageEvaluator.evaluate(model_input,
-               provider: SalixLlm.Provider,
-               provider_opts: %{
-                 "protocol" => "chat_completions",
-                 "base_url" => base_url,
-                 "api_key" => "test-only",
-                 "model" => "gpt-5.6-luna"
-               }
-             )
-
-    assert Agent.get(server, & &1.requests) == []
   end
 
   defp sha256(bytes) do

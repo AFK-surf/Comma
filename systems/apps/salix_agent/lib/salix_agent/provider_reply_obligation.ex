@@ -2,21 +2,21 @@ defmodule SalixAgent.ProviderReplyObligation do
   @moduledoc """
   Durable, provider-owned obligations for canonical Router sessions.
 
-  Two target kinds share one map and reminder, but only Task cards fence ACKs:
-  a plain reply reminder (retired by exact successful egress or settlement) and a
+  Two target kinds share one map, but only Task cards fence ACKs:
+  a plain reply target (retired by exact successful egress or settlement) and a
   `task_card` target (one successful `im_api.slack.post_task_card` for the
   exact Task conversation created from a Slack-sourced activation).
 
   The state is deliberately independent of transcript records: format-2
   compaction may archive every delivery and tool result while an unresolved
-  Task-card obligation still fences the session ACK; ordinary reply reminders
+  Task-card obligation still fences the session ACK; ordinary reply targets
   survive until explicit settlement.
 
   The obligation map itself is kernel state. `normalize/1`, `key/1`,
   `pending/1`, `pending_count/1`, `blocking_count/1`, and `admission_full?/3`
   are kernel queries; the reducers that used to build the next map here are
-  kernel events. The kernel also selects and renders request reminders, and
-  derives the resolution and candidate events from settled tool results.
+  kernel events. The kernel also derives the resolution and candidate events
+  from settled tool results.
   """
 
   require SalixAgent.InternalSession
@@ -60,10 +60,6 @@ defmodule SalixAgent.ProviderReplyObligation do
   @doc false
   def blocking?(state), do: blocking_count(state) > 0
 
-  @doc false
-  def append_reminder(messages, state) when is_list(messages),
-    do: session_query(state, :provider_request_part, {:obligation_reminder, messages}, messages)
-
   @doc """
   Reject admission before commit when accepted distinct reply targets would
   exceed the same configured bound used for the session input queue.
@@ -97,7 +93,7 @@ defmodule SalixAgent.ProviderReplyObligation do
   targets. Shared with delivery admission so the two cannot drift.
   """
   def admission_limit,
-    do: Application.get_env(:salix_agent, :session_input_queue_limit, 1000)
+    do: SystemsRuntime.get_env(:salix_agent, :session_input_queue_limit, 1000)
 
   @doc """
   Build the candidate add event for a Slack Task-card obligation.

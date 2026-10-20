@@ -1,4 +1,6 @@
 defmodule SalixAgent.Loops.Reconciler do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Keeps the spinfoam objects on this node equal to the active Loops of the
   Agents this node holds (docs/salix/tasks-background-execution.md, "Background
@@ -29,16 +31,19 @@ defmodule SalixAgent.Loops.Reconciler do
       be started (or are served here and unloaded) never starves the rows
       behind it. An Agent that no longer exists or is archived has its
       stranded Loops paused as undeliverable instead of retried forever.
+    * each sweep also ends one page of active Loops past their `ends_at`
+      and tells one page of Tasks that their Loop ended
+      (`SalixAgent.Loops.TaskOwner`).
 
   Adoption runs in a bounded task per Agent; a request that arrives while an
   adoption is in flight runs once more after it, never concurrently.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
   alias SalixAgent.{Loops, OwnershipCell}
-  alias SalixAgent.Loops.{Capabilities, Host}
+  alias SalixAgent.Loops.{Capabilities, Host, TaskOwner}
   alias SalixStore.Loops, as: Store
 
   @sweep_ms :timer.seconds(60)
@@ -47,33 +52,43 @@ defmodule SalixAgent.Loops.Reconciler do
   @release_timeout_ms 25_000
 
   def start_link(opts \\ []),
-    do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+    do:
+      SystemsRuntime.Server.start_link(__MODULE__, opts,
+        name: Keyword.get(opts, :name, __MODULE__)
+      )
 
   @doc "Load and start the Agent's active Loops on this node. Asynchronous, idempotent."
   @spec adopt(String.t()) :: :ok
   def adopt(agent_id) when is_binary(agent_id) do
-    if Process.whereis(__MODULE__), do: GenServer.cast(__MODULE__, {:adopt, agent_id})
+    if SystemsRuntime.Proc.whereis(__MODULE__),
+      do: SystemsRuntime.Server.cast(__MODULE__, {:adopt, agent_id})
+
     :ok
   end
 
   @doc "Stop and unload every object of the Agent on this node. Synchronous."
   @spec release(String.t()) :: :ok
-  def release(agent_id) when is_binary(agent_id) do
-    if Process.whereis(__MODULE__),
-      do: GenServer.call(__MODULE__, {:release, agent_id, nil}, @release_timeout_ms)
-
-    :ok
-  catch
-    :exit, _ -> :ok
-  end
+  def release(agent_id) when is_binary(agent_id), do: release_here(agent_id, nil)
 
   @doc "Stop and unload one Loop's object on this node. Synchronous."
   @spec release_loop(String.t(), String.t()) :: :ok
-  def release_loop(agent_id, loop_id) when is_binary(agent_id) and is_binary(loop_id) do
-    if Process.whereis(__MODULE__),
-      do: GenServer.call(__MODULE__, {:release, agent_id, loop_id}, @release_timeout_ms)
+  def release_loop(agent_id, loop_id) when is_binary(agent_id) and is_binary(loop_id),
+    do: release_here(agent_id, loop_id)
 
-    :ok
+  # The Reconciler releases inline when its own work leads here (a sweep
+  # marking a Loop undeliverable): a call to itself could not be answered.
+  defp release_here(agent_id, loop_id) do
+    case SystemsRuntime.Proc.whereis(__MODULE__) do
+      nil ->
+        :ok
+
+      reconciler ->
+        if reconciler == SystemsRuntime.Proc.self(),
+          do: do_release(agent_id, loop_id),
+          else: SystemsClock.call(__MODULE__, {:release, agent_id, loop_id}, @release_timeout_ms)
+
+        :ok
+    end
   catch
     :exit, _ -> :ok
   end
@@ -81,7 +96,7 @@ defmodule SalixAgent.Loops.Reconciler do
   @doc "Node-wide object capacity."
   @spec max_objects() :: pos_integer()
   def max_objects,
-    do: Application.get_env(:salix_agent, :spinfoam_max_objects, @default_max_objects)
+    do: SystemsRuntime.get_env(:salix_agent, :spinfoam_max_objects, @default_max_objects)
 
   @doc """
   Settle a terminal object. Called by the Host in a task; the Host has
@@ -123,8 +138,17 @@ defmodule SalixAgent.Loops.Reconciler do
 
   @impl true
   def init(_opts) do
-    Process.send_after(self(), :sweep, @sweep_ms)
-    {:ok, %{inflight: %{}, pending: MapSet.new(), monitors: %{}, recovery_cursor: nil}}
+    schedule_sweep()
+
+    {:ok,
+     %{
+       inflight: %{},
+       pending: MapSet.new(),
+       monitors: %{},
+       recovery_cursor: nil,
+       settle_cursor: nil,
+       settle_task: nil
+     }}
   end
 
   @impl true
@@ -146,7 +170,7 @@ defmodule SalixAgent.Loops.Reconciler do
 
   @impl true
   def handle_info(:sweep, state) do
-    Process.send_after(self(), :sweep, @sweep_ms)
+    schedule_sweep()
 
     # Objects of an Agent this node no longer holds must go; every locally
     # served Agent gets an idempotent adoption pass.
@@ -159,11 +183,20 @@ defmodule SalixAgent.Loops.Reconciler do
 
     local = local_agents()
     state = %{state | recovery_cursor: recover_stranded(local, state.recovery_cursor)}
+    state = start_task_sweep(state)
     {:noreply, Enum.reduce(local, state, &start_adoption(&2, &1))}
   end
 
-  def handle_info({ref, _result}, state) when is_reference(ref) do
-    Process.demonitor(ref, [:flush])
+  def handle_info({ref, cursor}, %{settle_task: ref} = state) do
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
+    {:noreply, %{state | settle_task: nil, settle_cursor: cursor}}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{settle_task: ref} = state),
+    do: {:noreply, %{state | settle_task: nil}}
+
+  def handle_info({ref, _result}, state) when SystemsRuntime.Proc.is_ref(ref) do
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
     {:noreply, finish_adoption(state, ref)}
   end
 
@@ -184,13 +217,36 @@ defmodule SalixAgent.Loops.Reconciler do
 
   def handle_info(_message, state), do: {:noreply, state}
 
+  # The periodic pass. With `config :salix_agent, loops_sweep: false` (the test
+  # configuration) a pass runs only when a `:sweep` message asks for one.
+  defp schedule_sweep do
+    if SystemsRuntime.get_env(:salix_agent, :loops_sweep, true),
+      do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :sweep, @sweep_ms)
+  end
+
+  defp start_task_sweep(%{settle_task: nil} = state) do
+    task =
+      SystemsRuntime.TaskSupervisor.async_nolink(SalixAgent.TaskSup, fn ->
+        :ok = Loops.end_past_due()
+        TaskOwner.reconcile_settles(state.settle_cursor)
+      end)
+
+    %{state | settle_task: task.ref}
+  end
+
+  defp start_task_sweep(state), do: state
+
   # ---- adoption -----------------------------------------------------------------
 
   defp start_adoption(state, agent_id) do
     if Enum.any?(state.inflight, fn {_ref, id} -> id == agent_id end) do
       %{state | pending: MapSet.put(state.pending, agent_id)}
     else
-      task = Task.Supervisor.async_nolink(SalixAgent.TaskSup, fn -> do_adopt(agent_id) end)
+      task =
+        SystemsRuntime.TaskSupervisor.async_nolink(SalixAgent.TaskSup, fn ->
+          do_adopt(agent_id)
+        end)
+
       state = monitor_server(state, agent_id)
       %{state | inflight: Map.put(state.inflight, task.ref, agent_id)}
     end
@@ -210,9 +266,9 @@ defmodule SalixAgent.Loops.Reconciler do
   defp monitor_server(state, agent_id) do
     already = Enum.any?(state.monitors, fn {_ref, id} -> id == agent_id end)
 
-    case {already, Registry.lookup(SalixAgent.Registry, agent_id)} do
+    case {already, SystemsRuntime.Registry.lookup(SalixAgent.Registry, agent_id)} do
       {false, [{pid, _}]} ->
-        ref = Process.monitor(pid)
+        ref = SystemsRuntime.Proc.monitor(pid)
         %{state | monitors: Map.put(state.monitors, ref, agent_id)}
 
       _ ->
@@ -221,7 +277,7 @@ defmodule SalixAgent.Loops.Reconciler do
   end
 
   defp do_adopt(agent_id) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     outcome =
       with {:ok, _epoch} <- owned?(agent_id),
@@ -267,7 +323,7 @@ defmodule SalixAgent.Loops.Reconciler do
           :skipped
       end
 
-    emit("loop_reconcile", reconcile_outcome(outcome), System.monotonic_time() - started)
+    emit("loop_reconcile", reconcile_outcome(outcome), SystemsClock.monotonic_time() - started)
     outcome
   end
 
@@ -297,8 +353,9 @@ defmodule SalixAgent.Loops.Reconciler do
         ref = loop_ref(record)
         config = load_config(record)
         # No per-Loop grants: every object is loaded with the whole allowlist
-        # and the tool dispatch applies the Agent's own disclosure per call.
-        capabilities = Capabilities.load_capabilities()
+        # and the tools its product binding pins; the tool dispatch applies the
+        # Agent's own disclosure per call.
+        capabilities = Capabilities.load_capabilities(record)
 
         case Loops.artifact(record) do
           {:ok, elf} ->
@@ -349,7 +406,8 @@ defmodule SalixAgent.Loops.Reconciler do
     |> Map.put("state", record["checkpoint"])
   end
 
-  defp loop_ref(record) do
+  @doc false
+  def loop_ref(record) do
     %{
       loop_id: record["id"],
       incarnation: record["incarnation"],
@@ -357,6 +415,7 @@ defmodule SalixAgent.Loops.Reconciler do
       session_id: record["session_id"],
       tenant_id: record["tenant_id"],
       group_id: record["group_id"],
+      task_conversation_id: record["task_conversation_id"],
       name: record["name"],
       elf_path: record["elf_path"],
       ifc: record["ifc"] || %{}
@@ -410,7 +469,7 @@ defmodule SalixAgent.Loops.Reconciler do
   end
 
   defp stranded_page,
-    do: Application.get_env(:salix_agent, :loops_recovery_page, @default_stranded_page)
+    do: SystemsRuntime.get_env(:salix_agent, :loops_recovery_page, @default_stranded_page)
 
   defp restart_owner(agent_id, loops) do
     case SalixAgent.Placement.ensure_started(agent_id, create: false) do
@@ -434,9 +493,9 @@ defmodule SalixAgent.Loops.Reconciler do
   # Agents with a live Server on this node. Registry keys for Servers are the
   # bare agent id; session actors register under tuples.
   defp local_agents do
-    if Process.whereis(SalixAgent.Registry) do
+    if SystemsRuntime.Proc.whereis(SalixAgent.Registry) do
       SalixAgent.Registry
-      |> Registry.select([{{:"$1", :_, :_}, [{:is_binary, :"$1"}], [:"$1"]}])
+      |> SystemsRuntime.Registry.select([{{:"$1", :_, :_}, [{:is_binary, :"$1"}], [:"$1"]}])
       |> Enum.uniq()
     else
       []

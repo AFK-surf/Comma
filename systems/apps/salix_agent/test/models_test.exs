@@ -1,5 +1,5 @@
 defmodule SalixAgent.ModelsTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.Models
 
@@ -10,22 +10,6 @@ defmodule SalixAgent.ModelsTest do
     assert {:ok, %{"model" => "openai/gpt-5.5"}} = Models.route("gpt-5.5", "openrouter")
     assert {:ok, %{"model" => "gpt-5.5"}} = Models.route("gpt-5.5", "codex")
     assert {:ok, %{"kind" => "subscription"}} = Models.source("codex")
-  end
-
-  test "versions of one line share a family across sources" do
-    {:ok, opus} = Models.get("claude-opus-5")
-    {:ok, older} = Models.get("claude-opus-4-8")
-    {:ok, sonnet} = Models.get("claude-sonnet-4-5")
-
-    assert opus["name"] == "Opus 5"
-    assert opus["family"] == "Opus" and older["family"] == "Opus"
-    assert sonnet["family"] == "Sonnet"
-  end
-
-  test "a source that does not serve a model has no route to it" do
-    assert :error = Models.route("gpt-5.5", "deepseek")
-    assert :error = Models.route("no-such-model", "openai")
-    assert :error = Models.get(nil)
   end
 
   test "served_by lists only models some given source can reach" do

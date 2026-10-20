@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shared spacing token: DESIGN §4 xl. -->
+    <dimen name="spacing_xl">16dp</dimen>
+    <!-- Shared spacing token: DESIGN §4 3xl. -->
+    <dimen name="spacing_3xl">24dp</dimen>
+    <dimen name="spacing_6xl">48dp</dimen>
+    <dimen name="screen_gutter">20dp</dimen>
+    <dimen name="card_corner">24dp</dimen>
+    <!-- DESIGN §4 圆角 5xl：浮在页面上的菜单卡片（附件菜单）。 -->
+    <dimen name="radius_5xl">32dp</dimen>
+    <!-- 时间线底部渐隐的长度，也是它自己淡出所用的滚动距离。48dp 约等于一行气泡的高度：
+         内容在碰到 composer 之前正好化完一整行，再长就吃掉阅读区。 -->
+    <dimen name="chat_edge_feather">48dp</dimen>
+    <!-- 侧栏：主流做法是留出右侧一条主界面可见，宽度封顶而不是按比例铺满 -->
+    <dimen name="drawer_width">320dp</dimen>
+    <!-- 建议 chip 之间的间距。行首尾的留白由 ScrollContainer 的 screen_gutter 负责，
+         最后一个 chip 的 marginEnd 在代码里清掉，两端才一样宽。 -->
+    <dimen name="suggestion_chip_gap">10dp</dimen>
+    <!-- 建议行贴着输入条坐，这是两者之间的呼吸；也是标题组与建议行之间的最小间隔。 -->
+    <dimen name="empty_state_dock_gap">16dp</dimen>
+    <!-- 点阵和它下面的间距。视口不够高时第一个被丢掉的就是这一块，控制器要按尺寸把它加回去
+         判断，所以写在这里而不是布局里。间距必须挂在点阵自己的 marginBottom 上——挂在标题的
+         marginTop 上的话，点阵 GONE 之后它还在，回填就会多算这 14dp。 -->
+    <dimen name="empty_glyph_height">70dp</dimen>
+    <dimen name="empty_glyph_gap">14dp</dimen>
+</resources>

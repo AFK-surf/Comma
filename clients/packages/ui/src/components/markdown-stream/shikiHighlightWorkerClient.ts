@@ -1,4 +1,7 @@
-import type { ShikiHighlightResult } from "./shikiHighlightTokens";
+import {
+  renderCodeHighlightTokens,
+  type ShikiHighlightResult,
+} from "./shikiHighlightTokens";
 
 type HighlightResponse =
   | { result: ShikiHighlightResult; id: number; ok: true }
@@ -60,9 +63,7 @@ export function renderCodeHighlightInWorker(
   if (!worker) {
     // Environments without module workers use the same token renderer and
     // React-owned DOM. A failed request is not retried here.
-    return import("./shikiHighlightTokens").then(({ renderCodeHighlightTokens }) =>
-      renderCodeHighlightTokens(code, language, theme)
-    );
+    return renderCodeHighlightTokens(code, language, theme);
   }
   const id = nextRequestId++;
   return new Promise<ShikiHighlightResult>((resolve, reject) => {

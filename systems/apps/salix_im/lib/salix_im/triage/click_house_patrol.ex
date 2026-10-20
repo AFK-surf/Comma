@@ -182,6 +182,9 @@ defmodule SalixIM.Triage.ClickHousePatrol do
     root_thread_ts = if row["thread_ts"] == "", do: row["message_ts"], else: row["thread_ts"]
     own_actor_ids = [authority["app_id"], authority["bot_user_id"], authority["bot_id"]]
     actor_kind = triage_actor_kind(row["actor_kind"])
+    # Slack keeps whitespace the author typed around the body (a pasted link
+    # often ends in a space); the receipt carries the canonical trimmed body.
+    text = if is_binary(row["text"]), do: String.trim(row["text"]), else: row["text"]
 
     directed_agent? =
       actor_kind == "agent" and mentions_bot?(row["text"], authority["bot_user_id"])
@@ -197,7 +200,7 @@ defmodule SalixIM.Triage.ClickHousePatrol do
 
       row["deleted"] != false or is_nil(actor_kind) or
         row["actor_id"] in own_actor_ids or row["subtype"] not in @body_subtypes or
-        not canonical_nonblank?(row["actor_id"]) or not canonical_nonblank?(row["text"]) or
+        not canonical_nonblank?(row["actor_id"]) or not canonical_nonblank?(text) or
         (actor_kind == "human" and mentions_bot?(row["text"], authority["bot_user_id"])) or
           (actor_kind == "agent" and not directed_agent? and root_thread_ts != row["message_ts"]) ->
         :ineligible
@@ -220,7 +223,7 @@ defmodule SalixIM.Triage.ClickHousePatrol do
            "ingest_at" => row["ingest_at"],
            "actor_id" => row["actor_id"],
            "actor_kind" => actor_kind,
-           "text" => row["text"]
+           "text" => text
          }}
     end
   end
@@ -411,7 +414,7 @@ defmodule SalixIM.Triage.ClickHousePatrol do
   defp valid_iso8601?(_value), do: false
 
   defp module_exports?(module, exports) when is_atom(module) do
-    Code.ensure_loaded?(module) and
+    SystemsRuntime.Proc.ensure_loaded?(module) and
       Enum.all?(exports, fn {function, arity} -> function_exported?(module, function, arity) end)
   end
 

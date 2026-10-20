@@ -1,5 +1,7 @@
 defmodule CommaWeb.ComputeRecoveryHTTPTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
   import Ecto.Query
   import Plug.Conn
   import Plug.Test
@@ -8,22 +10,22 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
 
   setup do
     comma_owner = CommaWeb.TestRepoSandbox.start_owner!(:multi_connection)
-    previous = Application.get_env(:salix_web, :public_base_url)
+    previous = SystemsRuntime.get_env(:salix_web, :public_base_url)
 
     previous_bindings =
-      Application.get_env(:salix_store, :agent_vmm_environment_scoped_bindings_enabled)
+      SystemsRuntime.get_env(:salix_store, :agent_vmm_environment_scoped_bindings_enabled)
 
-    Application.put_env(:salix_web, :public_base_url, "https://api.example.test")
-    Application.put_env(:salix_store, :agent_vmm_environment_scoped_bindings_enabled, true)
+    SystemsRuntime.put_env(:salix_web, :public_base_url, "https://api.example.test")
+    SystemsRuntime.put_env(:salix_store, :agent_vmm_environment_scoped_bindings_enabled, true)
 
     Repo.query!(
       "TRUNCATE agent_vmm_install_operations, compute_provider_bindings, compute_environments, compute_pools, agent_vmm_registrations CASCADE"
     )
 
     on_exit(fn ->
-      Application.put_env(:salix_web, :public_base_url, previous)
+      SystemsRuntime.put_env(:salix_web, :public_base_url, previous)
 
-      Application.put_env(
+      SystemsRuntime.put_env(
         :salix_store,
         :agent_vmm_environment_scoped_bindings_enabled,
         previous_bindings
@@ -36,7 +38,7 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
   end
 
   test "a queued old HTTP mutation loses authority when the new Session consumes machine proof" do
-    suffix = Ecto.UUID.generate()
+    suffix = SystemsRuntime.Proc.uuid()
 
     assert {:ok, user} =
              Comma.Accounts.create_user(%{"email" => "recovery-#{suffix}@example.test"})
@@ -74,7 +76,7 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
     operation_id = descriptor["operation_id"]
 
     {<<4, x::binary-size(32), y::binary-size(32)>>, private} =
-      :crypto.generate_key(:ecdh, :secp256r1)
+      SystemsRuntime.Proc.generate_key(:ecdh, :secp256r1)
 
     identity = %{
       device_id: "host-#{suffix}",
@@ -219,7 +221,75 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
     assert [%{"phase" => "action_required"}] = Jason.decode!(invalid_phase.resp_body)["workloads"]
 
     Repo.update_all(from(b in SalixStore.Compute.ProviderBinding, where: b.id == ^binding.id),
-      set: [observation: %{}]
+      set: [status: "available", observation: %{"connection_epoch" => "7"}]
+    )
+
+    Repo.update_all(from(w in SalixStore.Compute.Workload, where: w.id == ^"workload-#{suffix}"),
+      set: [observed_state: "ready"]
+    )
+
+    Repo.update_all(from(a in SalixStore.Compute.Allocation, where: a.id == ^allocation.id),
+      set: [
+        status: "ready",
+        provider_observation: %{
+          "container_status" => "running",
+          "runtime_verified_host_epoch" => "7"
+        }
+      ]
+    )
+
+    running_shell =
+      http(:post, "#{resource_path}/local-workloads", new["token"], %{"target" => target})
+
+    assert [%{"phase" => "ready"}] = Jason.decode!(running_shell.resp_body)["workloads"]
+
+    Repo.update_all(from(b in SalixStore.Compute.ProviderBinding, where: b.id == ^binding.id),
+      set: [status: "unavailable"]
+    )
+
+    disconnected_shell =
+      http(:post, "#{resource_path}/local-workloads", new["token"], %{"target" => target})
+
+    assert [%{"phase" => "waiting_connection"}] =
+             Jason.decode!(disconnected_shell.resp_body)["workloads"]
+
+    # A bounded reconnect inventory may omit this allocation and retain its old facts.
+    Repo.update_all(from(b in SalixStore.Compute.ProviderBinding, where: b.id == ^binding.id),
+      set: [
+        status: "available",
+        observation: %{"connection_epoch" => "8", "inventory_snapshot_bounded" => true}
+      ]
+    )
+
+    stale_shell =
+      http(:post, "#{resource_path}/local-workloads", new["token"], %{"target" => target})
+
+    assert [%{"phase" => "starting"}] = Jason.decode!(stale_shell.resp_body)["workloads"]
+
+    Repo.update_all(from(a in SalixStore.Compute.Allocation, where: a.id == ^allocation.id),
+      set: [
+        provider_observation: %{
+          "container_status" => "running",
+          "runtime_verified_host_epoch" => "8"
+        }
+      ]
+    )
+
+    refreshed_shell =
+      http(:post, "#{resource_path}/local-workloads", new["token"], %{"target" => target})
+
+    assert [%{"phase" => "ready"}] = Jason.decode!(refreshed_shell.resp_body)["workloads"]
+
+    Repo.update_all(from(b in SalixStore.Compute.ProviderBinding, where: b.id == ^binding.id),
+      set: [status: "available", observation: %{}]
+    )
+
+    Repo.update_all(from(w in SalixStore.Compute.Workload, where: w.id == ^"workload-#{suffix}"),
+      set: [observed_state: "pending"]
+    )
+
+    Repo.update_all(from(a in SalixStore.Compute.Allocation, where: a.id == ^allocation.id),
+      set: [status: "pending", provider_observation: %{}]
     )
 
     assert {:ok, outsider} =
@@ -235,34 +305,197 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
     assert denied.status == 403
     refute denied.resp_body =~ "workload-#{suffix}"
 
-    parent = self()
+    workload_path = "/v1/comma/workspaces/#{workspace.id}/compute/workloads/workload-#{suffix}"
+    assert http(:get, workload_path, outsider_session["token"]).status == 403
+    read = http(:get, workload_path, new["token"])
+    assert read.status == 200
+    assert Jason.decode!(read.resp_body)["workload"]["name"] == "Shell"
+
+    assert Jason.decode!(read.resp_body)["workload"]["location"]["registration_id"] ==
+             original.registration_id
+
+    renamed =
+      http(:patch, workload_path, new["token"], %{"name" => " Build Shell ", "revision" => 1})
+
+    assert renamed.status == 200
+    assert Jason.decode!(renamed.resp_body)["workload"]["name"] == "Build Shell"
+
+    assert http(:patch, workload_path, new["token"], %{"name" => "lost", "revision" => 1}).status ==
+             409
+
+    assert http(:patch, workload_path, new["token"], %{"name" => "", "revision" => 2}).status ==
+             400
+
+    assert Jason.decode!(http(:get, workload_path, new["token"]).resp_body)["workload"]["name"] ==
+             "Build Shell"
+
+    assert http(:post, "#{workload_path}/retry", outsider_session["token"], %{
+             "revision" => 2,
+             "generation" => 1
+           }).status == 403
+
+    Repo.update_all(from(w in SalixStore.Compute.Workload, where: w.id == ^"workload-#{suffix}"),
+      set: [observed_state: "failed"]
+    )
+
+    retried =
+      http(:post, "#{workload_path}/retry", new["token"], %{
+        "revision" => 2,
+        "generation" => 1
+      })
+
+    assert retried.status == 202
+    assert Jason.decode!(retried.resp_body)["workload"]["id"] == "workload-#{suffix}"
+    assert Jason.decode!(retried.resp_body)["workload"]["revision"] == 3
+
+    assert Repo.get!(SalixStore.Compute.Workload, "workload-#{suffix}").allocation_id ==
+             allocation.id
+
+    assert http(:post, "#{workload_path}/retry", new["token"], %{
+             "revision" => 2,
+             "generation" => 1
+           }).status == 409
+
+    assert http(:post, "#{workload_path}/deletion", outsider_session["token"], %{
+             "request_id" => "delete",
+             "revision" => 3,
+             "generation" => 1
+           }).status == 403
+
+    deletion =
+      http(:post, "#{workload_path}/deletion", new["token"], %{
+        "request_id" => "delete",
+        "revision" => 3,
+        "generation" => 1
+      })
+
+    assert deletion.status == 202
+    assert Jason.decode!(deletion.resp_body)["workload"]["phase"] == "deleting"
+
+    assert http(:post, "#{workload_path}/deletion", new["token"], %{
+             "request_id" => "delete",
+             "revision" => 3,
+             "generation" => 1
+           }).status == 202
+
+    assert Jason.decode!(http(:get, workload_path, new["token"]).resp_body)["workload"][
+             "deletion"
+           ]["request_id"] == "delete"
+
+    Repo.update_all(from(a in SalixStore.Compute.Allocation, where: a.id == ^allocation.id),
+      set: [status: "ready", provider_observation: %{"allocation_revision" => 7}]
+    )
+
+    assert {:ok, %{command: disposal}} =
+             SalixStore.ComputeWorkloadDeletion.advance(
+               SalixStore.Repo.get!(SalixStore.Compute.Allocation, allocation.id),
+               SalixStore.Repo.get!(SalixStore.Compute.Workload, "workload-#{suffix}")
+             )
+
+    waiting = Jason.decode!(http(:get, workload_path, new["token"]).resp_body)["workload"]
+    assert waiting["phase"] == "waiting_connection"
+    assert waiting["deletion"]["error"] == "original_device_offline"
+    assert waiting["actions"]["delete"] == false
+    assert disposal.allocation_id == allocation.id
+
+    creation_path = "/v1/comma/workspaces/#{workspace.id}/compute/workloads"
+
+    creation_attrs = %{
+      "environment_id" => original.environment_id,
+      "kind" => "shell",
+      "name" => "Named Shell",
+      "request_id" => "named-#{suffix}"
+    }
+
+    created = http(:post, creation_path, new["token"], creation_attrs)
+    assert created.status == 201
+    same = http(:post, creation_path, new["token"], creation_attrs)
+    assert same.status == 201
+
+    assert Jason.decode!(same.resp_body)["workload"]["id"] ==
+             Jason.decode!(created.resp_body)["workload"]["id"]
+
+    assert http(:post, creation_path, new["token"], Map.put(creation_attrs, "name", "different")).status ==
+             409
+
+    created_id = Jason.decode!(created.resp_body)["workload"]["id"]
+    now = SystemsClock.utc_now()
+
+    Repo.insert_all(
+      SalixStore.Compute.ExternalWorkerBinding,
+      for index <- 1..33 do
+        %{
+          id: "binding-use-#{suffix}-#{index}",
+          tenant_id: original.tenant_id,
+          agent_id: "agent-#{index}",
+          source_kind: "compute_workload",
+          workload_id: created_id,
+          status: "active",
+          binding_revision: 1,
+          runtime_spec: %{},
+          created_at: now,
+          updated_at: now
+        }
+      end
+    )
+
+    details = http(:get, "#{creation_path}/#{created_id}", new["token"])
+    assert details.status == 200
+    detail = Jason.decode!(details.resp_body)["workload"]
+    assert detail["runtime_policy"]["image"] =~ "comma.local/runtime/shell@"
+    assert detail["runtime_policy"]["entrypoint"] == []
+    assert detail["runtime_policy"]["resources"]["pid_max"] == 512
+    refute Map.has_key?(detail["runtime_policy"], "env")
+    assert length(detail["uses"]) == 32
+    assert detail["uses_truncated"]
+    assert Enum.all?(detail["uses"], &(&1["kind"] == "agent"))
+    refute detail["actions"]["delete"]
+    assert http(:get, "#{creation_path}/#{created_id}", outsider_session["token"]).status == 403
+
+    # A retired External Worker's leftover bindings neither own nor block its Workload.
+    Repo.update_all(from(w in SalixStore.Compute.Workload, where: w.id == ^created_id),
+      set: [kind: "external_worker", template_key: "external.codex"]
+    )
+
+    retired =
+      Jason.decode!(http(:get, "#{creation_path}/#{created_id}", new["token"]).resp_body)[
+        "workload"
+      ]
+
+    assert retired["uses"] == []
+    assert retired["owner"] == nil
+    assert retired["actions"]["delete"]
+
+    parent = SystemsRuntime.Proc.self()
 
     blocker =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Repo.transaction(fn ->
           Repo.one!(from(o in Operation, where: o.id == ^operation_id, lock: "FOR UPDATE"))
-          send(parent, :locked)
-          receive do: (:release -> :ok)
+          SystemsRuntime.Proc.send(parent, :locked)
+          SystemsRuntime.Proc.receive(do: (:release -> :ok))
         end)
       end)
 
     assert_receive :locked
 
     consume =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         http(:post, "#{path}/#{operation_id}/recovery/consume", new["token"], %{"proof" => proof})
       end)
 
     wait_for_owner_waiters(1)
 
     old_mutation =
-      Task.async(fn -> http(:post, "#{path}/#{operation_id}/disable", old["token"]) end)
+      SystemsRuntime.Task.async(fn ->
+        http(:post, "#{path}/#{operation_id}/disable", old["token"])
+      end)
 
     wait_for_owner_waiters(2)
-    send(blocker.pid, :release)
-    assert {:ok, :ok} = Task.await(blocker)
-    assert Task.await(consume).status == 200
-    stale = Task.await(old_mutation)
+    SystemsRuntime.Proc.send(blocker.pid, :release)
+    assert {:ok, :ok} = SystemsRuntime.Task.await(blocker, :infinity)
+    assert SystemsRuntime.Task.await(consume, :infinity).status == 200
+    stale = SystemsRuntime.Task.await(old_mutation, :infinity)
     assert stale.status == 409
     assert Jason.decode!(stale.resp_body)["error"] == "authorization_changed"
     recovered = Repo.get!(Operation, operation_id)
@@ -283,7 +516,7 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
            }).status == 409
   end
 
-  defp wait_for_owner_waiters(expected, attempts \\ 100)
+  defp wait_for_owner_waiters(expected, attempts \\ 3000)
   defp wait_for_owner_waiters(_, 0), do: flunk("HTTP requests did not reach the owner row lock")
 
   defp wait_for_owner_waiters(expected, attempts) do
@@ -293,7 +526,7 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
       ).rows
 
     if count < expected do
-      Process.sleep(10)
+      SystemsRuntime.Proc.sleep(10)
       wait_for_owner_waiters(expected, attempts - 1)
     end
   end
@@ -313,7 +546,7 @@ defmodule CommaWeb.ComputeRecoveryHTTPTest do
 
   defp proof(identity, private, nonce, wire) do
     <<0x30, _size, 0x02, r_size, rest::binary>> =
-      :crypto.sign(:ecdsa, :sha256, wire, [private, :secp256r1])
+      SystemsRuntime.Proc.sign(:ecdsa, :sha256, wire, [private, :secp256r1])
 
     <<r::binary-size(^r_size), 0x02, s_size, s::binary-size(s_size)>> = rest
     r = :binary.decode_unsigned(r)

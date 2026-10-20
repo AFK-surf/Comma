@@ -64,7 +64,7 @@ defmodule BridgeForTeams.OrgCreationInvites do
 
   def redeem_invite_code(code, attrs, opts) when is_binary(code) do
     attrs = normalize_attrs(attrs)
-    request_id = Keyword.get(opts, :request_id, Ecto.UUID.generate())
+    request_id = Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid())
 
     Repo.transaction(fn ->
       with {:ok, invite} <- fetch_redeemable_invite(code),
@@ -171,7 +171,7 @@ defmodule BridgeForTeams.OrgCreationInvites do
         resource_id: org.id,
         resource_label: org.name,
         result: "ok",
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         metadata: %{
           "invite_id" => invite.id,
           "org_id" => org.id,
@@ -224,7 +224,7 @@ defmodule BridgeForTeams.OrgCreationInvites do
   end
 
   defp generate_code do
-    "bft_" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+    "bft_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(18), padding: false)
   end
 
   defp code_hash(code), do: code |> normalize_code() |> Sessions.hash_token()
@@ -246,5 +246,5 @@ defmodule BridgeForTeams.OrgCreationInvites do
 
   defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
-  defp now, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+  defp now, do: SystemsClock.utc_now() |> DateTime.truncate(:microsecond)
 end

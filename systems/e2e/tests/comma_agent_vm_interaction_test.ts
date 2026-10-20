@@ -1,10 +1,9 @@
+import { setDefaultTimeout, test } from "bun:test";
 import { runAgentVmInteraction } from "../helpers/agent_vm_interaction.ts";
 
-Deno.test({
-  name: "Comma agent turn reaches Cloudflare VM through env.exec",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn() {
-    await runAgentVmInteraction("comma");
-  },
+// Builds and subprocesses here take longer than the five-second default.
+setDefaultTimeout(30 * 60_000);
+
+test("Comma agent turn reaches Cloudflare VM through env.exec", async () => {
+  await runAgentVmInteraction("comma");
 });

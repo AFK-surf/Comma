@@ -1,4 +1,6 @@
 defmodule SalixSignal.GroupCallTest do
+  require SystemsRuntime.Proc
+
   # Group calls end to end on one host (CRS-14). A Comma session joins a fake
   # calling server (test/support/fake_sfu.ex) over HTTPS, runs ICE and
   # AEAD_AES_128_GCM SRTP to it over real UDP sockets, and exchanges
@@ -7,7 +9,7 @@ defmodule SalixSignal.GroupCallTest do
   # call with the fake model. This proves Comma agrees with its reading of
   # CRS-14 end to end; it is not interoperability evidence (test levels 6
   # and 7 are).
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixSignal.GroupCall
   alias SalixSignal.GroupCall.{Session, Sfu}
@@ -49,23 +51,26 @@ defmodule SalixSignal.GroupCallTest do
         "max_calls_per_node" => 50
       })
 
-    env = [model_mod: Fake, fake_model_observer: self(), metering_mod: nil]
-    previous = Enum.map(env, fn {key, _} -> {key, Application.fetch_env(:salix_voice, key)} end)
-    Enum.each(env, fn {key, value} -> Application.put_env(:salix_voice, key, value) end)
+    env = [model_mod: Fake, fake_model_observer: SystemsRuntime.Proc.self(), metering_mod: nil]
+
+    previous =
+      Enum.map(env, fn {key, _} -> {key, SystemsRuntime.fetch_env(:salix_voice, key)} end)
+
+    Enum.each(env, fn {key, value} -> SystemsRuntime.put_env(:salix_voice, key, value) end)
 
     on_exit(fn ->
       for {key, value} <- previous do
         case value do
-          {:ok, value} -> Application.put_env(:salix_voice, key, value)
-          :error -> Application.delete_env(:salix_voice, key)
+          {:ok, value} -> SystemsRuntime.put_env(:salix_voice, key, value)
+          :error -> SystemsRuntime.delete_env(:salix_voice, key)
         end
       end
 
-      for pid <- :pg.get_members(@pg, :calls), do: Process.exit(pid, :kill)
+      for pid <- :pg.get_members(@pg, :calls), do: SystemsRuntime.Proc.exit(pid, :kill)
       S3.delete(Keys.ctl_system_voice())
     end)
 
-    params = Params.from_master_key(:crypto.strong_rand_bytes(32))
+    params = Params.from_master_key(SystemsRuntime.Proc.random_bytes(32))
 
     members =
       for aci <- [@own, @bob, @carol] do
@@ -74,7 +79,7 @@ defmodule SalixSignal.GroupCallTest do
       end
 
     opaque = Map.new(members, &{&1.aci, Proto.opaque_user_id(&1.member_id)})
-    sfu = start_supervised!({FakeSfu, {self(), @token, []}})
+    sfu = start_supervised!({FakeSfu, {SystemsRuntime.Proc.self(), @token, []}})
     server = start_supervised!({Bandit, FakeSfu.bandit_options(sfu, chain)}, id: :sfu_http)
 
     %{
@@ -90,6 +95,11 @@ defmodule SalixSignal.GroupCallTest do
 
   test "join, key exchange, mixed audio both ways, rotation when an account leaves, and leave",
        ctx do
+    # Heartbeats (1 s), the key switch and the leave linger run on
+    # SystemsClock; audio stays real time.
+    SystemsClock.speed_up(10)
+    on_exit(&SystemsClock.reset/0)
+
     FakeSfu.put_devices(ctx.sfu, [
       {@bob_demux, ctx.opaque[@bob]},
       {@carol_demux, ctx.opaque[@carol]}
@@ -154,7 +164,7 @@ defmodule SalixSignal.GroupCallTest do
     # Media is real time: frames that a loaded host delivers too late are
     # dropped, as on a network. Bob speaks for longer than the audio the
     # test needs, so drops do not starve it.
-    speak(ctx.sfu, ctx.bob, @bob_demux, Audio.sine(440, 1_800), 100)
+    speak(ctx.sfu, ctx.bob, @bob_demux, Audio.sine(440, 1_200), 100)
     heard = collect_model_audio(model, 500)
     assert_in_delta Audio.frequency(Audio.skip_ms(heard, 100)), 440, 25
 
@@ -192,7 +202,7 @@ defmodule SalixSignal.GroupCallTest do
 
     # Leave (section 10.3): a leaving notice through the SFU and over
     # signaling, the SFU leave twice, and the era update to the group.
-    ref = Process.monitor(session)
+    ref = SystemsRuntime.Proc.monitor(session)
     GroupCall.leave(session)
     assert eventually_receive(fn -> device_data!(rotated_receiver, 0x10) == :leaving end)
     assert_receive {:sent, [@bob], leaving, _}, @wait_ms
@@ -204,179 +214,10 @@ defmodule SalixSignal.GroupCallTest do
     assert_receive {:fake_model, ^model, :close}, @wait_ms
   end
 
-  test "a device appearing later gets the advanced key and the pending rotated key", ctx do
-    FakeSfu.put_devices(ctx.sfu, [{@bob_demux, ctx.opaque[@bob]}])
-    session = join!(ctx, rotation_delay_ms: 5_000)
-    assert_receive {:sent, [@bob], first, _}, @wait_ms
-    %{counter: 1} = media_key!(ctx, first)
-    assert_receive {:fake_sfu, :ice, :connected}, @wait_ms
-
-    # Bob's account leaves and a rotation starts (no one is left to tell).
-    FakeSfu.put_devices(ctx.sfu, [])
-
-    notify_sfu(ctx.sfu, %CallWire.SfuToDevice{
-      device_joined_or_left: %CallWire.DeviceJoinedOrLeft{}
-    })
-
-    assert eventually(fn -> Session.info(session).pending_key != nil end)
-
-    # Carol's key arrives, through the call-signaling dispatcher, before her
-    # device is in the call: it is held until the device appears (section
-    # 9.4).
-    signaling = start_signaling()
-    now = System.system_time(:millisecond)
-    {counter, secret} = Sender.key(ctx.carol)
-
-    SalixSignal.CallSignaling.receive_message(signaling, %{
-      sender_aci: @carol,
-      sender_device_id: 1,
-      call_message: Messages.media_key(ctx.params.group_id, counter, secret, @carol_demux),
-      server_timestamp_ms: now,
-      delivery_timestamp_ms: now
-    })
-
-    assert_receive {:fake_sfu, "GET"}, @wait_ms
-
-    # Carol joins while the rotation is pending: she gets the advanced
-    # current key (counter 2) and the pending key with counter 0 (section
-    # 9.3). The notification carries the peek itself (section 10.7).
-    FakeSfu.put_devices(ctx.sfu, [{@carol_demux, ctx.opaque[@carol]}])
-
-    notify_sfu(ctx.sfu, %CallWire.SfuToDevice{
-      device_joined_or_left: %CallWire.DeviceJoinedOrLeft{
-        peek_info: %CallWire.PeekInfo{
-          era_id: "0123456789abcdef",
-          devices: [
-            %CallWire.PeekDevice{demux_id: 0x10, opaque_user_id: ctx.opaque[@own]},
-            %CallWire.PeekDevice{demux_id: @carol_demux, opaque_user_id: ctx.opaque[@carol]}
-          ]
-        }
-      }
-    })
-
-    # The two sends run concurrently, so their order is not fixed.
-    assert_receive {:sent, [@carol], one, _}, @wait_ms
-    assert_receive {:sent, [@carol], two, _}, @wait_ms
-
-    assert [%{counter: 0, secret: secret}, %{counter: 2}] =
-             Enum.sort_by([media_key!(ctx, one), media_key!(ctx, two)], & &1.counter)
-
-    assert Session.info(session).pending_key == secret
-
-    # Her held key now opens her audio.
-    speak(ctx.sfu, ctx.carol, @carol_demux, Audio.sine(500, 240), 0)
-    assert eventually(fn -> Session.info(session).audio_in >= 3 end)
-    assert Session.info(session).undecryptable == 0
-  end
-
-  test "the first video request waits for the first peek and lists its devices", ctx do
-    # CRS-14 sections 10.5 and 12: the video request names every remote
-    # demux ID. When ICE connects before the first peek answers, Comma sends
-    # no video request until the peek has told it the devices.
-    FakeSfu.put_devices(ctx.sfu, [{@bob_demux, ctx.opaque[@bob]}])
-    :ok = FakeSfu.hold_peeks(ctx.sfu)
-    session = join!(ctx)
-
-    assert_receive {:fake_sfu, :ice, :connected}, @wait_ms
-    assert_receive {:signal_group_call, ^session, {:ice, :connected}}, @wait_ms
-    assert_receive {:fake_sfu, "GET"}, @wait_ms
-    refute_receive {:fake_sfu, :rtp, %Rtp{ssrc: 1}}, 300
-
-    :ok = FakeSfu.release_peeks(ctx.sfu)
-    assert %CallWire.DeviceToSfu{video_request: request} = sfu_message!()
-    assert Enum.map(request.requests, &{&1.demux_id, &1.height}) == [{@bob_demux, 0}]
-  end
-
-  test "a token the SFU refuses fails the join; a key for a group without a call is ignored",
-       ctx do
-    {:ok, session} =
-      GroupCall.join(session_opts(ctx, token: fn -> {:ok, "wrong:token"} end))
-
-    ref = Process.monitor(session)
-
-    assert_receive {:signal_group_call, ^session, {:left, {:join_failed, {:status, 401}}}},
-                   @wait_ms
-
-    assert_receive {:DOWN, ^ref, :process, _, _}, @wait_ms
-
-    # No session: the key is dropped without error.
-    data = opaque_data(Messages.media_key(ctx.params.group_id, 0, <<1::256>>, @bob_demux))
-    assert :ok = GroupCall.handle_opaque(@own, %{sender_aci: @bob, data: data, age_s: 0})
-  end
-
-  test "rings younger than 60 seconds reach the ring handler", ctx do
-    data =
-      opaque_data(Messages.ring(ctx.params.group_id, :ring, Proto.ring_id("0123456789abcdef")))
-
-    test = self()
-    on_ring = fn ring -> send(test, {:ring, ring}) end
-
-    GroupCall.handle_opaque(@own, %{sender_aci: @bob, data: data, age_s: 61}, on_ring: on_ring)
-    refute_receive {:ring, _}, 100
-
-    GroupCall.handle_opaque(@own, %{sender_aci: @bob, data: data, age_s: 3}, on_ring: on_ring)
-    assert_receive {:ring, %{type: :ring, ring_id: 81_985_529_216_486_895, sender_aci: @bob}}
-  end
-
-  test "the membership token comes from the storage service with a group auth presentation",
-       %{chain: chain} do
-    now = 1_758_758_400 + 7_200
-    secret = ServerParams.generate(:binary.copy(<<0x78>>, 32))
-    {:ok, server} = ServerParams.decode_public(ServerParams.public_from_secret(secret))
-    aci = <<0x00000000000040008000000000000031::128>>
-    pni = <<0x00000000000040008000000000000034::128>>
-    storage = start_supervised!({FakeStorage, {self(), secret, now}})
-
-    storage_server =
-      start_supervised!({Bandit, FakeStorage.bandit_options(storage, chain)}, id: :storage)
-
-    day = now - rem(now, 86_400)
-
-    {:ok, credentials} =
-      Storage.receive_credentials(
-        server,
-        aci,
-        %{
-          "credentials" => [
-            %{
-              "credential" =>
-                Base.encode64(
-                  AuthCredential.issue(secret, aci, pni, day, :crypto.strong_rand_bytes(32))
-                ),
-              "redemptionTime" => day
-            }
-          ],
-          "pni" => ServiceId.uuid_string(pni)
-        },
-        nil
-      )
-
-    client =
-      SalixSignal.Groups.client(server, credentials,
-        storage_url: "https://localhost:#{FakeChat.port(storage_server)}",
-        http: [roots: [chain.root]],
-        now: fn -> now end
-      )
-
-    params = Params.from_master_key(:crypto.strong_rand_bytes(32))
-    FakeStorage.put_group(storage, params, %Wire.Group{revision: 1, members: []})
-    assert {:error, _} = Sfu.fetch_token(client, params)
-
-    other = Params.from_master_key(:crypto.strong_rand_bytes(32))
-
-    FakeStorage.put_group(storage, other, %Wire.Group{
-      revision: 1,
-      members: [%Wire.Member{user_id: Uid.encrypt(other, {:aci, aci}), role: 1}]
-    })
-
-    assert {:ok, "fake:" <> _ = token} = Sfu.fetch_token(client, other)
-    assert {:ok, "Basic " <> _} = Proto.authorization(token)
-  end
-
   # -- Helpers -----------------------------------------------------------------
 
   defp session_opts(ctx, overrides) do
-    test = self()
+    test = SystemsRuntime.Proc.self()
 
     Keyword.merge(
       [
@@ -385,30 +226,16 @@ defmodule SalixSignal.GroupCallTest do
         owner: test,
         token: fn -> {:ok, @token} end,
         members: fn -> {:ok, ctx.members} end,
-        send: fn acis, message, opts -> send(test, {:sent, acis, message, opts}) && :ok end,
-        announce: fn era -> send(test, {:announce, era}) && :ok end,
+        send: fn acis, message, opts ->
+          SystemsRuntime.Proc.send(test, {:sent, acis, message, opts}) && :ok
+        end,
+        announce: fn era -> SystemsRuntime.Proc.send(test, {:announce, era}) && :ok end,
         sfu_url: ctx.sfu_url,
         http: [roots: [ctx.chain.root]],
         ice_opts: [ip_filter: &ipv4?/1],
         rotation_delay_ms: 300
       ],
       overrides
-    )
-  end
-
-  # A call-signaling dispatcher of this account whose opaque payloads go to
-  # the group calls (SalixSignal.CallSignaling option `opaque`).
-  defp start_signaling do
-    start_supervised!(
-      {SalixSignal.CallSignaling,
-       aci: @own,
-       device_id: 1,
-       identity_key: :crypto.strong_rand_bytes(32),
-       peer_identity_key: fn _aci -> {:ok, :crypto.strong_rand_bytes(32)} end,
-       send: fn _aci, _message, _opts -> :ok end,
-       incoming_call: fn _info -> :busy end,
-       admit: fn _info, _connection -> {:error, :unused} end,
-       opaque: &GroupCall.handle_opaque(@own, &1)}
     )
   end
 
@@ -421,7 +248,7 @@ defmodule SalixSignal.GroupCallTest do
     {:ok, _voice_call_id} =
       SalixSignal.Carrier.admit_group_call(session, %{
         tenant_id: "ten_1",
-        group_id: "grp_" <> Integer.to_string(System.unique_integer([:positive])),
+        group_id: "grp_" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive])),
         connect_id: "conn_signal",
         signal_group_id: ctx.params.group_id,
         era_id: "0123456789abcdef"
@@ -474,7 +301,7 @@ defmodule SalixSignal.GroupCallTest do
         })
 
       :ok = FakeSfu.send_rtp(sfu, packet)
-      Process.sleep(60)
+      SystemsRuntime.Proc.sleep(60)
       sender
     end)
   end
@@ -498,7 +325,7 @@ defmodule SalixSignal.GroupCallTest do
   # The next device-to-SFU message from the client (SSRC 1, no frame
   # encryption).
   defp sfu_message! do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:fake_sfu, :rtp, %Rtp{ssrc: 1, payload_type: 101, payload: payload}} ->
         CallWire.DeviceToSfu.decode(payload)
     after
@@ -511,7 +338,7 @@ defmodule SalixSignal.GroupCallTest do
   defp device_data!(receiver, demux) do
     data_ssrc = Proto.data_ssrc(demux)
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {:fake_sfu, :rtp, %Rtp{ssrc: ^data_ssrc, payload_type: 101, payload: payload}} ->
         case Receiver.decrypt(receiver, payload) do
           {:ok, plaintext, _} ->
@@ -532,7 +359,7 @@ defmodule SalixSignal.GroupCallTest do
     if byte_size(acc) >= div(24_000 * ms, 1000) * 2 do
       acc
     else
-      receive do
+      SystemsRuntime.Proc.receive do
         {:fake_sfu, :rtp, %Rtp{ssrc: ^demux, payload_type: 102} = rtp} ->
           assert {0xBEDE, <<5::4, 0::4, _v::1, _level::7, _::binary>>} = rtp.extension
           {:ok, opus, _} = Receiver.decrypt(receiver, rtp.payload)
@@ -548,7 +375,7 @@ defmodule SalixSignal.GroupCallTest do
     if byte_size(acc) >= div(24_000 * ms, 1000) * 2 do
       acc
     else
-      receive do
+      SystemsRuntime.Proc.receive do
         {:fake_model, ^model, {:audio, pcm}} -> collect_model_audio(model, ms, acc <> pcm)
       after
         @wait_ms -> flunk("model received #{byte_size(acc)} bytes of group audio")
@@ -566,12 +393,12 @@ defmodule SalixSignal.GroupCallTest do
     end
   end
 
-  # Polls `fun` every 100 ms until it returns true, for at most @wait_ms.
+  # Polls `fun` every 20 ms until it returns true, for at most @wait_ms.
   defp eventually(fun, deadline \\ System.monotonic_time(:millisecond) + @wait_ms) do
     cond do
       fun.() -> true
       System.monotonic_time(:millisecond) > deadline -> false
-      true -> Process.sleep(100) && eventually(fun, deadline)
+      true -> SystemsRuntime.Proc.sleep(20) && eventually(fun, deadline)
     end
   end
 

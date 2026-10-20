@@ -252,14 +252,6 @@ def validateEvent (raw : Term) : KernelM Term := do
     if key.isBinary && key != b "" then return ok
   if isString type ["visible_reply_intent", "visible_reply_committed", "visible_reply_aborted"] then
     return err (a "invalid_visible_reply_lifecycle_event")
-  if type == b "session_microcompact" then
-    let through := get "non_model_messages_over_bytes_through"
-    let validThrough := match through with | .integer n => n ≥ 0 | _ => false
-    if has "non_model_messages_over_bytes_through" && has "non_model_message_max_bytes" &&
-        validThrough && positive (get "non_model_message_max_bytes") then return ok
-    if has "non_model_messages_over_bytes_through" || has "non_model_message_max_bytes" then
-      return err (a "invalid_emergency_compact_event")
-    return ok
   if type == b "redact" then return err (a "redact_session_event_removed")
   if type == b "context_provider_state" then return err (a "context_provider_state_event_removed")
   if isString type standalone then return err (a "standalone_context_provider_event_removed")

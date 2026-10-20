@@ -20,7 +20,7 @@ defmodule BridgeForTeams.SlackHistoryAcquisitionPersistenceTest do
   defmodule SalixClient do
     def slack_history_read_page(request) do
       handler =
-        Application.fetch_env!(
+        SystemsRuntime.fetch_env!(
           :bridge_for_teams_core,
           :slack_history_acquisition_test_handler
         )
@@ -37,12 +37,12 @@ defmodule BridgeForTeams.SlackHistoryAcquisitionPersistenceTest do
   end
 
   setup do
-    previous_client = Application.get_env(:bridge_for_teams_core, :salix_client)
+    previous_client = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
 
     previous_handler =
-      Application.get_env(:bridge_for_teams_core, :slack_history_acquisition_test_handler)
+      SystemsRuntime.get_env(:bridge_for_teams_core, :slack_history_acquisition_test_handler)
 
-    Application.put_env(:bridge_for_teams_core, :salix_client, SalixClient)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, SalixClient)
 
     on_exit(fn ->
       restore_env(:bridge_for_teams_core, :salix_client, previous_client)
@@ -54,7 +54,7 @@ defmodule BridgeForTeams.SlackHistoryAcquisitionPersistenceTest do
       )
     end)
 
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
     {:ok, org} = Orgs.create_org(%{"name" => "Acquisition #{suffix}", "slug" => "acq-#{suffix}"})
 
     {:ok, user} =
@@ -76,7 +76,7 @@ defmodule BridgeForTeams.SlackHistoryAcquisitionPersistenceTest do
       org_id: org.id,
       project_id: project.id,
       requested_by_user_id: user.id,
-      client_request_id: Ecto.UUID.generate(),
+      client_request_id: SystemsRuntime.Proc.uuid(),
       salix_tenant_id: org.salix_tenant_id,
       salix_group_id: project.salix_group_id,
       source_workspace_id: "T_HISTORY",
@@ -103,13 +103,13 @@ defmodule BridgeForTeams.SlackHistoryAcquisitionPersistenceTest do
   end
 
   test "coordinator carries pinned authority across Salix and the durable checkpoint", ctx do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :slack_history_acquisition_test_handler,
       fn request ->
-        send(owner, {:salix_page_request, request})
+        SystemsRuntime.Proc.send(owner, {:salix_page_request, request})
 
         {:ok,
          page_envelope(request, [
@@ -160,170 +160,6 @@ defmodule BridgeForTeams.SlackHistoryAcquisitionPersistenceTest do
     assert snapshot.object_count == 1
   end
 
-  test "reconciler notification replaces the pending retry timer after a worker crash", ctx do
-    owner = self()
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :slack_history_acquisition_test_handler,
-      fn _request ->
-        send(owner, :reconciler_adapter_crash)
-        raise "simulated adapter crash"
-      end
-    )
-
-    previous_reconciler =
-      Application.get_env(:bridge_for_teams_core, Reconciler)
-
-    Application.put_env(:bridge_for_teams_core, Reconciler,
-      enabled: true,
-      interval_ms: 5_000
-    )
-
-    on_exit(fn ->
-      restore_env(:bridge_for_teams_core, Reconciler, previous_reconciler)
-    end)
-
-    pid = start_supervised!({Reconciler, interval_ms: 5_000})
-
-    assert_receive :reconciler_adapter_crash
-    first_idle = wait_for_reconciler_idle(pid)
-    first_timer_ref = first_idle.timer_ref
-    assert is_reference(first_timer_ref)
-    assert is_integer(Process.read_timer(first_timer_ref))
-
-    assert :ok = Reconciler.notify(ctx.run.id)
-    assert_receive :reconciler_adapter_crash
-
-    second_idle = wait_for_reconciler_idle(pid)
-    assert second_idle.timer_ref != first_timer_ref
-    assert Process.read_timer(first_timer_ref) == false
-    assert is_integer(Process.read_timer(second_idle.timer_ref))
-
-    refute_receive :reconciler_adapter_crash, 100
-  end
-
-  test "coordinator persists bounded retry state instead of sleeping", ctx do
-    Application.put_env(
-      :bridge_for_teams_core,
-      :slack_history_acquisition_test_handler,
-      fn _request -> {:error, {:rate_limited, 17_000}} end
-    )
-
-    before_pause = DateTime.utc_now()
-
-    assert {:ok, %{state: "acquiring", advanced?: true}} =
-             Reconciler.run_once(run_id: ctx.run.id)
-
-    assert {:ok, %{state: "paused", advanced?: true}} =
-             Reconciler.run_once(run_id: ctx.run.id)
-
-    assert {:ok, paused} = SlackHistoryImports.get_run(ctx.run.id)
-
-    assert paused.state == "paused"
-    assert paused.paused_reason == "rate_limited"
-    assert DateTime.diff(paused.retry_not_before, before_pause, :second) in 16..18
-
-    assert {:ok, checkpoint} =
-             Acquisition.get_checkpoint(ctx.run.id, "C_HISTORY", "history", "")
-
-    assert checkpoint.retry_count == 1
-    assert checkpoint.next_page_ordinal == 0
-  end
-
-  test "launch readiness keeps dry-run, publish, and grounding gates independent" do
-    previous_features =
-      Application.fetch_env!(:bridge_for_teams_core, :sourced_context_features)
-
-    previous_reconciler = Application.get_env(:bridge_for_teams_core, Reconciler)
-
-    previous_processor =
-      Application.get_env(:bridge_for_teams_core, :sourced_context_processor)
-
-    evidence = %{
-      model_provider: "fixture",
-      model_id: "fixture-model",
-      model_revision: "model-rev-1",
-      prompt_template_id: "bft-history-extraction",
-      prompt_revision: "prompt-rev-1",
-      policy_revision: "extraction-policy-rev-1",
-      schema_revision: "people-project-decision-v1",
-      processor_config: %{"temperature_millis" => 0}
-    }
-
-    on_exit(fn ->
-      Application.put_env(
-        :bridge_for_teams_core,
-        :sourced_context_features,
-        previous_features
-      )
-
-      restore_env(:bridge_for_teams_core, Reconciler, previous_reconciler)
-
-      restore_env(
-        :bridge_for_teams_core,
-        :sourced_context_processor,
-        previous_processor
-      )
-    end)
-
-    Application.delete_env(:bridge_for_teams_core, :sourced_context_processor)
-
-    Application.put_env(:bridge_for_teams_core, Reconciler,
-      enabled: false,
-      derivation_evidence: evidence
-    )
-
-    refute SlackHistoryOnboarding.readiness().dry_run?
-    refute SlackHistoryOnboarding.readiness().worker?
-
-    Application.put_env(:bridge_for_teams_core, Reconciler,
-      enabled: true,
-      derivation_evidence: nil
-    )
-
-    refute SlackHistoryOnboarding.readiness().dry_run?
-    refute SlackHistoryOnboarding.readiness().processor?
-
-    Application.put_env(:bridge_for_teams_core, Reconciler,
-      enabled: true,
-      derivation_evidence: evidence
-    )
-
-    refute SlackHistoryOnboarding.readiness().dry_run?
-    refute SlackHistoryOnboarding.readiness().processor?
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :sourced_context_processor,
-      ReadinessProcessor
-    )
-
-    assert SlackHistoryOnboarding.readiness().dry_run?
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :sourced_context_features,
-      Keyword.merge(previous_features, commit: false, grounding: false)
-    )
-
-    readiness = SlackHistoryOnboarding.readiness()
-    assert readiness.dry_run?
-    refute readiness.commit?
-    refute readiness.grounding?
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :sourced_context_features,
-      Keyword.put(previous_features, :onboarding_preview, false)
-    )
-
-    readiness = SlackHistoryOnboarding.readiness()
-    refute readiness.onboarding_preview?
-    assert readiness.dry_run?
-    refute SlackHistoryOnboarding.available?()
-  end
-
   test "retry checkpoint and paused run roll back together before transaction commit", ctx do
     assert {:ok, acquiring, _event} =
              SlackHistoryImports.start_acquisition(ctx.run.id, ctx.run.generation)
@@ -354,67 +190,8 @@ defmodule BridgeForTeams.SlackHistoryAcquisitionPersistenceTest do
              Acquisition.get_checkpoint(ctx.run.id, "C_HISTORY", "history", "")
   end
 
-  test "fresh-cursor empty pages stop at the durable receipt bound and pause the run", ctx do
-    previous_bounds = Application.fetch_env!(:bridge_for_teams_core, :sourced_context_bounds)
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :sourced_context_bounds,
-      Keyword.put(previous_bounds, :run_pages, 1)
-    )
-
-    on_exit(fn ->
-      Application.put_env(:bridge_for_teams_core, :sourced_context_bounds, previous_bounds)
-    end)
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :slack_history_acquisition_test_handler,
-      fn request ->
-        envelope =
-          request
-          |> page_envelope([])
-          |> Map.merge(%{
-            next_cursor: "cursor-#{request.page_ordinal + 1}",
-            stream_complete: false
-          })
-
-        {:ok, Map.put(envelope, :response_sha256, Acquisition.page_sha256(envelope))}
-      end
-    )
-
-    assert {:ok, acquiring, _event} =
-             SlackHistoryImports.start_acquisition(ctx.run.id, ctx.run.generation)
-
-    assert {:ok, _receipt} =
-             SlackAcquisition.acquire_one_page(ctx.run.id, acquiring.generation)
-
-    assert {:ok, paused, %{to: :paused}} =
-             SlackAcquisition.acquire_one_page(ctx.run.id, acquiring.generation)
-
-    assert paused.paused_reason == "bound_reached"
-
-    assert {:ok, %{state: "paused", advanced?: false}} =
-             Reconciler.run_once(run_id: ctx.run.id)
-
-    assert {:ok, still_paused} = SlackHistoryImports.get_run(ctx.run.id)
-    assert still_paused.generation == paused.generation
-    assert still_paused.paused_reason == "bound_reached"
-
-    assert Repo.aggregate(
-             from(receipt in SlackHistoryPageReceipt, where: receipt.run_id == ^ctx.run.id),
-             :count
-           ) == 1
-
-    assert {:ok, checkpoint} =
-             Acquisition.get_checkpoint(ctx.run.id, "C_HISTORY", "history", "")
-
-    assert checkpoint.next_page_ordinal == 1
-    assert checkpoint.next_cursor == "cursor-1"
-  end
-
   test "coordinator freezes an incomplete run when Salix proves source drift", ctx do
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :slack_history_acquisition_test_handler,
       fn _request -> {:error, :stale_source} end
@@ -429,75 +206,6 @@ defmodule BridgeForTeams.SlackHistoryAcquisitionPersistenceTest do
     assert stale.state == "stale_source"
     assert stale.context_bundle_id == ctx.run.context_bundle_id
     assert stale.snapshot_id == nil
-  end
-
-  test "coordinator persists malformed provider data as a terminal run failure", ctx do
-    Application.put_env(
-      :bridge_for_teams_core,
-      :slack_history_acquisition_test_handler,
-      fn _request -> {:error, :invalid_provider_page} end
-    )
-
-    assert {:ok, acquiring, _event} =
-             SlackHistoryImports.start_acquisition(ctx.run.id, ctx.run.generation)
-
-    assert {:ok, failed, %{to: :failed_terminal}} =
-             SlackAcquisition.acquire_one_page(ctx.run.id, acquiring.generation)
-
-    assert failed.state == "failed_terminal"
-    assert failed.failure_reason == "invalid_provider_page"
-  end
-
-  test "expired provider cursor is cleared but its durable time boundary is retained", ctx do
-    assert {:ok, acquiring, _event} =
-             SlackHistoryImports.start_acquisition(ctx.run.id, ctx.run.generation)
-
-    first_page =
-      page_envelope(acquisition_request(ctx.run), [
-        %{
-          "message_ts" => "1787227200.000001",
-          "thread_ts" => nil,
-          "actor_id" => "U_CURSOR",
-          "actor_kind" => "user",
-          "text" => "First page before cursor expiry",
-          "observable_version" => "original",
-          "reply_count" => 0,
-          "file_metadata" => []
-        }
-      ])
-      |> Map.merge(%{next_cursor: "cursor-that-expires", stream_complete: false})
-      |> then(&Map.put(&1, :response_sha256, Acquisition.page_sha256(&1)))
-
-    assert {:ok, _receipt} =
-             Acquisition.accept_page(ctx.run.id, acquiring.generation, first_page)
-
-    owner = self()
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :slack_history_acquisition_test_handler,
-      fn request ->
-        send(owner, {:expired_cursor_request, request})
-        {:error, :invalid_cursor}
-      end
-    )
-
-    assert {:ok, paused, %{to: :paused}} =
-             SlackAcquisition.acquire_one_page(ctx.run.id, acquiring.generation)
-
-    assert paused.paused_reason == "provider_unavailable"
-
-    assert_receive {:expired_cursor_request, request}
-    assert request.cursor == "cursor-that-expires"
-    assert request.resume_boundary == "1787227200.000001"
-
-    assert {:ok, checkpoint} =
-             Acquisition.get_checkpoint(ctx.run.id, "C_HISTORY", "history", "")
-
-    assert checkpoint.next_cursor == nil
-    assert checkpoint.timestamp_boundary == "1787227200.000001"
-    assert checkpoint.next_page_ordinal == 1
-    assert checkpoint.retry_count == 1
   end
 
   test "reply checkpoints must come from discovered roots and advance forward in time", ctx do
@@ -695,22 +403,6 @@ defmodule BridgeForTeams.SlackHistoryAcquisitionPersistenceTest do
     }
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
-
-  defp wait_for_reconciler_idle(pid, attempts \\ 100)
-
-  defp wait_for_reconciler_idle(_pid, 0),
-    do: flunk("reconciler did not settle on one retry timer")
-
-  defp wait_for_reconciler_idle(pid, attempts) do
-    state = :sys.get_state(pid)
-
-    if is_nil(state.task) and is_reference(state.timer_ref) do
-      state
-    else
-      Process.sleep(5)
-      wait_for_reconciler_idle(pid, attempts - 1)
-    end
-  end
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

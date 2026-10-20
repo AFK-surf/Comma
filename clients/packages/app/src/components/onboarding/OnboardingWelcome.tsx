@@ -1,5 +1,5 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Button } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
 import { useId, useLayoutEffect, useRef } from "react";
 import { CommaProductMark } from "../CommaProductMark";
 import { withRouterNameSpacing } from "../router-identity/routerNameSpacing";

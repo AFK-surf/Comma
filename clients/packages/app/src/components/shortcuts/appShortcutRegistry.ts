@@ -3,7 +3,7 @@ import {
   sequenceKeybinding,
   type AppKeybinding,
   type AppKeybindingPlatform,
-} from "@comma/ui";
+} from "@comma/ui/components/settings-shortcut";
 
 export type AppShortcutId =
   | "go-settings"

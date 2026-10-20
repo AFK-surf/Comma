@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,7 +11,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 func testAndroidProfiles(t *testing.T) *androidProvider {
@@ -82,7 +82,7 @@ func testAndroidProfiles(t *testing.T) *androidProvider {
 		return []byte("found"), nil
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		if err := p.stopProcess(ctx); err != nil {
 			t.Error(err)
@@ -201,13 +201,9 @@ func TestAndroidPreparingStatusAndCancellation(t *testing.T) {
 		t.Fatalf("slot not reserved: %v", busy)
 	}
 	cancel()
-	select {
-	case got := <-result:
-		if got["ok"] != false || p.lease != nil || p.process != nil {
-			t.Fatalf("cancel leaked lease/process: %v", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("cancellation did not finish cleanup")
+	got := <-result
+	if got["ok"] != false || p.lease != nil || p.process != nil {
+		t.Fatalf("cancel leaked lease/process: %v", got)
 	}
 }
 
@@ -215,15 +211,18 @@ func TestAndroidWrongRuntimeCannotReceiveLease(t *testing.T) {
 	for _, field := range []string{"emu avd name", "shell getprop ro.build.version.sdk", "shell getprop ro.product.cpu.abilist"} {
 		t.Run(field, func(t *testing.T) {
 			p := testAndroidProfiles(t)
+			// Readiness retries a mismatch until its context ends; the test
+			// ends it at the first mismatch.
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 			run := p.run
 			p.run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 				if strings.Join(args[2:], " ") == field {
+					cancel()
 					return []byte("wrong"), nil
 				}
 				return run(ctx, name, args...)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
-			defer cancel()
 			got := p.handle(ctx, "wrong", map[string]any{"action": "start"})
 			if got["ok"] != false || p.lease != nil || p.process != nil {
 				t.Fatalf("mismatch granted lease or leaked process: %v", got)
@@ -285,9 +284,17 @@ func TestAndroidPreflightSeparatesProfileAndHostFailures(t *testing.T) {
 
 func TestAndroidStopFailureKeepsOwnedProcessAndBlocksReplacement(t *testing.T) {
 	p := testAndroidProfiles(t)
-	cmd := exec.Command("sh", "-c", `trap '' TERM; while :; do sleep 1; done`)
+	// The shell says so once it ignores TERM.
+	cmd := exec.Command("sh", "-c", `trap '' TERM; echo ready; while :; do sleep 1; done`)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
+	}
+	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "ready\n" {
+		t.Fatalf("shell did not install its TERM handler: %q %v", line, err)
 	}
 	done := make(chan struct{})
 	go func() {
@@ -296,10 +303,9 @@ func TestAndroidStopFailureKeepsOwnedProcessAndBlocksReplacement(t *testing.T) {
 	}()
 	p.process = &androidOwnedProcess{process: cmd.Process, profile: "api30", done: done}
 
-	// Give the shell time to install its TERM handler before the stop attempt.
-	time.Sleep(20 * time.Millisecond)
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
-	defer cancel()
+	// The stop's deadline has passed: it signals the process, which stays.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	if err := p.stopProcess(ctx); err == nil {
 		t.Fatal("stop unexpectedly succeeded")
 	}
@@ -313,9 +319,7 @@ func TestAndroidStopFailureKeepsOwnedProcessAndBlocksReplacement(t *testing.T) {
 		return nil
 	}
 	profile, _ := p.findProfile("api35")
-	ctx, cancel = context.WithTimeout(context.Background(), 40*time.Millisecond)
-	err := p.ensureReady(ctx, profile)
-	cancel()
+	err = p.ensureReady(ctx, profile)
 	if err == nil || launched {
 		t.Fatalf("stop failure launched a replacement: %v", err)
 	}
@@ -384,7 +388,7 @@ func TestAndroidMetadataReportsConfiguredButUnavailableProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	c.android = p
 	capabilities := c.metadata().Capabilities
 	if capabilities["android_device_tool"] != false {

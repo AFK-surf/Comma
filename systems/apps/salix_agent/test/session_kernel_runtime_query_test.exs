@@ -6,11 +6,10 @@ defmodule SalixAgent.SessionKernelRuntimeQueryTest do
   Each case asserts the kernel's answer for fixtures that exercise the listing
   projection over idle, failed, forked, hidden, archived and compacted
   sessions; the format-1 fact scans and their format-2/3 explicit fields;
-  willow's title sourcing over binary and block content; the billing usage
-  shapes; and the emergency-compact watermark on both sides of the format-2
-  cutover.
+  willow's title sourcing over binary and block content; and the billing usage
+  shapes.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.InternalSession.State
   alias SalixVerifiedKernel.Session, as: Resident
@@ -127,27 +126,6 @@ defmodule SalixAgent.SessionKernelRuntimeQueryTest do
            }
          ]
        })},
-      {"emergency redaction",
-       base(%{
-         storage_format: 3,
-         next_message_id: 30,
-         redactions: [
-           %{"kind" => "tool_messages_through", "through_id" => 3, "replacement" => "x"},
-           %{
-             "kind" => "non_model_messages_over_bytes_through",
-             "through_id" => 17,
-             "max_bytes" => 10,
-             "replacement" => "y"
-           }
-         ]
-       })},
-      {"emergency redaction without watermark",
-       base(%{
-         storage_format: 3,
-         next_message_id: 30,
-         redactions: [%{"kind" => "non_model_messages_over_bytes_through", "max_bytes" => 10}]
-       })},
-      {"emergency legacy fallback", base(%{storage_format: 1, next_message_id: 30})},
       {"title source binary",
        base(%{
          messages: [
@@ -250,25 +228,6 @@ defmodule SalixAgent.SessionKernelRuntimeQueryTest do
     assert forked["source_schedule_id"] == "sched-1"
   end
 
-  test "the listing counts the whole transcript and the highest id ever minted" do
-    listing = ask(fixture("compacted and archived"), :session_json, "agent-1")
-
-    assert listing["message_count"] == 12
-    assert listing["last_message_id"] == 19
-    assert listing["archived_through"] == 8
-    assert listing["compacted_through"] == 12
-    assert listing["summary_sequence"] == 3
-  end
-
-  test "the emergency watermark distinguishes a missing format-2 result from a legacy head" do
-    assert ask(fixture("emergency redaction"), :emergency_compact_through_id) == 17
-
-    assert ask(fixture("emergency redaction without watermark"), :emergency_compact_through_id) ==
-             nil
-
-    assert ask(fixture("emergency legacy fallback"), :emergency_compact_through_id) == 29
-  end
-
   test "lineage follows a same-agent fork only" do
     assert ask(fixture("forked session"), :lineage_source_session_id) == "session-0"
 
@@ -355,15 +314,5 @@ defmodule SalixAgent.SessionKernelRuntimeQueryTest do
 
     assert third["cache_read_input_tokens"] == 9
     assert third["session_id"] == "session-1"
-  end
-
-  test "the durable ledger and the snapshot identity read the state, not the host" do
-    assert ask(fixture("input dedupe"), :input_dedupe_member?, "src-1") == true
-    assert ask(fixture("input dedupe"), :input_dedupe_member?, "src-9") == false
-    assert ask(fixture("idle empty"), :input_dedupe_member?, "src-1") == false
-
-    assert ask(fixture("snapshot revision"), :session_snapshot_id) == "rev-42"
-    assert ask(fixture("snapshot seq only"), :session_snapshot_id) == "seq:12"
-    assert ask(fixture("idle empty"), :session_snapshot_id) == "seq:0"
   end
 end

@@ -10,9 +10,6 @@ export function useThreadElements() {
   // The resize subscription lives in ScrollArea, so the element it has to
   // observe reaches it through a render rather than through the ref.
   const [latestTurnBody, setLatestTurnBody] = useState<HTMLElement | null>(null);
-  const registerNewestTurnAnchor = useCallback((node: HTMLElement | null) => {
-    newestTurnAnchorRef.current = node;
-  }, []);
   const registerLatestTurnShell = useCallback((node: HTMLElement | null) => {
     newestTurnAnchorRef.current = node;
     latestTurnShellRef.current = node;
@@ -36,7 +33,6 @@ export function useThreadElements() {
     readThreadGeometry,
     registerLatestTurnBody,
     registerLatestTurnShell,
-    registerNewestTurnAnchor,
     resolveNewestTurn,
     threadRef,
   };

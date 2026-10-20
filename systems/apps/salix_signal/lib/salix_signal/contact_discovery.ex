@@ -93,7 +93,7 @@ defmodule SalixSignal.ContactDiscovery do
           | {:error, error()}
   def lookup(transport, numbers, opts \\ []) when is_list(numbers) do
     deadline =
-      System.monotonic_time(:millisecond) + Keyword.get(opts, :timeout, @default_timeout_ms)
+      SystemsClock.monotonic_time(:millisecond) + Keyword.get(opts, :timeout, @default_timeout_ms)
 
     environment = Keyword.get(opts, :environment, :production)
     pins = Keyword.get(opts, :pins, Attestation.pins(environment))
@@ -161,7 +161,7 @@ defmodule SalixSignal.ContactDiscovery do
          {:ok, message1, handshake} <-
            Noise.initiator_write(enclave_key,
              ephemeral: X25519.generate_private_key(),
-             kem: MlKem1024.keypair(:crypto.strong_rand_bytes(64))
+             kem: MlKem1024.keypair(SystemsRuntime.Proc.random_bytes(64))
            ),
          {:ok, socket} <- send_binary(socket, message1),
          {:ok, message2, socket} <- receive_binary(socket),
@@ -177,7 +177,7 @@ defmodule SalixSignal.ContactDiscovery do
   end
 
   defp attest(message, pins) do
-    case Attestation.verify(message, pins, System.os_time(:second)) do
+    case Attestation.verify(message, pins, SystemsClock.system_time(:second)) do
       {:ok, attested} -> {:ok, attested}
       {:error, reason} -> {:error, {:attestation_failed, reason}}
     end
@@ -452,7 +452,7 @@ defmodule SalixSignal.ContactDiscovery do
     end
   end
 
-  defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
+  defp remaining(deadline), do: max(deadline - SystemsClock.monotonic_time(:millisecond), 0)
 
   defp timeout_or_transport(%Mint.TransportError{reason: :timeout}), do: :timeout
   defp timeout_or_transport(:timeout), do: :timeout

@@ -128,7 +128,7 @@ defmodule SalixStore.ConversationSearch do
 
   @spec writer_generation() :: {:ok, String.t()} | {:error, :unavailable}
   def writer_generation do
-    case Application.get_env(:salix_store, :conversation_search_writer_generation) do
+    case SystemsRuntime.get_env(:salix_store, :conversation_search_writer_generation) do
       generation when is_binary(generation) ->
         case String.trim(generation) do
           "" -> {:error, :unavailable}
@@ -143,7 +143,7 @@ defmodule SalixStore.ConversationSearch do
   @doc "Whether this deployment has opted into the Task-search lifecycle."
   @spec configured?() :: boolean()
   def configured?,
-    do: not is_nil(Application.get_env(:salix_store, :conversation_search_writer_generation))
+    do: not is_nil(SystemsRuntime.get_env(:salix_store, :conversation_search_writer_generation))
 
   @spec pending_job_count() :: {:ok, non_neg_integer()} | {:error, :unavailable}
   def pending_job_count do
@@ -1808,7 +1808,7 @@ defmodule SalixStore.ConversationSearch do
   end
 
   defp gc_retention_hours do
-    case Application.get_env(
+    case SystemsRuntime.get_env(
            :salix_store,
            :conversation_search_gc_retention_hours,
            @default_gc_retention_hours
@@ -1864,7 +1864,7 @@ defmodule SalixStore.ConversationSearch do
       )
 
   defp claim_token(holder),
-    do: holder <> ":" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+    do: holder <> ":" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(18), padding: false)
 
   defp claim_from_row([
          id,

@@ -264,7 +264,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerController do
           _ ->
             case Logger.metadata()[:request_id] do
               value when is_binary(value) and value != "" -> value
-              _ -> Ecto.UUID.generate()
+              _ -> SystemsRuntime.Proc.uuid()
             end
         end
     end
@@ -314,7 +314,7 @@ defmodule BridgeForTeamsWeb.MacMiniProvisionerController do
   end
 
   defp install_operation_exchange_url do
-    uri = :salix_web |> Application.fetch_env!(:public_base_url) |> URI.parse()
+    uri = :salix_web |> SystemsRuntime.fetch_env!(:public_base_url) |> URI.parse()
 
     %URI{
       uri

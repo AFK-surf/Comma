@@ -23,7 +23,8 @@ defmodule SalixIM.Ports.ProviderAppStore do
     exception -> {:error, {:crashed, exception.__struct__}}
   end
 
-  defp impl, do: Application.get_env(:salix_im, :provider_app_store_mod, __MODULE__.Unconfigured)
+  defp impl,
+    do: SystemsRuntime.get_env(:salix_im, :provider_app_store_mod, __MODULE__.Unconfigured)
 
   defmodule Unconfigured do
     @moduledoc false

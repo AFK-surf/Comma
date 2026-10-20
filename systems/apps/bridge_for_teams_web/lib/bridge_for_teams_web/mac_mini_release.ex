@@ -13,6 +13,7 @@ defmodule BridgeForTeamsWeb.MacMiniRelease do
   @install_components ~w(runner salix-connect agent-vmm-host)
   @salix_connect "salix-connect"
   @agent_vmm "agent-vmm"
+  @computer_use_helper "computer-use-helper"
 
   @doc "Return the current Server-bound release for the install wrapper."
   def install_release(conn \\ nil) do
@@ -104,17 +105,19 @@ defmodule BridgeForTeamsWeb.MacMiniRelease do
   def updates(_conn, provisioner) do
     case provisioner_platform(provisioner) do
       nil -> disabled_updates("unsupported_platform")
-      platform -> updates_for_platform(platform)
+      platform -> update_targets(platform)
     end
   end
 
-  defp updates_for_platform(platform) do
-    with {:ok, salix_connect} <- ServerReleaseDescriptor.target("salix-connect", platform),
-         {:ok, agent_vmm_host} <- ServerReleaseDescriptor.target("agent-vmm-host", platform) do
+  @doc false
+  def update_targets(platform, target \\ &ServerReleaseDescriptor.target/2) do
+    with {:ok, salix_connect} <- target.("salix-connect", platform),
+         {:ok, agent_vmm_host} <- target.("agent-vmm-host", platform) do
       %{
         @salix_connect => update_target(@salix_connect, salix_connect),
         @agent_vmm => update_target("agent-vmm-host", agent_vmm_host)
       }
+      |> put_computer_use_helper(target.(@computer_use_helper, platform))
     else
       {:error, _reason} -> disabled_updates("server_release_unavailable")
     end
@@ -137,6 +140,13 @@ defmodule BridgeForTeamsWeb.MacMiniRelease do
     }
   end
 
+  # The helper is optional: without its target, connector and VMM updates and
+  # installs proceed and the installed helper stays as it is.
+  defp put_computer_use_helper(targets, {:ok, helper}),
+    do: Map.put(targets, @computer_use_helper, update_target(@computer_use_helper, helper))
+
+  defp put_computer_use_helper(targets, {:error, _reason}), do: targets
+
   defp targets(platform) do
     Enum.reduce_while(@install_components, {:ok, %{}}, fn component, {:ok, values} ->
       case ServerReleaseDescriptor.target(component, platform) do
@@ -144,6 +154,16 @@ defmodule BridgeForTeamsWeb.MacMiniRelease do
         {:error, _} = error -> {:halt, error}
       end
     end)
+    |> case do
+      {:ok, values} ->
+        case ServerReleaseDescriptor.target(@computer_use_helper, platform) do
+          {:ok, helper} -> {:ok, Map.put(values, @computer_use_helper, helper)}
+          {:error, _reason} -> {:ok, values}
+        end
+
+      error ->
+        error
+    end
   end
 
   defp provisioner_platform(provisioner) do
@@ -165,7 +185,7 @@ defmodule BridgeForTeamsWeb.MacMiniRelease do
   defp dashboard_base_url(%Plug.Conn{} = _conn), do: dashboard_base_url(nil)
 
   defp dashboard_base_url(_conn) do
-    case Application.get_env(:bridge_for_teams_web, :public_base_url) do
+    case SystemsRuntime.get_env(:bridge_for_teams_web, :public_base_url) do
       base when is_binary(base) and base != "" -> base
       _ -> dashboard_endpoint_base_url()
     end
@@ -173,7 +193,7 @@ defmodule BridgeForTeamsWeb.MacMiniRelease do
 
   defp dashboard_endpoint_base_url do
     endpoint_config =
-      Application.get_env(:bridge_for_teams_web, BridgeForTeamsWeb.DashboardEndpoint, [])
+      SystemsRuntime.get_env(:bridge_for_teams_web, BridgeForTeamsWeb.DashboardEndpoint, [])
 
     url_config = Keyword.get(endpoint_config, :url, [])
     http_config = Keyword.get(endpoint_config, :http, [])

@@ -1,0 +1,14 @@
+{
+  "name": "systems-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "openid-client": "6.8.1",
+    "typescript": "7.0.2"
+  }
+}

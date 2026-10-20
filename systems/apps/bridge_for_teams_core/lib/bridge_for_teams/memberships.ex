@@ -15,7 +15,7 @@ defmodule BridgeForTeams.Memberships do
   """
   import Ecto.Query
 
-  alias BridgeForTeams.{Observability, Projects, Repo}
+  alias BridgeForTeams.{Observability, Projects, Repo, StationMembers}
   alias BridgeForTeams.Schema.{OrgMembership, OrgSsoIdentity, Project, ProjectMembership}
 
   @org_rank %{"owner" => 3, "admin" => 2, "member" => 1}
@@ -212,6 +212,33 @@ defmodule BridgeForTeams.Memberships do
      }}
   end
 
+  @doc """
+  At most `limit` of an org's memberships other than `except_user_id`'s, with
+  their `:user` preloaded: owners first, then admins, then members, each by
+  name and email. One bounded query.
+  """
+  @spec sample_org_members(Ecto.UUID.t(), Ecto.UUID.t(), 1..100) :: [OrgMembership.t()]
+  def sample_org_members(org_id, except_user_id, limit)
+      when is_integer(limit) and limit in 1..100 do
+    from(m in OrgMembership,
+      where: m.org_id == ^org_id and m.user_id != ^except_user_id,
+      join: u in assoc(m, :user),
+      order_by: [
+        asc:
+          fragment(
+            "CASE ? WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END",
+            m.role
+          ),
+        asc_nulls_last: u.name,
+        asc_nulls_last: u.email,
+        asc: u.id
+      ],
+      limit: ^limit,
+      preload: [user: u]
+    )
+    |> Repo.all()
+  end
+
   defp user_sort_key(user) do
     [
       user.email,
@@ -255,10 +282,32 @@ defmodule BridgeForTeams.Memberships do
   @doc "Remove an org membership."
   @spec remove_org_member(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: :ok | {:error, term()}
   def remove_org_member(org_id, user_id, opts \\ []) do
-    if audit_enabled?(opts) do
-      remove_org_member_with_audit(org_id, user_id, opts)
-    else
-      delete_org_member(org_id, user_id)
+    revoking_station_credentials(user_id, fn -> StationMembers.org_groups(org_id) end, fn ->
+      if audit_enabled?(opts) do
+        remove_org_member_with_audit(org_id, user_id, opts)
+      else
+        delete_org_member(org_id, user_id)
+      end
+    end)
+  end
+
+  # A removed member's station credentials are checked offline for up to 30
+  # days, so the removal also revokes them in the Groups it covers. The Salix
+  # rows are written before the removal commits (a failed write rolls it
+  # back); stations are told once it has.
+  defp revoking_station_credentials(user_id, groups, remove) do
+    case Repo.transaction(fn ->
+           case remove.() do
+             :ok -> StationMembers.revoke_removed(groups.(), user_id)
+             {:error, reason} -> Repo.rollback(reason)
+           end
+         end) do
+      {:ok, revocations} ->
+        SalixStore.Stations.Events.publish(revocations)
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -285,11 +334,17 @@ defmodule BridgeForTeams.Memberships do
   @doc "Remove an explicit Agent Swarm ACL grant."
   @spec remove_project_member(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: :ok | {:error, term()}
   def remove_project_member(project_id, user_id, opts \\ []) do
-    if audit_enabled?(opts) do
-      remove_project_member_with_audit(project_id, user_id, opts)
-    else
-      delete_project_member(project_id, user_id)
-    end
+    revoking_station_credentials(
+      user_id,
+      fn -> StationMembers.project_groups(project_id) end,
+      fn ->
+        if audit_enabled?(opts) do
+          remove_project_member_with_audit(project_id, user_id, opts)
+        else
+          delete_project_member(project_id, user_id)
+        end
+      end
+    )
   end
 
   defp delete_project_member(project_id, user_id) do
@@ -354,7 +409,7 @@ defmodule BridgeForTeams.Memberships do
             resource_label: member_resource_label("project_member", target_user_id),
             result: result,
             reason_class: failure_reason_class(reason),
-            request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+            request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
             metadata: member_attempt_metadata(project, target_user_id, reason, extra),
             redacted_diff: Keyword.get(extra, :redacted_diff, %{})
           })
@@ -544,7 +599,7 @@ defmodule BridgeForTeams.Memberships do
       resource_id: resource_id,
       resource_label: Keyword.fetch!(extra, :resource_label),
       result: "ok",
-      request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+      request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
       metadata: Keyword.get(extra, :metadata, %{}),
       redacted_diff: Keyword.get(extra, :redacted_diff, %{})
     }

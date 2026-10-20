@@ -123,3 +123,22 @@ export function subscriptionAuthorizationPage(
     )
   );
 }
+
+/**
+ * Every page the core's loopback listener shows (hosts/loopback.ts), rendered once: received and denied link back to
+ * the app at `returnUrl`.
+ */
+export function loopbackAuthorizationPages(
+  returnUrl?: string
+): Record<
+  "subscription" | "byok",
+  Record<"received" | "denied" | "invalid" | "notFound", string>
+> {
+  const pages = (source: "subscription" | "byok") => ({
+    received: subscriptionAuthorizationPage("received", source, returnUrl),
+    denied: subscriptionAuthorizationPage("denied", source, returnUrl),
+    invalid: subscriptionAuthorizationPage("invalid", source),
+    notFound: subscriptionAuthorizationPage("notFound", source),
+  });
+  return { subscription: pages("subscription"), byok: pages("byok") };
+}

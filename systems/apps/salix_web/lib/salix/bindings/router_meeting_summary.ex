@@ -3,9 +3,12 @@ defmodule Salix.Bindings.RouterMeetingSummary do
 
   def request(state, request) do
     ref =
-      if state["provider"] == "slack",
-        do: state["slack_ref"] || %{},
-        else: state["feishu_ref"] || %{}
+      case state["provider"] do
+        "slack" -> state["slack_ref"] || %{}
+        "lark" -> state["lark_ref"] || %{}
+        "comma" -> state["comma_ref"] || %{}
+        _ -> state["feishu_ref"] || %{}
+      end
 
     metadata = %{
       "provider" => state["provider"],
@@ -15,7 +18,8 @@ defmodule Salix.Bindings.RouterMeetingSummary do
       "thread_ts" => ref["thread_ts"],
       "chat_id" => ref["chat_id"],
       "chat_type" => ref["chat_type"],
-      "message_id" => ref["root_message_id"] || ref["trigger_message_id"],
+      "conversation_id" => if(state["provider"] == "comma", do: ref["conversation_id"]),
+      "message_id" => ref["root_message_id"] || ref["trigger_message_id"] || ref["message_id"],
       "event_type" => "meeting.summary_requested",
       "app_authored" => true,
       "meeting_id" => state["meeting_id"],

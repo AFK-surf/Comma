@@ -108,13 +108,51 @@ defmodule SalixIM.Provider.Feishu.Message do
   defp content_text(content) do
     content
     |> collect_values(fn
-      %{"tag" => "text", "text" => text} when is_binary(text) -> text
-      %{"tag" => "a", "text" => text} when is_binary(text) -> text
+      %{"tag" => "text", "text" => text} when is_binary(text) -> String.trim(text)
+      %{"tag" => "md", "text" => text} when is_binary(text) -> text
+      %{"tag" => "code_block", "text" => text} when is_binary(text) -> code_text(text)
+      %{"tag" => "at"} = node -> mention_text(node)
+      %{"tag" => "a"} = node -> link_text(node)
       _ -> nil
     end)
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == ""))
+    |> Enum.reject(&(String.trim(&1) == ""))
     |> Enum.join("\n")
+  end
+
+  # A longer fence preserves embedded backticks and the code's indentation.
+  defp code_text(text) do
+    longest =
+      ~r/`+/
+      |> Regex.scan(text)
+      |> Enum.map(fn [run] -> byte_size(run) end)
+      |> Enum.max(fn -> 0 end)
+
+    fence = String.duplicate("`", max(3, longest + 1))
+    fence <> "\n" <> text <> if(String.ends_with?(text, "\n"), do: "", else: "\n") <> fence
+  end
+
+  defp mention_text(node) do
+    case first([node["user_name"], node["user_id"]]) do
+      "" -> nil
+      name -> "@" <> name
+    end
+  end
+
+  # A rich-text link keeps its target in the text, so a shared document link
+  # reaches the agent as a URL it can open, not as its display title alone.
+  defp link_text(node) do
+    text = str(node["text"])
+    href = str(node["href"])
+
+    cond do
+      href == "" -> text
+      text == "" or text == href -> href
+      true -> text <> " (" <> href <> ")"
+    end
+    |> case do
+      "" -> nil
+      value -> value
+    end
   end
 
   defp content_links(content) do

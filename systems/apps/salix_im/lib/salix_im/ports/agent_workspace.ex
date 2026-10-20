@@ -99,7 +99,7 @@ defmodule SalixIM.Ports.AgentWorkspace do
     )
   end
 
-  defp impl, do: Application.get_env(:salix_im, :agent_workspace_mod, __MODULE__.Unconfigured)
+  defp impl, do: SystemsRuntime.get_env(:salix_im, :agent_workspace_mod, __MODULE__.Unconfigured)
 
   defmodule Unconfigured do
     @moduledoc false

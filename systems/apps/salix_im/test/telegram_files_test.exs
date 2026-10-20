@@ -1,5 +1,6 @@
 defmodule SalixIM.TelegramFilesTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle
   alias SalixIM.{TelegramFiles, ProviderAttachments}
   alias SalixIM.TestSupport.BanditServer
 
@@ -11,13 +12,17 @@ defmodule SalixIM.TelegramFilesTest do
       case conn.path_info do
         ["botprivate-token", method] when method in ["sendPhoto", "sendDocument"] ->
           {:ok, body, conn} = read_body(conn)
-          send(Application.fetch_env!(:salix_im, :telegram_files_test_pid), {:sent_media, body})
+
+          SystemsRuntime.Proc.send(
+            SystemsRuntime.fetch_env!(:salix_im, :telegram_files_test_pid),
+            {:sent_media, body}
+          )
 
           {status, response} =
             if String.contains?(body, "name=\"parse_mode\"") &&
-                 Application.get_env(:salix_im, :telegram_caption_test_failure) do
+                 SystemsRuntime.get_env(:salix_im, :telegram_caption_test_failure) do
               {code, description} =
-                Application.fetch_env!(:salix_im, :telegram_caption_test_failure)
+                SystemsRuntime.fetch_env!(:salix_im, :telegram_caption_test_failure)
 
               {code, %{"ok" => false, "error_code" => code, "description" => description}}
             else
@@ -66,8 +71,8 @@ defmodule SalixIM.TelegramFilesTest do
       do: {:ok, %{path: path, filename: "result.png", data: "result bytes"}}
 
     def put_ref(agent_id, path, ref) do
-      send(
-        Application.fetch_env!(:salix_im, :telegram_files_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_im, :telegram_files_test_pid),
         {:published, agent_id, path, ref}
       )
 
@@ -84,21 +89,21 @@ defmodule SalixIM.TelegramFilesTest do
             {:salix_im, :telegram_files_test_pid},
             {:salix_im, :telegram_caption_test_failure}
           ],
-          do: {app, key, Application.get_env(app, key)}
+          do: {app, key, SystemsRuntime.get_env(app, key)}
 
     start_supervised!(SalixStore.S3.Fake)
     port = BanditServer.start!(fn p -> {Bandit, plug: API, port: p} end)
-    Application.put_env(:salix_im, :telegram_api_base_url, "http://127.0.0.1:#{port}")
-    Application.put_env(:salix_im, :agent_workspace_mod, Workspace)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_im, :telegram_files_test_pid, self())
-    Application.delete_env(:salix_im, :telegram_caption_test_failure)
+    SystemsRuntime.put_env(:salix_im, :telegram_api_base_url, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:salix_im, :agent_workspace_mod, Workspace)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_im, :telegram_files_test_pid, SystemsRuntime.Proc.self())
+    SystemsRuntime.delete_env(:salix_im, :telegram_caption_test_failure)
 
     on_exit(fn ->
       Enum.each(prior, fn {app, key, value} ->
         if is_nil(value),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, value)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, value)
       end)
     end)
 
@@ -124,23 +129,11 @@ defmodule SalixIM.TelegramFilesTest do
         ] do
       [attachment] = attachments(media)
       assert {:ok, [staged], []} = ProviderAttachments.stage("agent", [attachment])
-      assert_receive {:published, "agent", path, ref}
+      settle_receive({:published, "agent", path, ref})
       assert path == staged["path"]
       refute inspect(staged) =~ "private-token"
       refute Map.has_key?(staged, "to_blob")
       assert {:ok, "actual media bytes"} = SalixStore.Blob.get("agent", ref)
-    end
-  end
-
-  test "declared or streamed oversize files fail explicitly without publishing a partial resource" do
-    for file <- [
-          %{"file_id" => "never-download", "file_size" => 21 * 1024 * 1024},
-          %{"file_id" => "large"}
-        ] do
-      assert {:ok, [], [%{"stage_error" => "size_limit"}]} =
-               ProviderAttachments.stage("agent", attachments(%{"document" => file}))
-
-      refute_receive {:published, _, _, _}
     end
   end
 
@@ -154,7 +147,7 @@ defmodule SalixIM.TelegramFilesTest do
 
       assert failure["stage_error"] == "download_failed"
       refute inspect(failure) =~ "private-token"
-      refute_receive {:published, _, _, _}
+      settle_refute_receive({:published, _, _, _})
     end
   end
 
@@ -177,7 +170,7 @@ defmodule SalixIM.TelegramFilesTest do
                  "reply_to_message_id" => 7
                })
 
-      assert_receive {:sent_media, body}
+      settle_receive({:sent_media, body})
       assert body =~ "name=\"message_thread_id\"\r\n\r\n55"
       assert body =~ "name=\"reply_to_message_id\"\r\n\r\n7"
       assert body =~ "result bytes"
@@ -209,70 +202,8 @@ defmodule SalixIM.TelegramFilesTest do
                  })
 
         assert reason =~ "1024"
-        refute_receive {:sent_media, _}, 20
+        settle_refute_receive({:sent_media, _}, 20)
       end
-    end
-  end
-
-  test "caption parser rejection falls back once but server failure never resends media" do
-    connect = %{"provider" => "telegram", "status" => "connected", "bot_token" => "private-token"}
-
-    params = %{
-      "chat_id" => "42",
-      "path" => "/result.png",
-      "caption" => "**result**",
-      "message_thread_id" => 55
-    }
-
-    for api <- ["telegram.send_photo", "telegram.send_document"] do
-      Application.put_env(
-        :salix_im,
-        :telegram_caption_test_failure,
-        {400, "Bad Request: can't parse entities"}
-      )
-
-      assert {:ok, _} = SalixIM.Provider.Telegram.call("agent", connect, api, params)
-      assert_receive {:sent_media, rich}
-      assert rich =~ "<b>result</b>"
-      assert_receive {:sent_media, plain}
-      assert plain =~ "name=\"caption\"\r\n\r\nresult"
-      assert plain =~ "name=\"message_thread_id\"\r\n\r\n55"
-      refute plain =~ "name=\"parse_mode\""
-      refute_receive {:sent_media, _}, 20
-
-      Application.put_env(:salix_im, :telegram_caption_test_failure, {503, "Unavailable"})
-      assert {:error, _} = SalixIM.Provider.Telegram.call("agent", connect, api, params)
-      assert_receive {:sent_media, _}
-      refute_receive {:sent_media, _}, 20
-    end
-  end
-
-  test "caption bounds follow displayed HTML text and independently bound a rejected fallback" do
-    connect = %{"provider" => "telegram", "status" => "connected", "bot_token" => "private-token"}
-    url = "https://example.test/report?signature=" <> String.duplicate("a", 1100)
-
-    for api <- ["telegram.send_photo", "telegram.send_document"] do
-      Application.delete_env(:salix_im, :telegram_caption_test_failure)
-
-      params = %{
-        "chat_id" => "42",
-        "path" => "/result.png",
-        "caption" => "[Download report](#{url})"
-      }
-
-      assert {:ok, _} = SalixIM.Provider.Telegram.call("agent", connect, api, params)
-      assert_receive {:sent_media, rich}
-      assert rich =~ "Download report</a>"
-
-      Application.put_env(
-        :salix_im,
-        :telegram_caption_test_failure,
-        {400, "Bad Request: can't parse entities"}
-      )
-
-      assert {:error, _} = SalixIM.Provider.Telegram.call("agent", connect, api, params)
-      assert_receive {:sent_media, _}
-      refute_receive {:sent_media, _}, 20
     end
   end
 

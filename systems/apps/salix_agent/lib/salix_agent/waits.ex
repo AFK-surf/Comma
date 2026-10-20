@@ -6,7 +6,7 @@ defmodule SalixAgent.Waits do
   @spec build(String.t(), pos_integer(), String.t(), map()) :: map()
   def build(reason, timeout_seconds, source, extra \\ %{}) do
     timeout_seconds = clamp_timeout(timeout_seconds)
-    deadline_ms = System.system_time(:millisecond) + timeout_seconds * 1_000
+    deadline_ms = SystemsClock.system_time(:millisecond) + timeout_seconds * 1_000
 
     %{
       "wait_id" => "wait-" <> random_id(),
@@ -198,7 +198,7 @@ defmodule SalixAgent.Waits do
         _ -> nil
       end
 
-    now_ms = System.system_time(:millisecond)
+    now_ms = SystemsClock.system_time(:millisecond)
     deadline_ms = wait["deadline_ms"]
     timeout_seconds = wait["timeout_seconds"]
 
@@ -352,5 +352,5 @@ defmodule SalixAgent.Waits do
     |> binary_part(0, 16)
   end
 
-  defp random_id, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower)
 end

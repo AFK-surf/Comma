@@ -4,7 +4,7 @@ defmodule SalixSignalProto.AccountOracleTest do
   # (CRS-02 §7.1), usernames (CRS-02 §10) and published pre-keys (CRS-03 §4,
   # §6). Rejections are compared as accept versus reject only. Run with
   # `--include signal_oracle` and COMMA_SIGNAL_ORACLE=host:port.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.{AccountKeys, Keys, PreKeys, Username}

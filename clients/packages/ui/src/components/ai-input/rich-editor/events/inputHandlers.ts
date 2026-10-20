@@ -6,6 +6,7 @@ import type {
   InputEvent,
   KeyboardEvent,
 } from "react";
+import { uiClock } from "../../../../clock";
 import { placeSelectionAtPoint } from "../dom/caret";
 import { insertTextAtSelection } from "../dom/editing";
 import {
@@ -158,7 +159,7 @@ export function createInputHandlers(
   const handleCompositionEnd = (event: CompositionEvent<HTMLDivElement>) => {
     onCompositionEndProp?.(event);
     composingRef.current = false;
-    lastCompositionEndAtRef.current = Date.now();
+    lastCompositionEndAtRef.current = uiClock.now();
     if (event.defaultPrevented || immutable) return;
     commitEditor();
   };

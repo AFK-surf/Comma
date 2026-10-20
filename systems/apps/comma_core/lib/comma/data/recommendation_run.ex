@@ -19,7 +19,12 @@ defmodule Comma.Data.RecommendationRun do
     field(:member_subjects, :map, default: %{})
     field(:metrics, :map, default: %{})
     field(:finished_at, :utc_datetime_usec)
-    timestamps(type: :utc_datetime_usec, updated_at: false)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      updated_at: false,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 
   def changeset(run, attrs) do

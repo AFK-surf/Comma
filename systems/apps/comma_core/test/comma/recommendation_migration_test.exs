@@ -1,5 +1,5 @@
 defmodule Comma.RecommendationMigrationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   import Ecto.Query
   alias Comma.Data.{RecommendationProfile, RecommendationRun}
 
@@ -16,7 +16,7 @@ defmodule Comma.RecommendationMigrationTest do
   setup do
     # Copy the actual table definitions into an isolated namespace. The real
     # Ecto migration runs there, without changing other tests' ledgers or data.
-    schema = "routine_migration_#{System.unique_integer([:positive])}"
+    schema = "routine_migration_#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     config =
       Comma.Repo.config()
@@ -34,7 +34,7 @@ defmodule Comma.RecommendationMigrationTest do
     on_exit(fn ->
       # The test supervisor can stop before on_exit. Use a fresh owned Repo
       # connection and delete only this test's namespace.
-      if Process.alive?(repo), do: Supervisor.stop(repo)
+      if SystemsRuntime.Proc.alive?(repo), do: Supervisor.stop(repo)
       {:ok, cleanup} = MigrationRepo.start_link(config)
       MigrationRepo.query!("DROP SCHEMA #{schema} CASCADE")
       Supervisor.stop(cleanup)
@@ -98,13 +98,19 @@ defmodule Comma.RecommendationMigrationTest do
     unrelated = MigrationRepo.get!(Oban.Job, unrelated.id)
 
     assert :ok =
-             Ecto.Migrator.up(MigrationRepo, @version, Comma.Repo.Migrations.QueueRoutineGeneration,
+             Ecto.Migrator.up(
+               MigrationRepo,
+               @version,
+               Comma.Repo.Migrations.QueueRoutineGeneration,
                prefix: schema,
                log: false
              )
 
     assert :already_up =
-             Ecto.Migrator.up(MigrationRepo, @version, Comma.Repo.Migrations.QueueRoutineGeneration,
+             Ecto.Migrator.up(
+               MigrationRepo,
+               @version,
+               Comma.Repo.Migrations.QueueRoutineGeneration,
                prefix: schema,
                log: false
              )

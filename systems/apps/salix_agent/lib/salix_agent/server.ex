@@ -1,4 +1,6 @@
 defmodule SalixAgent.Server do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The per-agent runtime process. It owns the `SalixStore.Agent`
   commit handle and drives the wake → targeted session wake cycle on the
@@ -70,7 +72,8 @@ defmodule SalixAgent.Server do
       wake_requested: false,
       deferred_wake_targets: [],
       deferred_wake_attempts: 0,
-      reconciled_wakes: false
+      reconciled_wakes: false,
+      clock_timeout: nil
     ]
   end
 
@@ -87,30 +90,31 @@ defmodule SalixAgent.Server do
 
   def start_link(opts) do
     agent_id = Keyword.fetch!(opts, :agent_id)
-    :gen_statem.start_link(via(agent_id), __MODULE__, opts, [])
+    SystemsRuntime.StateMachine.start_link(via(agent_id), __MODULE__, opts, [])
   end
 
   @doc "Nudge the agent to process pending work (a delivery arrived)."
   def wake(agent_id) when is_binary(agent_id) do
-    case Registry.lookup(SalixAgent.Registry, agent_id) do
-      [{pid, _}] -> :gen_statem.cast(pid, :wake)
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, agent_id) do
+      [{pid, _}] -> SystemsRuntime.StateMachine.cast(pid, :wake)
       [] -> {:error, :not_running}
     end
   end
 
-  def wake(pid) when is_pid(pid), do: :gen_statem.cast(pid, :wake)
+  def wake(pid) when SystemsRuntime.Proc.is_process(pid),
+    do: SystemsRuntime.StateMachine.cast(pid, :wake)
 
   @doc false
-  def wake_confirm(pid, timeout \\ 5_000) when is_pid(pid) do
-    :gen_statem.call(pid, :wake, timeout)
+  def wake_confirm(pid, timeout \\ 5_000) when SystemsRuntime.Proc.is_process(pid) do
+    SystemsClock.call(pid, :wake, timeout)
   end
 
   @doc false
   @spec recover_session_work(pid(), [SalixAgent.AgentActor.wake_target()], timeout()) ::
           :ok | {:error, term()}
   def recover_session_work(pid, targets, timeout \\ 5_000)
-      when is_pid(pid) and is_list(targets) do
-    :gen_statem.call(pid, {:recover_session_work, targets}, timeout)
+      when SystemsRuntime.Proc.is_process(pid) and is_list(targets) do
+    SystemsClock.call(pid, {:recover_session_work, targets}, timeout)
   catch
     :exit, reason -> {:error, {:exit, reason}}
   end
@@ -129,7 +133,7 @@ defmodule SalixAgent.Server do
   """
   def info(pid_or_agent_id, timeout \\ :infinity)
 
-  def info(pid, timeout) when is_pid(pid), do: call(pid, :info, timeout)
+  def info(pid, timeout) when SystemsRuntime.Proc.is_process(pid), do: call(pid, :info, timeout)
 
   def info(agent_id, timeout) when is_binary(agent_id), do: info_retry(agent_id, 2, timeout)
 
@@ -140,7 +144,7 @@ defmodule SalixAgent.Server do
           call(pid, :info, timeout)
         catch
           :exit, _ when attempts > 1 ->
-            Process.sleep(50)
+            SystemsClock.sleep(50)
             info_retry(agent_id, attempts - 1, timeout)
         end
 
@@ -149,7 +153,7 @@ defmodule SalixAgent.Server do
     end
   end
 
-  def stop(agent_or_pid), do: :gen_statem.stop(pid_of(agent_or_pid))
+  def stop(agent_or_pid), do: SystemsRuntime.StateMachine.stop(pid_of(agent_or_pid))
 
   @doc """
   Generation-conditional stop, the only way a superseded-runtime abort may
@@ -167,13 +171,13 @@ defmodule SalixAgent.Server do
   @spec stop_if_at_or_below(String.t(), non_neg_integer() | nil, timeout()) ::
           :ok | {:refused, non_neg_integer()} | {:error, :timeout}
   def stop_if_at_or_below(agent_id, bound, timeout \\ 5_000) when is_binary(agent_id) do
-    case Registry.lookup(SalixAgent.Registry, agent_id) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, agent_id) do
       [] ->
         :ok
 
       [{pid, _}] ->
         try do
-          case :gen_statem.call(pid, {:stop_if_at_or_below, bound}, timeout) do
+          case SystemsClock.call(pid, {:stop_if_at_or_below, bound}, timeout) do
             :stopping -> :ok
             {:refused, epoch} -> {:refused, epoch}
           end
@@ -186,18 +190,18 @@ defmodule SalixAgent.Server do
   end
 
   defp call(agent_or_pid, msg, timeout),
-    do: :gen_statem.call(pid_of(agent_or_pid), msg, timeout)
+    do: SystemsClock.call(pid_of(agent_or_pid), msg, timeout)
 
-  defp pid_of(pid) when is_pid(pid), do: pid
+  defp pid_of(pid) when SystemsRuntime.Proc.is_process(pid), do: pid
 
   defp pid_of(agent_id) when is_binary(agent_id) do
-    case Registry.lookup(SalixAgent.Registry, agent_id) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, agent_id) do
       [{pid, _}] -> pid
       [] -> raise "no running server for #{agent_id}"
     end
   end
 
-  defp via(agent_id), do: {:via, Registry, {SalixAgent.Registry, agent_id}}
+  defp via(agent_id), do: {:via, SystemsRuntime.Registry, {SalixAgent.Registry, agent_id}}
 
   # ---- gen_statem ----
 
@@ -318,6 +322,9 @@ defmodule SalixAgent.Server do
   def serving({:call, from}, {:stop_if_at_or_below, bound}, data),
     do: handle_conditional_stop(from, bound, data)
 
+  def serving(:info, {:clock_state_timeout, ref, event}, %{clock_timeout: ref} = data),
+    do: serving(:state_timeout, event, %{data | clock_timeout: nil})
+
   def serving(_t, _m, _d), do: :keep_state_and_data
 
   # ---- :parked ----
@@ -361,6 +368,9 @@ defmodule SalixAgent.Server do
 
   def parked({:call, from}, {:stop_if_at_or_below, bound}, data),
     do: handle_conditional_stop(from, bound, data)
+
+  def parked(:info, {:clock_state_timeout, ref, event}, %{clock_timeout: ref} = data),
+    do: parked(:state_timeout, event, %{data | clock_timeout: nil})
 
   def parked(_t, _m, _d), do: :keep_state_and_data
 
@@ -520,8 +530,8 @@ defmodule SalixAgent.Server do
         target_count: length(data.deferred_wake_targets || [])
       })
 
-      {:keep_state, %{data | deferred_wake_attempts: attempts},
-       [{:state_timeout, delay, :retry_deferred_wake}]}
+      {:keep_state,
+       state_timeout(%{data | deferred_wake_attempts: attempts}, delay, :retry_deferred_wake)}
     end
   end
 
@@ -632,11 +642,9 @@ defmodule SalixAgent.Server do
          "session_id" => session_id,
          "reasons" => reasons
        })
-       when runtime_kind in ["internal", "external"] do
-    runtime = if runtime_kind == "internal", do: :internal, else: :external
-
+       when runtime_kind == "internal" do
     if SessionWorkIndex.immediate_recovery_reasons?(reasons),
-      do: %{runtime: runtime, session_id: session_id},
+      do: %{runtime: :internal, session_id: session_id},
       else: nil
   end
 
@@ -694,12 +702,12 @@ defmodule SalixAgent.Server do
     else
       remaining =
         data.owned.head.lease_until -
-          System.system_time(:millisecond) -
+          SystemsClock.system_time(:millisecond) -
           max(data.lease_guard_ms, 0)
 
       if remaining > 0 do
         timeout = min(data.park_ms, remaining)
-        {:next_state, :parked, data, [{:state_timeout, timeout, :passivate}, :hibernate]}
+        {:next_state, :parked, state_timeout(data, timeout, :passivate), [:hibernate]}
       else
         passivate_expiring_lease(data, "park_boundary")
       end
@@ -715,7 +723,7 @@ defmodule SalixAgent.Server do
   @renew_retry_ms 5_000
 
   defp renew_and_park(%Data{} = data) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
     ttl = data.owned.ttl_ms
     lease_until = data.owned.head.lease_until
     # The PUT budget is one renew per agent per ~ttl/3, not one per settle:
@@ -726,7 +734,7 @@ defmodule SalixAgent.Server do
 
     if now < renew_due_at do
       timeout = min(data.park_ms, max(renew_due_at - now, 1_000))
-      {:next_state, :parked, data, [{:state_timeout, timeout, :passivate}, :hibernate]}
+      {:next_state, :parked, state_timeout(data, timeout, :passivate), [:hibernate]}
     else
       do_renew_and_park(data)
     end
@@ -737,7 +745,7 @@ defmodule SalixAgent.Server do
       {:ok, owned} ->
         data = %{data | owned: owned}
         timeout = min(data.park_ms, max(div(owned.ttl_ms, 3), 1_000))
-        {:next_state, :parked, data, [{:state_timeout, timeout, :passivate}, :hibernate]}
+        {:next_state, :parked, state_timeout(data, timeout, :passivate), [:hibernate]}
 
       {:error, :fenced} ->
         CommaLog.log("server_fenced", %{agent_id: data.agent_id, during: "renew"})
@@ -747,14 +755,13 @@ defmodule SalixAgent.Server do
       {:error, reason} ->
         remaining =
           data.owned.head.lease_until -
-            System.system_time(:millisecond) -
+            SystemsClock.system_time(:millisecond) -
             max(data.lease_guard_ms, 0)
 
         if remaining > @renew_retry_ms do
           CommaLog.log("server_renew_retry", %{agent_id: data.agent_id, reason: reason})
 
-          {:next_state, :parked, data,
-           [{:state_timeout, @renew_retry_ms, :passivate}, :hibernate]}
+          {:next_state, :parked, state_timeout(data, @renew_retry_ms, :passivate), [:hibernate]}
         else
           CommaLog.log("server_renew_failed", %{agent_id: data.agent_id, reason: reason})
           abort_runtime(data, {:renew_failed, reason})
@@ -833,5 +840,14 @@ defmodule SalixAgent.Server do
     end
   end
 
-  defp default_node, do: to_string(node())
+  defp default_node, do: to_string(SystemsRuntime.Proc.node())
+
+  # A gen_statem state timeout runs on the BEAM's own clock. This one runs on
+  # SystemsClock, so a test's clock fires it. Arming another replaces it; one
+  # that fires in a state that no longer expects its event is ignored.
+  defp state_timeout(data, ms, event) do
+    ref = SystemsRuntime.Proc.make_ref()
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), {:clock_state_timeout, ref, event}, ms)
+    %{data | clock_timeout: ref}
+  end
 end

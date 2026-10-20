@@ -1,4 +1,5 @@
 import { useCallback, type ChangeEvent, type RefObject } from "react";
+import { uiClock } from "../../../clock";
 import type { TextEditContextMenuAction } from "../../menu";
 import type { AiInputClipboard, ForwardedAiInputProps } from "../types";
 
@@ -11,7 +12,7 @@ export interface TextareaEditActionsOptions extends ForwardedAiInputProps<
   "maxLength" | "onChange" | "onValueChange" | "value"
 > {
   clipboard: AiInputClipboard;
-  pasteFilesFromMenu: () => Promise<boolean>;
+  pasteFromMenu: () => Promise<boolean>;
   requestMeasure: () => void;
   restoreTextareaSelection: () => void;
   /** Where the caret goes back to once the menu hands focus back. */
@@ -31,7 +32,7 @@ export function useTextareaEditActions({
   maxLength,
   onChange,
   onValueChange,
-  pasteFilesFromMenu,
+  pasteFromMenu,
   requestMeasure,
   restoreTextareaSelection,
   savedTextareaSelectionRef,
@@ -61,7 +62,7 @@ export function useTextareaEditActions({
         start: selectionStart,
         end: selectionEnd,
       };
-      requestAnimationFrame(() => {
+      uiClock.frame(() => {
         const nextTextarea = textareaRef.current;
         if (!nextTextarea) return;
         nextTextarea.focus({ preventScroll: true });
@@ -108,7 +109,7 @@ export function useTextareaEditActions({
 
       if (action === "paste") {
         try {
-          if (await pasteFilesFromMenu()) return;
+          if (await pasteFromMenu()) return;
           const text = await clipboard.readText();
           const availableLength =
             maxLength === undefined
@@ -134,7 +135,7 @@ export function useTextareaEditActions({
       applyTextareaValue,
       clipboard,
       maxLength,
-      pasteFilesFromMenu,
+      pasteFromMenu,
       restoreTextareaSelection,
       savedTextareaSelectionRef,
       textareaRef,

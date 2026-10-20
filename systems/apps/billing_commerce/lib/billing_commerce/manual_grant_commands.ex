@@ -103,7 +103,7 @@ defmodule BillingCommerce.ManualGrantCommands do
         "type" => "comma_admin_user",
         "reason" => command.reason
       },
-      valid_from: DateTime.utc_now(),
+      valid_from: SystemsClock.utc_now(),
       expires_at: command.expires_at,
       enforce_product_owner_identity: true,
       metadata: %{

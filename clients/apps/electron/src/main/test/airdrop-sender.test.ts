@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
+import { readFileSync, writeFileSync } from "node:fs";
 import {
   mkdtemp,
   open,
@@ -10,12 +10,18 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SynchronicityState } from "@comma/native-bridge";
+import { testEpoch } from "@comma/test-utils/test-clock";
+import { spawnAirDropHelper } from "../modules/airdrop/helper-process";
 import { AirDropSender } from "../modules/airdrop/sender";
 import { resolveAirDropVfsPath } from "../modules/airdrop/vfs-source";
+import {
+  fakeAirDropHelper,
+  type AirDropHelperRun,
+} from "../../test-support/fake-airdrop-helper";
 
 const roots: string[] = [];
 const senders: AirDropSender[] = [];
@@ -32,6 +38,9 @@ async function root() {
   roots.push(path);
   return path;
 }
+/** The id of a test's `n`th send request: the sender takes only UUIDs. */
+const requestId = (n: number) =>
+  `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 function session() {
   let current = new AbortController();
   return {
@@ -51,34 +60,71 @@ function session() {
     },
   };
 }
-const found = `emit({type:'peer',id:'phone-id',name:'手机\\nquoted "name"',model:'iPhone'});emit({type:'scan_completed',count:1,truncated:false});`;
-const sent = `const files=process.argv.flatMap((arg,index)=>arg==='--file'?[process.argv[index+1]]:[]);writeFileSync(join(root,'delivered'),files.map((path)=>readFileSync(path,'utf8')).join('|'));emit({type:'transfer_progress',direction:'send',peerId:'phone-id',phase:'waiting_for_confirmation',transferredBytes:12,totalBytes:12,fraction:1});emit({type:'send_completed',peerId:'phone-id'});`;
+/** The helper's side of one run; `directory` holds the fixture files. */
+type HelperBody = (run: AirDropHelperRun, directory: string) => void;
+const found: HelperBody = (run) => {
+  run.emit({
+    type: "peer",
+    id: "phone-id",
+    name: '手机\nquoted "name"',
+    model: "iPhone",
+  });
+  run.emit({ type: "scan_completed", count: 1, truncated: false });
+  run.exit(0);
+};
+const sent: HelperBody = (run, directory) => {
+  const files = run.args.flatMap((arg, index) =>
+    arg === "--file" ? [run.args[index + 1]!] : []
+  );
+  writeFileSync(
+    join(directory, "delivered"),
+    files.map((path) => readFileSync(path, "utf8")).join("|")
+  );
+  run.emit({
+    type: "transfer_progress",
+    direction: "send",
+    peerId: "phone-id",
+    phase: "waiting_for_confirmation",
+    transferredBytes: 12,
+    totalBytes: 12,
+    fraction: 1,
+  });
+  run.emit({ type: "send_completed", peerId: "phone-id" });
+  run.exit(0);
+};
+/** Waits for the parent to close stdin, as `--exit-on-stdin-close` does. */
+const waiting =
+  (message: string): HelperBody =>
+  (run) => {
+    run.emit({ type: "progress", message });
+    run.onStdinEnd(() => run.exit(0));
+  };
 async function fixture(
   sendBody = sent,
   findBody = found,
   resolveVfs?: ConstructorParameters<typeof AirDropSender>[0]["resolveVfs"]
 ) {
   const directory = await root();
-  const binaryPath = join(directory, "helper.mjs");
-  await writeFile(
-    binaryPath,
-    `#!${process.execPath}\nimport {readFileSync,writeFileSync} from 'node:fs';import {dirname,join} from 'node:path';
-const root=dirname(process.argv[1]); const emit=(value)=>process.stdout.write(JSON.stringify({version:1,...value})+'\\n');
-if(process.argv.includes('--native-identity')) throw new Error('Comma sends anonymously');
-if(process.argv[2]==='find'){${findBody}}else{${sendBody}}\n`,
-    { mode: 0o755 }
-  );
+  // status() requires the helper on disk; the fake below runs in its place.
+  const binaryPath = join(directory, "helper");
+  await writeFile(binaryPath, "");
+  const helper = fakeAirDropHelper((run) => {
+    if (run.args.includes("--native-identity"))
+      throw new Error("Comma sends anonymously");
+    (run.args[0] === "find" ? findBody : sendBody)(run, directory);
+  });
   const auth = session();
   const sender = new AirDropSender({
     binaryPath,
     platform: "darwin",
     bindSession: auth.bindSession,
+    spawn: helper.spawn,
     ...(resolveVfs ? { resolveVfs } : {}),
   });
   senders.push(sender);
   const path = join(directory, "报告 $(literal).pdf");
   await writeFile(path, "file payload");
-  return { directory, path, sender, auth };
+  return { directory, path, sender, auth, helper };
 }
 /** The existing Drive mount, as Synch publishes it. */
 function driveResolver(driveRoot: string) {
@@ -96,8 +142,18 @@ function driveResolver(driveRoot: string) {
 async function discover(sender: AirDropSender) {
   const scan = sender.find();
   expect(scan.status).toBe("running");
-  await expect.poll(() => sender.operation(scan.operationId).status).toBe("succeeded");
+  await sender.idle();
+  expect(sender.operation(scan.operationId).status).toBe("succeeded");
   return sender.operation(scan.operationId);
+}
+/** Starts a send and waits until the sender settles it. */
+async function settle(
+  sender: AirDropSender,
+  input: Parameters<AirDropSender["send"]>[0]
+) {
+  const operation = sender.send(input);
+  await sender.idle();
+  return { started: operation, settled: sender.operation(operation.operationId) };
 }
 
 describe("AirDrop outbound operations", () => {
@@ -109,7 +165,7 @@ describe("AirDrop outbound operations", () => {
     const h = await fixture(sent, found, resolveVfs);
     await discover(h.sender);
     const input = {
-      requestId: randomUUID(),
+      requestId: requestId(1),
       peerId: "phone-id",
       paths: ["/drive/file.png"],
     };
@@ -118,9 +174,8 @@ describe("AirDrop outbound operations", () => {
       status: "running",
     });
     expect(h.sender.send(input).operationId).toBe(input.requestId);
-    await expect
-      .poll(() => h.sender.operation(input.requestId).status, { timeout: 10_000 })
-      .toBe("succeeded");
+    await h.sender.idle();
+    expect(h.sender.operation(input.requestId).status).toBe("succeeded");
     expect(await readFile(join(h.directory, "delivered"), "utf8")).toBe(
       "Drive file bytes"
     );
@@ -137,14 +192,11 @@ describe("AirDrop outbound operations", () => {
     const h = await fixture(sent, found, driveResolver(driveRoot));
     await discover(h.sender);
     const input = {
-      requestId: randomUUID(),
+      requestId: requestId(1),
       peerId: "phone-id",
       paths: ["/drive/photo.png", h.path],
     };
-    h.sender.send(input);
-    await expect
-      .poll(() => h.sender.operation(input.requestId).status, { timeout: 10_000 })
-      .toBe("succeeded");
+    expect((await settle(h.sender, input)).settled.status).toBe("succeeded");
     // One helper run carries every file, in the requested order.
     expect(await readFile(join(h.directory, "delivered"), "utf8")).toBe(
       "Drive photo|file payload"
@@ -155,17 +207,15 @@ describe("AirDrop outbound operations", () => {
     await rm(join(h.directory, "delivered"));
 
     // A directory anywhere in the batch fails it before anything is sent.
-    const mixed = h.sender.send({
-      requestId: randomUUID(),
+    const mixed = await settle(h.sender, {
+      requestId: requestId(2),
       peerId: "phone-id",
       paths: [h.path, h.directory],
     });
-    await expect
-      .poll(() => h.sender.operation(mixed.operationId))
-      .toMatchObject({
-        error: expect.stringContaining(h.directory),
-        status: "failed",
-      });
+    expect(mixed.settled).toMatchObject({
+      error: expect.stringContaining(h.directory),
+      status: "failed",
+    });
     // The 1 GiB budget covers the whole batch, not each file.
     const halves = await Promise.all(
       ["half-1.bin", "half-2.bin"].map(async (name) => {
@@ -176,18 +226,18 @@ describe("AirDrop outbound operations", () => {
         return path;
       })
     );
-    const oversized = h.sender.send({
-      requestId: randomUUID(),
+    const oversized = await settle(h.sender, {
+      requestId: requestId(3),
       peerId: "phone-id",
       paths: halves,
     });
-    await expect
-      .poll(() => h.sender.operation(oversized.operationId))
-      .toMatchObject({
-        error: "AirDrop files must not exceed 1 GiB in total.",
-        status: "failed",
-      });
+    expect(oversized.settled).toMatchObject({
+      error: "AirDrop files must not exceed 1 GiB in total.",
+      status: "failed",
+    });
     expect(await readdir(h.directory)).not.toContain("delivered");
+    // Only the scan and the first batch started the helper.
+    expect(h.helper.processes.map((child) => child.args[0])).toEqual(["find", "send"]);
   });
 
   it.each(["cancel", "session"] as const)(
@@ -204,7 +254,7 @@ describe("AirDrop outbound operations", () => {
       );
       await discover(h.sender);
       const operation = h.sender.send({
-        requestId: randomUUID(),
+        requestId: requestId(1),
         peerId: "phone-id",
         paths: ["/drive/file.png"],
       });
@@ -216,6 +266,7 @@ describe("AirDrop outbound operations", () => {
       await stopped;
       expect(h.sender.status().active).toBeUndefined();
       expect(await readdir(h.directory)).not.toContain("delivered");
+      expect(h.helper.processes).toHaveLength(1);
     }
   );
 
@@ -225,12 +276,23 @@ describe("AirDrop outbound operations", () => {
     expect(scan.peers).toEqual([
       { id: "phone-id", name: '手机\nquoted "name"', model: "iPhone" },
     ]);
-    const input = { requestId: randomUUID(), peerId: "phone-id", paths: [h.path] };
+    // Scans and sends are anonymous and end when the parent closes stdin.
+    expect(h.helper.processes[0]!.args).toEqual([
+      "find",
+      "--seconds",
+      "5",
+      "--query-timeout",
+      "3",
+      "--max-peers",
+      "64",
+      "--json",
+      "--exit-on-stdin-close",
+    ]);
+    const input = { requestId: requestId(1), peerId: "phone-id", paths: [h.path] };
     expect(h.sender.send(input).status).toBe("running");
     expect(h.sender.send(input).operationId).toBe(input.requestId);
-    await expect
-      .poll(() => h.sender.operation(input.requestId).status)
-      .toBe("succeeded");
+    await h.sender.idle();
+    expect(h.sender.operation(input.requestId).status).toBe("succeeded");
     expect(await readFile(join(h.directory, "delivered"), "utf8")).toBe("file payload");
     // Byte progress rides on the operation; only send_completed made it succeed.
     expect(h.sender.operation(input.requestId).transfer).toEqual({
@@ -248,8 +310,9 @@ describe("AirDrop outbound operations", () => {
   });
 
   it("requires a recent scan and rejects directories, symbolic links, and missing files", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: testEpoch });
     const h = await fixture();
-    const input = { requestId: randomUUID(), peerId: "phone-id", paths: [h.path] };
+    const input = { requestId: requestId(1), peerId: "phone-id", paths: [h.path] };
     expect(() => h.sender.send(input)).toThrow("find again");
     await discover(h.sender);
     expect(() => h.sender.send({ ...input, paths: ["relative.pdf"] })).toThrow(
@@ -257,102 +320,138 @@ describe("AirDrop outbound operations", () => {
     );
     const link = join(h.directory, "link.pdf");
     await symlink(h.path, link);
-    for (const path of [h.directory, link, join(h.directory, "missing.pdf")]) {
-      const operation = h.sender.send({
+    for (const [index, path] of [
+      h.directory,
+      link,
+      join(h.directory, "missing.pdf"),
+    ].entries()) {
+      const { settled } = await settle(h.sender, {
         ...input,
-        requestId: randomUUID(),
+        requestId: requestId(index + 2),
         paths: [path],
       });
-      await expect
-        .poll(() => h.sender.operation(operation.operationId).status)
-        .toBe("failed");
+      expect(settled.status).toBe("failed");
     }
     expect(await readdir(h.directory)).not.toContain("delivered");
-    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 121_000);
+    vi.setSystemTime(testEpoch + 121_000);
     expect(() => h.sender.send(input)).toThrow("find again");
   });
 
+  // The one test with a real helper process: cancelling ends it through the
+  // stdin pipe and SIGTERM, and the sender waits for its exit.
   it("cancels a pending receiver decision, excludes concurrent sends, and drains the process", async () => {
-    const h = await fixture(
-      `emit({type:'progress',message:'Waiting for receiver'});process.stdin.resume();process.stdin.on('end',()=>{emit({type:'send_completed',peerId:'phone-id'});process.exit(0)});`
+    const directory = await root();
+    const binaryPath = join(directory, "helper.mjs");
+    await writeFile(
+      binaryPath,
+      `const emit=(value)=>process.stdout.write(JSON.stringify({version:1,...value})+'\\n');
+if(process.argv[2]==='find'){emit({type:'peer',id:'phone-id'});emit({type:'scan_completed',count:1,truncated:false});}
+else{emit({type:'progress',message:'Waiting for receiver'});process.stdin.resume();process.stdin.on('end',()=>{emit({type:'send_completed',peerId:'phone-id'});process.exit(0)});}
+`
     );
-    await discover(h.sender);
-    const op = h.sender.send({
-      requestId: randomUUID(),
-      peerId: "phone-id",
-      paths: [h.path],
+    const path = join(directory, "file.pdf");
+    await writeFile(path, "file payload");
+    const sending = Promise.withResolvers<ChildProcessWithoutNullStreams>();
+    const sender = new AirDropSender({
+      binaryPath,
+      platform: "darwin",
+      bindSession: session().bindSession,
+      // Node runs the script: macOS assesses a new executable on its first
+      // exec, which takes seconds on a busy Mac.
+      spawn: (command, args) => {
+        const child = spawnAirDropHelper(process.execPath, [command, ...args]);
+        if (args[0] === "send") sending.resolve(child);
+        return child;
+      },
     });
-    await expect
-      .poll(() => h.sender.operation(op.operationId).progress)
-      .toBe("Waiting for receiver");
-    expect(() => h.sender.find()).toThrow("already running");
-    expect((await h.sender.cancel(op.operationId)).status).toBe("cancelled");
-    expect(h.sender.status().active).toBeUndefined();
-    expect(h.sender.operation(op.operationId).status).toBe("cancelled");
+    senders.push(sender);
+    await discover(sender);
+    const op = sender.send({
+      requestId: requestId(1),
+      peerId: "phone-id",
+      paths: [path],
+    });
+    const child = await sending.promise;
+    while (sender.operation(op.operationId).progress !== "Waiting for receiver")
+      await once(child.stdout, "data");
+    expect(() => sender.find()).toThrow("already running");
+    expect((await sender.cancel(op.operationId)).status).toBe("cancelled");
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+    expect(sender.status().active).toBeUndefined();
+    expect(sender.operation(op.operationId).status).toBe("cancelled");
   });
 
   it("aborts work and clears recipients and history when the product session changes", async () => {
-    const h = await fixture(
-      `emit({type:'progress',message:'Waiting'});process.stdin.resume();process.stdin.on('end',()=>process.exit(0));`
-    );
+    const h = await fixture(waiting("Waiting"));
     await discover(h.sender);
+    const spawned = h.helper.nextSpawn();
     const op = h.sender.send({
-      requestId: randomUUID(),
+      requestId: requestId(1),
       peerId: "phone-id",
       paths: [h.path],
     });
-    await expect
-      .poll(() => h.sender.operation(op.operationId).progress)
-      .toBe("Waiting");
+    const child = await spawned;
+    await child.started;
+    expect(h.sender.operation(op.operationId).progress).toBe("Waiting");
     h.auth.change();
     await h.sender.reset();
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
     expect(h.sender.status().active).toBeUndefined();
     expect(() => h.sender.operation(op.operationId)).toThrow("no longer available");
     expect(() =>
-      h.sender.send({ requestId: randomUUID(), peerId: "phone-id", paths: [h.path] })
+      h.sender.send({ requestId: requestId(2), peerId: "phone-id", paths: [h.path] })
     ).toThrow("find again");
   });
 
   it("reports receiver rejection and does not infer success from process exit alone", async () => {
-    for (const body of [
-      `emit({type:'operation_failed',message:'Peer returned HTTP 403'});process.exitCode=1;`,
-      `process.exitCode=0;`,
-      `emit({type:'send_completed',peerId:'phone-id'});process.exitCode=1;`,
-    ]) {
+    const bodies: HelperBody[] = [
+      (run) => {
+        run.emit({ type: "operation_failed", message: "Peer returned HTTP 403" });
+        run.exit(1);
+      },
+      (run) => run.exit(0),
+      (run) => {
+        run.emit({ type: "send_completed", peerId: "phone-id" });
+        run.exit(1);
+      },
+    ];
+    for (const body of bodies) {
       const h = await fixture(body);
       await discover(h.sender);
-      const op = h.sender.send({
-        requestId: randomUUID(),
+      const { settled } = await settle(h.sender, {
+        requestId: requestId(1),
         peerId: "phone-id",
         paths: [h.path],
       });
-      await expect.poll(() => h.sender.operation(op.operationId).status).toBe("failed");
-      expect(h.sender.operation(op.operationId).error).toBeTruthy();
+      expect(settled.status).toBe("failed");
+      expect(settled.error).toBeTruthy();
     }
   });
 
   it("times out a stalled scan without leaving an active subprocess", async () => {
-    const h = await fixture(
-      sent,
-      `emit({type:'progress',message:'Scanning'});process.stdin.resume();process.stdin.on('end',()=>process.exit(0));`
-    );
+    const h = await fixture(sent, waiting("Scanning"));
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const op = h.sender.find();
-    await vi.waitFor(() =>
-      expect(h.sender.operation(op.operationId).progress).toBe("Scanning")
-    );
-    await vi.advanceTimersByTimeAsync(25_000);
-    vi.useRealTimers();
-    await expect.poll(() => h.sender.status().active).toBeUndefined();
+    const child = h.helper.processes[0]!;
+    await child.started;
+    expect(h.sender.operation(op.operationId).progress).toBe("Scanning");
+    await vi.advanceTimersByTimeAsync(24_999);
+    expect(h.sender.operation(op.operationId).status).toBe("running");
+    await vi.advanceTimersByTimeAsync(1);
+    await h.sender.idle();
+    expect(child.signals).toEqual(["SIGTERM"]);
+    expect(h.sender.status().active).toBeUndefined();
     expect(h.sender.operation(op.operationId).status).toBe("timed_out");
   });
 
   it("rejects malformed helper output and bounds retained operation history", async () => {
-    const broken = await fixture(sent, `process.stdout.write('not JSON\\n');`);
+    const broken = await fixture(sent, (run) => {
+      run.stdout("not JSON\n");
+      run.exit(0);
+    });
     const failed = broken.sender.find();
-    await expect
-      .poll(() => broken.sender.operation(failed.operationId).status)
-      .toBe("failed");
+    await broken.sender.idle();
+    expect(broken.sender.operation(failed.operationId).status).toBe("failed");
     const h = await fixture();
     const first = await discover(h.sender);
     for (let index = 0; index < 20; index++) await discover(h.sender);
@@ -366,7 +465,8 @@ describe.skipIf(!helperBinary || process.platform !== "darwin")(
   () => {
     it("discovers a real receiver, delivers a batch, reports refusal, and cancels a pending offer", async () => {
       const directory = await root();
-      const name = `Comma outbound test ${randomUUID()}`;
+      // No other receiver on the network has this run's name.
+      const name = `Comma outbound test ${hostname()} ${process.pid}`;
       const destination = join(directory, "received");
       const receiver = spawn(helperBinary!, [
         "receive",
@@ -383,9 +483,11 @@ describe.skipIf(!helperBinary || process.platform !== "darwin")(
         join(directory, "receiver-identity"),
       ]);
       const closed = once(receiver, "close");
-      let listening = false,
-        buffer = "",
-        offers = 0;
+      const listening = Promise.withResolvers<void>();
+      // The receiver's offers in the order they come.
+      const offers = Array.from({ length: 3 }, () => Promise.withResolvers<void>());
+      let offerCount = 0,
+        buffer = "";
       let accept: boolean | undefined = true;
       receiver.stdout.on("data", (data: Buffer) => {
         buffer += data.toString("utf8");
@@ -393,9 +495,9 @@ describe.skipIf(!helperBinary || process.platform !== "darwin")(
         while ((newline = buffer.indexOf("\n")) >= 0) {
           const event = JSON.parse(buffer.slice(0, newline));
           buffer = buffer.slice(newline + 1);
-          if (event.type === "listening") listening = true;
+          if (event.type === "listening") listening.resolve();
           if (event.type === "approval_requested") {
-            offers++;
+            offers[offerCount++]?.resolve();
             if (accept !== undefined)
               receiver.stdin.write(
                 JSON.stringify({
@@ -408,7 +510,7 @@ describe.skipIf(!helperBinary || process.platform !== "darwin")(
         }
       });
       try {
-        await expect.poll(() => listening, { timeout: 10_000 }).toBe(true);
+        await listening.promise;
         const auth = session();
         const sender = new AirDropSender({
           binaryPath: helperBinary!,
@@ -425,9 +527,8 @@ describe.skipIf(!helperBinary || process.platform !== "darwin")(
         });
         senders.push(sender);
         const scan = sender.find();
-        await expect
-          .poll(() => sender.operation(scan.operationId).status, { timeout: 30_000 })
-          .toBe("succeeded");
+        await sender.idle();
+        expect(sender.operation(scan.operationId).status).toBe("succeeded");
         const peer = sender
           .operation(scan.operationId)
           .peers!.find((candidate) => candidate.name === name);
@@ -439,32 +540,32 @@ describe.skipIf(!helperBinary || process.platform !== "darwin")(
         const second = join(directory, "报告.pdf");
         await writeFile(second, "Second file of the same request");
         const delivery = sender.send({
-          requestId: randomUUID(),
+          requestId: requestId(1),
           peerId: peer!.id,
           paths: ["/drive/真实发送文件.txt", second],
         });
-        await expect
-          .poll(() => sender.operation(delivery.operationId), { timeout: 20_000 })
-          .toMatchObject({ status: "succeeded" });
+        await sender.idle();
+        expect(sender.operation(delivery.operationId)).toMatchObject({
+          status: "succeeded",
+        });
         // One request carried both files to the receiver's directory.
-        expect(offers).toBe(1);
+        expect(offerCount).toBe(1);
         expect(await readFile(join(destination, "真实发送文件.txt"), "utf8")).toBe(
           "Comma outbound file bytes 你好"
         );
         expect(await readFile(join(destination, "报告.pdf"), "utf8")).toBe(
           "Second file of the same request"
         );
-        await expect.poll(() => sender.status().active).toBeUndefined();
+        expect(sender.status().active).toBeUndefined();
         expect(await readFile(path, "utf8")).toBe("Comma outbound file bytes 你好");
         accept = false;
         const refused = sender.send({
-          requestId: randomUUID(),
+          requestId: requestId(2),
           peerId: peer!.id,
           paths: [path],
         });
-        await expect
-          .poll(() => sender.operation(refused.operationId).status, { timeout: 20_000 })
-          .toBe("failed");
+        await sender.idle();
+        expect(sender.operation(refused.operationId).status).toBe("failed");
         // The receiver declines with HTTP 401; the helper reports it verbatim.
         expect(sender.operation(refused.operationId).error).toContain("HTTP 401");
         expect((await readdir(destination)).toSorted()).toEqual([
@@ -473,11 +574,11 @@ describe.skipIf(!helperBinary || process.platform !== "darwin")(
         ]);
         accept = undefined;
         const cancelled = sender.send({
-          requestId: randomUUID(),
+          requestId: requestId(3),
           peerId: peer!.id,
           paths: [path],
         });
-        await expect.poll(() => offers, { timeout: 20_000 }).toBe(3);
+        await offers[2]!.promise;
         expect((await sender.cancel(cancelled.operationId)).status).toBe("cancelled");
         expect(sender.status().active).toBeUndefined();
         expect((await readdir(destination)).toSorted()).toEqual([
@@ -486,10 +587,8 @@ describe.skipIf(!helperBinary || process.platform !== "darwin")(
         ]);
       } finally {
         receiver.stdin.end();
-        const timer = setTimeout(() => receiver.kill("SIGKILL"), 2_000);
         await closed;
-        clearTimeout(timer);
       }
-    }, 60_000);
+    });
   }
 );

@@ -1,15 +1,15 @@
 defmodule BillingStripe.PortalSyncTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(BillingCore.Repo)
 
     previous =
       for key <- [:stripe_api, :portal_configuration_id],
-          do: {key, Application.get_env(:billing_stripe, key)}
+          do: {key, SystemsRuntime.get_env(:billing_stripe, key)}
 
-    Application.put_env(:billing_stripe, :stripe_api, __MODULE__.API)
-    Application.delete_env(:billing_stripe, :portal_configuration_id)
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, __MODULE__.API)
+    SystemsRuntime.delete_env(:billing_stripe, :portal_configuration_id)
 
     start_supervised!(%{
       id: __MODULE__.State,
@@ -19,8 +19,8 @@ defmodule BillingStripe.PortalSyncTest do
     on_exit(fn ->
       Enum.each(previous, fn {key, value} ->
         if value,
-          do: Application.put_env(:billing_stripe, key, value),
-          else: Application.delete_env(:billing_stripe, key)
+          do: SystemsRuntime.put_env(:billing_stripe, key, value),
+          else: SystemsRuntime.delete_env(:billing_stripe, key)
       end)
     end)
 
@@ -45,7 +45,7 @@ defmodule BillingStripe.PortalSyncTest do
 
   test "management convergence preserves disabled plan changes and repairs configuration drift" do
     catalog = Comma.Billing.PricingV1.catalog()
-    Application.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
 
     start_supervised!(%{
       id: BillingStripe.TestAPI.Recorder,
@@ -53,9 +53,9 @@ defmodule BillingStripe.PortalSyncTest do
     })
 
     assert {:ok, _} = BillingStripe.sync_prices(catalog)
-    Application.put_env(:billing_stripe, :stripe_api, __MODULE__.API)
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, __MODULE__.API)
     assert {:ok, initial} = BillingStripe.PortalSync.sync(%{}, bootstrap: true)
-    Application.put_env(:billing_stripe, :portal_configuration_id, initial.id)
+    SystemsRuntime.put_env(:billing_stripe, :portal_configuration_id, initial.id)
     assert {:ok, portal} = BillingStripe.PortalSync.sync(catalog)
     assert portal.features.subscription_update.enabled == false
     assert {:ok, _} = BillingStripe.PortalSync.sync(catalog, dry_run: true, verify: true)

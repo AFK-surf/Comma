@@ -1,4 +1,5 @@
 import { getNativeBridge } from "@comma/native-bridge";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { useEffect } from "react";
 
 // Quiet period that stands in for the native end-of-resize signal. Main
@@ -52,19 +53,19 @@ export function subscribeWindowResizing(listener: () => void) {
  */
 export function useWindowResizingFlag() {
   useEffect(() => {
-    let quietTimer: number | undefined;
+    let quietTimer: CancelUiTimer | undefined;
     const cancelQuietClear = () => {
       if (quietTimer === undefined) return;
-      window.clearTimeout(quietTimer);
+      quietTimer();
       quietTimer = undefined;
     };
     const handleResize = () => {
       setWindowResizing(true);
       cancelQuietClear();
-      quietTimer = window.setTimeout(() => {
+      quietTimer = uiClock.after(windowResizeQuietPeriodMs, () => {
         quietTimer = undefined;
         setWindowResizing(false);
-      }, windowResizeQuietPeriodMs);
+      });
     };
     const settle = () => {
       cancelQuietClear();

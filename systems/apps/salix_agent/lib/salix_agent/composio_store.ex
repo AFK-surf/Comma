@@ -25,7 +25,7 @@ defmodule SalixAgent.ComposioStore do
 
   @doc "The configured implementation module, or nil."
   @spec impl() :: module() | nil
-  def impl, do: Application.get_env(:salix_agent, :composio_store_mod)
+  def impl, do: SystemsRuntime.get_env(:salix_agent, :composio_store_mod)
 
   @spec settings(String.t()) ::
           {:ok, %{optional(String.t()) => term()}} | {:error, term()}

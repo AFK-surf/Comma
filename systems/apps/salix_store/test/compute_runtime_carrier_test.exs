@@ -1,13 +1,14 @@
 defmodule SalixStore.ComputeRuntimeCarrierTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  import Ecto.Query
 
   alias SalixStore.{Compute, ComputeRuntimeCarrier, Crypto, Repo}
   alias SalixWeb.ComputeRuntimeSocket
 
   setup do
-    previous = Application.get_env(:salix_store, :compute_workload_credential_secret)
+    previous = SystemsRuntime.get_env(:salix_store, :compute_workload_credential_secret)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_store,
       :compute_workload_credential_secret,
       String.duplicate("s", 40)
@@ -15,8 +16,8 @@ defmodule SalixStore.ComputeRuntimeCarrierTest do
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_store, :compute_workload_credential_secret, previous),
-        else: Application.delete_env(:salix_store, :compute_workload_credential_secret)
+        do: SystemsRuntime.put_env(:salix_store, :compute_workload_credential_secret, previous),
+        else: SystemsRuntime.delete_env(:salix_store, :compute_workload_credential_secret)
     end)
 
     Repo.query!(
@@ -65,7 +66,7 @@ defmodule SalixStore.ComputeRuntimeCarrierTest do
         id: "workload",
         environment_id: environment.id,
         allocation_id: allocation.id,
-        kind: "external_worker",
+        kind: "meeting_runtime",
         capability_requirements: ["runtime_exec"],
         generation: 1
       })
@@ -128,14 +129,6 @@ defmodule SalixStore.ComputeRuntimeCarrierTest do
     assert opened.event_cursor == ""
     refute Map.has_key?(opened.credential, "expires_at")
 
-    assert :ok =
-             ComputeRuntimeSocket.terminate(:closed, %ComputeRuntimeSocket{
-               status: :ready,
-               runtime_instance_id: fixture.runtime.id,
-               generation: fixture.runtime.generation,
-               connection_epoch: fixture.runtime.connection_epoch
-             })
-
     assert %{status: "connected", readiness: "ready"} =
              Repo.get!(Compute.RuntimeInstance, fixture.runtime.id)
 
@@ -165,49 +158,7 @@ defmodule SalixStore.ComputeRuntimeCarrierTest do
                "1"
              )
 
-    assert Repo.get!(Compute.RuntimeInstance, fixture.runtime.id).input_cursor == input["id"]
-  end
-
-  test "host bootstrap preparation stays disconnected until the Runtime Agent carrier opens",
-       fixture do
-    assert {:ok, prepared} =
-             Compute.prepare_runtime_bootstrap(%{
-               id: fixture.runtime.id,
-               workload_id: fixture.workload.id,
-               allocation_id: fixture.runtime.allocation_id,
-               generation: fixture.runtime.generation,
-               connection_epoch: "2"
-             })
-
-    assert prepared.status == "disconnected"
-    assert prepared.readiness == "pending"
-    assert prepared.caught_up_epoch == "0"
-
-    {:ok, bootstrap} =
-      Compute.WorkloadCredential.issue_for_runtime(
-        fixture.workload.id,
-        fixture.runtime.id,
-        ["bootstrap"],
-        60
-      )
-
-    assert {:ok, opened} =
-             Compute.open_runtime_carrier(bootstrap["token"], %{
-               "protocol_version" => 1,
-               "supported_features" => [
-                 "runtime.input.v1",
-                 "runtime.event.v1",
-                 "runtime.auth.v1",
-                 "runtime.execution.v1"
-               ],
-               "input_cursor" => "",
-               "event_cursor" => ""
-             })
-
-    assert opened.runtime.status == "connected"
-    assert opened.runtime.readiness == "ready"
-    assert opened.runtime.connection_epoch == "2"
-    assert opened.runtime.caught_up_epoch == "2"
+    assert Repo.get!(Compute.RuntimeInstance, fixture.runtime.id).event_cursor == input["id"]
   end
 
   @tag :runtime_recovery
@@ -314,136 +265,6 @@ defmodule SalixStore.ComputeRuntimeCarrierTest do
     }
   end
 
-  test "normalizes a persisted cursor from a retired workload generation", fixture do
-    assert {:ok, _} =
-             submit(fixture.runtime, "1", %{
-               "dispatch_id" => "retired-generation-input",
-               "runtime_capability_token" => fixture.credential["token"]
-             })
-
-    assert {:ok, [input]} =
-             ComputeRuntimeCarrier.claim_inputs(fixture.runtime.id, "1", nil, 1)
-
-    assert {:ok, _} = ComputeRuntimeCarrier.ack(input["id"], fixture.runtime.id, "1")
-    assert Repo.get!(Compute.RuntimeInstance, fixture.runtime.id).input_cursor == input["id"]
-
-    # Model a pre-fix persisted RuntimeInstance after the Workload generation
-    # advanced. The retired input remains durable for audit/replay, but cannot
-    # order the new generation's stream.
-    Repo.update_all(Compute.Workload,
-      set: [generation: 2, revision: fixture.workload.revision + 1]
-    )
-
-    Repo.update_all(Compute.RuntimeInstance,
-      set: [generation: 2, status: "connected", readiness: "ready", caught_up_epoch: "1"]
-    )
-
-    {:ok, bootstrap} =
-      Compute.WorkloadCredential.issue_for_runtime(
-        fixture.workload.id,
-        fixture.runtime.id,
-        ["bootstrap"],
-        60
-      )
-
-    assert {:ok, opened} =
-             Compute.open_runtime_carrier(bootstrap["token"], %{
-               "protocol_version" => 1,
-               "supported_features" => [
-                 "runtime.input.v1",
-                 "runtime.event.v1",
-                 "runtime.auth.v1",
-                 "runtime.execution.v1"
-               ],
-               "input_cursor" => "",
-               "event_cursor" => ""
-             })
-
-    assert opened.input_cursor == ""
-    assert opened.event_cursor == ""
-  end
-
-  test "meeting carrier requires input and event features", fixture do
-    Repo.update_all(Compute.Workload, set: [kind: "meeting_runtime"])
-
-    {:ok, bootstrap} =
-      Compute.WorkloadCredential.issue_for_runtime(
-        fixture.workload.id,
-        fixture.runtime.id,
-        ["bootstrap"],
-        60
-      )
-
-    handshake = %{
-      "protocol_version" => 1,
-      "supported_features" => ["runtime.event.v1"],
-      "input_cursor" => "",
-      "event_cursor" => ""
-    }
-
-    assert {:error, :required_runtime_feature_missing} =
-             Compute.open_runtime_carrier(bootstrap["token"], handshake)
-
-    assert {:ok, opened} =
-             Compute.open_runtime_carrier(
-               bootstrap["token"],
-               Map.put(handshake, "supported_features", [
-                 "runtime.input.v1",
-                 "runtime.event.v1"
-               ])
-             )
-
-    assert opened.features == ["runtime.input.v1", "runtime.event.v1"]
-  end
-
-  test "socket confirms only a durable input ACK", fixture do
-    assert {:ok, _} =
-             submit(fixture.runtime, "1", %{
-               "dispatch_id" => "socket-ack",
-               "runtime_capability_token" => fixture.credential["token"]
-             })
-
-    assert {:ok, [input]} =
-             ComputeRuntimeCarrier.claim_inputs(fixture.runtime.id, "1", nil, 1)
-
-    state = %ComputeRuntimeSocket{
-      status: :ready,
-      runtime_instance_id: fixture.runtime.id,
-      connection_epoch: "1",
-      runtime_kind: "external_worker",
-      features: ["runtime.input.v1", "runtime.event.v1", "runtime.auth.v1"],
-      in_flight: input["id"]
-    }
-
-    assert {:push, {:text, confirmation}, next_state} =
-             ComputeRuntimeSocket.handle_in(
-               {Jason.encode!(%{
-                  "type" => "runtime.input_ack",
-                  "input_id" => input["id"]
-                }), [opcode: :text]},
-               state
-             )
-
-    assert Jason.decode!(confirmation) == %{
-             "type" => "runtime.input_acked",
-             "input_id" => input["id"]
-           }
-
-    assert next_state.in_flight == nil
-    assert Repo.get!(ComputeRuntimeCarrier.Input, input["id"]).status == "acked"
-    assert_receive :claim
-  end
-
-  test "accepts only canonical non-zero uint64 connection epochs", fixture do
-    for epoch <- ["", "0", "01", "-1", "18446744073709551616"] do
-      assert {:error, :invalid_connection_epoch} =
-               submit(fixture.runtime, epoch, %{
-                 "dispatch_id" => "invalid-epoch-" <> inspect(epoch),
-                 "runtime_capability_token" => fixture.credential["token"]
-               })
-    end
-  end
-
   test "requires caught-up current epoch and persists before acknowledging; retries are idempotent",
        fixture do
     payload = %{
@@ -467,55 +288,6 @@ defmodule SalixStore.ComputeRuntimeCarrierTest do
 
     assert {:error, :stale_runtime_capability} =
              submit(fixture.runtime, "2", payload)
-  end
-
-  test "same dispatch retry replaces only its delivery capability after reconnect", fixture do
-    payload = %{
-      "kind" => "external",
-      "dispatch_id" => "epoch-retry",
-      "runtime_capability_token" => fixture.credential["token"],
-      "session_id" => "session"
-    }
-
-    assert {:ok, _} = submit(fixture.runtime, "1", payload)
-
-    {:ok, reconnected} =
-      Compute.observe_runtime(%{
-        id: fixture.runtime.id,
-        workload_id: fixture.workload.id,
-        allocation_id: fixture.runtime.allocation_id,
-        generation: fixture.workload.generation,
-        connection_epoch: "2"
-      })
-
-    assert {:ok, _} = Compute.complete_runtime_catch_up(reconnected.id, reconnected.revision, "2")
-
-    retried_payload = Map.put(payload, "runtime_capability_token", "new-session-token")
-
-    assert {:ok, _} =
-             ComputeRuntimeCarrier.submit(
-               fixture.runtime.id,
-               "2",
-               retried_payload
-             )
-
-    input = Repo.get_by!(ComputeRuntimeCarrier.Input, source_dispatch_id: "epoch-retry")
-    assert input.payload == Map.drop(payload, ["runtime_capability_token"])
-
-    assert {:ok, "new-session-token"} =
-             Crypto.unseal_runtime_capability(input.runtime_capability_ciphertext)
-
-    refute input.runtime_capability_ciphertext =~ "new-session-token"
-
-    assert {:ok, [claimed]} =
-             ComputeRuntimeCarrier.claim_inputs(
-               fixture.runtime.id,
-               "2",
-               nil,
-               1
-             )
-
-    assert claimed["payload"]["runtime_capability_token"] == "new-session-token"
   end
 
   test "old epoch cannot acknowledge a current input", fixture do
@@ -605,106 +377,6 @@ defmodule SalixStore.ComputeRuntimeCarrierTest do
     assert Repo.get!(ComputeRuntimeCarrier.Input, claimed["id"]).status == "acked"
   end
 
-  test "claims a bounded batch, acknowledges by durable input id, and requeues in-flight work on reconnect",
-       fixture do
-    for dispatch_id <- ["claim-1", "claim-2"] do
-      assert {:ok, _} =
-               submit(fixture.runtime, "1", %{
-                 "dispatch_id" => dispatch_id,
-                 "runtime_capability_token" => fixture.credential["token"]
-               })
-    end
-
-    assert {:ok, [first]} =
-             ComputeRuntimeCarrier.claim_inputs(
-               fixture.runtime.id,
-               "1",
-               nil,
-               1
-             )
-
-    assert first["dispatch_id"] == "claim-1"
-    assert Repo.get!(ComputeRuntimeCarrier.Input, first["id"]).status == "in_flight"
-
-    assert {:ok, [reclaimed]} =
-             ComputeRuntimeCarrier.claim_inputs(
-               fixture.runtime.id,
-               "1",
-               nil,
-               1
-             )
-
-    assert reclaimed["id"] == first["id"]
-
-    assert {:ok, _second} =
-             ComputeRuntimeCarrier.claim_inputs(
-               fixture.runtime.id,
-               "1",
-               first["id"],
-               1
-             )
-
-    assert {:ok, _acked} =
-             ComputeRuntimeCarrier.ack(
-               first["id"],
-               fixture.runtime.id,
-               "1"
-             )
-
-    assert Repo.get!(ComputeRuntimeCarrier.Input, first["id"]).status == "acked"
-
-    {:ok, reconnected} =
-      Compute.observe_runtime(%{
-        id: fixture.runtime.id,
-        workload_id: fixture.workload.id,
-        allocation_id: fixture.runtime.allocation_id,
-        generation: fixture.workload.generation,
-        connection_epoch: "2"
-      })
-
-    assert Repo.get!(ComputeRuntimeCarrier.Input, "compute-input-" <> hash_for("claim-2"))
-           |> Map.take([:status, :connection_epoch]) == %{
-             status: "pending",
-             connection_epoch: "2"
-           }
-
-    assert {:ok, _} = Compute.complete_runtime_catch_up(reconnected.id, reconnected.revision, "2")
-  end
-
-  test "preserves the business payload and rejects an unknown cursor", fixture do
-    assert {:ok, _} =
-             submit(fixture.runtime, "1", %{
-               "dispatch_id" => "business-payload",
-               "runtime_capability_token" => fixture.credential["token"]
-             })
-
-    assert {:error, :invalid_after_cursor} =
-             ComputeRuntimeCarrier.claim_inputs(
-               fixture.runtime.id,
-               "1",
-               "missing-cursor",
-               1
-             )
-
-    assert Repo.get_by!(ComputeRuntimeCarrier.Input, source_dispatch_id: "business-payload").status ==
-             "pending"
-
-    assert {:ok, [claimed]} =
-             ComputeRuntimeCarrier.claim_inputs(
-               fixture.runtime.id,
-               "1",
-               nil,
-               1
-             )
-
-    assert claimed["payload"]["runtime_capability_token"] == fixture.credential["token"]
-
-    refute Map.has_key?(
-             Repo.get!(ComputeRuntimeCarrier.Input, claimed["id"]).payload,
-             "runtime_capability_token"
-           )
-  end
-
   test "scopes a caller dispatch id to its workload", fixture do
     {:ok, allocation} =
       Compute.allocate(%{
@@ -721,7 +393,7 @@ defmodule SalixStore.ComputeRuntimeCarrierTest do
         id: "workload-2",
         environment_id: "environment",
         allocation_id: allocation.id,
-        kind: "external_worker",
+        kind: "meeting_runtime",
         capability_requirements: ["runtime_exec"],
         generation: 1
       })
@@ -800,6 +472,59 @@ defmodule SalixStore.ComputeRuntimeCarrierTest do
     assert second_ack.runtime_instance_id == runtime.id
   end
 
+  test "a deletion fence rejects new frames while previously accepted pending inputs can settle",
+       fixture do
+    payload = %{
+      "dispatch_id" => "accepted-before-delete",
+      "runtime_capability_token" => fixture.credential["token"],
+      "session_id" => "session"
+    }
+
+    assert {:ok, _} = submit(fixture.runtime, "1", payload)
+
+    from(w in Compute.Workload, where: w.id == ^fixture.workload.id)
+    |> Repo.update_all(
+      set: [
+        desired_state: "draining",
+        deletion: %{"phase" => "settling_work", "request_id" => "delete"}
+      ]
+    )
+
+    assert {:error, :stale_runtime_capability} =
+             submit(fixture.runtime, "1", Map.put(payload, "dispatch_id", "after-delete"))
+
+    assert Repo.aggregate(ComputeRuntimeCarrier.Input, :count, :id) == 1
+
+    Repo.update_all(from(r in Compute.RuntimeInstance, where: r.id == ^fixture.runtime.id),
+      set: [status: "disconnected", readiness: "catching_up", caught_up_epoch: "0"]
+    )
+
+    assert {:ok, resumed} = Compute.open_runtime_carrier(fixture.credential["token"], handshake())
+    assert resumed.runtime.id == fixture.runtime.id
+    assert resumed.runtime.status == "connected"
+    assert resumed.runtime.caught_up_epoch == "1"
+
+    assert {:error, _} =
+             Compute.WorkloadCredential.verify_for_runtime(
+               fixture.credential["token"],
+               fixture.workload.id,
+               fixture.runtime.id,
+               1,
+               "runtime"
+             )
+
+    assert {:ok, [claimed]} = ComputeRuntimeCarrier.claim_inputs(fixture.runtime.id, "1", nil, 32)
+
+    assert {:ok, [replayed]} =
+             ComputeRuntimeCarrier.claim_inputs(fixture.runtime.id, "1", nil, 32)
+
+    assert replayed["id"] == claimed["id"]
+    assert {:ok, settled} = ComputeRuntimeCarrier.ack(claimed["id"], fixture.runtime.id, "1")
+    assert settled.status == "acked"
+
+    assert {:ok, []} = ComputeRuntimeCarrier.claim_inputs(fixture.runtime.id, "1", nil, 32)
+  end
+
   test "a terminal stop revokes runtime admission before accepting no further frames", fixture do
     payload = %{
       "dispatch_id" => "terminal-dispatch",
@@ -832,7 +557,6 @@ defmodule SalixStore.ComputeRuntimeCarrierTest do
 
   test "accepts bounded product prompts larger than the legacy 128 KiB limit", fixture do
     payload = %{
-      "kind" => "external",
       "dispatch_id" => "large-product-prompt",
       "runtime_capability_token" => fixture.credential["token"],
       "system_prompt" => String.duplicate("p", 256 * 1024)

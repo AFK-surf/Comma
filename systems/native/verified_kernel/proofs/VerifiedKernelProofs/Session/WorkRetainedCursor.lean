@@ -1,4 +1,5 @@
 import VerifiedKernelProofs.Session.WorkCurrentRecordFence
+import VerifiedKernelProofs.Session.WorkCurrentConfirmation
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data ArchivePublication

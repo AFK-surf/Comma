@@ -39,7 +39,7 @@ def mergeMaps (x y : Term) : Term :=
 def removeKey (m : Term) (key : Term) : Term :=
   match m with | .map entries => .map (entries.filter (·.1 != key)) | _ => m
 
-private def scrubBytes (raw : ByteArray) : ByteArray := Id.run do
+def scrubBytes (raw : ByteArray) : ByteArray := Id.run do
   if (String.fromUTF8? raw).isSome then return raw
   let mut output := ByteArray.empty
   let mut pos := 0
@@ -58,7 +58,7 @@ private def scrubBytes (raw : ByteArray) : ByteArray := Id.run do
       pos := pos + width
   return output
 
-private def scrubFuel : Nat → Term → Term
+def scrubFuel : Nat → Term → Term
   | 0, value => value
   | _ + 1, .binary raw => .binary (scrubBytes raw)
   | fuel + 1, .list xs => list (xs.map (scrubFuel fuel))

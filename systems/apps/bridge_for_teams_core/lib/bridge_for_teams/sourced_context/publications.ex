@@ -82,7 +82,7 @@ defmodule BridgeForTeams.SourcedContext.Publications do
   defp new_commit(run, command) do
     :ok = ensure_supported_publication_scope(run)
     :ok = ensure_commit_evidence(run, command)
-    publication_id = Ecto.UUID.generate()
+    publication_id = SystemsRuntime.Proc.uuid()
 
     evidence = %{
       snapshot_id: command.snapshot_id,
@@ -104,7 +104,7 @@ defmodule BridgeForTeams.SourcedContext.Publications do
         )
       end)
 
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     publication =
       %SourcedContextPublication{id: publication_id}
@@ -206,7 +206,7 @@ defmodule BridgeForTeams.SourcedContext.Publications do
         )
       end)
 
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     publication = deactivate!(publication, now, command.reason)
 
     result = %{
@@ -257,7 +257,7 @@ defmodule BridgeForTeams.SourcedContext.Publications do
         )
       end)
 
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     publication =
       case protocol_receipt.kind do
@@ -577,7 +577,7 @@ defmodule BridgeForTeams.SourcedContext.Publications do
 
   defp commit_feature_enabled do
     if Keyword.get(
-         Application.get_env(:bridge_for_teams_core, :sourced_context_features, []),
+         SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_features, []),
          :commit,
          false
        ),

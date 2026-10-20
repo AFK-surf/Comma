@@ -68,13 +68,13 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectController do
          :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
          {:ok, project} <- require_project(conn, org, params["project"]),
          :ok <- ProjectScope.authorize_project_for_conn(conn, project, :write),
-         {:ok, inbound_agent_id} <- require_inbound_agent(params["inbound_agent_id"]),
+         {:ok, inbound} <- require_inbound(params),
          {:ok, connect} <-
-           ProjectIMConnects.update_project_slack_inbound_agent(
+           ProjectIMConnects.update_project_slack_inbound(
              org.id,
              project.id,
              connect_id,
-             inbound_agent_id,
+             inbound,
              request_audit_opts(conn)
            ) do
       send_ok(conn, %{
@@ -86,7 +86,22 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectController do
       })
     else
       {:error, :missing_inbound_agent} ->
-        send_error(conn, 400, "missing_inbound_agent", "Pass inbound_agent_id.", %{})
+        send_error(
+          conn,
+          400,
+          "missing_inbound_agent",
+          "Pass inbound_agent_id (the Router) or inbound_tasks ({\"model\": <model choice or null>}).",
+          %{}
+        )
+
+      {:error, :workers_retired} ->
+        send_error(
+          conn,
+          410,
+          "workers_retired",
+          "Workers are retired. Bind the connection to the Router, or to Tasks with inbound_tasks: each new Slack thread becomes a Task that runs its model, or the project's default Task model.",
+          %{}
+        )
 
       error ->
         send_project_error(conn, error, "Could not update project Slack connect.")
@@ -164,18 +179,24 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectController do
 
   defp slack_attrs(params, %Project{} = project) do
     params
-    |> Map.take(~w(app_id client_id client_secret signing_secret app_name inbound_agent_id))
+    |> Map.take(
+      ~w(app_id client_id client_secret signing_secret app_name inbound_agent_id inbound_tasks)
+    )
     |> Map.put_new("app_name", project.name)
   end
 
-  defp require_inbound_agent(value) when is_binary(value) do
+  # The Router (`inbound_agent_id`) or Tasks (`inbound_tasks`).
+  defp require_inbound(%{"inbound_tasks" => %{} = tasks}),
+    do: {:ok, %{"inbound_tasks" => tasks}}
+
+  defp require_inbound(%{"inbound_agent_id" => value}) when is_binary(value) do
     case String.trim(value) do
       "" -> {:error, :missing_inbound_agent}
-      value -> {:ok, value}
+      value -> {:ok, %{"inbound_agent_id" => value}}
     end
   end
 
-  defp require_inbound_agent(_value), do: {:error, :missing_inbound_agent}
+  defp require_inbound(_params), do: {:error, :missing_inbound_agent}
 
   defp request_audit_opts(conn) do
     user = current_user(conn)
@@ -183,7 +204,7 @@ defmodule BridgeForTeamsWeb.ProjectIMConnectController do
     [
       actor_user_id: user.id,
       actor_label: actor_label(user),
-      request_id: List.first(get_req_header(conn, "x-request-id")) || Ecto.UUID.generate()
+      request_id: List.first(get_req_header(conn, "x-request-id")) || SystemsRuntime.Proc.uuid()
     ]
   end
 

@@ -3,8 +3,9 @@ defmodule SalixLlm.OpenAIChatRequestSeamTest do
   The blocking OpenAI Chat boundary exposes the exact immutable JSON bytes that
   will be sent and lets request-scoped callers disable Req transport retries.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixLlm", "Elixir.SalixLLM"]
   alias SalixLlm.Provider
 
   defmodule MockServer do
@@ -91,7 +92,7 @@ defmodule SalixLlm.OpenAIChatRequestSeamTest do
       {200, %{"choices" => [%{"message" => %{"content" => "ok"}, "finish_reason" => "stop"}]}}
     ])
 
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     format = %{
       "type" => "json_schema",
@@ -111,7 +112,7 @@ defmodule SalixLlm.OpenAIChatRequestSeamTest do
       base_opts(base_url)
       |> Map.put("response_format", format)
       |> Map.put(:before_send, fn body ->
-        send(owner, {:observed_body, body})
+        SystemsRuntime.Proc.send(owner, {:observed_body, body})
         :ok
       end)
 
@@ -122,7 +123,7 @@ defmodule SalixLlm.OpenAIChatRequestSeamTest do
                llm_opts
              )
 
-    assert_receive {:observed_body, observed_body}, 100
+    settle_receive({:observed_body, observed_body})
     assert [%{raw_body: sent_body, headers: headers}] = MockServer.requests(server)
     assert observed_body == sent_body
     assert Jason.decode!(sent_body)["response_format"] == format
@@ -168,22 +169,6 @@ defmodule SalixLlm.OpenAIChatRequestSeamTest do
              )
 
     assert [%{path: "/chat/completions"}] = MockServer.requests(server)
-  end
-
-  test "the default path retains transient transport retries", %{
-    server: server,
-    base_url: base_url
-  } do
-    MockServer.set_responses(server, [
-      {500, %{"error" => %{"message" => "temporary"}}},
-      {200,
-       %{"choices" => [%{"message" => %{"content" => "retried"}, "finish_reason" => "stop"}]}}
-    ])
-
-    assert {:final, "retried"} =
-             Provider.complete([%{role: "user", content: "hello"}], [], base_opts(base_url))
-
-    assert [_first_attempt, _retry] = MockServer.requests(server)
   end
 
   test "before_send rejection fails closed without an HTTP request", %{

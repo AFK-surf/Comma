@@ -56,9 +56,9 @@ theorem prepare_write_receipt_supported {state next : Term} {journal rest sealed
   have same : next = written := by
     simpa only [Term.tuple.injEq, List.cons.injEq, and_true, true_and] using same
   subst written
-  have ledger : LedgerFrame normalized next := write_field_frame writeCall rfl
+  have ledger : LedgerFrame normalized next := write_field_frame writeCall (by keys_absent)
   have fields : WorkFieldsPreserved normalized next :=
-    ⟨write_field_frame writeCall rfl, write_field_frame writeCall rfl⟩
+    ⟨write_field_frame writeCall (by keys_absent), write_field_frame writeCall (by keys_absent)⟩
   refine ⟨?_, ?_⟩
   · intro source present
     rw [ledger] at present

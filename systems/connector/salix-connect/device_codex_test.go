@@ -59,13 +59,13 @@ func TestCodexEntrySurvivesStandaloneUpgrade(t *testing.T) {
 		impl := c.runtimeImplementations["codex"].(*codexRuntimeImplementation)
 		rt, err := impl.ensureTargetRuntime(context.Background(), runtimeProbeTarget{provider: "codex", identityMaterial: entry})
 		if err != nil {
-			c.closeExternalRuntimes()
+			c.closeRuntimes()
 			t.Fatalf("%s runtime launch through entry: %v", version, err)
 		}
 		if rt.command != entry {
 			t.Errorf("runtime replaced entry identity: %q", rt.command)
 		}
-		c.closeExternalRuntimes()
+		c.closeRuntimes()
 	}
 }
 
@@ -76,7 +76,7 @@ func TestDeviceCodexReenable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	target := runtimeProbeTarget{provider: "codex", identityMaterial: command}
 	impl := c.runtimeImplementations["codex"].(*codexRuntimeImplementation)
 	if _, err := impl.ensureTargetRuntime(context.Background(), target); err != nil {

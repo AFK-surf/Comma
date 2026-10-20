@@ -45,7 +45,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		return runVMMCertificates(ctx, args[1:], stdin, stdout)
 	}
 	if len(args) == 0 || len(args) > 3 {
-		return &exitError{exitUsage, errors.New("usage: comma-release <plan|status|observe|reconcile|legacy-upgrade|prepare|migrate|sync-provider|finish-agent-configuration|publish-runtime-release|apply|verify|recover|repair> [--resume-forward] [--retry-failed]")}
+		return &exitError{exitUsage, errors.New("usage: comma-release <plan|status|observe|reconcile|legacy-upgrade|prepare|migrate|sync-provider|finish-agent-configuration|apply|verify|recover|repair> [--resume-forward] [--retry-failed]")}
 	}
 	command := args[0]
 	replaceRelease := ""
@@ -229,23 +229,16 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 			if err == nil {
 				err = platform.FinishAgentConfiguration(ctx, state)
 			}
-			if err == nil {
-				err = platform.PublishRuntimeRelease(ctx, state)
-			}
 		}
 	case "migrate":
 		state, err = engine.Migrate(ctx)
-	case "finish-agent-configuration", "publish-runtime-release":
+	case "finish-agent-configuration":
 		record, loadErr := store.Load(ctx)
 		if loadErr != nil {
 			return loadErr
 		}
 		state = record.State
-		if command == "publish-runtime-release" {
-			err = platform.PublishRuntimeRelease(ctx, state)
-		} else {
-			err = platform.FinishAgentConfiguration(ctx, state)
-		}
+		err = platform.FinishAgentConfiguration(ctx, state)
 	case "sync-provider":
 		state, err = engine.SyncProvider(ctx)
 	case "apply":

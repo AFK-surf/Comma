@@ -20,7 +20,9 @@ defmodule Comma.Workers.RecommendationGenerate do
         if remaining_ms(run) <= 0 do
           settle(run_id, :recommendation_run_timed_out)
         else
-          case Application.fetch_env!(:comma_core, :recommendation_runtime_mod).generate(run_id) do
+          case SystemsRuntime.fetch_env!(:comma_core, :recommendation_runtime_mod).generate(
+                 run_id
+               ) do
             :ok -> :ok
             {:error, reason} -> settle(run_id, reason)
           end
@@ -30,7 +32,7 @@ defmodule Comma.Workers.RecommendationGenerate do
 
   def remaining_ms(run) do
     RecommendationBudgets.run_hard_cap_seconds() * 1_000 -
-      DateTime.diff(DateTime.utc_now(), run.inserted_at, :millisecond)
+      DateTime.diff(SystemsClock.utc_now(), run.inserted_at, :millisecond)
   end
 
   defp settle(run_id, reason) do

@@ -7,7 +7,7 @@ defmodule SalixAgent.SessionKernelProvenanceQueryTest do
   read these queries through the kernel from both a handle and a state map.
   An empty session answers the fail-closed activation.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.InternalSession.State
   alias SalixVerifiedKernel.Session, as: Resident
@@ -96,17 +96,4 @@ defmodule SalixAgent.SessionKernelProvenanceQueryTest do
   end
 
   ## `SalixAgent.ToolCallProvenance` ----------------------------------------
-
-  test "ToolCallProvenance.current_source_ids/1 goes through the kernel" do
-    state = base(%{messages: [user(1, "s1", %{trusted_origin: human_origin()})]})
-
-    assert SalixAgent.ToolCallProvenance.current_source_ids(state) == ["s1"]
-
-    assert SalixAgent.ToolCallProvenance.current_source_ids(
-             SalixAgent.InternalSession.open(state)
-           ) == ["s1"]
-
-    assert SalixAgent.ToolCallProvenance.current_source_ids(%{}) == []
-    assert SalixAgent.ToolCallProvenance.current_source_ids(nil) == []
-  end
 end

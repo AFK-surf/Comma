@@ -4,7 +4,6 @@ defmodule SalixAgent.AsyncToolResults do
   alias SalixAgent.ToolResultProjection
 
   @internal_operation_source "async-tool-result"
-  @external_operation_source "external-async-tool-result"
   @reader_tool "tool_call.get_result"
   @notification_result_preview_chars 16_000
   @notification_error_message_chars 4_000
@@ -12,7 +11,6 @@ defmodule SalixAgent.AsyncToolResults do
   @result_response_max_bytes ToolResultProjection.model_envelope_max_bytes()
 
   def operation_source(:internal), do: @internal_operation_source
-  def operation_source(:external), do: @external_operation_source
 
   @doc false
   def result_response_max_bytes, do: @result_response_max_bytes
@@ -62,52 +60,6 @@ defmodule SalixAgent.AsyncToolResults do
       [wait_clear(session_id(pending), tool_call_id(pending))]
   end
 
-  def external_events(pending, result, message_id \\ nil) do
-    id = tool_call_id(pending)
-    name = tool_name(pending)
-    status = status(result)
-
-    completion = completion_event(pending, result, status)
-    summary = completion_summary(status, name, id)
-    runtime_message_id = "tool-call-result:" <> id
-    source_refs = tool_completion_source_refs(id, name, status, result)
-
-    notification =
-      %{
-        "type" => "delivery",
-        "session_id" => session_id(pending),
-        "source_message_id" => runtime_message_id,
-        "role" => "runtime",
-        "kind" => "runtime_message",
-        "runtime_message_id" => runtime_message_id,
-        "runtime_message_type" => runtime_message_type(status),
-        "source_tool_call_id" => id,
-        "summary" => summary,
-        "source_refs" => source_refs,
-        "content" =>
-          SalixAgent.Waits.async_completion_content(
-            %{"tool_call_id" => id, "tool_name" => name},
-            result
-          ),
-        "created_at" => System.system_time(:second)
-      }
-      |> put_optional("visible_reply_origin", field(result, :visible_reply_origin))
-      |> put_optional("message_id", message_id)
-      |> put_optional("trusted_origin", raw_field(pending, :trusted_origin))
-      |> put_optional("trusted_origins", raw_field(pending, :trusted_origins))
-      |> put_optional(
-        "trusted_origin_source_message_ids",
-        raw_field(pending, :trusted_origin_source_message_ids)
-      )
-
-    # Modeled in tla/salix/ExternalRuntimeToolWake.tla. External deliveries
-    # clear the durable wait when they enter the input queue. Make that same
-    # transition explicit so the separately persisted ExternalSessionStatus
-    # projection cannot retain the old auto-wait after the connector has
-    # consumed this completion and reported `settled`.
-    side_effects(result) ++ [completion, wait_clear(session_id(pending)), notification]
-  end
-
   def completion_summary(status, tool_name, tool_call_id) do
     case status do
       "failed" -> "async tool #{tool_name || "tool"} failed for #{tool_call_id}"
@@ -120,8 +72,6 @@ defmodule SalixAgent.AsyncToolResults do
   def session_id(record), do: field(record, :session_id)
 
   def status(result), do: if(error?(result), do: "failed", else: "completed")
-  defp runtime_message_type("failed"), do: "tool_call_failed"
-  defp runtime_message_type(_status), do: "tool_call_completed"
 
   def side_effects(result) do
     case result[:events] || result["events"] do
@@ -137,10 +87,10 @@ defmodule SalixAgent.AsyncToolResults do
     |> Map.put("tool_call_id", tool_call_id)
   end
 
-  defp completion_event(pending, result, status, completed_at_ms \\ nil) do
+  defp completion_event(pending, result, status, completed_at_ms) do
     id = tool_call_id(pending)
     type = if status == "failed", do: "async_tool_call_failed", else: "async_tool_call_completed"
-    now = completed_at_ms || System.system_time(:millisecond)
+    now = completed_at_ms || SystemsClock.system_time(:millisecond)
 
     %{
       "type" => type,
@@ -178,7 +128,7 @@ defmodule SalixAgent.AsyncToolResults do
       "kind" => "runtime_message",
       "dedupe_key" => "tool-call-result:" <> tool_call_id,
       "wake" => true,
-      "created_at" => Keyword.get(opts, :created_at) || System.system_time(:second),
+      "created_at" => Keyword.get(opts, :created_at) || SystemsClock.system_time(:second),
       "payload" =>
         %{
           "runtime_message_id" => "tool-call-result:" <> tool_call_id,

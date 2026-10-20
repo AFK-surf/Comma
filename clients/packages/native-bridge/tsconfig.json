@@ -5,8 +5,18 @@
     "declaration": true,
     "declarationMap": true,
     "emitDeclarationOnly": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "noEmit": false,
+    "rootDir": "."
   },
-  "include": ["src"],
-  "exclude": ["**/*.test.*", "**/*.spec.*"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.json"],
+  "exclude": ["**/*.test.*", "**/*.spec.*", "**/*.stories.*"],
+  "references": [
+    {
+      "path": "../chat-contract"
+    },
+    {
+      "path": "../session-contract"
+    }
+  ]
 }

@@ -11,9 +11,6 @@ export interface CoalescedAsyncRenderInput {
  * Changing its scope or replacing the source invalidates the old result, but
  * does not start another worker operation until the current one settles.
  * A stalled worker claims no progress; this queue adds no timer or retry.
- *
- * Ordering, disposal, and latest-input progress (assuming worker settlement)
- * map to `tla/salix/MarkdownAsyncRender.tla`.
  */
 export function createCoalescedAsyncRender<
   Input extends CoalescedAsyncRenderInput,

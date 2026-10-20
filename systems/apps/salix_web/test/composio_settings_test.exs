@@ -6,7 +6,7 @@ defmodule Salix.Control.ComposioSettingsTest do
   the enabled flag, and delete. Storage is Postgres (SalixStore.ComposioSettings).
   """
   # Shares the node-global composio_settings table; keep serial.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Control.ComposioSettings
 
@@ -14,6 +14,9 @@ defmodule Salix.Control.ComposioSettingsTest do
 
   setup do
     SalixStore.Repo.query!("TRUNCATE composio_settings")
+    # A deployment default left behind would configure Composio for every
+    # later suite in this VM.
+    on_exit(fn -> SalixStore.Repo.query!("TRUNCATE composio_settings") end)
     :ok
   end
 

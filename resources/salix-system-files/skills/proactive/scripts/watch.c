@@ -98,6 +98,22 @@ static sf_handle read_configured(sf_handle spec, sf_handle event, sf_handle *res
   sf_drop(args); return result;
 }
 
+/* A poll whose read equals the last settled observation has nothing new.
+ * Bounded plugin MCP reads are encoded in one stable key order. */
+static int unchanged(sf_handle state, sf_handle source) {
+  if (source < 0) return 0;
+  sf_handle settled = sf_json_get(state, "observation");
+  if (settled < 0 || sf_json_kind(settled) != SF_OBJECT) { sf_drop(settled); return 0; }
+  sf_handle a = sf_json_dump(settled), b = sf_json_dump(source);
+  sf_drop(settled);
+  sf_i64 n = sf_bytes_len(a), m = sf_bytes_len(b);
+  int same = n > 0 && n == m && n <= 8192;
+  if (same) { sf_bytes_read(a, 0, buffer, 8192); sf_bytes_read(b, 0, buffer + 8192, 8192); }
+  sf_drop(a); sf_drop(b);
+  for (sf_i64 i = 0; same && i < n; i++) if (buffer[i] != buffer[8192 + i]) same = 0;
+  return same;
+}
+
 static int save(sf_handle state) {
   sf_handle args = sf_json_object();
   sf_json_set(args, "state", state);
@@ -148,8 +164,8 @@ static int process(sf_handle config, sf_handle event, sf_handle state, int polli
   sf_drop(previous);
   if (source >= 0) sf_json_set(evidence, "source", source);
   if (context >= 0) sf_json_set(evidence, "context", context);
-  int quiet = 0;
-  if (source >= 0 && context >= 0) {
+  int quiet = polling && unchanged(state, source);
+  if (!quiet && source >= 0 && context >= 0) {
     sf_handle args = sf_json_object();
     sf_handle questions = sf_json_parse(QUESTIONS, sizeof(QUESTIONS) - 1);
     sf_json_set(args, "state", evidence); sf_json_set(args, "questions", questions);
@@ -184,6 +200,13 @@ static int process(sf_handle config, sf_handle event, sf_handle state, int polli
       sf_handle content = sf_json_string_raw(buffer, len);
       sf_handle args = sf_json_object();
       sf_handle id = sf_json_get(event, "event_id");
+      if (source < 0 && polling) {
+        /* Polls that keep failing to read the source are one handoff, keyed
+         * by the first failed poll, not a new wake every interval. */
+        sf_handle since = sf_json_get(state, "source_error_since");
+        if (sf_json_kind(since) == SF_STRING) { sf_drop(id); id = since; }
+        else { sf_drop(since); sf_json_set(state, "source_error_since", id); }
+      }
       sf_json_set(args, "content", content); sf_json_set(args, "dedup_key", id);
       sf_handle reply = sf_host_call("agent.notify", args, 20000);
       ok = sf_json_string_equals(reply, "status", "queued") == 1 ||
@@ -194,7 +217,15 @@ static int process(sf_handle config, sf_handle event, sf_handle state, int polli
   }
   if (ok) {
     /* Checkpoint the settled observation, not a duplicate of all chat history. */
-    if (source >= 0) sf_json_set(state, "observation", source);
+    if (source >= 0) {
+      sf_json_set(state, "observation", source);
+      sf_handle since = sf_json_get(state, "source_error_since");
+      if (sf_json_kind(since) == SF_STRING) {
+        sf_handle cleared = sf_json_null();
+        sf_json_set(state, "source_error_since", cleared); sf_drop(cleared);
+      }
+      sf_drop(since);
+    }
     if (polling) {
       sf_handle cleared = sf_json_null();
       sf_json_set(state, "pending_poll", cleared); sf_drop(cleared);

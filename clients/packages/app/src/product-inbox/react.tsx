@@ -1,213 +1,138 @@
+import type { ManualTaskStatus } from "@comma/chat-contract";
 import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
-import type { SessionProductLease } from "@comma/session-contract";
-import {
-  productInboxUnavailableResult,
-  type ProductInboxArchiveIntent,
-  type ProductInboxArchiveStage,
-  type ProductInboxProjectionController,
-  type ProductInboxProjectionEnvelope,
-  type ProductInboxRefresh,
-} from "./controller";
+  useCall,
+  useTopic,
+  useTopicSelect,
+  type ProductInboxListResult,
+} from "@comma/core-client";
+import { useCallback, useEffect, useRef } from "react";
+import { productInboxUnavailableResult } from "./messages";
 
-const ProductInboxProjectionContext = createContext<
-  ProductInboxProjectionController | undefined
->(undefined);
-
-const subscribeUnavailable = () => () => undefined;
-const getUnavailableSnapshot = () => null;
-
-export function ProductInboxProjectionProvider({
-  children,
-  controller,
-}: {
-  children: ReactNode;
-  controller: ProductInboxProjectionController;
-}) {
-  return (
-    <ProductInboxProjectionContext.Provider value={controller}>
-      {children}
-    </ProductInboxProjectionContext.Provider>
-  );
-}
+/**
+ * A workspace's tasks and chats, as the client core keeps them (`tasks`): shown
+ * from the device at once and kept current while shown. `workspaceId` also
+ * becomes the core's focus, which `useProductInboxSnapshot` and the other
+ * readers without a workspace follow.
+ */
+export type ProductInboxRefresh = {
+  conversationIds?: string[] | undefined;
+  /** Reads the next page (the list's own cursor). */
+  cursor?: string | undefined;
+  workspaceId?: string | undefined;
+};
 
 export function useProductInboxProjection(input: {
   enabled: boolean;
-  session: SessionProductLease;
   workspaceId?: string | undefined;
 }) {
-  const controller = useContext(ProductInboxProjectionContext);
-  const sessionIdentity = productLeaseIdentity(input.session);
-  const stableSession = useMemo<SessionProductLease>(
-    () => ({
-      audience: input.session.audience,
-      authorityInstanceId: input.session.authorityInstanceId,
-      generation: input.session.generation,
-      sessionId: input.session.sessionId,
-    }),
-    [
-      input.session.audience,
-      input.session.authorityInstanceId,
-      input.session.generation,
-      input.session.sessionId,
-    ]
-  );
-  const retention = useMemo(() => ({ session: stableSession }), [stableSession]);
-  const snapshot = useSyncExternalStore(
-    controller ? (listener) => controller.subscribe(listener) : subscribeUnavailable,
-    controller ? () => controller.getSnapshotSync() : getUnavailableSnapshot,
-    getUnavailableSnapshot
+  const call = useCall();
+  const workspace = input.workspaceId ?? "";
+  const { error, value } = useTopic(
+    input.enabled ? { topic: "tasks", workspace } : null
   );
 
   useEffect(() => {
-    if (!input.enabled || !controller) {
-      return undefined;
-    }
-    return controller.retain(retention);
-  }, [controller, input.enabled, retention]);
+    if (input.enabled && input.workspaceId)
+      void call("tasks.focus", { workspace: input.workspaceId }).catch(() => undefined);
+  }, [call, input.enabled, input.workspaceId]);
 
-  useEffect(() => {
-    if (!input.enabled || !controller || !input.workspaceId) {
-      return;
-    }
-    void controller.refresh({ workspaceId: input.workspaceId }).catch(() => undefined);
-  }, [controller, input.enabled, input.workspaceId, sessionIdentity]);
+  // Following the focus ("") and then naming the workspace it showed is the
+  // same list: keep showing it until the named topic's first value arrives.
+  const last = useRef<ProductInboxListResult | null>(null);
+  const kept = last.current;
+  if (value && !error) last.current = value;
+  const result = error
+    ? // The core could not keep the list (it is not running): say so, not loading.
+      productInboxUnavailableResult("utility_unavailable")
+    : (value ??
+      (input.enabled && workspace && kept?.activeWorkspaceId === workspace
+        ? kept
+        : null));
 
-  const refresh = useCallback(
-    (refreshInput?: ProductInboxRefresh) => {
-      if (!controller) {
-        return Promise.reject(
-          new Error("The ProductInbox projection controller is unavailable.")
-        );
-      }
-      return controller.refresh(refreshInput);
-    },
-    [controller]
-  );
-
-  const matchingSnapshot =
-    snapshot && productLeaseIdentity(snapshot.session) === sessionIdentity
-      ? snapshot.snapshot
-      : null;
-
-  return {
-    refresh,
-    result:
-      matchingSnapshot ??
-      (input.enabled && !controller
-        ? productInboxUnavailableResult("utility_unavailable")
-        : null),
-  };
+  const refresh = useProductInboxRefresh();
+  return { refresh, result };
 }
 
-/** Requests a canonical reread without retaining another projection demand. */
+/**
+ * Asks the core to read a list again now (`conversationIds`: those tasks
+ * exactly), or its next page (`cursor`). A failed next page rejects with the
+ * list's error code.
+ */
 export function useProductInboxRefresh() {
-  const controller = useContext(ProductInboxProjectionContext);
+  const call = useCall();
   return useCallback(
-    (input?: ProductInboxRefresh) => {
-      if (!controller) return Promise.reject(new Error("ProductInbox is unavailable"));
-      return controller.refresh(input);
+    async (input: ProductInboxRefresh = {}) => {
+      const workspace = input.workspaceId ? { workspace: input.workspaceId } : {};
+      if (input.cursor) await call("tasks.more", workspace);
+      else
+        await call("tasks.refresh", {
+          ...workspace,
+          ...(input.conversationIds ? { conversations: input.conversationIds } : {}),
+        });
     },
-    [controller]
+    [call]
   );
 }
 
-/**
- * Stages a Task the user just archived on the projected list. Without a host
- * projection there is nothing local to update, so the decision is simply not
- * shown early and the authority still decides it.
- */
-export function useStageTaskArchived() {
-  const controller = useContext(ProductInboxProjectionContext);
+export type ProductInboxArchiveIntent = {
+  conversationId: string;
+  groupId: string;
+  /** The Task version the decision was taken against: a later one ends it. */
+  version?: number | undefined;
+};
+
+/** A staged decision's handle: `confirm` keeps it until the server shows it, `rollback` drops it. */
+export type ProductInboxArchiveStage = {
+  confirm(): void;
+  rollback(): void;
+};
+
+export type ProductInboxStatusIntent = ProductInboxArchiveIntent & {
+  status: ManualTaskStatus;
+};
+
+function useStage() {
+  const call = useCall();
   return useCallback(
-    (input: ProductInboxArchiveIntent): ProductInboxArchiveStage =>
-      controller
-        ? controller.stageTaskArchived(input)
-        : { confirm: () => undefined, rollback: () => undefined },
-    [controller]
+    (input: ProductInboxArchiveIntent, status: string): ProductInboxArchiveStage => {
+      const staged = call("tasks.stage", {
+        conversationId: input.conversationId,
+        groupId: input.groupId,
+        status,
+        ...(input.version === undefined ? {} : { version: input.version }),
+      });
+      // A stage the core could not make (or no core) has nothing to settle; it
+      // fails quietly whether or not the caller settles it.
+      staged.catch(() => undefined);
+      const settle = (accepted: boolean) =>
+        void staged
+          .then(({ stage }) => call("tasks.stage.settle", { accepted, stage }))
+          .catch(() => undefined);
+      return { confirm: () => settle(true), rollback: () => settle(false) };
+    },
+    [call]
   );
 }
 
-/**
- * Runs `observe` on each owner read as it lands, including a reread that
- * repeats the published list, without rendering the caller. A cache of facts
- * outside the owner's page uses it to revalidate them.
- */
-export function useProductInboxOwnerReads(
-  observe: (snapshot: ProductInboxProjectionEnvelope) => void
-) {
-  const controller = useContext(ProductInboxProjectionContext);
-  useEffect(() => {
-    if (!controller) return undefined;
-    const notify = () => {
-      const snapshot = controller.getOwnerSnapshotSync();
-      if (snapshot) observe(snapshot);
-    };
-    notify();
-    return controller.subscribeOwnerSnapshot(notify);
-  }, [controller, observe]);
+/** Shows a status the user just chose by hand on every list at once. */
+export function useStageTaskStatus() {
+  const stage = useStage();
+  return useCallback(
+    (input: ProductInboxStatusIntent) => stage(input, input.status),
+    [stage]
+  );
 }
 
-/**
- * Reads one Task's item from the host owner's projection. The caller renders
- * again only when that Task's facts change, not when another Task's do.
- */
+/** One Task of the focused list: the caller renders again only when that Task changes. */
 export function useProductInboxItem(groupId: string, conversationId: string) {
-  const controller = useContext(ProductInboxProjectionContext);
-  const subscribe = useCallback(
-    (listener: () => void) =>
-      controller ? controller.subscribe(listener) : subscribeUnavailable(),
-    [controller]
-  );
-  return useSyncExternalStore(
-    subscribe,
-    () =>
-      controller
-        ?.getSnapshotSync()
-        ?.snapshot.items.find(
-          (item) => item.groupId === groupId && item.conversationId === conversationId
-        ),
-    () => undefined
+  return useTopicSelect({ topic: "tasks", workspace: "" }, (value) =>
+    value?.items.find(
+      (item) => item.groupId === groupId && item.conversationId === conversationId
+    )
   );
 }
 
-/** Reads which Workspace the host owner's projection shows, without its list. */
-export function useProductInboxActiveWorkspaceId() {
-  const controller = useContext(ProductInboxProjectionContext);
-  const subscribe = useCallback(
-    (listener: () => void) =>
-      controller ? controller.subscribe(listener) : subscribeUnavailable(),
-    [controller]
-  );
-  return useSyncExternalStore(
-    subscribe,
-    () => controller?.getSnapshotSync()?.snapshot.activeWorkspaceId,
-    () => undefined
-  );
-}
-
-/** Reads the host owner's replay-last projection without adding demand. */
-export function useProductInboxSnapshot() {
-  const controller = useContext(ProductInboxProjectionContext);
-  return useSyncExternalStore(
-    controller ? (listener) => controller.subscribe(listener) : subscribeUnavailable,
-    controller ? () => controller.getSnapshotSync() : getUnavailableSnapshot,
-    getUnavailableSnapshot
-  );
-}
-
-function productLeaseIdentity(session: SessionProductLease) {
-  return JSON.stringify([
-    session.authorityInstanceId,
-    session.generation,
-    session.sessionId,
-    session.audience,
-  ]);
+/** The focused list, without asking for a workspace. */
+export function useProductInboxSnapshot(): ProductInboxListResult | null {
+  return useTopic({ topic: "tasks", workspace: "" }).value ?? null;
 }

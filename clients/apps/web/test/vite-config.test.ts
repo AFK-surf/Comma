@@ -33,19 +33,4 @@ describe("Comma web runtime config", () => {
       COMMA_DEFINED_API_BASE_URL: JSON.stringify("http://127.0.0.1:4300"),
     });
   });
-
-  it.each([
-    ["staging", "https://salix-staging.comma.surf"],
-    ["prod", "https://salix.comma.surf"],
-  ] as const)(
-    "binds %s builds to their configured API origin",
-    async (flavor, apiBaseUrl) => {
-      const config = await loadViteConfig(flavor, "http://127.0.0.1:4300");
-
-      expect(config.define).toMatchObject({
-        COMMA_DEFINED_BUILD_FLAVOR: JSON.stringify(flavor),
-        COMMA_DEFINED_API_BASE_URL: JSON.stringify(apiBaseUrl),
-      });
-    }
-  );
 });

@@ -1,5 +1,5 @@
 defmodule SalixWeb.SalixFacadeTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Runtime.Placement
 
@@ -51,14 +51,14 @@ defmodule SalixWeb.SalixFacadeTest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_placement = Application.get_env(:salix_agent, :placement)
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_placement = SystemsRuntime.get_env(:salix_agent, :placement)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_fake_store()
     start_supervised!(SalixAgent.LLM.Mock)
-    Application.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
+    SystemsRuntime.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
@@ -74,7 +74,7 @@ defmodule SalixWeb.SalixFacadeTest do
        %{agent: agent} do
     session_id = SalixStore.Ids.new_session_id()
     SalixAgent.TestSupport.create_control_agent!(agent)
-    Application.put_env(:salix_agent, :placement, FailingPlacement)
+    SystemsRuntime.put_env(:salix_agent, :placement, FailingPlacement)
 
     # The staged contract ("durable fact survives a failed wake") retired with
     # the staged path: rpc acks only after the owner-side ledger commit, so a
@@ -88,7 +88,7 @@ defmodule SalixWeb.SalixFacadeTest do
     assert {:error, :not_found} = SalixAgent.InternalSessionStore.read(agent, session_id)
 
     # Placement recovers: the SAME source id retries and lands exactly once.
-    Application.put_env(:salix_agent, :placement, InertPlacement)
+    SystemsRuntime.put_env(:salix_agent, :placement, InertPlacement)
     SalixAgent.LLM.Mock.script([{:final, "ok"}])
 
     assert {:ok, :created} =
@@ -106,11 +106,11 @@ defmodule SalixWeb.SalixFacadeTest do
     assert Placement.remote_boundary() == {:erpc, SalixAgent.Fleet, :ensure_started}
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp start_fake_store do
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)

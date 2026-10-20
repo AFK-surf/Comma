@@ -45,7 +45,7 @@ macro_rules
   | `(tactic| round_kept_step $h:ident) =>
     `(tactic| first
       | (head_is $h [write]; simp only [write_round_kept_step] at $h:ident; obtain ⟨_, kept⟩ := $h
-         refine round_kept_trans (kept rfl) ?_)
+         refine round_kept_trans (kept (by keys_absent)) ?_)
       | (head_step $h "_round_kept_step"; obtain ⟨_, kept⟩ := $h; refine round_kept_trans kept ?_))
 
 syntax "round_kept_walk" ident : tactic
@@ -154,7 +154,7 @@ theorem historyCompaction_round_kept {s e t : Term} {provider : Bool} {j r : Lis
        obtain ⟨value, _, prior, h⟩ := bound
        first
          | (execution_head_is prior "VerifiedKernel.Data.write"
-            refine round_kept_trans (write_field_frame prior rfl) ?_)
+            refine round_kept_trans (write_field_frame prior (by keys_absent)) ?_)
          | (execution_head_is prior "VerifiedKernel.Session.pruneResultRefs"
             refine round_kept_trans (pruneResultRefs_round_kept prior) ?_)
          | (execution_head_is prior "VerifiedKernel.Session.pruneCompactResults"
@@ -175,7 +175,16 @@ round_rule compactResult (state event)
 round_rule storedResult (state event)
 round_rule transcriptToolResult (state event)
 round_rule transcriptLog (state event)
-round_rule transcriptSeed (state event)
+/-- Compose the two writes of `transcriptSeed` (`transcriptSeed_ops`). -/
+theorem transcriptSeed_round_kept {state event next : Term} {journal rest : List Term}
+    (call : transcriptSeed state event journal = .ok (next, rest)) : RoundKept state next := by
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, seeded, bytes⟩ := transcriptSeed_ops call
+  exact round_kept_trans (write_field_frame seeded (by keys_absent)) (write_field_frame bytes (by keys_absent))
+
+theorem transcriptSeed_round_kept_step {state event next : Term} {journal rest : List Term} :
+    transcriptSeed state event journal = .ok (next, rest) ↔
+      Except.ok (next, rest) = transcriptSeed state event journal ∧ RoundKept state next :=
+  step_iff transcriptSeed_round_kept
 round_rule queueAppend (state event)
 round_rule queueAck (state event)
 round_rule queueConsume (state event)
@@ -190,30 +199,6 @@ theorem sessionEvent_round_kept_step {state event next : Term} {journal rest : L
       Except.ok (next, rest) = sessionEvent state event journal ∧ RoundKept state next :=
   step_iff sessionEvent_round_kept
 
-theorem mergePredicate_round_kept {s kind through replacement extra t : Term} {j r : List Term}
-    (h : mergePredicate s kind through replacement extra j = .ok (t, r)) : RoundKept s t := by
-  unfold mergePredicate at h
-  repeat' first
-    | exact (write_field_frame h rfl)
-    | split at h
-    | (obtain ⟨_, _, _, h⟩ := bind_ok h)
-
-theorem mergePredicate_round_kept_step {s kind through replacement extra t : Term} {j r : List Term} :
-    mergePredicate s kind through replacement extra j = .ok (t, r) ↔
-      Except.ok (t, r) = mergePredicate s kind through replacement extra j ∧ RoundKept s t :=
-  step_iff mergePredicate_round_kept
-
-theorem microcompactIds_round_kept {s replacement e t : Term} {ids j r : List Term}
-    (h : microcompactIds s ids replacement e j = .ok (t, r)) : RoundKept s t := by
-  unfold microcompactIds at h
-  round_kept_walk h
-
-theorem microcompactIds_round_kept_step {s replacement e t : Term} {ids j r : List Term} :
-    microcompactIds s ids replacement e j = .ok (t, r) ↔
-      Except.ok (t, r) = microcompactIds s ids replacement e j ∧ RoundKept s t :=
-  step_iff microcompactIds_round_kept
-
-round_rule microcompact (state event)
 round_rule capabilitySync (state event)
 round_rule archiveAdvance (state event)
 
@@ -300,12 +285,12 @@ macro_rules
               obtain ⟨_, _, $hl:ident, _, $rfl:ident, _⟩ := $hx)
            | (head_is $hx [Pure.pure]; simp only [pure_ok_iff] at $hx:ident; cases $hx:ident)
            | (head_is $hx [write]; simp only [write_round_kept_step] at $hx:ident; obtain ⟨_, kept⟩ := $hx
-              refine reset_of_kept (kept rfl) ?_)
+              refine reset_of_kept (kept (by keys_absent)) ?_)
            | (head_step $hx "_round_kept_step"; obtain ⟨_, kept⟩ := $hx; refine reset_of_kept kept ?_)
            | (split at $hx:ident <;> first
                | (head_is $hx [Pure.pure]; simp only [pure_ok_iff] at $hx:ident; cases $hx:ident)
                | (head_is $hx [write]; simp only [write_round_kept_step] at $hx:ident; obtain ⟨_, kept⟩ := $hx
-                  refine reset_of_kept (kept rfl) ?_)
+                  refine reset_of_kept (kept (by keys_absent)) ?_)
                | (head_step $hx "_round_kept_step"; obtain ⟨_, kept⟩ := $hx; refine reset_of_kept kept ?_)
                | skip)
            | skip)
@@ -316,7 +301,7 @@ cheaper than a walk over every branch of `runtimeAppend`. -/
 theorem runtimeAppend_round {s e t : Term} {j r : List Term} (h : runtimeAppend s e j = .ok (t, r)) :
     RoundReset s t := by
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops h
-  exact reset_of_kept (appendFields_round_kept appended) (reset_of_kept (write_field_frame written rfl)
+  exact reset_of_kept (appendFields_round_kept appended) (reset_of_kept (write_field_frame written (by keys_absent))
     (reset_of_kept (bumpHwm_round_kept bumped) (resetFresh_round reset)))
 
 theorem transcriptRuntime_round {s e t : Term} {j r : List Term} (h : transcriptRuntime s e j = .ok (t, r)) :
@@ -342,7 +327,7 @@ theorem transcriptDelivery_round {s e t : Term} {j r : List Term} (h : transcrip
     RoundReset s t := by
   rcases transcriptDelivery_ops h with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, obligated, bumped, reset⟩
   · exact Or.inl (round_kept_refl _)
-  · exact reset_of_kept (appendFields_round_kept appended) (reset_of_kept (write_field_frame written rfl)
+  · exact reset_of_kept (appendFields_round_kept appended) (reset_of_kept (write_field_frame written (by keys_absent))
       (reset_of_kept (addObligation_round_kept obligated) (reset_of_kept (bumpHwm_round_kept bumped)
         (resetFresh_round reset))))
 

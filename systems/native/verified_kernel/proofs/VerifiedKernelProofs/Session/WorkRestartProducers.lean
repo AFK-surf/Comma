@@ -1,5 +1,4 @@
 import VerifiedKernelProofs.Session.WorkPresentationRecoveryProducers
-import VerifiedKernelProofs.Session.WorkNoWakeOrdinary
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data
@@ -21,6 +20,11 @@ abbrev restartAddItems : Term → String → List Term → Term :=
 def RestartContextOrdinary (context : Term) : Prop :=
   ∀ key ∈ ["missing_events", "external_events", "recovered_events", "failure_events", "capability_events"],
     RawOrdinaryBatch (restartGetList context key)
+
+theorem RestartContextOrdinary.get {context : Term} (safe : RestartContextOrdinary context) {key : String}
+    (member : key ∈ ["missing_events", "external_events", "recovered_events", "failure_events",
+      "capability_events"]) : RawOrdinaryBatch (restartGetList context key) :=
+  safe key member
 
 theorem RestartContextOrdinary.put_other {context value : Term} {name : String}
     (safe : RestartContextOrdinary context)
@@ -73,7 +77,8 @@ macro_rules
   | `(tactic| solve_restart_batch $safe:ident) => `(tactic|
     (repeat' first
        | assumption
-       | exact $safe _ (by simp)
+       | (with_reducible refine RestartContextOrdinary.get $safe ?_
+          repeat (first | exact List.Mem.head _ | apply List.Mem.tail))
        | apply raw_ordinary_append.mpr
        | apply raw_ordinary_pair.mpr
        | exact (restart_queue_ordinary _ _ _ _).raw
@@ -98,8 +103,7 @@ theorem restart_final_plan_events_ordinary {state context output : Term} {journa
        have bound := bind_ok call; clear call; rcases bound with ⟨value, _, prior, call⟩
        first
          | (execution_head_is prior "VerifiedKernel.Session.Presentation.recoveredCompletion"
-            rcases recovered_completion_events_ordinary
-              (raw_ordinary_no_wake_map (by solve_restart_batch safe) _) prior with
+            rcases recovered_completion_events_ordinary (by solve_restart_batch safe) prior with
               ⟨events, same, batch⟩
             subst value)
          -- Classify each generated sub-batch before processing the continuation.

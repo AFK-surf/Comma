@@ -9,8 +9,8 @@ defmodule AlertRouter.PostHogTest do
   @issue_id "019a9b08-3333-7777-8888-222222222222"
 
   setup do
-    previous = Application.fetch_env!(:alert_router, :posthog_webhook)
-    on_exit(fn -> Application.put_env(:alert_router, :posthog_webhook, previous) end)
+    previous = SystemsRuntime.fetch_env!(:alert_router, :posthog_webhook)
+    on_exit(fn -> SystemsRuntime.put_env(:alert_router, :posthog_webhook, previous) end)
     :ok
   end
 
@@ -77,7 +77,7 @@ defmodule AlertRouter.PostHogTest do
     }
 
     assert %{status: 401} = AlertRouter.Web.Router.call(conn, [])
-    Application.delete_env(:alert_router, :posthog_webhook)
+    SystemsRuntime.delete_env(:alert_router, :posthog_webhook)
     assert %{status: 503} = post(payload())
     assert Repo.all(Incident) == []
   end

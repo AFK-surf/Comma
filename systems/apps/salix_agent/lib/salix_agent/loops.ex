@@ -27,11 +27,41 @@ defmodule SalixAgent.Loops do
   Placement, loading and unloading are `SalixAgent.Loops.Reconciler`'s;
   the spinfoam process is `SalixAgent.Loops.Host`'s. This module never
   talks to the child process directly except through those two.
+
+  ## Trigger, limits and runs
+
+  A Loop may declare its trigger (`every_minutes`, `cron` with an IANA
+  `timezone`, or an `events` label) and its limits (`max_runs`, `ends_at`,
+  `stop_condition`). The row is the only record of them and of the Loop's
+  runs: a run is one `agent.notify` wake newly delivered (`record_run/3`),
+  counted in `run_count`. The runtime ends the Loop itself (`ended`, with
+  `ended_reason`) at `max_runs`, and at `ends_at` when a wake, `loop.next_run`,
+  a load or the Reconciler's sweep finds it past. The program asks for its
+  next timed run with `loop.next_run` (`next_run/3`), which computes it from
+  the declared trigger and records it as `next_run_at`; there is no
+  server-side timer.
+
+  ## Task Loops
+
+  A Worker holds one Session per Task, so a Loop that a Worker creates while
+  it works a Task belongs to that Task (`task_conversation_id`, in the
+  Loop's own Group, never changed). A Task has at most one Loop. Tool calls
+  from that Task's rounds manage only that Loop; every other round manages
+  only the Agent's Loops that belong to no Task (`scope/1`).
+
+  A Loop Task is a Loop that a Task requested: `request_task_loop/1` writes
+  it `pending` with its trigger and limits before the Task exists, and the
+  Task's Worker binds its program with `loop.create`. The Task shows the
+  Loop; the Loop never follows the Task's status. The Task layer ends a
+  Task's Loops (`end_task_loops/3`), deletes them (`delete_task_loops/2`)
+  and reads them (`task_loops/2`). A Loop that ends on its own tells its
+  Task once (`SalixAgent.Loops.TaskOwner`), retried by the Reconciler until
+  the Task takes it (`task_settle_pending`).
   """
 
   alias SalixAgent.Control
   alias SalixAgent.{AgentWorkspace, FileBackend, StorageAuthorization}
-  alias SalixAgent.Loops.{Capabilities, Host, Reconciler}
+  alias SalixAgent.Loops.{Capabilities, Host, Reconciler, TaskOwner}
   alias SalixAgent.Spinfoam.Build
   alias SalixStore.Ids
   alias SalixStore.Loops, as: Store
@@ -57,11 +87,22 @@ defmodule SalixAgent.Loops do
 
   @type ctx :: %{required(:agent_id) => String.t(), optional(atom()) => term()}
 
+  @typedoc """
+  Whose Loops a call may manage: an Agent id manages every Loop of the
+  Agent; a `scope/1` result manages only the Loops of its Task (`task`), or
+  only the Agent's Loops that belong to no Task (`task: nil`).
+  """
+  @type owner ::
+          String.t()
+          | %{agent_id: String.t(), task: String.t() | nil, session_id: String.t() | nil}
+
+  @max_fact_tasks 50
+
   # ---- limits ---------------------------------------------------------------
 
   def max_active_per_agent,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :salix_agent,
         :loops_max_active_per_agent,
         @default_max_active_per_agent
@@ -69,7 +110,7 @@ defmodule SalixAgent.Loops do
 
   def max_active_per_group,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :salix_agent,
         :loops_max_active_per_group,
         @default_max_active_per_group
@@ -156,10 +197,19 @@ defmodule SalixAgent.Loops do
   Create a Loop from a built artifact and start it on this node.
 
   `attrs` keys: `path` (required: the workspace file `build/4` wrote),
-  `name`, `config` (JSON object <= 16 KiB). The row records the path and
-  the file's SHA-256; the bytes stay in the workspace. There is no per-Loop
-  capability list: the program may call the whole Loop allowlist
-  (`SalixAgent.Loops.Capabilities`) under its creator's authority.
+  `name`, `config` (JSON object <= 16 KiB), and an optional trigger for
+  `loop.next_run`: `every_minutes`, or `cron` with `timezone` (an IANA name;
+  without one, the timezone of the request the round serves, else UTC).
+  The row records the path and the file's SHA-256; the bytes stay in the
+  workspace. There is no per-Loop capability list: the program may call the
+  whole Loop allowlist (`SalixAgent.Loops.Capabilities`) under its
+  creator's authority.
+
+  A Worker round that works a Task binds the Loop to that Task
+  (`round_task/1`). When the Task requested its Loop, the program binds to
+  that `pending` row, which keeps the requested trigger and limits; a
+  trigger argument is then refused. A second Loop for the Task is refused
+  with `{:error, {:task_loop_exists, loop_id}}`.
   """
   @spec create(ctx(), map()) :: {:ok, map()} | {:error, term()}
   def create(%{agent_id: agent_id} = ctx, attrs) when is_map(attrs) do
@@ -171,24 +221,46 @@ defmodule SalixAgent.Loops do
          :ok <- valid_artifact_path(path),
          {:ok, elf} <- read_artifact(ctx, path),
          {:ok, name} <- optional_name(attrs["name"]),
-         {:ok, config} <- validate_config(attrs["config"]) do
-      record = %{
-        "id" => Ids.new_loop_id(),
-        "tenant_id" => agent["tenant_id"],
-        "group_id" => agent["group_id"],
-        "agent_id" => agent_id,
+         {:ok, config} <- validate_config(attrs["config"]),
+         {:ok, trigger} <- trigger(attrs, ctx),
+         {:ok, task} <- round_task(ctx),
+         {:ok, requested} <- requested_loop(agent, task) do
+      program = %{
         "session_id" => session_id,
         "name" => name,
         "elf_sha256" => sha256_hex(elf),
         "elf_path" => path,
         "config" => config,
-        "status" => "active",
-        "ifc" => ifc_authority(ctx),
-        "created_at" => now,
-        "updated_at" => now
+        "ifc" => ifc_authority(ctx)
       }
 
-      case admit(agent, {:create, record}) do
+      result =
+        case requested do
+          %{} when not is_nil(trigger) ->
+            {:error, {:invalid, "trigger"}}
+
+          %{} = pending ->
+            admit(pending, {:update, pending["id"], &bind(&1, agent_id, program, now)})
+
+          nil ->
+            record =
+              Map.merge(program, %{
+                "id" => Ids.new_loop_id(),
+                "tenant_id" => agent["tenant_id"],
+                "group_id" => agent["group_id"],
+                "agent_id" => agent_id,
+                "task_conversation_id" => task,
+                "trigger" => trigger,
+                "status" => "active",
+                "started_at" => now,
+                "created_at" => now,
+                "updated_at" => now
+              })
+
+            admit(agent, {:create, record})
+        end
+
+      case result do
         {:ok, created} ->
           Reconciler.adopt(agent_id)
           {:ok, public(created)}
@@ -199,25 +271,138 @@ defmodule SalixAgent.Loops do
     end
   end
 
-  @spec list(String.t()) :: {:ok, [map()]} | {:error, term()}
-  def list(agent_id) when is_binary(agent_id) do
-    with {:ok, records} <- Store.list_by_agent(agent_id) do
-      {:ok, Enum.map(records, &public/1)}
+  # The pending Loop the round's Task requested, or nil.
+  defp requested_loop(_agent, nil), do: {:ok, nil}
+
+  defp requested_loop(agent, task) do
+    with {:ok, rows} <- Store.list_by_tasks(agent["group_id"], [task]) do
+      {:ok, Enum.find(rows, &(&1["status"] == "pending"))}
     end
   end
 
-  @spec get(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def get(agent_id, loop_id) when is_binary(agent_id) and is_binary(loop_id) do
-    with {:ok, record} <- Store.get_agent_owned(loop_id, agent_id) do
+  defp bind(%{"status" => "pending", "agent_id" => agent_id} = current, agent_id, program, now) do
+    {:ok,
+     current
+     |> Map.merge(program)
+     |> Map.merge(%{"status" => "active", "started_at" => now, "updated_at" => now})}
+  end
+
+  defp bind(%{"status" => "pending"}, _agent_id, _program, _now), do: {:error, :not_found}
+
+  defp bind(current, _agent_id, _program, _now),
+    do: {:error, {:task_loop_exists, current["id"]}}
+
+  @doc """
+  The Loops a tool call manages (`t:owner/0`): a Worker round that works a
+  Task manages only that Task's Loop, every other round only the Agent's
+  Loops that belong to no Task. A Loop that the Task's own Session created
+  before Loops recorded their Task belongs to no Task, yet stays with the
+  rounds of that Session: a Worker Session serves one Task.
+  """
+  @spec scope(ctx()) :: {:ok, owner()} | {:error, term()}
+  def scope(%{agent_id: agent_id} = ctx) do
+    with {:ok, task} <- round_task(ctx) do
+      {:ok, %{agent_id: agent_id, task: task, session_id: Map.get(ctx, :session_id)}}
+    end
+  end
+
+  @doc """
+  The Task the round of `ctx` works, or nil. A Worker holds one Session per
+  Task (`SalixIM.AgentDeliveryPayload`), so a Worker round works the Task
+  that Session serves. The round names it through a source Message of that
+  Task Conversation, or through the Task-bound Loop whose wake started the
+  round; failing both, a Task-bound Loop that this Session already runs
+  names it. Router and other rounds work no Task: their Session is not a
+  Task's.
+  """
+  @spec round_task(ctx()) :: {:ok, String.t() | nil} | {:error, term()}
+  def round_task(%{agent_id: _} = ctx) do
+    with true <- Map.get(ctx, :role) == "worker",
+         {:ok, nil} <- origin_task(ctx) do
+      session_task(ctx)
+    else
+      false -> {:ok, nil}
+      result -> result
+    end
+  end
+
+  defp origin_task(ctx) do
+    [Map.get(ctx, :trusted_origin) | List.wrap(Map.get(ctx, :trusted_origins))]
+    |> Enum.filter(&is_map/1)
+    |> Enum.uniq()
+    |> Enum.reduce_while({:ok, nil}, fn origin, acc ->
+      case origin_task(origin, ctx.agent_id) do
+        {:ok, nil} -> {:cont, acc}
+        result -> {:halt, result}
+      end
+    end)
+  end
+
+  defp origin_task(
+         %{
+           "provider" => provider,
+           "conversation_kind" => "agent_task",
+           "conversation_id" => id
+         },
+         _agent_id
+       )
+       when provider in ["internal", "loop"] and is_binary(id) and id != "",
+       do: {:ok, id}
+
+  defp origin_task(%{"provider" => "loop", "loop_id" => loop_id}, agent_id)
+       when is_binary(loop_id) do
+    case Store.get_agent_owned(loop_id, agent_id) do
+      {:ok, row} -> {:ok, row["task_conversation_id"]}
+      {:error, :not_found} -> {:ok, nil}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp origin_task(_origin, _agent_id), do: {:ok, nil}
+
+  defp session_task(%{agent_id: agent_id} = ctx) do
+    case Map.get(ctx, :session_id) do
+      session_id when is_binary(session_id) -> Store.session_task(agent_id, session_id)
+      _ -> {:ok, nil}
+    end
+  end
+
+  @spec list(owner()) :: {:ok, [map()]} | {:error, term()}
+  def list(owner) do
+    with {:ok, records} <- Store.list_by_agent(owner_agent(owner)) do
+      {:ok, records |> Enum.filter(&in_scope?(&1, owner)) |> Enum.map(&public/1)}
+    end
+  end
+
+  @spec get(owner(), String.t()) :: {:ok, map()} | {:error, term()}
+  def get(owner, loop_id) when is_binary(loop_id) do
+    with {:ok, record} <- owned(loop_id, owner) do
       {:ok, record |> public() |> Map.merge(runtime_view(record))}
     end
   end
 
-  @spec pause(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def pause(agent_id, loop_id) do
-    with {:ok, _} <- Store.get_agent_owned(loop_id, agent_id),
-         {:ok, record} <- set_status(loop_id, "paused", "user") do
-      Reconciler.release_loop(agent_id, loop_id)
+  @spec pause(owner(), String.t()) :: {:ok, map()} | {:error, term()}
+  def pause(owner, loop_id) do
+    with {:ok, _current} <- owned(loop_id, owner),
+         {:ok, record} <-
+           Store.update(loop_id, fn row ->
+             cond do
+               row["status"] in ["pending", "ended"] ->
+                 {:error, {:not_active, row["status"]}}
+
+               row["paused_by"] == "archive" ->
+                 {:ok, row}
+
+               true ->
+                 {:ok,
+                  Map.merge(row, %{
+                    "status" => "paused",
+                    "paused_by" => "user",
+                    "updated_at" => now_ms()
+                  })}
+             end
+           end) do
+      Reconciler.release_loop(record["agent_id"], loop_id)
       {:ok, public(record)}
     end
   end
@@ -225,19 +410,23 @@ defmodule SalixAgent.Loops do
   # Resume bumps the incarnation itself: a late notice from the object the
   # pause or fault retired can then never match the resumed row, even before
   # adoption records the next load.
-  @spec resume(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def resume(agent_id, loop_id) do
-    with {:ok, current} <- Store.get_agent_owned(loop_id, agent_id),
+  @spec resume(owner(), String.t()) :: {:ok, map()} | {:error, term()}
+  def resume(owner, loop_id) do
+    with {:ok, current} <- owned(loop_id, owner),
          :ok <- resumable(current),
          {:ok, record} <-
            admit(current, {:update, loop_id, &activate(&1, resumable(&1), %{"failure" => nil})}) do
-      Reconciler.adopt(agent_id)
+      Reconciler.adopt(current["agent_id"])
       {:ok, public(record)}
     end
   end
 
   defp resumable(%{"status" => "active"}), do: {:error, :already_active}
   defp resumable(%{"status" => "paused", "paused_by" => "archive"}), do: {:error, :agent_archived}
+
+  defp resumable(%{"status" => status}) when status in ["pending", "ended"],
+    do: {:error, {:not_active, status}}
+
   defp resumable(_), do: :ok
 
   # Every transition into `active` goes through `Store.admit_active/4`: the
@@ -250,6 +439,31 @@ defmodule SalixAgent.Loops do
       {max_active_per_agent(), max_active_per_group()},
       mutation
     )
+  end
+
+  defp schedules_mod, do: SystemsRuntime.fetch_env!(:salix_agent, :schedules_mod)
+
+  @doc "The Loop row `loop_id` when `owner` manages it; any other row reads as missing."
+  @spec fetch(owner(), String.t()) :: {:ok, map()} | {:error, term()}
+  def fetch(owner, loop_id) when is_binary(loop_id), do: owned(loop_id, owner)
+
+  defp owned(loop_id, owner) do
+    with {:ok, record} <- Store.get_agent_owned(loop_id, owner_agent(owner)) do
+      if in_scope?(record, owner), do: {:ok, record}, else: {:error, :not_found}
+    end
+  end
+
+  defp owner_agent(agent_id) when is_binary(agent_id), do: agent_id
+  defp owner_agent(%{agent_id: agent_id}), do: agent_id
+
+  defp in_scope?(_record, agent_id) when is_binary(agent_id), do: true
+  defp in_scope?(record, %{task: nil}), do: is_nil(record["task_conversation_id"])
+
+  defp in_scope?(record, %{task: task, session_id: session_id}) do
+    case record["task_conversation_id"] do
+      nil -> record["session_id"] == session_id
+      bound -> bound == task
+    end
   end
 
   # The row is re-read under the lock; the caller's precondition is
@@ -275,22 +489,299 @@ defmodule SalixAgent.Loops do
 
   defp activate(_current, {:error, _} = error, _extra), do: error
 
-  @spec delete(String.t(), String.t()) :: :ok | {:error, term()}
-  def delete(agent_id, loop_id) do
-    Reconciler.release_loop(agent_id, loop_id)
+  @doc "Stop and delete one Loop with its acknowledgements."
+  @spec delete(owner(), String.t()) :: :ok | {:error, term()}
+  def delete(owner, loop_id) do
+    with {:ok, record} <- owned(loop_id, owner), do: delete_record(record)
+  end
 
-    with :ok <- Store.delete_agent_owned(loop_id, agent_id) do
-      _ = Store.delete_acks(loop_id)
+  defp delete_record(record) do
+    with :ok <- Store.delete_agent_owned(record["id"], record["agent_id"]) do
+      Reconciler.release_loop(record["agent_id"], record["id"])
       :ok
     end
   end
 
+  # ---- the Loops of a Task (the Task layer's port) ---------------------------
+
+  @doc """
+  Write the Loop that a Task requests, `pending` until its Worker binds a
+  program (`create/2`). `attrs`: `tenant_id`, `group_id`, the Worker's
+  `agent_id`, `task_conversation_id`, `trigger` and the optional limits
+  `max_runs`, `ends_at` and `stop_condition`. A Task whose Loop ended gets a
+  new Loop with a new id and no runs; a Task whose Loop is still pending
+  keeps it. A Task whose Loop runs is refused with `{:error,
+  {:task_loop_exists, loop_id}}`.
+  """
+  @spec request_task_loop(map()) :: {:ok, map()} | {:error, term()}
+  def request_task_loop(%{"task_conversation_id" => task, "trigger" => %{} = trigger} = attrs)
+      when is_binary(task) do
+    now = now_ms()
+
+    record = %{
+      "id" => Ids.new_loop_id(),
+      "tenant_id" => attrs["tenant_id"],
+      "group_id" => attrs["group_id"],
+      "agent_id" => attrs["agent_id"],
+      "task_conversation_id" => task,
+      "trigger" => trigger,
+      "max_runs" => attrs["max_runs"],
+      "ends_at" => attrs["ends_at"],
+      "stop_condition" => attrs["stop_condition"],
+      "status" => "pending",
+      "created_at" => now,
+      "updated_at" => now
+    }
+
+    with :ok <- valid_trigger(trigger),
+         {:ok, row} <- Store.put_task_request(record),
+         do: {:ok, task_view(row)}
+  end
+
+  defp valid_trigger(%{"cron" => cron, "timezone" => timezone}) do
+    if schedules_mod().valid_cron?(cron, timezone), do: :ok, else: {:error, {:invalid, "cron"}}
+  end
+
+  defp valid_trigger(_trigger), do: :ok
+
+  @doc """
+  The Loops of at most #{@max_fact_tasks} Tasks of one Group, for read models
+  and the Task layer: `%{conversation_id => view}`. A Task without a Loop is
+  absent. One indexed read.
+  """
+  @spec task_loops(String.t(), [String.t()]) :: {:ok, %{String.t() => map()}} | {:error, term()}
+  def task_loops(group_id, conversation_ids)
+      when is_binary(group_id) and is_list(conversation_ids) and
+             length(conversation_ids) <= @max_fact_tasks do
+    with {:ok, records} <- Store.list_by_tasks(group_id, conversation_ids) do
+      {:ok, Map.new(records, &{&1["task_conversation_id"], task_view(&1)})}
+    end
+  end
+
+  @task_view_fields ~w(status paused_by trigger max_runs ends_at stop_condition run_count last_run_at next_run_at started_at ended_at ended_reason exit_code)
+
+  defp task_view(record) do
+    record
+    |> Map.take(@task_view_fields)
+    |> Map.put("loop_id", record["id"])
+    |> Map.put("run_count", record["run_count"] || 0)
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  @doc """
+  The Task ended with `reason` (`completed`, `cancelled` or `failed`): its
+  requested Loop ends with that reason and stays readable; a Loop that the
+  Task did not request is deleted. An `archived` Task cancels its requested
+  Loop and keeps any other. Idempotent: the Task repeats it at each status
+  publication.
+  """
+  @spec end_task_loops(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def end_task_loops(group_id, conversation_id, reason)
+      when is_binary(group_id) and is_binary(conversation_id) and is_binary(reason) do
+    with {:ok, records} <- Store.list_by_tasks(group_id, [conversation_id]) do
+      Enum.reduce_while(records, :ok, fn record, :ok ->
+        result =
+          cond do
+            is_nil(record["trigger"]) and reason == "archived" ->
+              :ok
+
+            is_nil(record["trigger"]) ->
+              delete_record(record)
+
+            record["status"] == "ended" ->
+              :ok
+
+            reason == "archived" ->
+              with({:ok, _} <- end_loop(record["id"], "cancelled", false), do: :ok)
+
+            true ->
+              with({:ok, _} <- end_loop(record["id"], reason, false), do: :ok)
+          end
+
+        case result do
+          :ok -> {:cont, :ok}
+          {:error, :not_found} -> {:cont, :ok}
+          error -> {:halt, error}
+        end
+      end)
+    end
+  end
+
+  @doc """
+  Delete the Task's Loops with their acknowledgements.
+  Returns how many Loops were deleted.
+  """
+  @spec delete_task_loops(String.t(), String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def delete_task_loops(group_id, conversation_id)
+      when is_binary(group_id) and is_binary(conversation_id) do
+    with {:ok, records} <- Store.list_by_tasks(group_id, [conversation_id]) do
+      Enum.reduce_while(records, {:ok, 0}, fn record, {:ok, count} ->
+        case delete_record(record) do
+          :ok -> {:cont, {:ok, count + 1}}
+          {:error, :not_found} -> {:cont, {:ok, count}}
+          error -> {:halt, error}
+        end
+      end)
+    end
+  end
+
+  # ---- runs and the end of a Loop ---------------------------------------------
+
+  @doc """
+  The next timed run of the Loop after `after_ms` (default: now), from its
+  declared trigger, recorded as `next_run_at`. When windows after `after_ms`
+  already passed, the latest of them is the answer, so a Loop that was down
+  runs once, not once per missed window. A next run at or after `ends_at`
+  ends the Loop: `{:ok, :ended}`. A Loop without a timed trigger is refused
+  with `{:error, :no_timed_trigger}`.
+  """
+  @spec next_run(String.t(), integer(), integer() | nil) ::
+          {:ok, integer() | :ended} | {:error, term()}
+  def next_run(loop_id, incarnation, after_ms) do
+    now = now_ms()
+
+    with {:ok, record} <- Store.get(loop_id),
+         :ok <- current(record, incarnation),
+         {:ok, next} <- next_window(record["trigger"], after_ms || now, now) do
+      if is_integer(record["ends_at"]) and next >= record["ends_at"] do
+        with {:ok, _} <- end_loop(loop_id, "ends_at"), do: {:ok, :ended}
+      else
+        Store.update(loop_id, fn current ->
+          if current["incarnation"] == incarnation and current["status"] == "active",
+            do: {:ok, Map.merge(current, %{"next_run_at" => next, "updated_at" => now})},
+            else: {:error, :stale_incarnation}
+        end)
+        |> case do
+          {:ok, _} -> {:ok, next}
+          {:error, _} = error -> error
+        end
+      end
+    end
+  end
+
+  defp current(%{"incarnation" => incarnation, "status" => "active"}, incarnation), do: :ok
+  defp current(_record, _incarnation), do: {:error, :stale_incarnation}
+
+  defp next_window(%{"every_minutes" => minutes}, after_ms, now) when is_integer(minutes) do
+    step = minutes * 60_000
+    next = after_ms + step
+    if next > now, do: {:ok, next}, else: {:ok, after_ms + div(now - after_ms, step) * step}
+  end
+
+  defp next_window(%{"cron" => cron, "timezone" => timezone}, after_ms, now) do
+    with {:ok, next} <- schedules_mod().cron_next_after(cron, after_ms, timezone) do
+      if next > now,
+        do: {:ok, next},
+        else: schedules_mod().cron_latest_at_or_before(cron, now, timezone)
+    end
+  end
+
+  defp next_window(_trigger, _after_ms, _now), do: {:error, :no_timed_trigger}
+
+  @doc """
+  Count one run: a wake that `agent.notify` newly delivered as `source`. The
+  same source counts once even when the guest repeats the call. The run that
+  reaches `max_runs` is counted and ends the Loop.
+  """
+  @spec record_run(String.t(), integer(), String.t()) :: :ok | {:error, term()}
+  def record_run(loop_id, incarnation, source) do
+    now = now_ms()
+
+    Store.update(loop_id, fn current ->
+      cond do
+        current["incarnation"] != incarnation ->
+          {:error, :stale_incarnation}
+
+        current["last_run_source"] == source ->
+          {:unchanged, current}
+
+        true ->
+          runs = (current["run_count"] || 0) + 1
+
+          {:ok,
+           Map.merge(current, %{
+             "run_count" => runs,
+             "last_run_at" => now,
+             "last_run_source" => source,
+             "updated_at" => now
+           })}
+      end
+    end)
+    |> case do
+      {:ok, %{"max_runs" => max, "run_count" => runs, "status" => "active"}}
+      when is_integer(max) and runs >= max ->
+        with {:ok, _} <- end_loop(loop_id, "max_runs"), do: :ok
+
+      {:ok, _} ->
+        :ok
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  @doc """
+  End the Loop with `reason`: `max_runs` and `ends_at` from the runtime, or
+  the end of its Task. An ended Loop keeps its row, runs no program and
+  takes no events. A Task Loop that ends on its own tells its Task once
+  (`TaskOwner.settle/1`); `tell_task?` is false when the Task ended it.
+  """
+  @spec end_loop(String.t(), String.t(), boolean()) :: {:ok, map()} | {:error, term()}
+  def end_loop(loop_id, reason, tell_task? \\ true) when is_binary(reason) do
+    now = now_ms()
+
+    Store.update(loop_id, fn
+      %{"status" => "ended"} = current ->
+        {:unchanged, current}
+
+      current ->
+        {:ok,
+         Map.merge(current, %{
+           "status" => "ended",
+           "paused_by" => nil,
+           "ended_at" => now,
+           "ended_reason" => reason,
+           "next_run_at" => nil,
+           "object_id" => nil,
+           "task_settle_pending" => tell_task? and is_binary(current["task_conversation_id"]),
+           "updated_at" => now
+         })}
+    end)
+    |> case do
+      {:ok, record} ->
+        Reconciler.release_loop(record["agent_id"], loop_id)
+        TaskOwner.settle_soon(record)
+        {:ok, record}
+
+      error ->
+        error
+    end
+  end
+
+  # A Loop past its `ends_at` ends at the first wake, run question or load
+  # that finds it so.
+  defp past_end?(%{"ends_at" => ends_at}, now) when is_integer(ends_at), do: now >= ends_at
+  defp past_end?(_record, _now), do: false
+
+  @doc "End one bounded page of active Loops past their `ends_at` (the Reconciler's sweep)."
+  @spec end_past_due(pos_integer()) :: :ok
+  def end_past_due(limit \\ 20) do
+    case Store.past_end(now_ms(), limit) do
+      {:ok, rows} -> Enum.each(rows, &end_loop(&1["id"], "ends_at"))
+      {:error, _} -> :ok
+    end
+
+    :ok
+  end
+
   @doc "Enable, rotate, or revoke the owning Agent's secret inbound URL."
-  def configure_webhook(agent_id, loop_id, action)
+  def configure_webhook(owner, loop_id, action)
       when action in ["enable", "rotate", "revoke"] do
+    agent_id = owner_agent(owner)
+
     with {:ok, record} <-
            Store.update(loop_id, fn record ->
-             if record["agent_id"] == agent_id do
+             if record["agent_id"] == agent_id and in_scope?(record, owner) do
                secret =
                  case action do
                    "revoke" -> nil
@@ -307,12 +798,13 @@ defmodule SalixAgent.Loops do
     end
   end
 
-  def configure_webhook(_agent_id, _loop_id, _action), do: {:error, {:invalid, "action"}}
+  def configure_webhook(_owner, _loop_id, _action), do: {:error, {:invalid, "action"}}
 
-  defp new_webhook_secret, do: Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+  defp new_webhook_secret,
+    do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
 
   defp webhook_url(%{"webhook_secret" => secret}) when is_binary(secret) do
-    case Application.get_env(:salix_agent, :loop_webhook_url_builder) do
+    case SystemsRuntime.get_env(:salix_agent, :loop_webhook_url_builder) do
       builder when is_function(builder, 1) -> builder.(secret)
       _ -> nil
     end
@@ -322,7 +814,7 @@ defmodule SalixAgent.Loops do
 
   @doc "Deliver data to the Loop selected by a secret URL."
   def deliver_webhook_event(secret, event) when is_map(event) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     result =
       with {:ok, record} <- Store.get_by_webhook_secret(secret),
@@ -330,14 +822,14 @@ defmodule SalixAgent.Loops do
         deliver_to_owner(record, normalized)
       end
 
-    emit("loop_event", event_outcome(result), System.monotonic_time() - started)
+    emit("loop_event", event_outcome(result), SystemsClock.monotonic_time() - started)
     result
   end
 
   @doc "Deliver an event from the owning Agent itself (the `loop.send` tool)."
-  @spec send_event(String.t(), String.t(), map()) :: {:ok, map()} | {:error, term()}
-  def send_event(agent_id, loop_id, event) when is_map(event) do
-    with {:ok, record} <- Store.get_agent_owned(loop_id, agent_id),
+  @spec send_event(owner(), String.t(), map()) :: {:ok, map()} | {:error, term()}
+  def send_event(owner, loop_id, event) when is_map(event) do
+    with {:ok, record} <- owned(loop_id, owner),
          {:ok, normalized} <- normalize_event(event) do
       deliver_to_owner(record, normalized)
     end
@@ -346,7 +838,7 @@ defmodule SalixAgent.Loops do
   @doc "Deliver an event from an external system authenticated for `group_id`."
   @spec deliver_external_event(String.t(), String.t(), map()) :: {:ok, map()} | {:error, term()}
   def deliver_external_event(group_id, loop_id, event) when is_map(event) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     result =
       with {:ok, record} <- Store.get_group_owned(loop_id, group_id),
@@ -354,13 +846,13 @@ defmodule SalixAgent.Loops do
         deliver_to_owner(record, normalized)
       end
 
-    emit("loop_event", event_outcome(result), System.monotonic_time() - started)
+    emit("loop_event", event_outcome(result), SystemsClock.monotonic_time() - started)
     result
   end
 
   @doc "Deliver only while the current Loop still owns the captured Composio binding."
   def deliver_composio_event(id, binding, event) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     result =
       with {:ok, row} <- Store.get(id),
@@ -372,7 +864,7 @@ defmodule SalixAgent.Loops do
         error -> error
       end
 
-    emit("loop_event", event_outcome(result), System.monotonic_time() - started)
+    emit("loop_event", event_outcome(result), SystemsClock.monotonic_time() - started)
     result
   end
 
@@ -443,6 +935,17 @@ defmodule SalixAgent.Loops do
   """
   @spec begin_incarnation(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def begin_incarnation(loop_id, node, host_session) do
+    with {:ok, record} <- Store.get(loop_id) do
+      if record["status"] == "active" and past_end?(record, now_ms()) do
+        _ = end_loop(loop_id, "ends_at")
+        {:error, :not_active}
+      else
+        begin_checked_incarnation(loop_id, node, host_session)
+      end
+    end
+  end
+
+  defp begin_checked_incarnation(loop_id, node, host_session) do
     Store.update(loop_id, fn current ->
       if current["status"] == "active" do
         {:ok,
@@ -497,7 +1000,13 @@ defmodule SalixAgent.Loops do
 
   @spec put_checkpoint(String.t(), integer(), term()) :: :ok | {:error, term()}
   def put_checkpoint(loop_id, incarnation, state) do
-    with :ok <- bounded_json(state, @max_checkpoint_bytes, :checkpoint_too_large) do
+    with :ok <-
+           bounded_json(
+             state,
+             @max_checkpoint_bytes,
+             :checkpoint_too_large,
+             :checkpoint_not_encodable
+           ) do
       Store.update(loop_id, fn current ->
         if current["incarnation"] == incarnation,
           do: {:ok, Map.merge(current, %{"checkpoint" => state, "updated_at" => now_ms()})},
@@ -540,6 +1049,9 @@ defmodule SalixAgent.Loops do
 
         current["status"] != "active" ->
           {:error, :not_active}
+
+        past_end?(current, now) ->
+          {:error, :past_end}
 
         true ->
           window_start = current["notify_window_start_ms"] || 0
@@ -586,6 +1098,10 @@ defmodule SalixAgent.Loops do
 
       {:ok, _} ->
         :ok
+
+      {:error, :past_end} ->
+        _ = end_loop(loop_id, "ends_at")
+        {:error, :ended}
 
       {:error, _} = error ->
         error
@@ -741,12 +1257,34 @@ defmodule SalixAgent.Loops do
     end
   end
 
-  @doc "The notification target Session cannot be resolved: pause with reason `undeliverable`."
+  @doc """
+  The notification target Session cannot be resolved: pause with reason
+  `undeliverable`. Only a Loop that was running is reported as stopped: a
+  lifecycle notice that cannot be delivered follows a stop already reported.
+  """
   @spec mark_undeliverable(String.t()) :: :ok
   def mark_undeliverable(loop_id) do
-    case set_status(loop_id, "paused", "undeliverable") do
-      {:ok, record} -> Reconciler.release_loop(record["agent_id"], loop_id)
-      _ -> :ok
+    result =
+      Store.update(loop_id, fn current ->
+        if current["status"] == "active" do
+          {:ok,
+           current
+           |> Map.merge(%{
+             "status" => "paused",
+             "paused_by" => "undeliverable",
+             "updated_at" => now_ms()
+           })}
+        else
+          {:error, :not_active}
+        end
+      end)
+
+    case result do
+      {:ok, record} ->
+        Reconciler.release_loop(record["agent_id"], loop_id)
+
+      _ ->
+        :ok
     end
 
     :ok
@@ -767,32 +1305,36 @@ defmodule SalixAgent.Loops do
   @spec resume_for_unarchive(String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
   def resume_for_unarchive(agent_id) do
     with {:ok, records} <- Store.list_by_agent(agent_id) do
-      archived =
-        Enum.filter(records, &(&1["status"] == "paused" and &1["paused_by"] == "archive"))
-
       count =
-        Enum.count(archived, fn record ->
-          precondition = fn current ->
-            if current["status"] == "paused" and current["paused_by"] == "archive",
-              do: :ok,
-              else: {:error, :not_archived}
-          end
-
-          case admit(record, {:update, record["id"], &activate(&1, precondition.(&1), %{})}) do
-            {:ok, _} ->
-              true
-
-            {:error, {:quota, _, _}} ->
-              _ = set_status(record["id"], "paused", "quota")
-              false
-
-            {:error, _} ->
-              false
-          end
-        end)
+        records
+        |> Enum.filter(&(&1["status"] == "paused" and &1["paused_by"] == "archive"))
+        |> Enum.count(&readmit(&1, "archive"))
 
       if count > 0, do: Reconciler.adopt(agent_id)
       {:ok, count}
+    end
+  end
+
+  # Re-admit a Loop that `paused_by` paused. The quota may refuse it: it then
+  # stays paused with reason `quota`, which only `loop.resume` leaves.
+  defp readmit(record, paused_by) do
+    precondition = fn current ->
+      if current["status"] == "paused" and current["paused_by"] == paused_by,
+        do: :ok,
+        else: {:error, :not_paused}
+    end
+
+    case admit(record, {:update, record["id"], &activate(&1, precondition.(&1), %{})}) do
+      {:ok, _} ->
+        true
+
+      {:error, {:quota, _, _}} ->
+        _ = set_status(record["id"], "paused", "quota")
+
+        false
+
+      {:error, _} ->
+        false
     end
   end
 
@@ -828,6 +1370,16 @@ defmodule SalixAgent.Loops do
       "loop_id" => record["id"],
       "webhook_url" => webhook_url(record),
       "composio_trigger" => record["composio_trigger"],
+      "trigger" => record["trigger"],
+      "max_runs" => record["max_runs"],
+      "ends_at" => record["ends_at"],
+      "stop_condition" => record["stop_condition"],
+      "run_count" => record["run_count"] || 0,
+      "last_run_at" => record["last_run_at"],
+      "next_run_at" => record["next_run_at"],
+      "ended_at" => record["ended_at"],
+      "ended_reason" => record["ended_reason"],
+      "task_conversation_id" => record["task_conversation_id"],
       "agent_id" => record["agent_id"],
       "session_id" => record["session_id"],
       "name" => record["name"],
@@ -926,6 +1478,47 @@ defmodule SalixAgent.Loops do
     end
   end
 
+  # A trigger is optional: `every_minutes` (5 to 1440), or `cron` with an
+  # IANA `timezone` that defaults to the timezone of the request the round
+  # serves (sealed on the source), else UTC. The resolved zone is stored, so
+  # later runs never depend on the round.
+  defp trigger(attrs, ctx) do
+    cron = (attrs["cron"] || attrs[:cron]) |> text() |> String.trim()
+    timezone = (attrs["timezone"] || attrs[:timezone]) |> text() |> String.trim()
+    minutes = attrs["every_minutes"] || attrs[:every_minutes]
+
+    cond do
+      cron == "" and timezone == "" and is_nil(minutes) ->
+        {:ok, nil}
+
+      not is_nil(minutes) and (cron != "" or timezone != "") ->
+        {:error, {:invalid, "trigger"}}
+
+      not is_nil(minutes) ->
+        if is_integer(minutes) and minutes in 5..1440,
+          do: {:ok, %{"every_minutes" => minutes}},
+          else: {:error, {:invalid, "every_minutes"}}
+
+      cron == "" ->
+        {:error, {:missing, "cron"}}
+
+      true ->
+        timezone = if timezone == "", do: source_timezone(ctx), else: timezone
+
+        if schedules_mod().valid_cron?(cron, timezone),
+          do: {:ok, %{"cron" => cron, "timezone" => timezone}},
+          else: {:error, {:invalid, "cron"}}
+    end
+  end
+
+  defp source_timezone(ctx) do
+    [Map.get(ctx, :trusted_origin) | List.wrap(Map.get(ctx, :trusted_origins))]
+    |> Enum.find_value("UTC", fn
+      %{"source_timezone" => zone} when is_binary(zone) and zone != "" -> zone
+      _ -> nil
+    end)
+  end
+
   defp optional_name(nil), do: {:ok, nil}
 
   defp optional_name(value) do
@@ -941,18 +1534,27 @@ defmodule SalixAgent.Loops do
   defp validate_config(nil), do: {:ok, %{}}
 
   defp validate_config(config) when is_map(config) do
-    with :ok <- bounded_json(config, @max_config_bytes, {:invalid, "config_too_large"}) do
+    with :ok <-
+           bounded_json(
+             config,
+             @max_config_bytes,
+             {:invalid, "config_too_large"},
+             {:invalid, "config_not_encodable"}
+           ) do
       {:ok, config}
     end
   end
 
   defp validate_config(_), do: {:error, {:invalid, "config"}}
 
-  defp bounded_json(value, limit, error) do
+  # A value that Jason cannot encode (a string that is not valid UTF-8, for
+  # example) is refused before it is stored: a stored value is encoded again
+  # on every load, so it must never fail there.
+  defp bounded_json(value, limit, too_large, not_encodable) do
     case Jason.encode(value) do
       {:ok, encoded} when byte_size(encoded) <= limit -> :ok
-      {:ok, _} -> {:error, error}
-      {:error, _} -> {:error, error}
+      {:ok, _} -> {:error, too_large}
+      {:error, _} -> {:error, not_encodable}
     end
   end
 
@@ -981,7 +1583,7 @@ defmodule SalixAgent.Loops do
   defp text(value) when is_binary(value), do: value
   defp text(value), do: to_string(value)
 
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 
   defp emit(operation, outcome, duration \\ 0) do
     Salix.Telemetry.emit_operation("salix_agent", operation, "loop", outcome, duration)

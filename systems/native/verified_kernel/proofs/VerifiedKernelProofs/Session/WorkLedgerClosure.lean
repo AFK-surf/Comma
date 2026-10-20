@@ -5,42 +5,6 @@ open Data
 set_option Elab.async false
 set_option maxHeartbeats 1000000
 
-theorem mergePredicate_ledger_frame {state kind through replacement extra next : Term} {journal rest : List Term}
-    (call : mergePredicate state kind through replacement extra journal = .ok (next, rest)) : LedgerFrame state next := by
-  unfold mergePredicate at call
-  repeat' first
-    | exact write_field_frame call rfl
-    | split at call
-    | (obtain ⟨_, _, _, call⟩ := bind_ok call)
-
-theorem mergePredicate_ledger_frame_step {state kind through replacement extra next : Term} {journal rest : List Term} :
-    mergePredicate state kind through replacement extra journal = .ok (next, rest) ↔
-      Except.ok (next, rest) = mergePredicate state kind through replacement extra journal ∧ LedgerFrame state next :=
-  step_iff mergePredicate_ledger_frame
-
-theorem microcompactIds_ledger_frame {state replacement event next : Term} {ids journal rest : List Term}
-    (call : microcompactIds state ids replacement event journal = .ok (next, rest)) : LedgerFrame state next := by
-  unfold microcompactIds at call
-  repeat' first
-    | exact write_field_frame call rfl
-    | split at call
-    | (obtain ⟨_, _, _, call⟩ := bind_ok call)
-
-theorem microcompactIds_ledger_frame_step {state replacement event next : Term} {ids journal rest : List Term} :
-    microcompactIds state ids replacement event journal = .ok (next, rest) ↔
-      Except.ok (next, rest) = microcompactIds state ids replacement event journal ∧ LedgerFrame state next :=
-  step_iff microcompactIds_ledger_frame
-
-theorem microcompact_ledger_frame {state event next : Term} {journal rest : List Term}
-    (call : microcompact state event journal = .ok (next, rest)) : LedgerFrame state next := by
-  unfold microcompact at call
-  ledger_frame_walk call
-
-theorem microcompact_ledger_frame_step {state event next : Term} {journal rest : List Term} :
-    microcompact state event journal = .ok (next, rest) ↔
-      Except.ok (next, rest) = microcompact state event journal ∧ LedgerFrame state next :=
-  step_iff microcompact_ledger_frame
-
 theorem inner_nonwriter_ledger_frame {state event next : Term} {journal rest : List Term}
     (append : (event.get (b "type") == b "queue_append") = false)
     (log : (event.get (b "type") == b "session_log_message") = false)
@@ -98,23 +62,21 @@ theorem unadmitted_ledger_frame {state event next : Term} {journal rest : List T
     contradiction
 
 theorem nonretiring_inner_ledger_supported {state event next : Term} {journal rest sealed : List Term}
-    (ready : QueueReady state) (format : state.get (a "storage_format") = i 3)
-    (safe : NonRetiring event) (supported : LedgerSupported state sealed)
+    (ready : QueueReady state) (safe : NonRetiring event) (supported : LedgerSupported state sealed)
     (call : inner state event journal = .ok (next, rest)) : LedgerSupported next sealed := by
   cases allowed : Command.inputEventAllowed event with
-  | true => exact admitted_inner_ledger_supported ready format allowed supported call
+  | true => exact admitted_inner_ledger_supported ready allowed supported call
   | false =>
     have ledger := unadmitted_ledger_frame allowed call
     intro source present
     rw [ledger] at present
     obtain ⟨originInput, fact, origin, represented⟩ := supported source present
     exact ⟨originInput, fact, origin, identity_fact_preserves
-      (nonretiring_inner_preserves ready format safe call sealed)
-      (fun _ stored => record_survives (nonretiring_inner_extends format safe call) stored) represented⟩
+      (nonretiring_inner_preserves ready safe call sealed)
+      (fun _ stored => record_survives (nonretiring_inner_extends safe call) stored) represented⟩
 
 theorem nonretiring_resident_ledger_supported {state event next : Term} {sealed : List Term}
-    (step : ResidentStep state event next) (ready : QueueReady state)
-    (format : state.get (a "storage_format") = i 3) (canonical : BinaryKeys event)
+    (step : ResidentStep state event next) (ready : QueueReady state) (canonical : BinaryKeys event)
     (safe : NonRetiring event) (supported : LedgerSupported state sealed) : LedgerSupported next sealed := by
   obtain ⟨middle, normalized, journal, rest, prepared, activity⟩ := step
   apply activity_ledger_supported activity
@@ -124,7 +86,7 @@ theorem nonretiring_resident_ledger_supported {state event next : Term} {sealed 
     obtain ⟨_, read, _, call⟩ := prepareTrusted_stringify prepared
     have same := shallowStringify_binary_keys canonical read
     subst normalized
-    exact nonretiring_inner_ledger_supported ready format safe supported call
+    exact nonretiring_inner_ledger_supported ready safe supported call
 
 theorem nonretiring_batch_ledger_supported {state next : Term} {events sealed : List Term}
     (execution : ResidentBatch state events next) (ready : QueueReady state)
@@ -142,6 +104,6 @@ theorem nonretiring_batch_ledger_supported {state next : Term} {events sealed : 
     exact ih middleReady middleFormat
       (fun event member => canonical event (List.mem_cons_of_mem _ member))
       (fun event member => safe event (List.mem_cons_of_mem _ member))
-      (nonretiring_resident_ledger_supported step ready format headKeys headSafe supported)
+      (nonretiring_resident_ledger_supported step ready headKeys headSafe supported)
 
 end VerifiedKernel.Session.WorkConservation

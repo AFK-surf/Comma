@@ -4,7 +4,7 @@ defmodule Salix.Control.DriveBindingsTest do
   default), binding validation and write-only key, and the handle the agent
   mount reaches a group's Drive with.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Control.{DriveBindings, DriveSettings}
 

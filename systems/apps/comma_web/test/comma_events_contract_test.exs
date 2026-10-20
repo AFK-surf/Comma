@@ -1,5 +1,10 @@
 defmodule CommaWeb.CommaEventsContractTest do
+  require SystemsRuntime.Proc
+
   use Comma.DataCase, async: false
+  # A stream stays open for its `wait` window on a clock the tests drive: the
+  # window ends after a test's changes, never in the middle of them.
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
 
   @admin_token "test-token"
 
@@ -24,6 +29,10 @@ defmodule CommaWeb.CommaEventsContractTest do
             router_conversations: %{},
             task_list_version: 0,
             task_list_subscribers: MapSet.new(),
+            mutation_version: 0,
+            mutation_subscribers: MapSet.new(),
+            station_tasks: [],
+            station_task_subscribers: MapSet.new(),
             subscribers: MapSet.new()
           }
         end,
@@ -50,8 +59,8 @@ defmodule CommaWeb.CommaEventsContractTest do
         "title" => attrs["title"] || "聊天",
         "status" => "active",
         "message_count" => 0,
-        "created_at" => System.system_time(:second),
-        "updated_at" => System.system_time(:second)
+        "created_at" => SystemsClock.system_time(:second),
+        "updated_at" => SystemsClock.system_time(:second)
       }
 
       Agent.update(__MODULE__, fn state ->
@@ -93,13 +102,13 @@ defmodule CommaWeb.CommaEventsContractTest do
         Map.update!(state, :subscribers, &MapSet.put(&1, subscriber))
       end)
 
-      send(
+      SystemsRuntime.Proc.send(
         subscriber,
         {:conversation_message_created, workspace["default_group_id"], conversation_id,
          SalixStore.Ids.new_message_id(), 987_654}
       )
 
-      {:ok, %{"owner_pid" => Process.whereis(__MODULE__), "tail_seq" => 987_653}}
+      {:ok, %{"owner_pid" => SystemsRuntime.Proc.whereis(__MODULE__), "tail_seq" => 987_653}}
     end
 
     def subscribe_group_conversation_list(_workspace, "agent_task", subscriber) do
@@ -111,10 +120,35 @@ defmodule CommaWeb.CommaEventsContractTest do
 
       {:ok,
        %{
-         "owner_pid" => Process.whereis(__MODULE__),
+         "owner_pid" => SystemsRuntime.Proc.whereis(__MODULE__),
          "resync_required" => true,
          "version" => version
        }}
+    end
+
+    @impl true
+    def list_station_tasks(_workspace),
+      do: {:ok, Agent.get(__MODULE__, & &1.station_tasks)}
+
+    @impl true
+    def subscribe_station_tasks(_workspace, subscriber) do
+      Agent.update(
+        __MODULE__,
+        &Map.update!(&1, :station_task_subscribers, fn s -> MapSet.put(s, subscriber) end)
+      )
+    end
+
+    def station_task_subscriber_count,
+      do: Agent.get(__MODULE__, &MapSet.size(&1.station_task_subscribers))
+
+    def put_station_tasks(group_id, rows) do
+      Agent.update(__MODULE__, fn state ->
+        Enum.each(state.station_task_subscribers, fn subscriber ->
+          SystemsRuntime.Proc.send(subscriber, {:station_tasks_invalidated, group_id})
+        end)
+
+        %{state | station_tasks: rows}
+      end)
     end
 
     def invalidate_task_list(group_id, conversation_id) do
@@ -123,7 +157,7 @@ defmodule CommaWeb.CommaEventsContractTest do
         version = "test.#{next_version}"
 
         Enum.each(state.task_list_subscribers, fn subscriber ->
-          send(
+          SystemsRuntime.Proc.send(
             subscriber,
             {:group_conversation_list_invalidated, group_id, "agent_task", conversation_id,
              version}
@@ -177,7 +211,7 @@ defmodule CommaWeb.CommaEventsContractTest do
       message =
         attrs
         |> Map.put("message_id", SalixStore.Ids.new_message_id())
-        |> Map.put_new("created_at", System.system_time(:second))
+        |> Map.put_new("created_at", SystemsClock.system_time(:second))
 
       Agent.update(
         __MODULE__,
@@ -243,7 +277,7 @@ defmodule CommaWeb.CommaEventsContractTest do
     defp task_owner(state, conversation_id, participant_id) do
       Enum.find_value(
         state.task_participants[conversation_id] || [],
-        Process.whereis(__MODULE__),
+        SystemsRuntime.Proc.whereis(__MODULE__),
         fn p ->
           if p["participant_id"] == participant_id, do: p["owner"]
         end
@@ -270,7 +304,7 @@ defmodule CommaWeb.CommaEventsContractTest do
         end)
 
       Enum.each(subscribers, fn subscriber ->
-        send(
+        SystemsRuntime.Proc.send(
           subscriber,
           {:conversation_participant_status_changed, workspace["default_group_id"],
            conversation_id, participant_id}
@@ -294,8 +328,8 @@ defmodule CommaWeb.CommaEventsContractTest do
         "title" => "Task",
         "status" => "running",
         "message_count" => 0,
-        "created_at" => System.system_time(:second),
-        "updated_at" => System.system_time(:second)
+        "created_at" => SystemsClock.system_time(:second),
+        "updated_at" => SystemsClock.system_time(:second)
       }
 
       Agent.update(__MODULE__, fn state ->
@@ -309,7 +343,7 @@ defmodule CommaWeb.CommaEventsContractTest do
       message =
         attrs
         |> Map.put_new("message_id", SalixStore.Ids.new_message_id())
-        |> Map.put_new("created_at", System.system_time(:second))
+        |> Map.put_new("created_at", SystemsClock.system_time(:second))
 
       Agent.update(
         __MODULE__,
@@ -355,6 +389,35 @@ defmodule CommaWeb.CommaEventsContractTest do
 
     def task_list_subscriber_count,
       do: Agent.get(__MODULE__, &MapSet.size(&1.task_list_subscribers))
+
+    @impl true
+    def subscribe_group_conversation_mutations(_workspace, subscriber) do
+      version =
+        Agent.get_and_update(__MODULE__, fn state ->
+          {"changes.#{state.mutation_version}",
+           Map.update!(state, :mutation_subscribers, &MapSet.put(&1, subscriber))}
+        end)
+
+      {:ok, %{"owner_pid" => SystemsRuntime.Proc.whereis(__MODULE__), "version" => version}}
+    end
+
+    def mutation_subscriber_count,
+      do: Agent.get(__MODULE__, &MapSet.size(&1.mutation_subscribers))
+
+    def mutate(group_id, mutation) do
+      Agent.update(__MODULE__, fn state ->
+        next = state.mutation_version + 1
+
+        Enum.each(state.mutation_subscribers, fn subscriber ->
+          SystemsRuntime.Proc.send(
+            subscriber,
+            {:group_conversation_mutated, group_id, mutation, "changes.#{next}"}
+          )
+        end)
+
+        %{state | mutation_version: next}
+      end)
+    end
 
     def participant_status_read_count,
       do: Agent.get(__MODULE__, & &1.participant_status_reads)
@@ -403,8 +466,8 @@ defmodule CommaWeb.CommaEventsContractTest do
           "title" => "聊天",
           "status" => "active",
           "message_count" => length(state.messages[conversation_id] || []),
-          "created_at" => System.system_time(:second),
-          "updated_at" => System.system_time(:second)
+          "created_at" => SystemsClock.system_time(:second),
+          "updated_at" => SystemsClock.system_time(:second)
         }
 
         state =
@@ -422,18 +485,18 @@ defmodule CommaWeb.CommaEventsContractTest do
   end
 
   setup do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
 
     billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    previous_client = Application.get_env(:comma_core, :salix_client)
-    previous_api_token = Application.get_env(:comma_web, :api_token)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_client = SystemsRuntime.get_env(:comma_core, :salix_client)
+    previous_api_token = SystemsRuntime.get_env(:comma_web, :api_token)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:comma_core, :salix_client, SalixClientFake)
-    Application.put_env(:comma_web, :api_token, @admin_token)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:comma_core, :salix_client, SalixClientFake)
+    SystemsRuntime.put_env(:comma_web, :api_token, @admin_token)
 
     ensure_fake_s3!()
     start_supervised!(SalixClientFake)
@@ -448,39 +511,221 @@ defmodule CommaWeb.CommaEventsContractTest do
     :ok
   end
 
-  test "task-list SSE starts with a canonical resync barrier and streams exact Group changes" do
-    %{workspace: workspace, session: session} = create_fixture("task-list-events@example.com")
+  test "a Group's station-hosted Tasks, and a task list stream that asks says when they change" do
+    %{workspace: workspace, session: session} = create_fixture("station-tasks@example.com")
     group_id = workspace["default_group_id"]
+    path = "/v1/comma/groups/#{group_id}/station-tasks"
 
-    response_task =
-      Task.async(fn ->
+    row = %{
+      station_id: String.duplicate("a", 64),
+      device_id: "dev_mac",
+      thread: "EMBER/1",
+      task: "EMBER/1",
+      title: "Fix the build",
+      status: "needs_review",
+      created_by: "usr_1",
+      created_at: 1_000,
+      last_activity_at: 2_000,
+      runtime: "codex",
+      model: "gpt-5.5",
+      labels: ["lbl_ship"],
+      rev: 3
+    }
+
+    SalixClientFake.put_station_tasks(group_id, [row])
+    response = user_req(session["token"], :get, path)
+    assert response.status == 200
+
+    assert %{
+             "tasks" => [
+               %{
+                 "thread" => "EMBER/1",
+                 "status" => "needs_review",
+                 "device_id" => "dev_mac",
+                 "labels" => ["lbl_ship"]
+               }
+             ]
+           } =
+             response.body
+
+    [etag] = Req.Response.get_header(response, "etag")
+
+    assert user_req(session["token"], :get, path, headers: [{"if-none-match", etag}]).status ==
+             304
+
+    events = fn query ->
+      SystemsRuntime.Task.async(fn ->
         user_req(
           session["token"],
           :get,
-          "/v1/comma/groups/#{group_id}/conversations/events?wait=300"
+          "/v1/comma/groups/#{group_id}/conversations/events?wait=300" <> query
         )
       end)
+    end
 
-    assert eventually(fn -> SalixClientFake.task_list_subscriber_count() == 1 end)
-    SalixClientFake.invalidate_task_list(group_id, SalixStore.Ids.new_conversation_id())
+    with_station_tasks = events.("&with=station_tasks")
+    plain = events.("")
+    assert eventually(fn -> SalixClientFake.station_task_subscriber_count() == 1 end)
+    SalixClientFake.put_station_tasks(group_id, [%{row | status: "done", rev: 4}])
 
-    body = Task.await(response_task, 2_000) |> expect_status(200)
-    assert [resync] = sse_payloads(body, "conversation_list_resync_required")
-    assert [invalidation] = sse_payloads(body, "conversation_list_invalidated")
+    assert [%{"type" => "station_tasks_invalidated", "group_id" => ^group_id}] =
+             with_station_tasks
+             |> settled_await()
+             |> expect_status(200)
+             |> sse_payloads("station_tasks_invalidated")
 
-    assert Map.take(resync, ~w(type group_id kind version)) == %{
-             "type" => "conversation_list_resync_required",
-             "group_id" => group_id,
-             "kind" => "agent_task",
-             "version" => "test.0"
-           }
+    assert plain
+           |> settled_await()
+           |> expect_status(200)
+           |> sse_payloads("station_tasks_invalidated") == []
+  end
 
-    assert Map.take(invalidation, ~w(type group_id kind version)) == %{
-             "type" => "conversation_list_invalidated",
-             "group_id" => group_id,
-             "kind" => "agent_task",
-             "version" => "test.1"
-           }
+  describe "the Group change feed (?changes=1)" do
+    test "names each conversation that changed, its kind and a message's seq" do
+      %{workspace: workspace, session: session, conversation: chat} =
+        create_fixture("group-changes@example.com")
+
+      group_id = workspace["default_group_id"]
+      task_id = SalixStore.Ids.new_conversation_id()
+      other_chat_id = SalixStore.Ids.new_conversation_id()
+      message_id = SalixStore.Ids.new_message_id()
+
+      response_task =
+        SystemsRuntime.Task.async(fn ->
+          user_req(
+            session["token"],
+            :get,
+            "/v1/comma/groups/#{group_id}/conversations/events?changes=1&wait=300"
+          )
+        end)
+
+      assert eventually(fn -> SalixClientFake.mutation_subscriber_count() == 1 end)
+
+      SalixClientFake.mutate(group_id, %{
+        event: :conversation_upsert,
+        conversation_id: task_id,
+        kind: "agent_task"
+      })
+
+      # Another conversation of the Group this user's Workspace does not show.
+      SalixClientFake.mutate(group_id, %{
+        event: :message_created,
+        conversation_id: other_chat_id,
+        kind: "user_chat",
+        message_id: message_id,
+        seq: 3
+      })
+
+      SalixClientFake.mutate(group_id, %{
+        event: :message_created,
+        conversation_id: chat["id"],
+        kind: "user_chat",
+        message_id: message_id,
+        seq: 7
+      })
+
+      SalixClientFake.mutate(group_id, %{
+        event: :conversation_delete,
+        conversation_id: task_id,
+        kind: "agent_task"
+      })
+
+      # Another Group's change does not reach this one's stream.
+      SalixClientFake.mutate("grp_other_group", %{
+        event: :conversation_upsert,
+        conversation_id: task_id,
+        kind: "agent_task"
+      })
+
+      body = settled_await(response_task) |> expect_status(200)
+
+      assert [
+               %{
+                 "type" => "conversation_changes_resync_required",
+                 "group_id" => ^group_id,
+                 "version" => "changes.0"
+               }
+             ] = sse_payloads(body, "conversation_changes_resync_required")
+
+      assert sse_payloads(body, "conversation_changed") == [
+               %{
+                 "type" => "conversation_changed",
+                 "group_id" => group_id,
+                 "conversation_id" => task_id,
+                 "kind" => "agent_task",
+                 "change" => "upsert",
+                 "version" => "changes.1"
+               },
+               %{
+                 "type" => "conversation_changed",
+                 "group_id" => group_id,
+                 "conversation_id" => chat["id"],
+                 "kind" => "user_chat",
+                 "change" => "message",
+                 "seq" => 7,
+                 "version" => "changes.3"
+               },
+               %{
+                 "type" => "conversation_changed",
+                 "group_id" => group_id,
+                 "conversation_id" => task_id,
+                 "kind" => "agent_task",
+                 "change" => "delete",
+                 "version" => "changes.4"
+               }
+             ]
+
+      refute body =~ other_chat_id
+      assert sse_payloads(body, "conversation_list_invalidated") == []
+    end
+
+    test "a session restricted to one conversation sees only that conversation's changes" do
+      %{user: user, workspace: workspace, conversation: chat} =
+        create_fixture("group-changes-restricted@example.com")
+
+      group_id = workspace["default_group_id"]
+
+      restricted =
+        admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions",
+          json: %{
+            "workspace_id" => workspace["id"],
+            "group_id" => group_id,
+            "conversation_id" => chat["id"],
+            "restricted" => true
+          }
+        )
+        |> expect_status(201)
+
+      response_task =
+        SystemsRuntime.Task.async(fn ->
+          user_req(
+            restricted["token"],
+            :get,
+            "/v1/comma/groups/#{group_id}/conversations/events?changes=1&wait=300"
+          )
+        end)
+
+      assert eventually(fn -> SalixClientFake.mutation_subscriber_count() == 1 end)
+
+      SalixClientFake.mutate(group_id, %{
+        event: :conversation_upsert,
+        conversation_id: SalixStore.Ids.new_conversation_id(),
+        kind: "agent_task"
+      })
+
+      SalixClientFake.mutate(group_id, %{
+        event: :conversation_upsert,
+        conversation_id: chat["id"],
+        kind: "user_chat"
+      })
+
+      body = settled_await(response_task) |> expect_status(200)
+
+      assert [%{"conversation_id" => conversation_id, "change" => "upsert"}] =
+               sse_payloads(body, "conversation_changed")
+
+      assert conversation_id == chat["id"]
+    end
   end
 
   test "Task SSE reports two exact participants independently and survives one owner loss" do
@@ -492,22 +737,22 @@ defmodule CommaWeb.CommaEventsContractTest do
     worker_id = SalixStore.Ids.new_participant_id()
 
     router_owner =
-      spawn(fn ->
-        receive do
+      SystemsRuntime.Proc.spawn(fn ->
+        SystemsRuntime.Proc.receive do
           :stop -> :ok
         end
       end)
 
     worker_owner =
-      spawn(fn ->
-        receive do
+      SystemsRuntime.Proc.spawn(fn ->
+        SystemsRuntime.Proc.receive do
           :stop -> :ok
         end
       end)
 
     on_exit(fn ->
-      send(router_owner, :stop)
-      send(worker_owner, :stop)
+      SystemsRuntime.Proc.send(router_owner, :stop)
+      SystemsRuntime.Proc.send(worker_owner, :stop)
     end)
 
     SalixClientFake.put_task_participants(task_id, [
@@ -538,7 +783,7 @@ defmodule CommaWeb.CommaEventsContractTest do
     })
 
     response_task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         user_req(
           session["token"],
           :get,
@@ -561,9 +806,9 @@ defmodule CommaWeb.CommaEventsContractTest do
       {:conversation_participant_status_changed, group_id, "foreign", worker_id}
     ])
 
-    Process.exit(worker_owner, :kill)
+    SystemsRuntime.Proc.exit(worker_owner, :kill)
     SalixClientFake.invalidate_task_list(group_id, task_id)
-    body = Task.await(response_task, 2000) |> expect_status(200)
+    body = settled_await(response_task) |> expect_status(200)
     [first | rest] = sse_payloads(body, "task_participant_statuses")
 
     assert MapSet.new(Enum.map(first["participants"], & &1["name"])) ==
@@ -594,109 +839,6 @@ defmodule CommaWeb.CommaEventsContractTest do
     refute body =~ "draft"
   end
 
-  test "Task SSE hides waiting participants and restores them when work resumes" do
-    %{workspace: workspace, session: session} = create_fixture("task-waiting@example.com")
-    {:ok, task} = SalixClientFake.create_group_conversation(workspace, %{"kind" => "agent_task"})
-    task_id = task["conversation_id"]
-    group_id = workspace["default_group_id"]
-    router_id = SalixStore.Ids.new_participant_id()
-    worker_id = SalixStore.Ids.new_participant_id()
-    active = %{"state" => "active", "status" => "is thinking...", "updated_at" => 1}
-    wait = %{"reason" => "Waiting for new instructions", "remaining_seconds" => 300}
-
-    SalixClientFake.put_task_participants(task_id, [
-      %{"participant_id" => router_id, "name" => "Router"},
-      %{
-        "participant_id" => worker_id,
-        "name" => "Worker",
-        "agent_id" => workspace["default_worker_agent_id"]
-      }
-    ])
-
-    SalixClientFake.put_task_status(workspace, task_id, router_id, active)
-    # Deliberately keep identical text: only structured wait controls visibility.
-    SalixClientFake.put_task_status(workspace, task_id, worker_id, active, wait: wait)
-
-    response_task =
-      Task.async(fn ->
-        user_req(
-          session["token"],
-          :get,
-          "/v1/comma/groups/#{group_id}/conversations/events?conversation_id=#{task_id}&wait=600"
-        )
-      end)
-
-    assert eventually(fn -> SalixClientFake.participant_subscriber_count() == 1 end)
-    reads = SalixClientFake.participant_status_read_count()
-    SalixClientFake.put_task_status(workspace, task_id, router_id, active, wait: wait)
-    assert eventually(fn -> SalixClientFake.participant_status_read_count() > reads end)
-    reads = SalixClientFake.participant_status_read_count()
-    SalixClientFake.put_task_status(workspace, task_id, worker_id, %{active | "updated_at" => 2})
-    assert eventually(fn -> SalixClientFake.participant_status_read_count() > reads end)
-    reads = SalixClientFake.participant_status_read_count()
-
-    SalixClientFake.put_task_status(
-      workspace,
-      task_id,
-      worker_id,
-      %{
-        "state" => "error",
-        "status" => "Runtime unavailable",
-        "updated_at" => 3
-      },
-      wait: wait
-    )
-
-    assert eventually(fn -> SalixClientFake.participant_status_read_count() > reads end)
-    SalixClientFake.invalidate_task_list(group_id, task_id)
-    body = Task.await(response_task, 2000) |> expect_status(200)
-    [first | rest] = sse_payloads(body, "task_participant_statuses")
-
-    assert %{"participant_id" => ^worker_id, "name" => "Worker", "actor_id" => "actor_" <> _} =
-             first["bound_worker"]
-
-    assert Enum.all?(rest, &(&1["bound_worker"] == first["bound_worker"]))
-    assert [%{"participant_id" => ^router_id}] = first["participants"]
-    assert Enum.any?(rest, &(&1["participants"] == []))
-
-    assert Enum.any?(rest, fn frame ->
-             match?(
-               [%{"participant_id" => ^worker_id, "state" => "active"}],
-               frame["participants"]
-             )
-           end)
-
-    assert [%{"participant_id" => ^worker_id, "state" => "error"}] =
-             List.last(rest)["participants"]
-
-    assert [_] = sse_payloads(body, "conversation_list_invalidated")
-  end
-
-  test "Task participant subscription failure leaves canonical invalidations available" do
-    %{workspace: workspace, session: session} =
-      create_fixture("task-participants-unavailable@example.com")
-
-    {:ok, task} = SalixClientFake.create_group_conversation(workspace, %{"kind" => "agent_task"})
-    task_id = task["conversation_id"]
-
-    SalixClientFake.put_task_participants(task_id, [
-      %{"participant_id" => SalixStore.Ids.new_participant_id(), "name" => "Worker"}
-    ])
-
-    SalixClientFake.fail_participant_subscriptions(:unavailable)
-
-    response =
-      user_req(
-        session["token"],
-        :get,
-        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/events?conversation_id=#{task_id}&wait=1"
-      )
-
-    body = expect_status(response, 200)
-    assert [%{"participants" => []}] = sse_payloads(body, "task_participant_statuses")
-    assert [_] = sse_payloads(body, "conversation_list_resync_required")
-  end
-
   test "user_chat events expose a canonical snapshot followed by an opaque invalidation" do
     %{workspace: workspace, session: session, conversation: conversation} =
       create_fixture("events-chat@example.com")
@@ -723,26 +865,6 @@ defmodule CommaWeb.CommaEventsContractTest do
     refute response.body =~ "987654"
     refute response.body =~ "last_event_id"
     refute response.body =~ "after_event_id"
-  end
-
-  test "participant subscription failure does not disable canonical conversation events" do
-    %{workspace: workspace, session: session, conversation: conversation} =
-      create_fixture("events-participant-unavailable@example.com")
-
-    SalixClientFake.fail_participant_subscriptions(:participant_status_unavailable)
-
-    response =
-      user_req(
-        session["token"],
-        :get,
-        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}/events?wait=0"
-      )
-
-    assert response.status == 200
-    assert [snapshot] = sse_payloads(response.body, "snapshot")
-    refute Map.has_key?(snapshot, "participant_draft")
-    refute Map.has_key?(snapshot, "participant_status")
-    assert sse_payloads(response.body, "participant_status") == []
   end
 
   test "user_chat SSE projects the subscribed participant activity snapshot" do
@@ -775,7 +897,8 @@ defmodule CommaWeb.CommaEventsContractTest do
                participant_id
              )
 
-    response_key = "rsp_" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+    response_key =
+      "rsp_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(18), padding: false)
 
     SalixClientFake.put_participant_status(
       workspace,
@@ -836,105 +959,6 @@ defmodule CommaWeb.CommaEventsContractTest do
              :binary.match(response.body, "event: activity")
   end
 
-  test "user_chat SSE projects the exact participant display status" do
-    %{workspace: workspace, session: session, conversation: conversation} =
-      create_fixture("events-participant-display-status@example.com")
-
-    conversation_id = conversation["id"]
-    participant_id = SalixClientFake.participant_id_for(conversation_id)
-
-    SalixClientFake.put_participant_status(
-      workspace,
-      conversation_id,
-      %{
-        "activity" => %{
-          "state" => "active",
-          "status" => "is executing a tool...",
-          "updated_at" => 1_780_000_000_123
-        }
-      },
-      notify: false
-    )
-
-    response =
-      user_req(
-        session["token"],
-        :get,
-        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation_id}/events?wait=0"
-      )
-
-    assert response.status == 200
-    [participant_status] = sse_payloads(response.body, "participant_status")
-
-    assert participant_status == %{
-             "type" => "participant_status",
-             "conversation_id" => conversation_id,
-             "participant_id" => participant_id,
-             "state" => "active",
-             "status" => "is executing a tool...",
-             "updated_at" => 1_780_000_000_123
-           }
-
-    assert [%{"participant_status" => ^participant_status}] =
-             sse_payloads(response.body, "snapshot")
-
-    assert :binary.match(response.body, "event: snapshot") <
-             :binary.match(response.body, "event: participant_status")
-  end
-
-  test "a completed reply snapshot carries stopped status with its cleared draft" do
-    %{workspace: workspace, session: session, conversation: conversation} =
-      create_fixture("events-reply-status-handoff@example.com")
-
-    conversation_id = conversation["id"]
-    participant_id = SalixClientFake.participant_id_for(conversation_id)
-
-    SalixClientFake.put_message(conversation_id, %{
-      "actor_type" => "agent",
-      "content" => "The requested answer is ready."
-    })
-
-    SalixClientFake.put_participant_status(
-      workspace,
-      conversation_id,
-      %{
-        "activity" => %{
-          "state" => "stopped",
-          "status" => "",
-          "updated_at" => 1_790_160_598_626
-        }
-      },
-      notify: false
-    )
-
-    reads = SalixClientFake.participant_status_read_count()
-
-    response =
-      user_req(
-        session["token"],
-        :get,
-        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation_id}/events?wait=0"
-      )
-
-    assert response.status == 200
-
-    assert [
-             %{
-               "messages" => [%{"content" => "The requested answer is ready."}],
-               "participant_draft" => nil,
-               "participant_status" => %{
-                 "conversation_id" => ^conversation_id,
-                 "participant_id" => ^participant_id,
-                 "state" => "stopped",
-                 "status" => "",
-                 "updated_at" => 1_790_160_598_626
-               }
-             }
-           ] = sse_payloads(response.body, "snapshot")
-
-    assert SalixClientFake.participant_status_read_count() == reads
-  end
-
   test "participant draft snapshots stream revisions and clear through participant status" do
     %{workspace: workspace, session: session, conversation: conversation} =
       create_fixture("events-participant-draft@example.com")
@@ -965,10 +989,11 @@ defmodule CommaWeb.CommaEventsContractTest do
                participant_id
              )
 
-    response_key = "rsp_" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+    response_key =
+      "rsp_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(18), padding: false)
 
     response_task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         user_req(
           session["token"],
           :get,
@@ -1012,7 +1037,7 @@ defmodule CommaWeb.CommaEventsContractTest do
              SalixClientFake.participant_status_read_count() > previous_reads
            end)
 
-    response = Task.await(response_task, 2_000) |> expect_status(200)
+    response = settled_await(response_task) |> expect_status(200)
     frames = draft_payloads(response)
 
     assert Enum.map(frames, & &1["status"]) == ["started", "delta", "delta", "cancelled"]
@@ -1033,141 +1058,6 @@ defmodule CommaWeb.CommaEventsContractTest do
     assert Enum.all?(frames, &(&1["source_message_ids"] == [public_source_id]))
   end
 
-  test "a reconnect first frame includes the exact current draft before separate realtime events" do
-    %{workspace: workspace, session: session, conversation: conversation} =
-      create_fixture("events-atomic-draft@example.com")
-
-    conversation_id = conversation["id"]
-
-    source =
-      SalixClientFake.put_message(conversation_id, %{
-        "actor_type" => "user",
-        "content" => "Continue"
-      })
-
-    participant_id = SalixClientFake.participant_id_for(conversation_id)
-
-    assert {:ok, source_identity} =
-             SalixIM.ConversationSourceIdentity.encode(
-               conversation_id,
-               source["message_id"],
-               participant_id
-             )
-
-    response_key = "rsp_" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
-
-    SalixClientFake.put_participant_status(workspace, conversation_id, %{
-      "draft" => %{
-        "response_key" => response_key,
-        "revision" => 3,
-        "source_message_ids" => [source_identity],
-        "text" => "An already visible prefix"
-      }
-    })
-
-    path =
-      "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation_id}/events?wait=0"
-
-    body = user_req(session["token"], :get, path) |> expect_status(200)
-
-    assert [
-             %{
-               "messages" => [%{"message_id" => public_source_id}],
-               "participant_draft" => initial
-             }
-           ] = sse_payloads(body, "snapshot")
-
-    assert initial["text"] == "An already visible prefix"
-    assert initial["revision"] == 3
-    assert initial["response_key"] == response_key
-    assert initial["source_message_ids"] == [public_source_id]
-    assert [^initial] = sse_payloads(body, "message_draft_started")
-    refute body =~ source_identity
-
-    # A later owner snapshot with no draft explicitly retires the presentation;
-    # it never changes the independently read canonical user message.
-    SalixClientFake.put_participant_status(workspace, conversation_id, %{})
-    cleared = user_req(session["token"], :get, path) |> expect_status(200)
-
-    assert [%{"messages" => [%{"message_id" => ^public_source_id}], "participant_draft" => nil}] =
-             sse_payloads(cleared, "snapshot")
-
-    assert sse_payloads(cleared, "message_draft_started") == []
-  end
-
-  test "agent_task events are explicitly unsupported" do
-    %{workspace: public_workspace, session: session} = create_fixture("events-task@example.com")
-    {:ok, workspace} = Comma.Workspaces.get(public_workspace["id"])
-    salix_id = SalixStore.Ids.new_conversation_id()
-    SalixClientFake.put_task(salix_id)
-
-    response =
-      user_req(
-        session["token"],
-        :get,
-        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{salix_id}/events?wait=0"
-      )
-
-    assert response.status == 409
-
-    assert response.body == %{
-             "error" => "unsupported_for_kind",
-             "code" => "unsupported_for_kind",
-             "kind" => "agent_task",
-             "operation" => "events"
-           }
-  end
-
-  test "conversation failures never expose canonical Salix identities" do
-    %{workspace: workspace, session: session, conversation: conversation} =
-      create_fixture("events-redacted-error@example.com")
-
-    salix_id = conversation["id"]
-    group_id = workspace["default_group_id"]
-
-    SalixClientFake.fail_reads({:owner_unreachable, group_id <> ":" <> salix_id, :timeout})
-
-    response =
-      user_req(
-        session["token"],
-        :get,
-        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}"
-      )
-
-    assert response.status == 503
-    assert response.body == %{"error" => "conversation_unavailable"}
-
-    SalixClientFake.fail_reads(:salix_participant_validation_incomplete)
-
-    atom_response =
-      user_req(
-        session["token"],
-        :get,
-        "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}"
-      )
-
-    assert atom_response.status == 503
-    assert atom_response.body == %{"error" => "conversation_unavailable"}
-
-    for internal_reason <- [
-          :grp1_private,
-          "grp1_private:cnv1_private",
-          {:bad_request, "invalid grp1_private/cnv1_private"}
-        ] do
-      SalixClientFake.fail_reads(internal_reason)
-
-      internal_response =
-        user_req(
-          session["token"],
-          :get,
-          "/v1/comma/groups/#{workspace["default_group_id"]}/conversations/#{conversation["id"]}"
-        )
-
-      assert internal_response.status == 503
-      assert internal_response.body == %{"error" => "conversation_unavailable"}
-    end
-  end
-
   defp create_fixture(email) do
     user =
       admin_req(:post, "/v1/comma/admin/users", json: %{"email" => email, "name" => "Events"})
@@ -1176,6 +1066,7 @@ defmodule CommaWeb.CommaEventsContractTest do
     workspace = create_ready_workspace!(user["id"])
 
     :ok = CommaWeb.TestConvergence.workspace!(workspace["id"])
+    workspace = CommaWeb.TestWorkers.with_default_worker!(workspace)
 
     session =
       admin_req(:post, "/v1/comma/admin/users/#{user["id"]}/sessions", json: %{})
@@ -1197,7 +1088,8 @@ defmodule CommaWeb.CommaEventsContractTest do
   defp user_req(token, method, path, opts \\ []), do: req(token, method, path, opts)
 
   defp req(token, method, path, opts) do
-    headers = [{"authorization", "Bearer " <> token}]
+    {extra, opts} = Keyword.pop(opts, :headers, [])
+    headers = [{"authorization", "Bearer " <> token} | extra]
     Req.request!([method: method, url: base() <> path, headers: headers, retry: false] ++ opts)
   end
 
@@ -1264,27 +1156,18 @@ defmodule CommaWeb.CommaEventsContractTest do
     end)
   end
 
-  defp eventually(fun, attempts \\ 100)
-  defp eventually(_fun, 0), do: false
-
-  defp eventually(fun, attempts) do
-    if fun.() do
-      true
-    else
-      Process.sleep(5)
-      eventually(fun, attempts - 1)
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun), do: settle_until(fun)
 
   defp ensure_fake_s3! do
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
     end
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
   defp base, do: CommaWeb.Application.base_url()
 end

@@ -53,7 +53,7 @@ defmodule SalixStore.MeetingCalendarSettings do
         connect_id: configuration["connect_id"],
         enabled: configuration["enabled"],
         configuration: configuration,
-        updated_at: DateTime.utc_now()
+        updated_at: SystemsClock.timestamp(:utc_datetime_usec)
       }
 
       case Repo.insert(

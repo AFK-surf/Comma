@@ -25,7 +25,8 @@ defmodule SalixIM.ProviderHTTP do
     Addressee,
     InitialThreadContext,
     MessageReferences,
-    SourceMessageId
+    SourceMessageId,
+    TableBlocks
   }
 
   alias SalixIM.Provider.Slack.TriageCallbackRouter
@@ -36,6 +37,7 @@ defmodule SalixIM.ProviderHTTP do
   alias SalixIM.{
     Diagnostics,
     FeishuFiles,
+    FeishuMessageMirror,
     GroupDirectory,
     ProviderConnects,
     ProviderIdentity,
@@ -201,13 +203,15 @@ defmodule SalixIM.ProviderHTTP do
   end
 
   defp do_handle_slack_request(app_id, envelope, headers, raw_body) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     # The app id is caller-controlled JSON: a non-binary shape must classify
     # as unattributed junk, not crash connect resolution into `error`.
     app_id = if is_binary(app_id), do: app_id, else: ""
 
     case find_connect_for_ingress(started, fn ->
-           ProviderIdentity.find_slack_im_connect_by_app_id(app_id)
+           slack_ingress_stage("im_ingress_connect", fn ->
+             ProviderIdentity.find_slack_im_connect_by_app_id(app_id)
+           end)
          end) do
       {:ok, connect} ->
         emit_ingress_result(connect, started, fn ->
@@ -219,8 +223,18 @@ defmodule SalixIM.ProviderHTTP do
     end
   end
 
+  # Finite stage spans under the callback's server span. They show where one
+  # Slack event spends its time before the HTTP reply; they never carry IDs.
+  defp slack_ingress_stage(stage, fun) do
+    SystemsObservability.Trace.with_span(
+      :salix_im_ingress,
+      %{component: "salix_im", operation: stage},
+      fun
+    )
+  end
+
   def handle_slack_interaction(app_id, payload, headers, raw_body) when is_map(payload) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     app_id = if is_binary(app_id), do: app_id, else: ""
 
     case find_connect_for_ingress(started, fn ->
@@ -256,7 +270,8 @@ defmodule SalixIM.ProviderHTTP do
     do: {:error, :invalid_envelope}
 
   def handle_slack_command(params, headers, raw_body) when is_map(params) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
+    deadline = SystemsClock.monotonic_time(:millisecond) + @slack_command_budget_ms
     context = SystemsObservability.Context.capture()
 
     # One wall-clock deadline covers identity reads, Router checks, receipt CAS,
@@ -265,10 +280,10 @@ defmodule SalixIM.ProviderHTTP do
     # does NOT revoke an in-flight provider/store write: retain its reservation
     # and let exact retries reuse confirmed timestamps and admission identities.
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         try do
           SystemsObservability.Context.run(context, fn ->
-            do_handle_slack_command(params, headers, raw_body, started)
+            do_handle_slack_command(params, headers, raw_body, started, deadline)
           end)
         rescue
           _ -> {:error, :command_delivery_unavailable}
@@ -277,19 +292,19 @@ defmodule SalixIM.ProviderHTTP do
         end
       end)
 
-    case Task.yield(task, max(slack_command_remaining_ms(started), 0)) do
+    case SystemsClock.yield(task, slack_command_timeout(deadline)) do
       {:ok, result} ->
         result
 
       _ ->
-        Task.shutdown(task, :brutal_kill)
+        SystemsRuntime.Task.shutdown(task, :brutal_kill)
         {:error, :command_thread_pending}
     end
   end
 
   def handle_slack_command(_params, _headers, _raw_body), do: {:error, :invalid_envelope}
 
-  defp do_handle_slack_command(params, headers, raw_body, started) do
+  defp do_handle_slack_command(params, headers, raw_body, started, deadline) do
     ReadScope.run(fn ->
       app_id = if is_binary(params["api_app_id"]), do: params["api_app_id"], else: ""
 
@@ -305,13 +320,13 @@ defmodule SalixIM.ProviderHTTP do
                :ok <- verify_slack_team(params, connect),
                :ok <- validate_slack_command(params),
                {:ok, prefix} <- SalixIM.SlackCommands.resolve(connect, params["command"]),
-               :ok <- slack_command_channel_access(connect, params["channel_id"], started),
+               :ok <- slack_command_channel_access(connect, params["channel_id"], deadline),
                :ok <- ProviderConnects.validate_group_router(connect["group_id"]),
                {:ok, thread_ts} <-
                  SalixIM.SlackCommandThread.ensure(connect, params, fn ->
-                   slack_command_remaining_ms(started)
+                   slack_command_timeout(deadline)
                  end) do
-            enqueue_slack_command(connect, params, thread_ts, started, prefix)
+            enqueue_slack_command(connect, params, thread_ts, deadline, prefix)
           end
         end)
       end
@@ -338,25 +353,26 @@ defmodule SalixIM.ProviderHTTP do
     end
   end
 
-  defp slack_command_channel_access(connect, channel_id, started) do
-    timeout = min(slack_command_remaining_ms(started), @slack_command_channel_timeout_ms)
+  defp slack_command_channel_access(connect, channel_id, deadline) do
+    timeout = min(slack_command_remaining_ms(deadline), @slack_command_channel_timeout_ms)
 
     if timeout <= 0 do
       {:error, :command_channel_check_unavailable}
     else
-      # One bot-token read, after callback authentication. No channel scan or retry.
-      response =
+      # One bot-token read, after callback authentication. No channel scan or
+      # retry. Bounded on the clock, so the acknowledgement window holds on
+      # any clock the command runs on.
+      read = fn ->
         SlackAPI.request_form(connect["bot_token"], "conversations.info", [channel: channel_id],
-          timeout_ms: timeout,
+          timeout_ms: SystemsClock.timeout(timeout),
           pool_retries: 0
         )
+      end
 
-      case response["channel"] do
-        %{"is_archived" => true} -> {:error, :command_channel_archived}
-        %{"is_im" => true} -> :ok
-        %{"is_member" => true} -> :ok
-        %{"is_member" => false} -> {:error, :command_channel_inaccessible}
-        _ -> {:error, :command_channel_check_unavailable}
+      case SystemsClock.run_bounded(read, timeout) do
+        {:ok, response} -> slack_command_channel_state(response)
+        {:exit, {:error, %SlackAPI.Error{} = error}} -> raise error
+        _timeout_or_exit -> {:error, :command_channel_check_unavailable}
       end
     end
   rescue
@@ -373,12 +389,25 @@ defmodule SalixIM.ProviderHTTP do
       end
   end
 
-  defp slack_command_remaining_ms(started) do
-    elapsed = System.convert_time_unit(System.monotonic_time() - started, :native, :millisecond)
-    @slack_command_budget_ms - elapsed
+  defp slack_command_channel_state(response) do
+    case response["channel"] do
+      %{"is_archived" => true} -> {:error, :command_channel_archived}
+      %{"is_im" => true} -> :ok
+      %{"is_member" => true} -> :ok
+      %{"is_member" => false} -> {:error, :command_channel_inaccessible}
+      _ -> {:error, :command_channel_check_unavailable}
+    end
   end
 
-  defp enqueue_slack_command(connect, params, thread_ts, started, prefix) do
+  # Clock milliseconds left of the command budget; may be negative.
+  defp slack_command_remaining_ms(deadline),
+    do: deadline - SystemsClock.monotonic_time(:millisecond)
+
+  # The same remainder as the real milliseconds a BEAM or transport timeout takes.
+  defp slack_command_timeout(deadline),
+    do: max(slack_command_remaining_ms(deadline), 0)
+
+  defp enqueue_slack_command(connect, params, thread_ts, deadline, prefix) do
     content = prefix <> params["text"]
 
     metadata = %{
@@ -398,7 +427,7 @@ defmodule SalixIM.ProviderHTTP do
     source_message_id =
       "im_provider:slack:" <> connect["connect_id"] <> ":slash:" <> params["trigger_id"]
 
-    remaining_ms = slack_command_remaining_ms(started)
+    remaining_ms = slack_command_remaining_ms(deadline)
 
     if remaining_ms > 0 do
       ProviderConnects.enqueue_group_router_im_provider_message(
@@ -435,14 +464,20 @@ defmodule SalixIM.ProviderHTTP do
            # After signature verification, before routing: edits/deletes are
            # excluded from history, so the mirror must see them here. A failed
            # outbox insert fails the callback so Slack retries.
-           :ok <- SlackMessageMirror.observe(connect, envelope),
+           :ok <-
+             slack_ingress_stage("im_ingress_mirror", fn ->
+               SlackMessageMirror.observe(connect, envelope)
+             end),
            {:ok, status} <- consume_slack_event(connect, envelope) do
         slack_event_status_result(status)
       else
         other -> other
       end
 
-    emit_slack_diagnostic(connect, envelope, result)
+    slack_ingress_stage("im_ingress_diagnostic", fn ->
+      emit_slack_diagnostic(connect, envelope, result)
+    end)
+
     result
   end
 
@@ -757,6 +792,10 @@ defmodule SalixIM.ProviderHTTP do
   # receipt persistence and delivery. A missing composition binding is an
   # unavailable server, not a product switch, so Slack may retry it.
   defp consume_slack_human_command(connect, envelope) do
+    # The command almost always reaches the Router: start its route reads now
+    # so they overlap the thread-owner claim and the receipt write.
+    prefetch_slack_route_records(connect, envelope["event"] || %{})
+
     TriageCallbackRouter.route_human_command(connect, envelope, fn route ->
       consume_explicit_slack_command(connect, envelope, route)
     end)
@@ -776,28 +815,49 @@ defmodule SalixIM.ProviderHTTP do
   )
 
   defp consume_explicit_slack_command(connect, envelope, route, opts \\ []) do
+    prefetch_slack_route_records(connect, envelope["event"] || %{})
+
     with_event_receipt(
       connect["connect_id"],
       envelope["event_id"],
-      &ProviderReceipts.record_slack/2,
+      &record_slack_receipt/2,
       &ProviderReceipts.delete_slack/2,
       fn disposition ->
         with :ok <- verify_current_slack_command_connect(connect),
-             :ok <- verify_slack_command_receipt(connect["connect_id"], envelope["event_id"]),
              :ok <- ProviderIdentityBarrier.hit(:slack_explicit_mention_after_connect_snapshot),
-             :ok <- verify_slack_command_route(route),
+             :ok <- verify_slack_command_receipt_and_route(connect, envelope, route),
              :ok <- verify_current_slack_command_connect(connect) do
-          enqueue_slack_event(
-            connect,
-            put_receipt_disposition(envelope, disposition),
-            command_thread?: Keyword.get(opts, :command_thread?, false)
-          )
+          slack_ingress_stage("im_ingress_enqueue", fn ->
+            enqueue_slack_event(
+              connect,
+              put_receipt_disposition(envelope, disposition),
+              command_thread?: Keyword.get(opts, :command_thread?, false)
+            )
+          end)
         else
           _stale_or_unavailable -> {:error, :slack_route_unavailable}
         end
       end,
       replay_duplicate?: true
     )
+  end
+
+  defp record_slack_receipt(connect_id, event_id) do
+    slack_ingress_stage("im_ingress_receipt", fn ->
+      ProviderReceipts.record_slack(connect_id, event_id)
+    end)
+  end
+
+  # Both reads follow the durable receipt and neither depends on the other, so
+  # they run together. Each still observes storage after the receipt write.
+  defp verify_slack_command_receipt_and_route(connect, envelope, route) do
+    slack_ingress_stage("im_ingress_verify", fn ->
+      route_check = SystemsRuntime.Task.async(fn -> verify_slack_command_route(route) end)
+      receipt = verify_slack_command_receipt(connect["connect_id"], envelope["event_id"])
+      route_result = SystemsRuntime.Task.await(route_check, :infinity)
+
+      with :ok <- receipt, do: route_result
+    end)
   end
 
   defp verify_slack_command_receipt(connect_id, event_id) do
@@ -871,7 +931,7 @@ defmodule SalixIM.ProviderHTTP do
   defp slack_event_status_result(:ok), do: {:ok, :accepted}
 
   def handle_feishu_request(app_id, envelope, headers, raw_body) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     # Same caller-controlled shape rule as the Slack wrapper.
     app_id = if is_binary(app_id), do: app_id, else: ""
 
@@ -888,6 +948,51 @@ defmodule SalixIM.ProviderHTTP do
     end
   end
 
+  @doc "One Lark webhook callback for the app `app_id` (`SalixIM.LarkInbound`)."
+  def handle_lark_request(app_id, envelope, headers, raw_body) do
+    started = SystemsClock.monotonic_time()
+    app_id = if is_binary(app_id), do: app_id, else: ""
+
+    case find_connect_for_ingress(started, fn ->
+           ProviderIdentity.find_active_lark_im_connect_by_app_id(app_id)
+         end) do
+      {:ok, connect} ->
+        emit_ingress_result(connect, started, fn ->
+          SalixIM.LarkInbound.handle_event(connect, envelope, headers, raw_body)
+        end)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc "One QQ bot webhook callback for the bot `app_id` (`SalixIM.QQInbound`)."
+  def handle_qq_request(app_id, payload, headers, raw_body) do
+    SalixIM.QQTiming.run(:ingress, fn ->
+      do_handle_qq_request(app_id, payload, headers, raw_body)
+    end)
+  end
+
+  defp do_handle_qq_request(app_id, payload, headers, raw_body) do
+    started = SystemsClock.monotonic_time()
+    app_id = if is_binary(app_id), do: app_id, else: ""
+
+    case find_connect_for_ingress(started, fn ->
+           SalixIM.QQTiming.measure("connect_lookup", fn ->
+             ProviderIdentity.find_active_qq_im_connect_by_app_id(app_id)
+           end)
+         end) do
+      {:ok, connect} ->
+        emit_ingress_result(connect, started, fn ->
+          SalixIM.QQInbound.handle_event(connect, payload, headers, raw_body)
+        end)
+
+      {:error, _reason} = error ->
+        SalixIM.QQTiming.discard()
+        error
+    end
+  end
+
   def handle_feishu_event(connect, envelope, headers, raw_body) do
     request_id = callback_request_id(headers)
     diagnostic_envelope = maybe_put_callback_request_id(envelope, request_id)
@@ -898,6 +1003,10 @@ defmodule SalixIM.ProviderHTTP do
            {:ok, decoded} <- verify_feishu_request(envelope, headers, raw_body, secrets),
            :ok <- validate_feishu_callback_shape(decoded),
            decoded = maybe_put_callback_request_id(decoded, request_id),
+           # After verification, before Router relevance: the mirror keeps group
+           # chatter and recalls the Router ignores. A failed outbox insert
+           # fails the callback so Feishu retries.
+           :ok <- FeishuMessageMirror.observe(connect, decoded),
            {:ok, response} <- dispatch_feishu_event(connect, decoded) do
         {{:ok, response}, decoded}
       else
@@ -995,9 +1104,9 @@ defmodule SalixIM.ProviderHTTP do
     owner = connect["billing_owner"] || connect[:billing_owner] || %{}
     surface = connect["surface"] || connect[:surface] || owner["surface"] || owner[:surface]
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{
         component: "salix_im",
         operation: "im_ingress",
@@ -1079,7 +1188,7 @@ defmodule SalixIM.ProviderHTTP do
     else
       with false <- timestamp == "" or signature == "",
            {ts, ""} <- Integer.parse(timestamp),
-           true <- abs(System.system_time(:second) - ts) <= 300 do
+           true <- abs(SystemsClock.system_time(:second) - ts) <= 300 do
         mac =
           :crypto.mac(:hmac, :sha256, secret, "v0:" <> timestamp <> ":" <> raw_body)
           |> Base.encode16(case: :lower)
@@ -1384,7 +1493,7 @@ defmodule SalixIM.ProviderHTTP do
   end
 
   defp route_wechat_message(connect, message, event_id) do
-    handler = Application.get_env(:salix_im, :wechat_command_handler)
+    handler = SystemsRuntime.get_env(:salix_im, :wechat_command_handler)
 
     result =
       if connect["managed_by"] == "comma_product" and is_atom(handler) and not is_nil(handler),
@@ -2211,7 +2320,8 @@ defmodule SalixIM.ProviderHTTP do
     text = trim(event["text"])
 
     if slack_misdirected_app_mention?(connect, event) or
-         (text == "" and not slack_event_has_files?(event)) do
+         (text == "" and not slack_event_has_files?(event) and
+            TableBlocks.from_message(event) == []) do
       {:error, :ignored}
     else
       case dispatch_meeting_provider(connect, envelope) do
@@ -2420,9 +2530,9 @@ defmodule SalixIM.ProviderHTTP do
 
     Use only the channel-local context needed to decide whether a short welcome is appropriate. Do not enumerate workspace channels, paginate history, or research member profiles for a greeting.
 
-    If this channel is suitable, post one short intro message in this channel with one standalone im_api.slack.post_channel_message call, without thread_ts. Introduce who you are, that you joined this channel, and the most useful things you can help this channel do.
+    If this channel is suitable, post one short intro message in this channel with one standalone im_api.slack.post_channel_message call, without thread_ts. Introduce who you are, that you joined this channel, and the most useful things you can help this channel do. The runtime authorizes only that welcome. Keep ifc.sources accurate.
 
-    If this channel is not suitable, or you cannot determine that posting is appropriate, do not post externally. Use end_turn. A welcome attempt ends this optional activation on success or refusal; do not retry a refusal with different references or unrelated reads. The inviter is context, not authority to impersonate a human request.
+    If this channel is not suitable, or you cannot determine that posting is appropriate, do not post externally. Use end_turn. A welcome attempt ends this optional activation on success or refusal; do not retry a refusal with different references or unrelated reads. The inviter is context, not authority to impersonate a human request. This activation may end automatically so that later human requests can proceed.
     """
     |> String.trim()
   end
@@ -2625,7 +2735,7 @@ defmodule SalixIM.ProviderHTTP do
   end
 
   defp dispatch_meeting_provider(connect, envelope) do
-    case Application.get_env(:salix_im, :meeting_provider_handler) do
+    case SystemsRuntime.get_env(:salix_im, :meeting_provider_handler) do
       fun when is_function(fun, 2) ->
         fun.(connect, envelope)
 
@@ -2791,14 +2901,16 @@ defmodule SalixIM.ProviderHTTP do
     if slack_user_display_name(event_profile, user_id) != "" do
       {:ready, event_profile}
     else
-      {:task, user_id, Task.async(fn -> slack_user_profile(connect, event, user_id) end)}
+      {:task, user_id,
+       SystemsRuntime.Task.async(fn -> slack_user_profile(connect, event, user_id) end)}
     end
   end
 
   defp await_slack_user_profile({:ready, profile}), do: profile
 
   defp await_slack_user_profile({:task, user_id, task}) do
-    case Task.yield(task, @slack_user_profile_join_ms) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, @slack_user_profile_join_ms) ||
+           SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, profile} when is_map(profile) -> profile
       _late_or_failed -> %{"user_id" => user_id}
     end
@@ -2817,6 +2929,7 @@ defmodule SalixIM.ProviderHTTP do
     user_label = slack_user_display_name(user_profile, user_id)
     source_message_id = slack_source_message_id(connect, envelope)
     conversation_text = slack_conversation_text(connect, event, text)
+    table_context = TableBlocks.content_suffix(event)
     reference_context = MessageReferences.content_suffix(event)
 
     author_label = if user_label == "", do: user_id, else: user_label
@@ -2824,7 +2937,7 @@ defmodule SalixIM.ProviderHTTP do
     router_content =
       "Slack #{event_type} from #{author_label} in #{channel_id}" <>
         if(thread_ts == "", do: "", else: " thread " <> thread_ts) <>
-        ":\n" <> text <> reference_context
+        ":\n" <> text <> table_context <> reference_context
 
     metadata =
       %{
@@ -2869,7 +2982,8 @@ defmodule SalixIM.ProviderHTTP do
       pre_deliveries: [],
       source_text: text,
       router_content: router_content,
-      conversation_content: provider_conversation_content(conversation_text <> reference_context)
+      conversation_content:
+        provider_conversation_content(conversation_text <> table_context <> reference_context)
     }
   end
 

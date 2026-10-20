@@ -41,7 +41,7 @@ defmodule CommaWeb.TaskShareEndpoints do
 
   @doc "The public web URL of a share token."
   def share_url(token) do
-    String.trim_trailing(Application.fetch_env!(:comma_web, :web_cookie_origin), "/") <>
+    String.trim_trailing(SystemsRuntime.fetch_env!(:comma_web, :web_cookie_origin), "/") <>
       "/s/" <> token
   end
 

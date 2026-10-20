@@ -7,6 +7,7 @@ import {
   getDmgArtifactName,
   normalizeReleaseArtifactNames,
   validateReleaseArtifacts,
+  writeWindowsInstallerPointer,
 } from "../scripts/release-artifacts";
 
 const releaseDirectories: string[] = [];
@@ -59,6 +60,30 @@ describe("getDmgArtifactName", () => {
 
     expect(name).toBe("Comma-1.2.3-staging.abcdef0.dmg");
     expect(name).not.toMatch(/[a-f0-9]{64}\.dmg$/);
+  });
+});
+
+describe("Windows installer pointer", () => {
+  it("keeps Velopack's installer and names a copy under the version", () => {
+    const directory = createReleaseDirectory();
+    writeFileSync(resolve(directory, "surf.comma.desktop-prod-Setup.exe"), "installer");
+    // An earlier version's copy left in the directory is not the installer.
+    writeFileSync(resolve(directory, "Comma-1.2.2-Setup.exe"), "older");
+
+    const name = writeWindowsInstallerPointer({
+      releaseOutputDir: directory,
+      packVersion: "1.2.3",
+      releaseChannel: "prod",
+    });
+
+    expect(name).toBe("Comma-1.2.3-Setup.exe");
+    expect(readFileSync(resolve(directory, name), "utf8")).toBe("installer");
+    expect(existsSync(resolve(directory, "surf.comma.desktop-prod-Setup.exe"))).toBe(
+      true
+    );
+    expect(readFileSync(resolve(directory, "setup.prod.txt"), "utf8").trim()).toBe(
+      name
+    );
   });
 });
 

@@ -1,6 +1,7 @@
 defmodule CommaWeb.RecommendationSourceCollectorTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
   alias CommaWeb.RecommendationSourceCollector
 
   defmodule Settings do
@@ -9,19 +10,19 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
 
   defmodule Client do
     def execute_tool(_settings, tool_slug, group_id, arguments, opts) do
-      test_pid = Application.fetch_env!(:comma_web, :recommendation_collector_test_pid)
-      send(test_pid, {:execute, tool_slug, group_id, arguments, opts})
+      test_pid = SystemsRuntime.fetch_env!(:comma_web, :recommendation_collector_test_pid)
+      SystemsRuntime.Proc.send(test_pid, {:execute, tool_slug, group_id, arguments, opts})
 
-      responses = Application.fetch_env!(:comma_web, :recommendation_collector_test_responses)
+      responses = SystemsRuntime.fetch_env!(:comma_web, :recommendation_collector_test_responses)
 
       case Map.fetch!(responses, tool_slug) do
         {:sleep, delay_ms, response} ->
-          send(test_pid, {:collector_worker, self()})
-          Process.sleep(delay_ms)
+          SystemsRuntime.Proc.send(test_pid, {:collector_worker, SystemsRuntime.Proc.self()})
+          SystemsClock.sleep(delay_ms)
           response
 
         :crash ->
-          Process.exit(self(), :kill)
+          SystemsRuntime.Proc.exit(SystemsRuntime.Proc.self(), :kill)
 
         response ->
           response
@@ -37,15 +38,20 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
       :recommendation_collector_test_responses
     ]
 
-    previous = Map.new(keys, &{&1, Application.get_env(:comma_web, &1)})
-    Application.put_env(:comma_web, :recommendation_composio_client_mod, Client)
-    Application.put_env(:comma_web, :recommendation_composio_settings_mod, Settings)
-    Application.put_env(:comma_web, :recommendation_collector_test_pid, self())
+    previous = Map.new(keys, &{&1, SystemsRuntime.get_env(:comma_web, &1)})
+    SystemsRuntime.put_env(:comma_web, :recommendation_composio_client_mod, Client)
+    SystemsRuntime.put_env(:comma_web, :recommendation_composio_settings_mod, Settings)
+
+    SystemsRuntime.put_env(
+      :comma_web,
+      :recommendation_collector_test_pid,
+      SystemsRuntime.Proc.self()
+    )
 
     on_exit(fn ->
       Enum.each(previous, fn
-        {key, nil} -> Application.delete_env(:comma_web, key)
-        {key, value} -> Application.put_env(:comma_web, key, value)
+        {key, nil} -> SystemsRuntime.delete_env(:comma_web, key)
+        {key, value} -> SystemsRuntime.put_env(:comma_web, key, value)
       end)
     end)
 
@@ -53,7 +59,7 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
   end
 
   test "collects each enabled Composio source once with a pinned account and bounded recipe" do
-    Application.put_env(:comma_web, :recommendation_collector_test_responses, %{
+    SystemsRuntime.put_env(:comma_web, :recommendation_collector_test_responses, %{
       "GITHUB_LIST_NOTIFICATIONS_FOR_THE_AUTHENTICATED_USER" =>
         {:ok, %{"successful" => true, "data" => %{"notifications" => [1]}}},
       "LINEAR_RUN_QUERY_OR_MUTATION" =>
@@ -74,27 +80,31 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
 
     assert Enum.map(facts, & &1["sourceId"]) == ["ca-github", "ca-linear", "ca-notion"]
 
-    assert_receive {:execute, "GITHUB_LIST_NOTIFICATIONS_FOR_THE_AUTHENTICATED_USER", "grp-1",
-                    %{"per_page" => 12},
-                    [connected_account_id: "ca-github", error_mode: :structured]}
+    settle_receive(
+      {:execute, "GITHUB_LIST_NOTIFICATIONS_FOR_THE_AUTHENTICATED_USER", "grp-1",
+       %{"per_page" => 12}, [connected_account_id: "ca-github", error_mode: :structured]}
+    )
 
-    assert_receive {:execute, "LINEAR_RUN_QUERY_OR_MUTATION", "grp-1",
-                    %{
-                      "query_or_mutation" => linear_query,
-                      "variables" => %{"first" => 12}
-                    }, [connected_account_id: "ca-linear", error_mode: :structured]}
+    settle_receive(
+      {:execute, "LINEAR_RUN_QUERY_OR_MUTATION", "grp-1",
+       %{
+         "query_or_mutation" => linear_query,
+         "variables" => %{"first" => 12}
+       }, [connected_account_id: "ca-linear", error_mode: :structured]}
+    )
 
     assert linear_query =~ "identifier"
     assert linear_query =~ "url"
     refute linear_query =~ "description"
 
-    assert_receive {:execute, "NOTION_FETCH_DATA", "grp-1",
-                    %{"get_pages" => true, "page_size" => 12},
-                    [connected_account_id: "ca-notion", error_mode: :structured]}
+    settle_receive(
+      {:execute, "NOTION_FETCH_DATA", "grp-1", %{"get_pages" => true, "page_size" => 12},
+       [connected_account_id: "ca-notion", error_mode: :structured]}
+    )
   end
 
   test "keeps successful facts and reports provider and unsupported-source failures" do
-    Application.put_env(:comma_web, :recommendation_collector_test_responses, %{
+    SystemsRuntime.put_env(:comma_web, :recommendation_collector_test_responses, %{
       "LINEAR_RUN_QUERY_OR_MUTATION" =>
         {:ok, %{"successful" => true, "data" => %{"issues" => %{"nodes" => []}}}},
       "NOTION_FETCH_DATA" => {:ok, %{"successful" => false, "error" => "missing scope"}}
@@ -117,7 +127,7 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
   end
 
   test "a crashed source does not discard healthy sources" do
-    Application.put_env(:comma_web, :recommendation_collector_test_responses, %{
+    SystemsRuntime.put_env(:comma_web, :recommendation_collector_test_responses, %{
       "LINEAR_RUN_QUERY_OR_MUTATION" =>
         {:ok, %{"successful" => true, "data" => %{"issues" => %{"nodes" => []}}}},
       "NOTION_FETCH_DATA" => :crash
@@ -133,23 +143,23 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
   end
 
   test "cancelling generation stops its in-flight source read" do
-    Application.put_env(:comma_web, :recommendation_collector_test_responses, %{
+    SystemsRuntime.put_env(:comma_web, :recommendation_collector_test_responses, %{
       "NOTION_FETCH_DATA" => {:sleep, 30_000, {:error, :unexpected_completion}}
     })
 
     owner =
-      spawn(fn ->
+      SystemsRuntime.Proc.spawn(fn ->
         RecommendationSourceCollector.collect(workspace(), [source("notion", "ca-notion")])
       end)
 
-    assert_receive {:collector_worker, worker}, 1_000
-    monitor = Process.monitor(worker)
-    Process.exit(owner, :kill)
-    assert_receive {:DOWN, ^monitor, :process, ^worker, _}, 1_000
+    settle_receive({:collector_worker, worker})
+    monitor = SystemsRuntime.Proc.monitor(worker)
+    SystemsRuntime.Proc.exit(owner, :kill)
+    settle_receive({:DOWN, ^monitor, :process, ^worker, _})
   end
 
   test "derives stable Gmail web links so emails become citable inline-link evidence" do
-    Application.put_env(:comma_web, :recommendation_collector_test_responses, %{
+    SystemsRuntime.put_env(:comma_web, :recommendation_collector_test_responses, %{
       "GMAIL_FETCH_EMAILS" =>
         {:ok,
          %{
@@ -188,7 +198,7 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
   end
 
   test "derives citable web links for Notion pages, GitHub notifications, and Drive files" do
-    Application.put_env(:comma_web, :recommendation_collector_test_responses, %{
+    SystemsRuntime.put_env(:comma_web, :recommendation_collector_test_responses, %{
       "NOTION_FETCH_DATA" =>
         {:ok,
          %{
@@ -262,7 +272,7 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
     visible_url = "https://linear.app/comma/issue/COMMA-143"
     excluded_url = "https://linear.app/comma/issue/COMMA-999"
 
-    Application.put_env(:comma_web, :recommendation_collector_test_responses, %{
+    SystemsRuntime.put_env(:comma_web, :recommendation_collector_test_responses, %{
       "LINEAR_RUN_QUERY_OR_MUTATION" =>
         {:ok,
          %{
@@ -291,7 +301,7 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
   test "slims Slack search matches to citable fields and keeps each permalink" do
     permalink = "https://comma-local.slack.com/archives/C01234567/p1786900000000200"
 
-    Application.put_env(:comma_web, :recommendation_collector_test_responses, %{
+    SystemsRuntime.put_env(:comma_web, :recommendation_collector_test_responses, %{
       "SLACK_SEARCH_FOR_MESSAGES_WITH_QUERY" =>
         {:ok,
          %{
@@ -345,7 +355,7 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
     # and truncation would drop its only citable URL.
     visible_url = "https://linear.app/comma/issue/COMMA-143"
 
-    Application.put_env(:comma_web, :recommendation_collector_test_responses, %{
+    SystemsRuntime.put_env(:comma_web, :recommendation_collector_test_responses, %{
       "LINEAR_RUN_QUERY_OR_MUTATION" =>
         {:ok,
          %{
@@ -380,7 +390,7 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
     end
 
     respond = fn issues ->
-      Application.put_env(:comma_web, :recommendation_collector_test_responses, %{
+      SystemsRuntime.put_env(:comma_web, :recommendation_collector_test_responses, %{
         "LINEAR_RUN_QUERY_OR_MUTATION" =>
           {:ok, %{"successful" => true, "data" => %{"issues" => %{"nodes" => issues}}}}
       })
@@ -411,14 +421,59 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
     assert bound["dropped"] == 20 - whole
   end
 
+  test "a member fact keeps every record's link and IDs outside the byte bound" do
+    source = %{"appId" => "outlook", "appName" => "Outlook", "connectionId" => "ms-mail"}
+    now = SystemsClock.utc_now()
+
+    # Graph message IDs run to about 150 characters, and each link repeats one.
+    mail = fn n, subject ->
+      id = "AQMkADAwATM0MDAAMS1iNTcw" <> String.duplicate("A", 120) <> "#{1000 + n}"
+
+      %{
+        "messageId" => id,
+        "threadId" => "AQMkADAwATM0MDAAMS1" <> String.duplicate("B", 96) <> "#{1000 + n}",
+        "subject" => subject,
+        "sender" => "sender#{n}@example.com",
+        "messageTimestamp" => "2026-10-19T08:00:00Z",
+        "webUrl" => "https://outlook.live.com/owa/?ItemID=#{URI.encode_www_form(id)}&exvsurl=1"
+      }
+    end
+
+    messages = for n <- 1..40, do: mail.(n, "Matter #{n}")
+    data = %{"messages" => messages, "memberRelation" => "your_recent_inbox"}
+
+    assert {:ok, fact, []} = RecommendationSourceCollector.member_fact(source, data, %{}, now)
+    assert fact["data"] == data
+    assert %{"truncated" => false, "kept" => 40, "dropped" => 0} = fact["bound"]
+
+    # Facts beyond the bound still drop from the tail. Each kept record keeps its
+    # identity, and the source reports the cut as a partial read.
+    long = for n <- 1..40, do: mail.(n, "Matter #{n} " <> String.duplicate("x", 600))
+    data = %{"messages" => long, "memberRelation" => "your_recent_inbox"}
+
+    assert {:ok, fact, [:member_source_truncated]} =
+             RecommendationSourceCollector.member_fact(source, data, %{}, now)
+
+    kept = get_in(fact["data"], ["value", "messages"])
+    whole = 40 - fact["bound"]["dropped"]
+    assert whole in 1..39
+    assert Enum.take(kept, whole) == Enum.take(long, whole)
+
+    # A record cut within its link keeps nothing to cite.
+    for {cut, original} <- Enum.zip(kept, long), cut["webUrl"] not in [nil, ""] do
+      assert Map.take(cut, ~w(messageId threadId webUrl)) ==
+               Map.take(original, ~w(messageId threadId webUrl))
+    end
+  end
+
   test "the collection sub-deadline bounds a multi-wave provider fan-out" do
-    Application.put_env(:comma_web, :recommendation_collector_test_responses, %{
+    SystemsRuntime.put_env(:comma_web, :recommendation_collector_test_responses, %{
       "GITHUB_LIST_NOTIFICATIONS_FOR_THE_AUTHENTICATED_USER" =>
         {:sleep, 500, {:ok, %{"successful" => true, "data" => %{"notifications" => []}}}}
     })
 
     sources = for id <- 1..5, do: source("github", "ca-github-#{id}")
-    started_at = System.monotonic_time(:millisecond)
+    started_at = SystemsClock.monotonic_time(:millisecond)
 
     assert {:ok, %{facts: [], failures: failures}} =
              RecommendationSourceCollector.collect(workspace(), sources,
@@ -427,7 +482,7 @@ defmodule CommaWeb.RecommendationSourceCollectorTest do
                source_timeout_ms: 1_000
              )
 
-    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+    elapsed_ms = SystemsClock.monotonic_time(:millisecond) - started_at
     # The terminal deadline outcome is the discriminating contract; the broad
     # wall-clock cap catches a hang without depending on scheduler precision.
     assert elapsed_ms < 2_000

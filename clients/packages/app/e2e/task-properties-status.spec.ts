@@ -1,12 +1,20 @@
 import { expect, test, type Locator } from "@playwright/test";
-import { installSharedWorkerClock } from "../../../e2e/helpers/shared-worker-clock";
+import { installCoreWorkerClock } from "../../../e2e/helpers/core-worker-clock";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
 import {
   chatSmokeTaskConversation,
+  chatSmokeTaskLoop,
+  chatSmokeWorkspace,
   startChatSmokeStub,
 } from "../../../e2e/p0/chat-stub";
+import {
+  chooseTaskStatus,
+  expectManualDoneChoice,
+} from "../../../e2e/helpers/task-panel";
 
-test.use({ viewport: { width: 1600, height: 1000 } });
+// The stub's Loop runs in Asia/Shanghai. On a UTC page, its rule always names
+// that zone as an offset, whatever zone the machine uses.
+test.use({ timezoneId: "UTC", viewport: { width: 1600, height: 1000 } });
 
 /** What a status icon paints: its glyph paths and resolved color. */
 const glyph = (icon: Locator) =>
@@ -15,7 +23,7 @@ const glyph = (icon: Locator) =>
     paths: svg.innerHTML,
   }));
 
-test("task details show the bound Worker without enabling Session history", async ({
+test("task details show where the Task runs and its model, not its Worker", async ({
   page,
 }) => {
   const stub = await startChatSmokeStub({ includeTaskInInbox: true });
@@ -28,8 +36,11 @@ test("task details show the bound Worker without enabling Session history", asyn
     status: "idle",
     updated_at: 1,
   };
-  // A structured wait hides activity, but not the bound Worker identity.
   stub.setTaskParticipants([], worker);
+  stub.setTaskRun({
+    place: { kind: "station", device_id: "dev_studio", name: "Mac Studio" },
+    model: { kind: "catalog", name: "Claude Sonnet" },
+  });
   try {
     await installBrowserTestSession(page, {
       apiBaseUrl: stub.baseUrl,
@@ -43,32 +54,25 @@ test("task details show the bound Worker without enabling Session history", asyn
       .locator('[data-slot="task-card"]')
       .filter({ hasText: chatSmokeTaskConversation.title })
       .click();
-    const workerSection = page.locator('[data-testid="task-panel-worker"]:visible');
-    await expect(workerSection).toContainText("Research Worker");
-    await expect(workerSection).not.toContainText("Router");
+    const run = page.locator('[data-testid="task-panel-run"]:visible');
+    await expect(run).toHaveText("on Mac Studio · Claude Sonnet");
+    await expect(page.getByText("Research Worker")).toHaveCount(0);
     await expect(page.getByTestId("session-history-participant")).toHaveCount(0);
     await page.setViewportSize({ width: 900, height: 800 });
     await page.getByTestId("task-panel-toggle").click();
-    await expect(
-      page.getByTestId("task-panel-popover").getByTestId("task-panel-worker")
-    ).toContainText("Research Worker");
-    stub.setTaskParticipants([{ ...worker, name: "Updated Worker", updated_at: 2 }]);
-    await expect(
-      page.getByTestId("task-panel-popover").getByTestId("task-panel-worker")
-    ).toContainText("Updated Worker");
-    const narrowWorker = page
+    const narrowRun = page
       .getByTestId("task-panel-popover")
-      .getByTestId("task-panel-worker");
-    stub.setTaskParticipants([], { ...worker, name: "Waiting Worker" });
-    await expect(narrowWorker).toContainText("Waiting Worker");
+      .getByTestId("task-panel-run");
+    await expect(narrowRun).toHaveText("on Mac Studio · Claude Sonnet");
     stub.disconnectTaskStatusStreams();
-    stub.setTaskParticipants([], { ...worker, name: "Reconnected Worker" });
-    await expect(narrowWorker).toContainText("Reconnected Worker");
+    stub.setTaskRun({ place: { kind: "cloud_vm" }, model: { kind: "platform" } });
+    await expect(narrowRun).toHaveText("on Cloud VM · official model");
     await page.reload();
     await page.getByTestId("task-panel-toggle").click();
-    await expect(narrowWorker).toContainText("Reconnected Worker");
-    stub.setTaskParticipants([], null);
-    await expect(narrowWorker).toHaveCount(0);
+    await expect(narrowRun).toHaveText("on Cloud VM · official model");
+    // A server before the Task's place and model sends neither: nothing shows.
+    stub.setTaskRun(null);
+    await expect(narrowRun).toHaveCount(0);
   } finally {
     await stub.close();
   }
@@ -151,7 +155,6 @@ test("a failed preparation leaves known properties usable while history loads", 
     taskPreparationUnavailable: true,
     taskStatus: "ready_for_review",
     taskAssistantMessages: [history],
-    taskSchedule: null,
   });
   try {
     await installBrowserTestSession(page, {
@@ -178,17 +181,12 @@ test("a failed preparation leaves known properties usable while history loads", 
     ).toBeVisible();
     await expect(page.getByRole("heading", { name: "Connecting…" })).toHaveCount(0);
     const properties = page.getByTestId("task-panel-properties");
-    await expect(
-      properties.getByText(
-        "The Task changed before it could be accepted. Review it again."
-      )
-    ).toHaveCount(0);
+    await expect(properties.getByRole("alert")).toHaveCount(0);
     await expect(properties.getByTestId("task-conversation-status")).toHaveText(
       "Needs Review"
     );
-    await expect(
-      properties.getByRole("button", { name: "Done", exact: true })
-    ).toHaveCount(0);
+    // A summary alone cannot end the Task: the version comes from the detail.
+    await expectManualDoneChoice(properties, false);
     await expect(
       page.getByRole("button", { name: "Add label", exact: true })
     ).toHaveCount(0);
@@ -199,9 +197,7 @@ test("a failed preparation leaves known properties usable while history loads", 
 
     stub.releaseDelayedTaskDetail();
     await expect(page.getByText(history, { exact: true })).toBeVisible();
-    await expect(
-      properties.getByRole("button", { name: "Done", exact: true })
-    ).toBeVisible();
+    await expectManualDoneChoice(properties, true);
     await expect(
       page.getByRole("status", { name: "Loading task history…" })
     ).toHaveCount(0);
@@ -217,7 +213,6 @@ test("Properties keeps the Inbox status when a stale task detail arrives later",
     includeTaskInInbox: true,
     taskStatus: "in_progress",
     taskDetailStatus: "in_progress",
-    taskSchedule: null,
   });
 
   try {
@@ -273,7 +268,6 @@ test("the Inbox row draws the same status glyph as Properties", async ({ page })
   const stub = await startChatSmokeStub({
     includeTaskInInbox: true,
     taskStatus: "active",
-    taskSchedule: null,
   });
   try {
     await installBrowserTestSession(page, {
@@ -293,9 +287,7 @@ test("the Inbox row draws the same status glyph as Properties", async ({ page })
     const rowIcon = row.locator(
       '[data-slot="task-list-item-icon"] > :not([data-motion="exit"]) svg'
     );
-    const statusIcon = status.locator(
-      ".comma-status-swap-layer:not([data-leaving]) svg"
-    );
+    const statusIcon = status.locator("svg");
 
     await expect(status).toHaveText("In progress");
     await expect.poll(() => glyph(rowIcon)).toEqual(await glyph(statusIcon));
@@ -312,13 +304,12 @@ test("the Inbox row draws the same status glyph as Properties", async ({ page })
   }
 });
 
-test("Done uses the accepted task while the next detail read is held", async ({
+test("Done from the status menu uses the ended task while the next detail read is held", async ({
   page,
 }) => {
   const stub = await startChatSmokeStub({
     includeTaskInInbox: true,
     taskStatus: "ready_for_review",
-    taskSchedule: null,
   });
   try {
     await installBrowserTestSession(page, {
@@ -333,14 +324,103 @@ test("Done uses the accepted task while the next detail read is held", async ({
       .filter({ hasText: chatSmokeTaskConversation.title })
       .click();
     const properties = page.getByTestId("task-panel-properties");
-    const done = properties.getByRole("button", { name: "Done", exact: true });
-    await expect(done).toBeVisible();
+    await expectManualDoneChoice(properties, true);
     stub.holdNextTaskDetail();
-    await done.click();
+    await chooseTaskStatus(properties, "Done");
+    // The detail read after the change is held: the ended Task shows meanwhile.
+    await stub.waitForDelayedTaskDetail();
     await expect(properties.getByTestId("task-conversation-status")).toHaveText("Done");
-    await expect(properties.locator(".comma-task-panel-done")).toHaveCount(0);
+    expect(stub.taskStatusRequestCount).toBe(1);
   } finally {
     stub.releaseDelayedTaskDetail();
+    await stub.close();
+  }
+});
+
+test("a Loop Task's Properties state its schedule, and Done ends the Loop with it", async ({
+  page,
+}) => {
+  // The stub's Loop: every day at 09:00 in Shanghai, 3 of 10 runs made.
+  const stub = await startChatSmokeStub({
+    includeTaskInInbox: true,
+    taskLoop: chatSmokeTaskLoop,
+    taskStatus: "active",
+  });
+  try {
+    await installBrowserTestSession(page, {
+      apiBaseUrl: stub.baseUrl,
+      email: "task-loop@comma.local",
+      token: "comma_sess_task_loop",
+    });
+    await page.goto("/");
+    await page.getByRole("link", { name: "Inbox" }).click();
+    await page
+      .getByTestId("inbox-item")
+      .filter({ hasText: chatSmokeTaskConversation.title })
+      .click();
+    const properties = page.getByTestId("task-panel-properties");
+    const schedule = page.getByTestId("task-panel-schedule");
+    await expect(schedule.getByRole("heading")).toHaveText("Scheduled");
+    await expect(schedule.getByRole("listitem")).toHaveText([
+      "Every day at 9:00 AM · GMT+8",
+    ]);
+    // The hover text names the zone in full.
+    await expect(schedule.locator("[title]")).toHaveAttribute(
+      "title",
+      "Every day at 9:00 AM · China Standard Time"
+    );
+    // The schedule follows the labels; no cron reaches the header.
+    await expect(
+      page.locator(
+        '[data-testid="task-panel-labels"] ~ [data-testid="task-panel-schedule"]'
+      )
+    ).toBeVisible();
+    await expect(page.getByText("0 9 * * *")).toHaveCount(0);
+
+    // A Loop Task is ended by hand like any Task; the server ends its Loop too.
+    await expectManualDoneChoice(properties, true);
+    await chooseTaskStatus(properties, "Done");
+    await expect(properties.getByTestId("task-conversation-status")).toHaveText("Done");
+    await expect(schedule.getByTestId("task-panel-schedule-next")).toHaveText("Ended");
+    // The ended Loop keeps its type. No text, hover text or control keeps its rule.
+    await expect(schedule).toHaveText("ScheduledEnded");
+    await expect(schedule.locator("[title]")).toHaveCount(0);
+    await expect(schedule.getByRole("button")).toHaveCount(0);
+    expect(stub.taskStatusRequestCount).toBe(1);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("a Loop Task opened from a link, in no list the app read, states its schedule once its summary is read", async ({
+  page,
+}) => {
+  // No list has the Task: its schedule comes only with its own summary.
+  const stub = await startChatSmokeStub({
+    taskLoop: chatSmokeTaskLoop,
+    taskStatus: "active",
+  });
+  stub.holdNextTaskSummary();
+  try {
+    await installBrowserTestSession(page, {
+      apiBaseUrl: stub.baseUrl,
+      email: "task-loop-link@comma.local",
+      token: "comma_sess_task_loop_link",
+    });
+    await page.goto(
+      `/#/tasks/${chatSmokeWorkspace.id}/${chatSmokeWorkspace.group_id}/${chatSmokeTaskConversation.id}`
+    );
+    await stub.waitForDelayedTaskSummary();
+    await expect(page.getByTestId("task-panel-properties")).toBeVisible();
+    await expect(page.getByTestId("task-panel-schedule")).toHaveCount(0);
+
+    stub.releaseDelayedTaskSummary();
+    const schedule = page.getByTestId("task-panel-schedule");
+    await expect(schedule.getByRole("heading")).toHaveText("Scheduled");
+    await expect(schedule.getByRole("listitem")).toHaveText([
+      "Every day at 9:00 AM · GMT+8",
+    ]);
+  } finally {
     await stub.close();
   }
 });
@@ -352,9 +432,8 @@ test("revisiting a released task paints its history before the fresh detail arri
   const stub = await startChatSmokeStub({
     includeTaskInInbox: true,
     taskAssistantMessages: [history],
-    taskSchedule: null,
   });
-  let clock: Awaited<ReturnType<typeof installSharedWorkerClock>> | undefined;
+  let clock: Awaited<ReturnType<typeof installCoreWorkerClock>> | undefined;
   try {
     await installBrowserTestSession(page, {
       apiBaseUrl: stub.baseUrl,
@@ -369,7 +448,7 @@ test("revisiting a released task paints its history before the fresh detail arri
     await row.click();
     await expect(page.getByText(history, { exact: true })).toBeVisible();
     await page.clock.install();
-    clock = await installSharedWorkerClock(page);
+    clock = await installCoreWorkerClock(page);
     await page.getByRole("link", { name: "Home", exact: true }).click();
     await page.clock.fastForward(31_000);
     await clock.advance(31_000);
@@ -393,7 +472,6 @@ test("a prepared task shows recent content immediately while the runtime detail 
     includeTaskInInbox: true,
     taskAssistantMessages: history,
     taskStatus: "ready_for_review",
-    taskSchedule: null,
   });
   try {
     await installBrowserTestSession(page, {
@@ -410,12 +488,13 @@ test("a prepared task shows recent content immediately while the runtime detail 
     await expect.poll(() => stub.taskPreparationRequestCount).toBe(1);
     // Let the preparation response cross the existing session cache boundary.
     await page.waitForTimeout(150);
-    expect(
-      await page.evaluate((id) => {
-        const raw = localStorage.getItem("comma.taskReviewSeen");
-        return raw ? (JSON.parse(raw)[id] ?? null) : null;
-      }, chatSmokeTaskConversation.id)
-    ).toBeNull();
+    // Preparing the Task is not viewing it: it still needs review in the Inbox.
+    await expect(
+      page
+        .getByRole("complementary", { name: "App sidebar" })
+        .getByRole("link", { name: "Inbox" })
+        .locator('[data-slot="left-rail-item-badge"]')
+    ).toBeVisible();
     expect(stub.taskDetailRequestCount).toBe(0);
     stub.holdNextTaskDetail();
     const clickedAt = Date.now();
@@ -423,7 +502,7 @@ test("a prepared task shows recent content immediately while the runtime detail 
     await stub.waitForDelayedTaskDetail();
     await expect(
       page.getByText("Prepared task update 96", { exact: true })
-    ).toBeVisible({ timeout: 500 });
+    ).toBeVisible();
     const clickToContentMs = Date.now() - clickedAt;
     expect(clickToContentMs).toBeLessThan(500);
     await test.info().attach("click-to-content", {
@@ -456,7 +535,6 @@ test("leaving a task during edge transitions releases its detached transcript", 
     includeTaskInInbox: true,
     taskInboxSummaryOnly: true,
     taskStatus: "ready_for_review",
-    taskSchedule: null,
     taskAssistantMessages: Array.from(
       { length: 1000 },
       (_, index) =>

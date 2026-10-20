@@ -24,6 +24,8 @@ defmodule SalixStore.Inflight do
   # The fixed operation vocabulary, mirroring the operations observed by
   # `SalixStore.S3`. Every scan emits a value for each — including zero —
   # because a `last_value` gauge only moves when a measurement arrives.
+  import SystemsRuntime.Proc, only: [is_process: 1]
+
   @operations ~w(store_put store_get store_list)
 
   @doc false
@@ -34,8 +36,8 @@ defmodule SalixStore.Inflight do
 
   @doc "Create the ETS table (idempotent). Called from the application supervisor root."
   def create_table do
-    if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [
+    if SystemsRuntime.ETS.whereis(@table) == :undefined do
+      SystemsRuntime.ETS.new(@table, [
         :set,
         :public,
         :named_table,
@@ -71,15 +73,20 @@ defmodule SalixStore.Inflight do
   end
 
   defp insert_row(operation) do
-    ref = make_ref()
-    :ets.insert(@table, {ref, operation, self(), System.monotonic_time(:millisecond)})
+    ref = SystemsRuntime.Proc.make_ref()
+
+    SystemsRuntime.ETS.insert(
+      @table,
+      {ref, operation, SystemsRuntime.Proc.self(), SystemsClock.monotonic_time(:millisecond)}
+    )
+
     {:ok, ref}
   rescue
     ArgumentError -> :untracked
   end
 
   defp delete_row(ref) do
-    :ets.delete(@table, ref)
+    SystemsRuntime.ETS.delete(@table, ref)
   rescue
     # The table vanished mid-operation (application shutdown). The cleanup
     # must not replace `fun`'s result or exception with its own.
@@ -92,7 +99,7 @@ defmodule SalixStore.Inflight do
   Rows whose recording process has died are deleted as they are encountered.
   """
   @spec snapshot(integer()) :: %{String.t() => {non_neg_integer(), non_neg_integer()}}
-  def snapshot(now_ms \\ System.monotonic_time(:millisecond)) do
+  def snapshot(now_ms \\ SystemsClock.monotonic_time(:millisecond)) do
     snapshot_matching(now_ms, fn _pid -> true end)
   end
 
@@ -100,18 +107,19 @@ defmodule SalixStore.Inflight do
   @spec snapshot_for(pid(), integer()) :: %{
           String.t() => {non_neg_integer(), non_neg_integer()}
         }
-  def snapshot_for(owner, now_ms \\ System.monotonic_time(:millisecond)) when is_pid(owner) do
+  def snapshot_for(owner, now_ms \\ SystemsClock.monotonic_time(:millisecond))
+      when is_process(owner) do
     snapshot_matching(now_ms, &(&1 == owner))
   end
 
   defp snapshot_matching(now_ms, owner?) do
     empty = Map.new(@operations, &{&1, {0, 0}})
 
-    :ets.tab2list(@table)
+    SystemsRuntime.ETS.tab2list(@table)
     |> Enum.reduce(empty, fn {ref, operation, pid, started_ms}, acc ->
       cond do
-        not Process.alive?(pid) ->
-          :ets.delete(@table, ref)
+        not SystemsRuntime.Proc.alive?(pid) ->
+          SystemsRuntime.ETS.delete(@table, ref)
           acc
 
         not is_map_key(acc, operation) ->
@@ -142,12 +150,15 @@ defmodule SalixStore.Inflight do
     to zero after it clears.
     """
 
-    use GenServer
+    use SystemsRuntime.Server
+    import SystemsRuntime.Proc, only: [is_process: 1]
 
     @default_interval_ms 10_000
 
     def start_link(opts) do
-      GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+      SystemsRuntime.Server.start_link(__MODULE__, opts,
+        name: Keyword.get(opts, :name, __MODULE__)
+      )
     end
 
     @impl true
@@ -167,19 +178,19 @@ defmodule SalixStore.Inflight do
     def handle_info(_message, state), do: {:noreply, state}
 
     @doc false
-    def publish(now_ms \\ System.monotonic_time(:millisecond)) do
+    def publish(now_ms \\ SystemsClock.monotonic_time(:millisecond)) do
       emit([:salix, :store, :inflight], SalixStore.Inflight.snapshot(now_ms))
     end
 
     @doc false
-    def publish_for(owner, event_name, now_ms \\ System.monotonic_time(:millisecond))
-        when is_pid(owner) and is_list(event_name) do
+    def publish_for(owner, event_name, now_ms \\ SystemsClock.monotonic_time(:millisecond))
+        when is_process(owner) and is_list(event_name) do
       emit(event_name, SalixStore.Inflight.snapshot_for(owner, now_ms))
     end
 
     defp emit(event_name, snapshot) do
       Enum.each(snapshot, fn {operation, {count, oldest_age_ms}} ->
-        :telemetry.execute(
+        SystemsRuntime.Telemetry.execute(
           event_name,
           %{count: count, oldest_age_seconds: oldest_age_ms / 1000},
           %{operation: operation}
@@ -187,6 +198,7 @@ defmodule SalixStore.Inflight do
       end)
     end
 
-    defp schedule(interval), do: Process.send_after(self(), :publish, interval)
+    defp schedule(interval),
+      do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :publish, interval)
   end
 end

@@ -4,6 +4,7 @@ import {
   useContext,
   useLayoutEffect,
   useRef,
+  useState,
   type CSSProperties,
   type ReactNode,
   type RefObject,
@@ -18,7 +19,7 @@ import {
   type CommaHomeRailFolds,
   type CommaHomeRailName,
 } from "../shellGeometry";
-import { isReducedMotionEnabled } from "@comma/ui";
+import { isReducedMotionEnabled } from "@comma/ui/tokens";
 import { useOptionalChatSidebar } from "../chat-sidebar/ChatSidebarContext";
 import { useRailFoldSpring } from "../railFoldSpring";
 
@@ -112,8 +113,9 @@ function useHomeRailFoldMotion(
       const surface = railElement?.querySelector<HTMLElement>(
         ":scope > .comma-home-rail-surface"
       );
-      layout.style.setProperty(foldProperty, String(progress));
+      // Armed before the value moves, so the change starts the transition.
       layout.toggleAttribute(transitionAttribute, phase === "transition");
+      layout.style.setProperty(foldProperty, String(progress));
       if (phase === "rest") {
         railElement?.removeAttribute("data-fold-moving");
         const chat = layout.querySelector<HTMLElement>(":scope > .comma-home-chat");
@@ -172,6 +174,12 @@ function releaseChatWidth(chat: HTMLElement) {
 export function HomeLayout({ children }: { children: ReactNode }) {
   const { collapsed, folds, widths } = useContext(HomeRailStateContext);
   const shut = mergeHomeRailFolds(folds, collapsed);
+  // React renders only the first value of each fold; the fold motion writes
+  // every later one, after it arms the transition. A value React wrote in the
+  // commit would already be resolved by any layout read in a descendant's
+  // layout effect (a ScrollArea measuring itself), before the transition was
+  // armed, and the rail would jump to its end instead of moving.
+  const [firstShut] = useState(shut);
   const layoutRef = useRef<HTMLDivElement>(null);
   useHomeRailFoldMotion(
     layoutRef,
@@ -192,8 +200,8 @@ export function HomeLayout({ children }: { children: ReactNode }) {
   const style = {
     "--comma-home-greet-preferred": `${widths?.greet ?? commaHomeGreetPreferredMinWidth}px`,
     "--comma-home-tasks-preferred": `${widths?.tasks ?? commaHomeTasksPreferredWidth}px`,
-    "--comma-home-greet-fold": shut.greet ? 1 : 0,
-    "--comma-home-tasks-fold": shut.tasks ? 1 : 0,
+    "--comma-home-greet-fold": firstShut.greet ? 1 : 0,
+    "--comma-home-tasks-fold": firstShut.tasks ? 1 : 0,
   } as CSSProperties;
   return (
     <div
@@ -228,6 +236,9 @@ export function useHomeRailCollapse(rail: CommaHomeRailName) {
     autoFolded: folds[rail],
     collapsed: collapsed[rail],
     toggleCollapsed,
+    /** Where each rail's fold is heading, not where its transition is now. */
+    shut: mergeHomeRailFolds(folds, collapsed),
+    tasksWidth: widths?.tasks ?? commaHomeTasksPreferredWidth,
   };
 }
 

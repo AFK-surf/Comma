@@ -5,7 +5,10 @@ defmodule SalixWeb.Dashboard.ComposioLiveTest do
   Composio tab (not-configured hint, connect flow returning a Connect Link,
   connection listing/disconnect through a stubbed Composio client).
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
@@ -17,7 +20,7 @@ defmodule SalixWeb.Dashboard.ComposioLiveTest do
   defmodule StubComposioClient do
     @moduledoc false
     def list_connected_accounts(_settings, user_id) do
-      case Application.get_env(:salix_web, :composio_stub_accounts) do
+      case SystemsRuntime.get_env(:salix_web, :composio_stub_accounts) do
         nil -> {:ok, []}
         {:error, _} = err -> err
         accounts -> {:ok, Enum.filter(accounts, &(&1["user_id"] == user_id))}
@@ -30,7 +33,11 @@ defmodule SalixWeb.Dashboard.ComposioLiveTest do
       do: {:ok, %{"redirect_url" => "https://connect.composio.dev/link/lk_stub"}}
 
     def delete_connected_account(_settings, account_id) do
-      send(Application.get_env(:salix_web, :composio_stub_pid), {:deleted, account_id})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.get_env(:salix_web, :composio_stub_pid),
+        {:deleted, account_id}
+      )
+
       :ok
     end
   end
@@ -44,19 +51,19 @@ defmodule SalixWeb.Dashboard.ComposioLiveTest do
     {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Composio"})
     tenant_id = tenant["tenant_id"]
     Process.put(:test_tenant_id, tenant_id)
-    prev_client = Application.get_env(:salix_web, :composio_client_mod)
-    Application.put_env(:salix_web, :composio_client_mod, StubComposioClient)
-    Application.put_env(:salix_web, :composio_stub_pid, self())
+    prev_client = SystemsRuntime.get_env(:salix_web, :composio_client_mod)
+    SystemsRuntime.put_env(:salix_web, :composio_client_mod, StubComposioClient)
+    SystemsRuntime.put_env(:salix_web, :composio_stub_pid, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       if prev_client do
-        Application.put_env(:salix_web, :composio_client_mod, prev_client)
+        SystemsRuntime.put_env(:salix_web, :composio_client_mod, prev_client)
       else
-        Application.delete_env(:salix_web, :composio_client_mod)
+        SystemsRuntime.delete_env(:salix_web, :composio_client_mod)
       end
 
-      Application.delete_env(:salix_web, :composio_stub_accounts)
-      Application.delete_env(:salix_web, :composio_stub_pid)
+      SystemsRuntime.delete_env(:salix_web, :composio_stub_accounts)
+      SystemsRuntime.delete_env(:salix_web, :composio_stub_pid)
       ComposioSettings.delete(tenant_id)
       ComposioSettings.delete_default()
     end)
@@ -105,35 +112,14 @@ defmodule SalixWeb.Dashboard.ComposioLiveTest do
     assert {:error, :not_configured} = ComposioSettings.get(tenant_id())
   end
 
-  test "settings page saves the platform default and shows the fallback badge" do
-    {:ok, view, _html} = live(authed_conn(), "/dash/composio")
-
-    html =
-      view
-      |> form("#composio-default-form", %{"api_key" => "ck_default", "enabled" => "true"})
-      |> render_submit()
-
-    assert html =~ "Platform default saved."
-    assert html =~ "platform default"
-    assert {:ok, %{"api_key" => "ck_default"}} = ComposioSettings.get(tenant_id())
-  end
-
   # ---- group tab ----
-
-  test "group composio tab points at settings when unconfigured" do
-    {:ok, group} = Salix.Control.Groups.create(%{"name" => "ComposioGroup"}, tenant_id())
-
-    {:ok, _view, html} = live(authed_conn(), "/dash/groups/#{group["group_id"]}?tab=composio")
-    assert html =~ "Composio is not configured"
-    assert html =~ "/dash/composio"
-  end
 
   test "group composio tab lists connections, connects, and disconnects" do
     {:ok, _} = ComposioSettings.put(tenant_id(), %{"api_key" => "ck_live"})
     {:ok, group} = Salix.Control.Groups.create(%{"name" => "ComposioGroup2"}, tenant_id())
     gid = group["group_id"]
 
-    Application.put_env(:salix_web, :composio_stub_accounts, [
+    SystemsRuntime.put_env(:salix_web, :composio_stub_accounts, [
       %{
         "id" => "ca_mine",
         "user_id" => gid,

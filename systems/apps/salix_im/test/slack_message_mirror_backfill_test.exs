@@ -7,8 +7,10 @@ defmodule SalixIM.SlackMessageMirrorBackfillTest do
   the code has to keep: write before commit, replies to the end or not at all,
   resume from the watermark, and stop at the floor or at Slack's end.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixStore.QueueCase, queues: [:slack_mirror_backfill]
 
+  use SalixAgent.TestSupport.Settle
   alias SalixIM.SlackMessageMirror.Backfill
   alias SalixStore.{Repo, SlackMirrorBackfillLedger, ULID}
 
@@ -103,18 +105,22 @@ defmodule SalixIM.SlackMessageMirrorBackfillTest do
     def replies(_credential, channel_id, root_ts, opts),
       do: FakeSlack.replies(pid(), channel_id, root_ts, opts)
 
-    defp pid, do: Application.fetch_env!(:salix_im, :backfill_test_slack)
+    defp pid, do: SystemsRuntime.fetch_env!(:salix_im, :backfill_test_slack)
   end
 
   defmodule Writer do
     @moduledoc false
     def write_batch(rows), do: FakeWriter.write_batch(pid(), rows)
-    defp pid, do: Application.fetch_env!(:salix_im, :backfill_test_writer)
+    defp pid, do: SystemsRuntime.fetch_env!(:salix_im, :backfill_test_writer)
   end
 
   defmodule ChannelObserver do
     def observe_slack_member_channels(connect, channels) do
-      send(self(), {:member_channels_observed, connect["connect_id"], channels})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:member_channels_observed, connect["connect_id"], channels}
+      )
+
       {:error, :projection_unavailable}
     end
   end
@@ -122,11 +128,11 @@ defmodule SalixIM.SlackMessageMirrorBackfillTest do
   @now_us 1_787_100_000_000_000
 
   setup do
-    Repo.query!("TRUNCATE slack_mirror_channel_watermarks, slack_mirror_backfill_connects")
+    Repo.query!("TRUNCATE slack_mirror_channel_watermarks")
 
     on_exit(fn ->
-      Application.delete_env(:salix_im, :backfill_test_slack)
-      Application.delete_env(:salix_im, :backfill_test_writer)
+      SystemsRuntime.delete_env(:salix_im, :backfill_test_slack)
+      SystemsRuntime.delete_env(:salix_im, :backfill_test_writer)
     end)
 
     :ok
@@ -605,9 +611,11 @@ defmodule SalixIM.SlackMessageMirrorBackfillTest do
       })
 
       writer = start_writer()
-      parent = self()
+      parent = SystemsRuntime.Proc.self()
 
-      assert {:ok, :idle} = run(connect, sleep: fn ms -> send(parent, {:slept, ms}) end)
+      assert {:ok, :idle} =
+               run(connect, sleep: fn ms -> SystemsRuntime.Proc.send(parent, {:slept, ms}) end)
+
       assert_received {:slept, 7_000}
       assert length(FakeWriter.rows(writer)) == 1
     end
@@ -665,13 +673,13 @@ defmodule SalixIM.SlackMessageMirrorBackfillTest do
 
   defp start_slack(script) do
     pid = FakeSlack.start(script)
-    Application.put_env(:salix_im, :backfill_test_slack, pid)
+    SystemsRuntime.put_env(:salix_im, :backfill_test_slack, pid)
     pid
   end
 
   defp start_writer(answers \\ []) do
     pid = FakeWriter.start(answers)
-    Application.put_env(:salix_im, :backfill_test_writer, pid)
+    SystemsRuntime.put_env(:salix_im, :backfill_test_writer, pid)
     pid
   end
 

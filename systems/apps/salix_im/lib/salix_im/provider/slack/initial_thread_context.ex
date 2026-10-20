@@ -16,6 +16,7 @@ defmodule SalixIM.Provider.Slack.InitialThreadContext do
   @max_files_per_message 5
   @max_source_references_per_message 3
   @max_source_text_bytes 512
+  @max_table_bytes 2_000
   @overall_timeout_ms 400
   @request_timeout_ms 350
 
@@ -113,9 +114,9 @@ defmodule SalixIM.Provider.Slack.InitialThreadContext do
   end
 
   defp run_with_timeout(fun, timeout_ms) do
-    task = Task.async(fun)
+    task = SystemsRuntime.Task.async(fun)
 
-    case Task.yield(task, timeout_ms) do
+    case SystemsClock.yield(task, timeout_ms) do
       {:ok, result} ->
         result
 
@@ -126,7 +127,7 @@ defmodule SalixIM.Provider.Slack.InitialThreadContext do
         # The transport has its own shorter timeout. Detach this optional
         # context task and deactivate its reply alias so a late result cannot
         # enter the caller mailbox.
-        Task.ignore(task)
+        SystemsRuntime.Task.ignore(task)
         {:error, :timeout}
     end
   end
@@ -186,6 +187,7 @@ defmodule SalixIM.Provider.Slack.InitialThreadContext do
     |> bound_message_strings(@max_text_bytes, @max_identity_bytes)
     |> Map.update("files", nil, &bounded_files/1)
     |> Map.update("source_references", nil, &bounded_source_references/1)
+    |> Map.update("tables", nil, &bounded_tables(&1, @max_table_bytes))
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
   end
@@ -217,6 +219,9 @@ defmodule SalixIM.Provider.Slack.InitialThreadContext do
       |> Map.new()
     end)
   end
+
+  defp bounded_tables(tables, bytes),
+    do: tables |> List.wrap() |> Enum.map(&bounded_string(&1, bytes))
 
   defp bounded_source_references(references) do
     references
@@ -275,6 +280,7 @@ defmodule SalixIM.Provider.Slack.InitialThreadContext do
       |> Enum.take(1)
       |> Enum.map(&bounded_source_reference(&1, 128, 64))
     end)
+    |> Map.update("tables", nil, &(&1 |> Enum.take(1) |> bounded_tables(512)))
     |> Map.put("context_truncated", true)
   end
 

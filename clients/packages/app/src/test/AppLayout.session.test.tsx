@@ -1,8 +1,12 @@
 import userEvent from "@testing-library/user-event";
+import type { DevicesValue, TopicValues } from "@comma/core/contract";
 import { initializeCommaI18n, type CommaLocale } from "@comma/i18n";
 import { CommaI18nProvider } from "@comma/i18n/react";
+import { flush } from "@comma/test-utils/fake-clock";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { act, render, screen } from "@comma/test-utils/render";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import { projectionToChannelState } from "@comma/core/chat";
 import {
   Outlet,
   RouterProvider,
@@ -27,7 +31,6 @@ import {
 } from "../components/productShellPaths";
 import { COMMA_SURFACE_PAUSED_ATTRIBUTE } from "../components/commaSurfacePause";
 import { AppSettingsRoute } from "../components/AppSettingsRoute";
-import { writeActiveWorkspaceId } from "../components/activeWorkspace";
 import {
   ChatConsumerBoundary,
   useChatRegistry,
@@ -38,7 +41,6 @@ import { useComposerDraft } from "../components/chat/composer/conversationDraft"
 import { ChatSidebarProvider } from "../components/chat-sidebar/ChatSidebarContext";
 import { CommaAppearanceProvider } from "../components/commaAppearance";
 import { CommaWebClientSettingsProvider } from "../components/commaClientSettings";
-import { CommaSideChatShortcutProvider } from "../components/commaSideChatShortcut";
 import { RecommendationMockDebugSettingsRoute } from "../devtools/recommendation-mock/RecommendationMockDebugSettingsRoute";
 import { CommaAppShortcutsProvider } from "../components/shortcuts/commaAppShortcuts";
 import { CommaSessionHostProvider } from "../session/react";
@@ -49,19 +51,151 @@ import {
 } from "./sessionHostHarness";
 
 const historyText = "Kept through Settings";
-let listedDevices: {
-  device_id: string;
-  name: string;
-  status: "connected";
-  allows_operations: boolean;
-  device_runtimes: {
-    provider: string;
-    device_runtime_id: string;
-    status: string;
-    message?: string;
-    readiness_valid_until?: number;
-  }[];
-}[] = [];
+let listedDevices: DevicesValue["devices"] = [];
+
+/** The login the window is signed in to: the core labels the window chat with it. */
+const chatSession = {
+  sessionId: signedInSessionSnapshot.session.sessionId,
+  audience: signedInSessionSnapshot.session.audience,
+};
+const homeTarget = {
+  conversationId: "cnv_home",
+  groupId: "grp_home",
+  workspaceId: "wsp_home",
+};
+type ChatMessage =
+  TopicValues["chat"]["snapshot"]["sessions"][number]["state"]["messages"][number];
+
+const historyMessage: ChatMessage = {
+  attachments: [],
+  blocksKey: JSON.stringify([{ type: "text", text: historyText }]),
+  createdAt: 1_720_000_002,
+  delivery: "sent",
+  messageId: "msg-settings-history",
+  parts: [{ kind: "markdown", text: historyText }],
+  refs: [],
+  role: "assistant",
+  source: "server",
+  status: "committed",
+  text: historyText,
+};
+
+/**
+ * The core the app talks to, scripted: the Home workspace, Ada's profile, the
+ * listed devices, and the Home chat with its one history message. A draft the
+ * UI sets (`chatView.setDraft`), or the suggestion the core adds to it once the
+ * chat is ready (`chatView.prefillDraft`), is the draft the core shows next.
+ */
+function scriptedSessionCore() {
+  let draft = { draft: "", draftEpoch: 0 };
+  const chat: TopicValues["chat"] = {
+    session: chatSession,
+    snapshot: {
+      protocolVersion: 3,
+      revision: 4,
+      sessions: [
+        {
+          ...homeTarget,
+          draftEpoch: 0,
+          key: "grp_home/cnv_home",
+          refs: 1,
+          revision: 3,
+          state: {
+            awaitingReply: false,
+            awaitingTimedOut: false,
+            locallyAwaitingReply: false,
+            connection: "connecting",
+            conversation: {
+              id: "cnv_home",
+              groupId: "grp_home",
+              kind: "user_chat",
+              status: "active",
+              title: "Chat",
+              workspaceId: "wsp_home",
+            },
+            draft: "",
+            draftAttachments: [],
+            lastBackoffMs: 0,
+            messages: [historyMessage],
+            pending: [],
+            serverMessages: [historyMessage],
+            status: "ready",
+          },
+        },
+      ],
+    },
+  };
+  const values: Partial<{ [N in keyof TopicValues]: () => TopicValues[N] }> = {
+    workspace: () => ({
+      status: "ready",
+      workspace: { id: "wsp_home", groupId: "grp_home", name: "Home" },
+      selected: true,
+    }),
+    profile: () => ({
+      status: "ready",
+      profile: {
+        avatar_id: null,
+        email: "person@example.com",
+        id: "usr_1",
+        name: "Ada",
+      },
+    }),
+    devices: () => ({
+      workspace: "wsp_home",
+      devices: listedDevices,
+      cloud: null,
+      hasMore: false,
+      loading: false,
+      failed: false,
+      checks: {},
+    }),
+    chatView: () => ({
+      session: chatSession,
+      revision: 4,
+      draftEpoch: draft.draftEpoch,
+      lease: { leaseId: "lease_home", subscriberId: "web:test:grp_home/cnv_home" },
+      state: projectionToChannelState({
+        ...chat.snapshot.sessions[0]!.state,
+        draft: draft.draft,
+      }),
+    }),
+    marks: () => ({ marks: {} }),
+    taskOrder: () => ({ orders: {}, sections: [] }),
+    doing: () => ({ doing: [] }),
+    pluginNotices: () => ({ notices: [] }),
+  };
+  const scripted = createScriptedCore({
+    values: (topic) => values[topic.topic as keyof TopicValues]?.(),
+    calls: (name, params) => {
+      switch (name) {
+        case "chat.resolveWorkspaceChat":
+          return { ...homeTarget, status: "ready" };
+        case "chatView.prefillDraft":
+        case "chatView.setDraft": {
+          const text = (params as { draft: string }).draft;
+          draft = {
+            draft:
+              name === "chatView.setDraft" || !draft.draft.trim()
+                ? text
+                : `${draft.draft}\n\n${text}`,
+            draftEpoch: draft.draftEpoch + 1,
+          };
+          queueMicrotask(() => scripted.changed("chatView"));
+          return { revision: 4, draftEpoch: draft.draftEpoch };
+        }
+        default:
+          return null;
+      }
+    },
+  });
+  return scripted;
+}
+
+let core = scriptedSessionCore();
+
+function user() {
+  return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+}
 
 function renderSessionApp(
   controller: ReturnType<typeof createTestSessionHostController>,
@@ -69,31 +203,30 @@ function renderSessionApp(
   locale?: CommaLocale
 ) {
   return render(
-    <CommaWebClientSettingsProvider>
-      <CommaSessionHostProvider controller={controller}>
-        <CommaAppearanceProvider>
-          <CommaSideChatShortcutProvider>
+    core.wrap(
+      <CommaWebClientSettingsProvider>
+        <CommaSessionHostProvider controller={controller}>
+          <CommaAppearanceProvider>
             <CommaAppShortcutsProvider>
               <CommaI18nProvider {...(locale ? { locale } : {})}>
                 <RouterProvider router={router} />
               </CommaI18nProvider>
             </CommaAppShortcutsProvider>
-          </CommaSideChatShortcutProvider>
-        </CommaAppearanceProvider>
-      </CommaSessionHostProvider>
-    </CommaWebClientSettingsProvider>
+          </CommaAppearanceProvider>
+        </CommaSessionHostProvider>
+      </CommaWebClientSettingsProvider>
+    )
   );
 }
 
 describe("authenticated session layout", () => {
   beforeEach(() => {
+    core = scriptedSessionCore();
     listedDevices = [];
     installNativeBridgeMock({ platform: "web" });
-    installFetchStub();
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     vi.unstubAllGlobals();
     initializeCommaI18n(["en"]);
   });
@@ -107,81 +240,7 @@ describe("authenticated session layout", () => {
     expect(settingsRouteComponentForBuildFlavor(undefined)).toBe(AppSettingsRoute);
   });
 
-  it("refreshes newly connected devices and delayed agent readiness while devices is visible", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
-    writeActiveWorkspaceId("wsp_home");
-    listedDevices = [
-      {
-        device_id: "dev_first",
-        name: "First device",
-        status: "connected",
-        allows_operations: false,
-        device_runtimes: [
-          {
-            provider: "codex",
-            device_runtime_id: "runtime_1",
-            status: "unavailable",
-            message: "Allow operations",
-          },
-        ],
-      },
-    ];
-    const controller = createTestSessionHostController({
-      apiBaseUrl: "https://api.example",
-      initial: signedInSessionSnapshot,
-    });
-    const router = createSessionRouter(() => {});
-    renderSessionApp(controller, router);
-    await screen.findByText(historyText);
-    await act(() => router.navigate({ to: "/settings" }));
-    await userEvent.click(screen.getByRole("button", { name: "Devices" }));
-    await screen.findByText("First device");
-    listedDevices = [
-      {
-        ...listedDevices[0]!,
-        allows_operations: true,
-        device_runtimes: [
-          {
-            provider: "codex",
-            device_runtime_id: "runtime_1",
-            status: "ready",
-            readiness_valid_until: Date.now() / 1000 + 300,
-          },
-        ],
-      },
-      {
-        device_id: "dev_new",
-        name: "New device",
-        status: "connected",
-        allows_operations: false,
-        device_runtimes: [],
-      },
-    ];
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(15_000);
-    });
-    expect(await screen.findByText("New device")).toBeVisible();
-    expect((await screen.findAllByText("Check passed"))[0]).toBeVisible();
-    // The browser retires a ready observation even while subsequent requests hang.
-    vi.mocked(fetch).mockImplementation(() => new Promise(() => {}));
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(300_001);
-    });
-    expect((await screen.findAllByText("Check expired"))[0]).toBeVisible();
-    expect(screen.queryByText("Check passed")).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "General" }));
-    const fetchMock = vi.mocked(fetch);
-    const countDeviceReads = () =>
-      fetchMock.mock.calls.filter(([url]) => String(url).includes("/devices")).length;
-    const requests = countDeviceReads();
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(30_000);
-    });
-    expect(countDeviceReads()).toBe(requests);
-  });
-
   it("leads with this computer in the desktop app, before its Connector reports", async () => {
-    writeActiveWorkspaceId("wsp_home");
     installNativeBridgeMock({ platform: "electron" });
     listedDevices = [
       {
@@ -199,9 +258,11 @@ describe("authenticated session layout", () => {
     const router = createSessionRouter(() => {});
     renderSessionApp(controller, router);
     await act(() => router.navigate({ to: "/settings" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Devices" }));
+    await flush();
+    await user().click(screen.getByRole("button", { name: "Devices" }));
+    await flush();
 
-    await screen.findByText("First device");
+    screen.getByText("First device");
     const identities = Array.from(
       document.querySelectorAll('[data-slot="device-card"]')
     );
@@ -210,22 +271,21 @@ describe("authenticated session layout", () => {
       "First device",
     ]);
     // A Connector that has not reported yet is connecting, not offline, and
-    // its permission is not a switch to throw in the meantime.
+    // its access cannot be changed in the meantime.
     expect(screen.getByRole("status", { name: "Connecting…" })).toHaveAttribute(
       "aria-busy",
       "true"
     );
-    await userEvent.click(
+    await user().click(
       screen.getAllByRole("button", { name: "Permissions & details" })[0]!
     );
-    expect(screen.getByRole("switch", { name: /^Allow operations/ })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: /^Full/ })).toBeDisabled();
   });
 
   it.each([
     {
       locale: "en" as const,
       devices: "Devices",
-      manual: "Connect manually",
       add: "Add device",
       guided: "Ask Router",
       draft: "I want to connect another computer. Please guide me in English.",
@@ -233,15 +293,13 @@ describe("authenticated session layout", () => {
     {
       locale: "zh-CN" as const,
       devices: "设备",
-      manual: "手动接入",
       add: "添加设备",
       guided: "让 Router 帮忙",
       draft: "我要连接另一台电脑，请用简体中文引导我。",
     },
   ])(
     "opens Router with the $locale device draft from settings",
-    async ({ locale, devices, manual, add, draft, guided }) => {
-      writeActiveWorkspaceId("wsp_home");
+    async ({ locale, devices, add, draft, guided }) => {
       const controller = createTestSessionHostController({
         apiBaseUrl: "https://api.example",
         initial: signedInSessionSnapshot,
@@ -249,25 +307,29 @@ describe("authenticated session layout", () => {
       const errors: string[] = [];
       const router = createSessionRouter((error) => errors.push(error.message));
       renderSessionApp(controller, router, locale);
-      await screen.findByText(historyText);
+      await flush();
+      expect(screen.getByText(historyText)).toBeVisible();
       await act(() => router.navigate({ to: "/settings" }));
-      await userEvent.click(screen.getByRole("button", { name: devices }));
-      await userEvent.click(screen.getByRole("button", { name: add }));
-      expect(screen.getByText(manual)).toBeVisible();
-      await userEvent.click(screen.getByRole("button", { name: guided }));
-      await vi.waitFor(() => expect(router.state.location.pathname).toBe("/"));
+      await user().click(screen.getByRole("button", { name: devices }));
+      await user().click(screen.getByRole("button", { name: add }));
+      expect(screen.getByRole("dialog", { name: add })).toBeVisible();
+      await user().click(screen.getByRole("button", { name: guided }));
+      await flush();
+      expect(router.state.location.pathname).toBe("/");
       expect((screen.getByLabelText("Router draft") as HTMLTextAreaElement).value).toBe(
         draft
       );
       expect(errors).toEqual([]);
-      expect(
-        vi
-          .mocked(fetch)
-          .mock.calls.some(
-            ([input, init]) =>
-              String(input).endsWith("/messages") && init?.method === "POST"
-          )
-      ).toBe(false);
+      expect(core.sentTo("chatView.prefillDraft")).toEqual([
+        expect.objectContaining({
+          workspace: "wsp_home",
+          group: "grp_home",
+          conversation: "cnv_home",
+          draft,
+        }),
+      ]);
+      // The draft is only set: nothing is sent to Router.
+      expect(core.sent.filter(([name]) => /send/i.test(name))).toEqual([]);
     }
   );
 
@@ -281,7 +343,8 @@ describe("authenticated session layout", () => {
 
     renderSessionApp(controller, router);
 
-    expect(await screen.findByText(historyText)).toBeVisible();
+    await flush();
+    expect(screen.getByText(historyText)).toBeVisible();
 
     await act(() => router.navigate({ to: "/settings" }));
     expect(screen.getByRole("heading", { level: 1, name: "General" })).toBeVisible();
@@ -322,7 +385,8 @@ describe("authenticated session layout", () => {
 
     renderSessionApp(controller, router);
 
-    expect(await screen.findByText(historyText)).toBeVisible();
+    await flush();
+    expect(screen.getByText(historyText)).toBeVisible();
     const home = screen.getByTestId("home-responsive-layout");
 
     await act(() => router.navigate({ to: "/tasks" }));
@@ -357,26 +421,28 @@ describe("authenticated session layout", () => {
 
     renderSessionApp(controller, router);
 
-    expect(await screen.findByText(historyText)).toBeVisible();
+    await flush();
+    expect(screen.getByText(historyText)).toBeVisible();
 
     await act(() => router.navigate({ to: "/settings" }));
     expect(routeErrors).toEqual([]);
-    await userEvent.click(await screen.findByRole("button", { name: "Profile" }));
+    await flush();
+    await user().click(screen.getByRole("button", { name: "Profile" }));
     expect(screen.getByRole("heading", { level: 1, name: "Profile" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Profile" })).toHaveAttribute(
       "data-selected",
       "true"
     );
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Edit name: Ada" })
-    );
+    await flush();
+    await user().click(screen.getByRole("button", { name: "Edit name: Ada" }));
     const name = screen.getByRole("textbox", { name: "Name" });
-    await userEvent.clear(name);
-    await userEvent.type(name, "Ada Lovelace");
+    await user().clear(name);
+    await user().type(name, "Ada Lovelace");
     expect(screen.getByRole("dialog", { name: "Name" })).toBeVisible();
     expect(name).toHaveValue("Ada Lovelace");
 
     await act(() => controller.lifecycle.reconcile({ reason: "manual_retry" }));
+    await flush();
 
     expect(screen.getByRole("dialog", { name: "Name" })).toBeVisible();
     expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("Ada Lovelace");
@@ -440,7 +506,8 @@ describe("authenticated session layout", () => {
       CommaProductLayout
     );
     renderSessionApp(controller, router);
-    const original = await screen.findByTestId("home-responsive-layout");
+    await flush();
+    const original = screen.getByTestId("home-responsive-layout");
     const route = original.closest(".comma-chat-route")!.parentElement!;
     Object.defineProperty(route, "clientWidth", { value: 961 });
     act(() => deliverResize(route));
@@ -450,6 +517,7 @@ describe("authenticated session layout", () => {
     );
 
     await act(() => controller.lifecycle.reconcile({ reason: "manual_retry" }));
+    await flush();
     const replacement = screen.getByTestId("home-responsive-layout");
     expect(replacement).not.toBe(original);
     const replacementRoute = replacement.closest(".comma-chat-route")!.parentElement!;
@@ -480,6 +548,7 @@ describe("authenticated session layout", () => {
     // on return must replace the retained folds even when both rails now fit.
     await act(() => router.navigate({ to: "/settings" }));
     await act(() => controller.lifecycle.reconcile({ reason: "manual_retry" }));
+    await flush();
     const pausedHome = screen.getByTestId("home-responsive-layout");
     const pausedRoute = pausedHome.closest(".comma-chat-route")!.parentElement!;
     Object.defineProperty(pausedRoute, "clientWidth", { value: 1400 });
@@ -501,15 +570,16 @@ describe("authenticated session layout", () => {
 
     renderSessionApp(controller, router);
 
-    expect(await screen.findByText(historyText)).toBeVisible();
+    await flush();
+    expect(screen.getByText(historyText)).toBeVisible();
     await act(() => router.navigate({ to: "/settings" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Profile" }));
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Edit name: Ada" })
-    );
+    await flush();
+    await user().click(screen.getByRole("button", { name: "Profile" }));
+    await flush();
+    await user().click(screen.getByRole("button", { name: "Edit name: Ada" }));
     const name = screen.getByRole("textbox", { name: "Name" });
-    await userEvent.clear(name);
-    await userEvent.type(name, "Account A draft");
+    await user().clear(name);
+    await user().type(name, "Account A draft");
 
     act(() => {
       publishTestSessionSnapshot(controller, {
@@ -549,7 +619,8 @@ describe("authenticated session layout", () => {
 
     renderSessionApp(controller, router);
 
-    expect(await screen.findByTestId("non-home-route")).toHaveTextContent("Inbox");
+    await flush();
+    expect(screen.getByTestId("non-home-route")).toHaveTextContent("Inbox");
 
     await act(() => router.navigate({ to: "/settings" }));
 
@@ -709,97 +780,4 @@ function HomeHistoryProbe() {
       )}
     </div>
   );
-}
-
-function installFetchStub() {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url =
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : input.url;
-      const path = new URL(url, "https://api.example").pathname;
-      const method = init?.method ?? "GET";
-
-      if (method === "GET" && path === "/v1/comma/workspaces") {
-        return jsonResponse({
-          data: [
-            { id: "wsp_home", group_id: "grp_home", name: "Home", status: "ready" },
-          ],
-        });
-      }
-      if (method === "GET" && path === "/v1/comma/workspaces/wsp_home/devices") {
-        return jsonResponse({ devices: listedDevices, next_cursor: null });
-      }
-      if (method === "POST" && path === "/v1/comma/groups/grp_home/assistant-chat") {
-        return jsonResponse({
-          id: "cnv_home",
-          group_id: "grp_home",
-          kind: "user_chat",
-          status: "active",
-          title: "Chat",
-          messages: [],
-        });
-      }
-
-      if (method === "GET" && path === "/v1/comma/me/profile") {
-        return jsonResponse({
-          avatar_id: null,
-          email: "person@example.com",
-          id: "usr_1",
-          name: "Ada",
-        });
-      }
-
-      if (
-        method === "GET" &&
-        path === "/v1/comma/groups/grp_home/conversations/cnv_home"
-      ) {
-        return jsonResponse({
-          group_id: "grp_home",
-          id: "cnv_home",
-          kind: "user_chat",
-          messages: [
-            {
-              actor_type: "agent",
-              content: [{ text: historyText, type: "text" }],
-              created_at: 1_720_000_002,
-              kind: "message",
-              message_id: "msg-settings-history",
-            },
-          ],
-          status: "active",
-          title: "Chat",
-        });
-      }
-
-      if (method === "GET" && path.endsWith("/skills")) {
-        return jsonResponse({ data: [] });
-      }
-
-      if (method === "GET" && path.endsWith("/events")) {
-        return new Response(
-          new ReadableStream({
-            start() {},
-          }),
-          {
-            headers: { "content-type": "text/event-stream" },
-            status: 200,
-          }
-        );
-      }
-
-      return jsonResponse({ error: `unhandled ${method} ${path}` }, 404);
-    })
-  );
-}
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    headers: { "content-type": "application/json" },
-    status,
-  });
 }

@@ -2,9 +2,10 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useState } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { HomeTaskCard } from "../home-tasks";
-import type { TaskStatusBucket, TaskSummaryViewModel } from "../task-workspace";
+import type { VisibleTaskStatusBucket } from "@comma/i18n";
+import type { TaskSummaryViewModel } from "../task-workspace";
 import { indicatorIdToTaskStatus, taskStatusToIndicatorId } from "./statusMapping";
-import { StatusIndicator } from "./StatusIndicator";
+import { loadStatusIndicatorElement, StatusIndicator } from "./StatusIndicator";
 import {
   StatusIndicatorPreview,
   statusIds,
@@ -15,7 +16,7 @@ const meta = {
   title: "App components/Status Indicator",
   component: StatusIndicatorPreview,
   args: {
-    value: "backlog",
+    value: "in-progress",
   },
   argTypes: {
     value: {
@@ -23,6 +24,7 @@ const meta = {
       options: statusIds,
     },
   },
+  loaders: [loadStatusIndicatorElement],
   parameters: {
     layout: "centered",
     docs: {
@@ -46,7 +48,7 @@ export const KeyboardNavigation: Story = {
     });
     const indicator =
       canvasElement.querySelector<StatusIndicatorElement>("status-indicator");
-    await expect(indicator?.value).toBe("backlog");
+    await expect(indicator?.value).toBe("in-progress");
     await expect(indicator?.style.getPropertyValue("--si-pill-bg")).toBe(
       "var(--color-bg-quaternary)"
     );
@@ -71,10 +73,10 @@ export const KeyboardNavigation: Story = {
       indicator?.shadowRoot?.querySelector('[role="radio"][aria-checked="true"]')
     ).toHaveTextContent("Cancel");
     await userEvent.keyboard("{Home}");
-    await expect(indicator?.value).toBe("backlog");
+    await expect(indicator?.value).toBe("in-progress");
     await expect(
       indicator?.shadowRoot?.querySelector('[role="radio"][aria-checked="true"]')
-    ).toHaveTextContent("Backlog");
+    ).toHaveTextContent("In progress");
 
     const finalSelectedStatus = indicator?.shadowRoot?.querySelector<HTMLButtonElement>(
       '[role="radio"][aria-checked="true"]'
@@ -86,14 +88,6 @@ export const KeyboardNavigation: Story = {
 };
 
 const boundTasks: TaskSummaryViewModel[] = [
-  {
-    activityStatus: "queued",
-    freshness: "fresh",
-    id: "bound-backlog",
-    statusBucket: "backlog",
-    title: "Start on refraction UI library",
-    updatedAt: 1_777_939_200,
-  },
   {
     activityStatus: "running",
     freshness: "fresh",
@@ -130,7 +124,7 @@ const boundTasks: TaskSummaryViewModel[] = [
 ];
 
 function StatusIndicatorWithTasks() {
-  const [bucket, setBucket] = useState<TaskStatusBucket>("backlog");
+  const [bucket, setBucket] = useState<VisibleTaskStatusBucket>("in_progress");
   const visible = boundTasks.filter((task) => task.statusBucket === bucket);
 
   return (
@@ -184,13 +178,13 @@ export const WithTasks: Story = {
       expect(canvas.getAllByTestId("home-task-card")).toHaveLength(1);
     });
     await expect(canvas.getByTestId("home-task-card")).toHaveTextContent(
-      "Start on refraction UI library"
+      "Summarizing recent OpenAI's update and create a HTML"
     );
 
     await waitFor(() => {
       const lazy =
         canvasElement.querySelector<StatusIndicatorElement>("status-indicator");
-      expect(lazy?.shadowRoot?.querySelectorAll('[role="radio"]')).toHaveLength(5);
+      expect(lazy?.shadowRoot?.querySelectorAll('[role="radio"]')).toHaveLength(4);
     });
     const indicator =
       canvasElement.querySelector<StatusIndicatorElement>("status-indicator");
@@ -200,10 +194,10 @@ export const WithTasks: Story = {
 
     await waitFor(() => {
       expect(canvas.getByTestId("home-task-card")).toHaveTextContent(
-        "Summarizing recent OpenAI's update and create a HTML"
+        "Review the launch checklist for the mobile beta"
       );
     });
-    await expect(indicator?.value).toBe("in-progress");
+    await expect(indicator?.value).toBe("needs-review");
   },
 };
 
@@ -212,7 +206,7 @@ export const KeyboardShortcuts: Story = {
     docs: {
       description: {
         story:
-          "Each status is available through its global macOS Option shortcut while the indicator is mounted: ⌥1 through ⌥5. The shortcut changes the bound task bucket without moving focus.",
+          "Each status is available through its global macOS Option shortcut while the indicator is mounted: ⌥1 through ⌥4. The shortcut changes the bound task bucket without moving focus. In a text field, such as the composer, a key that types an ASCII character, a letter, a quotation mark or a dead key types it: on a Mac, Option+2 types @ in Swedish and “ in German. Rare symbols such as the US layout's ¡ ™ £ ¢ stay with the shortcut. On Windows and Linux, where Alt with a digit types nothing, the shortcut always runs.",
       },
     },
   },
@@ -224,15 +218,20 @@ export const KeyboardShortcuts: Story = {
         inlineSize: 320,
       }}
     >
-      <input
+      <div
         aria-label="Shortcut focus target"
-        defaultValue="Draft task note"
+        contentEditable
+        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a rich text field, as the composer is; an input or textarea is not one.
+        role="textbox"
         style={{
           border: "var(--border-width-1) solid var(--color-border-primary)",
           borderRadius: "var(--radius-md)",
           padding: "var(--spacing-md)",
         }}
-      />
+        suppressContentEditableWarning
+      >
+        Draft task note
+      </div>
       <StatusIndicatorWithTasks />
     </div>
   ),

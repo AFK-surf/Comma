@@ -1,9 +1,11 @@
 defmodule CommaSSH.Listener do
   @moduledoc "Optional OTP SSH listener. No operating-system or Erlang shell is exposed."
-  use GenServer
-  def start_link(options), do: GenServer.start_link(__MODULE__, options, name: __MODULE__)
+  use SystemsRuntime.Server
 
-  def fingerprint, do: GenServer.call(__MODULE__, :fingerprint)
+  def start_link(options),
+    do: SystemsRuntime.Server.start_link(__MODULE__, options, name: __MODULE__)
+
+  def fingerprint, do: SystemsRuntime.Server.call(__MODULE__, :fingerprint)
   def handle_call(:fingerprint, _from, state), do: {:reply, state.fingerprint, state}
 
   def init(options) do
@@ -12,7 +14,7 @@ defmodule CommaSSH.Listener do
         Comma.SSHHostKey.load_or_create!()
       end)
 
-    port = Keyword.get(options, :port, Application.get_env(:comma_ssh, :port))
+    port = Keyword.get(options, :port, SystemsRuntime.get_env(:comma_ssh, :port))
 
     case :ssh.daemon(port, daemon_options(key)) do
       {:ok, daemon} ->

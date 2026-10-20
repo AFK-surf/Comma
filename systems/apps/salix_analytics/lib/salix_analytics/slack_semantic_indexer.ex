@@ -9,24 +9,29 @@ defmodule SalixAnalytics.SlackSemanticIndexer do
   """
   alias SalixAnalytics.SlackSemanticIndex, as: Index
   alias SalixAnalytics.SlackSemanticQueue, as: Queue
-  use GenServer
+  use SystemsRuntime.Server
   @window_us 14 * 86_400 * 1_000_000
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
   end
 
   @impl true
   def init(opts) do
-    Process.send_after(self(), :tick, Keyword.get(opts, :start_delay_ms, 1000))
+    SystemsClock.send_after(
+      SystemsRuntime.Proc.self(),
+      :tick,
+      Keyword.get(opts, :start_delay_ms, 1000)
+    )
+
     {:ok, %{discovery: nil}}
   end
 
   @impl true
   def handle_info(:tick, state) do
-    source = Application.get_env(:salix_analytics, :slack_semantic_scope_source)
-    latest = System.os_time(:microsecond)
-    started = System.monotonic_time()
+    source = SystemsRuntime.get_env(:salix_analytics, :slack_semantic_scope_source)
+    latest = SystemsClock.system_time(:microsecond)
+    started = SystemsClock.monotonic_time()
 
     result =
       try do
@@ -62,7 +67,12 @@ defmodule SalixAnalytics.SlackSemanticIndexer do
         _ -> state.discovery
       end
 
-    Process.send_after(self(), :tick, if(match?({:ok, _}, result), do: 1000, else: 5000))
+    SystemsClock.send_after(
+      SystemsRuntime.Proc.self(),
+      :tick,
+      if(match?({:ok, _}, result), do: 1000, else: 5000)
+    )
+
     {:noreply, %{state | discovery: discovery}}
   end
 
@@ -73,7 +83,7 @@ defmodule SalixAnalytics.SlackSemanticIndexer do
         parts = chunks(row["source_text"])
 
         with {:ok, vectors} <-
-               encode(parts, System.monotonic_time(:millisecond) + 220_000, 0, opts),
+               encode(parts, SystemsClock.monotonic_time(:millisecond) + 220_000, 0, opts),
              :ok <- publish(row, parts, vectors) do
           {:cont, :ok}
         else
@@ -85,7 +95,7 @@ defmodule SalixAnalytics.SlackSemanticIndexer do
 
   @doc false
   def index_file(scope, timestamp, file_id, opts \\ []) do
-    source = Application.get_env(:salix_analytics, :slack_semantic_file_source)
+    source = SystemsRuntime.get_env(:salix_analytics, :slack_semantic_file_source)
 
     if is_nil(source) or is_nil(scope["group_id"]) or is_nil(scope["connect_id"]) do
       {:cancel, :attachment_source_unconfigured}
@@ -106,8 +116,8 @@ defmodule SalixAnalytics.SlackSemanticIndexer do
   @doc false
   def run(scopes, opts \\ []) do
     if not valid_scopes?(scopes), do: raise(ArgumentError, "require one to eight exact scopes")
-    latest = Keyword.get(opts, :latest, System.os_time(:microsecond))
-    deadline = Keyword.get(opts, :deadline, System.monotonic_time(:millisecond) + 220_000)
+    latest = Keyword.get(opts, :latest, SystemsClock.system_time(:microsecond))
+    deadline = Keyword.get(opts, :deadline, SystemsClock.monotonic_time(:millisecond) + 220_000)
 
     report = %{
       documents: 0,
@@ -150,7 +160,7 @@ defmodule SalixAnalytics.SlackSemanticIndexer do
       Keyword.get(
         opts,
         :file_source,
-        Application.get_env(:salix_analytics, :slack_semantic_file_source)
+        SystemsRuntime.get_env(:salix_analytics, :slack_semantic_file_source)
       )
 
     if is_nil(source) or is_nil(scope["group_id"]) or is_nil(scope["connect_id"]) do
@@ -236,7 +246,7 @@ defmodule SalixAnalytics.SlackSemanticIndexer do
         true ->
           case Index.embed(part, background: true, live: Keyword.get(opts, :live, false)) do
             {:ok, vector} ->
-              Process.sleep(pace)
+              SystemsClock.sleep(pace)
               {:cont, {:ok, [vector | vectors]}}
 
             error ->
@@ -265,7 +275,7 @@ defmodule SalixAnalytics.SlackSemanticIndexer do
     |> Index.insert()
   end
 
-  defp expired?(deadline), do: System.monotonic_time(:millisecond) >= deadline
+  defp expired?(deadline), do: SystemsClock.monotonic_time(:millisecond) >= deadline
 
   defp valid_scopes?(scopes) when is_list(scopes) and length(scopes) in 1..8 do
     Enum.all?(scopes, fn scope ->

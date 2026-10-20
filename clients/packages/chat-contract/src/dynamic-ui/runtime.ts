@@ -257,6 +257,125 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
       },
       true
     );
+    // A right-click on a link asks the host for the menu chat gives its own
+    // links; the host cannot see events inside this frame.
+    document.addEventListener(
+      "contextmenu",
+      (event) => {
+        const link =
+          event.target instanceof Element ? event.target.closest("a[href]") : null;
+        if (!link) return;
+        event.preventDefault();
+        if (stopped || !event.isTrusted) return;
+        const url = new URL(link.getAttribute("href")!);
+        if (url.protocol === "https:" && !url.username && !url.password)
+          send({
+            type: "link-menu",
+            url: url.href,
+            x: event.clientX,
+            y: event.clientY,
+          });
+      },
+      true
+    );
+    // Hovering or focusing a link asks the host for the preview chat gives its
+    // own links, with the link's text and box in frame coordinates. A pointer
+    // hover wins over focus. Losing both, or Escape, sends a null url.
+    let pointerLink: Element | null = null;
+    let focusLink: Element | null = null;
+    let reportedLink: Element | null = null;
+    let dismissedLink: Element | null = null;
+    // Readable text only: card rows lead with an aria-hidden brand mark.
+    // eslint-disable-next-line unicorn/consistent-function-scoping -- This helper must travel with the serialized iframe bootstrap.
+    const linkLabel = (link: Element) => {
+      const walker = document.createTreeWalker(link, NodeFilter.SHOW_TEXT);
+      const parts: string[] = [];
+      for (let node = walker.nextNode(); node; node = walker.nextNode())
+        if (!node.parentElement?.closest('[aria-hidden="true"]'))
+          parts.push(node.textContent ?? "");
+      return parts.join(" ").replaceAll(/\s+/g, " ").trim().slice(0, 200);
+    };
+    const reportLink = () => {
+      const active = pointerLink ?? focusLink;
+      if (active !== dismissedLink) dismissedLink = null;
+      const link = active === dismissedLink ? null : active;
+      if (link === reportedLink) return;
+      reportedLink = link;
+      let url: URL | undefined;
+      try {
+        url = link ? new URL(link.getAttribute("href")!) : undefined;
+      } catch {
+        url = undefined;
+      }
+      if (!link || !url || url.protocol !== "https:" || url.username || url.password) {
+        send({ type: "link-hover", url: null });
+        return;
+      }
+      const box = link.getBoundingClientRect();
+      send({
+        type: "link-hover",
+        url: url.href,
+        label: linkLabel(link),
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height,
+      });
+    };
+    // eslint-disable-next-line unicorn/consistent-function-scoping -- This helper must travel with the serialized iframe bootstrap.
+    const linkOf = (target: EventTarget | null) =>
+      target instanceof Element ? target.closest("a[href]") : null;
+    // eslint-disable-next-line unicorn/consistent-function-scoping -- This helper must travel with the serialized iframe bootstrap.
+    const leaves = (link: Element, next: EventTarget | null) =>
+      !(next instanceof Node) || !link.contains(next);
+    document.addEventListener(
+      "pointerover",
+      (event) => {
+        if (stopped || !event.isTrusted || event.pointerType === "touch") return;
+        pointerLink = linkOf(event.target);
+        reportLink();
+      },
+      true
+    );
+    document.addEventListener(
+      "pointerout",
+      (event) => {
+        if (stopped || !event.isTrusted || !pointerLink) return;
+        if (!leaves(pointerLink, event.relatedTarget)) return;
+        pointerLink = null;
+        reportLink();
+      },
+      true
+    );
+    document.addEventListener(
+      "focusin",
+      (event) => {
+        if (stopped || !event.isTrusted) return;
+        focusLink = linkOf(event.target);
+        reportLink();
+      },
+      true
+    );
+    document.addEventListener(
+      "focusout",
+      (event) => {
+        if (stopped || !event.isTrusted || !focusLink) return;
+        if (!leaves(focusLink, event.relatedTarget)) return;
+        focusLink = null;
+        reportLink();
+      },
+      true
+    );
+    document.addEventListener(
+      "keydown",
+      (event) => {
+        if (stopped || !event.isTrusted || event.key !== "Escape" || !reportedLink)
+          return;
+        dismissedLink = reportedLink;
+        reportLink();
+      },
+      true
+    );
     const stop = (reason: string) => {
       if (stopped) return;
       stopped = true;
@@ -268,8 +387,18 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
       send({ type: "error", reason });
     };
     try {
-      const { payload, state, theme, icons, tokens, seed, locale, copy, cardState } =
-        initial.data;
+      const {
+        payload,
+        state,
+        theme,
+        icons,
+        tokens,
+        seed,
+        locale,
+        timeZone,
+        copy,
+        cardState,
+      } = initial.data;
       applyTokens(tokens);
       cardProgress = cardState;
       // Templates load on the first comma.card call; authored-only widgets never build them.
@@ -277,6 +406,7 @@ function runtimeBootstrap(workerSource: string, createCards: typeof cardEngine) 
         (cards ??= createCards({
           seed: typeof seed === "string" ? seed.slice(0, 200) : "",
           locale: typeof locale === "string" ? locale.slice(0, 35) : "",
+          timeZone: typeof timeZone === "string" ? timeZone.slice(0, 64) : "",
           copy: copy && typeof copy === "object" ? copy : {},
           icons: icons && typeof icons === "object" ? icons : {},
           state: cardProgress,

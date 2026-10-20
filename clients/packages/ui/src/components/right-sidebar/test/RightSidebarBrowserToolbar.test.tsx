@@ -127,7 +127,6 @@ describe("RightSidebarBrowserToolbar", () => {
   });
 
   it("lets the reload glyph finish its turn before the stop X takes over", () => {
-    vi.useFakeTimers();
     const props = {
       address: "https://example.com",
       canGoBack: false,
@@ -181,12 +180,9 @@ describe("RightSidebarBrowserToolbar", () => {
       propertyName: "rotate",
     });
     expect(reloadGlyph()).toHaveAttribute("data-visible", "false");
-
-    vi.useRealTimers();
   });
 
   it("finishes the reload handoff when transitionend is lost", () => {
-    vi.useFakeTimers();
     const props = {
       address: "https://example.com",
       canGoBack: false,
@@ -208,12 +204,9 @@ describe("RightSidebarBrowserToolbar", () => {
     expect(reloadGlyph()).toHaveAttribute("data-visible", "true");
     act(() => vi.runAllTimers());
     expect(reloadGlyph()).toHaveAttribute("data-visible", "false");
-
-    vi.useRealTimers();
   });
 
   it("keeps a long pointer press held until pointerup", () => {
-    vi.useFakeTimers();
     render(
       <RightSidebarBrowserToolbar
         address="https://example.com"
@@ -240,59 +233,52 @@ describe("RightSidebarBrowserToolbar", () => {
     expect(button).toHaveAttribute("data-press-held");
     fireEvent.pointerUp(button, { button: 0, isPrimary: true });
     expect(button).not.toHaveAttribute("data-press-held");
-
-    vi.useRealTimers();
   });
 
   it.each(["finished", "cancelled"])(
     "ignores a %s animation from an older watchdog after a new press",
     async (outcome) => {
-      vi.useFakeTimers();
-      try {
-        render(
-          <RightSidebarBrowserToolbar
-            address="https://example.com"
-            canGoBack={false}
-            canGoForward={false}
-            onAddressChange={vi.fn()}
-            onAddressSubmit={vi.fn()}
-            onBack={vi.fn()}
-            onForward={vi.fn()}
-            onReload={vi.fn()}
-          />
-        );
-        let finish!: () => void;
-        let cancel!: () => void;
-        const finished = new Promise<void>((resolve, reject) => {
-          finish = resolve;
-          cancel = () => reject(new DOMException("Cancelled", "AbortError"));
-        });
-        Object.defineProperty(reloadIcon(), "getAnimations", {
-          value: () => [{ transitionProperty: "rotate", finished }],
-        });
-        const button = screen.getByRole("button", { name: "Reload" });
-        fireEvent.pointerDown(button, { button: 0, isPrimary: true });
-        fireEvent.pointerUp(button, { button: 0, isPrimary: true });
-        fireEvent.click(button);
-        act(() => {
-          vi.advanceTimersToNextFrame();
-          vi.advanceTimersByTime(350);
-        });
-        expect(button).toHaveAttribute("data-press-held");
+      render(
+        <RightSidebarBrowserToolbar
+          address="https://example.com"
+          canGoBack={false}
+          canGoForward={false}
+          onAddressChange={vi.fn()}
+          onAddressSubmit={vi.fn()}
+          onBack={vi.fn()}
+          onForward={vi.fn()}
+          onReload={vi.fn()}
+        />
+      );
+      let finish!: () => void;
+      let cancel!: () => void;
+      const finished = new Promise<void>((resolve, reject) => {
+        finish = resolve;
+        cancel = () => reject(new DOMException("Cancelled", "AbortError"));
+      });
+      Object.defineProperty(reloadIcon(), "getAnimations", {
+        value: () => [{ transitionProperty: "rotate", finished }],
+      });
+      const button = screen.getByRole("button", { name: "Reload" });
+      fireEvent.pointerDown(button, { button: 0, isPrimary: true });
+      fireEvent.pointerUp(button, { button: 0, isPrimary: true });
+      fireEvent.click(button);
+      act(() => {
+        vi.advanceTimersToNextFrame();
+        vi.advanceTimersByTime(350);
+      });
+      expect(button).toHaveAttribute("data-press-held");
 
-        fireEvent.pointerDown(button, { button: 0, isPrimary: true });
-        await act(async () => {
-          if (outcome === "finished") finish();
-          else cancel();
-        });
-        fireEvent.pointerUp(button, { button: 0, isPrimary: true });
-        // The old completion cannot turn the new travel into held/recoil.
-        expect(button).toHaveAttribute("data-press-held");
-        fireEvent.transitionEnd(reloadIcon()!, { propertyName: "rotate" });
-        expect(button).not.toHaveAttribute("data-press-held");
-      } finally {
-        vi.useRealTimers();
-      }
+      fireEvent.pointerDown(button, { button: 0, isPrimary: true });
+      await act(async () => {
+        if (outcome === "finished") finish();
+        else cancel();
+      });
+      fireEvent.pointerUp(button, { button: 0, isPrimary: true });
+      // The old completion cannot turn the new travel into held/recoil.
+      expect(button).toHaveAttribute("data-press-held");
+      fireEvent.transitionEnd(reloadIcon()!, { propertyName: "rotate" });
+      expect(button).not.toHaveAttribute("data-press-held");
     }
   );
 
@@ -337,5 +323,52 @@ describe("RightSidebarBrowserToolbar", () => {
     });
     expect(inspectButton).toHaveAttribute("aria-pressed", "true");
     expect(inspectButton).toHaveClass("text-fg-brand-primary");
+  });
+
+  it("opens the page menu at its More actions button, or offers the system browser without an enabled one", () => {
+    const onPageMenu = vi.fn();
+    const props = {
+      address: "https://example.com",
+      canGoBack: false,
+      canGoForward: false,
+      onAddressChange: vi.fn(),
+      onAddressSubmit: vi.fn(),
+      onBack: vi.fn(),
+      onForward: vi.fn(),
+      onOpenExternal: vi.fn(),
+      onReload: vi.fn(),
+    };
+    const { rerender } = render(
+      <RightSidebarBrowserToolbar {...props} onPageMenu={onPageMenu} />
+    );
+    // The page menu holds the system browser action, so no separate button.
+    expect(
+      screen.queryByRole("button", { name: "Open in default browser" })
+    ).not.toBeInTheDocument();
+    const more = screen.getByRole("button", { name: "More actions" });
+    vi.spyOn(more, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ x: 300.4, y: 40.6, width: 28, height: 28 })
+    );
+    fireEvent.click(more);
+    // Main opens the native menu at this rect, so it must be the button's.
+    expect(onPageMenu).toHaveBeenCalledWith({ x: 300, y: 41, width: 28, height: 28 });
+
+    rerender(<RightSidebarBrowserToolbar {...props} />);
+    expect(
+      screen.queryByRole("button", { name: "More actions" })
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open in default browser" }));
+    expect(props.onOpenExternal).toHaveBeenCalledOnce();
+
+    // An inactive or unavailable page has no page menu, yet can still leave
+    // for the system browser.
+    rerender(
+      <RightSidebarBrowserToolbar {...props} disabled onPageMenu={onPageMenu} />
+    );
+    expect(
+      screen.queryByRole("button", { name: "More actions" })
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open in default browser" }));
+    expect(props.onOpenExternal).toHaveBeenCalledTimes(2);
   });
 });

@@ -38,7 +38,7 @@ defmodule SalixCluster.Timers do
   separately in `tla/salix/TimerCatchUpRotation.tla`.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
   alias SalixStore.Timers, as: StoreTimers
@@ -66,7 +66,8 @@ defmodule SalixCluster.Timers do
 
   # ---- API ----
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @doc """
   Run one firing pass. Returns `{:ok, fired_list}` with one entry per marker
@@ -86,7 +87,7 @@ defmodule SalixCluster.Timers do
   """
   @spec fire_due(keyword()) :: {:ok, [fired()]} | {:error, term()}
   def fire_due(opts \\ []) do
-    now = opts[:now] || System.system_time(:millisecond)
+    now = opts[:now] || SystemsClock.system_time(:millisecond)
     current = StoreTimers.minute_bucket(now)
     sweep_buckets((current - lookback(opts))..current, now)
   end
@@ -151,7 +152,7 @@ defmodule SalixCluster.Timers do
   @spec catch_up(keyword()) ::
           {:ok, %{fired: [fired()], next: String.t() | nil}} | {:error, term()}
   def catch_up(opts \\ []) do
-    now = opts[:now] || System.system_time(:millisecond)
+    now = opts[:now] || SystemsClock.system_time(:millisecond)
     window_start = StoreTimers.minute_bucket(now) - lookback(opts)
     max_buckets = opts[:max_buckets] || @default_catchup_buckets
     max_markers = opts[:max_markers] || @default_catchup_markers
@@ -376,7 +377,7 @@ defmodule SalixCluster.Timers do
         state
       end
 
-    Process.send_after(self(), :tick, state.interval)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, state.interval)
     %{state | ticks: state.ticks + 1}
   end
 

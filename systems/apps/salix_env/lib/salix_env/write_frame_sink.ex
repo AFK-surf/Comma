@@ -1,35 +1,40 @@
 defmodule SalixEnv.WriteFrameSink do
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
   @moduledoc false
-  use GenServer
+  use SystemsRuntime.Server
 
   alias SalixEnv.Transfer.Tokens
 
   @default_absolute_timeout_ms 305_000
 
   def start(owner, id, timeout, opts \\ []) do
-    caller = Keyword.get(opts, :caller, self())
+    caller = Keyword.get(opts, :caller, SystemsRuntime.Proc.self())
 
     absolute_timeout =
       opts
       |> Keyword.get(:absolute_timeout_ms, configured_absolute_timeout())
       |> positive_timeout(@default_absolute_timeout_ms)
 
-    GenServer.start(__MODULE__, {owner, id, timeout, caller, absolute_timeout})
+    SystemsRuntime.Server.start(__MODULE__, {owner, id, timeout, caller, absolute_timeout})
   end
 
-  def url(pid), do: GenServer.call(pid, :url)
+  def url(pid), do: SystemsRuntime.Server.call(pid, :url)
 
   @impl true
   def init({owner, id, timeout, caller, absolute_timeout}) do
-    token = Tokens.register(owner: self())
-    absolute_token = make_ref()
+    token = Tokens.register(owner: SystemsRuntime.Proc.self())
+    absolute_token = SystemsRuntime.Proc.make_ref()
 
     {:ok,
      %{
        owner: owner,
-       owner_monitor: Process.monitor(owner),
+       owner_monitor: SystemsRuntime.Proc.monitor(owner),
        caller: caller,
-       caller_monitor: if(is_pid(caller), do: Process.monitor(caller)),
+       caller_monitor:
+         if(SystemsRuntime.Proc.is_process(caller), do: SystemsRuntime.Proc.monitor(caller)),
        id: id,
        timeout: timeout,
        token: token,
@@ -38,8 +43,8 @@ defmodule SalixEnv.WriteFrameSink do
        handler_monitor: nil,
        absolute_token: absolute_token,
        absolute_timer:
-         Process.send_after(
-           self(),
+         SystemsClock.send_after(
+           SystemsRuntime.Proc.self(),
            {:remote_write_stream_absolute_timeout, absolute_token},
            absolute_timeout
          )
@@ -67,7 +72,7 @@ defmodule SalixEnv.WriteFrameSink do
           state
       end
 
-    send(handler, {:transfer_ack, token})
+    SystemsRuntime.Proc.send(handler, {:transfer_ack, token})
     {:noreply, state}
   end
 
@@ -87,8 +92,8 @@ defmodule SalixEnv.WriteFrameSink do
         {:error, reason} -> %{"ok" => false, "error" => inspect(reason)}
       end
 
-    send(handler, {:transfer_ack, token})
-    send(handler, {:transfer_complete, token, envelope})
+    SystemsRuntime.Proc.send(handler, {:transfer_ack, token})
+    SystemsRuntime.Proc.send(handler, {:transfer_complete, token, envelope})
     {:stop, :normal, state}
   end
 
@@ -122,35 +127,44 @@ defmodule SalixEnv.WriteFrameSink do
 
   @impl true
   def terminate(_reason, state) do
-    if state.absolute_timer, do: Process.cancel_timer(state.absolute_timer)
-    if state.owner_monitor, do: Process.demonitor(state.owner_monitor, [:flush])
-    if state.caller_monitor, do: Process.demonitor(state.caller_monitor, [:flush])
-    if state.handler_monitor, do: Process.demonitor(state.handler_monitor, [:flush])
+    if state.absolute_timer, do: SystemsClock.cancel_timer(state.absolute_timer)
+    if state.owner_monitor, do: SystemsRuntime.Proc.demonitor(state.owner_monitor, [:flush])
+    if state.caller_monitor, do: SystemsRuntime.Proc.demonitor(state.caller_monitor, [:flush])
+    if state.handler_monitor, do: SystemsRuntime.Proc.demonitor(state.handler_monitor, [:flush])
     Tokens.revoke(state.token)
     :ok
   end
 
   defp call_owner_write(owner, op, args, timeout) do
-    ref = Process.monitor(owner)
-    send(owner, List.to_tuple([:env_write_stream, op, ref, self() | args]))
+    ref = SystemsRuntime.Proc.monitor(owner)
 
-    receive do
+    SystemsRuntime.Proc.send(
+      owner,
+      List.to_tuple([:env_write_stream, op, ref, SystemsRuntime.Proc.self() | args])
+    )
+
+    SystemsClock.vreceive do
       {:env_write_stream_reply, ^ref, reply} ->
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         reply
 
       {:DOWN, ^ref, :process, ^owner, _reason} ->
         {:error, :disconnected}
     after
       timeout ->
-        send(owner, {:env_write_stream_cancel, ref, self()})
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.send(
+          owner,
+          {:env_write_stream_cancel, ref, SystemsRuntime.Proc.self()}
+        )
+
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         {:error, :timeout}
     end
   end
 
-  defp track_handler(%{handler: nil} = state, handler) when is_pid(handler) do
-    %{state | handler: handler, handler_monitor: Process.monitor(handler)}
+  defp track_handler(%{handler: nil} = state, handler)
+       when SystemsRuntime.Proc.is_process(handler) do
+    %{state | handler: handler, handler_monitor: SystemsRuntime.Proc.monitor(handler)}
   end
 
   defp track_handler(%{handler: handler} = state, handler), do: state
@@ -158,13 +172,13 @@ defmodule SalixEnv.WriteFrameSink do
   defp track_handler(state, _different_handler), do: state
 
   defp stop_with_abort(state, reason) do
-    send(state.owner, {:env_write_stream_abort, state.id, reason})
+    SystemsRuntime.Proc.send(state.owner, {:env_write_stream_abort, state.id, reason})
     stop_with_transfer_error(state, reason)
   end
 
   defp stop_with_transfer_error(state, reason) do
-    if is_pid(state.handler) do
-      send(
+    if SystemsRuntime.Proc.is_process(state.handler) do
+      SystemsRuntime.Proc.send(
         state.handler,
         {:transfer_complete, state.token, %{"ok" => false, "error" => inspect(reason)}}
       )
@@ -177,7 +191,7 @@ defmodule SalixEnv.WriteFrameSink do
   defp positive_timeout(_value, fallback), do: fallback
 
   defp configured_absolute_timeout do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :salix_env,
       :connector_remote_write_stream_timeout_ms,
       @default_absolute_timeout_ms

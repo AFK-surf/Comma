@@ -1,5 +1,5 @@
 import type { KeyboardEvent, MouseEvent, WheelEvent } from "react";
-import type { BrowserInput } from "../../../../api/browser";
+import type { BrowserViewInput as BrowserInput } from "@comma/core/contract";
 
 /** The remote tab's size in its own pixels, from the latest frame. */
 export type BrowserViewport = { width: number; height: number };

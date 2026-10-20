@@ -39,7 +39,7 @@ defmodule Comma.Migrations.LegacyS3Fixture do
     end
   end
 
-  def now, do: System.system_time(:second)
+  def now, do: SystemsClock.system_time(:second)
 
   defp key(bucket, id) do
     "comma/" <> to_string(bucket) <> "/" <> URI.encode(to_string(id), &(&1 not in [?/]))

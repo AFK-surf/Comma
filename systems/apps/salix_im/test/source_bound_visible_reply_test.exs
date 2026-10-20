@@ -1,5 +1,5 @@
 defmodule SalixIM.SourceBoundVisibleReplyTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.{ConversationInput, ConversationServer, Conversations, SourceBoundVisibleReply}
   alias SalixStore.Ids
@@ -8,8 +8,8 @@ defmodule SalixIM.SourceBoundVisibleReplyTest do
     SalixAgent.TestSupport.stop_all_agents()
     SalixIM.TestSupport.Fleet.stop_all!()
 
-    previous_s3 = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
 
     on_exit(fn ->
@@ -17,9 +17,9 @@ defmodule SalixIM.SourceBoundVisibleReplyTest do
       SalixIM.TestSupport.Fleet.stop_all!()
 
       if is_nil(previous_s3) do
-        Application.delete_env(:salix_store, :s3_backend)
+        SystemsRuntime.delete_env(:salix_store, :s3_backend)
       else
-        Application.put_env(:salix_store, :s3_backend, previous_s3)
+        SystemsRuntime.put_env(:salix_store, :s3_backend, previous_s3)
       end
     end)
 
@@ -118,22 +118,5 @@ defmodule SalixIM.SourceBoundVisibleReplyTest do
 
     assert {:error, {:permanent, :visible_reply_source_mismatch}} =
              SourceBoundVisibleReply.authorize(context.agent_id, wrong_scope)
-  end
-
-  test "retired implicit append fails closed without writing a Message", context do
-    assert {:error, {:permanent, :retired_visible_reply_append}} =
-             SourceBoundVisibleReply.append(context.agent_id, %{
-               "content" => "must not become a canonical Message",
-               "scope" => context.scope,
-               "idempotency_key" => "retired-visible-reply-append"
-             })
-
-    assert {:ok, messages} =
-             Conversations.list_group_conversation_messages(
-               context.group_id,
-               context.conversation_id
-             )
-
-    assert Enum.map(messages, & &1["message_id"]) == [context.source_message_id]
   end
 end

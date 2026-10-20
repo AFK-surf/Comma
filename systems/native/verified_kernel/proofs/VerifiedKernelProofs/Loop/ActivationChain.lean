@@ -75,7 +75,9 @@ theorem plain_fetch (name : Term) : Plain [.tuple [a "fact", name]] := by
   intro e mem
   simp only [List.mem_singleton] at mem
   subst mem
-  simp [effectKind]
+  have kind : effectKind (.tuple [a "fact", name]) = .blocking := rfl
+  rw [kind]
+  exact ⟨nofun, nofun⟩
 
 /-- An expiry entry is internal only when it asks for the busy fact. Its
 machine records the wait that it read. -/
@@ -908,15 +910,17 @@ theorem skip_step {C : Int} {σ σ' : HostState} {m e : Term} {rest : List Term}
   rw [perform] at ctlInv
   obtain ⟨act, ceiling, _, router, writes⟩ := ctlInv
   have notWrite : ∀ es, e ≠ .tuple [a "write", list es] := by
-    intro es h; subst h; simp [effectKind] at kind
+    intro es h; subst h
+    rw [show effectKind (.tuple [a "write", list es]) = .write from rfl] at kind
+    simp at kind
   have inv' : InChain C σ' := by
     refine ⟨by rw [work, dur]; exact sid, ?_⟩
     rw [ctl] at chain ⊢
     refine ⟨act, ceiling, chain.2, fun r => ?_, fun es mem => ?_⟩
     · have := router r
       simp only [List.cons.injEq] at this
-      rw [this.1] at kind
-      simp [effectKind] at kind
+      rw [this.1, show effectKind (.tuple [a "fact", a "canonical_router"]) = .blocking from rfl] at kind
+      simp at kind
     · obtain ⟨pair, _⟩ := writes es (List.mem_cons_of_mem _ mem)
       simp only [List.cons.injEq] at pair
       exact absurd pair.1 (notWrite es)

@@ -55,10 +55,7 @@ defmodule SalixIM.ConversationAttachments do
   defp download_size(_), do: {:error, :not_found}
 
   defp download_filename(block) do
-    filename =
-      [block["file_name"], block["title"], path(block)]
-      |> Enum.find("attachment", &(is_binary(&1) and String.trim(&1) != ""))
-      |> Path.basename()
+    filename = file_name(block)
 
     if filename not in ["", ".", "..", "/"] and byte_size(filename) <= @max_file_name_bytes,
       do: {:ok, filename},
@@ -153,8 +150,11 @@ defmodule SalixIM.ConversationAttachments do
 
       path ->
         case AgentWorkspace.file_ref(agent_id, path) do
-          {:ok, ref} -> {:ok, Map.put(block, "blob_ref", ref)}
-          {:error, reason} -> error(path, reason)
+          {:ok, ref} ->
+            {:ok, block |> Map.put("file_name", file_name(block)) |> Map.put("blob_ref", ref)}
+
+          {:error, reason} ->
+            error(path, reason)
         end
     end
   end
@@ -181,6 +181,8 @@ defmodule SalixIM.ConversationAttachments do
 
   defp materialize(agent_id, source_agent_id, message_id, index, block, mode) do
     source_path = path(block)
+    # Resolve against the sender's path before a recipient path adds its prefix.
+    block = if source_path != "", do: Map.put(block, "file_name", file_name(block)), else: block
 
     cond do
       source_path == "" or source_agent_id == agent_id ->
@@ -190,7 +192,7 @@ defmodule SalixIM.ConversationAttachments do
         immutable_ref? = is_map(block["blob_ref"])
 
         with {:ok, ref} <- ref(source_agent_id, source_path, block["blob_ref"]),
-             target_path = target_path(message_id, index, block, source_path),
+             target_path = target_path(message_id, index, block),
              {:ok, _file} <-
                AgentWorkspace.put_ref(agent_id, target_path, ref, preserve_error: true) do
           {:ok, block |> put_path(target_path) |> Map.delete("blob_ref")}
@@ -234,11 +236,61 @@ defmodule SalixIM.ConversationAttachments do
 
   defp put_path(block, path), do: Map.put(block, "path", path)
 
-  defp target_path(message_id, index, block, source_path) do
+  @doc """
+  The attachment filename shared by Salix delivery and product downloads.
+
+  The producer's `file_name` is authoritative. `title` is display-only.
+  Keep extensionless names and explicit names different from the source basename.
+  Files use top-level `path`. Images use VFS `file_ref.path`, then top-level `path`.
+  Non-VFS refs supply no filename evidence. Existing basename normalization applies.
+
+  Older producers appended a description to `file_name`. Preserve a name equal
+  to the complete source basename. Recover that basename only when a spaced
+  description separator and nonempty text follow it. An intentional rename of
+  that same form is indistinguishable and follows this convention.
+  Other explicit names stay unchanged. Dots and extensions do not determine validity.
+  Without a usable source, keep the explicit name. Without either, use `attachment`.
+
+  Sender binding and recipient copies retain this name before paths change.
+  Downloads apply the same rule to old Messages without rewriting stored content.
+  Byte limits and authorization still apply separately.
+  """
+  def file_name(block) do
+    explicit = basename(block["file_name"])
+    source = basename(path(block))
+
+    cond do
+      is_nil(explicit) -> source || "attachment"
+      is_nil(source) or explicit == source -> explicit
+      legacy_description?(explicit, source) -> source
+      true -> explicit
+    end
+  end
+
+  # The legacy convention compares the complete source name.
+  # Dots, extensions and separators inside that source name carry no meaning.
+  defp legacy_description?(explicit, source) do
+    Enum.any?([" - ", " – ", " — "], fn separator ->
+      prefix = source <> separator
+
+      String.starts_with?(explicit, prefix) and
+        String.trim(String.replace_prefix(explicit, prefix, "")) != ""
+    end)
+  end
+
+  defp basename(value) when is_binary(value) do
+    case value |> String.trim() |> Path.basename() do
+      name when name in ["", ".", "..", "/"] -> nil
+      name -> name
+    end
+  end
+
+  defp basename(_value), do: nil
+
+  defp target_path(message_id, index, block) do
     filename =
-      (block["file_name"] || block["title"] || Path.basename(source_path))
-      |> to_string()
-      |> Path.basename()
+      block
+      |> file_name()
       |> String.replace(~r/[^\p{L}\p{N}._ -]+/u, "_")
       |> String.slice(0, 120)
 

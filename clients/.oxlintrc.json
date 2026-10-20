@@ -20,5 +20,109 @@
     "apps/electron/dist-native/**",
     "apps/electron/native/**/.build/**",
     "apps/electron/native/**/.swiftpm/**"
+  ],
+  "overrides": [
+    {
+      "files": ["**/*.ts", "**/*.tsx"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "@comma/ui",
+                "message": "Import from the component module, such as @comma/ui/components/tag. The @comma/ui barrel loads the whole UI library."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "packages/app/**",
+        "packages/ui/**",
+        "packages/core-client/**",
+        "apps/web/src/**",
+        "apps/electron/src/renderer/**",
+        "apps/electron/src/preload/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect",
+                "message": "Effect is used only inside the client core (packages/core). A UI subscribes to the core's topics and makes its calls (@comma/core-client)."
+              },
+              {
+                "name": "@comma/ui",
+                "message": "Import from the component module, such as @comma/ui/components/tag. The @comma/ui barrel loads the whole UI library."
+              }
+            ],
+            "patterns": [
+              {
+                "group": ["effect/*"],
+                "message": "Effect is used only inside the client core (packages/core)."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "packages/app/**/test/**",
+        "packages/ui/**/test/**",
+        "packages/core-client/**/test/**",
+        "packages/test-utils/**",
+        "apps/web/test/**",
+        "apps/web/src/**/test/**",
+        "apps/electron/src/renderer/**/test/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect",
+                "message": "Effect is used only inside the client core (packages/core). A UI subscribes to the core's topics and makes its calls (@comma/core-client)."
+              },
+              {
+                "name": "@comma/ui",
+                "message": "Import from the component module, such as @comma/ui/components/tag. The @comma/ui barrel loads the whole UI library."
+              },
+              {
+                "name": "@comma/core",
+                "message": "A UI test does not run the client core. Script what the UI sees and assert the calls it sends with createScriptedCore (@comma/test-utils/scripted-core); test the core's own behaviour in packages/core/test."
+              },
+              {
+                "name": "@comma/core/testing",
+                "importNames": [
+                  "startTestCore",
+                  "FakeHost",
+                  "inProcessOpener",
+                  "Recorder",
+                  "FakeCommaApi",
+                  "TestTime",
+                  "fetchedApi",
+                  "signedIn",
+                  "signedOut"
+                ],
+                "message": "A UI test does not run the client core. Script what the UI sees and assert the calls it sends with createScriptedCore (@comma/test-utils/scripted-core); test the core's own behaviour in packages/core/test."
+              }
+            ],
+            "patterns": [
+              {
+                "group": ["effect/*"],
+                "message": "Effect is used only inside the client core (packages/core)."
+              }
+            ]
+          }
+        ]
+      }
+    }
   ]
 }

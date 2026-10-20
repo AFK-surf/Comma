@@ -1,17 +1,15 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { cx, plainTextWithLinks } from "@comma/ui";
-import { memo, useContext, useMemo, type Ref } from "react";
-import type { CommaApiClient } from "../../../../api";
-import { parseBrowserElementInspectionMessage } from "../../../chat-sidebar/browserElementInspection";
-import { controlCommandDisplayText } from "./controlCommandPresentation";
-import type {
-  ChatConversationRef,
-  ChatImagePreviewRef,
-  ChatMessage,
-  LocalFilePreview,
-} from "../../model/conversationChannel";
+import { cx } from "@comma/ui/components/utils";
+import { plainTextWithLinks } from "@comma/ui/components/markdown-stream/plainTextLinks";
+import { memo, useCallback, useContext, type Ref } from "react";
+import {
+  QUICK_CHAT_MESSAGE_TYPE,
+  type ChatConversationRef,
+  type ChatImagePreviewRef,
+  type ChatMessage,
+  type LocalFilePreview,
+} from "@comma/core/chat";
 import { userMessageContentWithMentions } from "../inline/MessageInlineElements";
-import { parseAttachmentsBlock, parseQuotedTextBlock } from "../../model/protocol";
 import type { OutgoingPresentation } from "../outgoing/outgoingPresentation";
 import type {
   ReplyChainState,
@@ -21,24 +19,29 @@ import { ThreadDefaultActorRoleContext } from "../threadContexts";
 import { AssistantResponseRow } from "./assistant/AssistantResponseRow";
 import { MessageBlockExtras } from "./MessageBlockExtras";
 import { MessageCopyAction } from "./MessageCopyAction";
-import { BrowserElementInspectionContextCard } from "./user/BrowserElementInspectionContextCard";
 import { FailedDeliveryNotice } from "./user/FailedDeliveryNotice";
+import { MessageAttachedTexts } from "./user/MessageAttachedTexts";
 import { MessageQuoteBlocks } from "./user/MessageQuoteBlocks";
 import {
   mergeMessageAttachments,
   textAttachmentsToPills,
 } from "./user/messageTextAttachments";
 import { UserMessageBubble } from "./user/UserMessageBubble";
-import { MessagePlatformBadge } from "../../MessagePlatformBadge";
+import { MessagePlatformBadge, QuickChatBadge } from "../../MessagePlatformBadge";
+import { MessageTaskCards } from "../../tasks/MessageTaskCards";
+
+/** The row a message renders as: every role but "assistant" draws the user row. */
+export function messageRowRole(message: Pick<ChatMessage, "role">) {
+  return message.role === "assistant" ? "assistant" : "user";
+}
 
 // Rows are memoized so per-emit thread renders (every keystroke and stream
 // chunk) reconcile only rows whose message/draft actually changed. All
 // callback props must stay identity-stable for these boundaries to hold.
 export const MessageRow = memo(function MessageRow({
-  api,
-  animateAssistantEntry = false,
   articleRef,
   groupId,
+  live = false,
   message,
   onAnchorOutgoingTurn,
   onDiscard,
@@ -49,16 +52,15 @@ export const MessageRow = memo(function MessageRow({
   outgoingPresentation,
   referenceMode,
   showActions = true,
-  variant = "default",
   workspaceId,
   // This row's place in the thread; an assistant message hands it on as is.
   ...relationship
 }: RowRelationshipProps & {
-  api?: CommaApiClient | undefined;
-  animateAssistantEntry?: boolean;
   articleRef?: Ref<HTMLElement> | undefined;
   chainState: ReplyChainState;
   groupId: string;
+  /** The row shows the core's live data (inline Tasks, widgets); a static row does not. */
+  live?: boolean;
   message: ChatMessage;
   onAnchorOutgoingTurn?: ((turnKey: string) => void) | undefined;
   onDiscard: (clientRequestId: string) => void;
@@ -71,40 +73,25 @@ export const MessageRow = memo(function MessageRow({
   outgoingPresentation?: OutgoingPresentation | undefined;
   referenceMode: "link" | "static";
   showActions?: boolean;
-  variant?: "default" | "side-chat";
   workspaceId: string;
 }) {
   const messagesApi = useCommaMessages();
-  const inspectionMessage: ReturnType<typeof parseBrowserElementInspectionMessage> =
-    message.platformSource
-      ? { body: message.text }
-      : parseBrowserElementInspectionMessage(message.text);
-  const attachmentsBlock = message.platformSource
-    ? { body: inspectionMessage.body, attachments: [] }
-    : parseAttachmentsBlock(inspectionMessage.body);
+  // The core reads a person's message out of its wire text; one from another platform is shown as it came.
+  const parsed = message.display ?? { body: message.text, quotes: [], files: [] };
+  const displayBody = parsed.command ? `/${parsed.command}` : parsed.body;
   const defaultActorRole = useContext(ThreadDefaultActorRoleContext);
-  // Quotes lead the wire text and attachments trail it, so peeling the
-  // attachments block first leaves the quote block at the front of the body.
-  const parsed = message.platformSource
-    ? { body: attachmentsBlock.body, quotes: [] }
-    : parseQuotedTextBlock(attachmentsBlock.body);
-  const displayBody = message.platformSource
-    ? parsed.body
-    : controlCommandDisplayText(parsed.body);
-  const userContent = useMemo(
-    () =>
-      message.role === "assistant"
-        ? undefined
-        : message.platformSource
-          ? plainTextWithLinks(displayBody)
-          : userMessageContentWithMentions(displayBody, {
-              api,
-              groupId,
-              workspaceId,
-            }),
-    [api, displayBody, groupId, message.role, message.platformSource, workspaceId]
+  const renderUserContent = useCallback(
+    (body: string) =>
+      message.platformSource
+        ? plainTextWithLinks(body)
+        : userMessageContentWithMentions(body, {
+            live,
+            groupId,
+            workspaceId,
+          }),
+    [groupId, live, message.platformSource, workspaceId]
   );
-  const parsedAttachments = textAttachmentsToPills(attachmentsBlock.attachments);
+  const parsedAttachments = textAttachmentsToPills(parsed.files);
   const mergedAttachments = mergeMessageAttachments(
     message.attachments,
     parsedAttachments
@@ -113,13 +100,13 @@ export const MessageRow = memo(function MessageRow({
     mergedAttachments !== message.attachments
       ? { ...message, attachments: mergedAttachments }
       : message;
+  const quickChat = message.messageType === QUICK_CHAT_MESSAGE_TYPE;
 
-  if (message.role === "assistant") {
+  if (messageRowRole(message) === "assistant") {
     return (
       <AssistantResponseRow
         {...relationship}
-        api={api}
-        animateEntry={animateAssistantEntry}
+        live={live}
         articleRef={articleRef}
         groupId={groupId}
         message={message}
@@ -128,7 +115,6 @@ export const MessageRow = memo(function MessageRow({
         referenceMode={referenceMode}
         showActions={showActions}
         streamId={message.messageId}
-        variant={variant}
         workspaceId={workspaceId}
       />
     );
@@ -164,6 +150,7 @@ export const MessageRow = memo(function MessageRow({
         workspaceId={workspaceId}
       />
       <MessageQuoteBlocks messageId={message.messageId} quotes={parsed.quotes} />
+      <MessageAttachedTexts messageId={message.messageId} texts={parsed.texts ?? []} />
       <MessageBlockExtras
         groupId={groupId}
         message={messageForExtras}
@@ -174,17 +161,14 @@ export const MessageRow = memo(function MessageRow({
         section="files"
         workspaceId={workspaceId}
       />
-      {inspectionMessage.context ? (
-        <BrowserElementInspectionContextCard context={inspectionMessage.context} />
-      ) : null}
       {parsed.body.trim() ? (
         <div className="comma-chat-user-bubble-row">
           <UserMessageBubble
-            content={userContent}
             onAnchorOutgoingTurn={onAnchorOutgoingTurn}
             onOutgoingAnimationComplete={onOutgoingAnimationComplete}
             outgoingPresentation={outgoingPresentation}
             platform={message.platformSource}
+            renderContent={renderUserContent}
             text={displayBody}
           />
           {showActions ? (
@@ -193,15 +177,25 @@ export const MessageRow = memo(function MessageRow({
               copyText={parsed.body}
               messageId={message.messageId}
               platform={message.platformSource}
+              quickChat={quickChat}
             />
-          ) : message.platformSource ? (
-            // Read-only surfaces (side chat, previews, shares) drop Copy but
+          ) : message.platformSource || quickChat ? (
+            // Read-only surfaces (previews, shares) drop Copy but
             // still name where the message came from.
             <div className="comma-chat-message-actions">
               <MessagePlatformBadge platform={message.platformSource} />
+              {quickChat ? <QuickChatBadge /> : null}
             </div>
           ) : null}
         </div>
+      ) : null}
+      {/* Stored Quick Chat messages can still carry references to their Tasks. */}
+      {quickChat ? (
+        <MessageTaskCards
+          groupId={groupId}
+          message={message}
+          workspaceId={workspaceId}
+        />
       ) : null}
       {message.delivery === "failed" && message.clientRequestId ? (
         <FailedDeliveryNotice

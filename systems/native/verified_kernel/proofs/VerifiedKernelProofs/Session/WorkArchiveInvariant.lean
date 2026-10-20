@@ -1,4 +1,5 @@
 import VerifiedKernelProofs.Session.WorkKernelHistory
+import VerifiedKernelProofs.Session.WorkIdentityCodec
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data ArchivePublication

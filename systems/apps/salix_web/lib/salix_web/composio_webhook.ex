@@ -73,7 +73,7 @@ defmodule SalixWeb.ComposioWebhook do
       # and each owner call has the existing five-second delivery deadline.
       results =
         rows
-        |> Task.async_stream(
+        |> SystemsClock.async_stream(
           fn row ->
             SalixAgent.Loops.deliver_composio_event(row["id"], row["composio_trigger"], event)
           end,
@@ -114,7 +114,7 @@ defmodule SalixWeb.ComposioWebhook do
   # Comma's member source item pool reads the named account again through its
   # official API. It gets the trigger and account, never the event data.
   defp signal(group, metadata) do
-    case Application.get_env(:salix_web, :composio_signal_mod) do
+    case SystemsRuntime.get_env(:salix_web, :composio_signal_mod) do
       module when is_atom(module) and not is_nil(module) ->
         module.signal(group, metadata["trigger_id"], metadata["connected_account_id"])
 
@@ -138,7 +138,7 @@ defmodule SalixWeb.ComposioWebhook do
       )
 
   defp limit(bucket, count) do
-    case RateLimit.hit("composio-webhook:" <> bucket, 60_000, count) do
+    case RateLimit.admit("composio-webhook:" <> bucket, 60_000, count) do
       {:allow, _} -> :ok
       {:deny, _} -> {:error, :rate_limited}
     end
@@ -158,5 +158,5 @@ defmodule SalixWeb.ComposioWebhook do
       |> put_resp_content_type("application/json")
       |> send_resp(status, Jason.encode!(body))
 
-  defp client, do: Application.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
+  defp client, do: SystemsRuntime.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
 end

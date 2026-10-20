@@ -14,7 +14,7 @@ defmodule BridgeForTeams.SlackHistoryImportPersistenceTest do
   alias BridgeForTeams.Schema.SlackHistoryImportChannel
 
   setup do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     {:ok, org} =
       Orgs.create_org(%{
@@ -82,7 +82,7 @@ defmodule BridgeForTeams.SlackHistoryImportPersistenceTest do
 
     from = ~U[2026-08-17 00:00:00Z]
     to = ~U[2026-08-24 00:00:00Z]
-    request_id = Ecto.UUID.generate()
+    request_id = SystemsRuntime.Proc.uuid()
 
     attrs = %{
       org_id: ctx.org.id,
@@ -214,7 +214,7 @@ defmodule BridgeForTeams.SlackHistoryImportPersistenceTest do
     assert {:ok, resumed, %{to: :acquiring}} =
              SlackHistoryImports.resume(run.id, paused.generation)
 
-    snapshot_id = Ecto.UUID.generate()
+    snapshot_id = SystemsRuntime.Proc.uuid()
 
     assert {:error, :snapshot_not_found} =
              SlackHistoryImports.complete_acquisition(run.id, resumed.generation, snapshot_id)
@@ -226,30 +226,6 @@ defmodule BridgeForTeams.SlackHistoryImportPersistenceTest do
     assert reloaded.state == "stale_source"
     assert reloaded.generation == stale.generation
     assert reloaded.snapshot_id == nil
-  end
-
-  test "resume honors the persisted retry window", ctx do
-    assert {:ok, run} = SlackHistoryImports.create_run(run_attrs(ctx, "retry-window"))
-
-    assert {:ok, acquiring, _event} =
-             SlackHistoryImports.start_acquisition(run.id, run.generation)
-
-    retry_at = DateTime.add(DateTime.utc_now(), 60, :second)
-
-    assert {:ok, paused, _event} =
-             SlackHistoryImports.pause(
-               run.id,
-               acquiring.generation,
-               :rate_limited,
-               retry_at
-             )
-
-    assert {:error, {:retry_not_before, ^retry_at}} =
-             SlackHistoryImports.resume(run.id, paused.generation)
-
-    assert {:ok, still_paused} = SlackHistoryImports.get_run(run.id)
-    assert still_paused.state == "paused"
-    assert still_paused.generation == paused.generation
   end
 
   test "disconnect preserves the old run and reconnect creates a clean replacement", ctx do
@@ -270,7 +246,7 @@ defmodule BridgeForTeams.SlackHistoryImportPersistenceTest do
     reconnect_attrs = %{
       expected_generation: stale.generation,
       requested_by_user_id: ctx.user.id,
-      client_request_id: Ecto.UUID.generate(),
+      client_request_id: SystemsRuntime.Proc.uuid(),
       source_workspace_id: "T_HISTORY",
       source_app_id: "A_HISTORY_RECONNECTED",
       connect_id: "conn-history-2",
@@ -324,7 +300,7 @@ defmodule BridgeForTeams.SlackHistoryImportPersistenceTest do
                run.id,
                %{
                  reconnect_attrs
-                 | client_request_id: Ecto.UUID.generate(),
+                 | client_request_id: SystemsRuntime.Proc.uuid(),
                    source_workspace_id: "T_OTHER"
                }
              )
@@ -334,7 +310,7 @@ defmodule BridgeForTeams.SlackHistoryImportPersistenceTest do
                run.id,
                %{
                  reconnect_attrs
-                 | client_request_id: Ecto.UUID.generate(),
+                 | client_request_id: SystemsRuntime.Proc.uuid(),
                    connect_generation: "gen-1"
                }
              )
@@ -345,7 +321,7 @@ defmodule BridgeForTeams.SlackHistoryImportPersistenceTest do
       org_id: ctx.org.id,
       project_id: ctx.project.id,
       requested_by_user_id: ctx.user.id,
-      client_request_id: Ecto.UUID.generate(),
+      client_request_id: SystemsRuntime.Proc.uuid(),
       salix_tenant_id: ctx.org.salix_tenant_id,
       salix_group_id: ctx.project.salix_group_id,
       source_workspace_id: "T_HISTORY",

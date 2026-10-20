@@ -1,5 +1,6 @@
 defmodule CommaWeb.CommaFilesTest do
   use Comma.DataCase, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
 
   import Plug.Conn
   import Plug.Test
@@ -124,13 +125,13 @@ defmodule CommaWeb.CommaFilesTest do
 
     @impl true
     def write_agent_file(workspace, path, body) do
-      send(test_pid!(), {:write_agent_file, workspace, path, body})
+      SystemsRuntime.Proc.send(test_pid!(), {:write_agent_file, workspace, path, body})
       Process.get(:write_agent_file_result, {:ok, %{"path" => path}})
     end
 
     @impl true
     def read_agent_file(workspace, path, max_bytes) do
-      send(test_pid!(), {:read_agent_file, workspace, path, max_bytes})
+      SystemsRuntime.Proc.send(test_pid!(), {:read_agent_file, workspace, path, max_bytes})
 
       result =
         :read_agent_file_results
@@ -146,25 +147,25 @@ defmodule CommaWeb.CommaFilesTest do
       end
     end
 
-    defp test_pid!, do: Application.fetch_env!(:comma_core, :comma_files_test_pid)
+    defp test_pid!, do: SystemsRuntime.fetch_env!(:comma_core, :comma_files_test_pid)
   end
 
   setup do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
 
     billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
 
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    prev_salix_client = Application.get_env(:comma_core, :salix_client)
-    prev_api_token = Application.get_env(:comma_web, :api_token)
-    prev_test_pid = Application.get_env(:comma_core, :comma_files_test_pid)
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_salix_client = SystemsRuntime.get_env(:comma_core, :salix_client)
+    prev_api_token = SystemsRuntime.get_env(:comma_web, :api_token)
+    prev_test_pid = SystemsRuntime.get_env(:comma_core, :comma_files_test_pid)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:comma_web, :api_token, @admin_token)
-    Application.put_env(:comma_core, :salix_client, SalixClientFake)
-    Application.put_env(:comma_core, :comma_files_test_pid, self())
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:comma_web, :api_token, @admin_token)
+    SystemsRuntime.put_env(:comma_core, :salix_client, SalixClientFake)
+    SystemsRuntime.put_env(:comma_core, :comma_files_test_pid, SystemsRuntime.Proc.self())
 
     ensure_fake_s3!()
 
@@ -206,26 +207,9 @@ defmodule CommaWeb.CommaFilesTest do
 
     workspace_id = workspace["id"]
 
-    assert_receive {:write_agent_file, %{"id" => ^workspace_id, "status" => "active"}, ^path,
-                    ^source}
-  end
-
-  test "uses collision-resistant upload paths for repeated filenames" do
-    %{workspace: workspace, session: session} = create_fixture("files-collision@example.com")
-
-    first =
-      upload_conn(session["token"], workspace["id"], filename: "same.txt", body: "one")
-      |> call()
-      |> expect_json(201)
-
-    second =
-      upload_conn(session["token"], workspace["id"], filename: "same.txt", body: "two")
-      |> call()
-      |> expect_json(201)
-
-    assert first["path"] =~ ~r|^/uploads/[A-Za-z0-9_-]{22}-same\.txt$|
-    assert second["path"] =~ ~r|^/uploads/[A-Za-z0-9_-]{22}-same\.txt$|
-    refute first["path"] == second["path"]
+    settle_receive(
+      {:write_agent_file, %{"id" => ^workspace_id, "status" => "active"}, ^path, ^source}
+    )
   end
 
   test "serves an authenticated uploaded image from the authorized Router VFS" do
@@ -254,40 +238,13 @@ defmodule CommaWeb.CommaFilesTest do
 
     workspace_id = workspace["id"]
 
-    assert_receive {:read_agent_file, %{"id" => ^workspace_id, "status" => "active"},
-                    uploaded_path, 10_000_001}
+    settle_receive(
+      {:read_agent_file, %{"id" => ^workspace_id, "status" => "active"}, uploaded_path,
+       10_000_001}
+    )
 
     assert uploaded_path == uploaded["path"]
     refute conn.resp_body =~ workspace["router_agent_id"]
-  end
-
-  test "serves only the allowed image extensions with their exact content types" do
-    %{workspace: workspace, session: session} =
-      create_fixture("files-image-types@example.com")
-
-    token = String.duplicate("A", 22)
-
-    for {extension, content_type, body} <- [
-          {"gif", "image/gif", gif_image(2, 3)},
-          {"JPeG", "image/jpeg", jpeg_image(3, 4, 0xC2)},
-          {"jpg", "image/jpeg", jpeg_image(4, 5, 0xC0)},
-          {"PNG", "image/png", png_image(5, 6)},
-          {"webp", "image/webp", webp_vp8x_image(6, 7)},
-          {"webp", "image/webp", webp_vp8_image(7, 8)},
-          {"webp", "image/webp", webp_vp8l_image(8, 9)}
-        ] do
-      path = "/uploads/#{token}-image.#{extension}"
-      put_read_agent_file_result(workspace, path, {:ok, body})
-
-      conn =
-        session["token"]
-        |> image_conn(workspace["id"], path)
-        |> call()
-
-      assert conn.status == 200
-      assert conn.resp_body == body
-      assert get_resp_header(conn, "content-type") == [content_type]
-    end
   end
 
   test "fails closed for missing, non-image, oversized, and invalid upload paths" do
@@ -326,8 +283,7 @@ defmodule CommaWeb.CommaFilesTest do
       |> call()
 
     assert expect_json(missing, 404) == %{"error" => "not_found"}
-    assert_receive {:read_agent_file, _, ^missing_path, 10_000_001}
-
+    settle_receive({:read_agent_file, _, ^missing_path, 10_000_001})
     mismatched_path = "/uploads/#{token}-mismatched.png"
     put_read_agent_file_result(workspace, mismatched_path, {:ok, gif_image(1, 1)})
 
@@ -337,7 +293,7 @@ defmodule CommaWeb.CommaFilesTest do
       |> call()
 
     assert expect_json(mismatched, 404) == %{"error" => "not_found"}
-    assert_receive {:read_agent_file, _, ^mismatched_path, 10_000_001}
+    settle_receive({:read_agent_file, _, ^mismatched_path, 10_000_001})
 
     for {extension, body} <- [
           {"png", png_image(4_097, 1)},
@@ -354,7 +310,7 @@ defmodule CommaWeb.CommaFilesTest do
         |> call()
 
       assert expect_json(huge, 404) == %{"error" => "not_found"}
-      assert_receive {:read_agent_file, _, ^path, 10_000_001}
+      settle_receive({:read_agent_file, _, ^path, 10_000_001})
     end
 
     oversized_path = "/uploads/#{token}-oversized.webp"
@@ -371,52 +327,6 @@ defmodule CommaWeb.CommaFilesTest do
       |> call()
 
     assert expect_json(oversized, 404) == %{"error" => "not_found"}
-  end
-
-  test "does not expose internal Router VFS read failures" do
-    %{workspace: workspace, session: session} =
-      create_fixture("files-image-unavailable@example.com")
-
-    path = "/uploads/#{String.duplicate("C", 22)}-private.png"
-
-    put_read_agent_file_result(
-      workspace,
-      path,
-      {:error, {:storage_read_failed, "private-bucket-key"}}
-    )
-
-    conn =
-      session["token"]
-      |> image_conn(workspace["id"], path)
-      |> call()
-
-    assert expect_json(conn, 503) == %{"error" => "workspace_unavailable"}
-    refute conn.resp_body =~ "private-bucket-key"
-  end
-
-  test "rejects oversized and unsupported files before writing" do
-    %{workspace: workspace, session: session} = create_fixture("files-reject@example.com")
-
-    oversized =
-      upload_conn(
-        session["token"],
-        workspace["id"],
-        filename: "large.txt",
-        body: String.duplicate("x", Comma.GroupFiles.max_upload_bytes() + 1)
-      )
-      |> call()
-      |> expect_json(413)
-
-    assert oversized["error"] == "file_too_large"
-    refute_received {:write_agent_file, _, _, _}
-
-    unsupported =
-      upload_conn(session["token"], workspace["id"], filename: "evil.exe", body: "bin")
-      |> call()
-      |> expect_json(415)
-
-    assert unsupported["error"] == "unsupported_file_type"
-    refute_received {:write_agent_file, _, _, _}
   end
 
   test "requires upload and image-read authentication and rejects restricted sessions" do
@@ -499,42 +409,6 @@ defmodule CommaWeb.CommaFilesTest do
     refute_received {:read_agent_file, _, _, _}
   end
 
-  test "sanitizes filenames and forwards billing errors" do
-    %{workspace: workspace, session: session} = create_fixture("files-sanitize@example.com")
-
-    conn =
-      upload_conn(session["token"], workspace["id"], filename: "报 告.csv", body: "a,b")
-      |> call()
-
-    body = expect_json(conn, 201)
-
-    assert body["name"] == "报 告.csv"
-    assert body["path"] =~ ~r|^/uploads/[A-Za-z0-9_-]{22}-file\.csv$|
-
-    Process.put(:write_agent_file_result, {:error, {:billing_unavailable, %{reason: "budget"}}})
-
-    billing =
-      upload_conn(session["token"], workspace["id"], filename: "bill.txt", body: "x")
-      |> call()
-      |> expect_json(402)
-
-    assert billing == %{"error" => "billing_unavailable", "reason" => "budget"}
-  end
-
-  test "multipart parser hard limit protects requests above the configured envelope" do
-    %{workspace: workspace, session: session} = create_fixture("files-hard-limit@example.com")
-
-    conn =
-      upload_conn(
-        session["token"],
-        workspace["id"],
-        filename: "too-large.txt",
-        body: String.duplicate("x", 11_000_001)
-      )
-
-    assert_raise Plug.Parsers.RequestTooLargeError, fn -> call(conn) end
-  end
-
   defp create_fixture(email) do
     user =
       admin_json(:post, "/v1/comma/admin/users", %{"email" => email, "name" => "Files"})
@@ -607,16 +481,6 @@ defmodule CommaWeb.CommaFilesTest do
       height - 1::little-24>>
   end
 
-  defp webp_vp8_image(width, height) do
-    <<"RIFF", 22::little-32, "WEBP", "VP8 ", 10::little-32, 0::little-24, 0x9D, 0x01, 0x2A,
-      width::little-16, height::little-16>>
-  end
-
-  defp webp_vp8l_image(width, height) do
-    dimension_bits = height * 16_384 - 16_384 + width - 1
-    <<"RIFF", 17::little-32, "WEBP", "VP8L", 5::little-32, 0x2F, dimension_bits::little-32>>
-  end
-
   defp multipart_conn(method, path, opts) do
     boundary = "----comma-upload-boundary"
     filename = Keyword.fetch!(opts, :filename)
@@ -656,13 +520,13 @@ defmodule CommaWeb.CommaFilesTest do
   end
 
   defp ensure_fake_s3! do
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
     end
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

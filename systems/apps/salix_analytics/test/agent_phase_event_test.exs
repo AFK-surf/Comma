@@ -1,5 +1,5 @@
 defmodule SalixAnalytics.AgentPhaseEventTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAnalytics.AgentPhaseEvent
   alias SalixAnalytics.Sink.ClickHouseTyped

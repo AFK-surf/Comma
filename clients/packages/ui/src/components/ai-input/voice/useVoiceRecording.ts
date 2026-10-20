@@ -6,6 +6,7 @@ import {
   useState,
   type RefObject,
 } from "react";
+import { uiClock } from "../../../clock";
 import type { ForwardedAiInputProps } from "../types";
 
 export interface VoiceRecordingOptions extends ForwardedAiInputProps<
@@ -115,14 +116,14 @@ export function useVoiceRecording({
   useEffect(() => {
     if (!isVoiceRecording) return;
 
-    const startedAt = performance.now();
-    const intervalId = window.setInterval(() => {
-      const nextDuration = (performance.now() - startedAt) / 1000;
+    const startedAt = uiClock.monotonic();
+    const stopInterval = uiClock.every(100, () => {
+      const nextDuration = (uiClock.monotonic() - startedAt) / 1000;
       voiceDurationRef.current = nextDuration;
       setVoiceDuration(nextDuration);
-    }, 100);
+    });
 
-    return () => window.clearInterval(intervalId);
+    return () => stopInterval();
   }, [isVoiceRecording]);
 
   useLayoutEffect(() => {

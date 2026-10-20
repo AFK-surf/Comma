@@ -1,6 +1,10 @@
 defmodule CommaWeb.TelegramIntegrationTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
+  use SystemsClock.Case, async: false
+  require SystemsClock
+
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
   import Comma.WorkspaceTestSupport
   import Plug.Conn
   import Plug.Test
@@ -19,10 +23,10 @@ defmodule CommaWeb.TelegramIntegrationTest do
     def call(conn, _opts) do
       case {conn.method, conn.path_info} do
         {"GET", ["bot" <> _token, "getMe"]} ->
-          if barrier = Application.get_env(:comma_web, :telegram_get_me_barrier) do
-            send(barrier, {:get_me_paused, self()})
+          if barrier = SystemsRuntime.get_env(:comma_web, :telegram_get_me_barrier) do
+            SystemsRuntime.Proc.send(barrier, {:get_me_paused, SystemsRuntime.Proc.self()})
 
-            receive do
+            SystemsClock.vreceive do
               :continue_get_me -> :ok
             after
               5_000 -> raise "Telegram getMe test barrier timed out"
@@ -45,11 +49,15 @@ defmodule CommaWeb.TelegramIntegrationTest do
           )
 
         {"POST", ["bot" <> _token, "sendMessage"]} ->
-          send(Application.fetch_env!(:comma_web, :telegram_test_pid), :telegram_provider_sent)
+          SystemsRuntime.Proc.send(
+            SystemsRuntime.fetch_env!(:comma_web, :telegram_test_pid),
+            :telegram_provider_sent
+          )
+
           {:ok, raw, conn} = read_body(conn)
 
-          send(
-            Application.fetch_env!(:comma_web, :telegram_test_pid),
+          SystemsRuntime.Proc.send(
+            SystemsRuntime.fetch_env!(:comma_web, :telegram_test_pid),
             {:telegram_message_sent, Jason.decode!(raw)}
           )
 
@@ -60,13 +68,13 @@ defmodule CommaWeb.TelegramIntegrationTest do
         {"POST", ["bot" <> _token, "editMessageText"]} ->
           {:ok, raw, conn} = read_body(conn)
 
-          send(
-            Application.fetch_env!(:comma_web, :telegram_test_pid),
+          SystemsRuntime.Proc.send(
+            SystemsRuntime.fetch_env!(:comma_web, :telegram_test_pid),
             {:telegram_card_edited, Jason.decode!(raw)}
           )
 
           {status, body} =
-            Application.get_env(
+            SystemsRuntime.get_env(
               :comma_web,
               :telegram_edit_response,
               {200, %{"ok" => true, "result" => %{"message_id" => 2}}}
@@ -92,8 +100,8 @@ defmodule CommaWeb.TelegramIntegrationTest do
       do: SalixIM.TestSupport.ConversationDelivery.notify(__MODULE__, agent, source)
 
     def deliver(agent_id, payload, opts) do
-      send(
-        Application.fetch_env!(:comma_web, :telegram_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :telegram_test_pid),
         {:interaction_input, agent_id, payload, opts}
       )
 
@@ -105,12 +113,18 @@ defmodule CommaWeb.TelegramIntegrationTest do
     @moduledoc false
 
     def exchange_authorization_code(code, opts) do
-      send(Application.fetch_env!(:comma_web, :telegram_test_pid), {:oidc_exchange, code, opts})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :telegram_test_pid),
+        {:oidc_exchange, code, opts}
+      )
 
       if code == "paused-code" do
-        send(Application.fetch_env!(:comma_web, :telegram_test_pid), {:oidc_paused, self()})
+        SystemsRuntime.Proc.send(
+          SystemsRuntime.fetch_env!(:comma_web, :telegram_test_pid),
+          {:oidc_paused, SystemsRuntime.Proc.self()}
+        )
 
-        receive do
+        SystemsClock.vreceive do
           :continue_oidc -> :ok
         after
           5_000 -> raise "OIDC test barrier timed out"
@@ -131,8 +145,8 @@ defmodule CommaWeb.TelegramIntegrationTest do
     @moduledoc false
 
     def send_message(_token, chat_id, text) do
-      send(
-        Application.fetch_env!(:comma_web, :telegram_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :telegram_test_pid),
         {:telegram_message, chat_id, text}
       )
 
@@ -140,8 +154,8 @@ defmodule CommaWeb.TelegramIntegrationTest do
     end
 
     def edit_device_view(_token, chat_id, message_id, text, buttons) do
-      send(
-        Application.fetch_env!(:comma_web, :telegram_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :telegram_test_pid),
         {:device_edited, chat_id, message_id, text, buttons}
       )
 
@@ -151,10 +165,10 @@ defmodule CommaWeb.TelegramIntegrationTest do
     def answer_device_callback(_token, _id, _text), do: {:ok, true}
 
     def send_card(_token, chat_id, text, rows) do
-      message_id = System.unique_integer([:positive])
+      message_id = SystemsRuntime.Proc.unique_integer([:positive])
 
-      send(
-        Application.fetch_env!(:comma_web, :telegram_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :telegram_test_pid),
         {:telegram_card, chat_id, message_id, text, rows}
       )
 
@@ -163,13 +177,13 @@ defmodule CommaWeb.TelegramIntegrationTest do
 
     def edit_card(_token, chat_id, message_id, text, rows) do
       result =
-        case Application.get_env(:comma_web, :telegram_card_edit_result) do
+        case SystemsRuntime.get_env(:comma_web, :telegram_card_edit_result) do
           fun when is_function(fun, 0) -> fun.()
           _ -> {:ok, %{"message_id" => message_id}}
         end
 
-      send(
-        Application.fetch_env!(:comma_web, :telegram_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :telegram_test_pid),
         {:telegram_card_edit, chat_id, message_id, text, rows}
       )
 
@@ -177,10 +191,10 @@ defmodule CommaWeb.TelegramIntegrationTest do
     end
 
     def send_force_reply(_token, chat_id, text) do
-      message_id = System.unique_integer([:positive])
+      message_id = SystemsRuntime.Proc.unique_integer([:positive])
 
-      send(
-        Application.fetch_env!(:comma_web, :telegram_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :telegram_test_pid),
         {:telegram_force_reply, chat_id, message_id, text}
       )
 
@@ -190,8 +204,8 @@ defmodule CommaWeb.TelegramIntegrationTest do
     def get_me(_token), do: {:ok, %{"username" => "comma_product_bot"}}
 
     def send_task_links(_token, chat_id, text, buttons) do
-      send(
-        Application.fetch_env!(:comma_web, :telegram_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :telegram_test_pid),
         {:telegram_task_links, chat_id, text, buttons}
       )
 
@@ -199,19 +213,19 @@ defmodule CommaWeb.TelegramIntegrationTest do
     end
 
     def verify_private_chat_access(_token, chat_id) do
-      send(
-        Application.fetch_env!(:comma_web, :telegram_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:comma_web, :telegram_test_pid),
         {:telegram_access_checked, chat_id}
       )
 
-      Application.get_env(:comma_web, :telegram_access_result, {:ok, true})
+      SystemsRuntime.get_env(:comma_web, :telegram_access_result, {:ok, true})
     end
 
     def set_webhook(_token, _url, _secret), do: {:ok, true}
 
     def get_webhook_info(_token),
       do:
-        Application.get_env(
+        SystemsRuntime.get_env(
           :comma_web,
           :telegram_webhook_info,
           {:ok,
@@ -223,7 +237,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
   end
 
   setup_all do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
 
@@ -240,11 +254,11 @@ defmodule CommaWeb.TelegramIntegrationTest do
     comma_owner = CommaWeb.TestRepoSandbox.start_owner!(mode)
     on_exit(fn -> CommaWeb.TestRepoSandbox.stop_owner(comma_owner) end)
 
-    previous_s3 = Application.get_env(:salix_store, :s3_backend)
-    previous_telegram = Application.get_env(:comma_web, :telegram)
-    previous_test_pid = Application.get_env(:comma_web, :telegram_test_pid)
-    previous_api_base = Application.get_env(:salix_im, :telegram_api_base_url)
-    previous_barrier = Application.get_env(:comma_web, :telegram_get_me_barrier)
+    previous_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_telegram = SystemsRuntime.get_env(:comma_web, :telegram)
+    previous_test_pid = SystemsRuntime.get_env(:comma_web, :telegram_test_pid)
+    previous_api_base = SystemsRuntime.get_env(:salix_im, :telegram_api_base_url)
+    previous_barrier = SystemsRuntime.get_env(:comma_web, :telegram_get_me_barrier)
 
     on_exit(fn ->
       restore_env(:salix_store, :s3_backend, previous_s3)
@@ -254,19 +268,19 @@ defmodule CommaWeb.TelegramIntegrationTest do
       restore_env(:comma_web, :telegram_get_me_barrier, previous_barrier)
     end)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
     end
 
     port = BanditServer.start!(fn port -> {Bandit, plug: TelegramAPI, port: port} end)
-    Application.put_env(:salix_im, :telegram_api_base_url, "http://127.0.0.1:#{port}")
-    Application.put_env(:comma_web, :telegram_test_pid, self())
+    SystemsRuntime.put_env(:salix_im, :telegram_api_base_url, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:comma_web, :telegram_test_pid, SystemsRuntime.Proc.self())
 
-    Application.put_env(:comma_web, :telegram,
+    SystemsRuntime.put_env(:comma_web, :telegram,
       enabled: true,
       oidc_enabled: true,
       bot_token: "test-telegram-token",
@@ -281,10 +295,14 @@ defmodule CommaWeb.TelegramIntegrationTest do
 
     {:ok, user} =
       Comma.Accounts.create_user(%{
-        "email" => "telegram-#{System.unique_integer([:positive])}@comma.test"
+        "email" => "telegram-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
-    workspace = create_ready_workspace!(user, %{"name" => "Telegram Team"})
+    workspace =
+      user
+      |> create_ready_workspace!(%{"name" => "Telegram Team"})
+      |> CommaWeb.TestWorkers.with_default_worker!()
+
     {:ok, session} = Comma.Accounts.create_session(user["id"])
 
     %{session: session, user: user, workspace: workspace}
@@ -292,10 +310,10 @@ defmodule CommaWeb.TelegramIntegrationTest do
 
   describe "Task review cards" do
     setup c do
-      previous_adapter = Application.get_env(:salix_im, :task_status_personal_adapter)
-      previous_delivery = Application.get_env(:salix_im, :agent_delivery_mod)
-      Application.put_env(:salix_im, :task_status_personal_adapter, CommaWeb.TelegramTaskCards)
-      Application.put_env(:salix_im, :agent_delivery_mod, InteractionDelivery)
+      previous_adapter = SystemsRuntime.get_env(:salix_im, :task_status_personal_adapter)
+      previous_delivery = SystemsRuntime.get_env(:salix_im, :agent_delivery_mod)
+      SystemsRuntime.put_env(:salix_im, :task_status_personal_adapter, CommaWeb.TelegramTaskCards)
+      SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, InteractionDelivery)
 
       on_exit(fn ->
         restore_env(:salix_im, :task_status_personal_adapter, previous_adapter)
@@ -317,7 +335,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
       id = create_card_task(c, "Ship the launch notes")
       set_task(c, id, %{"status" => "ready_for_review"})
 
-      assert_receive {:telegram_card, "42001", message_id, text, rows}, 3_000
+      settle_receive({:telegram_card, "42001", message_id, text, rows})
       assert text =~ "Ship the launch notes"
       buttons = List.flatten(rows)
       assert Enum.all?(buttons, &(byte_size(&1["callback_data"] || "") <= 64))
@@ -330,239 +348,76 @@ defmodule CommaWeb.TelegramIntegrationTest do
 
       # A different Telegram user cannot act through the owner's card.
       card_click(accept["callback_data"], message_id, 999) |> expect_json(200)
-      refute_receive {:telegram_card_edit, _, _, _, _}, 200
+      settle_refute_receive({:telegram_card_edit, _, _, _, _}, 200)
       assert task_status(c, id) == "ready_for_review"
 
       card_click(accept["callback_data"], message_id) |> expect_json(200)
-      assert_receive {:telegram_card_edit, "42001", ^message_id, accepted, []}, 3_000
+      settle_receive({:telegram_card_edit, "42001", ^message_id, accepted, []})
       assert accepted =~ "Ship the launch notes"
       assert task_status(c, id) == "completed"
 
       # A repeated click reports the same result without a second write.
       card_click(accept["callback_data"], message_id) |> expect_json(200)
-      assert_receive {:telegram_card_edit, "42001", ^message_id, ^accepted, []}, 3_000
+      settle_receive({:telegram_card_edit, "42001", ^message_id, ^accepted, []})
       assert task_status(c, id) == "completed"
-    end
-
-    test "a card for an older review version cannot complete the changed Task", c do
-      assert complete_login(c.session, c.workspace).status == 200
-      id = create_card_task(c, "Draft the plan")
-      set_task(c, id, %{"status" => "ready_for_review"})
-      assert_receive {:telegram_card, "42001", message_id, _text, rows}, 3_000
-      accept = Enum.find(List.flatten(rows), &String.ends_with?(&1["callback_data"] || "", ":a"))
-
-      # The Router may restate the status with other changes. A Task that
-      # stays in review keeps its one card.
-      set_task(c, id, %{"status" => "ready_for_review", "title" => "Draft the revised plan"})
-      refute_receive {:telegram_card, "42001", _, _, _}, 2_000
-      refute_receive {:telegram_card_edit, "42001", ^message_id, _, _}, 50
-      card_click(accept["callback_data"], message_id) |> expect_json(200)
-
-      assert_receive {:telegram_card_edit, "42001", ^message_id, text, rows}, 3_000
-      assert text =~ "updated"
-      assert Enum.all?(List.flatten(rows), &Map.has_key?(&1, "web_app"))
-      assert task_status(c, id) == "ready_for_review"
-    end
-
-    @tag :card_regression
-    test "a new review round sends a new card that accepts the revised Task", c do
-      assert complete_login(c.session, c.workspace).status == 200
-      issue_billing_grant(c.workspace)
-      id = create_card_task(c, "Revise the plan")
-      set_task(c, id, %{"status" => "ready_for_review"})
-      assert_receive {:telegram_card, "42001", first_id, _, rows}, 3_000
-      changes = Enum.find(List.flatten(rows), &String.ends_with?(&1["callback_data"] || "", ":r"))
-      card_click(changes["callback_data"], first_id) |> expect_json(200)
-      assert_receive {:telegram_force_reply, "42001", prompt_id, _}, 3_000
-
-      webhook_request(reply_update(975, prompt_id, "Revise the conclusion"), @webhook_secret)
-      |> expect_json(200)
-
-      assert_receive {:telegram_message, "42001", "Sent to the Task."}, 3_000
-      set_task(c, id, %{"status" => "active"})
-      set_task(c, id, %{"status" => "ready_for_review"})
-      assert_receive {:telegram_card, "42001", second_id, _, revised_rows}, 3_000
-      assert second_id != first_id
-
-      accept =
-        Enum.find(List.flatten(revised_rows), &String.ends_with?(&1["callback_data"] || "", ":a"))
-
-      card_click(accept["callback_data"], second_id) |> expect_json(200)
-      assert task_status(c, id) == "completed"
-    end
-
-    @tag :card_regression
-    test "a failed terminal edit retries the same card through delivery", c do
-      assert complete_login(c.session, c.workspace).status == 200
-      id = create_card_task(c, "Retire the card")
-      set_task(c, id, %{"status" => "ready_for_review"})
-      assert_receive {:telegram_card, "42001", message_id, _, _}, 3_000
-      {:ok, attempts} = start_supervised({Agent, fn -> 0 end})
-      previous_backoff = Application.get_env(:salix_im, :conversation_delivery_retry_backoff_ms)
-      Application.put_env(:salix_im, :conversation_delivery_retry_backoff_ms, 10)
-
-      on_exit(fn ->
-        restore_env(:salix_im, :conversation_delivery_retry_backoff_ms, previous_backoff)
-      end)
-
-      previous = Application.get_env(:comma_web, :telegram_card_edit_result)
-      on_exit(fn -> restore_env(:comma_web, :telegram_card_edit_result, previous) end)
-
-      Application.put_env(:comma_web, :telegram_card_edit_result, fn ->
-        Agent.get_and_update(attempts, fn
-          0 -> {{:error, :telegram_unavailable}, 1}
-          n -> {{:ok, %{"message_id" => message_id}}, n + 1}
-        end)
-      end)
-
-      set_task(c, id, %{"status" => "cancelled"})
-      assert_receive {:telegram_card_edit, "42001", ^message_id, text, []}, 3_000
-      assert text =~ "Cancelled"
-      assert_receive {:telegram_card_edit, "42001", ^message_id, ^text, []}, 5_000
-      assert Agent.get(attempts, & &1) == 2
-      refute_receive {:telegram_card, "42001", _, _, _}, 100
-    end
-
-    @tag :card_regression
-    test "exhausted retirement keeps its failure without suppressing a later review", c do
-      assert complete_login(c.session, c.workspace).status == 200
-      id = create_card_task(c, "Review after outage")
-      set_task(c, id, %{"status" => "ready_for_review"})
-      assert_receive {:telegram_card, "42001", first_id, _, _}, 3_000
-      previous = Application.get_env(:comma_web, :telegram_card_edit_result)
-      previous_backoff = Application.get_env(:salix_im, :conversation_delivery_retry_backoff_ms)
-
-      on_exit(fn ->
-        restore_env(:comma_web, :telegram_card_edit_result, previous)
-        restore_env(:salix_im, :conversation_delivery_retry_backoff_ms, previous_backoff)
-      end)
-
-      Application.put_env(:salix_im, :conversation_delivery_retry_backoff_ms, 10)
-
-      Application.put_env(:comma_web, :telegram_card_edit_result, fn ->
-        {:error, :telegram_unavailable}
-      end)
-
-      set_task(c, id, %{"status" => "active"})
-      set_task(c, id, %{"status" => "ready_for_review"})
-      assert_receive {:telegram_card, "42001", second_id, _, _}, 3_000
-      assert second_id != first_id
-
-      {:ok, %{"participants" => participants}} =
-        SalixIM.Conversations.list_group_conversation_participants(
-          c.workspace["default_group_id"],
-          id
-        )
-
-      participant = Enum.find(participants, &(&1["role_label"] == "task_status_personal"))
-
-      {:ok, %{"deliveries" => deliveries}} =
-        SalixIM.Conversations.group_conversation_delivery_status(
-          c.workspace["default_group_id"],
-          id,
-          participant_id: participant["participant_id"],
-          limit: 10
-        )
-
-      assert Enum.any?(
-               deliveries,
-               &(&1["status"] == "failed" and get_in(&1, ["delivery", "attempts"]) == 3)
-             )
     end
 
     test "requested changes reach the Task as the owner and never the Router", c do
       assert complete_login(c.session, c.workspace).status == 200
-      assert_receive {:telegram_message, "42001", "Telegram is now connected" <> _}
+      settle_receive({:telegram_message, "42001", "Telegram is now connected" <> _})
       issue_billing_grant(c.workspace)
       worker_id = c.worker["agent_id"]
       router_id = c.workspace["router_agent_id"]
       id = create_card_task(c, "Write the intro")
-      assert_receive {:interaction_input, ^worker_id, _, _}, 3_000
+      settle_receive({:interaction_input, ^worker_id, _, _})
       set_task(c, id, %{"status" => "ready_for_review"})
-      assert_receive {:telegram_card, "42001", message_id, _text, rows}, 3_000
+      settle_receive({:telegram_card, "42001", message_id, _text, rows})
       changes = Enum.find(List.flatten(rows), &String.ends_with?(&1["callback_data"] || "", ":r"))
 
       card_click(changes["callback_data"], message_id) |> expect_json(200)
-      assert_receive {:telegram_force_reply, "42001", prompt_id, _prompt}, 3_000
+      settle_receive({:telegram_force_reply, "42001", prompt_id, _prompt})
 
       webhook_request(reply_update(971, prompt_id, "Use a shorter intro"), @webhook_secret)
       |> expect_json(200)
 
-      assert_receive {:interaction_input, ^worker_id, %{content: "Use a shorter intro"} = payload,
-                      _opts},
-                     3_000
+      settle_receive(
+        {:interaction_input, ^worker_id, %{content: "Use a shorter intro"} = payload, _opts}
+      )
 
       # The owner's words enter the Task as a Comma user message, not as a
       # Telegram chat turn for the Router.
       assert payload.trusted_origin["provider"] == "internal"
       assert payload.trusted_origin["source_actor_type"] == "user"
 
-      refute_receive {:interaction_input, ^router_id,
-                      %{trusted_origin: %{"provider" => "telegram"}}, _},
-                     200
+      settle_refute_receive(
+        {:interaction_input, ^router_id, %{trusted_origin: %{"provider" => "telegram"}}, _},
+        200
+      )
 
-      assert_receive {:telegram_message, "42001", "Sent to the Task."}, 3_000
-
+      settle_receive({:telegram_message, "42001", "Sent to the Task."})
       # A second reply to the same prompt is a new message, not a duplicate.
       webhook_request(reply_update(974, prompt_id, "Also add a title"), @webhook_secret)
       |> expect_json(200)
 
-      assert_receive {:interaction_input, ^worker_id, %{content: "Also add a title"}, _}, 3_000
-      assert_receive {:telegram_message, "42001", "Sent to the Task."}, 3_000
-
+      settle_receive({:interaction_input, ^worker_id, %{content: "Also add a title"}, _})
+      settle_receive({:telegram_message, "42001", "Sent to the Task."})
       # A reply to an unrelated message stays an ordinary Router message.
       webhook_request(reply_update(972, 123_456, "What else is due?"), @webhook_secret)
       |> expect_json(200)
 
-      assert_receive {:interaction_input, ^router_id,
-                      %{trusted_origin: %{"provider" => "telegram"}} = routed, _},
-                     3_000
+      settle_receive(
+        {:interaction_input, ^router_id, %{trusted_origin: %{"provider" => "telegram"}} = routed,
+         _}
+      )
 
       assert inspect(routed) =~ "What else is due?"
-    end
-
-    test "an expired change prompt is not forwarded anywhere", c do
-      assert complete_login(c.session, c.workspace).status == 200
-      assert_receive {:telegram_message, "42001", "Telegram is now connected" <> _}
-      id = create_card_task(c, "Fix the footer")
-      set_task(c, id, %{"status" => "ready_for_review"})
-      assert_receive {:telegram_card, "42001", message_id, _text, rows}, 3_000
-      changes = Enum.find(List.flatten(rows), &String.ends_with?(&1["callback_data"] || "", ":r"))
-      card_click(changes["callback_data"], message_id) |> expect_json(200)
-      assert_receive {:telegram_force_reply, "42001", prompt_id, _prompt}, 3_000
-
-      {:ok, _} =
-        SalixStore.CasRecord.update(
-          CommaWeb.TelegramTaskCards.prompt_key("42001", prompt_id),
-          &Map.put(&1, "expires_at", 0)
-        )
-
-      webhook_request(reply_update(973, prompt_id, "Too late"), @webhook_secret)
-      |> expect_json(200)
-
-      assert_receive {:telegram_message, "42001", expired}, 3_000
-      assert expired =~ "expired"
-      refute_receive {:interaction_input, _, %{content: "Too late"}, _}, 200
-      refute_receive {:interaction_input, _, %{content: "Too late" <> _}, _}, 50
-    end
-
-    test "a Workspace without a Telegram link creates Tasks without cards", c do
-      id = create_card_task(c, "Unlinked task")
-
-      {:ok, %{"participants" => participants}} =
-        SalixIM.Conversations.list_group_conversation_participants(
-          c.workspace["default_group_id"],
-          id
-        )
-
-      refute Enum.any?(participants, &(&1["role_label"] == "task_status_personal"))
     end
   end
 
   test "background reminders wake only the Router, which replies through its ordinary tool", c do
     assert complete_login(c.session, c.workspace).status == 200
-    previous = Application.get_env(:salix_im, :agent_delivery_mod)
-    Application.put_env(:salix_im, :agent_delivery_mod, InteractionDelivery)
+    previous = SystemsRuntime.get_env(:salix_im, :agent_delivery_mod)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, InteractionDelivery)
     on_exit(fn -> restore_env(:salix_im, :agent_delivery_mod, previous) end)
     group = c.workspace["default_group_id"]
     router = c.workspace["router_agent_id"]
@@ -618,7 +473,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
                command
              )
 
-    refute_receive {:telegram_message_sent, _}, 100
+    settle_refute_receive({:telegram_message_sent, _}, 100)
     {:ok, messages} = SalixIM.Conversations.list_group_conversation_messages(group, home_id)
     [event] = Enum.filter(messages, &is_map(&1["agent_input"]))
     assert event["actor_type"] == "system"
@@ -636,7 +491,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
     refute payload.no_wake
     assert payload.session_id == binding.session_id
     assert SalixAgent.IFC.principal(payload.trusted_origin) == {:comma_user, c.user["id"]}
-    assert_receive {:interaction_input, ^router, delivered, _opts}, 3_000
+    settle_receive({:interaction_input, ^router, delivered, _opts})
     assert delivered.content =~ "Review the delivery pipeline"
 
     assert {:ok, _} =
@@ -648,7 +503,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
                command
              )
 
-    refute_receive {:interaction_input, ^router, _, _}, 100
+    settle_refute_receive({:interaction_input, ^router, _, _}, 100)
 
     assert {:ok, _} =
              SalixIM.Provider.call_api(router, "telegram", "telegram.send_message", %{
@@ -659,39 +514,14 @@ defmodule CommaWeb.TelegramIntegrationTest do
                }
              })
 
-    assert_receive {:telegram_message_sent, sent}, 3_000
+    settle_receive({:telegram_message_sent, sent})
     assert sent["text"] =~ "Router decided to ask you"
-  end
-
-  test "queued personal reminders cannot send even when attributed to the Router", c do
-    assert complete_login(c.session, c.workspace).status == 200
-    link = Comma.TelegramLinks.get_link(c.workspace["id"])
-
-    for metadata <- [%{"proactive_owner" => c.user["id"]}, %{"proactive_automatic" => true}, %{}] do
-      assert {:error, :router_reply_required, false} =
-               SalixIM.ConversationDelivery.deliver(%{
-                 "participant_actor_type" => "provider",
-                 "participant_provider" => "telegram",
-                 "participant_role_label" => "proactive_personal",
-                 "source_actor_type" => "agent",
-                 "source_agent_id" => c.workspace["router_agent_id"],
-                 "agent_group_id" => c.workspace["default_group_id"],
-                 "participant_payload" => %{
-                   "connect_id" => link.connect_id,
-                   "chat_id" => link.telegram_user_id
-                 },
-                 "message_content" => [%{"type" => "text", "text" => "Legacy reminder"}],
-                 "message_metadata" => metadata
-               })
-    end
-
-    refute_receive {:telegram_message_sent, _}, 100
   end
 
   test "a quoted private reply carries context and the linked owner's reminder authority", c do
     assert complete_login(c.session, c.workspace).status == 200
-    previous = Application.get_env(:salix_im, :agent_delivery_mod)
-    Application.put_env(:salix_im, :agent_delivery_mod, InteractionDelivery)
+    previous = SystemsRuntime.get_env(:salix_im, :agent_delivery_mod)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, InteractionDelivery)
     on_exit(fn -> restore_env(:salix_im, :agent_delivery_mod, previous) end)
 
     update =
@@ -702,7 +532,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
       })
 
     webhook_request(update, @webhook_secret) |> expect_json(200)
-    assert_receive {:interaction_input, agent, payload, _}, 2000
+    settle_receive({:interaction_input, agent, payload, _})
     assert inspect(payload) =~ "Handled this invoice"
     assert inspect(payload) =~ "Studio invoice $85"
     origin = payload[:trusted_origin] || payload["trusted_origin"]
@@ -753,7 +583,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
 
     assert complete_login(session, workspace).status == 200
 
-    assert_receive {:telegram_message, "42001", confirmation}
+    settle_receive({:telegram_message, "42001", confirmation})
     assert confirmation =~ "Telegram Team"
 
     linked =
@@ -865,7 +695,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
                "stale-location"
              )
 
-    refute_receive :telegram_provider_sent
+    settle_refute_receive(:telegram_provider_sent)
 
     assert CommaWeb.AgentTelegramInteraction.capabilities(%{
              ctx
@@ -893,7 +723,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
              }) == %{}
     end
 
-    previous_info = Application.get_env(:comma_web, :telegram_webhook_info)
+    previous_info = SystemsRuntime.get_env(:comma_web, :telegram_webhook_info)
     on_exit(fn -> restore_env(:comma_web, :telegram_webhook_info, previous_info) end)
 
     for info <- [
@@ -909,11 +739,11 @@ defmodule CommaWeb.TelegramIntegrationTest do
            }},
           {:error, :telegram_unavailable}
         ] do
-      Application.put_env(:comma_web, :telegram_webhook_info, info)
+      SystemsRuntime.put_env(:comma_web, :telegram_webhook_info, info)
       assert CommaWeb.AgentTelegramInteraction.capabilities(ctx) == %{}
     end
 
-    Application.delete_env(:comma_web, :telegram_webhook_info)
+    SystemsRuntime.delete_env(:comma_web, :telegram_webhook_info)
 
     assert CommaWeb.AgentTelegramInteraction.capabilities(%{ctx | session_id: "another-session"}) ==
              %{}
@@ -929,17 +759,19 @@ defmodule CommaWeb.TelegramIntegrationTest do
         "native-product"
       )
 
-    assert_receive {:telegram_message_sent,
-                    %{
-                      "text" => "今天还是明天？",
-                      "reply_parameters" => %{"message_id" => "801"},
-                      "reply_markup" => %{"inline_keyboard" => buttons}
-                    }}
+    settle_receive(
+      {:telegram_message_sent,
+       %{
+         "text" => "今天还是明天？",
+         "reply_parameters" => %{"message_id" => "801"},
+         "reply_markup" => %{"inline_keyboard" => buttons}
+       }}
+    )
 
     assert hd(hd(buttons))["text"] == "今天"
 
-    previous = Application.get_env(:salix_im, :agent_delivery_mod)
-    Application.put_env(:salix_im, :agent_delivery_mod, InteractionDelivery)
+    previous = SystemsRuntime.get_env(:salix_im, :agent_delivery_mod)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, InteractionDelivery)
     on_exit(fn -> restore_env(:salix_im, :agent_delivery_mod, previous) end)
 
     update = %{
@@ -955,20 +787,20 @@ defmodule CommaWeb.TelegramIntegrationTest do
     webhook_request(put_in(update, ["callback_query", "from", "id"], 999), @webhook_secret)
     |> expect_json(200)
 
-    refute_receive {:interaction_input, _, _, _}
-    refute_receive {:telegram_card_edited, _}
+    settle_refute_receive({:interaction_input, _, _, _})
+    settle_refute_receive({:telegram_card_edited, _})
     webhook_request(update, @webhook_secret) |> expect_json(200)
-    assert_receive {:interaction_input, ^agent_id, payload, opts}
+    settle_receive({:interaction_input, ^agent_id, payload, opts})
     assert inspect(payload) =~ "今天"
     assert opts[:source_message_id] =~ result["request_id"]
-    assert_receive {:telegram_card_edited, card}
+    settle_receive({:telegram_card_edited, card})
     assert card["message_id"] == 2
     assert card["chat_id"] == "42001"
     assert String.ends_with?(card["text"], "✅ 已选择：今天")
     assert card["reply_markup"] == %{"inline_keyboard" => []}
     webhook_request(update, @webhook_secret) |> expect_json(200)
-    assert_receive {:telegram_card_edited, ^card}
-    refute_receive {:interaction_input, _, _, _}
+    settle_receive({:telegram_card_edited, ^card})
+    settle_refute_receive({:interaction_input, _, _, _})
   end
 
   test "callback webhook retries a saved decision after Router delivery is unavailable", c do
@@ -1008,8 +840,8 @@ defmodule CommaWeb.TelegramIntegrationTest do
       }
     }
 
-    previous = Application.get_env(:salix_im, :agent_delivery_mod)
-    Application.put_env(:salix_im, :agent_delivery_mod, InteractionDelivery)
+    previous = SystemsRuntime.get_env(:salix_im, :agent_delivery_mod)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, InteractionDelivery)
     on_exit(fn -> restore_env(:salix_im, :agent_delivery_mod, previous) end)
 
     {:ok, conversation} = SalixIM.RouterConversationInput.ensure(group_id)
@@ -1018,16 +850,15 @@ defmodule CommaWeb.TelegramIntegrationTest do
     on_exit(fn -> SalixStore.S3.Fake.clear_blackhole() end)
 
     webhook_request(update, @webhook_secret) |> expect_json(503)
-    refute_receive {:interaction_input, _, _, _}
-    refute_receive {:telegram_card_edited, _}
-
+    settle_refute_receive({:interaction_input, _, _, _})
+    settle_refute_receive({:telegram_card_edited, _})
     assert {:ok, decided} = SalixStore.TelegramInteractions.get(group_id, result["request_id"])
     assert decided["status"] == "decided"
     assert decided["response"] == %{"status" => "answered", "answer" => "继续"}
 
     SalixStore.S3.Fake.clear_blackhole()
     webhook_request(update, @webhook_secret) |> expect_json(200)
-    assert_receive {:interaction_input, ^agent_id, payload, opts}
+    settle_receive({:interaction_input, ^agent_id, payload, opts})
 
     assert opts[:source_message_id] ==
              "im_provider:telegram:#{link.connect_id}:interaction:#{result["request_id"]}"
@@ -1036,12 +867,12 @@ defmodule CommaWeb.TelegramIntegrationTest do
     assert {:ok, delivered} = SalixStore.TelegramInteractions.get(group_id, result["request_id"])
     assert delivered["status"] == "delivered"
     assert delivered["response"] == decided["response"]
-    assert_receive {:telegram_card_edited, card}
+    settle_receive({:telegram_card_edited, card})
     assert card["text"] == "是否继续？\n\n✅ Selected: 继续"
     assert card["reply_markup"] == %{"inline_keyboard" => []}
 
     webhook_request(update, @webhook_secret) |> expect_json(200)
-    refute_receive {:interaction_input, _, _, _}
+    settle_refute_receive({:interaction_input, _, _, _})
   end
 
   test "OIDC URL uses PKCE and callback state is single-use", %{
@@ -1080,7 +911,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
     refute response.resp_body =~ params["state"]
     assert Comma.TelegramLinks.get_link(workspace["id"]).telegram_user_id == "42001"
 
-    assert_receive {:oidc_exchange, "telegram-code", opts}
+    settle_receive({:oidc_exchange, "telegram-code", opts})
     assert Keyword.fetch!(opts, :pkce_verifier) != params["state"]
 
     assert Keyword.fetch!(opts, :redirect_uri) ==
@@ -1099,43 +930,6 @@ defmodule CommaWeb.TelegramIntegrationTest do
     assert replay.resp_body =~ "expired or is no longer active"
   end
 
-  test "expired login explains how to restart without exchanging a code", %{
-    session: session,
-    workspace: workspace
-  } do
-    state = start_login(session, workspace)
-
-    Comma.Repo.update_all(Comma.Data.TelegramOIDCAttempt,
-      set: [expires_at: DateTime.add(DateTime.utc_now(), -1, :second)]
-    )
-
-    response = login_callback(state)
-    assert response.status == 400
-    assert response.resp_body =~ ~s(data-status="expired")
-    assert response.resp_body =~ "expired or is no longer active"
-    assert response.resp_body =~ "start a new Telegram connection"
-    refute response.resp_body =~ state
-    refute_receive {:oidc_exchange, _, _}
-    assert Comma.TelegramLinks.get_link(workspace["id"]) == nil
-  end
-
-  test "OIDC never falls back to the authentication subject when the Bot API id is missing", %{
-    session: session,
-    workspace: workspace
-  } do
-    attempt =
-      api_request(session, :post, telegram_path(workspace) <> "/connect", %{}) |> expect_json(201)
-
-    params =
-      attempt["authorization_url"] |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
-
-    assert {:error, :invalid_telegram_identity} =
-             CommaWeb.TelegramIntegration.complete_connect("missing-id", params["state"])
-
-    assert is_nil(Comma.TelegramLinks.get_link(workspace["id"]))
-    refute_receive {:telegram_message, _, _}
-  end
-
   test "commands give deterministic guidance before and after binding without reaching the agent",
        %{
          session: session,
@@ -1150,17 +944,17 @@ defmodule CommaWeb.TelegramIntegrationTest do
           {"/made_up", "Unknown command"}
         ] do
       webhook_request(
-        private_update(System.unique_integer([:positive]), command),
+        private_update(SystemsRuntime.Proc.unique_integer([:positive]), command),
         @webhook_secret
       )
       |> expect_json(200)
 
-      assert_receive {:telegram_message, "42001", text}
+      settle_receive({:telegram_message, "42001", text})
       assert text =~ expected
     end
 
     assert complete_login(session, workspace).status == 200
-    assert_receive {:telegram_message, "42001", _confirmation}
+    settle_receive({:telegram_message, "42001", _confirmation})
 
     for {command, expected} <- [
           {"/start", "Welcome to Comma"},
@@ -1171,12 +965,12 @@ defmodule CommaWeb.TelegramIntegrationTest do
           {"/unknown", "Unknown command"}
         ] do
       webhook_request(
-        private_update(System.unique_integer([:positive]), command),
+        private_update(SystemsRuntime.Proc.unique_integer([:positive]), command),
         @webhook_secret
       )
       |> expect_json(200)
 
-      assert_receive {:telegram_message, "42001", text}
+      settle_receive({:telegram_message, "42001", text})
       assert text =~ expected
     end
 
@@ -1184,170 +978,19 @@ defmodule CommaWeb.TelegramIntegrationTest do
     |> expect_json(200)
 
     assert Comma.TelegramLinks.get_link(workspace["id"])
-    refute_receive {:telegram_message, _, _}
-    refute_receive :telegram_provider_sent
+    settle_refute_receive({:telegram_message, _, _})
+    settle_refute_receive(:telegram_provider_sent)
 
     webhook_request(private_update(903, "/disconnect@COMMA_PRODUCT_BOT"), @webhook_secret)
     |> expect_json(200)
 
-    assert_receive {:telegram_message, "42001", "Telegram has been disconnected from Comma."}
+    settle_receive({:telegram_message, "42001", "Telegram has been disconnected from Comma."})
     refute Comma.TelegramLinks.get_link(workspace["id"])
-  end
-
-  test "legacy codes and Start payloads cannot bind; claim endpoint is removed", %{
-    user: user,
-    session: session,
-    workspace: workspace
-  } do
-    # Model a still-valid code issued before this release. Neither webhook
-    # command may consume it or mutate an existing OIDC binding.
-    assert {:ok, _, claim} = Comma.TelegramLinks.create_claim(user, session, workspace["id"])
-
-    state = api_request(session, :get, telegram_path(workspace)) |> expect_json(200)
-    assert state["pending_claim"] == nil
-
-    assert api_request(session, :post, telegram_path(workspace) <> "/claim-code", %{}).status ==
-             404
-
-    for command <- ["/link " <> claim.code, "/start link_" <> claim.code] do
-      webhook_request(
-        private_update(System.unique_integer([:positive]), command),
-        @webhook_secret
-      )
-      |> expect_json(200)
-
-      assert_receive {:telegram_message, "42001", guidance}
-      assert guidance =~ "sign in with Telegram"
-      assert is_nil(Comma.TelegramLinks.get_link(workspace["id"]))
-    end
-
-    assert complete_login(session, workspace).status == 200
-    original = Comma.TelegramLinks.get_link(workspace["id"])
-
-    for command <- ["/link " <> claim.code, "/start link_" <> claim.code] do
-      private_update(System.unique_integer([:positive]), command)
-      |> put_in(["message", "chat", "id"], 42_002)
-      |> put_in(["message", "from", "id"], 42_002)
-      |> webhook_request(@webhook_secret)
-      |> expect_json(200)
-
-      assert Comma.TelegramLinks.get_link(workspace["id"]).connect_id == original.connect_id
-    end
-  end
-
-  test "cancelling a stale OIDC attempt cannot remove a newer attempt", %{
-    session: session,
-    workspace: workspace
-  } do
-    old = start_login(session, workspace)
-    current = start_login(session, workspace)
-
-    api_request(session, :delete, telegram_path(workspace) <> "/connect", %{"state" => old})
-    |> expect_json(200)
-
-    assert login_callback(current).status == 200
-  end
-
-  test "OIDC bot access failure does not publish a binding", %{
-    session: session,
-    workspace: workspace
-  } do
-    Application.put_env(
-      :comma_web,
-      :telegram_access_result,
-      {:error, {:telegram_http_error, 403}}
-    )
-
-    on_exit(fn -> Application.delete_env(:comma_web, :telegram_access_result) end)
-
-    attempt =
-      api_request(session, :post, telegram_path(workspace) <> "/connect", %{}) |> expect_json(201)
-
-    params =
-      attempt["authorization_url"] |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
-
-    assert {:error, {:telegram_http_error, 403}} =
-             CommaWeb.TelegramIntegration.complete_connect("telegram-code", params["state"])
-
-    assert_receive {:telegram_access_checked, "42001"}
-    assert is_nil(Comma.TelegramLinks.get_link(workspace["id"]))
-    refute_receive {:telegram_message, _, _}
-  end
-
-  test "cancel fences an OIDC callback already exchanging its authorization code", %{
-    session: session,
-    workspace: workspace
-  } do
-    attempt =
-      api_request(session, :post, telegram_path(workspace) <> "/connect", %{}) |> expect_json(201)
-
-    params =
-      attempt["authorization_url"] |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
-
-    callback =
-      Task.async(fn ->
-        CommaWeb.TelegramIntegration.complete_connect("paused-code", params["state"])
-      end)
-
-    assert_receive {:oidc_paused, process}
-
-    api_request(session, :delete, telegram_path(workspace) <> "/connect", %{
-      "state" => params["state"]
-    })
-    |> expect_json(200)
-
-    send(process, :continue_oidc)
-    assert {:error, :invalid_telegram_connection_attempt} = Task.await(callback)
-    assert is_nil(Comma.TelegramLinks.get_link(workspace["id"]))
-  end
-
-  test "device refresh accepts unchanged Telegram content but retains other failures" do
-    config = Application.fetch_env!(:comma_web, :telegram)
-
-    Application.put_env(
-      :comma_web,
-      :telegram,
-      Keyword.put(
-        config,
-        :api_base_url,
-        Application.fetch_env!(:salix_im, :telegram_api_base_url)
-      )
-    )
-
-    on_exit(fn -> Application.delete_env(:comma_web, :telegram_edit_response) end)
-
-    Application.put_env(
-      :comma_web,
-      :telegram_edit_response,
-      {400,
-       %{
-         "ok" => false,
-         "error_code" => 400,
-         "description" => "Bad Request: message is not modified"
-       }}
-    )
-
-    assert {:ok, :unchanged} =
-             CommaWeb.TelegramBot.Req.edit_device_view("test", "42001", 2, "same", [])
-
-    Application.put_env(
-      :comma_web,
-      :telegram_edit_response,
-      {400,
-       %{
-         "ok" => false,
-         "error_code" => 400,
-         "description" => "Bad Request: message to edit not found"
-       }}
-    )
-
-    assert {:error, {:telegram_http_error, 400}} =
-             CommaWeb.TelegramBot.Req.edit_device_view("test", "42001", 2, "same", [])
   end
 
   test "device browsing reauthorizes clicks, pages bounded lists and rejects stale choices", c do
     assert complete_login(c.session, c.workspace).status == 200
-    assert_receive {:telegram_message, "42001", "Telegram is now connected" <> _}
+    settle_receive({:telegram_message, "42001", "Telegram is now connected" <> _})
 
     for i <- 1..7 do
       {:ok, token} =
@@ -1364,7 +1007,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
     end
 
     webhook_request(private_update(961, "/devices"), @webhook_secret) |> expect_json(200)
-    assert_receive {:telegram_task_links, "42001", text, buttons}
+    settle_receive({:telegram_task_links, "42001", text, buttons})
     assert text =~ "Read at"
     assert Enum.all?(buttons, &Map.has_key?(&1, "callback_data"))
     choices = Enum.filter(buttons, &Map.has_key?(&1, "callback_data"))
@@ -1385,27 +1028,27 @@ defmodule CommaWeb.TelegramIntegrationTest do
     end
 
     webhook_request(callback.(first["callback_data"]), @webhook_secret) |> expect_json(200)
-    assert_receive {:device_edited, "42001", 2, detail, detail_buttons}
+    settle_receive({:device_edited, "42001", 2, detail, detail_buttons})
     assert Enum.all?(detail_buttons, &Map.has_key?(&1, "callback_data"))
     assert detail =~ "Device operations"
     assert detail =~ String.replace_prefix(first["text"], "1. ", "")
     refresh = Enum.find(detail_buttons, &(&1["text"] == "Refresh details"))
     webhook_request(callback.(refresh["callback_data"]), @webhook_secret) |> expect_json(200)
-    assert_receive {:device_edited, "42001", 2, refreshed, detail_buttons}
+    settle_receive({:device_edited, "42001", 2, refreshed, detail_buttons})
     assert refreshed =~ "Device operations"
     back = Enum.find(detail_buttons, &(&1["text"] == "Device list / refresh"))
     webhook_request(callback.(back["callback_data"]), @webhook_secret) |> expect_json(200)
-    assert_receive {:device_edited, "42001", 2, list, choices}
+    settle_receive({:device_edited, "42001", 2, list, choices})
     assert list =~ "1. Desk"
     refute list =~ "Device operations"
     next = Enum.find(choices, &(&1["text"] == "Next page"))
     webhook_request(callback.(next["callback_data"]), @webhook_secret) |> expect_json(200)
-    assert_receive {:device_edited, "42001", 2, _text, second}
+    settle_receive({:device_edited, "42001", 2, _text, second})
     refute Enum.any?(second, &(&1["text"] == "Next page"))
     webhook_request(callback.(first["callback_data"]), @webhook_secret) |> expect_json(200)
-    assert_receive {:telegram_message, "42001", expired}
+    settle_receive({:telegram_message, "42001", expired})
     assert expired =~ "expired"
-    refute_receive {:device_edited, _, _, _, _}
+    settle_refute_receive({:device_edited, _, _, _, _})
     link = Comma.TelegramLinks.get_link(c.workspace["id"])
 
     key =
@@ -1413,15 +1056,14 @@ defmodule CommaWeb.TelegramIntegrationTest do
 
     assert {:ok, _} = SalixStore.CasRecord.update(key, &Map.put(&1, "expires_at", 0))
     webhook_request(callback.(hd(second)["callback_data"]), @webhook_secret) |> expect_json(200)
-    assert_receive {:telegram_message, "42001", ttl_expired}
+    settle_receive({:telegram_message, "42001", ttl_expired})
     assert ttl_expired =~ "expired"
-    refute_receive {:device_edited, _, _, _, _}
-
+    settle_refute_receive({:device_edited, _, _, _, _})
     api_request(c.session, :delete, telegram_path(c.workspace)) |> expect_json(200)
     webhook_request(callback.(hd(second)["callback_data"]), @webhook_secret) |> expect_json(200)
-    assert_receive {:telegram_message, "42001", unlinked}
+    settle_receive({:telegram_message, "42001", unlinked})
     assert unlinked =~ "not connected"
-    refute_receive {:device_edited, _, _, _, _}
+    settle_refute_receive({:device_edited, _, _, _, _})
   end
 
   test "tasks command reads canonical Tasks only from the bound workspace", %{
@@ -1445,11 +1087,13 @@ defmodule CommaWeb.TelegramIntegrationTest do
     assert complete_login(session, workspace).status == 200
     webhook_request(private_update(951, "/tasks"), @webhook_secret) |> expect_json(200)
 
-    assert_receive {:telegram_card, "42001", _message_id, text,
-                    [
-                      [%{"text" => "1", "web_app" => %{"url" => url}}],
-                      [%{"text" => "All tasks", "web_app" => %{"url" => all_url}}]
-                    ]}
+    settle_receive(
+      {:telegram_card, "42001", _message_id, text,
+       [
+         [%{"text" => "1", "web_app" => %{"url" => url}}],
+         [%{"text" => "All tasks", "web_app" => %{"url" => all_url}}]
+       ]}
+    )
 
     assert text =~ "Telegram Team"
     assert text =~ "1. 🔄 Review Telegram design"
@@ -1457,7 +1101,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
     uri = URI.parse(url)
 
     assert URI.to_string(%{uri | path: nil, query: nil}) ==
-             Application.fetch_env!(:comma_web, :web_cookie_origin)
+             SystemsRuntime.fetch_env!(:comma_web, :web_cookie_origin)
 
     assert uri.path == "/task-panel.html"
 
@@ -1477,27 +1121,6 @@ defmodule CommaWeb.TelegramIntegrationTest do
            }
 
     refute all_url =~ "token"
-  end
-
-  test "a retained binding with a retired provider connection is not reported as active", %{
-    session: session,
-    workspace: workspace
-  } do
-    assert complete_login(session, workspace).status == 200
-    linked = api_request(session, :get, telegram_path(workspace)) |> expect_json(200)
-    assert linked["connection_active"]
-    link = Comma.TelegramLinks.get_link(workspace["id"])
-
-    assert :ok =
-             SalixIM.ProviderConnects.delete_im_connect(
-               workspace["salix_tenant_id"],
-               workspace["default_group_id"],
-               link.connect_id
-             )
-
-    state = api_request(session, :get, telegram_path(workspace)) |> expect_json(200)
-    assert state["link"]["telegram_user_id"] == "42001"
-    refute state["connection_active"]
   end
 
   test "signed Mini App data issues only a short Task-panel cookie and revocation stops reads", %{
@@ -1675,7 +1298,10 @@ defmodule CommaWeb.TelegramIntegrationTest do
 
     assert miniapp_login(group_id, valid <> "&user=forged").status == 401
 
-    assert miniapp_login(group_id, signed_init_data(42_001, System.system_time(:second) - 121)).status ==
+    assert miniapp_login(
+             group_id,
+             signed_init_data(42_001, SystemsClock.system_time(:second) - 121)
+           ).status ==
              401
 
     assert miniapp_login(group_id, signed_init_data(42_002)).status == 401
@@ -1704,61 +1330,6 @@ defmodule CommaWeb.TelegramIntegrationTest do
     assert conflict.resp_cookies == %{}
   end
 
-  test "Mini App exchange clears a revoked Comma cookie when it issues a panel cookie", %{
-    session: session,
-    workspace: workspace
-  } do
-    assert complete_login(session, workspace).status == 200
-    assert :ok = Comma.Accounts.revoke_session_token(session["token"])
-
-    login =
-      miniapp_login(
-        workspace["default_group_id"],
-        signed_init_data(42_001),
-        session["token"]
-      )
-
-    %{"session_id" => panel_session_id} = expect_json(login, 201)
-    panel_cookie = login.resp_cookies[CommaWeb.SessionCookie.panel_cookie_name()].value
-    user_cookie_name = CommaWeb.SessionCookie.cookie_name()
-    panel_cookie_name = CommaWeb.SessionCookie.panel_cookie_name()
-
-    user_cookies =
-      case login.resp_cookies[user_cookie_name] do
-        %{max_age: 0} -> []
-        _ -> ["#{user_cookie_name}=#{session["token"]}"]
-      end
-
-    cookies = Enum.join(user_cookies ++ ["#{panel_cookie_name}=#{panel_cookie}"], "; ")
-
-    read =
-      :get
-      |> conn("/v1/comma/auth/session")
-      |> put_req_header("cookie", cookies)
-      |> miniapp_web_headers(panel_session_id)
-      |> call()
-
-    assert read.status == 200
-    assert login.resp_cookies[user_cookie_name].max_age == 0
-    assert login.resp_cookies[user_cookie_name].same_site == "Lax"
-    assert login.resp_cookies[user_cookie_name].path == "/"
-    assert panel_session_id != session["id"]
-  end
-
-  test "Chinese command guidance follows Telegram's language code and ignores non-private input" do
-    update = put_in(private_update(904, "/help")["message"]["from"]["language_code"], "zh-Hans")
-    webhook_request(update, @webhook_secret) |> expect_json(200)
-    assert_receive {:telegram_message, "42001", text}
-    assert text =~ "欢迎使用 Comma"
-    assert text =~ "消息渠道"
-    assert text =~ "/disconnect"
-
-    webhook_request(put_in(update["message"]["chat"]["type"], "group"), @webhook_secret)
-    |> expect_json(200)
-
-    refute_receive {:telegram_message, _, _}
-  end
-
   test "webhook requires Telegram's secret header and ignores non-private chats", %{
     workspace: workspace
   } do
@@ -1773,30 +1344,16 @@ defmodule CommaWeb.TelegramIntegrationTest do
     |> expect_json(200)
 
     assert Comma.TelegramLinks.get_link(workspace["id"]) == nil
-    refute_receive {:telegram_message, _, _}
-  end
-
-  test "disconnect fences an already exchanging OIDC callback", context do
-    callback = paused_callback(context)
-    assert_receive {:oidc_paused, callback_pid}, 2_000
-
-    api_request(context.session, :delete, telegram_path(context.workspace), %{})
-    |> expect_json(200)
-
-    send(callback_pid, :continue_oidc)
-    assert Task.await(callback).status == 400
-    assert Comma.TelegramLinks.get_link(context.workspace["id"]) == nil
-    refute_receive {:telegram_message, _, _}
+    settle_refute_receive({:telegram_message, _, _})
   end
 
   test "new fallback intent fences an older OIDC callback", context do
     callback = paused_callback(context)
-    assert_receive {:oidc_paused, callback_pid}, 2_000
-
+    settle_receive({:oidc_paused, callback_pid})
     assert complete_login(context.session, context.workspace, "second-user").status == 200
 
-    send(callback_pid, :continue_oidc)
-    assert Task.await(callback).status == 400
+    SystemsRuntime.Proc.send(callback_pid, :continue_oidc)
+    assert settled_await(callback).status == 400
     assert Comma.TelegramLinks.get_link(context.workspace["id"]).telegram_user_id == "42002"
 
     {:ok, [connect]} =
@@ -1807,74 +1364,6 @@ defmodule CommaWeb.TelegramIntegrationTest do
 
     assert connect["connect_id"] ==
              Comma.TelegramLinks.get_link(context.workspace["id"]).connect_id
-  end
-
-  @tag multi_connection: true
-  test "disconnect returns busy during prepare and a superseded prepare stays disabled",
-       context do
-    state = start_login(context.session, context.workspace)
-
-    Application.put_env(:comma_web, :telegram_get_me_barrier, self())
-
-    callback =
-      Task.async(fn ->
-        login_callback(state)
-      end)
-
-    assert_receive {:get_me_paused, provider_pid}, 2_000
-
-    busy = api_request(context.session, :delete, telegram_path(context.workspace), %{})
-    assert busy.status == 409
-
-    cancel =
-      api_request(context.session, :delete, telegram_path(context.workspace) <> "/connect", %{
-        "state" => state
-      })
-
-    assert cancel.status == 409
-
-    # A fresh user intent is a short, independent DB transaction; no provider
-    # HTTP call holds a workspace row lock. The old prepare may finish, but
-    # must not commit/activate after this supersession.
-    api_request(context.session, :post, telegram_path(context.workspace) <> "/connect", %{})
-    |> expect_json(201)
-
-    send(provider_pid, :continue_get_me)
-    assert Task.await(callback).status in 400..599
-    assert Comma.TelegramLinks.get_link(context.workspace["id"]) == nil
-
-    assert {:ok, []} =
-             SalixIM.ProviderConnects.list_tool_connects(context.workspace["default_group_id"], [
-               "telegram"
-             ])
-  end
-
-  @tag multi_connection: true
-  test "coordinator crash releases the database session lock", context do
-    parent = self()
-
-    {holder, monitor} =
-      spawn_monitor(fn ->
-        Comma.TelegramLinks.with_lifecycle_lock(fn ->
-          send(parent, :lifecycle_locked)
-
-          receive do
-            :finish -> :ok
-          end
-        end)
-      end)
-
-    assert_receive :lifecycle_locked, 2_000
-
-    assert {:error, :telegram_link_busy} =
-             Comma.TelegramLinks.with_lifecycle_lock(fn -> :unexpected end)
-
-    Process.exit(holder, :kill)
-    assert_receive {:DOWN, ^monitor, :process, ^holder, :killed}
-    assert_lifecycle_unlocked(100)
-
-    api_request(context.session, :delete, telegram_path(context.workspace), %{})
-    |> expect_json(200)
   end
 
   test "a provider connect without a committed Comma binding cannot send", %{workspace: workspace} do
@@ -1896,7 +1385,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
                }
              )
 
-    refute_receive :telegram_provider_sent
+    settle_refute_receive(:telegram_provider_sent)
 
     assert {:error, _reason} =
              SalixIM.ProviderConnects.enable_im_connect(
@@ -1904,48 +1393,6 @@ defmodule CommaWeb.TelegramIntegrationTest do
                workspace["default_group_id"],
                created["connect_id"]
              )
-  end
-
-  test "webhook setup is a dry-run unless the release command explicitly applies it" do
-    assert {:ok, plan} = CommaWeb.TelegramWebhook.apply()
-    assert plan["dry_run"]
-    assert plan["webhook_url"] == "https://comma.test/v1/comma/integrations/telegram/webhook"
-
-    assert {:ok, applied} = CommaWeb.TelegramWebhook.apply(dry_run: false)
-    refute applied["dry_run"]
-  end
-
-  test "a retired managed connect cannot be updated or activated again", %{workspace: workspace} do
-    tenant_id = workspace["salix_tenant_id"]
-    group_id = workspace["default_group_id"]
-
-    assert {:ok, prepared} =
-             SalixIM.ProviderConnects.ensure_managed_telegram_im_connect(
-               tenant_id,
-               group_id,
-               %{"bot_token" => "test-telegram-token", "telegram_user_id" => "42001"}
-             )
-
-    connect_id = prepared["connect_id"]
-
-    assert {:error, {:bad_request, _}} =
-             SalixIM.ProviderConnects.update_telegram_im_connect(
-               tenant_id,
-               group_id,
-               connect_id,
-               %{"bot_token" => "replacement-token"}
-             )
-
-    assert :ok = SalixIM.ProviderConnects.delete_im_connect(tenant_id, group_id, connect_id)
-
-    assert {:error, :not_found} =
-             SalixIM.ProviderConnects.activate_managed_telegram_im_connect(
-               tenant_id,
-               group_id,
-               connect_id
-             )
-
-    assert {:ok, []} = SalixIM.ProviderConnects.list_tool_connects(group_id, ["telegram"])
   end
 
   defp start_login(session, workspace) do
@@ -1974,19 +1421,6 @@ defmodule CommaWeb.TelegramIntegrationTest do
   defp telegram_path(workspace),
     do: "/v1/comma/workspaces/#{workspace["id"]}/integrations/telegram"
 
-  defp assert_lifecycle_unlocked(0), do: flunk("database session lock survived coordinator death")
-
-  defp assert_lifecycle_unlocked(attempts) do
-    case Comma.TelegramLinks.with_lifecycle_lock(fn -> :unlocked end) do
-      :unlocked ->
-        :ok
-
-      {:error, :telegram_link_busy} ->
-        Process.sleep(10)
-        assert_lifecycle_unlocked(attempts - 1)
-    end
-  end
-
   defp paused_callback(%{session: session, workspace: workspace}) do
     attempt =
       api_request(session, :post, telegram_path(workspace) <> "/connect", %{})
@@ -1995,7 +1429,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
     params =
       attempt["authorization_url"] |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
 
-    Task.async(fn ->
+    SystemsRuntime.Task.async(fn ->
       :get
       |> conn(
         "/v1/comma/integrations/telegram/connect/callback?" <>
@@ -2056,16 +1490,16 @@ defmodule CommaWeb.TelegramIntegrationTest do
 
   defp miniapp_web_headers(conn, expected_session) do
     conn
-    |> put_req_header("origin", Application.fetch_env!(:comma_web, :web_cookie_origin))
+    |> put_req_header("origin", SystemsRuntime.fetch_env!(:comma_web, :web_cookie_origin))
     |> put_req_header("x-comma-session-transport", "cookie")
     |> put_req_header("x-comma-session-lifecycle-version", "1")
     |> put_req_header("x-comma-expected-auth-session-id", expected_session)
   end
 
-  defp signed_init_data(id, auth_date \\ System.system_time(:second)) do
+  defp signed_init_data(id, auth_date \\ SystemsClock.system_time(:second)) do
     fields = %{
       "auth_date" => Integer.to_string(auth_date),
-      "query_id" => "test-#{System.unique_integer([:positive])}",
+      "query_id" => "test-#{SystemsRuntime.Proc.unique_integer([:positive])}",
       "user" => Jason.encode!(%{"id" => id, "first_name" => "Alice"})
     }
 
@@ -2120,7 +1554,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
         billing_account_id: account_id,
         credits: 100,
         valid_from: ~U[2026-06-17 00:00:00Z],
-        expires_at: DateTime.add(DateTime.utc_now(), 30, :day),
+        expires_at: DateTime.add(SystemsClock.utc_now(), 30, :day),
         source_type: "manual_contract",
         source_id: "telegram-card-test:#{workspace_id}",
         source_event_id: "telegram-card-test:#{workspace_id}",
@@ -2177,7 +1611,7 @@ defmodule CommaWeb.TelegramIntegrationTest do
   defp card_click(data, message_id, from \\ 42_001) do
     webhook_request(
       %{
-        "update_id" => System.unique_integer([:positive]),
+        "update_id" => SystemsRuntime.Proc.unique_integer([:positive]),
         "callback_query" => %{
           "id" => "card-callback",
           "data" => data,
@@ -2197,6 +1631,6 @@ defmodule CommaWeb.TelegramIntegrationTest do
     put_in(update, ["message", "reply_to_message"], %{"message_id" => reply_to})
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

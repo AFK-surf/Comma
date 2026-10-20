@@ -1,4 +1,3 @@
-import { TaskDetailsPanel } from "../../tasks/TaskDetailsPanel";
 import {
   act,
   fireEvent,
@@ -8,10 +7,11 @@ import {
   within,
 } from "@comma/test-utils/render";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CommaApiClient } from "../../../../api";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import { ConversationThread } from "../ConversationThread";
-import type { ChatMessage, LocalFilePreview } from "../../model/conversationChannel";
-import { composeMessageWithQuotes } from "../../model/protocol";
+import type { ChatMessage, LocalFilePreview } from "@comma/core/chat";
+import { composeMessageWithQuotes, decodeUserMessage } from "@comma/core/chat";
+import { messageMarkdown } from "@comma/core/markdown";
 
 // Keep MarkdownStream, the trusted inline compiler, and every attachment
 // component real. Only the image byte/lease boundary is supplied by the test.
@@ -54,7 +54,7 @@ function message(
   text: string,
   extra: Partial<ChatMessage> = {}
 ): ChatMessage {
-  return {
+  const built: ChatMessage = {
     attachments: [],
     blocksKey: undefined,
     clientRequestId: undefined,
@@ -71,6 +71,18 @@ function message(
     text,
     ...extra,
   };
+  // A person's message as the core reads it out of its wire text.
+  // A person's message as the core reads it out of its wire text; an agent's as the core parses it.
+  if (role === "user")
+    return built.platformSource || built.display
+      ? built
+      : { ...built, display: decodeUserMessage(text) };
+  return built.markdown
+    ? built
+    : {
+        ...built,
+        markdown: messageMarkdown(built.parts ?? []) as ChatMessage["markdown"],
+      };
 }
 const noop = () => {};
 const fileCard = (position: number) =>
@@ -257,61 +269,6 @@ describe("real chat Markdown and attachment composition", () => {
     ).toHaveAttribute("data-message-group-first", "true");
   });
 
-  it("uses the same Worker colors in messages and Task details", async () => {
-    vi.stubGlobal("crypto", process.getBuiltinModule("crypto").webcrypto);
-    const agentId = "agt1_worker_1";
-    const actorId = "actor_zJrB7_pSoHdVDU_PGYQtCsyypRFaRjMV2wIrMYjkSG8";
-    const workerMessage = message("msg_worker", "assistant", "Done", {
-      actorId: agentId,
-      actorRole: "worker",
-    });
-    try {
-      const { container } = render(
-        <>
-          <ConversationThread
-            groupId="grp_1"
-            workspaceId="wsp_1"
-            messages={[workerMessage]}
-            onDiscard={noop}
-            onRetry={noop}
-          />
-          <TaskDetailsPanel
-            conversation={{
-              group_id: "grp_1",
-              id: "cnv_1",
-              title: "Task",
-              status: "running",
-              kind: "agent_task",
-            }}
-            canDone={false}
-            doneState="idle"
-            groupId="grp_1"
-            onDone={noop}
-            open
-            worker={{ participantId: "p_worker", actorId, name: "Worker" }}
-          />
-        </>
-      );
-      const sidebarAvatar = container.querySelector<HTMLElement>(
-        '[data-testid="task-panel-worker"] .comma-session-avatar'
-      );
-      expect(sidebarAvatar).not.toBeNull();
-      await waitFor(() => {
-        const messageAvatar = container.querySelector<HTMLElement>(
-          ".comma-chat-message-assistant > .comma-chat-assistant-source-avatar"
-        );
-        expect(messageAvatar?.style.backgroundImage).toBe(
-          sidebarAvatar?.style.backgroundImage
-        );
-        expect(messageAvatar?.style.backgroundColor).toBe(
-          sidebarAvatar?.style.backgroundColor
-        );
-      });
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
   it("hands a growing Markdown reply to its canonical trusted task, image group, and media file cards", async () => {
     const release = vi.fn();
     const preview = vi.fn(async () => ({ url: previewUrl, release }));
@@ -480,7 +437,7 @@ describe("real chat Markdown and attachment composition", () => {
       },
     ];
     const renderAgentMedia = (
-      read: CommaApiClient["fetchConversationAttachment"],
+      read: (params: unknown) => Promise<{ bytes: Uint8Array; type: string }>,
       preview = vi.fn(
         async (): Promise<LocalFilePreview | undefined> => ({
           url: previewUrl,
@@ -490,29 +447,32 @@ describe("real chat Markdown and attachment composition", () => {
     ) => {
       vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:inline-video");
       vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
-      const api = { fetchConversationAttachment: read } as unknown as CommaApiClient;
-      const thread = (threadAttachments: ChatMessage["attachments"]) => (
-        <ConversationThread
-          api={api}
-          conversationId="cnv_media"
-          groupId="grp_1"
-          messages={[
-            message("msg_agent_media", "assistant", "Here is the run output.", {
-              attachments: threadAttachments,
-            }),
-          ]}
-          onDiscard={noop}
-          onPreviewLocalFile={preview}
-          onRetry={noop}
-          workspaceId="wsp_1"
-        />
-      );
+      const core = createScriptedCore({
+        calls: (name, params) => (name === "files.read" ? read(params) : null),
+      });
+      const thread = (threadAttachments: ChatMessage["attachments"]) =>
+        core.wrap(
+          <ConversationThread
+            live
+            conversationId="cnv_media"
+            groupId="grp_1"
+            messages={[
+              message("msg_agent_media", "assistant", "Here is the run output.", {
+                attachments: threadAttachments,
+              }),
+            ]}
+            onDiscard={noop}
+            onPreviewLocalFile={preview}
+            onRetry={noop}
+            workspaceId="wsp_1"
+          />
+        );
       return { ...render(thread(agentMedia)), preview, thread };
     };
     afterEach(() => vi.restoreAllMocks());
 
     it("shows an agent's image and video files in the message and keeps other files as cards", async () => {
-      const read = vi.fn(async () => new Blob(["webm-bytes"]));
+      const read = vi.fn(async (_params: unknown) => fileBytes("webm-bytes"));
       const { container, preview, rerender, thread } = renderAgentMedia(read);
 
       const image = await screen.findByRole("img", { name: "chart.png" });
@@ -539,13 +499,13 @@ describe("real chat Markdown and attachment composition", () => {
       expect(video).toHaveAttribute("preload", "metadata");
       expect(video).toHaveAccessibleName("demo.webm");
       expect(video.closest(".comma-chat-inline-video")).not.toBeNull();
-      expect(read).toHaveBeenCalledWith(
-        "grp_1",
-        "cnv_media",
-        "msg_agent_media",
-        1,
-        expect.anything()
-      );
+      expect(read).toHaveBeenCalledWith({
+        source: "attachment",
+        group: "grp_1",
+        conversation: "cnv_media",
+        message: "msg_agent_media",
+        index: 1,
+      });
       // The decoder gets the allowlisted type, whatever the endpoint answered.
       expect(vi.mocked(URL.createObjectURL).mock.calls[0]![0]).toHaveProperty(
         "type",
@@ -575,7 +535,7 @@ describe("real chat Markdown and attachment composition", () => {
 
     it("falls back to the file card when the renderer cannot decode the video", async () => {
       const { container } = renderAgentMedia(
-        vi.fn(async () => new Blob(["not-a-video"]))
+        vi.fn(async () => fileBytes("not-a-video"))
       );
       const video = await waitFor(() => {
         const element = container.querySelector("video");
@@ -589,7 +549,7 @@ describe("real chat Markdown and attachment composition", () => {
 
     it("falls back to the file card when the image preview is unavailable", async () => {
       renderAgentMedia(
-        vi.fn(async () => new Blob(["webm-bytes"])),
+        vi.fn(async () => fileBytes("webm-bytes")),
         vi.fn(async () => undefined)
       );
       await waitFor(() => expect(fileCard(0)).toHaveTextContent("chart.png"));
@@ -597,6 +557,11 @@ describe("real chat Markdown and attachment composition", () => {
     });
   });
 });
+
+/** A chat file as the core reads it, with the generic type an endpoint may answer. */
+function fileBytes(value: string) {
+  return { bytes: new TextEncoder().encode(value), type: "application/octet-stream" };
+}
 
 const streamingDraft = (text: string) => ({
   conversationId: "cnv_stream",
@@ -696,9 +661,7 @@ describe("a streaming reply beside mounted history", () => {
     expect(screen.getByTestId("chat-message-quote")).toBeInTheDocument();
     expect(container.querySelector(".comma-chat-block-extras")).not.toBeNull();
     // User bubbles measure themselves in the frame after they mount.
-    await act(
-      () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-    );
+    await act(() => vi.advanceTimersToNextFrame());
     const before = snapshotRenders(container);
 
     // A live reply starts empty, gains its first text, and then grows.

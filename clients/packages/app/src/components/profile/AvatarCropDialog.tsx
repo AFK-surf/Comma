@@ -1,5 +1,6 @@
 /* oxlint-disable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex, jsx-a11y/prefer-tag-over-role -- the crop frame is a focusable pan surface; pointer drag, wheel zoom, and arrow/+/- keys have no native element. */
-import { Dialog, Slider } from "@comma/ui";
+import { Dialog } from "@comma/ui/components/dialog";
+import { Slider } from "@comma/ui/components/slider";
 import { useCommaMessages } from "@comma/i18n/react";
 import {
   useEffect,

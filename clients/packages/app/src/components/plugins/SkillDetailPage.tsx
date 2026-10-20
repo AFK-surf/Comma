@@ -1,29 +1,26 @@
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import { getNativeBridge } from "@comma/native-bridge";
+import { Button } from "@comma/ui/components/Button";
+import { CubeIcon, MoreHorizontalIcon } from "@comma/ui/components/icons";
+import { MarkdownStream } from "@comma/ui/components/markdown-stream";
+import { Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui/components/menu";
+import { NativeSurfaceSuppressor } from "@comma/ui/components/native-surface/NativeSurfaceSuppressor";
+import { PageLoading } from "@comma/ui/components/PageLoading";
 import {
-  Button,
-  CubeIcon,
-  MarkdownStream,
-  Menu,
-  MenuItem,
-  MenuPopover,
-  MenuTrigger,
-  MoreHorizontalIcon,
-  NativeSurfaceSuppressor,
-  PageLoading,
   PluginDetail,
   PluginDetailSection,
   SkillFileBrowser,
   SkillFileSource,
-  spacing,
-  toast,
   type PluginDetailCopy,
   type SkillFileView,
-} from "@comma/ui";
+} from "@comma/ui/components/plugins";
+import { spacing } from "@comma/ui/tokens";
+import { toast } from "@comma/ui/components/toast";
 import { useEffect, useRef, useState } from "react";
-import type { CommaApiClient, CommaSkill } from "../../api";
+import { useCall } from "@comma/core-client";
+import type { CommaSkill } from "@comma/core/api-schemas";
 import { useCommaUiThemeName } from "../commaUiTheme";
-import { nativePlatformClipboard } from "../../runtime-chat/nativePlatformActions";
+import { nativePlatformClipboard } from "../../nativePlatformActions";
 import { revealLabel, saveFileAndShow } from "../../runtime-files/fileDownloads";
 import { portableSkillMarkdown, skillMarkdownBody } from "./skillMarkdown";
 
@@ -40,7 +37,6 @@ type SkillFileState =
 const entryFilePath = "SKILL.md";
 
 export function SkillDetailPage({
-  api,
   categoryName,
   copy,
   onBack,
@@ -48,7 +44,6 @@ export function SkillDetailPage({
   skill,
   workspaceId,
 }: {
-  api: CommaApiClient;
   categoryName?: string | undefined;
   copy: PluginDetailCopy;
   onBack: () => void;
@@ -58,6 +53,7 @@ export function SkillDetailPage({
 }) {
   const locale = useCommaLocale();
   const messages = useCommaMessages();
+  const call = useCall();
   const bridge = getNativeBridge();
   const isDark = useCommaUiThemeName() === "Dark mode";
   const [state, setState] = useState<SkillContentState>({ status: "loading" });
@@ -67,8 +63,11 @@ export function SkillDetailPage({
   useEffect(() => {
     const controller = new AbortController();
     setState({ status: "loading" });
-    void api
-      .getWorkspaceSkill(workspaceId, skill.skill_id, { signal: controller.signal })
+    void call(
+      "skills.detail",
+      { workspace: workspaceId, skill: skill.skill_id },
+      controller.signal
+    )
       .then((detail) => {
         if (controller.signal.aborted) return;
         setState({
@@ -84,7 +83,7 @@ export function SkillDetailPage({
         if (!controller.signal.aborted) setState({ status: "error" });
       });
     return () => controller.abort();
-  }, [api, skill.skill_id, workspaceId]);
+  }, [call, skill.skill_id, workspaceId]);
 
   const markdown = state.status === "ready" ? state.markdown : undefined;
   const [selectedPath, setSelectedPath] = useState(entryFilePath);
@@ -99,10 +98,11 @@ export function SkillDetailPage({
     }
     const controller = new AbortController();
     setFile({ status: "loading" });
-    void api
-      .getWorkspaceSkillFile(workspaceId, skill.skill_id, selectedPath, {
-        signal: controller.signal,
-      })
+    void call(
+      "skills.file",
+      { workspace: workspaceId, skill: skill.skill_id, path: selectedPath },
+      controller.signal
+    )
       .then((loaded) => {
         if (!controller.signal.aborted) {
           setFile({ content: loaded.content, status: "ready" });
@@ -112,7 +112,7 @@ export function SkillDetailPage({
         if (!controller.signal.aborted) setFile({ status: "error" });
       });
     return () => controller.abort();
-  }, [api, markdown, selectedPath, skill.skill_id, workspaceId]);
+  }, [call, markdown, selectedPath, skill.skill_id, workspaceId]);
 
   const isMarkdownFile = /\.(md|markdown)$/i.test(selectedPath);
   const showLocalCopy = async (show: "open" | "reveal") => {

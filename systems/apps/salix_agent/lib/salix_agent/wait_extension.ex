@@ -34,7 +34,7 @@ defmodule SalixAgent.WaitExtension do
 
   @doc "Whether a delegate of this wait is still working, from the configured probe."
   def busy?(agent_id, session_id, wait) do
-    case Application.get_env(:salix_agent, :wait_extension_mod) do
+    case SystemsRuntime.get_env(:salix_agent, :wait_extension_mod) do
       nil ->
         false
 

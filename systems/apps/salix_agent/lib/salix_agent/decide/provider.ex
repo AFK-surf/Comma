@@ -7,7 +7,10 @@ defmodule SalixAgent.Decide.Provider do
 
     timeout =
       if is_integer(config[:deadline]),
-        do: max(config.deadline - System.monotonic_time(:millisecond), 1),
+        do:
+          SystemsClock.timeout(
+            max(config.deadline - SystemsClock.monotonic_time(:millisecond), 1)
+          ),
         else: 2_000
 
     case Req.post(config.endpoint,
@@ -32,6 +35,8 @@ defmodule SalixAgent.Decide.Provider do
       {:ok, %{status: 200, body: body}} when is_binary(body) ->
         case Jason.decode(body) do
           {:ok, decoded} ->
+            decoded = unwrap(decoded)
+
             case SalixAgent.Decide.decode(
                    decoded,
                    args["questions"],
@@ -63,6 +68,10 @@ defmodule SalixAgent.Decide.Provider do
   rescue
     _ -> {:error, :unavailable}
   end
+
+  # Cloudflare's REST API wraps model output in its v4 envelope.
+  defp unwrap(%{"success" => true, "result" => %{} = result}), do: result
+  defp unwrap(decoded), do: decoded
 
   defp failure(code, response) do
     usage =

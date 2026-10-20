@@ -80,7 +80,7 @@ defmodule SalixIM.WeChatMessages do
       "connect_id" => connect["connect_id"],
       "peer" => connect["wechat_id"],
       "message_id" => id,
-      "created_at" => System.system_time(:millisecond),
+      "created_at" => SystemsClock.system_time(:millisecond),
       "items" => projected
     }
 
@@ -148,7 +148,7 @@ defmodule SalixIM.WeChatMessages do
              record["peer"] == connect["wechat_id"],
          true <- record["message_id"] == target,
          created when is_integer(created) <- record["created_at"],
-         age = System.system_time(:millisecond) - created,
+         age = SystemsClock.system_time(:millisecond) - created,
          true <- age >= 0 and age <= @quote_age_ms,
          values when is_list(values) <- record["items"] do
       values |> Enum.take(@max_items) |> Enum.filter(&is_map/1) |> Enum.map(&project_item/1)

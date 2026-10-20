@@ -1,13 +1,16 @@
 defmodule CommaSSH.Connections do
   @moduledoc "Ephemeral, process-scoped handoff from completed SSH authentication to its channel."
-  use GenServer
-  def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
-  def authenticated(blob, peer), do: GenServer.call(__MODULE__, {:register, blob, peer})
-  def claim(connection), do: GenServer.call(__MODULE__, {:claim, connection})
+  use SystemsRuntime.Server
+  def start_link(_), do: SystemsRuntime.Server.start_link(__MODULE__, %{}, name: __MODULE__)
+
+  def authenticated(blob, peer),
+    do: SystemsRuntime.Server.call(__MODULE__, {:register, blob, peer})
+
+  def claim(connection), do: SystemsRuntime.Server.call(__MODULE__, {:claim, connection})
   def init(state), do: {:ok, state}
 
   def handle_call({:register, blob, peer}, {pid, _}, state) do
-    Process.monitor(pid)
+    SystemsRuntime.Proc.monitor(pid)
     {:reply, :ok, Map.put(state, pid, %{key: blob, peer: peer, claimed: false})}
   end
 

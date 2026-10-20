@@ -7,7 +7,7 @@ defmodule SystemsObservability.Application do
     SystemsObservability.Resource.put_current()
     :ok = SystemsObservability.Instrumentation.setup()
 
-    Supervisor.start_link([SystemsObservability.Runtime],
+    SystemsRuntime.Supervisor.start_link([SystemsObservability.Runtime],
       strategy: :one_for_one,
       name: SystemsObservability.Supervisor
     )

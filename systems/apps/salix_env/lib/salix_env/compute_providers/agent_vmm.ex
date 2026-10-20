@@ -9,18 +9,14 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
   @behaviour SalixEnv.ComputeProvider
 
   import Ecto.Query
-  require Logger
 
   alias SalixStore.{
     AgentVMM,
     AgentVMMHostClient,
     Compute,
     Repo,
-    RuntimeBundleCatalog,
-    SessionWorkCandidates
+    RuntimeBundleCatalog
   }
-
-  alias SalixEnv.ComputeRuntimeAuth
 
   @minimum_container_log_limit_bytes 1_048_576
   @maximum_container_log_limit_bytes 67_108_864
@@ -101,51 +97,10 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     SalixStore.ComputeWorkloadUpdate.with_lock(field(workload, :id), fn ->
       current_workload = Repo.get!(Compute.Workload, field(workload, :id))
 
-      if current_workload.generation != field(workload, :generation) do
-        {:error, :stale_generation}
-      else
-        with {:ok, admitted_workload} <-
-               SalixStore.ComputeWorkloadUpdate.start_automatic(current_workload) do
-          cond do
-            admitted_workload.runtime_update != current_workload.runtime_update ->
-              # Commit admission before downloading. Its Workload row lock must
-              # not block the running Connector's input claims during import.
-              {:ok, %{outcome: :pending, resource: allocation}}
-
-            SalixStore.ComputeWorkloadUpdate.active?(admitted_workload) and
-                admitted_workload.desired_state == "ready" ->
-              reconcile_update(allocation, admitted_workload, opts)
-
-            true ->
-              reconcile_current(allocation, admitted_workload, opts)
-          end
-        end
-      end
+      if current_workload.generation != field(workload, :generation),
+        do: {:error, :stale_generation},
+        else: reconcile_current(allocation, current_workload, opts)
     end)
-  end
-
-  defp reconcile_update(allocation, workload, opts) do
-    current = Repo.get!(Compute.Allocation, allocation.id)
-
-    cond do
-      workload.runtime_update["action_required"] == true or
-          (workload.runtime_update["automatic"] != true and
-             workload.runtime_update["deadline"] <= System.system_time(:second)) ->
-        SalixEnv.ComputeWorkloadUpdate.advance(current, workload, fn _ ->
-          {:error, :update_paused}
-        end)
-
-      current.status != "ready" ->
-        allocate(current, workload, opts)
-
-      not current_host_session?(workload) ->
-        bootstrap(current, workload, Keyword.get(opts, :credential), opts)
-
-      true ->
-        SalixEnv.ComputeWorkloadUpdate.advance(current, workload, fn next ->
-          reconcile_current(current, next, Keyword.put(opts, :external_demand, true))
-        end)
-    end
   end
 
   defp reconcile_current(allocation, workload, opts) do
@@ -153,6 +108,9 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     observation = (current && current.provider_observation) || %{}
 
     cond do
+      not is_nil(field(workload, :deletion)) ->
+        SalixStore.ComputeWorkloadDeletion.advance(current, workload)
+
       is_nil(current) ->
         {:error, :not_found}
 
@@ -168,24 +126,87 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
       field(workload, :desired_state) == "stopped" ->
         reconcile_release(current, workload, opts)
 
+      # A stored Workload of a retired template (the External Runtime's
+      # external.*) is left as it is: no allocation, image or container
+      # operation. The reconciler parks it for an operator; deletion still runs.
+      retired_runtime_template?(workload) ->
+        {:error, :runtime_template_retired}
+
       current.status != "ready" ->
         allocate(current, workload, opts)
 
-      idle_external_workload?(workload, opts) and
-        runtime_bootstrap_invalid_or_expired?(current, workload) and
-          current_host_session?(workload) ->
-        reconcile_expired_runtime_bootstrap(current, workload)
-
-      idle_external_workload?(workload, opts) ->
-        reconcile_idle_external_workload(current, workload, opts)
-
       true ->
-        reconcile_ready_workload(
-          current,
-          workload,
-          opts,
-          observation
-        )
+        reconcile_ready_workload(current, workload, observation)
+    end
+  end
+
+  @doc """
+  Stop the Workload's container and keep its volume: a Group's Cloud VM on a
+  Host sleeps this way. `operation` names the stop, so a retry repeats the same
+  Host requests. Answers `:stopped` once the Host lists the container stopped
+  or absent.
+  """
+  def stop_container(allocation, workload, operation) when is_binary(operation) do
+    with {:ok, _session} <- AgentVMM.current_host_session_for_workload(field(workload, :id)),
+         {:ok, listed} <-
+           AgentVMMHostClient.provider_call(:container_list, %{}, field(workload, :id)),
+         {:ok, container} <- find_container(listed, container_id(workload)) do
+      case container && normalize_container_state(container["state"]) do
+        nil ->
+          with {:ok, _} <- persist_absent_container(allocation), do: {:ok, :stopped}
+
+        state when state in ["created", "stopped"] ->
+          with {:ok, _} <- persist_container_facts(allocation, container), do: {:ok, :stopped}
+
+        "running" ->
+          stop_running_container(allocation, workload, container, operation)
+
+        _ ->
+          {:error, :invalid_container_state}
+      end
+    end
+  end
+
+  defp stop_running_container(allocation, workload, container, operation) do
+    instance_id = container["instance_id"]
+    quiesce_request_id = operation_request_id("sleep-quiesce:" <> operation, workload)
+
+    with true <-
+           (is_binary(instance_id) and instance_id != "") ||
+             {:error, :container_instance_unavailable},
+         {:ok, _response} <-
+           AgentVMMHostClient.provider_call(
+             :container_quiesce,
+             %{
+               "request_id" => quiesce_request_id,
+               "container_id" => container["id"],
+               "expected_instance_id" => instance_id,
+               "minimum_idle_seconds" => 0
+             },
+             field(workload, :id)
+           ),
+         {:ok, _response} <-
+           AgentVMMHostClient.provider_call(
+             :container_stop,
+             %{
+               "request_id" => operation_request_id("sleep-stop:" <> operation, workload),
+               "container_id" => container["id"],
+               "expected_instance_id" => instance_id,
+               "quiesce_request_id" => quiesce_request_id,
+               "timeout_seconds" => 30
+             },
+             field(workload, :id)
+           ),
+         {:ok, listed} <-
+           AgentVMMHostClient.provider_call(:container_list, %{}, field(workload, :id)),
+         {:ok, stopped} <- find_container(listed, container["id"]),
+         state when state in ["created", "stopped"] <-
+           stopped && normalize_container_state(stopped["state"]),
+         {:ok, _allocation} <- persist_container_facts(allocation, stopped) do
+      {:ok, :stopped}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :workload_stop_unconfirmed}
     end
   end
 
@@ -206,13 +227,6 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
 
   defp reconcile_drain(allocation, workload, opts) do
     reconcile_release(allocation, workload, opts)
-  end
-
-  defp current_host_session?(workload) do
-    match?(
-      {:ok, _session},
-      AgentVMM.current_host_session_for_workload(field(workload, :id))
-    )
   end
 
   defp reconcile_image(allocation, workload, image_metadata, session) do
@@ -395,14 +409,10 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     end
   end
 
-  def runtime_recovery_needed?(allocation, workload, opts, continuing?) do
+  def runtime_recovery_needed?(allocation, workload, _opts, continuing?) do
     facts = allocation.provider_observation || %{}
 
-    sleeping? =
-      idle_external_workload?(workload, opts) and
-        facts["container_status"] in ["stopped", "absent"]
-
-    workload.desired_state == "ready" and runtime_bearing?(workload) and not sleeping? and
+    workload.desired_state == "ready" and runtime_bearing?(workload) and
       (continuing? or facts["container_status"] == "running" or
          is_binary(facts["runtime_bootstrap_expires_at"]))
   end
@@ -513,8 +523,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     requirements = Map.get(spec, "volume_requirements", [])
 
     case field(workload, :template_key) do
-      template
-      when template in ["external.claude", "external.codex", "external.pi", "meeting.meetnative"] ->
+      template when template in ["meeting.meetnative", "station.default"] ->
         expected_id = provider_state_volume_id(workload)
 
         expected_owner =
@@ -609,10 +618,8 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
 
   defp container_env(env, [_provider_state], workload) do
     case field(workload, :template_key) do
-      "external.claude" -> ["TMPDIR=/workspace", "HOME=/workspace" | env]
-      "external.codex" -> ["CODEX_HOME=/workspace", "HOME=/workspace" | env]
-      "external.pi" -> ["PI_CODING_AGENT_DIR=/workspace", "HOME=/workspace" | env]
       "meeting.meetnative" -> ["HOME=/workspace" | env]
+      "station.default" -> ["HOME=/workspace" | env]
     end
   end
 
@@ -645,7 +652,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
                300
              ),
            base_url when is_binary(base_url) and base_url != "" <-
-             Application.get_env(:salix_store, :compute_runtime_base_url),
+             SystemsRuntime.get_env(:salix_store, :compute_runtime_base_url),
            %Compute.RuntimeInstance{connection_epoch: connection_epoch} <-
              Repo.get(Compute.RuntimeInstance, runtime_id) do
         env =
@@ -668,7 +675,29 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
         _ -> {:error, :runtime_bootstrap_unavailable}
       end
     else
-      {:ok, [], nil, operation_request_id("create", workload)}
+      with {:ok, env} <- station_env(workload),
+           do: {:ok, env, nil, operation_request_id("create", workload)}
+    end
+  end
+
+  # A Group's Cloud VM station connects out to Salix's /v1/connect with its
+  # Workload's connect credential, which ends with the Workload's generation,
+  # as the Cloudflare Container's station does.
+  defp station_env(workload) do
+    if field(workload, :template_key) == "station.default" do
+      with server when is_binary(server) and server != "" <-
+             SalixEnv.Ports.PublicURL.connector_server_url(),
+           {:ok, token} <-
+             Compute.WorkloadCredential.issue_connect(
+               field(workload, :id),
+               field(workload, :generation)
+             ) do
+        {:ok, ["SALIX_SERVER=" <> server, "SALIX_WORKLOAD_CREDENTIAL=" <> token]}
+      else
+        _ -> {:error, :station_connect_unavailable}
+      end
+    else
+      {:ok, []}
     end
   end
 
@@ -698,7 +727,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
         expires_at when is_binary(expires_at) ->
           case DateTime.from_iso8601(expires_at) do
             {:ok, expires_at, _offset} ->
-              DateTime.compare(expires_at, DateTime.utc_now()) != :gt
+              DateTime.compare(expires_at, SystemsClock.utc_now()) != :gt
 
             _ ->
               true
@@ -871,15 +900,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     end
   end
 
-  defp reconcile_ready_workload(current, workload, opts, observation) do
-    if idle_external_workload?(workload, opts) do
-      reconcile_idle_external_workload(current, workload, opts)
-    else
-      reconcile_demanded_ready_workload(current, workload, observation)
-    end
-  end
-
-  defp reconcile_demanded_ready_workload(current, workload, _observation) do
+  defp reconcile_ready_workload(current, workload, _observation) do
     case RuntimeBundleCatalog.image_for_workload(workload) do
       {:ok, image_metadata} ->
         expected_reference = image_metadata["reference"]
@@ -915,13 +936,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
                   provider_fact(current, "container_status", nil) == "running" ->
                     with {:ok, current} <- refresh_runtime_container(current, workload) do
                       if provider_fact(current, "container_status", nil) == "running" do
-                        with :ok <-
-                               cancel_idle_quiesce(
-                                 workload,
-                                 provider_fact(current, "current_container", %{})
-                               ) do
-                          reconcile_runtime_ready(current, workload, current.provider_observation)
-                        end
+                        reconcile_runtime_ready(current, workload, current.provider_observation)
                       else
                         {:ok, %{outcome: :pending, resource: current}}
                       end
@@ -944,105 +959,11 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     end
   end
 
-  defp reconcile_idle_external_workload(allocation, workload, opts) do
-    expected_id = container_id(workload)
-    container = provider_fact(allocation, "current_container", nil)
-    status = provider_fact(allocation, "container_status", nil)
-
-    cond do
-      (is_nil(container) or container == %{}) and
-          never_materialized_external_workload?(allocation, workload) ->
-        persist_absent_container(allocation)
-
-      status not in ["created", "stopped"] and
-          runtime_bootstrap_invalid_or_expired?(allocation, workload) ->
-        open_idle_inspection_session(allocation, workload)
-
-      status == "running" and not runtime_ready?(workload) and
-          is_nil(reclaim_candidate(allocation)) ->
-        if current_host_session?(workload) do
-          with {:ok, allocation} <- refresh_runtime_container(allocation, workload) do
-            {:ok, %{outcome: :pending, resource: allocation}}
-          end
-        else
-          open_idle_inspection_session(allocation, workload)
-        end
-
-      is_nil(reclaim_candidate(allocation)) ->
-        if status == "running" and not current_host_session?(workload) do
-          bootstrap(allocation, workload, Keyword.get(opts, :credential), opts)
-        else
-          with {:ok, allocation} <- persist_facts(allocation, %{}) do
-            {:ok, %{outcome: :succeeded, resource: allocation, observation: %{}}}
-          end
-        end
-
-      is_nil(container) or container == %{} ->
-        inspect_and_stop_idle_external_workload(allocation, workload, expected_id)
-
-      is_map(container) and container["id"] == expected_id and
-          status in ["created", "stopped"] ->
-        with {:ok, allocation} <- persist_facts(allocation, %{}) do
-          {:ok, %{outcome: :succeeded, resource: allocation, observation: %{}}}
-        end
-
-      true ->
-        inspect_and_stop_idle_external_workload(allocation, workload, expected_id)
+  defp retired_runtime_template?(workload) do
+    case field(workload, :template_key) do
+      key when is_binary(key) -> key not in RuntimeBundleCatalog.keys()
+      _ -> false
     end
-  end
-
-  defp never_materialized_external_workload?(allocation, workload) do
-    runtime_id = "runtime:" <> field(workload, :id)
-
-    is_nil(provider_fact(allocation, "imported_reference", nil)) and
-      is_nil(Repo.get(Compute.RuntimeInstance, runtime_id)) and
-      match?(
-        {:error, :not_found},
-        AgentVMM.current_host_session_for_workload(field(workload, :id))
-      )
-  end
-
-  defp inspect_and_stop_idle_external_workload(allocation, workload, expected_id) do
-    case AgentVMM.current_host_session_for_workload(field(workload, :id)) do
-      {:ok, session} ->
-        with {:ok, listed} <-
-               AgentVMMHostClient.provider_call(:container_list, %{}, field(workload, :id)),
-             {:ok, container} <- find_container(listed, expected_id) do
-          case container && normalize_container_state(container["state"]) do
-            nil ->
-              persist_absent_container(allocation)
-
-            state when state in ["created", "stopped"] ->
-              with {:ok, allocation} <- persist_container_facts(allocation, container) do
-                {:ok,
-                 %{
-                   outcome: :succeeded,
-                   resource: allocation,
-                   observation: %{}
-                 }}
-              end
-
-            "running" ->
-              with {:ok, allocation} <-
-                     confirm_runtime_container(allocation, workload, container, session) do
-                safely_stop_idle_external_workload(allocation, workload, container)
-              end
-
-            _ ->
-              {:error, :invalid_container_state}
-          end
-        end
-
-      {:error, :not_found} ->
-        open_idle_inspection_session(allocation, workload)
-
-      {:error, _} = error ->
-        error
-    end
-  end
-
-  defp open_idle_inspection_session(allocation, workload) do
-    enqueue_runtime_session(allocation, workload)
   end
 
   defp persist_absent_container(allocation) do
@@ -1061,183 +982,10 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     end
   end
 
-  defp safely_stop_idle_external_workload(allocation, workload, container) do
-    environment = Repo.get(Compute.Environment, field(workload, :environment_id))
-    runtime_id = "runtime:" <> field(workload, :id)
-    runtime = Repo.get(Compute.RuntimeInstance, runtime_id)
-    instance_id = container["instance_id"]
-
-    attrs = %{
-      tenant_id: environment && environment.tenant_id,
-      project_id: environment && environment.owner_id,
-      workload_id: field(workload, :id),
-      runtime_instance_id: runtime_id,
-      generation: field(workload, :generation),
-      connection_epoch: runtime && runtime.connection_epoch,
-      provider: runtime_provider(workload)
-    }
-
-    Logger.debug("workload reclaim candidate", layer: :salix, state: :checking_quiet)
-
-    with :ok <- confirm_reclaim_candidate(allocation, workload, container),
-         true <-
-           (is_binary(instance_id) and instance_id != "") ||
-             {:error, :container_instance_unavailable},
-         quiesce_request_id <- operation_request_id("idle-quiesce:" <> instance_id, workload),
-         {:ok, _response} <-
-           AgentVMMHostClient.provider_call(
-             :container_quiesce,
-             %{
-               "request_id" => quiesce_request_id,
-               "container_id" => container["id"],
-               "expected_instance_id" => instance_id,
-               "minimum_idle_seconds" => 60
-             },
-             field(workload, :id)
-           ),
-         :ok <- confirm_idle_runtime_quiet(workload, container, attrs),
-         :ok <- confirm_reclaim_candidate(allocation, workload, container),
-         {:ok, _response} <-
-           AgentVMMHostClient.provider_call(
-             :container_stop,
-             %{
-               "request_id" => operation_request_id("idle-stop:" <> instance_id, workload),
-               "container_id" => container["id"],
-               "expected_instance_id" => instance_id,
-               "quiesce_request_id" => quiesce_request_id,
-               "timeout_seconds" => 30
-             },
-             field(workload, :id)
-           ),
-         {:ok, listed} <-
-           AgentVMMHostClient.provider_call(:container_list, %{}, field(workload, :id)),
-         {:ok, stopped} <- find_container(listed, container["id"]),
-         state when state in ["created", "stopped"] <-
-           stopped && normalize_container_state(stopped["state"]),
-         {:ok, allocation} <- persist_container_facts(allocation, stopped) do
-      {:ok, %{outcome: :succeeded, resource: allocation, observation: %{}}}
-    else
-      false -> {:error, :container_instance_unavailable}
-      {:error, _} = error -> error
-      _ -> {:error, :workload_stop_unconfirmed}
-    end
-  end
-
-  defp reclaim_candidate(allocation) do
-    observation =
-      Repo.one(
-        from(b in Compute.ProviderBinding,
-          join: o in AgentVMM.RegistrationObservation,
-          on: o.registration_id == b.provider_ref,
-          where:
-            b.id == ^allocation.provider_binding_id and b.provider == "agent_vmm" and
-              is_nil(o.disconnected_at) and
-              fragment("?->>'gateway_instance_id'", b.observation) == o.gateway_instance_id and
-              fragment("?->>'connection_epoch'", b.observation) == o.connection_epoch,
-          select: o.usage
-        )
-      )
-
-    case observation && observation["workload_reclaim_candidate"] do
-      %{"allocation_id" => id, "expires_at_ms" => expires} = candidate
-      when id == allocation.id and is_integer(expires) ->
-        if expires > System.system_time(:millisecond), do: candidate
-
-      _ ->
-        nil
-    end
-  end
-
-  defp confirm_reclaim_candidate(allocation, workload, container) do
-    candidate = reclaim_candidate(allocation)
-
-    if (candidate && candidate["container_id"] == container["id"]) and
-         candidate["instance_id"] == container["instance_id"] and
-         not external_execution_demand?(workload, []) do
-      :ok
-    else
-      Logger.debug("workload reclaim cancelled",
-        layer: :salix,
-        reason: :candidate_or_demand_changed
-      )
-
-      with :ok <- cancel_idle_quiesce(workload, container), do: {:error, :reclaim_cancelled}
-    end
-  end
-
-  defp confirm_idle_runtime_quiet(workload, container, attrs) do
-    case SalixEnv.ComputeRuntimeControl.quiet(attrs) do
-      {:ok, %{"quiet" => true}} ->
-        :ok
-
-      {:error, _} = error ->
-        Logger.debug("workload reclaim cancelled", layer: :connector, reason: :quiet_failed)
-        with :ok <- cancel_idle_quiesce(workload, container), do: error
-
-      _ ->
-        with :ok <- cancel_idle_quiesce(workload, container), do: {:error, :runtime_not_quiet}
-    end
-  end
-
-  defp cancel_idle_quiesce(workload, container) do
-    instance_id = container["instance_id"]
-
-    with true <-
-           (is_binary(container["id"]) and container["id"] != "" and
-              is_binary(instance_id) and instance_id != "") ||
-             {:error, :container_instance_unavailable},
-         {:ok, _response} <-
-           AgentVMMHostClient.provider_call(
-             :container_quiesce,
-             %{
-               "request_id" => operation_request_id("idle-quiesce:" <> instance_id, workload),
-               "container_id" => container["id"],
-               "expected_instance_id" => instance_id,
-               "cancel" => true
-             },
-             field(workload, :id)
-           ) do
-      :ok
-    else
-      false -> {:error, :container_instance_unavailable}
-      {:error, _} = error -> error
-    end
-  end
-
-  defp external_execution_demand?(workload, opts) do
-    Keyword.get(opts, :external_demand, false) or
-      SessionWorkCandidates.ready_for_workload?(field(workload, :id)) or
-      Repo.exists?(
-        from(i in SalixStore.ComputeRuntimeCarrier.Input,
-          where:
-            i.workload_id == ^field(workload, :id) and
-              i.generation == ^field(workload, :generation) and
-              i.status in ["pending", "in_flight"]
-        )
-      ) or
-      Repo.exists?(
-        from(c in Compute.Command,
-          where:
-            c.workload_id == ^field(workload, :id) and
-              c.target_generation == ^field(workload, :generation) and
-              c.status in ["pending", "admitted", "executing", "unknown_outcome"]
-        )
-      )
-  end
-
-  defp idle_external_workload?(workload, opts) do
-    field(workload, :kind) == "external_worker" and
-      not external_execution_demand?(workload, opts)
-  end
-
-  defp runtime_bearing?(workload),
-    do: field(workload, :kind) in ["external_worker", "meeting_runtime"]
+  defp runtime_bearing?(workload), do: field(workload, :kind) == "meeting_runtime"
 
   defp runtime_provider(workload) do
     case field(workload, :template_key) do
-      "external.claude" -> "claude"
-      "external.codex" -> "codex"
-      "external.pi" -> "pi"
       "meeting.meetnative" -> "meetnative"
     end
   end
@@ -1304,61 +1052,13 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
         caught_up_epoch: epoch
       } ->
         if generation == field(workload, :generation) do
-          reconcile_runtime_provider_ready(allocation, workload, observation, epoch)
+          persist_runtime_ready(allocation, observation)
         else
           {:ok, %{outcome: :pending, resource: allocation}}
         end
 
       _ ->
         {:ok, %{outcome: :pending, resource: allocation}}
-    end
-  end
-
-  defp reconcile_runtime_provider_ready(allocation, workload, observation, epoch) do
-    if field(workload, :kind) != "external_worker" do
-      persist_runtime_ready(allocation, observation)
-    else
-      environment = Repo.get(Compute.Environment, field(workload, :environment_id))
-
-      attrs = %{
-        tenant_id: environment && environment.tenant_id,
-        project_id: environment && environment.owner_id,
-        workload_id: field(workload, :id),
-        runtime_instance_id: "runtime:" <> field(workload, :id),
-        generation: field(workload, :generation),
-        connection_epoch: epoch,
-        provider: runtime_provider(workload)
-      }
-
-      case ComputeRuntimeAuth.call(:read, attrs) do
-        {:ok, %{"auth" => auth, "native_ready" => native_ready, "ready" => ready}} ->
-          facts =
-            Map.merge(observation, %{
-              "runtime_auth_status" => auth["status"],
-              "runtime_auth_ready" => auth["status"] in ["authenticated", "not_required"],
-              "runtime_native_ready" => native_ready
-            })
-
-          if ready do
-            persist_runtime_ready(allocation, facts)
-          else
-            with {:ok, allocation} <- persist_facts(allocation, facts) do
-              {:ok, %{outcome: :pending, resource: allocation}}
-            end
-          end
-
-        {:error, reason}
-        when reason in [
-               :runtime_transport_unavailable,
-               :runtime_auth_timeout,
-               :runtime_auth_failed,
-               :runtime_auth_unavailable
-             ] ->
-          {:ok, %{outcome: :pending, resource: allocation}}
-
-        {:error, _} = error ->
-          error
-      end
     end
   end
 
@@ -1599,7 +1299,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
   end
 
   defp new_runtime_execution_epoch do
-    Integer.to_string(max(:binary.decode_unsigned(:crypto.strong_rand_bytes(8)), 1))
+    Integer.to_string(max(:binary.decode_unsigned(SystemsRuntime.Proc.random_bytes(8)), 1))
   end
 
   defp enqueue(allocation, workload, kind, classification, payload) do
@@ -1639,7 +1339,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
                        "command_json",
                        encoded_command
                      ),
-                   deadline_at: DateTime.add(DateTime.utc_now(), 60, :second)
+                   deadline_at: DateTime.add(SystemsClock.utc_now(), 60, :second)
                  })
                end) do
             {:ok, %{command: command}} ->
@@ -1690,7 +1390,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     base = %{
       "commandId" => command_id,
       "deadlineUnixMillis" =>
-        DateTime.to_unix(DateTime.add(DateTime.utc_now(), 60), :millisecond),
+        DateTime.to_unix(DateTime.add(SystemsClock.utc_now(), 60), :millisecond),
       "targetRevision" => host_target_revision(allocation, kind)
     }
 
@@ -1758,7 +1458,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     DateTime.compare(
       expires_at,
       DateTime.add(
-        DateTime.utc_now(),
+        SystemsClock.utc_now(),
         AgentVMMHostClient.image_import_authority_seconds(),
         :second
       )
@@ -1789,7 +1489,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     "#{kind}:#{field(workload || %{}, :id) || "allocation"}:#{allocation.generation}:#{allocation.revision}"
   end
 
-  defp command_id(_allocation, _kind, _request_id), do: Ecto.UUID.generate()
+  defp command_id(_allocation, _kind, _request_id), do: SystemsRuntime.Proc.uuid()
 
   defp provider_fact(allocation, key, fallback),
     do: Map.get(field(allocation, :provider_observation) || %{}, key, fallback)
@@ -1851,7 +1551,7 @@ defmodule SalixEnv.ComputeProviders.AgentVMM do
     claim_token = Keyword.get(opts, :claim_token)
     workload_id = field(workload, :id)
     generation = field(workload, :generation)
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     (is_binary(claim_token) and claim_token != "" and
        Repo.exists?(

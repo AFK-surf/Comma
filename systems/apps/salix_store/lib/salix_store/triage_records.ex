@@ -547,6 +547,9 @@ defmodule SalixStore.TriageRecords do
                 AND fence.bucket_key = bucket.bucket_key
                 AND fence.generation_key =
                   encode(sha256(convert_to(bucket.history -> ordinal ->> 'generation', 'UTF8')), 'hex')
+                -- A released fence returns its generation to this lane.
+                AND NOT fence.body @>
+                  '{"terminal": null, "identity_observation": {"state": "released"}}'::jsonb
             )
           ), '[]'::jsonb)
         ), COALESCE(jsonb_array_length(bucket.history), 0), bucket.start_offset,

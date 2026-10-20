@@ -4,7 +4,7 @@ defmodule SalixMigrate.ImportTest do
   into S3 state such that a first claim reconstructs the conversation exactly,
   and the `migrated` cutover flag is set. Against the Fake backend.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixMigrate.Import
   alias SalixAgent.InternalSession
@@ -14,10 +14,10 @@ defmodule SalixMigrate.ImportTest do
   @session_id "ses1_0000000000000000001"
 
   setup do
-    prev = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, prev) end)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, prev) end)
     {:ok, agent: SalixAgent.TestSupport.new_agent_id()}
   end
 
@@ -90,7 +90,7 @@ defmodule SalixMigrate.ImportTest do
     assert vfs["/notes.txt"]["size"] == 5
   end
 
-  test "import carries the provider config through the control template", %{agent: a} do
+  test "an imported agent follows the platform model, whatever model it exported", %{agent: a} do
     export =
       Map.put(@export, "llm", %{
         "model" => "gpt-4o",
@@ -105,13 +105,8 @@ defmodule SalixMigrate.ImportTest do
 
     {:ok, %{body: agent_body}} = S3.get(Keys.ctl_agent(a))
     agent = Jason.decode!(agent_body)
-    assert agent["template_id"] == "assistant"
-
-    {:ok, %{body: template_body}} = S3.get(Keys.ctl_template("assistant"))
-    template = Jason.decode!(template_body)
-    assert template["model"] == "gpt-4o"
-    assert template["provider_config"]["protocol"] == "chat_completions"
-    assert template["provider_config"]["api_key_env"] == "TENANT_B_KEY"
+    refute SalixAgent.ModelChoice.value?(agent["model"])
+    refute agent_body =~ "TENANT_B_KEY"
   end
 
   test "import is one-way: re-importing an existing agent is rejected", %{agent: a} do

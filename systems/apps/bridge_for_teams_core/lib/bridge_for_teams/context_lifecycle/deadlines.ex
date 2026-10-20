@@ -33,7 +33,7 @@ defmodule BridgeForTeams.ContextLifecycle.Deadlines do
   defp sourced_context_bound(key, default), do: bound(:sourced_context_bounds, key, default)
 
   defp bound(config_key, key, default) do
-    case Application.get_env(:bridge_for_teams_core, config_key, [])
+    case SystemsRuntime.get_env(:bridge_for_teams_core, config_key, [])
          |> Keyword.get(key, default) do
       value when is_integer(value) and value > 0 -> value
       _invalid -> default

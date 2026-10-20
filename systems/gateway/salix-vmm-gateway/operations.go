@@ -866,7 +866,7 @@ func containerCreateRequest(args map[string]any) *hostv1.CreateContainerRequest 
 		request.User = &value
 	}
 	for _, item := range mapListArg(args, "volumes") {
-		request.Volumes = append(request.Volumes, &hostv1.VolumeMount{VolumeId: stringArg(item, "volume_id"), Destination: stringArg(item, "destination"), ReadOnly: boolArg(item, "read_only")})
+		request.Volumes = append(request.Volumes, &hostv1.VolumeMount{Source: &hostv1.VolumeMount_OwnedVolume{OwnedVolume: stringArg(item, "volume_id")}, Destination: stringArg(item, "destination"), ReadOnly: boolArg(item, "read_only")})
 	}
 	return request
 }

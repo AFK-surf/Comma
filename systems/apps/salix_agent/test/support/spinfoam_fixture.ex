@@ -14,7 +14,7 @@ defmodule SalixAgent.SpinfoamFixture do
   @sdk_cache_key {__MODULE__, :sdk}
 
   def binary do
-    case Application.get_env(:salix_agent, :spinfoam_cmd) do
+    case SystemsRuntime.get_env(:salix_agent, :spinfoam_cmd) do
       {exe, _args} -> exe
       _ -> Path.join(:code.priv_dir(:salix_agent), "spinfoam")
     end
@@ -23,10 +23,10 @@ defmodule SalixAgent.SpinfoamFixture do
   def available?, do: File.exists?(binary())
 
   def sdk_header do
-    case :persistent_term.get(@sdk_cache_key, nil) do
+    case SystemsRuntime.PersistentTerm.get(@sdk_cache_key, nil) do
       nil ->
         {sdk, 0} = System.cmd(binary(), ["--dump-sdk"])
-        :persistent_term.put(@sdk_cache_key, sdk)
+        SystemsRuntime.PersistentTerm.put(@sdk_cache_key, sdk)
         sdk
 
       sdk ->
@@ -50,11 +50,11 @@ defmodule SalixAgent.SpinfoamFixture do
     end
   end
 
-  defp await_host!(retries \\ 400) do
+  defp await_host!(retries \\ 1200) do
     cond do
       Host.status().available -> :ok
       retries == 0 -> raise "spinfoam host never became available: #{inspect(Host.status())}"
-      true -> Process.sleep(25) && await_host!(retries - 1)
+      true -> SystemsRuntime.Proc.sleep(25) && await_host!(retries - 1)
     end
   end
 
@@ -190,6 +190,44 @@ defmodule SalixAgent.SpinfoamFixture do
       if (ack < 0) return ack;
       sf_drop(ack);
       for (;;) sf_sleep_ms(60000);
+    }
+    """
+  end
+
+  @doc """
+  A loop that runs `command` through `env.exec` and stores the reply's
+  `content` as its checkpoint, then returns 1. Loaded again with that
+  checkpoint in `config.state`, it returns 2 without calling anything.
+  """
+  def exec_checkpoint_program(command) do
+    """
+    #include "spinfoam.h"
+    static const char ARGS[] = "{\\"device_id\\":\\"dev-1\\",\\"environment\\":\\"env-1\\",\\"command\\":\\"#{command}\\",\\"description\\":\\"loop exec\\",\\"timeout\\":5}";
+    SF_MAIN sf_i64 main(void) {
+      sf_handle config = sf_config();
+      sf_handle state = sf_json_get(config, "state");
+      if (state > 0) {
+        sf_handle stored = sf_json_get(state, "content");
+        if (stored > 0) return 2;
+      }
+      sf_handle args = sf_json_parse(ARGS, sizeof(ARGS) - 1);
+      if (args < 0) return 10;
+      sf_handle reply = sf_host_call("env.exec", args, 30000);
+      sf_drop(args);
+      if (reply < 0) return reply;
+      sf_handle content = sf_json_get(reply, "content");
+      if (content < 0) return 11;
+      sf_handle next = sf_json_object();
+      sf_json_set(next, "content", content);
+      sf_drop(content);
+      sf_drop(reply);
+      sf_handle put = sf_json_object();
+      sf_json_set(put, "state", next);
+      sf_handle ack = sf_host_call("loop.state.put", put, 10000);
+      sf_drop(put);
+      if (ack < 0) return ack;
+      sf_drop(ack);
+      return 1;
     }
     """
   end

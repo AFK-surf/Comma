@@ -219,7 +219,7 @@ defmodule BridgeForTeamsWeb.DashboardMembers do
         resource_label: resource_label(resource_id),
         result: "denied",
         reason: :forbidden,
-        request_id: Ecto.UUID.generate(),
+        request_id: SystemsRuntime.Proc.uuid(),
         surface: "members",
         metadata: metadata
       })
@@ -231,7 +231,11 @@ defmodule BridgeForTeamsWeb.DashboardMembers do
   defp resource_label(user_id), do: "Org member #{String.slice(user_id, 0, 8)}"
 
   defp audit_opts(user) do
-    [actor_user_id: user.id, actor_label: actor_label(user), request_id: Ecto.UUID.generate()]
+    [
+      actor_user_id: user.id,
+      actor_label: actor_label(user),
+      request_id: SystemsRuntime.Proc.uuid()
+    ]
   end
 
   defp actor_label(user), do: trimmed(user.email) || trimmed(user.name) || user.id

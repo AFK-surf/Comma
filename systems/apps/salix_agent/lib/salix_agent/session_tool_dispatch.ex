@@ -141,7 +141,7 @@ defmodule SalixAgent.SessionToolDispatch do
   defp authorize_triage(decisions, ctx) do
     if ctx[:triage_scopes] not in [nil, []] or
          get_in(ctx, [:trusted_origin, "triage_investigation"]) do
-      module = Application.get_env(:salix_agent, :triage_investigation_authority_mod)
+      module = SystemsRuntime.get_env(:salix_agent, :triage_investigation_authority_mod)
 
       Enum.map(decisions, fn
         {:execute, call} ->
@@ -167,7 +167,7 @@ defmodule SalixAgent.SessionToolDispatch do
   defp authorize_organization(decisions, ctx) do
     if ctx[:organization_scopes] not in [nil, []] or
          get_in(ctx, [:trusted_origin, "meeting_preparation"]) do
-      module = Application.get_env(:salix_agent, :meeting_preparation_mod)
+      module = SystemsRuntime.get_env(:salix_agent, :meeting_preparation_mod)
 
       Enum.map(decisions, fn
         {:execute, call} ->

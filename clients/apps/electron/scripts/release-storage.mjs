@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -13,28 +13,33 @@ const channelMetadata = {
       "assets.staging.json",
       "RELEASES-staging",
       "dmg.staging.txt",
+      "setup.staging.txt",
       "releases.staging.json",
     ],
     feed: "releases.staging.json",
     manifest: "assets.staging.json",
     dmgPointer: "dmg.staging.txt",
+    setupPointer: "setup.staging.txt",
   },
   "prod-pending": {
     active: [
       "assets.prod.pending.json",
       "RELEASES-prod.pending",
       "dmg.prod.pending.txt",
+      "setup.prod.pending.txt",
       "releases.prod.pending.json",
     ],
     excluded: [
       "assets.prod.json",
       "RELEASES-prod",
       "dmg.prod.txt",
+      "setup.prod.txt",
       "releases.prod.json",
     ],
     feed: "releases.prod.pending.json",
     manifest: "assets.prod.pending.json",
     dmgPointer: "dmg.prod.pending.txt",
+    setupPointer: "setup.prod.pending.txt",
   },
 };
 
@@ -210,20 +215,31 @@ function parseAssetManifest(path) {
   });
 }
 
-function parseDmgPointer(path, { required }) {
+/** The artifact a pointer file names: a macOS DMG (`dmg.*.txt`) or a Windows installer (`setup.*.txt`). */
+const pointerKinds = {
+  dmg: { label: "DMG", suffix: ".dmg" },
+  setup: { label: "Windows installer", suffix: "-Setup.exe" },
+};
+
+function parsePointer(path, { required, kind = "dmg" }) {
+  const { label, suffix } = pointerKinds[kind];
   if (!existsSync(path)) {
     if (required) {
-      throw new Error(`DMG pointer not found: ${path}`);
+      throw new Error(`${label} pointer not found: ${path}`);
     }
     return undefined;
   }
 
   const fileName = readFileSync(path, "utf8").trim();
   assertArtifactFileName(fileName, path);
-  if (!fileName.endsWith(".dmg")) {
-    throw new Error(`DMG pointer must reference a .dmg artifact: ${path}`);
+  if (!fileName.endsWith(suffix)) {
+    throw new Error(`${label} pointer must reference a ${suffix} artifact: ${path}`);
   }
   return fileName;
+}
+
+function parseDmgPointer(path, { required }) {
+  return parsePointer(path, { required, kind: "dmg" });
 }
 
 function headRemoteObject(storage, fileName, { allowMissing = false } = {}) {
@@ -242,14 +258,15 @@ function headRemoteObject(storage, fileName, { allowMissing = false } = {}) {
 
   if (result.status !== 0) {
     const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
-    if (allowMissing && /(?:\b404\b|NoSuchKey|Not Found|not found)/i.test(stderr)) {
+    const missing = /(?:\b404\b|NoSuchKey|Not Found|not found)/i.test(stderr);
+    if (allowMissing && missing) {
       return undefined;
     }
 
     throw new Error(
       `AWS CLI exited with status ${result.status}: ${formatCommand(
         getAwsArguments(storage, awsArguments)
-      )}${stderr ? `\n${stderr}` : ""}`
+      )}${stderr ? `\n${stderr}` : ""}${missing ? `\n${listReleaseObjects(storage, fileName)}` : ""}`
     );
   }
 
@@ -265,6 +282,46 @@ function headRemoteObject(storage, fileName, { allowMissing = false } = {}) {
   }
 
   return { size: head.ContentLength };
+}
+
+/**
+ * What the bucket holds now of the release a missing object belongs to: whether
+ * the upload never landed, or landed under another name or size.
+ */
+function listReleaseObjects(storage, fileName) {
+  const release = fileName.replace(/(?:-full|-delta)?\.[a-z]+$/i, "");
+  const prefix = getObjectKey(storage, release);
+  const result = runAws(
+    storage,
+    [
+      "s3api",
+      "list-objects-v2",
+      "--bucket",
+      storage.bucket,
+      "--prefix",
+      prefix,
+      "--output",
+      "json",
+    ],
+    { allowFailure: true, capture: true }
+  );
+  if (result.status !== 0) {
+    return `Listing ${prefix}* failed: ${String(result.stderr ?? "").trim()}`;
+  }
+  let listing;
+  try {
+    listing = JSON.parse(result.stdout || "{}");
+  } catch {
+    return `Listing ${prefix}* returned: ${String(result.stdout).trim()}`;
+  }
+  const objects = Array.isArray(listing?.Contents) ? listing.Contents : [];
+  return objects.length === 0
+    ? `The bucket holds no object under ${prefix}*.`
+    : `The bucket holds under ${prefix}*:\n${objects
+        .map((object) =>
+          `  ${object.Key} ${object.Size} bytes ${object.LastModified ?? ""}`.trimEnd()
+        )
+        .join("\n")}`;
 }
 
 async function getRemoteHashes(storage, fileName) {
@@ -353,11 +410,17 @@ function verifyRemoteManifestAssets(storage, manifestPath, localArtifactDir) {
   }
 }
 
-function verifyRemoteDmg(storage, pointerPath, localArtifactDir, { required }) {
-  const fileName = parseDmgPointer(pointerPath, { required });
+function verifyRemoteDmg(
+  storage,
+  pointerPath,
+  localArtifactDir,
+  { required, kind = "dmg" }
+) {
+  const fileName = parsePointer(pointerPath, { required, kind });
   if (!fileName) {
     return;
   }
+  const { label } = pointerKinds[kind];
 
   const localPath = resolve(localArtifactDir, fileName);
   const expectedSize =
@@ -367,11 +430,11 @@ function verifyRemoteDmg(storage, pointerPath, localArtifactDir, { required }) {
   const head = headRemoteObject(storage, fileName);
 
   if (head.size <= 0) {
-    throw new Error(`Remote DMG is empty: ${fileName}`);
+    throw new Error(`Remote ${label} is empty: ${fileName}`);
   }
   if (expectedSize !== undefined && head.size !== expectedSize) {
     throw new Error(
-      `Remote DMG size mismatch for ${fileName}: expected ${expectedSize}, got ${head.size}`
+      `Remote ${label} size mismatch for ${fileName}: expected ${expectedSize}, got ${head.size}`
     );
   }
 }
@@ -404,6 +467,17 @@ function uploadMetadataFile(storage, releaseDir, fileName, { required }) {
   uploadMetadataPath(storage, path, fileName);
 }
 
+/** Each file of a release directory with its size and modification time. */
+function describeReleaseDirectory(releaseDir) {
+  return readdirSync(releaseDir)
+    .toSorted()
+    .map((name) => {
+      const stats = statSync(resolve(releaseDir, name));
+      return `  ${name} ${stats.isFile() ? `${stats.size} bytes` : "(not a file)"} ${stats.mtime.toISOString()}`;
+    })
+    .join("\n");
+}
+
 async function publishRelease(storage, releaseDir, metadata, { requireDmg }) {
   const feedPath = resolve(releaseDir, metadata.feed);
   if (!existsSync(feedPath)) {
@@ -417,11 +491,24 @@ async function publishRelease(storage, releaseDir, metadata, { requireDmg }) {
     "sync",
     releaseDir,
     getObjectUri(storage),
-    "--only-show-errors",
+    // Each file it uploads is logged: a release that then misses one shows
+    // whether the sync sent it.
+    "--no-progress",
   ];
   for (const fileName of excludedMetadata) {
     syncArguments.push("--exclude", fileName);
   }
+
+  // What the sync compares, logged before it runs: on 10-13 and 10-20 it sent
+  // every asset but the DMG and exited 0, and the logs could not show whether
+  // the DMG was in the release directory or already listed in the bucket.
+  console.log(
+    `Release directory before the upload:\n${describeReleaseDirectory(releaseDir)}`
+  );
+  const dmgName = parseDmgPointer(resolve(releaseDir, metadata.dmgPointer), {
+    required: false,
+  });
+  if (dmgName) console.log(listReleaseObjects(storage, dmgName));
 
   console.log("Uploading release assets before metadata...");
   runAws(storage, syncArguments);
@@ -435,6 +522,10 @@ async function publishRelease(storage, releaseDir, metadata, { requireDmg }) {
   );
   verifyRemoteDmg(storage, resolve(releaseDir, metadata.dmgPointer), releaseDir, {
     required: requireDmg,
+  });
+  verifyRemoteDmg(storage, resolve(releaseDir, metadata.setupPointer), releaseDir, {
+    required: false,
+    kind: "setup",
   });
 
   console.log("Publishing secondary metadata...");
@@ -481,7 +572,7 @@ function promoteOptionalMetadataFile(storage, pendingName, activeName) {
   ]);
 }
 
-async function promoteProduction(storage) {
+async function promoteProduction(storage, { requireDmg }) {
   const verificationDir = await mkdtemp(join(tmpdir(), "comma-prod-signoff-"));
 
   try {
@@ -504,7 +595,13 @@ async function promoteProduction(storage) {
       storage,
       verificationDir,
       pendingDmgPointerName,
-      { required: true }
+      { required: requireDmg }
+    );
+    const setupPointerPath = await downloadRemoteMetadata(
+      storage,
+      verificationDir,
+      "setup.prod.pending.txt",
+      { required: false }
     );
 
     console.log("Verifying every package referenced by the pending feed...");
@@ -520,14 +617,24 @@ async function promoteProduction(storage) {
         }
       }
     }
-    verifyRemoteDmg(storage, dmgPointerPath, verificationDir, { required: true });
+    if (dmgPointerPath) {
+      verifyRemoteDmg(storage, dmgPointerPath, verificationDir, { required: true });
+    }
+    if (setupPointerPath) {
+      verifyRemoteDmg(storage, setupPointerPath, verificationDir, {
+        required: true,
+        kind: "setup",
+      });
+    }
 
     console.log("Promoting secondary production metadata...");
     if (manifestPath) {
       uploadMetadataPath(storage, manifestPath, "assets.prod.json");
     }
     promoteOptionalMetadataFile(storage, "RELEASES-prod.pending", "RELEASES-prod");
-    uploadMetadataPath(storage, dmgPointerPath, "dmg.prod.txt");
+    if (dmgPointerPath) uploadMetadataPath(storage, dmgPointerPath, "dmg.prod.txt");
+    if (setupPointerPath)
+      uploadMetadataPath(storage, setupPointerPath, "setup.prod.txt");
 
     console.log("Promoting the active production feed last...");
     uploadMetadataPath(storage, feedPath, "releases.prod.json");
@@ -541,12 +648,15 @@ async function main() {
   const options = parseOptions(values);
   const storage = getStorage(options);
 
+  // A Windows feed has no DMG (`--dmg none`); a macOS one must.
+  const requireDmg = options.get("--dmg") !== "none";
+
   if (command === "publish-staging") {
     await publishRelease(
       storage,
       resolve(requireOption(options, "--release-dir")),
       channelMetadata.staging,
-      { requireDmg: true }
+      { requireDmg }
     );
     return;
   }
@@ -556,18 +666,18 @@ async function main() {
       storage,
       resolve(requireOption(options, "--release-dir")),
       channelMetadata["prod-pending"],
-      { requireDmg: true }
+      { requireDmg }
     );
     return;
   }
 
   if (command === "promote-production") {
-    await promoteProduction(storage);
+    await promoteProduction(storage, { requireDmg });
     return;
   }
 
   throw new Error(
-    "Usage: release-storage.mjs <publish-staging|publish-production-pending|promote-production> --endpoint <url> --bucket <name> --prefix <path> [--release-dir <path>]"
+    "Usage: release-storage.mjs <publish-staging|publish-production-pending|promote-production> --endpoint <url> --bucket <name> --prefix <path> [--release-dir <path>] [--dmg required|none]"
   );
 }
 

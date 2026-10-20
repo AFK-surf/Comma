@@ -97,6 +97,10 @@ func buildBundle(ctx context.Context, spec release.EnvironmentSpec, gcloud, kube
 	})
 	redisURL := stringField(redis, "REDIS_URL")
 	setNested(salix, "comma", commaBundleConfig(stringField(db, "BRIDGE_DATABASE_URL"), redisURL))
+	// The screen stream TURN key has its own environment secrets until it moves into SALIX_CONFIG_JSON.
+	if keyID, apiToken := os.Getenv("COMMA_SCREEN_STREAM_TURN_KEY_ID"), os.Getenv("COMMA_SCREEN_STREAM_TURN_API_TOKEN"); keyID != "" && apiToken != "" {
+		setNested(salix, "comma", map[string]any{"screen_stream_turn": map[string]any{"key_id": keyID, "api_token": apiToken}})
+	}
 	// Salix control metadata (tenant API keys and cutover markers) shares the
 	// same physical database as BridgeForTeams and Comma, exactly as Comma does:
 	// ownership comes from distinct table names plus an isolated
@@ -408,10 +412,14 @@ func parseDatabaseIdentity(raw string) (databaseIdentity, error) {
 }
 
 func commaBundleConfig(databaseURL, redisURL string) map[string]any {
-	return map[string]any{
+	config := map[string]any{
 		"database": map[string]any{"url": databaseURL},
 		"auth":     map[string]any{"redis_url": redisURL},
 	}
+	if key, host := os.Getenv("COMMA_POSTHOG_KEY"), os.Getenv("COMMA_POSTHOG_HOST"); key != "" && host != "" {
+		config["analytics"] = map[string]any{"api_key": key, "host": host}
+	}
+	return config
 }
 
 func releaseNetworkConfig(config map[string]any) (string, string, string, string, string, error) {

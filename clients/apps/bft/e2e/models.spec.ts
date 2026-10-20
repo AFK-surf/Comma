@@ -1,7 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import {
   context,
-  csrf,
   injectCsrfToken,
   ok,
   routeApi,
@@ -10,24 +9,21 @@ import {
 
 const base = "/orgs/acme/settings/models";
 
-const models = {
-  catalog_status: "ok",
-  catalog: [{ template_id: "t-sonnet", label: "Claude Sonnet" }],
-  allowed_template_ids: [],
-  default_template_id: "tpl-1",
-  default_router_template_id: null,
-  default_options: { router: [], worker: [] },
-  platform_defaults: { router: null, worker: null },
+const sonnet = {
+  key: "catalog:claude-sonnet-4-6",
+  choice: { kind: "catalog", model: "claude-sonnet-4-6" },
+  label: "Claude Sonnet",
+  vendor: "anthropic",
 };
 
-const template = {
-  template_id: "tpl-1",
-  name: "Team Codex",
-  model: "gpt-5.6-sol",
-  model_display_name: "GPT-5.6 Sol",
-  model_vendor: "openai",
-  max_tokens: 65536,
-  subscription_provider: "codex",
+const models = {
+  catalog_status: "ok",
+  catalog: [sonnet],
+  allowed_models: [],
+  default_router_model: null,
+  default_task_model: sonnet,
+  default_options: { router: [sonnet], task: [sonnet] },
+  platform_defaults: { router: null, task: null },
 };
 
 const codex = {
@@ -81,7 +77,6 @@ async function openModels(
     if (request.method !== "GET") return undefined;
     if (request.path === "/orgs/acme/context") return ok(context);
     if (request.path === `${base}`) return ok(models);
-    if (request.path === `${base}/templates`) return ok({ templates: [template] });
     if (request.path === `${base}/accounts`) return ok({ accounts, next: null });
     return undefined;
   });
@@ -98,90 +93,6 @@ const accounts = (page: Page) =>
 // The switch input is visually hidden inside its label; click the label like a user.
 const toggleFor = (page: Page, name: string) =>
   page.locator("label").filter({ has: page.getByRole("switch", { name }) });
-
-test("templates are created from fetched models and the catalog reloads", async ({
-  page,
-}) => {
-  const created = { ...template, template_id: "tpl-2", name: "Internal alias" };
-  const requests = await openModels(page, (request) => {
-    if (request.path === `${base}/templates/discover`) {
-      return ok({
-        models: [{ id: "gpt-test-codex", name: "Codex Test Model", vendor: "openai" }],
-        truncated: true,
-      });
-    }
-    if (request.method === "POST" && request.path === `${base}/templates`) {
-      return ok({ templates: [template, created] });
-    }
-    return undefined;
-  });
-
-  const row = page.getByRole("listitem").filter({ hasText: "Team Codex" });
-  await expect(row).toContainText("GPT-5.6 Sol · Codex subscription");
-  // The organization's worker default is marked.
-  await expect(row).toContainText("Default");
-
-  await page.getByRole("button", { name: "Create template" }).click();
-  await page.getByRole("textbox", { name: "Template name" }).fill("Internal alias");
-  await page.getByRole("button", { name: "Fetch models" }).click();
-  await expect(page.getByText("The result is limited to 1,000 models.")).toBeVisible();
-  await page.getByRole("textbox", { name: "Model ID" }).fill("gpt-test-codex");
-  await expect(page.getByText("Display name: Codex Test Model")).toBeVisible();
-  await page.getByRole("button", { name: "Save template" }).click();
-
-  await expect(
-    page.getByRole("listitem").filter({ hasText: "Internal alias" })
-  ).toBeVisible();
-  expect(
-    writes(requests).map(({ path, body, csrf: token }) => ({ path, body, token }))
-  ).toEqual([
-    {
-      path: `${base}/templates/discover`,
-      body: { subscription_provider: "codex" },
-      token: csrf,
-    },
-    {
-      path: `${base}/templates`,
-      body: {
-        name: "Internal alias",
-        subscription_provider: "codex",
-        model: "gpt-test-codex",
-        model_display_name: "Codex Test Model",
-        model_vendor: "openai",
-        max_tokens: "65536",
-      },
-      token: csrf,
-    },
-  ]);
-  // The allowed models above are read again so the new template is offered.
-  await expect
-    .poll(() => requests.filter((request) => request.path === base).length)
-    .toBe(2);
-});
-
-test("a template in use is not deleted and the server says why", async ({ page }) => {
-  await openModels(page, (request) =>
-    request.method === "DELETE"
-      ? {
-          status: 409,
-          body: {
-            ok: false,
-            error: {
-              code: "conflict",
-              message:
-                "Remove this template from the organization's default and allowed models first.",
-            },
-          },
-        }
-      : undefined
-  );
-  await page.getByRole("button", { name: "Delete Team Codex" }).click();
-  await page.getByRole("button", { name: "Delete template" }).click();
-  await expect(page.getByRole("alert")).toHaveText(
-    "Remove this template from the organization's default and allowed models first."
-  );
-  await expect(page.getByRole("dialog")).toBeVisible();
-});
 
 test("an import reads the pasted credentials as JSON before sending them", async ({
   page,
@@ -392,7 +303,7 @@ test("Codex connects through a polled device code; the old address opens the sec
     page.getByRole("link", { name: "Open Codex authorization" })
   ).toHaveAttribute("href", "https://auth.example.test/device");
   // At least five seconds between polls; the second one connects.
-  await expect(page.getByRole("dialog")).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(writes(requests).map(({ body }) => body)).toEqual([
     { provider: "codex" },
     { code: "" },
@@ -452,7 +363,7 @@ test("usage lists the bound workloads and says when others are hidden", async ({
             {
               project: { id: "p-1", name: "Support Desk" },
               workload_id: "wl-1",
-              href: "/orgs/acme/projects/p-1/devices?runtime_auth_target=wl-1",
+              href: "/orgs/acme/projects/p-1/devices",
             },
           ],
           hidden_count: 2,
@@ -465,12 +376,86 @@ test("usage lists the bound workloads and says when others are hidden", async ({
   const dialog = page.getByRole("dialog", { name: "Account usage" });
   await expect(dialog.getByRole("link", { name: "Support Desk" })).toHaveAttribute(
     "href",
-    "/orgs/acme/projects/p-1/devices?runtime_auth_target=wl-1"
+    "/orgs/acme/projects/p-1/devices"
   );
   await expect(dialog).toContainText("Workload wl-1");
   await expect(dialog).toContainText(
     "Other projects you cannot open also use this account."
   );
+});
+
+test("a selected model stays selected when an account change stops serving it", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 1400 });
+  const plain = { ...sonnet, served_by: null, plans: [], key_sources: [] };
+  const paid = {
+    ...plain,
+    key: `${sonnet.key}+paid`,
+    choice: { ...sonnet.choice, allow_paid: true },
+    served_by: "api_key",
+    key_sources: ["Custom"],
+  };
+  const modelsWith = (option: unknown) => ({
+    ...models,
+    servable_status: "ok",
+    catalog: [option],
+    default_task_model: null,
+    default_options: { router: [option], task: [option] },
+  });
+  // The gateway serves Sonnet pay-per-use until it is disabled.
+  let current = modelsWith(paid);
+  const requests = await openModels(page, (request) => {
+    if (request.method === "GET" && request.path === base) return ok(current);
+    if (request.method === "PATCH" && request.path === `${base}/accounts/acct-key`) {
+      current = modelsWith(plain);
+      return ok({ accounts: [codex, { ...gateway, disabled: true }], next: null });
+    }
+    return request.method === "PUT" ? ok(current) : undefined;
+  });
+
+  await page.getByText("Only the models I select").click();
+  // The styled box covers the input and takes the click, like a user's.
+  await page.getByRole("checkbox", { name: "Claude Sonnet" }).check({ force: true });
+  await page.getByRole("button", { name: /Default Task model$/ }).click();
+  await page
+    .getByRole("option", { name: /Claude Sonnet · Pay-per-use: Custom/ })
+    .click();
+  await expect(page.getByRole("button", { name: /Default Task model$/ })).toContainText(
+    "Pay-per-use: Custom"
+  );
+
+  // Disabling the only key reads again what serves each model.
+  const reread = page.waitForRequest(
+    (request) =>
+      request.method() === "GET" &&
+      new URL(request.url()).pathname.endsWith("/orgs/acme/settings/models")
+  );
+  await toggleFor(page, "Enable Team gateway").click();
+  await page.getByRole("button", { name: "Disable", exact: true }).click();
+  await reread;
+  await expect(
+    page.getByRole("button", { name: "Hide No account serves these" })
+  ).toBeVisible();
+
+  // The unsaved choice keeps its data: listed as served by no account, still
+  // selected, and saved as it was rather than widening to every model.
+  const kept = page.getByRole("checkbox", { name: "Claude Sonnet", checked: true });
+  await expect(kept).toHaveCount(1);
+  await expect(kept).toBeEnabled();
+  await expect(page.getByText("Pay-per-use: Custom")).toBeVisible();
+  await page.getByRole("button", { name: "Save" }).click();
+  expect(
+    writes(requests)
+      .filter((request) => request.method === "PUT")
+      .map((request) => request.body)
+  ).toEqual([
+    {
+      allowed_models: [paid.choice],
+      default_task_model: paid.choice,
+      default_router_model: null,
+    },
+  ]);
 });
 
 test("the page fits 900 px in Chinese", async ({ page }) => {

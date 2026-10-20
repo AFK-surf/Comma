@@ -1,5 +1,5 @@
 /* Static SVG markup for the status-indicator segments, pre-rendered from the
-   Comma central icons (CircleDashedIcon, LoaderIcon, BubbleAlertIcon,
+   Comma central icons (LoaderIcon, BubbleAlertIcon,
    CircleCheckIcon, CircleXIcon in ../icons).
 
    These are inlined as strings so the app bundle never imports
@@ -11,13 +11,11 @@
    import { createElement } from 'react';
    import { renderToStaticMarkup } from 'react-dom/server';
    import * as icons from './src/components/icons';
-   console.log(renderToStaticMarkup(createElement(icons.CircleDashedIcon)));
+   console.log(renderToStaticMarkup(createElement(icons.LoaderIcon)));
    " (from clients/packages/ui, once per icon)
 */
 
 export const statusIconMarkup = {
-  backlog:
-    '<svg data-comma-icon="" aria-hidden="true" width="24px" height="24px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><mask id="round-outlined-radius-2-stroke-2-IconCircleDashed" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24"><rect width="24" height="24" fill="#000"></rect><g fill="none" style="color:#fff"><path d="M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 4"></path></g></mask><rect width="24" height="24" fill="currentColor" mask="url(#round-outlined-radius-2-stroke-2-IconCircleDashed)"></rect></svg>',
   cancel:
     '<svg data-comma-icon="" aria-hidden="true" width="24px" height="24px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><mask id="round-outlined-radius-2-stroke-2-IconCircleX" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24"><rect width="24" height="24" fill="#000"></rect><g fill="none" style="color:#fff"><path d="M15 9L9 15M15 15L9 9M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></g></mask><rect width="24" height="24" fill="currentColor" mask="url(#round-outlined-radius-2-stroke-2-IconCircleX)"></rect></svg>',
   done: '<svg data-comma-icon="" aria-hidden="true" width="24px" height="24px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><mask id="round-outlined-radius-2-stroke-2-IconCircleCheck" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24"><rect width="24" height="24" fill="#000"></rect><g fill="none" style="color:#fff"><path d="M15 9.5L10.5 15L8.5 13M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></g></mask><rect width="24" height="24" fill="currentColor" mask="url(#round-outlined-radius-2-stroke-2-IconCircleCheck)"></rect></svg>',

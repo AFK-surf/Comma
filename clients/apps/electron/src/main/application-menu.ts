@@ -10,10 +10,6 @@ type Options = {
   isMainFocused: () => boolean;
   dispatch: (id: ApplicationMenuCommand) => void;
   openMain: () => unknown;
-  openSideChat: () => unknown;
-  openSideChatBackground?: () => unknown;
-  /** False hides Open Side Chat, as Side Chat is turned off in General. */
-  sideChatEnabled: () => boolean;
 };
 const accelerators = (entries: ApplicationMenuItems) =>
   JSON.stringify(
@@ -54,6 +50,7 @@ export function installApplicationMenu(options: Options) {
     Home: "首页",
     Inbox: "收件箱",
     Tasks: "任务",
+    Stations: "工作站",
     Plugins: "插件",
     "Search Tasks…": "搜索任务…",
     Back: "后退",
@@ -61,8 +58,6 @@ export function installApplicationMenu(options: Options) {
     "Show Left Sidebar": "显示左侧栏",
     "Show Right Sidebar": "显示右侧栏",
     "Show Comma": "显示 Comma",
-    "Open Side Chat": "打开 Side Chat",
-    "Side Chat Background…": "Side Chat 背景调试…",
     "Keyboard Shortcuts…": "快捷键…",
     "Check for Updates…": "检查更新…",
   };
@@ -90,8 +85,6 @@ export function installApplicationMenu(options: Options) {
         );
       }
     }
-    const sideChatItem = menu.getMenuItemById("open-side-chat");
-    if (sideChatItem) sideChatItem.visible = options.sideChatEnabled();
   }
 
   function build() {
@@ -108,6 +101,7 @@ export function installApplicationMenu(options: Options) {
           ? `${t(label)}    ${state.shortcutLabel}`
           : t(label),
         enabled: (state?.enabled ?? false) && options.isMainFocused(),
+        // Shown only where it can be used: resuming a paused recording.
         ...(id === "record-resume" ? { visible: state?.enabled ?? false } : {}),
         ...(id === "record-pause"
           ? {
@@ -183,17 +177,6 @@ export function installApplicationMenu(options: Options) {
           command("toggle-right-sidebar", "Show Right Sidebar"),
           separator,
           { id: "toggle-devtools", role: "toggleDevTools" },
-          ...(options.openSideChatBackground
-            ? [
-                {
-                  id: "side-chat-background-debug",
-                  label: t("Side Chat Background…"),
-                  click: () => {
-                    void options.openSideChatBackground?.();
-                  },
-                },
-              ]
-            : []),
           separator,
           { role: "zoomIn" },
           { role: "zoomOut" },
@@ -210,14 +193,6 @@ export function installApplicationMenu(options: Options) {
             label: t("Show Comma"),
             click: () => {
               void options.openMain();
-            },
-          },
-          {
-            id: "open-side-chat",
-            label: t("Open Side Chat"),
-            visible: options.sideChatEnabled(),
-            click: () => {
-              void options.openSideChat();
             },
           },
           separator,
@@ -243,5 +218,4 @@ export function installApplicationMenu(options: Options) {
   app.on("browser-window-focus", update);
   app.on("browser-window-blur", update);
   build();
-  return { update };
 }

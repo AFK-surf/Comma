@@ -1,0 +1,59 @@
+id: swift-test-sleep
+language: swift
+severity: error
+message: "A test sleeps real time."
+note: |
+  Wait for the event (an expectation the code fulfills, an awaited result),
+  or drive the code with a clock the test controls.
+metadata:
+  category: sleep
+rule:
+  any:
+    - all:
+        - kind: call_expression
+        - regex: "^(Thread\\.sleep|usleep|sleep|Task\\.sleep|try await Task\\.sleep|RunLoop\\.(current|main)\\.run)\\b"
+files:
+  - "systems/connector/salix-connect/native/**/Tests/**/*.swift"
+  - "clients/packages/apple-core/Tests/**/*.swift"
+---
+id: swift-test-deadline
+language: swift
+severity: error
+message: "A test bounds a wait by real time."
+note: |
+  The wait fails when the machine is slower than the number. Await the
+  result itself; the job's hang guard is the only bound.
+metadata:
+  category: deadline
+rule:
+  any:
+    - all:
+        - kind: call_expression
+        - regex: "^(wait|waitForExpectations|XCTWaiter\\(\\)\\.wait|XCTWaiter\\.wait|fulfillment)\\b"
+        - regex: "timeout:"
+    - all:
+        - kind: call_expression
+        - regex: "\\.asyncAfter\\("
+files:
+  - "systems/connector/salix-connect/native/**/Tests/**/*.swift"
+  - "clients/packages/apple-core/Tests/**/*.swift"
+---
+id: swift-test-clock
+language: swift
+severity: error
+message: "A test reads the machine clock."
+note: |
+  Pass the code a clock or a fixed Date.
+metadata:
+  category: clock
+rule:
+  any:
+    - all:
+        - kind: call_expression
+        - regex: "^(Date\\(\\)|CFAbsoluteTimeGetCurrent\\(\\)|DispatchTime\\.now\\(\\)|ContinuousClock\\(\\)\\.now|SuspendingClock\\(\\)\\.now)$"
+    - all:
+        - kind: navigation_expression
+        - regex: "^(Date\\.now|ProcessInfo\\.processInfo\\.systemUptime)$"
+files:
+  - "systems/connector/salix-connect/native/**/Tests/**/*.swift"
+  - "clients/packages/apple-core/Tests/**/*.swift"

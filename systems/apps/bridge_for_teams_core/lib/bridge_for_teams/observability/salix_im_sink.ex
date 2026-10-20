@@ -12,7 +12,14 @@ defmodule BridgeForTeams.Observability.SalixIMSink do
     records: [:event],
     domains: ["conversation", "integration"],
     sources: ["salix.im"],
-    resource_types: ["feishu_connect", "feishu_message", "slack_connect", "slack_message"],
+    resource_types: [
+      "feishu_connect",
+      "feishu_message",
+      "lark_connect",
+      "lark_message",
+      "slack_connect",
+      "slack_message"
+    ],
     evidence_allowlist: [
       "app_id",
       "callback_mode",
@@ -44,6 +51,26 @@ defmodule BridgeForTeams.Observability.SalixIMSink do
 
   @im_evidence_keys_by_provider %{
     "feishu" => [
+      :provider,
+      :source,
+      :tenant_id,
+      :group_id,
+      :connect_id,
+      :app_id,
+      :provider_event_type,
+      :provider_event_id,
+      :request_id,
+      :message_id,
+      :source_message_id,
+      :reply_message_id,
+      :chat_id,
+      :chat_type,
+      :callback_mode,
+      :delivery_state,
+      :operation_api,
+      :receive_id_type
+    ],
+    "lark" => [
       :provider,
       :source,
       :tenant_id,

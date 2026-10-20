@@ -159,8 +159,9 @@ defmodule Salix.Control.GroupApiKeys do
   end
 
   defp notify_voice_key(key_id, message) do
-    if Process.whereis(@voice_pg) do
-      for pid <- :pg.get_members(@voice_pg, {:voice_key, key_id}), do: send(pid, message)
+    if SystemsRuntime.Proc.whereis(@voice_pg) do
+      for pid <- :pg.get_members(@voice_pg, {:voice_key, key_id}),
+          do: SystemsRuntime.Proc.send(pid, message)
     end
 
     :ok
@@ -298,7 +299,9 @@ defmodule Salix.Control.GroupApiKeys do
     do: {:error, {:unavailable, "could not allocate a unique key"}}
 
   defp insert_with_retries(group_id, tenant_id, name, expires_at, actor, kind, retries) do
-    raw = key_prefix(kind) <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+    raw =
+      key_prefix(kind) <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
+
     now = Store.now()
 
     record = %{

@@ -29,6 +29,21 @@ defmodule Salix.Control.Plugins do
     mcp-tool:im:get-read-status
     offline_access
   )
+  @lark_mcp_scopes ~w(
+    mcp-tool:common:get-user
+    mcp-tool:common:search-user
+    mcp-tool:docs:search-doc
+    mcp-tool:docs:fetch-doc
+    mcp-tool:docs:get-comments
+    mcp-tool:docs:list-docs-v2
+    mcp-tool:im:search-groups
+    mcp-tool:im:get-group-members
+    mcp-tool:im:get-messages
+    mcp-tool:im:get-thread-messages
+    mcp-tool:im:search-messages
+    mcp-tool:im:get-read-status
+    offline_access
+  )
   @github_mcp_scopes ~w(repo read:org read:user user:email)
   @google_workspace_mcp_scopes ~w(
     https://www.googleapis.com/auth/gmail.readonly
@@ -67,6 +82,52 @@ defmodule Salix.Control.Plugins do
   )
 
   @system_plugins [
+    %{
+      "plugin_id" => "x-twitter",
+      "name" => "X",
+      "description" => "Read X posts, search, and use account tools with OAuth permissions.",
+      "ui" => %{"brand" => "x"},
+      "default_enabled" => false,
+      "setup" => %{
+        "type" => "integration",
+        "default_connection" => "x-managed",
+        "connections" => [
+          %{
+            "id" => "x-managed",
+            "kind" => "managed_oauth",
+            "label" => "X OAuth",
+            "provider" => "x",
+            "alias" => "x",
+            "credential_env_var" => "X_BEARER_TOKEN",
+            "scopes" =>
+              ~w(tweet.read tweet.write users.read media.write follows.read follows.write dm.read dm.write bookmark.read bookmark.write offline.access),
+            "disconnect_on_uninstall" => false
+          },
+          %{
+            "id" => "x-api-key",
+            "kind" => "mcp_api_key",
+            "label" => "X read-only API",
+            "config_key" => "X_BEARER_TOKEN",
+            "credential_label" => "App-only Bearer Token",
+            "help_url" => "https://docs.x.com/tools/mcp#simple-route-app-only-bearer"
+          }
+        ],
+        "mcps" => [
+          %{
+            "mcp_id" => "mcp1_0000000000000000009",
+            "name" => "X",
+            "alias" => "x",
+            "target_ref" => "remote:x",
+            "placement" => "server",
+            "auth_refs" => ["x-managed", "x-api-key"]
+          }
+        ]
+      },
+      "refs" => %{
+        "tool_refs" => ["mcp.x.*"],
+        "mcp_refs" => [%{"mcp_id" => "mcp1_0000000000000000009"}]
+      }
+    },
     %{
       "plugin_id" => "core-runtime",
       "name" => "Core Runtime",
@@ -109,7 +170,7 @@ defmodule Salix.Control.Plugins do
       "default_enabled" => true,
       "refs" => %{
         "tool_refs" =>
-          ~w(agent.list agent.get agent.create_worker agent.update agent.rebind_runtime agent.archive)
+          ~w(agent.list agent.get agent.models agent.create_worker agent.update agent.rebind_runtime agent.archive)
       }
     },
     %{
@@ -127,11 +188,11 @@ defmodule Salix.Control.Plugins do
       "plugin_id" => "environment-control",
       "name" => "Environment Control",
       "description" =>
-        "Connector-backed environment discovery, command execution, file copy and process control.",
+        "Connector-backed environment discovery, command execution, file copy, process control and local-network gateway requests.",
       "default_enabled" => true,
       "refs" => %{
         "tool_refs" =>
-          ~w(device.list device.get env.runtime_targets env.exec env.copy env.computer_use env.process_list env.process_write env.process_tail)
+          ~w(device.list device.get env.exec env.copy env.computer_use env.process_list env.process_write env.process_tail device.lan_request device.lan_discover device.miio_request device.gree_request device.secret_save device.secret_list device.secret_delete)
       }
     },
     %{
@@ -146,10 +207,10 @@ defmodule Salix.Control.Plugins do
       "plugin_id" => "virtual-compute",
       "name" => "Virtual Compute",
       "description" =>
-        "Environment-bound virtual machine workspace, build, service export/import and route controls.",
-      "default_enabled" => false,
+        "Discover workspace Workloads and use their files and processes. Service routing requires a separate Grant.",
+      "default_enabled" => true,
       "ui" => %{"classification" => "compute", "resource_lifecycle" => "independent"},
-      "refs" => %{"tool_refs" => ["compute.*"]}
+      "refs" => %{"tool_refs" => ["compute.*", "process.*"]}
     },
     %{
       "plugin_id" => "external-im",
@@ -258,6 +319,45 @@ defmodule Salix.Control.Plugins do
       }
     },
     %{
+      "plugin_id" => "lark",
+      "name" => "Lark",
+      "description" => "Workspace messaging and bot routing through Lark.",
+      "ui" => %{"brand" => "lark"},
+      "default_enabled" => true,
+      "setup" => %{
+        "type" => "integration",
+        "default_connection" => "lark-im",
+        "connections" => [
+          %{
+            "id" => "lark-native",
+            "kind" => "native_mcp_oauth",
+            "label" => "Lark MCP OAuth",
+            "scopes" => @lark_mcp_scopes
+          },
+          %{
+            "id" => "lark-im",
+            "kind" => "im_connect",
+            "label" => "Lark messaging",
+            "provider" => "lark"
+          }
+        ],
+        "mcps" => [
+          %{
+            "mcp_id" => "mcp1_0000000000000000010",
+            "alias" => "lark",
+            "target_ref" => "remote:lark",
+            "placement" => "server",
+            "auth_refs" => ["lark-native"]
+          }
+        ]
+      },
+      "refs" => %{
+        "tool_refs" => ["im_api.lark.*", "mcp.lark.*"],
+        "mcp_refs" => [%{"mcp_id" => "mcp1_0000000000000000010"}],
+        "im_connect_requirements" => [%{"provider" => "lark"}]
+      }
+    },
+    %{
       "plugin_id" => "github",
       "name" => "GitHub",
       "description" => "Repositories, issues and pull requests through OAuth or direct APIs.",
@@ -358,6 +458,27 @@ defmodule Salix.Control.Plugins do
           }
         ]
       }
+    },
+    %{
+      "plugin_id" => "outlook",
+      "name" => "Microsoft Outlook",
+      "description" =>
+        "Connect Outlook mail and calendar through Composio. Personal Routine reading requires separate owner consent.",
+      "ui" => %{"brand" => "outlook"},
+      "default_enabled" => false,
+      "setup" => %{
+        "type" => "integration",
+        "default_connection" => "outlook-composio",
+        "connections" => [
+          %{
+            "id" => "outlook-composio",
+            "kind" => "composio",
+            "label" => "Outlook via Composio",
+            "toolkit" => "outlook"
+          }
+        ]
+      },
+      "refs" => %{"tool_refs" => []}
     },
     %{
       "plugin_id" => "linear",
@@ -601,6 +722,18 @@ defmodule Salix.Control.Plugins do
     end
   end
 
+  def configure_group_credentials(tenant_id, group_id, plugin_id, connection_id, values) do
+    with {:ok, definition} <- get_definition(tenant_id, group_id, plugin_id) do
+      PluginSetup.configure_credentials(tenant_id, group_id, definition, values, connection_id)
+    end
+  end
+
+  def disconnect_group_credentials(tenant_id, group_id, plugin_id, connection_id) do
+    with {:ok, definition} <- get_definition(tenant_id, group_id, plugin_id) do
+      PluginSetup.disconnect_credentials(tenant_id, group_id, definition, connection_id)
+    end
+  end
+
   @doc false
   def load_group_catalog(tenant_id, group_id) do
     # Hidden groups still own live agents. Visibility only filters the public
@@ -645,7 +778,7 @@ defmodule Salix.Control.Plugins do
       Keys.ctl_group_plugin_definitions_prefix(tenant_id, group_id),
       Keys.ctl_group_plugin_enablements_prefix(tenant_id, group_id)
     ]
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn prefix ->
         SystemsObservability.Context.run(context, fn -> Store.list_records(prefix) end)
       end,

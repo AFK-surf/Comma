@@ -4,7 +4,6 @@
 **/node_modules/
 
 # Husky generates hook shims here during local installs.
-clients/.husky/_/
 
 # Build outputs and caches
 **/dist/
@@ -23,6 +22,7 @@ clients/.husky/_/
 **/playwright-report/
 **/test-results/
 clients/packages/i18n/src/paraglide/
+clients/packages/i18n/.paraglide-*/
 # Electron release packaging output (electron-release-*.yml stages files in
 # clients/artifacts/). Keep this path-scoped: bare "artifacts/" would also
 # swallow Elixir source under systems/**/artifacts/.
@@ -73,6 +73,9 @@ systems/apps/salix_agent/priv/subscription_worker
 # Tailcat gateway and its test peer, built from systems/tailcat-gateway.
 systems/apps/salix_agent/priv/tailcat_gateway
 systems/apps/salix_agent/priv/tailcat_testpeer
+# Tailnet gateway and its test peer, built from systems/tailnet-gateway.
+systems/apps/salix_agent/priv/tailnet_gateway
+systems/apps/salix_agent/priv/tailnet_testpeer
 systems/apps/salix_web/priv/cloud_vm_connector.tar.gz
 
 # Self-hosted instance credentials.

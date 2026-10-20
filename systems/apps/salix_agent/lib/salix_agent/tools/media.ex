@@ -30,7 +30,7 @@ defmodule SalixAgent.Tools.Media do
 
   The Router reads the exact result Message with im_api.internal.read_conversation. It uses the returned reader-local attachment path to deliver the transcript to the original destination. For Slack, use im_api.slack.upload_file with that path and the original channel/thread. If an existing provider participant already delivers the attachment there, avoid duplicate delivery. A Slack Task card alone does not deliver the file.
 
-  With output_path, a .json sidecar preserves complete ASR chunks and the source path. For immutable meeting attachments, reuse the same source and output_path on retries. The tool reuses the committed transcript without another ASR request. Use a new output_path for changed source bytes. The result reports transcript_path, metadata_path, source duration, and chunk count.
+  With output_path, a .json sidecar preserves complete ASR chunks and the source path. For immutable meeting attachments, reuse the same source and output_path on retries. The tool reuses the committed transcript without another ASR request. Use a new output_path for changed source bytes. The result reports transcript_path, metadata_path, source duration, and chunk count. A file without recognizable speech returns speech_detected false and writes no transcript.
   """
 
   @normal_auto_wait_seconds SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds()
@@ -193,6 +193,11 @@ defmodule SalixAgent.Tools.Media do
       {:error, :asr_audio_too_large} ->
         raise "audio file exceeds the supported size"
 
+      # A silent recording (a clip with only background sound) is an answer,
+      # not a failure: no transcript artifact is written.
+      {:error, :asr_empty_transcript} ->
+        {Jason.encode!(%{"source_path" => path, "speech_detected" => false}), []}
+
       {:error, reason} when reason in [:asr_batch_timeout, :ffmpeg_timeout, :ffprobe_timeout] ->
         raise "audio transcription timed out"
 
@@ -238,7 +243,7 @@ defmodule SalixAgent.Tools.Media do
     output =
       requested ||
         "/artifacts/transcripts/audio-transcript-" <>
-          Integer.to_string(System.unique_integer([:positive])) <> ".txt"
+          Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive])) <> ".txt"
 
     result = %{
       "source_path" => source_path,
@@ -344,9 +349,14 @@ defmodule SalixAgent.Tools.Media do
     path = to_string(path || "") |> String.trim()
 
     cond do
-      path == "" -> prefix <> Integer.to_string(System.unique_integer([:positive])) <> ext
-      String.starts_with?(path, "/") -> path
-      true -> raise("output_path must be an absolute visible file path")
+      path == "" ->
+        prefix <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive])) <> ext
+
+      String.starts_with?(path, "/") ->
+        path
+
+      true ->
+        raise("output_path must be an absolute visible file path")
     end
   end
 

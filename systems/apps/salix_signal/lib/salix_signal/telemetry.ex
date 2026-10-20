@@ -34,7 +34,7 @@ defmodule SalixSignal.Telemetry do
           | :retry_answer_limited
         ) :: :ok
   def receive_guard(reason) when reason in @guard_reasons do
-    :telemetry.execute(@guard_event, %{count: 1}, %{reason: reason})
+    SystemsRuntime.Telemetry.execute(@guard_event, %{count: 1}, %{reason: reason})
   rescue
     _ -> :ok
   end

@@ -6,7 +6,10 @@ defmodule SalixWeb.PluginSystemE2ETest do
   and runtime materialization. They intentionally avoid child-domain store
   mutation checks except as observable facts around a plugin toggle.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
@@ -73,19 +76,19 @@ defmodule SalixWeb.PluginSystemE2ETest do
   setup do
     SalixAgent.TestSupport.stop_all_agents()
 
-    prev_store = Application.get_env(:salix_store, :s3_backend)
-    prev_plugin_store = Application.get_env(:salix_agent, :plugin_store_mod)
-    prev_composio_store = Application.get_env(:salix_agent, :composio_store_mod)
-    prev_meeting_preparation = Application.get_env(:salix_agent, :meeting_preparation_mod)
-    prev_meeting = Application.get_env(:salix_agent, :meeting_mod)
+    prev_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_plugin_store = SystemsRuntime.get_env(:salix_agent, :plugin_store_mod)
+    prev_composio_store = SystemsRuntime.get_env(:salix_agent, :composio_store_mod)
+    prev_meeting_preparation = SystemsRuntime.get_env(:salix_agent, :meeting_preparation_mod)
+    prev_meeting = SystemsRuntime.get_env(:salix_agent, :meeting_mod)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_agent, :plugin_store_mod, Salix.Bindings.AgentPluginStore)
-    Application.put_env(:salix_agent, :composio_store_mod, Salix.Bindings.AgentComposioStore)
-    Application.put_env(:salix_agent, :meeting_preparation_mod, MeetingPreparationStub)
-    Application.put_env(:salix_agent, :meeting_mod, MeetingStub)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_agent, :plugin_store_mod, Salix.Bindings.AgentPluginStore)
+    SystemsRuntime.put_env(:salix_agent, :composio_store_mod, Salix.Bindings.AgentComposioStore)
+    SystemsRuntime.put_env(:salix_agent, :meeting_preparation_mod, MeetingPreparationStub)
+    SystemsRuntime.put_env(:salix_agent, :meeting_mod, MeetingStub)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -106,7 +109,7 @@ defmodule SalixWeb.PluginSystemE2ETest do
       put_or_delete_env(:salix_agent, :meeting_mod, prev_meeting)
     end)
 
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
     {:ok, tenant} = Tenants.create(%{"name" => "Plugin E2E"})
     tenant_id = tenant["tenant_id"]
     {:ok, api_key} = Tenants.create_api_key(tenant_id, %{"name" => "plugin e2e"})
@@ -137,6 +140,52 @@ defmodule SalixWeb.PluginSystemE2ETest do
     Process.put(:plugin_tenant_key, api_key["key"])
 
     {:ok, tenant_id: tenant_id, group_a: group_a, router: router, suffix: suffix}
+  end
+
+  test "Compute discovery and processes share defaults and explicit plugin overrides", %{
+    tenant_id: tenant,
+    group_a: group,
+    router: router
+  } do
+    {:ok, worker} =
+      SalixAgent.Control.create(
+        %{"group_id" => group["group_id"], "name" => "Compute Worker", "role" => "worker"},
+        tenant
+      )
+
+    agents =
+      for agent <- [router, worker] do
+        id = agent["agent_id"]
+        session = Ids.new_session_id()
+        {:ok, _} = SalixAgent.InternalSessionStore.prepare_create(id, session)
+        {id, session}
+      end
+
+    check = fn enabled ->
+      for {agent, session} <- agents,
+          {tool, expected} <- [
+            {"compute.workloads.list", "compute_workspace_unavailable"},
+            {"process.list", "workload_target_required"}
+          ] do
+        assert {:ok, result, [], _, _} =
+                 SalixAgent.SessionToolExecution.execute(agent, session, :internal, [], tool, %{})
+
+        if enabled do
+          # This Salix-only Group has no Comma Workspace. Passing disclosure
+          # must still reach, and fail, the product authorization boundary.
+          assert result.error_class == expected
+        else
+          assert result.status == "guidance"
+          assert Jason.decode!(result.content)["guidance_reason"] == "not_callable"
+        end
+      end
+    end
+
+    check.(true)
+    assert {:ok, _} = Plugins.disable_group(tenant, group["group_id"], "virtual-compute")
+    check.(false)
+    assert :ok = Plugins.clear_group_enablement(tenant, group["group_id"], "virtual-compute")
+    check.(true)
   end
 
   @tag :hidden_runtime_catalog
@@ -185,11 +234,11 @@ defmodule SalixWeb.PluginSystemE2ETest do
 
     # The load reads the group record before the write and returns after it.
     :ok = SalixStore.S3.Fake.set_fault({:pause, :get, group_key})
-    load = Task.async(fn -> PluginCatalogCache.snapshot(tenant_id, group_id) end)
+    load = SystemsRuntime.Task.async(fn -> PluginCatalogCache.snapshot(tenant_id, group_id) end)
     assert eventually(&SalixStore.S3.Fake.paused?/0)
     assert :ok = PluginCatalogCache.invalidate_group(group_id)
     :ok = SalixStore.S3.Fake.release_pause()
-    assert {:ok, _late_snapshot} = Task.await(load, 5_000)
+    assert {:ok, _late_snapshot} = settled_await(load)
 
     SalixStore.S3.Fake.reset_read_log()
     assert {:ok, _fresh} = PluginCatalogCache.snapshot(tenant_id, group_id)
@@ -312,12 +361,12 @@ defmodule SalixWeb.PluginSystemE2ETest do
     :ok = SalixStore.S3.Fake.set_fault({:pause, :get, tenant_definition_key})
 
     on_exit(fn ->
-      if Process.whereis(SalixStore.S3.Fake) && SalixStore.S3.Fake.paused?(),
+      if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) && SalixStore.S3.Fake.paused?(),
         do: SalixStore.S3.Fake.release_pause()
     end)
 
     projection =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Plugins.runtime_projection(%{"tenant_id" => tenant_id, "group_id" => group_id})
       end)
 
@@ -330,9 +379,9 @@ defmodule SalixWeb.PluginSystemE2ETest do
                Enum.any?(reads, &match?({:list, ^enablement_prefix, _opts}, &1))
            end)
 
-    assert Task.yield(projection, 0) == nil
+    assert SystemsRuntime.Task.yield(projection, 0) == nil
     assert :ok = SalixStore.S3.Fake.release_pause()
-    assert {:ok, _projection} = Task.await(projection)
+    assert {:ok, _projection} = settled_await(projection)
   end
 
   test "idempotent preallocated group retry does not recreate a cleared default override", %{
@@ -434,51 +483,6 @@ defmodule SalixWeb.PluginSystemE2ETest do
 
     assert meeting_id in fail_closed["disabled_plugin_ids"]
     assert "core-runtime" in fail_closed["enabled_plugin_ids"]
-  end
-
-  test "historical durable system definitions are ignored by catalog and mutation paths", %{
-    tenant_id: tenant_id,
-    group_a: group
-  } do
-    plugin_id = Ids.new_plugin_id()
-    key = Keys.ctl_system_plugin_definition(plugin_id)
-    now = Store.now()
-
-    historical = %{
-      "owner_scope" => "system",
-      "tenant_id" => "",
-      "group_id" => "",
-      "plugin_id" => plugin_id,
-      "version" => 1,
-      "name" => "Historical durable system definition",
-      "description" => "must remain inert",
-      "refs" => %{},
-      "source" => "retired_seed",
-      "read_only" => true,
-      "locked" => false,
-      "default_enabled" => true,
-      "created_at" => now,
-      "updated_at" => now
-    }
-
-    assert {:ok, ^historical} = Store.put_new(key, historical)
-    assert {:error, :not_found} = Plugins.get_definition(tenant_id, group["group_id"], plugin_id)
-
-    assert {:error, :not_found} =
-             Plugins.update_definition(tenant_id, group["group_id"], plugin_id, %{"name" => "x"})
-
-    assert {:error, :not_found} =
-             Plugins.update_tenant_definition(tenant_id, plugin_id, %{"name" => "x"})
-
-    assert {:error, :not_found} =
-             Plugins.update_group_definition(
-               tenant_id,
-               group["group_id"],
-               plugin_id,
-               %{"name" => "x"}
-             )
-
-    assert {:ok, ^historical} = Store.get_record(key)
   end
 
   test "Dashboard and runtime API manage a group plugin without mutating child domains", %{
@@ -803,64 +807,6 @@ defmodule SalixWeb.PluginSystemE2ETest do
     refute disclosed?(disclosure, missing_tool)
   end
 
-  test "catalog reads do not restore the retired custom-id migration", %{
-    tenant_id: tenant_id,
-    group_a: group_a,
-    suffix: suffix
-  } do
-    group_id = group_a["group_id"]
-    old_plugin_id = "legacy-custom-plugin-#{suffix}"
-    plugin_name = "Legacy Custom Plugin #{suffix}"
-    legacy_tool = "legacy.custom_tool_#{suffix}"
-    now = Store.now()
-    definition_key = Keys.ctl_group_plugin_definition(tenant_id, group_id, old_plugin_id)
-    enablement_key = Keys.ctl_group_plugin_enablement(tenant_id, group_id, old_plugin_id)
-
-    {:ok, _definition} =
-      Store.put_new(definition_key, %{
-        "owner_scope" => "group",
-        "tenant_id" => tenant_id,
-        "group_id" => group_id,
-        "plugin_id" => old_plugin_id,
-        "version" => 1,
-        "name" => plugin_name,
-        "description" => "legacy semantic custom id",
-        "refs" => %{"tool_refs" => [legacy_tool]},
-        "source" => "group",
-        "read_only" => false,
-        "locked" => false,
-        "default_enabled" => false,
-        "created_at" => now,
-        "updated_at" => now
-      })
-
-    {:ok, _enablement} =
-      Store.put_new(enablement_key, %{
-        "tenant_id" => tenant_id,
-        "group_id" => group_id,
-        "plugin_id" => old_plugin_id,
-        "enabled" => true,
-        "enabled_version" => 1,
-        "revision" => 3,
-        "created_at" => now,
-        "updated_at" => now
-      })
-
-    assert {:ok, _projection} =
-             Plugins.runtime_projection(%{"tenant_id" => tenant_id, "group_id" => group_id})
-
-    refute Ids.valid_plugin_id?(old_plugin_id)
-    assert {:ok, %{"plugin_id" => ^old_plugin_id}} = Store.get_record(definition_key)
-
-    assert {:ok, %{"plugin_id" => ^old_plugin_id, "enabled" => true}} =
-             Store.get_record(enablement_key)
-
-    refute Enum.any?(
-             Store.list_records(Keys.ctl_group_plugin_definitions_prefix(tenant_id, group_id)),
-             &(&1["name"] == plugin_name and &1["plugin_id"] != old_plugin_id)
-           )
-  end
-
   defp authed_conn(tenant_id) do
     build_conn()
     |> Plug.Test.init_test_session(%{"admin_authed" => true, "current_tenant" => tenant_id})
@@ -894,18 +840,9 @@ defmodule SalixWeb.PluginSystemE2ETest do
     Enum.any?(disclosure["tools"], &(&1["name"] == name and &1["callable"] == true))
   end
 
-  defp eventually(fun, attempts \\ 100)
-  defp eventually(_fun, 0), do: false
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 
-  defp eventually(fun, attempts) do
-    if fun.() do
-      true
-    else
-      Process.sleep(5)
-      eventually(fun, attempts - 1)
-    end
-  end
-
-  defp put_or_delete_env(app, key, nil), do: Application.delete_env(app, key)
-  defp put_or_delete_env(app, key, value), do: Application.put_env(app, key, value)
+  defp put_or_delete_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp put_or_delete_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

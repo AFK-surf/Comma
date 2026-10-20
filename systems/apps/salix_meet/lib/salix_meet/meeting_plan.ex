@@ -330,7 +330,7 @@ defmodule SalixMeet.MeetingPlan do
     kind = Keyword.get(opts, :kind, "card")
 
     lead_ms =
-      if target["provider"] == "feishu",
+      if target["provider"] in ["feishu", "lark"],
         do: :timer.minutes(7),
         else: :timer.minutes(plan["preparation_lead_minutes"] || 10)
 
@@ -599,7 +599,7 @@ defmodule SalixMeet.MeetingPlan do
     start_ms = occurrence["start_ms"]
     budget = Keyword.get(opts, :publication_budget_ms, @publication_budget_ms)
     policy_revision = Keyword.get(opts, :policy_revision, 1)
-    feishu? = get_in(opts[:publication_target] || %{}, ["provider"]) == "feishu"
+    feishu? = get_in(opts[:publication_target] || %{}, ["provider"]) in ["feishu", "lark"]
     lead_minutes = Keyword.get(opts, :preparation_lead_minutes, 10)
 
     deadline_lead =
@@ -1210,6 +1210,26 @@ defmodule SalixMeet.MeetingPlan do
           {:error, :invalid_meeting_publication_target}
         end
 
+      {"lark", "im_api.lark.send_message", %{} = params} ->
+        allowed = ~w(connect_id chat_id mentions mention_all)
+
+        if exact_keys?(target, ~w(provider tool params)) and exact_subset?(params, allowed) and
+             nonblank?(params["connect_id"]) and nonblank?(params["chat_id"]) and
+             valid_feishu_mentions?(params) do
+          {:ok,
+           %{
+             "provider" => "lark",
+             "tool" => "im_api.lark.send_message",
+             "params" =>
+               params
+               |> Map.update!("connect_id", &String.trim/1)
+               |> Map.update!("chat_id", &String.trim/1)
+               |> normalize_feishu_mentions()
+           }}
+        else
+          {:error, :invalid_meeting_publication_target}
+        end
+
       _ ->
         {:error, :invalid_meeting_publication_target}
     end
@@ -1421,6 +1441,9 @@ defmodule SalixMeet.MeetingPlan do
   defp research_deadline(%{"publication_target" => %{"provider" => "feishu"}} = plan),
     do: get_in(plan, ["preparation", "publish_deadline_at"])
 
+  defp research_deadline(%{"publication_target" => %{"provider" => "lark"}} = plan),
+    do: get_in(plan, ["preparation", "publish_deadline_at"])
+
   defp research_deadline(plan), do: get_in(plan, ["preparation", "publish_start_at"])
 
   defp evidence(plan) do
@@ -1451,6 +1474,22 @@ defmodule SalixMeet.MeetingPlan do
 
   # Feishu retains its existing explicit publication and mention contract.
   defp publication_action(%{"publication_target" => %{"provider" => "feishu"} = target} = plan) do
+    %{
+      "tool" => target["tool"],
+      "params" => target["params"],
+      "content_param" => "text",
+      "draft" =>
+        MeetingBriefing.render(
+          current_context(plan),
+          get_in(plan, ["preparation", "baseline"]) || %{}
+        ),
+      "instruction" =>
+        "Make one call to this exact external IM operation, copying params unchanged and adding only the final attendee report as text. Normal provider-tool retry semantics apply."
+    }
+  end
+
+  # Lark has the explicit publication of Feishu, through `lark.send_message`.
+  defp publication_action(%{"publication_target" => %{"provider" => "lark"} = target} = plan) do
     %{
       "tool" => target["tool"],
       "params" => target["params"],
@@ -1750,7 +1789,7 @@ defmodule SalixMeet.MeetingPlan do
   defp bump(plan, now),
     do: plan |> Map.update("revision", 1, &(&1 + 1)) |> Map.put("updated_at", now)
 
-  defp now_ms(opts), do: Keyword.get(opts, :now, System.system_time(:millisecond))
+  defp now_ms(opts), do: Keyword.get(opts, :now, SystemsClock.system_time(:millisecond))
 
   defp ensure_binding(group_id, occurrence_ref) when is_map(occurrence_ref) do
     ref = JSON.stringify(occurrence_ref)

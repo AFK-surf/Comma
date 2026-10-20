@@ -36,7 +36,7 @@ defmodule SalixSignal.Test.MockService do
     Agent.start_link(fn ->
       %{
         accounts: %{},
-        clock: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end),
+        clock: Keyword.get(opts, :clock, fn -> SystemsClock.system_time(:millisecond) end),
         certificate_lifetime_ms: Keyword.get(opts, :certificate_lifetime_ms, 7 * 86_400_000),
         group_send_verifier: Keyword.get(opts, :group_send_verifier, fn _token, _ids -> true end),
         root: root,
@@ -414,7 +414,7 @@ defmodule SalixSignal.Test.MockService do
   defp pop([first | rest]), do: {first, rest}
 
   defp queue(s, aci, device_id, envelope) do
-    envelope = %{envelope | server_guid: :crypto.strong_rand_bytes(16)}
+    envelope = %{envelope | server_guid: SystemsRuntime.Proc.random_bytes(16)}
     update_in(s, [:accounts, aci, :devices, device_id, :queue], &(&1 ++ [envelope]))
   end
 

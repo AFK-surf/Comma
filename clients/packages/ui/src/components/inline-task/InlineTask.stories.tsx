@@ -21,7 +21,7 @@ const meta = {
   component: InlineTask,
   args: {
     link: <a aria-label="Open Generate the quarterly launch brief" href="#task" />,
-    task: task("backlog"),
+    task: task("in_progress"),
   },
   decorators: [
     (Story) => (
@@ -38,13 +38,7 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Backlog: Story = {};
-
-export const InProgress: Story = {
-  args: {
-    task: task("in_progress"),
-  },
-};
+export const InProgress: Story = {};
 
 export const NeedsReview: Story = {
   args: {
@@ -78,7 +72,7 @@ export const Unavailable: Story = {
   args: {
     dataTestId: "inline-task-unavailable-story",
     link: undefined,
-    task: task("backlog", { id: "unavailable", title: "" }),
+    task: task("in_progress", { id: "unavailable", title: "" }),
     unavailable: true,
   },
 };

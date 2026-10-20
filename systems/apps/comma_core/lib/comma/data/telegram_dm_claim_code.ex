@@ -10,7 +10,12 @@ defmodule Comma.Data.TelegramDMClaimCode do
     field(:owner_user_id, :string)
     field(:expires_at, :utc_datetime_usec)
     field(:consumed_at, :utc_datetime_usec)
-    timestamps(type: :utc_datetime_usec, updated_at: false)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      updated_at: false,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 
   def changeset(claim, attrs) do

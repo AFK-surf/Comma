@@ -6,7 +6,8 @@ import {
   type OnboardingWindowState,
 } from "@comma/native-bridge";
 import type { SessionLifecycleSnapshot } from "@comma/session-contract";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { settle } from "@comma/test-utils/settle";
 import {
   MainWindowOnboardingHold,
   OnboardingWindowPresenter,
@@ -15,6 +16,11 @@ import {
   type OnboardingBrowserWindowLike,
   type WindowBounds,
 } from "../onboarding-window";
+
+// The file's timers run on the test's clock: a test moves it.
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 
 // The laptop has its Dock along the bottom; the monitor has it on the left.
 const laptop = {
@@ -30,11 +36,12 @@ const laptopSheet = { height: 1084, width: 1728, x: 0, y: 33 };
 const monitorSheet = { height: 1415, width: 2560, x: 1728, y: -175 };
 
 describe("onboardingWindowFor", () => {
-  it("presents the window only on macOS, whose app activation lets it step down for the browser", () => {
+  it("presents the window on macOS and Windows, where it can step down for the browser", () => {
     const harness = createHarness();
 
     expect(onboardingWindowFor("macos", harness.presenter)).toBe(harness.presenter);
-    for (const os of ["linux", "windows"]) {
+    expect(onboardingWindowFor("windows", harness.presenter)).toBe(harness.presenter);
+    for (const os of ["linux", "unknown"]) {
       // The main window then covers its product with the overlay.
       expect(
         onboardingWindowFor(os, harness.presenter).presentWindow({} as never)
@@ -62,6 +69,18 @@ function createHold(onboardingOpen = false) {
 }
 
 describe("MainWindowOnboardingHold", () => {
+  it("ends without showing the main window or a later timeout when Main closes its windows", () => {
+    const { hold, showMainWindow } = createHold();
+    hold.begin();
+
+    expect(hold.cancel()).toBe(true);
+    vi.advanceTimersByTime(20_000);
+
+    expect(hold.held).toBe(false);
+    expect(showMainWindow).not.toHaveBeenCalled();
+    expect(hold.cancel()).toBe(false);
+  });
+
   it("lets the launch request wait for the onboarding, then answers a later one with the main window", () => {
     vi.useFakeTimers();
     try {
@@ -181,8 +200,9 @@ describe("onboardingHoldsMainWindow", () => {
     expect(holds({ session: { phase: "signed_out", principal: null } as never })).toBe(
       false
     );
-    // No onboarding window outside macOS: the overlay runs over the product.
-    expect(holds({ operatingSystem: "windows" })).toBe(false);
+    // Windows has the window too; elsewhere the overlay runs over the product.
+    expect(holds({ operatingSystem: "windows" })).toBe(true);
+    expect(holds({ operatingSystem: "linux" })).toBe(false);
   });
 });
 
@@ -233,9 +253,8 @@ describe("OnboardingWindowPresenter", () => {
 
     harness.window().closeByUser();
 
-    await vi.waitFor(() =>
-      expect(harness.completedUserIds()).toEqual(["usr_other", "usr_1"])
-    );
+    await harness.preferencesUpdated;
+    expect(harness.completedUserIds()).toEqual(["usr_other", "usr_1"]);
     expect(harness.focusMainWindow).toHaveBeenCalledOnce();
     // Closing it by hand is no hand-off to Home's composer.
     expect(harness.onHandoff).not.toHaveBeenCalled();
@@ -249,14 +268,15 @@ describe("OnboardingWindowPresenter", () => {
     const window = harness.window();
     window.paint();
 
+    const closed = window.whenClosed();
     harness.presenter.closeWindow({});
     // The request came from the window's own renderer; its reply goes first.
     expect(window.isDestroyed()).toBe(false);
-    await vi.waitFor(() => expect(window.isDestroyed()).toBe(true));
+    await settle(closed);
+    expect(window.isDestroyed()).toBe(true);
 
-    await vi.waitFor(() =>
-      expect(harness.completedUserIds()).toEqual(["usr_other", "usr_1"])
-    );
+    await harness.preferencesUpdated;
+    expect(harness.completedUserIds()).toEqual(["usr_other", "usr_1"]);
     expect(harness.updatePreferences).toHaveBeenCalledOnce();
     expect(harness.focusMainWindow).toHaveBeenCalledOnce();
   });
@@ -266,19 +286,12 @@ describe("OnboardingWindowPresenter", () => {
     await harness.presenter.presentWindow();
     const window = harness.window();
     window.paint();
-    // An app the user is still authorizing in the browser.
-    const pluginAuthorization = {
-      authorizationState: "state_1",
-      expiresAt: Date.now() + 60_000,
-      pluginId: "linear",
-      workspaceId: "wsp_1",
-    };
 
-    harness.presenter.closeWindow({ pluginAuthorization });
+    const closed = window.whenClosed();
+    harness.presenter.closeWindow({});
     expect(harness.onHandoff).not.toHaveBeenCalled();
-    await vi.waitFor(() =>
-      expect(harness.onHandoff).toHaveBeenCalledExactlyOnceWith({ pluginAuthorization })
-    );
+    await settle(closed);
+    expect(harness.onHandoff).toHaveBeenCalledExactlyOnceWith({});
 
     expect(window.isDestroyed()).toBe(true);
     expect(harness.published.at(-1)).toEqual({ open: false });
@@ -334,6 +347,20 @@ describe("OnboardingWindowPresenter", () => {
     expect(window.getBounds()).toEqual(monitorSheet);
   });
 
+  it("takes every click over the whole sheet, so none reaches the app behind", async () => {
+    const harness = createHarness();
+    await harness.presenter.presentWindow();
+    const window = harness.window();
+    expect(window.clicks).toBe("all");
+
+    // Stepping down for the browser and coming back never lets clicks through.
+    harness.setAppActive(false);
+    harness.setAppActive(true);
+    window.paint();
+    expect(window.setIgnoreMouseEvents).toHaveBeenCalledTimes(1);
+    expect(window.clicks).toBe("all");
+  });
+
   it("sits above the Dock only while Comma is the active app", async () => {
     const harness = createHarness();
     await harness.presenter.presentWindow();
@@ -349,8 +376,9 @@ describe("OnboardingWindowPresenter", () => {
     expect(window.level).toBe("main-menu");
     expect(window.setAlwaysOnTop).toHaveBeenCalledTimes(3);
 
+    const closed = window.whenClosed();
     harness.presenter.closeWindow({});
-    await vi.waitFor(() => expect(window.isDestroyed()).toBe(true));
+    await settle(closed);
     harness.setAppActive(false);
     expect(window.setAlwaysOnTop).toHaveBeenCalledTimes(3);
   });
@@ -459,8 +487,10 @@ function createHarness({
   const published: OnboardingWindowState[] = [];
   const focusMainWindow = vi.fn();
   const onHandoff = vi.fn();
+  const preferencesUpdated = Promise.withResolvers<void>();
   const updatePreferences = vi.fn(async (patch: AppPreferencesPatch) => {
     completed = patch.clientSettings?.onboardingCompletedUserIds ?? completed;
+    preferencesUpdated.resolve();
     return readPreferences();
   });
   const warn = vi.fn();
@@ -475,6 +505,8 @@ function createHarness({
     focusMainWindow,
     mainBounds,
     onHandoff,
+    /** Settles at the first preferences update: Main records a completion once it has read them. */
+    preferencesUpdated: preferencesUpdated.promise,
     presenter: undefined as unknown as OnboardingWindowPresenter,
     published,
     setAppActive: (next: boolean) => {
@@ -530,6 +562,11 @@ class FakeWindow implements OnboardingBrowserWindowLike {
   readonly moveTop = vi.fn();
   readonly setAlwaysOnTop = vi.fn((flag: boolean, level: string) => {
     this.level = flag ? level : "normal";
+  });
+  // AppKit's default for a transparent window: clear pixels let clicks through.
+  clicks: "all" | "opaque pixels" | "none" = "opaque pixels";
+  readonly setIgnoreMouseEvents = vi.fn((ignore: boolean) => {
+    this.clicks = ignore ? "none" : "all";
   });
   readonly webContents = {
     on: (event: string, listener: Listener) => this.#listen(`web:${event}`, listener),
@@ -588,6 +625,11 @@ class FakeWindow implements OnboardingBrowserWindowLike {
     this.#emit("close");
     this.#destroyed = true;
     this.#emit("closed");
+  }
+
+  /** Settles at the next `closed`, after the listeners registered before it. */
+  whenClosed() {
+    return new Promise<void>((resolve) => this.#listen("closed", resolve));
   }
 
   renderProcessGone() {

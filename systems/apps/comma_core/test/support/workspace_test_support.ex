@@ -1,4 +1,6 @@
 defmodule Comma.WorkspaceTestSupport do
+  require SystemsRuntime.Proc
+
   @moduledoc false
 
   import ExUnit.Assertions
@@ -69,7 +71,8 @@ defmodule Comma.WorkspaceTestSupport do
     workspace
   end
 
-  def cleanup_committed_user!(repo, user_id) when is_pid(repo) and is_binary(user_id) do
+  def cleanup_committed_user!(repo, user_id)
+      when SystemsRuntime.Proc.is_process(repo) and is_binary(user_id) do
     Ecto.Adapters.SQL.query!(
       repo,
       """

@@ -1,12 +1,12 @@
 defmodule SalixStore.Compute.WorkloadCredentialTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.Compute.WorkloadCredential
 
   setup do
-    previous = Application.get_env(:salix_store, :compute_workload_credential_secret)
+    previous = SystemsRuntime.get_env(:salix_store, :compute_workload_credential_secret)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_store,
       :compute_workload_credential_secret,
       String.duplicate("k", 32)
@@ -14,8 +14,8 @@ defmodule SalixStore.Compute.WorkloadCredentialTest do
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_store, :compute_workload_credential_secret, previous),
-        else: Application.delete_env(:salix_store, :compute_workload_credential_secret)
+        do: SystemsRuntime.put_env(:salix_store, :compute_workload_credential_secret, previous),
+        else: SystemsRuntime.delete_env(:salix_store, :compute_workload_credential_secret)
     end)
 
     :ok
@@ -32,7 +32,11 @@ defmodule SalixStore.Compute.WorkloadCredentialTest do
     refute Map.has_key?(claims, "provider")
     refute Map.has_key?(claims, "host")
     refute Map.has_key?(claims, "operator")
+    refute Map.has_key?(claims, "registration_id")
+    refute Map.has_key?(claims, "lease_id")
+    refute Map.has_key?(claims, "endpoint")
     refute Map.has_key?(credential, "claims")
+    refute inspect(Map.drop(credential, ["token"])) =~ credential["token"]
 
     assert {:error, :invalid_workload_credential} =
              WorkloadCredential.verify(credential["token"], "workload-2", "runtime")
@@ -49,7 +53,7 @@ defmodule SalixStore.Compute.WorkloadCredentialTest do
     assert result == {:error, :invalid_workload_credential}
     refute inspect(result) =~ credential["token"]
 
-    Application.delete_env(:salix_store, :compute_workload_credential_secret)
+    SystemsRuntime.delete_env(:salix_store, :compute_workload_credential_secret)
 
     assert {:error, :credential_signer_unavailable} =
              WorkloadCredential.issue("workload-1", nil, ["runtime"], 60)

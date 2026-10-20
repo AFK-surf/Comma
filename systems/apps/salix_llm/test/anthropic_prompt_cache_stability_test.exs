@@ -12,7 +12,7 @@ defmodule SalixLlm.AnthropicPromptCacheStabilityTest do
   `cache_creation_input_tokens` stayed full. These tests pin the two properties
   that fix restores.
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixLlm.{CacheBreakpoints, Convert}
 
@@ -27,17 +27,6 @@ defmodule SalixLlm.AnthropicPromptCacheStabilityTest do
       runtime_message_id: id,
       type: "tool_call_completed",
       summary: "background tool call #{id} finished"
-    }
-  end
-
-  defp project_knowledge do
-    %{
-      role: "runtime",
-      kind: "runtime_message",
-      runtime_message_id: "project-knowledge:atlas",
-      type: "project_knowledge",
-      summary: "Resolved project knowledge for this question",
-      content: ~s({"facts":[{"content":"The Atlas launch codename is ORBITAL-TEAL-47."}]})
     }
   end
 
@@ -177,7 +166,8 @@ defmodule SalixLlm.AnthropicPromptCacheStabilityTest do
       assert [%{"content" => [%{"type" => "text", "text" => "any update?"}]}] =
                marked_messages(messages)
 
-      assert List.last(messages)["content"] =~ "Reply before end_turn."
+      assert %{"role" => "system", "content" => reminder} = List.last(messages)
+      assert reminder =~ "Reply before end_turn."
       assert breakpoints(List.last(messages)) == 0
     end
 
@@ -190,7 +180,8 @@ defmodule SalixLlm.AnthropicPromptCacheStabilityTest do
 
       assert [marked] = marked_messages(messages)
       assert Map.delete(marked, "content") == Map.delete(List.last(messages), "content")
-      assert hd(marked["content"])["text"] =~ "runtime_message_id: runtime-2"
+      assert %{"role" => "user", "content" => [%{"type" => "text", "text" => result}]} = marked
+      assert result =~ "runtime_message_id: runtime-2"
     end
 
     test "only the trailing reminder run is skipped, not context further back" do
@@ -207,7 +198,9 @@ defmodule SalixLlm.AnthropicPromptCacheStabilityTest do
         )
 
       assert [%{"content" => [%{"text" => "any update?"}]}] = marked_messages(messages)
-      assert length(messages) == 4
+      # Each reminder is a system message; an assistant turn separates the first
+      # from the user turn that follows it.
+      assert length(messages) == 5
     end
 
     test "a runtime fact between a tool call and its result does not split them" do
@@ -234,9 +227,11 @@ defmodule SalixLlm.AnthropicPromptCacheStabilityTest do
                %{"content" => "run it"},
                %{"role" => "assistant", "content" => [%{"type" => "tool_use"}]},
                %{"content" => [%{"type" => "tool_result", "tool_use_id" => "call-1"}]},
-               %{"content" => "<system>\n<runtime-message>" <> _},
+               %{"role" => "user", "content" => runtime},
                %{"content" => "thanks"}
              ] = messages
+
+      assert runtime =~ "runtime_message_id: runtime-4"
     end
 
     test "an unanswered tool call leaves the transcript order alone" do
@@ -269,43 +264,6 @@ defmodule SalixLlm.AnthropicPromptCacheStabilityTest do
              ] = messages
     end
 
-    test "project knowledge cannot carry it — the next request has dropped it" do
-      # The kernel's `request_live_messages` keeps a `project_knowledge` fact
-      # only while the activation that retrieved it is current: the next user
-      # input drops it from every later rebuild, so a breakpoint on it writes
-      # up to 32 KiB of prefix that is never readable again. Request N marks
-      # the last turn that request N+1 still has.
-      {_system, _tools, first} =
-        request(
-          round(
-            [%{role: "user", content: "what is the codename?"}, project_knowledge()],
-            [reminder("Reply before ending the turn.")]
-          )
-        )
-
-      assert [%{"content" => [%{"text" => "what is the codename?"}]}] = marked_messages(first)
-
-      knowledge_turn = Enum.at(first, 1)
-      assert knowledge_turn["content"] =~ "ORBITAL-TEAL-47"
-      assert breakpoints(knowledge_turn) == 0
-
-      # Request N+1: project knowledge is gone, the conversation moved on.
-      {_system, _tools, second} =
-        request(
-          round(
-            [
-              %{role: "user", content: "what is the codename?"},
-              %{role: "assistant", content: "ORBITAL-TEAL-47"},
-              %{role: "user", content: "thanks"}
-            ],
-            [reminder("Reply before ending the turn.")]
-          )
-        )
-
-      prefix = cached_prefix(first)
-      assert prefix == second |> rendered() |> Enum.take(length(prefix))
-    end
-
     test "the trailing-context count only covers the re-derived tail" do
       messages =
         round(
@@ -313,6 +271,7 @@ defmodule SalixLlm.AnthropicPromptCacheStabilityTest do
           [reminder("first"), reminder("second")]
         )
 
+      # Two reminders render as two system messages.
       assert {"You are Salix.", projected, 2} = Convert.to_anthropic_parts(messages, nil)
       assert length(projected) == 4
     end

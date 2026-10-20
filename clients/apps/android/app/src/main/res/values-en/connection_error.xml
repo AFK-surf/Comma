@@ -1,0 +1,14 @@
+<resources>
+    <string name="connection_offline_title">You’re offline</string>
+    <string name="connection_offline_detail">Check your Wi-Fi or mobile data. We’ll retry automatically when you’re back online.</string>
+    <string name="connection_unreachable_title">Can’t reach the server</string>
+    <string name="connection_unreachable_detail">We couldn’t connect to the server. Please try again in a moment.</string>
+    <string name="connection_service_title">Service unavailable</string>
+    <string name="connection_service_detail">The server isn’t responding right now. Please try again in a moment.</string>
+    <string name="connection_rate_title">Let’s give it a moment</string>
+    <string name="connection_rate_detail">There have been too many requests. Please wait a moment, then try again.</string>
+    <string name="connection_workspace_title">Workspace isn’t ready</string>
+    <string name="connection_chat_title">Can’t open this chat</string>
+    <string name="connection_chat_detail">This chat isn’t available right now. Try again, or check your account.</string>
+    <string name="connection_retrying">Retrying…</string>
+</resources>

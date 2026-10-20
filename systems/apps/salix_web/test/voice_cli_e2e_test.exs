@@ -7,7 +7,10 @@ defmodule SalixWeb.VoiceCliE2ETest do
 
       mix test apps/salix_web/test/voice_cli_e2e_test.exs --include comma_voice_cli
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   @moduletag :comma_voice_cli
   @moduletag timeout: 300_000
@@ -18,7 +21,12 @@ defmodule SalixWeb.VoiceCliE2ETest do
   @cli_dir Path.expand("../../../voice/comma-voice", __DIR__)
 
   setup_all do
-    dir = Path.join(System.tmp_dir!(), "comma-voice-e2e-#{System.unique_integer([:positive])}")
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "comma-voice-e2e-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
     File.mkdir_p!(dir)
     bin = Path.join(dir, "comma-voice")
 
@@ -44,21 +52,21 @@ defmodule SalixWeb.VoiceCliE2ETest do
       {:salix_voice, :test_pid}
     ]
 
-    prev = for {app, key} <- keys, into: %{}, do: {{app, key}, Application.get_env(app, key)}
-    Application.put_env(:salix_web, :api_token, "test-token")
-    Application.put_env(:salix_voice, :model_mod, Fake)
-    Application.put_env(:salix_voice, :fake_model_observer, self())
-    Application.put_env(:salix_voice, :metering_mod, nil)
-    Application.put_env(:salix_voice, :ingress_mod, SalixVoice.TestStubs.Ingress)
-    Application.put_env(:salix_voice, :test_pid, self())
+    prev = for {app, key} <- keys, into: %{}, do: {{app, key}, SystemsRuntime.get_env(app, key)}
+    SystemsRuntime.put_env(:salix_web, :api_token, "test-token")
+    SystemsRuntime.put_env(:salix_voice, :model_mod, Fake)
+    SystemsRuntime.put_env(:salix_voice, :fake_model_observer, SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_voice, :metering_mod, nil)
+    SystemsRuntime.put_env(:salix_voice, :ingress_mod, SalixVoice.TestStubs.Ingress)
+    SystemsRuntime.put_env(:salix_voice, :test_pid, SystemsRuntime.Proc.self())
     SalixStore.S3.Fake.reset()
     SalixCluster.NodeLifecycle.reset()
 
     on_exit(fn ->
       for {{app, key}, value} <- prev do
         if is_nil(value),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, value)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, value)
       end
     end)
 
@@ -117,7 +125,7 @@ defmodule SalixWeb.VoiceCliE2ETest do
     File.write!(input, wav(8_000, 1_000))
 
     cli =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         System.cmd(
           ctx.bin,
           [
@@ -137,16 +145,16 @@ defmodule SalixWeb.VoiceCliE2ETest do
         )
       end)
 
-    assert_receive {:fake_model, model, {:started, _opts}}, 10_000
+    settle_receive({:fake_model, model, {:started, _opts}})
     Fake.emit(model, {:started, "sess_cli"})
-    assert_receive {:fake_model, ^model, {:audio, _caller}}, 5_000
-
+    settle_receive({:fake_model, ^model, {:audio, _caller}})
     Fake.emit(model, {:input_transcript, "Book a table for two.", true, 800})
     Fake.emit(model, {:delegation, "dlg_cli", 900})
 
-    assert_receive {:ingress, _group, _content, %{"event_type" => "voice.delegation"} = metadata,
-                    _source, _opts},
-                   5_000
+    settle_receive(
+      {:ingress, _group, _content, %{"event_type" => "voice.delegation"} = metadata, _source,
+       _opts}
+    )
 
     assert {:ok, _} =
              Provider.call_api(ctx.router_id, "voice", "voice.say", %{
@@ -158,13 +166,14 @@ defmodule SalixWeb.VoiceCliE2ETest do
                }
              })
 
-    assert_receive {:fake_model, ^model,
-                    {:append, :commentary, "dlg_cli", "Your table is booked."}}
+    settle_receive(
+      {:fake_model, ^model, {:append, :commentary, "dlg_cli", "Your table is booked."}}
+    )
 
     Fake.emit(model, {:output_transcript, "Your table is booked.", true})
     Fake.emit(model, {:audio, :binary.copy(<<0x55>>, 4_000)})
 
-    {out, status} = Task.await(cli, 60_000)
+    {out, status} = settled_await(cli)
     assert status == 0, out
     assert out =~ ~s("type":"session.started")
     assert out =~ "Your table is booked."

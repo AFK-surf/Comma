@@ -37,7 +37,7 @@ defmodule AlertRouter.TestOIDCTokenVerifier do
 end
 
 defmodule AlertRouter.GCPPushAuthTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Plug.Conn
   import Plug.Test
@@ -48,9 +48,9 @@ defmodule AlertRouter.GCPPushAuthTest do
   @email "alert-router-push@test.iam.gserviceaccount.com"
 
   setup do
-    previous = Application.fetch_env!(:alert_router, :gcp_push)
+    previous = SystemsRuntime.fetch_env!(:alert_router, :gcp_push)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :alert_router,
       :gcp_push,
       previous
@@ -59,7 +59,7 @@ defmodule AlertRouter.GCPPushAuthTest do
       |> Keyword.put(:token_verifier, AlertRouter.TestOIDCTokenVerifier)
     )
 
-    on_exit(fn -> Application.put_env(:alert_router, :gcp_push, previous) end)
+    on_exit(fn -> SystemsRuntime.put_env(:alert_router, :gcp_push, previous) end)
   end
 
   test "accepts only a verified token pinned to audience and service-account email" do
@@ -88,8 +88,8 @@ defmodule AlertRouter.GCPPushAuthTest do
   end
 
   test "fails closed when the expected identity is not configured" do
-    config = Application.fetch_env!(:alert_router, :gcp_push)
-    Application.put_env(:alert_router, :gcp_push, Keyword.put(config, :audience, nil))
+    config = SystemsRuntime.fetch_env!(:alert_router, :gcp_push)
+    SystemsRuntime.put_env(:alert_router, :gcp_push, Keyword.put(config, :audience, nil))
 
     assert {:error, :unauthorized} = authorize("valid")
   end
@@ -118,7 +118,7 @@ defmodule AlertRouter.GCPPushAuthTest do
         :unauthenticated
       )
 
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     claims = %{
       "iss" => issuer,

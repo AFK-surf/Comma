@@ -303,11 +303,11 @@ export async function tryWaitForCreditDecrease(
 }
 
 export function interactiveEnabled() {
-  return Deno.env.get("COMMA_STRIPE_INTERACTIVE") === "1";
+  return process.env.COMMA_STRIPE_INTERACTIVE === "1";
 }
 
 export function env(name: string, fallback: string) {
-  const value = Deno.env.get(name);
+  const value = process.env[name];
   return value && value.trim() !== "" ? value.trim() : fallback;
 }
 
@@ -361,21 +361,20 @@ export async function waitForEnter(message: string) {
 }
 
 export async function openUrlIfRequested(url: string) {
-  if (Deno.env.get("COMMA_BILLING_E2E_OPEN_CHECKOUT") !== "1") return;
+  if (process.env.COMMA_BILLING_E2E_OPEN_CHECKOUT !== "1") return;
 
   const command =
-    Deno.build.os === "darwin"
+    process.platform === "darwin"
       ? ["open", url]
-      : Deno.build.os === "windows"
+      : process.platform === "win32"
         ? ["cmd", "/c", "start", url]
         : ["xdg-open", url];
 
-  const child = new Deno.Command(command[0], {
-    args: command.slice(1),
-    stdout: "null",
-    stderr: "null",
-  }).spawn();
-  await child.status;
+  const child = Bun.spawn(command, {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  await child.exited;
 }
 
 export function uniqueRunId() {

@@ -1,4 +1,8 @@
 defmodule SalixWeb.ConversationSSE do
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
   @moduledoc """
   Canonical Group Conversation mutation stream under
   `/v1/runtime/agent-groups/:id/conversations/events`.
@@ -21,10 +25,13 @@ defmodule SalixWeb.ConversationSSE do
 
   @spec serve_group(Plug.Conn.t(), String.t()) :: Plug.Conn.t()
   def serve_group(conn, group_id) do
-    case ConversationServer.subscribe_group_conversation_mutations(group_id, self()) do
+    case ConversationServer.subscribe_group_conversation_mutations(
+           group_id,
+           SystemsRuntime.Proc.self()
+         ) do
       {:ok, %{"owner_pid" => owner_pid, "version" => version}}
-      when is_pid(owner_pid) and is_binary(version) ->
-        owner_ref = Process.monitor(owner_pid)
+      when SystemsRuntime.Proc.is_process(owner_pid) and is_binary(version) ->
+        owner_ref = SystemsRuntime.Proc.monitor(owner_pid)
 
         conn =
           conn
@@ -56,7 +63,7 @@ defmodule SalixWeb.ConversationSSE do
   end
 
   defp loop(conn, group_id, owner_ref) do
-    receive do
+    SystemsClock.vreceive do
       {:group_conversation_mutated, ^group_id, mutation, version} ->
         case safe_event(group_id, mutation) do
           {:ok, event, data} ->

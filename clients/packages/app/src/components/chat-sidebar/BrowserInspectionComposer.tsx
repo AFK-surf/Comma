@@ -1,6 +1,6 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { browserInspectionComposerConsolePrefix } from "@comma/native-bridge";
-import { CrossLargeIcon } from "@comma/ui";
+import { CrossLargeIcon } from "@comma/ui/components/icons";
 import { useCommaMessages } from "@comma/i18n/react";
 import { Button as AriaButton } from "react-aria-components";
 import { CommaAppearanceProvider } from "../commaAppearance";
@@ -99,7 +99,7 @@ export function BrowserInspectionComposer() {
               <CrossLargeIcon className="size-4" />
             </AriaButton>
           }
-          variant="side-chat"
+          variant="compact"
         />
       </div>
     </CommaAppearanceProvider>

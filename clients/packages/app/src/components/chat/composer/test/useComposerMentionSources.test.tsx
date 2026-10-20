@@ -1,59 +1,42 @@
 import { act, renderHook, waitFor } from "@comma/test-utils/render";
-import type { CommaApiClient, CommaConversation } from "../../../../api";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import type { MentionTask } from "@comma/core/contract";
+import type { ReactNode } from "react";
+import { describe, expect, it, vi } from "vitest";
 import {
   driveMentionItems,
   driveMentionSections,
-  resetComposerMentionSourcesCacheForTest,
   useComposerMentionSources,
 } from "../useComposerMentionSources";
-import type { DriveFile } from "../../../drive/driveStore";
+import { resetDriveStoreForTest, type DriveFile } from "../../../drive/driveStore";
 
-function deferred<Value>() {
-  let resolve!: (value: Value) => void;
-  const promise = new Promise<Value>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
-}
-
-function task(groupId: string, id: string, title: string): CommaConversation {
-  return {
-    group_id: groupId,
-    id,
-    kind: "agent_task",
-    status: "in_progress",
-    title,
-    updated_at: 1,
-  };
+function task(id: string, title: string): MentionTask {
+  return { id, status: "in_progress", title, updatedAt: 1 };
 }
 
 describe("useComposerMentionSources", () => {
-  beforeEach(() => {
-    resetComposerMentionSourcesCacheForTest();
-  });
-
   it("does not expose the previous group's tasks while the next group loads", async () => {
-    const groupA = deferred<CommaConversation[]>();
-    const groupB = deferred<CommaConversation[]>();
-    const listConversations = vi.fn((groupId: string) =>
-      groupId === "group-a" ? groupA.promise : groupB.promise
-    );
-    const api = { listConversations } as Partial<CommaApiClient> as CommaApiClient;
-
+    // What the core has read of each Group's Tasks; none yet is loading.
+    const read = new Map<string, MentionTask[]>();
+    const core = createScriptedCore({
+      values: (topic) =>
+        topic.topic === "mentionTasks"
+          ? (read.get(String(topic.group)) ?? null)
+          : undefined,
+    });
     const { rerender, result } = renderHook(
       ({ groupId }: { groupId: string }) =>
-        useComposerMentionSources({
-          api,
-          groupId,
-          workspaceId: undefined,
-        }),
-      { initialProps: { groupId: "group-a" } }
+        useComposerMentionSources({ groupId, workspaceId: undefined }),
+      {
+        initialProps: { groupId: "group-a" },
+        wrapper: ({ children }: { children: ReactNode }) => core.wrap(children),
+      }
     );
+    await waitFor(() => expect(result.current.tasks.status).toBe("loading"));
 
-    await act(async () => {
-      groupA.resolve([task("group-a", "task-a", "Task from A")]);
-      await groupA.promise;
+    act(() => {
+      read.set("group-a", [task("task-a", "Task from A")]);
+      core.changed("mentionTasks");
     });
     await waitFor(() => expect(result.current.tasks.status).toBe("ready"));
     expect(result.current.tasks.items.map((item) => item.title)).toEqual([
@@ -65,17 +48,15 @@ describe("useComposerMentionSources", () => {
     await waitFor(() => expect(result.current.tasks.status).toBe("loading"));
     expect(result.current.tasks.items).toEqual([]);
 
-    await act(async () => {
-      groupB.resolve([task("group-b", "task-b", "Task from B")]);
-      await groupB.promise;
+    act(() => {
+      read.set("group-b", [task("task-b", "Task from B")]);
+      core.changed("mentionTasks");
     });
     await waitFor(() =>
       expect(result.current.tasks.items.map((item) => item.title)).toEqual([
         "Task from B",
       ])
     );
-    expect(listConversations).toHaveBeenCalledWith("group-a");
-    expect(listConversations).toHaveBeenCalledWith("group-b");
   });
 });
 
@@ -109,7 +90,7 @@ describe("Drive mention items", () => {
     driveFile("also-new", "also-new.txt", 30, { folderPath: "drafts/q3" }),
   ];
 
-  it("lists files newest first with where they live, reading through the node", async () => {
+  it("lists files newest first with where they live, reading through the core", async () => {
     const readFile = vi.fn((file: DriveFile) => Promise.resolve(new Blob([file.name])));
     const items = driveMentionItems({ files, spaces }, readFile);
     expect(items.map((item) => [item.file.id, item.location])).toEqual([
@@ -120,12 +101,6 @@ describe("Drive mention items", () => {
     ]);
     await expect(items[0]!.read().then((blob) => blob.size)).resolves.toBe(7);
     expect(readFile).toHaveBeenCalledWith(files[1]);
-  });
-
-  it("keeps only files whose bytes are here when there is no node", async () => {
-    const items = driveMentionItems({ files, spaces }, undefined);
-    expect(items.map((item) => item.file.id)).toEqual(["mid", "old"]);
-    await expect(items[1]!.read().then((blob) => blob.size)).resolves.toBe(1);
   });
 
   it("groups the browse sections by folder, newest folder first", () => {
@@ -146,19 +121,44 @@ describe("Drive mention items", () => {
     ]);
   });
 
-  it("serves the demo store's attachable files when the client has no node", async () => {
-    const { result } = renderHook(() =>
-      useComposerMentionSources({
-        api: undefined,
-        groupId: undefined,
-        workspaceId: undefined,
-      })
+  it("reads the core's Drive once the @ menu opens when the client has no node", async () => {
+    // The window's Drive store is built on first use; build it for this window.
+    resetDriveStoreForTest();
+    const subscribed: unknown[] = [];
+    const core = createScriptedCore({
+      onSubscribe: (topic) => subscribed.push(topic.topic),
+      values: (topic) =>
+        topic.topic === "drive"
+          ? {
+              node: { status: "off" },
+              devices: [],
+              spaces,
+              files,
+              originDeviceId: "",
+              versionPolicy: "newest",
+              localSyncEnabled: false,
+              localSyncRoot: "",
+              syncHistory: [],
+              transfers: [],
+            }
+          : undefined,
+    });
+    const { result } = renderHook(
+      () => useComposerMentionSources({ groupId: undefined, workspaceId: undefined }),
+      { wrapper: ({ children }) => core.wrap(children) }
     );
-    await waitFor(() => expect(result.current.drive.status).toBe("ready"));
-    expect(result.current.drive.items.map((item) => item.file.name)).toEqual([
-      "Screenshot 2026-08-29 at 10.47.png",
-      "logo-mark.svg",
-      "sound.wav",
-    ]);
+    // A composer shown without its menu reads no Drive.
+    expect(subscribed).not.toContain("drive");
+    expect(result.current.drive.items).toEqual([]);
+    act(() => result.current.drive.onMenuQueryChange?.(""));
+    await waitFor(() =>
+      expect(result.current.drive.items.map((item) => item.file.id)).toEqual([
+        "new",
+        "also-new",
+        "mid",
+        "old",
+      ])
+    );
+    expect(subscribed).toContain("drive");
   });
 });

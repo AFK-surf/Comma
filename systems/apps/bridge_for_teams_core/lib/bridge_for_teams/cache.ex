@@ -7,7 +7,7 @@ defmodule BridgeForTeams.Cache do
   served directly from ETS (no GenServer round-trip) and lazily evict expired
   entries; the owning GenServer also sweeps periodically.
   """
-  use GenServer
+  use SystemsRuntime.Server
 
   @table __MODULE__
   @sweep_interval_ms 60_000
@@ -15,13 +15,13 @@ defmodule BridgeForTeams.Cache do
   @doc "Start the cache table owner."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc "Fetch a cached value."
   @spec get(term()) :: {:ok, term()} | :error
   def get(key) do
-    case :ets.lookup(@table, key) do
+    case SystemsRuntime.ETS.lookup(@table, key) do
       [{^key, value, :infinity}] ->
         {:ok, value}
 
@@ -29,7 +29,7 @@ defmodule BridgeForTeams.Cache do
         if now_ms() < expires_at do
           {:ok, value}
         else
-          :ets.delete(@table, key)
+          SystemsRuntime.ETS.delete(@table, key)
           :error
         end
 
@@ -54,20 +54,20 @@ defmodule BridgeForTeams.Cache do
         _ -> :infinity
       end
 
-    :ets.insert(@table, {key, value, expires_at})
+    SystemsRuntime.ETS.insert(@table, {key, value, expires_at})
     :ok
   end
 
   @doc "Delete a cached value."
   @spec delete(term()) :: :ok
   def delete(key) do
-    :ets.delete(@table, key)
+    SystemsRuntime.ETS.delete(@table, key)
     :ok
   end
 
   @impl true
   def init(_opts) do
-    table = :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+    table = SystemsRuntime.ETS.new(@table, [:named_table, :public, :set, read_concurrency: true])
     schedule_sweep()
     {:ok, %{table: table}}
   end
@@ -82,12 +82,13 @@ defmodule BridgeForTeams.Cache do
   defp sweep_expired do
     now = now_ms()
     # Match-delete every entry whose finite expiry is in the past.
-    :ets.select_delete(@table, [
+    SystemsRuntime.ETS.select_delete(@table, [
       {{:_, :_, :"$1"}, [{:andalso, {:"/=", :"$1", :infinity}, {:<, :"$1", now}}], [true]}
     ])
   end
 
-  defp schedule_sweep, do: Process.send_after(self(), :sweep, @sweep_interval_ms)
+  defp schedule_sweep,
+    do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :sweep, @sweep_interval_ms)
 
-  defp now_ms, do: System.monotonic_time(:millisecond)
+  defp now_ms, do: SystemsClock.monotonic_time(:millisecond)
 end

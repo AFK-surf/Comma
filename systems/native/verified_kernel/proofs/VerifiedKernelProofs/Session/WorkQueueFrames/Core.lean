@@ -1,5 +1,5 @@
-import VerifiedKernelProofs.Session.WorkAllocation
 import VerifiedKernelProofs.Proof.NativeProducerTactic
+import VerifiedKernelProofs.Session.WorkFrames
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data
@@ -43,13 +43,13 @@ syntax "queue_frame_step" ident : tactic
 macro_rules
   | `(tactic| queue_frame_step $h:ident) => do
     -- Select the execution summary before inspecting its arguments.
-    let steps ← (transcriptSteps ++ [`mergePredicate, `microcompactIds, `microcompact, `archiveAdvance]).mapM (fun name => do
+    let steps ← (transcriptSteps ++ [`archiveAdvance]).mapM (fun name => do
       let lemma := Lean.mkIdent (name.appendAfter "_queue_frame")
       let head := Lean.Syntax.mkStrLit ("VerifiedKernel.Session." ++ name.toString)
       `(tactic| (execution_head_is $h $head:str
                  refine queue_frame_trans ($lemma:ident $h) ?_)))
     let writes ← `(tactic| (execution_head_is $h "VerifiedKernel.Data.write"
-                            refine queue_frame_trans (write_queue_frame $h rfl rfl rfl rfl rfl) ?_))
+                            refine queue_frame_trans (write_queue_frame $h (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent)) ?_))
     let alternatives := (writes :: steps).toArray
     `(tactic| first $[| $alternatives:tactic]*)
 
@@ -540,7 +540,7 @@ theorem historyCompaction_queue_frame {s e t : Term} {provider : Bool} {j r : Li
        obtain ⟨value, _, prior, h⟩ := bound
        first
          | (execution_head_is prior "VerifiedKernel.Data.write"
-            refine queue_frame_trans (write_queue_frame prior rfl rfl rfl rfl rfl) ?_)
+            refine queue_frame_trans (write_queue_frame prior (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent)) ?_)
          | (execution_head_is prior "VerifiedKernel.Session.pruneResultRefs"
             refine queue_frame_trans (pruneResultRefs_queue_frame prior) ?_)
          | (execution_head_is prior "VerifiedKernel.Session.pruneCompactResults"
@@ -571,7 +571,7 @@ theorem compactResult_queue_frame {s e t : Term} {j r : List Term} (h : compactR
        obtain ⟨value, _, prior, h⟩ := bound
        first
          | (execution_head_is prior "VerifiedKernel.Data.write"
-            refine queue_frame_trans (write_queue_frame prior rfl rfl rfl rfl rfl) ?_)
+            refine queue_frame_trans (write_queue_frame prior (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent)) ?_)
          | (execution_head_is prior "Pure.pure"
             have same := pure_ok prior
             subst value)
@@ -629,10 +629,12 @@ theorem transcriptLog_queue_frame_step {s e t : Term} {j r : List Term} :
   step_iff transcriptLog_queue_frame
 
 
+/-- Compose the two writes of `transcriptSeed` (`transcriptSeed_ops`). -/
 theorem transcriptSeed_queue_frame {s e t : Term} {j r : List Term} (h : transcriptSeed s e j = .ok (t, r)) :
     QueueFrame s t := by
-  unfold transcriptSeed at h
-  queue_frame_walk h
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, seeded, bytes⟩ := transcriptSeed_ops h
+  exact queue_frame_trans (write_queue_frame seeded (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent))
+    (write_queue_frame bytes (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent))
 
 
 theorem transcriptSeed_queue_frame_step {s e t : Term} {j r : List Term} :
@@ -656,7 +658,7 @@ cheaper than a walk over every branch of `runtimeAppend`. -/
 theorem runtimeAppend_queue_frame {s e t : Term} {j r : List Term} (h : runtimeAppend s e j = .ok (t, r)) :
     QueueFrame s t := by
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops h
-  exact queue_frame_trans (appendFields_queue_frame appended) (queue_frame_trans (write_queue_frame written rfl rfl rfl rfl rfl)
+  exact queue_frame_trans (appendFields_queue_frame appended) (queue_frame_trans (write_queue_frame written (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent))
     (queue_frame_trans (bumpHwm_queue_frame bumped) (resetFresh_queue_frame reset)))
 
 
@@ -682,7 +684,7 @@ theorem transcriptDelivery_queue_frame {s e t : Term} {j r : List Term}
     (h : transcriptDelivery s e j = .ok (t, r)) : QueueFrame s t := by
   rcases transcriptDelivery_ops h with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, obligated, bumped, reset⟩
   · exact queue_frame_refl _
-  · exact queue_frame_trans (appendFields_queue_frame appended) (queue_frame_trans (write_queue_frame written rfl rfl rfl rfl rfl)
+  · exact queue_frame_trans (appendFields_queue_frame appended) (queue_frame_trans (write_queue_frame written (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent) (by keys_absent))
       (queue_frame_trans (addObligation_queue_frame obligated) (queue_frame_trans (bumpHwm_queue_frame bumped) (resetFresh_queue_frame reset))))
 
 

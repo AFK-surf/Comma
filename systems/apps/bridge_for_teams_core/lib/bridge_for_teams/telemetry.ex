@@ -23,7 +23,9 @@ defmodule BridgeForTeams.Telemetry do
     context_lifecycle: "other"
   }
   @operations @operation_providers |> Map.keys() |> Enum.map(&Atom.to_string/1)
-  @providers @operation_providers |> Map.values() |> Enum.uniq() |> Kernel.++(["other"])
+  # An `sso` operation is a Feishu sign-in unless its emitter says Lark. The
+  # label answers: which platform's sign-in is failing or slow?
+  @providers @operation_providers |> Map.values() |> Enum.uniq() |> Kernel.++(["lark", "other"])
 
   def metrics do
     operation_options = [
@@ -59,16 +61,21 @@ defmodule BridgeForTeams.Telemetry do
   end
 
   def emit_operation(operation, outcome, duration, metadata \\ %{}) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:bridge_for_teams, :operation, :stop],
       %{duration: duration},
       Map.merge(metadata, %{
         operation: operation,
-        provider: Map.get(@operation_providers, operation, "other"),
+        provider: operation_provider(operation, metadata),
         outcome: outcome
       })
     )
   end
+
+  defp operation_provider(:sso, %{provider: "lark"}), do: "lark"
+
+  defp operation_provider(operation, _metadata),
+    do: Map.get(@operation_providers, operation, "other")
 
   defp operation_tags(metadata) do
     %{

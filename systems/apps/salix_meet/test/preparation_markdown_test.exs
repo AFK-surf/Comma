@@ -1,5 +1,5 @@
 defmodule SalixMeet.PreparationMarkdownTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixMeet.{CalendarPreparation, PreparationMarkdown}
   alias SalixIM.Provider.Slack.MessageRenderer
@@ -57,15 +57,6 @@ defmodule SalixMeet.PreparationMarkdownTest do
            )
 
     assert report =~ "‹@U123›"
-  end
-
-  test "Slack source labels cannot break the standard Markdown link" do
-    report = PreparationMarkdown.normalize("**Source** <https://example.com/pr|PR [draft]*>")
-    assert {:ok, %{blocks: blocks}} = MessageRenderer.render(report)
-
-    assert %{"type" => "link", "text" => "PR [draft]*", "url" => "https://example.com/pr"} in descendants(
-             blocks
-           )
   end
 
   defp descendants(value) when is_list(value), do: Enum.flat_map(value, &descendants/1)

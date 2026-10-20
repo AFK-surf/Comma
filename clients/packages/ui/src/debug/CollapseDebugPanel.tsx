@@ -1,3 +1,4 @@
+import { uiClock, type CancelUiTimer } from "../clock";
 import { Pane } from "tweakpane";
 import { useEffect, useRef } from "react";
 import {
@@ -155,17 +156,18 @@ export const CollapseDebugPanel = ({ initial, onChange }: CollapseDebugPanelProp
       sync
     );
 
-    let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let copyFeedbackTimer: CancelUiTimer | null = null;
     const copyAllButton = pane.addButton({ title: "copy all params" });
     copyAllButton.on("click", () => {
       void copyTextToClipboard(serializeCollapseMotionParams(paramsRef.current)).then(
         () => {
-          if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
+          copyFeedbackTimer?.();
           copyAllButton.title = "copied";
-          copyFeedbackTimer = setTimeout(() => {
+          // motion
+          copyFeedbackTimer = uiClock.after(1200, () => {
             copyAllButton.title = "copy all params";
             copyFeedbackTimer = null;
-          }, 1200);
+          });
         }
       );
     });
@@ -173,7 +175,7 @@ export const CollapseDebugPanel = ({ initial, onChange }: CollapseDebugPanelProp
     sync();
 
     return () => {
-      if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
+      copyFeedbackTimer?.();
       pane.dispose();
       host.replaceChildren();
       resetCollapseMotionOnDocument();

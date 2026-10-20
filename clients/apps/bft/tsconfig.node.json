@@ -5,5 +5,10 @@
     "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.bft.node.tsbuildinfo"
   },
   "include": ["vite.config.ts", "playwright.config.ts", "../../vite/comma-tailwind.ts"],
-  "exclude": ["**/*.test.*", "**/*.spec.*"]
+  "exclude": ["**/*.test.*", "**/*.spec.*"],
+  "references": [
+    {
+      "path": "../../packages/i18n/tsconfig.tools.json"
+    }
+  ]
 }

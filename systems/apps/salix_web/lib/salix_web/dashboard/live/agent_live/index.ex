@@ -138,9 +138,9 @@ defmodule SalixWeb.Dashboard.AgentLive.Index do
         <:col :let={a} label="Status"><.status_pill status={a["status"]} /></:col>
         <:col :let={a} label="Role">{a["role"]}</:col>
         <:col :let={a} label="Group"><span class="font-mono text-xs">{Format.short_id(a["group_id"])}</span></:col>
-        <:col :let={a} label="Template">
-          <span :if={a["template_id"]} class="font-mono text-xs">{Format.short_id(a["template_id"])}</span>
-          <span :if={is_nil(a["template_id"])} class="text-xs text-neutral-500">follows default</span>
+        <:col :let={a} label="Model">
+          <span :if={is_map(a["model"])} class="font-mono text-xs">{a["model"]["model"] || a["model"]["tier"]}</span>
+          <span :if={not is_map(a["model"])} class="text-xs text-neutral-500">follows platform</span>
         </:col>
         <:action :let={a}>
           <.button size="sm" navigate={"/dash/agents/#{a["agent_id"]}"}>Open</.button>

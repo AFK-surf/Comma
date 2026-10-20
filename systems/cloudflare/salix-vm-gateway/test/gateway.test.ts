@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { createGateway, type GatewayEnv, type SandboxHandle } from "../src/app";
-import { signRequest, stripControlPlaneHeaders } from "../src/auth";
+import { signRequest } from "../src/auth";
 import { parseSandboxId, sandboxIdFromPath } from "../src/ids";
 import type { ManagedSandbox } from "../src/managed_sandbox";
 import type { ControlPermit } from "../src/control";
@@ -13,24 +13,6 @@ describe("id parsing", () => {
       id: "sb-1",
       suffix: "/connect",
     });
-  });
-});
-
-describe("auth", () => {
-  test("strips Salix control-plane headers before proxying", () => {
-    const headers = stripControlPlaneHeaders(
-      new Headers({
-        authorization: "Bearer secret",
-        cookie: "a=b",
-        "x-salix-signature": "sig",
-        "x-salix-request-id": "rid",
-        "x-custom": "ok",
-      }),
-    );
-    expect(headers.get("authorization")).toBeNull();
-    expect(headers.get("cookie")).toBeNull();
-    expect(headers.get("x-salix-signature")).toBeNull();
-    expect(headers.get("x-custom")).toBe("ok");
   });
 });
 
@@ -50,15 +32,58 @@ describe("gateway routes", () => {
     expect(calls).toEqual([]);
   });
 
-  test("control observation does not use Container transport and repair connect retains its mode", async () => {
-    const requests: Request[] = [];
-    const app = createGateway<TestEnv>({ getSandbox: () => fakeSandbox([], "sb-1", undefined, requests) });
+  test("nothing reaches the Container: connect and proxy paths are gone", async () => {
+    const calls: string[] = [];
+    const app = createGateway<TestEnv>({ getSandbox: () => fakeSandbox(calls, "sb-1") });
     const testEnv = env();
     const observed = await app.fetch(await signedRequest("https://gateway/internal/v1/sandboxes/sb-1/control", { control: false }), testEnv);
     expect(await observed.json()).toMatchObject({ running: false, control: null });
-    expect(requests).toEqual([]);
-    await app.fetch(await signedRequest("https://gateway/internal/v1/sandboxes/sb-1/connect?archive_repair=true", { headers: { upgrade: "websocket" } }), testEnv);
-    expect(new URL(requests[0].url).searchParams.get("archive_repair")).toBe("true");
+    for (const path of ["/connect", "/proxy/readyz", "/proxy/archive", "/receipt?operation=x"]) {
+      const response = await app.fetch(await signedRequest(`https://gateway/internal/v1/sandboxes/sb-1${path}`, { headers: { upgrade: "websocket" } }), testEnv);
+      expect(response.status).toBe(404);
+    }
+    expect(calls.filter((c) => !c.startsWith("get:"))).toEqual([]);
+  });
+
+  test("ensure gives the Container its station's server and credential, and refuses anything else", async () => {
+    const stations: unknown[] = [];
+    const handle = fakeSandbox();
+    handle.salixEnsure = async (_permit, _keepAlive, station) => {
+      stations.push(station);
+      return { running: true, control: null, managed_commands_settled: false, last_stop: null, last_uncommanded_stop: null };
+    };
+    const app = createGateway<TestEnv>({ getSandbox: () => handle });
+    const testEnv = env();
+    for (const bad of [undefined, { server: "ws://salix.example", credential: "c" }, { server: "wss://salix.example", credential: "" }, { server: "wss://salix.example", credential: "a b" }]) {
+      const refused = await app.fetch(await signedRequest("https://gateway/internal/v1/sandboxes", { method: "POST", body: { sandbox_id: "sb-1", station: bad } }), testEnv);
+      expect(refused.status).toBe(400);
+    }
+    expect(stations).toEqual([]);
+    const ok = await app.fetch(await signedRequest("https://gateway/internal/v1/sandboxes", { method: "POST", body: { sandbox_id: "sb-1", station: { server: "wss://salix.example", credential: "connect-credential" } } }), testEnv);
+    expect(await ok.json()).toMatchObject({ status: "started", running: true });
+    expect(stations).toEqual([{ SALIX_SERVER: "wss://salix.example", SALIX_WORKLOAD_CREDENTIAL: "connect-credential" }]);
+  });
+
+  test("ensure gives the Container the archive a wake names to restore before its station starts, as Salix encoded it", async () => {
+    const stations: unknown[] = [];
+    const handle = fakeSandbox();
+    handle.salixEnsure = async (_permit, _keepAlive, station) => {
+      stations.push(station);
+      return { running: true, control: null, managed_commands_settled: false, last_stop: null, last_uncommanded_stop: null };
+    };
+    const app = createGateway<TestEnv>({ getSandbox: () => handle });
+    const testEnv = env();
+    const station = { server: "wss://salix.example", credential: "connect-credential" };
+    // Anything but Salix's one bounded base64 string is refused: the Container is not started without its disk.
+    for (const restore of ["", "not base64!", { operation: "archive-1" }, null, "A".repeat(8 * 1024 + 4)]) {
+      const refused = await app.fetch(await signedRequest("https://gateway/internal/v1/sandboxes", { method: "POST", body: { sandbox_id: "sb-1", station: { ...station, restore } } }), testEnv);
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toMatchObject({ error: { code: "invalid_station" } });
+    }
+    expect(stations).toEqual([]);
+    const ok = await app.fetch(await signedRequest("https://gateway/internal/v1/sandboxes", { method: "POST", body: { sandbox_id: "sb-1", station: { ...station, restore: "H4sIAAAAAAAAA6tWyi9ILUosyS9SslIqSc7PBQBs7xjLFAAAAA==" } } }), testEnv);
+    expect(await ok.json()).toMatchObject({ status: "started", running: true });
+    expect(stations).toEqual([{ SALIX_SERVER: "wss://salix.example", SALIX_WORKLOAD_CREDENTIAL: "connect-credential", SALIX_RESTORE_ARCHIVE: "H4sIAAAAAAAAA6tWyi9ILUosyS9SslIqSc7PBQBs7xjLFAAAAA==" }]);
   });
 
   test("healthz includes worker and connector version metadata", async () => {
@@ -120,7 +145,7 @@ describe("gateway routes", () => {
     const ensure = await app.fetch(
       await signedRequest("https://gateway/internal/v1/sandboxes", {
         method: "POST",
-        body: { sandbox_id: "sb-1", keep_alive: true },
+        body: { sandbox_id: "sb-1", keep_alive: true, station: { server: "wss://salix.example", credential: "connect-credential" } },
       }),
       testEnv,
     );
@@ -128,7 +153,7 @@ describe("gateway routes", () => {
     expect(await ensure.json()).toMatchObject({
       ok: true,
       sandbox_id: "sb-1",
-      status: "ready",
+      status: "started",
       worker_version_id: "version-1",
       worker_version_tag: "tag-1",
       gateway_build_id: "build-1",
@@ -180,153 +205,24 @@ describe("gateway routes", () => {
     expect(calls).toContain("destroy:sb-1");
   });
 
-  test("connect and proxy strip Salix auth material", async () => {
-    const calls: Request[] = [];
-    const app = createGateway<TestEnv>({
-      getSandbox: () => fakeSandbox(undefined, "sb-1", undefined, calls),
-    });
+  test("only a signed explicit discard request authorizes disk disposal", async () => {
+    const decisions: boolean[] = [];
+    const handle = fakeSandbox();
+    handle.salixDestroy = async (_permit, discard) => {
+      decisions.push(discard === true);
+      return { running: false, control: null, managed_commands_settled: true, last_stop: null, last_uncommanded_stop: null };
+    };
+    const app = createGateway<TestEnv>({ getSandbox: () => handle });
     const testEnv = env();
-
-    const proxy = await app.fetch(
-      await signedRequest(
-        "https://gateway/internal/v1/sandboxes/sb-1/proxy/readyz",
-        {
-          method: "GET",
-        },
-      ),
-      testEnv,
-    );
-    expect(proxy.status).toBe(200);
-    expect(proxy.headers.get("x-salix-container-response")).toBe("1");
-    expect(calls[0].headers.get("x-salix-signature")).toBeNull();
-
-    const connect = await app.fetch(
-      await signedRequest(
-        "https://gateway/internal/v1/sandboxes/sb-1/connect",
-        {
-          method: "GET",
-          headers: { upgrade: "websocket" },
-        },
-      ),
-      testEnv,
-    );
-    expect(connect.status).toBe(200);
-    expect(await connect.json()).toEqual({ ok: true, upgraded: true });
-    expect(new URL(calls[1].url).pathname).toBe("/connect");
-    expect(calls[1].headers.get("upgrade")).toBe("websocket");
-    expect(calls[1].headers.get("x-salix-signature")).toBeNull();
+    const url = "https://gateway/internal/v1/sandboxes/sb-1/destroy";
+    const signed = await signedRequest(url, { method: "POST", body: { discard: false } });
+    expect((await app.fetch(new Request(signed, { body: JSON.stringify({ discard: true }) }), testEnv)).status).toBe(401);
+    expect(decisions).toEqual([]);
+    expect((await app.fetch(await signedRequest(url, { method: "POST" }), testEnv)).status).toBe(200);
+    expect((await app.fetch(await signedRequest(url, { method: "POST", body: { discard: true } }), testEnv)).status).toBe(200);
+    expect(decisions).toEqual([false, true]);
   });
 
-  test("marks a completed Container error but not a Gateway error", async () => {
-    const containerError = createGateway<TestEnv>({
-      getSandbox: () => ({
-        ...fakeSandbox(),
-        salixForward: async () => new Response("unavailable", { status: 503 }),
-      }),
-    });
-    const request = await signedRequest(
-      "https://gateway/internal/v1/sandboxes/sb-1/proxy/readyz",
-    );
-    const response = await containerError.fetch(request, env());
-    expect(response.status).toBe(503);
-    expect(response.headers.get("x-salix-container-response")).toBe("1");
-
-    const gatewayError = createGateway<TestEnv>({
-      getSandbox: () => {
-        throw new Error("gateway failed");
-      },
-    });
-    const failed = await gatewayError.fetch(request, env());
-    expect(failed.status).toBe(500);
-    expect(failed.headers.get("x-salix-container-response")).toBeNull();
-  });
-
-  test("proxy only allows diagnostic endpoints", async () => {
-    const calls: Request[] = [];
-    const app = createGateway<TestEnv>({
-      getSandbox: () => fakeSandbox(undefined, "sb-1", undefined, calls),
-    });
-    const testEnv = env();
-
-    for (const path of [
-      "/exec",
-      "/connect",
-      "/files/read",
-      "/processes",
-      "/diagnostics/../exec",
-      "/diagnostics/%2e%2e/exec",
-      "/diagnostics/%2E%2E/exec",
-      "/diagnostics/%2fexec",
-      "/diagnostics/%5c..%5cexec",
-      "/diagnostics/%5C..%5Cexec",
-    ]) {
-      const response = await app.fetch(
-        await signedRequest(
-          `https://gateway/internal/v1/sandboxes/sb-1/proxy${path}`,
-        ),
-        testEnv,
-      );
-      expect(response.status).toBe(403);
-    }
-    expect(calls).toHaveLength(0);
-
-    const diagnostics = await app.fetch(
-      await signedRequest(
-        "https://gateway/internal/v1/sandboxes/sb-1/proxy/diagnostics/runtime",
-      ),
-      testEnv,
-    );
-    expect(diagnostics.status).toBe(200);
-    expect(new URL(calls[0].url).pathname).toBe("/diagnostics/runtime");
-  });
-
-  test("signatures cover forwarded query strings", async () => {
-    const calls: Request[] = [];
-    const app = createGateway<TestEnv>({
-      getSandbox: () => fakeSandbox(undefined, "sb-1", undefined, calls),
-    });
-    const testEnv = env();
-
-    const signed = await signedRequest(
-      "https://gateway/internal/v1/sandboxes/sb-1/proxy/readyz?probe=ok",
-      {
-        method: "GET",
-      },
-    );
-    const ok = await app.fetch(signed, testEnv);
-    expect(ok.status).toBe(200);
-    expect(new URL(calls[0].url).search).toBe("?probe=ok");
-
-    const tampered = new Request(
-      "https://gateway/internal/v1/sandboxes/sb-1/proxy/readyz?probe=evil",
-      signed,
-    );
-    const rejected = await app.fetch(tampered, testEnv);
-    expect(rejected.status).toBe(401);
-  });
-
-  test("rejects oversized archive proxy bodies before forwarding", async () => {
-    const calls: Request[] = [];
-    const app = createGateway<TestEnv>({
-      getSandbox: () => fakeSandbox(undefined, "sb-1", undefined, calls),
-    });
-    const testEnv = { ...env(), SALIX_VM_GATEWAY_MAX_BODY_BYTES: "8" };
-
-    const response = await app.fetch(
-      await signedRequest(
-        "https://gateway/internal/v1/sandboxes/sb-1/proxy/archive",
-        {
-          method: "PUT",
-          body: "0123456789abcdef",
-          rawBody: true,
-        },
-      ),
-      testEnv,
-    );
-
-    expect(response.status).toBe(413);
-    expect(calls).toHaveLength(0);
-  });
 });
 
 type TestEnv = GatewayEnv;
@@ -393,35 +289,22 @@ function fakeSandbox(
   calls: string[] = [],
   id = "sandbox",
   keepAlive?: boolean,
-  requests: Request[] = [],
 ): SandboxHandle {
   calls.push(`get:${id}:${keepAlive}`);
   return {
-    async salixForward(_permit: ControlPermit, request: Request) {
-      requests.push(request);
-      return Response.json({ ok: true, path: new URL(request.url).pathname });
-    },
     async salixDestroy() {
       calls.push(`destroy:${id}`);
-      return { running: false, control: null, managed_commands_settled: false };
+      return { running: false, control: null, managed_commands_settled: false, last_stop: null, last_uncommanded_stop: null };
     },
     async salixKeepAlive(_permit: ControlPermit, value: boolean) {
       calls.push(`keepalive:${id}:${value}`);
     },
     async salixEnsure(_permit: ControlPermit, value: boolean) {
       calls.push(`ensure:${id}:${value}`);
-      return Response.json({ ok: true });
+      return { running: false, control: null, managed_commands_settled: false, last_stop: null, last_uncommanded_stop: null };
     },
-    async salixStatus() { return Response.json({ ok: true }); },
-    async salixReceipt() { return Response.json({ phase: "restored" }); },
-    async salixObserve() { return { running: false, control: null, managed_commands_settled: false }; },
-    async salixOpen() { return { running: false, control: null, managed_commands_settled: false }; },
-    async salixSeal() { return { running: false, control: null, managed_commands_settled: false }; },
-    async fetch(request: Request) {
-      const url = new URL(request.url);
-      url.searchParams.delete("salix_control");
-      requests.push(new Request(url, request));
-      return Response.json({ ok: true, upgraded: true });
-    },
+    async salixObserve() { return { running: false, control: null, managed_commands_settled: false, last_stop: null, last_uncommanded_stop: null }; },
+    async salixOpen() { return { running: false, control: null, managed_commands_settled: false, last_stop: null, last_uncommanded_stop: null }; },
+    async salixSeal() { return { running: false, control: null, managed_commands_settled: false, last_stop: null, last_uncommanded_stop: null }; },
   };
 }

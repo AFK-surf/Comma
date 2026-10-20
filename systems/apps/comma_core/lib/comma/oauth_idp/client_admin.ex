@@ -206,7 +206,7 @@ defmodule Comma.OauthIdp.ClientAdmin do
   @spec disable(String.t()) :: {:ok, public_client()} | {:error, atom()}
   def disable(client_id) do
     with {:ok, record} <- fetch(client_id) do
-      set_disabled_marker(record, DateTime.to_iso8601(DateTime.utc_now()))
+      set_disabled_marker(record, DateTime.to_iso8601(SystemsClock.utc_now()))
     end
   end
 
@@ -275,12 +275,12 @@ defmodule Comma.OauthIdp.ClientAdmin do
   # promise out of application logs; telemetry measurements (durations,
   # counts) are unaffected.
   defp suppress_credential_logs(fun) do
-    Logger.put_process_level(self(), :none)
+    Logger.put_process_level(SystemsRuntime.Proc.self(), :none)
 
     try do
       fun.()
     after
-      Logger.delete_process_level(self())
+      Logger.delete_process_level(SystemsRuntime.Proc.self())
     end
   end
 

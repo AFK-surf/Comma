@@ -8,11 +8,11 @@
       "path": "clients/apps/admin/package.json",
       "dependencies": [
         {
-          "name": "@comma/app",
+          "name": "@comma/config",
           "scope": "dependencies"
         },
         {
-          "name": "@comma/config",
+          "name": "@comma/i18n",
           "scope": "dependencies"
         },
         {
@@ -2877,10 +2877,10 @@
       "directTests": []
     },
     {
-      "concept": "External Runtime Session",
+      "concept": "Retired Session",
       "layer": "执行 Owner",
-      "implementation": "SalixAgent.ExternalSessionActor",
-      "path": "systems/apps/salix_agent/lib/salix_agent/external_session_actor.ex",
+      "implementation": "SalixAgent.RetiredSessions",
+      "path": "systems/apps/salix_agent/lib/salix_agent/retired_sessions.ex",
       "directTests": []
     }
   ]

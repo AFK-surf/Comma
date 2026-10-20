@@ -1,13 +1,12 @@
 defmodule BridgeForTeamsWeb.DashboardCase do
   @moduledoc """
-  Test case for the LiveView dashboard (port 4101 endpoint). Provides
-  `Phoenix.ConnTest` + `Phoenix.LiveViewTest` against
-  `BridgeForTeamsWeb.DashboardEndpoint`, checks out the Ecto SQL sandbox (the
+  Test case for the dashboard (port 4101 endpoint). Provides
+  `Phoenix.ConnTest` against `BridgeForTeamsWeb.DashboardEndpoint`, checks out the Ecto SQL sandbox (the
   dashboard drives `bridge_for_teams_core`'s repo), and exposes:
 
     * `log_in_user(conn, user)` — creates a REAL session via
       `BridgeForTeams.Auth.Sessions` and writes the opaque token into the signed
-      dashboard session cookie (same key the on_mount hook reads).
+      dashboard session cookie (same key the `fetch_current_user` plug reads).
     * `register_and_log_in_user/1` (setup tag) — creates user+org+membership and
       logs in.
     * fixtures: `user_fixture/1`, `org_fixture/1`, `org_with_owner_fixture/1`,
@@ -26,12 +25,14 @@ defmodule BridgeForTeamsWeb.DashboardCase do
 
       import Plug.Conn
       import Phoenix.ConnTest
-      import Phoenix.LiveViewTest
       import BridgeForTeamsWeb.DashboardCase
 
       @endpoint BridgeForTeamsWeb.DashboardEndpoint
     end
   end
+
+  # A synchronous test stops what it leaves running when it ends.
+  setup {SystemsClock.Case, :isolate}
 
   alias BridgeForTeams.{Accounts, Memberships, Orgs}
   alias BridgeForTeams.Auth.Sessions
@@ -45,7 +46,6 @@ defmodule BridgeForTeamsWeb.DashboardCase do
       Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: not tags[:async])
 
     on_exit(fn ->
-      _ = BridgeForTeams.EnvironmentRuntimeObserver.drain(30_000)
       Ecto.Adapters.SQL.Sandbox.stop_owner(bridge_owner)
       Ecto.Adapters.SQL.Sandbox.stop_owner(billing_owner)
     end)
@@ -55,11 +55,11 @@ defmodule BridgeForTeamsWeb.DashboardCase do
 
   @doc """
   Creates a real session for `user` and stores its opaque token in the signed
-  dashboard session cookie (the same `comma_session` key the on_mount auth hook
-  and the `fetch_current_user` plug read).
+  dashboard session cookie (the same `comma_session` key the
+  `fetch_current_user` plug reads).
 
-  Also marks the user's first-run onboarding completed so the
-  `:require_onboarded` gate doesn't bounce the test to `/onboarding`; pass
+  Also marks the user's first-run onboarding completed so the first-run gate
+  doesn't bounce the test to `/onboarding`; pass
   `onboarded: false` to log in a fresh user and exercise the gate itself.
   """
   @spec log_in_user(Plug.Conn.t(), map(), keyword()) :: Plug.Conn.t()
@@ -79,7 +79,7 @@ defmodule BridgeForTeamsWeb.DashboardCase do
     %{conn: log_in_user(conn, user), user: user, org: org}
   end
 
-  @doc "Mark `user`'s first-run onboarding as completed (passes the mount gate)."
+  @doc "Mark `user`'s first-run onboarding as completed (passes the first-run gate)."
   def complete_onboarding(user) do
     {:ok, onboarding} = BridgeForTeams.UserOnboardings.ensure_onboarding(user.id)
     {:ok, onboarding} = BridgeForTeams.UserOnboardings.complete(onboarding)
@@ -90,14 +90,14 @@ defmodule BridgeForTeamsWeb.DashboardCase do
 
   @doc "Create a user (default active)."
   def user_fixture(attrs \\ %{}) do
-    email = attrs[:email] || "user-#{System.unique_integer([:positive])}@example.com"
+    email = attrs[:email] || "user-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"
     {:ok, user} = Accounts.create_user(%{"email" => email, "name" => attrs[:name] || "Test User"})
     user
   end
 
   @doc "Create an org."
   def org_fixture(attrs \\ %{}) do
-    n = System.unique_integer([:positive])
+    n = SystemsRuntime.Proc.unique_integer([:positive])
 
     {:ok, org} =
       Orgs.create_org(%{
@@ -123,7 +123,7 @@ defmodule BridgeForTeamsWeb.DashboardCase do
   provisioned router agent.
   """
   def bare_project_fixture(org, attrs \\ %{}) do
-    n = System.unique_integer([:positive])
+    n = SystemsRuntime.Proc.unique_integer([:positive])
 
     BridgeForTeams.Repo.insert!(%BridgeForTeams.Schema.Project{
       org_id: org.id,

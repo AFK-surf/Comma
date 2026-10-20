@@ -1,6 +1,7 @@
 import VerifiedKernelProofs.Session.WorkReloadSequence
 import VerifiedKernelProofs.Session.WorkAuxiliaryFrames
 import VerifiedKernelProofs.Session.AppendOnly.SessionEvent
+import VerifiedKernelProofs.Session.WorkInputIdentity
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data ReloadSequence
@@ -203,8 +204,8 @@ theorem replyRepair_auxiliary_numbers {s e t : Term} {j r : List Term}
   unfold replyRepair at h
   obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨updated, _, written, h⟩ := bind_ok h
-  have updatedSorted := write_seq_frame written rfl sorted
-  have updatedNumbers := (write_auxiliary_frame written rfl rfl).numbers numbers
+  have updatedSorted := write_seq_frame written (by keys_absent) sorted
+  have updatedNumbers := (write_auxiliary_frame written (by keys_absent) (by keys_absent)).numbers numbers
   obtain ⟨watermark, _, watermarkRead, h⟩ := bind_ok h
   have same := field_value watermarkRead
   subst watermark

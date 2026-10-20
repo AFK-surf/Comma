@@ -52,6 +52,25 @@ defmodule SalixIM.Triage.ChannelBatch do
     end
   end
 
+  @doc """
+  Batch events whose message is present in the frozen source messages.
+
+  The newest of these is the decision target. An evaluated run always has one.
+  """
+  def present_events(events, messages) when is_list(events) and is_list(messages) do
+    present = MapSet.new(messages, &micros(&1["message_ts"]))
+    Enum.filter(events, &MapSet.member?(present, micros(&1["message_ts"])))
+  end
+
+  @doc "The physical target of the newest batch event still present in the source."
+  def present_target(authority, events, messages) do
+    cond do
+      not channel?(authority) -> authority
+      (present = present_events(events, messages)) != [] -> target(authority, present)
+      true -> nil
+    end
+  end
+
   def retain_root(normalized, %{"root_thread_ts" => root}),
     do: Map.put(normalized, "root_thread_ts", root)
 

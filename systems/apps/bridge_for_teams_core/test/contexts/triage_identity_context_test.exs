@@ -1,5 +1,5 @@
 defmodule BridgeForTeams.TriageIdentityContextTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias BridgeForTeams.Schema.{Agent, Project}
   alias BridgeForTeams.SourcedContext.Grounding
@@ -9,7 +9,7 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
     def resolve_connect(_authority, opts), do: {:ok, Keyword.fetch!(opts, :connect)}
 
     def load_product(_connect, opts) do
-      if pid = opts[:test_pid], do: send(pid, {:product_options, opts})
+      if pid = opts[:test_pid], do: SystemsRuntime.Proc.send(pid, {:product_options, opts})
       {:ok, Keyword.fetch!(opts, :product)}
     end
   end
@@ -18,14 +18,14 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
     def resolve_connect(_authority, opts), do: {:ok, Keyword.fetch!(opts, :connect)}
 
     def load_product(_connect, opts) do
-      send(Keyword.fetch!(opts, :test_pid), :unexpected_product_read)
+      SystemsRuntime.Proc.send(Keyword.fetch!(opts, :test_pid), :unexpected_product_read)
       {:error, :unexpected_product_read}
     end
   end
 
   defmodule ThreadReader do
     def read(_authority, _connect, opts) do
-      send(Keyword.fetch!(opts, :test_pid), :thread_read)
+      SystemsRuntime.Proc.send(Keyword.fetch!(opts, :test_pid), :thread_read)
 
       {:ok,
        %{
@@ -37,7 +37,7 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
 
   defmodule ForbiddenProfileReader do
     def users_info(_provider_user_id, opts) do
-      send(Keyword.fetch!(opts, :test_pid), :unexpected_users_info)
+      SystemsRuntime.Proc.send(Keyword.fetch!(opts, :test_pid), :unexpected_users_info)
       {:error, :forbidden}
     end
   end
@@ -85,8 +85,8 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
                product_source: ProductSource,
                product: Map.put(product(represented_agent()), :retained_context, [retained]),
                connect: connect,
-               test_pid: self(),
-               thread_reader: {ThreadReader, test_pid: self()}
+               test_pid: SystemsRuntime.Proc.self(),
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
     assert_receive {:product_options, opts}
@@ -105,8 +105,8 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
 
     injected_options = [
       [product_source: InjectedProductSource],
-      [thread_reader: {InjectedThreadReader, test_pid: self()}],
-      [identity_receipt_sink: {self(), make_ref()}]
+      [thread_reader: {InjectedThreadReader, test_pid: SystemsRuntime.Proc.self()}],
+      [identity_receipt_sink: {SystemsRuntime.Proc.self(), SystemsRuntime.Proc.make_ref()}]
     ]
 
     Enum.each(injected_options, fn injected ->
@@ -155,10 +155,10 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
                product_source: ProductSource,
                product: product(agent),
                connect: connect,
-               thread_reader: {ThreadReader, test_pid: self()}
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
-    assert_receive :thread_read, 100
+    assert_receive :thread_read
 
     identity = frozen["identity_context"]
     assert identity["schema"] == "comma.triage-identity-context.v1"
@@ -209,14 +209,14 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
                product_source: ProductSource,
                product: product(represented_agent()),
                connect: current,
-               thread_reader: {ThreadReader, test_pid: self()}
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
     assert frozen["identity_context"]["self_endpoint"]["revision_status"] ==
              "sanctioned_bot_identity_backfill"
 
     assert frozen["identity_context"]["self_endpoint"]["bot_user_id"] == "U_SELF"
-    assert_receive :thread_read, 100
+    assert_receive :thread_read
   end
 
   test "sender attribution remains source content but contributes no recipient evidence" do
@@ -229,7 +229,8 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
                product_source: ProductSource,
                product: product(represented_agent()),
                connect: connect,
-               thread_reader: {ThreadReader, test_pid: self(), messages: messages}
+               thread_reader:
+                 {ThreadReader, test_pid: SystemsRuntime.Proc.self(), messages: messages}
              )
 
     assert frozen["identity_context"]["mention_evidence"] == []
@@ -274,8 +275,10 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
                product_source: ProductSource,
                product: product(represented_agent()),
                connect: connect,
-               identity_profile_reader: {ForbiddenProfileReader, test_pid: self()},
-               thread_reader: {ThreadReader, test_pid: self(), messages: messages}
+               identity_profile_reader:
+                 {ForbiddenProfileReader, test_pid: SystemsRuntime.Proc.self()},
+               thread_reader:
+                 {ThreadReader, test_pid: SystemsRuntime.Proc.self(), messages: messages}
              )
 
     identity = frozen["identity_context"]
@@ -356,8 +359,10 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
                product_source: ProductSource,
                product: product(represented_agent()),
                connect: connect,
-               identity_profile_reader: {ForbiddenProfileReader, test_pid: self()},
-               thread_reader: {ThreadReader, test_pid: self(), messages: messages}
+               identity_profile_reader:
+                 {ForbiddenProfileReader, test_pid: SystemsRuntime.Proc.self()},
+               thread_reader:
+                 {ThreadReader, test_pid: SystemsRuntime.Proc.self(), messages: messages}
              )
 
     identity = frozen["identity_context"]
@@ -392,8 +397,8 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
              BridgeForTeams.TriageContext.freeze(input,
                product_source: GuardedProductSource,
                connect: connect,
-               test_pid: self(),
-               thread_reader: {ThreadReader, test_pid: self()}
+               test_pid: SystemsRuntime.Proc.self(),
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
     refute_received :unexpected_product_read
@@ -409,7 +414,7 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
                product_source: ProductSource,
                product: product(stale_agent),
                connect: connect,
-               thread_reader: {ThreadReader, test_pid: self()}
+               thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
              )
 
     refute_received :thread_read
@@ -435,7 +440,7 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
                  product_source: ProductSource,
                  product: inactive_product,
                  connect: connect,
-                 thread_reader: {ThreadReader, test_pid: self()}
+                 thread_reader: {ThreadReader, test_pid: SystemsRuntime.Proc.self()}
                )
 
       refute_received :thread_read
@@ -469,7 +474,8 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
                product_source: ProductSource,
                product: product(represented_agent()),
                connect: connect,
-               thread_reader: {ThreadReader, test_pid: self(), messages: messages}
+               thread_reader:
+                 {ThreadReader, test_pid: SystemsRuntime.Proc.self(), messages: messages}
              )
 
     principal =
@@ -503,7 +509,8 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
                product_source: ProductSource,
                product: product(represented_agent()),
                connect: connect,
-               thread_reader: {ThreadReader, test_pid: self(), messages: messages}
+               thread_reader:
+                 {ThreadReader, test_pid: SystemsRuntime.Proc.self(), messages: messages}
              )
 
     principal =
@@ -534,7 +541,8 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
                product_source: ProductSource,
                product: product(represented_agent()),
                connect: connect,
-               thread_reader: {ThreadReader, test_pid: self(), messages: messages}
+               thread_reader:
+                 {ThreadReader, test_pid: SystemsRuntime.Proc.self(), messages: messages}
              )
   end
 
@@ -552,7 +560,8 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
                product_source: ProductSource,
                product: product(represented_agent()),
                connect: connect,
-               thread_reader: {ThreadReader, test_pid: self(), messages: messages}
+               thread_reader:
+                 {ThreadReader, test_pid: SystemsRuntime.Proc.self(), messages: messages}
              )
   end
 
@@ -611,7 +620,7 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
       role: "router",
       salix: %{
         "name" => "BFT",
-        "template_id" => "template-identity",
+        "model" => %{"kind" => "catalog", "model" => "identity-model"},
         "llm_config" => %{"model" => "fixed-identity-model"},
         "system_prompt" => "You are BFT's private persona",
         "status" => "active",
@@ -699,6 +708,9 @@ defmodule BridgeForTeams.TriageIdentityContextTest do
   defp assert_sha256(value), do: assert(value =~ ~r/\A[0-9a-f]{64}\z/)
 
   defp identity_fence_handle do
-    %SalixIM.Triage.IdentityFenceHandle{runtime: self(), capability: make_ref()}
+    %SalixIM.Triage.IdentityFenceHandle{
+      runtime: SystemsRuntime.Proc.self(),
+      capability: SystemsRuntime.Proc.make_ref()
+    }
   end
 end

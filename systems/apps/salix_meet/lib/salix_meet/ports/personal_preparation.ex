@@ -18,7 +18,7 @@ defmodule SalixMeet.Ports.PersonalPreparation do
 
   def open_dm(plan, recipient), do: impl().open_dm(plan, recipient)
 
-  defp impl, do: Application.get_env(:salix_meet, :personal_preparation_mod, __MODULE__.None)
+  defp impl, do: SystemsRuntime.get_env(:salix_meet, :personal_preparation_mod, __MODULE__.None)
 
   defmodule None do
     @moduledoc false

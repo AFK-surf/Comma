@@ -16,13 +16,13 @@ defmodule Comma.OauthIdp.RateLimit do
   one code per login.
   """
 
+  @prefix "comma:oauth-idp:v1"
+  @timeout 2_000
+
+  # Hammer supervises the Redis connection; the buckets are SalixStore.RedisLimit's, on the application's clock.
   defmodule Redis do
     @moduledoc false
-    use Hammer,
-      backend: Hammer.Redis,
-      algorithm: :token_bucket,
-      prefix: "comma:oauth-idp:v1",
-      timeout: 2_000
+    use Hammer, backend: Hammer.Redis, timeout: 2_000
   end
 
   # burst = bucket size, rate = tokens per second per peer.
@@ -43,7 +43,7 @@ defmodule Comma.OauthIdp.RateLimit do
   @doc "True when a Redis URL is configured, i.e. the limiter child runs."
   @spec configured?() :: boolean()
   def configured? do
-    is_binary(Application.get_env(:comma_core, :oauth_idp_rate_limit_redis_url))
+    is_binary(SystemsRuntime.get_env(:comma_core, :oauth_idp_rate_limit_redis_url))
   end
 
   @doc """
@@ -62,7 +62,15 @@ defmodule Comma.OauthIdp.RateLimit do
     if valid_policy?(burst, rate) do
       {refill_rate, scale} = scaled_rate(rate)
 
-      case Redis.hit(digest_key({endpoint, peer}), refill_rate, burst * scale, scale) do
+      case SalixStore.RedisLimit.token_bucket(
+             Redis,
+             @prefix,
+             digest_key({endpoint, peer}),
+             refill_rate,
+             burst * scale,
+             scale,
+             @timeout
+           ) do
         {:allow, _remaining} ->
           emit(endpoint, :allow)
           :allow
@@ -93,7 +101,7 @@ defmodule Comma.OauthIdp.RateLimit do
   defp unavailable_retry_after, do: 30
 
   defp policy(endpoint) do
-    configured = Application.get_env(:comma_core, :oauth_idp_rate_limit, [])
+    configured = SystemsRuntime.get_env(:comma_core, :oauth_idp_rate_limit, [])
     Map.merge(@default_policies[endpoint], Map.new(Keyword.get(configured, endpoint, [])))
   end
 
@@ -116,7 +124,7 @@ defmodule Comma.OauthIdp.RateLimit do
   end
 
   defp emit(endpoint, outcome) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:comma_product, :oauth_idp, :rate_limit],
       %{count: 1},
       %{endpoint: endpoint, outcome: outcome}
@@ -124,6 +132,6 @@ defmodule Comma.OauthIdp.RateLimit do
   end
 
   defp redis_url! do
-    Application.fetch_env!(:comma_core, :oauth_idp_rate_limit_redis_url)
+    SystemsRuntime.fetch_env!(:comma_core, :oauth_idp_rate_limit_redis_url)
   end
 end

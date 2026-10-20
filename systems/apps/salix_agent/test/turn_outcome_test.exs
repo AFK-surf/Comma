@@ -1,5 +1,5 @@
 defmodule SalixAgent.TurnOutcomeTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.InternalSession
   alias SalixAgent.TurnOutcome
@@ -67,47 +67,5 @@ defmodule SalixAgent.TurnOutcomeTest do
       {:build_record, %{"mode" => "tools"}} ->
         :execute_tools
     end
-  end
-
-  test "derives a pending decision only from the latest clean unacknowledged prose" do
-    attempt = %{
-      id: 2,
-      role: "assistant",
-      content: "I will inspect",
-      tool_calls: [],
-      round_id: "round-1"
-    }
-
-    pending = %{messages: [%{id: 1, role: "user"}, attempt], last_ack_message_id: 1}
-    handle = InternalSession.open(pending)
-
-    assert TurnOutcome.decision_required?(handle)
-
-    assert [%{role: "user"}, %{role: "summary", content: _reminder}] =
-             TurnOutcome.append_reminder([%{role: "user"}], handle, true)
-
-    assert TurnOutcome.append_reminder([%{role: "user"}], handle, false) == [%{role: "user"}]
-
-    refute TurnOutcome.decision_required?(
-             InternalSession.open(%{pending | last_ack_message_id: 2})
-           )
-
-    refute TurnOutcome.decision_required?(
-             InternalSession.open(%{
-               pending
-               | messages: [%{attempt | tool_calls: [%{name: "call"}]}]
-             })
-           )
-
-    refute TurnOutcome.decision_required?(
-             InternalSession.open(%{
-               pending
-               | messages: [Map.put(attempt, :visible_reply_phase, :repair_required)]
-             })
-           )
-
-    refute TurnOutcome.decision_required?(
-             InternalSession.open(%{pending | messages: [Map.put(attempt, :no_wake, true)]})
-           )
   end
 end

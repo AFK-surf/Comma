@@ -109,8 +109,15 @@ defmodule Comma.GuestMode do
         tenant_id = SalixStore.Ids.new_tenant_id()
 
         case salix().ensure_guest_tenant(tenant_id, current["tenant_concurrency"]) do
-          :ok -> store_policy!(%{current | "salix_tenant_id" => tenant_id}, attrs["admin_command_id"], current)
-          {:error, reason} -> Repo.rollback(reason)
+          :ok ->
+            store_policy!(
+              %{current | "salix_tenant_id" => tenant_id},
+              attrs["admin_command_id"],
+              current
+            )
+
+          {:error, reason} ->
+            Repo.rollback(reason)
         end
       end)
     end
@@ -164,8 +171,11 @@ defmodule Comma.GuestMode do
   one-time claim that a registered account can redeem within an hour.
   """
   def handoff(%{"id" => user_id, "kind" => "guest"}) do
-    claim = @claim_prefix <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
-    expires_at = DateTime.add(DateTime.utc_now(), @claim_ttl_seconds, :second)
+    claim =
+      @claim_prefix <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
+
+    expires_at = DateTime.add(SystemsClock.utc_now(), @claim_ttl_seconds, :second)
+    since = SystemsClock.system_time(:second)
 
     Repo.transaction(fn ->
       guest = lock_user!(user_id)
@@ -185,7 +195,7 @@ defmodule Comma.GuestMode do
                 guest_claim_hash: claim_hash(claim),
                 guest_claim_expires_at: expires_at,
                 auth_epoch: guest.auth_epoch + 1,
-                updated_at: DateTime.utc_now()
+                updated_at: SystemsClock.timestamp(:utc_datetime_usec)
               ]
             )
 
@@ -194,6 +204,10 @@ defmodule Comma.GuestMode do
 
           %{"claim" => claim, "expires_at" => DateTime.to_unix(expires_at)}
       end
+    end)
+    |> tap(fn
+      {:ok, _} -> Comma.Stations.Revocations.publish_since(user_id, since)
+      _ -> :ok
     end)
   end
 
@@ -206,7 +220,7 @@ defmodule Comma.GuestMode do
   def redeem(%{"kind" => "guest"}, _claim), do: {:error, :guest_forbidden}
 
   def redeem(%{"id" => user_id}, claim) when is_binary(claim) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     with true <- String.starts_with?(claim, @claim_prefix) || {:error, :guest_claim_invalid} do
       Multi.new()
@@ -274,7 +288,10 @@ defmodule Comma.GuestMode do
 
   def import_status(%{"id" => user_id}, import_id) when is_binary(import_id) do
     case Repo.get(ExternalOperation, import_id) do
-      %ExternalOperation{operation_type: @operation_type, metadata: %{"target_user_id" => ^user_id}} =
+      %ExternalOperation{
+        operation_type: @operation_type,
+        metadata: %{"target_user_id" => ^user_id}
+      } =
           operation ->
         {:ok, public_import(operation)}
 
@@ -324,7 +341,9 @@ defmodule Comma.GuestMode do
 
   defp insert_guest!(pow_id) do
     email =
-      "g-" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower) <> "@" <> @placeholder_domain
+      "g-" <>
+        Base.encode16(SystemsRuntime.Proc.random_bytes(16), case: :lower) <>
+        "@" <> @placeholder_domain
 
     %User{}
     |> User.changeset(%{id: User.new_id(), email: email, name: nil, status: "active"})
@@ -351,7 +370,6 @@ defmodule Comma.GuestMode do
   end
 
   defp with_created_today(policy), do: Map.put(policy, "created_today", created_today())
-
 
   defp lock_user!(user_id) do
     case Repo.one(from(row in User, where: row.id == ^user_id, lock: "FOR UPDATE")) do
@@ -415,8 +433,13 @@ defmodule Comma.GuestMode do
 
     Enum.reduce_while(specs, {:ok, %{}}, fn {key, valid?}, {:ok, changes} ->
       case Map.fetch(attrs, key) do
-        :error -> {:cont, {:ok, changes}}
-        {:ok, value} -> if valid?.(value), do: {:cont, {:ok, Map.put(changes, key, value)}}, else: {:halt, {:error, :invalid_guest_policy}}
+        :error ->
+          {:cont, {:ok, changes}}
+
+        {:ok, value} ->
+          if valid?.(value),
+            do: {:cont, {:ok, Map.put(changes, key, value)}},
+            else: {:halt, {:error, :invalid_guest_policy}}
       end
     end)
   end
@@ -429,7 +452,7 @@ defmodule Comma.GuestMode do
   defp claim_hash(claim), do: :crypto.hash(:sha256, claim)
 
   defp import_operation_id,
-    do: "gim_" <> Base.url_encode64(:crypto.strong_rand_bytes(15), padding: false)
+    do: "gim_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(15), padding: false)
 
   defp salix, do: Comma.Salix.Client.impl()
 end

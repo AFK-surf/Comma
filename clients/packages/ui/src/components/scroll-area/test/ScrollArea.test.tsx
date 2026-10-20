@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from "@comma/test-utils/render";
-import { ScrollArea } from "@comma/ui";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -14,8 +14,9 @@ function setElementMetric(
   });
 }
 
+/** Runs the next frame of the test clock. */
 function flushAnimationFrames() {
-  return new Promise((resolve) => window.requestAnimationFrame(resolve));
+  return act(() => vi.advanceTimersToNextFrame());
 }
 
 // `contentResizeTarget` takes the element itself, so a caller that wants an
@@ -47,12 +48,10 @@ function ownScrollbar(root: HTMLElement | null) {
 
 describe("ScrollArea", () => {
   afterEach(() => {
-    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
   it("defaults to scroll-only visibility, hides after 500ms, and enables track-hover reveal", () => {
-    vi.useFakeTimers();
     const { container, unmount } = render(
       <ScrollArea>
         <div>Scrollable content</div>
@@ -80,7 +79,6 @@ describe("ScrollArea", () => {
   });
 
   it("supports a custom scroll hide delay and disabling track-hover reveal", () => {
-    vi.useFakeTimers();
     const { container, unmount } = render(
       <ScrollArea scrollbarHideDelay={120} scrollbarHoverReveal={false}>
         <div>Scrollable content</div>
@@ -107,7 +105,6 @@ describe("ScrollArea", () => {
   });
 
   it("can reveal on direct interaction without revealing for programmatic scroll", () => {
-    vi.useFakeTimers();
     const { container, unmount } = render(
       <ScrollArea scrollbarRevealSource="interaction">
         <div>Scrollable content</div>
@@ -174,7 +171,6 @@ describe("ScrollArea", () => {
   it.each(["always", "hover", "scrollbar-hover"] as const)(
     "does not start a scroll visibility timer for the %s policy",
     (scrollbarVisibility) => {
-      vi.useFakeTimers();
       const { container, unmount } = render(
         <ScrollArea scrollbarVisibility={scrollbarVisibility}>
           <div>Scrollable content</div>
@@ -239,6 +235,51 @@ describe("ScrollArea", () => {
     expect(onViewportResize).toHaveBeenCalledOnce();
   });
 
+  it("notifies a viewport resize during a window resize only when asked", async () => {
+    let resizeCallback: ResizeObserverCallback | undefined;
+    let resizeObserver: ResizeObserver | undefined;
+    class MockResizeObserver {
+      readonly observe = vi.fn();
+      readonly unobserve = vi.fn();
+      readonly disconnect = vi.fn();
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback;
+        resizeObserver = this as unknown as ResizeObserver;
+      }
+    }
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+    const waits = vi.fn();
+    const follows = vi.fn();
+    const { container } = render(
+      <>
+        <ScrollArea onViewportResize={waits}>
+          <div>Transcript</div>
+        </ScrollArea>
+        <ScrollArea onViewportResize={follows} notifyViewportResizeDuringWindowResize>
+          <div>Timeline</div>
+        </ScrollArea>
+      </>
+    );
+    const viewports = [
+      ...container.querySelectorAll<HTMLElement>('[data-slot="scroll-area-viewport"]'),
+    ];
+    await flushAnimationFrames();
+    waits.mockClear();
+    follows.mockClear();
+
+    fireEvent(window, new Event("resize"));
+    act(() => {
+      resizeCallback?.(
+        viewports.map((target) => ({ target }) as unknown as ResizeObserverEntry),
+        resizeObserver!
+      );
+    });
+    await flushAnimationFrames();
+
+    expect(follows).toHaveBeenCalledOnce();
+    expect(waits).not.toHaveBeenCalled();
+  });
+
   it("leaves a wheel over a vertical area to the browser", () => {
     const { container } = render(
       <ScrollArea>
@@ -257,7 +298,6 @@ describe("ScrollArea", () => {
   });
 
   it("maps a vertical wheel to a sideways scroll only while a horizontal area overflows", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const { container, unmount } = render(
       <ScrollArea orientation="horizontal">
         <div>Scrollable content</div>
@@ -871,7 +911,6 @@ describe("ScrollArea", () => {
   });
 
   it("temporarily suppresses an edge mask while the window is resizing", () => {
-    vi.useFakeTimers();
     const { container } = render(
       <ScrollArea edgeEffect="mask">
         <div>Scrollable content</div>
@@ -891,7 +930,6 @@ describe("ScrollArea", () => {
   });
 
   it("clears the window-resizing mask state when resize handling is resubscribed", () => {
-    vi.useFakeTimers();
     const { container, rerender } = render(
       <ScrollArea edgeEffect="mask">
         <div>Scrollable content</div>
@@ -913,7 +951,6 @@ describe("ScrollArea", () => {
   });
 
   it("defers vertical resize measurements and content notifications until window resize settles", () => {
-    vi.useFakeTimers();
     let resizeCallback: ResizeObserverCallback | undefined;
     let resizeObserver: ResizeObserver | undefined;
 

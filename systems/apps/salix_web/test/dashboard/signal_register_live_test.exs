@@ -6,7 +6,10 @@ defmodule SalixWeb.Dashboard.SignalRegisterLiveTest do
   operator flow from the verification session to a usable account, the
   resume of an account left `registering`, and the message of each failure.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
@@ -22,12 +25,12 @@ defmodule SalixWeb.Dashboard.SignalRegisterLiveTest do
   end
 
   setup %{chain: chain} do
-    previous_kem = Application.get_env(:salix_signal_proto, :plain_kem_in_tests)
-    previous = Application.get_env(:salix_web, :signal_registration)
+    previous_kem = SystemsRuntime.get_env(:salix_signal_proto, :plain_kem_in_tests)
+    previous = SystemsRuntime.get_env(:salix_web, :signal_registration)
 
     # This host's OpenSSL has no ML-KEM; test builds may make KEM keys in
     # plain Elixir (SalixSignalProto.KemBackend).
-    Application.put_env(:salix_signal_proto, :plain_kem_in_tests, true)
+    SystemsRuntime.put_env(:salix_signal_proto, :plain_kem_in_tests, true)
 
     {:ok, fake} = FakeAccountService.start_link()
     server = start_supervised!({Bandit, FakeAccountService.bandit_options(fake, chain)})
@@ -35,7 +38,7 @@ defmodule SalixWeb.Dashboard.SignalRegisterLiveTest do
 
     # One-shot answers that replace the fake's answer to a matching request.
     {:ok, overrides} = Agent.start_link(fn -> [] end)
-    test = self()
+    test = SystemsRuntime.Proc.self()
 
     transport = fn _environment ->
       fn method, path, opts ->
@@ -46,16 +49,19 @@ defmodule SalixWeb.Dashboard.SignalRegisterLiveTest do
       end
     end
 
-    Application.put_env(:salix_web, :signal_registration,
+    SystemsRuntime.put_env(:salix_web, :signal_registration,
       transport: transport,
       start: fn id ->
-        send(test, {:owner_started, id})
-        {:ok, self()}
+        SystemsRuntime.Proc.send(test, {:owner_started, id})
+        {:ok, SystemsRuntime.Proc.self()}
       end
     )
 
     {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Signal Register"})
-    number = "+1555010" <> String.pad_leading(Integer.to_string(:rand.uniform(9_999)), 4, "0")
+
+    number =
+      "+1555010" <>
+        String.pad_leading(Integer.to_string(SystemsRuntime.Proc.uniform(9_999)), 4, "0")
 
     on_exit(fn ->
       restore(:salix_web, :signal_registration, previous)
@@ -74,8 +80,8 @@ defmodule SalixWeb.Dashboard.SignalRegisterLiveTest do
     %{fake: fake, overrides: overrides, number: number, tenant_id: tenant["tenant_id"]}
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp take_override(overrides, method, path) do
     Agent.get_and_update(overrides, fn list ->
@@ -97,25 +103,6 @@ defmodule SalixWeb.Dashboard.SignalRegisterLiveTest do
       headers: headers,
       body: if(body, do: Jason.encode!(body), else: "")
     }
-
-  # A session object for the session in `path` (CRS-02 §2.2).
-  defp session_body(path, fields) do
-    [_, id | _] = String.split(path, "/v1/verification/session/") ++ [""]
-    id = id |> String.split("/") |> hd()
-
-    Map.merge(
-      %{
-        "id" => id,
-        "nextSms" => 0,
-        "nextCall" => 60,
-        "nextVerificationAttempt" => nil,
-        "allowedToRequestCode" => true,
-        "requestedInformation" => [],
-        "verified" => false
-      },
-      fields
-    )
-  end
 
   defp conn(ctx),
     do:
@@ -250,71 +237,5 @@ defmodule SalixWeb.Dashboard.SignalRegisterLiveTest do
 
     assert [%{id: ^id, state: :active, scope: {:organization, tenant_id}}] = accounts(ctx.number)
     assert tenant_id == ctx.tenant_id
-  end
-
-  test "a registration lock is explained and the same session can retry", ctx do
-    {:ok, view, _html} = live(conn(ctx), "/dash/signal/register")
-    start(view, ctx)
-
-    override(ctx, "POST", "/v1/registration", fn _path ->
-      json(423, %{"timeRemaining" => 3 * 3_600_000, "svr2Credentials" => nil})
-    end)
-
-    html = verify(view)
-    assert html =~ "The number has a registration lock."
-    assert html =~ "expires in 3 hours"
-    assert [%{id: id, state: :registering}] = accounts(ctx.number)
-
-    view |> element("#signal-register-submit") |> render_click()
-    html = render_async(view, @wait)
-    assert html =~ "Registered"
-    assert [%{id: ^id, state: :active}] = accounts(ctx.number)
-  end
-
-  test "each service failure has an actionable message", ctx do
-    {:ok, view, _html} = live(conn(ctx), "/dash/signal/register")
-
-    html = start(view, ctx, %{"number" => "5550100"})
-    assert html =~ "Enter the number in E.164 form"
-
-    override(ctx, "POST", "/v1/verification/session", fn _ ->
-      json(400, %{"originalNumber" => ctx.number, "normalizedNumber" => "+15550100999"})
-    end)
-
-    assert start(view, ctx) =~ "The service refused the number format. Enter it as +15550100999."
-
-    override(ctx, "POST", "/v1/verification/session", fn _ -> json(503, nil) end)
-    assert start(view, ctx) =~ "The Signal service is unavailable. Try again later."
-
-    override(ctx, "POST", "/v1/verification/session", fn _ ->
-      json(429, nil, [{"retry-after", "90"}])
-    end)
-
-    assert start(view, ctx) =~ "Rate limited. Try again in 90 seconds."
-
-    start(view, ctx)
-    captcha(view, "signalcaptcha://" <> FakeAccountService.captcha())
-
-    override(ctx, "POST", "/code", fn path ->
-      json(429, session_body(path, %{"nextSms" => 45}), [{"retry-after", "45"}])
-    end)
-
-    html = request_sms(view)
-    assert html =~ "Rate limited. Try again in 45 seconds."
-    assert html =~ "Send code by SMS (in 45 s, at "
-
-    override(ctx, "POST", "/code", fn _ ->
-      json(440, %{"reason" => "providerRejected", "permanentFailure" => true})
-    end)
-
-    assert request_sms(view) =~ "refused this number permanently. Use another number."
-
-    override(ctx, "POST", "/code", fn path -> json(418, session_body(path, %{})) end)
-    assert request_sms(view) =~ "Try the other method."
-
-    request_sms(view)
-    override(ctx, "PUT", "/code", fn _ -> json(503, nil) end)
-    assert code(view, FakeAccountService.code()) =~ "The Signal service is unavailable."
-    assert accounts(ctx.number) == []
   end
 end

@@ -1,3 +1,4 @@
+import { useCall, useTopic } from "@comma/core-client";
 import { useCommaMessages } from "@comma/i18n/react";
 import { getNativeBridge } from "@comma/native-bridge";
 import {
@@ -10,8 +11,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { readActiveWorkspaceId, subscribeActiveWorkspace } from "../activeWorkspace";
-import { useCommaAuth } from "../auth-context";
+import { useActiveWorkspaceId } from "../activeWorkspace";
 import { assistantBrandName, routerDisplayName } from "./routerDisplayName";
 
 export type RouterIdentity = {
@@ -45,76 +45,53 @@ const RouterIdentityContext = createContext<RouterIdentity | undefined>(undefine
 const RouterDisplayNameContext = createContext<string | undefined>(undefined);
 
 /**
- * One owner per signed-in window for the Router's name. It reads the
- * workspace's agent models once per workspace (no polling) and takes the name
- * from each rename response. A rename in another window shows here after the
+ * One owner per signed-in window for the Router's name. The core reads the
+ * workspace's Router once per workspace (no polling); this window takes the
+ * name from each rename it makes. A rename in another window shows here after the
  * next read: a workspace change, a remount, or the onboarding window closing.
  * That window names the Router while it covers the display, so every window
  * that shows the name reads it once more when it closes: one read per open
  * window per onboarding.
  *
- * It follows the active workspace. A window bound to one workspace's Task
- * (the Side Chat Task window) passes that `workspaceId` instead.
+ * It follows the active workspace.
  */
-export function RouterIdentityProvider({
-  children,
-  workspaceId: boundWorkspaceId,
-}: {
-  children: ReactNode;
-  workspaceId?: string;
-}) {
-  const { api } = useCommaAuth();
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState(readActiveWorkspaceId);
+export function RouterIdentityProvider({ children }: { children: ReactNode }) {
+  const call = useCall();
+  const workspaceId = useActiveWorkspaceId();
   const [stored, setStored] = useState<StoredRouterName>();
   // Read requests: the first read of a workspace, then one each time the
   // onboarding window closes.
   const [read, setRead] = useState(0);
   const latestRead = useRef(read);
-  // Each workspace's Router Agent id, from its agent models: the rename names it.
-  const routerAgentIds = useRef(new Map<string, string>());
-  const workspaceId = boundWorkspaceId ?? activeWorkspaceId;
-
-  useEffect(
-    () =>
-      boundWorkspaceId ? undefined : subscribeActiveWorkspace(setActiveWorkspaceId),
-    [boundWorkspaceId]
-  );
 
   // A rename stores the workspace's name for the latest read request, which
   // ends a read still in flight for it: that read could answer with the name
   // the rename replaced.
   const storedRead =
     stored && stored.workspaceId === workspaceId ? stored.read : undefined;
+  const wanted = !!workspaceId && storedRead !== read;
+  // A failed read leaves the label it had; the next workspace change,
+  // onboarding close or rename supplies the name.
+  const { value: routerRead } = useTopic(
+    wanted && workspaceId
+      ? { topic: "router", workspace: workspaceId, read: String(read) }
+      : null
+  );
   useEffect(() => {
-    if (!workspaceId || storedRead === read) return;
-    const controller = new AbortController();
-    api.getAgentModels(workspaceId, { signal: controller.signal }).then(
-      (models) => {
-        if (controller.signal.aborted) return;
-        routerAgentIds.current.set(workspaceId, models.agents.router.agent_id);
-        setStored({ workspaceId, name: models.agents.router.name, read });
-      },
-      // A failed read leaves the label it had; the next workspace change,
-      // onboarding close or rename supplies the name.
-      () => undefined
-    );
-    return () => controller.abort();
-  }, [api, read, storedRead, workspaceId]);
+    if (wanted && workspaceId && routerRead)
+      setStored({ workspaceId, name: routerRead.name, read });
+  }, [read, routerRead, wanted, workspaceId]);
 
   const setRouterName = useCallback(
     async (name: string, targetWorkspaceId?: string) => {
       const target = targetWorkspaceId ?? workspaceId;
       if (!target) throw new Error("workspace unavailable");
-      let routerAgentId = routerAgentIds.current.get(target);
-      if (!routerAgentId) {
-        routerAgentId = (await api.getAgentModels(target)).agents.router.agent_id;
-        routerAgentIds.current.set(target, routerAgentId);
-      }
-      await api.renameAgent(target, routerAgentId, name);
+      // The core renames the workspace's Router Agent, reading its id if it must.
+      await call("models.renameAgent", { workspace: target, name });
       // The server stores the name trimmed.
       setStored({ workspaceId: target, name: name.trim(), read: latestRead.current });
     },
-    [api, workspaceId]
+    [call, workspaceId]
   );
 
   const routerRenamed = useCallback((name: string, target: string) => {
@@ -168,8 +145,8 @@ export function useRouterRenamed(): RouterIdentity["routerRenamed"] {
 const ignoreRouterRename = () => undefined;
 
 /**
- * The Router's label for chat surfaces. The product session, Side Chat and
- * its Task window mount the provider. The web Task panel (a restricted
+ * The Router's label for chat surfaces. The product session and the
+ * onboarding window mount the provider. The web Task panel (a restricted
  * channel session that may not read agent models) and a public Task share
  * render the same rows without it; there the generic Router label applies.
  */

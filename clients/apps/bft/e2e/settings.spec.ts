@@ -35,33 +35,34 @@ const general = (slug = "acme", name = "Acme Robotics") => ({
   cli,
 });
 
+const catalogModel = (model: string, label: string, vendor: string) => ({
+  key: `catalog:${model}`,
+  choice: { kind: "catalog", model },
+  label,
+  vendor,
+});
+const sonnet = catalogModel("claude-sonnet-4-6", "Claude Sonnet", "anthropic");
+const opus = catalogModel("claude-opus-4-8", "Claude Opus", "anthropic");
+const gpt = catalogModel("gpt-5.5", "GPT-5.5", "openai");
+
 const models = {
   catalog_status: "ok",
-  catalog: [
-    { template_id: "t-sonnet", label: "Claude Sonnet", model: "sonnet", name: null },
-    { template_id: "t-opus", label: "Claude Opus", model: "opus", name: null },
-  ],
-  allowed_template_ids: ["t-sonnet"],
-  default_template_id: "t-sonnet",
-  default_router_template_id: null,
-  default_options: {
-    router: [
-      { value: "t-sonnet", label: "Claude Sonnet" },
-      { value: "t-opus", label: "Claude Opus" },
-    ],
-    worker: [
-      { value: "t-sonnet", label: "Claude Sonnet" },
-      { value: "t-opus", label: "Claude Opus" },
-    ],
+  catalog: [sonnet, opus, gpt],
+  allowed_models: [sonnet],
+  default_router_model: null,
+  default_task_model: sonnet,
+  default_options: { router: [sonnet, opus], task: [sonnet, opus] },
+  platform_defaults: {
+    router: { label: "Claude Haiku", model_icon: null },
+    task: null,
   },
-  platform_defaults: { router: { label: "Claude Haiku" }, worker: null },
 };
 
 const sso = {
   connection: null,
   feishu_app: null,
   redirect_uri: "https://bft.example/auth/callback",
-  providers: ["generic_oidc", "feishu"],
+  providers: ["generic_oidc", "feishu", "lark"],
   roles: ["admin", "member"],
   provisioning_policies: ["jit", "existing_identity"],
   default_feishu_scope: "contact:user.base:readonly",
@@ -114,7 +115,7 @@ const integrations = {
     ],
     apps_truncated: false,
     routes_status: "unavailable",
-    projects: [{ id: "p-1", name: "Support Desk" }],
+    projects_shown: 1,
     projects_truncated: false,
     redirect_uri: "https://bft.example/auth/callback",
     scope_cards: [
@@ -127,7 +128,6 @@ const integrations = {
 const pages: Record<string, unknown> = {
   "/orgs/acme/settings/general": general(),
   "/orgs/acme/settings/models": models,
-  "/orgs/acme/settings/models/templates": { templates: [] },
   "/orgs/acme/settings/models/accounts": { accounts: [], next: null },
   "/orgs/acme/settings/sso": sso,
   "/orgs/acme/settings/integrations": integrations,
@@ -170,8 +170,7 @@ test("each Settings page renders from its submenu entry", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByRole("checkbox", { name: "Claude Sonnet" })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: "Claude Opus" })).not.toBeChecked();
-  // Private templates and organization accounts are sections of the page.
-  await expect(page.getByRole("heading", { name: "Private templates" })).toBeVisible();
+  // Organization accounts are a section of the page.
   await expect(page.getByText("No organization accounts yet.")).toBeVisible();
 
   await submenu.getByRole("link", { name: "Single sign-on" }).click();
@@ -193,14 +192,95 @@ test("each Settings page renders from its submenu entry", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByText("1 member is waiting for an OAuth app")).toBeVisible();
   await expect(page.locator("#composio")).toContainText("Couldn't reach the runtime");
-  // An unverified route lookup offers no connect form.
+  // An unverified route lookup is said, not shown as "no routes".
   await expect(page.locator("#feishu")).toContainText(
-    "Could not verify the Agent Swarm routes."
+    "Could not read the Agent Swarm routes."
   );
-  await expect(page.getByRole("button", { name: "Connect" })).toHaveCount(0);
 });
 
-test("a Signal save sends the CSRF token and shows the returned section", async ({
+test("choosing Lark saves its own App ID and a write-only App Secret", async ({
+  page,
+}) => {
+  const feishuConnection = {
+    provider: "feishu",
+    issuer: null,
+    client_id: "cli_feishu",
+    client_secret_configured: true,
+    allowed_domains: [],
+    default_role: "member",
+    provider_config: {
+      scope: "contact:user.base:readonly",
+      provisioning_policy: "jit",
+    },
+  };
+  const larkConnection = {
+    ...feishuConnection,
+    provider: "lark",
+    client_id: "cli_lark_app",
+    provider_config: {
+      scope: "contact:user.email:readonly",
+      provisioning_policy: "jit",
+    },
+  };
+  const requests = await openSettings(
+    page,
+    "/orgs/acme/settings/sso",
+    (request) =>
+      request.method === "PUT" && request.path === "/orgs/acme/settings/sso"
+        ? ok({ ...sso, connection: larkConnection })
+        : undefined,
+    { "/orgs/acme/settings/sso": { ...sso, connection: feishuConnection } }
+  );
+  await expect(page.getByRole("textbox", { name: "Feishu scopes" })).toHaveValue(
+    "contact:user.base:readonly"
+  );
+
+  await page.getByRole("button", { name: /Provider/ }).click();
+  await page.getByRole("option", { name: "Lark" }).click();
+  // Nothing of the Feishu connection carries over to the Lark fields.
+  const appId = page.getByRole("textbox", { name: "App ID" });
+  const secret = page.getByRole("textbox", { name: "App Secret" });
+  const scopes = page.getByRole("textbox", { name: "Lark scopes" });
+  await expect(appId).toHaveValue("");
+  await expect(scopes).toHaveValue("");
+  await expect(secret).toHaveAttribute("type", "password");
+  await expect(page.getByText("Write-only. It is never shown again.")).toBeVisible();
+  await expect(
+    page.getByText("add this address to the redirect URLs", { exact: false })
+  ).toBeVisible();
+  await expect(page.getByLabel("Redirect URI", { exact: true })).toHaveText(
+    "https://bft.example/auth/callback"
+  );
+
+  await appId.fill(" cli_lark_app ");
+  await secret.fill("test-only-lark-secret");
+  await scopes.fill("contact:user.email:readonly");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+
+  await expect(
+    page.getByText("Configured. Leave blank to keep the current value.")
+  ).toBeVisible();
+  await expect(secret).toHaveValue("");
+  await expect(appId).toHaveValue("cli_lark_app");
+  expect(writes(requests)).toMatchObject([
+    {
+      method: "PUT",
+      path: "/orgs/acme/settings/sso",
+      body: {
+        provider: "lark",
+        client_id: "cli_lark_app",
+        client_secret: "test-only-lark-secret",
+        default_role: "member",
+        provider_config: {
+          scope: "contact:user.email:readonly",
+          provisioning_policy: "jit",
+        },
+      },
+    },
+  ]);
+});
+
+test("a Signal number change sends the CSRF token and shows the returned number", async ({
   page,
 }) => {
   const requests = await openSettings(
@@ -212,12 +292,16 @@ test("a Signal save sends the CSRF token and shows the returned section", async 
         : undefined
   );
   const section = page.locator("#signal");
-  await section
+  await expect(section.getByText("Platform number")).toBeVisible();
+  await section.getByRole("button", { name: "Change Signal number" }).click();
+  const dialog = page.getByRole("dialog", { name: "Signal number" });
+  await dialog
     .getByRole("textbox", { name: "Organization number" })
     .fill(" +15550123 ");
-  await section.getByRole("button", { name: "Save" }).click();
-  await expect(section.getByRole("status")).toHaveText("Saved");
-  await expect(section.locator("dd").first()).toHaveText("+15550123");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(section.getByText("+15550123")).toBeVisible();
+  await expect(section.getByText("Your organization's number")).toBeVisible();
   expect(writes(requests)).toEqual([
     {
       method: "PUT",
@@ -229,6 +313,75 @@ test("a Signal save sends the CSRF token and shows the returned section", async 
   ]);
 });
 
+test("each OAuth app and Composio say whether they work and whose credentials run", async ({
+  page,
+}) => {
+  const linear = integrations.oauth.apps[0]!;
+  const oauth = {
+    ...integrations.oauth,
+    apps: [
+      linear,
+      {
+        ...linear,
+        provider: "notion",
+        label: "Notion",
+        source: "default",
+        configured: true,
+      },
+      {
+        ...linear,
+        provider: "github",
+        label: "GitHub",
+        client_id: "gh-client",
+        client_secret_configured: true,
+        source: "org",
+        configured: true,
+      },
+    ],
+  };
+  const composio = { ...integrations.composio, status: "ok" };
+  const requests = await openSettings(
+    page,
+    "/orgs/acme/settings/integrations",
+    (request) =>
+      request.path === "/orgs/acme/settings/integrations/composio"
+        ? ok({ ...composio, enabled: true, api_key_configured: true, source: "org" })
+        : undefined,
+    { "/orgs/acme/settings/integrations": { ...integrations, oauth, composio } }
+  );
+  const rows = page.locator("#oauth").getByRole("listitem");
+  await expect(rows.filter({ hasText: "Linear" })).toContainText("Not set up");
+  // The platform's app already works: its own app is offered, with nothing to remove.
+  const notion = rows.filter({ hasText: "Notion" });
+  await expect(notion).toContainText("Ready");
+  await expect(notion).toContainText("Platform's shared app");
+  await expect(
+    notion.getByRole("button", { name: "Use your own Notion OAuth app" })
+  ).toBeVisible();
+  await expect(notion.getByRole("button", { name: /Remove/ })).toHaveCount(0);
+  const github = rows.filter({ hasText: "GitHub" });
+  await expect(github).toContainText("Your organization's app · Client ID gh-client");
+  await expect(
+    github.getByRole("button", { name: "Remove GitHub OAuth app" })
+  ).toBeVisible();
+
+  const section = page.locator("#composio");
+  await expect(section).toContainText("Not set up");
+  await section.getByRole("button", { name: "Set up Composio" }).click();
+  const dialog = page.getByRole("dialog", { name: "Composio" });
+  await dialog.getByRole("textbox", { name: "API key" }).fill("test-only-composio-key");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  // A first setup is saved turned on.
+  expect(writes(requests)).toMatchObject([
+    { method: "PUT", body: { api_key: "test-only-composio-key", enabled: true } },
+  ]);
+  await expect(section).toContainText("Your organization's key");
+  await expect(
+    section.getByRole("button", { name: "Remove Composio settings" })
+  ).toBeVisible();
+});
+
 test("a refused default model is shown under its field", async ({ page }) => {
   const requests = await openSettings(page, "/orgs/acme/settings/models", () => ({
     status: 422,
@@ -237,16 +390,21 @@ test("a refused default model is shown under its field", async ({ page }) => {
       error: {
         code: "default_model_not_allowed",
         message: "The default model must be one of the allowed models.",
-        details: { fields: ["default_template_id"] },
+        details: { fields: ["default_task_model"] },
       },
     },
   }));
-  await page.getByRole("button", { name: /Worker$/ }).click();
+  await expect(
+    page.getByText(
+      "Tasks of an Agent Swarm without its own default Task model run this model."
+    )
+  ).toBeVisible();
+  await page.getByRole("button", { name: /Default Task model$/ }).click();
   await page.getByRole("option", { name: "Claude Opus" }).click();
   await page.getByRole("button", { name: "Save" }).click();
 
   const message = "The default model must be one of the allowed models.";
-  // Once under the Worker select and once beside Save.
+  // Once under the Task model select and once beside Save.
   await expect(page.getByText(message)).toHaveCount(2);
   expect(writes(requests)).toEqual([
     {
@@ -255,39 +413,139 @@ test("a refused default model is shown under its field", async ({ page }) => {
       search: "",
       csrf,
       body: {
-        allowed_template_ids: ["t-sonnet"],
-        default_template_id: "t-opus",
-        default_router_template_id: null,
+        allowed_models: [sonnet.choice],
+        default_task_model: opus.choice,
+        default_router_model: null,
       },
     },
   ]);
 });
 
-test("allowlist IDs missing from the catalog are not saved back", async ({ page }) => {
+test("the filter narrows the allowlist and keeps hidden models checked", async ({
+  page,
+}) => {
+  const requests = await openSettings(page, "/orgs/acme/settings/models", () =>
+    ok({ ...models, allowed_models: [sonnet, gpt] })
+  );
+  await page.getByRole("searchbox", { name: "Filter models" }).fill("OpenAI");
+  await expect(page.getByRole("checkbox", { name: "Claude Sonnet" })).toHaveCount(0);
+  // The styled box covers the input; click its label like a user does.
+  await page.locator(".bft-checklist").getByText("GPT-5.5").click();
+  await expect(page.getByRole("checkbox", { name: "GPT-5.5" })).toBeChecked();
+  await page.getByRole("searchbox", { name: "Filter models" }).fill("nothing");
+  await expect(page.getByText("No models match this filter.")).toBeVisible();
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByRole("status")).toHaveText("Saved");
+  // Sonnet, hidden by the filter, is saved as well.
+  expect(writes(requests).map((request) => request.body)).toEqual([
+    {
+      allowed_models: [sonnet.choice, gpt.choice],
+      default_task_model: sonnet.choice,
+      default_router_model: null,
+    },
+  ]);
+});
+
+const served = (
+  option: ReturnType<typeof catalogModel>,
+  served_by: string | null,
+  plans: string[] = [],
+  key_sources: string[] = []
+) => ({ ...option, served_by, plans, key_sources });
+
+/** The pay-per-use choice of a model, as the server offers it. */
+const paid = (option: ReturnType<typeof catalogModel>, key_sources: string[]) => ({
+  ...served(option, "api_key", [], key_sources),
+  key: `${option.key}+paid`,
+  choice: { ...option.choice, allow_paid: true },
+});
+
+test("allowed models are grouped by the account that serves them", async ({ page }) => {
+  // Tall enough for the Task model options to open below their field.
+  await page.setViewportSize({ width: 1280, height: 1400 });
+  const astra = served(
+    catalogModel("gpt-6-astra", "GPT-6 Astra", "openai"),
+    "subscription",
+    ["codex"],
+    ["OpenRouter"]
+  );
+  const sol = served(
+    catalogModel("gpt-6.1-sol", "GPT-6.1 Sol", "openai"),
+    "subscription",
+    ["codex"]
+  );
+  const astraPaid = paid(catalogModel("gpt-6-astra", "GPT-6 Astra", "openai"), [
+    "OpenRouter",
+  ]);
+  const claude = paid(sonnet, ["OpenRouter"]);
+  const old = served(catalogModel("gpt-4", "GPT-4", "openai"), null);
+  const offered = [astra, sol, astraPaid, claude, old];
   const requests = await openSettings(
     page,
     "/orgs/acme/settings/models",
-    () => ok(models),
+    () => ok({ ...models, allowed_models: [] }),
     {
       "/orgs/acme/settings/models": {
         ...models,
-        allowed_template_ids: ["t-sonnet", "t-retired"],
-        default_template_id: null,
+        servable_status: "ok",
+        catalog: offered,
+        allowed_models: [],
+        default_options: { router: offered, task: offered },
       },
     }
   );
-  // Clearing the only box shown means "all models".
-  const sonnet = page.getByRole("checkbox", { name: "Claude Sonnet" });
-  // The styled box covers the input; click its label like a user does.
-  await page.locator(".bft-checklist").getByText("Claude Sonnet").click();
-  await expect(sonnet).not.toBeChecked();
+
+  // Any served model is allowed until an admin narrows the list.
+  await expect(
+    page.getByRole("radio", { name: /Any model your accounts serve/ })
+  ).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "GPT-6 Astra" })).toHaveCount(0);
+  await page.getByText("Only the models I select").click();
+
+  // A subscription and pay-per-use keys are separate choices of a model.
+  const codex = page.getByRole("button", { name: "Hide Codex subscription" });
+  await expect(codex).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Hide Pay-per-use: OpenRouter" })
+  ).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "GPT-6 Astra" })).toHaveCount(2);
+  await expect(page.getByText("Also available pay-per-use: OpenRouter")).toBeVisible();
+  // A model no account serves is out of sight until asked for.
+  await expect(page.getByRole("checkbox", { name: "GPT-4" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Show 1 model no account serves" }).click();
+  await expect(page.getByRole("checkbox", { name: "GPT-4" })).toBeDisabled();
+
+  // Search ignores case, spaces and punctuation, and finds sources too.
+  const search = page.getByRole("searchbox", { name: "Filter models" });
+  await search.fill("gpt6 astra");
+  await expect(page.getByRole("checkbox", { name: "GPT-6.1 Sol" })).toHaveCount(0);
+  await search.fill("sol 6.1");
+  await expect(page.getByRole("checkbox", { name: "GPT-6.1 Sol" })).toBeVisible();
+  await search.fill("openrouter");
+  await expect(page.getByRole("checkbox", { name: "Claude Sonnet" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "GPT-6.1 Sol" })).toHaveCount(0);
+  await search.fill("");
+
+  await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
+  await page
+    .getByRole("checkbox", { name: "Select every model in Codex subscription" })
+    // The styled box covers the input and takes the click, like a user's.
+    .check({ force: true });
+  await expect(page.getByText("2 of 2 selected")).toBeVisible();
+  await page.getByRole("checkbox", { name: "Claude Sonnet" }).check({ force: true });
+
+  // The Task model default lists only models an account serves, by source.
+  await page.getByRole("button", { name: /Default Task model$/ }).click();
+  await expect(page.getByRole("option", { name: "GPT-4" })).toHaveCount(0);
+  await page.getByRole("option", { name: "Claude Sonnet" }).click();
   await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByRole("status")).toHaveText("Saved");
+
+  // The pay-per-use choice is saved as one, for the list and the default alike.
   expect(writes(requests).map((request) => request.body)).toEqual([
     {
-      allowed_template_ids: [],
-      default_template_id: null,
-      default_router_template_id: null,
+      allowed_models: [astra.choice, sol.choice, claude.choice],
+      default_task_model: claude.choice,
+      default_router_model: null,
     },
   ]);
 });
@@ -320,10 +578,12 @@ const feishuRoute = (connect_id: string, disabled: boolean) => ({
   salix_group_id: "g-1",
   connect_id,
   disabled,
-  href: "/orgs/acme/projects/p-1/integrations",
+  href: "/orgs/acme/projects/p-1/connections?provider=feishu",
 });
 
-test("only a Feishu bot app without routes offers to connect", async ({ page }) => {
+test("a Feishu bot app lists its routes read-only, each linking the swarm's Connections", async ({
+  page,
+}) => {
   const app = integrations.feishu.apps[0]!;
   await openSettings(page, "/orgs/acme/settings/integrations", undefined, {
     "/orgs/acme/settings/integrations": {
@@ -331,38 +591,47 @@ test("only a Feishu bot app without routes offers to connect", async ({ page }) 
       feishu: {
         ...integrations.feishu,
         routes_status: "ok",
-        projects: [...integrations.feishu.projects, { id: "p-2", name: "Ops" }],
+        projects_shown: 2,
         projects_truncated: true,
         apps: [
           {
             ...app,
             id: "fa-1",
-            app_id: "cli_active",
-            routes: [feishuRoute("c-1", false)],
+            app_id: "cli_routed",
+            display_name: "Routed bot",
+            routes: [feishuRoute("c-1", false), feishuRoute("c-2", true)],
           },
           {
             ...app,
             id: "fa-2",
-            app_id: "cli_disabled",
-            routes: [feishuRoute("c-2", true)],
+            app_id: "cli_free",
+            display_name: "Free bot",
+            routes: [],
           },
-          { ...app, id: "fa-3", app_id: "cli_free", routes: [] },
         ],
       },
     },
   });
   const feishu = page.locator("#feishu");
+  const routes = feishu.getByRole("list", { name: "Agent Swarm routes of Routed bot" });
+  await expect(routes.getByRole("listitem")).toHaveCount(2);
+  await expect(routes.getByText("Active")).toBeVisible();
+  await expect(routes.getByText("Disabled")).toBeVisible();
+  for (const link of await routes.getByRole("link", { name: "Support Desk" }).all()) {
+    await expect(link).toHaveAttribute(
+      "href",
+      "/orgs/acme/projects/p-1/connections?provider=feishu"
+    );
+  }
   await expect(
-    feishu.getByRole("button", { name: "Disable the route to Support Desk" })
-  ).toHaveCount(1);
-  // Salix keeps an app on its Agent Swarm while a route exists, even disabled.
-  await expect(feishu.getByRole("button", { name: "Connect" })).toHaveCount(1);
-  await expect(
-    feishu
-      .locator("li")
-      .filter({ hasText: "cli_free" })
-      .getByRole("button", { name: "Connect" })
+    feishu.getByText(
+      "Not connected to an Agent Swarm yet. Connect it on the Agent Swarm's Connections page."
+    )
   ).toBeVisible();
+  // Routes are connected and disabled on the swarm's Connections page only.
+  await expect(feishu.getByRole("button", { name: /^Connect$|^Disable/ })).toHaveCount(
+    0
+  );
   await expect(
     feishu.getByText("Showing routes for the first 2 Agent Swarms.")
   ).toBeVisible();
@@ -440,4 +709,120 @@ test("a member who reaches Settings sees the forbidden state", async ({ page }) 
   );
   await page.goto("/orgs/acme/settings/sso");
   await expect(page.getByRole("heading", { name: "Admins only" })).toBeVisible();
+});
+
+test("typed input stays when newer settings arrive, with a notice to reload", async ({
+  page,
+}) => {
+  let name = "Acme Robotics";
+  let held: Promise<void> | null = null;
+  await injectCsrfToken(page);
+  await routeApi(page, async (request) => {
+    if (request.path === "/orgs/acme/context") return ok(context);
+    if (request.path === "/orgs/acme/settings/general") {
+      const value = name;
+      if (held) await held;
+      return ok(general("acme", value));
+    }
+    const data = pages[request.path];
+    return data ? ok(data) : undefined;
+  });
+  await page.goto("/orgs/acme/settings");
+  const nameField = page.getByRole("textbox", { name: "Name" });
+  const slug = page.getByRole("textbox", { name: "Slug" });
+  await expect(nameField).toHaveValue("Acme Robotics");
+
+  const nav = page.getByRole("navigation", { name: "Organization navigation" });
+  await nav.getByRole("link", { name: "AI models" }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "AI models" })
+  ).toBeVisible();
+  name = "Acme Labs";
+  const { promise, resolve } = Promise.withResolvers<void>();
+  held = promise;
+  await nav.getByRole("link", { name: "General" }).click();
+
+  // The cached settings show; the user starts typing before the newer ones arrive.
+  await expect(nameField).toHaveValue("Acme Robotics");
+  await slug.fill("acme-x");
+  resolve();
+  await expect(
+    page.getByText("These settings changed elsewhere.", { exact: false })
+  ).toBeVisible();
+  await expect(slug).toHaveValue("acme-x");
+  await expect(nameField).toHaveValue("Acme Robotics");
+
+  await page.getByRole("button", { name: "Reload" }).click();
+  await expect(nameField).toHaveValue("Acme Labs");
+  await expect(slug).toHaveValue("acme");
+  await expect(
+    page.getByText("These settings changed elsewhere.", { exact: false })
+  ).toHaveCount(0);
+});
+
+test("X app setup shows deployment settings and saves write-only client credentials", async ({
+  page,
+}) => {
+  const xApp = {
+    provider: "x",
+    label: "X",
+    client_id: null,
+    client_secret_configured: false,
+    source: null,
+    configured: false,
+    setup_href: "https://console.x.com",
+    setup_config: {
+      app_name: "Comma Bridge for Teams",
+      callback_url: "https://salix.example/v1/oauth/x/callback",
+      website_url: "https://bft.example",
+    },
+  };
+  const oauth = { ...integrations.oauth, apps: [xApp] };
+  const requests = await openSettings(
+    page,
+    "/orgs/acme/settings/integrations",
+    (request) => {
+      if (
+        request.method === "PUT" &&
+        request.path === "/orgs/acme/settings/integrations/oauth/x"
+      )
+        return ok({
+          ...oauth,
+          apps: [
+            {
+              ...xApp,
+              client_id: "x-client",
+              client_secret_configured: true,
+              configured: true,
+            },
+          ],
+        });
+      return undefined;
+    },
+    { "/orgs/acme/settings/integrations": { ...integrations, oauth } }
+  );
+  await page.getByRole("button", { name: "Set up X OAuth app" }).click();
+  const dialog = page.getByRole("dialog", { name: "X OAuth app" });
+  await expect(
+    dialog.getByRole("link", { name: "Open X developer settings" })
+  ).toHaveAttribute("href", "https://console.x.com");
+  await expect(dialog.getByLabel("Redirect URI", { exact: true })).toHaveText(
+    xApp.setup_config.callback_url
+  );
+  await dialog.getByRole("textbox", { name: "Client ID" }).fill("x-client");
+  const secret = dialog.getByRole("textbox", { name: "Client secret" });
+  await expect(secret).toHaveAttribute("type", "password");
+  await secret.fill("test-only-x-secret");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(writes(requests)).toMatchObject([
+    {
+      method: "PUT",
+      body: { client_id: "x-client", client_secret: "test-only-x-secret" },
+    },
+  ]);
+  await page.getByRole("button", { name: "Edit X OAuth app" }).click();
+  await expect(
+    page.getByRole("dialog").getByRole("textbox", { name: "Client secret" })
+  ).toHaveValue("");
 });

@@ -1,8 +1,7 @@
 defmodule SalixAgent.MiniskillSelector do
-  @moduledoc "Optional, deadline-bound instructions for accepted human inputs."
-  alias SalixAgent.{Decide, InternalSession, SkillFrontmatter, SkillStore}
+  @moduledoc "Optional, deadline-bound skill suggestions for accepted human inputs."
+  alias SalixAgent.{Decide, InternalSession}
   @budget_ms 1_000
-  @body_budget 10 * 1024
   @message_bytes 2 * 1024
 
   def start(session, config, agent_id, session_id, deadline \\ now() + @budget_ms) do
@@ -25,8 +24,10 @@ defmodule SalixAgent.MiniskillSelector do
       }
 
       started_ms = now()
-      started_at_ms = System.system_time(:millisecond)
+      started_at_ms = SystemsClock.system_time(:millisecond)
       trace = SystemsObservability.Context.capture()
+      # The job reads only the per-message skills, not the whole projection.
+      selectable = %{skills: per_message_skills(projection)}
 
       job =
         SalixAgent.DependencyJob.start(
@@ -34,7 +35,7 @@ defmodule SalixAgent.MiniskillSelector do
           ctx.tenant_id,
           fn ->
             SystemsObservability.Context.run(trace, fn ->
-              selection = select(inputs, projection, ctx, deadline)
+              selection = select(inputs, selectable, ctx, deadline)
               {selection, now()}
             end)
           end,
@@ -57,7 +58,7 @@ defmodule SalixAgent.MiniskillSelector do
   def finish(nil, _config), do: nil
 
   def finish(pending, config) do
-    joined = System.monotonic_time()
+    joined = SystemsClock.monotonic_time()
 
     result =
       case pending.job do
@@ -90,8 +91,8 @@ defmodule SalixAgent.MiniskillSelector do
 
     Salix.Telemetry.emit_miniskill(
       selection,
-      System.monotonic_time() - pending.started,
-      System.monotonic_time() - joined
+      SystemsClock.monotonic_time() - pending.started,
+      SystemsClock.monotonic_time() - joined
     )
 
     completed =
@@ -110,27 +111,50 @@ defmodule SalixAgent.MiniskillSelector do
     }
   end
 
+  @doc """
+  The transcript records of a finished selection: one no-wake runtime message
+  for each input with selected skills, numbered from `first_id`. Selected
+  skills reach the model only through these stored messages.
+  """
+  def runtime_messages(%{"selection" => %{"inputs" => inputs}}, session_id, first_id)
+      when is_list(inputs) and is_integer(first_id) do
+    inputs
+    |> Enum.filter(&match?([_ | _], &1["skills"]))
+    |> Enum.with_index(first_id)
+    |> Enum.map(fn {input, id} ->
+      %{
+        "type" => "runtime_message",
+        "session_id" => session_id,
+        "from_context_provider" => true,
+        "no_wake" => true,
+        "message_id" => id,
+        "runtime_message_id" => "miniskill:" <> to_string(input["source_message_id"]),
+        "runtime_message_type" => "miniskill_selection",
+        "content" => selection_text(input),
+        "created_at" => SystemsClock.system_time(:second)
+      }
+    end)
+  end
+
+  def runtime_messages(_event, _session_id, _first_id), do: []
+
+  defp selection_text(input) do
+    skills =
+      Enum.map(input["skills"], fn skill ->
+        "Selected miniskill: #{skill["skill_id"]}\nName: #{skill["name"]}\nDescription: #{skill["description"]}"
+      end)
+
+    Enum.join(["Miniskills for message #{input["source_message_id"]}:" | skills], "\n\n")
+  end
+
   def select(inputs, projection, ctx, deadline) do
-    candidates = Enum.filter(projection.skills, &(&1["activation"] == "per-message"))
+    candidates = per_message_skills(projection)
 
-    {selected, _bytes} =
-      Enum.map_reduce(inputs, 0, fn input, used ->
-        result = resolve(input, candidates, ctx, deadline)
-
-        {skills, used} =
-          Enum.map_reduce(result["skills"], used, fn skill, bytes ->
-            size = byte_size(skill["content"])
-            if bytes + size <= @body_budget, do: {skill, bytes + size}, else: {nil, bytes}
-          end)
-
-        kept = Enum.reject(skills, &is_nil/1)
-
-        result =
-          if length(kept) < length(result["skills"]),
-            do: %{result | "skills" => kept, "outcome" => "context_budget"},
-            else: result
-
-        {Map.put(result, "source_message_id", input["source_message_id"]), used}
+    selected =
+      Enum.map(inputs, fn input ->
+        input
+        |> resolve(candidates, ctx, deadline)
+        |> Map.put("source_message_id", input["source_message_id"])
       end)
 
     %{"through" => inputs |> Enum.map(& &1["id"]) |> Enum.max(), "inputs" => selected}
@@ -154,7 +178,9 @@ defmodule SalixAgent.MiniskillSelector do
           {-result["probability_bp"], indexed[key]["skill_id"]}
         end)
         |> Enum.take(5)
-        |> Enum.flat_map(fn {key, _} -> body(indexed[key], ctx, deadline) end)
+        |> Enum.map(fn {key, _} ->
+          Map.take(indexed[key], ["skill_id", "name", "description"])
+        end)
 
       %{"outcome" => if(skills == [], do: "no_match", else: "selected"), "skills" => skills}
     else
@@ -201,18 +227,6 @@ defmodule SalixAgent.MiniskillSelector do
     if byte_size(Jason.encode!(catalog)) <= 48 * 1024 and Decide.validate(args, :miniskill) == :ok,
       do: {:ok, args, indexed},
       else: {:error, :catalog_over_budget}
-  end
-
-  defp body(skill, ctx, deadline) do
-    with true <- now() < deadline,
-         %{} = entry <- get_in(skill, ["files", "SKILL.md"]),
-         {:ok, content} <- SkillStore.read_entry(ctx.agent_id, entry),
-         {:ok, _} <- SkillFrontmatter.metadata(content, skill),
-         true <- now() < deadline do
-      [%{"skill_id" => skill["skill_id"], "content" => SkillFrontmatter.body(content)}]
-    else
-      _ -> []
-    end
   end
 
   defp empty(inputs, reason),
@@ -271,5 +285,8 @@ defmodule SalixAgent.MiniskillSelector do
   defp utf8_start(text), do: text
 
   defp valid_utf8(text), do: for(<<cp::utf8 <- text>>, into: "", do: <<cp::utf8>>)
-  defp now, do: System.monotonic_time(:millisecond)
+  defp now, do: SystemsClock.monotonic_time(:millisecond)
+
+  defp per_message_skills(projection),
+    do: Enum.filter(projection.skills, &(&1["activation"] == "per-message"))
 end

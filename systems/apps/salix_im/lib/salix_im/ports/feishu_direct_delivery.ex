@@ -32,7 +32,7 @@ defmodule SalixIM.Ports.FeishuDirectDelivery do
     do: impl().post_file(agent_id, connect, target, path, blob_ref, operation_ref)
 
   defp impl do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :salix_im,
       :feishu_direct_delivery_mod,
       __MODULE__.Production

@@ -20,16 +20,16 @@ follow structured `next_action` fields instead of guessing command syntax.
 ## Safety contract
 
 - Use JSON output for decisions. Parse `schema_version`, `ok`, and errors from
-  stderr; exit 2 means the user has a manual step.
+  stderr. Exit 2 means the user has a manual step.
 - Authenticate with `bft auth login` and let the user approve the device flow.
 - Confirm the API base and organization before acting.
 - Before a command marked `mutates`, explain its target and effect and get the
   user's explicit approval. Add `--confirm-mutating` when the command metadata
   or help requires it, and only after approval.
-- Treat returned one-time install commands as secrets: execute them only on the
-  target Mac and never repeat them in chat or logs.
-- After approval, create exactly one install command and execute it immediately;
-  do not make a second generation request just to inspect its response.
+- Treat returned one-time install commands as secrets. Execute them only on the
+  target Mac. Never repeat them in chat or logs.
+- After approval, create exactly one install command and execute it immediately.
+  Do not make a second generation request just to inspect its response.
 - Verify changes with a read command. Do not infer server readiness from a
   local process alone.
 

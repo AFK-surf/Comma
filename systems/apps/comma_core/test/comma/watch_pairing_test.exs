@@ -8,7 +8,7 @@ defmodule Comma.WatchPairingTest do
 
     {:ok, user} =
       Accounts.create_user(%{
-        "email" => "watch-#{System.unique_integer([:positive])}@example.test"
+        "email" => "watch-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.test"
       })
 
     {:ok, phone} = Accounts.create_session(user["id"], client_kind: "ios", client_platform: "ios")
@@ -41,7 +41,7 @@ defmodule Comma.WatchPairingTest do
     # Revoke only the parent row to exercise the pairing-parent check itself.
     Comma.Repo.update_all(
       from(s in AuthSession, where: s.id == ^ctx.phone["id"]),
-      set: [revoked_at: DateTime.utc_now()]
+      set: [revoked_at: SystemsClock.utc_now()]
     )
 
     assert {:error, :revoked} =
@@ -64,7 +64,7 @@ defmodule Comma.WatchPairingTest do
     {:ok, pending} = WatchPairing.create(ctx.user, ctx.phone)
 
     Repo.get!(AuthSession, ctx.phone["id"])
-    |> Ecto.Changeset.change(expires_at: DateTime.add(DateTime.utc_now(), -1))
+    |> Ecto.Changeset.change(expires_at: DateTime.add(SystemsClock.utc_now(), -1))
     |> Repo.update!()
 
     assert {:ok, _, _} = Accounts.validate_session(watch["token"])

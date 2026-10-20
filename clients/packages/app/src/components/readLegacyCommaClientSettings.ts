@@ -3,21 +3,14 @@ import {
   commaClientAppearancePreferencesSchema,
   commaClientSettingsSchema,
   defaultCommaClientAppearancePreferences,
-  defaultSideChatShortcut,
-  sideChatShortcutSchema,
   type CommaClientSettings,
 } from "@comma/native-bridge";
-import {
-  clampCommaThemeLightness,
-  commaThemeChromaGainMax,
-  detectAppKeybindingPlatform,
-} from "@comma/ui";
+import { clampCommaThemeLightness, commaThemeChromaGainMax } from "@comma/ui/tokens";
+import { detectAppKeybindingPlatform } from "@comma/ui/components/settings-shortcut";
 import { parseLegacyAppShortcutOverrides } from "./shortcuts/appShortcutSettings";
 
 export const legacyCommaAppearanceStorageKey = "comma.appearance";
 export const legacyCommaAppShortcutsStorageKey = "comma.app.shortcuts";
-export const legacyCommaSideChatAppearanceStorageKey = "comma.sideChatAppearance";
-export const legacyCommaSideChatShortcutStorageKey = "comma.side-chat.shortcut";
 
 const readStoredJson = (key: string): unknown => {
   try {
@@ -111,18 +104,6 @@ const readLegacyAppearance = () => {
  * remain readable so a rollback can still recover the user's preferences.
  */
 export function readLegacyCommaClientSettings(): CommaClientSettings {
-  let sideChatAppearance: CommaClientSettings["sideChatAppearance"] = "auto";
-  try {
-    const stored = globalThis.localStorage?.getItem(
-      legacyCommaSideChatAppearanceStorageKey
-    );
-    if (stored === "light" || stored === "dark") sideChatAppearance = stored;
-  } catch {
-    // Keep the default migration value when the legacy store is unavailable.
-  }
-  const parsedSideChatShortcut = sideChatShortcutSchema.safeParse(
-    readStoredJson(legacyCommaSideChatShortcutStorageKey)
-  );
   return commaClientSettingsSchema.parse({
     appShortcutOverrides: parseLegacyAppShortcutOverrides(
       readStoredJson(legacyCommaAppShortcutsStorageKey),
@@ -130,9 +111,5 @@ export function readLegacyCommaClientSettings(): CommaClientSettings {
     ),
     appearance: readLegacyAppearance(),
     localePreference: readLegacyCommaLocalePreference(),
-    sideChatAppearance,
-    sideChatShortcut: parsedSideChatShortcut.success
-      ? parsedSideChatShortcut.data
-      : defaultSideChatShortcut,
   });
 }

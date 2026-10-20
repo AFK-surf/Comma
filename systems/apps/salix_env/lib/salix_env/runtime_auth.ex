@@ -9,8 +9,7 @@ defmodule SalixEnv.RuntimeAuth do
   arbitrary provider payloads, commands, paths, account details, and tokens are
   rejected rather than projected.
 
-  The retired connector models are historical evidence only; see
-  `tla/connector/README.md`. Contract changes require runtime regression tests.
+  Contract changes require runtime regression tests.
   """
 
   @snapshot_required ~w(schema_version status requires_openai_auth observed_at)
@@ -110,6 +109,12 @@ defmodule SalixEnv.RuntimeAuth do
        else: {:error, :invalid_runtime_auth_response}
   end
 
+  @doc "Whether the native auth observation permits a task attempt for this provider."
+  def dispatchable_snapshot?(provider, auth) do
+    auth["status"] in ~w(authenticated not_required) or
+      (provider == "claude" and auth["status"] == "configured")
+  end
+
   defp validate_status_result(result) do
     with true <-
            exact_keys?(result, ~w(provider auth native_ready dispatch_ready methods attempt)),
@@ -119,7 +124,7 @@ defmodule SalixEnv.RuntimeAuth do
          true <-
            not result["dispatch_ready"] or
              (result["native_ready"] and
-                result["auth"]["status"] in ~w(authenticated not_required)),
+                dispatchable_snapshot?(result["provider"], result["auth"])),
          methods when is_list(methods) and length(methods) <= 8 <- result["methods"],
          true <- Enum.all?(methods, &valid_method?(&1, result["provider"])),
          true <- valid_private_attempt?(result["attempt"]) do
@@ -427,7 +432,8 @@ defmodule SalixEnv.RuntimeAuth do
   defp valid_ceremony_expiry?(timestamp) do
     valid_timestamp?(timestamp) and
       timestamp <=
-        System.system_time(:millisecond) + @connector_attempt_ttl_ms + @ceremony_clock_skew_ms
+        SystemsClock.system_time(:millisecond) + @connector_attempt_ttl_ms +
+          @ceremony_clock_skew_ms
   end
 
   defp optional_enum?(map, key, values) do

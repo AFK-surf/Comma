@@ -1,151 +1,58 @@
-import { Button, CopyIcon, InputField, ScrollArea, Toggle } from "@comma/ui";
-import { useCallback, useEffect, useState } from "react";
-import {
-  AdminApiError,
-  createIdempotencyKey,
-  isAdminAccessDenied,
-  isAdminSessionRejection,
-  type AdminApi,
-  type GuestModePolicy,
-} from "./adminApi";
+import { Button } from "@comma/ui/components/Button";
+import { CopyIcon } from "@comma/ui/components/icons";
+import { InputField } from "@comma/ui/components/input";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { Toggle } from "@comma/ui/components/toggle";
+import { useAdminCommand, useAdminState } from "./adminRuntime";
 import {
   AdminConfirmationDialog,
   AdminNotice,
   AdminPageHeader,
-  DetailList,
-  ReasonField,
+  AdminRow,
+  AdminSaveBar,
+  AdminSection,
+  AdminState,
 } from "./adminUi";
-import { adminErrorMessage, guardedAdminCommand } from "./adminErrors";
+import { confirmationBusy } from "./adminModel";
+import {
+  guestModeForm,
+  guestPolicyChanges,
+  type GuestModeModel,
+} from "./GuestModeModel";
+import { messages } from "@comma/i18n";
 
-const updateConfirmation = "update-guest-policy:comma";
-const createTenantConfirmation = "create-guest-tenant:comma";
-const secondsPerDay = 86_400;
-const limits = {
-  dailyCreation: { min: 0, max: 100_000 },
-  tenantConcurrency: { min: 1, max: 512 },
-  sessionTtlSeconds: { min: 3_600, max: 2_592_000 },
-  powDifficulty: { min: 8, max: 24 },
-} as const;
-
-const freeRouterNote =
-  "Guests have no credits. Guest Routers must use a model on the Free Router models list.";
-
-interface Notice {
-  message: string;
-  tone: "error" | "success";
-}
-
-export function GuestModeView({
-  api,
-  onAccessDenied,
-  onOpenFreeRouterModels,
-}: {
-  api: AdminApi;
-  onAccessDenied: () => void;
-  onOpenFreeRouterModels?: () => void;
-}) {
-  const [policy, setPolicy] = useState<GuestModePolicy>();
-  const [enabled, setEnabled] = useState(false);
-  const [dailyLimit, setDailyLimit] = useState("");
-  const [concurrency, setConcurrency] = useState("");
-  const [lifetimeDays, setLifetimeDays] = useState("");
-  const [powDifficulty, setPowDifficulty] = useState("");
-  const [reason, setReason] = useState("");
-  const [tenantReason, setTenantReason] = useState("");
-  const [error, setError] = useState<string>();
-  const [notice, setNotice] = useState<Notice>();
-  const [reload, setReload] = useState(0);
-  const [review, setReview] = useState<"policy" | "tenant">();
-  const [busy, setBusy] = useState(false);
-  const [commandKey, setCommandKey] = useState("");
-  const [copiedTenantId, setCopiedTenantId] = useState<string>();
-
-  const applyPolicy = useCallback((next: GuestModePolicy) => {
-    setPolicy(next);
-    setEnabled(next.enabled);
-    setDailyLimit(String(next.daily_creation_limit));
-    setConcurrency(String(next.tenant_concurrency));
-    setLifetimeDays(formatDays(next.session_ttl_seconds));
-    setPowDifficulty(String(next.pow_difficulty));
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setPolicy(undefined);
-    setError(undefined);
-    void api
-      .getGuestMode({ signal: controller.signal })
-      .then((value) => {
-        if (!controller.signal.aborted) applyPolicy(value);
-      })
-      .catch((cause: unknown) => {
-        if (controller.signal.aborted || isAdminSessionRejection(cause)) return;
-        if (isAdminAccessDenied(cause)) return onAccessDenied();
-        setError(adminErrorMessage(cause, "Unable to load guest mode settings."));
-      });
-    return () => controller.abort();
-  }, [api, applyPolicy, onAccessDenied, reload]);
-
-  const tenantId = policy?.salix_tenant_id ?? null;
-
-  const daily = parseWhole(dailyLimit);
-  const tenantConcurrency = parseWhole(concurrency);
-  const ttlSeconds = policy ? lifetimeSeconds(lifetimeDays, policy) : Number.NaN;
-  const dailyError = inRange(daily, limits.dailyCreation)
-    ? undefined
-    : "Enter a whole number from 0 to 100,000.";
-  const concurrencyError = inRange(tenantConcurrency, limits.tenantConcurrency)
-    ? undefined
-    : "Enter a whole number from 1 to 512.";
-  const lifetimeError = inRange(ttlSeconds, limits.sessionTtlSeconds)
-    ? undefined
-    : "Enter a lifetime from 1 hour (0.0417 days) to 30 days.";
-  const difficulty = parseWhole(powDifficulty);
-  const difficultyError = inRange(difficulty, limits.powDifficulty)
-    ? undefined
-    : "Enter a whole number from 8 to 24.";
-  const tenantMissing = enabled && !tenantId;
-  const changed =
-    policy &&
-    (enabled !== policy.enabled ||
-      daily !== policy.daily_creation_limit ||
-      tenantConcurrency !== policy.tenant_concurrency ||
-      ttlSeconds !== policy.session_ttl_seconds ||
-      difficulty !== policy.pow_difficulty);
-  const canSave =
-    changed &&
-    !busy &&
-    !dailyError &&
-    !concurrencyError &&
-    !lifetimeError &&
-    !difficultyError &&
-    !tenantMissing &&
-    reason.trim().length >= 3;
-
-  const reloadAfterConflict = () => {
-    setReview(undefined);
-    setNotice({
-      message:
-        "Guest mode changed after this page loaded. Your change was not saved. The latest settings are now shown; review them and try again.",
-      tone: "error",
-    });
-    setReload((value) => value + 1);
-  };
+export function GuestModeView({ model }: { model: GuestModeModel }) {
+  const run = useAdminCommand();
+  const state = useAdminState(model.state);
+  const busy = useAdminState(model.confirmation.state, confirmationBusy);
+  const { copiedTenantId, enabled, error, notice, policy } = state;
+  const {
+    canSave,
+    concurrencyError,
+    dailyError,
+    difficultyError,
+    lifetimeError,
+    tenantId,
+    tenantMissing,
+  } = guestModeForm(state, busy);
+  const changes = policy ? guestPolicyChanges(state, policy).length : 0;
 
   return (
-    <section aria-label="Guest mode" className="admin-workspace">
+    <section
+      aria-label={messages.admin_section_guest()}
+      className="admin-workspace admin-settings-page"
+    >
       <AdminPageHeader
-        eyebrow="Platform"
-        title="Guest mode"
-        description="Let people try Comma without signing in. Guests share one dedicated Salix tenant, and each guest workspace has only a Router agent."
+        title={messages.admin_section_guest()}
+        description={messages.admin_guest_description()}
         actions={
           <Button
             hierarchy="secondary-gray"
             size="sm"
             isDisabled={busy}
-            onPress={() => setReload((value) => value + 1)}
+            onPress={() => run(model.reload)}
           >
-            Reload
+            {messages.admin_reload()}
           </Button>
         }
       />
@@ -156,270 +63,184 @@ export function GuestModeView({
         orientation="vertical"
         scrollbarVisibility="hover"
       >
-        {error ? <p role="alert">{error}</p> : null}
+        {error ? (
+          <AdminState
+            message={error}
+            onAction={() => run(model.reload)}
+            title={messages.admin_guest_load_failed()}
+            tone="error"
+          />
+        ) : null}
         {notice ? (
           <AdminNotice
             message={notice.message}
-            onDismiss={() => setNotice(undefined)}
+            onDismiss={() => run(model.dismissNotice)}
             tone={notice.tone}
           />
         ) : null}
-        {!policy && !error ? <p>Loading guest mode…</p> : null}
+        {!policy && !error ? (
+          <AdminState title={messages.admin_loading_guest()} />
+        ) : null}
         {policy ? (
-          <>
-            <section className="admin-drawer-section" aria-label="Guest tenant">
-              <div className="admin-drawer-section-header">
-                <div>
-                  <h3>Guest tenant</h3>
-                  <p>New guest workspaces are created in this Salix tenant.</p>
-                </div>
-              </div>
-              <DetailList
-                items={[
-                  {
-                    label: "Salix tenant ID",
-                    value: tenantId ? (
-                      <span className="admin-guest-tenant">
-                        <code>{tenantId}</code>
-                        <Button
-                          hierarchy="tertiary-gray"
-                          iconLeading={<CopyIcon />}
-                          onPress={() => {
-                            void navigator.clipboard
-                              .writeText(tenantId)
-                              .then(() => setCopiedTenantId(tenantId));
-                          }}
-                          size="sm"
-                        >
-                          {copiedTenantId === tenantId ? "Copied" : "Copy tenant ID"}
-                        </Button>
-                      </span>
-                    ) : (
-                      "None. Create a guest tenant before you enable guest mode."
-                    ),
-                  },
-                  {
-                    label: "Guest workspaces created today",
-                    value: `${policy.created_today} of ${policy.daily_creation_limit}`,
-                  },
-                ]}
-              />
-              <ReasonField value={tenantReason} onChange={setTenantReason} />
-              <Button
-                hierarchy="secondary-gray"
-                isDisabled={busy || tenantReason.trim().length < 3}
-                onPress={() => {
-                  setCommandKey(createIdempotencyKey("create-guest-tenant"));
-                  setReview("tenant");
-                }}
+          <div className="admin-page-sections">
+            <AdminSection
+              action={
+                <Button
+                  hierarchy="secondary-gray"
+                  isDisabled={busy}
+                  onPress={() => run(model.reviewTenant)}
+                  size="sm"
+                >
+                  {messages.admin_guest_create_tenant()}
+                </Button>
+              }
+              title={messages.admin_guest_tenant()}
+            >
+              <AdminRow
+                description={messages.admin_guest_tenant_body()}
+                title={messages.admin_salix_tenant_id()}
               >
-                Create new guest tenant
-              </Button>
-            </section>
+                {tenantId ? (
+                  <>
+                    <code className="admin-row-value">{tenantId}</code>
+                    <Button
+                      hierarchy="tertiary-gray"
+                      iconLeading={<CopyIcon />}
+                      onPress={() => run(model.copyTenantId)}
+                      size="sm"
+                    >
+                      {copiedTenantId === tenantId
+                        ? messages.admin_copied()
+                        : messages.admin_copy_tenant_id()}
+                    </Button>
+                  </>
+                ) : (
+                  <span className="admin-row-value">
+                    {messages.admin_guest_no_tenant()}
+                  </span>
+                )}
+              </AdminRow>
+              <AdminRow title={messages.admin_guest_created_today()}>
+                <span className="admin-row-value admin-tabular-value">
+                  {messages.admin_of_count({
+                    limit: policy.daily_creation_limit,
+                    used: policy.created_today,
+                  })}
+                </span>
+              </AdminRow>
+            </AdminSection>
 
-            <section className="admin-drawer-section" aria-label="Guest mode policy">
-              <div className="admin-drawer-section-header">
-                <div>
-                  <h3>Policy</h3>
-                  <p>Limits apply to all guests together.</p>
-                </div>
-              </div>
-              <Toggle
-                checked={enabled}
-                disabled={busy}
-                hint="Let people use Comma without signing in."
-                label="Guest mode enabled"
-                onChange={(event) => setEnabled(event.target.checked)}
-                size="sm"
-              />
-              {tenantMissing ? (
-                <p className="admin-drawer-note" role="alert">
-                  Create a guest tenant before you enable guest mode.
-                </p>
-              ) : null}
-              <div className="admin-form-grid">
+            <AdminSection
+              label={messages.admin_guest_policy()}
+              title={messages.admin_policy()}
+            >
+              <AdminRow
+                description={
+                  tenantMissing ? (
+                    <span role="alert">{messages.admin_guest_tenant_required()}</span>
+                  ) : (
+                    messages.admin_guest_enabled_hint()
+                  )
+                }
+                title={messages.admin_guest_mode()}
+              >
+                <Toggle
+                  aria-label={messages.admin_guest_enabled()}
+                  checked={enabled}
+                  disabled={busy}
+                  onChange={(event) => run(model.setEnabled(event.target.checked))}
+                  size="sm"
+                />
+              </AdminRow>
+              <AdminRow
+                description={messages.admin_guest_daily_hint()}
+                title={messages.admin_guest_daily()}
+              >
                 <InputField
-                  label="Daily creation limit"
-                  hint="New guest workspaces per day. 0 to 100,000."
+                  aria-label={messages.admin_guest_daily()}
+                  className="admin-row-input"
                   inputMode="numeric"
-                  onChange={(event) => setDailyLimit(event.target.value)}
+                  onChange={(event) =>
+                    run(model.setField("dailyLimit", event.target.value))
+                  }
                   type="number"
-                  value={dailyLimit}
+                  value={state.dailyLimit}
                   {...(dailyError ? { errorMessage: dailyError } : {})}
                 />
+              </AdminRow>
+              <AdminRow
+                description={messages.admin_guest_concurrency_hint()}
+                title={messages.admin_guest_concurrency()}
+              >
                 <InputField
-                  label="Tenant concurrency per node"
-                  hint="Concurrent LLM and tool jobs per Salix node, shared by all guests. 1 to 512."
+                  aria-label={messages.admin_guest_concurrency()}
+                  className="admin-row-input"
                   inputMode="numeric"
-                  onChange={(event) => setConcurrency(event.target.value)}
+                  onChange={(event) =>
+                    run(model.setField("concurrency", event.target.value))
+                  }
                   type="number"
-                  value={concurrency}
+                  value={state.concurrency}
                   {...(concurrencyError ? { errorMessage: concurrencyError } : {})}
                 />
+              </AdminRow>
+              <AdminRow
+                description={messages.admin_guest_lifetime_hint()}
+                title={messages.admin_guest_lifetime_days()}
+              >
                 <InputField
-                  label="Guest session lifetime (days)"
-                  hint="1 hour to 30 days. Use decimals for part days: 0.5 is 12 hours."
+                  aria-label={messages.admin_guest_lifetime_days()}
+                  className="admin-row-input"
                   inputMode="decimal"
-                  onChange={(event) => setLifetimeDays(event.target.value)}
+                  onChange={(event) =>
+                    run(model.setField("lifetimeDays", event.target.value))
+                  }
                   type="number"
-                  value={lifetimeDays}
+                  value={state.lifetimeDays}
                   {...(lifetimeError ? { errorMessage: lifetimeError } : {})}
                 />
+              </AdminRow>
+              <AdminRow
+                description={messages.admin_guest_pow_hint()}
+                title={messages.admin_guest_pow_bits()}
+              >
                 <InputField
-                  label="Proof-of-work difficulty (bits)"
-                  hint="Work a client does to create a guest. 8 to 24. 12 bits takes well under 0.5 s on a phone. Each extra bit doubles the work."
+                  aria-label={messages.admin_guest_pow_bits()}
+                  className="admin-row-input"
                   inputMode="numeric"
-                  onChange={(event) => setPowDifficulty(event.target.value)}
+                  onChange={(event) =>
+                    run(model.setField("powDifficulty", event.target.value))
+                  }
                   type="number"
-                  value={powDifficulty}
+                  value={state.powDifficulty}
                   {...(difficultyError ? { errorMessage: difficultyError } : {})}
                 />
-              </div>
-              <div className="admin-guest-note">
-                <p className="admin-drawer-note">{freeRouterNote}</p>
-                {onOpenFreeRouterModels ? (
-                  <Button
-                    hierarchy="link-gray"
-                    onPress={onOpenFreeRouterModels}
-                    size="sm"
-                  >
-                    Open Free Router models
-                  </Button>
-                ) : null}
-              </div>
-              <ReasonField value={reason} onChange={setReason} />
-              <Button
-                isDisabled={!canSave}
-                onPress={() => {
-                  setCommandKey(createIdempotencyKey("guest-policy"));
-                  setReview("policy");
-                }}
+              </AdminRow>
+              <AdminRow
+                description={messages.admin_free_note()}
+                title={messages.admin_guest_models()}
               >
-                Save guest mode
-              </Button>
-            </section>
-          </>
+                <Button
+                  hierarchy="secondary-gray"
+                  onPress={() => run(model.openFreeRouterModels)}
+                  size="sm"
+                >
+                  {messages.admin_open_free_models()}
+                </Button>
+              </AdminRow>
+            </AdminSection>
+          </div>
         ) : null}
       </ScrollArea>
-      <AdminConfirmationDialog
-        expected={updateConfirmation}
-        isOpen={review === "policy"}
-        onOpenChange={(open) => setReview(open ? "policy" : undefined)}
-        onBusyChange={setBusy}
-        title="Save guest mode?"
-        onConfirm={async () => {
-          if (!policy) return;
-          let saved: GuestModePolicy;
-          try {
-            saved = await guardedAdminCommand(
-              api.updateGuestMode(
-                {
-                  enabled,
-                  daily_creation_limit: daily,
-                  tenant_concurrency: tenantConcurrency,
-                  session_ttl_seconds: ttlSeconds,
-                  pow_difficulty: difficulty,
-                  revision: policy.revision,
-                },
-                {
-                  confirmation: updateConfirmation,
-                  idempotencyKey: commandKey,
-                  reason: reason.trim(),
-                }
-              ),
-              onAccessDenied
-            );
-          } catch (cause) {
-            if (isGuestPolicyConflict(cause)) return reloadAfterConflict();
-            throw guestCommandError(cause);
-          }
-          applyPolicy(saved);
-          setReason("");
-          setNotice({
-            message: "Saved. New guest sessions use these settings.",
-            tone: "success",
-          });
-        }}
+      <AdminSaveBar
+        canSave={canSave}
+        changes={changes}
+        disabled={busy}
+        onDiscard={() => run(model.discard)}
+        onSave={() => run(model.reviewPolicy)}
+        saveLabel={messages.admin_save_guest_mode()}
       />
-      <AdminConfirmationDialog
-        explanation="New guests go to the new tenant. Existing guest workspaces stay in their current tenant."
-        expected={createTenantConfirmation}
-        isOpen={review === "tenant"}
-        onOpenChange={(open) => setReview(open ? "tenant" : undefined)}
-        onBusyChange={setBusy}
-        title="Create new guest tenant?"
-        onConfirm={async () => {
-          if (!policy) return;
-          let saved: GuestModePolicy;
-          try {
-            saved = await guardedAdminCommand(
-              api.createGuestTenant(policy.revision, {
-                confirmation: createTenantConfirmation,
-                idempotencyKey: commandKey,
-                reason: tenantReason.trim(),
-              }),
-              onAccessDenied
-            );
-          } catch (cause) {
-            if (isGuestPolicyConflict(cause)) return reloadAfterConflict();
-            throw guestCommandError(cause);
-          }
-          // Keep unsaved policy edits; they save against the new revision.
-          setPolicy(saved);
-          setTenantReason("");
-          setNotice({
-            message:
-              "Created a new guest tenant. New guests go to it. Existing guest workspaces stay in their current tenant.",
-            tone: "success",
-          });
-        }}
-      />
+      <AdminConfirmationDialog confirmation={model.confirmation} />
     </section>
   );
-}
-
-function isGuestPolicyConflict(error: unknown) {
-  return (
-    error instanceof AdminApiError &&
-    error.status === 409 &&
-    error.code === "guest_policy_conflict"
-  );
-}
-
-function guestCommandError(error: unknown) {
-  if (error instanceof AdminApiError) {
-    if (error.code === "guest_tenant_required") {
-      return new Error("Create a guest tenant before you enable guest mode.", {
-        cause: error,
-      });
-    }
-    if (error.code === "invalid_guest_policy") {
-      return new Error(
-        "The server rejected these settings. Check that each value is within its limits.",
-        { cause: error }
-      );
-    }
-  }
-  return error;
-}
-
-function parseWhole(text: string) {
-  return /^\d+$/.test(text.trim()) ? Number(text.trim()) : Number.NaN;
-}
-
-function inRange(value: number, range: { max: number; min: number }) {
-  return Number.isInteger(value) && value >= range.min && value <= range.max;
-}
-
-function formatDays(seconds: number) {
-  return String(Number((seconds / secondsPerDay).toFixed(4)));
-}
-
-function lifetimeSeconds(daysText: string, policy: GuestModePolicy) {
-  // A rounded display value keeps the exact saved lifetime until it is edited.
-  if (daysText === formatDays(policy.session_ttl_seconds)) {
-    return policy.session_ttl_seconds;
-  }
-  const days = daysText.trim() ? Number(daysText) : Number.NaN;
-  return Number.isFinite(days) ? Math.round(days * secondsPerDay) : Number.NaN;
 }

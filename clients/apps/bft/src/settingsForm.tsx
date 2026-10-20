@@ -1,21 +1,25 @@
-import { Button, Dialog, InputField, ScrollArea } from "@comma/ui";
-import { useId, useState, type ReactNode } from "react";
+import { Button } from "@comma/ui/components/Button";
+import { Dialog } from "@comma/ui/components/dialog";
+import { InputField } from "@comma/ui/components/input";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { Fragment, useId, useState, type ReactNode } from "react";
 import { BftApiError, type BftFieldErrors } from "./api";
 import { ConfirmDialog, DialogError, writeErrorMessage } from "./dialogs";
 import { messages } from "./messages";
-import type { Resource } from "./resource";
+import { dataKey, type Resource } from "./resource";
 import { ErrorState, Skeleton } from "./states";
 
 const t = messages.settings;
 
 /**
  * A Settings-style page: the header, then one scrolling column of sections.
- * The Integrations page passes `wide` to lay its sections out in a grid. A
+ * `wide` drops the column's reading width for pages that lay out a grid. A
  * runtime outage or a conflict is a quiet notice with a retry, not an error page.
  */
 export function SettingsPage<T>({
   title,
   description,
+  crumb,
   resource,
   onRetry,
   wide = false,
@@ -24,6 +28,8 @@ export function SettingsPage<T>({
 }: {
   title: string;
   description: string | undefined;
+  /** A link back to the parent page, above the title. */
+  crumb?: ReactNode;
   resource: Resource<T>;
   onRetry: () => void;
   wide?: boolean;
@@ -34,6 +40,7 @@ export function SettingsPage<T>({
     <div className="bft-page">
       <div className="bft-page-header">
         <div className="bft-page-heading">
+          {crumb ? <div className="bft-crumb">{crumb}</div> : null}
           <h1>{title}</h1>
           <p>{description ?? <Skeleton width={220} />}</p>
         </div>
@@ -79,12 +86,52 @@ export function SettingsPage<T>({
   );
 }
 
+/**
+ * A form that starts from `data`. Newer data (a fresh read after a cached one)
+ * starts the form over while the user has not typed or changed anything in
+ * it; after that the form and its input stay, and a quiet notice offers to
+ * reload the newer data.
+ */
+export function EditableData<T>({
+  data,
+  children,
+}: {
+  data: T;
+  children: (data: T) => ReactNode;
+}) {
+  const [shown, setShown] = useState(data);
+  const [edited, setEdited] = useState(false);
+  if (shown !== data && !edited) setShown(data);
+  const markEdited = () => setEdited(true);
+  return (
+    <div className="bft-editable" onChangeCapture={markEdited}>
+      {shown !== data && edited ? (
+        <output className="bft-quiet-row">
+          <p className="bft-quiet bft-quiet-inline">{t.changedElsewhere}</p>
+          <button
+            className="bft-btn bft-btn-sm"
+            onClick={() => {
+              setShown(data);
+              setEdited(false);
+            }}
+            type="button"
+          >
+            {t.reload}
+          </button>
+        </output>
+      ) : null}
+      <Fragment key={dataKey(shown)}>{children(shown)}</Fragment>
+    </div>
+  );
+}
+
 /** A titled group of fields or rows, separated from the next by a hairline. */
 export function FormSection({
   id,
   title,
   description,
   action,
+  level = 2,
   children,
 }: {
   id?: string;
@@ -92,18 +139,62 @@ export function FormSection({
   description?: string | undefined;
   /** One button or link at the end of the heading row. */
   action?: ReactNode;
+  /** 3 inside a titled group of sections. */
+  level?: 2 | 3;
   children: ReactNode;
 }) {
   const headingId = useId();
+  const Heading = level === 3 ? "h3" : "h2";
   return (
     <section aria-labelledby={headingId} className="bft-form-section" id={id}>
       <div className="bft-form-section-head">
-        <h2 id={headingId}>{title}</h2>
+        <Heading id={headingId}>{title}</Heading>
         {action}
       </div>
       {description ? <p className="bft-form-section-note">{description}</p> : null}
       <div className="bft-form">{children}</div>
     </section>
+  );
+}
+
+/** The state line of a settings row: a status with its dot, then a quiet detail. */
+export function RowState({
+  tone,
+  label,
+  detail,
+}: {
+  tone?: "ok" | "warn" | undefined;
+  label: string;
+  detail?: string | null | undefined;
+}) {
+  return (
+    <span className="bft-setting-row-sub bft-setting-state">
+      <span className="bft-status" data-tone={tone}>
+        {label}
+      </span>
+      {detail ? <span className="bft-truncate">{detail}</span> : null}
+    </span>
+  );
+}
+
+/** One numbered step of a guided setup; lives in an `ol.bft-steps`. */
+export function Step({
+  index,
+  title,
+  children,
+}: {
+  index: number;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <li className="bft-step">
+      <h3 className="bft-step-title">
+        <span className="bft-step-index">{index}</span>
+        {title}
+      </h3>
+      {children}
+    </li>
   );
 }
 

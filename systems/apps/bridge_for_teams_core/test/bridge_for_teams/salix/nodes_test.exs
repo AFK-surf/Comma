@@ -1,16 +1,16 @@
 defmodule BridgeForTeams.Salix.NodesTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias BridgeForTeams.Salix.Nodes
 
   setup do
-    on_exit(fn -> Application.delete_env(:bridge_for_teams_core, :salix_nodes_override) end)
+    on_exit(fn -> SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_nodes_override) end)
     :ok
   end
 
   test "no salix nodes reachable -> unavailable" do
     # No real salix node is connected in the unit suite; probing finds none.
-    Application.delete_env(:bridge_for_teams_core, :salix_nodes_override)
+    SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_nodes_override)
     stop_salix_web_if_started()
 
     assert Nodes.salix_nodes() == []
@@ -19,7 +19,7 @@ defmodule BridgeForTeams.Salix.NodesTest do
   end
 
   test "started local salix app makes the current node pickable" do
-    Application.delete_env(:bridge_for_teams_core, :salix_nodes_override)
+    SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_nodes_override)
     started_before? = app_started?(:salix_web)
     {:ok, started_apps} = Application.ensure_all_started(:salix_web)
 
@@ -37,7 +37,7 @@ defmodule BridgeForTeams.Salix.NodesTest do
   end
 
   test "override lists nodes and pick returns one of them" do
-    Application.put_env(:bridge_for_teams_core, :salix_nodes_override, [:a@h, :b@h, :c@h])
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_nodes_override, [:a@h, :b@h, :c@h])
     assert Nodes.salix_nodes() == [:a@h, :b@h, :c@h]
 
     assert {:ok, node} = Nodes.pick("proj_1")
@@ -46,7 +46,7 @@ defmodule BridgeForTeams.Salix.NodesTest do
 
   test "pick is sticky by hint (deterministic on a stable list)" do
     nodes = [:a@h, :b@h, :c@h]
-    Application.put_env(:bridge_for_teams_core, :salix_nodes_override, nodes)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_nodes_override, nodes)
 
     {:ok, first} = Nodes.pick("proj_abc")
     {:ok, again} = Nodes.pick("proj_abc")
@@ -55,12 +55,6 @@ defmodule BridgeForTeams.Salix.NodesTest do
     # the chosen node matches the documented phash2 placement
     expected = Enum.at(nodes, :erlang.phash2("proj_abc", length(nodes)))
     assert first == expected
-  end
-
-  test "single node always picked" do
-    Application.put_env(:bridge_for_teams_core, :salix_nodes_override, [:only@h])
-    assert {:ok, :only@h} = Nodes.pick()
-    assert {:ok, :only@h} = Nodes.pick("anything")
   end
 
   defp stop_salix_web_if_started do

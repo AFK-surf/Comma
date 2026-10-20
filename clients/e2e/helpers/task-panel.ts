@@ -4,7 +4,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
  * The Task route's details panel: a second column while the route is wide,
  * the header toggle's popover once it folds below the breakpoint. Opens the
  * popover when the route is folded and returns whichever surface is showing,
- * so a test reads status and presses Done the same way at any width.
+ * so a test reads and changes the status the same way at any width.
  */
 export async function openTaskDetails(page: Page): Promise<Locator> {
   const column = page.locator('[data-testid="task-details-panel"][data-open="true"]');
@@ -18,9 +18,38 @@ export async function openTaskDetails(page: Page): Promise<Locator> {
   return popover;
 }
 
-/** The panel's Done control, present only while the Task awaits review. */
-export function taskDoneButton(details: Locator): Locator {
-  return details
-    .locator(".comma-task-panel-done")
-    .getByRole("button", { name: /^(Done|完成)$/ });
+/** The details' status pill; it opens the status menu. */
+export function taskStatusPill(details: Locator): Locator {
+  return details.getByTestId("task-conversation-status");
+}
+
+/** Opens the status menu and picks a manual end status. */
+export async function chooseTaskStatus(
+  details: Locator,
+  status: "Done" | "Cancelled"
+): Promise<void> {
+  await taskStatusPill(details).click();
+  const name = status === "Done" ? /^(Done|完成)$/ : /^(Cancelled|已取消)$/;
+  await details.page().getByRole("menuitem", { name }).click();
+}
+
+/**
+ * Checks whether the status pill offers the manual Done choice, which needs
+ * the loaded Task detail. Without a choice the pill stays read-only.
+ */
+export async function expectManualDoneChoice(
+  details: Locator,
+  offered: boolean
+): Promise<void> {
+  const pill = taskStatusPill(details);
+  if (!offered) {
+    await expect(pill).toBeDisabled();
+    return;
+  }
+  await expect(pill).toBeEnabled();
+  await pill.click();
+  const page = details.page();
+  await expect(page.getByRole("menuitem", { name: /^(Done|完成)$/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toHaveCount(0);
 }

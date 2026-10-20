@@ -184,16 +184,6 @@ export async function signRequest(
   return `sha256=${hex(new Uint8Array(sig))}`;
 }
 
-export function stripControlPlaneHeaders(headers: Headers): Headers {
-  const out = new Headers(headers);
-  out.delete("authorization");
-  out.delete("cookie");
-  out.delete("set-cookie");
-  out.delete("x-salix-signature");
-  for (const header of SIGNED_HEADERS) out.delete(header);
-  return out;
-}
-
 function freshTimestamp(value: string, maxSkewSeconds: number): boolean {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) return false;

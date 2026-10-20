@@ -16,7 +16,7 @@ defmodule SalixAgent.Browser do
   end
 
   def execute(owner, operation, args, principal \\ :agent) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = do_execute(owner, operation, args, principal)
 
     try do
@@ -25,7 +25,7 @@ defmodule SalixAgent.Browser do
         if(operation == "checkpoint", do: "browser_storage_checkpoint", else: "browser_command"),
         "salix",
         outcome(result),
-        System.monotonic_time() - started
+        SystemsClock.monotonic_time() - started
       )
     rescue
       _ -> :ok
@@ -223,7 +223,7 @@ defmodule SalixAgent.Browser do
        %{
          control: "human",
          controller: principal,
-         controller_expires_at: DateTime.add(DateTime.utc_now(), 10, :second)
+         controller_expires_at: DateTime.add(SystemsClock.utc_now(), 10, :second)
        }}
     end
   end
@@ -246,17 +246,17 @@ defmodule SalixAgent.Browser do
   def checkpoint(owner), do: execute(owner, "checkpoint", %{}, :checkpoint)
 
   defp save(row, all \\ true) do
-    save_batches(row, all, nil, System.monotonic_time(:millisecond) + 15_000)
+    save_batches(row, all, nil, SystemsClock.monotonic_time(:millisecond) + 15_000)
   end
 
   defp save_batches(row, all, remaining, deadline) do
     saved_at = BrowserStorage.saved_at(row)
 
     with true <- row.options["shared_storage"] == true,
-         true <- System.monotonic_time(:millisecond) < deadline,
+         true <- SystemsClock.monotonic_time(:millisecond) < deadline,
          {:ok, snapshot} <-
            Driver.call(row, "storage_export", %{
-             "timeout_ms" => max(1, deadline - System.monotonic_time(:millisecond))
+             "timeout_ms" => max(1, deadline - SystemsClock.monotonic_time(:millisecond))
            }),
          {:ok, :saved} <- BrowserStorage.save(row, snapshot, saved_at) do
       remaining = if is_nil(remaining), do: snapshot["remaining"], else: max(0, remaining - 4)
@@ -304,5 +304,5 @@ defmodule SalixAgent.Browser do
   end
 
   def provider,
-    do: Application.get_env(:salix_agent, :browser_provider, SalixAgent.Browser.Cloudflare)
+    do: SystemsRuntime.get_env(:salix_agent, :browser_provider, SalixAgent.Browser.Cloudflare)
 end

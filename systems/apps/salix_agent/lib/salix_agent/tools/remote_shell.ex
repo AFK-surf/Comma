@@ -4,7 +4,7 @@ defmodule SalixAgent.Tools.RemoteShell do
   def defs do
     [
       {"env.remote_shell",
-       "Temporary shell on a consenting user's computer; not a sandbox. prepare returns one shell script to give the user (Python 3, curl, macOS/glibc Linux). They run it and explicitly confirm yes. The script automatically submits public registration data. Retain request from prepare, then call register with that request to wait up to timeout_seconds (default 120). If status=waiting, keep waiting on the same request until expiry without repeated user messages. No copied output or startup reply is needed. register enrolls only that temporary space and returns a session-bound target. revoke can also cancel a pending request. exec runs a command via an SSH PTY, without a Comma-side synch daemon; output is terminal text. revoke removes delegation but cannot undo effects or guarantee termination of running commands: the user's Ctrl-C and device deadline stop access. If the workspace CP URL, org, or network changes, old targets are invalid, not revoked. Clean up the original delegation at its original location or ask the user to stop the helper. Never claim a dropped/timed-out connection means success, or replay a command automatically. Never put CP credentials in the script.",
+       "Temporary shell on a consenting user's computer; not a sandbox.\n\nprepare returns one shell script to give the user (Python 3, curl, macOS/glibc Linux). They run it and explicitly confirm yes. The script automatically submits public registration data. Retain request from prepare, then call register with that request to wait up to timeout_seconds (default 120). If status=waiting, keep waiting on the same request until expiry without repeated user messages. No copied output or startup reply is needed. register enrolls only that temporary space and returns a session-bound target. revoke can also cancel a pending request. exec runs a command via an SSH PTY, without a Comma-side synch daemon; output is terminal text. revoke removes delegation but cannot undo effects or guarantee termination of running commands: the user's Ctrl-C and device deadline stop access. If the workspace CP URL, org, or network changes, old targets are invalid, not revoked. Clean up the original delegation at its original location or ask the user to stop the helper. Never claim a dropped/timed-out connection means success, or replay a command automatically. Never put CP credentials in the script.",
        schema(), &__MODULE__.call/2, SalixAgent.Tools.AsyncPolicy.normal_tool_auto_wait_seconds(),
        [safety: "write"]}
     ]
@@ -36,7 +36,7 @@ defmodule SalixAgent.Tools.RemoteShell do
            session when is_binary(session) and session != "" <- ctx[:session_id],
            true <- is_binary(group) and group != "",
            mod when is_atom(mod) and not is_nil(mod) <-
-             Application.get_env(:salix_agent, :remote_shell_mod) do
+             SystemsRuntime.get_env(:salix_agent, :remote_shell_mod) do
         mod.call(group, {ctx.agent_id, session}, args)
       else
         _ -> {:error, :remote_shell_unavailable}

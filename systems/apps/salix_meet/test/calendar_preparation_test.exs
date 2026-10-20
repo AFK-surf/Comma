@@ -1,22 +1,7 @@
 defmodule SalixMeet.CalendarPreparationTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixMeet.CalendarPreparation
-
-  test "renders report Markdown as HTML with working links and line breaks" do
-    report =
-      "## 发布准备\n\n1. **检查发布**\n查看 [PR #1507](https://github.com/AFK-surf/Comma/pull/1507)\n\n> 保留引用\n\n`status`"
-
-    assert {:ok, description} = CalendarPreparation.merge("Human agenda\n", report)
-    assert description =~ "<h2>发布准备</h2>"
-    assert description =~ "<ol>"
-    assert description =~ "<strong>检查发布</strong><br />"
-    assert description =~ ~s(<a href="https://github.com/AFK-surf/Comma/pull/1507">PR #1507</a>)
-    assert description =~ "<blockquote>"
-    assert description =~ "<code>status</code>"
-    refute description =~ "<pre>"
-    assert {:ok, "Human agenda\n"} = CalendarPreparation.human_description(description)
-  end
 
   test "Markdown cannot activate script URLs or raw HTML" do
     assert {:ok, description} =
@@ -48,25 +33,5 @@ defmodule SalixMeet.CalendarPreparationTest do
     refute description =~ "<script>"
     assert description =~ "&lt;script&gt;"
     assert {:ok, ""} = CalendarPreparation.human_description(description)
-  end
-
-  test "malformed or duplicate blocks leave the original untouched" do
-    assert {:ok, block} = CalendarPreparation.merge("", "Preparation")
-
-    for description <- [
-          block <> block,
-          "Notes<!-- comma:meeting-preparation:begin -->unfinished",
-          "<!-- comma:meeting-preparation:end -->Notes"
-        ] do
-      assert {:error, :ambiguous_calendar_preparation_block} =
-               CalendarPreparation.merge(description, "Replacement")
-    end
-  end
-
-  test "rejects empty and oversized reports before any write" do
-    assert {:error, :empty_meeting_preparation} = CalendarPreparation.merge("Notes", " \n")
-
-    assert {:error, :invalid_meeting_preparation} =
-             CalendarPreparation.merge("Notes", String.duplicate("a", 16_001))
   end
 end

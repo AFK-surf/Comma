@@ -691,5 +691,41 @@ export function buildSalixRuntime(environment: DashboardEnvironment) {
         "short",
       ),
     )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        600,
+        "Station Task delegations unanswered",
+        `${lazyContext} One point per delegation and stage (phase) that SalixIM.StationTaskWatch reported for a Task running on a Cloud VM or desktop station (kind). The Cloud Monitoring P2 pages on vm_not_ready, station_offline and not_given; given_no_reply is counted only, because a long turn and a dead one look alike.`,
+        { x: 0, y: 93, w: 12, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'sum by (workload, phase, kind) (increase(salix_station_tasks_stalled_total{namespace="comma",workload="comma"}[30m]))',
+            legend: "{{workload}} {{kind}} {{phase}}",
+          },
+        ],
+        "short",
+      ),
+    )
+    .withPanel(
+      timeSeriesPanel(
+        environment,
+        601,
+        "Station Task first reply p95",
+        `${lazyContext} Time from a delegation to the first Worker Message a station posted for it, every answered delegation. A rising p95 with no stall points is a slow station, not a stuck one.`,
+        { x: 12, y: 93, w: 12, h: 8 },
+        [
+          {
+            refId: "A",
+            expression:
+              'histogram_quantile(0.95, sum by (workload, le, kind) (rate(salix_station_tasks_first_reply_seconds_bucket{namespace="comma",workload="comma"}[30m])))',
+            legend: "{{workload}} {{kind}} p95",
+          },
+        ],
+        "s",
+      ),
+    )
     .build();
 }

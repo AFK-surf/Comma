@@ -9,7 +9,6 @@ import * as messages from "./paraglide/messages.js";
  * each bucket.
  */
 export const visibleTaskStatusBuckets = [
-  "backlog",
   "in_progress",
   "needs_review",
   "done",
@@ -25,11 +24,21 @@ export function normalizeTaskStatus(status: string): string {
   return status.trim().toLowerCase();
 }
 
-/** The bucket a raw server status folds into, in every client surface and Electron Main. */
+const failedTaskStatuses = ["failed", "error"];
+
+/** A task that stopped because it failed: folded with the cancelled ones, but said so. */
+export function taskStatusFailed(status: string): boolean {
+  return failedTaskStatuses.includes(normalizeTaskStatus(status));
+}
+
+/**
+ * The bucket a raw server status folds into, in every client surface and Electron Main. The server starts every Task
+ * `active`, so a status this list does not name is work under way, not work waiting to start.
+ */
 export function taskStatusBucket(status: string): TaskStatusBucket {
   const normalized = normalizeTaskStatus(status);
   if (normalized === "archived") return "archived";
-  if (["cancelled", "canceled", "failed", "error"].includes(normalized)) {
+  if (["cancelled", "canceled", ...failedTaskStatuses].includes(normalized)) {
     return "cancelled";
   }
   if (
@@ -50,10 +59,7 @@ export function taskStatusBucket(status: string): TaskStatusBucket {
   ) {
     return "needs_review";
   }
-  if (["active", "in_progress", "running", "working"].includes(normalized)) {
-    return "in_progress";
-  }
-  return "backlog";
+  return "in_progress";
 }
 
 export function taskStatusBucketLabel(
@@ -63,8 +69,6 @@ export function taskStatusBucketLabel(
   switch (bucket) {
     case "archived":
       return messages.tasks_archived(undefined, { locale });
-    case "backlog":
-      return messages.tasks_backlog(undefined, { locale });
     case "in_progress":
       return messages.tasks_in_progress(undefined, { locale });
     case "needs_review":
@@ -74,6 +78,16 @@ export function taskStatusBucketLabel(
     case "cancelled":
       return messages.tasks_cancelled(undefined, { locale });
   }
+}
+
+/**
+ * A Task's status as one label. A Task waiting for its person (`escalated`, e.g. its Worker asked a question) says
+ * it needs their input; every other status says its bucket.
+ */
+export function taskStatusLabel(status: string, locale: CommaLocale): string {
+  return normalizeTaskStatus(status) === "escalated"
+    ? messages.tasks_needs_input(undefined, { locale })
+    : taskStatusBucketLabel(taskStatusBucket(status), locale);
 }
 
 export function taskActivityLabel(
@@ -115,6 +129,9 @@ export function taskActivityLabel(
     case "running":
     case "active":
     case "in_progress":
+    case "open":
+    case "pending":
+    case "queued":
       return messages.tasks_in_progress(undefined, { locale });
     case "working":
       return messages.tasks_activity_working(undefined, { locale });
@@ -140,11 +157,6 @@ export function taskActivityLabel(
     case "failed":
     case "error":
       return messages.tasks_activity_failed(undefined, { locale });
-    case "open":
-    case "pending":
-    case "queued":
-    case "backlog":
-      return messages.tasks_backlog(undefined, { locale });
     default:
       return messages.tasks_activity_unknown(undefined, { locale });
   }

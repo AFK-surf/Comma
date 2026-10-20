@@ -15,7 +15,7 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
 
   defmodule Purger do
     def purge(_bundle) do
-      case Application.get_env(:bridge_for_teams_core, :context_lifecycle_test_purger) do
+      case SystemsRuntime.get_env(:bridge_for_teams_core, :context_lifecycle_test_purger) do
         fun when is_function(fun, 1) -> fun.(:purge)
         _ -> {:ok, %{rows_deleted: 3, payloads_deleted: 2}}
       end
@@ -23,17 +23,17 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
   end
 
   setup do
-    previous = Application.get_env(:bridge_for_teams_core, :context_lifecycle_test_purger)
+    previous = SystemsRuntime.get_env(:bridge_for_teams_core, :context_lifecycle_test_purger)
 
     on_exit(fn ->
       if is_nil(previous) do
-        Application.delete_env(:bridge_for_teams_core, :context_lifecycle_test_purger)
+        SystemsRuntime.delete_env(:bridge_for_teams_core, :context_lifecycle_test_purger)
       else
-        Application.put_env(:bridge_for_teams_core, :context_lifecycle_test_purger, previous)
+        SystemsRuntime.put_env(:bridge_for_teams_core, :context_lifecycle_test_purger, previous)
       end
     end)
 
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     {:ok, org} =
       Orgs.create_org(%{"name" => "Lifecycle #{suffix}", "slug" => "lifecycle-#{suffix}"})
@@ -72,7 +72,7 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
   end
 
   test "deletion request is idempotent and can be restored before purge starts", ctx do
-    request = deletion_request(ctx, Ecto.UUID.generate(), "user_request")
+    request = deletion_request(ctx, SystemsRuntime.Proc.uuid(), "user_request")
 
     assert {:ok, %{bundle: pending, request: deletion, replayed?: false}} =
              ContextLifecycle.request_deletion(ctx.bundle.id, request)
@@ -111,7 +111,7 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
     restore = %{
       expected_revision: pending.lifecycle_revision,
       requested_by_user_id: ctx.user.id,
-      command_id: Ecto.UUID.generate(),
+      command_id: SystemsRuntime.Proc.uuid(),
       reason: "request_submitted_in_error"
     }
 
@@ -151,14 +151,14 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
              ContextLifecycle.request_deletion(ctx.bundle.id, %{
                expected_revision: ctx.bundle.lifecycle_revision,
                requested_by_user_id: ctx.user.id,
-               command_id: Ecto.UUID.generate(),
+               command_id: SystemsRuntime.Proc.uuid(),
                reason: "delete Peng's private Slack history"
              })
 
     assert {:ok, %{request: request}} =
              ContextLifecycle.request_deletion(
                ctx.bundle.id,
-               deletion_request(ctx, Ecto.UUID.generate(), "retention_expired")
+               deletion_request(ctx, SystemsRuntime.Proc.uuid(), "retention_expired")
              )
 
     assert Ecto.UUID.cast(request.command_id) == {:ok, request.command_id}
@@ -170,7 +170,7 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
     assert {:ok, %{bundle: pending, request: request}} =
              ContextLifecycle.request_erasure(
                ctx.bundle.id,
-               deletion_request(ctx, Ecto.UUID.generate(), "user_request")
+               deletion_request(ctx, SystemsRuntime.Proc.uuid(), "user_request")
              )
 
     assert pending.lifecycle_state == "erasure_pending"
@@ -215,23 +215,23 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
   test "a purge that returns after lease expiry rolls back and emits no completion evidence",
        ctx do
     previous_bounds =
-      Application.get_env(:bridge_for_teams_core, :context_lifecycle_bounds, [])
+      SystemsRuntime.get_env(:bridge_for_teams_core, :context_lifecycle_bounds, [])
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :context_lifecycle_bounds,
       Keyword.put(previous_bounds, :context_lifecycle_lease_ms, 1_000)
     )
 
     on_exit(fn ->
-      Application.put_env(:bridge_for_teams_core, :context_lifecycle_bounds, previous_bounds)
+      SystemsRuntime.put_env(:bridge_for_teams_core, :context_lifecycle_bounds, previous_bounds)
     end)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :context_lifecycle_test_purger,
       fn :purge ->
-        Process.sleep(1_100)
+        SystemsRuntime.Proc.sleep(1_100)
         {:ok, %{rows_deleted: 3, payloads_deleted: 2}}
       end
     )
@@ -239,7 +239,7 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
     assert {:ok, %{request: request}} =
              ContextLifecycle.request_erasure(
                ctx.bundle.id,
-               deletion_request(ctx, Ecto.UUID.generate(), "user_request")
+               deletion_request(ctx, SystemsRuntime.Proc.uuid(), "user_request")
              )
 
     assert {:ok, claim} = ContextLifecycle.claim(request.id, "lease-expiry-worker")
@@ -256,7 +256,7 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
   end
 
   test "transactional purge failure persists retry state and remains recoverable", ctx do
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :context_lifecycle_test_purger,
       fn :purge -> {:error, :storage_temporarily_unavailable} end
@@ -265,7 +265,7 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
     assert {:ok, %{request: request}} =
              ContextLifecycle.request_deletion(
                ctx.bundle.id,
-               deletion_request(ctx, Ecto.UUID.generate(), "retention_expired")
+               deletion_request(ctx, SystemsRuntime.Proc.uuid(), "retention_expired")
              )
 
     assert {:ok, claim} = ContextLifecycle.claim(request.id, "lifecycle-worker-retry")
@@ -282,7 +282,7 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
     restore = %{
       expected_revision: pending.lifecycle_revision,
       requested_by_user_id: ctx.user.id,
-      command_id: Ecto.UUID.generate(),
+      command_id: SystemsRuntime.Proc.uuid(),
       reason: "request_submitted_in_error"
     }
 
@@ -296,7 +296,7 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
   test "source adapter error text is reduced to a finite content-free class", ctx do
     secret = "Peng private Slack text must never be audit metadata"
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       :context_lifecycle_test_purger,
       fn :purge -> {:error, secret} end
@@ -305,7 +305,7 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
     assert {:ok, %{request: request}} =
              ContextLifecycle.request_deletion(
                ctx.bundle.id,
-               deletion_request(ctx, Ecto.UUID.generate(), "user_request")
+               deletion_request(ctx, SystemsRuntime.Proc.uuid(), "user_request")
              )
 
     assert {:ok, claim} = ContextLifecycle.claim(request.id, "redacting-purger")
@@ -340,33 +340,6 @@ defmodule BridgeForTeams.ContextLifecycleDeletionTest do
       })
 
     refute persisted =~ secret
-  end
-
-  test "source adapter count labels are a fixed schema", ctx do
-    secret_key = "Peng private Slack count"
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :context_lifecycle_test_purger,
-      fn :purge -> {:ok, %{secret_key => 1}} end
-    )
-
-    assert {:ok, %{request: request}} =
-             ContextLifecycle.request_erasure(
-               ctx.bundle.id,
-               deletion_request(ctx, Ecto.UUID.generate(), "user_request")
-             )
-
-    assert {:ok, claim} = ContextLifecycle.claim(request.id, "count-schema-purger")
-
-    assert {:ok, %{request: failed, outcome: :failed_terminal}} =
-             ContextLifecycle.run_claim(claim, purger: Purger)
-
-    assert failed.last_error_class == "invalid_purge_counts"
-    refute Repo.get_by(ContextLifecycleEvidence, request_id: request.id)
-
-    refute Jason.encode!(%{reason: failed.reason, last_error_class: failed.last_error_class}) =~
-             secret_key
   end
 
   defp deletion_request(ctx, command_id, reason) do

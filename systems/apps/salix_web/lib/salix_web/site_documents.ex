@@ -310,7 +310,7 @@ defmodule SalixWeb.SiteDocuments do
         true ->
           entry = %{
             "doc_namespace" => "site_" <> agent_id <> "_" <> site_name,
-            "created_at" => System.os_time(:second)
+            "created_at" => SystemsClock.system_time(:second)
           }
 
           body = Jason.encode!(Map.put(ns, site_name, entry))
@@ -334,7 +334,7 @@ defmodule SalixWeb.SiteDocuments do
 
   defp upsert_doc(agent_id, site_name, doc_key, value, attempt) do
     key = Keys.site_doc(agent_id, site_name, doc_key)
-    now = System.os_time(:second)
+    now = SystemsClock.system_time(:second)
 
     case S3.get(key) do
       {:ok, %{body: body, etag: etag}} ->
@@ -390,7 +390,7 @@ defmodule SalixWeb.SiteDocuments do
 
   defp new_doc_id do
     <<a::binary-4, b::binary-2, c::binary-2, d::binary-2, e::binary-6>> =
-      :crypto.strong_rand_bytes(16)
+      SystemsRuntime.Proc.random_bytes(16)
 
     [a, b, c, d, e]
     |> Enum.map(&Base.encode16(&1, case: :lower))

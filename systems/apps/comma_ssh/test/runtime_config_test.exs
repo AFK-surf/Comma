@@ -1,5 +1,5 @@
 defmodule CommaSSH.RuntimeConfigTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   @runtime Path.expand("../../../config/runtime.exs", __DIR__)
 

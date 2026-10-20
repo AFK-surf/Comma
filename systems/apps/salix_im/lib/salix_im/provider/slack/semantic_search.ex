@@ -15,7 +15,7 @@ defmodule SalixIM.Provider.Slack.SemanticSearch do
   def search(connect, params) do
     with {:ok, args} <- arguments(params),
          reader when is_atom(reader) and not is_nil(reader) <-
-           Application.get_env(:salix_im, :slack_semantic_reader),
+           SystemsRuntime.get_env(:salix_im, :slack_semantic_reader),
          :ok <- authorize(connect, args.channel),
          scope =
            Map.take(connect, ~w(tenant_id workspace_id)) |> Map.put("channel_id", args.channel),
@@ -95,7 +95,7 @@ defmodule SalixIM.Provider.Slack.SemanticSearch do
   end
 
   defp arguments(params) when is_map(params) do
-    now = System.os_time(:microsecond)
+    now = SystemsClock.system_time(:microsecond)
     count = params["count"] || 10
     query = params["query"]
     channel = params["channel"]

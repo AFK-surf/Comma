@@ -1,4 +1,4 @@
-import { Dropdown } from "@comma/ui";
+import { Dropdown } from "@comma/ui/components/dropdown";
 import { useState } from "react";
 import type {
   BftDataPolicy,

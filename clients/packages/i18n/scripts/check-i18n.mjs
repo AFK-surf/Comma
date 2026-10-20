@@ -1,8 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { selectorShape } from "./catalog-shape.mjs";
+import { ensureCompiled, hostCache, viteIsServer } from "./compiled-catalogs.mjs";
 
 const require = createRequire(import.meta.url);
 const locales = ["en", "zh-CN"];
@@ -76,34 +76,10 @@ for (const [index, locale] of locales.entries()) {
   }
 }
 
-const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
-const paraglideCli = fileURLToPath(
-  new URL("../bin/run.js", pathToFileURL(require.resolve("@inlang/paraglide-js")))
+// As compile.mjs and a Vite build compile it, so none of them rewrites it.
+console.log(
+  `Message catalogs: ${await ensureCompiled({ isServer: viteIsServer, cache: hostCache() })}.`
 );
-const compile = spawnSync(
-  process.execPath,
-  [
-    paraglideCli,
-    "compile",
-    "--project",
-    "./project.inlang",
-    "--outdir",
-    "./src/paraglide",
-    "--strategy",
-    "globalVariable",
-    "baseLocale",
-    "--emit-ts-declarations",
-  ],
-  {
-    cwd: packageDirectory,
-    encoding: "utf8",
-  }
-);
-if (compile.stdout) process.stdout.write(compile.stdout);
-if (compile.stderr) process.stderr.write(compile.stderr);
-if (compile.status !== 0) {
-  throw new Error(`Paraglide compilation failed with exit code ${compile.status}.`);
-}
 
 const generated = await import(
   new URL(`../src/paraglide/messages.js?catalog-check=${Date.now()}`, import.meta.url)

@@ -22,16 +22,16 @@ defmodule SalixSignalProto.Test.Party do
   ]
 
   def new(opts \\ []) do
-    identity = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
+    identity = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
 
     %__MODULE__{
-      aci: Keyword.get_lazy(opts, :aci, fn -> :crypto.strong_rand_bytes(16) end),
+      aci: Keyword.get_lazy(opts, :aci, fn -> SystemsRuntime.Proc.random_bytes(16) end),
       device_id: Keyword.get(opts, :device_id, 1),
       identity: identity,
-      registration_id: Keyword.get(opts, :registration_id, :rand.uniform(16_380)),
-      signed: Keys.ec_keypair(:crypto.strong_rand_bytes(32)),
+      registration_id: Keyword.get(opts, :registration_id, SystemsRuntime.Proc.uniform(16_380)),
+      signed: Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32)),
       kem: Keys.kem_keypair(),
-      one_time: Keys.ec_keypair(:crypto.strong_rand_bytes(32))
+      one_time: Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
     }
   end
 
@@ -96,8 +96,8 @@ defmodule SalixSignalProto.Test.Party do
 
   # A test trust root and server key, and a sender certificate for `party`.
   def certificate_authority do
-    root = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
-    server = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
+    root = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
+    server = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
 
     %{
       root: root,

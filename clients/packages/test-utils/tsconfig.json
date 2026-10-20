@@ -5,8 +5,44 @@
     "noEmit": true,
     "paths": {
       "@comma/native-bridge": ["../native-bridge/src/index.ts"],
-      "@comma/session-contract": ["../session-contract/src/index.ts"]
-    }
+      "@comma/session-contract": ["../session-contract/src/index.ts"],
+      "@comma/core/testing": ["../core/src/testing/index.ts"],
+      "@comma/core/contract": ["../core/src/contract.ts"],
+      "@comma/core-kernel": ["../../packages/core-kernel/src/index.ts"],
+      "@comma/core-kernel/client": ["../../packages/core-kernel/src/client/index.ts"],
+      "@comma/core-kernel/testing": ["../../packages/core-kernel/src/testing.ts"],
+      "@comma/core-kernel/node-sql": ["../../packages/core-kernel/src/node-sql.ts"],
+      "@comma/core-kernel/web-worker": [
+        "../../packages/core-kernel/src/worker/relay.ts"
+      ],
+      "@comma/core/chat": ["../core/src/chat/public.ts"],
+      "@comma/core/markdown": ["../core/src/markdown/index.ts"],
+      "@comma/core/api-schemas": ["../core/src/comma/api-schemas.ts"],
+      "@comma/core-client": ["../core-client/src/index.tsx"],
+      "@comma/i18n": ["../i18n/src/index.ts"]
+    },
+    "types": ["node"]
   },
-  "include": ["src", "../native-bridge/src", "../session-contract/src"]
+  "include": ["src"],
+  "exclude": ["**/*.test.*", "**/*.spec.*"],
+  "references": [
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../core-client"
+    },
+    {
+      "path": "../core-kernel"
+    },
+    {
+      "path": "../i18n"
+    },
+    {
+      "path": "../native-bridge"
+    },
+    {
+      "path": "../session-contract"
+    }
+  ]
 }

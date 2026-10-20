@@ -18,6 +18,6 @@ defmodule CommaWeb.PubSubNotifier do
   def topic(agent_id), do: "agent:" <> agent_id
 
   defp pubsub_server do
-    Application.get_env(:comma_core, :pubsub_server, CommaWeb.PubSub)
+    SystemsRuntime.get_env(:comma_core, :pubsub_server, CommaWeb.PubSub)
   end
 end

@@ -4,7 +4,7 @@ defmodule SalixAnalytics.TrajectoryEvalQueriesClickHouseTest do
   by the unit tests cannot catch ClickHouse alias resolution or type errors.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAnalytics.{Migrations, TrajectoryEvalEvent, TrajectoryEvalQueries}
   alias SalixAnalytics.Sink.ClickHouseTyped
@@ -17,12 +17,12 @@ defmodule SalixAnalytics.TrajectoryEvalQueriesClickHouseTest do
   setup_all do
     Application.ensure_all_started(:req)
 
-    database = "salix_trajectory_eval_q_test_#{System.unique_integer([:positive])}"
-    previous = Application.get_env(:salix_analytics, :clickhouse)
+    database = "salix_trajectory_eval_q_test_#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    previous = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
     clickhouse_query!("DROP DATABASE IF EXISTS #{database}")
 
-    Application.put_env(:salix_analytics, :clickhouse,
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
       base_url: @clickhouse_url,
       table: "#{database}.events"
     )
@@ -59,7 +59,10 @@ defmodule SalixAnalytics.TrajectoryEvalQueriesClickHouseTest do
     {:ok, 1} = ClickHouseTyped.insert([row])
 
     on_exit(fn ->
-      Application.put_env(:salix_analytics, :clickhouse, previous)
+      if previous,
+        do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, previous),
+        else: SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
+
       clickhouse_query!("DROP DATABASE IF EXISTS #{database}")
     end)
 

@@ -4,7 +4,7 @@ defmodule Salix.Bindings.MeetingSummary do
   @behaviour SalixMeet.Ports.Summary
 
   require Logger
-  alias SalixAgent.{AudioTranscriber, Templates}
+  alias SalixAgent.AudioTranscriber
   alias SalixWeb.LLMProxy
 
   @min_units 3
@@ -98,7 +98,7 @@ defmodule Salix.Bindings.MeetingSummary do
       state,
       context,
       &resolve_llm/1,
-      Application.get_env(:salix_web, :meeting_summary_skip_metering, false),
+      SystemsRuntime.get_env(:salix_web, :meeting_summary_skip_metering, false),
       true
     )
   end
@@ -232,7 +232,7 @@ defmodule Salix.Bindings.MeetingSummary do
     true
   end
 
-  defp verbose?, do: Application.get_env(:salix_web, :meeting_summary_log_transcripts, false)
+  defp verbose?, do: SystemsRuntime.get_env(:salix_web, :meeting_summary_log_transcripts, false)
 
   defp resolve_transcript(state, captions, caption_transcript, asr_fun, calibration_fun) do
     case asr_fun.(state) do
@@ -339,7 +339,7 @@ defmodule Salix.Bindings.MeetingSummary do
       caption_transcript,
       asr_transcript,
       &resolve_llm/1,
-      Application.get_env(:salix_web, :meeting_summary_skip_metering, false)
+      SystemsRuntime.get_env(:salix_web, :meeting_summary_skip_metering, false)
     )
   end
 
@@ -634,11 +634,11 @@ defmodule Salix.Bindings.MeetingSummary do
 
   @doc false
   def transcribe_asr_observed(agent_id, path, transcriber \\ AudioTranscriber) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     try do
       result = transcriber.transcribe(agent_id, path)
-      emit_asr_telemetry(result, System.monotonic_time() - started_at)
+      emit_asr_telemetry(result, SystemsClock.monotonic_time() - started_at)
 
       case result do
         {:ok, _metadata} = ok -> ok
@@ -648,7 +648,7 @@ defmodule Salix.Bindings.MeetingSummary do
       exception ->
         emit_asr_telemetry(
           {:error, :asr_observer_exception},
-          System.monotonic_time() - started_at
+          SystemsClock.monotonic_time() - started_at
         )
 
         reraise exception, __STACKTRACE__
@@ -656,7 +656,7 @@ defmodule Salix.Bindings.MeetingSummary do
       kind, reason ->
         emit_asr_telemetry(
           {:error, :asr_observer_exception},
-          System.monotonic_time() - started_at
+          SystemsClock.monotonic_time() - started_at
         )
 
         :erlang.raise(kind, reason, __STACKTRACE__)
@@ -715,7 +715,7 @@ defmodule Salix.Bindings.MeetingSummary do
        when status in [408, 425, 429] or status >= 500,
        do: true
 
-  defp asr_unavailable_reason?({:asr_template_unavailable, _reason}), do: true
+  defp asr_unavailable_reason?({:asr_model_unavailable, _reason}), do: true
 
   defp asr_unavailable_reason?({kind, _detail})
        when kind in [:ffmpeg_start_failed, :ffprobe_start_failed],
@@ -772,34 +772,22 @@ defmodule Salix.Bindings.MeetingSummary do
   end
 
   # Legacy Oneesama treats terminal meeting notes as their own LLM workload.
-  # Resolve the optional summary template live so existing create-once meeting
-  # agents can use it too. When it is absent, preserve the original meeting
-  # agent -> default-template resolution exactly. A temporarily unavailable
-  # explicit template logs and falls back instead of dropping the meeting
-  # notes. Calibration intentionally shares this resolver, matching legacy's
-  # SummaryModel default.
+  # The platform's summary model (`SalixAgent.PlatformModels` tier
+  # `summary`) when it is configured, else the meeting agent's own model. A
+  # temporarily unavailable summary model logs and falls back instead of
+  # dropping the meeting notes. Calibration shares this resolver.
   defp resolve_llm(agent_id) do
-    case Application.get_env(:salix_web, :meeting_summary_template) do
-      ref when is_binary(ref) ->
-        case String.trim(ref) do
-          "" -> LLMProxy.resolve_llm(agent_id)
-          ref -> resolve_configured_summary_llm(agent_id, ref)
-        end
-
-      _ ->
-        LLMProxy.resolve_llm(agent_id)
-    end
-  end
-
-  defp resolve_configured_summary_llm(agent_id, ref) do
-    case Templates.resolve_llm_for_template_ref(ref) do
-      {:ok, llm} when is_map(llm) ->
+    case SalixAgent.PlatformModels.llm("summary") do
+      {:ok, llm} ->
         {:ok, llm}
+
+      {:error, :platform_model_unconfigured} ->
+        LLMProxy.resolve_llm(agent_id)
 
       unavailable ->
         Logger.warning(
-          "meeting summary template #{inspect(ref)} unavailable; " <>
-            "falling back to the meeting agent template: #{inspect(unavailable)}"
+          "meeting summary model unavailable; " <>
+            "falling back to the meeting agent's model: #{inspect(unavailable)}"
         )
 
         LLMProxy.resolve_llm(agent_id)

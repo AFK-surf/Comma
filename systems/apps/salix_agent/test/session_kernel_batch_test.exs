@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelBatchTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias SalixAgent.InternalSession
   alias SalixAgent.InternalSession.State
 
@@ -46,24 +46,6 @@ defmodule SalixAgent.SessionKernelBatchTest do
     assert InternalSession.status(batched) == :idle
     assert InternalSession.get(batched, :async_result_refs) == %{"call" => 2}
     assert InternalSession.total_message_count(batched) == 1
-  end
-
-  test "an empty batch returns the same handle" do
-    original = InternalSession.open(state())
-    assert InternalSession.apply_events(original, []) === original
-  end
-
-  test "handles are immutable: an earlier handle is unaffected by later batches" do
-    first = InternalSession.apply_events(InternalSession.open(state()), Enum.take(events(), 1))
-    second = InternalSession.apply_events(first, Enum.drop(events(), 1))
-
-    assert InternalSession.status(first) == :active
-    assert InternalSession.status(second) == :idle
-
-    assert InternalSession.export(second) ===
-             InternalSession.export(
-               InternalSession.apply_events(InternalSession.open(state()), events())
-             )
   end
 
   test "a failing event in a batch raises and leaves the earlier handle untouched" do

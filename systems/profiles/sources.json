@@ -1,0 +1,646 @@
+[
+ {
+  "id": "openai",
+  "name": "OpenAI",
+  "kind": "api_key",
+  "endpoints": {
+   "responses": "https://api.openai.com/v1"
+  },
+  "protocols": [
+   "responses"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "anthropic",
+  "name": "Anthropic",
+  "kind": "api_key",
+  "endpoints": {
+   "anthropic": "https://api.anthropic.com"
+  },
+  "protocols": [
+   "anthropic"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "api_key",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "google",
+  "name": "Google Gemini",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://generativelanguage.googleapis.com/v1beta/openai"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "xai",
+  "name": "xAI",
+  "kind": "api_key",
+  "endpoints": {
+   "responses": "https://api.x.ai/v1"
+  },
+  "protocols": [
+   "responses"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "mistral",
+  "name": "Mistral",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://api.mistral.ai/v1"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "deepseek",
+  "name": "DeepSeek",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://api.deepseek.com"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "qwen",
+  "name": "Qwen",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "qwen-cn",
+  "name": "Qwen (China)",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "moonshotai",
+  "name": "Kimi",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://api.moonshot.ai/v1"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "moonshotai-cn",
+  "name": "Kimi (China)",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://api.moonshot.cn/v1"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "zai",
+  "name": "Z.ai",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://api.z.ai/api/coding/paas/v4"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "zai-coding-cn",
+  "name": "Z.ai Coding (China)",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://open.bigmodel.cn/api/coding/paas/v4"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "minimax",
+  "name": "MiniMax",
+  "kind": "api_key",
+  "endpoints": {
+   "anthropic": "https://api.minimax.io/anthropic"
+  },
+  "protocols": [
+   "anthropic"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "minimax-cn",
+  "name": "MiniMax (China)",
+  "kind": "api_key",
+  "endpoints": {
+   "anthropic": "https://api.minimaxi.com/anthropic"
+  },
+  "protocols": [
+   "anthropic"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "xiaomi",
+  "name": "Xiaomi MiMo",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://api.xiaomimimo.com/v1"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "ant-ling",
+  "name": "Ant Ling",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://api.ant-ling.com/v1"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "openrouter",
+  "name": "OpenRouter",
+  "kind": "api_key",
+  "endpoints": {
+   "anthropic": "https://openrouter.ai/api",
+   "chat_completions": "https://openrouter.ai/api/v1"
+  },
+  "protocols": [
+   "anthropic",
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "gateways"
+ },
+ {
+  "id": "vercel-ai-gateway",
+  "name": "Vercel AI Gateway",
+  "kind": "api_key",
+  "endpoints": {
+   "anthropic": "https://ai-gateway.vercel.sh"
+  },
+  "protocols": [
+   "anthropic"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "gateways"
+ },
+ {
+  "id": "opencode",
+  "name": "OpenCode Zen",
+  "kind": "api_key",
+  "endpoints": {
+   "anthropic": "https://opencode.ai/zen",
+   "chat_completions": "https://opencode.ai/zen/v1",
+   "responses": "https://opencode.ai/zen/v1"
+  },
+  "protocols": [
+   "anthropic",
+   "chat_completions",
+   "responses"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "api_key",
+  "session_header": true,
+  "station_only": false,
+  "group": "gateways"
+ },
+ {
+  "id": "opencode-go",
+  "name": "OpenCode Go",
+  "kind": "api_key",
+  "endpoints": {
+   "anthropic": "https://opencode.ai/zen/go",
+   "chat_completions": "https://opencode.ai/zen/go/v1",
+   "responses": "https://opencode.ai/zen/go/v1"
+  },
+  "protocols": [
+   "anthropic",
+   "chat_completions",
+   "responses"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "api_key",
+  "session_header": true,
+  "station_only": false,
+  "group": "gateways"
+ },
+ {
+  "id": "cloudflare-workers-ai",
+  "name": "Cloudflare Workers AI",
+  "kind": "api_key",
+  "endpoints": {},
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": true,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "hosted"
+ },
+ {
+  "id": "cloudflare-ai-gateway",
+  "name": "Cloudflare AI Gateway",
+  "kind": "api_key",
+  "endpoints": {},
+  "protocols": [
+   "anthropic",
+   "chat_completions",
+   "responses"
+  ],
+  "endpoint_required": true,
+  "key_optional": false,
+  "auth": "both",
+  "session_header": false,
+  "station_only": false,
+  "group": "gateways"
+ },
+ {
+  "id": "azure-openai",
+  "name": "Azure OpenAI",
+  "kind": "api_key",
+  "endpoints": {},
+  "protocols": [
+   "responses",
+   "chat_completions"
+  ],
+  "endpoint_required": true,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "hosted"
+ },
+ {
+  "id": "groq",
+  "name": "Groq",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://api.groq.com/openai/v1"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "hosted"
+ },
+ {
+  "id": "cerebras",
+  "name": "Cerebras",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://api.cerebras.ai/v1"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "hosted"
+ },
+ {
+  "id": "together",
+  "name": "Together AI",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://api.together.ai/v1"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "hosted"
+ },
+ {
+  "id": "fireworks",
+  "name": "Fireworks",
+  "kind": "api_key",
+  "endpoints": {
+   "anthropic": "https://api.fireworks.ai/inference",
+   "chat_completions": "https://api.fireworks.ai/inference/v1"
+  },
+  "protocols": [
+   "anthropic",
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "hosted"
+ },
+ {
+  "id": "huggingface",
+  "name": "Hugging Face",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://router.huggingface.co/v1"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "hosted"
+ },
+ {
+  "id": "nvidia",
+  "name": "NVIDIA",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://integrate.api.nvidia.com/v1"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "hosted"
+ },
+ {
+  "id": "baseten",
+  "name": "Baseten",
+  "kind": "api_key",
+  "endpoints": {
+   "chat_completions": "https://inference.baseten.co/v1"
+  },
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "hosted"
+ },
+ {
+  "id": "codex",
+  "name": "ChatGPT",
+  "kind": "subscription",
+  "endpoints": {},
+  "protocols": [],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "claude",
+  "name": "Claude",
+  "kind": "subscription",
+  "endpoints": {},
+  "protocols": [],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "gemini",
+  "name": "Google AI",
+  "kind": "subscription",
+  "endpoints": {},
+  "protocols": [],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "grok",
+  "name": "SuperGrok",
+  "kind": "subscription",
+  "endpoints": {},
+  "protocols": [],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "kimi-code",
+  "name": "Kimi Code",
+  "kind": "subscription",
+  "endpoints": {},
+  "protocols": [],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "github-copilot",
+  "name": "GitHub Copilot",
+  "kind": "subscription",
+  "endpoints": {},
+  "protocols": [],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": false,
+  "group": "labs"
+ },
+ {
+  "id": "custom",
+  "name": "Custom",
+  "kind": "api_key",
+  "endpoints": {},
+  "protocols": [
+   "chat_completions",
+   "responses",
+   "anthropic"
+  ],
+  "endpoint_required": true,
+  "key_optional": true,
+  "auth": "both",
+  "session_header": false,
+  "station_only": false,
+  "group": "local"
+ },
+ {
+  "id": "jev",
+  "name": "Jev",
+  "kind": "api_key",
+  "endpoints": {
+   "decision": "https://api.typesafe.ai/v1"
+  },
+  "protocols": [],
+  "endpoint_required": false,
+  "key_optional": false,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": true,
+  "group": "labs"
+ },
+ {
+  "id": "ollama",
+  "name": "Ollama",
+  "kind": "api_key",
+  "endpoints": {},
+  "protocols": [
+   "chat_completions"
+  ],
+  "endpoint_required": true,
+  "key_optional": true,
+  "auth": "bearer",
+  "session_header": false,
+  "station_only": true,
+  "group": "local"
+ }
+]

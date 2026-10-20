@@ -25,7 +25,6 @@ test("WeChat task chips render the brand mark and retain platform navigation", a
   const stub = await startChatSmokeStub({
     includeTaskInInbox: true,
     taskConversationExtras: { origin: "wechat" },
-    taskSchedule: null,
     taskStatus: "active",
   });
   try {

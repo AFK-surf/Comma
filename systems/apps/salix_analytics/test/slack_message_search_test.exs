@@ -1,5 +1,8 @@
 defmodule SalixAnalytics.SlackMessageSearchTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+  use SalixStore.QueueCase, queues: [:slack_mirror_outbox]
   @moduletag :clickhouse
   alias SalixAnalytics.{
     SlackMessageSearch,
@@ -45,9 +48,9 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
 
         text ->
           if text == "held-query" do
-            send(owner, {:embedding_request, self()})
+            SystemsRuntime.Proc.send(owner, {:embedding_request, SystemsRuntime.Proc.self()})
 
-            receive do
+            SystemsRuntime.Proc.receive do
               :complete_embedding -> :ok
             after
               2000 -> raise("test did not release embedding response")
@@ -130,9 +133,12 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
     def active?, do: true
 
     def candidates(_, _, _) do
-      send(Process.whereis(__MODULE__), {:search_waiting, self()})
-      Process.sleep(11_000)
-      {:ok, []}
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.whereis(__MODULE__),
+        {:search_waiting, SystemsRuntime.Proc.self()}
+      )
+
+      SystemsRuntime.Proc.sleep(:infinity)
     end
   end
 
@@ -147,11 +153,13 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
 
   setup do
     Repo.query!(
-      "TRUNCATE slack_semantic.search_windows, slack_semantic.search_components, slack_semantic.search_sources, slack_semantic.search_files, slack_semantic.search_connects, slack_semantic.search_channels, slack_semantic.search_cursors, slack_mirror_source_writes"
+      "TRUNCATE slack_semantic.search_windows, slack_semantic.search_components, slack_semantic.search_sources, slack_semantic.search_files, slack_semantic.search_connects, slack_semantic.search_channels, slack_semantic.search_cursors"
     )
 
-    if is_nil(Process.whereis(SalixStore.S3.Fake)), do: start_supervised!(SalixStore.S3.Fake)
-    database = "slack_message_search_#{System.unique_integer([:positive])}"
+    if is_nil(SystemsRuntime.Proc.whereis(SalixStore.S3.Fake)),
+      do: start_supervised!(SalixStore.S3.Fake)
+
+    database = "slack_message_search_#{SystemsRuntime.Proc.unique_integer([:positive])}"
     sql!("CREATE DATABASE #{database}")
 
     Application.app_dir(:salix_analytics, "priv/clickhouse/migrations/*.sql")
@@ -172,7 +180,10 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
     calls = start_supervised!({Agent, fn -> [] end})
 
     server =
-      start_supervised!({Bandit, plug: {Encoder, {calls, self()}}, ip: {127, 0, 0, 1}, port: 0})
+      start_supervised!(
+        {Bandit,
+         plug: {Encoder, {calls, SystemsRuntime.Proc.self()}}, ip: {127, 0, 0, 1}, port: 0}
+      )
 
     {:ok, {_, port}} = ThousandIsland.listener_info(server)
 
@@ -194,9 +205,9 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
     ]
 
     previous =
-      Enum.map(settings, fn {app, key, _} -> {app, key, Application.get_env(app, key)} end)
+      Enum.map(settings, fn {app, key, _} -> {app, key, SystemsRuntime.get_env(app, key)} end)
 
-    Enum.each(settings, fn {app, key, value} -> Application.put_env(app, key, value) end)
+    Enum.each(settings, fn {app, key, value} -> SystemsRuntime.put_env(app, key, value) end)
 
     # Use the production pool selection at the real HTTP boundary.
     {Finch, _} = http = Enum.find(SlackSemanticIndex.children(), &match?({Finch, _}, &1))
@@ -207,8 +218,8 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
 
       Enum.each(previous, fn {app, key, value} ->
         if is_nil(value),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, value)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, value)
       end)
     end)
 
@@ -252,7 +263,7 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
 
   test "four query requests can reach the GPU alongside two background transfers", _ctx do
     requests =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         1..6
         |> Task.async_stream(
           fn n -> SlackSemanticIndex.embed("held-query", background: n > 4) end,
@@ -264,12 +275,16 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
 
     owners =
       for _ <- 1..6 do
-        assert_receive {:embedding_request, owner}, 1000
+        assert_receive {:embedding_request, owner}
         owner
       end
 
     Enum.each(owners, &send(&1, :complete_embedding))
-    assert Enum.all?(Task.await(requests, 4000), &match?({:ok, {:ok, [_ | _]}}, &1))
+
+    assert Enum.all?(
+             SystemsRuntime.Task.await(requests, :infinity),
+             &match?({:ok, {:ok, [_ | _]}}, &1)
+           )
   end
 
   test "embedding busy remains actionable after tool result sanitization", ctx do
@@ -288,7 +303,7 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
     assert result.public_summary == "Message search is busy; retry shortly."
 
     [visible] =
-      SalixAgent.VisibleReplyPolicy.sanitize_context([Map.put(result, :role, "tool")], :clean)
+      SalixAgent.VisibleReplyPolicy.sanitize_context([Map.put(result, :role, "tool")])
 
     assert Jason.decode!(visible.content) == %{
              "status" => "error",
@@ -415,7 +430,7 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
 
   @tag :excerpt_memory
   test "an image page from large documents fits the existing search memory budget", ctx do
-    Application.put_env(:salix_analytics, :slack_semantic_file_source, LargeDocument)
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_file_source, LargeDocument)
 
     for n <- 1..20 do
       file = "FLARGE#{n}"
@@ -466,7 +481,7 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
       candidate,
       Map.put(candidate, "unit", 0),
       Map.put(candidate, "unit", 501),
-      Map.put(candidate, "build_id", Ecto.UUID.generate())
+      Map.put(candidate, "build_id", SystemsRuntime.Proc.uuid())
     ]
 
     assert {:ok, excerpts} = SlackMessageSearchIndex.excerpts(reader_scope, requested)
@@ -482,7 +497,7 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
     :ok =
       SlackSearchFiles.observe(s, %{"event" => %{"type" => "file_change", "file_id" => "F123"}})
 
-    Application.put_env(:salix_analytics, :slack_semantic_file_source, ReplacementVideo)
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_file_source, ReplacementVideo)
     assert :ok = SlackMessageSearchIndexer.file(s, @ts, "F123")
     assert {:ok, []} = SlackMessageSearchIndex.excerpts(reader_scope, requested)
   end
@@ -572,13 +587,13 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
     assert {:ok, %{"messages" => []}} =
              search(ctx, %{"query" => "video segment", "mode" => "keyword"})
 
-    Application.put_env(:salix_analytics, :slack_semantic_file_source, ChangedVideo)
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_file_source, ChangedVideo)
     assert {:error, :file_changed} = SlackMessageSearchIndexer.file(s, @ts, "F123")
 
     assert {:ok, %{"messages" => []}} =
              search(ctx, %{"query" => "video segment", "mode" => "keyword"})
 
-    Application.put_env(:salix_analytics, :slack_semantic_file_source, LongVideo)
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_file_source, LongVideo)
     assert :ok = SlackMessageSearchIndexer.file(s, @ts, "F123")
 
     assert {:ok, %{"messages" => [_]}} =
@@ -589,7 +604,7 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
         "event" => %{"type" => "file_change", "file_id" => "F123"}
       })
 
-    Application.put_env(:salix_analytics, :slack_semantic_file_source, ReplacementVideo)
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_file_source, ReplacementVideo)
     assert :ok = SlackMessageSearchIndexer.file(s, @ts, "F123")
     # The old packet has better vector similarity; it must be removed before
     # source ranking so that final publication filtering cannot hide this hit.
@@ -709,18 +724,22 @@ defmodule SalixAnalytics.SlackMessageSearchTest do
   end
 
   test "a stalled dependency is cancelled within the whole search budget", ctx do
-    Process.register(self(), SlowReader)
-    Application.put_env(:salix_im, :slack_message_search_reader, SlowReader)
-    started = System.monotonic_time(:millisecond)
+    # The 10 s search budget runs on a clock this test drives; it expires
+    # once the search waits only for the stalled reader.
+    SystemsClock.manual(drive: true, scope: ["Elixir.Salix"])
+    on_exit(&SystemsClock.reset/0)
+    Process.register(SystemsRuntime.Proc.self(), SlowReader)
+    SystemsRuntime.put_env(:salix_im, :slack_message_search_reader, SlowReader)
+    started = SystemsClock.monotonic_time(:millisecond)
     assert {:error, message} = search(ctx, %{"query" => "timeout", "mode" => "keyword"})
     assert message =~ "timed out"
-    assert System.monotonic_time(:millisecond) - started < 11_000
+    assert SystemsClock.monotonic_time(:millisecond) - started == 10_000
     assert_receive {:search_waiting, worker}
-    refute Process.alive?(worker)
+    refute SystemsRuntime.Proc.alive?(worker)
   end
 
   test "file refresh pages commit with jobs and a failed page cannot skip a reference", ctx do
-    Application.put_env(:salix_analytics, :slack_semantic_file_source, ShortFile)
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_file_source, ShortFile)
 
     for n <- 1..21 do
       write!(ctx, "C101", @ts + n, "file reference #{n}", [%{"id" => "FREFRESH"}])

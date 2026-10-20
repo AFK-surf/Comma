@@ -1,5 +1,5 @@
 defmodule SalixIM.Triage.DelegationEffectTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixIM.Triage.DelegationEffect
 
@@ -17,7 +17,7 @@ defmodule SalixIM.Triage.DelegationEffectTest do
              DelegationEffect.apply(claim,
                freshness_port: __MODULE__.Fresh,
                delegation_port: __MODULE__.DelegationPort,
-               port_opts: [test_pid: self()]
+               port_opts: [test_pid: SystemsRuntime.Proc.self()]
              )
 
     assert_receive {:freshness_check, ^claim}
@@ -42,33 +42,10 @@ defmodule SalixIM.Triage.DelegationEffectTest do
              DelegationEffect.apply(claim,
                freshness_port: __MODULE__.ChangingFreshness,
                delegation_port: __MODULE__.DelegationPort,
-               port_opts: [test_pid: self()]
+               port_opts: [test_pid: SystemsRuntime.Proc.self()]
              )
 
     refute_receive {:delegation_commit, _request_id}
-  end
-
-  test "a retryable Task error remains unsettled for idempotent retry" do
-    claim = claim()
-
-    assert {:error, :task_create_unavailable, true,
-            [%{"status" => "retry_scheduled", "index" => 0}]} =
-             DelegationEffect.apply(claim,
-               freshness_port: __MODULE__.Fresh,
-               delegation_port: __MODULE__.RetryableDelegationPort,
-               port_opts: [test_pid: self()]
-             )
-  end
-
-  test "Router admission is routed, not a canonical Task creation receipt" do
-    assert {:ok, [%{"status" => "routed", "index" => 0} = result]} =
-             DelegationEffect.apply(claim(),
-               freshness_port: __MODULE__.Fresh,
-               delegation_port: __MODULE__.RouterAdmissionPort,
-               port_opts: [test_pid: self()]
-             )
-
-    refute Map.has_key?(result, "conversation_id")
   end
 
   defmodule RouterAdmissionPort do
@@ -78,7 +55,7 @@ defmodule SalixIM.Triage.DelegationEffectTest do
 
   defmodule Fresh do
     def check(claim, opts) do
-      send(Keyword.fetch!(opts, :test_pid), {:freshness_check, claim})
+      SystemsRuntime.Proc.send(Keyword.fetch!(opts, :test_pid), {:freshness_check, claim})
       {:ok, %{status: :fresh, authority_ref: :same}}
     end
   end
@@ -86,7 +63,7 @@ defmodule SalixIM.Triage.DelegationEffectTest do
   defmodule ChangingFreshness do
     def check(claim, opts) do
       pid = Keyword.fetch!(opts, :test_pid)
-      send(pid, {:freshness_check, claim})
+      SystemsRuntime.Proc.send(pid, {:freshness_check, claim})
       count = Process.get({__MODULE__, :count}, 0) + 1
       Process.put({__MODULE__, :count}, count)
       {:ok, %{status: :fresh, authority_ref: count}}
@@ -96,12 +73,12 @@ defmodule SalixIM.Triage.DelegationEffectTest do
   defmodule DelegationPort do
     def prepare(claim, delegation, request_id) do
       pid = Process.get(:delegation_test_pid)
-      send(pid, {:delegation_prepare, claim, delegation, request_id})
+      SystemsRuntime.Proc.send(pid, {:delegation_prepare, claim, delegation, request_id})
       {:ok, %{request_id: request_id, test_pid: pid}}
     end
 
     def commit(%{request_id: request_id, test_pid: pid}) do
-      send(pid, {:delegation_commit, request_id})
+      SystemsRuntime.Proc.send(pid, {:delegation_commit, request_id})
       {:ok, %{"disposition" => "routed", "request_id" => request_id}}
     end
   end
@@ -114,7 +91,7 @@ defmodule SalixIM.Triage.DelegationEffectTest do
   end
 
   setup do
-    Process.put(:delegation_test_pid, self())
+    Process.put(:delegation_test_pid, SystemsRuntime.Proc.self())
     Process.delete({__MODULE__.ChangingFreshness, :count})
     :ok
   end

@@ -10,6 +10,9 @@ defmodule AlertRouter.DataCase do
     end
   end
 
+  # A synchronous test stops what it leaves running when it ends.
+  setup {SystemsClock.Case, :isolate}
+
   setup tags do
     owner =
       Ecto.Adapters.SQL.Sandbox.start_owner!(AlertRouter.Repo,

@@ -10,7 +10,11 @@ defmodule BridgeForTeams.Schema.CliDeviceAuthorization do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   @statuses ~w(pending approved cancelled consumed expired)
   @purposes ~w(login session_org_grant)

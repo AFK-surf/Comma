@@ -1,5 +1,8 @@
 defmodule SalixWeb.CloudVM.ArchiveR2 do
-  @moduledoc "Signs exact Connector archive parts for direct R2 transfer."
+  @moduledoc """
+  Signs exact Connector archive parts for direct R2 transfer, and writes the
+  short-lived restore manifest of an archive a wake restores.
+  """
 
   @expires_in 120
 
@@ -13,10 +16,31 @@ defmodule SalixWeb.CloudVM.ArchiveR2 do
 
   def read_url(key, expires_in \\ @expires_in), do: signed_url(:get, key, expires_in: expires_in)
 
+  @doc "Writes `body` as the object `key`, replacing what is there."
+  def put(key, body) when is_binary(key) and is_binary(body) do
+    with {:ok, url} <- signed_url(:put, key),
+         {:ok, %Req.Response{status: status}} when status in 200..299 <-
+           Req.request(
+             [method: :put, url: url, body: body, retry: false, receive_timeout: 20_000] ++
+               req_options()
+           ) do
+      :ok
+    else
+      {:error, reason}
+      when reason in [:r2_archive_not_configured, :invalid_r2_archive_endpoint] ->
+        {:error, reason}
+
+      _ ->
+        {:error, :r2_archive_unavailable}
+    end
+  end
+
   def head(key) do
     with {:ok, url} <- signed_url(:head, key),
          {:ok, %Req.Response{status: status} = response} <-
-           Req.request(method: :head, url: url, retry: false, receive_timeout: 20_000) do
+           Req.request(
+             [method: :head, url: url, retry: false, receive_timeout: 20_000] ++ req_options()
+           ) do
       case status do
         200 ->
           case Req.Response.get_header(response, "content-length") do
@@ -65,8 +89,11 @@ defmodule SalixWeb.CloudVM.ArchiveR2 do
     end
   end
 
+  # Tests answer R2's requests from their own store.
+  defp req_options, do: SystemsRuntime.get_env(:salix_web, :cloud_vm_archive_r2_req, [])
+
   defp request_config do
-    case Application.get_env(:salix_web, :cloud_vm_archive_r2) do
+    case SystemsRuntime.get_env(:salix_web, :cloud_vm_archive_r2) do
       %{"bucket" => bucket} when is_binary(bucket) and bucket != "" ->
         with {:ok, config} <- signing_config() do
           {:ok, bucket, Map.to_list(Map.put(config, :http_client, ExAws.Request.Req))}
@@ -78,7 +105,7 @@ defmodule SalixWeb.CloudVM.ArchiveR2 do
   end
 
   defp signed_url(method, key, opts \\ []) do
-    case Application.get_env(:salix_web, :cloud_vm_archive_r2) do
+    case SystemsRuntime.get_env(:salix_web, :cloud_vm_archive_r2) do
       %{"bucket" => bucket} when is_binary(bucket) and bucket != "" ->
         with {:ok, config} <- signing_config() do
           ExAws.S3.presigned_url(
@@ -96,7 +123,7 @@ defmodule SalixWeb.CloudVM.ArchiveR2 do
   end
 
   defp signing_config do
-    case Application.get_env(:salix_web, :cloud_vm_archive_r2) do
+    case SystemsRuntime.get_env(:salix_web, :cloud_vm_archive_r2) do
       %{"endpoint" => endpoint, "access_key_id" => access, "secret_access_key" => secret}
       when is_binary(endpoint) and is_binary(access) and is_binary(secret) ->
         uri = URI.parse(endpoint)

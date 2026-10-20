@@ -5,10 +5,10 @@ defmodule BridgeForTeamsWeb.Dashboard.SPAController do
   The build lands in `priv/static/bft/`: hashed assets are served by
   `Plug.Static` under `/bft/`, and this controller returns `index.html` for
   page routes, so the SPA shares the browser session, CSRF token and locale
-  with the LiveView pages. A flash message left by a redirect into the SPA is
-  written into the page once, because the SPA has no other way to read it. It
-  applies the same first-run gate as the LiveView pages, except on the pages
-  that onboarding itself links to and on the CLI device-login page.
+  with the server-rendered pages. A flash message left by a redirect into the
+  SPA is written into the page once, because the SPA has no other way to read
+  it. It applies the first-run gate, except on the onboarding wizard itself,
+  the pages the wizard links to and the CLI device-login page.
   """
   use BridgeForTeamsWeb.Dashboard, :controller
   use Gettext, backend: BridgeForTeamsWeb.Gettext
@@ -27,10 +27,31 @@ defmodule BridgeForTeamsWeb.Dashboard.SPAController do
   @doc """
   Serves a page without the first-run gate. The onboarding integrations step
   links admins to Settings → Integrations (Composio) to configure the org's
-  API key, so sending them back to `/onboarding` would block that step. The
-  page and its API still require an owner or admin.
+  API key, and links to its swarm's Connections page to set up messaging, so
+  sending them back to `/onboarding` would block that step. The pages and
+  their APIs keep their own owner, admin or swarm-member rules.
   """
   def before_onboarding(conn, _params), do: send_index(conn)
+
+  @doc """
+  Serves the first-run onboarding wizard to users who have not finished it;
+  anyone else goes to `/`. The Composio Connect round trip may come back with
+  `?oauth_error=`, which becomes an error notice.
+  """
+  def onboarding(conn, params) do
+    cond do
+      UserOnboardings.onboarded?(conn.assigns.current_user.id) ->
+        redirect(conn, to: ~p"/")
+
+      is_binary(params["oauth_error"]) and params["oauth_error"] != "" ->
+        conn
+        |> put_flash(:error, gettext("We couldn't connect that account. Please try again."))
+        |> send_index()
+
+      true ->
+        send_index(conn)
+    end
+  end
 
   @doc """
   Serves the BFT CLI device-login page. Only owners and admins may approve a
@@ -46,6 +67,13 @@ defmodule BridgeForTeamsWeb.Dashboard.SPAController do
       |> redirect(to: ~p"/orgs")
     end
   end
+
+  @doc """
+  The retired session inspector's address (`/tasks/:id/session`) opens the
+  task it belonged to.
+  """
+  def task_session(conn, %{"org" => org, "id" => project, "conversation_id" => task}),
+    do: redirect(conn, to: ~p"/orgs/#{org}/projects/#{project}/tasks/#{task}")
 
   defp send_index(conn) do
     case File.read(index_path()) do
@@ -66,7 +94,7 @@ defmodule BridgeForTeamsWeb.Dashboard.SPAController do
   end
 
   # The CSRF token for later writes, the locale resolved by
-  # `Dashboard.Locale` (same precedence as the LiveView pages) for the SPA's
+  # `Dashboard.Locale` (same precedence as the server-rendered pages) for the SPA's
   # string table, and the already translated `:info`/`:error` flash.
   defp inject_request_context(html, locale, flash) do
     locale = I18n.resolve(locale)
@@ -91,7 +119,7 @@ defmodule BridgeForTeamsWeb.Dashboard.SPAController do
   defp flash_meta(_kind, _message), do: ""
 
   defp index_path do
-    Application.get_env(:bridge_for_teams_web, :spa_index_path) ||
+    SystemsRuntime.get_env(:bridge_for_teams_web, :spa_index_path) ||
       Application.app_dir(:bridge_for_teams_web, "priv/static/bft/index.html")
   end
 end

@@ -5,10 +5,11 @@ defmodule SalixAgent.ExecutionTiming do
   Version 1 distinguishes these measurements from legacy commit-time stamps.
   """
 
-  def start, do: {System.system_time(:millisecond), System.monotonic_time(:millisecond)}
+  def start,
+    do: {SystemsClock.system_time(:millisecond), SystemsClock.monotonic_time(:millisecond)}
 
   def finish({epoch, monotonic}, first_token_at \\ nil) do
-    finish_at({epoch, monotonic}, System.monotonic_time(:millisecond), first_token_at)
+    finish_at({epoch, monotonic}, SystemsClock.monotonic_time(:millisecond), first_token_at)
   end
 
   def finish_at({epoch, monotonic}, completed_at, first_token_at \\ nil) do

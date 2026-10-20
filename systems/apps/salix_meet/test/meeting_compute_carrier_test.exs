@@ -1,14 +1,14 @@
 defmodule SalixMeet.MeetingComputeCarrierTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixMeet.MeetingComputeCarrier
   alias SalixStore.{Compute, ComputeRuntimeCarrier, Repo}
 
   setup do
     SalixStore.RepoTestSetup.ensure!()
-    previous = Application.get_env(:salix_store, :compute_workload_credential_secret)
+    previous = SystemsRuntime.get_env(:salix_store, :compute_workload_credential_secret)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_store,
       :compute_workload_credential_secret,
       String.duplicate("m", 40)
@@ -87,8 +87,8 @@ defmodule SalixMeet.MeetingComputeCarrierTest do
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_store, :compute_workload_credential_secret, previous),
-        else: Application.delete_env(:salix_store, :compute_workload_credential_secret)
+        do: SystemsRuntime.put_env(:salix_store, :compute_workload_credential_secret, previous),
+        else: SystemsRuntime.delete_env(:salix_store, :compute_workload_credential_secret)
     end)
 
     %{environment: environment, runtime: runtime, workload: workload, tenant_id: tenant_id}
@@ -116,6 +116,9 @@ defmodule SalixMeet.MeetingComputeCarrierTest do
     assert input.connection_epoch == "1"
     assert input.payload["frame_type"] == "meeting.join"
     assert input.payload["payload"]["runtime_token"] == "meeting-business-token"
+
+    assert Repo.get!(Compute.Workload, fixture.workload.id).owner_ref ==
+             %{"kind" => "meeting", "id" => "meeting-1"}
   end
 
   test "terminal stops the workload and stale frames are rejected", fixture do

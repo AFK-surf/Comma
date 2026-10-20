@@ -34,7 +34,7 @@ defmodule BillingStripe.TestAPI do
     record({:retrieve_checkout_session, id, params, opts})
 
     {:ok,
-     Application.get_env(:billing_stripe, :test_checkout_sessions, %{})[id] ||
+     SystemsRuntime.get_env(:billing_stripe, :test_checkout_sessions, %{})[id] ||
        %{id: id, status: "open", url: "https://checkout.stripe.test/session/" <> id}}
   end
 
@@ -49,7 +49,7 @@ defmodule BillingStripe.TestAPI do
   def retrieve_subscription(subscription_id, params, opts) do
     record({:retrieve_subscription, subscription_id, params, opts})
 
-    case Application.get_env(:billing_stripe, :test_subscriptions, %{})[subscription_id] do
+    case SystemsRuntime.get_env(:billing_stripe, :test_subscriptions, %{})[subscription_id] do
       {:error, reason} ->
         {:error, reason}
 
@@ -74,7 +74,7 @@ defmodule BillingStripe.TestAPI do
   def retrieve_payment_intent(payment_intent_id, params, opts) do
     record({:retrieve_payment_intent, payment_intent_id, params, opts})
 
-    case Application.get_env(:billing_stripe, :test_payment_intents, %{})[payment_intent_id] do
+    case SystemsRuntime.get_env(:billing_stripe, :test_payment_intents, %{})[payment_intent_id] do
       {:error, reason} ->
         {:error, reason}
 
@@ -137,7 +137,7 @@ defmodule BillingStripe.TestAPI do
   end
 
   defp response(key, id) do
-    case Application.get_env(:billing_stripe, key, %{})[id] do
+    case SystemsRuntime.get_env(:billing_stripe, key, %{})[id] do
       {:error, reason} -> {:error, reason}
       nil -> {:error, :not_found}
       value -> {:ok, value}
@@ -147,7 +147,7 @@ defmodule BillingStripe.TestAPI do
   @impl true
   def list_prices(params, opts) do
     record({:list_prices, params, opts})
-    calls = if Process.whereis(@recorder), do: Agent.get(@recorder, & &1), else: []
+    calls = if SystemsRuntime.Proc.whereis(@recorder), do: Agent.get(@recorder, & &1), else: []
 
     prices =
       for {:price, price, _} <- calls, price.lookup_key in params.lookup_keys do
@@ -214,7 +214,7 @@ defmodule BillingStripe.TestAPI do
   end
 
   defp record(call) do
-    case Process.whereis(@recorder) do
+    case SystemsRuntime.Proc.whereis(@recorder) do
       nil -> :ok
       _pid -> Agent.update(@recorder, &[call | &1])
     end

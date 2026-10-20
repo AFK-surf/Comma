@@ -1,5 +1,6 @@
-import { RightSidebar } from "@comma/ui";
-import { useState } from "react";
+import { CoreProvider } from "@comma/core-client";
+import { RightSidebar } from "@comma/ui/components/right-sidebar";
+import { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   createMemoryHistory,
@@ -9,8 +10,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { initializeCommaI18n } from "@comma/i18n";
-import type { ProductInboxItem } from "@comma/native-bridge";
-import type { CommaApiClient, CommaConversation } from "../../src/api";
+import type { ProductInboxItem } from "@comma/core-client";
 import {
   ConversationView,
   type ConversationViewActions,
@@ -19,12 +19,11 @@ import {
   idleConversationChannelState,
   type ChatMessage,
   type ConversationChannelState,
-} from "../../src/components/chat/model/conversationChannel";
-import {
-  createProductInboxProjectionController,
-  ProductInboxProjectionProvider,
-  type ProductInboxProjectionBridge,
-} from "../../src/product-inbox";
+} from "@comma/core/chat";
+// The UI shows what the core reads from these hand-built messages.
+import { readState } from "../../../../e2e/app-shell/fixtures/coreReading";
+// A fixture page builds with the web app's aliases, which leave test packages out.
+import { createScriptedCore } from "../../../test-utils/src/scripted-core";
 import { fixedDraftSource } from "../../src/components/chat/composer/conversationDraft";
 import "../../src/styles.css";
 
@@ -54,12 +53,6 @@ declare global {
 const GROUP_ID = "group";
 const WORKSPACE_ID = "workspace";
 const STATUSES = ["in_progress", "ready_for_review", "completed"] as const;
-const session = {
-  audience: "https://api.comma.test",
-  authorityInstanceId: "chat-task-panel-performance",
-  generation: 1,
-  sessionId: "11111111-1111-4111-8111-111111111111",
-};
 
 const taskId = (index: number) => `task-${index}`;
 
@@ -147,33 +140,38 @@ function projectionItems(taskCount: number, revision: number): ProductInboxItem[
 
 // The renderer's real projection over a stand-in owner. Every emit is an owner
 // read; the projection decides, as in the app, which reads change the list.
+// The Tasks the chat refers to are known from the same facts, as the core
+// takes them from the list (so rows also exercise their archive control).
+const summaryOf = (item: ProductInboxItem) => ({
+  archive_availability: item.archiveAvailability,
+  group_id: item.groupId,
+  id: item.conversationId,
+  kind: item.kind,
+  status: item.status,
+  title: item.title,
+  updated_at: item.archiveVersion,
+});
+
 function createProjection() {
-  let current: unknown = null;
-  const listeners = new Set<(envelope: unknown) => void>();
-  const bridge = {
-    refresh: async () => current,
-    release: async () => undefined,
-    retain: async () => current,
-    state: {
-      get: async () => current,
-      subscribe: (listener: (envelope: unknown) => void) => {
-        listeners.add(listener);
-        return () => {
-          listeners.delete(listener);
-        };
-      },
-    },
-  } as unknown as ProductInboxProjectionBridge;
-  const controller = createProductInboxProjectionController({ bridge });
-  controller.retain({ session });
-  return {
-    controller,
-    emit(items: ProductInboxItem[]) {
-      current = {
-        session,
-        snapshot: { activeWorkspaceId: WORKSPACE_ID, items, source: "live-sync" },
+  let items: ProductInboxItem[] = [];
+  const core = createScriptedCore({
+    values: (topic) => {
+      if (topic.topic === "tasks")
+        return { activeWorkspaceId: WORKSPACE_ID, items, source: "live-sync" };
+      if (topic.topic !== "taskSummaries") return undefined;
+      // Each surface is told only of the Tasks it asked for, as the core tells it.
+      const ids = new Set(String(topic.ids ?? "").split(","));
+      return {
+        summaries: items.filter((item) => ids.has(item.conversationId)).map(summaryOf),
       };
-      for (const listener of listeners) listener(current);
+    },
+  });
+  return {
+    controller: core.client,
+    emit(next: ProductInboxItem[]) {
+      items = next;
+      core.changed("tasks");
+      core.changed("taskSummaries");
     },
   };
 }
@@ -181,37 +179,6 @@ function createProjection() {
 const projection = createProjection();
 let projectedTaskCount = 0;
 let projectionRevision = 0;
-
-// Canonical summaries answer from the same facts the projection carries, so
-// rows also exercise their archive control. A response is its own event-loop
-// turn, as a network reply is; batches never share one synchronous run.
-const api = {
-  getTaskSummaries: async (groupId: string, ids: string[]) => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const items = new Map(
-      projectionItems(projectedTaskCount, projectionRevision).map((item) => [
-        item.conversationId,
-        item,
-      ])
-    );
-    return ids.flatMap((id): CommaConversation[] => {
-      const item = items.get(id);
-      return item
-        ? [
-            {
-              archive_availability: item.archiveAvailability,
-              group_id: groupId,
-              id,
-              kind: "agent_task",
-              status: item.status,
-              title: item.title,
-              updated_at: item.updatedAt,
-            },
-          ]
-        : [];
-    });
-  },
-} as unknown as CommaApiClient;
 
 const noop = () => undefined;
 const emptyDraft = fixedDraftSource("");
@@ -232,6 +199,7 @@ function Fixture() {
   const [state, setState] = useState<ConversationChannelState>(
     idleConversationChannelState
   );
+  const shown = useMemo(() => readState(state), [state]);
   window.chatTaskPanelStress = {
     stream: (historyTurns) => {
       projection.emit([]);
@@ -343,10 +311,10 @@ function Fixture() {
     <div style={{ display: "flex", height: "100vh" }}>
       <ConversationView
         actions={actions}
-        api={api}
+        live
         draftSource={emptyDraft}
         groupId={GROUP_ID}
-        state={state}
+        state={shown}
         variant="route"
         workspaceId={WORKSPACE_ID}
       />
@@ -362,10 +330,10 @@ function Fixture() {
         {sidebarMounted ? (
           <ConversationView
             actions={actions}
-            api={api}
+            live
             draftSource={emptyDraft}
             groupId={GROUP_ID}
-            state={state}
+            state={shown}
             variant="rail"
             workspaceId={WORKSPACE_ID}
           />
@@ -386,7 +354,7 @@ const router = createRouter({
   history: createMemoryHistory({ initialEntries: ["/"] }),
 });
 createRoot(document.getElementById("root")!).render(
-  <ProductInboxProjectionProvider controller={projection.controller}>
+  <CoreProvider client={projection.controller}>
     <RouterProvider router={router} />
-  </ProductInboxProjectionProvider>
+  </CoreProvider>
 );

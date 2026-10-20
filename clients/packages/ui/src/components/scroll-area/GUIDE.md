@@ -9,7 +9,7 @@
 - `scroll`：仅滚动时显示。这是默认策略。
 - `scrollbar-hover`：只有 hover 到滚动条轨道位置时显示。
 
-`scroll` 策略支持两个额外配置：
+`scroll` 策略支持三个额外配置：
 
 - `scrollbarHideDelay`：停止滚动后隐藏的延迟，单位为毫秒，默认 `500`。
 - `scrollbarHoverReveal`：hover 到滚动条轨道位置时强制显示，默认 `true`。
@@ -34,12 +34,11 @@ Do not add a local observer.
 ## 滚轮路由
 
 滚动由浏览器原生完成（合成器线程），ScrollArea 只观察 `scroll` 事件来更新滚动条、
-边缘状态和 `onMetricsChange`。主线程再忙（流式渲染、代码高亮、React 提交），滚动
-也不会等它。不要在业务组件里接管 `wheel`、`preventDefault`，或为滚轮改写
+边缘状态和 `onMetricsChange`。不要在业务组件里接管 `wheel`、`preventDefault`，或为滚轮改写
 `scrollTop` / `scrollLeft`。
 
 - 纵向区域和 `both` 区域：滚轮完全交给浏览器，组件不注册可取消的 `wheel` 监听。
-- 横向区域：普通鼠标没有横向滚轮，所以它的纵向滚轮会被映射为横向滚动——这是唯一
+- 横向区域：普通鼠标没有横向滚轮，所以它的纵向滚轮会被映射为横向滚动。这是唯一
   由脚本处理的滚轮。该监听只在区域**确实横向溢出**时存在；内容放得下的代码块、表格
   上方的滚轮仍然只走合成器。触控板的横向增量由浏览器原生滚动；映射滚到尽头后不再
   取消事件，滚轮会按下面的规则交给外层。
@@ -54,6 +53,11 @@ Do not add a local observer.
   按浏览器原生规则交给外层区域。Portal 出去的弹层不算嵌套，仍然是 `contain`。
 - 每个区域的 `overflow` 和边缘遮罩只作用于**自己的** viewport（子选择器），不会落到
   嵌套区域上。
+- 内容层 `.comma-scroll-area__content` 是 `position: relative` 的：子树里没有自己
+  定位祖先的 `position: absolute` 元素以它为包含块，随内容一起滚动。根节点也是定位
+  的（滚动条和边缘层挂在它上面），以根节点为包含块的后代在 viewport 滚动时会留在
+  原地。要钉在区域上的浮层（选择条、回到底部按钮）放在
+  ScrollArea 旁边，不放在内容里。
 - `scrollbarRevealSource="interaction"`：滚轮和它引起的 `scroll` 是两个事件。滚轮输入
   后约 250ms 内发生的滚动算读者的，显示滚动条；前面没有滚轮的滚动算应用自己的
   （跟随到底、跳转），保持隐藏。键盘、触摸和拖动滚动条照旧直接显示。
@@ -72,16 +76,20 @@ Do not add a local observer.
   `ResizeObserver`。
 - 需要在可视区本身变化时重算业务布局，使用同一共享 observer
   提供的 `onViewportResize`；回调只会在共享测量确认 block-size 变化之后触发。
+  纵向区域在 OS 窗口 resize 期间暂不通知，停止后再通知一次；回调摆放指针目标
+  （时间轴上的条）时传 `notifyViewportResizeDuringWindowResize`，让目标逐帧跟随新尺寸。
+- 区域的测量走帧的共享布局读阶段（`@comma/ui/clock` 的 `scheduleLayoutRead`）：
+  同一帧里所有区域先读同一次布局，再统一写滚动条和边缘状态。`onViewportResize`
+  和 `onMetricsChange` 在读阶段内调用，回调可以读布局、写 `scrollTop`；要写样式或
+  DOM 时，`onViewportResize` 返回写函数，由同一帧的写阶段执行；不要在回调里
+  直接写，否则后面每个区域的读取都会强制重新布局一次。
 - 子内容需要以当前可视高度作为布局基准时，通过 `viewportClassName` 把 viewport
   声明为尺寸容器（`container-type: size`），子内容用容器查询单位（`100cqb`）
-  取值。ScrollArea 不再把 viewport 尺寸发布成 CSS 自定义属性：写在根节点上的
-  自定义属性会被整棵滚动子树继承，viewport 高度每变一次，子树里的每个元素都要
-  重算一次样式。尺寸容器要求 viewport 的尺寸不依赖内容；由内容撑高的 ScrollArea
+  取值。不要把 viewport 尺寸发布成根节点上的 CSS 自定义属性。尺寸容器要求 viewport 的尺寸不依赖内容；由内容撑高的 ScrollArea
   没有可用的“可视高度”，不要在业务组件里再做一次测量来补。
 - 滚动过程中会翻转的状态写在**消费它的元素**上，不写在根节点：滚动条的显隐状态
   `data-scrolling` 在区域自己的滚动条元素上，边缘模糊的 `data-visible` 在边缘元素
-  上。浏览器的样式失效不区分子选择器和后代选择器，根节点属性一变，转录里每个代码块
-  和表格的滚动条都要重算一次样式。业务 CSS 不要用 ScrollArea 根节点上随滚动变化的
+  上。业务 CSS 不要用 ScrollArea 根节点上随滚动变化的
   属性去选中后代。
 - 分页列表用 `ScrollAreaLoadMore` 放在列表的末端（旧记录在上方时用
   `edge="start"`）加载下一页，不要再放“加载更多”按钮。读者滚动到距末端一个可视高度

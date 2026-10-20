@@ -4,7 +4,7 @@ defmodule SalixMeet.CalendarConfiguration do
   alias SalixStore.MeetingCalendarSettings
 
   def entries do
-    defaults = Application.get_env(:salix_meet, :calendar_autojoin_channels, []) |> List.wrap()
+    defaults = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels, []) |> List.wrap()
     ids = Enum.map(defaults, & &1["connect_id"])
 
     with {:ok, connects} <- default_connects(ids),
@@ -53,7 +53,7 @@ defmodule SalixMeet.CalendarConfiguration do
 
       {:error, :not_found} when is_nil(revision) ->
         defaults =
-          Application.get_env(:salix_meet, :calendar_autojoin_channels, []) |> List.wrap()
+          SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels, []) |> List.wrap()
 
         case Enum.filter(defaults, &(&1["connect_id"] == connect_id)) do
           [entry] -> {:ok, entry}
@@ -103,7 +103,7 @@ defmodule SalixMeet.CalendarConfiguration do
   defp default_connects(ids), do: ProviderConnects.find_active_im_connects_by_ids(ids)
 
   defp fits_budget?(entries) do
-    opts = Application.get_env(:salix_meet, :calendar_autojoin) || []
+    opts = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin) || []
     maximum = Keyword.get(opts, :max_groups_per_pass, 25)
     concurrency = Keyword.get(opts, :max_concurrency, 5)
     timeout = Keyword.get(opts, :task_timeout_ms, 30_000)

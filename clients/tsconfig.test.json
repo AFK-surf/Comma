@@ -4,17 +4,36 @@
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
     "paths": {
       "@comma/app": ["./packages/app/src/index.tsx"],
-      "@comma/app/auth": ["./packages/app/src/auth/index.ts"],
       "@comma/chat-contract": ["./packages/chat-contract/src/index.ts"],
       "@comma/config": ["./packages/config/src/index.ts"],
+      "@comma/core": ["./packages/core/src/index.ts"],
+      "@comma/core/contract": ["./packages/core/src/contract.ts"],
+      "@comma/core/task-loop-filter": ["./packages/core/src/task-loop-filter.ts"],
+      "@comma/core/chat": ["./packages/core/src/chat/public.ts"],
+      "@comma/core/markdown": ["./packages/core/src/markdown/index.ts"],
+      "@comma/core/api-schemas": ["./packages/core/src/comma/api-schemas.ts"],
+      "@comma/core/node": ["./packages/core/src/hosts/node.ts"],
+      "@comma/core/utility-protocol": ["./packages/core/src/hosts/utility-protocol.ts"],
+      "@comma/core/web": ["./packages/core/src/hosts/web.ts"],
+      "@comma/core/testing": ["./packages/core/src/testing/index.ts"],
+      "@comma/core-client": ["./packages/core-client/src/index.tsx"],
       "@comma/i18n": ["./packages/i18n/src/index.ts"],
       "@comma/i18n/react": ["./packages/i18n/src/react.tsx"],
       "@comma/layout-inspector": ["./packages/layout-inspector/src/index.ts"],
       "@comma/native-bridge": ["./packages/native-bridge/src/index.ts"],
       "@comma/native-bridge/web": ["./packages/native-bridge/src/web.ts"],
+      "@comma/mesh": ["./packages/mesh/src/index.ts"],
+      "@comma/mesh/station-native": ["./packages/mesh/src/station-native.ts"],
+      "@comma/mesh/testing": ["./packages/mesh/src/memory.ts"],
       "@comma/session-contract": ["./packages/session-contract/src/index.ts"],
       "@comma/test-utils/*": ["./packages/test-utils/src/*"],
-      "@comma/ui": ["./packages/ui/src/index.ts"]
+      "@comma/ui": ["./packages/ui/src/index.ts"],
+      "@comma/ui/*": ["./packages/ui/src/*"],
+      "@comma/core-kernel": ["./packages/core-kernel/src/index.ts"],
+      "@comma/core-kernel/client": ["./packages/core-kernel/src/client/index.ts"],
+      "@comma/core-kernel/testing": ["./packages/core-kernel/src/testing.ts"],
+      "@comma/core-kernel/node-sql": ["./packages/core-kernel/src/node-sql.ts"],
+      "@comma/core-kernel/web-worker": ["./packages/core-kernel/src/worker/relay.ts"]
     },
     "types": [
       "node",
@@ -22,15 +41,80 @@
       "vitest/globals",
       "@testing-library/jest-dom",
       "@electron-forge/plugin-vite/forge-vite-env"
-    ]
+    ],
+    "composite": false,
+    "incremental": true
   },
   "include": [
     "vitest.config.ts",
     "playwright.config.ts",
     "vite",
     "e2e",
-    "apps",
-    "packages",
-    "scripts"
-  ]
+    "scripts",
+    "apps/**/*.test.*",
+    "apps/**/*.spec.*",
+    "apps/**/e2e/**/*",
+    "apps/**/test-support/**/*",
+    "apps/**/test/**/*",
+    "packages/**/*.test.*",
+    "packages/**/*.spec.*",
+    "packages/**/*.stories.*",
+    "packages/**/e2e/**/*",
+    "packages/**/src/test/**/*",
+    "packages/**/scripts/**/*",
+    "packages/**/playwright*.ts",
+    "packages/**/vitest*.ts",
+    "packages/**/vite*.ts",
+    "packages/ui/.storybook/*",
+    "apps/**/*.d.ts",
+    "packages/**/*.d.ts"
+  ],
+  "references": [
+    {
+      "path": "./packages/config"
+    },
+    {
+      "path": "./packages/chat-contract"
+    },
+    {
+      "path": "./packages/session-contract"
+    },
+    {
+      "path": "./packages/recommendation-contract"
+    },
+    {
+      "path": "./packages/i18n"
+    },
+    {
+      "path": "./packages/layout-inspector"
+    },
+    {
+      "path": "./packages/analytics"
+    },
+    {
+      "path": "./packages/native-bridge"
+    },
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/core-client"
+    },
+    {
+      "path": "./packages/ui"
+    },
+    {
+      "path": "./packages/app"
+    },
+    {
+      "path": "./packages/core-kernel"
+    },
+    {
+      "path": "./packages/i18n/tsconfig.tools.json"
+    },
+    {
+      "path": "./packages/layout-inspector/tsconfig.tools.json"
+    }
+  ],
+  "exclude": ["**/node_modules/**", "**/dist/**"]
 }

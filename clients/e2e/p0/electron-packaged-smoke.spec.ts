@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
+import { electronMacLaunchArgs } from "../../apps/electron/e2e/electron-test";
 
 const electronAppDir = resolve(process.cwd(), "apps/electron");
 const electronOutDir = resolve(electronAppDir, "out");
@@ -151,8 +152,6 @@ async function waitForDebugPort(
 test("packaged electron app opens after build", async ({
   browserName: _browserName,
 }, testInfo) => {
-  test.setTimeout(60_000);
-
   const port = await getFreePort();
   const userDataDir = await mkdtemp(join(tmpdir(), "comma-electron-packaged-"));
   const launchTarget = findPackagedExecutable();
@@ -162,6 +161,7 @@ test("packaged electron app opens after build", async ({
       ...launchTarget.extraArgs,
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${userDataDir}`,
+      ...electronMacLaunchArgs,
     ],
     {
       cwd: electronAppDir,
@@ -193,9 +193,7 @@ test("packaged electron app opens after build", async ({
       });
       // DOM readiness precedes the deferred application import. Wait for a
       // visible, interactive application surface rather than an empty root.
-      await expect(page.locator("#root").getByRole("button").first()).toBeVisible({
-        timeout: 30000,
-      });
+      await expect(page.locator("#root").getByRole("button").first()).toBeVisible();
       expect(rendererErrors, "Renderer or application chunk load failures").toEqual([]);
       expect(
         output.join(""),

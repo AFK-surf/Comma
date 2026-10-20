@@ -48,7 +48,7 @@ defmodule SalixAgent.PluginStore do
     do: call(:disable_group, [tenant_id, group_id, plugin_id])
 
   defp call(fun, args) do
-    case Application.get_env(:salix_agent, :plugin_store_mod) do
+    case SystemsRuntime.get_env(:salix_agent, :plugin_store_mod) do
       nil -> {:error, :plugin_store_not_configured}
       mod -> apply(mod, fun, args)
     end

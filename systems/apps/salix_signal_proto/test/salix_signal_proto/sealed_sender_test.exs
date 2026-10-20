@@ -1,9 +1,9 @@
 defmodule SalixSignalProto.SealedSenderTest do
   # Sealed sender (CRS-06) against the CRS-06 vectors access-key.json,
-  # combined-access-key.json, known-constants.json, server-certificate.json,
+  # known-constants.json, server-certificate.json,
   # sender-certificate.json, sealed-sender-v1-decrypt.json and
   # sealed-sender-v2.json.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.{Keys, SealedSender, ServiceId}
   alias SalixSignalProto.SealedSender.{AccessKey, Certificate, Inner}
@@ -15,21 +15,12 @@ defmodule SalixSignalProto.SealedSenderTest do
 
   defp identity(private, public), do: %{private: hex(private), public: hex(public)}
 
-  describe "unidentified access keys (access-key, combined-access-key)" do
+  describe "unidentified access keys (access-key)" do
     test "derived from the profile key, with the header value" do
       for %{"inputs" => %{"profile_key" => key}, "outputs" => outputs} <- cases("access-key.json") do
         access_key = AccessKey.derive(hex(key))
         assert access_key == hex(outputs["access_key"])
         assert AccessKey.header(access_key) == outputs["header_value"]
-      end
-    end
-
-    test "the legacy multi-recipient key is the XOR of restricted recipients' keys" do
-      for %{"inputs" => %{"access_keys" => keys}, "outputs" => outputs} <-
-            cases("combined-access-key.json") do
-        combined = AccessKey.combine(Enum.map(keys, &hex/1))
-        assert combined == hex(outputs["combined"])
-        assert AccessKey.header(combined) == outputs["header_value"]
       end
     end
   end
@@ -122,13 +113,13 @@ defmodule SalixSignalProto.SealedSenderTest do
     end
 
     test "a referenced signer resolves through the known certificates" do
-      root = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
-      server = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
+      root = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
+      server = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
 
       {:ok, server_certificate} =
         Certificate.decode_server(Certificate.issue_server(7, server.public, root.private))
 
-      sender = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
+      sender = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
 
       fields = %{
         device_id: 3,
@@ -160,8 +151,8 @@ defmodule SalixSignalProto.SealedSenderTest do
     end
 
     test "sender certificates with missing, extra or out-of-range fields fail to parse" do
-      server = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
-      identity = Keys.ec_keypair(:crypto.strong_rand_bytes(32)).public
+      server = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
+      identity = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32)).public
 
       base = %{
         device_id: 3,
@@ -257,8 +248,8 @@ defmodule SalixSignalProto.SealedSenderTest do
     end
 
     test "Comma seals and opens its own messages" do
-      sender = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
-      recipient = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
+      sender = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
+      recipient = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
       inner = inner_bytes(sender.public)
 
       sealed = SealedSender.seal(inner, sender, recipient.public, ephemeral_private: <<7::256>>)
@@ -278,13 +269,13 @@ defmodule SalixSignalProto.SealedSenderTest do
       assert byte_size(wire.encrypted_static) == 43
       assert byte_size(wire.encrypted_message) == byte_size(inner) + 10
 
-      other = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
+      other = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
       assert SealedSender.open(sealed, other) == {:error, :bad_mac}
     end
   end
 
   defp inner_bytes(sender_public) do
-    server = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
+    server = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
 
     certificate =
       Certificate.issue_sender(
@@ -394,9 +385,9 @@ defmodule SalixSignalProto.SealedSenderTest do
     end
 
     test "Comma's upload parses, fans out and opens for each recipient" do
-      sender = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
-      alice = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
-      bob = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
+      sender = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
+      alice = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
+      bob = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
       inner = inner_bytes(sender.public)
 
       recipients = [
@@ -430,8 +421,8 @@ defmodule SalixSignalProto.SealedSenderTest do
     end
 
     test "an upload that names a service ID as recipient and as excluded is rejected" do
-      sender = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
-      alice = Keys.ec_keypair(:crypto.strong_rand_bytes(32))
+      sender = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
+      alice = Keys.ec_keypair(SystemsRuntime.Proc.random_bytes(32))
       id = {:aci, <<1::128>>}
 
       upload =

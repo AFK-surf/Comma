@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Local HTTP is allowed only by the dev flavor. No backend is contacted in P1. -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>

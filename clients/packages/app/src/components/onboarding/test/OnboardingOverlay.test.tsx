@@ -1,8 +1,5 @@
 import { initializeCommaI18n, messages as commaMessages } from "@comma/i18n";
-import {
-  defaultOpenCommaShortcut,
-  defaultSideChatShortcut,
-} from "@comma/native-bridge";
+import { defaultOpenCommaShortcut } from "@comma/native-bridge";
 import { CommaI18nProvider } from "@comma/i18n/react";
 import {
   act,
@@ -10,7 +7,6 @@ import {
   fireEvent,
   render,
   screen,
-  waitFor,
   within,
 } from "@comma/test-utils/render";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
@@ -111,27 +107,67 @@ function renderOverlay({
 }
 
 const button = (name: string | RegExp) => screen.getByRole("button", { name });
-/** The card on show: a group named by the question it answers. */
-const card = (question: string) => screen.findByRole("group", { name: question });
-/** A message in the thread, by its words. */
-const message = (text: string, timeout = 3000) =>
-  screen.findByText(text, { selector: ".comma-chat-user-bubble-content" }, { timeout });
-/** The label over each of Comma's groups of messages, in thread order. */
-const speakers = () =>
-  [...document.querySelectorAll(".comma-onboarding-thread__speaker")].map(
-    (label) => label.textContent
-  );
 /** Lets `ms` pass on the fake clock, rendering what each step brings. */
 async function pass(ms: number) {
   for (let step = 0; step < ms; step += 50) {
     await act(() => vi.advanceTimersByTimeAsync(Math.min(50, ms - step)));
   }
 }
-/** A press as assistive tech makes it, which needs no real timer. */
+/**
+ * Runs the fake clock one timer at a time until `assertion` passes, for at
+ * most ten seconds of it: Comma talks at its own pace, but no test waits
+ * for it in real time.
+ */
+async function eventually(assertion: () => void) {
+  const end = Date.now() + 10_000;
+  for (;;) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      // Nothing left to run, or out of time: it is not coming.
+      if (Date.now() >= end) throw error;
+      if (vi.getTimerCount() === 0) {
+        await act(async () => {});
+        assertion();
+        return;
+      }
+    }
+    await act(() => vi.advanceTimersToNextTimerAsync());
+  }
+}
+/** What `query` finds once the fake clock has run until it is there. */
+async function until<T>(query: () => T | null) {
+  let found: T | null = null;
+  await eventually(() => {
+    found = query();
+    expect(found, "nothing found on the fake clock").not.toBeNull();
+  });
+  return found as T;
+}
+/** The card on show: a group named by the question it answers. */
+const card = (question: string) =>
+  until(() => screen.queryByRole("group", { name: question }));
+/** A message in the thread, by its words. */
+const message = (text: string) =>
+  until(() =>
+    screen.queryByText(text, { selector: ".comma-chat-user-bubble-content" })
+  );
+/** The label over each of Comma's groups of messages, in thread order. */
+const speakers = () =>
+  [...document.querySelectorAll(".comma-onboarding-thread__speaker")].map(
+    (label) => label.textContent
+  );
+/** A press as assistive tech makes it, which needs no timer. */
 const press = (control: HTMLElement) => act(() => control.click());
+/**
+ * The user's pointer and keyboard, on the fake clock: user-event's own pause
+ * between events would otherwise wait on a timer nothing runs.
+ */
+let user: ReturnType<typeof userEvent.setup>;
 /** While Comma talks, a click anywhere brings the rest of what it says at once. */
 const hurry = async (name = "Continue") =>
-  userEvent.click(await screen.findByRole("button", { name }));
+  user.click(await until(() => screen.queryByRole("button", { name })));
 
 /** Comma's first line, once the intro has welcomed the user. */
 const greeting =
@@ -192,28 +228,28 @@ describe("OnboardingOverlay", () => {
   let play: MockInstance<HTMLMediaElement["play"]>;
   let pause: MockInstance<HTMLMediaElement["pause"]>;
 
+  // Every test runs on the fake clock: Comma's pace between lines, the beats
+  // before a reply and the light's sweep take no real time.
   beforeEach(() => {
+    user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     initializeCommaI18n(["en"]);
     play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
     pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockReturnValue(undefined);
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     // The onboarding stops its sound as it unmounts, still on the stand-ins.
     cleanup();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   // On the fake clock the intro's timing is exact: the screen dims for three
-  // seconds, the mark arrives, and Start appears 880ms after it. Presses are
-  // dispatched directly: user-event waits on a real timer the fake clock
-  // never runs.
+  // seconds, the mark arrives, and Start appears 880ms after it.
   describe("intro", () => {
     const startAppears = 3000 + 880;
 
     it("dims the screen, welcomes, and begins by itself eight seconds after Start appears", async () => {
-      vi.useFakeTimers();
       renderOverlay({ initialStage: "intro" });
 
       // While the screen dims, nothing is shown or reachable but Close.
@@ -244,7 +280,6 @@ describe("OnboardingOverlay", () => {
     });
 
     it("begins at once when Start is clicked", async () => {
-      vi.useFakeTimers();
       renderOverlay({ initialStage: "intro" });
       await pass(startAppears);
 
@@ -266,7 +301,6 @@ describe("OnboardingOverlay", () => {
     ])(
       "closes the onboarding from Close %s, without the welcome page",
       async (_when, pressAt) => {
-        vi.useFakeTimers();
         const { onComplete, onExited } = renderOverlay({ initialStage: "intro" });
         await pass(pressAt);
 
@@ -286,18 +320,18 @@ describe("OnboardingOverlay", () => {
   describe("sound", () => {
     it("plays once as the screen starts to dim, and fades out as the onboarding exits", async () => {
       const { onExited } = renderOverlay({ initialStage: "intro" });
-      await waitFor(() => expect(play).toHaveBeenCalledOnce());
+      await eventually(() => expect(play).toHaveBeenCalledOnce());
       expect(play.mock.contexts[0]).toBe(soundElement());
 
       // Closed while it plays: it fades to silence and stops before the
       // onboarding is gone, and nothing on the way plays it again.
       vi.spyOn(HTMLMediaElement.prototype, "paused", "get").mockReturnValue(false);
-      await userEvent.click(button("Close onboarding"));
+      await user.click(button("Close onboarding"));
       expect(play).toHaveBeenCalledOnce();
-      await waitFor(() => expect(pause).toHaveBeenCalledOnce());
+      await eventually(() => expect(pause).toHaveBeenCalledOnce());
       expect(soundElement().volume).toBe(0);
       expect(onExited).not.toHaveBeenCalled();
-      await waitFor(() => expect(onExited).toHaveBeenCalledOnce());
+      await eventually(() => expect(onExited).toHaveBeenCalledOnce());
     });
 
     it.each([
@@ -310,11 +344,11 @@ describe("OnboardingOverlay", () => {
       });
       renderOverlay({ initialStage: "intro" });
       // It starts at the volume it keeps: never loud first.
-      await waitFor(() => expect(play).toHaveBeenCalledOnce());
+      await eventually(() => expect(play).toHaveBeenCalledOnce());
       expect(soundElement().volume).toBe(expected);
 
       // The user's own volume applies on top of it.
-      await userEvent.click(button("Volume 100%"));
+      await user.click(button("Volume 100%"));
       fireEvent.change(screen.getByRole("slider", { name: "Volume" }), {
         target: { value: "0.5" },
       });
@@ -322,7 +356,6 @@ describe("OnboardingOverlay", () => {
     });
 
     it("clicks as Start and Start chatting are pressed, not as Start starts by itself", async () => {
-      vi.useFakeTimers();
       const clicks = vi.spyOn(HTMLMediaElement.prototype, "play");
       const clicked = () =>
         clicks.mock.contexts.filter((element) =>
@@ -348,16 +381,16 @@ describe("OnboardingOverlay", () => {
     it("plays on the first press or key when the browser refuses to play it by itself, and only once", async () => {
       play.mockRejectedValueOnce(new DOMException("No gesture yet", "NotAllowedError"));
       renderOverlay({ initialStage: "intro" });
-      await waitFor(() => expect(play).toHaveBeenCalledOnce());
+      await eventually(() => expect(play).toHaveBeenCalledOnce());
 
       // A modifier on its own is not the user acting on the page.
       fireEvent.keyDown(document.body, { key: "Shift" });
       fireEvent.pointerUp(document.body);
-      await waitFor(() => expect(play).toHaveBeenCalledTimes(2));
+      await eventually(() => expect(play).toHaveBeenCalledTimes(2));
 
       fireEvent.pointerUp(document.body);
       fireEvent.keyDown(document.body, { key: "Enter" });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await pass(50);
       expect(play).toHaveBeenCalledTimes(2);
     });
 
@@ -372,7 +405,7 @@ describe("OnboardingOverlay", () => {
       expect(soundElement().volume).toBe(1);
 
       // The first press opens the slider under it.
-      await userEvent.click(volume);
+      await user.click(volume);
       expect(screen.getByRole("dialog", { name: "Sound volume" })).toBeVisible();
       fireEvent.change(screen.getByRole("slider", { name: "Volume" }), {
         target: { value: "0.42" },
@@ -381,10 +414,10 @@ describe("OnboardingOverlay", () => {
       expect(button("Volume 42%")).toBe(volume);
 
       // A press with the slider open mutes, and the next one brings it back.
-      await userEvent.click(volume);
+      await user.click(volume);
       expect(soundElement().volume).toBe(0);
       expect(volume).toHaveAccessibleName("Muted");
-      await userEvent.click(volume);
+      await user.click(volume);
       expect(soundElement().volume).toBe(0.42);
     });
 
@@ -393,18 +426,18 @@ describe("OnboardingOverlay", () => {
       renderOverlay({ initialStage: "name", locale: "zh-CN" });
       const nameCard = await card("接下来，给我起个名字吧。");
 
-      await userEvent.type(
+      await user.type(
         within(nameCard).getByRole("textbox", { name: "助手名字" }),
         "Momo"
       );
       expect(soundElement().volume).toBe(1);
       expect(button("音量 100%")).toBeInTheDocument();
 
-      await userEvent.click(within(nameCard).getByRole("button", { name: "继续" }));
-      await userEvent.keyboard("m");
+      await user.click(within(nameCard).getByRole("button", { name: "继续" }));
+      await user.keyboard("m");
       expect(soundElement().volume).toBe(0);
       expect(button("已静音")).toBeInTheDocument();
-      await userEvent.keyboard("M");
+      await user.keyboard("M");
       expect(soundElement().volume).toBe(1);
     });
   });
@@ -478,10 +511,12 @@ describe("OnboardingOverlay", () => {
     vi.stubGlobal("ResizeObserver", Layout);
     try {
       renderOverlay();
-      const list = await screen.findByRole("list", { name: "Apps to connect" });
+      const list = await until(() =>
+        screen.queryByRole("list", { name: "Apps to connect" })
+      );
       // Three 66px rows do not fit in 190px: the list keeps two and a half
       // of them, the half row saying it scrolls.
-      await waitFor(() => {
+      await eventually(() => {
         const sized = getComputedStyle(list);
         expect(sized.getPropertyValue("--onboarding-app-row")).toBe("66px");
         expect(sized.getPropertyValue("--onboarding-list-rows")).toBe("2.5");
@@ -491,29 +526,17 @@ describe("OnboardingOverlay", () => {
     }
   });
 
-  it("reads out every line Comma says at once when hurried, not only the last", async () => {
-    renderOverlay({ initialStage: "greeting" });
-    await message(greeting);
-
-    await hurry();
-    await card(appsQuestion);
-    const log = threadLog();
-    expect(log).toHaveTextContent("No group chats to set up");
-    expect(log).toHaveTextContent("First, two quick things.");
-    expect(log).toHaveTextContent(appsQuestion);
-  });
-
   it("hands the focus to Continue and says so when a Connect the user pressed settles", async () => {
     const { rerender } = renderOverlay();
     const appsCard = await card(appsQuestion);
     const connect = within(appsCard).getByRole("button", { name: "Connect Linear" });
     connect.focus();
-    await userEvent.keyboard("{Enter}");
+    await user.keyboard("{Enter}");
 
     // The user authorizes Linear in the browser and comes back.
     rerender({ plugins: apps({ linear: "connected" }) });
 
-    await waitFor(() =>
+    await eventually(() =>
       expect(within(appsCard).getByRole("button", { name: "Continue" })).toHaveFocus()
     );
     expect(
@@ -527,14 +550,12 @@ describe("OnboardingOverlay", () => {
     const { onConnectPlugin, rerender } = renderOverlay();
     const appsCard = await card(appsQuestion);
 
-    await userEvent.click(
-      within(appsCard).getByRole("button", { name: "Connect Notion" })
-    );
+    await user.click(within(appsCard).getByRole("button", { name: "Connect Notion" }));
     expect(onConnectPlugin).toHaveBeenCalledExactlyOnceWith("notion");
     rerender({
       plugins: apps({ github: "connected", linear: "connected", notion: "connected" }),
     });
-    await userEvent.click(within(appsCard).getByRole("button", { name: "Continue" }));
+    await user.click(within(appsCard).getByRole("button", { name: "Continue" }));
 
     expect(await message("Connected GitHub, Notion and Linear")).toBeInTheDocument();
     expect(
@@ -552,9 +573,7 @@ describe("OnboardingOverlay", () => {
     renderOverlay();
     const appsCard = await card(appsQuestion);
 
-    await userEvent.click(
-      within(appsCard).getByRole("button", { name: "Skip for now" })
-    );
+    await user.click(within(appsCard).getByRole("button", { name: "Skip for now" }));
 
     expect(await message("Skip for now")).toBeInTheDocument();
     expect(
@@ -574,11 +593,11 @@ describe("OnboardingOverlay", () => {
       within(nameCard).getByRole("button", { name: "Skip for now" })
     ).toBeInTheDocument();
 
-    await userEvent.type(field, "  Atlas ");
+    await user.type(field, "  Atlas ");
     expect(
       within(nameCard).getByRole("button", { name: "Continue" })
     ).toBeInTheDocument();
-    await userEvent.keyboard("{Enter}");
+    await user.keyboard("{Enter}");
 
     expect(onSaveRouterName).toHaveBeenCalledExactlyOnceWith("Atlas", "wsp_ready");
     // The Router identity answers with the saved name.
@@ -598,9 +617,7 @@ describe("OnboardingOverlay", () => {
     const { onSaveRouterName } = renderOverlay({ initialStage: "name" });
     const nameCard = await card(nameQuestion);
 
-    await userEvent.click(
-      within(nameCard).getByRole("button", { name: "Skip for now" })
-    );
+    await user.click(within(nameCard).getByRole("button", { name: "Skip for now" }));
 
     expect(await message("Skip for now")).toBeInTheDocument();
     expect(
@@ -612,7 +629,7 @@ describe("OnboardingOverlay", () => {
     await hurry();
     expect(await message(routerRole)).toBeInTheDocument();
     expect(
-      await screen.findByRole("button", { name: "Start chatting" }, { timeout: 4000 })
+      await until(() => screen.queryByRole("button", { name: "Start chatting" }))
     ).toBeInTheDocument();
   });
 
@@ -626,31 +643,20 @@ describe("OnboardingOverlay", () => {
     });
     const nameCard = await card("接下来，给我起个名字吧。");
     const field = within(nameCard).getByRole("textbox", { name: "助手名字" });
-    await userEvent.clear(field);
+    await user.clear(field);
     // Empty, its one action skips.
     expect(within(nameCard).getByRole("button", { name: "暂时跳过" })).toBeVisible();
     expect(within(nameCard).queryByRole("button", { name: "跳过" })).toBeNull();
 
     // Typed, Continue would save it; the quiet Skip beside it moves on without.
-    await userEvent.type(field, "Nova");
+    await user.type(field, "Nova");
     expect(within(nameCard).getByRole("button", { name: "继续" })).toBeVisible();
-    await userEvent.click(within(nameCard).getByRole("button", { name: "跳过" }));
+    await user.click(within(nameCard).getByRole("button", { name: "跳过" }));
 
     expect(await message("先跳过")).toBeInTheDocument();
     expect(await message("那我先叫 Atlas，想好了随时在设置里改。")).toBeInTheDocument();
     expect(onSaveRouterName).not.toHaveBeenCalled();
     expect(speakers().at(-1)).toBe("Atlas");
-    await hurry("继续");
-    expect(
-      await message(
-        "以后有什么事都可以交给我：我会拆成任务、分给合适的 Worker，帮你盯着进度，做完把结果带回来；需要你拿主意的时候，我再来问你。"
-      )
-    ).toBeInTheDocument();
-
-    // The grants answered, the reply says how many of them.
-    await card("最后，允许我在这台 Mac 上工作，都是可选的。");
-    await userEvent.click(button("Grants for Atlas"));
-    expect(await message("3 项中已允许 2 项")).toBeInTheDocument();
   });
 
   it("moves on without a request when the name is unchanged", async () => {
@@ -664,7 +670,7 @@ describe("OnboardingOverlay", () => {
       within(nameCard).getByRole("textbox", { name: "Assistant name" })
     ).toHaveValue("Atlas");
 
-    await userEvent.click(within(nameCard).getByRole("button", { name: "Continue" }));
+    await user.click(within(nameCard).getByRole("button", { name: "Continue" }));
 
     expect(await message("Atlas it is.")).toBeInTheDocument();
     expect(onSaveRouterName).not.toHaveBeenCalled();
@@ -677,20 +683,20 @@ describe("OnboardingOverlay", () => {
     renderOverlay({ initialStage: "name", onSaveRouterName });
     const nameCard = await card(nameQuestion);
 
-    await userEvent.click(within(nameCard).getByRole("button", { name: "Nova" }));
+    await user.click(within(nameCard).getByRole("button", { name: "Nova" }));
     expect(
       within(nameCard).getByRole("textbox", { name: "Assistant name" })
     ).toHaveValue("Nova");
-    await userEvent.click(within(nameCard).getByRole("button", { name: "Continue" }));
+    await user.click(within(nameCard).getByRole("button", { name: "Continue" }));
 
     expect(
-      await screen.findByText("Couldn’t save the name. Try again.")
+      await until(() => screen.queryByText("Couldn’t save the name. Try again."))
     ).toBeInTheDocument();
     expect(screen.getByRole("group", { name: nameQuestion })).toBeInTheDocument();
     expect(onSaveRouterName).toHaveBeenCalledExactlyOnceWith("Nova", "wsp_ready");
 
     // Editing clears the error.
-    await userEvent.type(
+    await user.type(
       within(nameCard).getByRole("textbox", { name: "Assistant name" }),
       "h"
     );
@@ -703,18 +709,18 @@ describe("OnboardingOverlay", () => {
       workspace: { status: "preparing" },
     });
     const nameCard = await card(nameQuestion);
-    await userEvent.type(
+    await user.type(
       within(nameCard).getByRole("textbox", { name: "Assistant name" }),
       "Juno"
     );
-    await userEvent.click(within(nameCard).getByRole("button", { name: "Continue" }));
+    await user.click(within(nameCard).getByRole("button", { name: "Continue" }));
 
     expect(screen.getByText("Preparing your workspace…")).toBeInTheDocument();
     expect(onSaveRouterName).not.toHaveBeenCalled();
 
     rerender({ workspace: readyWorkspace });
 
-    await waitFor(() =>
+    await eventually(() =>
       expect(onSaveRouterName).toHaveBeenCalledExactlyOnceWith("Juno", "wsp_ready")
     );
     expect(await message("Juno")).toBeInTheDocument();
@@ -724,11 +730,11 @@ describe("OnboardingOverlay", () => {
     const { onSaveRouterName } = renderOverlay({ initialStage: "greeting" });
     // Return pressed again and again: it hurries the greeting, then lands on
     // the apps card, which takes the focus itself rather than on Skip for now.
-    await waitFor(() => expect(button("Continue")).toHaveFocus());
-    await userEvent.keyboard("{Enter}");
+    await eventually(() => expect(button("Continue")).toHaveFocus());
+    await user.keyboard("{Enter}");
     const appsCard = await card(appsQuestion);
-    await waitFor(() => expect(appsCard).toHaveFocus());
-    await userEvent.keyboard("{Enter}{Enter}{Enter}");
+    await eventually(() => expect(appsCard).toHaveFocus());
+    await user.keyboard("{Enter}{Enter}{Enter}");
     expect(screen.getByRole("group", { name: appsQuestion })).toBeInTheDocument();
     expect(
       screen.queryByText("Skip for now", {
@@ -737,28 +743,26 @@ describe("OnboardingOverlay", () => {
     ).toBeNull();
 
     // Return in an empty name field does nothing either.
-    await userEvent.click(
-      within(appsCard).getByRole("button", { name: "Skip for now" })
-    );
+    await user.click(within(appsCard).getByRole("button", { name: "Skip for now" }));
     await hurry();
     const nameCard = await card(nameQuestion);
     const field = within(nameCard).getByRole("textbox", { name: "Assistant name" });
-    await waitFor(() => expect(field).toHaveFocus());
-    await userEvent.keyboard("{Enter}{Enter}");
+    await eventually(() => expect(field).toHaveFocus());
+    await user.keyboard("{Enter}{Enter}");
     expect(screen.getByRole("group", { name: nameQuestion })).toBeInTheDocument();
     expect(onSaveRouterName).not.toHaveBeenCalled();
-  }, 15_000);
+  });
 
   it("lets Skip leave a save that never answers", async () => {
     const onSaveRouterName = vi.fn(() => new Promise<void>(() => {}));
     renderOverlay({ initialStage: "name", onSaveRouterName });
     const nameCard = await card(nameQuestion);
-    await userEvent.type(
+    await user.type(
       within(nameCard).getByRole("textbox", { name: "Assistant name" }),
       "Atlas{Enter}"
     );
     expect(onSaveRouterName).toHaveBeenCalledOnce();
-    await userEvent.click(within(nameCard).getByRole("button", { name: "Skip" }));
+    await user.click(within(nameCard).getByRole("button", { name: "Skip" }));
     expect(await message("Skip for now")).toBeInTheDocument();
   });
 
@@ -768,15 +772,17 @@ describe("OnboardingOverlay", () => {
       workspace: { status: "unavailable" },
     });
     const nameCard = await card(nameQuestion);
-    await userEvent.type(
+    await user.type(
       within(nameCard).getByRole("textbox", { name: "Assistant name" }),
       "Juno"
     );
-    await userEvent.click(within(nameCard).getByRole("button", { name: "Continue" }));
+    await user.click(within(nameCard).getByRole("button", { name: "Continue" }));
 
     expect(
-      await screen.findByText(
-        "Couldn’t reach your workspace. You can name me later in Settings."
+      await until(() =>
+        screen.queryByText(
+          "Couldn’t reach your workspace. You can name me later in Settings."
+        )
       )
     ).toBeInTheDocument();
     expect(screen.queryByText("Couldn’t save the name. Try again.")).toBeNull();
@@ -789,15 +795,15 @@ describe("OnboardingOverlay", () => {
       workspace: { status: "preparing" },
     });
     const nameCard = await card(nameQuestion);
-    await userEvent.type(
+    await user.type(
       within(nameCard).getByRole("textbox", { name: "Assistant name" }),
       "Juno"
     );
-    await userEvent.click(within(nameCard).getByRole("button", { name: "Continue" }));
-    await userEvent.click(button("Close onboarding"));
+    await user.click(within(nameCard).getByRole("button", { name: "Continue" }));
+    await user.click(button("Close onboarding"));
 
     rerender({ workspace: readyWorkspace });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await pass(50);
 
     expect(onSaveRouterName).not.toHaveBeenCalled();
   });
@@ -809,7 +815,7 @@ describe("OnboardingOverlay", () => {
     });
     await card(macQuestion);
 
-    await userEvent.click(button("Grants for Comma"));
+    await user.click(button("Grants for Comma"));
 
     expect(await message("Allowed 2 of 3")).toBeInTheDocument();
     expect(
@@ -830,7 +836,7 @@ describe("OnboardingOverlay", () => {
     });
     await card(macQuestion);
 
-    await userEvent.click(button("Grants for Atlas"));
+    await user.click(button("Grants for Atlas"));
 
     expect(await message("Allowed 2 of 3")).toBeInTheDocument();
     expect(
@@ -840,16 +846,13 @@ describe("OnboardingOverlay", () => {
     // grant left unallowed.
     expect(
       await message(
-        "A quick reminder. Still off: connecting apps and Notifications. You can turn them on anytime.",
-        4000
+        "A quick reminder. Still off: connecting apps and Notifications. You can turn them on anytime."
       )
     ).toBeInTheDocument();
     // After a beat the light clears the conversation, and the welcome page
     // says the assistant is ready by its name.
-    const start = await screen.findByRole(
-      "button",
-      { name: "Start chatting" },
-      { timeout: 4000 }
+    const start = await until(() =>
+      screen.queryByRole("button", { name: "Start chatting" })
     );
     expect(
       screen.getByRole("heading", { name: "Atlas is ready." })
@@ -860,14 +863,14 @@ describe("OnboardingOverlay", () => {
     // The focus lands on Start chatting: the page's words are read with it.
     expect(start).toHaveAccessibleDescription("Atlas is ready. Ask it for anything.");
     // The welcome page has no Close: the thread leaves with it.
-    await waitFor(() =>
+    await eventually(() =>
       expect(screen.queryByRole("button", { name: "Close onboarding" })).toBeNull()
     );
 
-    await userEvent.click(start);
+    await user.click(start);
     expect(onComplete).toHaveBeenCalledOnce();
-    await waitFor(() => expect(onExited).toHaveBeenCalledTimes(1));
-  }, 15_000);
+    await eventually(() => expect(onExited).toHaveBeenCalledTimes(1));
+  });
 
   it("closes from Close during the greeting: Comma says no more and the onboarding leaves", async () => {
     const { onComplete, onExited, onSaveRouterName } = renderOverlay({
@@ -875,10 +878,10 @@ describe("OnboardingOverlay", () => {
     });
     await message(greeting);
 
-    await userEvent.click(button("Close onboarding"));
+    await user.click(button("Close onboarding"));
     expect(onComplete).toHaveBeenCalledOnce();
 
-    await waitFor(() => expect(onExited).toHaveBeenCalledOnce(), { timeout: 3000 });
+    await eventually(() => expect(onExited).toHaveBeenCalledOnce());
     expect(screen.queryByText("No group chats", { exact: false })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Comma is ready." })).toBeNull();
     expect(onSaveRouterName).not.toHaveBeenCalled();
@@ -886,39 +889,34 @@ describe("OnboardingOverlay", () => {
 
   describe("Open Comma shortcut", () => {
     const shortcut = defaultOpenCommaShortcut;
+    // The keys as a Mac prints them (Windows': onboardingShortcutKeys.test.ts).
+    beforeEach(() => {
+      vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+    });
     const done = "You’ve got it. Press it anytime to bring up Comma.";
 
-    it("tells of the Side Chat, then steps the conversation back for the shortcut once Comma's last line has landed", async () => {
+    it("steps the conversation back for the shortcut once Comma's last line has landed", async () => {
       renderOverlay({
         initialStage: "permissions",
         openShortcut: shortcut,
         renderPermissions: grants,
         routerName: "Atlas",
-        sideChatShortcut: defaultSideChatShortcut,
       });
       await card(macQuestion);
-      await userEvent.click(button("Grants for Atlas"));
-      // After the grants, Comma tells of the Side Chat and its own shortcut.
+      await user.click(button("Grants for Atlas"));
       await message(
-        "One more thing: press ⌃ + Z anytime to bring up Side Chat, a small chat at the edge of your screen for the quick everyday things.",
-        4000
-      );
-      await message(
-        "A quick reminder. Still off: connecting apps and Notifications. You can turn them on anytime.",
-        4000
+        "A quick reminder. Still off: connecting apps and Notifications. You can turn them on anytime."
       );
 
       // Not the welcome page: the last step, named by its title and read
       // with its words and the shortcut spelled out.
-      const step = await screen.findByRole(
-        "group",
-        { name: "Try Option + Comma" },
-        { timeout: 6000 }
+      const step = await until(() =>
+        screen.queryByRole("group", { name: "Try Option + Comma" })
       );
       expect(step).toHaveAccessibleDescription(
         "Last step Press it anytime to bring up Comma, wherever you are. Press Option and Comma together."
       );
-      await waitFor(() => expect(step).toHaveFocus());
+      await eventually(() => expect(step).toHaveFocus());
       // The conversation stepped back: no longer read, nor reachable.
       expect(
         within(screen.getByRole("dialog", { name: "Welcome to Comma" })).queryByRole(
@@ -927,12 +925,11 @@ describe("OnboardingOverlay", () => {
       ).toBeNull();
       expect(button("Close onboarding")).toBeEnabled();
       // Nothing happens until the user presses it.
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await pass(1000);
       expect(screen.queryByRole("heading", { name: "Atlas is ready." })).toBeNull();
-    }, 15_000);
+    });
 
     it("says which keys to press when another key is pressed, once, however often", async () => {
-      vi.useFakeTimers();
       renderOverlay({
         initialStage: "shortcut",
         renderPermissions: grants,
@@ -971,7 +968,6 @@ describe("OnboardingOverlay", () => {
     });
 
     it("says it is done once both keys are down, in either order, then goes on to the welcome page", async () => {
-      vi.useFakeTimers();
       renderOverlay({
         initialStage: "shortcut",
         renderPermissions: grants,
@@ -998,7 +994,6 @@ describe("OnboardingOverlay", () => {
     });
 
     it("counts the keys pressed one after the other", async () => {
-      vi.useFakeTimers();
       renderOverlay({
         initialStage: "shortcut",
         renderPermissions: grants,
@@ -1015,7 +1010,6 @@ describe("OnboardingOverlay", () => {
     });
 
     it("listens for the keys inside StrictMode, as the development app mounts it", async () => {
-      vi.useFakeTimers();
       renderOverlay({
         initialStage: "shortcut",
         renderPermissions: grants,
@@ -1034,7 +1028,6 @@ describe("OnboardingOverlay", () => {
     });
 
     it("goes on to the welcome page from Skip, without the keys", async () => {
-      vi.useFakeTimers();
       const { onComplete } = renderOverlay({
         initialStage: "shortcut",
         renderPermissions: grants,
@@ -1049,7 +1042,6 @@ describe("OnboardingOverlay", () => {
     });
 
     it("goes on to the welcome page when the shortcut is turned off mid-step", async () => {
-      vi.useFakeTimers();
       const { rerender } = renderOverlay({
         initialStage: "shortcut",
         renderPermissions: grants,
@@ -1095,7 +1087,7 @@ describe("OnboardingOverlay", () => {
       locale: "zh-CN",
     });
     expect(
-      await screen.findByRole("heading", { name: "小逗已就绪。" }, { timeout: 3000 })
+      await until(() => screen.queryByRole("heading", { name: "小逗已就绪。" }))
     ).toBeInTheDocument();
     expect(screen.getByText("有什么事，直接交给它。")).toBeInTheDocument();
   });

@@ -11,6 +11,8 @@ import type {
   SynchronicityAdoptTreeResult,
   SynchronicityDeleteInput,
   SynchronicityImportFileInput,
+  SynchronicityStageImportInput,
+  SynchronicityStageImportResult,
   SynchronicityListInput,
   SynchronicityListResult,
   SynchronicityMutationResult,
@@ -24,6 +26,8 @@ import type {
   SynchronicitySetDomainInput,
   SynchronicitySaveDownloadInput,
   SynchronicityOpenLocalRootResult,
+  SynchronicityOpenStreamInput,
+  SynchronicityOpenStreamResult,
   SynchronicitySourceAddInput,
   SynchronicitySourceRemoveInput,
   SynchronicitySpace,
@@ -46,6 +50,8 @@ import {
   SynchControlError,
   type SynchControlClientLike,
 } from "./control-client";
+import { DriveStreamRegistry, type DriveStreamSource } from "./stream";
+import { StagedImports } from "./staged-imports";
 
 /**
  * The bundled synchronicity node, owned by Main the way the per-workspace
@@ -62,10 +68,25 @@ export interface SynchronicityProvider {
   list(input: SynchronicityListInput): Promise<SynchronicityListResult>;
   read(input: SynchronicityReadInput): Promise<SynchronicityReadResult>;
   saveDownload(input: SynchronicitySaveDownloadInput): Promise<FilesSaveDownloadResult>;
+  openStream(
+    input: SynchronicityOpenStreamInput
+  ): Promise<SynchronicityOpenStreamResult>;
+  /** Answers a `comma-drive:` request for a stream `openStream` handed out. */
+  serveStream(request: Request): Promise<Response>;
   openLocalRoot(input: void): Promise<SynchronicityOpenLocalRootResult>;
   versions(input: SynchronicityVersionsInput): Promise<SynchronicityVersionsResult>;
   write(input: SynchronicityWriteInput): Promise<SynchronicityMutationResult>;
   importFile(input: SynchronicityImportFileInput): Promise<SynchronicityMutationResult>;
+  /** Keeps a file a window picked for the core to import (`importStaged`), under an opaque reference. */
+  stageImport(
+    input: SynchronicityStageImportInput
+  ): Promise<SynchronicityStageImportResult>;
+  importStaged(input: {
+    space: string;
+    path: string;
+    ref: string;
+  }): Promise<SynchronicityMutationResult>;
+  releaseStaged(input: { refs: string[] }): Promise<void>;
   delete(input: SynchronicityDeleteInput): Promise<SynchronicityMutationResult>;
   adopt(input: SynchronicityAdoptInput): Promise<SynchronicityMutationResult>;
   scan(input: void): Promise<SynchronicityMutationResult>;
@@ -151,6 +172,14 @@ const COMMAND_TERMINATE_GRACE_MS = 1_000;
 const DAEMON_LIFECYCLE_BUSY =
   /another daemon or CAS migration owns this data directory/i;
 const IDENTITY_REFRESH_MS = 20_000;
+/** How often a node waiting for its zone to name it is asked again. */
+const NAME_RECHECK_MS = 5_000;
+/**
+ * How long a node may wait for its zone before Drive reports it failed. A
+ * record that was published is visible well within this; past it the record
+ * is most likely missing or names another key, which waiting will not fix.
+ */
+const NAME_WAIT_TIMEOUT_MS = 5 * 60_000;
 
 const nodeIdSchema = z.object({
   origin: z.string().min(1),
@@ -393,6 +422,10 @@ export class SynchronicityNodeService implements SynchronicityProvider {
   #origin = "";
   #domain = "";
   #identityRefreshedAt = 0;
+  /** The zone this node waits to be named by, while its daemon serves the reduced control service. */
+  #waitingOn: string | undefined;
+  #waitingSince: number | undefined;
+  #nameRecheck: ReturnType<typeof setTimeout> | undefined;
   #starting: Promise<void> | undefined;
   #lifecycleTail: Promise<void> = Promise.resolve();
   #activeLifecycle: AbortController | undefined;
@@ -400,6 +433,13 @@ export class SynchronicityNodeService implements SynchronicityProvider {
   #closed = false;
   #settings: DriveSettingsFile = { spaces: {} };
   #syncTail: Promise<unknown> = Promise.resolve();
+  readonly #streams = new DriveStreamRegistry();
+  readonly #staged = new StagedImports();
+  readonly #streamSource: DriveStreamSource = {
+    resolve: (reference) => this.#control.resolve(reference),
+    read: (reference, start, length) =>
+      this.#control.read({ ...reference, len: length, start }),
+  };
 
   constructor(options: SynchronicityNodeServiceOptions) {
     this.#options = options;
@@ -427,7 +467,11 @@ export class SynchronicityNodeService implements SynchronicityProvider {
   }
 
   #startWithReporting(forceDaemonStart: boolean, signal: AbortSignal) {
-    return this.#start(forceDaemonStart, signal).catch((error: unknown) => {
+    return this.#reportFailure(this.#start(forceDaemonStart, signal), signal);
+  }
+
+  #reportFailure(work: Promise<void>, signal: AbortSignal) {
+    return work.catch((error: unknown) => {
       if (this.#closed || signal.aborted) return;
       this.#status = "error";
       this.#reason = error instanceof Error ? error.message : String(error);
@@ -438,6 +482,7 @@ export class SynchronicityNodeService implements SynchronicityProvider {
   async close(): Promise<void> {
     if (this.#closing) return this.#closing;
     this.#closed = true;
+    this.#stopWaitingForName();
     this.#status = "unavailable";
     this.#reason = undefined;
     this.#activeLifecycle?.abort(new SynchronicityLifecycleClosedError());
@@ -565,6 +610,31 @@ export class SynchronicityNodeService implements SynchronicityProvider {
     return save({ chunks: this.#readChunks(input), fileName: input.fileName });
   }
 
+  async openStream(
+    input: SynchronicityOpenStreamInput
+  ): Promise<SynchronicityOpenStreamResult> {
+    const reference = {
+      path: input.path,
+      ...(input.policy ? { policy: input.policy } : {}),
+      space: input.space,
+    };
+    const selected = await this.#control.resolve(reference);
+    assertReadableFile(selected);
+    return {
+      status: "opened",
+      url: this.#streams.open({
+        contentRoot: selected.contentRoot,
+        contentType: input.contentType,
+        reference,
+        size: selected.size,
+      }),
+    };
+  }
+
+  serveStream(request: Request): Promise<Response> {
+    return this.#streams.serve(request, this.#streamSource);
+  }
+
   async openLocalRoot(): Promise<SynchronicityOpenLocalRootResult> {
     const openRoot = this.#options.openLocalRoot;
     if (!openRoot) return { status: "unavailable" };
@@ -596,6 +666,28 @@ export class SynchronicityNodeService implements SynchronicityProvider {
     });
     this.#changed();
     return { status: "done" };
+  }
+
+  stageImport(
+    input: SynchronicityStageImportInput
+  ): Promise<SynchronicityStageImportResult> {
+    return this.#staged.stage(input.sourcePath);
+  }
+
+  async importStaged(input: {
+    space: string;
+    path: string;
+    ref: string;
+  }): Promise<SynchronicityMutationResult> {
+    return this.importFile({
+      path: input.path,
+      sourcePath: this.#staged.path(input.ref),
+      space: input.space,
+    });
+  }
+
+  async releaseStaged(input: { refs: string[] }): Promise<void> {
+    this.#staged.release(input.refs);
   }
 
   async importFile(
@@ -664,8 +756,7 @@ export class SynchronicityNodeService implements SynchronicityProvider {
         this.#assertLifecycleOpen(signal);
         await this.#startDaemon(true, signal);
         this.#assertLifecycleOpen(signal);
-        await this.#refreshIdentity(true);
-        this.#assertLifecycleOpen(signal);
+        await this.#settleIdentity(signal);
         this.#changed();
         return this.state();
       });
@@ -784,6 +875,7 @@ export class SynchronicityNodeService implements SynchronicityProvider {
           }
         }
         this.#assertLifecycleOpen(signal);
+        this.#stopWaitingForName();
         this.#status = "unavailable";
         this.#reason = undefined;
         await this.#startWithReporting(true, signal);
@@ -935,11 +1027,72 @@ export class SynchronicityNodeService implements SynchronicityProvider {
     const now = Date.now();
     if (!force && now - this.#identityRefreshedAt < IDENTITY_REFRESH_MS) return;
     const id = await this.#control.run({ id: {} });
-    this.#origin = nodeIdSchema.parse({
-      origin: firstField(id.stdout, "origin"),
-    }).origin;
-    this.#domain = domainFrom(id.stdout);
+    const waitingOn = firstField(id.stdout, "waiting on");
+    this.#waitingOn = waitingOn || undefined;
+    this.#origin = waitingOn
+      ? ""
+      : nodeIdSchema.parse({
+          origin: firstField(id.stdout, "origin"),
+        }).origin;
+    this.#domain = waitingOn ? "" : domainFrom(id.stdout);
     this.#identityRefreshedAt = now;
+  }
+
+  /**
+   * Reads who the node is, and whether it can be used yet. Enrolling this
+   * device publishes its record in the Workspace's zone, but the daemon that
+   * restarts under that zone can ask DNS before the record is visible. It
+   * then has no name, answers only a reduced control service that refuses
+   * everything else, and re-checks on its own. So that is a wait, not a
+   * failure: the node stays `starting`, the daemon is asked to look again at
+   * once, and Main keeps asking until the zone answers.
+   */
+  async #settleIdentity(signal: AbortSignal): Promise<boolean> {
+    await this.#refreshIdentity(true);
+    this.#assertLifecycleOpen(signal);
+    const waitingOn = this.#waitingOn;
+    if (waitingOn === undefined) {
+      this.#stopWaitingForName();
+      return true;
+    }
+    this.#waitingSince ??= Date.now();
+    if (Date.now() - this.#waitingSince >= NAME_WAIT_TIMEOUT_MS) {
+      this.#stopWaitingForName();
+      throw new Error(
+        `${waitingOn} has not named this device after ${NAME_WAIT_TIMEOUT_MS / 60_000} minutes. ` +
+          "Its enrollment record may be missing; try again, or re-enroll this device."
+      );
+    }
+    this.#status = "starting";
+    this.#reason = `Waiting for ${waitingOn} to name this device.`;
+    await this.#control.run({ domainRefresh: {} }).catch((error: unknown) => {
+      this.#options.log?.warn(
+        `synchronicity domain refresh failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+    this.#assertLifecycleOpen(signal);
+    this.#scheduleNameRecheck();
+    return false;
+  }
+
+  #scheduleNameRecheck() {
+    clearTimeout(this.#nameRecheck);
+    this.#nameRecheck = setTimeout(() => {
+      this.#nameRecheck = undefined;
+      void this.#enqueueLifecycle(async (signal) => {
+        // A restart or domain change since this was armed owns the node now.
+        if (this.#waitingOn === undefined || this.#status !== "starting") return;
+        await this.#reportFailure(this.#finishStart(signal), signal);
+        this.#changed();
+      }).catch(() => {});
+    }, NAME_RECHECK_MS);
+  }
+
+  #stopWaitingForName() {
+    clearTimeout(this.#nameRecheck);
+    this.#nameRecheck = undefined;
+    this.#waitingOn = undefined;
+    this.#waitingSince = undefined;
   }
 
   async #start(forceDaemonStart: boolean, signal: AbortSignal) {
@@ -972,8 +1125,12 @@ export class SynchronicityNodeService implements SynchronicityProvider {
     }
     await this.#startDaemon(forceDaemonStart, signal);
     this.#assertLifecycleOpen(signal);
-    await this.#refreshIdentity(true);
-    this.#assertLifecycleOpen(signal);
+    await this.#finishStart(signal);
+  }
+
+  /** Publishes the default folder and reports ready, once the node has a name to publish under. */
+  async #finishStart(signal: AbortSignal) {
+    if (!(await this.#settleIdentity(signal))) return;
     await this.#ensureDefaultSource();
     this.#assertLifecycleOpen(signal);
     this.#status = "ready";

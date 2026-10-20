@@ -22,7 +22,7 @@ defmodule Comma.FreshInstall do
   ]
 
   def run do
-    unless Application.get_env(:comma_core, :selfhost, false) or
+    unless SystemsRuntime.get_env(:comma_core, :selfhost, false) or
              System.get_env("COMMA_ENVIRONMENT") == "local" do
       raise "Fresh installation is restricted to selfhost and local environments. Use the release handoff for hosted environments."
     end
@@ -69,7 +69,7 @@ defmodule Comma.FreshInstall do
   end
 
   defp initialize_owner! do
-    case Application.get_env(:comma_core, :selfhost_owner_email) do
+    case SystemsRuntime.get_env(:comma_core, :selfhost_owner_email) do
       email when is_binary(email) and email != "" ->
         {:ok, {:ok, _}, _} =
           Ecto.Migrator.with_repo(Comma.Repo, fn _ ->
@@ -152,7 +152,7 @@ defmodule Comma.FreshInstall do
       raise "fresh installation requires empty Comma product tables; found #{inspect(nonempty)}"
     end
 
-    completed_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    completed_at = SystemsClock.utc_now() |> DateTime.truncate(:microsecond)
 
     evidence = %{
       "schema_version" => 1,

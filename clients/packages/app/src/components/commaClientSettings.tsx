@@ -3,6 +3,8 @@ import {
   commaClientSettingsSchema,
   defaultCommaClientSettings,
   getNativeBridge,
+  retiredCommaClientSettings,
+  withoutRetiredCommaClientSettings,
   type AppPreferences,
   type CommaClientSettings,
   type CommaClientSettingsPatch,
@@ -55,7 +57,9 @@ export function readWebCommaClientSettings(): CommaClientSettings {
   try {
     const stored = globalThis.localStorage?.getItem(commaClientSettingsStorageKey);
     if (stored) {
-      const parsed = commaClientSettingsSchema.safeParse(JSON.parse(stored));
+      const parsed = commaClientSettingsSchema.safeParse(
+        withoutRetiredCommaClientSettings(JSON.parse(stored))
+      );
       if (parsed.success) return parsed.data;
     }
   } catch {
@@ -68,7 +72,10 @@ function storeWebCommaClientSettings(settings: CommaClientSettings) {
   try {
     globalThis.localStorage?.setItem(
       commaClientSettingsStorageKey,
-      JSON.stringify(commaClientSettingsSchema.parse(settings))
+      JSON.stringify({
+        ...commaClientSettingsSchema.parse(settings),
+        ...retiredCommaClientSettings,
+      })
     );
   } catch {
     // Browser storage is best effort; the current tab keeps its in-memory state.
@@ -140,8 +147,7 @@ export function CommaElectronClientSettingsProvider({
   const ownerHasSettingsRef = useRef(initialPreferences?.clientSettings !== undefined);
   const migrationStartedRef = useRef(false);
 
-  // Modeled in tla/app-preferences/AppPreferences.tla: command ACKs, replay,
-  // and live events may reorder, so a renderer accepts only monotonic owner
+  // Command ACKs, replay, and live events may reorder, so a renderer accepts only monotonic owner
   // snapshots. Only Main publishes this state.
   const acceptPreferences = useCallback((snapshot: AppPreferences) => {
     if (snapshot.revision < highWaterRevisionRef.current) return;

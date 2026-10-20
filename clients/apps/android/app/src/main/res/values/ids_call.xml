@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="chat_call_button" type="id" />
+    <item name="call_screen" type="id" />
+    <item name="call_status" type="id" />
+    <item name="call_toggle" type="id" />
+    <item name="call_output" type="id" />
+    <item name="call_mute" type="id" />
+    <item name="call_end" type="id" />
+    <item name="call_card_output" type="id" />
+    <item name="call_card_end" type="id" />
+    <item name="call_card_mute" type="id" />
+    <item name="call_output_sheet" type="id" />
+</resources>

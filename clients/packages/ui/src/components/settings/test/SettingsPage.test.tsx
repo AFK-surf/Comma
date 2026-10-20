@@ -263,6 +263,19 @@ describe("SettingsPage", () => {
     expect(row).toHaveFocus();
   });
 
+  it("shows no search field when its owner turns search off", () => {
+    render(
+      <SettingsPage
+        registry={registry}
+        searchable={false}
+        searchAriaLabel="Search settings"
+        searchPlaceholder="Search settings"
+      />
+    );
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    expect(screen.getByRole("button", { name: "General" })).toBeVisible();
+  });
+
   it("labels search results from an untitled section by the category alone", async () => {
     const { container } = render(
       <SettingsPage

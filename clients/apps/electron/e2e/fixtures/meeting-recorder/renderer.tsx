@@ -3,17 +3,28 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { CommaI18nProvider } from "@comma/i18n/react";
 import { getNativeBridge } from "@comma/native-bridge";
-import { RightSidebarBrowserToolbar, Toaster } from "@comma/ui";
+import { RightSidebarBrowserToolbar } from "@comma/ui/components/right-sidebar";
+import { Toaster } from "@comma/ui/components/toast";
 import { toast as sonnerToast } from "sonner";
 import { MeetingRecorderHost } from "../../../../../packages/app/src/components/MeetingRecorderHost";
 import { MeetingRecorderWindowApp } from "../../../../../packages/app/src/components/MeetingRecorderWindowApp";
+import { CoreClient, CoreProvider, electronCoreOpener } from "@comma/core-client";
 import "@comma/app/styles.css";
 // Test-only observations: retain bounded projection history without changing the host.
 const recorderStates: unknown[] = [];
-getNativeBridge().meetingRecorder.state.subscribe((state) => {
-  recorderStates.push(state);
-  if (recorderStates.length > 30) recorderStates.shift();
-});
+const permissionsWindow = getNativeBridge().self.role === "site-permission-menu";
+// Every recorder surface shows the client core's meeting recorder (the menu window has no core channel).
+const core = permissionsWindow
+  ? null
+  : new CoreClient(electronCoreOpener(() => getNativeBridge().core.open()));
+core?.subscribe(
+  { topic: "meetingRecorder" },
+  (state) => {
+    recorderStates.push(state);
+    if (recorderStates.length > 30) recorderStates.shift();
+  },
+  () => undefined
+);
 Object.assign(window, {
   recorderDiagnostics: () => ({
     states: recorderStates,
@@ -51,7 +62,7 @@ function ClientRecorder() {
           onBack={() => {}}
           onForward={() => {}}
           onReload={() => {}}
-          onPermissions={(anchor) => {
+          onPageMenu={(anchor) => {
             void getNativeBridge().browserSidebar.showPermissions({
               sessionId: "meet",
               anchor,
@@ -66,12 +77,12 @@ function ClientRecorder() {
 }
 createRoot(document.getElementById("root")!).render(
   <CommaI18nProvider locale="en">
-    {permissionsMenu ? (
+    {permissionsMenu || !core ? (
       <SitePermissionMenuApp />
-    ) : desktop ? (
-      <MeetingRecorderWindowApp />
     ) : (
-      <ClientRecorder />
+      <CoreProvider client={core}>
+        {desktop ? <MeetingRecorderWindowApp /> : <ClientRecorder />}
+      </CoreProvider>
     )}
   </CommaI18nProvider>
 );

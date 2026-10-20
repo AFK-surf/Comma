@@ -7,7 +7,7 @@ defmodule BridgeForTeams.ConversationIdentityMigrationE2ETest do
 
   setup do
     SalixStore.S3.Fake.reset()
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     {:ok, org} =
       Orgs.create_org(%{
@@ -37,8 +37,8 @@ defmodule BridgeForTeams.ConversationIdentityMigrationE2ETest do
 
     # The product code for these tables is retired; the rows are seeded with
     # SQL because the identity migration still rewrites any stored data.
-    chat_id = Ecto.UUID.generate()
-    item_id = Ecto.UUID.generate()
+    chat_id = SystemsRuntime.Proc.uuid()
+    item_id = SystemsRuntime.Proc.uuid()
 
     Repo.query!(
       """
@@ -78,7 +78,7 @@ defmodule BridgeForTeams.ConversationIdentityMigrationE2ETest do
       ]
     )
 
-    cursor_id = Ecto.UUID.generate()
+    cursor_id = SystemsRuntime.Proc.uuid()
 
     Repo.query!(
       """

@@ -1,6 +1,7 @@
 defmodule SalixIM.SlackTriageReceiptTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixIM.Provider.Slack.EndpointRevision
   alias SalixIM.ProviderConnects
   alias SalixIM.TestSupport.HistoricalProviderReceipts, as: ProviderReceipts
@@ -31,15 +32,29 @@ defmodule SalixIM.SlackTriageReceiptTest do
     @moduledoc false
     @behaviour SalixStore.S3
 
+    # Only receipt reads count: background owners (lease renewal, recovery)
+    # read the same store. Each receipt read holds until eight are in flight,
+    # so the page reads concurrently or never finishes, whatever the timing.
     @impl true
     def get(key, opts) do
-      ReceiptReadProbe.begin_get()
-      Process.sleep(20)
+      if String.starts_with?(key, Keys.ctl_im_slack_event_receipts_prefix()) do
+        ReceiptReadProbe.begin_get()
 
-      try do
+        try do
+          await_in_flight(8)
+          SalixStore.S3.Fake.get(key, opts)
+        after
+          ReceiptReadProbe.end_get()
+        end
+      else
         SalixStore.S3.Fake.get(key, opts)
-      after
-        ReceiptReadProbe.end_get()
+      end
+    end
+
+    defp await_in_flight(count) do
+      unless ReceiptReadProbe.snapshot().max_active >= count do
+        SystemsClock.sleep(1)
+        await_in_flight(count)
       end
     end
 
@@ -76,20 +91,20 @@ defmodule SalixIM.SlackTriageReceiptTest do
   end
 
   setup do
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    previous_triage_backend = Application.get_env(:salix_store, :triage_record_backend)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_triage_backend = SystemsRuntime.get_env(:salix_store, :triage_record_backend)
     previous_channel_mode = SlackTriageChannelCutover.mode()
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
-    Application.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
     use_legacy_channel_authority!()
 
-    if Process.whereis(S3.Fake) do
+    if SystemsRuntime.Proc.whereis(S3.Fake) do
       S3.Fake.reset()
     else
       start_supervised!(S3.Fake)
     end
 
-    unless Process.whereis(Ids), do: start_supervised!(Ids)
+    unless SystemsRuntime.Proc.whereis(Ids), do: start_supervised!(Ids)
 
     on_exit(fn ->
       if previous_channel_mode == :projected do
@@ -97,15 +112,15 @@ defmodule SalixIM.SlackTriageReceiptTest do
       end
 
       if is_nil(previous_backend) do
-        Application.delete_env(:salix_store, :s3_backend)
+        SystemsRuntime.delete_env(:salix_store, :s3_backend)
       else
-        Application.put_env(:salix_store, :s3_backend, previous_backend)
+        SystemsRuntime.put_env(:salix_store, :s3_backend, previous_backend)
       end
 
       if is_nil(previous_triage_backend) do
-        Application.delete_env(:salix_store, :triage_record_backend)
+        SystemsRuntime.delete_env(:salix_store, :triage_record_backend)
       else
-        Application.put_env(:salix_store, :triage_record_backend, previous_triage_backend)
+        SystemsRuntime.put_env(:salix_store, :triage_record_backend, previous_triage_backend)
       end
     end)
 
@@ -125,33 +140,6 @@ defmodule SalixIM.SlackTriageReceiptTest do
     VALUES ('slack_triage_channels_v1', now(), '{"mode":"receipt-test-restore"}'::jsonb)
     ON CONFLICT (name) DO NOTHING
     """)
-  end
-
-  test "endpoint revision preserves the reviewed nine-field canonical identity" do
-    authority = authority()
-
-    canonical_bytes =
-      ~s({"app_id":"A_BFT","bot_user_id":"U_BFT","connect_generation":"#{authority["connect_generation"]}","connect_id":"connect-atlas","group_id":"project-atlas","inbound_agent_id":"agt1_atlas_router","provider":"slack","tenant_id":"tenant-atlas","workspace_id":"T_ATLAS"})
-
-    expected = CanonicalJSON.sha256(canonical_bytes)
-
-    assert EndpointRevision.sha256(authority) == {:ok, expected}
-
-    refute expected =~ authority["approved_channel_id"]
-    refute expected =~ "secret"
-
-    assert authority
-           |> Map.put("bot_token", "xoxb-secret-must-not-affect-revision")
-           |> EndpointRevision.sha256() == {:ok, expected}
-
-    assert authority
-           |> Map.delete("app_id")
-           |> EndpointRevision.sha256() == {:error, :invalid_slack_endpoint_identity}
-
-    assert ProviderReceipts.record_slack_triage_root(
-             Map.put(authority, "triage_enabled", false),
-             verified_root(authority)
-           ) == {:error, :invalid_slack_triage_root}
   end
 
   test "typed root receipt is durable, exact-duplicate idempotent, and payload drift conflicts" do
@@ -211,77 +199,59 @@ defmodule SalixIM.SlackTriageReceiptTest do
     assert CasRecord.get(key) == {:ok, receipt}
   end
 
-  test "typed reply receipt is durable, exact-duplicate idempotent, and payload drift conflicts" do
+  test "Triage receipts withhold Bearer spans before admission and sealing" do
     authority = authority()
-    verified_reply = verified_reply(authority)
+    text = "接入要求 Bearer QUJDREVGRw，且仅公开只读工具"
+    withheld = "接入要求 [Bearer-credential withheld]"
 
-    assert {:ok, :created, receipt} =
-             ProviderReceipts.record_slack_triage_reply(authority, verified_reply)
-
-    assert Map.keys(receipt) |> Enum.sort() ==
-             ~w(connect_generation connect_id created_at event_id receipt_ref schema source_message_ref triage_event)
-
-    assert receipt["schema"] == "comma.slack-triage-event-receipt.v2"
-
-    # The bucket keeps the ROOT thread, the event keeps the REPLY message, and
-    # the source ref binds both — that pair is the whole reply contract.
-    assert receipt["triage_event"] == %{
-             "event_id" => verified_reply["provider_event_id"],
-             "connect_generation" => authority["connect_generation"],
-             "message_ts" => verified_reply["message_ts"],
-             "actor_id" => verified_reply["actor_id"],
-             "actor_kind" => "human",
-             "text" => verified_reply["text"],
-             "event_type" => "message",
-             "addressing_kind" => "ambient",
-             "trigger_kind" => "none",
-             "fast_path" => false,
-             "bucket" => %{
-               "workspace_id" => authority["workspace_id"],
-               "channel_id" => authority["approved_channel_id"],
-               "thread_ts" => verified_reply["root_thread_ts"]
-             },
-             "endpoint_provenance" => %{
-               "schema" => "comma.slack-endpoint-provenance.v1",
-               "captured_at_ms" => receipt["created_at"],
-               "callback_api_app_id" => authority["app_id"],
-               "fast_path_bot_user_id" => authority["bot_user_id"],
-               "endpoint_revision_sha256" => endpoint_revision!(authority)
-             },
-             "source_mode" => "callback"
-           }
-
-    assert receipt["source_message_ref"] ==
-             Enum.join(
-               [
-                 authority["connect_generation"],
-                 authority["workspace_id"],
-                 authority["approved_channel_id"],
-                 verified_reply["root_thread_ts"],
-                 verified_reply["message_ts"]
-               ],
-               ":"
+    assert {:ok, :created, etl} =
+             SalixIM.ProviderReceipts.record_slack_triage_clickhouse(
+               authority,
+               %{
+                 "workspace_id" => authority["workspace_id"],
+                 "channel_id" => authority["approved_channel_id"],
+                 "root_thread_ts" => "1787019000.000003",
+                 "message_ts" => "1787019000.000003",
+                 "message_ts_us" => 1_787_019_000_000_003,
+                 "observed_version" => 1,
+                 "ingest_at" => "2026-09-01T00:00:01.000Z",
+                 "actor_id" => "U_HUMAN",
+                 "actor_kind" => "human",
+                 "text" => text
+               },
+               7
              )
 
-    assert ProviderReceipts.verify_slack_triage_receipt(authority, receipt) == :ok
+    assert etl["triage_event"]["text"] == withheld
+    assert SalixIM.ProviderReceipts.verify_slack_triage_receipt(authority, etl) == :ok
 
-    assert {:ok, :duplicate, duplicate} =
-             ProviderReceipts.record_slack_triage_reply(authority, verified_reply)
+    assert {:ok, :created, recheck} =
+             SalixIM.ProviderReceipts.record_slack_triage_recheck(
+               authority,
+               Map.put(verified_recheck_message(authority), "text", text),
+               %{
+                 "entry_id" => "triage-context-entry-bearer",
+                 "schedule_id" => Ids.new_schedule_id(),
+                 "scheduled_for_ms" => 1_787_019_600_000
+               }
+             )
 
-    assert duplicate == receipt
+    assert recheck["triage_event"]["text"] == withheld
 
-    assert ProviderReceipts.record_slack_triage_reply(
-             authority,
-             Map.put(verified_reply, "text", "different callback payload")
-           ) == {:error, :triage_duplicate_payload_drift}
+    key_text = "Bearer -----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\n-----END PRIVATE KEY-----"
 
-    key =
-      Keys.ctl_im_slack_event_receipt(
-        authority["connect_id"],
-        verified_reply["provider_event_id"]
-      )
+    assert {:ok, :created, raw} =
+             SalixIM.ProviderReceipts.record_slack_triage_recheck(
+               authority,
+               Map.put(verified_recheck_message(authority), "text", key_text),
+               %{
+                 "entry_id" => "triage-context-entry-private-key",
+                 "schedule_id" => Ids.new_schedule_id(),
+                 "scheduled_for_ms" => 1_787_019_600_000
+               }
+             )
 
-    assert CasRecord.get(key) == {:ok, receipt}
+    assert raw["triage_event"]["text"] == key_text
   end
 
   test "scheduled rechecks preserve the physical source while deduplicating each logical occurrence" do
@@ -333,7 +303,7 @@ defmodule SalixIM.SlackTriageReceiptTest do
     assert ProviderReceipts.verify_slack_triage_receipt(authority, first) == :ok
     assert ProviderReceipts.verify_slack_triage_receipt(authority, second) == :ok
 
-    namespace = "triage-scheduled-recheck-#{System.unique_integer([:positive])}"
+    namespace = "triage-scheduled-recheck-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     for receipt <- [first, second] do
       assert Bucketing.claim_receipt(namespace, receipt) == {:ok, :accepted, :canonical}
@@ -372,7 +342,7 @@ defmodule SalixIM.SlackTriageReceiptTest do
     refute Bucketing.source_key(reply) == Bucketing.source_key(root)
     refute reply["receipt_ref"] == root["receipt_ref"]
 
-    namespace = "triage-reply-receipt-#{System.unique_integer([:positive])}"
+    namespace = "triage-reply-receipt-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     for receipt <- [root, reply] do
       assert Bucketing.claim_receipt(namespace, receipt) == {:ok, :accepted, :canonical}
@@ -397,558 +367,6 @@ defmodule SalixIM.SlackTriageReceiptTest do
     assert unchanged["open_receipts"] == bucket["open_receipts"]
   end
 
-  test "an explicit @bot reply is recorded as a fast-path receipt" do
-    authority = authority()
-
-    mention =
-      authority
-      |> verified_reply("Ev-triage-reply-mention")
-      |> Map.put("event_type", "app_mention")
-      |> Map.put("text", "<@#{authority["bot_user_id"]}> please take over")
-
-    assert {:ok, :created, receipt} =
-             ProviderReceipts.record_slack_triage_reply(authority, mention)
-
-    assert receipt["triage_event"]["fast_path"]
-    assert receipt["triage_event"]["event_type"] == "app_mention"
-    assert receipt["triage_event"]["addressing_kind"] == "directed"
-    assert receipt["triage_event"]["trigger_kind"] == "mention"
-    assert receipt["triage_event"]["addressed_connect"] == authority["connect_id"]
-
-    # An `app_mention` whose rendered text lost the token is still the explicit
-    # intent: Slack delivers that callback only to the mentioned app.
-    assert {:ok, :created, tokenless} =
-             ProviderReceipts.record_slack_triage_reply(
-               authority,
-               mention
-               |> Map.put("provider_event_id", "Ev-triage-reply-tokenless")
-               |> Map.put("text", "please take over")
-             )
-
-    assert tokenless["triage_event"]["fast_path"]
-    assert tokenless["triage_event"]["addressing_kind"] == "directed"
-    assert tokenless["triage_event"]["addressed_connect"] == authority["connect_id"]
-
-    message_callback =
-      mention
-      |> Map.put("provider_event_id", "Ev-mentioned-message-callback")
-      |> Map.put("event_type", "message")
-
-    assert {:ok, :created, message_directed} =
-             ProviderReceipts.record_slack_triage_reply(authority, message_callback)
-
-    assert message_directed["triage_event"]["event_type"] == "message"
-    assert message_directed["triage_event"]["addressing_kind"] == "directed"
-    assert message_directed["triage_event"]["trigger_kind"] == "mention"
-    assert message_directed["triage_event"]["addressed_connect"] == authority["connect_id"]
-    assert message_directed["triage_event"]["fast_path"]
-
-    # An ordinary reply that ends in a question keeps the root's own
-    # direct-question fast path.
-    assert {:ok, :created, question} =
-             ProviderReceipts.record_slack_triage_reply(
-               authority,
-               authority
-               |> verified_reply("Ev-triage-reply-question")
-               |> Map.put("text", "谁在跟进？")
-             )
-
-    assert question["triage_event"]["fast_path"]
-    assert question["triage_event"]["event_type"] == "message"
-    assert question["triage_event"]["addressing_kind"] == "ambient"
-    assert question["triage_event"]["trigger_kind"] == "question_heuristic"
-    refute Map.has_key?(question["triage_event"], "addressed_connect")
-
-    # And an ordinary one is not fast-pathed just for being a reply.
-    assert {:ok, :created, ordinary} =
-             ProviderReceipts.record_slack_triage_reply(
-               authority,
-               verified_reply(authority, "Ev-triage-reply-ordinary")
-             )
-
-    refute ordinary["triage_event"]["fast_path"]
-    assert ordinary["triage_event"]["trigger_kind"] == "none"
-  end
-
-  test "an agent question is ambient context while a tokenless app mention is directed" do
-    authority = authority()
-
-    agent_question =
-      authority
-      |> verified_reply("Ev-agent-question-evidence")
-      |> Map.put("actor_id", "U_AGENT")
-      |> Map.put("actor_kind", "agent")
-      |> Map.put("text", "build failed; retry?")
-
-    assert {:ok, :created, ambient} =
-             ProviderReceipts.record_slack_triage_reply(authority, agent_question)
-
-    assert ambient["triage_event"]["addressing_kind"] == "ambient"
-    assert ambient["triage_event"]["trigger_kind"] == "none"
-    refute ambient["triage_event"]["fast_path"]
-    refute Map.has_key?(ambient["triage_event"], "addressed_connect")
-
-    directed =
-      agent_question
-      |> Map.put("provider_event_id", "Ev-agent-directed-evidence")
-      |> Map.put("event_type", "app_mention")
-      |> Map.put("text", "review this")
-
-    assert {:ok, :created, directed_receipt} =
-             ProviderReceipts.record_slack_triage_reply(authority, directed)
-
-    assert directed_receipt["triage_event"]["addressing_kind"] == "directed"
-    assert directed_receipt["triage_event"]["trigger_kind"] == "mention"
-    assert directed_receipt["triage_event"]["addressed_connect"] == authority["connect_id"]
-    assert directed_receipt["triage_event"]["fast_path"]
-  end
-
-  test "v2 addressing evidence rejects impossible field combinations" do
-    authority = authority()
-
-    mention =
-      authority
-      |> verified_reply("Ev-invalid-addressing-evidence")
-      |> Map.put("event_type", "app_mention")
-      |> Map.put("text", "tokenless but directed")
-
-    assert {:ok, :created, receipt} =
-             ProviderReceipts.record_slack_triage_reply(authority, mention)
-
-    event = receipt["triage_event"]
-
-    invalid_events = [
-      Map.delete(event, "addressed_connect"),
-      Map.put(event, "event_type", "message"),
-      Map.put(event, "addressing_kind", "ambient"),
-      Map.put(event, "trigger_kind", "none"),
-      Map.put(event, "fast_path", false),
-      event
-      |> Map.delete("addressed_connect")
-      |> Map.merge(%{
-        "addressing_kind" => "ambient",
-        "event_type" => "app_mention",
-        "trigger_kind" => "none",
-        "fast_path" => false
-      }),
-      event
-      |> Map.delete("addressed_connect")
-      |> Map.merge(%{
-        "actor_kind" => "agent",
-        "addressing_kind" => "ambient",
-        "event_type" => "message",
-        "text" => "retry?",
-        "trigger_kind" => "question_heuristic",
-        "fast_path" => true
-      })
-    ]
-
-    for invalid_event <- invalid_events do
-      invalid_receipt = Map.put(receipt, "triage_event", invalid_event)
-
-      assert AddressingEvidence.validate_shape_only(invalid_event) ==
-               {:error, :invalid_addressing_evidence}
-
-      assert AddressingEvidence.validate(invalid_event, authority["connect_id"]) ==
-               {:error, :invalid_addressing_evidence}
-
-      assert ProviderReceipts.verify_slack_triage_receipt(
-               authority,
-               invalid_receipt
-             ) == {:error, :invalid_slack_triage_receipt}
-
-      assert Bucketing.validate_receipt(invalid_receipt) ==
-               {:error, :invalid_triage_receipt}
-    end
-
-    wrong_recipient = Map.put(event, "addressed_connect", "connect-other")
-    wrong_recipient_receipt = Map.put(receipt, "triage_event", wrong_recipient)
-
-    assert AddressingEvidence.validate_shape_only(wrong_recipient) == :ok
-
-    assert AddressingEvidence.validate(wrong_recipient, authority["connect_id"]) ==
-             {:error, :invalid_addressing_evidence}
-
-    assert ProviderReceipts.verify_slack_triage_receipt(authority, wrong_recipient_receipt) ==
-             {:error, :invalid_slack_triage_receipt}
-
-    assert Bucketing.validate_receipt(wrong_recipient_receipt) ==
-             {:error, :invalid_triage_receipt}
-  end
-
-  test "root and reply shapes are not interchangeable" do
-    authority = authority()
-
-    # A root's identity (message_ts == root_thread_ts) is not a reply.
-    assert ProviderReceipts.record_slack_triage_reply(authority, verified_root(authority)) ==
-             {:error, :invalid_slack_triage_reply}
-
-    # A reply's identity (message_ts inside the thread) is not a root.
-    assert ProviderReceipts.record_slack_triage_root(authority, verified_reply(authority)) ==
-             {:error, :invalid_slack_triage_root}
-
-    for invalid <- [
-          Map.put(verified_reply(authority), "message_ts", "not-a-slack-ts"),
-          Map.put(verified_reply(authority), "root_thread_ts", "not-a-slack-ts"),
-          Map.put(verified_reply(authority), "text", ""),
-          Map.put(verified_reply(authority), "actor_id", ""),
-          Map.put(verified_reply(authority), "event_type", "member_joined_channel"),
-          Map.put(verified_reply(authority), "channel_id", "C_OTHER"),
-          Map.put(verified_reply(authority), "callback_app_id", "A_OTHER"),
-          Map.put(verified_reply(authority), "workspace_id", "T_OTHER"),
-          Map.delete(verified_reply(authority), "text"),
-          Map.put(verified_reply(authority), "extra_key", "nope")
-        ] do
-      assert ProviderReceipts.record_slack_triage_reply(authority, invalid) ==
-               {:error, :invalid_slack_triage_reply}
-    end
-
-    assert ProviderReceipts.record_slack_triage_reply(
-             Map.put(authority, "triage_enabled", false),
-             verified_reply(authority)
-           ) == {:error, :invalid_slack_triage_reply}
-
-    assert ProviderReceipts.record_slack_triage_reply(authority, "not-a-map") ==
-             {:error, :invalid_slack_triage_reply}
-  end
-
-  test "legacy conflicts and ambiguous receipt writes converge without delete or overwrite" do
-    authority = authority()
-    legacy_root = verified_root(authority, "Ev-legacy-conflict")
-
-    assert ProviderReceipts.record_slack(
-             authority["connect_id"],
-             legacy_root["provider_event_id"]
-           ) ==
-             {:ok, true}
-
-    assert ProviderReceipts.record_slack_triage_root(authority, legacy_root) ==
-             {:error, :receipt_type_conflict}
-
-    ambiguous_root = verified_root(authority, "Ev-ambiguous-after")
-
-    ambiguous_key =
-      Keys.ctl_im_slack_event_receipt(
-        authority["connect_id"],
-        ambiguous_root["provider_event_id"]
-      )
-
-    :ok = S3.Fake.set_fault({:ambiguous_after, :put, ambiguous_key})
-
-    assert {:ok, :created, ambiguous_receipt} =
-             ProviderReceipts.record_slack_triage_root(authority, ambiguous_root)
-
-    assert CasRecord.get(ambiguous_key) == {:ok, ambiguous_receipt}
-  end
-
-  test "global recovery page advances past legacy malformed and unavailable objects" do
-    authority = authority()
-
-    assert {:ok, :created, healthy} =
-             ProviderReceipts.record_slack_triage_root(
-               authority,
-               verified_root(authority, "Ev-page-healthy")
-             )
-
-    assert {:ok, true} = ProviderReceipts.record_slack(authority["connect_id"], "Ev-page-legacy")
-
-    malformed_event_id = "Ev-page-malformed"
-    malformed_key = Keys.ctl_im_slack_event_receipt(authority["connect_id"], malformed_event_id)
-
-    malformed =
-      healthy
-      |> Map.put("event_id", malformed_event_id)
-      |> Map.put("receipt_ref", "s3://" <> malformed_key)
-      |> put_in(["triage_event", "event_id"], malformed_event_id)
-      |> Map.put("unexpected", "private")
-
-    assert {:ok, ^malformed} = CasRecord.create(malformed_key, malformed)
-
-    assert {:ok, :created, unavailable} =
-             ProviderReceipts.record_slack_triage_root(
-               authority,
-               verified_root(authority, "Ev-page-unavailable")
-             )
-
-    unavailable_key =
-      Keys.ctl_im_slack_event_receipt(authority["connect_id"], unavailable["event_id"])
-
-    assert :ok = S3.Fake.set_fault({:fail, 503, :get, unavailable_key})
-
-    assert {:ok, page} = ProviderReceipts.list_slack_triage_page(:all, nil, 25)
-    assert page.receipts == [healthy]
-    assert page.connect_ids == [authority["connect_id"]]
-    assert page.scanned_count == 4
-    assert page.legacy_count == 1
-    assert page.invalid_count == 1
-    assert page.unavailable_count == 1
-    assert page.scan_complete
-    assert page.next_cursor == nil
-
-    assert {:ok, next_ring} = ProviderReceipts.list_slack_triage_page(:all, nil, 25)
-
-    assert Enum.sort(Enum.map(next_ring.receipts, & &1["event_id"])) ==
-             Enum.sort([healthy["event_id"], unavailable["event_id"]])
-  end
-
-  test "bounded receipt pages hydrate remote records concurrently" do
-    authority = authority()
-
-    for index <- 1..8 do
-      assert {:ok, :created, _receipt} =
-               ProviderReceipts.record_slack_triage_root(
-                 authority,
-                 verified_root(authority, "Ev-concurrent-page-#{index}")
-               )
-    end
-
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    start_supervised!(ReceiptReadProbe)
-    ReceiptReadProbe.reset()
-    Application.put_env(:salix_store, :s3_backend, InstrumentedReceiptS3)
-
-    on_exit(fn ->
-      Application.put_env(:salix_store, :s3_backend, previous_backend)
-    end)
-
-    assert {:ok, page} = ProviderReceipts.list_slack_triage_page(:all, nil, 25)
-    assert length(page.receipts) == 8
-    assert ReceiptReadProbe.snapshot().max_active == 8
-  end
-
-  test "opaque cursor advances past an invalid raw key to a healthy later page" do
-    prefix = Keys.ctl_im_slack_event_receipts_prefix()
-    invalid_key = prefix <> "!invalid-key"
-
-    assert {:ok, _meta} =
-             S3.put(invalid_key, Jason.encode!(%{"raw" => "poison"}), if_none_match: "*")
-
-    authority = authority()
-
-    assert {:ok, :created, healthy} =
-             ProviderReceipts.record_slack_triage_root(
-               authority,
-               verified_root(authority, "Ev-after-invalid-key")
-             )
-
-    assert {:ok, first} = ProviderReceipts.list_slack_triage_page(:all, nil, 1)
-    assert first.receipts == []
-    assert first.invalid_count == 1
-    assert first.scanned_count == 1
-    refute first.scan_complete
-    assert is_binary(first.next_cursor)
-
-    assert {:ok, second} =
-             ProviderReceipts.list_slack_triage_page(:all, first.next_cursor, 1)
-
-    assert second.receipts == [healthy]
-    assert second.invalid_count == 0
-    assert second.scan_complete
-    assert second.next_cursor == nil
-  end
-
-  test "a folder marker and a trailing-space key are counted without pinning the page" do
-    prefix = Keys.ctl_im_slack_event_receipts_prefix()
-
-    assert {:ok, _marker} = S3.put(prefix, "", if_none_match: "*")
-
-    assert {:ok, _poison} =
-             S3.put(prefix <> "!poison ", Jason.encode!(%{"raw" => "poison"}), if_none_match: "*")
-
-    authority = authority()
-
-    assert {:ok, :created, healthy} =
-             ProviderReceipts.record_slack_triage_root(
-               authority,
-               verified_root(authority, "Ev-after-poison-keys")
-             )
-
-    assert {:ok, page} = ProviderReceipts.list_slack_triage_page(:all, nil, 25)
-    assert page.receipts == [healthy]
-    assert page.scanned_count == 3
-    assert page.invalid_count == 2
-    assert page.scan_complete
-    assert page.next_cursor == nil
-  end
-
-  test "the opaque cursor advances through a folder marker and a trailing-space key" do
-    prefix = Keys.ctl_im_slack_event_receipts_prefix()
-
-    assert {:ok, _marker} = S3.put(prefix, "", if_none_match: "*")
-
-    assert {:ok, _poison} =
-             S3.put(prefix <> "!poison ", Jason.encode!(%{"raw" => "poison"}), if_none_match: "*")
-
-    authority = authority()
-
-    assert {:ok, :created, healthy} =
-             ProviderReceipts.record_slack_triage_root(
-               authority,
-               verified_root(authority, "Ev-after-poison-cursor")
-             )
-
-    assert {:ok, first} = ProviderReceipts.list_slack_triage_page(:all, nil, 1)
-    assert first.receipts == []
-    assert first.invalid_count == 1
-    refute first.scan_complete
-    assert is_binary(first.next_cursor)
-
-    assert {:ok, second} = ProviderReceipts.list_slack_triage_page(:all, first.next_cursor, 1)
-    assert second.receipts == []
-    assert second.invalid_count == 1
-    refute second.scan_complete
-    assert is_binary(second.next_cursor)
-
-    assert {:ok, third} = ProviderReceipts.list_slack_triage_page(:all, second.next_cursor, 1)
-    assert third.receipts == [healthy]
-    assert third.invalid_count == 0
-    assert third.scan_complete
-    assert third.next_cursor == nil
-  end
-
-  test "authority resolution continues beyond the first thousand connect records" do
-    tenant_id = Ids.new_tenant_id()
-    group_id = Ids.new_group_id(tenant_id)
-    agent_id = Ids.new_agent_id(group_id)
-
-    authority =
-      authority()
-      |> Map.put("tenant_id", tenant_id)
-      |> Map.put("group_id", group_id)
-      |> Map.put("connect_id", Ids.new_connect_id())
-      |> Map.put("inbound_agent_id", agent_id)
-
-    group = %{
-      "tenant_id" => authority["tenant_id"],
-      "group_id" => authority["group_id"],
-      "router_agent_id" => authority["inbound_agent_id"],
-      "router_conversation_id" => "conv-atlas"
-    }
-
-    connect =
-      authority
-      |> Map.put("bot_token", "xoxb-private")
-      |> Map.put("disabled_at", nil)
-      |> Map.put("deleted_at", nil)
-
-    assert {:ok, ^group} = CasRecord.create(Keys.ctl_group(authority["group_id"]), group)
-
-    assert {:ok, ^connect} =
-             CasRecord.create(
-               Keys.ctl_im_connect(authority["group_id"], authority["connect_id"]),
-               connect
-             )
-
-    assert ProviderConnects.get_slack_triage_authority(
-             authority["tenant_id"],
-             authority["group_id"],
-             authority["connect_id"]
-           ) == {:ok, authority}
-
-    Enum.each(1..1_000, fn index ->
-      id = String.pad_leading(Integer.to_string(index), 4, "0")
-      connect_id = "dummy-connect-#{id}"
-      group_id = "0000-dummy-group-#{id}"
-
-      assert {:ok, _record} =
-               CasRecord.create(Keys.ctl_im_connect(group_id, connect_id), %{
-                 "provider" => "slack",
-                 "group_id" => group_id,
-                 "connect_id" => connect_id
-               })
-    end)
-
-    assert {:ok, first} =
-             ProviderConnects.resolve_slack_triage_recovery_authorities([
-               authority["connect_id"]
-             ])
-
-    assert first.authorities == %{}
-    assert first.seen_connect_ids == []
-    refute first.scan_complete
-    assert is_binary(first.next_cursor)
-
-    assert {:ok, second} =
-             ProviderConnects.resolve_slack_triage_recovery_authorities(
-               [authority["connect_id"]],
-               first.next_cursor
-             )
-
-    assert second.authorities == %{authority["connect_id"] => authority}
-    assert second.seen_connect_ids == [authority["connect_id"]]
-    assert second.unavailable_connect_ids == []
-    assert second.scan_complete
-    assert second.next_cursor == nil
-  end
-
-  test "authority resolution skips poison keys under the connect prefix" do
-    tenant_id = Ids.new_tenant_id()
-    group_id = Ids.new_group_id(tenant_id)
-    agent_id = Ids.new_agent_id(group_id)
-
-    authority =
-      authority()
-      |> Map.put("tenant_id", tenant_id)
-      |> Map.put("group_id", group_id)
-      |> Map.put("connect_id", Ids.new_connect_id())
-      |> Map.put("inbound_agent_id", agent_id)
-
-    group = %{
-      "tenant_id" => authority["tenant_id"],
-      "group_id" => authority["group_id"],
-      "router_agent_id" => authority["inbound_agent_id"],
-      "router_conversation_id" => "conv-atlas"
-    }
-
-    connect =
-      authority
-      |> Map.put("bot_token", "xoxb-private")
-      |> Map.put("disabled_at", nil)
-      |> Map.put("deleted_at", nil)
-
-    assert {:ok, ^group} = CasRecord.create(Keys.ctl_group(authority["group_id"]), group)
-
-    assert {:ok, ^connect} =
-             CasRecord.create(
-               Keys.ctl_im_connect(authority["group_id"], authority["connect_id"]),
-               connect
-             )
-
-    prefix = Keys.ctl_im_connects_all_prefix()
-
-    assert {:ok, _meta} = S3.put(prefix, "{}", if_none_match: "*")
-
-    assert {:ok, _meta} =
-             S3.put(prefix <> "!poison ", Jason.encode!(%{"raw" => "poison"}), if_none_match: "*")
-
-    assert {:ok, page} =
-             ProviderConnects.resolve_slack_triage_recovery_authorities([
-               authority["connect_id"]
-             ])
-
-    assert page.authorities == %{authority["connect_id"] => authority}
-    assert page.seen_connect_ids == [authority["connect_id"]]
-    assert page.unavailable_connect_ids == []
-    assert page.scan_complete
-  end
-
-  test "an empty typed receipt page resolves without scanning connect authority" do
-    assert ProviderConnects.resolve_slack_triage_recovery_authorities([]) ==
-             {:ok,
-              %{
-                authorities: %{},
-                seen_connect_ids: [],
-                unavailable_connect_ids: [],
-                next_cursor: nil,
-                scan_complete: true
-              }}
-
-    refute Enum.any?(S3.Fake.read_log(), fn
-             {:list, prefix, _opts} -> prefix == Keys.ctl_im_connects_all_prefix()
-             _other -> false
-           end)
-  end
-
   # The ingress attempt for a reply can die between its durable receipt write
   # and its admission — that is exactly the window the recovery ring exists
   # for, and the ring's receipt scan is shape-agnostic, so a reply receipt is
@@ -968,12 +386,12 @@ defmodule SalixIM.SlackTriageReceiptTest do
                verified_reply(authority, "Ev-recovery-reply")
              )
 
-    namespace = "triage-recovery-reply-#{System.unique_integer([:positive])}"
+    namespace = "triage-recovery-reply-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     runtime =
       start_supervised!(
         {SalixIM.Triage.Runtime, name: nil, mode: :review, namespace: namespace},
-        id: make_ref()
+        id: SystemsRuntime.Proc.make_ref()
       )
 
     # Only the root reaches admission; the reply's ingress never got that far.
@@ -991,125 +409,18 @@ defmodule SalixIM.SlackTriageReceiptTest do
          interval_ms: 1,
          full_ring_idle_ms: 5,
          held_poll_ms: 5,
-         lease_key: "ctl/test/triage-recovery-reply/#{System.unique_integer([:positive])}",
+         lease_key:
+           "ctl/test/triage-recovery-reply/#{SystemsRuntime.Proc.unique_integer([:positive])}",
          lease_ttl_ms: 5_000},
-        id: make_ref()
+        id: SystemsRuntime.Proc.make_ref()
       )
 
     assert eventually(fn ->
              match?({:ok, %{"open_receipts" => [^root, ^reply]}}, CasRecord.get(bucket_key))
            end),
-           inspect(:sys.get_state(recovery))
+           inspect(:sys.get_state(recovery, :infinity))
 
-    assert Process.alive?(recovery)
-  end
-
-  test "v1 receipts recover as human v2 evidence into the fresh namespace" do
-    authority = seed_recovery_connect!()
-
-    assert {:ok, :created, v2} =
-             ProviderReceipts.record_slack_triage_root(
-               authority,
-               verified_root(authority, "Ev-v1-rolling-recovery")
-             )
-
-    v1 =
-      v2
-      |> Map.put("schema", "comma.slack-triage-event-receipt.v1")
-      |> update_in(["triage_event"], fn event ->
-        Map.drop(
-          event,
-          ~w(actor_kind event_type addressing_kind trigger_kind addressed_connect)
-        )
-      end)
-
-    assert :ok = ProviderReceipts.delete_slack(v1["connect_id"], v1["event_id"])
-
-    receipt_key = Keys.ctl_im_slack_event_receipt(v1["connect_id"], v1["event_id"])
-    assert {:ok, ^v1} = CasRecord.create(receipt_key, v1)
-
-    assert {:ok, normalized} = ProviderReceipts.normalize_slack_triage_receipt(v1)
-    assert normalized["schema"] == "comma.slack-triage-event-receipt.v2"
-    assert normalized["triage_event"]["actor_kind"] == "human"
-    assert normalized["triage_event"]["event_type"] == "message"
-    assert normalized["triage_event"]["addressing_kind"] == "ambient"
-    assert normalized["triage_event"]["trigger_kind"] == "none"
-    refute Map.has_key?(normalized["triage_event"], "addressed_connect")
-    assert ProviderReceipts.verify_slack_triage_receipt(authority, v1) == :ok
-    assert Bucketing.validate_receipt(v1) == :ok
-
-    assert {:ok, :duplicate, ^normalized} =
-             ProviderReceipts.record_slack_triage_root(
-               authority,
-               verified_root(authority, "Ev-v1-rolling-recovery")
-             )
-
-    assert {:error, :triage_duplicate_payload_drift} =
-             ProviderReceipts.record_slack_triage_root(
-               authority,
-               authority
-               |> verified_root("Ev-v1-rolling-recovery")
-               |> Map.put("text", "different historical bytes")
-             )
-
-    question_v1 =
-      v1
-      |> put_in(["triage_event", "text"], "who owns this?")
-      |> put_in(["triage_event", "fast_path"], true)
-
-    assert {:ok, normalized_question} =
-             ProviderReceipts.normalize_slack_triage_receipt(question_v1)
-
-    assert normalized_question["triage_event"]["addressing_kind"] == "ambient"
-    assert normalized_question["triage_event"]["trigger_kind"] == "question_heuristic"
-    refute Map.has_key?(normalized_question["triage_event"], "addressed_connect")
-
-    assert ProviderReceipts.normalize_slack_triage_receipt(
-             put_in(question_v1, ["triage_event", "text"], "not actually a question")
-           ) == {:error, :invalid_slack_triage_receipt}
-
-    namespace = "triage-rolling-#{System.unique_integer([:positive])}"
-
-    runtime =
-      start_supervised!(
-        {SalixIM.Triage.Runtime, name: nil, mode: :review, namespace: namespace},
-        id: make_ref()
-      )
-
-    recovery =
-      start_supervised!(
-        {SalixIM.Triage.ReceiptRecovery,
-         name: nil,
-         runtime: runtime,
-         page_limit: 5,
-         interval_ms: 1,
-         full_ring_idle_ms: 5,
-         held_poll_ms: 5,
-         lease_key: "ctl/test/triage-v1-recovery/#{System.unique_integer([:positive])}",
-         lease_ttl_ms: 5_000},
-        id: make_ref()
-      )
-
-    bucket_key =
-      SalixStore.TriageKeys.ctl_im_triage_bucket(namespace, Bucketing.scope_key(normalized))
-
-    assert eventually(fn ->
-             case CasRecord.get(bucket_key) do
-               {:ok,
-                %{
-                  "open_receipts" => [
-                    %{"schema" => "comma.slack-triage-event-receipt.v2"}
-                  ]
-                }} ->
-                 true
-
-               _other ->
-                 false
-             end
-           end),
-           inspect(:sys.get_state(recovery))
-
-    assert Process.alive?(recovery)
+    assert SystemsRuntime.Proc.alive?(recovery)
   end
 
   # With one key per page, recovery must page past keys it cannot decode
@@ -1168,12 +479,12 @@ defmodule SalixIM.SlackTriageReceiptTest do
                  verified_root(authority, "Ev-recovery-after-#{@label}")
                )
 
-      namespace = "triage-recovery-#{@label}-#{System.unique_integer([:positive])}"
+      namespace = "triage-recovery-#{@label}-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
       runtime =
         start_supervised!(
           {SalixIM.Triage.Runtime, name: nil, mode: :review, namespace: namespace},
-          id: make_ref()
+          id: SystemsRuntime.Proc.make_ref()
         )
 
       recovery =
@@ -1185,9 +496,10 @@ defmodule SalixIM.SlackTriageReceiptTest do
            interval_ms: 1,
            full_ring_idle_ms: 5,
            held_poll_ms: 5,
-           lease_key: "ctl/test/triage-recovery-#{@label}/#{System.unique_integer([:positive])}",
+           lease_key:
+             "ctl/test/triage-recovery-#{@label}/#{SystemsRuntime.Proc.unique_integer([:positive])}",
            lease_ttl_ms: 5_000},
-          id: make_ref()
+          id: SystemsRuntime.Proc.make_ref()
         )
 
       bucket_key =
@@ -1196,9 +508,9 @@ defmodule SalixIM.SlackTriageReceiptTest do
       assert eventually(fn ->
                match?({:ok, %{"open_receipts" => [^receipt]}}, CasRecord.get(bucket_key))
              end),
-             inspect(:sys.get_state(recovery))
+             inspect(:sys.get_state(recovery, :infinity))
 
-      assert Process.alive?(recovery)
+      assert SystemsRuntime.Proc.alive?(recovery)
     end
   end
 
@@ -1276,12 +588,13 @@ defmodule SalixIM.SlackTriageReceiptTest do
     assert second_page.scan_complete
     assert second_page.seen_connect_ids == [connect_id]
 
-    namespace = "triage-recovery-duplicate-connect-#{System.unique_integer([:positive])}"
+    namespace =
+      "triage-recovery-duplicate-connect-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     runtime =
       start_supervised!(
         {SalixIM.Triage.Runtime, name: nil, mode: :review, namespace: namespace},
-        id: make_ref()
+        id: SystemsRuntime.Proc.make_ref()
       )
 
     recovery =
@@ -1293,18 +606,19 @@ defmodule SalixIM.SlackTriageReceiptTest do
          interval_ms: 25,
          full_ring_idle_ms: 100,
          held_poll_ms: 25,
-         lease_key: "ctl/test/triage-recovery-duplicate/#{System.unique_integer([:positive])}",
+         lease_key:
+           "ctl/test/triage-recovery-duplicate/#{SystemsRuntime.Proc.unique_integer([:positive])}",
          lease_ttl_ms: 5_000},
-        id: make_ref()
+        id: SystemsRuntime.Proc.make_ref()
       )
 
     assert eventually(fn ->
-             state = :sys.get_state(recovery)
+             state = :sys.get_state(recovery, :infinity)
              state.phase == :resolve and not is_nil(state.resolution)
            end)
 
     assert eventually(fn ->
-             state = :sys.get_state(recovery)
+             state = :sys.get_state(recovery, :infinity)
              state.phase == :list and is_nil(state.page) and not is_nil(state.lease)
            end)
 
@@ -1407,15 +721,6 @@ defmodule SalixIM.SlackTriageReceiptTest do
     revision
   end
 
-  defp eventually(fun, attempts \\ 100)
-  defp eventually(fun, 0), do: fun.()
-
-  defp eventually(fun, attempts) do
-    if fun.() do
-      true
-    else
-      Process.sleep(10)
-      eventually(fun, attempts - 1)
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 end

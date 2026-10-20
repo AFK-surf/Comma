@@ -82,7 +82,7 @@ services:
     image: node:24-alpine
     command: ["node", "/app/scripts/local-llm-mock.mjs"]
     environment:
-      PORT: "43123"
+      PORT: "23123"
       LOG_PATH: /tmp/comma-local-llm-requests.jsonl
     volumes:
       - ./scripts:/app/scripts:ro
@@ -92,7 +92,7 @@ services:
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:43123/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+          "fetch('http://127.0.0.1:23123/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
         ]
       interval: 2s
       timeout: 3s

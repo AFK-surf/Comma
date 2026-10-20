@@ -1,4 +1,4 @@
-import { FileIcon } from "@comma/ui";
+import { FileIcon } from "@comma/ui/components/icons";
 
 export function AttachmentPill({
   label,

@@ -113,6 +113,11 @@ export const recommendationActionSchema = z.discriminatedUnion("type", [
       memberTask: z.literal(true).optional(),
       prompt: z.string().min(1).max(recommendationLimits.payloadBytes),
       requiresConfirmation: z.literal(true),
+      // Decoded with memberTask: the source of the member's task, such as a
+      // Linear issue or a Gmail message. The prompt names the URL as text;
+      // these fields let the client show the source's mark and open the item.
+      sourceId: z.string().min(1).max(128).optional(),
+      sourceUrl: z.url().optional(),
       type: z.literal("send_to_comma"),
     })
     .strict(),
@@ -271,7 +276,13 @@ function expandRecommendationPrompts(
       }
       used.add(promptId as string);
       if (object.type === "send_to_comma")
-        return { ...rest, prompt: prompt.text, memberTask: true };
+        return {
+          ...rest,
+          prompt: prompt.text,
+          memberTask: true,
+          sourceId: prompt.sourceId,
+          ...(prompt.sourceUrl ? { sourceUrl: prompt.sourceUrl } : {}),
+        };
       if (
         object.sourceId !== prompt.sourceId ||
         (prompt.sourceUrl !== undefined && object.href !== prompt.sourceUrl)
@@ -358,6 +369,7 @@ export const recommendationSnapshotSchema = z.preprocess(
 // Why the last generation failed, as a bounded class. Present with the
 // `error` and `stale` states; the stored failure text never crosses the API.
 export const recommendationLastErrorSchema = z.enum([
+  "insufficient_credits",
   "invalid_projection",
   "renderer_declined",
   "source_collection_failed",

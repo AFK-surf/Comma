@@ -19,9 +19,6 @@ defmodule SalixAgent.VisibleReplyPolicy do
   def repair_required?(phase), do: policy(:repair_required?, phase)
   def repair_budget, do: policy(:repair_budget, nil)
 
-  def append_repair_reminder(messages, phase),
-    do: policy(:append_repair_reminder, {messages, phase})
-
   def sanitize_activity_calls(calls, phase), do: policy(:sanitize_activity_calls, {calls, phase})
   def label_results(results), do: policy(:label_results, results)
   def label_result(result), do: policy(:label_result, result)
@@ -52,7 +49,7 @@ defmodule SalixAgent.VisibleReplyPolicy do
   def transition_events(transition, session_id, hwm),
     do: policy(:transition_events, {transition, session_id, hwm})
 
-  def sanitize_context(messages, phase), do: policy(:sanitize_context, {messages, phase})
+  def sanitize_context(messages), do: policy(:sanitize_context, messages)
 
   def async_completion_events(events, session, result, opts \\ []),
     do:

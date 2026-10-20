@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
-	"time"
 )
 
 func TestDependencyDeclarationPrunesDeletedSourceBeforeArchive(t *testing.T) {
@@ -96,7 +97,15 @@ func TestCancelledInstallStopsItsChildBeforeAgentTakesOver(t *testing.T) {
 	bin := t.TempDir()
 	started := filepath.Join(bin, "started")
 	late := filepath.Join(bin, "late")
-	script := "#!/bin/sh\necho started > '" + started + "'\n(sleep 1; echo late > '" + late + "') &\nwait\n"
+	release := filepath.Join(bin, "release")
+	childPID := filepath.Join(bin, "child.pid")
+	// The installer's background child writes only after the test releases it:
+	// a child that cancellation killed never writes.
+	script := "#!/bin/sh\n" +
+		"sh -c 'while [ ! -e \"" + release + "\" ]; do sleep 0.01; done; echo late > \"" + late + "\"' &\n" +
+		"echo $! > '" + childPID + "'\n" +
+		"echo started > '" + started + "'\n" +
+		"wait\n"
 	if err := os.WriteFile(filepath.Join(bin, "npm"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -117,12 +126,14 @@ func TestCancelledInstallStopsItsChildBeforeAgentTakesOver(t *testing.T) {
 	if _, err := c.methodDependencyInstallations(map[string]any{"action": "start"}); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for !exists(started) && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	waitForCondition(t, "the installer to start", func() bool { return fileExists(started) })
+	pidData, err := os.ReadFile(childPID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !exists(started) {
-		t.Fatal("installer did not start")
+	child, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	if err != nil {
+		t.Fatal(err)
 	}
 	beforeCancel, err := c.readDependencyManifest()
 	if err != nil {
@@ -134,19 +145,20 @@ func TestCancelledInstallStopsItsChildBeforeAgentTakesOver(t *testing.T) {
 	if _, err := c.methodDependencyInstallations(map[string]any{"action": "cancel"}); err != nil {
 		t.Fatal(err)
 	}
-	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	waitForCondition(t, "the installation to be cancelled", func() bool {
 		result, err := c.methodDependencyInstallations(map[string]any{"action": "list"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(result.(map[string]any)["installation"].(map[string]any)["status"].(string), "cancelled") {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+		return strings.Contains(result.(map[string]any)["installation"].(map[string]any)["status"].(string), "cancelled")
+	})
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	time.Sleep(1100 * time.Millisecond)
-	if exists(late) {
+	waitForCondition(t, "the installer's background child to exit", func() bool {
+		return syscall.Kill(child, 0) != nil
+	})
+	if fileExists(late) {
 		t.Fatal("cancelled child continued writing")
 	}
 	restarted := &connector{root: c.root}
@@ -157,8 +169,8 @@ func TestCancelledInstallStopsItsChildBeforeAgentTakesOver(t *testing.T) {
 	if !manifest.Entries[".salix/sprite-home/.local/lib/node_modules"].Paused {
 		t.Fatal("cancel did not persist agent takeover")
 	}
+	// The start counts its queue before it returns.
 	restarted.startDependencyInstallLocked(manifest)
-	time.Sleep(50 * time.Millisecond)
 	if restarted.dependencyInstall.Total != 0 {
 		t.Fatal("restart queued cancelled install")
 	}

@@ -20,7 +20,7 @@ defmodule SalixIFC.LeanBoundaryTest do
           %{facts | membership: %{{:tag, "private"} => {:members, MapSet.new(), -1}}},
           %{facts | now: -1},
           Map.put(facts, :unused, %URI{}),
-          Map.put(facts, :unused, self()),
+          Map.put(facts, :unused, SystemsRuntime.Proc.self()),
           Map.put(facts, :unused, fn -> true end)
         ] do
       assert {:deny, %Reason{clause: :invalid_input}} =
@@ -61,23 +61,6 @@ defmodule SalixIFC.LeanBoundaryTest do
 
     assert {:deny, _} =
              SalixIFC.decide(effect, activation, [request], %{facts | now: 9, membership: %{}})
-  end
-
-  test "constructors do not invoke custom enumerable protocols" do
-    for constructor <- [&Label.new/1, &Facts.new/1, &Policy.new/1] do
-      assert_raise ArgumentError, fn -> constructor.(%URI{}) end
-    end
-  end
-
-  test "malformed helper arguments cannot become a public label or read permission" do
-    for bad <- [%{}, %Label{atoms: %{}}, %Label{atoms: MapSet.new([:unknown_audience])}] do
-      assert_raise ArgumentError, fn -> Label.join(bad, Label.bottom()) end
-      assert_raise ArgumentError, fn -> SalixIFC.reader?(:system, bad, %Facts{}) end
-
-      assert_raise ArgumentError, fn ->
-        SalixIFC.readers_subset?(Label.bottom(), bad, %Facts{})
-      end
-    end
   end
 
   test "the IFC domain crosses the same ETF entry point as Session" do

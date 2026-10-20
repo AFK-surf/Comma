@@ -1,5 +1,5 @@
 defmodule SalixIM.Migrations.SlackTriageChannelAuthorityCutoverTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.Migrations.SlackTriageChannelAuthorityCutover
   alias SalixIM.ProviderConnects
@@ -71,8 +71,8 @@ defmodule SalixIM.Migrations.SlackTriageChannelAuthorityCutoverTest do
   end
 
   setup do
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
 
     Repo.query!("""
@@ -313,7 +313,7 @@ defmodule SalixIM.Migrations.SlackTriageChannelAuthorityCutoverTest do
     secret_coordinate =
       ~s({"tenant_id":"#{tenant_id}","group_id":"#{group_id}","connect_id":"private"})
 
-    Application.put_env(:salix_store, :s3_backend, LeakyErrorS3)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, LeakyErrorS3)
     LeakyErrorS3.fail_next_list(secret_coordinate)
 
     assert {:error, {:slack_triage_channel_scan_failed, list_reason}} =
@@ -372,6 +372,6 @@ defmodule SalixIM.Migrations.SlackTriageChannelAuthorityCutoverTest do
     record
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

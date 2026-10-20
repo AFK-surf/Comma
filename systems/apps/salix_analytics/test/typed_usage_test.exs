@@ -1,5 +1,5 @@
 defmodule SalixAnalytics.TypedUsageTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAnalytics.{
     AgentRunEvent,
@@ -27,20 +27,25 @@ defmodule SalixAnalytics.TypedUsageTest do
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
 
-    prev_clickhouse = Application.get_env(:salix_analytics, :clickhouse)
-    prev_sink = Application.get_env(:salix_analytics, :typed_sink)
+    prev_clickhouse = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
+    prev_sink = SystemsRuntime.get_env(:salix_analytics, :typed_sink)
 
-    Application.put_env(:salix_analytics, :clickhouse,
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
       base_url: "http://127.0.0.1:#{port}/",
       table: "test.events",
       typed_database: "test"
     )
 
-    Application.put_env(:salix_analytics, :typed_sink, ClickHouseTyped)
+    SystemsRuntime.put_env(:salix_analytics, :typed_sink, ClickHouseTyped)
 
     on_exit(fn ->
-      Application.put_env(:salix_analytics, :clickhouse, prev_clickhouse)
-      Application.put_env(:salix_analytics, :typed_sink, prev_sink)
+      if prev_clickhouse,
+        do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, prev_clickhouse),
+        else: SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
+
+      if prev_sink,
+        do: SystemsRuntime.put_env(:salix_analytics, :typed_sink, prev_sink),
+        else: SystemsRuntime.delete_env(:salix_analytics, :typed_sink)
     end)
 
     :ok
@@ -282,7 +287,7 @@ defmodule SalixAnalytics.TypedUsageTest do
 
     assert :ok = TypedSinkWorker.enqueue([row], server: :typed_usage_async_worker)
     assert_receive {:reporting, :queue, %{depth: 1}, %{sink: "reporting"}}
-    assert_receive {:reporting, :flush, %{duration: duration}, %{outcome: "ok"}}, 5_000
+    assert_receive {:reporting, :flush, %{duration: duration}, %{outcome: "ok"}}
     assert is_integer(duration) and duration >= 0
     assert_receive {:reporting, :queue, %{depth: 0}, %{sink: "reporting"}}
 
@@ -290,7 +295,7 @@ defmodule SalixAnalytics.TypedUsageTest do
              SalixAnalytics.MockClickHouse.count() == 1
            end)
 
-    :telemetry.detach(handler)
+    SystemsRuntime.Telemetry.detach(handler)
   end
 
   test "typed worker rejects async enqueue when the bounded buffer is full" do
@@ -312,7 +317,7 @@ defmodule SalixAnalytics.TypedUsageTest do
              TypedSinkWorker.enqueue([row], server: :typed_usage_bounded_worker)
 
     assert_receive {:reporting, :queue_full, %{value: 1}, %{sink: "reporting"}}
-    :telemetry.detach(handler)
+    SystemsRuntime.Telemetry.detach(handler)
   end
 
   test "readiness checks typed tables without falling back to Postgres" do
@@ -358,15 +363,15 @@ defmodule SalixAnalytics.TypedUsageTest do
   end
 
   defp attach_reporting_telemetry do
-    handler = "typed-reporting-#{System.unique_integer([:positive])}"
-    parent = self()
+    handler = "typed-reporting-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    parent = SystemsRuntime.Proc.self()
 
     :ok =
-      :telemetry.attach_many(
+      SystemsRuntime.Telemetry.attach_many(
         handler,
         Enum.map([:queue, :queue_full, :flush, :drop], &[:salix, :reporting, &1]),
         fn [_salix, _reporting, event], measurements, metadata, _ ->
-          send(parent, {:reporting, event, measurements, metadata})
+          SystemsRuntime.Proc.send(parent, {:reporting, event, measurements, metadata})
         end,
         nil
       )
@@ -433,7 +438,7 @@ defmodule SalixAnalytics.TypedUsageTest do
     }
   end
 
-  defp eventually(fun, retries \\ 50) do
+  defp eventually(fun, retries \\ 3000) do
     cond do
       fun.() ->
         true
@@ -442,7 +447,7 @@ defmodule SalixAnalytics.TypedUsageTest do
         false
 
       true ->
-        Process.sleep(10)
+        SystemsRuntime.Proc.sleep(10)
         eventually(fun, retries - 1)
     end
   end

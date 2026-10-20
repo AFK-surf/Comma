@@ -207,14 +207,22 @@ private def failureSummary : String :=
 private def modelSummary : String :=
   "The model service could not continue this request. Ask your workspace administrator to check model availability, access and usage limits. Work already started may still finish. This notice does not cancel it or confirm its result."
 
+/-- The text that the failure notice sends to the source. -/
+private def noticeText (binding : Term) : String :=
+  let billing := key binding "billing_reason"
+  if billing == b "insufficient_credits" then
+    "I stopped because this workspace is out of Comma credits. Add credits in Settings > Usage & billing, then send your message again."
+  else if billing == b "provider_quota_exhausted" then
+    "I stopped because the model provider account behind your own API key or subscription has run out, and Comma credits do not cover it. Add funds with that provider or wait for its limit to reset (Settings > Model & API shows which account this assistant uses), then send your message again."
+  else if billing == b "account_inactive" || billing == b "missing_account" then
+    "Billing is unavailable for this request. Ask your workspace administrator to check the billing account, then try again."
+  else if key binding "failure_reason" == b "model" then modelSummary else failureSummary
+
+/-- The send operation of the failure notice. The runtime dispatches it; it is
+not a model call and the transcript does not record it. -/
 private def noticeCall (binding : Term) : Term :=
   let model := key binding "failure_reason" == b "model"
-  let billing := key binding "billing_reason"
-  let summary := b (if billing == b "insufficient_credits" then
-      "Not enough credits to continue this request. Add credits, then send a new message to try again."
-    else if billing == b "account_inactive" || billing == b "missing_account" then
-      "Billing is unavailable for this request. Ask your workspace administrator to check the billing account, then try again."
-    else if model then modelSummary else failureSummary)
+  let summary := b (noticeText binding)
   let target := key binding "reply_target"
   let (tool, params) :=
     if target.isMap then
@@ -234,6 +242,17 @@ private def noticeCall (binding : Term) : Term :=
   .map [(b "id", key binding "tool_call_id"), (b "name", b "call"),
     (b "args", .map ([(b "tool", tool), (b "params", params)] ++ intent)),
     (b "runtime_failure_reply", binding)]
+
+/-- The transcript record of the failure notice `call`: a no-wake runtime
+message at `aid`, keyed by the notice id. It is the only transcript entry of
+the notice, so the model sees the runtime's notice and no call of its own. -/
+private def noticeRecord (sid aid call : Term) : Term :=
+  .map [(b "type", b "runtime_message"), (b "session_id", sid), (b "from_queue", a "true"),
+    (b "message_id", aid), (b "runtime_message_id", key call "id"),
+    (b "runtime_message_type", b "runtime_failure_reply"), (b "dedupe_key", key call "id"),
+    (b "summary", b ("Runtime failure notice for the current source: " ++
+      noticeText (key call "runtime_failure_reply"))),
+    (b "no_wake", a "true")]
 
 /-- A round entered for a pending failure notice reports whether the notice
 settled; any other round ends `final`. -/
@@ -286,11 +305,9 @@ private def guardNotice (ask : Ask) (state machine : Term) : KernelM Term := do
   let attempt ← ask state "guard_failure_prepare" binding
   if !attempt.isMap then return result stopped stopEffects
   let call := noticeCall (key attempt "event")
-  let assistant := Term.map [(b "type", b "assistant"), (b "session_id", sid), (b "message_id", aid),
-    (b "content", b ""), (b "tool_calls", list [call]), (b "visible_reply_phase", b "clean")]
   let machine := ((machine.put (b "notice") call).put (b "notice_aid") aid).put (b "notice_authorized")
     (Term.bool send.isMap)
-  return result (phase machine "notice_cleanup") [commit [assistant, attempt] aid, cont]
+  return result (phase machine "notice_cleanup") [commit [noticeRecord sid aid call, attempt] aid, cont]
 
 private def noticeCleanup (ask : Ask) (state machine : Term) : KernelM Term := do
   let now ← observe (a "time")

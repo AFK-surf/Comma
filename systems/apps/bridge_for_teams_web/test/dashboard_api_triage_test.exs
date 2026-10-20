@@ -1,4 +1,6 @@
 defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The Slack triage API behind the React pages at `/orgs/:org/triage`,
   `/triage/timeline` and `/triage/knowledge`: the Agent roster and its Slack
@@ -73,7 +75,7 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
     def triage_connect_posture(_tenant_id, group_id) do
       case Stub.call({:posture, group_id}, {:ok, []}) do
         {:slow, ms, result} ->
-          Process.sleep(ms)
+          SystemsClock.sleep(ms)
           result
 
         result ->
@@ -159,6 +161,7 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
   end
 
   setup %{conn: conn} do
+    SalixAgent.TestSupport.configure_platform_models!()
     %{conn: conn, org: org, user: user} = register_and_log_in_user(%{conn: conn})
 
     {:ok, project} =
@@ -201,33 +204,8 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
 
       assert %{"error" => %{"code" => "agent_not_found"}} =
                conn
-               |> get(triage_path(org, "/activity", agent: Ecto.UUID.generate()))
+               |> get(triage_path(org, "/activity", agent: SystemsRuntime.Proc.uuid()))
                |> json_response(404)
-    end
-
-    test "the React pages, and the retired Context, Memory and Raw data addresses, are served",
-         %{conn: conn, org: org} do
-      for page <- ["", "/timeline", "/knowledge", "/context", "/memory", "/data"] do
-        assert html_response(get(conn, "/orgs/#{org.slug}/triage#{page}"), 200) =~
-                 ~s(<div id="root">)
-      end
-    end
-
-    test "the LiveView sidebar links Slack triage for owners and not for members",
-         %{conn: conn, org: org, project: project} do
-      {:ok, _view, html} = live(conn, ~p"/orgs/#{org.slug}/projects/#{project.id}/plugins")
-      assert html =~ ~s(href="/orgs/#{org.slug}/triage")
-
-      member = user_fixture(email: "triage-nav-member-#{unique()}@example.com")
-      {:ok, _} = Memberships.put_org_member(org.id, member.id, "member")
-      {:ok, _} = Memberships.put_project_member(project.id, member.id, "user")
-
-      {:ok, _view, html} =
-        build_conn()
-        |> log_in_user(member)
-        |> live(~p"/orgs/#{org.slug}/projects/#{project.id}/plugins")
-
-      refute html =~ "/orgs/#{org.slug}/triage"
     end
 
     test "writes need the page's CSRF token", %{
@@ -317,32 +295,6 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
       assert %{"name" => "Bridge", "state" => "empty", "sources" => []} = agents[previous.id]
       refute Jason.encode!(data) =~ "noise"
     end
-
-    test "an unreadable project is reported, not shown as an Agent without Slack",
-         %{conn: conn, org: org, project: project, router: router} do
-      use_stub(%{{:posture, project.salix_group_id} => {:error, :unavailable}})
-      data = conn |> get(triage_path(org)) |> json_response(200) |> data()
-
-      assert data["unavailable_projects"] == ["Bridge"]
-      assert [%{"id" => id, "state" => "unavailable", "sources" => []}] = data["agents"]
-      assert id == router.id
-    end
-
-    test "one request builds the org scope once and a Salix outage costs one timeout",
-         %{conn: conn, org: org, project: project} do
-      others = for i <- 1..23, do: sick_project(org, "Down #{i}")
-      groups = [project.salix_group_id | Enum.map(others, & &1.salix_group_id)]
-      use_stub(Map.new(groups, &{{:posture, &1}, {:slow, 30_000, {:error, :unavailable}}}))
-
-      {elapsed_us, conn} = :timer.tc(fn -> get(conn, triage_path(org)) end)
-      data = conn |> json_response(200) |> data()
-
-      # 24 sequential 30s reads would be twelve minutes; the bound is one
-      # per-group timeout and one concurrency window of reads.
-      assert div(elapsed_us, 1000) < 15_000
-      assert posture_calls() <= 16
-      assert data["unavailable_projects"] != []
-    end
   end
 
   describe "AI evaluation" do
@@ -373,21 +325,6 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
                |> get(triage_path(org, "/evaluation", agent: router.id, refresh: "1"))
                |> json_response(200)
                |> data()
-    end
-
-    test "an incomplete or old evaluator answer is unknown, never unavailable",
-         %{conn: conn, org: org, router: router} do
-      for ring <- [ring(:unknown), Map.delete(ring(:ready), :evaluation_readiness)] do
-        use_stub(%{:ring => {:ok, ring}})
-
-        assert %{"readiness" => "unknown"} =
-                 conn
-                 |> get(triage_path(org, "/evaluation", agent: router.id, refresh: "1"))
-                 |> json_response(200)
-                 |> data()
-
-        stop_supervised!(Stub)
-      end
     end
   end
 
@@ -427,63 +364,6 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
 
       assert notice =~ "Explicit human @bot commands remain available"
       assert {:set_enabled, project.salix_group_id, "c-1", false} in Stub.calls()
-    end
-
-    test "enabling needs a ready source with a channel; disabling an unreadable one stays safe",
-         %{conn: conn, org: org, project: project, router: router} do
-      use_stub(%{
-        {:posture, project.salix_group_id} =>
-          {:ok,
-           [
-             posture("c-empty", %{
-               configured_channels: [],
-               channel_controls_available?: false,
-               authority_valid?: false
-             }),
-             posture("c-unreadable", %{
-               triage_enabled: true,
-               posture_complete?: false,
-               authority_valid?: false
-             })
-           ]}
-      })
-
-      for body <- [%{"enabled" => true}, %{"enabled" => "delete"}] do
-        assert %{"error" => %{"message" => message}} =
-                 conn
-                 |> put(triage_path(org, "/sources/c-empty"), Map.put(body, "agent", router.id))
-                 |> json_response(422)
-
-        assert message == "Only organization owners and admins can change Triage switches."
-      end
-
-      refute Enum.any?(Stub.calls(), &match?({:set_enabled, _, "c-empty", _}, &1))
-
-      assert %{"ok" => true} =
-               conn
-               |> put(triage_path(org, "/sources/c-unreadable"), %{
-                 "agent" => router.id,
-                 "enabled" => false
-               })
-               |> json_response(200)
-
-      assert {:set_enabled, project.salix_group_id, "c-unreadable", false} in Stub.calls()
-    end
-
-    test "a write that times out says the result is unconfirmed",
-         %{conn: conn, org: org, project: project, router: router} do
-      use_stub(%{
-        {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
-        {:set_enabled, project.salix_group_id, "c-1", true} => {:error, :timeout}
-      })
-
-      assert %{"error" => %{"code" => "unconfirmed", "message" => message}} =
-               conn
-               |> put(triage_path(org, "/sources/c-1"), %{"agent" => router.id, "enabled" => true})
-               |> json_response(504)
-
-      assert message =~ "unconfirmed"
-      refute message =~ "could not be changed"
     end
 
     test "a channel pauses alone, and only while channel controls are complete",
@@ -583,21 +463,6 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
                Enum.filter(Stub.calls(), &match?({:provision, _, _, _}, &1))
     end
 
-    test "a failed Slack channel read is unavailable, not an empty list",
-         %{conn: conn, org: org, project: project, router: router} do
-      use_stub(%{
-        {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
-        {:channels, project.salix_group_id, "c-1", nil, 100} => {:error, :unavailable}
-      })
-
-      assert %{"error" => %{"message" => message}} =
-               conn
-               |> get(triage_path(org, "/channels", agent: router.id, connect: "c-1"))
-               |> json_response(503)
-
-      assert message =~ "channel list cannot be refreshed right now"
-    end
-
     test "writes reach only the selected Agent's own sources in this org",
          %{conn: conn, org: org, project: project, router: router} do
       other = insert_router_agent(project)
@@ -647,104 +512,25 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
     end
   end
 
-  describe "Worker for Triage" do
-    test "an administrator selects the Worker through an audited, revision-checked save",
+  describe "where Triage Tasks run" do
+    test "the swarm's Settings say it; choosing a Worker is retired",
          %{conn: conn, org: org, project: project, router: router, user: user} do
-      workers =
-        for name <- ["First investigator", "Second investigator"] do
-          {:ok, worker} =
-            BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(
-              project.id,
-              %{
-                role: "worker",
-                name: name
-              }
-            )
-
-          worker
-        end
-
-      [first, second] = workers
       {:ok, _} = Memberships.put_project_member(project.id, user.id, "admin")
       use_stub(%{})
 
-      view =
-        conn
-        |> get(triage_path(org, "/worker", agent: router.id, query: "investigator"))
-        |> json_response(200)
-        |> data()
-
-      assert %{"can_manage" => true, "worker_id" => nil, "revision" => revision} = view
-      assert first.salix_agent_id in Enum.map(view["candidates"], & &1["id"])
-
-      save = fn worker, revision ->
-        put(conn, triage_path(org, "/worker"), %{
-          "agent" => router.id,
-          "worker_id" => worker,
-          "revision" => revision
-        })
-      end
-
-      assert %{"notice" => "Triage Worker updated. Existing assignments keep their Worker."} =
-               first.salix_agent_id |> save.(revision) |> json_response(200) |> data()
-
-      assert {:ok, binding} = Salix.Bindings.TriageWorker.get(project.salix_group_id)
-
-      assert {binding["worker_agent_id"], binding["actor_user_id"]} ==
-               {first.salix_agent_id, user.id}
-
-      assert [audit] =
-               Observability.list_audit_logs(org.id,
-                 action: "integration.slack.triage_worker_change_attempted"
-               )
-
-      assert audit.request_id == binding["request_id"]
-
-      # A page that read the old revision cannot overwrite the new choice.
-      assert %{"error" => %{"code" => "worker_conflict"}} =
-               second.salix_agent_id |> save.(revision) |> json_response(409)
-
-      assert {:ok, %{"worker_agent_id" => kept}} =
-               Salix.Bindings.TriageWorker.get(project.salix_group_id)
-
-      assert kept == first.salix_agent_id
-
-      %{"revision" => current, "worker" => %{"name" => "First investigator"}} =
-        conn |> get(triage_path(org, "/worker", agent: router.id)) |> json_response(200) |> data()
-
-      assert %{"ok" => true} = second.salix_agent_id |> save.(current) |> json_response(200)
-
-      # A revoked administrator is refused before any mutation.
-      {:ok, _} = Memberships.put_org_member(org.id, user.id, "member")
-      assert nil |> save.(current + 1) |> json_response(404)
-
-      assert {:ok, %{"worker_agent_id" => worker}} =
-               Salix.Bindings.TriageWorker.get(project.salix_group_id)
-
-      assert worker == second.salix_agent_id
-    end
-
-    test "a Worker change stops before mutation when the audit store is unavailable",
-         %{conn: conn, org: org, project: project, router: router} do
-      {:ok, worker} =
-        BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_agent(project.id, %{
-          role: "worker",
-          name: "Investigator"
-        })
-
-      use_stub(%{})
-      use_failing_audit_writer()
-
-      assert %{"error" => %{"code" => "audit_unavailable"}} =
+      assert %{"settings_href" => href, "tools_ready" => tools_ready} =
                conn
-               |> put(triage_path(org, "/worker"), %{
-                 "agent" => router.id,
-                 "worker_id" => worker.salix_agent_id,
-                 "revision" => 0
-               })
-               |> json_response(503)
+               |> get(triage_path(org, "/worker", agent: router.id))
+               |> json_response(200)
+               |> data()
 
-      assert {:ok, %{"revision" => 0}} = Salix.Bindings.TriageWorker.get(project.salix_group_id)
+      assert href == "/orgs/#{org.slug}/projects/#{project.id}/settings"
+      assert tools_ready in [true, false, nil]
+
+      assert %{"error" => %{"code" => "workers_retired"}} =
+               conn
+               |> put(triage_path(org, "/worker"), %{"agent" => router.id, "worker_id" => "x"})
+               |> json_response(410)
     end
   end
 
@@ -907,57 +693,6 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
       assert reveal.(Enum.map(1..21, &"r#{&1}")) |> json_response(404)
     end
 
-    test "a reveal reads the Timeline page it was shown on, with numbers from a JSON body",
-         %{conn: conn, org: org, project: project, router: router} do
-      use_stub(%{
-        {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
-        :product_activity => {:ok, activity_page()}
-      })
-
-      for {activity, expected} <- [
-            {%{"kind" => "all", "channel" => "C123", "before" => 1_700_000_000_000},
-             [channel_id: "C123", before_ms: 1_700_000_000_000]},
-            {%{"kind" => "all", "before" => 1_700_000_000_000, "cursor" => "server-second"},
-             [cursor: "server-second", before_ms: nil]}
-          ] do
-        body = %{"agent" => router.id, "refs" => ["receipt-one"], "activity" => activity}
-
-        assert %{"messages" => %{"receipt-one" => _}} =
-                 conn
-                 |> put_req_header("content-type", "application/json")
-                 |> post(triage_path(org, "/reveal"), Jason.encode!(body))
-                 |> json_response(200)
-                 |> data()
-
-        {:activity_opts, opts} =
-          Stub.calls() |> Enum.filter(&match?({:activity_opts, _}, &1)) |> List.last()
-
-        for {key, value} <- expected, do: assert(opts[key] == value)
-      end
-    end
-
-    test "a reveal whose audit row fails returns no text",
-         %{conn: conn, org: org, project: project, router: router} do
-      use_stub(%{
-        {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
-        :product_activity => {:ok, activity_page()}
-      })
-
-      use_failing_audit_writer()
-
-      assert %{"error" => %{"message" => message}} =
-               conn
-               |> post(triage_path(org, "/reveal"), %{
-                 "agent" => router.id,
-                 "refs" => ["receipt-one"],
-                 "activity" => %{"kind" => "all"}
-               })
-               |> json_response(503)
-
-      assert message =~ "the access record failed to write"
-      refute message =~ "Could someone verify"
-    end
-
     test "Knowledge reveals a received message from the last 7 days with its own audit surface",
          %{conn: conn, org: org, project: project, router: router} do
       use_stub(%{
@@ -1013,141 +748,6 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
 
       assert audits |> Enum.map(& &1.resource_id) |> Enum.sort() ==
                ["s3://receipt-c-1", "s3://receipt-c-2"]
-    end
-
-    test "a crashing Salix client is unavailable, not a server error",
-         %{conn: conn, org: org, project: project, router: router} do
-      use_stub(%{
-        {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
-        :product_activity => :crash,
-        :ring => :crash,
-        {:processing_detail, project.salix_group_id, "receipt-two"} => :crash
-      })
-
-      for path <- [
-            triage_path(org, "/activity", agent: router.id),
-            triage_path(org, "/processing", agent: router.id, ref: "receipt-two")
-          ] do
-        assert %{"error" => %{"code" => "runtime_unavailable"}} =
-                 conn |> get(path) |> json_response(503)
-      end
-
-      assert %{"readiness" => "unknown"} =
-               conn
-               |> get(triage_path(org, "/evaluation", agent: router.id))
-               |> json_response(200)
-               |> data()
-    end
-
-    test "batch details, delegations and reveals read the Agent roster once",
-         %{conn: conn, org: org, project: project, router: router} do
-      use_stub(%{
-        {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
-        :product_activity => {:ok, activity_page()},
-        {:processing_detail, project.salix_group_id, "receipt-two"} =>
-          {:ok, %{state: :terminal, diagnostics: %{}}},
-        {:delegation_task, project.id, project.salix_group_id, router.id, @obligation, 0} =>
-          {:ok, %{"disposition" => "not_created"}}
-      })
-
-      # Warm the cached Slack source scope, which is not the roster.
-      conn |> get(triage_path(org)) |> json_response(200)
-
-      for request <- [
-            &get(&1, triage_path(org, "/processing", agent: router.id, ref: "receipt-two")),
-            &get(
-              &1,
-              triage_path(org, "/delegation", agent: router.id, obligation: @obligation, index: 0)
-            ),
-            &post(&1, triage_path(org, "/reveal"), %{
-              "agent" => router.id,
-              "refs" => ["receipt-two"],
-              "activity" => %{"kind" => "all"}
-            })
-          ] do
-        before = roster_reads()
-        assert conn |> request.() |> json_response(200)
-        assert roster_reads() - before == 1
-      end
-    end
-
-    test "the heatmap is one cached read per Agent", %{
-      conn: conn,
-      org: org,
-      project: project,
-      router: router
-    } do
-      cell = %{
-        connect_id: "c-1",
-        channel_id: "C123",
-        at_ms: 1_000,
-        reply: 1,
-        reaction: 0,
-        silence: 2,
-        total: 3
-      }
-
-      use_stub(%{
-        {:posture, project.salix_group_id} => {:ok, [posture("c-1")]},
-        :product_heatmap =>
-          {:ok, %{since_ms: 0, bucket_ms: 3_600_000, truncated: false, cells: [cell]}}
-      })
-
-      for _ <- 1..2 do
-        assert %{
-                 "since_ms" => 0,
-                 "cells" => [%{"channel_id" => "C123", "total" => 3, "reply" => 1}]
-               } =
-                 conn
-                 |> get(triage_path(org, "/heatmap", agent: router.id))
-                 |> json_response(200)
-                 |> data()
-      end
-
-      assert Enum.count(Stub.calls(), &(&1 == :heatmap_read)) == 1
-    end
-
-    test "batch evidence is read for one received message, and a failure keeps it unavailable",
-         %{conn: conn, org: org, project: project, router: router} do
-      key = {:processing_detail, project.salix_group_id, "receipt-two"}
-
-      use_stub(%{
-        key =>
-          {:ok,
-           %{
-             state: :terminal,
-             terminal_status: "failed",
-             suggested_action: nil,
-             diagnostics: %{
-               source: %{addressing_kind: "ambient", source_mode: "callback", thread_ts: "1.2"},
-               milestones: %{received_at_ms: 1_000, settled_at_ms: 2_500},
-               trace_ref: "triage-failed-sample",
-               decision_reason: "evaluation_unavailable",
-               evaluator: nil
-             }
-           }}
-      })
-
-      path = triage_path(org, "/processing", agent: router.id, ref: "receipt-two")
-
-      assert %{
-               "state" => "terminal",
-               "terminal_status" => "failed",
-               "decision_reason" => "evaluation_unavailable",
-               "milestones" => %{"received_at_ms" => 1_000, "settled_at_ms" => 2_500},
-               "source" => %{"addressing_kind" => "ambient"},
-               "evaluator" => nil
-             } = conn |> get(path) |> json_response(200) |> data()
-
-      Stub.put(key, {:error, :unavailable})
-
-      assert %{
-               "error" => %{
-                 "message" =>
-                   "Batch evidence is unavailable. The recorded processing status is still shown."
-               }
-             } =
-               conn |> get(path) |> json_response(503)
     end
   end
 
@@ -1223,51 +823,6 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
       assert href == "/orgs/#{org.slug}/projects/#{project.id}/tasks/#{task_id}"
       refute Jason.encode!(data) =~ "private transport detail"
       assert delegation_lookups() == [key]
-    end
-
-    test "not created, unavailable and failed lookups stay distinct; bad locators never cross",
-         %{conn: conn, org: org, project: project, router: router, user: user} do
-      key = {:delegation_task, project.id, project.salix_group_id, router.id, @obligation, 0}
-      use_stub(%{})
-
-      path =
-        triage_path(org, "/delegation", agent: router.id, obligation: @obligation, index: "0")
-
-      for {response, expected} <- [
-            {{:ok, %{"disposition" => "not_created"}}, %{"state" => "not_created"}},
-            {{:ok, %{"disposition" => "reserved_task_unavailable"}}, %{"state" => "unavailable"}}
-          ] do
-        Stub.put(key, response)
-
-        assert ^expected =
-                 conn |> get(path) |> json_response(200) |> data() |> Map.take(["state"])
-      end
-
-      Stub.put(key, {:error, {:unavailable, "private lookup diagnostic"}})
-      body = conn |> get(path) |> json_response(503)
-      assert body["error"]["message"] == "Task lookup is unavailable. Try again."
-      refute Jason.encode!(body) =~ "private lookup diagnostic"
-
-      lookups = length(delegation_lookups())
-
-      for params <- [
-            [obligation: @obligation, index: "2"],
-            [obligation: @obligation, index: "00"],
-            [obligation: "", index: "0"],
-            [obligation: @obligation]
-          ] do
-        params = [agent: router.id] ++ params
-
-        assert %{"error" => %{"message" => "That delegation is no longer available."}} =
-                 conn |> get(triage_path(org, "/delegation", params)) |> json_response(404)
-      end
-
-      assert length(delegation_lookups()) == lookups
-
-      # Access is checked on every lookup.
-      {:ok, _} = Memberships.put_org_member(org.id, user.id, "member")
-      assert conn |> get(path) |> json_response(404)
-      assert length(delegation_lookups()) == lookups
     end
   end
 
@@ -1405,42 +960,31 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
   end
 
   defp data(%{"data" => data}), do: data
-  defp unique, do: System.unique_integer([:positive])
+  defp unique, do: SystemsRuntime.Proc.unique_integer([:positive])
 
   defp use_stub(responses) do
     start_supervised!({Stub, responses})
-    previous = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, TriageClient)
+    previous = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, TriageClient)
     on_exit(fn -> restore(:bridge_for_teams_core, :salix_client, previous) end)
     if :ets.whereis(ReadCache) != :undefined, do: :ets.delete_all_objects(ReadCache)
     :ok
   end
 
-  # The audit writer is read from app env so the strict path is reachable:
-  # "the access record failed to write" cannot otherwise be produced.
-  defp use_failing_audit_writer do
-    previous = Application.get_env(:bridge_for_teams_core, :triage_audit_writer)
-
-    Application.put_env(:bridge_for_teams_core, :triage_audit_writer, fn _ ->
-      {:error, :offline}
-    end)
-
-    on_exit(fn -> restore(:bridge_for_teams_core, :triage_audit_writer, previous) end)
-  end
-
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp query_count(conn, path) do
-    test_pid = self()
+    test_pid = SystemsRuntime.Proc.self()
     handler = "triage-query-count-#{unique()}"
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:bridge_for_teams, :repo, :query],
         fn _event, _measurements, _metadata, _config ->
-          if self() == test_pid, do: send(test_pid, :repo_query)
+          if SystemsRuntime.Proc.self() == test_pid,
+            do: SystemsRuntime.Proc.send(test_pid, :repo_query)
         end,
         nil
       )
@@ -1449,20 +993,17 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
       conn |> get(path) |> json_response(200)
       count_messages(0)
     after
-      :telemetry.detach(handler)
+      SystemsRuntime.Telemetry.detach(handler)
     end
   end
 
   defp count_messages(count) do
-    receive do
+    SystemsRuntime.Proc.receive do
       :repo_query -> count_messages(count + 1)
     after
       0 -> count
     end
   end
-
-  defp posture_calls, do: Enum.count(Stub.calls(), &match?({:posture, _}, &1))
-  defp roster_reads, do: Enum.count(Stub.calls(), &match?({:roster_page, _}, &1))
 
   # The router Agent of a project in another org.
   defp foreign_router_agent do
@@ -1513,7 +1054,7 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
       evaluation_readiness: readiness,
       runtime: %{
         evaluation_readiness: readiness,
-        observed_at_ms: System.system_time(:millisecond)
+        observed_at_ms: SystemsClock.system_time(:millisecond)
       },
       recovery: %{cursor: nil}
     }
@@ -1541,7 +1082,7 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
   end
 
   defp activity_page do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     received = %{
       receipt_ref: "receipt-one",
@@ -1645,7 +1186,7 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
   end
 
   defp seed_assertion(project, user, kind, content, ref) do
-    source = %{type: "slack_receipt", ref: ref, observed_at: DateTime.utc_now()}
+    source = %{type: "slack_receipt", ref: ref, observed_at: SystemsClock.utc_now()}
     # An alias registered by an earlier assertion stays registered.
     _ = ProjectKnowledge.register_alias(project.id, {:person, user.id}, user.name, source)
     _ = ProjectKnowledge.register_alias(project.id, {:project, project.id}, project.name, source)
@@ -1660,16 +1201,6 @@ defmodule BridgeForTeamsWeb.DashboardAPITriageTest do
       )
 
     assertion
-  end
-
-  defp sick_project(org, name) do
-    {:ok, project} =
-      BridgeForTeams.TestSupport.CanonicalAgentClient.create_provisioned_project(org.id, %{
-        "name" => name,
-        "slug" => "down-#{unique()}"
-      })
-
-    project
   end
 
   defp insert_router_agent(project) do

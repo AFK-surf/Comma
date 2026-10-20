@@ -1,23 +1,28 @@
-import { LoadingIndicator } from "@comma/ui";
+import { LoadingIndicator } from "@comma/ui/components/LoadingIndicator";
 import type { CommaLocale } from "@comma/i18n";
 import { useCommaMessages } from "@comma/i18n/react";
+import { Badge } from "@comma/ui/components/Badge";
+import { Button } from "@comma/ui/components/Button";
+import { CreatedSecretPanel } from "@comma/ui/components/settings";
+import { Dialog } from "@comma/ui/components/dialog";
 import {
-  Badge,
-  Button,
-  CreatedSecretPanel,
-  Dialog,
   EditBigIcon,
+  MoreHorizontalIcon,
+  PlusIcon,
+  TrashCanIcon,
+} from "@comma/ui/components/icons";
+import {
   Menu,
   MenuItem,
   MenuPopover,
   MenuSeparator,
   MenuTrigger,
-  MoreHorizontalIcon,
-  PlusIcon,
-  TrashCanIcon,
-} from "@comma/ui";
+} from "@comma/ui/components/menu";
 import { useState } from "react";
-import type { CommaRouterApiKey, CommaRouterApiKeyCreated } from "../../api";
+import type {
+  RouterKey as CommaRouterApiKey,
+  RouterKeyCreated as CommaRouterApiKeyCreated,
+} from "@comma/core-client";
 import { InlineTextEditor } from "../tasks/InlineTextEditor";
 
 export type RouterApiKeyDraft = { name: string };

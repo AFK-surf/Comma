@@ -61,7 +61,7 @@ defmodule SalixWeb.AgentVMMAdminCursor do
   defp valid_cursor?(_), do: false
 
   defp signing_key do
-    case Application.get_env(:salix_web, :api_token) do
+    case SystemsRuntime.get_env(:salix_web, :api_token) do
       secret when is_binary(secret) and secret != "" ->
         {:ok, :crypto.mac(:hmac, :sha256, secret, @domain)}
 

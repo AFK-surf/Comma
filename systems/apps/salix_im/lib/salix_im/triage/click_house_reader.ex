@@ -39,6 +39,6 @@ defmodule SalixIM.Triage.ClickHouseReader do
   @optional_callbacks history: 2, replies: 3, search: 2, read_channel: 3
 
   def impl do
-    Application.get_env(:salix_im, :slack_triage_clickhouse_reader_mod)
+    SystemsRuntime.get_env(:salix_im, :slack_triage_clickhouse_reader_mod)
   end
 end

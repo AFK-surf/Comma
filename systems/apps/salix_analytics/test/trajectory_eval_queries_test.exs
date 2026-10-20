@@ -1,5 +1,5 @@
 defmodule SalixAnalytics.TrajectoryEvalQueriesTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAnalytics.TrajectoryEvalQueries, as: Queries
 
@@ -44,19 +44,24 @@ defmodule SalixAnalytics.TrajectoryEvalQueriesTest do
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
 
-    prev = Application.get_env(:salix_analytics, :clickhouse)
+    prev = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
-    Application.put_env(:salix_analytics, :clickhouse,
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
       base_url: "http://127.0.0.1:#{port}/",
       table: "test.analytics_events"
     )
 
-    on_exit(fn -> Application.put_env(:salix_analytics, :clickhouse, prev) end)
+    on_exit(fn ->
+      if prev,
+        do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, prev),
+        else: SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
+    end)
+
     :ok
   end
 
   test "returns {:error, :not_configured} when base_url is absent" do
-    Application.put_env(:salix_analytics, :clickhouse, [])
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse, [])
 
     assert {:error, :not_configured} = Queries.flag_rate_trend("t1")
     assert {:error, :not_configured} = Queries.metric_breakdown("t1")

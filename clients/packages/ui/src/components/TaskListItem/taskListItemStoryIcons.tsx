@@ -1,18 +1,7 @@
 import type { ReactNode } from "react";
-import {
-  BubbleAlertIcon,
-  CircleCheckIcon,
-  CircleDashedIcon,
-  CircleXIcon,
-  LoaderIcon,
-} from "../icons";
+import { BubbleAlertIcon, CircleCheckIcon, CircleXIcon, LoaderIcon } from "../icons";
 
-export type ContentTaskIconState =
-  | "backlog"
-  | "in-progress"
-  | "review"
-  | "done"
-  | "cancel";
+export type ContentTaskIconState = "in-progress" | "review" | "done" | "cancel";
 
 export type SidebarRunIconState = "success" | "attention" | "failed";
 
@@ -23,10 +12,6 @@ type IconStateDefinition = {
 
 export const contentTaskIconStates: Record<ContentTaskIconState, IconStateDefinition> =
   {
-    backlog: {
-      label: "Backlog",
-      renderIcon: () => <CircleDashedIcon className="text-sidebar-icon-secondary" />,
-    },
     "in-progress": {
       label: "In progress",
       renderIcon: () => <LoaderIcon className="text-sidebar-icon-secondary" />,
@@ -73,7 +58,7 @@ export const resolveTaskListItemStoryIcon = (
   }
 
   const state =
-    contentTaskIconStates[contentIconState ?? "backlog"] ??
-    contentTaskIconStates.backlog;
+    contentTaskIconStates[contentIconState ?? "in-progress"] ??
+    contentTaskIconStates["in-progress"];
   return { label: state.label, icon: state.renderIcon() };
 };

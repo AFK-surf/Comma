@@ -17,7 +17,7 @@ defmodule SalixIM.IFC.Confirmation do
 
   require Logger
 
-  alias SalixIM.IFC.{FeishuConfirmation, SlackConfirmation}
+  alias SalixIM.IFC.{FeishuConfirmation, LarkConfirmation, SlackConfirmation}
   alias SalixIM.ProviderConnects
 
   @doc "Posts one pending `ifc_declassify` request to its requester's provider."
@@ -26,6 +26,7 @@ defmodule SalixIM.IFC.Confirmation do
     case provider_of(request) do
       "slack" -> SlackConfirmation.post(request)
       "feishu" -> FeishuConfirmation.post(request)
+      "lark" -> LarkConfirmation.post(request)
       _no_surface -> :ok
     end
   rescue

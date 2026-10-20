@@ -1,5 +1,6 @@
 import { useContext } from "react";
 import { CommaAuthContext } from "../auth-context";
+import { needsDesktopApp } from "../DesktopAppPrompt";
 import {
   useCommaClientSettingsPending,
   useOptionalCommaClientSettings,
@@ -13,7 +14,8 @@ import { useOnboardingOpen } from "./onboardingPresence";
  * loading. So a reader that must wait for the onboarding holds back from its
  * first render, before the onboarding window has even opened (the product
  * mounts first). Outside a signed-in session, a guest's included, only an
- * open onboarding counts.
+ * open onboarding counts. The web has no onboarding, only an intro card
+ * that leaves the product usable, so nothing waits for it there.
  */
 export function useOnboardingAhead(): boolean {
   const open = useOnboardingOpen();
@@ -21,6 +23,6 @@ export function useOnboardingAhead(): boolean {
   const settings = useOptionalCommaClientSettings();
   const settingsPending = useCommaClientSettingsPending();
   if (open) return true;
-  if (!auth?.userId || auth.isGuest || !settings) return false;
+  if (!auth?.userId || auth.isGuest || !settings || needsDesktopApp()) return false;
   return settingsPending || !settings.onboardingCompletedUserIds.includes(auth.userId);
 }

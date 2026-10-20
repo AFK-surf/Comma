@@ -479,16 +479,8 @@ macro_rules
   | `(tactic| solve_sourced) => `(tactic|
     (repeat' first
       | exact Sourced.nil
-      | refine Sourced.cons (elem_named "notify" rfl (by decide) (by decide) (by decide)) ?_
-      | refine Sourced.cons (elem_named "continue" rfl (by decide) (by decide) (by decide)) ?_
-      | refine Sourced.cons (elem_named "stop" rfl (by decide) (by decide) (by decide)) ?_
-      | refine Sourced.cons (elem_named "build_record" rfl (by decide) (by decide) (by decide)) ?_
-      | refine Sourced.cons (elem_named "store_results" rfl (by decide) (by decide) (by decide)) ?_
-      | refine Sourced.cons (elem_named "commit_planned_results" rfl (by decide) (by decide) (by decide)) ?_
-      | refine Sourced.cons (elem_named "fact" rfl (by decide) (by decide) (by decide)) ?_
-      | refine Sourced.cons (elem_named "materialize" rfl (by decide) (by decide) (by decide)) ?_
-      | refine Sourced.cons (elem_named "set_timer" rfl (by decide) (by decide) (by decide)) ?_
-      | refine Sourced.cons (elem_named "cancel_timer" rfl (by decide) (by decide) (by decide)) ?_
+      -- `rfl` reads the effect name. A commit, `run_tools` or `write` effect fails `string_ne`.
+      | refine Sourced.cons (elem_named _ rfl (by string_ne) (by string_ne) (by string_ne)) ?_
       | refine Sourced.cons ?_ ?_
       | split
       | simp only [List.append_eq, List.cons_append, List.nil_append]))

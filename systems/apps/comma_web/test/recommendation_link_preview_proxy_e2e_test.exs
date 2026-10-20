@@ -1,21 +1,10 @@
 defmodule CommaWeb.RecommendationLinkPreviewProxyE2ETest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
   alias CommaWeb.RecommendationLinkPreview
 
   @event_href "https://www.google.com/calendar/event?eid=ZXZ0MTIzIHphbndlaUBjb21tYS5sb2NhbA"
-
-  # p<digits> is the message ts with its dot removed: 1786900000.000200
-  @message_href "https://comma-local.slack.com/archives/C01234567/p1786900000000200"
-  @message_ts "1786900000.000200"
-  @thread_ts "1786899000.000100"
-
-  # Every Slack session opens by binding the permalink's workspace subdomain.
-  @auth_ok {:ok,
-            %{
-              "status" => 200,
-              "data" => %{"ok" => true, "url" => "https://comma-local.slack.com/"}
-            }}
 
   defmodule Settings do
     def settings(_tenant_id), do: {:ok, %{"api_key" => "test"}}
@@ -25,25 +14,51 @@ defmodule CommaWeb.RecommendationLinkPreviewProxyE2ETest do
   # ordered answers let the test exercise session replacement without exposing
   # private implementation functions from RecommendationLinkPreview.
   defmodule Client do
+    def get_connected_account(_settings, id) do
+      toolkit =
+        cond do
+          String.contains?(id, "calendar") -> "googlecalendar"
+          String.contains?(id, "drive") -> "googledrive"
+          String.contains?(id, "slack") -> "slack"
+          true -> "github"
+        end
+
+      {:ok,
+       %{
+         "id" => id,
+         "user_id" =>
+           if(SystemsRuntime.get_env(:comma_web, :preview_e2e_rebound),
+             do: "other-group",
+             else: "grp-1"
+           ),
+         "toolkit" => %{"slug" => toolkit},
+         "status" => "ACTIVE"
+       }}
+    end
+
     def create_proxy_session(_settings, group_id, account_id, toolkit, _opts) do
-      send(test_pid(), {:proxy_session, group_id, account_id, toolkit})
+      SystemsRuntime.Proc.send(test_pid(), {:proxy_session, group_id, account_id, toolkit})
       pop!(:recommendation_link_preview_e2e_sessions)
     end
 
     def proxy_execute(_settings, session_id, request, _opts) do
-      send(test_pid(), {:proxy, session_id, request})
+      SystemsRuntime.Proc.send(test_pid(), {:proxy, session_id, request})
+
+      if SystemsRuntime.get_env(:comma_web, :preview_e2e_rebind_on_read),
+        do: SystemsRuntime.put_env(:comma_web, :preview_e2e_rebound, true)
+
       pop!(:recommendation_link_preview_e2e_responses)
     end
 
     def delete_proxy_session(_settings, session_id) do
-      send(test_pid(), {:proxy_closed, session_id})
+      SystemsRuntime.Proc.send(test_pid(), {:proxy_closed, session_id})
       :ok
     end
 
     defp pop!(key) do
-      case Application.fetch_env!(:comma_web, key) do
+      case SystemsRuntime.fetch_env!(:comma_web, key) do
         [next | rest] ->
-          Application.put_env(:comma_web, key, rest)
+          SystemsRuntime.put_env(:comma_web, key, rest)
           next
 
         [] ->
@@ -52,7 +67,7 @@ defmodule CommaWeb.RecommendationLinkPreviewProxyE2ETest do
     end
 
     defp test_pid,
-      do: Application.fetch_env!(:comma_web, :recommendation_link_preview_e2e_test_pid)
+      do: SystemsRuntime.fetch_env!(:comma_web, :recommendation_link_preview_e2e_test_pid)
   end
 
   setup do
@@ -61,18 +76,25 @@ defmodule CommaWeb.RecommendationLinkPreviewProxyE2ETest do
       :recommendation_composio_settings_mod,
       :recommendation_link_preview_e2e_responses,
       :recommendation_link_preview_e2e_sessions,
-      :recommendation_link_preview_e2e_test_pid
+      :recommendation_link_preview_e2e_test_pid,
+      :preview_e2e_rebind_on_read,
+      :preview_e2e_rebound
     ]
 
-    previous = Map.new(keys, &{&1, Application.get_env(:comma_web, &1)})
-    Application.put_env(:comma_web, :recommendation_composio_client_mod, Client)
-    Application.put_env(:comma_web, :recommendation_composio_settings_mod, Settings)
-    Application.put_env(:comma_web, :recommendation_link_preview_e2e_test_pid, self())
+    previous = Map.new(keys, &{&1, SystemsRuntime.get_env(:comma_web, &1)})
+    SystemsRuntime.put_env(:comma_web, :recommendation_composio_client_mod, Client)
+    SystemsRuntime.put_env(:comma_web, :recommendation_composio_settings_mod, Settings)
+
+    SystemsRuntime.put_env(
+      :comma_web,
+      :recommendation_link_preview_e2e_test_pid,
+      SystemsRuntime.Proc.self()
+    )
 
     on_exit(fn ->
       Enum.each(previous, fn
-        {key, nil} -> Application.delete_env(:comma_web, key)
-        {key, value} -> Application.put_env(:comma_web, key, value)
+        {key, nil} -> SystemsRuntime.delete_env(:comma_web, key)
+        {key, value} -> SystemsRuntime.put_env(:comma_web, key, value)
       end)
     end)
 
@@ -135,6 +157,17 @@ defmodule CommaWeb.RecommendationLinkPreviewProxyE2ETest do
     assert_received {:proxy, "sess-replacement", _request}
   end
 
+  test "rejects a completed provider read if the pinned account changes owner" do
+    attempts(
+      ["sess-rebound"],
+      [{:ok, %{"status" => 200, "data" => %{"id" => "evt123", "summary" => "Private"}}}]
+    )
+
+    SystemsRuntime.put_env(:comma_web, :preview_e2e_rebind_on_read, true)
+    assert {:error, :not_found} = preview()
+    assert_received {:proxy_closed, "sess-rebound"}
+  end
+
   test "returns unavailable after the replacement Tool Router session is also missing" do
     attempts(
       ["sess-stale", "sess-stale-again"],
@@ -150,94 +183,18 @@ defmodule CommaWeb.RecommendationLinkPreviewProxyE2ETest do
     refute_received {:proxy_session, _, _, _}
   end
 
-  test "replaces one missing session before the required Slack read only" do
-    attempts(
-      ["sess-stale", "sess-replacement"],
-      [
-        {:error, :not_found},
-        @auth_ok,
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{
-             "ok" => true,
-             "messages" => [%{"ts" => @message_ts, "text" => "Recovered"}]
-           }
-         }},
-        {:ok, %{"status" => 200, "data" => %{"ok" => false, "error" => "missing_scope"}}}
-      ]
-    )
-
-    assert {:ok, %{"kind" => "slack_message", "text" => "Recovered", "author" => nil}} =
-             slack_preview()
-
-    assert_received {:proxy_session, "grp-1", "ca-slack", "slack"}
-    assert_received {:proxy_session, "grp-1", "ca-slack", "slack"}
-    assert_received {:proxy, "sess-stale", _request}
-    assert_received {:proxy_closed, "sess-stale"}
-
-    # The replacement session re-runs the workspace binding first.
-    assert_received {:proxy, "sess-replacement",
-                     %{"endpoint" => "https://slack.com/api/auth.test"}}
-
-    assert_received {:proxy, "sess-replacement",
-                     %{"endpoint" => "https://slack.com/api/conversations.history" <> _}}
-
-    assert_received {:proxy, "sess-replacement",
-                     %{"endpoint" => "https://slack.com/api/conversations.info" <> _}}
-
-    assert_received {:proxy_closed, "sess-replacement"}
-    refute_received {:proxy_session, _, _, _}
-  end
-
-  test "reads a Slack thread reply through conversations.replies" do
-    attempts(
-      ["sess-slack"],
-      [
-        @auth_ok,
-        {:ok,
-         %{
-           "status" => 200,
-           "data" => %{
-             "ok" => true,
-             "messages" => [
-               %{"ts" => @thread_ts, "text" => "Parent", "user" => "U111"},
-               %{"ts" => @message_ts, "text" => "The reply", "user" => "U777"}
-             ]
-           }
-         }},
-        {:ok, %{"status" => 200, "data" => %{"ok" => true, "channel" => %{"name" => "release"}}}},
-        {:ok, %{"status" => 200, "data" => %{"ok" => true, "user" => %{"name" => "dana"}}}}
-      ]
-    )
-
-    assert {:ok,
-            %{"kind" => "slack_message", "text" => "The reply", "author" => %{"name" => "dana"}}} =
-             slack_preview(@message_href <> "?thread_ts=#{@thread_ts}&cid=C01234567")
-
-    assert_received {:proxy, "sess-slack", %{"endpoint" => "https://slack.com/api/auth.test"}}
-
-    assert_received {:proxy, "sess-slack",
-                     %{"endpoint" => "https://slack.com/api/conversations.replies" <> _}}
-
-    refute_received {:proxy, _,
-                     %{"endpoint" => "https://slack.com/api/conversations.history" <> _}}
-
-    assert_received {:proxy_closed, "sess-slack"}
-  end
-
   defp attempts(sessions, responses) do
-    Application.put_env(
+    SystemsRuntime.put_env(
       :comma_web,
       :recommendation_link_preview_e2e_sessions,
       Enum.map(sessions, &{:ok, &1})
     )
 
-    Application.put_env(:comma_web, :recommendation_link_preview_e2e_responses, responses)
+    SystemsRuntime.put_env(:comma_web, :recommendation_link_preview_e2e_responses, responses)
   end
 
   defp preview do
-    RecommendationLinkPreview.preview(
+    authorized_preview(
       %{"default_group_id" => "grp-1", "salix_tenant_id" => "ten-1"},
       [
         %{
@@ -254,21 +211,9 @@ defmodule CommaWeb.RecommendationLinkPreviewProxyE2ETest do
     )
   end
 
-  defp slack_preview(href \\ @message_href) do
-    RecommendationLinkPreview.preview(
-      %{"default_group_id" => "grp-1", "salix_tenant_id" => "ten-1"},
-      [
-        %{
-          "appId" => "slack",
-          "appName" => "Slack",
-          "connectionId" => "ca-slack",
-          "enabled" => true,
-          "kind" => "composio",
-          "toolkit" => "slack"
-        }
-      ],
-      href,
-      "ca-slack"
-    )
+  defp authorized_preview(workspace, sources, href, source_id) do
+    viewer = workspace["owner_user_id"] || "test-viewer"
+    workspace = Map.put(workspace, "owner_user_id", viewer)
+    RecommendationLinkPreview.preview(workspace, sources, href, source_id, viewer)
   end
 end

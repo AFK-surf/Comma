@@ -40,7 +40,7 @@ defmodule SalixAgent.OwnershipCell do
   clobber a newer claim; reads are direct ETS lookups on the hot path.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   @table __MODULE__
 
@@ -48,15 +48,15 @@ defmodule SalixAgent.OwnershipCell do
 
   @doc false
   def create_table do
-    if :ets.whereis(@table) == :undefined do
-      _ = :ets.new(@table, [:named_table, :set, :public, read_concurrency: true])
+    if SystemsRuntime.ETS.whereis(@table) == :undefined do
+      _ = SystemsRuntime.ETS.new(@table, [:named_table, :set, :public, read_concurrency: true])
     end
 
     :ok
   end
 
   def start_link(opts \\ []),
-    do: GenServer.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
 
   @doc "Record that this node claimed the agent root at `epoch`. Best-effort."
   @spec install(String.t(), non_neg_integer()) :: :ok
@@ -95,7 +95,7 @@ defmodule SalixAgent.OwnershipCell do
   """
   @spec entry(String.t()) :: {:ok, non_neg_integer(), status()} | :absent
   def entry(agent_id) when is_binary(agent_id) do
-    case :ets.lookup(@table, agent_id) do
+    case SystemsRuntime.ETS.lookup(@table, agent_id) do
       [{^agent_id, epoch, status}] -> {:ok, epoch, status}
       [] -> :absent
     end
@@ -142,7 +142,7 @@ defmodule SalixAgent.OwnershipCell do
   # A cell outage (missing process, timeout) must never raise into a claim
   # or commit path — the durable fences stay authoritative without it.
   defp safe_call(msg) do
-    GenServer.call(__MODULE__, msg, 5_000)
+    SystemsClock.call(__MODULE__, msg, 5_000)
     :ok
   catch
     :exit, _ -> :ok
@@ -156,20 +156,20 @@ defmodule SalixAgent.OwnershipCell do
 
   @impl true
   def handle_call({:install, agent_id, epoch}, _from, state) do
-    case :ets.lookup(@table, agent_id) do
+    case SystemsRuntime.ETS.lookup(@table, agent_id) do
       [{^agent_id, cur, _status}] when cur > epoch ->
         # A stale (delayed) install must not regress a newer claim/fence.
         :ok
 
       _ ->
-        :ets.insert(@table, {agent_id, epoch, :owned})
+        SystemsRuntime.ETS.insert(@table, {agent_id, epoch, :owned})
     end
 
     {:reply, :ok, state}
   end
 
   def handle_call({:fence, agent_id, observed_epoch}, _from, state) do
-    case :ets.lookup(@table, agent_id) do
+    case SystemsRuntime.ETS.lookup(@table, agent_id) do
       [{^agent_id, cur, status}] ->
         cond do
           is_integer(observed_epoch) and observed_epoch < cur ->
@@ -182,24 +182,24 @@ defmodule SalixAgent.OwnershipCell do
             :ok
 
           true ->
-            :ets.insert(@table, {agent_id, max(cur, observed_epoch || 0), :fenced})
+            SystemsRuntime.ETS.insert(@table, {agent_id, max(cur, observed_epoch || 0), :fenced})
         end
 
       [] ->
-        :ets.insert(@table, {agent_id, observed_epoch || 0, :fenced})
+        SystemsRuntime.ETS.insert(@table, {agent_id, observed_epoch || 0, :fenced})
     end
 
     {:reply, :ok, state}
   end
 
   def handle_call({:clear, agent_id}, _from, state) do
-    :ets.delete(@table, agent_id)
+    SystemsRuntime.ETS.delete(@table, agent_id)
     {:reply, :ok, state}
   end
 
   def handle_call({:release, agent_id, epoch}, _from, state) do
-    case :ets.lookup(@table, agent_id) do
-      [{^agent_id, cur, :owned}] when cur <= epoch -> :ets.delete(@table, agent_id)
+    case SystemsRuntime.ETS.lookup(@table, agent_id) do
+      [{^agent_id, cur, :owned}] when cur <= epoch -> SystemsRuntime.ETS.delete(@table, agent_id)
       _ -> :ok
     end
 
@@ -207,8 +207,8 @@ defmodule SalixAgent.OwnershipCell do
   end
 
   def handle_call({:clear_superseded, agent_id}, _from, state) do
-    case :ets.lookup(@table, agent_id) do
-      [{^agent_id, _cur, :fenced}] -> :ets.delete(@table, agent_id)
+    case SystemsRuntime.ETS.lookup(@table, agent_id) do
+      [{^agent_id, _cur, :fenced}] -> SystemsRuntime.ETS.delete(@table, agent_id)
       _ -> :ok
     end
 

@@ -104,7 +104,6 @@ test("following the newest turn rescans nothing while it grows", async ({ page }
       (_, index) =>
         `第 ${index + 1} 条 Worker 记录。${"这是一段够长的正文，用来把转录撑过一屏。".repeat(8)}`
     ),
-    taskSchedule: null,
     taskStatus: "completed",
   });
 
@@ -202,7 +201,7 @@ test("following the newest turn rescans nothing while it grows", async ({ page }
     // reader as the turn grows; a loop that lost the element it writes for
     // would let every tick's new pixels push the bottom away.
     // The newest-turn-top rule, which the same call resolves, is covered by
-    // shell-layout.spec.ts "automatic chat following stays hidden while native
+    // e2e/app-shell/shell-layout.chromium.test.ts "automatic chat following stays hidden while native
     // wheel remains visible".
     for (const [index, distance] of growth.distancesFromBottom.entries()) {
       expect(
@@ -235,7 +234,6 @@ test("a wheel over a code block leaves the tail and stays away", async ({ page }
         "```",
       ].join("\n")
     ),
-    taskSchedule: null,
     taskStatus: "completed",
   });
 

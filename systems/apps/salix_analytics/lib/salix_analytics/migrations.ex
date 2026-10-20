@@ -690,7 +690,7 @@ defmodule SalixAnalytics.Migrations do
   end
 
   defp config(opts) do
-    cfg = Keyword.merge(Application.get_env(:salix_analytics, :clickhouse, []), opts)
+    cfg = Keyword.merge(SystemsRuntime.get_env(:salix_analytics, :clickhouse, []), opts)
     base_url = cfg[:base_url]
     table = cfg[:table] || @default_table
 

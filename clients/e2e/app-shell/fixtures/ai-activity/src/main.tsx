@@ -3,15 +3,16 @@ import "../../../../../packages/app/src/styles.css";
 import {
   AiActivity,
   AiWorkerActivity,
-  MarkdownStream,
   type AiActivityEvent,
-} from "@comma/ui";
+} from "@comma/ui/components/ai-activity";
+import { MarkdownStream } from "@comma/ui/components/markdown-stream";
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ParticipantStatusSlot } from "../../../../../packages/app/src/components/chat/thread/activity/ActivityLine";
-import type { ChatParticipantStatus } from "../../../../../packages/app/src/components/chat/model/conversationChannel";
+import type { ChatParticipantStatus } from "@comma/core/chat";
+import { fixtureSearch } from "../../../support/search";
 
-if (new URLSearchParams(window.location.search).has("manualReducedMotion")) {
+if (new URLSearchParams(fixtureSearch()).has("manualReducedMotion")) {
   document.documentElement.setAttribute("data-comma-reduced-motion", "true");
 }
 
@@ -26,7 +27,6 @@ declare global {
     aiActivityFixture?: {
       burst: () => void;
       finish: () => void;
-      revealHistory: () => void;
       setMainProcessStep: (stage: MainProcessStepStage) => void;
     };
   }
@@ -135,7 +135,6 @@ function AiActivityFixture() {
   const [expanded, setExpanded] = useState(false);
   const [originExpanded, setOriginExpanded] = useState(false);
   const [rapidFrame, setRapidFrame] = useState(0);
-  const [stableHistoryVisible, setStableHistoryVisible] = useState(false);
   const [mainProcessStep, setMainProcessStep] =
     useState<MainProcessStepStage>("active-thinking");
   const burstTimersRef = useRef<number[]>([]);
@@ -155,7 +154,6 @@ function AiActivityFixture() {
         });
       },
       finish: () => setComplete(true),
-      revealHistory: () => setStableHistoryVisible(true),
       setMainProcessStep,
     };
 
@@ -235,17 +233,6 @@ function AiActivityFixture() {
           shimmer={false}
           status="running"
           summary={rapidActivity.summary}
-        />
-        <AiActivity
-          activityKey={
-            stableHistoryVisible ? "stable-public-work" : "stable-generic-thinking"
-          }
-          data-testid="stable-history-handoff"
-          events={stableHistoryVisible ? [longHistory[0]!] : []}
-          phase={stableHistoryVisible ? "execution" : "thinking"}
-          shimmer={!stableHistoryVisible}
-          status="running"
-          summary={stableHistoryVisible ? "Reading the workspace" : "Thinking"}
         />
         <AiActivity
           activityKey="bounded-shimmer"

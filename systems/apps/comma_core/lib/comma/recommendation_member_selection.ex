@@ -62,6 +62,7 @@ defmodule Comma.RecommendationMemberSelection do
                     do: get_in(fact, ["memberSubject", "provider_user_id"])
                   ),
                 "context" => get_in(fact, ["contexts", record[url_key]]),
+                "quote" => get_in(fact, ["quotes", record[url_key]]),
                 "facts" =>
                   Map.take(
                     record,
@@ -79,11 +80,15 @@ defmodule Comma.RecommendationMemberSelection do
   end
 
   # Same admitted evidence, without duplicate title/excerpt text and empty fields.
-  # IDs remain the model's only way to select a source reference.
+  # IDs remain the model's only way to select a source reference. A mail link
+  # only repeats the provider's message ID, so mail candidates leave it out.
   def model_candidates(context) do
     Enum.map(candidates(context), fn candidate ->
+      mail? = get_in(context, [:sources, candidate["source"], "toolkit"]) in ~w(gmail outlook)
+
       candidate
-      |> Map.drop(~w(promptContext sourceVersion))
+      |> Map.drop(~w(quote sourceVersion))
+      |> then(&if(mail?, do: Map.delete(&1, "url"), else: &1))
       |> then(fn item ->
         if item["excerpt"] == item["title"], do: Map.delete(item, "excerpt"), else: item
       end)
@@ -116,13 +121,36 @@ defmodule Comma.RecommendationMemberSelection do
     if rows != [] and selected == [] do
       {:error, :invalid_briefing_content}
     else
-      sources = selected |> Enum.map(& &1["source"]) |> Enum.uniq() |> Enum.take(6)
       open = Comma.RecommendationDraft.prompt_label(locale)
 
+      # Selection order is one ranking across sources. A source has no quota.
+      # In rank order, a row joins its source's card while that card holds fewer
+      # than four rows, else starts another card of that source. A row that would
+      # need a seventh card, or follows 18 kept rows, drops. The kept rows are the
+      # highest ranked that the card limits hold.
       routines =
-        Enum.map(sources, fn source ->
-          items = selected |> Enum.filter(&(&1["source"] == source)) |> Enum.take(3)
+        selected
+        |> Enum.reduce([], fn item, cards ->
+          card =
+            Enum.find_index(cards, fn {source, items} ->
+              source == item["source"] and length(items) < 4
+            end)
 
+          cond do
+            Enum.sum_by(cards, fn {_source, items} -> length(items) end) >= 18 ->
+              cards
+
+            card ->
+              List.update_at(cards, card, fn {source, items} -> {source, items ++ [item]} end)
+
+            length(cards) < 6 ->
+              cards ++ [{item["source"], [item]}]
+
+            true ->
+              cards
+          end
+        end)
+        |> Enum.map(fn {source, items} ->
           %{
             "source" => source,
             "layout" => "text",
@@ -140,8 +168,8 @@ defmodule Comma.RecommendationMemberSelection do
         if selected == [],
           do:
             if(locale == "zh-CN",
-              do: "暂时没有需要提醒你的工作事项。",
-              else: "I have no work items to flag for you right now."
+              do: "暂时没有需要提醒你的事项。",
+              else: "I have no items to flag for you right now."
             ),
           else:
             if(locale == "zh-CN",
@@ -151,7 +179,7 @@ defmodule Comma.RecommendationMemberSelection do
 
       {:ok,
        %{
-         "title" => if(locale == "zh-CN", do: "你的工作简报", else: "Your work briefing"),
+         "title" => if(locale == "zh-CN", do: "你的事项简报", else: "Your briefing"),
          "paragraphs" => [[%{"text" => summary}] ++ summary_parts(selected, context, locale)],
          "routines" => routines
        }}
@@ -222,6 +250,10 @@ defmodule Comma.RecommendationMemberSelection do
 
   defp records("gmail", %{"messages" => records}), do: {records, "subject", "webUrl"}
   defp records("googlecalendar", %{"items" => records}), do: {records, "summary", "htmlLink"}
+
+  defp records("outlook", data) when is_map(data),
+    do: {List.wrap(data["messages"]) ++ List.wrap(data["items"]), "subject", "webUrl"}
+
   defp records("googledrive", %{"files" => records}), do: {records, "name", "webViewLink"}
   defp records(_, _), do: {[], "title", "url"}
 

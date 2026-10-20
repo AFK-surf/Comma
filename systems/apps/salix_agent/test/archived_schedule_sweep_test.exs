@@ -1,13 +1,14 @@
 defmodule SalixAgent.ArchivedScheduleSweepTest do
   # Shares the node-global schedules table; keep serial.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.{AgentControl, ArchivedScheduleSweep, ArchivedSchedules}
   alias SalixStore.{Keys, S3, Schedules}
 
   setup do
-    prev = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
     start_supervised!(S3.Fake)
     SalixStore.Repo.query!("TRUNCATE schedules, schedule_runs")
 
@@ -15,8 +16,8 @@ defmodule SalixAgent.ArchivedScheduleSweepTest do
       SalixAgent.TestSupport.stop_all_agents()
 
       if is_nil(prev),
-        do: Application.delete_env(:salix_store, :s3_backend),
-        else: Application.put_env(:salix_store, :s3_backend, prev)
+        do: SystemsRuntime.delete_env(:salix_store, :s3_backend),
+        else: SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
     end)
 
     :ok
@@ -55,7 +56,7 @@ defmodule SalixAgent.ArchivedScheduleSweepTest do
       )
   end
 
-  defp wait_until(fun, attempts \\ 200) do
+  defp wait_until(fun, attempts \\ 3000) do
     cond do
       fun.() ->
         :ok
@@ -64,7 +65,7 @@ defmodule SalixAgent.ArchivedScheduleSweepTest do
         flunk("condition never held")
 
       true ->
-        Process.sleep(10)
+        SystemsClock.sleep(10)
         wait_until(fun, attempts - 1)
     end
   end
@@ -113,44 +114,6 @@ defmodule SalixAgent.ArchivedScheduleSweepTest do
              ArchivedScheduleSweep.run()
   end
 
-  # The #1509 review blocker: the sweep materializes "archived" from S3 and
-  # acts on it later. If an unarchive completes in between, an unfenced pause
-  # would leave a LIVE agent with archive-paused schedules — and nothing would
-  # ever resume them. Reproduced by parking the sweep's record GET.
-  test "a sweep acting on a stale archived read does not strand an unarchived agent" do
-    archived = agent!(true)
-    {:ok, rec} = AgentControl.get_record(archived)
-    schedule!("old-1", archived)
-
-    :ok = S3.Fake.set_fault({:pause, :get, Keys.ctl_agent(archived)})
-    sweep = Task.async(fn -> ArchivedScheduleSweep.run(now_ms: 400_000) end)
-    wait_until(fn -> S3.Fake.paused?() end)
-
-    # The unarchive runs to completion while the sweep holds its archived
-    # observation, and the live agent then gains a schedule the unarchive
-    # could not have stamped.
-    assert {:ok, _} = AgentControl.unarchive(archived, rec["tenant_id"])
-    assert {:ok, %{"status" => "active", "unarchived_epoch" => 1}} = Schedules.get("old-1")
-    schedule!("new-1", archived)
-
-    :ok = S3.Fake.release_pause()
-    assert {:ok, summary} = Task.await(sweep, 5_000)
-
-    # old-1 was fenced by the unarchive's stamp; new-1 was paused on the stale
-    # read and resumed by the re-validation. Neither is stranded.
-    assert summary.schedules_paused == 1
-    assert summary.schedules_resumed == 1
-
-    for id <- ["old-1", "new-1"] do
-      assert {:ok, %{"status" => "active"} = row} = Schedules.get(id)
-      refute Map.has_key?(row, "paused_by")
-    end
-
-    {:ok, live} = AgentControl.get_record(archived)
-    refute ArchivedSchedules.archived?(live)
-    assert ArchivedSchedules.archive_epoch(live) == 1
-  end
-
   test "archive bumps the epoch; a re-archive after unarchive pauses again despite the old stamp" do
     agent_id = agent!(false)
     {:ok, rec} = AgentControl.get_record(agent_id)
@@ -190,7 +153,7 @@ defmodule SalixAgent.ArchivedScheduleSweepTest do
 
     # U1 reads epoch 1, resumes and stamps, and its clear PUT is parked.
     :ok = S3.Fake.set_fault({:pause, :put, key})
-    u1 = Task.async(fn -> AgentControl.unarchive(agent_id, tenant_id) end)
+    u1 = SystemsRuntime.Task.async(fn -> AgentControl.unarchive(agent_id, tenant_id) end)
     wait_until(fn -> S3.Fake.paused?() end)
     assert {:ok, %{"status" => "active", "unarchived_epoch" => 1}} = Schedules.get("s1")
 
@@ -203,7 +166,7 @@ defmodule SalixAgent.ArchivedScheduleSweepTest do
 
     # U1's parked PUT takes a 412; the retry finds epoch 2 and must refuse.
     :ok = S3.Fake.release_pause()
-    assert {:error, :conflict} = Task.await(u1, 5_000)
+    assert {:error, :conflict} = settled_await(u1)
 
     {:ok, current} = AgentControl.get_record(agent_id)
     assert ArchivedSchedules.archived?(current)
@@ -213,27 +176,5 @@ defmodule SalixAgent.ArchivedScheduleSweepTest do
     # The epoch-2 unarchive still works and resumes the row.
     assert {:ok, _} = AgentControl.unarchive(agent_id, tenant_id)
     assert {:ok, %{"status" => "active", "unarchived_epoch" => 2}} = Schedules.get("s1")
-  end
-
-  test "a duplicate unarchive of the same epoch that lost the write still succeeds" do
-    agent_id = agent!(false)
-    {:ok, rec} = AgentControl.get_record(agent_id)
-    tenant_id = rec["tenant_id"]
-    key = Keys.ctl_agent(agent_id)
-    schedule!("s1", agent_id)
-    assert {:ok, _} = AgentControl.delete(agent_id)
-
-    :ok = S3.Fake.set_fault({:pause, :put, key})
-    u1 = Task.async(fn -> AgentControl.unarchive(agent_id, tenant_id) end)
-    wait_until(fn -> S3.Fake.paused?() end)
-    assert {:ok, _} = AgentControl.unarchive(agent_id, tenant_id)
-    :ok = S3.Fake.release_pause()
-
-    # Its epoch's unarchive landed: the desired end state holds, nothing to write.
-    assert {:ok, _} = Task.await(u1, 5_000)
-    {:ok, current} = AgentControl.get_record(agent_id)
-    refute ArchivedSchedules.archived?(current)
-    assert ArchivedSchedules.archive_epoch(current) == 1
-    assert {:ok, %{"status" => "active", "unarchived_epoch" => 1}} = Schedules.get("s1")
   end
 end

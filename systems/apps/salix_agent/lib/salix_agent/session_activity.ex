@@ -14,25 +14,14 @@ defmodule SalixAgent.SessionActivity do
   @type t :: map()
 
   @spec project(map()) :: t()
-  def project(%{"runtime_kind" => "external"} = session), do: external(session)
+  # A retired Session (`SalixAgent.RetiredSessions`) is read-only history.
+  def project(%{"runtime_kind" => "retired"} = session), do: activity(session, "stopped", "")
   def project(session) when is_map(session), do: internal(session)
 
   @doc "Notify subscribers that this session's canonical activity changed."
   @spec notify(String.t(), String.t()) :: :ok
   def notify(agent_id, session_id) when is_binary(agent_id) and is_binary(session_id) do
     Notifier.notify(agent_id, {:session_activity_updated, session_id})
-  end
-
-  defp external(session) do
-    case value(session, "status") do
-      "idle" -> activity(session, "stopped", "")
-      "starting" -> activity(session, "active", "is starting...")
-      "running" -> activity(session, "active", "is working...")
-      "waiting" -> waiting(session)
-      "failed" -> error(session, "runtime_failed")
-      "unknown" -> error(session, "runtime_status_unknown")
-      _other -> error(session, "session_activity_unknown")
-    end
   end
 
   defp internal(session) do
@@ -76,16 +65,62 @@ defmodule SalixAgent.SessionActivity do
     issue = text(value(session, "issue"))
     issue = if issue == "", do: default_issue, else: issue
 
-    message =
-      if value(session, "runtime_kind") == "external",
-        do: text(value(session, "message")),
-        else: ""
-
-    message = if message == "", do: error_text(issue), else: message
+    message = error_text(issue)
 
     session
     |> activity("error", "error: #{message}")
     |> Map.put("issue", issue)
+    |> put_optional("issue_detail", issue_detail(issue, session))
+  end
+
+  # Structured facts for a funding stop, so clients can name what to fix
+  # without parsing `status`: the provider source and Profile behind a
+  # member's own key, or when a runtime's own subscription resets.
+  defp issue_detail("provider_quota_exhausted", session) do
+    funding = value(session, "funding")
+
+    if is_map(funding) do
+      %{
+        "source" => bounded_text(funding["source"]),
+        "profile_id" => bounded_text(funding["profile_id"]),
+        "profile_name" => bounded_text(funding["profile_name"])
+      }
+      |> compact_detail()
+    end
+  end
+
+  defp issue_detail(issue, session) when issue in ~w(quota_exhausted rate_limited) do
+    reset_at = value(session, "reset_at")
+
+    %{
+      "source" => bounded_text(value(session, "runtime_provider")),
+      "reset_at" => if(is_integer(reset_at) and reset_at > 0, do: reset_at)
+    }
+    |> compact_detail()
+  end
+
+  # A model request failure names what started its round when that was not a
+  # person's message: a voice call, or system, provider-system or agent work in
+  # the background.
+  defp issue_detail("model_connection_failed", session) do
+    case value(session, "failure_trigger") do
+      trigger when trigger in ["voice_call", "background"] -> %{"trigger" => trigger}
+      _other -> nil
+    end
+  end
+
+  defp issue_detail(_issue, _session), do: nil
+
+  defp bounded_text(value) when is_binary(value) and byte_size(value) <= 200 do
+    value = String.trim(value)
+    if value == "" or not String.valid?(value), do: nil, else: value
+  end
+
+  defp bounded_text(_value), do: nil
+
+  defp compact_detail(detail) do
+    detail = detail |> Enum.reject(fn {_key, value} -> is_nil(value) end) |> Map.new()
+    if detail == %{}, do: nil, else: detail
   end
 
   defp activity(session, state, status) do
@@ -122,11 +157,16 @@ defmodule SalixAgent.SessionActivity do
   defp error_text("visible_reply_repair_exhausted"),
     do: "the session could not produce a visible reply"
 
-  defp error_text("insufficient_credits"), do: "not enough credits; add credits and try again"
+  defp error_text("insufficient_credits"),
+    do: "out of Comma credits; add credits, then send again"
+
   defp error_text("account_inactive"), do: "the billing account is unavailable"
   defp error_text("missing_account"), do: "this operation has no billing account"
 
-  defp error_text("model_connection_failed"), do: "the model could not be reached"
+  defp error_text("provider_quota_exhausted"),
+    do: "your own model provider account or subscription has run out"
+
+  defp error_text("model_connection_failed"), do: "the model request failed"
 
   defp error_text("session_activity_unknown"), do: "session activity is unknown"
   defp error_text(issue), do: String.replace(issue, "_", " ")
@@ -137,13 +177,13 @@ defmodule SalixAgent.SessionActivity do
         max(value(wait, "remaining_seconds"), 0)
 
       is_integer(value(wait, "deadline_ms")) ->
-        milliseconds_until(value(wait, "deadline_ms"), System.system_time(:millisecond))
+        milliseconds_until(value(wait, "deadline_ms"), SystemsClock.system_time(:millisecond))
 
       is_integer(value(wait, "deadline_at")) and value(wait, "deadline_at") > 10_000_000_000 ->
-        milliseconds_until(value(wait, "deadline_at"), System.system_time(:millisecond))
+        milliseconds_until(value(wait, "deadline_at"), SystemsClock.system_time(:millisecond))
 
       is_integer(value(wait, "deadline_at")) ->
-        max(value(wait, "deadline_at") - System.system_time(:second), 0)
+        max(value(wait, "deadline_at") - SystemsClock.system_time(:second), 0)
 
       true ->
         nil

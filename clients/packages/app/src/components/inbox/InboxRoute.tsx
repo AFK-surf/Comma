@@ -5,35 +5,37 @@ import {
   productInboxErrorMessage,
   useProductInboxProjection,
 } from "../../product-inbox";
-import { readActiveWorkspaceId, writeActiveWorkspaceId } from "../activeWorkspace";
-import { useCommaAuth } from "../AuthGate";
+import { useSelectWorkspace, useWorkspacePreference } from "../activeWorkspace";
 import { InboxView } from "./InboxView";
 
 /** Product inbox route backed by the host-owned cross-platform projection. */
 export function InboxRoute() {
   const locale = useCommaLocale();
   const params = useParams({ strict: false }) as { conversationId?: string };
-  const auth = useCommaAuth();
   const [loadMoreState, setLoadMoreState] = useState<{
     error?: string;
     pending: boolean;
   }>({ pending: false });
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | undefined>(
-    () => readActiveWorkspaceId()
-  );
+  // The inbox opens on the workspace the app works in, once the core has read it.
+  const activeWorkspaceId = useWorkspacePreference();
+  const selectWorkspace = useSelectWorkspace();
+  const [chosenWorkspaceId, setSelectedWorkspaceId] = useState<string | undefined>();
+  const selectedWorkspaceId = chosenWorkspaceId ?? (activeWorkspaceId || undefined);
   const requestedWorkspaceId = useRef<string | undefined>(undefined);
   const { refresh, result } = useProductInboxProjection({
-    enabled: true,
-    session: auth.productLease,
+    enabled: activeWorkspaceId !== undefined,
     ...(selectedWorkspaceId ? { workspaceId: selectedWorkspaceId } : {}),
   });
 
-  const handleSelectWorkspace = useCallback((workspaceId: string) => {
-    requestedWorkspaceId.current = workspaceId;
-    writeActiveWorkspaceId(workspaceId);
-    setLoadMoreState({ pending: false });
-    setSelectedWorkspaceId(workspaceId);
-  }, []);
+  const handleSelectWorkspace = useCallback(
+    (workspaceId: string) => {
+      requestedWorkspaceId.current = workspaceId;
+      selectWorkspace(workspaceId);
+      setLoadMoreState({ pending: false });
+      setSelectedWorkspaceId(workspaceId);
+    },
+    [selectWorkspace]
+  );
 
   useEffect(() => {
     if (result?.activeWorkspaceId === requestedWorkspaceId.current) {
@@ -44,10 +46,10 @@ export function InboxRoute() {
       result.activeWorkspaceId !== selectedWorkspaceId &&
       requestedWorkspaceId.current === undefined
     ) {
-      writeActiveWorkspaceId(result.activeWorkspaceId);
+      selectWorkspace(result.activeWorkspaceId);
       setSelectedWorkspaceId(result.activeWorkspaceId);
     }
-  }, [result?.activeWorkspaceId, selectedWorkspaceId]);
+  }, [result?.activeWorkspaceId, selectedWorkspaceId, selectWorkspace]);
 
   const handleLoadMore = useCallback(async () => {
     if (
@@ -61,17 +63,17 @@ export function InboxRoute() {
 
     setLoadMoreState({ pending: true });
     try {
-      const envelope = await refresh({
+      await refresh({
         cursor: result.nextCursor,
-        limit: 50,
         workspaceId: result.activeWorkspaceId,
       });
-      if (envelope.snapshot.source !== "live-sync") {
-        throw new Error(productInboxErrorMessage(envelope.snapshot.errorCode, locale));
-      }
       setLoadMoreState({ pending: false });
     } catch (error) {
-      setLoadMoreState({ error: errorMessage(error), pending: false });
+      // The core says why with the list's own error code.
+      setLoadMoreState({
+        error: productInboxErrorMessage((error as { code?: string }).code, locale),
+        pending: false,
+      });
     }
   }, [loadMoreState.pending, locale, refresh, result]);
 
@@ -119,8 +121,4 @@ export function InboxWorkspace({ children }: { children?: ReactNode }) {
       </div>
     </section>
   );
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
 }

@@ -86,7 +86,7 @@ defmodule SalixSignal.Test.FakeStorage do
       {:ok, body, conn} = read_body(conn, length: 8_000_000)
       conn = fetch_query_params(conn)
       state = Agent.get(storage, & &1)
-      send(state.test, {:fake_storage, conn.method, conn.request_path})
+      SystemsRuntime.Proc.send(state.test, {:fake_storage, conn.method, conn.request_path})
       conn = put_resp_header(conn, "x-signal-timestamp", Integer.to_string(state.now * 1000))
 
       case authenticate(conn, state) do

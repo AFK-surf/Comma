@@ -2,18 +2,24 @@ defmodule CommaWeb.IMessageIntegration do
   @moduledoc """
   Comma product iMessage private-chat binding and ingress.
   Consume intent, retire routes, prepare disabled, commit, then activate.
+  Two transports carry the same binding: the Willow relay and Photon shared
+  lines. Events carry `"transport" => "photon"` for Photon.
   See docs/messaging-voice.md for authorization and transport boundaries.
   """
 
+  require Logger
+
   alias Comma.{IMessageLinks, Workspaces}
-  alias SalixIM.{IMessageRelay, ProviderConnects}
+  alias SalixIM.{IMessageRelay, PhotonIMessage, ProviderConnects}
   alias SalixIM.Provider.IMessage
 
   def state(user, session, workspace_id) do
     with {:ok, workspace, link} <- IMessageLinks.get(user, session, workspace_id) do
       {:ok,
        %{
-         "configured" => IMessageRelay.configured?(),
+         "configured" => IMessageRelay.configured?() or PhotonIMessage.configured?(),
+         "relay_configured" => IMessageRelay.configured?(),
+         "photon_configured" => PhotonIMessage.configured?(),
          "shared_handle" => IMessageRelay.shared_handle(),
          "shared_identity" => IMessageRelay.shared_identity(),
          "workspace_id" => workspace["id"],
@@ -21,13 +27,43 @@ defmodule CommaWeb.IMessageIntegration do
          "pending_claim" =>
            IMessageLinks.public_claim(IMessageLinks.get_active_claim(workspace_id)),
          "connection_active" => active?(workspace, link),
-         "relay_online" => CommaWeb.IMessageRuntime.online?()
+         "relay_online" => CommaWeb.IMessageRuntime.online?(),
+         "photon_online" => CommaWeb.IMessagePhotonRuntime.online?()
        }}
     end
   end
 
-  def start_connect(user, session, workspace_id) do
-    with :ok <- require_configured(),
+  @doc """
+  Starts a connection attempt. With a `handle` (phone number or Apple Account
+  email), the attempt uses Photon: Comma registers the handle and assigns it a
+  shared line. The person then sends the code to that line from that handle.
+  Without a handle, the attempt is a relay claim command.
+  """
+  def start_connect(user, session, workspace_id, attrs \\ %{})
+
+  def start_connect(user, session, workspace_id, %{"handle" => raw_handle}) do
+    with :ok <- require_configured("photon"),
+         {:ok, _workspace, _link} <- IMessageLinks.get(user, session, workspace_id),
+         handle when is_binary(handle) <- PhotonIMessage.normalize_handle(raw_handle),
+         {:ok, _user_id} <- PhotonIMessage.register_user(handle),
+         {:ok, line} <- PhotonIMessage.assign_line(handle),
+         {:ok, _workspace, claim} <-
+           IMessageLinks.create_claim(user, session, workspace_id, %{
+             transport: "photon",
+             sender_handle: handle,
+             line_handle: line["line_handle"],
+             assignment_id: line["assignment_id"]
+           }) do
+      {:ok, IMessageLinks.public_claim(claim)}
+    else
+      nil -> {:error, :invalid_imessage_handle}
+      {:error, {:photon, _status, _code}} -> {:error, :imessage_unavailable}
+      other -> other
+    end
+  end
+
+  def start_connect(user, session, workspace_id, _attrs) do
+    with :ok <- require_configured("relay"),
          {:ok, _workspace, claim} <- IMessageLinks.create_claim(user, session, workspace_id) do
       {:ok, IMessageLinks.public_claim(claim)}
     end
@@ -41,14 +77,46 @@ defmodule CommaWeb.IMessageIntegration do
       with {:ok, workspace, link} <- IMessageLinks.get(user, session, workspace_id),
            :ok <- retire_link(link, workspace),
            {:ok, _workspace, removed?} <- IMessageLinks.delete(user, session, workspace_id) do
+        release_photon_assignment(link)
         {:ok, %{"disconnected" => removed?}}
       end
     end)
   end
 
+  # Frees the shared-line seat when no binding or open attempt uses the handle.
+  # A failed release leaves the seat to the receiver's assignment reconcile.
+  defp release_photon_assignment(%{transport: "photon", assignment_id: id, sender_handle: handle})
+       when is_binary(id) do
+    unless MapSet.member?(IMessageLinks.photon_handles_in_use(), handle) do
+      case PhotonIMessage.release_assignment(id) do
+        :ok -> :ok
+        _ -> Logger.warning("Photon line assignment release failed; reconcile will retry")
+      end
+    end
+
+    :ok
+  end
+
+  defp release_photon_assignment(_link), do: :ok
+
+  @doc """
+  Authenticates a Photon webhook delivery and wakes the Photon receiver.
+  The delivery is a wake-up signal only: the receiver reads received Messages
+  from the Photon API, so the payload grants nothing.
+  """
+  def photon_webhook(raw_body, id, timestamp, signature) do
+    with :ok <- require_configured("photon"),
+         :ok <- PhotonIMessage.verify_webhook(raw_body, id, timestamp, signature) do
+      CommaWeb.IMessagePhotonRuntime.poke()
+    end
+  end
+
   def handle_event(%{"type" => "message", "message" => message} = event) when is_map(message) do
-    with :ok <- require_configured(), :ok <- private_message(message) do
-      case command(message["text"]) do
+    transport = IMessage.transport(event)
+    message = Map.put(message, "transport", transport)
+
+    with :ok <- require_configured(transport), :ok <- private_message(message) do
+      case command(message) do
         {:connect, code} ->
           connect_message(message, code)
 
@@ -81,21 +149,30 @@ defmodule CommaWeb.IMessageIntegration do
        else: {:error, :ignored}
   end
 
-  defp command(text) when is_binary(text) do
+  defp command(%{"text" => text} = message) when is_binary(text) do
     case String.split(String.trim(text), ~r/\s+/, parts: 4) do
       ["bridgebot", "connect", code] -> {:connect, code}
       ["bridgebot", "status"] -> :status
       ["bridgebot" | _] -> :help
-      _ -> :message
+      _ -> photon_code(message)
     end
   end
 
-  defp command(_text), do: :message
+  defp command(_message), do: :message
+
+  # A Photon attempt also accepts the bare code, but only from its handle.
+  defp photon_code(%{"transport" => "photon", "text" => text, "sender_handle" => sender}) do
+    if IMessageLinks.photon_claim_code?(sender, text),
+      do: {:connect, String.trim(text)},
+      else: :message
+  end
+
+  defp photon_code(_message), do: :message
 
   defp connect_message(message, code) do
     result =
       with {:ok, %{user: user, workspace: workspace, claim: claim}} <-
-             IMessageLinks.take_claim(code) do
+             IMessageLinks.take_claim(code, message["transport"], message["sender_handle"]) do
         link_identity(user, workspace, message, claim)
       end
 
@@ -126,7 +203,7 @@ defmodule CommaWeb.IMessageIntegration do
              IMessageLinks.put_link(
                user["id"],
                workspace["id"],
-               message,
+               Map.put(message, "assignment_id", proof.assignment_id),
                connect["connect_id"],
                proof
              ),
@@ -216,7 +293,8 @@ defmodule CommaWeb.IMessageIntegration do
              "imessage"
            ),
          true <-
-           IMessage.current_relay?(connect) and
+           IMessage.current_transport?(connect) and
+             IMessage.transport(connect) == link.transport and
              connect["tenant_id"] == workspace["salix_tenant_id"] and
              connect["managed_peer_id"] == link.sender_handle and
              connect["managed_chat_id"] == link.chat_guid do
@@ -229,11 +307,19 @@ defmodule CommaWeb.IMessageIntegration do
 
   # Command acknowledgments are best effort, as in Telegram; replay must not
   # execute a successfully consumed binding command a second time.
+  defp reply(%{"transport" => "photon"} = message, text) do
+    _ = PhotonIMessage.send_text(message["agent_user_id"], message["chat_guid"], text)
+    :ok
+  end
+
   defp reply(message, text) do
     _ = IMessageRelay.send_text(message["sender_handle"], message["chat_guid"], text)
     :ok
   end
 
-  defp require_configured,
+  defp require_configured("photon"),
+    do: if(PhotonIMessage.configured?(), do: :ok, else: {:error, :imessage_unavailable})
+
+  defp require_configured(_relay),
     do: if(IMessageRelay.configured?(), do: :ok, else: {:error, :imessage_unavailable})
 end

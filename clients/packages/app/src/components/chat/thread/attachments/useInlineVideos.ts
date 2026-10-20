@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { inlineMediaTypeOf } from "../../../../runtime-files/inlineMedia";
-import type { ChatAttachment } from "../../model/conversationChannel";
+import type { ChatAttachment } from "@comma/core/chat";
 import type { ThreadFileSource } from "../threadContexts";
 
 export function useInlineVideos(

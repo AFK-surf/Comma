@@ -42,13 +42,18 @@ defmodule BridgeForTeams.Salix.Client do
               attrs()
             ) :: result()
   @optional_callbacks create_task_conversation: 4
+  # Create a Task its Group's Task agent runs, delegated by the Group's Router,
+  # with the place and model `attrs` names checked
+  # (`SalixIM.TaskPlacement.create_task_conversation/3`). A Salix node of the
+  # release before answers `{:error, :unavailable}`.
+  @callback create_placed_task_conversation(
+              group_id :: String.t(),
+              router_agent_id :: String.t(),
+              attrs()
+            ) :: result()
+  @optional_callbacks create_placed_task_conversation: 3
   @callback get_group_conversation(group_id :: String.t(), conversation_id :: String.t()) ::
               result()
-  @callback subscribe_group_conversation(
-              group_id :: String.t(),
-              conversation_id :: String.t(),
-              subscriber :: pid()
-            ) :: result()
   @callback get_group_conversation_with_messages(
               group_id :: String.t(),
               conversation_id :: String.t(),
@@ -191,6 +196,28 @@ defmodule BridgeForTeams.Salix.Client do
               connect_id :: String.t(),
               attrs()
             ) :: result()
+  @callback create_lark_im_connect(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              attrs()
+            ) :: result()
+  @callback update_lark_im_connect(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              connect_id :: String.t(),
+              attrs()
+            ) :: result()
+  @callback create_qq_im_connect(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              attrs()
+            ) :: result()
+  @callback update_qq_im_connect(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              connect_id :: String.t(),
+              attrs()
+            ) :: result()
   # On-demand Feishu callback preflight. POSTs a synthetic official Feishu
   # callback envelope to the connect's webhook URL and asserts that the
   # URL-verification challenge round-trips. When the
@@ -213,6 +240,17 @@ defmodule BridgeForTeams.Salix.Client do
   # needs for exact @-mention matching. Returns `{:ok, redacted_evidence}` or
   # `{:error, :bot_identity_missing | :connect_not_found | :connect_inactive}`.
   @callback feishu_bot_identity(params :: attrs()) :: result()
+  # Callback preflight of one Lark connect. `params` carries a `"connect_id"`;
+  # Salix reads the connect's own Verification Token and Encrypt Key and posts
+  # a URL verification to the connect's request URL. Returns
+  # `{:ok, redacted_evidence}` or `{:error, reason_class}`: `:token_mismatch |
+  # :decrypt_signature | :callback_unreachable | :unexpected_response |
+  # :connect_not_found | :connect_inactive | :secrets_not_configured`.
+  @callback lark_callback_preflight_for_connect(params :: attrs()) :: result()
+  # Checks that a Lark connect knows the bot's `open_id`, which a group mention
+  # names the bot by. Returns `{:ok, redacted_evidence}` or
+  # `{:error, :bot_identity_missing | :connect_not_found | :connect_inactive}`.
+  @callback lark_bot_identity(params :: attrs()) :: result()
   # Read-only Google Calendar meeting policy for one Feishu or Slack connect.
   # The Salix runtime resolves notification/auto-join policy against the current
   # Router's agent group and returns only explicitly configured shared
@@ -281,6 +319,22 @@ defmodule BridgeForTeams.Salix.Client do
               group_id :: String.t(),
               tenant_id :: String.t(),
               binding_id :: String.t()
+            ) :: result()
+
+  # A project's Tailscale network: the Salix group's node in the tenant's own
+  # tailnet (Salix.Control.Tailnet). Connect returns the status with a login
+  # link when the node waits for approval.
+  @callback get_group_tailnet(group_id :: String.t(), tenant_id :: String.t()) :: result()
+  @callback connect_group_tailnet(
+              group_id :: String.t(),
+              tenant_id :: String.t(),
+              attrs :: map(),
+              actor :: String.t()
+            ) :: result()
+  @callback disconnect_group_tailnet(
+              group_id :: String.t(),
+              tenant_id :: String.t(),
+              actor :: String.t()
             ) :: result()
 
   # ---- Tenant Composio settings (Salix.Control.ComposioSettings, app :salix_web) ----
@@ -370,6 +424,16 @@ defmodule BridgeForTeams.Salix.Client do
               binding_id :: String.t(),
               params :: attrs()
             ) :: result()
+  @callback configure_group_plugin_credentials(
+              String.t(),
+              String.t(),
+              String.t(),
+              String.t(),
+              attrs()
+            ) ::
+              :ok | result()
+  @callback disconnect_group_plugin_credentials(String.t(), String.t(), String.t(), String.t()) ::
+              :ok | result()
   @callback disconnect_remote_mcp_authorization(
               tenant_id :: String.t(),
               group_id :: String.t(),
@@ -418,11 +482,6 @@ defmodule BridgeForTeams.Salix.Client do
   @callback delete_feishu_tenant_app(tenant_id :: String.t()) :: :ok | result()
   @callback get_feishu_tenant_app(tenant_id :: String.t()) :: result()
 
-  # List the tenant-visible LLM template catalog (`SalixAgent.Templates.list_available/1`).
-  # Each entry is a public view — `%{"template_id", "name", "model", "provider",
-  # "provider_type", "max_tokens"}` — with no credentials. Returns a bare list
-  # (Salix template API convention). Drives BridgeForTeams's model-selection dropdown and
-  # per-org allowlist editor.
   @callback subscription_operation(String.t(), atom(), list()) :: result()
   @callback device_managed_auth_operation(
               String.t(),
@@ -434,22 +493,53 @@ defmodule BridgeForTeams.Salix.Client do
             ) ::
               {:ok, map()} | {:error, term()}
 
-  @callback compute_managed_auth_operation(String.t(), String.t(), String.t(), atom(), map()) ::
-              result()
-  @callback private_template_operation(String.t(), atom(), list()) :: result()
-
-  @callback list_templates(tenant_id :: String.t()) :: [map()] | {:error, term()}
-  # Read one visible template without exposing provider credentials.
-  @callback get_template(template_id :: String.t(), tenant_id :: String.t()) :: result()
-  # The effective Router/Worker default template per role for a tenant after
-  # layering tenant and platform defaults (`SalixAgent.AgentDefaults`).
-  @callback effective_agent_defaults(tenant_id :: String.t()) :: result()
+  # Models (`SalixAgent.ModelChoice`). A model choice is a value, not a
+  # reference: a catalog model, a station runtime model or a platform tier.
+  # The catalog models (`SalixAgent.Models.list/0`): platform data, no credentials.
+  @callback model_catalog() :: {:ok, [map()]} | {:error, term()}
+  # Check a model choice against a tenant; answers the value to store.
+  @callback choose_model(choice :: map(), tenant_id :: String.t()) :: result()
+  # The catalog models a tenant's own enabled accounts can serve now, with
+  # `served_by` and the subscription plans (`SalixAgent.AccountPool.servable_models/2`).
+  @callback servable_models(tenant_id :: String.t()) :: {:ok, map()} | {:error, term()}
+  # The credential-free view of a model choice (`SalixAgent.ModelChoice.public/2`).
+  @callback public_model(choice :: map(), tenant_id :: String.t()) :: result()
+  # The credential-free view of the platform model that a role
+  # ("router", "worker") follows (`SalixAgent.AgentModel.platform_public/1`).
+  @callback platform_model(role :: String.t()) :: result()
+  # Catalog models a Codex or Claude Code runtime serves with its own sign-in
+  # (`SalixAgent.Models.served_by/1`).
+  @callback runtime_catalog(provider :: String.t()) :: {:ok, [map()]} | {:error, term()}
+  @optional_callbacks runtime_catalog: 1
+  # A Group's default Task model (`SalixAgent.TaskModel.get/1`): the model
+  # choice a Task runs when it names no model and no station; nil when unset.
+  @callback get_group_task_model(group_id :: String.t()) :: {:ok, map() | nil} | {:error, term()}
+  # Check a choice and store it as the Group's default Task model
+  # (`SalixAgent.TaskModel.put/3`); answers the stored value. nil clears it.
+  @callback put_group_task_model(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              choice :: map() | nil
+            ) :: {:ok, map() | nil} | {:error, term()}
+  @optional_callbacks get_group_task_model: 1, put_group_task_model: 3
+  # A Group's default place to run Tasks (`SalixAgent.TaskPlace.get/1`): where a
+  # Task runs when it names no place; nil when unset (inside Salix).
+  @callback get_group_task_place(group_id :: String.t()) :: {:ok, map() | nil} | {:error, term()}
+  # Check a place and store it as the Group's default place to run Tasks
+  # (`SalixAgent.TaskPlace.put/3`); answers the stored value. A Salix node of
+  # the release before answers `{:error, :unavailable}`.
+  @callback put_group_task_place(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              place :: map()
+            ) :: {:ok, map() | nil} | {:error, term()}
+  @optional_callbacks get_group_task_place: 1, put_group_task_place: 3
 
   # Provision a Salix control-plane agent record (under attrs.tenant_id + group).
   @callback create_agent(attrs()) :: result()
 
   # Update an already-provisioned agent's control-plane record (e.g. its
-  # `template_id`/model, name, system prompt) — `SalixAgent.Control.update`.
+  # `model`, name, system prompt) — `SalixAgent.Control.update`.
   # The control record is create-once, so post-provision changes route here.
   @callback update_agent(agent_id :: String.t(), tenant_id :: String.t(), attrs()) :: result()
   # Read an already-provisioned Salix agent control record under a tenant.
@@ -463,45 +553,18 @@ defmodule BridgeForTeams.Salix.Client do
   @optional_callbacks page_group_agents: 3
 
   @callback archive_agent_configuration(String.t(), String.t()) :: result()
-  @callback rebind_agent_configuration(
-              String.t(),
-              String.t(),
-              map(),
-              non_neg_integer(),
-              String.t()
-            ) :: result()
-  @optional_callbacks archive_agent_configuration: 2, rebind_agent_configuration: 5
+  @optional_callbacks archive_agent_configuration: 2
+
+  @doc """
+  Move a Worker bound to a station to another station binding
+  (`runs_on`, `model`) at the binding revision the caller read.
+  """
+  @callback rebind_station_worker(String.t(), String.t(), map(), non_neg_integer()) :: result()
+  @optional_callbacks rebind_station_worker: 4
 
   @callback claim_agent_configuration(String.t(), String.t(), integer() | nil) :: result()
   @callback configure_agent(String.t(), String.t(), map()) :: result()
   @optional_callbacks claim_agent_configuration: 3, configure_agent: 3
-  # Expand-only seam for RFC25. BFT supplies the already-authorized Project
-  # tenant/group/owner facts; Salix owns target interpretation and fencing.
-  @callback page_external_worker_targets(
-              tenant_id :: String.t(),
-              owner_type :: String.t(),
-              owner_id :: String.t(),
-              group_id :: String.t(),
-              provider :: String.t(),
-              opts :: keyword()
-            ) :: result()
-  @callback validate_external_worker_target(
-              tenant_id :: String.t(),
-              owner_type :: String.t(),
-              owner_id :: String.t(),
-              group_id :: String.t(),
-              provider :: String.t(),
-              workload_id :: String.t(),
-              selection_fence :: map()
-            ) :: result()
-  @callback apply_external_worker_binding(
-              agent_id :: String.t(),
-              tenant_id :: String.t(),
-              runtime_config :: map()
-            ) :: result()
-  @optional_callbacks page_external_worker_targets: 6,
-                      validate_external_worker_target: 7,
-                      apply_external_worker_binding: 3
 
   # ---- Agent runtime (SalixAgent, app :salix_agent) ----
   @callback deliver(agent_id :: String.t(), payload :: map(), opts :: keyword()) :: result()
@@ -515,11 +578,6 @@ defmodule BridgeForTeams.Salix.Client do
               result()
   @callback get_session_messages(agent_id :: String.t(), session_id :: String.t()) :: result()
   @callback list_project_knowledge_uses(agent_id :: String.t(), opts :: keyword()) :: result()
-  @callback session_records(
-              agent_id :: String.t(),
-              session_id :: String.t(),
-              opts :: keyword()
-            ) :: result()
   @callback session_trace(agent_id :: String.t(), session_id :: String.t(), opts :: keyword()) ::
               result()
   # The agent's current in-memory activity surface (`SalixAgent.ActivitySurface`
@@ -647,26 +705,10 @@ defmodule BridgeForTeams.Salix.Client do
               group_id :: String.t(),
               tenant_id :: String.t()
             ) :: result()
-  @callback list_runtime_auth_requests(
-              group_id :: String.t(),
-              tenant_id :: String.t(),
-              opts :: keyword()
-            ) :: result()
-  @callback get_runtime_auth_request(
-              group_id :: String.t(),
-              request_id :: String.t(),
-              tenant_id :: String.t()
-            ) :: result()
-  @callback complete_runtime_auth_request(
-              group_id :: String.t(),
-              request_id :: String.t(),
-              attrs :: map(),
-              tenant_id :: String.t()
-            ) :: result()
 
   # ---- Slack Triage Workbench (SalixIM.Triage.ReadModel, app :salix_im) ----
   # Read-only windows over native Slack Triage durable state, backing the BFT
-  # Triage Workbench (docs/bridge-for-teams/design.mda).
+  # Triage Workbench (docs/bridge-for-teams/design.md).
   # The Salix runtime namespace is always explicit: the read model reads no
   # configuration of its own, so BFT resolves it and passes it in.
   #
@@ -699,16 +741,11 @@ defmodule BridgeForTeams.Salix.Client do
               group_id :: String.t(),
               agent_id :: String.t()
             ) :: result()
-  @callback ensure_triage_worker(String.t(), String.t()) :: result()
-  @callback triage_worker_binding(String.t()) :: result()
-  @callback triage_worker_configuration(String.t(), keyword()) :: result()
-  @callback configure_triage_worker(
-              String.t(),
-              String.t(),
-              String.t() | nil,
-              non_neg_integer(),
-              map()
-            ) :: result()
+  # The Group's Task agent (`SalixAgent.TaskAgent.ensure/2`): the Agent whose
+  # Session runs a Task that names no Worker, Triage Tasks among them.
+  @callback ensure_task_agent(tenant_id :: String.t(), group_id :: String.t()) :: result()
+  # Whether the Group's plugins allow each Triage tool a Triage Task uses.
+  @callback triage_tools(group_id :: String.t()) :: result()
 
   @callback triage_processing_detail(group_id :: String.t(), receipt_ref :: String.t()) ::
               {:ok, map()} | {:error, term()}
@@ -863,7 +900,7 @@ defmodule BridgeForTeams.Salix.Client do
   @doc "The configured Salix client implementation (`{:bridge_for_teams_core, :salix_client}`)."
   @spec impl() :: module()
   def impl,
-    do: Application.get_env(:bridge_for_teams_core, :salix_client, BridgeForTeams.Salix.Erpc)
+    do: SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client, BridgeForTeams.Salix.Erpc)
 
   @doc """
   Calls an optional callback on the configured client, or returns
@@ -878,11 +915,15 @@ defmodule BridgeForTeams.Salix.Client do
       else: {:error, :unsupported}
   end
 
-  @optional_callbacks get_signal_number: 1,
+  @optional_callbacks servable_models: 1,
+                      get_signal_number: 1,
                       put_signal_number: 2,
                       get_group_signal: 2,
                       start_group_signal_claim: 3,
                       remove_group_signal_binding: 3,
+                      get_group_tailnet: 2,
+                      connect_group_tailnet: 4,
+                      disconnect_group_tailnet: 3,
                       page_group_envs: 3,
                       slack_history_source_authority: 1,
                       slack_history_read_page: 1

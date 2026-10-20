@@ -6,11 +6,16 @@ import type {
   NotchHostEvent,
   NotchHostScenePayload,
 } from "@comma/native-bridge";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AirDropReception,
   type AirDropOfferPresentation,
 } from "../modules/airdrop/reception";
+
+// The file's timers run on the test's clock: a test moves it.
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 
 const requestId = "11111111-1111-4111-8111-111111111111";
 const roots: string[] = [];

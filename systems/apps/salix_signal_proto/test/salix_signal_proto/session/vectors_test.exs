@@ -2,7 +2,7 @@ defmodule SalixSignalProto.Session.VectorsTest do
   # Whole-session behavior (CRS-04 §3, §5, §7, §8; CRS-04b) against the
   # CRS-04 vectors conversation-ec-only.json, prekey-message-rejections.json,
   # session-establishment.json and conversation-deployed.json.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   import SalixSignalProto.Test.SessionFixtures
 

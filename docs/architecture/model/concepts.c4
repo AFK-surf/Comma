@@ -77,10 +77,6 @@ model {
     description 'Environment 内的稳定工作单元；以 capability requirement 描述需要的能力，不暴露 Provider-native ID'
   }
 
-  product_external_worker = concept 'External Worker Binding' {
-    description '恰好两种稳定目标：connected_runtime(device_runtime_id) 或 compute_workload(workload_id + runtime_spec)'
-  }
-
   product_service_route = concept 'Service Route' {
     description '在 source/destination Workload generation、route capability 与 expiry 都有效时才授权的服务连接'
   }
@@ -96,8 +92,6 @@ model {
   product_agent_scope .owns product_capability '范围内授权与配置'
   product_agent_scope .owns product_compute_environment '恰好 1 个产品 owner；0..N 个环境'
   product_compute_environment .owns product_compute_workload '0..N；由共享 Compute SSOT 放置和收敛'
-  product_worker .maps_to product_external_worker '外部执行时绑定稳定 target；活跃 Session 不原地换绑'
-  product_compute_workload .maps_to product_external_worker 'compute_workload variant'
   product_compute_workload .owns product_service_route '0..N 个 capability-gated export/import/route'
   product_compute_node .maps_to product_capability '本机容量是 opt-in 能力，不是 per-Agent VM'
   product_user .owns product_chat '每个 User × 当前范围：0..1 个当前 Chat'
@@ -312,7 +306,7 @@ model {
 
 
   impl_bft_conversation_read_seam = code_module 'BFT → Salix Conversation Read Seam' {
-    description 'ConversationLive/DashboardProjection 经 BridgeForTeams.Conversations + Salix.Client.impl/:erpc 调用 SalixIM.Conversations 公开读取；不直接调用 ConversationActor'
+    description 'DashboardSwarmTaskDetail/DashboardProjection 经 BridgeForTeams.Conversations + Salix.Client.impl/:erpc 调用 SalixIM.Conversations 公开读取；不直接调用 ConversationActor'
     technology 'BFT context + :erpc + SalixIM read facade'
     link ../../../systems/apps/bridge_for_teams_core/lib/bridge_for_teams/conversations.ex 'Source'
   }
@@ -341,10 +335,10 @@ model {
     link ../../../systems/apps/salix_agent/lib/salix_agent/internal_session_actor.ex 'Source'
   }
 
-  impl_external_session = code_module 'ExternalSessionActor(agent_id, session_id)' {
-    description '外部 runtime input queue、event record 与 tool lifecycle 的单写者；不写 internal transcript'
-    technology 'GenServer + ExternalSessionStore'
-    link ../../../systems/apps/salix_agent/lib/salix_agent/external_session_actor.ex 'Source'
+  impl_retired_session = code_module 'RetiredSessions(agent_id, session_id)' {
+    description '已退役 External Runtime 的 Session：只读历史，不再接收输入'
+    technology 'S3 state.json + SegmentLog'
+    link ../../../systems/apps/salix_agent/lib/salix_agent/retired_sessions.ex 'Source'
   }
 
   impl_compute = code_module 'SalixStore.Compute' {
@@ -357,12 +351,6 @@ model {
     description 'Cloudflare、Agent VMM 共用 allocate/observe/release/bootstrap/checkpoint contract 与 conformance suite'
     technology 'Provider behaviour + adapters'
     link ../../../systems/apps/salix_env/lib/salix_env/compute_provider.ex 'Source'
-  }
-
-  impl_runtime_binding = code_module 'RuntimeBindingResolver + ExternalWorkerDriver' {
-    description '验证 exact two-variant binding；stable target 与 live epoch 分离，Compute reconnect 只有 catch-up 后才可授权'
-    technology 'Salix Agent/Web runtime boundary'
-    link ../../../systems/apps/salix_agent/lib/salix_agent/runtime_binding_resolver.ex 'Source'
   }
 
   impl_service_route = code_module 'SalixStore.ServiceRoutes' {
@@ -422,13 +410,11 @@ model {
   product_router .maps_to impl_router_actor 'Role / session selection'
   product_worker .maps_to impl_worker_actor 'Role / session selection'
   router_runtime_session .maps_to impl_internal_session 'Comma/BFT 当前产品路径使用 internal Router'
-  router_runtime_session .maps_to impl_external_session 'Salix 平台层也支持 external Router runtime'
   worker_runtime_session .maps_to impl_internal_session 'internal worker'
-  worker_runtime_session .maps_to impl_external_session 'external worker'
+  worker_runtime_session .maps_to impl_retired_session '已退役 external worker 的只读历史'
   product_compute_environment .maps_to impl_compute '共享 SSOT；Comma/BFT 只保存 ACL、intent 与 bounded projection'
   product_compute_workload .maps_to impl_compute 'stable workload/generation'
   product_compute_workload .maps_to impl_compute_provider '按 policy/capability 放置，不由普通成员选择 provider'
-  product_external_worker .maps_to impl_runtime_binding 'exact binding validation、resolution 与 status'
   product_service_route .maps_to impl_service_route 'provider-neutral authority'
   product_compute_node .maps_to impl_compute_node 'leaf-first generated native bridge'
   product_recommendation .maps_to impl_recommendation_profile 'member-scoped product projection SSOT'

@@ -8,7 +8,9 @@ defmodule SalixIM.ConversationParticipantActor do
   Task-thread fences stop new sends and wait for unresolved requests to settle.
   Runtime subscription state remains local to this Participant.
   """
-  use GenServer
+
+  require SystemsRuntime.Proc, as: Proc
+  use SystemsRuntime.Server
 
   alias SalixIM.{
     ConversationDelivery,
@@ -16,7 +18,10 @@ defmodule SalixIM.ConversationParticipantActor do
     ConversationParticipantActivity,
     ConversationParticipantStore,
     Conversations,
-    SlackTaskCard
+    FeishuTaskCard,
+    LarkTaskCard,
+    SlackTaskCard,
+    TaskCardProjection
   }
 
   alias SalixIM.Ports.SessionActivity
@@ -45,6 +50,7 @@ defmodule SalixIM.ConversationParticipantActor do
             drain_pid: nil,
             active_delivery: nil,
             drain_requested?: false,
+            releasing?: false,
             realtime_status: nil,
             realtime_status_ref: nil,
             realtime_refresh: nil,
@@ -69,7 +75,10 @@ defmodule SalixIM.ConversationParticipantActor do
     group_id = Keyword.fetch!(opts, :group_id)
     conversation_id = Keyword.fetch!(opts, :conversation_id)
     participant_id = Keyword.fetch!(opts, :participant_id)
-    GenServer.start_link(__MODULE__, opts, name: via(group_id, conversation_id, participant_id))
+
+    SystemsRuntime.Server.start_link(__MODULE__, opts,
+      name: via(group_id, conversation_id, participant_id)
+    )
   end
 
   def key(group_id, conversation_id, participant_id),
@@ -136,17 +145,17 @@ defmodule SalixIM.ConversationParticipantActor do
 
   def worker_memory_target(pid), do: call(pid, :worker_memory_target)
 
-  def subscribe_realtime_status(pid, subscriber) when is_pid(subscriber),
+  def subscribe_realtime_status(pid, subscriber) when Proc.is_process(subscriber),
     do: call(pid, {:subscribe_realtime_status, subscriber})
 
-  defp call(pid, request), do: GenServer.call(pid, request, @call_timeout)
+  defp call(pid, request), do: SystemsRuntime.Server.call(pid, request, @call_timeout)
 
   def wake(group_id, conversation_id, participant_id) do
-    case Registry.lookup(
+    case SystemsRuntime.Registry.lookup(
            SalixIM.ConversationRegistry,
            key(group_id, conversation_id, participant_id)
          ) do
-      [{pid, _}] -> GenServer.cast(pid, :drain)
+      [{pid, _}] -> SystemsRuntime.Server.cast(pid, :drain)
       [] -> :ok
     end
 
@@ -155,12 +164,12 @@ defmodule SalixIM.ConversationParticipantActor do
 
   defp via(group_id, conversation_id, participant_id),
     do:
-      {:via, Registry,
+      {:via, SystemsRuntime.Registry,
        {SalixIM.ConversationRegistry, key(group_id, conversation_id, participant_id)}}
 
   @impl true
   def init(opts) do
-    Process.flag(:trap_exit, true)
+    Proc.trap_exit(true)
 
     group_id = Keyword.fetch!(opts, :group_id)
     conversation_id = Keyword.fetch!(opts, :conversation_id)
@@ -168,7 +177,7 @@ defmodule SalixIM.ConversationParticipantActor do
 
     {:ok, store_pid} =
       ConversationParticipantStore.start_link(
-        owner: self(),
+        owner: Proc.self(),
         group_id: group_id,
         conversation_id: conversation_id,
         participant_id: participant_id
@@ -188,14 +197,14 @@ defmodule SalixIM.ConversationParticipantActor do
   def handle_continue(:recover, state) do
     case load_participant(state.store_pid) do
       {:ok, %{"deleted_at" => deleted_at}} when not is_nil(deleted_at) ->
-        send(self(), :cleanup_deleted_participant)
+        Proc.send(Proc.self(), :cleanup_deleted_participant)
         {:noreply, %{state | deleted?: true, participant_load_error: nil}}
 
       {:ok, participant} ->
         state = %{state | participant: participant, participant_load_error: nil}
 
         if legacy_triage_slack_thread_participant?(participant) do
-          GenServer.cast(self(), :drain)
+          SystemsRuntime.Server.cast(Proc.self(), :drain)
         end
 
         {:noreply, reconcile_realtime_state(state)}
@@ -207,7 +216,7 @@ defmodule SalixIM.ConversationParticipantActor do
 
   @impl true
   def handle_call(:delete, _from, %{deleted?: true} = state) do
-    send(self(), :cleanup_deleted_participant)
+    Proc.send(Proc.self(), :cleanup_deleted_participant)
     {:reply, :ok, state}
   end
 
@@ -218,11 +227,11 @@ defmodule SalixIM.ConversationParticipantActor do
   # cleanup operations when this actor starts cold. Its no-new-provider-IO
   # guarantee and safety config do not cover this active-worker branch.
   def handle_call(:delete, _from, state) do
-    if is_pid(state.drain_pid), do: Process.exit(state.drain_pid, :kill)
+    if Proc.is_process(state.drain_pid), do: Proc.exit(state.drain_pid, :kill)
 
     case ConversationParticipantStore.tombstone(state.store_pid) do
       :ok ->
-        send(self(), :cleanup_deleted_participant)
+        Proc.send(Proc.self(), :cleanup_deleted_participant)
 
         state = retire_realtime_state(state)
 
@@ -451,7 +460,7 @@ defmodule SalixIM.ConversationParticipantActor do
 
     reply =
       case reply do
-        {:ok, status} -> {:ok, %{"owner_pid" => self(), "status" => status}}
+        {:ok, status} -> {:ok, %{"owner_pid" => Proc.self(), "status" => status}}
         {:error, _reason} = error -> error
       end
 
@@ -474,7 +483,7 @@ defmodule SalixIM.ConversationParticipantActor do
         fn participant ->
           participant
           |> Map.put("delivery_cursor_seq", max(participant_cursor_seq(participant), seq))
-          |> Map.put("updated_at", System.system_time(:millisecond))
+          |> Map.put("updated_at", SystemsClock.system_time(:millisecond))
         end
       )
 
@@ -556,6 +565,9 @@ defmodule SalixIM.ConversationParticipantActor do
   @impl true
   def handle_cast(_message, %{deleted?: true} = state), do: {:noreply, state}
 
+  # A releasing copy starts no new delivery; the current owner drains the rest.
+  def handle_cast(:drain, %{releasing?: true} = state), do: {:noreply, state}
+
   def handle_cast(:drain, %{drain_pid: nil} = initial_state) do
     state = initial_state
 
@@ -580,12 +592,12 @@ defmodule SalixIM.ConversationParticipantActor do
     do: {:noreply, %{state | drain_requested?: true}}
 
   defp notify_agent_source(conversation, %{"actor_type" => "agent"} = participant) do
-    if participant["state"] != "inactive" do
-      SalixIM.ConversationSource.notify(participant["agent_id"], %{
-        group_id: conversation["agent_group_id"],
-        conversation_id: conversation["conversation_id"],
-        participant_id: participant["participant_id"]
-      })
+    if participant["state"] != "inactive" and
+         SalixIM.ConversationSource.receives_messages?(participant) do
+      SalixIM.ConversationSource.notify(
+        participant["agent_id"],
+        SalixIM.ConversationSource.agent_source(conversation, participant)
+      )
     end
 
     {:ok, true}
@@ -600,7 +612,7 @@ defmodule SalixIM.ConversationParticipantActor do
         {:stop, :normal, state}
 
       _more_or_error ->
-        Process.send_after(self(), :cleanup_deleted_participant, @delete_retry_ms)
+        SystemsClock.send_after(Proc.self(), :cleanup_deleted_participant, @delete_retry_ms)
         {:noreply, state}
     end
   end
@@ -610,12 +622,24 @@ defmodule SalixIM.ConversationParticipantActor do
 
   def handle_info(_message, %{deleted?: true} = state), do: {:noreply, state}
 
+  # Placement moved this participant's conversation to another node. Stopping
+  # during provider I/O would kill the delivery worker and leave its claim to
+  # expire, so an in-flight delivery settles first. Undelivered records stay in
+  # the durable log for the current owner.
+  def handle_info(:release_non_owner, %{drain_pid: nil} = state),
+    do: {:stop, :normal, state}
+
+  def handle_info(:release_non_owner, state),
+    do: {:noreply, %{state | releasing?: true}}
+
+  def handle_info(:retry_drain, %{releasing?: true} = state), do: {:noreply, state}
+
   def handle_info({:session_activity_updated, agent_id, session_id}, state) do
     if state.session_ref == {agent_id, session_id} and is_nil(state.realtime_refresh) do
       # Invalidation hints carry no state. One mailbox marker reads the latest
       # snapshot after the queued burst, without a read for every notification.
-      token = make_ref()
-      send(self(), {:refresh_realtime_status, token})
+      token = Proc.make_ref()
+      Proc.send(Proc.self(), {:refresh_realtime_status, token})
       {:noreply, %{state | realtime_refresh: token}}
     else
       {:noreply, state}
@@ -660,7 +684,7 @@ defmodule SalixIM.ConversationParticipantActor do
     settle_delivery_result(active_delivery, result)
 
     state = %{state | drain_pid: nil, active_delivery: nil}
-    {:noreply, continue_or_finish_drain(state)}
+    after_delivery(state)
   end
 
   def handle_info(
@@ -676,19 +700,19 @@ defmodule SalixIM.ConversationParticipantActor do
     )
 
     state = %{state | drain_pid: nil, active_delivery: nil}
-    {:noreply, continue_or_finish_drain(state)}
+    after_delivery(state)
   end
 
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
 
   def handle_info(:retry_drain, state) do
-    GenServer.cast(self(), :drain)
+    SystemsRuntime.Server.cast(Proc.self(), :drain)
     {:noreply, state}
   end
 
   @impl true
   def terminate(_reason, state) do
-    if is_pid(state.drain_pid), do: Process.exit(state.drain_pid, :kill)
+    if Proc.is_process(state.drain_pid), do: Proc.exit(state.drain_pid, :kill)
     unsubscribe_session(state.session_ref)
   end
 
@@ -701,15 +725,15 @@ defmodule SalixIM.ConversationParticipantActor do
         {:ok, active_delivery, state} ->
           case prepare_active_delivery(state, active_delivery) do
             {:ok, state, active_delivery} ->
-              owner = self()
+              owner = Proc.self()
 
               pid =
-                spawn_link(fn ->
+                Proc.spawn_link(fn ->
                   result =
                     measured_delivery_io(active_delivery)
                     |> append_provider_notice(active_delivery.record)
 
-                  send(owner, {:participant_delivery_complete, self(), result})
+                  Proc.send(owner, {:participant_delivery_complete, Proc.self(), result})
                 end)
 
               %{
@@ -737,9 +761,12 @@ defmodule SalixIM.ConversationParticipantActor do
     end
   end
 
+  defp after_delivery(%{releasing?: true} = state), do: {:stop, :normal, state}
+  defp after_delivery(state), do: {:noreply, continue_or_finish_drain(state)}
+
   defp continue_or_finish_drain(state) do
     if state.drain_requested? do
-      GenServer.cast(self(), :drain)
+      SystemsRuntime.Server.cast(Proc.self(), :drain)
       %{state | drain_requested?: false}
     else
       start_next_delivery(state)
@@ -751,7 +778,7 @@ defmodule SalixIM.ConversationParticipantActor do
   defp retry_drain_later(state), do: retry_drain_later(state, 1_000)
 
   defp retry_drain_later(state, delay_ms) do
-    Process.send_after(self(), :retry_drain, max(delay_ms, 10))
+    SystemsClock.send_after(Proc.self(), :retry_drain, max(delay_ms, 10))
     %{state | drain_pid: nil, active_delivery: nil}
   end
 
@@ -771,7 +798,7 @@ defmodule SalixIM.ConversationParticipantActor do
 
       age =
         if first,
-          do: max(System.system_time(:millisecond) - (first["created_at"] || 0), 0),
+          do: max(SystemsClock.system_time(:millisecond) - (first["created_at"] || 0), 0),
           else: 0
 
       Salix.Telemetry.emit_conversation_log_sample(
@@ -795,7 +822,7 @@ defmodule SalixIM.ConversationParticipantActor do
           else
             case select_delivery(
                    [{record["delivery_id"], record, revision}],
-                   System.system_time(:millisecond),
+                   SystemsClock.system_time(:millisecond),
                    state.store_pid,
                    state.participant
                  ) do
@@ -1124,7 +1151,7 @@ defmodule SalixIM.ConversationParticipantActor do
   end
 
   defp claim_delivery(store_pid, delivery_id, rec, revision) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     claimed =
       rec
@@ -1161,7 +1188,7 @@ defmodule SalixIM.ConversationParticipantActor do
   end
 
   defp measured_delivery_io(delivery) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = perform_delivery_io(delivery)
 
     Salix.Telemetry.emit_operation(
@@ -1169,7 +1196,7 @@ defmodule SalixIM.ConversationParticipantActor do
       "provider_log_delivery",
       "system",
       if(match?({:ok, _}, result), do: "ok", else: "error"),
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     result
@@ -1286,8 +1313,8 @@ defmodule SalixIM.ConversationParticipantActor do
 
     case ConversationParticipantStore.update(state.store_pid, fn participant ->
            participant
-           |> SlackTaskCard.merge_participant_receipt(allowed)
-           |> Map.put("updated_at", System.system_time(:millisecond))
+           |> TaskCardProjection.merge_participant_receipt(allowed)
+           |> Map.put("updated_at", SystemsClock.system_time(:millisecond))
          end) do
       {:ok, participant} ->
         emit_receipt_telemetry(receipt)
@@ -1377,13 +1404,14 @@ defmodule SalixIM.ConversationParticipantActor do
       }, [delivery_kind: "slack_task_card_repair"]}, state}
   end
 
-  defp emit_receipt_telemetry(%{"telemetry_operation" => "slack_task_card"}) do
-    :telemetry.execute(
+  defp emit_receipt_telemetry(%{"telemetry_operation" => operation})
+       when operation in ["slack_task_card", "feishu_task_card", "lark_task_card"] do
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
       %{duration: 0},
       %{
         component: "salix_im",
-        operation: "slack_task_card",
+        operation: operation,
         surface: "system",
         outcome: "conflict"
       }
@@ -1418,11 +1446,34 @@ defmodule SalixIM.ConversationParticipantActor do
     end
   end
 
+  # Slack, and Linear for the activities its adapter can look up, settle an
+  # ambiguous send through provider verification.
   defp result_record(
-         %{"participant_provider" => "slack"} = rec,
+         %{"participant_provider" => provider} = rec,
          {:unknown, %{"status" => "provider_outcome_ambiguous"} = result, reason}
-       ),
+       )
+       when provider in ["slack", "linear"],
        do: verification_record(rec, result, reason, provider_verify_grace_ms())
+
+  defp result_record(
+         %{"participant_provider" => "feishu"} = rec,
+         {:unknown, %{"status" => "provider_outcome_ambiguous"} = result, reason}
+       ) do
+    if FeishuTaskCard.delivery?(rec),
+      do: verification_record(rec, result, reason, provider_verify_grace_ms()),
+      else: terminal_record(rec, "unknown", result, reason)
+  end
+
+  # A Lark Task card settles an unknown write by sending it again with the
+  # same `uuid`. Any other Lark send has no lookup, so it is not sent again.
+  defp result_record(
+         %{"participant_provider" => "lark"} = rec,
+         {:unknown, %{"status" => "provider_outcome_ambiguous"} = result, reason}
+       ) do
+    if LarkTaskCard.delivery?(rec),
+      do: verification_record(rec, result, reason, provider_verify_grace_ms()),
+      else: terminal_record(rec, "unknown", result, reason)
+  end
 
   defp result_record(rec, {:unknown, result, reason}),
     do: terminal_record(rec, "unknown", result, reason)
@@ -1525,13 +1576,21 @@ defmodule SalixIM.ConversationParticipantActor do
   defp emit_task_card_settlement_telemetry(rec) do
     outcome = @task_card_settlement_outcomes[rec["status"]]
 
-    if is_binary(outcome) and SlackTaskCard.delivery?(rec) do
-      :telemetry.execute(
+    operation =
+      cond do
+        SlackTaskCard.delivery?(rec) -> "slack_task_card"
+        FeishuTaskCard.delivery?(rec) -> "feishu_task_card"
+        LarkTaskCard.delivery?(rec) -> "lark_task_card"
+        true -> nil
+      end
+
+    if is_binary(outcome) and is_binary(operation) do
+      SystemsRuntime.Telemetry.execute(
         [:salix, :operation, :stop],
         %{duration: 0},
         %{
           component: "salix_im",
-          operation: "slack_task_card",
+          operation: operation,
           surface: "system",
           outcome: outcome
         }
@@ -1549,7 +1608,7 @@ defmodule SalixIM.ConversationParticipantActor do
         true -> {"delivered", status}
       end
 
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     rec
     |> Map.drop(~w(delivery_started_at retry_after_at provider_outcome_ambiguous_at last_error))
@@ -1568,13 +1627,13 @@ defmodule SalixIM.ConversationParticipantActor do
     |> Map.merge(%{
       "status" => status,
       "last_error" => inspect(reason),
-      "updated_at" => System.system_time(:millisecond)
+      "updated_at" => SystemsClock.system_time(:millisecond)
     })
     |> put_delivery_result(result)
   end
 
   defp verification_record(rec, result, reason, delay_ms) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
     delay_ms = max(delay_ms, 10)
 
     attempts = (rec["verification_attempts"] || 0) + 1
@@ -1596,7 +1655,7 @@ defmodule SalixIM.ConversationParticipantActor do
   end
 
   defp retry_record(rec, next_attempt, reason, delay_ms) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     if next_attempt < @max_delivery_attempts do
       rec
@@ -1632,14 +1691,14 @@ defmodule SalixIM.ConversationParticipantActor do
   defp retry_delay(_reason), do: nil
 
   defp delivery_lease_ms do
-    case Application.get_env(:salix_im, :conversation_delivery_lease_ms, @delivery_lease_ms) do
+    case SystemsRuntime.get_env(:salix_im, :conversation_delivery_lease_ms, @delivery_lease_ms) do
       value when is_integer(value) and value in 10..@delivery_lease_ms -> value
       _ -> @delivery_lease_ms
     end
   end
 
   defp delivery_retry_backoff_ms do
-    case Application.get_env(
+    case SystemsRuntime.get_env(
            :salix_im,
            :conversation_delivery_retry_backoff_ms,
            @delivery_retry_backoff_ms
@@ -1650,7 +1709,7 @@ defmodule SalixIM.ConversationParticipantActor do
   end
 
   defp provider_verify_grace_ms do
-    case Application.get_env(:salix_im, :provider_verify_grace_ms, @provider_verify_grace_ms) do
+    case SystemsRuntime.get_env(:salix_im, :provider_verify_grace_ms, @provider_verify_grace_ms) do
       value when is_integer(value) and value in 10..10_000 -> value
       _ -> @provider_verify_grace_ms
     end
@@ -1850,7 +1909,7 @@ defmodule SalixIM.ConversationParticipantActor do
            |> Map.merge(required_payload)
            |> put_optional_payload_field(field, desired_incarnation)
          )
-         |> Map.put("updated_at", desired["updated_at"] || System.system_time(:millisecond))}
+         |> Map.put("updated_at", desired["updated_at"] || SystemsClock.system_time(:millisecond))}
 
       current["state"] == "inactive" and allow_reactivation? and
         is_binary(desired_incarnation) and current_incarnation != desired_incarnation ->
@@ -1882,10 +1941,10 @@ defmodule SalixIM.ConversationParticipantActor do
   defp participant_result(reply, state), do: {reply, state}
 
   defp request_deactivation_drain({:ok, _participant}),
-    do: GenServer.cast(self(), :drain)
+    do: SystemsRuntime.Server.cast(Proc.self(), :drain)
 
   defp request_deactivation_drain({:ok, _status, _participant}),
-    do: GenServer.cast(self(), :drain)
+    do: SystemsRuntime.Server.cast(Proc.self(), :drain)
 
   defp request_deactivation_drain(_reply), do: :ok
 
@@ -2061,7 +2120,7 @@ defmodule SalixIM.ConversationParticipantActor do
       %{
         state
         | realtime_subscribers:
-            Map.put(state.realtime_subscribers, subscriber, Process.monitor(subscriber))
+            Map.put(state.realtime_subscribers, subscriber, Proc.monitor(subscriber))
       }
     end
   end
@@ -2071,7 +2130,7 @@ defmodule SalixIM.ConversationParticipantActor do
       {:conversation_participant_status_changed, state.group_id, state.conversation_id,
        state.participant_id}
 
-    Enum.each(Map.keys(state.realtime_subscribers), &send(&1, event))
+    Enum.each(Map.keys(state.realtime_subscribers), &Proc.send(&1, event))
   end
 
   defp activate_participant(participant, attrs) do
@@ -2109,7 +2168,7 @@ defmodule SalixIM.ConversationParticipantActor do
     |> Map.put("notification_filter", activation_notification_filter(participant, attrs))
     |> Map.put("delivery_cursor_seq", cursor_seq)
     |> Map.delete("task_thread_delivery_fence")
-    |> Map.put("updated_at", attrs["updated_at"] || System.system_time(:millisecond))
+    |> Map.put("updated_at", attrs["updated_at"] || SystemsClock.system_time(:millisecond))
   end
 
   defp deactivate_participant(participant, updated_at) do
@@ -2182,10 +2241,10 @@ defmodule SalixIM.ConversationParticipantActor do
     cutoff = get_in(state.participant, ["task_thread_delivery_fence", "cutoff_seq"]) || 0
 
     settled =
-      not is_pid(state.drain_pid) and
+      not Proc.is_process(state.drain_pid) and
         (state.participant["delivery_log_cursor_seq"] || 0) >= cutoff
 
-    unless settled, do: GenServer.cast(self(), :drain)
+    unless settled, do: SystemsRuntime.Server.cast(Proc.self(), :drain)
     {:ok, if(settled, do: "settled", else: "pending"), state}
   end
 
@@ -2310,7 +2369,7 @@ defmodule SalixIM.ConversationParticipantActor do
          not canonical_inactive_participant?(participant) do
       ConversationParticipantStore.update(store_pid, fn current ->
         if legacy_triage_slack_thread_participant?(current) do
-          deactivate_participant(current, System.system_time(:millisecond))
+          deactivate_participant(current, SystemsClock.system_time(:millisecond))
         else
           current
         end
@@ -2399,10 +2458,10 @@ defmodule SalixIM.ConversationParticipantActor do
   defp targets_participant?(participant, message) do
     not participant_inactive?(participant) and
       (ConversationMessage.targets_participant?(participant, message) or
-         (SlackTaskCard.participant?(participant) and
+         (TaskCardProjection.participant?(participant) and
             get_in(participant, ["notification_filter", "messages"]) == "all" and
-            get_in(participant, ["payload", "projection"]) == "slack_task_card" and
-            SlackTaskCard.timeline_message?(message)))
+            TaskCardProjection.projection?(participant["payload"]) and
+            TaskCardProjection.timeline_message?(message)))
   end
 
   defp conversation_tail_seq(conversation) do
@@ -2518,7 +2577,7 @@ defmodule SalixIM.ConversationParticipantActor do
   end
 
   defp put_operation_ref(rec) do
-    ref = :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false)
+    ref = SystemsRuntime.Proc.random_bytes(18) |> Base.url_encode64(padding: false)
     Map.put(rec, "operation_ref", "groupconv-delivery-" <> ref)
   end
 
@@ -2550,7 +2609,7 @@ defmodule SalixIM.ConversationParticipantActor do
   defp canonical_legacy_delivery(conversation, participant, facts) do
     facts = Map.take(facts, @legacy_delivery_fact_fields)
     delivery_id = trim(facts["delivery_id"])
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     if delivery_id == "" do
       {:error, {:bad_request, "delivery_id is required"}}
@@ -2621,5 +2680,5 @@ defmodule SalixIM.ConversationParticipantActor do
   defp trim(value) when is_binary(value), do: String.trim(value)
   defp trim(value), do: value |> to_string() |> String.trim()
 
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 end

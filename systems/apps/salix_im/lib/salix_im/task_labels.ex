@@ -842,7 +842,7 @@ defmodule SalixIM.TaskLabels do
 
   defp touch(aggregate), do: Map.put(aggregate, "updated_at", now())
 
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 
   defp trim(value) when is_binary(value), do: String.trim(value)
   defp trim(nil), do: ""

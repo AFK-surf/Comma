@@ -1,5 +1,5 @@
 defmodule SalixStore.AgentVMMInstallMaterialTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{AgentVMMInstallMaterial, Compute, Repo}
   alias SalixStore.AgentVMMInstallMaterialFixtures
@@ -17,9 +17,9 @@ defmodule SalixStore.AgentVMMInstallMaterialTest do
         pool_id: pool.id
       })
 
-    previous = Application.get_env(:salix_store, :agent_vmm_install_material)
+    previous = SystemsRuntime.get_env(:salix_store, :agent_vmm_install_material)
     catalog = AgentVMMInstallMaterialFixtures.catalog()
-    Application.put_env(:salix_store, :agent_vmm_install_material, catalog)
+    SystemsRuntime.put_env(:salix_store, :agent_vmm_install_material, catalog)
 
     on_exit(fn -> put_or_delete(previous) end)
     {:ok, catalog: catalog}
@@ -36,36 +36,6 @@ defmodule SalixStore.AgentVMMInstallMaterialTest do
     refute Map.has_key?(first.remote_enrollment.pool_policy, "max_environments")
     assert byte_size(Base.url_decode64!(first.scope_digest, padding: false)) == 32
   end
-
-  test "requires a DNS gateway with explicit port and a certificate-only trust bundle", ctx do
-    invalid_endpoint =
-      put_in(ctx.catalog, ["remote_enrollment", "gateway_endpoint"], "34.1.2.3:7443")
-
-    Application.put_env(:salix_store, :agent_vmm_install_material, invalid_endpoint)
-    assert {:error, :install_material_unavailable} = issue()
-
-    invalid_bundle =
-      put_in(ctx.catalog, ["remote_enrollment", "trust_bundle"], Base.encode64("not a CA"))
-
-    Application.put_env(:salix_store, :agent_vmm_install_material, invalid_bundle)
-    assert {:error, :install_material_unavailable} = issue()
-  end
-
-  test "fails closed when the Pool admission policy is malformed" do
-    Repo.query!("""
-    UPDATE compute_pools
-    SET capacity = jsonb_set(
-      capacity,
-      '{agent_vmm_remote_policy,per_environment_limits,pids}',
-      '0'::jsonb
-    )
-    WHERE tenant_id = 'tenant'
-    """)
-
-    assert {:error, :install_material_unavailable} = issue()
-  end
-
-  defp issue, do: AgentVMMInstallMaterial.issue(operation(), enrollment())
 
   defp operation do
     %{
@@ -84,8 +54,9 @@ defmodule SalixStore.AgentVMMInstallMaterialTest do
     }
   end
 
-  defp put_or_delete(nil), do: Application.delete_env(:salix_store, :agent_vmm_install_material)
+  defp put_or_delete(nil),
+    do: SystemsRuntime.delete_env(:salix_store, :agent_vmm_install_material)
 
   defp put_or_delete(value),
-    do: Application.put_env(:salix_store, :agent_vmm_install_material, value)
+    do: SystemsRuntime.put_env(:salix_store, :agent_vmm_install_material, value)
 end

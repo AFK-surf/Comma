@@ -15,7 +15,7 @@ defmodule BillingCore.FeeControl do
 
   @spec check(State.t(), map()) :: {:ok, map(), State.t()}
   def check(%State{} = state, attrs) when is_map(attrs) do
-    now = Map.get(attrs, :now, System.system_time(:millisecond))
+    now = Map.get(attrs, :now, SystemsClock.system_time(:millisecond))
     ttl_ms = Map.get(attrs, :cache_ttl_ms) || @default_ttl_ms
 
     key =
@@ -86,9 +86,9 @@ defmodule BillingCore.FeeControl do
   end
 
   defp refresh(state, attrs, key, now, ttl_ms, cache_hit, age_ms) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
     {snapshot, query_performed} = perform_query(attrs)
-    duration = max(System.monotonic_time(:millisecond) - started, 0)
+    duration = max(SystemsClock.monotonic_time(:millisecond) - started, 0)
     cache_entry = %{snapshot: snapshot, cached_at_ms: now}
 
     next_state = %{
@@ -107,7 +107,7 @@ defmodule BillingCore.FeeControl do
 
   defp sampled_probe?(attrs) do
     rate = attrs[:probe_rate] || attrs["probe_rate"] || 0
-    is_number(rate) and rate > 0 and :rand.uniform() <= rate
+    is_number(rate) and rate > 0 and SystemsRuntime.Proc.uniform() <= rate
   end
 
   defp perform_query(attrs) do
@@ -146,12 +146,12 @@ defmodule BillingCore.FeeControl do
   defp enforce_mode?(attrs), do: normalize_mode(Map.get(attrs, :mode, :shadow)) == :enforce
 
   defp repo_query?(attrs) do
-    repo = attrs[:repo] || Application.get_env(:billing_core, :repo, BillingCore.Repo)
-    attrs[:repo] || (is_atom(repo) and Process.whereis(repo) != nil)
+    repo = attrs[:repo] || SystemsRuntime.get_env(:billing_core, :repo, BillingCore.Repo)
+    attrs[:repo] || (is_atom(repo) and SystemsRuntime.Proc.whereis(repo) != nil)
   end
 
   defp repo_availability(attrs) do
-    repo = attrs[:repo] || Application.get_env(:billing_core, :repo, BillingCore.Repo)
+    repo = attrs[:repo] || SystemsRuntime.get_env(:billing_core, :repo, BillingCore.Repo)
     sql = attrs[:sql_runner] || Ecto.Adapters.SQL
     account_id = Map.fetch!(attrs, :billing_account_id)
     checked_at = checked_at(attrs)
@@ -310,7 +310,7 @@ defmodule BillingCore.FeeControl do
   defp reason(_status, _entitlement_mode, _balance, _estimated), do: "allowed"
 
   defp checked_at(attrs) do
-    attrs[:checked_at] || attrs[:metered_at] || DateTime.utc_now()
+    attrs[:checked_at] || attrs[:metered_at] || SystemsClock.utc_now()
   end
 
   defp normalize_mode(:enforce), do: :enforce
@@ -351,5 +351,5 @@ defmodule BillingCore.FeeControl do
   defp normalize_policy(_value), do: nil
 
   defp id(prefix),
-    do: prefix <> "_" <> (:crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower))
+    do: prefix <> "_" <> (SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower))
 end

@@ -1,53 +1,65 @@
-const ACTIVE_WORKSPACE_STORAGE_KEY = "comma.activeWorkspaceId";
-const ACTIVE_WORKSPACE_CHANGED_EVENT = "comma:active-workspace-changed";
+import { useCall, useTopic } from "@comma/core-client";
+import type { ResolvedWorkspace } from "@comma/core/contract";
+import { useCallback, useEffect } from "react";
 
-type ActiveWorkspaceListener = (workspaceId: string | undefined) => void;
-
-export function readActiveWorkspaceId() {
-  try {
-    return globalThis.localStorage?.getItem(ACTIVE_WORKSPACE_STORAGE_KEY) ?? undefined;
-  } catch {
-    return undefined;
-  }
+/**
+ * The workspace the app works in, as the core keeps it for the signed-in
+ * account (`workspace` with no preference): the one last selected while the
+ * account has it, else its first. Undefined while the list is read.
+ */
+export function useActiveWorkspace(enabled = true): ResolvedWorkspace | undefined {
+  return useTopic(enabled ? { topic: "workspace" } : null).value;
 }
 
-export function writeActiveWorkspaceId(workspaceId: string) {
-  try {
-    globalThis.localStorage?.setItem(ACTIVE_WORKSPACE_STORAGE_KEY, workspaceId);
-  } catch {
-    // A blocked storage write should not prevent this shell from changing scope.
-  }
+/** The id of the workspace the app works in; undefined while the list is read. */
+export function useActiveWorkspaceId(enabled = true): string | undefined {
+  return useActiveWorkspace(enabled)?.workspace?.id;
+}
 
-  globalThis.window?.dispatchEvent(
-    new CustomEvent(ACTIVE_WORKSPACE_CHANGED_EVENT, {
-      detail: { workspaceId },
-    })
+/**
+ * What a surface hands the core as its `prefer`: the workspace the app works
+ * in, "" when the account has none, undefined while the list is read (the
+ * surface waits rather than reading the first workspace's page first).
+ */
+export function useWorkspacePreference(enabled = true): string | undefined {
+  const resolved = useActiveWorkspace(enabled);
+  if (!resolved || resolved.status === "loading") return undefined;
+  return resolved.workspace?.id ?? "";
+}
+
+/** Makes a workspace the one the app works in, on every window (`workspace.select`). */
+export function useSelectWorkspace(): (workspaceId: string) => void {
+  const call = useCall();
+  return useCallback(
+    (workspaceId: string) => {
+      // A failed selection leaves the one before in place; nothing to tell the user.
+      void call("workspace.select", { workspace: workspaceId }).catch(() => undefined);
+    },
+    [call]
   );
 }
 
-export function subscribeActiveWorkspace(listener: ActiveWorkspaceListener) {
-  if (!globalThis.window) {
-    return () => undefined;
-  }
+const LEGACY_STORAGE_KEY = "comma.activeWorkspaceId";
 
-  const handleActiveWorkspaceChange = (event: Event) => {
-    const workspaceId = (event as CustomEvent<{ workspaceId?: string }>).detail
-      ?.workspaceId;
-    listener(workspaceId || readActiveWorkspaceId());
-  };
-  const handleStorage = (event: StorageEvent) => {
-    if (event.key === ACTIVE_WORKSPACE_STORAGE_KEY) {
-      listener(event.newValue || undefined);
+/**
+ * Before the core kept it, a window kept the selection in its own storage:
+ * hands it to the core once and forgets it. Mounted once per signed-in window.
+ */
+export function LegacyActiveWorkspace(): null {
+  useLegacyActiveWorkspace();
+  return null;
+}
+
+function useLegacyActiveWorkspace(): void {
+  const select = useSelectWorkspace();
+  useEffect(() => {
+    let legacy: string | null = null;
+    try {
+      legacy = globalThis.localStorage?.getItem(LEGACY_STORAGE_KEY) ?? null;
+      globalThis.localStorage?.removeItem(LEGACY_STORAGE_KEY);
+    } catch {
+      return;
     }
-  };
-
-  window.addEventListener(ACTIVE_WORKSPACE_CHANGED_EVENT, handleActiveWorkspaceChange);
-  window.addEventListener("storage", handleStorage);
-  return () => {
-    window.removeEventListener(
-      ACTIVE_WORKSPACE_CHANGED_EVENT,
-      handleActiveWorkspaceChange
-    );
-    window.removeEventListener("storage", handleStorage);
-  };
+    if (legacy) select(legacy);
+  }, [select]);
 }

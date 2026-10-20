@@ -1,0 +1,82 @@
+{
+ "name": "login_code_2026_10_11",
+ "description": "A Bridge login code arrives while the owner signs in to renew the patrol token (13:17:47Z). Fresh, it should reach the owner with the code; twenty minutes later it should not. Synthetic text modelled on the Gmail item in production.",
+ "now": "2026-10-11T13:18:30Z",
+ "pending_since": "2026-10-11T13:10:00Z",
+ "locale": "zh-CN",
+ "timezone": "Asia/Shanghai",
+ "owner": {
+  "user": "U0OWNER001",
+  "team": "T0TEAM0001",
+  "handle": "kai"
+ },
+ "home": [],
+ "slack": {
+  "search": [
+   {
+    "query": "<@U0OWNER001> after:2026-10-04",
+    "matches": []
+   },
+   {
+    "query": "to:me after:2026-10-04",
+    "matches": []
+   },
+   {
+    "query": "is:thread with:<@U0OWNER001> after:2026-10-04",
+    "matches": []
+   },
+   {
+    "query": "stash",
+    "matches": [
+     {
+      "type": "message",
+      "ts": "1791724667.000001",
+      "text": "[Bridge] Your Login Verification Code\nYour Bridge verification code is 482913. It expires in 10 minutes. If you did not try to sign in, ignore this email.",
+      "user": "U0BOTMAIL1",
+      "permalink": "https://example.slack.com/archives/D0MAIL0001/p1791724667000001",
+      "channel": {
+       "id": "D0MAIL0001",
+       "name": "mail",
+       "is_im": true
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "labels": {
+  "bridge_code": "https://example.slack.com/archives/D0MAIL0001/p1791724667000001"
+ },
+ "scenarios": [
+  {
+   "name": "fresh_code",
+   "inject": [
+    "bridge_code"
+   ],
+   "relation": "awaiting_your_reply",
+   "read_channels": false,
+   "expect": {
+    "routed_any": [
+     "bridge_code"
+    ],
+    "urgency_any": [
+     "critical"
+    ]
+   }
+  },
+  {
+   "name": "stale_code",
+   "now": "2026-10-11T13:40:00Z",
+   "inject": [
+    "bridge_code"
+   ],
+   "relation": "awaiting_your_reply",
+   "read_channels": false,
+   "expect": {
+    "not_routed": [
+     "bridge_code"
+    ]
+   }
+  }
+ ]
+}

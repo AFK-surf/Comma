@@ -8,7 +8,7 @@ defmodule BridgeForTeams.StorageMetering.Reconciler do
   replay safe after a process dies between charge and checkpoint acknowledgement.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   import Ecto.Query
 
@@ -32,17 +32,17 @@ defmodule BridgeForTeams.StorageMetering.Reconciler do
   end
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
   end
 
   def run_once(opts \\ []) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     try do
       repo = opts[:repo] || Repo
-      billing_repo = opts[:billing_repo] || Application.fetch_env!(:billing_core, :repo)
+      billing_repo = opts[:billing_repo] || SystemsRuntime.fetch_env!(:billing_core, :repo)
       sql = opts[:sql_runner] || Ecto.Adapters.SQL
-      now_ms = opts[:now_ms] || System.system_time(:millisecond)
+      now_ms = opts[:now_ms] || SystemsClock.system_time(:millisecond)
 
       sample_window_seconds =
         opts[:sample_window_seconds] || config(:sample_window_seconds, 3_600)
@@ -63,13 +63,13 @@ defmodule BridgeForTeams.StorageMetering.Reconciler do
       end
     rescue
       exception ->
-        Telemetry.emit_operation(:storage_sweep, "error", System.monotonic_time() - started)
+        Telemetry.emit_operation(:storage_sweep, "error", SystemsClock.monotonic_time() - started)
         reraise exception, __STACKTRACE__
     end
   end
 
   defp run_claimed_scan(claim, repo, billing_repo, sql, sample_window_seconds, opts) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     try do
       projects = project_page(repo, claim.cursor_project_id, opts[:limit] || @default_limit)
@@ -91,9 +91,9 @@ defmodule BridgeForTeams.StorageMetering.Reconciler do
       end
 
       outcome = if summary.failed == 0, do: "ok", else: "error"
-      Telemetry.emit_operation(:storage_sweep, outcome, System.monotonic_time() - started)
+      Telemetry.emit_operation(:storage_sweep, outcome, SystemsClock.monotonic_time() - started)
 
-      :telemetry.execute(
+      SystemsRuntime.Telemetry.execute(
         [:bridge_for_teams, :sweeper, :stop],
         %{value: summary.scopes_seen},
         %{operation: "storage_sweep", outcome: outcome}
@@ -103,7 +103,7 @@ defmodule BridgeForTeams.StorageMetering.Reconciler do
     rescue
       exception ->
         _ = release_scan(repo, claim)
-        Telemetry.emit_operation(:storage_sweep, "error", System.monotonic_time() - started)
+        Telemetry.emit_operation(:storage_sweep, "error", SystemsClock.monotonic_time() - started)
         reraise exception, __STACKTRACE__
     end
   end
@@ -117,14 +117,17 @@ defmodule BridgeForTeams.StorageMetering.Reconciler do
       lease_ttl_ms: Keyword.get(opts, :lease_ttl_ms, config(:lease_ttl_ms, @default_lease_ttl_ms))
     }
 
-    if state.enabled, do: send(self(), :run)
+    if state.enabled, do: SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :run)
     {:ok, state}
   end
 
   @impl true
   def handle_info(:run, state) do
     _ = run_safely(state)
-    if state.enabled, do: Process.send_after(self(), :run, state.interval_ms)
+
+    if state.enabled,
+      do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :run, state.interval_ms)
+
     {:noreply, state}
   end
 
@@ -359,7 +362,7 @@ defmodule BridgeForTeams.StorageMetering.Reconciler do
     now = DateTime.from_unix!(now_ms * 1_000, :microsecond)
     lease_ttl_ms = opts[:lease_ttl_ms] || config(:lease_ttl_ms, @default_lease_ttl_ms)
     lease_expires_at = DateTime.add(now, lease_ttl_ms, :millisecond)
-    token = Ecto.UUID.generate()
+    token = SystemsRuntime.Proc.uuid()
 
     repo.insert_all(
       StorageMeteringScan,
@@ -399,7 +402,7 @@ defmodule BridgeForTeams.StorageMetering.Reconciler do
 
   defp acknowledge_scan(repo, claim, last_project) do
     cursor_project_id = last_project && last_project.project_id
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     {updated, _} =
       repo.update_all(
@@ -420,7 +423,7 @@ defmodule BridgeForTeams.StorageMetering.Reconciler do
   end
 
   defp release_scan(repo, claim) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     repo.update_all(
       from(scan in StorageMeteringScan,
@@ -526,7 +529,7 @@ defmodule BridgeForTeams.StorageMetering.Reconciler do
 
   defp config(key, default) do
     :bridge_for_teams_core
-    |> Application.get_env(:storage_metering, [])
+    |> SystemsRuntime.get_env(:storage_metering, [])
     |> Keyword.get(key, default)
   end
 

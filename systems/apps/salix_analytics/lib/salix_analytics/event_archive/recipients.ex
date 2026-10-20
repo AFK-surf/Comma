@@ -47,8 +47,8 @@ defmodule SalixAnalytics.EventArchive.Recipients do
   """
   @spec load() :: {:ok, [recipient()]} | {:error, term()}
   def load do
-    case :persistent_term.get(@cache_key, :miss) do
-      :miss -> parse_and_cache(Application.get_env(:salix_analytics, :event_archive, []))
+    case SystemsRuntime.PersistentTerm.get(@cache_key, :miss) do
+      :miss -> parse_and_cache(SystemsRuntime.get_env(:salix_analytics, :event_archive, []))
       cached -> {:ok, cached}
     end
   end
@@ -60,7 +60,7 @@ defmodule SalixAnalytics.EventArchive.Recipients do
   every item written since is unreadable by whoever holds the rejected key.
   """
   @spec problems() :: [problem()]
-  def problems, do: :persistent_term.get(@problems_key, [])
+  def problems, do: SystemsRuntime.PersistentTerm.get(@problems_key, [])
 
   @doc "Recipients, or `[]` if unconfigured or invalid. Never raises."
   @spec get() :: [recipient()]
@@ -74,8 +74,8 @@ defmodule SalixAnalytics.EventArchive.Recipients do
   @doc "Drop the cache. Tests and config reloads only."
   @spec reset() :: :ok
   def reset do
-    _ = :persistent_term.erase(@cache_key)
-    _ = :persistent_term.erase(@problems_key)
+    _ = SystemsRuntime.PersistentTerm.erase(@cache_key)
+    _ = SystemsRuntime.PersistentTerm.erase(@problems_key)
     :ok
   end
 
@@ -133,13 +133,13 @@ defmodule SalixAnalytics.EventArchive.Recipients do
 
     cond do
       not enabled? or configured == [] ->
-        :persistent_term.put(@cache_key, [])
-        :persistent_term.put(@problems_key, [])
+        SystemsRuntime.PersistentTerm.put(@cache_key, [])
+        SystemsRuntime.PersistentTerm.put(@problems_key, [])
         {:ok, []}
 
       true ->
         {usable, rejected} = parse_all(configured)
-        :persistent_term.put(@problems_key, rejected)
+        SystemsRuntime.PersistentTerm.put(@problems_key, rejected)
         announce(rejected)
 
         if usable == [] do
@@ -148,7 +148,7 @@ defmodule SalixAnalytics.EventArchive.Recipients do
           # disable archiving for the life of the node.
           {:error, {:no_usable_recipients, rejected}}
         else
-          :persistent_term.put(@cache_key, usable)
+          SystemsRuntime.PersistentTerm.put(@cache_key, usable)
           {:ok, usable}
         end
     end
@@ -157,7 +157,7 @@ defmodule SalixAnalytics.EventArchive.Recipients do
   defp announce([]), do: :ok
 
   defp announce(rejected) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix_analytics, :event_archive, :recipient_rejected],
       %{count: length(rejected)},
       %{key_ids: Enum.map(rejected, &elem(&1, 0))}

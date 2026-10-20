@@ -30,25 +30,28 @@ defmodule SalixIM.Ports.AgentDelivery do
   def conversation_progress(agent_id, session_id, participant_id) do
     module = impl()
 
-    if Code.ensure_loaded?(module) and function_exported?(module, :conversation_progress, 3),
-      do: module.conversation_progress(agent_id, session_id, participant_id),
-      else: {:error, :agent_delivery_not_configured}
+    if SystemsRuntime.Proc.ensure_loaded?(module) and
+         function_exported?(module, :conversation_progress, 3),
+       do: module.conversation_progress(agent_id, session_id, participant_id),
+       else: {:error, :agent_delivery_not_configured}
   end
 
   def prepare_conversation_input(agent_id) do
     module = impl()
 
-    if Code.ensure_loaded?(module) and function_exported?(module, :prepare_conversation_input, 1),
-      do: module.prepare_conversation_input(agent_id),
-      else: :ok
+    if SystemsRuntime.Proc.ensure_loaded?(module) and
+         function_exported?(module, :prepare_conversation_input, 1),
+       do: module.prepare_conversation_input(agent_id),
+       else: :ok
   end
 
   def notify_conversation(agent_id, source) do
     module = impl()
 
-    if Code.ensure_loaded?(module) and function_exported?(module, :notify_conversation, 2),
-      do: module.notify_conversation(agent_id, source),
-      else: {:error, :agent_delivery_not_configured}
+    if SystemsRuntime.Proc.ensure_loaded?(module) and
+         function_exported?(module, :notify_conversation, 2),
+       do: module.notify_conversation(agent_id, source),
+       else: {:error, :agent_delivery_not_configured}
   end
 
   @spec get_session(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -64,7 +67,7 @@ defmodule SalixIM.Ports.AgentDelivery do
   def consult_memory(agent_id, session_id, question, request_id, opts \\ []),
     do: impl().consult_memory(agent_id, session_id, question, request_id, opts)
 
-  defp impl, do: Application.get_env(:salix_im, :agent_delivery_mod, __MODULE__.Unconfigured)
+  defp impl, do: SystemsRuntime.get_env(:salix_im, :agent_delivery_mod, __MODULE__.Unconfigured)
 
   defmodule Unconfigured do
     @moduledoc false

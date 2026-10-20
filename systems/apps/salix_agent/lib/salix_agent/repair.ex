@@ -43,10 +43,10 @@ defmodule SalixAgent.Repair do
 
     fn
       :clock ->
-        System.system_time(:millisecond)
+        SystemsClock.system_time(:millisecond)
 
       :nonce ->
-        System.unique_integer([:positive])
+        SystemsRuntime.Proc.unique_integer([:positive])
 
       {:archived_record, seq} ->
         case SalixAgent.InternalSessionStore.fetch_archived_record(
@@ -144,7 +144,7 @@ defmodule SalixAgent.Repair do
         "error" => true,
         "error_class" => result[:error_class],
         "error_message" => result[:error_message],
-        "completed_at" => System.system_time(:millisecond)
+        "completed_at" => SystemsClock.system_time(:millisecond)
       }
       |> SalixAgent.ToolCallProvenance.inherit(record)
     ]

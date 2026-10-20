@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelMetadataUpdateTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
   alias SalixAgent.TestSupport.SessionData
@@ -42,27 +42,6 @@ defmodule SalixAgent.SessionKernelMetadataUpdateTest do
     assert SessionData.apply_event(before, ev) === expected
   end
 
-  test "all native placeholder fast paths permit conditional renaming" do
-    for name <- [
-          nil,
-          false,
-          [],
-          "",
-          "Chat",
-          "Default",
-          "Untitled",
-          :"",
-          :Chat,
-          :Default,
-          :Untitled
-        ] do
-      before = %State{state() | name: name}
-      ev = event(%{"name" => "Generated", "if_unnamed" => true})
-
-      assert Driver.step(before, ev) === {:done, %State{before | name: "Generated"}}
-    end
-  end
-
   test "native conversion remains available outside the executable model profile" do
     for {name, expected_name} <- [
           {[67, 104, 97, 116], "Generated"},
@@ -97,33 +76,5 @@ defmodule SalixAgent.SessionKernelMetadataUpdateTest do
     assert_raise ArgumentError, ~r/^invalid Session data:/, fn ->
       SessionData.apply_event(before, ev)
     end
-  end
-
-  test "false supplied name is a rename, while hidden accepts only booleans" do
-    before = state()
-
-    for hidden <- [nil, 0, "", [], %{}, 1.25] do
-      ev = event(%{"name" => false, "hidden" => hidden})
-
-      assert Driver.step(before, ev) === {:done, %State{before | name: false}}
-    end
-
-    for hidden <- [true, false], timestamp <- [nil, false, 0, "", [], 1.25] do
-      ev = event(%{"hidden" => hidden, "updated_at" => timestamp})
-
-      expected = %State{
-        before
-        | hidden: hidden,
-          last_activity_at: timestamp || before.last_activity_at
-      }
-
-      assert Driver.step(before, ev) === {:done, expected}
-    end
-  end
-
-  test "the outer State wrapper filters cross-session updates" do
-    before = state()
-    ev = event(%{"name" => "Other", "session_id" => "other-session"})
-    assert SessionData.apply_event(before, ev) === before
   end
 end

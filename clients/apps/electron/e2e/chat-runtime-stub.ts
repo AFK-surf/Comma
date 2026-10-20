@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { emptyRoutineEnvelope } from "../../../e2e/helpers/routine-fixture";
+import { startElectronTestServer } from "./electron-test-server";
 
 export const runtimeAccountA = {
   conversationId: "cnv-public-runtime-a",
@@ -75,7 +75,6 @@ export async function startChatRuntimeStub({
   ensureFailureStatus,
   googleLinkRequired = false,
   googleAttemptGate,
-  googlePreparationFailures = 0,
   hangLogoutTokens = [],
   messageFailureReason,
   messageFailureStatus,
@@ -89,7 +88,6 @@ export async function startChatRuntimeStub({
   ensureFailureStatus?: RuntimeFailureStatus;
   googleLinkRequired?: boolean;
   googleAttemptGate?: Promise<void>;
-  googlePreparationFailures?: number;
   hangLogoutTokens?: string[];
   /** The billing reason a 402 carries; without it the 402 is a bare billing_unavailable. */
   messageFailureReason?: "insufficient_credits";
@@ -129,7 +127,7 @@ export async function startChatRuntimeStub({
     notifyBResolutionStarted = resolve;
   });
 
-  const server = createServer(async (req, res) => {
+  const server = await startElectronTestServer(async (req, res) => {
     setCorsHeaders(res);
     if (req.method === "OPTIONS") {
       res.writeHead(204).end();
@@ -150,6 +148,8 @@ export async function startChatRuntimeStub({
         challenge_id:
           account === runtimeAccountA ? "runtime-challenge-a" : "runtime-challenge-b",
         code: "654321",
+        expires_in: 900,
+        resend_after: 60,
       });
       return;
     }
@@ -170,11 +170,6 @@ export async function startChatRuntimeStub({
 
     if (method === "POST" && path === "/v1/comma/auth/google/attempt") {
       googleAttempts.push(await readJson(req));
-      if (googlePreparationFailures-- > 0) {
-        res.writeHead(503, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "auth_unavailable" }));
-        return;
-      }
       await googleAttemptGate;
       writeJson(res, {
         attempt_id: "runtime-google-attempt",
@@ -211,12 +206,33 @@ export async function startChatRuntimeStub({
       path === "/v1/comma/auth/logout" &&
       hangLogoutTokens.includes(token)
     ) {
+      // The logout is delivered and the connection drops before any response,
+      // so its outcome stays unknown without waiting out Main's timeout.
+      req.resume();
+      req.on("end", () => req.socket.destroy());
       return;
     }
 
     const account = accountForToken(token);
     if (!account) {
       writeJson(res, { error: "unauthorized" }, 401);
+      return;
+    }
+
+    // The group's change feed the client core follows for the conversations it keeps: open, and quiet.
+    if (
+      method === "GET" &&
+      path === `/v1/comma/groups/${account.groupId}/conversations/events` &&
+      url.searchParams.get("changes") === "1"
+    ) {
+      openSse(res);
+      res.write(
+        `event: conversation_changes_resync_required\ndata: ${JSON.stringify({
+          type: "conversation_changes_resync_required",
+          group_id: account.groupId,
+          version: "e2e.0",
+        })}\n\n`
+      );
       return;
     }
 
@@ -460,10 +476,9 @@ export async function startChatRuntimeStub({
     writeJson(res, { error: `unhandled ${method} ${path}` }, 404);
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address() as AddressInfo;
-
   return {
+    /** Requests another server hands it (an Electron worker's shared API address) are answered too. */
+    server: server.server,
     get accountBEventClientCount() {
       return accountBEventResponses.size;
     },
@@ -472,13 +487,9 @@ export async function startChatRuntimeStub({
     },
     aResolutionStarted,
     accountABodyHeadersSent,
-    baseUrl: `http://127.0.0.1:${port}`,
+    baseUrl: server.origin,
     bResolutionStarted,
-    close: () =>
-      new Promise<void>((resolve) => {
-        server.close(() => resolve());
-        server.closeAllConnections();
-      }),
+    close: () => server.close(),
     emailVerifications,
     googleAttempts,
     googleCompletions,
@@ -551,20 +562,16 @@ export async function startChatRuntimeStub({
         );
       }
     },
-    settleBResolution(failureStatus?: RuntimeFailureStatus) {
+    settleBResolution() {
       if (delayedBResponses.length === 0) {
         throw new Error("Account B Workspace Chat resolution has not started.");
       }
       bResolutionsReleased = true;
       for (const response of delayedBResponses.splice(0)) {
-        if (failureStatus) {
-          writeRuntimeFailure(response, failureStatus);
-        } else {
-          writeJson(
-            response,
-            conversationFor(runtimeAccountB, messagesFor(runtimeAccountB.token))
-          );
-        }
+        writeJson(
+          response,
+          conversationFor(runtimeAccountB, messagesFor(runtimeAccountB.token))
+        );
       }
     },
     settleNextAccountBMessage() {

@@ -1,5 +1,7 @@
 defmodule SystemsObservability.ApplicationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SystemsClock.Test, scope: ["Elixir.SalixStore", "Elixir.SystemsObservability"]
 
   test "an unavailable metrics port does not prevent the application from starting" do
     previous_port = Application.get_env(:systems_observability, :port, 9568)
@@ -18,9 +20,9 @@ defmodule SystemsObservability.ApplicationTest do
     end)
 
     assert {:ok, _} = Application.ensure_all_started(:systems_observability)
-    assert Process.alive?(Process.whereis(SystemsObservability.Runtime))
-    refute Process.whereis(SystemsObservability.Prometheus)
-    refute Process.whereis(SystemsObservability.Histograms)
+    assert SystemsRuntime.Proc.alive?(SystemsRuntime.Proc.whereis(SystemsObservability.Runtime))
+    refute SystemsRuntime.Proc.whereis(SystemsObservability.Prometheus)
+    refute SystemsRuntime.Proc.whereis(SystemsObservability.Histograms)
   end
 
   test "release telemetry applications can terminate without terminating the VM" do
@@ -47,15 +49,15 @@ defmodule SystemsObservability.ApplicationTest do
     {:ok, _} =
       Application.ensure_all_started(:systems_observability, type: observability_mode)
 
-    sentinel = spawn(fn -> Process.sleep(:infinity) end)
+    sentinel = spawn(fn -> SystemsClock.sleep(:infinity) end)
     Process.exit(Process.whereis(SystemsObservability.Supervisor), :kill)
-    Process.sleep(200)
+    SystemsClock.sleep(200)
 
     true = Process.alive?(sentinel)
     false = :systems_observability in Enum.map(Application.started_applications(), &elem(&1, 0))
 
     :ok = Application.stop(:opentelemetry_exporter)
-    Process.sleep(100)
+    SystemsClock.sleep(100)
     true = Process.alive?(sentinel)
 
     :temporary = observability_mode
@@ -64,7 +66,7 @@ defmodule SystemsObservability.ApplicationTest do
     """
 
     {output, status} =
-      System.cmd("mix", ["run", "--no-start", "-e", script],
+      System.cmd("mix", ["run", "--no-start", "--no-compile", "--no-deps-check", "-e", script],
         cd: systems_root,
         env: [{"ERL_CRASH_DUMP", "/dev/null"}, {"MIX_ENV", "test"}],
         stderr_to_stdout: true
@@ -77,12 +79,14 @@ defmodule SystemsObservability.ApplicationTest do
   defp await_reporter(0), do: flunk("observability reporter did not restart")
 
   defp await_reporter(attempts) do
-    if Process.whereis(SystemsObservability.Prometheus) &&
-         Process.whereis(SystemsObservability.Histograms) do
+    if SystemsRuntime.Proc.whereis(SystemsObservability.Prometheus) &&
+         SystemsRuntime.Proc.whereis(SystemsObservability.Histograms) do
       :ok
     else
-      if pid = Process.whereis(SystemsObservability.Runtime), do: send(pid, :retry)
-      Process.sleep(25)
+      if pid = SystemsRuntime.Proc.whereis(SystemsObservability.Runtime),
+        do: SystemsRuntime.Proc.send(pid, :retry)
+
+      SystemsClock.sleep(25)
       await_reporter(attempts - 1)
     end
   end

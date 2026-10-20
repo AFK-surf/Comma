@@ -1,5 +1,5 @@
 defmodule Salix.Drive.FilesTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   import Plug.Conn
 
   alias Salix.Drive.{Files, Handle}
@@ -120,6 +120,22 @@ defmodule Salix.Drive.FilesTest do
     assert {:error, :not_found} = Files.stream(@drive, "gone.txt")
   end
 
+  test "a space without a holder is unavailable, while other 503s remain retryable" do
+    Req.Test.stub(Salix.Drive.Files, fn conn ->
+      send_resp(conn, 503, "no attached daemon holds comma-drive\n")
+    end)
+
+    assert {:error, :no_device_attached} = Files.read(@drive, "Comma/Notebook.md", 1024)
+    assert {:error, :no_device_attached} = Files.stream(@drive, "Comma/Notebook.md")
+
+    Req.Test.stub(Salix.Drive.Files, fn conn ->
+      send_resp(conn, 503, "the daemon did not answer in time\n")
+    end)
+
+    assert {:error, {:retryable, {:status, 503}}} =
+             Files.read(@drive, "Comma/Notebook.md", 1024)
+  end
+
   test "stream yields the body and its size" do
     Req.Test.stub(Salix.Drive.Files, fn conn ->
       conn
@@ -192,7 +208,11 @@ defmodule Salix.Drive.FilesTest do
       Req.Test.json(conn, %{
         "enabled" => true,
         "devices" => [
-          %{"label" => "cloud-1", "origin" => "cloud-1@default.comma-x.sync.test", "spaces" => []}
+          %{
+            "device" => "cloud-1",
+            "origin" => "cloud-1@default.comma-x.sync.test",
+            "spaces" => ["comma-drive"]
+          }
         ],
         "attach_url" => "https://sync.test/agent/v1/attach",
         "writes" => %{"enabled" => true, "attached" => true, "device" => "cloud-1"}
@@ -200,6 +220,20 @@ defmodule Salix.Drive.FilesTest do
     end)
 
     assert {:ok, %{browse_enabled: true, attached: true, writes: true}} = Files.status(@drive)
+  end
+
+  test "an attached daemon without the bound space does not make the Drive readable" do
+    for spaces <- [[], ["other-space"]] do
+      Req.Test.stub(Salix.Drive.Files, fn conn ->
+        Req.Test.json(conn, %{
+          "enabled" => true,
+          "devices" => [%{"device" => "cloud-1", "spaces" => spaces}],
+          "writes" => %{"enabled" => true, "attached" => true, "device" => "cloud-1"}
+        })
+      end)
+
+      assert {:ok, %{browse_enabled: true, attached: false, writes: true}} = Files.status(@drive)
+    end
   end
 
   test "status with no attached device reads as not attached" do

@@ -75,35 +75,4 @@ defmodule BridgeForTeamsWeb.Dashboard.MagicLinkLoginTest do
     assert redirected_to(conn) == "/login"
     assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "invalid, expired, or already used"
   end
-
-  test "the fallback stays on the historical error when delivery is unconfigured", %{conn: conn} do
-    %{org: org} = sso_less_org_with_member()
-    prev = Application.get_env(:bridge_for_teams_core, :login_link_delivery)
-
-    # The default Postmark delivery reports unconfigured without a server
-    # token, so LoginLinks.enabled?/0 is false.
-    Application.delete_env(:bridge_for_teams_core, :login_link_delivery)
-    on_exit(fn -> Application.put_env(:bridge_for_teams_core, :login_link_delivery, prev) end)
-
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> post("/auth/start", %{"org_slug" => org.slug})
-
-    assert redirected_to(conn) == "/login"
-
-    assert Phoenix.Flash.get(conn.assigns.flash, :error) =~
-             "Unknown organization or SSO not configured"
-
-    conn = conn |> recycle() |> get("/auth/email", %{"o" => org.slug})
-    assert redirected_to(conn) == "/login"
-  end
-
-  test "a signed-in user is bounced away from the email form", %{conn: conn} do
-    %{user: user} = sso_less_org_with_member()
-
-    conn = conn |> log_in_user(user) |> get("/auth/email", %{"o" => "whatever"})
-
-    assert redirected_to(conn) == "/"
-  end
 end

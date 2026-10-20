@@ -13,19 +13,19 @@ defmodule SalixSignalProto.Crypto.Ed25519 do
 
   @doc "Returns a new random private key (secret seed)."
   @spec generate_private_key() :: private_key()
-  def generate_private_key, do: :crypto.strong_rand_bytes(32)
+  def generate_private_key, do: SystemsRuntime.Proc.random_bytes(32)
 
   @doc "Returns the public key for a private key."
   @spec public_key(private_key()) :: public_key()
   def public_key(<<_::binary-size(32)>> = private_key) do
-    {public_key, _private_key} = :crypto.generate_key(:eddsa, :ed25519, private_key)
+    {public_key, _private_key} = SystemsRuntime.Proc.generate_key(:eddsa, :ed25519, private_key)
     public_key
   end
 
   @doc "Signs `message`."
   @spec sign(private_key(), binary()) :: signature()
   def sign(<<_::binary-size(32)>> = private_key, message) when is_binary(message) do
-    :crypto.sign(:eddsa, :none, message, [private_key, :ed25519])
+    SystemsRuntime.Proc.sign(:eddsa, :none, message, [private_key, :ed25519])
   end
 
   @doc "Returns true when `signature` is valid for `message` under `public_key`."

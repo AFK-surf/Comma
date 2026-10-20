@@ -1,10 +1,9 @@
+import { setDefaultTimeout, test } from "bun:test";
 import { runVmLifecycle } from "../helpers/vm_lifecycle.ts";
 
-Deno.test({
-  name: "BridgeForTeams Cloudflare VM lifecycle",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn() {
-    await runVmLifecycle("bft", "cloudflare");
-  },
+// Builds and subprocesses here take longer than the five-second default.
+setDefaultTimeout(30 * 60_000);
+
+test("BridgeForTeams Cloudflare VM lifecycle", async () => {
+  await runVmLifecycle("bft", "cloudflare");
 });

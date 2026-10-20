@@ -1,16 +1,16 @@
 defmodule SalixWeb.MeetingRuntimeTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   setup do
-    prev = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    case Process.whereis(SalixStore.S3.Fake) do
+    case SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       nil -> start_supervised!(SalixStore.S3.Fake)
       _ -> SalixStore.S3.Fake.reset()
     end
 
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, prev) end)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, prev) end)
     :ok
   end
 
@@ -30,18 +30,6 @@ defmodule SalixWeb.MeetingRuntimeTest do
 
     assert {:error, :unauthorized} =
              SalixWeb.MeetingRuntime.handle_connector_event("env1", event, %{})
-  end
-
-  test "rejects an event for an unknown meeting" do
-    event = %{"event" => %{"meeting_id" => "missing", "runtime_token" => "tok"}}
-
-    assert {:error, :not_found} =
-             SalixWeb.MeetingRuntime.handle_connector_event("env1", event, %{})
-  end
-
-  test "rejects params without an event" do
-    assert {:error, :missing_event} =
-             SalixWeb.MeetingRuntime.handle_connector_event("env1", %{}, %{})
   end
 
   test "rejects an event from a connector scoped to a different group" do

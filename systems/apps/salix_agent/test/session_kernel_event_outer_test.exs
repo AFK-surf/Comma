@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelEventOuterTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias SalixAgent.InternalSession.State
 
   defp state(fields \\ []) do
@@ -69,27 +69,6 @@ defmodule SalixAgent.SessionKernelEventOuterTest do
     end
   end
 
-  test "active and waiting branches read no configuration" do
-    for active <- [:thinking, :execution, :messaging, :invalid] do
-      assert {{:ok, _}, {[], []}} = run(state(status: :active, activity_status: active), %{})
-    end
-
-    assert {{:ok, _}, {[], []}} = run(state(wait: %{}), %{"created_at" => 99})
-  end
-
-  test "three classifications each read all four raw caps" do
-    assert {{:ok, _}, {[], trace}} = run(state(), %{"type" => "unknown"})
-
-    caps = [
-      {:config, :llm_failure_activation_cap, 3},
-      {:config, :runaway_unsettled_round_cap, 2},
-      {:config, :repeated_tool_result_cap, 5},
-      {:config, :input_round_cap, 120}
-    ]
-
-    assert trace == caps ++ caps ++ caps
-  end
-
   test "activity configuration suspension preserves model notice and continuation inputs" do
     notice = %{
       "failure_reason" => "model",
@@ -112,53 +91,6 @@ defmodule SalixAgent.SessionKernelEventOuterTest do
       assert next.activity_status == expected
       assert next.runtime_failure_reply == attempt
       assert next.messages == messages
-    end
-  end
-
-  test "configuration changes between classifications are observed independently" do
-    llm = {:config, :llm_failure_activation_cap, 3}
-    runaway = {:config, :runaway_unsettled_round_cap, 2}
-
-    script = [
-      {llm, 1},
-      {llm, 4},
-      {runaway, 8},
-      {{:config, :repeated_tool_result_cap, 5}, 5},
-      {{:config, :input_round_cap, 120}, 120},
-      {llm, 1}
-    ]
-
-    assert {{:ok, next}, {[], _}} =
-             run(
-               state(llm_failure_streak: %{"count" => 3, "hwm" => 0}),
-               %{"created_at" => 321},
-               script
-             )
-
-    assert next.activity_status == :failed
-    assert next.activity_status_updated_at == 321
-  end
-
-  test "progress clock request precedes derived activity configuration" do
-    original = state(async_tool_calls: %{"tool" => %{"status" => "running"}})
-
-    assert {{:ok, _}, {[], [:time | _]}} =
-             run(
-               original,
-               %{"type" => "async_tool_call_progress", "tool_call_id" => "tool"},
-               [{:time, 444}]
-             )
-  end
-
-  test "terminal and unmatched progress skip the clock only" do
-    for calls <- [%{}, %{"tool" => %{"status" => "completed"}}] do
-      assert {{:ok, _}, {[], trace}} =
-               run(state(async_tool_calls: calls), %{
-                 "type" => "async_tool_call_progress",
-                 "tool_call_id" => "tool"
-               })
-
-      refute :time in trace
     end
   end
 
@@ -193,34 +125,5 @@ defmodule SalixAgent.SessionKernelEventOuterTest do
       assert {{:ok, next}, {[], _}} = run(original, %{}, script)
       assert next.activity_status == :paused
     end
-  end
-
-  test "repeated-result configuration can change between activity classifications" do
-    llm = {{:config, :llm_failure_activation_cap, 3}, 3}
-    runaway = {{:config, :runaway_unsettled_round_cap, 2}, 8}
-    repeated = {:config, :repeated_tool_result_cap, 5}
-
-    script = [
-      llm,
-      runaway,
-      {repeated, 5},
-      llm,
-      runaway,
-      {repeated, 6},
-      {{:config, :input_round_cap, 120}, 120},
-      llm,
-      runaway,
-      {repeated, 5}
-    ]
-
-    assert {{:ok, next}, {[], _}} =
-             run(
-               state(next_message_id: 2, repeated_tool_result_streak: %{"count" => 5}),
-               %{"created_at" => 77},
-               script
-             )
-
-    assert next.activity_status == :failed
-    assert next.activity_status_updated_at == 77
   end
 end

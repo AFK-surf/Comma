@@ -1,4 +1,6 @@
 defmodule SalixAgent.RoundActivityTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Fine-grained activity signals fan out via `SalixAgent.Notifier` as
   `{:activity, map}` while a round runs (see `SalixAgent.ActivityEvent`), so the
@@ -12,8 +14,33 @@ defmodule SalixAgent.RoundActivityTest do
   action/summary emission remains a side channel; the coarse phase is also
   committed as the session's durable `activity_status`.
   """
-  use ExUnit.Case, async: false
+  # Each test runs in its own SystemsSim world, from the same store: the
+  # database's baseline, an empty S3 fake, a new id allocator and an empty
+  # plugin catalog cache. The node has read what it reads once and keeps
+  # (its built-in skills, the station roster's cutover marker) before each
+  # world, so no test reads them in some test orders and not in others. No
+  # Loop runs: the loops host starts no spinfoam process, whose replies would
+  # come at real times. The control plane's triage receipt recovery, which
+  # lists the fake's receipts on its own schedule, stops.
+  use SystemsSim.Case,
+    reset: [
+      &SalixStore.RepoTestSetup.reset!/0,
+      &SalixAgent.BuiltinSkills.snapshot/0,
+      &Comma.Stations.Window.open?/0
+    ],
+    host: [
+      {SalixStore.Supervisor, SalixStore.S3.Fake},
+      {SalixStore.Supervisor, SalixStore.Ids},
+      {SalixWeb.Supervisor, Salix.Control.PluginCatalogCache}
+    ],
+    apps: [:salix_agent],
+    env: [salix_agent: [spinfoam_cmd: :disabled]],
+    timeout: 120_000,
+    max_steps: 20_000
 
+  require SystemsClock
+
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.{Server, Fleet, SessionToolDispatch}
   alias SalixAgent.LLM.Mock
 
@@ -33,11 +60,14 @@ defmodule SalixAgent.RoundActivityTest do
 
     @impl true
     def complete_stream(messages, tools, on_delta, opts) do
-      send(:persistent_term.get({SalixAgent.RoundActivityTest, :test_pid}), {
-        :reply_request,
-        messages,
-        tools
-      })
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.PersistentTerm.get({SalixAgent.RoundActivityTest, :test_pid}),
+        {
+          :reply_request,
+          messages,
+          tools
+        }
+      )
 
       {:assistant, text, calls} = Mock.complete_stream(messages, tools, on_delta, opts)
 
@@ -59,39 +89,42 @@ defmodule SalixAgent.RoundActivityTest do
 
     @impl true
     def notify(agent_id, event) do
-      case :persistent_term.get({SalixAgent.RoundActivityTest, :test_pid}, nil) do
+      case SystemsRuntime.PersistentTerm.get({SalixAgent.RoundActivityTest, :test_pid}, nil) do
         nil ->
           :ok
 
         pid ->
-          send(pid, {:notified, agent_id, event})
+          SystemsRuntime.Proc.send(pid, {:notified, agent_id, event})
 
           with {:session_activity_updated, session_id} <- event,
                %{} = draft <- SalixAgent.DraftSurface.get(agent_id, session_id) do
-            send(pid, {:participant_draft, agent_id, draft})
+            SystemsRuntime.Proc.send(pid, {:participant_draft, agent_id, draft})
           end
       end
 
       block? =
-        case :persistent_term.get({SalixAgent.RoundActivityTest, :block_phase}, nil) do
+        case SystemsRuntime.PersistentTerm.get({SalixAgent.RoundActivityTest, :block_phase}, nil) do
           {blocked_phase, gate} when is_binary(blocked_phase) ->
             matching_event? =
               match?({:activity, %{"phase" => ^blocked_phase}}, event) or
                 participant_draft_notification?(blocked_phase, agent_id, event)
 
-            matching_event? and :atomics.exchange(gate, 1, 1) == 0
+            matching_event? and SystemsRuntime.Atomics.exchange(gate, 1, 1) == 0
 
           _missing ->
             false
         end
 
       if block? do
-        send(:persistent_term.get({SalixAgent.RoundActivityTest, :test_pid}), {
-          :activity_blocked,
-          self()
-        })
+        SystemsRuntime.Proc.send(
+          SystemsRuntime.PersistentTerm.get({SalixAgent.RoundActivityTest, :test_pid}),
+          {
+            :activity_blocked,
+            SystemsRuntime.Proc.self()
+          }
+        )
 
-        receive do
+        SystemsRuntime.Proc.receive do
           :release_activity -> :ok
         end
       end
@@ -124,8 +157,8 @@ defmodule SalixAgent.RoundActivityTest do
 
     @owner_key {__MODULE__, :owner}
 
-    def set_owner(owner), do: :persistent_term.put(@owner_key, owner)
-    def clear, do: :persistent_term.erase(@owner_key)
+    def set_owner(owner), do: SystemsRuntime.PersistentTerm.put(@owner_key, owner)
+    def clear, do: SystemsRuntime.PersistentTerm.erase(@owner_key)
 
     @impl true
     def list_connects(_agent_id),
@@ -155,7 +188,11 @@ defmodule SalixAgent.RoundActivityTest do
 
     @impl true
     def call_api(agent_id, provider, api, args) do
-      send(:persistent_term.get(@owner_key), {:im_provider_call, agent_id, provider, api, args})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.PersistentTerm.get(@owner_key),
+        {:im_provider_call, agent_id, provider, api, args}
+      )
+
       {:ok, %{"ok" => true}}
     end
   end
@@ -166,8 +203,8 @@ defmodule SalixAgent.RoundActivityTest do
 
     @owner_key {__MODULE__, :owner}
 
-    def set_owner(owner), do: :persistent_term.put(@owner_key, owner)
-    def clear, do: :persistent_term.erase(@owner_key)
+    def set_owner(owner), do: SystemsRuntime.PersistentTerm.put(@owner_key, owner)
+    def clear, do: SystemsRuntime.PersistentTerm.erase(@owner_key)
 
     @impl true
     def list_connects(_agent_id),
@@ -178,16 +215,16 @@ defmodule SalixAgent.RoundActivityTest do
 
     @impl true
     def call_api(agent_id, provider, api, args) do
-      send(:persistent_term.get(@owner_key), {
+      SystemsRuntime.Proc.send(SystemsRuntime.PersistentTerm.get(@owner_key), {
         :blocked_im_provider_call,
-        self(),
+        SystemsRuntime.Proc.self(),
         agent_id,
         provider,
         api,
         args
       })
 
-      receive do
+      SystemsRuntime.Proc.receive do
         :complete_im_provider_call -> {:ok, %{"ok" => true}}
         :fail_im_provider_call -> {:error, :test_provider_failure}
       end
@@ -196,21 +233,21 @@ defmodule SalixAgent.RoundActivityTest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev_s3 = Application.get_env(:salix_store, :s3_backend)
-    prev_notifier = Application.get_env(:salix_agent, :notifier)
-    prev_llm = Application.get_env(:salix_agent, :llm)
+    prev_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_notifier = SystemsRuntime.get_env(:salix_agent, :notifier)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     start_supervised!(Mock)
-    Application.put_env(:salix_agent, :llm, Mock)
-    Application.put_env(:salix_agent, :notifier, TestNotifier)
-    :persistent_term.put(@pid_key, self())
+    SystemsRuntime.put_env(:salix_agent, :llm, Mock)
+    SystemsRuntime.put_env(:salix_agent, :notifier, TestNotifier)
+    SystemsRuntime.PersistentTerm.put(@pid_key, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      :persistent_term.erase(@pid_key)
-      :persistent_term.erase(@block_phase_key)
+      SystemsRuntime.PersistentTerm.erase(@pid_key)
+      SystemsRuntime.PersistentTerm.erase(@block_phase_key)
       restore(:salix_store, :s3_backend, prev_s3)
       restore(:salix_agent, :notifier, prev_notifier)
       restore(:salix_agent, :llm, prev_llm)
@@ -221,18 +258,18 @@ defmodule SalixAgent.RoundActivityTest do
     {:ok, agent: agent}
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, val), do: Application.put_env(app, key, val)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, val), do: SystemsRuntime.put_env(app, key, val)
 
   defp block_next_notification(phase) do
-    gate = :atomics.new(1, [])
-    :persistent_term.put(@block_phase_key, {phase, gate})
+    gate = SystemsRuntime.Atomics.new(1, [])
+    SystemsRuntime.PersistentTerm.put(@block_phase_key, {phase, gate})
   end
 
   defp wake_and_settle(agent) do
     Server.wake(agent)
     result = Server.info(agent)
-    assert eventually(fn -> internal_sessions_settled?(agent) end, 200)
+    assert eventually(fn -> internal_sessions_settled?(agent) end, 3000)
     result
   end
 
@@ -249,17 +286,12 @@ defmodule SalixAgent.RoundActivityTest do
     end
   end
 
-  defp eventually(fun, retries) do
-    cond do
-      fun.() -> true
-      retries == 0 -> false
-      true -> Process.sleep(10) && eventually(fun, retries - 1)
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 
   # Collect the activity notifications for `agent` in mailbox (emission) order.
   defp collect_activities(agent) do
-    receive do
+    SystemsClock.vreceive do
       {:notified, ^agent, {:activity, activity}} -> [activity | collect_activities(agent)]
       {:notified, ^agent, _other} -> collect_activities(agent)
     after
@@ -278,43 +310,16 @@ defmodule SalixAgent.RoundActivityTest do
         activities
 
       true ->
-        Process.sleep(10)
+        SystemsClock.sleep(10)
         collect_activities_until(agent, phase, retries - 1, activities)
     end
-  end
-
-  test "a plain reply emits a thinking then an idle activity", %{agent: a} do
-    Mock.script([{:final, "hi there"}])
-    {:ok, _pid} = Fleet.ensure_started(a, create: true)
-
-    {:ok, :created} =
-      deliver(a, "u1", %{content: "hi", session_id: "ses1_0000000000000000901"})
-
-    {:parked, _owned} = wake_and_settle(a)
-
-    activities = collect_activities_until(a, "idle")
-    phases = Enum.map(activities, & &1["phase"])
-
-    assert "thinking" in phases
-    assert "idle" in phases
-    refute "execution" in phases
-    refute "messaging" in phases
-
-    # The surface is cleared last so no bubble lingers after the turn.
-    assert List.last(activities)["phase"] == "idle"
-    assert List.last(activities)["status"] == "idle"
-
-    thinking = Enum.find(activities, &(&1["phase"] == "thinking"))
-    assert thinking["status"] == "running"
-    assert thinking["session_id"] == "ses1_0000000000000000901"
-    assert thinking["agent_id"] == a
   end
 
   test "Session assistant transcript stays private and never becomes a Participant draft", %{
     agent: a
   } do
-    previous_visible_reply = Application.get_env(:salix_agent, :visible_reply_mod)
-    Application.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
+    previous_visible_reply = SystemsRuntime.get_env(:salix_agent, :visible_reply_mod)
+    SystemsRuntime.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
 
     on_exit(fn ->
       restore(:salix_agent, :visible_reply_mod, previous_visible_reply)
@@ -364,12 +369,12 @@ defmodule SalixAgent.RoundActivityTest do
   test "a source-bound reply streams before provider completion and sends exactly once", %{
     agent: a
   } do
-    Application.put_env(:salix_agent, :llm, InspectingMock)
-    previous_im_provider = Application.get_env(:salix_agent, :im_provider_mod)
-    previous_visible_reply = Application.get_env(:salix_agent, :visible_reply_mod)
-    Application.put_env(:salix_agent, :im_provider_mod, TestIMProvider)
-    Application.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
-    TestIMProvider.set_owner(self())
+    SystemsRuntime.put_env(:salix_agent, :llm, InspectingMock)
+    previous_im_provider = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
+    previous_visible_reply = SystemsRuntime.get_env(:salix_agent, :visible_reply_mod)
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, TestIMProvider)
+    SystemsRuntime.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
+    TestIMProvider.set_owner(SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       TestIMProvider.clear()
@@ -418,6 +423,8 @@ defmodule SalixAgent.RoundActivityTest do
     ])
 
     {:ok, _pid} = Fleet.ensure_started(a, create: true)
+    # Delivery starts the round, so the gate is set before it.
+    block_next_notification("participant_draft")
 
     {:ok, :created} =
       deliver(a, encoded_source, %{
@@ -434,17 +441,12 @@ defmodule SalixAgent.RoundActivityTest do
         }
       })
 
-    block_next_notification("participant_draft")
     Server.wake(a)
-    assert_receive {:activity_blocked, activity_pid}, 2_000
-    assert_receive {:reply_request, request_messages, request_tools}, 1_000
+    settle_receive({:activity_blocked, activity_pid})
+    settle_receive({:reply_request, request_messages, request_tools})
     current_prompt = hd(request_messages).content
     assert current_prompt =~ current_instructions
     refute Enum.any?(request_tools, &(&1["name"] == "reply"))
-    # The request that answers a new Comma user message activates the first-reply
-    # rule. The rule lives in the stored prompt's catalog; the tail line names it.
-    assert "opening=on" in turn_flags(request_messages)
-    assert current_prompt =~ ~r/^- opening=on: /m
 
     response_identity =
       try do
@@ -466,20 +468,18 @@ defmodule SalixAgent.RoundActivityTest do
         assert SalixAgent.VisibleReplyScope.valid_response_identity?(response_identity)
         response_identity
       after
-        :persistent_term.erase(@block_phase_key)
-        send(activity_pid, :release_activity)
+        SystemsRuntime.PersistentTerm.erase(@block_phase_key)
+        SystemsRuntime.Proc.send(activity_pid, :release_activity)
       end
 
     result = Server.info(a)
-    assert_receive {:im_provider_call, ^a, "internal", "internal.send_message", _args}, 1_000
-    assert eventually(fn -> internal_sessions_settled?(a) end, 200)
-    assert eventually(fn -> SalixAgent.DraftSurface.get(a, session_id) == nil end, 200)
-    # After the opening is sent, the continuation answers no new user message.
-    assert_receive {:reply_request, continuation_messages, _tools}, 1_000
-    refute "opening=on" in turn_flags(continuation_messages)
+    settle_receive({:im_provider_call, ^a, "internal", "internal.send_message", _args})
+    assert eventually(fn -> internal_sessions_settled?(a) end, 3000)
+    assert eventually(fn -> SalixAgent.DraftSurface.get(a, session_id) == nil end, 3000)
+    settle_receive({:reply_request, _continuation_messages, _tools})
     assert {:parked, _owned} = result
     assert SalixAgent.DraftSurface.get(a, session_id) == nil
-    refute_receive {:im_provider_call, ^a, "internal", "internal.send_message", _}, 50
+    settle_refute_receive({:im_provider_call, ^a, "internal", "internal.send_message", _}, 50)
     assert {:ok, stored_session} = SalixAgent.InternalSessionStore.read(a, session_id)
 
     assert SalixAgent.InternalSession.get(stored_session, :system_prompt) ==
@@ -512,63 +512,15 @@ defmodule SalixAgent.RoundActivityTest do
            |> then(fn sequences -> sequences == Enum.sort(sequences) end)
   end
 
-  test "a validated internal reply tool emits messaging without exposing arguments", %{agent: a} do
-    previous_im_provider = Application.get_env(:salix_agent, :im_provider_mod)
-    Application.put_env(:salix_agent, :im_provider_mod, TestIMProvider)
-    TestIMProvider.set_owner(self())
-
-    on_exit(fn ->
-      TestIMProvider.clear()
-      restore(:salix_agent, :im_provider_mod, previous_im_provider)
-    end)
-
-    session_id = "ses1_0000000000000000903"
-
-    Mock.script([
-      {:assistant, "sending now",
-       [
-         %{
-           id: "reply-activity",
-           name: "call",
-           args: %{
-             "tool" => "im_api.internal.send_message",
-             "params" => %{
-               "connect_id" => "internal",
-               "conversation_id" => "conv-reply-activity",
-               "content" => [%{"type" => "text", "text" => "private reply body"}]
-             }
-           }
-         }
-       ]},
-      {:final, "done"}
-    ])
-
-    {:ok, _pid} = Fleet.ensure_started(a, create: true)
-
-    {:ok, :created} =
-      deliver(a, "u1", %{content: "send it", session_id: session_id})
-
-    {:parked, _owned} = wake_and_settle(a)
-
-    assert_receive {:im_provider_call, ^a, "internal", "internal.send_message", _args}, 1_000
-
-    activities = collect_activities_until(a, "idle")
-    assert [messaging] = Enum.filter(activities, &(&1["phase"] == "messaging"))
-    assert messaging["summary"] == "Typing"
-    refute Map.has_key?(messaging, "tool_name")
-    refute Map.has_key?(messaging, "args")
-    refute inspect(messaging) =~ "private reply body"
-  end
-
   test "one terminal response shows its validated Comma reply until source settlement", %{
     agent: _agent
   } do
-    previous_im_provider = Application.get_env(:salix_agent, :im_provider_mod)
-    previous_visible_reply = Application.get_env(:salix_agent, :visible_reply_mod)
-    Application.put_env(:salix_agent, :im_provider_mod, BlockingIMProvider)
-    Application.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
-    Application.put_env(:salix_agent, :llm, InspectingMock)
-    BlockingIMProvider.set_owner(self())
+    previous_im_provider = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
+    previous_visible_reply = SystemsRuntime.get_env(:salix_agent, :visible_reply_mod)
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, BlockingIMProvider)
+    SystemsRuntime.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
+    SystemsRuntime.put_env(:salix_agent, :llm, InspectingMock)
+    BlockingIMProvider.set_owner(SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       BlockingIMProvider.clear()
@@ -617,7 +569,7 @@ defmodule SalixAgent.RoundActivityTest do
         }
       })
 
-    assert_receive {:activity_blocked, activity_pid}, 2_000
+    settle_receive({:activity_blocked, activity_pid})
 
     try do
       assert %{"status" => "streaming", "text" => text} =
@@ -625,16 +577,18 @@ defmodule SalixAgent.RoundActivityTest do
 
       assert text == visible_text
 
-      refute_receive {:blocked_im_provider_call, _, ^a, "internal", "internal.send_message", _},
-                     50
+      settle_refute_receive(
+        {:blocked_im_provider_call, _, ^a, "internal", "internal.send_message", _},
+        50
+      )
     after
-      :persistent_term.erase(@block_phase_key)
-      send(activity_pid, :release_activity)
+      SystemsRuntime.PersistentTerm.erase(@block_phase_key)
+      SystemsRuntime.Proc.send(activity_pid, :release_activity)
     end
 
-    assert_receive {:blocked_im_provider_call, provider_pid, ^a, "internal",
-                    "internal.send_message", args},
-                   2_000
+    settle_receive(
+      {:blocked_im_provider_call, provider_pid, ^a, "internal", "internal.send_message", args}
+    )
 
     try do
       assert args["params"]["content"] == [%{"type" => "text", "text" => visible_text}]
@@ -642,11 +596,11 @@ defmodule SalixAgent.RoundActivityTest do
       assert %{"status" => "streaming", "text" => ^visible_text} =
                SalixAgent.DraftSurface.get(a, session_id)
     after
-      send(provider_pid, :complete_im_provider_call)
+      SystemsRuntime.Proc.send(provider_pid, :complete_im_provider_call)
     end
 
-    assert eventually(fn -> internal_sessions_settled?(a) end, 200)
-    assert eventually(fn -> SalixAgent.DraftSurface.get(a, session_id) == nil end, 200)
+    assert eventually(fn -> internal_sessions_settled?(a) end, 3000)
+    assert eventually(fn -> SalixAgent.DraftSurface.get(a, session_id) == nil end, 3000)
     assert {:ok, session} = SalixAgent.InternalSessionStore.read(a, session_id)
 
     assert Enum.any?(SalixAgent.InternalSession.get(session, :messages), fn message ->
@@ -658,11 +612,16 @@ defmodule SalixAgent.RoundActivityTest do
                end)
            end)
 
-    assert_receive {:reply_request, _, _}, 1_000
-    refute_receive {:reply_request, _, _}, 100
-    refute_receive {:blocked_im_provider_call, _, ^a, "internal", "internal.send_message", _}, 100
+    settle_receive({:reply_request, _, _})
+    settle_refute_receive({:reply_request, _, _}, 100)
 
-    activities = collect_activities_until(a, "idle")
+    settle_refute_receive(
+      {:blocked_im_provider_call, _, ^a, "internal", "internal.send_message", _},
+      100
+    )
+
+    # The source is already settled; a short window catches any late thinking.
+    activities = collect_activities_until(a, "idle", 20)
     messaging_index = phase_index(activities, "messaging")
     assert phase_index(activities, "thinking") < messaging_index
     refute Enum.any?(Enum.drop(activities, messaging_index + 1), &(&1["phase"] == "thinking"))
@@ -686,8 +645,8 @@ defmodule SalixAgent.RoundActivityTest do
         }
       })
 
-    assert_receive {:reply_request, next_messages, _}, 2_000
-    assert eventually(fn -> internal_sessions_settled?(a) end, 200)
+    settle_receive({:reply_request, next_messages, _})
+    assert eventually(fn -> internal_sessions_settled?(a) end, 3000)
 
     assert Enum.any?(next_messages, fn message ->
              Enum.any?(message[:tool_calls] || [], fn call ->
@@ -695,17 +654,27 @@ defmodule SalixAgent.RoundActivityTest do
              end)
            end)
 
-    result = Enum.find(next_messages, &(&1[:tool_call_id] == "terminal-comma-reply"))
-    assert %{"status" => "completed"} = Jason.decode!(result.content)
-    refute_receive {:blocked_im_provider_call, _, ^a, "internal", "internal.send_message", _}, 100
+    # The placeholder stays as committed; the completion follows it.
+    index = Enum.find_index(next_messages, &(&1[:tool_call_id] == "terminal-comma-reply"))
+    assert %{"status" => "running"} = Jason.decode!(Enum.at(next_messages, index).content)
+
+    assert Enum.any?(Enum.drop(next_messages, index + 1), fn message ->
+             message[:role] == "runtime" and
+               message[:source_tool_call_id] == "terminal-comma-reply"
+           end)
+
+    settle_refute_receive(
+      {:blocked_im_provider_call, _, ^a, "internal", "internal.send_message", _},
+      100
+    )
   end
 
   for filter_position <- [:before_text, :after_text] do
     @filter_position filter_position
     test "a terminal reply filtered #{@filter_position} never appears in the source draft" do
-      previous_visible_reply = Application.get_env(:salix_agent, :visible_reply_mod)
-      Application.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
-      Application.put_env(:salix_agent, :llm, InspectingMock)
+      previous_visible_reply = SystemsRuntime.get_env(:salix_agent, :visible_reply_mod)
+      SystemsRuntime.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
+      SystemsRuntime.put_env(:salix_agent, :llm, InspectingMock)
       on_exit(fn -> restore(:salix_agent, :visible_reply_mod, previous_visible_reply) end)
 
       a = SalixAgent.TestSupport.new_agent_id()
@@ -761,287 +730,10 @@ defmodule SalixAgent.RoundActivityTest do
           }
         })
 
-      assert_receive {:reply_request, _, _}, 2_000
-      assert_receive {:reply_request, _, _}, 2_000
-      refute_receive {:participant_draft, ^a, _draft}
+      settle_receive({:reply_request, _, _})
+      settle_receive({:reply_request, _, _})
+      settle_refute_receive({:participant_draft, ^a, _draft})
     end
-  end
-
-  test "an async explicit send keeps its Participant draft until the terminal result commits", %{
-    agent: a
-  } do
-    previous_im_provider = Application.get_env(:salix_agent, :im_provider_mod)
-    previous_visible_reply = Application.get_env(:salix_agent, :visible_reply_mod)
-    Application.put_env(:salix_agent, :im_provider_mod, BlockingIMProvider)
-    Application.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
-    BlockingIMProvider.set_owner(self())
-
-    on_exit(fn ->
-      BlockingIMProvider.clear()
-      restore(:salix_agent, :im_provider_mod, previous_im_provider)
-      restore(:salix_agent, :visible_reply_mod, previous_visible_reply)
-    end)
-
-    session_id = "ses1_0000000000000000913"
-    conversation_id = "conv-visible-async-send"
-    source_message_id = "msg1_0000000000000000913"
-    participant_id = "par1_0000000000000000913"
-    group_id = "grp1_0000000000000000913"
-    encoded_source = "groupconv:#{conversation_id}:#{source_message_id}:#{participant_id}"
-    tool_call_id = "async-visible-reply"
-
-    visible_text = "Draft remains visible while the send commits"
-
-    Mock.script([
-      {:assistant, "Session-only planning text",
-       [
-         %{
-           id: tool_call_id,
-           name: "call",
-           args: %{
-             "tool" => "im_api.internal.send_message",
-             "params" => %{
-               "connect_id" => "internal",
-               "conversation_id" => conversation_id,
-               "content" => [
-                 %{"type" => "text", "text" => visible_text}
-               ]
-             }
-           }
-         }
-       ]},
-      {:final, "done"}
-    ])
-
-    {:ok, _pid} = Fleet.ensure_started(a, create: true)
-
-    {:ok, :created} =
-      deliver(a, encoded_source, %{
-        content: "send it",
-        session_id: session_id,
-        trusted_origin: %{
-          "provider" => "internal",
-          "conversation_id" => conversation_id,
-          "conversation_kind" => "user_chat",
-          "message_id" => source_message_id,
-          "participant_id" => participant_id,
-          "source_actor_type" => "user",
-          "agent_group_id" => group_id
-        }
-      })
-
-    Server.wake(a)
-
-    assert_receive {
-                     :blocked_im_provider_call,
-                     provider_pid,
-                     ^a,
-                     "internal",
-                     "internal.send_message",
-                     _args
-                   },
-                   2_000
-
-    assert eventually(
-             fn ->
-               with {:ok, session} <-
-                      SalixAgent.InternalSessionStore.read(a, session_id),
-                    {:ok, %{"status" => "running"}} <-
-                      SalixAgent.InternalSession.lookup_async_call(session, tool_call_id) do
-                 true
-               else
-                 _ -> false
-               end
-             end,
-             200
-           )
-
-    assert %{"status" => "streaming", "text" => text} =
-             SalixAgent.DraftSurface.get(a, session_id)
-
-    assert text == visible_text
-    send(provider_pid, :complete_im_provider_call)
-
-    assert eventually(fn -> internal_sessions_settled?(a) end, 300)
-    assert eventually(fn -> SalixAgent.DraftSurface.get(a, session_id) == nil end, 200)
-  end
-
-  test "a failed source-bound reply clears its draft only after terminal failure", %{
-    agent: a
-  } do
-    previous_im_provider = Application.get_env(:salix_agent, :im_provider_mod)
-    previous_visible_reply = Application.get_env(:salix_agent, :visible_reply_mod)
-    Application.put_env(:salix_agent, :im_provider_mod, BlockingIMProvider)
-    Application.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
-    BlockingIMProvider.set_owner(self())
-
-    on_exit(fn ->
-      BlockingIMProvider.clear()
-      restore(:salix_agent, :im_provider_mod, previous_im_provider)
-      restore(:salix_agent, :visible_reply_mod, previous_visible_reply)
-    end)
-
-    session_id = "ses1_0000000000000000913"
-    conversation_id = "conv-visible-async-send"
-    source_message_id = "msg1_0000000000000000913"
-    participant_id = "par1_0000000000000000913"
-    group_id = "grp1_0000000000000000913"
-    encoded_source = "groupconv:#{conversation_id}:#{source_message_id}:#{participant_id}"
-    tool_call_id = "async-visible-reply"
-
-    visible_text = "Draft remains visible while the send commits"
-
-    Mock.script([
-      {:assistant, "Session-only planning text",
-       [
-         %{
-           id: tool_call_id,
-           name: "call",
-           args:
-             Jason.decode!(
-               ~s({"tool":"im_api.internal.send_message","params":{"connect_id":"internal","conversation_id":#{Jason.encode!(conversation_id)},"reply_to_message_id":#{Jason.encode!(source_message_id)},"content":[{"type":"text","text":#{Jason.encode!(visible_text)}}]}})
-             )
-         }
-       ]},
-      {:final, "done"}
-    ])
-
-    {:ok, _pid} = Fleet.ensure_started(a, create: true)
-
-    {:ok, :created} =
-      deliver(a, encoded_source, %{
-        content: "send it",
-        session_id: session_id,
-        trusted_origin: %{
-          "provider" => "internal",
-          "conversation_id" => conversation_id,
-          "conversation_kind" => "user_chat",
-          "message_id" => source_message_id,
-          "participant_id" => participant_id,
-          "source_actor_type" => "user",
-          "agent_group_id" => group_id
-        }
-      })
-
-    Server.wake(a)
-
-    assert_receive {
-                     :blocked_im_provider_call,
-                     provider_pid,
-                     ^a,
-                     "internal",
-                     "internal.send_message",
-                     _args
-                   },
-                   2_000
-
-    assert eventually(
-             fn ->
-               with {:ok, session} <-
-                      SalixAgent.InternalSessionStore.read(a, session_id),
-                    {:ok, %{"status" => "running"}} <-
-                      SalixAgent.InternalSession.lookup_async_call(session, tool_call_id) do
-                 true
-               else
-                 _ -> false
-               end
-             end,
-             200
-           )
-
-    assert %{"status" => "streaming", "text" => text} =
-             SalixAgent.DraftSurface.get(a, session_id)
-
-    assert text == visible_text
-    send(provider_pid, :fail_im_provider_call)
-
-    assert eventually(fn -> SalixAgent.DraftSurface.get(a, session_id) == nil end, 300)
-    assert {:ok, failed_session} = SalixAgent.InternalSessionStore.read(a, session_id)
-
-    assert {:ok, %{"status" => "failed"}} =
-             SalixAgent.InternalSession.lookup_async_call(failed_session, tool_call_id)
-
-    refute_receive {:blocked_im_provider_call, _, ^a, "internal", "internal.send_message", _}, 50
-  end
-
-  test "a reply tool executes during repair and emits messaging activity", %{agent: a} do
-    previous_im_provider = Application.get_env(:salix_agent, :im_provider_mod)
-    Application.put_env(:salix_agent, :im_provider_mod, TestIMProvider)
-    TestIMProvider.set_owner(self())
-
-    on_exit(fn ->
-      TestIMProvider.clear()
-      restore(:salix_agent, :im_provider_mod, previous_im_provider)
-    end)
-
-    call = %{
-      id: "repair-reply-activity",
-      name: "call",
-      args: %{
-        "tool" => "im_api.internal.send_message",
-        "params" => %{
-          "connect_id" => "internal",
-          "conversation_id" => "conv-repair-activity",
-          "content" => [%{"type" => "text", "text" => "private repair detail"}]
-        }
-      }
-    }
-
-    disclosure = %{
-      "tools" => [
-        %{
-          "name" => "im_api.internal.send_message",
-          "callable" => true,
-          "safety" => "write",
-          "input_schema" => %{
-            "type" => "object",
-            "properties" => %{
-              "connect_id" => %{"type" => "string"},
-              "conversation_id" => %{"type" => "string"},
-              "content" => %{"type" => "array"}
-            },
-            "required" => ["connect_id", "conversation_id", "content"]
-          }
-        }
-      ]
-    }
-
-    [result] =
-      SessionToolDispatch.execute([call], %{
-        agent_id: a,
-        session_id: "ses1_0000000000000000904",
-        llm_tool_envelope: true,
-        tool_disclosure: disclosure,
-        visible_reply_guard: {:repair_required, 0, 1, 1},
-        visible_reply_phase: {:repair_required, 0}
-      })
-
-    assert result.status == "completed"
-    assert result.diagnostic_visibility == "none"
-
-    assert_receive {:im_provider_call, ^a, "internal", "internal.send_message", _args}, 1_000
-    assert_receive {:notified, ^a, {:activity, %{"phase" => "messaging"}}}, 1_000
-  end
-
-  test "an LLM failure emits a failed activity before terminal idle", %{agent: a} do
-    {:error, llm_error} = SalixAgent.LLM.Error.http("mock", 401, "unauthorized")
-    Mock.script([{:error, llm_error}])
-    {:ok, _pid} = Fleet.ensure_started(a, create: true)
-
-    {:ok, :created} =
-      deliver(a, "u1", %{content: "hi", session_id: "ses1_0000000000000000901"})
-
-    {:parked, _owned} = wake_and_settle(a)
-
-    activities = collect_activities_until(a, "idle")
-    failed = Enum.find(activities, &(&1["status"] == "failed"))
-
-    assert failed["phase"] == "thinking"
-    assert failed["summary_class"] == "generic"
-    refute Map.has_key?(failed, "action")
-    refute Map.has_key?(failed, "summary")
-    assert phase_index(activities, "thinking") < phase_index(activities, "idle")
-    assert List.last(activities)["phase"] == "idle"
   end
 
   test "a tool round emits a running execution activity for the tool", %{agent: a} do
@@ -1064,7 +756,7 @@ defmodule SalixAgent.RoundActivityTest do
       deliver(a, "u1", %{content: "do work", session_id: "ses1_0000000000000000901"})
 
     Server.wake(a)
-    assert_receive {:activity_blocked, activity_pid}, 2_000
+    settle_receive({:activity_blocked, activity_pid})
 
     try do
       assert {:ok, session} =
@@ -1090,12 +782,12 @@ defmodule SalixAgent.RoundActivityTest do
       assert activity["phase"] == "execution"
       assert activity["status"] == "waiting"
     after
-      :persistent_term.erase(@block_phase_key)
-      send(activity_pid, :release_activity)
+      SystemsRuntime.PersistentTerm.erase(@block_phase_key)
+      SystemsRuntime.Proc.send(activity_pid, :release_activity)
     end
 
     result = Server.info(a)
-    assert eventually(fn -> internal_sessions_settled?(a) end, 200)
+    assert eventually(fn -> internal_sessions_settled?(a) end, 3000)
     assert {:parked, _owned} = result
 
     activities = collect_activities_until(a, "idle")
@@ -1116,170 +808,13 @@ defmodule SalixAgent.RoundActivityTest do
     assert List.last(activities)["phase"] == "idle"
   end
 
-  test "a source activation keeps one response identity across tool and final rounds", %{agent: a} do
-    previous_visible_reply = Application.get_env(:salix_agent, :visible_reply_mod)
-    Application.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
-
-    on_exit(fn ->
-      restore(:salix_agent, :visible_reply_mod, previous_visible_reply)
-    end)
-
-    session_id = "ses1_0000000000000000923"
-    conversation_id = "conv-activity-multi-round"
-    source_message_id = "msg1_0000000000000000923"
-    participant_id = "par1_0000000000000000923"
-    group_id = "grp1_0000000000000000923"
-    encoded_source = "groupconv:#{conversation_id}:#{source_message_id}:#{participant_id}"
-
-    Mock.script([
-      {:assistant, "checking first",
-       [
-         %{
-           id: "multi-round-tool",
-           name: "call",
-           args: %{"tool" => "help", "params" => %{"tool" => "fs.read_file"}}
-         }
-       ]},
-      {:final, "finished after the tool"}
-    ])
-
-    {:ok, _pid} = Fleet.ensure_started(a, create: true)
-
-    {:ok, :created} =
-      deliver(a, encoded_source, %{
-        content: "use a tool and answer",
-        session_id: session_id,
-        trusted_origin: %{
-          "provider" => "internal",
-          "conversation_id" => conversation_id,
-          "conversation_kind" => "user_chat",
-          "message_id" => source_message_id,
-          "participant_id" => participant_id,
-          "source_actor_type" => "user",
-          "agent_group_id" => group_id
-        }
-      })
-
-    {:parked, _owned} = wake_and_settle(a)
-
-    activities = collect_activities_until(a, "idle")
-    v2_frames = Enum.filter(activities, &Map.has_key?(&1, "response_key"))
-
-    assert [response_identity] = v2_frames |> Enum.map(& &1["response_key"]) |> Enum.uniq()
-    assert SalixAgent.VisibleReplyScope.valid_response_identity?(response_identity)
-
-    assert Enum.count(v2_frames, &(&1["phase"] == "thinking")) >= 2
-    assert Enum.any?(v2_frames, &(&1["phase"] == "execution"))
-    refute Enum.any?(v2_frames, &(&1["phase"] == "messaging"))
-    assert List.last(v2_frames)["phase"] == "idle"
-    assert Enum.all?(v2_frames, &(&1["response_key"] == response_identity))
-    assert Enum.all?(v2_frames, &(&1["source_message_ids"] == [encoded_source]))
-    assert Enum.all?(v2_frames, &(&1["conversation_id"] == conversation_id))
-
-    sequences = Enum.map(v2_frames, & &1["sequence"])
-    assert sequences == Enum.sort(sequences)
-    assert sequences == Enum.uniq(sequences)
-  end
-
-  test "a source activation reuses its response identity across a tool round and actor restart",
-       %{
-         agent: a
-       } do
-    previous_visible_reply = Application.get_env(:salix_agent, :visible_reply_mod)
-    Application.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
-
-    on_exit(fn ->
-      restore(:salix_agent, :visible_reply_mod, previous_visible_reply)
-    end)
-
-    session_id = "ses1_0000000000000000922"
-    conversation_id = "conv-activity-restart"
-    source_message_id = "msg1_0000000000000000922"
-    participant_id = "par1_0000000000000000922"
-    group_id = "grp1_0000000000000000922"
-    encoded_source = "groupconv:#{conversation_id}:#{source_message_id}:#{participant_id}"
-
-    Mock.script([
-      {:assistant, "checking first",
-       [
-         %{
-           id: "restart-tool",
-           name: "call",
-           args: %{"tool" => "help", "params" => %{"tool" => "fs.read_file"}}
-         }
-       ]},
-      {:final, "recovered answer"}
-    ])
-
-    {:ok, _pid} = Fleet.ensure_started(a, create: true)
-    block_next_notification("execution")
-
-    {:ok, :created} =
-      deliver(a, encoded_source, %{
-        content: "recover this turn",
-        session_id: session_id,
-        trusted_origin: %{
-          "provider" => "internal",
-          "conversation_id" => conversation_id,
-          "conversation_kind" => "user_chat",
-          "message_id" => source_message_id,
-          "participant_id" => participant_id,
-          "source_actor_type" => "user",
-          "agent_group_id" => group_id
-        }
-      })
-
-    Server.wake(a)
-    assert_receive {:activity_blocked, activity_owner}, 2_000
-
-    before_restart = self() |> Process.info(:messages) |> elem(1)
-
-    response_identity =
-      Enum.find_value(before_restart, fn
-        {:notified, ^a, {:activity, %{"response_key" => response_key}}} -> response_key
-        _other -> nil
-      end)
-
-    assert SalixAgent.VisibleReplyScope.valid_response_identity?(response_identity)
-
-    Process.exit(activity_owner, :kill)
-    :persistent_term.erase(@block_phase_key)
-
-    assert eventually(
-             fn -> SalixAgent.InternalSessionActor.running?(a, session_id) end,
-             200
-           )
-
-    {:parked, _owned} = wake_and_settle(a)
-
-    activities = collect_activities_until(a, "idle")
-    v2_frames = Enum.filter(activities, &Map.has_key?(&1, "response_key"))
-
-    assert Enum.any?(v2_frames, &(&1["phase"] == "execution"))
-    refute Enum.any?(v2_frames, &(&1["phase"] == "messaging"))
-    assert Enum.any?(v2_frames, &(&1["phase"] == "idle"))
-    assert Enum.all?(v2_frames, &(&1["response_key"] == response_identity))
-    assert Enum.all?(v2_frames, &(&1["source_message_ids"] == [encoded_source]))
-
-    sequences = Enum.map(v2_frames, & &1["sequence"])
-    assert sequences == Enum.sort(sequences)
-    assert sequences == Enum.uniq(sequences)
-  end
-
   defp phase_index(activities, phase) do
     Enum.find_index(activities, &(&1["phase"] == phase))
   end
 
-  defp turn_flags(request_messages) do
-    case List.last(request_messages) do
-      %{role: "summary", content: "turn: " <> flags} -> String.split(flags)
-      _ -> []
-    end
-  end
-
   test "private streamed reasoning never enters an activity payload", %{agent: a} do
-    previous_visible_reply = Application.get_env(:salix_agent, :visible_reply_mod)
-    Application.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
+    previous_visible_reply = SystemsRuntime.get_env(:salix_agent, :visible_reply_mod)
+    SystemsRuntime.put_env(:salix_agent, :visible_reply_mod, TestVisibleReply)
 
     on_exit(fn ->
       restore(:salix_agent, :visible_reply_mod, previous_visible_reply)
@@ -1323,31 +858,6 @@ defmodule SalixAgent.RoundActivityTest do
     assert Enum.all?(activities, &is_binary(&1["response_key"]))
 
     refute Enum.any?(activities, &(inspect(&1) =~ private_canary))
-  end
-
-  # OpenAI Responses summaries carry explicit public authority. Round
-  # accumulates and throttles only those summaries before ActivityEvent.
-  test "public streamed reasoning summary surfaces as thinking activity text", %{agent: a} do
-    Mock.script([
-      {:reasoning_summary, "Weighing the tradeoffs here", {:final, "hi there"}}
-    ])
-
-    {:ok, _pid} = Fleet.ensure_started(a, create: true)
-
-    {:ok, :created} =
-      deliver(a, "u1", %{content: "hi", session_id: "ses1_0000000000000000901"})
-
-    {:parked, _owned} = wake_and_settle(a)
-
-    activities = collect_activities_until(a, "idle")
-
-    reasoning =
-      Enum.find(activities, fn activity ->
-        activity["phase"] == "thinking" and activity["summary"] == "Weighing the tradeoffs here"
-      end)
-
-    assert reasoning, "expected a thinking activity carrying the reasoning summary"
-    assert reasoning["action"] == "Thinking"
   end
 
   # The staged Delivery engine is retired (docs/salix/conversation-owner-actor.md

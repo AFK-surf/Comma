@@ -475,17 +475,24 @@ defmodule SalixAgent.Tools.Memory do
     end
   end
 
-  # Willow isAllowedMemoryWritePath.
-  defp allowed_write_path?(path)
-       when path in [
-              @semantic_agent_path,
-              @semantic_user_path,
-              @semantic_people_path,
-              "/memory/index.md"
-            ],
-       do: true
+  @doc """
+  True when `path` is one of the memory files `memory.write` may write
+  (willow isAllowedMemoryWritePath): the semantic files, an environment note,
+  `/memory/index.md`, a scoped note, or a daily episode of any date. The
+  today-only rule belongs to append mode, not to the path. `path` must already
+  be clean (absolute, no `.`/`..` segments).
+  """
+  @spec allowed_write_path?(String.t()) :: boolean()
+  def allowed_write_path?(path)
+      when path in [
+             @semantic_agent_path,
+             @semantic_user_path,
+             @semantic_people_path,
+             "/memory/index.md"
+           ],
+      do: true
 
-  defp allowed_write_path?(path),
+  def allowed_write_path?(path) when is_binary(path),
     do: environment_path?(path) or daily_path?(path) or scoped_path?(path)
 
   @doc """

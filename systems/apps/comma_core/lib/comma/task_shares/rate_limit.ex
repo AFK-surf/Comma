@@ -8,13 +8,13 @@ defmodule Comma.TaskShares.RateLimit do
   second limits one share across all peers.
   """
 
+  @prefix "comma:task-share:v1"
+  @timeout 2_000
+
+  # Hammer supervises the Redis connection; the buckets are SalixStore.RedisLimit's, on the application's clock.
   defmodule Redis do
     @moduledoc false
-    use Hammer,
-      backend: Hammer.Redis,
-      algorithm: :token_bucket,
-      prefix: "comma:task-share:v1",
-      timeout: 2_000
+    use Hammer, backend: Hammer.Redis, timeout: 2_000
   end
 
   # burst = bucket size, rate = tokens per second. One page view reads the
@@ -30,7 +30,7 @@ defmodule Comma.TaskShares.RateLimit do
   @doc "True when a Redis URL is configured, i.e. the limiter child runs."
   @spec configured?() :: boolean()
   def configured? do
-    is_binary(Application.get_env(:comma_core, :task_share_rate_limit_redis_url))
+    is_binary(SystemsRuntime.get_env(:comma_core, :task_share_rate_limit_redis_url))
   end
 
   @doc """
@@ -53,7 +53,15 @@ defmodule Comma.TaskShares.RateLimit do
       scale = max(1, ceil(1 / rate))
       refill = max(1, round(rate * scale))
 
-      case Redis.hit(digest_key({bucket, key}), refill, burst * scale, scale) do
+      case SalixStore.RedisLimit.token_bucket(
+             Redis,
+             @prefix,
+             digest_key({bucket, key}),
+             refill,
+             burst * scale,
+             scale,
+             @timeout
+           ) do
         {:allow, _remaining} -> emit(bucket, :allow)
         {:deny, _retry_after_ms} -> emit(bucket, :deny, {:deny, max(1, ceil(1 / rate))})
       end
@@ -67,7 +75,7 @@ defmodule Comma.TaskShares.RateLimit do
   end
 
   defp policy(bucket) do
-    configured = Application.get_env(:comma_core, :task_share_rate_limit, [])
+    configured = SystemsRuntime.get_env(:comma_core, :task_share_rate_limit, [])
     Map.merge(@default_policies[bucket], Map.new(Keyword.get(configured, bucket, [])))
   end
 
@@ -79,7 +87,7 @@ defmodule Comma.TaskShares.RateLimit do
   end
 
   defp emit(bucket, outcome, result \\ :allow) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:comma_product, :task_share, :rate_limit],
       %{count: 1},
       %{kind: bucket, outcome: outcome}
@@ -88,5 +96,5 @@ defmodule Comma.TaskShares.RateLimit do
     result
   end
 
-  defp redis_url!, do: Application.fetch_env!(:comma_core, :task_share_rate_limit_redis_url)
+  defp redis_url!, do: SystemsRuntime.fetch_env!(:comma_core, :task_share_rate_limit_redis_url)
 end

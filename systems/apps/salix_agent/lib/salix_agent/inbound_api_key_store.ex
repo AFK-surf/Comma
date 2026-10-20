@@ -60,7 +60,7 @@ defmodule SalixAgent.InboundApiKeyStore do
 
   @doc "The configured implementation module, or nil."
   @spec impl() :: module() | nil
-  def impl, do: Application.get_env(:salix_agent, :inbound_api_key_store_mod)
+  def impl, do: SystemsRuntime.get_env(:salix_agent, :inbound_api_key_store_mod)
 
   @spec list(String.t(), String.t()) :: {:ok, [key()]} | {:error, term()}
   def list(tenant, group_id), do: dispatch(& &1.list(tenant, group_id))

@@ -76,7 +76,7 @@ defmodule BridgeForTeams.TriageInvestigationTransports do
     end
 
     previous =
-      Enum.map(@settings, fn {app, key} -> {app, key, Application.fetch_env(app, key)} end)
+      Enum.map(@settings, fn {app, key} -> {app, key, SystemsRuntime.fetch_env(app, key)} end)
 
     defaults = Req.default_options()
     adapter = Keyword.get(defaults, :adapter, &Req.Steps.run_finch/1)
@@ -97,23 +97,28 @@ defmodule BridgeForTeams.TriageInvestigationTransports do
       end)
     )
 
-    Application.put_env(:salix_agent, :exa_api_key, live_exa_key || "local-investigation-fixture")
-    Application.put_env(:salix_agent, :exa_base_url, @exa_base_url)
-    Application.put_env(:salix_agent, :env_dispatch, __MODULE__.EmptyEnvironment)
-    Application.put_env(:salix_agent, :mcp_provider_mod, __MODULE__.EmptyMCP)
+    SystemsRuntime.put_env(
+      :salix_agent,
+      :exa_api_key,
+      live_exa_key || "local-investigation-fixture"
+    )
 
-    Application.put_env(
+    SystemsRuntime.put_env(:salix_agent, :exa_base_url, @exa_base_url)
+    SystemsRuntime.put_env(:salix_agent, :env_dispatch, __MODULE__.EmptyEnvironment)
+    SystemsRuntime.put_env(:salix_agent, :mcp_provider_mod, __MODULE__.EmptyMCP)
+
+    SystemsRuntime.put_env(
       :salix_store,
       :agent_vmm_host_http_client,
       __MODULE__.UnavailableComputeHTTP
     )
 
-    Application.put_env(:bridge_for_teams_core, @capture_key, capture)
+    SystemsRuntime.put_env(:bridge_for_teams_core, @capture_key, capture)
 
     fn ->
       Enum.each(previous, fn
-        {app, key, {:ok, value}} -> Application.put_env(app, key, value)
-        {app, key, :error} -> Application.delete_env(app, key)
+        {app, key, {:ok, value}} -> SystemsRuntime.put_env(app, key, value)
+        {app, key, :error} -> SystemsRuntime.delete_env(app, key)
       end)
     end
   end
@@ -230,7 +235,7 @@ defmodule BridgeForTeams.TriageInvestigationTransports do
   end
 
   defp capture(surface, operation, disposition) do
-    callback = Application.get_env(:bridge_for_teams_core, @capture_key, fn _ -> :ok end)
+    callback = SystemsRuntime.get_env(:bridge_for_teams_core, @capture_key, fn _ -> :ok end)
     callback.(%{surface: surface, operation: operation, disposition: disposition})
   end
 
@@ -248,7 +253,7 @@ defmodule BridgeForTeams.TriageInvestigationTransports do
 
     for {operation, arity} <- [
           get_device: 2,
-          create_device_install: 2,
+          create_device_install: 3,
           exec: 4,
           request: 4,
           computer_use: 3,

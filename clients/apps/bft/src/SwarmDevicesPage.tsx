@@ -1,21 +1,27 @@
+import { Button } from "@comma/ui/components/Button";
+import { Dialog } from "@comma/ui/components/dialog";
+import { Dropdown } from "@comma/ui/components/dropdown";
 import {
-  Button,
-  Dialog,
-  Dropdown,
   Menu,
   MenuItem,
   MenuPopover,
   MenuSeparator,
   MenuTrigger,
-  MoreHorizontalIcon,
-  Toggle,
-} from "@comma/ui";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+} from "@comma/ui/components/menu";
+import { MoreHorizontalIcon } from "@comma/ui/components/icons";
+import { Toggle } from "@comma/ui/components/toggle";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import type {
   BftAndroidDevice,
+  BftCloudVm,
   BftComputeEnvironment,
-  BftRuntimeAuthRequests,
-  BftRuntimeAuthTarget,
   BftSwarmDevice,
   BftSwarmDevices,
 } from "./api";
@@ -25,8 +31,7 @@ import { formatBytes, formatRelative, humanize } from "./format";
 import { messages } from "./messages";
 import { projectHref } from "./navSpec";
 import { useApi, useResource, type Resource } from "./resource";
-import { navigate, spaLinkClick } from "./router";
-import { RuntimeAuthDialog } from "./RuntimeAuthDialog";
+import { spaLinkClick } from "./router";
 import {
   FormSection,
   SettingsPage,
@@ -49,6 +54,11 @@ const tones: Record<string, Tone> = {
   running: "ok",
   pending: "warn",
   starting: "warn",
+  creating: "warn",
+  archiving: "warn",
+  waking: "warn",
+  processing: "warn",
+  action_required: "error",
   draining: "warn",
   provisioning: "warn",
   disconnected: "error",
@@ -58,34 +68,26 @@ const tones: Record<string, Tone> = {
   revoked: "error",
 };
 
-function State({ value }: { value: string | null }) {
+function State({
+  value,
+  labels = t.states,
+}: {
+  value: string | null;
+  labels?: Record<string, string>;
+}) {
   if (!value) return <span className="bft-muted">—</span>;
   return (
     <span className="bft-status" data-tone={tones[value] ?? "neutral"}>
-      <span className="bft-truncate">{t.states[value] ?? humanize(value)}</span>
+      <span className="bft-truncate">{labels[value] ?? humanize(value)}</span>
     </span>
   );
 }
 
-/** The device address a Router-request management link names. */
-export function deviceLink(search: string) {
-  const params = new URLSearchParams(search);
-  return {
-    target: params.get("runtime_auth_target"),
-    request: params.get("runtime_auth_request"),
-  };
-}
-
 const deviceName = (device: BftSwarmDevice) => device.name ?? t.unnamed;
 
-interface OpenAuth {
-  target: Pick<BftRuntimeAuthTarget, "id" | "provider" | "target" | "managed">;
-  requestId: string | null;
-}
-
 /**
- * An Agent Swarm's devices: the fixed cloud computer and the connectors
- * registered to the swarm, their runtime authentication, Compute
+ * An Agent Swarm's devices: its Cloud VM (where it runs, its status and the
+ * org Runner it uses), the connectors registered to the swarm, Compute
  * environments and Android setup. While a device request is being
  * provisioned the page polls a cheap status and reads itself again once it
  * is done.
@@ -107,16 +109,6 @@ export function SwarmDevicesPage({
   const data = first.state === "ready" ? first.data : last.current;
   const resource: Resource<BftSwarmDevices> = data ? { state: "ready", data } : first;
   const [adding, setAdding] = useState(false);
-  const [auth, setAuth] = useState<OpenAuth | null>(null);
-  // Every page read, and every closed auth dialog, re-reads the Router requests.
-  const [reads, setReads] = useState(0);
-  const seen = useRef<BftSwarmDevices | undefined>(undefined);
-  useEffect(() => {
-    if (data && data !== seen.current) {
-      seen.current = data;
-      setReads((count) => count + 1);
-    }
-  }, [data]);
   const devicesPath = projectHref(org, project, "/devices");
   const notify = useCallback(
     (notice: string) => {
@@ -143,32 +135,6 @@ export function SwarmDevicesPage({
     onRetry
   );
 
-  // A management link opens its target once, then leaves the address.
-  const linkOpened = useRef(false);
-  useEffect(() => {
-    if (!data || linkOpened.current) return;
-    linkOpened.current = true;
-    const link = deviceLink(window.location.search);
-    if (!link.target) return;
-    const admin = data.project.role === "admin";
-    const row = data.runtime_auth.targets.find((item) => item.id === link.target);
-    const request =
-      data.runtime_auth.request?.target.workload_id === link.target
-        ? data.runtime_auth.request.request_id
-        : null;
-    if (row && (admin || row.managed)) setAuth({ target: row, requestId: request });
-    else if (!row && request && admin)
-      setAuth({
-        target: {
-          id: link.target,
-          provider: t.providerPending,
-          target: { kind: "compute_workload", workload_id: link.target },
-          managed: true,
-        },
-        requestId: request,
-      });
-  }, [data]);
-
   const manage = data?.project.role === "admin";
 
   return (
@@ -193,21 +159,21 @@ export function SwarmDevicesPage({
       >
         {(page) => (
           <>
+            <CloudVmSection
+              data={page.cloud_vm}
+              fail={fail}
+              loading={first.state === "loading"}
+              notify={notify}
+              org={org}
+              project={project}
+            />
             <DevicesSection
               data={page}
-              fail={fail}
               loading={first.state === "loading"}
               notify={notify}
               onRetry={onRetry}
               org={org}
               project={project}
-            />
-            <AuthSection
-              data={page}
-              onOpen={setAuth}
-              org={org}
-              project={project}
-              reads={reads}
             />
             <div className="bft-settings-grid">
               <ComputeSection
@@ -232,21 +198,6 @@ export function SwarmDevicesPage({
           }}
           org={org}
           project={project}
-        />
-      ) : null}
-      {auth && data ? (
-        <RuntimeAuthDialog
-          canManage={data.project.role === "admin"}
-          key={auth.target.id}
-          onClose={() => {
-            setAuth(null);
-            setReads((count) => count + 1);
-            if (window.location.search) navigate(devicesPath, { replace: true });
-          }}
-          org={org}
-          project={project}
-          requestId={auth.requestId}
-          target={auth.target}
         />
       ) : null}
     </>
@@ -327,7 +278,7 @@ function Cell({ main, sub }: { main: ReactNode; sub?: ReactNode }) {
 
 const relative = (iso: string | null) => (iso && formatRelative(iso)) || "—";
 
-interface RowAction {
+export interface RowAction {
   id: string;
   label: string;
   destructive?: boolean;
@@ -335,7 +286,7 @@ interface RowAction {
 }
 
 /** A row's writes behind one "more" button; destructive ones come last. */
-function RowMenu({ name, items }: { name: string; items: RowAction[] }) {
+export function RowMenu({ name, items }: { name: string; items: RowAction[] }) {
   const plain = items.filter((item) => !item.destructive);
   const destructive = items.filter((item) => item.destructive);
   return (
@@ -371,28 +322,45 @@ function RowMenu({ name, items }: { name: string; items: RowAction[] }) {
   );
 }
 
-function DevicesSection({
+const locationText = (location: BftCloudVm["next_location"]) => {
+  switch (location?.kind) {
+    case "cloudflare":
+      return t.cloudflare;
+    case "runner":
+      return location.name ? t.runnerNamed(location.name) : t.otherHost;
+    case "conflict":
+      return t.placementConflict;
+    default:
+      return "—";
+  }
+};
+
+/**
+ * The swarm's Cloud VM: where it runs and its status, or, before it exists,
+ * where a new one goes. An admin turns it on or off and chooses the org
+ * Runner a new VM is created on; the choice does not move an existing VM.
+ */
+function CloudVmSection({
   org,
   project,
   data,
   loading,
   notify,
   fail,
-  onRetry,
 }: {
   org: string;
   project: string;
-  data: BftSwarmDevices;
+  data: BftCloudVm;
   loading: boolean;
   notify: (notice: string) => void;
   fail: (error: unknown) => void;
-  onRetry: () => void;
 }) {
   const api = useApi();
   const confirm = useConfirm();
   const [saving, setSaving] = useState(false);
-  const manage = data.project.role === "admin";
-  const toggleCloud = (enabled: boolean) => {
+  const [choosing, setChoosing] = useState(false);
+  const { vm, runner } = data;
+  const toggle = (enabled: boolean) => {
     setSaving(true);
     api.setCloudComputer(org, project, enabled).then(
       ({ notice }) => {
@@ -405,6 +373,245 @@ function DevicesSection({
       }
     );
   };
+  const runnerName = runner?.name ?? t.otherHost;
+  const status = !data.enabled && !vm ? null : (vm?.status ?? null);
+
+  return (
+    <FormSection
+      action={
+        data.manageable ? (
+          <Toggle
+            aria-label={t.cloudVmToggle}
+            checked={data.enabled}
+            disabled={saving || loading}
+            onChange={(event) => toggle(event.target.checked)}
+            size="sm"
+          />
+        ) : undefined
+      }
+      description={t.cloudVmNote}
+      title={t.cloudVmTitle}
+    >
+      <dl className="bft-kv">
+        <div>
+          <dt>{t.cloudVmStatus}</dt>
+          <dd>
+            {status ? (
+              <State value={status} />
+            ) : (
+              <span className="bft-muted">
+                {data.enabled ? t.cloudVmNotCreated : t.cloudVmOff}
+              </span>
+            )}
+          </dd>
+        </div>
+        {vm ? (
+          <div>
+            <dt>{t.cloudVmRunsOn}</dt>
+            <dd>
+              {vm.status === "unavailable"
+                ? t.cloudVmUnavailable
+                : locationText(vm.location)}
+            </dd>
+          </div>
+        ) : (
+          <div>
+            <dt>{t.cloudVmNextRunsOn}</dt>
+            <dd>{locationText(data.next_location)}</dd>
+          </div>
+        )}
+        <div>
+          <dt>{t.cloudVmRunner}</dt>
+          <dd>
+            {runner ? (
+              <>
+                {runnerName} · <State labels={t.runnerStates} value={runner.status} />
+              </>
+            ) : (
+              <span className="bft-muted">{t.noRunner}</span>
+            )}
+          </dd>
+        </div>
+      </dl>
+      {data.runner_choosable || data.runner_removable ? (
+        <div className="bft-quiet-row bft-quiet-row-flush">
+          <p className="bft-quiet bft-quiet-inline">{t.runnerChoiceNote}</p>
+          {data.runner_choosable ? (
+            <button
+              className="bft-btn bft-btn-sm"
+              onClick={() => setChoosing(true)}
+              type="button"
+            >
+              {t.chooseRunner}
+            </button>
+          ) : (
+            <button
+              className="bft-btn bft-btn-sm"
+              onClick={() =>
+                confirm.ask({
+                  title: t.removeRunner,
+                  description: t.removeRunnerBody(runnerName),
+                  confirmLabel: t.removeRunner,
+                  action: () =>
+                    api
+                      .removeCloudVmRunner(org, project)
+                      .then(({ notice }) => notify(notice)),
+                })
+              }
+              type="button"
+            >
+              {t.removeRunner}
+            </button>
+          )}
+        </div>
+      ) : (
+        <p className="bft-quiet bft-quiet-inline">{t.runnerChoiceNote}</p>
+      )}
+      {choosing ? (
+        <ChooseRunnerDialog
+          onChosen={(notice) => {
+            setChoosing(false);
+            notify(notice);
+          }}
+          onClose={() => setChoosing(false)}
+          org={org}
+          project={project}
+        />
+      ) : null}
+      {confirm.dialog}
+    </FormSection>
+  );
+}
+
+/** Choose one online org Runner for the swarm's Cloud VM. */
+function ChooseRunnerDialog({
+  org,
+  project,
+  onClose,
+  onChosen,
+}: {
+  org: string;
+  project: string;
+  onClose: () => void;
+  onChosen: (notice: string) => void;
+}) {
+  const api = useApi();
+  const write = useWrite();
+  const [runners, retry] = useResource(`device-runners:${org}:${project}`, (signal) =>
+    api.deviceRunners(org, project, signal)
+  );
+  // One id per dialog: a retried choice repeats the same request.
+  const [requestId] = useState(() => crypto.randomUUID());
+  const [runner, setRunner] = useState<string>();
+  const choices = runners.state === "ready" ? runners.data.runners : [];
+  const none = runners.state === "ready" && choices.length === 0;
+  const chosen = runner ?? choices[0]?.id ?? "";
+  const close = () => {
+    if (!write.busy) onClose();
+  };
+  const submit = () =>
+    write.run(
+      () =>
+        api.chooseCloudVmRunner(org, project, {
+          runner_id: chosen,
+          request_id: requestId,
+        }),
+      ({ notice }) => onChosen(notice)
+    );
+
+  return (
+    <Dialog
+      actions={[
+        {
+          label: messages.common.cancel,
+          hierarchy: "secondary-gray",
+          onPress: close,
+          disabled: write.busy,
+        },
+        none || runners.state === "error"
+          ? { label: t.checkRunners, hierarchy: "primary", onPress: retry }
+          : {
+              label: write.busy ? messages.settings.saving : t.chooseRunnerSubmit,
+              hierarchy: "primary",
+              onPress: submit,
+              disabled: write.busy || choices.length === 0,
+            },
+      ]}
+      description={none ? t.noRunnersBody : t.chooseRunnerBody}
+      isDismissable={!write.busy}
+      isOpen
+      onOpenChange={(open) => {
+        if (!open) close();
+      }}
+      title={none ? t.noRunnersTitle : t.chooseRunnerTitle}
+    >
+      <div className="bft-form">
+        {runners.state === "loading" ? (
+          <output className="bft-rows-skeleton bft-rows-skeleton-flush">
+            <Skeleton height={32} />
+            <span className="bft-sr-only">{t.runnersLoading}</span>
+          </output>
+        ) : runners.state === "error" ? (
+          <p className="bft-dialog-error" role="alert">
+            {t.runnersUnavailable}
+          </p>
+        ) : none ? (
+          <a
+            className="bft-link"
+            href={runners.data.runners_href}
+            onClick={spaLinkClick}
+          >
+            {t.openRunners}
+          </a>
+        ) : (
+          <Dropdown
+            className="bft-form-field"
+            disabled={write.busy}
+            items={choices.map((choice) => ({ id: choice.id, label: choice.label }))}
+            label={t.runnerLabel}
+            onChange={setRunner}
+            size="sm"
+            value={chosen}
+          />
+        )}
+        <DialogError message={write.error} />
+      </div>
+    </Dialog>
+  );
+}
+
+/** Why a device cannot take tasks, and how its user upgrades it. */
+function StationNotice({
+  notice,
+}: {
+  notice: NonNullable<BftSwarmDevice["station_notice"]>;
+}) {
+  return (
+    <div className="bft-notice" role="note">
+      <strong>{t.stationNotice[notice.reason] ?? t.stationNoticeFallback}</strong>
+      <p>{notice.message}</p>
+    </div>
+  );
+}
+
+function DevicesSection({
+  org,
+  project,
+  data,
+  loading,
+  notify,
+  onRetry,
+}: {
+  org: string;
+  project: string;
+  data: BftSwarmDevices;
+  loading: boolean;
+  notify: (notice: string) => void;
+  onRetry: () => void;
+}) {
+  const api = useApi();
+  const confirm = useConfirm();
+  const manage = data.project.role === "admin";
 
   return (
     <FormSection
@@ -425,323 +632,158 @@ function DevicesSection({
       {data.provisioning ? (
         <output className="bft-quiet bft-quiet-inline">{t.provisioning}</output>
       ) : null}
-      <div className="bft-devices-table">
-        <table className="bft-table bft-devices">
-          <thead>
-            <tr>
-              <th scope="col">{t.columnName}</th>
-              <th className="bft-col-status" scope="col">
-                {t.columnStatus}
-              </th>
-              <th className="bft-col-runtimes" scope="col">
-                {t.columnRuntimes}
-              </th>
-              <th className="bft-col-host" scope="col">
-                {t.columnHost}
-              </th>
-              <th className="bft-col-cpu" scope="col">
-                {t.columnCpu}
-              </th>
-              <th className="bft-col-seen" scope="col">
-                {t.columnLastSeen}
-              </th>
-              <th className="bft-col-menu" scope="col">
-                <span className="bft-sr-only">{t.columnActions}</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>
-                <Cell main={t.cloudName} sub={t.cloudNote} />
-              </td>
-              <td className="bft-col-status">
-                <State value={data.cloud.enabled ? "enabled" : "disabled"} />
-              </td>
-              <td className="bft-col-runtimes">
-                <span className="bft-muted">—</span>
-              </td>
-              <td className="bft-col-host">
-                <Cell main={t.cloudHost} sub={t.cloudHostNote} />
-              </td>
-              <td className="bft-col-cpu">
-                <Cell main={t.cloudCapacity} />
-              </td>
-              <td className="bft-col-seen">
-                <span className="bft-muted">—</span>
-              </td>
-              <td className="bft-col-menu">
-                {data.cloud.manageable ? (
-                  <Toggle
-                    aria-label={t.cloudToggle}
-                    checked={data.cloud.enabled}
-                    disabled={saving || loading}
-                    onChange={(event) => toggleCloud(event.target.checked)}
-                    size="sm"
-                  />
-                ) : null}
-              </td>
-            </tr>
-            {data.devices.map((device) => (
-              <tr key={device.id}>
-                <td>
-                  <Cell
-                    main={<span title={deviceName(device)}>{deviceName(device)}</span>}
-                  />
-                </td>
-                <td className="bft-col-status">
-                  <State value={device.status} />
-                </td>
-                <td className="bft-col-runtimes">
-                  {device.runtimes.length === 0 ? (
-                    <span className="bft-muted">{t.noRuntime}</span>
-                  ) : (
-                    device.runtimes.map((runtime) => (
-                      <span className="bft-cell-main" key={runtime.id}>
-                        {runtime.provider}
-                        {runtime.version ? (
-                          <span className="bft-muted"> {runtime.version}</span>
-                        ) : null}
-                      </span>
-                    ))
-                  )}
-                </td>
-                <td className="bft-col-host">
-                  <Cell main={device.host ?? "—"} sub={device.os} />
-                </td>
-                <td className="bft-col-cpu">
-                  <Cell
-                    main={
-                      <span title={device.cpu_model ?? undefined}>
-                        {device.cpu_model ?? "—"}
-                      </span>
-                    }
-                    sub={
-                      [
-                        device.cpu_count ? t.cores(device.cpu_count) : null,
-                        device.memory_bytes ? formatBytes(device.memory_bytes) : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ") || null
-                    }
-                  />
-                </td>
-                <td className="bft-col-seen">
-                  <Cell
-                    main={
-                      <span title={device.last_seen_at ?? undefined}>
-                        {relative(device.last_seen_at)}
-                      </span>
-                    }
-                    sub={
-                      device.info_updated_at
-                        ? t.infoUpdated(relative(device.info_updated_at))
-                        : null
-                    }
-                  />
-                </td>
-                <td className="bft-col-menu">
-                  {manage ? (
-                    <RowMenu
-                      items={[
-                        ...(device.disconnectable
-                          ? [
-                              {
-                                id: "disconnect",
-                                label: t.disconnect,
-                                onAction: () =>
-                                  confirm.ask({
-                                    title: t.disconnectTitle,
-                                    description: t.disconnectBody(deviceName(device)),
-                                    confirmLabel: t.disconnect,
-                                    action: () =>
-                                      api
-                                        .disconnectDevice(org, project, device.id)
-                                        .then(({ notice }) => notify(notice)),
-                                  }),
-                              },
-                            ]
-                          : []),
-                        {
-                          id: "delete",
-                          label: t.delete,
-                          destructive: true,
-                          onAction: () =>
-                            confirm.ask({
-                              title: t.deleteTitle,
-                              description: t.deleteBody(deviceName(device)),
-                              confirmLabel: t.delete,
-                              action: () =>
-                                api
-                                  .deleteDevice(org, project, device.id)
-                                  .then(({ notice }) => notify(notice)),
-                            }),
-                        },
-                      ]}
-                      name={deviceName(device)}
-                    />
-                  ) : null}
-                </td>
+      {data.devices.length === 0 ? (
+        <p className="bft-quiet bft-quiet-inline">{t.noDevices}</p>
+      ) : (
+        <div className="bft-devices-table">
+          <table className="bft-table bft-devices">
+            <thead>
+              <tr>
+                <th scope="col">{t.columnName}</th>
+                <th className="bft-col-status" scope="col">
+                  {t.columnStatus}
+                </th>
+                <th className="bft-col-runtimes" scope="col">
+                  {t.columnRuntimes}
+                </th>
+                <th className="bft-col-host" scope="col">
+                  {t.columnHost}
+                </th>
+                <th className="bft-col-cpu" scope="col">
+                  {t.columnCpu}
+                </th>
+                <th className="bft-col-seen" scope="col">
+                  {t.columnLastSeen}
+                </th>
+                <th className="bft-col-menu" scope="col">
+                  <span className="bft-sr-only">{t.columnActions}</span>
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {data.devices.map((device) => (
+                <Fragment key={device.id}>
+                  <tr data-notice={device.station_notice ? "" : undefined}>
+                    <td>
+                      <Cell
+                        main={
+                          <span title={deviceName(device)}>{deviceName(device)}</span>
+                        }
+                      />
+                    </td>
+                    <td className="bft-col-status">
+                      <State value={device.status} />
+                    </td>
+                    <td className="bft-col-runtimes">
+                      {device.runtimes.length === 0 ? (
+                        <span className="bft-muted">{t.noRuntime}</span>
+                      ) : (
+                        device.runtimes.map((runtime) => (
+                          <span className="bft-cell-main" key={runtime.id}>
+                            {runtime.provider}
+                            {runtime.version ? (
+                              <span className="bft-muted"> {runtime.version}</span>
+                            ) : null}
+                          </span>
+                        ))
+                      )}
+                    </td>
+                    <td className="bft-col-host">
+                      <Cell main={device.host ?? "—"} sub={device.os} />
+                    </td>
+                    <td className="bft-col-cpu">
+                      <Cell
+                        main={
+                          <span title={device.cpu_model ?? undefined}>
+                            {device.cpu_model ?? "—"}
+                          </span>
+                        }
+                        sub={
+                          [
+                            device.cpu_count ? t.cores(device.cpu_count) : null,
+                            device.memory_bytes
+                              ? formatBytes(device.memory_bytes)
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ") || null
+                        }
+                      />
+                    </td>
+                    <td className="bft-col-seen">
+                      <Cell
+                        main={
+                          <span title={device.last_seen_at ?? undefined}>
+                            {relative(device.last_seen_at)}
+                          </span>
+                        }
+                        sub={
+                          device.info_updated_at
+                            ? t.infoUpdated(relative(device.info_updated_at))
+                            : null
+                        }
+                      />
+                    </td>
+                    <td className="bft-col-menu">
+                      {manage ? (
+                        <RowMenu
+                          items={[
+                            ...(device.disconnectable
+                              ? [
+                                  {
+                                    id: "disconnect",
+                                    label: t.disconnect,
+                                    onAction: () =>
+                                      confirm.ask({
+                                        title: t.disconnectTitle,
+                                        description: t.disconnectBody(
+                                          deviceName(device)
+                                        ),
+                                        confirmLabel: t.disconnect,
+                                        action: () =>
+                                          api
+                                            .disconnectDevice(org, project, device.id)
+                                            .then(({ notice }) => notify(notice)),
+                                      }),
+                                  },
+                                ]
+                              : []),
+                            {
+                              id: "delete",
+                              label: t.delete,
+                              destructive: true,
+                              onAction: () =>
+                                confirm.ask({
+                                  title: t.deleteTitle,
+                                  description: t.deleteBody(deviceName(device)),
+                                  confirmLabel: t.delete,
+                                  action: () =>
+                                    api
+                                      .deleteDevice(org, project, device.id)
+                                      .then(({ notice }) => notify(notice)),
+                                }),
+                            },
+                          ]}
+                          name={deviceName(device)}
+                        />
+                      ) : null}
+                    </td>
+                  </tr>
+                  {device.station_notice ? (
+                    <tr className="bft-device-notice-row">
+                      <td colSpan={7}>
+                        <StationNotice notice={device.station_notice} />
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       {confirm.dialog}
     </FormSection>
-  );
-}
-
-function AuthSection({
-  org,
-  project,
-  data,
-  onOpen,
-  reads,
-}: {
-  org: string;
-  project: string;
-  data: BftSwarmDevices;
-  onOpen: (auth: OpenAuth) => void;
-  reads: number;
-}) {
-  const manage = data.project.role === "admin";
-  const { targets } = data.runtime_auth;
-  const openRequest = (workload: string, requestId: string) =>
-    onOpen({
-      target: targets.find((item) => item.id === workload) ?? {
-        id: workload,
-        provider: t.providerPending,
-        target: { kind: "compute_workload", workload_id: workload },
-        managed: true,
-      },
-      requestId,
-    });
-
-  return (
-    <FormSection description={t.authNote} title={t.authTitle}>
-      <RouterRequests
-        manage={manage}
-        onOpen={openRequest}
-        org={org}
-        project={project}
-        reads={reads}
-      />
-      {targets.length === 0 ? (
-        <p className="bft-quiet bft-quiet-inline">{t.noTargets}</p>
-      ) : (
-        <table className="bft-table">
-          <thead>
-            <tr>
-              <th scope="col">{t.columnTarget}</th>
-              <th className="bft-col-provider" scope="col">
-                {t.columnProvider}
-              </th>
-              <th className="bft-col-status" scope="col">
-                {t.columnRuntime}
-              </th>
-              <th className="bft-col-auth-action" scope="col">
-                <span className="bft-sr-only">{t.columnActions}</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {targets.map((target) => (
-              <tr key={`${target.target.kind}:${target.id}`}>
-                <td className="bft-mono" title={target.id}>
-                  {target.id}
-                </td>
-                <td className="bft-col-provider">{target.provider}</td>
-                <td className="bft-col-status">
-                  <State value={target.status} />
-                </td>
-                <td className="bft-col-auth-action">
-                  {manage || target.managed ? (
-                    <button
-                      aria-label={`${manage ? t.manage : t.view} ${target.id}`}
-                      className="bft-btn bft-btn-sm"
-                      onClick={() => onOpen({ target, requestId: null })}
-                      type="button"
-                    >
-                      {manage ? t.manage : t.view}
-                    </button>
-                  ) : (
-                    <span className="bft-muted">{t.needsAdmin}</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </FormSection>
-  );
-}
-
-/** Router requests waiting for an admin, one page of 50 at a time. */
-function RouterRequests({
-  org,
-  project,
-  manage,
-  onOpen,
-  reads,
-}: {
-  org: string;
-  project: string;
-  manage: boolean;
-  onOpen: (workload: string, requestId: string) => void;
-  reads: number;
-}) {
-  const api = useApi();
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [page] = useResource<BftRuntimeAuthRequests>(
-    `runtime-auth-requests:${org}:${project}:${cursor ?? ""}:${reads}`,
-    (signal) => api.runtimeAuthRequests(org, project, cursor, signal)
-  );
-  if (page.state === "loading") return null;
-  if (page.state === "error")
-    return <p className="bft-quiet bft-quiet-inline">{t.requestsUnavailable}</p>;
-  const { runtime_auth_requests: requests, next_cursor: next } = page.data;
-  if (requests.length === 0 && !next) return null;
-
-  return (
-    <section aria-label={t.requestsTitle} className="bft-auth-requests">
-      <p className="bft-field-label">{t.requestsTitle}</p>
-      <ul className="bft-list">
-        {requests.map((request) => {
-          const workload = request.target?.workload_id;
-          return (
-            <li className="bft-auth-request" key={request.request_id}>
-              <span className="bft-mono bft-truncate">
-                {[request.action, workload].filter(Boolean).join(" · ")}
-              </span>
-              {manage && workload ? (
-                <button
-                  className="bft-btn bft-btn-sm"
-                  onClick={() => onOpen(workload, request.request_id)}
-                  type="button"
-                >
-                  {t.handle}
-                </button>
-              ) : (
-                <span className="bft-muted">{t.needsAdmin}</span>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-      {next ? (
-        <div>
-          <button
-            className="bft-btn bft-btn-sm"
-            onClick={() => setCursor(next)}
-            type="button"
-          >
-            {t.nextPage}
-          </button>
-        </div>
-      ) : null}
-    </section>
   );
 }
 

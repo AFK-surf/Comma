@@ -33,7 +33,7 @@ defmodule SalixSignal.CallSignaling.Call do
   broadcasts hangup type 1 naming the accepting device.
   """
 
-  use GenServer, restart: :temporary
+  use SystemsRuntime.Server, restart: :temporary
 
   alias SalixSignal.CallMedia
   alias SalixSignal.CallMedia.Connection
@@ -46,11 +46,11 @@ defmodule SalixSignal.CallSignaling.Call do
 
   # -- API ---------------------------------------------------------------------
 
-  def start_link(args), do: GenServer.start_link(__MODULE__, args)
+  def start_link(args), do: SystemsRuntime.Server.start_link(__MODULE__, args)
 
   @doc "Ends the call locally: in-band and broadcast hangup type 0 (CRS-12 section 7.3)."
   def hangup(pid) do
-    send(pid, :local_hangup)
+    SystemsRuntime.Proc.send(pid, :local_hangup)
     :ok
   end
 
@@ -59,7 +59,7 @@ defmodule SalixSignal.CallSignaling.Call do
   `:hangup` is `hangup/1`.
   """
   def finish(pid, :silent) do
-    send(pid, :finish_silent)
+    SystemsRuntime.Proc.send(pid, :finish_silent)
     :ok
   end
 
@@ -149,7 +149,7 @@ defmodule SalixSignal.CallSignaling.Call do
         |> Map.merge(%{
           role: state.role,
           call_id: state.call_id,
-          owner: self(),
+          owner: SystemsRuntime.Proc.self(),
           caller_identity_key: state.caller_identity_key,
           callee_identity_key: state.callee_identity_key,
           local_device_id: state.config.device_id,
@@ -160,7 +160,7 @@ defmodule SalixSignal.CallSignaling.Call do
 
       case CallMedia.start_connection(opts) do
         {:ok, pid} ->
-          {:ok, %{state | connection: pid, connection_ref: Process.monitor(pid)}}
+          {:ok, %{state | connection: pid, connection_ref: SystemsRuntime.Proc.monitor(pid)}}
 
         {:error, reason} ->
           {:error, reason}
@@ -186,11 +186,16 @@ defmodule SalixSignal.CallSignaling.Call do
     |> Proto.audio_only_parameters(state.config.max_bitrate_bps)
   end
 
-  defp start_setup_timer(state),
-    do: %{
-      state
-      | setup_timer: Process.send_after(self(), :setup_timeout, state.config.setup_timeout_ms)
-    }
+  defp start_setup_timer(state) do
+    timer =
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
+        :setup_timeout,
+        state.config.setup_timeout_ms
+      )
+
+    %{state | setup_timer: timer}
+  end
 
   # -- Signaling from the peer -------------------------------------------------
 
@@ -235,14 +240,14 @@ defmodule SalixSignal.CallSignaling.Call do
   # -- Sends -------------------------------------------------------------------
 
   def handle_info({:sent, tag, _result}, %{in_flight: {tag, _pid, ref, timer}} = state) do
-    Process.cancel_timer(timer)
-    Process.demonitor(ref, [:flush])
+    SystemsClock.cancel_timer(timer)
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
     {:noreply, send_done(state)}
   end
 
   def handle_info({:send_deadline, tag}, %{in_flight: {tag, pid, ref, _timer}} = state) do
-    Process.demonitor(ref, [:flush])
-    Process.exit(pid, :kill)
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.exit(pid, :kill)
     {:noreply, send_done(state)}
   end
 
@@ -250,7 +255,7 @@ defmodule SalixSignal.CallSignaling.Call do
         {:DOWN, ref, :process, _pid, _reason},
         %{in_flight: {_tag, _pid2, ref, timer}} = state
       ) do
-    Process.cancel_timer(timer)
+    SystemsClock.cancel_timer(timer)
     {:noreply, send_done(state)}
   end
 
@@ -453,10 +458,10 @@ defmodule SalixSignal.CallSignaling.Call do
   defp stop_connection(%{connection: nil} = state), do: state
 
   defp stop_connection(state) do
-    Process.demonitor(state.connection_ref, [:flush])
+    SystemsRuntime.Proc.demonitor(state.connection_ref, [:flush])
 
     try do
-      GenServer.stop(state.connection, :normal, 5_000)
+      SystemsRuntime.Server.stop(state.connection, :normal, 5_000)
     catch
       :exit, _ -> :ok
     end
@@ -467,19 +472,27 @@ defmodule SalixSignal.CallSignaling.Call do
   defp finish(state) do
     cancel_setup_timer(state)
     state = %{state | ending: true, local_candidates: []}
-    send(state.signaling, {:call_status, self(), %{ending: true}})
+
+    SystemsRuntime.Proc.send(
+      state.signaling,
+      {:call_status, SystemsRuntime.Proc.self(), %{ending: true}}
+    )
+
     state |> pump() |> maybe_stop()
   end
 
   defp maybe_stop(%{ending: true, in_flight: nil, connection: nil} = state) do
-    if :queue.is_empty(state.queue), do: send(self(), :stop), else: :ok
+    if :queue.is_empty(state.queue),
+      do: SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :stop),
+      else: :ok
+
     state
   end
 
   defp maybe_stop(state), do: state
 
   defp cancel_setup_timer(%{setup_timer: nil}), do: :ok
-  defp cancel_setup_timer(%{setup_timer: timer}), do: Process.cancel_timer(timer)
+  defp cancel_setup_timer(%{setup_timer: timer}), do: SystemsClock.cancel_timer(timer)
 
   # -- Send queue --------------------------------------------------------------
 
@@ -524,8 +537,8 @@ defmodule SalixSignal.CallSignaling.Call do
     send_fun = state.config.send
     peer = state.peer_aci
     urgent = Proto.urgent?(payload)
-    parent = self()
-    tag = make_ref()
+    parent = SystemsRuntime.Proc.self()
+    tag = SystemsRuntime.Proc.make_ref()
 
     {pid, ref} =
       spawn_monitor(fn ->
@@ -536,10 +549,16 @@ defmodule SalixSignal.CallSignaling.Call do
             kind, reason -> {:error, {kind, reason}}
           end
 
-        send(parent, {:sent, tag, result})
+        SystemsRuntime.Proc.send(parent, {:sent, tag, result})
       end)
 
-    timer = Process.send_after(self(), {:send_deadline, tag}, state.config.send_deadline_ms)
+    timer =
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
+        {:send_deadline, tag},
+        state.config.send_deadline_ms
+      )
+
     %{state | in_flight: {tag, pid, ref, timer}}
   end
 
@@ -551,9 +570,9 @@ defmodule SalixSignal.CallSignaling.Call do
   defp connected_device(_state), do: nil
 
   defp report(state) do
-    send(state.signaling, {
+    SystemsRuntime.Proc.send(state.signaling, {
       :call_status,
-      self(),
+      SystemsRuntime.Proc.self(),
       %{
         connected_device: connected_device(state),
         connected_and_accepted: state.ice_connected and state.accepted

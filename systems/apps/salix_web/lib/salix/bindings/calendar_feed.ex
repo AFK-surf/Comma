@@ -26,7 +26,7 @@ defmodule Salix.Bindings.CalendarFeed do
       when is_binary(feed_id) and is_binary(secret) and is_binary(if_none_match) do
     with :ok <- bounded_secret(secret),
          {:ok, scope} <- CalendarFeedSubscriptions.authenticate(feed_id, secret) do
-      now = System.system_time(:millisecond)
+      now = SystemsClock.system_time(:millisecond)
       from = now - @past_ms
       to = now + @future_ms
 

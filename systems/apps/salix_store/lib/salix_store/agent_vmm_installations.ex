@@ -34,6 +34,7 @@ defmodule SalixStore.AgentVMMInstallations do
       field(:client_request_id, :string)
       field(:provider, :string)
       field(:environment_id, :string)
+      field(:initial_workload_id, :string)
       field(:delivery_target_type, :string)
       field(:delivery_target_id, :string)
       field(:registration_id, :string)
@@ -63,11 +64,20 @@ defmodule SalixStore.AgentVMMInstallations do
           expires_at: DateTime.t()
         }
 
-  @doc "Create or rotate one idempotent install operation's current ticket."
+  @doc """
+  Create or rotate one idempotent install operation's current ticket.
+
+  With `one_per_scope: true` the scope (a BFT Project) may have only one live
+  Host: the request fails with `:scope_host_bound` while another operation of
+  the scope is live (`live_for_scope/3`) or its Group has another Agent VMM
+  registration that is not revoked. A Group's new Cloud VM goes to its one
+  registration (`SalixWeb.CloudVM.placement/2`), so this keeps that choice
+  unambiguous. A lock on the scope serializes the check with other requests.
+  """
   @spec request(map(), keyword()) :: {:ok, descriptor()} | {:error, atom() | tuple()}
   def request(attrs, opts \\ []) when is_map(attrs) do
     observe_mutation(telemetry_surface(Map.get(attrs, :surface)), fn ->
-      now = Keyword.get(opts, :now, DateTime.utc_now())
+      now = Keyword.get(opts, :now, SystemsClock.utc_now())
 
       Repo.transaction(fn ->
         lock_idempotency!(attrs.surface, attrs.scope_key, attrs.client_request_id)
@@ -83,6 +93,10 @@ defmodule SalixStore.AgentVMMInstallations do
         case validate_request(attrs) do
           :ok -> :ok
           {:error, reason} -> Repo.rollback(reason)
+        end
+
+        if Keyword.get(opts, :one_per_scope, false) do
+          require_unbound_scope!(attrs, existing)
         end
 
         case existing do
@@ -124,6 +138,75 @@ defmodule SalixStore.AgentVMMInstallations do
     end
   rescue
     _ -> {:error, :unavailable}
+  end
+
+  @doc """
+  The BFT Runner (its stable id) an Agent VMM registration of `tenant_id` was
+  installed on, or `nil` for a Host not delivered to a BFT Runner.
+  """
+  @spec bft_runner(String.t(), String.t()) :: String.t() | nil
+  def bft_runner(tenant_id, registration_id)
+      when is_binary(tenant_id) and is_binary(registration_id) do
+    Repo.one(
+      from(o in Operation,
+        where:
+          o.tenant_id == ^tenant_id and o.registration_id == ^registration_id and
+            o.surface == "bft" and o.delivery_target_type == "bft_runner",
+        order_by: [desc: o.created_at, desc: o.id],
+        limit: 1,
+        select: o.delivery_target_id
+      )
+    )
+  end
+
+  @doc """
+  The live install operations of one scope, newest first, as secret-free
+  projections: not revoked, and not handed off to a registration that was
+  revoked since. A failed operation (`action_required`) stays live until it is
+  revoked, because a retry can still install it. At most `limit` are read.
+  """
+  @spec live_for_scope(String.t(), String.t(), pos_integer()) :: [map()]
+  def live_for_scope(surface, scope_key, limit \\ 2)
+      when is_binary(surface) and is_binary(scope_key) and limit in 1..16 do
+    surface
+    |> live_scope_query(scope_key)
+    |> order_by([o], desc: o.created_at, desc: o.id)
+    |> limit(^limit)
+    |> Repo.all()
+    |> Enum.map(&project/1)
+  end
+
+  defp live_scope_query(surface, scope_key) do
+    from(o in Operation,
+      left_join: r in AgentVMM.Registration,
+      on: r.id == o.registration_id,
+      where:
+        o.surface == ^surface and o.scope_key == ^scope_key and
+          o.authorization_status != "revoked" and (is_nil(r.id) or r.status != "revoked")
+    )
+  end
+
+  defp require_unbound_scope!(attrs, existing) do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [
+      Enum.join(["agent-vmm-install-scope", attrs.surface, attrs.scope_key], ":")
+    ])
+
+    own = if existing, do: existing.id
+    own_registration = if existing, do: existing.registration_id
+
+    other_operation? =
+      Repo.exists?(
+        attrs.surface
+        |> live_scope_query(attrs.scope_key)
+        |> where([o], o.id != ^(own || ""))
+      )
+
+    other_registration? =
+      attrs.tenant_id
+      |> AgentVMM.group_registration_ids(attrs.group_id)
+      |> Enum.any?(&(&1 != own_registration))
+
+    if other_operation? or other_registration?, do: Repo.rollback(:scope_host_bound)
   end
 
   @doc "Read the original subject's unexchanged request without rotating its ticket or delivery target."
@@ -187,7 +270,7 @@ defmodule SalixStore.AgentVMMInstallations do
 
   @doc "Issue one dedicated challenge under the original installation authority."
   def recovery_challenge(operation_id, authority, opts \\ []) do
-    now = Keyword.get(opts, :now, DateTime.utc_now())
+    now = Keyword.get(opts, :now, SystemsClock.utc_now())
 
     Repo.transaction(fn ->
       operation = lock_operation!(operation_id)
@@ -206,7 +289,7 @@ defmodule SalixStore.AgentVMMInstallations do
         "environment_id" => operation.environment_id,
         "operation_id" => operation.id,
         "registration_id" => operation.registration_id,
-        "nonce" => Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false),
+        "nonce" => Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false),
         # The database trigger advances revision when it stores the challenge.
         "revision" => operation.revision + 1,
         "expires_at" => DateTime.to_unix(now) + SalixStore.AgentVMMRecovery.ttl()
@@ -236,7 +319,7 @@ defmodule SalixStore.AgentVMMInstallations do
 
   def recover(operation_id, authority, proof, consume, opts)
       when is_boolean(consume) and is_map(proof) do
-    now = Keyword.get(opts, :now, DateTime.utc_now())
+    now = Keyword.get(opts, :now, SystemsClock.utc_now())
 
     Repo.transaction(fn ->
       operation = lock_operation!(operation_id)
@@ -292,7 +375,7 @@ defmodule SalixStore.AgentVMMInstallations do
         authorization_status: "revoked",
         ticket_status: "revoked",
         recovery_challenge: nil,
-        updated_at: Keyword.get(opts, :now, DateTime.utc_now())
+        updated_at: Keyword.get(opts, :now, SystemsClock.utc_now())
       )
       |> project()
     end)
@@ -337,6 +420,7 @@ defmodule SalixStore.AgentVMMInstallations do
     unless operation.authorization_status == "handed_off" and
              is_binary(operation.host_identity_digest) and
              not is_nil(registration) and registration.status != "revoked" and
+             not AgentVMM.authorization_expired?(registration) and
              registration.tenant_id == operation.tenant_id and
              registration.group_id == operation.group_id do
       Repo.rollback(:recovery_target_unavailable)
@@ -366,7 +450,7 @@ defmodule SalixStore.AgentVMMInstallations do
   @spec retry(String.t(), keyword()) :: {:ok, descriptor()} | {:error, atom() | tuple()}
   def retry(operation_id, opts \\ []) when is_binary(operation_id) do
     observe_mutation("system", fn ->
-      now = Keyword.get(opts, :now, DateTime.utc_now())
+      now = Keyword.get(opts, :now, SystemsClock.utc_now())
 
       Repo.transaction(fn ->
         operation = lock_operation!(operation_id)
@@ -393,7 +477,7 @@ defmodule SalixStore.AgentVMMInstallations do
   def retry_at_revision(operation_id, expected_revision, opts \\ [])
       when is_binary(operation_id) and is_integer(expected_revision) do
     observe_mutation("comma_admin", fn ->
-      now = Keyword.get(opts, :now, DateTime.utc_now())
+      now = Keyword.get(opts, :now, SystemsClock.utc_now())
 
       Repo.transaction(fn ->
         operation = lock_operation!(operation_id)
@@ -425,7 +509,7 @@ defmodule SalixStore.AgentVMMInstallations do
   def deliver_next(delivery_target_type, delivery_target_id, opts)
       when is_binary(delivery_target_type) and is_binary(delivery_target_id) do
     observe_mutation("system", fn ->
-      now = Keyword.get(opts, :now, DateTime.utc_now())
+      now = Keyword.get(opts, :now, SystemsClock.utc_now())
 
       Repo.transaction(fn ->
         operation =
@@ -460,7 +544,7 @@ defmodule SalixStore.AgentVMMInstallations do
     if byte_size(error_code) in 1..128 and
          Regex.match?(~r/\A[a-z0-9][a-z0-9_.-]*\z/, error_code) do
       observe_mutation("system", fn ->
-        now = DateTime.utc_now()
+        now = SystemsClock.utc_now()
 
         Repo.transaction(fn ->
           operation = lock_operation!(operation_id)
@@ -564,7 +648,7 @@ defmodule SalixStore.AgentVMMInstallations do
       when is_binary(operation_id) and is_binary(secret) and is_map(host_identity) and
              is_function(issuer, 2) do
     observe_mutation("system", fn ->
-      now = Keyword.get(opts, :now, DateTime.utc_now())
+      now = Keyword.get(opts, :now, SystemsClock.utc_now())
 
       with {:ok, normalized_identity} <- normalize_host_identity(host_identity) do
         host_digest = identity_digest(normalized_identity)
@@ -605,7 +689,7 @@ defmodule SalixStore.AgentVMMInstallations do
   def acknowledge(operation_id, secret, host_digest, opts \\ [])
       when is_binary(operation_id) and is_binary(secret) and is_binary(host_digest) do
     observe_mutation("system", fn ->
-      now = Keyword.get(opts, :now, DateTime.utc_now())
+      now = Keyword.get(opts, :now, SystemsClock.utc_now())
 
       do_acknowledge(operation_id, secret, host_digest, now)
     end)
@@ -634,7 +718,7 @@ defmodule SalixStore.AgentVMMInstallations do
   @doc "Close an authorization or revoke its exact handed-off registration."
   def revoke(operation_id, opts \\ []) when is_binary(operation_id) do
     observe_mutation("system", fn ->
-      now = Keyword.get(opts, :now, DateTime.utc_now())
+      now = Keyword.get(opts, :now, SystemsClock.utc_now())
 
       Repo.transaction(fn ->
         operation = lock_operation!(operation_id)
@@ -692,7 +776,7 @@ defmodule SalixStore.AgentVMMInstallations do
           ) || Repo.rollback(:registration_not_found)
 
         cond do
-          registration.status == "revoked" ->
+          registration.status == "revoked" or AgentVMM.authorization_expired?(registration) ->
             Repo.rollback(:terminal_registration)
 
           registration.desired_enabled == enabled ->
@@ -717,27 +801,80 @@ defmodule SalixStore.AgentVMMInstallations do
         require_expected_authorization!(operation, opts)
         if product_status(operation) != "ready", do: Repo.rollback(:compute_node_not_ready)
 
-        case Compute.ensure_node_workload(
-               operation.tenant_id,
-               operation.environment_id,
-               operation.registration_id
-             ) do
-          {:ok, _workload} -> project(operation)
-          {:error, reason} -> Repo.rollback(reason)
+        workload =
+          if operation.initial_workload_id do
+            Repo.one(
+              from(w in Compute.Workload,
+                join: a in Compute.Allocation,
+                on: a.id == w.allocation_id,
+                join: b in Compute.ProviderBinding,
+                on: b.id == a.provider_binding_id,
+                where:
+                  w.id == ^operation.initial_workload_id and
+                    w.environment_id == ^operation.environment_id and w.kind == "shell" and
+                    b.provider == "agent_vmm" and b.provider_ref == ^operation.registration_id,
+                select: w
+              )
+            ) || Repo.rollback(:initial_workload_not_found)
+          else
+            case Compute.ensure_node_workload(
+                   operation.tenant_id,
+                   operation.environment_id,
+                   operation.registration_id
+                 ) do
+              {:ok, workload} -> workload
+              {:error, reason} -> Repo.rollback(reason)
+            end
+          end
+
+        retry_required =
+          workload.observed_state == "failed" or
+            Repo.exists?(
+              from(c in Compute.ReconcilerClaim,
+                where:
+                  c.workload_id == ^workload.id and c.generation == ^workload.generation and
+                    fragment("?->>'kind'", c.last_error) == "action_required"
+              )
+            )
+
+        if retry_required and is_nil(workload.deletion) do
+          case SalixStore.ComputeWorkloadManagement.retry(
+                 operation.tenant_id,
+                 operation.scope_key,
+                 workload.id,
+                 workload.revision,
+                 workload.generation,
+                 Keyword.get(opts, :authorize, fn -> :ok end)
+               ) do
+            {:ok, _} -> :ok
+            {:error, reason} -> Repo.rollback(reason)
+          end
         end
+
+        if is_nil(operation.initial_workload_id) do
+          Repo.update_all(from(o in Operation, where: o.id == ^operation.id),
+            set: [initial_workload_id: workload.id]
+          )
+        end
+
+        project(Repo.get!(Operation, operation.id))
       end)
       |> normalize_transaction()
     end)
   end
 
-  @doc "Close a bounded batch of expired, unacknowledged material handoffs."
+  @doc """
+  Settle a bounded batch of material handoffs past their deadline.
+  A Host that enrolled with the material received it, so its handoff completes.
+  Any other handoff closes and revokes its unenrolled registration, which frees the scope.
+  """
   def expire_handoffs(opts \\ []) do
     observe_mutation("system", fn ->
-      now = Keyword.get(opts, :now, DateTime.utc_now())
+      now = Keyword.get(opts, :now, SystemsClock.utc_now())
       limit = opts |> Keyword.get(:limit, @max_expiry_batch) |> min(@max_expiry_batch) |> max(1)
 
       Repo.transaction(fn ->
-        ids =
+        operations =
           Repo.all(
             from(o in Operation,
               where:
@@ -745,23 +882,13 @@ defmodule SalixStore.AgentVMMInstallations do
                   o.material_handoff_expires_at <= ^now,
               order_by: [asc: o.material_handoff_expires_at, asc: o.id],
               limit: ^limit,
-              select: o.id,
               lock: "FOR UPDATE SKIP LOCKED"
             )
           )
 
-        {count, _} =
-          Repo.update_all(from(o in Operation, where: o.id in ^ids),
-            set: [
-              authorization_status: "action_required",
-              error_code: "material_handoff_expired",
-              material_ciphertext: nil,
-              material_handoff_expires_at: nil,
-              updated_at: now
-            ]
-          )
+        Enum.each(operations, &close_expired_handoff!(&1, now))
 
-        count
+        %{settled: length(operations), more?: length(operations) == limit}
       end)
       |> normalize_transaction()
     end)
@@ -877,7 +1004,7 @@ defmodule SalixStore.AgentVMMInstallations do
       update_operation!(operation.id, ticket_status: "expired", updated_at: now)
       {:error, :ticket_expired}
     else
-      enrollment_token = :crypto.strong_rand_bytes(32)
+      enrollment_token = SystemsRuntime.Proc.random_bytes(32)
 
       case AgentVMM.create_registration(%{
              id: operation.registration_id,
@@ -939,8 +1066,10 @@ defmodule SalixStore.AgentVMMInstallations do
 
       is_nil(operation.material_handoff_expires_at) or
           DateTime.compare(operation.material_handoff_expires_at, now) != :gt ->
-        close_expired_handoff!(operation, now)
-        {:error, :handoff_expired}
+        case close_expired_handoff!(operation, now) do
+          %Operation{authorization_status: "handed_off"} -> {:error, :handoff_complete}
+          %Operation{} -> {:error, :handoff_expired}
+        end
 
       not is_binary(operation.material_ciphertext) ->
         Repo.rollback(:recovery_material_unavailable)
@@ -958,18 +1087,23 @@ defmodule SalixStore.AgentVMMInstallations do
   defp acknowledge_committed!(operation, now) do
     if is_nil(operation.material_handoff_expires_at) or
          DateTime.compare(operation.material_handoff_expires_at, now) != :gt do
-      close_expired_handoff!(operation, now)
-      {:error, :handoff_expired}
+      case close_expired_handoff!(operation, now) do
+        %Operation{authorization_status: "handed_off"} = settled -> project(settled)
+        %Operation{} -> {:error, :handoff_expired}
+      end
     else
-      update_operation!(operation.id,
-        authorization_status: "handed_off",
-        material_ciphertext: nil,
-        material_handoff_expires_at: nil,
-        material_handed_off_at: now,
-        updated_at: now
-      )
-      |> project()
+      operation |> hand_off!(now) |> project()
     end
+  end
+
+  defp hand_off!(operation, now) do
+    update_operation!(operation.id,
+      authorization_status: "handed_off",
+      material_ciphertext: nil,
+      material_handoff_expires_at: nil,
+      material_handed_off_at: now,
+      updated_at: now
+    )
   end
 
   defp verify_handoff_identity!(operation, secret, host_digest) do
@@ -988,14 +1122,34 @@ defmodule SalixStore.AgentVMMInstallations do
     end
   end
 
+  # Callers hold the Operation lock; the Registration lock follows it.
+  # Enrollment consumes the token inside the material, so an enrolled
+  # Registration proves the Host received it even without an acknowledgement.
   defp close_expired_handoff!(operation, now) do
-    update_operation!(operation.id,
-      authorization_status: "action_required",
-      error_code: "material_handoff_expired",
-      material_ciphertext: nil,
-      material_handoff_expires_at: nil,
-      updated_at: now
-    )
+    registration =
+      Repo.one(
+        from(r in AgentVMM.Registration,
+          where: r.id == ^operation.registration_id,
+          lock: "FOR UPDATE"
+        )
+      )
+
+    case registration do
+      %AgentVMM.Registration{status: status, credential_hash: hash}
+      when status in ["ready", "disabled"] and is_binary(hash) ->
+        hand_off!(operation, now)
+
+      _ ->
+        revoke_bound_registration!(operation)
+
+        update_operation!(operation.id,
+          authorization_status: "action_required",
+          error_code: "material_handoff_expired",
+          material_ciphertext: nil,
+          material_handoff_expires_at: nil,
+          updated_at: now
+        )
+    end
   end
 
   defp revoke_bound_registration!(operation) do
@@ -1074,7 +1228,7 @@ defmodule SalixStore.AgentVMMInstallations do
   end
 
   defp ensure_scoped_provider_binding!(%Operation{}) do
-    if Application.get_env(
+    if SystemsRuntime.get_env(
          :salix_store,
          :agent_vmm_environment_scoped_bindings_enabled,
          false
@@ -1105,7 +1259,7 @@ defmodule SalixStore.AgentVMMInstallations do
       end)
 
     scope_enabled =
-      Application.get_env(
+      SystemsRuntime.get_env(
         :salix_store,
         :agent_vmm_environment_scoped_bindings_enabled,
         false
@@ -1205,6 +1359,7 @@ defmodule SalixStore.AgentVMMInstallations do
       :scope_key,
       :provider,
       :environment_id,
+      :initial_workload_id,
       :delivery_target_type,
       :delivery_target_id,
       :registration_id,
@@ -1354,7 +1509,7 @@ defmodule SalixStore.AgentVMMInstallations do
   defp normalize_transaction({:error, reason}), do: {:error, reason}
 
   defp observe_mutation(surface, operation) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     result =
       try do
@@ -1363,9 +1518,9 @@ defmodule SalixStore.AgentVMMInstallations do
         _ -> {:error, :unavailable}
       end
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{
         component: "salix_store",
         operation: "compute_mutation",
@@ -1395,8 +1550,9 @@ defmodule SalixStore.AgentVMMInstallations do
   defp secure_equal?(_, _), do: false
 
   defp new_secret,
-    do: "vmmi_" <> (:crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false))
+    do: "vmmi_" <> (SystemsRuntime.Proc.random_bytes(32) |> Base.url_encode64(padding: false))
 
   defp new_id(prefix),
-    do: prefix <> "_" <> (:crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false))
+    do:
+      prefix <> "_" <> (SystemsRuntime.Proc.random_bytes(16) |> Base.url_encode64(padding: false))
 end

@@ -1,17 +1,17 @@
 defmodule SalixStore.OAuthTest do
   @moduledoc "OAuth refresh serialized by CAS, against both backends."
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.OAuth
 
   for {backend, name} <- [{SalixStore.S3.AWS, "MinIO"}, {SalixStore.S3.Fake, "Fake"}] do
     describe "#{name}: oauth refresh" do
       setup do
-        prev = Application.get_env(:salix_store, :s3_backend)
-        Application.put_env(:salix_store, :s3_backend, unquote(backend))
+        prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+        SystemsRuntime.put_env(:salix_store, :s3_backend, unquote(backend))
         if unquote(backend) == SalixStore.S3.Fake, do: start_supervised!(SalixStore.S3.Fake)
-        on_exit(fn -> Application.put_env(:salix_store, :s3_backend, prev) end)
-        {:ok, id: "conn-#{System.unique_integer([:positive])}"}
+        on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, prev) end)
+        {:ok, id: "conn-#{SystemsRuntime.Proc.unique_integer([:positive])}"}
       end
 
       test "returns the token when fresh; refreshes via CAS when expired", %{id: id} do
@@ -45,7 +45,7 @@ defmodule SalixStore.OAuthTest do
         # Each refresher returns a distinct token; only one CAS write should win.
         tasks =
           for i <- 1..5 do
-            Task.async(fn ->
+            SystemsRuntime.Task.async(fn ->
               OAuth.valid_token(
                 id,
                 fn _ -> {:ok, %{"access_token" => "tok-#{i}", "expires_at" => 100_000}} end,
@@ -54,7 +54,7 @@ defmodule SalixStore.OAuthTest do
             end)
           end
 
-        results = Task.await_many(tasks)
+        results = SystemsRuntime.Task.await_many(tasks, :infinity)
         assert Enum.all?(results, &match?({:ok, _}, &1))
 
         # The stored record advanced exactly one version (one effective refresh).

@@ -8,12 +8,13 @@ defmodule SalixIM.PrivateChatStatusActor do
   durable protocol is introduced: a crash/owner change loses presentation only;
   the next accepted input recreates it. Input delivery and answers are unchanged.
   """
-  use GenServer
+  use SystemsRuntime.Server
 
   alias SalixIM.Ports.SessionActivity
 
   alias SalixIM.{
     GroupDirectory,
+    IMessageStatusTransport,
     ProviderConnects,
     PrivateChatStatusPlacement,
     SignalStatusTransport,
@@ -23,6 +24,7 @@ defmodule SalixIM.PrivateChatStatusActor do
 
   @refresh_ms 4_000
   @signal_refresh_ms 10_000
+  @imessage_refresh_ms 10_000
   @idle_ms 60_000
   @max_age_ms 30 * 60_000
 
@@ -40,20 +42,21 @@ defmodule SalixIM.PrivateChatStatusActor do
 
   def start_link(opts) do
     name =
-      {:via, Registry, {SalixIM.PrivateChatStatusRegistry, key(opts[:connect], opts[:metadata])}}
+      {:via, SystemsRuntime.Registry,
+       {SalixIM.PrivateChatStatusRegistry, key(opts[:connect], opts[:metadata])}}
 
-    GenServer.start_link(__MODULE__, opts, name: name)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: name)
   end
 
   def activate(pid, source_id, session_id),
-    do: GenServer.cast(pid, {:activate, source_id, session_id})
+    do: SystemsRuntime.Server.cast(pid, {:activate, source_id, session_id})
 
-  def reply_sent(pid), do: GenServer.cast(pid, :reply_sent)
+  def reply_sent(pid), do: SystemsRuntime.Server.cast(pid, :reply_sent)
 
   @impl true
   def init(opts) do
     connect = Keyword.fetch!(opts, :connect)
-    Process.send_after(self(), :unactivated, @idle_ms)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :unactivated, @idle_ms)
 
     {:ok,
      %{
@@ -82,11 +85,15 @@ defmodule SalixIM.PrivateChatStatusActor do
 
   defp transport("wechat"), do: WeChatStatusTransport
   defp transport("signal"), do: SignalStatusTransport
+  defp transport("imessage"), do: IMessageStatusTransport
   defp transport(_provider), do: TelegramStatusTransport
 
   # Each Signal typing indicator is an encrypted message to the peer, and
   # Signal clients keep one visible for 15 seconds.
   defp refresh_ms("signal"), do: @signal_refresh_ms
+  # Photon allows 5 requests per second per project, shared with receiving and
+  # sending. One refresh per chat every 10 s keeps ten chats at 1 request/s.
+  defp refresh_ms("imessage"), do: @imessage_refresh_ms
   defp refresh_ms(_provider), do: @refresh_ms
 
   @impl true
@@ -224,7 +231,7 @@ defmodule SalixIM.PrivateChatStatusActor do
   end
 
   defp clear_typing(%{provider: provider, typing?: true} = state, connect)
-       when provider in ["wechat", "signal"] do
+       when provider in ["wechat", "signal", "imessage"] do
     case state.transport.send(connect, state.target, :cancel, state.typing_ticket, "") do
       {:ok, _} -> {:ok, %{state | typing?: false}}
       {:error, :revoked} -> :revoked
@@ -256,12 +263,19 @@ defmodule SalixIM.PrivateChatStatusActor do
   end
 
   defp schedule(%{timer: nil} = state) do
-    token = make_ref()
-    timer = Process.send_after(self(), {:tick, token}, max(state.next_at - now(), 0))
+    token = SystemsRuntime.Proc.make_ref()
+
+    timer =
+      SystemsClock.send_after(
+        SystemsRuntime.Proc.self(),
+        {:tick, token},
+        max(state.next_at - now(), 0)
+      )
+
     %{state | timer: {timer, token}}
   end
 
   defp schedule(state), do: state
 
-  defp now, do: System.monotonic_time(:millisecond)
+  defp now, do: SystemsClock.monotonic_time(:millisecond)
 end

@@ -1,4 +1,5 @@
-import { Button, Dropdown } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Dropdown } from "@comma/ui/components/dropdown";
 import { useRef, useState } from "react";
 import type { BftCli, BftSettingsGeneral } from "./api";
 import { CodeBlock, CopyButton } from "./dialogs";

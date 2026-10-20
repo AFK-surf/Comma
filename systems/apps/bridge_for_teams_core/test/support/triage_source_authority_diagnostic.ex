@@ -31,7 +31,7 @@ defmodule BridgeForTeams.TriageSourceAuthorityDiagnostic do
 
   @impl true
   def create_task_conversation(group_id, delegator, worker, attrs) do
-    state = Application.fetch_env!(:bridge_for_teams_core, @state_key)
+    state = SystemsRuntime.fetch_env!(:bridge_for_teams_core, @state_key)
 
     {replacement, binding} =
       Agent.get_and_update(state, fn current ->

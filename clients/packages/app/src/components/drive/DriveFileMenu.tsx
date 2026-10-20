@@ -3,13 +3,15 @@ import {
   CloudCheckIcon,
   Cursor1Icon,
   DownloadIcon,
+  TrashCanIcon,
+} from "@comma/ui/components/icons";
+import {
   Menu,
   MenuItem,
   MenuPopover,
   MenuSeparator,
-  TrashCanIcon,
   type MenuPointerOffsets,
-} from "@comma/ui";
+} from "@comma/ui/components/menu";
 import type { RefObject } from "react";
 
 export type DriveFileMenuAction =
@@ -45,8 +47,8 @@ export function DriveSelectionMenuPopover({
   deleteLabel: string;
   downloadAllLabel: string;
   isOpen: boolean;
-  /** Already reflects the selection: pin them all, or unpin them all. */
-  keepOfflineLabel: string;
+  /** Already reflects the selection: pin them all, or unpin them all. Absent where nothing can be kept here. */
+  keepOfflineLabel: string | undefined;
   onAction: (action: DriveSelectionMenuAction) => void;
   onOpenChange: (isOpen: boolean) => void;
   pointerOffsets: MenuPointerOffsets | null;
@@ -77,9 +79,11 @@ export function DriveSelectionMenuPopover({
         <MenuItem icon={<DownloadIcon />} id="download-all">
           {downloadAllLabel}
         </MenuItem>
-        <MenuItem icon={<CloudCheckIcon />} id="keep-offline">
-          {keepOfflineLabel}
-        </MenuItem>
+        {keepOfflineLabel === undefined ? null : (
+          <MenuItem icon={<CloudCheckIcon />} id="keep-offline">
+            {keepOfflineLabel}
+          </MenuItem>
+        )}
         {writable ? (
           <>
             <MenuSeparator />
@@ -116,8 +120,12 @@ export function DriveFileMenuPopover({
   deleteLabel: string;
   downloadLabel: string;
   isOpen: boolean;
-  /** Already reflects the file's pin state ("Keep Offline" / "Stop Keeping Offline"). */
-  keepOfflineLabel: string;
+  /**
+   * Already reflects the file's pin state ("Keep Offline" / "Stop Keeping
+   * Offline"); absent for a file no device holds (System Files), which has
+   * nothing to pin.
+   */
+  keepOfflineLabel: string | undefined;
   onAction: (action: DriveFileMenuAction) => void;
   onOpenChange: (isOpen: boolean) => void;
   pointerOffsets: MenuPointerOffsets | null;
@@ -150,9 +158,11 @@ export function DriveFileMenuPopover({
         </MenuItem>
         {/* The same checked cloud the list paints on a pinned row, so the
             action and the mark it leaves behind read as one thing. */}
-        <MenuItem icon={<CloudCheckIcon />} id="keep-offline">
-          {keepOfflineLabel}
-        </MenuItem>
+        {keepOfflineLabel === undefined ? null : (
+          <MenuItem icon={<CloudCheckIcon />} id="keep-offline">
+            {keepOfflineLabel}
+          </MenuItem>
+        )}
         {writable ? (
           <>
             <MenuSeparator />

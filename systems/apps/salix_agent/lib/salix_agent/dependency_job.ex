@@ -1,11 +1,22 @@
 defmodule SalixAgent.DependencyJob do
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
   @moduledoc """
   Actor-owned handle for one user dependency execution.
 
-  Admission is globally and per-tenant bounded by `DependencyAdmission`. The
-  owner receives a token-fenced result and an independent deadline message;
-  completing, cancelling, timing out, or losing either process releases the
-  admission exactly once.
+  Admission is globally and per-tenant bounded by `DependencyAdmission`,
+  except `:loop_control`: a background Loop's own checkpoint, ack, log and
+  notify calls, and a session's own send to a Conversation or update of one
+  (`SalixAgent.Tools`). Those are bounded Store writes, at most one in flight
+  per resident Loop (a guest's `host.call` is synchronous) and at most a
+  round's calls per session, and refusing them because model rounds hold the
+  Tenant's slots makes a Loop lose its checkpoint or its wake, and a session
+  its report. They are tracked for deadlines and telemetry but neither need
+  nor take a slot. The owner receives a token-fenced result and an
+  independent deadline message; completing, cancelling, timing out, or
+  losing either process releases the admission exactly once.
   """
 
   defstruct [
@@ -18,7 +29,7 @@ defmodule SalixAgent.DependencyJob do
     :timeout_ms
   ]
 
-  @type kind :: :llm | :compaction | :external_runtime | :tool
+  @type kind :: :llm | :compaction | :tool | :loop_control
   @type t :: %__MODULE__{
           kind: kind(),
           tenant_id: String.t(),
@@ -34,15 +45,16 @@ defmodule SalixAgent.DependencyJob do
   @spec start(kind(), String.t(), (-> term()), keyword()) ::
           {:ok, t()} | {:error, :dependency_saturated | term()}
   def start(kind, tenant_id, fun, opts \\ [])
-      when kind in [:llm, :compaction, :external_runtime, :tool] and is_binary(tenant_id) and
+      when kind in [:llm, :compaction, :tool, :loop_control] and
+             is_binary(tenant_id) and
              is_function(fun, 0) do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
     timeout_ms = Keyword.get(opts, :timeout_ms, timeout_ms(kind))
 
     with true <- is_integer(timeout_ms) and timeout_ms > 0,
          {:ok, token, pid} <-
            SalixAgent.DependencyAdmission.start(owner, tenant_id, kind, fun) do
-      timer_ref = Process.send_after(owner, {:dependency_job_timeout, token}, timeout_ms)
+      timer_ref = SystemsClock.send_after(owner, {:dependency_job_timeout, token}, timeout_ms)
 
       {:ok,
        %__MODULE__{
@@ -81,7 +93,7 @@ defmodule SalixAgent.DependencyJob do
   @doc false
   @spec yield(t(), timeout()) :: {:ok, term()} | {:exit, term()} | nil
   def yield(%__MODULE__{} = job, timeout) do
-    receive do
+    SystemsClock.vreceive do
       {:dependency_job_result, token, result} when token == job.token ->
         :ok = complete(job)
         {:ok, result}
@@ -102,7 +114,7 @@ defmodule SalixAgent.DependencyJob do
   def timeout_ms(kind) do
     default = default_timeout_ms(kind)
 
-    case Application.get_env(:salix_agent, :dependency_job_timeout_ms, default) do
+    case SystemsRuntime.get_env(:salix_agent, :dependency_job_timeout_ms, default) do
       timeout when is_integer(timeout) and timeout > 0 ->
         timeout
 
@@ -127,7 +139,7 @@ defmodule SalixAgent.DependencyJob do
   defp cancel_timer(nil), do: :ok
 
   defp cancel_timer(timer_ref) do
-    _ = Process.cancel_timer(timer_ref, async: false, info: false)
+    _ = SystemsClock.cancel_timer(timer_ref)
     :ok
   end
 end
@@ -135,7 +147,7 @@ end
 defmodule SalixAgent.DependencyRunner do
   @moduledoc false
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -143,16 +155,17 @@ defmodule SalixAgent.DependencyRunner do
 
   defstruct jobs: %{}, keys: %{}
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @spec start(DependencyJob.kind(), String.t(), (-> term()), keyword()) ::
           :ok | {:error, :dependency_already_running | :dependency_saturated | term()}
   def start(kind, tenant_id, fun, opts \\ []) do
-    GenServer.call(__MODULE__, {:start, kind, tenant_id, fun, opts})
+    SystemsRuntime.Server.call(__MODULE__, {:start, kind, tenant_id, fun, opts})
   end
 
   @doc false
-  def active_count, do: GenServer.call(__MODULE__, :active_count)
+  def active_count, do: SystemsRuntime.Server.call(__MODULE__, :active_count)
 
   @impl true
   def init(_opts), do: {:ok, %__MODULE__{}}
@@ -231,30 +244,62 @@ defmodule SalixAgent.DependencyRunner do
 end
 
 defmodule SalixAgent.DependencyAdmission do
+  require SystemsRuntime.Proc
+
   @moduledoc false
 
-  use GenServer
+  use SystemsRuntime.Server
 
   @default_global_limit 64
   @default_per_tenant_limit 8
-  @kinds [:llm, :compaction, :external_runtime, :tool]
+  @kinds [:llm, :compaction, :tool, :loop_control]
+  # Kinds admitted without a global or per-Tenant slot (see `DependencyJob`).
+  @unmetered_kinds [:loop_control]
 
   defstruct jobs: %{},
             task_refs: %{},
             owner_refs: %{},
             tenant_counts: %{},
             kind_counts: %{},
-            tenant_limits: %{}
+            tenant_limits: %{},
+            capacity_watches: %{},
+            capacity_watch_refs: %{},
+            capacity_watch_order: 0
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
-  def start(owner, tenant_id, kind, fun),
-    do: GenServer.call(__MODULE__, {:start, owner, tenant_id, kind, fun})
+  # Admission starts a job that waits for its function, and the owner sends
+  # the function to the job directly. Passing it through this server and the
+  # task supervisor would copy it twice more, and a round's closure can hold
+  # hundreds of kilobytes.
+  def start(owner, tenant_id, kind, fun) do
+    unless owner == SystemsRuntime.Proc.self(),
+      do: raise(FunctionClauseError, module: __MODULE__, function: :start, arity: 4)
 
-  def release(token), do: GenServer.call(__MODULE__, {:release, token})
+    with {:ok, token, pid} <-
+           SystemsRuntime.Server.call(__MODULE__, {:start, owner, tenant_id, kind}) do
+      SystemsRuntime.Proc.send(pid, {:dependency_job_fun, token, fun})
+      {:ok, token, pid}
+    end
+  end
+
+  def release(token), do: SystemsRuntime.Server.call(__MODULE__, {:release, token})
 
   def cancel(token, outcome \\ :cancelled) when outcome in [:cancelled, :timeout],
-    do: GenServer.call(__MODULE__, {:cancel, token, outcome})
+    do: SystemsRuntime.Server.call(__MODULE__, {:cancel, token, outcome})
+
+  # A notification is only a hint to retry normal admission, not a reserved slot.
+  # Checking capacity in the same call closes the release-before-watch race.
+  @spec watch_capacity(String.t(), SalixAgent.DependencyJob.kind(), reference()) ::
+          :ok | {:error, :saturated}
+  def watch_capacity(tenant_id, kind, token)
+      when is_binary(tenant_id) and kind in @kinds and is_reference(token),
+      do: SystemsRuntime.Server.call(__MODULE__, {:watch_capacity, tenant_id, kind, token})
+
+  @spec cancel_capacity_watch(reference()) :: :ok
+  def cancel_capacity_watch(token) when is_reference(token),
+    do: SystemsRuntime.Server.call(__MODULE__, {:cancel_capacity_watch, token})
 
   @impl true
   def init(_opts) do
@@ -265,17 +310,16 @@ defmodule SalixAgent.DependencyAdmission do
   end
 
   @impl true
-  def handle_call({:start, owner, tenant_id, kind, fun}, _from, state) do
-    if admitted?(state, tenant_id) do
-      token = make_ref()
+  def handle_call({:start, owner, tenant_id, kind}, _from, state) do
+    if admitted?(state, tenant_id, kind) do
+      token = SystemsRuntime.Proc.make_ref()
 
-      case Task.Supervisor.start_child(SalixAgent.DependencyTaskSup, fn ->
-             result = fun.()
-             send(owner, {:dependency_job_result, token, result})
+      case SystemsRuntime.TaskSupervisor.start_child(SalixAgent.DependencyTaskSup, fn ->
+             await_and_run(owner, token)
            end) do
         {:ok, pid} ->
-          task_ref = Process.monitor(pid)
-          owner_ref = Process.monitor(owner)
+          task_ref = SystemsRuntime.Proc.monitor(pid)
+          owner_ref = SystemsRuntime.Proc.monitor(owner)
 
           job = %{
             owner: owner,
@@ -312,15 +356,72 @@ defmodule SalixAgent.DependencyAdmission do
     {:reply, :ok, drop_job(state, token, true, outcome)}
   end
 
+  def handle_call({:watch_capacity, tenant_id, kind, token}, {owner, _tag}, state) do
+    state = drop_capacity_watch(state, owner)
+
+    cond do
+      admitted?(state, tenant_id, kind) ->
+        SystemsRuntime.Proc.send(owner, {:dependency_capacity_available, token})
+        {:reply, :ok, state}
+
+      map_size(state.capacity_watches) <
+          limit(:dependency_max_children, @default_global_limit) ->
+        ref = SystemsRuntime.Proc.monitor(owner)
+        order = state.capacity_watch_order + 1
+        watch = %{token: token, tenant_id: tenant_id, kind: kind, ref: ref, order: order}
+
+        {:reply, :ok,
+         %{
+           state
+           | capacity_watches: Map.put(state.capacity_watches, owner, watch),
+             capacity_watch_refs: Map.put(state.capacity_watch_refs, ref, owner),
+             capacity_watch_order: order
+         }}
+
+      true ->
+        # The owner's existing retry timer remains the fallback when full.
+        {:reply, {:error, :saturated}, state}
+    end
+  end
+
+  def handle_call({:cancel_capacity_watch, token}, {owner, _tag}, state) do
+    state =
+      case state.capacity_watches[owner] do
+        %{token: ^token} -> drop_capacity_watch(state, owner)
+        _other -> state
+      end
+
+    {:reply, :ok, state}
+  end
+
+  # Admission also kills a job whose owner exits. The monitor covers an owner
+  # that exits before it sends the function while admission is restarting.
+  defp await_and_run(owner, token) do
+    monitor = SystemsRuntime.Proc.monitor(owner)
+
+    SystemsRuntime.Proc.receive do
+      {:dependency_job_fun, ^token, fun} ->
+        SystemsRuntime.Proc.demonitor(monitor, [:flush])
+        result = fun.()
+        SystemsRuntime.Proc.send(owner, {:dependency_job_result, token, result})
+
+      {:DOWN, ^monitor, :process, _pid, _reason} ->
+        :ok
+    end
+  end
+
   @impl true
   def handle_info(:refresh_tenant_limits, state) do
-    server = self()
+    server = SystemsRuntime.Proc.self()
 
     # Tenant profiles override the per-Tenant limit. The bounded read runs
     # outside admission; a failed read keeps the last known overrides.
-    Task.start(fn ->
+    SystemsRuntime.Task.start(fn ->
       try do
-        send(server, {:tenant_limits, SalixStore.TenantProfiles.dependency_limits()})
+        SystemsRuntime.Proc.send(
+          server,
+          {:tenant_limits, SalixStore.TenantProfiles.dependency_limits()}
+        )
       rescue
         _error -> :ok
       catch
@@ -340,7 +441,7 @@ defmodule SalixAgent.DependencyAdmission do
       token = state.task_refs[ref] ->
         case state.jobs[token] do
           %{owner: owner} when reason != :normal ->
-            send(owner, {:dependency_job_down, token, reason})
+            SystemsRuntime.Proc.send(owner, {:dependency_job_down, token, reason})
 
           _other ->
             :ok
@@ -352,31 +453,41 @@ defmodule SalixAgent.DependencyAdmission do
       token = state.owner_refs[ref] ->
         {:noreply, drop_job(state, token, true, :cancelled)}
 
+      owner = state.capacity_watch_refs[ref] ->
+        {:noreply, drop_capacity_watch(state, owner)}
+
       true ->
         {:noreply, state}
     end
   end
 
-  defp admitted?(state, tenant_id) do
+  defp admitted?(_state, _tenant_id, kind) when kind in @unmetered_kinds, do: true
+
+  defp admitted?(state, tenant_id, _kind) do
     tenant_limit =
       Map.get_lazy(state.tenant_limits, tenant_id, fn ->
         limit(:dependency_max_children_per_tenant, @default_per_tenant_limit)
       end)
 
-    map_size(state.jobs) < limit(:dependency_max_children, @default_global_limit) and
+    metered_count(state) < limit(:dependency_max_children, @default_global_limit) and
       Map.get(state.tenant_counts, tenant_id, 0) < tenant_limit
   end
 
+  defp metered_count(state) do
+    map_size(state.jobs) -
+      Enum.reduce(@unmetered_kinds, 0, &(Map.get(state.kind_counts, &1, 0) + &2))
+  end
+
   defp tenant_limit_refresh_ms,
-    do: Application.get_env(:salix_agent, :dependency_tenant_limit_refresh_ms, 30_000)
+    do: SystemsRuntime.get_env(:salix_agent, :dependency_tenant_limit_refresh_ms, 30_000)
 
   defp schedule_tenant_limit_refresh(ms) when is_integer(ms) and ms >= 0,
-    do: Process.send_after(self(), :refresh_tenant_limits, ms)
+    do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :refresh_tenant_limits, ms)
 
   defp schedule_tenant_limit_refresh(_disabled), do: :ok
 
   defp limit(key, default) do
-    case Application.get_env(:salix_agent, key, default) do
+    case SystemsRuntime.get_env(:salix_agent, key, default) do
       value when is_integer(value) and value > 0 -> value
       _other -> default
     end
@@ -388,7 +499,7 @@ defmodule SalixAgent.DependencyAdmission do
       | jobs: Map.put(state.jobs, token, job),
         task_refs: Map.put(state.task_refs, job.task_ref, token),
         owner_refs: Map.put(state.owner_refs, job.owner_ref, token),
-        tenant_counts: Map.update(state.tenant_counts, job.tenant_id, 1, &(&1 + 1)),
+        tenant_counts: count_tenant(state.tenant_counts, job),
         kind_counts: Map.update(state.kind_counts, job.kind, 1, &(&1 + 1))
     }
   end
@@ -399,18 +510,16 @@ defmodule SalixAgent.DependencyAdmission do
         state
 
       {job, jobs} ->
-        if kill? and Process.alive?(job.pid), do: Process.exit(job.pid, :kill)
-        Process.demonitor(job.task_ref, [:flush])
-        Process.demonitor(job.owner_ref, [:flush])
+        if kill? and SystemsRuntime.Proc.alive?(job.pid),
+          do: SystemsRuntime.Proc.exit(job.pid, :kill)
+
+        SystemsRuntime.Proc.demonitor(job.task_ref, [:flush])
+        SystemsRuntime.Proc.demonitor(job.owner_ref, [:flush])
 
         tenant_counts =
-          case Map.get(state.tenant_counts, job.tenant_id, 0) - 1 do
-            remaining when remaining > 0 ->
-              Map.put(state.tenant_counts, job.tenant_id, remaining)
-
-            _zero ->
-              Map.delete(state.tenant_counts, job.tenant_id)
-          end
+          if job.kind in @unmetered_kinds,
+            do: state.tenant_counts,
+            else: decrement_count(state.tenant_counts, job.tenant_id)
 
         kind_counts = decrement_count(state.kind_counts, job.kind)
 
@@ -425,9 +534,45 @@ defmodule SalixAgent.DependencyAdmission do
 
         Salix.Telemetry.emit_dependency_job(job.kind, outcome)
         emit_active(job.kind, state)
+        if job.kind in @unmetered_kinds, do: state, else: notify_capacity_watch(state)
+    end
+  end
+
+  defp notify_capacity_watch(state) do
+    # Both the scan and its retained state are bounded by the global job limit.
+    # A release can help another Tenant, so eligibility uses all current limits.
+    state.capacity_watches
+    |> Enum.filter(fn {_owner, watch} -> admitted?(state, watch.tenant_id, watch.kind) end)
+    |> Enum.min_by(fn {_owner, watch} -> watch.order end, fn -> nil end)
+    |> case do
+      nil ->
+        state
+
+      {owner, watch} ->
+        state = drop_capacity_watch(state, owner)
+        SystemsRuntime.Proc.send(owner, {:dependency_capacity_available, watch.token})
         state
     end
   end
+
+  defp drop_capacity_watch(state, owner) do
+    case Map.pop(state.capacity_watches, owner) do
+      {nil, _watches} ->
+        state
+
+      {watch, watches} ->
+        SystemsRuntime.Proc.demonitor(watch.ref, [:flush])
+
+        %{
+          state
+          | capacity_watches: watches,
+            capacity_watch_refs: Map.delete(state.capacity_watch_refs, watch.ref)
+        }
+    end
+  end
+
+  defp count_tenant(counts, %{kind: kind}) when kind in @unmetered_kinds, do: counts
+  defp count_tenant(counts, job), do: Map.update(counts, job.tenant_id, 1, &(&1 + 1))
 
   defp decrement_count(counts, key) do
     case Map.get(counts, key, 0) do

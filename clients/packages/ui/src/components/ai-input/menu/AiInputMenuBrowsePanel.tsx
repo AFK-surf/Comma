@@ -251,7 +251,11 @@ export const AiInputMenuBrowsePanel = ({
       className={aiInputMenuBrowse}
       data-testid="ai-input-menu-browse"
       ref={rootRef}
-      style={{ height: AI_INPUT_MENU_MAX_HEIGHT_PX }}
+      style={
+        browse.compact
+          ? { maxHeight: AI_INPUT_MENU_MAX_HEIGHT_PX }
+          : { height: AI_INPUT_MENU_MAX_HEIGHT_PX }
+      }
     >
       {/* oxlint-disable-next-line jsx-a11y/interactive-supports-focus -- InputBase renders an <input>, focusable by nature. */}
       <InputBase

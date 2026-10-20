@@ -297,6 +297,75 @@ defmodule SalixVerifiedKernel.LoopHostTest do
     end
   end
 
+  describe "get_runtime_message calls" do
+    # The runtime shows its own messages as `get_runtime_message` calls. A model
+    # that imitates one gets guidance that names wait_for and end_turn. It ran
+    # no tool, so the answer neither opens reply repair nor uses an attempt.
+    test "a direct or enveloped call becomes guidance that points to wait_for" do
+      direct = %{id: "r1", name: "get_runtime_message", args: %{"runtime_message_id" => "x"}}
+
+      enveloped = %{
+        id: "r2",
+        name: "call",
+        args: %{"tool" => "get_runtime_message", "params" => %{}}
+      }
+
+      # A non-LLM runtime refuses every `call` envelope before it reads the target.
+      for {envelope, calls} <- [{true, [direct, enveloped]}, {false, [direct]}] do
+        for guided <- Session.query(session(), :call_envelopes, {calls, envelope}) do
+          assert guided[:guidance_tool] == "get_runtime_message"
+          assert guided[:guidance_reason] == "envelope_misuse"
+          assert guided[:guidance_error] =~ "is not a tool"
+          assert guided[:guidance_error] =~ "wait_for"
+        end
+      end
+    end
+
+    defp runtime_message_guidance do
+      %{
+        id: "r1",
+        name: "get_runtime_message",
+        status: "guidance",
+        diagnostic_visibility: "model_only",
+        guidance_reason: "envelope_misuse"
+      }
+    end
+
+    defp misuse(name) do
+      %{
+        id: "m1",
+        name: name,
+        status: "guidance",
+        diagnostic_visibility: "model_only",
+        guidance_reason: "envelope_misuse"
+      }
+    end
+
+    test "its guidance neither opens repair nor uses a repair attempt" do
+      clean = session()
+      repair = session(%{visible_reply_repair: %{"status" => "required", "attempts" => 1}})
+      sent = %{id: "s1", name: "im_api.internal.send_message", status: "completed"}
+
+      assert Session.query(clean, :tool_batch_checkpoint, [runtime_message_guidance()]) == :none
+
+      assert Session.query(clean, :tool_batch_checkpoint, [
+               runtime_message_guidance(),
+               misuse("fs.read")
+             ]) ==
+               {:required, 0}
+
+      assert Session.query(repair, :tool_batch_checkpoint, [runtime_message_guidance()]) ==
+               {:required, 1}
+
+      assert Session.query(repair, :tool_batch_checkpoint, [runtime_message_guidance(), sent]) ==
+               :completed
+
+      # Other call-shape guidance keeps the repair contract.
+      assert Session.query(clean, :tool_batch_checkpoint, [misuse("fs.read")]) == {:required, 0}
+      assert Session.query(repair, :tool_batch_checkpoint, [misuse("fs.read")]) == {:exhausted, 2}
+    end
+  end
+
   describe "conversation header" do
     test "an internal origin that asks for it shows its conversation in each request" do
       shown = Map.put(@origin, "show_conversation", true)

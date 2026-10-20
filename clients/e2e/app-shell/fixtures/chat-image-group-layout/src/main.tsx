@@ -7,7 +7,7 @@ import type {
   ChatImagePreviewRef,
   ChatMessage,
   LocalFilePreview,
-} from "../../../../../packages/app/src/components/chat/model/conversationChannel";
+} from "@comma/core/chat";
 import { ConversationThread } from "../../../../../packages/app/src/components/chat/thread/ConversationThread";
 import { CommaUiThemeProvider } from "../../../../../packages/app/src/components/commaUiTheme";
 
@@ -16,7 +16,6 @@ declare global {
     chatImageGroupLayoutFixture?: {
       pendingRefs: () => string[];
       requestedCount: () => number;
-      resolve: (index: number) => boolean;
       resolveAll: () => void;
     };
   }
@@ -54,8 +53,8 @@ for (let index = 0; index < 7; index += 1) {
   previewUrl.set(refFor(index), imageDataUrl(index));
 }
 
-// Previews stay pending until the spec releases them one at a time, so every
-// intermediate state of a settling message is observable and deterministic.
+// Previews stay pending until the spec releases them, so the loaded state is
+// reached deterministically.
 const pending = new Map<string, (preview: LocalFilePreview | undefined) => void>();
 let requestedCount = 0;
 
@@ -80,13 +79,6 @@ const onPreviewLocalFile = (
 window.chatImageGroupLayoutFixture = {
   pendingRefs: () => [...pending.keys()],
   requestedCount: () => requestedCount,
-  resolve: (index) => {
-    const ref = refFor(index);
-    const settle = pending.get(ref);
-    if (!settle) return false;
-    settle({ release() {}, url: previewUrl.get(ref)! });
-    return true;
-  },
   resolveAll: () => {
     // Settling removes the entry, so iterate over a snapshot of the map.
     const entries = Array.from(pending.entries());

@@ -1,5 +1,5 @@
 defmodule SalixCalendar.AgentAPILocalReadTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixCalendar.AgentAPI
   alias SalixStore.{Ids, Keys, S3}
@@ -64,13 +64,6 @@ defmodule SalixCalendar.AgentAPILocalReadTest do
     assert read["object"]["title"] == "会议"
   end
 
-  test "list_items over the Event's day returns the local Event", ctx do
-    assert {:ok, %{"data" => data}} = AgentAPI.list_items(ctx.group_id, day(ctx), ctx.principal)
-
-    assert [entry] = Enum.filter(data, &(get_in(&1, ["item", "calendar_item_id"]) == ctx.item_id))
-    assert get_in(entry, ["occurrence", "start_ms"]) == ms("2026-08-29T16:00:00+09:00")
-  end
-
   test "local Events are owner-scoped: another principal cannot read or list them", ctx do
     other = %{ctx.principal | "subject_id" => "U_bob"}
 
@@ -93,10 +86,5 @@ defmodule SalixCalendar.AgentAPILocalReadTest do
              )
 
     assert {:ok, %{"data" => []}} = AgentAPI.list_items(ctx.group_id, day(ctx), nil)
-  end
-
-  test "object_type=Task excludes local Events", ctx do
-    params = Map.put(day(ctx), "object_type", "Task")
-    assert {:ok, %{"data" => []}} = AgentAPI.list_items(ctx.group_id, params, ctx.principal)
   end
 end

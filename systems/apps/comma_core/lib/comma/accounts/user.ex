@@ -11,7 +11,8 @@ defmodule Comma.Accounts.User do
   @timestamps_opts [
     type: :utc_datetime_usec,
     inserted_at: :created_at,
-    inserted_at_source: :inserted_at
+    inserted_at_source: :inserted_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
   ]
 
   @type t :: %__MODULE__{
@@ -33,6 +34,7 @@ defmodule Comma.Accounts.User do
     field(:avatar_id, :string)
     field(:status, :string, default: "active")
     field(:auth_epoch, :integer, default: 0)
+    field(:review_login_code_hash, :string, redact: true)
     field(:signup_credit_eligible, :boolean, default: false)
     # Set only by Comma.GuestMode; a guest never becomes a registered User.
     field(:kind, :string, default: "registered")
@@ -72,7 +74,7 @@ defmodule Comma.Accounts.User do
 
   @spec new_id() :: String.t()
   def new_id do
-    "usr_" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+    "usr_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(9), padding: false)
   end
 
   defp normalize_email(changeset) do

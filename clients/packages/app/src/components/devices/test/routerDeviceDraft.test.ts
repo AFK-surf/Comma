@@ -1,42 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ChatChannel } from "../../../runtime-chat/channel/ChatChannel";
-import { idleConversationChannelState } from "../../chat/model/conversationChannel";
 import { prefillDeviceDraft } from "../routerDeviceDraft";
 
+// How the core waits for the chat and keeps the draft is tested in
+// packages/core/test/chat/chat.test.ts.
+
 describe("device Router draft", () => {
-  it("waits for existing content, preserves it, and never sends", async () => {
-    let state = {
-      ...idleConversationChannelState,
-      status: "loading" as "loading" | "ready",
-      draft: "",
-    };
-    let changed: () => void = vi.fn();
-    const release = vi.fn();
-    const setDraft = vi.fn((draft: string) => {
-      state = { ...state, draft };
-    });
-    const send = vi.fn();
-    const channel = {
-      getSnapshot: () => state,
-      subscribe: (cb: () => void) => {
-        changed = cb;
-        return release;
-      },
-      setDraft,
-      send,
-    } as unknown as ChatChannel;
-    const signal = new AbortController().signal;
-    const pending = prefillDeviceDraft(channel, "Connect another device", signal);
-    expect(setDraft).not.toHaveBeenCalled();
-    state = { ...state, status: "ready", draft: "My existing draft" };
-    changed();
-    await pending;
-    expect(setDraft).toHaveBeenCalledWith(
-      "My existing draft\n\nConnect another device"
+  it("asks the core to add the prompt to the draft, and stops waiting on an abort", async () => {
+    const prefillDraft = vi.fn(() => Promise.resolve({}));
+    await prefillDeviceDraft(
+      { prefillDraft },
+      "Connect another device",
+      new AbortController().signal
     );
-    await prefillDeviceDraft(channel, "Connect another device", signal);
-    expect(setDraft).toHaveBeenCalledOnce();
-    expect(send).not.toHaveBeenCalled();
-    expect(release).toHaveBeenCalledTimes(2);
+    expect(prefillDraft).toHaveBeenCalledWith("Connect another device");
+
+    const controller = new AbortController();
+    const pending = prefillDeviceDraft(
+      { prefillDraft: () => new Promise(() => {}) },
+      "Connect another device",
+      controller.signal
+    );
+    controller.abort();
+    await expect(pending).rejects.toThrow("Chat request canceled.");
   });
 });

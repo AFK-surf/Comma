@@ -1,5 +1,5 @@
 defmodule SalixStore.ComputeContractTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixStore.ComputeContract
 
@@ -51,7 +51,7 @@ defmodule SalixStore.ComputeContractTest do
 
   test "workload contract rejects provider-native identity and old runtime kind" do
     assert :ok =
-             ComputeContract.validate_workload("external_worker", [
+             ComputeContract.validate_workload("shell", [
                "runtime_exec",
                "runtime_process"
              ])

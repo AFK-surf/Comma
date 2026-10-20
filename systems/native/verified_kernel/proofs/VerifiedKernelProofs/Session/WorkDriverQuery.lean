@@ -58,11 +58,14 @@ theorem issue_not_query (context : Context) (result saved operation args request
     issue context result ≠
       (some (.tuple [a "session_command_driver_query", saved, operation, args, list observations]),
         .tuple [a "observe", request]) := by
-  intro h
-  unfold issue at h
-  split at h
-  all_goals simp_all [issueWrite, preparedWrite, invalid, RevisionFence.invalid, a]
-  all_goals split at h <;> simp_all
+  refine issue_rec (P := (· ≠ _)) context result ?_ ?_ ?_ ?_ ?_
+  · intro _ _ _; simp [a]
+  · intro _ _ _ _ _
+    unfold issueWrite preparedWrite
+    split <;> simp [a]
+  · intro _ _; simp [a]
+  · intro _ _ _ _; simp [a]
+  · simp [invalid, RevisionFence.invalid]
 
 /-- `issue` on the command forms that the input proofs build. Each equation holds by `rfl`. A
 `simp` that unfolds `issue` generates the splitter of its `match` again in every module. -/

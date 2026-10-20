@@ -7,7 +7,7 @@ defmodule BridgeForTeams.Observability.Pruner do
   scheduler. The GenServer only decides when to call that boundary and keeps
   failures from taking down the supervision tree.
   """
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -30,7 +30,7 @@ defmodule BridgeForTeams.Observability.Pruner do
   @doc "Start the scheduled observability pruning worker."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name_option(opts))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name_option(opts))
   end
 
   @doc """
@@ -77,7 +77,7 @@ defmodule BridgeForTeams.Observability.Pruner do
 
   @impl true
   def init(opts) do
-    cfg = Application.get_env(:bridge_for_teams_core, __MODULE__, [])
+    cfg = SystemsRuntime.get_env(:bridge_for_teams_core, __MODULE__, [])
 
     state = %{
       enabled: Keyword.get(opts, :enabled, Keyword.get(cfg, :enabled, scheduled_by_policy?())),
@@ -96,7 +96,9 @@ defmodule BridgeForTeams.Observability.Pruner do
     }
 
     if state.enabled do
-      if state.run_on_start, do: send(self(), :prune), else: schedule(state.interval_ms)
+      if state.run_on_start,
+        do: SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :prune),
+        else: schedule(state.interval_ms)
     end
 
     {:ok, state}
@@ -142,7 +144,7 @@ defmodule BridgeForTeams.Observability.Pruner do
 
   defp claim_scan(repo, opts) do
     lease_ms = Keyword.get(opts, :lease_ms, @default_lease_ms)
-    token = Ecto.UUID.generate()
+    token = SystemsRuntime.Proc.uuid()
 
     repo.transaction(fn ->
       repo.query!(
@@ -185,7 +187,7 @@ defmodule BridgeForTeams.Observability.Pruner do
 
   defp prune_claimed_batch(repo, claim, opts) do
     policy = Keyword.get(opts, :policy, Observability.retention_policy())
-    now = Keyword.get(opts, :now, DateTime.utc_now())
+    now = Keyword.get(opts, :now, SystemsClock.utc_now())
     limit = Keyword.get(opts, :limit, @default_batch_size)
 
     {count_key, sql, cutoff} = phase_spec(claim.phase, policy, now)
@@ -338,7 +340,8 @@ defmodule BridgeForTeams.Observability.Pruner do
   defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
   defp positive_integer(_value, default), do: default
 
-  defp schedule(interval_ms), do: Process.send_after(self(), :prune, interval_ms)
+  defp schedule(interval_ms),
+    do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :prune, interval_ms)
 
   defp name_option(opts) do
     case Keyword.fetch(opts, :name) do

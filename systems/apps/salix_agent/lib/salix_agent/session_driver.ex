@@ -28,8 +28,8 @@ defmodule SalixAgent.SessionDriver do
 
   defp reader(read) do
     fn
-      :nonce -> System.unique_integer([:positive])
-      :clock -> System.system_time(:millisecond)
+      :nonce -> SystemsRuntime.Proc.unique_integer([:positive])
+      :clock -> SystemsClock.system_time(:millisecond)
       request when is_function(read, 1) -> read.(request)
       request -> raise ArgumentError, "unanswered session read: #{inspect(request)}"
     end

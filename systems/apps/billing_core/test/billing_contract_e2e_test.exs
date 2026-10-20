@@ -1,6 +1,7 @@
 defmodule BillingContractE2ETest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SystemsClock.Test, scope: ["Elixir.SalixStore", "Elixir.BillingCore"]
   alias BillingCore.{Charges, FeeControl, LLMMetering, ResourceMetering, State}
   alias BillingCore.Metering.PricingBackfill
   alias SalixAnalytics.LLMCallEvent
@@ -11,20 +12,24 @@ defmodule BillingContractE2ETest do
     def enqueue(rows, _opts), do: insert(rows) |> then(fn _ -> :ok end)
 
     def insert(rows) do
-      send(Application.fetch_env!(:billing_core, :contract_test_pid), {:typed_rows, rows})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:billing_core, :contract_test_pid),
+        {:typed_rows, rows}
+      )
+
       {:ok, length(rows)}
     end
   end
 
   setup do
-    previous = Application.get_env(:billing_core, :contract_test_pid)
-    Application.put_env(:billing_core, :contract_test_pid, self())
+    previous = SystemsRuntime.get_env(:billing_core, :contract_test_pid)
+    SystemsRuntime.put_env(:billing_core, :contract_test_pid, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       if previous do
-        Application.put_env(:billing_core, :contract_test_pid, previous)
+        SystemsRuntime.put_env(:billing_core, :contract_test_pid, previous)
       else
-        Application.delete_env(:billing_core, :contract_test_pid)
+        SystemsRuntime.delete_env(:billing_core, :contract_test_pid)
       end
     end)
 
@@ -32,7 +37,7 @@ defmodule BillingContractE2ETest do
   end
 
   test "billing migrations retain VM and OpenRouter Claude prices" do
-    unless Process.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
     owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
 
@@ -84,14 +89,16 @@ defmodule BillingContractE2ETest do
     assert :ok = LLMMetering.before_llm_call(fact)
     assert :ok = deliver_llm(fact)
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "charge_status" => "not_billable",
-                        "prompt_tokens" => 10,
-                        "billing_account_id" => "comma_ba"
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "charge_status" => "not_billable",
+           "prompt_tokens" => 10,
+           "billing_account_id" => "comma_ba"
+         }
+       ]}
+    )
 
     assert {:ok, charge, charged_state} =
              deliver_llm(%{
@@ -131,27 +138,31 @@ defmodule BillingContractE2ETest do
     assert remaining(state.grants, "comma_ba") == 80
     assert remaining(state.grants, "bridge_ba") == 80
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "source" => "salix_agent.llm",
-                        "source_key" => "comma:llm:1",
-                        "entrypoint" => "conversation_send",
-                        "billing_account_id" => "comma_ba",
-                        "prompt_tokens" => 10
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "source" => "salix_agent.llm",
+           "source_key" => "comma:llm:1",
+           "entrypoint" => "conversation_send",
+           "billing_account_id" => "comma_ba",
+           "prompt_tokens" => 10
+         }
+       ]}
+    )
 
-    assert_receive {:typed_rows,
-                    [
-                      %{
-                        "source" => "salix_agent.llm",
-                        "source_key" => "bridge:llm:1",
-                        "entrypoint" => "direct_deliver",
-                        "billing_account_id" => "bridge_ba",
-                        "prompt_tokens" => 10
-                      }
-                    ]}
+    settle_receive(
+      {:typed_rows,
+       [
+         %{
+           "source" => "salix_agent.llm",
+           "source_key" => "bridge:llm:1",
+           "entrypoint" => "direct_deliver",
+           "billing_account_id" => "bridge_ba",
+           "prompt_tokens" => 10
+         }
+       ]}
+    )
   end
 
   test "IM router and meeting actors keep entrypoint and actor attribution" do
@@ -190,7 +201,7 @@ defmodule BillingContractE2ETest do
              })
 
     assert vm_charge.charged_credits == 50
-    assert_receive {:typed_rows, [%{"resource_kind" => "vm"}]}
+    settle_receive({:typed_rows, [%{"resource_kind" => "vm"}]})
 
     assert {:pending, pending, _state} =
              ResourceMetering.meter_storage_sample(%{
@@ -206,7 +217,7 @@ defmodule BillingContractE2ETest do
              })
 
     assert pending.pricing_status == :missing_pricing
-    assert_receive {:typed_rows, [%{"resource_kind" => "storage"}]}
+    settle_receive({:typed_rows, [%{"resource_kind" => "storage"}]})
   end
 
   test "pricing backfill and shadow fee-control contracts" do

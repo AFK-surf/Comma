@@ -53,7 +53,7 @@ defmodule SalixSignal.CallSignaling do
       (defaults 60 s and 15 s)
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -87,7 +87,12 @@ defmodule SalixSignal.CallSignaling do
 
   def start_link(opts) do
     {name, opts} = Keyword.pop(opts, :name)
-    GenServer.start_link(__MODULE__, Map.new(opts), if(name, do: [name: name], else: []))
+
+    SystemsRuntime.Server.start_link(
+      __MODULE__,
+      Map.new(opts),
+      if(name, do: [name: name], else: [])
+    )
   end
 
   @doc """
@@ -97,7 +102,8 @@ defmodule SalixSignal.CallSignaling do
   6.1).
   """
   @spec receive_message(GenServer.server(), inbound()) :: :ok
-  def receive_message(server, inbound), do: GenServer.cast(server, {:receive, inbound})
+  def receive_message(server, inbound),
+    do: SystemsRuntime.Server.cast(server, {:receive, inbound})
 
   @doc """
   Starts an outgoing audio call to `peer_aci` (CRS-12 section 7.1). Returns
@@ -107,7 +113,7 @@ defmodule SalixSignal.CallSignaling do
   """
   @spec call(GenServer.server(), String.t()) ::
           {:ok, pid(), Proto.call_id()} | {:error, term()}
-  def call(server, peer_aci), do: GenServer.call(server, {:call, peer_aci})
+  def call(server, peer_aci), do: SystemsRuntime.Server.call(server, {:call, peer_aci})
 
   @doc "Ends a call locally with hangup type 0 (CRS-12 section 7.3)."
   @spec hangup(pid()) :: :ok
@@ -115,7 +121,7 @@ defmodule SalixSignal.CallSignaling do
 
   @doc "The live calls: `%{pid, peer_aci, call_id, role, connected_device, connected_and_accepted}`."
   @spec calls(GenServer.server()) :: [map()]
-  def calls(server), do: GenServer.call(server, :calls)
+  def calls(server), do: SystemsRuntime.Server.call(server, :calls)
 
   # -- Server ------------------------------------------------------------------
 
@@ -262,7 +268,7 @@ defmodule SalixSignal.CallSignaling do
   end
 
   defp forward_to(state, pid, message) do
-    send(pid, message)
+    SystemsRuntime.Proc.send(pid, message)
     state
   end
 
@@ -348,9 +354,11 @@ defmodule SalixSignal.CallSignaling do
 
     # Busy is always a broadcast (CRS-12 section 8). Nothing depends on the
     # result.
-    Task.start(fn ->
-      task = Task.async(fn -> send_fun.(aci, message, %{urgent: false}) end)
-      Task.yield(task, deadline) || Task.shutdown(task, :brutal_kill)
+    SystemsRuntime.Task.start(fn ->
+      task = SystemsRuntime.Task.async(fn -> send_fun.(aci, message, %{urgent: false}) end)
+
+      SystemsRuntime.Task.yield(task, deadline) ||
+        SystemsRuntime.Task.shutdown(task, :brutal_kill)
     end)
 
     state
@@ -365,7 +373,7 @@ defmodule SalixSignal.CallSignaling do
 
     Map.merge(
       %{
-        signaling: self(),
+        signaling: SystemsRuntime.Proc.self(),
         role: role,
         peer_aci: aci,
         peer_device_id: device,
@@ -380,9 +388,12 @@ defmodule SalixSignal.CallSignaling do
   end
 
   defp start_call(state, args) do
-    case DynamicSupervisor.start_child(SalixSignal.CallSignaling.Supervisor, {Call, args}) do
+    case SystemsRuntime.DynamicSupervisor.start_child(
+           SalixSignal.CallSignaling.Supervisor,
+           {Call, args}
+         ) do
       {:ok, pid} ->
-        Process.monitor(pid)
+        SystemsRuntime.Proc.monitor(pid)
 
         call = %{
           peer_aci: args.peer_aci,
@@ -431,7 +442,7 @@ defmodule SalixSignal.CallSignaling do
   # -- Early ICE updates -------------------------------------------------------
 
   defp buffer_ice(state, aci, device, {:ice, call_id, candidates}) do
-    now = System.monotonic_time(:millisecond)
+    now = SystemsClock.monotonic_time(:millisecond)
     max_age_ms = Proto.max_offer_age_s() * 1000
 
     early =

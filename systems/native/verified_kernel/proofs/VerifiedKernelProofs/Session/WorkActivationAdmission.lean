@@ -72,21 +72,35 @@ theorem activation_issue_write_valid (context : Context) (continuation : Term) (
   · exact .timestamp _ _ _ batch fenced
   · exact .write _ _ _ batch fenced
 
+theorem callbacks_perform_other {request continuation : Term}
+    (other : ∀ events options, request ≠ .tuple [.atom "write", events, options])
+    (callbacks : ActivationCommandCallbacks (.tuple [.atom "perform", request, continuation])) :
+    ActivationCallback continuation := by
+  unfold ActivationCommandCallbacks at callbacks
+  split at callbacks
+  · rename_i same
+    simp only [Term.tuple.injEq, List.cons.injEq] at same
+    obtain ⟨-, rfl, -⟩ := same
+    exact absurd rfl (other _ _)
+  · rename_i same
+    simp only [Term.tuple.injEq, List.cons.injEq] at same
+    obtain ⟨-, -, rfl, -⟩ := same
+    exact callbacks
+  · rename_i _ notPerform
+    exact (notPerform _ _ rfl).elim
+
 theorem activation_issue_valid (context : Context) (result : Term)
     (events : ActivationCommandEvents result) (callbacks : ActivationCommandCallbacks result) :
     ActivationAdmissionOutput context (issue context result) := by
-  unfold issue
-  split
-  · exact .returned _ _
-  · exact activation_issue_write_valid _ _ _ _ events callbacks
-  · exact activation_issue_write_valid _ _ _ _ events callbacks
-  · exact activation_issue_write_valid _ _ _ _ events callbacks
-  · exact .fence _
-  · exact .effect _ _ callbacks
-  · exact .effect _ _ callbacks
-  · exact .effect _ _ callbacks
-  · exact .effect _ _ callbacks
-  · exact .effect _ _ callbacks
+  refine issue_rec (P := ActivationAdmissionOutput context) context result ?_ ?_ ?_ ?_ ?_
+  · intro _ _ _; exact .returned _ _
+  · intro _ _ _ _ same
+    subst same
+    exact activation_issue_write_valid _ _ _ _ events callbacks
+  · intro _ _; exact .fence _
+  · intro _ _ other same
+    subst same
+    exact .effect _ _ (callbacks_perform_other other callbacks)
   · exact .failed _
 
 theorem activation_query_valid (context : Context) (operation args : Term) (observations : List Term)

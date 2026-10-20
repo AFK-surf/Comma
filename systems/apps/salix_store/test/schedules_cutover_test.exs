@@ -1,6 +1,6 @@
 defmodule SalixStore.SchedulesCutoverTest do
   # Shares the node-global Fake bucket and control tables; keep serial.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{Keys, Repo, S3, Schedules, SchedulesCutover}
 

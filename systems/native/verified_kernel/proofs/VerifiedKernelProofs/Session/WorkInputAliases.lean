@@ -155,7 +155,7 @@ theorem inputEvent_source_term_fields {session payload now event source : Term} 
   intro name value member
   simp only [List.mem_cons, List.mem_singleton, Prod.mk.injEq] at member
   rcases member with ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ |
-    ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ <;> simp_all
+    ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩ <;> string_ne
 
 theorem inputEvent_queueKeys_aliases {session payload now event normalized source : Term}
     {keys j r before middle after : List Term}

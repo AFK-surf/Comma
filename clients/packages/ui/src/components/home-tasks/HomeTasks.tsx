@@ -23,6 +23,7 @@ import {
   applyManualOrder,
 } from "../task-board";
 import type { TaskSummaryViewModel } from "../task-workspace/TaskSummaryCard";
+import type { VisibleTaskStatusBucket } from "@comma/i18n";
 import type { TaskStatusBucket } from "../task-workspace/taskStatus";
 import { ScrollArea } from "../scroll-area";
 import { HomeTaskCard } from "./HomeTaskCard";
@@ -50,10 +51,10 @@ const EDGE_MASK = { endSize: 24, startSize: 16 };
 export interface HomeTasksProps<T extends TaskSummaryViewModel = TaskSummaryViewModel> {
   onAddTask?: (() => void) | undefined;
   onOpenTask: (task: T) => void;
-  onStatusChange: (bucket: TaskStatusBucket) => void;
+  onStatusChange: (bucket: VisibleTaskStatusBucket) => void;
   /** False while the task source is still loading; suppresses entry animations. */
   ready?: boolean;
-  status: TaskStatusBucket;
+  status: VisibleTaskStatusBucket;
   /** Persisted per-bucket card order to layer over the projection. */
   taskOrder?: Partial<Record<TaskStatusBucket, readonly string[]>> | undefined;
   onTaskOrderChange?: ((bucket: TaskStatusBucket, ids: string[]) => void) | undefined;

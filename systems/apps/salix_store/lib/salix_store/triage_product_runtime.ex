@@ -1621,7 +1621,7 @@ defmodule SalixStore.TriageProductRuntime do
         "authority_generation" => authority_generation
       },
       "run_at" => run_at,
-      "created_at" => System.system_time(:millisecond),
+      "created_at" => SystemsClock.system_time(:millisecond),
       "last_run" => nil
     }
 

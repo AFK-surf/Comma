@@ -5,6 +5,7 @@ defmodule SalixAgent.ContextProviders do
 
   alias SalixAgent.InternalSession
   alias SalixAgent.MigrationNotice
+  alias SalixAgent.PlatformCapabilities
 
   @doc false
   def current_state(session_config) when is_map(session_config) do
@@ -60,6 +61,15 @@ defmodule SalixAgent.ContextProviders do
         do: current,
         else: Map.put(current, "round_budget", budget_state)
 
+    {workspace_messages, workspace_state} =
+      SalixAgent.CondensedWorkspace.prepare(session, session_config, known)
+
+    # Present only while the Group feature is on for this Session.
+    current =
+      if empty_map?(workspace_state),
+        do: current,
+        else: Map.put(current, "condensed_workspace", workspace_state)
+
     messages =
       cond do
         get_in(known, ["model_context", "version"]) != 1 and
@@ -70,7 +80,12 @@ defmodule SalixAgent.ContextProviders do
           delta_messages(known, current, session_config)
       end
 
-    messages = messages ++ time_messages ++ queue_messages ++ budget_messages
+    messages =
+      messages ++
+        time_messages ++
+        queue_messages ++
+        budget_messages ++
+        workspace_messages ++ SalixAgent.UnsettledReplyNotice.prepare(session)
 
     if messages == [] and current == known do
       :none
@@ -78,6 +93,49 @@ defmodule SalixAgent.ContextProviders do
       {:delta, %{messages: messages, provider_state: current}}
     end
   end
+
+  @doc """
+  Adds the current-source interaction reminder to an activation `delta`. An
+  external source (Telegram, Slack, Feishu, ...) gets one stored reminder each
+  time its set of interactive tools changes. Internal sources leave the
+  recorded set as it is. The reminder is an ordinary activation message, so
+  response acceptance stores it and later requests read it from history.
+  """
+  def with_interaction_reminder(delta, session, disclosure, origin) do
+    if (origin || %{})["provider"] in [nil, "internal"] do
+      delta
+    else
+      known = provider_states(session)
+      tools = PlatformCapabilities.interaction_tools(disclosure)
+      state = %{"tools" => tools}
+
+      if get_in(known, ["interaction_tools"]) == state do
+        delta
+      else
+        delta = delta || %{messages: []}
+        base = Map.get(delta, :provider_state) || known
+
+        message = %{
+          "runtime_message_id" => "interaction-tools:" <> digest(state),
+          "runtime_message_type" => "runtime_guidance",
+          "summary" => "current-source interaction tools changed",
+          "content_kind" => "model_context",
+          "content" => PlatformCapabilities.reminder(disclosure),
+          "source_refs" => %{"providers" => ["interaction_tools"]}
+        }
+
+        delta
+        |> Map.update(:messages, [message], &(&1 ++ [message]))
+        |> Map.put(:provider_state, Map.put(base, "interaction_tools", state))
+      end
+    end
+  end
+
+  defp digest(term),
+    do:
+      :crypto.hash(:sha256, Jason.encode!(term))
+      |> Base.url_encode64(padding: false)
+      |> binary_part(0, 16)
 
   defp baseline_messages(current, session_config) do
     # The owner filters superseded rules. Do not replay stored notifications,
@@ -142,7 +200,7 @@ defmodule SalixAgent.ContextProviders do
             "from_context_provider" => true,
             "message_id" => id,
             "no_wake" => true,
-            "created_at" => payload["created_at"] || System.system_time(:second)
+            "created_at" => payload["created_at"] || SystemsClock.system_time(:second)
           })
 
         {event, id + 1}

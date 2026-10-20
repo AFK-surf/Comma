@@ -5,8 +5,8 @@ import {
   type CommaNativeBridge,
   type FilesSaveDownloadResult,
 } from "@comma/native-bridge";
-import type { ChatPanelFileOpenInAction } from "@comma/ui";
-import type { CommaApiClient } from "../api";
+import type { CallFn } from "@comma/core-client";
+import type { ChatPanelFileOpenInAction } from "@comma/ui/components/chat-panel";
 import type { ChatRegistryAttempt } from "../components/chat/ChatProvider";
 import {
   conversationFileSourceKey,
@@ -23,25 +23,27 @@ const receiptStores = new WeakMap<object, ReceiptStore>();
 
 const abortError = () => new DOMException("File action cancelled", "AbortError");
 
-/** Native effects are never replayed automatically. See tla/file-actions/FileAction.tla. */
+/** Native effects are never replayed automatically. */
 export function createFileOpenInAction({
-  api,
+  call,
   source,
   bridge = getNativeBridge(),
   locale,
   beginAttempt,
 }: {
-  api: CommaApiClient;
+  call: CallFn;
   source: ConversationFileSource;
   bridge?: Pick<CommaNativeBridge, "files" | "os" | "platform">;
   locale: CommaLocale;
   beginAttempt: () => Attempt;
 }): ChatPanelFileOpenInAction | undefined {
   return createResolvedFileOpenInAction({
-    owner: api,
+    // Saved files are reused within the session that read them: a new session
+    // brings a new beginAttempt, and reads its files again.
+    owner: beginAttempt,
     sourceKey: conversationFileSourceKey(source),
     fileName: source.fileName,
-    resolveBytes: (signal) => resolveConversationFile(api, source, signal),
+    resolveBytes: (signal) => resolveConversationFile(call, source, signal),
     bridge,
     locale,
     beginAttempt,

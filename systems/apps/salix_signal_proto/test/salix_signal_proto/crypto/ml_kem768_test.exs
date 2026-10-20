@@ -1,7 +1,7 @@
 defmodule SalixSignalProto.Crypto.MlKem768Test do
   # FIPS 203 ML-KEM-768 as the post-quantum ratchet uses it (CRS-04b §8),
   # against the CRS-04b vector spqr-mlkem768.json.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.Crypto.MlKem768
@@ -45,8 +45,8 @@ defmodule SalixSignalProto.Crypto.MlKem768Test do
   end
 
   test "keys from keypair/1 decapsulate what the split encapsulation makes" do
-    {ek, dk} = MlKem768.keypair(:crypto.strong_rand_bytes(64))
-    {secret, ciphertext} = MlKem768.encapsulate(ek, :crypto.strong_rand_bytes(32))
+    {ek, dk} = MlKem768.keypair(SystemsRuntime.Proc.random_bytes(64))
+    {secret, ciphertext} = MlKem768.encapsulate(ek, SystemsRuntime.Proc.random_bytes(32))
     assert MlKem768.decapsulate(dk, ciphertext) == {:ok, secret}
     assert MlKem768.decapsulate_plain(dk, ciphertext) == {:ok, secret}
   end

@@ -1,24 +1,24 @@
 import { useRef, useSyncExternalStore } from "react";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 
 // A shared presentation clock, not a refresh loop: no network or record mutation.
 // At most one timer per renderer, stopped when no visible history view needs it.
-// TLA: tla/session-history/ExecutionHistoryObservation.tla::Tick.
 const listeners = new Set<() => void>();
-let now = Date.now();
-let timer: ReturnType<typeof setInterval> | undefined;
+let now = uiClock.now();
+let timer: CancelUiTimer | undefined;
 function subscribe(listener: () => void) {
   listeners.add(listener);
   if (timer === undefined) {
-    now = Date.now();
-    timer = setInterval(() => {
-      now = Date.now();
+    now = uiClock.now();
+    timer = uiClock.every(100, () => {
+      now = uiClock.now();
       for (const notify of listeners) notify();
-    }, 100);
+    });
   }
   return () => {
     listeners.delete(listener);
     if (listeners.size === 0) {
-      clearInterval(timer);
+      timer?.();
       timer = undefined;
     }
   };

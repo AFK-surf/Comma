@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notify_channel_replies">回复</string>
+    <string name="notify_channel_replies_description">离开 App 后回复完成时提醒你</string>
+    <string name="notify_channel_receiving">后台接收</string>
+    <string name="notify_channel_receiving_description">离开 App 后继续接收正在生成的回复</string>
+    <string name="notify_receiving_title">正在接收回复</string>
+    <string name="notify_reply_public">新回复</string>
+</resources>

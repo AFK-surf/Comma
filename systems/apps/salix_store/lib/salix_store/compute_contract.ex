@@ -9,7 +9,7 @@ defmodule SalixStore.ComputeContract do
 
   @node_results ~w(not_set processing ready stopped action_required removed)
   @operation_outcomes ~w(pending succeeded failed unknown)
-  @workload_kinds ~w(shell external_worker meeting_runtime service)
+  @workload_kinds ~w(shell meeting_runtime service)
   @capabilities ~w(runtime_exec runtime_process service_private service_public_http)
 
   @type node_result :: String.t()

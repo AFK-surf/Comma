@@ -1,4 +1,5 @@
 import { useCallback, useRef, type CompositionEvent, type KeyboardEvent } from "react";
+import { uiClock } from "../../../clock";
 import { consumeWebKitImeConfirmation, isImeKeyEvent } from "../../utils";
 import type { ForwardedAiInputProps } from "../types";
 import type { VoiceRecording } from "../voice/useVoiceRecording";
@@ -94,7 +95,7 @@ export function usePromptKeyboard({
 
   const handleCompositionEnd = (event: CompositionEvent<HTMLTextAreaElement>) => {
     composingRef.current = false;
-    lastCompositionEndAtRef.current = Date.now();
+    lastCompositionEndAtRef.current = uiClock.now();
     onCompositionEnd?.(event);
   };
 

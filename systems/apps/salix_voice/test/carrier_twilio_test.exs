@@ -1,5 +1,5 @@
 defmodule SalixVoice.Carrier.TwilioTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixVoice.Carrier.Twilio
 

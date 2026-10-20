@@ -23,7 +23,7 @@ defmodule SalixStore.BrowserSettings do
   # and driver receive plaintext. Missing keys fail browser use closed.
   def seal(token, scope) when is_binary(token) and is_binary(scope) do
     with {:ok, key} <- Crypto.derived_key("browser-provider-credential-v1") do
-      iv = :crypto.strong_rand_bytes(12)
+      iv = SystemsRuntime.Proc.random_bytes(12)
       {cipher, tag} = :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, token, scope, true)
       {:ok, Base.encode64(iv <> tag <> cipher)}
     end
@@ -144,7 +144,7 @@ defmodule SalixStore.BrowserSettings do
         allowed_domains: domains,
         account_id: account,
         token_ciphertext: cipher,
-        updated_at: DateTime.utc_now()
+        updated_at: SystemsClock.timestamp(:utc_datetime_usec)
       }
 
       Repo.insert!(row,

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="media_viewer_title">Image</string>
+    <string name="media_viewer_close">Close</string>
+    <string name="media_viewer_save">Save to Photos</string>
+    <string name="media_viewer_saved">Saved to Photos</string>
+    <string name="media_viewer_save_failed">Couldn\'t save</string>
+    <string name="media_viewer_counter">%1$d / %2$d</string>
+    <string name="media_viewer_load_failed">Couldn\'t load the image. Tap to retry.</string>
+    <string name="media_video_play">Play video</string>
+    <string name="media_video_download">Download video</string>
+    <string name="media_video_cancel">Cancel download</string>
+    <string name="media_video_retry">Download failed. Tap to retry.</string>
+    <string name="media_video_unavailable">Video no longer available</string>
+    <string name="media_video_progress">Downloading %1$d%%</string>
+    <string name="media_video_cannot_play">Can\'t play this video</string>
+    <string name="media_file_meta">%1$s · %2$s</string>
+    <string name="media_file_downloading">Downloading %1$d%%</string>
+    <string name="media_file_downloading_unknown">Downloading…</string>
+    <string name="media_file_failed">Download failed. Tap to retry.</string>
+    <string name="media_file_unavailable">File no longer available</string>
+    <string name="media_file_no_app">No app can open this file</string>
+    <string name="media_file_kind_image">Image</string>
+    <string name="media_file_kind_video">Video</string>
+    <string name="media_file_kind_audio">Audio</string>
+    <string name="media_file_kind_pdf">PDF</string>
+    <string name="media_file_kind_text">Document</string>
+    <string name="media_file_kind_code">Code</string>
+    <string name="media_file_kind_archive">Archive</string>
+    <string name="media_file_kind_other">File</string>
+</resources>

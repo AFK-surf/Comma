@@ -14,14 +14,14 @@ defmodule SalixAgent.DependencySupervisor do
   use Supervisor
 
   def start_link(opts \\ []) do
-    Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
+    SystemsRuntime.Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @impl true
   def init(_opts) do
     Supervisor.init(
       [
-        {Task.Supervisor, name: SalixAgent.DependencyTaskSup},
+        {SystemsRuntime.TaskSupervisor, name: SalixAgent.DependencyTaskSup},
         SalixAgent.DependencyAdmission
       ],
       strategy: :one_for_all

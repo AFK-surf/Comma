@@ -148,6 +148,7 @@ final class NotchHost {
                 conversationId: "preview",
                 groupId: "preview",
                 id: "preview",
+                status: .inProgress,
                 subtitle: "",
                 title: title,
                 updatedAt: 0,
@@ -199,6 +200,8 @@ final class NotchHost {
         } else if payload?.airDrop == nil {
             hasActivity = payload?.hasActivity ?? defaultActivity
         }
+        // A notification bounces the compact shell and shows the newest Task
+        // in the compact title at once.
         if payload?.notify == true {
             notificationSequence += 1
         }
@@ -373,6 +376,7 @@ final class NotchHost {
             compactLeadingSlot: NotchScene.erased {
                 CommaNotchActivityLeadingSlotView(
                     tasks: tasks,
+                    notificationSequence: notificationSequence,
                     availableWidth: leadingWidth
                 )
             },

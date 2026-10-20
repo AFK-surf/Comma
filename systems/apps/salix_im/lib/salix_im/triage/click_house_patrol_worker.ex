@@ -7,7 +7,7 @@ defmodule SalixIM.Triage.ClickHousePatrolWorker do
   The worker itself owns no durable queue or retry state.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -33,7 +33,7 @@ defmodule SalixIM.Triage.ClickHousePatrolWorker do
   end
 
   def start_link(opts) when is_list(opts) do
-    GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
   @doc "Runs one bounded discovery page and one bounded claimed batch."
@@ -312,7 +312,7 @@ defmodule SalixIM.Triage.ClickHousePatrolWorker do
   end
 
   defp module_exports?(module, exports) when is_atom(module) do
-    Code.ensure_loaded?(module) and
+    SystemsRuntime.Proc.ensure_loaded?(module) and
       Enum.all?(exports, fn {fun, arity} -> function_exported?(module, fun, arity) end)
   end
 
@@ -346,7 +346,7 @@ defmodule SalixIM.Triage.ClickHousePatrolWorker do
 
   defp default_holder do
     node_name = node() |> Atom.to_string() |> String.slice(0, 120)
-    "#{node_name}:#{System.unique_integer([:positive])}"
+    "#{node_name}:#{SystemsRuntime.Proc.unique_integer([:positive])}"
   end
 
   defp valid_holder?(holder),
@@ -391,5 +391,7 @@ defmodule SalixIM.Triage.ClickHousePatrolWorker do
 
   defp increment(summary, key), do: Map.update!(summary, key, &(&1 + 1))
   defp add(summary, key, count), do: Map.update!(summary, key, &(&1 + count))
-  defp schedule_tick(delay_ms), do: Process.send_after(self(), :tick, delay_ms)
+
+  defp schedule_tick(delay_ms),
+    do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, delay_ms)
 end

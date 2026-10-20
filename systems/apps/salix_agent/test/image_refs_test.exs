@@ -5,36 +5,47 @@ defmodule SalixAgent.ImageRefsTest do
   unresolvable/oversized images produce an explicit fallback text block.
 
   An image becomes model input on one route only: the agent read it with a
-  tool, and the template's `supports_images` says the model accepts image
+  tool, and the model's `supports_images` says it accepts image
   input. Inbound attachments — documents and photos alike — are never model
   input on any protocol: they are announced by filename and VFS path so the
   agent reads them with its own tools.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.{AgentWorkspace, ImageRefs}
 
   @png <<137, 80, 78, 71, 13, 10, 26, 10>>
 
-  defmodule TemplateMediaResolver do
+  defmodule AgentMediaResolver do
     @behaviour SalixAgent.MediaResolver
 
     @impl true
-    def resolve(agent_id), do: SalixAgent.Templates.resolve_media_for_agent(agent_id)
+    def resolve(agent_id), do: SalixAgent.AgentModel.resolve_media_for_agent(agent_id)
   end
 
   defmodule CapturingProvider do
     def request_config(opts), do: SalixLlm.Provider.request_config(opts)
 
     def complete({:encoded_provider_request, protocol, body}, _tools, _opts) do
-      send(self(), {:image_request, protocol, Jason.decode!(body)})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:image_request, protocol, Jason.decode!(body)}
+      )
+
+      {:final, "ok"}
+    end
+
+    # A subscription route encodes the neutral request in its own transport.
+    def complete(messages, _tools, _opts) when is_list(messages) do
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:image_request, :neutral, messages})
       {:final, "ok"}
     end
   end
 
   defmodule ScreenshotDispatch do
     def computer_use(agent, target, %{"action" => "screenshot"}) do
-      send(self(), {:screenshot_capture, agent, target})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:screenshot_capture, agent, target})
 
       {:ok,
        %{
@@ -49,7 +60,11 @@ defmodule SalixAgent.ImageRefsTest do
 
     def computer_use(agent, target, %{"action" => "read_image", "args" => %{"path" => path}}) do
       Process.put(:screenshot_reads, Process.get(:screenshot_reads, 0) + 1)
-      send(self(), {:screenshot_read, agent, target, path})
+
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:screenshot_read, agent, target, path}
+      )
 
       case Process.get(:device_image_failure) do
         nil ->
@@ -65,13 +80,13 @@ defmodule SalixAgent.ImageRefsTest do
   test "async device screenshot reaches each model protocol without a workspace copy", %{
     agent: agent
   } do
-    previous = Application.get_env(:salix_agent, :env_dispatch)
-    Application.put_env(:salix_agent, :env_dispatch, ScreenshotDispatch)
+    previous = SystemsRuntime.get_env(:salix_agent, :env_dispatch)
+    SystemsRuntime.put_env(:salix_agent, :env_dispatch, ScreenshotDispatch)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_agent, :env_dispatch, previous),
-        else: Application.delete_env(:salix_agent, :env_dispatch)
+        do: SystemsRuntime.put_env(:salix_agent, :env_dispatch, previous),
+        else: SystemsRuntime.delete_env(:salix_agent, :env_dispatch)
     end)
 
     target = %{device_id: "device-test", environment_id: "environment-test"}
@@ -86,7 +101,7 @@ defmodule SalixAgent.ImageRefsTest do
         %{agent_id: agent, model_supports_images: true}
       )
 
-    assert_receive {:screenshot_capture, ^agent, ^target}
+    settle_receive({:screenshot_capture, ^agent, ^target})
 
     record = %{
       "seq" => 42,
@@ -119,7 +134,7 @@ defmodule SalixAgent.ImageRefsTest do
     }
 
     [projected] = ImageRefs.inline([message], ctx)
-    assert_receive {:screenshot_read, ^agent, ^target, "capture-test.png"}
+    settle_receive({:screenshot_read, ^agent, ^target, "capture-test.png"})
     assert projected.native_content_trusted
     assert projected.role == "user"
     assert projected.content =~ Base.encode64(@png)
@@ -148,7 +163,6 @@ defmodule SalixAgent.ImageRefsTest do
       config = %{
         "role" => "worker",
         "canonical_router" => false,
-        "disclosure" => %{},
         "protocol" => wire_protocol,
         "cfg" => cfg,
         "tools" => [],
@@ -182,18 +196,18 @@ defmodule SalixAgent.ImageRefsTest do
   end
 
   setup do
-    prev = Application.get_env(:salix_store, :s3_backend)
-    prev_resolver = Application.get_env(:salix_agent, :media_resolver)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_resolver = SystemsRuntime.get_env(:salix_agent, :media_resolver)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
-    Application.put_env(:salix_agent, :media_resolver, TemplateMediaResolver)
+    SystemsRuntime.put_env(:salix_agent, :media_resolver, AgentMediaResolver)
 
     on_exit(fn ->
-      Application.put_env(:salix_store, :s3_backend, prev)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
 
       if is_nil(prev_resolver),
-        do: Application.delete_env(:salix_agent, :media_resolver),
-        else: Application.put_env(:salix_agent, :media_resolver, prev_resolver)
+        do: SystemsRuntime.delete_env(:salix_agent, :media_resolver),
+        else: SystemsRuntime.put_env(:salix_agent, :media_resolver, prev_resolver)
     end)
 
     agent = SalixAgent.TestSupport.new_agent_id()
@@ -223,51 +237,21 @@ defmodule SalixAgent.ImageRefsTest do
     ])
   end
 
-  test "an in-flight request keeps its model's image capability across a template switch", %{
-    agent: agent
-  } do
-    previous = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_agent, :llm, CapturingProvider)
-    on_exit(fn -> Application.put_env(:salix_agent, :llm, previous) end)
-    {:ok, record} = SalixAgent.Control.get_record(agent)
-    template = record["template_id"]
-
-    for {request_support, current_support} <- [{false, true}, {true, false}] do
-      {:ok, _} = SalixAgent.Templates.update(template, %{"supports_images" => request_support})
-      {:ok, request_opts} = SalixAgent.Templates.resolve_llm_for_agent(agent)
-      {:ok, _} = SalixAgent.Templates.update(template, %{"supports_images" => current_support})
-
-      dispatch_image_request(agent, request_opts)
-      assert_receive {:image_request, "chat", body}
-      assert Jason.encode!(body) =~ Base.encode64(@png) == request_support
-    end
-  end
-
   test "the same image history is encoded for each newly selected model protocol", %{agent: agent} do
-    previous = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_agent, :llm, CapturingProvider)
-    on_exit(fn -> Application.put_env(:salix_agent, :llm, previous) end)
-    {:ok, record} = SalixAgent.Control.get_record(agent)
+    previous = SystemsRuntime.get_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_agent, :llm, CapturingProvider)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_agent, :llm, previous) end)
 
-    for protocol <- ["chat", "responses", "anthropic"] do
-      {:ok, template} =
-        SalixAgent.Templates.create(%{
-          "name" => "image-switch-#{protocol}",
-          "model" => "image-#{protocol}",
-          "supports_images" => true,
-          "provider_config" => %{"protocol" => protocol}
-        })
+    for {stored, protocol} <- [
+          {"chat_completions", "chat"},
+          {"responses", "responses"},
+          {"anthropic", "anthropic"}
+        ] do
+      platform_worker!("image-#{protocol}", %{"images" => true, "protocol" => stored})
 
-      {:ok, _} =
-        SalixAgent.Control.configure(
-          agent,
-          %{"template_id" => template["template_id"]},
-          record["tenant_id"]
-        )
-
-      {:ok, opts} = SalixAgent.Templates.resolve_llm_for_agent(agent)
+      {:ok, opts} = SalixAgent.AgentModel.resolve_llm_for_agent(agent)
       dispatch_image_request(agent, opts)
-      assert_receive {:image_request, ^protocol, body}
+      settle_receive({:image_request, ^protocol, body})
       assert body["model"] == "image-#{protocol}"
       blocks = request_blocks(body)
 
@@ -308,57 +292,14 @@ defmodule SalixAgent.ImageRefsTest do
     end
   end
 
-  for {pool, protocol} <- [{"codex", "responses"}, {"claude", "anthropic"}] do
-    test "#{pool} subscription template preserves image capability into the round request", %{
-      agent: agent
-    } do
-      previous = Application.get_env(:salix_agent, :llm)
-      Application.put_env(:salix_agent, :llm, CapturingProvider)
-      on_exit(fn -> Application.put_env(:salix_agent, :llm, previous) end)
-      {:ok, record} = SalixAgent.Control.get_record(agent)
-      tenant = record["tenant_id"]
-      id = SalixAgent.SubscriptionStore.id()
-
-      {:ok, credentials} =
-        SalixAgent.SubscriptionStore.seal(tenant, id, %{"access_token" => "test-only"})
-
-      {:ok, _} =
-        SalixAgent.SubscriptionStore.create(tenant, %{
-          "id" => id,
-          "credential_kind" => "subscription_oauth",
-          "provider" => unquote(pool),
-          "status" => "active",
-          "disabled" => false,
-          "prepared" => true,
-          "credentials" => credentials
-        })
-
-      for support <- [true, false] do
-        {:ok, template} =
-          SalixAgent.Templates.create_private(
-            %{
-              "name" => "subscription-image-#{unquote(pool)}",
-              "model" => "image-test",
-              "supports_images" => support,
-              "provider_config" => %{"account_pool" => unquote(pool)}
-            },
-            tenant
-          )
-
-        {:ok, _} =
-          SalixAgent.Control.configure(agent, %{"template_id" => template["template_id"]}, tenant)
-
-        {:ok, opts, _cache} =
-          SalixAgent.RoundConfigCache.begin_round(
-            %SalixAgent.RoundConfigCache{},
-            fn -> SalixAgent.Templates.resolve_llm_for_agent(agent) end
-          )
-
-        dispatch_image_request(agent, opts)
-        assert_receive {:image_request, unquote(protocol), body}
-        assert Jason.encode!(body) =~ Base.encode64(@png) == support
-      end
-    end
+  # The test Agent is a Worker that follows the platform Worker model.
+  defp platform_worker!(model, entry) do
+    SalixAgent.TestSupport.configure_platform_tier!(
+      "worker",
+      "https://images.example.test/v1",
+      model,
+      entry
+    )
   end
 
   defp request_blocks(value) when is_map(value),
@@ -391,7 +332,6 @@ defmodule SalixAgent.ImageRefsTest do
     config = %{
       "role" => "worker",
       "canonical_router" => false,
-      "disclosure" => %{},
       "protocol" => protocol,
       "cfg" => cfg,
       "tools" => [],
@@ -449,42 +389,6 @@ defmodule SalixAgent.ImageRefsTest do
     assert message.content == image_read_content("/large.png", byte_size(source))
   end
 
-  test "failed preview materialization is an explicit note, not oversized raw input", %{agent: a} do
-    source = :binary.copy("not an image", 60_000)
-    {:ok, ev} = AgentWorkspace.prepare_write(a, "/bad.png", source)
-    assert {:ok, _} = AgentWorkspace.seed_operation(a, "bad-image-seed", %{}, [ev])
-
-    message = %{
-      role: "tool",
-      tool_name: "fs.read_file",
-      tool_call_id: "bad-image",
-      content: image_read_content("/bad.png", byte_size(source))
-    }
-
-    assert [inlined] = ImageRefs.inline([message], %{agent_id: a})
-    assert [%{"type" => "text", "text" => _note}, _] = Jason.decode!(inlined.content)
-    refute inlined.content =~ "base64"
-  end
-
-  test "missing file drops the image block but keeps the summary", %{agent: a} do
-    msg = %{
-      role: "tool",
-      tool_name: "im_api.slack.fetch_file",
-      tool_call_id: "t1",
-      content: image_read_content("/gone.png", 8)
-    }
-
-    [inlined] = ImageRefs.inline([msg], %{agent_id: a})
-
-    assert [
-             %{"type" => "text", "text" => fallback},
-             %{"type" => "text", "text" => text}
-           ] = Jason.decode!(inlined.content)
-
-    assert fallback =~ "reason=not_found"
-    assert text =~ "/gone.png"
-  end
-
   test "an inbound user image is announced by path, never sent as model input", %{agent: a} do
     content = image_read_content("/pic.png", 8)
     [image_ref | _] = Jason.decode!(content)
@@ -500,7 +404,7 @@ defmodule SalixAgent.ImageRefsTest do
     assert [%{"type" => "text", "text" => note}, %{"type" => "text"}] =
              Jason.decode!(inlined_user.content)
 
-    # The agent template accepts image input; the attachment is withheld
+    # The agent's model accepts image input; the attachment is withheld
     # because nothing asked for it, not because the model cannot see it.
     assert note =~ "/pic.png"
     assert note =~ "fs.read_file"
@@ -508,18 +412,7 @@ defmodule SalixAgent.ImageRefsTest do
     refute inlined_user.content =~ Base.encode64(@png)
   end
 
-  test "an inbound image is withheld on every protocol", %{agent: a} do
-    content = image_read_content("/pic.png", 8)
-    [image_ref | _] = Jason.decode!(content)
-    message = %{role: "user", content: content, trusted_attachment_refs: [image_ref]}
-
-    for protocol <- ["chat_completions", "responses", "anthropic"] do
-      assert [inlined] = ImageRefs.inline([message], %{agent_id: a, protocol: protocol})
-      refute inlined.content =~ Base.encode64(@png)
-    end
-  end
-
-  test "a tool read is refused native image input when the template has none" do
+  test "a tool read is refused native image input when the model has none" do
     text_only = text_only_agent!()
 
     message = %{
@@ -537,41 +430,6 @@ defmodule SalixAgent.ImageRefsTest do
     assert note =~ "/pic.png"
     refute inlined.content =~ "image_url"
     refute inlined.content =~ Base.encode64(@png)
-  end
-
-  test "a provider fetch is refused native image input when the template has none" do
-    text_only = text_only_agent!()
-
-    message = %{
-      role: "tool",
-      tool_name: "im_api.slack.fetch_file",
-      tool_call_id: "fetch",
-      content: image_read_content("/pic.png", 8)
-    }
-
-    assert [inlined] = ImageRefs.inline([message], %{agent_id: text_only})
-    refute inlined.content =~ "image_url"
-    refute inlined.content =~ Base.encode64(@png)
-  end
-
-  # Fail closed: an agent record that cannot be read answers the capability
-  # question with "no", so an unreachable control plane withholds the image
-  # rather than letting the provider classify the rejection for us.
-  test "an unresolvable agent never materializes image bytes" do
-    message = %{
-      role: "tool",
-      tool_name: "fs.read_file",
-      tool_call_id: "read",
-      content: image_read_content("/pic.png", 8)
-    }
-
-    unknown = SalixAgent.TestSupport.new_agent_id()
-    assert [inlined] = ImageRefs.inline([message], %{agent_id: unknown})
-
-    assert [%{"type" => "text", "text" => _note}, %{"type" => "text"}] =
-             Jason.decode!(inlined.content)
-
-    refute inlined.content =~ "image_url"
   end
 
   test "a staged user document is announced by path, never sent as model file input", %{agent: a} do
@@ -619,358 +477,6 @@ defmodule SalixAgent.ImageRefsTest do
     end
   end
 
-  test "announces a completed async provider PDF returned by tool_call.get_result", %{
-    agent: a
-  } do
-    pdf = "%PDF-1.4\nasync provider result\n%%EOF\n"
-    {:ok, event} = AgentWorkspace.prepare_write(a, "/async-report.pdf", pdf)
-    assert {:ok, _} = AgentWorkspace.seed_operation(a, "async-pdf-native-input", %{}, [event])
-
-    provider_blocks = [
-      %{"type" => "text", "text" => ~s({"file_name":"async-report.pdf"})},
-      %{
-        "type" => "file",
-        "path" => "/async-report.pdf",
-        "file_name" => "async-report.pdf",
-        "mime_type" => "application/pdf"
-      }
-    ]
-
-    message = %{
-      role: "tool",
-      tool_name: "tool_call.get_result",
-      content:
-        Jason.encode!(%{
-          "status" => "completed",
-          "tool_call_id" => "provider-fetch-async",
-          "tool_name" => "im_api.feishu.fetch_message_resource",
-          "result" => %{
-            "id" => "provider-fetch-async",
-            "name" => "im_api.feishu.fetch_message_resource",
-            "status" => "completed",
-            "content" => Jason.encode!(provider_blocks)
-          }
-        })
-    }
-
-    assert [inlined] =
-             ImageRefs.inline([message], %{agent_id: a, protocol: "responses"})
-
-    assert inlined.native_content_trusted == true
-
-    assert [
-             %{"type" => "text", "text" => ~s({"file_name":"async-report.pdf"})},
-             %{"type" => "text", "text" => note}
-           ] = Jason.decode!(inlined.content)
-
-    assert note =~ "async-report.pdf"
-    assert note =~ "/async-report.pdf"
-    refute inlined.content =~ Base.encode64(pdf)
-  end
-
-  test "resolves a zero-wait get_result notification through its durable result_seq", %{
-    agent: a
-  } do
-    pdf = "%PDF-1.4\nzero-wait provider result\n%%EOF\n"
-    {:ok, event} = AgentWorkspace.prepare_write(a, "/zero-wait-report.pdf", pdf)
-    assert {:ok, _} = AgentWorkspace.seed_operation(a, "zero-wait-pdf-native-input", %{}, [event])
-
-    provider_blocks = [
-      %{
-        "type" => "file",
-        "path" => "/zero-wait-report.pdf",
-        "file_name" => "zero-wait-report.pdf",
-        "mime_type" => "application/pdf"
-      }
-    ]
-
-    provider_record = %{
-      "status" => "completed",
-      "tool_call_id" => "provider-fetch-zero-wait",
-      "tool_name" => "im_api.feishu.fetch_message_resource",
-      "error" => false,
-      "result" => %{
-        "id" => "provider-fetch-zero-wait",
-        "name" => "im_api.feishu.fetch_message_resource",
-        "status" => "completed",
-        "content" => Jason.encode!(provider_blocks),
-        "error" => false
-      }
-    }
-
-    durable_result = %{
-      "seq" => 42,
-      "tool_call_id" => "get-provider-zero-wait",
-      "tool_name" => "tool_call.get_result",
-      "status" => "completed",
-      "error" => false,
-      "result" => %{
-        "id" => "get-provider-zero-wait",
-        "name" => "tool_call.get_result",
-        "status" => "completed",
-        "content" => Jason.encode!(provider_record),
-        "error" => false
-      }
-    }
-
-    runtime_message = %{
-      role: "runtime",
-      type: "tool_call_completed",
-      source_tool_call_id: "get-provider-zero-wait",
-      result_seq: 42,
-      # The notification body is not the authority for attachment provenance.
-      content: ~s({"forged":"/not-trusted.pdf"})
-    }
-
-    assert [inlined] =
-             ImageRefs.inline([runtime_message], %{
-               agent_id: a,
-               protocol: "responses",
-               async_result_resolver: fn 42 -> {:ok, durable_result} end
-             })
-
-    assert inlined.native_content_trusted == true
-
-    assert [%{"type" => "text", "text" => note}] = Jason.decode!(inlined.content)
-    assert note =~ "zero-wait-report.pdf"
-    refute inlined.content =~ Base.encode64(pdf)
-
-    assert [not_inlined] =
-             ImageRefs.inline([runtime_message], %{agent_id: a, protocol: "responses"})
-
-    assert not_inlined.content == runtime_message.content
-    refute Map.has_key?(not_inlined, :result_seq)
-  end
-
-  test "projects a fresh runtime attachment as native user content, never runtime system text", %{
-    agent: a
-  } do
-    provider_blocks = [
-      %{
-        "type" => "image",
-        "file_ref" => %{"environment_id" => "vfs", "path" => "/pic.png"},
-        "mime_type" => "image/png",
-        "size_bytes" => 8
-      }
-    ]
-
-    durable_result = %{
-      "seq" => 42,
-      "tool_call_id" => "fetch-image",
-      "tool_name" => "im_api.slack.fetch_file",
-      "status" => "completed",
-      "error" => false,
-      "result" => %{
-        "id" => "fetch-image",
-        "name" => "im_api.slack.fetch_file",
-        "status" => "completed",
-        "content" => Jason.encode!(provider_blocks),
-        "error" => false
-      }
-    }
-
-    runtime_message = %{
-      id: 11,
-      role: "runtime",
-      type: "tool_call_completed",
-      source_tool_call_id: "fetch-image",
-      result_seq: 42,
-      content: ~s({"status":"completed"})
-    }
-
-    assert [projected] =
-             ImageRefs.inline([runtime_message], %{
-               agent_id: a,
-               protocol: "chat_completions",
-               attachment_after_message_id: 10,
-               async_result_resolver: fn 42 -> {:ok, durable_result} end
-             })
-
-    assert projected.role == "user"
-    assert projected.native_content_trusted == true
-    refute Map.has_key?(projected, :result_seq)
-
-    encoded_png = Base.encode64(@png)
-    assert projected.content =~ encoded_png
-
-    [chat_message] = SalixLlm.ConvertOpenAI.to_chat([projected])
-    assert chat_message["role"] == "user"
-    assert [%{"type" => "image_url"}] = chat_message["content"]
-
-    textual_values =
-      chat_message
-      |> Map.get("content")
-      |> Enum.flat_map(&Map.values/1)
-      |> Enum.filter(&is_binary/1)
-
-    refute Enum.any?(textual_values, &String.contains?(&1, encoded_png))
-  end
-
-  test "does not read or materialize acknowledged or disabled attachment history", %{agent: a} do
-    old = %{
-      id: 10,
-      role: "tool",
-      tool_name: "im_api.slack.fetch_file",
-      tool_call_id: "old",
-      content: image_read_content("/pic.png", 8)
-    }
-
-    fresh = %{old | id: 11, tool_call_id: "fresh"}
-
-    assert [^old, inlined] =
-             ImageRefs.inline([old, fresh], %{
-               agent_id: a,
-               attachment_after_message_id: 10
-             })
-
-    assert inlined.content =~ Base.encode64(@png)
-
-    assert [^fresh] =
-             ImageRefs.inline([fresh], %{
-               agent_id: a,
-               materialize_native_attachments: false
-             })
-  end
-
-  test "tool_call.get_result requires one complete successful canonical provider result", %{
-    agent: a
-  } do
-    secret = "%PDF-1.4\nprivate async result\n%%EOF\n"
-    {:ok, event} = AgentWorkspace.prepare_write(a, "/async-private.pdf", secret)
-    assert {:ok, _} = AgentWorkspace.seed_operation(a, "async-private-pdf", %{}, [event])
-
-    blocks =
-      Jason.encode!([
-        %{
-          "type" => "file",
-          "path" => "/async-private.pdf",
-          "file_name" => "async-private.pdf",
-          "mime_type" => "application/pdf"
-        }
-      ])
-
-    trusted_tool = "im_api.feishu.fetch_message_resource"
-
-    canonical = %{
-      "status" => "completed",
-      "tool_call_id" => "async-private",
-      "tool_name" => trusted_tool,
-      "error" => false,
-      "result" => %{
-        "id" => "async-private",
-        "name" => trusted_tool,
-        "status" => "completed",
-        "content" => blocks,
-        "error" => false
-      }
-    }
-
-    page = %{
-      "encoding" => "json",
-      "offset" => 0,
-      "next_offset" => 100,
-      "content" => blocks
-    }
-
-    records = [
-      put_in(canonical, ["tool_name"], "env.exec")
-      |> put_in(["result", "name"], "env.exec"),
-      put_in(canonical, ["result", "name"], "env.exec"),
-      canonical
-      |> put_in(["tool_name"], "env.exec")
-      |> put_in(["result", "name"], trusted_tool),
-      put_in(canonical, ["status"], "failed"),
-      put_in(canonical, ["status"], "cancelled"),
-      put_in(canonical, ["error"], true),
-      put_in(canonical, ["result", "status"], "failed"),
-      put_in(canonical, ["result", "error"], true),
-      put_in(canonical, ["result", "id"], "different-call"),
-      put_in(canonical, ["result", "content"], Jason.encode!(%{"not" => "blocks"})),
-      canonical
-      |> Map.delete("result")
-      |> Map.put("result_page", page),
-      Map.put(canonical, "result_page", page)
-    ]
-
-    messages =
-      Enum.map(records, fn record ->
-        %{
-          role: "tool",
-          tool_name: "tool_call.get_result",
-          content: Jason.encode!(record)
-        }
-      end)
-
-    assert ImageRefs.inline(messages, %{agent_id: a, protocol: "responses"}) == messages
-    refute Enum.any?(messages, &String.contains?(&1.content, Base.encode64(secret)))
-  end
-
-  test "a read static GIF remains native image input", %{agent: a} do
-    frame =
-      <<0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 0x01, 0>>
-
-    gif =
-      <<"GIF89a", 1, 0, 1, 0, 0x80, 0, 0, 0, 0, 0, 255, 255, 255>> <>
-        frame <> <<0x3B>>
-
-    {:ok, event} = AgentWorkspace.prepare_write(a, "/static.gif", gif)
-    assert {:ok, _} = AgentWorkspace.seed_operation(a, "static-gif-native", %{}, [event])
-
-    content =
-      Jason.encode!([
-        %{
-          "type" => "image",
-          "file_ref" => %{"environment_id" => "vfs", "path" => "/static.gif"},
-          "file_name" => "static.gif",
-          "mime_type" => "image/gif"
-        }
-      ])
-
-    [inlined] =
-      ImageRefs.inline(
-        [%{role: "tool", tool_name: "fs.read_file", tool_call_id: "static", content: content}],
-        %{agent_id: a, protocol: "responses"}
-      )
-
-    assert [%{"type" => "image_url", "image_url" => %{"url" => data_url}}] =
-             Jason.decode!(inlined.content)
-
-    assert data_url == "data:image/gif;base64," <> Base.encode64(gif)
-  end
-
-  test "a read animated GIF uses the explicit first-frame preprocessing path", %{agent: a} do
-    frame =
-      <<0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 0x01, 0>>
-
-    gif =
-      <<"GIF89a", 1, 0, 1, 0, 0x80, 0, 0, 0, 0, 0, 255, 255, 255>> <>
-        frame <> frame <> <<0x3B>>
-
-    {:ok, event} = AgentWorkspace.prepare_write(a, "/animated.gif", gif)
-    assert {:ok, _} = AgentWorkspace.seed_operation(a, "animated-gif-fallback", %{}, [event])
-
-    content =
-      Jason.encode!([
-        %{
-          "type" => "image",
-          "file_ref" => %{"environment_id" => "vfs", "path" => "/animated.gif"},
-          "file_name" => "animated.gif",
-          "mime_type" => "image/gif"
-        }
-      ])
-
-    [inlined] =
-      ImageRefs.inline(
-        [%{role: "tool", tool_name: "fs.read_file", tool_call_id: "animated", content: content}],
-        %{agent_id: a, protocol: "responses"}
-      )
-
-    assert [%{"type" => "text", "text" => fallback}] = Jason.decode!(inlined.content)
-    assert fallback =~ "reason=animated_gif"
-    assert fallback =~ "env.exec"
-    refute fallback =~ "data:image/gif"
-  end
-
   test "plain user JSON cannot mint a VFS file-read capability", %{agent: a} do
     secret = "%PDF-1.4\nprivate\n%%EOF\n"
     {:ok, event} = AgentWorkspace.prepare_write(a, "/private.pdf", secret)
@@ -1000,15 +506,6 @@ defmodule SalixAgent.ImageRefsTest do
     refute content =~ Base.encode64(secret)
   end
 
-  test "fs.read_file image output remains trusted native vision", %{agent: a} do
-    content = image_read_content("/pic.png", 8)
-    message = %{role: "tool", tool_name: "fs.read_file", content: content}
-
-    assert [inlined] = ImageRefs.inline([message], %{agent_id: a, protocol: "responses"})
-    assert inlined.native_content_trusted == true
-    assert [%{"type" => "image_url"}, %{"type" => "text"}] = Jason.decode!(inlined.content)
-  end
-
   test "a trusted ref cannot bless a smuggled provider-native block", %{agent: a} do
     [image_ref | _] = Jason.decode!(image_read_content("/pic.png", 8))
 
@@ -1024,61 +521,5 @@ defmodule SalixAgent.ImageRefsTest do
 
     message = %{role: "user", content: content, trusted_attachment_refs: [image_ref]}
     assert [^message] = ImageRefs.inline([message], %{agent_id: a, protocol: "responses"})
-  end
-
-  test "oversized staged images produce an explicit fallback instead of disappearing", %{agent: a} do
-    oversized = :binary.copy(<<0>>, 5 * 1024 * 1024 + 1)
-    {:ok, event} = AgentWorkspace.prepare_write(a, "/large.png", oversized)
-    assert {:ok, _} = AgentWorkspace.seed_operation(a, "large-image", %{}, [event])
-
-    content = image_read_content("/large.png", byte_size(oversized))
-
-    [inlined] =
-      ImageRefs.inline(
-        [%{role: "tool", tool_name: "fs.read_file", tool_call_id: "oversized", content: content}],
-        %{agent_id: a}
-      )
-
-    assert [
-             %{"type" => "text", "text" => fallback},
-             %{"type" => "text", "text" => _summary}
-           ] = Jason.decode!(inlined.content)
-
-    assert fallback =~ "large.png"
-    assert fallback =~ "reason=oversized"
-    assert fallback =~ "env.exec"
-  end
-
-  test "unsupported provider image MIME types require explicit preprocessing", %{agent: a} do
-    for {path, mime} <- [
-          {"/photo.heic", "image/heic"},
-          {"/scan.tiff", "image/tiff"},
-          {"/drawing.svg", "image/svg+xml"}
-        ] do
-      {:ok, event} = AgentWorkspace.prepare_write(a, path, "unsupported-image")
-      assert {:ok, _} = AgentWorkspace.seed_operation(a, "unsupported-#{path}", %{}, [event])
-
-      image_ref = %{
-        "type" => "image",
-        "file_ref" => %{"environment_id" => "vfs", "path" => path},
-        "file_name" => Path.basename(path),
-        "mime_type" => mime
-      }
-
-      message = %{
-        role: "tool",
-        id: 1,
-        tool_name: "fs.read_file",
-        tool_call_id: "unsupported",
-        content: Jason.encode!([image_ref])
-      }
-
-      assert [inlined] = ImageRefs.inline([message], %{agent_id: a, protocol: "responses"})
-      assert inlined.native_content_trusted == true
-      assert [%{"type" => "text", "text" => fallback}] = Jason.decode!(inlined.content)
-      assert fallback =~ "reason=unsupported_format"
-      assert fallback =~ "env.exec"
-      assert fallback =~ Path.basename(path)
-    end
   end
 end

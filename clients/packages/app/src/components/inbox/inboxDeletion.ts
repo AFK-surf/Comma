@@ -1,88 +1,73 @@
-import type { ProductInboxItem } from "@comma/native-bridge";
-import { taskStatusBucket } from "@comma/ui";
+import type { ProductInboxItem } from "@comma/core-client";
+import { taskStatusBucket } from "@comma/ui/components/task-workspace";
+import { useMemo } from "react";
 import {
-  createRevisionMarksStore,
   useRevisionMarks,
+  useRevisionMarkWriter,
   type RevisionMarks,
 } from "../revisionMarks";
 import {
-  markTaskReviewSeen,
   taskReviewNeedsAttention,
+  useMarkTaskReviewSeen,
   type TaskReviewSeenMarks,
 } from "../tasks/taskReviewAttention";
 
 /**
- * Renderer-local "deleted" marks for Inbox notifications. Deleting one never
- * touches its conversation — the server keeps no per-user notification state
- * — it hides the row until the conversation updates again, when the newer
- * revision outgrows the mark and the notification comes back, the way an
- * inbox re-notifies on fresh activity.
+ * "Deleted" marks for Inbox notifications. Deleting one never touches its
+ * conversation — the server keeps no per-user notification state — it hides
+ * the row until the conversation updates again, when the newer revision
+ * outgrows the mark and the notification comes back, the way an inbox
+ * re-notifies on fresh activity.
+ *
+ * "Unread" marks: the server has no per-user read state for Inbox rows, so
+ * Mark as unread is a fact of this device: the attention dot stays until the
+ * reader opens the row or marks it read.
  */
-const INBOX_DELETED_STORAGE_KEY = "comma.inboxDeleted";
-const INBOX_UNREAD_STORAGE_KEY = "comma.inboxUnread";
-
-const deletedStore = createRevisionMarksStore({
-  changedEvent: "comma:inbox-deleted-changed",
-  maxMarks: 500,
-  persist: (raw) => globalThis.localStorage?.setItem(INBOX_DELETED_STORAGE_KEY, raw),
-  storageKey: INBOX_DELETED_STORAGE_KEY,
-});
-
-/**
- * Renderer-local "unread" marks. The server has no per-user read state for
- * Inbox rows, so Mark as unread is a client fact: the attention dot stays
- * until the reader opens the row or marks it read.
- */
-const unreadStore = createRevisionMarksStore({
-  changedEvent: "comma:inbox-unread-changed",
-  maxMarks: 500,
-  persist: (raw) => globalThis.localStorage?.setItem(INBOX_UNREAD_STORAGE_KEY, raw),
-  storageKey: INBOX_UNREAD_STORAGE_KEY,
-});
+const LEGACY_DELETED_KEY = "comma.inboxDeleted";
+const LEGACY_UNREAD_KEY = "comma.inboxUnread";
 
 export type InboxDeletedMarks = RevisionMarks;
 export type InboxUnreadMarks = RevisionMarks;
 
-export const readInboxDeletedMarks = deletedStore.read;
-export const readInboxUnreadMarks = unreadStore.read;
-
 export function useInboxDeletedMarks(): InboxDeletedMarks {
-  return useRevisionMarks(deletedStore);
+  return useRevisionMarks("inboxDeleted", LEGACY_DELETED_KEY);
 }
 
 export function useInboxUnreadMarks(): InboxUnreadMarks {
-  return useRevisionMarks(unreadStore);
+  return useRevisionMarks("inboxUnread", LEGACY_UNREAD_KEY);
+}
+
+/** What the reader can do to Inbox rows on this device. */
+export function useInboxMarkActions() {
+  const deleted = useRevisionMarkWriter("inboxDeleted");
+  const unread = useRevisionMarkWriter("inboxUnread");
+  const seen = useMarkTaskReviewSeen();
+  return useMemo(
+    () => ({
+      /** Hides these notifications until their conversations update again. */
+      deleteItems: (items: readonly ProductInboxItem[]) =>
+        deleted.mark(items.map((item) => [item.id, item.updatedAt] as const)),
+      /** Shows the attention dot on these notifications until the reader opens them. */
+      markUnread: (items: readonly ProductInboxItem[]) =>
+        unread.mark(items.map((item) => [item.id, item.updatedAt] as const)),
+      /** Drops a user unread mark so the row can read as read again. */
+      clearUnread: (ids: readonly string[]) => unread.unmark(ids),
+      /**
+       * Clears the attention dot without opening the row: drops a user unread
+       * mark and records the current revision as seen for needs-review tasks.
+       */
+      markRead: (items: readonly ProductInboxItem[]) => {
+        unread.unmark(items.map((item) => item.id));
+        for (const item of items) seen(item.conversationId, item.updatedAt);
+      },
+    }),
+    [deleted, seen, unread]
+  );
 }
 
 export function isInboxItemDeleted(marks: InboxDeletedMarks, item: ProductInboxItem) {
   const deletedAt = marks.get(item.id);
   return deletedAt !== undefined && item.updatedAt <= deletedAt;
-}
-
-/** Hides these notifications until their conversations update again. */
-export function deleteInboxItems(items: readonly ProductInboxItem[]) {
-  deletedStore.mark(items.map((item) => [item.id, item.updatedAt] as const));
-}
-
-/** Shows the attention dot on these notifications until the reader opens them. */
-export function markInboxItemsUnread(items: readonly ProductInboxItem[]) {
-  unreadStore.mark(items.map((item) => [item.id, item.updatedAt] as const));
-}
-
-/** Drops a user unread mark so the row can read as read again. */
-export function clearInboxItemUnread(ids: readonly string[]) {
-  unreadStore.unmark(ids);
-}
-
-/**
- * Clears the attention dot without opening the row: drops a user unread mark
- * and records the current revision as seen for needs-review tasks.
- */
-export function markInboxItemsRead(items: readonly ProductInboxItem[]) {
-  unreadStore.unmark(items.map((item) => item.id));
-  for (const item of items) {
-    markTaskReviewSeen(item.conversationId, item.updatedAt);
-  }
 }
 
 function isInboxItemUserUnread(marks: InboxUnreadMarks, item: ProductInboxItem) {

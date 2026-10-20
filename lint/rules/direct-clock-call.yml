@@ -1,0 +1,34 @@
+id: direct-clock-call
+language: elixir
+severity: error
+message: "$M.$F reads the machine clock, which tests cannot control. Call SystemsClock instead."
+note: |
+  DateTime.utc_now/0               -> SystemsClock.utc_now/0
+  NaiveDateTime.utc_now/0          -> SystemsClock.utc_now/0 |> DateTime.to_naive/1
+  System.monotonic_time/0,1        -> SystemsClock.monotonic_time/1
+  System.system_time/0,1, os_time  -> SystemsClock.system_time/1
+  Process.send_after/3,4           -> SystemsClock.send_after/4
+  :erlang.start_timer/3            -> SystemsClock.start_timer/3
+  Process.sleep/1, :timer.sleep/1  -> SystemsClock.sleep/1
+  A capture is a call too: write &SystemsClock.sleep/1, not &Process.sleep/1.
+  See docs/testing.md#deterministic-runtime.
+rule:
+  any:
+    - pattern: $M.$F($$$)
+    - pattern: "&$M.$F/$A"
+constraints:
+  M: { regex: '^(DateTime|NaiveDateTime|System|Process|:erlang|:os|:timer)$' }
+  F: { regex: '^(utc_now|monotonic_time|system_time|os_time|send_after|start_timer|sleep)$' }
+files:
+  - systems/apps/*/lib/**/*.ex
+ignores:
+  # The clock, the simulation scheduler and the runtime bindings: the
+  # determinism ledger checks them (lint/determinism/rules/ex-harness-real-clock.yml).
+  - systems/apps/systems_clock/**
+  - systems/apps/systems_runtime/**
+  - systems/apps/systems_sim/**
+  # Calls that predate the check, as in
+  # systems/apps/systems_runtime/priv/clock_calls_baseline.exs. Remove an entry
+  # when its call moves to SystemsClock; never add one.
+  - systems/apps/salix_store/lib/salix_store/ids.ex
+  - systems/apps/salix_store/lib/salix_store/ulid.ex

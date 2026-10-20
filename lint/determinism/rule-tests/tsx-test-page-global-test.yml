@@ -1,0 +1,22 @@
+id: tsx-test-page-global
+valid:
+  - |
+    stubProperty(navigator, "clipboard", { value: { writeText } });
+  - |
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(rect);
+  - |
+    vi.stubGlobal("matchMedia", matchMedia);
+  # An element of the test's own render, gone with it.
+  - |
+    Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 120 });
+invalid:
+  - |
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  - |
+    Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", { get: () => 40 });
+  - |
+    Object.assign(navigator, { clipboard: { writeText } });
+  - |
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+  - |
+    window.matchMedia = matchMedia;

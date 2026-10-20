@@ -85,6 +85,8 @@ type Gateway struct {
 
 	mu      sync.Mutex
 	clients map[*tailcat.Client]struct{}
+	// changed is signalled when a client is removed.
+	changed *sync.Cond
 }
 
 // New returns a Gateway. It does no network access.
@@ -98,7 +100,9 @@ func New(cfg Config) (*Gateway, error) {
 	if cfg.Logf == nil {
 		cfg.Logf = logger.Discard
 	}
-	return &Gateway{cfg: cfg, clients: map[*tailcat.Client]struct{}{}}, nil
+	g := &Gateway{cfg: cfg, clients: map[*tailcat.Client]struct{}{}}
+	g.changed = sync.NewCond(&g.mu)
+	return g, nil
 }
 
 // Serve accepts connections until ln closes.
@@ -120,6 +124,7 @@ func (g *Gateway) Close() {
 		c.Close()
 		delete(g.clients, c)
 	}
+	g.changed.Broadcast()
 }
 
 // Conns reports open connections (dialing or connected).
@@ -218,6 +223,7 @@ func (g *Gateway) release(c *tailcat.Client) {
 	c.Close()
 	g.mu.Lock()
 	delete(g.clients, c)
+	g.changed.Broadcast()
 	g.mu.Unlock()
 }
 

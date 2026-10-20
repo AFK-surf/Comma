@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
-import type { ChatAssistantDraft, ChatMessage } from "../../model/conversationChannel";
+import type { ChatAssistantDraft, ChatMessage } from "@comma/core/chat";
 import {
   conversationWindowUnits,
   visibleConversationTurns,
@@ -7,11 +7,12 @@ import {
 } from "./conversationTurnWindow";
 import { useConversationTurnWindow } from "./useConversationTurnWindow";
 import type { useStickToBottom } from "../scroll/useStickToBottom";
-import { conversationMessageTurnKey as messageTurnKey } from "../../model/visibleReplyPresentation";
+import { conversationMessageTurnKey as messageTurnKey } from "@comma/core/chat";
 import {
   appendAssistantDraft,
   assistantDraftTurnIndex,
   type ConversationLayout,
+  type EntryTimestamp,
 } from "../layout/conversationLayout";
 import type { OutgoingPresentations } from "../outgoing/useOutgoingPresentations";
 import type { AnchoredTail } from "../turns/useAnchoredTails";
@@ -25,6 +26,7 @@ export function useThreadTurnWindow({
   assistantDraft,
   assistantResponseSlotId,
   canonicalLayout,
+  draftTimestamp,
   follow: { isFollowing, isRevealingMessage, scrollRootRef },
   outgoing: { outgoingPresentations, outgoingTurnKeys },
   pendingUserMessage,
@@ -33,6 +35,7 @@ export function useThreadTurnWindow({
   assistantDraft: ChatAssistantDraft | undefined;
   assistantResponseSlotId: string;
   canonicalLayout: ConversationLayout;
+  draftTimestamp: EntryTimestamp | undefined;
   follow: Pick<Follow, "isFollowing" | "isRevealingMessage" | "scrollRootRef">;
   outgoing: Pick<OutgoingPresentations, "outgoingPresentations" | "outgoingTurnKeys">;
   pendingUserMessage: ChatMessage | undefined;
@@ -155,9 +158,16 @@ export function useThreadTurnWindow({
       },
       assistantDraft,
       assistantResponseSlotId,
-      visibleOwnerTurnIndex
+      visibleOwnerTurnIndex,
+      draftTimestamp
     ).turns;
-  }, [assistantDraft, assistantResponseSlotId, canonicalLayout, visibleCanonicalTurns]);
+  }, [
+    assistantDraft,
+    assistantResponseSlotId,
+    canonicalLayout,
+    draftTimestamp,
+    visibleCanonicalTurns,
+  ]);
   return {
     getWindowViewport,
     hasMeasuredContentRef,

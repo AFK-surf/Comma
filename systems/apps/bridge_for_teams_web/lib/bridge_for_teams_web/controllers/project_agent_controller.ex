@@ -2,17 +2,23 @@ defmodule BridgeForTeamsWeb.ProjectAgentController do
   @moduledoc """
   Project-scoped agent API used by BFT CLI clients.
 
-  This is the same project agent inventory and create path the dashboard relies
-  on, exposed as a product API so operators can create external workers and bind
-  Slack connects without guessing Salix ids.
+  This is the same project agent inventory the dashboard relies on, exposed as
+  a product API so operators can read agent ids and configure the Router.
+
+  Workers are retired. A Worker made before stays listed as history. Creating
+  one, moving one to a station (`…/runtime`) or changing one answers 410 Gone
+  (`workers_retired`): Tasks run at the project's default place and model,
+  which the project's Settings set, or at the place and model a Task names.
   """
   use BridgeForTeamsWeb.Dashboard, :controller
 
   import BridgeForTeamsWeb.ProjectAPIResponse
 
-  alias BridgeForTeams.{Agents, Environments}
+  alias BridgeForTeams.Agents
   alias BridgeForTeams.Schema.Project
   alias BridgeForTeamsWeb.{LimitParams, ProjectScope}
+
+  @workers_retired "Workers are retired. Tasks run at the project's default place and model (set them in the project's Settings), or at the place and model a Task names."
 
   def create(conn, params) do
     with {:ok, org} <- require_org(params["org"]),
@@ -20,23 +26,24 @@ defmodule BridgeForTeamsWeb.ProjectAgentController do
          {:ok, project} <- require_project(conn, org, params["project"]),
          :ok <- ProjectScope.authorize_project_for_conn(conn, project, :write),
          {:ok, agent} <- create_agent(project, params, request_audit_opts(conn)) do
-      {environments, runtime_lookup_error} = project_environments(project)
-
-      response =
+      send_ok(
+        conn,
         %{
           "mode" => "project_agent_create",
           "org" => public_org(org),
           "project" => public_project(project),
-          "agent" => public_agent(agent, environments)
-        }
-        |> maybe_put("runtime_lookup_error", runtime_lookup_error)
-
-      send_ok(conn, response, 201)
+          "agent" => public_agent(agent)
+        },
+        201
+      )
     else
       {:error, %Ecto.Changeset{} = changeset} ->
         send_error(conn, 422, "validation_failed", "Could not create project agent.", %{
           "errors" => changeset_errors(changeset)
         })
+
+      {:error, :workers_retired} ->
+        send_error(conn, 410, "workers_retired", @workers_retired, %{})
 
       error ->
         send_project_error(conn, error, "Could not create project agent.")
@@ -57,8 +64,6 @@ defmodule BridgeForTeamsWeb.ProjectAgentController do
              limit: limit,
              cursor: params["cursor"]
            ) do
-      {environments, runtime_lookup_error} = project_environments(project)
-
       agents = page.items
 
       response =
@@ -66,13 +71,12 @@ defmodule BridgeForTeamsWeb.ProjectAgentController do
           "mode" => "project_agents_list",
           "org" => public_org(org),
           "project" => public_project(project),
-          "agents" => Enum.map(agents, &public_agent(&1, environments)),
+          "agents" => Enum.map(agents, &public_agent/1),
           "limit" => limit,
           "next_cursor" => page.next_cursor
         }
         |> maybe_put("role", role)
         |> maybe_put("filter", trim(params["filter"]))
-        |> maybe_put("runtime_lookup_error", runtime_lookup_error)
 
       send_ok(conn, response)
     else
@@ -87,65 +91,6 @@ defmodule BridgeForTeamsWeb.ProjectAgentController do
     end
   end
 
-  def runtimes(conn, params) do
-    with {:ok, org} <- require_org(params["org"]),
-         :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
-         {:ok, project} <- require_project(conn, org, params["project"]),
-         :ok <- ProjectScope.authorize_project_for_conn(conn, project, :read),
-         {:ok, runtimes} <- Agents.list_external_runtimes(project.id) do
-      send_ok(conn, %{
-        "mode" => "project_agent_runtimes_list",
-        "org" => public_org(org),
-        "project" => public_project(project),
-        "runtimes" => runtimes
-      })
-    else
-      error ->
-        send_project_error(conn, error, "Could not list project agent runtimes.")
-    end
-  end
-
-  def workloads(conn, params) do
-    with {:ok, org} <- require_org(params["org"]),
-         :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
-         {:ok, project} <- require_project(conn, org, params["project"]),
-         :ok <- ProjectScope.authorize_project_for_conn(conn, project, :read),
-         {:ok, provider} <- read_workload_provider(params),
-         {:ok, limit} <- LimitParams.read(params, "limit", 50),
-         {:ok, include_unavailable} <- read_include_unavailable(params),
-         {:ok, page} <-
-           Agents.page_external_worker_targets(project, provider,
-             cursor: trim_nil(params["cursor"]),
-             query: trim_nil(params["query"]),
-             node_id: trim_nil(params["node_id"]),
-             limit: min(limit, 50),
-             include_unavailable: include_unavailable
-           ) do
-      send_ok(conn, %{
-        "mode" => "project_agent_workloads_page",
-        "org" => public_org(org),
-        "project" => public_project(project),
-        "provider" => provider,
-        "page" => page
-      })
-    else
-      {:error, :invalid_limit} ->
-        send_error(conn, 400, "invalid_limit", "Limit must be a positive integer.", %{})
-
-      {:error, :invalid_include_unavailable} ->
-        send_error(
-          conn,
-          400,
-          "invalid_include_unavailable",
-          "include_unavailable must be true or false.",
-          %{}
-        )
-
-      error ->
-        send_project_error(conn, error, "Could not list project agent Workloads.")
-    end
-  end
-
   def update(conn, params) do
     with {:ok, org} <- require_org(params["org"]),
          :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
@@ -154,23 +99,23 @@ defmodule BridgeForTeamsWeb.ProjectAgentController do
          {:ok, agent} <- require_project_agent(project, params["agent"]),
          {:ok, agent} <-
            Agents.update_agent(agent, update_agent_attrs(params), request_audit_opts(conn)) do
-      {environments, runtime_lookup_error} = project_environments(project)
-
-      response =
+      send_ok(
+        conn,
         %{
           "mode" => "project_agent_update",
           "org" => public_org(org),
           "project" => public_project(project),
-          "agent" => public_agent(agent, environments)
+          "agent" => public_agent(agent)
         }
-        |> maybe_put("runtime_lookup_error", runtime_lookup_error)
-
-      send_ok(conn, response)
+      )
     else
       {:error, %Ecto.Changeset{} = changeset} ->
         send_error(conn, 422, "validation_failed", "Could not update project agent.", %{
           "errors" => changeset_errors(changeset)
         })
+
+      {:error, :workers_retired} ->
+        send_error(conn, 410, "workers_retired", @workers_retired, %{})
 
       error ->
         send_project_error(conn, error, "Could not update project agent.")
@@ -181,37 +126,10 @@ defmodule BridgeForTeamsWeb.ProjectAgentController do
     with {:ok, org} <- require_org(params["org"]),
          :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
          {:ok, project} <- require_project(conn, org, params["project"]),
-         :ok <- ProjectScope.authorize_project_for_conn(conn, project, :write),
-         {:ok, agent} <- require_project_agent(project, params["agent"]),
-         {:ok, expected_revision} <- read_expected_binding_revision(params),
-         {:ok, agent} <-
-           Agents.rebind_external_target(
-             project,
-             agent,
-             external_target(params),
-             expected_revision,
-             request_audit_opts(conn)
-           ) do
-      {environments, runtime_lookup_error} = project_environments(project)
-
-      response =
-        %{
-          "mode" => "project_agent_runtime_rebind",
-          "org" => public_org(org),
-          "project" => public_project(project),
-          "agent" => public_agent(agent, environments)
-        }
-        |> maybe_put("runtime_lookup_error", runtime_lookup_error)
-
-      send_ok(conn, response)
+         :ok <- ProjectScope.authorize_project_for_conn(conn, project, :write) do
+      send_error(conn, 410, "workers_retired", @workers_retired, %{})
     else
-      {:error, %Ecto.Changeset{} = changeset} ->
-        send_error(conn, 422, "validation_failed", "Could not rebind project agent runtime.", %{
-          "errors" => changeset_errors(changeset)
-        })
-
-      error ->
-        send_project_error(conn, error, "Could not rebind project agent runtime.")
+      error -> send_project_error(conn, error, "Could not rebind project agent runtime.")
     end
   end
 
@@ -231,64 +149,20 @@ defmodule BridgeForTeamsWeb.ProjectAgentController do
 
   defp read_limit(params), do: LimitParams.read(params, "limit", 100)
 
-  defp create_agent(project, %{"external_target" => target} = params, opts)
-       when is_map(target) do
-    Agents.create_external_agent(project, Map.take(params, ~w(name)), target, opts)
-  end
+  defp create_agent(_project, %{"station_target" => _target}, _opts),
+    do: {:error, :workers_retired}
 
   defp create_agent(_project, %{"external_target" => _target}, _opts),
-    do: {:error, :invalid_external_target}
+    do: {:error, :workers_retired}
 
   defp create_agent(_project, %{"runtime_config" => _config}, _opts),
     do: {:error, :raw_runtime_config_forbidden}
 
   defp create_agent(project, params, opts),
-    do: Agents.create_agent(project.id, Map.take(params, ~w(name role vm)), opts)
+    do: Agents.create_agent(project.id, Map.take(params, ~w(name role)), opts)
 
   defp update_agent_attrs(params) do
-    Map.take(params, ~w(name role vm))
-  end
-
-  defp external_target(%{"external_target" => target}) when is_map(target), do: target
-  defp external_target(_params), do: %{}
-
-  defp read_expected_binding_revision(params) do
-    case params["expected_binding_revision"] do
-      revision when is_integer(revision) and revision >= 0 ->
-        {:ok, revision}
-
-      revision when is_binary(revision) ->
-        case Integer.parse(revision) do
-          {value, ""} when value >= 0 -> {:ok, value}
-          _ -> {:error, :invalid_expected_binding_revision}
-        end
-
-      _ ->
-        {:error, :invalid_expected_binding_revision}
-    end
-  end
-
-  defp read_workload_provider(params) do
-    case trim(params["provider"]) do
-      provider when provider in ["codex", "pi", "claude"] -> {:ok, provider}
-      _ -> {:error, :provider_unsupported}
-    end
-  end
-
-  defp read_include_unavailable(params) do
-    case params["include_unavailable"] do
-      nil -> {:ok, false}
-      value when value in [true, "true"] -> {:ok, true}
-      value when value in [false, "false"] -> {:ok, false}
-      _ -> {:error, :invalid_include_unavailable}
-    end
-  end
-
-  defp trim_nil(value) do
-    case trim(value) do
-      "" -> nil
-      value -> value
-    end
+    Map.take(params, ~w(name role))
   end
 
   defp read_role(params) do
@@ -297,11 +171,6 @@ defmodule BridgeForTeamsWeb.ProjectAgentController do
       role when role in ["router", "worker"] -> {:ok, role}
       _other -> {:error, :invalid_role}
     end
-  end
-
-  defp project_environments(%Project{} = project) do
-    {:ok, environments} = Environments.list_projected_environments(project.id)
-    {environments, nil}
   end
 
   defp maybe_put(map, _key, nil), do: map
@@ -314,7 +183,7 @@ defmodule BridgeForTeamsWeb.ProjectAgentController do
     [
       actor_user_id: user.id,
       actor_label: actor_label(user),
-      request_id: List.first(get_req_header(conn, "x-request-id")) || Ecto.UUID.generate()
+      request_id: List.first(get_req_header(conn, "x-request-id")) || SystemsRuntime.Proc.uuid()
     ]
   end
 

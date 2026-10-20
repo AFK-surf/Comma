@@ -1,4 +1,4 @@
-import type { CommaTaskLabelProposal } from "../../api";
+import type { CommaTaskLabelProposal } from "@comma/core/api-schemas";
 
 /** New proposals contain a batch; previously saved single-label proposals remain readable. */
 export function taskLabelProposalLabels(proposal: CommaTaskLabelProposal) {

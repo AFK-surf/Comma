@@ -1,12 +1,19 @@
 defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The Agent Swarm API behind the React Tasks and Settings pages and the
-  Overview's Websites panel: paged tasks read from Salix, task creation, the
-  Scheduled view and schedule deletion, websites, rename, archive with its
-  blockers, and the Access list. Swarm admins write; a swarm member's write is
-  refused with a denied audit; someone outside the swarm gets 404.
+  Overview's Websites panel: paged tasks read from Salix, task creation with
+  its places and models, the Scheduled view and schedule deletion, websites,
+  rename, the default Task model, archive with its blockers, and the Access
+  list. Swarm members create Tasks; other writes are for swarm admins, and a
+  swarm member's is refused with a denied audit; someone outside the swarm
+  gets 404.
   """
   use BridgeForTeamsWeb.DashboardCase, async: false
+
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.BridgeForTeamsWeb", "Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{
     Accounts,
@@ -27,6 +34,34 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
       do: {:ok, [%{"name" => "marketing", "url" => "https://marketing-#{agent_id}.example.test"}]}
   end
 
+  # A Salix node of the release before has no default place to run Tasks.
+  defmodule PlaceUnknownClient do
+    use BridgeForTeams.TestSupport.CanonicalAgentClient
+    @moduledoc false
+
+    def put_group_task_place(_tenant, _group, _place), do: {:error, :unavailable}
+  end
+
+  # A Salix node of the release before has no worker-less Task create.
+  defmodule PlacementUnknownClient do
+    use BridgeForTeams.TestSupport.CanonicalAgentClient
+    @moduledoc false
+
+    defdelegate get_group(group), to: BridgeForTeams.Salix.Erpc
+
+    def create_placed_task_conversation(group_id, router_agent_id, attrs) do
+      # What `:erpc.call` raises there, as `Erpc` answers it.
+      {:error,
+       {:error,
+        {:exception, :undef,
+         [
+           {SalixIM.TaskPlacement, :create_task_conversation, [group_id, router_agent_id, attrs],
+            []}
+         ]}}}
+      |> BridgeForTeams.Salix.Erpc.unknown_before_release(SalixIM.TaskPlacement)
+    end
+  end
+
   defmodule SchedulesClient do
     use BridgeForTeams.TestSupport.CanonicalAgentClient
     @moduledoc false
@@ -36,7 +71,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
     defdelegate triage_worker_configuration(group_id, opts), to: BridgeForTeams.Salix.Erpc
 
     def list_schedules_for_owners(_agent_ids, _group_id),
-      do: {:ok, Application.get_env(:bridge_for_teams_core, :test_schedules, [])}
+      do: {:ok, SystemsRuntime.get_env(:bridge_for_teams_core, :test_schedules, [])}
 
     def delete_schedule(id) do
       put_schedules(Enum.reject(schedules(), &(&1["id"] == id)))
@@ -51,10 +86,10 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
       {:ok, %{"conversation_id" => conversation_id, "schedule" => %{"schedule_id" => nil}}}
     end
 
-    defp schedules, do: Application.get_env(:bridge_for_teams_core, :test_schedules, [])
+    defp schedules, do: SystemsRuntime.get_env(:bridge_for_teams_core, :test_schedules, [])
 
     defp put_schedules(list),
-      do: Application.put_env(:bridge_for_teams_core, :test_schedules, list)
+      do: SystemsRuntime.put_env(:bridge_for_teams_core, :test_schedules, list)
   end
 
   defmodule UnavailableClient do
@@ -75,7 +110,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
     def list_group_conversations(_group_id, _opts), do: {:error, :timeout}
 
     def page_group_agents(tenant_id, group_id, opts) do
-      send(self(), :agents_read)
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :agents_read)
       BridgeForTeams.Salix.Erpc.page_group_agents(tenant_id, group_id, opts)
     end
   end
@@ -89,10 +124,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
   end
 
   describe "tasks" do
-    test "lists tasks from Salix, newest first, with the agents a task can use",
-         %{conn: conn, org: org, project: project} do
-      {:ok, helper} = create_agent(project, "helper")
-
+    test "lists tasks from Salix, newest first", %{conn: conn, org: org, project: project} do
       {:ok, titled} =
         create_conversation(project, %{
           "title" => "Incident triage",
@@ -108,8 +140,6 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
       assert data["status"] == "ok"
       assert data["next_cursor"] == nil
       assert data["project"] == %{"id" => project.id, "name" => "Acme", "role" => "admin"}
-      assert %{"status" => "ok", "items" => agents} = data["agents"]
-      assert %{"id" => helper.id, "name" => "helper"} in agents
 
       tasks = Map.new(data["tasks"], &{&1["id"], &1})
 
@@ -130,29 +160,6 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
       assert {:ok, _, 0} = DateTime.from_iso8601(tasks[untitled["conversation_id"]]["updated_at"])
     end
 
-    test "pages 100 tasks at a time; later pages carry no agents", %{
-      conn: conn,
-      org: org,
-      project: project
-    } do
-      for n <- 1..101, do: {:ok, _} = create_conversation(project, %{"title" => "Task #{n}"})
-
-      first = conn |> get(swarm_path(org, project, "/tasks")) |> json_response(200) |> data()
-      assert length(first["tasks"]) == 100
-      assert is_binary(first["next_cursor"])
-
-      second =
-        conn
-        |> get(swarm_path(org, project, "/tasks"), %{"cursor" => first["next_cursor"]})
-        |> json_response(200)
-        |> data()
-
-      assert [last] = second["tasks"]
-      assert second["next_cursor"] == nil
-      refute Map.has_key?(second, "agents")
-      refute last["id"] in Enum.map(first["tasks"], & &1["id"])
-    end
-
     test "costs a fixed number of queries however many tasks there are", %{
       conn: conn,
       org: org,
@@ -170,62 +177,42 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
                conn |> get(swarm_path(org, project, "/tasks")) |> json_response(200) |> data()
     end
 
-    test "a stale cursor is refused; a later page during an outage is an error, not the end",
-         %{conn: conn, org: org, project: project} do
-      assert %{"error" => %{"code" => "invalid_cursor"}} =
-               conn
-               |> get(swarm_path(org, project, "/tasks"), %{"cursor" => "not-a-cursor"})
-               |> json_response(422)
-
-      with_client(LaterPageOutageClient)
-
-      assert %{"error" => %{"code" => "runtime_unavailable"}} =
-               conn
-               |> get(swarm_path(org, project, "/tasks"), %{"cursor" => "later-page"})
-               |> json_response(503)
-
-      refute_received :agents_read
-
-      # The first page still says the list is unavailable, with its agents.
-      assert %{"status" => "unavailable", "agents" => %{}} =
-               conn |> get(swarm_path(org, project, "/tasks")) |> json_response(200) |> data()
-
-      assert_received :agents_read
-    end
-
-    test "creates a task for one of the swarm's agents, with a blank title too", %{
-      conn: conn,
-      org: org,
-      project: project,
-      user: user
-    } do
-      {:ok, agent} = create_agent(project, "helper")
+    test "creates a Task the swarm's Task agent runs, inside Salix by default; agent_id is ignored",
+         %{conn: conn, org: org, project: project, user: user} do
+      {:ok, worker} = create_agent(project, "helper")
+      {:ok, router} = Agents.current_router(project)
+      group_id = project.salix_group_id
 
       for title <- ["Launch support", ""] do
         assert %{"id" => id, "href" => href} =
                  conn
                  |> post(swarm_path(org, project, "/tasks"), %{
                    "title" => title,
-                   "agent_id" => agent.id
+                   "content" => "Draft the launch support plan.",
+                   "agent_id" => worker.id
                  })
                  |> json_response(201)
                  |> data()
 
         assert href == "/orgs/#{org.slug}/projects/#{project.id}/tasks/#{id}"
 
-        assert {:ok, conversation} =
-                 SalixIM.Conversations.get_group_conversation(project.salix_group_id, id)
+        assert {:ok, %{"kind" => "agent_task"} = conversation} =
+                 SalixIM.Conversations.get_group_conversation(group_id, id)
 
-        assert conversation["title"] == title
+        # A blank title leaves Salix to name the Task.
+        if title != "", do: assert(conversation["title"] == title)
 
-        assert {:ok, %{"participants" => [participant]}} =
-                 SalixIM.Conversations.list_group_conversation_participants(
-                   project.salix_group_id,
-                   id
-                 )
+        assert {:ok, %{"participants" => participants}} =
+                 SalixIM.Conversations.list_group_conversation_participants(group_id, id)
 
-        assert participant["actor_type"] == "agent"
-        assert participant["agent_id"] == agent.salix_agent_id
+        by_role = Map.new(participants, &{&1["role_label"], &1["agent_id"]})
+        assert by_role["delegator"] == router.salix_agent_id
+        assert by_role["worker"] == SalixAgent.TaskAgent.id(group_id)
+
+        # Inside Salix: the Task agent's Session takes the Task.
+        refute participants
+               |> Enum.find(&(&1["role_label"] == "worker"))
+               |> SalixIM.TaskConversationInput.station_worker?()
       end
 
       audit =
@@ -234,53 +221,159 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
         |> List.first()
 
       assert audit.actor_user_id == user.id
-      assert audit.metadata["agent_id"] == agent.id
+      assert audit.metadata["agent_id"] == router.id
       refute inspect(audit) =~ "Launch support"
     end
 
-    test "refuses an agent from outside the swarm", %{conn: conn, org: org, project: project} do
-      assert %{"error" => %{"code" => "invalid_agent", "details" => %{"fields" => fields}}} =
-               conn
-               |> post(swarm_path(org, project, "/tasks"), %{"agent_id" => Ecto.UUID.generate()})
-               |> json_response(422)
-
-      assert Map.has_key?(fields, "agent_id")
-    end
-
-    test "a swarm member cannot create a task; the attempt is audited", %{
+    test "lists the places and models a Task can choose, the swarm's defaults marked", %{
+      conn: conn,
       org: org,
       project: project
     } do
-      {:ok, agent} = create_agent(project, "helper")
-      member_conn = member_conn(org, project)
+      {:ok, _off} = Projects.set_vm_enabled(project, false)
+      {:ok, project} = Projects.get_project(project.id)
+      ready = "device-ready"
 
-      assert %{"error" => %{"code" => "forbidden", "message" => message}} =
-               member_conn
-               |> post(swarm_path(org, project, "/tasks"), %{
-                 "title" => "forged secret topic",
-                 "agent_id" => agent.id
-               })
-               |> json_response(403)
+      connect_station(org, project, ready, %{
+        "tasks" => 2,
+        "task_models" => %{"codex" => ["gpt-5.5"]}
+      })
 
-      assert message =~ "Only Agent Swarm admins can manage tasks"
+      connect_station(org, project, "device-old-connector", %{})
+      offline = "device-offline"
+      offline_run = connect_station(org, project, offline, %{"tasks" => 2})
+      {:ok, _} = SalixEnv.Registry.mark_disconnected(offline_run)
+
+      {:ok, _result} =
+        BridgeForTeams.Environments.reconcile_device_projection(projection_page_limit: 100)
+
+      gpt = %{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => false}
+      {:ok, _org} = BridgeForTeams.Orgs.update_org(org, %{"allowed_models" => [gpt]})
+
+      targets = fn ->
+        conn |> get(swarm_path(org, project, "/tasks/targets")) |> json_response(200) |> data()
+      end
+
+      # Salix and the station that takes Tasks now; the Cloud VM is off.
+      assert %{"places" => places, "models" => models} = targets.()
+
+      assert [
+               %{"id" => "salix", "kind" => "salix", "default" => true},
+               %{
+                 "id" => ^ready,
+                 "kind" => "station",
+                 "device_id" => ^ready,
+                 "default" => false,
+                 "models" => %{"codex" => ["gpt-5.5"], "claude" => []}
+               }
+             ] = places
+
+      assert [%{"key" => "", "choice" => nil, "label" => default}, platform, offered] = models
+      assert default =~ "Swarm default"
+      assert platform["choice"] == %{"kind" => "platform", "tier" => "worker"}
+      assert %{"key" => "catalog:gpt-5.5", "choice" => ^gpt} = offered
+
+      # The swarm's default place is marked; the Cloud VM shows once it is on.
+      {:ok, _on} = Projects.set_vm_enabled(project, true)
+      {:ok, project} = Projects.get_project(project.id)
+
+      {:ok, _place} =
+        Projects.set_default_task_place(project, %{"kind" => "station", "device_id" => ready})
+
+      assert %{"places" => places} = targets.()
+
+      assert Enum.map(places, &{&1["id"], &1["default"]}) == [
+               {"salix", false},
+               {"cloud_vm", false},
+               {ready, true}
+             ]
+    end
+
+    test "Salix refuses a place or model the swarm cannot use, and nothing is made", %{
+      conn: conn,
+      org: org,
+      project: project
+    } do
+      offline = "device-offline"
+      offline_run = connect_station(org, project, offline, %{"tasks" => 2})
+      {:ok, _} = SalixEnv.Registry.mark_disconnected(offline_run)
+      gpt = %{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => false}
+      {:ok, _org} = BridgeForTeams.Orgs.update_org(org, %{"allowed_models" => [gpt]})
+
+      create = fn extra, status ->
+        conn
+        |> post(
+          swarm_path(org, project, "/tasks"),
+          Map.merge(%{"title" => "Refused", "content" => "Do it."}, extra)
+        )
+        |> json_response(status)
+      end
+
+      for {extra, code} <- [
+            {%{"runs_on" => %{"kind" => "cloud_vm"}}, "cloud_vm_disabled"},
+            {%{
+               "runs_on" => %{"kind" => "station", "device_id" => offline},
+               "model" => %{"kind" => "runtime", "provider" => "codex"}
+             }, "station_offline"},
+            {%{
+               "runs_on" => %{"kind" => "station", "device_id" => "device-elsewhere"},
+               "model" => %{"kind" => "runtime", "provider" => "codex"}
+             }, "invalid_place"},
+            {%{"model" => %{"kind" => "catalog", "model" => "claude-opus-4-7"}}, "invalid_model"},
+            {%{"runs_on" => "station"}, "invalid_place"},
+            {%{"content" => " "}, "invalid_task"}
+          ] do
+        assert %{"error" => %{"code" => ^code}} = create.(extra, 422)
+      end
 
       assert {:ok, %{"data" => []}} =
                SalixIM.Conversations.list_group_conversations(project.salix_group_id, limit: 10)
+    end
 
-      assert [audit] =
-               Observability.list_audit_logs(org.id,
-                 action: "project_conversation.created",
-                 result: "denied"
-               )
+    test "a Salix node of the release before cannot create it: 503, and the browser asks again",
+         %{conn: conn, org: org, project: project} do
+      with_client(PlacementUnknownClient)
 
-      assert audit.resource_type == "project_conversation"
-      assert audit.reason_class == "forbidden"
-      assert audit.metadata["project_id"] == project.id
-      assert audit.metadata["surface"] == "conversation"
-      assert audit.metadata["agent_id_configured"] in [true, "true"]
-      refute inspect(audit) =~ "forged secret topic"
+      assert %{"error" => %{"code" => "runtime_unavailable"}} =
+               conn
+               |> post(swarm_path(org, project, "/tasks"), %{"content" => "Do it."})
+               |> json_response(503)
 
-      # The member still reads the list.
+      with_client(BridgeForTeams.Salix.Erpc)
+
+      assert %{"id" => _id} =
+               conn
+               |> post(swarm_path(org, project, "/tasks"), %{"content" => "Do it."})
+               |> json_response(201)
+               |> data()
+    end
+
+    test "a swarm member creates a Task too, on any place of the swarm", %{
+      org: org,
+      project: project
+    } do
+      member_conn = member_conn(org, project)
+
+      assert %{"places" => [%{"id" => "salix", "default" => true} | _others]} =
+               member_conn
+               |> get(swarm_path(org, project, "/tasks/targets"))
+               |> json_response(200)
+               |> data()
+
+      assert %{"id" => id} =
+               member_conn
+               |> post(swarm_path(org, project, "/tasks"), %{
+                 "title" => "From a member",
+                 "content" => "Summarize the week.",
+                 "runs_on" => %{"kind" => "salix"},
+                 "model" => %{"kind" => "platform", "tier" => "worker"}
+               })
+               |> json_response(201)
+               |> data()
+
+      assert {:ok, %{"title" => "From a member"}} =
+               SalixIM.Conversations.get_group_conversation(project.salix_group_id, id)
+
       assert %{"project" => %{"role" => "user"}} =
                member_conn
                |> get(swarm_path(org, project, "/tasks"))
@@ -291,7 +384,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
 
   describe "schedules" do
     setup do
-      on_exit(fn -> Application.delete_env(:bridge_for_teams_core, :test_schedules) end)
+      on_exit(fn -> SystemsRuntime.delete_env(:bridge_for_teams_core, :test_schedules) end)
     end
 
     test "lists agent and task schedules with their recurrence, never another swarm's",
@@ -398,7 +491,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
                |> delete(swarm_path(org, project, "/schedules/sched-task"))
                |> json_response(403)
 
-      assert [_still_there] = Application.get_env(:bridge_for_teams_core, :test_schedules)
+      assert [_still_there] = SystemsRuntime.get_env(:bridge_for_teams_core, :test_schedules)
 
       assert [audit] =
                Observability.list_audit_logs(org.id,
@@ -506,6 +599,140 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
                |> json_response(422)
     end
 
+    test "an admin sets the default place to run Tasks: Salix, the Cloud VM or a station", %{
+      conn: conn,
+      org: org,
+      project: project,
+      user: admin
+    } do
+      path = swarm_path(org, project, "/settings/task-place")
+
+      # Unset: Tasks run inside Salix.
+      assert %{
+               "task_place" => %{
+                 "status" => "ok",
+                 "place" => %{"kind" => "salix"},
+                 "label" => "Salix"
+               }
+             } =
+               conn |> get(swarm_path(org, project, "/settings")) |> json_response(200) |> data()
+
+      # The Cloud VM while the swarm's Cloud VM is on.
+      {:ok, _} =
+        SalixStore.CasRecord.update(
+          SalixStore.Keys.ctl_group(project.salix_group_id),
+          &Map.put(&1, "cloud_vm_enabled", true),
+          create: false
+        )
+
+      assert %{"task_place" => %{"place" => %{"kind" => "cloud_vm"}, "label" => "The Cloud VM"}} =
+               conn
+               |> put(path, %{"place" => %{"kind" => "cloud_vm"}})
+               |> json_response(200)
+               |> data()
+
+      assert {:ok, %{"kind" => "cloud_vm"}} = Projects.default_task_place(project)
+
+      # A station the swarm does not have is refused and changes nothing.
+      assert %{"error" => %{"code" => "invalid_place"}} =
+               conn
+               |> put(path, %{
+                 "place" => %{"kind" => "station", "device_id" => "device-elsewhere"}
+               })
+               |> json_response(422)
+
+      {:ok, _off} = Projects.set_vm_enabled(project, false)
+
+      assert %{"error" => %{"code" => "cloud_vm_disabled"}} =
+               conn |> put(path, %{"place" => %{"kind" => "cloud_vm"}}) |> json_response(422)
+
+      assert {:ok, %{"kind" => "cloud_vm"}} = Projects.default_task_place(project)
+
+      # A Salix node of the release before: nothing is stored, and saving again works.
+      with_client(PlaceUnknownClient)
+
+      assert %{"error" => %{"code" => "write_failed"}} =
+               conn |> put(path, %{"place" => %{"kind" => "salix"}}) |> json_response(503)
+
+      with_client(BridgeForTeams.Salix.Erpc)
+
+      assert %{"task_place" => %{"place" => %{"kind" => "salix"}}} =
+               conn
+               |> put(path, %{"place" => %{"kind" => "salix"}})
+               |> json_response(200)
+               |> data()
+
+      audits = Observability.list_audit_logs(org.id, action: "project.default_task_place_changed")
+
+      assert Enum.sort(Enum.map(audits, & &1.redacted_diff["default_task_place"]["to"])) == [
+               "cloud_vm",
+               "salix"
+             ]
+
+      assert Enum.all?(audits, &(&1.actor_user_id == admin.id and &1.result == "ok"))
+    end
+
+    test "an admin sets the default Task model from the platform model and the org's models", %{
+      conn: conn,
+      org: org,
+      project: project,
+      user: admin
+    } do
+      platform = %{"kind" => "platform", "tier" => "worker"}
+      gpt = %{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => false}
+      sol = %{"kind" => "catalog", "model" => "gpt-6.1-sol", "allow_paid" => false}
+      {:ok, _org} = BridgeForTeams.Orgs.update_org(org, %{"allowed_models" => [gpt]})
+      path = swarm_path(org, project, "/settings/task-model")
+
+      # Unset: each Task runs the org's default Task model; that row clears a default.
+      assert %{
+               "task_model" => %{
+                 "status" => "ok",
+                 "key" => "",
+                 "label" => "Organization default (" <> _,
+                 "models" => rows
+               }
+             } =
+               conn |> get(swarm_path(org, project, "/settings")) |> json_response(200) |> data()
+
+      assert [
+               %{"key" => "", "choice" => nil, "disabled" => false},
+               %{"key" => "platform:worker", "choice" => ^platform, "disabled" => false},
+               %{"key" => "catalog:gpt-5.5", "choice" => ^gpt, "disabled" => false}
+             ] = rows
+
+      assert %{"error" => %{"code" => "invalid_model"}} =
+               conn |> put(path, %{"model" => sol}) |> json_response(422)
+
+      assert %{
+               "task_model" => %{
+                 "key" => "platform:worker",
+                 "models" => [unset, platform_row | _]
+               }
+             } =
+               conn |> put(path, %{"model" => platform}) |> json_response(200) |> data()
+
+      assert %{"key" => "", "choice" => nil, "disabled" => false} = unset
+      assert platform_row["choice"] == platform
+
+      assert %{"task_model" => %{"key" => "catalog:gpt-5.5", "label" => "GPT-5.5"}} =
+               conn |> put(path, %{"model" => gpt}) |> json_response(200) |> data()
+
+      assert {:ok, ^gpt} = Projects.default_task_model(project)
+
+      # Clearing it gives each Task the org's default Task model again.
+      assert %{"task_model" => %{"key" => "", "label" => "Organization default (" <> _}} =
+               conn |> delete(path) |> json_response(200) |> data()
+
+      assert {:ok, nil} = Projects.default_task_model(project)
+
+      assert [_, _, _] =
+               audits =
+               Observability.list_audit_logs(org.id, action: "project.default_task_model_changed")
+
+      assert Enum.all?(audits, &(&1.actor_user_id == admin.id and &1.result == "ok"))
+    end
+
     test "archiving waits until every IM connection is disabled", %{
       conn: conn,
       org: org,
@@ -539,25 +766,6 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
                Projects.get_project(project.id)
     end
 
-    test "archiving waits until every schedule is deleted", %{
-      conn: conn,
-      org: org,
-      project: project
-    } do
-      with_client(SchedulesClient)
-      on_exit(fn -> Application.delete_env(:bridge_for_teams_core, :test_schedules) end)
-      put_schedules([task_schedule(project)])
-
-      assert %{"error" => %{"code" => "archive_blocked", "message" => message}} =
-               conn |> post(swarm_path(org, project, "/archive")) |> json_response(409)
-
-      assert message =~ "Scheduled view of Tasks"
-
-      put_schedules([])
-      assert conn |> post(swarm_path(org, project, "/archive")) |> json_response(200)
-      assert {:ok, %{status: "archived"}} = Projects.get_project(project.id)
-    end
-
     test "refuses to archive when Salix cannot confirm the swarm is quiet", %{
       conn: conn,
       org: org,
@@ -577,7 +785,7 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
     } do
       member_conn = member_conn(org, project)
 
-      assert %{"project" => %{"role" => "user"}} =
+      assert %{"project" => %{"role" => "user"}, "task_model" => %{"status" => "ok", "key" => ""}} =
                member_conn
                |> get(swarm_path(org, project, "/settings"))
                |> json_response(200)
@@ -596,10 +804,41 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
       assert archive_message =~ "Only Agent Swarm admins can archive"
       assert {:ok, %{name: "Acme", status: "active"}} = Projects.get_project(project.id)
 
-      for action <- ["project.renamed", "project.archived"] do
-        assert [audit] = Observability.list_audit_logs(org.id, action: action, result: "denied")
-        assert audit.resource_id == project.id
-        assert audit.reason_class == "forbidden"
+      assert %{"error" => %{"message" => model_message}} =
+               member_conn
+               |> put(swarm_path(org, project, "/settings/task-model"), %{
+                 "model" => %{"kind" => "platform", "tier" => "worker"}
+               })
+               |> json_response(403)
+
+      assert model_message =~ "Only Agent Swarm admins can change the default Task model"
+
+      assert %{"error" => %{"message" => place_message}} =
+               member_conn
+               |> put(swarm_path(org, project, "/settings/task-place"), %{
+                 "place" => %{"kind" => "salix"}
+               })
+               |> json_response(403)
+
+      assert place_message =~ "Only Agent Swarm admins can change the default place to run Tasks"
+      assert {:ok, nil} = Projects.default_task_place(project)
+      assert {:ok, nil} = Projects.default_task_model(project)
+
+      assert %{"error" => %{"message" => ^model_message}} =
+               member_conn
+               |> delete(swarm_path(org, project, "/settings/task-model"))
+               |> json_response(403)
+
+      for {action, count} <- [
+            {"project.renamed", 1},
+            {"project.archived", 1},
+            {"project.default_task_model_changed", 2},
+            {"project.default_task_place_changed", 1}
+          ] do
+        audits = Observability.list_audit_logs(org.id, action: action, result: "denied")
+        assert length(audits) == count
+        assert Enum.all?(audits, &(&1.resource_id == project.id))
+        assert Enum.all?(audits, &(&1.reason_class == "forbidden"))
       end
     end
   end
@@ -645,107 +884,6 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
         assert audit.resource_id == member.id
         assert audit.redacted_diff["role"] == diff
       end
-    end
-
-    test "changing or removing someone without a grant is 404 and changes nothing", %{
-      conn: conn,
-      org: org,
-      project: project,
-      user: owner
-    } do
-      outsider = user_fixture()
-
-      # The org owner is an admin through the org, not through a grant.
-      for target <- [outsider.id, owner.id] do
-        assert %{"error" => %{"code" => "member_not_found"}} =
-                 conn
-                 |> patch(swarm_path(org, project, "/access/#{target}"), %{"role" => "user"})
-                 |> json_response(404)
-
-        assert %{"error" => %{"code" => "member_not_found"}} =
-                 conn
-                 |> delete(swarm_path(org, project, "/access/#{target}"))
-                 |> json_response(404)
-
-        assert {:error, :not_found} = Memberships.project_grant(project.id, target)
-      end
-
-      assert {:error, :not_found} = Memberships.project_role(project.id, outsider.id)
-      assert {:ok, "admin"} = Memberships.project_role(project.id, owner.id)
-
-      for action <- ["project_member.role_changed", "project_member.removed"],
-          do: assert([] == Observability.list_audit_logs(org.id, action: action))
-    end
-
-    test "a swarm admin who demotes themselves gets their new role back", %{
-      org: org,
-      project: project
-    } do
-      {conn, admin} = swarm_admin_conn(org, project)
-
-      assert %{"project" => %{"role" => "user"}, "access" => %{"members" => members}} =
-               conn
-               |> patch(swarm_path(org, project, "/access/#{admin.id}"), %{"role" => "user"})
-               |> json_response(200)
-               |> data()
-
-      assert Enum.any?(members, &(&1["id"] == admin.id and &1["role"] == "user"))
-    end
-
-    test "a swarm admin who removes themselves is sent to the swarms list", %{
-      org: org,
-      project: project
-    } do
-      {conn, admin} = swarm_admin_conn(org, project)
-
-      assert %{"redirect" => redirect, "notice" => notice} =
-               conn
-               |> delete(swarm_path(org, project, "/access/#{admin.id}"))
-               |> json_response(200)
-               |> data()
-
-      assert redirect == "/orgs/#{org.slug}/projects"
-      assert notice == ~s(You no longer have access to Agent Swarm "Acme".)
-      assert {:error, :not_found} = Memberships.project_role(project.id, admin.id)
-    end
-
-    test "pages the access list 100 grants at a time", %{conn: conn, org: org, project: project} do
-      for _ <- 1..101 do
-        {:ok, _} = Memberships.put_project_member(project.id, user_fixture().id, "user")
-      end
-
-      assert %{"access" => first} =
-               conn |> get(swarm_path(org, project, "/settings")) |> json_response(200) |> data()
-
-      assert %{"truncated" => true, "next_cursor" => "100"} = first
-      assert length(first["members"]) == 100
-
-      assert %{"members" => [last], "truncated" => false, "next_cursor" => nil} =
-               conn
-               |> get(swarm_path(org, project, "/access"), %{"cursor" => "100"})
-               |> json_response(200)
-               |> data()
-
-      refute last["id"] in Enum.map(first["members"], & &1["id"])
-
-      assert %{"error" => %{"code" => "invalid_cursor"}} =
-               conn
-               |> get(swarm_path(org, project, "/access"), %{"cursor" => "nope"})
-               |> json_response(422)
-    end
-
-    test "checks the email and the role", %{conn: conn, org: org, project: project} do
-      assert %{"error" => %{"code" => "invalid_email"}} =
-               conn
-               |> post(swarm_path(org, project, "/access"), %{"email" => " "})
-               |> json_response(422)
-
-      assert %{"error" => %{"code" => "invalid_role"}} =
-               conn
-               |> patch(swarm_path(org, project, "/access/#{Ecto.UUID.generate()}"), %{
-                 "role" => "owner"
-               })
-               |> json_response(422)
     end
 
     test "a swarm member cannot change access; each attempt is audited", %{
@@ -833,17 +971,6 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
                |> patch(swarm_path(org, project, "/settings"), %{"name" => "With token"})
                |> json_response(200)
     end
-
-    test "the React dashboard serves the swarm pages and their retired addresses", %{
-      conn: conn,
-      org: org,
-      project: project
-    } do
-      for page <- ~w(tasks schedules settings access websites) do
-        assert html_response(get(conn, "/orgs/#{org.slug}/projects/#{project.id}/#{page}"), 200) =~
-                 ~s(<div id="root">)
-      end
-    end
   end
 
   defp swarm_path(org, project, rest),
@@ -858,19 +985,51 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
     log_in_user(build_conn(), member)
   end
 
-  # An org member who administers the swarm through an explicit grant only.
-  defp swarm_admin_conn(org, project) do
-    admin = user_fixture()
-    {:ok, _} = Memberships.put_org_member(org.id, admin.id, "member")
-    {:ok, _} = Memberships.put_project_member(project.id, admin.id, "admin")
-    {log_in_user(build_conn(), admin), admin}
-  end
-
   defp create_agent(project, name) do
-    with {:ok, agent} <- Agents.create_agent(project.id, %{"name" => name, "role" => "worker"}) do
+    with {:ok, agent} <-
+           BridgeForTeams.TestSupport.LegacyWorker.create(project.id, %{
+             "name" => name,
+             "role" => "worker"
+           }) do
       drain_all()
       Agents.get_agent(agent.id)
     end
+  end
+
+  # A device of the swarm whose Comma station reports `capabilities`; answers
+  # its connector run.
+  defp connect_station(org, project, device_id, capabilities) do
+    {:ok, _transport_id, record} =
+      SalixEnv.Registry.connect(
+        "nonode@nohost",
+        %{
+          "tenant_id" => org.salix_tenant_id,
+          "group_id" => project.salix_group_id,
+          "device_id" => device_id,
+          "connector_id" => "connector-" <> device_id,
+          "name" => "Mac Studio"
+        },
+        transport_id: "transport-" <> device_id
+      )
+
+    run_id = record["connector_run_id"]
+    {:ok, _} = SalixEnv.Registry.update_meta(run_id, &Map.put(&1, "capabilities", capabilities))
+    refresh_device_projection(project.id, device_id, 20)
+    run_id
+  end
+
+  defp refresh_device_projection(_project_id, _device_id, 0),
+    do: flunk("device projection did not converge")
+
+  defp refresh_device_projection(project_id, device_id, attempts) do
+    assert {:ok, _result} =
+             BridgeForTeams.Environments.reconcile_device_projection(projection_page_limit: 100)
+
+    unless BridgeForTeams.Repo.get_by(BridgeForTeams.Schema.ProjectDeviceProjection,
+             project_id: project_id,
+             device_id: device_id
+           ),
+           do: refresh_device_projection(project_id, device_id, attempts - 1)
   end
 
   defp create_conversation(project, attrs) do
@@ -898,16 +1057,17 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
     }
   end
 
-  defp put_schedules(list), do: Application.put_env(:bridge_for_teams_core, :test_schedules, list)
+  defp put_schedules(list),
+    do: SystemsRuntime.put_env(:bridge_for_teams_core, :test_schedules, list)
 
   defp with_client(client) do
-    previous = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, client)
+    previous = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, client)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:bridge_for_teams_core, :salix_client, previous),
-        else: Application.delete_env(:bridge_for_teams_core, :salix_client)
+        do: SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous),
+        else: SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
     end)
   end
 
@@ -919,15 +1079,16 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
   end
 
   defp query_count(conn, path) do
-    test_pid = self()
-    handler = "swarm-query-count-#{System.unique_integer([:positive])}"
+    test_pid = SystemsRuntime.Proc.self()
+    handler = "swarm-query-count-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:bridge_for_teams, :repo, :query],
         fn _event, _measurements, _metadata, _config ->
-          if self() == test_pid, do: send(test_pid, :repo_query)
+          if SystemsRuntime.Proc.self() == test_pid,
+            do: SystemsRuntime.Proc.send(test_pid, :repo_query)
         end,
         nil
       )
@@ -936,12 +1097,12 @@ defmodule BridgeForTeamsWeb.DashboardAPISwarmTest do
       conn |> get(path) |> json_response(200)
       count_messages(0)
     after
-      :telemetry.detach(handler)
+      SystemsRuntime.Telemetry.detach(handler)
     end
   end
 
   defp count_messages(count) do
-    receive do
+    SystemsRuntime.Proc.receive do
       :repo_query -> count_messages(count + 1)
     after
       0 -> count

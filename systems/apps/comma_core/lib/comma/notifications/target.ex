@@ -4,7 +4,10 @@ defmodule Comma.Notifications.Target do
   import Ecto.Changeset
 
   @primary_key {:id, Ecto.UUID, autogenerate: true}
-  @timestamps_opts [type: :utc_datetime_usec]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   schema "comma_notification_targets" do
     belongs_to(:auth_session, Comma.Accounts.AuthSession, type: Ecto.UUID)
@@ -17,6 +20,13 @@ defmodule Comma.Notifications.Target do
     field(:group_id, :string)
     field(:conversation_id, :string)
     field(:activity_id, :string)
+    field(:activity_schema, :string)
+    field(:activity_content, :map, default: %{})
+    field(:activity_started_at, :utc_datetime_usec)
+    field(:activity_start_pending_until, :utc_datetime_usec)
+    field(:suppressed_task_ids, {:array, :string}, default: [])
+    field(:router_last_sent_seq, :integer, default: 0)
+    field(:router_last_sent_badge, :integer)
     field(:expires_at, :utc_datetime_usec)
     field(:last_sent_version, :integer, default: 0)
     field(:last_sent_status, :string)
@@ -28,6 +38,7 @@ defmodule Comma.Notifications.Target do
   def changeset(target, attrs) do
     target
     |> cast(attrs, [
+      :id,
       :auth_session_id,
       :kind,
       :token,
@@ -38,6 +49,10 @@ defmodule Comma.Notifications.Target do
       :group_id,
       :conversation_id,
       :activity_id,
+      :activity_schema,
+      :activity_started_at,
+      :last_sent_version,
+      :router_last_sent_seq,
       :expires_at
     ])
     |> validate_required([
@@ -53,12 +68,14 @@ defmodule Comma.Notifications.Target do
     |> validate_inclusion(:environment, ~w(sandbox production))
     |> validate_inclusion(:bundle_id, ~w(surf.comma.ios surf.comma.ios.dev))
     |> validate_inclusion(:locale, ~w(en-US zh-Hans))
+    |> validate_inclusion(:activity_schema, ["tasks_v1"])
     |> validate_format(:token, ~r/\A[0-9a-fA-F]{32,512}\z/)
     |> validate_length(:workspace_id, max: 256)
     |> validate_length(:group_id, max: 256)
     |> validate_length(:conversation_id, max: 256)
     |> validate_length(:activity_id, max: 256)
     |> unique_constraint([:auth_session_id, :kind])
+    |> unique_constraint(:id, name: :comma_notification_targets_pkey)
     |> foreign_key_constraint(:auth_session_id)
     |> check_constraint(:kind, name: :notification_target_shape)
   end

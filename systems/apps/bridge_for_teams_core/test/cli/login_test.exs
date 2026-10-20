@@ -9,14 +9,14 @@ defmodule BridgeForTeams.CLI.LoginTest do
   defp user! do
     %User{}
     |> User.changeset(%{
-      email: "cli-login-#{System.unique_integer([:positive])}@example.test",
+      email: "cli-login-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.test",
       name: "CLI User"
     })
     |> Repo.insert!()
   end
 
   defp org_with_owner!(user) do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     org =
       %Organization{}
@@ -135,7 +135,7 @@ defmodule BridgeForTeams.CLI.LoginTest do
     {:ok, %{device_code: device_code, authorization: authorization}} =
       CLILogin.start_device_authorization()
 
-    expired_at = DateTime.add(DateTime.utc_now(), -1, :second)
+    expired_at = DateTime.add(SystemsClock.utc_now(), -1, :second)
 
     authorization
     |> Ecto.Changeset.change(expires_at: expired_at)

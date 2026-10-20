@@ -15,9 +15,9 @@ defmodule SalixEnv.RuntimeAuthTelemetry do
 
   @spec emit(atom(), term(), integer()) :: :ok
   def emit(operation, result, started_at) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: max(System.monotonic_time() - started_at, 0)},
+      %{duration: max(SystemsClock.monotonic_time() - started_at, 0)},
       %{
         component: "salix_env",
         operation: Map.fetch!(@operations, operation),

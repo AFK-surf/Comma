@@ -1,6 +1,9 @@
+import { firstTouch, sanitizeAttribution, webPersistence } from "@comma/analytics";
 import posthog, { type PostHog, type CaptureResult } from "posthog-js";
+import { uiClock } from "@comma/ui/clock";
 import { getActiveCommaConfig } from "@comma/config";
 import type { SessionLifecycleSnapshot } from "@comma/session-contract";
+import type { NativeInfo } from "@comma/native-bridge";
 import type { SessionLifecycleProjectionSource } from "../session/react";
 
 declare const COMMA_DEFINED_APP_VERSION: string | undefined;
@@ -10,7 +13,7 @@ declare const COMMA_DEFINED_POSTHOG_KEY: string | undefined;
 declare const COMMA_DEFINED_POSTHOG_HOST: string | undefined;
 
 type Runtime = "web" | "electron";
-export type ChatSurface = "home" | "route" | "rail" | "side-chat";
+export type ChatSurface = "home" | "route" | "rail";
 type Analytics = {
   client: PostHog;
   userId: string | undefined;
@@ -32,6 +35,7 @@ const eventNames = new Set([
   "$identify",
   "$pageview",
   "comma_client_opened",
+  "comma_desktop_launched",
   "comma_session_state_changed",
   "comma_message_send_requested",
   "comma_message_send_accepted",
@@ -39,7 +43,7 @@ const eventNames = new Set([
 ]);
 
 // PostHog enriches even manually captured events. Keep that enrichment bounded:
-// URLs, referrers, DOM text, person properties and campaign parameters are private.
+// Keep only public campaign slugs; raw URLs, DOM text and account details are private.
 const propertyNames = new Set([
   "token",
   "distinct_id",
@@ -77,6 +81,8 @@ const propertyNames = new Set([
   "error_kind",
   "severity",
   "login_error_code",
+  "source_message_id",
+  "launch_kind",
 ]);
 
 export function sanitizeCommaAnalyticsEvent(event: CaptureResult | null) {
@@ -84,6 +90,11 @@ export function sanitizeCommaAnalyticsEvent(event: CaptureResult | null) {
   const properties = Object.fromEntries(
     Object.entries(event.properties).filter(([key]) => propertyNames.has(key))
   );
+  Object.assign(properties, sanitizeAttribution(event.properties));
+  if (event.event === "$identify") {
+    const first = sanitizeAttribution(event.properties.$set_once);
+    if (Object.keys(first).length) properties.$set_once = first;
+  }
   if (!loginFailureCodes.has(properties.login_error_code))
     delete properties.login_error_code;
   if (event.event === "$pageview") {
@@ -115,9 +126,18 @@ export function sanitizeCommaAnalyticsEvent(event: CaptureResult | null) {
         : []),
     ]);
   }
+  // Only canonical opaque Message IDs may correlate visible replies with server facts.
+  if (
+    event.event !== "comma_reply_first_visible" ||
+    typeof properties.source_message_id !== "string" ||
+    !/^msg1_[0-9]{19}$/.test(properties.source_message_id)
+  )
+    delete properties.source_message_id;
   const sanitized = { ...event, properties };
   delete sanitized.$set;
-  delete sanitized.$set_once;
+  const first = event.event === "$identify" ? sanitizeAttribution(event.$set_once) : {};
+  if (Object.keys(first).length) sanitized.$set_once = first;
+  else delete sanitized.$set_once;
   delete sanitized.$unset;
   return sanitized;
 }
@@ -133,14 +153,18 @@ export function commaAnalyticsRoute(hash: string): string {
   return "/other";
 }
 
+// Only the main window reports. The name stays in the SDK storage key and in
+// every event, so an existing install keeps its analytics identity.
+const windowRole = "main-window";
+
 export function startCommaAnalytics({
   runtime,
-  windowRole = "main-window",
   lifecycle,
+  desktopLaunch,
 }: {
   runtime: Runtime;
-  windowRole?: "main-window" | "side-chat-window";
   lifecycle: SessionLifecycleProjectionSource;
+  desktopLaunch?: Promise<NativeInfo["desktopLaunch"]> | undefined;
 }): () => void {
   const key =
     typeof COMMA_DEFINED_POSTHOG_KEY === "undefined" ? "" : COMMA_DEFINED_POSTHOG_KEY;
@@ -148,6 +172,7 @@ export function startCommaAnalytics({
     typeof COMMA_DEFINED_POSTHOG_HOST === "undefined" ? "" : COMMA_DEFINED_POSTHOG_HOST;
   if (!key || !host || active) return () => {};
 
+  const sharedWebIdentity = runtime === "web";
   let client: PostHog | undefined;
   try {
     client = posthog.init(key, {
@@ -168,6 +193,7 @@ export function startCommaAnalytics({
       enable_recording_console_log: false,
       persistence: "localStorage",
       persistence_name: `comma_${getActiveCommaConfig().channel}_${runtime}_${windowRole}`,
+      ...(sharedWebIdentity ? webPersistence(getActiveCommaConfig().channel) : {}),
       person_profiles: "identified_only",
       respect_dnt: true,
       save_referrer: false,
@@ -212,13 +238,38 @@ export function startCommaAnalytics({
   let previousPhase: SessionLifecycleSnapshot["phase"] | undefined;
   let previousNavigation: string | undefined;
   let sessionResolved = false;
+  let launch: NativeInfo["desktopLaunch"];
+  let launchCaptured = false;
+  const captureDesktopLaunch = () => {
+    if (!sessionResolved || !launch || launchCaptured || active !== analytics) return;
+    launchCaptured = true;
+    const snapshot = launch;
+    safely(() => {
+      const launchKey = `comma_${getActiveCommaConfig().channel}_last_launch`;
+      // Main's snapshot survives renderer reloads; SDK identity resets do not
+      // clear this marker. If storage fails, omit this observation.
+      if (localStorage.getItem(launchKey) === snapshot.eventId) return;
+      localStorage.setItem(launchKey, snapshot.eventId);
+      client.capture("comma_desktop_launched", {
+        launch_kind: snapshot.kind,
+      });
+    });
+  };
+  if (runtime === "electron") {
+    void desktopLaunch
+      ?.then((snapshot) => {
+        launch = snapshot;
+        captureDesktopLaunch();
+      })
+      .catch(() => undefined);
+  }
   let readyCaptured = false;
   analytics.captureReady = () => {
     if (!sessionResolved || !uiCommitted || readyCaptured) return;
     readyCaptured = true;
     safely(() =>
       client.capture("comma_client_ready", {
-        duration_ms: Math.round(performance.now()),
+        duration_ms: Math.round(uiClock.monotonic()),
       })
     );
   };
@@ -226,12 +277,8 @@ export function startCommaAnalytics({
 
   const capturePage = () => {
     if (!sessionResolved) return;
-    const route =
-      windowRole === "side-chat-window"
-        ? "/side-chat"
-        : commaAnalyticsRoute(location.hash);
-    const navigation =
-      windowRole === "side-chat-window" ? "/side-chat" : location.hash.split("?", 1)[0];
+    const route = commaAnalyticsRoute(location.hash);
+    const navigation = location.hash.split("?", 1)[0];
     if (navigation === previousNavigation) return;
     previousNavigation = navigation;
     safely(() => client.capture("$pageview", { route }));
@@ -252,7 +299,13 @@ export function startCommaAnalytics({
       snapshot.phase === "signed_in" ? snapshot.principal.userId : undefined;
     if (firstSnapshot)
       safely(() => {
-        if (!userId || client.get_distinct_id() !== userId) client.reset(true);
+        const previousUser = client.get_property("$user_id");
+        if (
+          sharedWebIdentity
+            ? previousUser && previousUser !== userId
+            : !userId || client.get_distinct_id() !== userId
+        )
+          client.reset(true);
       });
     const identityChanged = analytics.userId !== userId;
     if (identityChanged) {
@@ -261,18 +314,25 @@ export function startCommaAnalytics({
     }
     // reset clears common event properties along with the previous identity.
     safely(() => client.register(commonProperties));
-    if (identityChanged && userId) safely(() => client.identify(userId));
+    safely(() => {
+      const attribution = sharedWebIdentity ? firstTouch(client, "/app") : undefined;
+      if (identityChanged && userId) {
+        if (attribution) client.identify(userId, undefined, attribution);
+        else client.identify(userId);
+      }
+    });
     if (snapshot.phase !== previousPhase) {
       previousPhase = snapshot.phase;
       safely(() =>
         client.capture("comma_session_state_changed", {
           phase: snapshot.phase,
-          duration_ms: firstSnapshot ? Math.round(performance.now()) : undefined,
+          duration_ms: firstSnapshot ? Math.round(uiClock.monotonic()) : undefined,
         })
       );
     }
     if (firstSnapshot) {
       safely(() => client.capture("comma_client_opened"));
+      captureDesktopLaunch();
       capturePage();
       analytics.captureReady();
     }
@@ -307,7 +367,7 @@ export function captureCommaPageView() {
 export function beginCommaMessageSend(surface: ChatSurface) {
   const analytics = active;
   const userId = analytics?.userId;
-  const start = performance.now();
+  const start = uiClock.monotonic();
   if (analytics)
     safely(() => analytics.client.capture("comma_message_send_requested", { surface }));
   return (
@@ -320,7 +380,7 @@ export function beginCommaMessageSend(surface: ChatSurface) {
       analytics.client.capture(`comma_message_send_${result}`, {
         surface,
         boundary,
-        duration_ms: Math.round(performance.now() - start),
+        duration_ms: Math.round(uiClock.monotonic() - start),
       })
     );
   };
@@ -352,6 +412,7 @@ export function captureCommaExperience(
     | "comma_participant_failed",
   properties: {
     surface: ChatSurface;
+    source_message_id?: string | undefined;
     duration_ms?: number | undefined;
     state?: string;
     error_kind?: string;
@@ -368,7 +429,9 @@ type ClientErrorKind =
   | "react_uncaught"
   | "unhandled_error"
   | "unhandled_rejection"
-  | "login_unavailable";
+  | "login_unavailable"
+  /** The client core reported an error in its own work, or its channel failed. */
+  | "core_fault";
 
 const loginFailureCodes = new Set([
   "network_unavailable",

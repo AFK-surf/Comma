@@ -1,4 +1,6 @@
 defmodule SalixMeet.Delivery do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Periodic terminal-meeting delivery runner.
 
@@ -7,7 +9,7 @@ defmodule SalixMeet.Delivery do
   meeting state itself, and publishes results through the provider boundary.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
   alias SalixMeet.{OwnerAttributionSnapshot, Runtime, RuntimeEvents, SlackThreadIndex, Store}
@@ -67,7 +69,7 @@ defmodule SalixMeet.Delivery do
           | :summary_waiting
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
   end
 
   @doc "Run one deterministic delivery pass."
@@ -144,7 +146,7 @@ defmodule SalixMeet.Delivery do
   # terminal one-way valve guarantees the verdict cannot be overwritten by a
   # late runtime event afterward.
   defp watchdog_check(meeting_id, doc, opts) do
-    now_s = opts[:watchdog_now_s] || System.system_time(:second)
+    now_s = opts[:watchdog_now_s] || SystemsClock.system_time(:second)
     cutoff_s = opts[:watchdog_cutoff_s] || Store.watchdog_cutoff_s()
 
     case Store.watchdog_eligibility(doc, now_s, cutoff_s) do
@@ -480,14 +482,14 @@ defmodule SalixMeet.Delivery do
   def init(opts) do
     interval = opts[:interval_ms] || @interval
     state = %{interval: interval, lease: nil, node: opts[:node] || to_string(node())}
-    send(self(), :tick)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :tick)
     {:ok, state}
   end
 
   @impl true
   def handle_info(:tick, state) do
     state = tick(state)
-    Process.send_after(self(), :tick, state.interval)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, state.interval)
     {:noreply, state}
   end
 
@@ -537,7 +539,7 @@ defmodule SalixMeet.Delivery do
   end
 
   defp publish_claimed_observed(meeting_id, doc, claim) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     try do
       outcome = publish_claimed(meeting_id, doc, claim)
@@ -560,7 +562,7 @@ defmodule SalixMeet.Delivery do
       "meeting_delivery",
       "system",
       outcome,
-      System.monotonic_time() - started_at
+      SystemsClock.monotonic_time() - started_at
     )
   end
 
@@ -731,7 +733,7 @@ defmodule SalixMeet.Delivery do
 
     is_integer(attempts) and attempts >= @delivery_retry_max_attempts and
       is_integer(first_failed_at) and
-      System.system_time(:millisecond) - first_failed_at >= @delivery_retry_min_elapsed_ms
+      SystemsClock.system_time(:millisecond) - first_failed_at >= @delivery_retry_min_elapsed_ms
   end
 
   # Structural, provider-neutral exemption: both providers now report a
@@ -1136,7 +1138,7 @@ defmodule SalixMeet.Delivery do
           with {:ok, enriched} <- enriched_result do
             candidate =
               OwnerAttributionSnapshot.build(summary, enriched,
-                completed_at: System.system_time(:millisecond)
+                completed_at: SystemsClock.system_time(:millisecond)
               )
 
             persist_owner_snapshot(meeting_id, claim, candidate, context, source_fingerprint)
@@ -1144,7 +1146,7 @@ defmodule SalixMeet.Delivery do
         else
           empty_snapshot =
             OwnerAttributionSnapshot.build(%{}, %{},
-              completed_at: System.system_time(:millisecond)
+              completed_at: SystemsClock.system_time(:millisecond)
             )
 
           persist_owner_snapshot(
@@ -1313,16 +1315,19 @@ defmodule SalixMeet.Delivery do
   defp put_valid_summary_fingerprint(context, _fingerprint), do: context
 
   defp start_status_refresher(meeting_id, state, claim) do
-    spawn_link(fn -> wait_for_status_refresh(meeting_id, state, claim, @status_refresh_ms) end)
+    SystemsRuntime.Proc.spawn_link(fn ->
+      wait_for_status_refresh(meeting_id, state, claim, @status_refresh_ms)
+    end)
   end
 
   defp start_claim_refresher(meeting_id, claim) do
-    spawn_link(fn ->
+    SystemsRuntime.Proc.spawn_link(fn ->
       wait_for_claim_refresh(meeting_id, claim, claim_refresh_ms())
     end)
   end
 
-  defp stop_refresher(pid) when is_pid(pid), do: send(pid, :stop)
+  defp stop_refresher(pid) when SystemsRuntime.Proc.is_process(pid),
+    do: SystemsRuntime.Proc.send(pid, :stop)
 
   defp status_refresh_loop(meeting_id, state, claim) do
     case set_generating_status(meeting_id, state, claim) do
@@ -1335,7 +1340,7 @@ defmodule SalixMeet.Delivery do
   end
 
   defp wait_for_status_refresh(meeting_id, state, claim, delay) do
-    receive do
+    SystemsRuntime.Proc.receive do
       :stop -> :ok
     after
       delay -> status_refresh_loop(meeting_id, state, claim)
@@ -1368,7 +1373,7 @@ defmodule SalixMeet.Delivery do
   end
 
   defp wait_for_claim_refresh(meeting_id, claim, delay) do
-    receive do
+    SystemsRuntime.Proc.receive do
       :stop -> :ok
     after
       delay -> claim_refresh_loop(meeting_id, claim)
@@ -1384,7 +1389,7 @@ defmodule SalixMeet.Delivery do
   end
 
   defp positive_refresh_ms(key, fallback) do
-    case Application.get_env(:salix_meet, key, fallback) do
+    case SystemsRuntime.get_env(:salix_meet, key, fallback) do
       value when is_integer(value) and value > 0 -> value
       _ -> fallback
     end

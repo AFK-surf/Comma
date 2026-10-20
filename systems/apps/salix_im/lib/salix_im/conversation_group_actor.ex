@@ -6,16 +6,22 @@ defmodule SalixIM.ConversationGroupActor do
   group-level commands, while the canonical CAS aggregate also preserves its
   constraints across owner overlap or retry.
 
-  The best-effort mutation wakeup and reconnect resynchronization boundary is
-  modeled in `tla/salix/ConversationMutationSubscription.tla`; changes to that
-  contract must move the spec and its executable scenarios together.
+  Mutation wakeups are best effort and route to the ring owner. A subscriber
+  recovers lost wakeups only when the owner it monitors exits: the stream
+  closes, reconnects through current placement, and receives `resync_required`.
+  The cluster therefore releases a local owner once placement names another
+  node (`SalixCluster.ConversationOwnerKeeper`).
+  The former TLA+ model of this boundary was retired in #1536; its anchors are
+  historical, and the multinode and ring placement tests carry the guarantee.
   """
 
-  use GenServer
+  require SystemsRuntime.Proc, as: Proc
+
+  use SystemsRuntime.Server
 
   require Logger
 
-  alias SalixIM.{Conversations, GroupDirectory}
+  alias SalixIM.{Conversations, GroupDirectory, TaskActivityProjection}
   alias SalixStore.{CasRecord, Ids, Keys}
 
   @pin_limit 200
@@ -29,6 +35,9 @@ defmodule SalixIM.ConversationGroupActor do
             router_read_hint: nil,
             list_revisions: %{"agent_task" => 0, "user_chat" => 0},
             mutation_revision: 0,
+            activity_rebuild_task: nil,
+            activity_rebuild_retry: nil,
+            activity_projection_ready?: false,
             list_subscribers: %{},
             mutation_subscribers: %{}
 
@@ -47,20 +56,20 @@ defmodule SalixIM.ConversationGroupActor do
     group_id = Keyword.fetch!(opts, :group_id)
 
     case Keyword.get(opts, :name, via(group_id)) do
-      nil -> GenServer.start_link(__MODULE__, opts)
-      name -> GenServer.start_link(__MODULE__, opts, name: name)
+      nil -> SystemsRuntime.Server.start_link(__MODULE__, opts)
+      name -> SystemsRuntime.Server.start_link(__MODULE__, opts, name: name)
     end
   end
 
   def key(group_id), do: {:conversation_group, group_id}
 
   defp via(group_id),
-    do: {:via, Registry, {SalixIM.ConversationRegistry, key(group_id)}}
+    do: {:via, SystemsRuntime.Registry, {SalixIM.ConversationRegistry, key(group_id)}}
 
   # A read-ahead address only. Callers must resolve current Group authority.
   def router_read_hint(group_id) do
-    case Registry.lookup(SalixIM.ConversationRegistry, key(group_id)) do
-      [{pid, _}] -> GenServer.call(pid, :router_read_hint, 100)
+    case SystemsRuntime.Registry.lookup(SalixIM.ConversationRegistry, key(group_id)) do
+      [{pid, _}] -> SystemsRuntime.Server.call(pid, :router_read_hint, 100)
       _ -> nil
     end
   catch
@@ -71,17 +80,17 @@ defmodule SalixIM.ConversationGroupActor do
     do: call(pid, {:remove_deleted_pin, conversation_id})
 
   def subscribe_conversation_list(pid, kind, subscriber)
-      when kind in ["agent_task", "user_chat"] and is_pid(subscriber),
+      when kind in ["agent_task", "user_chat"] and Proc.is_process(subscriber),
       do: call(pid, {:subscribe_conversation_list, kind, subscriber})
 
-  def subscribe_conversation_mutations(pid, subscriber) when is_pid(subscriber),
+  def subscribe_conversation_mutations(pid, subscriber) when Proc.is_process(subscriber),
     do: call(pid, {:subscribe_conversation_mutations, subscriber})
 
   def notify_conversation_mutation_if_running(group_id, mutation) when is_map(mutation) do
     if valid_mutation?(mutation) do
-      case Registry.lookup(SalixIM.ConversationRegistry, key(group_id)) do
+      case SystemsRuntime.Registry.lookup(SalixIM.ConversationRegistry, key(group_id)) do
         [{pid, _value}] ->
-          GenServer.cast(pid, {:conversation_mutated, mutation})
+          SystemsRuntime.Server.cast(pid, {:conversation_mutated, mutation})
 
         [] ->
           :ok
@@ -103,20 +112,36 @@ defmodule SalixIM.ConversationGroupActor do
 
   def notify_conversation_mutation_if_running(_group_id, _mutation), do: :ok
 
-  defp call(pid, command), do: GenServer.call(pid, command, @call_timeout)
+  defp call(pid, command), do: SystemsRuntime.Server.call(pid, command, @call_timeout)
 
   @impl true
   def init(opts) do
     {:ok,
      %__MODULE__{
        group_id: Keyword.fetch!(opts, :group_id),
-       list_generation: Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+       list_generation: Base.url_encode64(SystemsRuntime.Proc.random_bytes(12), padding: false)
      }}
   end
 
   @impl true
   def handle_call(:router_read_hint, _from, state),
     do: {:reply, state.router_read_hint, state}
+
+  def handle_call(:activity_tasks, _from, %{activity_projection_ready?: true} = state),
+    do: {:reply, :ok, state}
+
+  def handle_call(:activity_tasks, _from, state) do
+    with {:ok, _group} <- GroupDirectory.get_group(state.group_id) do
+      state = start_activity_rebuild(state)
+
+      reply =
+        if state.activity_projection_ready?, do: :ok, else: {:error, :activity_projection_pending}
+
+      {:reply, reply, state}
+    else
+      error -> {:reply, error, state}
+    end
+  end
 
   def handle_call({:router_read_hint, agent_id}, _from, state),
     do: {:reply, :ok, %{state | router_read_hint: agent_id}}
@@ -126,7 +151,7 @@ defmodule SalixIM.ConversationGroupActor do
       with {:ok, _group} <- GroupDirectory.get_group(state.group_id, tenant_id),
            {:ok, _conversation} <-
              Conversations.get_group_conversation(state.group_id, conversation_id) do
-        put_pin(state.group_id, conversation_id, System.system_time(:millisecond))
+        put_pin(state.group_id, conversation_id, SystemsClock.system_time(:millisecond))
       end
 
     {:reply, reply, state}
@@ -167,20 +192,20 @@ defmodule SalixIM.ConversationGroupActor do
   end
 
   def handle_call({:subscribe_conversation_list, kind, subscriber}, _from, state)
-      when kind in ["agent_task", "user_chat"] and is_pid(subscriber) do
+      when kind in ["agent_task", "user_chat"] and Proc.is_process(subscriber) do
     state = put_list_subscriber(state, kind, subscriber)
 
     {:reply,
      {:ok,
       %{
-        "owner_pid" => self(),
+        "owner_pid" => Proc.self(),
         "resync_required" => true,
         "version" => list_version(state, kind)
       }}, state}
   end
 
   def handle_call({:subscribe_conversation_mutations, subscriber}, _from, state)
-      when is_pid(subscriber) do
+      when Proc.is_process(subscriber) do
     case GroupDirectory.get_group(state.group_id) do
       {:ok, _group} ->
         state = put_mutation_subscriber(state, subscriber)
@@ -188,7 +213,7 @@ defmodule SalixIM.ConversationGroupActor do
         {:reply,
          {:ok,
           %{
-            "owner_pid" => self(),
+            "owner_pid" => Proc.self(),
             "version" => mutation_version(state)
           }}, state}
 
@@ -204,20 +229,117 @@ defmodule SalixIM.ConversationGroupActor do
     version = mutation_version(state)
 
     Enum.each(Map.keys(state.mutation_subscribers), fn subscriber ->
-      send(subscriber, {:group_conversation_mutated, state.group_id, mutation, version})
+      Proc.send(subscriber, {:group_conversation_mutated, state.group_id, mutation, version})
     end)
 
     {:noreply, state}
   end
 
   @impl true
+  def handle_info(
+        {ref, {:ok, next_cursor}},
+        %{activity_rebuild_task: %{ref: ref, cursor: cursor}} = state
+      ) do
+    Proc.demonitor(ref, [:flush])
+    state = %{state | activity_rebuild_task: nil}
+
+    case TaskActivityProjection.advance_rebuild(
+           state.group_id,
+           next_cursor || cursor,
+           is_nil(next_cursor)
+         ) do
+      {:ok, %{"state" => "ready"}} ->
+        state = invalidate_conversation_lists(state, %{kind: "agent_task", conversation_id: nil})
+        {:noreply, %{state | activity_projection_ready?: true}}
+
+      {:ok, _building} ->
+        Proc.send(Proc.self(), :continue_activity_rebuild)
+        {:noreply, state}
+
+      {:error, _reason} ->
+        {:noreply, schedule_activity_rebuild(state)}
+    end
+  end
+
+  def handle_info({ref, {:error, _reason}}, %{activity_rebuild_task: %{ref: ref}} = state) do
+    Proc.demonitor(ref, [:flush])
+    {:noreply, schedule_activity_rebuild(%{state | activity_rebuild_task: nil})}
+  end
+
+  def handle_info(:continue_activity_rebuild, state),
+    do: {:noreply, start_activity_rebuild(%{state | activity_rebuild_retry: nil})}
+
+  def handle_info(
+        {:DOWN, ref, :process, _pid, _reason},
+        %{activity_rebuild_task: %{ref: ref}} = state
+      ) do
+    {:noreply, schedule_activity_rebuild(%{state | activity_rebuild_task: nil})}
+  end
+
   def handle_info({:DOWN, ref, :process, subscriber, _reason}, state) do
     state = drop_list_subscriber(state, subscriber, ref)
     {:noreply, drop_mutation_subscriber(state, subscriber, ref)}
   end
 
+  # Placement moved this group to another node. Exiting closes each subscriber
+  # stream, which reconnects to the current owner and resynchronizes.
+  def handle_info(:release_non_owner, state), do: {:stop, :normal, state}
+
+  defp start_activity_rebuild(%{activity_rebuild_task: task} = state) when not is_nil(task),
+    do: state
+
+  defp start_activity_rebuild(%{activity_rebuild_retry: timer} = state) when not is_nil(timer),
+    do: state
+
+  defp start_activity_rebuild(state) do
+    case TaskActivityProjection.rebuild_state(state.group_id) do
+      {:ok, %{"state" => "ready"}} ->
+        %{state | activity_projection_ready?: true}
+
+      {:ok, %{"cursor" => cursor}} ->
+        start_activity_rebuild_page(state, cursor)
+
+      {:error, :not_found} ->
+        start_activity_rebuild_page(state, nil)
+
+      {:error, _reason} ->
+        schedule_activity_rebuild(state)
+    end
+  end
+
+  defp start_activity_rebuild_page(state, cursor) do
+    context = SystemsObservability.Context.capture()
+    group_id = state.group_id
+
+    try do
+      task =
+        SystemsRuntime.TaskSupervisor.async_nolink(SalixIM.ConversationProjectionTasks, fn ->
+          SystemsObservability.Context.run(context, fn ->
+            TaskActivityProjection.rebuild_page(group_id, cursor)
+          end)
+        end)
+
+      %{state | activity_rebuild_task: %{ref: task.ref, cursor: cursor}}
+    rescue
+      _error -> schedule_activity_rebuild(state)
+    catch
+      :exit, _reason ->
+        schedule_activity_rebuild(state)
+    end
+  end
+
+  defp schedule_activity_rebuild(%{activity_rebuild_retry: timer} = state) when not is_nil(timer),
+    do: state
+
+  defp schedule_activity_rebuild(state),
+    do: %{
+      state
+      | activity_rebuild_retry:
+          SystemsClock.send_after(Proc.self(), :continue_activity_rebuild, 5_000)
+    }
+
   defp put_task_order(group_id, bucket, conversation_ids) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     with {:ok, aggregate} <-
            update_task_order_aggregate(group_id, fn aggregate ->
@@ -339,7 +461,7 @@ defmodule SalixIM.ConversationGroupActor do
 
       if length(pins) == length(aggregate["pins"]),
         do: {:unchanged, aggregate},
-        else: put_pins(aggregate, pins, System.system_time(:millisecond))
+        else: put_pins(aggregate, pins, SystemsClock.system_time(:millisecond))
     end)
   end
 
@@ -436,7 +558,7 @@ defmodule SalixIM.ConversationGroupActor do
         put_in(state.list_subscribers[subscriber], %{current | kinds: MapSet.put(kinds, kind)})
 
       nil ->
-        subscriber_state = %{kinds: MapSet.new([kind]), ref: Process.monitor(subscriber)}
+        subscriber_state = %{kinds: MapSet.new([kind]), ref: Proc.monitor(subscriber)}
         put_in(state.list_subscribers[subscriber], subscriber_state)
     end
   end
@@ -445,7 +567,7 @@ defmodule SalixIM.ConversationGroupActor do
     if Map.has_key?(state.mutation_subscribers, subscriber) do
       state
     else
-      put_in(state.mutation_subscribers[subscriber], Process.monitor(subscriber))
+      put_in(state.mutation_subscribers[subscriber], Proc.monitor(subscriber))
     end
   end
 
@@ -479,7 +601,7 @@ defmodule SalixIM.ConversationGroupActor do
       Enum.each(state.list_subscribers, fn
         {subscriber, %{kinds: kinds}} ->
           if MapSet.member?(kinds, kind) do
-            send(
+            Proc.send(
               subscriber,
               {:group_conversation_list_invalidated, state.group_id, kind,
                mutation.conversation_id, version}

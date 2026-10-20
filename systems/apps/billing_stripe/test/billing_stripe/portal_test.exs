@@ -1,14 +1,14 @@
 defmodule BillingStripe.PortalTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   setup do
-    previous_secret = Application.get_env(:billing_stripe, :secret_key)
-    previous_api = Application.get_env(:billing_stripe, :stripe_api)
-    previous_configuration = Application.get_env(:billing_stripe, :portal_configuration_id)
+    previous_secret = SystemsRuntime.get_env(:billing_stripe, :secret_key)
+    previous_api = SystemsRuntime.get_env(:billing_stripe, :stripe_api)
+    previous_configuration = SystemsRuntime.get_env(:billing_stripe, :portal_configuration_id)
 
-    Application.put_env(:billing_stripe, :portal_configuration_id, "bpc_comma_staging")
-    Application.put_env(:billing_stripe, :secret_key, "sk_test_secret")
-    Application.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
+    SystemsRuntime.put_env(:billing_stripe, :portal_configuration_id, "bpc_comma_staging")
+    SystemsRuntime.put_env(:billing_stripe, :secret_key, "sk_test_secret")
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
 
     start_supervised!(%{
       id: BillingStripe.TestAPI.Recorder,
@@ -38,7 +38,7 @@ defmodule BillingStripe.PortalTest do
   end
 
   test "missing configuration returns an actionable error" do
-    Application.delete_env(:billing_stripe, :portal_configuration_id)
+    SystemsRuntime.delete_env(:billing_stripe, :portal_configuration_id)
 
     assert {:error, :stripe_portal_not_configured} =
              BillingStripe.create_customer_portal(%{
@@ -48,6 +48,6 @@ defmodule BillingStripe.PortalTest do
              })
   end
 
-  defp restore_env(key, nil), do: Application.delete_env(:billing_stripe, key)
-  defp restore_env(key, value), do: Application.put_env(:billing_stripe, key, value)
+  defp restore_env(key, nil), do: SystemsRuntime.delete_env(:billing_stripe, key)
+  defp restore_env(key, value), do: SystemsRuntime.put_env(:billing_stripe, key, value)
 end

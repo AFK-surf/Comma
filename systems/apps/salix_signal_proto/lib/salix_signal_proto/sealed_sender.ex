@@ -280,7 +280,7 @@ defmodule SalixSignalProto.SealedSender do
   def seal_multi(inner, %{public: sender_public, private: sender_private}, recipients, opts \\ [])
       when is_binary(inner) and is_list(recipients) do
     excluded = Keyword.get(opts, :excluded, [])
-    seed = Keyword.get_lazy(opts, :seed, fn -> :crypto.strong_rand_bytes(32) end)
+    seed = Keyword.get_lazy(opts, :seed, fn -> SystemsRuntime.Proc.random_bytes(32) end)
     %{x: x, k: k} = seed_keys(seed)
     q = X25519.public_key(X25519.clamp(x))
     q33 = <<0x05>> <> q

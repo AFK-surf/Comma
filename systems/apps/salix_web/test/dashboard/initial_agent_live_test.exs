@@ -1,6 +1,6 @@
 defmodule SalixWeb.Dashboard.InitialAgentLiveTest do
   @moduledoc "Initial-agent slot list + create/edit via LiveView."
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
@@ -8,104 +8,62 @@ defmodule SalixWeb.Dashboard.InitialAgentLiveTest do
   @endpoint SalixWeb.DashboardEndpoint
 
   setup do
-    {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Template dashboard test"})
-    Process.put(:template_dashboard_tenant, tenant["tenant_id"])
+    {:ok, tenant} = Salix.Control.Tenants.create(%{"name" => "Initial agent dashboard test"})
+    Process.put(:initial_agent_dashboard_tenant, tenant["tenant_id"])
     :ok
   end
 
-  defp tenant_id, do: Process.get(:template_dashboard_tenant)
+  defp tenant_id, do: Process.get(:initial_agent_dashboard_tenant)
 
   defp authed_conn,
     do:
       build_conn()
       |> Plug.Test.init_test_session(%{"admin_authed" => true, "current_tenant" => tenant_id()})
 
-  defp template(name) do
-    {:ok, t} = SalixAgent.Templates.create(%{"name" => name, "model" => "gpt-test"})
-    t
-  end
-
-  @tag :private_template
-  test "initial Agent seed selects and materializes a private template in its tenant" do
-    {:ok, private} =
-      SalixAgent.Templates.create_private(
-        %{"name" => "Private seed model", "model" => "gpt-seed"},
-        tenant_id()
-      )
-
-    {:ok, foreign} =
-      SalixAgent.Templates.create_private(
-        %{"name" => "Foreign seed model", "model" => "gpt-foreign"},
-        SalixStore.Ids.new_tenant_id()
-      )
-
-    {:ok, view, html} = live(authed_conn(), "/dash/initial-agents/new")
-    assert html =~ private["name"]
-    refute html =~ foreign["name"]
+  test "initial Agent seed stores and materializes a catalog model choice" do
+    {:ok, view, _html} = live(authed_conn(), "/dash/initial-agents/new")
 
     {:ok, _, _} =
       view
       |> form("form[phx-submit=save]", %{
-        "slot" => "private-worker",
-        "display_name" => "Private seeded worker",
-        "template_id" => private["template_id"],
+        "slot" => "catalog-worker",
+        "display_name" => "Catalog worker",
+        "model" => "gpt-5.5",
         "enabled" => "true"
       })
       |> render_submit()
       |> follow_redirect(authed_conn())
 
-    {:ok, group} = Salix.Control.Groups.create(%{"name" => "Private seed group"}, tenant_id())
+    {:ok, seed} = Salix.Control.InitialAgentSeeds.get("catalog-worker", tenant_id())
+    assert %{"kind" => "catalog", "model" => "gpt-5.5"} = seed["model"]
+
+    {:ok, group} = Salix.Control.Groups.create(%{"name" => "Catalog seed group"}, tenant_id())
 
     assert {:ok, agent} =
              Salix.Control.InitialAgentSeeds.materialize_slot(
                group["group_id"],
-               "private-worker",
+               "catalog-worker",
                tenant_id()
              )
 
-    assert agent["template_id"] == private["template_id"]
-    assert {:ok, llm} = SalixAgent.Templates.resolve_llm_for_agent(agent["agent_id"])
-    assert llm["model"] == "gpt-seed"
+    assert agent["model"] == seed["model"]
+    assert {:ok, %{"model" => "gpt-5.5"}, :pinned} = SalixAgent.AgentModel.resolve(agent)
 
-    assert {:error, {:bad_request, "template not found"}} =
+    assert {:error, {:bad_request, "template_id is not supported; give model"}} =
              Salix.Control.InitialAgentSeeds.put(
-               "foreign",
-               %{"template_id" => foreign["template_id"]},
+               "legacy",
+               %{"template_id" => "tmpl-legacy"},
                tenant_id()
              )
-  end
-
-  test "create an initial-agent slot via the new form" do
-    t = template("IA New Template-#{System.unique_integer([:positive])}")
-    slot = "main-#{System.unique_integer([:positive])}"
-
-    {:ok, view, _html} = live(authed_conn(), "/dash/initial-agents/new")
-
-    {:ok, _edit_view, html} =
-      view
-      |> form("form[phx-submit=save]", %{
-        "slot" => slot,
-        "display_name" => "Bridge Worker",
-        "template_id" => t["template_id"],
-        "is_default" => "true",
-        "enabled" => "true",
-        "sort_order" => "0"
-      })
-      |> render_submit()
-      |> follow_redirect(authed_conn())
-
-    assert html =~ "Bridge Worker"
-    assert html =~ slot
   end
 
   test "editing a slot loads its current values and saves changes" do
-    t = template("IA Edit Template-#{System.unique_integer([:positive])}")
-    slot = "edit-#{System.unique_integer([:positive])}"
+    slot = "edit-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, _} =
       Salix.Control.InitialAgentSeeds.put(
         slot,
-        %{"template_id" => t["template_id"], "display_name" => "Before"},
+        %{"model" => %{"kind" => "catalog", "model" => "gpt-5.5"}, "display_name" => "Before"},
         tenant_id()
       )
 
@@ -115,7 +73,7 @@ defmodule SalixWeb.Dashboard.InitialAgentLiveTest do
     view
     |> form("form[phx-submit=save]", %{
       "display_name" => "After",
-      "template_id" => t["template_id"],
+      "model" => "",
       "enabled" => "true",
       "sort_order" => "5"
     })
@@ -124,16 +82,17 @@ defmodule SalixWeb.Dashboard.InitialAgentLiveTest do
     {:ok, updated} = Salix.Control.InitialAgentSeeds.get(slot, tenant_id())
     assert updated["display_name"] == "After"
     assert updated["sort_order"] == 5
+    # The empty option follows the platform model of the role.
+    assert updated["model"] == nil
   end
 
   test "index deletes a slot" do
-    t = template("IA Del Template-#{System.unique_integer([:positive])}")
-    slot = "del-#{System.unique_integer([:positive])}"
+    slot = "del-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     {:ok, _} =
       Salix.Control.InitialAgentSeeds.put(
         slot,
-        %{"template_id" => t["template_id"], "display_name" => "Delete Me"},
+        %{"display_name" => "Delete Me"},
         tenant_id()
       )
 
@@ -144,26 +103,5 @@ defmodule SalixWeb.Dashboard.InitialAgentLiveTest do
     html = render_click(view, "delete", %{"slot" => slot})
     refute html =~ "Delete Me"
     assert {:error, :not_found} = Salix.Control.InitialAgentSeeds.get(slot, tenant_id())
-  end
-
-  test "surfaces a validation error for an invalid default/router combination" do
-    t = template("IA Bad Template-#{System.unique_integer([:positive])}")
-    slot = "bad-#{System.unique_integer([:positive])}"
-
-    {:ok, view, _html} = live(authed_conn(), "/dash/initial-agents/new")
-
-    html =
-      view
-      |> form("form[phx-submit=save]", %{
-        "slot" => slot,
-        "template_id" => t["template_id"],
-        "is_default" => "true",
-        "is_router" => "true",
-        "enabled" => "true",
-        "sort_order" => "0"
-      })
-      |> render_submit()
-
-    assert html =~ "default initial agent role must be worker"
   end
 end

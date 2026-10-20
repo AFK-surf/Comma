@@ -1,0 +1,12 @@
+# Python packages preinstalled in both Cloud VM images (the Agent VMM station image
+# and the Cloudflare Sandbox), so Tasks can read and write PDFs and Office files
+# without installing anything. Regenerate file-tools-requirements.txt with:
+#   uv pip compile file-tools-requirements.in --universal --python-version 3.11 \
+#     --generate-hashes --no-header -o file-tools-requirements.txt
+pypdf
+pdfplumber
+python-docx
+openpyxl
+python-pptx
+pillow
+reportlab

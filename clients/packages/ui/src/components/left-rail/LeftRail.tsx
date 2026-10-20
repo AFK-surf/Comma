@@ -1,7 +1,7 @@
 import type { ReactNode, RefObject } from "react";
 import { Button as AriaButton, Focusable } from "react-aria-components";
 import {
-  HomeIcon,
+  HomeFilledIcon,
   InboxIcon,
   ListChecksIcon,
   PuzzleIcon,
@@ -133,7 +133,7 @@ export const LeftRailItemControl = ({ item }: { item: LeftRailItem }) => {
 };
 
 const defaultLeftRailItems: LeftRailItem[] = [
-  { icon: <HomeIcon />, id: "home", label: "Home", selected: true },
+  { icon: <HomeFilledIcon />, id: "home", label: "Home", selected: true },
   { icon: <InboxIcon />, id: "inbox", label: "Inbox" },
   { icon: <ListChecksIcon mode="raw" />, id: "tasks", label: "Tasks" },
   { icon: <PuzzleIcon />, id: "plugins", label: "Plugins" },

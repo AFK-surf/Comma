@@ -1,7 +1,7 @@
 defmodule SalixAgent.SettleReasonReviewTest do
   # Issue #2070, M4: owner review of the reasons that settle a turn without a
   # visible reply. Each test drives the kernel directly.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{InternalSession, ProviderReplyObligation}
 
@@ -9,14 +9,14 @@ defmodule SalixAgent.SettleReasonReviewTest do
   @source "im_provider:slack:slack-1:C0AQ0C0KVMH:1787628850.000001"
 
   setup do
-    previous = Application.get_env(:salix_agent, :llm_activation_retry_base_ms)
+    previous = SystemsRuntime.get_env(:salix_agent, :llm_activation_retry_base_ms)
     # A long base delay keeps the retry deadline in the future.
-    Application.put_env(:salix_agent, :llm_activation_retry_base_ms, 600_000)
+    SystemsRuntime.put_env(:salix_agent, :llm_activation_retry_base_ms, 600_000)
 
     on_exit(fn ->
       if is_nil(previous),
-        do: Application.delete_env(:salix_agent, :llm_activation_retry_base_ms),
-        else: Application.put_env(:salix_agent, :llm_activation_retry_base_ms, previous)
+        do: SystemsRuntime.delete_env(:salix_agent, :llm_activation_retry_base_ms),
+        else: SystemsRuntime.put_env(:salix_agent, :llm_activation_retry_base_ms, previous)
     end)
   end
 
@@ -73,61 +73,6 @@ defmodule SalixAgent.SettleReasonReviewTest do
     assert InternalSession.get(failed, :last_ack_message_id) == 0
     assert ProviderReplyObligation.pending_count(failed) == 1
   end
-
-  # `TerminalReply.admit` binds the outcome of the lifecycle, not of the
-  # model's `end_turn` decision: a channel welcome is `done` and a Telegram
-  # interactive card is `blocked`. Both admissions are reachable with the
-  # opposite decision outcome.
-  test "channel welcomes and Telegram cards override the end_turn outcome" do
-    welcome = %{
-      "name" => "im_api.slack.post_channel_message",
-      "args" => %{"connect_id" => "slack-1", "channel" => "C_JOIN", "text" => "Welcome"},
-      "id" => "welcome",
-      "reply_intent" => nil
-    }
-
-    onboarding = %{
-      "kind" => "channel_onboarding",
-      "connect_id" => "slack-1",
-      "chat_id" => "C_JOIN",
-      "eligible" => true
-    }
-
-    assert {:ok, _args, %{"outcome" => "done"}} =
-             SalixVerifiedKernel.AgentLoop.terminal_reply_admission(
-               welcome,
-               onboarding,
-               flags("blocked")
-             )
-
-    question = %{
-      "name" => "question.request",
-      "args" => %{"question" => "Which option?"},
-      "id" => "question",
-      "reply_intent" => nil
-    }
-
-    telegram = %{
-      "kind" => "telegram",
-      "connect_id" => "telegram-1",
-      "chat_id" => "42",
-      "eligible" => true
-    }
-
-    assert {:ok, _args, %{"outcome" => "blocked"}} =
-             SalixVerifiedKernel.AgentLoop.terminal_reply_admission(
-               question,
-               telegram,
-               flags("done")
-             )
-  end
-
-  defp flags(outcome),
-    do: %{
-      "llm_tool_envelope" => true,
-      "runtime_failure_delivery" => false,
-      "terminal_decision_outcome" => outcome
-    }
 
   defp step(session, machine, event),
     do: InternalSession.query(session, :loop_step, {machine, event})

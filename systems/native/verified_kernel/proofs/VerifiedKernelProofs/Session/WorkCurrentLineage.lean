@@ -73,7 +73,7 @@ theorem read_lineage {framing : CodecFraming} {objects : Objects} {store : HotSt
       ValueSemantics.Equivalent snapshot decodedState := by
   obtain ⟨owner, identity, snapshot, sealed, _, encoded, history⟩ := valid objectKey _ read
   have equivalent := codec snapshot bytes decodedState encoded decoded
-  obtain ⟨addressed, _, captured⟩ := start_captured started
+  obtain ⟨addressed, _, captured⟩ := dispatch_start_captured started
   have trace := loaded
   rw [captured, addressed] at trace
   obtain ⟨state, journal, rest, normalized, owned, identified, _, _⟩ :=

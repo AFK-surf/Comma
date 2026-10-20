@@ -355,7 +355,7 @@ defmodule BridgeForTeams.Triage do
         org.id
         |> Projects.list_projects()
         |> Enum.filter(&present?(&1.salix_group_id))
-        |> Task.async_stream(&project_router_agents/1,
+        |> SystemsClock.async_stream(&project_router_agents/1,
           max_concurrency: @scope_max_concurrency,
           timeout: :infinity
         )
@@ -590,65 +590,21 @@ defmodule BridgeForTeams.Triage do
 
   defp put_task_preview(task, _project), do: task
 
-  def worker_configuration(org, agent, actor_id, opts \\ []) do
-    with {:ok, project} <- worker_project(org, agent, actor_id, :read),
-         {:ok, view} <- client().triage_worker_configuration(project.salix_group_id, opts) do
-      {:ok,
-       Map.put(
-         view,
-         "can_manage",
-         Memberships.authorize(actor_id, :write, %{
-           project_id: project.id,
-           min_project_role: "admin"
-         }) == :ok
-       )}
-    end
-  end
+  @doc """
+  Where Triage Tasks run: on the swarm's Task agent, at the swarm's default
+  place and default Task model (no Worker is chosen). Answers the project and
+  whether the swarm's plugins allow the Triage tools the Task uses
+  (`tools_ready`, nil when Salix cannot say).
+  """
+  def task_settings(org, agent, actor_id) do
+    with {:ok, project} <- worker_project(org, agent, actor_id, :read) do
+      tools_ready =
+        case client().triage_tools(project.salix_group_id) do
+          {:ok, %{} = tools} -> Enum.all?(tools, fn {_tool, enabled} -> enabled == true end)
+          _unavailable -> nil
+        end
 
-  def configure_worker(org, agent, actor_id, worker_id, revision) do
-    with {:ok, project} <- worker_project(org, agent, actor_id, :write),
-         {:ok, router} <- Agents.current_router(project),
-         audit = %{
-           org_id: org.id,
-           actor_user_id: actor_id,
-           action: "integration.slack.triage_worker_change_attempted",
-           resource_type: "project",
-           resource_id: project.id,
-           resource_label: "Triage Worker",
-           result: "ok",
-           request_id: Ecto.UUID.generate(),
-           metadata: %{
-             "worker_agent_id" => worker_id,
-             "expected_revision" => revision
-           }
-         },
-         :ok <- strict_audit(audit, audit_writer()) do
-      result =
-        client().configure_triage_worker(
-          project.salix_group_id,
-          router.salix_agent_id,
-          worker_id,
-          revision,
-          %{"actor_user_id" => actor_id, "request_id" => audit.request_id}
-        )
-
-      case result do
-        {:ok, binding} ->
-          recorded =
-            strict_audit(
-              %{
-                audit
-                | action: "integration.slack.triage_worker_changed",
-                  metadata: Map.put(audit.metadata, "binding", binding)
-              },
-              audit_writer()
-            )
-
-          {:ok, Map.put(binding, "audit_recorded", recorded == :ok)}
-
-        error ->
-          error
-      end
+      {:ok, %{project: project, tools_ready: tools_ready}}
     end
   end
 
@@ -774,7 +730,7 @@ defmodule BridgeForTeams.Triage do
           resource_id: receipt_ref,
           resource_label: "Slack Triage",
           result: "ok",
-          request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+          request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
           metadata: reveal_metadata(receipt_ref, opts)
         },
         audit_writer()
@@ -833,7 +789,7 @@ defmodule BridgeForTeams.Triage do
           resource_id: ref,
           resource_label: "Slack Triage",
           result: "ok",
-          request_id: Ecto.UUID.generate(),
+          request_id: SystemsRuntime.Proc.uuid(),
           metadata: reveal_metadata(ref, reveal_opts)
         }
       end)
@@ -893,7 +849,7 @@ defmodule BridgeForTeams.Triage do
             resource_label: "Slack Triage",
             result: "denied",
             reason: :forbidden,
-            request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+            request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
             surface: "integration",
             metadata: %{"receipt_ref" => receipt_ref}
           },
@@ -1115,7 +1071,7 @@ defmodule BridgeForTeams.Triage do
         resource_id: before.connect_id,
         resource_label: audit_label(before),
         result: "ok",
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         metadata: audit_metadata(before, later, action)
       },
       audit_writer()
@@ -1134,7 +1090,7 @@ defmodule BridgeForTeams.Triage do
         resource_label: "Slack Triage",
         result: result,
         reason: reason,
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         surface: "integration",
         metadata: Map.put(extra, "action", action_name(action))
       },
@@ -1178,7 +1134,7 @@ defmodule BridgeForTeams.Triage do
   # is no other way to produce it without corrupting the audit table.
   defp audit_writer,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :bridge_for_teams_core,
         :triage_audit_writer,
         &Observability.record_audit/1
@@ -1187,7 +1143,7 @@ defmodule BridgeForTeams.Triage do
   # A configured single-row writer (tests use it to fail audits) also governs
   # batches, so the batch is stored only when every row would have been.
   defp audit_batch_writer do
-    case Application.get_env(:bridge_for_teams_core, :triage_audit_writer) do
+    case SystemsRuntime.get_env(:bridge_for_teams_core, :triage_audit_writer) do
       nil ->
         &Observability.record_audits/1
 
@@ -1205,7 +1161,7 @@ defmodule BridgeForTeams.Triage do
 
   defp write_attempt_writer,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :bridge_for_teams_core,
         :triage_write_attempt_writer,
         &Observability.record_write_attempt/1
@@ -1301,25 +1257,25 @@ defmodule BridgeForTeams.Triage do
   defp fan_out_postures([], _tenant_id), do: {[], []}
 
   defp fan_out_postures(projects, tenant_id) do
-    deadline = System.monotonic_time(:millisecond) + @scope_deadline_ms
+    deadline = SystemsClock.monotonic_time(:millisecond) + @scope_deadline_ms
 
     answered =
       projects
-      |> Task.async_stream(
-        fn project -> {project.id, cached_posture(tenant_id, project.salix_group_id)} end,
+      |> SystemsClock.async_stream(
+        fn project -> {project.id, bounded_posture(tenant_id, project.salix_group_id)} end,
         max_concurrency: @scope_max_concurrency,
-        timeout: @scope_group_timeout_ms,
-        on_timeout: :kill_task,
+        timeout: :infinity,
         ordered: false
       )
       |> Enum.reduce_while(%{}, fn outcome, acc ->
         acc =
           case outcome do
+            {:ok, {_project_id, :timed_out}} -> acc
             {:ok, {project_id, result}} -> Map.put(acc, project_id, result)
             {:exit, _reason} -> acc
           end
 
-        if System.monotonic_time(:millisecond) >= deadline,
+        if SystemsClock.monotonic_time(:millisecond) >= deadline,
           do: {:halt, acc},
           else: {:cont, acc}
       end)
@@ -1345,6 +1301,17 @@ defmodule BridgeForTeams.Triage do
       end)
 
     {postures |> Enum.reverse() |> List.flatten(), Enum.reverse(unavailable)}
+  end
+
+  # The per-group timeout runs on SystemsClock, so a test's clock expires it.
+  defp bounded_posture(tenant_id, group_id) do
+    case SystemsClock.run_bounded(
+           fn -> cached_posture(tenant_id, group_id) end,
+           @scope_group_timeout_ms
+         ) do
+      {:ok, result} -> result
+      _exit_or_timeout -> :timed_out
+    end
   end
 
   defp unavailable_group(%Project{} = project, reason),

@@ -2,7 +2,7 @@ defmodule SalixAgent.AnalyzeLLM do
   @moduledoc """
   Resolve the per-agent auxiliary "analyze" model options.
 
-  Prefers the agent template's `analyze_config` (via
+  Prefers the agent's `analyze_config` (via
   `SalixAgent.MediaResolver`, the same model `salix.analyze` uses), falling
   back to the agent's main runtime LLM config. Shared by post-settle side
   channels that need a small model outside a round — session titles and the

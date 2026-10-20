@@ -3,6 +3,8 @@ import {
   useCallback,
   useContext,
   useId,
+  useLayoutEffect,
+  useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import {
@@ -95,6 +97,52 @@ const useDialogEnterShortcut = (
   );
 };
 
+/**
+ * Returns focus to the element that opened the dialog when React Aria's own
+ * return misses it.
+ *
+ * React Aria focuses the opener one frame after the dialog unmounts, but it
+ * lifts the background `inert` in a passive-effect cleanup. When that frame
+ * comes first (a busy main thread), focusing the still-inert opener does
+ * nothing and focus stays on <body>. A dialog closed over Settings then loses
+ * its place. This waits until the opener is no longer inert. It does nothing
+ * if focus has moved anywhere in the meantime.
+ */
+const OpenerFocusReturn = () => {
+  // Read during render, as React Aria does, before focus moves into the dialog.
+  const [opener] = useState(() =>
+    typeof document === "undefined" ? null : document.activeElement
+  );
+  useLayoutEffect(() => {
+    if (!(opener instanceof HTMLElement)) return undefined;
+    return () => {
+      if (!opener.closest("[inert]")) return;
+      const ownerDocument = opener.ownerDocument;
+      const observer = new MutationObserver(() => {
+        if (!opener.isConnected) {
+          stop();
+          return;
+        }
+        if (opener.closest("[inert]")) return;
+        stop();
+        const active = ownerDocument.activeElement;
+        if (active === null || active === ownerDocument.body)
+          opener.focus({ preventScroll: true });
+      });
+      function stop() {
+        observer.disconnect();
+        ownerDocument.removeEventListener("focusin", stop, true);
+      }
+      observer.observe(ownerDocument.documentElement, {
+        attributeFilter: ["inert"],
+        subtree: true,
+      });
+      ownerDocument.addEventListener("focusin", stop, true);
+    };
+  }, [opener]);
+  return null;
+};
+
 const DialogSurface = ({
   className,
   panelProps,
@@ -174,6 +222,7 @@ const DialogOverlay = ({
       }
     >
       <NativeSurfaceSuppressor />
+      <OpenerFocusReturn />
       <DialogSurface
         {...definedProps({ className })}
         {...definedProps({ descriptionId })}

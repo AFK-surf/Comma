@@ -1,4 +1,6 @@
-import { Button, Tooltip, cx, type ButtonProps } from "@comma/ui";
+import { Button, type ButtonProps } from "@comma/ui/components/Button";
+import { Tooltip } from "@comma/ui/components/tooltip";
+import { cx } from "@comma/ui/components/utils";
 import type { CSSProperties, ReactNode } from "react";
 import { AppIcon, type AppIconName } from "./icons";
 
@@ -7,12 +9,21 @@ const shellIconButtonStyle = {
   "--comma-button-hover-fg": "var(--color-sidebar-icon-primary)",
 } as CSSProperties;
 
+/** Closing the window: solid red under the pointer, as Windows' own close button. */
+const shellIconButtonDangerStyle = {
+  "--comma-button-hover-bg": "var(--color-bg-error-solid)",
+  "--comma-button-hover-fg": "var(--color-fg-white)",
+} as CSSProperties;
+
+type ShellIconButtonTone = "danger" | "default";
+
 type ShellIconButtonControlProps = Omit<
   ButtonProps,
   "children" | "className" | "hierarchy" | "iconLeading" | "iconOnly" | "size" | "style"
 > & {
   className?: string;
   icon: ReactNode;
+  tone?: ShellIconButtonTone;
 };
 
 /** The shell icon-button appearance without Tooltip or other trigger wrappers. */
@@ -21,6 +32,7 @@ export function ShellIconButtonControl({
   disabled,
   icon,
   isDisabled,
+  tone = "default",
   ...props
 }: ShellIconButtonControlProps) {
   const resolvedDisabled = isDisabled ?? disabled ?? false;
@@ -37,7 +49,12 @@ export function ShellIconButtonControl({
       size="sm"
       {...(disabled === undefined ? {} : { disabled })}
       {...(isDisabled === undefined ? {} : { isDisabled })}
-      {...(!resolvedDisabled ? { style: shellIconButtonStyle } : {})}
+      {...(!resolvedDisabled
+        ? {
+            style:
+              tone === "danger" ? shellIconButtonDangerStyle : shellIconButtonStyle,
+          }
+        : {})}
       {...props}
     />
   );
@@ -60,6 +77,7 @@ export function ShellIconButton({
   onPointerLeave,
   shortcut,
   testId,
+  tone = "default",
   variant = "plain",
 }: {
   className?: string;
@@ -79,6 +97,7 @@ export function ShellIconButton({
   shortcut?: string | readonly string[];
   /** Test hook, rendered as `data-testid` on the control itself. */
   testId?: string;
+  tone?: ShellIconButtonTone;
   variant?: "muted" | "plain";
 }) {
   const eventProps = {
@@ -106,6 +125,7 @@ export function ShellIconButton({
         )}
         disabled={disabled}
         icon={<AppIcon name={icon} className={cx("comma-input-icon", iconClassName)} />}
+        tone={tone}
         {...eventProps}
         {...expandedProps}
       />

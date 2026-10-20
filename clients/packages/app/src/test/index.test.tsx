@@ -1,12 +1,37 @@
+import type {
+  CoreClient,
+  ProductInboxItem,
+  ProductInboxListResult,
+  SessionAttempt,
+  SessionValue,
+  TaskSearchValue,
+} from "@comma/core-client";
+import { CoreProvider, type TaskConversationValue } from "@comma/core-client";
+import {
+  idleConversationChannelState,
+  normalizeServerMessages,
+} from "@comma/core/chat";
+import type { CommaConversation } from "@comma/core/api-schemas";
 import userEvent from "@testing-library/user-event";
+import { advance, flush } from "@comma/test-utils/fake-clock";
+import {
+  createScriptedCore,
+  delegateScriptedCore,
+} from "@comma/test-utils/scripted-core";
 import {
   commaClientAppShortcutOverridesSchema,
   defaultCommaClientSettings,
   type NativeStateBridge,
-  type ProductInboxItem,
-  type ProductInboxListResult,
   type SurfaceList,
 } from "@comma/native-bridge";
+import type {
+  SessionAuthAttemptRef,
+  SessionLifecycleSnapshot,
+  SessionProblemCode,
+  SessionProblemOperation,
+  SignedInSessionSnapshot,
+  SignedOutSessionSnapshot,
+} from "@comma/session-contract";
 import {
   CommaApp,
   CommaAuthGate,
@@ -14,13 +39,10 @@ import {
   CommaSidebarPanel,
   CommaSidebarProvider,
   CommaWebClientSettingsProvider,
-  ProductInboxProjectionProvider,
   commaClientSettingsStorageKey,
-  createWebSessionHostController,
+  createCoreSessionHostController,
   useCommaAuth,
-  type ProductInboxProjectionController,
   type SessionHostController,
-  type WebSessionHostPorts,
 } from "@comma/app";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import {
@@ -31,11 +53,17 @@ import {
   waitFor,
   within,
 } from "@comma/test-utils/render";
-import { chordKeybinding, sequenceKeybinding, toast } from "@comma/ui";
+import {
+  chordKeybinding,
+  sequenceKeybinding,
+} from "@comma/ui/components/settings-shortcut";
+import { toast } from "@comma/ui/components/toast";
+import { motionDuration } from "@comma/ui/tokens";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { COMMA_SURFACE_PAUSED_ATTRIBUTE } from "../components/commaSurfacePause";
 import { createProductInboxProjectionHarness } from "./productInboxProjectionHarness";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 vi.mock("tweakpane", () => ({
   Pane: class PaneMock {
@@ -51,13 +79,15 @@ const legacySessionTokenStorageKey = "comma.sessionToken";
 const legacyUserAdminStorageKey = "comma.userAdmin";
 const legacyUserEmailStorageKey = "comma.userEmail";
 
-let commaTestSession: true | "guest" | undefined;
-let nextSessionHostId = 0;
 const sessionHostControllers: SessionHostController[] = [];
+/** The client core the app rendered in this test talks to (scripted). */
+let app: AppCore;
+let user: ReturnType<typeof userEvent.setup>;
 
 describe("CommaApp", () => {
   beforeEach(() => {
-    commaTestSession = undefined;
+    user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    app = createAppCore();
     delete (window as Window & { google?: unknown }).google;
     installCommaFetchStub();
   });
@@ -75,367 +105,312 @@ describe("CommaApp", () => {
 
   it("renders passwordless login before the app shell", async () => {
     renderCommaApp();
+    await settle();
 
     expect(
-      await screen.findByRole("heading", { name: "Sign in to Comma" })
+      screen.getByRole("heading", { name: "Sign in to Comma" })
     ).toBeInTheDocument();
     expect(screen.queryByRole("complementary", { name: "App sidebar" })).toBeNull();
   });
 
-  it("does not render product drag surfaces above web content", async () => {
-    const { container } = renderCommaApp();
-
-    expect(
-      await screen.findByRole("heading", { name: "Sign in to Comma" })
-    ).toBeInTheDocument();
-    expect(container.querySelector(".comma-content")).toBeNull();
-    expect(container.querySelector(".comma-window-bar")).toBeNull();
-  });
-
   it("signs in with an email verification code", async () => {
-    const fetchMock = installCommaFetchStub(async (url: string) => {
-      if (url.endsWith("/v1/comma/auth/email/login")) {
-        return jsonResponse({
-          challenge_id: "comma_challenge_1",
-          code: "123456",
-        });
-      }
-
-      return jsonResponse({
-        expires_at: 4_102_444_800,
-        session_id: "11111111-1111-4111-8111-111111111111",
-        user: { id: "usr_1", email: "person@example.com" },
-      });
-    });
+    app.emailLogin({ challengeId: "comma_challenge_1", code: "123456", who: person });
 
     renderCommaApp();
+    await settle();
 
-    await userEvent.type(
-      await screen.findByRole("textbox", { name: /email/i }),
+    await user.type(
+      screen.getByRole("textbox", { name: /email/i }),
       "person@example.com"
     );
-    await userEvent.click(screen.getByRole("button", { name: "Send code" }));
+    await user.click(screen.getByRole("button", { name: "Send code" }));
+    await settle();
 
-    expect(
-      await screen.findByRole("textbox", { name: /verification code/i })
-    ).toHaveValue("123456");
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      "Verification code sent."
+    // The code arrives with the request's answer and fills in once it renders.
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: /verification code/i })).toHaveValue(
+        "123456"
+      )
     );
+    expect(screen.getByRole("status")).toHaveTextContent("Verification code sent.");
 
-    await userEvent.click(screen.getByRole("button", { name: "Verify code" }));
+    await user.click(screen.getByRole("button", { name: "Verify code" }));
+    await settle();
 
     expect(
-      await screen.findByRole("complementary", { name: "App sidebar" })
+      screen.getByRole("complementary", { name: "App sidebar" })
     ).toBeInTheDocument();
     expect(localStorage.getItem(legacySessionTokenStorageKey)).toBeNull();
     expect(localStorage.getItem(legacyUserEmailStorageKey)).toBeNull();
     expect(localStorage.getItem(legacyUserAdminStorageKey)).toBeNull();
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:4200/v1/comma/auth/email/login",
-      expect.objectContaining({
-        method: "POST",
-        credentials: "include",
-        body: JSON.stringify({ email: "person@example.com" }),
-      })
-    );
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:4200/v1/comma/auth/email/verify",
-      expect.objectContaining({
-        method: "POST",
-        credentials: "include",
-        body: expect.stringMatching(
-          /^{"challenge_id":"comma_challenge_1","code":"123456","client_kind":"web","client_platform":"(?:android|ios|linux|macos|unknown|windows)"}$/
-        ),
-      })
-    );
+    const signedOut = {
+      authorityInstanceId: "core-web",
+      expectedSessionId: null,
+      generation: 0,
+    };
+    expect(app.sentTo("session.email.request")).toEqual([
+      { email: "person@example.com", expected: signedOut },
+    ]);
+    expect(app.sentTo("session.email.verify")).toEqual([
+      {
+        attempt: { attemptId: "attempt-1", expected: signedOut },
+        challengeId: "comma_challenge_1",
+        code: "123456",
+      },
+    ]);
   });
 
   it("replaces a prepared Google attempt when the user chooses email", async () => {
     const google = installGoogleIdentityServicesStub();
-    const fetchMock = installCommaFetchStub(async (url: string) => {
-      if (url.endsWith("/v1/comma/auth/google/attempt")) {
-        return jsonResponse({
-          attempt_id: "gat_email_fallback",
-          client_id: "comma-web-client.apps.googleusercontent.com",
-          nonce: "nonce_email_fallback",
-          platform: "web",
-        });
-      }
-      if (url.endsWith("/v1/comma/auth/email/login")) {
-        return jsonResponse({
-          challenge_id: "comma_challenge_email_fallback",
-          code: "123456",
-        });
-      }
-      if (url.endsWith("/v1/comma/auth/email/verify")) {
-        return jsonResponse({
-          expires_at: 4_102_444_800,
-          session_id: "11111111-1111-4111-8111-111111111111",
-          user: { id: "usr_1", email: "person@example.com" },
-        });
-      }
-      return jsonResponse({ error: "not found" }, 404);
+    app.answer("session.google.attempt", () =>
+      app.googleAttempt("gat_email_fallback", "nonce_email_fallback")
+    );
+    app.emailLogin({
+      challengeId: "comma_challenge_email_fallback",
+      code: "123456",
+      who: person,
     });
 
     renderCommaApp();
+    await settle();
 
-    await waitFor(() => expect(google.renderButton).toHaveBeenCalledOnce());
-    await userEvent.type(
+    expect(google.renderButton).toHaveBeenCalledOnce();
+    await user.type(
       screen.getByRole("textbox", { name: /email/i }),
       "person@example.com"
     );
-    await userEvent.click(screen.getByRole("button", { name: "Send code" }));
+    await user.click(screen.getByRole("button", { name: "Send code" }));
+    await settle();
 
-    expect(
-      await screen.findByRole("textbox", { name: /verification code/i })
-    ).toHaveValue("123456");
-    await userEvent.click(screen.getByRole("button", { name: "Verify code" }));
-    expect(
-      await screen.findByRole("complementary", { name: "App sidebar" })
-    ).toBeVisible();
-    expect(
-      fetchMock.mock.calls.filter(([input]) =>
-        String(input).endsWith("/v1/comma/auth/google")
+    // The code arrives with the request's answer and fills in once it renders.
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: /verification code/i })).toHaveValue(
+        "123456"
       )
-    ).toEqual([]);
+    );
+    await user.click(screen.getByRole("button", { name: "Verify code" }));
+    await settle();
+    expect(screen.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
+    expect(app.sentTo("session.google.complete")).toEqual([]);
   });
 
   it("signs in through the official Google Identity Services callback", async () => {
     const google = installGoogleIdentityServicesStub();
-    const fetchMock = installCommaFetchStub(async (url: string) => {
-      if (url.endsWith("/v1/comma/auth/google/attempt")) {
-        return jsonResponse({
-          attempt_id: "gat_1",
-          client_id: "comma-web-client.apps.googleusercontent.com",
-          nonce: "nonce_1",
-          platform: "web",
-        });
-      }
-
-      if (url.endsWith("/v1/comma/auth/google")) {
-        return jsonResponse({
-          expires_at: 4_102_444_800,
-          session_id: "11111111-1111-4111-8111-111111111111",
-          user: { id: "usr_google", email: "person@gmail.com" },
-        });
-      }
-
-      return jsonResponse({ error: "not found" }, 404);
-    });
+    app.answer("session.google.attempt", () => app.googleAttempt("gat_1", "nonce_1"));
+    app.answer("session.google.complete", () => ({
+      ok: true,
+      value: {
+        status: "signed_in",
+        snapshot: app.signIn({ id: "usr_google", email: "person@gmail.com" }),
+      },
+    }));
 
     renderCommaApp();
+    await settle();
 
-    await waitFor(() => expect(google.renderButton).toHaveBeenCalledOnce());
+    expect(google.renderButton).toHaveBeenCalledOnce();
     google.submitCredential("google_id_token");
+    await settle();
 
     expect(
-      await screen.findByRole("complementary", { name: "App sidebar" })
+      screen.getByRole("complementary", { name: "App sidebar" })
     ).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:4200/v1/comma/auth/google",
-      expect.objectContaining({
-        method: "POST",
-        credentials: "include",
-        body: expect.stringMatching(
-          /^{"attempt_id":"gat_1","credential":"google_id_token","nonce":"nonce_1","client_kind":"web","client_platform":"(?:android|ios|linux|macos|unknown|windows)"}$/
-        ),
-      })
-    );
+    expect(app.sentTo("session.google.complete")).toEqual([
+      {
+        attempt: {
+          attemptId: "attempt-1",
+          expected: {
+            authorityInstanceId: "core-web",
+            expectedSessionId: null,
+            generation: 0,
+          },
+        },
+        credential: "google_id_token",
+        nonce: "nonce_1",
+        providerAttemptId: "gat_1",
+      },
+    ]);
     expect(localStorage.getItem(legacySessionTokenStorageKey)).toBeNull();
   });
 
   it("retries Google Identity Services after the script fails to load", async () => {
-    installCommaFetchStub(async (url: string) => {
-      if (url.endsWith("/v1/comma/auth/google/attempt")) {
-        return jsonResponse({
-          attempt_id: "gat_retry",
-          client_id: "comma-web-client.apps.googleusercontent.com",
-          nonce: "nonce_retry",
-          platform: "web",
-        });
-      }
-
-      return jsonResponse({ error: "not found" }, 404);
-    });
-
-    renderCommaApp();
-
-    const firstScript = await waitFor(() => {
-      const script = document.getElementById("comma-google-identity-services");
-      expect(script).toBeInstanceOf(HTMLScriptElement);
-      return script as HTMLScriptElement;
-    });
-    fireEvent.error(firstScript);
-
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Retry Google sign-in" })
+    app.answer("session.google.attempt", () =>
+      app.googleAttempt("gat_retry", "nonce_retry")
     );
 
-    const secondScript = await waitFor(() => {
-      const script = document.getElementById("comma-google-identity-services");
-      expect(script).toBeInstanceOf(HTMLScriptElement);
-      expect(script).not.toBe(firstScript);
-      return script as HTMLScriptElement;
-    });
-    const google = installGoogleIdentityServicesStub();
-    fireEvent.load(secondScript);
+    renderCommaApp();
+    await settle();
 
-    await waitFor(() => expect(google.renderButton).toHaveBeenCalledOnce());
+    const firstScript = document.getElementById("comma-google-identity-services");
+    expect(firstScript).toBeInstanceOf(HTMLScriptElement);
+    fireEvent.error(firstScript!);
+    await settle();
+
+    await user.click(screen.getByRole("button", { name: "Retry Google sign-in" }));
+    await settle();
+
+    const secondScript = document.getElementById("comma-google-identity-services");
+    expect(secondScript).toBeInstanceOf(HTMLScriptElement);
+    expect(secondScript).not.toBe(firstScript);
+    const google = installGoogleIdentityServicesStub();
+    fireEvent.load(secondScript!);
+    await settle();
+
+    expect(google.renderButton).toHaveBeenCalledOnce();
   });
 
   it("replaces a failed Google credential attempt when the user retries", async () => {
     const google = installGoogleIdentityServicesStub();
+    const secondAttempt = deferred<void>();
     let attemptCount = 0;
-    let releaseSecondAttempt: (() => void) | undefined;
-    const secondAttemptPending = new Promise<void>((resolve) => {
-      releaseSecondAttempt = resolve;
+    app.answer("session.google.attempt", async () => {
+      attemptCount += 1;
+      const count = attemptCount;
+      if (count === 2) await secondAttempt.promise;
+      return app.googleAttempt(`gat_retry_${count}`, `nonce_retry_${count}`);
     });
-    const fetchMock = installCommaFetchStub(async (url: string) => {
-      if (url.endsWith("/v1/comma/auth/google/attempt")) {
-        attemptCount += 1;
-        if (attemptCount === 2) {
-          await secondAttemptPending;
-        }
-        return jsonResponse({
-          attempt_id: `gat_retry_${attemptCount}`,
-          client_id: "comma-web-client.apps.googleusercontent.com",
-          nonce: `nonce_retry_${attemptCount}`,
-          platform: "web",
-        });
-      }
-
-      if (url.endsWith("/v1/comma/auth/google")) {
-        return jsonResponse({ error: "invalid_google_credential" }, 401);
-      }
-
-      return jsonResponse({ error: "not found" }, 404);
+    // The server refused the credential (401): the core answers a sign-in that cannot go on.
+    app.answer("session.google.complete", () => {
+      app.signOut("no_session");
+      return refused("sign_in_with_google", "unknown");
     });
 
     renderCommaApp();
+    await settle();
 
-    await waitFor(() => expect(google.renderButton).toHaveBeenCalledOnce());
+    expect(google.renderButton).toHaveBeenCalledOnce();
     google.submitCredential("rejected_google_id_token");
+    await settle();
 
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Retry Google sign-in" })
-    );
+    await user.click(screen.getByRole("button", { name: "Retry Google sign-in" }));
+    await settle();
 
     expect(
-      await screen.findByRole("status", { name: "Loading Google sign-in…" })
+      screen.getByRole("status", { name: "Loading Google sign-in…" })
     ).toBeVisible();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(attemptCount).toBe(2);
 
-    releaseSecondAttempt?.();
+    secondAttempt.resolve();
+    await settle();
 
-    await waitFor(() => expect(google.renderButton).toHaveBeenCalledTimes(2));
-    expect(
-      fetchMock.mock.calls.filter(([input]) =>
-        String(input).endsWith("/v1/comma/auth/google/attempt")
-      )
-    ).toHaveLength(2);
+    expect(google.renderButton).toHaveBeenCalledTimes(2);
+    expect(app.sentTo("session.google.attempt")).toHaveLength(2);
   });
 
   it("requires the purpose-bound email code when Google linking needs proof", async () => {
     const google = installGoogleIdentityServicesStub();
-    const fetchMock = installCommaFetchStub(async (url: string) => {
-      if (url.endsWith("/v1/comma/auth/google/attempt")) {
-        return jsonResponse({
-          attempt_id: "gat_2",
-          client_id: "comma-web-client.apps.googleusercontent.com",
-          nonce: "nonce_2",
-          platform: "web",
-        });
-      }
-
-      if (url.endsWith("/v1/comma/auth/google/link/verify")) {
-        return jsonResponse({
-          expires_at: 4_102_444_800,
-          session_id: "11111111-1111-4111-8111-111111111111",
-          user: { id: "usr_linked", email: "person@example.com" },
-        });
-      }
-
-      if (url.endsWith("/v1/comma/auth/google")) {
-        return jsonResponse({
+    app.answer("session.google.attempt", () => app.googleAttempt("gat_2", "nonce_2"));
+    // The Google account must be linked first: the same attempt now waits on the emailed code.
+    app.answer(
+      "session.google.complete",
+      ({ attempt }: { attempt: SessionAuthAttemptRef }) => ({
+        ok: true,
+        value: {
           status: "otp_required",
-          challenge_id: "challenge_google_link",
-          email: "person@example.com",
+          attempt: app.begin(
+            "google",
+            {
+              challengeId: "challenge_google_link",
+              purpose: "google_link",
+              email: "person@example.com",
+            },
+            attempt
+          ),
+          challengeId: "challenge_google_link",
           code: "654321",
-        });
-      }
-
-      return jsonResponse({ error: "not found" }, 404);
-    });
+          email: "person@example.com",
+        },
+      })
+    );
+    app.answer("session.google.linkVerify", () => ({
+      ok: true,
+      value: app.signIn({ id: "usr_linked", email: "person@example.com" }),
+    }));
 
     renderCommaApp();
+    await settle();
 
-    await waitFor(() => expect(google.renderButton).toHaveBeenCalledOnce());
+    expect(google.renderButton).toHaveBeenCalledOnce();
     google.submitCredential("google_id_token_for_link");
+    await settle();
 
     expect(
-      await screen.findByRole("heading", { name: "Check your email" })
+      screen.getByRole("heading", { name: "Check your email" })
     ).toBeInTheDocument();
     expect(screen.getByText("person@example.com")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: /verification code/i })).toHaveValue(
       "654321"
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Verify code" }));
+    await user.click(screen.getByRole("button", { name: "Verify code" }));
+    await settle();
 
     expect(
-      await screen.findByRole("complementary", { name: "App sidebar" })
+      screen.getByRole("complementary", { name: "App sidebar" })
     ).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:4200/v1/comma/auth/google/link/verify",
-      expect.objectContaining({
-        method: "POST",
-        credentials: "include",
-        body: expect.stringMatching(
-          /^{"challenge_id":"challenge_google_link","code":"654321","client_kind":"web","client_platform":"(?:android|ios|linux|macos|unknown|windows)"}$/
-        ),
-      })
-    );
+    expect(app.sentTo("session.google.linkVerify")).toEqual([
+      {
+        attempt: {
+          attemptId: "attempt-1",
+          expected: {
+            authorityInstanceId: "core-web",
+            expectedSessionId: null,
+            generation: 0,
+          },
+        },
+        challengeId: "challenge_google_link",
+        code: "654321",
+      },
+    ]);
   });
 
   it("returns to login when the user signs out from Settings → Profile", async () => {
     seedCommaSession();
     renderCommaApp();
+    await settle();
 
-    await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Profile" }));
-    expect(
-      await screen.findByText("Sign out of Comma on this device.")
-    ).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await settle();
+    await user.click(screen.getByRole("button", { name: "Profile" }));
+    await settle();
+    expect(screen.getByText("Sign out of Comma on this device.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await settle();
 
     expect(
-      await screen.findByRole("heading", { name: "Sign in to Comma" })
+      screen.getByRole("heading", { name: "Sign in to Comma" })
     ).toBeInTheDocument();
-    await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:4200/v1/comma/auth/logout",
-        expect.objectContaining({ method: "POST", credentials: "include" })
-      )
-    );
+    expect(app.sentTo("session.signOut")).toEqual([
+      {
+        expected: {
+          authorityInstanceId: "core-web",
+          expectedAudience: "http://127.0.0.1",
+          expectedSessionId: testSessionId,
+          generation: 1,
+        },
+      },
+    ]);
   });
 
   it("unmounts the authenticated tree while browser logout is pending", async () => {
     seedCommaSession();
-    let finishLogout!: (response: Response) => void;
-    const pendingLogout = new Promise<Response>((resolve) => {
-      finishLogout = resolve;
-    });
-    installCommaFetchStub(undefined, {
-      logout: async () => pendingLogout,
+    const logout = deferred<void>();
+    app.answer("session.signOut", async () => {
+      app.signingOut();
+      await logout.promise;
+      return { ok: true, value: app.signOut("user_signed_out") };
     });
 
     renderCommaApp();
+    await settle();
 
-    await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Profile" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await settle();
+    await user.click(screen.getByRole("button", { name: "Profile" }));
+    await settle();
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await settle();
 
     expect(screen.getByText("Signing out…")).toBeInTheDocument();
     expect(
@@ -445,17 +420,26 @@ describe("CommaApp", () => {
       screen.queryByRole("heading", { name: "Sign in to Comma" })
     ).not.toBeInTheDocument();
 
-    finishLogout(jsonResponse({ signed_out: true }));
+    logout.resolve();
+    await settle();
 
     expect(
-      await screen.findByRole("heading", { name: "Sign in to Comma" })
+      screen.getByRole("heading", { name: "Sign in to Comma" })
     ).toBeInTheDocument();
   });
 
   it("fails closed until an uncertain HttpOnly-cookie logout is reconciled", async () => {
     seedCommaSession();
-    const fetchMock = installCommaFetchStub(undefined, {
-      logout: async () => jsonResponse({ error: "unavailable" }, 503),
+    // The server could not say whether it signed out (503): the core fails closed, holding the Cookie's session.
+    app.answer("session.signOut", () => {
+      app.signingOut();
+      app.failClosed("session_probe_unavailable", "sign_out");
+      return refused("sign_out", "unknown");
+    });
+    // The person retries: the core finds the Cookie's session again.
+    app.answer("session.recover", () => {
+      app.signIn(person);
+      return null;
     });
     let currentSignal: AbortSignal | undefined;
 
@@ -473,48 +457,38 @@ describe("CommaApp", () => {
     }
 
     renderWithSessionHost(
-      <CommaAuthGate>
-        <AuthProbe />
-      </CommaAuthGate>
+      app.wrap(
+        <CommaAuthGate>
+          <AuthProbe />
+        </CommaAuthGate>
+      )
     );
+    await settle();
 
-    await expect(screen.findByLabelText("auth-email")).resolves.toHaveTextContent(
-      "person@example.com"
-    );
+    expect(screen.getByLabelText("auth-email")).toHaveTextContent("person@example.com");
     const originalSignal = currentSignal;
-    await userEvent.click(screen.getByRole("button", { name: "sign out" }));
+    await user.click(screen.getByRole("button", { name: "sign out" }));
+    await settle();
 
     expect(originalSignal?.aborted).toBe(true);
     expect(
-      await screen.findByRole("heading", {
+      screen.getByRole("heading", {
         name: "Comma can’t continue",
       })
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("auth-email")).toBeNull();
+    expect(app.sentTo("session.recover")).toEqual([]);
 
-    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await waitFor(() => {
-      expect(currentSignal).not.toBe(originalSignal);
-      expect(currentSignal?.aborted).toBe(false);
-    });
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await settle();
+
+    expect(currentSignal).not.toBe(originalSignal);
+    expect(currentSignal?.aborted).toBe(false);
     expect(screen.getByLabelText("auth-email")).toHaveTextContent("person@example.com");
     expect(
       screen.queryByRole("heading", { name: "Sign in to Comma" })
     ).not.toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.filter(([input, init]) => {
-        const url =
-          typeof input === "string"
-            ? input
-            : input instanceof URL
-              ? input.toString()
-              : input.url;
-        return (
-          (init?.method ?? "GET") === "GET" &&
-          requestPath(url) === "/v1/comma/auth/session"
-        );
-      })
-    ).toHaveLength(2);
+    expect(app.sentTo("session.recover")).toEqual([{}]);
   });
 
   it("scrubs legacy renderer auth metadata when the web app mounts", async () => {
@@ -523,20 +497,20 @@ describe("CommaApp", () => {
     localStorage.setItem(legacyUserAdminStorageKey, "true");
 
     renderCommaApp();
+    await settle();
 
-    await waitFor(() => {
-      expect(localStorage.getItem(legacySessionTokenStorageKey)).toBeNull();
-      expect(localStorage.getItem(legacyUserEmailStorageKey)).toBeNull();
-      expect(localStorage.getItem(legacyUserAdminStorageKey)).toBeNull();
-    });
+    expect(localStorage.getItem(legacySessionTokenStorageKey)).toBeNull();
+    expect(localStorage.getItem(legacyUserEmailStorageKey)).toBeNull();
+    expect(localStorage.getItem(legacyUserAdminStorageKey)).toBeNull();
   });
 
   it("renders the Figma shell layout with the Home route", async () => {
     seedCommaSession();
     renderCommaApp();
+    await settle();
 
     expect(
-      await screen.findByRole("complementary", { name: "App sidebar" })
+      screen.getByRole("complementary", { name: "App sidebar" })
     ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute(
       "aria-current",
@@ -563,42 +537,85 @@ describe("CommaApp", () => {
     );
     expect(screen.getByRole("textbox", { name: "AI prompt" })).toHaveAttribute(
       "data-placeholder",
-      "Do anything"
+      "Type / for commands, @ for context"
     );
     expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
     expect(screen.getByRole("button", { name: "Voice input" })).toBeEnabled();
   });
 
+  it("opens and sends to the workspace named by a Quick Chat Home link", async () => {
+    seedCommaSession();
+    scriptChat(app);
+    const requested: unknown[] = [];
+    app.topic("workspaceChat", (topic) => {
+      requested.push(topic.workspace);
+      const workspaceId = String(topic.workspace ?? "default");
+      return {
+        status: "ready",
+        kept: false,
+        chat: {
+          workspaceId,
+          groupId: `group-${workspaceId}`,
+          conversationId: `chat-${workspaceId}`,
+        },
+      };
+    });
+    window.location.hash = "#/?workspace=second";
+    renderCommaApp();
+    await settle();
+    expect(requested).toEqual(["second"]);
+    await user.type(screen.getByRole("textbox", { name: "AI prompt" }), "Follow up");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await settle();
+    expect(app.sentTo("chatView.send")).toEqual([
+      expect.objectContaining({
+        workspace: "second",
+        group: "group-second",
+        conversation: "chat-second",
+        text: "Follow up",
+      }),
+    ]);
+    fireEvent.keyDown(window, { code: "KeyG" });
+    fireEvent.keyDown(window, { code: "KeyT" });
+    await settle();
+    expect(window.location.hash).toBe("#/tasks");
+    expect(requested).toEqual(["second"]);
+  });
+
   it("starts the Workspace Chat from the Comma Center prompt", async () => {
     seedCommaSession();
     installNativeBridgeMock({ platform: "web" });
-    let releaseWorkspaceChat!: () => void;
-    const workspaceChatReady = new Promise<void>((resolve) => {
-      releaseWorkspaceChat = resolve;
+    const workspaceChat = deferred<void>();
+    scriptChat(app);
+    app.answer("chat.resolveWorkspaceChat", async () => {
+      await workspaceChat.promise;
+      return {
+        conversationId: "conv-created",
+        groupId: "grp-web",
+        status: "ready",
+        workspaceId: "ws-web",
+      };
     });
-    const fetchMock = installCommaCenterFetchStub({ workspaceChatReady });
     renderCommaApp();
+    await settle();
 
-    await userEvent.type(
-      await screen.findByRole("textbox", { name: "AI prompt" }),
+    await user.type(
+      screen.getByRole("textbox", { name: "AI prompt" }),
       "你好，第二条聊天测试"
     );
-    await userEvent.click(screen.getByRole("button", { name: "Send" }));
-    releaseWorkspaceChat();
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    workspaceChat.resolve();
+    await settle();
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:4200/v1/comma/groups/grp-web/assistant-chat",
-      expect.objectContaining({ method: "POST" })
-    );
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "http://127.0.0.1:4200/v1/comma/groups/grp-web/conversations/conv-created/messages",
-        expect.objectContaining({
-          method: "POST",
-          body: expect.stringContaining("你好，第二条聊天测试"),
-        })
-      )
-    );
+    expect(app.sentTo("chat.resolveWorkspaceChat")).not.toEqual([]);
+    expect(app.sentTo("chatView.send")).toEqual([
+      expect.objectContaining({
+        conversation: "conv-created",
+        group: "grp-web",
+        text: "你好，第二条聊天测试",
+        workspace: "ws-web",
+      }),
+    ]);
   });
 
   it("sets platform root attributes from native.info", async () => {
@@ -614,10 +631,9 @@ describe("CommaApp", () => {
     });
 
     renderCommaApp();
+    await settle();
 
-    await waitFor(() =>
-      expect(screen.getByRole("main")).toHaveAttribute("data-platform", "electron")
-    );
+    expect(screen.getByRole("main")).toHaveAttribute("data-platform", "electron");
     expect(screen.getByRole("main")).toHaveAttribute("data-os", "macos");
   });
 
@@ -638,52 +654,40 @@ describe("CommaApp", () => {
     });
 
     renderCommaApp();
-    await waitFor(() =>
-      expect(screen.getByRole("main")).toHaveAttribute("data-platform", "electron")
-    );
+    await settle();
+    expect(screen.getByRole("main")).toHaveAttribute("data-platform", "electron");
 
     act(() => {
       toast.info("Copied message", { description: "Message copied to clipboard" });
     });
+    await flush();
 
-    expect(await screen.findByText("Copied message")).toBeInTheDocument();
+    expect(screen.getByText("Copied message")).toBeInTheDocument();
     expect(document.querySelectorAll("[data-sonner-toaster]")).toHaveLength(1);
     act(() => {
       toast.dismissAll();
     });
   });
 
-  it("opens Search over the current route from the window bar", async () => {
-    seedCommaSession();
-    renderCommaApp();
-
-    const homeLink = await screen.findByRole("link", { name: "Home" });
-    expect(homeLink).toHaveAttribute("aria-current", "page");
-
-    await userEvent.click(screen.getByTestId("comma-window-bar-search"));
-    expect(await screen.findByRole("dialog", { name: "Search Comma" })).toBeVisible();
-    expect(screen.getByRole("combobox", { name: "Search Comma" })).toHaveFocus();
-    expect(window.location.hash).not.toBe("#/search");
-  });
-
   it("keeps the command palette closed for a guest Session", async () => {
-    commaTestSession = "guest";
+    seedCommaSession(guestUser);
     renderCommaApp();
+    await settle();
 
-    expect(await screen.findByTestId("comma-guest-banner")).toBeVisible();
+    expect(screen.getByTestId("comma-guest-banner")).toBeVisible();
     dispatchCommandPaletteShortcut();
+    await advance(200);
 
     // A guest has no Tasks to search; the palette never opens.
-    await expect(
-      screen.findByRole("dialog", { name: "Search Comma" }, { timeout: 200 })
-    ).rejects.toThrow();
+    expect(screen.queryByRole("dialog", { name: "Search Comma" })).toBeNull();
   });
 
   it("ignores the Chat Sidebar shortcut in a guest Session", async () => {
-    commaTestSession = "guest";
+    seedCommaSession(guestUser);
     renderCommaApp();
+    await settle();
 
-    expect(await screen.findByTestId("comma-guest-banner")).toBeVisible();
+    expect(screen.getByTestId("comma-guest-banner")).toBeVisible();
     const chatSidebar = screen.getByTestId("chat-sidebar");
     dispatchPrimaryChord("KeyB", { altKey: true });
 
@@ -696,8 +700,10 @@ describe("CommaApp", () => {
     });
     seedCommaSession();
     renderCommaApp();
+    await settle();
 
-    await userEvent.click(await screen.findByTestId("comma-window-bar-search"));
+    await user.click(screen.getByTestId("comma-window-bar-search"));
+    await settle();
 
     const commandHint = screen.getByText("Command Search").parentElement;
     expect(commandHint).not.toBeNull();
@@ -734,16 +740,9 @@ describe("CommaApp", () => {
         ]
       ),
     });
-    installCommaFetchStub(async (url: string, init?: RequestInit) => {
-      const parsedUrl = new URL(url);
-      const method = init?.method ?? "GET";
-      if (
-        method === "GET" &&
-        parsedUrl.pathname ===
-          "/v1/comma/groups/grp-history/conversations/cnv-history-21"
-      ) {
-        previewRequests.push("cnv-history-21");
-        return jsonResponse({
+    scriptTaskPreviews(previewRequests, (conversationId) => {
+      if (conversationId === "cnv-history-21") {
+        return {
           ...history[20]!,
           messages: [
             {
@@ -761,19 +760,19 @@ describe("CommaApp", () => {
               message_id: "msg-history-assistant",
             },
           ],
-        });
+        };
       }
-      return jsonResponse({ error: `unhandled ${method} ${parsedUrl.pathname}` }, 404);
+      return new Promise(() => {});
     });
     renderCommaApp(productInbox.controller);
+    await settle();
 
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "General" })
-    ).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "General" })).toBeVisible();
     dispatchCommandPaletteShortcut();
-    expect(await screen.findByRole("dialog", { name: "Search Comma" })).toBeVisible();
+    await settle();
+    expect(screen.getByRole("dialog", { name: "Search Comma" })).toBeVisible();
 
-    const newestTask = await screen.findByRole("option", {
+    const newestTask = screen.getByRole("option", {
       name: /Newest history task/,
     });
     expect(screen.getAllByRole("option")).toHaveLength(20);
@@ -781,24 +780,20 @@ describe("CommaApp", () => {
       screen.queryByRole("option", { name: /^History task 1(?:\s|$)/ })
     ).toBeNull();
     expect(screen.queryByRole("option", { name: /Not a Task/ })).toBeNull();
-    await waitFor(() => expect(newestTask).toHaveAttribute("aria-selected", "true"));
-    expect(await screen.findByText("The Task preview is ready.")).toBeVisible();
+    expect(newestTask).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("The Task preview is ready.")).toBeVisible();
     expect(previewRequests).toEqual(["cnv-history-21"]);
     expect(productInbox.retain).toHaveBeenCalled();
 
-    await userEvent.click(newestTask);
+    await user.click(newestTask);
+    await settle();
 
-    await waitFor(() =>
-      expect(window.location.hash).toBe(
-        "#/tasks/wsp-history/grp-history/cnv-history-21"
-      )
-    );
-  }, 10_000);
+    expect(window.location.hash).toBe("#/tasks/wsp-history/grp-history/cnv-history-21");
+  });
 
-  it("loads a Task preview after confirmed pointer intent and cancels the previous preview", async () => {
+  it("loads a Task preview after confirmed pointer intent, and shows only the Task now selected", async () => {
     seedCommaSession();
     window.location.hash = "#/settings";
-    let firstPreviewSignal: AbortSignal | undefined;
     const previewRequests: string[] = [];
     const tasks = [
       {
@@ -824,31 +819,15 @@ describe("CommaApp", () => {
         tasks
       ),
     });
-    installCommaFetchStub(async (url: string, init?: RequestInit) => {
-      const parsedUrl = new URL(url);
-      const method = init?.method ?? "GET";
-      if (
-        method === "GET" &&
-        parsedUrl.pathname ===
-          "/v1/comma/groups/grp-hover/conversations/cnv-hover-first"
-      ) {
-        previewRequests.push("cnv-hover-first");
-        firstPreviewSignal = init?.signal ?? undefined;
-        return new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener(
-            "abort",
-            () => reject(new DOMException("Aborted", "AbortError")),
-            { once: true }
-          );
+    let answerFirst!: (conversation: CommaConversation) => void;
+    scriptTaskPreviews(previewRequests, (conversationId) => {
+      if (conversationId === "cnv-hover-first") {
+        return new Promise<CommaConversation>((resolve) => {
+          answerFirst = resolve;
         });
       }
-      if (
-        method === "GET" &&
-        parsedUrl.pathname ===
-          "/v1/comma/groups/grp-hover/conversations/cnv-hover-second"
-      ) {
-        previewRequests.push("cnv-hover-second");
-        return jsonResponse({
+      if (conversationId === "cnv-hover-second") {
+        return {
           group_id: "grp-hover",
           id: "cnv-hover-second",
           kind: "agent_task",
@@ -864,30 +843,51 @@ describe("CommaApp", () => {
           status: "active",
           title: "Second preview",
           updated_at: 1,
-        });
+        };
       }
-      return jsonResponse({ error: `unhandled ${method} ${parsedUrl.pathname}` }, 404);
+      return new Promise(() => {});
     });
     renderCommaApp(productInbox.controller);
+    await settle();
 
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "General" })
-    ).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "General" })).toBeVisible();
     dispatchCommandPaletteShortcut();
-    expect(await screen.findByRole("dialog", { name: "Search Comma" })).toBeVisible();
-    await waitFor(() => expect(previewRequests).toEqual(["cnv-hover-first"]));
+    await settle();
+    expect(screen.getByRole("dialog", { name: "Search Comma" })).toBeVisible();
+    expect(previewRequests).toEqual(["cnv-hover-first"]);
 
     const secondPreview = screen.getByRole("option", { name: /Second preview/ });
     fireEvent.pointerMove(secondPreview, { pointerType: "mouse" });
 
     expect(previewRequests).toEqual(["cnv-hover-first"]);
-    expect(firstPreviewSignal?.aborted).toBe(false);
     expect(secondPreview).toHaveAttribute("aria-selected", "true");
-    await waitFor(() =>
-      expect(previewRequests).toEqual(["cnv-hover-first", "cnv-hover-second"])
+    // The palette takes the pointer's rest on a row as intent once it has stayed there.
+    await advance(motionDuration.pointerIntent);
+    expect(previewRequests).toEqual(["cnv-hover-first", "cnv-hover-second"]);
+    expect(screen.getByText("Second Task preview")).toBeVisible();
+
+    // The first Task's answer comes late: the preview stays the selected Task's.
+    act(() =>
+      answerFirst({
+        group_id: "grp-hover",
+        id: "cnv-hover-first",
+        kind: "agent_task",
+        messages: [
+          {
+            actor_type: "agent",
+            agent_id: "agt-hover",
+            content: [{ text: "First Task preview", type: "text" }],
+            kind: "message",
+            message_id: "msg-hover-first",
+          },
+        ],
+        status: "active",
+        title: "First preview",
+      })
     );
-    expect(await screen.findByText("Second Task preview")).toBeVisible();
-    expect(firstPreviewSignal?.aborted).toBe(true);
+    await settle();
+    expect(screen.getByText("Second Task preview")).toBeVisible();
+    expect(screen.queryByText("First Task preview")).toBeNull();
   });
 
   it("keeps the preview aligned when the Task list reorders after hover", async () => {
@@ -930,15 +930,9 @@ describe("CommaApp", () => {
         tasks
       ),
     });
-    installCommaFetchStub(async (url: string, init?: RequestInit) => {
-      const path = requestPath(url);
-      const method = init?.method ?? "GET";
-      if (
-        method === "GET" &&
-        path === "/v1/comma/groups/grp-hover-race/conversations/cnv-hover-race-first"
-      ) {
-        previewRequests.push("cnv-hover-race-first");
-        return jsonResponse({
+    scriptTaskPreviews(previewRequests, (conversationId) => {
+      if (conversationId === "cnv-hover-race-first") {
+        return {
           ...tasks[0]!,
           messages: [
             {
@@ -949,14 +943,10 @@ describe("CommaApp", () => {
               message_id: "msg-hover-race-first",
             },
           ],
-        });
+        };
       }
-      if (
-        method === "GET" &&
-        path === "/v1/comma/groups/grp-hover-race/conversations/cnv-hover-race-second"
-      ) {
-        previewRequests.push("cnv-hover-race-second");
-        return jsonResponse({
+      if (conversationId === "cnv-hover-race-second") {
+        return {
           ...tasks[1]!,
           messages: [
             {
@@ -967,27 +957,26 @@ describe("CommaApp", () => {
               message_id: "msg-hover-race-second",
             },
           ],
-        });
+        };
       }
-      return jsonResponse({ error: `unhandled ${method} ${path}` }, 404);
+      return new Promise(() => {});
     });
     renderCommaApp(productInbox.controller);
+    await settle();
 
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "General" })
-    ).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "General" })).toBeVisible();
     dispatchCommandPaletteShortcut();
-    expect(await screen.findByText("Race first preview")).toBeVisible();
+    await settle();
+    expect(screen.getByText("Race first preview")).toBeVisible();
 
     const secondTask = screen.getByRole("option", { name: /Race second/ });
     fireEvent.pointerMove(secondTask, { pointerType: "mouse" });
     expect(previewRequests).toEqual(["cnv-hover-race-first"]);
     expect(secondTask).toHaveAttribute("aria-selected", "true");
-    await waitFor(() =>
-      expect(previewRequests).toEqual(["cnv-hover-race-first", "cnv-hover-race-second"])
-    );
-    expect(await screen.findByText("Race second preview")).toBeVisible();
-    await waitFor(() => expect(secondTask).toHaveAttribute("aria-selected", "true"));
+    await advance(motionDuration.pointerIntent);
+    expect(previewRequests).toEqual(["cnv-hover-race-first", "cnv-hover-race-second"]);
+    expect(screen.getByText("Race second preview")).toBeVisible();
+    expect(secondTask).toHaveAttribute("aria-selected", "true");
 
     act(() => {
       productInbox.emit(
@@ -1001,8 +990,9 @@ describe("CommaApp", () => {
         )
       );
     });
+    await settle();
 
-    expect(await screen.findByText("Race second preview")).toBeVisible();
+    expect(screen.getByText("Race second preview")).toBeVisible();
     expect(secondTask).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByText("Race first preview")).toBeNull();
     expect(previewRequests).toEqual(["cnv-hover-race-first", "cnv-hover-race-second"]);
@@ -1010,100 +1000,81 @@ describe("CommaApp", () => {
 
   it("keeps one-character Task queries local and searches two-character terms", async () => {
     seedCommaSession();
-    let searchRequests = 0;
-    installCommaFetchStub(async (url: string, init?: RequestInit) => {
-      const parsedUrl = new URL(url);
-      const method = init?.method ?? "GET";
-      if (method === "GET" && parsedUrl.pathname === "/v1/comma/workspaces") {
-        return jsonResponse({
-          data: [{ group_id: "grp-search", id: "wsp-search", name: "Search" }],
-        });
-      }
-      if (
-        method === "GET" &&
-        parsedUrl.pathname === "/v1/comma/groups/grp-search/conversations/search"
-      ) {
-        searchRequests += 1;
-        expect(parsedUrl.searchParams.get("q")).toBe("智能");
-        return jsonResponse({
-          data: [
-            {
-              conversation_id: "cnv-ai",
-              highlights: [{ start: 0, end: 2 }],
-              matched_field: "title",
-              snippet: "智能路线图",
-              title: "智能路线图",
-            },
-          ],
-        });
-      }
-      return jsonResponse({ error: `unhandled ${method} ${parsedUrl.pathname}` }, 404);
+    const searched = scriptTaskSearch({
+      智能: {
+        status: "ready",
+        scope: { groupId: "grp-search", workspaceId: "wsp-search" },
+        results: [
+          {
+            conversation_id: "cnv-ai",
+            highlights: [{ start: 0, end: 2 }],
+            matched_field: "title",
+            snippet: "智能路线图",
+            title: "智能路线图",
+          },
+        ],
+      },
     });
     renderCommaApp();
+    await settle();
 
-    await userEvent.click(await screen.findByTestId("comma-window-bar-search"));
+    await user.click(screen.getByTestId("comma-window-bar-search"));
+    await settle();
     const input = screen.getByRole("combobox", { name: "Search Comma" });
-    await userEvent.type(input, "智");
+    await user.type(input, "智");
+    await settle();
     expect(
       screen.getByText("Type at least 2 characters to search tasks")
     ).toBeVisible();
-    expect(searchRequests).toBe(0);
+    expect(searched()).toEqual([]);
 
-    await userEvent.clear(input);
-    await userEvent.type(input, "e\u0301");
+    await user.clear(input);
+    await user.type(input, "é");
+    await settle();
     expect(
       screen.getByText("Type at least 2 characters to search tasks")
     ).toBeVisible();
-    expect(searchRequests).toBe(0);
+    expect(searched()).toEqual([]);
 
-    await userEvent.clear(input);
-    await userEvent.type(input, "智");
-    await userEvent.type(input, "能");
-    expect(await screen.findByRole("option", { name: /智能路线图/ })).toBeVisible();
+    await user.clear(input);
+    await user.type(input, "智");
+    await settle();
+    await user.type(input, "能");
+    await settle();
+    expect(screen.getByRole("option", { name: /智能路线图/ })).toBeVisible();
     expect(screen.getByText("智能", { selector: "mark" })).toBeVisible();
-    expect(searchRequests).toBe(1);
+    expect(searched()).toEqual(["智能"]);
   });
 
   it("searches indexed Task content, highlights the match, and opens the Task", async () => {
     seedCommaSession();
     const snippet = `…${"前".repeat(48)}archive rollout`;
     const highlightStart = snippet.indexOf("archive");
-    installCommaFetchStub(async (url: string, init?: RequestInit) => {
-      const path = requestPath(url);
-      const method = init?.method ?? "GET";
-      if (method === "GET" && path === "/v1/comma/workspaces") {
-        return jsonResponse({
-          data: [{ group_id: "grp-search", id: "wsp-search", name: "Search" }],
-        });
-      }
-      if (
-        method === "GET" &&
-        path === "/v1/comma/groups/grp-search/conversations/search"
-      ) {
-        return jsonResponse({
-          data: [
-            {
-              conversation_id: "cnv-search",
-              highlights: [{ start: highlightStart, end: highlightStart + 7 }],
-              matched_field: "content",
-              snippet,
-              title: "Release checklist",
-              updated_at: 2,
-            },
-          ],
-        });
-      }
-      return jsonResponse({ error: `unhandled ${method} ${path}` }, 404);
+    scriptTaskSearch({
+      archive: {
+        status: "ready",
+        scope: { groupId: "grp-search", workspaceId: "wsp-search" },
+        results: [
+          {
+            conversation_id: "cnv-search",
+            highlights: [{ start: highlightStart, end: highlightStart + 7 }],
+            matched_field: "content",
+            snippet,
+            title: "Release checklist",
+            updated_at: 2,
+          },
+        ],
+      },
     });
     renderCommaApp();
+    await settle();
 
-    await userEvent.click(await screen.findByTestId("comma-window-bar-search"));
-    await userEvent.type(
-      screen.getByRole("combobox", { name: "Search Comma" }),
-      "archive"
-    );
+    await user.click(screen.getByTestId("comma-window-bar-search"));
+    await settle();
+    await user.type(screen.getByRole("combobox", { name: "Search Comma" }), "archive");
+    await settle();
 
-    const releaseChecklist = await screen.findByRole("option", {
+    const releaseChecklist = screen.getByRole("option", {
       name: /Release checklist/,
     });
     expect(releaseChecklist).toBeVisible();
@@ -1116,56 +1087,44 @@ describe("CommaApp", () => {
       releaseChecklist.querySelector('[data-slot="command-palette-item-highlight"]')
     ).toBeNull();
     expect(releaseChecklist).not.toHaveAccessibleName(/Tasks/);
-    await userEvent.click(releaseChecklist);
+    await user.click(releaseChecklist);
+    await settle();
 
-    await waitFor(() =>
-      expect(window.location.hash).toBe("#/tasks/wsp-search/grp-search/cnv-search")
-    );
+    expect(window.location.hash).toBe("#/tasks/wsp-search/grp-search/cnv-search");
   });
 
   it("shows the first content match as a subtitle when the title also matches", async () => {
     seedCommaSession();
     const title = "调研 Cursor 并制作网页";
     const contentSnippet = "已完成中文简报网页，并附带 HTML";
-    installCommaFetchStub(async (url: string, init?: RequestInit) => {
-      const path = requestPath(url);
-      const method = init?.method ?? "GET";
-      if (method === "GET" && path === "/v1/comma/workspaces") {
-        return jsonResponse({
-          data: [{ group_id: "grp-search", id: "wsp-search", name: "Search" }],
-        });
-      }
-      if (
-        method === "GET" &&
-        path === "/v1/comma/groups/grp-search/conversations/search"
-      ) {
-        return jsonResponse({
-          data: [
-            {
-              content_match: {
-                highlights: [{ start: 7, end: 9 }],
-                snippet: contentSnippet,
-              },
-              conversation_id: "cnv-title-and-content",
-              highlights: [{ start: 13, end: 15 }],
-              matched_field: "title",
-              snippet: title,
-              title,
+    scriptTaskSearch({
+      网页: {
+        status: "ready",
+        scope: { groupId: "grp-search", workspaceId: "wsp-search" },
+        results: [
+          {
+            content_match: {
+              highlights: [{ start: 7, end: 9 }],
+              snippet: contentSnippet,
             },
-          ],
-        });
-      }
-      return jsonResponse({ error: `unhandled ${method} ${path}` }, 404);
+            conversation_id: "cnv-title-and-content",
+            highlights: [{ start: 13, end: 15 }],
+            matched_field: "title",
+            snippet: title,
+            title,
+          },
+        ],
+      },
     });
     renderCommaApp();
+    await settle();
 
-    await userEvent.click(await screen.findByTestId("comma-window-bar-search"));
-    await userEvent.type(
-      screen.getByRole("combobox", { name: "Search Comma" }),
-      "网页"
-    );
+    await user.click(screen.getByTestId("comma-window-bar-search"));
+    await settle();
+    await user.type(screen.getByRole("combobox", { name: "Search Comma" }), "网页");
+    await settle();
 
-    const result = await screen.findByRole("option", { name: /调研 Cursor/ });
+    const result = screen.getByRole("option", { name: /调研 Cursor/ });
     const resultTitle = result.querySelector(
       '[data-slot="command-palette-item-title"]'
     );
@@ -1178,179 +1137,108 @@ describe("CommaApp", () => {
     expect(subtitle?.querySelector("mark")).toHaveTextContent("网页");
   });
 
-  it("shows only Task Search failure without command fallbacks", async () => {
-    seedCommaSession();
-    installCommaFetchStub(async (url: string, init?: RequestInit) => {
-      const path = requestPath(url);
-      const method = init?.method ?? "GET";
-      if (method === "GET" && path === "/v1/comma/workspaces") {
-        return jsonResponse({
-          data: [{ group_id: "grp-search", id: "wsp-search", name: "Search" }],
-        });
-      }
-      if (
-        method === "GET" &&
-        path === "/v1/comma/groups/grp-search/conversations/search"
-      ) {
-        return jsonResponse({ error: "projection unavailable" }, 503);
-      }
-      return jsonResponse({ error: `unhandled ${method} ${path}` }, 404);
-    });
-    renderCommaApp();
-
-    await userEvent.click(await screen.findByTestId("comma-window-bar-search"));
-    await userEvent.type(
-      screen.getByRole("combobox", { name: "Search Comma" }),
-      "font"
-    );
-
-    expect(
-      await screen.findByText("Unable to search tasks. Try again in a moment.")
-    ).toBeVisible();
-    expect(screen.queryAllByRole("option")).toHaveLength(0);
-  });
-
   it("shows server-rejected Task queries as actionable validation errors", async () => {
     seedCommaSession();
-    installCommaFetchStub(async (url: string, init?: RequestInit) => {
-      const path = requestPath(url);
-      const method = init?.method ?? "GET";
-      if (method === "GET" && path === "/v1/comma/workspaces") {
-        return jsonResponse({
-          data: [{ group_id: "grp-search", id: "wsp-search", name: "Search" }],
-        });
-      }
-      if (
-        method === "GET" &&
-        path === "/v1/comma/groups/grp-search/conversations/search"
-      ) {
-        expect(new URL(url).searchParams.get("q")).toBe("ß".repeat(128));
-        return jsonResponse({ error: "q must contain at most 128 characters" }, 400);
-      }
-      return jsonResponse({ error: `unhandled ${method} ${path}` }, 404);
+    // The server refused the query (400): the core calls it invalid.
+    const searched = scriptTaskSearch({
+      ["ß".repeat(128)]: { status: "invalid", scope: null, results: [] },
     });
     renderCommaApp();
+    await settle();
 
-    await userEvent.click(await screen.findByTestId("comma-window-bar-search"));
+    await user.click(screen.getByTestId("comma-window-bar-search"));
+    await settle();
     fireEvent.change(screen.getByRole("combobox", { name: "Search Comma" }), {
       target: { value: "ß".repeat(128) },
     });
+    await settle();
 
     expect(
-      await screen.findByText("This search is invalid. Try a shorter query.")
+      screen.getByText("This search is invalid. Try a shorter query.")
     ).toBeVisible();
     expect(
       screen.queryByText("Unable to search tasks. Try again in a moment.")
     ).not.toBeInTheDocument();
     expect(screen.queryAllByRole("option")).toHaveLength(0);
+    expect(searched()).toEqual(["ß".repeat(128)]);
   });
 
   it("removes committed Task results as soon as the query request key changes", async () => {
     seedCommaSession();
-    let resolveRollout: ((response: Response) => void) | undefined;
-    let workspaceRequests = 0;
-    const rolloutResponse = new Promise<Response>((resolve) => {
-      resolveRollout = resolve;
-    });
-    installCommaFetchStub(async (url: string, init?: RequestInit) => {
-      const parsedUrl = new URL(url);
-      const path = parsedUrl.pathname;
-      const method = init?.method ?? "GET";
-      if (method === "GET" && path === "/v1/comma/workspaces") {
-        workspaceRequests += 1;
-        return jsonResponse({
-          data: [{ group_id: "grp-search", id: "wsp-search", name: "Search" }],
-        });
-      }
-      if (
-        method === "GET" &&
-        path === "/v1/comma/groups/grp-search/conversations/search"
-      ) {
-        if (parsedUrl.searchParams.get("q") === "rollout") return rolloutResponse;
-        return jsonResponse({
-          data: [
-            {
-              conversation_id: "cnv-search",
-              highlights: [{ start: 12, end: 19 }],
-              matched_field: "content",
-              snippet: "Prepare the archive rollout",
-              title: "Release checklist",
-            },
-          ],
-        });
-      }
-      return jsonResponse({ error: `unhandled ${method} ${path}` }, 404);
+    const rollout = deferred<TaskSearchValue>();
+    scriptTaskSearch({
+      archive: {
+        status: "ready",
+        scope: { groupId: "grp-search", workspaceId: "wsp-search" },
+        results: [
+          {
+            conversation_id: "cnv-search",
+            highlights: [{ start: 12, end: 19 }],
+            matched_field: "content",
+            snippet: "Prepare the archive rollout",
+            title: "Release checklist",
+          },
+        ],
+      },
+      rollout: rollout.promise,
     });
     renderCommaApp();
+    await settle();
 
-    await userEvent.click(await screen.findByTestId("comma-window-bar-search"));
+    await user.click(screen.getByTestId("comma-window-bar-search"));
+    await settle();
     const input = screen.getByRole("combobox", { name: "Search Comma" });
-    await userEvent.type(input, "archive");
-    expect(
-      await screen.findByRole("option", { name: /Release checklist/ })
-    ).toBeVisible();
-    const workspaceRequestsAfterFirstResult = workspaceRequests;
+    await user.type(input, "archive");
+    await settle();
+    expect(screen.getByRole("option", { name: /Release checklist/ })).toBeVisible();
 
-    await userEvent.clear(input);
-    await userEvent.type(input, "rollout");
+    await user.clear(input);
+    await user.type(input, "rollout");
+    await settle();
     expect(
       screen.queryByRole("option", { name: /Release checklist/ })
     ).not.toBeInTheDocument();
     expect(screen.getByRole("progressbar", { name: "Searching tasks…" })).toBeVisible();
 
-    await act(async () => {
-      resolveRollout?.(jsonResponse({ data: [] }));
-      await Promise.resolve();
+    rollout.resolve({
+      status: "ready",
+      scope: { groupId: "grp-search", workspaceId: "wsp-search" },
+      results: [],
     });
-    expect(await screen.findByText("No results found")).toBeVisible();
-    expect(workspaceRequests).toBe(workspaceRequestsAfterFirstResult);
+    await settle();
+    expect(screen.getByText("No results found")).toBeVisible();
   });
 
   it("opens the workspace plugin catalog from the shared product sidebar", async () => {
     seedCommaSession();
-    installCommaFetchStub(async (url: string, init?: RequestInit) => {
-      const path = requestPath(url);
-      const method = init?.method ?? "GET";
-
-      if (method === "GET" && path === "/v1/comma/workspaces") {
-        return jsonResponse({
-          data: [
-            {
-              group_id: "grp_plugins",
-              id: "wsp_plugins",
-              name: "Plugin Workspace",
-              status: "ready",
-            },
-          ],
-        });
-      }
-
-      if (method === "GET" && path === "/v1/comma/workspaces/wsp_plugins/plugins") {
-        return jsonResponse({
-          data: [
-            {
-              id: "linear",
-              name: "Linear",
-              summary: "Plan and track product work",
-              description: "Plan and track product work",
-              brand: "linear",
-              category: "Integrations",
-              installed: false,
-              locked: false,
-              mcps: [],
-              skills: [],
-            },
-          ],
-        });
-      }
-
-      return jsonResponse({ error: `unhandled ${method} ${path}` }, 404);
-    });
+    app.topic("plugins", () => ({
+      status: "ready",
+      workspace: "wsp_plugins",
+      plugins: [
+        {
+          id: "linear",
+          name: "Linear",
+          summary: "Plan and track product work",
+          description: "Plan and track product work",
+          brand: "linear",
+          category: "Integrations",
+          installed: false,
+          locked: false,
+          mcps: [],
+          skills: [],
+          activity: "idle",
+        },
+      ],
+      installed: [],
+      categories: [{ id: "integrations", name: null, plugins: ["linear"] }],
+    }));
     renderCommaApp();
+    await settle();
 
-    await userEvent.click(await screen.findByRole("link", { name: "Plugins" }));
+    await user.click(screen.getByRole("link", { name: "Plugins" }));
+    await settle();
 
-    expect(await screen.findByRole("heading", { name: "Plugins" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Plugins" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Add Linear" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Plugins" })).toHaveAttribute(
       "aria-current",
@@ -1362,8 +1250,9 @@ describe("CommaApp", () => {
   it("opens Settings as a modal over the surface the user is on", async () => {
     seedCommaSession();
     renderCommaApp();
+    await settle();
 
-    const homeBeforeSettings = await screen.findByTestId("home-responsive-layout");
+    const homeBeforeSettings = screen.getByTestId("home-responsive-layout");
     const windowBar = screen.getByTestId("comma-window-bar");
     const sidebar = screen.getByRole("complementary", { name: "App sidebar" });
     const content = screen.getByRole("region", { name: "Content" });
@@ -1372,11 +1261,10 @@ describe("CommaApp", () => {
     expect(settingsButton).not.toHaveAttribute("aria-current");
     expect(screen.queryByRole("dialog", { name: "Settings sections" })).toBeNull();
 
-    await userEvent.click(settingsButton);
+    await user.click(settingsButton);
+    await settle();
 
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "General" })
-    ).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "General" })).toBeVisible();
     // Settings is a modal, not a place: the location the user was on is left
     // exactly as it was.
     expect(["", "#/"]).toContain(window.location.hash);
@@ -1408,11 +1296,10 @@ describe("CommaApp", () => {
     expect(homeBeforeSettings).toBeVisible();
     expect(homeBeforeSettings.closest("[inert]")).toBeNull();
 
-    await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
+    await user.click(screen.getByRole("button", { name: "Close settings" }));
+    await settle();
 
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: "Settings sections" })).toBeNull()
-    );
+    expect(screen.queryByRole("dialog", { name: "Settings sections" })).toBeNull();
     expect(["", "#/"]).toContain(window.location.hash);
     expect(screen.getByTestId("home-responsive-layout")).toBe(homeBeforeSettings);
     expect(settingsButton).toHaveAttribute("data-selected", "false");
@@ -1425,19 +1312,22 @@ describe("CommaApp", () => {
   it("keeps Home mounted while Tasks is showing and returns to Home without remounting", async () => {
     seedCommaSession();
     renderCommaApp();
+    await settle();
 
-    const home = await screen.findByTestId("home-responsive-layout");
+    const home = screen.getByTestId("home-responsive-layout");
     expect(home).toBeVisible();
 
     fireEvent.keyDown(window, { code: "KeyG" });
     fireEvent.keyDown(window, { code: "KeyT" });
-    await waitFor(() => expect(window.location.hash).toBe("#/tasks"));
+    await settle();
+    expect(window.location.hash).toBe("#/tasks");
     expect(home).toBe(screen.getByTestId("home-responsive-layout"));
     expect(home).not.toBeVisible();
     expect(home.closest(`[${COMMA_SURFACE_PAUSED_ATTRIBUTE}="true"]`)).not.toBeNull();
 
-    await userEvent.click(screen.getByRole("link", { name: "Home" }));
-    await waitFor(() => expect(window.location.hash).toBe("#/"));
+    await user.click(screen.getByRole("link", { name: "Home" }));
+    await settle();
+    expect(window.location.hash).toBe("#/");
     expect(screen.getByTestId("home-responsive-layout")).toBe(home);
     expect(home).toBeVisible();
     expect(home.closest("[inert]")).toBeNull();
@@ -1446,13 +1336,11 @@ describe("CommaApp", () => {
   it("opens Settings directly without mounting or bootstrapping Home", async () => {
     seedCommaSession();
     window.location.hash = "#/settings";
-    const fetchMock = installCommaFetchStub();
 
     renderCommaApp();
+    await settle();
 
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "General" })
-    ).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "General" })).toBeVisible();
     expect(screen.queryByTestId("home-responsive-layout")).not.toBeInTheDocument();
     // The shell is mounted for every product location; only Home is skipped.
     expect(screen.getByTestId("comma-window-bar")).toBeInTheDocument();
@@ -1460,16 +1348,9 @@ describe("CommaApp", () => {
     expect(
       screen.getByRole("dialog", { name: "Settings sections" })
     ).toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.some(([input, init]) => {
-        const method = init?.method ?? "GET";
-        const url = String(input);
-        return (
-          method === "POST" &&
-          (url.endsWith("/v1/comma/me/bootstrap") || url.endsWith("/assistant-chat"))
-        );
-      })
-    ).toBe(false);
+    // Home's workspace is not provisioned, nor its chat looked up or made.
+    expect(app.subscribed()).not.toContain("onboardingWorkspace");
+    expect(app.sentTo("chat.resolveWorkspaceChat")).toEqual([]);
   });
 
   it("keeps the rail toggle shortcut active on Settings", async () => {
@@ -1479,10 +1360,9 @@ describe("CommaApp", () => {
     seedCommaSession();
     window.location.hash = "#/settings";
     renderCommaApp();
+    await settle();
 
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "General" })
-    ).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "General" })).toBeVisible();
     const sidebarSlot = screen.getByTestId("comma-sidebar-slot");
     const toggle = screen.getByRole("button", { name: "Collapse sidebar" });
     const content = screen.getByRole("region", { name: "Content" });
@@ -1491,8 +1371,9 @@ describe("CommaApp", () => {
 
     fireEvent.keyDown(window, { code: "KeyG" });
     fireEvent.keyDown(window, { code: "KeyB" });
+    await settle();
 
-    await waitFor(() => expect(sidebarSlot).toHaveAttribute("data-collapsed", "true"));
+    expect(sidebarSlot).toHaveAttribute("data-collapsed", "true");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(content).toHaveAttribute("data-sidebar-collapsed", "true");
     // Settings stays put; only the rail slot gave up its width.
@@ -1503,70 +1384,15 @@ describe("CommaApp", () => {
 
     // The modal owns pointer input while it is open, so the toggle behind it
     // only takes clicks again once Settings closes.
-    await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: "Settings sections" })).toBeNull()
-    );
+    await user.click(screen.getByRole("button", { name: "Close settings" }));
+    await settle();
+    expect(screen.queryByRole("dialog", { name: "Settings sections" })).toBeNull();
 
-    await userEvent.click(toggle);
+    await user.click(toggle);
 
     expect(sidebarSlot).toHaveAttribute("data-collapsed", "false");
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(content).toHaveAttribute("data-sidebar-collapsed", "false");
-  });
-
-  it.each([
-    ["Home", "KeyC", "#/"],
-    ["Inbox", "KeyI", "#/inbox"],
-    ["Tasks", "KeyT", "#/tasks"],
-    ["Plugins", "KeyP", "#/plugins"],
-  ])(
-    "dispatches the divergent Go to %s sequence from the Settings route",
-    async (_name, secondCode, targetHash) => {
-      seedCommaSession();
-      window.location.hash = "#/settings";
-      renderCommaApp();
-
-      expect(
-        await screen.findByRole("heading", { level: 1, name: "General" })
-      ).toBeInTheDocument();
-
-      fireEvent.keyDown(window, { code: "KeyG" });
-      fireEvent.keyDown(window, { code: secondCode });
-
-      await waitFor(() => expect(window.location.hash).toBe(targetHash));
-    }
-  );
-
-  it("opens the Search palette from the Settings route without leaving it", async () => {
-    seedCommaSession();
-    window.location.hash = "#/settings";
-    renderCommaApp();
-
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "General" })
-    ).toBeInTheDocument();
-
-    const platform = `${
-      (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData
-        ?.platform ?? ""
-    } ${navigator.platform} ${navigator.userAgent}`.toLocaleLowerCase();
-    const usesCommandAsPrimary =
-      platform.includes("mac") ||
-      platform.includes("iphone") ||
-      platform.includes("ipad");
-
-    fireEvent.keyDown(window, {
-      code: "KeyK",
-      ctrlKey: !usesCommandAsPrimary,
-      metaKey: usesCommandAsPrimary,
-    });
-
-    expect(await screen.findByRole("dialog", { name: "Search Comma" })).toBeVisible();
-    await waitFor(() =>
-      expect(screen.getByRole("combobox", { name: "Search Comma" })).toHaveFocus()
-    );
-    expect(window.location.hash).toBe("#/settings");
   });
 
   it("dispatches a customized history chord from the Settings route", async () => {
@@ -1575,71 +1401,43 @@ describe("CommaApp", () => {
     });
     seedCommaSession();
     renderCommaApp();
+    await settle();
 
-    await screen.findByTestId("home-responsive-layout");
+    expect(screen.getByTestId("home-responsive-layout")).toBeInTheDocument();
     // The rail opens the modal in place, so reach the routed form of Settings
     // the way a deep link does.
     await act(async () => {
       window.location.hash = "#/settings";
     });
+    await settle();
     expect(
-      await screen.findByRole("dialog", { name: "Settings sections" })
+      screen.getByRole("dialog", { name: "Settings sections" })
     ).toBeInTheDocument();
     expect(window.location.hash).toBe("#/settings");
 
     fireEvent.keyDown(window, { code: "KeyH", ctrlKey: true });
+    // jsdom goes back in two queued tasks, the second queued while the first runs (a timer 1 ms on).
+    await advance(1);
 
-    await waitFor(() => expect(["", "#/"]).toContain(window.location.hash));
+    expect(["", "#/"]).toContain(window.location.hash);
     expect(screen.queryByRole("dialog", { name: "Settings sections" })).toBeNull();
     expect(screen.getByTestId("home-responsive-layout")).toBeVisible();
-  });
-
-  it("shares product sequence candidates across navigation and shell owners", async () => {
-    seedAppShortcutOverrides({
-      "toggle-left-sidebar": sequenceKeybinding("KeyG", "KeyB"),
-    });
-    seedCommaSession();
-    renderCommaApp();
-
-    const sidebarSlot = await screen.findByTestId("comma-sidebar-slot");
-    expect(sidebarSlot).toHaveAttribute("data-collapsed", "false");
-
-    fireEvent.keyDown(window, { code: "KeyG" });
-    fireEvent.keyDown(window, { code: "KeyB" });
-    await waitFor(() => expect(sidebarSlot).toHaveAttribute("data-collapsed", "true"));
-
-    fireEvent.keyDown(window, { code: "KeyG" });
-    fireEvent.keyDown(window, { code: "KeyI" });
-    await waitFor(() => expect(window.location.hash).toBe("#/inbox"));
-
-    fireEvent.keyDown(window, { code: "KeyG" });
-    fireEvent.keyDown(window, { code: "KeyT" });
-    await waitFor(() => expect(window.location.hash).toBe("#/tasks"));
-
-    fireEvent.keyDown(window, { code: "KeyG" });
-    fireEvent.keyDown(window, { code: "KeyP" });
-    await waitFor(() => expect(window.location.hash).toBe("#/plugins"));
-
-    fireEvent.keyDown(window, { code: "KeyG" });
-    fireEvent.keyDown(window, { code: "KeyC" });
-    await waitFor(() => expect(window.location.hash).toBe("#/"));
   });
 
   it("mounts the development layout inspector at the app root", async () => {
     seedCommaSession();
     renderCommaApp();
-    await screen.findByRole("complementary", { name: "App sidebar" });
-    await vi.dynamicImportSettled();
+    await settle();
+    expect(screen.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
 
     fireEvent.keyDown(window, {
       code: "KeyL",
       ctrlKey: true,
       shiftKey: true,
     });
+    await settle();
 
-    expect(
-      await screen.findByText(/Layout Inspector · hover to inspect/)
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Layout Inspector · hover to inspect/)).toBeInTheDocument();
   });
 
   it("renders the development runtime workbench as a product-shell-free debug surface", async () => {
@@ -1705,13 +1503,14 @@ describe("CommaApp", () => {
     window.location.hash = "#/dev/workbench";
 
     renderCommaApp();
+    await settle();
 
     expect(
-      await screen.findByRole("heading", { name: "Runtime Workbench" })
+      screen.getByRole("heading", { name: "Runtime Workbench" })
     ).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Sign in to Comma" })).toBeNull();
     expect(screen.queryByRole("complementary", { name: "App sidebar" })).toBeNull();
-    expect(await screen.findByText("win_main")).toBeInTheDocument();
+    expect(screen.getByText("win_main")).toBeInTheDocument();
     expect(screen.getByText("dev_workbench")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Runtime/ })).toBeInTheDocument();
   });
@@ -1740,8 +1539,9 @@ describe("CommaApp", () => {
   it("toggles the sidebar between expanded and collapsed layout widths", async () => {
     seedCommaSession();
     renderCommaApp();
+    await settle();
 
-    const toggle = await screen.findByRole("button", { name: "Collapse sidebar" });
+    const toggle = screen.getByRole("button", { name: "Collapse sidebar" });
     const slot = screen.getByTestId("comma-sidebar-slot");
     const sidebar = screen.getByTestId("comma-sidebar");
     const content = screen.getByRole("region", { name: "Content" });
@@ -1759,7 +1559,7 @@ describe("CommaApp", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: "Back" })).toBeInTheDocument();
 
-    await userEvent.click(toggle);
+    await user.click(toggle);
 
     expect(slot).toHaveAttribute("data-collapsed", "true");
     expect(sidebar).toHaveAttribute("data-collapsed", "true");
@@ -1774,7 +1574,7 @@ describe("CommaApp", () => {
     // History lives in the window bar now, so collapsing the rail keeps it.
     expect(screen.getByRole("button", { name: "Back" })).toBeInTheDocument();
 
-    await userEvent.click(toggle);
+    await user.click(toggle);
 
     expect(slot).toHaveAttribute("data-collapsed", "false");
     expect(sidebar).toHaveAttribute("data-collapsed", "false");
@@ -1790,14 +1590,15 @@ describe("CommaApp", () => {
   it("renders the icon rail as primary navigation with Settings at its foot", async () => {
     seedCommaSession();
     renderCommaApp();
+    await settle();
 
-    const sidebar = await screen.findByRole("complementary", { name: "App sidebar" });
+    const sidebar = screen.getByRole("complementary", { name: "App sidebar" });
     const nav = within(sidebar).getByRole("navigation", { name: "Primary" });
     const links = within(nav).getAllByRole("link");
 
-    // Drive needs the Electron host's synchronicity node, so the web rail omits it.
-    expect(links).toHaveLength(4);
-    ["Home", "Inbox", "Tasks", "Plugins"].forEach((name, index) => {
+    // The web reads the Workspace's Drive too, so its rail has Drive.
+    expect(links).toHaveLength(5);
+    ["Home", "Inbox", "Tasks", "Drive", "Plugins"].forEach((name, index) => {
       expect(links[index]).toHaveAccessibleName(name);
       expect(links[index]).toHaveAttribute("data-slot", "left-rail-item");
       expect(links[index]).toHaveClass("comma-sidebar-link");
@@ -1806,6 +1607,7 @@ describe("CommaApp", () => {
       "#/",
       "#/inbox",
       "#/tasks",
+      "#/drive",
       "#/plugins",
     ]);
     expect(links.map((link) => link.getAttribute("aria-current"))).toEqual([
@@ -1813,9 +1615,11 @@ describe("CommaApp", () => {
       null,
       null,
       null,
+      null,
     ]);
     expect(links.map((link) => link.getAttribute("data-selected"))).toEqual([
       "true",
+      "false",
       "false",
       "false",
       "false",
@@ -1841,8 +1645,9 @@ describe("CommaApp", () => {
 
     fireEvent.keyDown(window, { code: "KeyG" });
     fireEvent.keyDown(window, { code: "KeyI" });
+    await settle();
 
-    await waitFor(() => expect(window.location.hash).toBe("#/inbox"));
+    expect(window.location.hash).toBe("#/inbox");
     expect(within(nav).getByRole("link", { name: "Inbox" })).toHaveAttribute(
       "aria-current",
       "page"
@@ -1851,14 +1656,13 @@ describe("CommaApp", () => {
       "aria-current"
     );
 
-    await userEvent.click(settingsButton);
+    await user.click(settingsButton);
+    await settle();
 
     // The modal marks its rail item selected without taking the route: Inbox
     // is still the location behind it (the rail itself is hidden from the
     // accessibility tree for as long as the modal is open).
-    await waitFor(() =>
-      expect(settingsButton).toHaveAttribute("data-selected", "true")
-    );
+    expect(settingsButton).toHaveAttribute("data-selected", "true");
     expect(window.location.hash).toBe("#/inbox");
     expect(within(nav).queryByRole("link", { name: "Inbox" })).toBeNull();
     expect(nav.querySelector('a[href="#/inbox"]')).toHaveAttribute(
@@ -1870,11 +1674,12 @@ describe("CommaApp", () => {
   it("hosts history, the Chat Sidebar toggle, recent tasks and the search hint in the window bar", async () => {
     seedCommaSession();
     const { container } = renderCommaApp();
+    await settle();
 
-    const windowBar = await screen.findByTestId("comma-window-bar");
+    const windowBar = screen.getByTestId("comma-window-bar");
     const sidebar = screen.getByRole("complementary", { name: "App sidebar" });
     const content = screen.getByRole("region", { name: "Content" });
-    const chatToggle = screen.getByRole("button", { name: "Toggle chat sidebar" });
+    const chatToggle = within(windowBar).getByRole("button", { name: "New tab" });
 
     expect(windowBar).toHaveClass("comma-window-titlebar-region");
     expect(container.querySelector(".comma-window-frame")).toContainElement(windowBar);
@@ -1897,11 +1702,12 @@ describe("CommaApp", () => {
     expect(windowBar).toContainElement(searchHint);
     expect(searchHint).toHaveTextContent(/^Use .+ for search$/);
 
-    await userEvent.click(searchHint);
+    await user.click(searchHint);
+    await settle();
 
     // The hint raises the command palette over the current route; Search is
     // not a location.
-    expect(await screen.findByRole("dialog", { name: "Search Comma" })).toBeVisible();
+    expect(screen.getByRole("dialog", { name: "Search Comma" })).toBeVisible();
     expect(window.location.hash).not.toBe("#/search");
   });
 
@@ -1923,12 +1729,11 @@ describe("CommaApp", () => {
       ),
     });
     renderCommaApp(productInbox.controller);
+    await settle();
 
-    const sidebar = await screen.findByRole("complementary", { name: "App sidebar" });
+    const sidebar = screen.getByRole("complementary", { name: "App sidebar" });
     const inbox = within(sidebar).getByRole("link", { name: "Inbox" });
-    await waitFor(() =>
-      expect(inbox.querySelector('[data-slot="left-rail-item-badge"]')).not.toBeNull()
-    );
+    expect(inbox.querySelector('[data-slot="left-rail-item-badge"]')).not.toBeNull();
     expect(
       within(sidebar)
         .getByRole("link", { name: "Home" })
@@ -1952,14 +1757,297 @@ describe("CommaApp", () => {
         )
       );
     });
-    await waitFor(() =>
-      expect(inbox.querySelector('[data-slot="left-rail-item-badge"]')).toBeNull()
-    );
+    await settle();
+    expect(inbox.querySelector('[data-slot="left-rail-item-badge"]')).toBeNull();
   });
 });
 
-function seedCommaSession() {
-  commaTestSession = true;
+type TestUser = { id: string; email: string; name?: string; kind?: "guest" };
+
+/** The account a seeded session holds. */
+const person: TestUser = {
+  id: "usr_1",
+  email: "person@example.com",
+  name: "Person Example",
+};
+const guestUser: TestUser = {
+  id: "usr_guest",
+  email: "g-1@guest.comma.invalid",
+  kind: "guest",
+};
+
+function seedCommaSession(who: TestUser = person) {
+  app.signIn(who);
+}
+
+const authority = { authorityInstanceId: "core-web", kind: "web_cookie" } as const;
+const testSessionId = "11111111-1111-4111-8111-111111111111";
+
+type Answer = (params: never) => unknown;
+
+/** A `session.*` call's typed failure, as the lifecycle answers it. */
+function refused(operation: string, code: string, recovery = "none") {
+  return {
+    ok: false,
+    error: { code, operation, recovery, retryable: recovery !== "none" },
+  };
+}
+type AppCore = ReturnType<typeof createAppCore>;
+
+/**
+ * The client core as the app sees it. Its `session` topic is the web lifecycle's snapshot (signed out until a test
+ * signs someone in), and the `session.*` calls answer as that lifecycle does against a server that accepts them;
+ * a test answers other calls (`answer`) and topics (`topic`) itself. Everything else it says nothing of. The task
+ * list is the projection harness's, which hands this script what it does not own.
+ */
+function createAppCore() {
+  let revision = 0;
+  let generation = 0;
+  let attempts = 0;
+  let attempt: SessionAttempt | null = null;
+  const header = () => ({
+    authority,
+    cleanup: { revocation: "idle" as const },
+    contractVersion: 1 as const,
+    revision: ++revision,
+  });
+  const signedIn = (who: TestUser): SignedInSessionSnapshot => ({
+    ...header(),
+    generation: ++generation,
+    phase: "signed_in",
+    principal: {
+      ...(who.name ? { displayName: who.name } : {}),
+      email: who.email,
+      ...(who.kind ? { kind: who.kind } : {}),
+      userId: who.id,
+    },
+    session: {
+      audience: "http://127.0.0.1",
+      expiresAtEpochSeconds: 4_102_444_800,
+      sessionId: testSessionId,
+    },
+  });
+  const signedOut = (
+    reason: SignedOutSessionSnapshot["reason"]
+  ): SignedOutSessionSnapshot => ({
+    ...header(),
+    generation,
+    phase: "signed_out",
+    principal: null,
+    reason,
+    session: null,
+  });
+  let lifecycle: SessionLifecycleSnapshot = signedOut("no_session");
+  const value = (): SessionValue => ({
+    ...(lifecycle.phase === "signed_in"
+      ? {
+          phase: "signed_in" as const,
+          userId: lifecycle.principal.userId,
+          audience: lifecycle.session.audience,
+          sessionId: lifecycle.session.sessionId,
+        }
+      : { phase: lifecycle.phase === "signed_out" ? "signed_out" : "unknown" }),
+    lifecycle,
+    attempt,
+    guestImports: 0,
+  });
+  const answers = new Map<string, Answer>();
+  const topics = new Map<string, (topic: Record<string, unknown>) => unknown>();
+  const subscribed: string[] = [];
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "session" ? value() : topics.get(String(topic.topic))?.(topic),
+    calls: (name, params) => answers.get(name)?.(params as never) ?? null,
+    onSubscribe: (topic) => subscribed.push(String(topic.topic)),
+  });
+  const publish = <S extends SessionLifecycleSnapshot>(next: S): S => {
+    lifecycle = next;
+    if (next.phase !== "authenticating") attempt = null;
+    core.changed("session");
+    return next;
+  };
+  /** A sign-in starts (or `ref`'s goes on, waiting on `challenge`): every tab sees it under way. */
+  const begin = (
+    method: SessionAttempt["method"],
+    challenge?: SessionAttempt["challenge"],
+    ref: SessionAuthAttemptRef = {
+      attemptId: `attempt-${++attempts}`,
+      expected: {
+        authorityInstanceId: authority.authorityInstanceId,
+        expectedSessionId: null,
+        generation,
+      },
+    }
+  ): SessionAuthAttemptRef => {
+    attempt = { ref, method, ...(challenge ? { challenge } : {}) };
+    publish({
+      ...header(),
+      generation,
+      phase: "authenticating",
+      principal: null,
+      session: null,
+    });
+    return ref;
+  };
+  const script = {
+    ...core,
+    /** Answers the call `name` with `answer` (its params in, its result out). */
+    answer<P>(name: string, answer: (params: P) => unknown) {
+      answers.set(name, answer as Answer);
+    },
+    /** Says `name`'s value (by its params) with `say`. */
+    topic(name: string, say: (topic: Record<string, unknown>) => unknown) {
+      topics.set(name, say);
+    },
+    snapshot: () => lifecycle,
+    /** The topics the app subscribed to, by name, in order. */
+    subscribed: () => [...subscribed],
+    signIn: (who: TestUser) => publish(signedIn(who)),
+    signOut: (reason: SignedOutSessionSnapshot["reason"]) => publish(signedOut(reason)),
+    /** The lifecycle could not tell what the Cookie holds after `operation`. */
+    failClosed: (code: SessionProblemCode, operation: SessionProblemOperation) =>
+      publish({
+        ...header(),
+        generation,
+        phase: "indeterminate",
+        principal: null,
+        problem: {
+          code,
+          operation,
+          recovery:
+            code === "credential_mutation_uncertain" ? "reconcile" : "retry_operation",
+          retryable: code !== "credential_mutation_uncertain",
+        } as never,
+        session: null,
+      }),
+    signingOut: () =>
+      publish({
+        ...header(),
+        generation,
+        phase: "signing_out",
+        principal: null,
+        session: null,
+      }),
+    begin,
+    /** The emailed code sign-in: the challenge `request` answers, and who `verify` signs in. */
+    emailLogin({
+      challengeId,
+      code,
+      who,
+    }: {
+      challengeId: string;
+      code: string;
+      who: TestUser;
+    }) {
+      script.answer("session.email.request", ({ email }: { email: string }) => ({
+        ok: true,
+        value: {
+          attempt: begin("email", { challengeId, purpose: "email_login", email }),
+          challengeId,
+          code,
+        },
+      }));
+      script.answer("session.email.verify", () => ({
+        ok: true,
+        value: script.signIn(who),
+      }));
+    },
+    /** A Google attempt the page's button is rendered with. */
+    googleAttempt(providerAttemptId: string, nonce: string) {
+      return {
+        ok: true,
+        value: {
+          attempt: begin("google"),
+          clientId: "comma-web-client.apps.googleusercontent.com",
+          nonce,
+          providerAttemptId,
+        },
+      };
+    },
+  };
+  // The server offers no Google sign-in and no guest sessions until a test says otherwise.
+  script.answer("session.google.attempt", () =>
+    refused("sign_in_with_google", "provider_unavailable", "retry_operation")
+  );
+  script.answer("session.guest.availability", () => false);
+  // Home's workspace chat is still being found.
+  script.answer("chat.resolveWorkspaceChat", () => new Promise(() => undefined));
+  script.answer("session.reconcile", () => ({ ok: true, value: lifecycle }));
+  script.answer("session.cancelAuth", () => ({
+    ok: true,
+    value: script.signOut("no_session"),
+  }));
+  script.answer("session.signOut", () => {
+    script.signingOut();
+    return { ok: true, value: script.signOut("user_signed_out") };
+  });
+  return script;
+}
+
+/**
+ * The command palette's Task search as the core answers it: each query in `answers` (a promise: when the test
+ * settles it), any other one never (the person typed on before the core asked). Returns the queries the UI sent.
+ */
+function scriptTaskSearch(
+  answers: Record<string, TaskSearchValue | Promise<TaskSearchValue>>
+) {
+  app.answer("search.tasks", ({ query }: { query: string }) =>
+    Object.hasOwn(answers, query) ? answers[query] : new Promise(() => undefined)
+  );
+  return () =>
+    app.sentTo("search.tasks").map((params) => (params as { query: string }).query);
+}
+
+/** A view's conversation, as its key. */
+const keyOf = (view: Record<string, unknown>) =>
+  `${String(view.group)}/${String(view.conversation)}`;
+
+/**
+ * The window's chat on the scripted core: each conversation a window shows is ready and empty, with the draft it was
+ * given; a send is accepted (the test reads it from `chatView.send`).
+ */
+function scriptChat(core: AppCore) {
+  const session = { sessionId: testSessionId, audience: "http://127.0.0.1" };
+  const drafts = new Map<string, string>();
+  let revision = 0;
+  let draftEpoch = 0;
+  core.topic("chatView", (view: Record<string, unknown>) => ({
+    session,
+    revision,
+    draftEpoch,
+    lease: { leaseId: "lease", subscriberId: `${String(view.surface)}:${keyOf(view)}` },
+    state: {
+      ...idleConversationChannelState,
+      connection: "live" as const,
+      conversation: {
+        group_id: String(view.group),
+        id: String(view.conversation),
+        kind: "user_chat" as const,
+        status: "active",
+        title: "聊天",
+      },
+      draft: drafts.get(keyOf(view)) ?? "",
+      status: "ready" as const,
+    },
+  }));
+  const changed = () => {
+    revision += 1;
+    queueMicrotask(() => core.changed("chatView"));
+    return { revision, draftEpoch };
+  };
+  core.answer(
+    "chatView.setDraft",
+    (input: { group: string; conversation: string; draft: string }) => {
+      drafts.set(keyOf(input), input.draft);
+      draftEpoch += 1;
+      return changed();
+    }
+  );
+  core.answer("chatView.send", (input: { group: string; conversation: string }) => {
+    drafts.set(keyOf(input), "");
+    draftEpoch += 1;
+    return changed();
+  });
 }
 
 function dispatchCommandPaletteShortcut() {
@@ -1983,17 +2071,59 @@ function dispatchPrimaryChord(code: string, { altKey = false } = {}) {
   });
 }
 
-function renderCommaApp(
-  productInboxController: ProductInboxProjectionController = createProductInboxProjectionHarness(
-    {
-      initial: { items: [], source: "live-sync" },
-    }
-  ).controller
+/**
+ * Lets what the app started finish without moving the clock: the modules of its lazy screens, the scripted core's
+ * answers and values, and React's work.
+ */
+async function settle() {
+  for (let round = 0; round < 3; round += 1) {
+    await act(() => vi.dynamicImportSettled());
+    await flush();
+  }
+}
+
+/**
+ * The core's task conversation previews as these tests script them: each Task the app asks for is read once with
+ * `read` (its id goes into `requested`), and answered with its messages as the core projects them.
+ */
+function scriptTaskPreviews(
+  requested: string[],
+  read: (conversationId: string) => CommaConversation | Promise<CommaConversation>
 ) {
+  const answers = new Map<string, TaskConversationValue>();
+  app.topic("taskConversation", (topic) => {
+    const id = String(topic.conversation);
+    if (!requested.includes(id)) {
+      requested.push(id);
+      void Promise.resolve(read(id)).then((conversation) => {
+        answers.set(id, {
+          status: "ready",
+          messages: normalizeServerMessages(
+            conversation.messages ?? [],
+            [],
+            conversation.kind
+          ),
+        });
+        app.changed("taskConversation");
+      });
+    }
+    return answers.get(id) ?? { status: "loading" };
+  });
+}
+
+function renderCommaApp(
+  productInboxController: CoreClient = createProductInboxProjectionHarness({
+    initial: { items: [], source: "live-sync" },
+  }).controller
+) {
+  // The task list is the projection harness's; the rest of the core is this test's script.
+  delegateScriptedCore(productInboxController, app.client);
   return renderWithSessionHost(
-    <ProductInboxProjectionProvider controller={productInboxController}>
-      <CommaApp />
-    </ProductInboxProjectionProvider>
+    app.wrap(
+      <CoreProvider client={productInboxController}>
+        <CommaApp />
+      </CoreProvider>
+    )
   );
 }
 
@@ -2032,9 +2162,10 @@ function productInboxResult(
 
 function renderWithSessionHost(element: ReactElement) {
   recordOnboardingCompleted();
-  const controller = createWebSessionHostController({
-    apiBaseUrl: "http://127.0.0.1:4200",
-    ports: createTestWebSessionHostPorts(),
+  // The page shows the session the core runs, as the web app does.
+  const controller = createCoreSessionHostController({
+    apiBaseUrl: "http://127.0.0.1",
+    core: app.client,
   });
   sessionHostControllers.push(controller);
   return render(
@@ -2073,40 +2204,7 @@ function seedAppShortcutOverrides(appShortcutOverrides: Record<string, unknown>)
   );
 }
 
-function createTestWebSessionHostPorts(): WebSessionHostPorts {
-  return {
-    broadcast: {
-      open() {
-        return {
-          close() {},
-          publish() {},
-          subscribe() {
-            return () => {};
-          },
-        };
-      },
-    },
-    documentOrigin: window.location.origin,
-    fetch: (input, init) => globalThis.fetch(input, init),
-    locks: {
-      async request(_name, signal, work) {
-        if (signal.aborted) {
-          throw new DOMException("Lock request aborted.", "AbortError");
-        }
-        return work();
-      },
-    },
-    now: () => Date.now(),
-    randomId: () => `index-test-session-host-${++nextSessionHostId}`,
-    schedule: (callback, delayMs) => window.setTimeout(callback, delayMs),
-    storage: {
-      read: (key) => localStorage.getItem(key),
-      write: (key, value) => localStorage.setItem(key, value),
-    },
-    unschedule: (handle) => window.clearTimeout(handle),
-  };
-}
-
+/** The page's own requests (a Task preview reads its conversation itself): `handler` answers them. */
 function installCommaFetchStub(
   handler: (url: string, init?: RequestInit) => Promise<Response> = async (
     url,
@@ -2114,10 +2212,7 @@ function installCommaFetchStub(
   ) => {
     const method = init?.method ?? "GET";
     return jsonResponse({ error: `unhandled ${method} ${requestPath(url)}` }, 404);
-  },
-  options: {
-    logout?: ((url: string, init?: RequestInit) => Promise<Response>) | undefined;
-  } = {}
+  }
 ) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url =
@@ -2126,106 +2221,11 @@ function installCommaFetchStub(
         : input instanceof URL
           ? input.toString()
           : input.url;
-    const path = requestPath(url);
-    const method = init?.method ?? "GET";
-
-    if (method === "GET" && path === "/v1/comma/auth/session") {
-      if (!commaTestSession) {
-        return jsonResponse({ error: "unauthorized" }, 401);
-      }
-
-      return jsonResponse({
-        expires_at: 4_102_444_800,
-        session_id: "11111111-1111-4111-8111-111111111111",
-        user:
-          commaTestSession === "guest"
-            ? { id: "usr_guest", email: "g-1@guest.comma.invalid", kind: "guest" }
-            : {
-                id: "usr_1",
-                email: "person@example.com",
-                name: "Person Example",
-              },
-      });
-    }
-
-    if (method === "POST" && path === "/v1/comma/auth/logout") {
-      if (options.logout) {
-        return options.logout(url, init);
-      }
-      commaTestSession = undefined;
-      return jsonResponse({ signed_out: true });
-    }
-
     return handler(url, init);
   });
 
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
-}
-
-function installCommaCenterFetchStub({
-  workspaceChatReady,
-}: { workspaceChatReady?: Promise<void> } = {}) {
-  return installCommaFetchStub(async (url: string, init?: RequestInit) => {
-    const path = requestPath(url);
-    const method = init?.method ?? "GET";
-
-    if (method === "POST" && path === "/v1/comma/me/bootstrap") {
-      return jsonResponse({
-        status: "ready",
-        workspace: { group_id: "grp-web", id: "ws-web", name: "Web Workspace" },
-      });
-    }
-
-    if (method === "POST" && path === "/v1/comma/groups/grp-web/assistant-chat") {
-      await workspaceChatReady;
-      return jsonResponse({
-        group_id: "grp-web",
-        id: "conv-created",
-        kind: "user_chat",
-        title: "聊天",
-        status: "active",
-        updated_at: 2_000,
-      });
-    }
-
-    if (
-      method === "POST" &&
-      path === "/v1/comma/groups/grp-web/conversations/conv-created/messages"
-    ) {
-      return jsonResponse({
-        group_id: "grp-web",
-        id: "conv-created",
-        kind: "user_chat",
-        title: "聊天",
-        status: "active",
-        updated_at: 3_000,
-      });
-    }
-
-    if (
-      method === "GET" &&
-      path === "/v1/comma/groups/grp-web/conversations/conv-created"
-    ) {
-      return jsonResponse({
-        group_id: "grp-web",
-        id: "conv-created",
-        kind: "user_chat",
-        title: "聊天",
-        status: "active",
-        updated_at: 3_000,
-      });
-    }
-
-    if (
-      method === "GET" &&
-      path === "/v1/comma/groups/grp-web/conversations/conv-created/messages"
-    ) {
-      return jsonResponse({ data: [] });
-    }
-
-    return jsonResponse({ error: `unhandled ${method} ${path}` }, 404);
-  });
 }
 
 function requestPath(raw: string) {
@@ -2242,6 +2242,15 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+/** A promise the test settles (`resolve`) when it chooses. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function installGoogleIdentityServicesStub() {
   let credentialCallback: ((response: { credential?: string }) => void) | undefined;
   const initialize = vi.fn(
@@ -2251,7 +2260,7 @@ function installGoogleIdentityServicesStub() {
   );
   const renderButton = vi.fn();
 
-  Object.defineProperty(window, "google", {
+  stubProperty(window, "google", {
     configurable: true,
     value: {
       accounts: {

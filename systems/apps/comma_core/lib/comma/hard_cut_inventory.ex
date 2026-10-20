@@ -115,7 +115,7 @@ defmodule Comma.HardCutInventory do
        %{
          "schema_version" => 3,
          "generated_at" =>
-           DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+           SystemsClock.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
          "mode" => "read_only",
          "machine_ready" => Enum.all?(checks, &(&1["status"] == "pass")),
          "machine_checks" => checks,

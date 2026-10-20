@@ -4,7 +4,7 @@ defmodule SalixSignalProto.CallSignalingTest do
   # CRS hand-encoded from its field tables. They check that Comma reads the
   # tables the same way; they are not interoperability evidence (test levels
   # 6 and 7 are).
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.CallSignaling
 

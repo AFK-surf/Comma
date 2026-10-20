@@ -1,6 +1,6 @@
 # Runs the OpenSSL KEM tests with plain `elixir`, without the umbrella, on a
-# host whose OTP links OpenSSL 3.5 or later (the test-signal-proto-trixie CI
-# job). Usage, from apps/salix_signal_proto: elixir test/openssl35_kem.exs
+# host whose OTP links OpenSSL 3.5 or later, such as the release image's
+# Debian trixie. Usage, from apps/salix_signal_proto: elixir test/openssl35_kem.exs
 #
 # Covers Kyber1024Openssl (PQXDH, CRS-03 section 6) and the ML-KEM-768 path
 # of the post-quantum ratchet (CRS-04b section 8). The modules are compiled

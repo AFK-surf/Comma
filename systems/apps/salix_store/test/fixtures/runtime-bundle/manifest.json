@@ -3,15 +3,6 @@
   "sourceRevision": "test-runtime-revision",
   "images": [
     {
-      "class": "external",
-      "inputDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-      "reference": "comma.local/runtime/external@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "platform": "linux/arm64",
-      "archiveSize": 9,
-      "archiveSha256": "1b665050c87b37aa6ac165e4d12580794f99fa769fc6a87d482923a5be8465bb",
-      "manifestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    },
-    {
       "class": "meeting",
       "inputDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
       "reference": "comma.local/runtime/meeting@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -28,6 +19,15 @@
       "archiveSize": 6,
       "archiveSha256": "5c485cdc1a890a816971ba337bbfb6d58cd8edaee7f53fd38fb41f59150aa597",
       "manifestDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "class": "station",
+      "inputDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "reference": "comma.local/runtime/station@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "platform": "linux/arm64",
+      "archiveSize": 8,
+      "archiveSha256": "47721ddbed08259663f848ff30b14ca2f844ba8fcc7fb03f8f3074e64a76d4c5",
+      "manifestDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
     }
   ]
 }

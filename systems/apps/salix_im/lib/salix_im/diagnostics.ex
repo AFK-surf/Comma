@@ -6,7 +6,7 @@ defmodule SalixIM.Diagnostics do
   @doc "Emit one sanitized IM diagnostic map to the configured sink."
   @spec emit(map()) :: :ok
   def emit(diagnostic) when is_map(diagnostic) do
-    case Application.get_env(:salix_im, :diagnostic_sink) do
+    case SystemsRuntime.get_env(:salix_im, :diagnostic_sink) do
       nil ->
         :ok
 

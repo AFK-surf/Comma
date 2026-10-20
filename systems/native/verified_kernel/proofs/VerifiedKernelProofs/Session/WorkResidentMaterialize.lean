@@ -43,7 +43,7 @@ theorem resident_reduced_extends {s t : Term} {events : List Term}
   | nil => exact extends_refl _
   | cons call activity tail ih =>
     have kind := ordinary _ List.mem_cons_self
-    exact extends_trans (inner_extends kind.1 kind.2 call)
+    exact extends_trans (inner_extends kind call)
       (extends_trans (activity_frame_extends activity)
         (ih (fun event member => ordinary event (List.mem_cons_of_mem _ member))))
 

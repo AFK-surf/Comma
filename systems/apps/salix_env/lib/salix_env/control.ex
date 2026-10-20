@@ -10,18 +10,27 @@ defmodule SalixEnv.Control do
   @connector_runtime_provider "connector"
   @connector_runtime_id "default"
 
-  @device_fields ~w(display_name connector_run_id environment_id device_id connector_id tenant_id group_id alias name description provision_request_id provisioner_id skills capabilities os arch node_id status connected_at disconnected_at updated_at environments system_info system_info_updated_at connector_health connector_health_updated_at device_runtimes process_instance_id last_exec)
+  @probe_fields ~w(model model_provider reasoning_effort version version_detected auth_ready auth native_server_startable ready status readiness_issue readiness_message readiness_checked_at readiness_valid_until probe_trigger probe_duration_ms)
+
+  @device_fields ~w(display_name connector_run_id environment_id device_id connector_id station_id tenant_id group_id alias name description provision_request_id provisioner_id skills capabilities os arch node_id status connected_at disconnected_at updated_at environments system_info system_info_updated_at connector_health connector_health_updated_at device_runtimes process_instance_id last_exec)
   @environment_fields ~w(environment_id environment_provider environment_runtime_id alias name description device_id capabilities risk shares_user_files requires_permission path_semantics status permission_message)
   @runtime_fields ~w(status issue message provider runtime_id device_runtime_id device_id model model_provider reasoning_effort version readiness_checked_at readiness_valid_until updated_at auth)
-  @capability_fields ~w(exec persistent_processes computer_use_tool android_device_tool android host_access_required runtime_probe runtime_auth_v1 meeting_runtime execution_boundary component_versions component_releases)
+  @capability_fields ~w(exec persistent_processes computer_use_tool android_device_tool android host_access_required runtime_probe runtime_auth_v1 meeting_runtime execution_boundary component_versions component_releases lan_gateway tasks task_models access)
+  # A device's one access value, as its station reports it (systems/station/src/device/access.ts).
+  @access_levels ~w(off read full)
+  # What a station's Tasks may choose to run there: models by runtime, as its profiles enable them.
+  @task_model_runtimes ~w(claude codex)
+  @task_model_limit 64
+  @lan_gateway_methods ~w(lan_http_request http_request lan_discover lan_tcp_dial udp_request)
+  @lan_discover_probe_fields ~w(max_probes max_payload_bytes max_answer_bytes max_total_answer_bytes)
   @android_capability_fields ~w(protocol_version profiles profile_details default_profile active_profile target_profile phase state capacity available_slots)
   @android_profile_fields ~w(id api_level abi image_flavor status issue)
-  @health_fields ~w(schema_version observed_at process_started_at request_inflight request_capacity runtime_proxy_inflight runtime_proxy_capacity managed_processes resumable_runtime_sessions recoverable_runtime_sessions pending_input_batches pending_runtime_events)
+  @health_fields ~w(schema_version observed_at process_started_at request_inflight request_capacity runtime_proxy_inflight runtime_proxy_capacity managed_processes)
   @system_info_fields ~w(client_source hostname os_type os_release os_version arch cpu_model go_version cpu_count memory_total collected_at)
   @release_fields ~w(component version release_id commit built_at goos goarch go_version)
-  @integer_fields ~w(connected_at disconnected_at updated_at system_info_updated_at connector_health_updated_at readiness_checked_at readiness_valid_until schema_version protocol_version capacity available_slots observed_at process_started_at request_inflight request_capacity runtime_proxy_inflight runtime_proxy_capacity managed_processes resumable_runtime_sessions recoverable_runtime_sessions pending_input_batches pending_runtime_events cpu_count memory_total collected_at at)
+  @integer_fields ~w(connected_at disconnected_at updated_at system_info_updated_at connector_health_updated_at readiness_checked_at readiness_valid_until schema_version protocol_version capacity available_slots observed_at process_started_at request_inflight request_capacity runtime_proxy_inflight runtime_proxy_capacity managed_processes cpu_count memory_total collected_at at)
   @boolean_fields ~w(exec persistent_processes computer_use_tool android_device_tool host_access_required runtime_probe runtime_auth_v1 meeting_runtime shares_user_files requires_permission)
-  @text_fields ~w(display_name connector_run_id environment_id device_id connector_id tenant_id group_id alias name description provision_request_id provisioner_id os arch node_id process_instance_id environment_provider environment_runtime_id risk path_semantics status permission_message issue message provider runtime_id device_runtime_id model model_provider reasoning_effort version execution_boundary client_source hostname os_type os_release os_version cpu_model go_version component release_id commit built_at goos goarch description)
+  @text_fields ~w(display_name connector_run_id environment_id device_id connector_id station_id tenant_id group_id alias name description provision_request_id provisioner_id os arch node_id process_instance_id environment_provider environment_runtime_id risk path_semantics status permission_message issue message provider runtime_id device_runtime_id model model_provider reasoning_effort version execution_boundary client_source hostname os_type os_release os_version cpu_model go_version component release_id commit built_at goos goarch description)
 
   @doc "List all stable devices visible to a tenant."
   @spec list_environments(String.t()) :: [map()]
@@ -62,9 +71,66 @@ defmodule SalixEnv.Control do
     end
   end
 
+  @doc """
+  List one bounded page of one owner's devices in a tenant/group that
+  connected at least once (`Registry.page_owned_by_group/3`).
+  """
+  @spec page_owned_environments(String.t(), String.t(), String.t(), keyword()) ::
+          {:ok, %{records: [map()], next_cursor: String.t() | nil}} | {:error, term()}
+  def page_owned_environments(group_id, tenant_id, owner_user_id, opts) do
+    if Ids.valid_group_id_for_tenant?(group_id, tenant_id) do
+      with {:ok, %{records: records, next_cursor: next_cursor}} <-
+             Registry.page_owned_by_group(group_id, owner_user_id, opts) do
+        {:ok, %{records: Enum.map(records, &environment_json/1), next_cursor: next_cursor}}
+      end
+    else
+      {:error, :not_found}
+    end
+  end
+
+  @doc "The device of a tenant/group's Cloud VM, or nil when the Group has none."
+  @spec group_compute_environment(String.t(), String.t()) :: {:ok, map() | nil}
+  def group_compute_environment(group_id, tenant_id) do
+    with true <- Ids.valid_group_id_for_tenant?(group_id, tenant_id),
+         {:ok, %{"tenant_id" => ^tenant_id, "device_id" => device_id}}
+         when is_binary(device_id) and device_id != "" <-
+           SalixStore.Compute.group_workload(group_id),
+         {:ok, environment} <- get_environment(device_id, group_id, tenant_id) do
+      {:ok, environment}
+    else
+      _ -> {:ok, nil}
+    end
+  end
+
   @doc "Fetch a tenant-scoped stable device."
   @spec get_environment(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def get_environment(device_id, group_id, tenant_id) do
+    with {:ok, device} <- device_record(device_id, group_id, tenant_id) do
+      {:ok, environment_json(device)}
+    end
+  end
+
+  @doc """
+  Fetch a tenant-scoped stable device that `owner_user_id` owns. A device of
+  another user, or one no user owns (a Group's Cloud VM), is `:forbidden`.
+  """
+  @spec get_owned_environment(String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def get_owned_environment(device_id, group_id, tenant_id, owner_user_id) do
+    case device_record(device_id, group_id, tenant_id) do
+      {:ok, %{"meta" => %{"owner_user_id" => ^owner_user_id}} = device}
+      when is_binary(owner_user_id) and owner_user_id != "" ->
+        {:ok, environment_json(device)}
+
+      {:ok, _not_owned} ->
+        {:error, :forbidden}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp device_record(device_id, group_id, tenant_id) do
     if Ids.valid_group_id_for_tenant?(group_id, tenant_id) do
       case Registry.get_device(tenant_id, group_id, device_id) do
         {:ok,
@@ -78,7 +144,7 @@ defmodule SalixEnv.Control do
              "device_id" => ^device_id
            }
          } = device} ->
-          {:ok, environment_json(device)}
+          {:ok, device}
 
         {:ok, _mismatched} ->
           {:error, :not_found}
@@ -130,7 +196,10 @@ defmodule SalixEnv.Control do
            Live.request(device["connector_run_id"], "runtime_probe", %{
              "provider" => runtime["provider"],
              "identity_material" => runtime["identity_material"]
-           }) do
+           }),
+         true <-
+           is_map(summary) and summary["provider"] == runtime["provider"] and
+             summary["identity_material"] == runtime["identity_material"] do
       {:ok,
        summary
        |> Map.drop(["identity_material"])
@@ -141,6 +210,38 @@ defmodule SalixEnv.Control do
       {:error, :disconnected} -> {:error, :connector_disconnected}
       {:error, _} = error -> error
       _ -> {:error, :invalid_runtime_probe_response}
+    end
+  end
+
+  @doc """
+  Re-probe one external runtime of a device now and return its `device_runtimes`
+  item as `environment_json/1` reports it, with the fresh observation applied
+  even when the connector's metadata has not been persisted yet.
+  """
+  @spec check_device_runtime(String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def check_device_runtime(device_id, device_runtime_id, group_id, tenant_id) do
+    with {:ok, previous} <-
+           device_runtime_entry(device_id, device_runtime_id, group_id, tenant_id),
+         {:ok, summary} <- probe_runtime(device_id, device_runtime_id, group_id, tenant_id),
+         {:ok, current} <- device_runtime_entry(device_id, device_runtime_id, group_id, tenant_id) do
+      entry =
+        if same_runtime_owner?(previous, current),
+          do: runtime_probe_result(previous, current, summary),
+          else: current
+
+      {:ok, public_map(device_runtime_view(entry), @runtime_fields)}
+    end
+  end
+
+  defp device_runtime_entry(device_id, device_runtime_id, group_id, tenant_id) do
+    with {:ok, device} <- Registry.get_device(tenant_id, group_id, device_id),
+         {:ok, %{"device_id" => ^device_id} = entry} <-
+           find_device_runtime([device], tenant_id, group_id, device_runtime_id) do
+      {:ok, entry}
+    else
+      {:ok, _other_device} -> {:error, :not_found}
+      {:error, _} = error -> error
     end
   end
 
@@ -155,7 +256,7 @@ defmodule SalixEnv.Control do
              :input_cancel
            ] and
              is_map(attrs) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
     result = do_runtime_auth(operation, attrs)
     SalixEnv.RuntimeAuthTelemetry.emit(operation, result, started_at)
     result
@@ -407,7 +508,7 @@ defmodule SalixEnv.Control do
          extra_params,
          operation
        ) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     result =
       with {:ok, device} <- runtime_auth_device(device_id, group_id, tenant_id),
@@ -640,42 +741,6 @@ defmodule SalixEnv.Control do
 
   defp normalize_runtime_auth_error(_reason), do: {:error, :runtime_auth_failed}
 
-  @doc "Read the Connector's bounded last-observed session snapshot for one device runtime."
-  @spec runtime_sessions(String.t(), String.t(), String.t(), String.t()) ::
-          {:ok, map()} | {:error, term()}
-  def runtime_sessions(device_id, device_runtime_id, group_id, tenant_id) do
-    with {:ok, record} <- Registry.get_device(tenant_id, group_id, device_id),
-         device = private_environment_json(record),
-         %{} = runtime <-
-           Enum.find(
-             device["device_runtimes"] || [],
-             &(&1["device_runtime_id"] == device_runtime_id and
-                 RuntimeIds.external_runtime_provider?(&1["provider"]))
-           ) do
-      snapshot = runtime["session_snapshot"]
-
-      response = %{
-        "device_id" => device_id,
-        "device_runtime_id" => device_runtime_id,
-        "connector_status" => device["status"] || "disconnected",
-        "observation_status" => session_observation_status(snapshot, device["status"]),
-        "observed_at" => if(is_map(snapshot), do: snapshot["observed_at"]),
-        "session_count" => if(is_map(snapshot), do: snapshot["session_count"]),
-        "session_ids" => if(is_map(snapshot), do: snapshot["session_ids"], else: []),
-        "truncated" => if(is_map(snapshot), do: snapshot["truncated"])
-      }
-
-      {:ok, response}
-    else
-      nil -> {:error, :not_found}
-      {:error, _} = error -> error
-    end
-  end
-
-  defp session_observation_status(snapshot, "connected") when is_map(snapshot), do: "current"
-  defp session_observation_status(snapshot, _status) when is_map(snapshot), do: "last_observed"
-  defp session_observation_status(_snapshot, _status), do: "not_reported"
-
   defp ensure_probe_supported(%{"status" => status}) when status != "connected",
     do: {:error, :connector_disconnected}
 
@@ -685,91 +750,11 @@ defmodule SalixEnv.Control do
       else: {:error, :runtime_probe_unsupported}
   end
 
-  @doc "Resolve a stable external runtime binding to the current connector run."
-  @spec resolve_external_runtime_binding(map(), String.t(), String.t()) ::
-          {:ok, map()} | {:error, term()}
-  def resolve_external_runtime_binding(config, tenant_id, group_id) when is_map(config) do
-    provider = trim(config["provider"])
-    device_runtime_id = trim(config["device_runtime_id"])
-
-    cond do
-      not RuntimeIds.external_runtime_provider?(provider) ->
-        {:error, {:bad_request, "runtime_config.provider must be codex, pi, kimi, or claude"}}
-
-      device_runtime_id == "" ->
-        {:error, {:bad_request, "runtime_config.device_runtime_id is required"}}
-
-      true ->
-        case find_current_device_runtime(tenant_id, group_id, device_runtime_id) do
-          {:ok, runtime} ->
-            resolve_ready_external_runtime(runtime, device_runtime_id, tenant_id, group_id)
-
-          {:error, :not_found} ->
-            {:error, {:bad_request, "runtime_config.device_runtime_id not found"}}
-
-          {:error, _} = err ->
-            err
-        end
-    end
-  end
-
-  def resolve_external_runtime_binding(_config, _tenant_id, _group_id),
-    do: {:error, {:bad_request, "runtime_config must be an object"}}
-
-  defp resolve_ready_external_runtime(runtime, device_runtime_id, tenant_id, group_id) do
-    case runtime_availability(runtime) do
-      %{"status" => "ready"} ->
-        {:ok, runtime_binding_json(runtime)}
-
-      %{"status" => "stale"} ->
-        with {:ok, summary} <-
-               probe_runtime(runtime["device_id"], device_runtime_id, group_id, tenant_id),
-             {:ok, current} <-
-               find_current_device_runtime(tenant_id, group_id, device_runtime_id),
-             true <- same_runtime_owner?(runtime, current),
-             refreshed = Map.update!(current, "runtime", &Map.merge(&1, summary)),
-             %{"status" => "ready"} <- runtime_availability(refreshed) do
-          {:ok, runtime_binding_json(refreshed)}
-        else
-          _ -> {:error, {:bad_request, "runtime_config.device_runtime_id is not ready"}}
-        end
-
-      _status ->
-        {:error, {:bad_request, "runtime_config.device_runtime_id is not ready"}}
-    end
-  end
-
   defp same_runtime_owner?(left, right) do
     Enum.all?(~w(device_id connector_run_id runtime_provider runtime_id), fn field ->
       left[field] == right[field]
     end)
   end
-
-  @doc "Status projection for a stable external runtime binding."
-  @spec external_runtime_binding_status(map(), String.t(), String.t()) ::
-          {:ok, map()} | {:error, term()}
-  def external_runtime_binding_status(config, tenant_id, group_id) when is_map(config) do
-    with device_id when device_id != "" <- trim(config["device_id"]),
-         {:ok, device} <- Registry.get_device(tenant_id, group_id, device_id),
-         {:ok, runtime} <-
-           find_device_runtime(
-             [device],
-             tenant_id,
-             group_id,
-             trim(config["device_runtime_id"])
-           ) do
-      {:ok, runtime_availability(runtime)}
-    else
-      value when value in ["", {:error, :not_found}] ->
-        {:ok, %{"status" => "missing", "issue" => "runtime_not_found", "updated_at" => 0}}
-
-      {:error, _} = error ->
-        error
-    end
-  end
-
-  def external_runtime_binding_status(_config, _tenant_id, _group_id),
-    do: {:ok, %{"status" => "missing", "issue" => "runtime_not_found", "updated_at" => 0}}
 
   @doc "Resolve a stable group device runtime to the current connected connector run."
   @spec resolve_device_runtime_binding(String.t(), String.t(), String.t()) ::
@@ -790,61 +775,25 @@ defmodule SalixEnv.Control do
     end
   end
 
-  @doc "Validate a selectable management target against the current exact device inventory."
-  def select_device_runtime_binding(device_runtime_id, tenant_id, group_id) do
-    case find_indexed_device_runtime(tenant_id, group_id, trim(device_runtime_id)) do
-      {:ok, %{"status" => "connected", "runtime" => %{"status" => "ready"}} = runtime} ->
-        {:ok, runtime_binding_json(runtime)}
+  defp runtime_probe_result(previous, current, summary) do
+    # The RPC reply can precede queued metadata persistence. Use its full observation
+    # only while the cached observation is unchanged; later publications take priority.
+    if probe_observation(previous["runtime"]) == probe_observation(current["runtime"]) do
+      runtime =
+        current["runtime"]
+        |> Map.drop(@probe_fields ++ ~w(issue message updated_at last_error app_server_startable))
+        |> Map.merge(Map.take(summary, @probe_fields))
+        |> Map.put("readiness_checked_at", timestamp_seconds(summary["readiness_checked_at"]))
 
-      {:ok, _} ->
-        {:error, :target_unavailable}
-
-      {:error, :not_found} ->
-        {:error, :target_not_found}
-
-      error ->
-        error
-    end
-  end
-
-  @doc "One bounded device page projected into selectable external runtime references."
-  def page_external_runtime_targets(tenant_id, group_id, opts \\ []) do
-    with true <- SalixStore.Ids.valid_group_id_for_tenant?(group_id, tenant_id),
-         {:ok, %{records: records, next_cursor: next}} <- Registry.page_by_group(group_id, opts) do
-      Enum.each(records, &SalixEnv.RuntimeTargets.observe/1)
-
-      entries =
-        records
-        |> Enum.map(&private_environment_json/1)
-        |> Enum.flat_map(&environment_device_runtimes/1)
-        |> Enum.filter(&RuntimeIds.external_runtime_provider?(&1["runtime_provider"]))
-        |> Enum.filter(&(is_nil(opts[:provider]) or &1["runtime_provider"] == opts[:provider]))
-        |> Enum.map(fn entry ->
-          runtime = entry["runtime"]
-          selectable = entry["status"] == "connected" and runtime["status"] == "ready"
-
-          %{
-            "target" => %{
-              "kind" => "connected",
-              "device_runtime_id" => entry["device_runtime_id"]
-            },
-            "runtime" => %{
-              "kind" => "connected",
-              "provider" => entry["runtime_provider"],
-              "device_id" => entry["device_id"],
-              "device_runtime_id" => entry["device_runtime_id"]
-            },
-            "selectable" => selectable,
-            "reason" => if(selectable, do: nil, else: "runtime_not_ready")
-          }
-        end)
-
-      {:ok, %{items: entries, next_cursor: next}}
+      availability = runtime_availability(runtime, current["status"], current["updated_at"])
+      Map.put(current, "runtime", Map.merge(runtime, availability))
     else
-      false -> {:error, :invalid_scope}
-      error -> error
+      current
     end
   end
+
+  defp probe_observation(runtime),
+    do: Map.drop(runtime, ~w(status issue message updated_at))
 
   @doc "Status projection for a stable group device runtime."
   @spec device_runtime_binding_status(String.t(), String.t(), String.t()) ::
@@ -906,7 +855,10 @@ defmodule SalixEnv.Control do
 
   def rename_environment(_, _, _, _), do: {:error, {:bad_request, "name is required"}}
 
-  @doc "Permanently remove a stable device and revoke its connector credential when known."
+  @doc """
+  Permanently remove a stable device and revoke its connector credentials.
+  A known token hash also deletes that token record.
+  """
   @spec remove_environment(String.t(), String.t(), String.t(), String.t() | nil) ::
           {:ok, map()} | {:error, term()}
   def remove_environment(device_id, group_id, tenant_id, connector_token_hash \\ nil) do
@@ -918,18 +870,10 @@ defmodule SalixEnv.Control do
              group_id,
              tenant_id
            ),
-         {:ok, _record} <- Registry.delete_device(tenant_id, group_id, device_id) do
+         {:ok, record} <- Registry.get_device(tenant_id, group_id, device_id),
+         :ok <- SalixEnv.ConnectorTokens.remove_device(record) do
       {:ok, env}
     end
-  end
-
-  @doc "Ready runtime hints for the durable wake projection. Dispatch still resolves the current binding."
-  def ready_runtime_deadlines(device) do
-    (device["meta"] || %{})
-    |> current_generation_agent_runtimes(device["connection_generation"])
-    |> canonical_agent_runtimes(device["status"], device["updated_at"])
-    |> Enum.filter(&(&1["status"] == "ready"))
-    |> Map.new(&{&1["device_runtime_id"], &1["readiness_valid_until"] * 1_000})
   end
 
   @doc "Stable HTTP/dashboard projection for devices and their current connector."
@@ -960,6 +904,8 @@ defmodule SalixEnv.Control do
       "environment_id" => default_environment_id(environments),
       "device_id" => device_id,
       "connector_id" => rec["connector_id"],
+      # The station the Connector proved it runs (`relay_register`), its id.
+      "station_id" => meta["station_id"],
       "tenant_id" => rec["tenant_id"],
       "group_id" => rec["group_id"],
       "alias" => meta["alias"],
@@ -1006,6 +952,24 @@ defmodule SalixEnv.Control do
 
   defp public_map(_map, _fields), do: %{}
 
+  # An optional group of limits, such as `response_chunks`; absent when the
+  # gateway states none.
+  defp put_limits(public, key, value, fields) do
+    case value[key] do
+      %{} = limits ->
+        case limits |> Map.take(fields) |> positive_limits() do
+          empty when empty == %{} -> public
+          limits -> Map.put(public, key, limits)
+        end
+
+      _ ->
+        public
+    end
+  end
+
+  defp positive_limits(limits),
+    do: Map.filter(limits, fn {_key, limit} -> is_integer(limit) and limit > 0 end)
+
   defp public_value("skills", values) when is_list(values),
     do: Enum.filter(values, &is_binary(public_text(&1)))
 
@@ -1022,7 +986,25 @@ defmodule SalixEnv.Control do
   defp public_value("api_level", value) when is_integer(value) and value in 1..99, do: value
 
   defp public_value("capabilities", value), do: public_map(value, @capability_fields)
+
+  # `tasks` 2: a Comma station that takes Tasks as stations ask each other
+  # (systems/station/docs/tasks.md); products list it as a station.
+  defp public_value("tasks", version) when version in [1, 2], do: version
+
+  defp public_value("task_models", value) when is_map(value) do
+    for {runtime, models} <- value, runtime in @task_model_runtimes, is_list(models), into: %{} do
+      {runtime,
+       models
+       |> Enum.map(&public_text/1)
+       |> Enum.reject(&is_nil/1)
+       |> Enum.take(@task_model_limit)}
+    end
+  end
+
   defp public_value("android", value), do: public_map(value, @android_capability_fields)
+
+  defp public_value("access", level) when level in @access_levels, do: level
+  defp public_value("access", _level), do: :drop
 
   defp public_value("environments", values) when is_list(values),
     do:
@@ -1061,6 +1043,24 @@ defmodule SalixEnv.Control do
   defp public_value(field, _value)
        when field in ~w(component_versions component_releases),
        do: :drop
+
+  # A LAN gateway advertises the connector methods it serves and its limits.
+  defp public_value("lan_gateway", %{"methods" => methods} = value) when is_list(methods) do
+    case Enum.filter(@lan_gateway_methods, &(&1 in methods)) do
+      [] ->
+        :drop
+
+      known ->
+        value
+        |> Map.take(~w(max_bytes max_timeout_seconds))
+        |> positive_limits()
+        |> put_limits("response_chunks", value, ~w(max_total_bytes chunk_bytes))
+        |> put_limits("discover_probes", value, @lan_discover_probe_fields)
+        |> Map.put("methods", known)
+    end
+  end
+
+  defp public_value("lan_gateway", _value), do: :drop
 
   defp public_value(field, value)
        when field in @integer_fields and is_integer(value) and value >= 0,
@@ -1150,7 +1150,7 @@ defmodule SalixEnv.Control do
     |> Map.put("status", "permission_required")
     |> Map.put(
       "permission_message",
-      "Device access is read-only. Ask the user to turn on Allow operations in Comma Settings > Devices, then retry."
+      "Device access is read-only. Ask the user to set Access to Full in Comma Settings > Devices, then retry."
     )
   end
 
@@ -1249,13 +1249,7 @@ defmodule SalixEnv.Control do
 
     Enum.map(runtimes, fn
       runtime when is_map(runtime) ->
-        runtime
-        |> maybe_drop_generation_field(
-          "session_snapshot",
-          meta["runtime_session_snapshot_generation"],
-          generation
-        )
-        |> maybe_drop_generation_field("auth", meta["runtime_auth_generation"], generation)
+        maybe_drop_generation_field(runtime, "auth", meta["runtime_auth_generation"], generation)
 
       runtime ->
         runtime
@@ -1284,12 +1278,6 @@ defmodule SalixEnv.Control do
   defp find_current_device_runtime(tenant_id, group_id, device_runtime_id) do
     with {:ok, records} <- Registry.list_by_group(group_id) do
       find_device_runtime(records, tenant_id, group_id, device_runtime_id)
-    end
-  end
-
-  defp find_indexed_device_runtime(tenant_id, group_id, device_runtime_id) do
-    with {:ok, record} <- SalixEnv.RuntimeTargets.device(tenant_id, group_id, device_runtime_id) do
-      find_device_runtime([record], tenant_id, group_id, device_runtime_id)
     end
   end
 
@@ -1380,6 +1368,7 @@ defmodule SalixEnv.Control do
             "connector_run_id" => env["connector_run_id"],
             "carrier_provider" => env["carrier_provider"],
             "runtime_provider" => provider,
+            "runtime_probe" => get_in(env, ["capabilities", "runtime_probe"]) == true,
             "runtime_id" => runtime_id,
             "device_runtime_id" => device_runtime_id,
             "runtime" => runtime,
@@ -1442,21 +1431,10 @@ defmodule SalixEnv.Control do
     end)
   end
 
-  defp runtime_availability(%{"runtime" => runtime} = entry) do
-    runtime
-    |> runtime_availability(entry["status"], entry["updated_at"])
-    |> Map.merge(
-      Map.take(
-        entry,
-        ~w(connector_id connector_run_id device_id device_runtime_id runtime_id runtime_provider)
-      )
-    )
-  end
-
   defp runtime_availability(runtime, connector_status, connector_updated_at) do
     checked_at = timestamp_seconds(runtime["readiness_checked_at"])
     valid_until = timestamp_seconds(runtime["readiness_valid_until"])
-    timestamp = System.system_time(:second)
+    timestamp = SystemsClock.system_time(:second)
 
     {status, issue, message} =
       cond do
@@ -1466,7 +1444,7 @@ defmodule SalixEnv.Control do
 
         runtime["readiness_issue"] == "permission_required" ->
           {"unavailable", "permission_required",
-           "Allow operations in Comma Settings > Devices to use this agent."}
+           "Set Access to Full in Comma Settings > Devices to use this agent."}
 
         checked_at == 0 or valid_until == 0 ->
           {"unavailable", "readiness_incomplete",
@@ -1522,35 +1500,37 @@ defmodule SalixEnv.Control do
     runtimes =
       env
       |> environment_device_runtimes()
-      |> Enum.map(fn entry ->
-        runtime = entry["runtime"] || %{}
-        external? = RuntimeIds.external_runtime_provider?(entry["runtime_provider"])
-
-        %{
-          "status" => if(external?, do: runtime["status"], else: entry["status"]),
-          "issue" => if(external?, do: runtime["issue"]),
-          "message" => if(external?, do: runtime["message"]),
-          "provider" => entry["runtime_provider"],
-          "runtime_id" => entry["runtime_id"],
-          "device_runtime_id" => entry["device_runtime_id"],
-          "device_id" => entry["device_id"],
-          "connector_id" => entry["connector_id"],
-          "connector_run_id" => entry["connector_run_id"],
-          "model" => runtime["model"],
-          "model_provider" => runtime["model_provider"],
-          "reasoning_effort" => runtime["reasoning_effort"],
-          "version" => runtime["version"],
-          "readiness_checked_at" => runtime["readiness_checked_at"],
-          "readiness_valid_until" => runtime["readiness_valid_until"],
-          "auth" => if(external?, do: runtime["auth"]),
-          "session_snapshot" => if(external?, do: runtime["session_snapshot"]),
-          "updated_at" => entry["updated_at"]
-        }
-        |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
-        |> Map.new()
-      end)
+      |> Enum.map(&device_runtime_view/1)
 
     Map.put(env, "device_runtimes", runtimes)
+  end
+
+  # One `device_runtimes` item of `environment_json/1`.
+  defp device_runtime_view(entry) do
+    runtime = entry["runtime"] || %{}
+    external? = RuntimeIds.external_runtime_provider?(entry["runtime_provider"])
+
+    %{
+      "status" => if(external?, do: runtime["status"], else: entry["status"]),
+      "issue" => if(external?, do: runtime["issue"]),
+      "message" => if(external?, do: runtime["message"]),
+      "provider" => entry["runtime_provider"],
+      "runtime_id" => entry["runtime_id"],
+      "device_runtime_id" => entry["device_runtime_id"],
+      "device_id" => entry["device_id"],
+      "connector_id" => entry["connector_id"],
+      "connector_run_id" => entry["connector_run_id"],
+      "model" => runtime["model"],
+      "model_provider" => runtime["model_provider"],
+      "reasoning_effort" => runtime["reasoning_effort"],
+      "version" => runtime["version"],
+      "readiness_checked_at" => runtime["readiness_checked_at"],
+      "readiness_valid_until" => runtime["readiness_valid_until"],
+      "auth" => if(external?, do: runtime["auth"]),
+      "updated_at" => entry["updated_at"]
+    }
+    |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+    |> Map.new()
   end
 
   defp stringify_keys(map) when is_map(map),

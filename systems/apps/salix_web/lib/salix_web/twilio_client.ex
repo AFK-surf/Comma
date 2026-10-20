@@ -137,10 +137,10 @@ defmodule SalixWeb.TwilioClient do
   defp status_error(status, _message) when status in [401, 403], do: :not_configured
   defp status_error(status, _message), do: {:unavailable, "twilio returned #{status}"}
 
-  defp api_base_url, do: Application.get_env(:salix_web, :twilio_api_base_url, @api_base_url)
+  defp api_base_url, do: SystemsRuntime.get_env(:salix_web, :twilio_api_base_url, @api_base_url)
 
   defp verify_base_url,
-    do: Application.get_env(:salix_web, :twilio_verify_base_url, @verify_base_url)
+    do: SystemsRuntime.get_env(:salix_web, :twilio_verify_base_url, @verify_base_url)
 
   defp present?(value), do: is_binary(value) and String.trim(value) != ""
 end

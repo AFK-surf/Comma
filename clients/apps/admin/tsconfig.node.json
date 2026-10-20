@@ -11,13 +11,20 @@
     "vite.config.ts",
     "wrangler.worker.ts",
     "playwright.config.ts",
-    "../../vite/*.ts",
-    "../../packages/config/src/**/*.ts"
+    "../../vite/*.ts"
   ],
   "exclude": [
     "**/*.test.*",
     "**/*.spec.*",
     "../../packages/**/*.test.*",
     "../../packages/**/*.spec.*"
+  ],
+  "references": [
+    {
+      "path": "../../packages/config"
+    },
+    {
+      "path": "../../packages/i18n/tsconfig.tools.json"
+    }
   ]
 }

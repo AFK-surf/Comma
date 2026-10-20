@@ -413,7 +413,7 @@ defmodule SalixIM.Provider.Feishu.MeetingActivationAuthorization do
   end
 
   defp validate_expiry(%{"expires_at" => expires_at}) when is_integer(expires_at) do
-    if expires_at >= System.system_time(:second), do: :ok, else: {:error, :expired}
+    if expires_at >= SystemsClock.system_time(:second), do: :ok, else: {:error, :expired}
   end
 
   defp validate_expiry(_grant), do: {:error, :expired}

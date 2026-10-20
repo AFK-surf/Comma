@@ -1,5 +1,5 @@
 defmodule AlertRouter.AdaptersTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   import AlertRouter.TestFixtures
 
@@ -38,53 +38,31 @@ defmodule AlertRouter.AdaptersTest do
     assert first.evidence_values["duration"] == "15 分钟"
   end
 
-  test "GCP Agent recovery exhaustion normalizes as the intervention P0 in both projects" do
-    for {environment, project} <- [
-          {"staging", "example-staging-project"},
-          {"production", "example-prod-project"}
-        ] do
-      labels = %{
-        "comma_policy_id" => "external_session_runtime_failed",
-        "comma_priority" => "p0",
-        "comma_domain" => "availability",
-        "managed_by" => "comma_alerting",
-        "policy_version" => "v1",
-        "environment" => environment,
-        "service" => "salix_agent"
-      }
+  test "the retired External Session P0 policy fails closed" do
+    labels = %{
+      "comma_policy_id" => "external_session_runtime_failed",
+      "comma_priority" => "p0",
+      "comma_domain" => "availability",
+      "managed_by" => "comma_alerting",
+      "policy_version" => "v1",
+      "environment" => "staging",
+      "service" => "salix_agent"
+    }
 
-      payload =
-        gcp_payload("open", project: project)
-        |> put_in(["incident", "policy_user_labels"], labels)
-        |> put_in(["incident", "observed_value"], "1")
+    payload =
+      gcp_payload("open", project: "example-staging-project")
+      |> put_in(["incident", "policy_user_labels"], labels)
 
-      assert {:ok, event} = GCPMonitoring.normalize(payload)
-      assert event.priority == "P0"
-      assert event.environment == environment
-      assert event.service == "salix_agent"
-
-      assert event.policy_identity == [
-               "gcp_monitoring",
-               "comma_alerting",
-               "external_session_runtime_failed"
-             ]
-
-      assert event.evidence_values["cluster"] == "example-cluster"
-      assert event.evidence_values["trigger_error"] == "recovery_exhausted"
-      assert event.evidence_values["threshold"] == ">= 1 个自动恢复耗尽事件"
-      assert event.summary == "Agent session 自动恢复耗尽，需要人工介入"
-      assert event.latest =~ "recovery_exhausted"
-      assert event.impact =~ "需要人工处理"
-    end
+    assert {:error, _} = GCPMonitoring.normalize(payload)
   end
 
-  test "GCP Agent runtime failure normalizes as P1 in both projects" do
+  test "GCP Task Worker dependency failure normalizes as P1 in both projects" do
     for {environment, project} <- [
           {"staging", "example-staging-project"},
           {"production", "example-prod-project"}
         ] do
       labels = %{
-        "comma_policy_id" => "external_session_runtime_interrupted",
+        "comma_policy_id" => "task_worker_dependency_failed",
         "comma_priority" => "p1",
         "comma_domain" => "availability",
         "managed_by" => "comma_alerting",
@@ -106,16 +84,14 @@ defmodule AlertRouter.AdaptersTest do
       assert event.policy_identity == [
                "gcp_monitoring",
                "comma_alerting",
-               "external_session_runtime_interrupted"
+               "task_worker_dependency_failed"
              ]
 
       assert event.evidence_values["cluster"] == "example-cluster"
-      # This aggregate policy also accepts internal dependency failures;
-      # without an exact log fact, the card must not invent the trigger.
+      # Without an exact log fact, the card must not invent the trigger.
       refute Map.has_key?(event.evidence_values, "trigger_error")
 
-      assert event.evidence_values["threshold"] ==
-               "external 中断 1 次；internal 同一 Task activation 依赖失败 3 次"
+      assert event.evidence_values["threshold"] == "同一 Task activation 依赖失败 3 次"
 
       assert event.state == "firing"
       assert event.recovery_status == "not_applicable"

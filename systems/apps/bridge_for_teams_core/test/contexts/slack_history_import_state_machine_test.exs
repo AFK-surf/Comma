@@ -1,5 +1,5 @@
 defmodule BridgeForTeams.SlackHistoryImport.StateMachineTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias BridgeForTeams.SlackHistoryImport.StateMachine
 

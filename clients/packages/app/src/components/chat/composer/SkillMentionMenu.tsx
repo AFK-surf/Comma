@@ -1,6 +1,6 @@
 /* oxlint-disable jsx-a11y/prefer-tag-over-role -- custom combobox popup uses ARIA listbox/option semantics while keeping button mouse affordances. */
 import { useCommaMessages } from "@comma/i18n/react";
-import type { CommaSkill } from "../../../api";
+import type { CommaSkill } from "@comma/core/api-schemas";
 
 export function SkillMentionMenu({
   activeIndex,

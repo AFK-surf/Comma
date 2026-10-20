@@ -3,20 +3,15 @@ import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import {
   CommandPalette,
   CommandPaletteHighlight,
-  appKeybindingKeycaps,
-  taskStatusIcon,
   type CommandPaletteActiveChangeSource,
   type CommandPaletteGroup,
   type CommandPaletteItem,
-} from "@comma/ui";
+} from "@comma/ui/components/command-palette";
+import { appKeybindingKeycaps } from "@comma/ui/components/settings-shortcut";
+import { taskStatusIcon } from "@comma/ui/components/task-workspace";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import {
-  CommaApiError,
-  type CommaApiClient,
-  type CommaTaskSearchResult,
-} from "../../api";
-import { useChatApi } from "../chat/ChatProvider";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCall, type TaskSearchResult } from "@comma/core-client";
 import { useOptionalAppShortcutBinding } from "../shortcuts/commaAppShortcuts";
 import { useWorkspaceTasks, type TaskViewModel } from "../tasks/useWorkspaceTasks";
 import { normalizeUnixTimestampMs } from "./normalizeUnixTimestampMs";
@@ -27,9 +22,7 @@ import {
   type TextHighlight,
 } from "./searchText";
 
-const taskSearchDebounceMs = 180;
 const taskHistoryLimit = 20;
-const taskSearchLimit = 20;
 // The server keeps two-codepoint queries on its bounded short-gram index; this
 // preserves useful searches such as "AI" and common two-character CJK terms.
 const taskSearchMinQueryCodepoints = 2;
@@ -41,12 +34,10 @@ type SearchScope = {
 };
 
 type TaskSearchState = {
-  api?: CommaApiClient;
   error: boolean;
   loading: boolean;
-  requestKey: string;
-  results: CommaTaskSearchResult[];
-  scope?: SearchScope;
+  results: TaskSearchResult[];
+  scope?: SearchScope | undefined;
   validationError: boolean;
 };
 
@@ -62,7 +53,6 @@ type PaletteTask = {
 const idleTaskSearch: TaskSearchState = {
   error: false,
   loading: false,
-  requestKey: "",
   results: [],
   validationError: false,
 };
@@ -73,116 +63,61 @@ function boundedTaskQuery(query: string) {
     .join("");
 }
 
+/** Each query is one core search, cancelled when the query changes; the core asks once it has stayed typed 180 ms. */
 function useTaskSearch(
-  api: CommaApiClient,
   open: boolean,
   query: string,
   preferredScope: SearchScope | undefined,
   preferredWorkspaceId: string | undefined
-) {
-  const scopeByApi = useRef(new WeakMap<CommaApiClient, Map<string, SearchScope>>());
-  const [state, setState] = useState<TaskSearchState>(idleTaskSearch);
+): TaskSearchState {
+  const call = useCall();
   const normalizedQuery = boundedTaskQuery(query);
-  const queryCodepoints = Array.from(normalizedQuery).length;
+  const eligible =
+    open && Array.from(normalizedQuery).length >= taskSearchMinQueryCodepoints;
   const requestKey = `${preferredScope?.groupId ?? ""}\u0000${preferredWorkspaceId ?? ""}\u0000${normalizedQuery}`;
-  const eligible = open && queryCodepoints >= taskSearchMinQueryCodepoints;
-
+  const [answer, setAnswer] = useState<{ key: string; state: TaskSearchState }>();
   useEffect(() => {
-    if (!eligible) {
-      setState(idleTaskSearch);
-      return;
-    }
-
+    if (!eligible) return;
     const controller = new AbortController();
-    setState({
-      api,
-      error: false,
-      loading: true,
-      requestKey,
-      results: [],
-      validationError: false,
-    });
-    const timeout = window.setTimeout(() => {
-      void (async () => {
-        try {
-          let scope = preferredScope;
-          if (!scope) {
-            let scopeByWorkspace = scopeByApi.current.get(api);
-            if (!scopeByWorkspace) {
-              scopeByWorkspace = new Map();
-              scopeByApi.current.set(api, scopeByWorkspace);
-            }
-            const scopeKey = preferredWorkspaceId ?? "";
-            scope = scopeByWorkspace.get(scopeKey);
-            if (!scope) {
-              const workspaces = await api.listWorkspaces({
-                signal: controller.signal,
-              });
-              const workspace =
-                workspaces.find((candidate) => candidate.id === preferredWorkspaceId) ??
-                workspaces[0];
-              if (!workspace) {
-                if (!controller.signal.aborted) {
-                  setState({ ...idleTaskSearch, api, requestKey });
-                }
-                return;
-              }
-              scope = { groupId: workspace.group_id, workspaceId: workspace.id };
-              scopeByWorkspace.set(scopeKey, scope);
-              scopeByWorkspace.set(workspace.id, scope);
-            }
-          }
-
-          const results = await api.searchTasks(scope.groupId, normalizedQuery, {
-            limit: taskSearchLimit,
-            signal: controller.signal,
-          });
-          if (!controller.signal.aborted) {
-            setState({
-              api,
-              error: false,
-              loading: false,
-              requestKey,
-              results,
-              scope,
-              validationError: false,
-            });
-          }
-        } catch (error) {
-          if (!controller.signal.aborted) {
-            const validationError =
-              error instanceof CommaApiError && error.status === 400;
-            setState({
-              api,
-              error: !validationError,
-              loading: false,
-              requestKey,
-              results: [],
-              validationError,
-            });
-          }
-        }
-      })();
-    }, taskSearchDebounceMs);
-
-    return () => {
-      window.clearTimeout(timeout);
-      controller.abort();
-    };
+    call(
+      "search.tasks",
+      {
+        query: normalizedQuery,
+        group: preferredScope?.groupId ?? "",
+        prefer: preferredScope?.workspaceId ?? preferredWorkspaceId ?? "",
+      },
+      controller.signal
+    ).then(
+      (value) => {
+        if (controller.signal.aborted) return;
+        setAnswer({
+          key: requestKey,
+          state: {
+            error: value.status === "error",
+            loading: false,
+            results: value.results,
+            scope: value.scope ?? undefined,
+            validationError: value.status === "invalid",
+          },
+        });
+      },
+      () => {
+        if (!controller.signal.aborted)
+          setAnswer({ key: requestKey, state: { ...idleTaskSearch, error: true } });
+      }
+    );
+    return () => controller.abort();
   }, [
-    api,
+    call,
     eligible,
     normalizedQuery,
     preferredScope,
     preferredWorkspaceId,
     requestKey,
   ]);
-
   if (!eligible) return idleTaskSearch;
-  if (state.api !== api || state.requestKey !== requestKey) {
-    return { ...idleTaskSearch, api, loading: true, requestKey };
-  }
-  return state;
+  if (answer?.key !== requestKey) return { ...idleTaskSearch, loading: true };
+  return answer.state;
 }
 
 function highlightedText(
@@ -238,7 +173,6 @@ export function AppCommandPalette({
   const locale = useCommaLocale();
   const m = useCommaMessages();
   const navigate = useNavigate();
-  const api = useChatApi();
   const searchShortcut = useOptionalAppShortcutBinding("go-search");
   const searchShortcutKeycaps = appKeybindingKeycaps(searchShortcut);
   const [query, setQuery] = useState("");
@@ -256,7 +190,6 @@ export function AppCommandPalette({
     [workspaceTasks.activeGroupId, workspaceTasks.activeWorkspaceId]
   );
   const taskSearch = useTaskSearch(
-    api,
     open,
     query,
     preferredScope,
@@ -332,7 +265,7 @@ export function AppCommandPalette({
       ? firstHighlightExcerpt(contentMatch.snippet, contentMatch.highlights)
       : undefined;
     return {
-      icon: taskStatusIcon(knownTask?.statusBucket ?? "backlog"),
+      icon: taskStatusIcon(knownTask?.statusBucket ?? "in_progress"),
       meta: taskUpdatedAt(updatedAt, locale),
       subtitle: subtitleExcerpt
         ? highlightedText(subtitleExcerpt.text, subtitleExcerpt.highlights)
@@ -386,11 +319,7 @@ export function AppCommandPalette({
   const previewTask = previewValue ? taskTargets.get(previewValue) : undefined;
   const previewLabel = previewTask?.title;
   const preview = previewTask ? (
-    <TaskConversationPreview
-      apiClient={api}
-      searchQuery={normalizedTaskQuery}
-      task={previewTask}
-    />
+    <TaskConversationPreview searchQuery={normalizedTaskQuery} task={previewTask} />
   ) : undefined;
 
   const handleQueryChange = (nextQuery: string) => {

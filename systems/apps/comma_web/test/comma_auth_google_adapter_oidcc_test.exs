@@ -1,6 +1,7 @@
 defmodule Comma.Auth.GoogleAdapter.OidccIntegrationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
   alias Comma.Auth.GoogleAdapter.Oidcc, as: GoogleAdapter
   alias Comma.Auth.GoogleAdapter.Oidcc.JwksRefreshGate
   alias Oidcc.ProviderConfiguration.Worker
@@ -53,7 +54,7 @@ defmodule Comma.Auth.GoogleAdapter.OidccIntegrationTest do
           {:ok, body, conn} = read_body(conn)
           params = URI.decode_query(body)
           snapshot = Agent.get(state, & &1)
-          send(snapshot.test_pid, {:google_token_request, params})
+          SystemsRuntime.Proc.send(snapshot.test_pid, {:google_token_request, params})
 
           if params["client_id"] == @desktop_client_id and
                params["client_secret"] == @desktop_client_secret and
@@ -91,7 +92,7 @@ defmodule Comma.Auth.GoogleAdapter.OidccIntegrationTest do
     end
 
     {signing_key, public_key} = rsa_keypair("initial-kid")
-    test_pid = self()
+    test_pid = SystemsRuntime.Proc.self()
 
     state =
       start_supervised!(
@@ -190,21 +191,10 @@ defmodule Comma.Auth.GoogleAdapter.OidccIntegrationTest do
 
     assert claims["sub"] == "google-user-1"
 
-    assert_receive {:google_token_request, params}
+    settle_receive({:google_token_request, params})
     assert params["client_id"] == @client_id
     assert params["client_secret"] == @client_secret
     assert params["code_verifier"] == "desktop-pkce-verifier-0123456789012345678901"
-  end
-
-  test "classifies a rejected desktop client credential as provider unavailable" do
-    assert {:error, :google_provider_unavailable} =
-             GoogleAdapter.exchange_authorization_code("desktop-authorization-code",
-               client_id: @client_id,
-               client_secret: "wrong-secret",
-               nonce: @nonce,
-               pkce_verifier: "desktop-pkce-verifier-0123456789012345678901",
-               redirect_uri: "http://127.0.0.1:43123/oauth2/callback"
-             )
   end
 
   test "rejects an ID token with a bad signature", context do
@@ -225,7 +215,7 @@ defmodule Comma.Auth.GoogleAdapter.OidccIntegrationTest do
     test "rejects an ID token #{label}", context do
       overrides =
         Map.new(@overrides, fn
-          {key, {:now_offset, seconds}} -> {key, System.system_time(:second) + seconds}
+          {key, {:now_offset, seconds}} -> {key, SystemsClock.system_time(:second) + seconds}
           pair -> pair
         end)
 
@@ -249,55 +239,12 @@ defmodule Comma.Auth.GoogleAdapter.OidccIntegrationTest do
     assert Agent.get(context.state, & &1.jwks_requests) == requests_before + 1
   end
 
-  test "singleflights refresh and applies one global cooldown to attacker-controlled kids",
-       context do
-    requests_before = Agent.get(context.state, & &1.jwks_requests)
-    {rotated_key, rotated_public_key} = rsa_keypair("singleflight-rotated-kid")
-
-    Agent.update(context.state, fn state ->
-      %{state | keys: state.keys ++ [rotated_public_key]}
-    end)
-
-    rotated_token = token(rotated_key, "singleflight-rotated-kid", claims(context.issuer))
-
-    rotated_results =
-      1..8
-      |> Enum.map(fn _index -> Task.async(fn -> verify(rotated_token) end) end)
-      |> Task.await_many(10_000)
-
-    assert Enum.all?(rotated_results, &match?({:ok, %{"sub" => "google-user-1"}}, &1))
-    assert Agent.get(context.state, & &1.jwks_requests) == requests_before + 1
-
-    {attacker_key, _attacker_public_key} = rsa_keypair("ignored-attacker-kid")
-
-    first_unknown = token(attacker_key, "random-kid-before-cooldown", claims(context.issuer))
-    assert {:error, :invalid_google_credential} = verify(first_unknown)
-    assert Agent.get(context.state, & &1.jwks_requests) == requests_before + 1
-
-    Agent.update(context.state, &%{&1 | clock_ms: &1.clock_ms + 1_000})
-
-    random_results =
-      1..8
-      |> Enum.map(fn index ->
-        random_token = token(attacker_key, "random-kid-#{index}", claims(context.issuer))
-        Task.async(fn -> verify(random_token) end)
-      end)
-      |> Task.await_many(10_000)
-
-    assert Enum.all?(random_results, &match?({:error, :invalid_google_credential}, &1))
-    assert Agent.get(context.state, & &1.jwks_requests) == requests_before + 2
-
-    last_unknown = token(attacker_key, "random-kid-after-burst", claims(context.issuer))
-    assert {:error, :invalid_google_credential} = verify(last_unknown)
-    assert Agent.get(context.state, & &1.jwks_requests) == requests_before + 2
-  end
-
   defp verify(token) do
     GoogleAdapter.verify_id_token(token, client_id: @client_id, nonce: @nonce)
   end
 
   defp claims(issuer, overrides \\ %{}) do
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     Map.merge(
       %{

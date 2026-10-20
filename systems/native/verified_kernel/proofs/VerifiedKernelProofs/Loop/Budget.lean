@@ -1,4 +1,5 @@
 import VerifiedKernelProofs.Loop.Source
+import VerifiedKernelProofs.Loop.QueryAnswers
 import VerifiedKernelProofs.Loop.WaitBudget
 import VerifiedKernelProofs.Proof.TermComparison
 
@@ -835,13 +836,9 @@ theorem internal_chain_bounded {ask : Loop.Ask} {s : StepRec} {rest : List StepR
 abbrev activationNextN : Term → Term → KernelM Term :=
   native_decl% "VerifiedKernel.Session.Command.activationNext"
 
-theorem lookup_activation_next :
-    lookupOp queryTable (a "activation_next") = some activationNextN := rfl
-
 theorem queryAsk_activation_next (state r : Term) :
-    Loop.queryAsk state "activation_next" r = activationNextN state r := by
-  unfold Loop.queryAsk
-  rw [lookup_activation_next]
+    Loop.queryAsk state "activation_next" r = activationNextN state r :=
+  QueryAnswers.activation_next state r
 
 /-- `activation_next` asks for the Router fact only when the fact is absent. -/
 theorem activationNext_check_router {state r : Term} :

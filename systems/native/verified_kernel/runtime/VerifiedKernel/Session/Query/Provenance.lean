@@ -350,17 +350,8 @@ def build (state args : Term) : KernelM Term := do
   let scope := match entries.find? (fun entry => entry.ref == request.default currentRef) with
     | some entry => (entry.items.head?.getD nil).get (b "label")
     | none => privateLabel
-  -- Instruction overlays are runtime file reads. They retain the same private
-  -- audience as FileBackend.label/2, without entering the transcript.
-  let active ← asList (← ReplyQuery.currentSourceMessageIds state)
-  let selections := (wrap ((cv state "miniskills").get (b "inputs"))).filter fun input =>
-    active.contains (input.get (b "source_message_id"))
-  let skills := selections.flatMap fun input => wrap (input.get (b "skills"))
-  let overlayItems ← skills.mapM fun skill => do
-    return Term.map [(b "ref", ← prefixedRef "src:k-" (skill.get (b "skill_id"))),
-      (b "label", privateLabel), (b "integrity", b "data"), (b "principal", nil)]
   return .map
-    [(b "items", list (entries.flatMap Entry.items ++ uniq overlayItems)),
+    [(b "items", list (entries.flatMap Entry.items)),
      (b "input_refs", (entries.filter consumes).foldl
        (fun acc entry => acc.put entry.sourceId entry.ref) empty),
      (b "requester", ← requesterOf trustedOrigin entries request),

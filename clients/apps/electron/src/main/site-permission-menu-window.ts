@@ -1,6 +1,7 @@
 import { BaseWindow, BrowserWindow, screen, shell } from "electron";
 import {
   emptySitePermissionMenuState,
+  type BrowserPageMenuItem,
   type SitePermissionMenuAction,
   type SitePermissionMenuState,
 } from "@comma/native-bridge";
@@ -11,6 +12,9 @@ import type { NativeSurfaceService } from "./modules/surfaces";
 import type { SitePermissionPlatform } from "./modules/browser-sidebar/site-permissions";
 
 type Settings = Parameters<SitePermissionPlatform["settings"]>[0];
+const menuWidth = 352;
+// The tallest the menu may grow; the renderer reports its height to fit it.
+const menuHeight = 480;
 export interface SitePermissionMenuProvider {
   read(input?: void): SitePermissionMenuState;
   act(input: SitePermissionMenuAction): void | Promise<void>;
@@ -28,7 +32,13 @@ export class SitePermissionMenuWindow implements SitePermissionMenuProvider {
   #owner: BaseWindow | undefined;
   #loading: Promise<void> | undefined;
   #active:
-    | { input: Settings; generation: number; finish(): void; fail(error: Error): void }
+    | {
+        input: Settings;
+        generation: number;
+        place(height: number): void;
+        finish(picked?: BrowserPageMenuItem): void;
+        fail(error: Error): void;
+      }
     | undefined;
   #generation = 0;
   #revision = 0;
@@ -54,7 +64,7 @@ export class SitePermissionMenuWindow implements SitePermissionMenuProvider {
     const window = new BrowserWindow(
       createSitePermissionMenuWindowOptions({
         parent: owner,
-        bounds: { x: 0, y: 0, width: 352, height: 404 },
+        bounds: { x: 0, y: 0, width: menuWidth, height: menuHeight },
         preloadPath: this.options.preloadPath,
       })
     );
@@ -102,7 +112,7 @@ export class SitePermissionMenuWindow implements SitePermissionMenuProvider {
     return this.#loading;
   }
 
-  async open(input: Settings): Promise<void> {
+  async open(input: Settings): Promise<BrowserPageMenuItem | undefined> {
     this.#active?.finish();
     const owner = input.owner;
     if (!(owner instanceof BaseWindow) || owner.isDestroyed() || input.signal.aborted)
@@ -120,47 +130,57 @@ export class SitePermissionMenuWindow implements SitePermissionMenuProvider {
         }
       : screen.getCursorScreenPoint();
     const area = screen.getDisplayNearestPoint(point).workArea;
-    const width = 352,
-      height = 404;
-    window.setBounds({
-      x: Math.round(
-        Math.max(area.x, Math.min(point.x - width + 12, area.x + area.width - width))
-      ),
-      y: Math.round(
-        Math.max(area.y, Math.min(point.y - 12, area.y + area.height - height))
-      ),
-      width,
-      height,
-    });
-    return new Promise<void>((resolve, reject) => {
+    const place = (contentHeight: number) => {
+      const width = menuWidth,
+        height = Math.round(Math.min(menuHeight, Math.max(1, contentHeight)));
+      window.setBounds({
+        x: Math.round(
+          Math.max(area.x, Math.min(point.x - width + 12, area.x + area.width - width))
+        ),
+        y: Math.round(
+          Math.max(area.y, Math.min(point.y - 12, area.y + area.height - height))
+        ),
+        width,
+        height,
+      });
+    };
+    // Lay the hidden menu out at full height; presenting fits it to the menu.
+    place(menuHeight);
+    return new Promise<BrowserPageMenuItem | undefined>((resolve, reject) => {
       let finished = false;
-      const finish = () => {
+      // Listeners get the bare dismissal: an event argument is never a pick.
+      const dismiss = () => finish();
+      const finish = (picked?: BrowserPageMenuItem) => {
         if (finished) return;
         finished = true;
-        input.signal.removeEventListener("abort", finish);
-        owner.removeListener("hide", finish);
-        owner.removeListener("minimize", finish);
-        owner.removeListener("move", finish);
-        owner.removeListener("resize", finish);
+        input.signal.removeEventListener("abort", dismiss);
+        owner.removeListener("hide", dismiss);
+        owner.removeListener("minimize", dismiss);
+        owner.removeListener("move", dismiss);
+        owner.removeListener("resize", dismiss);
         this.#active = undefined;
         if (!window.isDestroyed()) window.hide();
         this.#publish();
-        resolve();
+        resolve(picked);
       };
       this.#active = {
-        input: { ...input, choices: { ...input.choices } },
+        input: {
+          ...input,
+          site: input.site && { ...input.site, choices: { ...input.site.choices } },
+        },
         generation: ++this.#generation,
+        place,
         finish,
         fail: (error) => {
           reject(error);
           finish();
         },
       };
-      input.signal.addEventListener("abort", finish, { once: true });
-      owner.on("hide", finish);
-      owner.on("minimize", finish);
-      owner.on("move", finish);
-      owner.on("resize", finish);
+      input.signal.addEventListener("abort", dismiss, { once: true });
+      owner.on("hide", dismiss);
+      owner.on("minimize", dismiss);
+      owner.on("move", dismiss);
+      owner.on("resize", dismiss);
       this.#publish();
       // The renderer acknowledges this generation after committing the new menu.
       // Until then the native window remains hidden, so an old origin cannot flash.
@@ -181,8 +201,9 @@ export class SitePermissionMenuWindow implements SitePermissionMenuProvider {
       revision: this.#revision,
       menu: input
         ? {
-            origin: input.origin,
-            choices: { ...input.choices },
+            site: input.site
+              ? { origin: input.site.origin, choices: { ...input.site.choices } }
+              : null,
             systemSettings: process.platform === "darwin",
           }
         : null,
@@ -207,23 +228,30 @@ export class SitePermissionMenuWindow implements SitePermissionMenuProvider {
       action.generation !== active.generation
     )
       throw new Error("Website permission menu has closed. Open it again.");
-    const input = active.input;
+    const site = active.input.site;
     switch (action.action) {
       case "present":
-        this.#window!.show();
+        active.place(action.height);
+        if (!this.#window!.isVisible()) this.#window!.show();
+        break;
+      case "pick":
+        active.finish(action.item);
         break;
       case "change":
-        input.change(action.media, action.value);
-        input.choices[action.media] = action.value;
+        if (!site) throw new Error("This page has no website permissions.");
+        site.change(action.media, action.value);
+        site.choices[action.media] = action.value;
         this.#publish();
         break;
       case "reset":
-        input.reset();
-        input.choices = { microphone: "ask", camera: "ask" };
+        if (!site) throw new Error("This page has no website permissions.");
+        site.reset();
+        site.choices = { microphone: "ask", camera: "ask" };
         this.#publish();
         break;
       case "reload":
-        input.reload();
+        if (!site) throw new Error("This page has no website permissions.");
+        site.reload();
         active.finish();
         break;
       case "close":
@@ -233,6 +261,10 @@ export class SitePermissionMenuWindow implements SitePermissionMenuProvider {
         if (process.platform === "darwin")
           await shell.openExternal(
             `x-apple.systempreferences:com.apple.preference.security?Privacy_${action.media === "camera" ? "Camera" : "Microphone"}`
+          );
+        else if (process.platform === "win32")
+          await shell.openExternal(
+            `ms-settings:privacy-${action.media === "camera" ? "webcam" : "microphone"}`
           );
         break;
     }

@@ -1,5 +1,5 @@
 defmodule SalixStore.AgentVMMTrustTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{AgentVMMManagedTrustSigning, AgentVMMTrust, PersonalMeshProto, Repo}
 
@@ -14,7 +14,7 @@ defmodule SalixStore.AgentVMMTrustTest do
   end
 
   test "managed anchor rotation and credentials remain tenant/revision scoped" do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     {public_key, private_key} = keypair()
     signer = &sign_low_s(&1, private_key)
 
@@ -132,13 +132,13 @@ defmodule SalixStore.AgentVMMTrustTest do
   end
 
   test "managed key rotation creates the reviewed revision beside the old anchor" do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     {old_public_key, _old_private_key} = keypair()
     {public_key, private_key} = keypair()
 
-    previous = Application.get_env(:salix_store, :agent_vmm_managed_trust_signing)
+    previous = SystemsRuntime.get_env(:salix_store, :agent_vmm_managed_trust_signing)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_store,
       :agent_vmm_managed_trust_signing,
       AgentVMMManagedTrustSigning.from_json(%{"private_key" => Base.encode64(private_key)})
@@ -146,8 +146,8 @@ defmodule SalixStore.AgentVMMTrustTest do
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_store, :agent_vmm_managed_trust_signing, previous),
-        else: Application.delete_env(:salix_store, :agent_vmm_managed_trust_signing)
+        do: SystemsRuntime.put_env(:salix_store, :agent_vmm_managed_trust_signing, previous),
+        else: SystemsRuntime.delete_env(:salix_store, :agent_vmm_managed_trust_signing)
     end)
 
     assert {:ok, anchor} =
@@ -185,13 +185,19 @@ defmodule SalixStore.AgentVMMTrustTest do
     assert rotated.public_key == public_key
     assert rotated.key_revision == 2
     assert rotated.policy_revision == 2
+
+    # A Host clock may lag issuance by as much as it may lead it.
+    credential = Repo.one!(AgentVMMTrust.Credential)
+    lifetime = DateTime.diff(credential.expires_at, credential.not_before, :second)
+    assert DateTime.diff(credential.not_before, rotated.not_before, :second) == lifetime
+    assert bundle.trust_anchor["notBefore"] == DateTime.to_iso8601(rotated.not_before)
   end
 
   test "re-enrollment reuses the exact active membership credential for one device identity" do
     {public_key, private_key} = keypair()
-    previous = Application.get_env(:salix_store, :agent_vmm_managed_trust_signing)
+    previous = SystemsRuntime.get_env(:salix_store, :agent_vmm_managed_trust_signing)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_store,
       :agent_vmm_managed_trust_signing,
       AgentVMMManagedTrustSigning.from_json(%{"private_key" => Base.encode64(private_key)})
@@ -199,8 +205,8 @@ defmodule SalixStore.AgentVMMTrustTest do
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_store, :agent_vmm_managed_trust_signing, previous),
-        else: Application.delete_env(:salix_store, :agent_vmm_managed_trust_signing)
+        do: SystemsRuntime.put_env(:salix_store, :agent_vmm_managed_trust_signing, previous),
+        else: SystemsRuntime.delete_env(:salix_store, :agent_vmm_managed_trust_signing)
     end)
 
     identity = %{
@@ -268,7 +274,7 @@ defmodule SalixStore.AgentVMMTrustTest do
   end
 
   test "managed signer rejects a valid high-S representation" do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     {public_key, private_key} = keypair()
 
     {:ok, anchor} =
@@ -351,7 +357,7 @@ defmodule SalixStore.AgentVMMTrustTest do
   end
 
   defp sign_low_s(payload, private_key) do
-    der = :crypto.sign(:ecdsa, :sha256, payload, [private_key, :secp256r1])
+    der = SystemsRuntime.Proc.sign(:ecdsa, :sha256, payload, [private_key, :secp256r1])
     <<0x30, _size, 0x02, r_size, rest::binary>> = der
     <<r::binary-size(^r_size), 0x02, s_size, s::binary-size(s_size)>> = rest
     r = r |> :binary.decode_unsigned() |> encode32()
@@ -371,7 +377,7 @@ defmodule SalixStore.AgentVMMTrustTest do
 
   defp keypair do
     {<<4, x::binary-size(32), y::binary-size(32)>>, private_key} =
-      :crypto.generate_key(:ecdh, :secp256r1)
+      SystemsRuntime.Proc.generate_key(:ecdh, :secp256r1)
 
     prefix = 2 + Bitwise.band(:binary.last(y), 1)
     {<<prefix, x::binary>>, private_key}

@@ -1,7 +1,7 @@
 # Run in a configured development environment:
 # mix run scripts/routine_member_evaluate.exs /private/path/identity.json [cases.json]
-# Identity must name an existing caller-owned Router Agent, Tenant, and Group.
-# Calls use the Routine's template selection, metering, archive, and admission.
+# Identity must name the caller User and their Router Agent, Tenant, and Group.
+# Calls use the Routine's model selection, metering, archive, and admission.
 
 {identity_path, cases_path} =
   case System.argv() do
@@ -18,16 +18,7 @@ workspace = %{
   "default_group_id" => Map.fetch!(identity, "group_id")
 }
 
-template_id =
-  case Application.get_env(:comma_web, :recommendation_template_id) do
-    id when is_binary(id) and id != "" ->
-      id
-
-    _ ->
-      {:ok, record} = SalixAgent.AgentControl.get_record(workspace["router_agent_id"])
-      {:ok, id, _source} = SalixAgent.Templates.resolve_template_id_for_record(record)
-      id
-  end
+{:ok, model} = CommaWeb.RecommendationRuntime.model(workspace["router_agent_id"])
 
 results =
   for scenario <- File.read!(cases_path) |> Jason.decode!() do
@@ -38,12 +29,12 @@ results =
       relevance_mode: "member"
     }
 
-    profile = %{timezone: scenario["input"]["timezone"], locale: scenario["locale"] || "en"}
+    profile = %{timezone: scenario["input"]["timezone"], user_id: Map.fetch!(identity, "user_id")}
 
     result =
       CommaWeb.RecommendationRenderer.render(
         workspace,
-        template_id,
+        model,
         profile,
         run,
         %{failures: []},

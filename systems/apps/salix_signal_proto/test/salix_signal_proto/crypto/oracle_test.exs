@@ -7,7 +7,7 @@ defmodule SalixSignalProto.Crypto.OracleTest do
   # Kyber1024 has no oracle operation (ORACLE_INTERFACE.md section 6.3); the
   # CRS-03 decapsulation vectors cover it at level 1, and pre-key sessions
   # (layer C2) cover encapsulation.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   import Bitwise
@@ -155,7 +155,7 @@ defmodule SalixSignalProto.Crypto.OracleTest do
 
         assert AesCbc.encrypt(key, iv, plaintext) == Oracle.unhex(ciphertext)
 
-        random = :crypto.strong_rand_bytes(16 * blocks)
+        random = SystemsRuntime.Proc.random_bytes(16 * blocks)
 
         oracle_result =
           Oracle.call(oracle, "aes256cbc.decrypt", %{key: key, iv: iv, ciphertext: random})

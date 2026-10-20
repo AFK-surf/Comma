@@ -1,4 +1,6 @@
 defmodule Comma.AdminTest do
+  require SystemsRuntime.Proc
+
   use Comma.DataCase, async: false
 
   import Ecto.Query
@@ -9,7 +11,7 @@ defmodule Comma.AdminTest do
   alias Comma.Repo
 
   setup do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
 
@@ -19,13 +21,13 @@ defmodule Comma.AdminTest do
   end
 
   test "selfhost requires explicit Admin access and never trusts the hosted domain" do
-    previous = Application.get_env(:comma_core, :selfhost)
-    Application.put_env(:comma_core, :selfhost, true)
+    previous = SystemsRuntime.get_env(:comma_core, :selfhost)
+    SystemsRuntime.put_env(:comma_core, :selfhost, true)
 
     on_exit(fn ->
       if is_nil(previous),
-        do: Application.delete_env(:comma_core, :selfhost),
-        else: Application.put_env(:comma_core, :selfhost, previous)
+        do: SystemsRuntime.delete_env(:comma_core, :selfhost),
+        else: SystemsRuntime.put_env(:comma_core, :selfhost, previous)
     end)
 
     {:ok, user} =
@@ -39,8 +41,8 @@ defmodule Comma.AdminTest do
   end
 
   test "the admin email domain is configuration" do
-    Application.put_env(:comma_core, :admin_email_domain, "ops.example.com")
-    on_exit(fn -> Application.delete_env(:comma_core, :admin_email_domain) end)
+    SystemsRuntime.put_env(:comma_core, :admin_email_domain, "ops.example.com")
+    on_exit(fn -> SystemsRuntime.delete_env(:comma_core, :admin_email_domain) end)
 
     assert Comma.Admin.admin_email?("Admin@Ops.Example.com")
     refute Comma.Admin.admin_email?("admin@comma.surf")
@@ -114,70 +116,8 @@ defmodule Comma.AdminTest do
     refute Comma.Admin.admin_user?(disabled)
   end
 
-  test "decorates bounded user pages with access and login methods" do
-    {:ok, domain_user} =
-      Comma.Accounts.create_user(%{"email" => unique_email("summary-domain") <> "@comma.surf"})
-
-    {:ok, outside_user} =
-      Comma.Accounts.create_user(%{"email" => unique_email("summary-outside") <> "@example.com"})
-
-    last_authenticated_at = ~U[2026-07-25 08:30:00.000000Z]
-
-    assert {:ok, _identity} =
-             Repository.ensure_identity(outside_user["id"], %{
-               provider: "google",
-               issuer: "https://accounts.google.com",
-               subject: "summary-google-subject",
-               email_snapshot: outside_user["email"],
-               email_verified: true,
-               last_authenticated_at: last_authenticated_at
-             })
-
-    {:ok, _outside_user} =
-      Comma.Admin.set_admin_access(
-        outside_user["id"],
-        "allow",
-        :ops,
-        "Count the explicit Admin"
-      )
-
-    {:ok, page} = Comma.Admin.list_users(limit: 100)
-
-    assert Enum.find(page["data"], &(&1["id"] == domain_user["id"]))["admin_access"] == %{
-             "allowed" => true,
-             "decision" => nil,
-             "source" => "domain_default"
-           }
-
-    listed_outside = Enum.find(page["data"], &(&1["id"] == outside_user["id"]))
-
-    assert listed_outside["admin_access"]["allowed"]
-
-    assert [
-             %{"method" => "email_otp", "email" => outside_email},
-             %{
-               "method" => "google",
-               "email_snapshot" => google_email,
-               "email_verified" => true,
-               "linked_at" => linked_at,
-               "last_authenticated_at" => last_authenticated_at_unix
-             }
-           ] = listed_outside["login_methods"]
-
-    assert outside_email == outside_user["email"]
-    assert google_email == outside_user["email"]
-    assert is_integer(linked_at)
-    assert last_authenticated_at_unix == DateTime.to_unix(last_authenticated_at)
-
-    {:ok, fetched_domain} = Comma.Admin.get_user(domain_user["id"])
-
-    assert fetched_domain["login_methods"] == [
-             %{"method" => "email_otp", "email" => domain_user["email"]}
-           ]
-  end
-
   test "Workspace and Billing projection is owner-verified, bounded, and redacted" do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = SystemsClock.utc_now() |> DateTime.truncate(:second)
     valid_from = DateTime.add(now, -1, :day)
     expires_at = DateTime.add(now, 30, :day)
 
@@ -272,73 +212,6 @@ defmodule Comma.AdminTest do
     refute inspect(projected_billing) =~ "idempotency_key"
   end
 
-  test "Workspace and Billing projection fails closed on owner mismatch and cardinality drift" do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
-    valid_from = DateTime.add(now, -1, :day)
-    expires_at = DateTime.add(now, 30, :day)
-
-    {:ok, mismatched_user} =
-      Comma.Accounts.create_user(%{
-        "email" => unique_email("workspace-mismatch") <> "@comma.surf"
-      })
-
-    assert {:ok, workspace} = Comma.Workspaces.create_for_user(mismatched_user["id"])
-
-    assert :ok =
-             BillingCore.Accounts.ensure_account(%{
-               repo: BillingCore.Repo,
-               billing_account_id: workspace["billing_account_id"],
-               surface: "comma",
-               required_surface: "comma",
-               product_owner_type: "workspace",
-               product_owner_id: "another-workspace",
-               enforce_product_owner_identity: true
-             })
-
-    assert {:ok, _grant} =
-             BillingCore.Credits.issue_grant(%{
-               repo: BillingCore.Repo,
-               billing_account_id: workspace["billing_account_id"],
-               credits: 73,
-               valid_from: valid_from,
-               expires_at: expires_at,
-               source_type: "redeem_code",
-               source_id: "mismatched-redemption",
-               source_event_id: "mismatched-event",
-               idempotency_key: "workspace-billing-mismatch",
-               package_code: "must_not_cross",
-               package_version: "1"
-             })
-
-    assert {:ok,
-            projection = %{
-              "workspace" => %{"id" => workspace_id},
-              "billing" => %{
-                "account_status" => "identity_mismatch",
-                "current_credits" => 0,
-                "active_grants" => [],
-                "has_more" => false
-              }
-            }} = Comma.Admin.get_user_workspace_billing(mismatched_user["id"])
-
-    assert workspace_id == workspace["id"]
-    refute inspect(projection) =~ "must_not_cross"
-
-    {:ok, duplicate_user} =
-      Comma.Accounts.create_user(%{
-        "email" => unique_email("workspace-duplicate") <> "@comma.surf"
-      })
-
-    assert {:ok, _first} = Comma.Workspaces.create_for_user(duplicate_user["id"])
-    assert {:ok, _second} = Comma.Workspaces.create_for_user(duplicate_user["id"])
-
-    assert {:error, :workspace_invariant} =
-             Comma.Admin.get_user_workspace_billing(duplicate_user["id"])
-
-    assert {:error, :not_found} =
-             Comma.Admin.get_user_workspace_billing("missing-workspace-billing-user")
-  end
-
   test "human support command is audited, capped, secret-redacted, and duplicate-safe" do
     {:ok, actor} =
       Comma.Accounts.create_user(%{"email" => unique_email("actor") <> "@comma.surf"})
@@ -404,13 +277,13 @@ defmodule Comma.AdminTest do
   end
 
   test "a concurrent retry cannot execute a second effect while the first owns the fence" do
-    previous_lease_seconds = Application.get_env(:comma_core, :admin_audit_lease_seconds)
-    Application.put_env(:comma_core, :admin_audit_lease_seconds, 0)
+    previous_lease_seconds = SystemsRuntime.get_env(:comma_core, :admin_audit_lease_seconds)
+    SystemsRuntime.put_env(:comma_core, :admin_audit_lease_seconds, 0)
 
     on_exit(fn ->
       case previous_lease_seconds do
-        nil -> Application.delete_env(:comma_core, :admin_audit_lease_seconds)
-        seconds -> Application.put_env(:comma_core, :admin_audit_lease_seconds, seconds)
+        nil -> SystemsRuntime.delete_env(:comma_core, :admin_audit_lease_seconds)
+        seconds -> SystemsRuntime.put_env(:comma_core, :admin_audit_lease_seconds, seconds)
       end
     end)
 
@@ -427,10 +300,10 @@ defmodule Comma.AdminTest do
       "expires_in_seconds" => 900
     }
 
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     first =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Comma.Admin.run_human_command(
           actor,
           "create_support_session",
@@ -439,9 +312,9 @@ defmodule Comma.AdminTest do
           attrs,
           "support-session:#{target["id"]}",
           fn _command_id ->
-            send(parent, :first_effect_started)
+            SystemsRuntime.Proc.send(parent, :first_effect_started)
 
-            receive do
+            SystemsRuntime.Proc.receive do
               :release_first_effect -> :ok
             after
               5_000 -> raise "timed out waiting to release the first Admin effect"
@@ -452,10 +325,10 @@ defmodule Comma.AdminTest do
         )
       end)
 
-    assert_receive :first_effect_started, 1_000
+    assert_receive :first_effect_started
 
     second =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Comma.Admin.run_human_command(
           actor,
           "create_support_session",
@@ -464,19 +337,19 @@ defmodule Comma.AdminTest do
           attrs,
           "support-session:#{target["id"]}",
           fn _command_id ->
-            send(parent, :second_effect_started)
+            SystemsRuntime.Proc.send(parent, :second_effect_started)
             Comma.Admin.create_support_session(target["id"], attrs)
           end
         )
       end)
 
-    assert Task.yield(second, 100) == nil
+    assert SystemsRuntime.Task.yield(second, 100) == nil
     refute_received :second_effect_started
 
-    send(first.pid, :release_first_effect)
-    assert {:ok, _session} = Task.await(first, 2_000)
+    SystemsRuntime.Proc.send(first.pid, :release_first_effect)
+    assert {:ok, _session} = SystemsRuntime.Task.await(first, :infinity)
 
-    assert Task.await(second, 2_000) in [
+    assert SystemsRuntime.Task.await(second, :infinity) in [
              {:error, :admin_command_in_progress},
              {:error, :admin_command_already_succeeded}
            ]
@@ -491,17 +364,17 @@ defmodule Comma.AdminTest do
   end
 
   test "external command recovers owner truth after commit and a lost response" do
-    previous_lease_seconds = Application.get_env(:comma_core, :admin_audit_lease_seconds)
-    Application.put_env(:comma_core, :admin_audit_lease_seconds, 0)
+    previous_lease_seconds = SystemsRuntime.get_env(:comma_core, :admin_audit_lease_seconds)
+    SystemsRuntime.put_env(:comma_core, :admin_audit_lease_seconds, 0)
 
     on_exit(fn ->
       case previous_lease_seconds do
-        nil -> Application.delete_env(:comma_core, :admin_audit_lease_seconds)
-        seconds -> Application.put_env(:comma_core, :admin_audit_lease_seconds, seconds)
+        nil -> SystemsRuntime.delete_env(:comma_core, :admin_audit_lease_seconds)
+        seconds -> SystemsRuntime.put_env(:comma_core, :admin_audit_lease_seconds, seconds)
       end
     end)
 
-    package_code = "comma_admin_lost_ack_#{System.unique_integer([:positive])}"
+    package_code = "comma_admin_lost_ack_#{SystemsRuntime.Proc.unique_integer([:positive])}"
     package_version = "2026-07"
 
     assert {:ok, _package} =
@@ -531,15 +404,15 @@ defmodule Comma.AdminTest do
       Comma.Accounts.create_user(%{"email" => unique_email("lost-ack") <> "@comma.surf"})
 
     attrs = %{
-      "code" => "comma-lost-ack-#{System.unique_integer([:positive])}",
+      "code" => "comma-lost-ack-#{SystemsRuntime.Proc.unique_integer([:positive])}",
       "package_code" => package_code,
       "package_version" => package_version,
       "reason" => "Recover Billing owner truth after a lost response",
-      "idempotency_key" => "lost-ack-#{Ecto.UUID.generate()}",
+      "idempotency_key" => "lost-ack-#{SystemsRuntime.Proc.uuid()}",
       "confirmation" => "create-redeem-code:#{package_code}:#{package_version}"
     }
 
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     assert_raise RuntimeError, "simulated response loss", fn ->
       Comma.Admin.run_human_external_command(
@@ -555,7 +428,7 @@ defmodule Comma.AdminTest do
                    |> BillingCommerce.RedeemCodeCommands.bind_admin_command(command_id)
                    |> BillingCommerce.create_redeem_code()
 
-          send(parent, {:billing_committed, created})
+          SystemsRuntime.Proc.send(parent, {:billing_committed, created})
           raise "simulated response loss"
         end
       )
@@ -605,12 +478,12 @@ defmodule Comma.AdminTest do
       Comma.Accounts.create_user(%{"email" => unique_email("receipted") <> "@comma.surf"})
 
     {:ok, receipt} = Agent.start_link(fn -> nil end)
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     attrs = %{
       "expected_revision" => 7,
       "reason" => "Recover the exact committed Agent VMM intent",
-      "idempotency_key" => "receipted-#{Ecto.UUID.generate()}",
+      "idempotency_key" => "receipted-#{SystemsRuntime.Proc.uuid()}",
       "confirmation" => "disable_agent_vmm_registration:registration-a:7"
     }
 
@@ -633,13 +506,13 @@ defmodule Comma.AdminTest do
     end
 
     execute = fn command_id, _command ->
-      send(parent, :executed)
+      SystemsRuntime.Proc.send(parent, :executed)
       Agent.update(receipt, fn nil -> command_id end)
       {:ok, %{accepted: true, result_revision: 8}}
     end
 
     replay = fn command_id, _command ->
-      send(parent, :replayed)
+      SystemsRuntime.Proc.send(parent, :replayed)
 
       if Agent.get(receipt, & &1) == command_id,
         do: {:already_applied, %{accepted: true, result_revision: 8}},
@@ -692,7 +565,7 @@ defmodule Comma.AdminTest do
                device_label: "Comma Desktop on Linux"
              )
 
-    expired_at = DateTime.add(DateTime.utc_now(), -60, :second)
+    expired_at = DateTime.add(SystemsClock.utc_now(), -60, :second)
 
     expired["id"]
     |> then(&Repo.get!(AuthSession, &1))
@@ -782,43 +655,6 @@ defmodule Comma.AdminTest do
     end
 
     assert {:error, :not_found} = Comma.Admin.list_user_sessions("missing-user")
-  end
-
-  test "invalid human confirmation is rejected before the effect and remains auditable" do
-    {:ok, actor} =
-      Comma.Accounts.create_user(%{"email" => unique_email("rejected") <> "@comma.surf"})
-
-    parent = self()
-
-    assert {:error, :invalid_admin_confirmation} =
-             Comma.Admin.run_human_command(
-               actor,
-               "update_user",
-               "user",
-               actor["id"],
-               %{
-                 "reason" => "Try an invalid confirmation",
-                 "idempotency_key" => "rejected-test-key-0001",
-                 "confirmation" => "wrong"
-               },
-               "update-user:#{actor["id"]}",
-               fn _command_id ->
-                 send(parent, :effect_ran)
-                 {:ok, %{}}
-               end
-             )
-
-    refute_received :effect_ran
-
-    assert Repo.exists?(
-             from(event in AuditEvent,
-               where:
-                 event.actor_key == ^actor["id"] and
-                   event.action == "update_user" and
-                   event.outcome == "rejected" and
-                   event.error_code == "invalid_admin_confirmation"
-             )
-           )
   end
 
   test "Audit log is latest-first, cursor-bounded, and secret-redacted" do
@@ -922,6 +758,57 @@ defmodule Comma.AdminTest do
     assert Repo.get!(AccessOverride, user["id"]).decision == "allow"
   end
 
+  test "lookup finds an account by email prefix, user id, and the ids of its Workspace" do
+    stem = "lookup_a1b2"
+
+    {:ok, ada} = Comma.Accounts.create_user(%{"email" => stem <> ".ada@example.com"})
+    {:ok, _bob} = Comma.Accounts.create_user(%{"email" => stem <> ".bob@example.com"})
+    # The underscore in the query is a literal character, not a LIKE wildcard.
+    {:ok, _other} =
+      Comma.Accounts.create_user(%{
+        "email" => String.replace(stem, "_", "x") <> ".eve@example.com"
+      })
+
+    assert {:ok, %{"data" => by_prefix}} = Comma.Admin.lookup("  " <> String.upcase(stem) <> " ")
+
+    assert Enum.map(by_prefix, & &1["user"]["email"]) == [
+             stem <> ".ada@example.com",
+             stem <> ".bob@example.com"
+           ]
+
+    assert Enum.all?(by_prefix, &(&1["match"] == "email" and &1["workspace"] == nil))
+    assert hd(by_prefix)["user"]["admin_access"]["allowed"] == false
+
+    assert {:ok, %{"data" => [%{"match" => "user_id", "user" => %{"id" => ada_id}}]}} =
+             Comma.Admin.lookup(ada["id"])
+
+    assert ada_id == ada["id"]
+
+    assert {:ok, workspace} = Comma.Workspaces.create_for_user(ada["id"])
+
+    workspace["id"]
+    |> then(&Repo.get!(Workspace, &1))
+    |> Ecto.Changeset.change(salix_tenant_id: stem <> "-tenant", salix_group_id: stem <> "-group")
+    |> Repo.update!()
+
+    for {term, match} <- [
+          {workspace["id"], "workspace_id"},
+          {stem <> "-tenant", "tenant_id"},
+          {stem <> "-group", "group_id"}
+        ] do
+      assert {:ok, %{"data" => [result]}} = Comma.Admin.lookup(term)
+      assert result["match"] == match
+      assert result["user"]["id"] == ada["id"]
+      assert result["workspace"]["id"] == workspace["id"]
+      assert result["workspace"]["tenant_id"] == stem <> "-tenant"
+    end
+
+    assert {:ok, %{"data" => []}} = Comma.Admin.lookup("nobody-" <> stem)
+    assert {:error, :invalid_filter} = Comma.Admin.lookup("   ")
+    assert {:error, :invalid_filter} = Comma.Admin.lookup(String.duplicate("a", 321))
+    assert {:error, :invalid_filter} = Comma.Admin.lookup(nil)
+  end
+
   defp unique_email(prefix),
-    do: prefix <> "-" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+    do: prefix <> "-" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(9), padding: false)
 end

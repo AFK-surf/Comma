@@ -1,29 +1,34 @@
+import { countTaskLoopRules, taskLoopRuleKey } from "@comma/core/task-loop-filter";
+import { openTaskTarget } from "./openTaskTarget";
+import { NewStationTaskDialog } from "./station/NewStationTaskDialog";
+import { useTaskLoopRuleFilter } from "./useTaskLoopRuleFilter";
+import { useCall, useTopic } from "@comma/core-client";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import {
+  InfinityIcon,
   MacbookIcon,
-  type TaskStatusBucket,
   SquareGridCircleIcon,
   TagLabelIcon,
+} from "@comma/ui/components/icons";
+import {
+  type TaskStatusBucket,
   TaskWorkspace,
   type TaskFilterOption,
   type TaskFilterSection,
   type TaskWorkspaceProps,
-  toast,
   type TaskWorkspaceTask,
-} from "@comma/ui";
+} from "@comma/ui/components/task-workspace";
+import { toast } from "@comma/ui/components/toast";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConversationPreparation } from "../chat/prepareConversations";
-import { nativePlatformClipboard } from "../../runtime-chat/nativePlatformActions";
+import { nativePlatformClipboard } from "../../nativePlatformActions";
 import { useCommaAuth } from "../AuthGate";
-import {
-  isStaleChatSessionError,
-  useChatApi,
-  useChatRegistry,
-} from "../chat/ChatProvider";
+import { isStaleChatSessionError, useChatRegistry } from "../chat/ChatProvider";
 import { resolveWorkspaceChat } from "../chat/useWorkspaceChat";
 import { useCommaUiThemeName } from "../commaUiTheme";
 import { LabelDot } from "./labelColor";
+import { TaskStepCards } from "./taskSteps";
 import {
   TASK_ORIGIN_KEYS,
   TaskOriginIcon,
@@ -31,7 +36,12 @@ import {
   taskOriginLabel,
   type TaskOriginKey,
 } from "./taskOrigin";
-import { useOpenTasksFilter } from "./taskChips";
+import {
+  TASK_LOOP_FILTER_KEYS,
+  taskLoopFilterKey,
+  type TaskLoopFilterCounts,
+} from "./taskLoopLabels";
+import { taskLoopFilterOptions, useOpenTasksFilter } from "./taskChips";
 import { taskMentionsDraft } from "./taskMentions";
 import { useTaskBadges } from "./useTaskBadges";
 import { useTaskOrder } from "./useTaskOrder";
@@ -46,17 +56,19 @@ const NO_LABEL_OPTION = "comma:no-label";
 
 /**
  * Filter-menu edits, tied to the deep link they were made under: a fresh
- * `?label=` / `?platform=` link supersedes them, so a chip clicked elsewhere
- * always lands on exactly the narrowing it names.
+ * label, platform, Loop type or rule link supersedes them, so a chip
+ * clicked elsewhere always lands on exactly the narrowing it names.
  */
 interface FilterEdits {
   link: string;
   label?: ReadonlySet<string> | undefined;
   platform?: ReadonlySet<string> | undefined;
   clientPlatform?: ReadonlySet<string> | undefined;
+  schedule?: ReadonlySet<string> | undefined;
+  loopRule?: string | undefined;
 }
 
-const NO_LINK = "||";
+const NO_LINK = JSON.stringify(["", "", "", "", ""]);
 
 function allOptionIds(options: readonly TaskFilterOption[]): ReadonlySet<string> {
   return new Set(options.map((option) => option.id));
@@ -74,7 +86,6 @@ export function TasksRoute() {
   const isDark = useCommaUiThemeName() === "Dark mode";
   const auth = useCommaAuth();
   const navigate = useNavigate();
-  const api = useChatApi();
   const {
     activeGroupId,
     loadMore,
@@ -84,22 +95,34 @@ export function TasksRoute() {
     retryTasks,
     taskLoadError,
     tasks,
-  } = useWorkspaceTasks();
-  const { orders, setBucketOrder } = useTaskOrder(api, activeGroupId, tasks);
+  } = useWorkspaceTasks({ stationTasks: true });
+  const { orders, setBucketOrder } = useTaskOrder(activeGroupId, tasks);
   const messages = useCommaMessages();
 
-  // `?label=<id>` / `?platform=<origin>`: a chip on a card or in a Task's
-  // properties panel, or Settings › Labels › View labeled tasks. The link
-  // seeds the filter (the toolbar's Filter icon shows it); editing the
-  // filter menu takes over from it.
+  // A deep link seeds the filter (the toolbar's Filter icon shows it). An edit
+  // in the filter menu replaces it.
+  // - `?label=<id>` / `?platform=<origin>`: a chip on a card or in a Task's
+  //   properties panel, or Settings › Labels › View labeled tasks.
+  // - `?schedule=<scheduled|event_triggered|unknown|not_scheduled>`: the Loop
+  //   chip on a Task card or an Inbox row. An older `?schedule=loop` selects
+  //   every Loop type.
+  // - `?loopRule=<rule key>`: the trigger chip in a Task's properties panel.
   const {
     label: labelParam,
     platform: platformParam,
     status: statusParam,
     clientPlatform: clientPlatformParam,
+    schedule: scheduleParam,
+    loopRule: loopRuleParam,
   } = useSearch({ strict: false });
   const platformLink = taskOriginKey(platformParam);
-  const link = `${labelParam ?? ""}|${platformParam ?? ""}|${clientPlatformParam ?? ""}`;
+  const link = JSON.stringify([
+    labelParam ?? "",
+    platformParam ?? "",
+    clientPlatformParam ?? "",
+    scheduleParam ?? "",
+    loopRuleParam ?? "",
+  ]);
   const [edits, setEdits] = useState<FilterEdits>({ link });
   const current = edits.link === link ? edits : undefined;
   const labelSelection = useMemo(
@@ -118,9 +141,20 @@ export function TasksRoute() {
       (clientPlatformParam ? new Set([clientPlatformParam]) : undefined),
     [current, clientPlatformParam]
   );
+  const scheduleSelection = useMemo(
+    () =>
+      current?.schedule ??
+      (scheduleParam === "loop"
+        ? new Set(TASK_LOOP_FILTER_KEYS.filter((key) => key !== "not_scheduled"))
+        : scheduleParam
+          ? new Set([scheduleParam])
+          : undefined),
+    [current, scheduleParam]
+  );
+  const loopRuleSelection = current?.loopRule ?? loopRuleParam;
+  const loopRules = useMemo(() => countTaskLoopRules(tasks), [tasks]);
   const openTasksFilter = useOpenTasksFilter();
   const { catalog, catalogById, metaById, renderTaskBadges } = useTaskBadges(
-    api,
     activeGroupId,
     tasks,
     openTasksFilter
@@ -202,19 +236,41 @@ export function TasksRoute() {
     );
   }, [tasks, metaById, clientPlatformSelection, messages]);
 
+  const scheduleCounts = useMemo<TaskLoopFilterCounts>(() => {
+    const counts = { scheduled: 0, event_triggered: 0, unknown: 0, not_scheduled: 0 };
+    for (const task of tasks) counts[taskLoopFilterKey(task.loop)] += 1;
+    return counts;
+  }, [tasks]);
+  const loopCount = tasks.length - scheduleCounts.not_scheduled;
+  const scheduleOptions = useMemo(
+    () => taskLoopFilterOptions(scheduleCounts, messages, scheduleSelection),
+    [scheduleCounts, messages, scheduleSelection]
+  );
+
   const edit = useCallback(
-    (patch: Partial<Pick<FilterEdits, "label" | "platform" | "clientPlatform">>) => {
+    (
+      patch: Partial<
+        Pick<
+          FilterEdits,
+          "label" | "platform" | "clientPlatform" | "schedule" | "loopRule"
+        >
+      >
+    ) => {
       setEdits({
         label: labelSelection,
         clientPlatform: clientPlatformSelection,
         link: NO_LINK,
         platform: platformSelection,
+        schedule: scheduleSelection,
+        loopRule: loopRuleSelection,
         ...patch,
       });
       if (
         labelParam !== undefined ||
         platformParam !== undefined ||
-        clientPlatformParam !== undefined
+        clientPlatformParam !== undefined ||
+        scheduleParam !== undefined ||
+        loopRuleParam !== undefined
       ) {
         void navigate({
           replace: true,
@@ -231,12 +287,41 @@ export function TasksRoute() {
       platformSelection,
       clientPlatformParam,
       clientPlatformSelection,
+      scheduleParam,
+      scheduleSelection,
+      loopRuleParam,
+      loopRuleSelection,
       statusParam,
     ]
   );
 
+  const editLoopRule = useCallback(
+    (loopRule: string | undefined) => edit({ loopRule }),
+    [edit]
+  );
+  const ruleSection = useTaskLoopRuleFilter(
+    loopRules,
+    tasks.length,
+    loopRuleSelection,
+    editLoopRule
+  );
+
   const filterSections = useMemo<TaskFilterSection[]>(() => {
     const sections: TaskFilterSection[] = [];
+    // Show trigger filters once a Task has a Loop or a link narrows by trigger.
+    if (loopCount > 0 || scheduleSelection !== undefined) {
+      sections.push({
+        icon: <InfinityIcon />,
+        id: "schedule",
+        label: messages.tasks_loops(),
+        narrowed: scheduleSelection !== undefined,
+        onChange: (selected) =>
+          edit({ schedule: narrowingOnly(selected, scheduleOptions) }),
+        options: scheduleOptions,
+        selected: scheduleSelection ?? allOptionIds(scheduleOptions),
+      });
+    }
+    if (ruleSection) sections.push(ruleSection);
     if (hasLabels) {
       sections.push({
         icon: <TagLabelIcon />,
@@ -279,18 +364,31 @@ export function TasksRoute() {
     hasLabels,
     labelOptions,
     labelSelection,
+    loopCount,
     messages,
     platformOptions,
     platformSelection,
+    scheduleOptions,
+    scheduleSelection,
+    ruleSection,
   ]);
 
   const narrowing =
     labelSelection !== undefined ||
     platformSelection !== undefined ||
-    clientPlatformSelection !== undefined;
+    clientPlatformSelection !== undefined ||
+    scheduleSelection !== undefined ||
+    loopRuleSelection !== undefined;
   const visibleTasks = useMemo(() => {
     if (!narrowing) return tasks;
     return tasks.filter((task) => {
+      if (
+        loopRuleSelection !== undefined &&
+        taskLoopRuleKey(task.loop) !== loopRuleSelection
+      )
+        return false;
+      if (scheduleSelection && !scheduleSelection.has(taskLoopFilterKey(task.loop)))
+        return false;
       if (
         clientPlatformSelection &&
         !clientPlatformSelection.has(
@@ -320,19 +418,21 @@ export function TasksRoute() {
     narrowing,
     platformSelection,
     clientPlatformSelection,
+    scheduleSelection,
+    loopRuleSelection,
     tasks,
   ]);
 
+  // A Task is made on a machine of the workspace from an app that reaches the machines (the desktop app).
+  const reachesStations = useTopic({ topic: "stationsHome" }).value?.state;
+  const canCreateTask =
+    reachesStations !== undefined &&
+    reachesStations !== "unavailable" &&
+    !!result?.activeWorkspaceId;
+  const [creating, setCreating] = useState(false);
   const openTask = useCallback(
     (task: TaskViewModel) => {
-      void navigate({
-        params: {
-          conversationId: task.conversationId,
-          groupId: task.groupId,
-          workspaceId: task.workspaceId,
-        },
-        to: "/tasks/$workspaceId/$groupId/$conversationId",
-      });
+      void navigate(openTaskTarget(task));
     },
     [navigate]
   );
@@ -345,22 +445,30 @@ export function TasksRoute() {
   // a draft written through a short-lived lease is the one the Home composer
   // shows once we navigate there (the way Drive hands over attachments).
   const registry = useChatRegistry();
+  const call = useCall();
   const preparation = useRef<ConversationPreparation | undefined>(undefined);
   useEffect(() => {
-    const owner = new ConversationPreparation(registry);
+    const owner = new ConversationPreparation(registry, call);
     preparation.current = owner;
     return () => {
       owner.dispose();
       preparation.current = undefined;
     };
-  }, [registry]);
+  }, [call, registry]);
   const prepareVisibleTasks = useCallback((visible: readonly TaskWorkspaceTask[]) => {
+    // A Task a station hosts has no Salix conversation to prepare.
     preparation.current?.update(
-      visible.map((task) => ({
-        conversationId: task.conversationId,
-        groupId: task.groupId,
-        updatedAt: task.archiveVersion,
-      }))
+      visible.flatMap((task) =>
+        task.conversationId.startsWith("station:")
+          ? []
+          : [
+              {
+                conversationId: task.conversationId,
+                groupId: task.groupId,
+                updatedAt: task.archiveVersion,
+              },
+            ]
+      )
     );
   }, []);
 
@@ -370,11 +478,11 @@ export function TasksRoute() {
       if (selected.length === 0) return;
       const attempt = registry.beginAttempt();
       try {
-        await attempt.run(async (attemptApi, signal) => {
+        await attempt.run(async (signal) => {
           let target = registry.getHomeConversationTarget();
           if (!target) {
             const resolution = await resolveWorkspaceChat({
-              api: attemptApi,
+              core: registry.core,
               locale,
               session: registry.productLease,
               signal,
@@ -412,30 +520,40 @@ export function TasksRoute() {
     [locale, messages, navigate, registry]
   );
 
+  // Running cards show their Workers' latest steps.
   return (
-    <TaskWorkspace
-      key={statusParam ?? "all"}
-      initialStatus={statusParam as TaskStatusBucket | undefined}
-      capabilityState="ready"
-      codeClipboard={nativePlatformClipboard}
-      filterSections={filterSections}
-      hasMore={result?.hasMore === true}
-      isDark={isDark}
-      loadError={taskLoadError}
-      loadMoreError={loadMoreState.error}
-      loadMorePending={loadMoreState.pending}
-      loading={loading}
-      onAskComma={askComma}
-      onChatWithComma={openCommaHome}
-      onLoadMore={loadMore}
-      onOpenTask={openTask}
-      onVisibleTasksChange={prepareVisibleTasks}
-      onRetry={result?.source === "error" ? retryTasks : undefined}
-      onTaskOrderChange={setBucketOrder}
-      renderTaskBadges={renderTaskBadges}
-      taskOrder={orders}
-      tasks={visibleTasks}
-      userEmail={auth.userEmail}
-    />
+    <TaskStepCards active>
+      <TaskWorkspace
+        key={statusParam ?? "all"}
+        initialStatus={statusParam as TaskStatusBucket | undefined}
+        capabilityState="ready"
+        codeClipboard={nativePlatformClipboard}
+        filterSections={filterSections}
+        hasMore={result?.hasMore === true}
+        isDark={isDark}
+        loadError={taskLoadError}
+        loadMoreError={loadMoreState.error}
+        loadMorePending={loadMoreState.pending}
+        loading={loading}
+        onAskComma={askComma}
+        onChatWithComma={openCommaHome}
+        onLoadMore={loadMore}
+        onOpenTask={openTask}
+        {...(canCreateTask ? { onCreateTask: () => setCreating(true) } : {})}
+        onVisibleTasksChange={prepareVisibleTasks}
+        onRetry={result?.source === "error" ? retryTasks : undefined}
+        onTaskOrderChange={setBucketOrder}
+        renderTaskBadges={renderTaskBadges}
+        taskOrder={orders}
+        tasks={visibleTasks}
+        userEmail={auth.userEmail}
+      />
+      {creating && result?.activeWorkspaceId ? (
+        <NewStationTaskDialog
+          onClose={() => setCreating(false)}
+          workspace={result.activeWorkspaceId}
+        />
+      ) : null}
+    </TaskStepCards>
   );
 }

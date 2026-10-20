@@ -1,17 +1,7 @@
-import { Button, ScrollArea } from "@comma/ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  createIdempotencyKey,
-  isAdminAccessDenied,
-  isAdminSessionRejection,
-  type AdminApi,
-  type AgentVmmAction,
-  type AgentVmmEnvironment,
-  type AgentVmmNode,
-  type AgentVmmOverview,
-} from "./adminApi";
-import { adminErrorMessage } from "./adminErrors";
-import { replaceAdminViewParams } from "./adminNavigation";
+import { Button } from "@comma/ui/components/Button";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import type { AgentVmmEnvironment, AgentVmmNode } from "./adminApi";
+import { useAdminCommand, useAdminState } from "./adminRuntime";
 import {
   AdminConfirmationDialog,
   AdminDrawer,
@@ -19,153 +9,27 @@ import {
   AdminPageHeader,
   AdminState,
   DetailList,
-  ReasonField,
   displayText,
+  formatLocalDate,
 } from "./adminUi";
+import type {
+  ComputeNodeCommand,
+  ComputeNodeModel,
+  ComputeNodesModel,
+  FleetState,
+} from "./ComputeNodesModel";
+import { messages } from "@comma/i18n";
 
-type FleetState =
-  | { status: "idle" }
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "ready"; nodes: AgentVmmNode[]; overview: AgentVmmOverview };
+type BeginCommand = (command: ComputeNodeCommand) => void;
 
-interface PendingCommand {
-  action: AgentVmmAction;
-  destructive: boolean;
-  expectedRevision: number;
-  idempotencyKey: string;
-  label: string;
-  targetId: string;
-}
-
-export function ComputeNodesView({
-  api,
-  onAccessDenied,
-}: {
-  api: AdminApi;
-  onAccessDenied: () => void;
-}) {
-  const initialTenant = useMemo(
-    () => new URLSearchParams(window.location.search).get("tenant") ?? "",
-    []
-  );
-  const initialRegistration = useMemo(
-    () => new URLSearchParams(window.location.search).get("registration") ?? undefined,
-    []
-  );
-  const [tenantDraft, setTenantDraft] = useState(initialTenant);
-  const [tenantId, setTenantId] = useState(initialTenant);
-  const [revision, setRevision] = useState(0);
-  const [state, setState] = useState<FleetState>({ status: "idle" });
-  const [selectedId, setSelectedId] = useState<string | undefined>(initialRegistration);
-  const [selected, setSelected] = useState<AgentVmmNode>();
-  const [detailError, setDetailError] = useState<string>();
-  const [reason, setReason] = useState("");
-  const [pending, setPending] = useState<PendingCommand>();
-  const [notice, setNotice] = useState<string>();
-
-  useEffect(() => {
-    setReason("");
-  }, [selectedId]);
-
-  useEffect(() => {
-    replaceAdminViewParams({
-      tenant: tenantId,
-      registration: tenantId ? selectedId : undefined,
-    });
-  }, [selectedId, tenantId]);
-
-  useEffect(() => {
-    if (!tenantId) {
-      setState({ status: "idle" });
-      return;
-    }
-    const request = new AbortController();
-    setState({ status: "loading" });
-    void Promise.all([
-      api.getAgentVmmOverview(tenantId, { signal: request.signal }),
-      api.listAgentVmmNodes(tenantId, { limit: 50, signal: request.signal }),
-    ])
-      .then(([overview, page]) => {
-        if (!request.signal.aborted) {
-          setState({ status: "ready", nodes: page.data, overview });
-        }
-      })
-      .catch((error: unknown) => {
-        if (request.signal.aborted || isAdminSessionRejection(error)) return;
-        if (isAdminAccessDenied(error)) return onAccessDenied();
-        setState({
-          status: "error",
-          message: adminErrorMessage(error, "Unable to load compute nodes."),
-        });
-      });
-    return () => request.abort();
-  }, [api, onAccessDenied, revision, tenantId]);
-
-  useEffect(() => {
-    if (!tenantId || !selectedId) {
-      setSelected(undefined);
-      return;
-    }
-    const request = new AbortController();
-    setDetailError(undefined);
-    void api
-      .getAgentVmmNode(tenantId, selectedId, { signal: request.signal })
-      .then((node) => {
-        if (!request.signal.aborted) setSelected(node);
-      })
-      .catch((error: unknown) => {
-        if (request.signal.aborted || isAdminSessionRejection(error)) return;
-        if (isAdminAccessDenied(error)) return onAccessDenied();
-        setDetailError(adminErrorMessage(error, "Unable to load node details."));
-      });
-    return () => request.abort();
-  }, [api, onAccessDenied, revision, selectedId, tenantId]);
-
-  const beginCommand = useCallback(
-    (
-      action: AgentVmmAction,
-      targetId: string,
-      expectedRevision: number,
-      label: string,
-      destructive = false
-    ) => {
-      setPending({
-        action,
-        destructive,
-        expectedRevision,
-        idempotencyKey: createIdempotencyKey(`agent-vmm:${action}:${targetId}`),
-        label,
-        targetId,
-      });
-    },
-    []
-  );
-
-  const execute = useCallback(async () => {
-    if (!pending || reason.trim().length < 3) {
-      throw new Error("Enter a reason with at least 3 characters.");
-    }
-    await api.executeAgentVmmCommand(
-      tenantId,
-      pending.action,
-      pending.targetId,
-      pending.expectedRevision,
-      {
-        confirmation: `${pending.action}:${pending.targetId}:${pending.expectedRevision}`,
-        idempotencyKey: pending.idempotencyKey,
-        reason: reason.trim(),
-      }
-    );
-    setNotice(`${pending.label} was accepted. Refresh to observe convergence.`);
-    setReason("");
-    setPending(undefined);
-    setRevision((current) => current + 1);
-  }, [api, pending, reason, tenantId]);
+export function ComputeNodesView({ model }: { model: ComputeNodesModel }) {
+  const run = useAdminCommand();
+  const { fleet, node, notice, tenantDraft } = useAdminState(model.state);
+  const beginCommand: BeginCommand = (command) => run(model.reviewCommand(command));
 
   return (
     <section
-      aria-label="Compute nodes"
+      aria-label={messages.admin_section_compute()}
       className="admin-workspace compute-workspace"
       data-testid="admin-compute-nodes"
     >
@@ -173,88 +37,87 @@ export function ComputeNodesView({
         actions={
           <Button
             hierarchy="secondary-gray"
-            onPress={() => setRevision((value) => value + 1)}
+            onPress={() => run(model.refresh)}
             size="sm"
           >
-            Refresh
+            {messages.admin_refresh()}
           </Button>
         }
-        description="Monitor availability and manage your tenant’s compute nodes."
-        eyebrow="Platform"
-        title="Compute nodes"
+        description={messages.admin_compute_description()}
+        title={messages.admin_section_compute()}
       />
 
       <form
         className="compute-tenant-form"
         onSubmit={(event) => {
           event.preventDefault();
-          setTenantId(tenantDraft.trim());
-          setSelectedId(undefined);
+          run(model.loadTenant);
         }}
       >
         <label>
-          Tenant ID
+          {messages.admin_tenant_id()}
           <input
-            onChange={(event) => setTenantDraft(event.target.value)}
+            onChange={(event) => run(model.setTenantDraft(event.target.value))}
             placeholder="tenant_…"
             required
             value={tenantDraft}
           />
         </label>
         <Button hierarchy="secondary-gray" size="sm" type="submit">
-          Load tenant
+          {messages.admin_load_tenant()}
         </Button>
       </form>
 
       {notice ? (
-        <AdminNotice message={notice} onDismiss={() => setNotice(undefined)} />
+        <AdminNotice message={notice} onDismiss={() => run(model.dismissNotice)} />
       ) : null}
       <FleetContent
-        onRetry={() => setRevision((value) => value + 1)}
-        onSelect={setSelectedId}
-        state={state}
+        onRetry={() => run(model.refresh)}
+        onSelect={(id) => run(model.openNode(id))}
+        state={fleet}
       />
 
-      {selectedId ? (
-        <AdminDrawer
-          eyebrow="Compute node"
-          onClose={() => setSelectedId(undefined)}
-          title={selected?.device_id || selectedId}
-        >
-          {detailError ? (
-            <AdminState
-              message={detailError}
-              title="Details unavailable"
-              tone="error"
-            />
-          ) : selected ? (
-            <NodeDetails
-              beginCommand={beginCommand}
-              node={selected}
-              reason={reason}
-              setReason={setReason}
-            />
-          ) : (
-            <AdminState title="Loading details…" />
-          )}
-        </AdminDrawer>
+      {node ? (
+        <NodeDrawer
+          beginCommand={beginCommand}
+          model={node}
+          onClose={() => run(model.closeNode)}
+        />
       ) : null}
 
-      <AdminConfirmationDialog
-        destructive={pending?.destructive ?? false}
-        expected={
-          pending
-            ? `${pending.action}:${pending.targetId}:${pending.expectedRevision}`
-            : ""
-        }
-        isOpen={Boolean(pending)}
-        onConfirm={execute}
-        onOpenChange={(open) => {
-          if (!open) setPending(undefined);
-        }}
-        title={pending?.label ?? "Confirm command"}
-      />
+      <AdminConfirmationDialog confirmation={model.confirmation} />
     </section>
+  );
+}
+
+function NodeDrawer({
+  beginCommand,
+  model,
+  onClose,
+}: {
+  beginCommand: BeginCommand;
+  model: ComputeNodeModel;
+  onClose: () => void;
+}) {
+  const { error, node } = useAdminState(model.state);
+  return (
+    <AdminDrawer
+      eyebrow={messages.admin_compute_node()}
+      onClose={onClose}
+      title={node?.device_id || model.registrationId}
+    >
+      {error ? (
+        <AdminState
+          message={error}
+          title={messages.admin_details_unavailable()}
+          tone="error"
+        />
+      ) : node ? (
+        <NodeDetails beginCommand={beginCommand} node={node} />
+      ) : (
+        <AdminState title={messages.admin_loading_details()} />
+      )}
+    </AdminDrawer>
   );
 }
 
@@ -270,17 +133,18 @@ function FleetContent({
   if (state.status === "idle")
     return (
       <AdminState
-        message="Enter a tenant ID to load its fleet."
-        title="Choose a tenant"
+        message={messages.admin_choose_tenant_body()}
+        title={messages.admin_choose_tenant()}
       />
     );
-  if (state.status === "loading") return <AdminState title="Loading compute nodes…" />;
+  if (state.status === "loading")
+    return <AdminState title={messages.admin_loading_compute()} />;
   if (state.status === "error")
     return (
       <AdminState
         message={state.message}
         onAction={onRetry}
-        title="Fleet unavailable"
+        title={messages.admin_fleet_unavailable()}
         tone="error"
       />
     );
@@ -288,12 +152,12 @@ function FleetContent({
     <>
       <div className="compute-overview-grid">
         {[
-          ["Total", state.overview.total],
-          ["Ready", state.overview.ready],
-          ["Needs attention", state.overview.needs_attention],
-          ["Disconnected / stale", state.overview.disconnected_or_stale],
-          ["Draining", state.overview.draining],
-          ["Unknown outcome", state.overview.unknown_outcome],
+          [messages.admin_fleet_total(), state.overview.total],
+          [messages.admin_fleet_ready(), state.overview.ready],
+          [messages.admin_fleet_attention(), state.overview.needs_attention],
+          [messages.admin_fleet_stale(), state.overview.disconnected_or_stale],
+          [messages.admin_fleet_draining(), state.overview.draining],
+          [messages.admin_fleet_unknown(), state.overview.unknown_outcome],
         ].map(([label, value]) => (
           <div key={label}>
             <span>{label}</span>
@@ -301,17 +165,17 @@ function FleetContent({
           </div>
         ))}
       </div>
-      <section className="compute-fleet" aria-label="Node list">
+      <section className="compute-fleet" aria-label={messages.admin_node_list()}>
         <div className="compute-fleet-heading">
           <h2>
-            Nodes <span>{state.nodes.length}</span>
+            {messages.admin_nodes()} <span>{state.nodes.length}</span>
           </h2>
-          <span>Showing up to 50 nodes · Select a node for details</span>
+          <span>{messages.admin_nodes_note()}</span>
         </div>
         {state.nodes.length === 0 ? (
           <AdminState
-            title="No compute nodes yet"
-            message="Enable Compute Node in Comma settings to connect a device to this tenant."
+            title={messages.admin_nodes_none()}
+            message={messages.admin_nodes_none_body()}
           />
         ) : (
           <ScrollArea
@@ -324,7 +188,9 @@ function FleetContent({
               {state.nodes.map((node) => (
                 <li key={node.id}>
                   <button
-                    aria-label={`Open compute node ${node.device_id || node.id}`}
+                    aria-label={messages.admin_open_compute_node({
+                      name: node.device_id || node.id,
+                    })}
                     className="compute-node-row"
                     onClick={() => onSelect(node.id)}
                     type="button"
@@ -333,8 +199,13 @@ function FleetContent({
                       <div className="compute-node-identity">
                         <strong title={node.device_id || node.id}>
                           {node.device_id
-                            ? `Host ${node.device_id.length > 18 ? `${node.device_id.slice(0, 8)}…${node.device_id.slice(-6)}` : node.device_id}`
-                            : "Unenrolled host"}
+                            ? messages.admin_host({
+                                name:
+                                  node.device_id.length > 18
+                                    ? `${node.device_id.slice(0, 8)}…${node.device_id.slice(-6)}`
+                                    : node.device_id,
+                              })
+                            : messages.admin_unenrolled_host()}
                         </strong>
                         <span title={node.id}>{node.id}</span>
                       </div>
@@ -355,11 +226,15 @@ function FleetContent({
                         />
                         {node.connection.status.replaceAll("_", " ")}
                       </span>
-                      <span>{String(node.work.workloads ?? 0)} workloads</span>
+                      <span>
+                        {messages.admin_workloads_count({
+                          count: node.work.workloads ?? 0,
+                        })}
+                      </span>
                       <span className="compute-node-updated">
-                        Updated{" "}
+                        {messages.admin_updated_at()}{" "}
                         <time dateTime={node.updated_at}>
-                          {new Date(node.updated_at).toLocaleString(undefined, {
+                          {formatLocalDate(node.updated_at, {
                             month: "short",
                             day: "numeric",
                             hour: "2-digit",
@@ -367,7 +242,9 @@ function FleetContent({
                           })}
                         </time>
                       </span>
-                      <span className="compute-node-open">View details →</span>
+                      <span className="compute-node-open">
+                        {messages.admin_view_details()}
+                      </span>
                     </div>
                   </button>
                 </li>
@@ -383,98 +260,96 @@ function FleetContent({
 function NodeDetails({
   beginCommand,
   node,
-  reason,
-  setReason,
 }: {
-  beginCommand: (
-    action: AgentVmmAction,
-    targetId: string,
-    revision: number,
-    label: string,
-    destructive?: boolean
-  ) => void;
+  beginCommand: BeginCommand;
   node: AgentVmmNode;
-  reason: string;
-  setReason: (value: string) => void;
 }) {
   return (
     <div className="compute-node-detail">
       <DetailList
         items={[
-          { label: "Device ID", value: node.device_id },
-          { label: "Registration ID", value: node.id },
-          { label: "Registration", value: node.registration.status },
+          { label: messages.admin_device_id(), value: node.device_id },
+          { label: messages.admin_registration_id(), value: node.id },
+          { label: messages.admin_registration(), value: node.registration.status },
           {
-            label: "Desired",
+            label: messages.admin_desired(),
             value: node.registration.desired_enabled ? "enabled" : "disabled",
           },
-          { label: "Connection", value: node.connection.status },
+          { label: messages.admin_connection(), value: node.connection.status },
           {
-            label: "Last observed",
+            label: messages.admin_last_observed(),
             value: displayText(node.connection.last_observed_at),
           },
-          { label: "Bindings", value: node.connection.binding_count },
-          { label: "Top issue", value: displayText(node.issue) },
-          { label: "Allocations", value: String(node.work.allocations ?? 0) },
-          { label: "Workloads", value: String(node.work.workloads ?? 0) },
-          { label: "Runtimes", value: String(node.work.runtimes ?? 0) },
+          { label: messages.admin_bindings(), value: node.connection.binding_count },
+          { label: messages.admin_top_issue(), value: displayText(node.issue) },
+          {
+            label: messages.admin_allocations(),
+            value: String(node.work.allocations ?? 0),
+          },
+          {
+            label: messages.admin_workloads(),
+            value: String(node.work.workloads ?? 0),
+          },
+          { label: messages.admin_runtimes(), value: String(node.work.runtimes ?? 0) },
         ]}
       />
       <section className="compute-command-panel">
-        <h3>Audited actions</h3>
-        <ReasonField onChange={setReason} value={reason} />
+        <h3>{messages.admin_actions()}</h3>
         <div className="compute-command-actions">
           {node.installation?.retryable ? (
             <Button
               hierarchy="secondary-gray"
               onPress={() =>
-                beginCommand(
-                  "retry_agent_vmm_install",
-                  node.installation!.id,
-                  node.installation!.revision,
-                  "Retry installation"
-                )
+                beginCommand({
+                  action: "retry_agent_vmm_install",
+                  expectedRevision: node.installation!.revision,
+                  label: messages.admin_retry_install(),
+                  targetId: node.installation!.id,
+                })
               }
             >
-              Retry installation
+              {messages.admin_retry_install()}
             </Button>
           ) : null}
           {node.installation?.status === "action_required" &&
           !node.installation.retryable ? (
             <span className="admin-help">
-              Retry this installation from its original delivery surface.
+              {messages.admin_retry_install_elsewhere()}
             </span>
           ) : null}
           <Button
             hierarchy="secondary-gray"
             onPress={() =>
-              beginCommand(
-                node.registration.desired_enabled
+              beginCommand({
+                action: node.registration.desired_enabled
                   ? "disable_agent_vmm_registration"
                   : "enable_agent_vmm_registration",
-                node.id,
-                node.registration.revision,
-                node.registration.desired_enabled
-                  ? "Disable and drain registration"
-                  : "Enable registration"
-              )
+                expectedRevision: node.registration.revision,
+                label: node.registration.desired_enabled
+                  ? messages.admin_disable_drain_registration()
+                  : messages.admin_enable_registration(),
+                targetId: node.id,
+              })
             }
           >
-            {node.registration.desired_enabled ? "Disable / drain" : "Enable"}
+            {node.registration.desired_enabled
+              ? messages.admin_disable_drain()
+              : messages.admin_enable()}
           </Button>
           <Button
             hierarchy="destructive"
             onPress={() =>
-              beginCommand(
-                "revoke_agent_vmm_registration",
-                node.id,
-                node.registration.revision,
-                "Revoke registration",
-                true
-              )
+              beginCommand({
+                action: "revoke_agent_vmm_registration",
+                destructive: true,
+                expectedRevision: node.registration.revision,
+                label: messages.admin_revoke_registration(),
+                targetId: node.id,
+                typed: node.device_id || node.id,
+              })
             }
           >
-            Revoke registration
+            {messages.admin_revoke_registration()}
           </Button>
         </div>
       </section>
@@ -493,7 +368,7 @@ function EnvironmentActions({
   beginCommand,
   environment,
 }: {
-  beginCommand: NodeDetailsProps["beginCommand"];
+  beginCommand: BeginCommand;
   environment: AgentVmmEnvironment;
 }) {
   return (
@@ -502,21 +377,18 @@ function EnvironmentActions({
       <DetailList
         items={[
           {
-            label: "Owner",
+            label: messages.admin_owner(),
             value: `${environment.owner_type}:${environment.owner_id}`,
           },
-          { label: "Desired", value: environment.desired_state },
-          { label: "Observed", value: environment.observed_state },
-          { label: "Binding", value: environment.binding_status },
-          { label: "Allocations", value: environment.allocations },
-          { label: "Workloads", value: environment.workloads },
-          { label: "Runtimes", value: environment.runtimes },
+          { label: messages.admin_desired(), value: environment.desired_state },
+          { label: messages.admin_observed(), value: environment.observed_state },
+          { label: messages.admin_binding(), value: environment.binding_status },
+          { label: messages.admin_allocations(), value: environment.allocations },
+          { label: messages.admin_workloads(), value: environment.workloads },
+          { label: messages.admin_runtimes(), value: environment.runtimes },
         ]}
       />
-      <p>
-        Create a managed Shell workload: 512 PID limit, 2 GiB writable disk limit, no
-        network access.
-      </p>
+      <p>{messages.admin_shell_note()}</p>
       <div className="compute-command-actions">
         <Button
           hierarchy="secondary-gray"
@@ -525,46 +397,45 @@ function EnvironmentActions({
             environment.binding_status !== "available"
           }
           onPress={() =>
-            beginCommand(
-              "create_shell_workload",
-              environment.id,
-              environment.revision,
-              "Create Shell workload"
-            )
+            beginCommand({
+              action: "create_shell_workload",
+              expectedRevision: environment.revision,
+              label: messages.admin_create_shell(),
+              targetId: environment.id,
+            })
           }
         >
-          Create Shell workload
+          {messages.admin_create_shell()}
         </Button>
         <Button
           hierarchy="secondary-gray"
           onPress={() =>
-            beginCommand(
-              "drain_compute_environment",
-              environment.id,
-              environment.revision,
-              "Drain environment"
-            )
+            beginCommand({
+              action: "drain_compute_environment",
+              expectedRevision: environment.revision,
+              label: messages.admin_drain_environment(),
+              targetId: environment.id,
+            })
           }
         >
-          Drain
+          {messages.admin_drain()}
         </Button>
         <Button
           hierarchy="destructive"
           onPress={() =>
-            beginCommand(
-              "revoke_compute_environment",
-              environment.id,
-              environment.revision,
-              "Revoke environment",
-              true
-            )
+            beginCommand({
+              action: "revoke_compute_environment",
+              destructive: true,
+              expectedRevision: environment.revision,
+              label: messages.admin_revoke_environment(),
+              targetId: environment.id,
+              typed: environment.id,
+            })
           }
         >
-          Revoke
+          {messages.admin_revoke()}
         </Button>
       </div>
     </section>
   );
 }
-
-type NodeDetailsProps = Parameters<typeof NodeDetails>[0];

@@ -1,13 +1,14 @@
 defmodule SalixAgent.Tools.MCPManagementTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.Tools.MCP
 
   defmodule Provider do
     @moduledoc false
 
-    def set_owner(owner), do: :persistent_term.put({__MODULE__, :owner}, owner)
-    def clear_owner, do: :persistent_term.erase({__MODULE__, :owner})
+    def set_owner(owner), do: SystemsRuntime.PersistentTerm.put({__MODULE__, :owner}, owner)
+    def clear_owner, do: SystemsRuntime.PersistentTerm.erase({__MODULE__, :owner})
 
     def create_definition(agent_id, attrs) do
       record(:create_definition, [agent_id, attrs])
@@ -40,7 +41,10 @@ defmodule SalixAgent.Tools.MCPManagementTest do
     end
 
     defp record(operation, args) do
-      send(:persistent_term.get({__MODULE__, :owner}), {:mcp_provider_call, operation, args})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.PersistentTerm.get({__MODULE__, :owner}),
+        {:mcp_provider_call, operation, args}
+      )
     end
   end
 
@@ -48,19 +52,23 @@ defmodule SalixAgent.Tools.MCPManagementTest do
     @moduledoc false
 
     def create_capability_request(attrs) do
-      send(:persistent_term.get({Provider, :owner}), {:unexpected_capability_request, attrs})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.PersistentTerm.get({Provider, :owner}),
+        {:unexpected_capability_request, attrs}
+      )
+
       {:error, :mcp_management_approval_must_not_be_created}
     end
   end
 
   setup do
-    previous_provider = Application.get_env(:salix_agent, :mcp_provider_mod)
-    previous_request_store = Application.get_env(:salix_agent, :capability_request_store_mod)
+    previous_provider = SystemsRuntime.get_env(:salix_agent, :mcp_provider_mod)
+    previous_request_store = SystemsRuntime.get_env(:salix_agent, :capability_request_store_mod)
 
-    Provider.set_owner(self())
-    Application.put_env(:salix_agent, :mcp_provider_mod, Provider)
+    Provider.set_owner(SystemsRuntime.Proc.self())
+    SystemsRuntime.put_env(:salix_agent, :mcp_provider_mod, Provider)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :capability_request_store_mod,
       RejectingCapabilityRequestStore
@@ -85,8 +93,9 @@ defmodule SalixAgent.Tools.MCPManagementTest do
     assert %{"definition" => %{"mcp_id" => "mcp1_direct"}} =
              decode(MCP.definition_create(%{name: "Direct MCP"}, ctx))
 
-    assert_receive {:mcp_provider_call, :create_definition,
-                    ["agt1_direct", %{"name" => "Direct MCP"}]}
+    settle_receive(
+      {:mcp_provider_call, :create_definition, ["agt1_direct", %{"name" => "Direct MCP"}]}
+    )
 
     connect_args = %{
       mcp_id: "mcp1_direct",
@@ -98,34 +107,40 @@ defmodule SalixAgent.Tools.MCPManagementTest do
     assert %{"binding" => %{"binding_id" => "mpb1_direct"}} =
              decode(MCP.connect(connect_args, ctx))
 
-    assert_receive {:mcp_provider_call, :create_binding,
-                    [
-                      "agt1_direct",
-                      %{
-                        "alias" => "direct",
-                        "mcp_id" => "mcp1_direct",
-                        "placement" => "server",
-                        "target_ref" => "remote:primary"
-                      }
-                    ]}
+    settle_receive(
+      {:mcp_provider_call, :create_binding,
+       [
+         "agt1_direct",
+         %{
+           "alias" => "direct",
+           "mcp_id" => "mcp1_direct",
+           "placement" => "server",
+           "target_ref" => "remote:primary"
+         }
+       ]}
+    )
 
     assert %{"binding" => %{"alias" => "renamed"}} =
              decode(MCP.update(%{binding_id: "mpb1_direct", alias: "renamed"}, ctx))
 
-    assert_receive {:mcp_provider_call, :update_binding,
-                    ["agt1_direct", "mpb1_direct", %{"alias" => "renamed"}]}
+    settle_receive(
+      {:mcp_provider_call, :update_binding,
+       ["agt1_direct", "mpb1_direct", %{"alias" => "renamed"}]}
+    )
 
     assert %{"binding" => %{"enabled" => true}} =
              decode(MCP.set_enabled(%{binding_id: "mpb1_direct", enabled: true}, ctx))
 
-    assert_receive {:mcp_provider_call, :set_binding_enabled,
-                    ["agt1_direct", "mpb1_direct", true]}
+    settle_receive(
+      {:mcp_provider_call, :set_binding_enabled, ["agt1_direct", "mpb1_direct", true]}
+    )
 
     assert %{"binding" => %{"enabled" => false}} =
              decode(MCP.set_enabled(%{binding_id: "mpb1_direct", enabled: false}, ctx))
 
-    assert_receive {:mcp_provider_call, :set_binding_enabled,
-                    ["agt1_direct", "mpb1_direct", false]}
+    settle_receive(
+      {:mcp_provider_call, :set_binding_enabled, ["agt1_direct", "mpb1_direct", false]}
+    )
 
     assert %{
              "authorization" => %{
@@ -134,14 +149,16 @@ defmodule SalixAgent.Tools.MCPManagementTest do
              }
            } = decode(MCP.authorize(%{binding_id: "mpb1_direct", scope: "read"}, ctx))
 
-    assert_receive {:mcp_provider_call, :authorize_binding,
-                    ["agt1_direct", "mpb1_direct", %{"scope" => "read"}]}
+    settle_receive(
+      {:mcp_provider_call, :authorize_binding,
+       ["agt1_direct", "mpb1_direct", %{"scope" => "read"}]}
+    )
 
     refute_received {:unexpected_capability_request, _attrs}
   end
 
   defp decode(result), do: Jason.decode!(result)
 
-  defp restore_env(key, nil), do: Application.delete_env(:salix_agent, key)
-  defp restore_env(key, value), do: Application.put_env(:salix_agent, key, value)
+  defp restore_env(key, nil), do: SystemsRuntime.delete_env(:salix_agent, key)
+  defp restore_env(key, value), do: SystemsRuntime.put_env(:salix_agent, key, value)
 end

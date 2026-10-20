@@ -1,6 +1,8 @@
 defmodule SalixIM.Provider.Slack.ConversationIngress do
   @moduledoc """
   Slack thread ingress for direct-Worker and explicitly bound Task conversations.
+  A connection bound to Tasks (`inbound_tasks`) makes each new thread a Task
+  of the Group's Task agent with the connection's model.
 
   Slack thread binding and field translation live here. Conversation aggregate
   mutations are delegated exclusively to `SalixIM.ConversationServer`.
@@ -288,7 +290,8 @@ defmodule SalixIM.Provider.Slack.ConversationIngress do
              group_id,
              conversation_id,
              worker_agent_id,
-             materialization
+             materialization,
+             session_model: connect_task_model(connect)
            ),
          worker_participant_id when is_binary(worker_participant_id) <-
            task["worker_participant_id"] do
@@ -305,6 +308,12 @@ defmodule SalixIM.Provider.Slack.ConversationIngress do
       other -> other
     end
   end
+
+  # A connection bound to Tasks (`inbound_tasks`) runs each new thread's Task
+  # on the Group's Task agent with the model it names; none names the default.
+  # A thread bound to a Worker before already has its Task.
+  defp connect_task_model(%{"inbound_tasks" => %{} = tasks}), do: tasks["model"]
+  defp connect_task_model(_connect), do: nil
 
   defp append_to_bound_task(
          group_id,
@@ -1198,10 +1207,10 @@ defmodule SalixIM.Provider.Slack.ConversationIngress do
   end
 
   defp url_segment(value), do: value |> trim() |> URI.encode(&URI.char_unreserved?/1)
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 
   defp binding_token,
-    do: :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
+    do: SystemsRuntime.Proc.random_bytes(16) |> Base.url_encode64(padding: false)
 
   defp require_nonblank(value, field) do
     if trim(value) == "", do: {:error, {:bad_request, "#{field} is required"}}, else: :ok

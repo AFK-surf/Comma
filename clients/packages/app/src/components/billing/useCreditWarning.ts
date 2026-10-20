@@ -1,193 +1,130 @@
-import { useCallback, useMemo, useSyncExternalStore } from "react";
-import type { CommaApiClient, CommaBillingPlan, CommaBillingSummary } from "../../api";
-import { creditAllowance } from "./BillingSettings";
+import { useCall, useTopic, type CreditWarning } from "@comma/core-client";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { messages, type CommaLocale } from "@comma/i18n";
+import { toast } from "@comma/ui/components/toast";
+import {
+  openUsageBillingSettings,
+  OUT_OF_CREDITS_TOAST_ID,
+  showOutOfCreditsToast,
+} from "./outOfCredits";
 
-export type CreditWarning = {
-  percent: number;
-  // 0: no usable credits remain, including after every grant expired.
-  threshold: 0 | 5 | 10 | 50;
-};
+export type { CreditWarning };
 
-function warningThreshold(percent: number): CreditWarning["threshold"] | undefined {
-  return percent <= 5 ? 5 : percent <= 10 ? 10 : percent <= 50 ? 50 : undefined;
+// The toast on screen: one per renderer, whichever chat surface showed it.
+let presented: { workspace: string; warning: string } | undefined;
+/** How many mounted surfaces watch each workspace. */
+const watchers = new Map<string, number>();
+
+function clearToast() {
+  // Sonner also calls onClose when a toast is removed in code. Forget it first so a warning going away is not taken
+  // for the person closing it.
+  const was = presented;
+  presented = undefined;
+  if (was) toast.dismiss(OUT_OF_CREDITS_TOAST_ID);
 }
 
-type Dismissal = { grants: string; threshold: number };
+function subscribeVisibility(listener: () => void) {
+  document.addEventListener("visibilitychange", listener);
+  return () => document.removeEventListener("visibilitychange", listener);
+}
+const pageVisible = () => document.visibilityState !== "hidden";
 
-// Share reads across visible chat surfaces in this renderer. The main chat
-// and sidebar require at most two workspace scopes. Each scope has one in-flight
-// summary read and one read per minute, regardless of its conversation count.
-// Catalog reads occur once per subscription lifetime. Hidden pages do not poll.
-const monitors = new WeakMap<CommaApiClient, Map<string, CreditWarningMonitor>>();
+/**
+ * Whether a workspace is low on credits (the core reads its balance once a minute while a visible page asks), and its
+ * toast. A hidden page lets the topic go: after the UI's linger and the core's grace (about 90 s) it is no longer read.
+ * Focus reads it again.
+ */
+export function useCreditWarning(workspaceId: string | undefined, active: boolean) {
+  const call = useCall();
+  const visible = useSyncExternalStore(subscribeVisibility, pageVisible, () => true);
+  const watched = active && visible && workspaceId ? workspaceId : undefined;
+  const { value } = useTopic(
+    watched ? { topic: "creditWarning", workspace: watched } : null
+  );
+  const warning = watched ? (value ?? undefined) : undefined;
 
-class CreditWarningMonitor {
-  private listeners = new Set<() => void>();
-  private plans: CommaBillingPlan[] | undefined;
-  private summary: CommaBillingSummary | undefined;
-  private warning: CreditWarning | undefined;
-  private dismissal: Dismissal | undefined;
-  private controller: AbortController | undefined;
-  private timer: ReturnType<typeof setInterval> | undefined;
+  useEffect(() => {
+    if (!watched) return;
+    const refresh = () => {
+      if (pageVisible())
+        void call("billing.refresh", { workspace: watched }).catch(() => undefined);
+    };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [call, watched]);
 
-  constructor(
-    private api: CommaApiClient,
-    private workspaceId: string,
-    private release: () => void
-  ) {}
+  const dismiss = useCallback(() => {
+    if (workspaceId)
+      void call("billing.dismissWarning", { workspace: workspaceId }).catch(
+        () => undefined
+      );
+  }, [call, workspaceId]);
 
-  getSnapshot = () => this.warning;
+  const key = warning ? `${warning.threshold}:${warning.percent}` : undefined;
+  useEffect(() => {
+    if (!warning && presented?.workspace === workspaceId) clearToast();
+  }, [key, warning, workspaceId]);
 
-  subscribe = (listener: () => void) => {
-    this.listeners.add(listener);
-    if (this.listeners.size === 1) {
-      window.addEventListener("focus", this.refresh);
-      document.addEventListener("visibilitychange", this.refresh);
-      this.timer = setInterval(this.refresh, 60_000);
-      this.refresh();
-    }
+  const showToast = useCallback(
+    (locale: CommaLocale) => {
+      if (!warning || !workspaceId || !key) return;
+      if (presented?.workspace === workspaceId && presented.warning === key) return;
+      const shown = { workspace: workspaceId, warning: key };
+      presented = shown;
+      const onClose = () => {
+        if (presented === shown) {
+          presented = undefined;
+          dismiss();
+        }
+      };
+      if (warning.threshold === 0) {
+        showOutOfCreditsToast(locale, onClose);
+        return;
+      }
+      const notify = warning.threshold === 50 ? toast.info : toast.warning;
+      notify(
+        messages.billing_low_credits_title({ percent: warning.percent }, { locale }),
+        {
+          id: OUT_OF_CREDITS_TOAST_ID,
+          testId: OUT_OF_CREDITS_TOAST_ID,
+          icon: "gauge",
+          description:
+            warning.threshold === 50
+              ? messages.billing_credits_reminder_detail(undefined, { locale })
+              : messages.billing_low_credits_detail(undefined, { locale }),
+          onClose,
+          actions: [
+            {
+              label:
+                warning.threshold === 50
+                  ? messages.settings_usage_billing(undefined, { locale })
+                  : messages.chat_add_credits(undefined, { locale }),
+              onPress: () => {
+                if (presented === shown) presented = undefined;
+                dismiss();
+                openUsageBillingSettings();
+              },
+            },
+          ],
+        }
+      );
+    },
+    [dismiss, key, warning, workspaceId]
+  );
+
+  // The last surface showing the workspace went away: its toast goes too.
+  useEffect(() => {
+    if (!watched) return;
+    watchers.set(watched, (watchers.get(watched) ?? 0) + 1);
     return () => {
-      this.listeners.delete(listener);
-      if (this.listeners.size) return;
-      window.removeEventListener("focus", this.refresh);
-      document.removeEventListener("visibilitychange", this.refresh);
-      clearInterval(this.timer);
-      this.controller?.abort();
-      this.controller = undefined;
+      const left = (watchers.get(watched) ?? 1) - 1;
+      if (left > 0) watchers.set(watched, left);
+      else watchers.delete(watched);
       queueMicrotask(() => {
-        if (!this.listeners.size) this.release();
+        if (!watchers.has(watched) && presented?.workspace === watched) clearToast();
       });
     };
-  };
+  }, [watched]);
 
-  private refresh = () => {
-    if (document.visibilityState === "hidden" || this.controller) return;
-    const controller = new AbortController();
-    this.controller = controller;
-    void this.load(controller);
-  };
-
-  private async load(controller: AbortController) {
-    try {
-      const options = { signal: controller.signal };
-      const [summary, plans] = await Promise.all([
-        this.api.getBillingSummary(this.workspaceId, options),
-        this.plans ?? this.api.listBillingPlans(options),
-      ]);
-      if (controller.signal.aborted) return;
-      this.summary = summary;
-      this.plans = plans;
-      this.update();
-    } catch {
-      // A failed balance read must not block chat or display a stale warning.
-      if (!controller.signal.aborted) this.publish(undefined);
-    } finally {
-      if (this.controller === controller) this.controller = undefined;
-    }
-  }
-
-  private storageKey() {
-    return `comma.creditWarning.${this.summary?.billing_account_id}`;
-  }
-
-  private grantScope() {
-    return JSON.stringify(
-      this.summary!.active_grants.map((grant) => grant.id).toSorted()
-    );
-  }
-
-  private update() {
-    if (!this.summary) return this.publish(undefined);
-    const allowance = creditAllowance(this.summary, this.plans ?? []);
-    // The summary lists only unexpired grants. With none left there is no
-    // allowance to compare against, but billed work is already refused, so
-    // that state reads as exhausted rather than unknown.
-    const exhausted =
-      this.summary.current_credits <= 0 &&
-      (allowance !== undefined || this.summary.active_grants.length === 0);
-    if (!allowance && !exhausted) return this.publish(undefined);
-    // Compare the actual ratio. Display rounding must not trigger an early warning.
-    const percent = allowance
-      ? (this.summary.current_credits / allowance.total) * 100
-      : 0;
-    const threshold = exhausted ? 0 : warningThreshold(percent);
-    if (threshold === undefined) return this.publish(undefined);
-    try {
-      const saved: unknown = JSON.parse(
-        localStorage.getItem(this.storageKey()) ?? "null"
-      );
-      if (
-        saved &&
-        typeof saved === "object" &&
-        "grants" in saved &&
-        "threshold" in saved &&
-        typeof saved.grants === "string" &&
-        typeof saved.threshold === "number"
-      ) {
-        this.dismissal = { grants: saved.grants, threshold: saved.threshold };
-      }
-    } catch {
-      // Keep in-memory dismissal when browser storage is unavailable.
-    }
-    if (
-      this.dismissal?.grants === this.grantScope() &&
-      threshold >= this.dismissal.threshold
-    ) {
-      return this.publish(undefined);
-    }
-    this.publish({ percent: allowance?.percent ?? 0, threshold });
-  }
-
-  dismiss = () => {
-    if (!this.warning || !this.summary) return;
-    this.dismissal = { grants: this.grantScope(), threshold: this.warning.threshold };
-    try {
-      localStorage.setItem(this.storageKey(), JSON.stringify(this.dismissal));
-    } catch {
-      // Storage failures do not prevent closing the warning.
-    }
-    this.publish(undefined);
-  };
-
-  private publish(warning: CreditWarning | undefined) {
-    if (
-      warning?.percent === this.warning?.percent &&
-      warning?.threshold === this.warning?.threshold
-    )
-      return;
-    this.warning = warning;
-    for (const listener of this.listeners) listener();
-  }
-}
-
-const emptySnapshot = () => undefined;
-const emptySubscribe = () => () => {};
-
-export function useCreditWarning(
-  api: CommaApiClient | undefined,
-  workspaceId: string | undefined,
-  active: boolean
-) {
-  const monitor = useMemo(() => {
-    if (!api || !workspaceId || !active) return undefined;
-    let workspaces = monitors.get(api);
-    if (!workspaces) {
-      workspaces = new Map();
-      monitors.set(api, workspaces);
-    }
-    let entry = workspaces.get(workspaceId);
-    if (!entry) {
-      entry = new CreditWarningMonitor(api, workspaceId, () => {
-        if (workspaces.get(workspaceId) === entry) workspaces.delete(workspaceId);
-      });
-      workspaces.set(workspaceId, entry);
-    }
-    return entry;
-  }, [api, workspaceId, active]);
-  const warning = useSyncExternalStore(
-    monitor?.subscribe ?? emptySubscribe,
-    monitor?.getSnapshot ?? emptySnapshot,
-    emptySnapshot
-  );
-  const dismiss = useCallback(() => monitor?.dismiss(), [monitor]);
-  return { warning, dismiss };
+  return { warning, dismiss, showToast };
 }

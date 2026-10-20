@@ -53,6 +53,7 @@ defmodule SalixAgent.Workspace do
              "storage_write"
            ),
          {:ok, event} <- AgentWorkspace.prepare_write(agent_id, path, body),
+         event = put_ifc_label(event, Keyword.get(opts, :ifc_label)),
          file = file_json(path, event),
          {:ok, result} <-
            SalixAgent.AgentActor.commit_workspace_operation(
@@ -332,6 +333,11 @@ defmodule SalixAgent.Workspace do
     Enum.any?(Map.keys(vfs), &String.starts_with?(&1, prefix))
   end
 
+  # A caller that replaces a file on someone's behalf keeps the audience the
+  # file already had (`docs/verification.md` §8): `ifc_label:` is that label.
+  defp put_ifc_label(event, label) when is_list(label), do: Map.put(event, "ifc_label", label)
+  defp put_ifc_label(event, _none), do: event
+
   defp file_json(path, meta) do
     %{
       "path" => path,
@@ -400,7 +406,7 @@ defmodule SalixAgent.Workspace do
     end
   end
 
-  defp now, do: System.system_time(:second)
+  defp now, do: SystemsClock.system_time(:second)
 
   defp operation_id(kind, agent_id, path, opts, fingerprint_parts) do
     prefix = operation_prefix(kind, agent_id, path, opts)

@@ -38,7 +38,7 @@ defmodule SalixCalendar.Fleet do
   defp ensure(_module, _key, _opts, _identity, false, error), do: {:error, error}
 
   defp start_or_lookup(key, child, attempts) do
-    case DynamicSupervisor.start_child(SalixCalendar.FleetSupervisor, child) do
+    case SystemsRuntime.DynamicSupervisor.start_child(SalixCalendar.FleetSupervisor, child) do
       {:ok, pid} ->
         {:ok, pid}
 
@@ -46,7 +46,7 @@ defmodule SalixCalendar.Fleet do
         {:ok, pid}
 
       {:error, :already_present} when attempts > 0 ->
-        case Registry.lookup(SalixCalendar.Registry, key) do
+        case SystemsRuntime.Registry.lookup(SalixCalendar.Registry, key) do
           [{pid, _}] -> {:ok, pid}
           [] -> start_or_lookup(key, child, attempts - 1)
         end

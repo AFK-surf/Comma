@@ -28,6 +28,8 @@ defmodule SalixIM.MixProject do
 
   defp deps do
     [
+      {:systems_clock, in_umbrella: true},
+      {:systems_runtime, in_umbrella: true},
       {:salix_ifc, in_umbrella: true},
       {:salix_store, in_umbrella: true},
       {:salix_agent, in_umbrella: true, only: :test},

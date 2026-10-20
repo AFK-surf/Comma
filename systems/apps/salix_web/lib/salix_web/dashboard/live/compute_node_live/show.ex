@@ -19,7 +19,7 @@ defmodule SalixWeb.Dashboard.ComputeNodeLive.Show do
        next_cursor: nil,
        node: nil,
        workloads: [],
-       workload_command_id: Ecto.UUID.generate(),
+       workload_command_id: SystemsRuntime.Proc.uuid(),
        operations: [],
        activity: [],
        comma_admin_url: nil,
@@ -68,7 +68,7 @@ defmodule SalixWeb.Dashboard.ComputeNodeLive.Show do
       {status, _} when status in [:ok, :already_applied] ->
         {:noreply,
          socket
-         |> assign(workload_command_id: Ecto.UUID.generate())
+         |> assign(workload_command_id: SystemsRuntime.Proc.uuid())
          |> load()
          |> put_flash(:info, "Shell workload accepted. Refresh to check its runtime status.")}
 
@@ -87,7 +87,7 @@ defmodule SalixWeb.Dashboard.ComputeNodeLive.Show do
         node: node,
         comma_admin_url: comma_admin_url(tenant_id, id),
         page_title: node["device_id"],
-        read_at: DateTime.utc_now(),
+        read_at: SystemsClock.utc_now(),
         read_error: nil
       )
     else
@@ -159,7 +159,7 @@ defmodule SalixWeb.Dashboard.ComputeNodeLive.Show do
   defp maybe_put_cursor(params, cursor), do: Map.put(params, "cursor", cursor)
 
   defp comma_admin_url(tenant_id, registration_id) do
-    origin = Application.get_env(:comma_web, :admin_cookie_origin, "http://127.0.0.1:4175")
+    origin = SystemsRuntime.get_env(:comma_web, :admin_cookie_origin, "http://127.0.0.1:4175")
 
     origin <>
       "/?" <>

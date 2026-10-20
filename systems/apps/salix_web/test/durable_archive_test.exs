@@ -1,25 +1,30 @@
 defmodule SalixWeb.CloudVM.DurableArchiveTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.S3
   alias SalixStore.Compute
   alias SalixWeb.CloudVM.{ArchiveGC, DurableArchive}
-  alias SalixWeb.MockCloudflareGateway
-  alias SalixEnv.VM.Providers.Cloudflare.Client
 
   setup do
-    old_backend = Application.get_env(:salix_store, :s3_backend)
-    old_r2 = Application.get_env(:salix_web, :cloud_vm_archive_r2)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    old_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    old_r2 = SystemsRuntime.get_env(:salix_web, :cloud_vm_archive_r2)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    Application.put_env(:salix_web, :cloud_vm_archive_r2, %{
+    SystemsRuntime.put_env(:salix_web, :cloud_vm_archive_r2, %{
       "endpoint" => "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com",
       "bucket" => "test-archive",
       "access_key_id" => "testaccess",
       "secret_access_key" => "testsecret"
     })
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    # R2 itself is the store the Gateway mock's stations write their parts to.
+    SystemsRuntime.put_env(:salix_web, :cloud_vm_archive_r2_req,
+      plug: &SalixWeb.MockCloudflareGateway.r2/1
+    )
+
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_web, :cloud_vm_archive_r2_req) end)
+
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -27,86 +32,66 @@ defmodule SalixWeb.CloudVM.DurableArchiveTest do
 
     on_exit(fn ->
       if old_backend,
-        do: Application.put_env(:salix_store, :s3_backend, old_backend),
-        else: Application.delete_env(:salix_store, :s3_backend)
+        do: SystemsRuntime.put_env(:salix_store, :s3_backend, old_backend),
+        else: SystemsRuntime.delete_env(:salix_store, :s3_backend)
 
       if old_r2,
-        do: Application.put_env(:salix_web, :cloud_vm_archive_r2, old_r2),
-        else: Application.delete_env(:salix_web, :cloud_vm_archive_r2)
+        do: SystemsRuntime.put_env(:salix_web, :cloud_vm_archive_r2, old_r2),
+        else: SystemsRuntime.delete_env(:salix_web, :cloud_vm_archive_r2)
     end)
 
     :ok
   end
 
-  test "restore refuses a missing second chunk before reporting completion" do
+  # A station as DurableArchive reaches it: each request goes to the test
+  # process, which answers from `answers` (by method) and keeps the requests.
+  defp station(answers) do
+    test = SystemsRuntime.Proc.self()
+
+    fn method, params, _timeout ->
+      SystemsRuntime.Proc.send(test, {:station, method, params})
+
+      case Map.fetch(answers, method) do
+        {:ok, answer} when is_function(answer, 1) -> answer.(params)
+        {:ok, answer} -> answer
+        :error -> {:error, "unsupported"}
+      end
+    end
+  end
+
+  defp zstd_archive(operation, bytes) do
+    %{
+      "type" => "connector_tar_zst_chunks",
+      "storage" => "r2",
+      "scope" => "full",
+      "operation" => operation,
+      "byte_size" => bytes,
+      "chunk_size" => 4 * 1024 * 1024,
+      "chunk_count" => div(bytes + 4 * 1024 * 1024 - 1, 4 * 1024 * 1024),
+      "sessions" => 0
+    }
+  end
+
+  test "a missing chunk fails verification of an archive" do
     group_id = "group-owned"
     operation = "archive-owned"
     first = :binary.copy(<<1>>, 4 * 1024 * 1024)
-    second = <<2, 3, 4>>
 
     archive = %{
       "type" => "connector_tar_gz_chunks",
       "storage" => "salix_s3",
       "operation" => operation,
-      "byte_size" => byte_size(first) + byte_size(second),
+      "byte_size" => byte_size(first) + 3,
       "chunk_size" => byte_size(first),
       "chunk_count" => 2,
       "sessions" => 1
     }
 
     assert {:ok, _} = S3.put(DurableArchive.chunk_key(group_id, operation, 0), first)
-    assert {:ok, _} = S3.put(DurableArchive.chunk_key(group_id, operation, 1), second)
-
-    assert :ok =
-             DurableArchive.read_chunks(archive, group_id, fn offset, data ->
-               assert {offset, byte_size(data)} in [{0, byte_size(first)}, {byte_size(first), 3}]
-               :ok
-             end)
-
+    assert {:ok, _} = S3.put(DurableArchive.chunk_key(group_id, operation, 1), <<2, 3, 4>>)
+    assert :ok = DurableArchive.check_chunks(archive, group_id)
     assert :ok = S3.delete(DurableArchive.chunk_key(group_id, operation, 1))
-
-    assert {:error, :not_found} =
-             DurableArchive.read_chunks(archive, group_id, fn _, _ -> :ok end)
-  end
-
-  test "a restored receipt cannot confirm an archive with a different retention scope" do
-    gateway = start_supervised!(MockCloudflareGateway)
-    client = Client.new(base_url: MockCloudflareGateway.base_url(gateway), secret: "test-secret")
-
-    archive = %{
-      "type" => "connector_tar_gz_chunks",
-      "storage" => "salix_s3",
-      "operation" => "scope-owned",
-      "byte_size" => 3,
-      "chunk_size" => 4 * 1024 * 1024,
-      "chunk_count" => 1,
-      "sessions" => 0,
-      "scope" => "full"
-    }
-
-    :ok =
-      MockCloudflareGateway.set_import(gateway, "scope-target", %{
-        "phase" => "restored",
-        "next_offset" => 3,
-        "sessions" => 0,
-        "scope" => "recovery"
-      })
-
-    assert {:error, :durable_archive_restore_mismatch} =
-             DurableArchive.restore(client, "scope-target", "group-owned", archive)
-
-    assert :ok =
-             DurableArchive.restore(
-               client,
-               "scope-target",
-               "group-owned",
-               Map.put(archive, "scope", "recovery")
-             )
-
-    refute Enum.any?(
-             MockCloudflareGateway.calls(gateway),
-             &(&1.body["action"] in ["part", "finish"])
-           )
+    assert {:error, :not_found} = DurableArchive.check_chunks(archive, group_id)
   end
 
   test "archive verification stops when its owning release budget expires" do
@@ -168,238 +153,154 @@ defmodule SalixWeb.CloudVM.DurableArchiveTest do
     assert {:ok, %{body: "current"}} = S3.get(current_key)
   end
 
-  test "a lost finish response resumes from the restored receipt without replaying parts" do
-    gateway = start_supervised!(MockCloudflareGateway)
-
-    client =
-      Client.new(
-        base_url: MockCloudflareGateway.base_url(gateway),
-        secret: "test-secret",
-        max_retries: 0
-      )
-
-    group = "group-owned"
-    operation = "restore-once"
-    data = "archive-body"
-
-    archive = %{
-      "type" => "connector_tar_gz_chunks",
-      "storage" => "salix_s3",
-      "operation" => operation,
-      "byte_size" => byte_size(data),
-      "chunk_size" => 4 * 1024 * 1024,
-      "chunk_count" => 1,
-      "sessions" => 0
-    }
-
-    assert {:ok, _} = S3.put(DurableArchive.chunk_key(group, operation, 0), data)
-    :ok = MockCloudflareGateway.lose_next_import_finish_response(gateway)
-    assert {:error, _} = DurableArchive.restore(client, "sandbox-owned", group, archive)
-    expired = System.system_time(:millisecond) - 1
-
-    assert :ok =
-             DurableArchive.restore(client, "sandbox-owned", group, archive, deadline_ms: expired)
-
-    assert {:error, :durable_archive_restore_expired} =
-             DurableArchive.restore(client, "another-target", group, archive,
-               deadline_ms: expired
-             )
-
-    actions =
-      MockCloudflareGateway.calls(gateway)
-      |> Enum.filter(&(&1.op == :migration_import))
-      |> Enum.map(& &1.body["action"])
-
-    assert actions == ["status", "part", "finish", "status", "status"]
-  end
-
-  test "a partial restore preserves the target and retained archive without execution sealing" do
-    gateway = start_supervised!(MockCloudflareGateway)
-    client = Client.new(base_url: MockCloudflareGateway.base_url(gateway), secret: "test-secret")
-    group = "group-owned"
-    operation = "restore-after-partial"
-    data = "archive-body"
-
-    archive = %{
-      "type" => "connector_tar_gz_chunks",
-      "storage" => "salix_s3",
-      "operation" => operation,
-      "byte_size" => byte_size(data),
-      "chunk_size" => 4 * 1024 * 1024,
-      "chunk_count" => 1,
-      "sessions" => 0
-    }
-
-    assert {:ok, _} = S3.put(DurableArchive.chunk_key(group, operation, 0), data)
-    :ok = MockCloudflareGateway.set_import(gateway, "sandbox-owned", %{"phase" => "restoring"})
-
-    assert {:error, :durable_archive_partial_target} =
-             SalixWeb.ComputeProviders.Cloudflare.ensure(
-               %{"provider_resource_id" => "sandbox-owned", "group_id" => group},
-               %{},
-               client: client,
-               archive: archive,
-               attach: false
-             )
-
-    refute Enum.any?(MockCloudflareGateway.calls(gateway), &(&1.op == :destroy))
-    assert {:ok, %{body: ^data}} = S3.get(DurableArchive.chunk_key(group, operation, 0))
-
-    assert {:ok, %{"phase" => "restoring"}} =
-             Client.archive_import(client, "sandbox-owned", %{
-               "action" => "status",
-               "operation" => operation
-             })
-  end
-
-  test "Connector export uses signed R2 parts without relaying bytes through Salix" do
-    gateway = start_supervised!(MockCloudflareGateway)
-    client = Client.new(base_url: MockCloudflareGateway.base_url(gateway), secret: "test-secret")
+  test "export packs the station's root straight into signed R2 parts and records the archive" do
     group = "group-owned"
     operation = "round-trip"
-    data = :crypto.strong_rand_bytes(4 * 1024 * 1024 + 17)
-    :ok = MockCloudflareGateway.set_export(gateway, "source", operation, data, 1)
 
-    assert {:ok, %{"storage" => "r2", "chunk_count" => 2, "byte_size" => bytes, "sessions" => 1}} =
-             DurableArchive.export(client, "source", group, operation)
+    call =
+      station(%{
+        "archive_export" => {:ok, %{"operation" => operation, "phase" => "preparing"}},
+        "archive_status" =>
+          {:ok, %{"operation" => operation, "phase" => "exported", "bytes" => 5, "sessions" => 2}}
+      })
 
-    assert bytes == byte_size(data)
+    assert {:ok, archive} = DurableArchive.export(call, group, operation)
+
+    assert archive == %{
+             "type" => "connector_tar_zst_chunks",
+             "storage" => "r2",
+             "scope" => "full",
+             "operation" => operation,
+             "byte_size" => 5,
+             "chunk_size" => 4 * 1024 * 1024,
+             "chunk_count" => 1,
+             "sessions" => 2
+           }
+
+    assert_received {:station, "archive_export",
+                     %{"operation" => ^operation, "scope" => "full", "transfers" => transfers}}
+
+    assert length(transfers) == 1024
+
+    for %{"put_url" => put, "get_url" => get} <- transfers do
+      assert URI.parse(put).host == URI.parse(get).host
+      assert URI.parse(put).path == URI.parse(get).path
+    end
+
     assert {:error, :not_found} = S3.get(DurableArchive.chunk_key(group, operation, 0))
-
-    direct_parts =
-      MockCloudflareGateway.calls(gateway)
-      |> Enum.filter(&(&1.op == :archive_export && &1.body["method"] == "PUT"))
-      |> Enum.sort_by(& &1.body["offset"])
-      |> Enum.map(& &1.body["offset"])
-
-    assert direct_parts == [0, 4 * 1024 * 1024]
   end
 
-  test "zstd archive streams directly to R2 and restores with one Connector request" do
-    r2 = Application.fetch_env!(:salix_web, :cloud_vm_archive_r2)
-    Application.put_env(:salix_web, :cloud_vm_archive_r2, Map.put(r2, "zstd_enabled", true))
-    gateway = start_supervised!(MockCloudflareGateway)
-    client = Client.new(base_url: MockCloudflareGateway.base_url(gateway), secret: "test-secret")
-    group = diagnostics_group()
-    operation = "zstd-round-trip"
-    data = :crypto.strong_rand_bytes(4 * 1024 * 1024 + 17)
-    :ok = MockCloudflareGateway.set_export(gateway, "source", operation, data, 0)
+  test "a failed export is terminal" do
+    call =
+      station(%{
+        "archive_export" => {:ok, %{"phase" => "preparing"}},
+        "archive_status" => {:ok, %{"phase" => "failed"}}
+      })
 
-    assert {:ok, %{"type" => "connector_tar_zst_chunks", "storage" => "r2"} = archive} =
-             DurableArchive.export(client, "source", group, operation)
-
-    assert DurableArchive.valid_manifest?(archive)
-    assert :ok = DurableArchive.restore(client, "target", group, archive)
-    await_diagnostics(group, operation, ["export", "restore"])
-
-    assert {:ok, %{"observation" => true, "diagnostics" => summaries}} =
-             SalixWeb.ComputeProviders.Cloudflare.archive_operation_status(group, operation)
-
-    assert Enum.all?(summaries, &is_integer(&1["salix_duration_ms"]))
-
-    calls = MockCloudflareGateway.calls(gateway)
-
-    assert Enum.any?(calls, fn call ->
-             call.op == :archive_export and call.body["method"] == "POST" and
-               call.body["format"] == "tar_zst"
-           end)
-
-    refute Enum.any?(calls, fn call ->
-             call.op == :archive_export and call.body["method"] == "PUT"
-           end)
-
-    assert Enum.map(Enum.filter(calls, &(&1.op == :migration_import)), & &1.body["action"]) ==
-             ["status", "stream"]
-
-    assert {:error, :transfer_callback_failed} =
-             DurableArchive.restore(client, "target-with-callback", group, archive,
-               on_transfer_complete: fn -> {:error, :transfer_callback_failed} end
-             )
+    assert {:error, :durable_archive_export_failed} =
+             DurableArchive.export(call, "group-owned", "failed-export")
   end
 
-  test "old Connector falls back only on unsupported direct transfer" do
-    gateway = start_supervised!({MockCloudflareGateway, fail_ops: [:archive_direct]})
-    client = Client.new(base_url: MockCloudflareGateway.base_url(gateway), secret: "test-secret")
+  test "a cancelled export asks the station to stop and writes no archive" do
     group = "group-owned"
-    operation = "old-connector"
-    data = "retained legacy archive"
-    :ok = MockCloudflareGateway.set_export(gateway, "source", operation, data)
-
-    assert {:ok, %{"storage" => "salix_s3", "byte_size" => bytes}} =
-             DurableArchive.export(client, "source", group, operation)
-
-    assert bytes == byte_size(data)
-    assert {:ok, %{body: ^data}} = S3.get(DurableArchive.chunk_key(group, operation, 0))
-
-    assert Enum.any?(MockCloudflareGateway.calls(gateway), fn call ->
-             call.op == :archive_export and call.body["method"] == "PUT"
-           end)
-  end
-
-  test "cancelled export stops before writing a Salix archive chunk" do
-    gateway = start_supervised!(MockCloudflareGateway)
-    client = Client.new(base_url: MockCloudflareGateway.base_url(gateway), secret: "test-secret")
-    group = diagnostics_group()
     operation = "cancel-owned"
-    :ok = MockCloudflareGateway.set_export(gateway, "source", operation, "user data")
+
+    call =
+      station(%{
+        "archive_cancel" => {:ok, %{"operation" => operation, "phase" => "cancelling"}},
+        "archive_status" => {:ok, %{"operation" => operation, "phase" => "cancelled"}}
+      })
 
     assert {:error, :archive_cancelled} =
-             DurableArchive.export(client, "source", group, operation, fn _ ->
+             DurableArchive.export(call, group, operation, fn _ ->
                {:error, :archive_cancel_requested}
              end)
 
-    assert Enum.any?(MockCloudflareGateway.calls(gateway), fn call ->
-             call.op == :archive_export and call.body["method"] == "DELETE" and
-               call.body["operation"] == operation
-           end)
-
-    assert {:error, :not_found} = S3.get(DurableArchive.chunk_key(group, operation, 0))
-    await_diagnostics(group, operation, ["export"])
-
-    assert {:ok, %{"observation" => true, "diagnostics" => [summary]}} =
-             SalixWeb.ComputeProviders.Cloudflare.archive_operation_status(group, operation)
-
-    assert summary["outcome"] == "cancelled"
+    assert_received {:station, "archive_cancel", %{"operation" => ^operation}}
+    refute_received {:station, "archive_export", _}
   end
 
-  test "diagnostic saturation cannot block archive, restore or Connector control" do
-    r2 = Application.fetch_env!(:salix_web, :cloud_vm_archive_r2)
-    Application.put_env(:salix_web, :cloud_vm_archive_r2, Map.put(r2, "zstd_enabled", true))
-    pool = SalixWeb.CloudVM.ArchiveDiagnosticsSupervisor
-    await_diagnostics_idle(pool)
+  # What a Container's start reads: the instruction, then the manifest its URL names.
+  defp decode_restore(value), do: value |> Base.decode64!() |> Jason.decode!()
 
-    blockers =
-      for _ <- 1..4 do
-        {:ok, pid} =
-          Task.Supervisor.start_child(pool, fn ->
-            receive do
-              :release -> :ok
-            end
-          end)
+  defp manifest(group, operation) do
+    {:ok, %{body: body}} = S3.get(DurableArchive.manifest_key(group, operation))
+    Jason.decode!(body)
+  end
 
-        on_exit(fn -> Task.Supervisor.terminate_child(pool, pid) end)
-        pid
-      end
+  defp assert_signed_for_an_hour(url, path_end) do
+    uri = URI.parse(url)
+    assert uri.scheme == "https"
+    assert String.ends_with?(uri.host, ".r2.cloudflarestorage.com")
+    assert String.ends_with?(uri.path, path_end)
+    assert %{"X-Amz-Expires" => "3600", "X-Amz-Signature" => _} = URI.decode_query(uri.query)
+  end
 
-    assert length(blockers) == 4
-    assert {:error, :max_children} = Task.Supervisor.start_child(pool, fn -> :ok end)
-    caller = self()
+  test "a start's restore instruction names the archive and one signed URL, of the manifest that lists its parts" do
+    archive = zstd_archive("restore-owned", 5 * 1024 * 1024)
 
-    assert {:ok, _} =
-             Task.Supervisor.start_child(SalixWeb.ConnectorControlTaskSupervisor, fn ->
-               send(caller, :control_available)
-             end)
+    assert {:ok, value} = DurableArchive.restore_instruction("group-owned", archive)
 
-    assert_receive :control_available
+    assert %{"operation" => "restore-owned", "bytes" => 5_242_880, "manifest_url" => url} =
+             instruction = decode_restore(value)
 
-    gateway = start_supervised!(MockCloudflareGateway)
-    client = Client.new(base_url: MockCloudflareGateway.base_url(gateway), secret: "test-secret")
-    group = diagnostics_group()
-    operation = "observation-saturated"
-    :ok = MockCloudflareGateway.set_export(gateway, "source", operation, "owned-data", 0)
-    assert {:ok, archive} = DurableArchive.export(client, "source", group, operation)
-    assert :ok = DurableArchive.restore(client, "target", group, archive)
-    assert {:ok, []} = SalixWeb.CloudVM.ArchiveDiagnostics.list(group)
+    assert map_size(instruction) == 3
+    assert_signed_for_an_hour(url, "/group-owned/restore-owned/restore-manifest")
+
+    # The manifest is an object next to the parts: it goes with them when the archive does.
+    assert String.starts_with?(
+             DurableArchive.manifest_key("group-owned", "restore-owned"),
+             DurableArchive.chunk_prefix("group-owned", "restore-owned")
+           )
+
+    assert %{
+             "operation" => "restore-owned",
+             "bytes" => 5_242_880,
+             "parts" => [
+               %{"bytes" => 4_194_304, "get_url" => first},
+               %{"bytes" => 1_048_576, "get_url" => second}
+             ]
+           } = manifest("group-owned", "restore-owned")
+
+    assert_signed_for_an_hour(first, "/group-owned/restore-owned/0")
+    assert_signed_for_an_hour(second, "/group-owned/restore-owned/1")
+  end
+
+  test "the largest archive's start value is 696 bytes, as the smallest's: its 1024 parts are in the manifest" do
+    group = "grp1_2096157733236506624_2096157733236506625"
+    operation = "archive-" <> String.duplicate("f", 16)
+    largest = zstd_archive(operation, 4 * 1024 * 1024 * 1024)
+    assert largest["chunk_count"] == 1024
+
+    assert {:ok, value} = DurableArchive.restore_instruction(group, largest)
+    assert length(manifest(group, operation)["parts"]) == 1024
+    # A real Group id and operation, and R2's signed URL: the Gateway and the
+    # station read at most 8 KiB.
+    assert byte_size(value) == 696
+
+    assert {:ok, smallest} = DurableArchive.restore_instruction(group, zstd_archive(operation, 1))
+    assert_in_delta byte_size(smallest), byte_size(value), 16
+  end
+
+  test "an archive whose manifest cannot be written has no restore instruction" do
+    SystemsRuntime.put_env(:salix_web, :cloud_vm_archive_r2_req,
+      plug: fn conn -> Plug.Conn.send_resp(conn, 503, "") end
+    )
+
+    assert {:error, :r2_archive_unavailable} =
+             DurableArchive.restore_instruction("group-owned", zstd_archive("restore-owned", 3))
+  end
+
+  test "an archive the retired connector wrote has no restore instruction" do
+    for archive <- [
+          Map.put(zstd_archive("gzip-owned", 3), "type", "connector_tar_gz_chunks"),
+          Map.put(zstd_archive("s3-owned", 3), "storage", "salix_s3")
+        ] do
+      refute DurableArchive.restorable?(archive)
+
+      assert {:error, :durable_archive_format_retired} =
+               DurableArchive.restore_instruction("group-owned", archive)
+    end
   end
 
   test "archive status reports the exact operation and commit cannot be cancelled" do
@@ -433,55 +334,4 @@ defmodule SalixWeb.CloudVM.DurableArchiveTest do
     assert rec["status"] == "archiving"
     assert rec["archive_cancel_requested"] == nil
   end
-
-  defp await_diagnostics_idle(pool, attempts \\ 200)
-
-  defp await_diagnostics_idle(pool, attempts) when attempts > 0 do
-    if Task.Supervisor.children(pool) == [] do
-      :ok
-    else
-      Process.sleep(10)
-      await_diagnostics_idle(pool, attempts - 1)
-    end
-  end
-
-  defp await_diagnostics_idle(_, 0), do: flunk("previous diagnostic tasks did not settle")
-
-  defp diagnostics_group do
-    tenant = SalixStore.Ids.new_tenant_id()
-    group = SalixStore.Ids.new_group_id(tenant)
-
-    {:ok, _, :created} =
-      Compute.ensure_group_workload(%{
-        "tenant_id" => tenant,
-        "group_id" => group,
-        "provider" => "cloudflare",
-        "status" => "ready",
-        "provider_resource_name" => "diagnostics-only"
-      })
-
-    group
-  end
-
-  defp await_diagnostics(group, operation, directions, attempts \\ 100)
-
-  defp await_diagnostics(group, operation, directions, attempts) when attempts > 0 do
-    {:ok, records} = SalixWeb.CloudVM.ArchiveDiagnostics.list(group)
-
-    if Enum.all?(directions, fn direction ->
-         Enum.any?(
-           records,
-           &(&1["operation"] == operation and &1["direction"] == direction and
-               is_integer(&1["salix_duration_ms"]))
-         )
-       end),
-       do: :ok,
-       else:
-         (
-           Process.sleep(10)
-           await_diagnostics(group, operation, directions, attempts - 1)
-         )
-  end
-
-  defp await_diagnostics(_, _, _, 0), do: flunk("archive diagnostics were not stored")
 end

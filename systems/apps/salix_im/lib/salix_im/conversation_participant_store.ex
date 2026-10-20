@@ -7,7 +7,9 @@ defmodule SalixIM.ConversationParticipantStore do
   Conditional receipt writes prevent a stale result from replacing another claim.
   Historical delivery objects are removed only with their owning Participant.
   """
-  use GenServer
+
+  alias SystemsRuntime.Proc
+  use SystemsRuntime.Server
 
   alias SalixStore.{CasRecord, Ids, Keys, S3}
 
@@ -21,7 +23,7 @@ defmodule SalixIM.ConversationParticipantStore do
             participant_id: nil,
             participant_key: nil
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts)
 
   def load(pid), do: call(pid, :load)
   def load_conversation(pid), do: call(pid, :load_conversation)
@@ -43,7 +45,7 @@ defmodule SalixIM.ConversationParticipantStore do
 
   def delivery_by_id(pid, delivery_id), do: call(pid, {:delivery_by_id, delivery_id})
 
-  defp call(pid, request), do: GenServer.call(pid, request, @call_timeout)
+  defp call(pid, request), do: SystemsRuntime.Server.call(pid, request, @call_timeout)
 
   @impl true
   def init(opts) do
@@ -55,7 +57,7 @@ defmodule SalixIM.ConversationParticipantStore do
     {:ok,
      %__MODULE__{
        owner: owner,
-       owner_ref: Process.monitor(owner),
+       owner_ref: Proc.monitor(owner),
        group_id: group_id,
        conversation_id: conversation_id,
        participant_id: participant_id,
@@ -374,7 +376,7 @@ defmodule SalixIM.ConversationParticipantStore do
            state.group_id,
            state.conversation_id,
            state.participant_id,
-           &Map.put_new(&1, "deleted_at", System.system_time(:millisecond))
+           &Map.put_new(&1, "deleted_at", SystemsClock.system_time(:millisecond))
          ) do
       {:ok, _participant} -> :ok
       {:error, :not_found} -> :ok

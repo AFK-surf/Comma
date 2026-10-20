@@ -5,8 +5,11 @@ defmodule Comma.Auth.GoogleAdapter.Fake do
 
   @impl true
   def exchange_authorization_code(authorization_code, opts) do
-    if pid = Application.get_env(:comma_core, :google_adapter_fake_exchange_pid) do
-      send(pid, {:google_authorization_code_exchange, authorization_code, opts})
+    if pid = SystemsRuntime.get_env(:comma_core, :google_adapter_fake_exchange_pid) do
+      SystemsRuntime.Proc.send(
+        pid,
+        {:google_authorization_code_exchange, authorization_code, opts}
+      )
     end
 
     verify_fake_credential(authorization_code, opts)
@@ -18,7 +21,7 @@ defmodule Comma.Auth.GoogleAdapter.Fake do
   end
 
   defp verify_fake_credential(credential, opts) do
-    credentials = Application.get_env(:comma_core, :google_adapter_fake_credentials, %{})
+    credentials = SystemsRuntime.get_env(:comma_core, :google_adapter_fake_credentials, %{})
 
     case Map.get(credentials, credential) do
       claims when is_map(claims) ->

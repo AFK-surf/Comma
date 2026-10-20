@@ -1,5 +1,5 @@
 defmodule SystemsObservability.ClassifierTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias SystemsObservability.Classifier
 
   test "finite classifiers normalize known values and reject dynamic values" do

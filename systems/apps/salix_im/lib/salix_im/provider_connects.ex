@@ -27,7 +27,6 @@ defmodule SalixIM.ProviderConnects do
     Keys,
     ReadScope,
     S3,
-    SlackTriageChannelCutover,
     SlackTriageChannels,
     ULID
   }
@@ -144,9 +143,9 @@ defmodule SalixIM.ProviderConnects do
 
     with true <- length(connects) <= 64,
          {:ok, _} <- GroupDirectory.get_group(scope.group_id, scope.tenant_id) do
-      task = Task.async(fn -> read_search_connects(scope, connects) end)
+      task = SystemsRuntime.Task.async(fn -> read_search_connects(scope, connects) end)
 
-      case Task.yield(task, 3000) || Task.shutdown(task, :brutal_kill) do
+      case SystemsClock.yield(task, 3000) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
         {:ok, result} -> result
         _ -> {:error, :search_scope_unavailable}
       end
@@ -158,7 +157,7 @@ defmodule SalixIM.ProviderConnects do
 
   defp read_search_connects(scope, connects) do
     connects
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn id ->
         case get_active_connect_by_id(scope.group_id, id, "slack") do
           {:ok, current} ->
@@ -242,7 +241,7 @@ defmodule SalixIM.ProviderConnects do
          {:ok, rec} <- CasRecord.get(Keys.ctl_im_connect(group_id, trim(connect_id))),
          true <- slack_triage_connect_ready?(rec, group, tenant_id),
          true <- rec["triage_enabled"] == true do
-      case SlackTriageChannelCutover.mode() do
+      case cutover().mode() do
         :legacy ->
           legacy_slack_triage_authority(rec, group, tenant_id, channel_id)
 
@@ -453,7 +452,7 @@ defmodule SalixIM.ProviderConnects do
     do: {:error, :slack_triage_authority_stale}
 
   defp slack_connect_snapshot_ignored_keys do
-    case SlackTriageChannelCutover.mode() do
+    case cutover().mode() do
       :legacy ->
         {:ok, @slack_connect_snapshot_non_authority_keys}
 
@@ -512,7 +511,7 @@ defmodule SalixIM.ProviderConnects do
     do: {:error, :slack_triage_authority_unavailable}
 
   defp peer_mentioned_for_cutover_mode(authority, peers) do
-    case SlackTriageChannelCutover.mode() do
+    case cutover().mode() do
       :legacy ->
         {:ok,
          Enum.any?(peers, &(trim(&1["approved_channel_id"]) == authority["approved_channel_id"]))}
@@ -636,7 +635,7 @@ defmodule SalixIM.ProviderConnects do
         connect_id,
         approved_channel_id
       ) do
-    SlackTriageChannelCutover.with_authority_write(fn ->
+    cutover().with_authority_write(fn ->
       approved_channel_id = trim(approved_channel_id)
       key = Keys.ctl_im_connect(group_id, trim(connect_id))
 
@@ -647,7 +646,7 @@ defmodule SalixIM.ProviderConnects do
            true <- slack_triage_provisionable?(current),
            {:ok, approved_channel_name} <-
              validate_slack_triage_channel(current, approved_channel_id),
-           mode when mode in [:legacy, :projected] <- SlackTriageChannelCutover.mode(),
+           mode when mode in [:legacy, :projected] <- cutover().mode(),
            :ok <- allow_slack_triage_provision?(mode, current, approved_channel_id) do
         with {:ok, prepared} <-
                update_existing(key, fn rec ->
@@ -748,7 +747,7 @@ defmodule SalixIM.ProviderConnects do
 
   def set_slack_triage_enabled(tenant_id, group_id, connect_id, enabled?)
       when is_boolean(enabled?) do
-    SlackTriageChannelCutover.with_authority_write(fn ->
+    cutover().with_authority_write(fn ->
       key = Keys.ctl_im_connect(group_id, trim(connect_id))
 
       with {:ok, group} <- GroupDirectory.get_group(group_id, tenant_id),
@@ -802,7 +801,7 @@ defmodule SalixIM.ProviderConnects do
          true <- current["workspace_id"] == connect["workspace_id"],
          true <- current["triage_enabled"] == true,
          true <- slack_triage_connect_ready?(current, group, tenant_id),
-         :projected <- SlackTriageChannelCutover.mode() do
+         :projected <- cutover().mode() do
       channels
       |> Enum.filter(&default_slack_triage_channel?/1)
       |> Enum.reduce_while(:ok, fn channel, :ok ->
@@ -857,7 +856,7 @@ defmodule SalixIM.ProviderConnects do
   end
 
   defp configured_channels_for_cutover_mode(rec, tenant_id, group_id, connect_ready?) do
-    case SlackTriageChannelCutover.mode() do
+    case cutover().mode() do
       :legacy ->
         channels = legacy_configured_channel_projection(rec)
 
@@ -935,7 +934,7 @@ defmodule SalixIM.ProviderConnects do
     with {:ok, _group} <- GroupDirectory.get_group(group_id, tenant_id),
          {:ok, rec} <- get_active_or_disabled_connect(group_id, connect_id),
          true <- rec["tenant_id"] == tenant_id and rec["provider"] == "slack",
-         :projected <- SlackTriageChannelCutover.mode(),
+         :projected <- cutover().mode(),
          :ok <-
            set_projected_or_legacy_channel_enabled(
              rec,
@@ -975,7 +974,7 @@ defmodule SalixIM.ProviderConnects do
     with {:ok, _group} <- GroupDirectory.get_group(group_id, tenant_id),
          {:ok, rec} <- get_active_or_disabled_connect(group_id, connect_id),
          true <- rec["tenant_id"] == tenant_id and rec["provider"] == "slack",
-         :projected <- SlackTriageChannelCutover.mode(),
+         :projected <- cutover().mode(),
          :ok <-
            set_projected_channel_expression_mode(
              rec,
@@ -1104,7 +1103,7 @@ defmodule SalixIM.ProviderConnects do
   end
 
   def create_slack_im_connect(tenant_id, group_id, attrs) when is_map(attrs) do
-    SlackTriageChannelCutover.with_authority_write(fn ->
+    cutover().with_authority_write(fn ->
       with {:ok, group} <- GroupDirectory.get_group(group_id, tenant_id),
            :ok <-
              validate_required_attrs(attrs, [
@@ -1113,7 +1112,7 @@ defmodule SalixIM.ProviderConnects do
                "client_secret",
                "signing_secret"
              ]),
-           {:ok, inbound_agent} <- resolve_slack_inbound_agent(group, attrs),
+           {:ok, inbound_agent, inbound_tasks} <- resolve_slack_inbound(group, attrs),
            app_id <- trim(attrs["app_id"]),
            :ok <- ProviderIdentity.ensure_available("slack", app_id) do
         now = now()
@@ -1149,6 +1148,7 @@ defmodule SalixIM.ProviderConnects do
             "inbound_event_not_before_ms",
             attrs["inbound_event_not_before_ms"]
           )
+          |> put_inbound_tasks(inbound_tasks)
 
         with :ok <-
                ProviderIdentity.reserve_provider("slack", app_id, tenant_id, group_id, connect_id),
@@ -1164,12 +1164,12 @@ defmodule SalixIM.ProviderConnects do
   end
 
   def update_slack_im_connect(tenant_id, group_id, connect_id, attrs) when is_map(attrs) do
-    SlackTriageChannelCutover.with_authority_write(fn ->
+    cutover().with_authority_write(fn ->
       with {:ok, group} <- GroupDirectory.get_group(group_id, tenant_id),
            {:ok, current} <- get_active_connect_by_id(group_id, connect_id, "slack"),
            true <- current["tenant_id"] == tenant_id,
            next_app_id <- nonblank(attrs["app_id"], current["app_id"]),
-           {:ok, inbound_agent} <- resolve_slack_inbound_agent(group, attrs, current),
+           {:ok, inbound_agent, inbound_tasks} <- resolve_slack_inbound(group, attrs, current),
            :ok <- ProviderIdentity.ensure_available("slack", next_app_id, connect_id) do
         ProviderIdentity.update(
           "slack",
@@ -1207,6 +1207,7 @@ defmodule SalixIM.ProviderConnects do
               |> maybe_put_nonblank("client_secret", attrs["client_secret"])
               |> maybe_put_nonblank("signing_secret", attrs["signing_secret"])
               |> Map.put("inbound_agent_id", inbound_agent["agent_id"])
+              |> put_inbound_tasks(inbound_tasks)
               |> maybe_reset_slack_oauth(attrs["reset_oauth"] == true)
               |> Map.put("updated_at", now())
             end)
@@ -1243,7 +1244,39 @@ defmodule SalixIM.ProviderConnects do
     end
   end
 
-  @doc "Prepares a disabled Comma iMessage DM route; uses CommaTelegramBinding.tla's prepare transition."
+  @doc """
+  Prepares a disabled Comma iMessage DM route; uses CommaTelegramBinding.tla's prepare transition.
+  A Photon route also records the assigned line's Photon User as its sender.
+  """
+  def ensure_managed_imessage_im_connect(tenant_id, group_id, %{"transport" => "photon"} = attrs) do
+    photon = SalixIM.PhotonIMessage
+
+    if photon.configured?() do
+      create_secret_connect(
+        tenant_id,
+        group_id,
+        "imessage",
+        attrs,
+        ["sender_handle", "chat_guid", "agent_user_id"],
+        fn rec ->
+          Map.merge(rec, %{
+            "managed_by" => "comma_product",
+            "managed_peer_id" => trim(attrs["sender_handle"]),
+            "managed_chat_id" => trim(attrs["chat_guid"]),
+            "relay_id" => photon.relay_id(),
+            "bot_user_id" => trim(attrs["agent_user_id"]),
+            "bot_display_name" => photon.identity(),
+            "runtime_mode" => "photon",
+            "status" => "connected",
+            "disabled_at" => now()
+          })
+        end
+      )
+    else
+      {:error, :imessage_unavailable}
+    end
+  end
+
   def ensure_managed_imessage_im_connect(tenant_id, group_id, attrs) when is_map(attrs) do
     relay = SalixIM.IMessageRelay
 
@@ -1440,6 +1473,261 @@ defmodule SalixIM.ProviderConnects do
     end
   end
 
+  @doc """
+  Connects one QQ bot to a Group. The bot's AppID and AppSecret belong to the
+  connect. QQ delivers events to `webhook_url`, which the bot's owner saves in
+  the QQ bot console.
+  """
+  def create_qq_im_connect(tenant_id, group_id, attrs) when is_map(attrs) do
+    app_id = trim(attrs["app_id"])
+
+    with :ok <- validate_required_attrs(attrs, ["app_id", "app_secret"]),
+         {:ok, bot} <- validate_qq_credentials(app_id, attrs["app_secret"]),
+         :ok <- ProviderIdentity.ensure_available("qq", app_id) do
+      create_secret_connect(
+        tenant_id,
+        group_id,
+        "qq",
+        attrs,
+        ["app_id", "app_secret"],
+        &put_qq_connect_fields(&1, attrs, bot),
+        identity: {"qq", app_id}
+      )
+      |> sync_qq_command_panels(attrs)
+    end
+  end
+
+  # A request with `command_menu` and no credentials changes the bot's command
+  # menu (`SalixIM.Provider.QQ.Menu`) and nothing else.
+  def update_qq_im_connect(tenant_id, group_id, connect_id, %{"command_menu" => items} = attrs)
+      when not is_map_key(attrs, "app_secret") do
+    with {:ok, current} <- get_active_or_disabled_connect(group_id, connect_id),
+         true <- current["tenant_id"] == tenant_id and current["provider"] == "qq",
+         {:ok, shortcuts} <- qq_command_menu(items) do
+      # QQ gets the menu first: a menu QQ refused is not stored.
+      case SalixIM.Provider.QQ.Menu.sync(Map.put(current, "command_menu", shortcuts)) do
+        %{"private" => "failed", "group" => "failed"} ->
+          {:error, {:bad_request, "QQ did not take the command menu; try again"}}
+
+        synced ->
+          update_existing(Keys.ctl_im_connect(group_id, connect_id), fn rec ->
+            rec
+            |> Map.put("command_menu", shortcuts)
+            |> Map.put("command_menu_sync", synced)
+            |> Map.put("updated_at", now())
+          end)
+          |> public_result()
+      end
+    else
+      false -> {:error, :not_found}
+      other -> other
+    end
+  end
+
+  def update_qq_im_connect(tenant_id, group_id, connect_id, attrs) when is_map(attrs) do
+    app_id = trim(attrs["app_id"])
+
+    with {:ok, current} <- get_active_or_disabled_connect(group_id, connect_id),
+         true <- current["tenant_id"] == tenant_id and current["provider"] == "qq",
+         :ok <- validate_required_attrs(attrs, ["app_id", "app_secret"]),
+         {:ok, bot} <- validate_qq_credentials(app_id, attrs["app_secret"]),
+         :ok <- ProviderIdentity.ensure_available("qq", app_id, connect_id) do
+      ProviderIdentity.update(
+        "qq",
+        tenant_id,
+        group_id,
+        connect_id,
+        current["app_id"],
+        app_id,
+        fn ->
+          update_secret_connect(
+            tenant_id,
+            group_id,
+            connect_id,
+            "qq",
+            attrs,
+            ["app_id", "app_secret"],
+            &put_qq_connect_fields(&1, attrs, bot)
+          )
+        end
+      )
+      |> sync_qq_command_panels(attrs)
+    else
+      false -> {:error, :not_found}
+      other -> other
+    end
+  end
+
+  # Best effort: a bot connects whether or not QQ takes its menu, and the
+  # outcome is kept for the page that shows the connect.
+  defp sync_qq_command_panels(
+         {:ok, %{"connect_id" => connect_id, "group_id" => group_id}} = saved,
+         attrs
+       ) do
+    key = Keys.ctl_im_connect(group_id, connect_id)
+
+    with {:ok, rec} <- CasRecord.get(key),
+         synced =
+           SalixIM.Provider.QQ.Menu.sync(Map.put(rec, "app_secret", trim(attrs["app_secret"]))),
+         {:ok, rec} <- update_existing(key, &Map.put(&1, "command_menu_sync", synced)) do
+      {:ok, im_connect_public(rec)}
+    else
+      _unavailable -> saved
+    end
+  end
+
+  defp sync_qq_command_panels(other, _attrs), do: other
+
+  defp qq_command_menu(items) do
+    case SalixIM.Provider.QQ.Menu.validate(items) do
+      {:ok, shortcuts} -> {:ok, shortcuts}
+      {:error, message} -> {:error, {:bad_request, message}}
+    end
+  end
+
+  defp put_qq_connect_fields(rec, attrs, bot) do
+    app_id = trim(attrs["app_id"])
+
+    rec
+    |> Map.put("app_id", app_id)
+    |> Map.put("app_secret", trim(attrs["app_secret"]))
+    |> Map.put("bot_user_id", trim(bot["id"]))
+    |> Map.put("bot_username", trim(bot["username"]))
+    |> Map.put("runtime_mode", "webhook")
+    |> Map.put(
+      "webhook_url",
+      public_base_url() <> "/v1/im/qq/events?app_id=" <> URI.encode_www_form(app_id)
+    )
+    |> Map.put("status", "connected")
+    |> Map.put("last_error", "")
+    |> Map.put("connected_at", now())
+  end
+
+  @doc """
+  Connects one Lark app's bot to a Group. The App ID, the App Secret and the
+  values that verify a callback (Verification Token, Encrypt Key) belong to
+  the connect. Lark delivers events to `webhook_url`, which the app's owner
+  saves as the request URL of the app's event subscription.
+  """
+  def create_lark_im_connect(tenant_id, group_id, attrs) when is_map(attrs) do
+    app_id = trim(attrs["app_id"])
+
+    with :ok <- validate_lark_attrs(attrs),
+         {:ok, bot} <- validate_lark_credentials(app_id, attrs["app_secret"]),
+         :ok <- ProviderIdentity.ensure_available("lark", app_id) do
+      create_secret_connect(
+        tenant_id,
+        group_id,
+        "lark",
+        attrs,
+        ["app_id", "app_secret"],
+        &put_lark_connect_fields(&1, attrs, bot),
+        identity: {"lark", app_id}
+      )
+    end
+  end
+
+  def update_lark_im_connect(tenant_id, group_id, connect_id, attrs) when is_map(attrs) do
+    app_id = trim(attrs["app_id"])
+
+    with {:ok, current} <- get_active_or_disabled_connect(group_id, connect_id),
+         true <- current["tenant_id"] == tenant_id and current["provider"] == "lark",
+         :ok <- validate_lark_attrs(attrs),
+         {:ok, bot} <- validate_lark_credentials(app_id, attrs["app_secret"]),
+         :ok <- ProviderIdentity.ensure_available("lark", app_id, connect_id) do
+      ProviderIdentity.update(
+        "lark",
+        tenant_id,
+        group_id,
+        connect_id,
+        current["app_id"],
+        app_id,
+        fn ->
+          update_secret_connect(
+            tenant_id,
+            group_id,
+            connect_id,
+            "lark",
+            attrs,
+            ["app_id", "app_secret"],
+            &put_lark_connect_fields(&1, attrs, bot)
+          )
+        end
+      )
+    else
+      false -> {:error, :not_found}
+      other -> other
+    end
+  end
+
+  # A callback is accepted only against one of these two values
+  # (`SalixIM.LarkInbound`), so a connect without both could receive nothing.
+  defp validate_lark_attrs(attrs) do
+    with :ok <- validate_required_attrs(attrs, ["app_id", "app_secret"]) do
+      if trim(attrs["verification_token"]) == "" and trim(attrs["encrypt_key"]) == "",
+        do: {:error, {:bad_request, "verification_token or encrypt_key is required"}},
+        else: :ok
+    end
+  end
+
+  defp put_lark_connect_fields(rec, attrs, bot) do
+    app_id = trim(attrs["app_id"])
+
+    rec
+    |> Map.put("app_id", app_id)
+    |> Map.put("app_secret", trim(attrs["app_secret"]))
+    |> Map.put("verification_token", trim(attrs["verification_token"]))
+    |> Map.put("encrypt_key", trim(attrs["encrypt_key"]))
+    |> Map.put("app_name", trim(bot["app_name"]))
+    |> Map.put("bot_open_id", trim(bot["open_id"]))
+    |> Map.put(
+      "webhook_url",
+      public_base_url() <> "/v1/im/lark/events?app_id=" <> URI.encode_www_form(app_id)
+    )
+    |> Map.put("status", "connected")
+    |> Map.put("last_error", "")
+    |> Map.put("connected_at", now())
+  end
+
+  # The bot's own identity proves the credentials and gives the open_id a
+  # group mention names the bot by.
+  defp validate_lark_credentials(app_id, app_secret) do
+    case SalixIM.Provider.Lark.API.get(
+           %{"app_id" => app_id, "app_secret" => trim(app_secret)},
+           "/bot/v3/info"
+         ) do
+      {:ok, %{"bot" => %{"open_id" => open_id} = bot}}
+      when is_binary(open_id) and open_id != "" ->
+        {:ok, bot}
+
+      {:ok, _body} ->
+        {:error,
+         {:bad_request,
+          "Lark app has no bot; enable the Bot capability in the Lark Developer Console and publish the app"}}
+
+      {:error, reason} ->
+        {:error, {:bad_request, "Lark credential check failed: " <> to_string(reason)}}
+    end
+  end
+
+  defp validate_qq_credentials(app_id, app_secret) do
+    case SalixIM.Provider.QQ.API.bot_profile(%{
+           "app_id" => app_id,
+           "app_secret" => trim(app_secret)
+         }) do
+      {:ok, %{"id" => _id} = bot} ->
+        {:ok, bot}
+
+      {:ok, _body} ->
+        {:error, {:bad_request, "QQ bot profile is not available for this AppID"}}
+
+      {:error, reason} ->
+        {:error,
+         {:bad_request,
+          "QQ credential check failed: " <> SalixIM.Provider.QQ.API.error_text(reason)}}
+    end
+  end
+
   # ---- voice (SalixIM.VoiceConnects owns the voice connect contract) ----
 
   defdelegate ensure_voice_im_connect(tenant_id, group_id), to: SalixIM.VoiceConnects
@@ -1600,7 +1888,7 @@ defmodule SalixIM.ProviderConnects do
   end
 
   def complete_slack_im_connect_oauth(connect, oauth) do
-    SlackTriageChannelCutover.with_authority_write(fn ->
+    cutover().with_authority_write(fn ->
       key = Keys.ctl_im_connect(connect["group_id"], connect["connect_id"])
       now = now()
 
@@ -1655,6 +1943,14 @@ defmodule SalixIM.ProviderConnects do
   def list_slack_mirror_backfill_connects(limit \\ 100, cursor \\ nil),
     do: scan_slack_connect_page(limit, cursor, &slack_mirror_backfill_connect?/1)
 
+  @doc "One page of connected Feishu connects for the Feishu mirror backfill."
+  def list_feishu_mirror_backfill_connects(limit \\ 100, cursor \\ nil),
+    do: scan_slack_connect_page(limit, cursor, &feishu_mirror_backfill_connect?/1)
+
+  @doc "One page of connected Lark connects for the Lark message record backfill."
+  def list_lark_message_record_backfill_connects(limit \\ 100, cursor \\ nil),
+    do: scan_slack_connect_page(limit, cursor, &lark_message_record_backfill_connect?/1)
+
   @doc "Reference-only search discovery, including revoked records to update the catalog."
   def list_slack_search_connects(limit \\ 20, cursor \\ nil) do
     with {:ok, page} <- scan_slack_connect_page(limit, cursor, &(&1["provider"] == "slack")) do
@@ -1694,6 +1990,19 @@ defmodule SalixIM.ProviderConnects do
       trim(rec["bot_token"]) != "" and trim(rec["workspace_id"]) != "" and
       trim(rec["tenant_id"]) != "" and trim(rec["group_id"]) != "" and
       trim(rec["connect_id"]) != "" and trim(rec["connect_generation"]) != ""
+  end
+
+  defp feishu_mirror_backfill_connect?(rec) do
+    rec["provider"] == "feishu" and rec["status"] == "connected" and is_nil(rec["deleted_at"]) and
+      is_nil(rec["disabled_at"]) and
+      Enum.all?(~w(app_id tenant_id group_id connect_id), &(trim(rec[&1]) != ""))
+  end
+
+  # A Lark connect holds its app's credentials; the walk calls Lark with them.
+  defp lark_message_record_backfill_connect?(rec) do
+    rec["provider"] == "lark" and rec["status"] == "connected" and is_nil(rec["deleted_at"]) and
+      is_nil(rec["disabled_at"]) and
+      Enum.all?(~w(app_id app_secret tenant_id group_id connect_id), &(trim(rec[&1]) != ""))
   end
 
   # Retained data belongs to the logical connect/workspace. Credential and
@@ -1967,7 +2276,7 @@ defmodule SalixIM.ProviderConnects do
   end
 
   defp establish_backfilled_slack_connect_generation(key, summary) do
-    SlackTriageChannelCutover.with_authority_write(fn ->
+    cutover().with_authority_write(fn ->
       update_existing(key, fn rec ->
         # Re-checked inside the CAS: the record read during the scan may have
         # gained a generation, or been deleted, since it was listed. The refusal
@@ -2019,7 +2328,7 @@ defmodule SalixIM.ProviderConnects do
     if bot_id == "" or bot_user_id == "" do
       {:error, {:bad_request, "bot_id and bot_user_id are required"}}
     else
-      SlackTriageChannelCutover.with_authority_write(fn ->
+      cutover().with_authority_write(fn ->
         key = Keys.ctl_im_connect(connect["group_id"], connect["connect_id"])
         expected_token = trim(connect["bot_token"])
         now = now()
@@ -2158,7 +2467,7 @@ defmodule SalixIM.ProviderConnects do
   end
 
   defp feishu_thread_participation_ttl_ms do
-    Application.get_env(:salix_im, :feishu_thread_participation_ttl_seconds, 30 * 24 * 60 * 60) *
+    SystemsRuntime.get_env(:salix_im, :feishu_thread_participation_ttl_seconds, 30 * 24 * 60 * 60) *
       1_000
   end
 
@@ -2543,7 +2852,8 @@ defmodule SalixIM.ProviderConnects do
         source_message_id,
         opts \\ []
       ) do
-    with {:ok, _group} <- GroupDirectory.get_group(group_id),
+    with {:ok, _group} <-
+           SalixIM.QQTiming.measure("group_check", fn -> GroupDirectory.get_group(group_id) end),
          :ok <-
            validate_required_attrs(
              %{"source_message_id" => source_message_id},
@@ -2563,12 +2873,14 @@ defmodule SalixIM.ProviderConnects do
          # message that addressed the bot and is not a receipt replay, and a
          # path that passes none cannot produce a command at all.
          :none <-
-           SalixIM.ControlCommand.intercept(
-             group_id,
-             Keyword.get(opts, :command_text),
-             metadata,
-             replayed?: Keyword.get(opts, :command_replayed?, false)
-           ) do
+           SalixIM.QQTiming.measure("control_command", fn ->
+             SalixIM.ControlCommand.intercept(
+               group_id,
+               Keyword.get(opts, :command_text),
+               metadata,
+               replayed?: Keyword.get(opts, :command_replayed?, false)
+             )
+           end) do
       deliver_router_provider_message(group_id, content, metadata, source_message_id, opts)
     end
   end
@@ -2580,21 +2892,27 @@ defmodule SalixIM.ProviderConnects do
          source_message_id,
          opts
        ) do
-    with {:ok, group} <- GroupDirectory.get_group(group_id),
-         {:ok, router_agent} <- resolve_group_router_agent(group),
+    with {:ok, group} <-
+           SalixIM.QQTiming.measure("group_lookup", fn -> GroupDirectory.get_group(group_id) end),
+         {:ok, router_agent} <-
+           SalixIM.QQTiming.measure("router_lookup", fn -> resolve_group_router_agent(group) end),
          {:ok, staged_attachments, failed_attachments} <-
-           ProviderAttachments.stage(
-             router_agent["agent_id"],
-             Keyword.get(opts, :attachments, [])
-           ),
+           SalixIM.QQTiming.measure("attachments", fn ->
+             ProviderAttachments.stage(
+               router_agent["agent_id"],
+               Keyword.get(opts, :attachments, [])
+             )
+           end),
          {:ok, delivery} <-
-           SalixIM.AgentDeliveryPayload.provider_router_delivery(
-             group,
-             router_agent,
-             content,
-             metadata,
-             Keyword.put(opts, :source_message_id, source_message_id)
-           ) do
+           SalixIM.QQTiming.measure("delivery_payload", fn ->
+             SalixIM.AgentDeliveryPayload.provider_router_delivery(
+               group,
+               router_agent,
+               content,
+               metadata,
+               Keyword.put(opts, :source_message_id, source_message_id)
+             )
+           end) do
       agent_id = router_agent["agent_id"]
 
       pre_deliveries =
@@ -2634,13 +2952,15 @@ defmodule SalixIM.ProviderConnects do
              metadata
            ) do
         {:ok, _status} ->
-          SalixIM.PrivateChatStatus.record_inbound(
-            group_id,
-            metadata,
-            source_message_id,
-            agent_id,
-            Map.get(payload, :session_id)
-          )
+          SalixIM.QQTiming.measure("inbound_status", fn ->
+            SalixIM.PrivateChatStatus.record_inbound(
+              group_id,
+              metadata,
+              source_message_id,
+              agent_id,
+              Map.get(payload, :session_id)
+            )
+          end)
 
           {:ok, :queued}
 
@@ -2685,7 +3005,63 @@ defmodule SalixIM.ProviderConnects do
     }
   end
 
-  defp resolve_slack_inbound_agent(group, attrs, current \\ %{}) do
+  # A Slack connection delivers to its Group's Router, or binds each thread to
+  # a Task of the Group's Task agent (`inbound_tasks`, with the model those
+  # Tasks run; none: the default Task model). A Worker bound before Workers
+  # were retired stays bound until the connection changes. An update that
+  # names neither keeps the current binding.
+  defp resolve_slack_inbound(group, attrs, current \\ %{}) do
+    current_tasks = current["inbound_tasks"]
+
+    case attrs["inbound_tasks"] do
+      %{} = tasks ->
+        scope = %{tenant_id: group["tenant_id"], group_id: group["group_id"]}
+
+        with {:ok, agent} <- slack_task_agent(scope),
+             {:ok, model} <- slack_task_model(scope, tasks["model"]) do
+          {:ok, agent, if(model, do: %{"model" => model}, else: %{})}
+        end
+
+      nil when is_map(current_tasks) ->
+        if trim(attrs["inbound_agent_id"]) == "" do
+          with {:ok, agent} <- resolve_connect_inbound_agent(group, current),
+               do: {:ok, agent, current_tasks}
+        else
+          with {:ok, agent} <- resolve_slack_inbound_agent(group, attrs, current),
+               do: {:ok, agent, nil}
+        end
+
+      nil ->
+        with {:ok, agent} <- resolve_slack_inbound_agent(group, attrs, current),
+             do: {:ok, agent, nil}
+
+      _other ->
+        {:error, {:bad_request, "inbound_tasks must be an object"}}
+    end
+  end
+
+  defp slack_task_agent(scope) do
+    with {:ok, agent_id} <- SalixIM.Ports.TaskCreate.task_worker(scope),
+         {:ok, agent} <- GroupDirectory.get_agent(agent_id) do
+      {:ok, agent}
+    else
+      {:error, :task_worker_required} -> {:error, :task_agent_unavailable}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp slack_task_model(_scope, nil), do: {:ok, nil}
+
+  defp slack_task_model(scope, choice) when is_map(choice),
+    do: SalixIM.Ports.TaskCreate.session_model(Map.put(scope, :runs_on, nil), choice)
+
+  defp slack_task_model(_scope, _choice),
+    do: {:error, {:bad_request, "inbound_tasks.model must be an object"}}
+
+  defp put_inbound_tasks(rec, nil), do: Map.delete(rec, "inbound_tasks")
+  defp put_inbound_tasks(rec, tasks), do: Map.put(rec, "inbound_tasks", tasks)
+
+  defp resolve_slack_inbound_agent(group, attrs, current) do
     inbound_agent_id =
       attrs
       |> Map.get("inbound_agent_id")
@@ -2757,19 +3133,28 @@ defmodule SalixIM.ProviderConnects do
            ) do
         {:ok, binding} ->
           if SlackConversationIngress.task_thread_binding_record?(binding),
-            do: resolve_slack_inbound_agent(group, %{}, connect),
+            do: resolve_connect_inbound_agent(group, connect),
             else: resolve_bound_slack_worker(group, binding)
 
         {:error, :not_found} ->
-          resolve_slack_inbound_agent(group, %{}, connect)
+          resolve_connect_inbound_agent(group, connect)
 
         {:error, _} = error ->
           error
       end
     else
-      resolve_slack_inbound_agent(group, %{}, connect)
+      resolve_connect_inbound_agent(group, connect)
     end
   end
+
+  # A connection bound to Tasks delivers a new thread to the Group's Task
+  # agent, resolved now: one bound by the release that retired Workers still
+  # names the Worker it delivered to before.
+  defp resolve_connect_inbound_agent(group, %{"inbound_tasks" => %{}}),
+    do: slack_task_agent(%{tenant_id: group["tenant_id"], group_id: group["group_id"]})
+
+  defp resolve_connect_inbound_agent(group, connect),
+    do: resolve_slack_inbound_agent(group, %{}, connect)
 
   defp resolve_bound_slack_worker(group, binding) do
     with {:ok, agent} <- GroupDirectory.get_agent(binding["worker_agent_id"]),
@@ -2936,7 +3321,7 @@ defmodule SalixIM.ProviderConnects do
         (trim(rec["bot_user_id"]) != "" or trim(rec["bot_username"]) != "")
 
   defp tool_visible_connect?(%{"provider" => "imessage"} = rec),
-    do: rec["status"] == "connected" and SalixIM.Provider.IMessage.current_relay?(rec)
+    do: rec["status"] == "connected" and SalixIM.Provider.IMessage.current_transport?(rec)
 
   defp tool_visible_connect?(%{"provider" => "feishu"} = rec),
     do:
@@ -2947,6 +3332,16 @@ defmodule SalixIM.ProviderConnects do
     do:
       rec["status"] == "connected" and trim(rec["wechat_id"]) != "" and
         trim(rec["token"]) != "" and trim(rec["base_url"]) != ""
+
+  defp tool_visible_connect?(%{"provider" => "qq"} = rec),
+    do:
+      rec["status"] == "connected" and trim(rec["app_id"]) != "" and
+        trim(rec["app_secret"]) != ""
+
+  defp tool_visible_connect?(%{"provider" => "lark"} = rec),
+    do:
+      rec["status"] == "connected" and trim(rec["app_id"]) != "" and
+        trim(rec["app_secret"]) != ""
 
   defp tool_visible_connect?(%{"provider" => "voice"} = rec), do: rec["status"] == "connected"
   defp tool_visible_connect?(%{"provider" => "signal"} = rec), do: rec["status"] == "connected"
@@ -2975,10 +3370,37 @@ defmodule SalixIM.ProviderConnects do
     end
   end
 
-  defp tool_connect_visible_to_agent?(_rec, agent_id, router_agent_id, _agent_role) do
+  # A Feishu connect belongs to the Group, not to one agent. Workers reach it
+  # for the read and cloud-document operations; the dispatch fence rejects
+  # the rest.
+  defp tool_connect_visible_to_agent?(%{"provider" => "feishu"}, agent_id, router_agent_id, role) do
     cond do
       agent_id == "" -> true
       router_agent_id == "" -> false
+      role == "worker" -> true
+      true -> agent_id == router_agent_id
+    end
+  end
+
+  # A Lark connect belongs to the Group in the same way. Workers reach it for
+  # the read, cloud document and Minutes operations; the dispatch fence
+  # rejects the rest.
+  defp tool_connect_visible_to_agent?(%{"provider" => "lark"}, agent_id, router_agent_id, role) do
+    cond do
+      agent_id == "" -> true
+      router_agent_id == "" -> false
+      role == "worker" -> true
+      true -> agent_id == router_agent_id
+    end
+  end
+
+  # Every other connect belongs to the Group as well. Workers reach it for
+  # the provider's read operations; the dispatch fence rejects the rest.
+  defp tool_connect_visible_to_agent?(_rec, agent_id, router_agent_id, agent_role) do
+    cond do
+      agent_id == "" -> true
+      router_agent_id == "" -> false
+      agent_role == "worker" -> true
       true -> agent_id == router_agent_id
     end
   end
@@ -3024,11 +3446,29 @@ defmodule SalixIM.ProviderConnects do
     |> put_optional_nonblank("tenant_key", rec["tenant_key"])
   end
 
+  defp tool_connect_summary(%{"provider" => "qq"} = rec) do
+    %{
+      "connect_id" => rec["connect_id"],
+      "provider" => "qq"
+    }
+    |> put_optional_nonblank("bot_username", rec["bot_username"])
+  end
+
+  defp tool_connect_summary(%{"provider" => "lark"} = rec) do
+    %{
+      "connect_id" => rec["connect_id"],
+      "provider" => "lark"
+    }
+    |> put_optional_nonblank("app_name", rec["app_name"])
+  end
+
   defp tool_connect_summary(rec),
     do: %{"connect_id" => rec["connect_id"], "provider" => rec["provider"]}
 
   defp im_connect_public(%{"provider" => "slack"} = rec), do: slack_connect_public(rec)
   defp im_connect_public(%{"provider" => "feishu"} = rec), do: feishu_connect_public(rec)
+  defp im_connect_public(%{"provider" => "qq"} = rec), do: qq_connect_public(rec)
+  defp im_connect_public(%{"provider" => "lark"} = rec), do: lark_connect_public(rec)
   defp im_connect_public(%{"provider" => "voice"} = rec), do: SalixIM.VoiceConnects.public(rec)
   defp im_connect_public(%{"provider" => "signal"} = rec), do: SalixIM.SignalConnects.public(rec)
 
@@ -3059,6 +3499,52 @@ defmodule SalixIM.ProviderConnects do
       "updated_at"
     ])
     |> Map.put("bot_token_configured", trim(rec["bot_token"]) != "")
+  end
+
+  defp qq_connect_public(rec) do
+    rec
+    |> Map.take([
+      "connect_id",
+      "tenant_id",
+      "group_id",
+      "provider",
+      "app_id",
+      "bot_user_id",
+      "bot_username",
+      "webhook_url",
+      "status",
+      "last_error",
+      "connected_at",
+      "disabled_at",
+      "created_at",
+      "updated_at"
+    ])
+    |> Map.put("app_secret_configured", trim(rec["app_secret"]) != "")
+    |> Map.put("command_menu", SalixIM.Provider.QQ.Menu.shortcuts(rec))
+    |> Map.put("command_menu_sync", rec["command_menu_sync"] || %{})
+  end
+
+  defp lark_connect_public(rec) do
+    rec
+    |> Map.take([
+      "connect_id",
+      "tenant_id",
+      "group_id",
+      "provider",
+      "app_id",
+      "app_name",
+      "bot_open_id",
+      "webhook_url",
+      "status",
+      "last_error",
+      "connected_at",
+      "disabled_at",
+      "created_at",
+      "updated_at"
+    ])
+    |> Map.put("app_secret_configured", trim(rec["app_secret"]) != "")
+    |> Map.put("verification_token_configured", trim(rec["verification_token"]) != "")
+    |> Map.put("encrypt_key_configured", trim(rec["encrypt_key"]) != "")
   end
 
   defp feishu_connect_public(rec) do
@@ -3105,6 +3591,7 @@ defmodule SalixIM.ProviderConnects do
       "bot_user_id",
       "bot_username",
       "inbound_agent_id",
+      "inbound_tasks",
       "approved_channel_id",
       "approved_channel_name",
       "oauth_completed_at",
@@ -3154,7 +3641,7 @@ defmodule SalixIM.ProviderConnects do
   # authority and an empty, stale, incomplete, or unreadable projection can
   # never be repaired by falling back to the legacy channel.
   defp ensure_slack_triage_master_authority(rec, group, tenant_id) do
-    case SlackTriageChannelCutover.mode() do
+    case cutover().mode() do
       :legacy ->
         if slack_triage_authority_ready?(rec, group, tenant_id),
           do: :ok,
@@ -3268,7 +3755,7 @@ defmodule SalixIM.ProviderConnects do
   end
 
   defp expression_context_policy(rec, tenant_id, group_id, channel_id) do
-    case SlackTriageChannelCutover.mode() do
+    case cutover().mode() do
       :legacy ->
         if provisioned?(rec) and trim(rec["approved_channel_id"]) == channel_id do
           {:ok,
@@ -3392,7 +3879,7 @@ defmodule SalixIM.ProviderConnects do
     else
       base =
         :salix_im
-        |> Application.get_env(:telegram_api_base_url, "https://api.telegram.org")
+        |> SystemsRuntime.get_env(:telegram_api_base_url, "https://api.telegram.org")
         |> trim()
         |> default_base("https://api.telegram.org")
 
@@ -3534,7 +4021,7 @@ defmodule SalixIM.ProviderConnects do
 
   defp feishu_api_base do
     :salix_im
-    |> Application.get_env(:feishu_api_base_url, "https://open.feishu.cn/open-apis")
+    |> SystemsRuntime.get_env(:feishu_api_base_url, "https://open.feishu.cn/open-apis")
     |> trim()
     |> default_base("https://open.feishu.cn/open-apis")
   end
@@ -3683,7 +4170,7 @@ defmodule SalixIM.ProviderConnects do
   defp maybe_rotate_slack_triage_activation(rec, true), do: rec
 
   defp maybe_with_slack_authority_write(%{"provider" => "slack"}, fun),
-    do: SlackTriageChannelCutover.with_authority_write(fun)
+    do: cutover().with_authority_write(fun)
 
   defp maybe_with_slack_authority_write(_rec, fun), do: fun.()
 
@@ -3972,11 +4459,14 @@ defmodule SalixIM.ProviderConnects do
   defp num(_), do: 0
 
   def public_base_url do
-    Application.get_env(:salix_im, :public_base_url, "http://127.0.0.1:4000")
+    SystemsRuntime.get_env(:salix_im, :public_base_url, "http://127.0.0.1:4000")
     |> trim()
     |> String.trim_trailing("/")
   end
 
-  defp random_id, do: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
-  defp now, do: System.system_time(:millisecond)
+  defp random_id, do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(9), padding: false)
+  defp now, do: SystemsClock.system_time(:millisecond)
+
+  # The cutover barrier, or its in-memory twin in a simulation.
+  defp cutover, do: SalixStore.SlackTriageChannelCutover
 end

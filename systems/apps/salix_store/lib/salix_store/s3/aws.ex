@@ -1,4 +1,6 @@
 defmodule SalixStore.S3.AWS do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Real S3 / MinIO backend over Finch with our own SigV4 signing (path-style).
 
@@ -96,7 +98,7 @@ defmodule SalixStore.S3.AWS do
   defp request_budget,
     do: Keyword.get(timeouts_config(), :budget_ms, @request_budget)
 
-  defp timeouts_config, do: Application.get_env(:salix_store, :s3_timeouts, [])
+  defp timeouts_config, do: SystemsRuntime.get_env(:salix_store, :s3_timeouts, [])
 
   @impl true
   def put(key, body, opts) do
@@ -106,7 +108,7 @@ defmodule SalixStore.S3.AWS do
     # cancellable and is outside the bound by contract (see the moduledoc):
     # the body stays iodata (no eager normalization — signing and Finch both
     # consume iodata), and sizing walks segments without copying bytes.
-    deadline = System.monotonic_time(:millisecond) + request_budget()
+    deadline = SystemsClock.monotonic_time(:millisecond) + request_budget()
     cfg = SalixStore.Config.get()
 
     headers =
@@ -479,18 +481,18 @@ defmodule SalixStore.S3.AWS do
   # public boundary before body sizing.
   defp request(method, url, headers, body, cfg, recv_timeout \\ nil, deadline \\ nil) do
     recv_timeout = recv_timeout || fast_recv_timeout()
-    deadline = deadline || System.monotonic_time(:millisecond) + request_budget()
+    deadline = deadline || SystemsClock.monotonic_time(:millisecond) + request_budget()
     do_request(method, url, headers, body, cfg, recv_timeout, deadline, @transient_retries)
   end
 
   defp response_stream(method, url, headers, cfg) do
     Stream.resource(
       fn ->
-        parent = self()
-        ref = make_ref()
+        parent = SystemsRuntime.Proc.self()
+        ref = SystemsRuntime.Proc.make_ref()
 
         task =
-          Task.async(fn ->
+          SystemsRuntime.Task.async(fn ->
             signed = SalixStore.SigV4.sign(method, url, headers, "", cfg)
 
             result =
@@ -499,24 +501,24 @@ defmodule SalixStore.S3.AWS do
                 @finch,
                 nil,
                 fn event, acc ->
-                  send(parent, {ref, event})
+                  SystemsRuntime.Proc.send(parent, {ref, event})
                   acc
                 end,
                 receive_timeout: bulk_recv_timeout()
               )
 
-            send(parent, {ref, :done, result})
+            SystemsRuntime.Proc.send(parent, {ref, :done, result})
           end)
 
         %{ref: ref, task: task}
       end,
       &next_stream_chunk/1,
-      fn %{task: task} -> Task.shutdown(task, :brutal_kill) end
+      fn %{task: task} -> SystemsRuntime.Task.shutdown(task, :brutal_kill) end
     )
   end
 
   defp next_stream_chunk(%{ref: ref} = state) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {^ref, {:status, status}} when status in [200, 206] ->
         next_stream_chunk(state)
 
@@ -562,7 +564,7 @@ defmodule SalixStore.S3.AWS do
   # error — an ambiguous outcome upstream, same as any other timeout, so the
   # settle-by-read-back obligation is unchanged.
   defp do_request(method, url, headers, body, cfg, recv_timeout, deadline, attempts_left) do
-    remaining = deadline - System.monotonic_time(:millisecond)
+    remaining = deadline - SystemsClock.monotonic_time(:millisecond)
 
     if remaining <= 0 do
       {:error, %Mint.TransportError{reason: :timeout}}
@@ -575,8 +577,8 @@ defmodule SalixStore.S3.AWS do
                reason in [:closed, :timeout, :econnrefused] and attempts_left > 0 ->
           backoff = transient_backoff(attempts_left)
 
-          if System.monotonic_time(:millisecond) + backoff < deadline do
-            Process.sleep(backoff)
+          if SystemsClock.monotonic_time(:millisecond) + backoff < deadline do
+            SystemsClock.sleep(backoff)
             do_request(method, url, headers, body, cfg, recv_timeout, deadline, attempts_left - 1)
           else
             result
@@ -610,15 +612,24 @@ defmodule SalixStore.S3.AWS do
   # the previous un-wrapped behaviour.
   defp bounded_attempt(method, url, headers, body, cfg, recv_timeout, deadline) do
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         try do
           signed = SalixStore.SigV4.sign(method, url, headers, body, cfg)
-          remaining = max(deadline - System.monotonic_time(:millisecond), 1)
+          remaining = max(deadline - SystemsClock.monotonic_time(:millisecond), 1)
+          receive_timeout = min(recv_timeout, remaining)
+
+          # The limits this attempt's remote stages run under: what bounds a
+          # stalled backend, observable without timing the call.
+          SystemsRuntime.Telemetry.execute(
+            [:salix_store, :s3, :attempt],
+            %{remaining_ms: remaining, receive_timeout_ms: receive_timeout},
+            %{method: method}
+          )
 
           {:finch,
            Finch.build(method_atom(method), url, signed, body)
            |> Finch.request(@finch,
-             receive_timeout: min(recv_timeout, remaining),
+             receive_timeout: receive_timeout,
              request_timeout: remaining,
              pool_timeout: @pool_timeout
            )}
@@ -627,8 +638,8 @@ defmodule SalixStore.S3.AWS do
         end
       end)
 
-    case Task.yield(task, max(deadline - System.monotonic_time(:millisecond), 0)) ||
-           Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, max(deadline - SystemsClock.monotonic_time(:millisecond), 0)) ||
+           SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, {:finch, result}} -> result
       {:ok, {:raised, exception, stacktrace}} -> reraise(exception, stacktrace)
       {:exit, reason} -> exit(reason)

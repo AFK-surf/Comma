@@ -37,6 +37,7 @@ export const AiInput = ({
   onAttachPress,
   onDropFiles,
   onPasteFiles,
+  onPasteText,
   dropPlaceholder,
   onAccessPress,
   onVoicePress,
@@ -123,14 +124,14 @@ export const AiInput = ({
     showVoiceButton,
     submitPending,
   });
-  const filePaste = useFilePaste({ clipboard, onPaste, onPasteFiles });
+  const filePaste = useFilePaste({ clipboard, onPaste, onPasteFiles, onPasteText });
   const textareaEdit = useTextareaEditMenu(textareaMenu, {
     clipboard,
     isEnabled: textareaMenuEnabled,
     maxLength,
     onChange,
     onValueChange,
-    pasteFilesFromMenu: filePaste.pasteFilesFromMenu,
+    pasteFromMenu: filePaste.pasteFromMenu,
     requestMeasure: sizing.requestMeasure,
     setDraftValue,
     value,

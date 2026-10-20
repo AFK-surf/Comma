@@ -14,7 +14,7 @@ defmodule SalixMeet.CalendarAutojoin do
   `SalixMeet.Meeting` process.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
   alias SalixMeet.{
@@ -50,7 +50,7 @@ defmodule SalixMeet.CalendarAutojoin do
   @enrollment_retry_backoff_ms 60_000
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
   end
 
   @impl true
@@ -63,7 +63,7 @@ defmodule SalixMeet.CalendarAutojoin do
     # in a `Task.async` whose normal completion is delivered here as `{:EXIT, task, :normal}` after
     # `Task.await` returns, so handle_info/2 must accept those (see the EXIT clauses below) or the first
     # store call after boot crashes the worker.
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
 
     state = %{
       lease: nil,
@@ -84,21 +84,21 @@ defmodule SalixMeet.CalendarAutojoin do
       task_timeout: opts[:task_timeout_ms] || @task_timeout_ms
     }
 
-    send(self(), :scan_tick)
-    send(self(), :join_tick)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :scan_tick)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :join_tick)
     {:ok, state}
   end
 
   @impl true
   def handle_info(:scan_tick, state) do
     state = with_lease(state, &run_scan_pass/2)
-    Process.send_after(self(), :scan_tick, state.scan_ms)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :scan_tick, state.scan_ms)
     {:noreply, state}
   end
 
   def handle_info(:join_tick, state) do
     state = with_lease(state, &run_join_pass/2)
-    Process.send_after(self(), :join_tick, state.join_ms)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :join_tick, state.join_ms)
     {:noreply, state}
   end
 
@@ -132,7 +132,7 @@ defmodule SalixMeet.CalendarAutojoin do
   # refresh_groups_with_lease/2 so no durable cache mutation can happen without
   # a post-resolution remote ownership proof.
   defp refresh_groups(state) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
     {state, actions, outcome} = prepare_enrollment(state)
     emit_enrollment_telemetry(started_at, outcome)
 
@@ -151,7 +151,7 @@ defmodule SalixMeet.CalendarAutojoin do
        do: {:ok, %{state | groups: override}, lease}
 
   defp refresh_groups_with_lease(state, lease) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
     {prepared_state, actions, outcome} = prepare_enrollment(state)
 
     case renew_lease(lease, state) do
@@ -181,9 +181,9 @@ defmodule SalixMeet.CalendarAutojoin do
   defp enrollment_lease_outcome(_reason), do: "error"
 
   defp emit_enrollment_telemetry(started_at, outcome) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started_at},
+      %{duration: SystemsClock.monotonic_time() - started_at},
       %{
         component: "salix_meet",
         operation: "calendar_enrollment",
@@ -678,7 +678,7 @@ defmodule SalixMeet.CalendarAutojoin do
   end
 
   defp prepare_scan_group(group, now, max_events, lease_epoch) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
     request = Map.put(group, "max_events", max_events)
 
     with {:ok, projection} <-
@@ -1355,7 +1355,7 @@ defmodule SalixMeet.CalendarAutojoin do
 
   defp emit_meet_operation(operation, outcome, started_at \\ nil) do
     duration =
-      if is_integer(started_at), do: System.monotonic_time() - started_at, else: 0
+      if is_integer(started_at), do: SystemsClock.monotonic_time() - started_at, else: 0
 
     Salix.Telemetry.emit_operation("salix_meet", operation, "system", outcome, duration)
   end
@@ -1685,7 +1685,7 @@ defmodule SalixMeet.CalendarAutojoin do
           :ok
 
         {:error, reason} when reason in [:not_leader, :not_running] ->
-          Process.sleep(25)
+          SystemsClock.sleep(25)
           request_join(meeting_id, retries - 1)
 
         {:error, _} = error ->
@@ -1727,7 +1727,7 @@ defmodule SalixMeet.CalendarAutojoin do
              "caption_language" => default_caption_language(),
              "start_at" => start_s,
              "end_at" => event_end_s(event),
-             "runtime_source" => "connected_runtime",
+             "runtime_source" => SalixMeet.MeetingRuntimePolicy.default_source(),
              "source" => source
            }) do
         {:ok, state} -> {:ok, state, target}
@@ -1901,8 +1901,9 @@ defmodule SalixMeet.CalendarAutojoin do
     end
   end
 
+  # The task budget runs on SystemsClock, as every other deadline here does.
   defp bounded_map(values, concurrency, timeout, fun) do
-    Task.async_stream(values, fun,
+    SystemsClock.async_stream(values, fun,
       ordered: true,
       max_concurrency: concurrency,
       timeout: timeout,
@@ -1941,7 +1942,7 @@ defmodule SalixMeet.CalendarAutojoin do
     do: configured_default(:default_caption_language, @default_caption_language)
 
   defp configured_default(key, fallback) do
-    case Application.get_env(:salix_meet, key) do
+    case SystemsRuntime.get_env(:salix_meet, key) do
       value when is_binary(value) -> blank_default(String.trim(value), fallback)
       _ -> fallback
     end
@@ -1950,5 +1951,5 @@ defmodule SalixMeet.CalendarAutojoin do
   defp blank_default("", fallback), do: fallback
   defp blank_default(value, _fallback), do: value
   defp trim(value), do: String.trim(to_string(value || ""))
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 end

@@ -4,23 +4,25 @@ import { getCommaReleaseConfig } from "../src/release-config";
 
 export const notchBinaryName = "NotchHost";
 export const micCaptureBinaryName = "MicCaptureHost";
+export const quickChatBinaryName = "QuickChatHost";
 export const sleepGuardBinaryName = "CommaSleepGuard";
 export const sleepGuardAddonName = "comma-sleep-guard.node";
-export const sideChatAppName = "CommaSideChatHost";
-export const sideChatBackdropAddonName = "comma-side-chat-backdrop.node";
+export const menuBarAppName = "CommaMenuBarHost";
 export const fileApplicationsAddonName = "comma-file-applications.node";
 export const notificationAuthorizationAddonName =
   "comma-notification-authorization.node";
 export const fontFamiliesAddonName = "comma-font-families.node";
+export const keychainPasswordAddonName = "comma-keychain-password.node";
+export const cableScannerAddonName = "comma-cable-scanner.node";
 export const computerUseAppName = `${getCommaReleaseConfig().productName} Computer Use`;
 export const computerUseProductName = "CommaComputerUseDaemon";
 
-export function sideChatHostBundleId(appBundleId: string) {
+/**
+ * The menu-bar helper keeps the bundle id it had when it also ran Side Chat:
+ * macOS keeps the item's place in the menu bar and its Menu Bar setting by it.
+ */
+export function menuBarHostBundleId(appBundleId: string) {
   return `${appBundleId}.side-chat`;
-}
-
-export function salixConnectBinaryName(platform: string = currentPlatform) {
-  return platform === "win32" ? "salix-connect.exe" : "salix-connect";
 }
 
 export function nativeDistRoot(appDir: string) {
@@ -39,18 +41,28 @@ export function platformNativeDistDir(
   return resolve(nativeDistRoot(appDir), platform, arch);
 }
 
-export function salixConnectBinaryPath(
+/** The station release (systems/station/scripts/bundle.sh's DIR): one for every architecture's build. */
+export function stationDistDir(appDir: string) {
+  return resolve(nativeDistRoot(appDir), "station");
+}
+
+/** The station's mesh addon (bundle.sh: `station/mesh.node`): the client core's endpoint to stations is on it. */
+export function stationMeshAddonDistPath(appDir: string) {
+  return resolve(stationDistDir(appDir), "station", "mesh.node");
+}
+
+export function stationLauncherDistPath(
   appDir: string,
-  platform: string = currentPlatform,
-  arch: string = currentArch
+  platform: string = currentPlatform
 ) {
   return resolve(
-    platformNativeDistDir(appDir, platform, arch),
-    salixConnectBinaryName(platform)
+    stationDistDir(appDir),
+    "mesh/target/release",
+    platform === "win32" ? "stillfail-station.exe" : "stillfail-station"
   );
 }
 
-/** The synchronicity node daemon and its CLI: one binary, shipped beside salix-connect. */
+/** The synchronicity node daemon and its CLI: one binary, shipped beside the station. */
 export function synchBinaryName(platform: string = currentPlatform) {
   return platform === "win32" ? "synch.exe" : "synch";
 }
@@ -70,16 +82,12 @@ export function notchHostDistPath(appDir: string) {
   return resolve(sharedMacOSNativeDistDir(appDir), notchBinaryName);
 }
 
-export function sideChatHostDistAppPath(appDir: string) {
-  return resolve(sharedMacOSNativeDistDir(appDir), `${sideChatAppName}.app`);
+export function menuBarHostDistAppPath(appDir: string) {
+  return resolve(sharedMacOSNativeDistDir(appDir), `${menuBarAppName}.app`);
 }
 
-export function sideChatHostExecutablePath(appDir: string) {
-  return resolve(sideChatHostDistAppPath(appDir), "Contents/MacOS", sideChatAppName);
-}
-
-export function sideChatBackdropAddonDistPath(appDir: string) {
-  return resolve(sharedMacOSNativeDistDir(appDir), sideChatBackdropAddonName);
+export function menuBarHostExecutablePath(appDir: string) {
+  return resolve(menuBarHostDistAppPath(appDir), "Contents/MacOS", menuBarAppName);
 }
 
 export function fileApplicationsAddonDistPath(appDir: string) {
@@ -92,6 +100,14 @@ export function notificationAuthorizationAddonDistPath(appDir: string) {
 
 export function fontFamiliesAddonDistPath(appDir: string) {
   return resolve(sharedMacOSNativeDistDir(appDir), fontFamiliesAddonName);
+}
+
+export function cableScannerAddonDistPath(appDir: string) {
+  return resolve(sharedMacOSNativeDistDir(appDir), cableScannerAddonName);
+}
+
+export function keychainPasswordAddonDistPath(appDir: string) {
+  return resolve(sharedMacOSNativeDistDir(appDir), keychainPasswordAddonName);
 }
 
 export function computerUseDistAppPath(
@@ -110,20 +126,12 @@ export function packagedNotchHostPath(appBundle: string) {
   return resolve(appBundle, "Contents/Resources/native/macos", notchBinaryName);
 }
 
-export function packagedSideChatHostAppPath(appBundle: string) {
-  return resolve(
-    appBundle,
-    "Contents/Resources/native/macos",
-    `${sideChatAppName}.app`
-  );
+export function packagedQuickChatHostPath(appBundle: string) {
+  return resolve(appBundle, "Contents/Resources/native/macos", quickChatBinaryName);
 }
 
-export function packagedSideChatBackdropAddonPath(appBundle: string) {
-  return resolve(
-    appBundle,
-    "Contents/Resources/native/macos",
-    sideChatBackdropAddonName
-  );
+export function packagedMenuBarHostAppPath(appBundle: string) {
+  return resolve(appBundle, "Contents/Resources/native/macos", `${menuBarAppName}.app`);
 }
 
 export function packagedNotificationAuthorizationAddonPath(appBundle: string) {
@@ -163,4 +171,8 @@ export function packagedSleepGuardPath(appBundle: string) {
 
 export function micCaptureHostDistPath(appDir: string) {
   return resolve(sharedMacOSNativeDistDir(appDir), micCaptureBinaryName);
+}
+
+export function quickChatHostDistPath(appDir: string) {
+  return resolve(sharedMacOSNativeDistDir(appDir), quickChatBinaryName);
 }

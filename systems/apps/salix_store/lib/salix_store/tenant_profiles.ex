@@ -51,7 +51,7 @@ defmodule SalixStore.TenantProfiles do
         "tenant_id" => tenant_id,
         "name" => @name,
         "value" => value,
-        "updated_at" => System.system_time(:second)
+        "updated_at" => SystemsClock.system_time(:second)
       })
 
     {:ok, value}

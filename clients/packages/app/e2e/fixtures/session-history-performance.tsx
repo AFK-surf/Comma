@@ -1,27 +1,19 @@
 import { useLayoutEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { initializeCommaI18n } from "@comma/i18n";
-import type {
-  CommaNativeBridge,
-  SessionHistoryEnvelope,
-  SessionHistoryRecord,
-} from "@comma/native-bridge";
-import { createCommaApi } from "../../src/api";
+import { CoreProvider } from "@comma/core-client";
+import type { SessionHistoryRecord, SessionHistoryValue } from "@comma/core-client";
+// A fixture page builds with the web app's aliases, which leave test packages out.
+import { createScriptedCore } from "../../../test-utils/src/scripted-core";
 import { ChatProvider } from "../../src/components/chat/ChatProvider";
 import { SessionHistoryPage } from "../../src/components/chat/session-history/SessionHistory";
-import {
-  sessionTimeline,
-  sessionTimelineAxis,
-  sessionTimelineBars,
-  sessionIdleMarkers,
-  sessionZoomAxis,
-} from "../../src/components/chat/session-history/timeline/sessionHistoryTimelineModel";
-import type { SessionItemPresentation } from "../../src/components/chat/session-history/model/sessionHistoryPresentation";
-import { SessionHistoryBridgeProvider } from "../../src/runtime-chat/sessionHistoryBridge";
+import { sessionStressRecords } from "./session-history-stress-records";
 import "../../src/styles.css";
 
 initializeCommaI18n(["en"]);
 const count = Number(new URLSearchParams(location.search).get("count") ?? 100);
+// `?stress=N`: the first N records of the stress history, every page already read (a cold render of all of them).
+const stress = Number(new URLSearchParams(location.search).get("stress") ?? 0);
 const now = Date.now();
 const session = {
   audience: location.origin,
@@ -71,47 +63,29 @@ const live: SessionHistoryRecord = {
     live: true,
   },
 };
-let envelope: SessionHistoryEnvelope = {
-  session,
-  snapshot: {
-    ...target,
-    records,
-    recentRecords: [],
-    liveRecords: [live],
-    clockOffsetMs: 0,
-    streamStatus: "live",
-    hasMore: false,
-    nextBefore: null,
-    status: "ready",
-    loaded: "detail",
-    error: null,
-    revision: 1,
-  },
+let snapshot: SessionHistoryValue = {
+  ...target,
+  records: stress
+    ? sessionStressRecords(Math.ceil(stress / 10)).slice(0, stress)
+    : records,
+  recentRecords: [],
+  liveRecords: stress ? [] : [live],
+  clockOffsetMs: 0,
+  streamStatus: "live",
+  hasMore: false,
+  nextBefore: null,
+  status: "ready",
+  loaded: "detail",
+  error: null,
 };
-const listeners = new Set<(value: SessionHistoryEnvelope) => void>();
-const get = async () => envelope;
-const bridge: CommaNativeBridge["sessionHistory"] = {
-  state: Object.assign(get, {
-    get,
-    subscribe: (listener: (value: SessionHistoryEnvelope) => void) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-  }),
-  retain: get,
-  load: get,
-  release: async () => true,
-};
+// The client core as the page sees it: the history's value, then each change.
+const core = createScriptedCore({
+  values: (topic) => (topic.topic === "history" ? snapshot : undefined),
+  calls: async () => null,
+});
 declare global {
   interface Window {
     sessionHistoryStress: {
-      measureFoldedProjection(): Promise<{
-        folds: number;
-        bars: number;
-        samples: number[];
-        totalMs: number;
-        checksum: number;
-      }>;
       setVisible(active: boolean): void;
       pause(): void;
       resume(): void;
@@ -123,20 +97,16 @@ declare global {
     };
   }
 }
-function publish(snapshot: SessionHistoryEnvelope["snapshot"]) {
-  envelope = {
-    session,
-    snapshot: { ...snapshot, revision: envelope.snapshot.revision + 1 },
-  };
-  for (const notify of listeners) notify(envelope);
+function publish(next: SessionHistoryValue) {
+  snapshot = next;
+  core.emit("history", snapshot);
 }
 window.sessionHistoryStress = {
-  measureFoldedProjection,
   setVisible: () => undefined,
   startFutureOverlap: () => {
     const current = Date.now();
     publish({
-      ...envelope.snapshot,
+      ...snapshot,
       records: [
         ...records.map((record, index) =>
           index === 0 ? { ...record, execution: null } : record
@@ -182,7 +152,7 @@ window.sessionHistoryStress = {
   },
   startModel: () =>
     publish({
-      ...envelope.snapshot,
+      ...snapshot,
       liveRecords: [
         {
           ...live,
@@ -200,11 +170,11 @@ window.sessionHistoryStress = {
         },
       ],
     }),
-  pause: () => publish({ ...envelope.snapshot, streamStatus: "reconnecting" }),
-  resume: () => publish({ ...envelope.snapshot, streamStatus: "live" }),
+  pause: () => publish({ ...snapshot, streamStatus: "reconnecting" }),
+  resume: () => publish({ ...snapshot, streamStatus: "live" }),
   complete: () =>
     publish({
-      ...envelope.snapshot,
+      ...snapshot,
       liveRecords: [],
       records: [
         ...records,
@@ -225,17 +195,16 @@ window.sessionHistoryStress = {
         },
       ],
     }),
-  // Hosts deliver every snapshot as a structured clone (Electron IPC, the web
-  // SharedWorker port), so unchanged records arrive as new objects.
-  heartbeat: () => publish(structuredClone(envelope.snapshot)),
+  // The core sends a change only for records that changed: a copy changes none.
+  heartbeat: () => publish(structuredClone(snapshot)),
   append: () => {
-    const snapshot = structuredClone(envelope.snapshot);
+    const copy = structuredClone(snapshot);
     const started = Date.now();
-    const id = String(snapshot.records.length + 1);
+    const id = String(copy.records.length + 1);
     publish({
-      ...snapshot,
+      ...copy,
       records: [
-        ...snapshot.records,
+        ...copy.records,
         {
           id,
           kind: "tool",
@@ -259,16 +228,6 @@ window.sessionHistoryStress = {
     });
   },
 };
-const api = createCommaApi({
-  baseUrl: location.origin,
-  token: "",
-  sessionTransport: {
-    applyHeaders: () => undefined,
-    credentials: "include",
-    reportSessionRejection: () => undefined,
-    signal: new AbortController().signal,
-  },
-});
 function Fixture() {
   const [active, setActive] = useState(true);
   useLayoutEffect(() => {
@@ -283,8 +242,8 @@ function Fixture() {
         width: "min(1000px, 100vw)",
       }}
     >
-      <ChatProvider api={api} productLease={session}>
-        <SessionHistoryBridgeProvider bridge={bridge}>
+      <CoreProvider client={core.client}>
+        <ChatProvider productLease={session}>
           <section
             hidden={!active}
             style={{
@@ -300,82 +259,9 @@ function Fixture() {
               participant={{ ...target, name: "Performance session" }}
             />
           </section>
-        </SessionHistoryBridgeProvider>
-      </ChatProvider>
+        </ChatProvider>
+      </CoreProvider>
     </div>
   );
 }
 createRoot(document.getElementById("root")!).render(<Fixture />);
-
-async function measureFoldedProjection() {
-  const epoch = 1_720_000_000_000;
-  const mixed: SessionHistoryRecord[] = Array.from({ length: 5000 }, (_, index) => {
-    const start = epoch + Math.floor(index / 2) * 5000;
-    if (index % 2 === 0)
-      return {
-        id: String(index + 1),
-        kind: "user",
-        content: {},
-        timestamp_ms: start,
-      };
-    const isLive = index === 4999;
-    return {
-      id: String(index + 1),
-      kind: "assistant",
-      content: {},
-      timestamp_ms: start + 20,
-      execution: {
-        id: `model-${index}`,
-        lane: "model",
-        started_at_ms: start + 20,
-        first_token_at_ms: start + 30,
-        observed_at_ms: start + 100,
-        completed_at_ms: isLive ? null : start + 100,
-        duration_ms: 80,
-        live: isLive,
-      },
-    };
-  });
-  const items: SessionItemPresentation[] = mixed.map((record) => ({
-    kind: record.kind === "user" ? "input" : "model",
-    label: record.kind,
-    summary: "",
-    tools: [],
-    duration: record.execution?.duration_ms,
-  }));
-  const samples: number[] = [];
-  let checksum = 0,
-    folds = 0,
-    bars = 0;
-  // Three warm-up ticks precede the twenty measured projections. Fixture setup
-  // and the model build are outside this coordinate-lookup regression budget.
-  for (let tick = -3; tick < 20; tick++) {
-    await new Promise(requestAnimationFrame);
-    const model = sessionTimeline(
-      mixed,
-      items,
-      undefined,
-      mixed.at(-1)!.execution!.observed_at_ms + Math.max(0, tick) * 100
-    );
-    const base = sessionTimelineAxis(model);
-    const axis = sessionZoomAxis(base, model.start, model.end);
-    const begin = performance.now();
-    const projected = sessionTimelineBars(model, axis, 1100);
-    const markers = sessionIdleMarkers(axis, 1100);
-    const ticks = [0, 0.25, 0.5, 0.75, 1].map((fraction) => axis.timeAt(fraction));
-    if (tick >= 0) samples.push(performance.now() - begin);
-    checksum +=
-      projected.reduce((sum, bar) => sum + bar.left + bar.width, 0) +
-      markers.length +
-      ticks.reduce((sum, time) => sum + time, 0);
-    folds = base.folds.length;
-    bars = projected.length;
-  }
-  return {
-    folds,
-    bars,
-    samples,
-    totalMs: samples.reduce((sum, ms) => sum + ms, 0),
-    checksum,
-  };
-}

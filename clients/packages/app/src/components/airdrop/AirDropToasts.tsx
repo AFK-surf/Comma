@@ -5,7 +5,7 @@ import {
   type AirDropState,
   type AirDropTransfer,
 } from "@comma/native-bridge";
-import { toast, type FileTransferToastProps } from "@comma/ui";
+import { toast, type FileTransferToastProps } from "@comma/ui/components/toast";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type CommaMessages = ReturnType<typeof useCommaMessages>;

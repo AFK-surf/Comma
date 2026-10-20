@@ -31,7 +31,7 @@ defmodule SalixStore.SlackTriageChannels do
     if valid_values?(values) and valid_expression_mode?(expression_mode) and
          ULID.valid?(attrs["installation_generation"]) and
          ULID.valid?(generation) do
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       sql = """
       INSERT INTO slack_triage_channels (
@@ -118,7 +118,7 @@ defmodule SalixStore.SlackTriageChannels do
 
     if valid_values?(values) and ULID.valid?(attrs["installation_generation"]) and
          ULID.valid?(attrs["channel_generation"]) do
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       query_one(
         """
@@ -418,7 +418,8 @@ defmodule SalixStore.SlackTriageChannels do
     }
   end
 
-  defp encode_enabled_cursor(channel) do
+  @doc false
+  def encode_enabled_cursor(channel) do
     ~w(tenant_id group_id connect_id channel_id)
     |> Enum.map(&channel[&1])
     |> Jason.encode!()
@@ -426,9 +427,10 @@ defmodule SalixStore.SlackTriageChannels do
     |> then(&("v1." <> &1))
   end
 
-  defp decode_enabled_cursor(nil), do: {:ok, nil}
+  @doc false
+  def decode_enabled_cursor(nil), do: {:ok, nil}
 
-  defp decode_enabled_cursor("v1." <> encoded) do
+  def decode_enabled_cursor("v1." <> encoded) do
     with {:ok, json} <- Base.url_decode64(encoded, padding: false),
          {:ok, values} when is_list(values) <- Jason.decode(json),
          true <- length(values) == 4 and valid_values?(values) do
@@ -438,7 +440,7 @@ defmodule SalixStore.SlackTriageChannels do
     end
   end
 
-  defp decode_enabled_cursor(_cursor), do: {:error, :invalid_slack_triage_channel_cursor}
+  def decode_enabled_cursor(_cursor), do: {:error, :invalid_slack_triage_channel_cursor}
 
   defp query_one(sql, params) do
     safe_query(fn ->
@@ -452,16 +454,19 @@ defmodule SalixStore.SlackTriageChannels do
 
   defp row(columns, values), do: columns |> Enum.zip(values) |> Map.new()
 
-  defp expression_mode(attrs) do
+  @doc false
+  def expression_mode(attrs) do
     case Map.fetch(attrs, "expression_mode") do
       {:ok, mode} -> mode
       :error -> "project"
     end
   end
 
-  defp valid_expression_mode?(mode), do: mode in @expression_modes
+  @doc false
+  def valid_expression_mode?(mode), do: mode in @expression_modes
 
-  defp valid_values?(values),
+  @doc false
+  def valid_values?(values),
     do: Enum.all?(values, &(is_binary(&1) and &1 != "" and &1 == String.trim(&1)))
 
   defp safe_query(fun) do

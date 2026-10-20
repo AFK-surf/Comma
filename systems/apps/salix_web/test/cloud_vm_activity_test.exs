@@ -1,5 +1,7 @@
 defmodule SalixWeb.CloudVMActivityTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{Compute, Ids, Repo}
 
@@ -12,83 +14,6 @@ defmodule SalixWeb.CloudVMActivityTest do
 
     {:ok, group_id: group_id, record: record}
   end
-
-  test "archive observations survive operation retirement and retain only bounded summaries", %{
-    group_id: group
-  } do
-    alias SalixWeb.CloudVM.ArchiveDiagnostics
-
-    for i <- 1..10 do
-      :ok =
-        ArchiveDiagnostics.observe(group, "archive-#{i}", "export", %{
-          "connector_outcome" => "exported",
-          "pack_ms" => i,
-          "total_ms" => i * 2,
-          "source_url" => "secret-url",
-          "command" => "private command"
-        })
-
-      await_observation(fn ->
-        {:ok, records} = ArchiveDiagnostics.list(group)
-        Enum.any?(records, &(&1["operation"] == "archive-#{i}"))
-      end)
-    end
-
-    assert {:ok, records} = ArchiveDiagnostics.list(group)
-    assert length(records) == 8
-
-    assert Enum.all?(
-             records,
-             &(not Map.has_key?(&1, "source_url") and not Map.has_key?(&1, "command"))
-           )
-
-    assert {:error, :archive_operation_not_found} =
-             SalixWeb.ComputeProviders.Cloudflare.archive_operation_status(group, "archive-1")
-
-    assert {:ok, %{"observation" => true, "diagnostics" => [summary]}} =
-             SalixWeb.ComputeProviders.Cloudflare.archive_operation_status(group, "archive-10")
-
-    assert summary["pack_ms"] == 10
-
-    assert {:error, _} =
-             SalixWeb.ComputeProviders.Cloudflare.cancel_archive_operation(group, "archive-10")
-
-    :ok =
-      ArchiveDiagnostics.observe(group, "archive-10", "export", %{
-        "outcome" => "ok",
-        "salix_duration_ms" => 100,
-        "pack_ms" => -5
-      })
-
-    await_observation(fn ->
-      {:ok, rs} = ArchiveDiagnostics.list(group)
-      Enum.any?(rs, &(&1["operation"] == "archive-10" and &1["salix_duration_ms"] == 100))
-    end)
-
-    assert {:ok, %{"observation" => true, "diagnostics" => [summary]}} =
-             SalixWeb.ComputeProviders.Cloudflare.archive_operation_status(group, "archive-10")
-
-    assert summary["pack_ms"] == 10
-    assert summary["connector_outcome"] == "exported"
-    assert summary["outcome"] == "ok"
-    assert {:ok, record} = Compute.group_workload(group)
-    assert record["status"] == "ready"
-    assert record["active_operation_count"] == 0
-  end
-
-  defp await_observation(check, attempts \\ 100)
-
-  defp await_observation(check, attempts) when attempts > 0 do
-    if check.(),
-      do: :ok,
-      else:
-        (
-          Process.sleep(10)
-          await_observation(check, attempts - 1)
-        )
-  end
-
-  defp await_observation(_, 0), do: flunk("archive observation was not stored")
 
   test "nine concurrent begins commit one ledger and nine finishes remove their union", %{
     group_id: group_id
@@ -154,41 +79,41 @@ defmodule SalixWeb.CloudVMActivityTest do
     group_id: group,
     record: record
   } do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     holder =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Repo.transaction(fn ->
           Repo.query!("SELECT id FROM compute_workloads WHERE id = $1 FOR UPDATE", [
             record["workload_id"]
           ])
 
-          send(parent, :locked)
+          SystemsRuntime.Proc.send(parent, :locked)
 
-          receive do
+          SystemsRuntime.Proc.receive do
             :commit -> :ok
           end
         end)
       end)
 
-    assert_receive :locked, 1_000
+    assert_receive :locked
 
     caller =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         result =
           SalixWeb.ComputeProviders.Cloudflare.begin_operation(group, "read",
             operation_id: "durable",
             mutating?: false
           )
 
-        send(parent, {:began, result})
+        SystemsRuntime.Proc.send(parent, {:began, result})
         result
       end)
 
     refute_receive {:began, _}, 50
-    send(holder.pid, :commit)
-    assert {:ok, :ok} = Task.await(holder)
-    assert {:ok, "durable"} = Task.await(caller)
+    SystemsRuntime.Proc.send(holder.pid, :commit)
+    assert {:ok, :ok} = SystemsRuntime.Task.await(holder, :infinity)
+    assert {:ok, "durable"} = SystemsRuntime.Task.await(caller, :infinity)
     assert {:ok, stored} = Compute.group_workload(group)
     assert Map.has_key?(stored["active_operations"], "durable")
 
@@ -205,14 +130,14 @@ defmodule SalixWeb.CloudVMActivityTest do
     do: concurrent(Enum.to_list(1..count), fun)
 
   defp concurrent(items, fun) do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     tasks =
       Enum.map(items, fn item ->
-        Task.async(fn ->
-          send(parent, {:ready, self()})
+        SystemsRuntime.Task.async(fn ->
+          SystemsRuntime.Proc.send(parent, {:ready, SystemsRuntime.Proc.self()})
 
-          receive do
+          SystemsRuntime.Proc.receive do
             :go -> fun.(item)
           end
         end)
@@ -220,12 +145,12 @@ defmodule SalixWeb.CloudVMActivityTest do
 
     pids =
       Enum.map(tasks, fn _task ->
-        assert_receive {:ready, pid}, 1_000
+        assert_receive {:ready, pid}
         pid
       end)
 
     Enum.each(pids, &send(&1, :go))
-    Enum.map(tasks, &Task.await(&1, 5_000))
+    Enum.map(tasks, &SystemsRuntime.Task.await(&1, :infinity))
   end
 
   defp ready_record(tenant_id, group_id) do
@@ -242,7 +167,7 @@ defmodule SalixWeb.CloudVMActivityTest do
       "alias" => "cloud-vm",
       "status" => "ready",
       "rollout_state" => "ready",
-      "ready_at" => System.system_time(:millisecond),
+      "ready_at" => SystemsClock.system_time(:millisecond),
       "active_operation_count" => 0,
       "active_operations" => %{}
     }

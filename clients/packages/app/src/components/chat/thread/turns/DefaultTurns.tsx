@@ -1,6 +1,6 @@
 import type { CommaLocale } from "@comma/i18n";
 import { useCommaMessages } from "@comma/i18n/react";
-import { cx } from "@comma/ui";
+import { cx } from "@comma/ui/components/utils";
 import { Fragment, useCallback, type ReactNode } from "react";
 import {
   continuesTurnRole,
@@ -23,6 +23,7 @@ export function DefaultTurns({
   historyBoundaryMessageId,
   lastTurnKey,
   locale,
+  newTimestampId,
   outgoing: { outgoingPresentationByTurnKey, outgoingTurnKeys },
   registerLatestTurnBody,
   registerLatestTurnShell,
@@ -30,8 +31,8 @@ export function DefaultTurns({
   responseFeedback,
   rowRelationshipProps,
   rows: {
-    api,
     groupId,
+    live,
     onAnchorOutgoingTurn,
     onDiscard,
     onOpenConversationRef,
@@ -58,8 +59,7 @@ export function DefaultTurns({
         entry.kind === "assistant-response" ? (
           <AssistantResponseRow
             {...rowRelationshipProps(entry.message?.messageId ?? entry.draft?.draftId)}
-            api={api}
-            animateEntry={false}
+            live={live}
             chainState={replyChainState(entry.message?.messageId)}
             groupId={groupId}
             draft={entry.draft}
@@ -74,7 +74,7 @@ export function DefaultTurns({
         ) : (
           <MessageRow
             {...rowRelationshipProps(entry.message.messageId)}
-            api={api}
+            live={live}
             chainState={replyChainState(entry.message.messageId)}
             groupId={groupId}
             message={entry.message}
@@ -106,29 +106,32 @@ export function DefaultTurns({
           </div>
         );
       }
-      if (
-        entry.kind === "message" &&
-        entry.message.role === "user" &&
-        turn.timestamp?.messageId === entry.message.messageId
-      ) {
+      if (entry.timestamp) {
+        const isUser = entry.kind === "message" && entry.message.role === "user";
+        const timedId =
+          entry.kind === "message"
+            ? entry.message.messageId
+            : (entry.message?.messageId ?? entry.draft?.draftId);
         precedingRows.push(
           <ConversationTimestamp
-            animate={outgoingTurnKeys.has(turn.key)}
-            createdAt={turn.timestamp.createdAt}
-            key={`timestamp:${turn.key}`}
+            animate={isUser && outgoingTurnKeys.has(turn.key)}
+            createdAt={entry.timestamp.createdAt}
+            isNew={timedId !== undefined && timedId === newTimestampId}
+            key={`timestamp:${entry.key}`}
             locale={locale}
-            messageId={entry.message.messageId}
+            messageId={timedId ?? entry.key}
           />
         );
       }
       return [...precedingRows, keyedRow];
     },
     [
-      api,
       groupId,
+      live,
       historyBoundaryMessageId,
       locale,
       messagesApi,
+      newTimestampId,
       onAnchorOutgoingTurn,
       onDiscard,
       onOpenConversationRef,

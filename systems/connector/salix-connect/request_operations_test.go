@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
-	"time"
 )
 
 func TestRequestOperationRebindsRunningReplyToReplacement(t *testing.T) {
@@ -59,13 +58,9 @@ func TestRequestOperationRebindsRunningReplyToReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	select {
-	case reply := <-newReplies:
-		if reply.ID != request.ID || reply.Type != "response" {
-			t.Fatalf("replacement reply = %#v", reply)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("replacement did not receive running operation result")
+	reply := <-newReplies
+	if reply.ID != request.ID || reply.Type != "response" {
+		t.Fatalf("replacement reply = %#v", reply)
 	}
 	select {
 	case reply := <-oldReplies:
@@ -100,13 +95,9 @@ func TestRequestOperationReplaysCompletedResultAndRejectsIDConflict(t *testing.T
 	if !replacement.startRequest(request, func() { executions.Add(100) }) {
 		t.Fatal("replacement did not replay completed operation")
 	}
-	select {
-	case reply := <-replies:
-		if reply.ID != request.ID || reply.Type != "response" {
-			t.Fatalf("replayed reply = %#v", reply)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("completed result was not replayed")
+	reply := <-replies
+	if reply.ID != request.ID || reply.Type != "response" {
+		t.Fatalf("replayed reply = %#v", reply)
 	}
 
 	conflict := message{
@@ -115,13 +106,9 @@ func TestRequestOperationReplaysCompletedResultAndRejectsIDConflict(t *testing.T
 	if !replacement.startRequest(conflict, func() { executions.Add(1000) }) {
 		t.Fatal("id conflict did not produce a bounded error reply")
 	}
-	select {
-	case reply := <-replies:
-		if reply.Type != "error" || reply.Error != "request id reused with different method or params" {
-			t.Fatalf("id conflict reply = %#v", reply)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("id conflict did not reply")
+	reply = <-replies
+	if reply.Type != "error" || reply.Error != "request id reused with different method or params" {
+		t.Fatalf("id conflict reply = %#v", reply)
 	}
 	if got := executions.Load(); got != 1 {
 		t.Fatalf("stable operation executed %d times", got)
@@ -153,26 +140,18 @@ func TestReplyReleasesRequestAdmissionBeforeCallerStartsNextRequest(t *testing.T
 		t.Fatal("first request was not admitted")
 	}
 
-	select {
-	case admitted := <-secondAdmission:
-		if !admitted {
-			t.Fatal("reply became visible before its request admission was released")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("first request did not reply")
+	admitted := <-secondAdmission
+	if !admitted {
+		t.Fatal("reply became visible before its request admission was released")
 	}
 
 	seen := map[string]bool{}
 	for len(seen) < 2 {
-		select {
-		case reply := <-replies:
-			if reply.Type != "response" {
-				t.Fatalf("reply = %#v", reply)
-			}
-			seen[reply.ID] = true
-		case <-time.After(time.Second):
-			t.Fatalf("replies = %v", seen)
+		reply := <-replies
+		if reply.Type != "response" {
+			t.Fatalf("reply = %#v", reply)
 		}
+		seen[reply.ID] = true
 	}
 	waitForCondition(t, "request admission drain", func() bool { return len(c.requestSlots) == 0 })
 }
@@ -182,7 +161,7 @@ func TestRuntimeAuthLoginStartRebindsRunningButDoesNotReplayCompletedCeremony(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(c.closeExternalRuntimes)
+	t.Cleanup(c.closeRuntimes)
 
 	oldReplies := make(chan message, 1)
 	old := c.claimConnection(context.Background(), func(_ context.Context, reply message) error {
@@ -220,14 +199,10 @@ func TestRuntimeAuthLoginStartRebindsRunningButDoesNotReplayCompletedCeremony(t 
 	}}
 	c.completeRequestOperation(request.ID, request.Method, ceremony, nil)
 	<-c.requestSlots
-	select {
-	case reply := <-replacementReplies:
-		result, _ := reply.Result.(map[string]any)
-		if stringParam(result, "user_code") != "SECRET-CODE" {
-			t.Fatalf("replacement reply = %#v", reply)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("replacement did not receive the in-flight ceremony")
+	reply := <-replacementReplies
+	result, _ := reply.Result.(map[string]any)
+	if stringParam(result, "user_code") != "SECRET-CODE" {
+		t.Fatalf("replacement reply = %#v", reply)
 	}
 	select {
 	case reply := <-oldReplies:

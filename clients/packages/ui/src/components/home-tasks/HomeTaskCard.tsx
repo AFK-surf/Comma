@@ -40,7 +40,7 @@ function HomeTaskCardImpl<T extends TaskSummaryViewModel>({
         : undefined;
 
   return (
-    <TaskArchiveMenu action={task.archiveAction}>
+    <TaskArchiveMenu action={task.archiveAction} overlay="task-card">
       <button
         aria-label={taskAriaLabel(task, locale)}
         className={homeTaskCardButton}

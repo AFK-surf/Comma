@@ -19,7 +19,7 @@ defmodule SalixStore.ConfigJson do
       log        file (JSONL diagnostic log path; default disabled)
       web        port, api_token, sites_domain, api_base_url
       transfer   port, advertise_host, advertise_port
-      decide     api_key, endpoint, model (Jev-compatible decisions)
+      decide     api_key, endpoint, model, provider (Jev-compatible decisions)
       search     exa_api_key                    (willow SearchConfig)
       email      postmark_server_token, owner_notification_from_email,
                  magic_link_from_email
@@ -31,6 +31,13 @@ defmodule SalixStore.ConfigJson do
       clickhouse url, table, user, password     (willow ClickHouseConfig)
       slack_mirror enabled (default on; false disables ingest and backfill),
                  batch_size, outbox.*, backfill.*
+      feishu_mirror enabled (default on; false disables ingest, backfill and search),
+                 batch_size, outbox.*, backfill.*
+      qq_mirror  enabled (default on; false disables the record of QQ group
+                 messages and its search), batch_size, outbox.*
+      lark_mirror enabled (default on; false disables the record of Lark
+                 messages, its backfill and its search), batch_size,
+                 outbox.*, backfill.*
       slack_semantic_search url, client_id, client_secret (connection settings only;
                  activation follows COMMA_ENVIRONMENT, off only in prod/production)
       billing   database.*, stripe.*, storage_metering.*
@@ -46,8 +53,19 @@ defmodule SalixStore.ConfigJson do
                  trigger text yields no inference; code default is
                  "Chinese, Mandarin (Simplified)"), calendar_autojoin.*
                  (explicitly enabled, bounded worker settings and a non-empty
-                 list of tenant/group ownership pairs)
+                 list of tenant/group ownership pairs),
+                 runtime_source (connected_runtime | compute_workload |
+                 native_runtime for new Meetings),
+                 master_token_factory.{base_url,secret,profile} (native
+                 Meet Google account join), guest_factory.{url,secret}
+                 (native Meet guest handoff Worker), live_asr.{provider,config}
+                 (native Meet live ASR provider module and its settings)
       salix_dashboard secret_key_base
+      station_task_watch canary_group_ids (the Groups whose station Tasks are
+                 the Cloud VM canary), and the stage thresholds in ms
+                 (vm_not_ready_ms, station_offline_ms, not_given_ms,
+                 given_no_reply_ms, running_ms, idle_no_reply_ms,
+                 cannot_start_ms, recheck_ms, stale_ms)
       e2e_reports session_secret, r2.*
       bridge_for_teams database.*, bft_cli.*, dashboard.* (including
                        impersonator_org_slug; legacy web.public_base_url is
@@ -216,7 +234,15 @@ defmodule SalixStore.ConfigJson do
         {:salix_meet, :default_caption_language, str(json, ~w(meetings caption_language))},
         {:salix_meet, :meeting_feishu_activation_enabled,
          boolean(json, ~w(meetings feishu_action_activation_enabled))},
+        {:salix_meet, :meeting_lark_activation_enabled,
+         boolean(json, ~w(meetings lark_action_activation_enabled))},
         {:salix_web, :meeting_asr_template, str(json, ~w(meetings asr_template))},
+        {:salix_meet, :default_runtime_source, str(json, ~w(meetings runtime_source))},
+        {:salix_meet_native, :master_token_factory, master_token_factory(json)},
+        {:salix_meet_native, :token_factory, guest_factory(json)},
+        {:salix_meet_native, :live_asr, live_asr(json)},
+        {:salix_meet_native, :google_profile,
+         str(json, ~w(meetings master_token_factory profile))},
 
         # Salix admin dashboard
         {:salix_web, :dashboard_secret_key_base, str(json, ~w(salix_dashboard secret_key_base))},
@@ -235,6 +261,7 @@ defmodule SalixStore.ConfigJson do
     |> Kernel.++(calendar_autojoin_env(json))
     |> Kernel.++(sourced_context_env(json))
     |> Kernel.++(trajectory_eval_env(json))
+    |> Kernel.++(station_task_watch_env(json))
     |> Enum.reject(fn {_app, _key, value} -> is_nil(value) end)
   end
 
@@ -310,7 +337,7 @@ defmodule SalixStore.ConfigJson do
     case json_get(json, ["decide"]) do
       %{} = section ->
         # Preserve invalid explicit values so the capability rejects them.
-        for key <- [:api_key, :endpoint, :model],
+        for key <- [:api_key, :endpoint, :model, :provider],
             Map.has_key?(section, Atom.to_string(key)),
             do: {key, Map.get(section, Atom.to_string(key))}
 
@@ -542,6 +569,41 @@ defmodule SalixStore.ConfigJson do
 
     base = if kw == [], do: [], else: [{:salix_agent, :trajectory_eval, kw}]
     base ++ judge_providers_env(json)
+  end
+
+  # `SalixIM.StationTaskWatch`: the Groups whose station Tasks are the Cloud
+  # VM canary (docs/observability.md#cloud-vm-canary) and the stage
+  # thresholds. Only keys present in config.json are set; the watch merges
+  # them over its compiled defaults.
+  defp station_task_watch_env(json) do
+    kw =
+      [
+        vm_not_ready_ms: int(json, ~w(station_task_watch vm_not_ready_ms)),
+        station_offline_ms: int(json, ~w(station_task_watch station_offline_ms)),
+        not_given_ms: int(json, ~w(station_task_watch not_given_ms)),
+        given_no_reply_ms: int(json, ~w(station_task_watch given_no_reply_ms)),
+        running_ms: int(json, ~w(station_task_watch running_ms)),
+        idle_no_reply_ms: int(json, ~w(station_task_watch idle_no_reply_ms)),
+        cannot_start_ms: int(json, ~w(station_task_watch cannot_start_ms)),
+        recheck_ms: int(json, ~w(station_task_watch recheck_ms)),
+        stale_ms: int(json, ~w(station_task_watch stale_ms)),
+        canary_group_ids: string_list(json, ~w(station_task_watch canary_group_ids))
+      ]
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+
+    if kw == [], do: [], else: [{:salix_im, :station_task_watch, kw}]
+  end
+
+  # A list of non-empty strings; anything else in it is dropped, and a value
+  # that is not a list is absent.
+  defp string_list(json, path) do
+    case json_get(json, path) do
+      values when is_list(values) ->
+        Enum.filter(values, &(is_binary(&1) and &1 != ""))
+
+      _ ->
+        nil
+    end
   end
 
   # The judge-model allowlist (`SalixAgent.TrajectoryEval.JudgeProviders`). ops
@@ -856,6 +918,33 @@ defmodule SalixStore.ConfigJson do
     case json_get(json, ~w(vm)) do
       vm when is_map(vm) and map_size(vm) > 0 -> stringify_keys(vm)
       _ -> nil
+    end
+  end
+
+  defp master_token_factory(json) do
+    case {str(json, ~w(meetings master_token_factory base_url)),
+          str(json, ~w(meetings master_token_factory secret))} do
+      {base_url, secret} when is_binary(base_url) -> [base_url: base_url, secret: secret]
+      _ -> nil
+    end
+  end
+
+  # The anonymous/guest browser token-factory (/v1/handoff). JSON section is `guest_factory`,
+  # but the app env key stays :token_factory (the Elixir handoff path consumes that).
+  defp guest_factory(json) do
+    case {str(json, ~w(meetings guest_factory url)), str(json, ~w(meetings guest_factory secret))} do
+      {url, secret} when is_binary(url) -> [url: url, secret: secret]
+      _ -> nil
+    end
+  end
+
+  defp live_asr(json) do
+    case {str(json, ~w(meetings live_asr provider)), json_get(json, ~w(meetings live_asr config))} do
+      {provider, config} when is_binary(provider) ->
+        [provider: provider, config: if(is_map(config), do: config, else: %{})]
+
+      _ ->
+        nil
     end
   end
 

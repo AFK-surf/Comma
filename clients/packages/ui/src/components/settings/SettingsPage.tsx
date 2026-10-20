@@ -30,6 +30,8 @@ export interface SettingsPageProps {
   onLayoutChange?: (layout: SettingsSidebarLayout) => void;
   onSearchQueryChange?: (query: string) => void;
   registry: SettingsRegistry;
+  /** False hides the search field, for a registry with one category and little to find. */
+  searchable?: boolean;
   searchAriaLabel: string;
   searchPlaceholder: string;
   searchQuery?: string;
@@ -118,6 +120,7 @@ export const SettingsPage = ({
   onLayoutChange,
   onSearchQueryChange,
   registry,
+  searchable = true,
   searchAriaLabel,
   searchPlaceholder,
   searchQuery,
@@ -291,6 +294,7 @@ export const SettingsPage = ({
         groups={groups}
         layout={layout}
         onSearchChange={handleSearchQueryChange}
+        searchable={searchable}
         searchAriaLabel={searchAriaLabel}
         {...(emptySearchDescription !== undefined
           ? { searchEmptyDescription: emptySearchDescription }

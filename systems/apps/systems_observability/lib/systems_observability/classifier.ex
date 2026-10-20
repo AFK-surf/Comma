@@ -11,7 +11,7 @@ defmodule SystemsObservability.Classifier do
   @outcomes ~w(ok error timeout unavailable conflict rejected cancelled)
   @error_classes ~w(none validation auth rate_limited timeout unavailable conflict provider storage internal)
   @repos ~w(bft billing comma salix)
-  @trace_operations ~w(im_send_total im_send_authorize im_send_conversation im_send_attachments im_send_participant im_send_placement im_send_call im_send_queue im_send_actor im_send_membership im_send_sender im_send_sender_fence im_send_prepare im_send_commit im_send_delivery im_send_result erpc.receive erpc.call charge authorize request execute provision archive provider_request salix_boundary deliver triage_recovery)
+  @trace_operations ~w(im_send_total im_send_authorize im_send_conversation im_send_attachments im_send_participant im_send_placement im_send_call im_send_queue im_send_actor im_send_membership im_send_sender im_send_sender_fence im_send_prepare im_send_commit im_send_delivery im_send_result erpc.receive erpc.call charge authorize request execute provision archive provider_request salix_boundary deliver triage_recovery im_ingress_connect im_ingress_mirror im_ingress_route im_ingress_receipt im_ingress_verify im_ingress_enqueue im_ingress_diagnostic)
   @job_kinds ~w(tool_completion)
   @async_kinds ~w(tool_completion)
 

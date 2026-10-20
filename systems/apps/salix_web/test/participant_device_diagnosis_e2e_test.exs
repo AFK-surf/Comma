@@ -1,17 +1,12 @@
 defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
   @moduledoc """
-  Agent-facing product-path coverage for participant activity and fixed-session
-  device/runtime diagnosis.
+  Agent-facing product-path coverage for participant activity and device
+  runtime diagnosis through the Router's tools.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
-  alias SalixAgent.{
-    ExternalAgentRuntime,
-    ExternalSessionStatus,
-    SessionToolDispatch,
-    ToolDisclosure
-  }
+  alias SalixAgent.{SessionToolDispatch, ToolDisclosure}
 
   alias Salix.Control.{Groups, Plugins, Tenants}
   alias SalixEnv.Registry
@@ -22,18 +17,18 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
     SalixAgent.TestSupport.stop_all_agents()
 
     previous = %{
-      s3: Application.get_env(:salix_store, :s3_backend),
-      im_provider: Application.get_env(:salix_agent, :im_provider_mod),
-      plugin_store: Application.get_env(:salix_agent, :plugin_store_mod),
-      session_activity: Application.get_env(:salix_im, :session_activity_mod)
+      s3: SystemsRuntime.get_env(:salix_store, :s3_backend),
+      im_provider: SystemsRuntime.get_env(:salix_agent, :im_provider_mod),
+      plugin_store: SystemsRuntime.get_env(:salix_agent, :plugin_store_mod),
+      session_activity: SystemsRuntime.get_env(:salix_im, :session_activity_mod)
     }
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_agent, :im_provider_mod, Salix.Bindings.AgentIMProvider)
-    Application.put_env(:salix_agent, :plugin_store_mod, Salix.Bindings.AgentPluginStore)
-    Application.put_env(:salix_im, :session_activity_mod, Salix.Bindings.IMSessionActivity)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, Salix.Bindings.AgentIMProvider)
+    SystemsRuntime.put_env(:salix_agent, :plugin_store_mod, Salix.Bindings.AgentPluginStore)
+    SystemsRuntime.put_env(:salix_im, :session_activity_mod, Salix.Bindings.IMSessionActivity)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -72,44 +67,17 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
     {:ok, tenant: tenant, group: group, router: router, worker: worker}
   end
 
-  test "Router diagnoses a disconnected fixed participant device through participant status and device.get",
+  test "Router reads participant status and diagnoses a disconnected device through device.get",
        %{tenant: tenant, group: group, router: router, worker: worker} do
     tenant_id = tenant["tenant_id"]
     group_id = group["group_id"]
     {connector_run_id, fixed_binding} = connect_ready_runtime!(tenant_id, group_id)
 
-    assert {:ok, worker} =
-             SalixAgent.Control.configure(worker["agent_id"], %{
-               "runtime_config" => fixed_binding
-             })
-
     {conversation_id, participant_id, session_id} =
       create_agent_task_conversation!(group_id, router["agent_id"], worker["agent_id"])
 
-    stage_external_session!(worker["agent_id"], session_id)
-
-    {_rebound_run_id, rebound_binding} =
-      connect_ready_runtime!(tenant_id, group_id,
-        session_snapshot: %{
-          "session_ids" => [session_id],
-          "native_session_id" => "misleading-native-session"
-        }
-      )
-
-    assert {:ok, _worker} =
-             SalixAgent.Control.configure(worker["agent_id"], %{
-               "runtime_config" => rebound_binding
-             })
-
-    assert {:ok, rebound_sessions} =
-             SalixEnv.Control.runtime_sessions(
-               rebound_binding["device_id"],
-               rebound_binding["device_runtime_id"],
-               group_id,
-               tenant_id
-             )
-
-    assert rebound_sessions["session_ids"] == [session_id]
+    assert {:ok, _session} =
+             SalixAgent.InternalSessionStore.prepare_create(worker["agent_id"], session_id)
 
     assert {:ok, disconnected} = Registry.mark_disconnected(connector_run_id)
     assert disconnected["status"] == "disconnected"
@@ -142,11 +110,9 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
     tools = ctx.tool_disclosure["tools"]
 
     assert %{
-             "participant_device_id" => fixed_binding["device_id"],
              "env_get_disclosed" => true,
              "old_combined_operation_disclosed" => false
            } == %{
-             "participant_device_id" => participant_status["device_id"],
              "env_get_disclosed" => Enum.any?(tools, &(&1["name"] == "device.get")),
              "old_combined_operation_disclosed" =>
                Enum.any?(
@@ -165,7 +131,7 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
     help = call_tool!(ctx, "help", %{"tool" => "device.get"})
     assert help["input_schema"]["required"] == ["device_id"]
 
-    device = call_tool!(ctx, "device.get", %{"device_id" => participant_status["device_id"]})
+    device = call_tool!(ctx, "device.get", %{"device_id" => fixed_binding["device_id"]})
 
     assert device["device_id"] == fixed_binding["device_id"]
     assert device["name"] == "Fixed worker device"
@@ -182,24 +148,16 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
     assert runtime["runtime_id"] == fixed_binding["runtime_id"]
     assert runtime["status"] == "disconnected"
     assert runtime["issue"] == "connector_disconnected"
-    refute device["device_id"] == rebound_binding["device_id"]
 
-    refute_sensitive_projection!(device, [
-      session_id,
-      rebound_binding["device_id"],
-      "misleading-native-session",
-      "/usr/local/bin/codex"
-    ])
+    refute_sensitive_projection!(device, [session_id, "/usr/local/bin/codex"])
 
     device_prefix = Keys.ctl_group_devices_prefix(tenant_id, group_id)
-    external_session_prefix = Keys.agent_external_runtime_sessions_prefix(worker["agent_id"])
     internal_session_prefix = Keys.agent_internal_runtime_sessions_prefix(worker["agent_id"])
     group_agents_prefix = Keys.ctl_agents_prefix_for_group(group_id)
 
     refute Enum.any?(SalixStore.S3.Fake.read_log(), fn
              {:list, ^participant_prefix, _opts} -> true
              {:list, ^device_prefix, _opts} -> true
-             {:list, ^external_session_prefix, _opts} -> true
              {:list, ^internal_session_prefix, _opts} -> true
              {:list, ^group_agents_prefix, _opts} -> true
              _other -> false
@@ -236,43 +194,25 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
   end
 
   test "Router device.get returns specific workspace and authentication observations",
-       %{tenant: tenant, group: group, router: router, worker: worker} do
+       %{tenant: tenant, group: group, router: router} do
     tenant_id = tenant["tenant_id"]
     group_id = group["group_id"]
     {connector_run_id, binding} = connect_ready_runtime!(tenant_id, group_id)
-
-    assert {:ok, worker} =
-             SalixAgent.Control.configure(worker["agent_id"], %{"runtime_config" => binding})
-
-    {conversation_id, participant_id, session_id} =
-      create_agent_task_conversation!(group_id, router["agent_id"], worker["agent_id"])
-
-    stage_external_session!(worker["agent_id"], session_id)
     ctx = router_tool_context(tenant_id, group_id, router["agent_id"])
-
-    participant_status =
-      call_tool!(ctx, "im_api.internal.get_conversation_participant_status", %{
-        "connect_id" => "internal",
-        "conversation_id" => conversation_id,
-        "participant_id" => participant_id
-      })
-
-    assert participant_status["device_id"] == binding["device_id"]
 
     update_runtime_readiness!(connector_run_id, %{
       "ready" => false,
       "readiness_issue" => "workspace_unavailable",
-      "readiness_message" =>
-        "HOME is not set; the external runtime workspace root cannot be resolved."
+      "readiness_message" => "HOME is not set; the runtime workspace root cannot be resolved."
     })
 
-    workspace = call_tool!(ctx, "device.get", %{"device_id" => participant_status["device_id"]})
+    workspace = call_tool!(ctx, "device.get", %{"device_id" => binding["device_id"]})
     workspace_runtime = runtime!(workspace, binding)
     assert workspace_runtime["status"] == "unavailable"
     assert workspace_runtime["issue"] == "workspace_unavailable"
 
     assert workspace_runtime["message"] ==
-             "HOME is not set; the external runtime workspace root cannot be resolved."
+             "HOME is not set; the runtime workspace root cannot be resolved."
 
     update_runtime_readiness!(connector_run_id, %{
       "auth_ready" => false,
@@ -283,7 +223,7 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
     })
 
     authentication =
-      call_tool!(ctx, "device.get", %{"device_id" => participant_status["device_id"]})
+      call_tool!(ctx, "device.get", %{"device_id" => binding["device_id"]})
 
     authentication_runtime = runtime!(authentication, binding)
     assert authentication_runtime["status"] == "unavailable"
@@ -293,18 +233,10 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
   end
 
   test "Router device.get drops an invalid public readiness message but keeps status and issue",
-       %{tenant: tenant, group: group, router: router, worker: worker} do
+       %{tenant: tenant, group: group, router: router} do
     tenant_id = tenant["tenant_id"]
     group_id = group["group_id"]
     {connector_run_id, binding} = connect_ready_runtime!(tenant_id, group_id)
-
-    assert {:ok, worker} =
-             SalixAgent.Control.configure(worker["agent_id"], %{"runtime_config" => binding})
-
-    {conversation_id, participant_id, session_id} =
-      create_agent_task_conversation!(group_id, router["agent_id"], worker["agent_id"])
-
-    stage_external_session!(worker["agent_id"], session_id)
     marker = "invalid-public-readiness-marker-"
 
     update_runtime_readiness!(connector_run_id, %{
@@ -314,17 +246,7 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
     })
 
     ctx = router_tool_context(tenant_id, group_id, router["agent_id"])
-
-    participant_status =
-      call_tool!(ctx, "im_api.internal.get_conversation_participant_status", %{
-        "connect_id" => "internal",
-        "conversation_id" => conversation_id,
-        "participant_id" => participant_id
-      })
-
-    assert participant_status["device_id"] == binding["device_id"]
-
-    device = call_tool!(ctx, "device.get", %{"device_id" => participant_status["device_id"]})
+    device = call_tool!(ctx, "device.get", %{"device_id" => binding["device_id"]})
     runtime = runtime!(device, binding)
 
     assert runtime["status"] == "unavailable"
@@ -333,102 +255,13 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
     refute Jason.encode!(device) =~ marker
   end
 
-  test "Codex quota terminal detail reaches participant while device runtime stays ready",
-       %{tenant: tenant, group: group, router: router, worker: worker} do
-    tenant_id = tenant["tenant_id"]
-    group_id = group["group_id"]
-    {connector_run_id, binding} = connect_ready_runtime!(tenant_id, group_id)
-
-    assert {:ok, worker} =
-             SalixAgent.Control.configure(worker["agent_id"], %{"runtime_config" => binding})
-
-    {conversation_id, participant_id, session_id} =
-      create_agent_task_conversation!(group_id, router["agent_id"], worker["agent_id"])
-
-    stage_external_session!(worker["agent_id"], session_id)
-    timestamp = System.system_time(:second)
-
-    assert {:ok, dispatch_binding} =
-             ExternalAgentRuntime.begin_session(
-               worker["agent_id"],
-               session_id,
-               tenant_id,
-               binding
-             )
-
-    capability = dispatch_binding["runtime_capability"]
-
-    assert {:ok, _status} =
-             ExternalSessionStatus.dispatch_started(
-               worker["agent_id"],
-               session_id,
-               "dispatch-quota",
-               connector_run_id,
-               timestamp
-             )
-
-    assert {:ok, %{"ok" => true}} =
-             ExternalAgentRuntime.handle_connector_event(
-               connector_run_id,
-               %{
-                 "capability_token" => capability["token"],
-                 "event_id" => SalixStore.ULID.generate(),
-                 "event" => %{
-                   "type" => "status",
-                   "provider" => "codex",
-                   "name" => "turn/completed",
-                   "state" => "failed",
-                   "dispatch_id" => "dispatch-quota",
-                   "execution_id" => "execution-quota",
-                   "work_state" => "failed",
-                   "issue" => "quota_exhausted",
-                   "message" => "Codex account usage quota is exhausted.",
-                   "created_at" => timestamp
-                 }
-               },
-               %{"tenant_id" => tenant_id, "group_id" => group_id}
-             )
-
-    assert {:ok, records} =
-             ExternalAgentRuntime.session_records(worker, session_id, limit: 20)
-
-    assert Enum.any?(records["records"], fn record ->
-             event = get_in(record, ["data", "event"]) || %{}
-
-             event["work_state"] == "failed" and
-               event["issue"] == "quota_exhausted" and
-               event["message"] == "Codex account usage quota is exhausted."
-           end)
-
-    ctx = router_tool_context(tenant_id, group_id, router["agent_id"])
-
-    participant_status =
-      call_tool!(ctx, "im_api.internal.get_conversation_participant_status", %{
-        "connect_id" => "internal",
-        "conversation_id" => conversation_id,
-        "participant_id" => participant_id
-      })
-
-    assert participant_status["activity"]["state"] == "error"
-    assert participant_status["issue"] == "quota_exhausted"
-
-    assert participant_status["activity"]["status"] ==
-             "error: Codex account usage quota is exhausted."
-
-    device = call_tool!(ctx, "device.get", %{"device_id" => participant_status["device_id"]})
-    device_runtime = runtime!(device, binding)
-    assert device_runtime["status"] == "ready"
-    refute Map.has_key?(device_runtime, "issue")
-    refute Map.has_key?(device_runtime, "message")
-  end
-
-  defp connect_ready_runtime!(tenant_id, group_id, opts \\ []) do
-    suffix = System.unique_integer([:positive])
+  defp connect_ready_runtime!(tenant_id, group_id) do
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
     transport_id = "participant-runtime-#{suffix}"
     device_id = "participant-device-#{suffix}"
     runtime_id = "codex-#{suffix}"
-    binding = external_binding(device_id, runtime_id)
-    now = System.system_time(:millisecond)
+    binding = runtime_ref(device_id, runtime_id)
+    now = SystemsClock.system_time(:millisecond)
 
     {:ok, ^transport_id, record} =
       Registry.connect(
@@ -465,23 +298,7 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
               "readiness_valid_until" => now + 600_000
             }
 
-          runtime =
-            case Keyword.fetch(opts, :session_snapshot) do
-              {:ok, snapshot} -> Map.put(runtime, "session_snapshot", snapshot)
-              :error -> runtime
-            end
-
-          meta = Map.put(meta, "agent_runtimes", [runtime])
-
-          if Keyword.has_key?(opts, :session_snapshot) do
-            Map.put(
-              meta,
-              "runtime_session_snapshot_generation",
-              record["connection_generation"]
-            )
-          else
-            meta
-          end
+          Map.put(meta, "agent_runtimes", [runtime])
         end,
         now: now
       )
@@ -489,9 +306,8 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
     {connector_run_id, binding}
   end
 
-  defp external_binding(device_id, runtime_id) do
+  defp runtime_ref(device_id, runtime_id) do
     %{
-      "kind" => "external",
       "provider" => "codex",
       "device_id" => device_id,
       "runtime_id" => runtime_id,
@@ -500,7 +316,7 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
   end
 
   defp update_runtime_readiness!(connector_run_id, overrides) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     assert {:ok, _record} =
              Registry.update_meta(
@@ -531,7 +347,7 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
   end
 
   defp create_agent_task_conversation!(group_id, router_agent_id, worker_agent_id) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     {:ok, conversation} =
       ConversationInput.create_group_conversation(group_id, %{
@@ -574,19 +390,6 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
     {conversation_id, participant_id, session_id}
   end
 
-  defp stage_external_session!(agent_id, session_id) do
-    assert {:ok, :external} =
-             ExternalAgentRuntime.stage_delivery(agent_id, %{
-               source_message_id: "participant-runtime-#{System.unique_integer([:positive])}",
-               payload: %{
-                 "session_id" => session_id,
-                 "content" => "diagnose me",
-                 "role" => "user",
-                 "no_wake" => true
-               }
-             })
-  end
-
   defp router_tool_context(tenant_id, group_id, agent_id) do
     assert {:ok, projection} =
              Plugins.runtime_projection(%{"tenant_id" => tenant_id, "group_id" => group_id})
@@ -619,7 +422,7 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
       SessionToolDispatch.execute(
         [
           %{
-            "id" => "call-#{System.unique_integer([:positive])}",
+            "id" => "call-#{SystemsRuntime.Proc.unique_integer([:positive])}",
             "name" => "call",
             "args" => %{"tool" => tool, "params" => params}
           }
@@ -655,6 +458,6 @@ defmodule SalixWeb.ParticipantDeviceDiagnosisE2ETest do
     walk.(walk, value)
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

@@ -1,3 +1,5 @@
+import type { CoreClient } from "@comma/core-client";
+import { CoreProvider } from "@comma/core-client";
 import {
   Outlet,
   RouterProvider,
@@ -7,15 +9,14 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import type { ProductInboxListResult } from "@comma/native-bridge";
-import { controlIntersections } from "@comma/test-utils/intersection";
+import type { ProductInboxListResult } from "@comma/core-client";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { act, render, screen, waitFor } from "@comma/test-utils/render";
-import { Toaster, toast } from "@comma/ui";
+import { Toaster, toast } from "@comma/ui/components/toast";
 import userEvent from "@testing-library/user-event";
 import { useEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCommaApi, type CommaConversation } from "../api";
+import type { CommaConversation } from "@comma/core/api-schemas";
 import { CommaAuthContext } from "../components/auth-context";
 import {
   ChatProvider,
@@ -23,13 +24,6 @@ import {
   useChatRegistry,
 } from "../components/chat/ChatProvider";
 import { InboxRoute } from "../components/inbox/InboxRoute";
-import {
-  appendProductInboxPages as appendInboxPages,
-  combineProductInboxPages as combineInboxPages,
-  ProductInboxProjectionProvider,
-  refreshProductInboxPages as refreshInboxPages,
-  type ProductInboxProjectionController,
-} from "../product-inbox";
 import {
   createProductInboxProjectionHarness,
   createTestCommaAuthValue,
@@ -101,116 +95,7 @@ describe("InboxRoute (product inbox tracer bullet)", () => {
     expect(projection.refresh).toHaveBeenCalledTimes(refreshCount);
   });
 
-  it("loads the next inbox page when the end of the list comes into view, not before", async () => {
-    const firstPage = {
-      activeWorkspaceId: "w1",
-      hasMore: true,
-      items: [productInboxItem("c1", "First page")],
-      nextCursor: "cursor-2",
-      source: "live-sync",
-    } satisfies ProductInboxListResult;
-    const secondPage = {
-      activeWorkspaceId: "w1",
-      hasMore: false,
-      items: [productInboxItem("c2", "Second page")],
-      source: "live-sync",
-    } satisfies ProductInboxListResult;
-    const projection = createProductInboxProjectionHarness({
-      initial: firstPage,
-      refresh: (input) => (input.cursor ? secondPage : firstPage),
-    });
-    installNativeBridgeMock({ platform: "electron" });
-    const intersections = controlIntersections();
-    try {
-      renderInboxRoute(projection.controller);
-
-      expect(await screen.findByText("First page")).toBeInTheDocument();
-      const listEnd = await waitFor(() => {
-        const end = listLoadTrigger();
-        expect(end).not.toBeNull();
-        return end!;
-      });
-      await act(async () => {});
-      expect(projection.refresh.mock.calls.some(([input]) => input.cursor)).toBe(false);
-
-      act(() => intersections.reveal(listEnd));
-
-      expect(await screen.findByText("Second page")).toBeInTheDocument();
-      expect(projection.refresh).toHaveBeenCalledWith({
-        cursor: "cursor-2",
-        limit: 50,
-        session: expect.any(Object),
-        workspaceId: "w1",
-      });
-      expect(
-        projection.refresh.mock.calls.filter(([input]) => input.cursor)
-      ).toHaveLength(1);
-      expect(listLoadTrigger()).toBeNull();
-    } finally {
-      intersections.restore();
-    }
-  });
-
-  it("keeps loaded rows and retries the same page after a cache fallback", async () => {
-    const firstPage: ProductInboxListResult = {
-      activeWorkspaceId: "w1",
-      hasMore: true,
-      items: [productInboxItem("c1", "First page")],
-      nextCursor: "cursor-2",
-      source: "live-sync",
-    };
-    const page = Promise.withResolvers<ProductInboxListResult>();
-    let attempts = 0;
-    const projection = createProductInboxProjectionHarness({
-      initial: firstPage,
-      refresh: (input) => {
-        if (!input.cursor) return firstPage;
-        attempts += 1;
-        return attempts === 1
-          ? page.promise
-          : {
-              activeWorkspaceId: "w1",
-              hasMore: false,
-              items: [productInboxItem("c2", "Last page")],
-              source: "live-sync",
-            };
-      },
-    });
-    installNativeBridgeMock({ platform: "electron" });
-    const intersections = controlIntersections();
-    try {
-      renderInboxRoute(projection.controller);
-      await screen.findByText("First page");
-      act(() => intersections.reveal(listLoadTrigger()!));
-      await waitFor(() => expect(attempts).toBe(1));
-      expect(screen.queryByRole("status", { name: "Loading…" })).toBeNull();
-      expect(screen.getByRole("link", { name: /First page/ })).toBeEnabled();
-      await act(async () => {
-        page.resolve({
-          activeWorkspaceId: "w1",
-          errorCode: "network_unavailable",
-          items: [],
-          source: "cache",
-        });
-      });
-      const retry = await screen.findByRole("button", { name: "Retry" });
-      expect(screen.getByText("First page")).toBeInTheDocument();
-      act(() => intersections.reveal(listLoadTrigger()!));
-      expect(attempts).toBe(1);
-      await userEvent.click(retry);
-      await screen.findByText("Last page");
-      expect(screen.getByText("First page")).toBeInTheDocument();
-      expect(attempts).toBe(2);
-      expect(listLoadTrigger()).toBeNull();
-      await waitFor(() =>
-        expect(screen.queryByTestId("inbox-load-more-error")).toBeNull()
-      );
-    } finally {
-      intersections.restore();
-    }
-  });
-
-  it("preserves loaded desktop pages across a Main-owned projection refresh", async () => {
+  it("shows a loaded page the core kept stale when it read the first page again", async () => {
     const firstPage: ProductInboxListResult = {
       activeWorkspaceId: "w1",
       hasMore: true,
@@ -240,9 +125,15 @@ describe("InboxRoute (product inbox tracer bullet)", () => {
     // visible), so the next page loads without a request from the reader.
     await screen.findByText("Loaded second page");
 
+    // The core reads the first page again and keeps the loaded tail, stale.
     projection.emit({
-      ...firstPage,
-      items: [productInboxItem("c1", "Refreshed first page")],
+      activeWorkspaceId: "w1",
+      hasMore: false,
+      items: [
+        productInboxItem("c1", "Refreshed first page"),
+        { ...productInboxItem("c2", "Loaded second page"), freshness: "stale" },
+      ],
+      source: "live-sync",
     });
 
     await screen.findByText("Refreshed first page");
@@ -252,78 +143,6 @@ describe("InboxRoute (product inbox tracer bullet)", () => {
     ).toHaveAttribute("data-freshness", "stale");
     // The refreshed first page does not bring back a page past the last one.
     expect(listLoadTrigger()).toBeNull();
-  });
-
-  it("clears terminal cursor metadata when appending the last page", () => {
-    const firstPage = {
-      activeWorkspaceId: "w1",
-      hasMore: true,
-      items: [productInboxItem("c1", "First page")],
-      nextCursor: "cursor-2",
-      source: "live-sync",
-    } satisfies ProductInboxListResult;
-    const lastPage = {
-      activeWorkspaceId: "w1",
-      hasMore: false,
-      items: [productInboxItem("c2", "Last page")],
-      source: "live-sync",
-    } satisfies ProductInboxListResult;
-
-    const combined = combineInboxPages(appendInboxPages([firstPage], lastPage));
-    expect(combined).toMatchObject({
-      hasMore: false,
-      items: [firstPage.items[0], lastPage.items[0]],
-    });
-    expect(combined).not.toHaveProperty("nextCursor");
-  });
-
-  it("retains the loaded tail cursor on refresh and resets all pages for another workspace", () => {
-    const firstPage = {
-      activeWorkspaceId: "w1",
-      hasMore: true,
-      items: [productInboxItem("c1", "First page")],
-      nextCursor: "cursor-2",
-      source: "live-sync",
-    } satisfies ProductInboxListResult;
-    const secondPage = {
-      activeWorkspaceId: "w1",
-      hasMore: true,
-      items: [productInboxItem("c2", "Second page")],
-      nextCursor: "cursor-3",
-      source: "live-sync",
-    } satisfies ProductInboxListResult;
-    const refreshedFirstPage = {
-      ...firstPage,
-      items: [productInboxItem("c1", "Refreshed first page")],
-      nextCursor: "new-first-page-cursor",
-    };
-
-    const refreshed = refreshInboxPages(
-      appendInboxPages([firstPage], secondPage),
-      refreshedFirstPage
-    );
-    expect(combineInboxPages(refreshed)).toMatchObject({
-      hasMore: true,
-      nextCursor: "cursor-3",
-      items: [
-        expect.objectContaining({ title: "Refreshed first page" }),
-        expect.objectContaining({ freshness: "stale", title: "Second page" }),
-      ],
-    });
-
-    const otherWorkspace = {
-      activeWorkspaceId: "w2",
-      hasMore: false,
-      items: [
-        {
-          ...productInboxItem("c9", "Other workspace"),
-          id: "w2:c9",
-          workspaceId: "w2",
-        },
-      ],
-      source: "live-sync",
-    } satisfies ProductInboxListResult;
-    expect(refreshInboxPages(refreshed, otherWorkspace)).toEqual([otherWorkspace]);
   });
 
   it("surfaces the typed ProductInbox error semantics", async () => {
@@ -436,30 +255,27 @@ describe("InboxRoute (product inbox tracer bullet)", () => {
 });
 
 function renderInboxRoute(
-  productInboxController: ProductInboxProjectionController = createProductInboxProjectionHarness(
-    {
-      initial: {
-        errorCode: "utility_unavailable",
-        items: [],
-        source: "unavailable",
-      },
-    }
-  ).controller,
+  productInboxController: CoreClient = createProductInboxProjectionHarness({
+    initial: {
+      errorCode: "utility_unavailable",
+      items: [],
+      source: "unavailable",
+    },
+  }).controller,
   captureChatRegistry?: (registry: ChatRegistry) => void
 ): AnyRouter {
-  const api = createCommaApi({ baseUrl: "", token: "" });
   const auth = createTestCommaAuthValue();
   const rootRoute = createRootRoute({
     component: () => (
       <CommaAuthContext.Provider value={auth}>
-        <ProductInboxProjectionProvider controller={productInboxController}>
-          <ChatProvider api={api} productLease={auth.productLease}>
+        <CoreProvider client={productInboxController}>
+          <ChatProvider productLease={auth.productLease}>
             {captureChatRegistry ? (
               <ChatRegistryCapture capture={captureChatRegistry} />
             ) : null}
             <Outlet />
           </ChatProvider>
-        </ProductInboxProjectionProvider>
+        </CoreProvider>
       </CommaAuthContext.Provider>
     ),
   });

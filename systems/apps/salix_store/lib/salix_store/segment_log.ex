@@ -190,7 +190,7 @@ defmodule SalixStore.SegmentLog do
 
     groups
     |> Enum.flat_map(&partition_replay_group(&1, opts))
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn group ->
         SystemsObservability.Context.run(context, fn ->
           settle_replay_group(cache, group, opts)

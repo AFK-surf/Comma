@@ -26,7 +26,7 @@ test -f "${verification_dir}/manifest.json"
 jq -e --arg revision "${expected_revision}" '
   .schemaVersion == 3 and
   .sourceRevision == $revision and
-  ([.images[].class] | sort == ["external", "meeting", "shell"]) and
+  ([.images[].class] | sort == ["meeting", "shell", "station"]) and
   all(.images[]; . as $image |
     $image.platform == "linux/arm64" and
     ($image.inputDigest | test("^sha256:[0-9a-f]{64}$")) and

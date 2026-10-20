@@ -3,7 +3,7 @@ defmodule SalixWeb.Dashboard.AuthTest do
   Dashboard admin-token login gating. The dashboard endpoint runs
   with `server: false`, so LiveViewTest drives it directly (no listener).
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
@@ -15,14 +15,14 @@ defmodule SalixWeb.Dashboard.AuthTest do
   @token "test-token"
 
   setup do
-    prev_api_token = Application.get_env(:salix_web, :api_token)
-    Application.put_env(:salix_web, :api_token, @token)
+    prev_api_token = SystemsRuntime.get_env(:salix_web, :api_token)
+    SystemsRuntime.put_env(:salix_web, :api_token, @token)
 
     on_exit(fn ->
       if prev_api_token do
-        Application.put_env(:salix_web, :api_token, prev_api_token)
+        SystemsRuntime.put_env(:salix_web, :api_token, prev_api_token)
       else
-        Application.delete_env(:salix_web, :api_token)
+        SystemsRuntime.delete_env(:salix_web, :api_token)
       end
     end)
   end

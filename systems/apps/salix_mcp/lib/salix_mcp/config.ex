@@ -13,8 +13,42 @@ defmodule SalixMCP.Config do
            |> normalize_map()
            |> Map.merge(credential_values),
          {:ok, config} <- resolve_entry(entry, binding, values, remote_headers) do
-      {:ok, Map.put(config, "entry", entry)}
+      {:ok,
+       config
+       |> Map.put("entry", entry)
+       |> Map.put("tool_allowlist", tool_allowlist(definition, credential_values))}
     end
+  end
+
+  # Resolve this policy with the credential used by this request, never from
+  # cached discovery or a binding's old OAuth references.
+  defp tool_allowlist(%{"mcp_id" => "mcp1_0000000000000000009"} = definition, values) do
+    if Map.has_key?(values, "X_BEARER_TOKEN"),
+      do: nil,
+      else: get_in(definition, ["salix_metadata", "app_only_tool_allowlist"]) || []
+  end
+
+  defp tool_allowlist(_definition, _values), do: nil
+
+  def allow_request(config, "tools/call", params) do
+    case config["tool_allowlist"] do
+      nil ->
+        :ok
+
+      names when is_list(names) ->
+        if params["name"] in names, do: :ok, else: {:error, :mcp_tool_not_allowed}
+
+      _ ->
+        {:error, :mcp_tool_not_allowed}
+    end
+  end
+
+  def allow_request(_config, _method, _params), do: :ok
+
+  def restrict_tools(discovered, config) do
+    Map.update(discovered, "tools", [], fn tools ->
+      Enum.filter(tools, &(allow_request(config, "tools/call", &1) == :ok))
+    end)
   end
 
   def resolve_entry(entry, binding) when is_map(entry) and is_map(binding) do
@@ -85,7 +119,7 @@ defmodule SalixMCP.Config do
   end
 
   defp apply_remote_target_override(entry) do
-    overrides = Application.get_env(:salix_mcp, :remote_target_overrides, %{}) || %{}
+    overrides = SystemsRuntime.get_env(:salix_mcp, :remote_target_overrides, %{}) || %{}
 
     case overrides[entry["target_ref"]] do
       url when is_binary(url) and url != "" -> Map.put(entry, "url", url)

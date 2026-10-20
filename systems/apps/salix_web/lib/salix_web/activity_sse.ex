@@ -1,4 +1,6 @@
 defmodule SalixWeb.ActivitySSE do
+  require SystemsClock
+
   @moduledoc """
   Live agent-activity event streams. Emits `activity` events as the runtime
   publishes fine-grained activity signals (thinking / tool execution / messaging
@@ -63,7 +65,7 @@ defmodule SalixWeb.ActivitySSE do
 
   # `routes` tracks the agents whose PubSub topics belong to this stream.
   defp loop(conn, scope, routes, quiet_polls) do
-    receive do
+    SystemsClock.vreceive do
       {:salix_agent_event, agent_id, {:activity, activity}} ->
         case emit_all(conn, [{"activity", enrich(activity, agent_id, routes)}]) do
           {:ok, conn} -> loop(conn, scope, routes, 0)

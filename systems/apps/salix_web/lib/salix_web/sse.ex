@@ -1,4 +1,6 @@
 defmodule SalixWeb.SSE do
+  require SystemsClock
+
   @moduledoc """
   Server-Sent Events stream for a session: one chunked Bandit
   connection process per subscriber, subscribed to the agent's `Phoenix.PubSub`
@@ -29,7 +31,7 @@ defmodule SalixWeb.SSE do
   end
 
   defp loop(conn, %{"agent_id" => agent_id} = agent, session_id) do
-    receive do
+    SystemsClock.vreceive do
       {:salix_agent_event, ^agent_id, {:settled, _summaries}} ->
         summary = session_summary(agent, session_id)
         data = %{type: "update", session: summary}
@@ -89,9 +91,5 @@ defmodule SalixWeb.SSE do
     end
   end
 
-  defp missing_session_summary(agent) do
-    if SalixAgent.Control.runtime_kind(agent) == "external",
-      do: %{status: "unknown", message_count: 0, last_ack: nil},
-      else: %{status: "idle", message_count: 0, last_ack: nil}
-  end
+  defp missing_session_summary(_agent), do: %{status: "idle", message_count: 0, last_ack: nil}
 end

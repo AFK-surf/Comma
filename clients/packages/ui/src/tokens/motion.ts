@@ -1,3 +1,5 @@
+import { uiClock } from "../clock";
+
 /**
  * Shared motion tokens for direct, interruptible interface feedback.
  * Durations are expressed in milliseconds for CSS generation and JS consumers.
@@ -82,6 +84,14 @@ export const motionDuration = {
   revealStagger: 30,
   spatialMove: 200,
   replyDraw: 600,
+  /**
+   * A reply thread lifting out of the transcript: each message travels from
+   * where it sat to the gathered stack above the composer. Long enough to
+   * follow every bubble to its new place, as iMessage does.
+   */
+  replyThreadEnter: 380,
+  /** The thread settling back into the transcript; quicker, the eye already knows the way. */
+  replyThreadExit: 280,
   menuEnter: 120,
   menuExit: 80,
   /** Settling time before a pointer-driven preview handoff. */
@@ -329,6 +339,53 @@ export const motionNotchResize = {
   stiffness: 520,
   damping: 41,
 } as const;
+
+/**
+ * Milliseconds in a CSS time read back from a custom property. Minified CSS
+ * may rewrite `180ms` as `.18s`, so the unit decides the scale.
+ */
+export function cssTimeMs(value: string): number {
+  const time = value.trim();
+  const amount = Number.parseFloat(time);
+  return time.endsWith("ms") || !time.endsWith("s") ? amount : amount * 1000;
+}
+
+/**
+ * Runs `done` once the finite animations on `element` and its subtree have
+ * finished or been cancelled, including any that start while they run. With
+ * none running, `done` runs at once. Where the DOM has no animation engine
+ * (jsdom has no document timeline), `done` runs after `fallbackMs` on the UI
+ * clock. Returns a cancel function.
+ */
+export function afterAnimations(
+  element: Element,
+  fallbackMs: number,
+  done: () => void
+): () => void {
+  let cancelled = false;
+  if (!element.ownerDocument.timeline || typeof element.getAnimations !== "function") {
+    return uiClock.after(fallbackMs, done);
+  }
+  const wait = () => {
+    if (cancelled) return;
+    const running = element
+      .getAnimations({ subtree: true })
+      .filter(
+        (animation) =>
+          (animation.pending || animation.playState === "running") &&
+          animation.effect?.getComputedTiming().endTime !== Infinity
+      );
+    if (running.length === 0) {
+      done();
+      return;
+    }
+    void Promise.allSettled(running.map((animation) => animation.finished)).then(wait);
+  };
+  wait();
+  return () => {
+    cancelled = true;
+  };
+}
 
 export const commaReducedMotionAttribute = "data-comma-reduced-motion";
 

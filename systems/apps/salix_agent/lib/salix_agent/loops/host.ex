@@ -40,7 +40,7 @@ defmodule SalixAgent.Loops.Host do
   `SalixAgent.Loops`'s. Nothing in the child survives its exit, by design.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
   alias SalixAgent.DependencyJob
@@ -77,12 +77,15 @@ defmodule SalixAgent.Loops.Host do
   @doc "Resident script objects allowed per node (`:salix_agent, :script_max_objects`)."
   @spec script_max_objects() :: pos_integer()
   def script_max_objects,
-    do: Application.get_env(:salix_agent, :script_max_objects, @default_script_max_objects)
+    do: SystemsRuntime.get_env(:salix_agent, :script_max_objects, @default_script_max_objects)
 
   # ---- public API -----------------------------------------------------------
 
   def start_link(opts \\ []),
-    do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+    do:
+      SystemsRuntime.Server.start_link(__MODULE__, opts,
+        name: Keyword.get(opts, :name, __MODULE__)
+      )
 
   @doc "Availability, session, compiler and counters."
   @spec status(GenServer.server()) :: map()
@@ -135,7 +138,7 @@ defmodule SalixAgent.Loops.Host do
   """
   @spec host_reply(String.t(), {:ok, term()} | {:error, String.t()}) :: :ok
   def host_reply(rpc_id, reply) when is_binary(rpc_id),
-    do: GenServer.cast(__MODULE__, {:host_reply, rpc_id, reply})
+    do: SystemsRuntime.Server.cast(__MODULE__, {:host_reply, rpc_id, reply})
 
   @doc "Bind an already loaded object to a (new) incarnation of its Loop."
   @spec object_bind(String.t(), loop_ref()) :: :ok | {:error, term()}
@@ -248,7 +251,7 @@ defmodule SalixAgent.Loops.Host do
   end
 
   defp safe_call(server, message, timeout, fallback) do
-    GenServer.call(server, message, timeout)
+    SystemsClock.call(server, message, timeout)
   catch
     :exit, {:noproc, _} -> fallback
     :exit, {:timeout, _} -> {:error, :timeout}
@@ -293,7 +296,7 @@ defmodule SalixAgent.Loops.Host do
 
   @impl true
   def init(opts) do
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
     state = %State{reconciler: Keyword.get(opts, :reconciler, SalixAgent.Loops.Reconciler)}
     {:ok, state, {:continue, :spawn}}
   end
@@ -425,6 +428,7 @@ defmodule SalixAgent.Loops.Host do
         {:noreply, state}
 
       {%{from: from}, requests} ->
+        SystemsClock.replied({__MODULE__, id})
         reply_request(from, {:error, :timeout}, state)
         {:noreply, flush_queue(%{state | requests: requests})}
     end
@@ -433,13 +437,14 @@ defmodule SalixAgent.Loops.Host do
   def handle_info(:init_timeout, %State{available: false, init_id: id} = state)
       when not is_nil(id) do
     Logger.error("spinfoam did not answer sf.initialize within #{@initialize_timeout_ms} ms")
+    SystemsClock.replied({__MODULE__, id})
     {:noreply, child_lost(state, :initialize_timeout)}
   end
 
   def handle_info(:init_timeout, state), do: {:noreply, state}
 
   def handle_info(:sweep, state) do
-    Process.send_after(self(), :sweep, @sweep_ms)
+    schedule_sweep()
 
     if state.available and map_size(state.objects) > 0,
       do:
@@ -475,8 +480,9 @@ defmodule SalixAgent.Loops.Host do
       {nil, _} ->
         {:noreply, state}
 
-      {%{job: job, rpc_id: rpc_id}, host_calls} ->
+      {%{job: job, rpc_id: rpc_id, object_id: object_id}, host_calls} ->
         :ok = DependencyJob.cancel(job, :timeout)
+        Logger.warning("loop object #{object_id} host call exceeded its deadline")
         send_host_error(state, rpc_id, "DEADLINE_EXCEEDED", "capability deadline exceeded")
 
         {:noreply,
@@ -489,8 +495,9 @@ defmodule SalixAgent.Loops.Host do
       {nil, _} ->
         {:noreply, state}
 
-      {%{job: job, rpc_id: rpc_id}, host_calls} ->
+      {%{job: job, rpc_id: rpc_id, object_id: object_id}, host_calls} ->
         :ok = DependencyJob.complete(job)
+        Logger.warning("loop object #{object_id} host call crashed: #{inspect(reason)}")
 
         send_host_error(
           state,
@@ -505,6 +512,14 @@ defmodule SalixAgent.Loops.Host do
   end
 
   def handle_info(_message, state), do: {:noreply, state}
+
+  # The periodic pass over the resident objects. With
+  # `config :salix_agent, loops_sweep: false` (the test configuration) a pass
+  # runs only when a `:sweep` message asks for one.
+  defp schedule_sweep do
+    if SystemsRuntime.get_env(:salix_agent, :loops_sweep, true),
+      do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :sweep, @sweep_ms)
+  end
 
   @impl true
   def terminate(_reason, %State{port: port} = state) when is_port(port) do
@@ -551,7 +566,14 @@ defmodule SalixAgent.Loops.Host do
           }
 
           :ok = port_send(port, payload)
-          Process.send_after(self(), :init_timeout, @initialize_timeout_ms)
+          # The child answers on its own time: the clock waits for it.
+          SystemsClock.awaiting({__MODULE__, id})
+
+          SystemsClock.send_after(
+            SystemsRuntime.Proc.self(),
+            :init_timeout,
+            @initialize_timeout_ms
+          )
 
           %{
             state
@@ -587,7 +609,7 @@ defmodule SalixAgent.Loops.Host do
   end
 
   defp command do
-    case Application.get_env(:salix_agent, :spinfoam_cmd) do
+    case SystemsRuntime.get_env(:salix_agent, :spinfoam_cmd) do
       {exe, args} when is_binary(exe) and is_list(args) ->
         if File.exists?(exe),
           do: {:ok, exe, args ++ compiler_args()},
@@ -612,13 +634,18 @@ defmodule SalixAgent.Loops.Host do
     cancel_host_calls(state)
 
     for {object_id, %{kind: :script, owner: owner}} <- state.objects do
-      send(owner, {:script_terminal, object_id, :runtime_lost})
+      SystemsRuntime.Proc.send(owner, {:script_terminal, object_id, :runtime_lost})
     end
 
-    for {monitor, _object_id} <- state.monitors, do: Process.demonitor(monitor, [:flush])
+    for {monitor, _object_id} <- state.monitors,
+        do: SystemsRuntime.Proc.demonitor(monitor, [:flush])
 
-    for {_id, %{from: from}} <- state.requests,
-        do: reply_request(from, {:error, {:host_lost, reason}}, state)
+    if state.init_id, do: SystemsClock.replied({__MODULE__, state.init_id})
+
+    for {id, %{from: from}} <- state.requests do
+      SystemsClock.replied({__MODULE__, id})
+      reply_request(from, {:error, {:host_lost, reason}}, state)
+    end
 
     for {_m, _p, _t, from} <- :queue.to_list(state.queue),
         do: reply_request(from, {:error, {:host_lost, reason}}, state)
@@ -647,7 +674,7 @@ defmodule SalixAgent.Loops.Host do
   end
 
   defp schedule_respawn(state) do
-    now = System.monotonic_time(:millisecond)
+    now = SystemsClock.monotonic_time(:millisecond)
     restarts = Enum.filter([now | state.restarts], &(now - &1 < @restart_window_ms))
 
     if length(restarts) > @max_restarts_per_hour do
@@ -660,7 +687,7 @@ defmodule SalixAgent.Loops.Host do
     else
       attempt = state.spawn_attempt
       backoff = Enum.at(@restart_backoff_ms, min(attempt, length(@restart_backoff_ms) - 1))
-      Process.send_after(self(), :spawn, backoff)
+      SystemsClock.send_after(SystemsRuntime.Proc.self(), :spawn, backoff)
       %{state | restarts: restarts, spawn_attempt: attempt + 1}
     end
   end
@@ -676,9 +703,15 @@ defmodule SalixAgent.Loops.Host do
   defp handle_message(%{"id" => id} = message, state)
        when is_binary(id) and not is_map_key(message, "method") do
     cond do
-      id == state.init_id -> handle_initialize_reply(message, state)
-      Map.has_key?(state.requests, id) -> handle_reply(id, message, state)
-      true -> state
+      id == state.init_id ->
+        SystemsClock.replied({__MODULE__, id})
+        handle_initialize_reply(message, state)
+
+      Map.has_key?(state.requests, id) ->
+        handle_reply(id, message, state)
+
+      true ->
+        state
     end
   end
 
@@ -695,7 +728,7 @@ defmodule SalixAgent.Loops.Host do
 
         with id when is_binary(id) <- object_id,
              %{kind: :script, owner: owner} <- Map.get(state.objects, id) do
-          send(owner, {:script_host_cancel, id, rpc_id})
+          SystemsRuntime.Proc.send(owner, {:script_host_cancel, id, rpc_id})
         end
 
         %{state | script_calls: script_calls}
@@ -745,7 +778,7 @@ defmodule SalixAgent.Loops.Host do
       "spinfoam ready: session #{result["session_id"]}, target #{result["target"]}, compiler available=#{compiler["available"] == true}"
     )
 
-    Process.send_after(self(), :sweep, @sweep_ms)
+    schedule_sweep()
 
     state = %{
       state
@@ -769,7 +802,8 @@ defmodule SalixAgent.Loops.Host do
 
   defp handle_reply(id, message, state) do
     {%{from: from, timer: timer, method: method}, requests} = Map.pop(state.requests, id)
-    _ = Process.cancel_timer(timer)
+    SystemsClock.replied({__MODULE__, id})
+    _ = SystemsClock.cancel_timer(timer)
     state = %{state | requests: requests}
 
     reply =
@@ -800,12 +834,12 @@ defmodule SalixAgent.Loops.Host do
   # and a lost child, releases the capacity reserved at admission; a loaded
   # object then holds it through `state.objects`.
   defp reply_request({:load, from, ref}, {:ok, %{"object_id" => object_id}}, state) do
-    GenServer.reply(from, {:ok, object_id})
+    SystemsRuntime.Server.reply(from, {:ok, object_id})
     state = %{state | objects: Map.put(state.objects, object_id, ref)}
 
     case ref do
       %{kind: :script, owner: owner} ->
-        monitor = Process.monitor(owner)
+        monitor = SystemsRuntime.Proc.monitor(owner)
         state = reserve_script_load(state, -1)
         %{state | monitors: Map.put(state.monitors, monitor, object_id)}
 
@@ -815,7 +849,7 @@ defmodule SalixAgent.Loops.Host do
   end
 
   defp reply_request({:load, from, ref}, reply, state) do
-    GenServer.reply(from, reply)
+    SystemsRuntime.Server.reply(from, reply)
     if script_ref?(ref), do: reserve_script_load(state, -1), else: state
   end
 
@@ -851,7 +885,7 @@ defmodule SalixAgent.Loops.Host do
   defp reply_request(:discard, _reply, state), do: state
 
   defp reply_request(from, reply, state) do
-    GenServer.reply(from, reply)
+    SystemsRuntime.Server.reply(from, reply)
     state
   end
 
@@ -864,7 +898,7 @@ defmodule SalixAgent.Loops.Host do
         state
 
       {%{kind: :script, owner: owner}, _objects} ->
-        send(owner, {:script_terminal, object_id, status})
+        SystemsRuntime.Proc.send(owner, {:script_terminal, object_id, status})
         state = forget_object(state, object_id)
 
         enqueue_request(
@@ -877,13 +911,13 @@ defmodule SalixAgent.Loops.Host do
 
       {loop, objects} ->
         reconciler = state.reconciler
-        host = self()
+        host = SystemsRuntime.Proc.self()
 
-        Task.Supervisor.start_child(SalixAgent.TaskSup, fn ->
+        SystemsRuntime.TaskSupervisor.start_child(SalixAgent.TaskSup, fn ->
           try do
             reconciler.object_terminal(loop, object_id, status)
           after
-            GenServer.cast(host, {:unload_object, object_id})
+            SystemsRuntime.Server.cast(host, {:unload_object, object_id})
           end
         end)
 
@@ -896,7 +930,7 @@ defmodule SalixAgent.Loops.Host do
     {monitors, dropped} =
       Enum.split_with(state.monitors, fn {_monitor, id} -> id != object_id end)
 
-    for {monitor, _} <- dropped, do: Process.demonitor(monitor, [:flush])
+    for {monitor, _} <- dropped, do: SystemsRuntime.Proc.demonitor(monitor, [:flush])
 
     %{
       state
@@ -957,7 +991,11 @@ defmodule SalixAgent.Loops.Host do
         # capability inline under its own admission and deadline, so a
         # nested tool cannot saturate the per-tenant lane the outer call
         # already holds (`SalixAgent.ScriptRun`).
-        send(owner, {:script_host_call, object_id, rpc_id, capability, arguments})
+        SystemsRuntime.Proc.send(
+          owner,
+          {:script_host_call, object_id, rpc_id, capability, arguments}
+        )
+
         %{state | script_calls: Map.put(state.script_calls, rpc_id, object_id)}
 
       loop ->
@@ -966,7 +1004,12 @@ defmodule SalixAgent.Loops.Host do
 
         dependency = fn -> Capabilities.call(loop, capability, arguments, max_bytes) end
 
-        case DependencyJob.start(:tool, loop.tenant_id, dependency, timeout_ms: deadline_ms) do
+        # The Loop's own built-ins never wait for a Tenant slot: a burst of
+        # model rounds (a node taking over Agents during a rollout) must not
+        # cost a Loop its checkpoint or its wake.
+        kind = if capability in Capabilities.builtin(), do: :loop_control, else: :tool
+
+        case DependencyJob.start(kind, loop.tenant_id, dependency, timeout_ms: deadline_ms) do
           {:ok, job} ->
             entry = %{job: job, rpc_id: rpc_id, object_id: object_id}
 
@@ -977,10 +1020,13 @@ defmodule SalixAgent.Loops.Host do
             }
 
           {:error, :dependency_saturated} ->
+            log_refused_call(loop, capability, "dependency admission is saturated")
             send_host_error(state, rpc_id, "BUSY", "dependency admission is saturated")
             state
 
           {:error, reason} ->
+            log_refused_call(loop, capability, "dependency could not start: " <> inspect(reason))
+
             send_host_error(
               state,
               rpc_id,
@@ -993,10 +1039,16 @@ defmodule SalixAgent.Loops.Host do
     end
   end
 
+  defp log_refused_call(loop, capability, reason) do
+    Logger.warning(
+      "loop #{loop.loop_id} incarnation #{loop.incarnation} host call #{capability} refused: #{reason}"
+    )
+  end
+
   # The operation's own deadline is what we enforce: the smaller of its
   # remaining absolute deadline and its original duration, clamped.
   defp host_call_deadline(params) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
     timeout = params["timeout_ms"]
     absolute = params["deadline_unix_ms"]
 
@@ -1014,8 +1066,19 @@ defmodule SalixAgent.Loops.Host do
   end
 
   defp send_host_result(state, rpc_id, {:ok, result}) do
-    _ = port_send(state.port, %{"jsonrpc" => "2.0", "id" => rpc_id, "result" => result})
-    :ok
+    reply = %{"jsonrpc" => "2.0", "id" => rpc_id, "result" => result}
+
+    # A result the Host cannot encode (a string that is not valid UTF-8) is
+    # answered as an error to the one caller; it must not take the Host, and
+    # every object on this node, down with it.
+    case Jason.encode_to_iodata(reply) do
+      {:ok, encoded} ->
+        _ = port_send_encoded(state.port, encoded)
+        :ok
+
+      {:error, _} ->
+        send_host_error(state, rpc_id, "HOST_ERROR", "capability result is not valid UTF-8 JSON")
+    end
   end
 
   defp send_host_result(state, rpc_id, {:error, message}) when is_binary(message),
@@ -1033,11 +1096,17 @@ defmodule SalixAgent.Loops.Host do
   defp send_host_error(%State{port: nil}, _rpc_id, _kind, _message), do: :ok
 
   defp send_host_error(state, rpc_id, kind, message) do
+    # The text of a failed tool result is copied from tool output; bytes
+    # that are not valid UTF-8 become U+FFFD so the error still encodes.
     _ =
       port_send(state.port, %{
         "jsonrpc" => "2.0",
         "id" => rpc_id,
-        "error" => %{"code" => -32000, "message" => message, "data" => %{"kind" => kind}}
+        "error" => %{
+          "code" => -32000,
+          "message" => String.replace_invalid(message),
+          "data" => %{"kind" => kind}
+        }
       })
 
     :ok
@@ -1069,9 +1138,21 @@ defmodule SalixAgent.Loops.Host do
     id = "h:" <> Integer.to_string(state.next_id)
     payload = %{"jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params}
 
-    case port_send(state.port, payload) do
+    # Params the Host cannot encode (a source file that is not valid UTF-8,
+    # for example) fail that one request; they must not take the Host down.
+    case Jason.encode_to_iodata(payload) do
+      {:ok, encoded} -> send_encoded_request(state, id, method, encoded, timeout, from)
+      {:error, _} -> reply_request(from, {:error, :request_not_encodable}, state)
+    end
+  end
+
+  defp send_encoded_request(state, id, method, encoded, timeout, from) do
+    case port_send_encoded(state.port, encoded) do
       :ok ->
-        timer = Process.send_after(self(), {:request_timeout, id}, timeout)
+        SystemsClock.awaiting({__MODULE__, id})
+
+        timer =
+          SystemsClock.send_after(SystemsRuntime.Proc.self(), {:request_timeout, id}, timeout)
 
         %{
           state
@@ -1087,7 +1168,7 @@ defmodule SalixAgent.Loops.Host do
   defp notify_reconciler(%State{reconciler: nil}, _event), do: :ok
 
   defp notify_reconciler(%State{reconciler: reconciler}, event) do
-    if Process.whereis(reconciler), do: GenServer.cast(reconciler, event)
+    if SystemsRuntime.Proc.whereis(reconciler), do: SystemsRuntime.Server.cast(reconciler, event)
     :ok
   end
 
@@ -1095,8 +1176,12 @@ defmodule SalixAgent.Loops.Host do
 
   defp port_send(nil, _payload), do: :error
 
-  defp port_send(port, payload) do
-    Port.command(port, [Jason.encode!(payload), "\n"])
+  defp port_send(port, payload), do: port_send_encoded(port, Jason.encode_to_iodata!(payload))
+
+  defp port_send_encoded(nil, _encoded), do: :error
+
+  defp port_send_encoded(port, encoded) do
+    Port.command(port, [encoded, "\n"])
     :ok
   rescue
     ArgumentError -> :error

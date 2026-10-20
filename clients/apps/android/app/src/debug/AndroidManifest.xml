@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name=".ui.connection.ConnectionErrorDemoActivity"
+            android:exported="true" android:theme="@style/Theme.Comma.Auth" />
+        <!-- Debug-only playground for the composer. Exported so `adb shell am start` can open it. -->
+        <activity android:name=".ui.composer.demo.ComposerDemoActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustNothing"
+            android:theme="@style/Theme.Chat" />
+        <!-- Debug-only showcase of the task surfaces on fixture data. Exported so that
+             `adb shell am start` can open it; release builds do not contain it. -->
+        <activity android:name=".tasks.demo.TasksDemoActivity"
+            android:exported="true"
+            android:label="@string/tasks_demo_title"
+            android:theme="@style/Theme.TasksDemo" />
+        <!-- Debug-only playground for the media viewer, video and file cards on local samples.
+             Exported so `adb shell am start` can open it; release builds do not contain it. -->
+        <activity android:name=".media.demo.MediaDemoActivity"
+            android:exported="true"
+            android:label="Media demo"
+            android:theme="@style/Theme.Chat" />
+        <!-- Debug-only page of made-up conversations in the chat's bubbles. Exported so
+             `adb shell am start` can open it; release builds do not contain it. -->
+        <activity android:name=".chat.demo.ChatBubblesDemoActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustNothing"
+            android:theme="@style/Theme.Chat" />
+    </application>
+</manifest>

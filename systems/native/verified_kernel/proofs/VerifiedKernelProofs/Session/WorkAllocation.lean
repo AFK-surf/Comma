@@ -196,7 +196,7 @@ theorem pruneResultRefs_next_id {s t : Term} {j r : List Term}
     t.get (a "next_queue_id") = s.get (a "next_queue_id") := by
   unfold pruneResultRefs at h
   repeat' first
-    | exact write_field_frame h rfl
+    | exact write_field_frame h (by keys_absent)
     | (have same := pure_ok h; subst t; rfl)
     | split at h
     | (obtain ⟨_, _, _, h⟩ := bind_ok h)
@@ -207,7 +207,7 @@ theorem queueConsume_next_id {s e t : Term} {j r : List Term}
   unfold queueConsume at h
   iterate 4 obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨_, _, written, pruned⟩ := bind_ok h
-  exact (pruneResultRefs_next_id pruned).trans (write_field_frame written rfl)
+  exact (pruneResultRefs_next_id pruned).trans (write_field_frame written (by keys_absent))
 
 theorem queueAck_next_id {s e t : Term} {j r : List Term}
     (h : queueAck s e j = .ok (t, r)) :
@@ -215,7 +215,7 @@ theorem queueAck_next_id {s e t : Term} {j r : List Term}
   unfold queueAck at h
   iterate 6 obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨_, _, written, pruned⟩ := bind_ok h
-  exact (pruneResultRefs_next_id pruned).trans (write_field_frame written rfl)
+  exact (pruneResultRefs_next_id pruned).trans (write_field_frame written (by keys_absent))
 
 
 theorem filterAuxM_sublist {p : Term → KernelM Bool} {xs acc ys : List Term} {j r : List Term}

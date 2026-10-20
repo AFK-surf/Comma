@@ -1,17 +1,7 @@
 ---
 name: dynamic-asset-fetcher
-description: |
-  Fetch and extract dynamically-loaded front-end assets (vector animations, SPA media,
-  CDN-served JSON, images, fonts, and other resources) from web pages that hide real URLs behind
-  JavaScript rendering, anti-scraping protections (Cloudflare, bot detection), lazy-loading, or
-  Service Worker URL rewriting. Uses Playwright headless browser automation with stealth
-  configuration to intercept network requests and capture real CDN addresses. Includes asset
-  container validation (ZIP structure, JSON schema), archive unpacking, and structured
-  delivery. Trigger on: "fetch animation from page", "extract asset URL from website",
-  "download media container from site", "scrape CDN URL", "get web media asset", "intercept network
-  requests", "bypass anti-scraping", "capture XHR/fetch URLs", "extract SPA media",
-  "download dynamic resource", "resolve signed CDN URL", or any request to retrieve web assets
-  from a page that requires browser rendering or blocks direct HTTP clients.
+description: "Fetch web assets whose URLs require browser rendering or network inspection, including animations, media, JSON, images, and fonts. Validate and unpack downloaded assets when needed."
+activation: per-message
 metadata:
   displayName: Dynamic Asset Fetcher
   icon: globe.network

@@ -1,0 +1,104 @@
+id: ts-test-clock
+language: typescript
+severity: error
+message: "A test reads the machine clock."
+note: |
+  Take time from a clock the test controls (the fake clock, the virtual
+  clock, a fixed Date), not from the machine.
+metadata:
+  category: clock
+rule:
+  any:
+    - pattern: Date.now()
+    - pattern: new Date()
+    - pattern: performance.now()
+    - pattern: $G.performance.now()
+    - pattern: process.hrtime($$$)
+    - pattern: process.hrtime.bigint()
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"
+  - "clients/apps/**/test/**/*.test.tsx"
+  - "clients/packages/**/test/**/*.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"
+---
+id: tsx-test-clock
+language: tsx
+severity: error
+message: "A test reads the machine clock."
+note: |
+  Take time from a clock the test controls (the fake clock, the virtual
+  clock, a fixed Date), not from the machine.
+metadata:
+  category: clock
+rule:
+  any:
+    - pattern: Date.now()
+    - pattern: new Date()
+    - pattern: performance.now()
+    - pattern: $G.performance.now()
+    - pattern: process.hrtime($$$)
+    - pattern: process.hrtime.bigint()
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"
+  - "clients/apps/**/test/**/*.test.tsx"
+  - "clients/packages/**/test/**/*.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"
+---
+id: tsx-test-clock-browser
+language: tsx
+severity: error
+message: "A test reads the machine clock."
+note: |
+  Take time from a clock the test controls (the fake clock, the virtual
+  clock, a fixed Date), not from the machine.
+metadata:
+  category: clock
+rule:
+  any:
+    - pattern: Date.now()
+    - pattern: new Date()
+    - pattern: performance.now()
+    - pattern: $G.performance.now()
+    - pattern: process.hrtime($$$)
+    - pattern: process.hrtime.bigint()
+files:
+  - "clients/apps/**/test/**/*.chromium.test.tsx"
+  - "clients/packages/**/test/**/*.chromium.test.tsx"
+  - "clients/e2e/app-shell/**/*.chromium.test.ts"
+  - "clients/e2e/app-shell/**/*.chromium.test.tsx"

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import {
   resolveChatSelectionQuote,
   type ChatSelectionAnchor,
@@ -106,11 +107,11 @@ export function useChatSelectionQuote(rootRef: RefObject<HTMLElement | null>) {
   useEffect(() => {
     if (!selection) return undefined;
 
-    let frame = 0;
+    let frame: CancelUiTimer | null = null;
     const schedule = () => {
-      if (frame !== 0) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
+      if (frame !== null) return;
+      frame = uiClock.frame(() => {
+        frame = null;
         sync();
       });
     };
@@ -118,7 +119,7 @@ export function useChatSelectionQuote(rootRef: RefObject<HTMLElement | null>) {
     window.addEventListener("resize", schedule);
     document.addEventListener("scroll", schedule, true);
     return () => {
-      if (frame !== 0) cancelAnimationFrame(frame);
+      if (frame !== null) frame();
       window.removeEventListener("resize", schedule);
       document.removeEventListener("scroll", schedule, true);
     };

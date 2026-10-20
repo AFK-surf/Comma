@@ -1,21 +1,21 @@
+import { countTaskLoopRules } from "@comma/core/task-loop-filter";
+import { useTaskLoopRuleFilter } from "../tasks/useTaskLoopRuleFilter";
+import { uiClock } from "@comma/ui/clock";
 import { InboxList } from "./InboxList";
-import { PageLoading } from "@comma/ui";
+import { PageLoading } from "@comma/ui/components/PageLoading";
 import { formatNumber } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import type {
   ProductInboxItem,
   ProductInboxListResult,
   ProductInboxListSource,
-} from "@comma/native-bridge";
-import {
-  Button,
-  ContentHeader,
-  ScrollArea,
-  ScrollAreaLoadMore,
-  XIcon,
-  toast,
-} from "@comma/ui";
-import { useMemo, useState } from "react";
+} from "@comma/core-client";
+import { Button } from "@comma/ui/components/Button";
+import { ContentHeader } from "@comma/ui/components/content-header";
+import { ScrollArea, ScrollAreaLoadMore } from "@comma/ui/components/scroll-area";
+import { XIcon } from "@comma/ui/components/icons";
+import { toast } from "@comma/ui/components/toast";
+import { useCallback, useMemo, useState } from "react";
 import { commaInboxConversationRailWidth } from "../shellGeometry";
 import { useTaskReviewSeenMarks } from "../tasks/taskReviewAttention";
 import { InboxActionsMenu } from "./InboxActionsMenu";
@@ -24,18 +24,16 @@ import type { InboxWorkspaceSelector } from "./filters/InboxFilterPanels";
 import {
   applyInboxFilters,
   countInboxItemsByPlatform,
+  countInboxTasksBySchedule,
   countInboxTasksByStatus,
   isInboxFiltered,
   unfilteredInbox,
 } from "./filters/inboxFilters";
 import { formatCompactRelative, groupInboxItems } from "./InboxGroup";
 import {
-  clearInboxItemUnread,
-  deleteInboxItems,
   isInboxItemDeleted,
   isInboxItemUnread,
-  markInboxItemsRead,
-  markInboxItemsUnread,
+  useInboxMarkActions,
   useInboxDeletedMarks,
   useInboxUnreadMarks,
 } from "./inboxDeletion";
@@ -68,6 +66,7 @@ export function InboxView({
   const messages = useCommaMessages();
   const [filters, setFilters] = useState(unfilteredInbox);
   const deletedMarks = useInboxDeletedMarks();
+  const markActions = useInboxMarkActions();
   const unreadMarks = useInboxUnreadMarks();
   const seenMarks = useTaskReviewSeenMarks();
   useInboxSyncToasts(result, loadMoreError, onLoadMore);
@@ -90,13 +89,30 @@ export function InboxView({
     [visibleItems, seenMarks, unreadMarks]
   );
   const filtered = isInboxFiltered(filters);
-  const day = new Date().setHours(0, 0, 0, 0);
+  const day = new Date(uiClock.now()).setHours(0, 0, 0, 0);
   const groups = useMemo(
     () => groupInboxItems(visibleItems, locale, day),
     [visibleItems, locale, day]
   );
   const platformCounts = useMemo(() => countInboxItemsByPlatform(items), [items]);
   const statusCounts = useMemo(() => countInboxTasksByStatus(items), [items]);
+  const scheduleCounts = useMemo(() => countInboxTasksBySchedule(items), [items]);
+  const loopTasks = useMemo(
+    () => items.filter((item) => item.kind === "agent_task"),
+    [items]
+  );
+  const loopRules = useMemo(() => countTaskLoopRules(loopTasks), [loopTasks]);
+  const editLoopRule = useCallback(
+    (loopRule: string | undefined) =>
+      setFilters((current) => ({ ...current, loopRule })),
+    []
+  );
+  const ruleSection = useTaskLoopRuleFilter(
+    loopRules,
+    loopTasks.length,
+    filters.loopRule,
+    editLoopRule
+  );
   const sourceLabels: Record<ProductInboxListSource, string> = {
     cache: messages.inbox_source_cache(),
     "live-sync": messages.inbox_source_live(),
@@ -106,7 +122,7 @@ export function InboxView({
 
   // Deleting acts on what the rail lists right now, filters included.
   const deleteItems = (targets: readonly ProductInboxItem[]) => {
-    deleteInboxItems(targets);
+    markActions.deleteItems(targets);
     toast.success(
       messages.inbox_deleted_count({
         count: targets.length,
@@ -140,6 +156,8 @@ export function InboxView({
             filters={filters}
             onFiltersChange={setFilters}
             platformCounts={platformCounts}
+            scheduleCounts={scheduleCounts}
+            ruleSection={ruleSection}
             statusCounts={statusCounts}
             workspaceSelector={workspaceSelector}
           />
@@ -163,9 +181,9 @@ export function InboxView({
         <InboxList
           groups={groups}
           onDeleteItem={(item) => deleteItems([item])}
-          onMarkReadItem={(item) => markInboxItemsRead([item])}
-          onMarkUnreadItem={(item) => markInboxItemsUnread([item])}
-          onOpenItem={(item) => clearInboxItemUnread([item.id])}
+          onMarkReadItem={(item) => markActions.markRead([item])}
+          onMarkUnreadItem={(item) => markActions.markUnread([item])}
+          onOpenItem={(item) => markActions.clearUnread([item.id])}
           seenMarks={seenMarks}
           selectedConversationId={selectedConversationId}
           unreadMarks={unreadMarks}

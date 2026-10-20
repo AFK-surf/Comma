@@ -3148,7 +3148,7 @@ defmodule SalixStore.Migrations.ConversationIdentity do
 
   defp parallel_map(items, fun) do
     items
-    |> Task.async_stream(fun,
+    |> SystemsClock.async_stream(fun,
       ordered: false,
       max_concurrency: @max_concurrency,
       timeout: :infinity

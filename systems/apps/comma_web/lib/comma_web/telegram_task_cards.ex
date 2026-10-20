@@ -165,7 +165,7 @@ defmodule CommaWeb.TelegramTaskCards do
     status = rec["conversation_status"]
 
     card = %{
-      "id" => Base.encode16(:crypto.strong_rand_bytes(8), case: :lower),
+      "id" => Base.encode16(SystemsRuntime.Proc.random_bytes(8), case: :lower),
       "workspace_id" => workspace["id"],
       "group_id" => group,
       "conversation_id" => conversation_id,
@@ -452,7 +452,7 @@ defmodule CommaWeb.TelegramTaskCards do
     do: "comma/telegram_task_cards/latest/#{group}/#{conversation_id}.json"
 
   defp web_origin,
-    do: Application.fetch_env!(:comma_web, :web_cookie_origin) |> String.trim_trailing("/")
+    do: SystemsRuntime.fetch_env!(:comma_web, :web_cookie_origin) |> String.trim_trailing("/")
 
-  defp now, do: System.system_time(:second)
+  defp now, do: SystemsClock.system_time(:second)
 end

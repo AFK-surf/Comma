@@ -33,7 +33,8 @@ defmodule AlertRouter.Workers.Remind do
 
   def eligible?(incident) do
     Progress.enabled?() and incident.state == "firing" and incident.priority in ["P0", "P1"] and
-      is_binary(incident.slack_root_ts) and Application.get_env(:alert_router, :mode) != :disabled
+      is_binary(incident.slack_root_ts) and
+      SystemsRuntime.get_env(:alert_router, :mode) != :disabled
   end
 
   @impl true

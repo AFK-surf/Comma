@@ -6,7 +6,7 @@ defmodule SalixSignalProto.MessagingOracleTest do
   # the oracle uses internal randomness, so every check is a round trip or a
   # comparison of deterministic results. Run with `--include signal_oracle`
   # and COMMA_SIGNAL_ORACLE=host:port.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.{Address, Keys, PreKeyBundle, Receive, SealedSender, ServiceId, Session}
@@ -28,7 +28,7 @@ defmodule SalixSignalProto.MessagingOracleTest do
   end
 
   defp text(value), do: {:text, value}
-  defp store_name, do: "c5-#{System.unique_integer([:positive])}"
+  defp store_name, do: "c5-#{SystemsRuntime.Proc.unique_integer([:positive])}"
   defp aci(n), do: <<0::48, 0x40, 0x00, 0x80, 0x00, 0::40, n>>
 
   defp create_store(oracle, identity, registration_id \\ 1) do
@@ -74,7 +74,7 @@ defmodule SalixSignalProto.MessagingOracleTest do
               group? <- boolean(),
               max_runs: 25
             ) do
-        group_id = if group?, do: :crypto.strong_rand_bytes(32)
+        group_id = if group?, do: SystemsRuntime.Proc.random_bytes(32)
         inner = inner_bytes(sender, authority, type, content, hint, group_id)
         sealed = SealedSender.seal(inner, sender.identity, recipient.public)
 
@@ -154,7 +154,7 @@ defmodule SalixSignalProto.MessagingOracleTest do
           for {devices, index} <- Enum.with_index(device_lists) do
             keys = Keys.ec_keypair()
             kind = if index == 2, do: :pni, else: :aci
-            registration = for d <- devices, do: {d, :rand.uniform(16_383)}
+            registration = for d <- devices, do: {d, SystemsRuntime.Proc.uniform(16_383)}
 
             %{
               service_id: {kind, aci(10 + index)},
@@ -171,9 +171,9 @@ defmodule SalixSignalProto.MessagingOracleTest do
             sender,
             authority,
             :sender_key,
-            :crypto.strong_rand_bytes(40),
+            SystemsRuntime.Proc.random_bytes(40),
             1,
-            :crypto.strong_rand_bytes(32)
+            SystemsRuntime.Proc.random_bytes(32)
           )
 
         upload =
@@ -386,7 +386,7 @@ defmodule SalixSignalProto.MessagingOracleTest do
         client_timestamp: @now,
         payload: Oracle.unhex(sealed["ciphertext"]),
         destination: {:aci, bob.aci},
-        server_guid: :crypto.strong_rand_bytes(16)
+        server_guid: SystemsRuntime.Proc.random_bytes(16)
       }
 
       result = Receive.open(envelope, Party.receive_context(bob, [authority.root.public], @now))

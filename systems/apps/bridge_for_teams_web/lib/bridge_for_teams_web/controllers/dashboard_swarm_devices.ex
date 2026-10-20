@@ -1,18 +1,19 @@
 defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
   @moduledoc """
   Builds the Agent Swarm Devices page payloads and applies its writes for
-  `DashboardAPIController`: the fixed cloud computer and the swarm's devices,
-  adding a device on an organization runner, disconnecting and deleting a
-  device, the runtime authentication targets, Android setup and the Compute
-  environments with their Shell workload, drain and revoke.
+  `DashboardAPIController`: the swarm's Cloud VM (where it runs, its status
+  and the org Runner it uses), the swarm's devices, adding a device on an
+  organization runner, disconnecting and deleting a device, Android setup and
+  the Compute environments with their Shell workload, drain and revoke.
+  A device that cannot take tasks carries a `station_notice`
+  (`BridgeForTeamsWeb.StationNotice`) saying how to upgrade it.
 
   The page reads PostgreSQL projections and never the live device registry:
   at most 100 devices (`Environments.list_projected_environments/1`), one
-  Compute page of 50 environments and 50 workloads, the Android admission
-  record and whether a device request is still being provisioned. Its cost
-  does not grow with the number of devices. Runtime authentication goes
-  through the browser-owned `/dashboard/orgs/:org/projects/:project/runtime-auth`
-  and `managed-auth` endpoints; this page lists the targets (at most 50).
+  Compute page of 50 environments and 50 workloads, the Group's Cloud VM
+  record and Runner binding (`Compute.cloud_vm/2`, indexed reads), the
+  Android admission record and whether a device request is still being
+  provisioned. Its cost does not grow with the number of devices.
 
   While a device request is active the browser polls `provisioning/1`, one
   indexed EXISTS query, and reads the page again when it is done.
@@ -23,41 +24,28 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
   """
   use Gettext, backend: BridgeForTeamsWeb.Gettext
 
-  alias BridgeForTeams.{Compute, Environments, Observability, Projects, RuntimeAuth}
+  alias BridgeForTeams.{Compute, Environments, Observability, Projects}
   alias BridgeForTeamsWeb.Dashboard.CoreComponents
+  alias BridgeForTeamsWeb.StationNotice
   alias SalixStore.RuntimeIds
 
   @runner_page 100
-  @runtime_auth_targets 50
-  @external_providers ~w(codex pi claude)
-  @managed_providers ~w(codex claude)
   @android_profiles 8
 
   # ---- Reads ----
 
-  @doc """
-  The page. `runtime_auth_request` (with `runtime_auth_target`) names a Router
-  request a management link opens; it is read for swarm admins only.
-  """
-  def page(org, user, project, role, params) do
+  @doc "The page."
+  def page(org, _user, project, role) do
     {:ok, environments} = Environments.list_projected_environments(project.id)
-    compute = compute(org, project)
 
     {:ok,
      %{
        "project" => public_project(project, role),
-       "cloud" => %{
-         "enabled" => project.vm_enabled == true,
-         "manageable" => role == "admin" and project.status != "archived"
-       },
+       "cloud_vm" => cloud_vm(org, project, role),
        "devices" => Enum.map(environments, &device/1),
        "provisioning" => Environments.device_provisioning_active?(project.id),
        "android" => android(project, environments),
-       "compute" => Map.delete(compute, "rows"),
-       "runtime_auth" => %{
-         "targets" => runtime_auth_targets(compute["rows"], environments),
-         "request" => linked_request(user, project, role, params)
-       }
+       "compute" => compute(org, project)
      }}
   end
 
@@ -155,6 +143,87 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
     end
   end
 
+  @doc """
+  Choose the org Runner the swarm's Cloud VM uses. The choice applies when the
+  VM is first created; a swarm has at most one Runner.
+  """
+  def choose_runner(org, user, project, role, params) do
+    with :ok <- cloud_vm_admin(project, user, role) do
+      case Compute.choose_cloud_vm_runner(
+             org,
+             project,
+             text(params["runner_id"]),
+             text(params["request_id"])
+           ) do
+        {:ok, _operation} ->
+          {:ok, %{"notice" => gettext("The runner was asked to get ready for the Cloud VM.")}}
+
+        {:error, reason} ->
+          runner_error(reason)
+      end
+    end
+  end
+
+  @doc "Remove the swarm's Runner choice while no Cloud VM runs on it."
+  def remove_runner(org, user, project, role) do
+    with :ok <- cloud_vm_admin(project, user, role) do
+      case Compute.remove_cloud_vm_runner(org, project) do
+        {:ok, _operation} ->
+          {:ok, %{"notice" => gettext("Runner removed from this Agent Swarm.")}}
+
+        {:error, reason} ->
+          runner_error(reason)
+      end
+    end
+  end
+
+  defp cloud_vm_admin(project, user, role) do
+    with :ok <-
+           authorize(role, fn ->
+             Projects.record_project_write_attempt(
+               project,
+               "project.cloud_vm_runner_changed",
+               "denied",
+               :forbidden,
+               audit_opts(user)
+             )
+           end) do
+      if project.status == "archived",
+        do: {:error, 409, "project_archived", gettext("This Agent Swarm is archived."), %{}},
+        else: :ok
+    end
+  end
+
+  defp runner_error(:project_runner_bound),
+    do:
+      {:error, 409, "runner_already_chosen",
+       gettext(
+         "This Agent Swarm already has a runner. Remove it before you choose another runner."
+       ), %{}}
+
+  defp runner_error(:cloud_vm_exists),
+    do:
+      {:error, 409, "cloud_vm_exists",
+       gettext(
+         "The Cloud VM already exists. The runner choice applies only when the Cloud VM is first created."
+       ), %{}}
+
+  defp runner_error(:cloud_vm_on_runner),
+    do:
+      {:error, 409, "cloud_vm_on_runner",
+       gettext("The Cloud VM runs on this runner. You cannot remove the runner."), %{}}
+
+  defp runner_error(reason) when reason in [:runner_offline, :runner_not_found],
+    do: {:error, 409, "runner_offline", gettext("Runner is offline."), %{}}
+
+  defp runner_error(:not_found),
+    do: {:error, 404, "runner_not_chosen", gettext("This Agent Swarm has no runner."), %{}}
+
+  defp runner_error(:invalid_id),
+    do: {:error, 422, "runner_required", gettext("Select an online runner."), %{}}
+
+  defp runner_error(_reason), do: write_failed(gettext("Couldn't update the runner."))
+
   defp cloud_enabled(enabled) when is_boolean(enabled), do: {:ok, enabled}
 
   defp cloud_enabled(_enabled),
@@ -247,6 +316,32 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
     end
   end
 
+  # ---- Cloud VM ----
+
+  defp cloud_vm(org, project, role) do
+    manageable = role == "admin" and project.status != "archived"
+
+    {:ok, state} = Compute.cloud_vm(org, project)
+
+    vm =
+      case state["vm"] do
+        "unavailable" -> %{"status" => "unavailable", "location" => nil}
+        vm -> vm
+      end
+
+    %{
+      "enabled" => project.vm_enabled == true,
+      "manageable" => manageable,
+      "vm" => vm,
+      "runner" => state["runner"] && Map.take(state["runner"], ~w(name status)),
+      "next_location" => state["next_location"],
+      "runner_choosable" => manageable and is_nil(vm) and is_nil(state["runner"]),
+      "runner_removable" =>
+        manageable and not is_nil(state["runner"]) and
+          not match?(%{"location" => %{"kind" => "runner"}}, vm)
+    }
+  end
+
   # ---- Devices ----
 
   defp device(env) do
@@ -277,7 +372,10 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
       "memory_bytes" => positive(info["memory_total"]),
       "last_seen_at" => iso_timestamp(env["updated_at"]),
       "info_updated_at" => iso_timestamp(env["system_info_updated_at"]),
-      "android" => android_device(env)
+      "android" => android_device(env),
+      # Nil when the device's station takes tasks; else why not and how its
+      # user upgrades it.
+      "station_notice" => StationNotice.for_capabilities(env["capabilities"])
     }
   end
 
@@ -380,72 +478,13 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
           "workloads" =>
             for row <- projection["workloads"] || [] do
               %{"id" => row.id, "kind" => row.kind, "observed_state" => row.observed_state}
-            end,
-          "rows" => projection["workloads"] || []
+            end
         }
 
       {:error, _reason} ->
-        %{"status" => "unavailable", "environments" => [], "workloads" => [], "rows" => []}
+        %{"status" => "unavailable", "environments" => [], "workloads" => []}
     end
   end
-
-  # ---- Runtime authentication ----
-
-  # The bounded Compute and device projections name the targets; the panel
-  # reads live status only for the target it opens.
-  defp runtime_auth_targets(workloads, environments) do
-    compute =
-      for row <- workloads,
-          "external." <> provider <- [Map.get(row, :template_key)],
-          provider in @external_providers do
-        target(row.id, provider, row.observed_state, %{
-          "kind" => "compute_workload",
-          "workload_id" => row.id
-        })
-      end
-
-    connected =
-      Stream.flat_map(environments, fn env ->
-        for runtime <- external_runtimes(env), runtime["provider"] in @external_providers do
-          target(runtime["device_runtime_id"], runtime["provider"], env["status"], %{
-            "kind" => "connected_runtime",
-            "device_id" => env["device_id"],
-            "runtime_id" => runtime["device_runtime_id"]
-          })
-        end
-      end)
-
-    compute |> Stream.concat(connected) |> Enum.take(@runtime_auth_targets)
-  end
-
-  defp target(id, provider, status, target) do
-    %{
-      "id" => id,
-      "provider" => provider,
-      "status" => status,
-      "target" => target,
-      "managed" => target["kind"] == "compute_workload" or provider in @managed_providers
-    }
-  end
-
-  defp linked_request(user, project, "admin", %{"runtime_auth_request" => request_id} = params)
-       when is_binary(request_id) do
-    target = params["runtime_auth_target"]
-
-    case RuntimeAuth.get_request(user.id, project.id, request_id) do
-      {:ok, %{"target" => %{"workload_id" => ^target}} = request} when is_binary(target) ->
-        %{
-          "request_id" => request["request_id"],
-          "action" => request["action"],
-          "target" => request["target"]
-        }
-
-      _other ->
-        nil
-    end
-  end
-
-  defp linked_request(_user, _project, _role, _params), do: nil
 
   # ---- Authorization and envelopes ----
 
@@ -476,7 +515,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
       resource_label: project.name,
       result: "denied",
       reason: :forbidden,
-      request_id: Ecto.UUID.generate(),
+      request_id: SystemsRuntime.Proc.uuid(),
       surface: "device",
       metadata:
         Map.merge(
@@ -512,7 +551,11 @@ defmodule BridgeForTeamsWeb.DashboardSwarmDevices do
     do: %{"id" => project.id, "name" => project.name, "role" => role}
 
   defp audit_opts(user),
-    do: [actor_user_id: user.id, actor_label: actor_label(user), request_id: Ecto.UUID.generate()]
+    do: [
+      actor_user_id: user.id,
+      actor_label: actor_label(user),
+      request_id: SystemsRuntime.Proc.uuid()
+    ]
 
   defp actor_label(user), do: text(user.email) || text(user.name) || user.id
 

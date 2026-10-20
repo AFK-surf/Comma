@@ -1,8 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useCallback, useRef, useState } from "react";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
-import type { TaskStatusBucket, TaskSummaryViewModel } from "../task-workspace";
-import type { StatusIndicatorElement } from "../status-indicator";
+import type { VisibleTaskStatusBucket } from "@comma/i18n";
+import type { TaskSummaryViewModel } from "../task-workspace";
+import {
+  loadStatusIndicatorElement,
+  type StatusIndicatorElement,
+} from "../status-indicator";
 import { HomeTasks } from "./HomeTasks";
 
 const storyTasks: TaskSummaryViewModel[] = [
@@ -24,21 +28,12 @@ const storyTasks: TaskSummaryViewModel[] = [
     updatedAt: 1_778_025_600,
   },
   {
-    activityStatus: "queued",
+    activityStatus: "ready_for_review",
     freshness: "fresh",
     id: "task-refraction",
-    statusBucket: "backlog",
+    statusBucket: "needs_review",
     title: "Start on refraction UI library",
     updatedAt: 1_777_939_200,
-  },
-  {
-    activityStatus: "queued",
-    freshness: "fresh",
-    id: "task-report",
-    statusBucket: "backlog",
-    title: "Summarizing recent OpenAI's update and create a HTML",
-    updatedAt: 1_777_852_800,
-    worker: "codex",
   },
   {
     activityStatus: "ready_for_review",
@@ -46,7 +41,8 @@ const storyTasks: TaskSummaryViewModel[] = [
     id: "task-review",
     statusBucket: "needs_review",
     title: "Review the launch checklist for the mobile beta",
-    updatedAt: 1_777_766_400,
+    updatedAt: 1_777_852_800,
+    worker: "codex",
   },
   {
     activityStatus: "done",
@@ -65,7 +61,7 @@ function HomeTasksPlayground({
   onOpenTask: (task: TaskSummaryViewModel) => void;
   tasks: TaskSummaryViewModel[];
 }) {
-  const [status, setStatus] = useState<TaskStatusBucket>("backlog");
+  const [status, setStatus] = useState<VisibleTaskStatusBucket>("in_progress");
   const [tasks, setTasks] = useState(initialTasks);
 
   const addTask = useCallback(() => {
@@ -98,6 +94,7 @@ function HomeTasksPlayground({
 const meta = {
   title: "App components/Home Tasks",
   component: HomeTasks,
+  loaders: [loadStatusIndicatorElement],
   parameters: {
     layout: "centered",
     docs: {
@@ -116,7 +113,7 @@ export const Default: Story = {
   args: {
     onOpenTask: fn(),
     onStatusChange: fn(),
-    status: "backlog",
+    status: "in_progress",
     tasks: storyTasks,
   },
   render: (args) => (
@@ -128,7 +125,7 @@ export const SwitchesCardsWithIndicator: Story = {
   args: {
     onOpenTask: fn(),
     onStatusChange: fn(),
-    status: "backlog",
+    status: "in_progress",
     tasks: storyTasks,
   },
   render: (args) => (
@@ -145,21 +142,19 @@ export const SwitchesCardsWithIndicator: Story = {
     });
     const indicator =
       canvasElement.querySelector<StatusIndicatorElement>("status-indicator");
-    indicator!.value = "in-progress";
+    indicator!.value = "needs-review";
     indicator!.dispatchEvent(
       new CustomEvent("change", {
         bubbles: true,
         composed: true,
-        detail: { index: 1, label: "In progress", value: "in-progress" },
+        detail: { index: 1, label: "Needs Review", value: "needs-review" },
       })
     );
 
     await waitFor(() => {
       const cards = canvas.getAllByTestId("home-task-card");
       expect(cards).toHaveLength(2);
-      expect(cards[0]).toHaveTextContent(
-        "Summarizing recent OpenAI's update and create a HTML"
-      );
+      expect(cards[0]).toHaveTextContent("Start on refraction UI library");
     });
   },
 };
@@ -177,7 +172,7 @@ function NewCardPlayground({
 }: {
   onOpenTask: (task: TaskSummaryViewModel) => void;
 }) {
-  const [status, setStatus] = useState<TaskStatusBucket>("in_progress");
+  const [status, setStatus] = useState<VisibleTaskStatusBucket>("in_progress");
   const [tasks, setTasks] = useState(storyTasks);
   const counterRef = useRef(0);
 
@@ -297,7 +292,7 @@ export const NoTasks: Story = {
   args: {
     onOpenTask: fn(),
     onStatusChange: fn(),
-    status: "backlog",
+    status: "in_progress",
     tasks: [],
   },
   render: (args) => (
@@ -305,7 +300,7 @@ export const NoTasks: Story = {
       <HomeTasks
         onOpenTask={args.onOpenTask}
         onStatusChange={args.onStatusChange}
-        status="backlog"
+        status="in_progress"
         tasks={[]}
       />
     </div>

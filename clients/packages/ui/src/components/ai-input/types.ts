@@ -6,7 +6,7 @@ import type {
 } from "react";
 import type { AiInputMenuRegistration, AiInputRichValue } from "./richText";
 
-export type AiInputAttachmentType = "image" | "file" | "quote";
+export type AiInputAttachmentType = "image" | "file" | "quote" | "snippet";
 
 /**
  * Where an attachment is in its upload. Image tiles show this on the tile
@@ -24,6 +24,10 @@ export interface AiInputAttachment {
   alt?: string;
   /** Full plain text revealed on hover. Quote chips carry the whole selection. */
   detail?: string;
+  /** The snippet tile's mark, such as the brand of the app the text came from. */
+  icon?: ReactNode;
+  /** Called when a snippet is pressed to move its text into the prompt. */
+  onExpand?: () => void;
   /** Defaults to "ready" — a settled attachment showing its own content. */
   state?: AiInputAttachmentState;
   onRemove?: () => void;
@@ -85,6 +89,12 @@ export type AiInputProps = AiInputNativeAttributes & {
    * a drop does. Text-only pastes are untouched.
    */
   onPasteFiles?: (clipboardData: DataTransfer) => void;
+  /**
+   * A paste of plain text, from the keyboard or the edit menu. Return true to
+   * take the text, such as to stage a long paste as a snippet attachment; the
+   * prompt then leaves it out.
+   */
+  onPasteText?: (text: string) => boolean;
   /** Overlay title while files are dragged over; defaults to `ui_ai_drop_anything_here`. */
   dropPlaceholder?: string;
   onAccessPress?: () => void;

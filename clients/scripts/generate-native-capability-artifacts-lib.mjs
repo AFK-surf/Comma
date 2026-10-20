@@ -502,12 +502,9 @@ export interface GeneratedNativePreloadBridgeHelpers {
     event: NativeEventLeaf<Payload>,
     listener: (payload: Payload) => void
   ): () => void;
-  importLocalFile<Output>(
-    contract: NativeCommandContract<
-      { path: string; sourcePath: string; space: string },
-      Output
-    >,
-    input: { path: string; source: unknown; space: string }
+  stageLocalFile<Output>(
+    contract: NativeCommandContract<{ sourcePath: string }, Output>,
+    input: { source: unknown }
   ): Promise<Output>;
 }
 
@@ -617,7 +614,7 @@ function renderGeneratedPreloadBridgeEntries({ commands, events, states }) {
       const inputType = `GeneratedNativeCommandInput<typeof ${entry.exportName}>`;
       const invocation =
         entry.preloadTransform === "file-path-from-file"
-          ? `helpers.importLocalFile(${entry.exportName}.contract`
+          ? `helpers.stageLocalFile(${entry.exportName}.contract`
           : entry.preloadTransform === "chat-attachment-files"
             ? `helpers.prepareChatAttachments(${entry.exportName}.contract`
             : `helpers.invoke(${entry.exportName}.contract`;

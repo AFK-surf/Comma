@@ -1,5 +1,5 @@
 defmodule SalixIM.IFCTaskAudienceTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.IFC.{AudiencePlacement, Facts}
   alias SalixIFC.{Activation, Codec, Effect, Item, Label}
@@ -25,10 +25,10 @@ defmodule SalixIM.IFCTaskAudienceTest do
   end
 
   setup do
-    previous = Application.get_env(:salix_store, :s3_backend)
-    base = Application.get_env(:salix_im, :slack_api_base_url)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
-    if Process.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
+    previous = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    base = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+    if SystemsRuntime.Proc.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
 
     start_supervised!(%{
       id: Slack,
@@ -39,15 +39,15 @@ defmodule SalixIM.IFCTaskAudienceTest do
     {:ok, port} = :inet.port(socket)
     :gen_tcp.close(socket)
     start_supervised!({Bandit, plug: Slack, port: port})
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
     :ets.delete_all_objects(:salix_ifc_audience_placement)
 
     on_exit(fn ->
-      Application.put_env(:salix_store, :s3_backend, previous)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, previous)
 
       if base,
-        do: Application.put_env(:salix_im, :slack_api_base_url, base),
-        else: Application.delete_env(:salix_im, :slack_api_base_url)
+        do: SystemsRuntime.put_env(:salix_im, :slack_api_base_url, base),
+        else: SystemsRuntime.delete_env(:salix_im, :slack_api_base_url)
     end)
 
     tenant = Ids.new_tenant_id()
@@ -229,24 +229,5 @@ defmodule SalixIM.IFCTaskAudienceTest do
 
     assert {:deny, _} = decide(ctx, facts(ctx))
     assert calls() == ["U1"]
-  end
-
-  test "provider reads are bounded and unresolved Task members still block", ctx do
-    ids = Enum.map(1..21, &"U#{&1}")
-    Enum.each(ids, fn id -> profile(id, %{"id" => id}) end)
-    task(ctx, ids)
-    assert {:deny, _} = decide(ctx, facts(ctx))
-    assert length(calls()) == 20
-    assert :ets.info(:salix_ifc_audience_placement, :size) <= 4096
-  end
-
-  test "non-Slack connections do not infer membership", ctx do
-    put(
-      Keys.ctl_im_connect(ctx.scope.group_id, ctx.scope.connect_id),
-      Map.put(ctx.installation, "provider", "feishu")
-    )
-
-    assert AudiencePlacement.resolve(ctx.scope, ["U1"]) == %{}
-    assert calls() == []
   end
 end

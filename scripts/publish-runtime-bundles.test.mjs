@@ -15,7 +15,7 @@ test("runtime bundle publication is content-addressed and immutable", () => {
   mkdirSync(transport);
   mkdirSync(fakeBin);
 
-  const images = ["external", "meeting", "shell"].map((className, index) => {
+  const images = ["meeting", "shell", "station"].map((className, index) => {
     const bytes = Buffer.from(`${className}-oci-archive`);
     const sha = createHash("sha256").update(bytes).digest("hex");
     const manifestDigest = `sha256:${String(index + 4).repeat(64)}`;

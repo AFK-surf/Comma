@@ -4,9 +4,11 @@ defmodule SalixAgent.Tools.SSH do
   key (`SalixAgent.SSH.Identity`) and checked against the Group's
   trust-on-first-use host keys (`SalixAgent.SSH.KnownHosts`).
 
-  `ssh.open` reaches a public `host` directly, or a Tailcat server through the
+  `ssh.open` reaches a public `host` directly, a Tailcat server through the
   node's Tailcat gateway (`tailcat`: an address or a DNS name with a
-  `tailcat=` TXT record; `SalixAgent.SSH.TailcatGateway`).
+  `tailcat=` TXT record; `SalixAgent.SSH.TailcatGateway`), or any `host` the
+  gateway device `via_device_id` reaches (`SalixAgent.SSH.DeviceRelay`), or a
+  device in the Group's tailnet (`via_tailnet`; `SalixAgent.Tailnet`).
 
   `ssh.open` starts a long-lived interactive PTY shell owned by the calling
   Agent session (`SalixAgent.SSH.Sessions`); the other session tools operate
@@ -47,7 +49,7 @@ defmodule SalixAgent.Tools.SSH do
        "Return the Group's SSH public key and fingerprint (created on first use). Every Agent in the Group authenticates with this key: give the user the public_key line to add to ~/.ssh/authorized_keys on hosts the Agent should reach.",
        schema(%{}), &__MODULE__.public_key/2, @short_wait, [safety: "read"]},
       {"ssh.open",
-       "Open a long-lived interactive SSH shell (PTY) to a public host as user, authenticated with the Group SSH key. Pass host, or tailcat instead to reach a Tailcat server (the user runs tailcat serve 22, or tailcat serve ssh, without --allow, and gives you its tailcat address or a DNS name with a tailcat= TXT record; the Group SSH key still authenticates); port is then the port on the Tailcat server. The first connection to a host trusts and records its host key; a changed key is refused with both fingerprints. Returns ssh_session_id, host_key and the first output (banner, prompt). Use ssh.write/ssh.read/ssh.screen on the session, and ssh.close when done. Sessions belong to this Agent session, close after 30 minutes without use, and do not survive Agent restarts or platform deploys; run long work under tmux or screen on the remote host. Never replayed automatically. On auth_failed, give the user the returned public_key to install.",
+       "Open a long-lived interactive SSH shell (PTY) to a public host as user, authenticated with the Group SSH key. Pass host, or tailcat instead to reach a Tailcat server (the user runs tailcat serve 22, or tailcat serve ssh, without --allow, and gives you its tailcat address or a DNS name with a tailcat= TXT record; the Group SSH key still authenticates); port is then the port on the Tailcat server. To reach a host on the user's own network, such as 192.168.1.20 or nas.local, pass via_device_id with host: a gateway device (capabilities include lan_gateway) dials host from its network. To reach a device in the Group's tailnet (see tailnet.status and tailnet.peers), pass via_tailnet: true with host set to its MagicDNS name or Tailscale address. The first connection to a host trusts and records its host key; a changed key is refused with both fingerprints. Returns ssh_session_id, host_key and the first output (banner, prompt). Use ssh.write/ssh.read/ssh.screen on the session, and ssh.close when done. Sessions belong to this Agent session, close after 30 minutes without use, and do not survive Agent restarts or platform deploys; run long work under tmux or screen on the remote host. Never replayed automatically. On auth_failed, give the user the returned public_key to install.",
        schema(
          %{
            "host" => %{"type" => "string", "pattern" => @host_pattern},
@@ -56,6 +58,16 @@ defmodule SalixAgent.Tools.SSH do
              "pattern" => @tailcat_pattern,
              "description" =>
                "Instead of host: a tailcat address (tc...) or a DNS name with a tailcat= TXT record."
+           },
+           "via_device_id" => %{
+             "type" => "string",
+             "description" =>
+               "With host: a gateway device_id from device.list. The gateway resolves and dials host from its own network."
+           },
+           "via_tailnet" => %{
+             "type" => "boolean",
+             "description" =>
+               "With host: dial host in the Group's tailnet (a MagicDNS name or Tailscale address from tailnet.peers)."
            },
            "port" => %{"type" => "integer", "minimum" => 1, "maximum" => 65_535},
            "user" => %{"type" => "string", "pattern" => @user_pattern},
@@ -249,6 +261,8 @@ defmodule SalixAgent.Tools.SSH do
       group_id: group_id!(ctx),
       host: host,
       tailcat: tailcat,
+      via_device_id: via_device_id!(args, tailcat),
+      via_tailnet: via_tailnet!(args, tailcat),
       port: int(args, "port", 22),
       user: string!(args, "user"),
       term: Map.get(args, "term") || "xterm-256color",
@@ -390,6 +404,44 @@ defmodule SalixAgent.Tools.SSH do
     end
   end
 
+  defp via_device_id!(args, tailcat) do
+    case Map.get(args, "via_device_id") do
+      nil ->
+        nil
+
+      _device_id when is_binary(tailcat) ->
+        raise "ssh.open takes via_device_id with host, not tailcat"
+
+      device_id when is_binary(device_id) and device_id != "" ->
+        device_id
+
+      _ ->
+        raise "via_device_id must be a non-empty string"
+    end
+  end
+
+  defp via_tailnet!(args, tailcat) do
+    case Map.get(args, "via_tailnet") do
+      nil ->
+        false
+
+      false ->
+        false
+
+      true when is_binary(tailcat) ->
+        raise "ssh.open takes via_tailnet with host, not tailcat"
+
+      true when is_map_key(args, "via_device_id") ->
+        raise "ssh.open takes one of via_tailnet and via_device_id"
+
+      true ->
+        true
+
+      _ ->
+        raise "via_tailnet must be a boolean"
+    end
+  end
+
   defp session_request(args, ctx, message, wait_ms) do
     reply(Sessions.request(owner(ctx), id!(args), message, wait_ms + 5_000))
   end
@@ -468,7 +520,7 @@ defmodule SalixAgent.Tools.SSH do
     seed =
       case Map.get(ctx, :tool_call_id) do
         id when is_binary(id) and id != "" -> id
-        _ -> Base.encode16(:crypto.strong_rand_bytes(16))
+        _ -> Base.encode16(SystemsRuntime.Proc.random_bytes(16))
       end
 
     digest =

@@ -32,7 +32,7 @@ defmodule SalixIM.SlackCommandSync do
   end
 
   def sync(connect) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = do_sync(connect)
 
     outcome =
@@ -41,9 +41,9 @@ defmodule SalixIM.SlackCommandSync do
         _ -> "error"
       end
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :slack_command_sync, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{outcome: outcome}
     )
 
@@ -107,7 +107,7 @@ defmodule SalixIM.SlackCommandSync do
           "failure_stage" => nil,
           "failure_outcome" => nil,
           "authorization_required" => required,
-          "synced_at" => System.system_time(:second),
+          "synced_at" => SystemsClock.system_time(:second),
           "managed_names" => Enum.map(SlackCommands.list(connect), & &1["command"])
         })
 
@@ -266,7 +266,8 @@ defmodule SalixIM.SlackCommandSync do
 
   defp token(tenant_id, profile) do
     with {:ok, credential} <- SlackCommandControl.credential(tenant_id, profile) do
-      if is_integer(credential["exp"]) and credential["exp"] > System.system_time(:second) + 300 do
+      if is_integer(credential["exp"]) and
+           credential["exp"] > SystemsClock.system_time(:second) + 300 do
         {:ok, credential}
       else
         with {:ok, rotated} <-

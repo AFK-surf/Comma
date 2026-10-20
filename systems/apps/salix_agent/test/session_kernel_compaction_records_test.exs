@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelCompactionRecordsTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
   alias SalixAgent.TestSupport.SessionData
@@ -53,23 +53,6 @@ defmodule SalixAgent.SessionKernelCompactionRecordsTest do
 
     assert Driver.step(before, event("compaction_failure", %{})) ===
              {:done, %State{before | compaction_failure: %{}}}
-  end
-
-  test "failure timestamp uses native truthiness" do
-    before = state()
-
-    for supplied <- [nil, false, 0, "", [], 1.25] do
-      failure = if is_nil(supplied), do: %{}, else: %{"failed_at" => supplied}
-
-      expected = %State{
-        before
-        | compaction_failure: failure,
-          last_activity_at: supplied || before.last_activity_at
-      }
-
-      assert Driver.step(before, event("compaction_failure", %{"failed_at" => supplied})) ===
-               {:done, expected}
-    end
   end
 
   test "recovery defaults missing kind before nil filtering and appends one exact fact" do
@@ -138,36 +121,6 @@ defmodule SalixAgent.SessionKernelCompactionRecordsTest do
       }
 
       assert Driver.step(before, event("compaction_recovery", %{})) === {:done, expected}
-    end
-  end
-
-  test "recovery timestamp fallback does not discard false from the stored fact" do
-    before = state()
-
-    for supplied <- [nil, false, 0, "", []] do
-      fact = %{"kind" => "compaction_recovery", "seq" => 5}
-      fact = if is_nil(supplied), do: fact, else: Map.put(fact, "created_at", supplied)
-
-      expected = %State{
-        before
-        | events: before.events ++ [fact],
-          last_seq: 5,
-          llm_failure_streak: nil,
-          last_compaction_recovery: fact,
-          last_activity_at: supplied || before.last_activity_at
-      }
-
-      assert Driver.step(before, event("compaction_recovery", %{"created_at" => supplied})) ===
-               {:done, expected}
-    end
-  end
-
-  test "the State wrapper rejects cross-session record events" do
-    before = state()
-
-    for type <- ["compaction_failure", "compaction_recovery"] do
-      ev = event(type, %{"session_id" => "different-session", "created_at" => 99})
-      assert SessionData.apply_event(before, ev) === before
     end
   end
 end

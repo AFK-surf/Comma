@@ -7,7 +7,7 @@ defmodule BridgeForTeams.ReleaseMigrationE2ETest do
   release entrypoint and is covered by canonical organization-write tests.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias BridgeForTeams.Repo
 

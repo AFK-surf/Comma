@@ -19,7 +19,7 @@ defmodule SalixIM.Ports.LocalFileImport do
   def materialize_delivery(_agent_id, _delivery), do: {:error, :invalid_local_file_delivery}
 
   defp impl,
-    do: Application.get_env(:salix_im, :local_file_import_mod, __MODULE__.Unconfigured)
+    do: SystemsRuntime.get_env(:salix_im, :local_file_import_mod, __MODULE__.Unconfigured)
 
   defp local_file_blocks?(content) when is_list(content),
     do: Enum.any?(content, &match?(%{"type" => "local_file"}, &1))

@@ -57,11 +57,14 @@ defmodule BridgeForTeams.TriageCollaborationCompositionTest do
   end
 
   setup do
+    # Agents run under the application's supervisors, outside the test's
+    # process tree; they read the test's bindings (the local search reader).
+    :ok = SystemsRuntime.Test.shared()
     profiles = RoleProfiles.read!()
     assert System.get_env("COMMA_TRIAGE_WORKER_CONTEXT_DIAGNOSTIC") in [nil, ""]
     SalixStore.S3.Fake.reset()
-    unless Process.whereis(Ids), do: start_supervised!(Ids)
-    :ok = Fixture.install_clickhouse_reader!(self())
+    unless SystemsRuntime.Proc.whereis(Ids), do: start_supervised!(Ids)
+    :ok = Fixture.install_clickhouse_reader!(SystemsRuntime.Proc.self())
     restore_runtime = Live.install_runtime!()
 
     state =
@@ -83,10 +86,10 @@ defmodule BridgeForTeams.TriageCollaborationCompositionTest do
          end}
       )
 
-    previous_state = Application.get_env(:bridge_for_teams_core, @state_key)
-    previous_base = Application.get_env(:salix_im, :slack_api_base_url)
-    Application.put_env(:bridge_for_teams_core, @state_key, state)
-    Application.put_env(:salix_agent, :llm, BoundedLiveProvider)
+    previous_state = SystemsRuntime.get_env(:bridge_for_teams_core, @state_key)
+    previous_base = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    SystemsRuntime.put_env(:bridge_for_teams_core, @state_key, state)
+    SystemsRuntime.put_env(:salix_agent, :llm, BoundedLiveProvider)
 
     port =
       SalixIM.TestSupport.BanditServer.start!(fn port ->
@@ -94,7 +97,7 @@ defmodule BridgeForTeams.TriageCollaborationCompositionTest do
       end)
 
     base = "http://127.0.0.1:#{port}/api"
-    Application.put_env(:salix_im, :slack_api_base_url, base)
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, base)
 
     restore_transports =
       Transports.install!(
@@ -104,7 +107,7 @@ defmodule BridgeForTeams.TriageCollaborationCompositionTest do
         llm_request_observer: &SourceImageObserver.capture_request(state, &1, &2),
         exa: fn request -> Context.web_response(Agent.get(state, & &1.context), request) end,
         capture: fn event ->
-          if Process.alive?(state) do
+          if SystemsRuntime.Proc.alive?(state) do
             Agent.update(
               state,
               &Map.update!(&1, :transport_events, fn events -> [event | events] end)
@@ -128,7 +131,7 @@ defmodule BridgeForTeams.TriageCollaborationCompositionTest do
   defmodule FollowUpThreadReader do
     def read(_authority, _connect, _target) do
       state =
-        Application.fetch_env!(:bridge_for_teams_core, :triage_investigation_composition_state)
+        SystemsRuntime.fetch_env!(:bridge_for_teams_core, :triage_investigation_composition_state)
 
       {:ok, %{"messages" => Agent.get(state, & &1.context.source_messages)}}
     end
@@ -138,7 +141,7 @@ defmodule BridgeForTeams.TriageCollaborationCompositionTest do
   @tag :triage_autonomous_followup
   test "Worker-owned recovery verification creates and fires a follow-up", context do
     original = Corpus.fetch!("historical_message_sources")
-    root = Integer.to_string(System.system_time(:second)) <> ".000001"
+    root = Integer.to_string(SystemsClock.system_time(:second)) <> ".000001"
 
     message =
       original["source_messages"]
@@ -180,8 +183,8 @@ defmodule BridgeForTeams.TriageCollaborationCompositionTest do
     due = SalixCluster.Schedules.next_fire_ms(schedule)
     assert due == DateTime.to_unix(entry.next_check_at, :millisecond)
 
-    previous = Application.get_env(:salix_im, :triage_follow_up_thread_reader_mod)
-    Application.put_env(:salix_im, :triage_follow_up_thread_reader_mod, FollowUpThreadReader)
+    previous = SystemsRuntime.get_env(:salix_im, :triage_follow_up_thread_reader_mod)
+    SystemsRuntime.put_env(:salix_im, :triage_follow_up_thread_reader_mod, FollowUpThreadReader)
     on_exit(fn -> restore_env(:salix_im, :triage_follow_up_thread_reader_mod, previous) end)
 
     assert {:ok, sweep} = SalixCluster.Schedules.run_once(now: due)
@@ -324,13 +327,18 @@ defmodule BridgeForTeams.TriageCollaborationCompositionTest do
 
     if opts[:direct_correction_trial] do
       assert Corpus.entrypoint(case_data) == :direct_command
-      Application.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, CapturedHTTPPageReader)
+
+      SystemsRuntime.put_env(
+        :salix_im,
+        :slack_triage_clickhouse_reader_mod,
+        CapturedHTTPPageReader
+      )
     end
 
     # File-only messages have no lexical text unit. Their attachments remain
     # discoverable through the real original-thread read/fetch-file operations.
     searchable = Enum.reject(context.messages, &(String.trim(&1["text"]) == ""))
-    on_exit(Search.install!(state, connect, searchable))
+    Search.install!(state, connect, searchable)
 
     role_instructions = System.fetch_env!("COMMA_TRIAGE_ROLE_INSTRUCTIONS") |> Jason.decode!()
     configure_selected_agent!(router, "router", profiles.router, role_instructions["router"])
@@ -391,13 +399,13 @@ defmodule BridgeForTeams.TriageCollaborationCompositionTest do
     )
 
     if arm = opts[:source_authority_arm] do
-      {:ok, binding} = previous = Application.fetch_env(:salix_im, :task_create_mod)
-      Application.put_env(:salix_im, :task_create_mod, SourceAuthorityDiagnostic)
+      {:ok, binding} = previous = SystemsRuntime.fetch_env(:salix_im, :task_create_mod)
+      SystemsRuntime.put_env(:salix_im, :task_create_mod, SourceAuthorityDiagnostic)
 
       on_exit(fn ->
         case previous do
-          {:ok, value} -> Application.put_env(:salix_im, :task_create_mod, value)
-          :error -> Application.delete_env(:salix_im, :task_create_mod)
+          {:ok, value} -> SystemsRuntime.put_env(:salix_im, :task_create_mod, value)
+          :error -> SystemsRuntime.delete_env(:salix_im, :task_create_mod)
         end
       end)
 
@@ -605,7 +613,7 @@ defmodule BridgeForTeams.TriageCollaborationCompositionTest do
     }
 
     raw = Jason.encode!(envelope)
-    timestamp = System.system_time(:second)
+    timestamp = SystemsClock.system_time(:second)
 
     signature =
       :crypto.mac(:hmac, :sha256, secret, "v0:#{timestamp}:#{raw}") |> Base.encode16(case: :lower)
@@ -793,7 +801,9 @@ defmodule BridgeForTeams.TriageCollaborationCompositionTest do
       # Source reads or completed capability discovery must precede the final
       # answer. Task/Agent listing and a correction alone cannot pass this case.
       actors = if task, do: [router, task["task_worker_agent_id"]], else: [router]
-      cutoff_ms = if result, do: result["created_at"], else: System.system_time(:millisecond)
+
+      cutoff_ms =
+        if result, do: result["created_at"], else: SystemsClock.system_time(:millisecond)
 
       checks =
         for actor <- actors,
@@ -1622,6 +1632,6 @@ defmodule BridgeForTeams.TriageCollaborationCompositionTest do
   end
 
   defp value(map, key), do: Map.get(map, key, Map.get(map, to_string(key)))
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

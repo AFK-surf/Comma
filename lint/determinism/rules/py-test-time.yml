@@ -1,0 +1,94 @@
+id: py-test-sleep
+language: python
+severity: error
+message: "A test sleeps real time."
+note: |
+  Wait for the event (a line, a socket answer, a process exit) instead.
+metadata:
+  category: sleep
+rule:
+  all:
+    - kind: call
+    - has:
+        field: function
+        regex: "^(time\\.sleep|asyncio\\.sleep|sleep)$"
+files:
+  - "clients/**/test_*.py"
+  - "systems/**/test_*.py"
+  - "systems/**/*_test.py"
+  - ".github/**/test_*.py"
+  - "k8s/vast-inference/test_*.py"
+  - "k8s/salix-vmm-gateway/test_*.py"
+---
+id: py-test-clock
+language: python
+severity: error
+message: "A test reads the machine clock."
+note: |
+  Use a fixed time or a clock the test controls.
+metadata:
+  category: clock
+rule:
+  all:
+    - kind: call
+    - has:
+        field: function
+        regex: "^(time\\.(time|monotonic|perf_counter|time_ns|monotonic_ns)|datetime\\.(now|utcnow|today)|datetime\\.datetime\\.(now|utcnow|today)|date\\.today)$"
+files:
+  - "clients/**/test_*.py"
+  - "systems/**/test_*.py"
+  - "systems/**/*_test.py"
+  - ".github/**/test_*.py"
+  - "k8s/vast-inference/test_*.py"
+  - "k8s/salix-vmm-gateway/test_*.py"
+---
+id: py-test-deadline
+language: python
+severity: error
+message: "A test bounds a wait by real time."
+note: |
+  The wait fails when the machine is slower than the number. Wait for the
+  event with no deadline of its own.
+metadata:
+  category: deadline
+rule:
+  all:
+    - kind: keyword_argument
+    - has:
+        field: name
+        regex: "^timeout$"
+    - has:
+        field: value
+        any:
+          - kind: integer
+          - kind: float
+        regex: "^[1-9]|^0\\.[0-9]*[1-9]"
+files:
+  - "clients/**/test_*.py"
+  - "systems/**/test_*.py"
+  - "systems/**/*_test.py"
+  - ".github/**/test_*.py"
+  - "k8s/vast-inference/test_*.py"
+  - "k8s/salix-vmm-gateway/test_*.py"
+---
+id: py-test-random
+language: python
+severity: error
+message: "A test uses unseeded randomness."
+note: |
+  Use fixed values or a seeded generator.
+metadata:
+  category: random
+rule:
+  all:
+    - kind: call
+    - has:
+        field: function
+        regex: "^(random\\.[a-z_]+|uuid\\.uuid4|os\\.urandom|secrets\\.[a-z_]+)$"
+files:
+  - "clients/**/test_*.py"
+  - "systems/**/test_*.py"
+  - "systems/**/*_test.py"
+  - ".github/**/test_*.py"
+  - "k8s/vast-inference/test_*.py"
+  - "k8s/salix-vmm-gateway/test_*.py"

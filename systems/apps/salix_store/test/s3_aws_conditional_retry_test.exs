@@ -9,7 +9,7 @@ defmodule SalixStore.S3.AWSConditionalRetryTest do
   retry sequence (request consumed, connection closed without a response →
   retry → HTTP response) is exercised, not a stubbed classification.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.S3.AWS
 
@@ -21,8 +21,8 @@ defmodule SalixStore.S3.AWSConditionalRetryTest do
 
     {:ok, port} = :inet.port(listener)
 
-    Application.put_env(:salix_store, :s3_endpoint, "http://127.0.0.1:#{port}")
-    Application.put_env(:salix_store, :s3_bucket, "retry-test")
+    SystemsRuntime.put_env(:salix_store, :s3_endpoint, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:salix_store, :s3_bucket, "retry-test")
 
     on_exit(fn ->
       :gen_tcp.close(listener)
@@ -33,7 +33,7 @@ defmodule SalixStore.S3.AWSConditionalRetryTest do
   end
 
   defp serve(listener, script) do
-    Task.async(fn ->
+    SystemsRuntime.Task.async(fn ->
       Enum.each(script, fn action ->
         {:ok, socket} = :gen_tcp.accept(listener, 10_000)
 
@@ -101,7 +101,7 @@ defmodule SalixStore.S3.AWSConditionalRetryTest do
     assert {:error, {:ambiguous, :conditional_retry_412}} =
              AWS.put("cas/retried", "body", if_match: "\"etag\"")
 
-    Task.await(server, 15_000)
+    SystemsRuntime.Task.await(server, :infinity)
 
     # A first-attempt 412 (no transport retry involved) cannot have landed:
     # clean conflict, safe for CAS callers to re-run against.
@@ -110,7 +110,7 @@ defmodule SalixStore.S3.AWSConditionalRetryTest do
     assert {:error, :precondition_failed} =
              AWS.put("cas/clean", "body", if_match: "\"etag\"")
 
-    Task.await(server, 15_000)
+    SystemsRuntime.Task.await(server, :infinity)
 
     # An UNconditional write retried into a 412 (not that S3 produces one)
     # keeps the plain classification — the ambiguity rule is scoped to
@@ -119,7 +119,7 @@ defmodule SalixStore.S3.AWSConditionalRetryTest do
 
     assert {:error, :precondition_failed} = AWS.put("cas/unconditional", "body", [])
 
-    Task.await(server, 15_000)
+    SystemsRuntime.Task.await(server, :infinity)
   end
 
   test "a retried conditional DELETE 412 is ambiguous, a first-attempt 412 is clean", %{
@@ -128,13 +128,13 @@ defmodule SalixStore.S3.AWSConditionalRetryTest do
     # The 412 classification lives on the NATIVE conditional-delete path
     # (emulate mode never sends If-Match on the DELETE). put_all_env cannot
     # remove a key absent from the saved env, so restore explicitly.
-    prev_mode = Application.fetch_env(:salix_store, :s3_conditional_delete)
-    Application.put_env(:salix_store, :s3_conditional_delete, :native)
+    prev_mode = SystemsRuntime.fetch_env(:salix_store, :s3_conditional_delete)
+    SystemsRuntime.put_env(:salix_store, :s3_conditional_delete, :native)
 
     on_exit(fn ->
       case prev_mode do
-        {:ok, value} -> Application.put_env(:salix_store, :s3_conditional_delete, value)
-        :error -> Application.delete_env(:salix_store, :s3_conditional_delete)
+        {:ok, value} -> SystemsRuntime.put_env(:salix_store, :s3_conditional_delete, value)
+        :error -> SystemsRuntime.delete_env(:salix_store, :s3_conditional_delete)
       end
     end)
 
@@ -146,13 +146,13 @@ defmodule SalixStore.S3.AWSConditionalRetryTest do
     assert {:error, {:ambiguous, :conditional_retry_412}} =
              AWS.delete("cas/retried-delete", if_match: "\"etag\"")
 
-    Task.await(server, 15_000)
+    SystemsRuntime.Task.await(server, :infinity)
 
     server = serve(listener, [{:respond, "412 Precondition Failed"}])
 
     assert {:error, :precondition_failed} =
              AWS.delete("cas/clean-delete", if_match: "\"etag\"")
 
-    Task.await(server, 15_000)
+    SystemsRuntime.Task.await(server, :infinity)
   end
 end

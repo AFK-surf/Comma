@@ -1,13 +1,30 @@
-import { render, screen } from "@testing-library/react";
+import { Effect } from "effect";
+import { screen } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
+import { TestClock } from "effect/testing";
 import { describe, expect, it, vi } from "vitest";
-import type { AdminApi, AdminUser } from "../src/adminApi";
+import type {
+  AdminApiShape,
+  AdminUser,
+  AdminWorkspaceAgentModel,
+} from "../src/adminApi";
+import { makeUserWorkspaceBillingModel } from "../src/UserWorkspaceBillingModel";
 import { UserWorkspaceBillingPanel } from "../src/UserWorkspaceBillingPanel";
+import { mountModel, ok, refuse, review, settle, onTestClock } from "./support";
 
 const noSignalNumber = { override: null, platform: null, effective: null };
 
+async function mountPanel(api: Partial<AdminApiShape>, user: AdminUser) {
+  const view = mountModel(makeUserWorkspaceBillingModel(user), { api });
+  view.render(
+    <UserWorkspaceBillingPanel model={view.model} onEnsureWorkspace={vi.fn()} />
+  );
+  await settle();
+  return view;
+}
+
 describe("UserWorkspaceBillingPanel", () => {
-  it("shows both agent models and independently changes the Worker assignment", async () => {
+  it("shows both agent models and independently returns the Worker to the platform model", async () => {
     const billingOverview = {
       workspace: {
         id: "wsp_owner",
@@ -27,182 +44,118 @@ describe("UserWorkspaceBillingPanel", () => {
         has_more: false,
       },
     };
-    const modelOptions = [
-      {
-        template_id: "template_luna",
-        name: "GPT-5.6 Luna",
-        model: "gpt-5.6-luna",
-        provider: "openai",
-        scope: "global" as const,
-      },
-      {
-        template_id: "template_sol",
-        name: "GPT-5.6 Sol",
+    const firstModels = workspaceAgentModelsFixture({
+      worker: {
+        agent_id: "agent_worker",
+        role: "worker" as const,
+        source: "pinned" as const,
         model: "gpt-5.6-sol",
         provider: "openai",
-        scope: "global" as const,
+        selection: { kind: "catalog" as const, model: "gpt-5.6-sol" },
       },
-      {
-        template_id: "template_terra",
-        name: "GPT-5.6 Terra",
-        model: "gpt-5.6-terra",
-        provider: "openai",
-        scope: "global" as const,
-      },
-    ];
-    const firstModels = {
-      workspace_id: "wsp_owner",
-      agents: {
-        router: {
-          agent_id: "agent_router",
-          role: "router" as const,
-          template_id: "template_luna",
-          template_name: "GPT-5.6 Luna",
-          model: "gpt-5.6-luna",
-          provider: "openai",
-        },
-        worker: {
-          agent_id: "agent_worker",
-          role: "worker" as const,
-          template_id: "template_sol",
-          template_name: "GPT-5.6 Sol",
-          model: "gpt-5.6-sol",
-          provider: "openai",
-        },
-      },
-      available_models: modelOptions,
-    };
-    const updatedModels = {
-      ...firstModels,
-      agents: {
-        ...firstModels.agents,
-        worker: {
-          ...firstModels.agents.worker,
-          template_id: "template_terra",
-          template_name: "GPT-5.6 Terra",
-          model: "gpt-5.6-terra",
-        },
-      },
-    };
+    });
+    const updatedModels = workspaceAgentModelsFixture();
     const api = {
-      getUserWorkspaceSignalNumber: vi.fn().mockResolvedValue(noSignalNumber),
+      getUserWorkspaceSignalNumber: vi.fn().mockReturnValue(ok(noSignalNumber)),
       getUserWorkspaceAgentModels: vi
         .fn()
-        .mockResolvedValueOnce(firstModels)
-        .mockResolvedValue(updatedModels),
-      getUserWorkspaceBilling: vi.fn().mockResolvedValue(billingOverview),
+        .mockReturnValueOnce(ok(firstModels))
+        .mockReturnValue(ok(updatedModels)),
+      getUserWorkspaceBilling: vi.fn().mockReturnValue(ok(billingOverview)),
       updateUserWorkspaceAgentModel: vi
         .fn()
-        .mockResolvedValue(updatedModels.agents.worker),
-    } as unknown as AdminApi;
+        .mockReturnValue(ok(updatedModels.agents.worker)),
+    } satisfies Partial<AdminApiShape>;
     const user: AdminUser = {
       id: "usr_owner",
       email: "owner@example.com",
       name: "Owner",
       status: "active",
     };
-    const interaction = userEvent.setup();
+    const interaction = userEvent.setup({ delay: null });
 
-    render(
-      <UserWorkspaceBillingPanel
-        api={api}
-        onAccessDenied={vi.fn()}
-        onApplyRedeemCode={vi.fn()}
-        onBack={vi.fn()}
-        onEnsureWorkspace={vi.fn()}
-        user={user}
-      />
-    );
+    await mountPanel(api, user);
 
-    expect(await screen.findByRole("heading", { name: "Agent models" })).toBeVisible();
-    expect(await screen.findByText("gpt-5.6-luna")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Agent models" })).toBeVisible();
+    expect(screen.getByText("gpt-5.6-luna")).toBeVisible();
     expect(screen.getByText("gpt-5.6-sol")).toBeVisible();
 
     await interaction.click(
       screen.getByRole("button", { name: "Change Worker model" })
     );
-    const pane = await screen.findByRole("region", { name: "Change Worker model" });
-    await interaction.selectOptions(
-      screen.getByRole("combobox", { name: "Worker model" }),
-      "template_terra"
-    );
-    await interaction.type(
-      screen.getByRole("textbox", { name: /^Reason/ }),
-      "Use the approved lower-latency model"
-    );
-    await interaction.click(screen.getByRole("button", { name: "Review command" }));
+    await settle();
+    const pane = screen.getByRole("dialog", { name: "Change Worker model" });
+    const picker = screen.getByRole("combobox", { name: "Worker model" });
+    expect(picker).toHaveValue("catalog:gpt-5.6-sol");
+    await interaction.selectOptions(picker, "Platform default (GPT-5.6 Luna)");
+    await interaction.click(screen.getByRole("button", { name: "Change model…" }));
+    await settle();
 
-    const confirmation = await screen.findByRole("dialog", {
+    const confirmation = screen.getByRole("dialog", {
       name: "Change Worker model?",
     });
-    await interaction.type(
-      screen.getByRole("textbox", { name: /Confirmation/ }),
-      "workspace-agent-model:usr_owner:worker:template_terra"
+    expect(confirmation).toHaveTextContent(
+      "Worker modelgpt-5.6-sol→Platform default (GPT-5.6 Luna)"
     );
-    await interaction.click(screen.getByRole("button", { name: "Confirm" }));
+    await review(
+      interaction,
+      "Change Worker model?",
+      "Use the approved lower-latency model"
+    );
 
-    expect(
-      await screen.findByText("Worker model changed to GPT-5.6 Terra — gpt-5.6-terra.")
-    ).toBeVisible();
+    expect(screen.getByText("Worker model changed to gpt-5.6-luna.")).toBeVisible();
     expect(api.updateUserWorkspaceAgentModel).toHaveBeenCalledWith(
       "usr_owner",
       "worker",
       expect.objectContaining({
-        confirmation: "workspace-agent-model:usr_owner:worker:template_terra",
+        confirmation: "workspace-agent-model:usr_owner:worker:default",
+        model: null,
         reason: "Use the approved lower-latency model",
-        templateId: "template_terra",
       })
     );
     expect(api.getUserWorkspaceAgentModels).toHaveBeenCalledTimes(2);
-    expect(screen.getByText("gpt-5.6-terra")).toBeVisible();
+    expect(screen.getAllByText("gpt-5.6-luna")).toHaveLength(2);
     expect(pane).not.toBeInTheDocument();
     expect(confirmation).not.toBeInTheDocument();
   });
 
   it("shows the Tenant and Agent group ids that the Workspace references", async () => {
     const api = {
-      getUserWorkspaceSignalNumber: vi.fn().mockResolvedValue(noSignalNumber),
+      getUserWorkspaceSignalNumber: vi.fn().mockReturnValue(ok(noSignalNumber)),
       getUserWorkspaceAgentModels: vi
         .fn()
-        .mockResolvedValue(workspaceAgentModelsFixture()),
-      getUserWorkspaceBilling: vi.fn().mockResolvedValue({
-        workspace: {
-          id: "wsp_owner",
-          name: "Owner Workspace",
-          status: "ready",
-          tenant_id: "tnt_owner",
-          group_id: "grp_owner",
-          billing_account_id: "billing_owner",
-          created_at: 1_784_880_000,
-          updated_at: 1_784_880_500,
-        },
-        billing: {
-          account_id: "billing_owner",
-          account_status: "active",
-          current_credits: 1_200,
-          active_grants: [],
-          has_more: false,
-        },
-      }),
-    } as unknown as AdminApi;
+        .mockReturnValue(ok(workspaceAgentModelsFixture())),
+      getUserWorkspaceBilling: vi.fn().mockReturnValue(
+        ok({
+          workspace: {
+            id: "wsp_owner",
+            name: "Owner Workspace",
+            status: "ready",
+            tenant_id: "tnt_owner",
+            group_id: "grp_owner",
+            billing_account_id: "billing_owner",
+            created_at: 1_784_880_000,
+            updated_at: 1_784_880_500,
+          },
+          billing: {
+            account_id: "billing_owner",
+            account_status: "active",
+            current_credits: 1_200,
+            active_grants: [],
+            has_more: false,
+          },
+        })
+      ),
+    } satisfies Partial<AdminApiShape>;
 
-    render(
-      <UserWorkspaceBillingPanel
-        api={api}
-        onAccessDenied={vi.fn()}
-        onApplyRedeemCode={vi.fn()}
-        onBack={vi.fn()}
-        onEnsureWorkspace={vi.fn()}
-        user={{
-          id: "usr_owner",
-          email: "owner@example.com",
-          name: "Owner",
-          status: "active",
-        }}
-      />
-    );
+    await mountPanel(api, {
+      id: "usr_owner",
+      email: "owner@example.com",
+      name: "Owner",
+      status: "active",
+    });
 
-    expect(await screen.findByText("Tenant ID")).toBeVisible();
+    expect(screen.getByText("Tenant ID")).toBeVisible();
     expect(screen.getByText("tnt_owner")).toBeVisible();
     expect(screen.getByText("Agent group ID")).toBeVisible();
     expect(screen.getByText("grp_owner")).toBeVisible();
@@ -210,87 +163,80 @@ describe("UserWorkspaceBillingPanel", () => {
 
   it("keeps Billing visible when the agent-model projection fails and retries it independently", async () => {
     const api = {
-      getUserWorkspaceSignalNumber: vi.fn().mockResolvedValue(noSignalNumber),
+      getUserWorkspaceSignalNumber: vi.fn().mockReturnValue(ok(noSignalNumber)),
       getUserWorkspaceAgentModels: vi
         .fn()
-        .mockRejectedValueOnce(new Error("Salix unavailable"))
-        .mockResolvedValue(workspaceAgentModelsFixture()),
-      getUserWorkspaceBilling: vi.fn().mockResolvedValue({
-        workspace: {
-          id: "wsp_owner",
-          name: "Owner Workspace",
-          status: "ready",
-          tenant_id: "tnt_owner",
-          group_id: "grp_owner",
-          billing_account_id: "billing_owner",
-          created_at: 1_784_880_000,
-          updated_at: 1_784_880_500,
-        },
-        billing: {
-          account_id: "billing_owner",
-          account_status: "active",
-          current_credits: 1_200,
-          active_grants: [],
-          has_more: false,
-        },
-      }),
-    } as unknown as AdminApi;
+        .mockReturnValueOnce(refuse(503, "salix_unavailable", "Salix unavailable"))
+        .mockReturnValue(ok(workspaceAgentModelsFixture())),
+      getUserWorkspaceBilling: vi.fn().mockReturnValue(
+        ok({
+          workspace: {
+            id: "wsp_owner",
+            name: "Owner Workspace",
+            status: "ready",
+            tenant_id: "tnt_owner",
+            group_id: "grp_owner",
+            billing_account_id: "billing_owner",
+            created_at: 1_784_880_000,
+            updated_at: 1_784_880_500,
+          },
+          billing: {
+            account_id: "billing_owner",
+            account_status: "active",
+            current_credits: 1_200,
+            active_grants: [],
+            has_more: false,
+          },
+        })
+      ),
+    } satisfies Partial<AdminApiShape>;
 
-    render(
-      <UserWorkspaceBillingPanel
-        api={api}
-        onAccessDenied={vi.fn()}
-        onApplyRedeemCode={vi.fn()}
-        onBack={vi.fn()}
-        onEnsureWorkspace={vi.fn()}
-        user={{
-          id: "usr_owner",
-          email: "owner@example.com",
-          name: "Owner",
-          status: "active",
-        }}
-      />
-    );
+    await mountPanel(api, {
+      id: "usr_owner",
+      email: "owner@example.com",
+      name: "Owner",
+      status: "active",
+    });
 
-    expect(
-      await screen.findByRole("heading", { name: "Agent models couldn’t be loaded" })
-    ).toBeVisible();
+    expect(screen.getByText("Agent models couldn’t be loaded")).toBeVisible();
     expect(screen.getByText("1,200")).toBeVisible();
 
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await settle();
 
-    expect(await screen.findAllByText("gpt-5.6-luna")).toHaveLength(2);
+    expect(screen.getAllByText("gpt-5.6-luna")).toHaveLength(2);
     expect(api.getUserWorkspaceAgentModels).toHaveBeenCalledTimes(2);
     expect(api.getUserWorkspaceBilling).toHaveBeenCalledTimes(1);
   });
 
   it("keeps redeem-code application disabled for a mismatched Billing owner", async () => {
-    const onApplyRedeemCode = vi.fn();
     const api = {
-      getUserWorkspaceSignalNumber: vi.fn().mockResolvedValue(noSignalNumber),
+      getUserWorkspaceSignalNumber: vi.fn().mockReturnValue(ok(noSignalNumber)),
       getUserWorkspaceAgentModels: vi
         .fn()
-        .mockResolvedValue(workspaceAgentModelsFixture()),
-      getUserWorkspaceBilling: vi.fn().mockResolvedValue({
-        workspace: {
-          id: "wsp_owner",
-          name: "Owner Workspace",
-          status: "ready",
-          tenant_id: "tnt_owner",
-          group_id: "grp_owner",
-          billing_account_id: "billing_owner",
-          created_at: 1_784_880_000,
-          updated_at: 1_784_880_500,
-        },
-        billing: {
-          account_id: "billing_owner",
-          account_status: "identity_mismatch",
-          current_credits: 0,
-          active_grants: [],
-          has_more: false,
-        },
-      }),
-    } as unknown as AdminApi;
+        .mockReturnValue(ok(workspaceAgentModelsFixture())),
+      getUserWorkspaceBilling: vi.fn().mockReturnValue(
+        ok({
+          workspace: {
+            id: "wsp_owner",
+            name: "Owner Workspace",
+            status: "ready",
+            tenant_id: "tnt_owner",
+            group_id: "grp_owner",
+            billing_account_id: "billing_owner",
+            created_at: 1_784_880_000,
+            updated_at: 1_784_880_500,
+          },
+          billing: {
+            account_id: "billing_owner",
+            account_status: "identity_mismatch",
+            current_credits: 0,
+            active_grants: [],
+            has_more: false,
+          },
+        })
+      ),
+    } satisfies Partial<AdminApiShape>;
     const user: AdminUser = {
       id: "usr_owner",
       email: "owner@example.com",
@@ -298,31 +244,24 @@ describe("UserWorkspaceBillingPanel", () => {
       status: "active",
     };
 
-    render(
-      <UserWorkspaceBillingPanel
-        api={api}
-        onAccessDenied={vi.fn()}
-        onApplyRedeemCode={onApplyRedeemCode}
-        onBack={vi.fn()}
-        onEnsureWorkspace={vi.fn()}
-        user={user}
-      />
-    );
+    const view = await mountPanel(api, user);
 
     expect(
-      await screen.findByText(
+      screen.getByText(
         "The Billing account does not belong to this Workspace. No credits or grants were read."
       )
     ).toBeInTheDocument();
-    expect(screen.getAllByText("0")).toHaveLength(2);
+    expect(screen.getByText("0", { selector: "strong" })).toBeInTheDocument();
 
     const applyButton = screen.getByRole("button", {
       name: "Apply redeem code",
     });
     expect(applyButton).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Issue credits" })).toBeDisabled();
     await userEvent.click(applyButton);
-    expect(onApplyRedeemCode).not.toHaveBeenCalled();
+    view.runtime.runFork(view.model.openIssueCredits);
+    await settle();
+    expect(view.links.applyRedeemCode).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Issue credits" })).toBeNull();
   });
 
   it("issues a package-backed grant without sending Billing owner fields", async () => {
@@ -346,98 +285,88 @@ describe("UserWorkspaceBillingPanel", () => {
       },
     };
     const api = {
-      getUserWorkspaceSignalNumber: vi.fn().mockResolvedValue(noSignalNumber),
+      getUserWorkspaceSignalNumber: vi.fn().mockReturnValue(ok(noSignalNumber)),
       getUserWorkspaceAgentModels: vi
         .fn()
-        .mockResolvedValue(workspaceAgentModelsFixture()),
-      getUserWorkspaceBilling: vi.fn().mockResolvedValue(overview),
-      issueUserWorkspaceCredits: vi.fn().mockResolvedValue({
-        manual_grant: {
-          id: "manual_grant_1",
-          billing_account_id: "billing_owner",
-          package_code: "comma_support",
-          package_version: "2026-07",
-          source_type: "manual_adjustment",
-          source_id: "comma_admin:wsp_owner",
-          source_event_id: "audit_1",
-          operator_snapshot: {
-            id: "usr_admin",
-            type: "comma_admin_user",
-            reason: "Approved support grant",
+        .mockReturnValue(ok(workspaceAgentModelsFixture())),
+      getUserWorkspaceBilling: vi.fn().mockReturnValue(ok(overview)),
+      issueUserWorkspaceCredits: vi.fn().mockReturnValue(
+        ok({
+          manual_grant: {
+            id: "manual_grant_1",
+            billing_account_id: "billing_owner",
+            package_code: "comma_support",
+            package_version: "2026-07",
+            source_type: "manual_adjustment",
+            source_id: "comma_admin:wsp_owner",
+            source_event_id: "audit_1",
+            operator_snapshot: {
+              id: "usr_admin",
+              type: "comma_admin_user",
+              reason: "Approved support grant",
+            },
+            valid_from: "2026-07-28T08:00:00Z",
+            expires_at: "2099-08-01T00:00:00Z",
+            credit_grant_id: "grant_1",
+            status: "issued",
           },
-          valid_from: "2026-07-28T08:00:00Z",
-          expires_at: "2099-08-01T00:00:00Z",
-          credit_grant_id: "grant_1",
-          status: "issued",
-        },
-        grant: {
-          id: "grant_1",
-          billing_account_id: "billing_owner",
-          remaining_credits: 4_000_000,
-          valid_from: "2026-07-28T08:00:00Z",
-          expires_at: "2099-08-01T00:00:00Z",
-          status: "active",
-        },
-        idempotent: false,
-      }),
-      listPackageVersions: vi.fn().mockResolvedValue([
-        {
-          id: "package_v1",
-          package_code: "comma_support",
-          package_name: "Comma Support",
-          version: "2026-07",
-          surface: "comma",
-          kind: "one_time",
-          grant_credits: 4_000_000,
-          grant_period: "current_period",
-          status: "active",
-        },
-      ]),
-    } as unknown as AdminApi;
+          grant: {
+            id: "grant_1",
+            billing_account_id: "billing_owner",
+            remaining_credits: 4_000_000,
+            valid_from: "2026-07-28T08:00:00Z",
+            expires_at: "2099-08-01T00:00:00Z",
+            status: "active",
+          },
+          idempotent: false,
+        })
+      ),
+      listPackageVersions: Effect.suspend(
+        vi.fn().mockReturnValue(
+          ok([
+            {
+              id: "package_v1",
+              package_code: "comma_support",
+              package_name: "Comma Support",
+              version: "2026-07",
+              surface: "comma",
+              kind: "one_time",
+              grant_credits: 4_000_000,
+              grant_period: "current_period",
+              status: "active",
+            },
+          ])
+        )
+      ),
+    } satisfies Partial<AdminApiShape>;
     const user: AdminUser = {
       id: "usr_owner",
       email: "owner@example.com",
       name: "Owner",
       status: "active",
     };
-    const interaction = userEvent.setup();
+    const interaction = userEvent.setup({ delay: null });
 
-    render(
-      <UserWorkspaceBillingPanel
-        api={api}
-        onAccessDenied={vi.fn()}
-        onApplyRedeemCode={vi.fn()}
-        onBack={vi.fn()}
-        onEnsureWorkspace={vi.fn()}
-        user={user}
-      />
+    const view = await mountPanel(api, user);
+    // The default expiry is 30 days after now, and must be in the future.
+    await onTestClock(
+      view.runtime.runPromise(TestClock.setTime(Date.parse("2026-07-28T08:00:00Z")))
     );
 
-    await interaction.click(
-      await screen.findByRole("button", { name: "Issue credits" })
-    );
-    const pane = await screen.findByRole("region", {
-      name: "Issue Workspace credits",
-    });
-    expect(
-      screen.queryByRole("dialog", { name: "Issue Workspace credits" })
-    ).toBeNull();
-    await interaction.type(
-      screen.getByRole("textbox", { name: /^Reason/ }),
-      "Approved support grant"
-    );
-    await interaction.click(screen.getByRole("button", { name: "Review command" }));
+    // The account page's header opens the Issue credits drawer.
+    view.runtime.runFork(view.model.openIssueCredits);
+    await settle();
+    const pane = screen.getByRole("dialog", { name: "Issue credits" });
+    await interaction.click(screen.getByRole("button", { name: "Issue credits…" }));
+    await settle();
 
-    const confirmation = await screen.findByRole("dialog", {
+    const confirmation = screen.getByRole("dialog", {
       name: "Issue these credits?",
     });
-    await interaction.type(
-      screen.getByRole("textbox", { name: /Confirmation/ }),
-      "issue-workspace-credits:wsp_owner:comma_support:2026-07"
-    );
-    await interaction.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(confirmation).toHaveTextContent("Credits—→+4,000,000");
+    await review(interaction, "Issue these credits?", "Approved support grant");
 
-    expect(await screen.findByText("Issued 4,000,000 credits.")).toBeInTheDocument();
+    expect(screen.getByText("Issued 4,000,000 credits.")).toBeInTheDocument();
     expect(api.issueUserWorkspaceCredits).toHaveBeenCalledWith(
       "usr_owner",
       expect.objectContaining({
@@ -447,44 +376,41 @@ describe("UserWorkspaceBillingPanel", () => {
         reason: "Approved support grant",
       })
     );
-    const command = vi.mocked(api.issueUserWorkspaceCredits).mock.calls[0]?.[1];
+    const command = api.issueUserWorkspaceCredits.mock.calls[0]?.[1];
     expect(command).not.toHaveProperty("billingAccountId");
     expect(command).not.toHaveProperty("workspaceId");
+    expect(command).toHaveProperty("expiresAt", "2026-08-27T08:00:00.000Z");
     expect(api.getUserWorkspaceBilling).toHaveBeenCalledTimes(2);
     expect(pane).not.toBeInTheDocument();
     expect(confirmation).not.toBeInTheDocument();
   });
 });
 
-function workspaceAgentModelsFixture() {
-  const template = {
-    template_id: "template_luna",
-    name: "GPT-5.6 Luna",
+function workspaceAgentModelsFixture(
+  overrides: { worker?: AdminWorkspaceAgentModel } = {}
+) {
+  const platform = {
+    agent_id: "agent_router",
+    role: "router" as const,
+    source: "platform_default" as const,
     model: "gpt-5.6-luna",
     provider: "openai",
-    scope: "global" as const,
+    selection: { kind: "builtin" as const },
   };
 
   return {
     workspace_id: "wsp_owner",
     agents: {
-      router: {
-        agent_id: "agent_router",
-        role: "router" as const,
-        template_id: template.template_id,
-        template_name: template.name,
-        model: template.model,
-        provider: template.provider,
-      },
-      worker: {
+      router: platform,
+      worker: overrides.worker ?? {
+        ...platform,
         agent_id: "agent_worker",
         role: "worker" as const,
-        template_id: template.template_id,
-        template_name: template.name,
-        model: template.model,
-        provider: template.provider,
       },
     },
-    available_models: [template],
+    platform_defaults: {
+      router: { name: "GPT-5.6 Luna", model: "gpt-5.6-luna", provider: "openai" },
+      worker: { name: "GPT-5.6 Luna", model: "gpt-5.6-luna", provider: "openai" },
+    },
   };
 }

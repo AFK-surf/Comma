@@ -6,6 +6,8 @@ interface Env {
 
 const commaApiPrefix = "/v1";
 const publicSharePath = /^\/s\/[^/]+\/?$/;
+// Only production is for search. Staging and preview hosts stay out of indexes.
+const indexedHost = "app.comma.surf";
 
 // A public Task Share link: the token stays out of referrers and indexes.
 async function servePublicShare(request: Request, env: Env): Promise<Response> {
@@ -26,22 +28,30 @@ async function servePublicShare(request: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  fetch(request: Request, env: Env): Promise<Response> {
-    const pathname = new URL(request.url).pathname;
-    if (pathname === commaApiPrefix || pathname.startsWith(`${commaApiPrefix}/`)) {
-      return Promise.resolve(
-        Response.json(
-          { error: "direct_api_origin_required" },
-          {
-            headers: { "cache-control": "no-store" },
-            status: 404,
-          }
-        )
-      );
-    }
-    if (publicSharePath.test(pathname)) {
-      return servePublicShare(request, env);
-    }
-    return env.ASSETS.fetch(request);
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    const response = await serve(request, url.pathname, env);
+    if (url.hostname === indexedHost) return response;
+    const hidden = new Response(response.body, response);
+    hidden.headers.set("x-robots-tag", "noindex");
+    return hidden;
   },
 };
+
+function serve(request: Request, pathname: string, env: Env): Promise<Response> {
+  if (pathname === commaApiPrefix || pathname.startsWith(`${commaApiPrefix}/`)) {
+    return Promise.resolve(
+      Response.json(
+        { error: "direct_api_origin_required" },
+        {
+          headers: { "cache-control": "no-store" },
+          status: 404,
+        }
+      )
+    );
+  }
+  if (publicSharePath.test(pathname)) {
+    return servePublicShare(request, env);
+  }
+  return env.ASSETS.fetch(request);
+}

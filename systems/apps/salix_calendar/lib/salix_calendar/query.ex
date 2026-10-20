@@ -206,7 +206,7 @@ defmodule SalixCalendar.Query do
 
   defp parallel(values, fun) do
     values
-    |> Task.async_stream(fun,
+    |> SystemsClock.async_stream(fun,
       ordered: true,
       max_concurrency: 8,
       timeout: 5_000,

@@ -2,7 +2,7 @@ defmodule SalixSignalProto.Session.SpqrTest do
   # The post-quantum ratchet (CRS-04b) against the CRS-04b vectors
   # spqr-erasure-code.json, spqr-message-format.json,
   # spqr-authenticator.json, spqr-chain.json and spqr-field-variants.json.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.{Address, Keys, Session}
@@ -184,7 +184,7 @@ defmodule SalixSignalProto.Session.SpqrTest do
 
   describe "state machine" do
     test "an epoch completes in both roles and the next epoch starts with the roles swapped" do
-      secret = :crypto.strong_rand_bytes(32)
+      secret = SystemsRuntime.Proc.random_bytes(32)
 
       {alice, bob} =
         Enum.reduce(1..90, {Spqr.new(:initiator, secret), Spqr.new(:responder, secret)}, fn _step,
@@ -200,10 +200,10 @@ defmodule SalixSignalProto.Session.SpqrTest do
     end
 
     test "a message from a future epoch, or a reused index, is rejected without a state change" do
-      secret = :crypto.strong_rand_bytes(32)
+      secret = SystemsRuntime.Proc.random_bytes(32)
       alice = Spqr.new(:initiator, secret)
       bob = Spqr.new(:responder, secret)
-      {:ok, bytes, _key, _alice} = Spqr.send(alice, :crypto.strong_rand_bytes(64))
+      {:ok, bytes, _key, _alice} = Spqr.send(alice, SystemsRuntime.Proc.random_bytes(64))
 
       {:ok, _key, bob_after} = Spqr.receive(bob, bytes)
       assert Spqr.receive(bob_after, bytes) == {:error, :invalid}
@@ -213,7 +213,7 @@ defmodule SalixSignalProto.Session.SpqrTest do
     end
 
     test "a failed decapsulation when ciphertext 2 completes rejects the message" do
-      secret = :crypto.strong_rand_bytes(32)
+      secret = SystemsRuntime.Proc.random_bytes(32)
 
       # Alternate until Alice, the key owner of epoch 1, waits for ciphertext 2.
       {alice, bob} =
@@ -234,7 +234,7 @@ defmodule SalixSignalProto.Session.SpqrTest do
       # Bob's ciphertext-2 chunks; one of them completes the payload.
       outcome =
         Enum.reduce_while(1..10, {bob, alice, broken}, fn _step, {bob, alice, broken} ->
-          {:ok, bytes, _key, bob} = Spqr.send(bob, :crypto.strong_rand_bytes(64))
+          {:ok, bytes, _key, bob} = Spqr.send(bob, SystemsRuntime.Proc.random_bytes(64))
           {:ok, _key, next_alice} = Spqr.receive(alice, bytes)
 
           case Spqr.receive(broken, bytes) do
@@ -252,14 +252,14 @@ defmodule SalixSignalProto.Session.SpqrTest do
     # still decrypts.
     @tag timeout: 300_000
     test "chunk indices wrap modulo 65536 in a long one-way stream" do
-      secret = :crypto.strong_rand_bytes(32)
+      secret = SystemsRuntime.Proc.random_bytes(32)
 
       {_alice, _bob, chunks} =
         Enum.reduce(
           1..65_540,
           {Spqr.new(:initiator, secret), Spqr.new(:responder, secret), []},
           fn _step, {alice, bob, chunks} ->
-            {:ok, bytes, key, alice} = Spqr.send(alice, :crypto.strong_rand_bytes(64))
+            {:ok, bytes, key, alice} = Spqr.send(alice, SystemsRuntime.Proc.random_bytes(64))
             assert {:ok, ^key, bob} = Spqr.receive(bob, bytes)
             {:ok, %Message{type: 1} = message} = Message.decode(bytes)
             {alice, bob, [{message.chunk_index, message.chunk} | chunks]}
@@ -274,7 +274,7 @@ defmodule SalixSignalProto.Session.SpqrTest do
   end
 
   defp exchange(sender, receiver) do
-    {:ok, bytes, key, sender} = Spqr.send(sender, :crypto.strong_rand_bytes(64))
+    {:ok, bytes, key, sender} = Spqr.send(sender, SystemsRuntime.Proc.random_bytes(64))
     assert {:ok, ^key, receiver} = Spqr.receive(receiver, bytes)
     {sender, receiver}
   end

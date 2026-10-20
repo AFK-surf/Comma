@@ -1,14 +1,23 @@
 defmodule BillingCore.Metering.LLMUsageSinkTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.BillingCore", "Elixir.SalixAnalytics.TypedSinkWorker"]
+
   alias BillingCore.LLMMetering
   alias SalixAnalytics.TypedSinkWorker
   @worker BillingCore.Metering.LLMUsageWorker
 
   defmodule ControlledSink do
     def insert(rows) do
-      send(Process.whereis(:llm_usage_test_owner), {:raw_write, self(), rows})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.whereis(:llm_usage_test_owner),
+        {:raw_write, SystemsRuntime.Proc.self(), rows}
+      )
 
-      receive do
+      SystemsRuntime.Proc.receive do
         :accept -> {:ok, length(rows)}
         :reject -> {:error, :clickhouse_down}
       end
@@ -16,9 +25,9 @@ defmodule BillingCore.Metering.LLMUsageSinkTest do
   end
 
   setup do
-    Process.register(self(), :llm_usage_test_owner)
-    previous = Application.get_env(:billing_core, :llm_typed_sink)
-    Application.put_env(:billing_core, :llm_typed_sink, ControlledSink)
+    Process.register(SystemsRuntime.Proc.self(), :llm_usage_test_owner)
+    previous = SystemsRuntime.get_env(:billing_core, :llm_typed_sink)
+    SystemsRuntime.put_env(:billing_core, :llm_typed_sink, ControlledSink)
 
     worker =
       start_supervised!(
@@ -32,11 +41,11 @@ defmodule BillingCore.Metering.LLMUsageSinkTest do
       )
 
     on_exit(fn ->
-      if pid = Process.whereis(@worker), do: Process.exit(pid, :kill)
+      if pid = SystemsRuntime.Proc.whereis(@worker), do: SystemsRuntime.Proc.exit(pid, :kill)
 
       if previous,
-        do: Application.put_env(:billing_core, :llm_typed_sink, previous),
-        else: Application.delete_env(:billing_core, :llm_typed_sink)
+        do: SystemsRuntime.put_env(:billing_core, :llm_typed_sink, previous),
+        else: SystemsRuntime.delete_env(:billing_core, :llm_typed_sink)
     end)
 
     %{worker: worker}
@@ -46,17 +55,17 @@ defmodule BillingCore.Metering.LLMUsageSinkTest do
     worker: worker
   } do
     assert :ok = LLMMetering.after_llm_call(fact("first"))
-    assert_receive {:raw_write, ^worker, [first]}
-    task = Task.async(fn -> LLMMetering.after_llm_call(fact("second")) end)
-    assert Task.await(task, 1_000) == :ok
+    settle_receive({:raw_write, ^worker, [first]})
+    task = SystemsRuntime.Task.async(fn -> LLMMetering.after_llm_call(fact("second")) end)
+    assert settled_await(task) == :ok
     assert {:error, :queue_full} = LLMMetering.after_llm_call(fact("overflow"))
-    send(worker, :reject)
-    assert_receive {:raw_write, ^worker, [retry]}, 2_000
+    SystemsRuntime.Proc.send(worker, :reject)
+    settle_receive({:raw_write, ^worker, [retry]})
     assert retry == first
-    send(worker, :accept)
-    assert_receive {:raw_write, ^worker, [%{"source_key" => "second"}]}
-    send(worker, :accept)
-    :sys.get_state(worker)
+    SystemsRuntime.Proc.send(worker, :accept)
+    settle_receive({:raw_write, ^worker, [%{"source_key" => "second"}]})
+    SystemsRuntime.Proc.send(worker, :accept)
+    :sys.get_state(worker, :infinity)
   end
 
   test "graceful shutdown drains accepted LLM usage and stores no credentials", %{worker: worker} do
@@ -65,13 +74,13 @@ defmodule BillingCore.Metering.LLMUsageSinkTest do
                Map.merge(fact("shutdown"), %{api_key: "private-key", prompt: "private-prompt"})
              )
 
-    assert_receive {:raw_write, ^worker, [_]}
+    settle_receive({:raw_write, ^worker, [_]})
     entries = :ets.tab2list(@worker) |> Enum.filter(&(tuple_size(&1) == 3))
     refute inspect(entries) =~ "private-key"
     refute inspect(entries) =~ "private-prompt"
-    stopper = Task.async(fn -> GenServer.stop(worker, :normal, 2_000) end)
-    send(worker, :accept)
-    assert :ok = Task.await(stopper)
+    stopper = SystemsRuntime.Task.async(fn -> GenServer.stop(worker, :normal, 2_000) end)
+    SystemsRuntime.Proc.send(worker, :accept)
+    assert :ok = settled_await(stopper)
   end
 
   defp fact(key) do

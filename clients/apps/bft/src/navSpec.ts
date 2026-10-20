@@ -9,8 +9,7 @@ import {
 
 /*
  * The one navigation spec for an organization. The sidebar and the command
- * palette both render from it. Destinations the SPA does not own yet (most
- * Agent Swarm pages) are LiveView pages reached through full-page loads.
+ * palette both render from it; the SPA renders every destination.
  */
 
 export type NavIconName =
@@ -29,8 +28,6 @@ export interface NavLink {
   id: string;
   label: string;
   href: string;
-  /** True when the SPA renders this route; false means a full-page load. */
-  spa: boolean;
   /** Pages of the active Agent Swarm; set only on that swarm's entry. */
   children?: NavLink[];
 }
@@ -76,18 +73,17 @@ export const triagePaths: Record<TriageView, string> = {
   knowledge: "/triage/knowledge",
 };
 
-/** An Agent Swarm's pages; `true` marks the ones the SPA renders. */
+/** An Agent Swarm's pages. */
 const projectPages = [
-  ["overview", "projectOverview", "", true],
-  ["tasks", "projectTasks", "/tasks", true],
-  ["agents", "projectAgents", "/agents", true],
-  ["devices", "projectDevices", "/devices", true],
-  ["plugins", "projectPlugins", "/plugins", false],
-  ["skills", "projectSkills", "/skills", false],
-  ["integrations", "projectIntegrations", "/integrations", false],
-  ["connections", "projectConnections", "/connections", false],
-  ["settings", "projectSettings", "/settings", true],
-] as const satisfies readonly [string, keyof typeof messages.nav, string, boolean][];
+  ["overview", "projectOverview", ""],
+  ["tasks", "projectTasks", "/tasks"],
+  ["agents", "projectAgents", "/agents"],
+  ["devices", "projectDevices", "/devices"],
+  ["plugins", "projectPlugins", "/plugins"],
+  ["skills", "projectSkills", "/skills"],
+  ["connections", "projectConnections", "/connections"],
+  ["settings", "projectSettings", "/settings"],
+] as const satisfies readonly [string, keyof typeof messages.nav, string][];
 
 export function projectHref(org: string, project: string, path = "") {
   return orgHref(org, `/projects/${encodeURIComponent(project)}${path}`);
@@ -105,14 +101,12 @@ export function buildOrgNav({
     icon: NavIconName,
     label: string,
     path: string,
-    children: NavLink[] = [],
-    spa = path === ""
+    children: NavLink[] = []
   ): NavItem => ({
     id,
     icon,
     label,
     href: href(path),
-    spa,
     match: path === "" ? "exact" : "prefix",
     children,
   });
@@ -120,7 +114,6 @@ export function buildOrgNav({
     id,
     label,
     href: href(path),
-    spa: true,
   });
   const setting = (id: SettingsPage, label: string) =>
     sub(`settings:${id}`, label, settingsPaths[id]);
@@ -134,14 +127,12 @@ export function buildOrgNav({
       id: `swarm:${id}`,
       label: name,
       href: base,
-      spa: true,
       ...(inside
         ? {
-            children: projectPages.map(([key, label, path, spa]) => ({
+            children: projectPages.map(([key, label, path]) => ({
               id: `swarm:${id}:${key}`,
               label: t[label],
               href: `${base}${path}`,
-              spa,
             })),
           }
         : {}),
@@ -150,54 +141,32 @@ export function buildOrgNav({
 
   const items: (NavItem | false)[] = [
     page("overview", "overview", t.overview, ""),
-    page("swarms", "swarms", t.agentSwarms, "/projects", projects.map(project), true),
+    page("swarms", "swarms", t.agentSwarms, "/projects", projects.map(project)),
     capabilities.meetings &&
-      page(
-        "meetings",
-        "meetings",
-        t.meetings,
-        meetingsPaths.upcoming,
-        [
-          sub("meetings:upcoming", t.meetingsUpcoming, meetingsPaths.upcoming),
-          sub("meetings:past", t.meetingsPast, meetingsPaths.past),
-          sub("meetings:settings", t.meetingsSettings, meetingsPaths.settings),
-        ],
-        true
-      ),
+      page("meetings", "meetings", t.meetings, meetingsPaths.upcoming, [
+        sub("meetings:upcoming", t.meetingsUpcoming, meetingsPaths.upcoming),
+        sub("meetings:past", t.meetingsPast, meetingsPaths.past),
+        sub("meetings:settings", t.meetingsSettings, meetingsPaths.settings),
+      ]),
     capabilities.triage &&
-      page(
-        "triage",
-        "triage",
-        t.slackTriage,
-        triagePaths.overview,
-        [
-          sub("triage:overview", t.triageOverview, triagePaths.overview),
-          sub("triage:timeline", t.triageTimeline, triagePaths.timeline),
-          sub("triage:knowledge", t.triageKnowledge, triagePaths.knowledge),
-        ],
-        true
-      ),
+      page("triage", "triage", t.slackTriage, triagePaths.overview, [
+        sub("triage:overview", t.triageOverview, triagePaths.overview),
+        sub("triage:timeline", t.triageTimeline, triagePaths.timeline),
+        sub("triage:knowledge", t.triageKnowledge, triagePaths.knowledge),
+      ]),
     capabilities.information_flow &&
-      page("data-policy", "dataPolicy", t.dataPolicy, "/information-flow", [], true),
-    capabilities.operations &&
-      page("health", "health", t.health, "/operations", [], true),
-    page("runners", "runners", t.runners, "/fin", [], true),
-    page("members", "members", t.members, "/members", [], true),
-    page("plugins", "plugins", t.plugins, "/plugins", [], true),
+      page("data-policy", "dataPolicy", t.dataPolicy, "/information-flow"),
+    capabilities.operations && page("health", "health", t.health, "/operations"),
+    page("runners", "runners", t.runners, "/fin"),
+    page("members", "members", t.members, "/members"),
+    page("plugins", "plugins", t.plugins, "/plugins"),
     capabilities.settings &&
-      page(
-        "settings",
-        "settings",
-        t.settings,
-        "/settings",
-        [
-          setting("general", t.settingsGeneral),
-          setting("models", t.settingsModels),
-          setting("sso", t.settingsSso),
-          setting("integrations", t.settingsIntegrations),
-        ],
-        true
-      ),
+      page("settings", "settings", t.settings, "/settings", [
+        setting("general", t.settingsGeneral),
+        setting("models", t.settingsModels),
+        setting("sso", t.settingsSso),
+        setting("integrations", t.settingsIntegrations),
+      ]),
   ];
   return items.filter((item): item is NavItem => item !== false);
 }

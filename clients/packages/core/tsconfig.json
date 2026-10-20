@@ -1,0 +1,39 @@
+{
+  "extends": ["../../tsconfig.base.json", "../../tsconfig.effect.json"],
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "lib": ["ES2024", "DOM", "WebWorker.ImportScripts"],
+    "types": ["node"],
+    "outDir": "dist",
+    "rootDir": ".",
+    "paths": {
+      "@comma/recommendation-contract": ["../recommendation-contract/src/index.ts"],
+      "@comma/session-contract": ["../session-contract/src/index.ts"],
+      "@comma/core-kernel": ["../../packages/core-kernel/src/index.ts"],
+      "@comma/core-kernel/client": ["../../packages/core-kernel/src/client/index.ts"],
+      "@comma/core-kernel/testing": ["../../packages/core-kernel/src/testing.ts"],
+      "@comma/core-kernel/node-sql": ["../../packages/core-kernel/src/node-sql.ts"],
+      "@comma/core-kernel/web-worker": [
+        "../../packages/core-kernel/src/worker/relay.ts"
+      ]
+    },
+    "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.core.tsbuildinfo",
+    "noEmit": false
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.json"],
+  "exclude": ["**/*.test.*", "**/*.spec.*", "**/*.stories.*"],
+  "references": [
+    {
+      "path": "../core-kernel"
+    },
+    {
+      "path": "../recommendation-contract"
+    },
+    {
+      "path": "../session-contract"
+    }
+  ]
+}

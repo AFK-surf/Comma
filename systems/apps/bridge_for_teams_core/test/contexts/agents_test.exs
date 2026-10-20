@@ -1,9 +1,9 @@
 defmodule BridgeForTeams.AgentsTest do
   use BridgeForTeams.DataCase, async: false
 
-  alias BridgeForTeams.{Agents, Environments, Observability, Orgs, Projects}
-  alias BridgeForTeams.Schema.{Agent, ProjectDeviceProjection, ReconcileOutbox}
-  alias SalixStore.RuntimeIds
+  alias BridgeForTeams.{Agents, Orgs, Projects}
+  alias BridgeForTeams.Schema.{Agent, ReconcileOutbox}
+  alias BridgeForTeams.TestSupport.LegacyWorker
 
   defmodule RaisingFeeSink do
     def insert(_rows), do: raise("fee sink down")
@@ -11,39 +11,15 @@ defmodule BridgeForTeams.AgentsTest do
 
   defmodule TypedSinkFake do
     def insert(rows) do
-      send(self(), {:bridge_typed_rows, rows})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:bridge_typed_rows, rows})
       {:ok, length(rows)}
     end
   end
 
-  defmodule RuntimeInventoryClient do
-    use BridgeForTeams.TestSupport.CanonicalAgentClient
-    @moduledoc false
-
-    def list_group_envs(group_id, tenant_id) do
-      envs =
-        :bridge_for_teams_core
-        |> Application.get_env(:test_runtime_inventory, [])
-        |> Enum.filter(&(&1["group_id"] == group_id and &1["tenant_id"] == tenant_id))
-
-      {:ok, envs}
-    end
-
-    def page_group_envs(group_id, tenant_id, _opts) do
-      {:ok, envs} = list_group_envs(group_id, tenant_id)
-      {:ok, %{records: envs, next_cursor: nil}}
-    end
-
-    def get_agent(agent_id, tenant_id), do: SalixAgent.Control.get(agent_id, tenant_id)
-
-    def get_agent_projection(agent_id, tenant_id),
-      do: SalixAgent.Control.get(agent_id, tenant_id)
-  end
-
   setup do
     ensure_billing_repo_started()
-    prev_fee_sink = Application.get_env(:billing_core, :fee_control_typed_sink)
-    prev_observer = Application.get_env(:bridge_for_teams_core, :fee_control_observer)
+    prev_fee_sink = SystemsRuntime.get_env(:billing_core, :fee_control_typed_sink)
+    prev_observer = SystemsRuntime.get_env(:bridge_for_teams_core, :fee_control_observer)
     SalixStore.S3.Fake.reset()
     {:ok, org} = Orgs.create_org(%{name: "Acme", slug: "acme"})
     {:ok, project} = Projects.create_project(org.id, %{name: "P", slug: "p"})
@@ -64,107 +40,6 @@ defmodule BridgeForTeams.AgentsTest do
     end
   end
 
-  defp external_codex_runtime_config(
-         command_path \\ "/Applications/Codex.app/Contents/MacOS/codex",
-         device_id \\ "device_mac"
-       ) do
-    runtime_id = RuntimeIds.runtime_id(command_path)
-
-    %{
-      "kind" => "external",
-      "provider" => "codex",
-      "device_id" => device_id,
-      "runtime_id" => runtime_id,
-      "device_runtime_id" => RuntimeIds.device_runtime_id(device_id, "codex", runtime_id),
-      "model" => "claude-sonnet-4",
-      "model_provider" => "anthropic"
-    }
-  end
-
-  defp runtime_inventory_fields(runtime_config) do
-    Map.take(runtime_config, ~w(model model_provider))
-  end
-
-  defp register_external_runtime(org, project, runtime_config) do
-    transport_id = "transport_" <> Ecto.UUID.generate()
-    connector_id = "connector_" <> Ecto.UUID.generate()
-
-    meta = %{
-      "tenant_id" => org.salix_tenant_id,
-      "group_id" => project.salix_group_id,
-      "device_id" => runtime_config["device_id"],
-      "connector_id" => connector_id,
-      "name" => "test-device",
-      "agent_runtimes" => [
-        %{
-          "kind" => "external",
-          "provider" => "codex",
-          "runtime_id" => runtime_config["runtime_id"],
-          "device_runtime_id" => runtime_config["device_runtime_id"],
-          "version_detected" => true,
-          "auth_ready" => true,
-          "native_server_startable" => true,
-          "ready" => true,
-          "readiness_checked_at" => System.system_time(:millisecond),
-          "readiness_valid_until" => System.system_time(:millisecond) + 600_000
-        }
-        |> Map.merge(runtime_inventory_fields(runtime_config))
-      ]
-    }
-
-    {:ok, _transport_id, record} =
-      SalixEnv.Registry.connect("nonode@nohost", meta, transport_id: transport_id)
-
-    env = SalixEnv.Control.environment_json(record)
-
-    Application.put_env(
-      :bridge_for_teams_core,
-      :test_runtime_inventory,
-      [env | Application.get_env(:bridge_for_teams_core, :test_runtime_inventory, [])]
-    )
-
-    refresh_device_projection(project.id, runtime_config["device_id"])
-    :ok
-  end
-
-  defp refresh_device_projection(project_id, device_id, attempts \\ 20)
-
-  defp refresh_device_projection(_project_id, _device_id, 0),
-    do: flunk("device projection did not converge")
-
-  defp refresh_device_projection(project_id, device_id, attempts) do
-    assert {:ok, _result} =
-             Environments.reconcile_device_projection(projection_page_limit: 100)
-
-    if Repo.get_by(ProjectDeviceProjection, project_id: project_id, device_id: device_id) do
-      :ok
-    else
-      refresh_device_projection(project_id, device_id, attempts - 1)
-    end
-  end
-
-  defp materialize_salix_group_agent(org, project, agent, runtime_config) do
-    {:ok, _tenant} = Salix.Control.Tenants.create_preallocated(%{}, org.salix_tenant_id)
-
-    {:ok, _group} =
-      Salix.Control.Groups.create_preallocated(
-        %{"name" => project.name},
-        org.salix_tenant_id,
-        project.salix_group_id
-      )
-
-    SalixAgent.Control.create_owned_preallocated(
-      %{
-        "group_id" => project.salix_group_id,
-        "role" => agent.role,
-        "name" => agent.salix["name"],
-        "runtime_config" => runtime_config
-      },
-      org.salix_tenant_id,
-      agent.salix_agent_id
-    )
-  end
-
   test "create_agent assigns salix id and enqueues config", %{project: project} do
     assert {:ok, %Agent{} = agent} =
              Agents.create_agent(project.id, %{
@@ -183,407 +58,80 @@ defmodule BridgeForTeams.AgentsTest do
     assert ops == ["create_owned_agent"]
   end
 
-  test "create_agent stores external Codex runtime config and forwards it through outbox",
-       %{
-         org: org,
-         project: project
-       } do
-    prev_client = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, RuntimeInventoryClient)
+  test "Workers are retired: a new one is refused and nothing is queued", %{project: project} do
+    before = Repo.aggregate(ReconcileOutbox, :count)
 
-    on_exit(fn ->
-      restore_env(:bridge_for_teams_core, :salix_client, prev_client)
-      Application.delete_env(:bridge_for_teams_core, :test_runtime_inventory)
-    end)
+    assert {:error, :workers_retired} =
+             Agents.create_agent(project.id, %{"role" => "worker", "name" => "W"})
 
-    runtime_config = external_codex_runtime_config()
-    client_runtime_config = Map.drop(runtime_config, ~w(model model_provider))
-    :ok = register_external_runtime(org, project, runtime_config)
-
-    assert {:ok, %Agent{} = agent} =
-             Agents.create_agent(project.id, %{
-               "role" => "worker",
-               "name" => "codex-worker",
-               "runtime_config" => client_runtime_config
-             })
-
-    assert agent.salix["runtime_config"] == runtime_config
-
-    row =
-      Repo.one!(
-        from(r in ReconcileOutbox,
-          where:
-            r.aggregate == "agent" and r.aggregate_id == ^agent.id and
-              r.op == "create_owned_agent"
-        )
-      )
-
-    assert row.payload["attrs"]["runtime_config"] == runtime_config
+    assert {:error, :workers_retired} = Agents.create_agent(project.id, %{"name" => "W"})
+    assert Repo.aggregate(ReconcileOutbox, :count) == before
+    refute Repo.get_by(Agent, project_id: project.id, role: "worker")
   end
 
-  test "rebind_external_runtime changes the canonical configuration without a BFT snapshot", %{
-    org: org,
-    project: project
-  } do
-    prev_client = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, RuntimeInventoryClient)
-
-    on_exit(fn ->
-      restore_env(:bridge_for_teams_core, :salix_client, prev_client)
-      Application.delete_env(:bridge_for_teams_core, :test_runtime_inventory)
-    end)
-
-    initial_runtime_config = external_codex_runtime_config()
-    next_runtime_config = external_codex_runtime_config("/usr/local/bin/codex", "device_studio")
-    :ok = register_external_runtime(org, project, initial_runtime_config)
-    :ok = register_external_runtime(org, project, next_runtime_config)
-
-    assert {:ok, %Agent{} = agent} =
-             Agents.create_agent(project.id, %{
-               "role" => "worker",
-               "name" => "codex-worker",
-               "runtime_config" => initial_runtime_config
-             })
-
-    assert {:ok, _salix_agent} =
-             materialize_salix_group_agent(org, project, agent, initial_runtime_config)
-
-    assert {:ok, %Agent{} = updated} =
-             Agents.rebind_external_runtime(
-               project,
-               agent,
-               next_runtime_config["device_runtime_id"]
-             )
-
-    assert updated.id == agent.id
-    assert updated.salix["runtime_config"] == next_runtime_config
-    refute Repo.get!(Agent, agent.id).salix["runtime_config"]
-    assert {:ok, record} = SalixAgent.Control.get(agent.salix_agent_id)
-    assert record["runtime_config"] == next_runtime_config
-  end
-
-  test "create_agent stores and forwards VM provider config", %{project: project} do
-    vm = %{"enabled" => true, "provider" => "cloudflare"}
-
-    assert {:ok, %Agent{} = agent} =
-             Agents.create_agent(project.id, %{
-               "role" => "worker",
-               "name" => "cf-worker",
-               "vm" => vm
-             })
-
-    assert agent.salix["vm"] == vm
-
-    row =
-      Repo.one!(
-        from(r in ReconcileOutbox,
-          where:
-            r.aggregate == "agent" and r.aggregate_id == ^agent.id and
-              r.op == "create_owned_agent"
-        )
-      )
-
-    assert row.payload["attrs"]["vm"] == vm
-  end
-
-  # {name, create attrs, invalid field, expected messages}
-  @create_rejections [
-    {"create_agent rejects VM recreate command fields",
-     %{
-       "role" => "worker",
-       "vm" => %{"enabled" => true, "provider" => "cloudflare", "recreate" => true}
-     }, :vm, ["recreate is only supported when changing VM provider"]},
-    {"create_agent rejects mismatched stable external runtime identity",
-     %{
-       "role" => "worker",
-       "runtime_config" => %{
-         "kind" => "external",
-         "provider" => "codex",
-         "device_id" => "device_mac",
-         "runtime_id" => RuntimeIds.runtime_id("/usr/local/bin/codex"),
-         "device_runtime_id" => "not-the-derived-device-runtime-id"
-       }
-     }, :runtime_config, ["device_runtime_id must match device_id/provider/runtime_id"]},
-    {"create_agent requires complete stable external runtime binding",
-     %{
-       "role" => "worker",
-       "runtime_config" => %{
-         "kind" => "external",
-         "provider" => "codex",
-         "device_runtime_id" => "incomplete-runtime"
-       }
-     }, :runtime_config, ["must include runtime_id", "must include device_id"]},
-    {"create_agent rejects external runtime config on router agents",
-     %{
-       "role" => "router",
-       "runtime_config" => %{
-         "kind" => "external",
-         "provider" => "codex",
-         "device_runtime_id" => "device_runtime_runtime_codex"
-       }
-     }, :role, ["must be worker for external runtime agents"]}
-  ]
-
-  for {name, attrs, field, messages} <- @create_rejections do
-    test name, %{project: project} do
-      assert {:error, cs} = Agents.create_agent(project.id, unquote(Macro.escape(attrs)))
-      assert errors_on(cs)[unquote(field)] == unquote(messages)
-    end
-  end
-
-  test "create_agent normalizes internal runtime config to kind only", %{project: project} do
-    assert {:ok, %Agent{} = agent} =
-             Agents.create_agent(project.id, %{
-               "role" => "worker",
-               "runtime_config" => %{
-                 "kind" => "internal",
-                 "device_runtime_id" => "ignored"
-               }
-             })
-
-    assert agent.salix["runtime_config"] == nil
-  end
-
-  test "validates role", %{project: project} do
-    assert {:error, cs} = Agents.create_agent(project.id, %{"role" => "boss"})
-    assert %{role: _} = errors_on(cs)
-  end
-
-  test "list excludes archived", %{project: project} do
-    {:ok, a1} = Agents.create_agent(project.id, %{"role" => "worker", "name" => "A"})
-    {:ok, a2} = Agents.create_agent(project.id, %{"role" => "worker", "name" => "B"})
-    drain_all()
-    {:ok, _} = Agents.archive_agent(a2)
-    ids = Agents.list_agents(project.id) |> Enum.map(& &1.id)
-    assert a1.id in ids
-    refute a2.id in ids
-  end
-
-  test "canonical pages retain product references and exclude foreign projects", %{
+  test "a Worker queued before the release still drains and stays read-only", %{
     org: org,
     project: project
   } do
     {:ok, other_project} = Projects.create_project(org.id, %{name: "Q", slug: "q"})
-    {:ok, first} = Agents.create_agent(project.id, %{"role" => "worker", "name" => "A"})
-    {:ok, second} = Agents.create_agent(other_project.id, %{"role" => "worker", "name" => "B"})
+    {:ok, worker} = LegacyWorker.create(project, %{"name" => "A"})
+    {:ok, foreign} = LegacyWorker.create(other_project, %{"name" => "B"})
     drain_all()
-    assert {:ok, first_page} = Agents.page_agents(project, limit: 50)
-    assert first.id in Enum.map(first_page.items, & &1.id)
-    refute second.id in Enum.map(first_page.items, & &1.id)
-    assert {:ok, second_page} = Agents.page_agents(other_project, limit: 50)
-    assert second.id in Enum.map(second_page.items, & &1.id)
+
+    assert {:ok, %{"role" => "worker", "name" => "A"}} =
+             SalixAgent.Control.get(worker.salix_agent_id)
+
+    assert {:ok, page} = Agents.page_agents(project, limit: 50)
+    assert worker.id in Enum.map(page.items, & &1.id)
+    refute foreign.id in Enum.map(page.items, & &1.id)
+
+    assert {:ok, worker} = Agents.get_agent(worker.id)
+    assert {:error, :workers_retired} = Agents.update_agent(worker, %{"system_prompt" => "hi"})
+    assert {:ok, record} = SalixAgent.Control.get(worker.salix_agent_id)
+    assert record["system_prompt"] in [nil, ""]
   end
 
   test "update_agent applies through Salix without another BFT config row", %{project: project} do
-    {:ok, agent} = Agents.create_agent(project.id, %{"role" => "worker"})
-    drain_all()
+    router = router(project)
     before = Repo.aggregate(ReconcileOutbox, :count)
-    assert {:ok, updated} = Agents.update_agent(agent, %{"system_prompt" => "hi"})
+    assert {:ok, updated} = Agents.update_agent(router, %{"system_prompt" => "hi"})
     assert updated.salix["system_prompt"] == "hi"
     assert Repo.aggregate(ReconcileOutbox, :count) == before
-    refute Repo.get!(Agent, agent.id).salix["system_prompt"]
-  end
-
-  test "update and archive do not forward stale BFT runtime config", %{project: project} do
-    runtime_config = external_codex_runtime_config()
-
-    agent =
-      Repo.insert!(%Agent{
-        project_id: project.id,
-        salix_agent_id: SalixStore.Ids.new_agent_id(project.salix_group_id),
-        role: "worker",
-        salix: %{"name" => "Codex", "runtime_config" => runtime_config}
-      })
-
-    assert {:error, :agent_configuration_transfer_required} =
-             Agents.update_agent(agent, %{"name" => "Renamed Codex"})
-
-    assert {:error, :agent_configuration_transfer_required} = Agents.archive_agent(agent)
-    refute Repo.exists?(from r in ReconcileOutbox, where: r.aggregate_id == ^agent.id)
-  end
-
-  test "router agents cannot be archived", %{org: org, project: project} do
-    audit_opts = [actor_label: "ops-admin@example.com"]
-    router = Enum.find(Agents.list_agents(project.id), &(&1.role == "router"))
-
-    assert {:error, :router_agent} = Agents.archive_agent(router, audit_opts)
-    assert is_nil(Repo.reload(router).salix["archived_at"])
-
-    assert [audit] =
-             Observability.list_audit_logs(org.id,
-               action: "agent.archived",
-               result: "failed"
-             )
-
-    assert audit.resource_id == router.id
-    assert audit.reason_class == "router_agent"
-  end
-
-  test "agent write actions record redacted audit rows", %{org: org, project: project} do
-    audit_opts = [actor_label: "ops-admin@example.com"]
-
-    assert {:ok, agent} =
-             Agents.create_agent(
-               project.id,
-               %{"role" => "worker", "name" => "triage"},
-               audit_opts
-             )
-
-    assert [created] = Observability.list_audit_logs(org.id, action: "agent.created")
-    assert created.actor_label == "ops-admin@example.com"
-    assert created.resource_type == "agent"
-    assert created.resource_id == agent.id
-    assert created.metadata["project_id"] == project.id
-    assert created.metadata["agent_name"] == "triage"
-    assert created.metadata["instructions_configured"] == "false"
-    assert created.redacted_diff["role"] == %{"from" => nil, "to" => "worker"}
-
-    drain_all()
-
-    assert {:ok, updated} =
-             Agents.update_agent(
-               agent,
-               %{
-                 "system_prompt" => "Handle incidents with bearer secret-token"
-               },
-               audit_opts
-             )
-
-    assert [config_updated] =
-             Observability.list_audit_logs(org.id, action: "agent.config_updated")
-
-    assert config_updated.resource_id == agent.id
-
-    assert config_updated.redacted_diff["instructions_configured"] == %{
-             "from" => "false",
-             "to" => "true"
-           }
-
-    refute Map.has_key?(config_updated.redacted_diff, "inline_model_configured")
-
-    refute inspect(config_updated) =~ "Handle incidents"
-    refute inspect(config_updated) =~ "secret-token"
-    refute inspect(config_updated) =~ "private-model"
-    refute inspect(config_updated) =~ "sk-test"
-
-    assert {:ok, ^updated} = Agents.set_router_agent(updated, audit_opts)
-
-    assert [router_set] = Observability.list_audit_logs(org.id, action: "agent.router_set")
-    assert router_set.resource_id == agent.id
-    assert router_set.redacted_diff["router_agent_id"]["to"] == agent.salix_agent_id
-
-    assert {:ok, archived} = Agents.archive_agent(updated, audit_opts)
-    assert Agent.lifecycle(archived) == "archived"
-
-    assert [archived_audit] = Observability.list_audit_logs(org.id, action: "agent.archived")
-    assert archived_audit.resource_id == agent.id
-
-    assert archived_audit.redacted_diff["status"] == %{
-             "from" => Agent.lifecycle(updated),
-             "to" => "archived"
-           }
-
-    assert archived_audit.redacted_diff["archived_at"]["to"]
-  end
-
-  test "failed agent write attempts record redacted audit rows", %{org: org, project: project} do
-    audit_opts = [actor_label: "ops-admin@example.com"]
-
-    assert {:error, create_changeset} =
-             Agents.create_agent(
-               project.id,
-               %{
-                 "role" => "boss",
-                 "name" => "bad-agent",
-                 "system_prompt" => "Do not leak this instruction"
-               },
-               audit_opts
-             )
-
-    assert %{role: _} = errors_on(create_changeset)
-
-    assert [create_audit] = Observability.list_audit_logs(org.id, action: "agent.created")
-    assert create_audit.result == "failed"
-    assert create_audit.reason_class == "validation_failed"
-    assert is_nil(create_audit.resource_id)
-    assert create_audit.resource_label == "Agent write attempt"
-    assert create_audit.metadata["attempted_role"] == "boss"
-    assert create_audit.metadata["attempted_name_configured"] == "true"
-    assert create_audit.metadata["attempted_instructions_configured"] == "true"
-    assert create_audit.metadata["validation_fields"] == ["role"]
-    refute inspect(create_audit) =~ "Do not leak"
-
-    {:ok, agent} = Agents.create_agent(project.id, %{"role" => "worker"})
-
-    drain_all()
-
-    assert {:error, :agent_role_immutable} =
-             Agents.update_agent(
-               agent,
-               %{"role" => "boss", "system_prompt" => "Keep this private"},
-               audit_opts
-             )
-
-    assert [update_audit] =
-             Observability.list_audit_logs(org.id, action: "agent.config_updated")
-
-    assert update_audit.result == "failed"
-    assert update_audit.reason_class == "agent_role_immutable"
-    assert update_audit.resource_id == agent.id
-    assert update_audit.metadata["attempted_instructions_configured"] == "true"
-    refute inspect(update_audit) =~ "Keep this private"
-
-    unprovisioned = %{agent | salix_agent_id: nil}
-    assert {:error, :not_provisioned} = Agents.set_router_agent(unprovisioned, audit_opts)
-
-    assert [router_audit] = Observability.list_audit_logs(org.id, action: "agent.router_set")
-    assert router_audit.result == "failed"
-    assert router_audit.reason_class == "not_provisioned"
-    assert router_audit.resource_id == agent.id
+    refute Repo.get!(Agent, router.id).salix["system_prompt"]
   end
 
   test "inline credentials cannot masquerade as an applied model configuration", %{
     project: project
   } do
-    assert {:error, :use_template_catalog} =
+    assert {:error, :use_model_choice} =
              Agents.create_agent(
                project.id,
                %{
-                 "role" => "worker",
+                 "role" => "router",
                  "llm_config" => %{"model" => "ignored", "api_key" => "private"}
                }
              )
 
-    {:ok, agent} = Agents.create_agent(project.id, %{"role" => "worker"})
-    drain_all()
+    router = router(project)
 
-    assert {:error, :use_template_catalog} =
+    assert {:error, :use_model_choice} =
              Agents.update_agent(
-               agent,
+               router,
                %{"llm_config" => %{"model" => "ignored", "api_key" => "private"}}
              )
 
-    assert {:ok, record} = SalixAgent.Control.get(agent.salix_agent_id)
+    assert {:ok, record} = SalixAgent.Control.get(router.salix_agent_id)
     refute Map.has_key?(record, "llm_config")
   end
 
-  test "create_agent copies the org default only at creation", %{
+  test "create_agent copies the org default Router model only at creation", %{
     org: org,
     project: project
   } do
-    {:ok, _} =
-      SalixAgent.Templates.create(%{
-        "template_id" => "tmpl-default",
-        "name" => "Org default",
-        "model" => "org-model",
-        "provider" => "mock"
-      })
+    default = %{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => false}
+    {:ok, org} = Orgs.update_org(org, %{"default_router_model" => default})
 
-    {:ok, _} = Orgs.update_org(org, %{"default_template_id" => "tmpl-default"})
-    drain_all()
-
-    assert {:ok, agent} = Agents.create_agent(project.id, %{"role" => "worker"})
-    refute agent.salix["template_id"]
+    assert {:ok, agent} = Agents.create_agent(project.id, %{"role" => "router"})
 
     row =
       Repo.one(
@@ -594,54 +142,35 @@ defmodule BridgeForTeams.AgentsTest do
         )
       )
 
-    refute row.payload["attrs"]["template_id"]
+    assert row.payload["attrs"]["model"] == default
     drain_all()
 
-    assert {:ok, record} = SalixAgent.Control.get(agent.salix_agent_id)
-    assert record["template_id"] == "tmpl-default"
-
-    assert {:ok, %{"template_id" => "tmpl-default"}, :pinned} =
-             SalixAgent.Templates.resolve_template_for_record(record)
+    assert {:ok, %{"model" => ^default}} = SalixAgent.Control.get(agent.salix_agent_id)
 
     # A later org default applies to new Agents only.
-    {:ok, _} =
-      SalixAgent.Templates.create(%{
-        "template_id" => "tmpl-next",
-        "name" => "Next default",
-        "model" => "next-model",
-        "provider" => "mock"
-      })
+    next_default = %{"kind" => "catalog", "model" => "claude-opus-4-8", "allow_paid" => false}
+    {:ok, _} = Orgs.update_org(org, %{"default_router_model" => next_default})
 
-    {:ok, _} = Orgs.update_org(org, %{"default_template_id" => "tmpl-next"})
-    drain_all()
-
-    assert {:ok, record} = SalixAgent.Control.get(agent.salix_agent_id)
-
-    assert {:ok, %{"template_id" => "tmpl-default"}, :pinned} =
-             SalixAgent.Templates.resolve_template_for_record(record)
-
-    assert {:ok, next} = Agents.create_agent(project.id, %{"role" => "worker"})
-    drain_all()
-    assert {:ok, next_record} = SalixAgent.Control.get(next.salix_agent_id)
-    assert next_record["template_id"] == "tmpl-next"
+    assert {:ok, %{"model" => ^default}} = SalixAgent.Control.get(agent.salix_agent_id)
   end
 
-  test "update_agent applies the selected catalog template in Salix", %{project: project} do
-    {:ok, _} =
-      SalixAgent.Templates.create(%{
-        "template_id" => "tmpl-pick",
-        "name" => "Selected",
-        "model" => "selected-model",
-        "provider" => "mock"
-      })
+  test "update_agent sends the model choice to Salix; nil follows the platform model", %{
+    project: project
+  } do
+    choice = %{"kind" => "catalog", "model" => "claude-haiku-4-5", "allow_paid" => false}
+    router = router(project)
 
-    {:ok, agent} = Agents.create_agent(project.id, %{"role" => "worker", "name" => "w"})
-    drain_all()
-    assert {:ok, updated} = Agents.update_agent(agent, %{"template_id" => "tmpl-pick"})
-    assert updated.salix["template_id"] == "tmpl-pick"
-    refute Repo.get!(Agent, agent.id).salix["template_id"]
-    assert {:ok, %{"template_id" => "tmpl-pick"}} = SalixAgent.Control.get(agent.salix_agent_id)
+    assert {:ok, updated} = Agents.update_agent(router, %{"model" => choice})
+    assert updated.salix["model"] == choice
+    assert {:ok, %{"model" => ^choice}} = SalixAgent.Control.get(router.salix_agent_id)
+
+    assert {:ok, cleared} = Agents.update_agent(updated, %{"model" => nil})
+    assert cleared.salix["model"] == nil
+    assert {:ok, record} = SalixAgent.Control.get(router.salix_agent_id)
+    assert record["model"] == nil
   end
+
+  defp router(project), do: Enum.find(Agents.list_agents(project.id), &(&1.role == "router"))
 
   test "deliver stamps server-side billing context through Salix erpc", %{
     org: org,
@@ -730,7 +259,11 @@ defmodule BridgeForTeams.AgentsTest do
     org: _org,
     project: project
   } do
-    Application.put_env(:bridge_for_teams_core, :fee_control_observer, self())
+    SystemsRuntime.put_env(
+      :bridge_for_teams_core,
+      :fee_control_observer,
+      SystemsRuntime.Proc.self()
+    )
 
     {:ok, agent} = Agents.create_agent(project.id, %{"role" => "router"})
     drain_all()
@@ -760,7 +293,11 @@ defmodule BridgeForTeams.AgentsTest do
          org: org,
          project: project
        } do
-    Application.put_env(:bridge_for_teams_core, :fee_control_observer, self())
+    SystemsRuntime.put_env(
+      :bridge_for_teams_core,
+      :fee_control_observer,
+      SystemsRuntime.Proc.self()
+    )
 
     {:ok, agent} = Agents.create_agent(project.id, %{"role" => "router"})
     drain_all()
@@ -804,21 +341,11 @@ defmodule BridgeForTeams.AgentsTest do
                     }, %{"entrypoint" => "direct_deliver"}}
   end
 
-  test "a private subscription template can deliver with revoked credits", %{
+  test "an Agent on a catalog model can deliver with revoked credits", %{
     org: org,
     project: project
   } do
     revoke_default_entitlement(org.billing_account_id)
-
-    {:ok, template} =
-      SalixAgent.Templates.create_private(
-        %{
-          "name" => "Subscription",
-          "model" => "gpt-5",
-          "provider_config" => %{"account_pool" => "codex"}
-        },
-        org.salix_tenant_id
-      )
 
     {:ok, agent} = Agents.create_agent(project.id, %{"role" => "router"})
     drain_all()
@@ -826,7 +353,11 @@ defmodule BridgeForTeams.AgentsTest do
     assert {:error, {:billing_unavailable, _}} =
              Agents.deliver(agent, %{"content" => "blocked"}, [])
 
-    {:ok, agent} = Agents.update_agent(agent, %{"template_id" => template["template_id"]})
+    # Only the org's own Profiles serve a catalog model; the platform does not pay.
+    {:ok, agent} =
+      Agents.update_agent(agent, %{
+        "model" => %{"kind" => "catalog", "model" => "gpt-5", "allow_paid" => false}
+      })
 
     assert {:ok, :created} =
              Agents.deliver(agent, %{"content" => "subscription"},
@@ -834,18 +365,18 @@ defmodule BridgeForTeams.AgentsTest do
              )
   end
 
-  test "deliver unprovisioned errors", %{project: _project} do
-    assert {:error, :not_provisioned} =
-             Agents.deliver(%Agent{salix_agent_id: nil}, %{}, [])
-  end
-
   test "deliver allows active credits when fee-control projection sink fails", %{
     org: org,
     project: project
   } do
     issue_billing_grant(org.billing_account_id)
-    Application.put_env(:billing_core, :fee_control_typed_sink, RaisingFeeSink)
-    Application.put_env(:bridge_for_teams_core, :fee_control_observer, self())
+    SystemsRuntime.put_env(:billing_core, :fee_control_typed_sink, RaisingFeeSink)
+
+    SystemsRuntime.put_env(
+      :bridge_for_teams_core,
+      :fee_control_observer,
+      SystemsRuntime.Proc.self()
+    )
 
     {:ok, agent} = Agents.create_agent(project.id, %{"role" => "router"})
     drain_all()
@@ -897,10 +428,6 @@ defmodule BridgeForTeams.AgentsTest do
     assert group["billing_owner"]["billing_account_id"]
   end
 
-  test "set_router_agent on an unprovisioned agent errors" do
-    assert {:error, :not_provisioned} = Agents.set_router_agent(%Agent{salix_agent_id: nil})
-  end
-
   defp eventually_session(agent_id, session_id, predicate) when is_function(predicate, 1),
     do: eventually_session(agent_id, session_id, predicate, 50)
 
@@ -910,12 +437,12 @@ defmodule BridgeForTeams.AgentsTest do
         if predicate.(session) do
           {:ok, session}
         else
-          Process.sleep(10)
+          SystemsRuntime.Proc.sleep(10)
           eventually_session(agent_id, session_id, predicate, attempts - 1)
         end
 
       {:error, :not_found} ->
-        Process.sleep(10)
+        SystemsRuntime.Proc.sleep(10)
         eventually_session(agent_id, session_id, predicate, attempts - 1)
 
       other ->
@@ -970,19 +497,19 @@ defmodule BridgeForTeams.AgentsTest do
   end
 
   defp ensure_billing_repo_started do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
   end
 
   defp future_expiry do
-    DateTime.utc_now()
+    SystemsClock.utc_now()
     |> DateTime.add(30, :day)
     |> DateTime.truncate(:second)
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp price(resource_kind, component, provider, sku, usd_micros_per_unit) do
     %{

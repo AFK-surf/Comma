@@ -19,6 +19,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import {
   MathBlockNode,
   MathInlineNode,
@@ -28,14 +29,8 @@ import {
   type RenderContext,
   type RenderNodeFn,
 } from "markstream-react";
-import {
-  getMarkdown,
-  parseMarkdownToStructure,
-  type BaseNode,
-  type MarkdownIt,
-  type MarkdownToken,
-  type ParseOptions,
-} from "stream-markdown-parser";
+import type { BaseNode } from "stream-markdown-parser";
+import { scheduleLayoutRead, uiClock, type CancelUiTimer } from "../../clock";
 import { componentsDark } from "../../tokens/colors";
 import { Button } from "../Button";
 import {
@@ -55,7 +50,14 @@ import {
 import { MarkdownDocumentRenderer } from "./MarkdownDocumentRenderer";
 import type { MarkdownBlockPresentation } from "./blockPresentation";
 import { createCoalescedAsyncRender } from "./coalescedAsyncRender";
-import { configureMarkdownSyntax } from "./markdownSyntax";
+import {
+  documentNodes,
+  IncrementalMarkdown,
+  stableRootNodeCount,
+  type MarkdownDocumentFragment,
+  type MarkdownDocumentNodes,
+  type MarkdownNode as ParsedMarkdownNode,
+} from "@comma/core/markdown";
 import { createTextReveal, type TextReveal, type TextRevealLeaf } from "./textReveal";
 
 type MarkdownNode = {
@@ -119,406 +121,10 @@ export interface MarkdownStreamClipboard {
  */
 export type MarkdownStreamInlineElements = ReadonlyMap<string, ReactNode>;
 
-export type MarkdownStreamDocumentFragment =
-  | { type: "inline"; key: string }
-  | { type: "block"; key: string }
-  | { type: "markdown"; text: string };
-
-export type MarkdownStreamNodes = readonly BaseNode[];
-
-const trustedInlineTag = "comma-inline";
-const trustedInlineMarkerStart = "\uE000";
-const trustedInlineMarkerEnd = "\uE001";
-const trustedInlineMarkerPattern = /\uE000([0-9A-Za-z_-]+)\uE001/g;
-const trustedInlineArrayProperties = ["children", "items", "rows", "cells"];
-const trustedInlineObjectProperties = ["header"];
-const trustedInlineLiftContainers = new Set(["blockquote", "html_inline", "link"]);
-
-type TrustedInlineValuePiece =
-  | { type: "inline"; key: string }
-  | { type: "text"; value: string };
-
-/**
- * Parses the ordered fragments as one Markdown document so definitions and
- * inline formatting retain their document-wide semantics. Application-owned
- * inline markers are then promoted in the parsed tree. If Markdown placed a
- * marker in an opaque node (for example a code span, fence, HTML node, or link
- * destination), that node is split and the trusted element is lifted outside.
- */
-export function createMarkdownStreamDocumentNodes(
-  fragments: readonly MarkdownStreamDocumentFragment[]
-): MarkdownStreamNodes {
-  const trustedKeys = new Set<string>();
-  const blockKeys = new Set<string>();
-  const source = fragments
-    .map((fragment) => {
-      if (fragment.type === "markdown") {
-        return fragment.text
-          .replaceAll(trustedInlineMarkerStart, "�")
-          .replaceAll(trustedInlineMarkerEnd, "�");
-      }
-      validateTrustedInlineKey(fragment.key);
-      trustedKeys.add(fragment.key);
-      if (fragment.type === "block") {
-        blockKeys.add(fragment.key);
-        return `\n\n${trustedInlineMarker(fragment.key)}\n\n`;
-      }
-      return trustedInlineMarker(fragment.key);
-    })
-    .join("");
-  const markdown = configureMarkdownSyntax(
-    getMarkdown("comma-trusted-inline-document", {
-      customHtmlTags: [trustedInlineTag],
-    })
-  );
-  const parsed = parseMarkdownToStructure(source, markdown, {
-    customHtmlTags: [trustedInlineTag],
-    final: true,
-    streamParse: false,
-  }) as MarkdownNode[];
-  const promoted = parsed.flatMap((node) =>
-    promoteTrustedInlineNode(node, trustedKeys, false)
-  );
-  const blocks = promoted.flatMap((node) => {
-    const children = nodeChildren(node);
-    return node.type === "paragraph" &&
-      children.length === 1 &&
-      blockKeys.has(markdownNodeAttribute(children[0]!, "data-key") ?? "")
-      ? children
-      : [node];
-  });
-  return wrapRootTrustedInlineNodes(blocks, blockKeys) as BaseNode[];
-}
-
-function createTrustedInlineNode(key: string): MarkdownNode {
-  validateTrustedInlineKey(key);
-  const raw = `<${trustedInlineTag} data-key="${key}"></${trustedInlineTag}>`;
-  return {
-    commaTrustedInline: true,
-    attrs: [["data-key", key]],
-    autoClosed: false,
-    children: [],
-    content: "",
-    loading: false,
-    raw,
-    tag: trustedInlineTag,
-    type: trustedInlineTag,
-  };
-}
-
-function validateTrustedInlineKey(key: string) {
-  if (!/^[0-9A-Za-z_-]+$/.test(key)) {
-    throw new Error("MarkdownStream inline keys must be opaque identifier strings.");
-  }
-}
-
-function trustedInlineMarker(key: string) {
-  return `${trustedInlineMarkerStart}${key}${trustedInlineMarkerEnd}`;
-}
-
-function promoteTrustedInlineNode(
-  node: MarkdownNode,
-  trustedKeys: ReadonlySet<string>,
-  liftTrustedInline: boolean
-): MarkdownNode[] {
-  if (isTrustedInlineNode(node)) return [node];
-  if (node.type === trustedInlineTag) return [markdownTextNode(asString(node.raw))];
-
-  const opaque = splitOpaqueTrustedInlineNode(node, trustedKeys);
-  if (opaque) return opaque;
-
-  if (node.type === "text") {
-    const value = asString(node.content) || asString(node.raw);
-    const pieces = splitTrustedInlineValue(value, trustedKeys);
-    if (pieces.some((piece) => piece.type === "inline")) {
-      return pieces.flatMap((piece) =>
-        piece.type === "inline"
-          ? [createTrustedInlineNode(piece.key)]
-          : piece.value
-            ? [{ ...node, content: piece.value, raw: piece.value }]
-            : []
-      );
-    }
-  }
-
-  const childNodes = markdownNodeChildren(node);
-  if (!childNodes.some((child) => markdownNodeHasTrustedMarker(child, trustedKeys))) {
-    const raw = firstTrustedMarkerString(node, trustedKeys);
-    if (raw) return trustedValueAsTextNodes(raw, trustedKeys);
-  }
-
-  const mustLift = liftTrustedInline || trustedInlineLiftContainers.has(node.type);
-  let variants: MarkdownNode[] = [scrubTrustedMarkersFromNode(node, trustedKeys)];
-
-  for (const property of trustedInlineArrayProperties) {
-    variants = variants.flatMap((variant) => {
-      const value = variant[property];
-      if (!Array.isArray(value) || !value.some(isDocumentMarkdownNode)) {
-        return [variant];
-      }
-      const transformed = (value as MarkdownNode[]).flatMap((child) =>
-        promoteTrustedInlineNode(child, trustedKeys, mustLift)
-      );
-      if (mustLift && transformed.some(isTrustedInlineNode)) {
-        return splitContainerAtTrustedInline(variant, property, transformed);
-      }
-      return [{ ...variant, [property]: transformed }];
-    });
-  }
-
-  for (const property of trustedInlineObjectProperties) {
-    variants = variants.flatMap((variant) => {
-      const value = variant[property];
-      if (!isDocumentMarkdownNode(value)) return [variant];
-      const transformed = promoteTrustedInlineNode(value, trustedKeys, mustLift);
-      if (mustLift && transformed.some(isTrustedInlineNode)) {
-        return transformed.map((piece) =>
-          isTrustedInlineNode(piece) ? piece : { ...variant, [property]: piece }
-        );
-      }
-      return transformed.length === 1
-        ? [{ ...variant, [property]: transformed[0] }]
-        : [variant];
-    });
-  }
-
-  return variants;
-}
-
-function splitOpaqueTrustedInlineNode(
-  node: MarkdownNode,
-  trustedKeys: ReadonlySet<string>
-): MarkdownNode[] | undefined {
-  if (node.type === "code_block") {
-    const language = asString(node.language);
-    if (hasTrustedInlineMarker(language, trustedKeys)) {
-      const pieces = splitTrustedInlineValue(language, trustedKeys);
-      return pieces.flatMap((piece, index): MarkdownNode[] => {
-        if (piece.type === "inline") return [createTrustedInlineNode(piece.key)];
-        const hasInlineAfter = pieces
-          .slice(index + 1)
-          .some((candidate) => candidate.type === "inline");
-        const next = cloneCodeBlock(
-          node,
-          piece.value,
-          hasInlineAfter ? "" : asString(node.code)
-        );
-        if (!piece.value && !next.code) return [];
-        return hasInlineAfter
-          ? [next]
-          : (splitOpaqueTrustedInlineNode(next, trustedKeys) ?? [next]);
-      });
-    }
-
-    const code = asString(node.code) || asString(node.raw);
-    if (hasTrustedInlineMarker(code, trustedKeys)) {
-      return splitTrustedInlineValue(code, trustedKeys).flatMap((piece) =>
-        piece.type === "inline"
-          ? [createTrustedInlineNode(piece.key)]
-          : piece.value
-            ? [cloneCodeBlock(node, language, piece.value)]
-            : []
-      );
-    }
-    return undefined;
-  }
-
-  const opaqueField =
-    node.type === "inline_code"
-      ? "code"
-      : node.type === "html_block" || node.type === "html_inline"
-        ? "content"
-        : node.type === "math_block" || node.type === "math_inline"
-          ? "content"
-          : undefined;
-  if (!opaqueField) return undefined;
-
-  const value = asString(node[opaqueField]) || asString(node.raw);
-  if (!hasTrustedInlineMarker(value, trustedKeys)) return undefined;
-  return splitTrustedInlineValue(value, trustedKeys).flatMap((piece) => {
-    if (piece.type === "inline") return [createTrustedInlineNode(piece.key)];
-    if (!piece.value) return [];
-    if (node.type === "inline_code") {
-      return [{ ...node, code: piece.value, raw: piece.value }];
-    }
-    return [
-      {
-        ...node,
-        children: [],
-        content: piece.value,
-        raw: piece.value,
-      },
-    ];
-  });
-}
-
-function cloneCodeBlock(node: MarkdownNode, language: string, code: string) {
-  return { ...node, code, language, raw: code } as MarkdownNode;
-}
-
-function splitContainerAtTrustedInline(
-  node: MarkdownNode,
-  property: string,
-  children: MarkdownNode[]
-) {
-  const result: MarkdownNode[] = [];
-  let run: MarkdownNode[] = [];
-  const flush = () => {
-    if (run.length > 0) result.push({ ...node, [property]: run });
-    run = [];
-  };
-  children.forEach((child) => {
-    if (isTrustedInlineNode(child)) {
-      flush();
-      result.push(child);
-    } else {
-      run.push(child);
-    }
-  });
-  flush();
-  return result;
-}
-
-function splitTrustedInlineValue(
-  value: string,
-  trustedKeys: ReadonlySet<string>
-): TrustedInlineValuePiece[] {
-  const pieces: TrustedInlineValuePiece[] = [];
-  let offset = 0;
-  for (const match of value.matchAll(trustedInlineMarkerPattern)) {
-    const index = match.index;
-    const key = match[1];
-    if (!key || !trustedKeys.has(key)) continue;
-    pieces.push({ type: "text", value: value.slice(offset, index) });
-    pieces.push({ key, type: "inline" });
-    offset = index + match[0].length;
-  }
-  pieces.push({ type: "text", value: value.slice(offset) });
-  return pieces;
-}
-
-function hasTrustedInlineMarker(value: string, trustedKeys: ReadonlySet<string>) {
-  return splitTrustedInlineValue(value, trustedKeys).some(
-    (piece) => piece.type === "inline"
-  );
-}
-
-function trustedValueAsTextNodes(value: string, trustedKeys: ReadonlySet<string>) {
-  return splitTrustedInlineValue(value, trustedKeys).flatMap((piece) =>
-    piece.type === "inline"
-      ? [createTrustedInlineNode(piece.key)]
-      : piece.value
-        ? [markdownTextNode(piece.value)]
-        : []
-  );
-}
-
-function firstTrustedMarkerString(
-  node: MarkdownNode,
-  trustedKeys: ReadonlySet<string>
-) {
-  for (const property of ["raw", "content", "code", "href", "src", "title"]) {
-    const value = node[property];
-    if (typeof value === "string" && hasTrustedInlineMarker(value, trustedKeys)) {
-      return value;
-    }
-  }
-  return undefined;
-}
-
-function scrubTrustedMarkersFromNode(
-  node: MarkdownNode,
-  trustedKeys: ReadonlySet<string>
-) {
-  const next = { ...node };
-  for (const property of ["raw", "content", "text"]) {
-    const value = next[property];
-    if (typeof value === "string" && hasTrustedInlineMarker(value, trustedKeys)) {
-      next[property] = splitTrustedInlineValue(value, trustedKeys)
-        .filter(
-          (piece): piece is Extract<TrustedInlineValuePiece, { type: "text" }> =>
-            piece.type === "text"
-        )
-        .map((piece) => piece.value)
-        .join("");
-    }
-  }
-  return next;
-}
-
-function markdownNodeChildren(node: MarkdownNode) {
-  const children: MarkdownNode[] = [];
-  for (const property of trustedInlineArrayProperties) {
-    const value = node[property];
-    if (Array.isArray(value)) {
-      children.push(...value.filter(isDocumentMarkdownNode));
-    }
-  }
-  for (const property of trustedInlineObjectProperties) {
-    const value = node[property];
-    if (isDocumentMarkdownNode(value)) children.push(value);
-  }
-  return children;
-}
-
-function markdownNodeHasTrustedMarker(
-  node: MarkdownNode,
-  trustedKeys: ReadonlySet<string>
-): boolean {
-  if (firstTrustedMarkerString(node, trustedKeys)) return true;
-  return markdownNodeChildren(node).some((child) =>
-    markdownNodeHasTrustedMarker(child, trustedKeys)
-  );
-}
-
-function isDocumentMarkdownNode(value: unknown): value is MarkdownNode {
-  return Boolean(
-    value &&
-    typeof value === "object" &&
-    "type" in value &&
-    typeof value.type === "string"
-  );
-}
-
-function isTrustedInlineNode(node: MarkdownNode) {
-  return node.commaTrustedInline === true;
-}
-
-function markdownTextNode(content: string): MarkdownNode {
-  return { center: false, content, raw: content, type: "text" };
-}
-
-function wrapRootTrustedInlineNodes(
-  nodes: MarkdownNode[],
-  blockKeys = new Set<string>()
-) {
-  const result: MarkdownNode[] = [];
-  let inlineRun: MarkdownNode[] = [];
-  const flush = () => {
-    if (inlineRun.length > 0) {
-      result.push({ children: inlineRun, raw: "", type: "paragraph" });
-    }
-    inlineRun = [];
-  };
-  nodes.forEach((node) => {
-    if (
-      isTrustedInlineNode(node) &&
-      blockKeys.has(markdownNodeAttribute(node, "data-key") ?? "")
-    ) {
-      flush();
-      result.push(node);
-      return;
-    }
-    if (isTrustedInlineNode(node)) {
-      inlineRun.push(node);
-      return;
-    }
-    flush();
-    result.push(node);
-  });
-  flush();
-  return result;
-}
+// The document's parse is the client core's (`@comma/core/markdown`), the one every client uses.
+export type MarkdownStreamDocumentFragment = MarkdownDocumentFragment;
+export type MarkdownStreamNodes = MarkdownDocumentNodes;
+export const createMarkdownStreamDocumentNodes = documentNodes;
 
 export interface MarkdownStreamBlurAnimationOptions {
   activeCharacters?: number;
@@ -535,16 +141,23 @@ export interface MarkdownStreamProps extends Omit<
   NodeRendererProps,
   | "content"
   | "customId"
+  | "customMarkdownIt"
   | "fade"
   | "final"
   | "indexKey"
   | "nodes"
   | "onCopy"
+  | "parseOptions"
   | "renderCodeBlocksAsPre"
   | "smoothStreaming"
   | "typewriter"
 > {
   content?: string;
+  /**
+   * `content` as the client core already parsed it (a chat reply streaming in):
+   * drawn as given, streaming as `content` would, and never parsed here.
+   */
+  parsed?: MarkdownStreamNodes | undefined;
   nodes?: NodeRendererProps["nodes"];
   final?: boolean;
   streamId?: string;
@@ -760,27 +373,6 @@ const memoCommaNode = <TNode extends MarkdownNode>(
     ) => boolean
   );
 
-const hasLoadingMarkdownNode = (node: MarkdownNode): boolean => {
-  if (node.loading) return true;
-
-  return Object.values(node).some((value) => {
-    if (!Array.isArray(value)) return false;
-    return value.some((item) => {
-      if (isMarkdownNode(item)) return hasLoadingMarkdownNode(item);
-      if (
-        typeof item === "object" &&
-        item !== null &&
-        Array.isArray((item as { cells?: unknown }).cells)
-      ) {
-        return (item as { cells: unknown[] }).cells.some(
-          (cell) => isMarkdownNode(cell) && hasLoadingMarkdownNode(cell)
-        );
-      }
-      return false;
-    });
-  });
-};
-
 const completeBlurNodeTextContent = (node: MarkdownNode, final: boolean): string => {
   if (node.type === "code_block") return codeBlockContent(node);
   if (node.type === "footnote") {
@@ -836,329 +428,46 @@ const completeBlurPartitionMetrics = (
   };
 };
 
-const stableRootNodeCount = (parsedNodes: readonly MarkdownNode[], final: boolean) => {
-  if (final) return parsedNodes.length;
-  if (parsedNodes.length === 0) return 0;
-
-  const firstLoadingIndex = parsedNodes.findIndex(hasLoadingMarkdownNode);
-  if (firstLoadingIndex >= 0) return firstLoadingIndex;
-
-  return Math.max(0, parsedNodes.length - 1);
-};
-
-type MarkdownParseResult = {
-  nodes: MarkdownNode[];
-  rootStartLines: number[];
-};
-
-type IncrementalMarkdownParseCache = {
-  content: string;
-  customHtmlTagsKey: string | undefined;
-  incrementalSafe: boolean;
-  markdown: MarkdownIt;
-  nodes: MarkdownNode[];
-  parseOptions: ParseOptions | undefined;
-  rootSourceOffsets: number[];
-};
-
-const topLevelRootStartLines = (tokens: MarkdownToken[]) =>
-  tokens.flatMap((token) => {
-    const map = token.map;
-    const startLine = Array.isArray(map) ? map[0] : undefined;
-    return token.level === 0 && token.nesting !== -1 && Number.isInteger(startLine)
-      ? [startLine as number]
-      : [];
-  });
-
-const parseMarkdownWithRootStartLines = ({
-  content,
-  customHtmlTags,
-  final,
-  markdown,
-  parseOptions,
-  streamParse,
-}: {
-  content: string;
-  customHtmlTags?: readonly string[] | undefined;
-  final: boolean;
-  markdown: MarkdownIt;
-  parseOptions?: ParseOptions | undefined;
-  streamParse?: false | undefined;
-}): MarkdownParseResult => {
-  let rootStartLines: number[] = [];
-  const userPreTransformTokens = parseOptions?.preTransformTokens;
-  const nodes = parseMarkdownToStructure(content, markdown, {
-    ...parseOptions,
-    ...(customHtmlTags ? { customHtmlTags } : {}),
-    final,
-    preTransformTokens: (tokens) => {
-      const transformedTokens = userPreTransformTokens?.(tokens) ?? tokens;
-      rootStartLines = topLevelRootStartLines(transformedTokens);
-      return transformedTokens;
-    },
-    ...(streamParse === false ? { streamParse: false } : {}),
-  }) as MarkdownNode[];
-
-  return { nodes, rootStartLines };
-};
-
-const markdownLineStartOffsets = (content: string) => {
-  const offsets = [0];
-  for (let index = 0; index < content.length; index += 1) {
-    if (content[index] === "\n") offsets.push(index + 1);
-  }
-  return offsets;
-};
-
-const paragraphRootMatchesSource = (
-  content: string,
-  offset: number,
-  node: MarkdownNode
-) => {
-  if (node.type !== "paragraph" || typeof node.raw !== "string") return true;
-  return content
-    .slice(offset)
-    .replace(/^[\t ]{0,3}/, "")
-    .startsWith(node.raw);
-};
-
-const validatedRootSourceOffsets = (
-  content: string,
-  nodes: readonly MarkdownNode[],
-  rootStartLines: readonly number[]
-) => {
-  if (nodes.length !== rootStartLines.length || /\r(?!\n)/.test(content)) return null;
-  if (nodes.length === 0) return [];
-
-  const lineStarts = markdownLineStartOffsets(content);
-  const offsets: number[] = [];
-  for (let index = 0; index < rootStartLines.length; index += 1) {
-    const line = rootStartLines[index];
-    const offset = line === undefined ? undefined : lineStarts[line];
-    if (
-      offset === undefined ||
-      offset >= content.length ||
-      (index > 0 && offset <= offsets[index - 1]!) ||
-      !paragraphRootMatchesSource(content, offset, nodes[index]!)
-    ) {
-      return null;
-    }
-    offsets.push(offset);
-  }
-  return offsets;
-};
-
-const hasRetroactiveMarkdownDefinition = (content: string) => content.includes("]:");
-
-// stream-markdown-parser carries filename/ticker demotion context across root
-// blocks. That context can continue through an arbitrary run of filename-like
-// roots, and the dependency does not expose a checkpoint state that a fragment
-// parse can restore. Keep the detector deliberately broader than the parser's
-// current trigger expressions so a fragment never silently loses that context.
-const hasCrossRootLinkifyContext = (content: string) =>
-  /(?:文件|附件|路径|路徑|档案|檔案|文档|文檔|资料|資料|股票|证券|證券|代码|代碼|交易所|后缀|後綴|市场|市場|\b(?:files?|attachments?|paths?|documents?|docs?|tickers?|symbols?|exchanges?)\b)/iu.test(
-    content
-  );
-
-const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-const customHtmlTagsMayShiftSourceLines = (
-  content: string,
-  customHtmlTags: readonly string[] | undefined
-) => {
-  if (!customHtmlTags?.length || !content.includes("<")) return false;
-  const tagPattern = customHtmlTags.map(escapeRegExp).join("|");
-  if (!tagPattern) return false;
-  const openPattern = new RegExp(`<\\s*(?:${tagPattern})(?=\\s|/?>)`, "i");
-  const closePattern = new RegExp(`<\\s*/\\s*(?:${tagPattern})(?=\\s|>)`, "i");
-  const lines = content.split(/\r?\n/);
-
-  return lines.some((line, index) => {
-    const hasOpen = openPattern.test(line);
-    const hasClose = closePattern.test(line);
-    if (!hasOpen && !hasClose) return false;
-    // A complete inline custom tag does not change the parser's line map.
-    if (hasOpen && hasClose) return false;
-    if (hasOpen && index > 0 && lines[index - 1]?.trim() !== "") return true;
-    return hasClose && index + 1 < lines.length && lines[index + 1]?.trim() !== "";
-  });
-};
-
-const incrementalMarkdownParseIsSafe = (
-  content: string,
-  customHtmlTags: readonly string[] | undefined,
-  parseOptions: ParseOptions | undefined,
-  customMarkdownIt: NodeRendererProps["customMarkdownIt"] | undefined
-) =>
-  // A custom MarkdownIt callback may install document-global core/block rules.
-  // Without an explicit fragment-safety/checkpoint contract, only the default
-  // parser is safe to run against an isolated suffix.
-  customMarkdownIt === undefined &&
-  typeof parseOptions?.preTransformTokens !== "function" &&
-  typeof parseOptions?.postTransformTokens !== "function" &&
-  !hasRetroactiveMarkdownDefinition(content) &&
-  !hasCrossRootLinkifyContext(content) &&
-  !customHtmlTagsMayShiftSourceLines(content, customHtmlTags);
-
 const usePartitionedMarkdownNodes = ({
   content,
-  customHtmlTags,
   customId,
-  customMarkdownIt,
   enabled,
   final,
-  parseOptions,
+  parsedByCore,
   stableTextBoundary,
 }: {
   content: string;
-  customHtmlTags?: NodeRendererProps["customHtmlTags"];
   customId: string;
-  customMarkdownIt?: NodeRendererProps["customMarkdownIt"];
   enabled: boolean;
   final: boolean;
-  parseOptions?: NodeRendererProps["parseOptions"];
+  /** The content as the client core already parsed it (a chat reply): drawn as given, not parsed here. */
+  parsedByCore?: MarkdownStreamNodes | undefined;
   stableTextBoundary?: number | undefined;
 }) => {
-  const customHtmlTagsKey =
-    customHtmlTags === undefined ? undefined : customHtmlTags.join("\u0000");
-  // Key the parser and the parse on the tags VALUE, not the array identity:
-  // callers may rebuild an equal array per render, and that must not rebuild
-  // the MarkdownIt instance (getMarkdown constructs a fresh parser with its
-  // full plugin chain on every call) or re-parse the whole document.
-  const stableCustomHtmlTags = useMemo(
-    () =>
-      customHtmlTagsKey === undefined
-        ? undefined
-        : customHtmlTagsKey.split("\u0000").filter((tag) => tag !== ""),
-    [customHtmlTagsKey]
-  );
-  const markdown = useMemo<MarkdownIt | null>(() => {
-    if (!enabled) return null;
-    const parser = getMarkdown(
-      `${customId}:partition:${customHtmlTagsKey ?? ""}`,
-      stableCustomHtmlTags ? { customHtmlTags: stableCustomHtmlTags } : undefined
-    );
-    configureMarkdownSyntax(parser);
-    return customMarkdownIt ? customMarkdownIt(parser) : parser;
-  }, [customHtmlTagsKey, customId, customMarkdownIt, enabled, stableCustomHtmlTags]);
-  const parseCacheRef = useRef<IncrementalMarkdownParseCache | null>(null);
-  const stableReuseEpochRef = useRef(0);
-  const parsedNodes = useMemo(() => {
-    if (!enabled || markdown === null) {
+  // One parse per document: another stream id is another document, shown afresh.
+  const documentRef = useRef<{
+    customId: string;
+    epoch: number;
+    parser: IncrementalMarkdown;
+  }>(null!);
+  documentRef.current ??= { customId, epoch: 0, parser: new IncrementalMarkdown() };
+  if (documentRef.current.customId !== customId)
+    documentRef.current = {
+      customId,
+      epoch: documentRef.current.epoch + 1,
+      parser: new IncrementalMarkdown(),
+    };
+  const { parser } = documentRef.current;
+  const parsedNodes = useMemo((): readonly ParsedMarkdownNode[] => {
+    if (parsedByCore) return parsedByCore;
+    if (!enabled) {
       // A compiled nodes handoff (for example a completed reply with embedded
       // tasks) changes the input representation, not this document's lifetime.
-      parseCacheRef.current = null;
+      parser.reset();
       return [];
     }
-
-    const stableReuseSafe = incrementalMarkdownParseIsSafe(
-      content,
-      stableCustomHtmlTags,
-      parseOptions,
-      customMarkdownIt
-    );
-    const incrementalSafe = !final && stableReuseSafe;
-    const previous = parseCacheRef.current;
-    const configMatches =
-      previous?.markdown === markdown &&
-      previous.parseOptions === parseOptions &&
-      previous.customHtmlTagsKey === customHtmlTagsKey;
-    const prefixGrew =
-      previous !== null &&
-      content.length > previous.content.length &&
-      content.startsWith(previous.content);
-
-    if (incrementalSafe && previous?.incrementalSafe && configMatches && prefixGrew) {
-      const settledCount = stableRootNodeCount(previous.nodes, false);
-      const checkpoint = previous.rootSourceOffsets[settledCount];
-      if (
-        checkpoint !== undefined &&
-        checkpoint > 0 &&
-        checkpoint < previous.content.length
-      ) {
-        const tailContent = content.slice(checkpoint);
-        const tail = parseMarkdownWithRootStartLines({
-          content: tailContent,
-          customHtmlTags: stableCustomHtmlTags,
-          final: false,
-          markdown,
-          parseOptions,
-          streamParse: false,
-        });
-        const tailRootSourceOffsets = validatedRootSourceOffsets(
-          tailContent,
-          tail.nodes,
-          tail.rootStartLines
-        );
-        if (
-          tail.nodes.length > 0 &&
-          tailRootSourceOffsets?.[0] === 0 &&
-          previous.rootSourceOffsets.length === previous.nodes.length
-        ) {
-          const nodes = [...previous.nodes.slice(0, settledCount), ...tail.nodes];
-          const rootSourceOffsets = [
-            ...previous.rootSourceOffsets.slice(0, settledCount),
-            ...tailRootSourceOffsets.map((offset) => checkpoint + offset),
-          ];
-          if (
-            rootSourceOffsets.length === nodes.length &&
-            rootSourceOffsets.every(
-              (offset, index) => index === 0 || offset > rootSourceOffsets[index - 1]!
-            )
-          ) {
-            parseCacheRef.current = {
-              content,
-              customHtmlTagsKey,
-              incrementalSafe: true,
-              markdown,
-              nodes,
-              parseOptions,
-              rootSourceOffsets,
-            };
-            return nodes;
-          }
-        }
-      }
-    }
-
-    const full = parseMarkdownWithRootStartLines({
-      content,
-      customHtmlTags: stableCustomHtmlTags,
-      final,
-      markdown,
-      parseOptions,
-    });
-    // Parsing can revise earlier nodes, including canonical whitespace trims.
-    // Text replacement updates this document; only parser/document identity
-    // starts a new presentation lifetime. The renderer receives the full AST.
-    if (previous !== null && !configMatches) {
-      stableReuseEpochRef.current += 1;
-    }
-    const rootSourceOffsets = validatedRootSourceOffsets(
-      content,
-      full.nodes,
-      full.rootStartLines
-    );
-    parseCacheRef.current = {
-      content,
-      customHtmlTagsKey,
-      incrementalSafe: incrementalSafe && rootSourceOffsets !== null,
-      markdown,
-      nodes: full.nodes,
-      parseOptions,
-      rootSourceOffsets: rootSourceOffsets ?? [],
-    };
-    return full.nodes;
-  }, [
-    content,
-    customHtmlTagsKey,
-    enabled,
-    final,
-    markdown,
-    parseOptions,
-    stableCustomHtmlTags,
-    customMarkdownIt,
-  ]);
+    return parser.parse({ content, final });
+  }, [content, enabled, final, parsedByCore, parser]);
   const stableRef = useRef<{
     epoch: number;
     nodes: MarkdownNode[];
@@ -1168,7 +477,7 @@ const usePartitionedMarkdownNodes = ({
     nodes: [],
     signatures: [],
   });
-  const stableReuseEpoch = stableReuseEpochRef.current;
+  const stableReuseEpoch = documentRef.current.epoch;
   return useMemo(() => {
     const completeBlurMetrics =
       typeof stableTextBoundary === "number"
@@ -1755,21 +1064,40 @@ const renderCharacterRuns = (
   return runs;
 };
 
-function CommaCompleteBlurCharacter({
-  children,
-  clearOnInactive = true,
-  shouldAnimate,
-  style,
-  timeoutMs,
-  onAnimationComplete,
-}: {
+type CommaCompleteBlurCharacterProps = {
   children: string;
   clearOnInactive?: boolean | undefined;
   onAnimationComplete?: (() => void) | undefined;
   shouldAnimate: boolean;
   style?: CSSProperties | undefined;
   timeoutMs?: number | undefined;
-}) {
+};
+
+/**
+ * A character renders again only when what it shows can change. With
+ * `clearOnInactive` false its animation is fixed when it mounts, so a later
+ * `shouldAnimate` changes nothing: each frame then renders only the characters
+ * it added.
+ */
+const CommaCompleteBlurCharacter = memo(
+  CommaCompleteBlurCharacterView,
+  (previous: CommaCompleteBlurCharacterProps, next: CommaCompleteBlurCharacterProps) =>
+    previous.children === next.children &&
+    previous.clearOnInactive === next.clearOnInactive &&
+    previous.onAnimationComplete === next.onAnimationComplete &&
+    previous.style === next.style &&
+    previous.timeoutMs === next.timeoutMs &&
+    (next.clearOnInactive === false || previous.shouldAnimate === next.shouldAnimate)
+);
+
+function CommaCompleteBlurCharacterView({
+  children,
+  clearOnInactive = true,
+  shouldAnimate,
+  style,
+  timeoutMs,
+  onAnimationComplete,
+}: CommaCompleteBlurCharacterProps) {
   const animationStartedRef = useRef(shouldAnimate);
   const animating = clearOnInactive ? shouldAnimate : animationStartedRef.current;
 
@@ -1865,12 +1193,12 @@ function CommaTrackedCompleteBlurGlyph({
     const glyph = glyphRef.current;
     glyph?.addEventListener("animationcancel", completeAnimation);
     glyph?.addEventListener("animationend", completeAnimation);
-    const timeout = setTimeout(
-      completeAnimation,
-      (timeoutMs ?? blurAnimation.durationMs) + 80
+    const timeout = uiClock.after(
+      (timeoutMs ?? blurAnimation.durationMs) + 80,
+      completeAnimation
     );
     return () => {
-      clearTimeout(timeout);
+      timeout();
       glyph?.removeEventListener("animationcancel", completeAnimation);
       glyph?.removeEventListener("animationend", completeAnimation);
     };
@@ -1888,6 +1216,106 @@ function CommaTrackedCompleteBlurGlyph({
     </span>
   );
 }
+
+type CommaCompleteBlurWordProps = {
+  animatedTextBoundary: number;
+  text: string;
+  textStart: number;
+  visibleTextCharacters: number;
+};
+
+/**
+ * One word of the active window, keyed by where it starts in the text. It
+ * renders again only when its text grows: its characters' animations are fixed
+ * when they mount, so a frame that only slides the window renders no word.
+ */
+const CommaCompleteBlurWord = memo(
+  function CommaCompleteBlurWord({
+    animatedTextBoundary,
+    text,
+    textStart,
+    visibleTextCharacters,
+  }: CommaCompleteBlurWordProps) {
+    return (
+      <span className="markdown-stream-char-word">
+        {stringCharacters(text).map((character, index) => {
+          const textIndex = textStart + index;
+          return (
+            <CommaCompleteBlurCharacter
+              key={`${textIndex}:${character}`}
+              clearOnInactive={false}
+              shouldAnimate={
+                textIndex >= animatedTextBoundary && textIndex < visibleTextCharacters
+              }
+            >
+              {character}
+            </CommaCompleteBlurCharacter>
+          );
+        })}
+      </span>
+    );
+  },
+  (previous, next) =>
+    previous.text === next.text && previous.textStart === next.textStart
+);
+
+/**
+ * The active window as words, spaces and line breaks. A word or a space keeps
+ * its key, and so its DOM and its running blur, while the window slides over
+ * the text before it.
+ */
+const renderCompleteBlurRuns = (
+  characters: readonly string[],
+  textStart: number,
+  animatedTextBoundary: number,
+  visibleTextCharacters: number
+) => {
+  const runs: ReactNode[] = [];
+  let wordStart = -1;
+
+  const flushWord = (end: number) => {
+    if (wordStart < 0) return;
+    const start = textStart + wordStart;
+    runs.push(
+      <CommaCompleteBlurWord
+        animatedTextBoundary={animatedTextBoundary}
+        key={`word:${start}`}
+        text={characters.slice(wordStart, end).join("")}
+        textStart={start}
+        visibleTextCharacters={visibleTextCharacters}
+      />
+    );
+    wordStart = -1;
+  };
+
+  characters.forEach((character, index) => {
+    if (isLineBreakCharacter(character)) {
+      flushWord(index);
+      runs.push(character);
+      return;
+    }
+    if (isWhitespaceCharacter(character)) {
+      flushWord(index);
+      const textIndex = textStart + index;
+      runs.push(
+        <CommaCompleteBlurCharacter
+          key={`${textIndex}:${character}`}
+          clearOnInactive={false}
+          shouldAnimate={
+            textIndex >= animatedTextBoundary && textIndex < visibleTextCharacters
+          }
+        >
+          {character}
+        </CommaCompleteBlurCharacter>
+      );
+      return;
+    }
+    if (wordStart < 0) wordStart = index;
+  });
+  flushWord(characters.length);
+
+  return runs;
+};
 
 function CommaCompleteBlurText({
   className,
@@ -1924,24 +1352,11 @@ function CommaCompleteBlurText({
   return (
     <span className={cx(commonTextClasses, className)}>
       {settledText}
-      {renderCharacterRuns(
+      {renderCompleteBlurRuns(
         activeCharacters,
-        (character, index) => {
-          const textIndex = startOffset + activeCharacterStart + index;
-          const shouldAnimate =
-            textIndex >= animatedTextBoundary &&
-            textIndex < queue.visibleTextCharacters;
-          return (
-            <CommaCompleteBlurCharacter
-              key={`${textIndex}:${character}`}
-              clearOnInactive={false}
-              shouldAnimate={shouldAnimate}
-            >
-              {character}
-            </CommaCompleteBlurCharacter>
-          );
-        },
-        `${startOffset}:${activeCharacterStart}`
+        startOffset + activeCharacterStart,
+        animatedTextBoundary,
+        queue.visibleTextCharacters
       )}
     </span>
   );
@@ -2123,11 +1538,11 @@ function CommaLocalAnimatedText({
 
     if (lineBreakOnlySegmentIds.length === 0) return undefined;
 
-    const timer = setTimeout(() => {
+    const timer = uiClock.after(0, () => {
       lineBreakOnlySegmentIds.forEach(settleSegment);
-    }, 0);
+    });
 
-    return () => clearTimeout(timer);
+    return () => timer();
   }, [renderState.activeSegments]);
 
   const maxDelayIndex = Math.max(0, maxAnimatedCharacters - 1);
@@ -2217,21 +1632,31 @@ function CommaRevealingText({ content }: { content: string }) {
       if (root) root.dirty = true;
       previousNode.current = null;
     }
-    if (!element || !node || node.nodeType !== Node.TEXT_NODE) return;
-    const text = node as Text;
-    previousNode.current = text;
-    const enabled = !final && !settled && !element.closest("pre, code, svg, .katex");
-    if (enabled && painter) {
+    if (!element) return;
+    const text = node?.nodeType === Node.TEXT_NODE ? (node as Text) : null;
+    const enabled =
+      Boolean(text && painter) &&
+      !final &&
+      !settled &&
+      !element.closest("pre, code, svg, .katex");
+    // Only a leaf the painter can paint matches the stream's highlight rules.
+    // Settled and final text stays unmarked, so adding or removing those rules
+    // restyles the live tail instead of every reply in the transcript.
+    element.toggleAttribute("data-comma-text-reveal", enabled);
+    if (enabled) {
       element.style.setProperty(
         "--comma-stream-text-color",
         getComputedStyle(element).color
       );
+    } else {
+      element.style.removeProperty("--comma-stream-text-color");
     }
+    if (!text) return;
+    previousNode.current = text;
     if (root) {
-      root.leaves.set(text, { node: text, content, enabled: Boolean(enabled) });
+      root.leaves.set(text, { node: text, content, enabled });
       root.dirty = true;
     }
-    if (!enabled) element.style.removeProperty("--comma-stream-text-color");
   }, [content, final, settled, isDark, painter, root]);
   useLayoutEffect(
     () => () => {
@@ -2242,7 +1667,7 @@ function CommaRevealingText({ content }: { content: string }) {
     [root]
   );
   return (
-    <span className={commonTextClasses} data-comma-text-reveal="" ref={ref}>
+    <span className={commonTextClasses} ref={ref}>
       {content}
     </span>
   );
@@ -3522,9 +2947,8 @@ const CommaStandardCodeBlock = memo(
     const [copied, setCopied] = useState(false);
     const [expanded, setExpanded] = useState(false);
     const [collapsible, setCollapsible] = useState(false);
-    const [highlightRenderRevision, setHighlightRenderRevision] = useState(0);
     const codeBodyRef = useRef<HTMLDivElement>(null);
-    const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const resetTimer = useRef<CancelUiTimer | null>(null);
     const info = useMemo(
       () => ({ code, language, loading }),
       [code, language, loading]
@@ -3549,29 +2973,50 @@ const CommaStandardCodeBlock = memo(
 
     useEffect(
       () => () => {
-        if (resetTimer.current) clearTimeout(resetTimer.current);
+        if (resetTimer.current) resetTimer.current();
       },
       []
     );
 
-    const measureCollapsibility = useCallback(() => {
+    /** Reads whether the block needs collapsing; returns the commit. */
+    const readCollapsibility = useCallback(() => {
       const codeBody = codeBodyRef.current;
-      if (!codeBody) return;
+      if (!codeBody) return undefined;
       const codeContent = codeBody.querySelector<HTMLElement>(".code-block-content");
       const contentHeight = codeContent?.scrollHeight ?? codeBody.scrollHeight;
       const nextCollapsible =
         codeNeedsPreviewWindow || contentHeight > codeBlockCollapsedHeightPx;
-      setCollapsible(nextCollapsible);
-      if (!nextCollapsible) setExpanded(false);
+      return () => {
+        setCollapsible(nextCollapsible);
+        if (!nextCollapsible) setExpanded(false);
+      };
     }, [codeNeedsPreviewWindow]);
 
-    const handleHighlightRendered = useCallback(() => {
-      setHighlightRenderRevision((revision) => revision + 1);
-    }, []);
-
+    // New content is measured in its own commit, so a tall block paints
+    // collapsed from its first frame.
     useLayoutEffect(() => {
-      measureCollapsibility();
-    }, [code, highlightRenderRevision, loading, measureCollapsibility]);
+      readCollapsibility()?.();
+    }, [code, loading, readCollapsibility]);
+
+    // A finished highlight or a resized body is checked again in the frame's
+    // shared read phase. Neither re-renders the block: every code block of a
+    // transcript reports each frame of a window or sidebar resize.
+    const collapsibilityRead = useRef<CancelUiTimer | undefined>(undefined);
+    const handleHighlightRendered = useCallback(() => {
+      collapsibilityRead.current ??= scheduleLayoutRead(() => {
+        collapsibilityRead.current = undefined;
+        const commit = readCollapsibility();
+        // Commit before this frame paints, like the layout-effect path.
+        return commit && (() => flushSync(commit));
+      });
+    }, [readCollapsibility]);
+    useEffect(
+      () => () => {
+        collapsibilityRead.current?.();
+        collapsibilityRead.current = undefined;
+      },
+      []
+    );
 
     const copyCode = async () => {
       if (config.clipboard) {
@@ -3583,8 +3028,8 @@ const CommaStandardCodeBlock = memo(
       }
       config.onCopyCode?.(info);
       setCopied(true);
-      if (resetTimer.current) clearTimeout(resetTimer.current);
-      resetTimer.current = setTimeout(() => setCopied(false), 1400);
+      if (resetTimer.current) resetTimer.current();
+      resetTimer.current = uiClock.after(1400, () => setCopied(false));
     };
 
     const showHeader = config.showCodeBlockHeader || config.showCodeBlockCopy;
@@ -3760,7 +3205,7 @@ const CommaMermaidBlock = memo(
     const [copied, setCopied] = useState(false);
     const reactId = useId();
     const renderCounter = useRef(0);
-    const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const resetTimer = useRef<CancelUiTimer | null>(null);
     const isDark = config.isDark;
     const showHeader = config.showCodeBlockHeader || config.showCodeBlockCopy;
     const canRenderPreview = code.trim().length > 0;
@@ -3771,7 +3216,7 @@ const CommaMermaidBlock = memo(
 
     useEffect(
       () => () => {
-        if (resetTimer.current) clearTimeout(resetTimer.current);
+        if (resetTimer.current) resetTimer.current();
       },
       []
     );
@@ -3789,57 +3234,54 @@ const CommaMermaidBlock = memo(
 
       setRendering(true);
 
-      const timer = window.setTimeout(
-        () => {
-          const render = async () => {
-            try {
-              const moduleValue = await import("mermaid");
-              if (cancelled) return;
+      const timer = uiClock.after(loading ? 180 : 0, () => {
+        const render = async () => {
+          try {
+            const moduleValue = await import("mermaid");
+            if (cancelled) return;
 
-              const mermaid = resolveMermaidApi(moduleValue);
-              if (!mermaid) {
-                throw new Error(messages.markdown_renderer_unavailable());
-              }
-
-              mermaid.initialize?.({
-                startOnLoad: false,
-                securityLevel: "strict",
-                suppressErrorRendering: true,
-                htmlLabels: false,
-                flowchart: { htmlLabels: false },
-                ...mermaidThemeConfig(isDark),
-              });
-
-              const renderId = `${renderIdPrefix}-${renderCounter.current++}`;
-              const result = await mermaid.render(
-                renderId,
-                withMermaidThemeInit(trimmedCode, isDark)
-              );
-              if (cancelled) return;
-
-              const nextSvg = sanitizeMermaidSvg(result.svg ?? "");
-              if (!nextSvg) {
-                throw new Error(messages.markdown_empty_diagram_error());
-              }
-
-              setSvg(nextSvg);
-              setError(null);
-            } catch (caught) {
-              if (cancelled) return;
-              setError(caught instanceof Error ? caught.message : String(caught));
-            } finally {
-              if (!cancelled) setRendering(false);
+            const mermaid = resolveMermaidApi(moduleValue);
+            if (!mermaid) {
+              throw new Error(messages.markdown_renderer_unavailable());
             }
-          };
 
-          void render();
-        },
-        loading ? 180 : 0
-      );
+            mermaid.initialize?.({
+              startOnLoad: false,
+              securityLevel: "strict",
+              suppressErrorRendering: true,
+              htmlLabels: false,
+              flowchart: { htmlLabels: false },
+              ...mermaidThemeConfig(isDark),
+            });
+
+            const renderId = `${renderIdPrefix}-${renderCounter.current++}`;
+            const result = await mermaid.render(
+              renderId,
+              withMermaidThemeInit(trimmedCode, isDark)
+            );
+            if (cancelled) return;
+
+            const nextSvg = sanitizeMermaidSvg(result.svg ?? "");
+            if (!nextSvg) {
+              throw new Error(messages.markdown_empty_diagram_error());
+            }
+
+            setSvg(nextSvg);
+            setError(null);
+          } catch (caught) {
+            if (cancelled) return;
+            setError(caught instanceof Error ? caught.message : String(caught));
+          } finally {
+            if (!cancelled) setRendering(false);
+          }
+        };
+
+        void render();
+      });
 
       return () => {
         cancelled = true;
-        window.clearTimeout(timer);
+        timer();
       };
     }, [code, deferPreview, isDark, loading, messages, renderIdPrefix]);
 
@@ -3853,8 +3295,8 @@ const CommaMermaidBlock = memo(
       }
       config.onCopyCode?.({ code, language, loading });
       setCopied(true);
-      if (resetTimer.current) clearTimeout(resetTimer.current);
-      resetTimer.current = setTimeout(() => setCopied(false), 1400);
+      if (resetTimer.current) resetTimer.current();
+      resetTimer.current = uiClock.after(1400, () => setCopied(false));
     };
 
     return (
@@ -4125,9 +3567,33 @@ const commaMarkdownComponents = {
 
 setCustomComponents(commaMarkdownComponents);
 
-const getBlurStreamBatchSize = (backlog: number) => {
-  if (backlog <= 0) return 0;
-  return Math.min(28, Math.max(1, Math.ceil(backlog / 16)));
+// Smooth playback reveals a sixteenth of what is left per 60Hz frame, at
+// least 1 and at most 28 characters, as a function of time: the count at a
+// moment is the same at any frame rate.
+const revealFrameMs = 1000 / 60;
+const revealMaxPerFrame = 28;
+const revealDivisor = 16;
+
+/** Characters (fractional) revealed `ms` after a reveal of `backlog` began. */
+export const revealedAfter = (backlog: number, ms: number) => {
+  let remaining = Math.max(backlog, 0);
+  let frames = Math.max(ms, 0) / revealFrameMs;
+  // At the cap while a sixteenth of the rest is more than it.
+  const capped = revealMaxPerFrame * revealDivisor;
+  if (frames > 0 && remaining > capped) {
+    const spent = Math.min(frames, (remaining - capped) / revealMaxPerFrame);
+    remaining -= revealMaxPerFrame * spent;
+    frames -= spent;
+  }
+  // A sixteenth of the rest per frame: the rest decays exponentially.
+  if (frames > 0 && remaining > revealDivisor) {
+    const spent = Math.min(frames, revealDivisor * Math.log(remaining / revealDivisor));
+    remaining *= Math.exp(-spent / revealDivisor);
+    frames -= spent;
+  }
+  // At least one character per frame.
+  if (frames > 0) remaining -= Math.min(frames, remaining);
+  return Math.max(backlog, 0) - remaining;
 };
 
 const useStreamContent = ({
@@ -4157,9 +3623,19 @@ const useStreamContent = ({
   const targetContentRef = useRef(content);
   const schedulingModeRef = useRef(mode);
   const scheduledWorkRef = useRef<{
-    id: number;
+    cancel: CancelUiTimer;
     type: "frame" | "timeout";
   } | null>(null);
+  // The smooth reveal since its target last changed: when, how much was
+  // revealed then (fractional), and the target length it runs toward.
+  const revealRef = useRef<{ from: number; target: number; time: number } | null>(null);
+
+  /** The reveal's fractional length at `time`. */
+  const revealedAt = (time: number) => {
+    const reveal = revealRef.current;
+    if (!reveal) return visibleContentRef.current.length;
+    return reveal.from + revealedAfter(reveal.target - reveal.from, time - reveal.time);
+  };
 
   const commitPlaybackComplete = (nextPlaybackComplete: boolean) => {
     if (playbackCompleteRef.current === nextPlaybackComplete) return;
@@ -4169,15 +3645,7 @@ const useStreamContent = ({
 
   const cancelScheduledWork = () => {
     if (scheduledWorkRef.current === null) return;
-    if (
-      scheduledWorkRef.current.type === "frame" &&
-      typeof window !== "undefined" &&
-      window.cancelAnimationFrame
-    ) {
-      window.cancelAnimationFrame(scheduledWorkRef.current.id);
-    } else {
-      clearTimeout(scheduledWorkRef.current.id);
-    }
+    scheduledWorkRef.current.cancel();
     scheduledWorkRef.current = null;
   };
 
@@ -4187,7 +3655,7 @@ const useStreamContent = ({
       nextContent.length > previousContent.length &&
       nextContent.startsWith(previousContent)
     ) {
-      lastQueuedCharacterAtRef.current = Date.now();
+      lastQueuedCharacterAtRef.current = uiClock.now();
     }
     visibleContentRef.current = nextContent;
     setVisibleContent(nextContent);
@@ -4196,42 +3664,48 @@ const useStreamContent = ({
   const getQueuedCharacterDelay = () => {
     const gapMs = blurAnimationRef.current.characterDelayMs;
     if (gapMs <= 0 || lastQueuedCharacterAtRef.current === null) return 0;
-    return Math.max(0, gapMs - (Date.now() - lastQueuedCharacterAtRef.current));
+    return Math.max(0, gapMs - (uiClock.now() - lastQueuedCharacterAtRef.current));
   };
 
   const scheduleFrame = () => {
     if (scheduledWorkRef.current !== null) return;
 
-    const runFrame = () => {
+    const runFrame = (time?: number) => {
       scheduledWorkRef.current = null;
 
       const current = visibleContentRef.current;
       const target = targetContentRef.current;
-      if (current === target) return;
+      if (current === target) {
+        revealRef.current = null;
+        return;
+      }
 
       if (!target.startsWith(current)) {
+        revealRef.current = null;
         commitVisibleContent(target);
         return;
       }
 
-      const backlog = target.length - current.length;
-      const batchSize = getBlurStreamBatchSize(backlog);
-      const nextContent = target.slice(0, current.length + batchSize);
-      commitVisibleContent(nextContent);
+      const revealed = Math.floor(revealedAt(time ?? uiClock.monotonic()) + 1e-6);
+      const nextLength = Math.min(target.length, Math.max(current.length, revealed));
+      if (nextLength > current.length)
+        commitVisibleContent(target.slice(0, nextLength));
 
-      if (nextContent !== target) {
-        scheduleFrame();
-      }
+      if (nextLength < target.length) scheduleFrame();
+      else revealRef.current = null;
     };
 
-    if (typeof window !== "undefined" && window.requestAnimationFrame) {
+    if (
+      typeof window !== "undefined" &&
+      typeof window.requestAnimationFrame === "function"
+    ) {
       scheduledWorkRef.current = {
-        id: window.requestAnimationFrame(runFrame),
+        cancel: uiClock.frame(runFrame),
         type: "frame",
       };
     } else {
       scheduledWorkRef.current = {
-        id: setTimeout(runFrame, 16) as unknown as number,
+        cancel: uiClock.after(16, () => runFrame()),
         type: "timeout",
       };
     }
@@ -4241,7 +3715,7 @@ const useStreamContent = ({
     if (scheduledWorkRef.current !== null) return;
 
     scheduledWorkRef.current = {
-      id: setTimeout(() => {
+      cancel: uiClock.after(delayMs, () => {
         scheduledWorkRef.current = null;
 
         const current = visibleContentRef.current;
@@ -4271,7 +3745,7 @@ const useStreamContent = ({
         } else {
           commitPlaybackComplete(true);
         }
-      }, delayMs) as unknown as number,
+      }),
       type: "timeout",
     };
   };
@@ -4288,6 +3762,7 @@ const useStreamContent = ({
       cancelScheduledWork();
       targetContentRef.current = content;
       lastQueuedCharacterAtRef.current = null;
+      revealRef.current = null;
       visibleContentRef.current = content;
       commitPlaybackComplete(true);
       return;
@@ -4325,11 +3800,15 @@ const useStreamContent = ({
     if (!content.startsWith(visibleContentValue)) {
       cancelScheduledWork();
       lastQueuedCharacterAtRef.current = null;
+      revealRef.current = null;
       commitVisibleContent(content);
       commitPlaybackComplete(true);
       return;
     }
 
+    // The reveal runs toward the new target from where it is now.
+    const now = uiClock.monotonic();
+    revealRef.current = { from: revealedAt(now), target: content.length, time: now };
     commitPlaybackComplete(true);
     scheduleFrame();
     // Scheduling helpers use refs for current target/visible content. Listing
@@ -4371,13 +3850,13 @@ const useCompleteBlurTextPlayback = ({
   const visibleTextCharactersRef = useRef(0);
   const scheduledWorkRef = useRef<{
     generation: number;
-    id: number;
+    cancel: CancelUiTimer;
     type: "advance" | "complete";
   } | null>(null);
 
   const cancelScheduledWork = () => {
     if (scheduledWorkRef.current === null) return;
-    clearTimeout(scheduledWorkRef.current.id);
+    scheduledWorkRef.current.cancel();
     scheduledWorkRef.current = null;
   };
 
@@ -4399,7 +3878,7 @@ const useCompleteBlurTextPlayback = ({
     if (gapMs <= 0 || lastVisibleCharacterAtRef.current === null) return 0;
     const remainingMs = Math.max(
       0,
-      gapMs - (Date.now() - lastVisibleCharacterAtRef.current)
+      gapMs - (uiClock.now() - lastVisibleCharacterAtRef.current)
     );
     if (remainingMs === 0) return 0;
     return gapMs < minBatchedCharacterFrameMs
@@ -4411,11 +3890,11 @@ const useCompleteBlurTextPlayback = ({
     if (scheduledWorkRef.current !== null) return;
     const generation = playbackGenerationRef.current;
     scheduledWorkRef.current = {
-      id: setTimeout(() => {
+      cancel: uiClock.after(blurAnimationRef.current.durationMs, () => {
         if (playbackGenerationRef.current !== generation) return;
         scheduledWorkRef.current = null;
         commitPlaybackComplete(true);
-      }, blurAnimationRef.current.durationMs) as unknown as number,
+      }),
       generation,
       type: "complete",
     };
@@ -4426,7 +3905,7 @@ const useCompleteBlurTextPlayback = ({
     if (visibleTextCharactersRef.current < targetTextCharacters) {
       const gapMs = blurAnimationRef.current.characterDelayMs;
       const backlog = targetTextCharacters - visibleTextCharactersRef.current;
-      const now = Date.now();
+      const now = uiClock.now();
       const previousStartedAt = lastVisibleCharacterAtRef.current;
       const elapsedMs =
         previousStartedAt === null ? 0 : Math.max(0, now - previousStartedAt);
@@ -4484,11 +3963,11 @@ const useCompleteBlurTextPlayback = ({
 
     const generation = playbackGenerationRef.current;
     scheduledWorkRef.current = {
-      id: setTimeout(() => {
+      cancel: uiClock.after(delayMs, () => {
         if (playbackGenerationRef.current !== generation) return;
         scheduledWorkRef.current = null;
         advanceVisibleCharacters();
-      }, delayMs) as unknown as number,
+      }),
       generation,
       type: "advance",
     };
@@ -4590,6 +4069,7 @@ const useCompleteBlurTextPlayback = ({
 
 export const MarkdownStream = ({
   content = "",
+  parsed,
   nodes,
   final = false,
   streamId,
@@ -4627,16 +4107,9 @@ export const MarkdownStream = ({
   const hasInlineElements = normalizedInlineElements !== emptyInlineElements;
   const customHtmlTags = useMemo(() => {
     const tags = props.customHtmlTags;
-    const parseTags = props.parseOptions?.customHtmlTags;
-    if (!hasInlineElements && !parseTags?.length) return tags;
-    return Array.from(
-      new Set([
-        ...(tags ?? []),
-        ...(parseTags ?? []),
-        ...(hasInlineElements ? ["comma-inline"] : []),
-      ])
-    );
-  }, [hasInlineElements, props.customHtmlTags, props.parseOptions?.customHtmlTags]);
+    if (!hasInlineElements) return tags;
+    return Array.from(new Set([...(tags ?? []), "comma-inline"]));
+  }, [hasInlineElements, props.customHtmlTags]);
   const blurAnimation = useMemo(
     () => normalizeBlurAnimation(blurAnimationOptions),
     [blurAnimationOptions]
@@ -4713,12 +4186,10 @@ export const MarkdownStream = ({
   const usePartitionedRenderer = nodes === undefined;
   const partitionedNodes = usePartitionedMarkdownNodes({
     content: rendererContent,
-    customHtmlTags,
     customId,
-    customMarkdownIt: props.customMarkdownIt,
     enabled: usePartitionedRenderer,
     final: renderFinal,
-    parseOptions: props.parseOptions,
+    parsedByCore: parsed,
     stableTextBoundary: stableCompleteBlurTextBoundary,
   });
   const textReveal = useMemo(

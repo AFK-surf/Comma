@@ -37,7 +37,7 @@ run("go", "build", "-o", str(image / "salix-runtime-agent"), ".",
 run("go", "build", "-o", str(image / "pressure-relay"), str(fixture / "main.go"), env=linux_env)
 archive = output / "image.oci.tar"
 run("docker", "buildx", "build", "--platform=linux/arm64", "--provenance=false",
-    "--build-arg", "EXTERNAL_IMAGE=" + lock["baseImages"]["external"],
+    "--build-arg", "NODE_IMAGE=" + lock["baseImages"]["station"],
     "--build-arg", "PI_TARBALL=" + lock["pi"]["tarball"],
     "--build-arg", "PI_INTEGRITY=" + lock["pi"]["integrity"],
     "--output", "type=oci,dest=" + str(archive), str(image))
@@ -48,8 +48,8 @@ image_metadata = output / "image.json"
 with archive.open("rb") as stream:
     archive_sha = hashlib.file_digest(stream, "sha256").hexdigest()
 image_metadata.write_text(json.dumps({
-    "reference": "comma.local/runtime/external@" + digest,
-    "manifestDigest": digest, "platform": "linux/arm64", "class": "external",
+    "reference": "comma.local/runtime/meeting@" + digest,
+    "manifestDigest": digest, "platform": "linux/arm64", "class": "meeting",
     "archiveSha256": archive_sha,
     "archiveSize": archive.stat().st_size,
 }))

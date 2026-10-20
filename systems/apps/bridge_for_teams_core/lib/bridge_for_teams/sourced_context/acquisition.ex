@@ -163,7 +163,7 @@ defmodule BridgeForTeams.SourcedContext.Acquisition do
                  |> Repo.update!()
 
                  delay_ms = provider_delay_ms || provider_backoff_ms(retry_count)
-                 {reason, DateTime.add(DateTime.utc_now(), delay_ms, :millisecond)}
+                 {reason, DateTime.add(SystemsClock.utc_now(), delay_ms, :millisecond)}
                end
 
              SlackHistoryImports.transition_in_transaction(run.id, fn protocol_run ->
@@ -298,7 +298,7 @@ defmodule BridgeForTeams.SourcedContext.Acquisition do
     if receipts == [], do: Repo.rollback(:snapshot_has_no_pages)
 
     manifest = manifest(run, objects, receipts, normalization_revision)
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     snapshot =
       %SourcedContextSnapshot{}
@@ -682,7 +682,7 @@ defmodule BridgeForTeams.SourcedContext.Acquisition do
           Repo.rollback(:source_object_conflict)
 
         nil ->
-          id = Ecto.UUID.generate()
+          id = SystemsRuntime.Proc.uuid()
           {:ok, ciphertext} = Crypto.seal(payload, object_aad(id))
 
           %SourcedContextObject{id: id}
@@ -698,7 +698,7 @@ defmodule BridgeForTeams.SourcedContext.Acquisition do
             payload_sha256: payload_sha256,
             byte_count: byte_size(payload),
             observed_at: page.observed_at,
-            created_at: DateTime.utc_now()
+            created_at: SystemsClock.timestamp(:utc_datetime_usec)
           })
           |> Repo.insert!()
 
@@ -765,7 +765,7 @@ defmodule BridgeForTeams.SourcedContext.Acquisition do
       timestamp_boundary: page.timestamp_boundary,
       next_cursor_ciphertext: cursor_ciphertext,
       stream_complete: page.stream_complete,
-      created_at: DateTime.utc_now()
+      created_at: SystemsClock.timestamp(:utc_datetime_usec)
     })
     |> Repo.insert!()
   end
@@ -1056,7 +1056,7 @@ defmodule BridgeForTeams.SourcedContext.Acquisition do
 
   defp feature_enabled(feature) do
     if Keyword.get(
-         Application.get_env(:bridge_for_teams_core, :sourced_context_features, []),
+         SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_features, []),
          feature,
          false
        ),
@@ -1071,7 +1071,7 @@ defmodule BridgeForTeams.SourcedContext.Acquisition do
   end
 
   defp bound(key) do
-    Application.get_env(:bridge_for_teams_core, :sourced_context_bounds, [])
+    SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_bounds, [])
     |> Keyword.fetch!(key)
   end
 end

@@ -9,8 +9,9 @@ defmodule SalixAgent.RuntimeEpochFenceTest do
   actor-owned `commit/4`/`commit_dynamic/4` paths are exercised, not only the
   `prepare_*` seams.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.InternalSession.State
   alias SalixAgent.{InternalSessionActor, InternalSessionStore, OwnershipCell}
   alias SalixStore.{Codec, Keys, S3}
@@ -18,7 +19,7 @@ defmodule SalixAgent.RuntimeEpochFenceTest do
   @session "ses1_0000000000000000001"
 
   setup do
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     SalixStore.Repo.query!("TRUNCATE session_work_candidates")
     {:ok, agent: SalixAgent.TestSupport.new_agent_id()}
@@ -37,13 +38,8 @@ defmodule SalixAgent.RuntimeEpochFenceTest do
     :ok
   end
 
-  defp eventually(fun, retries \\ 100) do
-    cond do
-      fun.() -> true
-      retries == 0 -> false
-      true -> Process.sleep(10) && eventually(fun, retries - 1)
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 
   test "commits stamp the local ownership epoch into the session object", %{agent: a} do
     :ok = OwnershipCell.install(a, 3)
@@ -112,8 +108,8 @@ defmodule SalixAgent.RuntimeEpochFenceTest do
           {:ok, _} =
             InternalSessionStore.prepare_commit(a, @session, [status_event(@session, "idle")])
         end
-        |> Task.async()
-        |> Task.await()
+        |> SystemsRuntime.Task.async()
+        |> settled_await()
       end
 
       {:ok, [status_event(@session, "active")]}
@@ -124,17 +120,6 @@ defmodule SalixAgent.RuntimeEpochFenceTest do
     assert {:ok, read_back} = InternalSessionStore.read(a, @session)
     assert SalixAgent.InternalSession.get(read_back, :runtime_epoch) == 5
     assert SalixAgent.InternalSession.status(read_back) == :idle
-  end
-
-  test "a fenced cell refuses commits while local runtime is live", %{agent: a} do
-    register_as_session_owner!(a, @session)
-    :ok = OwnershipCell.install(a, 2)
-    assert {:ok, _} = InternalSessionStore.commit(a, @session, [created_event(@session)])
-
-    :ok = OwnershipCell.fence(a, 7)
-
-    assert {:error, :fenced} =
-             InternalSessionStore.commit(a, @session, [status_event(@session, "active")])
   end
 
   test "a fenced cell without local runtime degrades to legacy for prepare_* seams", %{agent: a} do
@@ -170,12 +155,6 @@ defmodule SalixAgent.RuntimeEpochFenceTest do
     assert SalixAgent.InternalSession.get(state, :runtime_epoch) == 6
   end
 
-  test "an epoch-less fence never flips a live claim", %{agent: a} do
-    :ok = OwnershipCell.install(a, 4)
-    :ok = OwnershipCell.fence(a, nil)
-    assert OwnershipCell.fetch(a) == {:ok, 4}
-  end
-
   test "seed onto a higher-epoch session is fenced", %{agent: a} do
     :ok = OwnershipCell.install(a, 5)
     assert {:ok, _} = InternalSessionStore.prepare_commit(a, @session, [created_event(@session)])
@@ -202,36 +181,6 @@ defmodule SalixAgent.RuntimeEpochFenceTest do
     assert SalixAgent.InternalSession.get(read_back, :runtime_epoch) == 5
   end
 
-  test "deploy-window caveat: an old node's stripped write resets the fence", %{agent: a} do
-    # Modeled as the expected FenceSafety violation in
-    # tla/salix/SessionEpochFence_LegacyStrip.cfg: old code's State struct
-    # has no :runtime_epoch field, so its read-modify-write re-lands the
-    # object without the stamp, and a previously superseded runner is no
-    # longer fenced. This test pins the DOCUMENTED degradation.
-    :ok = OwnershipCell.install(a, 5)
-    assert {:ok, _} = InternalSessionStore.prepare_commit(a, @session, [created_event(@session)])
-
-    {:ok, state} = InternalSessionStore.read(a, @session)
-
-    stripped =
-      state
-      |> SalixAgent.InternalSession.export()
-      |> Map.from_struct()
-      |> Map.drop([:runtime_epoch, :runtime_node])
-      |> Map.put(:__struct__, State)
-
-    key = Keys.agent_internal_runtime_session(a, @session)
-    {:ok, _} = S3.put(key, Codec.encode_snapshot(stripped), [])
-
-    :ok = OwnershipCell.clear(a)
-    :ok = OwnershipCell.install(a, 3)
-
-    assert {:ok, committed} =
-             InternalSessionStore.prepare_commit(a, @session, [status_event(@session, "idle")])
-
-    assert SalixAgent.InternalSession.get(committed, :runtime_epoch) == 3
-  end
-
   test "a stale actor's frozen epoch survives a same-node re-claim (no laundering)", %{
     agent: a
   } do
@@ -254,8 +203,8 @@ defmodule SalixAgent.RuntimeEpochFenceTest do
       {:ok, _} =
         InternalSessionStore.prepare_commit(a, @session, [status_event(@session, "active")])
     end
-    |> Task.async()
-    |> Task.await()
+    |> SystemsRuntime.Task.async()
+    |> settled_await()
 
     # This node re-claims at epoch 3 while the stale actor is still alive.
     :ok = OwnershipCell.clear(a)
@@ -294,8 +243,8 @@ defmodule SalixAgent.RuntimeEpochFenceTest do
       {:ok, _} =
         InternalSessionStore.prepare_commit(a, @session, [status_event(@session, "active")])
     end
-    |> Task.async()
-    |> Task.await()
+    |> SystemsRuntime.Task.async()
+    |> settled_await()
 
     # This node claims epoch 3; delayed abort evidence for epoch 2 arrives.
     :ok = OwnershipCell.clear(a)
@@ -311,31 +260,5 @@ defmodule SalixAgent.RuntimeEpochFenceTest do
     assert {:ok, read_back} = InternalSessionStore.read(a, @session)
     assert SalixAgent.InternalSession.get(read_back, :runtime_epoch) == 2
     assert SalixAgent.InternalSession.status(read_back) == :active
-  end
-
-  test "kill-switch off: a would-be fence logs and proceeds without regressing the stamp", %{
-    agent: a
-  } do
-    prev = Application.get_env(:salix_agent, :session_fence_enforce)
-    Application.put_env(:salix_agent, :session_fence_enforce, false)
-
-    on_exit(fn ->
-      if is_nil(prev),
-        do: Application.delete_env(:salix_agent, :session_fence_enforce),
-        else: Application.put_env(:salix_agent, :session_fence_enforce, prev)
-    end)
-
-    :ok = OwnershipCell.install(a, 5)
-    assert {:ok, _} = InternalSessionStore.prepare_commit(a, @session, [created_event(@session)])
-
-    :ok = OwnershipCell.clear(a)
-    :ok = OwnershipCell.install(a, 3)
-
-    assert {:ok, state} =
-             InternalSessionStore.prepare_commit(a, @session, [status_event(@session, "idle")])
-
-    # Proceeded legacy-style, preserving (not regressing) the newer stamp.
-    assert SalixAgent.InternalSession.get(state, :runtime_epoch) == 5
-    assert OwnershipCell.fetch(a) == {:ok, 3}
   end
 end

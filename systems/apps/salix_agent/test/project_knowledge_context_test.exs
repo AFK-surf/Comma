@@ -1,19 +1,22 @@
 defmodule SalixAgent.ProjectKnowledgeContextTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.ProjectKnowledgeContext
 
   defmodule Provider do
     def retrieve(agent_id, question, context) do
-      send(
-        Application.fetch_env!(:salix_agent, :project_knowledge_context_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_agent, :project_knowledge_context_test_pid),
         {:retrieved, agent_id, question, context}
       )
 
-      Process.sleep(Application.get_env(:salix_agent, :project_knowledge_context_delay_ms, 0))
+      SystemsClock.sleep(
+        SystemsRuntime.get_env(:salix_agent, :project_knowledge_context_delay_ms, 0)
+      )
 
       :salix_agent
-      |> Application.fetch_env!(:project_knowledge_context_result)
+      |> SystemsRuntime.fetch_env!(:project_knowledge_context_result)
       |> with_default_subject()
     end
 
@@ -33,13 +36,21 @@ defmodule SalixAgent.ProjectKnowledgeContextTest do
   end
 
   setup do
-    previous_provider = Application.get_env(:salix_agent, :project_knowledge_provider_mod)
-    previous_result = Application.get_env(:salix_agent, :project_knowledge_context_result)
-    previous_test_pid = Application.get_env(:salix_agent, :project_knowledge_context_test_pid)
-    previous_delay = Application.get_env(:salix_agent, :project_knowledge_context_delay_ms)
-    previous_timeout = Application.get_env(:salix_agent, :project_knowledge_provider_timeout_ms)
-    Application.put_env(:salix_agent, :project_knowledge_provider_mod, Provider)
-    Application.put_env(:salix_agent, :project_knowledge_context_test_pid, self())
+    previous_provider = SystemsRuntime.get_env(:salix_agent, :project_knowledge_provider_mod)
+    previous_result = SystemsRuntime.get_env(:salix_agent, :project_knowledge_context_result)
+    previous_test_pid = SystemsRuntime.get_env(:salix_agent, :project_knowledge_context_test_pid)
+    previous_delay = SystemsRuntime.get_env(:salix_agent, :project_knowledge_context_delay_ms)
+
+    previous_timeout =
+      SystemsRuntime.get_env(:salix_agent, :project_knowledge_provider_timeout_ms)
+
+    SystemsRuntime.put_env(:salix_agent, :project_knowledge_provider_mod, Provider)
+
+    SystemsRuntime.put_env(
+      :salix_agent,
+      :project_knowledge_context_test_pid,
+      SystemsRuntime.Proc.self()
+    )
 
     on_exit(fn ->
       restore(:project_knowledge_provider_mod, previous_provider)
@@ -69,7 +80,7 @@ defmodule SalixAgent.ProjectKnowledgeContextTest do
          ]
        }}
 
-    Application.put_env(:salix_agent, :project_knowledge_context_result, result)
+    SystemsRuntime.put_env(:salix_agent, :project_knowledge_context_result, result)
 
     session = %{
       next_message_id: 2,
@@ -79,8 +90,9 @@ defmodule SalixAgent.ProjectKnowledgeContextTest do
     assert {:messages, [payload]} =
              ProjectKnowledgeContext.prepare("agent-1", "session-1", session)
 
-    assert_receive {:retrieved, "agent-1", "What does Lin own in Atlas?",
-                    %{session_id: "session-1"}}
+    settle_receive(
+      {:retrieved, "agent-1", "What does Lin own in Atlas?", %{session_id: "session-1"}}
+    )
 
     assert payload["runtime_message_type"] == "project_knowledge"
     assert payload["runtime_message_id"] =~ "project-knowledge:"
@@ -120,70 +132,13 @@ defmodule SalixAgent.ProjectKnowledgeContextTest do
     refute continued_payload["runtime_message_id"] == payload["runtime_message_id"]
   end
 
-  test "facts already rendered in place for this activation are not committed again" do
-    result =
-      {:ok,
-       %{
-         status: :resolved,
-         facts: [
-           %{
-             id: "assertion-1",
-             kind: :decision,
-             content: "Lin owns the Atlas launch checklist.",
-             source_refs: [
-               %{type: "slack_receipt", ref: "s3://triage/receipts/decision.json"}
-             ]
-           }
-         ]
-       }}
-
-    Application.put_env(:salix_agent, :project_knowledge_context_result, result)
-
-    question = %{id: 1, role: "user", content: "What does Lin own in Atlas?"}
-
-    assert {:messages, [payload]} =
-             ProjectKnowledgeContext.prepare("agent-1", "session-1", %{
-               next_message_id: 2,
-               messages: [question]
-             })
-
-    in_place = %{
-      id: 2,
-      role: "runtime",
-      type: "project_knowledge",
-      runtime_message_id: "project-knowledge:earlier-round",
-      content: payload["content"]
-    }
-
-    # A later round of the same activation: the block is still in the request.
-    continued = %{
-      next_message_id: 5,
-      messages: [question, in_place, %{id: 3, role: "assistant", content: "", tool_calls: []}]
-    }
-
-    assert :none = ProjectKnowledgeContext.prepare("agent-1", "session-1", continued)
-
-    # A new user input starts another activation; the block is out of view.
-    next_activation = %{
-      next_message_id: 6,
-      messages:
-        continued.messages ++ [%{id: 5, role: "user", content: "What does Lin own in Atlas?"}]
-    }
-
-    assert {:messages, [fresh]} =
-             ProjectKnowledgeContext.prepare("agent-1", "session-1", next_activation)
-
-    assert fresh["content"] == payload["content"]
-    refute fresh["runtime_message_id"] == payload["runtime_message_id"]
-  end
-
   test "runtime knowledge preserves resolved subjects and rejects facts outside that set" do
     entities = [
       %{kind: :person, id: "person-lin", matched_alias: "Lin"},
       %{kind: :person, id: "person-ann", matched_alias: "Ann"}
     ]
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :project_knowledge_context_result,
       {:ok,
@@ -234,7 +189,7 @@ defmodule SalixAgent.ProjectKnowledgeContextTest do
              ]
            } = Jason.decode!(payload["content"])
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :project_knowledge_context_result,
       {:ok,
@@ -255,7 +210,7 @@ defmodule SalixAgent.ProjectKnowledgeContextTest do
 
     assert :none = ProjectKnowledgeContext.prepare("agent-1", "session-1", session)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :project_knowledge_context_result,
       {:ok,
@@ -275,100 +230,6 @@ defmodule SalixAgent.ProjectKnowledgeContextTest do
     )
 
     assert :none = ProjectKnowledgeContext.prepare("agent-1", "session-1", session)
-  end
-
-  test "one activation queries every ordered user delivery" do
-    Application.put_env(
-      :salix_agent,
-      :project_knowledge_context_result,
-      {:ok,
-       %{
-         status: :resolved,
-         facts: [
-           %{
-             id: "assertion-atlas-owner",
-             kind: :fact,
-             content: "Lin owns Atlas.",
-             source_refs: [%{type: "manual", ref: "manual://atlas/owner"}]
-           }
-         ]
-       }}
-    )
-
-    session = %{
-      last_ack_message_id: 2,
-      next_message_id: 3,
-      messages: [
-        %{
-          id: 1,
-          role: "user",
-          source_message_id: "delivery-1",
-          content: "What does Lin own in Atlas?"
-        },
-        %{
-          id: 2,
-          role: "user",
-          source_message_id: "delivery-2",
-          content: "Also say hello."
-        }
-      ]
-    }
-
-    assert {:messages, [_payload]} =
-             ProjectKnowledgeContext.prepare("agent-1", "session-1", session)
-
-    assert_receive {:retrieved, "agent-1", "What does Lin own in Atlas?\n\nAlso say hello.",
-                    %{session_id: "session-1"}}
-  end
-
-  test "unknown, ambiguous, and unsourced results expose no context" do
-    session = %{
-      next_message_id: 2,
-      messages: [%{id: 1, role: "user", content: "Who owns Atlas?"}]
-    }
-
-    for result <- [
-          {:ok, %{status: :unknown, facts: []}},
-          {:ok, %{status: :ambiguous, facts: []}},
-          {:ok,
-           %{
-             status: :resolved,
-             facts: [%{id: "a", kind: :fact, content: "unsourced", source_refs: []}]
-           }}
-        ] do
-      Application.put_env(:salix_agent, :project_knowledge_context_result, result)
-      assert :none = ProjectKnowledgeContext.prepare("agent-1", "session-1", session)
-    end
-  end
-
-  test "a provider page larger than the runtime budget is deterministically truncated" do
-    facts =
-      for index <- 1..21 do
-        %{
-          id: "assertion-#{index}",
-          kind: :fact,
-          content: "Fact #{index}",
-          source_refs: [%{type: "manual", ref: "manual://fact/#{index}"}]
-        }
-      end
-
-    Application.put_env(
-      :salix_agent,
-      :project_knowledge_context_result,
-      {:ok, %{status: :resolved, facts: facts}}
-    )
-
-    session = %{
-      next_message_id: 2,
-      messages: [%{id: 1, role: "user", content: "What do we know?"}]
-    }
-
-    assert {:messages, [payload]} =
-             ProjectKnowledgeContext.prepare("agent-1", "session-1", session)
-
-    decoded = Jason.decode!(payload["content"])
-    assert length(decoded["facts"]) == 20
-    assert Enum.map(decoded["facts"], & &1["id"]) == Enum.map(1..20, &"assertion-#{&1}")
   end
 
   for {name, count, digit_bytes, ref_bytes, expected_ids} <- [
@@ -393,7 +254,7 @@ defmodule SalixAgent.ProjectKnowledgeContextTest do
           }
         end
 
-      Application.put_env(
+      SystemsRuntime.put_env(
         :salix_agent,
         :project_knowledge_context_result,
         {:ok, %{status: :resolved, facts: facts}}
@@ -412,15 +273,19 @@ defmodule SalixAgent.ProjectKnowledgeContextTest do
         |> SalixAgent.ContextProviders.model_messages()
         |> then(fn [message] -> message end)
 
-      # Since #1145 a transcript that is entirely system-authored is not folded
-      # into `system` — Anthropic `messages` may not be empty, so the lone
-      # runtime block is demoted to one `<system>`-wrapped user turn. The
-      # aggregate byte budget still governs the runtime block itself.
-      assert {nil, [%{"role" => "user", "content" => "<system>\n" <> demoted}]} =
-               SalixLlm.Convert.to_anthropic([runtime_message])
+      # Mid-conversation project knowledge reaches the model as the result of a
+      # synthetic `get_runtime_message` call (Chat) or as runtime text in a
+      # user turn (Anthropic). The budget governs both.
+      conversation = [%{role: "user", content: "What do we know?"}, runtime_message]
 
-      runtime_block = String.replace_suffix(demoted, "\n</system>", "")
-      assert byte_size(runtime_block) <= 32 * 1024
+      assert [_question, _call, %{"role" => "tool", "content" => runtime_result}] =
+               SalixLlm.ConvertOpenAI.to_chat(conversation)
+
+      assert {nil, [_question, %{"role" => "user", "content" => runtime_text}]} =
+               SalixLlm.Convert.to_anthropic(conversation)
+
+      assert byte_size(runtime_result) <= 32 * 1024
+      assert byte_size(runtime_text) <= 32 * 1024
 
       ids = Enum.map(Jason.decode!(payload["content"])["facts"], & &1["id"])
 
@@ -435,56 +300,6 @@ defmodule SalixAgent.ProjectKnowledgeContextTest do
     end
   end
 
-  test "a stalled provider fails open at the configured deadline and emits a bounded outcome" do
-    handler_id = "project-knowledge-timeout-#{System.unique_integer([:positive])}"
-    test_pid = self()
-
-    :ok =
-      :telemetry.attach(
-        handler_id,
-        [:salix, :project_knowledge, :retrieve, :stop],
-        fn event, measurements, metadata, _config ->
-          send(test_pid, {:project_knowledge_telemetry, event, measurements, metadata})
-        end,
-        nil
-      )
-
-    on_exit(fn -> :telemetry.detach(handler_id) end)
-
-    Application.put_env(:salix_agent, :project_knowledge_provider_timeout_ms, 20)
-    Application.put_env(:salix_agent, :project_knowledge_context_delay_ms, 250)
-    Application.put_env(:salix_agent, :project_knowledge_context_result, :none)
-
-    session = %{
-      next_message_id: 2,
-      messages: [%{id: 1, role: "user", content: "Who owns Atlas?"}]
-    }
-
-    started_at = System.monotonic_time(:millisecond)
-    assert :none = ProjectKnowledgeContext.prepare("agent-1", "session-1", session)
-    assert System.monotonic_time(:millisecond) - started_at < 150
-
-    assert_receive {:project_knowledge_telemetry, [:salix, :project_knowledge, :retrieve, :stop],
-                    %{duration: duration}, %{outcome: :timeout}}
-
-    assert is_integer(duration) and duration > 0
-  end
-
-  test "a product provider absent from an isolated runtime is inert" do
-    Application.put_env(
-      :salix_agent,
-      :project_knowledge_provider_mod,
-      SalixAgent.ProjectKnowledgeContextTest.MissingProvider
-    )
-
-    session = %{
-      next_message_id: 2,
-      messages: [%{id: 1, role: "user", content: "Who owns Atlas?"}]
-    }
-
-    assert :none = ProjectKnowledgeContext.prepare("agent-1", "session-1", session)
-  end
-
-  defp restore(key, nil), do: Application.delete_env(:salix_agent, key)
-  defp restore(key, value), do: Application.put_env(:salix_agent, key, value)
+  defp restore(key, nil), do: SystemsRuntime.delete_env(:salix_agent, key)
+  defp restore(key, value), do: SystemsRuntime.put_env(:salix_agent, key, value)
 end

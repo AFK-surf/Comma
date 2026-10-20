@@ -51,7 +51,7 @@ defmodule BillingStripe.Release do
 
       {:ok, {:error, reason}, _started} when attempt < max_attempts ->
         if transient?(reason) do
-          Process.sleep(attempt * 1_000)
+          SystemsClock.sleep(attempt * 1_000)
           sync_repo_attempt(repo, catalog, opts, attempt + 1, max_attempts)
         else
           {:error, reason}
@@ -62,7 +62,7 @@ defmodule BillingStripe.Release do
 
       {:error, reason} when attempt < max_attempts ->
         if transient?(reason) do
-          Process.sleep(attempt * 1_000)
+          SystemsClock.sleep(attempt * 1_000)
           sync_repo_attempt(repo, catalog, opts, attempt + 1, max_attempts)
         else
           {:error, reason}
@@ -137,7 +137,7 @@ defmodule BillingStripe.Release do
   end
 
   defp repos do
-    Application.get_env(:billing_core, :ecto_repos, [])
+    SystemsRuntime.get_env(:billing_core, :ecto_repos, [])
   end
 
   defp prepare_apps do

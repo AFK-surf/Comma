@@ -8,20 +8,20 @@ defmodule SalixStore.MeetingGroupProjectionReadiness do
   backfill release.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   alias SalixStore.MeetingGroupProjections
 
   @name __MODULE__
   @retry_ms 1_000
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: @name)
+  def start_link(opts \\ []), do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: @name)
 
   @spec ready?() :: boolean()
   def ready? do
-    case Process.whereis(@name) do
+    case SystemsRuntime.Proc.whereis(@name) do
       nil -> false
-      pid -> GenServer.call(pid, :ready?)
+      pid -> SystemsRuntime.Server.call(pid, :ready?)
     end
   catch
     :exit, _reason -> false
@@ -29,9 +29,9 @@ defmodule SalixStore.MeetingGroupProjectionReadiness do
 
   @doc false
   def refresh do
-    case Process.whereis(@name) do
+    case SystemsRuntime.Proc.whereis(@name) do
       nil -> :ok
-      pid -> GenServer.call(pid, :refresh)
+      pid -> SystemsRuntime.Server.call(pid, :refresh)
     end
   catch
     :exit, _reason -> :ok
@@ -53,7 +53,7 @@ defmodule SalixStore.MeetingGroupProjectionReadiness do
 
   defp check(state) do
     ready? = MeetingGroupProjections.ready?()
-    unless ready?, do: Process.send_after(self(), :recheck, @retry_ms)
+    unless ready?, do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :recheck, @retry_ms)
     %{state | ready?: ready?}
   end
 end

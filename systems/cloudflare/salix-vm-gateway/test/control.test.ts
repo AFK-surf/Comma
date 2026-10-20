@@ -37,14 +37,13 @@ describe("persistent Container carrier control", () => {
     await expect(replacement.run(permit, "ensure", destroy, () => ({}))).rejects.toThrow("stale_control_permit");
   });
 
-  test("a network failure stays unresolved across eviction and no ready observation settles import", async () => {
+  test("a network failure stays unresolved across eviction", async () => {
     const disk = storage();
     const control = new ContainerControl(disk);
     await control.open(permit);
     await expect(control.run(permit, "import", async () => { throw new Error("response lost"); }, () => ({}))).rejects.toThrow("response lost");
     const replacement = new ContainerControl(disk);
     await replacement.seal(sealed);
-    await replacement.confirmReady(sealed);
     expect(replacement.observe()?.pending).toMatchObject({ action: "import", claim_id: "claim-1" });
     const destroy = vi.fn(async () => undefined);
     await expect(replacement.run(sealed, "destroy", destroy, () => ({}), { sealed: true })).rejects.toThrow("control_command_unsettled");
@@ -65,29 +64,6 @@ describe("persistent Container carrier control", () => {
     await rejected;
     expect(start).not.toHaveBeenCalled();
     expect(control.observe()).toMatchObject({ sealed: true, pending: null, last_terminal: { outcome: "not_issued", claim_id: "claim-1" } });
-  });
-
-  test("only an issued native start can be confirmed ready; an unissued intent cannot", async () => {
-    const disk = storage();
-    const control = new ContainerControl(disk);
-    await control.open(permit);
-    const beforeStart = deferred<void>();
-    const started = deferred<void>();
-    const call = control.run(permit, "ensure", async () => {
-      started.resolve();
-      await beforeStart.promise;
-      control.startIssued(permit);
-      throw new Error("ready response lost");
-    }, () => ({}));
-    const rejected = expect(call).rejects.toThrow("ready response lost");
-    await started.promise;
-    await control.confirmReady(permit);
-    expect(control.observe()?.pending).not.toBeNull();
-    beforeStart.resolve();
-    await rejected;
-    const replacement = new ContainerControl(disk);
-    await replacement.confirmReady(permit);
-    expect(replacement.observe()).toMatchObject({ pending: null, last_terminal: { action: "ensure", start_issued: true, outcome: "completed" } });
   });
 
   test("destroy retries cannot cross an explicitly reopened owner generation", async () => {
@@ -114,4 +90,41 @@ describe("persistent Container carrier control", () => {
     expect(start).not.toHaveBeenCalled();
     expect(control.observe()?.pending?.claim_id).toBe(permit.claim_id);
   });
+  test("an approved sealed discard supersedes import without late completion changing destruction", async () => {
+    const disk = storage();
+    const control = new ContainerControl(disk);
+    await control.open(permit);
+    const response = deferred<string>();
+    const started = deferred<void>();
+    const importing = control.run(permit, "import", () => {
+      started.resolve(); return response.promise;
+    }, () => ({ status: 200 }), { archive_operation: "snapshot-1" });
+    const abandoned = expect(importing).rejects.toThrow("control_command_changed");
+    await started.promise;
+    await control.seal(sealed);
+    const replacement = new ContainerControl(disk);
+    const destroy = vi.fn(async () => "stopped");
+    expect(await replacement.run({ ...sealed, claim_id: "discard" }, "destroy", destroy, () => ({ status: 200 }),
+      { sealed: true, discard: true })).toBe("stopped");
+    response.resolve("imported");
+    await abandoned;
+    expect(replacement.observe()).toMatchObject({ sealed: true, pending: null,
+      last_terminal: { action: "destroy", claim_id: "discard", outcome: "completed" } });
+    await expect(control.run(permit, "ensure", destroy, () => ({}))).rejects.toThrow("stale_control_permit");
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  test("discard cannot supersede an unresolved destruction or run against an open carrier", async () => {
+    const control = new ContainerControl(storage());
+    await control.open(permit);
+    const destroy = vi.fn(async () => undefined);
+    await expect(control.run(permit, "destroy", destroy, () => ({}), { discard: true })).rejects.toThrow("control_seal_required");
+    await control.seal(sealed);
+    await expect(control.run(sealed, "destroy", async () => { throw new Error("response lost"); }, () => ({}),
+      { sealed: true, discard: true })).rejects.toThrow("response lost");
+    await expect(control.run(command("another", sealed), "destroy", destroy, () => ({}),
+      { sealed: true, discard: true })).rejects.toThrow("control_command_unsettled");
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
 });

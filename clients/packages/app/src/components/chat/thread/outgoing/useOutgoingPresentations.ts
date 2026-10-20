@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { ChatMessage } from "../../model/conversationChannel";
+import type { ChatMessage } from "@comma/core/chat";
 import {
   resolveOutgoingPresentations,
   type ChatOutgoingLaunch,

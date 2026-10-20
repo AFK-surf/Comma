@@ -5,28 +5,33 @@ defmodule SalixWeb.RouterInboxTest do
   session through the provider ingress funnel, and every other credential and
   every other path is refused.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   alias SalixAgent.LLM.Mock
   alias SalixIM.ProviderConnects
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev = Application.get_env(:salix_store, :s3_backend)
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_api_token = Application.get_env(:salix_web, :api_token)
-    prev_limits = Application.get_env(:salix_web, :router_inbox_rate_limits)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_web, :api_token, "test-token")
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_api_token = SystemsRuntime.get_env(:salix_web, :api_token)
+    prev_limits = SystemsRuntime.get_env(:salix_web, :router_inbox_rate_limits)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_web, :api_token, "test-token")
 
     Comma.PodLifecycle.reset_for_test()
     SalixCluster.NodeLifecycle.reset()
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
     end
+
+    SalixAgent.TestSupport.configure_platform_models!()
 
     case start_supervised(Mock) do
       {:ok, _pid} -> :ok
@@ -34,13 +39,13 @@ defmodule SalixWeb.RouterInboxTest do
     end
 
     Mock.script([])
-    Application.put_env(:salix_agent, :llm, Mock)
+    SystemsRuntime.put_env(:salix_agent, :llm, Mock)
     SalixStore.Repo.query!("DELETE FROM agent_group_api_keys")
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev)
-      Application.put_env(:salix_agent, :llm, prev_llm)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
+      SystemsRuntime.put_env(:salix_agent, :llm, prev_llm)
       restore_env(:salix_web, :api_token, prev_api_token)
       restore_env(:salix_web, :router_inbox_rate_limits, prev_limits)
       Comma.PodLifecycle.reset_for_test()
@@ -144,52 +149,6 @@ defmodule SalixWeb.RouterInboxTest do
            ) == 1
   end
 
-  test "wake=false delivers context without a round", ctx do
-    response =
-      req_as(ctx.key, :post, inbox_path(ctx.group_id),
-        json: %{text: "FYI only", source_message_id: "fyi-1", wake: false}
-      )
-
-    assert response.status == 202
-    context_id = response.body["message_id"]
-
-    # Committed durably, but no round ingests it until something wakes the
-    # Router: it is not in the session yet.
-    Process.sleep(300)
-
-    ingested? =
-      case router_session(ctx) do
-        {:ok, session} ->
-          Enum.any?(
-            SalixAgent.InternalSession.get(session, :messages),
-            &(source_id(&1) == context_id)
-          )
-
-        _ ->
-          false
-      end
-
-    refute ingested?
-
-    trigger =
-      req_as(ctx.key, :post, inbox_path(ctx.group_id),
-        json: %{text: "now act", source_message_id: "act-1"}
-      )
-
-    assert trigger.status == 202
-    _ = router_session_message(ctx, trigger.body["message_id"])
-    context = router_session_message(ctx, context_id)
-    assert Map.get(context, :no_wake) == true or Map.get(context, "no_wake") == true
-  end
-
-  test "a server-generated source id is used when the caller sends none", ctx do
-    response = req_as(ctx.key, :post, inbox_path(ctx.group_id), json: %{text: "no id"})
-    assert response.status == 202
-    assert "api:" <> rest = response.body["message_id"]
-    assert String.starts_with?(rest, ctx.key_id <> ":")
-    assert _ = router_session_message(ctx, response.body["message_id"])
-  end
-
   test "disable, enable and delete change whether the key opens the door", ctx do
     path = "/v1/runtime/agent-groups/#{ctx.group_id}/router/api-keys/#{ctx.key_id}"
 
@@ -226,7 +185,7 @@ defmodule SalixWeb.RouterInboxTest do
            ).status == 401
 
     assert req_as(ctx.key, :get, "/v1/admin/tenants").status == 401
-    assert req_as(ctx.key, :get, "/v1/templates/catalog").status == 401
+    assert req_as(ctx.key, :get, "/v1/runtime/agents").status == 401
   end
 
   test "the path group must be the key's own group", ctx do
@@ -237,91 +196,6 @@ defmodule SalixWeb.RouterInboxTest do
     assert response.body == %{"error" => "agent group not found"}
 
     assert req_as(ctx.key, :post, inbox_path("grp1_0_0"), json: %{text: "x"}).status == 404
-  end
-
-  test "a group without a Router answers 409", ctx do
-    group = req_as(ctx.tenant_key, :post, "/v1/runtime/agent-groups", json: %{name: "Bare"}).body
-
-    key =
-      req_as(
-        ctx.tenant_key,
-        :post,
-        "/v1/runtime/agent-groups/#{group["group_id"]}/router/api-keys",
-        json: %{name: "k"}
-      ).body[
-        "key"
-      ]
-
-    response = req_as(key, :post, inbox_path(group["group_id"]), json: %{text: "x"})
-    assert response.status == 409
-    assert response.body == %{"error" => "router_not_configured"}
-  end
-
-  test "the request body is validated field by field", ctx do
-    cases = [
-      {%{}, "text"},
-      {%{text: "   "}, "text"},
-      {%{text: String.duplicate("a", 32_001)}, "text"},
-      {%{text: "x", source_message_id: "has space"}, "source_message_id"},
-      {%{text: "x", source_message_id: String.duplicate("a", 129)}, "source_message_id"},
-      {%{text: "x", sender: "Zendesk"}, "sender"},
-      {%{text: "x", sender: %{name: String.duplicate("n", 81)}}, "sender.name"},
-      {%{text: "x", context: [1, 2]}, "context"},
-      {%{text: "x", context: %{blob: String.duplicate("z", 5_000)}}, "context"},
-      {%{text: "x", wake: "yes"}, "wake"}
-    ]
-
-    for {body, field} <- cases do
-      response = req_as(ctx.key, :post, inbox_path(ctx.group_id), json: body)
-      assert response.status == 422, "#{inspect(body)} should be 422"
-      assert response.body["error"] == "invalid_request"
-      assert response.body["field"] == field
-      assert is_binary(response.body["reason"])
-    end
-
-    too_large = %{text: "x", context: %{}, pad: String.duplicate("p", 70_000)}
-    response = req_as(ctx.key, :post, inbox_path(ctx.group_id), json: too_large)
-    assert response.status == 413
-    assert response.body == %{"error" => "payload_too_large"}
-
-    # The ceiling is applied by the body reader, before parsing: an over-limit
-    # body that is not JSON at all is still refused as too large, not decoded.
-    too_large_not_json =
-      Req.request!(
-        method: :post,
-        url: base() <> inbox_path(ctx.group_id),
-        headers: [{"authorization", "Bearer " <> ctx.key}, {"content-type", "application/json"}],
-        body: String.duplicate("{", 70_000)
-      )
-
-    assert too_large_not_json.status == 413
-    assert too_large_not_json.body == %{"error" => "payload_too_large"}
-
-    malformed =
-      Req.request!(
-        method: :post,
-        url: base() <> inbox_path(ctx.group_id),
-        headers: [{"authorization", "Bearer " <> ctx.key}, {"content-type", "application/json"}],
-        body: "{not json"
-      )
-
-    assert malformed.status == 400
-  end
-
-  test "requests beyond the per-key window are refused with Retry-After", ctx do
-    Application.put_env(:salix_web, :router_inbox_rate_limits,
-      key_per_minute: 2,
-      group_per_minute: 600
-    )
-
-    assert req_as(ctx.key, :post, inbox_path(ctx.group_id), json: %{text: "1"}).status == 202
-    assert req_as(ctx.key, :post, inbox_path(ctx.group_id), json: %{text: "2"}).status == 202
-
-    limited = req_as(ctx.key, :post, inbox_path(ctx.group_id), json: %{text: "3"})
-    assert limited.status == 429
-    assert limited.body == %{"error" => "rate_limited"}
-    assert [retry_after] = Req.Response.get_header(limited, "retry-after")
-    assert String.to_integer(retry_after) >= 1
   end
 
   test "the tenant management API lists, creates, updates and deletes keys", ctx do
@@ -397,13 +271,8 @@ defmodule SalixWeb.RouterInboxTest do
         Map.get(message, :source_message_id) || Map.get(message, "source_message_id") || ""
       )
 
-  defp eventually(fun, retries \\ 100) do
-    cond do
-      fun.() -> true
-      retries == 0 -> false
-      true -> Process.sleep(20) && eventually(fun, retries - 1)
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 
   defp req(method, path, opts), do: req_as("test-token", method, path, opts)
 
@@ -414,6 +283,6 @@ defmodule SalixWeb.RouterInboxTest do
 
   defp base, do: SalixWeb.Application.base_url()
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

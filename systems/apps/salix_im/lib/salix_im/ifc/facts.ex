@@ -48,7 +48,7 @@ defmodule SalixIM.IFC.Facts do
   @spec mode(String.t(), String.t()) :: String.t()
   def mode(tenant_id, group_id) do
     key = {text(tenant_id), text(group_id)}
-    now = System.monotonic_time(:millisecond)
+    now = SystemsClock.monotonic_time(:millisecond)
 
     case cached_mode(key, now) do
       {:ok, mode} -> mode
@@ -64,7 +64,7 @@ defmodule SalixIM.IFC.Facts do
   end
 
   defp cached_mode(key, now) do
-    case :ets.lookup(mode_cache(), key) do
+    case SystemsRuntime.ETS.lookup(mode_cache(), key) do
       [{^key, expires_at, mode}] when expires_at > now -> {:ok, mode}
       _miss -> :miss
     end
@@ -75,8 +75,9 @@ defmodule SalixIM.IFC.Facts do
   defp cache_mode(key, now, mode) do
     table = mode_cache()
 
-    if :ets.member(table, key) or :ets.info(table, :size) < @mode_cache_max_entries do
-      :ets.insert(table, {key, now + @mode_cache_ttl_ms, mode})
+    if SystemsRuntime.ETS.member(table, key) or
+         SystemsRuntime.ETS.info(table, :size) < @mode_cache_max_entries do
+      SystemsRuntime.ETS.insert(table, {key, now + @mode_cache_ttl_ms, mode})
     end
 
     mode
@@ -85,10 +86,10 @@ defmodule SalixIM.IFC.Facts do
   end
 
   defp mode_cache do
-    case :ets.whereis(@mode_cache) do
+    case SystemsRuntime.ETS.whereis(@mode_cache) do
       :undefined ->
         try do
-          :ets.new(@mode_cache, [
+          SystemsRuntime.ETS.new(@mode_cache, [
             :named_table,
             :public,
             :set,
@@ -514,6 +515,22 @@ defmodule SalixIM.IFC.Facts do
           message_scope(tenant_id, group_id, connects, descriptor)
         )
 
+      # The same for a Lark document, read through the Lark connect.
+      %{"kind" => "provider_document", "provider" => "lark"} = descriptor ->
+        lark_document(group_id, connects, descriptor)
+
+      # Content written into an existing Feishu document, comment, or a new
+      # document under a parent folder or wiki node. See `provider_document/4`.
+      %{"kind" => "provider_document"} = descriptor ->
+        provider_document(group_id, connects, descriptor)
+
+      # Opening a Feishu document to the whole tenant or a department.
+      %{"kind" => "provider_space"} = descriptor ->
+        case connect_or_default(descriptor["connect_id"], connects) do
+          "" -> {encode([:public]), "unknown"}
+          connect_id -> {encode([{:space, connect_id}]), "any"}
+        end
+
       %{"kind" => "conversation"} = descriptor ->
         conversation(group_id, descriptor)
 
@@ -526,6 +543,10 @@ defmodule SalixIM.IFC.Facts do
         {encode([{:group, group_id}]), "any"}
 
       %{"kind" => "memory"} ->
+        {encode([{:group, group_id}]), "any"}
+
+      # Saved device secrets serve the whole Group, like Group memory.
+      %{"kind" => "device_secret"} ->
         {encode([{:group, group_id}]), "any"}
 
       # The user's Drive (`/drive/...`): the Workspace's shared folder, synced
@@ -605,6 +626,55 @@ defmodule SalixIM.IFC.Facts do
   # nothing there; the guest rule is the kernel's, not this table's. A room
   # with a known member set restricts writers to it, and a room whose members
   # are unknown has no writers this resolver can vouch for.
+  # A document's readers are its collaborators, the members of every chat and
+  # department it is shared with, the members of a parent folder or wiki
+  # space, and anyone its link is open to. Most of those cannot be enumerated
+  # by this app, so a destination never claims fewer readers than the whole
+  # tenant: the space, or the public when the link is open to anyone. A
+  # setting Feishu will not disclose is a public destination with unknown
+  # writers. One bounded permission read per decision; no member listing.
+  defp provider_document(group_id, connects, descriptor) do
+    connect_id = connect_or_default(descriptor["connect_id"], connects)
+
+    with false <- connect_id == "",
+         {:ok, connect} <-
+           ProviderConnects.get_active_connect_by_id(group_id, connect_id, "feishu"),
+         {:ok, entity} <-
+           SalixIM.Provider.Feishu.Docs.link_share_entity(
+             connect,
+             descriptor["document"],
+             text(descriptor["document_type"])
+           ) do
+      if String.starts_with?(entity, "anyone"),
+        do: {encode([:public]), "any"},
+        else: {encode([{:space, connect_id}]), "any"}
+    else
+      _unknown -> {encode([:public]), "unknown"}
+    end
+  end
+
+  # A Lark document, by the rule of `provider_document/3`. The connect must be
+  # a Lark connect: its own app reads the link setting from Lark.
+  defp lark_document(group_id, connects, descriptor) do
+    connect_id = connect_or_default(descriptor["connect_id"], connects)
+
+    with false <- connect_id == "",
+         {:ok, connect} <-
+           ProviderConnects.get_active_connect_by_id(group_id, connect_id, "lark"),
+         {:ok, entity} <-
+           SalixIM.Provider.Lark.Docs.link_share_entity(
+             connect,
+             descriptor["document"],
+             text(descriptor["document_type"])
+           ) do
+      if String.starts_with?(entity, "anyone"),
+        do: {encode([:public]), "any"},
+        else: {encode([{:space, connect_id}]), "any"}
+    else
+      _unknown -> {encode([:public]), "unknown"}
+    end
+  end
+
   defp scope_writers(connect_id, row) do
     cond do
       row.kind == "public" and row.audience_mode != "members" -> "any"
@@ -697,20 +767,22 @@ defmodule SalixIM.IFC.Facts do
   end
 
   defp conversation_row(group_id, conversation_id, requester) do
-    mod = Application.get_env(:salix_im, :task_execution_owner_mod)
+    mod = SystemsRuntime.get_env(:salix_im, :task_execution_owner_mod)
 
     members =
-      if mod && Code.ensure_loaded?(mod) && function_exported?(mod, :conversation_members, 3),
-        do: mod.conversation_members(group_id, conversation_id, requester)
+      if mod && SystemsRuntime.Proc.ensure_loaded?(mod) &&
+           function_exported?(mod, :conversation_members, 3),
+         do: mod.conversation_members(group_id, conversation_id, requester)
 
     %{members: members, revision: 0, sealed: false, display_name: nil, tags: []}
   end
 
   defp direct_members(group_id, connect_id, %{kind: "direct", members: members}, requester) do
-    mod = Application.get_env(:salix_im, :task_execution_owner_mod)
+    mod = SystemsRuntime.get_env(:salix_im, :task_execution_owner_mod)
 
-    if mod && Code.ensure_loaded?(mod) && function_exported?(mod, :direct_members, 4),
-      do: mod.direct_members(group_id, connect_id, members, requester)
+    if mod && SystemsRuntime.Proc.ensure_loaded?(mod) &&
+         function_exported?(mod, :direct_members, 4),
+       do: mod.direct_members(group_id, connect_id, members, requester)
   end
 
   defp direct_members(_group_id, _connect_id, _row, _requester), do: nil
@@ -785,7 +857,7 @@ defmodule SalixIM.IFC.Facts do
   end
 
   defp now_ms(value) when is_integer(value) and value > 0, do: value
-  defp now_ms(_value), do: System.system_time(:millisecond)
+  defp now_ms(_value), do: SystemsClock.system_time(:millisecond)
 
   defp text(nil), do: ""
   defp text(value) when is_binary(value), do: String.trim(value)

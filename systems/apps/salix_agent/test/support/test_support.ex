@@ -1,51 +1,114 @@
 defmodule SalixAgent.TestSupport do
+  require SystemsRuntime.Proc
+
   @moduledoc false
 
   def configure_control_fixtures! do
-    Application.put_env(:salix_agent, :group_context_mod, SalixAgent.TestSupport.GroupContext)
+    put_env(:salix_agent, :group_context_mod, SalixAgent.TestSupport.GroupContext)
+  end
+
+  defp put_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
+
+  defp on_exit(fun) do
+    if SystemsSim.simulated?(),
+      do: SystemsSim.Case.on_exit(fun),
+      else: ExUnit.Callbacks.on_exit(fun)
   end
 
   def new_tenant_id, do: SalixStore.Ids.new_tenant_id()
-  def new_group_id, do: new_tenant_id() |> SalixStore.Ids.new_group_id()
-  def new_agent_id, do: new_group_id() |> SalixStore.Ids.new_agent_id()
 
   @doc """
-  Write the tenant record's `agent_defaults` config section, the tenant layer
-  read by `SalixAgent.AgentDefaults`. Creates a minimal tenant record when the
-  test has not created one.
+  The platform model's base URL in tests. A test that reaches the provider
+  (no test LLM in place) gets a refused connection at once: nothing on the
+  machine listens on port 1, and no name is resolved.
   """
-  def put_tenant_agent_defaults!(tenant_id, defaults) when is_map(defaults) do
-    key = SalixStore.Keys.ctl_tenant(tenant_id)
+  def platform_model_base_url, do: "http://127.0.0.1:1/v1"
 
-    {record, etag} =
-      case SalixStore.S3.get(key) do
-        {:ok, %{body: body, etag: etag}} -> {Jason.decode!(body), etag}
-        {:error, :not_found} -> {%{"tenant_id" => tenant_id, "name" => tenant_id}, nil}
-      end
+  @doc """
+  Sets up the platform model for both roles, as a deployment does: Agents that
+  follow the platform default run it (the test LLM answers whatever it names).
+  """
+  def configure_platform_models!(model \\ "gpt-test") do
+    {:ok, profile} =
+      SalixAgent.AccountPool.create(SalixAgent.AccountPool.platform_tenant(), %{
+        "credential_kind" => "provider_api_key",
+        "source" => "custom",
+        "api_key" => "sk-test-platform-0123456789",
+        "base_url" => platform_model_base_url(),
+        "protocol" => "chat_completions",
+        "models" => [model]
+      })
 
-    config =
-      case record["config"] do
-        config when is_binary(config) and config != "" -> Jason.decode!(config)
-        config when is_map(config) -> config
-        _ -> %{}
-      end
+    on_exit(fn ->
+      SalixAgent.SubscriptionStore.query("DELETE FROM subscription_accounts WHERE id=$1", [
+        profile["id"]
+      ])
+    end)
 
-    section =
-      config
-      |> Map.get("agent_defaults", %{})
-      |> Map.merge(stringify_keys(defaults))
-      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
-      |> Map.new()
+    restore_platform_models_on_exit()
+    entry = %{"profile_id" => profile["id"], "model" => model}
 
-    next = Map.put(record, "config", Jason.encode!(Map.put(config, "agent_defaults", section)))
+    {:ok, _} =
+      SalixAgent.PlatformModels.put(%{"tiers" => %{"router" => entry, "worker" => entry}})
 
-    put_opts = if etag, do: [if_match: etag], else: [if_none_match: "*"]
-
-    case SalixStore.S3.put(key, Jason.encode!(next), put_opts) do
-      {:ok, _} -> section
-      {:error, reason} -> raise "failed to write tenant agent defaults: #{inspect(reason)}"
-    end
+    profile
   end
+
+  @doc """
+  Sets up one platform model tier at `base_url` (a test provider), keeping the
+  others; `entry` adds tier fields such as `max_tokens` or `protocol`
+  (default `chat_completions`), and may give the Profile's `api_key`.
+  """
+  def configure_platform_tier!(tier, base_url, model, entry \\ %{}) do
+    {api_key, entry} = Map.pop(entry, "api_key", "sk-test-#{tier}-0123456789")
+
+    {:ok, profile} =
+      SalixAgent.AccountPool.create(SalixAgent.AccountPool.platform_tenant(), %{
+        "credential_kind" => "provider_api_key",
+        "source" => "custom",
+        "api_key" => api_key,
+        "base_url" => base_url,
+        "protocol" => entry["protocol"] || "chat_completions",
+        "models" => [model]
+      })
+
+    on_exit(fn ->
+      SalixAgent.SubscriptionStore.query("DELETE FROM subscription_accounts WHERE id=$1", [
+        profile["id"]
+      ])
+    end)
+
+    restore_platform_models_on_exit()
+    {:ok, settings} = SalixAgent.PlatformModels.get()
+    entry = Map.merge(%{"profile_id" => profile["id"], "model" => model}, entry)
+    tiers = Map.put(settings["tiers"] || %{}, tier, entry)
+    {:ok, _} = SalixAgent.PlatformModels.put(Map.put(settings, "tiers", tiers))
+    profile
+  end
+
+  @doc "Clears one platform model tier."
+  def clear_platform_tier!(tier) do
+    restore_platform_models_on_exit()
+    {:ok, settings} = SalixAgent.PlatformModels.get()
+    tiers = Map.delete(settings["tiers"] || %{}, tier)
+    {:ok, _} = SalixAgent.PlatformModels.put(Map.put(settings, "tiers", tiers))
+    :ok
+  end
+
+  # The settings outlive the test (the store is shared across test modules),
+  # but the Profiles a tier names are deleted at exit: restore the settings
+  # the test found, so a later test does not follow a tier whose Profile is
+  # gone (`platform_model_unavailable`).
+  defp restore_platform_models_on_exit do
+    {:ok, previous} = SalixAgent.PlatformModels.get()
+
+    on_exit(fn ->
+      _ = SalixAgent.PlatformModels.put(Map.put_new(previous, "tiers", %{}))
+    end)
+  end
+
+  def new_group_id, do: new_tenant_id() |> SalixStore.Ids.new_group_id()
+  def new_agent_id, do: new_group_id() |> SalixStore.Ids.new_agent_id()
 
   def create_control_group!(group_id, attrs \\ %{}) do
     attrs = stringify_keys(attrs)
@@ -110,24 +173,27 @@ defmodule SalixAgent.TestSupport do
     )
   end
 
+  # Fixture attributes that describe the platform model an Agent follows
+  # (`ensure_platform_model!/2`), not the Agent record.
+  @platform_entry_attrs ~w(supports_images context_tokens max_tokens)
+
   defp create_control_fixture!(agent_id, attrs, authority) do
     configure_control_fixtures!()
     attrs = stringify_keys(attrs)
     group_id = attrs["group_id"] || SalixStore.Ids.group_id_from_agent!(agent_id)
     tenant_id = attrs["tenant_id"] || SalixStore.Ids.tenant_id_from_group!(group_id)
-    template_id = attrs["template_id"] || "tmpl-#{agent_id}"
+    role = attrs["role"] || "worker"
 
     ensure_control_group!(tenant_id, group_id)
-    ensure_template!(template_id, attrs)
+    ensure_platform_model!(role, attrs)
 
     create_attrs =
       %{
         "group_id" => group_id,
-        "template_id" => template_id,
         "name" => attrs["name"] || agent_id,
-        "role" => attrs["role"] || "worker"
+        "role" => role
       }
-      |> Map.merge(Map.drop(attrs, ["tenant_id"]))
+      |> Map.merge(Map.drop(attrs, ["tenant_id" | @platform_entry_attrs]))
 
     create = if authority == :owned, do: :create_owned_preallocated, else: :create_preallocated
 
@@ -147,20 +213,65 @@ defmodule SalixAgent.TestSupport do
         "tool_call_id" => tool_call_id,
         "request_type" => "host_access",
         "request_payload" => %{},
-        "expires_at" => System.system_time(:second) + 60
+        "expires_at" => SystemsClock.system_time(:second) + 60
       })
 
     SalixAgent.CapabilityRequestStore.execution_fields(request)
   end
 
   def stop_all_agents do
-    if Process.whereis(SalixAgent.Registry) do
+    if SystemsRuntime.Proc.whereis(SalixAgent.Registry) do
       SalixAgent.Registry
-      |> Registry.select([{{:"$1", :"$2", :"$3"}, [], [:"$1"]}])
+      |> SystemsRuntime.Registry.select([{{:"$1", :"$2", :"$3"}, [], [:"$1"]}])
       |> Enum.uniq()
       |> Enum.each(&SalixAgent.Fleet.stop/1)
 
-      wait_stopped(50)
+      wait_stopped()
+    end
+
+    release_loops()
+    stop_dependency_jobs()
+    :ok
+  end
+
+  # A Loop's object runs in the node's spinfoam child, not in its Agent, so
+  # stopping the Agents can leave it running: its timers keep making host calls
+  # into the next test, through that test's shared database connection.
+  defp release_loops do
+    if SystemsRuntime.Proc.whereis(SalixAgent.Loops.Host) do
+      SalixAgent.Loops.Host.loop_objects()
+      |> Enum.map(fn {_object_id, ref} -> ref.agent_id end)
+      |> Enum.uniq()
+      |> Enum.each(&SalixAgent.Loops.Reconciler.release/1)
+    end
+  end
+
+  # In a `SystemsSim` world the world runs until it is idle: the registry and
+  # every other process that watched the stopped agents have taken in their
+  # exits. On a node the registry is polled until it is empty.
+  defp wait_stopped do
+    if SystemsSim.simulated?(),
+      do: SystemsSim.until(fn -> true end),
+      else: wait_stopped(50)
+  end
+
+  # A stopped agent's LLM, compaction and tool calls run as dependency jobs
+  # that outlive it until admission notices the owner's exit. In that window
+  # one can take the next test's scripted `SalixAgent.LLM.Mock` entry from the
+  # global queue. Only synchronous tests stop agents, so no other test owns a
+  # job here.
+  defp stop_dependency_jobs do
+    if SystemsRuntime.Proc.whereis(SalixAgent.DependencyTaskSup) do
+      for pid <- SystemsRuntime.TaskSupervisor.children(SalixAgent.DependencyTaskSup) do
+        ref = SystemsRuntime.Proc.monitor(pid)
+        SystemsRuntime.TaskSupervisor.terminate_child(SalixAgent.DependencyTaskSup, pid)
+
+        SystemsRuntime.Proc.receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+        after
+          1_000 -> SystemsRuntime.Proc.demonitor(ref, [:flush])
+        end
+      end
     end
 
     :ok
@@ -184,19 +295,40 @@ defmodule SalixAgent.TestSupport do
 
   Only suites that deliberately start a round they do not await need this.
   """
-  def await_session_quiet(agent_id, session_id, timeout_ms \\ 10_000) do
+  def await_session_quiet(agent_id, session_id, timeout_ms \\ 30_000) do
     key = SalixAgent.InternalSessionActor.key(agent_id, session_id)
-    do_await_session_quiet(key, System.monotonic_time(:millisecond) + timeout_ms)
+
+    if SystemsClock.driven?() do
+      # On a test clock the session's work waits for clock time: settle it,
+      # from an `on_exit` callback too.
+      unless SystemsClock.drives?(), do: SystemsClock.take_over(keep_journal: true)
+
+      SystemsClock.settle(
+        until: fn -> not session_busy?(key) end,
+        within: timeout_ms
+      )
+
+      :ok
+    else
+      do_await_session_quiet(key, SystemsClock.monotonic_time(:millisecond) + timeout_ms)
+    end
+  end
+
+  defp session_busy?(key) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) do
+      [{pid, _}] -> session_in_flight?(pid)
+      _ -> false
+    end
   end
 
   defp do_await_session_quiet(key, deadline) do
-    case Registry.lookup(SalixAgent.Registry, key) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) do
       [{pid, _}] ->
         if session_in_flight?(pid) do
-          if System.monotonic_time(:millisecond) >= deadline do
+          if SystemsClock.monotonic_time(:millisecond) >= deadline do
             {:error, :timeout}
           else
-            Process.sleep(20)
+            SystemsRuntime.Proc.sleep(20)
             do_await_session_quiet(key, deadline)
           end
         else
@@ -209,7 +341,7 @@ defmodule SalixAgent.TestSupport do
   end
 
   defp session_in_flight?(pid) do
-    state = :sys.get_state(pid)
+    state = SystemsRuntime.Server.get_state(pid)
 
     state.pending_llm != nil or state.pending_compaction != nil or
       map_size(state.pending_async_tools || %{}) > 0 or
@@ -227,12 +359,12 @@ defmodule SalixAgent.TestSupport do
   first let that callback finish, or it reads the pre-fence snapshot. An
   absent or exiting owner has nothing in flight.
   """
-  def join_session_owner(agent_id, session_id, timeout_ms \\ 10_000) do
+  def join_session_owner(agent_id, session_id, timeout_ms \\ 30_000) do
     key = SalixAgent.InternalSessionActor.key(agent_id, session_id)
 
-    case Registry.lookup(SalixAgent.Registry, key) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) do
       [{pid, _}] ->
-        _ = :sys.get_state(pid, timeout_ms)
+        _ = SystemsRuntime.Server.get_state(pid, timeout_ms)
         :ok
 
       _ ->
@@ -279,35 +411,34 @@ defmodule SalixAgent.TestSupport do
   defp wait_stopped(0), do: :ok
 
   defp wait_stopped(retries) do
-    if Registry.count(SalixAgent.Registry) == 0 do
+    if SystemsRuntime.Registry.count(SalixAgent.Registry) == 0 do
       :ok
     else
-      Process.sleep(10)
+      SystemsRuntime.Proc.sleep(10)
       wait_stopped(retries - 1)
     end
   end
 
-  defp ensure_template!(template_id, attrs) do
-    case SalixAgent.Templates.get(template_id) do
-      {:ok, template} ->
-        template
+  # An Agent without a `model` choice follows the platform model of its role.
+  # Configure that tier when it is not configured, or when the fixture asks
+  # for its image input or limits.
+  defp ensure_platform_model!("meeting", _attrs), do: :ok
+  defp ensure_platform_model!(role, attrs), do: configure_role_tier!(role, attrs)
 
-      {:error, :not_found} ->
-        {:ok, template} =
-          SalixAgent.Templates.create(%{
-            "template_id" => template_id,
-            "name" => attrs["template_name"] || template_id,
-            "model" => attrs["model"] || "mock",
-            "provider" => attrs["provider"] || "mock",
-            "provider_config" => attrs["provider_config"] || %{},
-            "supports_images" => attrs["supports_images"],
-            "vision_describer_config" => attrs["vision_describer_config"] || %{},
-            "max_tokens" => attrs["max_tokens"] || 65_536,
-            "context_tokens" => attrs["context_tokens"] || 0
-          })
+  defp configure_role_tier!(role, attrs) do
+    entry =
+      %{
+        "images" => attrs["supports_images"],
+        "context_tokens" => attrs["context_tokens"],
+        "max_tokens" => attrs["max_tokens"]
+      }
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
 
-        template
+    if entry != %{} or not SalixAgent.PlatformModels.configured?(role) do
+      configure_platform_tier!(role, platform_model_base_url(), "mock", entry)
     end
+
+    :ok
   end
 
   defp all_test_tool_names do
@@ -352,7 +483,7 @@ defmodule SalixAgent.TestSupport do
         end
 
       {:error, :not_found} ->
-        now = System.system_time(:second)
+        now = SystemsClock.system_time(:second)
 
         group = %{
           "group_id" => group_id,

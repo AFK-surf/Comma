@@ -37,7 +37,7 @@ defmodule SalixAgent.MemoryConsultationSource do
   @spec search(String.t(), String.t(), [map()], pos_integer()) ::
           {:ok, %{targets: [target()], truncated: boolean()}} | {:error, term()}
   def search(group_id, keywords, conversation_refs, limit) do
-    case Application.get_env(:salix_agent, :memory_consultation_source_mod) do
+    case SystemsRuntime.get_env(:salix_agent, :memory_consultation_source_mod) do
       module when is_atom(module) and not is_nil(module) ->
         module.search_worker_sessions(group_id, keywords, conversation_refs, limit)
 
@@ -49,7 +49,7 @@ defmodule SalixAgent.MemoryConsultationSource do
   @spec consult(String.t(), target(), String.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def consult(group_id, target, question, request_id, opts \\ []) do
-    case Application.get_env(:salix_agent, :memory_consultation_source_mod) do
+    case SystemsRuntime.get_env(:salix_agent, :memory_consultation_source_mod) do
       module when is_atom(module) and not is_nil(module) ->
         module.consult_worker_session(group_id, target, question, request_id, opts)
 

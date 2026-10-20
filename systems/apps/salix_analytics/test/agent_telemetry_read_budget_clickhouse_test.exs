@@ -15,7 +15,7 @@ defmodule SalixAnalytics.AgentTelemetryReadBudgetClickHouseTest do
   default production ceilings are generous (a legitimate busy-tenant window
   passes); the mechanism, not the specific number, is what is contracted.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAnalytics.AgentTelemetryQueries, as: Queries
   alias SalixAnalytics.Migrations
@@ -29,12 +29,12 @@ defmodule SalixAnalytics.AgentTelemetryReadBudgetClickHouseTest do
   setup_all do
     Application.ensure_all_started(:req)
 
-    database = "salix_telemetry_budget_test_#{System.unique_integer([:positive])}"
-    prev = Application.get_env(:salix_analytics, :clickhouse)
+    database = "salix_telemetry_budget_test_#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    prev = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
     clickhouse_query!("DROP DATABASE IF EXISTS #{database}")
 
-    Application.put_env(:salix_analytics, :clickhouse,
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
       base_url: @clickhouse_url,
       table: "#{database}.events",
       # Pin the row budget low so a fat session provably trips it. Production
@@ -62,7 +62,10 @@ defmodule SalixAnalytics.AgentTelemetryReadBudgetClickHouseTest do
     """)
 
     on_exit(fn ->
-      Application.put_env(:salix_analytics, :clickhouse, prev)
+      if prev,
+        do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, prev),
+        else: SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
+
       clickhouse_query!("DROP DATABASE IF EXISTS #{database}")
     end)
 
@@ -88,15 +91,18 @@ defmodule SalixAnalytics.AgentTelemetryReadBudgetClickHouseTest do
     # Without projections a session lookup scans the whole table, so "small"
     # means the TABLE is under the budget, not the session. Use a fresh tiny
     # database to prove a bounded scan passes.
-    small_db = "salix_telemetry_budget_small_#{System.unique_integer([:positive])}"
-    prev = Application.get_env(:salix_analytics, :clickhouse)
+    small_db = "salix_telemetry_budget_small_#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    prev = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
     on_exit(fn ->
-      Application.put_env(:salix_analytics, :clickhouse, prev)
+      if prev,
+        do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, prev),
+        else: SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
+
       clickhouse_query!("DROP DATABASE IF EXISTS #{small_db}")
     end)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_analytics,
       :clickhouse,
       Keyword.merge(prev, base_url: @clickhouse_url, table: "#{small_db}.events")
@@ -123,16 +129,18 @@ defmodule SalixAnalytics.AgentTelemetryReadBudgetClickHouseTest do
   end
 
   test "over-budget surfaces as a distinct telemetry outcome, not a generic error" do
-    handler = {__MODULE__, :telemetry, make_ref()}
+    handler = {__MODULE__, :telemetry, SystemsRuntime.Proc.make_ref()}
 
-    :telemetry.attach(
+    SystemsRuntime.Telemetry.attach(
       handler,
       [:salix, :operation, :stop],
-      fn _e, _m, meta, pid -> send(pid, {:outcome, meta.operation, meta.outcome}) end,
-      self()
+      fn _e, _m, meta, pid ->
+        SystemsRuntime.Proc.send(pid, {:outcome, meta.operation, meta.outcome})
+      end,
+      SystemsRuntime.Proc.self()
     )
 
-    on_exit(fn -> :telemetry.detach(handler) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler) end)
 
     assert {:error, {:read_over_budget, _}} = Queries.session_trace("t-fat", "sess-fat")
     assert_receive {:outcome, "session_trace", "over_budget"}

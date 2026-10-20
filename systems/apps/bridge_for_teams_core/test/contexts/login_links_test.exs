@@ -9,7 +9,7 @@ defmodule BridgeForTeams.LoginLinksTest do
 
   @base_url "https://teams.example.com"
 
-  defp uniq(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
+  defp uniq(prefix), do: "#{prefix}-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
   defp org_fixture do
     slug = uniq("magic-org")
@@ -166,7 +166,7 @@ defmodule BridgeForTeams.LoginLinksTest do
 
       {:ok, _} =
         link
-        |> LoginEmailLink.changeset(%{"expires_at" => DateTime.add(DateTime.utc_now(), -1)})
+        |> LoginEmailLink.changeset(%{"expires_at" => DateTime.add(SystemsClock.utc_now(), -1)})
         |> Repo.update()
 
       assert {:error, :login_token_expired} = LoginLinks.redeem_login_token_for_session(token)

@@ -1,5 +1,5 @@
 import VerifiedKernelProofs.Session.WorkForkInitial
-import VerifiedKernelProofs.Session.WorkDurableReload
+import VerifiedKernelProofs.Session.WorkPhysicalIdentity
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data ArchivePublication

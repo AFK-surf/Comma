@@ -16,13 +16,18 @@ defmodule SalixStore.ServerReleaseDescriptor do
     {"salix-connect", "linux-arm64", "salix-connect"},
     {"salix-connect", "darwin-amd64", "salix-connect"},
     {"salix-connect", "darwin-arm64", "salix-connect"},
-    {"agent-vmm-host", "darwin-arm64", "Agent-VMM-Host.zip"}
+    {"agent-vmm-host", "darwin-arm64", "Agent-VMM-Host.zip"},
+    {"computer-use-helper", "darwin-amd64", "comma-computer-use.tar.gz"},
+    {"computer-use-helper", "darwin-arm64", "comma-computer-use.tar.gz"}
   ]
   @target_files MapSet.new(@targets)
+  # A descriptor from a release before the standalone Computer Use helper has no helper targets.
+  @required_target_files MapSet.reject(@target_files, &(elem(&1, 0) == "computer-use-helper"))
   @primary_artifacts %{
     "runner" => "mac-mini-provisioner",
     "salix-connect" => "salix-connect",
-    "agent-vmm-host" => "Agent-VMM-Host.zip"
+    "agent-vmm-host" => "Agent-VMM-Host.zip",
+    "computer-use-helper" => "comma-computer-use.tar.gz"
   }
 
   def target(component, platform), do: target(component, platform, @default_root)
@@ -108,11 +113,9 @@ defmodule SalixStore.ServerReleaseDescriptor do
     end)
     |> case do
       {:ok, seen} ->
-        expected = @target_files
-
-        if seen == expected,
+        if MapSet.subset?(@required_target_files, seen),
           do: :ok,
-          else: {:error, {:target_set_mismatch, MapSet.difference(expected, seen)}}
+          else: {:error, {:target_set_mismatch, MapSet.difference(@required_target_files, seen)}}
 
       error ->
         error

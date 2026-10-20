@@ -23,8 +23,47 @@ def config (overrides apiKey authToken : Term) : KernelM Term := do
     ("prompt_cache_key", if nonempty cacheKey then cacheKey else nil),
     ("default_headers", coalesce [get overrides "default_headers", empty])]
 
-private def mark (v : Term) : Term := if v.isMap then v.put (b "cache_control") (obj [("type", b "ephemeral")]) else v
-private def markLast (xs : List Term) : List Term := (xs.reverse.modifyHead mark).reverse
+private def text (v : Term) : String := (String.fromUTF8? (bytes v)).getD ""
+
+/-- The beta that carries `thinking.block_binding` and `input_transformations`. -/
+def bindingBeta : String := "thinking-binding-controls-2026-08-01"
+
+/-- A Claude request that carries thinking asks the API to drop a replayed
+thinking block whose conversation prefix changed instead of rejecting the
+request, and to report each drop in `input_transformations`. Other models on
+the Anthropic protocol get no block binding. -/
+def bindingControls (cfg : Term) : Bool :=
+  let thinking := cfg.get (a "thinking")
+  let model := (((text (cfg.get (a "model"))).toLower.splitOn "/").getLast?.getD "")
+  thinking.isMap && (get thinking "type" == b "adaptive" || get thinking "type" == b "enabled") &&
+    model.startsWith "claude-"
+
+/-- The `thinking` object of an Anthropic request. -/
+def anthropicThinking (cfg : Term) : Term :=
+  let thinking := cfg.get (a "thinking")
+  if bindingControls cfg then
+    thinking.put (b "block_binding") (obj [("prefix_mismatch_behavior", b "drop_block")])
+  else thinking
+
+private def betaHeader (header : Term) : Bool :=
+  match header with
+  | .tuple [name, _] => (text name).toLower == "anthropic-beta"
+  | _ => false
+
+/-- The headers with the binding beta added to the request's `anthropic-beta`
+list, or as a new `anthropic-beta` header. -/
+def withBindingBeta (headers : List Term) : KernelM (List Term) := do
+  if !headers.any betaHeader then return headers ++ [.tuple [b "anthropic-beta", b bindingBeta]]
+  headers.mapM fun header => do
+    match header with
+    | .tuple [name, value] =>
+      if betaHeader header && !((text value).splitOn ",").any (·.trimAscii.toString == bindingBeta) then
+        return .tuple [name, ← cat [value, b ",", b bindingBeta]]
+      else return header
+    | other => return other
+
+def mark (v : Term) : Term := if v.isMap then v.put (b "cache_control") (obj [("type", b "ephemeral")]) else v
+def markLast (xs : List Term) : List Term := (xs.reverse.modifyHead mark).reverse
 
 def cache (system tools messages enabled trailing : Term) : Term := Id.run do
   if enabled == a "false" then return .tuple [system, tools, messages]
@@ -50,8 +89,7 @@ def cache (system tools messages enabled trailing : Term) : Term := Id.run do
     else output := m :: output
   return .tuple [system, tools, list output]
 
-def body (protocol : String) (cfg : Term) (messages tools : List Term) (mode : String) (reminders : List Term := []) : KernelM Term := do
-  let messages := if protocol == "responses" then messages else messages ++ reminders
+def body (protocol : String) (cfg : Term) (messages tools : List Term) (mode : String) : KernelM Term := do
   let model := cfg.get (a "model")
   let toolDefs ← tools.mapM (toolSpec protocol)
   let toolDefs := if tools.isEmpty then nil else list toolDefs
@@ -59,7 +97,7 @@ def body (protocol : String) (cfg : Term) (messages tools : List Term) (mode : S
     let .tuple [system, msgs, trailing] ← Messages.anthropicParts messages model | fail "badarg"
     let .tuple [system, specs, msgs] := cache system toolDefs msgs (cfg.get (a "prompt_caching")) trailing | fail "badarg"
     let mut value := obj [("model", model), ("max_tokens", coalesce [cfg.get (a "max_tokens"), i 4096]), ("messages", msgs)]
-    value := putOptional (putOptional (putOptional value "system" system) "tools" specs) "thinking" (cfg.get (a "thinking"))
+    value := putOptional (putOptional (putOptional value "system" system) "tools" specs) "thinking" (anthropicThinking cfg)
     -- Preserve the existing streaming request contract. Only blocking calls send output_config.
     if mode == "stream" then return value.put (b "stream") (a "true")
     let reasoning := cfg.get (a "reasoning")
@@ -67,7 +105,7 @@ def body (protocol : String) (cfg : Term) (messages tools : List Term) (mode : S
     return if member effort ["low", "medium", "high", "xhigh", "max"] then
       value.put (b "output_config") (obj [("effort", effort)]) else value
   if protocol == "responses" then
-    let .tuple [input, instructions] ← Messages.responsesParts messages reminders | fail "badarg"
+    let .tuple [input, instructions] ← Messages.responsesParts messages | fail "badarg"
     let mut value := putOptional (putOptional (obj [("model", model), ("input", input)]) "instructions" instructions) "tools" toolDefs
     if mode == "compact" then return value
     -- One stable key per session keeps every round of a conversation on the
@@ -119,12 +157,12 @@ def endpoint (protocol : String) (cfg : Term) (mode : String) (extra : List Term
   let defaults := cfg.get (a "default_headers")
   for (k, v) in (← entries defaults) do
     headers := headers ++ [.tuple [← str k, ← str v]]
+  if protocol == "anthropic" && bindingControls cfg then headers ← withBindingBeta headers
   return .tuple [b (base ++ path), list headers]
 
-def encodedBody (protocol : String) (cfg : Term) (messages tools : List Term) (mode : String) (reminders : List Term := []) : KernelM Term := do
+def encodedBody (protocol : String) (cfg : Term) (messages tools : List Term) (mode : String) : KernelM Term := do
   let messages := if protocol == "anthropic" then messages else messages.map scrub
   let tools := if protocol == "anthropic" then tools else tools.map scrub
-  let reminders := if protocol == "anthropic" then reminders else reminders.map scrub
-  encode (scrub (← body protocol cfg messages tools mode reminders))
+  encode (scrub (← body protocol cfg messages tools mode))
 
 end VerifiedKernel.Provider.Request

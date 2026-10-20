@@ -29,7 +29,7 @@ defmodule SalixStore.Convergence.Worker do
       ]
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -42,7 +42,7 @@ defmodule SalixStore.Convergence.Worker do
 
   def start_link(opts) do
     impl = Keyword.fetch!(opts, :impl)
-    GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, impl))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, impl))
   end
 
   def child_spec(opts) do
@@ -63,7 +63,7 @@ defmodule SalixStore.Convergence.Worker do
       partial_delay_ms: Keyword.get(opts, :partial_delay_ms, @partial_delay_ms)
     }
 
-    Process.send_after(self(), :ensure, jitter(state.boot_jitter_ms))
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :ensure, jitter(state.boot_jitter_ms))
     {:ok, state}
   end
 
@@ -99,10 +99,10 @@ defmodule SalixStore.Convergence.Worker do
           state.retry_ms + jitter(state.retry_ms)
       end
 
-    Process.send_after(self(), :ensure, delay)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :ensure, delay)
     {:noreply, state}
   end
 
   defp jitter(max_ms) when max_ms <= 0, do: 0
-  defp jitter(max_ms), do: :rand.uniform(max_ms)
+  defp jitter(max_ms), do: SystemsRuntime.Proc.uniform(max_ms)
 end

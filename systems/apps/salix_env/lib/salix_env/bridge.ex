@@ -1,4 +1,8 @@
 defmodule SalixEnv.Bridge do
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
   @moduledoc """
   The connector bridge — the Salix port of willow's `internal/environ/bridge.go`,
   minus NATS. A connector's WebSocket lives on exactly one node (the node that
@@ -25,7 +29,7 @@ defmodule SalixEnv.Bridge do
   request/response envelopes.
 
   The contract with the socket owner: it must register as
-  `Registry.register(SalixEnv.Bridges, env_id, :connector)` and handle
+  `SystemsRuntime.Registry.register(SalixEnv.Bridges, env_id, :connector)` and handle
   `{:env_rpc, ref, from_pid, message}` by pushing `message` to the connector and
   eventually replying `send(from_pid, {:env_rpc_reply, ref, {:ok, result} |
   {:error, reason}})`.
@@ -54,11 +58,13 @@ defmodule SalixEnv.Bridge do
   end
 
   defp do_register_owner(env_id, attempts) do
-    case Registry.register(@registry, env_id, :connector) do
+    systems_self = SystemsRuntime.Proc.self()
+
+    case SystemsRuntime.Registry.register(@registry, env_id, :connector) do
       {:ok, _} ->
         :ok
 
-      {:error, {:already_registered, pid}} when pid == self() ->
+      {:error, {:already_registered, pid}} when pid == systems_self ->
         :ok
 
       {:error, {:already_registered, pid}} when attempts > 0 ->
@@ -82,12 +88,14 @@ defmodule SalixEnv.Bridge do
   defp register_owner_scope(_, _), do: {:error, :invalid_owner_scope}
 
   defp put_owner_scope(env_id, scope) do
-    case Registry.register(@registry, {:owner_scope, env_id}, scope) do
+    systems_self = SystemsRuntime.Proc.self()
+
+    case SystemsRuntime.Registry.register(@registry, {:owner_scope, env_id}, scope) do
       {:ok, _} ->
         :ok
 
-      {:error, {:already_registered, pid}} when pid == self() ->
-        Registry.update_value(@registry, {:owner_scope, env_id}, fn _ -> scope end)
+      {:error, {:already_registered, pid}} when pid == systems_self ->
+        SystemsRuntime.Registry.update_value(@registry, {:owner_scope, env_id}, fn _ -> scope end)
 
         :ok
 
@@ -97,26 +105,26 @@ defmodule SalixEnv.Bridge do
   end
 
   defp replace_owner(pid, env_id) do
-    ref = Process.monitor(pid)
-    send(pid, {:env_owner_takeover, env_id, self()})
+    ref = SystemsRuntime.Proc.monitor(pid)
+    SystemsRuntime.Proc.send(pid, {:env_owner_takeover, env_id, SystemsRuntime.Proc.self()})
 
-    receive do
+    SystemsClock.vreceive do
       {:DOWN, ^ref, :process, ^pid, _reason} ->
         :ok
     after
       takeover_timeout_ms() ->
-        Process.exit(pid, :kill)
+        SystemsRuntime.Proc.exit(pid, :kill)
         wait_owner_down(pid, ref)
     end
   end
 
   defp wait_owner_down(pid, ref) do
-    receive do
+    SystemsClock.vreceive do
       {:DOWN, ^ref, :process, ^pid, _reason} ->
         :ok
     after
       kill_timeout_ms() ->
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         {:error, {:owner_not_replaced, pid}}
     end
   end
@@ -146,24 +154,26 @@ defmodule SalixEnv.Bridge do
 
   @doc false
   def stop_local_owner(transport_id) do
-    case Registry.lookup(@registry, transport_id) do
-      [{pid, _} | _] when pid == self() -> :ok
+    systems_self = SystemsRuntime.Proc.self()
+
+    case SystemsRuntime.Registry.lookup(@registry, transport_id) do
+      [{pid, _} | _] when pid == systems_self -> :ok
       [{pid, _} | _] -> replace_owner(pid, transport_id)
       [] -> :ok
     end
   end
 
   defp takeover_timeout_ms do
-    Application.get_env(:salix_env, :bridge_takeover_timeout_ms, @default_takeover_timeout_ms)
+    SystemsRuntime.get_env(:salix_env, :bridge_takeover_timeout_ms, @default_takeover_timeout_ms)
   end
 
   defp kill_timeout_ms do
-    Application.get_env(:salix_env, :bridge_kill_timeout_ms, @default_kill_timeout_ms)
+    SystemsRuntime.get_env(:salix_env, :bridge_kill_timeout_ms, @default_kill_timeout_ms)
   end
 
   @doc "True if a connector socket for `env_id` is bridged on THIS node."
   @spec local?(String.t()) :: boolean()
-  def local?(env_id), do: Registry.lookup(@registry, env_id) != []
+  def local?(env_id), do: SystemsRuntime.Registry.lookup(@registry, env_id) != []
 
   @doc """
   True if a socket owner for `env_id` is verifiably registered on
@@ -203,10 +213,54 @@ defmodule SalixEnv.Bridge do
   """
   @spec rpc(String.t(), map(), timeout()) :: {:ok, map()} | {:error, term()}
   def rpc(env_id, message, timeout \\ 30_000) do
-    case Registry.lookup(@registry, env_id) do
+    case SystemsRuntime.Registry.lookup(@registry, env_id) do
       [{owner, _} | _] ->
         with :ok <- provider_cutover_admission(env_id, owner, message["method"]),
              do: call_owner(owner, message, timeout)
+
+      [] ->
+        {:error, :disconnected}
+    end
+  end
+
+  @doc """
+  Open a connector TCP tunnel (`lan_tcp_dial`) on THIS node. Safe to invoke
+  via `:erpc`. `relay` receives `{:env_tunnel_frame, id, frame}` for the
+  tunnel's frames and sends `{:env_tunnel_send, relay, id, frame}` to the
+  returned socket owner. The tunnel closes when either process exits.
+  """
+  @spec open_tunnel(String.t(), map(), pid(), timeout()) ::
+          {:ok, %{owner: pid(), result: map()}} | {:error, term()}
+  def open_tunnel(env_id, message, relay, timeout) when SystemsRuntime.Proc.is_process(relay) do
+    case SystemsRuntime.Registry.lookup(@registry, env_id) do
+      [{owner, _} | _] ->
+        with :ok <- provider_cutover_admission(env_id, owner, message["method"]) do
+          ref = SystemsRuntime.Proc.monitor(owner)
+
+          SystemsRuntime.Proc.send(
+            owner,
+            {:env_tunnel_open, ref, SystemsRuntime.Proc.self(), relay, message}
+          )
+
+          SystemsClock.vreceive do
+            {:env_rpc_reply, ^ref, {:ok, result}} ->
+              SystemsRuntime.Proc.demonitor(ref, [:flush])
+              {:ok, %{owner: owner, result: result}}
+
+            {:env_rpc_reply, ^ref, {:error, _} = error} ->
+              SystemsRuntime.Proc.demonitor(ref, [:flush])
+              error
+
+            {:DOWN, ^ref, :process, ^owner, _reason} ->
+              {:error, :disconnected}
+          after
+            timeout ->
+              # The relay's exit closes a tunnel that opens after this.
+              SystemsRuntime.Proc.send(owner, {:env_rpc_cancel, ref, SystemsRuntime.Proc.self()})
+              SystemsRuntime.Proc.demonitor(ref, [:flush])
+              {:error, :timeout}
+          end
+        end
 
       [] ->
         {:error, :disconnected}
@@ -217,7 +271,7 @@ defmodule SalixEnv.Bridge do
   @spec read_stream(String.t(), map(), timeout()) ::
           {:ok, Enumerable.t(), non_neg_integer() | nil} | {:error, term()}
   def read_stream(env_id, message, timeout \\ 30_000) do
-    case Registry.lookup(@registry, env_id) do
+    case SystemsRuntime.Registry.lookup(@registry, env_id) do
       [{owner, _} | _] -> call_owner_read_stream(owner, message, timeout)
       [] -> {:error, :disconnected}
     end
@@ -251,7 +305,7 @@ defmodule SalixEnv.Bridge do
   """
   @spec begin_write_stream(String.t(), map(), timeout()) :: {:ok, map()} | {:error, term()}
   def begin_write_stream(env_id, message, timeout \\ 30_000) do
-    case Registry.lookup(@registry, env_id) do
+    case SystemsRuntime.Registry.lookup(@registry, env_id) do
       [{owner, _} | _] ->
         with :ok <- provider_cutover_admission(env_id, owner, "write_stream"),
              do: call_owner_write(owner, :begin, [message], timeout)
@@ -270,14 +324,15 @@ defmodule SalixEnv.Bridge do
   @spec prepare_remote_write_stream(String.t(), map(), timeout()) ::
           {:ok, map()} | {:error, term()}
   def prepare_remote_write_stream(env_id, message, timeout \\ 30_000) do
-    prepare_remote_write_stream(env_id, message, timeout, self())
+    prepare_remote_write_stream(env_id, message, timeout, SystemsRuntime.Proc.self())
   end
 
   @doc false
   @spec prepare_remote_write_stream(String.t(), map(), timeout(), pid()) ::
           {:ok, map()} | {:error, term()}
-  def prepare_remote_write_stream(env_id, message, timeout, caller) when is_pid(caller) do
-    with [{owner, _} | _] <- Registry.lookup(@registry, env_id),
+  def prepare_remote_write_stream(env_id, message, timeout, caller)
+      when SystemsRuntime.Proc.is_process(caller) do
+    with [{owner, _} | _] <- SystemsRuntime.Registry.lookup(@registry, env_id),
          :ok <- provider_cutover_admission(env_id, owner, "write_stream"),
          {:ok, %{"id" => id}} <- call_owner_write(owner, :begin, [message], timeout) do
       case SalixEnv.WriteFrameSink.start(owner, id, timeout, caller: caller) do
@@ -285,7 +340,11 @@ defmodule SalixEnv.Bridge do
           {:ok, %{"url" => SalixEnv.WriteFrameSink.url(sink)}}
 
         {:error, reason} ->
-          send(owner, {:env_write_stream_abort, id, {:remote_write_stream_sink_start, reason}})
+          SystemsRuntime.Proc.send(
+            owner,
+            {:env_write_stream_abort, id, {:remote_write_stream_sink_start, reason}}
+          )
+
           {:error, reason}
       end
     else
@@ -297,7 +356,7 @@ defmodule SalixEnv.Bridge do
 
   @spec write_stream_chunk(String.t(), String.t(), binary(), timeout()) :: :ok | {:error, term()}
   def write_stream_chunk(env_id, id, chunk, timeout \\ 30_000) when is_binary(chunk) do
-    case Registry.lookup(@registry, env_id) do
+    case SystemsRuntime.Registry.lookup(@registry, env_id) do
       [{owner, _} | _] ->
         call_owner_write(owner, :chunk, [id, chunk], timeout)
 
@@ -308,7 +367,7 @@ defmodule SalixEnv.Bridge do
 
   @spec finish_write_stream(String.t(), String.t(), timeout()) :: {:ok, map()} | {:error, term()}
   def finish_write_stream(env_id, id, timeout \\ 30_000) do
-    case Registry.lookup(@registry, env_id) do
+    case SystemsRuntime.Registry.lookup(@registry, env_id) do
       [{owner, _} | _] -> call_owner_write(owner, :eof, [id], timeout)
       [] -> {:error, :disconnected}
     end
@@ -316,8 +375,8 @@ defmodule SalixEnv.Bridge do
 
   @spec abort_write_stream(String.t(), String.t(), term()) :: :ok
   def abort_write_stream(env_id, id, reason) do
-    case Registry.lookup(@registry, env_id) do
-      [{owner, _} | _] -> send(owner, {:env_write_stream_abort, id, reason})
+    case SystemsRuntime.Registry.lookup(@registry, env_id) do
+      [{owner, _} | _] -> SystemsRuntime.Proc.send(owner, {:env_write_stream_abort, id, reason})
       [] -> :ok
     end
 
@@ -327,14 +386,14 @@ defmodule SalixEnv.Bridge do
   # The socket's authenticated Group/Device scope is registered beside its
   # owner. Check only commands capable of creating new post-cutover facts.
   # The indexed Workload read runs in the caller, never in the socket loop.
-  @cutover_read_methods ~w(read read_ref stat list glob grep process_list process_tail runtime_probe runtime_auth_read runtime_auth_status external_runtime_events cloud_runtime_quiesce agent_runtime_stop process_stop)
+  @cutover_read_methods ~w(read read_ref stat list glob grep process_list process_tail runtime_probe runtime_auth_read runtime_auth_status cloud_runtime_quiesce process_stop)
 
   defp provider_cutover_admission(_env_id, _owner, method)
        when method in @cutover_read_methods,
        do: :ok
 
   defp provider_cutover_admission(env_id, owner, _method) do
-    case Registry.lookup(@registry, {:owner_scope, env_id}) do
+    case SystemsRuntime.Registry.lookup(@registry, {:owner_scope, env_id}) do
       [{^owner, {tenant, group, device}}] ->
         SalixStore.Compute.group_provider_mutation_admission(tenant, group, device)
 
@@ -352,12 +411,12 @@ defmodule SalixEnv.Bridge do
   end
 
   defp call_owner(owner, message, timeout) do
-    ref = Process.monitor(owner)
-    send(owner, {:env_rpc, ref, self(), message})
+    ref = SystemsRuntime.Proc.monitor(owner)
+    SystemsRuntime.Proc.send(owner, {:env_rpc, ref, SystemsRuntime.Proc.self(), message})
 
-    receive do
+    SystemsClock.vreceive do
       {:env_rpc_reply, ^ref, reply} ->
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         reply
 
       {:DOWN, ^ref, :process, ^owner, _reason} ->
@@ -367,46 +426,58 @@ defmodule SalixEnv.Bridge do
         # ConnectorSocket monitors the caller as the primary ownership fence.
         # An explicit timeout cancellation closes the shorter caller budget
         # without waiting for the socket's absolute pending-entry deadline.
-        send(owner, {:env_rpc_cancel, ref, self()})
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.send(owner, {:env_rpc_cancel, ref, SystemsRuntime.Proc.self()})
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         {:error, :timeout}
     end
   end
 
   defp call_owner_write(owner, op, args, timeout) do
-    ref = Process.monitor(owner)
-    send(owner, List.to_tuple([:env_write_stream, op, ref, self() | args]))
+    ref = SystemsRuntime.Proc.monitor(owner)
 
-    receive do
+    SystemsRuntime.Proc.send(
+      owner,
+      List.to_tuple([:env_write_stream, op, ref, SystemsRuntime.Proc.self() | args])
+    )
+
+    SystemsClock.vreceive do
       {:env_write_stream_reply, ^ref, reply} ->
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         reply
 
       {:DOWN, ^ref, :process, ^owner, _reason} ->
         {:error, :disconnected}
     after
       timeout ->
-        send(owner, {:env_write_stream_cancel, ref, self()})
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.send(
+          owner,
+          {:env_write_stream_cancel, ref, SystemsRuntime.Proc.self()}
+        )
+
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         {:error, :timeout}
     end
   end
 
   defp call_owner_read_stream(owner, message, timeout) do
-    ref = Process.monitor(owner)
-    send(owner, {:env_read_stream, ref, self(), message})
+    ref = SystemsRuntime.Proc.monitor(owner)
+    SystemsRuntime.Proc.send(owner, {:env_read_stream, ref, SystemsRuntime.Proc.self(), message})
 
-    receive do
+    SystemsClock.vreceive do
       {:env_read_stream_reply, ^ref, reply} ->
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         reply
 
       {:DOWN, ^ref, :process, ^owner, _reason} ->
         {:error, :disconnected}
     after
       timeout ->
-        send(owner, {:env_read_stream_cancel, ref, self()})
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.send(
+          owner,
+          {:env_read_stream_cancel, ref, SystemsRuntime.Proc.self()}
+        )
+
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         {:error, :timeout}
     end
   end

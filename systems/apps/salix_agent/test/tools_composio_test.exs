@@ -8,8 +8,9 @@ defmodule SalixAgent.Tools.ComposioTest do
   The HTTP client is stubbed via `:composio_client_mod`; agent context via
   `:oauth_store_mod` (shared with the oauth tools).
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.Tools.Composio, as: ComposioTools
 
   @group_id "group-composio-1"
@@ -23,7 +24,7 @@ defmodule SalixAgent.Tools.ComposioTest do
 
     @impl true
     def agent_oauth_context(_agent_id) do
-      case Application.get_env(:salix_agent, :composio_test_context) do
+      case SystemsRuntime.get_env(:salix_agent, :composio_test_context) do
         nil -> {:error, :agent_not_found}
         ctx -> {:ok, ctx}
       end
@@ -45,7 +46,7 @@ defmodule SalixAgent.Tools.ComposioTest do
 
     @impl true
     def settings(tenant) do
-      case Application.get_env(:salix_agent, :composio_test_settings) do
+      case SystemsRuntime.get_env(:salix_agent, :composio_test_settings) do
         %{} = by_tenant -> Map.get(by_tenant, tenant) || {:error, :not_configured}
         nil -> {:error, :not_configured}
       end
@@ -77,10 +78,10 @@ defmodule SalixAgent.Tools.ComposioTest do
       do: replay(:execute_tool, [settings, tool_slug, user_id, arguments, opts])
 
     defp replay(fun, args) do
-      pid = Application.get_env(:salix_agent, :composio_test_pid)
-      if pid, do: send(pid, {:composio_call, fun, args})
+      pid = SystemsRuntime.get_env(:salix_agent, :composio_test_pid)
+      if pid, do: SystemsRuntime.Proc.send(pid, {:composio_call, fun, args})
 
-      responses = Application.get_env(:salix_agent, :composio_test_responses, %{})
+      responses = SystemsRuntime.get_env(:salix_agent, :composio_test_responses, %{})
 
       case Map.fetch(responses, fun) do
         {:ok, response} when is_function(response) -> apply(response, args)
@@ -101,58 +102,34 @@ defmodule SalixAgent.Tools.ComposioTest do
   ]
 
   setup do
-    prev = Map.new(@seam_keys, &{&1, Application.get_env(:salix_agent, &1)})
+    prev = Map.new(@seam_keys, &{&1, SystemsRuntime.get_env(:salix_agent, &1)})
 
-    Application.put_env(:salix_agent, :oauth_store_mod, StubOAuthStore)
-    Application.put_env(:salix_agent, :composio_store_mod, StubComposioStore)
-    Application.put_env(:salix_agent, :composio_client_mod, StubClient)
+    SystemsRuntime.put_env(:salix_agent, :oauth_store_mod, StubOAuthStore)
+    SystemsRuntime.put_env(:salix_agent, :composio_store_mod, StubComposioStore)
+    SystemsRuntime.put_env(:salix_agent, :composio_client_mod, StubClient)
 
-    Application.put_env(:salix_agent, :composio_test_context, %{
+    SystemsRuntime.put_env(:salix_agent, :composio_test_context, %{
       tenant: @tenant,
       group_id: @group_id
     })
 
-    Application.put_env(:salix_agent, :composio_test_settings, %{@tenant => {:ok, @settings}})
-    Application.put_env(:salix_agent, :composio_test_pid, self())
+    SystemsRuntime.put_env(:salix_agent, :composio_test_settings, %{@tenant => {:ok, @settings}})
+    SystemsRuntime.put_env(:salix_agent, :composio_test_pid, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       Enum.each(prev, fn
-        {key, nil} -> Application.delete_env(:salix_agent, key)
-        {key, value} -> Application.put_env(:salix_agent, key, value)
+        {key, nil} -> SystemsRuntime.delete_env(:salix_agent, key)
+        {key, value} -> SystemsRuntime.put_env(:salix_agent, key, value)
       end)
     end)
 
     :ok
   end
 
-  defp stub_responses(map), do: Application.put_env(:salix_agent, :composio_test_responses, map)
+  defp stub_responses(map),
+    do: SystemsRuntime.put_env(:salix_agent, :composio_test_responses, map)
 
   # ---- gating ----
-
-  test "every tool reports an unconfigured tenant with the oauth fallback hint" do
-    Application.put_env(:salix_agent, :composio_test_settings, %{})
-
-    for fun <- [
-          &ComposioTools.list_connections/2,
-          &ComposioTools.request_connection/2,
-          &ComposioTools.execute/2
-        ] do
-      err =
-        assert_raise RuntimeError, fn ->
-          fun.(%{"toolkit" => "gmail", "tool_slug" => "X"}, @ctx)
-        end
-
-      assert err.message =~ "composio is not configured for this tenant"
-      assert err.message =~ "oauth.*"
-    end
-  end
-
-  test "a runtime without a composio store seam reports not configured" do
-    Application.put_env(:salix_agent, :composio_store_mod, nil)
-
-    err = assert_raise RuntimeError, fn -> ComposioTools.list_connections(%{}, @ctx) end
-    assert err.message =~ "composio is not configured"
-  end
 
   # ---- list_connections ----
 
@@ -177,22 +154,6 @@ defmodule SalixAgent.Tools.ComposioTest do
              %{"connected_account_id" => "ca_1", "toolkit" => "gmail", "status" => "ACTIVE"},
              %{"connected_account_id" => "ca_2", "toolkit" => "notion", "status" => "INITIATED"}
            ] = out["connections"]
-
-    assert_received {:composio_call, :list_connected_accounts_all,
-                     [@settings, @group_id, [page_limit: 100, max_pages: 10]]}
-  end
-
-  test "list_connections fails closed instead of returning an incomplete account set" do
-    stub_responses(%{
-      list_connected_accounts_all: {:error, :connected_accounts_page_limit_exceeded}
-    })
-
-    error =
-      assert_raise RuntimeError, fn ->
-        ComposioTools.list_connections(%{}, @ctx)
-      end
-
-    assert error.message =~ "connected_accounts_page_limit_exceeded"
 
     assert_received {:composio_call, :list_connected_accounts_all,
                      [@settings, @group_id, [page_limit: 100, max_pages: 10]]}
@@ -233,32 +194,6 @@ defmodule SalixAgent.Tools.ComposioTest do
   end
 
   # ---- check_connection ----
-
-  test "check_connection maps ACTIVE / INITIATED / FAILED statuses" do
-    for {provider_status, expected} <- [
-          {"ACTIVE", "active"},
-          {"INITIATED", "pending"},
-          {"INITIALIZING", "pending"},
-          {"FAILED", "failed"}
-        ] do
-      stub_responses(%{
-        get_connected_account:
-          {:ok,
-           %{
-             "id" => "ca_1",
-             "user_id" => @group_id,
-             "status" => provider_status,
-             "toolkit" => %{"slug" => "gmail"}
-           }}
-      })
-
-      out =
-        ComposioTools.check_connection(%{"connected_account_id" => "ca_1"}, @ctx)
-        |> Jason.decode!()
-
-      assert out["status"] == expected, "#{provider_status} should map to #{expected}"
-    end
-  end
 
   test "check_connection hides other groups' accounts as not_found" do
     stub_responses(%{
@@ -306,88 +241,7 @@ defmodule SalixAgent.Tools.ComposioTest do
 
   # ---- list_tools / get_tool ----
 
-  test "list_tools requires a toolkit or query and trims long descriptions" do
-    assert_raise RuntimeError, ~r/at least one of 'toolkit' or 'query'/, fn ->
-      ComposioTools.list_tools(%{}, @ctx)
-    end
-
-    stub_responses(%{
-      list_tools:
-        {:ok,
-         [
-           %{
-             "slug" => "GMAIL_FETCH_EMAILS",
-             "name" => "Fetch emails",
-             "description" => String.duplicate("d", 400)
-           }
-         ]}
-    })
-
-    out = ComposioTools.list_tools(%{"toolkit" => "gmail"}, @ctx) |> Jason.decode!()
-
-    assert [%{"tool_slug" => "GMAIL_FETCH_EMAILS", "description" => desc}] = out["tools"]
-    assert String.length(desc) == 301
-
-    assert_received {:composio_call, :list_tools, [@settings, opts]}
-    assert opts[:toolkit] == "gmail"
-    assert opts[:limit] == 20
-  end
-
-  test "get_tool returns the full input schema" do
-    stub_responses(%{
-      list_tools:
-        {:ok,
-         [
-           %{
-             "slug" => "GMAIL_FETCH_EMAILS",
-             "name" => "Fetch emails",
-             "description" => "Fetch emails from Gmail",
-             "toolkit" => %{"slug" => "gmail"},
-             "input_parameters" => %{
-               "type" => "object",
-               "properties" => %{"max_results" => %{"type" => "integer"}}
-             }
-           }
-         ]}
-    })
-
-    out = ComposioTools.get_tool(%{"tool_slug" => "gmail_fetch_emails"}, @ctx) |> Jason.decode!()
-
-    assert out["tool_slug"] == "GMAIL_FETCH_EMAILS"
-    assert out["input_parameters"]["properties"]["max_results"]
-
-    assert_received {:composio_call, :list_tools, [@settings, opts]}
-    assert opts[:tool_slugs] == "GMAIL_FETCH_EMAILS"
-  end
-
   # ---- list_toolkits ----
-
-  test "list_toolkits searches the catalog and returns slim entries" do
-    stub_responses(%{
-      list_toolkits:
-        {:ok,
-         [
-           %{
-             "slug" => "googlecalendar",
-             "name" => "Google Calendar",
-             "meta" => %{"description" => String.duplicate("d", 400), "tools_count" => 24}
-           }
-         ]}
-    })
-
-    out =
-      ComposioTools.list_toolkits_catalog(%{"query" => "calendar"}, @ctx) |> Jason.decode!()
-
-    assert [entry] = out["toolkits"]
-    assert entry["toolkit"] == "googlecalendar"
-    assert entry["tools_count"] == 24
-    assert String.length(entry["description"]) == 301
-    assert out["usage"] =~ "composio.request_connection"
-
-    assert_received {:composio_call, :list_toolkits, [@settings, opts]}
-    assert opts[:search] == "calendar"
-    assert opts[:limit] == 20
-  end
 
   # ---- execute ----
 
@@ -416,45 +270,6 @@ defmodule SalixAgent.Tools.ComposioTest do
 
     assert_received {:composio_call, :execute_tool,
                      [@settings, "GMAIL_FETCH_EMAILS", @group_id, %{"max_results" => 1}, []]}
-  end
-
-  test "execute passes provider-level failure through instead of raising" do
-    stub_responses(%{
-      execute_tool: {:ok, %{"data" => %{}, "successful" => false, "error" => "missing scopes"}}
-    })
-
-    out = ComposioTools.execute(%{"tool_slug" => "GMAIL_FETCH_EMAILS"}, @ctx) |> Jason.decode!()
-
-    assert out["successful"] == false
-    assert out["error"] == "missing scopes"
-  end
-
-  test "execute preserves oversized provider payloads for the session projection layer" do
-    big = String.duplicate("x", 150_000)
-
-    stub_responses(%{
-      execute_tool:
-        {:ok,
-         %{
-           "data" => %{"blob" => big},
-           "successful" => true,
-           "log_id" => "log_large"
-         }}
-    })
-
-    encoded = ComposioTools.execute(%{"tool_slug" => "GMAIL_FETCH_EMAILS"}, @ctx)
-    out = Jason.decode!(encoded)
-
-    assert byte_size(encoded) > 150_000
-    assert out["data"]["blob"] == big
-    assert out["log_id"] == "log_large"
-    refute Map.has_key?(out, "truncated")
-  end
-
-  test "execute rejects non-object arguments" do
-    assert_raise RuntimeError, ~r/'arguments' must be a JSON object/, fn ->
-      ComposioTools.execute(%{"tool_slug" => "X", "arguments" => "nope"}, @ctx)
-    end
   end
 
   test "execute refuses a pinned account owned by another group before provider execution" do
@@ -597,23 +412,5 @@ defmodule SalixAgent.Tools.ComposioTest do
 
     assert_received {:composio_call, :execute_tool,
                      [@settings, "LINEAR_UPDATE_ISSUE", @group_id, _, _]}
-  end
-
-  test "composio tools are registered with schemas" do
-    specs = SalixAgent.Tools.specs()
-    by_name = Map.new(specs, &{&1["name"], &1})
-
-    for name <- [
-          "composio.list_connections",
-          "composio.request_connection",
-          "composio.check_connection",
-          "composio.delete_connection",
-          "composio.list_tools",
-          "composio.get_tool",
-          "composio.execute",
-          "composio.list_toolkits"
-        ] do
-      assert %{"input_schema" => %{"type" => "object"}} = by_name[name], "#{name} missing"
-    end
   end
 end

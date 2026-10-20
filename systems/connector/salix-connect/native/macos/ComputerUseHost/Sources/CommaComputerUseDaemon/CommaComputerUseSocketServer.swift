@@ -1,3 +1,4 @@
+import CUStream
 import Darwin
 import Foundation
 
@@ -21,12 +22,18 @@ final class CommaComputerUseSocketServer {
 
     func start() throws {
         unlink(socketPath)
+        let directory = (socketPath as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(
-            atPath: (socketPath as NSString).deletingLastPathComponent,
+            atPath: directory,
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
 
+        // A client connects once the socket path exists. Bind and listen on a
+        // private name first, then rename it into place, so the path never
+        // names a socket that refuses connections.
+        let stagingPath = (directory as NSString).appendingPathComponent(".\(getpid())")
+        unlink(stagingPath)
         serverSocket = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard serverSocket >= 0 else {
             throw CommaSocketError("Failed to create socket")
@@ -34,8 +41,8 @@ final class CommaComputerUseSocketServer {
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
-        let pathBytes = socketPath.utf8CString
-        guard pathBytes.count <= 104 else {
+        let pathBytes = stagingPath.utf8CString
+        guard socketPath.utf8CString.count <= 104, pathBytes.count <= 104 else {
             close(serverSocket)
             throw CommaSocketError("Socket path is too long")
         }
@@ -56,14 +63,21 @@ final class CommaComputerUseSocketServer {
             close(serverSocket)
             throw CommaSocketError("Failed to bind socket: \(String(cString: strerror(errno)))")
         }
-        guard chmod(socketPath, S_IRUSR | S_IWUSR) == 0 else {
+        guard chmod(stagingPath, S_IRUSR | S_IWUSR) == 0 else {
             close(serverSocket)
+            unlink(stagingPath)
             throw CommaSocketError("Failed to chmod socket: \(String(cString: strerror(errno)))")
         }
 
         guard listen(serverSocket, 5) == 0 else {
             close(serverSocket)
+            unlink(stagingPath)
             throw CommaSocketError("Failed to listen on socket")
+        }
+        guard rename(stagingPath, socketPath) == 0 else {
+            close(serverSocket)
+            unlink(stagingPath)
+            throw CommaSocketError("Failed to publish socket: \(String(cString: strerror(errno)))")
         }
 
         isRunning = true
@@ -149,6 +163,11 @@ final class CommaComputerUseSocketServer {
             return
         } catch {
             sendStreamMessage(.final(.failure("Invalid JSON request")), to: clientSocket)
+            return
+        }
+
+        if let streamOptions = request.streamOptions {
+            ScreenStreamConnection(socket: clientSocket).run(options: ScreenStreamOptions(json: streamOptions))
             return
         }
 
@@ -259,6 +278,8 @@ struct CommaComputerUseRequest {
     let kind: Kind
     let display: Int?
     let thinking: String?
+    /// Set for the `stream` control: the connection becomes a screen stream.
+    let streamOptions: [String: Any]?
 
     var isWaitAction: Bool {
         if case let .action(action) = kind {
@@ -287,6 +308,9 @@ struct CommaComputerUseRequest {
 
         display = CommaComputerUseAction.intValue(object["display"])
         thinking = (object["thinking"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let control = (object["control"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        streamOptions = control == "stream" ? (object["stream"] as? [String: Any] ?? [:]) : nil
 
         if let control = object["control"] as? String,
            !control.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

@@ -22,9 +22,18 @@ struct CommaNotchActivityLeadingSlotView: View {
     /// keeps its activity mark alone. The Settings preview uses the same line.
     private static let minimumTitleWidth: CGFloat = 36
 
+    /// Task ids and the notification count change in one render when a
+    /// notification adds a Task, so the rotation reads them together.
+    private struct RotationInput: Equatable {
+        let taskIDs: [String]
+        let notificationSequence: Int
+    }
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var rotation = CommaNotchTaskRotation()
     let tasks: [CommaNotchScenePayloadTask]
+    /// Changes with each notification; the newest Task then comes to the front.
+    let notificationSequence: Int
     let availableWidth: CGFloat
 
     private var currentTask: CommaNotchScenePayloadTask? {
@@ -42,18 +51,30 @@ struct CommaNotchActivityLeadingSlotView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            CommaNotchLogoAnimation()
-                .frame(width: 14, height: 14)
-                .frame(width: 20, height: 18)
+            ZStack {
+                Group {
+                    if currentTask?.status == .inProgress {
+                        CommaNotchLogoAnimation()
+                            .frame(width: 14, height: 14)
+                    } else {
+                        Image(systemName: currentTask?.status == .sent ? "checkmark.circle" : "exclamationmark.circle")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.58))
+                    }
+                }
+                .id(currentTask?.status)
+                .transition(reduceMotion ? .opacity : .commaStateSwap)
+            }
+            .frame(width: 20, height: 18)
+            .animation(Self.textSwap(reduceMotion), value: currentTask?.status)
 
             if showsTitle {
                 ZStack(alignment: .leading) {
                     if let task = currentTask {
-                        CommaNotchThinkingHighlightText(
+                        CommaNotchTitleText(
                             text: task.title,
-                            font: .system(size: 12, weight: .semibold, design: .rounded),
-                            baseColor: .white.opacity(0.58),
-                            highlightColor: .white.opacity(0.98)
+                            running: task.status == .inProgress,
+                            font: .system(size: 12, weight: .semibold, design: .rounded)
                         )
                         .id(task.id)
                         .transition(reduceMotion ? .opacity : .asymmetric(
@@ -74,12 +95,19 @@ struct CommaNotchActivityLeadingSlotView: View {
             }
         }
         .frame(width: availableWidth, alignment: .leading)
-        .onChange(of: tasks.map(\.id), initial: true) { _, ids in
-            rotation.update(taskIDs: ids)
+        .onChange(
+            of: RotationInput(taskIDs: tasks.map(\.id), notificationSequence: notificationSequence),
+            initial: true
+        ) { previous, input in
+            rotation.update(
+                taskIDs: input.taskIDs,
+                showsNewest: input.notificationSequence != previous.notificationSequence
+            )
         }
         // One local timer per mounted compact slot, not per task or workspace.
         // The incoming projection is capped at 100 tasks; no RPC/polling is added.
-        .task(id: tasks.count > 1) {
+        // A notification restarts it, so the newest Task stays a full interval.
+        .task(id: tasks.count > 1 ? notificationSequence : nil) {
             guard tasks.count > 1 else { return }
             while !Task.isCancelled {
                 do {
@@ -91,6 +119,12 @@ struct CommaNotchActivityLeadingSlotView: View {
                 rotation.advance()
             }
         }
+    }
+}
+
+extension CommaNotchActivityLeadingSlotView {
+    static func textSwap(_ reduceMotion: Bool) -> Animation {
+        reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.35, dampingFraction: 1)
     }
 }
 
@@ -209,6 +243,7 @@ struct CommaNotchTasksView: View {
 }
 
 private struct CommaNotchTaskCardView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let task: CommaNotchScenePayloadTask
     let openChatLabel: String
     let onOpen: () -> Void
@@ -217,25 +252,36 @@ private struct CommaNotchTaskCardView: View {
         HStack(alignment: .center, spacing: 10) {
             Button(action: onOpen) {
                 HStack(alignment: .center, spacing: 10) {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .controlSize(.small)
-                        .tint(.white)
-                        .frame(width: 24, height: 24)
+                    ZStack {
+                        // A settled send has no task progress to display.
+                        Group {
+                            if task.status != .inProgress {
+                                Image(systemName: task.status == .sent ? "checkmark.circle" : "exclamationmark.circle")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.58))
+                            } else {
+                                ProgressView()
+                                    .progressViewStyle(.circular)
+                                    .controlSize(.small)
+                                    .tint(.white)
+                            }
+                        }
+                        .id(task.status)
+                        .transition(reduceMotion ? .opacity : .commaStateSwap)
+                    }
+                    .frame(width: 24, height: 24)
+                    .animation(CommaNotchActivityLeadingSlotView.textSwap(reduceMotion), value: task.status)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        CommaNotchThinkingHighlightText(
+                        CommaNotchTitleText(
                             text: task.title,
-                            font: .system(size: 13, weight: .medium),
-                            baseColor: .white.opacity(0.58),
-                            highlightColor: .white.opacity(0.98)
+                            running: task.status == .inProgress,
+                            font: .system(size: 12, weight: .medium)
                         )
 
-                        Text(task.subtitle)
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundStyle(.white.opacity(0.46))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                        if !task.subtitle.isEmpty {
+                            CommaNotchTaskStepText(text: task.subtitle)
+                        }
                     }
                     .layoutPriority(1)
 
@@ -287,6 +333,86 @@ private struct CommaNotchTaskCardView: View {
 
 }
 
+/// A row's title. When the row stays and its text or state changes (a Quick
+/// Chat message's words becoming the Task the Router made of them), the old
+/// text blurs out upward as the new one blurs in from below, the direction of
+/// the step text under it. A running row's title shimmers.
+private struct CommaNotchTitleText: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let text: String
+    let running: Bool
+    let font: Font
+
+    private struct Content: Hashable {
+        let text: String
+        let running: Bool
+    }
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Group {
+                if running {
+                    CommaNotchThinkingHighlightText(
+                        text: text,
+                        font: font,
+                        baseColor: .white.opacity(0.58),
+                        highlightColor: .white.opacity(0.98)
+                    )
+                } else {
+                    Text(text)
+                        .font(font)
+                        .foregroundStyle(.white.opacity(0.58))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .id(Content(text: text, running: running))
+            .transition(reduceMotion ? .opacity : .asymmetric(
+                insertion: .commaTextFromBottom,
+                removal: .commaTextToTop
+            ))
+        }
+        .animation(
+            CommaNotchActivityLeadingSlotView.textSwap(reduceMotion),
+            value: Content(text: text, running: running)
+        )
+    }
+}
+
+/// The Worker's latest step under a Task title. A new step rises in from
+/// below as the old one leaves upward, the same direction as the compact
+/// title rotation. The spring is critically damped and starts from the
+/// on-screen value, so steps that change in quick succession retarget the
+/// motion instead of queueing it. Only offset and opacity animate.
+private struct CommaNotchTaskStepText: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let text: String
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Text(text)
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(.white.opacity(0.46))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .id(text)
+                .transition(reduceMotion ? .opacity : .asymmetric(
+                    insertion: .offset(y: 8).combined(with: .opacity),
+                    removal: .offset(y: -8).combined(with: .opacity)
+                ))
+        }
+        .clipped()
+        .animation(
+            reduceMotion
+                ? .easeOut(duration: 0.15)
+                : .spring(response: 0.35, dampingFraction: 1),
+            value: text
+        )
+    }
+}
+
 private struct CommaNotchBlurTransitionModifier: ViewModifier {
     let blur: CGFloat
     let offsetY: CGFloat
@@ -322,6 +448,28 @@ private extension AnyTransition {
     static var commaBlurFromBottom: AnyTransition {
         .modifier(
             active: CommaNotchBlurTransitionModifier(blur: 4, offsetY: 12, opacity: 0),
+            identity: CommaNotchBlurTransitionModifier(blur: 0, offsetY: 0, opacity: 1)
+        )
+    }
+
+    static var commaTextToTop: AnyTransition {
+        .modifier(
+            active: CommaNotchBlurTransitionModifier(blur: 3, offsetY: -8, opacity: 0),
+            identity: CommaNotchBlurTransitionModifier(blur: 0, offsetY: 0, opacity: 1)
+        )
+    }
+
+    static var commaTextFromBottom: AnyTransition {
+        .modifier(
+            active: CommaNotchBlurTransitionModifier(blur: 3, offsetY: 8, opacity: 0),
+            identity: CommaNotchBlurTransitionModifier(blur: 0, offsetY: 0, opacity: 1)
+        )
+    }
+
+    /// A row's mark changing state in place: blur through, no movement.
+    static var commaStateSwap: AnyTransition {
+        .modifier(
+            active: CommaNotchBlurTransitionModifier(blur: 3, offsetY: 0, opacity: 0),
             identity: CommaNotchBlurTransitionModifier(blur: 0, offsetY: 0, opacity: 1)
         )
     }

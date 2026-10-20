@@ -1,9 +1,10 @@
 import "@comma/ui/styles.css";
 import "@comma/app/styles.css";
 
-import { ChatPanelImage, ChatPanelVideo } from "@comma/ui";
+import { ChatPanelImage, ChatPanelVideo } from "@comma/ui/components/chat-panel";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { fixtureSearch } from "../../../support/search";
 
 const svg = (width: number, height: number, fill: string, label: string) =>
   `data:image/svg+xml,${encodeURIComponent(
@@ -18,7 +19,7 @@ const videoSource = new URL(
 ).href;
 
 function InlineMediaDemo() {
-  const params = new URLSearchParams(window.location.search);
+  const params = new URLSearchParams(fixtureSearch());
   const width = Number.parseInt(params.get("bubbleWidth") ?? "640", 10);
   return (
     <main style={{ padding: "24px" }}>
@@ -50,12 +51,6 @@ function InlineMediaDemo() {
           </div>
         </div>
       </article>
-      {params.has("sharedControls") ? (
-        <section data-testid="shared-media-controls">
-          <ChatPanelImage alt="Shared image" src={panoramaArtwork} />
-          <ChatPanelVideo alt="Shared video" poster="" src={videoSource} />
-        </section>
-      ) : null}
     </main>
   );
 }

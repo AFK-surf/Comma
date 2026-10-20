@@ -1,5 +1,5 @@
 defmodule AlertRouter.SlackRendererTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   import AlertRouter.TestFixtures
 
@@ -176,11 +176,6 @@ defmodule AlertRouter.SlackRendererTest do
     p0 = %{
       incident(gcp_event())
       | priority: "P0",
-        policy_identity: [
-          "gcp_monitoring",
-          "comma_alerting",
-          "external_session_runtime_failed"
-        ],
         service: "salix_agent",
         evidence_values: evidence,
         route_id: "live"
@@ -244,10 +239,9 @@ defmodule AlertRouter.SlackRendererTest do
              "🟢 P0 · 已确认恢复"
   end
 
-  test "normalized runtime P1 and exhaustion P0 use one card and never equate source closure with recovery" do
+  test "normalized runtime P1 uses one card and never equates source closure with recovery" do
     for {policy, priority, issue} <- [
-          {"external_session_runtime_interrupted", "P1", "执行异常"},
-          {"external_session_runtime_failed", "P0", "recovery_exhausted"}
+          {"task_worker_dependency_failed", "P1", "plugin_projection:not_found"}
         ] do
       payload =
         gcp_payload()
@@ -280,15 +274,7 @@ defmodule AlertRouter.SlackRendererTest do
   end
 
   test "diagnostic context omits absent fields without guessing values" do
-    p0 = %{
-      incident(gcp_event())
-      | priority: "P0",
-        policy_identity: [
-          "gcp_monitoring",
-          "comma_alerting",
-          "external_session_runtime_failed"
-        ]
-    }
+    p0 = %{incident(gcp_event()) | priority: "P0"}
 
     assert Renderer.root(p0, 1) |> child_block("diagnostic-context") == nil
 

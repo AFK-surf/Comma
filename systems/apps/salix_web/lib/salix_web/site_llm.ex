@@ -8,11 +8,10 @@ defmodule SalixWeb.SiteLLM do
     1. per-agent global Redis sliding-window rate limit (default 60 rpm,
        `_api.json` `llm.rate_limit_rpm` overrides) → 429 + `Retry-After: 60`
     2. parse the OpenAI-style request (5 MiB body cap)
-    3. resolve the agent template's provider config through
-       `SalixAgent.Templates`; the model ALWAYS comes from the template,
-       never the client
+    3. resolve the agent's provider config through `SalixAgent.AgentModel`;
+       the model ALWAYS comes from the agent's model, never the client
     4. clamp `max_tokens` by `_api.json` `llm.max_tokens`, then the
-       template's `max_tokens`
+       model's `max_tokens`
     5. proxy via `SalixLlm.SiteProxy` — JSON response, or SSE forwarding
        where `data: [DONE]` is sent only on clean completion (clients detect
        truncation by its absence)
@@ -24,7 +23,7 @@ defmodule SalixWeb.SiteLLM do
   require Logger
 
   alias Salix.Control.Groups
-  alias SalixAgent.{Control, LLMMetering, Templates}
+  alias SalixAgent.{AgentModel, Control, LLMMetering}
   alias SalixWeb.Site
 
   @max_body_bytes 5 * 1024 * 1024
@@ -40,7 +39,7 @@ defmodule SalixWeb.SiteLLM do
           Site.site_error(conn, status, message)
 
         {:ok, req, conn} ->
-          case Templates.resolve_llm_for_agent(agent_id) do
+          case AgentModel.resolve_llm_for_agent(agent_id) do
             {:ok, llm} when is_map(llm) ->
               proxy(conn, agent_id, site_name, cfg, llm, req)
 
@@ -111,7 +110,7 @@ defmodule SalixWeb.SiteLLM do
 
     case authorize_llm(conn, meter_ctx) do
       :ok ->
-        started = System.monotonic_time(:millisecond)
+        started = SystemsClock.monotonic_time(:millisecond)
 
         case SalixLlm.SiteProxy.complete(llm, proxy_req) do
           {:ok, resp} ->
@@ -145,7 +144,7 @@ defmodule SalixWeb.SiteLLM do
 
     case authorize_llm(conn, meter_ctx) do
       :ok ->
-        started = System.monotonic_time(:millisecond)
+        started = SystemsClock.monotonic_time(:millisecond)
 
         sse_conn =
           conn
@@ -241,7 +240,7 @@ defmodule SalixWeb.SiteLLM do
       provider: infer_provider_type(llm["base_url"]),
       credential_scope: llm["credential_scope"],
       model: llm["model"],
-      started_at_ms: System.system_time(:millisecond)
+      started_at_ms: SystemsClock.system_time(:millisecond)
     }
     |> Map.merge(owner)
     |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
@@ -277,8 +276,8 @@ defmodule SalixWeb.SiteLLM do
     ctx
     |> Map.merge(%{
       status: status,
-      duration_ms: System.monotonic_time(:millisecond) - started,
-      completed_at_ms: System.system_time(:millisecond),
+      duration_ms: SystemsClock.monotonic_time(:millisecond) - started,
+      completed_at_ms: SystemsClock.system_time(:millisecond),
       response_kind: "site_proxy",
       usage: normalize_usage(usage),
       error: if(reason, do: inspect(reason))

@@ -40,7 +40,7 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthController do
   Never enabled in prod.
   """
   def dev_login(conn, params) do
-    if Application.get_env(:bridge_for_teams_web, :dev_login, false) do
+    if SystemsRuntime.get_env(:bridge_for_teams_web, :dev_login, false) do
       email = params["email"] || "e2e@example.com"
 
       with {:ok, user} <- Accounts.get_user_by_email(email),
@@ -73,6 +73,7 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthController do
         error: Phoenix.Flash.get(conn.assigns.flash, :error),
         layout: false,
         org: org,
+        lark_sign_in: lark_sign_in?(org),
         org_slug: params["o"],
         shortcuts_disabled: login_shortcuts_disabled?(params),
         return_to: return_to
@@ -365,7 +366,7 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthController do
   # host keeps dev/e2e working but is why config should win in production
   # (emailed links must not trust the Host header).
   defp public_base_url(conn) do
-    case Application.get_env(:bridge_for_teams_web, :public_base_url) do
+    case SystemsRuntime.get_env(:bridge_for_teams_web, :public_base_url) do
       base when is_binary(base) and base != "" -> String.trim_trailing(base, "/")
       _ -> "#{conn.scheme}://#{conn.host}:#{conn.port}"
     end
@@ -381,7 +382,7 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthController do
   defp request_id(_conn) do
     case Logger.metadata()[:request_id] do
       value when is_binary(value) and value != "" -> value
-      _ -> Ecto.UUID.generate()
+      _ -> SystemsRuntime.Proc.uuid()
     end
   end
 
@@ -393,6 +394,13 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthController do
   end
 
   defp login_org(_params), do: nil
+
+  # The page of one organization names Lark on its button when that
+  # organization signs in with Lark.
+  defp lark_sign_in?(%{id: org_id}),
+    do: match?(%{provider: "lark"}, Orgs.get_sso_connection(org_id))
+
+  defp lark_sign_in?(_org), do: false
 
   defp login_shortcuts_disabled?(%{"o" => slug}) when is_binary(slug),
     do: String.trim(slug) != ""

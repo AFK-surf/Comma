@@ -198,7 +198,7 @@ defmodule SalixSignal.Account.Usernames do
     low = if digits == 2, do: 1, else: Integer.pow(10, digits - 1)
     high = Integer.pow(10, digits) - 1
 
-    Stream.repeatedly(fn -> low + :rand.uniform(high - low + 1) - 1 end)
+    Stream.repeatedly(fn -> low + SystemsRuntime.Proc.uniform(high - low + 1) - 1 end)
     |> Stream.uniq()
     |> Enum.take(@max_candidates)
     |> Enum.map(&(nickname <> "." <> String.pad_leading(Integer.to_string(&1), digits, "0")))

@@ -43,7 +43,10 @@ defmodule Comma.OauthIdp.AuthorizeRequests do
       field(:expires_at, :utc_datetime_usec)
       field(:consumed_at, :utc_datetime_usec)
 
-      timestamps(type: :utc_datetime_usec)
+      timestamps(
+        type: :utc_datetime_usec,
+        autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+      )
     end
   end
 
@@ -66,11 +69,11 @@ defmodule Comma.OauthIdp.AuthorizeRequests do
   def create!(attrs) do
     sweep_expired()
 
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     Repo.insert!(%Request{
-      id: Ecto.UUID.generate(),
-      csrf_token: Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false),
+      id: SystemsRuntime.Proc.uuid(),
+      csrf_token: Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false),
       user_id: attrs[:user_id],
       client_id: attrs.client_id,
       redirect_uri: attrs.redirect_uri,
@@ -91,7 +94,7 @@ defmodule Comma.OauthIdp.AuthorizeRequests do
   @spec consume(String.t(), String.t()) :: {:ok, Request.t()} | :error
   def consume(handle, user_id) when is_binary(handle) and is_binary(user_id) do
     with {:ok, _uuid} <- Ecto.UUID.cast(handle) do
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       query =
         from(r in Request,
@@ -122,7 +125,7 @@ defmodule Comma.OauthIdp.AuthorizeRequests do
   @spec consume_anonymous(String.t()) :: {:ok, Request.t()} | :error
   def consume_anonymous(handle) when is_binary(handle) do
     with {:ok, _uuid} <- Ecto.UUID.cast(handle) do
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       query =
         from(r in Request,
@@ -142,7 +145,7 @@ defmodule Comma.OauthIdp.AuthorizeRequests do
   end
 
   defp sweep_expired do
-    cutoff = DateTime.add(DateTime.utc_now(), -@sweep_grace_seconds, :second)
+    cutoff = DateTime.add(SystemsClock.utc_now(), -@sweep_grace_seconds, :second)
 
     batch =
       from(r in Request,

@@ -22,7 +22,7 @@ defmodule AlertRouter.Ingest do
           {:ok, %{disposition: atom(), incident: Incident.t()}}
           | {:error, term()}
   def accept(%CanonicalEvent{} = event, opts \\ []) do
-    route_mode = Keyword.get(opts, :route_mode, Application.get_env(:alert_router, :mode))
+    route_mode = Keyword.get(opts, :route_mode, SystemsRuntime.get_env(:alert_router, :mode))
 
     Telemetry.observe(:ingest, event.source, fn ->
       with {:ok, route} <- Routes.resolve(event, route_mode) do

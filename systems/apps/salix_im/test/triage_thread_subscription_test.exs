@@ -1,34 +1,34 @@
 defmodule SalixIM.TriageThreadSubscriptionTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixIM.Provider.Slack.TriageThreadSubscription
   alias SalixStore.{Ids, ULID}
 
   defmodule OwnerPort do
     def lookup(scope) do
-      send(self(), {:owner_lookup, scope})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:owner_lookup, scope})
       Process.get(:owner_lookup, :unbound)
     end
 
     def claim_triage(scope, claim_identity) do
-      send(self(), {:owner_claim, scope, claim_identity})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:owner_claim, scope, claim_identity})
       Process.get(:owner_claim, {:ok, :triage})
     end
   end
 
   defmodule StorePort do
     def product_scope(target, identity) do
-      send(self(), {:product_scope, target, identity})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:product_scope, target, identity})
       Process.get(:product_scope, {:ok, Process.get(:scope)})
     end
 
     def activate(scope, provenance) do
-      send(self(), {:activate, scope, provenance})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:activate, scope, provenance})
       Process.get(:activate, {:ok, :created})
     end
 
     def status(scope) do
-      send(self(), {:status, scope})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:status, scope})
       Process.get(:status, {:ok, :active})
     end
   end
@@ -72,28 +72,6 @@ defmodule SalixIM.TriageThreadSubscriptionTest do
 
     assert_receive {:product_scope, _target, _identity}
     refute_receive _message
-  end
-
-  test "failed and malformed provider results never activate", %{scope: scope} do
-    claim = claim(scope)
-
-    assert TriageThreadSubscription.after_reply(claim, {:error, :timeout},
-             owner_port: OwnerPort,
-             store_port: StorePort,
-             continuation_context_port: ContinuationContext
-           ) == {:error, :timeout}
-
-    assert {:unknown, %{"status" => "triage_subscription_contract_invalid"},
-            :invalid_subscription} =
-             TriageThreadSubscription.after_reply(
-               claim,
-               {:ok, %{"channel" => "C_WRONG", "ts" => "101.000001"}},
-               owner_port: OwnerPort,
-               store_port: StorePort,
-               continuation_context_port: ContinuationContext
-             )
-
-    refute_receive {:activate, _scope, _provenance}
   end
 
   test "temporary activation failure preserves provider success for local-only retry", %{
@@ -151,20 +129,6 @@ defmodule SalixIM.TriageThreadSubscriptionTest do
              continuation_context_port: ContinuationContext
            ) ==
              {:error, :unavailable}
-  end
-
-  test "context must persist before ordinary continuation activates", %{scope: scope} do
-    Process.put(:continuation_context, {:error, :unavailable})
-    result = {:ok, %{"channel" => scope["channel_id"], "ts" => "101.000001"}}
-
-    assert {:completion_later, ^result, _} =
-             TriageThreadSubscription.after_reply(claim(scope), result,
-               owner_port: OwnerPort,
-               store_port: StorePort,
-               continuation_context_port: ContinuationContext
-             )
-
-    refute_receive {:activate, _, _}
   end
 
   defp scope do

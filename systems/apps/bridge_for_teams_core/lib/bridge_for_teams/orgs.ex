@@ -34,7 +34,7 @@ defmodule BridgeForTeams.Orgs do
     Repo.transaction(fn ->
       case Repo.insert(changeset) do
         {:ok, org} ->
-          outbox_base = DateTime.utc_now()
+          outbox_base = SystemsClock.timestamp(:utc_datetime_usec)
 
           with :ok <-
                  BillingCore.Accounts.ensure_account(%{
@@ -75,8 +75,8 @@ defmodule BridgeForTeams.Orgs do
   end
 
   defp billing_commerce_repo_started? do
-    case Application.get_env(:billing_commerce, :repo) do
-      repo when is_atom(repo) -> Process.whereis(repo) != nil
+    case SystemsRuntime.get_env(:billing_commerce, :repo) do
+      repo when is_atom(repo) -> SystemsRuntime.Proc.whereis(repo) != nil
       _repo -> false
     end
   end
@@ -180,7 +180,6 @@ defmodule BridgeForTeams.Orgs do
       Repo.transaction(fn ->
         with {:ok, updated} <- Repo.update(changeset),
              :ok <- maybe_enqueue_billing_owner_updates(org, updated),
-             :ok <- maybe_enqueue_worker_default(org, updated),
              {:ok, _audit} <- maybe_record_org_update_audit(org, updated, attrs, opts) do
           updated
         else
@@ -191,13 +190,6 @@ defmodule BridgeForTeams.Orgs do
     maybe_record_model_validation_event(result, org, attrs, opts)
     maybe_record_org_update_write_attempt(result, org, attrs, opts)
     result
-  end
-
-  defp maybe_enqueue_worker_default(old, updated) do
-    if old.default_template_id != updated.default_template_id or
-         old.default_router_template_id != updated.default_router_template_id,
-       do: TenantConfig.enqueue_ensure_tenant_config(updated),
-       else: :ok
   end
 
   defp maybe_enqueue_billing_owner_updates(%Organization{} = old, %Organization{} = updated) do
@@ -219,6 +211,22 @@ defmodule BridgeForTeams.Orgs do
       distinct: true
     )
     |> Repo.all()
+  end
+
+  @doc """
+  The first organization of `list_orgs_for_user/1` (same order), or nil. One
+  bounded query, whatever the number of the user's organizations.
+  """
+  @spec first_org_for_user(Ecto.UUID.t()) :: Organization.t() | nil
+  def first_org_for_user(user_id) do
+    from(o in Organization,
+      join: m in OrgMembership,
+      on: m.org_id == o.id,
+      where: m.user_id == ^user_id,
+      order_by: [asc: o.name, asc: o.slug],
+      limit: 1
+    )
+    |> Repo.one()
   end
 
   @doc "List organizations a user can manage as an owner or admin."
@@ -363,7 +371,7 @@ defmodule BridgeForTeams.Orgs do
         resource_id: updated.id,
         resource_label: updated.name,
         result: "ok",
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         metadata: %{
           "org_id" => updated.id,
           "org_name" => updated.name,
@@ -378,7 +386,7 @@ defmodule BridgeForTeams.Orgs do
     end
   end
 
-  @model_setting_fields ~w(allowed_template_ids default_template_id default_router_template_id)
+  @model_setting_fields ~w(allowed_models default_router_model default_task_model)
 
   defp org_update_action(attrs) do
     if Enum.any?(Map.keys(attrs), &(&1 in @model_setting_fields)) do
@@ -417,13 +425,13 @@ defmodule BridgeForTeams.Orgs do
   defp org_audit_field(%Organization{} = org, "default_locale"), do: org.default_locale
   defp org_audit_field(%Organization{} = org, "billing_account_id"), do: org.billing_account_id
 
-  defp org_audit_field(%Organization{} = org, "allowed_template_ids"),
-    do: org.allowed_template_ids || []
+  defp org_audit_field(%Organization{} = org, "allowed_models"), do: org.allowed_models || []
 
-  defp org_audit_field(%Organization{} = org, "default_template_id"), do: org.default_template_id
+  defp org_audit_field(%Organization{} = org, "default_router_model"),
+    do: org.default_router_model
 
-  defp org_audit_field(%Organization{} = org, "default_router_template_id"),
-    do: org.default_router_template_id
+  defp org_audit_field(%Organization{} = org, "default_task_model"),
+    do: org.default_task_model
 
   defp org_audit_field(%Organization{} = org, "icon"), do: icon_audit_value(org.icon)
   defp org_audit_field(_org, _field), do: nil
@@ -443,7 +451,7 @@ defmodule BridgeForTeams.Orgs do
       resource_id: sso.id,
       resource_label: sso.provider,
       result: "ok",
-      request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+      request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
       metadata: %{
         "provider" => sso.provider,
         "client_id" => sso.client_id,
@@ -467,7 +475,7 @@ defmodule BridgeForTeams.Orgs do
       resource_id: sso.id,
       resource_label: sso.provider,
       result: "ok",
-      request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+      request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
       metadata: %{
         "provider" => sso.provider,
         "client_id" => sso.client_id,
@@ -491,7 +499,7 @@ defmodule BridgeForTeams.Orgs do
         resource_label: org.name,
         result: "failed",
         reason: reason,
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         surface: org_settings_surface(attrs),
         metadata: %{
           "org_id" => org.id,
@@ -518,7 +526,7 @@ defmodule BridgeForTeams.Orgs do
         resource_label: attrs["provider"] || "sso",
         result: "failed",
         reason: reason,
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         surface: "sso",
         metadata: %{
           "provider" => attrs["provider"],
@@ -564,8 +572,9 @@ defmodule BridgeForTeams.Orgs do
         status: validation_status(result),
         reason_class: validation_reason(result),
         evidence: %{
-          "allowed_template_count" => attrs |> Map.get("allowed_template_ids", []) |> lengthish(),
-          "default_template_configured" => present?(attrs["default_template_id"]),
+          "allowed_model_count" => attrs |> Map.get("allowed_models", []) |> lengthish(),
+          "default_router_model_configured" => is_map(attrs["default_router_model"]),
+          "default_task_model_configured" => is_map(attrs["default_task_model"]),
           "changed_fields" => Map.keys(attrs),
           "field_errors" => validation_field_errors(result)
         }
@@ -732,6 +741,24 @@ defmodule BridgeForTeams.Orgs do
   defp blank?(nil), do: true
   defp blank?(_), do: false
 
+  # Lark and the other providers do not share provider_config: a scope, a
+  # tenant_key or a provisioning policy of one platform means nothing on the
+  # other. A connection that changes to Lark or away from Lark keeps none of
+  # the stored keys.
+  defp normalize_provider_config(%{"provider" => to} = attrs, %{provider: from})
+       when to != from and (to == "lark" or from == "lark") do
+    config =
+      case Map.get(attrs, "provider_config") do
+        %{} = config ->
+          config |> Map.new(fn {k, v} -> {to_string(k), v} end) |> allowed_provider_config(to)
+
+        _ ->
+          %{}
+      end
+
+    Map.put(attrs, "provider_config", config)
+  end
+
   defp normalize_provider_config(%{"provider_config" => config} = attrs, existing)
        when is_map(config) do
     provider = Map.get(attrs, "provider") || (existing && existing.provider) || "generic_oidc"
@@ -756,6 +783,14 @@ defmodule BridgeForTeams.Orgs do
     config
     |> Map.take(["scope", "tenant_key", "provisioning_policy"])
     |> normalize_feishu_provider_config()
+  end
+
+  defp allowed_provider_config(config, "lark") do
+    config = Map.take(config, ["scope", "tenant_key", "provisioning_policy"])
+
+    if config["provisioning_policy"] in ["jit", "existing_identity"],
+      do: config,
+      else: Map.delete(config, "provisioning_policy")
   end
 
   defp allowed_provider_config(config, _provider), do: config
@@ -804,6 +839,12 @@ defmodule BridgeForTeams.Orgs do
   end
 
   defp normalize_sso_provider_fields(%{"provider" => "feishu"} = attrs) do
+    attrs
+    |> Map.put("issuer", nil)
+    |> Map.put("allowed_domains", [])
+  end
+
+  defp normalize_sso_provider_fields(%{"provider" => "lark"} = attrs) do
     attrs
     |> Map.put("issuer", nil)
     |> Map.put("allowed_domains", [])

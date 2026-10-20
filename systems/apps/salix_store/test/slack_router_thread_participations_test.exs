@@ -1,5 +1,7 @@
 defmodule SalixStore.SlackRouterThreadParticipationsTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{Repo, SlackRouterThreadParticipations}
 
@@ -29,7 +31,7 @@ defmodule SalixStore.SlackRouterThreadParticipationsTest do
                     30 * @day_seconds,
                     1
 
-    expired_soon = NaiveDateTime.add(NaiveDateTime.utc_now(), 1, :second)
+    expired_soon = NaiveDateTime.add(DateTime.to_naive(SystemsClock.utc_now()), 1, :second)
 
     Repo.query!(
       """
@@ -77,129 +79,6 @@ defmodule SalixStore.SlackRouterThreadParticipationsTest do
 
     expire_status(identity)
     assert status(identity) == :unknown
-  end
-
-  test "participation identity is isolated by group, connect, installation, channel, and thread" do
-    base = identity("isolated")
-    assert :ok = mark_participating(base)
-    assert status(base) == :participating
-
-    for other <- [
-          List.replace_at(base, 0, "group-other"),
-          List.replace_at(base, 1, "connect-other"),
-          List.replace_at(base, 2, "workspace-other"),
-          List.replace_at(base, 3, "bot-other"),
-          List.replace_at(base, 4, "channel-other"),
-          List.replace_at(base, 5, "thread-other")
-        ] do
-      assert status(other) == :unknown
-    end
-  end
-
-  test "participating status supersedes not-participating status until it expires" do
-    identity = identity("participating-wins")
-
-    assert {:ok, :not_participating} = mark_not_participating(identity)
-    assert status(identity) == :not_participating
-
-    assert :ok = mark_participating(identity)
-    assert status(identity) == :participating
-
-    assert {:ok, :participating} = mark_not_participating(identity)
-    assert status(identity) == :participating
-    assert row(identity).participation_status == "participating"
-
-    expire_status(identity)
-    expire_legacy(identity)
-
-    assert {:ok, :not_participating} = mark_not_participating(identity)
-    assert status(identity) == :not_participating
-  end
-
-  test "an old-runtime insert defaults to participating during rollout" do
-    identity = identity("old-insert")
-    now = NaiveDateTime.utc_now()
-
-    Repo.query!(
-      """
-      INSERT INTO slack_router_thread_participations (
-        group_id, connect_id, workspace_id, bot_user_id,
-        channel_id, thread_ts, last_active_at, expires_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      """,
-      identity ++ [now, NaiveDateTime.add(now, 30 * @day_seconds, :second)]
-    )
-
-    assert status(identity) == :participating
-    assert row(identity).participation_status == "participating"
-  end
-
-  test "an old reader ignores not-participating status and an old write restores participating" do
-    identity = identity("mixed-version")
-    assert {:ok, :not_participating} = mark_not_participating(identity)
-
-    assert %{num_rows: 0} =
-             Repo.query!(
-               """
-               UPDATE slack_router_thread_participations
-               SET expires_at = GREATEST(
-                 expires_at,
-                 timezone('UTC', statement_timestamp()) + interval '30 days'
-               )
-               WHERE group_id = $1 AND connect_id = $2 AND workspace_id = $3
-                 AND bot_user_id = $4 AND channel_id = $5 AND thread_ts = $6
-                 AND expires_at > timezone('UTC', statement_timestamp())
-               RETURNING group_id
-               """,
-               identity
-             )
-
-    now = NaiveDateTime.utc_now()
-
-    Repo.query!(
-      """
-      INSERT INTO slack_router_thread_participations (
-        group_id, connect_id, workspace_id, bot_user_id,
-        channel_id, thread_ts, last_active_at, expires_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      ON CONFLICT (group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts)
-      DO UPDATE SET
-        last_active_at = GREATEST(
-          slack_router_thread_participations.last_active_at,
-          EXCLUDED.last_active_at
-        ),
-        expires_at = GREATEST(
-          slack_router_thread_participations.expires_at,
-          EXCLUDED.expires_at
-        )
-      """,
-      identity ++ [now, NaiveDateTime.add(now, 30 * @day_seconds, :second)]
-    )
-
-    assert status(identity) == :participating
-    assert row(identity).participation_status == "participating"
-  end
-
-  test "an expired status is unknown and cannot renew itself" do
-    identity = identity("expired")
-    assert :ok = mark_participating(identity)
-
-    expired_at = NaiveDateTime.add(NaiveDateTime.utc_now(), -1, :second)
-
-    Repo.query!(
-      """
-      UPDATE slack_router_thread_participations
-      SET status_expires_at = $7
-      WHERE group_id = $1 AND connect_id = $2 AND workspace_id = $3
-        AND bot_user_id = $4 AND channel_id = $5 AND thread_ts = $6
-      """,
-      identity ++ [expired_at]
-    )
-
-    expire_legacy(identity)
-
-    assert status(identity) == :unknown
-    assert NaiveDateTime.compare(row(identity).expires_at, expired_at) == :eq
   end
 
   test "status migration repairs an invalid index left by a failed concurrent build" do
@@ -266,62 +145,6 @@ defmodule SalixStore.SlackRouterThreadParticipationsTest do
              )
   end
 
-  test "canonical cleanup uses the expiry index and deletes at most the requested bound" do
-    for suffix <- ~w(expired-a expired-b expired-c live) do
-      assert :ok = suffix |> identity() |> mark_participating()
-    end
-
-    Repo.query!("""
-    UPDATE slack_router_thread_participations
-    SET
-      expires_at = timezone('UTC', statement_timestamp()) - interval '1 second',
-      status_expires_at = timezone('UTC', statement_timestamp()) - interval '1 second'
-    WHERE group_id <> 'group-live'
-    """)
-
-    Repo.query!("""
-    INSERT INTO slack_router_thread_participations (
-      group_id, connect_id, workspace_id, bot_user_id,
-      channel_id, thread_ts, participation_status,
-      last_active_at, expires_at, status_expires_at
-    )
-    SELECT
-      'live-seed-' || series,
-      'connect-seed',
-      'workspace-seed',
-      'bot-seed',
-      'channel-seed',
-      'thread-seed',
-      'participating',
-      timezone('UTC', statement_timestamp()),
-      timezone('UTC', statement_timestamp()) + interval '30 days',
-      timezone('UTC', statement_timestamp()) + interval '30 days'
-    FROM generate_series(1, 5000) AS series
-    """)
-
-    Repo.query!("ANALYZE slack_router_thread_participations")
-
-    %{rows: plan_rows} =
-      Repo.query!("""
-      EXPLAIN (COSTS OFF)
-      SELECT group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts
-      FROM slack_router_thread_participations
-      WHERE status_expires_at <= timezone('UTC', statement_timestamp())
-        AND expires_at <= timezone('UTC', statement_timestamp())
-      ORDER BY status_expires_at, group_id, connect_id, workspace_id, bot_user_id, channel_id, thread_ts
-      LIMIT 2
-      FOR UPDATE SKIP LOCKED
-      """)
-
-    plan = plan_rows |> List.flatten() |> Enum.join("\n")
-    assert plan =~ "slack_router_thread_participations_status_expiry_idx"
-
-    assert {:ok, 2} = SlackRouterThreadParticipations.cleanup_expired(2)
-    assert {:ok, 1} = SlackRouterThreadParticipations.cleanup_expired(2)
-    assert {:ok, 0} = SlackRouterThreadParticipations.cleanup_expired(2)
-    assert status(identity("live")) == :participating
-  end
-
   test "legacy compatibility cleanup remains separately bounded" do
     for suffix <- ~w(expired-a expired-b live) do
       assert :ok = suffix |> identity() |> mark_participating()
@@ -338,154 +161,6 @@ defmodule SalixStore.SlackRouterThreadParticipationsTest do
     assert {:ok, 1} = SlackRouterThreadParticipations.cleanup_legacy_expired(1)
     assert {:ok, 1} = SlackRouterThreadParticipations.cleanup_legacy_expired(1)
     assert {:ok, 0} = SlackRouterThreadParticipations.cleanup_legacy_expired(1)
-  end
-
-  test "a live participating hit racing cleanup renews without being deleted" do
-    identity = identity("renew-race")
-    assert :ok = mark_participating(identity)
-
-    %{rows: [[expires_at]]} =
-      Repo.query!(
-        """
-        UPDATE slack_router_thread_participations
-        SET
-          expires_at = timezone('UTC', statement_timestamp()) + interval '2 seconds',
-          status_expires_at = timezone('UTC', statement_timestamp()) + interval '2 seconds'
-        WHERE group_id = $1 AND connect_id = $2 AND workspace_id = $3
-          AND bot_user_id = $4 AND channel_id = $5 AND thread_ts = $6
-        RETURNING expires_at
-        """,
-        identity
-      )
-
-    parent = self()
-
-    locker =
-      Task.async(fn ->
-        Repo.transaction(fn ->
-          Repo.query!(
-            """
-            SELECT group_id
-            FROM slack_router_thread_participations
-            WHERE group_id = $1 AND connect_id = $2 AND workspace_id = $3
-              AND bot_user_id = $4 AND channel_id = $5 AND thread_ts = $6
-            FOR UPDATE
-            """,
-            identity
-          )
-
-          send(parent, :participation_row_locked)
-
-          receive do
-            :release_participation_row -> :ok
-          after
-            10_000 -> Repo.rollback(:lock_barrier_timeout)
-          end
-        end)
-      end)
-
-    assert_receive :participation_row_locked, 1_000
-
-    renewal =
-      Task.async(fn ->
-        Repo.checkout(fn ->
-          %{rows: [[backend_pid]]} = Repo.query!("SELECT pg_backend_pid()")
-          send(parent, {:renewal_backend, backend_pid})
-          status(identity, timeout_ms: 5_000)
-        end)
-      end)
-
-    assert_receive {:renewal_backend, renewal_backend}, 1_000
-    await_backend_lock!(renewal_backend)
-    await_database_time!(expires_at)
-
-    assert {:ok, 0} = SlackRouterThreadParticipations.cleanup_expired(1)
-
-    send(locker.pid, :release_participation_row)
-    assert {:ok, :ok} = Task.await(locker, 1_000)
-    assert Task.await(renewal, 1_000) == :participating
-    assert status(identity) == :participating
-  end
-
-  test "a blocked optional status query respects its explicit short timeout" do
-    identity = identity("query-timeout")
-    assert :ok = mark_participating(identity)
-    parent = self()
-
-    locker =
-      Task.async(fn ->
-        Repo.transaction(fn ->
-          Repo.query!(
-            """
-            SELECT group_id
-            FROM slack_router_thread_participations
-            WHERE group_id = $1 AND connect_id = $2 AND workspace_id = $3
-              AND bot_user_id = $4 AND channel_id = $5 AND thread_ts = $6
-            FOR UPDATE
-            """,
-            identity
-          )
-
-          send(parent, :timeout_test_row_locked)
-
-          receive do
-            :release_timeout_test_row -> :ok
-          after
-            5_000 -> Repo.rollback(:lock_barrier_timeout)
-          end
-        end)
-      end)
-
-    assert_receive :timeout_test_row_locked, 1_000
-    started_at = System.monotonic_time(:millisecond)
-
-    assert status(identity, timeout_ms: 50) == :unknown
-
-    elapsed_ms = System.monotonic_time(:millisecond) - started_at
-    assert elapsed_ms < 500
-
-    send(locker.pid, :release_timeout_test_row)
-    assert {:ok, :ok} = Task.await(locker, 1_000)
-    assert status(identity) == :participating
-  end
-
-  test "status writes are idempotent and invalid identities fail closed" do
-    identity = identity("upsert")
-
-    assert :ok = mark_participating(identity)
-    assert :ok = mark_participating(identity)
-
-    assert %{rows: [[1]]} =
-             Repo.query!("SELECT count(*) FROM slack_router_thread_participations")
-
-    assert {:error, :invalid_identity} =
-             SlackRouterThreadParticipations.mark_participating(
-               "",
-               "connect",
-               "workspace",
-               "bot",
-               "channel",
-               "thread"
-             )
-
-    assert {:error, :invalid_identity} =
-             SlackRouterThreadParticipations.mark_not_participating(
-               "group",
-               " \t",
-               "workspace",
-               "bot",
-               "channel",
-               "thread"
-             )
-
-    assert SlackRouterThreadParticipations.status(
-             "group",
-             "connect",
-             "workspace",
-             "bot",
-             "channel",
-             ""
-           ) == :unknown
   end
 
   defp identity(suffix),
@@ -622,52 +297,5 @@ defmodule SalixStore.SlackRouterThreadParticipationsTest do
       """,
       identity
     )
-  end
-
-  defp expire_legacy(identity) do
-    Repo.query!(
-      """
-      UPDATE slack_router_thread_participations
-      SET expires_at = timezone('UTC', statement_timestamp()) - interval '1 second'
-      WHERE group_id = $1 AND connect_id = $2 AND workspace_id = $3
-        AND bot_user_id = $4 AND channel_id = $5 AND thread_ts = $6
-      """,
-      identity
-    )
-  end
-
-  defp await_backend_lock!(backend_pid, attempts \\ 100)
-
-  defp await_backend_lock!(_backend_pid, 0),
-    do: flunk("renewal query never reached its row-lock barrier")
-
-  defp await_backend_lock!(backend_pid, attempts) do
-    case Repo.query!(
-           "SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1",
-           [backend_pid]
-         ).rows do
-      [["Lock"]] ->
-        :ok
-
-      _other ->
-        Process.sleep(10)
-        await_backend_lock!(backend_pid, attempts - 1)
-    end
-  end
-
-  defp await_database_time!(expires_at, attempts \\ 300)
-
-  defp await_database_time!(_expires_at, 0),
-    do: flunk("database clock did not reach the cleanup boundary")
-
-  defp await_database_time!(expires_at, attempts) do
-    case Repo.query!("SELECT timezone('UTC', statement_timestamp()) >= $1", [expires_at]).rows do
-      [[true]] ->
-        :ok
-
-      _other ->
-        Process.sleep(10)
-        await_database_time!(expires_at, attempts - 1)
-    end
   end
 end

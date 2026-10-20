@@ -1,4 +1,5 @@
 import { defineConfig, devices, type ReporterDescription } from "@playwright/test";
+import { browserNetworkArgs } from "../../../scripts/test-network-browser.mjs";
 
 const baseURL = process.env.COMMA_ADMIN_PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:4175";
 const skipWebServer = process.env.COMMA_ADMIN_PLAYWRIGHT_SKIP_WEB_SERVER === "1";
@@ -36,14 +37,19 @@ process.env.NO_PROXY = Array.from(noProxyHosts).join(",");
 process.env.no_proxy = process.env.NO_PROXY;
 
 export default defineConfig({
+  // Test startup must not invoke Git or request repository credentials.
+  captureGitInfo: { commit: false, diff: false },
   testDir: "./e2e",
-  timeout: 45_000,
+  // A wait has no deadline of its own (docs/testing.md#deterministic-tests):
+  // an assertion waits until it holds, and a test that hangs stops after ten
+  // minutes.
+  timeout: 600_000,
   expect: {
-    timeout: 8_000,
+    timeout: 0,
   },
   fullyParallel: false,
   workers: 1,
-  retries: process.env.CI ? 1 : 0,
+  retries: 0,
   reporter,
   outputDir: "../../test-results/playwright-admin",
   use: {
@@ -53,6 +59,8 @@ export default defineConfig({
     trace: "retain-on-failure",
     video: "retain-on-failure",
     viewport: { width: 1280, height: 800 },
+    // Hosts other than this machine do not resolve (docs/testing.md#no-real-network).
+    launchOptions: { args: browserNetworkArgs([new URL(baseURL).hostname]) },
   },
   ...(skipWebServer
     ? {}

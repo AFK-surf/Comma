@@ -14,7 +14,7 @@ defmodule SalixAgent.SessionFormat3BackupPrune do
   def run(opts \\ []) do
     days = Keyword.get(opts, :retention_days, 14)
     dry_run = Keyword.get(opts, :dry_run, true)
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     if not is_integer(days) or days < 0,
       do: raise(ArgumentError, "retention_days must be nonnegative")

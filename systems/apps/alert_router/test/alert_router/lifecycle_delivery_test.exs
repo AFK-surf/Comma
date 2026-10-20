@@ -22,17 +22,17 @@ defmodule AlertRouter.LifecycleDeliveryTest do
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
 
-    previous_slack = Application.get_env(:alert_router, :slack)
-    previous_gcp = Application.get_env(:alert_router, :gcp_push)
+    previous_slack = SystemsRuntime.get_env(:alert_router, :slack)
+    previous_gcp = SystemsRuntime.get_env(:alert_router, :gcp_push)
 
     previous_lifecycle_event_reader =
-      Application.get_env(
+      SystemsRuntime.get_env(
         :alert_router,
         :lifecycle_event_reader,
         AlertRouter.LifecycleEventReader.Repo
       )
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :alert_router,
       :slack,
       previous_slack
@@ -40,17 +40,17 @@ defmodule AlertRouter.LifecycleDeliveryTest do
       |> Keyword.put(:base_url, "http://127.0.0.1:#{port}/api")
     )
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :alert_router,
       :gcp_push,
       Keyword.put(previous_gcp, :auth_module, AlertRouter.TestGCPPushAuth)
     )
 
     on_exit(fn ->
-      Application.put_env(:alert_router, :slack, previous_slack)
-      Application.put_env(:alert_router, :gcp_push, previous_gcp)
+      SystemsRuntime.put_env(:alert_router, :slack, previous_slack)
+      SystemsRuntime.put_env(:alert_router, :gcp_push, previous_gcp)
 
-      Application.put_env(
+      SystemsRuntime.put_env(
         :alert_router,
         :lifecycle_event_reader,
         previous_lifecycle_event_reader
@@ -72,7 +72,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
       "type" => "message",
       "channel" => incident.channel_id,
       "thread_ts" => incident.slack_root_ts,
-      "ts" => "#{System.system_time(:second) + 10}.000001",
+      "ts" => "#{SystemsClock.system_time(:second) + 10}.000001",
       "user" => "UINVESTIGATOR",
       "text" => "告警进展\n已确认：一个会话再次中断\n影响：已定位一个会话，整体范围未知\n下一步：核对第二次执行结果"
     }
@@ -90,7 +90,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
 
     assert push_progress(%{
              report
-             | "ts" => "#{System.system_time(:second) + 9}.000001",
+             | "ts" => "#{SystemsClock.system_time(:second) + 9}.000001",
                "text" => "告警进展\n旧结论"
            }).status == 200
 
@@ -123,7 +123,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
       "type" => "message",
       "channel" => incident.channel_id,
       "thread_ts" => incident.slack_root_ts,
-      "ts" => "#{System.system_time(:second) + 10}.000001",
+      "ts" => "#{SystemsClock.system_time(:second) + 10}.000001",
       "user" => "UREPORTER",
       "text" => "告警进展\n已恢复 <!channel>"
     }
@@ -195,7 +195,10 @@ defmodule AlertRouter.LifecycleDeliveryTest do
 
     assert length(notifications) == 2
     assert List.last(notifications).body["text"] =~ "<!channel> P0"
-    assert Jason.encode!(List.last(notifications).body) =~ "https://comma-test.slack.com/archives/"
+
+    assert Jason.encode!(List.last(notifications).body) =~
+             "https://comma-test.slack.com/archives/"
+
     assert List.last(requests).path == "/api/conversations.history"
     assert {:ok, %{disposition: :duplicate}} = AlertRouter.ingest(escalation, route_mode: :live)
     assert %{success: 0, failure: 0} = drain_delivery()
@@ -229,14 +232,17 @@ defmodule AlertRouter.LifecycleDeliveryTest do
   test "an escalation while the first root is in flight still notifies the channel" do
     first = %{gcp_event("open", project: "example-staging-project") | priority: "P1"}
     assert {:ok, %{incident: incident}} = AlertRouter.ingest(first, route_mode: :live)
-    ref = make_ref()
+    ref = SystemsRuntime.Proc.make_ref()
 
     AlertRouter.MockSlackAPI.script_next(
       "/api/chat.getPermalink",
       {:respond, 429, %{"ok" => false, "error" => "ratelimited"}}
     )
 
-    AlertRouter.MockSlackAPI.script_next("/api/chat.postMessage", {:gate_commit, self(), ref})
+    AlertRouter.MockSlackAPI.script_next(
+      "/api/chat.postMessage",
+      {:gate_commit, SystemsRuntime.Proc.self(), ref}
+    )
 
     job = %Oban.Job{
       args: %{
@@ -246,8 +252,8 @@ defmodule AlertRouter.LifecycleDeliveryTest do
       }
     }
 
-    sender = Task.async(fn -> AlertRouter.Workers.DeliverIncident.perform(job) end)
-    assert_receive {:mock_slack_gate, ^ref, gate_pid}, 1_000
+    sender = SystemsRuntime.Task.async(fn -> AlertRouter.Workers.DeliverIncident.perform(job) end)
+    assert_receive {:mock_slack_gate, ^ref, gate_pid}
 
     escalation = %{
       first
@@ -257,8 +263,8 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     }
 
     assert {:ok, _} = AlertRouter.ingest(escalation, route_mode: :live)
-    send(gate_pid, {:release_mock_slack_gate, ref})
-    assert :ok = Task.await(sender)
+    SystemsRuntime.Proc.send(gate_pid, {:release_mock_slack_gate, ref})
+    assert :ok = SystemsRuntime.Task.await(sender, :infinity)
     assert %{failure: 0} = drain_delivery()
 
     posts =
@@ -339,7 +345,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
       "subtype" => "bot_message",
       "channel" => incident.channel_id,
       "thread_ts" => incident.slack_root_ts,
-      "ts" => "#{System.system_time(:second) + 10}.000001",
+      "ts" => "#{SystemsClock.system_time(:second) + 10}.000001",
       "bot_id" => "BINVESTIGATOR",
       "app_id" => "AINVESTIGATOR",
       "text" => "调查受阻：无法读取原始日志，实际用户影响仍未知。"
@@ -365,7 +371,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     |> Ecto.Changeset.change(owner: "UALICE")
     |> Repo.update!()
 
-    duplicate_ts = "#{System.system_time(:second) + 12}.000001"
+    duplicate_ts = "#{SystemsClock.system_time(:second) + 12}.000001"
 
     assert push_progress(%{report | "ts" => duplicate_ts},
              investigator_bot_id: "BINVESTIGATOR"
@@ -374,7 +380,11 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     assert %{success: 0, failure: 0} = drain_delivery()
 
     assert push_progress(
-             %{report | "text" => "旧调查结果", "ts" => "#{System.system_time(:second) + 11}.000001"},
+             %{
+               report
+               | "text" => "旧调查结果",
+                 "ts" => "#{SystemsClock.system_time(:second) + 11}.000001"
+             },
              investigator_bot_id: "BINVESTIGATOR"
            ).status == 200
 
@@ -391,7 +401,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     long = %{
       report
       | "text" => String.duplicate("已确认", 1200),
-        "ts" => "#{System.system_time(:second) + 13}.000001"
+        "ts" => "#{SystemsClock.system_time(:second) + 13}.000001"
     }
 
     assert push_progress(long, investigator_bot_id: "BINVESTIGATOR").status == 200
@@ -402,9 +412,9 @@ defmodule AlertRouter.LifecycleDeliveryTest do
   end
 
   test "overdue notices are bounded, target the channel or owner, and stop after new progress" do
-    previous = Application.get_env(:alert_router, :slack_progress)
+    previous = SystemsRuntime.get_env(:alert_router, :slack_progress)
 
-    Application.put_env(:alert_router, :slack_progress,
+    SystemsRuntime.put_env(:alert_router, :slack_progress,
       signing_secret: "progress-test-secret",
       team_id: "TTEST",
       app_id: "ATEST"
@@ -412,8 +422,8 @@ defmodule AlertRouter.LifecycleDeliveryTest do
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:alert_router, :slack_progress, previous),
-        else: Application.delete_env(:alert_router, :slack_progress)
+        do: SystemsRuntime.put_env(:alert_router, :slack_progress, previous),
+        else: SystemsRuntime.delete_env(:alert_router, :slack_progress)
     end)
 
     event = %{gcp_event("open", project: "example-staging-project") | priority: "P1"}
@@ -470,7 +480,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
       "type" => "message",
       "channel" => incident.channel_id,
       "thread_ts" => incident.slack_root_ts,
-      "ts" => "#{System.system_time(:second) + 10}.000001",
+      "ts" => "#{SystemsClock.system_time(:second) + 10}.000001",
       "user" => "UALICE",
       "text" => "告警进展\n正在验证用户路径"
     }
@@ -516,9 +526,9 @@ defmodule AlertRouter.LifecycleDeliveryTest do
   end
 
   defp push_action(incident, user, action, opts \\ []) do
-    previous = Application.get_env(:alert_router, :slack_progress)
+    previous = SystemsRuntime.get_env(:alert_router, :slack_progress)
 
-    Application.put_env(:alert_router, :slack_progress,
+    SystemsRuntime.put_env(:alert_router, :slack_progress,
       signing_secret: "progress-test-secret",
       team_id: "TTEST",
       app_id: "ATEST"
@@ -545,7 +555,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
       }
 
       body = URI.encode_query(%{"payload" => Jason.encode!(payload)})
-      timestamp = Integer.to_string(System.system_time(:second))
+      timestamp = Integer.to_string(SystemsClock.system_time(:second))
 
       signature =
         :crypto.mac(
@@ -562,15 +572,15 @@ defmodule AlertRouter.LifecycleDeliveryTest do
       |> AlertRouter.Web.Router.call([])
     after
       if previous,
-        do: Application.put_env(:alert_router, :slack_progress, previous),
-        else: Application.delete_env(:alert_router, :slack_progress)
+        do: SystemsRuntime.put_env(:alert_router, :slack_progress, previous),
+        else: SystemsRuntime.delete_env(:alert_router, :slack_progress)
     end
   end
 
   defp push_progress(event, opts \\ []) do
-    previous = Application.get_env(:alert_router, :slack_progress)
+    previous = SystemsRuntime.get_env(:alert_router, :slack_progress)
 
-    Application.put_env(:alert_router, :slack_progress,
+    SystemsRuntime.put_env(:alert_router, :slack_progress,
       signing_secret: "progress-test-secret",
       team_id: "TTEST",
       app_id: "ATEST",
@@ -586,7 +596,8 @@ defmodule AlertRouter.LifecycleDeliveryTest do
           "event" => event
         })
 
-      timestamp = Integer.to_string(System.system_time(:second) + Keyword.get(opts, :age, 0))
+      timestamp =
+        Integer.to_string(SystemsClock.system_time(:second) + Keyword.get(opts, :age, 0))
 
       signature =
         :crypto.mac(
@@ -603,8 +614,8 @@ defmodule AlertRouter.LifecycleDeliveryTest do
       |> AlertRouter.Web.Router.call([])
     after
       if previous,
-        do: Application.put_env(:alert_router, :slack_progress, previous),
-        else: Application.delete_env(:alert_router, :slack_progress)
+        do: SystemsRuntime.put_env(:alert_router, :slack_progress, previous),
+        else: SystemsRuntime.delete_env(:alert_router, :slack_progress)
     end
   end
 
@@ -625,9 +636,9 @@ defmodule AlertRouter.LifecycleDeliveryTest do
   end
 
   test "GKE OOM push reaches the alert channel once without claiming recovery or Comma attribution" do
-    previous_mode = Application.fetch_env!(:alert_router, :mode)
-    Application.put_env(:alert_router, :mode, :live)
-    on_exit(fn -> Application.put_env(:alert_router, :mode, previous_mode) end)
+    previous_mode = SystemsRuntime.fetch_env!(:alert_router, :mode)
+    SystemsRuntime.put_env(:alert_router, :mode, :live)
+    on_exit(fn -> SystemsRuntime.put_env(:alert_router, :mode, previous_mode) end)
 
     labels = %{
       "comma_policy_id" => "gke_oom_kill",
@@ -788,23 +799,9 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     refute Jason.encode!(resolved_reply) =~ "已恢复"
   end
 
-  defp p0_event(state) do
-    labels = %{
-      "comma_policy_id" => "external_session_runtime_failed",
-      "comma_priority" => "p0",
-      "comma_domain" => "availability",
-      "managed_by" => "comma_alerting",
-      "policy_version" => "v1",
-      "environment" => "staging",
-      "service" => "salix_agent"
-    }
-
-    state
-    |> gcp_payload(project: "example-staging-project")
-    |> put_in(["incident", "policy_user_labels"], labels)
-    |> GCPMonitoring.normalize()
-    |> then(fn {:ok, event} -> event end)
-  end
+  # No cataloged policy is P0 any more; the priority contract still allows it.
+  defp p0_event(state),
+    do: %{gcp_event(state, project: "example-staging-project") | priority: "P0"}
 
   test "resolved lifecycle never regresses and conflicting reuse of an event id fails closed" do
     firing = gcp_event()
@@ -945,7 +942,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     event = gcp_event()
     assert {:ok, %{disposition: :accepted}} = AlertRouter.ingest(event, route_mode: :shadow)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :alert_router,
       :lifecycle_event_reader,
       AlertRouter.FailingLifecycleEventReader
@@ -960,7 +957,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     assert incident.delivery_lease_token == nil
     assert AlertRouter.MockSlackAPI.requests() == []
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :alert_router,
       :lifecycle_event_reader,
       AlertRouter.LifecycleEventReader.Repo
@@ -1112,9 +1109,9 @@ defmodule AlertRouter.LifecycleDeliveryTest do
   end
 
   test "an unapproved shadow destination fails before persistence" do
-    slack = Application.fetch_env!(:alert_router, :slack)
+    slack = SystemsRuntime.fetch_env!(:alert_router, :slack)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :alert_router,
       :slack,
       Keyword.put(slack, :routes, %{"shadow" => "C-production-alerts"})
@@ -1262,7 +1259,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     assert %{success: 2, failure: 0} = drain_delivery()
     assert {:ok, %{disposition: :accepted}} = AlertRouter.ingest(resolved, route_mode: :shadow)
 
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     firing.incident_key
     |> then(&Repo.get!(Incident, &1))
@@ -1272,7 +1269,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
       delivery_attempt_revision: 2,
       ambiguous_revision: 2,
       ambiguous_since: DateTime.add(now, -5, :second),
-      delivery_lease_token: Ecto.UUID.generate(),
+      delivery_lease_token: SystemsRuntime.Proc.uuid(),
       delivery_lease_revision: 2,
       delivery_lease_expires_at: DateTime.add(now, -1, :second)
     })
@@ -1354,7 +1351,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     event = gcp_event()
     assert {:ok, %{disposition: :accepted}} = AlertRouter.ingest(event, route_mode: :shadow)
 
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     event.incident_key
     |> then(&Repo.get!(Incident, &1))
@@ -1364,7 +1361,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
       delivery_attempt_revision: 1,
       ambiguous_revision: 1,
       ambiguous_since: DateTime.add(now, -5, :second),
-      delivery_lease_token: Ecto.UUID.generate(),
+      delivery_lease_token: SystemsRuntime.Proc.uuid(),
       delivery_lease_revision: 1,
       delivery_lease_expires_at: DateTime.add(now, -1, :second)
     })
@@ -1383,11 +1380,11 @@ defmodule AlertRouter.LifecycleDeliveryTest do
     assert {:ok, %{disposition: :accepted}} = AlertRouter.ingest(event, route_mode: :shadow)
 
     incident = Repo.get!(Incident, event.incident_key)
-    ref = make_ref()
+    ref = SystemsRuntime.Proc.make_ref()
 
     AlertRouter.MockSlackAPI.script_next(
       "/api/chat.postMessage",
-      {:gate_commit, self(), ref}
+      {:gate_commit, SystemsRuntime.Proc.self(), ref}
     )
 
     job = %Oban.Job{
@@ -1398,15 +1395,15 @@ defmodule AlertRouter.LifecycleDeliveryTest do
       }
     }
 
-    first = Task.async(fn -> AlertRouter.Workers.DeliverIncident.perform(job) end)
-    assert_receive {:mock_slack_gate, ^ref, gate_pid}, 1_000
+    first = SystemsRuntime.Task.async(fn -> AlertRouter.Workers.DeliverIncident.perform(job) end)
+    assert_receive {:mock_slack_gate, ^ref, gate_pid}
 
-    second = Task.async(fn -> AlertRouter.Workers.DeliverIncident.perform(job) end)
-    assert {:snooze, seconds} = Task.await(second)
+    second = SystemsRuntime.Task.async(fn -> AlertRouter.Workers.DeliverIncident.perform(job) end)
+    assert {:snooze, seconds} = SystemsRuntime.Task.await(second, :infinity)
     assert seconds > 0
 
-    send(gate_pid, {:release_mock_slack_gate, ref})
-    assert :ok = Task.await(first)
+    SystemsRuntime.Proc.send(gate_pid, {:release_mock_slack_gate, ref})
+    assert :ok = SystemsRuntime.Task.await(first, :infinity)
 
     requests = AlertRouter.MockSlackAPI.requests()
     assert Enum.count(requests, &(&1.path == "/api/chat.postMessage")) == 1
@@ -1700,7 +1697,7 @@ defmodule AlertRouter.LifecycleDeliveryTest do
 
   defp push_grafana(payload) do
     body = Jason.encode!(payload)
-    timestamp = System.system_time(:second) |> Integer.to_string()
+    timestamp = SystemsClock.system_time(:second) |> Integer.to_string()
 
     signature =
       :crypto.mac(

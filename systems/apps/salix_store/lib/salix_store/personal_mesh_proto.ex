@@ -27,7 +27,7 @@ defmodule SalixStore.PersonalMeshProto do
   @signature_domain "agent-vmm/signature/v1\0"
 
   def encode_snapshot(snapshot) do
-    issued_at = DateTime.utc_now()
+    issued_at = SystemsClock.utc_now()
     expires_at = snapshot.freshness_expires_at
 
     base = %MeshSnapshot{
@@ -265,7 +265,7 @@ defmodule SalixStore.PersonalMeshProto do
       expires_at: timestamp(expires_at)
     }
 
-    signer = Application.get_env(:salix_store, :personal_mesh_registry_receipt_signer)
+    signer = SystemsRuntime.get_env(:salix_store, :personal_mesh_registry_receipt_signer)
 
     key_id =
       case signer && signer.(canonical("RegistryReceipt", base)) do

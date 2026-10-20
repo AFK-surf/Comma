@@ -1,13 +1,9 @@
 // Tailwind config for the BridgeForTeams dashboard (Linear-style minimalist).
 // Content globs MUST include the dashboard .ex and .heex sources so utility
 // classes used in HEEx are preserved.
-const plugin = require("tailwindcss/plugin");
-
 module.exports = {
   content: [
     "./js/**/*.js",
-    "../../salix_web/lib/salix_web/dashboard/live/account_pool_live.ex",
-    "../../salix_web/lib/salix_web/dashboard/components/core_components.ex",
     "../lib/bridge_for_teams_web/dashboard/**/*.{ex,heex}",
     "../lib/bridge_for_teams_web/dashboard.ex",
   ],
@@ -74,20 +70,4 @@ module.exports = {
       },
     },
   },
-  plugins: [
-    plugin(({ addVariant }) => {
-      addVariant("phx-click-loading", [
-        ".phx-click-loading&",
-        ".phx-click-loading &",
-      ]);
-      addVariant("phx-submit-loading", [
-        ".phx-submit-loading&",
-        ".phx-submit-loading &",
-      ]);
-      addVariant("phx-change-loading", [
-        ".phx-change-loading&",
-        ".phx-change-loading &",
-      ]);
-    }),
-  ],
 };

@@ -51,6 +51,14 @@ theorem contains_witness (h : contains xs x = true) :
   exact ⟨y, member, key_eq equal⟩
 
 omit [System.Domain] in
+theorem tri_and_yes {p q : Tri} (h : Tri.and p q = .yes) : p = .yes ∧ q = .yes := by
+  revert h; cases p <;> cases q <;> decide
+
+omit [System.Domain] in
+theorem tri_or_yes {p q : Tri} (h : Tri.or p q = .yes) : p = .yes ∨ q = .yes := by
+  revert h; cases p <;> cases q <;> decide
+
+omit [System.Domain] in
 theorem allTri_yes (h : allTri xs test = .yes) : ∀ x ∈ xs, test x = .yes := by
   have general : ∀ (xs : List Term) (acc : Tri), xs.foldl (fun acc x => Tri.and acc (test x)) acc = .yes →
       acc = .yes ∧ ∀ x ∈ xs, test x = .yes := by
@@ -61,7 +69,7 @@ theorem allTri_yes (h : allTri xs test = .yes) : ∀ x ∈ xs, test x = .yes := 
       intro acc h
       obtain ⟨both, tail⟩ := ih _ h
       have first : acc = .yes ∧ test x = .yes := by
-        cases acc <;> cases he : test x <;> simp_all [Tri.and]
+        exact tri_and_yes both
       exact ⟨first.1, by simpa using And.intro first.2 tail⟩
   exact (general xs .yes h).2
 
@@ -76,7 +84,7 @@ theorem anyTri_yes (h : anyTri xs test = .yes) : ∃ x ∈ xs, test x = .yes := 
       intro acc h
       rcases ih _ h with first | later
       · have either : acc = .yes ∨ test x = .yes := by
-          cases acc <;> cases he : test x <;> simp_all [Tri.or]
+          exact tri_or_yes first
         rcases either with yes | yes
         · exact Or.inl yes
         · exact Or.inr ⟨x, by simp, yes⟩

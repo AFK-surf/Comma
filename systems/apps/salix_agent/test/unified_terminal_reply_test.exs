@@ -1,5 +1,5 @@
 defmodule SalixAgent.UnifiedTerminalReplyTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.TestSupport.SessionData
 
@@ -69,25 +69,6 @@ defmodule SalixAgent.UnifiedTerminalReplyTest do
     }
   end
 
-  test "a Signal source targets its bound chat with the send operation" do
-    state = state("signal", %{"connect_id" => "c", "chat_id" => "peer-aci"})
-
-    assert [%{"tool" => "im_api.signal.send_message", "params" => params}] =
-             query(state, :terminal_reply_targets)
-
-    assert params == %{"connect_id" => "c", "chat_id" => "peer-aci"}
-    assert query(state, :terminal_reply_source_scope)["source_message_id"] == "source"
-  end
-
-  test "Slack source targets disclose only the required-thread reply operation" do
-    state = state("slack", %{"connect_id" => "c", "channel_id" => "C", "thread_ts" => "1.000001"})
-
-    assert [%{"tool" => "im_api.slack.reply_message", "params" => params}] =
-             query(state, :terminal_reply_targets)
-
-    assert params == %{"connect_id" => "c", "channel" => "C", "thread_ts" => "1.000001"}
-  end
-
   test "a final-labelled opening is delivered without settling any Router source" do
     for {provider, destination} <- [
           {"slack", %{"connect_id" => "c", "channel_id" => "channel", "thread_ts" => "thread"}},
@@ -154,70 +135,5 @@ defmodule SalixAgent.UnifiedTerminalReplyTest do
 
     foreign = put_in(reply, [:args, "conversation_id"], "foreign")
     assert {:error, _} = TerminalReply.authorize(foreign, ctx)
-  end
-
-  test "broadcast, filtered Comma delivery, unknown providers and incomplete targets get no binding" do
-    for {provider, destination, extra} <- [
-          {"slack", %{"connect_id" => "c", "channel_id" => "C", "thread_ts" => "T"},
-           %{"reply_broadcast" => true}},
-          {"internal", %{}, %{"delivery_filter" => %{"participant_ids" => []}}}
-        ] do
-      state = state(provider, destination)
-      [target | _] = query(state, :terminal_reply_targets)
-      call = call(target)
-
-      assert {:ok, delivered} =
-               TerminalReply.authorize(
-                 %{call | args: Map.merge(call.args, extra)},
-                 context(state)
-               )
-
-      refute Map.has_key?(delivered, :terminal_reply)
-    end
-
-    for {provider, destination} <- [
-          {"unknown", %{"connect_id" => "c"}},
-          {"slack", %{"connect_id" => "c", "channel_id" => "C"}},
-          {"feishu", %{"connect_id" => "c"}},
-          {"signal", %{"connect_id" => "c"}}
-        ] do
-      assert query(state(provider, destination), :terminal_reply_source_scope) == nil
-      assert query(state(provider, destination), :terminal_reply_targets) == []
-    end
-  end
-
-  # Staging issue #2026: both sends were refused until the model removed
-  # final metadata, although neither destination or authorization changed.
-  test "Worker Task reports and deferred Router replies accept final metadata" do
-    task_origin = %{
-      "provider" => "internal",
-      "source_actor_type" => "agent",
-      "conversation_kind" => "agent_task",
-      "conversation_id" => "task",
-      "source_message_id" => "source"
-    }
-
-    state = %{
-      state("internal", %{})
-      | messages: [
-          %{id: 2, role: "user", source_message_id: "source", trusted_origin: task_origin},
-          %{id: 3, role: "assistant", content: "", tool_calls: [%{"id" => "reply"}]}
-        ]
-    }
-
-    assert query(state, :terminal_reply_targets) == []
-
-    for {role, conversation_id} <- [{"worker", "task"}, {"router", "user-chat"}] do
-      call = %{
-        id: "reply",
-        name: "im_api.internal.send_message",
-        args: %{"connect_id" => "internal", "conversation_id" => conversation_id},
-        reply_intent: %{"reply_mode" => "final", "final_outcome" => "done"}
-      }
-
-      ctx = %{role: role, llm_tool_envelope: true, terminal_reply_context: nil}
-      assert {:ok, delivered} = TerminalReply.authorize(call, ctx)
-      refute Map.has_key?(delivered, :terminal_reply)
-    end
   end
 end

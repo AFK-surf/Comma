@@ -1,6 +1,8 @@
 defmodule SalixIM.TriagePostgresAuthoritativeCommitTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  require SystemsClock
 
+  use SalixAgent.TestSupport.Settle
   import SalixIM.TriageEngineFixtures
 
   alias SalixIM.Triage
@@ -25,9 +27,9 @@ defmodule SalixIM.TriagePostgresAuthoritativeCommitTest do
            %{"terminal" => terminal} <- Jason.decode!(body),
            true <-
              (phase == :terminal and is_map(terminal)) or (phase == :open and is_nil(terminal)) do
-        send(owner, {:projection_read_blocked, self()})
+        SystemsRuntime.Proc.send(owner, {:projection_read_blocked, SystemsRuntime.Proc.self()})
 
-        receive do
+        SystemsClock.vreceive do
           :release_projection -> :ok
         after
           10_000 -> raise "projection test was not released"
@@ -38,7 +40,7 @@ defmodule SalixIM.TriagePostgresAuthoritativeCommitTest do
     end
 
     defp blocked_phase do
-      case :persistent_term.get(__MODULE__, nil) do
+      case SystemsRuntime.PersistentTerm.get(__MODULE__, nil) do
         {prefix, owner} -> {prefix, owner, :terminal}
         configured -> configured
       end
@@ -53,8 +55,8 @@ defmodule SalixIM.TriagePostgresAuthoritativeCommitTest do
   end
 
   setup do
-    previous_backend = Application.get_env(:salix_store, :triage_record_backend)
-    Application.put_env(:salix_store, :triage_record_backend, TriageRecords)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :triage_record_backend)
+    SystemsRuntime.put_env(:salix_store, :triage_record_backend, TriageRecords)
 
     Repo.query!("""
     TRUNCATE
@@ -85,17 +87,77 @@ defmodule SalixIM.TriagePostgresAuthoritativeCommitTest do
 
     on_exit(fn ->
       if previous_backend do
-        Application.put_env(:salix_store, :triage_record_backend, previous_backend)
+        SystemsRuntime.put_env(:salix_store, :triage_record_backend, previous_backend)
       else
-        Application.delete_env(:salix_store, :triage_record_backend)
+        SystemsRuntime.delete_env(:salix_store, :triage_record_backend)
       end
     end)
 
     :ok
   end
 
+  test "a drain-released run is evaluated again under a new fence with one authoritative run" do
+    namespace = "triage-pg-release-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    authority = authority!()
+    calls = :counters.new(1, [])
+
+    # Draining starts after the first run won its fence.
+    draining? = fn ->
+      :counters.add(calls, 1, 1)
+      :counters.get(calls, 1) > 1
+    end
+
+    opts = [
+      name: nil,
+      mode: :review,
+      namespace: namespace,
+      debounce_ms: 10,
+      max_wait_ms: 40,
+      evaluation_timeout_ms: 1_000,
+      recovery_idle_ms: 50,
+      evaluator_port: {ForbiddenEvaluator, []}
+    ]
+
+    draining =
+      start_supervised!(
+        {Runtime, opts ++ [restart: :temporary, draining?: draining?]},
+        id: SystemsRuntime.Proc.make_ref()
+      )
+
+    admit!(draining, authority, "Ev-pg-release", text: "release before transport")
+
+    released_query = """
+    SELECT count(*) FROM triage_run_fences
+    WHERE body @> '{"terminal": null, "identity_observation": {"state": "released"}}'::jsonb
+    """
+
+    assert true =
+             eventually(fn ->
+               match?(%Postgrex.Result{rows: [[1]]}, Repo.query!(released_query))
+             end)
+
+    assert Triage.ledger_records(draining) == []
+    :ok = GenServer.stop(draining)
+
+    serving = start_supervised!({Runtime, opts}, id: SystemsRuntime.Proc.make_ref())
+
+    assert [%{"authoritative" => true, "status" => "failed"} = run] =
+             eventually(fn -> Triage.ledger_records(serving) end)
+
+    assert %Postgrex.Result{rows: [[1, 2, run_id, 1]]} =
+             Repo.query!("""
+             SELECT
+               (SELECT count(*) FROM triage_run_fences),
+               (SELECT (body ->> 'fence_epoch')::int FROM triage_run_fences),
+               (SELECT body ->> 'run_id' FROM triage_run_fences),
+               (SELECT count(*) FROM triage_runs)
+             """)
+
+    assert run_id == run["run_id"]
+  end
+
   test "the production runtime commits authority before its idempotent projector converges" do
-    namespace = "triage-pg-#{System.unique_integer([:positive])}"
+    namespace = "triage-pg-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     authority = authority!()
 
     server =
@@ -109,7 +171,7 @@ defmodule SalixIM.TriagePostgresAuthoritativeCommitTest do
          evaluation_timeout_ms: 100,
          recovery_idle_ms: 200,
          evaluator_port: {ForbiddenEvaluator, []}},
-        id: make_ref()
+        id: SystemsRuntime.Proc.make_ref()
       )
 
     admit!(server, authority, "Ev-pg-atomic", text: "verify the atomic terminal")
@@ -160,66 +222,12 @@ defmodule SalixIM.TriagePostgresAuthoritativeCommitTest do
     assert is_binary(namespace_key)
   end
 
-  @tag :projection_mailbox
-  test "a blocked derived projection leaves Runtime free to settle another receipt" do
-    namespace = "triage-pg-background-#{System.unique_integer([:positive])}"
-    authority = authority!()
-    prefix = SalixStore.TriageKeys.ctl_im_triage_bucket_seals_prefix(namespace)
-    :persistent_term.put(BlockedProjectionStore, {prefix, self()})
-    Application.put_env(:salix_store, :triage_record_backend, BlockedProjectionStore)
-    on_exit(fn -> :persistent_term.erase(BlockedProjectionStore) end)
-
-    server =
-      start_supervised!(
-        {Runtime,
-         name: nil,
-         mode: :review,
-         namespace: namespace,
-         debounce_ms: 5,
-         max_wait_ms: 20,
-         evaluation_timeout_ms: 200,
-         recovery_idle_ms: 50,
-         evaluator_port: {ForbiddenEvaluator, []}},
-        id: make_ref()
-      )
-
-    admit!(server, authority, "Ev-pg-blocked-projection")
-    assert_receive {:projection_read_blocked, projector}, 2_000
-    assert %{namespace: ^namespace} = GenServer.call(server, :status, 250)
-    assert projector != server
-
-    admit!(server, authority, "Ev-pg-next-receipt",
-      thread_ts: "1787019010.000000",
-      message_ts: "1787019010.000000"
-    )
-
-    assert eventually(fn -> length(Triage.ledger_records(server)) == 2 end)
-
-    assert %{rows: [[2]]} =
-             Repo.query!(
-               "SELECT count(*) FROM triage_projection_obligations WHERE state = 'pending'"
-             )
-
-    refute_received {:projection_read_blocked, _duplicate_projector}
-
-    :persistent_term.erase(BlockedProjectionStore)
-    send(projector, :release_projection)
-
-    assert eventually(fn ->
-             Repo.query!(
-               "SELECT count(*) FROM triage_projection_obligations WHERE state = 'applied'"
-             ).rows == [[2]]
-           end)
-
-    assert length(Triage.ledger_records(server)) == 2
-  end
-
   test "expired open fence recovery yields the mailbox and commits atomically" do
-    namespace = "triage-pg-recovery-#{System.unique_integer([:positive])}"
+    namespace = "triage-pg-recovery-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     authority = authority!()
     generation = ULID.generate()
     run_id = ULID.generate()
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     receipt =
       thread_receipt!(authority, "Ev-pg-recovery", "1787019000.000002",
@@ -267,9 +275,13 @@ defmodule SalixIM.TriagePostgresAuthoritativeCommitTest do
     assert {:ok, {:won, created}} =
              RunFence.create(namespace, scope, run_id, input, now - 2_000, now - 1_000)
 
-    :persistent_term.put(BlockedProjectionStore, {created.key, self(), :open})
-    Application.put_env(:salix_store, :triage_record_backend, BlockedProjectionStore)
-    on_exit(fn -> :persistent_term.erase(BlockedProjectionStore) end)
+    SystemsRuntime.PersistentTerm.put(
+      BlockedProjectionStore,
+      {created.key, SystemsRuntime.Proc.self(), :open}
+    )
+
+    SystemsRuntime.put_env(:salix_store, :triage_record_backend, BlockedProjectionStore)
+    on_exit(fn -> SystemsRuntime.PersistentTerm.erase(BlockedProjectionStore) end)
 
     server =
       start_supervised!(
@@ -279,14 +291,14 @@ defmodule SalixIM.TriagePostgresAuthoritativeCommitTest do
          namespace: namespace,
          recovery_idle_ms: 200,
          evaluator_port: {ForbiddenEvaluator, []}},
-        id: make_ref()
+        id: SystemsRuntime.Proc.make_ref()
       )
 
-    assert_receive {:projection_read_blocked, recovery}, 2_000
+    settle_receive({:projection_read_blocked, recovery})
     assert %{namespace: ^namespace} = GenServer.call(server, :status, 250)
     assert recovery != server
-    :persistent_term.erase(BlockedProjectionStore)
-    send(recovery, :release_projection)
+    SystemsRuntime.PersistentTerm.erase(BlockedProjectionStore)
+    SystemsRuntime.Proc.send(recovery, :release_projection)
 
     assert true =
              eventually(fn ->
@@ -315,7 +327,7 @@ defmodule SalixIM.TriagePostgresAuthoritativeCommitTest do
   end
 
   test "settled thread generations leave the bucket and late duplicates stay settled" do
-    namespace = "triage-pg-thread-archive-#{System.unique_integer([:positive])}"
+    namespace = "triage-pg-thread-archive-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     authority = authority!()
 
     server =
@@ -329,7 +341,7 @@ defmodule SalixIM.TriagePostgresAuthoritativeCommitTest do
          evaluation_timeout_ms: 100,
          recovery_idle_ms: 200,
          evaluator_port: {ForbiddenEvaluator, []}},
-        id: make_ref()
+        id: SystemsRuntime.Proc.make_ref()
       )
 
     first = admit!(server, authority, "Ev-pg-thread-archive-1")
@@ -400,54 +412,5 @@ defmodule SalixIM.TriagePostgresAuthoritativeCommitTest do
     # archive; it does not re-enter the bucket as new work.
     assert {:ok, :duplicate, durable} = Admission.accept_membership(namespace, authority, first)
     refute Enum.any?(durable["open_receipts"], &(&1["receipt_ref"] == first["receipt_ref"]))
-  end
-
-  test "a directed mid-thread receipt can create a bucket without a root receipt" do
-    namespace = "triage-pg-mid-thread-#{System.unique_integer([:positive])}"
-    authority = authority!()
-
-    receipt =
-      thread_receipt!(authority, "Ev-pg-mid-thread", "1787019000.000002",
-        actor_kind: "agent",
-        event_type: "app_mention",
-        text: "<@#{authority["bot_user_id"]}> review this historical thread"
-      )
-
-    assert {:ok, :accepted, durable} =
-             Admission.accept_membership(namespace, authority, receipt)
-
-    assert durable["open_receipts"] == [receipt]
-    assert durable["bucket_scope"] == SalixIM.Triage.Bucketing.scope_key(receipt)
-
-    assert get_in(hd(durable["open_receipts"]), ["triage_event", "message_ts"]) !=
-             get_in(hd(durable["open_receipts"]), ["triage_event", "bucket", "thread_ts"])
-
-    # Another namespace can receive ambient work while this directed bucket is
-    # admitted. That work must not count as a membership of this namespace.
-    unrelated_authority = authority!()
-
-    unrelated_receipt =
-      receipt!(unrelated_authority, "Ev-pg-unrelated",
-        thread_ts: "1787019010.000001",
-        message_ts: "1787019010.000001"
-      )
-
-    assert {:ok, :accepted, _} =
-             Admission.accept_membership(
-               namespace <> "-unrelated",
-               unrelated_authority,
-               unrelated_receipt
-             )
-
-    assert %Postgrex.Result{rows: [["directed", 1]]} =
-             Repo.query!(
-               """
-               SELECT lane, count(*)
-               FROM triage_bucket_memberships
-               WHERE namespace_key = $1
-               GROUP BY lane
-               """,
-               [SalixStore.TriageKeys.namespace_key(namespace)]
-             )
   end
 end

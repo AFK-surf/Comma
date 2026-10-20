@@ -1,4 +1,4 @@
-export { defaultApiBaseUrl } from "./api";
+export { defaultApiBaseUrl } from "./apiBaseUrl";
 export { TaskPanelApp, type TaskPanelHost } from "./components/tasks/TaskPanelApp";
 export {
   CommaClientSettingsI18nProvider,
@@ -6,5 +6,4 @@ export {
   readWebCommaClientSettings,
 } from "./components/commaClientSettings";
 export { CommaSessionHostProvider } from "./session/react";
-export { createBrowserSessionHostPorts } from "./session/web/browser-session-host";
-export { createWebSessionHostControllerFromAdapter } from "./session/web/web-session-host-controller";
+export { createCoreSessionHostController } from "./session/core-session-host-controller";

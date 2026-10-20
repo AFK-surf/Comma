@@ -1,7 +1,7 @@
 defmodule SalixAgent.MigrationNotice do
   @moduledoc false
 
-  @version 52
+  @version 63
   @superseded_versions [
     11,
     18,
@@ -31,7 +31,9 @@ defmodule SalixAgent.MigrationNotice do
     42,
     47,
     49,
-    51
+    51,
+    57,
+    58
   ]
 
   @doc false
@@ -79,6 +81,24 @@ defmodule SalixAgent.MigrationNotice do
     }
   end
 
+  defp summary(63), do: "Work that needs a machine runs on the user's own computer first"
+
+  defp summary(62), do: "Every Router picks each Task's place and model, never a Worker"
+
+  defp summary(61), do: "A Task without runs_on runs at the Group's default place"
+
+  defp summary(60), do: "A Task without a model runs the Group's default Task model"
+
+  defp summary(59), do: "A completed answer accompanies the terminal decision"
+
+  defp summary(58), do: "BridgeForTeams Routers may choose a Worker's or a Task's model"
+  defp summary(57), do: "Workers can be bound to a station; external runtimes are retired"
+  defp summary(56), do: "Comma Routers create Tasks without a Worker"
+  defp summary(55), do: "Routers may run a Task on a Cloud VM or station"
+  defp summary(54), do: "Routers may choose a model for each Task"
+
+  defp summary(53), do: "Routers can read servable models and may choose a new Worker's model"
+
   defp summary(52), do: "Router completion and status notices use current Task policy"
 
   defp summary(51), do: "Tasks use ordinary Worker delegation"
@@ -121,6 +141,50 @@ defmodule SalixAgent.MigrationNotice do
   defp summary(47), do: "Router delivery requires separate completion"
 
   defp summary(_version), do: "migration notice changed"
+
+  defp content(63),
+    do:
+      "Routers: work that needs a shell, command-line tools or local files (downloading a file or a video, running a script, building code) needs a machine. Before you create its Task, call device.list and give runs_on {kind: station, device_id} for the requesting user's own connected computer when it can take Tasks, with model {kind: runtime}; give {kind: cloud_vm} only when there is no such computer. Existing Tasks are unchanged. Continue silently; this notice requests no new work."
+
+  defp content(62),
+    do:
+      "Routers of every product: Workers are retired. This replaces notices and earlier instructions that told you to supply agent_id, find Workers with agent.list or agent.get, or create, update, bind, rebind or archive a Worker. Create every Task with im_api.internal.task.create without agent_id: the Group's own Task agent runs it. Choose each Task's model from agent.models and, when it must run in a particular place, its runs_on; a catalog model the organization does not allow is refused (model_not_allowed). When the user asks for a Worker or agent with a model, a name, a role or instructions, pass that model on each of their Tasks and write their requirements into each Task's content. agent.list, agent.get, agent.create_worker, agent.update, agent.rebind_runtime and agent.archive are no longer offered; agent.models stays. Existing Tasks and Schedules are unchanged. Continue silently; this notice requests no new work."
+
+  defp content(61),
+    do:
+      "Routers: people can set a Group's default place to run Tasks in the product's settings (Comma: Settings > Models; BridgeForTeams: the Agent Swarm settings): inside Salix (the default), the Cloud VM, or a station. im_api.internal.task.create without runs_on now runs the Task there, unless its Worker is bound to a station or it has a model not of kind runtime, which runs inside Salix. The place is checked as one you name: an offline station, a Cloud VM that is off or not running, or a person's own computer for a Loop refuses the Task; tell the user. Give runs_on {kind: salix} to run a Task inside Salix whatever the default is. Existing Tasks are unchanged. Continue silently; this notice requests no new work."
+
+  defp content(60),
+    do:
+      "Routers: im_api.internal.task.create without model and without runs_on now runs the Group's default Task model, which people set in the product's settings (Comma: Settings > Models; the platform model unless they changed it). Where none is set, the Worker's model applies as before. BridgeForTeams Routers: when the user named a model, pass it as model on each Task that should run it, including Tasks for a Worker created with that model; do not rely on the Worker's model. On a station, model {kind: runtime, provider: codex | claude} without a model id runs that station's default model; on the Cloud VM that is the platform model with Codex. Existing Tasks are unchanged. Continue silently; this notice requests no new work."
+
+  defp content(59),
+    do:
+      "Routers: this replaces older opening and final-answer instructions in stored prompts and notices, including notice 48's separate completion rule. If you can answer immediately, call end_turn directly with outcome=done and reply={tool,params}. Use the same form for completed work with an unsent final answer. Do not send that answer through call and then end it in another round. Use a standalone opening or progress send only while work remains. Then continue that work. A successful standalone send proves delivery, not completion. If the answer was already sent, omit reply. Current-source routing and IFC authorization do not change. Put any required ifc declaration inside reply. With reply, the runtime settles only after a successful send. Existing script instructions remain unchanged. Continue silently. This notice requests no new work."
+
+  defp content(58),
+    do:
+      "BridgeForTeams Routers: agent.create_worker with runtime {kind: internal} and im_api.internal.task.create now accept model {kind: catalog, model, reasoning_effort?, allow_paid?, profile_id?} from agent.models; a Task may also choose the platform model. When the user names a model or asks for a Worker that uses one, use it instead of refusing. Read current help before the first call. Existing Workers and Tasks are unchanged. Continue silently; this notice requests no new work."
+
+  defp content(57),
+    do:
+      "Routers: a Worker can be bound to a station. agent.create_worker takes runtime {kind: station, device_id} (a station from device.list) or {kind: cloud_vm}, with model {kind: runtime, provider: codex | claude, model?, reasoning_effort?}; every Task of that Worker runs there, and im_api.internal.task.create needs no runs_on or model for it. agent.rebind_runtime moves a bound Worker to another station. Connected and Compute runtimes are retired for new Workers; existing external Workers now run their Tasks on their device's station. A device that runs the old connector refuses the Task until its user installs the Comma station: tell the user. Read current help before the first call. Continue silently; this notice requests no new work."
+
+  defp content(56),
+    do:
+      "Comma Routers: a Workspace has one Worker. im_api.internal.task.create takes agent_id as optional; omit it and that Worker takes the Task. Choose each Task's model with model as before. agent.list, agent.get, agent.create_worker, agent.update, agent.rebind_runtime and agent.archive are no longer offered to a Comma Router; agent.models stays. Other products still name the Worker. Existing Workers and Tasks are unchanged. Continue silently; this notice requests no new work."
+
+  defp content(55),
+    do:
+      "Routers: im_api.internal.task.create accepts an optional runs_on, {kind: cloud_vm} or {kind: station, device_id}, to run the Task with Codex or Claude Code on the Workspace's Cloud VM or a connected desktop station. It requires model {kind: runtime, provider: codex | claude, model, reasoning_effort?}. Some products reject it; then omit it. Read current help before the first call. Existing Tasks are unchanged. Continue silently; this notice requests no new work."
+
+  defp content(54),
+    do:
+      "Routers: im_api.internal.task.create accepts an optional model for a Worker on the internal runtime: {kind: catalog, model, reasoning_effort?, allow_paid?, profile_id?}, chosen from agent.models. The Worker's Session for that Task uses it instead of the Worker's model. A different model no longer needs another Worker. Some products reject model; then omit it. Read current help before the first call. Existing Workers and Tasks are unchanged. Continue silently; this notice requests no new work."
+
+  defp content(53),
+    do:
+      "Routers: agent.models is a new read tool. It lists the catalog models that this Group's enabled Profiles can serve, with each model's reasoning efforts and served_by, and the owner's locale and timezone when the product knows them. agent.create_worker accepts an optional model for an internal runtime: {kind: catalog, model, reasoning_effort?, allow_paid?, profile_id?}. Some products reject model; then omit it and the Worker uses the product default. Read current help before the first call. Existing Workers are unchanged. Continue silently; this notice requests no new work."
 
   defp content(52),
     do:

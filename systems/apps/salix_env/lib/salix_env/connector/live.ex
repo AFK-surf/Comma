@@ -44,6 +44,13 @@ defmodule SalixEnv.Connector.Live do
     route_read_stream(connector_run_id, message, timeout)
   end
 
+  @doc "Open a TCP tunnel through the connector. See `SalixEnv.Bridge.open_tunnel/4`."
+  @spec open_tunnel(String.t(), map(), pid(), timeout()) ::
+          {:ok, %{owner: pid(), result: map()}} | {:error, term()}
+  def open_tunnel(connector_run_id, message, relay, timeout) do
+    route_write(connector_run_id, :open_tunnel, [message, relay, timeout])
+  end
+
   @spec begin_write_stream(String.t(), map(), timeout()) :: {:ok, map()} | {:error, term()}
   def begin_write_stream(
         connector_run_id,
@@ -99,12 +106,7 @@ defmodule SalixEnv.Connector.Live do
   def dispatch(connector_run_id, message, timeout) do
     case Registry.get_by_connector_run_id(connector_run_id) do
       {:ok, env_id, %{"status" => "connected", "node" => node_str} = record} ->
-        case if(
-               archive_repair?(record) and
-                 message["method"] not in ~w(cloud_runtime_quiesce cloud_runtime_resume cloud_runtime_release),
-               do: {:error, :vm_archiving},
-               else: route(env_id, node_str, message, timeout)
-             ) do
+        case route(env_id, node_str, message, timeout) do
           {:error, :disconnected} = err ->
             # The durable record said connected but no socket owner answered:
             # a crash skipped the owner's terminate (e.g. node restart under
@@ -128,12 +130,10 @@ defmodule SalixEnv.Connector.Live do
     end
   end
 
-  defp archive_repair?(record), do: get_in(record, ["meta", "archive_repair"]) == true
-
   defp heal_stale_record(_transport_id, record) do
     updated_at = record["updated_at"] || record["registered_at"] || 0
 
-    if System.system_time(:millisecond) - updated_at > @heal_grace_ms do
+    if SystemsClock.system_time(:millisecond) - updated_at > @heal_grace_ms do
       _ =
         Registry.mark_disconnected(record["connector_run_id"],
           connection_generation: record["connection_generation"],
@@ -166,9 +166,6 @@ defmodule SalixEnv.Connector.Live do
 
   defp route_write(connector_run_id, fun, args) do
     case Registry.get_by_connector_run_id(connector_run_id) do
-      {:ok, _env_id, %{"status" => "connected", "meta" => %{"archive_repair" => true}}} ->
-        {:error, :vm_archiving}
-
       {:ok, env_id, %{"status" => "connected", "node" => node_str} = record} ->
         owner = SalixEnv.ClusterNodes.find(node_str)
 
@@ -202,9 +199,6 @@ defmodule SalixEnv.Connector.Live do
 
   defp route_write_stream(connector_run_id, message, stream, timeout) do
     case Registry.get_by_connector_run_id(connector_run_id) do
-      {:ok, _env_id, %{"status" => "connected", "meta" => %{"archive_repair" => true}}} ->
-        {:error, :vm_archiving}
-
       {:ok, env_id, %{"status" => "connected", "node" => node_str} = record} ->
         owner = SalixEnv.ClusterNodes.find(node_str)
 
@@ -252,7 +246,7 @@ defmodule SalixEnv.Connector.Live do
              owner,
              Bridge,
              :prepare_remote_write_stream,
-             [env_id, Map.delete(message, "transfer"), timeout, self()],
+             [env_id, Map.delete(message, "transfer"), timeout, SystemsRuntime.Proc.self()],
              timeout + 5_000
            ),
          {:ok, result} <- SalixEnv.Transfer.send_stream(url, stream) do
@@ -265,9 +259,6 @@ defmodule SalixEnv.Connector.Live do
 
   defp route_read_stream(connector_run_id, message, timeout) do
     case Registry.get_by_connector_run_id(connector_run_id) do
-      {:ok, _env_id, %{"status" => "connected", "meta" => %{"archive_repair" => true}}} ->
-        {:error, :vm_archiving}
-
       {:ok, env_id, %{"status" => "connected", "node" => node_str} = record} ->
         owner = SalixEnv.ClusterNodes.find(node_str)
 
@@ -323,7 +314,7 @@ defmodule SalixEnv.Connector.Live do
 
     with {:ok, receiver} <-
            StreamReceiver.start_link(
-             owner: self(),
+             owner: SystemsRuntime.Proc.self(),
              idle_timeout_ms: idle_timeout,
              absolute_timeout_ms: absolute_timeout
            ) do
@@ -352,20 +343,20 @@ defmodule SalixEnv.Connector.Live do
           {:ok, stream, nil}
 
         {:error, :max_children} ->
-          GenServer.stop(receiver, :normal)
+          SystemsRuntime.Server.stop(receiver, :normal)
           emit_remote_read_stream_saturated()
           {:error, :connector_remote_read_stream_capacity_exhausted}
 
         {:error, :supervisor_unavailable} ->
-          GenServer.stop(receiver, :normal)
+          SystemsRuntime.Server.stop(receiver, :normal)
           {:error, :connector_remote_read_stream_unavailable}
 
         {:error, {:supervisor_exit, reason}} ->
-          GenServer.stop(receiver, :normal)
+          SystemsRuntime.Server.stop(receiver, :normal)
           {:error, {:remote_read_stream_start_failed, reason}}
 
         {:error, reason} ->
-          GenServer.stop(receiver, :normal)
+          SystemsRuntime.Server.stop(receiver, :normal)
           {:error, {:remote_read_stream_start_failed, reason}}
       end
     end
@@ -396,14 +387,14 @@ defmodule SalixEnv.Connector.Live do
   end
 
   defp start_remote_read_task(supervisor, task) do
-    Task.Supervisor.start_child(supervisor, task)
+    SystemsRuntime.TaskSupervisor.start_child(supervisor, task)
   catch
     :exit, {:noproc, _} -> {:error, :supervisor_unavailable}
     :exit, reason -> {:error, {:supervisor_exit, reason}}
   end
 
   defp emit_remote_read_stream_saturated do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :connector, :read_stream],
       %{},
       %{outcome: :saturated, transport: :other}
@@ -415,7 +406,7 @@ defmodule SalixEnv.Connector.Live do
       Keyword.get(
         opts,
         :absolute_timeout_ms,
-        Application.get_env(:salix_env, :connector_remote_read_stream_timeout_ms, 305_000)
+        SystemsRuntime.get_env(:salix_env, :connector_remote_read_stream_timeout_ms, 305_000)
       )
 
     case configured do
@@ -429,7 +420,7 @@ defmodule SalixEnv.Connector.Live do
       Keyword.get(
         opts,
         :idle_timeout_ms,
-        Application.get_env(:salix_env, :connector_remote_read_stream_idle_timeout_ms, 30_000)
+        SystemsRuntime.get_env(:salix_env, :connector_remote_read_stream_idle_timeout_ms, 30_000)
       )
 
     case configured do

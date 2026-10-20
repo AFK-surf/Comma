@@ -1,11 +1,15 @@
 defmodule BridgeForTeams.MeetingsReplayTest do
   use BridgeForTeams.DataCase, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{Accounts, Meetings, Observability, Orgs, Projects}
 
   defmodule ReplayClient do
     def replay_meeting_summary(group_id, meeting_id, opts) do
-      send(Process.get(:meeting_replay_test_pid), {:replay, group_id, meeting_id, opts})
+      SystemsRuntime.Proc.send(
+        Process.get(:meeting_replay_test_pid),
+        {:replay, group_id, meeting_id, opts}
+      )
 
       {:ok,
        %{
@@ -17,17 +21,17 @@ defmodule BridgeForTeams.MeetingsReplayTest do
   end
 
   setup do
-    previous_client = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, ReplayClient)
-    Process.put(:meeting_replay_test_pid, self())
+    previous_client = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, ReplayClient)
+    Process.put(:meeting_replay_test_pid, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
       Process.delete(:meeting_replay_test_pid)
 
       if previous_client do
-        Application.put_env(:bridge_for_teams_core, :salix_client, previous_client)
+        SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous_client)
       else
-        Application.delete_env(:bridge_for_teams_core, :salix_client)
+        SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
       end
     end)
 
@@ -48,7 +52,7 @@ defmodule BridgeForTeams.MeetingsReplayTest do
                "request-123"
              )
 
-    assert_receive {:replay, group_id, "meeting-123", [run_model: false]}
+    settle_receive({:replay, group_id, "meeting-123", [run_model: false]})
     assert group_id == context.project.salix_group_id
     assert first["status"] == "ok"
     assert first["passed"]
@@ -64,7 +68,7 @@ defmodule BridgeForTeams.MeetingsReplayTest do
                "request-123"
              )
 
-    refute_receive {:replay, _, _, _}
+    settle_refute_receive({:replay, _, _, _})
     assert second["run_id"] == first["run_id"]
     assert second["replayed"]
 
@@ -87,7 +91,7 @@ defmodule BridgeForTeams.MeetingsReplayTest do
                "request-conflict"
              )
 
-    assert_receive {:replay, _, "meeting-123", [run_model: false]}
+    settle_receive({:replay, _, "meeting-123", [run_model: false]})
 
     assert {:error, :replay_request_conflict} =
              Meetings.replay_summary(
@@ -108,7 +112,7 @@ defmodule BridgeForTeams.MeetingsReplayTest do
                run_model: true
              )
 
-    refute_receive {:replay, _, _, _}
+    settle_refute_receive({:replay, _, _, _})
   end
 
   test "same request id cannot cross project boundaries", context do
@@ -124,7 +128,7 @@ defmodule BridgeForTeams.MeetingsReplayTest do
                "request-project-conflict"
              )
 
-    assert_receive {:replay, _, "meeting-123", [run_model: false]}
+    settle_receive({:replay, _, "meeting-123", [run_model: false]})
 
     assert {:error, :replay_request_conflict} =
              Meetings.replay_summary(
@@ -135,6 +139,6 @@ defmodule BridgeForTeams.MeetingsReplayTest do
                "request-project-conflict"
              )
 
-    refute_receive {:replay, _, _, _}
+    settle_refute_receive({:replay, _, _, _})
   end
 end

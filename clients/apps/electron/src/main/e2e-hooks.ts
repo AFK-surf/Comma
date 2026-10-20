@@ -7,11 +7,19 @@ import type {
   CommaOperatingSystem,
   SystemNotificationsStatus,
 } from "@comma/native-bridge";
+import { WebSocket, type RawData } from "ws";
 import type { SleepGuardAddon } from "../../native/macos/SleepGuard";
+import type { CableScanner } from "./modules/browser-sidebar/hybrid";
 import type { LaunchAtLoginStatus } from "./launch-at-login";
+import {
+  electronE2eStartHookEnv,
+  type ElectronE2eStartHookEnv,
+} from "./e2e-start-hooks";
 import type { AppPreferencesRuntime } from "./modules/electron-main.module";
 import type { SecureSessionInput } from "./secure-store";
 import type { StatusTrayMenuItem } from "./status-tray";
+import type { CoreHostService } from "./modules/core";
+import type { UpdateFeed } from "./updates";
 
 const e2eSessionExpiresAtEpochSeconds = 4_102_444_800;
 
@@ -23,9 +31,44 @@ export type ElectronE2eConnectorMode = "real" | "static";
  */
 export type ElectronE2eSynchronicityMode = "off" | "fake";
 
+/**
+ * What a test reaches in Main with `app.evaluate` (see `clients/e2e/helpers/electron-core-clock.ts`):
+ * `commaE2eCore.advanceClock(ms)` moves the core's test clock (`coreTestClock`), and
+ * `commaE2eUpdateFeed.script(feed)` says what the update feed answers (`updateFeed: "scripted"`).
+ */
+export type ElectronE2eGlobals = typeof globalThis & {
+  commaE2eCore?: {
+    advanceClock(ms: number): Promise<void>;
+    /**
+     * The core's `app.reset`; done once Main started again after it (`exposeElectronE2eCore`), with the start hooks
+     * of `env` (`electronE2eStartHookEnv`) in place of the last ones.
+     */
+    reset(env?: ElectronE2eStartHookEnv): Promise<void>;
+    /** Done once Main's newest start opened its windows. */
+    started(): Promise<void>;
+    /** A call to the core on Main's own channel (`CoreHostService.client`). */
+    call(name: string, params: unknown): Promise<unknown>;
+    /** Whether `window` is Main's main window, as Main made it: a page's own reading changes while it loads. */
+    isMainWindow(window: unknown): boolean;
+  };
+  commaE2eUpdateFeed?: { script(feed: UpdateFeed): void };
+};
+
 export interface ElectronE2eHooks {
   backgroundWindows?: boolean;
   activateStatusTraySettings?: boolean;
+  /**
+   * Stands in for `~/Library/Application Support` and the browser's Safe
+   * Storage keychain item when Settings imports another browser's cookies.
+   */
+  browserImportDirectory?: string;
+  browserImportKeychainPassword?: string;
+  /**
+   * A test phone (`src/test-support/cable-phone.ts`) at `ws://127.0.0.1:<port>`.
+   * It stands in for Bluetooth and for the caBLE tunnel server when a browser
+   * tab signs in with a passkey from a phone.
+   */
+  cablePhoneOrigin?: string;
   apiBaseUrl?: string;
   appPreferencesDrainStartedMarkerFilePath?: string;
   appPreferencesStateBlockedMarkerFilePath?: string;
@@ -42,13 +85,11 @@ export interface ElectronE2eHooks {
   launchAtLoginStatus?: LaunchAtLoginStatus;
   mainReadyBlockedMarkerFilePath?: string;
   mainReadyReleaseFilePath?: string;
-  openSideChat?: boolean;
   operatingSystem?: CommaOperatingSystem;
   menuBarHiddenMarkerFilePath?: string;
   rendererUrl?: string;
   secureSessionFilePath?: string;
   session?: SecureSessionInput;
-  sideChatHostPath?: string;
   /**
    * Stands in for the sleep guard daemon and Login Items: `registered` and
    * `approved` files model macOS's registration state, and the fake writes
@@ -67,6 +108,12 @@ export interface ElectronE2eHooks {
   computeNodeLifecyclePath?: string;
   connectorMode?: ElectronE2eConnectorMode;
   synchronicityMode?: ElectronE2eSynchronicityMode;
+  /** The client core's clock stands still from its start and moves only when the test says (`commaE2eCore`). */
+  coreTestClock?: boolean;
+  /** `scripted`: the app's update feed answers what the test scripts (`commaE2eUpdateFeed`), not Velopack. */
+  updateFeed?: "scripted";
+  /** Where the test's stations listen, by endpoint id: the core reaches them there (loopback, no relays). */
+  stationPeers?: Record<string, string[]>;
 }
 
 interface ElectronE2eHookEnv {
@@ -84,6 +131,9 @@ interface ElectronE2eHookEnv {
     | undefined;
   COMMA_ELECTRON_E2E_APP_PREFERENCES_UPDATE_ACK_RELEASE_FILE_PATH?: string | undefined;
   COMMA_ELECTRON_E2E_ACTIVATE_STATUS_TRAY_SETTINGS?: string | undefined;
+  COMMA_ELECTRON_E2E_BROWSER_IMPORT_DIRECTORY?: string | undefined;
+  COMMA_ELECTRON_E2E_BROWSER_IMPORT_KEYCHAIN_PASSWORD?: string | undefined;
+  COMMA_ELECTRON_E2E_CABLE_PHONE_ORIGIN?: string | undefined;
   COMMA_ELECTRON_E2E_ACTIVATE_STATUS_TRAY_MENU_ITEM?: string | undefined;
   COMMA_ELECTRON_E2E_DEV_RENDERER_URL?: string | undefined;
   COMMA_ELECTRON_E2E_DOCK_UPDATE_BLOCKED_MARKER_FILE_PATH?: string | undefined;
@@ -99,10 +149,8 @@ interface ElectronE2eHookEnv {
   COMMA_ELECTRON_E2E_SESSION_EMAIL?: string | undefined;
   COMMA_ELECTRON_E2E_SECURE_SESSION_FILE_PATH?: string | undefined;
   COMMA_ELECTRON_E2E_SESSION_TOKEN?: string | undefined;
-  COMMA_ELECTRON_E2E_OPEN_SIDE_CHAT?: string | undefined;
   COMMA_ELECTRON_E2E_OPERATING_SYSTEM?: string | undefined;
   COMMA_ELECTRON_E2E_MENU_BAR_HIDDEN_MARKER_FILE_PATH?: string | undefined;
-  COMMA_ELECTRON_E2E_SIDE_CHAT_HOST_PATH?: string | undefined;
   COMMA_ELECTRON_E2E_SLEEP_GUARD_DIRECTORY?: string | undefined;
   COMMA_ELECTRON_E2E_STATUS_TRAY_OPEN_MAIN_BLOCKED_MARKER_FILE_PATH?:
     | string
@@ -113,15 +161,10 @@ interface ElectronE2eHookEnv {
   COMMA_ELECTRON_E2E_COMPUTE_NODE_LIFECYCLE_PATH?: string | undefined;
   COMMA_ELECTRON_E2E_CONNECTOR_MODE?: string | undefined;
   COMMA_ELECTRON_E2E_BACKGROUND_WINDOWS?: string | undefined;
+  COMMA_ELECTRON_E2E_CORE_TEST_CLOCK?: string | undefined;
+  COMMA_ELECTRON_E2E_STATION_PEERS?: string | undefined;
+  COMMA_ELECTRON_E2E_UPDATE_FEED?: string | undefined;
   NODE_ENV?: string | undefined;
-}
-
-interface SessionSeedStore {
-  setSession(input: SecureSessionInput): Promise<void>;
-}
-
-interface SessionSeedLifecycle {
-  initialize(): Promise<unknown>;
 }
 
 export function resolveElectronE2eHooks({
@@ -189,7 +232,6 @@ export function resolveElectronE2eHooks({
   const rendererUrl = env.COMMA_ELECTRON_RENDERER_URL?.trim();
   const token = env.COMMA_ELECTRON_E2E_SESSION_TOKEN?.trim();
   const secureSessionFilePath = env.COMMA_ELECTRON_E2E_SECURE_SESSION_FILE_PATH?.trim();
-  const sideChatHostPath = env.COMMA_ELECTRON_E2E_SIDE_CHAT_HOST_PATH?.trim();
   const statusTrayMenuFilePath =
     env.COMMA_ELECTRON_E2E_STATUS_TRAY_MENU_FILE_PATH?.trim();
   const activateStatusTrayMenuItem =
@@ -230,8 +272,31 @@ export function resolveElectronE2eHooks({
     hooks.activateStatusTraySettings = true;
   }
 
-  if (env.COMMA_ELECTRON_E2E_OPEN_SIDE_CHAT === "1") {
-    hooks.openSideChat = true;
+  const browserImportDirectory =
+    env.COMMA_ELECTRON_E2E_BROWSER_IMPORT_DIRECTORY?.trim();
+  const browserImportKeychainPassword =
+    env.COMMA_ELECTRON_E2E_BROWSER_IMPORT_KEYCHAIN_PASSWORD;
+  if (Boolean(browserImportDirectory) !== Boolean(browserImportKeychainPassword)) {
+    throw new Error(
+      "The browser import e2e fixture requires both a directory and a keychain password."
+    );
+  }
+  if (browserImportDirectory && browserImportKeychainPassword) {
+    hooks.browserImportDirectory = browserImportDirectory;
+    hooks.browserImportKeychainPassword = browserImportKeychainPassword;
+  }
+
+  if (env.COMMA_ELECTRON_E2E_CORE_TEST_CLOCK === "1") hooks.coreTestClock = true;
+  if (env.COMMA_ELECTRON_E2E_UPDATE_FEED === "scripted") hooks.updateFeed = "scripted";
+  const stationPeers = env.COMMA_ELECTRON_E2E_STATION_PEERS?.trim();
+  if (stationPeers) hooks.stationPeers = resolveStationPeers(stationPeers);
+
+  const cablePhoneOrigin = env.COMMA_ELECTRON_E2E_CABLE_PHONE_ORIGIN?.trim();
+  if (cablePhoneOrigin) {
+    if (!/^ws:\/\/127\.0\.0\.1:\d+$/u.test(cablePhoneOrigin)) {
+      throw new Error("The e2e caBLE phone must listen on ws://127.0.0.1:<port>.");
+    }
+    hooks.cablePhoneOrigin = cablePhoneOrigin;
   }
 
   if (apiBaseUrl) {
@@ -335,10 +400,6 @@ export function resolveElectronE2eHooks({
     hooks.secureSessionFilePath = secureSessionFilePath;
   }
 
-  if (sideChatHostPath) {
-    hooks.sideChatHostPath = sideChatHostPath;
-  }
-
   if (statusTrayMenuFilePath) hooks.statusTrayMenuFilePath = statusTrayMenuFilePath;
   if (activateStatusTrayMenuItem) {
     hooks.activateStatusTrayMenuItem = activateStatusTrayMenuItem;
@@ -371,20 +432,6 @@ export function resolveElectronE2eHooks({
   }
 
   return hooks;
-}
-
-export async function applyElectronE2eHooks(
-  hooks: ElectronE2eHooks,
-  sessionStore: SessionSeedStore,
-  sessionLifecycle: SessionSeedLifecycle
-) {
-  if (hooks.session) {
-    await sessionStore.setSession(hooks.session);
-    // Main constructs its lifecycle authority before this fixture-only hook
-    // runs. Re-enter its idempotent initializer so the seeded credential is
-    // remotely verified and projected before any renderer is created.
-    await sessionLifecycle.initialize();
-  }
 }
 
 export async function awaitElectronE2eMainReadyRelease(hooks: ElectronE2eHooks) {
@@ -461,6 +508,25 @@ export function decorateElectronE2eAppPreferencesProvider(
   };
 }
 
+/**
+ * Bluetooth for the e2e caBLE phone: its adverts arrive over `/air` instead of
+ * the radio. The phone broadcasts one after the test scans the QR code.
+ */
+export function createElectronE2eCableScanner(phoneOrigin: string): CableScanner {
+  return {
+    scan(listener, signal) {
+      if (signal.aborted) return;
+      const air = new WebSocket(`${phoneOrigin}/air`);
+      air.on("open", () => listener.state("on"));
+      air.on("message", (data: RawData) => {
+        listener.advert(new Uint8Array(data as Buffer));
+      });
+      air.on("error", () => listener.state("unsupported"));
+      signal.addEventListener("abort", () => air.terminate(), { once: true });
+    },
+  };
+}
+
 export function createElectronE2eSleepGuardAddon(directory: string): SleepGuardAddon {
   const file = (name: string) => join(directory, name);
   const status = () =>
@@ -526,7 +592,7 @@ let statusTrayMenuItemActivated = false;
 /** The OS menu is out of Playwright's reach: record it and what draws it, and click a row. */
 export function recordElectronE2eStatusTrayMenu(
   hooks: ElectronE2eHooks,
-  host: "electron" | "side-chat-helper",
+  host: "electron" | "menu-bar-helper",
   template: readonly StatusTrayMenuItem[]
 ) {
   if (hooks.statusTrayMenuFilePath) {
@@ -564,6 +630,73 @@ export async function activateElectronE2eStatusTrayOpenMainAfterRelease(
   activate();
 }
 
+/**
+ * The running core for an unpackaged test build: `commaE2eCore.advanceClock(ms)` moves its test clock
+ * (`coreTestClock`); `commaE2eCore.reset()` asks it to reset the app (`app.reset`) and waits until Main started
+ * again; `commaE2eCore.started()` waits until Main's newest start (`started`: the launch's or a reset's) opened its
+ * windows; `commaE2eCore.call(name, params)` makes a call on Main's own channel to the core. The core's process ends
+ * with a reset, so its `app.reset` is never answered.
+ */
+export function exposeElectronE2eCore(
+  coreHost: CoreHostService | undefined,
+  started: () => Promise<void> | undefined,
+  /** The start hooks the reset's new services take (`applyElectronE2eStartHooks`). */
+  startHooks: (env: ElectronE2eStartHookEnv) => void,
+  /** Main's main window, while one is open. */
+  mainWindow: () => unknown
+) {
+  if (!coreHost) return;
+  (globalThis as ElectronE2eGlobals).commaE2eCore = {
+    advanceClock: (ms) => coreHost.advanceClock(ms),
+    reset: async (env = {}) => {
+      startHooks(env);
+      const before = started();
+      const failure = await coreHost
+        .client()
+        .call("app.reset", {})
+        .then(
+          () =>
+            new Error("The core answered its reset; its process should have ended."),
+          (error: unknown) => error
+        );
+      const reset = started();
+      if (!reset || reset === before) throw failure;
+      await reset;
+    },
+    started: async () => {
+      await started();
+    },
+    call: (name, params) => coreHost.client().call(name as never, params as never),
+    isMainWindow: (window) => window !== undefined && window === mainWindow(),
+  };
+}
+
+/**
+ * The update feed a test scripts (`updateFeed: "scripted"`): what the core asks of it waits until the test says what
+ * it answers (`commaE2eUpdateFeed.script`), and a later script replaces it.
+ */
+export function createElectronE2eUpdateFeed(): UpdateFeed {
+  let scripted: UpdateFeed | undefined;
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => (release = resolve));
+  (globalThis as ElectronE2eGlobals).commaE2eUpdateFeed = {
+    script(feed) {
+      scripted = feed;
+      release();
+    },
+  };
+  const feed = async () => {
+    await ready;
+    return scripted!;
+  };
+  return {
+    status: async () => (await feed()).status(),
+    check: async () => (await feed()).check(),
+    download: async (update) => (await feed()).download(update),
+    apply: async (update) => (await feed()).apply(update),
+  };
+}
+
 function defaultE2eUserDataPath() {
   return mkdtempSync(join(tmpdir(), "comma-electron-e2e-user-data-"));
 }
@@ -588,7 +721,6 @@ function hasAnyHook(hooks: ElectronE2eHooks) {
     hooks.sleepGuardDirectory ||
     hooks.mainReadyBlockedMarkerFilePath ||
     hooks.mainReadyReleaseFilePath ||
-    hooks.openSideChat ||
     hooks.operatingSystem ||
     hooks.menuBarHiddenMarkerFilePath ||
     hooks.rendererUrl ||
@@ -596,13 +728,69 @@ function hasAnyHook(hooks: ElectronE2eHooks) {
     hooks.session ||
     hooks.connectorMode ||
     hooks.synchronicityMode ||
-    hooks.sideChatHostPath ||
     hooks.statusTrayMenuFilePath ||
     hooks.activateStatusTrayMenuItem ||
     hooks.statusTrayOpenMainBlockedMarkerFilePath ||
     hooks.statusTrayOpenMainReleaseFilePath ||
-    hooks.systemNotificationsStatus
+    hooks.systemNotificationsStatus ||
+    hooks.coreTestClock ||
+    hooks.updateFeed ||
+    hooks.stationPeers
   );
+}
+
+/** The hooks `electronE2eStartHookEnv` sets. */
+const startHookKeys = [
+  "browserImportDirectory",
+  "browserImportKeychainPassword",
+  "cablePhoneOrigin",
+  "computeNodeLifecyclePath",
+  "coreTestClock",
+  "stationPeers",
+  "synchronicityMode",
+  "updateFeed",
+] as const satisfies readonly (keyof ElectronE2eHooks)[];
+
+/**
+ * Gives `hooks` the start hooks of `env` (`electronE2eStartHookEnv`), in place of the ones it had: a reset of the
+ * shared e2e app, before Main starts its services again. A variable that is not a start hook is refused.
+ */
+export function applyElectronE2eStartHooks(
+  hooks: ElectronE2eHooks,
+  env: ElectronE2eStartHookEnv
+): void {
+  for (const name of Object.keys(env))
+    if (!(electronE2eStartHookEnv as readonly string[]).includes(name))
+      throw new Error(`${name} is read at launch: a reset cannot change it.`);
+  const next = resolveElectronE2eHooks({
+    createUserDataPath: () => "",
+    env: { ...env, NODE_ENV: "test" },
+    isPackaged: false,
+  });
+  const target = hooks as Record<string, unknown>;
+  for (const key of startHookKeys) {
+    if (next[key] === undefined) delete target[key];
+    else target[key] = next[key];
+  }
+}
+
+/** `{"<endpoint id>": ["127.0.0.1:<port>"]}`: loopback addresses only. */
+function resolveStationPeers(value: string): Record<string, string[]> {
+  const parsed: unknown = JSON.parse(value);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+    throw new Error("The e2e stations must be an object of endpoint ids.");
+  const peers: Record<string, string[]> = {};
+  for (const [id, addresses] of Object.entries(parsed)) {
+    if (
+      !Array.isArray(addresses) ||
+      !addresses.every(
+        (a): a is string => typeof a === "string" && /^127\.0\.0\.1:\d+$/u.test(a)
+      )
+    )
+      throw new Error("An e2e station listens on 127.0.0.1:<port> only.");
+    peers[id] = addresses;
+  }
+  return peers;
 }
 
 function resolveConnectorMode(

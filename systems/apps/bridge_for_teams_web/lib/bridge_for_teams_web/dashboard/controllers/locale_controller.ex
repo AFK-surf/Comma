@@ -1,7 +1,6 @@
 defmodule BridgeForTeamsWeb.Dashboard.LocaleController do
   @moduledoc """
-  Switches the dashboard locale. A LiveView can't write the session cookie, so
-  the switcher links here: this action persists the chosen locale to the session
+  Switches the dashboard locale. The switcher links here: this action persists the chosen locale to the session
   (and, for a signed-in user, to `preferred_locale`), then redirects back to the
   page the user came from.
 

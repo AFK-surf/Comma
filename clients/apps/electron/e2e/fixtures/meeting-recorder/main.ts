@@ -7,20 +7,21 @@ import {
   type SitePermissionChoice,
   type SitePermissionPlatform,
 } from "../../../src/main/modules/browser-sidebar/site-permissions";
-import {
-  meetingTaskRecoveryScenario,
-  meetingTaskReofferScenario,
-} from "../../../src/test-support/meeting-task-recovery";
-import { captureLifecycleScenario } from "./capture-lifecycle";
 import { compressionScenario, stereoCompressionScenario } from "./compression";
 import {
   defaultCommaClientSettings,
   sitePermissionMenuChangedEvent,
-  meetingRecorderStateChangedEvent,
   unavailableAudioCaptureState,
+  type AudioCaptureState,
   type AudioCaptureStopResult,
-  type MeetingRecorderState,
 } from "@comma/native-bridge";
+import type { MeetingRecorderValue } from "@comma/core";
+import { startFixtureCore } from "./core";
+import { Effect } from "effect";
+import { CoreChannelService } from "../../../src/main/modules/core";
+import { MainCredentialGate } from "../../../src/main/modules/session/main-credential-gate";
+import { MainNativeSessionAdmissionGuard } from "../../../src/main/modules/session/native-session-admission";
+import { acceptVerified } from "../../../src/test-support/session-gate";
 import { bindRecorderClientVisibility } from "../../../src/main/recorder-client-visibility";
 import { MeetingRecorderWindow } from "../../../src/main/meeting-recorder-window";
 import {
@@ -30,7 +31,7 @@ import {
   type BrowserSidebarOwnerWindowLike,
 } from "../../../src/main/modules/browser-sidebar";
 import { MeetingPresenceService } from "../../../src/main/modules/meeting-presence";
-import { MeetingRecorderService } from "../../../src/main/modules/meeting-recorder";
+import { MeetingRecorderMain } from "../../../src/main/modules/meeting-recorder";
 import {
   IpcGateway,
   NativeEventBus,
@@ -46,28 +47,42 @@ import {
 import { createMainWindowOptions } from "../../../src/main/window-options";
 import { configureManagedWindow } from "../../../src/main/managed-window";
 import { installWindowSecurity } from "../../../src/main/security";
+import {
+  exitOnUncaughtMainException,
+  reportMainShutdownOnExit,
+} from "../../../src/main/e2e-shutdown-report";
+
+// The fixture has no quit sequence of its own: Node's exit is its finished close.
+reportMainShutdownOnExit(() => true);
+exitOnUncaughtMainException();
 
 app.commandLine.appendSwitch("use-fake-device-for-media-stream");
-// Linux uses this flag to select Chromium's fake audio manager. On macOS,
-// the permission test selects a non-default fake input to avoid CoreAudio.
+// Linux uses this flag to select Chromium's fake audio manager.
 app.commandLine.appendSwitch("disable-audio-output");
 
-// Record helper and renderer process loss so the media diagnostics attached on
-// failure can tell an audio service that crashed or never launched from one
-// that is alive but does not reply.
-const processEvents: string[] = [];
-app.on("child-process-gone", (_event, details) =>
-  processEvents.push(
-    `child-process-gone type=${details.type} service=${details.serviceName ?? details.name ?? ""} reason=${details.reason} exitCode=${details.exitCode}`
-  )
-);
-app.on("web-contents-created", (_event, contents) =>
-  contents.on("render-process-gone", (_gone, details) =>
-    processEvents.push(
-      `render-process-gone url=${contents.getURL()} reason=${details.reason} exitCode=${details.exitCode}`
-    )
-  )
-);
+const preferences = () => ({
+  ...defaultCommaClientSettings,
+  meetingStartRecording:
+    process.env.COMMA_RECORDER_FIXTURE_REMINDER === "1" ||
+    process.env.COMMA_RECORDER_FIXTURE_BASELINE === "1"
+      ? ("reminder" as const)
+      : ("auto" as const),
+  meetingHideRecorder: process.env.COMMA_RECORDER_FIXTURE_HIDE === "1",
+});
+
+// Playwright's `app.evaluate` reaches Main through the Node inspector, which may run it inside Main code that is
+// running (a V8 interrupt), such as the client window's show and its visibility update. A seam that changes Main
+// runs on Main's next turn instead, after what runs now, as presence, capture and window events do.
+const onMainTurn = <A>(change: () => A | Promise<A>) =>
+  new Promise<A>((resolve, reject) =>
+    setImmediate(() => {
+      try {
+        resolve(change());
+      } catch (error) {
+        reject(error);
+      }
+    })
+  );
 
 void app.whenReady().then(async () => {
   const url = process.env.COMMA_RECORDER_FIXTURE_URL!;
@@ -76,15 +91,9 @@ void app.whenReady().then(async () => {
   const permissions = createRolePermissionPolicy({
     grantsByRole: {
       "site-permission-menu": ["site-permission-menu.control"],
-      "main-window": [
-        "meeting-recorder.read",
-        "meeting-recorder.control",
-        "meeting-recorder.receipt",
-        "browser-sidebar.control",
-      ],
+      "main-window": ["core.open", "browser-sidebar.control"],
       "meeting-recorder-window": [
-        "meeting-recorder.read",
-        "meeting-recorder.control",
+        "core.open",
         "meeting-recorder.window",
         "meeting-presence.read",
         "audio-capture.read",
@@ -168,95 +177,163 @@ void app.whenReady().then(async () => {
   let starts = 0,
     stops = 0;
   let finish!: (value: AudioCaptureStopResult) => void;
-  // Explicit server boundary for the native Task/Toast regression.
-  const taskEnabled = process.env.COMMA_RECORDER_FIXTURE_TASKS === "1";
+  // Explicit server boundary for the native Task/Toast regression: the meeting Task API as the core calls it.
+  const taskFailure = process.env.COMMA_RECORDER_FIXTURE_TASK_FAILURE === "1";
   const taskEvents: string[] = [];
-  const taskReceipt = {
+  let finalizeFailures = taskFailure ? 1 : 0;
+  const tasks = new Map<string, { version: number; phase: string }>();
+  const receipt = (id: string, entry: Record<string, unknown>) => ({
     group_id: "fixture-group",
     task_id: "fixture-meeting-task",
     status: "active",
-    meeting: {
-      occurrence_id: "fixture-occurrence",
-      name: "Zoom",
-      archive_date: "2026-09-09",
-      started_at: 1,
-      phase: "processing" as const,
-      version: 4,
-    },
-  };
-  const owner: MeetingRecorderService = new MeetingRecorderService({
-    ...(taskEnabled
-      ? {
-          retryMeetings: async () => {
-            taskEvents.push("retry");
-            owner.acceptTask(meeting.key, {
-              status: "synced",
-              task: { groupId: taskReceipt.group_id, taskId: taskReceipt.task_id },
-            });
+    meeting: { ...entry, occurrence_id: id, ...tasks.get(id)! },
+  });
+  const entries = new Map<string, Record<string, unknown>>();
+  const api = ({
+    method,
+    path,
+    body,
+  }: {
+    method: string;
+    path: string;
+    body: unknown;
+  }) => {
+    if (method === "POST" && path === "/v1/comma/me/bootstrap")
+      return {
+        status: 200,
+        body: {
+          status: "ready",
+          workspace: {
+            id: "fixture-workspace",
+            group_id: "fixture-group",
+            name: "Fixture",
           },
-          enterMeeting: async () => {
-            if (!taskEvents.length) taskEvents.push("entry");
-            owner.acceptTask(meeting.key, {
-              status: "synced",
-              task: { groupId: taskReceipt.group_id, taskId: taskReceipt.task_id },
-            });
-          },
-          changeMeeting: async (
-            _meeting: import("@comma/native-bridge").MeetingPresenceMeeting,
-            action: "recording" | "paused" | "dismiss" | "discard"
-          ) => {
-            taskEvents.push(action);
-          },
-        }
-      : {}),
-    account: () => "test-user",
-    preferences: () => ({
-      ...defaultCommaClientSettings,
-      meetingStartRecording:
-        process.env.COMMA_RECORDER_FIXTURE_REMINDER === "1" ||
-        process.env.COMMA_RECORDER_FIXTURE_BASELINE === "1"
-          ? "reminder"
-          : "auto",
-      meetingHideRecorder: process.env.COMMA_RECORDER_FIXTURE_HIDE === "1",
-    }),
-    publish: (state: MeetingRecorderState) => {
-      bus.emit(meetingRecorderStateChangedEvent, state);
-      accessory.update(state);
-    },
-    layoutWindow: (input) => accessory.layout(input),
-    dragWindow: (input) => accessory.drag(input),
-    setInteractive: (value) => accessory.setInteractive(value),
-    start: async (source) => {
-      startedSource = source;
-      await accessory.prepare();
-      starts++;
-      return capture;
-    },
-    stop: async () => {
-      stops++;
-      const result = await new Promise<AudioCaptureStopResult>((resolve) => {
-        finish = resolve;
-      });
-      if (taskEnabled && result.status === "ready") {
-        taskEvents.push("finalize");
-        if (process.env.COMMA_RECORDER_FIXTURE_TASK_FAILURE === "1") {
-          const summary = new Promise<never>((_resolve, reject) =>
-            setImmediate(() => {
-              const error = "Meeting submission (submit): HTTP 403.";
-              owner.acceptTask(meeting.key, { status: "error", error });
-              reject(new Error(error));
-            })
-          );
-          return { ...result, summary };
-        }
-        return { ...result, summary: Promise.resolve(taskReceipt) };
+        },
+      };
+    const task =
+      /^\/v1\/comma\/groups\/fixture-group\/meeting-tasks(?:\/([^/]+))?$/.exec(path);
+    if (method === "POST" && task && !task[1]) {
+      const entry = body as { occurrence_id: string };
+      if (!taskEvents.length) taskEvents.push("entry");
+      if (!tasks.has(entry.occurrence_id)) {
+        tasks.set(entry.occurrence_id, { version: 0, phase: "awaiting_recording" });
+        entries.set(entry.occurrence_id, entry);
       }
-      return result;
+      return {
+        status: 200,
+        body: receipt(entry.occurrence_id, entries.get(entry.occurrence_id)!),
+      };
+    }
+    if (method === "POST" && task?.[1]) {
+      const id = decodeURIComponent(task[1]);
+      const command = body as { action: string; version: number };
+      taskEvents.push(command.action);
+      if (command.action === "finalize" && finalizeFailures > 0) {
+        finalizeFailures--;
+        return { status: 403, body: { error: "forbidden" } };
+      }
+      tasks.set(id, {
+        version: command.version,
+        phase: command.action === "finalize" ? "saved" : command.action,
+      });
+      return { status: 200, body: receipt(id, entries.get(id)!) };
+    }
+    return { status: 404, body: { error: "not_found" } };
+  };
+  // Main's session admission, signed in as the core sees it: commands run only for its lease.
+  const gate = new MainCredentialGate({
+    authorityInstanceId: "recorder-fixture",
+    trustedAudience: "https://recorder.example",
+  });
+  acceptVerified(gate, {
+    audience: "https://recorder.example",
+    email: "fixture@example.com",
+    expiresAtEpochSeconds: Math.floor(Date.now() / 1000) + 3600,
+    sessionId: "recorder-fixture",
+    token: "test-only",
+    userId: "test-user",
+  });
+  let captureState: AudioCaptureState = { ...capture, status: "idle" };
+  // Main's real meeting parts; only the audio hardware and file stores are fixtures.
+  const owner: MeetingRecorderMain = new MeetingRecorderMain({
+    capture: {
+      start: async (input) => {
+        startedSource = input.source;
+        // As before the core: the fixture shows its accessory for every start (hidden or not).
+        await accessory.prepare();
+        starts++;
+        captureState = capture;
+        return capture;
+      },
+      stop: async (_input, afterSaved) => {
+        stops++;
+        const result = await new Promise<AudioCaptureStopResult>((resolve) => {
+          finish = resolve;
+        });
+        captureState = { ...capture, status: "idle" };
+        if (result.status === "ready")
+          await afterSaved?.(
+            result.recording,
+            undefined as never,
+            "/fixture/Drive/recording/fixture.wav"
+          );
+        return result;
+      },
+      pause: async () => (captureState = { ...capture, status: "paused" }),
+      resume: async () => (captureState = capture),
+      cancel: async () => (captureState = { ...capture, status: "idle" }),
+      selectMicrophone: async () => captureState,
     },
-    pause: async () => ({ ...capture, status: "paused" }),
-    resume: async () => capture,
-    cancel: async () => ({ ...capture, status: "idle" }),
-    selectMicrophone: async () => capture,
+    guard: new MainNativeSessionAdmissionGuard(gate),
+    files: {
+      snapshot: async () => ({
+        localFileRef: `lfi1_${"a".repeat(43)}`,
+        name: "fixture.wav",
+        mediaType: "audio/wav",
+        size: 800044,
+      }),
+      markBound: async () => true,
+    },
+    registrar: { register: async () => {} },
+    write: async () => ({ status: "done" }) as never,
+    preferences: () => {
+      const settings = preferences();
+      return {
+        meetingStartRecording: settings.meetingStartRecording,
+        meetingHideRecorder: settings.meetingHideRecorder,
+        meetingSmartSummary: settings.meetingSmartSummary,
+      };
+    },
+    window: {
+      layout: (input) => accessory.layout(input),
+      drag: (input) => accessory.drag(input),
+      setInteractive: (value) => accessory.setInteractive(value),
+    },
+  });
+  let listener: ((event: import("@comma/core").MeetingEvent) => void) | undefined;
+  const fixtureCore = startFixtureCore({
+    api,
+    meeting: {
+      command: (op, input) =>
+        Effect.promise(() => owner.command({ op, input } as never) as Promise<never>),
+      listen: (next) => {
+        listener = next;
+      },
+    },
+  });
+  owner.connect((event) => listener?.(event));
+  for (const event of owner.events()) listener?.(event);
+  fixtureCore.core.observeSession(gate.getSnapshot());
+  const recorderState = () => fixtureCore.core.meeting!.value() as MeetingRecorderValue;
+  // The recorder window follows the core's meeting recorder, as Main's does.
+  fixtureCore.client.subscribe(
+    { topic: "meetingRecorder" },
+    (state) => accessory.update(state as MeetingRecorderValue),
+    () => undefined
+  );
+  const channels = new CoreChannelService({
+    host: fixtureCore.channelHost as never,
+    registry,
   });
   registerGeneratedNativeMainBindings({
     gateway,
@@ -266,17 +343,15 @@ void app.whenReady().then(async () => {
         showPermissions: (input: { sessionId: string }) =>
           browser?.showPermissions(input) ?? { status: "unavailable" },
       },
-      meetingRecorder: new Proxy(owner, {
-        get(target, key) {
-          if (key === "state" && process.env.COMMA_RECORDER_FIXTURE_DELAY_STATE === "1")
-            return async () => {
-              await new Promise((resolve) => setTimeout(resolve, 250));
-              return target.state();
-            };
-          const value = Reflect.get(target, key, target);
-          return typeof value === "function" ? value.bind(target) : value;
+      meetingRecorder: owner,
+      // A window's channel to the core (delayed, as a slow first state would be).
+      core: {
+        open: async () => {
+          if (process.env.COMMA_RECORDER_FIXTURE_DELAY_STATE === "1")
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          return channels.open();
         },
-      }),
+      },
       meetingPresence: { icon: async () => null },
       audioCapture: {
         microphones: async () => ({
@@ -348,17 +423,20 @@ void app.whenReady().then(async () => {
     surfaces,
     webContentsRegistry: registry,
   });
-  owner.initializePresence({
-    available: true,
-    revision: 1,
-    meetings: process.env.COMMA_RECORDER_FIXTURE_BASELINE === "1" ? [meeting] : [],
-  });
+  owner.presenceChanged(
+    {
+      available: true,
+      revision: 1,
+      meetings: process.env.COMMA_RECORDER_FIXTURE_BASELINE === "1" ? [meeting] : [],
+    },
+    true
+  );
   // Reuse the real sidebar, joined-page probe, presence owner and recorder owner.
   // Only Google's document and the audio hardware boundary are fixtures.
   let browser: NativeBrowserSidebarService | undefined;
   let prompt: { origin: string; media: string[] } | undefined;
   let respond: ((choice: SitePermissionChoice) => void) | undefined;
-  let settings: Parameters<SitePermissionPlatform["settings"]>[0] | undefined;
+  let settings: Parameters<SitePermissionPlatform["settings"]>[0]["site"];
   const websitePermissions = new BrowserSitePermissions({
     prepare: (menuOwner) => {
       if (process.env.COMMA_RECORDER_FIXTURE_COMMA_MENU === "1")
@@ -372,9 +450,10 @@ void app.whenReady().then(async () => {
       });
     },
     settings: async (input) => {
-      settings = input;
+      settings = input.site;
       if (process.env.COMMA_RECORDER_FIXTURE_COMMA_MENU === "1")
-        await sitePermissionMenu.open(input);
+        return sitePermissionMenu.open(input);
+      return undefined;
     },
     hasSystemAccess: () => true,
     ensureSystemAccess: async () => true,
@@ -396,7 +475,7 @@ void app.whenReady().then(async () => {
     setInterval: () => 0,
     clearInterval: () => {},
     readBrowserMeetings: async () => browser?.readMeetings() ?? [],
-    onStateChanged: (state) => owner.acceptPresence(state),
+    onStateChanged: (state) => owner.presenceChanged(state),
   });
   const browserMeeting = async (action: "open" | "tick" | "close", tab = "meet") => {
     if (action === "open") {
@@ -444,50 +523,58 @@ void app.whenReady().then(async () => {
   };
   Object.assign(globalThis, {
     recorderFixture: {
+      onMainTurn,
       websitePermissions: () => ({
         prompt,
         settings: settings && { origin: settings.origin, choices: settings.choices },
       }),
-      respondWebsitePermission: (choice: SitePermissionChoice) => {
-        respond?.(choice);
-        respond = undefined;
-        prompt = undefined;
-      },
+      respondWebsitePermission: (choice: SitePermissionChoice) =>
+        onMainTurn(() => {
+          respond?.(choice);
+          respond = undefined;
+          prompt = undefined;
+        }),
       changeWebsitePermission: (choice: SitePermissionChoice) =>
-        settings?.change("microphone", choice),
-      resetWebsitePermissions: () => settings?.reset(),
-      browserMeeting,
+        onMainTurn(() => settings?.change("camera", choice)),
+      resetWebsitePermissions: () => onMainTurn(() => settings?.reset()),
+      browserMeeting: (action: "open" | "tick" | "close", tab?: string) =>
+        onMainTurn(() => browserMeeting(action, tab)),
       startedSource: () => startedSource,
-      captureLifecycleScenario,
-      meetingTaskRecoveryScenario,
-      meetingTaskReofferScenario,
       compressionScenario,
       stereoCompressionScenario,
       visibilityTimeline: () => visibilityTimeline,
-      processEvents: () => processEvents,
       join: () =>
-        owner.acceptPresence({ available: true, revision: 2, meetings: [meeting] }),
+        onMainTurn(() =>
+          owner.presenceChanged({ available: true, revision: 2, meetings: [meeting] })
+        ),
       counts: () => ({ starts, stops }),
       taskEvents: () => taskEvents,
+      taskTitles: () => [...entries.values()].map((entry) => entry.name),
       firstRecorderPaint: () => firstRecorderPaint,
       finish: () =>
-        finish({
-          status: "ready",
-          recording: {
-            channels: 1,
-            durationMs: 26000,
-            sampleRate: 16000,
-            file: { name: "fixture.wav", size: 800044, mediaType: "audio/wav" },
-            driveFile: { space: "comma-drive", path: "recording/fixture.wav" },
-          },
-        }),
-      state: () => owner.state(),
+        onMainTurn(() =>
+          finish({
+            status: "ready",
+            recording: {
+              channels: 1,
+              durationMs: 26000,
+              sampleRate: 16000,
+              file: { name: "fixture.wav", size: 800044, mediaType: "audio/wav" },
+              driveFile: { space: "comma-drive", path: "recording/fixture.wav" },
+            },
+          })
+        ),
+      // The core takes what Main told it on its next turn.
+      state: async () => {
+        await new Promise((resolve) => setImmediate(resolve));
+        return recorderState();
+      },
     },
   });
   app.on("before-quit", () => {
     void browserPresence.close();
     void browser?.dispose();
-    owner.close();
+    fixtureCore.core.close();
     accessory.close();
   });
 });

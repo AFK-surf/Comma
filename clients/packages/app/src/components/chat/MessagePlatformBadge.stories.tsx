@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, waitFor, within } from "storybook/test";
 import "../../styles.css";
 import { ConversationThread } from "./thread/ConversationThread";
-import type { ChatMessage } from "./model/conversationChannel";
+import type { ChatMessage } from "@comma/core/chat";
 import { getMessagePlatformBubbleStyle } from "./MessagePlatformBadge";
 import { MessageCopyAction } from "./thread/rows/MessageCopyAction";
 import { UserMessageBubble } from "./thread/rows/user/UserMessageBubble";
@@ -29,6 +29,8 @@ function message(
 }
 
 const meta = {
+  // Asserts badge geometry and the computed opacity on focus.
+  tags: ["browser"],
   title: "App components/Chat/Platform messages",
   component: ConversationThread,
   parameters: { layout: "fullscreen" },

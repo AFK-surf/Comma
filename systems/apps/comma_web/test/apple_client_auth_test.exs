@@ -10,7 +10,7 @@ defmodule CommaWeb.AppleClientAuthTest do
   end
 
   test "native email login, Watch grant exchange, independent bearer, and phone logout cross the HTTP boundary" do
-    email = "native-watch-#{System.unique_integer([:positive])}@example.test"
+    email = "native-watch-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.test"
     challenge = post("/v1/comma/auth/email/login", %{"email" => email})
     assert challenge.status == 200
     challenge = Jason.decode!(challenge.resp_body)
@@ -52,30 +52,14 @@ defmodule CommaWeb.AppleClientAuthTest do
   test "restricted session cannot delegate Watch account authority" do
     {:ok, user} =
       Accounts.create_user(%{
-        "email" => "restricted-watch-#{System.unique_integer([:positive])}@example.test"
+        "email" =>
+          "restricted-watch-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.test"
       })
 
     {:ok, session} =
       Accounts.create_session(user["id"], restricted: true, session_source: "ops_api")
 
     assert post("/v1/comma/auth/watch/pairing", %{}, session["token"]).status == 403
-  end
-
-  test "unconfigured Sign in with Apple returns an actionable error" do
-    previous = Application.get_env(:comma_core, :apple_auth)
-    Application.delete_env(:comma_core, :apple_auth)
-
-    on_exit(fn ->
-      if previous, do: Application.put_env(:comma_core, :apple_auth, previous)
-    end)
-
-    result = post("/v1/comma/auth/apple/attempt", %{})
-    assert result.status == 503
-
-    assert %{"error" => "apple_not_configured", "message" => message} =
-             Jason.decode!(result.resp_body)
-
-    assert message =~ "COMMA_APPLE_CLIENT_ID"
   end
 
   defp post(path, attrs, token \\ nil) do

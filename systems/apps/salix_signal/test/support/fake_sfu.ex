@@ -56,16 +56,16 @@ defmodule SalixSignal.Test.FakeSfu do
 
   @impl GenServer
   def init({test_pid, token, opts}) do
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
 
     {:ok, ice} =
       ExICE.ICEAgent.start_link(
         role: :controlled,
         ip_filter: fn ip -> tuple_size(ip) == 4 end,
-        on_new_candidate: self(),
-        on_connection_state_change: self(),
-        on_gathering_state_change: self(),
-        on_data: self()
+        on_new_candidate: SystemsRuntime.Proc.self(),
+        on_connection_state_change: SystemsRuntime.Proc.self(),
+        on_gathering_state_change: SystemsRuntime.Proc.self(),
+        on_data: SystemsRuntime.Proc.self()
       )
 
     :ok = ExICE.ICEAgent.gather_candidates(ice)
@@ -114,7 +114,7 @@ defmodule SalixSignal.Test.FakeSfu do
   end
 
   def handle_call({:http, method, authorization, body}, from, state) do
-    send(state.test, {:fake_sfu, method})
+    SystemsRuntime.Proc.send(state.test, {:fake_sfu, method})
 
     cond do
       authorization != expected_authorization(state.token) ->
@@ -153,7 +153,7 @@ defmodule SalixSignal.Test.FakeSfu do
   end
 
   def handle_info({:ex_ice, _ice, {:connection_state_change, ice_state}}, state) do
-    send(state.test, {:fake_sfu, :ice, ice_state})
+    SystemsRuntime.Proc.send(state.test, {:fake_sfu, :ice, ice_state})
     {:noreply, %{state | ice_state: ice_state}}
   end
 
@@ -164,13 +164,13 @@ defmodule SalixSignal.Test.FakeSfu do
 
       Rtp.rtcp?(packet) ->
         {:ok, plain, rx} = Srtp.unprotect_rtcp(rx, packet)
-        send(state.test, {:fake_sfu, :rtcp, plain})
+        SystemsRuntime.Proc.send(state.test, {:fake_sfu, :rtcp, plain})
         {:noreply, %{state | rx: rx}}
 
       true ->
         {:ok, plain, rx} = Srtp.unprotect(rx, packet)
         {:ok, rtp} = Rtp.decode(plain)
-        send(state.test, {:fake_sfu, :rtp, rtp})
+        SystemsRuntime.Proc.send(state.test, {:fake_sfu, :rtp, rtp})
         {:noreply, %{state | rx: rx}}
     end
   end
@@ -187,7 +187,7 @@ defmodule SalixSignal.Test.FakeSfu do
     {:ok, keys} = GroupCall.srtp_keys(sfu_private, client_public, extra)
 
     :ok = ExICE.ICEAgent.set_remote_credentials(state.ice, request["iceUfrag"], request["icePwd"])
-    send(state.test, {:fake_sfu, :join_request, request})
+    SystemsRuntime.Proc.send(state.test, {:fake_sfu, :join_request, request})
 
     addresses =
       for candidate <- state.candidates do

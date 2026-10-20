@@ -72,6 +72,6 @@ defmodule SalixAnalytics.TrajectoryEvalRecorder do
   end
 
   defp sink do
-    Application.get_env(:salix_analytics, :trajectory_eval_sink, TypedSinkWorker)
+    SystemsRuntime.get_env(:salix_analytics, :trajectory_eval_sink, TypedSinkWorker)
   end
 end

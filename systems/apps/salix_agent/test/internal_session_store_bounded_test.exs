@@ -1,11 +1,11 @@
 defmodule SalixAgent.InternalSessionStoreBoundedTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.InternalSessionStore
   alias SalixStore.{Keys, S3}
 
   test "bounded session folds stop at the object budget and report an incomplete prefix" do
-    agent_id = "bounded-scan-#{System.unique_integer([:positive])}"
+    agent_id = "bounded-scan-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     prefix = Keys.agent_internal_runtime_sessions_prefix(agent_id)
 
     for suffix <- ~w(a b c) do
@@ -27,7 +27,7 @@ defmodule SalixAgent.InternalSessionStoreBoundedTest do
     assert [
              {:list, ^prefix, [max_keys: 1]},
              {:list, ^prefix, second_page_opts}
-           ] = S3.Fake.read_log(self())
+           ] = S3.Fake.read_log(SystemsRuntime.Proc.self())
 
     assert second_page_opts[:max_keys] == 1
     assert is_binary(second_page_opts[:continuation_token])

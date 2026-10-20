@@ -29,7 +29,7 @@ defmodule SalixMeet.Ports.MeetingChannel do
     end
   end
 
-  defp impl, do: Application.get_env(:salix_meet, :meeting_channel_mod, __MODULE__.None)
+  defp impl, do: SystemsRuntime.get_env(:salix_meet, :meeting_channel_mod, __MODULE__.None)
 
   defmodule None do
     @moduledoc false

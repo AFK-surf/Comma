@@ -11,24 +11,22 @@ import (
 
 // This is the Workload owner's local admission projection, not a new owner.
 type cloudRuntimeControl struct {
-	BusinessAdmitted  *bool    `json:"business_admitted"`
-	RecoveryPaths     []string `json:"recovery_paths,omitempty"`
-	RecoveryValidated bool     `json:"recovery_validated,omitempty"`
-	OwnerID           string   `json:"owner_id"`
-	OperationID       string   `json:"operation_id"`
-	Generation        int64    `json:"generation"`
-	Revision          int64    `json:"revision"`
-	Sealed            bool     `json:"sealed"`
+	BusinessAdmitted *bool  `json:"business_admitted"`
+	OwnerID          string `json:"owner_id"`
+	OperationID      string `json:"operation_id"`
+	Generation       int64  `json:"generation"`
+	Revision         int64  `json:"revision"`
+	Sealed           bool   `json:"sealed"`
 }
 
 func (c *connector) cloudRuntimeControlPath() string {
 	return filepath.Join(c.runtimeStateRoot(), "cloud-runtime-control.json")
 }
 
-func (c *connector) loadCloudRuntimeControl(freshExternalState bool) error {
+func (c *connector) loadCloudRuntimeControl(neverAdmitted bool) error {
 	raw, err := os.ReadFile(c.cloudRuntimeControlPath())
 	if errors.Is(err, os.ErrNotExist) {
-		return c.initializeFreshCloudRuntimeControl(freshExternalState)
+		return c.initializeFreshCloudRuntimeControl(neverAdmitted)
 	}
 	if err != nil {
 		return err
@@ -46,9 +44,10 @@ func (c *connector) loadCloudRuntimeControl(freshExternalState bool) error {
 
 const cloudRuntimeFreshRelativePath = ".salix/cloud-runtime-fresh"
 
-// Only the managed image supplies this one-use birth marker. An empty database
-// on an older disk is not evidence that this target never admitted work.
-func (c *connector) initializeFreshCloudRuntimeControl(freshExternalState bool) error {
+// Only the managed image supplies this one-use birth marker. A disk that
+// carries state from an earlier release is not evidence that this target
+// never admitted work.
+func (c *connector) initializeFreshCloudRuntimeControl(neverAdmitted bool) error {
 	if os.Getenv("SALIX_MANAGED_RUNTIME_ROOT") == "" {
 		return nil
 	}
@@ -64,7 +63,7 @@ func (c *connector) initializeFreshCloudRuntimeControl(freshExternalState bool) 
 		return errors.New("invalid fresh runtime marker")
 	}
 	var admitted *bool
-	if freshExternalState && c.externalRuntimeState.emptyArchiveTarget() {
+	if neverAdmitted {
 		value := false
 		admitted = &value
 	}
@@ -79,7 +78,7 @@ func (c *connector) initializeFreshCloudRuntimeControl(freshExternalState bool) 
 }
 
 func (value cloudRuntimeControl) initialClosed() bool {
-	return value.Sealed && value.OwnerID == "" && value.OperationID == "" && value.Generation == 0 && value.Revision == 0 && !value.RecoveryValidated && len(value.RecoveryPaths) == 0
+	return value.Sealed && value.OwnerID == "" && value.OperationID == "" && value.Generation == 0 && value.Revision == 0
 }
 
 // Called under cloudRuntimeMu before ordinary connection admission. A failed
@@ -162,8 +161,6 @@ func (c *connector) handleCloudRuntimeControl(w http.ResponseWriter, r *http.Req
 		return
 	}
 	next := request.Control
-	next.RecoveryValidated = false
-	next.RecoveryPaths = nil
 	next.BusinessAdmitted = nil
 	next.Sealed = request.Action == "seal"
 	previous := c.cloudRuntimeControl
@@ -198,24 +195,12 @@ func (c *connector) handleCloudRuntimeControl(w http.ResponseWriter, r *http.Req
 	if next.Sealed {
 		c.cloudRuntimeQuiesced = true
 		c.cloudRuntimeParkToken = next.OperationID
-		if request.Scope == "recovery" {
-			paths, err := c.recoveryArchivePaths(r.Context())
-			if err != nil {
-				writeJSONResponse(w, 409, map[string]any{"code": "recovery_checkpoint_unavailable", "control": next})
-				return
-			}
-			next.RecoveryPaths = paths
-		} else if request.Scope != "" && request.Scope != "full" {
+		if request.Scope != "" && request.Scope != "full" {
 			http.Error(w, "invalid archive scope", 400)
 			return
 		}
-		if err := c.quietManagedCloudRuntimes(r.Context()); err != nil {
+		if err := c.quietManagedCloudRuntimes(); err != nil {
 			writeJSONResponse(w, 409, map[string]any{"code": "cloud_runtime_not_quiet", "control": next})
-			return
-		}
-		next.RecoveryValidated = request.Scope == "recovery"
-		if err := c.saveCloudRuntimeControl(next); err != nil {
-			http.Error(w, "cloud runtime control unavailable", 503)
 			return
 		}
 		writeJSONResponse(w, 200, map[string]any{"control": next, "quiet": true, "never_admitted": next.BusinessAdmitted != nil && !*next.BusinessAdmitted})
@@ -230,5 +215,6 @@ func (c *connector) handleCloudRuntimeControl(w http.ResponseWriter, r *http.Req
 func (c *connector) localControlArchivePath(path string) bool {
 	stateRoot, err := filepath.EvalSymlinks(c.runtimeStateRoot())
 	return filepath.Clean(path) == filepath.Join(c.root, cloudRuntimeFreshRelativePath) ||
-		(err == nil && filepath.Clean(path) == filepath.Join(stateRoot, "cloud-runtime-control.json"))
+		(err == nil && (filepath.Clean(path) == filepath.Join(stateRoot, "cloud-runtime-control.json") ||
+			filepath.Clean(path) == filepath.Join(stateRoot, runtimeStateLockName)))
 }

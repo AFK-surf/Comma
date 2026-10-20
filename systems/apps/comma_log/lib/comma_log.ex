@@ -29,7 +29,7 @@ defmodule CommaLog do
   owner — which serializes the appends.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
   @enabled_key {__MODULE__, :enabled?}
@@ -38,7 +38,8 @@ defmodule CommaLog do
 
   # ---- API ----
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @doc "Cheap enabled check (one :persistent_term read)."
   @spec enabled?() :: boolean()
@@ -62,7 +63,7 @@ defmodule CommaLog do
           "pid" => inspect(self())
         })
 
-      GenServer.cast(__MODULE__, {:write, entry})
+      SystemsRuntime.Server.cast(__MODULE__, {:write, entry})
     end
 
     :ok
@@ -70,19 +71,20 @@ defmodule CommaLog do
 
   @doc "Enable logging to `path` at runtime (reopens if already enabled)."
   @spec enable(String.t()) :: :ok | {:error, term()}
-  def enable(path) when is_binary(path), do: GenServer.call(__MODULE__, {:enable, path})
+  def enable(path) when is_binary(path),
+    do: SystemsRuntime.Server.call(__MODULE__, {:enable, path})
 
   @doc "Disable logging and close the file."
   @spec disable() :: :ok
-  def disable, do: GenServer.call(__MODULE__, :disable)
+  def disable, do: SystemsRuntime.Server.call(__MODULE__, :disable)
 
   @doc "Block until all casts queued before this call are written (tests)."
   @spec flush() :: :ok
-  def flush, do: GenServer.call(__MODULE__, :flush)
+  def flush, do: SystemsRuntime.Server.call(__MODULE__, :flush)
 
   @doc "The active log file path, or nil when disabled."
   @spec path() :: String.t() | nil
-  def path, do: GenServer.call(__MODULE__, :path)
+  def path, do: SystemsRuntime.Server.call(__MODULE__, :path)
 
   @doc """
   Resolve the configured log path: `--log-file` flag → `{:comma_log, :log_file}` /
@@ -188,7 +190,7 @@ defmodule CommaLog do
   end
 
   defp timestamp do
-    System.system_time(:microsecond)
+    SystemsClock.system_time(:microsecond)
     |> DateTime.from_unix!(:microsecond)
     |> DateTime.to_iso8601()
   end

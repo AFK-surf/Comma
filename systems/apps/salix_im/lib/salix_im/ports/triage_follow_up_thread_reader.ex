@@ -12,7 +12,7 @@ defmodule SalixIM.Ports.TriageFollowUpThreadReader do
   def read(authority, connect, target), do: impl().read(authority, connect, target)
 
   defp impl do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :salix_im,
       :triage_follow_up_thread_reader_mod,
       __MODULE__.Unconfigured

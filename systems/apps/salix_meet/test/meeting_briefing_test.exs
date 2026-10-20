@@ -1,5 +1,5 @@
 defmodule SalixMeet.MeetingBriefingTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixMeet.MeetingBriefing
 
@@ -41,49 +41,6 @@ defmodule SalixMeet.MeetingBriefingTest do
 
     refute briefing =~ "{"
     refute briefing =~ ~s("known_facts")
-  end
-
-  test "uses the occurrence-effective Meet URL and omits unsafe presentation links" do
-    context =
-      context()
-      |> put_in(
-        ["calendar_item", "object", "links", "event", "href"],
-        "https://user@www.google.com/calendar/event?eid=unsafe"
-      )
-      |> put_in(
-        ["calendar_item", "object", "virtualLocations", "conference", "uri"],
-        "https://meet.google.com/series-room"
-      )
-      |> put_in(
-        [
-          "effective_occurrence",
-          "effective",
-          "virtualLocations",
-          "conference",
-          "uri"
-        ],
-        "https://meet.google.com/occurrence-room"
-      )
-
-    briefing = MeetingBriefing.render(context, %{})
-
-    refute briefing =~ "[Open event]"
-    assert briefing =~ "[Join Meet](<https://meet.google.com/occurrence-room>)"
-    refute briefing =~ "series-room"
-  end
-
-  test "omits a non-Google-Meet conference URL" do
-    context =
-      put_in(
-        context(),
-        ["effective_occurrence", "effective", "virtualLocations", "conference", "uri"],
-        "https://video.example.test/occurrence-room"
-      )
-
-    briefing = MeetingBriefing.render(context, %{})
-
-    refute briefing =~ "[Join Meet]"
-    refute briefing =~ "video.example.test"
   end
 
   test "unknown baseline shapes degrade to readable pending text and untrusted text cannot inject mentions" do

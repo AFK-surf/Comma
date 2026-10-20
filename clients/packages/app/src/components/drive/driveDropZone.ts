@@ -1,4 +1,4 @@
-import { dataTransferHasFiles } from "@comma/ui";
+import { dataTransferHasFiles } from "@comma/ui/components/ai-input";
 import {
   useCallback,
   useEffect,

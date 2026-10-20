@@ -198,7 +198,7 @@ defmodule BridgeForTeams.SlackHistoryImports do
   defp retry_window_open?(%{retry_not_before: nil}), do: :ok
 
   defp retry_window_open?(%{retry_not_before: retry_not_before}) do
-    if DateTime.compare(DateTime.utc_now(), retry_not_before) in [:eq, :gt],
+    if DateTime.compare(SystemsClock.utc_now(), retry_not_before) in [:eq, :gt],
       do: :ok,
       else: {:error, {:retry_not_before, retry_not_before}}
   end
@@ -225,7 +225,7 @@ defmodule BridgeForTeams.SlackHistoryImports do
   end
 
   defp insert_replacement(old_run, run_attrs, channels) do
-    new_run_id = Ecto.UUID.generate()
+    new_run_id = SystemsRuntime.Proc.uuid()
 
     case StateMachine.restart_after_reconnect(
            to_protocol(old_run),
@@ -590,7 +590,7 @@ defmodule BridgeForTeams.SlackHistoryImports do
 
   defp feature_enabled(feature) do
     if get_in(
-         Application.get_env(:bridge_for_teams_core, :sourced_context_features, []),
+         SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_features, []),
          [feature]
        ) == true,
        do: :ok,

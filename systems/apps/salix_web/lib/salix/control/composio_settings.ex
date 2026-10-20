@@ -106,7 +106,7 @@ defmodule Salix.Control.ComposioSettings do
            true <- complete?(rec),
            secret <-
              if(attrs["rotate"] == true or is_nil(rec["webhook_secret"]),
-               do: Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false),
+               do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false),
                else: rec["webhook_secret"]
              ),
            url <-
@@ -141,7 +141,7 @@ defmodule Salix.Control.ComposioSettings do
 
   defp subscription_id(_, _, _), do: {:error, :invalid_composio_response}
 
-  defp client, do: Application.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
+  defp client, do: SystemsRuntime.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
 
   defp upsert(scope, attrs), do: Data.locked(scope, fn -> do_upsert(scope, attrs) end)
 

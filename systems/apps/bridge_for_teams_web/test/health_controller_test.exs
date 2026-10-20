@@ -1,5 +1,5 @@
 defmodule BridgeForTeamsWeb.HealthControllerTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Plug.Test
 
@@ -7,15 +7,15 @@ defmodule BridgeForTeamsWeb.HealthControllerTest do
   @opts @endpoint.init([])
 
   test "standalone health endpoints fail closed when the launcher lifecycle is absent" do
-    previous = Application.get_env(:bridge_for_teams_web, :lifecycle_module)
+    previous = SystemsRuntime.get_env(:bridge_for_teams_web, :lifecycle_module)
     missing_lifecycle = Module.concat([__MODULE__, MissingLifecycle])
-    Application.put_env(:bridge_for_teams_web, :lifecycle_module, missing_lifecycle)
+    SystemsRuntime.put_env(:bridge_for_teams_web, :lifecycle_module, missing_lifecycle)
 
     on_exit(fn ->
       if is_nil(previous) do
-        Application.delete_env(:bridge_for_teams_web, :lifecycle_module)
+        SystemsRuntime.delete_env(:bridge_for_teams_web, :lifecycle_module)
       else
-        Application.put_env(:bridge_for_teams_web, :lifecycle_module, previous)
+        SystemsRuntime.put_env(:bridge_for_teams_web, :lifecycle_module, previous)
       end
     end)
 

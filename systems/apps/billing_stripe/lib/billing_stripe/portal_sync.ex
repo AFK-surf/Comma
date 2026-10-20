@@ -2,9 +2,12 @@ defmodule BillingStripe.PortalSync do
   @moduledoc "Explicit operations for the nondefault Comma customer portal."
 
   def sync(_catalog, opts \\ []) do
-    api = Application.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
-    key = Application.get_env(:billing_stripe, :secret_key)
-    id = opts[:configuration_id] || Application.get_env(:billing_stripe, :portal_configuration_id)
+    api = SystemsRuntime.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
+    key = SystemsRuntime.get_env(:billing_stripe, :secret_key)
+
+    id =
+      opts[:configuration_id] || SystemsRuntime.get_env(:billing_stripe, :portal_configuration_id)
+
     stripe_opts = [api_key: key]
 
     with true <- is_binary(key) and key != "",

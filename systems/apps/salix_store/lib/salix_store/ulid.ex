@@ -9,7 +9,8 @@ defmodule SalixStore.ULID do
 
   def generate(after_id \\ nil) do
     candidate =
-      <<System.system_time(:millisecond)::unsigned-big-48, :crypto.strong_rand_bytes(10)::binary>>
+      <<SystemsRuntime.Proc.system_time(:millisecond)::unsigned-big-48,
+        SystemsRuntime.Proc.random_bytes(10)::binary>>
       |> :binary.decode_unsigned()
 
     value =

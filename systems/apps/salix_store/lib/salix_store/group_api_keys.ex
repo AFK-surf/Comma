@@ -129,7 +129,7 @@ defmodule SalixStore.GroupApiKeys do
   @spec update(String.t(), String.t(), map(), String.t() | nil) ::
           {:ok, map()} | {:error, :not_found}
   def update(group_id, key_id, changes, kind \\ nil) when is_map(changes) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     fields =
       changes
@@ -170,7 +170,7 @@ defmodule SalixStore.GroupApiKeys do
   """
   @spec touch_last_used(String.t(), pos_integer()) :: :ok
   def touch_last_used(key_id, min_interval_s) when is_binary(key_id) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     threshold = DateTime.add(now, -min_interval_s, :second)
 
     Row
@@ -181,7 +181,8 @@ defmodule SalixStore.GroupApiKeys do
     :ok
   end
 
-  defp to_record(%Row{} = row) do
+  @doc false
+  def to_record(%Row{} = row) do
     %{
       "key_hash" => row.key_hash,
       "key_id" => row.key_id,
@@ -199,7 +200,8 @@ defmodule SalixStore.GroupApiKeys do
     }
   end
 
-  defp from_record(record) do
+  @doc false
+  def from_record(record) do
     %Row{
       key_hash: record["key_hash"],
       key_id: record["key_id"],
@@ -220,9 +222,10 @@ defmodule SalixStore.GroupApiKeys do
   defp to_epoch(nil), do: nil
   defp to_epoch(%DateTime{} = dt), do: DateTime.to_unix(dt, :second)
 
-  defp from_epoch(nil), do: nil
-  defp from_epoch(%DateTime{} = dt), do: dt
+  @doc false
+  def from_epoch(nil), do: nil
+  def from_epoch(%DateTime{} = dt), do: dt
 
-  defp from_epoch(seconds) when is_integer(seconds),
+  def from_epoch(seconds) when is_integer(seconds),
     do: DateTime.from_unix!(seconds * 1_000_000, :microsecond)
 end

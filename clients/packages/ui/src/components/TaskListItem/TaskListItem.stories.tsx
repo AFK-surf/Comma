@@ -12,6 +12,7 @@ import {
   CalendarIcon,
   ChainLinkIcon,
   EditBigIcon,
+  EyeIcon,
   MenuItem,
   MenuSeparator,
   PinIcon,
@@ -32,7 +33,7 @@ const meta = {
   title: "App components/Tasks/Task List Item",
   component: TaskListItem,
   args: {
-    icon: contentTaskIconStates.backlog.renderIcon(),
+    icon: contentTaskIconStates["in-progress"].renderIcon(),
     title: "Untitled",
     layout: "content",
   },
@@ -79,17 +80,28 @@ const TaskListItemWithActions = ({ title, ...props }: TaskListItemWithActionsPro
   return <TaskListItem {...props} contextMenu={contextMenu} title={title} />;
 };
 
-const ScheduleTag = () => (
-  <Badge
-    className="gap-xs py-xxs pr-md pl-sm text-xs text-quaternary"
-    color="gray"
-    size="sm"
-    type="pill-outline"
-  >
-    <CalendarIcon className="size-3 shrink-0 text-quaternary" />
-    Schedules
-  </Badge>
-);
+// The Loop chip as the product shows it: each trigger type has its own icon.
+const loopBadges = {
+  scheduled: { Icon: CalendarIcon, label: "Scheduled" },
+  event_triggered: { Icon: EyeIcon, label: "On updates" },
+} as const;
+
+type LoopKind = keyof typeof loopBadges;
+
+const LoopBadge = ({ kind = "scheduled" }: { kind?: LoopKind | undefined }) => {
+  const { Icon, label } = loopBadges[kind];
+  return (
+    <Badge
+      className="gap-xs py-xxs pr-md pl-sm text-xs text-quaternary"
+      color="gray"
+      size="sm"
+      type="pill-outline"
+    >
+      <Icon className="size-3 shrink-0 text-quaternary" />
+      {label}
+    </Badge>
+  );
+};
 
 const SectionLabel = ({ children }: { children: ReactNode }) => (
   <p className="px-md text-left text-sm font-medium leading-5 tracking-[-0.14px] text-quaternary">
@@ -145,7 +157,7 @@ type GroupAccent = "neutral" | "warning" | "success" | "error";
 type ContentRow = {
   key: string;
   title: string;
-  schedule: boolean;
+  loop?: LoopKind;
 };
 
 type ContentGroup = {
@@ -158,23 +170,13 @@ type ContentGroup = {
 
 const contentGroups: ContentGroup[] = [
   {
-    state: "backlog",
-    label: "Backlog",
-    accent: "neutral",
-    defaultOpen: true,
-    rows: [
-      { key: "backlog-1", title: "Untitled", schedule: false },
-      { key: "backlog-2", title: longTitle, schedule: false },
-    ],
-  },
-  {
     state: "in-progress",
     label: "In progress",
     accent: "neutral",
     defaultOpen: true,
     rows: [
-      { key: "in-progress-1", title: longTitle, schedule: true },
-      { key: "in-progress-2", title: longTitle, schedule: true },
+      { key: "in-progress-1", title: "Untitled" },
+      { key: "in-progress-2", title: longTitle, loop: "scheduled" },
     ],
   },
   {
@@ -183,10 +185,10 @@ const contentGroups: ContentGroup[] = [
     accent: "warning",
     defaultOpen: true,
     rows: [
-      { key: "review-1", title: longTitle, schedule: true },
-      { key: "review-2", title: longTitle, schedule: true },
-      { key: "review-3", title: longTitle, schedule: true },
-      { key: "review-4", title: longTitle, schedule: true },
+      { key: "review-1", title: longTitle, loop: "scheduled" },
+      { key: "review-2", title: longTitle, loop: "event_triggered" },
+      { key: "review-3", title: longTitle, loop: "scheduled" },
+      { key: "review-4", title: longTitle, loop: "scheduled" },
     ],
   },
   {
@@ -195,8 +197,8 @@ const contentGroups: ContentGroup[] = [
     accent: "success",
     defaultOpen: true,
     rows: [
-      { key: "done-1", title: longTitle, schedule: true },
-      { key: "done-2", title: longTitle, schedule: true },
+      { key: "done-1", title: longTitle, loop: "scheduled" },
+      { key: "done-2", title: longTitle, loop: "scheduled" },
     ],
   },
   {
@@ -208,10 +210,10 @@ const contentGroups: ContentGroup[] = [
   },
 ];
 
-const renderContentTail = (date: string, schedule: boolean) =>
-  schedule ? (
+const renderContentTail = (date: string, loop?: LoopKind) =>
+  loop ? (
     <>
-      <ScheduleTag />
+      <LoopBadge kind={loop} />
       <span className="shrink-0 whitespace-nowrap font-normal text-quaternary">
         {date}
       </span>
@@ -231,7 +233,7 @@ const renderTail = (mode: TailMode) => {
     case "content-date":
       return "Create May 9";
     case "content-with-tag":
-      return renderContentTail("Create May 9", true);
+      return renderContentTail("Create May 9", "scheduled");
   }
 };
 
@@ -290,8 +292,8 @@ export const KeyboardContextMenuInteraction: Story = {
     <div className="w-[560px] rounded-xl bg-primary p-lg">
       <TaskListItemWithActions
         aria-label="Keyboard task row"
-        icon={contentTaskIconStates.backlog.renderIcon()}
-        iconKey="backlog"
+        icon={contentTaskIconStates["in-progress"].renderIcon()}
+        iconKey="in-progress"
         title="Keyboard context menu task"
       />
     </div>
@@ -401,7 +403,7 @@ export const Content: Story = {
                 iconKey={group.state}
                 key={row.key}
                 layout="content"
-                tail={renderContentTail("Create May 9", row.schedule)}
+                tail={renderContentTail("Create May 9", row.loop)}
                 title={row.title}
               />
             ))}

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    A phone: a rounded upright outline.
+    Dot matrix on the voice marker's grid (1.2dp dots, 1.65dp pitch, 8 rows), so every
+    device picture is as tall as the others and reads as the same family:
+
+         .###.
+         #...#
+         #...#
+         #...#
+         #...#
+         #...#
+         #...#
+         .###.
+
+    One colour. The path is that grid, one circle per `#`, row by row.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="7.8dp"
+    android:height="12.75dp"
+    android:viewportWidth="7.8"
+    android:viewportHeight="12.75">
+    <path
+        android:fillColor="@color/ink_muted"
+        android:pathData="M1.65,0.6a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM3.3,0.6a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM4.95,0.6a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM0,2.25a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM6.6,2.25a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM0,3.9a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM6.6,3.9a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM0,5.55a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM6.6,5.55a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM0,7.2a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM6.6,7.2a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM0,8.85a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM6.6,8.85a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM0,10.5a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM6.6,10.5a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM1.65,12.15a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM3.3,12.15a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0ZM4.95,12.15a0.6,0.6 0,1 0,1.2,0a0.6,0.6 0,1 0,-1.2,0Z" />
+</vector>

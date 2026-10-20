@@ -1,5 +1,5 @@
 defmodule SalixLlm.OpenAIResponsesRequestSeamTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixLlm.Provider
 
@@ -104,9 +104,6 @@ defmodule SalixLlm.OpenAIResponsesRequestSeamTest do
     {protocol, cfg} = Provider.request_config(opts)
     initial = Session.new("cache-agent", "cache-session") |> Session.export()
 
-    catalog =
-      Session.query(Session.open(initial), :provider_request_part, {:turn_reminder_catalog})
-
     user = %{id: 1, role: "user", content: "A stable user request"}
 
     assistant = %{
@@ -129,9 +126,8 @@ defmodule SalixLlm.OpenAIResponsesRequestSeamTest do
         state =
           initial
           |> Map.merge(%{
-            system_prompt: "Stable prompt\n\n" <> catalog,
-            messages: history,
-            provider_reply_obligations: %{"target" => %{"provider" => "slack", "channel" => "C1"}}
+            system_prompt: "Stable prompt",
+            messages: history
           })
           |> Session.open()
 
@@ -139,7 +135,7 @@ defmodule SalixLlm.OpenAIResponsesRequestSeamTest do
           Session.query(
             state,
             :provider_dispatch,
-            {nil, false, nil, %{}, false, protocol, cfg, [], "complete"}
+            {nil, protocol, cfg, [], "complete"}
           )
 
         assert {:final, "ok"} =
@@ -152,11 +148,10 @@ defmodule SalixLlm.OpenAIResponsesRequestSeamTest do
     [first, second, third] = Enum.map(bodies, &Jason.decode!/1)
     assert first["instructions"] == second["instructions"]
     assert second["instructions"] == third["instructions"]
-    assert Enum.drop(first["input"], -1) == Enum.take(second["input"], 1)
-    assert Enum.drop(second["input"], -1) == Enum.take(third["input"], 3)
+    assert first["input"] == Enum.take(second["input"], 1)
+    assert second["input"] == Enum.take(third["input"], 3)
     assert Enum.at(second["input"], 2)["type"] == "function_call_output"
     assert Enum.at(third["input"], 3)["role"] == "user"
-    assert Enum.all?([first, second, third], &(List.last(&1["input"])["role"] == "developer"))
   end
 
   test "blocking and streaming preserve reported usage and actual model", %{
@@ -257,7 +252,7 @@ defmodule SalixLlm.OpenAIResponsesRequestSeamTest do
     base_url: base_url
   } do
     MockServer.set_response(server, MockServer.success_response("ok"))
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     llm_opts = %{
       "protocol" => "responses",
@@ -266,7 +261,7 @@ defmodule SalixLlm.OpenAIResponsesRequestSeamTest do
       "api_key" => "test-key",
       :transport_retry => false,
       :before_send => fn body ->
-        send(owner, {:observed_body, body})
+        SystemsRuntime.Proc.send(owner, {:observed_body, body})
         :ok
       end
     }
@@ -274,7 +269,7 @@ defmodule SalixLlm.OpenAIResponsesRequestSeamTest do
     assert {:final, "ok"} =
              Provider.complete([%{role: "user", content: "hello"}], [], llm_opts)
 
-    assert_receive {:observed_body, observed_body}, 100
+    assert_receive {:observed_body, observed_body}
     assert [sent_body] = MockServer.raw_bodies(server)
     assert observed_body == sent_body
     assert %{"model" => "gpt-test", "input" => [_]} = Jason.decode!(observed_body)

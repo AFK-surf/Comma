@@ -23,8 +23,8 @@ This module proves property B of issue #2070 on the host trace model of
   `dispatch_after_durable_assistant` adds H2 (`RecordsCarryAssistant`): the
   committed events hold the assistant event at `aid`.
 * `notice_after_durable_record`: a runtime failure notice dispatch follows a
-  durable commit of the kernel-built notice assistant event at the same `aid`
-  with the dispatched call. `dispatch_modes`: every non-speculative dispatch
+  durable commit of the kernel-built notice runtime message at the same `aid`
+  for the dispatched call. `dispatch_modes`: every non-speculative dispatch
   is a model turn or this notice, so B1 covers every dispatch.
 * `speculative_dispatch`: a speculative dispatch directly follows the working
   write of its intent record. Its calls are read-only by H4
@@ -92,7 +92,7 @@ macro_rules
   | `(tactic| nmi_step $h:ident) =>
     `(tactic| first
       | (head_is $h [write]; simp only [write_nmi_frame_step] at $h:ident; obtain ⟨_, kept⟩ := $h
-         refine nmi_trans (kept rfl) ?_)
+         refine nmi_trans (kept (by keys_absent)) ?_)
       | (head_step $h "_nmi_step"; obtain ⟨_, kept⟩ := $h; refine nmi_trans kept ?_))
 
 syntax "nmi_walk" ident : tactic
@@ -250,7 +250,7 @@ theorem historyCompaction_nmi {s e t : Term} {provider : Bool} {j r : List Term}
        obtain ⟨value, _, prior, h⟩ := bound
        first
          | (execution_head_is prior "VerifiedKernel.Data.write"
-            refine nmi_trans (write_nmi_frame prior rfl) ?_)
+            refine nmi_trans (write_nmi_frame prior (by keys_absent)) ?_)
          | (execution_head_is prior "VerifiedKernel.Session.pruneResultRefs"
             refine nmi_trans (pruneResultRefs_nmi prior) ?_)
          | (execution_head_is prior "VerifiedKernel.Session.pruneCompactResults"
@@ -280,7 +280,7 @@ theorem compactResult_nmi {s e t : Term} {j r : List Term} (h : compactResult s 
        obtain ⟨value, _, prior, h⟩ := bound
        first
          | (execution_head_is prior "VerifiedKernel.Data.write"
-            refine nmi_trans (write_nmi_frame prior rfl) ?_)
+            refine nmi_trans (write_nmi_frame prior (by keys_absent)) ?_)
          | (execution_head_is prior "Pure.pure"
             have same := pure_ok prior
             subst value)
@@ -301,7 +301,7 @@ cheaper than a walk over every branch of `runtimeAppend`. -/
 theorem runtimeAppend_nmi {state event next : Term} {journal rest : List Term}
     (call : runtimeAppend state event journal = .ok (next, rest)) : NmiStep state next := by
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops call
-  exact nmi_trans (appendFields_nmi appended) (nmi_trans (write_nmi_frame written rfl)
+  exact nmi_trans (appendFields_nmi appended) (nmi_trans (write_nmi_frame written (by keys_absent))
     (nmi_trans (bumpHwm_nmi bumped) (resetFresh_nmi reset)))
 
 theorem runtimeAppend_nmi_step {state event next : Term} {journal rest : List Term} :
@@ -386,7 +386,7 @@ theorem transcriptSeed_nmi {s e t : Term} {j r : List Term} (h : transcriptSeed 
     simp only [Except.ok.injEq, Prod.mk.injEq] at hmax
     obtain ⟨rfl, -⟩ := hmax
     have written := write_get_key "next_message_id" hw rfl
-    have kept := write_frame_key "next_message_id" hfinal rfl
+    have kept := write_frame_key "next_message_id" hfinal (by keys_absent)
     exact ⟨max k m, by rw [kept, written], Int.le_trans hnm (Int.le_max_right _ _)⟩
 
 theorem transcriptSeed_nmi_step {s e t : Term} {j r : List Term} :
@@ -399,7 +399,7 @@ theorem transcriptDelivery_nmi {state event next : Term} {journal rest : List Te
     (call : transcriptDelivery state event journal = .ok (next, rest)) : NmiStep state next := by
   rcases transcriptDelivery_ops call with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, obligated, bumped, reset⟩
   · exact nmi_refl _
-  · exact nmi_trans (appendFields_nmi appended) (nmi_trans (write_nmi_frame written rfl)
+  · exact nmi_trans (appendFields_nmi appended) (nmi_trans (write_nmi_frame written (by keys_absent))
       (nmi_trans (addObligation_nmi obligated) (nmi_trans (bumpHwm_nmi bumped) (resetFresh_nmi reset))))
 
 theorem transcriptDelivery_nmi_step {state event next : Term} {journal rest : List Term} :
@@ -420,30 +420,6 @@ theorem sessionEvent_nmi_step {state event next : Term} {journal rest : List Ter
       Except.ok (next, rest) = sessionEvent state event journal ∧ NmiStep state next :=
   step_iff sessionEvent_nmi
 
-theorem mergePredicate_nmi {s kind through replacement extra t : Term} {j r : List Term}
-    (h : mergePredicate s kind through replacement extra j = .ok (t, r)) : NmiStep s t := by
-  unfold mergePredicate at h
-  repeat' first
-    | exact write_nmi_frame h rfl
-    | split at h
-    | (obtain ⟨_, _, _, h⟩ := bind_ok h)
-
-theorem mergePredicate_nmi_step {s kind through replacement extra t : Term} {j r : List Term} :
-    mergePredicate s kind through replacement extra j = .ok (t, r) ↔
-      Except.ok (t, r) = mergePredicate s kind through replacement extra j ∧ NmiStep s t :=
-  step_iff mergePredicate_nmi
-
-theorem microcompactIds_nmi {s replacement e t : Term} {ids j r : List Term}
-    (h : microcompactIds s ids replacement e j = .ok (t, r)) : NmiStep s t := by
-  unfold microcompactIds at h
-  nmi_walk h
-
-theorem microcompactIds_nmi_step {s replacement e t : Term} {ids j r : List Term} :
-    microcompactIds s ids replacement e j = .ok (t, r) ↔
-      Except.ok (t, r) = microcompactIds s ids replacement e j ∧ NmiStep s t :=
-  step_iff microcompactIds_nmi
-
-nmi_rule microcompact (state event)
 nmi_rule capabilitySync (state event)
 nmi_rule archiveAdvance (state event)
 
@@ -690,7 +666,7 @@ def MachineFacts (state machine : Term) (out : Term) : Prop :=
     (phaseIs machine' "notice_cleanup" →
       ((∃ events aid sid call, commitEffect events (hwmOpts aid) nil ∈ effects ∧
           FieldIs state "next_message_id" aid ∧ mkey machine' "notice_aid" = aid ∧
-          noticeAssistant sid aid call ∈ events ∧ mkey machine' "notice" = call) ∨
+          noticeRecord sid aid call ∈ events ∧ mkey machine' "notice" = call) ∨
         (phaseIs machine "notice_cleanup" ∧ mkey machine' "notice_aid" = mkey machine "notice_aid" ∧
           mkey machine' "notice" = mkey machine "notice")) ∧
       ∀ calls flags, effects.getLast? ≠ some (runToolsEffect calls flags)) ∧
@@ -3099,10 +3075,10 @@ theorem dispatch_once_per_round {cfg : HostConfig} {σ₀ σ : HostState} {log :
 
 /-! ## The runtime failure notice -/
 
-/-- A durable commit before position `i` holds the notice assistant event at
-`aid` with the single call `call`. -/
+/-- A durable commit before position `i` holds the notice runtime message at
+`aid` for the single call `call`. -/
 def NoticeBefore (log : List HostLabel) (i : Nat) (aid call : Term) : Prop :=
-  ∃ k < i, ∃ events sid, log[k]? = some (.commit events nil) ∧ noticeAssistant sid aid call ∈ events
+  ∃ k < i, ∃ events sid, log[k]? = some (.commit events nil) ∧ noticeRecord sid aid call ∈ events
 
 /-- A machine in phase `notice_cleanup` holds a notice that a durable commit recorded. -/
 def MachineNoticed (log : List HostLabel) (machine : Term) : Prop :=
@@ -3278,13 +3254,13 @@ theorem noticeInv_run {cfg : HostConfig} {σ₀ σ : HostState} {log : List Host
   | step _ next ih => exact noticeInv_step stepSources ih next
 
 /-- B1 for the runtime failure notice: a notice dispatch at position `i`
-follows a durable commit, at `k < i`, of the kernel-built notice assistant
-event at the same `aid` whose single call is the dispatched call. -/
+follows a durable commit, at `k < i`, of the kernel-built notice runtime
+message at the same `aid` for the dispatched call. -/
 theorem notice_after_durable_record {cfg : HostConfig} {σ₀ σ : HostState} {log : List HostLabel}
     (run : HostRun cfg σ₀ log σ) (init : HostInit σ₀) {i : Nat} {aid calls : Term}
     (at_ : log[i]? = some (.dispatch aid calls (b "runtime_failure_notice") false)) :
     ∃ call, calls = list [call] ∧ ∃ k < i, ∃ events sid, log[k]? = some (.commit events nil) ∧
-      noticeAssistant sid aid call ∈ events := by
+      noticeRecord sid aid call ∈ events := by
   rcases (noticeInv_run run init).dispatched i aid calls _ at_ with model | ⟨_, call, eq, before⟩
   · exact absurd (text_inj.mp model) (by decide)
   · exact ⟨call, eq, before⟩

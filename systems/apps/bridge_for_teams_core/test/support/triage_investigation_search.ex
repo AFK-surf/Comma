@@ -1,4 +1,6 @@
 defmodule BridgeForTeams.TriageInvestigationSearch do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Finite local-corpus reader for the production group-owned Slack search path.
 
@@ -8,8 +10,10 @@ defmodule BridgeForTeams.TriageInvestigationSearch do
   every requested mode; it does not simulate embeddings or semantic ranking.
   Returned excerpts explicitly identify that test-only search semantics.
 
-  Install only in an isolated test process/store. Stop callers before restoring
-  the reader. The caller owns the supplied Agent and retains its read receipts.
+  `install!/3` binds the reader for the calling test with `SystemsRuntime.Test`;
+  the binding ends with the test. A suite whose searches run in processes that
+  do not act for the test makes the bindings shared first. The caller owns the
+  supplied Agent and retains its read receipts.
   """
 
   alias SalixIM.Provider
@@ -24,7 +28,7 @@ defmodule BridgeForTeams.TriageInvestigationSearch do
   @semantics "Local fixture corpus: case-insensitive text terms, not semantic ranking."
 
   def install!(state, connect, messages)
-      when is_pid(state) and is_map(connect) and is_list(messages) do
+      when SystemsRuntime.Proc.is_process(state) and is_map(connect) and is_list(messages) do
     unless length(messages) in 1..@max_rows,
       do: raise(ArgumentError, "local search corpus requires 1..#{@max_rows} messages")
 
@@ -33,10 +37,6 @@ defmodule BridgeForTeams.TriageInvestigationSearch do
 
     if length(Enum.uniq_by(rows, &source_key(&1.candidate))) != length(rows),
       do: raise(ArgumentError, "local search corpus has duplicate message identities")
-
-    previous =
-      for key <- [:slack_message_search_reader, @state_key],
-          do: {key, Application.get_env(:salix_im, key)}
 
     :ok = SlackSearchCatalog.remember_connects([connect])
     :ok = SlackSearchCatalog.remember_channels(connect, Enum.map(messages, & &1["channel"]))
@@ -48,20 +48,13 @@ defmodule BridgeForTeams.TriageInvestigationSearch do
     Agent.update(state, &Map.put(&1, :search_rows, rows))
     Enum.each(rows, fn row -> :ok = SlackSearchSources.publish(row.candidate) end)
 
-    Application.put_env(:salix_im, @state_key, state)
-    Application.put_env(:salix_im, :slack_message_search_reader, __MODULE__)
-
-    fn ->
-      Enum.each(previous, fn
-        {key, nil} -> Application.delete_env(:salix_im, key)
-        {key, value} -> Application.put_env(:salix_im, key, value)
-      end)
-    end
+    :ok = SystemsRuntime.Test.put_env(:salix_im, @state_key, state)
+    :ok = SystemsRuntime.Test.put_env(:salix_im, :slack_message_search_reader, __MODULE__)
   end
 
   def active? do
-    case Application.get_env(:salix_im, @state_key) do
-      pid when is_pid(pid) -> Process.alive?(pid)
+    case SystemsRuntime.get_env(:salix_im, @state_key) do
+      pid when SystemsRuntime.Proc.is_process(pid) -> SystemsRuntime.Proc.alive?(pid)
       _ -> false
     end
   end
@@ -138,9 +131,9 @@ defmodule BridgeForTeams.TriageInvestigationSearch do
         "channel_id" => channel,
         "message_ts_us" => timestamp_us,
         "component" => "lexical",
-        "build_id" => Ecto.UUID.generate(),
-        "message_identity" => Ecto.UUID.generate(),
-        "payload_identity" => Ecto.UUID.generate(),
+        "build_id" => SystemsRuntime.Proc.uuid(),
+        "message_identity" => SystemsRuntime.Proc.uuid(),
+        "payload_identity" => SystemsRuntime.Proc.uuid(),
         "unit" => 1,
         "unit_count" => 1,
         "file_id" => "",
@@ -212,7 +205,7 @@ defmodule BridgeForTeams.TriageInvestigationSearch do
     do: Map.take(candidate, @scope_keys ++ ~w(message_ts_us build_id unit))
 
   defp rows,
-    do: Agent.get(Application.fetch_env!(:salix_im, @state_key), &Map.fetch!(&1, :search_rows))
+    do: Agent.get(state!(), &Map.fetch!(&1, :search_rows))
 
   defp record(scope, operation, messages, extra) do
     context_agent = Provider.current_tool_context()["agent_id"]
@@ -232,7 +225,7 @@ defmodule BridgeForTeams.TriageInvestigationSearch do
       })
 
     result =
-      Agent.get_and_update(Application.fetch_env!(:salix_im, @state_key), fn state ->
+      Agent.get_and_update(state!(), fn state ->
         previous = Map.get(state, :context_reads, [])
 
         if length(previous) >= @max_read_events,
@@ -251,5 +244,10 @@ defmodule BridgeForTeams.TriageInvestigationSearch do
       value when is_binary(value) and byte_size(value) > 0 -> value
       _ -> raise ArgumentError, "local search fixture requires #{key}"
     end
+  end
+
+  defp state! do
+    {:ok, state} = SystemsRuntime.fetch_env(:salix_im, @state_key)
+    state
   end
 end

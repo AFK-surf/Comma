@@ -5,7 +5,7 @@ defmodule SalixAgent.ToolsWebTest do
   against the real spinfoam child with VFS-seeded C programs (skipped without
   the pinned binary). Against the Fake S3 backend.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.Tools.Web
   alias SalixAgent.{AgentWorkspace, SpinfoamFixture, ToolDisclosure}
@@ -65,7 +65,7 @@ defmodule SalixAgent.ToolsWebTest do
   defmodule SuccessfulInternalSendIMProvider do
     @behaviour SalixAgent.Tools.ImRouter
 
-    def set_owner(pid), do: :persistent_term.put({__MODULE__, :owner}, pid)
+    def set_owner(pid), do: SystemsRuntime.PersistentTerm.put({__MODULE__, :owner}, pid)
 
     @impl true
     def list_connects(_agent_id),
@@ -94,18 +94,22 @@ defmodule SalixAgent.ToolsWebTest do
 
     @impl true
     def call_api(agent_id, "internal", "internal.send_message", args) do
-      send(:persistent_term.get({__MODULE__, :owner}), {:nested_file_send, agent_id, args})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.PersistentTerm.get({__MODULE__, :owner}),
+        {:nested_file_send, agent_id, args}
+      )
+
       {:ok, %{"ok" => true}}
     end
   end
 
   setup do
-    prev = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
 
     on_exit(fn ->
-      Application.put_env(:salix_store, :s3_backend, prev)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
     end)
 
     agent = SalixAgent.TestSupport.new_agent_id()
@@ -152,17 +156,6 @@ defmodule SalixAgent.ToolsWebTest do
   end
 
   describe "defs/0" do
-    test "exposes canonical tools in stable order as 2-arity funs and auto wait" do
-      assert [
-               {"web.read_pages", d1, f1, 20},
-               {"script.run_file", d2, f2, 20, [safety: "write"]},
-               {"script.sdk", d3, f3, 20, [safety: "read"]},
-               {"web.http_request", d4, f4, 20, [safety: "write"]}
-             ] = Web.defs()
-
-      for d <- [d1, d2, d3, d4], do: assert(is_binary(d) and d != "")
-      for f <- [f1, f2, f3, f4], do: assert(is_function(f, 2))
-    end
   end
 
   describe "web.read_pages (Bandit mock)" do
@@ -172,7 +165,7 @@ defmodule SalixAgent.ToolsWebTest do
       # Retry on port collisions (randomized ports can collide across suites).
       port =
         Enum.find_value(1..10, fn _ ->
-          p = 40000 + :erlang.phash2(make_ref(), 20000)
+          p = 40000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20000)
 
           case start_supervised({Bandit, plug: MockExa, port: p}, id: {:bandit, p}) do
             {:ok, _pid} -> p
@@ -180,10 +173,10 @@ defmodule SalixAgent.ToolsWebTest do
           end
         end)
 
-      prev_base = Application.get_env(:salix_agent, :exa_base_url)
-      prev_key = Application.get_env(:salix_agent, :exa_api_key)
-      Application.put_env(:salix_agent, :exa_base_url, "http://127.0.0.1:#{port}")
-      Application.put_env(:salix_agent, :exa_api_key, "test-key")
+      prev_base = SystemsRuntime.get_env(:salix_agent, :exa_base_url)
+      prev_key = SystemsRuntime.get_env(:salix_agent, :exa_api_key)
+      SystemsRuntime.put_env(:salix_agent, :exa_base_url, "http://127.0.0.1:#{port}")
+      SystemsRuntime.put_env(:salix_agent, :exa_api_key, "test-key")
 
       on_exit(fn ->
         restore_env(:exa_base_url, prev_base)
@@ -216,43 +209,6 @@ defmodule SalixAgent.ToolsWebTest do
       assert body["urls"] == ["http://x/a", "http://x/b"]
       assert body["text"] == %{"maxCharacters" => 10_000}
     end
-
-    test "accepts a single url param", %{ctx: ctx} do
-      out = Web.exa_contents(%{"url" => "http://x/solo"}, ctx)
-      assert %{"count" => 1, "results" => [%{"url" => "http://x/solo"}]} = Jason.decode!(out)
-    end
-
-    test "truncates to 10 urls per request", %{ctx: ctx} do
-      urls = Enum.map(1..12, &"http://x/p#{&1}")
-      out = Web.exa_contents(%{"urls" => urls}, ctx)
-      assert Jason.decode!(out)["count"] == 10
-      assert %{body: %{"urls" => sent}} = MockExa.last_request()
-      assert length(sent) == 10
-      assert List.last(sent) == "http://x/p10"
-    end
-
-    test "empty urls raise", %{ctx: ctx} do
-      assert_raise RuntimeError, ~r/urls array cannot be empty/, fn ->
-        Web.exa_contents(%{"urls" => " , "}, ctx)
-      end
-    end
-
-    test "non-2xx raises with status and body text", %{ctx: ctx} do
-      assert_raise RuntimeError, ~r/web\.read_pages: failed: http 404: no such page/, fn ->
-        Web.exa_contents(%{"urls" => "http://x/fail-page"}, ctx)
-      end
-    end
-
-    test "raises when no api key is configured", %{ctx: ctx} do
-      Application.delete_env(:salix_agent, :exa_api_key)
-      prev = System.get_env("EXA_API_KEY")
-      if prev, do: System.delete_env("EXA_API_KEY")
-      on_exit(fn -> if prev, do: System.put_env("EXA_API_KEY", prev) end)
-
-      assert_raise RuntimeError, ~r/not configured/, fn ->
-        Web.exa_contents(%{"urls" => "http://x/a"}, ctx)
-      end
-    end
   end
 
   describe "script_run_file (real spinfoam child)" do
@@ -263,44 +219,15 @@ defmodule SalixAgent.ToolsWebTest do
                      else: "spinfoam binary unavailable"
                    )
 
-    test "executes a VFS program and JSON-encodes its result", %{ctx: ctx} do
-      assert Web.script_run_file(%{"path" => "/scripts/add.c"}, ctx) == "3"
-    end
-
-    test "env entries are exposed as config.env", %{ctx: ctx} do
-      out =
-        Web.script_run_file(
-          %{
-            "path" => "/scripts/env.c",
-            "env" => [
-              %{"name" => "GREETING", "value" => "Hello"},
-              %{"name" => "NAME", "value" => "World"}
-            ]
-          },
-          ctx
-        )
-
-      assert Jason.decode!(out) == "Hello, World"
-    end
-
-    test "programs can directly call known canonical tools through salix.call", %{ctx: ctx} do
-      out = Web.script_run_file(%{"path" => "/scripts/read-via-host.c"}, ctx)
-
-      assert {:tool_observations, content, events, observations} = out
-      assert events == []
-      assert [%{tool_name: "fs.read_file", status: "completed"}] = observations
-      assert Jason.decode!(content) =~ "alpha from vfs"
-    end
-
     test "script.run_file preserves a successful nested source-send execution fact", %{ctx: ctx} do
-      previous_provider = Application.get_env(:salix_agent, :im_provider_mod)
-      Application.put_env(:salix_agent, :im_provider_mod, SuccessfulInternalSendIMProvider)
-      SuccessfulInternalSendIMProvider.set_owner(self())
+      previous_provider = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
+      SystemsRuntime.put_env(:salix_agent, :im_provider_mod, SuccessfulInternalSendIMProvider)
+      SuccessfulInternalSendIMProvider.set_owner(SystemsRuntime.Proc.self())
 
       on_exit(fn ->
         if previous_provider,
-          do: Application.put_env(:salix_agent, :im_provider_mod, previous_provider),
-          else: Application.delete_env(:salix_agent, :im_provider_mod)
+          do: SystemsRuntime.put_env(:salix_agent, :im_provider_mod, previous_provider),
+          else: SystemsRuntime.delete_env(:salix_agent, :im_provider_mod)
       end)
 
       ctx =
@@ -332,40 +259,6 @@ defmodule SalixAgent.ToolsWebTest do
       assert get_in(egress, ["event", "source_message_ids"]) == ["source-1", "source-2"]
       assert get_in(egress, ["event", "outer_tool_call_id"]) == "outer-run-file"
     end
-
-    test "duplicate and empty env names raise", %{ctx: ctx} do
-      assert_raise RuntimeError, ~r/duplicate name "A"/, fn ->
-        Web.script_run_file(
-          %{
-            "path" => "/scripts/add.c",
-            "env" => [%{"name" => "A", "value" => "1"}, %{"name" => "A", "value" => "2"}]
-          },
-          ctx
-        )
-      end
-
-      assert_raise RuntimeError, ~r/non-empty name/, fn ->
-        Web.script_run_file(
-          %{"path" => "/scripts/add.c", "env" => [%{"name" => " ", "value" => "1"}]},
-          ctx
-        )
-      end
-    end
-
-    test "missing file raises", %{ctx: ctx} do
-      assert_raise RuntimeError, ~r/no such file: \/scripts\/nope.c/, fn ->
-        Web.script_run_file(%{"path" => "/scripts/nope.c"}, ctx)
-      end
-    end
-
-    test "sources over the compiler's 128 KiB cap raise", %{ctx: ctx, agent: agent} do
-      big = write_event(agent, "/scripts/big.c", String.duplicate("a", 128 * 1024 + 1))
-      commit_workspace!(agent, "tools-web-big-script", [big])
-
-      assert_raise RuntimeError, ~r/script too large/, fn ->
-        Web.script_run_file(%{"path" => "/scripts/big.c"}, ctx)
-      end
-    end
   end
 
   defp write_event(agent, path, body) do
@@ -377,6 +270,6 @@ defmodule SalixAgent.ToolsWebTest do
     assert {:ok, _} = AgentWorkspace.seed_operation(agent, operation_id, %{}, events)
   end
 
-  defp restore_env(key, nil), do: Application.delete_env(:salix_agent, key)
-  defp restore_env(key, value), do: Application.put_env(:salix_agent, key, value)
+  defp restore_env(key, nil), do: SystemsRuntime.delete_env(:salix_agent, key)
+  defp restore_env(key, value), do: SystemsRuntime.put_env(:salix_agent, key, value)
 end

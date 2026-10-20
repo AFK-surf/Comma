@@ -1,6 +1,6 @@
-import { chatAttachmentDownloadMaxBytes } from "@comma/chat-contract";
+import { useCall } from "@comma/core-client";
 import { useCommaLocale } from "@comma/i18n/react";
-import { ChatPanelVideo } from "@comma/ui";
+import { ChatPanelVideo } from "@comma/ui/components/chat-panel";
 import {
   useCallback,
   useContext,
@@ -9,7 +9,6 @@ import {
   useState,
   type SyntheticEvent,
 } from "react";
-import type { CommaApiClient } from "../../../../api";
 import { createFileDownloadCapability } from "../../../../runtime-files/fileDownloads";
 import {
   conversationFileSourceKey,
@@ -22,15 +21,14 @@ import { useDriveObjectUrl } from "../../../drive/useDriveObjectUrl";
 import type { ChatRegistryAttempt } from "../../ChatProvider";
 
 /**
- * Plays an agent's video attachment in the message. The bytes come from the
- * same conversation attachment source the file card downloads and previews, so
- * authorization and the size limit stay with that one owner. Anything short of
+ * Plays an agent's video attachment in the message. The core reads the bytes
+ * from the same conversation attachment source the file card downloads and
+ * previews, so authorization and the size limit stay with that one owner. Anything short of
  * a playable video reports `onUnavailable`, and the message paints the file
  * card instead.
  */
 export function MessageInlineVideo({
   active,
-  api,
   beginAttempt,
   mediaType,
   onUnavailable,
@@ -40,7 +38,6 @@ export function MessageInlineVideo({
 }: {
   /** Bytes are requested only once the message has come near the viewport. */
   active: boolean;
-  api: CommaApiClient;
   beginAttempt?:
     | (() => Pick<ChatRegistryAttempt, "signal" | "isCurrent" | "release">)
     | undefined;
@@ -53,6 +50,7 @@ export function MessageInlineVideo({
   testId: string;
 }) {
   const locale = useCommaLocale();
+  const call = useCall();
   const openMediaMenu = useContext(MediaMenuContext);
   const key = conversationFileSourceKey(source);
   const [loaded, setLoaded] = useState<{ blob: Blob; key: string }>();
@@ -67,10 +65,10 @@ export function MessageInlineVideo({
       ? AbortSignal.any([controller.signal, attempt.signal])
       : controller.signal;
     let current = true;
-    void resolveConversationFile(api, source, signal).then(
+    void resolveConversationFile(call, source, signal).then(
       (bytes) => {
         if (!current || signal.aborted || (attempt && !attempt.isCurrent())) return;
-        if (bytes.size === 0 || bytes.size > chatAttachmentDownloadMaxBytes) {
+        if (bytes.size === 0) {
           onUnavailable(position);
           return;
         }
@@ -87,7 +85,7 @@ export function MessageInlineVideo({
       controller.abort();
       attempt?.release();
     };
-  }, [active, api, beginAttempt, key, mediaType, onUnavailable, position, source]);
+  }, [active, call, beginAttempt, key, mediaType, onUnavailable, position, source]);
 
   const download = useMemo(
     () =>

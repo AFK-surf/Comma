@@ -27,11 +27,11 @@ defmodule SalixSignalProto.Attachment do
 
   @doc "64 new random attachment keys (CRS-10 section 6.1)."
   @spec generate_keys() :: keys()
-  def generate_keys, do: :crypto.strong_rand_bytes(64)
+  def generate_keys, do: SystemsRuntime.Proc.random_bytes(64)
 
   @doc "A new random 16-byte IV."
   @spec generate_iv() :: <<_::128>>
-  def generate_iv, do: :crypto.strong_rand_bytes(@iv_bytes)
+  def generate_iv, do: SystemsRuntime.Proc.random_bytes(@iv_bytes)
 
   @doc """
   The padded plaintext size for an attachment of `size` bytes:

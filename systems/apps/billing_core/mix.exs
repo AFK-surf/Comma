@@ -23,6 +23,8 @@ defmodule BillingCore.MixProject do
 
   defp deps do
     [
+      {:systems_clock, in_umbrella: true},
+      {:systems_runtime, in_umbrella: true},
       {:systems_observability, in_umbrella: true},
       {:ecto_sql, "~> 3.12"},
       {:postgrex, "~> 0.19"},

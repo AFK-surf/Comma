@@ -85,7 +85,7 @@ defmodule SalixAgent.AgentWorkspace do
            "ref" => stringify(ref),
            "size" => ref.size,
            "hash" => ref.hash,
-           "modified_at" => System.os_time(:second)
+           "modified_at" => SystemsClock.system_time(:second)
          }}
 
       {:error, _} = err ->
@@ -154,7 +154,7 @@ defmodule SalixAgent.AgentWorkspace do
            "ref" => stringify(ref),
            "size" => ref.size,
            "hash" => ref.hash,
-           "modified_at" => System.os_time(:second)
+           "modified_at" => SystemsClock.system_time(:second)
          }}
 
       {:error, _} = err ->
@@ -190,7 +190,7 @@ defmodule SalixAgent.AgentWorkspace do
        "ref" => stringify(ref),
        "size" => ref.size,
        "hash" => ref.hash,
-       "modified_at" => System.os_time(:second)
+       "modified_at" => SystemsClock.system_time(:second)
      }}
   end
 
@@ -209,7 +209,7 @@ defmodule SalixAgent.AgentWorkspace do
        "ref" => entry["ref"] || entry[:ref],
        "size" => entry["size"] || entry[:size],
        "hash" => entry["hash"] || entry[:hash],
-       "modified_at" => System.os_time(:second)
+       "modified_at" => SystemsClock.system_time(:second)
      }}
   end
 
@@ -352,7 +352,7 @@ defmodule SalixAgent.AgentWorkspace do
               "result" => result,
               "event_count" => length(events),
               "managed_blob_uuids" => managed_write_uuids(events),
-              "committed_at" => opts[:committed_at] || System.os_time(:second)
+              "committed_at" => opts[:committed_at] || SystemsClock.system_time(:second)
             }
 
             next_state =
@@ -485,7 +485,7 @@ defmodule SalixAgent.AgentWorkspace do
             "result" => result,
             "event_count" => length(events),
             "managed_blob_uuids" => managed_write_uuids(events),
-            "committed_at" => opts[:committed_at] || System.os_time(:second)
+            "committed_at" => opts[:committed_at] || SystemsClock.system_time(:second)
           }
 
           next_state =
@@ -600,7 +600,7 @@ defmodule SalixAgent.AgentWorkspace do
     operations =
       state.operations
       |> Map.put(operation_id, record)
-      |> prune_operations(System.os_time(:second))
+      |> prune_operations(SystemsClock.system_time(:second))
 
     %State{state | operations: operations}
   end

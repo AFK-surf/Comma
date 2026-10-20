@@ -15,7 +15,7 @@ defmodule SalixIM.SignalStatusTransport do
   def authorized?(connect, target), do: binding(connect, target) != nil
 
   def send(connect, target, kind, _ticket, _text) when kind in [:typing, :cancel] do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = send_status(connect, target, kind)
     observe(result, started)
     result
@@ -70,9 +70,9 @@ defmodule SalixIM.SignalStatusTransport do
         _ -> :unavailable
       end
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{
         component: "salix_im",
         operation: "private_chat_status",

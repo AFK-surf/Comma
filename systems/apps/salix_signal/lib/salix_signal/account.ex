@@ -224,7 +224,7 @@ defmodule SalixSignal.Account do
   # reads run here, concurrently, not in the owner process.
   defp presentations(context, acis) do
     acis
-    |> Task.async_stream(&presentation(context, &1),
+    |> SystemsClock.async_stream(&presentation(context, &1),
       max_concurrency: 8,
       timeout: @profile_timeout_ms + 5_000,
       on_timeout: :kill_task

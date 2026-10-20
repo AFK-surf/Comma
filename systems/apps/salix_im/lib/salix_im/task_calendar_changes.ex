@@ -168,7 +168,7 @@ defmodule SalixIM.TaskCalendarChanges do
   defp new_record(state) do
     state
     |> Map.put("change_id", Ids.new_calendar_change_id())
-    |> Map.put("created_at", System.system_time(:millisecond))
+    |> Map.put("created_at", SystemsClock.system_time(:millisecond))
   end
 
   defp state_digest(state),

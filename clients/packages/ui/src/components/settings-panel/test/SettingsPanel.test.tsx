@@ -2,6 +2,7 @@ import { render, screen } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SettingsPanel } from "../SettingsPanel";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 type LoopNode = { label: string; self?: LoopNode };
 const ShowLoop = ({ node }: { node: LoopNode }) => <p>{node.label}</p>;
@@ -105,7 +106,6 @@ describe("SettingsPanel", () => {
                 id: "telegram.connection",
                 title: "Telegram",
                 icon: <svg data-testid="provider-logo" />,
-                description: "Chat with Comma in Telegram.",
                 integration: {
                   status: { label: "Connected", color: "success" },
                   details: [
@@ -141,7 +141,10 @@ describe("SettingsPanel", () => {
     expect(screen.getByRole("region", { name: "Telegram" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Telegram" })).not.toBeInTheDocument();
     expect(screen.getByText("@ada")).toBeInTheDocument();
-    expect(screen.getByText("Connected")).toBeInTheDocument();
+    // A live state reads in its dot's colour.
+    const connected = screen.getByText("Connected");
+    expect(connected).toHaveClass("text-utility-success-700");
+    expect(connected.querySelector(".bg-utility-success-700")).not.toBeNull();
     expect(screen.getByText("Telegram account").tagName).toBe("DT");
     expect(screen.getByText("Private chats only.")).toBeInTheDocument();
     expect(screen.getByTestId("provider-logo").parentElement).toHaveAttribute(
@@ -163,6 +166,41 @@ describe("SettingsPanel", () => {
     await userEvent.click(screen.getByRole("button", { name: "Manage" }));
     await userEvent.click(screen.getByRole("menuitem", { name: "Disconnect" }));
     expect(disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("leaves out a service card's empty groups", () => {
+    render(
+      <SettingsPanel
+        sections={[
+          {
+            id: "signal",
+            title: "",
+            items: [
+              {
+                id: "signal.connection",
+                title: "Signal",
+                integration: {
+                  status: { label: "Not connected", color: "gray" },
+                  details: [],
+                  content: <p>Workspace Signal number</p>,
+                  note: "Connect with a one-time code.",
+                },
+              },
+            ],
+          },
+        ]}
+        title="Channels"
+      />
+    );
+    const card = screen.getByRole("region", { name: "Signal" });
+    expect(screen.getByText("Workspace Signal number")).toBeInTheDocument();
+    expect(screen.getByText("Connect with a one-time code.")).toBeInTheDocument();
+    // No account facts: no empty list under its own divider.
+    expect(card.querySelector("dl")).toBeNull();
+    // Nothing to report: the subtitle stays empty, ready to announce.
+    expect(card.querySelector("output")).toBeEmptyDOMElement();
+    // A neutral state carries no dot.
+    expect(screen.getByText("Not connected").querySelector("[aria-hidden]")).toBeNull();
   });
 
   it("renders display-only shortcut keycaps", () => {
@@ -245,7 +283,7 @@ describe("SettingsPanel", () => {
 
   it("focuses the active setting row for search navigation", () => {
     const scrollIntoView = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    stubProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
       value: scrollIntoView,
     });
@@ -280,7 +318,7 @@ describe("SettingsPanel", () => {
   it("scrolls the active setting without animation when reduced motion is enabled", () => {
     document.documentElement.setAttribute("data-comma-reduced-motion", "true");
     const scrollIntoView = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    stubProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
       value: scrollIntoView,
     });

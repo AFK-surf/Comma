@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useCommaAuth } from "../auth-context";
 import { useCommaClientSettings } from "../commaClientSettings";
 import { useRouterIdentity } from "../router-identity/RouterIdentityProvider";
 import { onboardingConnectedAppIds } from "./items/OnboardingAppsPanel";
@@ -28,10 +27,10 @@ export type OnboardingExperienceProps = {
 /**
  * The whole first-launch experience (a conversation with Comma: its greeting,
  * then one exchange each to connect apps, name the assistant, and allow the
- * macOS grants where they exist, the Side Chat and the Open Comma shortcut in
- * the macOS app, and a welcome page) with its own session hooks.
- * Render it inside the signed-in providers (auth, client settings,
- * PluginInstallProvider, RouterIdentityProvider).
+ * macOS grants where they exist, the Open Comma shortcut in the macOS app,
+ * and a welcome page) with its own session hooks.
+ * Render it inside the signed-in providers (auth, client settings, the client
+ * core, RouterIdentityProvider).
  *
  * It waits for the account's workspace itself, because every call it makes is
  * workspace-scoped; the grants join the conversation only where macOS offers
@@ -42,22 +41,18 @@ export function OnboardingExperience({
   onExited,
   presentation,
 }: OnboardingExperienceProps) {
-  const auth = useCommaAuth();
   const { name, setRouterName } = useRouterIdentity();
-  const workspace = useOnboardingWorkspace(auth.api);
-  const plugins = useOnboardingPlugins({ api: auth.api, workspace });
+  const workspace = useOnboardingWorkspace();
+  const plugins = useOnboardingPlugins({ workspace });
   const routines = useOnboardingRoutines({
-    api: auth.api,
     connected: onboardingConnectedAppIds(plugins.list).length > 0,
     workspace,
   });
   const permissionsAvailable = usePermissionsStepAvailable();
-  // The macOS app's window tells of the Side Chat and teaches the Open Comma
-  // shortcut, each where its shortcut is set.
+  // The macOS app's window teaches the Open Comma shortcut, where it is set.
   const { settings } = useCommaClientSettings();
   const mac = presentation === "window" && permissionsAvailable;
   const openShortcut = (mac && settings.openCommaShortcut) || undefined;
-  const sideChatShortcut = (mac && settings.sideChatShortcut) || undefined;
   // A tone picked for this onboarding, kept to its end.
   const [voice] = useState(randomOnboardingVoice);
 
@@ -76,7 +71,6 @@ export function OnboardingExperience({
       }
       routerName={name}
       openShortcut={openShortcut}
-      sideChatShortcut={sideChatShortcut}
       voice={voice}
       workspace={workspace}
     />

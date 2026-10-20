@@ -1,0 +1,186 @@
+{
+  "name": "apple_account_2026_10_16",
+  "description": "Two Apple mails 10 minutes apart. Find My was turned off on the owner's iPhone and Apple Watch; Comma notified and the owner did not answer. Then the Apple Account's shipping information changed. Staging judged the second mail alone as normal with no cost on 2026-10-16, although it may show someone else in the account. With the unanswered Find My matter, the second mail continues it and reaches the Router. Alone, or after the owner said they turned Find My off themselves, it does not.",
+  "now": "2026-10-16T08:46:14Z",
+  "pending_since": "2026-10-16T08:30:00Z",
+  "locale": "zh-CN",
+  "timezone": "Asia/Singapore",
+  "owner": {
+    "user": "outlook-user-1",
+    "team": "T0TEAM0001",
+    "handle": "kai",
+    "mail": "kai@example.com"
+  },
+  "home": [
+    {
+      "from": "agent",
+      "text": "刚收到的 Apple「查找」邮件称：你的 iPhone 和 Apple Watch 已关闭“查找”，无法再远程定位、设为丢失或抹除，重新激活也不再要求你的 Apple 账户验证。如果不是你刚操作的，请尽快打开设备设置或“查找”App 核对；要我带你检查并说明如何恢复保护吗？"
+    }
+  ],
+  "outlook": [
+    {
+      "id": "find_my_off",
+      "conversationId": "c-find_my_off",
+      "subject": "Find My has been disabled on Kai's iPhone",
+      "from": {
+        "emailAddress": {
+          "address": "noreply@email.apple.com"
+        }
+      },
+      "receivedDateTime": "2026-10-16T08:25:05Z",
+      "bodyPreview": "[https://statici.icloud.com/fmipmobile/deviceImages-4.0/iPhone/iPhone18,2-1-9-0/online-nolocation_iphone__2x.png] Find My has been disabled on Kai's iPhone and Kai's Apple Watch With Find My disabled, these devices can no longer be located, placed in Lost Mod",
+      "webLink": "https://outlook.office.com/mail/inbox/id/find_my_off",
+      "importance": "normal",
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "[https://statici.icloud.com/fmipmobile/deviceImages-4.0/iPhone/iPhone18,2-1-9-0/online-nolocation_iphone__2x.png]\r\nFind My has been disabled on Kai's iPhone and Kai's Apple Watch\r\nWith Find My disabled, these devices can no longer be located, placed in Lost Mode or remotely erased using icloud.com/find<https://www.icloud.com/find> or the Find My app.\r\nIn addition, verifying with your Apple Account will no longer be required for someone to erase, reactivate and use your iPhone and Apple Watch.\r\n[https://statici.icloud.com/emailimages/v4/common/icloud_footer_signoff@2x.png]\r\niCloud is a service provided by Apple.\r\nApple Account <https://account.apple.com/choose-your-country/> | Support <https://www.apple.com/support/icloud/ww> | Terms and Conditions <https://www.apple.com/legal/internet-services/icloud/ww/> | Privacy Policy <https://www.apple.com/uk/legal/privacy/en-ww/>\r\nCopyright © 2026 Apple Distribution International Ltd. Hollyhill Industrial Estate, Hollyhill, Cork, Ireland. All rights reserved."
+      }
+    },
+    {
+      "id": "shipping_changed",
+      "conversationId": "c-shipping_changed",
+      "subject": "Apple 账户信息已更新",
+      "from": {
+        "emailAddress": {
+          "address": "appleid@id.apple.com"
+        }
+      },
+      "receivedDateTime": "2026-10-16T08:35:17Z",
+      "bodyPreview": "[“Apple”] 你的 Apple 账户信息已更新 你的 Apple 账户 (kai@example.com) 已于2026年10月16日上午8:35:15 GMT 进行了以下更改： 送货信息 如果你未做过这些更改或认为有未经授权的人员访问了你的账户，你应尽快前往 Apple 账户页面 https://account.apple.com 更改你的密码。 此致 Apple 支持 Apple 账户<https://account.apple.com> | 支持<https://www.apple.",
+      "webLink": "https://outlook.office.com/mail/inbox/id/shipping_changed",
+      "importance": "normal",
+      "uniqueBody": {
+        "contentType": "text",
+        "content": "[“Apple”]\r\n你的 Apple 账户信息已更新\r\n\r\n你的 Apple 账户 (kai@example.com) 已于2026年10月16日上午8:35:15 GMT 进行了以下更改：\r\n\r\n送货信息\r\n\r\n如果你未做过这些更改或认为有未经授权的人员访问了你的账户，你应尽快前往 Apple 账户页面 https://account.apple.com 更改你的密码。\r\n\r\n此致\r\n\r\nApple 支持\r\n\r\nApple 账户<https://account.apple.com> | 支持<https://www.apple.com/support> | 隐私政策<https://www.apple.com/legal/privacy>\r\nCopyright © 2026 One Apple Park Way, Cupertino, CA 95014, United States‎ 保留所有权利。"
+      }
+    }
+  ],
+  "labels": {
+    "find_my_off": "https://outlook.office.com/mail/inbox/id/find_my_off",
+    "shipping_changed": "https://outlook.office.com/mail/inbox/id/shipping_changed"
+  },
+  "scenarios": [
+    {
+      "name": "after_unanswered_find_my",
+      "only": [
+        "shipping_changed"
+      ],
+      "read_channels": false,
+      "matters": [
+        {
+          "subject": "Find My has been disabled on Kai's iPhone",
+          "state": "active",
+          "urgency": "critical",
+          "decision": "notify",
+          "reason": "邮件称 iPhone 和 Apple Watch 的查找已关闭，失去远程定位、丢失模式、抹除和激活锁保护；近期对话里成员没说过自己在转让或关闭，已提醒成员核对",
+          "changedAt": "2026-10-16T08:28:20Z",
+          "cost": "Your devices can no longer be located, put in Lost Mode or remotely erased through Find My; someone can erase and reactivate them without your Apple Account verification.",
+          "due": "2026-10-16T08:25:05Z"
+        },
+        {
+          "subject": "Team stand-up",
+          "state": "active",
+          "urgency": "critical",
+          "decision": "notify",
+          "reason": "日历上今天 10:30 的站会仍是 confirmed，约 18 分钟后开始，已提醒",
+          "changedAt": "2026-10-16T02:11:40Z",
+          "cost": "You risk missing the start of your scheduled stand-up.",
+          "due": "2026-10-16T02:30:00Z"
+        },
+        {
+          "subject": "APP-MACOS-2N - App Hanging: App hanging for at least 2000 ms.",
+          "state": "quiet",
+          "urgency": "high",
+          "decision": "quiet",
+          "reason": "Sentry 报告一次至少 2 秒的卡顿，没有频率、影响人数或必须在简报前处理的证据，留待简报",
+          "changedAt": "2026-10-15T17:24:40Z",
+          "cost": "A production hang in the desktop app you maintain remains uninvestigated."
+        }
+      ],
+      "expect": {
+        "routed_any": [
+          "shipping_changed"
+        ],
+        "continues_any": [
+          "Find My has been disabled on Kai's iPhone"
+        ]
+      }
+    },
+    {
+      "name": "alone",
+      "only": [
+        "shipping_changed"
+      ],
+      "read_channels": false,
+      "matters": [
+        {
+          "subject": "Team stand-up",
+          "state": "active",
+          "urgency": "critical",
+          "decision": "notify",
+          "reason": "日历上今天 10:30 的站会仍是 confirmed，约 18 分钟后开始，已提醒",
+          "changedAt": "2026-10-16T02:11:40Z",
+          "cost": "You risk missing the start of your scheduled stand-up.",
+          "due": "2026-10-16T02:30:00Z"
+        },
+        {
+          "subject": "APP-MACOS-2N - App Hanging: App hanging for at least 2000 ms.",
+          "state": "quiet",
+          "urgency": "high",
+          "decision": "quiet",
+          "reason": "Sentry 报告一次至少 2 秒的卡顿，没有频率、影响人数或必须在简报前处理的证据，留待简报",
+          "changedAt": "2026-10-15T17:24:40Z",
+          "cost": "A production hang in the desktop app you maintain remains uninvestigated."
+        }
+      ],
+      "expect": {
+        "not_routed": [
+          "shipping_changed"
+        ]
+      }
+    },
+    {
+      "name": "after_owner_answered",
+      "only": [
+        "shipping_changed"
+      ],
+      "read_channels": false,
+      "matters": [
+        {
+          "subject": "Find My has been disabled on Kai's iPhone",
+          "state": "handled",
+          "urgency": "critical",
+          "decision": "quiet",
+          "reason": "成员回复：是自己换新手机前关的查找，不用再管",
+          "changedAt": "2026-10-16T08:28:20Z",
+          "cost": "Your devices can no longer be located, put in Lost Mode or remotely erased through Find My; someone can erase and reactivate them without your Apple Account verification.",
+          "due": "2026-10-16T08:25:05Z"
+        },
+        {
+          "subject": "Team stand-up",
+          "state": "active",
+          "urgency": "critical",
+          "decision": "notify",
+          "reason": "日历上今天 10:30 的站会仍是 confirmed，约 18 分钟后开始，已提醒",
+          "changedAt": "2026-10-16T02:11:40Z",
+          "cost": "You risk missing the start of your scheduled stand-up.",
+          "due": "2026-10-16T02:30:00Z"
+        },
+        {
+          "subject": "APP-MACOS-2N - App Hanging: App hanging for at least 2000 ms.",
+          "state": "quiet",
+          "urgency": "high",
+          "decision": "quiet",
+          "reason": "Sentry 报告一次至少 2 秒的卡顿，没有频率、影响人数或必须在简报前处理的证据，留待简报",
+          "changedAt": "2026-10-15T17:24:40Z",
+          "cost": "A production hang in the desktop app you maintain remains uninvestigated."
+        }
+      ],
+      "expect": {
+        "not_routed": [
+          "shipping_changed"
+        ]
+      }
+    }
+  ]
+}

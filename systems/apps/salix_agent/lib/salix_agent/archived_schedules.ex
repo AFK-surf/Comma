@@ -74,7 +74,7 @@ defmodule SalixAgent.ArchivedSchedules do
   """
   @spec pause(String.t(), pos_integer(), keyword()) :: {:ok, pause_summary()} | {:error, term()}
   def pause(agent_id, epoch, opts \\ []) when is_binary(agent_id) and is_integer(epoch) do
-    now_ms = Keyword.get(opts, :now_ms) || System.system_time(:millisecond)
+    now_ms = Keyword.get(opts, :now_ms) || SystemsClock.system_time(:millisecond)
 
     case Schedules.pause_for_archived_agent(agent_id, epoch, now_ms) do
       {:ok, 0} -> {:ok, %{paused: 0, undone: 0}}
@@ -115,7 +115,7 @@ defmodule SalixAgent.ArchivedSchedules do
           {:ok, non_neg_integer()} | {:error, term()}
   def resume_for_unarchive(agent_id, epoch, opts \\ [])
       when is_binary(agent_id) and is_integer(epoch) do
-    now_ms = Keyword.get(opts, :now_ms) || System.system_time(:millisecond)
+    now_ms = Keyword.get(opts, :now_ms) || SystemsClock.system_time(:millisecond)
     Schedules.resume_archive_paused(agent_id, epoch, now_ms, stamp: true)
   end
 
@@ -129,7 +129,7 @@ defmodule SalixAgent.ArchivedSchedules do
           {:ok, non_neg_integer()} | {:error, term()}
   def reconcile_live(agent_id, epoch, opts \\ [])
       when is_binary(agent_id) and is_integer(epoch) do
-    now_ms = Keyword.get(opts, :now_ms) || System.system_time(:millisecond)
+    now_ms = Keyword.get(opts, :now_ms) || SystemsClock.system_time(:millisecond)
     Schedules.resume_archive_paused(agent_id, epoch, now_ms)
   end
 end

@@ -314,12 +314,15 @@ func (g *gateway) Connect(stream remotev1.RemoteControllerService_ConnectServer)
 }
 
 func changesAuthoritativeInventory(command *remotev1.ControllerCommand) bool {
-	return command != nil && (command.GetEnsureAllocation() != nil || command.GetReleaseAllocation() != nil)
+	return command != nil && (command.GetEnsureAllocation() != nil || command.GetReleaseAllocation() != nil || command.GetDisposeAllocation() != nil)
 }
 
 func requiresFreshAuthoritativeInventory(command *remotev1.ControllerCommand, transcript controllerremote.CommandTranscript) bool {
 	result := transcript.Result
-	if result != nil && result.GetOutcome() == remotev1.CommandOutcome_COMMAND_OUTCOME_REJECTED && result.GetReason() == remotev1.ErrorReason_ERROR_REASON_STALE_REVISION {
+	if command != nil && command.GetDisposeAllocation() != nil {
+		return result != nil && result.GetOutcome() == remotev1.CommandOutcome_COMMAND_OUTCOME_SUCCEEDED
+	}
+	if result != nil && result.GetOutcome() == remotev1.CommandOutcome_COMMAND_OUTCOME_REJECTED && (result.GetReason() == remotev1.ErrorReason_ERROR_REASON_STALE_REVISION || result.GetReason() == remotev1.ErrorReason_ERROR_REASON_DISPOSAL_REVISION_NOT_ACCEPTED) {
 		return true
 	}
 	if !changesAuthoritativeInventory(command) {

@@ -24,13 +24,13 @@ defmodule Comma.OauthIdpTestKeys do
 
   @doc "Configures the KEK only, for tests that provision keys themselves."
   def install_kek do
-    previous = Application.get_env(:comma_core, :oauth_idp)
-    Application.put_env(:comma_core, :oauth_idp, kek: @kek)
+    previous = SystemsRuntime.get_env(:comma_core, :oauth_idp)
+    SystemsRuntime.put_env(:comma_core, :oauth_idp, kek: @kek)
 
     ExUnit.Callbacks.on_exit(fn ->
       case previous do
-        nil -> Application.delete_env(:comma_core, :oauth_idp)
-        config -> Application.put_env(:comma_core, :oauth_idp, config)
+        nil -> SystemsRuntime.delete_env(:comma_core, :oauth_idp)
+        config -> SystemsRuntime.put_env(:comma_core, :oauth_idp, config)
       end
     end)
 

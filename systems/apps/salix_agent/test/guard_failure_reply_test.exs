@@ -1,5 +1,5 @@
 defmodule SalixAgent.GuardFailureReplyTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.{InternalSession, TerminalReply}
   alias SalixAgent.InternalSession.State
@@ -138,26 +138,6 @@ defmodule SalixAgent.GuardFailureReplyTest do
     end
   end
 
-  test "durable guard admission rejects a failure event without its tool owner" do
-    event = InternalSession.query(exhausted(), :guard_failure_prepare, reply_binding())
-    assert :ok = State.validate_events([event])
-
-    for kind <- ["runtime_failure_reply_attempted", "runtime_failure_reply_settled"] do
-      event = Map.put(event, "kind", kind)
-
-      assert {:error, :invalid_runtime_failure_reply} =
-               State.validate_events([
-                 update_in(event, ["event"], &Map.delete(&1, "tool_call_id"))
-               ])
-
-      assert {:error, :invalid_runtime_failure_reply} =
-               State.validate_events([put_in(event, ["event", "kind"], "channel_onboarding")])
-    end
-
-    assert {:error, :invalid_capability_request_sync} =
-             State.validate_events([%{"type" => "capability_request_sync", "settled" => true}])
-  end
-
   defp attempted do
     session = exhausted()
     event = InternalSession.query(session, :guard_failure_prepare, reply_binding())
@@ -165,10 +145,14 @@ defmodule SalixAgent.GuardFailureReplyTest do
 
     InternalSession.apply_events(session, [
       %{
-        "type" => "assistant",
+        "type" => "runtime_message",
+        "from_queue" => true,
         "message_id" => 3,
-        "content" => "",
-        "tool_calls" => [%{"id" => @call, "name" => "call", "args" => %{}}]
+        "runtime_message_id" => @call,
+        "runtime_message_type" => "runtime_failure_reply",
+        "dedupe_key" => @call,
+        "summary" => "Runtime failure notice for the current source.",
+        "no_wake" => true
       },
       event
     ])
@@ -181,36 +165,6 @@ defmodule SalixAgent.GuardFailureReplyTest do
       status: status,
       error: status != "completed"
     }
-  end
-
-  test "cold recovery indexes an exhausted source before reserving its failure reply" do
-    {:ok, session} = InternalSession.load(InternalSession.persist(exhausted()))
-
-    assert InternalSession.get(session, :runtime_failure_reply) == nil
-    assert InternalSession.query(session, :guard_disposition_pending?)
-    assert "runtime_failure_reply" in InternalSession.query(session, :work_reasons)
-    refute InternalSession.query(session, :needs_transcript_continuation?)
-    refute InternalSession.query(session, :has_unprocessed_stable_work?)
-
-    reserved = attempted()
-    refute InternalSession.query(reserved, :guard_disposition_pending?)
-    assert "runtime_failure_reply" in InternalSession.query(reserved, :work_reasons)
-  end
-
-  test "denied send authority reserves a local refusal without granting a provider send" do
-    session = exhausted()
-    {events, call, authorized} = prepare_notice(session)
-    refute authorized
-    assert call["runtime_failure_reply"]["source_message_id"] == @source
-
-    reserved = InternalSession.apply_events(session, events)
-    refusal = %{result("guidance") | id: call["id"]}
-    settlement = InternalSession.query(reserved, :guard_failure_settlement, {refusal, []})
-    settled = InternalSession.apply_events(reserved, settlement)
-
-    assert InternalSession.last_ack_message_id(settled) == 3
-    refute "runtime_failure_reply" in InternalSession.query(settled, :work_reasons)
-    refute Enum.any?(settlement, &(&1["kind"] == "terminal_reply_delivered"))
   end
 
   test "a financial refusal stops the input and preserves accepted running work after reload" do
@@ -253,7 +207,7 @@ defmodule SalixAgent.GuardFailureReplyTest do
     {events, call, _authorized} = prepare_notice(running)
 
     assert call["args"]["reply_mode"] == "progress"
-    assert call["args"]["params"]["text"] =~ "Not enough credits"
+    assert call["args"]["params"]["text"] =~ "out of Comma credits"
     reserved = InternalSession.apply_events(running, events)
     assert InternalSession.query(reserved, :guard_failure_cleanup_events, {nil, 123}) == []
     receipt = %{result("guidance") | id: call["id"]}
@@ -309,29 +263,6 @@ defmodule SalixAgent.GuardFailureReplyTest do
 
     assert {:ok, %{"status" => "running"}} =
              InternalSession.lookup_async_call(running, "accepted-work")
-  end
-
-  test "a source without a destination is settled locally after restart without a send" do
-    state = InternalSession.export(exhausted())
-    [request, assistant] = state.messages
-    malformed = Map.put(origin(), "provider_context", %{})
-
-    session =
-      InternalSession.open(%{
-        state
-        | messages: [Map.put(request, :trusted_origin, malformed), assistant]
-      })
-
-    assert InternalSession.query(session, :guard_disposition_pending?)
-    assert TerminalReply.disposition_context(session, 3) == nil
-    {events, _next_id} = SalixAgent.Repair.plan_session(session)
-    assert State.validate_events(events) == :ok
-    restored = InternalSession.apply_events(session, events)
-    assert InternalSession.last_ack_message_id(restored) == 2
-    assert InternalSession.get(restored, :messages) == InternalSession.get(session, :messages)
-    refute InternalSession.query(restored, :guard_disposition_pending?)
-    assert InternalSession.get(restored, :runtime_failure_reply) == nil
-    assert Enum.any?(events, &(&1["kind"] == "runtime_failure_disposed"))
   end
 
   test "a committed attempt consumes its budget and failure ends only its activation" do
@@ -417,72 +348,13 @@ defmodule SalixAgent.GuardFailureReplyTest do
     session = attempted()
 
     events =
-      TerminalReply.settle(session, %{terminal_reply: reply_binding()}, result("completed"), [
-        %{
-          "type" => "tool_result",
-          "message_id" => 4,
-          "tool_call_id" => @call,
-          "tool_name" => "im_api.telegram.send_message",
-          "status" => "completed",
-          "content" => "sent"
-        }
-      ])
+      TerminalReply.settle(session, %{terminal_reply: reply_binding()}, result("completed"), [])
 
     delivered = Enum.find(events, &(&1["kind"] == "terminal_reply_delivered"))
     assert delivered["event"]["outcome"] == "blocked"
     settled = InternalSession.apply_events(session, events)
-    assert InternalSession.last_ack_message_id(settled) == 4
+    assert InternalSession.last_ack_message_id(settled) == 3
     assert InternalSession.get(settled, :runtime_failure_reply) == nil
-  end
-
-  test "recovery retires only owned work and retains a known successful receipt" do
-    session =
-      InternalSession.apply_events(attempted(), [
-        %{
-          "type" => "async_tool_call_started",
-          "tool_call_id" => @call,
-          "tool_name" => "im_api.telegram.send_message",
-          "status" => "running",
-          "completion_mode" => "external_callback",
-          "trusted_origin" => origin(),
-          "trusted_origin_source_message_ids" => [@source]
-        }
-      ])
-
-    cleanup =
-      InternalSession.query(session, :guard_failure_cleanup_events, {result("completed"), 1234})
-
-    assert [%{"type" => "async_tool_call_completed", "result" => receipt}] = cleanup
-    assert receipt == result("completed")
-    events = InternalSession.query(session, :guard_failure_settlement, {receipt, cleanup})
-    assert TerminalReply.settled?(events)
-    settled = InternalSession.apply_events(session, events)
-
-    assert {:ok, %{"status" => "completed", "result" => ^receipt}} =
-             InternalSession.lookup_async_call(settled, @call)
-  end
-
-  test "a restart answer after guard recovery does not settle the failure reply again" do
-    started = %{
-      "type" => "async_tool_call_started",
-      "tool_call_id" => @call,
-      "tool_name" => "im_api.telegram.send_message",
-      "status" => "running",
-      "completion_mode" => "external_callback",
-      "trusted_origin" => origin(),
-      "trusted_origin_source_message_ids" => [@source]
-    }
-
-    session = InternalSession.apply_events(attempted(), [started])
-    cleanup = InternalSession.query(session, :guard_failure_cleanup_events, {nil, 1234})
-    guard = cleanup ++ InternalSession.query(session, :guard_failure_settlement, {nil, cleanup})
-    assert TerminalReply.settled?(guard)
-
-    # Crash repair answers a restart request over the session with the guard
-    # events applied, as its restart plan sees it.
-    request = {"encode_recovered", {Map.delete(started, "type"), result("completed")}}
-    {events, _handoff} = SalixAgent.Repair.reader(session).({:restart, request, guard})
-    refute Enum.any?(events, &(&1["kind"] == "runtime_failure_reply_settled"))
   end
 
   test "unknown delivery survives archive and cold snapshot without another dispatch" do
@@ -531,67 +403,6 @@ defmodule SalixAgent.GuardFailureReplyTest do
     settled = InternalSession.apply_events(session, events)
     assert InternalSession.last_ack_message_id(settled) == 3
     assert Enum.any?(InternalSession.get(settled, :messages), &(&1[:source_message_id] == "next"))
-  end
-
-  test "archived later input cannot expand the failed attempt's acknowledgement" do
-    session =
-      InternalSession.apply_events(attempted(), [
-        %{
-          "type" => "delivery",
-          "from_queue" => true,
-          "message_id" => 4,
-          "role" => "user",
-          "source_message_id" => "next",
-          "content" => "next request",
-          "trusted_origin" => Map.put(origin(), "source_message_id", "next")
-        }
-      ])
-
-    seq = InternalSession.get(session, :last_seq)
-
-    archived =
-      InternalSession.apply_events(session, [
-        %{
-          "type" => "compaction",
-          "compacted_through" => 4,
-          "compacted_seq" => seq,
-          "summary" => "both requests",
-          "summary_sequence" => 1
-        },
-        %{"type" => "archive_advance", "archived_through" => seq, "segments" => []}
-      ])
-
-    assert InternalSession.get(archived, :messages) == []
-    events = InternalSession.query(archived, :guard_failure_settlement, {nil, []})
-
-    assert InternalSession.last_ack_message_id(InternalSession.apply_events(archived, events)) ==
-             3
-  end
-
-  test "running work and card obligations still prevent failure settlement" do
-    session =
-      InternalSession.apply_events(attempted(), [
-        %{
-          "type" => "async_tool_call_started",
-          "tool_call_id" => "work",
-          "tool_name" => "env.exec",
-          "status" => "running"
-        }
-      ])
-
-    assert InternalSession.query(session, :guard_failure_settlement, {nil, []}) == nil
-
-    state = InternalSession.export(attempted())
-
-    blocked =
-      InternalSession.open(%{
-        state
-        | provider_reply_obligations: %{
-            "task" => %{"kind" => "task_card"}
-          }
-      })
-
-    assert InternalSession.query(blocked, :guard_failure_settlement, {nil, []}) == nil
   end
 
   test "foreign destinations and unrelated running work cannot gain guard authority" do

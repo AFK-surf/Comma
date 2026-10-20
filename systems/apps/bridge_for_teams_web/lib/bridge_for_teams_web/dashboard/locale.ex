@@ -1,7 +1,7 @@
 defmodule BridgeForTeamsWeb.Dashboard.Locale do
   @moduledoc """
-  Resolves the request locale for the dashboard and applies it for the dead
-  render (HTTP/plug process).
+  Resolves the request locale for the dashboard and applies it to the request
+  process.
 
   Precedence:
 
@@ -11,12 +11,11 @@ defmodule BridgeForTeamsWeb.Dashboard.Locale do
     * **Anonymous users** (login/signup): `?locale=` → session `"locale"` (set by
       the switcher) → `Accept-Language` → default.
 
-  The resolved locale is always written back to the session and assigned as
-  `@locale` — this is what the connected LiveView reads in the `:set_locale`
-  `on_mount` hook (Gettext locale is process-local). For signed-in users the
-  session is treated as an output-only handoff (not an input), so a changed
-  personal/org preference takes effect immediately rather than being shadowed by
-  a stale session value.
+  The resolved locale is assigned as `@locale` (read by the server-rendered
+  pages and injected into the React app by `SPAController`) and written back to
+  the session. For signed-in users the session is output-only (not an input),
+  so a changed personal/org preference takes effect immediately rather than
+  being shadowed by a stale session value.
 
   Must run after `:fetch_session` and `fetch_current_user` in the pipeline.
   """
@@ -44,10 +43,8 @@ defmodule BridgeForTeamsWeb.Dashboard.Locale do
   end
 
   # Only write the session when the locale is non-default or the session already
-  # carries one. This keeps the LiveView handoff working (a missing session
-  # locale resolves to the default in the on_mount hook) while avoiding a
-  # gratuitous cookie on plain default-locale requests (e.g. the /dev/login
-  # bypass, which must mint no cookie).
+  # carries one, avoiding a gratuitous cookie on plain default-locale requests
+  # (e.g. the /dev/login bypass, which must mint no cookie).
   defp maybe_put_locale_session(conn, locale) do
     current = get_session(conn, @session_key)
 

@@ -1,5 +1,63 @@
 import Config
 
+# Systems CI runs several `mix test` processes on one host, each with its own
+# MIX_TEST_PARTITION. The partition number suffixes every database, the MinIO
+# bucket and the fixed listener port below; without it the names are unchanged.
+partition = System.get_env("MIX_TEST_PARTITION", "")
+
+# A test waits for the message its next step needs, not for an amount of
+# time: any shorter limit made the result depend on how loaded the machine
+# was. This limit only stops a test whose message never comes, below the
+# 60-second test timeout so the failure still shows the mailbox. Tests do not
+# pass their own `assert_receive` timeouts. `refute_receive` keeps its own
+# short default.
+config :ex_unit, assert_receive_timeout: 30_000
+
+# Tests bind configuration per test process with SystemsRuntime.Test, so a
+# swapped module or URL never leaks into another test.
+config :systems_runtime, scoped_env: true
+
+# Tests and MIX_ENV=test scripts do not reach the real network: a connection
+# to a host other than this machine fails the test that made it
+# (SystemsRuntime.NetworkGuard, docs/testing.md#no-real-network).
+config :systems_runtime, network_guard: true
+
+# Repos do not log each query. At :debug, every SQL statement of every test
+# went through the formatter and the job log, about 85 000 lines per BEAM job.
+repo_log = false
+
+# The application's typed sink workers flush on SystemsClock. Every test that
+# drives the clock steps through each of their flushes, so they flush once a
+# second instead of every 50 ms; a test that needs a fast flush starts its own
+# worker with :flush_ms.
+config :salix_analytics, typed_sink_flush_ms: 1_000
+
+# A test database's now() follows a manual SystemsClock (SystemsRuntime.DbClock).
+config :systems_clock,
+  observers: [SystemsRuntime.DbClock],
+  outside_blocked: [{SystemsRuntime.DbClock, :waiting_on_locks?, []}],
+  outside_blocked_report: {SystemsRuntime.DbClock, :lock_report, []}
+
+# The clock keeps each process that arms a timer, and a synchronous test fails
+# when a service of the node holds one that
+# apps/systems_clock/priv/node_timers.exs does not list
+# (SystemsClock.NodeTimers). A worker added to an application gets a switch
+# here, like the ones below, not a line in that list.
+config :systems_clock, node_timers: true
+
+# HTTP requests through Req keep their timeouts on SystemsClock (see
+# `SystemsClock.ReqAdapter`). A test that sets its own adapter replaces it.
+config :req, default_options: [adapter: &SystemsClock.ReqAdapter.run/1]
+
+config :systems_runtime,
+  db_clock_repos: [
+    BridgeForTeams.Repo,
+    SalixStore.Repo,
+    Comma.Repo,
+    BillingCore.Repo,
+    AlertRouter.Repo
+  ]
+
 config :alert_router,
   ecto_repos: [AlertRouter.Repo],
   start_repo: true,
@@ -14,11 +72,13 @@ config :alert_router,
   timeline_batch_size: 25
 
 config :alert_router, AlertRouter.Repo,
+  after_connect: {SystemsRuntime.DbClock, :after_connect, []},
+  log: repo_log,
   username: "postgres",
   password: "postgres",
   hostname: "127.0.0.1",
   port: String.to_integer(System.get_env("ALERT_ROUTER_TEST_DB_PORT", "5432")),
-  database: System.get_env("ALERT_ROUTER_TEST_DB", "alert_router_test"),
+  database: System.get_env("ALERT_ROUTER_TEST_DB", "alert_router_test") <> partition,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: 4,
   migration_source: "alert_router_schema_migrations",
@@ -85,7 +145,7 @@ config :salix_store,
   compute_runtime_base_url: "https://salix.test",
   runtime_active_revision_override: "test-runtime-revision",
   runtime_bundle_root: Path.expand("../apps/salix_store/test/fixtures/runtime-bundle", __DIR__),
-  s3_bucket: "salix-test",
+  s3_bucket: "salix-test" <> partition,
   s3_backend: live_llm_s3_backend,
   triage_record_backend: SalixStore.TriageRecords,
   snowflake_worker_id: 0
@@ -103,6 +163,8 @@ config :salix_store,
   start_repo: true
 
 config :salix_store, SalixStore.Repo,
+  after_connect: {SystemsRuntime.DbClock, :after_connect, []},
+  log: repo_log,
   username: "postgres",
   password: "postgres",
   hostname: "127.0.0.1",
@@ -110,7 +172,7 @@ config :salix_store, SalixStore.Repo,
   # Overridable so parallel checkouts (worktrees / sibling clones) with
   # DIVERGED unmerged migrations can isolate their test schemas instead of
   # corrupting each other through one shared database.
-  database: System.get_env("SALIX_TEST_DB", "salix_store_test"),
+  database: System.get_env("SALIX_TEST_DB", "salix_store_test") <> partition,
   pool_size: 8,
   migration_source: "salix_schema_migrations",
   migration_primary_key: [name: :id, type: :binary_id]
@@ -118,6 +180,8 @@ config :salix_store, SalixStore.Repo,
 config :salix_web,
   port: 0,
   api_token: "test-token"
+
+config :systems_observability, port: 0
 
 # Projection tests claim jobs explicitly; a background poller would race their
 # assertions against the node-global Salix test database.
@@ -181,12 +245,18 @@ config :comma_core,
   start_schema_readiness: false
 
 config :comma_core, Comma.Repo,
+  after_connect: {SystemsRuntime.DbClock, :after_connect, []},
+  log: repo_log,
   username: "postgres",
   password: "postgres",
   hostname: "127.0.0.1",
   port: String.to_integer(System.get_env("COMMA_TEST_DB_PORT", "5432")),
-  database: "comma_core_test",
+  database: "comma_core_test" <> partition,
   pool: Ecto.Adapters.SQL.Sandbox,
+  # Opt-in live fixtures (COMMA_COMPUTE_HOST_E2E) hold auto-mode checkouts in
+  # long-lived HTTP connections for minutes; gated tests keep the default.
+  ownership_timeout:
+    String.to_integer(System.get_env("COMMA_TEST_DB_OWNERSHIP_TIMEOUT_MS", "120000")),
   pool_size: 8,
   telemetry_prefix: [:comma, :repo],
   migration_primary_key: [name: :id, type: :binary_id]
@@ -217,11 +287,13 @@ config :billing_core, :pending_charge_worker_enabled, false
 config :billing_core, :llm_usage_worker_enabled, false
 
 config :billing_core, BillingCore.Repo,
+  after_connect: {SystemsRuntime.DbClock, :after_connect, []},
+  log: repo_log,
   username: "postgres",
   password: "postgres",
   hostname: "127.0.0.1",
   port: String.to_integer(System.get_env("BILLING_TEST_DB_PORT", "5432")),
-  database: "billing_core_test",
+  database: "billing_core_test" <> partition,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: 10,
   migration_primary_key: [name: :id, type: :binary_id]
@@ -231,11 +303,13 @@ config :billing_core, BillingCore.Repo,
 # check out per test). The default database is pre-created; worktrees may
 # override it to avoid mixing divergent migration ledgers.
 config :bridge_for_teams_core, BridgeForTeams.Repo,
+  after_connect: {SystemsRuntime.DbClock, :after_connect, []},
+  log: repo_log,
   username: "postgres",
   password: "postgres",
   hostname: "127.0.0.1",
   port: String.to_integer(System.get_env("BRIDGE_TEST_DB_PORT", "5432")),
-  database: System.get_env("BRIDGE_TEST_DB", "bridge_for_teams_test"),
+  database: System.get_env("BRIDGE_TEST_DB", "bridge_for_teams_test") <> partition,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: 10,
   migration_primary_key: [name: :id, type: :binary_id]
@@ -246,6 +320,7 @@ config :bridge_for_teams_core,
   salix_client: BridgeForTeams.Salix.Erpc,
   oidc_provider: BridgeForTeams.Auth.OIDC.Fake,
   feishu_provider: BridgeForTeams.Auth.Feishu.Fake,
+  lark_provider: BridgeForTeams.Auth.Lark.Fake,
   login_link_delivery: BridgeForTeams.LoginLinks.Delivery.Fake
 
 # The magic-link rate limiter is a node-global ETS bucket and ConnTest shares
@@ -270,11 +345,42 @@ config :bridge_for_teams_core,
 config :salix_web,
   site_rate_limit_redis_url: System.get_env("REDIS_TEST_URL", "redis://127.0.0.1:6379/14")
 
+# The node runs none of the deployment's triage processes (the review Runtime,
+# ReceiptRecovery and the product-effect workers). Started on the node, they
+# scan, claim and lock the triage tables other tests write, reset and read back
+# (a TRUNCATE in a test's setup deadlocked against them). A test starts the
+# triage processes it exercises (`SalixIM.Triage.Runtime`,
+# `ProductEffectWorker.process_once/1`).
+config :salix_web, native_triage: false
+
+# The services below do their work on a timer, on tables, buckets and
+# processes that every test of the node shares. The test node runs none of
+# that work beside the tests (SystemsClock.NodeTimers): a test calls the work
+# itself, or starts the worker under its own supervisor.
+config :salix_web,
+  subscription_runtime_worker: false,
+  cloud_vm_archive_gc: false
+
+config :salix_agent,
+  subscription_quota_worker: false,
+  prepared_blob_cleanup: false,
+  # The Loops host and reconciler serve the Loops of the tests, so they
+  # start; their periodic passes do not run.
+  loops_sweep: false
+
+# The keeper stays for ring changes, without its periodic pass.
+config :salix_cluster, conversation_owner_keeper_interval_ms: nil
+
 # The reconcile outbox drainer is driven deterministically by tests
 # (Reconciler.drain_once/1), not the periodic GenServer loop — its background
 # DB access has no sandbox connection and would just churn errors.
 config :bridge_for_teams_core, BridgeForTeams.Salix.Reconciler, enabled: false
 config :bridge_for_teams_core, BridgeForTeams.Salix.TenantConfigChecker, enabled: false
+
+# The dashboard projection reconciler refreshes every stale project it can see,
+# through whatever Salix client stub the running test installed. Its own test
+# starts it; elsewhere it would refresh other tests' projects in the background.
+config :bridge_for_teams_core, BridgeForTeams.DashboardProjection.Reconciler, enabled: false
 
 # Mac mini provision-request watching is also driven directly by tests. The
 # background loop has no SQL sandbox connection.
@@ -289,14 +395,12 @@ config :bridge_for_teams_web,
 
 config :salix_web, oauth_return_base_urls: ["http://localhost:4102"]
 
-# Dashboard endpoint under test: LiveViewTest drives it in-process (server:
-# false) with a fixed secret/salt.
+# Dashboard endpoint under test: ConnTest drives it in-process (server: false)
+# with a fixed secret.
 config :bridge_for_teams_web, BridgeForTeamsWeb.DashboardEndpoint,
   http: [ip: {127, 0, 0, 1}, port: 4102],
   secret_key_base: "test_only_secret_key_base_00000000000000000000000000000000000000000000",
-  live_view: [signing_salt: "comma4t-dash-test-salt"],
-  server: false,
-  check_origin: false
+  server: false
 
 # The local Triage rehearsal is an explicitly invoked, long-running acceptance
 # drive. Normal tests keep the endpoint in-process; the rehearsal opts into the
@@ -307,8 +411,7 @@ if rehearsal_port = System.get_env("COMMA_TRIAGE_REHEARSAL_UI_PORT") do
 
   config :bridge_for_teams_web, BridgeForTeamsWeb.DashboardEndpoint,
     http: [ip: {127, 0, 0, 1}, port: String.to_integer(rehearsal_port)],
-    server: true,
-    check_origin: false
+    server: true
 
   config :bridge_for_teams_web, dev_login: true
 end
@@ -320,8 +423,10 @@ config :salix_im,
 
 # Off the default :4400 so a running dev node doesn't collide with the test
 # boot. E2E tests can still choose a free port before the app starts.
+transfer_port = 4401 + String.to_integer("0" <> partition)
+
 config :salix_env,
-  transfer_port: String.to_integer(System.get_env("SALIX_TRANSFER_PORT", "4401")),
+  transfer_port: String.to_integer(System.get_env("SALIX_TRANSFER_PORT", "#{transfer_port}")),
   # Reconciler tests invoke bounded sweeps explicitly; the production ticker
   # would race their shared database fixtures.
   compute_reconciler_start_sweeper?: false
@@ -381,6 +486,46 @@ config :salix_agent, :subscription_storage_key, String.duplicate("s", 32)
 # is off.
 config :salix_signal, account_keeper: false
 
+# Signal services are not reached from tests: this name is this machine's
+# (`*.localhost`) and is in no hosts file, so it does not resolve.
+config :salix_signal, service_host: "signal-service.localhost"
+
+# Host names in MCP server URLs (Lark's, GitHub's) and in an Agent's web
+# requests (a tailnet device's `nas`) resolve only on this machine, so a test
+# that does not stand in for them sees a name that does not exist.
+config :salix_mcp, resolver: SystemsRuntime.Test.NoDNS
+config :salix_agent, resolver: SystemsRuntime.Test.NoDNS
+
 config :salix_agent, session_memory_budget_bytes: 8 * 1024 * 1024 * 1024
 
+# Session residency admits actors only while the node's memory is not under
+# pressure, sampled from the container or the BEAM. In tests that sample
+# would be the runner's memory, so admission would depend on the host and on
+# whatever else runs there. Tests sample a fixed healthy node instead; a test
+# of pressure sets it in the residency table itself. A sample of that fixed
+# node changes nothing, so the controller samples once an hour: every test
+# that drives the clock stepped through a sample each second.
+config :salix_agent, :session_residency,
+  sample: fn -> {:ok, %{used: 0, limit: 1}} end,
+  interval: 3_600_000
+
 config :salix_im, :conversation_log_recovery, false
+
+# Provider APIs that a test does not stand in for itself fail at once on this
+# machine, instead of resolving and calling the real host
+# (SystemsRuntime.NetworkGuard refuses any that still try). A test that needs
+# an answer starts its own server and points these at it.
+config :salix_im,
+  telegram_api_base_url: "http://127.0.0.1:1",
+  slack_api_base_url: "http://127.0.0.1:1/api",
+  slack_files_base_url: "http://127.0.0.1:1"
+
+config :comma_web, :telegram, api_base_url: "http://127.0.0.1:1"
+
+config :salix_store, :oauth_endpoint_overrides, %{
+  "linear" => %{
+    "token_url" => "http://127.0.0.1:1/oauth/token",
+    "revoke_url" => "http://127.0.0.1:1/oauth/revoke",
+    "api_url" => "http://127.0.0.1:1/graphql"
+  }
+}

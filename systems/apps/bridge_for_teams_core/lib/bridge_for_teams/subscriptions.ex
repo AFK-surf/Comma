@@ -1,5 +1,5 @@
 defmodule BridgeForTeams.Subscriptions do
-  @moduledoc "Organization-authorized access to Salix subscription accounts and templates."
+  @moduledoc "Organization-authorized access to Salix subscription accounts."
   import Ecto.Query
 
   alias BridgeForTeams.{Memberships, Orgs, Repo}
@@ -102,42 +102,5 @@ defmodule BridgeForTeams.Subscriptions do
     binding
     |> Map.drop(["project_id", "group_id", "device_id", "device_runtime_id"])
     |> Map.put("project", %{"id" => project.id, "name" => project.name, "slug" => project.slug})
-  end
-
-  def templates(scope) do
-    with {:ok, org} <- authorize(scope) do
-      Client.impl().private_template_operation(org.salix_tenant_id, :list, [])
-    end
-  end
-
-  def discover_models(scope, pool) when pool in ["codex", "claude"] do
-    with {:ok, org} <- authorize(scope) do
-      Client.impl().private_template_operation(org.salix_tenant_id, :discover, [pool])
-    end
-  end
-
-  def save_template(scope, id, attrs) do
-    with {:ok, org} <- authorize(scope) do
-      Client.impl().private_template_operation(org.salix_tenant_id, :save, [
-        id,
-        Map.take(
-          attrs,
-          ~w(name model model_display_name model_vendor subscription_provider max_tokens)
-        )
-      ])
-    end
-  end
-
-  def delete_template(scope, id) do
-    with {:ok, org} <- authorize(scope) do
-      if id in [org.default_template_id, org.default_router_template_id] or
-           id in (org.allowed_template_ids || []) do
-        {:error,
-         {:conflict,
-          "Remove this template from the organization's default and allowed models first."}}
-      else
-        Client.impl().private_template_operation(org.salix_tenant_id, :delete, [id])
-      end
-    end
   end
 end

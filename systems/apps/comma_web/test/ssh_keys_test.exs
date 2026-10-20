@@ -7,12 +7,12 @@ defmodule CommaWeb.SSHKeysTest do
   test "account API lists and revokes owned keys and excludes restricted sessions" do
     {:ok, user} =
       Comma.Accounts.get_or_create_user_by_email(
-        "keys-#{System.unique_integer([:positive])}@example.com"
+        "keys-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"
       )
 
     {:ok, foreign} =
       Comma.Accounts.get_or_create_user_by_email(
-        "foreign-#{System.unique_integer([:positive])}@example.com"
+        "foreign-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com"
       )
 
     {:ok, login} = Comma.Accounts.create_session(user["id"])
@@ -21,7 +21,7 @@ defmodule CommaWeb.SSHKeysTest do
     {:ok, restricted} =
       Comma.Accounts.create_session(user["id"], session_source: "ops_api", restricted: true)
 
-    key = :crypto.strong_rand_bytes(64)
+    key = SystemsRuntime.Proc.random_bytes(64)
     {:ok, identity} = SSHIdentities.enroll(user, key)
     {:ok, ssh_token} = SSHIdentities.login(key)
     assert {:ok, detail} = Comma.Admin.get_user(user["id"])

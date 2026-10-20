@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { NativeInstallCache, snapshotPaths } from "./native-build-cache";
 import pinnedRelease from "./opendropkit-release.json";
 
 export interface OpenDropKitRelease {
@@ -93,10 +94,13 @@ export async function fetchOpenDropKit(options: {
   platform: string;
   arch: string;
   binaryOverride?: string | undefined;
+  incremental?: boolean;
   release?: OpenDropKitRelease;
   fetch?: typeof fetch;
   /** Reads the private release; see `downloadOpenDropKitAsset`. */
   token?: string | undefined;
+  /** Where the pinned archive is kept between builds; beside the app by default. */
+  downloadCache?: string | undefined;
 }) {
   const { appDir, platform, arch } = options;
   if (platform !== "darwin") throw new Error("AirDrop requires macOS.");
@@ -104,6 +108,21 @@ export async function fetchOpenDropKit(options: {
   mkdirSync(output, { recursive: true });
   const release: OpenDropKitRelease = options.release ?? pinnedRelease;
   const override = options.binaryOverride?.trim();
+
+  const selected = release.archives[`${platform}/${arch}`];
+  const receipt = new NativeInstallCache(
+    join(appDir, ".native-cache/installs/opendropkit.json"),
+    options.incremental ?? false,
+    {
+      platform,
+      arch,
+      input: override
+        ? snapshotPaths([override, join(dirname(override), "OpenDropKit-LICENSE")])
+        : { tag: release.tag, selected },
+    },
+    [join(output, "opendropkit"), join(output, "OpenDropKit-LICENSE")]
+  );
+  if (receipt.reuse()) return;
 
   // Comma ships only the anonymous helper. A copy signed with the release's
   // AirDrop identity entitlements is private-entitled, and macOS refuses to
@@ -127,24 +146,27 @@ export async function fetchOpenDropKit(options: {
 
   if (override) {
     install(override, dirname(override));
+    receipt.save();
     console.log(`OpenDropKit copied from COMMA_OPENDROPKIT_BINARY (${override}).`);
     return;
   }
-  const selected = release.archives[`${platform}/${arch}`];
   if (!selected) throw new Error(`No OpenDropKit release for ${platform}/${arch}.`);
   const { archive, sha256 } = selected;
-  const cache = join(appDir, ".native-cache/opendropkit");
+  const cache = options.downloadCache ?? join(appDir, ".native-cache/opendropkit");
   mkdirSync(cache, { recursive: true });
   const cached = join(cache, archive);
   const digest = () => createHash("sha256").update(readFileSync(cached)).digest("hex");
   if (!existsSync(cached) || digest() !== sha256) {
+    // Another build may read the same cache: the archive appears whole or not at all.
+    const staged = `${cached}.${process.pid}.tmp`;
     writeFileSync(
-      cached,
+      staged,
       await downloadOpenDropKitAsset(release.tag, archive, {
         ...(options.fetch ? { fetch: options.fetch } : {}),
         token: options.token,
       })
     );
+    renameSync(staged, cached);
   }
   if (digest() !== sha256) {
     rmSync(cached, { force: true });
@@ -158,5 +180,6 @@ export async function fetchOpenDropKit(options: {
   } finally {
     rmSync(extracted, { force: true, recursive: true });
   }
+  receipt.save();
   console.log(`OpenDropKit ${release.tag} ready for ${platform}/${arch}.`);
 }

@@ -21,7 +21,7 @@ theorem resident_input_extends {s t event : Term} (step : ResidentStep s event t
     subst normalized
     have excluded := InputAdmission.admitted_event_no_retirement (events := [event]) (event := event)
       (by simpa using allowed) (by simp)
-    exact extends_trans (inner_extends (binary_ne_false excluded.2.2.2) (binary_ne_false excluded.2.2.1) call)
+    exact extends_trans (inner_extends (binary_ne_false excluded.2.2) call)
       (activity_frame_extends activity)
 
 theorem resident_input_batch_extends {s t : Term} {events : List Term} (execution : ResidentBatch s events t)
@@ -88,7 +88,7 @@ theorem prepareWrite_preserves {s prepared item : Term} {sealed j r : List Term}
   have output := pure_ok h
   have same : prepared = next := by simpa only [Term.tuple.injEq, List.cons.injEq, and_true, true_and] using output
   subst next
-  exact work_fields_preserves ⟨write_field_frame written rfl, write_field_frame written rfl⟩
+  exact work_fields_preserves ⟨write_field_frame written (by keys_absent), write_field_frame written (by keys_absent)⟩
     (normalize_preserves ready normalizedRead represented)
 
 theorem persist_preserves {s item : Term} {bytes : ByteArray} {sealed : List Term}

@@ -8,7 +8,7 @@ defmodule BridgeForTeams.SessionIdentityMigrationE2ETest do
   setup do
     SalixStore.S3.Fake.reset()
 
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
 
     {:ok, org} =
       Orgs.create_org(%{"name" => "Migration #{suffix}", "slug" => "migration-#{suffix}"})
@@ -38,7 +38,7 @@ defmodule BridgeForTeams.SessionIdentityMigrationE2ETest do
 
     # The product code for this table is retired; the row is seeded with SQL
     # because the identity migration still rewrites any stored data.
-    workspace_item_id = Ecto.UUID.generate()
+    workspace_item_id = SystemsRuntime.Proc.uuid()
 
     Repo.query!(
       """

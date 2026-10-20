@@ -3,6 +3,7 @@ module
 public meta import Lean.Elab.Command
 public meta import Lean.Elab.Tactic.ElabTerm
 public meta import VerifiedKernelProofs.Proof.WalkTactic
+public meta import VerifiedKernelProofs.Proof.StringKeys
 
 public section
 
@@ -22,7 +23,7 @@ elab "owner_control_frame_step " h:ident : tactic => Lean.Elab.Tactic.withMainCo
   if fn == `VerifiedKernel.Data.write then
     Lean.Elab.Tactic.evalTactic (← `(tactic|
       (simp only [$writeStep:ident] at $h:ident; obtain ⟨_, kept⟩ := $h;
-       refine $trans:ident (kept rfl) ?_)))
+       refine $trans:ident (kept (by keys_absent)) ?_)))
   else
     let lemma := Lean.mkIdent (`VerifiedKernel.Session.WorkConservation ++
       Lean.Name.mkSimple (fn.getString! ++ "_owner_control_frame_step"))

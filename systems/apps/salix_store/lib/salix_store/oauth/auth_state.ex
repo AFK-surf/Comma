@@ -78,7 +78,7 @@ defmodule SalixStore.OAuth.AuthState do
         {:error, {:invalid, "agent session identity is invalid"}}
 
       true ->
-        now = System.system_time(:millisecond)
+        now = SystemsClock.system_time(:millisecond)
 
         rec =
           record
@@ -102,7 +102,7 @@ defmodule SalixStore.OAuth.AuthState do
   """
   @spec get(String.t(), keyword()) :: {:ok, rec()} | {:error, :not_found | term()}
   def get(state_id, opts \\ []) do
-    now = opts[:now] || System.system_time(:millisecond)
+    now = opts[:now] || SystemsClock.system_time(:millisecond)
 
     case read(state_id) do
       {:ok, rec, etag} ->
@@ -166,7 +166,7 @@ defmodule SalixStore.OAuth.AuthState do
   defp do_consume(_state_id, _opts, 0), do: {:error, :precondition_failed}
 
   defp do_consume(state_id, opts, attempts) do
-    now = opts[:now] || System.system_time(:millisecond)
+    now = opts[:now] || SystemsClock.system_time(:millisecond)
 
     case read(state_id) do
       {:error, reason} ->

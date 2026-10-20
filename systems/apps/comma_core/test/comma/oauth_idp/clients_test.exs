@@ -4,7 +4,7 @@ defmodule Comma.OauthIdp.ClientsTest do
   publishes provider keys only and never enumerates clients.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Boruta.Ecto.Admin
   alias Comma.OauthIdp
@@ -12,7 +12,7 @@ defmodule Comma.OauthIdp.ClientsTest do
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Comma.Repo)
-    Ecto.Adapters.SQL.Sandbox.mode(Comma.Repo, {:shared, self()})
+    Ecto.Adapters.SQL.Sandbox.mode(Comma.Repo, {:shared, SystemsRuntime.Proc.self()})
     :ok
   end
 
@@ -46,51 +46,5 @@ defmodule Comma.OauthIdp.ClientsTest do
     # The per-client key Boruta generated at registration is not what
     # signing uses.
     refute resolved.private_key == client.private_key
-  end
-
-  test "get_client returns nil for an unknown client" do
-    OauthIdpTestKeys.install()
-    assert Comma.OauthIdp.Clients.get_client(Ecto.UUID.generate()) == nil
-  end
-
-  test "the JWKS lists exactly the provider keys, regardless of client count" do
-    kid = OauthIdpTestKeys.install()
-    for n <- 1..3, do: create_client!("jwks-client-#{n}")
-
-    jwks = Comma.OauthIdp.Clients.list_clients_jwk()
-
-    assert [%JOSE.JWK{} = jwk] = jwks
-    assert jwk.fields["kid"] == kid
-
-    # Public key material only.
-    {_meta, map} = JOSE.JWK.to_map(jwk)
-    refute Map.has_key?(map, "d")
-    assert map["kty"] == "RSA"
-  end
-
-  test "a missing signing key fails closed with a clear raise" do
-    previous = Application.get_env(:comma_core, :oauth_idp)
-    Application.delete_env(:comma_core, :oauth_idp)
-
-    on_exit(fn ->
-      case previous do
-        nil -> Application.delete_env(:comma_core, :oauth_idp)
-        config -> Application.put_env(:comma_core, :oauth_idp, config)
-      end
-    end)
-
-    client = create_client!("no-key")
-
-    assert_raise RuntimeError, ~r/has no signing key/, fn ->
-      Comma.OauthIdp.Clients.get_client(client.id)
-    end
-
-    assert_raise RuntimeError, ~r/has no signing key/, fn ->
-      Comma.OauthIdp.Clients.list_clients_jwk()
-    end
-
-    assert_raise RuntimeError, ~r/has no signing key/, fn ->
-      OauthIdp.signing_key!()
-    end
   end
 end

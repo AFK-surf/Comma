@@ -1,4 +1,5 @@
 export { AiActivity, AiWorkerActivity } from "./AiActivity";
+export { useGradientShimmer } from "./useGradientShimmer";
 export type {
   AiActivityEvent,
   AiActivityEventStatus,

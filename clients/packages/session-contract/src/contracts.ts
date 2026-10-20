@@ -15,6 +15,7 @@ export const sessionAuthorityKindSchema = z.enum([
   "web_cookie",
   "electron_main",
   "swiftui_keychain",
+  "android_keystore",
 ]);
 
 export const sessionAuthoritySchema = z.strictObject({
@@ -239,6 +240,7 @@ export const sessionSignOutInputSchema = z.strictObject({
 export const sessionRequestEmailLoginInputSchema = z.strictObject({
   email: z.string().min(1).max(320),
   expected: sessionAbsenceExpectationSchema,
+  resend: z.literal(true).optional(),
 });
 
 export const sessionVerifyLoginInputSchema = z.strictObject({
@@ -280,6 +282,8 @@ export const sessionOperationNameSchema = z.enum([
   "verify_email_login",
   "sign_in_with_google",
   "verify_google_link",
+  "sign_in_with_apple",
+  "verify_apple_link",
   "cancel_auth_attempt",
   "reconcile",
   "sign_out",
@@ -378,6 +382,19 @@ export const sessionOperationErrorPolicy = {
     unsupported: noRetry,
     unknown: noRetry,
   },
+  sign_in_with_apple: {
+    account_disabled: noRetry,
+    cancelled: noRetry,
+    conflict: noRetry,
+    credential_mutation_uncertain: reconcileBeforeContinuing,
+    credential_store_unavailable: waitForHostChange,
+    network_unavailable: retryOperation,
+    protocol_mismatch: waitForHostChange,
+    provider_unavailable: retryOperation,
+    rate_limited: retryOperation,
+    unsupported: noRetry,
+    unknown: noRetry,
+  },
   sign_in_with_google: {
     account_disabled: noRetry,
     cancelled: noRetry,
@@ -407,6 +424,21 @@ export const sessionOperationErrorPolicy = {
     conflict: noRetry,
     credential_mutation_uncertain: reconcileBeforeContinuing,
     credential_store_unavailable: waitForHostChange,
+    network_unavailable: retryOperation,
+    protocol_mismatch: waitForHostChange,
+    provider_unavailable: retryOperation,
+    rate_limited: retryOperation,
+    unsupported: noRetry,
+    unknown: noRetry,
+  },
+  verify_apple_link: {
+    account_disabled: noRetry,
+    cancelled: noRetry,
+    challenge_expired: startNewAuthAttempt,
+    conflict: noRetry,
+    credential_mutation_uncertain: reconcileBeforeContinuing,
+    credential_store_unavailable: waitForHostChange,
+    invalid_challenge: retryOperation,
     network_unavailable: retryOperation,
     protocol_mismatch: waitForHostChange,
     provider_unavailable: retryOperation,
@@ -531,6 +563,8 @@ export function sessionOperationResultSchema<
 export const sessionRequestEmailLoginValueSchema = z.strictObject({
   attempt: sessionAuthAttemptRefSchema,
   challengeId: boundedIdSchema,
+  expiresInSeconds: z.number().int().nonnegative().optional(),
+  resendAfterSeconds: z.number().int().nonnegative().optional(),
 });
 
 export const sessionGoogleSignInValueSchema = z.discriminatedUnion("status", [

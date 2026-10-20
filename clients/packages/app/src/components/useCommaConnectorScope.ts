@@ -5,17 +5,10 @@ import {
   type ConnectorScopeState,
 } from "@comma/native-bridge";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CommaApiClient } from "../api";
-import {
-  readActiveWorkspaceId,
-  subscribeActiveWorkspace,
-  writeActiveWorkspaceId,
-} from "./activeWorkspace";
+import { useActiveWorkspace } from "./activeWorkspace";
 
-type WorkspaceListApi = Pick<CommaApiClient, "listWorkspaces">;
-
-export function CommaConnectorRuntimeOwner({ api }: { api: WorkspaceListApi }) {
-  useCommaConnectorScope(true, api);
+export function CommaConnectorRuntimeOwner() {
+  useCommaConnectorScope(true);
   return null;
 }
 
@@ -28,72 +21,24 @@ export function CommaConnectorRuntimeOwner({ api }: { api: WorkspaceListApi }) {
  * validates the persisted selection. A deleted/stale localStorage id must
  * never become an immortal Connector retry target.
  */
-export function useCommaConnectorScope(enabled: boolean, api: WorkspaceListApi) {
+export function useCommaConnectorScope(enabled: boolean) {
   const bridge = getNativeBridge();
   const nativeAvailable = bridge.platform === "electron";
-  const [requestedWorkspaceId, setRequestedWorkspaceId] =
-    useState(readActiveWorkspaceId);
-  const [workspaceId, setWorkspaceId] = useState<string>();
   const [state, setState] = useState<ConnectorScopeState | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const mutationRef = useRef(0);
   const revisionRef = useRef(-1);
   const subscriptionRef = useRef(0);
-  const validatedWorkspaceIdsRef = useRef(new Set<string>());
 
-  useEffect(() => subscribeActiveWorkspace(setRequestedWorkspaceId), []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setWorkspaceId(undefined);
-    setState(null);
-    setError(undefined);
-
-    if (!enabled || !nativeAvailable) {
-      validatedWorkspaceIdsRef.current.clear();
-      return () => controller.abort();
-    }
-
-    // A direct Settings entry deliberately does not bootstrap or select a
-    // Workspace. Validation only repairs an explicit persisted selection.
-    if (!requestedWorkspaceId) return () => controller.abort();
-
-    if (validatedWorkspaceIdsRef.current.has(requestedWorkspaceId)) {
-      setWorkspaceId(requestedWorkspaceId);
-      return () => controller.abort();
-    }
-
-    void api
-      .listWorkspaces({ signal: controller.signal })
-      .then((workspaces) => {
-        if (controller.signal.aborted) return;
-        const validatedIds = new Set(workspaces.map((workspace) => workspace.id));
-        validatedWorkspaceIdsRef.current = validatedIds;
-        const resolvedWorkspaceId =
-          (validatedIds.has(requestedWorkspaceId)
-            ? requestedWorkspaceId
-            : workspaces[0]?.id) ?? undefined;
-
-        if (!resolvedWorkspaceId) {
-          setError("No active Workspace is available for Connector permissions.");
-          return;
-        }
-
-        setWorkspaceId(resolvedWorkspaceId);
-        if (resolvedWorkspaceId !== requestedWorkspaceId) {
-          setRequestedWorkspaceId(resolvedWorkspaceId);
-          writeActiveWorkspaceId(resolvedWorkspaceId);
-        }
-      })
-      .catch((reason: unknown) => {
-        if (!controller.signal.aborted) {
-          setError(reason instanceof Error ? reason.message : String(reason));
-        }
-      });
-
-    return () => controller.abort();
-  }, [api, enabled, nativeAvailable, requestedWorkspaceId]);
+  // A direct Settings entry deliberately does not bootstrap or select a
+  // Workspace: the Connector runs only for one the user selected. The core
+  // answers the account's workspace for it (the first one when it is gone).
+  const resolved = useActiveWorkspace(enabled && nativeAvailable);
+  const selected = resolved?.selected === true;
+  const workspaceId = selected ? resolved?.workspace?.id : undefined;
+  const failed = selected && resolved?.status === "error";
+  const missing = selected && resolved?.status === "ready" && !resolved.workspace;
 
   useEffect(() => {
     const subscription = ++subscriptionRef.current;
@@ -134,6 +79,13 @@ export function useCommaConnectorScope(enabled: boolean, api: WorkspaceListApi) 
       unsubscribe();
     };
   }, [bridge, enabled, nativeAvailable, workspaceId]);
+
+  // After the effect above, which starts each Workspace with no error.
+  useEffect(() => {
+    if (failed) setError("The account's Workspaces could not be read.");
+    else if (missing)
+      setError("No active Workspace is available for Connector permissions.");
+  }, [failed, missing]);
 
   const setScope = useCallback(
     async (scope: ConnectorScope) => {

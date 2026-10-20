@@ -6,16 +6,14 @@ import (
 )
 
 type runtimeAuthVerificationObservation struct {
-	provider         string
-	backend          string
-	nativeGeneration string
-	authEpoch        string
-	status           string
-	model            string
-	observedAt       int64
+	provider   string
+	backend    string
+	status     string
+	model      string
+	observedAt int64
 }
 
-// RuntimeAuthVerification.tla: provider I/O runs outside the existing target
+// Provider I/O runs outside the existing target
 // section. Cancellation and carrier replacement fence publication, not I/O.
 // Once published, accepted evidence is target-scoped within this process and
 // survives a control-carrier reconnect until its configuration owner changes.
@@ -46,10 +44,8 @@ func (m *runtimeAuthCoordinator) verifyPrivateTargetWithin(ctx context.Context, 
 	attempt.target, input.verifyCancel = local, cancel
 	input.outcome = runtimeAuthSaveOutcome{SaveResult: "not_requested"}
 	// Verification reads the selected profile and performs one isolated provider
-	// request. It does not share the mutation busy gate: after a Connector process
-	// restart, durable Session recovery can already own the target and must be
-	// able to regain this volatile proof. The attempt owner still excludes every
-	// credential mutation and a second verification.
+	// request. The attempt owner excludes every credential mutation and a second
+	// verification.
 	input.phase = "verifying"
 	unlock()
 
@@ -82,13 +78,11 @@ func (m *runtimeAuthCoordinator) verifyPrivateTargetWithin(ctx context.Context, 
 	}
 	published := m.codex.connector.commitPrivateRuntimeAuth(ctx, local, input.context, func() runtimeAuthSaveOutcome {
 		m.setPrivateVerification(target, runtimeAuthVerificationObservation{
-			provider:         input.context.Provider,
-			backend:          input.context.Backend,
-			nativeGeneration: input.context.NativeGeneration,
-			authEpoch:        input.context.AuthEpoch,
-			status:           outcome.Status,
-			model:            model,
-			observedAt:       m.now().UnixMilli(),
+			provider:   input.context.Provider,
+			backend:    input.context.Backend,
+			status:     outcome.Status,
+			model:      model,
+			observedAt: m.now().UnixMilli(),
 		})
 		input.phase, input.outcome.Issue = "failed", outcome.Issue
 		if outcome.Status == "authenticated" {
@@ -151,20 +145,12 @@ func (m *runtimeAuthCoordinator) privateVerificationOwnerCurrent(target runtimeP
 		return false
 	}
 	switch proof.provider {
-	case "pi":
-		// Pi has no independently replaceable native owner. Credential mutation
-		// clears this process-local target proof, and process restart destroys it.
-		return true
 	case "claude":
 		if m.codex == nil || m.codex.connector == nil {
 			return false
 		}
 		implementation, ok := m.codex.connector.runtimeImplementations["claude"].(*claudeRuntimeImplementation)
-		if !ok || implementation == nil {
-			return false
-		}
-		generation, epoch := implementation.authFence()
-		return proof.nativeGeneration == generation && proof.authEpoch == epoch
+		return ok && implementation != nil
 	default:
 		return false
 	}

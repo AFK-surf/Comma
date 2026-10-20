@@ -1,14 +1,9 @@
 import { useApplicationMenu } from "./application-menu/useApplicationMenu";
+import { useCall, useTopic, type CallFn } from "@comma/core-client";
 import { messages, type CommaLocale } from "@comma/i18n";
 import { useCommaLocale } from "@comma/i18n/react";
-import {
-  getNativeBridge,
-  type CommaNativeBridge,
-  type UpdateAsset,
-  type UpdateBridge,
-  type UpdateInfo,
-} from "@comma/native-bridge";
-import { toast } from "@comma/ui";
+import { getNativeBridge } from "@comma/native-bridge";
+import { toast } from "@comma/ui/components/toast";
 import { useEffect, useRef, useState } from "react";
 import {
   useSessionHostController,
@@ -17,27 +12,6 @@ import {
 
 const manualUpdateProgressToastId = "comma-manual-update-progress";
 const updateReadyToastId = "comma-update-ready";
-const automaticUpdateChecks = new WeakMap<
-  UpdateBridge,
-  Promise<ReadyUpdate | undefined>
->();
-const automaticUpdateRetryDelaysMs = [5_000, 30_000] as const;
-
-type ApplicableUpdate = UpdateInfo | UpdateAsset;
-
-// An update sitting on disk, waiting for a window in which offering a restart
-// is welcome. Carries its own bridge so the restart applies the release this
-// check actually downloaded.
-type ReadyUpdate = {
-  productName: string;
-  update: ApplicableUpdate;
-  updates: UpdateBridge;
-  version: string;
-};
-
-function reportUpdateFailure(stage: string, error: unknown) {
-  console.error(`[automatic-updates] ${stage} failed`, error);
-}
 
 function showApplyFailure(productName: string, locale: CommaLocale) {
   toast.info(messages.update_install_failed_title(undefined, { locale }), {
@@ -49,8 +23,11 @@ function showApplyFailure(productName: string, locale: CommaLocale) {
   });
 }
 
-function showUpdateReady(ready: ReadyUpdate, locale: CommaLocale) {
-  const { productName, update, updates, version } = ready;
+function showUpdateReady(
+  { productName, version }: { productName: string; version: string },
+  call: CallFn,
+  locale: CommaLocale
+) {
   let applying = false;
 
   toast.success(messages.update_ready_title(undefined, { locale }), {
@@ -66,9 +43,8 @@ function showUpdateReady(ready: ReadyUpdate, locale: CommaLocale) {
           if (applying) return;
           applying = true;
 
-          void updates
-            .apply(update)
-            .then((applied) => {
+          void call("appUpdate.apply", {})
+            .then(({ applied }) => {
               if (!applied) {
                 applying = false;
                 showApplyFailure(productName, locale);
@@ -76,7 +52,7 @@ function showUpdateReady(ready: ReadyUpdate, locale: CommaLocale) {
             })
             .catch((error: unknown) => {
               applying = false;
-              reportUpdateFailure("apply", error);
+              console.error("[automatic-updates] apply failed", error);
               showApplyFailure(productName, locale);
             });
         },
@@ -85,92 +61,27 @@ function showUpdateReady(ready: ReadyUpdate, locale: CommaLocale) {
   });
 }
 
-async function checkForAutomaticUpdate(updates: UpdateBridge, onDownload?: () => void) {
-  const status = await updates.status();
-
-  if (!status.configured) return undefined;
-  if (status.error) {
-    throw new Error(status.error);
-  }
-
-  const productName = status.productName ?? "Comma";
-  if (status.pendingRestart) {
-    return {
-      productName,
-      update: status.pendingRestart,
-      updates,
-      version: status.pendingRestart.Version,
-    };
-  }
-
-  const update = await updates.check();
-  if (!update) return undefined;
-
-  onDownload?.();
-  const downloaded = await updates.download(update);
-  if (!downloaded) {
-    throw new Error("The update bridge did not confirm the download.");
-  }
-
-  return {
-    productName,
-    update,
-    updates,
-    version: update.TargetFullRelease.Version,
-  };
-}
-
-function waitForRetry(delayMs: number) {
-  return new Promise<void>((resolve) => {
-    window.setTimeout(resolve, delayMs);
-  });
-}
-
-async function runAutomaticUpdateCheck(updates: UpdateBridge) {
-  for (let attempt = 0; attempt <= automaticUpdateRetryDelaysMs.length; attempt += 1) {
-    try {
-      return await checkForAutomaticUpdate(updates);
-    } catch (error: unknown) {
-      reportUpdateFailure("check", error);
-
-      const retryDelayMs = automaticUpdateRetryDelaysMs[attempt];
-      if (retryDelayMs === undefined) {
-        return undefined;
-      }
-
-      await waitForRetry(retryDelayMs);
-    }
-  }
-
-  return undefined;
-}
-
-// Memoized on the bridge, so the once-per-launch check survives a remount and
-// hands the same result to whoever asks next.
-function startAutomaticUpdateCheck(bridge: CommaNativeBridge) {
-  if (
-    bridge.platform !== "electron" ||
-    bridge.self.role !== "main-window" ||
-    bridge.self.windowId !== "win_main"
-  ) {
-    return undefined;
-  }
-
-  const existingCheck = automaticUpdateChecks.get(bridge.updates);
-  if (existingCheck) return existingCheck;
-
-  const check = runAutomaticUpdateCheck(bridge.updates);
-  automaticUpdateChecks.set(bridge.updates, check);
-  return check;
-}
-
+/**
+ * The desktop app's update, as the core keeps it (the `appUpdate` topic: the core checks, retries and downloads on
+ * its own clock): the restart offer, and the menu's Check for Updates with its progress.
+ */
 export function AutomaticUpdates() {
   const locale = useCommaLocale();
+  const call = useCall();
   const controller = useSessionHostController();
   const signedIn =
     useSessionLifecycleSnapshot(controller.lifecycle).phase === "signed_in";
-  const [ready, setReady] = useState<ReadyUpdate>();
+  const bridge = getNativeBridge();
+  const desktop = bridge.platform === "electron";
+  // The primary window offers the update the core found on its own; another offers one its own check found.
+  const primary =
+    desktop &&
+    bridge.self.role === "main-window" &&
+    bridge.self.windowId === "win_main";
+  const { value: update } = useTopic(desktop ? { topic: "appUpdate" } : null);
   const [checking, setChecking] = useState(false);
+  // Each manual check that ends with an update ready shows the offer again.
+  const [asked, setAsked] = useState(0);
   useApplicationMenu([
     {
       id: "check-updates",
@@ -182,26 +93,18 @@ export function AutomaticUpdates() {
           duration: Number.POSITIVE_INFINITY,
         });
         try {
-          const bridge = getNativeBridge();
-          const status = await bridge.updates.status();
-          if (!status.configured) {
+          const { outcome } = await call("appUpdate.check", {});
+          if (outcome === "unconfigured")
             toast.info(
               locale === "zh-CN"
                 ? "当前版本未配置更新源"
                 : "Updates are not configured for this build"
             );
-            return;
-          }
-          const next = await checkForAutomaticUpdate(bridge.updates, () => {
-            toast.info(locale === "zh-CN" ? "正在下载更新…" : "Downloading update…", {
-              id: manualUpdateProgressToastId,
-              duration: Number.POSITIVE_INFINITY,
-            });
-          });
-          if (next) setReady(next);
-          else toast.info(locale === "zh-CN" ? "已是最新版本" : "You’re up to date");
+          else if (outcome === "current")
+            toast.info(locale === "zh-CN" ? "已是最新版本" : "You’re up to date");
+          else setAsked((count) => count + 1);
         } catch (error: unknown) {
-          reportUpdateFailure("manual check", error);
+          console.error("[automatic-updates] manual check failed", error);
           toast.error(
             locale === "zh-CN" ? "检查更新失败" : "Could not check for updates",
             {
@@ -219,28 +122,42 @@ export function AutomaticUpdates() {
     },
   ]);
 
-  // Downloading is not the part that interrupts anyone, so it starts with the
-  // renderer: by the time a sign-in finishes, the release is already on disk.
+  // A manual check that waits on a download says so.
+  const downloading = update?.downloading === true;
   useEffect(() => {
-    let live = true;
-    void startAutomaticUpdateCheck(getNativeBridge())?.then((next) => {
-      if (live && next) setReady(next);
+    if (!checking || !downloading) return;
+    toast.info(locale === "zh-CN" ? "正在下载更新…" : "Downloading update…", {
+      id: manualUpdateProgressToastId,
+      duration: Number.POSITIVE_INFINITY,
     });
-    return () => {
-      live = false;
-    };
-  }, []);
+  }, [checking, downloading, locale]);
 
-  // Offering the restart is. The prompt belongs to the product, so it waits for
+  // The core checks on its own clock; a window coming back (focus, the network)
+  // lets it catch up a check the computer slept through.
+  useEffect(() => {
+    if (!primary) return;
+    const wake = () => void call("appUpdate.wake", {}).catch(() => undefined);
+    window.addEventListener("focus", wake);
+    window.addEventListener("online", wake);
+    return () => {
+      window.removeEventListener("focus", wake);
+      window.removeEventListener("online", wake);
+    };
+  }, [call, primary]);
+
+  // The restart prompt belongs to the product, so it waits for
   // a session and leaves with one: it never lands on the login screen, and
   // signing out takes it back down. Only an offer this window actually raised
   // is dismissed — sonner delivers a dismissal a frame late, so dismissing an
   // id preemptively can retire the very toast that arrives in between.
   const offered = useRef(false);
+  const productName = update?.ready?.productName;
+  const version = update?.ready?.version;
+  const offers = primary || asked > 0;
 
   useEffect(() => {
-    if (signedIn && ready) {
-      showUpdateReady(ready, locale);
+    if (signedIn && offers && productName !== undefined && version !== undefined) {
+      showUpdateReady({ productName, version }, call, locale);
       offered.current = true;
       return;
     }
@@ -248,7 +165,7 @@ export function AutomaticUpdates() {
       toast.dismiss(updateReadyToastId);
       offered.current = false;
     }
-  }, [locale, ready, signedIn]);
+  }, [asked, call, locale, offers, productName, signedIn, version]);
 
   return null;
 }

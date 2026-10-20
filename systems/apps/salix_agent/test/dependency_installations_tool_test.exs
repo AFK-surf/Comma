@@ -1,23 +1,28 @@
 defmodule SalixAgent.DependencyInstallationsToolTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.Tools.DependencyInstallations
 
   defmodule Dispatch do
     def request(agent_id, target, method, params) do
-      send(self(), {:dependency_request, agent_id, target, method, params})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:dependency_request, agent_id, target, method, params}
+      )
+
       {:ok, %{"entries" => %{}}}
     end
   end
 
   setup do
-    previous = Application.get_env(:salix_agent, :env_dispatch)
-    Application.put_env(:salix_agent, :env_dispatch, Dispatch)
+    previous = SystemsRuntime.get_env(:salix_agent, :env_dispatch)
+    SystemsRuntime.put_env(:salix_agent, :env_dispatch, Dispatch)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_agent, :env_dispatch, previous),
-        else: Application.delete_env(:salix_agent, :env_dispatch)
+        do: SystemsRuntime.put_env(:salix_agent, :env_dispatch, previous),
+        else: SystemsRuntime.delete_env(:salix_agent, :env_dispatch)
     end)
   end
 

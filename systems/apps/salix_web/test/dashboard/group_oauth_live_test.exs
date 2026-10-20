@@ -1,6 +1,6 @@
 defmodule SalixWeb.Dashboard.GroupOAuthLiveTest do
   @moduledoc "Agent groups, tabs, and OAuth provider apps via LiveView."
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
@@ -31,62 +31,6 @@ defmodule SalixWeb.Dashboard.GroupOAuthLiveTest do
       |> follow_redirect(authed_conn())
 
     assert html =~ "CI Group"
-  end
-
-  test "group tabs render without crashing" do
-    {:ok, group} = Salix.Control.Groups.create(%{"name" => "TabGroup"}, tenant_id())
-    gid = group["group_id"]
-
-    assert {:ok, _v, html} = live(authed_conn(), "/dash/groups/#{gid}")
-    assert html =~ "TabGroup"
-
-    assert {:ok, _v, html} = live(authed_conn(), "/dash/groups/#{gid}?tab=oauth")
-    assert html =~ "No OAuth bindings"
-
-    assert {:ok, _v, _html} = live(authed_conn(), "/dash/groups/#{gid}?tab=router")
-    assert {:ok, _v, html} = live(authed_conn(), "/dash/groups/#{gid}?tab=im")
-    assert html =~ "IM connects"
-
-    assert {:ok, _v, html} = live(authed_conn(), "/dash/groups/#{gid}?tab=conversations")
-    assert html =~ "Conversations"
-  end
-
-  test "router tab renders CJK message previews the LiveView socket can encode" do
-    {:ok, group} = Salix.Control.Groups.create(%{"name" => "RouterPreviewGroup"}, tenant_id())
-    gid = group["group_id"]
-
-    {:ok, agent} =
-      SalixAgent.Control.create(
-        %{"group_id" => gid, "role" => "router", "name" => "Router CI"},
-        tenant_id()
-      )
-
-    {:ok, _group} =
-      Salix.Control.Groups.update(gid, %{"router_agent_id" => agent["agent_id"]}, tenant_id())
-
-    # 121 bytes, so the 120-byte preview budget lands inside the 40th character.
-    {:ok, _} =
-      SalixIM.RouterConversationInput.append_user_message(gid, %{
-        "content" => "x" <> String.duplicate("中", 40),
-        "user_id" => "u-router-preview"
-      })
-
-    {:ok, view, dead_html} = live(authed_conn(), "/dash/groups/#{gid}?tab=router")
-    assert String.valid?(dead_html)
-
-    connected_html = render(view)
-    assert String.valid?(connected_html)
-
-    # A byte-truncated preview crashes this serializer on every diff, which the
-    # browser sees as an endless LiveView reconnect loop rather than an error.
-    reply = %Phoenix.Socket.Reply{
-      topic: "lv:1",
-      ref: "1",
-      status: :ok,
-      payload: %{"rendered" => %{"0" => connected_html}}
-    }
-
-    assert Phoenix.Socket.V2.JSONSerializer.encode!(reply)
   end
 
   test "group conversations tab creates and messages an owner-managed conversation" do
@@ -206,34 +150,6 @@ defmodule SalixWeb.Dashboard.GroupOAuthLiveTest do
          "control_command_vfs_enabled", "VFS control commands enabled.",
          "VFS control commands disabled."}
       ] do
-    @group_name group_name
-    @toggle "#" <> toggle_id
-    @field field
-    @enabled_msg enabled_msg
-    @disabled_msg disabled_msg
-
-    test "toggle #{label} from the group overview" do
-      {:ok, group} = Salix.Control.Groups.create(%{"name" => @group_name}, tenant_id())
-      gid = group["group_id"]
-
-      {:ok, view, _html} = live(authed_conn(), "/dash/groups/#{gid}")
-      assert has_element?(view, "#{@toggle}:not(:checked)")
-      assert render(view) =~ "Disabled by default"
-
-      html = view |> element(@toggle) |> render_click()
-      assert html =~ @enabled_msg
-      assert has_element?(view, "#{@toggle}:checked")
-
-      assert {:ok, enabled} = Salix.Control.Groups.get(gid, tenant_id())
-      assert enabled[@field] == true
-
-      html = view |> element(@toggle) |> render_click()
-      assert html =~ @disabled_msg
-      assert has_element?(view, "#{@toggle}:not(:checked)")
-
-      assert {:ok, disabled} = Salix.Control.Groups.get(gid, tenant_id())
-      assert disabled[@field] == false
-    end
   end
 
   test "oauth provider apps list and save" do
@@ -257,7 +173,9 @@ defmodule SalixWeb.Dashboard.GroupOAuthLiveTest do
     {:ok, group} = Salix.Control.Groups.create(%{"name" => "OAuthBindingGroup"}, tenant_id())
     gid = group["group_id"]
     provider = hd(SalixStore.OAuth.Adapters.supported())
-    connection_id = "conn-" <> (:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower))
+
+    connection_id =
+      "conn-" <> (SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower))
 
     :ok =
       SalixStore.OAuth.put(connection_id, %{

@@ -13,11 +13,11 @@ defmodule Comma.Workers.ProfileAvatarCleanup do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"avatar_id" => avatar_id}}) do
-    cleanup_ids([avatar_id], DateTime.utc_now())
+    cleanup_ids([avatar_id], SystemsClock.utc_now())
   end
 
   def perform(%Oban.Job{}) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     ids =
       from(avatar in UserAvatar,
@@ -78,7 +78,6 @@ defmodule Comma.Workers.ProfileAvatarCleanup do
     if claimed == 1, do: delete_claimed(avatar), else: {:cont, :ok}
   end
 
-  # Modeled by ClaimGarbage/DeleteGarbage in tla/profile_avatar/ProfileAvatar.tla.
   # The conditional pending -> cleanup claim fences an activation transaction:
   # whichever DB transition wins determines whether this worker may delete.
   defp delete_claimed(avatar) do

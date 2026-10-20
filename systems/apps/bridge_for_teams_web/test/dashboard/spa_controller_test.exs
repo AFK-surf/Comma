@@ -18,6 +18,12 @@ defmodule BridgeForTeamsWeb.Dashboard.SPAControllerTest do
             ~p"/orgs/#{org.slug}",
             ~p"/orgs/#{org.slug}/projects",
             ~p"/orgs/#{org.slug}/projects/#{project.id}",
+            ~p"/orgs/#{org.slug}/projects/#{project.id}/plugins",
+            ~p"/orgs/#{org.slug}/projects/#{project.id}/plugins/linear",
+            ~p"/orgs/#{org.slug}/projects/#{project.id}/skills",
+            ~p"/orgs/#{org.slug}/projects/#{project.id}/connections",
+            ~p"/orgs/#{org.slug}/projects/#{project.id}/integrations",
+            ~p"/orgs/#{org.slug}/projects/#{project.id}/tasks/cnv1_task",
             ~p"/orgs/#{org.slug}/plugins",
             ~p"/orgs/#{org.slug}/meetings",
             ~p"/orgs/#{org.slug}/meetings/past",
@@ -46,31 +52,6 @@ defmodule BridgeForTeamsWeb.Dashboard.SPAControllerTest do
         assert html =~ ~s(<meta name="csrf-token" content=")
         assert html =~ ~s(<meta name="bft-locale" content="en" />)
       end
-    end
-
-    test "passes the user's dashboard language to the React app", %{conn: conn, user: user} do
-      {:ok, _} = BridgeForTeams.Accounts.update_user(user, %{"preferred_locale" => "zh_Hans"})
-
-      html = conn |> get(~p"/") |> html_response(200)
-
-      assert html =~ ~s(<html lang="zh-Hans">)
-      assert html =~ ~s(<meta name="bft-locale" content="zh_Hans" />)
-    end
-
-    test "a flash left by a redirect into the React app is written into the page once",
-         %{conn: conn, org: org} do
-      missing = ~p"/orgs/#{org.slug}/projects/#{Ecto.UUID.generate()}/plugins"
-      conn = get(conn, missing)
-      assert redirected_to(conn) == ~p"/orgs/#{org.slug}/projects"
-
-      conn = get(conn, ~p"/orgs/#{org.slug}/projects")
-      html = html_response(conn, 200)
-
-      assert html =~
-               ~s(<meta name="bft-flash" data-kind="error" content="Agent Swarm not found." />)
-
-      html = conn |> get(~p"/orgs/#{org.slug}/projects") |> html_response(200)
-      refute html =~ "bft-flash"
     end
 
     test "escapes the flash message", %{conn: conn} do

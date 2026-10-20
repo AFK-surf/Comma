@@ -6,34 +6,76 @@
     "paths": {
       "@comma/app": ["../../packages/app/src/index.tsx"],
       "@comma/config": ["../../packages/config/src/index.ts"],
+      "@comma/core/contract": ["../../packages/core/src/contract.ts"],
+      "@comma/core/chat": ["../../packages/core/src/chat/public.ts"],
+      "@comma/core/markdown": ["../../packages/core/src/markdown/index.ts"],
+      "@comma/core/api-schemas": ["../../packages/core/src/comma/api-schemas.ts"],
+      "@comma/core-client": ["../../packages/core-client/src/index.tsx"],
       "@comma/i18n": ["../../packages/i18n/src/index.ts"],
       "@comma/i18n/react": ["../../packages/i18n/src/react.tsx"],
       "@comma/layout-inspector": ["../../packages/layout-inspector/src/index.ts"],
       "@comma/native-bridge": ["../../packages/native-bridge/src/index.ts"],
       "@comma/session-contract": ["../../packages/session-contract/src/index.ts"],
-      "@comma/ui": ["../../packages/ui/src/index.ts"]
+      "@comma/ui": ["../../packages/ui/src/index.ts"],
+      "@comma/ui/*": ["../../packages/ui/src/*"],
+      "@comma/core-kernel": ["../../packages/core-kernel/src/index.ts"],
+      "@comma/core-kernel/client": ["../../packages/core-kernel/src/client/index.ts"],
+      "@comma/core-kernel/testing": ["../../packages/core-kernel/src/testing.ts"],
+      "@comma/core-kernel/node-sql": ["../../packages/core-kernel/src/node-sql.ts"],
+      "@comma/core-kernel/web-worker": [
+        "../../packages/core-kernel/src/worker/relay.ts"
+      ]
     }
   },
-  "include": [
-    "src/renderer/**/*.ts",
-    "src/renderer/**/*.tsx",
-    "../../packages/app/src/**/*.ts",
-    "../../packages/app/src/**/*.tsx",
-    "../../packages/config/src/**/*.ts",
-    "../../packages/i18n/src/**/*.ts",
-    "../../packages/i18n/src/**/*.tsx",
-    "../../packages/layout-inspector/src/**/*.ts",
-    "../../packages/layout-inspector/src/**/*.tsx",
-    "../../packages/native-bridge/src/**/*.ts",
-    "../../packages/session-contract/src/**/*.ts",
-    "../../packages/ui/src/**/*.ts",
-    "../../packages/ui/src/**/*.tsx",
-    "../../packages/ui/src/**/*.json"
-  ],
+  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx"],
   "exclude": [
     "**/*.test.*",
     "**/*.spec.*",
     "../../packages/**/*.test.*",
+    "../../packages/app/src/test/productInboxProjectionHarness.ts",
+    "../../packages/app/src/test/settingsHarness.tsx",
+    "../../packages/app/src/test/labelsCore.tsx",
     "../../packages/**/*.spec.*"
+  ],
+  "references": [
+    {
+      "path": "../../packages/analytics"
+    },
+    {
+      "path": "../../packages/app"
+    },
+    {
+      "path": "../../packages/chat-contract"
+    },
+    {
+      "path": "../../packages/config"
+    },
+    {
+      "path": "../../packages/core"
+    },
+    {
+      "path": "../../packages/core-client"
+    },
+    {
+      "path": "../../packages/core-kernel"
+    },
+    {
+      "path": "../../packages/i18n"
+    },
+    {
+      "path": "../../packages/layout-inspector"
+    },
+    {
+      "path": "../../packages/native-bridge"
+    },
+    {
+      "path": "../../packages/recommendation-contract"
+    },
+    {
+      "path": "../../packages/session-contract"
+    },
+    {
+      "path": "../../packages/ui"
+    }
   ]
 }

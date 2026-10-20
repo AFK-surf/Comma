@@ -1,20 +1,23 @@
 defmodule SalixVoice.TestStubs do
+  require SystemsRuntime.Proc
+
   @moduledoc false
   # Boundary stubs for CallActor tests. Each reports to the pid stored in
-  # `Application.get_env(:salix_voice, :test_pid)`.
+  # `SystemsRuntime.get_env(:salix_voice, :test_pid)`.
 
   defmodule Ingress do
     @moduledoc false
     def enqueue_group_router_im_provider_message(group_id, content, metadata, source_id, opts) do
-      delays = Application.get_env(:salix_voice, :test_ingress_delays, %{})
-      if delay = delays[metadata["event_type"]], do: Process.sleep(delay)
+      delays = SystemsRuntime.get_env(:salix_voice, :test_ingress_delays, %{})
+      if delay = delays[metadata["event_type"]], do: SystemsClock.sleep(delay)
 
       report({:ingress, group_id, content, metadata, source_id, opts})
 
-      Application.get_env(:salix_voice, :test_ingress_result, {:ok, :queued})
+      SystemsRuntime.get_env(:salix_voice, :test_ingress_result, {:ok, :queued})
     end
 
-    defp report(message), do: send(Application.fetch_env!(:salix_voice, :test_pid), message)
+    defp report(message),
+      do: SystemsRuntime.Proc.send(SystemsRuntime.fetch_env!(:salix_voice, :test_pid), message)
   end
 
   defmodule ProfileDecider do
@@ -22,14 +25,18 @@ defmodule SalixVoice.TestStubs do
     # Stands in for `SalixAgent.RouterDecision`: reports the request and
     # returns `:test_profile_decision`, optionally after `{:sleep, ms, result}`.
     def decide(group_id, _purpose, questions, opts) do
-      send(
-        Application.fetch_env!(:salix_voice, :test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_voice, :test_pid),
         {:profile_decide, group_id, questions, opts}
       )
 
-      case Application.get_env(:salix_voice, :test_profile_decision, {:error, "not_configured"}) do
+      case SystemsRuntime.get_env(
+             :salix_voice,
+             :test_profile_decision,
+             {:error, "not_configured"}
+           ) do
         {:sleep, ms, result} ->
-          Process.sleep(ms)
+          SystemsClock.sleep(ms)
           result
 
         result ->
@@ -56,12 +63,15 @@ defmodule SalixVoice.TestStubs do
 
   defmodule Metering do
     @moduledoc false
-    def authorize(_attrs), do: Application.get_env(:salix_voice, :test_admission, :ok)
+    def authorize(_attrs), do: SystemsRuntime.get_env(:salix_voice, :test_admission, :ok)
 
     def charge(attrs) do
-      case Application.get_env(:salix_voice, :test_pid) do
-        pid when is_pid(pid) -> send(pid, {:metered, attrs})
-        _ -> :ok
+      case SystemsRuntime.get_env(:salix_voice, :test_pid) do
+        pid when SystemsRuntime.Proc.is_process(pid) ->
+          SystemsRuntime.Proc.send(pid, {:metered, attrs})
+
+        _ ->
+          :ok
       end
 
       {:ok, %{}}

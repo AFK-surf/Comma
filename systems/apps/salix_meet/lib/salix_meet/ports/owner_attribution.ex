@@ -28,7 +28,7 @@ defmodule SalixMeet.Ports.OwnerAttribution do
   end
 
   defp impl do
-    Application.get_env(:salix_meet, :owner_attribution_mod, __MODULE__.None)
+    SystemsRuntime.get_env(:salix_meet, :owner_attribution_mod, __MODULE__.None)
   end
 
   defmodule None do

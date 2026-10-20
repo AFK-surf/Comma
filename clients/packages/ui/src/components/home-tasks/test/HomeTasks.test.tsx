@@ -1,7 +1,8 @@
 import { render, waitFor } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { TaskSummaryViewModel } from "../../task-workspace";
+import { loadStatusIndicatorElement } from "../../status-indicator";
 import { HomeTasks } from "../HomeTasks";
 
 function task(
@@ -20,10 +21,14 @@ function task(
 }
 
 const tasks = [
-  task("backlog-a", "backlog", 3),
-  task("backlog-b", "backlog", 2),
+  task("review-a", "needs_review", 3),
+  task("review-b", "needs_review", 2),
   task("progress-a", "in_progress", 1),
 ];
+
+// The status indicator registers its element on a dynamic import: real I/O
+// that the test clock does not move. The tests load it first, as the stories do.
+beforeAll(() => loadStatusIndicatorElement());
 
 describe("HomeTasks", () => {
   it("renders only the cards for the selected status bucket", () => {
@@ -31,7 +36,7 @@ describe("HomeTasks", () => {
       <HomeTasks
         onOpenTask={vi.fn()}
         onStatusChange={vi.fn()}
-        status="backlog"
+        status="needs_review"
         tasks={tasks}
       />
     );
@@ -77,14 +82,14 @@ describe("HomeTasks", () => {
       <HomeTasks
         onOpenTask={onOpenTask}
         onStatusChange={vi.fn()}
-        status="backlog"
+        status="needs_review"
         tasks={tasks}
       />
     );
 
     await userEvent.click(getAllByTestId("home-task-card")[0]!);
     expect(onOpenTask).toHaveBeenCalledTimes(1);
-    expect(onOpenTask.mock.calls[0]![0].id).toBe("backlog-a");
+    expect(onOpenTask.mock.calls[0]![0].id).toBe("review-a");
   });
 
   it("switches the visible cards when the status prop changes", async () => {
@@ -92,7 +97,7 @@ describe("HomeTasks", () => {
       <HomeTasks
         onOpenTask={vi.fn()}
         onStatusChange={vi.fn()}
-        status="backlog"
+        status="needs_review"
         tasks={tasks}
       />
     );
@@ -126,7 +131,9 @@ describe("HomeTasks", () => {
       onStatusChange: vi.fn(),
       tasks: [] as TaskSummaryViewModel[],
     };
-    const { getByText, rerender } = render(<HomeTasks {...props} status="backlog" />);
+    const { getByText, rerender } = render(
+      <HomeTasks {...props} status="needs_review" />
+    );
     const emptyState = getByText("No tasks");
 
     rerender(<HomeTasks {...props} status="in_progress" />);
@@ -180,7 +187,7 @@ describe("HomeTasks", () => {
     const props = {
       onOpenTask: vi.fn(),
       onStatusChange: vi.fn(),
-      status: "backlog" as const,
+      status: "needs_review" as const,
     };
     const { container, getByRole, rerender } = render(
       <HomeTasks {...props} tasks={[tasks[0]!]} />
@@ -209,9 +216,9 @@ describe("HomeTasks", () => {
     const onOpenTask = vi.fn();
     const props = { onOpenTask, onStatusChange: vi.fn(), tasks };
     const { container, getByRole, rerender } = render(
-      <HomeTasks {...props} status="backlog" />
+      <HomeTasks {...props} status="needs_review" />
     );
-    const focusedCard = getByRole("button", { name: "Task backlog-a" });
+    const focusedCard = getByRole("button", { name: "Task review-a" });
 
     focusedCard.focus();
     expect(focusedCard).toHaveFocus();
@@ -235,9 +242,9 @@ describe("HomeTasks", () => {
   it("moves focus before the focused task leaves the selected page", async () => {
     const props = { onOpenTask: vi.fn(), onStatusChange: vi.fn(), tasks };
     const { getByRole, queryByRole, rerender } = render(
-      <HomeTasks {...props} status="backlog" />
+      <HomeTasks {...props} status="needs_review" />
     );
-    const focusedCard = getByRole("button", { name: "Task backlog-a" });
+    const focusedCard = getByRole("button", { name: "Task review-a" });
 
     focusedCard.focus();
     expect(focusedCard).toHaveFocus();
@@ -245,9 +252,9 @@ describe("HomeTasks", () => {
     rerender(
       <HomeTasks
         {...props}
-        status="backlog"
+        status="needs_review"
         tasks={tasks.map((candidateTask) =>
-          candidateTask.id === "backlog-a"
+          candidateTask.id === "review-a"
             ? { ...candidateTask, statusBucket: "in_progress" }
             : candidateTask
         )}
@@ -256,7 +263,7 @@ describe("HomeTasks", () => {
 
     expect(getByRole("heading", { name: "Tasks" })).toHaveFocus();
     await waitFor(() => {
-      expect(queryByRole("button", { name: "Task backlog-a" })).toBeNull();
+      expect(queryByRole("button", { name: "Task review-a" })).toBeNull();
     });
     expect(document.activeElement).not.toBe(document.body);
   });
@@ -265,7 +272,7 @@ describe("HomeTasks", () => {
     const props = {
       onOpenTask: vi.fn(),
       onStatusChange: vi.fn(),
-      status: "backlog" as const,
+      status: "needs_review" as const,
     };
     const { container, getByRole, rerender } = render(
       <HomeTasks {...props} tasks={[tasks[0]!]} />
@@ -297,16 +304,16 @@ describe("HomeTasks", () => {
   it("recovers instantly when the selection scrubs back to the displayed bucket", async () => {
     const props = { onOpenTask: vi.fn(), onStatusChange: vi.fn(), tasks };
     const { getAllByTestId, rerender } = render(
-      <HomeTasks {...props} status="backlog" />
+      <HomeTasks {...props} status="needs_review" />
     );
 
     rerender(<HomeTasks {...props} status="in_progress" />);
-    rerender(<HomeTasks {...props} status="backlog" />);
+    rerender(<HomeTasks {...props} status="needs_review" />);
 
     await waitFor(() => {
       const cards = getAllByTestId("home-task-card");
       expect(cards).toHaveLength(2);
-      expect(cards[0]).toHaveTextContent("Task backlog-a");
+      expect(cards[0]).toHaveTextContent("Task review-a");
     });
   });
 
@@ -316,7 +323,7 @@ describe("HomeTasks", () => {
       <HomeTasks
         onOpenTask={vi.fn()}
         onStatusChange={onStatusChange}
-        status="backlog"
+        status="needs_review"
         tasks={tasks}
       />
     );
@@ -330,7 +337,7 @@ describe("HomeTasks", () => {
       new CustomEvent("change", {
         bubbles: true,
         composed: true,
-        detail: { index: 4, label: "Cancel", value: "cancel" },
+        detail: { index: 3, label: "Cancel", value: "cancel" },
       })
     );
 
@@ -341,13 +348,13 @@ describe("HomeTasks", () => {
     const props = {
       onOpenTask: vi.fn(),
       onStatusChange: vi.fn(),
-      status: "backlog" as const,
+      status: "needs_review" as const,
       tasks,
     };
     const { container, getAllByTestId, rerender } = render(<HomeTasks {...props} />);
 
     rerender(
-      <HomeTasks {...props} tasks={[task("backlog-new", "backlog", 9), ...tasks]} />
+      <HomeTasks {...props} tasks={[task("review-new", "needs_review", 9), ...tasks]} />
     );
 
     await waitFor(() => {
@@ -355,7 +362,7 @@ describe("HomeTasks", () => {
     });
     const newItem = container.querySelector('[data-state="new"]');
     expect(newItem).not.toBeNull();
-    expect(newItem).toHaveTextContent("Task backlog-new");
+    expect(newItem).toHaveTextContent("Task review-new");
 
     // After the pop finishes the card settles, rejoining the FLIP glide.
     await waitFor(
@@ -370,7 +377,7 @@ describe("HomeTasks", () => {
     const props = {
       onOpenTask: vi.fn(),
       onStatusChange: vi.fn(),
-      status: "backlog" as const,
+      status: "needs_review" as const,
       tasks,
     };
     const { container, getAllByTestId, rerender } = render(<HomeTasks {...props} />);
@@ -379,9 +386,9 @@ describe("HomeTasks", () => {
       <HomeTasks
         {...props}
         tasks={[
-          task("backlog-new-a", "backlog", 11),
-          task("backlog-new-b", "backlog", 10),
-          task("backlog-new-c", "backlog", 9),
+          task("review-new-a", "needs_review", 11),
+          task("review-new-b", "needs_review", 10),
+          task("review-new-c", "needs_review", 9),
           ...tasks,
         ]}
       />
@@ -407,7 +414,7 @@ describe("HomeTasks", () => {
   it("measures card offsets only when the cards change", async () => {
     const props = {
       onStatusChange: vi.fn(),
-      status: "backlog" as const,
+      status: "needs_review" as const,
       tasks,
     };
     const { getAllByTestId, rerender } = render(
@@ -425,7 +432,7 @@ describe("HomeTasks", () => {
         <HomeTasks
           {...props}
           onOpenTask={vi.fn()}
-          tasks={[task("backlog-c", "backlog", 4), ...tasks]}
+          tasks={[task("review-c", "needs_review", 4), ...tasks]}
         />
       );
       await waitFor(() => expect(getAllByTestId("home-task-card")).toHaveLength(3));
@@ -440,7 +447,7 @@ describe("HomeTasks", () => {
       onOpenTask: vi.fn(),
       onStatusChange: vi.fn(),
       ready: false,
-      status: "backlog" as const,
+      status: "needs_review" as const,
       tasks: [] as TaskSummaryViewModel[],
     };
     const { container, getAllByTestId, rerender } = render(<HomeTasks {...props} />);

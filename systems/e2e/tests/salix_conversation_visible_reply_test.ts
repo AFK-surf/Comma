@@ -1,79 +1,83 @@
+import { setDefaultTimeout, test } from "bun:test";
+import { rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createBucketArgs, MINIO_IMAGE } from "../helpers/minio.ts";
+
+// Builds and subprocesses here take longer than the five-second default.
+setDefaultTimeout(30 * 60_000);
+
 const SALIX_ROOT = new URL("../..", import.meta.url).pathname;
 const DEFAULT_TIMEOUT_MS = 120_000;
 
-Deno.test({
-  name: "Salix conversation visible replies use public conversation APIs",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn() {
-    const id = crypto.randomUUID().slice(0, 8);
-    const minioName = `salix-conv-reply-e2e-minio-${id}`;
-    const bucket = `salix-conv-reply-e2e-${id}`;
-    const minioPort = reservePort();
-    let salixConfigPath: string | undefined;
+test("Salix conversation visible replies use public conversation APIs", async () => {
+  const id = crypto.randomUUID().slice(0, 8);
+  const minioName = `salix-conv-reply-e2e-minio-${id}`;
+  const bucket = `salix-conv-reply-e2e-${id}`;
+  const minioPort = reservePort();
+  let salixConfigPath: string | undefined;
 
-    minioPort.release();
-    await run("docker", [
-      "run",
-      "-d",
-      "--rm",
-      "--name",
-      minioName,
-      "-p",
-      `${minioPort.port}:9000`,
-      "-e",
-      "MINIO_ROOT_USER=minioadmin",
-      "-e",
-      "MINIO_ROOT_PASSWORD=minioadmin",
-      "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
-      "server",
-      "/data",
-    ]);
+  minioPort.release();
+  await run("docker", [
+    "run",
+    "-d",
+    "--rm",
+    "--name",
+    minioName,
+    "-p",
+    `${minioPort.port}:9000`,
+    "-e",
+    "MINIO_ROOT_USER=minioadmin",
+    "-e",
+    "MINIO_ROOT_PASSWORD=minioadmin",
+    MINIO_IMAGE,
+    "server",
+    "/data",
+  ]);
 
-    try {
-      const endpoint = `http://127.0.0.1:${minioPort.port}`;
-      await waitForMinio(endpoint);
-      await createBucket(minioName, bucket);
-      salixConfigPath = await writeSalixConfig(endpoint, bucket);
+  try {
+    const endpoint = `http://127.0.0.1:${minioPort.port}`;
+    await waitForMinio(endpoint);
+    await createBucket(minioName, bucket);
+    salixConfigPath = await writeSalixConfig(endpoint, bucket);
 
-      const output = await run(
-        "mix",
-        ["run", "scripts/salix_conversation_visible_reply_e2e.exs"],
-        {
-          cwd: SALIX_ROOT,
-          timeoutMs: DEFAULT_TIMEOUT_MS,
-          env: {
-            ...Deno.env.toObject(),
-            PATH: pathWithAsdf(),
-            MIX_ENV: "test",
-            SALIX_CONFIG_PATH: salixConfigPath,
-            SALIX_S3_ENDPOINT: endpoint,
-            SALIX_S3_ACCESS_KEY_ID: "minioadmin",
-            SALIX_S3_SECRET_ACCESS_KEY: "minioadmin",
-            SALIX_S3_REGION: "us-east-1",
-            SALIX_S3_BUCKET: bucket,
-            AWS_ACCESS_KEY_ID: "minioadmin",
-            AWS_SECRET_ACCESS_KEY: "minioadmin",
-            AWS_DEFAULT_REGION: "us-east-1",
-          },
+    const output = await run(
+      "mix",
+      ["run", "scripts/salix_conversation_visible_reply_e2e.exs"],
+      {
+        cwd: SALIX_ROOT,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        env: {
+          ...process.env,
+          PATH: pathWithAsdf(),
+          MIX_ENV: "test",
+          SALIX_CONFIG_PATH: salixConfigPath,
+          SALIX_S3_ENDPOINT: endpoint,
+          SALIX_S3_ACCESS_KEY_ID: "minioadmin",
+          SALIX_S3_SECRET_ACCESS_KEY: "minioadmin",
+          SALIX_S3_REGION: "us-east-1",
+          SALIX_S3_BUCKET: bucket,
+          AWS_ACCESS_KEY_ID: "minioadmin",
+          AWS_SECRET_ACCESS_KEY: "minioadmin",
+          AWS_DEFAULT_REGION: "us-east-1",
         },
-      );
+      },
+    );
 
-      assertIncludes(
-        output.combined,
-        "SALIX_CONVERSATION_VISIBLE_REPLY_E2E: PASS",
-      );
-    } finally {
-      if (salixConfigPath) await Deno.remove(salixConfigPath).catch(() => {});
-      await run("docker", ["rm", "-f", minioName], { allowFailure: true });
-      releasePorts(minioPort);
-    }
-  },
+    assertIncludes(
+      output.combined,
+      "SALIX_CONVERSATION_VISIBLE_REPLY_E2E: PASS",
+    );
+  } finally {
+    if (salixConfigPath) await rm(salixConfigPath).catch(() => {});
+    await run("docker", ["rm", "-f", minioName], { allowFailure: true });
+    releasePorts(minioPort);
+  }
 });
 
 type RunOptions = {
   cwd?: string;
-  env?: Record<string, string>;
+  env?: Record<string, string | undefined>;
   timeoutMs?: number;
   allowFailure?: boolean;
 };
@@ -84,8 +88,12 @@ type PortLease = {
 };
 
 function reservePort(): PortLease {
-  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
-  const port = (listener.addr as Deno.NetAddr).port;
+  const listener = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: { data() {} },
+  });
+  const port = listener.port;
   let released = false;
 
   return {
@@ -93,7 +101,7 @@ function reservePort(): PortLease {
     release() {
       if (released) return;
       released = true;
-      listener.close();
+      listener.stop(true);
     },
   };
 }
@@ -103,13 +111,12 @@ function releasePorts(...ports: PortLease[]) {
 }
 
 async function run(command: string, args: string[], opts: RunOptions = {}) {
-  const child = new Deno.Command(command, {
-    args,
+  const child = Bun.spawn([command, ...args], {
     cwd: opts.cwd,
-    env: opts.env,
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
+    env: { ...process.env, ...opts.env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -121,33 +128,32 @@ async function run(command: string, args: string[], opts: RunOptions = {}) {
     }
   }, opts.timeoutMs ?? 60_000);
 
-  const output = await child.output();
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
   clearTimeout(timer);
 
-  const stdout = new TextDecoder().decode(output.stdout);
-  const stderr = new TextDecoder().decode(output.stderr);
   const combined = stdout + stderr;
 
-  if ((!output.success || timedOut) && !opts.allowFailure) {
+  if ((code !== 0 || timedOut) && !opts.allowFailure) {
     throw new Error(
       [
         `command failed: ${command} ${args.join(" ")}`,
-        `code=${output.code} timedOut=${timedOut}`,
+        `code=${code} timedOut=${timedOut}`,
         combined,
       ].join("\n"),
     );
   }
 
-  return { ...output, stdout, stderr, combined };
+  return { success: code === 0, code, stdout, stderr, combined };
 }
 
 async function writeSalixConfig(endpoint: string, bucket: string) {
-  const path = await Deno.makeTempFile({
-    prefix: "salix-conversation-visible-reply-e2e-config-",
-    suffix: ".json",
-  });
+  const path = join(tmpdir(), `salix-conversation-visible-reply-e2e-config-${bucket}.json`);
 
-  await Deno.writeTextFile(
+  await writeFile(
     path,
     JSON.stringify({
       storage: {
@@ -179,19 +185,7 @@ async function waitForMinio(endpoint: string) {
 }
 
 async function createBucket(container: string, bucket: string) {
-  await run("docker", [
-    "exec",
-    container,
-    "mc",
-    "alias",
-    "set",
-    "local",
-    "http://127.0.0.1:9000",
-    "minioadmin",
-    "minioadmin",
-  ]);
-
-  await run("docker", ["exec", container, "mc", "mb", `local/${bucket}`]);
+  await run("docker", createBucketArgs(container, bucket));
 }
 
 function delay(ms: number) {
@@ -199,8 +193,8 @@ function delay(ms: number) {
 }
 
 function pathWithAsdf() {
-  const home = Deno.env.get("HOME") ?? "";
-  const current = Deno.env.get("PATH") ?? "";
+  const home = process.env.HOME ?? "";
+  const current = process.env.PATH ?? "";
   const candidates = [
     `${home}/.asdf/shims`,
     `${home}/.asdf/bin`,

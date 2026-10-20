@@ -1,0 +1,41 @@
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -5,7 +5,13 @@
+ // Jest keeps the state in a separate WeakMap which is good for memory,
+ // but it makes the state slower to access and return different values
+ // if you stored it before calling `mockClear` where it will be recreated
++// Held weakly, as Vitest 5 does: a mock nothing reaches any more cannot be
++// cleared or reset by anyone, and a process that runs many test files must
++// not keep every file's mocks (and what their implementations reach) alive.
+ const REGISTERED_MOCKS = new Set();
++const MOCK_FINALIZER = new FinalizationRegistry((ref) => {
++	REGISTERED_MOCKS.delete(ref);
++});
+ const MOCK_CONFIGS = new WeakMap();
+ function createMockInstance(options = {}) {
+ 	const { originalImplementation, restore, mockImplementation, resetToMockImplementation, resetToMockName } = options;
+@@ -33,7 +39,9 @@
+ 		config.mockName = mock.name || "vi.fn()";
+ 	}
+ 	MOCK_CONFIGS.set(mock, config);
+-	REGISTERED_MOCKS.add(mock);
++	const ref = new WeakRef(mock);
++	REGISTERED_MOCKS.add(ref);
++	MOCK_FINALIZER.register(mock, ref);
+ 	mock._isMockFunction = true;
+ 	mock.getMockImplementation = () => {
+ 		// Jest only returns `config.mockImplementation` here,
+@@ -471,10 +479,10 @@
+ 	MOCK_RESTORE.clear();
+ }
+ function clearAllMocks() {
+-	REGISTERED_MOCKS.forEach((mock) => mock.mockClear());
++	REGISTERED_MOCKS.forEach((ref) => ref.deref()?.mockClear());
+ }
+ function resetAllMocks() {
+-	REGISTERED_MOCKS.forEach((mock) => mock.mockReset());
++	REGISTERED_MOCKS.forEach((ref) => ref.deref()?.mockReset());
+ }
+ function throwConstructorError(shorthand) {
+ 	throw new TypeError(`Cannot use \`${shorthand}\` when called with \`new\`. Use \`mockImplementation\` with a \`class\` keyword instead. See https://vitest.dev/api/mock#class-support for more information.`);

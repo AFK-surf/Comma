@@ -3,7 +3,7 @@ defmodule SalixSignalProto.ContactDiscovery.NoiseTest do
   # enclave. The symmetric state and the NK pattern are checked against the
   # public Noise test vectors (cacophony, Noise_NK_25519_ChaChaPoly_SHA256);
   # the HFS tokens, sizes and transport framing against the CRS text.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.ContactDiscovery.{Lookup, Noise}
   alias SalixSignalProto.Crypto.{MlKem1024, X25519}
@@ -81,7 +81,7 @@ defmodule SalixSignalProto.ContactDiscovery.NoiseTest do
 
   test "a long message is split into 65,519-byte chunks, one nonce each" do
     {initiator, responder, _, _} = handshake()
-    plaintext = :crypto.strong_rand_bytes(2 * 65_519 + 5)
+    plaintext = SystemsRuntime.Proc.random_bytes(2 * 65_519 + 5)
 
     {:ok, sealed, initiator} = Noise.seal(initiator, plaintext)
     assert byte_size(sealed) == byte_size(plaintext) + 3 * 16
@@ -105,7 +105,7 @@ defmodule SalixSignalProto.ContactDiscovery.NoiseTest do
   test "a tampered or foreign handshake fails" do
     s = X25519.generate_private_key()
     other = X25519.generate_private_key()
-    kem = MlKem1024.keypair(:crypto.strong_rand_bytes(64))
+    kem = MlKem1024.keypair(SystemsRuntime.Proc.random_bytes(64))
 
     {:ok, message1, initiator} =
       Noise.initiator_write(X25519.public_key(s),
@@ -122,7 +122,7 @@ defmodule SalixSignalProto.ContactDiscovery.NoiseTest do
     {:ok, message2, _} =
       Noise.responder_write(responder,
         ephemeral: X25519.generate_private_key(),
-        kem_randomness: :crypto.strong_rand_bytes(32)
+        kem_randomness: SystemsRuntime.Proc.random_bytes(32)
       )
 
     <<head::binary-size(100), byte, tail::binary>> = message2
@@ -133,7 +133,7 @@ defmodule SalixSignalProto.ContactDiscovery.NoiseTest do
 
   defp handshake do
     s = X25519.generate_private_key()
-    kem = MlKem1024.keypair(:crypto.strong_rand_bytes(64))
+    kem = MlKem1024.keypair(SystemsRuntime.Proc.random_bytes(64))
 
     {:ok, message1, initiator} =
       Noise.initiator_write(X25519.public_key(s),
@@ -146,7 +146,7 @@ defmodule SalixSignalProto.ContactDiscovery.NoiseTest do
     {:ok, message2, responder} =
       Noise.responder_write(responder,
         ephemeral: X25519.generate_private_key(),
-        kem_randomness: :crypto.strong_rand_bytes(32)
+        kem_randomness: SystemsRuntime.Proc.random_bytes(32)
       )
 
     {:ok, "", initiator} = Noise.initiator_read(initiator, message2)

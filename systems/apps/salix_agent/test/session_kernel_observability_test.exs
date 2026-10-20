@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelObservabilityTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   alias SalixAgent.InternalSession.State
   alias SalixAgent.TestSupport.SessionData
   @reporter Module.concat(__MODULE__, Reporter)
@@ -39,17 +39,17 @@ defmodule SalixAgent.SessionKernelObservabilityTest do
     stop_supervised!(@reporter)
     assert SessionData.apply_event(state, %{}) == state
 
-    handler = {__MODULE__, make_ref()}
+    handler = {__MODULE__, SystemsRuntime.Proc.make_ref()}
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:salix, :operation, :stop],
         fn _, _, _, _ -> raise "failed telemetry handler" end,
         nil
       )
 
-    on_exit(fn -> :telemetry.detach(handler) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler) end)
     assert SessionData.apply_event(state, %{}) == state
   end
 end

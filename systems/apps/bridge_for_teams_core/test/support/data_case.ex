@@ -18,6 +18,9 @@ defmodule BridgeForTeams.DataCase do
     end
   end
 
+  # A synchronous test stops what it leaves running when it ends.
+  setup {SystemsClock.Case, :isolate}
+
   setup tags do
     owner_opts =
       [shared: not tags[:async]]
@@ -41,7 +44,6 @@ defmodule BridgeForTeams.DataCase do
       Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, owner_opts)
 
     on_exit(fn ->
-      _ = BridgeForTeams.EnvironmentRuntimeObserver.drain(30_000)
       Ecto.Adapters.SQL.Sandbox.stop_owner(bridge_owner)
       Ecto.Adapters.SQL.Sandbox.stop_owner(billing_owner)
     end)
@@ -76,7 +78,7 @@ defmodule BridgeForTeams.DataCase do
 
   def archive_agent_fixture!(agent) do
     {:ok, id} = Ecto.UUID.dump(agent.id)
-    at = DateTime.utc_now()
+    at = SystemsClock.utc_now()
 
     BridgeForTeams.Repo.query!(
       "UPDATE agents SET archived_at = $1, status = 'archived' WHERE id = $2",

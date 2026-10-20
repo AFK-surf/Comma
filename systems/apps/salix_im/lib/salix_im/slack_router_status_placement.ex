@@ -9,7 +9,7 @@ defmodule SalixIM.SlackRouterStatusPlacement do
   def local_owner?(agent_id), do: impl().local_owner?(agent_id)
 
   defp impl do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :salix_im,
       :slack_router_status_placement,
       __MODULE__.LocalFleet

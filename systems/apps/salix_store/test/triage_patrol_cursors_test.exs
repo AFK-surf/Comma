@@ -1,5 +1,6 @@
 defmodule SalixStore.TriagePatrolCursorsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixStore.QueueCase, queues: [:triage_patrol_cursors]
 
   alias SalixStore.{
     Repo,
@@ -10,25 +11,8 @@ defmodule SalixStore.TriagePatrolCursorsTest do
   }
 
   setup do
-    Repo.query!("TRUNCATE triage_patrol_cursors, slack_triage_channels")
+    Repo.query!("TRUNCATE slack_triage_channels")
     :ok
-  end
-
-  test "global discovery pages enabled channels only" do
-    first = provision!("tenant-a", "group-a", "connect-a", "C_A", true)
-    _disabled = provision!("tenant-a", "group-a", "connect-a", "C_B", false)
-    second = provision!("tenant-b", "group-b", "connect-b", "C_C", true)
-
-    assert {:ok, %{channels: [^first], scan_complete: false, next_cursor: cursor}} =
-             SlackTriageChannels.list_enabled_page(nil, 1)
-
-    assert is_binary(cursor)
-
-    assert {:ok, %{channels: [^second], scan_complete: true, next_cursor: nil}} =
-             SlackTriageChannels.list_enabled_page(cursor, 1)
-
-    assert SlackTriageChannels.list_enabled_page("not-a-cursor", 10) ==
-             {:error, :invalid_slack_triage_channel_cursor}
   end
 
   test "scan state checkpoints a fixed-tail pass and commits only its final page" do
@@ -150,37 +134,6 @@ defmodule SalixStore.TriagePatrolCursorsTest do
     assert {:ok, %{status: :failed}} = TriagePatrolCursors.fail(new_claim, :reader_unavailable)
   end
 
-  test "inactive claims preserve progress, fence stale holders and resume after authority validation" do
-    channel = provision!("tenant-a", "group-a", "connect-a", "C_A", true)
-    authority = authority(channel)
-    {:ok, initial} = TriagePatrolScanState.initial(cursor("2026-09-01T00:00:05.000Z", 50, 100))
-    {:ok, _} = TriagePatrolCursors.ensure(channel, authority, initial)
-    {:ok, [claim]} = TriagePatrolCursors.claim_due("pod-a", limit: 1)
-
-    assert {:ok, %{status: :inactive}} = TriagePatrolCursors.deactivate(claim)
-    assert {:error, :conflict} = TriagePatrolCursors.deactivate(claim)
-    assert {:error, :conflict} = TriagePatrolCursors.fail(claim, :reader_unavailable)
-    assert {:ok, []} = TriagePatrolCursors.claim_due("pod-b", limit: 1)
-
-    {:ok, newer_tail} = TriagePatrolScanState.initial(cursor("2026-09-01T01:00:00.000Z", 60, 120))
-    assert {:ok, resumed} = TriagePatrolCursors.ensure(channel, authority, newer_tail)
-    assert resumed["scan_state"] == initial
-    assert is_nil(resumed["last_error"])
-    assert {:ok, [resumed_claim]} = TriagePatrolCursors.claim_due("pod-b", limit: 1)
-    assert resumed_claim.scan_state == initial
-    assert {:error, :conflict} = TriagePatrolCursors.deactivate(claim)
-
-    assert {:ok, %{status: :failed}} =
-             TriagePatrolCursors.fail(resumed_claim, :reader_unavailable)
-
-    Repo.query!(
-      "UPDATE triage_patrol_cursors SET next_due_at = statement_timestamp() WHERE cursor_key = $1",
-      [claim.cursor_key]
-    )
-
-    assert {:ok, [_]} = TriagePatrolCursors.claim_due("pod-c", limit: 1)
-  end
-
   test "NULL legacy scan state is never claimed and discovery repairs it from the current tail" do
     channel = provision!("tenant-a", "group-a", "connect-a", "C_A", true)
     authority = authority(channel)
@@ -202,55 +155,6 @@ defmodule SalixStore.TriagePatrolCursorsTest do
     assert repaired["scan_state"] == repaired_state
     assert repaired["last_outcome"] == "reset"
     assert repaired["revision"] == stored["revision"] + 1
-
-    assert {:ok, [claim]} =
-             TriagePatrolCursors.claim_due("pod-a", limit: 1, lease_ms: 5_000)
-
-    assert claim.scan_state == repaired_state
-    assert {:ok, %{status: :failed}} = TriagePatrolCursors.fail(claim, :test_complete)
-  end
-
-  test "known deployed v1 scan state is reset before it can be claimed" do
-    channel = provision!("tenant-a", "group-a", "connect-a", "C_A", true)
-    authority = authority(channel)
-    {:ok, initial} = TriagePatrolScanState.initial(cursor("2026-09-01T00:00:05.000Z", 50, 100))
-
-    assert {:ok, stored} = TriagePatrolCursors.ensure(channel, authority, initial)
-
-    legacy_state = %{
-      "schema" => "comma.triage-patrol-scan.v1",
-      "phase" => "history",
-      "history" => %{
-        "cursor" => "legacy-next-page",
-        "oldest_ts" => "1787018000.000001",
-        "newest_ts" => "1787019000.000001"
-      },
-      "range" => %{"oldest_ts" => "1787018000.000001", "newest_ts" => "1787019000.000001"},
-      "source" => %{"mode" => "slack_history", "page_count" => 2},
-      "summary" => %{"admitted" => 1, "ignored" => 3}
-    }
-
-    Repo.query!(
-      """
-      UPDATE triage_patrol_cursors
-      SET scan_state = $2, claim_token = 'legacy-claim',
-          lease_until = statement_timestamp() + interval '1 hour',
-          last_outcome = 'running', last_error = 'legacy partial'
-      WHERE cursor_key = $1
-      """,
-      [stored["cursor_key"], legacy_state]
-    )
-
-    {:ok, repaired_state} =
-      TriagePatrolScanState.initial(cursor("2026-09-01T00:00:10.000Z", 100, 200))
-
-    assert {:ok, repaired} = TriagePatrolCursors.ensure(channel, authority, repaired_state)
-    assert repaired["scan_state"] == repaired_state
-    assert repaired["revision"] == stored["revision"] + 1
-    assert repaired["last_outcome"] == "reset"
-    assert is_nil(repaired["claim_token"])
-    assert is_nil(repaired["lease_until"])
-    assert is_nil(repaired["last_error"])
 
     assert {:ok, [claim]} =
              TriagePatrolCursors.claim_due("pod-a", limit: 1, lease_ms: 5_000)

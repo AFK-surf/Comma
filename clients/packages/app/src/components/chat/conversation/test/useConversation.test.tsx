@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   idleConversationChannelState,
   type ConversationChannelState,
-} from "../../model/conversationChannel";
+} from "@comma/core/chat";
 import {
   useComposerDraft,
   type ComposerDraftSource,

@@ -16,9 +16,6 @@ defmodule Mix.Tasks.Comma.Synchronicity.Provision do
 
   Reads `comma.synchronicity.base_url` and
   `comma.synchronicity.provisioning_secret` from `config.json`.
-
-  The remote-present/local-missing retry boundary is modeled in
-  `tla/comma_synchronicity/WorkspaceProvisioning.tla`.
   """
   use Mix.Task
 

@@ -7,7 +7,7 @@ import {
   parseStoredAppKeybinding,
   sameAppKeybinding,
   type AppKeybinding,
-} from "@comma/ui";
+} from "@comma/ui/components/settings-shortcut";
 import {
   appShortcutIds,
   createDefaultAppShortcutBindings,

@@ -109,7 +109,7 @@ defmodule BridgeForTeams.Schedules do
         "status" => "unavailable"
       },
       correlation_id: "project:#{project.id}:schedules:index",
-      occurred_at: DateTime.utc_now()
+      occurred_at: SystemsClock.utc_now()
     }
 
     case Observability.create_event(attrs) do
@@ -387,7 +387,7 @@ defmodule BridgeForTeams.Schedules do
              resource_id: schedule_id,
              resource_label: schedule_label(schedule_id, schedule),
              result: "ok",
-             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+             request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
              metadata: schedule_metadata(project, schedule_id, schedule)
            }) do
         {:ok, _audit} ->
@@ -419,7 +419,7 @@ defmodule BridgeForTeams.Schedules do
              resource_label: schedule_label(schedule_id, schedule),
              result: "failed",
              reason: reason,
-             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+             request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
              surface: "schedule",
              metadata: schedule_metadata(project, schedule_id, schedule)
            }) do

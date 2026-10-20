@@ -6,26 +6,6 @@ import {
 } from "../domain-adapters";
 
 const readySnapshot: WorkbenchSnapshot = {
-  localData: {
-    available: true,
-    database: {
-      latestSchemaVersion: 2,
-      schemaVersion: 2,
-      status: "ready",
-    },
-    fileStore: {
-      diskUsage: 4096,
-      missingReferences: 0,
-      status: "ready",
-      storedEntries: 3,
-    },
-    observability: {
-      jsonlEnabled: true,
-      location: "userData/agent-observability/native-events.jsonl",
-      redacted: true,
-      status: "ready",
-    },
-  },
   transport: {
     available: true,
     capabilities: {
@@ -74,7 +54,6 @@ describe("loadRuntimeSnapshot", () => {
       native: { info: vi.fn(async () => ({ platform: "electron" })) },
       surfaces: { state: surfaceState },
       session: { state: vi.fn(async () => ({ signedIn: true })) },
-      localData: { status: vi.fn(async () => readySnapshot.localData) },
       transport: { status: vi.fn(async () => readySnapshot.transport) },
     } as unknown as NonNullable<typeof globalThis.commaNative>;
 
@@ -145,40 +124,9 @@ describe("buildWorkbenchTabs", () => {
     }
   });
 
-  it("exposes observed flow data for Local Data and Transport without route rendering", () => {
+  it("exposes observed flow data for Transport without route rendering", () => {
     const tabs = buildWorkbenchTabs(readySnapshot);
-    const localData = tabs.find((tab) => tab.id === "local-data");
     const transport = tabs.find((tab) => tab.id === "transport");
-
-    expect(localData?.flows).toContainEqual(
-      expect.objectContaining({
-        evidenceLabel: "localData.status",
-        id: "local-data-diagnostics",
-        label: "Local Data Diagnostics",
-        status: "ready",
-        traceIdSource: "NativeObservationEvent.trace.id for localData.status",
-      })
-    );
-    expect(localData?.flows[0]?.steps).toEqual([
-      expect.objectContaining({
-        id: "sqlite-schema",
-        label: "SQLite schema",
-        observes: "schema 2/2",
-        traceIdSource: "localData.status.database",
-      }),
-      expect.objectContaining({
-        id: "file-store",
-        label: "FileStore",
-        observes: "3 entries · 4096 bytes · 0 missing refs",
-        traceIdSource: "localData.status.fileStore",
-      }),
-      expect.objectContaining({
-        id: "observability-jsonl",
-        label: "Observability JSONL",
-        observes: "ready · redacted · userData/agent-observability/native-events.jsonl",
-        traceIdSource: "localData.status.observability",
-      }),
-    ]);
 
     expect(transport?.flows).toContainEqual(
       expect.objectContaining({

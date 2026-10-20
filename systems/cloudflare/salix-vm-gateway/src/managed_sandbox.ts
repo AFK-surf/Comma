@@ -1,22 +1,52 @@
 import { Sandbox as SDKSandbox } from "@cloudflare/sandbox";
-import { ContainerControl, ControlError, requestControlPermit, type ControlPermit, type ControlState, type ControlAction } from "./control";
+import { ContainerControl, ControlError, type ControlPermit, type ControlState } from "./control";
 import { errorJson } from "./json";
 
-const PORT = 8080;
-const OBSERVATION_TIMEOUT_MS = 20_000;
+
+/**
+ * What a Container starts with: what its station connects to Salix with (its server and its Workload's connect
+ * credential) and, on a wake, the archive its disk is to be, which the image's entrypoint unpacks before it starts the
+ * station (and exits when it cannot: a Container never runs a station without its disk).
+ */
+export type StationEnv = { SALIX_SERVER: string; SALIX_WORKLOAD_CREDENTIAL: string; SALIX_RESTORE_ARCHIVE?: string };
+
+
+/**
+ * How a Container last stopped, as its monitor said: its exit code when it gave one, the monitor's error otherwise.
+ * `requested` when a destroy Salix commanded was under way; anything else stopped by itself or was stopped by Cloudflare.
+ */
+export type ContainerStop = {
+  at: number;
+  exit_code: number | null;
+  error: string | null;
+  requested: boolean;
+  operation_id: string | null;
+  /** When this object issued the start of the Container that stopped; null when another object did (this one was made after it). */
+  started_at: number | null;
+  /** Who said it stopped: this object's monitor of the Container it started, or the SDK for one it found. */
+  seen_by: "monitor" | "sdk";
+};
 
 export type ControlObservation = {
   running: boolean;
   control: ControlState | null;
+  last_stop: ContainerStop | null;
+  // The last stop nobody commanded, kept apart: the destroy that follows it does not replace it.
+  last_uncommanded_stop: ContainerStop | null;
   // This covers commands admitted by this protocol, never pre-protocol calls.
   managed_commands_settled: boolean;
 };
 
 export class ManagedSandbox<Env = unknown> extends SDKSandbox<Env> {
   #control: ContainerControl;
+  #watching = false;
+  #startedAt: number | null = null;
+  #destroying = false;
 
   constructor(ctx: DurableObjectState<{}>, env: Env) {
     super(ctx, env);
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS salix_container_stop (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), value TEXT NOT NULL)");
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS salix_container_uncommanded_stop (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), value TEXT NOT NULL)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS salix_container_control (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), value TEXT NOT NULL)");
     this.#control = new ContainerControl({
       read: () => {
@@ -33,6 +63,8 @@ export class ManagedSandbox<Env = unknown> extends SDKSandbox<Env> {
     return {
       running: this.ctx.container?.running === true,
       control,
+      last_stop: this.#lastStop("salix_container_stop"),
+      last_uncommanded_stop: this.#lastStop("salix_container_uncommanded_stop"),
       managed_commands_settled: control?.sealed === true && control.pending === null,
     };
   }
@@ -47,69 +79,27 @@ export class ManagedSandbox<Env = unknown> extends SDKSandbox<Env> {
     return this.salixObserve();
   }
 
-  async salixEnsure(permit: ControlPermit, keepAlive: boolean): Promise<Response> {
-    return this.#control.run(permit, "ensure", async () => {
+  // The Container's station connects out to Salix with the credential in `station`; nothing here waits for it. The
+  // one native start is the command: once issued it has no retry behind it, so issuing it completes the command.
+  // What `station` names to restore belongs to this start alone: a Container found running keeps the disk it has.
+  async salixEnsure(permit: ControlPermit, keepAlive: boolean, station: StationEnv): Promise<ControlObservation> {
+    await this.#control.run(permit, "ensure", async () => {
       await super.setKeepAlive(keepAlive);
       const container = this.#container();
+      // Cloudflare stops a Container shortly after its Durable Object becomes inactive. The SDK's alarm keeps this
+      // one active while the Container runs, and only its own start arms it: the alarm a new object sets finds no
+      // Container and ends. Armed here for the start below, and for a Container found running without it.
+      await this.scheduleNextAlarm();
       // No SDK auto-start loop: the durable permit check and native start have
       // no await between them. An older DO must touch storage before this call.
       this.#control.current(permit, false);
-      if (!container.running) container.start({ enableInternet: this.enableInternet, env: this.envVars, ...this.entrypoint && { entrypoint: this.entrypoint } });
-      this.#control.startIssued(permit);
-      const monitored = container.monitor().then(
-        () => this.#control.confirmStartEnded(permit),
-        (error: unknown) => {
-          const exitCode = error && typeof error === "object" && "exitCode" in error ? error.exitCode : undefined;
-          const capacity = error instanceof Error && /^there is no container instance that can be provided to this durable object(?:, try again later)?$/i.test(error.message);
-          if (Number.isInteger(exitCode) || capacity) return this.#control.confirmStartEnded(permit);
-        },
-      );
-      this.ctx.waitUntil(monitored);
-      const response = await this.#readRunning(permit, new Request("http://localhost:8080/readyz"));
-      if (!response.ok) throw new ControlError("container_start_unsettled", 503);
-      return response;
-    }, (response) => ({ status: response.status }));
-  }
-
-  async salixStatus(permit: ControlPermit): Promise<Response> {
-    const response = await this.#readRunning(permit, new Request("http://localhost:8080/readyz"));
-    if (response.ok) await this.#control.confirmReady(permit);
-    return response;
-  }
-
-  async salixReceipt(permit: ControlPermit, operation: string): Promise<Response> {
-    if (!operation || operation.length > 128 || /[\x00-\x1f\x7f]/.test(operation)) throw new ControlError("invalid_archive_operation", 400);
-    const response = await this.#readRunning(permit, new Request("http://localhost:8080/archive", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "status", operation }),
-    }));
-    if (response.ok) {
-      const receipt = await response.clone().json().catch(() => null) as Record<string, unknown> | null;
-      if (receipt?.operation === operation && receipt.phase === "restored" &&
-          Number.isSafeInteger(receipt.next_offset) && Number(receipt.next_offset) > 0 &&
-          Number.isSafeInteger(receipt.sessions) && Number(receipt.sessions) >= 0) {
-        await this.#control.confirmImported(permit, operation);
+      if (!container.running) {
+        container.start({ enableInternet: this.enableInternet, env: { ...this.envVars, ...station }, ...this.entrypoint && { entrypoint: this.entrypoint } });
+        this.#startedAt = Date.now();
+        this.#watch(container);
       }
-    }
-    return response;
-  }
-
-  async salixForward(permit: ControlPermit, request: Request, action: ControlAction | "observe", archiveOperation?: string): Promise<Response> {
-    if (action === "observe") return this.#fetchRunning(permit, request);
-    let sealed = false;
-    if (action === "connector_control") {
-      const body = await request.clone().json() as { action?: unknown; control?: Partial<ControlPermit> };
-      if (body.action !== "open" && body.action !== "seal") throw new ControlError("invalid_control_action", 400);
-      if (!body.control || (["owner_id", "operation_id", "generation", "revision"] as const).some((key) => body.control?.[key] !== permit[key])) throw new ControlError("invalid_control_permit", 400);
-      sealed = body.action === "seal";
-    } else if (action === "export") {
-      sealed = this.#control.current(permit).sealed;
-    } else if (action !== "import") throw new ControlError("invalid_control_action", 400);
-    if (action === "connector_control") {
-      request = new Request(request, { signal: AbortSignal.timeout(100_000) });
-    }
-    return this.#control.run(permit, action, () => this.#fetchRunning(permit, request),
-      (response) => ({ status: response.status }), { sealed, archive_operation: archiveOperation });
+    }, () => ({}));
+    return this.salixObserve();
   }
 
   async salixKeepAlive(permit: ControlPermit, enabled: boolean): Promise<void> {
@@ -117,55 +107,75 @@ export class ManagedSandbox<Env = unknown> extends SDKSandbox<Env> {
       { sealed: this.#control.current(permit).sealed });
   }
 
-  async salixDestroy(permit: ControlPermit): Promise<ControlObservation> {
-    // Salix grants this command only after preserving critical facts. DO seal
-    // closes carrier admission; it is not itself data-disposal authorization.
+  async salixDestroy(permit: ControlPermit, discard = false): Promise<ControlObservation> {
+    // Salix authorizes exact local-disk disposal. The seal fences old carrier
+    // commands without asserting a terminal result for business input.
     await this.#control.run(permit, "destroy", async () => {
-      await this.#container().destroy();
+      this.#destroying = true;
+      try {
+        await this.#container().destroy();
+      } finally {
+        this.#destroying = false;
+      }
       if (this.#container().running) throw new ControlError("container_destroy_unsettled", 503);
-    }, () => ({}), { sealed: true });
+    }, () => ({}), { sealed: true, discard });
     return this.salixObserve();
   }
 
-  override async fetch(request: Request): Promise<Response> {
+  // Nothing reaches the Container through the gateway: its station connects out.
+  override async fetch(): Promise<Response> {
+    return errorJson("control_permit_required", 409);
+  }
+
+  // The Container this object started: why it stops is kept and logged, so a stop nobody commanded can be told from
+  // one Salix asked for. Cloudflare gives no more than the monitor's word; the Container's output is not readable here.
+  #watch(container: Container): void {
+    if (this.#watching) return;
+    this.#watching = true;
+    const requested = () => this.#destroying;
+    void container.monitor().then(
+      () => this.#stopped({ exit_code: 0, error: null }, requested(), "monitor"),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        const code = /(?:exit code|signalled)[^0-9-]*(-?\d+)/i.exec(message);
+        this.#stopped({ exit_code: code ? Number(code[1]) : null, error: message.slice(0, 500) }, requested(), "monitor");
+      },
+    );
+  }
+
+  // A stop nobody commanded is also kept apart from the last stop: what follows it is Salix's seal and destroy, and
+  // that commanded stop must not be all that is left to read.
+  #stopped(how: { exit_code: number | null; error: string | null }, requested: boolean, seenBy: ContainerStop["seen_by"]): void {
+    this.#watching = false;
+    const stop: ContainerStop = { at: Date.now(), ...how, requested, operation_id: this.#control.observe()?.operation_id ?? null, started_at: this.#startedAt, seen_by: seenBy };
+    this.#startedAt = null;
     try {
-      if (new URL(request.url).pathname !== "/connect" || request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
-        throw new ControlError("control_permit_required");
+      for (const table of requested ? ["salix_container_stop"] : ["salix_container_stop", "salix_container_uncommanded_stop"]) {
+        this.ctx.storage.sql.exec(`INSERT INTO ${table}(singleton, value) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET value = excluded.value`, JSON.stringify(stop));
       }
-      const permit = requestControlPermit(request);
-      const url = new URL(request.url);
-      url.searchParams.delete("salix_control");
-      const repair = url.searchParams.get("archive_repair") === "true";
-      const forwarded = new Request(url, request);
-      // The slot ends at the upgrade response, not when the WS closes. Existing
-      // accepted work drains through Connector's persistent execution seal.
-      return await this.#control.run(permit, "connect", () => this.#fetchRunning(permit, forwarded),
-        (response) => ({ status: response.status }), { sealed: repair });
-    } catch (error) {
-      if (error instanceof ControlError) return errorJson(error.code, error.status);
-      throw error;
-    }
+      console.log(JSON.stringify({ event: "sandbox_stopped", owner_id: this.#control.observe()?.owner_id ?? null, ...stop }));
+    } catch { /* diagnostics cannot change the Container's state */ }
+  }
+
+  #lastStop(table: "salix_container_stop" | "salix_container_uncommanded_stop"): ContainerStop | null {
+    const rows = this.ctx.storage.sql.exec<{ value: string }>(`SELECT value FROM ${table} WHERE singleton = 1`).toArray();
+    return rows.length ? JSON.parse(rows[0].value) as ContainerStop : null;
+  }
+
+  // A Container found running by a new object (after a Worker deploy) is watched by the SDK, which says its stop here.
+  override async onStop(params?: { exitCode?: number; reason?: string }): Promise<void> {
+    if (!this.#watching) this.#stopped({ exit_code: params?.exitCode ?? null, error: params?.reason ?? null }, this.#destroying, "sdk");
+    await super.onStop();
+  }
+
+  override onError(error: unknown): void {
+    if (!this.#watching) this.#stopped({ exit_code: null, error: (error instanceof Error ? error.message : String(error)).slice(0, 500) }, this.#destroying, "sdk");
   }
 
   #container(): Container {
     const container = this.ctx.container;
     if (!container) throw new ControlError("container_unavailable", 503);
     return container;
-  }
-
-  #fetchRunning(permit: ControlPermit, request: Request): Promise<Response> {
-    this.#control.current(permit);
-    const container = this.#container();
-    if (!container.running) throw new ControlError("container_not_running", 503);
-    // Native getTcpPort.fetch does not call SDK startAndWaitForPorts. If the
-    // Container stops after this check, return the failure; never auto-start.
-    const headers = new Headers(request.headers);
-    headers.set("x-salix-control", JSON.stringify(permit));
-    return container.getTcpPort(PORT).fetch(new Request(request, { headers }));
-  }
-
-  #readRunning(permit: ControlPermit, request: Request): Promise<Response> {
-    return this.#fetchRunning(permit, new Request(request, { signal: AbortSignal.timeout(OBSERVATION_TIMEOUT_MS) }));
   }
 
   // Old Workers use these SDK methods (getSandbox also asynchronously calls

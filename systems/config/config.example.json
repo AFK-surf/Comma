@@ -40,7 +40,8 @@
   "decide": {
     "api_key": "",
     "endpoint": "https://api.typesafe.ai/v1/systemone",
-    "model": "jev-1.13.0"
+    "model": "jev-1.13.0",
+    "provider": "typesafe"
   },
   "transfer": {
     "port": 4400,
@@ -103,6 +104,15 @@
   "slack_mirror": {
     "enabled": true
   },
+  "feishu_mirror": {
+    "enabled": true
+  },
+  "qq_mirror": {
+    "enabled": true
+  },
+  "lark_mirror": {
+    "enabled": true
+  },
   "slack_semantic_search": {
     "url": null,
     "client_id": null,
@@ -132,6 +142,9 @@
       }
     }
   },
+  "station_task_watch": {
+    "canary_group_ids": []
+  },
   "meetings": {
     "runtime_url": "http://meeting-runtime:8080",
     "agent_template": "__internal_meeting_agent",
@@ -139,7 +152,17 @@
     "asr_template": "example-meeting-asr-template",
     "bot_name": "Cirno",
     "caption_language": "Chinese, Mandarin (Simplified)",
+    "master_token_factory": {
+      "base_url": "https://meet-mtf-staging.afk.surf",
+      "secret": "replace-with-token-factory-secret",
+      "profile": "Default"
+    },
+    "guest_factory": {
+      "url": "https://meet-guest-factory-staging.afk.surf/v1/handoff",
+      "secret": "replace-with-token-factory-secret"
+    },
     "feishu_action_activation_enabled": false,
+    "lark_action_activation_enabled": false,
     "calendar_autojoin": {
       "enabled": true,
       "channels": {
@@ -152,6 +175,18 @@
         "replace-with-feishu-connect-id": {
           "mode": "notify",
           "chat_id": "oc_replace_with_target_group",
+          "calendars": [
+            "Your Team Calendar"
+          ],
+          "create_calendar": "Your Team Calendar",
+          "mentions": {
+            "mode": "none",
+            "users": []
+          }
+        },
+        "replace-with-lark-connect-id": {
+          "mode": "notify",
+          "chat_id": "oc_replace_with_target_lark_group",
           "calendars": [
             "Your Team Calendar"
           ],

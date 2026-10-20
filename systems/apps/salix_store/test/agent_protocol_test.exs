@@ -5,7 +5,7 @@ defmodule SalixStore.AgentProtocolTest do
   serializable-transaction semantics and that fencing is
   validated inside every commit.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{Agent, S3, Keys}
   alias SalixStore.Agent.Owned
@@ -15,17 +15,17 @@ defmodule SalixStore.AgentProtocolTest do
   for {backend, name} <- [{SalixStore.S3.AWS, "MinIO"}, {SalixStore.S3.Fake, "Fake"}] do
     describe "#{name}: agent protocol" do
       setup do
-        prev = Application.get_env(:salix_store, :s3_backend)
-        Application.put_env(:salix_store, :s3_backend, unquote(backend))
+        prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+        SystemsRuntime.put_env(:salix_store, :s3_backend, unquote(backend))
         # Force snapshots after a tiny amount of journal so we exercise that path.
-        prev_snap = Application.get_env(:salix_store, :snapshot_bytes)
-        Application.put_env(:salix_store, :snapshot_bytes, 200)
+        prev_snap = SystemsRuntime.get_env(:salix_store, :snapshot_bytes)
+        SystemsRuntime.put_env(:salix_store, :snapshot_bytes, 200)
 
         if unquote(backend) == SalixStore.S3.Fake, do: start_supervised!(SalixStore.S3.Fake)
 
         on_exit(fn ->
-          Application.put_env(:salix_store, :s3_backend, prev)
-          Application.put_env(:salix_store, :snapshot_bytes, prev_snap)
+          SystemsRuntime.put_env(:salix_store, :s3_backend, prev)
+          SystemsRuntime.put_env(:salix_store, :snapshot_bytes, prev_snap)
         end)
 
         {:ok, agent: unique_agent()}
@@ -111,6 +111,6 @@ defmodule SalixStore.AgentProtocolTest do
   end
 
   defp unique_agent do
-    "agent-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+    "agent-" <> Base.encode16(SystemsRuntime.Proc.random_bytes(8), case: :lower)
   end
 end

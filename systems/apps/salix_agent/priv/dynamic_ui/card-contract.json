@@ -11,7 +11,8 @@
         "meta": {
           "description": "short header context",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
         },
         "source": {
           "type": "string",
@@ -21,9 +22,15 @@
           "type": "string"
         },
         "updatedAt": {
-          "description": "display text such as \"17:05\"",
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
         },
         "actions": {
           "description": "a click proposes the prompt like comma.request",
@@ -160,7 +167,8 @@
         "meta": {
           "description": "short header context",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
         },
         "source": {
           "type": "string",
@@ -170,9 +178,15 @@
           "type": "string"
         },
         "updatedAt": {
-          "description": "display text such as \"17:05\"",
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
         },
         "actions": {
           "description": "a click proposes the prompt like comma.request",
@@ -324,7 +338,8 @@
         "meta": {
           "description": "short header context",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
         },
         "source": {
           "type": "string",
@@ -334,9 +349,15 @@
           "type": "string"
         },
         "updatedAt": {
-          "description": "display text such as \"17:05\"",
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
         },
         "actions": {
           "description": "a click proposes the prompt like comma.request",
@@ -472,7 +493,8 @@
         "meta": {
           "description": "short header context",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
         },
         "source": {
           "type": "string",
@@ -482,9 +504,15 @@
           "type": "string"
         },
         "updatedAt": {
-          "description": "display text such as \"17:05\"",
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
         },
         "actions": {
           "description": "a click proposes the prompt like comma.request",
@@ -701,7 +729,8 @@
         "meta": {
           "description": "short header context",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
         },
         "source": {
           "type": "string",
@@ -711,9 +740,15 @@
           "type": "string"
         },
         "updatedAt": {
-          "description": "display text such as \"17:05\"",
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
         },
         "actions": {
           "description": "a click proposes the prompt like comma.request",
@@ -843,7 +878,8 @@
         "meta": {
           "description": "short header context",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
         },
         "source": {
           "type": "string",
@@ -853,9 +889,15 @@
           "type": "string"
         },
         "updatedAt": {
-          "description": "display text such as \"17:05\"",
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
         },
         "actions": {
           "description": "a click proposes the prompt like comma.request",
@@ -988,7 +1030,8 @@
         "meta": {
           "description": "short header context",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
         },
         "source": {
           "type": "string",
@@ -998,9 +1041,15 @@
           "type": "string"
         },
         "updatedAt": {
-          "description": "display text such as \"17:05\"",
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
         },
         "actions": {
           "description": "a click proposes the prompt like comma.request",
@@ -1087,7 +1136,8 @@
         "meta": {
           "description": "short header context",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
         },
         "source": {
           "type": "string",
@@ -1097,9 +1147,15 @@
           "type": "string"
         },
         "updatedAt": {
-          "description": "display text such as \"17:05\"",
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
         },
         "actions": {
           "description": "a click proposes the prompt like comma.request",
@@ -1179,7 +1235,8 @@
         "meta": {
           "description": "short header context",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
         },
         "source": {
           "type": "string",
@@ -1189,9 +1246,15 @@
           "type": "string"
         },
         "updatedAt": {
-          "description": "display text such as \"17:05\"",
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
         },
         "actions": {
           "description": "a click proposes the prompt like comma.request",
@@ -1303,7 +1366,8 @@
         "meta": {
           "description": "short header context",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
         },
         "source": {
           "type": "string",
@@ -1313,9 +1377,15 @@
           "type": "string"
         },
         "updatedAt": {
-          "description": "display text such as \"17:05\"",
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
         },
         "actions": {
           "description": "a click proposes the prompt like comma.request",
@@ -1360,8 +1430,15 @@
                 "pattern": "\\S"
               },
               "time": {
+                "description": "a label such as \"2 小时前\"",
                 "type": "string",
-                "pattern": "\\S"
+                "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+                "title": "untimed"
+              },
+              "at": {
+                "description": "when it happened",
+                "type": "string",
+                "format": "date-time"
               },
               "status": {
                 "type": "object",
@@ -1387,11 +1464,27 @@
                 ],
                 "title": "status"
               },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "limit": 3
+              },
               "href": {
                 "type": "string",
                 "pattern": "^https:\\/\\/[^\\s/?#@]+(?:[/?#]\\S*)?$",
                 "title": "url",
                 "description": "an HTTPS URL"
+              },
+              "filterKeys": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "\\S"
+                },
+                "limit": 8
               }
             },
             "required": [
@@ -1400,6 +1493,27 @@
             ]
           },
           "limit": 6
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "label": {
+                "type": "string",
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "key",
+              "label"
+            ]
+          },
+          "limit": 4
         },
         "groups": {
           "type": "array",
@@ -1463,7 +1577,8 @@
         "meta": {
           "description": "short header context",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
         },
         "source": {
           "type": "string",
@@ -1473,9 +1588,15 @@
           "type": "string"
         },
         "updatedAt": {
-          "description": "display text such as \"17:05\"",
+          "description": "a freshness label without a clock time, such as \"截至 9/22\"",
           "type": "string",
-          "pattern": "\\S"
+          "pattern": "^(?![\\s\\S]*(?:\\d{1,2}:\\d{2}|\\b(?:UTC|GMT)\\b))[\\s\\S]*\\S",
+          "title": "untimed"
+        },
+        "observedAt": {
+          "description": "when the facts were read",
+          "type": "string",
+          "format": "date-time"
         },
         "actions": {
           "description": "a click proposes the prompt like comma.request",
@@ -1573,7 +1694,8 @@
   },
   "manual": [
     "Fields are text unless a type follows the name. ? marks an optional field.",
-    "Every kind accepts {title, meta? (short header context), source?, sourceBrand?, updatedAt? (display text such as \"17:05\"), actions?: [{label, prompt}] (<= 2; a click proposes the prompt like comma.request)}.",
+    "Card text holds no clock time or time zone. Pass a moment in an ISO time field, such as observedAt: 2026-10-05T03:17:00Z. The card shows it in the viewer's time zone.",
+    "Every kind accepts {title, meta? (short header context), source?, sourceBrand?, updatedAt? (a freshness label without a clock time, such as \"截至 9/22\"), observedAt?: ISO time (when the facts were read), actions?: [{label, prompt}] (<= 2; a click proposes the prompt like comma.request)}.",
     "tone: neutral | brand | success | warning | error",
     "condition: clear | clear-night | partly-cloudy | cloudy | rain | snow",
     "state: done | current | upcoming",
@@ -1589,7 +1711,7 @@
     "checklist: {groups: [{label?, items: [{label, id?, detail?, done?: boolean}] (>= 1)}] (1 to 4; at most 12 items in total)}; layouts: progress, grouped (2 or more groups)",
     "composition: {total, totalLabel?, segments: [{label, value: number >= 0, valueLabel?, muted?: boolean}] (1 to 6)}; layouts: stacked, donut",
     "place: {places: [{name, category?, rating?: number, reviews?, status?, address?, distance?, eta?, href?: url}] (1 to 5)}; layouts: single (1 place), nearby (2 or more)",
-    "feed (news, updates and status lists such as pull requests or CI runs): {items?: [{source, title, brand?, excerpt?, time?, status?, href?: url}] (<= 6), groups?: [{source, summary, brand?, count?: integer >= 0, tone?}] (<= 6)}; needs items or groups; layouts: news (items), digest (groups)",
+    "feed (news, updates and status lists such as pull requests or CI runs): {items?: [{source, title, brand?, excerpt?, time? (a label such as \"2 小时前\"), at?: ISO time (when it happened), status?, tags?: [text] (<= 3), href?: url, filterKeys?: [text] (<= 8)}] (<= 6), filters?: [{key, label}] (<= 4), groups?: [{source, summary, brand?, count?: integer >= 0, tone?}] (<= 6)}; needs items or groups; layouts: news (items), digest (groups)",
     "timer: {label, endsAt?: ISO time, remainingSeconds?: number, daysLeft?: number, totalSeconds?: number, paused?: boolean, phase?: focus | break, cycle?: {current: integer >= 1, total: integer from 1 to 8}, date?, elapsedRatio?: number from 0 to 1, note?}; needs endsAt, remainingSeconds or daysLeft; layouts: countdown, event (daysLeft)"
   ]
 }

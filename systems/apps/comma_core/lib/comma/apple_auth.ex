@@ -17,14 +17,15 @@ defmodule Comma.AppleAuth do
   def start_attempt(attrs \\ %{}) do
     with {:ok, client_id} <- client_id(),
          nonce =
-           :crypto.hash(:sha256, :crypto.strong_rand_bytes(32)) |> Base.encode16(case: :lower),
+           :crypto.hash(:sha256, SystemsRuntime.Proc.random_bytes(32))
+           |> Base.encode16(case: :lower),
          {:ok, grant} <-
            OneTimeCredentials.issue(
              @purpose,
              %{
                "client_id" => client_id,
                "nonce" => nonce,
-               "issued_at" => System.system_time(:second)
+               "issued_at" => SystemsClock.system_time(:second)
              },
              300,
              attrs["remote_ip"] || "unknown"
@@ -47,6 +48,11 @@ defmodule Comma.AppleAuth do
          {:ok, claims} <- AppleToken.verify(attrs["identity_token"], attempt),
          {:ok, outcome} <- transaction(fn -> resolve_claims(claims) end) do
       case outcome do
+        {%User{} = user, identity, creation} ->
+          # The account and identity transaction has committed before capture.
+          if creation == :created, do: Comma.Analytics.registered(user.id)
+          issue_session(user, identity, attrs)
+
         {user, identity} ->
           issue_session(user, identity, attrs)
 
@@ -107,7 +113,7 @@ defmodule Comma.AppleAuth do
           Repo.one(from(user in User, where: user.id == ^identity.user_id, lock: "FOR UPDATE"))
 
         require_active!(user)
-        updates = %{last_authenticated_at: DateTime.utc_now()}
+        updates = %{last_authenticated_at: SystemsClock.utc_now()}
 
         updates =
           if email != nil and claims["email_verified"] in [true, "true"],
@@ -130,9 +136,9 @@ defmodule Comma.AppleAuth do
             {:otp, user, email}
 
           nil ->
-            {:ok, user} = Repository.ensure_user_by_email(email)
+            {:ok, user, creation} = Repository.ensure_user_by_email(email)
             require_active!(user)
-            {user, link_identity!(user, claims["sub"], email)}
+            {user, link_identity!(user, claims["sub"], email), creation}
         end
     end
   end
@@ -208,7 +214,7 @@ defmodule Comma.AppleAuth do
   defp require_active!(_), do: Repo.rollback(:disabled)
 
   defp client_id do
-    case Application.get_env(:comma_core, :apple_auth, [])[:client_id] do
+    case SystemsRuntime.get_env(:comma_core, :apple_auth, [])[:client_id] do
       id when is_binary(id) and byte_size(id) in 1..500 -> {:ok, id}
       _ -> {:error, :apple_not_configured}
     end

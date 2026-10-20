@@ -2,7 +2,7 @@ import {
   motionMessageSend,
   type MessageSendMotionConfig,
   type MessageSendSpringConfig,
-} from "@comma/ui";
+} from "@comma/ui/tokens";
 
 export type MessageSendChannel = "width" | "position" | "height";
 export const messageSendChannels: readonly MessageSendChannel[] = [

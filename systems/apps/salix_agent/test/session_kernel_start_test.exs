@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelStartTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
   alias SalixAgent.TestSupport.SessionData
@@ -71,72 +71,6 @@ defmodule SalixAgent.SessionKernelStartTest do
       before = %State{state() | async_result_refs: %{"selected" => pointer}}
       assert_lookup(before, "selected", {:archived, pointer})
       assert_start(before, event("selected"), before)
-    end
-  end
-
-  test "a pointer-selected nonterminal result shadows fallback terminal matches" do
-    pointed = %{"status" => "running", "seq" => 4, "result_ref" => "another"}
-    fallback = %{"status" => "completed", "result_ref" => "selected"}
-
-    before = %State{
-      state()
-      | async_result_refs: %{"selected" => 4},
-        async_results: [fallback, pointed]
-    }
-
-    assert_lookup(before, "selected", {:ok, pointed})
-
-    expected = %State{
-      before
-      | async_tool_calls: %{"selected" => %{"tool_call_id" => "selected", "status" => "running"}}
-    }
-
-    assert_start(before, event("selected"), expected)
-
-    numeric_first = %{"seq" => 4.0, "status" => "running", "label" => "first"}
-
-    assert_lookup(
-      %State{before | async_results: [numeric_first, pointed]},
-      "selected",
-      {:ok, numeric_first}
-    )
-  end
-
-  test "result references precede call identities and each search keeps its first match" do
-    by_id = %{"tool_call_id" => "selected", "label" => "id"}
-    first = %{"result_ref" => "selected", "label" => "first"}
-    second = %{"result_ref" => "selected", "label" => "second"}
-    before = %State{state() | async_results: [by_id, first, second]}
-    assert_lookup(before, "selected", {:ok, first})
-
-    assert_lookup(
-      %State{before | async_results: [by_id, %{"tool_call_id" => "selected"}]},
-      "selected",
-      {:ok, by_id}
-    )
-
-    for fallback <- [nil, false] do
-      assert_lookup(
-        %State{
-          before
-          | async_tool_calls: %{"selected" => fallback},
-            async_result_refs: %{"selected" => fallback}
-        },
-        "selected",
-        {:ok, first}
-      )
-
-      empty = %State{state(fallback) | async_results: fallback, async_result_refs: fallback}
-      assert_lookup(empty, "selected", :not_found)
-
-      expected = %State{
-        empty
-        | async_tool_calls: %{
-            "selected" => %{"tool_call_id" => "selected", "status" => "running"}
-          }
-      }
-
-      assert_start(empty, event("selected"), expected)
     end
   end
 

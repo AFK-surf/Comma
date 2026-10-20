@@ -1,5 +1,5 @@
 defmodule SalixIM.Migrations.ConversationParticipantNotificationFilterTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.Migrations.ConversationParticipantNotificationFilter
   alias SalixIM.{Conversations, Release}
@@ -7,12 +7,12 @@ defmodule SalixIM.Migrations.ConversationParticipantNotificationFilterTest do
 
   setup do
     SalixIM.TestSupport.Fleet.stop_all!()
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    previous_placement = Application.get_env(:salix_im, :conversation_placement)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_placement = SystemsRuntime.get_env(:salix_im, :conversation_placement)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :conversation_placement,
       SalixIM.ConversationPlacement.LocalFleet
@@ -149,6 +149,6 @@ defmodule SalixIM.Migrations.ConversationParticipantNotificationFilterTest do
              S3.put(key, body |> Jason.decode!() |> fun.() |> Jason.encode!(), if_match: etag)
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

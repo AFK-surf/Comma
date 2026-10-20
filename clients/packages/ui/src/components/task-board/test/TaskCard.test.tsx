@@ -52,7 +52,7 @@ describe("TaskCard", () => {
   it("renders meta and badge slots when provided", () => {
     const { container } = render(
       <TaskCard
-        badges={<span data-testid="schedule-badge">Schedules</span>}
+        badges={<span data-testid="schedule-badge">Loops</span>}
         icon={<Icon name="status-icon" />}
         meta={<span data-testid="worker">worker</span>}
         title="Untitled"

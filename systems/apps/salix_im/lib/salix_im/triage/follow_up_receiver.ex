@@ -200,7 +200,7 @@ defmodule SalixIM.Triage.FollowUpReceiver do
       "message_ts" => source.trigger_message_ts,
       "actor_id" => message["actor_id"] || message["user"],
       "actor_kind" => message["actor_kind"],
-      "text" => message["text"]
+      "text" => if(is_binary(message["text"]), do: String.trim(message["text"]), else: nil)
     }
 
     if Enum.all?(Map.values(verified), &nonblank?/1),

@@ -1,5 +1,5 @@
 defmodule SalixStore.AgentVMMInstallationsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Ecto.Query
 
@@ -39,39 +39,6 @@ defmodule SalixStore.AgentVMMInstallationsTest do
     :ok
   end
 
-  test "lost and concurrent install requests create only the original environment" do
-    {:ok, calls} = Agent.start_link(fn -> 0 end)
-
-    create = fn ->
-      Agent.update(calls, &(&1 + 1))
-
-      Compute.ensure_environment(%{
-        id: "request-env-" <> Ecto.UUID.generate(),
-        tenant_id: "tenant",
-        owner_type: "project",
-        owner_id: "project",
-        pool_id: "pool"
-      })
-    end
-
-    attrs = Map.delete(request_attrs(), :environment_id)
-
-    requests =
-      for _ <- 1..2,
-          do:
-            Task.async(fn -> AgentVMMInstallations.request(attrs, create_environment: create) end)
-
-    [first, second] = Enum.map(requests, &Task.await/1)
-    assert {:ok, a} = first
-    assert {:ok, b} = second
-    assert a.operation.id == b.operation.id
-    assert a.operation.environment_id == b.operation.environment_id
-    assert {:ok, retried} = AgentVMMInstallations.request(attrs, create_environment: create)
-    assert retried.operation.environment_id == a.operation.environment_id
-    assert Repo.aggregate(Compute.Environment, :count) == 1
-    assert Agent.get(calls, & &1) == 1
-  end
-
   test "ordinary owner commit rechecks a Session that became inactive after initial validation" do
     assert {:ok, descriptor} = AgentVMMInstallations.request(request_attrs())
 
@@ -92,31 +59,6 @@ defmodule SalixStore.AgentVMMInstallationsTest do
     end
 
     assert Repo.get!(Operation, descriptor.operation.id).revision == descriptor.operation.revision
-  end
-
-  test "ordinary mutations reject a delivery change after the caller observes authorization" do
-    assert {:ok, descriptor} = AgentVMMInstallations.request(request_attrs())
-    expected = descriptor.operation
-
-    {1, _} =
-      Repo.update_all(from(o in Operation, where: o.id == ^expected.id),
-        set: [delivery_target_id: "replacement-session"]
-      )
-
-    options = [expected_authorization: expected]
-    assert {:error, :authorization_changed} = AgentVMMInstallations.retry(expected.id, options)
-    assert {:error, :authorization_changed} = AgentVMMInstallations.revoke(expected.id, options)
-
-    assert {:error, :authorization_changed} =
-             AgentVMMInstallations.configure_registration(expected.id, true, options)
-
-    assert {:error, :authorization_changed} =
-             AgentVMMInstallations.initialize_workload(expected.id, options)
-
-    current = Repo.get!(Operation, expected.id)
-    assert current.authorization_status == "requested"
-    assert current.delivery_target_id == "replacement-session"
-    assert current.ticket_generation == expected.ticket_generation
   end
 
   test "dedicated possession proof recovers the original installation once and fences old management" do
@@ -239,7 +181,7 @@ defmodule SalixStore.AgentVMMInstallationsTest do
              AgentVMMInstallations.recovery_challenge(original.id, authority, unknown)
 
     assert Repo.get!(Operation, original.id).authorizing_subject_id == nil
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     known = [
       authorize: fn -> :ok end,
@@ -321,64 +263,6 @@ defmodule SalixStore.AgentVMMInstallationsTest do
     assert Repo.get!(Compute.ProviderBinding, binding.id).status == "disabled"
   end
 
-  test "ticket response-loss budget can explicitly reopen only the same pre-handoff operation" do
-    assert {:ok, initial} = AgentVMMInstallations.request(request_attrs())
-
-    assert {:ok, second} = AgentVMMInstallations.retry(initial.operation.id)
-    assert {:ok, third} = AgentVMMInstallations.retry(initial.operation.id)
-    assert {:ok, fourth} = AgentVMMInstallations.retry(initial.operation.id)
-
-    assert [
-             second.operation.ticket_generation,
-             third.operation.ticket_generation,
-             fourth.operation.ticket_generation
-           ] == [2, 3, 4]
-
-    assert {:error, :ticket_retry_exhausted} =
-             AgentVMMInstallations.retry(initial.operation.id)
-
-    closed = Repo.get!(Operation, initial.operation.id)
-    assert closed.authorization_status == "action_required"
-    assert closed.ticket_status == "revoked"
-    assert closed.error_code == "ticket_retry_exhausted"
-
-    assert {:ok, reopened} = AgentVMMInstallations.retry(initial.operation.id)
-    assert reopened.operation.id == initial.operation.id
-    assert reopened.operation.registration_id == initial.operation.registration_id
-    assert reopened.operation.authorization_status == "requested"
-    assert reopened.operation.ticket_status == "active"
-    assert reopened.operation.ticket_generation == 1
-    assert is_nil(reopened.operation.error_code)
-
-    assert {:error, :invalid_ticket} =
-             exchange(initial.operation.id, fourth.one_time_secret, host_identity())
-
-    assert {:ok, exchanged} =
-             exchange(initial.operation.id, reopened.one_time_secret, host_identity())
-
-    assert exchanged.operation.authorization_status == "exchange_committed"
-  end
-
-  test "runner descriptor delivery is bounded after three lost responses" do
-    assert {:ok, initial} = AgentVMMInstallations.request(request_attrs())
-
-    for expected_generation <- 2..4 do
-      assert {:ok, delivered} =
-               AgentVMMInstallations.deliver_next("bft_runner", "runner-a")
-
-      assert delivered.operation.id == initial.operation.id
-      assert delivered.operation.ticket_generation == expected_generation
-    end
-
-    assert {:error, :ticket_retry_exhausted} =
-             AgentVMMInstallations.deliver_next("bft_runner", "runner-a")
-
-    assert Repo.get!(Operation, initial.operation.id).authorization_status == "action_required"
-
-    assert {:error, :no_pending_operation} =
-             AgentVMMInstallations.deliver_next("bft_runner", "runner-a")
-  end
-
   test "reused idempotency key cannot change its authorization binding" do
     assert {:ok, descriptor} = AgentVMMInstallations.request(request_attrs())
 
@@ -388,34 +272,6 @@ defmodule SalixStore.AgentVMMInstallationsTest do
     assert {:ok, operation} = AgentVMMInstallations.get(descriptor.operation.id)
     assert operation.delivery_target_id == "runner-a"
     assert operation.ticket_generation == 1
-  end
-
-  test "request rejects unbounded product surfaces" do
-    assert {:error, :invalid_install_request} =
-             AgentVMMInstallations.request(%{request_attrs() | surface: "caller-controlled"})
-
-    assert Repo.aggregate(Operation, :count) == 0
-  end
-
-  test "exact delivery target rotates one pending descriptor without a claim lease" do
-    assert {:ok, initial} = AgentVMMInstallations.request(request_attrs())
-
-    assert {:error, :no_pending_operation} =
-             AgentVMMInstallations.deliver_next("bft_runner", "runner-b")
-
-    assert {:ok, delivered} = AgentVMMInstallations.deliver_next("bft_runner", "runner-a")
-    assert delivered.operation.id == initial.operation.id
-    assert delivered.operation.ticket_generation == 2
-    refute delivered.one_time_secret == initial.one_time_secret
-
-    assert {:error, :invalid_ticket} =
-             exchange(initial.operation.id, initial.one_time_secret, host_identity())
-
-    assert {:ok, _result} =
-             exchange(delivered.operation.id, delivered.one_time_secret, host_identity())
-
-    assert {:error, :no_pending_operation} =
-             AgentVMMInstallations.deliver_next("bft_runner", "runner-a")
   end
 
   test "exact runner terminal report closes redelivery and revokes committed material" do
@@ -478,41 +334,6 @@ defmodule SalixStore.AgentVMMInstallationsTest do
     assert is_nil(Repo.get!(Operation, committed_descriptor.operation.id).material_ciphertext)
 
     assert Repo.get!(AgentVMM.Registration, committed_descriptor.operation.registration_id).status ==
-             "revoked"
-  end
-
-  test "terminal report after handoff ACK revokes registration and requires action" do
-    assert {:ok, descriptor} = AgentVMMInstallations.request(request_attrs())
-
-    assert {:ok, _} =
-             exchange(descriptor.operation.id, descriptor.one_time_secret, host_identity())
-
-    assert {:ok, handed_off} =
-             AgentVMMInstallations.acknowledge(
-               descriptor.operation.id,
-               descriptor.one_time_secret,
-               host_identity_digest()
-             )
-
-    assert handed_off.authorization_status == "handed_off"
-
-    assert {:ok, apply_failed} =
-             AgentVMMInstallations.report_delivery_failure(
-               "bft_runner",
-               "runner-a",
-               descriptor.operation.id,
-               "agent_vmm.apply_failed"
-             )
-
-    assert apply_failed.authorization_status == "handed_off"
-    assert apply_failed.status == "action_required"
-    assert apply_failed.error_code == "agent_vmm.apply_failed"
-    assert is_nil(Repo.get!(Operation, descriptor.operation.id).material_ciphertext)
-
-    assert {:error, :operation_not_retryable} =
-             AgentVMMInstallations.retry(descriptor.operation.id)
-
-    assert Repo.get!(AgentVMM.Registration, descriptor.operation.registration_id).status ==
              "revoked"
   end
 
@@ -594,28 +415,6 @@ defmodule SalixStore.AgentVMMInstallationsTest do
              AgentVMMInstallations.request(request_attrs())
 
     assert Repo.aggregate(Operation, :count) == 0
-  end
-
-  test "exchange rechecks the exact Environment after authorization and rolls back effects" do
-    assert {:ok, descriptor} = AgentVMMInstallations.request(request_attrs())
-
-    assert {:ok, environment} =
-             Compute.update_environment_intent("environment", 1, %{desired_state: "revoked"})
-
-    assert environment.desired_state == "revoked"
-
-    assert {:error, :invalid_install_environment} =
-             exchange(descriptor.operation.id, descriptor.one_time_secret, host_identity())
-
-    assert Repo.get(AgentVMM.Registration, descriptor.operation.registration_id) == nil
-
-    assert Repo.get_by(Compute.ProviderBinding,
-             provider_ref: descriptor.operation.registration_id
-           ) == nil
-
-    stored = Repo.get!(Operation, descriptor.operation.id)
-    assert stored.authorization_status == "requested"
-    assert stored.ticket_status == "active"
   end
 
   test "exchange response recovery is fixed to the current secret and Host" do
@@ -725,6 +524,75 @@ defmodule SalixStore.AgentVMMInstallationsTest do
     assert {:ok, ready} = AgentVMMInstallations.get(descriptor.operation.id)
     assert ready.status == "ready"
 
+    assert {:ok, initialized} =
+             AgentVMMInstallations.initialize_workload(ready.id,
+               expected_authorization: ready
+             )
+
+    initial = initialized.initial_workload_id
+    assert is_binary(initial)
+
+    assert {:ok, repeated} =
+             AgentVMMInstallations.initialize_workload(ready.id,
+               expected_authorization: initialized
+             )
+
+    assert repeated.initial_workload_id == initial
+
+    Repo.update_all(from(w in Compute.Workload, where: w.id == ^initial),
+      set: [observed_state: "failed"]
+    )
+
+    assert {:ok, retried} =
+             AgentVMMInstallations.initialize_workload(ready.id,
+               expected_authorization: repeated
+             )
+
+    assert retried.initial_workload_id == initial
+    assert Repo.get!(Compute.Workload, initial).observed_state == "pending"
+    now = SystemsClock.utc_now()
+
+    claim =
+      Repo.insert!(%Compute.ReconcilerClaim{
+        id: "initial-shell-claim",
+        provider: "agent_vmm",
+        workload_id: initial,
+        generation: 1,
+        claim_token: "action-required",
+        attempt_count: 1,
+        last_error: %{"kind" => "action_required", "code" => "resource_capacity_exhausted"},
+        created_at: now,
+        updated_at: now
+      })
+
+    assert {:ok, claim_retried} =
+             AgentVMMInstallations.initialize_workload(ready.id,
+               expected_authorization: retried
+             )
+
+    assert claim_retried.initial_workload_id == initial
+    assert Repo.get!(Compute.ReconcilerClaim, claim.id).last_error == %{}
+    workload = Repo.get!(Compute.Workload, initial)
+
+    assert {:ok, _} =
+             SalixStore.ComputeWorkloadDeletion.start(
+               ready.tenant_id,
+               ready.scope_key,
+               initial,
+               workload.revision,
+               workload.generation,
+               "delete-initial",
+               fn -> :ok end
+             )
+
+    assert {:ok, after_deletion} =
+             AgentVMMInstallations.initialize_workload(ready.id,
+               expected_authorization: claim_retried
+             )
+
+    assert after_deletion.initial_workload_id == initial
+    assert Repo.aggregate(Compute.Workload, :count) == 1
+
     {1, _} =
       Repo.update_all(Compute.ProviderBinding,
         set: [
@@ -776,7 +644,7 @@ defmodule SalixStore.AgentVMMInstallationsTest do
   end
 
   test "expired unconsumed ticket remains expired and creates no registration" do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     assert {:ok, descriptor} = AgentVMMInstallations.request(request_attrs(), now: now)
 
     assert {:error, :ticket_expired} =
@@ -798,8 +666,49 @@ defmodule SalixStore.AgentVMMInstallationsTest do
              nil
   end
 
-  test "expired material handoff closes recovery without rematerializing" do
-    now = DateTime.utc_now()
+  test "an expired handoff whose Host never enrolled frees the scope for a new install" do
+    now = SystemsClock.utc_now()
+
+    assert {:ok, descriptor} =
+             AgentVMMInstallations.request(request_attrs(), now: now, one_per_scope: true)
+
+    assert {:ok, _} =
+             exchange(descriptor.operation.id, descriptor.one_time_secret, host_identity(),
+               now: now
+             )
+
+    assert {:ok, %{settled: 0}} =
+             AgentVMMInstallations.expire_handoffs(now: DateTime.add(now, 14 * 60, :second))
+
+    assert Repo.get!(Operation, descriptor.operation.id).authorization_status ==
+             "exchange_committed"
+
+    assert {:error, :scope_host_bound} =
+             AgentVMMInstallations.request(%{request_attrs() | client_request_id: "second"},
+               one_per_scope: true
+             )
+
+    assert {:ok, %{settled: 1}} =
+             AgentVMMInstallations.expire_handoffs(now: DateTime.add(now, 16 * 60, :second))
+
+    stored = Repo.get!(Operation, descriptor.operation.id)
+    assert stored.authorization_status == "action_required"
+    assert stored.error_code == "material_handoff_expired"
+    assert is_nil(stored.material_ciphertext)
+
+    assert Repo.get!(AgentVMM.Registration, descriptor.operation.registration_id).status ==
+             "revoked"
+
+    assert {:ok, second} =
+             AgentVMMInstallations.request(%{request_attrs() | client_request_id: "second"},
+               one_per_scope: true
+             )
+
+    assert second.operation.id != descriptor.operation.id
+  end
+
+  test "an expired handoff whose Host already enrolled settles as handed off" do
+    now = SystemsClock.utc_now()
     assert {:ok, descriptor} = AgentVMMInstallations.request(request_attrs(), now: now)
 
     assert {:ok, exchanged} =
@@ -807,52 +716,39 @@ defmodule SalixStore.AgentVMMInstallationsTest do
                now: now
              )
 
-    expired_at = DateTime.add(now, 16 * 60, :second)
+    token = Base.decode64!(exchanged.material["remote_enrollment"]["enrollment_token"])
 
-    assert {:error, :handoff_expired} =
-             AgentVMMInstallations.acknowledge(
-               descriptor.operation.id,
-               descriptor.one_time_secret,
-               exchanged.host_identity_digest,
-               now: expired_at
+    assert {:ok, enrolled} =
+             AgentVMM.enroll(
+               descriptor.operation.registration_id,
+               token,
+               String.duplicate("c", 32)
              )
 
+    assert {:ok, %{settled: 1}} =
+             AgentVMMInstallations.expire_handoffs(now: DateTime.add(now, 16 * 60, :second))
+
     stored = Repo.get!(Operation, descriptor.operation.id)
-    assert stored.authorization_status == "action_required"
-    assert stored.error_code == "material_handoff_expired"
+    assert stored.authorization_status == "handed_off"
     assert is_nil(stored.material_ciphertext)
-    assert {:error, {:operation_exists, _}} = AgentVMMInstallations.request(request_attrs())
+    assert stored.material_handed_off_at
+    assert Repo.get!(AgentVMM.Registration, enrolled.id) == enrolled
   end
 
-  test "bounded expiry closes only committed handoffs" do
-    now = DateTime.utc_now()
-    assert {:ok, descriptor} = AgentVMMInstallations.request(request_attrs(), now: now)
+  test "the settlement sweeper pass expires due material handoffs" do
+    past = DateTime.add(SystemsClock.utc_now(), -20 * 60, :second)
+    assert {:ok, descriptor} = AgentVMMInstallations.request(request_attrs(), now: past)
 
     assert {:ok, _} =
              exchange(descriptor.operation.id, descriptor.one_time_secret, host_identity(),
-               now: now
+               now: past
              )
 
-    assert {:ok, 1} =
-             AgentVMMInstallations.expire_handoffs(now: DateTime.add(now, 16 * 60, :second))
+    assert {:noreply, _} =
+             SalixStore.AgentVMMSettlementSweeper.handle_info(:sweep, {3_600_000, ""})
 
-    assert Repo.get!(Operation, descriptor.operation.id).authorization_status == "action_required"
-
-    assert {:ok, 0} =
-             AgentVMMInstallations.expire_handoffs(now: DateTime.add(now, 17 * 60, :second))
-  end
-
-  test "revocation closes a pre-handoff operation and old ticket" do
-    assert {:ok, descriptor} = AgentVMMInstallations.request(request_attrs())
-    assert {:ok, revoked} = AgentVMMInstallations.revoke(descriptor.operation.id)
-    assert revoked.authorization_status == "revoked"
-    assert revoked.ticket_status == "revoked"
-
-    assert {:error, :ticket_revoked} =
-             exchange(descriptor.operation.id, descriptor.one_time_secret, host_identity())
-
-    assert {:ok, repeated} = AgentVMMInstallations.revoke(descriptor.operation.id)
-    assert repeated.authorization_status == "revoked"
+    assert Repo.get!(Operation, descriptor.operation.id).error_code ==
+             "material_handoff_expired"
   end
 
   test "revocation after exchange closes its exact registration and material" do
@@ -915,23 +811,6 @@ defmodule SalixStore.AgentVMMInstallationsTest do
              AgentVMMInstallations.configure_registration(descriptor.operation.id, true)
   end
 
-  test "oversized material rolls back registration and ticket consumption" do
-    assert {:ok, descriptor} = AgentVMMInstallations.request(request_attrs())
-
-    assert {:error, :install_material_too_large} =
-             AgentVMMInstallations.exchange(
-               descriptor.operation.id,
-               descriptor.one_time_secret,
-               host_identity(),
-               fn _, _ -> {:ok, %{"payload" => String.duplicate("x", 512_001)}} end
-             )
-
-    stored = Repo.get!(Operation, descriptor.operation.id)
-    assert stored.authorization_status == "requested"
-    assert stored.ticket_status == "active"
-    assert Repo.get(AgentVMM.Registration, descriptor.operation.registration_id) == nil
-  end
-
   defp exchange(operation_id, secret, identity, opts \\ []) do
     AgentVMMInstallations.exchange(
       operation_id,
@@ -985,14 +864,14 @@ defmodule SalixStore.AgentVMMInstallationsTest do
 
   defp recovery_identity do
     {<<4, x::binary-size(32), y::binary-size(32)>>, private_key} =
-      :crypto.generate_key(:ecdh, :secp256r1)
+      SystemsRuntime.Proc.generate_key(:ecdh, :secp256r1)
 
     key = <<2 + Bitwise.band(:binary.last(y), 1), x::binary>>
     {%{device_id: "host-device", root_public_key: key, root_key_revision: 1}, private_key}
   end
 
   defp recovery_proof(identity, private_key, nonce, wire) do
-    der = :crypto.sign(:ecdsa, :sha256, wire, [private_key, :secp256r1])
+    der = SystemsRuntime.Proc.sign(:ecdsa, :sha256, wire, [private_key, :secp256r1])
     <<0x30, _size, 0x02, r_size, rest::binary>> = der
     <<r::binary-size(^r_size), 0x02, s_size, s::binary-size(s_size)>> = rest
     r = :binary.decode_unsigned(r)

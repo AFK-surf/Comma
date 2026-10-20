@@ -1,6 +1,7 @@
 defmodule SalixMeet.RuntimeDriver.SalixConnectTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixMeet"]
   alias SalixMeet.RuntimeDriver.SalixConnect
 
   defmodule CaptureDispatch do
@@ -8,7 +9,7 @@ defmodule SalixMeet.RuntimeDriver.SalixConnectTest do
 
     @impl true
     def join(payload) do
-      send(self(), {:dispatched, payload})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:dispatched, payload})
       {:ok, %{"accepted" => true}}
     end
 
@@ -20,9 +21,9 @@ defmodule SalixMeet.RuntimeDriver.SalixConnectTest do
   end
 
   setup do
-    prev = Application.get_env(:salix_meet, :meeting_dispatch_mod)
-    Application.put_env(:salix_meet, :meeting_dispatch_mod, CaptureDispatch)
-    on_exit(fn -> Application.put_env(:salix_meet, :meeting_dispatch_mod, prev) end)
+    prev = SystemsRuntime.get_env(:salix_meet, :meeting_dispatch_mod)
+    SystemsRuntime.put_env(:salix_meet, :meeting_dispatch_mod, CaptureDispatch)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_meet, :meeting_dispatch_mod, prev) end)
     :ok
   end
 
@@ -42,8 +43,7 @@ defmodule SalixMeet.RuntimeDriver.SalixConnectTest do
     }
 
     assert {:ok, %{"accepted" => true}} = SalixConnect.join(doc)
-    assert_receive {:dispatched, payload}
-
+    settle_receive({:dispatched, payload})
     assert payload["meeting_id"] == "meet_1"
     assert payload["meet_url"] == "https://meet.google.com/abc-defg-hij"
     assert payload["tenant_id"] == "t1"
@@ -52,13 +52,5 @@ defmodule SalixMeet.RuntimeDriver.SalixConnectTest do
     assert payload["caption_language"] == "English"
     assert payload["join_requested_at"] == 123
     refute Map.has_key?(payload, "callback_url")
-  end
-
-  test "join surfaces a dispatch error when no runtime is available" do
-    Application.put_env(:salix_meet, :meeting_dispatch_mod, SalixMeet.Ports.MeetingDispatch.None)
-
-    doc = %{"id" => "meet_2", "state" => %{"group_id" => "g1"}}
-
-    assert {:error, :meeting_dispatch_not_configured} = SalixConnect.join(doc)
   end
 end

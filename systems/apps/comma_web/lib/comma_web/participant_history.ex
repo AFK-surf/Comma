@@ -38,29 +38,45 @@ defmodule CommaWeb.ParticipantHistory do
 
   @doc false
   def page(agent, session_id, limit, before) do
-    if Control.runtime_kind(agent) == "external" do
-      with {:ok, result} <-
-             Runtime.session_records(agent, session_id, limit: limit, before: before) do
-        {:ok,
-         %{
-           "records" => Enum.map(result["records"], &external_record/1),
-           "has_more" => result["has_more"] == true,
-           "next_before" => result["next_before"]
-         }}
-      end
-    else
-      with {:ok, scope} <- history_scope(before, limit),
-           {:ok, result} <- Runtime.get_session_messages(agent, session_id, history: scope) do
-        records = Enum.map(result["messages"], &internal_record/1)
-        has_more = result["history_truncated"] == true and records != []
+    case history_scope(before, limit) do
+      {:ok, scope} ->
+        case Runtime.get_session_messages(agent, session_id, history: scope) do
+          {:ok, %{"read_only" => true}} -> retired_page(agent, session_id, limit, before)
+          {:ok, result} -> {:ok, internal_page(result)}
+          error -> error
+        end
 
-        {:ok,
-         %{
-           "records" => records,
-           "has_more" => has_more,
-           "next_before" => if(has_more, do: hd(records)["id"])
-         }}
-      end
+      # A retired Session pages by record id, which is not a message sequence.
+      {:error, :invalid_cursor} = error ->
+        case retired_page(agent, session_id, limit, before) do
+          {:ok, _page} = ok -> ok
+          _not_retired -> error
+        end
+    end
+  end
+
+  defp internal_page(result) do
+    records = Enum.map(result["messages"], &internal_record/1)
+    has_more = result["history_truncated"] == true and records != []
+
+    %{
+      "records" => records,
+      "has_more" => has_more,
+      "next_before" => if(has_more, do: hd(records)["id"])
+    }
+  end
+
+  # A Session of the retired External Runtime (`SalixAgent.RetiredSessions`):
+  # its stored records, paged by record id.
+  defp retired_page(agent, session_id, limit, before) do
+    with {:ok, result} <-
+           SalixAgent.RetiredSessions.records(agent, session_id, limit: limit, before: before) do
+      {:ok,
+       %{
+         "records" => Enum.map(result["records"], &retired_record/1),
+         "has_more" => result["has_more"] == true,
+         "next_before" => result["next_before"]
+       }}
     end
   end
 
@@ -117,7 +133,7 @@ defmodule CommaWeb.ParticipantHistory do
       |> source_field(
         "provider",
         origin["provider"],
-        ~w(internal telegram slack feishu wechat imessage voice signal)
+        ~w(internal telegram slack feishu wechat imessage voice signal lark)
       )
       |> source_field(
         "actor_type",
@@ -150,7 +166,7 @@ defmodule CommaWeb.ParticipantHistory do
     if value in allowed, do: Map.put(source, key, value), else: source
   end
 
-  defp external_record(record) do
+  defp retired_record(record) do
     data = record["data"] || %{}
 
     %{

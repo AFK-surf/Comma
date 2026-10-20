@@ -1,4 +1,6 @@
 defmodule SalixIM.ConversationSearchWorker do
+  require SystemsClock
+
   @moduledoc """
   Single bounded search-projection worker per SalixIM application instance.
 
@@ -14,7 +16,7 @@ defmodule SalixIM.ConversationSearchWorker do
   `tla/salix/ConversationTaskSearchQueue.tla`.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   alias SalixIM.ConversationSearchProjection
   alias SalixStore.ConversationSearch
@@ -23,11 +25,12 @@ defmodule SalixIM.ConversationSearchWorker do
   @default_lease_ms 30_000
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc false
-  def drain_once(server \\ __MODULE__), do: GenServer.call(server, :drain_once, 60_000)
+  def drain_once(server \\ __MODULE__),
+    do: SystemsRuntime.Server.call(server, :drain_once, 60_000)
 
   @doc false
   def with_heartbeat_for_test(claim, lease_ms, fun) when is_function(fun, 0),
@@ -38,7 +41,7 @@ defmodule SalixIM.ConversationSearchWorker do
     state = %{
       interval_ms: positive(opts[:interval_ms], @default_interval_ms),
       lease_ms: positive(opts[:lease_ms], @default_lease_ms),
-      holder: Atom.to_string(node()) <> ":" <> inspect(self())
+      holder: Atom.to_string(node()) <> ":" <> inspect(SystemsRuntime.Proc.self())
     }
 
     schedule_tick(0)
@@ -75,15 +78,15 @@ defmodule SalixIM.ConversationSearchWorker do
   defp settle(claim, {:error, reason}), do: ConversationSearch.retry(claim, reason)
   defp settle(claim, other), do: ConversationSearch.retry(claim, {:unexpected_result, other})
 
-  defp schedule_tick(delay), do: Process.send_after(self(), :tick, delay)
+  defp schedule_tick(delay), do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, delay)
 
   defp with_heartbeat(claim, lease_ms, fun \\ nil) do
-    parent = self()
-    reference = make_ref()
+    parent = SystemsRuntime.Proc.self()
+    reference = SystemsRuntime.Proc.make_ref()
 
     {:ok, heartbeat} =
-      Task.start(fn ->
-        owner_ref = Process.monitor(parent)
+      SystemsRuntime.Task.start(fn ->
+        owner_ref = SystemsRuntime.Proc.monitor(parent)
 
         heartbeat(
           parent,
@@ -96,12 +99,12 @@ defmodule SalixIM.ConversationSearchWorker do
         )
       end)
 
-    receive do
+    SystemsClock.vreceive do
       {^reference, :renewed} ->
         result = run_claim(fun, claim)
-        send(heartbeat, {reference, :stop})
+        SystemsRuntime.Proc.send(heartbeat, {reference, :stop})
 
-        receive do
+        SystemsClock.vreceive do
           {^reference, :stopped} -> result
           {^reference, {:lost, reason}} -> {:error, {:claim_heartbeat_lost, reason}}
         after
@@ -118,10 +121,10 @@ defmodule SalixIM.ConversationSearchWorker do
   defp heartbeat(parent, owner_ref, reference, claim, lease_ms, interval_ms, phase) do
     case ConversationSearch.renew_job_claim(claim, lease_ms) do
       :ok ->
-        if phase == :initial, do: send(parent, {reference, :renewed})
+        if phase == :initial, do: SystemsRuntime.Proc.send(parent, {reference, :renewed})
 
-        receive do
-          {^reference, :stop} -> send(parent, {reference, :stopped})
+        SystemsClock.vreceive do
+          {^reference, :stop} -> SystemsRuntime.Proc.send(parent, {reference, :stopped})
           {:DOWN, ^owner_ref, :process, ^parent, _reason} -> :ok
         after
           interval_ms ->
@@ -129,7 +132,7 @@ defmodule SalixIM.ConversationSearchWorker do
         end
 
       {:error, reason} ->
-        send(parent, {reference, {:lost, reason}})
+        SystemsRuntime.Proc.send(parent, {reference, {:lost, reason}})
     end
   end
 

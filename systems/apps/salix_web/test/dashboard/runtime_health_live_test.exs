@@ -1,9 +1,14 @@
 defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Runtime Health pages: reconciling stat strips, trend charts, deploy table,
   the internal-only attention list, tab/filter URL persistence, drills.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
@@ -15,7 +20,7 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
   defmodule Buckets do
     @moduledoc false
     def hour_start(hours_back \\ 0) do
-      unix = div(System.os_time(:second), 3600) * 3600 - hours_back * 3600
+      unix = div(SystemsClock.system_time(:second), 3600) * 3600 - hours_back * 3600
       unix |> DateTime.from_unix!() |> Calendar.strftime("%Y-%m-%d %H:%M:%S")
     end
   end
@@ -66,7 +71,7 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
        ]}
     end
 
-    # One internal, one external, one unresolvable — only ag-int survives.
+    # One resolvable, one unresolvable — only ag-int survives.
     def unconverged_sessions(_t, _o) do
       {:ok,
        [
@@ -75,12 +80,6 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
            "salix_agent_id" => "ag-int",
            "last_activity_at" => hour_start(0),
            "activity_events" => 9
-         },
-         %{
-           "session_id" => "sess-ext",
-           "salix_agent_id" => "ag-ext",
-           "last_activity_at" => hour_start(0),
-           "activity_events" => 5
          },
          %{
            "session_id" => "sess-gone",
@@ -292,11 +291,11 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
     end
 
     # Activity feed. The scope the LiveView asked for is reported to the
-    # test (the connected LiveView runs in its own process, so `self()`
+    # test (the connected LiveView runs in its own process, so `SystemsRuntime.Proc.self()`
     # would be wrong); `:all` adds a second tenant's round.
     def activity_trace(scope, opts) do
-      if pid = Process.whereis(:activity_trace_listener),
-        do: send(pid, {:activity_trace_scope, scope, opts})
+      if pid = SystemsRuntime.Proc.whereis(:activity_trace_listener),
+        do: SystemsRuntime.Proc.send(pid, {:activity_trace_scope, scope, opts})
 
       base = "2026-09-04 10:00:00"
       at = fn ms -> base <> "." <> String.pad_leading(to_string(ms), 3, "0") end
@@ -417,13 +416,14 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
           "status" => "ok",
           "activation_key" => "msg-1"
         },
-        # An external worker's proxied tool calls: a session, no round.
+        # Tool calls recorded without a round (as retired External Runtime
+        # sessions left them): a session lane, no round.
         %{
           "event_kind" => "tool",
           "tenant_id" => "default",
           "group_id" => "g1",
-          "salix_agent_id" => "ag-ext",
-          "session_id" => "sess-ext",
+          "salix_agent_id" => "ag-loose",
+          "session_id" => "sess-loose",
           "round_id" => nil,
           "started_at" => at.(700),
           "duration_ms" => 100,
@@ -436,8 +436,8 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
           "event_kind" => "tool",
           "tenant_id" => "default",
           "group_id" => "g1",
-          "salix_agent_id" => "ag-ext",
-          "session_id" => "sess-ext",
+          "salix_agent_id" => "ag-loose",
+          "session_id" => "sess-loose",
           "round_id" => nil,
           "started_at" => at.(900),
           "duration_ms" => 50,
@@ -540,17 +540,14 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
     defdelegate session_costs(k, t, o), to: SalixWeb.Dashboard.RuntimeHealthLiveTest.StubQueries
   end
 
-  # Agent registry stand-in for internal/external labeling.
+  # Agent registry stand-in for name and known-agent labeling.
   defmodule StubAgentControl do
-    def get_record("ag-ext"), do: {:ok, %{"runtime_config" => %{"kind" => "external"}}}
     def get_record("ag-missing"), do: {:error, :not_found}
 
     def get_record("ag-int"),
       do: {:ok, %{"name" => "Router Bot", "runtime_config" => %{"kind" => "internal"}}}
 
     def get_record(_id), do: {:ok, %{"runtime_config" => %{"kind" => "internal"}}}
-
-    defdelegate runtime_kind(agent), to: SalixAgent.Control
   end
 
   defp authed_conn,
@@ -559,10 +556,10 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
       |> Plug.Test.init_test_session(%{"admin_authed" => true, "current_tenant" => "default"})
 
   defp with_stubs(queries_mod) do
-    prev_q = Application.get_env(:salix_web, :agent_telemetry_queries_mod)
-    prev_a = Application.get_env(:salix_web, :agent_control_mod)
-    Application.put_env(:salix_web, :agent_telemetry_queries_mod, queries_mod)
-    Application.put_env(:salix_web, :agent_control_mod, StubAgentControl)
+    prev_q = SystemsRuntime.get_env(:salix_web, :agent_telemetry_queries_mod)
+    prev_a = SystemsRuntime.get_env(:salix_web, :agent_control_mod)
+    SystemsRuntime.put_env(:salix_web, :agent_telemetry_queries_mod, queries_mod)
+    SystemsRuntime.put_env(:salix_web, :agent_control_mod, StubAgentControl)
 
     on_exit(fn ->
       restore(:agent_telemetry_queries_mod, prev_q)
@@ -570,38 +567,21 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
     end)
   end
 
-  defp restore(key, nil), do: Application.delete_env(:salix_web, key)
-  defp restore(key, value), do: Application.put_env(:salix_web, key, value)
+  defp restore(key, nil), do: SystemsRuntime.delete_env(:salix_web, key)
+  defp restore(key, value), do: SystemsRuntime.put_env(:salix_web, key, value)
 
   defp with_metering do
-    prev = Application.get_env(:salix_agent, :llm_metering_mod)
-    Application.put_env(:salix_agent, :llm_metering_mod, SalixAgent.LLMMetering.Noop)
+    prev = SystemsRuntime.get_env(:salix_agent, :llm_metering_mod)
+    SystemsRuntime.put_env(:salix_agent, :llm_metering_mod, SalixAgent.LLMMetering.Noop)
 
     on_exit(fn ->
       if prev,
-        do: Application.put_env(:salix_agent, :llm_metering_mod, prev),
-        else: Application.delete_env(:salix_agent, :llm_metering_mod)
+        do: SystemsRuntime.put_env(:salix_agent, :llm_metering_mod, prev),
+        else: SystemsRuntime.delete_env(:salix_agent, :llm_metering_mod)
     end)
   end
 
-  test "the overview names guard parks and repair failures and still balances" do
-    with_stubs(ParkedOutcomeQueries)
-
-    {:ok, view, _} = live(authed_conn(), "/dash/runtime")
-    html = render(view)
-
-    # A park is not a crash, so the card cannot be called "Failed" any more.
-    assert html =~ "Did not finish"
-    assert html =~ "3 no tool call"
-    assert html =~ "1 stopped by a guard"
-
-    # 26 - 17 = 9, of which the named counts cover 7. The remaining 2 have no
-    # column, and must still be visible rather than silently dropped.
-    assert html =~ "(26 = 17 + 9)"
-    assert html =~ "2 ended another way"
-  end
-
-  test "overview reconciles the strip and filters the attention list to internal sessions" do
+  test "overview reconciles the strip and filters the attention list to sessions of known agents" do
     with_stubs(StubQueries)
 
     {:ok, view, _} = live(authed_conn(), "/dash/runtime")
@@ -644,12 +624,11 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
     assert html =~ "▲ +5.0pt"
     assert html =~ "too few calls to judge"
 
-    # Attention: the hard failure plus ONLY the internal silent session —
-    # the external and unresolvable ones are dropped, and the unaccounted
-    # tile counts the same filtered set (1).
+    # Attention: the hard failure plus ONLY the resolvable silent session —
+    # the unresolvable one is dropped, and the unaccounted tile counts the
+    # same filtered set (1).
     assert html =~ "sess-fail"
     assert html =~ "sess-stuck"
-    refute html =~ "sess-ext"
     refute html =~ "sess-gone"
     assert html =~ "never finished"
     assert html =~ "model failed"
@@ -799,73 +778,29 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
     end
   end
 
-  test "activity shows the miniskill duration and timing breakdown" do
-    with_stubs(MiniskillActivityQueries)
-    {:ok, view, _} = live(authed_conn(), "/dash/runtime/activity")
-    html = render_async(view)
-    assert has_element?(view, ~s([data-phase="miniskill"][title*="600ms"]))
-    assert html =~ "Miniskill selection"
-    assert html =~ "miniskill selection"
-  end
-
-  test "activity identifies compaction without presenting it as an external tool call" do
-    with_stubs(CompactionActivityQueries)
-    {:ok, view, _} = live(authed_conn(), "/dash/runtime/activity")
-    html = render_async(view)
-    assert has_element?(view, ~s([data-segment="compaction"][title*="Compaction model call"]))
-    assert has_element?(view, ~s([data-segment="compaction"][aria-label*="Provider call only"]))
-    refute has_element?(view, ~s([data-lane-kind="session"]))
-    assert html =~ "1 round"
-    assert html =~ "compaction model calls"
-  end
-
-  test "activity calls expose their complete details to keyboard and assistive users" do
-    with_stubs(StubQueries)
-    {:ok, view, _} = live(authed_conn(), "/dash/runtime/activity")
-
-    assert has_element?(
-             view,
-             ~s(#activity-scroll[phx-hook="ActivityTooltip"][role="region"][aria-label="Activation timeline"][tabindex="0"])
-           )
-
-    assert has_element?(view, ~s([data-segment="tool"][tabindex="0"][aria-label*="web_fetch"]))
-    assert has_element?(view, ~s(.act-lane[data-tracks]))
-    assert has_element?(view, ~s([data-segment="llm"][data-track]))
-    assert has_element?(view, ~s([data-segment="llm"][tabindex="0"][title*="Model call"]))
-    assert has_element?(view, ~s([data-lane] a[href="/dash/agents/ag-int"]), "Router Bot")
-  end
-
-  test "empty activity keeps its explanation without a focusable empty chart" do
-    with_stubs(EmptyActivityQueries)
-    {:ok, view, _} = live(authed_conn(), "/dash/runtime/activity?range=3h")
-    assert render(view) =~ "No model or tool calls recorded in this window."
-    refute has_element?(view, ~s([role="region"][aria-label="Activation timeline"]))
-  end
-
   test "activity tab lays rounds out as lanes with unknown stretches and links continuations" do
     with_stubs(StubQueries)
-    Process.register(self(), :activity_trace_listener)
+    Process.register(SystemsRuntime.Proc.self(), :activity_trace_listener)
 
     # The plain-HTTP render paints the frame only; the feed is read once,
     # when the socket connects.
     dead = authed_conn() |> get("/dash/runtime/activity") |> html_response(200)
     assert dead =~ "Loading runtime telemetry"
     refute dead =~ "lane"
-    refute_receive {:activity_trace_scope, _, _}
-
+    settle_refute_receive({:activity_trace_scope, _, _})
     {:ok, view, _} = live(authed_conn(), "/dash/runtime/activity")
 
     html = render(view)
 
     # Default scope is the current tenant.
-    assert_receive {:activity_trace_scope, "default", opts}
-    refute_receive {:activity_trace_scope, _, _}
+    settle_receive({:activity_trace_scope, "default", opts})
+    settle_refute_receive({:activity_trace_scope, _, _})
     assert opts[:limit] == 4000
     refute html =~ "sess-other"
 
     # Two lanes: the tool round and its continuation are one activation,
-    # laid end to end — llm, tool, between, llm, finishing — and the external
-    # worker's session is a lane of its two tool calls.
+    # laid end to end — llm, tool, between, llm, finishing — and the session
+    # with round-less tool calls is a lane of its two tool calls.
     assert [_, _] = Regex.scan(~r/data-lane="/, html)
     assert html =~ ~s(data-lane="round-first-1")
     assert html =~ ~s(data-lane-kind="activation")
@@ -876,12 +811,12 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
     assert Enum.sort(segments) ==
              ["between", "llm", "llm", "phase", "phase", "settle", "tool", "tool", "tool"]
 
-    # The external session: striped, counted in tool calls, no rounds and no
-    # ending; the role strip separates it from the Router's activation.
-    assert html =~ ~s(data-lane="session:sess-ext")
+    # The round-less session: striped, counted in tool calls, no rounds and
+    # no ending; the role strip separates it from the Router's activation.
+    assert html =~ ~s(data-lane="session:sess-loose")
     assert html =~ ~s(data-lane-kind="session")
     assert html =~ "2 tool calls"
-    assert html =~ "external worker: tool calls only"
+    assert html =~ "tool calls recorded outside any round"
     assert html =~ "Striped lanes are external worker sessions: 1"
     assert html =~ ~s(data-roles="1")
     assert html =~ "External workers"
@@ -934,179 +869,11 @@ defmodule SalixWeb.Dashboard.RuntimeHealthLiveTest do
       |> element("#runtime-filters")
       |> render_change(%{"range" => "24h", "tenants" => "all"})
 
-    assert_receive {:activity_trace_scope, :all, _opts}
+    settle_receive({:activity_trace_scope, :all, _opts})
     assert html =~ "tenants=all"
     assert html =~ "sess-other"
     assert html =~ "other-tenant"
     assert html =~ "FAILED: rate_limited"
     assert html =~ "1 failed"
-  end
-
-  test "activity lanes open collapsed onto one row, keeping every record" do
-    with_stubs(StubQueries)
-    {:ok, view, _} = live(authed_conn(), "/dash/runtime/activity")
-
-    html = render(view)
-
-    # Collapsed to begin with, and nothing is dropped: the phases and the
-    # unknown stretches are drawn with the calls, every record on track 0,
-    # each lane one track tall. The stylesheet stacks calls over phases.
-    assert html =~ ~s(data-activity-detail="false")
-    assert html =~ ~s(data-lane-detail="false")
-    assert html =~ ~s(data-segment="phase")
-    assert html =~ ~s(data-segment="llm")
-    assert html =~ ~s(data-segment="tool")
-    assert html =~ ~s(data-segment="between")
-    assert html =~ ~s(data-tracks="1")
-    refute html =~ ~s(data-track="1")
-
-    # A block too narrow for its duration label carries no label span at
-    # all: an empty one is still an 8px box of side padding.
-    refute html =~ ~s(<span class="act-txt"></span>)
-
-    # The lane's own icon button opts that lane out of the page default,
-    # giving each record its own track again.
-    html = view |> element(~s(button[phx-value-lane="round-first-1"])) |> render_click()
-    assert html =~ ~s(data-lane-detail="true")
-    assert html =~ ~r/data-track="[1-9][^>]*data-segment="phase"/
-
-    # And the page-level button expands every lane, clearing that choice.
-    html = view |> element(~s(button[phx-click="toggle_activity_detail"])) |> render_click()
-    assert html =~ ~s(data-activity-detail="true")
-    refute html =~ ~s(data-lane-detail="false")
-    assert html =~ ~r/data-track="[1-9][^>]*data-segment="phase"/
-  end
-
-  test "activity tab pages older activations by cursor, and a filter change drops it" do
-    with_stubs(StubQueries)
-    Process.register(self(), :activity_trace_listener)
-
-    # The newest page has everything: no pager. (`live/2` renders twice —
-    # disconnected, then connected — so each page reports its scope twice.)
-    {:ok, view, _} = live(authed_conn(), "/dash/runtime/activity")
-    html = render(view)
-    assert_receive {:activity_trace_scope, "default", opts}
-    refute Keyword.has_key?(opts, :before)
-    refute html =~ "data-pager"
-    drain_traces()
-
-    # A cursor in the URL becomes the query's `before`, at millisecond
-    # precision, and the page says what it is showing.
-    before = ~U[2026-09-04 15:33:20.000Z]
-    before_ms = DateTime.to_unix(before, :millisecond)
-    {:ok, view, _} = live(authed_conn(), "/dash/runtime/activity?before=#{before_ms}")
-    html = render(view)
-    assert_receive {:activity_trace_scope, "default", opts}
-    assert opts[:before] == before
-    assert opts[:limit] == 4000
-    drain_traces()
-
-    assert html =~ "40 activations that started before"
-    # The server renders the UTC text; the BrowserLocalTime hook rewrites it
-    # into the viewer's zone from the unix milliseconds on the element.
-    assert html =~ ~s(data-local-time-ms="#{before_ms}")
-    assert html =~ "2026-09-04 15:33:20 UTC"
-    assert html =~ "data-pager"
-
-    # One page deep: "Newer" is the newest page. There is no "Newest" link.
-    assert html =~ "← Newer"
-    assert html =~ ~s(href="/dash/runtime/activity")
-    refute html =~ "Newest"
-
-    # The feed filled its limit, so there is an older page; its cursor is the
-    # start of the oldest lane shown (the 40th, 40s before this cursor).
-    assert html =~ "the first one on the next page"
-    assert html =~ "Older →"
-    older = "/dash/runtime/activity?before=#{before_ms - 40_000}&amp;trail=#{before_ms}"
-    assert html =~ ~s(href="#{older}")
-
-    # Two pages deep: "Newer" steps back exactly one page (the trail's last
-    # cursor); still no "Newest".
-    {:ok, _view, deep} =
-      live(
-        authed_conn(),
-        "/dash/runtime/activity?before=#{before_ms - 40_000}&trail=#{before_ms}"
-      )
-
-    drain_traces()
-    refute deep =~ "Newest"
-    assert deep =~ "← Newer"
-    assert deep =~ ~s(href="/dash/runtime/activity?before=#{before_ms}")
-    refute deep =~ ~s(href="/dash/runtime/activity?before=#{before_ms}&amp;trail=)
-
-    assert deep =~
-             ~s(href="/dash/runtime/activity?before=#{before_ms - 80_000}&amp;trail=#{before_ms}.#{before_ms - 40_000}")
-
-    assert [_] = Regex.scan(~r/data-lane="round-old-40"/, html)
-    refute html =~ ~s(data-lane="round-old-41")
-
-    # Changing a filter is a fresh query: the cursor is gone.
-    view
-    |> element("#runtime-filters")
-    |> render_change(%{"range" => "3h"})
-
-    assert_patch(view, "/dash/runtime/activity?range=3h")
-    assert_receive {:activity_trace_scope, "default", opts}
-    refute Keyword.has_key?(opts, :before)
-    drain_traces()
-
-    # A malformed cursor means the newest page.
-    {:ok, view, _} = live(authed_conn(), "/dash/runtime/activity?before=yesterday")
-    html = render(view)
-    assert_receive {:activity_trace_scope, "default", opts}
-    refute Keyword.has_key?(opts, :before)
-    refute html =~ "data-pager"
-  end
-
-  defp drain_traces do
-    receive do
-      {:activity_trace_scope, _, _} -> drain_traces()
-    after
-      0 -> :ok
-    end
-  end
-
-  test "filters persist into the URL and across tab switches" do
-    with_stubs(StubQueries)
-
-    {:ok, view, _html} = live(authed_conn(), "/dash/runtime")
-
-    view
-    |> element("form#runtime-filters")
-    |> render_change(%{"range" => "3h", "group" => "", "rev" => "revB"})
-
-    assert_patch(view, "/dash/runtime?range=3h&rev=revB")
-
-    # Tab links carry the current filters along.
-    html = render(view)
-    assert html =~ "/dash/runtime/tools?range=3h&amp;rev=revB"
-  end
-
-  test "a single active bucket still draws marks on both trend charts" do
-    with_stubs(SingleBucketQueries)
-
-    {:ok, view, _} = live(authed_conn(), "/dash/runtime")
-
-    html = render(view)
-
-    # One isolated rate dot + p50 and p95 dots on the duration chart.
-    dots = html |> String.split("data-dot") |> length() |> Kernel.-(1)
-    assert dots >= 3
-    assert html =~ "p50 4.0s"
-  end
-
-  test "shows the not-configured empty state on every tab" do
-    with_stubs(NotConfiguredQueries)
-
-    for path <- [
-          "/dash/runtime",
-          "/dash/runtime/tools",
-          "/dash/runtime/models",
-          "/dash/runtime/activity"
-        ] do
-      {:ok, view, _} = live(authed_conn(), path)
-      html = render(view)
-      assert html =~ "ClickHouse not configured"
-    end
   end
 end

@@ -130,7 +130,7 @@ defmodule SalixIM.SlackMessageMirror.Backfill do
          credential: SlackAPI.installation(connect),
          connect_id: identity["connect_id"],
          key_base: Map.take(identity, ~w(tenant_id workspace_id)),
-         now_us: opts[:now_us] || System.os_time(:microsecond),
+         now_us: opts[:now_us] || SystemsClock.system_time(:microsecond),
          floor_us: opts[:floor_ts_us] || 0,
          page_limit: opts[:page_limit] || @page_limit,
          page_budget: page_budget(opts),
@@ -143,8 +143,8 @@ defmodule SalixIM.SlackMessageMirror.Backfill do
          channel_observer: opts[:channel_observer] || SalixIM.ProviderConnects,
          writer: opts[:writer] || SlackMessageMirror,
          ledger: opts[:ledger] || SlackMirrorBackfillLedger,
-         sleep: opts[:sleep] || (&Process.sleep/1),
-         snapshot_cut: opts[:snapshot_cut] || fn -> System.os_time(:microsecond) end
+         sleep: opts[:sleep] || (&SystemsClock.sleep/1),
+         snapshot_cut: opts[:snapshot_cut] || fn -> SystemsClock.system_time(:microsecond) end
        }}
     else
       {:error, :invalid_backfill_connect}

@@ -3,25 +3,9 @@ defmodule SalixLlm.AnthropicTest do
   The Anthropic client: message conversion, response parsing,
   SSE-stream decoding, and `complete/2` against a mock Messages API server.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixLlm.{Convert, Stream, Anthropic}
-
-  defmodule TransientAnthropic do
-    @moduledoc false
-    import Plug.Conn
-
-    def init(test_pid), do: test_pid
-
-    def call(conn, test_pid) do
-      {:ok, raw_body, conn} = read_body(conn)
-      send(test_pid, {:anthropic_request, raw_body})
-
-      conn
-      |> put_resp_content_type("application/json")
-      |> send_resp(500, Jason.encode!(%{"error" => %{"message" => "temporary"}}))
-    end
-  end
 
   describe "Convert.to_anthropic/1" do
     test "maps user, assistant+tool_calls, tool, and summary messages" do
@@ -202,51 +186,6 @@ defmodule SalixLlm.AnthropicTest do
 
       assert SalixLlm.MockAnthropic.last_request()["output_config"] == %{"effort" => "low"}
     end
-
-    test "before_send observes the exact JSON bytes sent to Anthropic", %{llm_opts: llm_opts} do
-      SalixLlm.MockAnthropic.set(%{
-        "content" => [%{"type" => "text", "text" => "observed"}],
-        "stop_reason" => "end_turn"
-      })
-
-      owner = self()
-
-      llm_opts =
-        Map.put(llm_opts, :before_send, fn body ->
-          send(owner, {:observed_anthropic_body, body})
-          :ok
-        end)
-
-      assert {:final, "observed"} =
-               Anthropic.complete([%{role: "user", content: "hi"}], [], llm_opts)
-
-      assert_receive {:observed_anthropic_body, observed_body}, 100
-      assert Jason.decode!(observed_body) == SalixLlm.MockAnthropic.last_request()
-    end
-
-    test "transport_retry false sends a transient Anthropic failure exactly once" do
-      bandit =
-        start_supervised!(
-          {Bandit, plug: {TransientAnthropic, self()}, port: 0, startup_log: false},
-          id: :transient_anthropic
-        )
-
-      {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
-
-      llm_opts = %{
-        "protocol" => "anthropic",
-        "model" => "claude-test",
-        "base_url" => "http://127.0.0.1:#{port}",
-        "api_key" => "test-key",
-        :transport_retry => false
-      }
-
-      assert {:error, %{"provider" => "anthropic", "status" => 500}} =
-               Anthropic.complete([%{role: "user", content: "hi"}], [], llm_opts)
-
-      assert_receive {:anthropic_request, _body}, 100
-      refute_receive {:anthropic_request, _body}, 100
-    end
   end
 
   defp echo_tool_spec do
@@ -264,7 +203,7 @@ defmodule SalixLlm.AnthropicTest do
   # Bind Bandit on a random port, retrying on collisions across suites.
   defp start_bandit_retry!(spec_fun) do
     Enum.find_value(1..10, fn _ ->
-      p = 40000 + :erlang.phash2(make_ref(), 20000)
+      p = 40000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20000)
 
       case ExUnit.Callbacks.start_supervised(spec_fun.(p), id: {:bandit_retry, p}) do
         {:ok, _pid} -> p

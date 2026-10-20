@@ -8,7 +8,7 @@ defmodule SalixAgent.SessionMemory do
   """
 
   def sample do
-    root = Application.get_env(:salix_agent, :session_cgroup_path, "/sys/fs/cgroup")
+    root = SystemsRuntime.get_env(:salix_agent, :session_cgroup_path, "/sys/fs/cgroup")
 
     with {:ok, used} <- integer_file(Path.join(root, "memory.current")),
          {:ok, limit} <- integer_file(Path.join(root, "memory.max")),
@@ -43,7 +43,11 @@ defmodule SalixAgent.SessionMemory do
   end
 
   defp beam_budget do
-    case Application.get_env(:salix_agent, :session_memory_budget_bytes, 4 * 1024 * 1024 * 1024) do
+    case SystemsRuntime.get_env(
+           :salix_agent,
+           :session_memory_budget_bytes,
+           4 * 1024 * 1024 * 1024
+         ) do
       n when is_integer(n) and n > 0 -> {:ok, %{used: :erlang.memory(:total), limit: n}}
       _ -> {:error, :invalid_memory_budget}
     end

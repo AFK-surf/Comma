@@ -282,7 +282,7 @@ def trustedContext (message : Term) : Bool :=
       (valueOf message "no_wake" == a "true" && provider != nil && provider != b "" &&
         carrierActor))
 
-/-- The unacked `user` messages `source_scope/1` and `append_reminder/3` read. -/
+/-- The unacked `user` messages `source_scope/1` reads. -/
 private def currentUserMessages (state : Term) : KernelM (List Term) := do
   let lastAck ← lastAckOf state
   (← StateQuery.properList ((← field state "messages").default (list []))).filterM (fun message => do
@@ -354,20 +354,6 @@ def sourceScope (state : Term) : KernelM Term := do
   return .map [(b "source_message_id", source), (b "context_source_message_ids", ← currentSourceIds state),
     (b "trusted_origin", origin)]
 
-/-- `TerminalReply.append_reminder/3`: an unanswered Telegram human request. -/
-def reminderActive (state : Term) : KernelM Term := do
-  let scope ← sourceScope state
-  if scope.isMap && (← replyTargets (scope.get (b "trusted_origin"))) != list [] then return a "true"
-  let lastAck ← lastAckOf state
-  return Term.bool (← StateQuery.enumAny ((← field state "messages").default (list []))
-    (fun message => do
-      let origin := (valueOf message "trusted_origin").default empty
-      if valueOf message "role" != b "user" then return false
-      if valueOf message "no_wake" == a "true" then return false
-      if !(← greater (valueOf message "id") lastAck) then return false
-      return textKey origin "provider" == b "telegram" &&
-        textKey origin "source_actor_type" == b "provider_user"))
-
 /-- `TerminalReply.matches?/2`: the binding still owns this exact activation. -/
 def bindingMatches (state args : Term) : KernelM Term := do
   if !args.isMap then return Term.bool false
@@ -403,7 +389,10 @@ def bindingMatches (state args : Term) : KernelM Term := do
   let toolCallId := textKey args "tool_call_id"
   return Term.bool (← allM (fun message => do
     if ← atMost (valueOf message "id") assistantId then return true
-    return valueOf message "role" == b "tool" && valueOf message "tool_call_id" == toolCallId)
+    -- The reply call's result, and its no-wake completion from settlement.
+    return (valueOf message "role" == b "tool" && valueOf message "tool_call_id" == toolCallId) ||
+      (valueOf message "role" == b "runtime" && valueOf message "source_tool_call_id" == toolCallId &&
+        valueOf message "no_wake" == a "true"))
     (← StateQuery.properList ((← field state "messages").default (list []))))
 
 /-- `TerminalReply.running?/1`: a process-local background call still running. -/
@@ -563,7 +552,6 @@ def table : OpTable :=
    ("terminal_reply_targets", fun state _ => do
      let scope ← sourceScope state
      replyTargets (scope.get (b "trusted_origin"))),
-   ("terminal_reply_reminder_active?", fun state _ => reminderActive state),
    ("terminal_reply_matches?", bindingMatches),
    ("terminal_reply_running?", fun state _ => replyRunning state),
    ("onboarding_source_message_id", onboardingSourceMessageId),

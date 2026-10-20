@@ -199,7 +199,7 @@ defmodule BridgeForTeams.Skills do
          "type" => "user",
          "user_id" => user_id,
          "label" => to_string(Keyword.get(opts, :actor_label) || ""),
-         "request_id" => Keyword.get(opts, :request_id) || Ecto.UUID.generate()
+         "request_id" => Keyword.get(opts, :request_id) || SystemsRuntime.Proc.uuid()
        }}
     else
       {:error, :forbidden}

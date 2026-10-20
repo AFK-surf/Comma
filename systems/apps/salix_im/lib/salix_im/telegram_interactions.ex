@@ -651,10 +651,10 @@ defmodule SalixIM.TelegramInteractions do
   defp timeout(nil), do: {:ok, 600}
   defp timeout(n) when is_integer(n) and n in 1..1800, do: {:ok, n}
   defp timeout(_), do: {:error, :invalid_timeout}
-  defp now, do: System.system_time(:second)
+  defp now, do: SystemsClock.system_time(:second)
 
   defp observe(operation, fun) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = fun.()
     emit_observation(operation, result, started)
     result
@@ -677,9 +677,9 @@ defmodule SalixIM.TelegramInteractions do
           "unavailable"
       end
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{component: "salix_im", operation: operation, surface: "comma", outcome: outcome}
     )
   rescue
@@ -739,7 +739,7 @@ defmodule SalixIM.TelegramInteractions do
   # Same per-connect Req adapter choice as TelegramStatusTransport. No retries
   # after an ambiguous write, and never expose provider error bodies or tokens.
   defp api(connect, method, body) do
-    base = Application.get_env(:salix_im, :telegram_api_base_url, "https://api.telegram.org")
+    base = SystemsRuntime.get_env(:salix_im, :telegram_api_base_url, "https://api.telegram.org")
 
     case Req.post("#{String.trim_trailing(base, "/")}/bot#{connect["bot_token"]}/#{method}",
            json: body,

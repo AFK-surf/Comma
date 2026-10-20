@@ -1,5 +1,8 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Button, CommaLogoAnimation, motionDuration } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { CommaLogoAnimation } from "@comma/ui/components/comma-mascot";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
+import { motionDuration } from "@comma/ui/tokens";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   introLeaveMs,
@@ -63,7 +66,7 @@ export function OnboardingIntro({
   const actionRef = useRef<HTMLSpanElement>(null);
   // Where the mark was drawn as it left the middle, for its move to the top.
   const travelFrom = useRef<DOMRect>(undefined);
-  const timers = useRef<number[]>([]);
+  const timers = useRef<CancelUiTimer[]>([]);
   const latest = useRef({ leaving, onBegin, onStart, reducedMotion, takeFocus });
   useLayoutEffect(() => {
     latest.current = { leaving, onBegin, onStart, reducedMotion, takeFocus };
@@ -71,21 +74,21 @@ export function OnboardingIntro({
 
   useEffect(() => {
     const scheduled = timers.current;
-    return () => scheduled.forEach((timer) => window.clearTimeout(timer));
+    return () => scheduled.forEach((timer) => timer());
   }, []);
   const later = (run: () => void, ms: number) => {
     timers.current.push(
-      window.setTimeout(() => {
+      uiClock.after(ms, () => {
         if (!latest.current.leaving) run();
-      }, ms)
+      })
     );
   };
 
   // The mark arrives once the screen has dimmed.
   useEffect(() => {
     if (stage !== "dim" || leaving) return undefined;
-    const timer = window.setTimeout(() => setStage("welcome"), introTiming.dim);
-    return () => window.clearTimeout(timer);
+    const timer = uiClock.after(introTiming.dim, () => setStage("welcome"));
+    return () => timer();
   }, [leaving, stage]);
 
   const start = () => {
@@ -132,14 +135,14 @@ export function OnboardingIntro({
       reduced
     );
     const steps = [
-      window.setTimeout(() => setThinking(true), introTiming.thinking),
-      window.setTimeout(() => {
+      uiClock.after(introTiming.thinking, () => setThinking(true)),
+      uiClock.after(introTiming.start, () => {
         const action = actionRef.current?.querySelector<HTMLElement>("button");
         if (action) latest.current.takeFocus(action);
-      }, introTiming.start),
-      window.setTimeout(() => startRef.current(), introTiming.autoStart),
+      }),
+      uiClock.after(introTiming.autoStart, () => startRef.current()),
     ];
-    return () => steps.forEach((step) => window.clearTimeout(step));
+    return () => steps.forEach((step) => step());
   }, [stage]);
 
   // At the top the mark heads the conversation, which begins once it is there.

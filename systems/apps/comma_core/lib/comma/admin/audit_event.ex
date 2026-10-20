@@ -40,7 +40,8 @@ defmodule Comma.Admin.AuditEvent do
   @timestamps_opts [
     type: :utc_datetime_usec,
     inserted_at: :created_at,
-    inserted_at_source: :inserted_at
+    inserted_at_source: :inserted_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
   ]
 
   schema "comma_admin_audit_events" do

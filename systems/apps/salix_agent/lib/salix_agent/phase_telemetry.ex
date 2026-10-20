@@ -18,7 +18,7 @@ defmodule SalixAgent.PhaseTelemetry do
       the actor state, handed to `Round.run/3` as `activation_started_ms`)
       up to the moment Round.run began. Only rounds dispatched by the
       actor's activation carry it; direct `run_round` calls don't.
-    * `miniskill` — selection job admission through decision inference and instruction reads.
+    * `miniskill` — selection job admission through decision inference and metadata selection.
       It overlaps activation work and excludes cold catalog prewarming.
     * `prepare` — Round.run entry up to the provider dispatch.
     * `response_commit` — provider completion up to the assistant turn
@@ -29,6 +29,11 @@ defmodule SalixAgent.PhaseTelemetry do
     * `boundary` — the status=idle write that ends a tool round.
     * `finalize` — provider completion up to the final message committed,
       on the round that produces text.
+    * `cw_evidence` — the Condensed Workspace check reading the newest
+      transcript messages and starting its decision task, on the Session
+      actor, beside the tool batch.
+    * `cw_wait` — the next round's activation waiting for that check's
+      answer, up to its deadline.
 
   `activation_key` is the runtime's identity for the input the round is
   answering (`InternalSession.current_activation_key/2`, joined),
@@ -37,10 +42,10 @@ defmodule SalixAgent.PhaseTelemetry do
 
   require Logger
 
-  @phases ~w(miniskill response_pickup delivery_wait activation prepare response_commit tool_batch tool_commit boundary finalize async_pickup async_commit async_config)a
+  @phases ~w(miniskill response_pickup delivery_wait activation prepare response_commit tool_batch tool_commit boundary finalize async_pickup async_commit async_config cw_evidence cw_wait)a
 
   @doc "Wall-clock milliseconds, the unit every phase boundary is stamped in."
-  def now_ms, do: System.system_time(:millisecond)
+  def now_ms, do: SystemsClock.system_time(:millisecond)
 
   @doc """
   The earliest `delivered_at_ms` among the transcript messages this round
@@ -170,7 +175,7 @@ defmodule SalixAgent.PhaseTelemetry do
       status: "ok",
       duration_ms: max(ended_ms - started_ms, 0),
       started_at: DateTime.from_unix!(started_ms, :millisecond),
-      metered_at: DateTime.utc_now(),
+      metered_at: SystemsClock.utc_now(),
       trace_id: field(meter_ctx, :trace_id),
       request_id: field(meter_ctx, :request_id),
       salix_agent_id: field(meter_ctx, :salix_agent_id) || field(meter_ctx, :agent_id),
@@ -217,5 +222,5 @@ defmodule SalixAgent.PhaseTelemetry do
   defp field(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
   defp field(_map, _key), do: nil
 
-  defp random_id, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower)
 end

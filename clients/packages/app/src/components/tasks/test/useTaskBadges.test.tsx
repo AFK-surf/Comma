@@ -1,67 +1,129 @@
-import { render, renderHook, screen, waitFor } from "@comma/test-utils/render";
+import { flush } from "@comma/test-utils/fake-clock";
+import { render, renderHook, screen, within } from "@comma/test-utils/render";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { CommaApiClient, CommaTaskLabelCatalog } from "../../../api";
+import { labelCatalog, labelsCore } from "../../../test/labelsCore";
 import { TaskBadgeChips, useTaskBadges } from "../useTaskBadges";
 
 const GROUP = "grp_badges";
 const work = { color: "blue", id: "lbl_work", name: "Work" };
-const catalog = (labels = [work]): CommaTaskLabelCatalog => ({
-  approval_policy: "ask",
-  colors: [],
-  labels,
-  proposals: [],
-});
+const catalog = (labels = [work]) => labelCatalog({ labels });
 const tasksOf = (count: number, labels: string[] = []) =>
   Array.from({ length: count }, (_, index) => ({
     conversationId: `task-${index + 1}`,
     labels,
   }));
 
-function stubApi(listTaskLabels = vi.fn(async () => catalog())) {
-  const getTaskSummaries = vi.fn();
-  return {
-    api: {
-      listTaskLabels,
-      getTaskSummaries,
-    } as Partial<CommaApiClient> as CommaApiClient,
-    listTaskLabels,
-    getTaskSummaries,
-  };
-}
-
 describe("useTaskBadges", () => {
   it("uses projected membership for every loaded task, including same-timestamp changes", async () => {
-    const { api, getTaskSummaries } = stubApi();
+    const labels = labelsCore({ catalog: catalog() });
     const initialTasks = tasksOf(60);
     initialTasks[54]!.labels = ["lbl_work"];
     const { result, rerender } = renderHook(
-      ({ tasks }) => useTaskBadges(api, GROUP, tasks),
-      { initialProps: { tasks: initialTasks } }
+      ({ tasks }) => useTaskBadges(GROUP, tasks),
+      { initialProps: { tasks: initialTasks }, wrapper: labels.wrapper }
     );
     expect(result.current.metaById.size).toBe(60);
     expect(result.current.metaById.get("task-55")?.labels).toEqual(["lbl_work"]);
     expect(result.current.metaById.get("task-1")?.labels).toEqual([]);
     rerender({ tasks: tasksOf(60) });
     expect(result.current.metaById.get("task-55")?.labels).toEqual([]);
-    await waitFor(() => expect(result.current.catalog).toBeDefined());
-    expect(getTaskSummaries).not.toHaveBeenCalled();
+    await flush();
+    expect(result.current.catalog).toBeDefined();
   });
 
-  it("shows origin while the catalog is unavailable and leaves old-cache membership unknown", () => {
-    const listTaskLabels = vi.fn(
-      () => new Promise<ReturnType<typeof catalog>>(() => {})
-    );
-    const { api, getTaskSummaries } = stubApi(listTaskLabels);
+  it("shows origin while the catalog is unavailable and leaves old-cache membership unknown", async () => {
+    // The first read never answers: the core says the catalog is loading.
+    const labels = labelsCore({ loading: true });
     function Card() {
-      const badges = useTaskBadges(api, GROUP, [{ conversationId: "task-1" }]);
+      const badges = useTaskBadges(GROUP, [{ conversationId: "task-1" }]);
       expect(badges.metaById.has("task-1")).toBe(false);
       return (
         <>{badges.renderTaskBadges({ conversationId: "task-1", origin: "comma" })}</>
       );
     }
-    render(<Card />);
+    render(<Card />, { wrapper: labels.wrapper });
     expect(screen.getByTestId("task-card-platform")).toHaveTextContent("Comma");
-    expect(getTaskSummaries).not.toHaveBeenCalled();
+    await flush();
+    expect(screen.getByTestId("task-card-platform")).toHaveTextContent("Comma");
+  });
+
+  it("labels ended Loop Tasks by their trigger type and links the chip to that filter", async () => {
+    const labels = labelsCore({
+      catalog: catalog([
+        work,
+        { color: "orange", id: "lbl_urgent", name: "Urgent" },
+        { color: "purple", id: "lbl_release", name: "Release" },
+      ]),
+    });
+    const onOpen = vi.fn();
+    const loop = {
+      state: "ended" as const,
+      cadence: { events: "new comments" },
+      startedAt: 1,
+      wakeCount: 5,
+    };
+    function Cards() {
+      const badges = useTaskBadges(
+        GROUP,
+        [
+          { conversationId: "task-loop", loop },
+          {
+            conversationId: "task-labelled",
+            labels: ["lbl_work", "lbl_urgent", "lbl_release"],
+            loop,
+          },
+          { conversationId: "task-plain", labels: [] },
+        ],
+        onOpen
+      );
+      return (
+        <>
+          {["task-loop", "task-labelled", "task-plain"].map((id) => (
+            <div data-testid={id} key={id}>
+              {badges.renderTaskBadges({ conversationId: id })}
+            </div>
+          ))}
+        </>
+      );
+    }
+    render(<Cards />, { wrapper: labels.wrapper });
+    await flush();
+
+    // An ended Loop still wears it, with no label or origin beside it.
+    expect(screen.getByTestId("task-loop")).toHaveTextContent("On updates");
+    expect(screen.getByTestId("task-plain")).toBeEmptyDOMElement();
+    const chips = [
+      ...screen.getByTestId("task-labelled").querySelectorAll("[data-chip]"),
+    ].map((chip) => [chip.getAttribute("data-chip"), chip.textContent]);
+    // It takes one of the two places a squeezed row keeps, so two labels fold.
+    expect(chips).toEqual([
+      ["schedule", "On updates"],
+      ["label", "Work"],
+      ["label", "Urgent"],
+      ["label", "Release"],
+      ["more", "+2 labels"],
+    ]);
+    await userEvent
+      .setup({ advanceTimers: vi.advanceTimersByTime })
+      .click(within(screen.getByTestId("task-loop")).getByText("On updates"));
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith({ schedule: "event_triggered" });
+  });
+
+  it("names a trigger this client cannot read Other trigger and links the chip to that type", async () => {
+    const onOpen = vi.fn();
+    render(
+      <TaskBadgeChips
+        labels={[]}
+        loop={{ state: "active", startedAt: 1, wakeCount: 0 }}
+        onOpen={onOpen}
+        origin={undefined}
+      />
+    );
+    const chip = screen.getByTestId("task-card-schedule");
+    expect(chip).toHaveTextContent(/^Other trigger$/);
+    await userEvent.setup({ advanceTimers: vi.advanceTimersByTime }).click(chip);
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith({ schedule: "unknown" });
   });
 
   it("wears the channel's own mark on the platform chip", () => {
@@ -73,45 +135,65 @@ describe("useTaskBadges", () => {
   });
 
   it("refreshes the catalog for changed membership but not ordinary task updates", async () => {
-    let labels = [work];
-    const listTaskLabels = vi.fn(async () => catalog(labels));
-    const { api, getTaskSummaries } = stubApi(listTaskLabels);
+    let read = [work];
+    // A refresh reads the catalog the server has now.
+    const labels = labelsCore({
+      catalog: catalog(),
+      answer: (name) => (name === "taskLabels.refresh" ? catalog(read) : undefined),
+    });
     function Cards({ ids, origin }: { ids: string[]; origin: string }) {
-      const badges = useTaskBadges(api, GROUP, tasksOf(60, ids));
+      const badges = useTaskBadges(GROUP, tasksOf(60, ids));
       return <>{badges.renderTaskBadges({ conversationId: "task-60", origin })}</>;
     }
-    const { rerender } = render(<Cards ids={["lbl_work"]} origin="slack" />);
-    expect(await screen.findByText("Work")).toBeVisible();
-    expect(listTaskLabels).toHaveBeenCalledTimes(1);
-    labels = [...labels, { id: "lbl_new", color: "orange", name: "Release" }];
+    const { rerender } = render(<Cards ids={["lbl_work"]} origin="slack" />, {
+      wrapper: labels.wrapper,
+    });
+    await flush();
+    expect(screen.getByText("Work")).toBeVisible();
+    expect(labels.subscribed).toHaveLength(1);
+    expect(labels.sentTo("taskLabels.refresh")).toEqual([]);
+    read = [...read, { id: "lbl_new", color: "orange", name: "Release" }];
     const ids = ["lbl_work", "lbl_new", "lbl_deleted"];
     rerender(<Cards ids={ids} origin="slack" />);
-    expect(await screen.findByText("Release")).toBeVisible();
-    expect(listTaskLabels).toHaveBeenCalledTimes(2);
+    await flush();
+    expect(screen.getByText("Release")).toBeVisible();
+    expect(labels.sentTo("taskLabels.refresh")).toEqual([{ group: GROUP }]);
     rerender(<Cards ids={[...ids]} origin="telegram" />);
+    await flush();
     expect(screen.getByText("Telegram")).toBeVisible();
     expect(screen.getByText("Release")).toBeVisible();
     expect(screen.queryByText("lbl_deleted")).toBeNull();
-    expect(listTaskLabels).toHaveBeenCalledTimes(2);
-    expect(getTaskSummaries).not.toHaveBeenCalled();
+    expect(labels.subscribed).toHaveLength(1);
+    expect(labels.sentTo("taskLabels.refresh")).toHaveLength(1);
   });
 
   it("keeps known chips after catalog refresh failure without retrying unchanged membership", async () => {
-    const { api, listTaskLabels } = stubApi();
+    const labels = labelsCore({
+      catalog: catalog(),
+      answer: (name) => {
+        if (name === "taskLabels.refresh") throw new Error("catalog unavailable");
+        return undefined;
+      },
+    });
     function Card({ ids, origin }: { ids: string[]; origin: string }) {
-      const badges = useTaskBadges(api, GROUP, tasksOf(1, ids));
+      const badges = useTaskBadges(GROUP, tasksOf(1, ids));
       return <>{badges.renderTaskBadges({ conversationId: "task-1", origin })}</>;
     }
-    const { rerender } = render(<Card ids={["lbl_work"]} origin="slack" />);
-    expect(await screen.findByText("Work")).toBeVisible();
-    listTaskLabels.mockRejectedValue(new Error("catalog unavailable"));
+    const { rerender } = render(<Card ids={["lbl_work"]} origin="slack" />, {
+      wrapper: labels.wrapper,
+    });
+    await flush();
+    expect(screen.getByText("Work")).toBeVisible();
     rerender(<Card ids={["lbl_work", "lbl_new"]} origin="slack" />);
-    await waitFor(() => expect(listTaskLabels).toHaveBeenCalledTimes(2));
+    await flush();
+    expect(labels.sentTo("taskLabels.refresh")).toHaveLength(1);
+    expect(labels.value().error).toBe(true);
     expect(screen.getByText("Work")).toBeVisible();
     expect(screen.queryByText("lbl_new")).toBeNull();
     rerender(<Card ids={["lbl_work", "lbl_new"]} origin="telegram" />);
+    await flush();
     expect(screen.getByText("Telegram")).toBeVisible();
     expect(screen.getByText("Work")).toBeVisible();
-    expect(listTaskLabels).toHaveBeenCalledTimes(2);
+    expect(labels.sentTo("taskLabels.refresh")).toHaveLength(1);
   });
 });

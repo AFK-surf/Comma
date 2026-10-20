@@ -14,6 +14,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import tarfile
 import tempfile
 import unittest
 import urllib.parse
@@ -157,6 +158,18 @@ def write_host_runtime_archive(
     return hashlib.sha256(archive_path.read_bytes()).hexdigest()
 
 
+def write_computer_use_helper_archive(archive_path: pathlib.Path, daemon: str) -> str:
+    app = "native/macos/Comma Computer Use.app"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        executable = root / app / "Contents" / "MacOS" / "CommaComputerUseDaemon"
+        executable.parent.mkdir(parents=True)
+        write_executable(executable, daemon)
+        with tarfile.open(archive_path, "w:gz") as archive:
+            archive.add(root / "native", arcname="native")
+    return hashlib.sha256(archive_path.read_bytes()).hexdigest()
+
+
 def write_fake_host_tools(command_dir: pathlib.Path) -> None:
     write_executable(
         command_dir / "codesign",
@@ -247,6 +260,7 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             ("BFT_RUNNER_URL", "BFT_RUNNER_SIZE"),
             ("BFT_SALIX_CONNECTOR_URL", "BFT_SALIX_CONNECTOR_SIZE"),
             ("BFT_AGENT_VMM_HOST_URL", "BFT_AGENT_VMM_HOST_SIZE"),
+            ("BFT_COMPUTER_USE_HELPER_URL", "BFT_COMPUTER_USE_HELPER_SIZE"),
         ):
             raw_url = merged.get(url_key)
             if raw_url and size_key not in merged:
@@ -1112,6 +1126,133 @@ class MacMiniProvisionerInstallTest(unittest.TestCase):
             self.assertEqual(status_payload["launchd"]["last_action"], "remove")
             self.assertTrue(status_payload["launchd"]["last_remove_removed"])
             self.assertTrue((prefix / "com.bridgeforteams.runner.plist").exists())
+
+    def computer_use_helper_install_env(
+        self, root: pathlib.Path, artifacts: pathlib.Path
+    ) -> dict[str, str]:
+        connector_sha = write_executable(artifacts / "salix-connector", "#!/bin/sh\n")
+        # The installer runs the real runner to replace the helper.
+        runner = artifacts / "mac-mini-provisioner"
+        subprocess.run(
+            ["go", "build", "-o", str(runner), "."],
+            cwd=str(REPO_ROOT / "systems" / "connector" / "mac-mini-provisioner"),
+            env={**os.environ, "CGO_ENABLED": "0"},
+            check=True,
+        )
+        worker_sha = hashlib.sha256(runner.read_bytes()).hexdigest()
+        return {
+            "HOME": str(root / "home"),
+            "BFT_INSTALL_PREFIX": str(root / "install"),
+            "BFT_SALIX_CONNECTOR_URL": (artifacts / "salix-connector").as_uri(),
+            "BFT_SALIX_CONNECTOR_SHA256": connector_sha,
+            **agent_vmm_host_env(root, artifacts),
+            "BFT_RUNNER_URL": (artifacts / "mac-mini-provisioner").as_uri(),
+            "BFT_RUNNER_SHA256": worker_sha,
+        }
+
+    @unittest.skipUnless(shutil.which("go"), "the helper install runs the Go runner")
+    def test_installs_computer_use_helper_beside_salix_connect(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            env = self.computer_use_helper_install_env(root, artifacts)
+            native = root / "install" / "bin" / "native" / "macos"
+            app = native / "Comma Computer Use.app"
+            daemon = app / "Contents" / "MacOS" / "CommaComputerUseDaemon"
+            config_path = root / "install" / "runner.json"
+
+            # A server release without the helper installs everything else.
+            proc = self.run_installer(env)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("Computer Use helper is not part of this server release", proc.stdout)
+            self.assertFalse(app.exists())
+
+            archive = artifacts / "comma-computer-use.tar.gz"
+            first_sha = write_computer_use_helper_archive(archive, "#!/bin/sh\necho first\n")
+            helper_env = {
+                "BFT_COMPUTER_USE_HELPER_URL": archive.as_uri(),
+                "BFT_COMPUTER_USE_HELPER_SHA256": first_sha,
+                "BFT_COMPUTER_USE_HELPER_SIZE": str(archive.stat().st_size),
+            }
+            proc = self.run_installer({**env, **helper_env})
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("first", daemon.read_text(encoding="utf-8"))
+            self.assertTrue(os.access(daemon, os.X_OK))
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(config["capabilities"]["component_digests"]["computer-use-helper"], first_sha)
+
+            # The installed release is not downloaded again.
+            archive.unlink()
+            proc = self.run_installer({**env, **helper_env})
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("first", daemon.read_text(encoding="utf-8"))
+
+            second_sha = write_computer_use_helper_archive(archive, "#!/bin/sh\necho second\n")
+            proc = self.run_installer(
+                {
+                    **env,
+                    "BFT_COMPUTER_USE_HELPER_URL": archive.as_uri(),
+                    "BFT_COMPUTER_USE_HELPER_SHA256": second_sha,
+                    "BFT_COMPUTER_USE_HELPER_SIZE": str(archive.stat().st_size),
+                }
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("second", daemon.read_text(encoding="utf-8"))
+            self.assertEqual(
+                sorted(path.name for path in native.iterdir()),
+                [".Comma Computer Use.app.lock", "Comma Computer Use.app"],
+            )
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(config["capabilities"]["component_digests"]["computer-use-helper"], second_sha)
+
+    @unittest.skipUnless(shutil.which("go"), "the helper install runs the Go runner")
+    def test_rejects_unsigned_computer_use_helper_and_keeps_the_installed_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            env = self.computer_use_helper_install_env(root, artifacts)
+            archive = artifacts / "comma-computer-use.tar.gz"
+            installed_sha = write_computer_use_helper_archive(archive, "#!/bin/sh\necho installed\n")
+            proc = self.run_installer(
+                {
+                    **env,
+                    "BFT_COMPUTER_USE_HELPER_URL": archive.as_uri(),
+                    "BFT_COMPUTER_USE_HELPER_SHA256": installed_sha,
+                }
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            command_dir = root / "unsigned-helper-tools"
+            command_dir.mkdir()
+            write_executable(
+                command_dir / "codesign",
+                "#!/bin/sh\n"
+                "for argument in \"$@\"; do\n"
+                "  case \"$argument\" in */.comma-computer-use-*) exit 1 ;; esac\n"
+                "done\n",
+            )
+            unsigned_sha = write_computer_use_helper_archive(archive, "#!/bin/sh\necho unsigned\n")
+            proc = self.run_installer(
+                {
+                    **env,
+                    "PATH": f"{command_dir}:{env['PATH']}",
+                    "BFT_COMPUTER_USE_HELPER_URL": archive.as_uri(),
+                    "BFT_COMPUTER_USE_HELPER_SHA256": unsigned_sha,
+                }
+            )
+
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("Code: computer_use_helper.signature_invalid", proc.stderr)
+            self.assertIn("install.computer_use_helper_install_failed", proc.stderr)
+            native = root / "install" / "bin" / "native" / "macos"
+            daemon = native / "Comma Computer Use.app" / "Contents" / "MacOS" / "CommaComputerUseDaemon"
+            self.assertIn("installed", daemon.read_text(encoding="utf-8"))
+            self.assertEqual(
+                sorted(path.name for path in native.iterdir()),
+                [".Comma Computer Use.app.lock", "Comma Computer Use.app"],
+            )
 
     def test_missing_runner_sha_identifies_runner_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

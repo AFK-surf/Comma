@@ -1,5 +1,5 @@
 defmodule SalixAgent.InternalSessionFormat2StateTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.InternalSession
   alias SalixAgent.InternalSession.State
@@ -47,7 +47,7 @@ defmodule SalixAgent.InternalSessionFormat2StateTest do
     Map.merge(
       %{
         "type" => "session_event",
-        "event_id" => "evt-#{System.unique_integer([:positive])}",
+        "event_id" => "evt-#{SystemsRuntime.Proc.unique_integer([:positive])}",
         "kind" => kind,
         "source" => "internal_runtime",
         "created_at" => 3_000
@@ -781,7 +781,6 @@ defmodule SalixAgent.InternalSessionFormat2StateTest do
         :flush_id,
         :async_results,
         :async_result_refs,
-        :redactions,
         :llm_failure_streak
       ])
 
@@ -793,7 +792,6 @@ defmodule SalixAgent.InternalSessionFormat2StateTest do
     assert restored.archived_through == 0
     assert restored.async_results == []
     assert restored.async_result_refs == %{}
-    assert restored.redactions == []
   end
 
   test "a legacy snapshot with stamped records resumes past the highest stamp" do

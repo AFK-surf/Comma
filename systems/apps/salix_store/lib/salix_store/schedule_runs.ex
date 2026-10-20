@@ -204,7 +204,7 @@ defmodule SalixStore.ScheduleRuns do
   """
   @spec prune_older_than(pos_integer()) :: {:ok, non_neg_integer()} | {:error, :unavailable}
   def prune_older_than(days) when is_integer(days) and days > 0 do
-    cutoff = DateTime.add(DateTime.utc_now(), -days * 86_400, :second)
+    cutoff = DateTime.add(SystemsClock.utc_now(), -days * 86_400, :second)
 
     {count, _} =
       Row
@@ -224,7 +224,8 @@ defmodule SalixStore.ScheduleRuns do
     _ -> {:error, :unavailable}
   end
 
-  defp to_record(%Row{} = row) do
+  @doc false
+  def to_record(%Row{} = row) do
     %{
       "schedule_id" => row.schedule_id,
       "scheduled_for_ms" => row.scheduled_for_ms,

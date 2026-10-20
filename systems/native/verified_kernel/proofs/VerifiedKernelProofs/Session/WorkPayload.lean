@@ -17,7 +17,7 @@ def DeliveryFields (event record : Term) : Prop :=
 theorem delivery_fields_stamped {e message seq : Term} (fields : DeliveryFields e message) :
     DeliveryFields e (message.put (a "seq") seq) := by
   obtain ⟨id, source, dedupe, content, fact, shape⟩ := fields
-  have nextShape := shape.put (by simp +decide [RecordShape.SafeName] : RecordShape.SafeName "seq") seq
+  have nextShape := shape.put (by safe_name : RecordShape.SafeName "seq") seq
   simpa only [DeliveryFields, get_put_other _ _ (by decide : "seq" ≠ "id"),
     get_put_other _ _ (by decide : "seq" ≠ "source_message_id"),
     get_put_other _ _ (by decide : "seq" ≠ "dedupe_key"),

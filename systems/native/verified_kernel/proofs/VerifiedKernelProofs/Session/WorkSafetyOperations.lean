@@ -64,7 +64,7 @@ theorem admitted_inner_representation {s e t item : Term} {sealed j r : List Ter
     (h : inner s e j = .ok (t, r)) (represented : ConcreteRepresented s sealed item) :
     ConcreteRepresented t sealed item := by
   have excluded := InputAdmission.admitted_event_no_retirement (events := [e]) (event := e) (by simpa using allowed) (by simp)
-  have records := inner_extends (binary_ne_false excluded.2.2.2) (binary_ne_false excluded.2.2.1) h
+  have records := inner_extends (binary_ne_false excluded.2.2) h
   by_cases append : e.get (b "type") = b "queue_append"
   · have reduced : queueAppend s e j = .ok (t, r) := by simpa +decide [inner, append] using h
     exact queueAppend_representation invariant reduced represented

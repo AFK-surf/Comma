@@ -36,8 +36,9 @@ export const Avatar = ({
   className,
   ...rest
 }: AvatarProps) => {
-  const [hasImageError, setHasImageError] = useState(false);
-  const showImage = Boolean(src) && !hasImageError;
+  // The image that failed to load: a new one is shown again.
+  const [failedSrc, setFailedSrc] = useState<string>();
+  const showImage = Boolean(src) && src !== failedSrc;
 
   return (
     <span className={cx("relative inline-flex shrink-0", className)}>
@@ -49,7 +50,7 @@ export const Avatar = ({
             "rounded-full object-cover ring-1 ring-avatar-profile-photo-border",
             sizeClasses[size]
           )}
-          onError={() => setHasImageError(true)}
+          onError={() => setFailedSrc(src)}
           {...rest}
         />
       ) : (

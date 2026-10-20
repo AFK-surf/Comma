@@ -5,6 +5,9 @@
        peeking out along the right edge only, like the reference stack. */
     --chat-panel-image-group-card-width: 165px;
     --chat-panel-image-group-card-expanded-width: 165px;
+    /* A lone image keeps its ratio within this box instead of the 3:4 card. */
+    --chat-panel-image-group-single-max-width: 320px;
+    --chat-panel-image-group-single-max-height: 240px;
     --chat-panel-image-group-stack-rotation-step: 3.5deg;
     --chat-panel-image-group-stack-shift-step: 3px;
     --chat-panel-image-group-stack-scale-step: 0.03;
@@ -206,6 +209,44 @@
     width: 100%;
     height: 100%;
     object-fit: cover;
+  }
+
+  /* An image still uploading shows dimmed under a spinner until it uploaded. */
+  .chat-panel-image-group-card-uploading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: color-mix(in srgb, var(--color-bg-overlay) 40%, transparent);
+    color: var(--color-fg-white);
+    pointer-events: none;
+  }
+
+  /* A lone image is not part of a deck, so it keeps its own ratio: the card
+     shrinks to the picture, bounded on both axes, instead of cropping it to
+     3:4. `min(…, 100%)` lets a narrow column shrink it rather than clip it. */
+  /* Nor does it fan, so it reserves no fan allowance: its edge meets the
+     message's, like any other attachment. */
+  .chat-panel-image-group-cards[data-single="true"] {
+    padding: var(--spacing-none);
+  }
+
+  .chat-panel-image-group-cards[data-single="true"] .chat-panel-image-group-card {
+    width: fit-content;
+    max-width: min(var(--chat-panel-image-group-single-max-width), 100%);
+    aspect-ratio: auto;
+    contain-intrinsic-width: auto var(--chat-panel-image-group-single-max-width);
+    contain-intrinsic-height: auto var(--chat-panel-image-group-single-max-height);
+  }
+
+  .chat-panel-image-group-cards[data-single="true"]
+    .chat-panel-image-group-card-content {
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: var(--chat-panel-image-group-single-max-height);
+    object-fit: contain;
   }
 
   /* Depth dimming for cards tucked behind the front of the deck. */

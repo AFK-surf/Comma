@@ -1,4 +1,6 @@
 defmodule AlertRouter.MockSlackAPI do
+  require SystemsRuntime.Proc
+
   @moduledoc false
 
   use Agent
@@ -14,7 +16,7 @@ defmodule AlertRouter.MockSlackAPI do
           messages: [],
           scripts: [],
           next_sequence: 1,
-          base_seconds: System.system_time(:second),
+          base_seconds: SystemsClock.system_time(:second),
           history_complete?: true,
           replies_complete?: true
         }
@@ -78,11 +80,12 @@ defmodule AlertRouter.MockSlackAPI do
   end
 
   defp handle_request(path, body, _query, {:gate_commit, notify_pid, ref}, state)
-       when path in ["/api/chat.postMessage", "/api/chat.update"] and is_pid(notify_pid) do
+       when path in ["/api/chat.postMessage", "/api/chat.update"] and
+              SystemsRuntime.Proc.is_process(notify_pid) do
     {response_body, state} = commit_mutation(path, body, state)
-    send(notify_pid, {:mock_slack_gate, ref, self()})
+    SystemsRuntime.Proc.send(notify_pid, {:mock_slack_gate, ref, SystemsRuntime.Proc.self()})
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {:release_mock_slack_gate, ^ref} -> {{200, response_body, []}, state}
     after
       2_000 -> {{500, %{"ok" => false, "error" => "gate_timeout"}, []}, state}

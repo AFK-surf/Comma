@@ -1,11 +1,12 @@
 import "@comma/ui/styles.css";
 
-import { Login } from "@comma/ui";
+import { Login } from "@comma/ui/components/login";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { fixtureSearch } from "../../../support/search";
 
 function LoginFixture() {
-  const showError = new URLSearchParams(window.location.search).has("error");
+  const showError = new URLSearchParams(fixtureSearch()).has("error");
   const [code, setCode] = useState("");
   const [completedCode, setCompletedCode] = useState("");
   const [errorMessage, setErrorMessage] = useState(

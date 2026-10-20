@@ -27,7 +27,7 @@ defmodule Comma.Accounts.Sessions do
     with {:ok, %User{status: "active"} = user} <- Repository.get_user(user_id, repo: target_repo) do
       source = Keyword.get(opts, :session_source, "user_login")
       token = session_token(source)
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       attrs = %{
         user_id: user.id,
@@ -55,8 +55,12 @@ defmodule Comma.Accounts.Sessions do
       }
 
       case target_repo.insert(AuthSession.changeset(%AuthSession{}, attrs)) do
-        {:ok, session} -> {:ok, Map.put(public_session(session), "token", token)}
-        {:error, changeset} -> {:error, changeset}
+        {:ok, session} ->
+          Comma.Analytics.identify(user.id)
+          {:ok, Map.put(public_session(session), "token", token)}
+
+        {:error, changeset} ->
+          {:error, changeset}
       end
     else
       {:ok, %User{}} -> {:error, :disabled}
@@ -157,11 +161,11 @@ defmodule Comma.Accounts.Sessions do
 
   def touch_last_seen(%{"id" => session_id, "last_seen_at" => last_seen_at}, opts)
       when is_binary(session_id) and is_integer(last_seen_at) do
-    cutoff = DateTime.add(DateTime.utc_now(), -@last_seen_interval_seconds)
+    cutoff = DateTime.add(SystemsClock.utc_now(), -@last_seen_interval_seconds)
 
     if last_seen_at < DateTime.to_unix(cutoff) do
       target_repo = Keyword.get(opts, :repo, Repo)
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       target_repo.update_all(
         from(row in AuthSession,
@@ -188,7 +192,7 @@ defmodule Comma.Accounts.Sessions do
       )
       when is_binary(session_id) do
     target_repo = Keyword.get(opts, :repo, Repo)
-    now = Keyword.get(opts, :now, DateTime.utc_now())
+    now = Keyword.get(opts, :now, SystemsClock.utc_now())
     cutoff = DateTime.add(now, -@active_interval_seconds)
 
     target_repo.update_all(
@@ -208,7 +212,7 @@ defmodule Comma.Accounts.Sessions do
   @doc "Whether the user used a signed-in desktop App in the last ten minutes."
   def present?(user_id, opts \\ []) when is_binary(user_id) do
     target_repo = Keyword.get(opts, :repo, Repo)
-    now = Keyword.get(opts, :now, DateTime.utc_now())
+    now = Keyword.get(opts, :now, SystemsClock.utc_now())
     since = DateTime.add(now, -@present_seconds)
 
     target_repo.exists?(
@@ -226,14 +230,17 @@ defmodule Comma.Accounts.Sessions do
     target_repo = Keyword.get(opts, :repo, Repo)
     limit = opts |> Keyword.get(:limit, @default_page_limit) |> clamp_limit()
 
-    with {:ok, cursor} <- decode_cursor(Keyword.get(opts, :cursor)) do
+    with {:ok, filters} <- list_filters(opts),
+         {:ok, cursor} <- decode_cursor(Keyword.get(opts, :cursor), filters) do
       query =
         from(session in AuthSession,
           where: session.user_id == ^user_id,
-          order_by: [desc: session.created_at, desc: session.id],
+          order_by: [desc: field(session, ^filters.sort), desc: session.id],
           limit: ^(limit + 1)
         )
-        |> after_cursor(cursor)
+        |> filter_status(filters.status, SystemsClock.utc_now())
+        |> filter_client(filters.client_kind)
+        |> after_cursor(cursor, filters.sort)
 
       rows = target_repo.all(query)
       page = Enum.take(rows, limit)
@@ -243,7 +250,7 @@ defmodule Comma.Accounts.Sessions do
        %{
          "data" => Enum.map(page, &public_session/1),
          "has_more" => has_more,
-         "next_cursor" => if(has_more, do: encode_cursor(List.last(page)))
+         "next_cursor" => if(has_more, do: encode_cursor(List.last(page), filters))
        }}
     end
   end
@@ -257,18 +264,23 @@ defmodule Comma.Accounts.Sessions do
     case Ecto.UUID.cast(session_id) do
       {:ok, session_id} ->
         target_repo = Keyword.get(opts, :repo, Repo)
-        now = DateTime.utc_now()
+        now = SystemsClock.utc_now()
 
-        {_count, _} =
-          target_repo.update_all(
-            from(session in AuthSession,
-              where:
-                (session.id == ^session_id or session.parent_session_id == ^session_id) and
-                  session.user_id == ^user_id and
-                  is_nil(session.revoked_at)
-            ),
-            set: [revoked_at: now, revoke_reason: reason, updated_at: now]
-          )
+        with_station_revocations(target_repo, fn ->
+          {_count, revoked} =
+            target_repo.update_all(
+              from(session in AuthSession,
+                where:
+                  (session.id == ^session_id or session.parent_session_id == ^session_id) and
+                    session.user_id == ^user_id and
+                    is_nil(session.revoked_at),
+                select: {session.id, session.user_id}
+              ),
+              set: [revoked_at: now, revoke_reason: reason, updated_at: now]
+            )
+
+          {:ok, revoked}
+        end)
 
         :ok
 
@@ -289,7 +301,7 @@ defmodule Comma.Accounts.Sessions do
 
   defp revoke_known_token(token, reason, opts) do
     target_repo = Keyword.get(opts, :repo, Repo)
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     parents =
       from(session in AuthSession,
@@ -297,14 +309,20 @@ defmodule Comma.Accounts.Sessions do
         select: session.id
       )
 
-    target_repo.update_all(
-      from(session in AuthSession,
-        where:
-          (session.id in subquery(parents) or session.parent_session_id in subquery(parents)) and
-            is_nil(session.revoked_at)
-      ),
-      set: [revoked_at: now, revoke_reason: reason, updated_at: now]
-    )
+    with_station_revocations(target_repo, fn ->
+      {_count, revoked} =
+        target_repo.update_all(
+          from(session in AuthSession,
+            where:
+              (session.id in subquery(parents) or session.parent_session_id in subquery(parents)) and
+                is_nil(session.revoked_at),
+            select: {session.id, session.user_id}
+          ),
+          set: [revoked_at: now, revoke_reason: reason, updated_at: now]
+        )
+
+      {:ok, revoked}
+    end)
 
     :ok
   end
@@ -315,21 +333,24 @@ defmodule Comma.Accounts.Sessions do
     target_repo = Keyword.get(opts, :repo, Repo)
     except_id = Keyword.get(opts, :except_session_id)
     reason = Keyword.get(opts, :reason, "user_revoked_all")
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     query =
       from(session in AuthSession,
-        where: session.user_id == ^user_id and is_nil(session.revoked_at)
+        where: session.user_id == ^user_id and is_nil(session.revoked_at),
+        select: {session.id, session.user_id}
       )
       |> except_session(except_id)
       |> active_only(Keyword.get(opts, :active_only, false), now)
 
-    {count, _} =
-      target_repo.update_all(query,
-        set: [revoked_at: now, revoke_reason: reason, updated_at: now]
-      )
+    with_station_revocations(target_repo, fn ->
+      {count, revoked} =
+        target_repo.update_all(query,
+          set: [revoked_at: now, revoke_reason: reason, updated_at: now]
+        )
 
-    {:ok, count}
+      {count, revoked}
+    end)
   end
 
   def revoke_all(_user_id, _opts), do: {:ok, 0}
@@ -448,7 +469,7 @@ defmodule Comma.Accounts.Sessions do
   defp active_identity(_session, _repo), do: :ok
 
   defp active_session?(session, user) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     cond do
       session.revoked_at -> {:error, :revoked}
@@ -461,10 +482,11 @@ defmodule Comma.Accounts.Sessions do
 
   defp session_token("channel_task_panel"),
     do:
-      @task_panel_token_prefix <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+      @task_panel_token_prefix <>
+        Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
 
   defp session_token(_source),
-    do: @token_prefix <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+    do: @token_prefix <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
 
   defp session_token?(@token_prefix <> _), do: true
   defp session_token?(@task_panel_token_prefix <> _), do: true
@@ -478,36 +500,102 @@ defmodule Comma.Accounts.Sessions do
   defp clamp_limit(limit) when is_integer(limit), do: limit |> max(1) |> min(@max_page_limit)
   defp clamp_limit(_limit), do: @default_page_limit
 
-  defp encode_cursor(%AuthSession{} = session) do
-    %{created_at: DateTime.to_iso8601(session.created_at), id: session.id}
+  defp list_filters(opts) do
+    status = Keyword.get(opts, :status) || "all"
+    client_kind = Keyword.get(opts, :client_kind) || "all"
+    sort = Keyword.get(opts, :sort) || "created_at"
+
+    if status in ~w(all active expired revoked) and
+         client_kind in ~w(all unknown web electron android ios watch api ssh) and
+         sort in ~w(created_at last_seen_at) do
+      {:ok,
+       %{
+         status: status,
+         client_kind: client_kind,
+         sort: if(sort == "last_seen_at", do: :last_seen_at, else: :created_at)
+       }}
+    else
+      {:error, :invalid_filter}
+    end
+  end
+
+  defp filter_status(query, "all", _now), do: query
+
+  defp filter_status(query, "active", now),
+    do: from(session in query, where: is_nil(session.revoked_at) and session.expires_at > ^now)
+
+  defp filter_status(query, "expired", now),
+    do: from(session in query, where: is_nil(session.revoked_at) and session.expires_at <= ^now)
+
+  defp filter_status(query, "revoked", _now),
+    do: from(session in query, where: not is_nil(session.revoked_at))
+
+  defp filter_client(query, "all"), do: query
+
+  defp filter_client(query, "unknown"),
+    do: from(session in query, where: is_nil(session.client_kind))
+
+  defp filter_client(query, kind), do: from(session in query, where: session.client_kind == ^kind)
+
+  defp encode_cursor(%AuthSession{} = session, filters) do
+    %{
+      Atom.to_string(filters.sort) => DateTime.to_iso8601(Map.fetch!(session, filters.sort)),
+      "id" => session.id,
+      "status" => filters.status,
+      "client_kind" => filters.client_kind
+    }
     |> Jason.encode!()
     |> Base.url_encode64(padding: false)
   end
 
-  defp decode_cursor(nil), do: {:ok, nil}
-  defp decode_cursor(""), do: {:ok, nil}
+  defp decode_cursor(nil, _filters), do: {:ok, nil}
+  defp decode_cursor("", _filters), do: {:ok, nil}
 
-  defp decode_cursor(cursor) when is_binary(cursor) do
+  defp decode_cursor(cursor, filters) when is_binary(cursor) and byte_size(cursor) <= 1_024 do
     with {:ok, json} <- Base.url_decode64(cursor, padding: false),
-         {:ok, %{"created_at" => created_at, "id" => id}} <- Jason.decode(json),
-         {:ok, created_at, 0} <- DateTime.from_iso8601(created_at),
+         {:ok, %{"id" => id} = values} <- Jason.decode(json),
+         true <- Map.get(values, "status", "all") == filters.status,
+         true <- Map.get(values, "client_kind", "all") == filters.client_kind,
+         timestamp when is_binary(timestamp) <- values[Atom.to_string(filters.sort)],
+         {:ok, timestamp, 0} <- DateTime.from_iso8601(timestamp),
          {:ok, id} <- Ecto.UUID.cast(id) do
-      {:ok, {created_at, id}}
+      {:ok, {timestamp, id}}
     else
       _ -> {:error, :invalid_cursor}
     end
   end
 
-  defp decode_cursor(_cursor), do: {:error, :invalid_cursor}
+  defp decode_cursor(_cursor, _filters), do: {:error, :invalid_cursor}
 
-  defp after_cursor(query, nil), do: query
+  defp after_cursor(query, nil, _sort), do: query
 
-  defp after_cursor(query, {created_at, id}) do
+  defp after_cursor(query, {timestamp, id}, sort) do
     from(session in query,
       where:
-        session.created_at < ^created_at or
-          (session.created_at == ^created_at and session.id < ^id)
+        field(session, ^sort) < ^timestamp or
+          (field(session, ^sort) == ^timestamp and session.id < ^id)
     )
+  end
+
+  # The session update and its station revocation rows commit together. Stations
+  # are told after commit; inside a caller's transaction the caller publishes
+  # once it commits (`Comma.Stations.Revocations.publish_since/2`).
+  defp with_station_revocations(repo, update) do
+    outer? = repo.in_transaction?()
+
+    {:ok, {count, revocations}} =
+      repo.transaction(fn ->
+        {count, revoked} =
+          case update.() do
+            {:ok, revoked} -> {nil, revoked}
+            {count, revoked} -> {count, revoked}
+          end
+
+        {count, Comma.Stations.Revocations.sessions_revoked(repo, revoked)}
+      end)
+
+    unless outer?, do: Comma.Stations.Revocations.publish(revocations)
+    {:ok, count}
   end
 
   defp except_session(query, nil), do: query
@@ -520,5 +608,5 @@ defmodule Comma.Accounts.Sessions do
 
   defp unix(nil), do: nil
   defp unix(%DateTime{} = value), do: DateTime.to_unix(value)
-  defp now_iso8601, do: DateTime.utc_now() |> DateTime.to_iso8601()
+  defp now_iso8601, do: SystemsClock.utc_now() |> DateTime.to_iso8601()
 end

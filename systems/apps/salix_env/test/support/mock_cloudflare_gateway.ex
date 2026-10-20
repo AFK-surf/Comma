@@ -9,19 +9,20 @@ defmodule SalixEnv.VM.Providers.Cloudflare.MockGateway do
   def calls(pid), do: GenServer.call(pid, :calls)
   def calls(pid, op), do: Enum.filter(calls(pid), &(&1.op == op))
   def set_error(pid, status, body), do: GenServer.call(pid, {:set_error, status, body})
+  def set_responses(pid, responses), do: GenServer.call(pid, {:set_responses, responses})
 
   @impl true
   def init(opts) do
     {:ok, bandit} =
       Bandit.start_link(
-        plug: {__MODULE__.Plug, self()},
+        plug: {__MODULE__.Plug, SystemsRuntime.Proc.self()},
         port: 0,
         ip: {127, 0, 0, 1},
         startup_log: false
       )
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
-    {:ok, %{port: port, calls: [], error: Keyword.get(opts, :error)}}
+    {:ok, %{port: port, calls: [], error: Keyword.get(opts, :error), responses: []}}
   end
 
   @impl true
@@ -30,6 +31,9 @@ defmodule SalixEnv.VM.Providers.Cloudflare.MockGateway do
 
   def handle_call({:set_error, status, body}, _from, state),
     do: {:reply, :ok, %{state | error: {status, body}}}
+
+  def handle_call({:set_responses, responses}, _from, state),
+    do: {:reply, :ok, %{state | responses: responses}}
 
   def handle_call({:request, op, sandbox_id, conn, body}, _from, state) do
     call = %{
@@ -43,13 +47,21 @@ defmodule SalixEnv.VM.Providers.Cloudflare.MockGateway do
       request_id: header(conn, "x-salix-request-id"),
       worker_version_key: header(conn, "cloudflare-workers-version-key"),
       worker_version_overrides: header(conn, "cloudflare-workers-version-overrides"),
-      body: body
+      body: body,
+      control:
+        conn
+        |> Plug.Conn.fetch_query_params()
+        |> Map.get(:query_params)
+        |> Map.get("salix_control")
     }
 
     state = %{state | calls: [call | state.calls]}
 
-    case state.error do
-      {status, error_body} ->
+    case {state.responses, state.error} do
+      {[response | rest], _} ->
+        {:reply, response, %{state | responses: rest}}
+
+      {[], {status, error_body}} ->
         {:reply, {status, error_body}, %{state | error: nil}}
 
       _ ->
@@ -58,29 +70,19 @@ defmodule SalixEnv.VM.Providers.Cloudflare.MockGateway do
   end
 
   defp response(:ensure, sandbox_id, _body),
-    do: {200, versioned(%{"ok" => true, "sandbox_id" => sandbox_id, "status" => "ready"})}
+    do: {200, versioned(%{"ok" => true, "sandbox_id" => sandbox_id, "status" => "started"})}
 
   defp response(:status, sandbox_id, _body),
-    do: {200, versioned(%{"ok" => true, "sandbox_id" => sandbox_id, "status" => "ready"})}
+    do: {200, versioned(%{"ok" => true, "sandbox_id" => sandbox_id, "status" => "running"})}
 
   defp response(:destroy, sandbox_id, _body),
     do: {200, versioned(%{"ok" => true, "sandbox_id" => sandbox_id})}
-
-  defp response(:checkpoint, sandbox_id, _body),
-    do:
-      {200, versioned(%{"ok" => true, "sandbox_id" => sandbox_id, "archive" => %{"id" => "a1"}})}
-
-  defp response(:restore, sandbox_id, _body),
-    do:
-      {200,
-       versioned(%{"ok" => true, "sandbox_id" => sandbox_id, "restore" => %{"restored" => true}})}
 
   defp response(:keepalive, sandbox_id, body),
     do:
       {200,
        versioned(%{"ok" => true, "sandbox_id" => sandbox_id, "keep_alive" => body["keep_alive"]})}
 
-  defp response(:proxy, _sandbox_id, _body), do: {200, %{"ok" => true, "proxied" => true}}
   defp response(:not_found, _sandbox_id, _body), do: {404, %{"error" => "not_found"}}
 
   defp versioned(body) do
@@ -109,11 +111,6 @@ defmodule SalixEnv.VM.Providers.Cloudflare.MockGateway do
       {op, sandbox_id} = route(conn, body)
       {status, response} = GenServer.call(pid, {:request, op, sandbox_id, conn, body})
 
-      conn =
-        if op == :proxy,
-          do: put_resp_header(conn, "x-salix-container-response", "1"),
-          else: conn
-
       conn
       |> put_resp_content_type("application/json")
       |> send_resp(status, Jason.encode!(response))
@@ -132,17 +129,11 @@ defmodule SalixEnv.VM.Providers.Cloudflare.MockGateway do
     defp route(%{path_info: ["internal", "v1", "sandboxes", sandbox_id, "destroy"]}, _body),
       do: {:destroy, sandbox_id}
 
-    defp route(%{path_info: ["internal", "v1", "sandboxes", sandbox_id, "checkpoint"]}, _body),
-      do: {:checkpoint, sandbox_id}
-
-    defp route(%{path_info: ["internal", "v1", "sandboxes", sandbox_id, "restore"]}, _body),
-      do: {:restore, sandbox_id}
+    defp route(%{path_info: ["internal", "v1", "sandboxes", sandbox_id, "control"]}, _body),
+      do: {:control, sandbox_id}
 
     defp route(%{path_info: ["internal", "v1", "sandboxes", sandbox_id, "keepalive"]}, _body),
       do: {:keepalive, sandbox_id}
-
-    defp route(%{path_info: ["internal", "v1", "sandboxes", sandbox_id, "proxy" | _]}, _body),
-      do: {:proxy, sandbox_id}
 
     defp route(_conn, _body), do: {:not_found, nil}
   end

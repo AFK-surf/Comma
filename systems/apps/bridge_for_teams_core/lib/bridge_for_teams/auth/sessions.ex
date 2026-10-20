@@ -33,7 +33,7 @@ defmodule BridgeForTeams.Auth.Sessions do
     user_id = user_id(user_or_id)
     token = generate_token()
     ttl = Keyword.get(opts, :ttl_seconds, @default_ttl_seconds)
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     attrs = %{
       user_id: user_id,
@@ -69,7 +69,7 @@ defmodule BridgeForTeams.Auth.Sessions do
         {:error, :invalid}
 
       %AuthSession{} = session ->
-        if DateTime.compare(session.expires_at, DateTime.utc_now()) == :gt do
+        if DateTime.compare(session.expires_at, SystemsClock.utc_now()) == :gt do
           if touch?, do: touch(session), else: {:ok, session}
         else
           Repo.delete(session)
@@ -97,7 +97,7 @@ defmodule BridgeForTeams.Auth.Sessions do
   @spec list_for_user(User.t() | Ecto.UUID.t(), keyword()) :: [AuthSession.t()]
   def list_for_user(user_or_id, opts \\ []) do
     user_id = user_id(user_or_id)
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     AuthSession
     |> where([s], s.user_id == ^user_id and s.expires_at > ^now)
@@ -131,7 +131,7 @@ defmodule BridgeForTeams.Auth.Sessions do
   @doc "Generate a fresh opaque session token (URL-safe, unpadded base64)."
   @spec generate_token() :: String.t()
   def generate_token,
-    do: Base.url_encode64(:crypto.strong_rand_bytes(@token_bytes), padding: false)
+    do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(@token_bytes), padding: false)
 
   defp maybe_filter_device(query, nil), do: query
   defp maybe_filter_device(query, device), do: where(query, [s], s.device == ^device)
@@ -141,7 +141,7 @@ defmodule BridgeForTeams.Auth.Sessions do
 
   defp touch(session) do
     session
-    |> AuthSession.changeset(%{last_seen_at: DateTime.utc_now()})
+    |> AuthSession.changeset(%{last_seen_at: SystemsClock.utc_now()})
     |> Repo.update()
     |> case do
       {:ok, updated} -> {:ok, updated}

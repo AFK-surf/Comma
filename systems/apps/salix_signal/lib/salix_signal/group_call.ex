@@ -33,7 +33,11 @@ defmodule SalixSignal.GroupCall do
   """
   @spec join(keyword() | map()) :: DynamicSupervisor.on_start_child()
   def join(opts),
-    do: DynamicSupervisor.start_child(SalixSignal.GroupCall.Supervisor, {Session, opts})
+    do:
+      SystemsRuntime.DynamicSupervisor.start_child(
+        SalixSignal.GroupCall.Supervisor,
+        {Session, opts}
+      )
 
   @doc "Leaves a group call."
   @spec leave(pid()) :: :ok
@@ -42,7 +46,7 @@ defmodule SalixSignal.GroupCall do
   @doc "The session of account `aci` in group `group_id` on this node, or nil."
   @spec whereis(String.t(), binary()) :: pid() | nil
   def whereis(aci, group_id) do
-    case Registry.lookup(@registry, {aci, group_id}) do
+    case SystemsRuntime.Registry.lookup(@registry, {aci, group_id}) do
       [{pid, _}] -> pid
       [] -> nil
     end
@@ -51,7 +55,10 @@ defmodule SalixSignal.GroupCall do
   @doc "True when account `aci` is in any group call on this node."
   @spec active?(String.t()) :: boolean()
   def active?(aci),
-    do: Registry.select(@registry, [{{{:"$1", :_}, :_, :_}, [{:==, :"$1", aci}], [true]}]) != []
+    do:
+      SystemsRuntime.Registry.select(@registry, [
+        {{{:"$1", :_}, :_, :_}, [{:==, :"$1", aci}], [true]}
+      ]) != []
 
   @doc """
   Routes one opaque call payload received by account `own_aci`.

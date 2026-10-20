@@ -14,17 +14,17 @@ defmodule SalixCluster.Application do
   @impl true
   def start(_type, _args) do
     # Route agent placement through the ring (no-op routing on a single node).
-    Application.put_env(:salix_agent, :placement, SalixCluster.Placement)
-    Application.put_env(:salix_calendar, :placement, SalixCluster.CalendarPlacement)
-    Application.put_env(:salix_im, :conversation_placement, SalixCluster.ConversationPlacement)
+    SystemsRuntime.put_env(:salix_agent, :placement, SalixCluster.Placement)
+    SystemsRuntime.put_env(:salix_calendar, :placement, SalixCluster.CalendarPlacement)
+    SystemsRuntime.put_env(:salix_im, :conversation_placement, SalixCluster.ConversationPlacement)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :private_chat_status_placement,
       SalixCluster.PrivateChatStatusPlacement
     )
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :slack_router_status_placement,
       SalixCluster.SlackRouterStatusPlacement
@@ -32,21 +32,29 @@ defmodule SalixCluster.Application do
 
     children =
       [
-        SalixCluster.Ring,
+        # Starts before the ring so the ring's first change reaches it.
+        {SalixCluster.ConversationOwnerKeeper,
+         interval_ms:
+           SystemsRuntime.get_env(
+             :salix_cluster,
+             :conversation_owner_keeper_interval_ms,
+             :timer.seconds(60)
+           )},
+        {SalixCluster.Ring, on_change: &SalixCluster.ConversationOwnerKeeper.ring_changed/0},
         # Owns the non-linked housekeeping tasks (Recovery's async prune).
         # Started unconditionally — Recovery instances launched directly by
         # tests need it even where the production sweeps are disabled.
-        {Task.Supervisor, name: SalixCluster.TaskSup}
+        {SystemsRuntime.TaskSupervisor, name: SalixCluster.TaskSup}
       ]
       |> maybe_libcluster()
       |> maybe_recovery()
 
     opts = [strategy: :one_for_one, name: SalixCluster.Supervisor]
-    Supervisor.start_link(children, opts)
+    SystemsRuntime.Supervisor.start_link(children, opts)
   end
 
   defp maybe_libcluster(children) do
-    case Application.get_env(:salix_cluster, :topologies) do
+    case SystemsRuntime.get_env(:salix_cluster, :topologies) do
       nil ->
         children
 
@@ -56,7 +64,7 @@ defmodule SalixCluster.Application do
   end
 
   defp maybe_recovery(children) do
-    if Application.get_env(:salix_cluster, :enabled, true) do
+    if SystemsRuntime.get_env(:salix_cluster, :enabled, true) do
       # Lease-gated singletons — safe to start on every node.
       recovery_children =
         [SalixCluster.Recovery] ++
@@ -73,7 +81,7 @@ defmodule SalixCluster.Application do
   # candidate projection. S3-only runtime nodes retain periodic recovery but
   # do not enter a reconnect loop for a database they intentionally lack.
   defp session_work_notification_children do
-    if Application.get_env(:salix_store, :start_repo, false) do
+    if SystemsRuntime.get_env(:salix_store, :start_repo, false) do
       [SalixCluster.SessionWorkNotificationListener]
     else
       []

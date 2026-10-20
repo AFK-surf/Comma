@@ -68,7 +68,7 @@ defmodule BillingCore.VoiceMetering do
           source_key: attrs[:source_key],
           provider: attrs[:provider],
           sku: attrs[:sku],
-          metered_at: attrs[:metered_at] || DateTime.utc_now(),
+          metered_at: attrs[:metered_at] || SystemsClock.utc_now(),
           meter_components: Enum.map(components, &component/1),
           owner_snapshot: owner,
           surface: owner["surface"] || "unknown",

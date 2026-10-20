@@ -10,7 +10,7 @@ import {
   type TimerData,
 } from "@comma/chat-contract/dynamic-ui-cards";
 import { dynamicUiDocument } from "@comma/chat-contract/dynamic-ui-runtime";
-import { Button } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
 import { cardBrandIcons, cardCopy, cardIconMarkup, cardTokenProbe } from "./cardHost";
 
 /**

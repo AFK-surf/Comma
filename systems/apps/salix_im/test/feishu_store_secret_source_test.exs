@@ -7,7 +7,7 @@ defmodule SalixIM.FeishuStoreSecretSourceTest do
     * connect records do not store app_secret / verification_token / encrypt_key;
     * missing tenant app secret fails closed with a clear `{:bad_request, _}`.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Plug.Conn
 
@@ -49,18 +49,18 @@ defmodule SalixIM.FeishuStoreSecretSourceTest do
   end
 
   setup do
-    prev_s3 = Application.get_env(:salix_store, :s3_backend)
-    prev_store = Application.get_env(:salix_im, :provider_app_store_mod)
-    prev_feishu = Application.get_env(:salix_im, :feishu_api_base_url)
+    prev_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_store = SystemsRuntime.get_env(:salix_im, :provider_app_store_mod)
+    prev_feishu = SystemsRuntime.get_env(:salix_im, :feishu_api_base_url)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
 
     start_supervised!(FakeTenantAppStore)
-    Application.put_env(:salix_im, :provider_app_store_mod, FakeTenantAppStore)
+    SystemsRuntime.put_env(:salix_im, :provider_app_store_mod, FakeTenantAppStore)
 
     port = start_bandit_retry!(fn p -> {Bandit, plug: MockFeishuAPI, port: p} end)
-    Application.put_env(:salix_im, :feishu_api_base_url, "http://127.0.0.1:#{port}/open-apis")
+    SystemsRuntime.put_env(:salix_im, :feishu_api_base_url, "http://127.0.0.1:#{port}/open-apis")
 
     on_exit(fn ->
       restore(:salix_store, :s3_backend, prev_s3)
@@ -136,13 +136,13 @@ defmodule SalixIM.FeishuStoreSecretSourceTest do
     assert message =~ "not configured"
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   # Bind Bandit on a random port, retrying on collisions across suites.
   defp start_bandit_retry!(spec_fun) do
     Enum.find_value(1..10, fn _ ->
-      p = 40_000 + :erlang.phash2(make_ref(), 20_000)
+      p = 40_000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20_000)
 
       case start_supervised(spec_fun.(p), id: {:bandit_retry, p}) do
         {:ok, _pid} -> p

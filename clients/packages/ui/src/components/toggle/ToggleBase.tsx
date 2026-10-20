@@ -48,7 +48,7 @@ export const ToggleBase = ({
   return (
     <div
       className={cx(
-        "comma-toggle cursor-pointer rounded-full",
+        "comma-toggle shrink-0 cursor-pointer rounded-full",
         // Hover darkens the track with a translucent overlay (styles.css) so
         // both states share one treatment; no per-state hover color swap here.
         isSelected ? "bg-brand-solid" : "bg-toggle",

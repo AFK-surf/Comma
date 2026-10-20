@@ -96,7 +96,7 @@ defmodule CommaWeb.TelegramBot.Req do
   defp call(token, method, body) do
     base =
       :comma_web
-      |> Application.get_env(:telegram, [])
+      |> SystemsRuntime.get_env(:telegram, [])
       |> Keyword.get(:api_base_url, @api_base)
       |> String.trim_trailing("/")
 

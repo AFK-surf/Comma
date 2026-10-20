@@ -23,7 +23,7 @@ import {
   conversationFileSourceKey,
   type ConversationFileSource,
 } from "../../runtime-files/fileSources";
-import type { ChatParticipantStatus } from "../chat/model/conversationChannel";
+import type { ChatParticipantStatus } from "@comma/core/chat";
 
 export type ChatSidebarHost = {
   conversationId: string;
@@ -67,7 +67,27 @@ export type ChatSidebarHistoryPage = {
 
 export type ChatSidebarFilePreview = { id: string; source: ConversationFileSource };
 
-export type ChatSidebarSurface = "browser" | "chat" | "drive" | "history" | "file";
+/** A computer's screen, live, as a tab: the big screen of a computer-use session. */
+export type ChatSidebarScreenPage = {
+  id: string;
+  workspaceId: string;
+  device: string;
+  /** The apps an app stream shows; empty for the frontmost app. */
+  apps: string[];
+};
+
+/** A screen page's id: one tab per computer and set of apps. */
+export function screenPageId(page: Pick<ChatSidebarScreenPage, "device" | "apps">) {
+  return JSON.stringify([page.device, ...page.apps]);
+}
+
+export type ChatSidebarSurface =
+  | "browser"
+  | "chat"
+  | "drive"
+  | "history"
+  | "file"
+  | "screen";
 
 export type ChatSidebarSession = {
   activeBrowserPageId?: string | undefined;
@@ -81,6 +101,8 @@ export type ChatSidebarSession = {
   drivePreviews: ChatSidebarDrivePreview[];
   historyPages?: ChatSidebarHistoryPage[];
   activeHistoryPageId?: string | undefined;
+  screenPages?: ChatSidebarScreenPage[];
+  activeScreenPageId?: string | undefined;
 };
 
 export type ChatSidebarContextValue = {
@@ -92,6 +114,7 @@ export type ChatSidebarContextValue = {
   closeChat: (host: ChatSidebarHost, chatId?: string) => void;
   closeDrivePreview: (host: ChatSidebarHost, previewId: string) => void;
   closeHistoryPage: (host: ChatSidebarHost, pageId: string) => void;
+  closeScreenPage: (host: ChatSidebarHost, pageId: string) => void;
   getNativeBrowserCapacityBlockedEpoch: (sessionId: string) => number | undefined;
   isOpen: boolean;
   nativeBrowserCapacityEpoch: number;
@@ -106,6 +129,10 @@ export type ChatSidebarContextValue = {
     host: ChatSidebarHost,
     target: Omit<ChatSidebarHistoryPage, "id">
   ) => void;
+  openScreen: (
+    host: ChatSidebarHost,
+    target: Omit<ChatSidebarScreenPage, "id">
+  ) => void;
   /**
    * Width the trailing sidebar has yet to take from `host`'s row: positive
    * while it opens, negative while it closes, 0 once its width transition has
@@ -118,8 +145,14 @@ export type ChatSidebarContextValue = {
   pendingTrailingWidth: (host: Element) => number;
   registerHost: (
     host: ChatSidebarHost,
-    options?: { commaCenter?: boolean | undefined }
+    options?: { commaCenter?: boolean | undefined; owner?: object | undefined }
   ) => () => void;
+  /**
+   * Marks the current route as one whose host is still loading. A sidebar the
+   * reader opens meanwhile opens on the global host and becomes the route's
+   * own once `owner` registers its host (`registerHost`).
+   */
+  registerPendingHost: (owner: object) => () => void;
   recordNativeBrowserState: (
     state: BrowserSidebarState,
     capacityAttemptEpoch?: number | undefined
@@ -128,6 +161,7 @@ export type ChatSidebarContextValue = {
   selectChat: (host: ChatSidebarHost, chatId?: string) => void;
   selectDrivePreview: (host: ChatSidebarHost, previewId: string) => void;
   selectHistoryPage: (host: ChatSidebarHost, pageId: string) => void;
+  selectScreenPage: (host: ChatSidebarHost, pageId: string) => void;
   toggle: (host: ChatSidebarHost) => void;
   toggleActive: () => void;
   /** The sidebar aside; the surface that renders it attaches the element. */
@@ -171,6 +205,7 @@ const emptySession = (): ChatSidebarSession => ({
   drivePreviews: [],
   historyPages: [],
   filePreviews: [],
+  screenPages: [],
 });
 
 export function activeSidebarChat(session: ChatSidebarSession | undefined) {
@@ -201,11 +236,26 @@ export const driveSidebarHost: ChatSidebarHost = {
 // Every `BrowserSidebarState` field the renderer reads; `surface` is Main's
 // window-registry geometry, carried for tooling and changing on every frame
 // of a drag.
+const samePasskeyPrompt = (
+  previous: BrowserSidebarState["passkey"],
+  next: BrowserSidebarState["passkey"]
+) =>
+  previous === next ||
+  (previous !== undefined &&
+    next !== undefined &&
+    previous.site === next.site &&
+    previous.kind === next.kind &&
+    previous.phase === next.phase &&
+    previous.qr === next.qr &&
+    previous.bluetooth === next.bluetooth &&
+    previous.securityKey === next.securityKey);
+
 const sameConsumedBrowserState = (
   previous: BrowserSidebarState | undefined,
   next: BrowserSidebarState
 ) =>
   previous !== undefined &&
+  samePasskeyPrompt(previous.passkey, next.passkey) &&
   previous.available === next.available &&
   previous.active === next.active &&
   previous.canGoBack === next.canGoBack &&
@@ -220,6 +270,10 @@ const sameConsumedBrowserState = (
 
 export function ChatSidebarProvider({ children }: { children: ReactNode }) {
   const activeRegistration = useRef<symbol | undefined>(undefined);
+  // The route whose host is still loading, and the route a sidebar opened on
+  // the global host belongs to (see `registerPendingHost`).
+  const pendingHostOwner = useRef<object | undefined>(undefined);
+  const globalSidebarOwner = useRef<object | undefined>(undefined);
   const trailingRef = useRef<HTMLElement | null>(null);
   const pendingTrailingWidth = useCallback<
     ChatSidebarContextValue["pendingTrailingWidth"]
@@ -449,6 +503,9 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
     (host, options) => {
       const registration = Symbol(chatSidebarHostKey(host));
       activeRegistration.current = registration;
+      const adoptsGlobalSidebar =
+        options?.owner !== undefined && options.owner === globalSidebarOwner.current;
+      globalSidebarOwner.current = undefined;
       setRegistry((current) => {
         const commaCenterLineage = options?.commaCenter
           ? addLineage(current.commaCenterLineage, host)
@@ -459,11 +516,8 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
         ) {
           return current;
         }
-        return {
-          ...current,
-          activeHost: host,
-          commaCenterLineage,
-        };
+        const next = { ...current, activeHost: host, commaCenterLineage };
+        return adoptsGlobalSidebar ? adoptGlobalSidebar(next, host) : next;
       });
 
       return () => {
@@ -478,6 +532,15 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
     },
     []
   );
+
+  const registerPendingHost = useCallback<
+    ChatSidebarContextValue["registerPendingHost"]
+  >((owner) => {
+    pendingHostOwner.current = owner;
+    return () => {
+      if (pendingHostOwner.current === owner) pendingHostOwner.current = undefined;
+    };
+  }, []);
 
   const openBrowser = useCallback<ChatSidebarContextValue["openBrowser"]>(
     (host, target) => {
@@ -578,6 +641,9 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
 
   const toggleActive = useCallback<ChatSidebarContextValue["toggleActive"]>(() => {
     const page = createBlankBrowserPage();
+    // A route still loading its host has none yet: the sidebar opens on the
+    // global host and stays open as the route's own once the host arrives.
+    globalSidebarOwner.current = pendingHostOwner.current;
     setRegistry((current) => {
       const host = current.activeHost ?? globalBrowserHost;
       const key = chatSidebarHostKey(host);
@@ -676,7 +742,8 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
           !session.chats.length &&
           session.drivePreviews.length === 0 &&
           !session.historyPages?.length &&
-          !session.filePreviews?.length
+          !session.filePreviews?.length &&
+          !session.screenPages?.length
         ) {
           touchSidebarSession(sessions, key, emptySession());
           return finishSidebarTabClose(current, sessions, host);
@@ -908,7 +975,8 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
           session.browserPages.length === 0 &&
           !session.chats.length &&
           !session.historyPages?.length &&
-          !session.filePreviews?.length
+          !session.filePreviews?.length &&
+          !session.screenPages?.length
         ) {
           touchSidebarSession(sessions, key, emptySession());
           return finishSidebarTabClose(current, sessions, host);
@@ -986,6 +1054,76 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
     []
   );
 
+  const openScreen = useCallback<ChatSidebarContextValue["openScreen"]>(
+    (host, target) => {
+      const id = screenPageId(target);
+      setRegistry((current) => {
+        const sessions = updateSidebarSession(current.sessions, host, (session) => {
+          const pages = session.screenPages ?? [];
+          const page = { ...target, id };
+          return {
+            ...session,
+            activeSurface: "screen",
+            activeScreenPageId: id,
+            // A Connector runs at most four streams; reopening focuses the same tab.
+            screenPages: pages.some((item) => item.id === id)
+              ? pages.map((item) => (item.id === id ? page : item))
+              : [...pages.slice(-3), page],
+          };
+        });
+        return {
+          ...current,
+          sessions,
+          openSessionKeys: openSidebarSession(current.openSessionKeys, sessions, host),
+        };
+      });
+    },
+    []
+  );
+
+  const selectScreenPage = useCallback<ChatSidebarContextValue["selectScreenPage"]>(
+    (host, pageId) => {
+      setRegistry((current) => {
+        const key = chatSidebarHostKey(host);
+        const session = current.sessions.get(key);
+        if (!session?.screenPages?.some((page) => page.id === pageId)) return current;
+        const sessions = new Map(current.sessions);
+        touchSidebarSession(sessions, key, {
+          ...session,
+          activeSurface: "screen",
+          activeScreenPageId: pageId,
+        });
+        return { ...current, sessions };
+      });
+    },
+    []
+  );
+
+  const closeScreenPage = useCallback<ChatSidebarContextValue["closeScreenPage"]>(
+    (host, pageId) => {
+      setRegistry((current) => {
+        const key = chatSidebarHostKey(host);
+        const session = current.sessions.get(key);
+        const index =
+          session?.screenPages?.findIndex((page) => page.id === pageId) ?? -1;
+        if (!session || index < 0) return current;
+        const screenPages = session.screenPages!.filter((page) => page.id !== pageId);
+        const sessions = new Map(current.sessions);
+        // With no screen left, the panel shows whatever the session still holds.
+        touchSidebarSession(sessions, key, {
+          ...session,
+          screenPages,
+          activeScreenPageId:
+            session.activeScreenPageId === pageId
+              ? screenPages[Math.min(index, screenPages.length - 1)]?.id
+              : session.activeScreenPageId,
+        });
+        return finishSidebarTabClose(current, sessions, host);
+      });
+    },
+    []
+  );
+
   const selectHistoryPage = useCallback<ChatSidebarContextValue["selectHistoryPage"]>(
     (host, pageId) => {
       setRegistry((current) => {
@@ -1040,8 +1178,6 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
     []
   );
 
-  // Navigation revision, metadata, and bounded retention are modeled in
-  // tla/browser-sidebar/BrowserSidebar.tla.
   const updateBrowserPage = useCallback<ChatSidebarContextValue["updateBrowserPage"]>(
     (host, pageId, patch) => {
       setRegistry((current) => {
@@ -1106,6 +1242,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       closeChat,
       closeDrivePreview,
       closeHistoryPage,
+      closeScreenPage,
       getNativeBrowserCapacityBlockedEpoch,
       isOpen,
       nativeBrowserCapacityEpoch,
@@ -1117,13 +1254,16 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       selectFilePreview,
       closeFilePreview,
       openSessionHistory,
+      openScreen,
       pendingTrailingWidth,
       registerHost,
+      registerPendingHost,
       recordNativeBrowserState,
       selectBrowserPage,
       selectChat,
       selectDrivePreview,
       selectHistoryPage,
+      selectScreenPage,
       toggle,
       toggleActive,
       trailingRef,
@@ -1137,6 +1277,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       closeChat,
       closeDrivePreview,
       closeHistoryPage,
+      closeScreenPage,
       getNativeBrowserCapacityBlockedEpoch,
       isOpen,
       nativeBrowserCapacityEpoch,
@@ -1148,8 +1289,10 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       selectFilePreview,
       closeFilePreview,
       openSessionHistory,
+      openScreen,
       pendingTrailingWidth,
       registerHost,
+      registerPendingHost,
       recordNativeBrowserState,
       registry.activeHost,
       registry.commaCenterLineage,
@@ -1157,6 +1300,7 @@ export function ChatSidebarProvider({ children }: { children: ReactNode }) {
       selectChat,
       selectDrivePreview,
       selectHistoryPage,
+      selectScreenPage,
       toggle,
       toggleActive,
       updateBrowserPage,
@@ -1197,20 +1341,41 @@ export function useOptionalChatSidebar() {
   return useContext(ChatSidebarContext);
 }
 
+/**
+ * Registers the route's conversation as the sidebar host. `awaitingHost`: the
+ * route will have a host once its conversation loads, so a sidebar the reader
+ * opens before then is kept open, as this route's, when the host arrives.
+ */
 export function useRegisterChatSidebarHost(
   host: ChatSidebarHost | undefined,
-  options?: { commaCenter?: boolean | undefined }
+  options?: { awaitingHost?: boolean | undefined; commaCenter?: boolean | undefined }
 ) {
-  const { registerHost } = useChatSidebar();
+  const { registerHost, registerPendingHost } = useChatSidebar();
+  const [owner] = useState(() => ({}));
   const conversationId = host?.conversationId;
   const groupId = host?.groupId;
   const workspaceId = host?.workspaceId;
+  const awaitingHost = options?.awaitingHost === true;
   const commaCenter = options?.commaCenter === true;
 
   useLayoutEffect(() => {
-    if (!conversationId || !groupId || !workspaceId) return undefined;
-    return registerHost({ conversationId, groupId, workspaceId }, { commaCenter });
-  }, [conversationId, commaCenter, groupId, registerHost, workspaceId]);
+    if (!conversationId || !groupId || !workspaceId) {
+      return awaitingHost ? registerPendingHost(owner) : undefined;
+    }
+    return registerHost(
+      { conversationId, groupId, workspaceId },
+      { commaCenter, owner }
+    );
+  }, [
+    awaitingHost,
+    conversationId,
+    commaCenter,
+    groupId,
+    owner,
+    registerHost,
+    registerPendingHost,
+    workspaceId,
+  ]);
 }
 
 export function chatSidebarHostKey(host: ChatSidebarHost) {
@@ -1232,7 +1397,13 @@ export function browserPageLabel(page: ChatSidebarBrowserPage) {
 }
 
 function createBrowserPageId() {
-  return globalThis.crypto?.randomUUID?.() ?? `page-${Date.now()}-${Math.random()}`;
+  return globalThis.crypto?.randomUUID?.() ?? `page-${randomHex()}`;
+}
+
+/** 128 random bits as hex, where randomUUID is missing (outside a secure context). */
+function randomHex() {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function createBlankBrowserPage(): ChatSidebarBrowserPage {
@@ -1277,6 +1448,33 @@ function openRequestedBrowserTab(
     openSessionKeys: openSidebarSession(current.openSessionKeys, sessions, host),
     sessions,
   };
+}
+
+/**
+ * Hands the open global sidebar to `host` when it has no sidebar of its own:
+ * the reader opened it on this route before the route's host had loaded.
+ */
+function adoptGlobalSidebar(
+  current: ChatSidebarRegistry,
+  host: ChatSidebarHost
+): ChatSidebarRegistry {
+  const globalKey = chatSidebarHostKey(globalBrowserHost);
+  const key = chatSidebarHostKey(host);
+  const session = current.sessions.get(globalKey);
+  if (
+    !session ||
+    !current.openSessionKeys.has(globalKey) ||
+    current.sessions.has(key)
+  ) {
+    return current;
+  }
+  const sessions = new Map(current.sessions);
+  sessions.delete(globalKey);
+  sessions.set(key, session);
+  const openSessionKeys = new Set(current.openSessionKeys);
+  openSessionKeys.delete(globalKey);
+  openSessionKeys.add(key);
+  return { ...current, openSessionKeys, sessions };
 }
 
 function sameChatSidebarHost(
@@ -1360,7 +1558,8 @@ function finishSidebarTabClose(
       session.chats.length > 0 ||
       session.drivePreviews.length > 0 ||
       (session.historyPages?.length ?? 0) > 0 ||
-      (session.filePreviews?.length ?? 0) > 0);
+      (session.filePreviews?.length ?? 0) > 0 ||
+      (session.screenPages?.length ?? 0) > 0);
   if (hasTabs || !current.openSessionKeys.has(key)) return { ...current, sessions };
   const openSessionKeys = new Set(current.openSessionKeys);
   openSessionKeys.delete(key);
@@ -1539,7 +1738,8 @@ function limitBrowserPageSessions(
       !session.chats.length &&
       session.drivePreviews.length === 0 &&
       !session.historyPages?.length &&
-      !session.filePreviews?.length
+      !session.filePreviews?.length &&
+      !session.screenPages?.length
     ) {
       sessions.delete(hostKey);
       continue;

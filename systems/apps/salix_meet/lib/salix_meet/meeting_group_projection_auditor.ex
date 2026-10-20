@@ -7,7 +7,7 @@ defmodule SalixMeet.MeetingGroupProjectionAuditor do
   backfill is deliberately run.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -19,13 +19,13 @@ defmodule SalixMeet.MeetingGroupProjectionAuditor do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     case Keyword.get(opts, :name, __MODULE__) do
-      nil -> GenServer.start_link(__MODULE__, opts)
-      name -> GenServer.start_link(__MODULE__, opts, name: name)
+      nil -> SystemsRuntime.Server.start_link(__MODULE__, opts)
+      name -> SystemsRuntime.Server.start_link(__MODULE__, opts, name: name)
     end
   end
 
   @spec audit_now(GenServer.server()) :: :ok | {:error, term()}
-  def audit_now(server \\ __MODULE__), do: GenServer.call(server, :audit_now)
+  def audit_now(server \\ __MODULE__), do: SystemsRuntime.Server.call(server, :audit_now)
 
   @impl true
   def init(opts) do
@@ -81,7 +81,7 @@ defmodule SalixMeet.MeetingGroupProjectionAuditor do
 
   defp schedule(%{timer_ref: nil, interval_ms: interval_ms} = state)
        when is_integer(interval_ms) and interval_ms > 0 do
-    %{state | timer_ref: Process.send_after(self(), :audit, interval_ms)}
+    %{state | timer_ref: SystemsClock.send_after(SystemsRuntime.Proc.self(), :audit, interval_ms)}
   end
 
   defp maybe_put_continuation_token(opts, nil), do: opts
@@ -90,7 +90,7 @@ defmodule SalixMeet.MeetingGroupProjectionAuditor do
     do: Keyword.put(opts, :continuation_token, token)
 
   defp observe(:ok) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix_meet, :meeting_group_projection, :audit],
       %{drift_count: 0},
       %{outcome: :ok}
@@ -100,7 +100,7 @@ defmodule SalixMeet.MeetingGroupProjectionAuditor do
   defp observe({:error, reason}) do
     Logger.error("meeting group projection audit detected drift: #{inspect(reason)}")
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix_meet, :meeting_group_projection, :audit],
       %{drift_count: 1},
       %{outcome: :error, reason: reason}

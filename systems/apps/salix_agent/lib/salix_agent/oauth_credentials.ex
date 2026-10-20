@@ -66,7 +66,7 @@ defmodule SalixAgent.OAuthCredentials do
   partial result is discarded and `{:error, message}` is returned for the
   offending entry (willow: ResolveAll discards partial output).
 
-  Options (tests): `:now` — clock in ms (default `System.system_time/1`).
+  Options (tests): `:now` — clock in ms (default `SystemsClock.system_time/1`).
   """
   @spec resolve(String.t(), term(), keyword()) ::
           {:ok, %{String.t() => String.t()}} | {:error, String.t()}
@@ -244,7 +244,7 @@ defmodule SalixAgent.OAuthCredentials do
   # ---- refresh (willow maybeRefresh) ----
 
   defp maybe_refresh(adapter, tenant, provider, conn_id, conn, opts) do
-    now = opts[:now] || System.system_time(:millisecond)
+    now = opts[:now] || SystemsClock.system_time(:millisecond)
     expires_at = conn["expires_at"]
 
     cond do
@@ -362,7 +362,7 @@ defmodule SalixAgent.OAuthCredentials do
   # ---- seams ----
 
   defp adapters_fn do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :salix_agent,
       :oauth_adapters_fn,
       &SalixStore.OAuth.Adapters.for_provider/1
@@ -370,7 +370,7 @@ defmodule SalixAgent.OAuthCredentials do
   end
 
   defp refresher_fn do
-    Application.get_env(:salix_agent, :oauth_refresher_fn, fn adapter, app, conn ->
+    SystemsRuntime.get_env(:salix_agent, :oauth_refresher_fn, fn adapter, app, conn ->
       adapter.refresh(app, conn)
     end)
   end

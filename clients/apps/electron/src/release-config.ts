@@ -117,22 +117,34 @@ function assertPackableReleaseConfig(
   }
 }
 
+/**
+ * Windows' Velopack feed is a folder of its own under the flavor's: its channel files (releases.<channel>.json, …)
+ * have the same names as macOS', which they would otherwise replace.
+ */
+function platformR2Path(
+  r2Path: string | undefined,
+  platform: string = process.platform
+) {
+  return platform === "win32" && r2Path ? `${r2Path}/win32` : r2Path;
+}
+
 export function getCommaReleaseConfig(
   flavor = parseCommaChannelStrict(readEnv("COMMA_BUILD_FLAVOR"))
 ): CommaReleaseConfig {
   const base = configs[flavor];
+  const r2Path = platformR2Path(base.r2Path);
   const apiBaseUrl = readEnv("COMMA_API_BASE_URL") || base.apiBaseUrl;
   const explicitUpdateUrl = readEnv("COMMA_UPDATE_URL");
   const r2BaseUrl =
     readEnv("COMMA_R2_PUBLIC_BASE_URL") || readEnv("CLOUDFLARE_R2_PUBLIC_BASE_URL");
   const updateUrl =
-    explicitUpdateUrl ||
-    (base.r2Path && r2BaseUrl ? joinUrl(r2BaseUrl, base.r2Path) : undefined);
+    explicitUpdateUrl || (r2Path && r2BaseUrl ? joinUrl(r2BaseUrl, r2Path) : undefined);
 
   const config: CommaReleaseConfig = {
     ...base,
     apiBaseUrl,
   };
+  if (r2Path) config.r2Path = r2Path;
 
   if (updateUrl) {
     config.updateUrl = updateUrl;

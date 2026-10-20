@@ -6,17 +6,17 @@ defmodule Comma.Auth.AppleKeys do
   HTTPS endpoint. Token headers cannot select another URL or algorithm.
   Missing or unavailable keys deny login instead of trusting client claims.
   """
-  use GenServer
+  use SystemsRuntime.Server
 
   @url "https://appleid.apple.com/auth/keys"
   @ttl_ms 3_600_000
   @refresh_cooldown_ms 30_000
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
   def init(_opts), do: {:ok, %{keys: [], fetched_at: nil, attempted_at: nil}}
 
   def key(kid) when is_binary(kid) and byte_size(kid) in 1..200 do
-    GenServer.call(__MODULE__, {:key, kid}, 6_000)
+    SystemsRuntime.Server.call(__MODULE__, {:key, kid}, 6_000)
   catch
     :exit, _ -> {:error, :apple_provider_unavailable}
   end
@@ -24,7 +24,7 @@ defmodule Comma.Auth.AppleKeys do
   def key(_kid), do: {:error, :invalid_apple_credential}
 
   def handle_call({:key, kid}, _from, state) do
-    now = System.monotonic_time(:millisecond)
+    now = SystemsClock.monotonic_time(:millisecond)
     fresh = is_integer(state.fetched_at) and now - state.fetched_at < @ttl_ms
     existing = if fresh, do: find_key(state.keys, kid)
 
@@ -39,13 +39,13 @@ defmodule Comma.Auth.AppleKeys do
 
       true ->
         next = %{state | attempted_at: now}
-        started = System.monotonic_time()
+        started = SystemsClock.monotonic_time()
         result = fetch_keys()
 
         CommaProduct.Telemetry.emit_operation(
           :apple_jwks,
           if(match?({:ok, _}, result), do: :ok, else: :unavailable),
-          System.monotonic_time() - started
+          SystemsClock.monotonic_time() - started
         )
 
         case result do
@@ -67,7 +67,7 @@ defmodule Comma.Auth.AppleKeys do
   end
 
   defp fetch_keys do
-    opts = Application.get_env(:comma_core, :apple_auth, [])[:request_options] || []
+    opts = SystemsRuntime.get_env(:comma_core, :apple_auth, [])[:request_options] || []
 
     with {:ok, %{status: 200, body: body}} <-
            Req.get(

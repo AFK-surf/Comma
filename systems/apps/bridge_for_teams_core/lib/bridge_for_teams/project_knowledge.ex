@@ -698,7 +698,7 @@ defmodule BridgeForTeams.ProjectKnowledge do
   defp source_time(source) do
     case source[:observed_at] || source["observed_at"] do
       %DateTime{} = value -> value
-      _ -> DateTime.utc_now()
+      _ -> SystemsClock.utc_now()
     end
   end
 

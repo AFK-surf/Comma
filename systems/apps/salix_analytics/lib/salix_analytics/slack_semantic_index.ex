@@ -45,7 +45,7 @@ defmodule SalixAnalytics.SlackSemanticIndex do
   end
 
   def search(scope, query, oldest, latest, count) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = do_search(scope, query, oldest, latest, count)
 
     outcome =
@@ -61,9 +61,9 @@ defmodule SalixAnalytics.SlackSemanticIndex do
 
   @doc false
   def observe(operation, started, outcome) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{
         component: "salix_analytics",
         operation: operation,
@@ -79,7 +79,7 @@ defmodule SalixAnalytics.SlackSemanticIndex do
 
   defp do_search(scope, query, oldest, latest, count) do
     cfg = config()
-    ch = Application.get_env(:salix_analytics, :clickhouse, [])
+    ch = SystemsRuntime.get_env(:salix_analytics, :clickhouse, [])
 
     database =
       ch[:database] || (ch[:table] || "salix_analytics.events") |> String.split(".") |> hd()
@@ -98,7 +98,7 @@ defmodule SalixAnalytics.SlackSemanticIndex do
     _, _ -> {:error, :semantic_unavailable}
   end
 
-  defp config, do: Application.get_env(:salix_analytics, :slack_semantic_search, [])
+  defp config, do: SystemsRuntime.get_env(:salix_analytics, :slack_semantic_search, [])
 
   @doc false
   def source_sql(database), do: String.replace(@source, "{{database}}", database)
@@ -152,7 +152,7 @@ defmodule SalixAnalytics.SlackSemanticIndex do
     # may be retried with fresh IDs because the mutation only fills zero cells.
     # The exact physical part/offset fence prevents assigning an old literal
     # to different content after an insert or merge. No source text is read.
-    ids = Enum.map_join(1..5000, ",", fn _ -> "'" <> Ecto.UUID.generate() <> "'" end)
+    ids = Enum.map_join(1..5000, ",", fn _ -> "'" <> SystemsRuntime.Proc.uuid() <> "'" end)
     part = part |> String.replace("\\", "\\\\") |> String.replace("'", "\\'")
     name = if table == :messages, do: "slack_messages", else: "slack_message_payloads"
 
@@ -324,23 +324,30 @@ defmodule SalixAnalytics.SlackSemanticIndex do
     if cancelled.(), do: {:error, :preempted}, else: result
   end
 
+  @encode_wait_ms 2500
+  @media_wait_ms 15_000
+
   defp consume_media(url, headers, cancelled) do
-    deadline = System.monotonic_time(:millisecond) + 1_210_000
+    deadline = SystemsClock.monotonic_time(:millisecond) + 1_210_000
 
     with {:ok, %{status: 200, body: body, private: private}} <-
-           Req.post(url,
-             headers: headers,
-             finch: __MODULE__.HTTP,
-             retry: false,
-             redirect: false,
-             decode_body: false,
-             receive_timeout: 15_000,
-             pool_timeout: 50,
-             into: fn chunk, acc ->
-               if cancelled.(),
-                 do: {:halt, acc},
-                 else: collect(chunk, acc, deadline, 8 * 1024 * 1024)
-             end
+           bounded_post(
+             url,
+             [
+               headers: headers,
+               finch: __MODULE__.HTTP,
+               retry: false,
+               redirect: false,
+               decode_body: false,
+               receive_timeout: SystemsClock.timeout(@media_wait_ms),
+               pool_timeout: 50,
+               into: fn chunk, acc ->
+                 if cancelled.(),
+                   do: {:halt, acc},
+                   else: collect(chunk, acc, deadline, 8 * 1024 * 1024)
+               end
+             ],
+             @media_wait_ms
            ),
          nil <- private[:semantic_overflow],
          rows = body |> String.split("\n", trim: true) |> Enum.map(&Jason.decode!/1),
@@ -373,7 +380,7 @@ defmodule SalixAnalytics.SlackSemanticIndex do
   end
 
   defp database_config do
-    ch = Application.get_env(:salix_analytics, :clickhouse, [])
+    ch = SystemsRuntime.get_env(:salix_analytics, :clickhouse, [])
 
     database =
       ch[:database] || (ch[:table] || "salix_analytics.events") |> String.split(".") |> hd()
@@ -542,8 +549,20 @@ defmodule SalixAnalytics.SlackSemanticIndex do
       row["distance"] >= -0.001 and row["distance"] <= 2.001
   end
 
+  # The answer is awaited on SystemsClock, so a test's clock can expire a
+  # stalled service; the receive timeout stays as the socket bound. Extra Req
+  # options (a test plug) come from the `:slack_semantic_search` config.
+  defp bounded_post(url, opts, wait_ms) do
+    opts = Keyword.merge(opts, config()[:req_options] || [])
+
+    case SystemsClock.run_bounded(fn -> Req.post(url, opts) end, wait_ms) do
+      {:ok, response} -> response
+      _exit_or_timeout -> {:error, :timeout}
+    end
+  end
+
   defp post(url, opts, pool_timeout \\ 50, busy_error \\ :semantic_unavailable) do
-    deadline = System.monotonic_time(:millisecond) + 2500
+    deadline = SystemsClock.monotonic_time(:millisecond) + 2500
 
     opts =
       opts ++
@@ -552,12 +571,12 @@ defmodule SalixAnalytics.SlackSemanticIndex do
           retry: false,
           redirect: false,
           decode_body: false,
-          receive_timeout: 2500,
+          receive_timeout: SystemsClock.timeout(@encode_wait_ms),
           pool_timeout: pool_timeout,
           into: fn chunk, acc -> collect(chunk, acc, deadline) end
         ]
 
-    case Req.post(url, opts) do
+    case bounded_post(url, opts, @encode_wait_ms) do
       {:ok, %{status: 200, body: body, private: private}} ->
         if private[:semantic_overflow], do: {:error, :semantic_unavailable}, else: {:ok, body}
 
@@ -593,7 +612,7 @@ defmodule SalixAnalytics.SlackSemanticIndex do
     body = response.body || ""
 
     if byte_size(body) + byte_size(data) > max_body or
-         System.monotonic_time(:millisecond) > deadline do
+         SystemsClock.monotonic_time(:millisecond) > deadline do
       {:halt,
        {request, %{response | private: Map.put(response.private, :semantic_overflow, true)}}}
     else

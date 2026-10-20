@@ -4,23 +4,6 @@ defmodule SalixAgent.ModelDiscovery do
   @protocols ~w(responses chat_completions anthropic)
   @body_limit 2_000_000
 
-  def discover(%{"template_id" => id} = attrs, tenant)
-      when map_size(attrs) == 1 and is_binary(tenant) and is_binary(id) and
-             byte_size(id) in 1..200 do
-    with {:ok, template} <- SalixAgent.Templates.get(id, tenant),
-         true <- template["tenant_id"] == tenant do
-      config = template["provider_config"] || %{}
-
-      if config["account_pool"] in ["codex", "claude"] do
-        discover(%{"account_pool" => config["account_pool"]}, tenant)
-      else
-        discover(Map.take(config, ~w(base_url api_key protocol)))
-      end
-    else
-      _ -> {:error, :not_found}
-    end
-  end
-
   def discover(%{"account_pool" => pool} = attrs, tenant)
       when pool in ["codex", "claude"] and map_size(attrs) == 1 do
     case SalixAgent.AccountPool.models(tenant, pool) do
@@ -44,9 +27,9 @@ defmodule SalixAgent.ModelDiscovery do
 
   def discover(attrs) do
     with {:ok, connection} <- connection(attrs) do
-      task = Task.async(fn -> pages(connection, nil, [], 5) end)
+      task = SystemsRuntime.Task.async(fn -> pages(connection, nil, [], 5) end)
 
-      case Task.yield(task, 15_000) || Task.shutdown(task, :brutal_kill) do
+      case SystemsClock.yield(task, 15_000) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
         {:ok, {:ok, result}} -> {:ok, Map.merge(connection |> Map.drop(["api_key"]), result)}
         {:ok, error} -> error
         _ -> {:error, :model_discovery_timeout}

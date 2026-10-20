@@ -32,24 +32,29 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
     DashboardMeetings,
     DashboardMembers,
     DashboardModelAccounts,
+    DashboardOnboardingWizard,
     DashboardPlugins,
     DashboardProjects,
     DashboardRunners,
     DashboardSettings,
     DashboardSwarmAgents,
+    DashboardSwarmConnections,
     DashboardSwarmDevices,
+    DashboardSwarmPlugins,
     DashboardSwarmSettings,
+    DashboardSwarmSkills,
+    DashboardSwarmTaskDetail,
     DashboardSwarmTasks,
     DashboardTriage,
     JSON
   }
 
-  # One bounded Salix page; the Agents page lists the rest.
-  @overview_agent_limit 50
   # The Overview's Websites panel lists at most this many sites.
   @overview_site_limit 50
 
   @admin_roles ~w(owner admin)
+  # Names of members waiting for an OAuth client that the Overview shows.
+  @oauth_waiting_limit 5
 
   def session(conn, _params) do
     user = conn.assigns.current_user
@@ -86,7 +91,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
   def overview(conn, %{"org" => slug}) do
     user = conn.assigns.current_user
 
-    with {:ok, org, _role} <- member_org(slug, user) do
+    with {:ok, org, role} <- member_org(slug, user) do
       summary = Analytics.org_home_summary(org.id, user.id)
       runners = Environments.mac_mini_health_summary(org.id)
       projects = Enum.map(summary.project_usage_rows, &public_project_usage/1)
@@ -99,18 +104,19 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
         "member_count" => Memberships.count_org_members(org.id),
         "runners" => %{"total" => runners.total, "online" => runners.online},
         "projects" => projects,
-        "attention" => attention(org, summary.project_usage_rows, runners.unhealthy)
+        "attention" => attention(org, summary.project_usage_rows, runners.unhealthy),
+        "oauth_waiting" => oauth_waiting(org, role)
       })
     else
       :not_found -> org_not_found(conn)
     end
   end
 
-  # ---- First-run checklist ----
+  # ---- Quick setup checklist ----
   #
-  # The LiveView shell shows the checklist on Agent Swarm pages; every org
-  # page is React, so the Overview shows the same steps from the same
-  # snapshot. `active: false` once the user skipped or finished it.
+  # The Overview shows the steps of `BridgeForTeams.Onboarding`; it is the
+  # only checklist.
+  # `active: false` once the user skipped or finished it.
 
   def onboarding(conn, %{"org" => slug}),
     do: org_action(conn, slug, 200, &{:ok, public_onboarding(&1, &2, &3)})
@@ -127,12 +133,39 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
     end)
   end
 
+  @doc """
+  A member whose connect step waits for an OAuth client asks the org admins to
+  configure one. Idempotent; admins configure it themselves.
+  """
+  def remind_onboarding_admins(conn, %{"org" => slug}) do
+    org_action(conn, slug, 200, fn org, user, role ->
+      if role == "member" do
+        case Onboarding.remind_admins(org.id, user.id) do
+          {:ok, _state} ->
+            {:ok, public_onboarding(org, user, role)}
+
+          {:error, _reason} ->
+            {:error, 500, "write_failed", gettext("Could not remind the admins. Try again."), %{}}
+        end
+      else
+        {:error, 403, "forbidden",
+         gettext("Admins configure OAuth clients in Settings → Integrations."), %{}}
+      end
+    end)
+  end
+
   defp public_onboarding(org, user, role) do
     state = Onboarding.get_state(org.id, user.id)
 
     if Onboarding.steps_for_role(role) == [] or not is_nil(state.dismissed_at) or
          not is_nil(state.celebrated_at) do
-      %{"active" => false, "steps" => [], "first_project_id" => nil, "oauth_configured" => nil}
+      %{
+        "active" => false,
+        "steps" => [],
+        "first_project_id" => nil,
+        "oauth_configured" => nil,
+        "oauth_reminded" => false
+      }
     else
       snapshot = Onboarding.snapshot(org, user.id, role, state: state)
 
@@ -142,7 +175,8 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
           for(step <- snapshot.steps, do: %{"id" => step, "done" => snapshot.done[step] == true}),
         "first_project_id" => snapshot.first_project && snapshot.first_project.id,
         # A member's connect step waits for an admin's OAuth client.
-        "oauth_configured" => snapshot.oauth_configured
+        "oauth_configured" => snapshot.oauth_configured,
+        "oauth_reminded" => not is_nil(state.oauth_reminded_at)
       }
     end
   end
@@ -220,7 +254,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
     }
   end
 
-  # ---- Agent Swarm Agents, Devices, Tasks and Settings (swarm members read; swarm admins write) ----
+  # ---- Agent Swarm Agents, Devices, Plugins, Skills, Tasks and Settings (swarm members read; swarm admins write) ----
 
   def project_agents(conn, %{"org" => slug, "id" => id} = params),
     do:
@@ -235,12 +269,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
     do:
       swarm_action(conn, slug, id, fn _org, _user, project, role ->
         DashboardSwarmAgents.targets(project, role)
-      end)
-
-  def project_agent_workloads(conn, %{"org" => slug, "id" => id} = params),
-    do:
-      swarm_action(conn, slug, id, fn _org, _user, project, role ->
-        DashboardSwarmAgents.workloads(project, role, params)
       end)
 
   def project_agent(conn, %{"org" => slug, "id" => id, "agent_id" => agent}),
@@ -282,11 +310,8 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
           &DashboardSwarmAgents.switch_router_session(&1, &2, &3, &4, agent, params)
         )
 
-  def project_devices(conn, %{"org" => slug, "id" => id} = params),
-    do:
-      swarm_action(conn, slug, id, fn org, user, project, role ->
-        DashboardSwarmDevices.page(org, user, project, role, params)
-      end)
+  def project_devices(conn, %{"org" => slug, "id" => id}),
+    do: swarm_action(conn, slug, id, &DashboardSwarmDevices.page/4)
 
   def project_device_provisioning(conn, %{"org" => slug, "id" => id}),
     do:
@@ -305,6 +330,12 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
 
   def set_project_cloud_computer(conn, %{"org" => slug, "id" => id} = params),
     do: swarm_action(conn, slug, id, &DashboardSwarmDevices.set_cloud(&1, &2, &3, &4, params))
+
+  def set_project_cloud_vm_runner(conn, %{"org" => slug, "id" => id} = params),
+    do: swarm_action(conn, slug, id, &DashboardSwarmDevices.choose_runner(&1, &2, &3, &4, params))
+
+  def remove_project_cloud_vm_runner(conn, %{"org" => slug, "id" => id}),
+    do: swarm_action(conn, slug, id, &DashboardSwarmDevices.remove_runner/4)
 
   def disconnect_project_device(conn, %{"org" => slug, "id" => id, "device_id" => device}),
     do: swarm_action(conn, slug, id, &DashboardSwarmDevices.disconnect(&1, &2, &3, &4, device))
@@ -341,6 +372,264 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
            &DashboardSwarmDevices.environment_intent(&1, &2, &3, &4, environment, intent, params)
          )
 
+  def project_plugins(conn, %{"org" => slug, "id" => id}),
+    do:
+      swarm_action(conn, slug, id, fn org, user, project, role ->
+        DashboardSwarmPlugins.page(org, user, project, role)
+      end)
+
+  def project_plugin(conn, %{"org" => slug, "id" => id, "plugin_id" => plugin}),
+    do:
+      swarm_action(conn, slug, id, fn org, user, project, role ->
+        DashboardSwarmPlugins.show(org, user, project, role, plugin)
+      end)
+
+  def create_project_plugin(conn, %{"org" => slug, "id" => id} = params),
+    do: swarm_action(conn, slug, id, 201, &DashboardSwarmPlugins.create(&1, &2, &3, &4, params))
+
+  def update_project_plugin(conn, %{"org" => slug, "id" => id, "plugin_id" => plugin} = params),
+    do:
+      swarm_action(conn, slug, id, &DashboardSwarmPlugins.update(&1, &2, &3, &4, plugin, params))
+
+  def set_project_plugin_enablement(
+        conn,
+        %{"org" => slug, "id" => id, "plugin_id" => plugin} = params
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmPlugins.set_enabled(&1, &2, &3, &4, plugin, params)
+        )
+
+  # The provider sends the browser back to the plugin page on this origin.
+  def connect_project_plugin(
+        conn,
+        %{"org" => slug, "id" => id, "plugin_id" => plugin, "connection_id" => connection} =
+          params
+      ) do
+    base_url = dashboard_base_url(conn)
+
+    swarm_action(
+      conn,
+      slug,
+      id,
+      &DashboardSwarmPlugins.connect(&1, &2, &3, &4, plugin, connection, base_url, params)
+    )
+  end
+
+  def disconnect_project_plugin(
+        conn,
+        %{"org" => slug, "id" => id, "plugin_id" => plugin, "connection_id" => connection}
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmPlugins.disconnect(&1, &2, &3, &4, plugin, connection)
+        )
+
+  def project_connections(conn, %{"org" => slug, "id" => id}),
+    do: swarm_action(conn, slug, id, &DashboardSwarmConnections.page/4)
+
+  def project_slack_manifest(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(conn, slug, id, fn _org, _user, _project, _role ->
+        DashboardSwarmConnections.slack_manifest(params)
+      end)
+
+  def create_project_feishu_connect(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        201,
+        &DashboardSwarmConnections.create_feishu(&1, &2, &3, &4, params)
+      )
+
+  def create_project_lark_connect(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        201,
+        &DashboardSwarmConnections.create_lark(&1, &2, &3, &4, params)
+      )
+
+  def create_project_qq_connect(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        201,
+        &DashboardSwarmConnections.create_qq(&1, &2, &3, &4, params)
+      )
+
+  def update_project_qq_command_menu(
+        conn,
+        %{"org" => slug, "id" => id, "connect_id" => connect} = params
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmConnections.update_qq_menu(&1, &2, &3, &4, connect, params)
+        )
+
+  def create_project_slack_connect(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        201,
+        &DashboardSwarmConnections.create_slack(&1, &2, &3, &4, params)
+      )
+
+  def set_project_im_connect_enablement(
+        conn,
+        %{"org" => slug, "id" => id, "connect_id" => connect} = params
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmConnections.set_im_enabled(&1, &2, &3, &4, connect, params)
+        )
+
+  def delete_project_im_connect(conn, %{"org" => slug, "id" => id, "connect_id" => connect}),
+    do:
+      swarm_action(conn, slug, id, &DashboardSwarmConnections.delete_im(&1, &2, &3, &4, connect))
+
+  def run_project_feishu_checks(conn, %{"org" => slug, "id" => id}),
+    do: swarm_action(conn, slug, id, &DashboardSwarmConnections.run_feishu_checks/4)
+
+  def run_project_lark_checks(conn, %{"org" => slug, "id" => id, "connect_id" => connect}),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        &DashboardSwarmConnections.run_lark_checks(&1, &2, &3, &4, connect)
+      )
+
+  def run_project_slack_checks(conn, %{"org" => slug, "id" => id, "connect_id" => connect}),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        &DashboardSwarmConnections.run_slack_checks(&1, &2, &3, &4, connect)
+      )
+
+  def create_project_signal_claim(conn, %{"org" => slug, "id" => id}),
+    do: swarm_action(conn, slug, id, 201, &DashboardSwarmConnections.create_signal_claim/4)
+
+  def remove_project_signal_binding(
+        conn,
+        %{"org" => slug, "id" => id, "binding_id" => binding}
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmConnections.remove_signal_binding(&1, &2, &3, &4, binding)
+        )
+
+  # The provider sends the browser back to the Connections page on this origin.
+  def connect_project_tailnet(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        &DashboardSwarmConnections.connect_tailnet(&1, &2, &3, &4, params)
+      )
+
+  def disconnect_project_tailnet(conn, %{"org" => slug, "id" => id}),
+    do: swarm_action(conn, slug, id, &DashboardSwarmConnections.disconnect_tailnet/4)
+
+  def connect_project_account(conn, %{"org" => slug, "id" => id} = params) do
+    base_url = dashboard_base_url(conn)
+
+    swarm_action(
+      conn,
+      slug,
+      id,
+      &DashboardSwarmConnections.connect_account(&1, &2, &3, &4, params, base_url)
+    )
+  end
+
+  def set_project_account_enablement(
+        conn,
+        %{"org" => slug, "id" => id, "binding_id" => binding} = params
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmConnections.set_account_enabled(&1, &2, &3, &4, binding, params)
+        )
+
+  def delete_project_account(conn, %{"org" => slug, "id" => id, "binding_id" => binding}),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        &DashboardSwarmConnections.delete_account(&1, &2, &3, &4, binding)
+      )
+
+  def connect_project_composio(conn, %{"org" => slug, "id" => id, "toolkit" => toolkit}) do
+    base_url = dashboard_base_url(conn)
+
+    swarm_action(
+      conn,
+      slug,
+      id,
+      &DashboardSwarmConnections.connect_composio(&1, &2, &3, &4, toolkit, base_url)
+    )
+  end
+
+  def delete_project_composio(conn, %{"org" => slug, "id" => id, "account_id" => account}),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        &DashboardSwarmConnections.delete_composio(&1, &2, &3, &4, account)
+      )
+
+  def project_skills(conn, %{"org" => slug, "id" => id}),
+    do:
+      swarm_action(conn, slug, id, fn org, _user, project, role ->
+        DashboardSwarmSkills.page(org, project, role)
+      end)
+
+  def project_skill(conn, %{"org" => slug, "id" => id, "skill_id" => skill}),
+    do:
+      swarm_action(conn, slug, id, fn org, _user, project, _role ->
+        DashboardSwarmSkills.show(org, project, skill)
+      end)
+
+  def create_project_skill(conn, %{"org" => slug, "id" => id} = params),
+    do: swarm_action(conn, slug, id, 201, &DashboardSwarmSkills.create(&1, &2, &3, &4, params))
+
+  def upload_project_skill(conn, %{"org" => slug, "id" => id} = params),
+    do: swarm_action(conn, slug, id, 201, &DashboardSwarmSkills.upload(&1, &2, &3, &4, params))
+
+  def delete_project_skill(conn, %{"org" => slug, "id" => id, "skill_id" => skill}),
+    do: swarm_action(conn, slug, id, &DashboardSwarmSkills.delete(&1, &2, &3, &4, skill))
+
   def project_tasks(conn, %{"org" => slug, "id" => id} = params),
     do:
       swarm_action(conn, slug, id, fn org, _user, project, role ->
@@ -349,6 +638,72 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
 
   def create_project_task(conn, %{"org" => slug, "id" => id} = params),
     do: swarm_action(conn, slug, id, 201, &DashboardSwarmTasks.create(&1, &2, &3, &4, params))
+
+  def project_task_targets(conn, %{"org" => slug, "id" => id}),
+    do:
+      swarm_action(conn, slug, id, fn org, _user, project, role ->
+        DashboardSwarmTasks.targets(org, project, role)
+      end)
+
+  # ---- Task detail ----
+
+  def project_task(conn, %{"org" => slug, "id" => id, "task_id" => task}),
+    do:
+      swarm_action(conn, slug, id, fn org, _user, project, role ->
+        DashboardSwarmTaskDetail.show(org, project, role, task)
+      end)
+
+  def project_task_messages(conn, %{"org" => slug, "id" => id, "task_id" => task} = params),
+    do:
+      swarm_action(conn, slug, id, fn org, _user, project, _role ->
+        DashboardSwarmTaskDetail.messages(org, project, task, params)
+      end)
+
+  def send_project_task_message(conn, %{"org" => slug, "id" => id, "task_id" => task} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        201,
+        &DashboardSwarmTaskDetail.send_message(&1, &2, &3, &4, task, params)
+      )
+
+  def accept_project_task_review(
+        conn,
+        %{"org" => slug, "id" => id, "task_id" => task} = params
+      ),
+      do:
+        swarm_action(
+          conn,
+          slug,
+          id,
+          &DashboardSwarmTaskDetail.accept_review(&1, &2, &3, &4, task, params)
+        )
+
+  def put_project_task_schedule(conn, %{"org" => slug, "id" => id, "task_id" => task} = params),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        &DashboardSwarmTaskDetail.put_schedule(&1, &2, &3, &4, task, params)
+      )
+
+  def delete_project_task_schedule(conn, %{"org" => slug, "id" => id, "task_id" => task}),
+    do:
+      swarm_action(
+        conn,
+        slug,
+        id,
+        &DashboardSwarmTaskDetail.delete_schedule(&1, &2, &3, &4, task)
+      )
+
+  def preview_project_task_schedule(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(conn, slug, id, fn _org, _user, _project, _role ->
+        DashboardSwarmTaskDetail.preview_schedule(params)
+      end)
 
   def project_schedules(conn, %{"org" => slug, "id" => id}),
     do:
@@ -368,6 +723,17 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
 
   def update_project_settings(conn, %{"org" => slug, "id" => id} = params),
     do: swarm_action(conn, slug, id, &DashboardSwarmSettings.rename(&1, &2, &3, &4, params))
+
+  def put_project_task_model(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(conn, slug, id, &DashboardSwarmSettings.set_task_model(&1, &2, &3, &4, params))
+
+  def put_project_task_place(conn, %{"org" => slug, "id" => id} = params),
+    do:
+      swarm_action(conn, slug, id, &DashboardSwarmSettings.set_task_place(&1, &2, &3, &4, params))
+
+  def delete_project_task_model(conn, %{"org" => slug, "id" => id}),
+    do: swarm_action(conn, slug, id, &DashboardSwarmSettings.clear_task_model(&1, &2, &3, &4))
 
   def archive_project(conn, %{"org" => slug, "id" => id}),
     do: swarm_action(conn, slug, id, &DashboardSwarmSettings.archive(&1, &2, &3, &4))
@@ -670,34 +1036,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
     end)
   end
 
-  # ---- AI models: private templates and organization accounts ----
-
-  def model_templates(conn, %{"org" => slug}),
-    do: settings_read(conn, slug, &DashboardModelAccounts.templates/2)
-
-  def create_model_template(conn, %{"org" => slug} = params) do
-    settings_write(conn, slug, "model_template.saved", fn org, user ->
-      DashboardModelAccounts.save_template(org, user, nil, params)
-    end)
-  end
-
-  def update_model_template(conn, %{"org" => slug, "id" => id} = params) do
-    settings_write(conn, slug, "model_template.saved", fn org, user ->
-      DashboardModelAccounts.save_template(org, user, id, params)
-    end)
-  end
-
-  def delete_model_template(conn, %{"org" => slug, "id" => id}) do
-    settings_write(conn, slug, "model_template.deleted", fn org, user ->
-      DashboardModelAccounts.delete_template(org, user, id)
-    end)
-  end
-
-  def discover_template_models(conn, %{"org" => slug} = params) do
-    settings_write(conn, slug, "model_template.discovered", fn org, user ->
-      DashboardModelAccounts.discover_models(org, user, params)
-    end)
-  end
+  # ---- AI models: organization accounts ----
 
   def model_accounts(conn, %{"org" => slug} = params) do
     settings_read(conn, slug, fn org, user ->
@@ -819,21 +1158,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
     end)
   end
 
-  def connect_settings_feishu_route(conn, %{"org" => slug} = params) do
-    settings_write(conn, slug, "integration.feishu.created", fn org, user ->
-      DashboardSettings.connect_feishu_route(org, user, params)
-    end)
-  end
-
-  def disable_settings_feishu_route(
-        conn,
-        %{"org" => slug, "project_id" => project_id, "connect_id" => connect_id}
-      ) do
-    settings_write(conn, slug, "integration.feishu.disabled", fn org, user ->
-      DashboardSettings.disable_feishu_route(org, user, project_id, connect_id)
-    end)
-  end
-
   defp settings_read(conn, slug, read) do
     user = conn.assigns.current_user
 
@@ -886,6 +1210,46 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
 
   def deny_cli_login(conn, %{"user_code" => code}),
     do: cli_login_reply(conn, DashboardCLILogin.deny(conn.assigns.current_user, code))
+
+  # ---- First-run onboarding wizard (outside any organization) ----
+
+  def onboarding_wizard(conn, _params),
+    do: wizard_reply(conn, DashboardOnboardingWizard.show(conn.assigns.current_user))
+
+  def onboarding_wizard_integrations(conn, _params),
+    do: wizard_reply(conn, DashboardOnboardingWizard.integrations(conn.assigns.current_user))
+
+  def save_onboarding_capabilities(conn, params),
+    do:
+      wizard_reply(
+        conn,
+        DashboardOnboardingWizard.save_capabilities(conn.assigns.current_user, params)
+      )
+
+  def save_onboarding_profile(conn, _params),
+    do: wizard_reply(conn, DashboardOnboardingWizard.save_profile(conn.assigns.current_user))
+
+  def connect_onboarding_toolkit(conn, params),
+    do:
+      wizard_reply(
+        conn,
+        DashboardOnboardingWizard.connect(
+          conn.assigns.current_user,
+          params,
+          dashboard_base_url(conn)
+        )
+      )
+
+  def complete_onboarding(conn, _params),
+    do: wizard_reply(conn, DashboardOnboardingWizard.complete(conn.assigns.current_user))
+
+  def skip_onboarding(conn, _params),
+    do: wizard_reply(conn, DashboardOnboardingWizard.skip(conn.assigns.current_user))
+
+  defp wizard_reply(conn, {:ok, data}), do: send_ok(conn, data)
+
+  defp wizard_reply(conn, {:error, status, code, message, details}),
+    do: send_error(conn, status, code, message, details)
 
   defp cli_login_reply(conn, {:ok, data}), do: send_ok(conn, data)
 
@@ -949,14 +1313,15 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
     end
   end
 
-  # A Salix outage degrades the Agents panel, not the page.
+  # The Agents panel lists the Router (Workers are retired). A Salix outage
+  # degrades the panel, not the page.
   defp overview_agents(project) do
-    case Agents.page_agents(project, limit: @overview_agent_limit) do
-      {:ok, %{items: items, next_cursor: next_cursor}} ->
+    case Agents.current_router(project) do
+      {:ok, router} ->
         %{
           "status" => "ok",
-          "items" => Enum.map(items, &DashboardSwarmAgents.summary/1),
-          "truncated" => not is_nil(next_cursor)
+          "items" => [DashboardSwarmAgents.summary(router)],
+          "truncated" => false
         }
 
       _ ->
@@ -987,6 +1352,24 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
   defp iso_timestamp(_value), do: nil
 
   defp present?(value), do: is_binary(value) and String.trim(value) != ""
+
+  # The configured public origin; the request's own origin in dev and e2e.
+  defp dashboard_base_url(conn) do
+    case SystemsRuntime.get_env(:bridge_for_teams_web, :public_base_url) do
+      base when is_binary(base) and base != "" ->
+        String.trim_trailing(base, "/")
+
+      _unset ->
+        port =
+          case {conn.scheme, conn.port} do
+            {:http, 80} -> ""
+            {:https, 443} -> ""
+            {_scheme, port} -> ":#{port}"
+          end
+
+        "#{conn.scheme}://#{conn.host}#{port}"
+    end
+  end
 
   defp member_org(slug, user) do
     with {:ok, org} <- Orgs.get_org_by_slug(slug),
@@ -1030,6 +1413,31 @@ defmodule BridgeForTeamsWeb.DashboardAPIController do
 
     unhealthy_runners ++ failed_snapshots
   end
+
+  # Org admins see the members who asked for an OAuth client while none is
+  # configured: one bounded query, and the cached OAuth answer only when
+  # someone is waiting.
+  defp oauth_waiting(org, role) when role in @admin_roles do
+    case Onboarding.pending_oauth_reminders(org.id, limit: @oauth_waiting_limit + 1) do
+      [] ->
+        nil
+
+      waiting ->
+        if Onboarding.oauth_configured?(org.id) do
+          nil
+        else
+          %{
+            "names" =>
+              waiting
+              |> Enum.take(@oauth_waiting_limit)
+              |> Enum.map(fn %{user: user} -> user.name || user.email || user.id end),
+            "truncated" => length(waiting) > @oauth_waiting_limit
+          }
+        end
+    end
+  end
+
+  defp oauth_waiting(_org, _role), do: nil
 
   defp runner_title(%{effective_status: "degraded", name: name}),
     do: gettext("Runner %{name} is degraded", name: name)

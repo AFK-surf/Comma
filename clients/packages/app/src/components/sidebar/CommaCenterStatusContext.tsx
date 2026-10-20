@@ -9,10 +9,11 @@ import {
   type ReactNode,
   type SetStateAction,
 } from "react";
-import type { ConversationChannelState } from "../chat/model/conversationChannel";
+import type { ChatMessage, ConversationChannelState } from "@comma/core/chat";
 import { useHomeConversationTarget } from "../chat/ChatProvider";
-import { parseAttachmentsBlock } from "../chat/model/protocol";
+import { parseAttachmentsBlock } from "@comma/core/chat";
 import { useConversation } from "../chat/conversation/useConversation";
+import { useWindowAttended } from "../useWindowAttended";
 
 export type CommaCenterStatus =
   | { kind: "idle" }
@@ -29,6 +30,8 @@ const idleCommaCenterStatus: CommaCenterStatus = { kind: "idle" };
 type CommaCenterStatusPublication = {
   owner: symbol | undefined;
   status: CommaCenterStatus;
+  // Undefined until canonical history is ready; null means no Router reply yet.
+  latestReplyId?: string | null;
 };
 
 const idleCommaCenterStatusPublication: CommaCenterStatusPublication = {
@@ -58,6 +61,44 @@ export function useCommaCenterStatus() {
   return (
     useContext(CommaCenterStatusContext)?.publication.status ?? idleCommaCenterStatus
   );
+}
+
+/** One view-local attention mark, fed by the already-retained Home conversation. */
+export function useHomeTabUnread(homeVisible: boolean) {
+  const publication =
+    useContext(CommaCenterStatusContext)?.publication ??
+    idleCommaCenterStatusPublication;
+  const attended = useWindowAttended();
+  const viewing = homeVisible && attended;
+  const [observed, setObserved] = useState({
+    owner: publication.owner,
+    replyId: publication.latestReplyId,
+    unread: false,
+  });
+
+  if (observed.owner !== publication.owner) {
+    setObserved({
+      owner: publication.owner,
+      replyId: publication.latestReplyId,
+      unread: false,
+    });
+    return false;
+  }
+  const replyId = publication.latestReplyId;
+  if (replyId !== undefined && replyId !== observed.replyId) {
+    // The first ready snapshot establishes history, including an empty history.
+    // Later committed replies count even while another reply is streaming.
+    const unread =
+      !viewing &&
+      (observed.unread || (observed.replyId !== undefined && replyId !== null));
+    setObserved({ ...observed, replyId, unread });
+    return unread;
+  }
+  if (viewing && observed.unread) {
+    setObserved({ ...observed, unread: false });
+    return false;
+  }
+  return observed.unread;
 }
 
 export function CommaCenterStatusOwner() {
@@ -90,23 +131,87 @@ function RetainedCommaCenterConversationStatus({
     () => deriveCommaCenterStatus(conversation.state),
     [conversation.state]
   );
+  const ready = conversation.state.status === "ready";
+  const serverMessages = conversation.state.serverMessages;
+  const [replyMark, setReplyMark] = useState<RouterReplyMark | undefined>(undefined);
+  let currentMark = replyMark;
+  if (ready) {
+    const nextMark = advanceRouterReplyMark(replyMark, serverMessages);
+    if (nextMark !== replyMark) {
+      setReplyMark(nextMark);
+      currentMark = nextMark;
+    }
+  }
+  const latestReplyId = ready ? currentMark?.published : undefined;
 
-  usePublishCommaCenterStatus(owner, status);
+  usePublishCommaCenterStatus(owner, status, latestReplyId);
   return null;
 }
 
-export function usePublishCommaCenterStatus(owner: symbol, status: CommaCenterStatus) {
+/**
+ * The Router reply the Home badge counts from. `published` only moves forward
+ * to a reply committed after the last one seen, so a deleted or retracted
+ * latest reply never reads as a new one; `seen` is the latest reply in the
+ * current history, the anchor the next reply is ordered against.
+ */
+export type RouterReplyMark = { published: string | null; seen: string | null };
+
+export function advanceRouterReplyMark(
+  mark: RouterReplyMark | undefined,
+  serverMessages: readonly ChatMessage[]
+): RouterReplyMark {
+  const latestIndex = serverMessages.findLastIndex(isRouterReply);
+  const latest = latestIndex === -1 ? null : serverMessages[latestIndex]!.messageId;
+  if (!mark) return { published: latest, seen: latest };
+  if (latest === mark.seen) return mark;
+  const seenIndex =
+    mark.seen === null
+      ? -1
+      : serverMessages.findIndex((message) => message.messageId === mark.seen);
+  const after =
+    latest !== null &&
+    (mark.seen === null || (seenIndex !== -1 && seenIndex < latestIndex));
+  return after ? { published: latest, seen: latest } : { ...mark, seen: latest };
+}
+
+function isRouterReply(message: ChatMessage) {
+  return (
+    message.role === "assistant" &&
+    !message.platformSource &&
+    (message.actorRole === undefined || message.actorRole === "router") &&
+    (message.text.trim() !== "" ||
+      message.attachments.length > 0 ||
+      (message.parts?.some(
+        (part) => part.kind !== "markdown" || part.text.trim() !== ""
+      ) ??
+        false))
+  );
+}
+
+export function usePublishCommaCenterStatus(
+  owner: symbol,
+  status: CommaCenterStatus,
+  latestReplyId?: string | null
+) {
   const context = useContext(CommaCenterStatusContext);
   const setPublication = context?.setPublication;
 
   useLayoutEffect(() => {
     setPublication?.((current) => {
-      if (current.owner === owner && commaCenterStatusesEqual(current.status, status)) {
+      if (
+        current.owner === owner &&
+        current.latestReplyId === latestReplyId &&
+        commaCenterStatusesEqual(current.status, status)
+      ) {
         return current;
       }
-      return { owner, status };
+      return {
+        owner,
+        status,
+        ...(latestReplyId !== undefined ? { latestReplyId } : {}),
+      };
     });
-  }, [owner, setPublication, status]);
+  }, [owner, setPublication, status, latestReplyId]);
 
   useLayoutEffect(
     () => () => {
@@ -137,24 +242,14 @@ function commaCenterStatusesEqual(left: CommaCenterStatus, right: CommaCenterSta
 export function deriveCommaCenterStatus(
   state: Pick<
     ConversationChannelState,
-    | "assistantDraft"
-    | "awaitingReply"
-    | "awaitingSince"
-    | "awaitingTimedOut"
-    | "messages"
-    | "pending"
+    "awaitingSince" | "messages" | "pending" | "reply"
   >
 ): CommaCenterStatus {
   const activePending = state.pending.findLast(
     (pending) => pending.status !== "failed"
   );
-  const awaitingLiveReply =
-    state.awaitingReply &&
-    !state.awaitingTimedOut &&
-    state.assistantDraft === undefined;
-  const streamingDraft = state.assistantDraft?.status === "streaming";
 
-  if (activePending !== undefined || awaitingLiveReply || streamingDraft) {
+  if (state.reply?.coming) {
     return {
       kind: "typing",
       timestamp: state.awaitingSince ?? activePending?.createdAt,

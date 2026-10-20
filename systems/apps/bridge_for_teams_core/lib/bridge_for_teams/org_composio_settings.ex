@@ -111,7 +111,7 @@ defmodule BridgeForTeams.OrgComposioSettings do
         resource_id: org.salix_tenant_id,
         resource_label: "composio",
         result: "ok",
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         metadata: %{
           "salix_tenant_id" => org.salix_tenant_id,
           "enabled" => attrs["enabled"],
@@ -136,7 +136,7 @@ defmodule BridgeForTeams.OrgComposioSettings do
              resource_label: "composio",
              result: "failed",
              reason: reason,
-             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+             request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
              surface: "composio",
              metadata: %{
                "salix_tenant_id" => org.salix_tenant_id,

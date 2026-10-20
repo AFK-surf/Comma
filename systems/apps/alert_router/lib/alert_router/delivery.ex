@@ -34,7 +34,7 @@ defmodule AlertRouter.Delivery do
   def lease_wait_seconds(_row, _now), do: 1
 
   @spec token() :: Ecto.UUID.t()
-  def token, do: Ecto.UUID.generate()
+  def token, do: SystemsRuntime.Proc.uuid()
 
   @spec max_delivery_attempts() :: pos_integer()
   def max_delivery_attempts, do: positive_config(:max_delivery_attempts, 5)
@@ -75,7 +75,7 @@ defmodule AlertRouter.Delivery do
   defp lease_seconds, do: positive_config(:delivery_lease_seconds, 15)
 
   defp positive_config(key, default) do
-    case Application.get_env(:alert_router, key, default) do
+    case SystemsRuntime.get_env(:alert_router, key, default) do
       value when is_integer(value) and value > 0 -> value
       _ -> default
     end

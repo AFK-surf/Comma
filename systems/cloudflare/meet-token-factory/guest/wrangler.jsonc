@@ -1,0 +1,120 @@
+// Cue deployment of meet-guest-factory (the meetnative-tokenfactory Worker). The source is
+// AFK-surf/meet_tokenfactory at the revision in ../source.lock.json, checked out to
+// ../.source by CI. Wrangler resolves paths relative to this file. Only the staging and
+// stable environments are deployed. Keep observability off: request URLs must not reach
+// Workers Logs. Containers, Durable Objects and migrations are not inherited, so each
+// environment repeats them.
+{
+  "name": "meet-guest-factory",
+  "main": "../.source/meetnative-tokenfactory/serverless/cloudflare/containers.js",
+  "compatibility_date": "2026-09-29",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "observability": {
+    "enabled": false
+  },
+  "containers": [
+    {
+      "class_name": "ChromeFactory",
+      "image": "../.source/meetnative-tokenfactory/serverless/chrome/Dockerfile",
+      "image_build_context": "../.source/meetnative-tokenfactory",
+      "max_instances": 1,
+      "instance_type": "standard-1"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CHROME",
+        "class_name": "ChromeFactory"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ChromeFactory"
+      ]
+    }
+  ],
+  "env": {
+    "staging": {
+      "name": "meet-guest-factory-staging",
+      "workers_dev": false,
+      "routes": [
+        {
+          "pattern": "meet-guest-factory-staging.afk.surf",
+          "custom_domain": true
+        }
+      ],
+      "observability": {
+        "enabled": false
+      },
+      "containers": [
+        {
+          "class_name": "ChromeFactory",
+          "image": "../.source/meetnative-tokenfactory/serverless/chrome/Dockerfile",
+          "image_build_context": "../.source/meetnative-tokenfactory",
+          "max_instances": 1,
+          "instance_type": "standard-1"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "CHROME",
+            "class_name": "ChromeFactory"
+          }
+        ]
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": [
+            "ChromeFactory"
+          ]
+        }
+      ]
+    },
+    "stable": {
+      "name": "meet-guest-factory-stable",
+      "workers_dev": false,
+      "routes": [
+        {
+          "pattern": "meet-guest-factory-prod.afk.surf",
+          "custom_domain": true
+        }
+      ],
+      "observability": {
+        "enabled": false
+      },
+      "containers": [
+        {
+          "class_name": "ChromeFactory",
+          "image": "../.source/meetnative-tokenfactory/serverless/chrome/Dockerfile",
+          "image_build_context": "../.source/meetnative-tokenfactory",
+          "max_instances": 1,
+          "instance_type": "standard-1"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "CHROME",
+            "class_name": "ChromeFactory"
+          }
+        ]
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": [
+            "ChromeFactory"
+          ]
+        }
+      ]
+    }
+  }
+}

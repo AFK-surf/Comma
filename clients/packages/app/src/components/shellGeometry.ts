@@ -1,9 +1,9 @@
+import { LEFT_RAIL_WIDTH } from "@comma/ui/components/left-rail";
 import {
-  LEFT_RAIL_WIDTH,
   RIGHT_SIDEBAR_DEFAULT_WIDTH,
   RIGHT_SIDEBAR_MAX_WIDTH,
   RIGHT_SIDEBAR_MIN_WIDTH,
-} from "@comma/ui";
+} from "@comma/ui/components/right-sidebar";
 
 // The app sidebar is a fixed icon rail beside the content panel; the window
 // bar above both spans the whole frame, so no shell width depends on sidebar
@@ -29,6 +29,34 @@ export const commaHomeGreetFoldWidth =
   commaHomeContentMinWidth + commaHomeRailMinWidth + commaHomeLayoutGutter;
 export const commaHomeTasksFoldWidth =
   commaHomeGreetFoldWidth + commaHomeGreetPreferredMinWidth + commaHomeLayoutGutter;
+
+/**
+ * The widest Greeting a drag or key step may reach: the chat column keeps its
+ * 393px floor beside the Tasks track as it is at rest (styles.css,
+ * `.comma-home-layout`). With Tasks open that is its preferred width plus
+ * gutter, unless Greeting already squeezes it, and then Greeting keeps its
+ * current width. With Tasks shut only its shell clearance stays.
+ *
+ * Every input is a settled value, so a seam grabbed while a fold or the Chat
+ * Sidebar is still moving gets the same bound as one grabbed after it.
+ */
+export function commaHomeGreetMaxWidth({
+  routeWidth,
+  greetWidth,
+  tasks,
+}: {
+  routeWidth: number;
+  greetWidth: number;
+  tasks: { shut: boolean; width: number; clearance: number };
+}) {
+  const spare = routeWidth - commaHomeContentMinWidth - commaHomeLayoutGutter;
+  return Math.max(
+    commaHomeRailMinWidth,
+    tasks.shut
+      ? spare - tasks.clearance
+      : Math.max(greetWidth, spare - tasks.width - commaHomeLayoutGutter)
+  );
+}
 
 export type CommaHomeRailName = "greet" | "tasks";
 

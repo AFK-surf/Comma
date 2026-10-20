@@ -1,5 +1,5 @@
 defmodule CommaWeb.RecommendationSourcesTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias CommaWeb.RecommendationSourceCatalog
   alias Salix.Control.{Groups, Tenants}
@@ -12,23 +12,23 @@ defmodule CommaWeb.RecommendationSourcesTest do
 
     def list_connected_accounts(_settings, _group),
       do:
-        Application.get_env(
+        SystemsRuntime.get_env(
           :comma_web,
           :recommendation_source_result,
-          {:ok, Application.get_env(:comma_web, :recommendation_source_accounts, [])}
+          {:ok, SystemsRuntime.get_env(:comma_web, :recommendation_source_accounts, [])}
         )
   end
 
   setup do
-    previous_store = Application.get_env(:salix_store, :s3_backend)
-    previous_composio_settings = Application.get_env(:salix_web, :composio_settings_mod)
-    previous_composio_client = Application.get_env(:salix_web, :composio_client_mod)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_web, :composio_settings_mod, StubComposio)
-    Application.put_env(:salix_web, :composio_client_mod, StubComposio)
-    Application.put_env(:comma_web, :recommendation_source_accounts, [])
+    previous_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_composio_settings = SystemsRuntime.get_env(:salix_web, :composio_settings_mod)
+    previous_composio_client = SystemsRuntime.get_env(:salix_web, :composio_client_mod)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_web, :composio_settings_mod, StubComposio)
+    SystemsRuntime.put_env(:salix_web, :composio_client_mod, StubComposio)
+    SystemsRuntime.put_env(:comma_web, :recommendation_source_accounts, [])
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -36,13 +36,13 @@ defmodule CommaWeb.RecommendationSourcesTest do
 
     on_exit(fn ->
       if previous_store,
-        do: Application.put_env(:salix_store, :s3_backend, previous_store),
-        else: Application.delete_env(:salix_store, :s3_backend)
+        do: SystemsRuntime.put_env(:salix_store, :s3_backend, previous_store),
+        else: SystemsRuntime.delete_env(:salix_store, :s3_backend)
 
       restore_env(:salix_web, :composio_settings_mod, previous_composio_settings)
       restore_env(:salix_web, :composio_client_mod, previous_composio_client)
-      Application.delete_env(:comma_web, :recommendation_source_accounts)
-      Application.delete_env(:comma_web, :recommendation_source_result)
+      SystemsRuntime.delete_env(:comma_web, :recommendation_source_accounts)
+      SystemsRuntime.delete_env(:comma_web, :recommendation_source_result)
     end)
 
     assert {:ok, _} = SalixMCP.Builtins.seed_builtin_definitions()
@@ -55,7 +55,7 @@ defmodule CommaWeb.RecommendationSourcesTest do
   end
 
   test "native OAuth discovery does not require Composio configuration", context do
-    Application.put_env(:comma_web, :recommendation_source_result, {:error, :not_configured})
+    SystemsRuntime.put_env(:comma_web, :recommendation_source_result, {:error, :not_configured})
 
     assert {:ok, []} =
              CommaWeb.RecommendationSources.discover(%{
@@ -65,10 +65,10 @@ defmodule CommaWeb.RecommendationSourcesTest do
   end
 
   test "native sources collect through scoped credentials without Composio", context do
-    Application.put_env(:comma_web, :recommendation_source_result, {:error, :not_configured})
-    previous = Application.get_env(:comma_web, :recommendation_oauth_http_options)
+    SystemsRuntime.put_env(:comma_web, :recommendation_source_result, {:error, :not_configured})
+    previous = SystemsRuntime.get_env(:comma_web, :recommendation_oauth_http_options)
 
-    Application.put_env(:comma_web, :recommendation_oauth_http_options,
+    SystemsRuntime.put_env(:comma_web, :recommendation_oauth_http_options,
       plug: {Req.Test, __MODULE__}
     )
 
@@ -176,7 +176,7 @@ defmodule CommaWeb.RecommendationSourcesTest do
     assert length(remaining) == 2
   end
 
-  test "Slack discovery selects the managed binding while retaining the old Composio account",
+  test "Slack discovery lists only the managed binding and never the Composio account",
        context do
     old = %{
       "id" => "ca_slack",
@@ -185,7 +185,7 @@ defmodule CommaWeb.RecommendationSourcesTest do
       "status" => "ACTIVE"
     }
 
-    Application.put_env(:comma_web, :recommendation_source_accounts, [old])
+    SystemsRuntime.put_env(:comma_web, :recommendation_source_accounts, [old])
     connection = "#{context.group_id}-slack"
 
     :ok =
@@ -212,15 +212,34 @@ defmodule CommaWeb.RecommendationSourcesTest do
              CommaWeb.RecommendationSources.discover(workspace)
 
     assert source["connectionId"] == binding["binding_id"]
-    assert Application.get_env(:comma_web, :recommendation_source_accounts) == [old]
+    assert SystemsRuntime.get_env(:comma_web, :recommendation_source_accounts) == [old]
   end
 
-  test "an active Composio account with the real nested toolkit shape is exposed", context do
-    Application.put_env(:comma_web, :recommendation_source_accounts, [
+  test "an active Composio Slack account alone is not a Routine source", context do
+    SystemsRuntime.put_env(:comma_web, :recommendation_source_accounts, [
       %{
         "id" => "ca_slack",
         "user_id" => context.group_id,
         "toolkit" => %{"slug" => "slack"},
+        "status" => "ACTIVE"
+      }
+    ])
+
+    # Slack reads use the managed binding only, so the account is not offered
+    # even when no managed Slack binding exists yet.
+    assert {:ok, []} =
+             CommaWeb.RecommendationSources.discover(%{
+               "salix_tenant_id" => context.tenant_id,
+               "default_group_id" => context.group_id
+             })
+  end
+
+  test "an active Composio account with the real nested toolkit shape is exposed", context do
+    SystemsRuntime.put_env(:comma_web, :recommendation_source_accounts, [
+      %{
+        "id" => "ca_gmail",
+        "user_id" => context.group_id,
+        "toolkit" => %{"slug" => "gmail"},
         "status" => "ACTIVE"
       }
     ])
@@ -231,13 +250,13 @@ defmodule CommaWeb.RecommendationSourcesTest do
                "default_group_id" => context.group_id
              })
 
-    assert source["connectionId"] == "ca_slack"
+    assert source["connectionId"] == "ca_gmail"
     assert source["kind"] == "composio"
-    assert source["toolkit"] == "slack"
+    assert source["toolkit"] == "gmail"
   end
 
   test "re-authorized toolkits expose only their newest active account", context do
-    Application.put_env(:comma_web, :recommendation_source_accounts, [
+    SystemsRuntime.put_env(:comma_web, :recommendation_source_accounts, [
       %{
         "id" => "ca_googledrive_old",
         "user_id" => context.group_id,
@@ -287,17 +306,17 @@ defmodule CommaWeb.RecommendationSourcesTest do
   end
 
   test "without timestamps the first listed account of a toolkit is the newest", context do
-    Application.put_env(:comma_web, :recommendation_source_accounts, [
+    SystemsRuntime.put_env(:comma_web, :recommendation_source_accounts, [
       %{
-        "id" => "ca_slack_first",
+        "id" => "ca_gmail_first",
         "user_id" => context.group_id,
-        "toolkit" => %{"slug" => "slack"},
+        "toolkit" => %{"slug" => "gmail"},
         "status" => "ACTIVE"
       },
       %{
-        "id" => "ca_slack_second",
+        "id" => "ca_gmail_second",
         "user_id" => context.group_id,
-        "toolkit" => %{"slug" => "slack"},
+        "toolkit" => %{"slug" => "gmail"},
         "status" => "ACTIVE"
       }
     ])
@@ -308,11 +327,11 @@ defmodule CommaWeb.RecommendationSourcesTest do
                "default_group_id" => context.group_id
              })
 
-    assert source["connectionId"] == "ca_slack_first"
+    assert source["connectionId"] == "ca_gmail_first"
   end
 
   test "an active Composio account without an executable recipe is not exposed", context do
-    Application.put_env(:comma_web, :recommendation_source_accounts, [
+    SystemsRuntime.put_env(:comma_web, :recommendation_source_accounts, [
       %{
         "id" => "ca-jira",
         "user_id" => context.group_id,
@@ -339,7 +358,7 @@ defmodule CommaWeb.RecommendationSourcesTest do
   end
 
   test "a Composio registry outage is explicit instead of looking disconnected", context do
-    Application.put_env(
+    SystemsRuntime.put_env(
       :comma_web,
       :recommendation_source_result,
       {:error, :registry_unavailable}
@@ -352,6 +371,6 @@ defmodule CommaWeb.RecommendationSourcesTest do
              })
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

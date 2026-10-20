@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="devices_access" type="id" />
+    <item name="devices_access_notice" type="id" />
+    <item name="devices_add" type="id" />
+    <item name="devices_add_heading" type="id" />
+    <item name="devices_add_body" type="id" />
+    <item name="devices_add_primary" type="id" />
+    <item name="devices_add_secondary" type="id" />
+    <item name="devices_home_status" type="id" />
+    <item name="devices_remove" type="id" />
+    <item name="devices_text_input" type="id" />
+    <item name="devices_text_reveal" type="id" />
+    <item name="devices_add_working" type="id" />
+</resources>

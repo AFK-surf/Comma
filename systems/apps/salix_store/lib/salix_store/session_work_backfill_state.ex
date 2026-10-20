@@ -75,7 +75,7 @@ defmodule SalixStore.SessionWorkBackfillState do
 
   @spec load() :: {:ok, map()} | {:error, :unavailable}
   def load do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     Repo.insert_all(
       Row,
@@ -111,7 +111,7 @@ defmodule SalixStore.SessionWorkBackfillState do
 
   @spec put(map()) :: {:ok, map()} | {:error, :unavailable}
   def put(%{} = attrs) do
-    attrs = Map.put(attrs, :updated_at_ms, System.system_time(:millisecond))
+    attrs = Map.put(attrs, :updated_at_ms, SystemsClock.system_time(:millisecond))
 
     update_returning(attrs)
   rescue
@@ -135,7 +135,7 @@ defmodule SalixStore.SessionWorkBackfillState do
 
   @spec mark_terminal(map()) :: :ok | {:error, :uncovered_authoritative_work | :unavailable}
   def mark_terminal(%{"uncovered_authoritative_work" => 0, "projection_gaps" => 0} = evidence) do
-    completed_at = DateTime.utc_now() |> DateTime.truncate(:second)
+    completed_at = SystemsClock.utc_now() |> DateTime.truncate(:second)
     evidence = Map.put(evidence, "strategy_version", @strategy_version)
 
     case Repo.query(
@@ -219,7 +219,7 @@ defmodule SalixStore.SessionWorkBackfillState do
                    uncovered_authoritative_work: 0,
                    processed: 0,
                    projection_gaps: 0,
-                   updated_at_ms: System.system_time(:millisecond)
+                   updated_at_ms: SystemsClock.system_time(:millisecond)
                  }) do
             :ok
           end
@@ -263,7 +263,7 @@ defmodule SalixStore.SessionWorkBackfillState do
   end
 
   defp with_updated_at(attrs),
-    do: Map.put(attrs, :updated_at_ms, System.system_time(:millisecond))
+    do: Map.put(attrs, :updated_at_ms, SystemsClock.system_time(:millisecond))
 
   defp to_map(%Row{} = row) do
     %{

@@ -1,8 +1,8 @@
 import { useContext, useMemo } from "react";
-import type { CommaConversationKind } from "../../../../api";
+import type { CommaConversationKind } from "@comma/core/api-schemas";
 import { CommaAuthContext } from "../../../auth-context";
 import { useProfileAvatarUrl } from "../../../useProfileAvatarUrl";
-import type { ChatMessage } from "../../model/conversationChannel";
+import type { ChatMessage } from "@comma/core/chat";
 import type { MessageReply } from "./messageRelationships";
 
 export function useReplyPreviewAvatar({

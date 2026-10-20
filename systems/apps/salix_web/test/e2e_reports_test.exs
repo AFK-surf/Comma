@@ -1,5 +1,5 @@
 defmodule SalixWeb.E2EReportsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixWeb.E2EReports
 
@@ -56,10 +56,10 @@ defmodule SalixWeb.E2EReportsTest do
     end
 
     FakeStorage.reset()
-    prev_storage = Application.get_env(:salix_web, :e2e_reports_storage)
-    prev_secret = Application.get_env(:salix_web, :e2e_reports_session_secret)
-    Application.put_env(:salix_web, :e2e_reports_storage, FakeStorage)
-    Application.put_env(:salix_web, :e2e_reports_session_secret, "test-session-secret")
+    prev_storage = SystemsRuntime.get_env(:salix_web, :e2e_reports_storage)
+    prev_secret = SystemsRuntime.get_env(:salix_web, :e2e_reports_session_secret)
+    SystemsRuntime.put_env(:salix_web, :e2e_reports_storage, FakeStorage)
+    SystemsRuntime.put_env(:salix_web, :e2e_reports_session_secret, "test-session-secret")
 
     on_exit(fn ->
       restore_env(:salix_web, :e2e_reports_storage, prev_storage)
@@ -210,11 +210,11 @@ defmodule SalixWeb.E2EReportsTest do
   end
 
   test "R2 storage requires the bucket from configuration" do
-    original = Application.get_env(:salix_web, :e2e_reports_r2)
+    original = SystemsRuntime.get_env(:salix_web, :e2e_reports_r2)
 
     on_exit(fn -> restore_env(:salix_web, :e2e_reports_r2, original) end)
 
-    Application.put_env(:salix_web, :e2e_reports_r2,
+    SystemsRuntime.put_env(:salix_web, :e2e_reports_r2,
       endpoint: "http://127.0.0.1:1",
       access_key_id: "key",
       secret_access_key: "secret"
@@ -223,6 +223,6 @@ defmodule SalixWeb.E2EReportsTest do
     assert {:error, :not_configured} = SalixWeb.E2EReports.R2.get_object("runs/x.json")
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

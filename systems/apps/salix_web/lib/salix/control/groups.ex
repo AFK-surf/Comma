@@ -16,6 +16,8 @@ defmodule Salix.Control.Groups do
     owner_emails
     memory_ask_worker_enabled
     control_command_vfs_enabled
+    condensed_workspace_enabled
+    cloud_vm_enabled
     ifc
   )
 
@@ -113,6 +115,8 @@ defmodule Salix.Control.Groups do
          {:ok, attrs} <- normalize_update_attrs(attrs),
          :ok <- validate_memory_ask_worker_enabled(attrs),
          :ok <- validate_control_command_vfs_enabled(attrs),
+         :ok <- validate_boolean(attrs, "condensed_workspace_enabled"),
+         :ok <- validate_cloud_vm_enabled(attrs, group),
          :ok <- validate_ifc(attrs),
          :ok <- validate_group_agent_refs(attrs, group["tenant_id"], group["group_id"]),
          {:ok, attrs} <- normalize_owner_emails(attrs) do
@@ -171,6 +175,8 @@ defmodule Salix.Control.Groups do
            SalixStore.BrowserStorage.delete_group(group["tenant_id"], id, fn ->
              with :ok <- SalixIM.ProviderConnects.delete_group_im_connects(group["tenant_id"], id),
                   :ok <- SalixAgent.SSH.delete_group_data(id),
+                  :ok <- SalixAgent.DeviceSecrets.delete_group_data(id),
+                  :ok <- SalixAgent.Tailnet.delete_group_data(id),
                   do: Store.delete_record(Keys.ctl_group(id))
            end) do
       _ = PluginCatalogCache.invalidate_group(id)
@@ -297,6 +303,8 @@ defmodule Salix.Control.Groups do
          {:ok, attrs} <- normalize_create_attrs(attrs),
          :ok <- validate_memory_ask_worker_enabled(attrs),
          :ok <- validate_control_command_vfs_enabled(attrs),
+         :ok <- validate_boolean(attrs, "condensed_workspace_enabled"),
+         :ok <- reject_create_cloud_vm(attrs),
          :ok <- validate_group_agent_refs(attrs, tenant_id, group_id),
          {:ok, attrs} <- normalize_owner_emails(attrs) do
       rec =
@@ -307,7 +315,9 @@ defmodule Salix.Control.Groups do
           "created_at" => Store.now(),
           "router_conversation_id" => Ids.new_conversation_id(),
           "memory_ask_worker_enabled" => attrs["memory_ask_worker_enabled"] == true,
-          "control_command_vfs_enabled" => attrs["control_command_vfs_enabled"] == true
+          "control_command_vfs_enabled" => attrs["control_command_vfs_enabled"] == true,
+          "condensed_workspace_enabled" => attrs["condensed_workspace_enabled"] == true,
+          "cloud_vm_enabled" => false
         }
         |> Store.put_optional("purpose", attrs["purpose"])
         |> Store.put_optional("hidden", attrs["hidden"])
@@ -358,6 +368,45 @@ defmodule Salix.Control.Groups do
     |> Map.delete("home_agent_id")
     |> Map.put_new("memory_ask_worker_enabled", false)
     |> Map.put_new("control_command_vfs_enabled", false)
+    |> Map.put_new("condensed_workspace_enabled", false)
+    |> Map.put_new("cloud_vm_enabled", false)
+  end
+
+  # `cloud_vm_enabled` is the Group's Cloud VM switch, the one thing that
+  # decides whether the Group's Agents may start its Cloud VM and place Tasks
+  # there (`SalixAgent.CloudVM.allowed?/1`). Turning it on checks that the
+  # Group's VM has somewhere to go (`SalixWeb.CloudVM.placement/2`). A guest
+  # (router-only) Tenant has no Cloud VM.
+  defp validate_cloud_vm_enabled(attrs, group) do
+    case Map.fetch(attrs, "cloud_vm_enabled") do
+      :error ->
+        :ok
+
+      {:ok, true} ->
+        cond do
+          group["cloud_vm_enabled"] == true ->
+            :ok
+
+          SalixStore.TenantProfiles.router_only?(group["tenant_id"]) ->
+            {:error, {:bad_request, "this tenant has no Cloud VM"}}
+
+          true ->
+            SalixAgent.CloudVM.validate_group_enabled(group["tenant_id"], group["group_id"])
+        end
+
+      {:ok, false} ->
+        :ok
+
+      {:ok, _value} ->
+        {:error, {:bad_request, "cloud_vm_enabled must be a boolean"}}
+    end
+  end
+
+  # A new Group starts with its Cloud VM switch off; an update turns it on.
+  defp reject_create_cloud_vm(attrs) do
+    if Map.has_key?(attrs, "cloud_vm_enabled"),
+      do: {:error, {:bad_request, "cloud_vm_enabled is set by a Group update"}},
+      else: :ok
   end
 
   # The only thing a caller may set is the mode, and only to a mode that
@@ -414,6 +463,14 @@ defmodule Salix.Control.Groups do
       :error -> :ok
       {:ok, enabled} when is_boolean(enabled) -> :ok
       {:ok, _value} -> {:error, {:bad_request, "control_command_vfs_enabled must be a boolean"}}
+    end
+  end
+
+  defp validate_boolean(attrs, field) do
+    case Map.fetch(attrs, field) do
+      :error -> :ok
+      {:ok, enabled} when is_boolean(enabled) -> :ok
+      {:ok, _value} -> {:error, {:bad_request, "#{field} must be a boolean"}}
     end
   end
 

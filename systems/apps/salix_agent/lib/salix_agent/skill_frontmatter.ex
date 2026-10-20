@@ -32,9 +32,6 @@ defmodule SalixAgent.SkillFrontmatter do
           Enum.any?(["name", "description"], &(String.trim(fields[&1] || "") == "")) ->
         {:error, "miniskills require a name and description"}
 
-      activation == "per-message" and byte_size(body) > 2048 ->
-        {:error, "miniskill instructions exceed 2 KiB"}
-
       true ->
         {:ok,
          fields

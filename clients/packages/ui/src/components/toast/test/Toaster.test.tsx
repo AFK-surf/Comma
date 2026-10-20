@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen } from "@comma/test-utils/render";
 import { toastLayout } from "../../../tokens";
@@ -93,26 +94,6 @@ describe("Toaster", () => {
     expect(obstruction()).toBe("0px");
   });
 
-  it("sources its geometry from tokens and carries the Comma class hooks", async () => {
-    const { container } = render(<Toaster />);
-    act(() => {
-      toast.info("Saved");
-    });
-    expect(await screen.findByText("Saved")).toBeInTheDocument();
-
-    const stack = container.querySelector("[data-sonner-toaster]") as HTMLElement;
-    // Sonner injects its own unlayered rules at import time, so every Comma motion
-    // override is scoped by a `comma-` class rather than relying on source order.
-    expect(stack).toHaveClass("comma-sonner-toaster");
-    expect(container.querySelector("[data-sonner-toast]")).toHaveClass(
-      "comma-sonner-toast"
-    );
-    expect(stack.style.getPropertyValue("--gap")).toBe(`${toastLayout.stackGap}px`);
-    expect(stack.style.getPropertyValue("--width")).toContain(
-      "var(--toast-width-single)"
-    );
-  });
-
   it("hosts the stack on a top-layer surface a modal leaves usable", async () => {
     render(<Toaster />);
     act(() => {
@@ -141,35 +122,79 @@ describe("Toaster", () => {
     expect(screen.queryByText("Copied message")).toBeNull();
     expect(container.querySelector("[data-sonner-toast]")).toBeNull();
   });
-  it("replaces indefinite progress in place and retires the result after its normal five seconds", async () => {
-    vi.useFakeTimers();
-    try {
-      render(<Toaster />);
-      act(() => {
-        toast("Downloading…", {
-          id: "download-transition",
-          duration: Infinity,
-          testId: "download-progress",
+  it("shows a toast raised by an effect of the commit that also updates the stack", async () => {
+    // Home raises its Workspace recovery toast from an effect. When that commit
+    // also carries the stack's own update (here a dismissal landing), Sonner
+    // 2.0.7 had unsubscribed the stack for its re-subscription, so the toast
+    // was published to no one and never shown.
+    const raiseRef: { current: (() => void) | undefined } = { current: undefined };
+    function Feedback() {
+      const [raised, setRaised] = useState(false);
+      raiseRef.current = () => setRaised(true);
+      useEffect(() => {
+        if (!raised) return undefined;
+        const id = toast.error("No workspace is available for chat.", {
+          actions: [{ label: "Retry", onPress: () => undefined }],
+          testId: "raised-with-stack-update",
         });
-      });
-      await act(() => vi.advanceTimersByTimeAsync(0));
-      expect(screen.getByTestId("download-progress")).toBeInTheDocument();
-      act(() => {
-        toast.success("Download complete", {
-          id: "download-transition",
-          testId: "download-completed",
-        });
-      });
-      await act(() => vi.advanceTimersByTimeAsync(0));
-      expect(screen.queryByTestId("download-progress")).not.toBeInTheDocument();
-      expect(screen.getByTestId("download-completed")).toBeInTheDocument();
-      await act(() => vi.advanceTimersByTimeAsync(4999));
-      expect(screen.getByTestId("download-completed")).toBeInTheDocument();
-      // Sonner animates exit after the five-second display duration.
-      await act(() => vi.advanceTimersByTimeAsync(1001));
-      expect(screen.queryByTestId("download-completed")).not.toBeInTheDocument();
-    } finally {
-      vi.useRealTimers();
+        return () => {
+          toast.dismiss(id);
+        };
+      }, [raised]);
+      return null;
     }
+    render(
+      <>
+        <Feedback />
+        <Toaster />
+      </>
+    );
+    let earlier: string | number = "";
+    act(() => {
+      earlier = toast.info("Earlier notice", { duration: Infinity });
+    });
+    expect(await screen.findByText("Earlier notice")).toBeInTheDocument();
+
+    // Sonner applies a dismissal to the stack two frames later; raising the
+    // feedback then puts both updates in one act batch, so one commit.
+    await act(async () => {
+      toast.dismiss(earlier);
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          raiseRef.current?.();
+        })
+      );
+      vi.advanceTimersToNextFrame();
+      vi.advanceTimersToNextFrame();
+    });
+
+    expect(await screen.findByTestId("raised-with-stack-update")).toBeInTheDocument();
+  });
+
+  it("replaces indefinite progress in place and retires the result after its normal five seconds", async () => {
+    render(<Toaster />);
+    act(() => {
+      toast("Downloading…", {
+        id: "download-transition",
+        duration: Infinity,
+        testId: "download-progress",
+      });
+    });
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByTestId("download-progress")).toBeInTheDocument();
+    act(() => {
+      toast.success("Download complete", {
+        id: "download-transition",
+        testId: "download-completed",
+      });
+    });
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.queryByTestId("download-progress")).not.toBeInTheDocument();
+    expect(screen.getByTestId("download-completed")).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(4999));
+    expect(screen.getByTestId("download-completed")).toBeInTheDocument();
+    // Sonner animates exit after the five-second display duration.
+    await act(() => vi.advanceTimersByTimeAsync(1001));
+    expect(screen.queryByTestId("download-completed")).not.toBeInTheDocument();
   });
 });

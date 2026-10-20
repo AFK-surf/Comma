@@ -1,15 +1,13 @@
 import { expect, test } from "@playwright/test";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
 import { startChatSmokeStub } from "../../../e2e/p0/chat-stub";
+import { hostedDriveRoutes } from "./fixtures/hosted-drive";
 
 /**
  * The composer's "@" menu lists Drive: the newest files, "View more" into the
  * browse panel (search, sections per folder), and a pick that lands as an
- * attachment. Runs on the web build's demo Drive, seeded through the real
- * folder upload so the tree has more than one folder and more than five files.
+ * attachment. Runs on the Workspace's hosted Drive the web reads, with more
+ * than one folder and more than five files.
  */
 const folders: Record<string, string[]> = {
   handoff: ["home-v4.fig", "rail-spec.pdf", "tokens.json", "icons.zip"],
@@ -17,30 +15,24 @@ const folders: Record<string, string[]> = {
 };
 
 test("mentions Drive files through @ and attaches the chosen one", async ({ page }) => {
-  const root = await mkdtemp(join(tmpdir(), "comma-drive-mention-"));
-  for (const [folder, names] of Object.entries(folders)) {
-    await mkdir(join(root, folder), { recursive: true });
-    for (const name of names) await writeFile(join(root, folder, name), `${name}\n`);
-  }
-  const stub = await startChatSmokeStub({ holdAssistantReply: true });
+  const files = Object.entries(folders).flatMap(([folder, names]) =>
+    names.map((name, index) => ({
+      path: `${folder}/${name}`,
+      bytes: Buffer.from(`${name}\n`),
+      modifiedAt: 1_788_000_000 + index,
+    }))
+  );
+  const stub = await startChatSmokeStub({
+    holdAssistantReply: true,
+    extraRoutes: hostedDriveRoutes(files),
+  });
   try {
     await installBrowserTestSession(page, {
       apiBaseUrl: stub.baseUrl,
       email: "composer-drive-mention@comma.local",
       token: "comma_sess_composer_drive_mention",
     });
-    await page.goto("/#/drive");
-    await page.getByTestId("drive-folder-input").setInputFiles(root);
-    await expect
-      .poll(() => page.locator('[data-testid^="drive-folder-"]').count(), {
-        timeout: 15_000,
-      })
-      .toBeGreaterThan(0);
-
-    // Home without a reload: the demo store lives in the page.
-    await page.evaluate(() => {
-      location.hash = "#/";
-    });
+    await page.goto("/#/");
     const content = page.getByRole("region", { name: "Content" });
     const prompt = content.getByRole("textbox", { name: "AI prompt" });
     await prompt.click();
@@ -69,8 +61,7 @@ test("mentions Drive files through @ and attaches the chosen one", async ({ page
     const panel = page.getByRole("dialog", { name: "Drive" });
     const search = panel.getByRole("combobox", { name: "Drive" });
     await expect(search).toBeFocused();
-    // The seven uploads plus the demo store's three files that have bytes here.
-    await expect(panel.getByRole("option")).toHaveCount(10);
+    await expect(panel.getByRole("option")).toHaveCount(7);
     await expect(panel.getByText(/drafts \/ q3$/)).toBeVisible();
 
     await page.keyboard.type("q3");

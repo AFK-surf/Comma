@@ -47,6 +47,7 @@ const ownerPolicySchema = z.object({
   activeRequest: z.string().optional(),
   latestRequest: z.string().optional(),
   uninstalled: z.boolean(),
+  blockedInstalls: z.record(z.string(), z.boolean()).optional(),
   completedRequests: z.record(z.string(), z.boolean()).optional(),
   supersededRequests: z.record(z.string(), z.string()).optional(),
 });
@@ -74,6 +75,11 @@ export class LocalHostMaintenance {
   private get journalPath() {
     return join(this.journalDirectory, "comma.json");
   }
+  async installationBlocked(operationId: string) {
+    // Native owns the permanent replay fence. Do not infer it from a missing plan or registration.
+    return (await this.policy())?.blockedInstalls?.[operationId] === true;
+  }
+
   async assertInstallationAllowed() {
     const policy = await this.policy();
     if (policy?.activeRequest || policy?.uninstalled)
@@ -208,6 +214,9 @@ export class LocalHostMaintenance {
     // This does not perform Host maintenance or resume the old disposal plan.
     if (journal && !obsolete) await this.settleReset(journal);
     return hostMaintenanceStateSchema.parse({
+      ...(this.executing && journal?.operation.phase === "preparing"
+        ? { preparationPhase: this.preparation.state().phase }
+        : {}),
       installation,
       ...(installedReleaseId ? { installedReleaseId } : {}),
       selectedReleaseId: publishedHost.release_id,

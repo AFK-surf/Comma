@@ -1,6 +1,9 @@
 defmodule Comma.SessionLifecycleWriterEpochTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.Comma"]
   alias Comma.SessionLifecycleWriterEpoch, as: Epoch
   alias Ecto.Adapters.SQL
 
@@ -22,7 +25,7 @@ defmodule Comma.SessionLifecycleWriterEpochTest do
   end
 
   setup_all do
-    database = "comma_lifecycle_epoch_#{System.unique_integer([:positive])}"
+    database = "comma_lifecycle_epoch_#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     repo_config =
       Comma.Repo.config()
@@ -33,8 +36,8 @@ defmodule Comma.SessionLifecycleWriterEpochTest do
     assert :ok = Ecto.Adapters.Postgres.storage_up(repo_config)
     {:ok, repo_pid} = EpochRepo.start_link(repo_config)
     {:ok, peer_pid} = PeerRepo.start_link(repo_config)
-    Process.unlink(repo_pid)
-    Process.unlink(peer_pid)
+    SystemsRuntime.Proc.unlink(repo_pid)
+    SystemsRuntime.Proc.unlink(peer_pid)
 
     SQL.query!(
       EpochRepo,
@@ -98,31 +101,31 @@ defmodule Comma.SessionLifecycleWriterEpochTest do
   end
 
   test "acquire drains an in-flight old replica then DB triggers reject old and background writers" do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     old_writer =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         PeerRepo.transaction(fn ->
           SQL.query!(PeerRepo, "INSERT INTO comma_users (id) VALUES ('old-in-flight')")
-          send(parent, :old_writer_open)
+          SystemsRuntime.Proc.send(parent, :old_writer_open)
 
-          receive do
+          SystemsRuntime.Proc.receive do
             :rollback_old_writer -> PeerRepo.rollback(:test_complete)
           end
         end)
       end)
 
-    assert_receive :old_writer_open
+    settle_receive(:old_writer_open)
 
     acquire =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Epoch.acquire("release-v1", @token_a, repo: EpochRepo, lease_seconds: 60)
       end)
 
-    assert Task.yield(acquire, 100) == nil
-    send(old_writer.pid, :rollback_old_writer)
-    assert {:error, :test_complete} = Task.await(old_writer)
-    assert {:ok, epoch} = Task.await(acquire)
+    assert SystemsClock.yield(acquire, 100) == nil
+    SystemsRuntime.Proc.send(old_writer.pid, :rollback_old_writer)
+    assert {:error, :test_complete} = settled_await(old_writer)
+    assert {:ok, epoch} = settled_await(acquire)
     assert epoch.generation == 1
     assert DateTime.compare(epoch.drained_at, epoch.acquired_at) in [:eq, :gt]
 

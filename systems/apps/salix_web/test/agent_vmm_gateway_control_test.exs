@@ -1,5 +1,5 @@
 defmodule SalixWeb.AgentVMMGatewayControlTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import Ecto.Query
   import Plug.Conn
@@ -14,19 +14,19 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
   @connection_epoch "9223372036854775808"
 
   setup do
-    previous = Application.get_env(:salix_web, :agent_vmm_gateway_control_secret)
-    previous_signer = Application.get_env(:salix_store, :personal_mesh_registry_receipt_signer)
-    previous_managed = Application.get_env(:salix_store, :agent_vmm_managed_trust_signing)
-    Application.put_env(:salix_web, :agent_vmm_gateway_control_secret, @secret)
+    previous = SystemsRuntime.get_env(:salix_web, :agent_vmm_gateway_control_secret)
+    previous_signer = SystemsRuntime.get_env(:salix_store, :personal_mesh_registry_receipt_signer)
+    previous_managed = SystemsRuntime.get_env(:salix_store, :agent_vmm_managed_trust_signing)
+    SystemsRuntime.put_env(:salix_web, :agent_vmm_gateway_control_secret, @secret)
     {_receipt_public, receipt_private} = keypair()
 
-    Application.put_env(:salix_store, :personal_mesh_registry_receipt_signer, fn payload ->
+    SystemsRuntime.put_env(:salix_store, :personal_mesh_registry_receipt_signer, fn payload ->
       {"registry-key", sign(payload, receipt_private)}
     end)
 
     {managed_public, managed_private} = keypair()
 
-    Application.put_env(:salix_store, :agent_vmm_managed_trust_signing, %{
+    SystemsRuntime.put_env(:salix_store, :agent_vmm_managed_trust_signing, %{
       authority_prefix: "salix-managed",
       key_id: "managed-key",
       key_revision: 1,
@@ -151,7 +151,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
 
     assert Repo.one!(Compute.ProviderBinding).observation["connection_epoch"] == "2"
 
-    now = DateTime.utc_now() |> DateTime.to_unix(:millisecond) |> Integer.to_string()
+    now = SystemsClock.utc_now() |> DateTime.to_unix(:millisecond) |> Integer.to_string()
 
     observation = %{
       "sequence" => "2",
@@ -216,7 +216,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
   end
 
   test "managed enrollment reports a finite signer failure without consuming the token" do
-    Application.delete_env(:salix_store, :agent_vmm_managed_trust_signing)
+    SystemsRuntime.delete_env(:salix_store, :agent_vmm_managed_trust_signing)
 
     enroll = %{
       "protocolVersion" => "remote.v1",
@@ -404,7 +404,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
         id: "terminal-workload",
         environment_id: environment.id,
         allocation_id: allocation.id,
-        kind: "external_worker",
+        kind: "meeting_runtime",
         generation: environment.generation
       })
 
@@ -422,7 +422,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
                id: "revived-workload",
                environment_id: environment.id,
                allocation_id: released.id,
-               kind: "external_worker",
+               kind: "meeting_runtime",
                generation: environment.generation
              })
 
@@ -449,10 +449,10 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
                target_generation: released.generation,
                target_revision: released.revision,
                payload: %{"workload_generation" => workload.generation},
-               deadline_at: DateTime.add(DateTime.utc_now(), 60, :second)
+               deadline_at: DateTime.add(SystemsClock.utc_now(), 60, :second)
              })
 
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     assert {1, nil} =
              Repo.insert_all(Compute.Command, [
@@ -526,7 +526,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
         id: "discarded-workload",
         environment_id: environment.id,
         allocation_id: allocation.id,
-        kind: "external_worker",
+        kind: "meeting_runtime",
         generation: environment.generation
       })
 
@@ -557,7 +557,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
     refute Repo.get_by(Compute.Command, allocation_id: allocation.id)
 
     assert {:ok, :inserted} =
-             Compute.backfill_release_obligation(allocation.id, DateTime.utc_now())
+             Compute.backfill_release_obligation(allocation.id, SystemsClock.utc_now())
 
     obligation = Repo.get_by!(Compute.Command, allocation_id: allocation.id)
     assert obligation.target_revision == draining.revision
@@ -604,7 +604,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
         id: "retained-terminal-workload",
         environment_id: environment.id,
         allocation_id: allocation.id,
-        kind: "external_worker",
+        kind: "meeting_runtime",
         generation: environment.generation
       })
 
@@ -734,7 +734,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
         id: "stopped-ensure-workload",
         environment_id: environment.id,
         allocation_id: allocation.id,
-        kind: "external_worker",
+        kind: "meeting_runtime",
         spec: resource_v2_spec(),
         generation: environment.generation
       })
@@ -800,7 +800,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
         id: "terminal-release-workload",
         environment_id: environment.id,
         allocation_id: allocation.id,
-        kind: "external_worker",
+        kind: "meeting_runtime",
         generation: environment.generation
       })
 
@@ -869,10 +869,10 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
     assert retired.generation < ready_environment.generation
 
     Repo.update_all(from(c in Compute.Command, where: c.id == ^obligation.id),
-      set: [deadline_at: DateTime.add(DateTime.utc_now(), -1, :second)]
+      set: [deadline_at: DateTime.add(SystemsClock.utc_now(), -1, :second)]
     )
 
-    settle_at = DateTime.utc_now()
+    settle_at = SystemsClock.utc_now()
 
     assert {:ok, %{settled: 1}} =
              AgentVMM.settle_expired_commands(32, settle_at)
@@ -887,7 +887,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
     assert refreshed.release_incarnation == obligation.release_incarnation
     assert refreshed.workload_id == nil
     assert refreshed.status == "pending"
-    assert DateTime.compare(refreshed.deadline_at, DateTime.utc_now()) == :gt
+    assert DateTime.compare(refreshed.deadline_at, SystemsClock.utc_now()) == :gt
     assert refreshed.target_generation == retired.generation
     assert refreshed.target_revision == retired.revision
 
@@ -951,7 +951,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
         id: "revoked-workload",
         environment_id: environment.id,
         allocation_id: allocation.id,
-        kind: "external_worker",
+        kind: "meeting_runtime",
         spec: resource_v2_spec(),
         capability_requirements: ["runtime_exec"],
         generation: 1
@@ -966,7 +966,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
              AgentVMM.revoke_registration("tenant", registration.id, registration.revision)
 
     assert revoked.status == "revoked"
-    assert Repo.get!(Compute.ProviderBinding, "binding").status == "revoked"
+    assert Repo.get!(AgentVMM.Registration, "registration").status == "revoked"
 
     reconnect = put_in(hello["connectionEpoch"], "8")
 
@@ -974,17 +974,26 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
              "hello_b64" => encode_json(reconnect)
            }).status == 422
 
-    assert Repo.get!(Compute.ProviderBinding, "binding").status == "revoked"
+    assert Repo.get!(AgentVMM.Registration, "registration").status == "revoked"
 
     assert request("/v1/compute/commands/claim", %{
              "registration_id" => "registration",
              "connection_epoch" => "7"
-           }).status == 204
+           }).status == 403
 
     assert Repo.all(Compute.Command) |> Enum.map(& &1.status) |> Enum.uniq() == ["pending"]
 
     assert Repo.all(Compute.Command) |> Enum.map(& &1.kind) |> Enum.sort() ==
-             ["allocation.ensure", "allocation.release"]
+             ["allocation.ensure"]
+
+    assert {:ok, _} = SalixStore.ComputeWorkloadDeletion.retire_revoked()
+    assert Repo.get!(Compute.Allocation, allocation.id).status == "released"
+
+    assert Repo.get!(Compute.Allocation, allocation.id).provider_observation["data_deleted"] !=
+             true
+
+    assert Repo.get!(Compute.Workload, workload.id).deletion == nil
+    assert Repo.all(Compute.Command) |> Enum.map(& &1.status) |> Enum.uniq() == ["cancelled"]
   end
 
   test "allocation and Workload session close and reopen through the real control API" do
@@ -1014,7 +1023,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
         id: "workload",
         environment_id: environment.id,
         allocation_id: allocation.id,
-        kind: "external_worker",
+        kind: "meeting_runtime",
         spec: resource_v2_spec(),
         capability_requirements: ["runtime_exec"],
         generation: 1
@@ -1078,7 +1087,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
       ]
 
     Repo.update_all(Compute.Command,
-      set: [deadline_at: DateTime.add(DateTime.utc_now(), -1, :second)]
+      set: [deadline_at: DateTime.add(SystemsClock.utc_now(), -1, :second)]
     )
 
     assert {:ok, %{outcome: :pending}} =
@@ -1167,7 +1176,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
         id: "retry-workload",
         environment_id: environment.id,
         allocation_id: allocation.id,
-        kind: "external_worker",
+        kind: "meeting_runtime",
         spec: resource_v2_spec(),
         capability_requirements: ["runtime_exec"],
         generation: 1
@@ -1180,11 +1189,11 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
     first_id = first["commandId"]
 
     Repo.update_all(Compute.Command,
-      set: [deadline_at: DateTime.add(DateTime.utc_now(), -1, :second)]
+      set: [deadline_at: DateTime.add(SystemsClock.utc_now(), -1, :second)]
     )
 
     assert {:ok, %{settled: 1, more?: false}} =
-             AgentVMM.settle_expired_commands(32, DateTime.utc_now())
+             AgentVMM.settle_expired_commands(32, SystemsClock.utc_now())
 
     assert {:ok, %{outcome: :pending}} =
              SalixEnv.ComputeProviders.AgentVMM.allocate(allocation, workload, [])
@@ -1200,7 +1209,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
     {root_public_uncompressed, root_private} = keypair()
     root_public = compress_public_key(root_public_uncompressed)
     root_b64 = Base.encode64(root_public)
-    created_at = DateTime.utc_now()
+    created_at = SystemsClock.utc_now()
     expires_at = DateTime.add(created_at, 600, :second)
     expires = DateTime.to_iso8601(expires_at)
 
@@ -1401,7 +1410,8 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
               "allocationGeneration" =>
                 Integer.to_string(command["openSession"]["allocationGeneration"]),
               "tunnelNonce" => "host-tunnel-nonce",
-              "expiresUnixMillis" => Integer.to_string(System.system_time(:millisecond) + 300_000)
+              "expiresUnixMillis" =>
+                Integer.to_string(SystemsClock.system_time(:millisecond) + 300_000)
             }
           }
 
@@ -1441,7 +1451,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
     }
   end
 
-  defp keypair, do: :crypto.generate_key(:ecdh, :secp256r1)
+  defp keypair, do: SystemsRuntime.Proc.generate_key(:ecdh, :secp256r1)
 
   defp compress_public_key(<<4, x::binary-size(32), y::binary-size(32)>>) do
     prefix = if rem(:binary.decode_unsigned(y), 2) == 0, do: 2, else: 3
@@ -1449,7 +1459,7 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
   end
 
   defp sign(payload, private) do
-    der = :crypto.sign(:ecdsa, :sha256, payload, [private, :secp256r1])
+    der = SystemsRuntime.Proc.sign(:ecdsa, :sha256, payload, [private, :secp256r1])
     <<0x30, _size, 0x02, r_size, rest::binary>> = der
     <<r::binary-size(^r_size), 0x02, s_size, s::binary-size(s_size)>> = rest
     r = pad32(r)
@@ -1461,6 +1471,6 @@ defmodule SalixWeb.AgentVMMGatewayControlTest do
   defp pad32(<<0, rest::binary>>), do: pad32(rest)
   defp pad32(value), do: :binary.copy(<<0>>, 32 - byte_size(value)) <> value
 
-  defp put_or_delete_env(app, key, nil), do: Application.delete_env(app, key)
-  defp put_or_delete_env(app, key, value), do: Application.put_env(app, key, value)
+  defp put_or_delete_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp put_or_delete_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

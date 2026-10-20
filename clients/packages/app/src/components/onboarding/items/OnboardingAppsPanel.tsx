@@ -1,5 +1,8 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { LoaderIcon, PluginArtwork, ScrollArea, motionDuration } from "@comma/ui";
+import { LoaderIcon } from "@comma/ui/components/icons";
+import { PluginArtwork } from "@comma/ui/components/plugins";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { motionDuration } from "@comma/ui/tokens";
 import { useLayoutEffect, useState } from "react";
 import { useLeaving } from "../../chat/motion/useLeaving";
 import { PluginBrandArtwork } from "../../plugins/PluginBrandArtwork";

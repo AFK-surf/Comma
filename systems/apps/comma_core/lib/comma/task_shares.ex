@@ -715,10 +715,10 @@ defmodule Comma.TaskShares do
   end
 
   defp new_token do
-    @token_bytes |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    @token_bytes |> SystemsRuntime.Proc.random_bytes() |> Base.url_encode64(padding: false)
   end
 
-  defp now, do: DateTime.utc_now()
+  defp now, do: SystemsClock.utc_now()
 
   defp unix_time(%DateTime{} = value), do: DateTime.to_unix(value)
   defp unix_time(_value), do: nil

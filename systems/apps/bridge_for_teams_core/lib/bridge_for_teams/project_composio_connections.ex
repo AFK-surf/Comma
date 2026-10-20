@@ -178,7 +178,7 @@ defmodule BridgeForTeams.ProjectComposioConnections do
         resource_id: resource,
         resource_label: resource,
         result: "ok",
-        request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+        request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
         metadata: %{
           "project_id" => project.id,
           "salix_group_id" => project.salix_group_id

@@ -18,7 +18,7 @@ defmodule SalixAnalytics do
 
   @doc "Readiness gate for typed billing/reporting usage tables."
   def typed_usage_ready? do
-    if Application.get_env(:salix_analytics, :metering_enabled, false) do
+    if SystemsRuntime.get_env(:salix_analytics, :metering_enabled, false) do
       SalixAnalytics.Sink.ClickHouseTyped.readiness()
     else
       :ok

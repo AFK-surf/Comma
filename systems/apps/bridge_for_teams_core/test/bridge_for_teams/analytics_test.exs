@@ -13,7 +13,7 @@ defmodule BridgeForTeams.AnalyticsTest do
                token_input: 10,
                token_output: 20,
                token_total: 30,
-               refreshed_at: DateTime.utc_now()
+               refreshed_at: SystemsClock.utc_now()
              })
 
     assert {:ok, _snapshot} =
@@ -44,7 +44,7 @@ defmodule BridgeForTeams.AnalyticsTest do
   end
 
   defp fixture do
-    n = System.unique_integer([:positive])
+    n = SystemsRuntime.Proc.unique_integer([:positive])
     {:ok, user} = Accounts.create_user(%{"email" => "analytics-#{n}@example.com"})
     {:ok, org} = Orgs.create_org(%{"name" => "Analytics #{n}", "slug" => "analytics-#{n}"})
     {:ok, _membership} = Memberships.put_org_member(org.id, user.id, "owner")

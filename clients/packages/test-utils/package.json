@@ -19,17 +19,45 @@
     "./setup-dom": {
       "types": "./src/setup-dom.ts",
       "default": "./src/setup-dom.ts"
+    },
+    "./browser-commands": {
+      "types": "./src/browser-commands.ts",
+      "default": "./src/browser-commands.ts"
+    },
+    "./stub-property": {
+      "types": "./src/stub-property.ts",
+      "default": "./src/stub-property.ts"
+    },
+    "./settle": {
+      "types": "./src/settle.ts",
+      "default": "./src/settle.ts"
+    },
+    "./fake-clock": {
+      "types": "./src/fake-clock.ts",
+      "default": "./src/fake-clock.ts"
+    },
+    "./scripted-core": {
+      "types": "./src/scripted-core.tsx",
+      "default": "./src/scripted-core.tsx"
     }
   },
   "dependencies": {
+    "@comma/chat-contract": "workspace:*",
+    "@comma/core": "workspace:*",
+    "@comma/core-client": "workspace:*",
+    "@comma/core-kernel": "workspace:*",
+    "@comma/i18n": "workspace:*",
     "@comma/native-bridge": "workspace:*",
     "@testing-library/react": "^16.3.2",
+    "react-aria": "^3.49.0",
+    "sonner": "^2.0.8",
     "vitest": "^4.1.11"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "memfs": "^4.80.0",
     "typescript": "^6.0.3"
   }
 }

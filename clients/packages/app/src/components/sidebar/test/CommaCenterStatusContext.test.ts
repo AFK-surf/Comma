@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type {
-  ChatMessage,
-  ConversationChannelState,
-} from "../../chat/model/conversationChannel";
-import { deriveCommaCenterStatus } from "../CommaCenterStatusContext";
+import type { ChatMessage, ConversationChannelState } from "@comma/core/chat";
+import { replyState } from "@comma/core/chat";
+import {
+  advanceRouterReplyMark,
+  deriveCommaCenterStatus,
+} from "../CommaCenterStatusContext";
 
 type StatusInput = Pick<
   ConversationChannelState,
@@ -14,6 +15,12 @@ type StatusInput = Pick<
   | "messages"
   | "pending"
 >;
+
+/** What the status reads: the channel's facts, with the core's reading of the reply. */
+const withReply = (input: StatusInput) => ({
+  ...input,
+  reply: replyState({ ...input, participantStatus: undefined }),
+});
 
 function assistantMessage(
   messageId: string,
@@ -116,6 +123,60 @@ describe("deriveCommaCenterStatus", () => {
       expected: oldReplyComplete,
     },
   ])("$name", ({ expected, input }) => {
-    expect(deriveCommaCenterStatus(input())).toEqual(expected);
+    expect(deriveCommaCenterStatus(withReply(input()))).toEqual(expected);
+  });
+});
+
+describe("advanceRouterReplyMark", () => {
+  const user = (messageId: string): ChatMessage => ({
+    ...assistantMessage(messageId, "question", 1),
+    role: "user",
+  });
+  const reply = (messageId: string) => assistantMessage(messageId, "answer", 1);
+
+  it("takes the first history as the baseline, including an empty one", () => {
+    expect(advanceRouterReplyMark(undefined, [])).toEqual({
+      published: null,
+      seen: null,
+    });
+    expect(advanceRouterReplyMark(undefined, [user("u1"), reply("r1")])).toEqual({
+      published: "r1",
+      seen: "r1",
+    });
+  });
+
+  it("publishes a reply committed after the last one seen", () => {
+    const empty = advanceRouterReplyMark(undefined, []);
+    const first = advanceRouterReplyMark(empty, [user("u1"), reply("r1")]);
+    expect(first).toEqual({ published: "r1", seen: "r1" });
+    expect(advanceRouterReplyMark(first, [user("u1"), reply("r1")])).toBe(first);
+    expect(advanceRouterReplyMark(first, [user("u1"), reply("r1"), user("u2")])).toBe(
+      first
+    );
+    expect(
+      advanceRouterReplyMark(first, [user("u1"), reply("r1"), user("u2"), reply("r2")])
+    ).toEqual({ published: "r2", seen: "r2" });
+  });
+
+  it("keeps the published reply when the latest one is deleted, then counts the next", () => {
+    const mark = advanceRouterReplyMark(undefined, [reply("r1"), reply("r2")]);
+    const deleted = advanceRouterReplyMark(mark, [reply("r1")]);
+    expect(deleted).toEqual({ published: "r2", seen: "r1" });
+    expect(advanceRouterReplyMark(deleted, [])).toEqual({
+      published: "r2",
+      seen: null,
+    });
+    expect(advanceRouterReplyMark(deleted, [reply("r1"), reply("r3")])).toEqual({
+      published: "r3",
+      seen: "r3",
+    });
+  });
+
+  it("does not count a reply it cannot order after the last one seen", () => {
+    const mark = advanceRouterReplyMark(undefined, [reply("r1")]);
+    expect(advanceRouterReplyMark(mark, [reply("other")])).toEqual({
+      published: "r1",
+      seen: "other",
+    });
   });
 });

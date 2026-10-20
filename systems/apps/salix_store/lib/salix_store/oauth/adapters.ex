@@ -12,11 +12,14 @@ defmodule SalixStore.OAuth.Adapters do
   """
 
   @adapters %{
+    "feishu" => SalixStore.OAuth.Adapters.Feishu,
     "github" => SalixStore.OAuth.Adapters.GitHub,
     "google" => SalixStore.OAuth.Adapters.Google,
+    "lark" => SalixStore.OAuth.Adapters.Lark,
     "linear" => SalixStore.OAuth.Adapters.Linear,
     "notion" => SalixStore.OAuth.Adapters.Notion,
-    "slack" => SalixStore.OAuth.Adapters.Slack
+    "slack" => SalixStore.OAuth.Adapters.Slack,
+    "x" => SalixStore.OAuth.Adapters.X
   }
 
   @doc """

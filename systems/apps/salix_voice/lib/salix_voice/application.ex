@@ -14,10 +14,13 @@ defmodule SalixVoice.Application do
   def start(_type, _args) do
     children = [
       %{id: SalixVoice.PG, start: {:pg, :start_link, [SalixVoice.PG]}},
-      {Task.Supervisor, name: SalixVoice.TaskSupervisor},
-      {DynamicSupervisor, name: SalixVoice.CallSupervisor, strategy: :one_for_one}
+      {SystemsRuntime.TaskSupervisor, name: SalixVoice.TaskSupervisor},
+      {SystemsRuntime.DynamicSupervisor, name: SalixVoice.CallSupervisor, strategy: :one_for_one}
     ]
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: SalixVoice.Supervisor)
+    SystemsRuntime.Supervisor.start_link(children,
+      strategy: :one_for_one,
+      name: SalixVoice.Supervisor
+    )
   end
 end

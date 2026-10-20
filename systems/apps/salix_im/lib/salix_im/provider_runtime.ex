@@ -22,7 +22,7 @@ defmodule SalixIM.ProviderRuntime do
   count rather than discarded.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
   alias SalixIM.{ProviderConnects, ProviderHTTP}
@@ -34,7 +34,7 @@ defmodule SalixIM.ProviderRuntime do
   @default_max_concurrency 32
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
   def poll_once(providers \\ ["telegram", "wechat"]) do
@@ -84,18 +84,18 @@ defmodule SalixIM.ProviderRuntime do
   defp poll_connects(connects) do
     max_concurrency =
       :salix_im
-      |> Application.get_env(:provider_runtime_max_concurrency, @default_max_concurrency)
+      |> SystemsRuntime.get_env(:provider_runtime_max_concurrency, @default_max_concurrency)
       |> num()
       |> max(1)
 
     timeout_ms =
       :salix_im
-      |> Application.get_env(:provider_runtime_task_timeout_ms, @default_task_timeout_ms)
+      |> SystemsRuntime.get_env(:provider_runtime_task_timeout_ms, @default_task_timeout_ms)
       |> num()
       |> max(1)
 
     connects
-    |> Task.async_stream(&poll_connect/1,
+    |> SystemsClock.async_stream(&poll_connect/1,
       ordered: true,
       max_concurrency: max_concurrency,
       timeout: timeout_ms,
@@ -129,7 +129,7 @@ defmodule SalixIM.ProviderRuntime do
   defp poll_pass(providers) do
     # `started` must be a parameter of the function that owns the catch —
     # an implicit-try body's bindings are not visible inside its own catch.
-    do_poll_pass(providers, System.monotonic_time())
+    do_poll_pass(providers, SystemsClock.monotonic_time())
   end
 
   defp do_poll_pass(providers, started) do
@@ -179,9 +179,9 @@ defmodule SalixIM.ProviderRuntime do
   end
 
   defp emit_poll(started, outcome) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{
         component: "salix_im",
         operation: "provider_poll",
@@ -191,7 +191,8 @@ defmodule SalixIM.ProviderRuntime do
     )
   end
 
-  defp schedule_poll(interval_ms), do: Process.send_after(self(), :poll, interval_ms)
+  defp schedule_poll(interval_ms),
+    do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :poll, interval_ms)
 
   defp poll_telegram(connect) do
     base = telegram_api_base()
@@ -362,7 +363,7 @@ defmodule SalixIM.ProviderRuntime do
 
   defp telegram_api_base do
     :salix_im
-    |> Application.get_env(:telegram_api_base_url, "https://api.telegram.org")
+    |> SystemsRuntime.get_env(:telegram_api_base_url, "https://api.telegram.org")
     |> trim()
     |> case do
       "" -> "https://api.telegram.org"
@@ -387,8 +388,10 @@ defmodule SalixIM.ProviderRuntime do
 
   defp req_get(url, opts, pool_retries_left) do
     case Req.get(url, opts) do
+      # A concurrent request is still starting the host's pool. Waiting for
+      # that is runtime work, not product time, so it stays on the real clock.
       {:error, %Req.HTTPError{reason: :pool_not_available}} when pool_retries_left > 0 ->
-        Process.sleep(25)
+        SystemsClock.sleep(25)
         req_get(url, opts, pool_retries_left - 1)
 
       other ->
@@ -400,8 +403,10 @@ defmodule SalixIM.ProviderRuntime do
 
   defp req_post(url, opts, pool_retries_left) do
     case Req.post(url, opts) do
+      # A concurrent request is still starting the host's pool. Waiting for
+      # that is runtime work, not product time, so it stays on the real clock.
       {:error, %Req.HTTPError{reason: :pool_not_available}} when pool_retries_left > 0 ->
-        Process.sleep(25)
+        SystemsClock.sleep(25)
         req_post(url, opts, pool_retries_left - 1)
 
       other ->

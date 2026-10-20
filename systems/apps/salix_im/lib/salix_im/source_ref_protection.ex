@@ -25,7 +25,7 @@ defmodule SalixIM.SourceRefProtection do
 
   defp protected_keys do
     with {:ok, contracts} <-
-           Application.fetch_env(:salix_im, :protected_source_ref_contracts),
+           SystemsRuntime.fetch_env(:salix_im, :protected_source_ref_contracts),
          true <- is_list(contracts) do
       Enum.reduce_while(contracts, {:ok, []}, fn contract, {:ok, acc} ->
         case contract_keys(contract) do
@@ -44,7 +44,7 @@ defmodule SalixIM.SourceRefProtection do
   end
 
   defp contract_keys(contract) when is_atom(contract) do
-    if Code.ensure_loaded?(contract) and
+    if SystemsRuntime.Proc.ensure_loaded?(contract) and
          function_exported?(contract, :protected_source_ref_keys, 0),
        do: contract.protected_source_ref_keys(),
        else: [:invalid]

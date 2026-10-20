@@ -7,6 +7,7 @@ import {
 } from "../../../../../packages/ui/src/components/scroll-area/ScrollArea";
 import { StrictMode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { fixtureSearch } from "../../../support/search";
 
 declare global {
   interface Window {
@@ -287,7 +288,7 @@ function FirstEdgeStateFixture() {
 
 // `?routing` and `?nested` show nested areas on their own, so the single-area
 // page keeps exactly one ScrollArea for the specs that read it.
-const fixturePage = new URLSearchParams(window.location.search);
+const fixturePage = new URLSearchParams(fixtureSearch());
 createRoot(document.getElementById("root") as HTMLElement).render(
   <StrictMode>
     {fixturePage.has("first-edge") ? (

@@ -1,6 +1,6 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import { AiInputMenuPanel } from "../../menu/AiInputMenuPanel";
-import type { AiInputMenuItem } from "../../richText";
+import type { AiInputMenuGroup, AiInputMenuItem } from "../../richText";
 import { AI_INPUT_MENU_WIDTH_PX } from "../../styles";
 import type { RichEditorState } from "../state/useRichEditorState";
 import type { MenuBrowse } from "./useMenuBrowse";
@@ -8,7 +8,7 @@ import type { TriggerMenu } from "./useTriggerMenu";
 
 /** The open trigger menu's panel, or the one still fading out after it closed. */
 export const RichEditorMenu = ({
-  browse: { closeBrowse, handleBrowseBlur },
+  browse: { closeBrowse, handleBrowseBlur, openBrowse },
   immutable,
   menu: { closingMenu, menuOptionId, menuPanelRef },
   selectItem,
@@ -24,10 +24,11 @@ export const RichEditorMenu = ({
   const renderedMenu = activeMenu ?? closingMenu;
   if (!renderedMenu || immutable) return null;
   const position = renderedMenu.position;
-  const browseGroup = renderedMenu.browseGroupId
-    ? renderedMenu.registration.groups.find(
-        (group) => group.id === renderedMenu.browseGroupId && group.browse
-      )
+  const browseId = renderedMenu.browseGroupId;
+  const browseGroup = browseId
+    ? (renderedMenu.registration.groups.find(
+        (group) => group.id === browseId && group.browse
+      ) ?? itemBrowseGroup(renderedMenu.registration.groups, browseId))
     : undefined;
   return (
     <AiInputMenuPanel
@@ -37,7 +38,8 @@ export const RichEditorMenu = ({
           ? {
               backLabel: messages.ui_ai_menu_back(),
               group: browseGroup,
-              initialQuery: renderedMenu.query,
+              // A row's own choices start unfiltered: the query found the row.
+              initialQuery: browseGroup.browse?.compact ? "" : renderedMenu.query,
               onBack: closeBrowse,
               onBlur: handleBrowseBlur,
             }
@@ -49,6 +51,7 @@ export const RichEditorMenu = ({
       menuId={menuId}
       noResultsLabel={messages.ui_ai_menu_no_results()}
       onHoverItem={setActiveIndex}
+      onOpenItemBrowse={(item) => openBrowse(item.id)}
       onSelectItem={selectItem}
       optionId={menuOptionId}
       panelRef={menuPanelRef}
@@ -72,3 +75,16 @@ export const RichEditorMenu = ({
     />
   );
 };
+
+/** A row's own second level (`AiInputMenuItem.browse`), as the panel shows a group's. */
+function itemBrowseGroup(
+  groups: readonly AiInputMenuGroup[],
+  itemId: string
+): AiInputMenuGroup | undefined {
+  for (const group of groups) {
+    const item = group.items.find((row) => row.id === itemId && row.browse);
+    if (item?.browse)
+      return { id: item.id, label: item.label, items: [], browse: item.browse };
+  }
+  return undefined;
+}

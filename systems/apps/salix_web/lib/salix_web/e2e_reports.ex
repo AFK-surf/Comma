@@ -80,7 +80,7 @@ defmodule SalixWeb.E2EReports do
              "attempt" => to_string(attempt),
              "target" => target,
              "root" => field(target_record, "reportRootKey"),
-             "exp" => System.system_time(:second) + ttl
+             "exp" => SystemsClock.system_time(:second) + ttl
            }) do
       {:ok,
        %{
@@ -328,7 +328,7 @@ defmodule SalixWeb.E2EReports do
     retention_days = if status == "success", do: 7, else: 30
 
     threshold =
-      DateTime.utc_now()
+      SystemsClock.utc_now()
       |> DateTime.add(-retention_days * 86_400, :second)
       |> DateTime.to_iso8601()
 
@@ -381,7 +381,7 @@ defmodule SalixWeb.E2EReports do
          true <- Plug.Crypto.secure_compare(signature, sign(encoded, secret)),
          {:ok, body} <- Base.url_decode64(encoded, padding: false),
          {:ok, payload} <- Jason.decode(body),
-         true <- parse_int(field(payload, "exp"), 0) > System.system_time(:second) do
+         true <- parse_int(field(payload, "exp"), 0) > SystemsClock.system_time(:second) do
       {:ok, payload}
     else
       _ -> {:error, :invalid_token}
@@ -396,7 +396,7 @@ defmodule SalixWeb.E2EReports do
   end
 
   defp session_secret do
-    Application.get_env(:salix_web, :e2e_reports_session_secret)
+    SystemsRuntime.get_env(:salix_web, :e2e_reports_session_secret)
   end
 
   defp safe_report_path(path) when is_list(path), do: safe_report_path(Enum.join(path, "/"))
@@ -475,7 +475,7 @@ defmodule SalixWeb.E2EReports do
   end
 
   defp storage do
-    Application.get_env(:salix_web, :e2e_reports_storage, SalixWeb.E2EReports.R2)
+    SystemsRuntime.get_env(:salix_web, :e2e_reports_storage, SalixWeb.E2EReports.R2)
   end
 
   defp normalize_params(params) when is_map(params) do

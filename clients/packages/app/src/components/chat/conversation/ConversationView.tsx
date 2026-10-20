@@ -1,3 +1,9 @@
+import type { QuestionCardAnswer } from "../channel/ChatChannel";
+import {
+  QuestionCardActionsContext,
+  QuestionCardAttachmentsContext,
+  type QuestionCardActions,
+} from "../question/QuestionCardContext";
 import { AgentBrowserPanel, AgentBrowserTrigger } from "./browser/AgentBrowserPanel";
 import { useSessionBrowser } from "./browser/useSessionBrowser";
 import {
@@ -8,38 +14,47 @@ import {
 import {
   DynamicUiDraftContext,
   DynamicUiLinkContext,
+  DynamicUiLinkMenuContext,
 } from "../dynamic-ui/DynamicUiWidget";
 import { HomeLayout } from "../../home/HomeRailFolds";
 import { ConversationParticipants } from "../session-history/SessionHistory";
 import { useOptionalChatSidebar } from "../../chat-sidebar/ChatSidebarContext";
 import { useRouter } from "@tanstack/react-router";
 import { acceptedSendPromise } from "./sendAcceptance";
+import type { ManualTaskStatus } from "@comma/chat-contract";
+import { useStageTaskStatus } from "../../../product-inbox";
 import type {
+  ComposerDraftFill,
   ComposerDraftSource,
   ConversationViewState,
 } from "../composer/conversationDraft";
 import { useTaskSummary } from "../../tasks/useTaskArchive";
 import { TaskShareButton } from "../../tasks/TaskShareButton";
-import { taskStatusBucketLabel } from "@comma/i18n";
+import { taskStatusLabel as taskStatusLabelOf } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import { Badge } from "@comma/ui/components/Badge";
+import { Button } from "@comma/ui/components/Button";
+import { uiClock } from "@comma/ui/clock";
+import { isImeKeyEvent } from "@comma/ui/components/utils";
+import { ContentHeader } from "@comma/ui/components/content-header";
+import { CommaLogoAnimation } from "@comma/ui/components/comma-mascot";
 import {
-  Badge,
-  Button,
-  ContentHeader,
-  CommaLogoAnimation,
   CopyContextMenu,
   LinkContextMenu,
-  MarkdownStreamLinkDecoratorContext,
-  SelectionActionBar,
-  taskStatusBucket,
-  taskStatusIcon,
-  toast,
   type CopyContextMenuAction,
   type LinkContextMenuAction,
-  type MarkdownStreamLinkDecorator,
-  type SelectionActionBarAction,
   useTextEditContextMenuState,
-} from "@comma/ui";
+} from "@comma/ui/components/menu";
+import {
+  MarkdownStreamLinkDecoratorContext,
+  type MarkdownStreamLinkDecorator,
+} from "@comma/ui/components/markdown-stream";
+import {
+  SelectionActionBar,
+  type SelectionActionBarAction,
+} from "@comma/ui/components/selection-action-bar";
+import { taskStatusBucket, taskStatusIcon } from "@comma/ui/components/task-workspace";
+import { toast } from "@comma/ui/components/toast";
 import {
   memo,
   useCallback,
@@ -51,12 +66,19 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
-import type { CommaApiClient, CommaSkill } from "../../../api";
+import type { CommaSkill } from "@comma/core/api-schemas";
 import { createConversationAnalytics } from "../../../analytics/experience";
 import { beginCommaMessageSend } from "../../../analytics/client";
+import { FocusComputerUseScreen } from "../../remote-screen/WorkerComputerUseScreen";
 import { ParticipantStatusSlot } from "../thread/activity/ActivityLine";
+import type { ActivityFocusTask } from "../thread/activity/activityFocus";
+import { useActivityFocus } from "../thread/activity/useActivityFocus";
+import { ThreadWorkerVendorContext } from "../thread/threadContexts";
 import { ChatBanner } from "./ChatBanner";
-import { CreditWarningNotice } from "../../billing/CreditWarningNotice";
+import { CreditWarningToast } from "../../billing/CreditWarningToast";
+import { showOutOfCreditsToast } from "../../billing/outOfCredits";
+import { fundingStopKind, showFundingStopToast } from "../../billing/fundingStops";
+import { FundingStopActions } from "../../billing/FundingStopActions";
 import { ChatLinkHoverCard } from "../thread/inline/ChatLinkHoverCard";
 import {
   ChatLabelProposals,
@@ -65,7 +87,8 @@ import {
 import { groupLabelProposalsByAnchor } from "../tasks/labels/labelProposalAnchor";
 import { useTaskLabelsCatalog } from "../tasks/labels/useTaskLabelsCatalog";
 import { ChatTaskDock } from "../tasks/ChatTaskDock";
-import type { TaskDetailsDoneState } from "../tasks/TaskDetailsPanel";
+import { ChatTaskCardsContext, useChatTaskCards } from "../tasks/chatTaskCards";
+import type { TaskDetailsStatusState } from "../tasks/TaskDetailsPanel";
 import { stateSwapExitMs, useLeaving } from "../motion/useLeaving";
 import type { TasksFilterLink } from "../../tasks/taskChips";
 import {
@@ -73,9 +96,25 @@ import {
   TaskPanelFoldedTrigger,
   useTaskPanelFold,
 } from "../tasks/TaskPanelFold";
+import { useTaskActivity } from "../tasks/useTaskActivity";
 import { Composer } from "../composer/Composer";
 import { createChatDraftQuote, type ChatDraftQuote } from "../composer/draftQuotes";
+import {
+  composeMessageWithSnippets,
+  createChatDraftSnippet,
+  snippetAttachedTexts,
+  useConversationDraftSnippets,
+  type ChatDraftSnippet,
+  type ComposerDraftSnippets,
+} from "../composer/draftSnippets";
 import { useChatSelectionQuote } from "./useChatSelectionQuote";
+import { useTouchLongPressMenu } from "./useTouchLongPressMenu";
+import {
+  canReplyTo,
+  replyThreadSendTarget,
+  threadRootOf,
+  type ReplyThreadSelection,
+} from "../thread/replies/replyThread";
 import {
   ConversationThread,
   type ChatOutgoingLaunch,
@@ -83,16 +122,17 @@ import {
 import { measureOutgoingBubbleSource } from "../motion/outgoingBubbleMotion";
 import {
   InlineTaskLinkAdapterProvider,
+  renderInlineTaskLink,
   routeInlineTaskLinkAdapter,
-  staticInlineTaskLinkAdapter,
   type InlineTaskLinkAdapter,
 } from "../thread/inline/MessageInlineElements";
 import type {
   AttachmentUploadInput,
   ChatImagePreviewRef,
   ChatConversationRef,
+  ChatParticipantStatus,
   LocalFilePreview,
-} from "../model/conversationChannel";
+} from "@comma/core/chat";
 
 import {
   isInteractiveChatMessageTarget,
@@ -105,18 +145,21 @@ import {
   openUrlInExternalBrowser,
   resolveHttpLinkFromEventTarget,
 } from "../thread/inline/linkActions";
-import { hasRecommendationLinkPreview } from "../../recommendations/linkPreviewCache";
 import {
+  composeMessageWithAttachedTexts,
   composeMessageWithQuotes,
   isTranscodedImageAttachment,
-} from "../model/protocol";
+} from "@comma/core/chat";
 import { useComposerMentionSources } from "../composer/useComposerMentionSources";
-import { conversationMessageTurnKey } from "../model/visibleReplyPresentation";
+import { conversationMessageTurnKey } from "@comma/core/chat";
 import { useMarkLoadedTaskReviewSeen } from "../tasks/useMarkLoadedTaskReviewSeen";
 
 export type ConversationViewActions = {
   acceptTaskReview?: (reviewVersion: number) => unknown;
-  attachFiles?: (files: AttachmentUploadInput[]) => unknown;
+  /** Ends the Task by hand at the exact version the viewer saw. */
+  setTaskStatus?: (status: ManualTaskStatus, expectedUpdatedAt: number) => unknown;
+  /** Files for the draft, or with `questionMessageId` for that question card's other answer. */
+  attachFiles?: (files: AttachmentUploadInput[], questionMessageId?: string) => unknown;
   /** Replaces the Task's labels; absent when this host cannot edit labels. */
   setTaskLabels?: (labelIds: string[]) => unknown;
   discard: (clientRequestId: string) => unknown;
@@ -125,10 +168,14 @@ export type ConversationViewActions = {
     previewRef: ChatImagePreviewRef,
     signal?: AbortSignal
   ) => Promise<LocalFilePreview | undefined>;
+  /** Reads a Task's history before the transcript held, for its Activity alone. */
+  readTaskActivity?: () => unknown;
   refresh: () => unknown;
-  removeAttachment: (id: string) => unknown;
+  removeAttachment: (id: string, questionMessageId?: string) => unknown;
   retry: (clientRequestId: string) => unknown;
-  retryAttachment: (id: string) => unknown;
+  retryAttachment: (id: string, questionMessageId?: string) => unknown;
+  /** Answers a question card; absent where cards are shown but not answered. */
+  answerQuestion?: (answer: QuestionCardAnswer) => Promise<unknown>;
   send: (
     text: string,
     options?: {
@@ -150,39 +197,26 @@ export type ConversationComposerPresentation = {
   /** Each new value focuses the composer's prompt. */
   focusRequest?: number | undefined;
   placeholder?: string | undefined;
+  /** The conversation's snippets, when a surface beside it also stages them. */
+  snippets?: ComposerDraftSnippets | undefined;
   submitDisabled?: boolean | undefined;
 };
 
-function currentAwaitingSendFailed(
-  awaitingTurnKey: ConversationViewState["awaitingTurnKey"],
-  pendingSends: ConversationViewState["pending"]
-) {
-  return Boolean(
-    awaitingTurnKey &&
-    pendingSends.some(
-      (pending) =>
-        pending.clientRequestId === awaitingTurnKey && pending.status === "failed"
-    )
-  );
-}
-
 export const ConversationView = memo(function ConversationView({
   actions,
-  api,
   composerPresentation,
   conversationId: selectedConversationId,
   draftSource,
   groupId,
   inlineTaskLinkAdapter,
   leadingPanel,
+  live = false,
   state,
   surfaceActive = true,
   trailingPanel,
   variant = "route",
   workspaceId,
   skills = [],
-  onComposerContentHeightChange,
-  onComposerNoticeHeightChange,
   onOpenConversationRef,
   onOpenInCommaBrowser,
   onOpenTasksFilter,
@@ -190,7 +224,6 @@ export const ConversationView = memo(function ConversationView({
   outgoingPlaybackRate = 1,
 }: {
   actions: ConversationViewActions;
-  api?: CommaApiClient | undefined;
   composerPresentation?: ConversationComposerPresentation | undefined;
   /** Selected identity is available before the runtime loads its history. */
   conversationId?: string | undefined;
@@ -199,14 +232,17 @@ export const ConversationView = memo(function ConversationView({
   groupId?: string | undefined;
   inlineTaskLinkAdapter?: InlineTaskLinkAdapter | undefined;
   leadingPanel?: ReactNode;
-  onComposerContentHeightChange?: (height: number) => void;
-  onComposerNoticeHeightChange?: (height: number) => void;
+  /**
+   * The view shows the core's live data (link previews, the Task panel, label proposals, the agent's browser,
+   * attachments). A static view (a share preview) shows only what it was given.
+   */
+  live?: boolean | undefined;
   onOpenConversationRef?: ((conversationRef: ChatConversationRef) => void) | undefined;
   /** Opens an http(s) URL in Comma's embedded browser sidebar. */
   onOpenInCommaBrowser?: ((url: string) => void) | undefined;
   /** Opens the Tasks page narrowed to a label or platform chip of the Task. */
   onOpenTasksFilter?: ((filter: TasksFilterLink) => void) | undefined;
-  outgoingMotion?: import("@comma/ui").MessageSendMotionConfig | undefined;
+  outgoingMotion?: import("@comma/ui/tokens").MessageSendMotionConfig | undefined;
   outgoingPlaybackRate?:
     | import("../motion/outgoingBubbleMotion").OutgoingBubblePlaybackRate
     | undefined;
@@ -215,7 +251,7 @@ export const ConversationView = memo(function ConversationView({
   surfaceActive?: boolean | undefined;
   skills?: CommaSkill[];
   trailingPanel?: ReactNode;
-  variant?: "home" | "route" | "rail" | "side-chat";
+  variant?: "home" | "route" | "rail";
   workspaceId?: string | undefined;
 }) {
   const observeAnalytics = useMemo(
@@ -231,13 +267,61 @@ export const ConversationView = memo(function ConversationView({
   const routeRef = useRef<HTMLElement | null>(null);
   const messages = useCommaMessages();
   const locale = useCommaLocale();
+  const announcedCreditFailures = useRef(new Set<string>());
+  useEffect(() => {
+    if (!surfaceActive) return;
+    const failures = new Set(
+      state.pending
+        .filter(
+          (pending) =>
+            pending.status === "failed" &&
+            (pending.failureAction === "billing" ||
+              pending.error === messages.chat_insufficient_credits())
+        )
+        .map((pending) => pending.clientRequestId)
+    );
+    if ([...failures].some((id) => !announcedCreditFailures.current.has(id))) {
+      showOutOfCreditsToast(locale);
+    }
+    announcedCreditFailures.current = failures;
+  }, [locale, messages, state.pending, surfaceActive]);
+  // A participant that stops mid-request for lack of funds raises the matching
+  // toast once per stop in this view: Comma credits, the provider account
+  // behind the member's own key, or an external runtime's own subscription.
+  // The toast names the provider and Profile when the runtime published them.
+  const announcedFundingStops = useRef(new Set<string>());
+  useEffect(() => {
+    if (!surfaceActive) return;
+    const statuses =
+      state.participantStatuses ??
+      (state.participantStatus ? [state.participantStatus] : []);
+    const stops = new Map<string, ChatParticipantStatus>();
+    for (const status of statuses) {
+      if (status.state === "error" && fundingStopKind(status.issue)) {
+        const detail = status.issueDetail;
+        stops.set(
+          [
+            status.participantId,
+            status.issue,
+            detail?.source,
+            detail?.profileId,
+            detail?.resetAt,
+          ].join(":"),
+          status
+        );
+      }
+    }
+    for (const [key, status] of stops) {
+      if (!announcedFundingStops.current.has(key)) showFundingStopToast(status, locale);
+    }
+    announcedFundingStops.current = new Set(stops.keys());
+  }, [locale, state.participantStatus, state.participantStatuses, surfaceActive]);
   const [browserOpen, setBrowserOpen] = useState(false);
   const browserPanelId = useId();
   const syncWarningToastId = `chat-sync-warning-${useId()}`;
   const heicToastId = `chat-heic-unsupported-${useId()}`;
   const resolvedInlineTaskLinkAdapter = useMemo<InlineTaskLinkAdapter>(() => {
     if (inlineTaskLinkAdapter) return inlineTaskLinkAdapter;
-    if (variant === "side-chat") return staticInlineTaskLinkAdapter;
     return {
       ...routeInlineTaskLinkAdapter,
       previewBoundaryRef: routeRef,
@@ -258,7 +342,7 @@ export const ConversationView = memo(function ConversationView({
             onOpenConversationRef({ conversationId, kind: "agent_task", title })
         : undefined,
     };
-  }, [inlineTaskLinkAdapter, onOpenConversationRef, router, variant]);
+  }, [inlineTaskLinkAdapter, onOpenConversationRef, router]);
   const mountedRef = useRef(false);
   const previousAssistantMessageId = useRef<string | undefined>(undefined);
   const [replyAnnouncementId, setReplyAnnouncementId] = useState(0);
@@ -270,9 +354,22 @@ export const ConversationView = memo(function ConversationView({
     conversationId: string;
     reviewVersion: number;
   }>();
+  // A manual status change shows at once. The chosen status stands in for the
+  // canonical one until the Task's version moves on or the request fails.
+  const [settingTaskStatus, setSettingTaskStatus] = useState<{
+    conversationId: string;
+    settled: boolean;
+    status: ManualTaskStatus;
+    version: number;
+  }>();
+  const [taskStatusError, setTaskStatusError] = useState<{
+    conversationId: string;
+    status: string | undefined;
+  }>();
   const linkMenuUrlRef = useRef<string | null>(null);
   const linkMenuMessageTextRef = useRef<string>("");
   const copyMenuTextRef = useRef<string>("");
+  const replyMenuTargetRef = useRef<ReplyThreadSelection | null>(null);
   const {
     isOpen: isLinkMenuOpen,
     pointerOffsets: linkMenuPointerOffsets,
@@ -297,7 +394,6 @@ export const ConversationView = memo(function ConversationView({
   const homeSurfaceLabel = variant === "home" ? messages.home_region() : undefined;
   const terminalError = state.status === "error" && state.errorKind !== "network";
   const canonicalTask = useTaskSummary(
-    api,
     groupId ?? state.conversation?.group_id ?? "",
     selectedConversationId ??
       (state.conversation?.kind === "agent_task" ? state.conversation.id : ""),
@@ -318,15 +414,27 @@ export const ConversationView = memo(function ConversationView({
     (taskSummary.updated_at ?? 0) >= (state.conversation?.updated_at ?? 0)
       ? taskSummary.status
       : state.conversation?.status;
+  const taskVersion =
+    taskSummary &&
+    (taskSummary.updated_at ?? 0) >= (state.conversation?.updated_at ?? 0)
+      ? taskSummary.updated_at
+      : state.conversation?.updated_at;
   const isArchived = isTask && taskStatus === "archived";
-  const taskSchedule = extractTaskSchedule(state.conversation?.schedule);
+  // A Loop Task's Loop, as the core read it into the Task's summary.
+  const taskLoop = taskSummary?.loop;
   const taskConversationId = state.conversation?.id;
   const taskReviewVersion = state.conversation?.review_version;
+  const optimisticTaskStatus =
+    settingTaskStatus !== undefined &&
+    settingTaskStatus.conversationId === taskConversationId &&
+    settingTaskStatus.version === taskVersion
+      ? settingTaskStatus
+      : undefined;
+  const shownTaskStatus = optimisticTaskStatus?.status ?? taskStatus;
   const headerTaskStatus =
-    isTask && taskStatus ? taskStatusBucket(taskStatus) : undefined;
-  const taskStatusLabel = headerTaskStatus
-    ? taskStatusBucketLabel(headerTaskStatus, locale)
-    : undefined;
+    isTask && shownTaskStatus ? taskStatusBucket(shownTaskStatus) : undefined;
+  const taskStatusLabel =
+    isTask && shownTaskStatus ? taskStatusLabelOf(shownTaskStatus, locale) : undefined;
   const canAcceptTask =
     isTask &&
     !isArchived &&
@@ -334,8 +442,32 @@ export const ConversationView = memo(function ConversationView({
     typeof taskReviewVersion === "number" &&
     Number.isInteger(taskReviewVersion) &&
     taskReviewVersion > 0 &&
-    !hasTaskSchedule(state.conversation?.schedule) &&
+    // A Task whose Loop still runs never waits for a review.
+    (taskLoop === undefined || taskLoop.state === "ended") &&
     actions.acceptTaskReview !== undefined;
+  // A user ends an in-progress or in-review Task by hand, a Loop Task included:
+  // its Loop ends with it. The server also rejects Workflow and Triage Tasks,
+  // which this view cannot tell apart.
+  const canSetTaskStatus =
+    isTask &&
+    !isArchived &&
+    taskConversationId !== undefined &&
+    (taskStatus === "active" ||
+      taskStatus === "ready_for_review" ||
+      taskStatus === "escalated") &&
+    typeof taskVersion === "number" &&
+    taskVersion > 0 &&
+    actions.setTaskStatus !== undefined;
+  // Until the canonical Task catches up, the menu stays open to focus but
+  // offers no second change from the version the first one consumed.
+  const taskStatusState: TaskDetailsStatusState =
+    optimisticTaskStatus !== undefined
+      ? "pending"
+      : taskStatusError !== undefined &&
+          taskStatusError.conversationId === taskConversationId &&
+          taskStatusError.status === taskStatus
+        ? "failed"
+        : "idle";
   const isAcceptingTask =
     acceptingTask !== undefined &&
     acceptingTask.conversationId === taskConversationId &&
@@ -363,9 +495,6 @@ export const ConversationView = memo(function ConversationView({
     state.participantStatus?.state !== "active" &&
     state.participantStatus?.state !== "error";
 
-  const anyUploading = state.draftAttachments.some(
-    (attachment) => attachment.status === "uploading"
-  );
   const anyFailedAttachment = state.draftAttachments.some(
     (attachment) => attachment.status === "failed"
   );
@@ -406,7 +535,7 @@ export const ConversationView = memo(function ConversationView({
   const handleAttachFiles = useMemo(
     () =>
       attachFiles
-        ? (files: AttachmentUploadInput[]) => {
+        ? (files: AttachmentUploadInput[], questionMessageId?: string) => {
             const admitted = transcodesImages
               ? files
               : files.filter((file) => !isTranscodedImageAttachment(file.name));
@@ -416,7 +545,9 @@ export const ConversationView = memo(function ConversationView({
                 testId: "chat-heic-unsupported",
               });
             }
-            if (admitted.length > 0) attachFiles(admitted);
+            if (admitted.length === 0) return;
+            if (questionMessageId === undefined) attachFiles(admitted);
+            else attachFiles(admitted, questionMessageId);
           }
         : undefined,
     [attachFiles, heicToastId, messages, transcodesImages]
@@ -455,7 +586,7 @@ export const ConversationView = memo(function ConversationView({
       const source = options.sourceFrame ?? measureChatComposer(routeRef.current);
       const currentState = stateRef.current;
       const launch: ChatOutgoingLaunch = {
-        expiresAt: Date.now() + 4_000 / outgoingPlaybackRateRef.current,
+        expiresAt: uiClock.now() + 4_000 / outgoingPlaybackRateRef.current,
         existingTurnKeys: new Set(
           currentState.messages
             .filter((message) => message.role === "user")
@@ -465,10 +596,6 @@ export const ConversationView = memo(function ConversationView({
         sourceFrame: source,
         motionConfig: outgoingMotionRef.current,
         playbackRate: outgoingPlaybackRateRef.current,
-        startedFromEmpty:
-          variant === "side-chat" &&
-          currentState.messages.length === 0 &&
-          currentState.assistantDraft === undefined,
         text,
       };
       if (text.trim()) {
@@ -479,12 +606,19 @@ export const ConversationView = memo(function ConversationView({
       const finishAnalytics = actions.tracksSendAnalytics
         ? undefined
         : beginCommaMessageSend(variant);
+      // An open reply thread names the target; otherwise a widget reply may.
+      const replyThread =
+        options.consumeDraft !== false ? replyThreadRef.current : undefined;
+      const replyToMessageId =
+        options.consumeDraft === false
+          ? undefined
+          : replyThread
+            ? replyThreadSendTarget(currentState.messages, replyThread)
+            : uiReplyRef.current;
       try {
         result = actions.send(text, {
           skills: options.skills,
-          ...(options.consumeDraft !== false && uiReplyRef.current
-            ? { replyToMessageId: uiReplyRef.current }
-            : {}),
+          ...(replyToMessageId ? { replyToMessageId } : {}),
           ...(options.consumeDraft === false ? { consumeDraft: false } : {}),
         });
       } catch (error) {
@@ -493,6 +627,14 @@ export const ConversationView = memo(function ConversationView({
           current.filter((candidate) => candidate.id !== launchId)
         );
         throw error;
+      }
+      // Later replies in the thread answer its newest message.
+      if (replyThread?.targetId) {
+        setReplyThread((current) =>
+          current?.rootId === replyThread.rootId
+            ? { rootId: current.rootId, targetId: undefined }
+            : current
+        );
       }
       const accepted = acceptedSendPromise(result);
       const completion =
@@ -525,19 +667,20 @@ export const ConversationView = memo(function ConversationView({
   conversationIdRef.current = conversationId;
 
   // Tasks the agent created in this conversation dock above the composer, on
-  // the full chat surfaces only — the rail and side chat are too narrow for a
-  // second panel.
+  // the full chat surfaces only — the rail is too narrow for a second panel.
   const showTaskDock = variant === "route" || variant === "home";
   const revealTurnHandleRef = useRef<
     ((turnKey: string, highlightMessageId?: string) => void) | null
   >(null);
+  const revealMessageHandleRef = useRef<((messageId: string) => void) | null>(null);
 
-  // Tasks, routines, and plugins for the composer's "@" panel. Loaded once
-  // per group/workspace with a short TTL; a Task chat never lists itself.
+  // Tasks, routines, and plugins for the composer's "@" panel, as the core
+  // keeps them; a Task chat never lists itself.
   const mentionSources = useComposerMentionSources({
-    api,
     excludeConversationId: conversationId,
     groupId: threadGroupId || undefined,
+    // Home is the Router chat: a model named there starts a Task with it.
+    models: variant === "home",
     workspaceId: threadWorkspaceId || undefined,
   });
 
@@ -545,6 +688,13 @@ export const ConversationView = memo(function ConversationView({
   // text on send. Keeping them out of the channel avoids widening the
   // Main-owned draft epoch for something with no intake or upload lifecycle.
   const uiReplyRef = useRef<string | undefined>(undefined);
+  // The thread gathered above the composer for a reply. Sends read it through
+  // the ref so the send callback keeps its identity.
+  const [replyThread, setReplyThread] = useState<ReplyThreadSelection>();
+  const replyThreadRef = useRef(replyThread);
+  useEffect(() => {
+    replyThreadRef.current = replyThread;
+  }, [replyThread]);
   // A widget reply targets its message until the reader empties the draft.
   // Watched without rendering: the view never re-renders for a keystroke.
   useEffect(() => {
@@ -565,6 +715,42 @@ export const ConversationView = memo(function ConversationView({
     },
     [draftSource, setDraft]
   );
+  const {
+    answerQuestion,
+    removeAttachment,
+    retryAttachment,
+    previewLocalFile: previewQuestionImage,
+  } = actions;
+  // A card's images go through the composer's own attach, remove and retry, named by the question.
+  const questionCardActions = useMemo<QuestionCardActions | undefined>(
+    () =>
+      answerQuestion && handleAttachFiles
+        ? {
+            answer: answerQuestion,
+            attach: (questionMessageId, files) =>
+              handleAttachFiles(files, questionMessageId),
+            removeAttachment: (questionMessageId, attachmentId) =>
+              removeAttachment(attachmentId, questionMessageId),
+            retryAttachment: (questionMessageId, attachmentId) =>
+              retryAttachment(attachmentId, questionMessageId),
+            previewLocalFile: previewQuestionImage,
+          }
+        : undefined,
+    [
+      answerQuestion,
+      handleAttachFiles,
+      removeAttachment,
+      retryAttachment,
+      previewQuestionImage,
+    ]
+  );
+  // Each state update maps the images anew: the cards re-render only when they change.
+  const questionAttachmentsKey = JSON.stringify(state.questionAttachments ?? {});
+  const questionAttachments = useMemo(
+    () => state.questionAttachments ?? {},
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- keyed by value
+    [questionAttachmentsKey]
+  );
   const [draftQuotes, setDraftQuotes] = useState<ChatDraftQuote[]>([]);
   const draftQuotesRef = useRef(draftQuotes);
   useEffect(() => {
@@ -575,6 +761,7 @@ export const ConversationView = memo(function ConversationView({
   // freshly created conversation, cost no render.
   useEffect(() => {
     uiReplyRef.current = undefined;
+    setReplyThread(undefined);
     setDraftQuotes((current) => (current.length === 0 ? current : []));
   }, [conversationId]);
 
@@ -586,6 +773,52 @@ export const ConversationView = memo(function ConversationView({
   const removeDraftQuote = useCallback((id: string) => {
     setDraftQuotes((current) => current.filter((quote) => quote.id !== id));
   }, []);
+
+  // Snippets stay with their conversation, as its draft does: switching away
+  // and back finds them. Home stages its Routines' into the same place. Sends
+  // read them through refs so the send callback keeps its identity.
+  const ownSnippets = useConversationDraftSnippets(conversationId);
+  const { items: draftSnippets, setItems: setDraftSnippets } =
+    composerPresentation?.snippets ?? ownSnippets;
+  const draftSnippetsRef = useRef(draftSnippets);
+  const setDraftSnippetsRef = useRef(setDraftSnippets);
+  useEffect(() => {
+    draftSnippetsRef.current = draftSnippets;
+    setDraftSnippetsRef.current = setDraftSnippets;
+  }, [draftSnippets, setDraftSnippets]);
+  const removeDraftSnippet = useCallback(
+    (id: string) =>
+      setDraftSnippets((current) => current.filter((snippet) => snippet.id !== id)),
+    [setDraftSnippets]
+  );
+  const pasteDraftSnippet = useCallback(
+    (text: string) =>
+      setDraftSnippets((current) => [
+        ...current,
+        createChatDraftSnippet({ kind: "paste", text }),
+      ]),
+    [setDraftSnippets]
+  );
+  // "Show in text field" writes the snippet after the draft. Its source still
+  // opens on send while the draft keeps the source's URL.
+  const [composerFill, setComposerFill] = useState<ComposerDraftFill>();
+  const expandedSourceUrlsRef = useRef(new Map<string, Set<string>>());
+  const expandDraftSnippet = useCallback(
+    (snippet: ChatDraftSnippet) => {
+      removeDraftSnippet(snippet.id);
+      if (snippet.sourceUrl) {
+        const key = conversationIdRef.current ?? "";
+        const urls = expandedSourceUrlsRef.current.get(key) ?? new Set<string>();
+        urls.add(snippet.sourceUrl);
+        expandedSourceUrlsRef.current.set(key, urls);
+      }
+      const draft = draftSource.getSnapshot();
+      const next = draft ? `${draft}\n\n${snippet.text}` : snippet.text;
+      setDraft(next);
+      setComposerFill({ draft: next });
+    },
+    [draftSource, removeDraftSnippet, setDraft]
+  );
 
   const quoteSelection = useCallback(() => {
     const text = selectionQuote?.text.trim();
@@ -641,10 +874,39 @@ export const ConversationView = memo(function ConversationView({
           return missing.length === 0 ? current : [...missing, ...current];
         });
       };
+      const submittedSnippets = draftSnippetsRef.current;
+      const setSnippets = setDraftSnippetsRef.current;
+      const submittedSnippetIds = new Set(
+        submittedSnippets.map((snippet) => snippet.id)
+      );
+      const restoreSubmittedSnippets = () => {
+        if (submittedSnippets.length === 0) return;
+        setSnippets((current) => {
+          const currentIds = new Set(current.map((snippet) => snippet.id));
+          const missing = submittedSnippets.filter(
+            (snippet) => !currentIds.has(snippet.id)
+          );
+          return missing.length === 0 ? current : [...missing, ...current];
+        });
+      };
+      // The items the sent snippets are about open beside the conversation.
+      const expandedKey = submittedConversationId ?? "";
+      const expandedSourceUrls = expandedSourceUrlsRef.current.get(expandedKey);
+      expandedSourceUrlsRef.current.delete(expandedKey);
+      const restoreSubmitted = () => {
+        restoreSubmittedQuotes();
+        restoreSubmittedSnippets();
+        if (expandedSourceUrls) {
+          expandedSourceUrlsRef.current.set(expandedKey, expandedSourceUrls);
+        }
+      };
       // Folded in before the handoff so a send that is nothing but a quoted
-      // passage still carries text.
+      // passage or a snippet still carries text.
       const quoted = composeMessageWithQuotes(
-        text,
+        composeMessageWithAttachedTexts(
+          composeMessageWithSnippets(text, submittedSnippets),
+          snippetAttachedTexts(submittedSnippets)
+        ),
         submittedQuotes.map((quote) => quote.text)
       );
       if (submittedQuotes.length > 0) {
@@ -652,20 +914,40 @@ export const ConversationView = memo(function ConversationView({
           current.filter((quote) => !submittedQuoteIds.has(quote.id))
         );
       }
+      if (submittedSnippets.length > 0) {
+        setSnippets((current) =>
+          current.filter((snippet) => !submittedSnippetIds.has(snippet.id))
+        );
+      }
 
       let result: unknown;
       try {
         result = launchOutgoing(quoted, {
-          onAdmissionRejected: restoreSubmittedQuotes,
+          onAdmissionRejected: restoreSubmitted,
           skills: options.skills,
         });
       } catch (error) {
-        restoreSubmittedQuotes();
+        restoreSubmitted();
         throw error;
+      }
+      const sourceUrls = new Set([
+        ...submittedSnippets.flatMap((snippet) =>
+          snippet.sourceUrl ? [snippet.sourceUrl] : []
+        ),
+        ...[...(expandedSourceUrls ?? [])].filter((url) => text.includes(url)),
+      ]);
+      if (sourceUrls.size > 0 && onOpenInCommaBrowser) {
+        const openSources = () => {
+          for (const url of sourceUrls) onOpenInCommaBrowser(url);
+        };
+        // A send the runtime may still refuse opens them once it is accepted.
+        const accepted = acceptedSendPromise(result);
+        if (accepted) void accepted.then(openSources, () => undefined);
+        else openSources();
       }
       return result;
     },
-    [launchOutgoing]
+    [launchOutgoing, onOpenInCommaBrowser]
   );
 
   const handleAcceptTask = useCallback(async () => {
@@ -689,34 +971,127 @@ export const ConversationView = memo(function ConversationView({
     }
   }, [actions, canAcceptTask, taskConversationId, taskReviewVersion]);
 
+  const stageTaskStatus = useStageTaskStatus();
+  const handleSetTaskStatus = useCallback(
+    async (status: ManualTaskStatus) => {
+      if (
+        !canSetTaskStatus ||
+        optimisticTaskStatus !== undefined ||
+        !actions.setTaskStatus ||
+        taskConversationId === undefined ||
+        typeof taskVersion !== "number"
+      ) {
+        return;
+      }
+      const request = {
+        conversationId: taskConversationId,
+        settled: false,
+        status,
+        version: taskVersion,
+      };
+      setSettingTaskStatus(request);
+      setTaskStatusError(undefined);
+      // Lists that read the projected Inbox show the choice at once too.
+      const listStage = stageTaskStatus({
+        conversationId: taskConversationId,
+        groupId: threadGroupId,
+        status,
+        version: taskVersion,
+      });
+      try {
+        await actions.setTaskStatus(status, taskVersion);
+        listStage.confirm();
+        // Keep showing the chosen status until the canonical Task catches up,
+        // so the pill never flashes back to the old status.
+        setSettingTaskStatus((current) =>
+          current === request ? { ...request, settled: true } : current
+        );
+      } catch {
+        listStage.rollback();
+        setSettingTaskStatus((current) => (current === request ? undefined : current));
+        setTaskStatusError({ conversationId: taskConversationId, status: taskStatus });
+      }
+    },
+    [
+      actions,
+      canSetTaskStatus,
+      optimisticTaskStatus,
+      stageTaskStatus,
+      taskConversationId,
+      taskStatus,
+      taskVersion,
+      threadGroupId,
+    ]
+  );
+
   const finishOutgoingLaunch = useCallback((launchId: number) => {
     setOutgoingLaunches((current) =>
       current.filter((candidate) => candidate.id !== launchId)
     );
   }, []);
 
-  // Hover previews for external message links. Keyed on [api, workspaceId]
-  // only: every MarkdownStream link node subscribes to this context, so a new
-  // decorator identity per render would re-render every link on every emit
-  // (PR #857 identity contract) — memoize hard.
+  // Hover previews for every external message link: a rich card where the
+  // server can read the link, the generic destination tile otherwise. Keyed on
+  // [live, workspaceId] only: every MarkdownStream link node subscribes to this
+  // context, so a new decorator identity per render would re-render every link
+  // on every emit (PR #857 identity contract) — memoize hard.
   const linkDecorator = useMemo<MarkdownStreamLinkDecorator | undefined>(() => {
-    if (!api || !threadWorkspaceId) return undefined;
-    return ({ anchor, href }) =>
-      hasRecommendationLinkPreview(href) ? (
-        <ChatLinkHoverCard
-          anchor={anchor}
-          api={api}
-          href={href}
-          workspaceId={threadWorkspaceId}
-        />
-      ) : (
-        anchor
-      );
-  }, [api, threadWorkspaceId]);
+    if (!live || !threadWorkspaceId) return undefined;
+    return ({ anchor, href }) => (
+      <ChatLinkHoverCard anchor={anchor} href={href} workspaceId={threadWorkspaceId} />
+    );
+  }, [live, threadWorkspaceId]);
 
+  // Only a canonical message can be answered, and only where the reader can send.
+  const canReply = !isArchived && !unboundComposerDisabled;
+  const resolveReplyTarget = useCallback(
+    (article: HTMLElement): ReplyThreadSelection | null => {
+      const messageId = article.dataset.messageId;
+      if (!messageId || messageId === state.assistantDraft?.draftId) return null;
+      const message = state.messages.find((item) => item.messageId === messageId);
+      if (canReplyTo(message)) {
+        return { rootId: threadRootOf(message), targetId: messageId };
+      }
+      // An older thread member loaded only for the open thread.
+      const open = replyThreadRef.current;
+      if (open && !message && article.closest(".comma-chat-reply-thread")) {
+        return { rootId: open.rootId, targetId: messageId };
+      }
+      return null;
+    },
+    [state.assistantDraft?.draftId, state.messages]
+  );
+  const focusComposer = useCallback(() => {
+    routeRef.current
+      ?.querySelector<HTMLElement>('.comma-chat-composer [role="textbox"]')
+      ?.focus({ preventScroll: true });
+  }, []);
+  const openReplyThread = useCallback(
+    (target: ReplyThreadSelection) => {
+      setReplyThread(target);
+      focusComposer();
+    },
+    [focusComposer]
+  );
+  const closeReplyThread = useCallback(() => setReplyThread(undefined), []);
+  const replyThreadOpen = replyThread !== undefined;
+  useEffect(() => {
+    if (!replyThreadOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || isImeKeyEvent(event))
+        return;
+      event.preventDefault();
+      closeReplyThread();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [closeReplyThread, replyThreadOpen]);
+
+  const longPress = useTouchLongPressMenu();
   const handleClickCapture = useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
-      if (!onOpenInCommaBrowser) return;
+      longPress.onClickCapture(event);
+      if (event.defaultPrevented || !onOpenInCommaBrowser) return;
       const url = resolveHttpLinkFromEventTarget(event.target, event.currentTarget);
       if (!url) return;
       try {
@@ -727,12 +1102,13 @@ export const ConversationView = memo(function ConversationView({
       event.preventDefault();
       onOpenInCommaBrowser(url);
     },
-    [onOpenInCommaBrowser]
+    [longPress, onOpenInCommaBrowser]
   );
 
   const handleContextMenuCapture = useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
-      if (variant !== "side-chat" && event.target instanceof Element) {
+      longPress.onContextMenuCapture();
+      if (event.target instanceof Element) {
         if (event.target.closest('[data-media-context-menu="true"]')) return;
         const media = event.target.closest("img, video");
         if (media instanceof HTMLImageElement || media instanceof HTMLVideoElement) {
@@ -777,10 +1153,12 @@ export const ConversationView = memo(function ConversationView({
         state.messages,
         state.assistantDraft
       );
-      if (!copyText) return;
+      const replyTarget = canReply ? resolveReplyTarget(article) : null;
+      if (!copyText && !replyTarget) return;
 
       event.preventDefault();
       copyMenuTextRef.current = copyText;
+      replyMenuTargetRef.current = replyTarget;
       setLinkMenuOpen(false);
       openCopyMenuAtPointer(
         event.currentTarget,
@@ -790,15 +1168,37 @@ export const ConversationView = memo(function ConversationView({
       );
     },
     [
+      canReply,
+      longPress,
       openImageMenu,
-      variant,
       openCopyMenuAtPointer,
       openLinkMenuAtPointer,
+      resolveReplyTarget,
       setCopyMenuOpen,
       setLinkMenuOpen,
       state.assistantDraft,
       state.messages,
     ]
+  );
+
+  // Widget frames keep their events, so a right-click on a widget link arrives
+  // as a request with viewport coordinates instead of a contextmenu event.
+  const handleDynamicUiLinkMenu = useCallback(
+    (url: string, clientX: number, clientY: number, frame: HTMLIFrameElement) => {
+      const route = routeRef.current;
+      if (!route) return;
+      const article = resolveChatMessageArticleFromEventTarget(frame, route);
+      if (!article) return;
+      linkMenuUrlRef.current = url;
+      linkMenuMessageTextRef.current = resolveChatMessageText(
+        article,
+        state.messages,
+        state.assistantDraft
+      );
+      setCopyMenuOpen(false);
+      openLinkMenuAtPointer(route, clientX, clientY, frame);
+    },
+    [openLinkMenuAtPointer, setCopyMenuOpen, state.assistantDraft, state.messages]
   );
 
   const handleLinkMenuAction = useCallback(
@@ -824,11 +1224,18 @@ export const ConversationView = memo(function ConversationView({
     [onOpenInCommaBrowser]
   );
 
-  const handleCopyMenuAction = useCallback((action: CopyContextMenuAction) => {
-    if (action !== "copy") return;
-    const text = copyMenuTextRef.current;
-    if (text) void copyTextToClipboard(text);
-  }, []);
+  const handleCopyMenuAction = useCallback(
+    (action: CopyContextMenuAction) => {
+      if (action === "reply") {
+        const target = replyMenuTargetRef.current;
+        if (target) openReplyThread(target);
+        return;
+      }
+      const text = copyMenuTextRef.current;
+      if (text) void copyTextToClipboard(text);
+    },
+    [openReplyThread]
+  );
 
   const handleLinkMenuOpenChange = useCallback(
     (open: boolean) => {
@@ -841,10 +1248,23 @@ export const ConversationView = memo(function ConversationView({
     [setLinkMenuOpen]
   );
 
+  // A press inside a widget frame never reaches this document, so React Aria
+  // cannot treat it as an outside interaction. The window losing focus to the
+  // frame closes the menu instead.
+  useEffect(() => {
+    if (!isLinkMenuOpen) return;
+    const close = () => handleLinkMenuOpenChange(false);
+    window.addEventListener("blur", close);
+    return () => window.removeEventListener("blur", close);
+  }, [handleLinkMenuOpenChange, isLinkMenuOpen]);
+
   const handleCopyMenuOpenChange = useCallback(
     (open: boolean) => {
       const changed = setCopyMenuOpen(open);
-      if (!open && changed) copyMenuTextRef.current = "";
+      if (!open && changed) {
+        copyMenuTextRef.current = "";
+        replyMenuTargetRef.current = null;
+      }
     },
     [setCopyMenuOpen]
   );
@@ -916,64 +1336,125 @@ export const ConversationView = memo(function ConversationView({
   );
   // The details panel lives on the Task route and in the chat sidebar (rail),
   // both on the same responsive rule: a second column while the host is wide,
-  // a popover behind a trigger once it folds. Home and the side chat keep the
-  // header status badge instead.
+  // a popover behind a trigger once it folds. Home keeps the header status
+  // badge instead.
   const showTaskPanel =
     isTask && (variant === "route" || variant === "rail") && presentation !== undefined;
   const taskPanelFold = useTaskPanelFold(routeRef, showTaskPanel);
+  const taskActivity = useTaskActivity(showTaskPanel ? state.taskActivity : undefined);
+  // The Activity reads the Task's whole history; the transcript holds only its latest messages.
+  const { readTaskActivity } = actions;
+  const readEarlierActivity = useMemo(
+    () =>
+      readTaskActivity
+        ? () => void Promise.resolve(readTaskActivity()).catch(() => undefined)
+        : undefined,
+    [readTaskActivity]
+  );
+  // Only a Task whose first message the transcript does not hold has more to read.
+  const taskHasEarlier =
+    showTaskPanel && state.status === "ready" && state.history?.hasOlder === true;
+  useEffect(() => {
+    if (taskHasEarlier) readEarlierActivity?.();
+  }, [readEarlierActivity, taskHasEarlier]);
+  const revealActivityStep = useCallback(
+    (messageId: string) => revealMessageHandleRef.current?.(messageId),
+    []
+  );
+  // A Loop Task stays in progress between runs; its Activity reads as working only while an Agent is.
+  const taskAgentWorking = (
+    state.participantStatuses ??
+    (state.participantStatus ? [state.participantStatus] : [])
+  ).some((status) => status.state === "active");
   const taskPanelProps =
     showTaskPanel && presentation
       ? {
-          api,
-          canDone: canAcceptTask,
+          activity: taskActivity,
+          activityWorking: taskAgentWorking,
           conversation: {
             ...presentation,
-            status: taskStatus ?? presentation.status,
+            status: shownTaskStatus ?? presentation.status,
           },
-          doneState: (isAcceptingTask
-            ? "pending"
-            : showAcceptTaskError
-              ? "failed"
-              : "idle") as TaskDetailsDoneState,
           groupId: threadGroupId,
-          worker: state.boundWorker,
-          onDone: handleAcceptTask,
+          loop: taskLoop,
+          run: state.taskRun,
           onOpenTasksFilter,
+          onReadEarlierActivity: readEarlierActivity,
+          onRevealActivityStep: revealActivityStep,
           onSetLabels: hasCanonicalConversation ? actions.setTaskLabels : undefined,
+          onSetStatus: canSetTaskStatus ? handleSetTaskStatus : undefined,
+          statusState: taskStatusState,
         }
       : undefined;
 
+  // Task work behind the Router's status, or this chat's Workers while the
+  // Router is idle. A Task view lists its own Participants instead, and a
+  // retained surface that is not shown follows no Task.
+  const activityFocus = useActivityFocus({
+    enabled: surfaceActive && !isTask && Boolean(threadGroupId) && live,
+    groupId: threadGroupId,
+    messages: state.messages,
+    participantStatus: state.participantStatus,
+  });
+  // A Task card under each message that announced a Task. Its Workers' steps
+  // follow the reply slot's rule.
+  const taskCards = useChatTaskCards(state.messages, surfaceActive && live);
+  // The bubble opens a Task the way this surface's Task chips do.
+  const focusTaskLink = useCallback(
+    (task: ActivityFocusTask) => {
+      const taskTitle = task.title || messages.chat_ref_task();
+      return renderInlineTaskLink(resolvedInlineTaskLinkAdapter, {
+        ariaLabel: messages.tasks_open({ title: taskTitle }),
+        conversationId: task.conversationId,
+        groupId: threadGroupId,
+        title: taskTitle,
+        workspaceId: threadWorkspaceId,
+      });
+    },
+    [messages, resolvedInlineTaskLinkAdapter, threadGroupId, threadWorkspaceId]
+  );
+
+  const workerVendor = state.taskRun?.vendor;
   const responseFeedback = useCallback(
     ({ hasResponse }: { hasResponse: boolean }) => (
-      <ParticipantStatusSlot
-        hasResponse={hasResponse}
-        activity={state.activity}
-        toolPresentation={variant === "side-chat" ? "bubble" : "inline"}
-        reserveSpace={false}
-        streaming={state.assistantDraft?.status === "streaming"}
-        optimisticThinking={
-          state.awaitingReply &&
-          state.locallyAwaitingReply === true &&
-          !state.awaitingTimedOut &&
-          state.assistantDraft === undefined &&
-          !currentAwaitingSendFailed(state.awaitingTurnKey, state.pending)
-        }
-        participantStatus={state.participantStatus}
-        participantStatuses={state.participantStatuses}
-        replyTimedOut={state.awaitingReply && state.awaitingTimedOut}
-      />
+      <>
+        <ParticipantStatusSlot
+          hasResponse={hasResponse}
+          activity={state.activity}
+          reserveSpace={false}
+          streaming={state.reply?.streaming === true}
+          optimisticThinking={state.reply?.thinking === true}
+          participantStatus={state.participantStatus}
+          participantStatuses={state.participantStatuses}
+          replyTimedOut={state.reply?.timedOut === true}
+          focus={activityFocus}
+          taskLink={focusTaskLink}
+          workerVendor={workerVendor}
+        />
+        {threadGroupId && state.participantStatus?.state === "active" ? (
+          <FocusComputerUseScreen
+            conversationId={state.participantStatus.conversationId}
+            groupId={threadGroupId}
+            participantId={state.participantStatus.participantId}
+          />
+        ) : null}
+        <FundingStopActions
+          participantStatuses={
+            state.participantStatuses ??
+            (state.participantStatus ? [state.participantStatus] : [])
+          }
+        />
+      </>
     ),
     [
       state.activity,
-      state.assistantDraft,
-      state.awaitingReply,
-      state.awaitingTimedOut,
-      state.awaitingTurnKey,
-      state.locallyAwaitingReply,
+      state.reply,
       state.participantStatus,
       state.participantStatuses,
-      state.pending,
-      variant,
+      activityFocus,
+      focusTaskLink,
+      threadGroupId,
+      workerVendor,
     ]
   );
   // The newest reply's identity: a Router reply may have filed label
@@ -987,13 +1468,13 @@ export const ConversationView = memo(function ConversationView({
   }, [state.messages]);
   // The Group's shared label catalog. The card reads it too, and every
   // proposal mutation hands the fresh catalog back through `replace`.
-  const { catalog: labelCatalog } = useTaskLabelsCatalog(api, threadGroupId, !isTask);
+  const { catalog: labelCatalog } = useTaskLabelsCatalog(threadGroupId, !isTask);
   // A proposal records when it was filed, not the reply that filed it. Each card
   // belongs to the reply nearest that time: it holds that reply's place in the
   // transcript, so a later round neither drags an older card along nor hides the
   // new decision at the bottom.
   const labelProposalsTails = useMemo(() => {
-    if (isTask || !api || !threadGroupId || !conversationId) return undefined;
+    if (isTask || !live || !threadGroupId || !conversationId) return undefined;
     const groups = groupLabelProposalsByAnchor(
       conversationLabelProposals(labelCatalog, conversationId),
       state.messages
@@ -1007,7 +1488,6 @@ export const ConversationView = memo(function ConversationView({
           messageId: undefined,
           node: (
             <ChatLabelProposals
-              api={api}
               conversationId={conversationId}
               groupId={threadGroupId}
               replyKey={latestReplyKey}
@@ -1024,7 +1504,6 @@ export const ConversationView = memo(function ConversationView({
         messageId: group.messageId,
         node: (
           <ChatLabelProposals
-            api={api}
             conversationId={conversationId}
             groupId={threadGroupId}
             proposals={group.proposals}
@@ -1036,11 +1515,11 @@ export const ConversationView = memo(function ConversationView({
       };
     });
   }, [
-    api,
     conversationId,
     isTask,
     labelCatalog,
     latestReplyKey,
+    live,
     state.messages,
     threadGroupId,
     threadWorkspaceId,
@@ -1054,6 +1533,16 @@ export const ConversationView = memo(function ConversationView({
     ),
     [isTask, responseFeedback, showTaskPanel, taskReviewAction]
   );
+
+  useEffect(() => {
+    if (
+      settingTaskStatus !== undefined &&
+      (settingTaskStatus.conversationId !== taskConversationId ||
+        settingTaskStatus.version !== taskVersion)
+    ) {
+      setSettingTaskStatus(undefined);
+    }
+  }, [settingTaskStatus, taskConversationId, taskVersion]);
 
   useEffect(() => {
     if (
@@ -1085,16 +1574,13 @@ export const ConversationView = memo(function ConversationView({
     const nextExpiry = Math.min(...outgoingLaunches.map((launch) => launch.expiresAt));
     if (!Number.isFinite(nextExpiry)) return;
 
-    const timer = window.setTimeout(
-      () => {
-        const now = Date.now();
-        setOutgoingLaunches((current) =>
-          current.filter((launch) => launch.expiresAt > now)
-        );
-      },
-      Math.max(0, nextExpiry - Date.now())
-    );
-    return () => window.clearTimeout(timer);
+    const timer = uiClock.after(Math.max(0, nextExpiry - uiClock.now()), () => {
+      const now = uiClock.now();
+      setOutgoingLaunches((current) =>
+        current.filter((launch) => launch.expiresAt > now)
+      );
+    });
+    return () => timer();
   }, [outgoingLaunches]);
 
   const historyParticipants =
@@ -1122,6 +1608,7 @@ export const ConversationView = memo(function ConversationView({
           <ConversationParticipants
             groupId={threadGroupId}
             participants={historyParticipants}
+            taskRun={state.taskRun}
             onOpen={(participant) =>
               sidebar.openSessionHistory(
                 sidebar.activeHost ?? {
@@ -1144,32 +1631,48 @@ export const ConversationView = memo(function ConversationView({
         ) : null}
         <MarkdownStreamLinkDecoratorContext.Provider value={linkDecorator}>
           <InlineTaskLinkAdapterProvider adapter={resolvedInlineTaskLinkAdapter}>
-            <DynamicUiLinkContext.Provider value={onOpenInCommaBrowser}>
-              <DynamicUiDraftContext.Provider value={replyFromDynamicUi}>
-                <ConversationThread
-                  api={api}
-                  assistantDraft={state.assistantDraft}
-                  assistantResponseSlotId={state.conversation?.id ?? "conversation"}
-                  conversationId={state.conversation?.id}
-                  conversationKind={isTask ? "agent_task" : "user_chat"}
-                  defaultAssistantActorRole={isTask ? undefined : "router"}
-                  groupId={threadGroupId}
-                  afterMessages={transcriptTail}
-                  anchoredTails={labelProposalsTails}
-                  responseFeedback={isTask ? undefined : responseFeedback}
-                  messages={state.messages}
-                  onOpenConversationRef={onOpenConversationRef}
-                  onOutgoingAnimationComplete={finishOutgoingLaunch}
-                  onPreviewLocalFile={actions.previewLocalFile}
-                  onDiscard={actionsMemo.discard}
-                  onRetry={actionsMemo.retry}
-                  outgoingLaunches={outgoingLaunches}
-                  revealTurnHandle={revealTurnHandleRef}
-                  variant={variant === "side-chat" ? "side-chat" : "default"}
-                  workspaceId={threadWorkspaceId}
-                />
-              </DynamicUiDraftContext.Provider>
-            </DynamicUiLinkContext.Provider>
+            <ChatTaskCardsContext.Provider value={taskCards}>
+              <DynamicUiLinkContext.Provider value={onOpenInCommaBrowser}>
+                <DynamicUiLinkMenuContext.Provider value={handleDynamicUiLinkMenu}>
+                  <DynamicUiDraftContext.Provider value={replyFromDynamicUi}>
+                    <QuestionCardActionsContext.Provider value={questionCardActions}>
+                      <QuestionCardAttachmentsContext.Provider
+                        value={questionAttachments}
+                      >
+                        <ThreadWorkerVendorContext.Provider value={workerVendor}>
+                          <ConversationThread
+                            live={live}
+                            assistantDraft={state.assistantDraft}
+                            assistantResponseSlotId={
+                              state.conversation?.id ?? "conversation"
+                            }
+                            conversationId={state.conversation?.id}
+                            conversationKind={isTask ? "agent_task" : "user_chat"}
+                            defaultAssistantActorRole={isTask ? undefined : "router"}
+                            groupId={threadGroupId}
+                            afterMessages={transcriptTail}
+                            anchoredTails={labelProposalsTails}
+                            responseFeedback={isTask ? undefined : responseFeedback}
+                            messages={state.messages}
+                            onOpenConversationRef={onOpenConversationRef}
+                            onOutgoingAnimationComplete={finishOutgoingLaunch}
+                            onPreviewLocalFile={actions.previewLocalFile}
+                            onDiscard={actionsMemo.discard}
+                            onExitReplyThread={closeReplyThread}
+                            onRetry={actionsMemo.retry}
+                            outgoingLaunches={outgoingLaunches}
+                            replyThread={replyThread}
+                            revealMessageHandle={revealMessageHandleRef}
+                            revealTurnHandle={revealTurnHandleRef}
+                            workspaceId={threadWorkspaceId}
+                          />
+                        </ThreadWorkerVendorContext.Provider>
+                      </QuestionCardAttachmentsContext.Provider>
+                    </QuestionCardActionsContext.Provider>
+                  </DynamicUiDraftContext.Provider>
+                </DynamicUiLinkMenuContext.Provider>
+              </DynamicUiLinkContext.Provider>
+            </ChatTaskCardsContext.Provider>
           </InlineTaskLinkAdapterProvider>
         </MarkdownStreamLinkDecoratorContext.Provider>
         <div className="comma-chat-composer-zone">
@@ -1181,7 +1684,6 @@ export const ConversationView = memo(function ConversationView({
           >
             {showTaskDock ? (
               <ChatTaskDock
-                api={api}
                 groupId={threadGroupId}
                 messages={state.messages}
                 revealTurnHandle={revealTurnHandleRef}
@@ -1189,11 +1691,9 @@ export const ConversationView = memo(function ConversationView({
                 workspaceId={threadWorkspaceId}
               />
             ) : null}
-            <CreditWarningNotice
-              api={api}
+            <CreditWarningToast
               workspaceId={workspaceId}
               active={surfaceActive && !isArchived}
-              onHeightChange={onComposerNoticeHeightChange}
             />
             <Composer
               controlCommandsEnabled={state.conversation?.kind === "user_chat"}
@@ -1201,6 +1701,8 @@ export const ConversationView = memo(function ConversationView({
               draftSource={draftSource}
               draftAttachments={state.draftAttachments}
               draftQuotes={draftQuotes}
+              draftSnippets={draftSnippets}
+              fill={composerFill}
               {...(handleAttachFiles ? { onAttachFiles: handleAttachFiles } : {})}
               {...(actions.pickAttachments
                 ? { onPickAttachments: actions.pickAttachments }
@@ -1211,15 +1713,12 @@ export const ConversationView = memo(function ConversationView({
               mentionSources={mentionSources}
               onDraftChange={actions.setDraft}
               onRemoveAttachment={actions.removeAttachment}
+              onExpandSnippet={expandDraftSnippet}
+              onPasteSnippet={pasteDraftSnippet}
               onRemoveQuote={removeDraftQuote}
+              onRemoveSnippet={removeDraftSnippet}
               onRetryAttachment={actions.retryAttachment}
               onSend={handleSend}
-              {...(onComposerContentHeightChange
-                ? { onContentHeightChange: onComposerContentHeightChange }
-                : {})}
-              {...(variant === "side-chat"
-                ? { placeholder: messages.chat_side_composer_placeholder() }
-                : {})}
               {...(showHomeStarterControls
                 ? {
                     placeholder: messages.home_prompt_placeholder(),
@@ -1230,15 +1729,14 @@ export const ConversationView = memo(function ConversationView({
               {...(composerPresentation?.placeholder
                 ? { placeholder: composerPresentation.placeholder }
                 : {})}
+              {...(replyThread
+                ? { placeholder: messages.chat_composer_placeholder() }
+                : {})}
               size="small"
               skills={skills}
               submitDisabled={
-                unboundComposerDisabled ||
-                unboundSubmitDisabled ||
-                anyUploading ||
-                anyFailedAttachment
+                unboundComposerDisabled || unboundSubmitDisabled || anyFailedAttachment
               }
-              variant={variant === "side-chat" ? "side-chat" : "default"}
             />
             {composerPresentation?.feedback}
           </div>
@@ -1261,7 +1759,7 @@ export const ConversationView = memo(function ConversationView({
       ? state.participantStatus?.participantId
       : undefined;
   const { browser, refresh: refreshBrowser } = useSessionBrowser(
-    variant === "side-chat" || !surfaceActive ? undefined : api,
+    surfaceActive && live,
     workspaceId,
     conversationId,
     browserParticipantId
@@ -1278,30 +1776,31 @@ export const ConversationView = memo(function ConversationView({
     />
   ) : null;
   const browserPanel =
-    browserOpen && browser && api && workspaceId ? (
+    browserOpen && browser && live && workspaceId ? (
       <AgentBrowserPanel
         key={JSON.stringify([workspaceId, browser.agent_id, browser.session_id])}
         binding={browser}
         onRefresh={refreshBrowser}
         id={browserPanelId}
-        api={api}
         workspaceId={workspaceId}
       />
     ) : null;
 
   return (
-    <MediaMenuContext.Provider
-      value={variant === "side-chat" ? undefined : openImageMenu}
-    >
+    <MediaMenuContext.Provider value={openImageMenu}>
       <section
         aria-label={homeSurfaceLabel ?? messages.chat_region()}
         className="comma-chat-route flex min-h-0 w-full min-w-0 flex-1 flex-col bg-main-panel-bg"
         data-variant={variant}
         onClickCapture={handleClickCapture}
         onContextMenuCapture={handleContextMenuCapture}
+        onPointerCancel={longPress.onPointerCancel}
+        onPointerDown={longPress.onPointerDown}
+        onPointerMove={longPress.onPointerMove}
+        onPointerUp={longPress.onPointerUp}
         ref={routeRef}
       >
-        {variant === "side-chat" || variant === "home" ? null : (
+        {variant === "home" ? null : (
           <ContentHeader aria-busy={connecting} className="comma-chat-header">
             <div
               className="flex min-w-0 flex-1 items-center gap-sm"
@@ -1319,11 +1818,10 @@ export const ConversationView = memo(function ConversationView({
               {isTask &&
               !connecting &&
               variant === "route" &&
-              api &&
+              live &&
               groupId &&
               selectedConversationId ? (
                 <TaskShareButton
-                  api={api}
                   conversationId={selectedConversationId}
                   groupId={groupId}
                   status={taskStatus}
@@ -1353,11 +1851,6 @@ export const ConversationView = memo(function ConversationView({
                     </Badge>
                   ) : null}
                 </div>
-              ) : null}
-              {isTask && taskSchedule ? (
-                <span className="min-w-0 truncate text-xs text-tertiary">
-                  · {messages.chat_schedule({ schedule: taskSchedule })}
-                </span>
               ) : null}
             </div>
             {browserTrigger}
@@ -1417,38 +1910,22 @@ export const ConversationView = memo(function ConversationView({
         />
         <CopyContextMenu
           isOpen={isCopyMenuOpen}
+          disabledActions={{ copy: !copyMenuTextRef.current }}
           labels={{
             ariaLabel: messages.chat_text_menu(),
             copy: messages.common_copy(),
+            reply: replyMenuTargetRef.current ? messages.chat_reply() : undefined,
           }}
           onAction={handleCopyMenuAction}
           onOpenChange={handleCopyMenuOpenChange}
           pointerOffsets={copyMenuPointerOffsets}
           triggerRef={routeRef}
         />
-        {variant !== "side-chat" ? imageMenu : null}
+        {imageMenu}
       </section>
     </MediaMenuContext.Provider>
   );
 });
-
-function extractTaskSchedule(schedule: unknown) {
-  if (!schedule || typeof schedule !== "object" || Array.isArray(schedule)) {
-    return undefined;
-  }
-
-  const value = schedule as Record<string, unknown>;
-  const label = value.next_run_at ?? value.run_at ?? value.cron ?? value.expression;
-  return typeof label === "string" && label ? label : undefined;
-}
-
-function hasTaskSchedule(schedule: unknown) {
-  if (!schedule || typeof schedule !== "object" || Array.isArray(schedule)) {
-    return false;
-  }
-  const scheduleId = (schedule as Record<string, unknown>).schedule_id;
-  return typeof scheduleId === "string" && scheduleId.trim() !== "";
-}
 
 let chatOutgoingLaunchSequence = 0;
 

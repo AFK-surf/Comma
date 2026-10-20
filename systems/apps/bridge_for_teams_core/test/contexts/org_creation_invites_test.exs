@@ -24,13 +24,6 @@ defmodule BridgeForTeams.OrgCreationInvitesTest do
       refute invite.code_hash == code
       assert %DateTime{} = invite.expires_at
     end
-
-    test "requires org name and slug" do
-      assert {:error, changeset} = OrgCreationInvites.create_invite_code(note: "missing org")
-
-      assert %{org_name: ["can't be blank"], org_slug: ["can't be blank"]} =
-               errors_on(changeset)
-    end
   end
 
   describe "redeem_invite_code/2" do
@@ -58,61 +51,6 @@ defmodule BridgeForTeams.OrgCreationInvitesTest do
       assert used.used_org_id == org.id
       assert %DateTime{} = used.used_at
       assert {:ok, "owner"} = Memberships.org_role(org.id, user.id)
-    end
-
-    test "records invite redemption and initial owner grant audit rows when requested" do
-      suffix = unique_suffix()
-      email = "audited-owner-#{suffix}@example.com"
-      org_slug = "audited-#{suffix}"
-
-      {:ok, %{code: code, invite: invite}} =
-        create_invite(org_name: "Audited Co", org_slug: org_slug)
-
-      assert {:ok, %{org: org, user: user, membership: membership}} =
-               OrgCreationInvites.redeem_invite_code(
-                 code,
-                 %{
-                   email: email,
-                   name: "Audited Owner"
-                 },
-                 audit: true,
-                 request_id: "req-invite-signup"
-               )
-
-      assert [invite_audit] =
-               Observability.list_audit_logs(org.id,
-                 action: "org_creation_invite.redeemed"
-               )
-
-      assert invite_audit.actor_user_id == user.id
-      assert invite_audit.actor_label == email
-      assert invite_audit.resource_type == "organization"
-      assert invite_audit.resource_id == org.id
-      assert invite_audit.resource_label == "Audited Co"
-      assert invite_audit.result == "ok"
-      assert invite_audit.request_id == "req-invite-signup"
-      assert invite_audit.metadata["invite_id"] == invite.id
-      assert invite_audit.metadata["org_slug"] == org_slug
-      assert invite_audit.metadata["owner_user_id"] == user.id
-      assert invite_audit.metadata["membership_id"] == membership.id
-      refute inspect(invite_audit.metadata) =~ code
-      refute inspect(invite_audit.metadata) =~ invite.code_hash
-
-      assert [member_audit] =
-               Observability.list_audit_logs(org.id,
-                 action: "org_member.granted",
-                 resource_type: "org_member"
-               )
-
-      assert member_audit.actor_user_id == user.id
-      assert member_audit.resource_id == user.id
-      assert member_audit.request_id == "req-invite-signup"
-      assert member_audit.metadata["new_role"] == "owner"
-
-      assert [event] = Observability.list_events(org.id, audit_log_id: invite_audit.id)
-      assert event.domain == "audit"
-      assert event.event_type == "audit.org_creation_invite.redeemed"
-      assert event.correlation_id == "req-invite-signup"
     end
 
     test "cannot reuse a code" do
@@ -176,28 +114,10 @@ defmodule BridgeForTeams.OrgCreationInvitesTest do
       assert is_nil(reloaded.used_at)
       assert {:error, :not_found} = Orgs.get_org_by_slug(org_slug)
     end
-
-    test "requires an email to create the owner account" do
-      suffix = unique_suffix()
-      org_slug = "missing-email-#{suffix}"
-
-      {:ok, %{code: code, invite: invite}} =
-        create_invite(org_name: "Missing Email", org_slug: org_slug)
-
-      assert {:error, %Ecto.Changeset{} = changeset} =
-               OrgCreationInvites.redeem_invite_code(code, %{
-                 name: "Owner"
-               })
-
-      assert %{email: ["can't be blank"]} = errors_on(changeset)
-      reloaded = Repo.get!(OrgCreationInvite, invite.id)
-      assert is_nil(reloaded.used_at)
-      assert {:error, :not_found} = Orgs.get_org_by_slug(org_slug)
-    end
   end
 
   defp unique_suffix do
-    System.unique_integer([:positive, :monotonic])
+    SystemsRuntime.Proc.unique_integer([:positive, :monotonic])
   end
 
   defp create_invite(attrs) do

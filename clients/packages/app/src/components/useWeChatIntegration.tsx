@@ -1,186 +1,66 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { QRCodeCanvas } from "qrcode.react";
+import { Button } from "@comma/ui/components/Button";
+import { WeChatProviderLogo } from "@comma/ui/components/provider-brand-logos";
+import { InputField } from "@comma/ui/components/input";
 import {
-  Button,
-  WeChatProviderLogo,
-  InputField,
   type SettingsPanelItem,
   type SettingsControl,
-} from "@comma/ui";
+} from "@comma/ui/components/settings-panel";
 import { useCommaMessages } from "@comma/i18n/react";
-import type {
-  CommaApiClient,
-  CommaWeChatConnection,
-  CommaWeChatIntegrationState,
-} from "../api";
+import { useCall, useTopic } from "@comma/core-client";
 
-const stopped = new Set([
-  "need_verifycode",
-  "expired",
-  "verify_code_blocked",
-  "binded_redirect",
-]);
-
+/** Settings › Channels › WeChat: the core reads and checks the connection; this shows it and asks for changes. */
 export function useWeChatIntegration(
-  api: CommaApiClient,
   workspaceId: string | undefined,
   active: boolean
 ): SettingsPanelItem {
   const m = useCommaMessages();
-  const [state, setState] = useState<CommaWeChatIntegrationState>();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(false);
+  const call = useCall();
+  const { value } = useTopic(
+    active && workspaceId ? { topic: "wechat", workspace: workspaceId } : null
+  );
+  const state = value?.state ?? undefined;
+  const error = value?.error ?? false;
+  const busy = value?.busy ?? false;
   const [code, setCode] = useState("");
-  const action = useRef<AbortController | undefined>(undefined);
   const pending = state?.pending;
   const connection = state?.connection;
   const attempt =
     pending ?? (connection?.status === "prepared" ? connection : undefined);
-  const attemptId = attempt?.connect_id;
-  const expiresAt = attempt?.expires_at;
   const loginStatus = attempt?.login_status;
   const attemptStatus = attempt?.status;
 
-  useEffect(() => {
-    setState(undefined);
-    setError(false);
-    setBusy(false);
-    setCode("");
-    const controller = new AbortController();
-    if (active && workspaceId) {
-      void api.getWeChatIntegration(workspaceId, { signal: controller.signal }).then(
-        (next) => {
-          if (!controller.signal.aborted) setState(next);
-        },
-        () => {
-          if (!controller.signal.aborted) setError(true);
-        }
-      );
-    }
-    return () => {
-      controller.abort();
-      action.current?.abort();
-    };
-  }, [api, workspaceId, active]);
-
-  const accept = useCallback((record: CommaWeChatConnection) => {
-    setState((current) =>
-      record.connection_active
-        ? { connection: record, pending: null }
-        : { connection: current?.connection ?? null, pending: record }
-    );
-  }, []);
-
-  const canPoll =
-    active &&
-    !busy &&
-    !error &&
-    attemptStatus === "pending" &&
-    !stopped.has(loginStatus ?? "");
-
-  // One visible attempt per Workspace. Status updates do not reset the
-  // three-second pause between requests. Leaving Settings aborts the poll.
-  useEffect(() => {
-    if (!canPoll || !workspaceId || !attemptId || !expiresAt) return;
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      if (Date.now() >= expiresAt * 1000) {
-        setState((current) =>
-          current?.pending?.connect_id === attemptId
-            ? { ...current, pending: { ...current.pending, login_status: "expired" } }
-            : current
-        );
-        return;
-      }
-      try {
-        const next = await api.pollWeChatConnect(workspaceId, attemptId, undefined, {
-          signal: controller.signal,
-        });
-        if (controller.signal.aborted) return;
-        accept(next);
-        if (!next.connection_active && !stopped.has(next.login_status))
-          timer = setTimeout(() => void poll(), 3000);
-      } catch {
-        if (!controller.signal.aborted) setError(true);
-      }
-    };
-    void poll();
-    return () => {
-      controller.abort();
-      clearTimeout(timer);
-    };
-  }, [api, workspaceId, attemptId, expiresAt, canPoll, accept]);
-  const run = async (operation: (signal: AbortSignal) => Promise<void>) => {
+  const ask = (
+    name: "wechat.refresh" | "wechat.start" | "wechat.cancel" | "wechat.disconnect",
+    clearCode = false
+  ) => {
     if (busy || !workspaceId) return;
-    const controller = new AbortController();
-    action.current?.abort();
-    action.current = controller;
-    setBusy(true);
-    setError(false);
-    try {
-      await operation(controller.signal);
-    } catch {
-      if (!controller.signal.aborted) setError(true);
-    } finally {
-      if (!controller.signal.aborted) setBusy(false);
-    }
+    void call(name, { workspace: workspaceId }).then(
+      () => {
+        if (clearCode) setCode("");
+      },
+      // The core says it failed (`error`) and offers Refresh.
+      () => undefined
+    );
   };
-  const refresh = () =>
-    void run(async (signal) => {
-      const next = await api.getWeChatIntegration(workspaceId!, { signal });
-      if (signal.aborted) return;
-      setState(next);
-      const repair = [next.pending, next.connection].find(
-        (record) => record?.status === "prepared"
-      );
-      if (repair && !signal.aborted) {
-        const recovered = await api.pollWeChatConnect(
-          workspaceId!,
-          repair.connect_id,
-          undefined,
-          { signal }
-        );
-        if (!signal.aborted) accept(recovered);
-      }
-    });
-  const start = () =>
-    void run(async (signal) => {
-      const next = await api.startWeChatConnect(workspaceId!, { signal });
-      if (!signal.aborted) {
-        setCode("");
-        accept(next);
-      }
-    });
-  const cancel = () =>
-    void run(async (signal) => {
-      await api.cancelWeChatConnect(workspaceId!, pending!.connect_id, { signal });
-      const next = await api.getWeChatIntegration(workspaceId!, { signal });
-      if (!signal.aborted) {
-        setCode("");
-        setState(next);
-      }
-    });
-  const disconnect = () =>
-    void run(async (signal) => {
-      await api.disconnectWeChat(workspaceId!, { signal });
-      if (!signal.aborted) setState({ connection: null, pending: null });
-    });
-  const verify = () =>
-    void run(async (signal) => {
-      const next = await api.pollWeChatConnect(workspaceId!, attemptId!, code, {
-        signal,
-      });
-      if (!signal.aborted) {
-        setCode("");
-        accept(next);
-      }
-    });
+  const refresh = () => ask("wechat.refresh");
+  const start = () => ask("wechat.start", true);
+  const cancel = () => ask("wechat.cancel", true);
+  const disconnect = () => ask("wechat.disconnect");
+  const verify = () => {
+    if (busy || !workspaceId) return;
+    void call("wechat.verify", { workspace: workspaceId, code }).then(
+      () => setCode(""),
+      () => undefined
+    );
+  };
 
   const terminal =
     loginStatus &&
     ["expired", "verify_code_blocked", "binded_redirect"].includes(loginStatus);
-  let description = m.settings_wechat_description();
+  // The subtitle reports only trouble or progress.
+  let description: string | undefined;
   if (error) description = m.settings_wechat_failed();
   else if (!state) description = m.settings_telegram_loading();
   else if (loginStatus === "need_verifycode")
@@ -241,7 +121,7 @@ export function useWeChatIntegration(
     id: "wechat.connection",
     title: m.settings_wechat(),
     icon: <WeChatProviderLogo />,
-    description,
+    ...(description ? { description } : {}),
     descriptionLoading: !error && !state,
     control,
     keywords: ["WeChat", "微信", "ClawBot"],
@@ -250,13 +130,18 @@ export function useWeChatIntegration(
       content: attempt ? (
         <div className="flex flex-wrap items-center gap-xl">
           {!terminal && attempt.qrcode_url ? (
-            <figure aria-label={m.settings_wechat_qr_label()} className="m-0 shrink-0">
+            // The code's quiet zone reads as a tile, so its edge, not the
+            // modules inside it, lines up with the text above.
+            <figure
+              aria-label={m.settings_wechat_qr_label()}
+              className="m-0 shrink-0 overflow-hidden rounded-lg border-[0.5px] border-primary"
+            >
               <QRCodeCanvas
                 value={attempt.qrcode_url}
                 size={192}
                 marginSize={4}
                 level="M"
-                className="rounded-lg"
+                className="block"
               />
             </figure>
           ) : null}

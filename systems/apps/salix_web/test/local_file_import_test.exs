@@ -1,5 +1,5 @@
 defmodule Salix.Bindings.LocalFileImportTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias Salix.Bindings.LocalFileImport
 
@@ -7,14 +7,21 @@ defmodule Salix.Bindings.LocalFileImportTest do
 
   defmodule Conversations do
     def get_group_conversation_message(group_id, conversation_id, message_id) do
-      send(self(), {:canonical_read, group_id, conversation_id, message_id})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:canonical_read, group_id, conversation_id, message_id}
+      )
+
       {:ok, Process.get(:canonical_message)}
     end
   end
 
   defmodule Refs do
     def resolve_committed(group_id, conversation_id, message, ref) do
-      send(self(), {:resolved, group_id, conversation_id, message, ref})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:resolved, group_id, conversation_id, message, ref}
+      )
 
       {:ok,
        %{
@@ -27,7 +34,10 @@ defmodule Salix.Bindings.LocalFileImportTest do
     end
 
     def refence_committed(group_id, conversation_id, message, ref, admitted) do
-      send(self(), {:refenced, group_id, conversation_id, message, ref, admitted})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:refenced, group_id, conversation_id, message, ref, admitted}
+      )
 
       if Process.get(:read_finished) == true do
         Process.get(:refence_result, :ok)
@@ -39,7 +49,7 @@ defmodule Salix.Bindings.LocalFileImportTest do
 
   defmodule Connector do
     def read_stream(run_id, request, timeout) do
-      send(self(), {:read_ref, run_id, request, timeout})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:read_ref, run_id, request, timeout})
       {:ok, ["bytes"], nil}
     end
   end
@@ -50,7 +60,7 @@ defmodule Salix.Bindings.LocalFileImportTest do
     end
 
     def discard_prepared_write(event) do
-      send(self(), {:discarded, event})
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), {:discarded, event})
       :ok
     end
   end
@@ -59,7 +69,11 @@ defmodule Salix.Bindings.LocalFileImportTest do
     def prepare_managed_write_stream(agent_id, path, stream, opts) do
       bytes = stream |> Enum.to_list() |> IO.iodata_to_binary()
       Process.put(:read_finished, true)
-      send(self(), {:prepared, agent_id, path, bytes, opts})
+
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:prepared, agent_id, path, bytes, opts}
+      )
 
       {:ok,
        %{
@@ -75,7 +89,11 @@ defmodule Salix.Bindings.LocalFileImportTest do
 
   defmodule Actor do
     def commit_workspace_operation(agent_id, operation_id, result, [event], opts) do
-      send(self(), {:committed, agent_id, operation_id, result, event, opts})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:committed, agent_id, operation_id, result, event, opts}
+      )
+
       Process.put({:operation, operation_id}, {:ok, result})
       {:ok, result}
     end
@@ -86,7 +104,11 @@ defmodule Salix.Bindings.LocalFileImportTest do
       attempt = Process.get(:ambiguous_commit_attempt, 0) + 1
       Process.put(:ambiguous_commit_attempt, attempt)
       call = {agent_id, operation_id, result, event, opts}
-      send(self(), {:ambiguous_commit_attempt, attempt, call})
+
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:ambiguous_commit_attempt, attempt, call}
+      )
 
       case {Process.get(:ambiguous_commit_mode), attempt} do
         {mode, 1} when mode in [:settles, :settlement_read_fails] ->
@@ -102,7 +124,12 @@ defmodule Salix.Bindings.LocalFileImportTest do
           true = Process.get(:first_ambiguous_commit_call) == call
           {:ok, committed} = Process.get({:operation, operation_id})
           Process.put({:cleanup_ownership, operation_id}, :adopted)
-          send(self(), {:ambiguous_commit_reconciled, operation_id})
+
+          SystemsRuntime.Proc.send(
+            SystemsRuntime.Proc.self(),
+            {:ambiguous_commit_reconciled, operation_id}
+          )
+
           {:ok, committed}
 
         {:settlement_read_fails, 2} ->

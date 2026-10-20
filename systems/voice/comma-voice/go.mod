@@ -1,6 +1,6 @@
 module github.com/AFK-surf/comma/systems/voice/comma-voice
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/gen2brain/malgo v0.11.26

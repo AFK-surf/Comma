@@ -1,4 +1,5 @@
 import VerifiedKernelProofs.Loop.ActivationGate
+import VerifiedKernelProofs.Loop.QueryAnswers
 import VerifiedKernelProofs.Loop.RoundFrames
 import VerifiedKernelProofs.Session.AppendOnly.SessionEvent
 import VerifiedKernelProofs.Session.WorkRetirement
@@ -442,14 +443,9 @@ theorem localSettlement_shape {s : Term} :
     | (rw [settlementEvents_native]
        exact Or.inr ⟨_, _, ⟨_, _, (hyp% sub _ _ _ = _)⟩, rfl⟩)
 
-theorem lookup_local_settlement :
-    lookupOp queryTable (a "guard_failure_local_settlement") = some (fun state _ => Settlement.guardLocalSettlement state) :=
-  rfl
-
 theorem queryAsk_local_settlement (state x : Term) :
-    Loop.queryAsk state "guard_failure_local_settlement" x = Settlement.guardLocalSettlement state := by
-  unfold Loop.queryAsk
-  rw [lookup_local_settlement]
+    Loop.queryAsk state "guard_failure_local_settlement" x = Settlement.guardLocalSettlement state :=
+  LoopProof.QueryAnswers.guard_local state x
 
 /-- `local_settlement_stops_continuation`: `guard_notice` commits the answer
 of `guard_failure_local_settlement` when it is a list. After those events
@@ -606,13 +602,9 @@ theorem retireRunaway_shape {s : Term} :
            exact Or.inr (Or.inr repair)
          · simp at repair)
 
-theorem lookup_runaway_retirement :
-    lookupOp queryTable (a "runaway_retirement") = some (fun state _ => Settlement.retireRunaway state) := rfl
-
 theorem queryAsk_runaway_retirement (state x : Term) :
-    Loop.queryAsk state "runaway_retirement" x = Settlement.retireRunaway state := by
-  unfold Loop.queryAsk
-  rw [lookup_runaway_retirement]
+    Loop.queryAsk state "runaway_retirement" x = Settlement.retireRunaway state :=
+  LoopProof.QueryAnswers.runaway_retirement state x
 
 /-- `runaway_retirement_stops_continuation`: `guard_notice` commits the
 answer of `runaway_retirement` when it is a list. After those events apply

@@ -29,7 +29,7 @@ macro_rules
   | `(tactic| ledger_frame_step $h:ident) =>
     `(tactic| first
       | (head_is $h [write]; simp only [write_ledger_frame_step] at $h:ident; obtain ⟨_, kept⟩ := $h
-         refine ledger_frame_trans (kept rfl) ?_)
+         refine ledger_frame_trans (kept (by keys_absent)) ?_)
       | (head_step $h "_ledger_frame_step"; obtain ⟨_, kept⟩ := $h; refine ledger_frame_trans kept ?_))
 
 syntax "ledger_frame_walk" ident : tactic

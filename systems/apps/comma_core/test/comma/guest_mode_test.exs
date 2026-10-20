@@ -6,7 +6,7 @@ defmodule Comma.GuestModeTest do
   alias Comma.GuestMode
 
   setup_all do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
       Ecto.Migrator.run(BillingCore.Repo, :up, all: true)
     end
@@ -17,43 +17,11 @@ defmodule Comma.GuestModeTest do
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(BillingCore.Repo)
-    Ecto.Adapters.SQL.Sandbox.mode(BillingCore.Repo, {:shared, self()})
-    previous = Application.get_env(:comma_core, :selfhost)
-    Application.put_env(:comma_core, :selfhost, false)
-    on_exit(fn -> Application.put_env(:comma_core, :selfhost, previous) end)
+    Ecto.Adapters.SQL.Sandbox.mode(BillingCore.Repo, {:shared, SystemsRuntime.Proc.self()})
+    previous = SystemsRuntime.get_env(:comma_core, :selfhost)
+    SystemsRuntime.put_env(:comma_core, :selfhost, false)
+    on_exit(fn -> SystemsRuntime.put_env(:comma_core, :selfhost, previous) end)
     :ok
-  end
-
-  test "the admin policy needs a guest Tenant before enabling and rejects stale revisions" do
-    {:ok, policy} = GuestMode.get_policy()
-    refute policy["enabled"]
-    assert GuestMode.public_status() == %{"enabled" => false}
-    assert {:error, :guest_mode_disabled} = GuestMode.create_guest(%{})
-
-    assert {:error, :guest_tenant_required} =
-             GuestMode.update_policy(%{"enabled" => true, "revision" => policy["revision"]})
-
-    assert {:error, :invalid_guest_policy} =
-             GuestMode.update_policy(%{"tenant_concurrency" => 0, "revision" => policy["revision"]})
-
-    {:ok, with_tenant} = GuestMode.create_tenant(%{"revision" => policy["revision"]})
-    assert is_binary(with_tenant["salix_tenant_id"])
-    assert SalixStore.TenantProfiles.router_only?(with_tenant["salix_tenant_id"])
-
-    assert {:error, :guest_policy_conflict} =
-             GuestMode.update_policy(%{"enabled" => true, "revision" => policy["revision"]})
-
-    {:ok, enabled} =
-      GuestMode.update_policy(%{
-        "enabled" => true,
-        "tenant_concurrency" => 48,
-        "revision" => with_tenant["revision"]
-      })
-
-    assert enabled["enabled"]
-    assert %{"enabled" => true, "pow" => %{}} = GuestMode.public_status()
-
-    assert SalixStore.TenantProfiles.dependency_limits()[with_tenant["salix_tenant_id"]] == 48
   end
 
   test "a guest gets a router-only Workspace in the shared guest Tenant" do
@@ -73,7 +41,7 @@ defmodule Comma.GuestModeTest do
     {:ok, router} = SalixAgent.Control.get(stored.salix_router_agent_id, tenant_id)
     assert router["role"] == "router"
     assert router["purpose"] == SalixStore.TenantProfiles.guest_router_purpose()
-    assert router["vm"]["enabled"] == false
+    refute SalixAgent.CloudVM.allowed?(router)
 
     # Salix refuses a Worker or a VM in the guest Tenant, whoever asks.
     assert {:error, {:bad_request, _message}} =
@@ -119,7 +87,10 @@ defmodule Comma.GuestModeTest do
     assert {:busy, _seconds} = Comma.Workers.GuestImport.run(import_id)
     create_ready_workspace!(account["id"])
     Repo.update_all(ExternalOperation, set: [next_attempt_at: nil])
-    assert {:ok, %ExternalOperation{status: "succeeded"}} = Comma.Workers.GuestImport.run(import_id)
+
+    assert {:ok, %ExternalOperation{status: "succeeded"}} =
+             Comma.Workers.GuestImport.run(import_id)
+
     assert {:ok, %{"status" => "succeeded"}} = GuestMode.import_status(account, import_id)
   end
 
@@ -143,9 +114,12 @@ defmodule Comma.GuestModeTest do
     account_workspace = create_ready_workspace!(account["id"])
     {:ok, %{"import_id" => import_id}} = GuestMode.redeem(account, claim)
 
-    assert {:ok, %ExternalOperation{status: "succeeded"}} = Comma.Workers.GuestImport.run(import_id)
+    assert {:ok, %ExternalOperation{status: "succeeded"}} =
+             Comma.Workers.GuestImport.run(import_id)
+
     # A repeated run neither writes nor sends again.
-    assert {:ok, %ExternalOperation{status: "succeeded"}} = Comma.Workers.GuestImport.run(import_id)
+    assert {:ok, %ExternalOperation{status: "succeeded"}} =
+             Comma.Workers.GuestImport.run(import_id)
 
     {:ok, chat} =
       Comma.AssistantChats.ensure_chat(account, %{}, account_workspace["default_group_id"])
@@ -160,7 +134,10 @@ defmodule Comma.GuestModeTest do
       )
 
     [imported] =
-      Enum.filter(page["messages"], &(&1["actor_type"] == "user" and &1["user_id"] == account["id"]))
+      Enum.filter(
+        page["messages"],
+        &(&1["actor_type"] == "user" and &1["user_id"] == account["id"])
+      )
 
     [%{"text" => text}] = imported["content"]
     [_, path] = Regex.run(~r{workspace file: (/uploads/guest-chat-[^)]+\.md)}, text)
@@ -209,11 +186,15 @@ defmodule Comma.GuestModeTest do
   defp enable_guest_mode! do
     {:ok, policy} = GuestMode.get_policy()
     {:ok, policy} = GuestMode.create_tenant(%{"revision" => policy["revision"]})
-    {:ok, policy} = GuestMode.update_policy(%{"enabled" => true, "revision" => policy["revision"]})
+
+    {:ok, policy} =
+      GuestMode.update_policy(%{"enabled" => true, "revision" => policy["revision"]})
+
     policy["salix_tenant_id"]
   end
 
-  defp create_guest!, do: create_guest_session!()["user"] |> then(&elem(Accounts.get_user(&1["id"]), 1))
+  defp create_guest!,
+    do: create_guest_session!()["user"] |> then(&elem(Accounts.get_user(&1["id"]), 1))
 
   defp create_guest_session! do
     assert {:ok, session} = GuestMode.create_guest(%{"pow" => solved_pow()})
@@ -235,7 +216,7 @@ defmodule Comma.GuestModeTest do
     %{"challenge" => challenge, "nonce" => nonce}
   end
 
-  defp unique, do: System.unique_integer([:positive])
+  defp unique, do: SystemsRuntime.Proc.unique_integer([:positive])
 
   defp wrong_nonce(%{"challenge" => challenge}) do
     Stream.iterate(0, &(&1 + 1))

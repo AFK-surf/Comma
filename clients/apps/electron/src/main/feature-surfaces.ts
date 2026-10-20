@@ -8,9 +8,7 @@ export interface FeatureSurfaceManifestEntry {
     | "createMeetingRecorderWindowOptions"
     | "createMainWindowOptions"
     | "createOnboardingWindowOptions"
-    | "createRuntimeWorkbenchWindowOptions"
-    | "createSideChatTestWindowOptions"
-    | "createSideChatWindowOptions";
+    | "createRuntimeWorkbenchWindowOptions";
 }
 
 export const FEATURE_SURFACES = [
@@ -38,15 +36,5 @@ export const FEATURE_SURFACES = [
     id: "runtime-workbench",
     kind: "window",
     optionFactory: "createRuntimeWorkbenchWindowOptions",
-  },
-  {
-    id: "side-chat",
-    kind: "window",
-    optionFactory: "createSideChatWindowOptions",
-  },
-  {
-    id: "side-chat-test-window",
-    kind: "window",
-    optionFactory: "createSideChatTestWindowOptions",
   },
 ] as const satisfies readonly FeatureSurfaceManifestEntry[];

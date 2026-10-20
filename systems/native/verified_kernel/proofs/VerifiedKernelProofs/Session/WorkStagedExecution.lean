@@ -8,6 +8,7 @@ import VerifiedKernelProofs.Session.WorkCurrentRecordFence
 import VerifiedKernelProofs.Session.WorkDriverLog
 import VerifiedKernelProofs.Session.WorkDriverRecovery
 import VerifiedKernelProofs.Session.WorkRawOrdinary
+import VerifiedKernelProofs.Session.WorkCurrentConfirmation
 
 namespace VerifiedKernel.Session.WorkConservation.CurrentExecution
 open Data ArchivePublication CommandDriver
@@ -226,7 +227,7 @@ theorem Staging.landed {framing : CodecFraming} {objects nextObjects : Objects}
   obtain ⟨stagedToken, extension, nextSealed, nextHistory, stageKept⟩ := staging.identities history
   obtain ⟨addressed, etag, snapshot, bytes, encoded, issued, stored, snapshotHistory, kept⟩ :=
     write.current_identities nextHistory cas
-  have readAddress := (SessionDomain.ReadRevision.start_captured read.started).1
+  have readAddress := (SessionDomain.ReadRevision.dispatch_start_captured read.started).1
   have sameKey : write.key = read.objectKey := addressed.trans readAddress.symm
   rw [sameKey, stagedToken, readToken] at issued
   have applied : HotCAS before (.tuple [a "cas", read.objectKey, .binary bytes, .binary read.etag]) result after := by

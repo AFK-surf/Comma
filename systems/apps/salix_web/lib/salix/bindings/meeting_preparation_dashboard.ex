@@ -33,7 +33,7 @@ defmodule Salix.Bindings.MeetingPreparationDashboard do
              )
            ),
          "calendar" => status(group, settings),
-         "runtime_enabled" => is_list(Application.get_env(:salix_meet, :calendar_autojoin)),
+         "runtime_enabled" => is_list(SystemsRuntime.get_env(:salix_meet, :calendar_autojoin)),
          "personal_available" => false
        }}
     end
@@ -111,7 +111,7 @@ defmodule Salix.Bindings.MeetingPreparationDashboard do
   end
 
   defp inherited_settings(group) do
-    defaults = Application.get_env(:salix_meet, :calendar_autojoin_channels, []) |> List.wrap()
+    defaults = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels, []) |> List.wrap()
 
     with {:ok, identities} <- MeetingEnrollment.resolve_identities(defaults) do
       entries =

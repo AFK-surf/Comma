@@ -1,5 +1,5 @@
 defmodule SalixSignalProto.Crypto.Ed25519Test do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.Crypto.Ed25519
   alias SalixSignalProto.Test.Vectors

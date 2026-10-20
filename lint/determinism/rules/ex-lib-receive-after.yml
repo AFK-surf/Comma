@@ -1,0 +1,27 @@
+id: ex-lib-receive-after
+language: elixir
+severity: error
+message: "Application code bounds a receive by real time."
+note: |
+  Use SystemsClock.vreceive, or `after SystemsClock.timeout(ms)`, so a test
+  clock decides when the wait ends.
+metadata:
+  category: deadline
+rule:
+  all:
+    - kind: call
+    - has:
+        field: target
+        regex: "^receive$"
+    - has:
+        kind: do_block
+        has:
+          kind: after_block
+          not:
+            has:
+              kind: stab_clause
+              has:
+                field: left
+                regex: "^(0|:infinity|SystemsClock\\.timeout\\(.*\\))$"
+files:
+  - "systems/apps/*/lib/**/*.ex"

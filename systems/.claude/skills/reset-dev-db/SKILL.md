@@ -9,24 +9,24 @@ Use only for an explicitly requested reset of the resolved local targets.
 Startup failure, an old version, or a pending handoff does not authorize a wipe.
 For ordinary initialization, follow `docs/development.md` from the repository
 root and the selected stack's current bootstrap. Never seed admission markers
-manually to bypass a failed migration or apply this procedure to staging/production.
+manually to bypass a failed migration. Never apply this procedure to staging or production.
 
-Full wipe of the BridgeForTeams, BillingCore, and SalixStore Postgres repos and the `salix-dev` MinIO bucket, followed by
-tenant re-creation. **Platform defaults** are deployment config, not tenant
-data — they are backed up before the wipe and restored after, so global OAuth
-fallback, the Composio fallback API key, and cloud-VM provisioning keep working
-on the fresh tenants. Back them up from their **authoritative store**: OAuth
-apps and Composio settings are now in Postgres (a PG-only rotation leaves the
-old S3 object stale, so backing up S3 would lose the current secret); cloud-VM
-config (`ctl/vm/default_config.json`) still lives in S3.
+This wipes the BridgeForTeams, BillingCore, and SalixStore Postgres repos and the
+`salix-dev` MinIO bucket, then re-creates tenants. **Platform defaults** are
+deployment config, not tenant data. Back them up before the wipe and restore them
+after, so global OAuth fallback, the Composio fallback API key, and cloud-VM
+provisioning keep working. Back them up from their **authoritative store**.
+OAuth apps and Composio settings are in Postgres. Do not back them up from S3,
+because the S3 copies can hold an old secret. The cloud-VM config
+(`ctl/vm/default_config.json`) is in S3.
 
 Prerequisites (the standard dev stack): MinIO on `127.0.0.1:19000`
 (podman container, creds `minioadmin`/`minioadmin`), Postgres per
 `config/config.exs` plus `config/runtime.exs`, and the dev node named `comma` with cookie `comma-dev-cookie`.
 This recipe targets the native dev stack with host-network Podman. It does not
 reset the Dev Container or an isolated `make salix-dev-up` stack. Resolve that
-stack's actual targets before adapting this procedure; do not substitute a
-volume-wide reset when platform defaults must survive.
+stack's actual targets before you adapt this procedure. Do not use a volume-wide
+reset when platform defaults must survive.
 
 Run the following steps from `systems/`:
 
@@ -47,20 +47,17 @@ Tenant recreation is optional. Before using `resetup.exs`, inspect its current
 roster and model configuration. It can provision real agents and incur usage.
 Run it only when that recreation is part of the requested reset.
 
-What is **lost**: all orgs/users/swarms/conversations, tenant OAuth
-_connections_ (users must redo the Google consent flow), agent state.
+What is **lost**: all orgs, users, swarms, conversations, tenant OAuth
+_connections_ (users must redo the Google consent flow), and agent state.
 What is **kept**: platform OAuth defaults, the platform Composio default,
-platform VM defaults, and — via
-re-creation — the standard tenant roster defined in `resetup.exs`.
+platform VM defaults, and (through re-creation) the tenant roster in `resetup.exs`.
 
 ## 1. Back up platform defaults
 
 ```bash
 umask 077
 export BK=$(mktemp -d)
-# OAuth apps + Composio settings are authoritative in Postgres — export the
-# deployment defaults from PG (the S3 copies are frozen at cutover time and miss
-# any later PG-only rotation).
+# OAuth apps and Composio settings: export the deployment defaults from Postgres.
 mix run --no-start -e '
   {:ok, _} = Application.ensure_all_started(:salix_store)
   bk = System.fetch_env!("BK")
@@ -72,7 +69,7 @@ mix run --no-start -e '
   end
   File.write!(bk <> "/composio_default.json", Jason.encode!(composio))
 '
-# cloud-VM config still lives in S3.
+# Cloud-VM config is in S3.
 podman run --rm --network host -v $BK:/bk:Z --entrypoint /bin/sh docker.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727 -c '
 mc alias set local http://127.0.0.1:19000 minioadmin minioadmin >/dev/null || exit 1
 mc cp local/salix-dev/ctl/vm/default_config.json /bk/ >/dev/null 2>&1
@@ -97,16 +94,14 @@ mix ecto.drop -r BillingCore.Repo && mix ecto.create -r BillingCore.Repo && mix 
 mix ecto.drop -r SalixStore.Repo && mix ecto.create -r SalixStore.Repo && mix ecto.migrate -r SalixStore.Repo
 ```
 
-The salix control repo (`salix_dev`) holds the migrated control datasets
-(tenant API keys, provider credentials, tenant configs, schedules, oauth apps)
-and their
-cutover markers. After the approved wipe, step 4 calls the owning cutover
-routines. The request path does not create these facts. Do not write markers
-directly or use an empty-store procedure against retained data.
+The Salix control repo (`salix_dev`) holds the control datasets (tenant API
+keys, provider credentials, tenant configs, schedules, OAuth apps) and their
+cutover markers. Step 4 runs the owning cutover routines. Do not write markers
+directly. Do not use an empty-store procedure against retained data.
 
 ## 4. Wipe the bucket, restore platform defaults
 
-Destructive — this empties the whole `salix-dev` bucket:
+Destructive. This empties the whole `salix-dev` bucket:
 
 ```bash
 podman run --rm --network host -v $BK:/bk:ro,Z --entrypoint /bin/sh docker.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727 -c '
@@ -117,21 +112,19 @@ echo "bucket wiped"
 mc ls --recursive local/salix-dev/'
 ```
 
-The final listing must show exactly the restored `ctl/vm/default_config.json`
-(the OAuth/Composio defaults are restored into Postgres below, not S3).
+The final listing must show only the restored `ctl/vm/default_config.json`.
+The OAuth and Composio defaults go back into Postgres below.
 
-For this now-empty native development store, run its existing cutover owners.
-These functions must establish their own completion facts, not accept fabricated
-markers. Check the current `Comma.Release` local migration path before adapting
-the list to a different stack:
+Run the cutover owners for the empty store. They write their own completion
+markers. The list matches `run_salix_cutover_for_dev_compose/0` in
+`apps/comma/lib/comma/release.ex`. Check it before you adapt the list to a
+different stack:
 
 ```bash
-mix run --no-start -e '{:ok, _} = Application.ensure_all_started(:salix_store); :ok = SalixStore.TenantApiKeyCutover.run(); :ok = SalixStore.ProviderCredentialsCutover.run(); :ok = SalixStore.TenantConfigsCutover.run(); :ok = SalixStore.SchedulesCutover.run(); :ok = SalixStore.OAuthAppsCutover.run(); :ok = SalixAgent.InternalSessionFormat2Cutover.run()'
+mix run --no-start -e '{:ok, _} = Application.ensure_all_started(:salix_store); :ok = SalixStore.TenantApiKeyCutover.run(); :ok = SalixStore.ProviderCredentialsCutover.run(); :ok = SalixStore.TenantConfigsCutover.run(); :ok = SalixStore.SchedulesCutover.run(); :ok = SalixStore.OAuthAppsCutover.run()'
 ```
 
-Finally, restore the deployment OAuth + Composio defaults into their
-**authoritative Postgres tables** (they were exported from PG in step 1; the
-markers now exist, so these are ordinary post-cutover PG writes):
+Restore the deployment OAuth and Composio defaults into Postgres:
 
 ```bash
 mix run --no-start -e '
@@ -149,7 +142,7 @@ mix run --no-start -e '
 
 ## 5. Restart the dev server
 
-Run in the background (this is the long-running dev server):
+Run the long-running dev server in the background:
 
 ```bash
 elixir --sname comma --cookie comma-dev-cookie -S mix run --no-halt
@@ -161,19 +154,17 @@ If startup fails, inspect the server log and report the error before proceeding.
 
 ## 6. Recreate the dev tenants
 
-Runs over erpc against the live node; the tenant roster, templates, and billing
-grants live in the script. Output is verbose (remote SQL debug logs relay to
-the caller), so filter for the status lines:
+The script runs over erpc against the live node. It defines the tenant roster,
+platform model, and billing grants. Filter the verbose output for status lines:
 
 ```bash
 elixir --sname resetup_$RANDOM --cookie comma-dev-cookie .claude/skills/reset-dev-db/resetup.exs 2>&1 |
-  grep -E '^(template |package version|org |swarm |router |fee-control |re-setup)'
+  grep -E '^(platform model|package version|org |swarm |router |fee-control |re-setup)'
 ```
 
-Expect: 2 templates created, 2 package versions, 3 orgs, credit + unlimited
-grants, 3 swarms, all 3 routers provisioned (`router <slug>: agent_...`), and
-`fee-control <slug>: allowed=true` for each. `router board-demo` having an
-empty `template=` is normal (that org has no default template override).
+Expect: the platform model tiers (or a kept configuration), 2 package versions,
+3 orgs, credit + unlimited grants, 3 swarms, all 3 routers provisioned
+(`router <slug>: agent_...`), and `fee-control <slug>: allowed=true` for each.
 
 ## 7. Verify platform defaults survived
 
@@ -187,6 +178,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:4000/v1/admin/composi
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:4000/v1/admin/vm/default-config
 ```
 
-The google entry must show `client_secret_configured: true`, the VM config
-`token_configured: true`, and — when a platform Composio key existed before
-the reset — the composio default `api_key_configured: true`. Finally clean up: `rm -rf $BK`.
+The google entry must show `client_secret_configured: true`. The VM config must
+show `token_configured: true`. If a platform Composio key existed before the
+reset, the Composio default must show `api_key_configured: true`. Then clean up
+with `rm -rf $BK`.

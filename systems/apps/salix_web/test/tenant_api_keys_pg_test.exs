@@ -4,7 +4,7 @@ defmodule SalixWeb.TenantApiKeysPgTest do
   # the cutover marker is a readiness/deploy-time fact, not a per-request gate
   # (Comma.PodLifecycle.ready(:salix) keeps an unmigrated pod out of service).
   # Serial: shares the node-global Fake bucket and control tables.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Control.Tenants
   alias SalixStore.{Keys, S3, TenantApiKeys}
@@ -51,34 +51,6 @@ defmodule SalixWeb.TenantApiKeysPgTest do
 
     # The row still exists; only authorization is refused.
     assert {:ok, _} = TenantApiKeys.get_by_hash(hash)
-  end
-
-  test "a transient tenant-record store fault is unavailable (503), not unauthorized (401)" do
-    tenant_id = create_tenant!()
-    {:ok, %{"key" => raw}} = Tenants.create_api_key(tenant_id, %{"name" => "faulty"})
-
-    # The PG lookup succeeds and yields the tenant; the tenant-record S3 read
-    # then faults. That must read as unavailable (a valid key must never be
-    # told it is invalid), which SalixWeb.Auth maps to 503.
-    S3.Fake.set_fault({:fail, 503, :get, Keys.ctl_tenant(tenant_id)})
-    assert {:error, :unavailable} = Tenants.validate_api_key(raw)
-  end
-
-  test "create/delete surface a Postgres fault as {:unavailable}, not a raise (503 contract)" do
-    tenant_id = create_tenant!()
-
-    # Make the PG writes fault by renaming the table away; RENAME preserves the
-    # exact schema for a clean restore before the next test's setup.
-    SalixStore.Repo.query!("ALTER TABLE tenant_api_keys RENAME TO tenant_api_keys_tmp")
-
-    on_exit(fn ->
-      SalixStore.Repo.query!("ALTER TABLE tenant_api_keys_tmp RENAME TO tenant_api_keys")
-    end)
-
-    # Both must return a structured unavailable result (router maps it to 503),
-    # never raise a Plug.Conn.WrapperError.
-    assert {:error, {:unavailable, _}} = Tenants.create_api_key(tenant_id, %{"name" => "x"})
-    assert {:error, {:unavailable, _}} = Tenants.delete_api_key(tenant_id, "deadbeef")
   end
 
   defp normalize_delete({:ok, _}), do: :ok

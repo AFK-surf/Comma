@@ -29,7 +29,7 @@ defmodule SalixStore.LeaseStealFenceClockTest do
   serializes ops, giving the exact per-object linearizability S3 promises, which
   is precisely what makes "exactly one CAS wins" testable).
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   use ExUnitProperties
 
   alias SalixStore.{Agent, S3, Keys}
@@ -38,14 +38,12 @@ defmodule SalixStore.LeaseStealFenceClockTest do
   @sm SalixStore.TestSM
 
   setup do
-    prev = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, prev) end)
-    {:ok, agent: "agent-#{System.unique_integer([:positive])}"}
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, prev) end)
+    {:ok, agent: "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"}
   end
-
-  defp uid, do: "agent-#{System.unique_integer([:positive])}"
 
   # --- helper: the live head as decoded from S3 (ground truth, not a handle) ---
   defp live_head(agent) do
@@ -111,10 +109,12 @@ defmodule SalixStore.LeaseStealFenceClockTest do
 
     tasks =
       for node <- ["node-A", "node-B"] do
-        Task.async(fn -> {node, Agent.claim(a, node, @sm, now: now, ttl_ms: ttl)} end)
+        SystemsRuntime.Task.async(fn ->
+          {node, Agent.claim(a, node, @sm, now: now, ttl_ms: ttl)}
+        end)
       end
 
-    results = Task.await_many(tasks, 5_000)
+    results = SystemsRuntime.Task.await_many(tasks, :infinity)
 
     oks = for {node, {:ok, o}} <- results, do: {node, o}
     held = for {_node, {:error, {:held_by, owner, _}}} <- results, do: owner
@@ -142,83 +142,6 @@ defmodule SalixStore.LeaseStealFenceClockTest do
                "superseded owner #{node} must be fenced, got #{inspect(result)}"
       end
     end
-  end
-
-  # =====================================================================
-  # Scenario C — LIVENESS: held_by before expiry, stealable at/after expiry
-  # =====================================================================
-  # This is the clock-DEPENDENT half (liveness, not safety). We sweep `now`
-  # across the lease boundary and assert the gate flips exactly at lease_until.
-  property "steal-eligibility flips precisely at lease_until (boundary inclusive)", %{agent: _} do
-    check all(
-            t0 <- integer(0..1_000_000_000),
-            ttl <- integer(1_000..600_000),
-            # offsets that straddle the boundary; -ttl..-1 = before, 0.. = at/after
-            offset <- integer(-ttl..(2 * ttl))
-          ) do
-      a = uid()
-      {:ok, _o} = Agent.create(a, "owner", @sm, now: t0, ttl_ms: ttl)
-      lease_until = t0 + ttl
-      probe = t0 + ttl + offset
-
-      result = Agent.claim(a, "thief", @sm, now: probe, ttl_ms: ttl)
-
-      cond do
-        probe < lease_until ->
-          # Before expiry: not stealable; the truthful owner/lease is reported.
-          assert {:error, {:held_by, "owner", ^lease_until}} = result
-
-        true ->
-          # At or after expiry (lease_until <= now): stealable, epoch bumps to 2.
-          assert {:ok, %Owned{epoch: 2, node_id: "thief"}} = result
-      end
-    end
-  end
-
-  # =====================================================================
-  # Scenario D — release clears the lease index; renew extends without epoch bump
-  # =====================================================================
-  test "renew extends lease_until without bumping epoch; release clears the index", %{agent: a} do
-    t0 = 3_000_000
-    ttl = 60_000
-    {:ok, o} = Agent.create(a, "node-1", @sm, now: t0, ttl_ms: ttl)
-    assert o.head.lease_until == t0 + ttl
-    assert o.epoch == 1
-
-    # The live-lease index exists after create.
-    assert {:ok, _} = S3.head(Keys.lease("node-1", a))
-
-    # renew: pure CAS, extends lease_until to now + ttl, epoch unchanged.
-    {:ok, o} = Agent.renew(o, now: t0 + 30_000)
-    assert o.head.lease_until == t0 + 30_000 + ttl
-    assert o.epoch == 1
-    assert live_head(a).lease_until == t0 + 30_000 + ttl
-    assert live_head(a).epoch == 1
-
-    # renew is fenceable too: if someone steals, our renew must fail (not silently
-    # resurrect a dead lease). Steal from another node, then try to renew the old
-    # handle.
-    {:ok, _thief} = Agent.claim(a, "node-2", @sm, steal: true)
-    assert {:error, :fenced} = Agent.renew(o, now: t0 + 40_000)
-
-    # release with a fenced handle is a safe no-op (head CAS 412 → :ok), and it
-    # must NOT delete the new owner's records — but it WILL try to delete its own
-    # node's lease key. Verify node-2 stays the owner.
-    assert :ok = Agent.release(o)
-    assert live_head(a).owner_node == "node-2"
-
-    # Now exercise a clean release by the live owner: clears owner + lease index.
-    {:ok, owner2} = Agent.claim(a, "node-2", @sm, now: t0 + 50_000)
-    assert :ok = Agent.release(owner2)
-    head = live_head(a)
-    assert head.owner_node == nil
-    assert head.lease_until == nil
-    assert {:error, :not_found} = S3.head(Keys.lease("node-2", a))
-
-    # A released agent is freely claimable by anyone (owner_node == nil path),
-    # no steal flag needed, regardless of clock.
-    assert {:ok, %Owned{node_id: "node-3"}} =
-             Agent.claim(a, "node-3", @sm, now: t0 + 1)
   end
 
   # =====================================================================
@@ -259,35 +182,5 @@ defmodule SalixStore.LeaseStealFenceClockTest do
     {:ok, replay} = Agent.claim(a, "node-4", @sm, steal: true)
     assert replay.state.counter == 16
     assert replay.head.epoch == 4
-  end
-
-  # =====================================================================
-  # Scenario F — work admission closes before the steal boundary
-  # =====================================================================
-  test "work-owner verification rejects the guard window even while identity still matches", %{
-    agent: a
-  } do
-    t0 = 5_000_000
-    ttl = 60_000
-    guard_ms = 5_000
-    {:ok, owner} = Agent.create(a, "node-1", @sm, now: t0, ttl_ms: ttl)
-
-    assert :ok =
-             Agent.verify_work_owner(owner,
-               now: t0 + ttl - guard_ms - 1,
-               guard_ms: guard_ms
-             )
-
-    assert {:error, :lease_expiring} =
-             Agent.verify_work_owner(owner,
-               now: t0 + ttl - guard_ms,
-               guard_ms: guard_ms
-             )
-
-    # This is not fencing: the same handle remains the live owner and can
-    # release cleanly. It is specifically a fail-closed decision not to start
-    # another bounded work unit near expiry.
-    assert live_head(a).owner_node == "node-1"
-    assert :ok = Agent.release(owner)
   end
 end

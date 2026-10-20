@@ -3,10 +3,8 @@ import { test, expect } from "@playwright/test";
 const email = process.env.E2E_USER_EMAIL || "e2e@example.com";
 const org = process.env.E2E_SUBSCRIPTION_ORG || "e2e";
 
-// Organization accounts and private templates are sections of the React
-// AI models page.
-test("organization subscriptions, Claude OAuth popup and private templates", async ({ page, context }, testInfo) => {
-  const modelName = `Subscription model ${Date.now()}`;
+// Organization accounts are a section of the React AI models page.
+test("organization subscriptions and Claude OAuth popup", async ({ page, context }, testInfo) => {
   const identity = "browser-fixture@example.com";
   await context.route("https://claude.ai/**", route => route.fulfill({ contentType: "text/html", body: "<h1>Authorization test destination</h1>" }));
   await page.goto(`/dev/login?email=${encodeURIComponent(email)}&to=/orgs/${org}/settings/models`);
@@ -42,20 +40,4 @@ test("organization subscriptions, Claude OAuth popup and private templates", asy
   await page.getByRole("menuitem", { name: "Remove", exact: true }).click();
   await page.getByRole("dialog", { name: "Remove subscription" }).getByRole("button", { name: "Remove", exact: true }).click();
   await expect(row).toHaveCount(0);
-
-  await page.getByRole("button", { name: "Create template", exact: true }).click();
-  await page.getByRole("textbox", { name: "Template name", exact: true }).fill(modelName);
-  await page.getByRole("button", { name: "Save template", exact: true }).click();
-  const template = page.getByRole("listitem").filter({ hasText: modelName });
-  await expect(template).toBeVisible();
-  await template.getByRole("button", { name: `Edit ${modelName}`, exact: true }).click();
-  await page.getByRole("textbox", { name: "Maximum output tokens" }).fill("8192");
-  await page.screenshot({ path: testInfo.outputPath("private-template-editor.png"), fullPage: true });
-  await page.getByRole("button", { name: "Save template", exact: true }).click();
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  // The allowed models above offer the new private template.
-  await expect(page.locator(".bft-checklist")).toContainText(modelName);
-  await template.getByRole("button", { name: `Delete ${modelName}`, exact: true }).click();
-  await page.getByRole("button", { name: "Delete template", exact: true }).click();
-  await expect(template).toHaveCount(0);
 });

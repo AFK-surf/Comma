@@ -49,7 +49,7 @@ defmodule SalixAgent.TrajectoryEval.Store do
       doc = %{
         "session_id" => session_id,
         "agent_id" => agent_id,
-        "updated_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+        "updated_at" => SystemsClock.utc_now() |> DateTime.to_iso8601(),
         "evals" => Enum.take(evals, @max_entries)
       }
 
@@ -81,7 +81,7 @@ defmodule SalixAgent.TrajectoryEval.Store do
           doc = %{
             doc
             | "evals" => List.update_at(evals, index, &Map.put(&1, "judge", judge)),
-              "updated_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+              "updated_at" => SystemsClock.utc_now() |> DateTime.to_iso8601()
           }
 
           case S3.put(

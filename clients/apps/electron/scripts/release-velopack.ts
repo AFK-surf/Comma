@@ -19,6 +19,7 @@ import {
   getDmgArtifactName,
   normalizeReleaseArtifactNames,
   validateReleaseArtifacts,
+  writeWindowsInstallerPointer,
 } from "./release-artifacts";
 
 interface PackageJson {
@@ -231,6 +232,8 @@ async function main() {
       ...process.env,
       COMMA_PACK_DIR: packDir,
     },
+    // pnpm is pnpm.cmd on Windows, which only a shell runs.
+    shell: hostPlatform === "win32",
     stdio: "inherit",
   });
 
@@ -248,6 +251,13 @@ async function main() {
     packVersion,
     releaseChannel: releaseConfig.releaseChannel,
   });
+  if (forgePlatform === "win32") {
+    writeWindowsInstallerPointer({
+      releaseOutputDir,
+      packVersion,
+      releaseChannel: releaseConfig.releaseChannel,
+    });
+  }
   await validateReleaseArtifacts({
     releaseOutputDir,
     releaseChannel: releaseConfig.releaseChannel,

@@ -1,7 +1,7 @@
 # End-to-end validation for agent-visible VFS and skill runtime files.
 #
-# Run through Deno:
-#   deno test --allow-all e2e/tests/skill_runtime_files_test.ts
+# Run through Bun, from systems/e2e:
+#   bun test tests/skill_runtime_files_test.ts
 #
 # The script uses the same tool execution and side-effect commit boundary that a
 # real internal LLM round uses: the LLM-facing `call` envelope expands to the

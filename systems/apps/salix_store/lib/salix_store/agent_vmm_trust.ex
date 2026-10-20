@@ -14,6 +14,7 @@ defmodule SalixStore.AgentVMMTrust do
 
   @max_credential_ttl 24 * 60 * 60
   @max_route_ttl 60 * 60
+  @enrollment_credential_ttl 60 * 60
   @route_audience "agent-vmm/service-tunnel/1"
 
   defmodule Anchor do
@@ -110,7 +111,7 @@ defmodule SalixStore.AgentVMMTrust do
 
   @doc "Issue and persist the self-contained managed trust bundle used by enrollment."
   def issue_enrollment_bundle(registration, identity) when is_map(identity) do
-    config = Application.get_env(:salix_store, :agent_vmm_managed_trust_signing)
+    config = SystemsRuntime.get_env(:salix_store, :agent_vmm_managed_trust_signing)
 
     with %{
            authority_prefix: prefix,
@@ -126,7 +127,7 @@ defmodule SalixStore.AgentVMMTrust do
          true <- device_id == registration.device_id,
          {:ok, root_public_key} <- Base.decode64(identity["rootPublicKey"] || ""),
          {root_key_revision, ""} <- Integer.parse(identity["rootKeyRevision"] || "") do
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
       authority_id = prefix <> ":" <> registration.tenant_id
       trust_domain_ref = :crypto.hash(:sha256, registration.tenant_id)
       anchor_id = authority_id <> ":" <> Integer.to_string(key_revision)
@@ -150,7 +151,10 @@ defmodule SalixStore.AgentVMMTrust do
                  public_key: public_key,
                  key_revision: key_revision,
                  policy_revision: trust_policy_revision,
-                 not_before: DateTime.add(now, -60, :second),
+                 # The Host checks not_before on its own clock. Backdating by the
+                 # credential lifetime tolerates a Host clock as far behind as the
+                 # credential expiry already tolerates one ahead.
+                 not_before: DateTime.add(now, -@enrollment_credential_ttl, :second),
                  expires_at: anchor_expires_at
                }) do
             {:ok, value} -> value
@@ -161,7 +165,7 @@ defmodule SalixStore.AgentVMMTrust do
            anchor.policy_revision != trust_policy_revision do
         {:error, :managed_anchor_unavailable}
       else
-        expires_at = DateTime.add(now, 60 * 60, :second)
+        expires_at = DateTime.add(now, @enrollment_credential_ttl, :second)
 
         claims_digest =
           :crypto.hash(:sha256, registration.tenant_id <> "\0" <> registration.group_id)
@@ -294,7 +298,7 @@ defmodule SalixStore.AgentVMMTrust do
         Repo.rollback(:revision_conflict)
       end
 
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       {1, _} =
         Repo.update_all(from(a in Anchor, where: a.id == ^current.id and is_nil(a.revoked_at)),
@@ -322,7 +326,7 @@ defmodule SalixStore.AgentVMMTrust do
   end
 
   def issue_credential(anchor_id, attrs, signer) when is_map(attrs) and is_function(signer, 1) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     anchor = Repo.get!(Anchor, anchor_id)
 
     cond do
@@ -376,7 +380,7 @@ defmodule SalixStore.AgentVMMTrust do
            from(c in Credential,
              where: c.id == ^id and c.tenant_id == ^tenant_id and is_nil(c.revoked_at)
            ),
-           set: [revoked_at: DateTime.utc_now()]
+           set: [revoked_at: SystemsClock.utc_now()]
          ) do
       {1, _} -> :ok
       {0, _} -> {:error, :not_found}
@@ -388,7 +392,7 @@ defmodule SalixStore.AgentVMMTrust do
   @doc "Issue an exact, short-lived managed service-route capability."
   def issue_route_capability(anchor_id, attrs, policy, signer)
       when is_map(attrs) and is_function(policy, 1) and is_function(signer, 1) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     anchor = Repo.get!(Anchor, anchor_id)
 
     credential =
@@ -510,7 +514,7 @@ defmodule SalixStore.AgentVMMTrust do
            from(c in RouteCapability,
              where: c.id == ^id and c.tenant_id == ^tenant_id and is_nil(c.revoked_at)
            ),
-           set: [revoked_at: DateTime.utc_now()]
+           set: [revoked_at: SystemsClock.utc_now()]
          ) do
       {1, _} -> :ok
       {0, _} -> {:error, :not_found}

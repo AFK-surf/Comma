@@ -75,7 +75,7 @@ defmodule BridgeForTeams.TestConversationStore do
   def get_group_with_router(_group_id), do: {:error, :not_found}
 
   def create_group_conversation(store, group_id, attrs) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     id = attrs["conversation_id"] || SalixStore.Ids.new_conversation_id()
 
     conversation =
@@ -184,7 +184,7 @@ defmodule BridgeForTeams.TestConversationStore do
           updated =
             conversation
             |> deep_merge(stringify(attrs))
-            |> Map.put("updated_at", DateTime.utc_now())
+            |> Map.put("updated_at", SystemsClock.utc_now())
 
           {{:ok, updated}, Map.put(state, key, updated)}
 
@@ -210,7 +210,7 @@ defmodule BridgeForTeams.TestConversationStore do
             message =
               attrs
               |> Map.put("message_id", SalixStore.Ids.new_message_id())
-              |> Map.put_new("created_at", DateTime.utc_now())
+              |> Map.put_new("created_at", SystemsClock.utc_now())
 
             result = append_message_result(conversation_id, message["message_id"], true)
             {{:ok, result}, Map.put(state, key, [message | messages])}
@@ -243,7 +243,7 @@ defmodule BridgeForTeams.TestConversationStore do
 
     Agent.update(ensure_store(store), fn state ->
       Map.put_new_lazy(state, {group_id, conversation_id}, fn ->
-        now = DateTime.utc_now()
+        now = SystemsClock.utc_now()
 
         conversation_attrs
         |> Map.put_new("agent_group_id", group_id)
@@ -262,7 +262,7 @@ defmodule BridgeForTeams.TestConversationStore do
       Enum.map(messages, fn message ->
         message
         |> Map.put("message_id", SalixStore.Ids.new_message_id())
-        |> Map.put_new("created_at", DateTime.utc_now())
+        |> Map.put_new("created_at", SystemsClock.utc_now())
       end)
 
     Agent.update(
@@ -303,7 +303,7 @@ defmodule BridgeForTeams.TestConversationStore do
   end
 
   defp ensure_store(store) do
-    case Process.whereis(store) do
+    case SystemsRuntime.Proc.whereis(store) do
       nil ->
         case Agent.start_link(fn -> %{} end, name: store) do
           {:ok, pid} -> pid

@@ -154,8 +154,7 @@ func (w *webSocketWriter) run() {
 			w.Close(err)
 			return
 		}
-		// The release-before-reply linearization point is modeled in
-		// tla/connector/ConnectorRequestAdmission.tla.
+		// Release admission before the reply: this is the linearization point.
 		if req.beforeWrite != nil {
 			req.beforeWrite()
 		}

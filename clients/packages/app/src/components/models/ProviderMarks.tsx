@@ -1,13 +1,12 @@
 import { Button as AriaButton } from "react-aria-components";
 import { useCommaMessages } from "@comma/i18n/react";
+import { ModelIcon, hasModelIcon } from "@comma/ui/components/model-icons/ModelIcon";
 import {
-  ModelIcon,
   ModelVendorIcon,
-  Tooltip,
-  hasModelIcon,
   hasModelVendorLogo,
-} from "@comma/ui";
-import type { QuotaMeter } from "./providerPresets";
+} from "@comma/ui/components/model-icons/ModelVendorIcon";
+import { Tooltip } from "@comma/ui/components/tooltip";
+import type { QuotaMeter } from "@comma/core-client";
 
 /** A provider's logo, or its initial where no logo exists yet. */
 export function ProviderMark({ brand, name }: { brand: string; name: string }) {

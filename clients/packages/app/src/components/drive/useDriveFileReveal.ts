@@ -1,5 +1,5 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { toast } from "@comma/ui";
+import { toast } from "@comma/ui/components/toast";
 import {
   useCallback,
   useEffect,
@@ -8,7 +8,7 @@ import {
   useState,
   type RefObject,
 } from "react";
-import type { DriveSynchronicityBackend } from "./driveSynchronicityBackend";
+import type { CallFn } from "@comma/core-client";
 import type { DriveSnapshot, DriveStore } from "./driveStore";
 
 export interface DriveRevealSearch {
@@ -19,7 +19,7 @@ export interface DriveRevealSearch {
 
 /** A single request owns one lookup and one post-mount scroll; no polling. */
 export function useDriveFileReveal({
-  backend,
+  call,
   folderPath,
   onConsumed,
   rootRef,
@@ -28,7 +28,7 @@ export function useDriveFileReveal({
   snapshot,
   store,
 }: {
-  backend: DriveSynchronicityBackend | undefined;
+  call: CallFn;
   folderPath: readonly string[];
   onConsumed: () => void;
   rootRef: RefObject<HTMLElement | null>;
@@ -69,26 +69,15 @@ export function useDriveFileReveal({
         ) {
           throw new Error("Invalid Drive location.");
         }
-        if (backend) {
-          const resolved = await backend.lookupFile({ path, space });
-          if (cancelled) return;
-          store.revealFile(resolved);
-        }
+        // The core finds the one file without listing the rest of its space.
+        const { file } = await call("drive.reveal", { path, space });
         if (cancelled) return;
-        const current = store.getSnapshot();
-        const file = current.files.find(
-          (entry) =>
-            entry.spaceId === space &&
-            [entry.folderPath, entry.name].filter(Boolean).join("/") === path
-        );
-        const device = current.devices.find((entry) => entry.current);
-        if (!file || !device) throw new Error("Drive file is unavailable.");
         consumed.current = request;
         store.selectSpace(space);
-        store.setOriginDevice(device.id);
-        const folder = file.folderPath ?? "";
+        const slash = path.lastIndexOf("/");
+        const folder = slash === -1 ? "" : path.slice(0, slash);
         setFolderPath(folder ? folder.split("/") : []);
-        setPending({ request, fileId: file.id, folder, space });
+        setPending({ request, fileId: file, folder, space });
       } catch {
         if (!cancelled) {
           consumed.current = request;
@@ -102,14 +91,16 @@ export function useDriveFileReveal({
     };
     // A request is consumed once. Store renders must not repeat its lookup.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backend, path, reveal, setFolderPath, space, store]);
+  }, [call, path, reveal, setFolderPath, space, store]);
 
   useLayoutEffect(() => {
     if (
       !pending ||
       pending.request !== JSON.stringify([space, path, reveal]) ||
       snapshot.selectedSpaceId !== pending.space ||
-      folderPath.join("/") !== pending.folder
+      folderPath.join("/") !== pending.folder ||
+      // The core's Drive has the file once its change reached this window.
+      !snapshot.files.some((file) => file.id === pending.fileId)
     )
       return;
     const row = rootRef.current?.querySelector<HTMLElement>(
@@ -136,6 +127,7 @@ export function useDriveFileReveal({
     pending,
     reveal,
     rootRef,
+    snapshot.files,
     snapshot.selectedSpaceId,
     space,
   ]);

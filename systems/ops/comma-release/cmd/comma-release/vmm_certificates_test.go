@@ -20,8 +20,17 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 )
+
+// fixtureNow is when the fixture's certificates are issued and checked. It is
+// what time.Now() returns when a synctest bubble starts, so a check made in a
+// bubble agrees with it.
+var fixtureNow = time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+// fixtureTime is the clock of the TLS endpoints that check the fixture.
+func fixtureTime() time.Time { return fixtureNow }
 
 type vmmFixture struct {
 	directory string
@@ -41,9 +50,9 @@ func makeVMMFixture(t *testing.T) vmmFixture {
 		}
 		var root []byte
 		if purpose == "client" {
-			root, err = createVMMClientRoot(key, "staging", time.Now())
+			root, err = createVMMClientRoot(key, "staging", fixtureNow)
 		} else {
-			template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "server root"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(10 * 365 * 24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+			template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "server root"}, NotBefore: fixtureNow.Add(-time.Hour), NotAfter: fixtureNow.Add(10 * 365 * 24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
 			var der []byte
 			der, err = x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
 			root = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
@@ -73,7 +82,7 @@ func makeVMMFixture(t *testing.T) vmmFixture {
 		}
 		return fixture.keys["client"], nil
 	}
-	bundle, err := issueVMMBundle("staging", fixture.directory, factory, time.Now())
+	bundle, err := issueVMMBundle("staging", fixture.directory, factory, fixtureNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +111,7 @@ func TestVMMIssuedBundleEnforcesTLSBoundaries(t *testing.T) {
 	serverRoots.AppendCertsFromPEM(serverRoot)
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "authorized") }))
 	server.Config.ErrorLog = log.New(io.Discard, "", 0)
-	server.TLS = &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{serverPair}, ClientCAs: clientRoots, ClientAuth: tls.RequireAndVerifyClientCert}
+	server.TLS = &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{serverPair}, ClientCAs: clientRoots, ClientAuth: tls.RequireAndVerifyClientCert, Time: fixtureTime}
 	server.StartTLS()
 	defer server.Close()
 	foreign := makeVMMFixture(t)
@@ -110,7 +119,7 @@ func TestVMMIssuedBundleEnforcesTLSBoundaries(t *testing.T) {
 	// Same authorized issuer, wrong leaf usage: issuer mismatch cannot hide this check.
 	block, _ := pem.Decode(fixture.roots["client"])
 	root, _ := x509.ParseCertificate(block.Bytes)
-	template := &x509.Certificate{SerialNumber: big.NewInt(44), Subject: pkix.Name{CommonName: "wrong usage"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	template := &x509.Certificate{SerialNumber: big.NewInt(44), Subject: pkix.Name{CommonName: "wrong usage"}, NotBefore: fixtureNow.Add(-time.Hour), NotAfter: fixtureNow.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	der, err := x509.CreateCertificate(rand.Reader, template, root, leafKey.Public(), fixture.keys["client"])
 	if err != nil {
@@ -129,9 +138,9 @@ func TestVMMIssuedBundleEnforcesTLSBoundaries(t *testing.T) {
 		{"wrong client usage", "gateway.test", []tls.Certificate{wrongUsage}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: serverRoots, ServerName: test.hostname, Certificates: test.certificates}}
+			transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: serverRoots, ServerName: test.hostname, Certificates: test.certificates, Time: fixtureTime}}
 			defer transport.CloseIdleConnections()
-			response, err := (&http.Client{Transport: transport, Timeout: 3 * time.Second}).Get(server.URL)
+			response, err := (&http.Client{Transport: transport}).Get(server.URL)
 			if !test.allowed {
 				if err == nil {
 					response.Body.Close()
@@ -151,32 +160,36 @@ func TestVMMIssuedBundleEnforcesTLSBoundaries(t *testing.T) {
 	}
 }
 func TestVMMRenewalPreservesRootsAndRejectsWrongIssuerTarget(t *testing.T) {
-	fixture := makeVMMFixture(t)
-	due, err := vmmRenewalDue(fixture.bundle, time.Now())
-	if err != nil || due {
-		t.Fatalf("new bundle due=%v err=%v", due, err)
-	}
-	due, err = vmmRenewalDue(fixture.bundle, time.Now().Add(310*24*time.Hour))
-	if err != nil || !due {
-		t.Fatalf("expiring bundle due=%v err=%v", due, err)
-	}
-	for _, name := range vmmTLSNames[:2] {
-		if fixture.bundle.Secrets[name].Data["ca.crt"] != base64.StdEncoding.EncodeToString(fixture.roots["server"]) {
-			t.Fatal("server trust missing from next release input")
+	synctest.Test(t, func(t *testing.T) {
+		fixture := makeVMMFixture(t)
+		due, err := vmmRenewalDue(fixture.bundle, time.Now())
+		if err != nil || due {
+			t.Fatalf("new bundle due=%v err=%v", due, err)
 		}
-	}
-	factory := func(string) (crypto.Signer, error) { return fixture.keys["server"], nil }
-	if _, err = issueVMMBundle("prod", fixture.directory, factory, time.Now()); err == nil {
-		t.Fatal("staging issuer accepted in production")
-	}
-	if _, err = issueVMMBundle("staging", fixture.directory, factory, time.Now()); err == nil {
-		t.Fatal("wrong client signing key accepted")
-	}
+		due, err = vmmRenewalDue(fixture.bundle, time.Now().Add(310*24*time.Hour))
+		if err != nil || !due {
+			t.Fatalf("expiring bundle due=%v err=%v", due, err)
+		}
+		for _, name := range vmmTLSNames[:2] {
+			if fixture.bundle.Secrets[name].Data["ca.crt"] != base64.StdEncoding.EncodeToString(fixture.roots["server"]) {
+				t.Fatal("server trust missing from next release input")
+			}
+		}
+		factory := func(string) (crypto.Signer, error) { return fixture.keys["server"], nil }
+		if _, err = issueVMMBundle("prod", fixture.directory, factory, time.Now()); err == nil {
+			t.Fatal("staging issuer accepted in production")
+		}
+		if _, err = issueVMMBundle("staging", fixture.directory, factory, time.Now()); err == nil {
+			t.Fatal("wrong client signing key accepted")
+		}
+	})
 }
 func TestVMMCertificateCommandDoesNotEnterReleaseLifecycle(t *testing.T) {
-	// Certificate checks do not require a release record, chart or database.
-	t.Setenv("COMMA_RELEASE_ENV_SPEC", "/does-not-exist")
-	if err := run(context.Background(), []string{"vmm-certificates", "check", "--environment", "staging", "--force"}, nil, io.Discard); err != nil {
-		t.Fatal(err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		// Certificate checks do not require a release record, chart or database.
+		t.Setenv("COMMA_RELEASE_ENV_SPEC", "/does-not-exist")
+		if err := run(context.Background(), []string{"vmm-certificates", "check", "--environment", "staging", "--force"}, nil, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+	})
 }

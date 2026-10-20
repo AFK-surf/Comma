@@ -1,28 +1,29 @@
 defmodule CommaWeb.ProactiveMail do
-  @moduledoc "Reads and Task correlation for existing Gmail-backed Home values."
+  @moduledoc "Reads and Task correlation for consented Gmail and Outlook Home values."
 
   alias Comma.MemberSourceConsents
   alias SalixStore.Loops, as: Store
 
   def receive_schedule(payload, opts), do: CommaWeb.HomeMail.receive_schedule(payload, opts)
 
-  def read(%{"message_id" => message_id}, ctx) do
+  def read(%{"message_id" => message_id} = args, ctx) do
     with {:ok, workspace, user_id} <- scope(ctx),
-         {:ok, consent, settings} <- consent(workspace, user_id),
+         {:ok, toolkit} <- toolkit_for(workspace, user_id, args["connection_id"]),
+         {:ok, consent, settings} <- consent(workspace, user_id, toolkit),
          :ok <- loop_consent(ctx, workspace, consent),
          {:ok, result} <-
-           CommaWeb.ProactiveMailSource.read(
+           source_module(toolkit).read(
              settings,
              workspace["default_group_id"],
              consent["connection_id"],
              message_id
            ),
-         ^consent <- MemberSourceConsents.binding(workspace["id"], user_id, "gmail"),
+         ^consent <- MemberSourceConsents.binding(workspace["id"], user_id, toolkit),
          {:ok, current_workspace, ^user_id} <- scope(ctx),
          true <- current_workspace["id"] == workspace["id"],
          :ok <- loop_consent(ctx, workspace, consent) do
       CommaWeb.HomeMail.decorate_read(
-        Map.put(result, "source", Map.merge(consent, %{"toolkit" => "gmail"})),
+        Map.put(result, "source", Map.merge(consent, %{"toolkit" => toolkit})),
         ctx
       )
     else
@@ -38,11 +39,11 @@ defmodule CommaWeb.ProactiveMail do
 
   # This is Task correlation metadata, not source authority. Every read below
   # still authorizes the current owner/account independently.
-  def link_task(%{"conversation_id" => id, "message_id" => message_id}, ctx) do
+  def link_task(%{"conversation_id" => id, "message_id" => _message_id} = args, ctx) do
     with {:ok, workspace, _user} <- scope(ctx),
          true <- ctx.agent_id == workspace["router_agent_id"],
          {:ok, _task} <- owned_task(workspace, id),
-         {:ok, mail} <- read(%{"message_id" => message_id}, ctx),
+         {:ok, mail} <- read(Map.take(args, ~w(message_id connection_id)), ctx),
          ref =
            Map.take(mail, ~w(message_id thread_id url))
            |> Map.put("connection_id", mail["source"]["connection_id"]),
@@ -72,9 +73,7 @@ defmodule CommaWeb.ProactiveMail do
       else
         with %{"message_id" => message_id, "thread_id" => thread, "connection_id" => account} <-
                get_in(task, ["source_refs", "comma_mail"]),
-             {:ok, receipt, _settings} <- consent(workspace, workspace["owner_user_id"]),
-             true <- receipt["connection_id"] == account,
-             {:ok, mail} <- read(%{"message_id" => message_id}, ctx),
+             {:ok, mail} <- read(%{"message_id" => message_id, "connection_id" => account}, ctx),
              true <- mail["thread_id"] == thread do
           finish_followup(workspace, task, mail)
         else
@@ -130,18 +129,50 @@ defmodule CommaWeb.ProactiveMail do
 
   def scope(ctx), do: CommaWeb.Proactive.scope(ctx)
 
-  defp consent(workspace, user_id) do
+  defp toolkit_for(workspace, user_id, nil) do
+    # Preserve the existing Gmail-only direct read contract. Outlook reads must
+    # pin the account so a colliding provider message ID cannot select a source.
+    if MemberSourceConsents.binding(workspace["id"], user_id, "gmail"),
+      do: {:ok, "gmail"},
+      else: {:error, :consented_gmail_account_required}
+  end
+
+  defp toolkit_for(workspace, user_id, id) when is_binary(id) do
+    case Enum.filter(~w(gmail outlook), fn toolkit ->
+           match?(
+             %{"connection_id" => ^id},
+             MemberSourceConsents.binding(workspace["id"], user_id, toolkit)
+           )
+         end) do
+      [toolkit] -> {:ok, toolkit}
+      _ -> {:error, :consented_mail_account_required}
+    end
+  end
+
+  defp toolkit_for(_, _, _), do: {:error, :consented_mail_account_required}
+
+  defp source_module("gmail"), do: CommaWeb.ProactiveMailSource
+  defp source_module("outlook"), do: CommaWeb.ProactiveOutlookMailSource
+
+  defp consent(workspace, user_id, toolkit) do
     with %{"connection_id" => id} = receipt <-
-           MemberSourceConsents.binding(workspace["id"], user_id, "gmail"),
+           MemberSourceConsents.binding(workspace["id"], user_id, toolkit),
          {:ok, settings} <- settings().get(workspace["salix_tenant_id"]),
          {:ok, account} <- client().get_connected_account(settings, id, error_mode: :structured),
          true <-
            account["id"] == id and account["user_id"] == workspace["default_group_id"] and
-             account["status"] == "ACTIVE" and get_in(account, ["toolkit", "slug"]) == "gmail" do
+             account["status"] == "ACTIVE" and get_in(account, ["toolkit", "slug"]) == toolkit do
       {:ok, receipt, settings}
     else
-      {:error, _} = error -> error
-      _ -> {:error, :consented_gmail_account_required}
+      {:error, _} = error ->
+        error
+
+      _ ->
+        {:error,
+         if(toolkit == "gmail",
+           do: :consented_gmail_account_required,
+           else: :consented_mail_account_required
+         )}
     end
   end
 
@@ -152,8 +183,8 @@ defmodule CommaWeb.ProactiveMail do
 
   defp loop_consent(_ctx, _workspace, _consent), do: :ok
 
-  defp client, do: Application.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
+  defp client, do: SystemsRuntime.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
 
   defp settings,
-    do: Application.get_env(:salix_web, :composio_settings_mod, Salix.Control.ComposioSettings)
+    do: SystemsRuntime.get_env(:salix_web, :composio_settings_mod, Salix.Control.ComposioSettings)
 end

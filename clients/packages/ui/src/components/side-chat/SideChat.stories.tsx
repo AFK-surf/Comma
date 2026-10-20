@@ -56,7 +56,7 @@ const tasks: SideChatTask[] = [
     createdAt: 1_784_200_100,
     groupId: "grp-story",
     id: "task-2",
-    statusBucket: "backlog",
+    statusBucket: "needs_review",
     title: "Audit blur parity",
     workspaceId: "wsp-story",
   },

@@ -1,16 +1,17 @@
+import { Button } from "@comma/ui/components/Button";
+import { ChevronDownSmallIcon, SearchIcon } from "@comma/ui/components/icons";
 import {
-  Button,
-  ChevronDownSmallIcon,
   CommandPalette,
+  type CommandPaletteGroup,
+} from "@comma/ui/components/command-palette";
+import {
   Menu,
   MenuItem,
   MenuPopover,
   MenuSeparator,
   MenuTrigger,
-  ScrollArea,
-  SearchIcon,
-  type CommandPaletteGroup,
-} from "@comma/ui";
+} from "@comma/ui/components/menu";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { BftOrgContext } from "./api";
 import { FlashNotice } from "./flash";
@@ -26,7 +27,7 @@ import {
   type NavLink,
 } from "./navSpec";
 import { go, normalizePath, spaLinkClick } from "./router";
-import { signOut } from "./session";
+import { restartOnboarding, signOut } from "./session";
 
 const t = messages.topBar;
 
@@ -169,6 +170,9 @@ function UserMenu({ user }: { user: BftOrgContext["user"] }) {
             </span>
           </MenuItem>
           <MenuSeparator />
+          <MenuItem id="restart-onboarding" onAction={restartOnboarding}>
+            {t.restartOnboarding}
+          </MenuItem>
           <MenuItem id="sign-out" onAction={signOut}>
             {t.signOut}
           </MenuItem>
@@ -211,7 +215,7 @@ function Sidebar({ nav, pathname }: { nav: NavItem[]; pathname: string }) {
                       active ? (childActive ? "parent" : "active") : undefined
                     }
                     href={item.href}
-                    onClick={item.spa ? spaLinkClick : undefined}
+                    onClick={spaLinkClick}
                     title={item.label}
                   >
                     <Icon className="bft-nav-icon" />
@@ -256,7 +260,7 @@ function SubNav({
                 !exact && isNavLinkActive(link, pathname) ? "parent" : undefined
               }
               href={link.href}
-              onClick={link.spa ? spaLinkClick : undefined}
+              onClick={spaLinkClick}
               title={link.label}
             >
               {link.label}

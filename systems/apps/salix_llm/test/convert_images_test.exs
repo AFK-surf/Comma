@@ -6,7 +6,7 @@ defmodule SalixLlm.ConvertImagesTest do
   (willow client.go), Responses input_image output items. Non-image content,
   including plain JSON arrays, must stay byte-identical strings.
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixLlm.{Convert, ConvertOpenAI}
 

@@ -3,7 +3,7 @@ import { test, expect, type Locator, type Page } from "@playwright/test";
 // End-to-end coverage of the Salix admin dashboard, driven through the real
 // LiveView UI on :4000/dash. Auth is the system-wide admin token pasted into the
 // login form (no OIDC/dev-login bypass). Run serially: later tests reuse the
-// tenant/template/group/agent created by earlier ones (persisted server-side).
+// tenant/group/agent created by earlier ones (persisted server-side).
 const TOKEN = process.env.SALIX_API_TOKEN || "e2e-admin-token";
 const uniq = () =>
   Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
@@ -11,8 +11,6 @@ const uniq = () =>
 // Shared state carried across the serial suite.
 let groupName = "";
 let groupUrl = "";
-let templateName = "";
-let templateId = "";
 let agentUrl = "";
 
 async function expectLiveViewConnected(page: Page) {
@@ -124,82 +122,6 @@ test.describe("authenticated", () => {
     await expect(page.getByText("New key (copy now)")).toBeVisible();
   });
 
-  test("create a template and preserve credentials when editing its alias", async ({
-    page,
-  }) => {
-    templateName = `Tmpl ${uniq()}`;
-    await gotoDashboard(page, "/dash/templates/new");
-
-    const form = page.locator("#template-form");
-    await form
-      .getByLabel("Configuration alias", { exact: true })
-      .fill(templateName);
-    await form.getByLabel("Model ID", { exact: true }).fill("mock-model");
-    await form
-      .getByLabel("API key", { exact: true })
-      .fill("e2e-template-secret");
-    await form.locator("#advanced-options > summary").click();
-    await form
-      .getByLabel("Extra provider parameters")
-      .fill('{"custom":{"region":"test"}}');
-    await form
-      .getByRole("button", { name: "Save template", exact: true })
-      .click();
-    await expect(page).toHaveURL(/\/dash\/templates\/(?!new$).+/);
-    templateId = new URL(page.url()).pathname.split("/").pop()!;
-    await expect(
-      page.getByRole("heading", { name: "mock-model", exact: true }),
-    ).toBeVisible();
-    await expect(form.getByLabel("API key", { exact: true })).toHaveValue("");
-    await expect(form.getByLabel("API key", { exact: true })).toHaveAttribute(
-      "placeholder",
-      /Configured/,
-    );
-
-    templateName += " edited";
-    await form
-      .getByLabel("Configuration alias", { exact: true })
-      .fill(templateName);
-    const dialogHandled = new Promise<void>((resolve) =>
-      page.once("dialog", async (dialog) => {
-        expect(dialog.message()).toContain("Discard unsaved template changes");
-        await dialog.dismiss();
-        resolve();
-      }),
-    );
-    await form.getByRole("link", { name: "Cancel", exact: true }).click();
-    await dialogHandled;
-    await expect(
-      form.getByLabel("Configuration alias", { exact: true }),
-    ).toHaveValue(templateName);
-    await form
-      .getByRole("button", { name: "Save template", exact: true })
-      .click();
-    await expect(
-      page.getByText("Template saved.", { exact: true }),
-    ).toBeVisible();
-    await expect(form.getByLabel("API key", { exact: true })).toHaveValue("");
-    await expect(form.getByLabel("API key", { exact: true })).toHaveAttribute(
-      "placeholder",
-      /Configured/,
-    );
-    await form.locator("#advanced-options > summary").click();
-    await expect(form.getByLabel("Extra provider parameters")).toHaveValue(
-      /"region": "test"/,
-    );
-    await page
-      .getByRole("link", { name: "← Model catalog", exact: true })
-      .click();
-    await page
-      .getByLabel("Search configurations", { exact: true })
-      .fill(templateName);
-    await expect(
-      page
-        .locator("#global-templates")
-        .getByText(templateName, { exact: true }),
-    ).toBeVisible();
-  });
-
   test("create an agent group", async ({ page }) => {
     groupName = `Group ${uniq()}`;
     await gotoDashboard(page, "/dash/groups");
@@ -247,7 +169,6 @@ test.describe("authenticated", () => {
 
   test("create an agent in the group", async ({ page }) => {
     expect(groupName, "group test must run first").not.toBe("");
-    expect(templateName, "template test must run first").not.toBe("");
 
     await gotoDashboard(page, "/dash/agents/new");
     const form = page.locator("form[phx-submit=create]");
@@ -256,11 +177,8 @@ test.describe("authenticated", () => {
     await form
       .locator('select[name="group_id"]')
       .selectOption({ label: groupName });
-    const models = form.locator('select[name="template_id"]');
-    await expect(models.locator(`option[value="${templateId}"]`)).toHaveText(
-      `mock-model — ${templateName}`,
-    );
-    await models.selectOption(templateId);
+    // An empty model follows the platform model of the role.
+    await expect(form.locator('select[name="model"]')).toHaveValue("");
     await form.locator('button[type="submit"]').click();
 
     // Lands on the agent detail page.

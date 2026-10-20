@@ -1,12 +1,16 @@
 defmodule SalixAgent.MigrationNoticeTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.{ContextProviders, MigrationNotice}
 
   test "migration notices are delivered and adopted once for new and current sessions" do
-    for previous_version <- [0, 50, MigrationNotice.version() - 1] do
+    current_version = MigrationNotice.version()
+
+    for previous_version <- [0, current_version - 1] do
       notices = MigrationNotice.payloads_since(previous_version)
       assert notices != []
+      assert List.last(notices)["version"] == current_version
+      assert Enum.all?(notices, &(&1["wake"] == false))
 
       session = %{
         "context_provider_states" => %{
@@ -20,6 +24,14 @@ defmodule SalixAgent.MigrationNoticeTest do
       assert [message] = ContextProviders.model_messages(delta)
       for notice <- notices, do: assert(message.content =~ notice["content"])
 
+      assert {[event], 1} = ContextProviders.activation_commit_events("session", delta, 1)
+      assert event["runtime_message_type"] == "migration_notice"
+      assert event["no_wake"] == true
+      assert event["content"] == message.content
+
+      assert ContextProviders.adopted_provider_state(delta)["migration_notice"] ==
+               %{"version" => current_version}
+
       updated = %{
         session
         | "context_provider_states" => ContextProviders.adopted_provider_state(delta)
@@ -27,39 +39,8 @@ defmodule SalixAgent.MigrationNoticeTest do
 
       assert :none = ContextProviders.prepare_activation_delta(adopted_context(updated), %{})
     end
-  end
 
-  test "existing sessions receive the Slack split and source migration exactly once" do
-    for previous_version <- [39, 45] do
-      notices = MigrationNotice.payloads_since(previous_version)
-
-      assert [notice] =
-               Enum.filter(
-                 notices,
-                 &String.contains?(&1["content"], "im_api.slack.reply_message")
-               )
-
-      assert notice["wake"] == false
-      assert notice["content"] =~ "im_api.slack.post_channel_message"
-      assert notice["content"] =~ "task_reply_source"
-
-      refute Enum.any?(
-               MigrationNotice.payloads_since(notice["version"]),
-               &(&1["version"] == notice["version"])
-             )
-    end
-  end
-
-  test "existing sessions receive the current Comma reply contract after script migration" do
-    notices = MigrationNotice.payloads_since(47)
-    assert [%{"version" => 48}, %{"version" => 50}, %{"version" => 52}] = notices
-    assert Enum.all?(notices, &(&1["wake"] == false))
-
-    assert [%{"version" => 50}, %{"version" => 52}] = MigrationNotice.payloads_since(48)
-    assert [%{"version" => 50}, %{"version" => 52}] = MigrationNotice.payloads_since(49)
-    assert [replacement] = MigrationNotice.payloads_since(50)
-    assert [^replacement] = MigrationNotice.payloads_since(51)
-    assert MigrationNotice.payloads_since(MigrationNotice.version()) == []
+    assert MigrationNotice.payloads_since(current_version) == []
   end
 
   test "a disclosure revision names the authoritative current callable tools" do
@@ -114,7 +95,7 @@ defmodule SalixAgent.MigrationNoticeTest do
       states
       |> Map.put("model_context", %{"version" => 1})
       |> Map.put("time_context", %{
-        "sampled_at" => System.system_time(:second),
+        "sampled_at" => SystemsClock.system_time(:second),
         "source_cursor" => nil,
         "session_id" => nil
       })

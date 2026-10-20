@@ -5,21 +5,17 @@ defmodule SalixWeb.Dashboard.AgentTelemetry do
   session "What actually ran" card, and the Trajectory Evals "Sessions
   never checked" card.
 
-  ## Internal-only labeling
+  ## Known-agent labeling
 
-  Run terminal rows (`agent_run_events`) are emitted by INTERNAL sessions
-  only. Any "never finished" listing built on their absence must therefore
-  drop sessions owned by external-runtime agents — an external session
-  never reports an ending, so its absence means nothing. `internal_only/1`
-  applies that filter using the agent registry; sessions whose agent can't
-  be resolved are dropped too (fail closed: quietly mislabeling a healthy
-  external session as stuck is exactly the failure mode this exists to
-  prevent).
+  Any "never finished" listing is built on the absence of run terminal rows
+  (`agent_run_events`). `internal_only/1` keeps the rows whose agent the
+  registry resolves; sessions whose agent can't be resolved are dropped
+  (fail closed: a session with no readable agent is not labelled stuck).
   """
 
   @doc "The ClickHouse query module (swappable in tests)."
   def queries_mod do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :salix_web,
       :agent_telemetry_queries_mod,
       SalixAnalytics.AgentTelemetryQueries
@@ -27,8 +23,8 @@ defmodule SalixWeb.Dashboard.AgentTelemetry do
   end
 
   @doc """
-  Keep only rows (maps with `"salix_agent_id"`) whose agent is a verified
-  internal-runtime agent. One registry lookup per distinct agent id.
+  Keep only rows (maps with `"salix_agent_id"`) whose agent the registry
+  resolves. One registry lookup per distinct agent id.
   """
   def internal_only(rows) when is_list(rows) do
     kinds =
@@ -42,19 +38,16 @@ defmodule SalixWeb.Dashboard.AgentTelemetry do
   end
 
   defp internal_agent?(agent_id) do
-    case agent_control().get_record(agent_id) do
-      {:ok, agent} -> agent_control().runtime_kind(agent) != "external"
-      _ -> false
-    end
+    match?({:ok, _agent}, agent_control().get_record(agent_id))
   end
 
   @doc """
-  Display name, role and runtime kind for a list of agent ids — one registry
+  Display name and role for a list of agent ids — one registry
   lookup per distinct id, run concurrently (the lanes name up to 40 agents,
   and forty sequential reads are a visible part of the page's load time).
   An id whose record has no name or cannot be read (a cross-tenant row may
   name an agent this tenant view can't see) keeps the id as its name, has no
-  role, and counts as internal.
+  role.
   """
   @name_lookup_concurrency 8
   @name_lookup_timeout_ms 5_000
@@ -64,7 +57,7 @@ defmodule SalixWeb.Dashboard.AgentTelemetry do
 
     infos =
       ids
-      |> Task.async_stream(&{&1, agent_info(&1)},
+      |> SystemsClock.async_stream(&{&1, agent_info(&1)},
         max_concurrency: @name_lookup_concurrency,
         ordered: false,
         timeout: @name_lookup_timeout_ms,
@@ -90,8 +83,7 @@ defmodule SalixWeb.Dashboard.AgentTelemetry do
 
         %{
           name: if(is_binary(name) and name != "", do: name, else: id),
-          role: record["role"],
-          external?: agent_control().runtime_kind(record) == "external"
+          role: record["role"]
         }
 
       _ ->
@@ -99,10 +91,10 @@ defmodule SalixWeb.Dashboard.AgentTelemetry do
     end
   end
 
-  defp unknown_agent(id), do: %{name: id, role: nil, external?: false}
+  defp unknown_agent(id), do: %{name: id, role: nil}
 
   defp agent_control do
-    Application.get_env(:salix_web, :agent_control_mod, SalixAgent.Control)
+    SystemsRuntime.get_env(:salix_web, :agent_control_mod, SalixAgent.Control)
   end
 
   @doc "Degrade a failed widget query to empty rather than crashing the page."

@@ -53,7 +53,7 @@ defmodule BridgeForTeams.MacMiniOnboarding do
           normalized_runner_stable_id(Keyword.get(opts, :runner_stable_id)) ||
             "runner_" <> Sessions.generate_token()
 
-        now = Keyword.get(opts, :now, DateTime.utc_now())
+        now = Keyword.get(opts, :now, SystemsClock.utc_now())
         ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_ttl_seconds)
 
         with {:ok, server_build_id} <- server_build_id(opts) do
@@ -129,7 +129,7 @@ defmodule BridgeForTeams.MacMiniOnboarding do
           | {:error, atom()}
   def consume_install_code(org_id, raw_code, opts \\ [])
       when is_binary(org_id) and is_binary(raw_code) do
-    now = Keyword.get(opts, :now, DateTime.utc_now())
+    now = Keyword.get(opts, :now, SystemsClock.utc_now())
     code_hash = Sessions.hash_token(raw_code)
 
     result =
@@ -345,7 +345,7 @@ defmodule BridgeForTeams.MacMiniOnboarding do
   defp install_code_consumption_request_id(opts) do
     case Keyword.get(opts, :request_id) do
       request_id when is_binary(request_id) and request_id != "" -> request_id
-      _ -> Ecto.UUID.generate()
+      _ -> SystemsRuntime.Proc.uuid()
     end
   end
 
@@ -484,8 +484,11 @@ defmodule BridgeForTeams.MacMiniOnboarding do
         for {component, prefix} <- [
               {"runner", "BFT_RUNNER"},
               {"salix-connect", "BFT_SALIX_CONNECTOR"},
-              {"agent-vmm-host", "BFT_AGENT_VMM_HOST"}
+              {"agent-vmm-host", "BFT_AGENT_VMM_HOST"},
+              {"computer-use-helper", "BFT_COMPUTER_USE_HELPER"}
             ],
+            # The installer skips the helper when the release does not carry it.
+            Map.has_key?(components, component),
             {field, suffix} <- [{"source", "URL"}, {"sha256", "SHA256"}, {"size", "SIZE"}],
             into: %{} do
           {prefix <> "_" <> suffix, target_field(components, component, field)}
@@ -592,7 +595,7 @@ defmodule BridgeForTeams.MacMiniOnboarding do
       resource_id: install_code.id,
       resource_label: "Runner install command",
       result: "ok",
-      request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+      request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
       metadata:
         %{
           "install_code_id" => install_code.id,
@@ -616,7 +619,7 @@ defmodule BridgeForTeams.MacMiniOnboarding do
              resource_label: "Runner install command",
              result: "failed",
              reason: reason,
-             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+             request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
              surface: "runner_install_code",
              metadata: install_code_attempt_metadata(opts)
            }) do

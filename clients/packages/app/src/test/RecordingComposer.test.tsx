@@ -5,7 +5,7 @@ import type {
 } from "@comma/native-bridge";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { act, fireEvent, render, screen, waitFor } from "@comma/test-utils/render";
-import { toast } from "@comma/ui";
+import { toast } from "@comma/ui/components/toast";
 import { expect, it, vi } from "vitest";
 import { CommaAuthContext } from "../components/auth-context";
 import { Composer } from "../components/chat/composer/Composer";

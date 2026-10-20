@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Central Icons (commercially licensed): IconWifiNoSignal, round-outlined-radius-2-stroke-2.
+    Not for redistribution; see ui/icons/IconSources.kt. Tinted in code.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M14.8281 13.8281L9.17127 8.17127"
+        android:strokeColor="#FF000000" android:strokeWidth="2" android:strokeLineCap="round" />
+    <path android:pathData="M9.17187 13.8286L14.8287 8.17176"
+        android:strokeColor="#FF000000" android:strokeWidth="2" android:strokeLineCap="round" />
+    <path android:pathData="M12 18.75H12.01M12.25 18.75C12.25 18.8881 12.1381 19 12 19C11.8619 19 11.75 18.8881 11.75 18.75C11.75 18.6119 11.8619 18.5 12 18.5C12.1381 18.5 12.25 18.6119 12.25 18.75Z"
+        android:strokeColor="#FF000000" android:strokeWidth="2" android:strokeLineCap="round" />
+</vector>

@@ -1,4 +1,5 @@
 import VerifiedKernelProofs.Session.WorkHistoryNumbers
+import VerifiedKernelProofs.Session.WorkArchiveOrder
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data ReloadSequence
@@ -41,7 +42,7 @@ theorem inner_auxiliary_numbers {s e t : Term} {j r : List Term}
   obtain ⟨_, h⟩ | ⟨_, h⟩ := h
   · exact (conversationSourceAdvance_auxiliary_frame h).numbers numbers
   obtain ⟨_, h⟩ | ⟨_, h⟩ := h
-  · exact (write_auxiliary_frame h rfl rfl).numbers numbers
+  · exact (write_auxiliary_frame h (by keys_absent) (by keys_absent)).numbers numbers
   obtain ⟨_, h⟩ | ⟨_, h⟩ := h
   · exact (metadataPrompt_auxiliary_frame h).numbers numbers
   obtain ⟨_, h⟩ | ⟨_, h⟩ := h
@@ -74,7 +75,7 @@ theorem inner_auxiliary_numbers {s e t : Term} {j r : List Term}
   · exact (sessionAck_auxiliary_frame h).numbers numbers
   obtain ⟨_, h⟩ | ⟨_, h⟩ := h
   · obtain ⟨_, _, _, h⟩ := bind_ok h
-    exact (write_auxiliary_frame h rfl rfl).numbers numbers
+    exact (write_auxiliary_frame h (by keys_absent) (by keys_absent)).numbers numbers
   obtain ⟨_, h⟩ | ⟨_, h⟩ := h
   · exact (waitClear_auxiliary_frame h).numbers numbers
   obtain ⟨_, h⟩ | ⟨_, h⟩ := h
@@ -91,8 +92,6 @@ theorem inner_auxiliary_numbers {s e t : Term} {j r : List Term}
   · exact (transcriptDelivery_auxiliary_frame h).numbers numbers
   obtain ⟨_, h⟩ | ⟨_, h⟩ := h
   · exact sessionEvent_auxiliary_numbers h sorted numbers
-  obtain ⟨_, h⟩ | ⟨_, h⟩ := h
-  · exact (microcompact_auxiliary_frame h).numbers numbers
   obtain ⟨_, h⟩ | ⟨_, h⟩ := h
   · exact (historyCompaction_auxiliary_frame h).numbers numbers
   obtain ⟨_, h⟩ | ⟨_, h⟩ := h
@@ -174,9 +173,9 @@ theorem prepareWrite_history_numbers {s result : Term} {format : Int} {j r : Lis
   have supported : (i format == i 2 || i format == i 3) = true := by rcases modern with rfl | rfl <;> rfl
   simp only [notLegacy, Bool.false_eq_true, supported, ↓reduceIte] at h
   obtain ⟨t, _, written, h⟩ := bind_ok h
-  have sorted' := write_seq_frame written rfl nextSorted
+  have sorted' := write_seq_frame written (by keys_absent) nextSorted
   exact ⟨t, pure_ok h, sorted', history_numbers_from_auxiliary sorted'
-    ((write_auxiliary_frame written rfl rfl).numbers ⟨nextNumbers.2.1, nextNumbers.2.2.1⟩)⟩
+    ((write_auxiliary_frame written (by keys_absent) (by keys_absent)).numbers ⟨nextNumbers.2.1, nextNumbers.2.2.1⟩)⟩
 
 theorem persist_load_history_numbers {s snapshot decodedState loaded : Term} {bytes : ByteArray}
     {resident : Option Term} {rest : List Term}

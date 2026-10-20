@@ -1,4 +1,4 @@
-import { taskMentionPlainText } from "../chat/model/mentionSerialization";
+import { taskMentionPlainText } from "@comma/core/chat";
 
 /**
  * The composer text that names these Tasks for the Comma assistant: one

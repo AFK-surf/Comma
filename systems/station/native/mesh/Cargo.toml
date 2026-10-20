@@ -1,0 +1,64 @@
+[package]
+name = "stillfail-mesh"
+edition = "2024"
+version = "0.1.0"
+publish = false
+description = "The station's iroh and its image codecs (thumbnails, ThumbHashes), for the station in TypeScript (station/src): built once per release of it, shipped prebuilt as mesh.node"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Profiles as Comma and the stations both use them (systems/profiles): the pool and the runtimes' environment.
+comma-profiles = { path = "../../../profiles" }
+serde = "1"
+serde_json = "1"
+# The archive lock (archive.rs `file_lock`) and local links (local_links.rs), as mesh/app has them.
+libc = "=0.2.189"
+percent-encoding = "=2.3.2"
+pulldown-cmark = { version = "=0.13.4", default-features = false }
+url = "=2.5.8"
+anyhow = "1"
+base64 = "0.22"
+hex = "0.4"
+iroh = { version = "=1.0.3", features = ["unstable-custom-transports"] }
+iroh-base = "=1.0.3"
+n0-watcher = "1"
+# A connection's paths as they change (lib.rs `next_via`).
+futures-core = "0.3"
+noq-udp = { version = "1", default-features = false }
+iroh-mdns-address-lookup = "=0.4.0"
+iroh-mainline-address-lookup = "=0.5.0"
+napi = { version = "3", features = ["async", "tokio_rt"] }
+napi-derive = "3"
+noq-proto = { version = "1", default-features = false }
+sha2 = "0.10"
+# Thumbnails (src/thumbs.rs): exactly as mesh/app builds them (mesh/Cargo.lock), so both stations make the same bytes;
+# the codecs under `image` pinned too (Cargo.lock is not kept here).
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+thumbhash = "=0.1.0"
+png = "=0.18.1"
+fdeflate = "=0.3.7"
+flate2 = "=1.1.10"
+miniz_oxide = "=0.8.9"
+zune-jpeg = "=0.5.15"
+zune-core = "=0.5.3"
+image-webp = "=0.2.4"
+moxcms = "=0.8.1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+
+[build-dependencies]
+napi-build = "2"
+
+# A workspace of its own: not part of mesh/ or client/.
+[workspace]
+
+# As mesh/ has them (vendor/README.md).
+[patch.crates-io]
+swarm-discovery = { path = "../../vendor/swarm-discovery" }
+iroh-mdns-address-lookup = { path = "../../vendor/iroh-mdns-address-lookup" }
+noq-udp = { path = "../../vendor/noq-udp" }
+iroh = { path = "../../vendor/iroh" }
+
+[profile.release]
+strip = true

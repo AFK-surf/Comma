@@ -9,7 +9,10 @@ defmodule Comma.Accounts.AuthSession do
 
   @primary_key {:id, Ecto.UUID, autogenerate: true}
   @foreign_key_type :string
-  @timestamps_opts [type: :utc_datetime_usec]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   schema "comma_auth_sessions" do
     belongs_to(:user, User)
@@ -93,6 +96,7 @@ defmodule Comma.Accounts.AuthSession do
       :auth_method,
       [
         "email_otp",
+        "review_code",
         "google",
         "apple",
         "watch_pairing",

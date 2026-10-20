@@ -28,14 +28,15 @@ defmodule SalixMigrate.Import do
         "group_id" => canonical group id,
         "role" => "worker" | "router",                      # optional; nil ⇒ "worker"
         "router_session_id" => exported canonical router session id, # required for router
-        "template" => string,                                 # optional, for ctl
+        "template" => string,                                 # optional, provenance
         "prompts" => %{"system_prompt" => s, "router_system_prompt" => s}  # optional
       }
 
   Agent identity/config is written to the control plane, not runtime state:
 
     * `"role"`/`"prompts"` land on `ctl/agents/{id}.json`
-    * `"llm"` becomes the imported template's `provider_config`
+    * the imported Agent follows the platform model of its role
+      (`SalixAgent.AgentModel`); the export's `"llm"` is not imported
     * internal runtime sessions receive sessions/messages runtime data
     * `"vfs"` becomes an agent workspace operation
   """
@@ -64,7 +65,6 @@ defmodule SalixMigrate.Import do
     with :ok <- Agent.seed(agent_id, state, State, Keyword.merge(opts, hwm: 0)),
          :ok <- seed_internal_sessions(agent_id, export, opts),
          :ok <- seed_workspace(agent_id, export),
-         :ok <- write_template(export),
          :ok <- write_registry(agent_id, export, role) do
       :ok
     end
@@ -102,8 +102,7 @@ defmodule SalixMigrate.Import do
 
   defp write_registry(agent_id, export, role) do
     prompts = import_prompts(export["prompts"])
-    template_id = template_id(export)
-    now = export["migrated_at"] || System.system_time(:second)
+    now = export["migrated_at"] || SystemsClock.system_time(:second)
 
     body =
       %{
@@ -114,8 +113,6 @@ defmodule SalixMigrate.Import do
         "name" => export["name"] || agent_id,
         "system_prompt" => prompts["system_prompt"] || "",
         "router_system_prompt" => prompts["router_system_prompt"] || "",
-        "template_id" => template_id,
-        "provider" => template_provider(export["llm"]),
         "db_namespace" => "salix:" <> agent_id,
         "status" => "idle",
         "purpose" => "migrated",
@@ -129,35 +126,6 @@ defmodule SalixMigrate.Import do
       |> Jason.encode!()
 
     case S3.put(Keys.ctl_agent(agent_id), body) do
-      {:ok, _} -> :ok
-      other -> other
-    end
-  end
-
-  defp write_template(export) do
-    llm = export["llm"] || %{}
-    template_id = template_id(export)
-    now = export["migrated_at"] || System.system_time(:second)
-
-    body =
-      %{
-        "template_id" => template_id,
-        "name" => export["template"] || template_id,
-        "model" => llm["model"] || "migrated",
-        "provider" => template_provider(llm),
-        "provider_config" => Map.drop(llm, ["model", "max_tokens"]),
-        "request_headers" => %{},
-        "image_config" => %{},
-        "video_config" => %{},
-        "vision_describer_config" => %{},
-        "analyze_config" => %{},
-        "max_tokens" => llm["max_tokens"] || 65_536,
-        "context_tokens" => llm["context_tokens"] || 0,
-        "created_at" => now
-      }
-      |> Jason.encode!()
-
-    case S3.put(Keys.ctl_template(template_id), body) do
       {:ok, _} -> :ok
       other -> other
     end
@@ -270,13 +238,6 @@ defmodule SalixMigrate.Import do
   end
 
   defp import_prompts(_), do: %{}
-
-  defp template_id(export) do
-    export["template_id"] || export["template"] || "migrated-default"
-  end
-
-  defp template_provider(%{"protocol" => protocol}) when is_binary(protocol), do: protocol
-  defp template_provider(_), do: "migrated"
 
   defp put_optional(map, _key, nil), do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)

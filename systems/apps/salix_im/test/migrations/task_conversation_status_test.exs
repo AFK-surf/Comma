@@ -1,18 +1,19 @@
 defmodule SalixIM.Migrations.TaskConversationStatusTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixIM.Migrations.TaskConversationStatus
   alias SalixIM.{Conversations, Release}
   alias SalixStore.{Ids, Keys, S3}
 
   setup do
     SalixIM.TestSupport.Fleet.stop_all!()
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    previous_placement = Application.get_env(:salix_im, :conversation_placement)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_placement = SystemsRuntime.get_env(:salix_im, :conversation_placement)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :conversation_placement,
       SalixIM.ConversationPlacement.LocalFleet
@@ -180,18 +181,9 @@ defmodule SalixIM.Migrations.TaskConversationStatusTest do
     assert {:ok, _} = S3.put(key, Jason.encode!(Map.merge(current, fields)), if_match: etag)
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
-  defp eventually(fun, attempts \\ 100)
-  defp eventually(fun, 0), do: fun.()
-
-  defp eventually(fun, attempts) do
-    if fun.() do
-      true
-    else
-      Process.sleep(10)
-      eventually(fun, attempts - 1)
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 end

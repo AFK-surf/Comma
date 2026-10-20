@@ -1,5 +1,5 @@
 defmodule BillingCore.PricingSeedTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   unless Code.ensure_loaded?(BillingCore.Repo.Migrations.SeedInitialLlmPricing) do
     Code.require_file(

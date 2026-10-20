@@ -16,7 +16,7 @@ defmodule Salix.RemoteShell.Gateway do
     state = %{
       socket: socket,
       controller: device.controller,
-      owner: self(),
+      owner: SystemsRuntime.Proc.self(),
       opened: false,
       credit: false,
       ready: false
@@ -44,7 +44,7 @@ defmodule Salix.RemoteShell.Gateway do
             {:ok, pid}
 
           _ ->
-            Process.exit(pid, :kill)
+            SystemsRuntime.Proc.exit(pid, :kill)
             {:error, :local_transport_failed}
         end
 
@@ -55,7 +55,7 @@ defmodule Salix.RemoteShell.Gateway do
 
   @impl true
   def handle_connect(_conn, state) do
-    Process.monitor(state.owner)
+    SystemsRuntime.Proc.monitor(state.owner)
     {:ok, state}
   end
 

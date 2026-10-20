@@ -1,10 +1,11 @@
-import { LoadingIndicator } from "@comma/ui";
+import { LoadingIndicator } from "@comma/ui/components/LoadingIndicator";
 import {
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { useCommaI18n, useCommaMessages } from "@comma/i18n/react";
@@ -13,12 +14,15 @@ import {
   sessionPrincipalKind,
   sessionProductLease,
 } from "@comma/session-contract";
-import { Button, Text, toast } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Text } from "@comma/ui/components/Text";
+import { toast } from "@comma/ui/components/toast";
 import {
   useSessionHostController,
   useSessionLifecycleSnapshot,
 } from "../session/react";
-import { createCommaApi, type CommaUserProfile } from "../api";
+import { useCall, useTopic } from "@comma/core-client";
+import { supportedLocales } from "@comma/i18n";
 import { CommaAuthContext, type CommaAuthContextValue } from "./auth-context";
 import { LoginScreen } from "./LoginScreen";
 import type { SessionHostController } from "../session/controller";
@@ -41,9 +45,6 @@ export function CommaAuthGate({
   const messages = useCommaMessages();
   const controller = useSessionHostController();
   const snapshot = useSessionLifecycleSnapshot(controller.lifecycle);
-  const [profile, setProfile] = useState<CommaUserProfile>();
-  const signedInSessionId =
-    snapshot.phase === "signed_in" ? snapshot.session.sessionId : undefined;
   const isGuest =
     snapshot.phase === "signed_in" &&
     sessionPrincipalKind(snapshot.principal) === "guest";
@@ -132,57 +133,38 @@ export function CommaAuthGate({
   }, [controller]);
 
   const sessionTransport = controller.getProductTransport();
-  // The lease's one API client. The profile read below and the shell share it
-  // through the context; a new lease brings a new transport and a new client.
-  const api = useMemo(
-    () =>
-      sessionTransport
-        ? createCommaApi({
-            baseUrl: controller.apiBaseUrl,
-            sessionTransport,
-            token: "",
-          })
-        : undefined,
-    [controller.apiBaseUrl, sessionTransport]
+  // The account's profile as the core keeps it (every surface that saves it shows the new one).
+  const call = useCall();
+  const { value: profileShown } = useTopic(
+    snapshot.phase === "signed_in" && sessionTransport && !oauthHandoffActive
+      ? { topic: "profile" }
+      : null
   );
-  const publishProfile = useCallback((next: CommaUserProfile) => setProfile(next), []);
-
-  useEffect(() => {
-    if (snapshot.phase !== "signed_in" || !api || oauthHandoffActive) {
-      setProfile(undefined);
-      return;
-    }
-
-    const profileRequest = new AbortController();
-    void api
-      .getProfile({ signal: profileRequest.signal })
-      .then((next) => setProfile(next))
-      .catch(() => undefined);
-    return () => profileRequest.abort();
-  }, [api, oauthHandoffActive, signedInSessionId, snapshot.phase]);
+  const profile = profileShown?.profile ?? undefined;
 
   // The app language is an account setting. A signed-in device follows the
   // account; an account without one takes this device's current language once.
   const { locale, localePreference, setLocalePreference } = useCommaI18n();
-  const accountLocale = profile?.locale;
+  const accountLocale = supportedLocales.find((l) => l === profile?.locale);
   const profileLoaded = profile !== undefined;
+  // Offered once per account.
+  const localeOffered = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (!profileLoaded || !api) return;
+    if (!profileLoaded) return;
     if (accountLocale) {
       if (accountLocale !== localePreference) setLocalePreference(accountLocale);
       return;
     }
-    void api
-      .updateProfile({ locale })
-      .then(publishProfile)
-      .catch(() => undefined);
+    if (localeOffered.current === profile?.id) return;
+    localeOffered.current = profile?.id;
+    void call("profile.update", { locale }).catch(() => undefined);
   }, [
     accountLocale,
-    api,
+    call,
     locale,
     localePreference,
+    profile?.id,
     profileLoaded,
-    publishProfile,
     setLocalePreference,
   ]);
 
@@ -210,7 +192,7 @@ export function CommaAuthGate({
   }, [messages, signedInEmail, signedInUserId, snapshot.phase]);
 
   const contextValue = useMemo<CommaAuthContextValue | undefined>(() => {
-    if (snapshot.phase !== "signed_in" || !sessionTransport || !api) {
+    if (snapshot.phase !== "signed_in" || !sessionTransport) {
       return undefined;
     }
     const productLease = sessionProductLease(snapshot);
@@ -222,7 +204,6 @@ export function CommaAuthGate({
       : profile?.name || snapshot.principal.displayName;
     const beginGuestSignUp = isGuest ? guest?.beginSignUp : undefined;
     return {
-      api,
       apiBaseUrl: controller.apiBaseUrl,
       ...(profile?.avatar_id && !isGuest ? { avatarRevision: profile.avatar_id } : {}),
       authenticated: true,
@@ -231,20 +212,17 @@ export function CommaAuthGate({
       productLease,
       sessionSignal: sessionTransport.signal,
       sessionTransport,
-      publishProfile,
       signOut,
       userId: snapshot.principal.userId,
       ...(userDisplayName ? { userDisplayName } : {}),
       userEmail: snapshot.principal.email,
     };
   }, [
-    api,
     controller.apiBaseUrl,
     guest,
     isGuest,
     messages,
     profile,
-    publishProfile,
     sessionTransport,
     signOut,
     snapshot,
@@ -329,46 +307,22 @@ export function CommaAuthGate({
   );
 }
 
-// One serial recovery burst per mounted window, never per workspace or child.
-// Retries stay silent: the user sees only a spinner until the burst fails.
-// A persistent failure stops after five requests; an online event or an
-// explicit retry starts a new burst. Unmounting cancels the pending timer.
-const connectionRecoveryDelays = [0, 1_000, 3_000, 10_000, 30_000] as const;
-
+// The client core runs one recovery burst for every window (its clock, its delays): the window shows a spinner until
+// the core says the burst is spent. A retry or the network coming back asks the core to start a new one.
 function ConnectionRecovery({ controller }: { controller: SessionHostController }) {
   const messages = useCommaMessages();
-  const [cycle, setCycle] = useState(0);
-  const [exhausted, setExhausted] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    let attempt = 0;
-    let timer: ReturnType<typeof setTimeout>;
-    setExhausted(false);
-    const recover = async () => {
-      await controller.recover().catch(() => undefined);
-      if (cancelled) return;
-      attempt += 1;
-      const delay = connectionRecoveryDelays[attempt];
-      if (delay === undefined) {
-        setExhausted(true);
-      } else {
-        timer = setTimeout(() => void recover(), delay);
-      }
-    };
-    timer = setTimeout(() => void recover(), connectionRecoveryDelays[0]);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [controller, cycle]);
+  const exhausted =
+    useSyncExternalStore(
+      controller.connectionRecovery.subscribe,
+      controller.connectionRecovery.get
+    ) === "exhausted";
 
   useEffect(() => {
     if (!exhausted) return;
-    const resume = () => setCycle((value) => value + 1);
+    const resume = () => void controller.recover().catch(() => undefined);
     window.addEventListener("online", resume);
     return () => window.removeEventListener("online", resume);
-  }, [exhausted]);
+  }, [controller, exhausted]);
 
   if (!exhausted) {
     return (
@@ -401,7 +355,7 @@ function ConnectionRecovery({ controller }: { controller: SessionHostController 
             <p className="app-login-message">{messages.auth_connection_help()}</p>
             <Button
               className="app-login-primary"
-              onPress={() => setCycle((value) => value + 1)}
+              onPress={() => void controller.recover().catch(() => undefined)}
             >
               {messages.auth_try_again()}
             </Button>

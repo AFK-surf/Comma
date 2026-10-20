@@ -159,7 +159,7 @@ defmodule SalixStore.OAuth.Adapters.GitHub do
   end
 
   defp tokens_from_response(parsed) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     %{
       "access_token" => parsed["access_token"],

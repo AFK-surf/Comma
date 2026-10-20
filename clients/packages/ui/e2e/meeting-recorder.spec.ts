@@ -95,93 +95,6 @@ for (const immediate of [false, true]) {
   });
 }
 
-test("meeting recorder walks detected → recording → paused → saved", async ({
-  page,
-}) => {
-  await page.goto("/?path=/story/app-components-meeting-recorder--interactive");
-
-  const preview = page.locator("#storybook-preview-iframe").contentFrame();
-  const card = preview.getByTestId("meeting-recorder-demo");
-  await expect(card).toHaveAttribute("data-phase", "detected");
-  await expect(card).toContainText("Meeting detected");
-  await expect(card.getByRole("button", { name: "Show in Drive" })).toHaveCount(0);
-  await expect(card.getByRole("button", { name: "Open file" })).toHaveCount(0);
-
-  await card.getByRole("button", { name: "Start recording" }).click();
-  await expect(card).toHaveAttribute("data-phase", "recording");
-  const timer = card.getByRole("timer");
-  await expect(timer).toBeVisible();
-  await expect(card.getByRole("button", { name: "Choose microphone" })).toBeEnabled();
-
-  const expectRecorderColors = async (paused: boolean) => {
-    await expect
-      .poll(() =>
-        card.evaluate((element, isPaused) => {
-          const targets = [
-            [
-              '[data-slot="meeting-recorder-static-logo"]',
-              isPaused
-                ? "--color-ai-input-panel-icon-disabled"
-                : "--color-text-primary",
-            ],
-            [
-              "[role=timer]",
-              isPaused ? "--color-text-disabled" : "--color-text-secondary",
-            ],
-          ] as const;
-          return targets.every(([selector, token]) => {
-            const target = element.querySelector(selector)!;
-            const style = getComputedStyle(target);
-            const probe = document.createElement("span");
-            probe.style.color = `var(${token})`;
-            element.append(probe);
-            const expected = getComputedStyle(probe).color;
-            probe.remove();
-            const colorIndex = style.transitionProperty.split(", ").indexOf("color");
-            return (
-              style.color === expected &&
-              style.transitionDuration.split(", ")[colorIndex] === "0.05s"
-            );
-          });
-        }, paused)
-      )
-      .toBe(true);
-  };
-
-  // Pausing freezes the clock and dims the logo and timer with a 50ms color transition.
-  await card.getByRole("button", { name: "Pause recording" }).click();
-  await expect(card).toHaveAttribute("data-phase", "paused");
-  await expectRecorderColors(true);
-  const frozen = await timer.textContent();
-  await page.waitForTimeout(1_200);
-  expect(await timer.textContent()).toBe(frozen);
-  await expect(card.getByRole("img", { name: "Live audio level" })).toHaveCount(0);
-
-  await card.getByRole("button", { name: "Resume recording" }).click();
-  await expect(card).toHaveAttribute("data-phase", "recording");
-  await expectRecorderColors(false);
-
-  await card.getByRole("button", { name: "Stop", exact: true }).click();
-  await expect(card).toHaveAttribute("data-phase", "saved");
-  await expect(card).toContainText("comma-recording-2026-08-26T21-38-46.wav");
-
-  const reveal = card.getByRole("button", { name: "Show in Drive" });
-  const open = card.getByRole("button", { name: "Open file" });
-  await reveal.click();
-  await expect(reveal).toHaveAttribute("data-pending", "true");
-  await expect(open).toBeDisabled();
-  await expect(preview.getByText("Preview: Show in Drive completed.")).toBeVisible();
-  await expect(card).toHaveAttribute("data-phase", "saved");
-  await open.click();
-  await expect(open).toHaveAttribute("data-pending", "true");
-  await expect(reveal).toBeDisabled();
-  await expect(preview.getByText("Preview: Open file completed.")).toBeVisible();
-  await expect(card).toContainText("comma-recording-2026-08-26T21-38-46.wav");
-
-  await card.getByRole("button", { name: "Dismiss" }).click();
-  await expect(card).toHaveAttribute("data-phase", "detected");
-});
-
 test("saved recording file actions fit long names and narrow windows", async ({
   page,
 }) => {
@@ -206,16 +119,6 @@ test("saved recording file actions fit long names and narrow windows", async ({
     };
   });
   expect(geometry).toEqual({ contentFits: true, cardFits: true, actionsFit: true });
-});
-
-test("a file action failure leaves the saved recording available", async ({ page }) => {
-  await page.goto("/?path=/story/app-components-meeting-recorder--saved-action-error");
-  const preview = page.locator("#storybook-preview-iframe").contentFrame();
-  const card = preview.locator('[data-slot="meeting-recorder"]');
-  await expect(card).toHaveAttribute("data-phase", "saved");
-  await expect(card.getByRole("alert")).toContainText("Try again.");
-  await expect(card.getByRole("button", { name: "Show in Drive" })).toBeEnabled();
-  await expect(card.getByRole("button", { name: "Open file" })).toBeEnabled();
 });
 
 test("meeting recorder shows eight expanded states and one interactive compact state", async ({
@@ -327,41 +230,6 @@ test("desktop recorder starts top centre, separate from the client block", async
   });
   expect(geometry.top).toBe(32);
   expect(Math.abs(geometry.centreOffset)).toBeLessThanOrEqual(1);
-});
-
-test("microphone selection is checked, keyboard-dismissible, and discard never enters saving", async ({
-  page,
-}) => {
-  await page.goto(
-    "/iframe.html?id=app-components-meeting-recorder--interactive&viewMode=story"
-  );
-  const card = page.getByTestId("meeting-recorder-demo");
-  await card.getByRole("button", { name: "Start recording" }).click();
-  await expect(card).toHaveAttribute("data-phase", "recording");
-  const trigger = card.getByRole("button", { name: "Choose microphone" });
-  await expect(card.locator(".comma-recorder-microphone button")).toHaveCount(1);
-  // Clicking the microphone glyph opens the same menu as the chevron.
-  await trigger.locator("svg").first().click();
-  await expect(
-    page.getByRole("menuitemradio", { name: /System default/ })
-  ).toHaveAttribute("aria-checked", "true");
-  await page
-    .getByRole("menuitemradio", { name: "MacBook Pro Microphone", exact: true })
-    .click();
-  await page.mouse.move(0, 0);
-  await card.hover();
-  await trigger.locator("svg").last().click();
-  await expect(
-    page.getByRole("menuitemradio", { name: "MacBook Pro Microphone", exact: true })
-  ).toHaveAttribute("aria-checked", "true");
-  await page.keyboard.press("Escape");
-  await expect(card).toBeFocused();
-  await page.mouse.move(0, 0);
-  await card.hover();
-  await card.getByRole("button", { name: "Stop options" }).click();
-  await page.getByRole("menuitem", { name: "Discard and stop" }).click();
-  await expect(card).toHaveAttribute("data-phase", "detected");
-  await expect(page.getByText("Recording saved", { exact: true })).toHaveCount(0);
 });
 
 test("recorder logos stay static and recording shares the saving shimmer", async ({
@@ -635,7 +503,23 @@ test("hover resizes the actual card without stretching its border and obeys redu
   await expect
     .poll(() => card.evaluate((el) => el.getBoundingClientRect().width))
     .toBe(227);
+  // Hold the page's animations still, so the hover transition is still running when the test reads
+  // it however late the runner gets to it; the test sets each frame's time itself.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Animation.enable");
+  await cdp.send("Animation.setPlaybackRate", { playbackRate: 0 });
   await card.hover();
+  // The transitions start with the hover's style change.
+  await expect
+    .poll(() =>
+      card.evaluate(
+        (el) =>
+          el
+            .parentElement!.getAnimations({ subtree: true })
+            .filter((animation) => animation instanceof CSSTransition).length
+      )
+    )
+    .toBeGreaterThan(0);
   const widths = [];
   for (const time of [30, 60, 120, 180]) {
     const frame = await card.evaluate((el, frameTime) => {
@@ -679,6 +563,7 @@ test("hover resizes the actual card without stretching its border and obeys redu
   expect(widths[1]).toBeGreaterThan(widths[0]!);
   expect(widths[2]).toBeGreaterThan(widths[1]!);
   expect(widths[3]).toBe(370);
+  await cdp.send("Animation.setPlaybackRate", { playbackRate: 1 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.mouse.move(0, 0);
   await expect

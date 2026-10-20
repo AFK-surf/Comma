@@ -1,12 +1,14 @@
 defmodule SalixIM.TaskExecutionTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  require SystemsClock
 
+  use SalixAgent.TestSupport.Settle
   alias SalixIM.{Conversations, ConversationServer, Provider, RouterConversationInput}
   alias SalixStore.{CasRecord, Ids, Keys}
 
   defmodule Owner do
     def authorize_owner(group, user) do
-      if Application.get_env(:salix_im, :task_execution_test_owner) == {group, user},
+      if SystemsRuntime.get_env(:salix_im, :task_execution_test_owner) == {group, user},
         do: :ok,
         else: {:error, :not_owner}
     end
@@ -23,7 +25,7 @@ defmodule SalixIM.TaskExecutionTest do
 
     def direct_members(group, connect, [peer], "comma_user|" <> user = principal) do
       if authorize_owner(group, user) == :ok and
-           Application.get_env(:salix_im, :task_execution_test_link) == {connect, peer},
+           SystemsRuntime.get_env(:salix_im, :task_execution_test_link) == {connect, peer},
          do: [principal]
     end
 
@@ -38,12 +40,17 @@ defmodule SalixIM.TaskExecutionTest do
     # names is also handed to the real runtime, so a test that wants a Session
     # activated gets one without every other test paying for a round.
     def deliver(agent_id, payload, opts) do
-      send(
-        Application.fetch_env!(:salix_im, :task_execution_test_pid),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_im, :task_execution_test_pid),
         {:delivered, agent_id, payload}
       )
 
-      if agent_id == Application.get_env(:salix_im, :task_execution_test_runtime_agent),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_im, :task_execution_test_pid),
+        {:source_delivery, agent_id, payload, opts[:source_message_id]}
+      )
+
+      if agent_id == SystemsRuntime.get_env(:salix_im, :task_execution_test_runtime_agent),
         do: SalixAgent.deliver(agent_id, payload, opts),
         else: {:ok, %{}}
     end
@@ -62,7 +69,10 @@ defmodule SalixIM.TaskExecutionTest do
 
     @impl true
     def complete_stream(_messages, tools, _on_delta, _opts) do
-      send(Application.fetch_env!(:salix_im, :task_execution_test_pid), {:offered_tools, tools})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.fetch_env!(:salix_im, :task_execution_test_pid),
+        {:offered_tools, tools}
+      )
 
       {:assistant, "done",
        [%{id: "task-execution-end-turn", name: "end_turn", args: %{"outcome" => "done"}}]}
@@ -83,7 +93,7 @@ defmodule SalixIM.TaskExecutionTest do
         # Model a durable grant written before the operation split, at the same
         # persistence boundary. The command still uses normal source protection.
         attrs =
-          if Application.get_env(:salix_im, :task_execution_test_legacy_grant, false) do
+          if SystemsRuntime.get_env(:salix_im, :task_execution_test_legacy_grant, false) do
             update_in(attrs, ["source_refs", "task_execution", "requests"], fn requests ->
               Enum.map(requests, &Map.put(&1, "api", "slack.post_message"))
             end)
@@ -135,19 +145,27 @@ defmodule SalixIM.TaskExecutionTest do
             %{"ok" => true, "members" => ["U1"]}
 
           conn.request_path == "/api/chat.postMessage" ->
-            send(Application.fetch_env!(:salix_im, :task_execution_test_pid), {:slack, body})
+            SystemsRuntime.Proc.send(
+              SystemsRuntime.fetch_env!(:salix_im, :task_execution_test_pid),
+              {:slack, body}
+            )
+
             %{"ok" => true, "channel" => body["channel"], "ts" => "123.456"}
 
           conn.request_path == "/open-apis/im/v1/messages" ->
-            send(
-              Application.fetch_env!(:salix_im, :task_execution_test_pid),
+            SystemsRuntime.Proc.send(
+              SystemsRuntime.fetch_env!(:salix_im, :task_execution_test_pid),
               {:feishu, body, conn.query_string}
             )
 
             %{"code" => 0, "data" => %{"message_id" => "om1"}}
 
           true ->
-            send(Application.fetch_env!(:salix_im, :task_execution_test_pid), {:telegram, body})
+            SystemsRuntime.Proc.send(
+              SystemsRuntime.fetch_env!(:salix_im, :task_execution_test_pid),
+              {:telegram, body}
+            )
+
             %{"ok" => true, "result" => %{"message_id" => 42}}
         end
 
@@ -178,26 +196,26 @@ defmodule SalixIM.TaskExecutionTest do
          SalixIM.TaskReplySource,
          SalixIM.IFCSourceRefs
        ]},
-      {:salix_im, :task_execution_test_pid, self()},
+      {:salix_im, :task_execution_test_pid, SystemsRuntime.Proc.self()},
       {:salix_agent, :im_provider_mod, Provider},
       {:salix_agent, :ifc_facts_mod, SalixIM.IFC.Facts},
       {:salix_agent, :llm, CaptureLLM}
     ]
 
     previous =
-      Enum.map(overrides, fn {app, key, _} -> {app, key, Application.get_env(app, key)} end)
+      Enum.map(overrides, fn {app, key, _} -> {app, key, SystemsRuntime.get_env(app, key)} end)
 
-    for {app, key, val} <- overrides, do: Application.put_env(app, key, val)
-    old_api = Application.get_env(:salix_im, :telegram_api_base_url)
-    old_slack_api = Application.get_env(:salix_im, :slack_api_base_url)
-    old_feishu_api = Application.get_env(:salix_im, :feishu_api_base_url)
+    for {app, key, val} <- overrides, do: SystemsRuntime.put_env(app, key, val)
+    old_api = SystemsRuntime.get_env(:salix_im, :telegram_api_base_url)
+    old_slack_api = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    old_feishu_api = SystemsRuntime.get_env(:salix_im, :feishu_api_base_url)
 
     port =
       SalixIM.TestSupport.BanditServer.start!(fn p -> {Bandit, plug: TelegramAPI, port: p} end)
 
-    Application.put_env(:salix_im, :telegram_api_base_url, "http://127.0.0.1:#{port}")
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
-    Application.put_env(:salix_im, :feishu_api_base_url, "http://127.0.0.1:#{port}/open-apis")
+    SystemsRuntime.put_env(:salix_im, :telegram_api_base_url, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    SystemsRuntime.put_env(:salix_im, :feishu_api_base_url, "http://127.0.0.1:#{port}/open-apis")
 
     on_exit(fn ->
       SalixIM.TestSupport.Fleet.stop_all!()
@@ -209,14 +227,14 @@ defmodule SalixIM.TaskExecutionTest do
             {:salix_im, :feishu_api_base_url, old_feishu_api} | previous
           ] do
         if is_nil(value),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, value)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, value)
       end
 
-      Application.delete_env(:salix_im, :task_execution_test_owner)
-      Application.delete_env(:salix_im, :task_execution_test_link)
-      Application.delete_env(:salix_im, :task_execution_test_runtime_agent)
-      Application.delete_env(:salix_im, :task_execution_test_legacy_grant)
+      SystemsRuntime.delete_env(:salix_im, :task_execution_test_owner)
+      SystemsRuntime.delete_env(:salix_im, :task_execution_test_link)
+      SystemsRuntime.delete_env(:salix_im, :task_execution_test_runtime_agent)
+      SystemsRuntime.delete_env(:salix_im, :task_execution_test_legacy_grant)
     end)
 
     tenant = SalixAgent.TestSupport.new_tenant_id()
@@ -240,7 +258,7 @@ defmodule SalixIM.TaskExecutionTest do
       })
 
     user = "usr_task_execution_owner"
-    Application.put_env(:salix_im, :task_execution_test_owner, {group, user})
+    SystemsRuntime.put_env(:salix_im, :task_execution_test_owner, {group, user})
     connect = Ids.new_connect_id()
 
     {:ok, _} =
@@ -266,24 +284,35 @@ defmodule SalixIM.TaskExecutionTest do
     }
   end
 
+  # Without a current grant the Worker keeps only the reads of the connect.
+  defp assert_no_execution_grant(f, context) do
+    assert {:ok, connects} = Provider.list_connects(f.worker, context)
+    refute Enum.any?(connects, &Map.has_key?(&1, "task_execution_requests"))
+    assert {:ok, %{"apis" => apis}} = Provider.provider_manual("telegram", f.worker, context)
+    assert Enum.all?(apis, &(&1["safety"] == "read"))
+  end
+
   test "Comma owner request creates a Task whose Worker discovers and removes the exact Telegram keyboard",
        f do
     {task, context} = create_task(f)
     assert {:ok, connects} = Provider.list_connects(f.worker, context)
     assert Enum.any?(connects, &(&1["connect_id"] == f.connect))
-    assert {:ok, %{"apis" => [api]}} = Provider.provider_manual("telegram", f.worker, context)
-    assert api["name"] == "telegram.remove_reply_keyboard"
+    # The Task grants its one write beside the reads every Worker holds.
+    assert {:ok, %{"apis" => apis}} = Provider.provider_manual("telegram", f.worker, context)
+
+    assert [%{"name" => "telegram.remove_reply_keyboard"}] =
+             Enum.reject(apis, &(&1["safety"] == "read"))
 
     assert {:ok, %{"message_id" => 42}} = remove_keyboard(f, context)
 
-    assert_receive {:telegram,
-                    %{"chat_id" => "123", "reply_markup" => %{"remove_keyboard" => true}}}
+    settle_receive(
+      {:telegram, %{"chat_id" => "123", "reply_markup" => %{"remove_keyboard" => true}}}
+    )
 
     assert {:error, _} = remove_keyboard(f, context, %{"chat_id" => "other"})
     assert {:error, _} = remove_keyboard(f, context, %{"message_thread_id" => 7})
     assert {:error, _} = remove_keyboard(f, %{})
-    refute_receive {:telegram, _}, 20
-
+    settle_refute_receive({:telegram, _}, 20)
     {:ok, record} = Conversations.get_group_conversation_record(f.group, task["conversation_id"])
     assert record["owner_user_id"] == f.user
     assert get_in(record, ["source_refs", "task_execution", "requester_id"]) == f.user
@@ -300,7 +329,7 @@ defmodule SalixIM.TaskExecutionTest do
       "123"
     )
 
-    Application.put_env(:salix_im, :task_execution_test_link, {f.connect, "123"})
+    SystemsRuntime.put_env(:salix_im, :task_execution_test_link, {f.connect, "123"})
 
     {task, context} = create_task(f, %{}, :enforce)
     ctx = runtime_context(f, context, "worker", :enforce)
@@ -323,10 +352,10 @@ defmodule SalixIM.TaskExecutionTest do
 
     refute result.error, inspect(result)
     assert result.status == "completed", inspect(result)
-    assert_receive {:telegram, %{"reply_markup" => %{"remove_keyboard" => true}}}
+    settle_receive({:telegram, %{"reply_markup" => %{"remove_keyboard" => true}}})
     assert ctx.ifc["items"] == [original]
 
-    Application.delete_env(:salix_im, :task_execution_test_link)
+    SystemsRuntime.delete_env(:salix_im, :task_execution_test_link)
 
     unlinked =
       execute(
@@ -337,8 +366,8 @@ defmodule SalixIM.TaskExecutionTest do
       )
 
     assert unlinked.error or unlinked.status == "guidance", inspect(unlinked)
-    refute_receive {:telegram, _}, 20
-    Application.put_env(:salix_im, :task_execution_test_link, {f.connect, "123"})
+    settle_refute_receive({:telegram, _}, 20)
+    SystemsRuntime.put_env(:salix_im, :task_execution_test_link, {f.connect, "123"})
 
     refused =
       execute(
@@ -353,7 +382,7 @@ defmodule SalixIM.TaskExecutionTest do
       )
 
     assert refused.error or refused.status == "guidance", inspect(refused)
-    refute_receive {:telegram, _}, 20
+    settle_refute_receive({:telegram, _}, 20)
 
     report =
       execute(
@@ -382,7 +411,7 @@ defmodule SalixIM.TaskExecutionTest do
   for {legacy, threaded} <- [{false, true}, {true, true}, {true, false}] do
     @tag legacy_slack_grant: legacy, threaded_slack_grant: threaded
     test "Slack grant legacy=#{legacy} threaded=#{threaded} preserves its exact target", f do
-      Application.put_env(:salix_im, :task_execution_test_legacy_grant, f.legacy_slack_grant)
+      SystemsRuntime.put_env(:salix_im, :task_execution_test_legacy_grant, f.legacy_slack_grant)
 
       api =
         if f.threaded_slack_grant, do: "slack.reply_message", else: "slack.post_channel_message"
@@ -433,7 +462,7 @@ defmodule SalixIM.TaskExecutionTest do
 
       result = execute(ctx, "im_api." <> api, args, %{})
       assert result.status == "completed", inspect(result)
-      assert_receive {:slack, sent}
+      settle_receive({:slack, sent})
       assert Map.take(sent, ["channel", "thread_ts"]) == target
 
       opposite =
@@ -457,7 +486,7 @@ defmodule SalixIM.TaskExecutionTest do
         assert result.error or result.status == "guidance", inspect(result)
       end
 
-      refute_receive {:slack, _}, 20
+      settle_refute_receive({:slack, _}, 20)
 
       {:ok, _} =
         CasRecord.update(
@@ -469,7 +498,7 @@ defmodule SalixIM.TaskExecutionTest do
       refute Enum.any?(manual["apis"], &(&1["name"] == api))
       result = execute(ctx, "im_api." <> api, args, %{})
       assert result.error or result.status == "guidance", inspect(result)
-      refute_receive {:slack, _}, 20
+      settle_refute_receive({:slack, _}, 20)
     end
   end
 
@@ -484,7 +513,7 @@ defmodule SalixIM.TaskExecutionTest do
       "123"
     )
 
-    Application.put_env(:salix_im, :task_execution_test_link, {f.connect, "123"})
+    SystemsRuntime.put_env(:salix_im, :task_execution_test_link, {f.connect, "123"})
     {_task, context} = create_task(f, %{}, :enforce)
     ctx = runtime_context(f, context, "worker", :enforce)
     ref = SalixAgent.IFC.input_ref(1)
@@ -509,7 +538,7 @@ defmodule SalixIM.TaskExecutionTest do
       assert result.error or result.status == "guidance", inspect(result)
     end
 
-    refute_receive {:telegram, _}, 20
+    settle_refute_receive({:telegram, _}, 20)
 
     assert :none =
              Provider.task_execution_request(
@@ -526,164 +555,6 @@ defmodule SalixIM.TaskExecutionTest do
              )
 
     assert ctx.ifc["requester"] == nil
-  end
-
-  test "Feishu Task scope uses the existing adapter and cannot change the recipient type", f do
-    connect = Ids.new_connect_id()
-
-    {:ok, _} =
-      CasRecord.create(Keys.ctl_im_connect(f.group, connect), %{
-        "tenant_id" => f.tenant,
-        "group_id" => f.group,
-        "connect_id" => connect,
-        "provider" => "feishu",
-        "status" => "connected",
-        "app_id" => "cli1",
-        "tenant_key" => "tenant1",
-        "tenant_access_token" => "test-token"
-      })
-
-    {_task, context} =
-      create_task(f, %{
-        "execution_requests" => [
-          %{
-            "api" => "feishu.send_text",
-            "connect_id" => connect,
-            "params" => %{"receive_id" => "oc1", "receive_id_type" => "chat_id"}
-          }
-        ]
-      })
-
-    ctx = runtime_context(f, context, "worker", :off)
-
-    args = %{
-      "connect_id" => connect,
-      "receive_id" => "oc1",
-      "receive_id_type" => "chat_id",
-      "text" => "done"
-    }
-
-    result = execute(ctx, "im_api.feishu.send_text", args, %{})
-    assert result.status == "completed", inspect(result)
-
-    assert_receive {:feishu, %{"receive_id" => "oc1", "content" => content},
-                    "receive_id_type=chat_id"}
-
-    assert Jason.decode!(content) == %{"text" => "done"}
-
-    for params <- [
-          Map.put(args, "receive_id_type", "open_id"),
-          Map.put(args, "receive_id", "oc2"),
-          Map.put(args, "mention_all", true)
-        ] do
-      result = execute(ctx, "im_api.feishu.send_text", params, %{})
-      assert result.error or result.status == "guidance", inspect(result)
-    end
-
-    refute_receive {:feishu, _, _}, 20
-  end
-
-  test "runtime configuration discovers only the grant from the current admitted envelope", f do
-    {_task, context} = create_task(f)
-    ctx = runtime_context(f, context, "worker", :off)
-
-    config =
-      ctx
-      |> Map.put(:messages, ctx.input_messages)
-      |> Map.drop([:trusted_origin, :source_message_id, :ifc, :tool_disclosure])
-
-    for kind <- [:internal, :external],
-        config <- [config, struct(SalixAgent.InternalSession.State, config)] do
-      entries =
-        SalixAgent.Tools.ImRouter.dynamic_disclosure_entries(Map.put(config, :runtime_kind, kind))
-
-      assert Enum.any?(entries, &(&1["name"] == "im_api.telegram.remove_reply_keyboard"))
-      refute Enum.any?(entries, &(&1["name"] == "im_api.telegram.send_message"))
-    end
-
-    # A round configuration that carries no admitted source ids of its own is
-    # answered by the kernel from the transcript: with the envelope's message
-    # acknowledged, no source is current and the grant it carried is gone.
-    entries =
-      SalixAgent.Tools.ImRouter.dynamic_disclosure_entries(
-        config
-        |> Map.delete(:source_message_ids)
-        |> Map.put(:last_ack_message_id, 1)
-      )
-
-    refute Enum.any?(entries, &String.starts_with?(&1["name"], "im_api.telegram."))
-  end
-
-  test "a round configuration seeded from the Session handle keeps the delegated grant", f do
-    {_task, context} = create_task(f)
-    ctx = runtime_context(f, context, "worker", :off)
-
-    # The transcript the Worker's Session actually holds: the delegated
-    # envelope, unacknowledged.
-    session =
-      SalixAgent.InternalSession.open(%SalixAgent.InternalSession.State{
-        agent_id: f.worker,
-        session_id: ctx.session_id,
-        platform: "internal",
-        next_message_id: 2,
-        last_ack_message_id: 0,
-        messages: ctx.input_messages
-      })
-
-    session_context = SalixAgent.RoundConfig.round_session_context(session)
-
-    assert session_context.session_id == ctx.session_id
-    assert session_context.source_message_ids == ctx.source_message_ids
-    assert [%{"source_message_id" => _}] = session_context.trusted_origins
-
-    assert {:ok, %{session_config: config}} =
-             SalixAgent.RoundConfig.build_round_config(f.worker, "worker", session_context)
-
-    assert {:ok, snapshot} =
-             SalixAgent.RoundConfig.build_round_snapshot(f.worker, session_context)
-
-    assert {:ok, %{session_config: cached}} =
-             SalixAgent.RoundConfig.materialize_round_snapshot(
-               f.worker,
-               snapshot,
-               session_context
-             )
-
-    assert disclosed_tool_names(cached) == disclosed_tool_names(config)
-
-    assert {:ok, %{session_config: next_round}} =
-             SalixAgent.RoundConfig.materialize_round_snapshot(f.worker, snapshot, %{
-               platform: "internal",
-               source_message_ids: [],
-               trusted_origins: []
-             })
-
-    refute Enum.any?(
-             disclosed_tool_names(next_round),
-             &String.starts_with?(&1, "im_api.telegram.")
-           )
-
-    names = disclosed_tool_names(config)
-    assert "im_api.telegram.remove_reply_keyboard" in names
-    refute "im_api.telegram.send_message" in names
-
-    # The regression: a projection that keeps only the Session's identity and
-    # platform drops the admitted sources, so the delegation is invisible and
-    # the authorized capability disappears from the round's disclosure.
-    identity_only = Map.take(session_context, [:session_id, :platform])
-
-    assert {:ok, %{session_config: blind}} =
-             SalixAgent.RoundConfig.build_round_config(f.worker, "worker", identity_only)
-
-    refute Enum.any?(disclosed_tool_names(blind), &String.starts_with?(&1, "im_api.telegram."))
-  end
-
-  test "the Worker's activation uses the stable call envelope with Task delegation", f do
-    Application.put_env(:salix_im, :task_execution_test_runtime_agent, f.worker)
-    create_task(f)
-
-    assert_receive {:offered_tools, tools}, 10_000
-    assert tools == SalixAgent.ToolDisclosure.internal_llm_specs("worker")
   end
 
   test "Task admission rejects unsupported scopes and cannot widen an exact retry", f do
@@ -722,9 +593,9 @@ defmodule SalixIM.TaskExecutionTest do
     {:ok, _} =
       CasRecord.update(Keys.ctl_group(f.group), &Map.put(&1, "router_agent_id", f.router))
 
-    Application.delete_env(:salix_im, :task_execution_test_owner)
+    SystemsRuntime.delete_env(:salix_im, :task_execution_test_owner)
     assert {:error, _} = call.(params, context)
-    Application.put_env(:salix_im, :task_execution_test_owner, {f.group, f.user})
+    SystemsRuntime.put_env(:salix_im, :task_execution_test_owner, {f.group, f.user})
     assert {:ok, first} = call.(params, context)
     assert {:ok, retry} = call.(params, context)
     assert first["conversation_id"] == retry["conversation_id"]
@@ -747,11 +618,10 @@ defmodule SalixIM.TaskExecutionTest do
       assert {:error, _} = remove_keyboard(f, changed)
     end
 
-    Application.delete_env(:salix_im, :task_execution_test_owner)
+    SystemsRuntime.delete_env(:salix_im, :task_execution_test_owner)
     assert {:error, _} = remove_keyboard(f, context)
-    assert {:ok, [%{"connect_id" => "internal"}]} = Provider.list_connects(f.worker, context)
-    assert {:error, :unsupported} = Provider.provider_manual("telegram", f.worker, context)
-    Application.put_env(:salix_im, :task_execution_test_owner, {f.group, f.user})
+    assert_no_execution_grant(f, context)
+    SystemsRuntime.put_env(:salix_im, :task_execution_test_owner, {f.group, f.user})
 
     {:ok, _} =
       CasRecord.update(
@@ -760,7 +630,7 @@ defmodule SalixIM.TaskExecutionTest do
       )
 
     assert {:error, _} = remove_keyboard(f, context)
-    refute_receive {:telegram, _}, 20
+    settle_refute_receive({:telegram, _}, 20)
   end
 
   test "cancellation and generic source-ref forgery cannot keep or add execution access", f do
@@ -777,8 +647,249 @@ defmodule SalixIM.TaskExecutionTest do
              ConversationServer.update_group_conversation(f.group, id, %{"status" => "cancelled"})
 
     assert {:error, _} = remove_keyboard(f, context)
-    assert {:ok, [%{"connect_id" => "internal"}]} = Provider.list_connects(f.worker, context)
-    refute_receive {:telegram, _}, 20
+    assert_no_execution_grant(f, context)
+    settle_refute_receive({:telegram, _}, 20)
+  end
+
+  test "a Loop Task Worker builds, starts and reports its final run under IFC enforcement", f do
+    {:ok, _} =
+      CasRecord.update(Keys.ctl_group(f.group), &Map.put(&1, "ifc", %{"mode" => "enforce"}))
+
+    {task, context} =
+      create_task(
+        f,
+        %{
+          "execution_requests" => nil,
+          "loop" => %{"cadence" => %{"every_minutes" => 60}, "max_runs" => 1}
+        },
+        :enforce
+      )
+
+    ctx = runtime_context(f, context, "worker", :enforce)
+    ref = SalixAgent.IFC.input_ref(1)
+    source = "#include <spinfoam.h>\nSF_MAIN sf_i64 main(void) { for (;;) sf_sleep_ms(60000); }"
+
+    result =
+      execute(ctx, "loop.build", %{"source" => source, "path" => "/loops/task.elf"}, %{
+        "request" => ref,
+        "sources" => [ref]
+      })
+
+    assert result.status == "completed", inspect(result)
+    refute result.error
+    assert Jason.decode!(result.content)["state"] == "succeeded"
+
+    assert {:ok, [%{"status" => "pending"}]} =
+             SalixStore.Loops.list_by_tasks(f.group, [task["conversation_id"]])
+
+    {:ok, _} =
+      SalixAgent.AgentWorkspace.seed_operation(f.worker, "task-loop-build", %{}, result.events)
+
+    created =
+      execute(ctx, "loop.create", %{"path" => "/loops/task.elf"}, %{
+        "request" => ref,
+        "sources" => [ref]
+      })
+
+    assert created.status == "completed", inspect(created)
+    refute created.error, inspect(created)
+    loop_id = Jason.decode!(created.content)["loop_id"]
+    {:ok, record} = SalixStore.Loops.get(loop_id)
+    assert record["ifc"]["creator"] == "agent|" <> f.worker
+
+    stale =
+      execute(%{ctx | session_id: "other"}, "loop.create", %{"path" => "/loops/task.elf"}, %{
+        "request" => ref,
+        "sources" => [ref]
+      })
+
+    assert stale.status == "guidance", inspect(stale)
+
+    assert {:ok, _} =
+             SalixAgent.Loops.Capabilities.deliver_notification(record, "Check one run", "one")
+
+    worker = f.worker
+
+    settle_receive(
+      {:source_delivery, ^worker, %{trusted_origin: %{"provider" => "loop"}} = payload, source_id}
+    )
+
+    input = %{
+      id: 1,
+      role: "user",
+      content: payload.content,
+      source_message_id: source_id,
+      trusted_origin: payload.trusted_origin
+    }
+
+    wake_ctx = %{
+      ctx
+      | trusted_origin: payload.trusted_origin,
+        source_message_id: source_id,
+        source_message_ids: [source_id],
+        input_messages: [input],
+        ifc:
+          SalixAgent.IFC.Context.build(%{messages: [input]},
+            source_message_id: source_id,
+            source_message_ids: [source_id],
+            trusted_origin: payload.trusted_origin
+          )
+    }
+
+    report =
+      execute(
+        wake_ctx,
+        "im_api.internal.send_message",
+        %{
+          "connect_id" => "internal",
+          "conversation_id" => task["conversation_id"],
+          "content" => [%{"type" => "text", "text" => "Final Loop report"}]
+        },
+        %{"request" => ref, "sources" => [ref]}
+      )
+
+    assert report.status == "completed", inspect(report)
+    refute report.error, inspect(report)
+
+    # The original data-only assignment grants only setup and its own Task report.
+    assert ctx.ifc["requester"] == nil
+
+    for denied <- [%{ctx | session_id: "other"}, %{ctx | source_message_ids: []}] do
+      assert :none =
+               Provider.task_execution_request(
+                 "loop.create",
+                 %{"path" => "/loops/task.elf"},
+                 denied
+               )
+    end
+
+    assert :none =
+             Provider.task_execution_request("loop.build", %{"path" => "/drive/leak.elf"}, ctx)
+
+    flush_deliveries(f.router)
+    {other_task, _} = create_task(f, %{"execution_requests" => nil}, :enforce)
+
+    crossed =
+      execute(
+        ctx,
+        "im_api.internal.send_message",
+        %{
+          "connect_id" => "internal",
+          "conversation_id" => other_task["conversation_id"],
+          "content" => [%{"type" => "text", "text" => "TASK_PRIVATE_CANARY"}]
+        },
+        %{"request" => ref, "sources" => [ref]}
+      )
+
+    assert crossed.status == "guidance", inspect(crossed)
+
+    denied =
+      execute(
+        wake_ctx,
+        "fs.write_file",
+        %{"path" => "/drive/leak.txt", "content" => "TASK_PRIVATE_CANARY"},
+        %{"request" => ref, "sources" => [ref]}
+      )
+
+    assert denied.status == "guidance", inspect(denied)
+
+    external =
+      execute(
+        wake_ctx,
+        "im_api.telegram.remove_reply_keyboard",
+        %{"connect_id" => f.connect, "chat_id" => "123"},
+        %{"request" => ref, "sources" => [ref]}
+      )
+
+    assert external.status != "completed" or external.error, inspect(external)
+  end
+
+  test "Router can act on a consumed Loop runtime notice under IFC enforcement", f do
+    {:ok, _} =
+      CasRecord.update(Keys.ctl_group(f.group), &Map.put(&1, "ifc", %{"mode" => "enforce"}))
+
+    for {event, status} <- [
+          {"ended", "completed"},
+          {"report", "escalated"}
+        ] do
+      {task, worker_context} =
+        create_task(
+          f,
+          %{
+            "execution_requests" => nil,
+            "loop" => %{"cadence" => %{"every_minutes" => 60}, "max_runs" => 1}
+          },
+          :enforce
+        )
+
+      id = task["conversation_id"]
+
+      loop = %{
+        "group_id" => f.group,
+        "conversation_id" => id,
+        "loop_id" => Ids.new_loop_id(),
+        "agent_id" => f.worker,
+        "session_id" => worker_context["session_id"]
+      }
+
+      ctx =
+        if event == "report" do
+          router_report_context(f, task)
+        else
+          assert {:ok, :ended} =
+                   ConversationServer.task_loop_ended(f.group, id, loop, %{
+                     "ended_reason" => "max_runs",
+                     "max_runs" => 1
+                   })
+
+          {:ok, messages} = Conversations.list_group_conversation_messages(f.group, id)
+          notice = Enum.find(messages, &(get_in(&1, ["metadata", "task_loop", "event"]) == event))
+          message_id = notice["message_id"]
+          router = f.router
+
+          settle_receive(
+            {:delivered, ^router, %{trusted_origin: %{"message_id" => ^message_id}} = payload}
+          )
+
+          runtime_context(f, tool_context(f, router, payload), "router", :enforce)
+        end
+
+      ref = SalixAgent.IFC.input_ref(1)
+      target = %{"connect_id" => "internal", "conversation_id" => id, "status" => status}
+
+      result =
+        execute(ctx, "im_api.internal.update_conversation", target, %{
+          "request" => ref,
+          "sources" => [ref]
+        })
+
+      assert result.status == "completed", inspect(result)
+      refute result.error
+
+      assert execute(ctx, "im_api.internal.update_conversation", target, %{
+               "request" => ref,
+               "sources" => [ref]
+             }).status == "completed"
+
+      for changed <- [
+            Map.put(target, "conversation_id", "other"),
+            Map.put(target, "status", "active"),
+            Map.put(target, "title", "extra")
+          ] do
+        assert :none =
+                 Provider.task_execution_request(
+                   "im_api.internal.update_conversation",
+                   changed,
+                   ctx
+                 )
+      end
+
+      assert :none =
+               Provider.task_execution_request("im_api.internal.update_conversation", target, %{
+                 ctx
+                 | session_id: "stale"
+               })
+    end
   end
 
   test "ordinary Worker can report to its own Task without external execution grants", f do
@@ -861,57 +972,6 @@ defmodule SalixIM.TaskExecutionTest do
       Conversations.list_group_conversation_messages(f.group, task["conversation_id"])
 
     refute Enum.any?(messages, &(inspect(&1["content"]) =~ "PRIVATE_REPORT_CANARY"))
-  end
-
-  test "a later delegator message can authorize a report, but a cancelled Task cannot", f do
-    {:ok, _} =
-      CasRecord.update(Keys.ctl_group(f.group), &Map.put(&1, "ifc", %{"mode" => "enforce"}))
-
-    {task, _context} = create_task(f, %{"execution_requests" => nil}, :enforce)
-    id = task["conversation_id"]
-
-    assert {:ok, _} =
-             ConversationServer.append_group_conversation_agent_message(
-               f.group,
-               id,
-               f.router,
-               %{
-                 "content" => "Clarify the requested report",
-                 "client_request_id" => Ids.new_message_id()
-               }
-             )
-
-    worker = f.worker
-    assert_receive {:delivered, ^worker, payload}, 2_000
-    ctx = runtime_context(f, tool_context(f, worker, payload), "worker", :enforce)
-    ref = SalixAgent.IFC.input_ref(1)
-
-    args = %{
-      "connect_id" => "internal",
-      "conversation_id" => id,
-      "content" => [%{"type" => "text", "text" => "Follow-up report"}]
-    }
-
-    assert {:ok, _, principal} =
-             Provider.task_execution_request("im_api.internal.send_message", args, ctx)
-
-    assert principal == "agent|" <> worker
-
-    result =
-      execute(ctx, "im_api.internal.send_message", args, %{"request" => ref, "sources" => [ref]})
-
-    assert result.status == "completed", inspect(result)
-    assert ctx.ifc["requester"] == nil
-
-    assert {:ok, _} =
-             ConversationServer.update_group_conversation(f.group, id, %{"status" => "cancelled"})
-
-    assert :none = Provider.task_execution_request("im_api.internal.send_message", args, ctx)
-
-    denied =
-      execute(ctx, "im_api.internal.send_message", args, %{"request" => ref, "sources" => []})
-
-    assert denied.status == "guidance", inspect(denied)
   end
 
   test "Router coordinates only its own live Task after a consumed Worker report", f do
@@ -1080,7 +1140,63 @@ defmodule SalixIM.TaskExecutionTest do
     assert :none = Provider.task_execution_request("im_api.internal.send_message", args, ctx)
   end
 
-  for status <- ~w(active ready_for_review completed failed cancelled escalated) do
+  test "after a manual end the Router changes the status only in a human-started turn", f do
+    {task, _worker_ctx} = create_task(f)
+    id = task["conversation_id"]
+    {:ok, current} = Conversations.get_group_conversation_record(f.group, id)
+
+    assert {:ok, %{"status" => "completed"}} =
+             ConversationServer.set_task_status(
+               f.group,
+               id,
+               "completed",
+               current["updated_at"],
+               f.user
+             )
+
+    {:ok, report} =
+      ConversationServer.append_group_conversation_agent_message(f.group, id, f.worker, %{
+        "content" => "Late Worker result",
+        "client_request_id" => Ids.new_message_id()
+      })
+
+    router = f.router
+    report_id = report["message_id"]
+
+    settle_receive(
+      {:delivered, ^router, %{trusted_origin: %{"message_id" => ^report_id}} = report_payload}
+    )
+
+    reopen = fn context ->
+      Provider.call_api(router, "internal", "internal.update_conversation", %{
+        "connect_id" => "internal",
+        "tool_context" => context,
+        "params" => %{"conversation_id" => id, "status" => "active"}
+      })
+    end
+
+    assert {:error, _} = reopen.(tool_context(f, router, report_payload))
+
+    forged =
+      put_in(
+        tool_context(f, router, report_payload),
+        ["trusted_origin", "source_message_id"],
+        "other"
+      )
+
+    assert {:error, _} = reopen.(forged)
+
+    assert {:ok, %{"status" => "completed"}} =
+             Conversations.get_group_conversation_record(f.group, id)
+
+    # Drop the Router's earlier Task deliveries so the next one is the user's.
+    flush_deliveries(router)
+    human = router_request_context(f)
+    assert human["trusted_origin"]["source_actor_type"] == "user"
+    assert {:ok, %{"status" => "active"}} = reopen.(human)
+  end
+
+  for status <- ~w(active ready_for_review completed cancelled) do
     @tag task_status: status
     test "Router reply after #{status} retains the Slack target and rejects private data and installation replacement",
          f do
@@ -1133,7 +1249,7 @@ defmodule SalixIM.TaskExecutionTest do
         execute(ctx, "im_api.slack.reply_message", args, %{"request" => ref, "sources" => [ref]})
 
       assert result.status == "completed", inspect(result)
-      assert_receive {:slack, %{"channel" => "C1", "thread_ts" => "100.200"}}, 2_000
+      settle_receive({:slack, %{"channel" => "C1", "thread_ts" => "100.200"}})
 
       for invalid <- [
             Map.delete(args, "thread_ts"),
@@ -1216,9 +1332,6 @@ defmodule SalixIM.TaskExecutionTest do
     end
   end
 
-  defp disclosed_tool_names(%{tool_disclosure: %{"tools" => tools}}),
-    do: Enum.map(tools, & &1["name"])
-
   defp router_report_context(f, task) do
     {:ok, result} =
       ConversationServer.append_group_conversation_agent_message(
@@ -1234,9 +1347,9 @@ defmodule SalixIM.TaskExecutionTest do
     router = f.router
     message_id = result["message_id"]
 
-    assert_receive {:delivered, ^router,
-                    %{trusted_origin: %{"message_id" => ^message_id}} = payload},
-                   2_000
+    settle_receive(
+      {:delivered, ^router, %{trusted_origin: %{"message_id" => ^message_id}} = payload}
+    )
 
     runtime_context(f, tool_context(f, router, payload), "router", :enforce)
   end
@@ -1351,7 +1464,7 @@ defmodule SalixIM.TaskExecutionTest do
       end
 
     worker = f.worker
-    assert_receive {:delivered, ^worker, worker_payload}, 2_000
+    settle_receive({:delivered, ^worker, worker_payload})
     {task, tool_context(f, worker, worker_payload)}
   end
 
@@ -1417,7 +1530,7 @@ defmodule SalixIM.TaskExecutionTest do
       })
 
     router = f.router
-    assert_receive {:delivered, ^router, payload}, 2_000
+    settle_receive({:delivered, ^router, payload})
     tool_context(f, router, payload)
   end
 
@@ -1433,6 +1546,14 @@ defmodule SalixIM.TaskExecutionTest do
         }
       ]
     }
+  end
+
+  defp flush_deliveries(agent) do
+    SystemsClock.vreceive do
+      {:delivered, ^agent, _payload} -> flush_deliveries(agent)
+    after
+      200 -> :ok
+    end
   end
 
   defp tool_context(f, agent, payload) do

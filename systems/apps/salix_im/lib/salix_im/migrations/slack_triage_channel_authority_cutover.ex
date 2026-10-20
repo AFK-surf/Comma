@@ -17,7 +17,6 @@ defmodule SalixIM.Migrations.SlackTriageChannelAuthorityCutover do
     Keys,
     Repo,
     S3,
-    SlackTriageChannelCutover,
     SlackTriageChannels,
     ULID
   }
@@ -35,7 +34,7 @@ defmodule SalixIM.Migrations.SlackTriageChannelAuthorityCutover do
            }}
           | {:error, term()}
   def run do
-    case SlackTriageChannelCutover.mode() do
+    case cutover().mode() do
       :projected ->
         {:ok, %{already_projected: true}}
 
@@ -49,13 +48,13 @@ defmodule SalixIM.Migrations.SlackTriageChannelAuthorityCutover do
 
   defp run_legacy_cutover do
     with {:ok, @preparation_id} <-
-           SlackTriageChannelCutover.begin_preparing(preparation_evidence()),
+           cutover().begin_preparing(preparation_evidence()),
          {:ok, before} <- enumerate_legacy_authorities(),
          :ok <- reconcile_projection(before),
          {:ok, after_reconciliation} <- enumerate_legacy_authorities(),
          :ok <- verify_frozen_snapshot(before, after_reconciliation),
          :ok <- verify_projection(after_reconciliation),
-         :ok <- SlackTriageChannelCutover.mark_ready(readiness_evidence()) do
+         :ok <- cutover().mark_ready(readiness_evidence()) do
       count = length(after_reconciliation)
       {:ok, %{already_projected: false, materialized: count, verified: count}}
     end
@@ -355,4 +354,7 @@ defmodule SalixIM.Migrations.SlackTriageChannelAuthorityCutover do
   defp safe_storage_reason({:ambiguous, _reason}), do: :ambiguous
   defp safe_storage_reason(reason) when is_atom(reason), do: reason
   defp safe_storage_reason(_reason), do: :unavailable
+
+  # The cutover barrier, or its in-memory twin in a simulation.
+  defp cutover, do: SalixStore.SlackTriageChannelCutover
 end

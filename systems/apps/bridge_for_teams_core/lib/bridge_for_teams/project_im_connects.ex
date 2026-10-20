@@ -9,10 +9,11 @@ defmodule BridgeForTeams.ProjectIMConnects do
   by Salix's tenant Feishu app store, so project connects forward only app
   identity.
 
-  Supported providers: Slack and Feishu. A Slack connect returns an `oauth_url`
-  to finish the workspace install; a Feishu connect returns a `webhook_url` to
-  paste into the app's event-subscription settings. Connect lifecycle
-  (disable/enable/delete) is provider-neutral.
+  Supported providers: Slack, Feishu and QQ. A Slack connect returns an
+  `oauth_url` to finish the workspace install; a Feishu or QQ connect returns a
+  `webhook_url` to paste into the app's or bot's callback settings. A QQ bot's
+  AppSecret is connect-owned. Connect lifecycle (disable/enable/delete) is
+  provider-neutral.
   """
   require Logger
 
@@ -20,7 +21,7 @@ defmodule BridgeForTeams.ProjectIMConnects do
   alias BridgeForTeams.Salix.{Client, Reconciler}
   alias BridgeForTeams.Schema.{Organization, Project}
 
-  @providers ~w(slack feishu)
+  @providers ~w(slack feishu qq lark)
   @transient [:unavailable, :timeout]
   # `list_connects_for_projects/2` budgets: per Salix call, and for the whole
   # lookup before it starts another call.
@@ -32,7 +33,9 @@ defmodule BridgeForTeams.ProjectIMConnects do
   # Salix from the tenant Feishu-app store.
   @required_fields %{
     "slack" => ~w(app_id client_id client_secret signing_secret),
-    "feishu" => ~w(app_id)
+    "feishu" => ~w(app_id),
+    "qq" => ~w(app_id app_secret),
+    "lark" => ~w(app_id app_secret)
   }
 
   @type result :: {:ok, term()} | {:error, term()}
@@ -114,13 +117,13 @@ defmodule BridgeForTeams.ProjectIMConnects do
   @spec list_connects_for_projects([Project.t()], String.t() | nil) ::
           {[{Project.t(), map()}], term() | nil}
   def list_connects_for_projects(projects, provider) when is_list(projects) do
-    deadline = System.monotonic_time(:millisecond) + @connect_list_budget
+    deadline = SystemsClock.monotonic_time(:millisecond) + @connect_list_budget
 
     {pairs, error} =
       projects
       |> Enum.reject(&blank?(&1.salix_group_id))
       |> Enum.reduce_while({[], nil}, fn project, {pairs, error} ->
-        if System.monotonic_time(:millisecond) > deadline do
+        if SystemsClock.monotonic_time(:millisecond) > deadline do
           {:halt, {pairs, :timeout}}
         else
           case list_with_timeout(project, provider) do
@@ -190,7 +193,7 @@ defmodule BridgeForTeams.ProjectIMConnects do
         "status" => "unavailable"
       },
       correlation_id: "project:#{project.id}:im-connects:#{provider_filter}",
-      occurred_at: DateTime.utc_now()
+      occurred_at: SystemsClock.utc_now()
     }
 
     case Observability.create_event(attrs) do
@@ -385,26 +388,35 @@ defmodule BridgeForTeams.ProjectIMConnects do
   end
 
   @doc """
-  Update the inbound agent binding of an existing Slack project IM connect.
+  Update where an existing Slack project IM connect delivers inbound Slack
+  events: `%{"inbound_agent_id" => router_id}` to the project's Router, or
+  `%{"inbound_tasks" => %{"model" => choice | nil}}` to Tasks: each new
+  Slack thread becomes a Task of the swarm's Task agent that runs `model`
+  (nil: the swarm's default Task model). Workers are retired: naming one
+  answers `{:error, :workers_retired}`.
 
-  Credentials stay in Salix; this path only changes which group agent receives
-  inbound Slack events for the existing app.
+  Credentials stay in Salix; this path only changes the inbound binding.
   """
-  @spec update_project_slack_inbound_agent(
+  @spec update_project_slack_inbound(
           Ecto.UUID.t(),
           Ecto.UUID.t(),
           String.t(),
-          String.t(),
+          map(),
           keyword()
         ) :: result()
-  def update_project_slack_inbound_agent(
+  def update_project_slack_inbound(
         org_id,
         project_id,
         connect_id,
-        inbound_agent_id,
+        inbound,
         opts \\ []
       ) do
-    attrs = %{"inbound_agent_id" => trim(inbound_agent_id)}
+    attrs =
+      inbound
+      |> stringify()
+      |> Map.take(["inbound_agent_id", "inbound_tasks"])
+      |> Map.update("inbound_agent_id", nil, &trim/1)
+      |> drop_blank()
 
     result =
       with {:ok, org, project} <- fetch_org_project(org_id, project_id),
@@ -458,9 +470,81 @@ defmodule BridgeForTeams.ProjectIMConnects do
 
   defp slack_inbound_agent_payload(%Organization{} = _org, %Project{} = _project, attrs) do
     %{
-      "inbound_agent_id" => attrs["inbound_agent_id"]
+      "inbound_agent_id" => attrs["inbound_agent_id"],
+      "inbound_tasks" => inbound_tasks(attrs["inbound_tasks"])
     }
     |> drop_blank()
+  end
+
+  defp inbound_tasks(%{} = tasks), do: Map.take(stringify(tasks), ["model"])
+  defp inbound_tasks(_none), do: nil
+
+  @doc """
+  Replaces the shortcuts of a QQ bot's command menu. Salix checks them, writes
+  the menu to QQ and returns the connect with the menu it stored.
+  """
+  @spec update_project_qq_command_menu(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t(),
+          [map()],
+          keyword()
+        ) :: result()
+  def update_project_qq_command_menu(org_id, project_id, connect_id, items, opts \\ []) do
+    attrs = %{"connect_id" => connect_id}
+
+    result =
+      with {:ok, org, project} <- fetch_org_project(org_id, project_id),
+           :ok <- ensure_group_ready(project) do
+        # Salix says in words what is wrong with a menu; the admin reads it.
+        result =
+          case client().update_qq_im_connect(
+                 org.salix_tenant_id,
+                 project.salix_group_id,
+                 connect_id,
+                 %{"command_menu" => items}
+               ) do
+            {:error, {:bad_request, message}} when is_binary(message) ->
+              {:error, {:invalid_menu, message}}
+
+            {:error, :not_found} ->
+              {:error, :connect_not_found}
+
+            other ->
+              other
+          end
+
+        case result do
+          {:ok, connect} ->
+            maybe_record_project_im_audit(
+              project_im_action("qq", "updated"),
+              org,
+              project,
+              "qq",
+              connect,
+              attrs,
+              opts,
+              resource_id: connect_id
+            )
+
+          _other ->
+            :ok
+        end
+
+        result
+      end
+
+    maybe_record_project_im_write_attempt(
+      result,
+      project_im_action("qq", "updated"),
+      org_id,
+      project_id,
+      "qq",
+      attrs,
+      opts
+    )
+
+    result
   end
 
   @spec disable_project_connect(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) :: result()
@@ -576,7 +660,7 @@ defmodule BridgeForTeams.ProjectIMConnects do
                  project_im_label(project, provider, connect_id)
                ),
              result: "ok",
-             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+             request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
              metadata: project_im_metadata(project.id, provider, attrs, connect)
            }) do
         {:ok, _audit} ->
@@ -609,7 +693,7 @@ defmodule BridgeForTeams.ProjectIMConnects do
              resource_label: provider || "Project IM connect",
              result: "failed",
              reason: reason,
-             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+             request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
              surface: "integration",
              metadata: project_im_attempt_metadata(project_id, provider, attrs)
            }) do
@@ -797,20 +881,33 @@ defmodule BridgeForTeams.ProjectIMConnects do
 
   defp validate_inbound_agent(_project, provider, _credentials) when provider != "slack", do: :ok
 
+  # A Slack connection delivers to the Router (the default) or to Tasks
+  # (`inbound_tasks`, with an optional model choice that Salix checks against
+  # the org's allowed models). Workers are retired.
   defp validate_inbound_agent(%Project{} = project, "slack", credentials) do
     inbound_agent_id = trim(credentials["inbound_agent_id"])
 
-    cond do
-      inbound_agent_id == "" ->
-        :ok
+    case credentials["inbound_tasks"] do
+      nil ->
+        validate_inbound_router(project, inbound_agent_id)
 
-      project.id
-      |> Agents.list_agents()
-      |> Enum.any?(&(&1.salix_agent_id == inbound_agent_id)) ->
-        :ok
+      %{} = tasks when inbound_agent_id == "" ->
+        if is_nil(tasks["model"]) or is_map(tasks["model"]),
+          do: :ok,
+          else: {:error, :invalid_inbound_agent}
 
-      true ->
+      _invalid ->
         {:error, :invalid_inbound_agent}
+    end
+  end
+
+  defp validate_inbound_router(_project, ""), do: :ok
+
+  defp validate_inbound_router(project, inbound_agent_id) do
+    case Enum.find(Agents.list_agents(project.id), &(&1.salix_agent_id == inbound_agent_id)) do
+      %{role: "router"} -> :ok
+      %{role: "worker"} -> {:error, :workers_retired}
+      nil -> {:error, :invalid_inbound_agent}
     end
   end
 
@@ -850,7 +947,8 @@ defmodule BridgeForTeams.ProjectIMConnects do
       "client_id" => credentials["client_id"],
       "client_secret" => credentials["client_secret"],
       "signing_secret" => credentials["signing_secret"],
-      "inbound_agent_id" => credentials["inbound_agent_id"]
+      "inbound_agent_id" => credentials["inbound_agent_id"],
+      "inbound_tasks" => inbound_tasks(credentials["inbound_tasks"])
     }
     |> drop_blank()
   end
@@ -863,11 +961,29 @@ defmodule BridgeForTeams.ProjectIMConnects do
     |> drop_blank()
   end
 
+  # A QQ bot's AppSecret belongs to its connect, as a Slack app's secrets do.
+  defp payload(_org, _project, "qq", credentials) do
+    %{"app_id" => credentials["app_id"], "app_secret" => credentials["app_secret"]}
+    |> drop_blank()
+  end
+
+  # A Lark app's secrets belong to its connect. Lark verifies a callback by
+  # the Verification Token or the Encrypt Key; Salix requires one of them.
+  defp payload(_org, _project, "lark", credentials) do
+    credentials
+    |> Map.take(~w(app_id app_secret verification_token encrypt_key))
+    |> drop_blank()
+  end
+
   defp create_fun("slack"), do: :create_slack_im_connect
   defp create_fun("feishu"), do: :create_feishu_im_connect
+  defp create_fun("qq"), do: :create_qq_im_connect
+  defp create_fun("lark"), do: :create_lark_im_connect
 
   defp update_fun("slack"), do: :update_slack_im_connect
   defp update_fun("feishu"), do: :update_feishu_im_connect
+  defp update_fun("qq"), do: :update_qq_im_connect
+  defp update_fun("lark"), do: :update_lark_im_connect
 
   defp active?(connect), do: is_nil(connect["disabled_at"])
 
@@ -882,12 +998,21 @@ defmodule BridgeForTeams.ProjectIMConnects do
 
   # Salix surfaces provider/credential validation failures as `{:bad_request, _}`;
   # collapse them to stable, secret-free reasons for callers and the UI.
+  # The tenant Feishu app errors name what the org admin must fix first.
   defp normalize_salix_result({:error, {:bad_request, message}})
        when is_binary(message) do
-    if String.contains?(message, "app_id is already used by another connect") do
-      {:error, :provider_app_in_use}
-    else
-      {:error, :connect_rejected}
+    cond do
+      String.contains?(message, "app_id is already used by another connect") ->
+        {:error, :provider_app_in_use}
+
+      String.contains?(message, "tenant app_id does not match the connect app_id") ->
+        {:error, :feishu_app_mismatch}
+
+      String.contains?(message, "Feishu app secret is not configured") ->
+        {:error, :feishu_app_secret_missing}
+
+      true ->
+        {:error, :connect_rejected}
     end
   end
 

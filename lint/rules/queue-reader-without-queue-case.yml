@@ -1,0 +1,37 @@
+id: queue-reader-without-queue-case
+language: elixir
+severity: error
+message: "$M.$F takes the oldest work of a SalixStore.Repo queue, whoever wrote it. `use SalixStore.QueueCase, queues: [...]` in this test module."
+note: |
+  SalixStore.Repo is not in the SQL sandbox: a test sees the rows other
+  suites left. A queue reader claims the oldest pending row of the whole
+  table, so it claims theirs. SalixStore.QueueCase empties the named queues
+  before each test of an `async: false` module:
+
+    use SystemsClock.Case, async: false
+    use SalixStore.QueueCase, queues: [:triage_product_effects]
+
+  A worker call that is given its claims (`claim_fun:`) reads no queue.
+  A new reader of this kind goes into this rule and into SalixStore.QueueCase.
+rule:
+  all:
+    - any:
+        - pattern: $M.$F($$$)
+        - pattern: "&$M.$F/$A"
+    - not:
+        regex: "claim_fun:"
+    - not:
+        inside:
+          stopBy: end
+          kind: source
+          has:
+            stopBy: end
+            pattern: use SalixStore.QueueCase, $$$
+constraints:
+  M:
+    regex: '(^|\.)(TriageProductRuntime|ProductEffectWorker|TriagePatrolCursors|ClickHousePatrolWorker|SlackMirrorOutbox|FeishuMirrorOutbox|QQMirrorOutbox|OutboxDrainer|SlackMirrorBackfillLedger|FeishuMirrorBackfillLedger|BackfillRunner|ConversationSearch|ConversationLogRecovery)$'
+  F:
+    regex: '^(claim|claim_obligations|claim_companion_reactions|claim_due|claim_source_writes|claim_due_connect|claim_one|process_once|drain_once|run_once)$'
+files:
+  - systems/apps/*/test/**/*.exs
+  - systems/apps/*/test/**/*.ex

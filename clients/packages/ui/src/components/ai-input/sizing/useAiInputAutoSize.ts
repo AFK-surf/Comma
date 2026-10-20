@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { flushSync } from "react-dom";
+import { scheduleLayoutRead, type CancelUiTimer } from "../../../clock";
 import { isReducedMotionEnabled } from "../../../tokens";
 import {
   AI_INPUT_SMALL_EXPANDED_TEXTAREA_MIN_HEIGHT_PX,
@@ -8,13 +9,8 @@ import {
   AI_INPUT_TEXTAREA_MAX_HEIGHT_PX,
   AI_INPUT_TEXTAREA_MIN_HEIGHT_PX,
 } from "../styles";
-import {
-  nextSmallUsesDefaultLayout,
-  trackNarrowest,
-  type CompactBox,
-} from "./measurement";
-import { readCollapsedPrompt } from "./readCollapsedPrompt";
-import { readRichPrompt } from "./readRichPrompt";
+import type { CompactBox } from "./measurement";
+import { readPromptLayout } from "./readPromptLayout";
 import {
   reportHeights,
   type AiInputLayoutHeights,
@@ -77,59 +73,43 @@ export function useAiInputAutoSize(options: AiInputAutoSizeOptions) {
   const reported = useRef<AiInputLayoutHeights | undefined>(undefined);
   const synced = useRef(false);
   const pendingPromptLeft = useRef<number | null>(null);
-  const frame = useRef<number | undefined>(undefined);
+  const frame = useRef<CancelUiTimer | undefined>(undefined);
 
-  /** One layout read that commits only what changed; safe in layout effects. */
-  const measureNow = useCallback(() => {
+  /** One layout read (`readPromptLayout`); returns the commit of only what changed. */
+  const readLayout = useCallback((): (() => void) | undefined => {
     const current = latest.current;
-    const prompt = current.promptRef.current;
-    if (!prompt) return;
-    const expanded = current.smallUsesDefaultLayout;
-    const compact = current.isSmall && !expanded;
-    const narrowest =
-      current.measurementWidthMode === "narrowest"
-        ? trackNarrowest(prompt, narrowestWidth)
-        : undefined;
-    const measurement =
-      prompt instanceof HTMLTextAreaElement || narrowest !== undefined
-        ? readCollapsedPrompt(prompt, {
-            compact,
-            compactBox,
-            expanded,
-            hasValue: current.hasValue,
-            narrowestWidth: narrowest,
-          })
-        : readRichPrompt(prompt, { compact, compactBox, hasValue: current.hasValue });
-    const nextExpanded =
-      current.isSmall && nextSmallUsesDefaultLayout(expanded, measurement);
-    if (nextExpanded !== expanded) {
-      // The layout effect below measures again once the switch commits.
-      if (synced.current && measurement.width > 0) {
-        pendingPromptLeft.current = measurement.left;
-      }
-      synced.current = true;
-      setSmallUsesDefaultLayout(nextExpanded);
-      return;
+    const layout = readPromptLayout(current, { compactBox, narrowestWidth });
+    if (!layout) return undefined;
+    if (layout.kind === "switch") {
+      return () => {
+        // The layout effect below measures again once the switch commits.
+        if (synced.current && layout.width > 0) pendingPromptLeft.current = layout.left;
+        synced.current = true;
+        setSmallUsesDefaultLayout(layout.expanded);
+      };
     }
-    synced.current = true;
-    const height = Math.min(
-      Math.max(measurement.height, current.textareaMinHeight),
-      current.textareaMaxHeight
-    );
-    if (measurement.explicitHeight) prompt.style.height = `${height}px`;
-    else if (prompt.style.height) prompt.style.removeProperty("height");
-    setPromptHeight((previous) => (previous === height ? previous : height));
-    reportHeights(current, height, reported);
+    const { explicitHeight, extras, height, prompt } = layout;
+    return () => {
+      synced.current = true;
+      if (explicitHeight) prompt.style.height = `${height}px`;
+      else if (prompt.style.height) prompt.style.removeProperty("height");
+      setPromptHeight((previous) => (previous === height ? previous : height));
+      reportHeights(current, height, extras, reported);
+    };
   }, []);
 
-  /** Coalesces reads into one in the next frame, before it paints. */
+  /** Reads and commits at once; safe in layout effects. */
+  const measureNow = useCallback(() => readLayout()?.(), [readLayout]);
+
+  /** Coalesces reads into the next frame's shared read phase, committed before it paints. */
   const requestMeasure = useCallback(() => {
     if (frame.current !== undefined) return;
-    frame.current = window.requestAnimationFrame(() => {
+    frame.current = scheduleLayoutRead(() => {
       frame.current = undefined;
-      flushSync(measureNow);
+      const commit = readLayout();
+      return commit && (() => flushSync(commit));
     });
-  }, [measureNow]);
+  }, [readLayout]);
 
   /** An edit's read: at the edit when a host sizes itself from it. */
   const measureEdit = useCallback(() => {
@@ -180,7 +160,7 @@ export function useAiInputAutoSize(options: AiInputAutoSizeOptions) {
   useLayoutEffect(
     () => () => {
       if (frame.current === undefined) return;
-      window.cancelAnimationFrame(frame.current);
+      frame.current();
       frame.current = undefined;
     },
     []

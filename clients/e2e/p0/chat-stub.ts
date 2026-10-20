@@ -1,4 +1,9 @@
-import { createServer, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import type { AddressInfo } from "node:net";
 import { emptyRoutineEnvelope } from "../helpers/routine-fixture";
 import {
@@ -7,35 +12,23 @@ import {
   readBrowserSessionFixture,
   reflectedCorsRequestHeaders,
 } from "../helpers/session-fixture";
+import {
+  chatSmokeAssistantReply,
+  chatSmokeTaskConversation,
+  chatSmokeWorkspace,
+  chatSmokeWorkspaceChat,
+  type ChatSmokeTaskLoop,
+} from "./chat-stub-records";
 
-export const chatSmokeWorkspace = {
-  group_id: "grp-smoke",
-  id: "ws-smoke",
-  name: "Smoke Workspace",
-};
-export const chatSmokeWorkspaceChat = {
-  id: "cnv_public_chat_smoke",
-  status: "active",
-  title: "聊天",
-  kind: "user_chat",
-  group_id: chatSmokeWorkspace.group_id,
-  created_at: 1_720_000_000,
-  updated_at: 1_720_000_000,
-};
-export const chatSmokeTaskConversation = {
-  id: "cnv_public_task_smoke",
-  status: "completed",
-  title: "冒烟任务",
-  kind: "agent_task",
-  schedule: {
-    schedule_id: "sch1_1720000002000000000",
-    command: "Create the weekday workspace summary",
-  },
-  group_id: chatSmokeWorkspace.group_id,
-  created_at: 1_720_000_002,
-  updated_at: 1_720_000_003,
-};
-export const chatSmokeAssistantReply = "收到，stub 已生成回复。";
+// The stub's fixed records, in a module a browser test can import too.
+export {
+  chatSmokeAssistantReply,
+  chatSmokeTaskConversation,
+  chatSmokeTaskLoop,
+  chatSmokeWorkspace,
+  chatSmokeWorkspaceChat,
+  type ChatSmokeTaskLoop,
+} from "./chat-stub-records";
 export type ChatSmokeAdditionalTaskRef = {
   browserLink: {
     label: string;
@@ -49,6 +42,14 @@ export const chatSmokeSkill = {
   name: "周会总结",
   description: "整理会议要点和后续事项",
   location: "salix://skills/weekly-summary",
+};
+// A per-message skill, which the agent attaches by itself and the / menu omits.
+export const chatSmokeMiniskill = {
+  skill_id: "weekly-reminder",
+  name: "周会提醒",
+  description: "提醒周会议程",
+  location: "salix://skills/weekly-reminder",
+  activation: "per-message",
 };
 
 export type TaskParticipantFixture = {
@@ -79,6 +80,41 @@ export type ChatSmokeStreamingFailure = {
 /** A Channel whose inbound message started the Router's current work. */
 export type ChatSmokeWorkingProvider = "wechat" | "telegram" | "signal";
 
+/** A message of the workspace chat's transcript, as the server lists it. */
+export type ChatSmokeTranscriptMessage = {
+  actor_type: string;
+  agent_id?: string;
+  kind: string;
+  message_id: string;
+  created_at: number;
+  agent_input?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  platform_message?: {
+    provider: string;
+    role: "user" | "assistant";
+    content: (
+      | { type: "text"; text: string }
+      | { type: "file" | "image"; file_name?: string; mime_type?: string }
+    )[];
+  };
+  content: (
+    | { type: "text"; text: string }
+    | { type: "mail_reference"; source_key: string }
+    | {
+        type: "file";
+        file_name: string;
+        mime_type: string;
+        blob_ref: { uuid: string; hash: string; size: number };
+      }
+    | {
+        type: "conversation_ref";
+        conversation_id: string;
+        kind: "agent_task";
+        presentation: "inline";
+      }
+  )[];
+};
+
 export async function startChatSmokeStub({
   additionalInboxConversations = [],
   conversationList,
@@ -92,7 +128,6 @@ export async function startChatSmokeStub({
   extraInlineTasks = [],
   followupAssistantReply,
   holdAssistantReply = false,
-  holdCompletedWorkspaceChatEventStream = false,
   holdStreamingReplyStart = false,
   externalActivityProvider,
   holdWorkspaceChatMessage = false,
@@ -113,15 +148,15 @@ export async function startChatSmokeStub({
   streamAssistantReply = false,
   archiveLatencyMs = 0,
   taskAcceptConflictOnce = false,
-  unarchiveAfterArchiveMs,
   taskAssistantMessages,
   taskPreparationUnavailable = false,
   taskPreparationDelayMs = 0,
   taskAssistantReply,
   taskConversationExtras = {},
+  taskLabels,
   taskTranscript,
   taskReviewVersion = 2,
-  taskSchedule = chatSmokeTaskConversation.schedule,
+  taskLoop = null,
   taskStatus = chatSmokeTaskConversation.status,
   taskDetailStatus,
   waitForInitialInboxListBeforeWorkspaceChat = false,
@@ -130,13 +165,27 @@ export async function startChatSmokeStub({
   workspaceChatMessageError,
   beforeWorkspaceChat,
   beforeWorkspaceChatDetail,
+  extraRoutes,
+  origin,
 }: {
+  /** The origin pages reach this stub at, if not its own address (e2e/ui-runtime/node-realm.ts, realmOrigin). */
+  origin?: string;
   /**
-   * Extra conversations served in the Group conversation list. The product
-   * inbox loads inside a SharedWorker on web, where Playwright page routes
-   * cannot reach — task fixtures must come from this stub itself.
+   * Answers requests this stub has no route for (a spec's own API, such as the stations control plane): true when it
+   * answered.
    */
-  sessionHistory?: (url: URL) => { status?: number; body: unknown };
+  extraRoutes?: (
+    req: IncomingMessage,
+    url: URL,
+    res: ServerResponse
+  ) => boolean | Promise<boolean>;
+  /**
+   * Extra conversations served in the Group conversation list. The task list
+   * loads in the client core's Worker; task fixtures come from this stub.
+   */
+  sessionHistory?: (
+    url: URL
+  ) => { status?: number; body: unknown } | Promise<{ status?: number; body: unknown }>;
   sessionHistoryEvents?: (url: URL, response: ServerResponse) => void;
   port?: number;
   additionalInboxConversations?: readonly Record<string, unknown>[];
@@ -159,11 +208,6 @@ export async function startChatSmokeStub({
    */
   archiveLatencyMs?: number;
   /**
-   * Another client puts the Task back this many ms after the archive lands, so
-   * the archive response a waiting client finally receives is already stale.
-   */
-  unarchiveAfterArchiveMs?: number;
-  /**
    * Extra Tasks known to the stub: each adds one committed assistant message
    * announcing an inline Task (own conversation id, title, and status
    * snapshot) and one entry in the group's conversation list, so the Tasks
@@ -172,7 +216,6 @@ export async function startChatSmokeStub({
   extraInlineTasks?: readonly { id: string; status: string; title: string }[];
   followupAssistantReply?: string;
   holdAssistantReply?: boolean;
-  holdCompletedWorkspaceChatEventStream?: boolean;
   /** Hold the first reply's live activity and draft behind a test-controlled gate. */
   holdStreamingReplyStart?: boolean;
   externalActivityProvider?: ChatSmokeWorkingProvider;
@@ -195,30 +238,7 @@ export async function startChatSmokeStub({
   /** Synthetic user/assistant turns after the primary stub reply. */
   laterChatTurns?: number;
   priorAssistantReply?: string;
-  workspaceTranscript?: readonly {
-    actor_type: string;
-    agent_id?: string;
-    kind: string;
-    message_id: string;
-    created_at: number;
-    agent_input?: Record<string, unknown>;
-    metadata?: Record<string, unknown>;
-    platform_message?: {
-      provider: string;
-      role: "user" | "assistant";
-      content: { type: "text"; text: string }[];
-    };
-    content: (
-      | { type: "text"; text: string }
-      | { type: "mail_reference"; source_key: string }
-      | {
-          type: "file";
-          file_name: string;
-          mime_type: string;
-          blob_ref: { uuid: string; hash: string; size: number };
-        }
-    )[];
-  }[];
+  workspaceTranscript?: readonly ChatSmokeTranscriptMessage[];
   priorUserMessage?: string;
   sessionEmail?: string;
   streamAssistantReply?: boolean;
@@ -229,10 +249,18 @@ export async function startChatSmokeStub({
   taskAssistantReply?: string | undefined;
   /** Extra fields served on the Task conversation (origin, client_platform, …). */
   taskConversationExtras?: Record<string, unknown>;
+  /** The Group's Task label catalog; without it the stub has no such route. */
+  taskLabels?: readonly { id: string; name: string; color: string }[];
   /** Raw canonical wire messages, including system and workflow authors. */
   taskTranscript?: readonly Record<string, unknown>[];
   taskReviewVersion?: number;
-  taskSchedule?: typeof chatSmokeTaskConversation.schedule | null;
+  /**
+   * The Task's public `loop`, which makes it a Loop Task (`chatSmokeTaskLoop`: active, every day at 09:00 in Shanghai,
+   * 3 of 10 runs); by default none, a one-off Task. Its `state` is sent as given: pair `active` with
+   * `taskStatus: "active"` and `paused` with `"escalated"`, as the server would. A Done or Cancel from the status menu
+   * ends a Loop that has not ended.
+   */
+  taskLoop?: ChatSmokeTaskLoop | null;
   taskStatus?: string;
   /** Override only detail reads to model a snapshot lagging behind the task list. */
   taskDetailStatus?: string;
@@ -263,6 +291,7 @@ export async function startChatSmokeStub({
   const failedOnce = new Set<string>();
   let workspaceChatCreated = false;
   let workspaceChatRequestCount = 0;
+  let initialChatSnapshotServed = false;
   const workspaceChatResponseStatuses: number[] = [];
   const workspaceChatDetailResponseStatuses: number[] = [];
   let userText = "";
@@ -275,15 +304,16 @@ export async function startChatSmokeStub({
     TaskParticipantFixture,
     "participant_id" | "actor_id" | "name"
   > | null = null;
+  // Where the Task runs and its model, as the Task status stream sends them.
+  let taskRun: Record<string, unknown> | null = null;
   const taskStatusStreams = new Set<ServerResponse>();
   const thinkingTimers = new Set<ReturnType<typeof setInterval>>();
   let clientRequestId = "";
   let conversationListRequestCount = 0;
   let failNextConversationListRead = false;
+  let taskPreviewsFail = false;
   let failedConversationListReadObserved = Promise.resolve();
   let notifyFailedConversationListRead: (() => void) | undefined;
-  let activeCompletedWorkspaceChatEventStreams = 0;
-  let completedWorkspaceChatEventStreamRequestCount = 0;
   let delayedTaskDetail:
     | { body: ReturnType<typeof taskConversation>; response: ServerResponseLike }
     | undefined;
@@ -301,10 +331,6 @@ export async function startChatSmokeStub({
   let streamingActivitySequence = 0;
   let streamingDraftRevision = 0;
   let streamingReconnectCount = 0;
-  let workspaceChatEventsUnreachable = false;
-  let droppedWorkspaceChatEventStreamCount = 0;
-  const heldCompletedWorkspaceChatEventStreams = new Set<ServerResponse>();
-  let participantSnapshotAvailable = true;
   let releaseWorkspaceChatMessage: (() => void) | undefined;
   let notifyWorkspaceChatMessage: (() => void) | undefined;
   let releaseStreamingReplyStart: (() => void) | undefined;
@@ -330,6 +356,7 @@ export async function startChatSmokeStub({
     : "stopped";
   let participantStatus = externalActivityProvider ? "is thinking..." : "";
   let workingProvider = externalActivityProvider;
+  let participantHints: { waiting?: boolean; workingConversationIds?: string[] } = {};
   let participantIssue: string | undefined;
   let participantUpdatedAt = 1;
   // A turn that never commits an assistant message. The exact failure cause is
@@ -348,13 +375,18 @@ export async function startChatSmokeStub({
   let notifyDelayedTaskDetail: (() => void) | undefined;
   let notifyDelayedTaskSummary: (() => void) | undefined;
   let taskAcceptRequestCount = 0;
+  let taskStatusRequestCount = 0;
   let taskDetailRequestCount = 0;
   let taskPreparationRequestCount = 0;
   let taskListRevision = 0;
   let taskListEventStreamRequestCount = 0;
+  let taskStatusStreamRequestCount = 0;
   const taskListEventStreams = new Set<ServerResponse>();
   let currentTaskReviewVersion = taskReviewVersion;
   let currentTaskStatus = taskStatus;
+  // Messages the server appended to the workspace chat after the page opened.
+  const laterWorkspaceMessages: ChatSmokeTranscriptMessage[] = [];
+  let currentTaskLoop = taskLoop;
   let currentTaskTitle = chatSmokeTaskConversation.title;
   let currentTaskLabels: string[] | undefined;
   let currentTaskUpdatedAt = chatSmokeTaskConversation.updated_at;
@@ -362,6 +394,7 @@ export async function startChatSmokeStub({
   let archivedFromStatus: string | undefined;
   let archivedAt: number | undefined;
   let workspaceChatHidden = false;
+  let taskPreviewResponseCount = 0;
   let notifyInitialInboxList: (() => void) | undefined;
   const initialInboxListObserved = new Promise<void>((resolve) => {
     notifyInitialInboxList = resolve;
@@ -391,6 +424,7 @@ export async function startChatSmokeStub({
     }
 
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    if (extraRoutes && (await extraRoutes(req, url, res))) return;
     if (sessionHistory && url.pathname.endsWith("/history/events")) {
       res.writeHead(200, {
         "content-type": "text/event-stream",
@@ -401,7 +435,7 @@ export async function startChatSmokeStub({
       return;
     }
     if (sessionHistory && url.pathname.endsWith("/history")) {
-      const response = sessionHistory(url);
+      const response = await sessionHistory(url);
       res.writeHead(response.status ?? 200, { "content-type": "application/json" });
       res.end(JSON.stringify(response.body));
       return;
@@ -418,7 +452,7 @@ export async function startChatSmokeStub({
     const additionalTaskOperation = additionalTaskPath[1];
     if (req.method === "GET" && path === "/v1/comma/auth/session") {
       const projection = readBrowserSessionFixture(
-        `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+        origin ?? `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
         req.headers.cookie
       );
       if (projection === null) {
@@ -426,6 +460,26 @@ export async function startChatSmokeStub({
         return;
       }
       writeJson(res, projection ?? createE2eSessionProjection({ email: sessionEmail }));
+      return;
+    }
+
+    // The email sign-in, for an app that starts signed out (an Electron worker's shared app): any code signs in as
+    // the stub's account.
+    if (req.method === "POST" && path === "/v1/comma/auth/email/login") {
+      req.resume();
+      writeJson(res, {
+        challenge_id: "smoke-email-challenge",
+        expires_in: 900,
+        resend_after: 60,
+      });
+      return;
+    }
+    if (req.method === "POST" && path === "/v1/comma/auth/email/verify") {
+      req.resume();
+      writeJson(res, {
+        ...createE2eSessionProjection({ email: sessionEmail }),
+        token: `smoke-token:${sessionEmail}`,
+      });
       return;
     }
 
@@ -460,6 +514,7 @@ export async function startChatSmokeStub({
             description: "检查实现风险和测试缺口",
             location: "salix://skills/code-review",
           },
+          chatSmokeMiniskill,
         ],
       });
       return;
@@ -473,10 +528,11 @@ export async function startChatSmokeStub({
       const body = {
         data: [
           taskConversation(),
-          ...extraInlineTasks.map((task) => ({
+          ...extraInlineTasks.map((task, index) => ({
             ...task,
             group_id: chatSmokeWorkspace.group_id,
             kind: "agent_task",
+            run_started_at: extraInlineTaskRunStartedAt(index),
             updated_at: 1_720_000_011,
           })),
         ].filter((task) => ids.has(task.id)),
@@ -508,7 +564,7 @@ export async function startChatSmokeStub({
       }
       if (
         body.expected_updated_at !== currentTaskUpdatedAt ||
-        (archive && (currentTaskStatus === "active" || taskSchedule !== null))
+        (archive && currentTaskStatus === "active")
       ) {
         writeJson(res, { error: "Task changed or cannot be archived" }, 409);
         return;
@@ -520,12 +576,6 @@ export async function startChatSmokeStub({
         archivedFromStatus = currentTaskStatus;
         archivedAt = Date.now();
         currentTaskStatus = "archived";
-        if (unarchiveAfterArchiveMs !== undefined) {
-          await new Promise((resolve) => setTimeout(resolve, unarchiveAfterArchiveMs));
-          currentTaskStatus = archivedFromStatus!;
-          archivedFromStatus = undefined;
-          archivedAt = undefined;
-        }
       } else {
         currentTaskStatus = archivedFromStatus!;
         archivedFromStatus = undefined;
@@ -578,6 +628,7 @@ export async function startChatSmokeStub({
                 id: task.id,
                 kind: "agent_task",
                 messages: [],
+                run_started_at: extraInlineTaskRunStartedAt(index),
                 status: task.status,
                 title: task.title,
                 updated_at: 1_720_000_011 + index * 2,
@@ -609,6 +660,27 @@ export async function startChatSmokeStub({
 
     if (
       req.method === "GET" &&
+      path === `/v1/comma/groups/${chatSmokeWorkspace.group_id}/conversations/events` &&
+      url.searchParams.get("changes") === "1"
+    ) {
+      // The group's change feed the client core follows for the conversations it keeps: open, and quiet.
+      res.writeHead(200, {
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+        "content-type": "text/event-stream",
+      });
+      res.write(
+        sseFrame("conversation_changes_resync_required", {
+          group_id: chatSmokeWorkspace.group_id,
+          type: "conversation_changes_resync_required",
+          version: `smoke.${taskListRevision}`,
+        })
+      );
+      return;
+    }
+
+    if (
+      req.method === "GET" &&
       path === `/v1/comma/groups/${chatSmokeWorkspace.group_id}/conversations/events`
     ) {
       taskListEventStreamRequestCount += 1;
@@ -621,6 +693,7 @@ export async function startChatSmokeStub({
       });
       res.write(taskListInvalidationFrame());
       if (url.searchParams.get("conversation_id") === chatSmokeTaskConversation.id) {
+        taskStatusStreamRequestCount += 1;
         taskStatusStreams.add(res);
         res.once("close", () => taskStatusStreams.delete(res));
         res.write(taskParticipantFrame());
@@ -773,7 +846,22 @@ export async function startChatSmokeStub({
       path ===
         `/v1/comma/groups/${chatSmokeWorkspace.group_id}/conversations/${chatSmokeTaskConversation.id}/preview`
     ) {
+      // A failed read: the connection drops before any answer.
+      if (taskPreviewsFail) {
+        res.destroy();
+        return;
+      }
+      taskPreviewResponseCount += 1;
       writeJson(res, taskPreview());
+      return;
+    }
+
+    if (
+      taskLabels &&
+      req.method === "GET" &&
+      path === `/v1/comma/groups/${chatSmokeWorkspace.group_id}/task-labels`
+    ) {
+      writeJson(res, { colors: [], proposals: [], labels: taskLabels });
       return;
     }
 
@@ -782,6 +870,11 @@ export async function startChatSmokeStub({
       if (additionalTaskOperation === undefined) {
         res.setHeader("etag", `"task-${task.id}-v1"`);
         writeJson(res, additionalTaskConversation(task, index));
+        return;
+      }
+      // The inline Task's hover card reads it as the pointer reaches the link.
+      if (additionalTaskOperation === "preview") {
+        writeJson(res, additionalTaskPreview(task, index));
         return;
       }
       if (additionalTaskOperation === "messages") {
@@ -952,17 +1045,46 @@ export async function startChatSmokeStub({
     }
 
     if (
+      req.method === "POST" &&
+      path ===
+        `/v1/comma/groups/${chatSmokeWorkspace.group_id}/conversations/${chatSmokeTaskConversation.id}/status`
+    ) {
+      const body = (await readJson(req)) as {
+        expected_updated_at?: number;
+        status?: string;
+      };
+      taskStatusRequestCount += 1;
+      if (
+        !["completed", "cancelled"].includes(body.status ?? "") ||
+        body.expected_updated_at !== currentTaskUpdatedAt ||
+        !["active", "ready_for_review", "escalated"].includes(currentTaskStatus)
+      ) {
+        writeJson(res, { error: "conflict" }, 409);
+        return;
+      }
+      currentTaskStatus = body.status!;
+      currentTaskUpdatedAt += 1;
+      // Like the server, a person's Done or Cancel ends a Loop in the same change.
+      if (currentTaskLoop !== null && currentTaskLoop.state !== "ended") {
+        const { next_run_at: _nextRunAt, ...ended } = currentTaskLoop;
+        currentTaskLoop = {
+          ...ended,
+          state: "ended",
+          reason: body.status as "completed" | "cancelled",
+          ended_at: currentTaskUpdatedAt * 1000,
+        };
+      }
+      writeJson(res, taskConversation());
+      broadcastTaskListInvalidation();
+      return;
+    }
+
+    if (
       req.method === "GET" &&
       path.startsWith(
         `/v1/comma/groups/${chatSmokeWorkspace.group_id}/conversations/${chatSmokeWorkspaceChat.id}/events`
       )
     ) {
-      if (workspaceChatEventsUnreachable) {
-        // A dropped connection, as when a laptop wakes before Wi-Fi rejoins.
-        droppedWorkspaceChatEventStreamCount += 1;
-        req.socket.destroy();
-        return;
-      }
       const snapshot = {
         activity_status: workspaceChatActivityStatus(),
         conversation_id: chatSmokeWorkspaceChat.id,
@@ -973,7 +1095,10 @@ export async function startChatSmokeStub({
         group_id: chatSmokeWorkspace.group_id,
         participant_draft: null,
       };
-      if (!userText) notifyInitialChatSnapshot?.();
+      if (!userText) {
+        initialChatSnapshotServed = true;
+        notifyInitialChatSnapshot?.();
+      }
 
       if (externalActivityProvider) {
         streamingReplyResponse = res;
@@ -1027,7 +1152,7 @@ export async function startChatSmokeStub({
         if (streamingReplyFailure) {
           participantState = "error";
           participantStatus =
-            streamingReplyFailure.status ?? "error: the model could not be reached";
+            streamingReplyFailure.status ?? "error: the model request failed";
           participantIssue = streamingReplyFailure.issue ?? "model_connection_failed";
           participantUpdatedAt += 1;
           if (!res.destroyed) {
@@ -1113,10 +1238,9 @@ export async function startChatSmokeStub({
         res.write(
           sseFrame("snapshot", {
             ...snapshot,
-            participant_draft: participantSnapshotAvailable ? draft : undefined,
+            participant_draft: draft,
           })
         );
-        if (!participantSnapshotAvailable) return;
         // Real HTTP chunks may arrive in different paints. The first frame
         // must already preserve the draft before later Participant events.
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1187,23 +1311,6 @@ export async function startChatSmokeStub({
         return;
       }
 
-      if (holdCompletedWorkspaceChatEventStream && assistantCommitted) {
-        completedWorkspaceChatEventStreamRequestCount += 1;
-        activeCompletedWorkspaceChatEventStreams += 1;
-        heldCompletedWorkspaceChatEventStreams.add(res);
-        let released = false;
-        res.once("close", () => {
-          heldCompletedWorkspaceChatEventStreams.delete(res);
-          if (released) return;
-          released = true;
-          activeCompletedWorkspaceChatEventStreams -= 1;
-        });
-        res.writeHead(200, { "content-type": "text/event-stream" });
-        res.write(sseFrame("snapshot", snapshot));
-        res.write(participantStatusFrame());
-        return;
-      }
-
       writeConversationSse(res, snapshot);
       return;
     }
@@ -1232,26 +1339,30 @@ export async function startChatSmokeStub({
   return new Promise<{
     activeTaskListEventStreams: number;
     authCookies: (string | undefined)[];
-    activeCompletedWorkspaceChatEventStreams: number;
     chatMessageBodies: unknown[];
     authHeaders: (string | undefined)[];
     baseUrl: string;
+    /** Its server: requests another server hands it (an Electron worker's shared API address) are answered too. */
+    server: Server;
     close: () => Promise<void>;
     completeStreamingReply: () => void;
-    appendPriorAssistantReply: (text: string) => void;
     reconnectStreamingReply: () => void;
-    droppedWorkspaceChatEventStreamCount: number;
-    setWorkspaceChatEventsUnreachable: (unreachable: boolean) => void;
-    setParticipantSnapshotAvailable: (available: boolean) => void;
     streamingReconnectCount: number;
     commitThinkingReply: () => void;
     failStreamingReply: (failure?: ChatSmokeStreamingFailure) => void;
-    completedWorkspaceChatEventStreamRequestCount: number;
     conversationListRequestCount: number;
+    /** Task previews answered 200. */
+    taskPreviewResponseCount: number;
     workspaceChatRequestCount: number;
+    /** The chat's first stream snapshot went out: a message published now reaches its next read. */
+    initialChatSnapshotServed: boolean;
     workspaceChatResponseStatuses: readonly number[];
     workspaceChatDetailResponseStatuses: readonly number[];
     failNextConversationListRead: () => void;
+    /** From now on the Task's preview reads fail, or answer again. */
+    setTaskPreviewsFailing: (failing: boolean) => void;
+    /** Tells every open task list stream that the list changed. */
+    invalidateTaskList: () => void;
     holdNextTaskDetail: () => void;
     holdNextTaskSummary: () => void;
     messageBodies: unknown[];
@@ -1260,22 +1371,33 @@ export async function startChatSmokeStub({
       status: string,
       provider?: ChatSmokeWorkingProvider,
       state?: "active" | "stopped" | "error",
-      issue?: string
+      issue?: string,
+      hints?: { waiting?: boolean; workingConversationIds?: string[] }
     ) => void;
     publishTaskReviewUpdate: (input: {
       assistantMessages: readonly string[];
       title: string;
       updatedAt: number;
     }) => void;
+    /**
+     * Appends a message to a `workspaceTranscript` chat behind the page's back,
+     * as the server does for a Quick Chat: the chat's next stream snapshot
+     * carries it.
+     */
+    publishWorkspaceChatMessage: (message: ChatSmokeTranscriptMessage) => void;
     releaseDelayedTaskDetail: () => void;
     releaseDelayedTaskSummary: () => void;
     releaseWorkspaceChatMessage: () => void;
     startStreamingReply: () => void;
     updateStreamingDraft: (text: string) => void;
     taskAcceptRequestCount: number;
+    taskStatusRequestCount: number;
     taskDetailRequestCount: number;
     taskPreparationRequestCount: number;
     taskListEventStreamRequestCount: number;
+    /** Task Participant feeds for the smoke Task, opened and still open. */
+    taskStatusStreamRequestCount: number;
+    openTaskStatusStreamCount: number;
     uploads: {
       auth: string | undefined;
       filename: string;
@@ -1295,6 +1417,8 @@ export async function startChatSmokeStub({
         "participant_id" | "actor_id" | "name"
       > | null
     ) => void;
+    /** The Task's place and model (`run`) from now on; null sends none. */
+    setTaskRun: (run: Record<string, unknown> | null) => void;
     disconnectTaskStatusStreams: () => void;
     setWorkspaceChatHidden: (hidden: boolean) => void;
     waitForDraft: () => Promise<void>;
@@ -1312,37 +1436,21 @@ export async function startChatSmokeStub({
           return taskListEventStreams.size;
         },
         authCookies,
-        get activeCompletedWorkspaceChatEventStreams() {
-          return activeCompletedWorkspaceChatEventStreams;
-        },
         chatMessageBodies,
         authHeaders,
-        baseUrl: `http://127.0.0.1:${port}`,
+        baseUrl: origin ?? `http://127.0.0.1:${port}`,
+        server,
         reconnectStreamingReply: () => {
           if (!streamingReplyResponse || streamingReplyResponse.destroyed)
             throw new Error("No streaming reply to reconnect");
           streamingReplyResponse.end();
-        },
-        get droppedWorkspaceChatEventStreamCount() {
-          return droppedWorkspaceChatEventStreamCount;
-        },
-        setWorkspaceChatEventsUnreachable: (unreachable) => {
-          workspaceChatEventsUnreachable = unreachable;
-          if (!unreachable) return;
-          for (const stream of heldCompletedWorkspaceChatEventStreams) {
-            droppedWorkspaceChatEventStreamCount += 1;
-            stream.destroy();
-          }
-        },
-        setParticipantSnapshotAvailable: (available) => {
-          participantSnapshotAvailable = available;
         },
         get streamingReconnectCount() {
           return streamingReconnectCount;
         },
         close: () =>
           new Promise<void>((done) => {
-            clearBrowserSessionFixtures(`http://127.0.0.1:${port}`);
+            clearBrowserSessionFixtures(origin ?? `http://127.0.0.1:${port}`);
             releaseStreamingReply?.();
             releaseStreamingReplyStart?.();
             releaseWorkspaceChatMessage?.();
@@ -1357,42 +1465,29 @@ export async function startChatSmokeStub({
             httpServer.closeAllConnections();
           }),
         completeStreamingReply: () => releaseStreamingReply?.(),
-        // One earlier request may commit while the independent Participant
-        // already exposes the current request's draft. Keep that draft alive.
-        appendPriorAssistantReply: (text) => {
-          if (
-            !priorUserMessage ||
-            priorAssistantReply !== undefined ||
-            !streamingReplyResponse ||
-            streamingReplyResponse.destroyed
-          ) {
-            throw new Error("No unresolved prior reply beside a live draft");
-          }
-          priorAssistantReply = text;
-          streamingReplyResponse.end(
-            sseFrame("conversation_invalidated", {
-              conversation_id: chatSmokeWorkspaceChat.id,
-              type: "conversation_invalidated",
-            })
-          );
-        },
         /** Commit the keepThinkingAfterReply draft as one more Agent message. */
         commitThinkingReply: () => notifyThinkingCommit?.(),
         failStreamingReply: (failure = {}) => {
           streamingReplyFailure = failure;
           releaseStreamingReply?.();
         },
-        get completedWorkspaceChatEventStreamRequestCount() {
-          return completedWorkspaceChatEventStreamRequestCount;
-        },
         get conversationListRequestCount() {
           return conversationListRequestCount;
+        },
+        get taskPreviewResponseCount() {
+          return taskPreviewResponseCount;
+        },
+        get initialChatSnapshotServed() {
+          return initialChatSnapshotServed;
         },
         get workspaceChatRequestCount() {
           return workspaceChatRequestCount;
         },
         workspaceChatResponseStatuses,
         workspaceChatDetailResponseStatuses,
+        setTaskPreviewsFailing: (failing: boolean) => {
+          taskPreviewsFail = failing;
+        },
         failNextConversationListRead: () => {
           if (failNextConversationListRead) {
             throw new Error("A failed conversation list read is already armed.");
@@ -1402,6 +1497,7 @@ export async function startChatSmokeStub({
             notifyFailedConversationListRead = observed;
           });
         },
+        invalidateTaskList: () => broadcastTaskListInvalidation(),
         holdNextTaskDetail: () => {
           if (delayedTaskDetail) {
             throw new Error("A delayed Task detail response is already pending.");
@@ -1436,9 +1532,11 @@ export async function startChatSmokeStub({
           status,
           provider,
           state = "active",
-          issue
+          issue,
+          hints = {}
         ) => {
           workingProvider = provider;
+          participantHints = hints;
           participantState = state;
           participantStatus = status;
           participantIssue = issue;
@@ -1447,6 +1545,9 @@ export async function startChatSmokeStub({
             throw new Error("The streaming reply is not connected.");
           }
           streamingReplyResponse.write(participantStatusFrame());
+        },
+        publishWorkspaceChatMessage: (message) => {
+          laterWorkspaceMessages.push(message);
         },
         publishTaskReviewUpdate: ({ assistantMessages, title, updatedAt }) => {
           if (!Number.isFinite(updatedAt) || updatedAt <= currentTaskUpdatedAt) {
@@ -1472,6 +1573,12 @@ export async function startChatSmokeStub({
                 name: identity.name,
               }
             : null;
+          for (const stream of taskStatusStreams) {
+            if (!stream.destroyed) stream.write(taskParticipantFrame());
+          }
+        },
+        setTaskRun: (run) => {
+          taskRun = run;
           for (const stream of taskStatusStreams) {
             if (!stream.destroyed) stream.write(taskParticipantFrame());
           }
@@ -1512,6 +1619,9 @@ export async function startChatSmokeStub({
         get taskAcceptRequestCount() {
           return taskAcceptRequestCount;
         },
+        get taskStatusRequestCount() {
+          return taskStatusRequestCount;
+        },
         get taskPreparationRequestCount() {
           return taskPreparationRequestCount;
         },
@@ -1520,6 +1630,12 @@ export async function startChatSmokeStub({
         },
         get taskListEventStreamRequestCount() {
           return taskListEventStreamRequestCount;
+        },
+        get taskStatusStreamRequestCount() {
+          return taskStatusStreamRequestCount;
+        },
+        get openTaskStatusStreamCount() {
+          return taskStatusStreams.size;
         },
         uploads,
         userId: createE2eSessionProjection({ email: sessionEmail }).user.id,
@@ -1574,6 +1690,7 @@ export async function startChatSmokeStub({
       group_id: chatSmokeWorkspace.group_id,
       conversation_id: chatSmokeTaskConversation.id,
       bound_worker: boundWorker,
+      ...(taskRun ? { run: taskRun } : {}),
       participants: taskParticipants.map((p) => ({
         ...p,
         conversation_id: chatSmokeTaskConversation.id,
@@ -1599,6 +1716,13 @@ export async function startChatSmokeStub({
       ...(participantState === "active" && workingProvider
         ? { working_provider: workingProvider }
         : {}),
+      ...(participantState === "active" && participantHints.waiting
+        ? { waiting: true }
+        : {}),
+      ...(participantState === "active" &&
+      participantHints.workingConversationIds?.length
+        ? { working_conversation_ids: participantHints.workingConversationIds }
+        : {}),
       status: participantStatus,
       type: "participant_status",
       updated_at: participantUpdatedAt,
@@ -1619,13 +1743,13 @@ export async function startChatSmokeStub({
   }
 
   function taskConversation() {
-    const conversation: Omit<typeof chatSmokeTaskConversation, "schedule"> & {
+    const conversation: typeof chatSmokeTaskConversation & {
       messages: ReturnType<typeof taskMessages>;
       review_version?: number;
       archived_at?: number;
       archived_from_status?: string;
       archive_availability?: { allowed: boolean; reason: string | null };
-      schedule?: typeof chatSmokeTaskConversation.schedule;
+      loop?: ChatSmokeTaskLoop;
     } = {
       ...chatSmokeTaskConversation,
       ...taskConversationExtras,
@@ -1635,32 +1759,21 @@ export async function startChatSmokeStub({
       title: currentTaskTitle,
       updated_at: currentTaskUpdatedAt,
       archive_availability: {
-        allowed:
-          taskSchedule === null &&
-          [
-            "ready_for_review",
-            "completed",
-            "failed",
-            "cancelled",
-            "escalated",
-          ].includes(currentTaskStatus),
-        reason:
-          taskSchedule !== null
-            ? "schedule_bound"
-            : currentTaskStatus === "active"
-              ? "not_finished"
-              : null,
+        allowed: [
+          "ready_for_review",
+          "completed",
+          "failed",
+          "cancelled",
+          "escalated",
+        ].includes(currentTaskStatus),
+        reason: currentTaskStatus === "active" ? "not_finished" : null,
       },
       ...(archivedAt
         ? { archived_at: archivedAt, archived_from_status: archivedFromStatus! }
         : {}),
     };
 
-    if (taskSchedule === null) {
-      delete conversation.schedule;
-    } else {
-      conversation.schedule = taskSchedule;
-    }
+    if (currentTaskLoop !== null) conversation.loop = currentTaskLoop;
 
     if (currentTaskStatus === "ready_for_review") {
       conversation.review_version = currentTaskReviewVersion;
@@ -1717,7 +1830,7 @@ export async function startChatSmokeStub({
   }
 
   function messages() {
-    if (workspaceTranscript) return [...workspaceTranscript];
+    if (workspaceTranscript) return [...workspaceTranscript, ...laterWorkspaceMessages];
     if (!userText) {
       return [];
     }
@@ -1953,6 +2066,11 @@ export async function startChatSmokeStub({
   }
 }
 
+/** When an extra inline Task's latest run started (Unix milliseconds), as Salix sets it. */
+function extraInlineTaskRunStartedAt(index: number) {
+  return 1_720_000_010_000 + index * 2_000;
+}
+
 function additionalTaskConversation(task: ChatSmokeAdditionalTaskRef, index: number) {
   return {
     created_at: 1_720_000_100 + index * 2,
@@ -1963,6 +2081,18 @@ function additionalTaskConversation(task: ChatSmokeAdditionalTaskRef, index: num
     title: task.title,
     updated_at: 1_720_000_101 + index * 2,
     group_id: chatSmokeWorkspace.group_id,
+  };
+}
+
+function additionalTaskPreview(task: ChatSmokeAdditionalTaskRef, index: number) {
+  const { messages: _messages, ...conversation } = additionalTaskConversation(
+    task,
+    index
+  );
+  return {
+    ...conversation,
+    activity_status: "idle",
+    freshness: { refreshed_at: conversation.updated_at, state: "fresh" },
   };
 }
 
@@ -2010,6 +2140,7 @@ function readBuffer(req: NodeJS.ReadableStream) {
 }
 
 type ServerResponseLike = {
+  destroy: () => void;
   destroyed: boolean;
   end: (chunk?: string) => void;
   setHeader: (name: string, value: string) => void;

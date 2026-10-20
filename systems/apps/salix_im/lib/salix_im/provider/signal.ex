@@ -359,7 +359,7 @@ defmodule SalixIM.Provider.Signal do
     do: {:error, "signal_account_unavailable: try again shortly"}
 
   # These codes are lasting target or account states. A stable error class
-  # keeps that fact in model context after repair removes the diagnostic text.
+  # names that fact.
   defp error_text({:error, :unregistered}), do: coded("signal_recipient_unregistered")
   defp error_text({:error, :forbidden}), do: coded("signal_forbidden")
 

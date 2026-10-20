@@ -1,6 +1,6 @@
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import type { ProductInboxListResult } from "@comma/native-bridge";
-import { toast } from "@comma/ui";
+import type { ProductInboxListResult } from "@comma/core-client";
+import { toast } from "@comma/ui/components/toast";
 import { useEffect } from "react";
 import { productInboxErrorMessage } from "../../product-inbox";
 

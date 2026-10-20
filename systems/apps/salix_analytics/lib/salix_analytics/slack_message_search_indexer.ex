@@ -41,7 +41,7 @@ defmodule SalixAnalytics.SlackMessageSearchIndexer do
   end
 
   def file(scope, timestamp, file_id, opts \\ []) do
-    extractor = Application.get_env(:salix_analytics, :slack_semantic_file_source)
+    extractor = SystemsRuntime.get_env(:salix_analytics, :slack_semantic_file_source)
 
     with :ok <- valid_scope(scope),
          {:ok, indexed} <- SlackMessageSearchIndex.indexed_components(scope, timestamp),
@@ -187,7 +187,7 @@ defmodule SalixAnalytics.SlackMessageSearchIndexer do
         "file_id" => file_id,
         "file_epoch" => if(file_id == "", do: 0, else: captured.file_epoch),
         "change_epoch" => captured.change_epoch,
-        "build_id" => Ecto.UUID.generate(),
+        "build_id" => SystemsRuntime.Proc.uuid(),
         "build_sequence" => build["build_sequence"],
         "chunks" => Enum.map(units, & &1["text"]),
         "embeddings" => Enum.map(units, & &1["embedding"]),

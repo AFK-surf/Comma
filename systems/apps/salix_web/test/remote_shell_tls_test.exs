@@ -9,13 +9,20 @@ defmodule Salix.RemoteShellTLSTest.Edge do
   def init(opts), do: opts
 
   def call(conn, owner) do
-    send(owner, {:tls_authenticated, Plug.Conn.get_req_header(conn, "authorization")})
+    SystemsRuntime.Proc.send(
+      owner,
+      {:tls_authenticated, Plug.Conn.get_req_header(conn, "authorization")}
+    )
+
     WebSockAdapter.upgrade(conn, Salix.RemoteShellTLSTest.Socket, %{}, [])
   end
 end
 
 defmodule Salix.RemoteShellTLSTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   test "real WSS trusts the CA but rejects wrong hostnames and untrusted roots" do
     Application.ensure_all_started(:websockex)
@@ -24,7 +31,7 @@ defmodule Salix.RemoteShellTLSTest do
     dir =
       Path.join(
         System.tmp_dir!(),
-        "comma-shell-tls-#{Base.encode16(:crypto.strong_rand_bytes(9))}"
+        "comma-shell-tls-#{Base.encode16(SystemsRuntime.Proc.random_bytes(9))}"
       )
 
     File.mkdir_p!(dir)
@@ -95,7 +102,7 @@ defmodule Salix.RemoteShellTLSTest do
     server =
       start_supervised!(
         {Bandit,
-         plug: {Salix.RemoteShellTLSTest.Edge, self()},
+         plug: {Salix.RemoteShellTLSTest.Edge, SystemsRuntime.Proc.self()},
          scheme: :https,
          port: 0,
          ip: {127, 0, 0, 1},
@@ -130,11 +137,10 @@ defmodule Salix.RemoteShellTLSTest do
     refute_received {:tls_authenticated, _}
 
     assert {:ok, gateway} = Salix.RemoteShell.Gateway.open(handle, device, socket)
-    assert_receive {:tls_authenticated, ["Bearer test-only-token"]}
-    monitor = Process.monitor(gateway)
-    Process.exit(gateway, :kill)
-    assert_receive {:DOWN, ^monitor, :process, ^gateway, _}
-
+    settle_receive({:tls_authenticated, ["Bearer test-only-token"]})
+    monitor = SystemsRuntime.Proc.monitor(gateway)
+    SystemsRuntime.Proc.exit(gateway, :kill)
+    settle_receive({:DOWN, ^monitor, :process, ^gateway, _})
     assert :ok = :public_key.cacerts_load()
     {:ok, untrusted_socket} = :gen_tcp.listen(0, [:binary, active: false])
     on_exit(fn -> :gen_tcp.close(untrusted_socket) end)

@@ -45,7 +45,9 @@ defmodule SalixStore.SlackMirrorOutbox do
   def append(row, kind, context)
       when is_map(row) and is_map(context) and kind in ["message", "reaction", "pin", "metadata"] do
     row =
-      if kind == "message", do: Map.put(row, "source_write_id", Ecto.UUID.generate()), else: row
+      if kind == "message",
+        do: Map.put(row, "source_write_id", SystemsRuntime.Proc.uuid()),
+        else: row
 
     safe_query(fn ->
       Repo.transaction(fn ->
@@ -81,7 +83,7 @@ defmodule SalixStore.SlackMirrorOutbox do
   cannot claim this queue.
   """
   def admit_messages(rows) when is_list(rows) and length(rows) in 1..200 do
-    rows = Enum.map(rows, &Map.put(&1, "source_write_id", Ecto.UUID.generate()))
+    rows = Enum.map(rows, &Map.put(&1, "source_write_id", SystemsRuntime.Proc.uuid()))
 
     safe_query(fn ->
       Repo.transaction(fn ->

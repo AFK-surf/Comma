@@ -1,5 +1,5 @@
 defmodule SalixSignalProto.CallMedia.KeysTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.CallMedia.Keys
   alias SalixSignalProto.Test.Vectors
@@ -67,7 +67,7 @@ defmodule SalixSignalProto.CallMedia.KeysTest do
       test "case #{index}: a low-order peer key rejects the call" do
         input = hex_map(@vector["inputs"])
         assert @vector["outputs"]["result"] == "rejected"
-        identity = :crypto.strong_rand_bytes(32)
+        identity = SystemsRuntime.Proc.random_bytes(32)
 
         assert {:error, :invalid_public_key} =
                  Keys.derive(
@@ -84,7 +84,7 @@ defmodule SalixSignalProto.CallMedia.KeysTest do
   test "a peer key or identity key of the wrong length is refused" do
     {_public, private} = Keys.generate_keypair()
     {peer, _} = Keys.generate_keypair()
-    ik = :crypto.strong_rand_bytes(32)
+    ik = SystemsRuntime.Proc.random_bytes(32)
 
     assert {:error, :invalid_public_key} =
              Keys.derive(:caller, private, <<5, peer::binary>>, ik, ik)

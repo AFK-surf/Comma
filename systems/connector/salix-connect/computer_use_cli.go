@@ -1,13 +1,8 @@
 package main
 
 import (
-	"context"
 	"crypto/sha256"
-	"encoding/json"
-	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -122,53 +117,4 @@ func safeComputerUseRuntimeNamespace(value string) string {
 		}
 	}
 	return strings.Trim(normalized.String(), ".")
-}
-
-func runComputerUseRuntimeCLI(args []string) error {
-	if len(args) == 0 {
-		return errors.New("usage: salix computer-use <action> [--config path] [--json '{...}']")
-	}
-
-	action := args[0]
-	fs := flag.NewFlagSet("computer-use", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-
-	cfg := config{
-		configPath: getenv("SALIX_CONNECTOR_CONFIG", ""),
-		name:       getenv("SALIX_CONNECTOR_NAME", hostname()),
-		root:       getenv("SALIX_CONNECTOR_ROOT", "."),
-		reconnect:  true,
-	}
-	paramsJSON := "{}"
-	fs.StringVar(&cfg.configPath, "config", cfg.configPath, "connector config JSON path")
-	fs.StringVar(&paramsJSON, "json", paramsJSON, "computer_use params JSON object")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-
-	if cfg.configPath != "" {
-		explicit := map[string]bool{}
-		fs.Visit(func(f *flag.Flag) {
-			explicit[f.Name] = true
-		})
-		if err := applyConfigFile(&cfg, explicit); err != nil {
-			return err
-		}
-	}
-
-	var params map[string]any
-	if err := json.Unmarshal([]byte(paramsJSON), &params); err != nil {
-		return fmt.Errorf("--json must be a JSON object: %w", err)
-	}
-	if params == nil {
-		params = map[string]any{}
-	}
-	params["action"] = action
-
-	c, err := newConnector(cfg)
-	if err != nil {
-		return err
-	}
-
-	return json.NewEncoder(os.Stdout).Encode(c.methodComputerUse(context.Background(), params))
 }

@@ -4,12 +4,16 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import {
   CloudOffIcon,
-  cx,
   Folder1Icon,
   FolderAddRightIcon,
   EditBigIcon,
   FolderOpenIcon,
   FolderUploadIcon,
+  MoreHorizontalIcon,
+  TrashCanIcon,
+} from "@comma/ui/components/icons";
+import { cx } from "@comma/ui/components/utils";
+import {
   getMenuPointerOffsets,
   Menu,
   MenuItem,
@@ -17,13 +21,11 @@ import {
   MenuSeparator,
   menuItemClasses,
   menuSurfaceClasses,
-  MoreHorizontalIcon,
-  ScrollArea,
-  Toggle,
-  Tooltip,
-  TrashCanIcon,
   type MenuPointerOffsets,
-} from "@comma/ui";
+} from "@comma/ui/components/menu";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { Toggle } from "@comma/ui/components/toggle";
+import { Tooltip } from "@comma/ui/components/tooltip";
 import { useRef, type RefObject } from "react";
 import { commaDriveSpaceRailWidth } from "../shellGeometry";
 import { useDriveContextMenu } from "./DriveItemMenu";
@@ -209,6 +211,8 @@ function DriveSpaceRow({
           if (!rowRef.current) return;
           event.preventDefault();
           event.stopPropagation();
+          // Comma serves this space: nothing to sync, rename or remove.
+          if (space.remote) return;
           menu.open(
             getMenuPointerOffsets(rowRef.current, event.clientX, event.clientY)
           );
@@ -230,7 +234,7 @@ function DriveSpaceRow({
           <Folder1Icon aria-hidden className="size-5 shrink-0 text-quaternary" />
         )}
         <span className="min-w-0 truncate text-sm">{space.name}</span>
-        {space.synced ? null : (
+        {space.synced || space.remote ? null : (
           <Tooltip content={messages.drive_space_not_synced()} placement="top">
             <span
               aria-label={messages.drive_space_not_synced()}
@@ -243,23 +247,25 @@ function DriveSpaceRow({
           </Tooltip>
         )}
         <span className="min-w-0 flex-1" />
-        <button
-          aria-label={messages.drive_space_more_actions({ spaceName: space.name })}
-          className={cx(
-            "inline-flex size-5 shrink-0 items-center justify-center rounded-sm border-0 bg-transparent p-0 text-quaternary outline-none",
-            "hover:text-secondary focus-visible:opacity-100 focus-visible:shadow-focus-gray",
-            menu.isOpen
-              ? "opacity-100"
-              : "opacity-0 group-hover/drive-space:opacity-100"
-          )}
-          onClick={(event) => {
-            event.stopPropagation();
-            menu.open(null);
-          }}
-          type="button"
-        >
-          <MoreHorizontalIcon aria-hidden className="size-5" />
-        </button>
+        {space.remote ? null : (
+          <button
+            aria-label={messages.drive_space_more_actions({ spaceName: space.name })}
+            className={cx(
+              "inline-flex size-5 shrink-0 items-center justify-center rounded-sm border-0 bg-transparent p-0 text-quaternary outline-none",
+              "hover:text-secondary focus-visible:opacity-100 focus-visible:shadow-focus-gray",
+              menu.isOpen
+                ? "opacity-100"
+                : "opacity-0 group-hover/drive-space:opacity-100"
+            )}
+            onClick={(event) => {
+              event.stopPropagation();
+              menu.open(null);
+            }}
+            type="button"
+          >
+            <MoreHorizontalIcon aria-hidden className="size-5" />
+          </button>
+        )}
       </div>
       <DriveSpaceMenuPopover
         isOpen={menu.isOpen}

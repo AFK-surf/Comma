@@ -1,5 +1,5 @@
 defmodule SystemsObservability.ContextTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   require OpenTelemetry.Tracer, as: Tracer
 
   alias SystemsObservability.Context
@@ -65,13 +65,13 @@ defmodule SystemsObservability.ContextTest do
       captured = Context.with_surface("comma", &Context.capture/0)
 
       task =
-        Task.async(fn ->
+        SystemsRuntime.Task.async(fn ->
           Context.run(captured, fn ->
             OpenTelemetry.Tracer.current_span_ctx()
           end)
         end)
 
-      child_process_context = Task.await(task)
+      child_process_context = SystemsRuntime.Task.await(task, :infinity)
 
       assert OpenTelemetry.Span.trace_id(child_process_context) ==
                OpenTelemetry.Span.trace_id(parent)

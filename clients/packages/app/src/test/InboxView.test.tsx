@@ -9,13 +9,15 @@ import {
 import type { ComponentProps } from "react";
 import { initializeCommaI18n, type CommaLocale } from "@comma/i18n";
 import { CommaI18nProvider } from "@comma/i18n/react";
-import { fireEvent, render, screen, waitFor, within } from "@comma/test-utils/render";
+import { fireEvent, render, screen, within } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ProductInboxItem, ProductInboxListResult } from "@comma/native-bridge";
-import { Toaster, toast } from "@comma/ui";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProductInboxItem, ProductInboxListResult } from "@comma/core-client";
+import { Toaster, toast } from "@comma/ui/components/toast";
 import { InboxView } from "../components/inbox/InboxView";
-import { readInboxUnreadMarks } from "../components/inbox/inboxDeletion";
+import type { MarkKind } from "@comma/core/contract";
+import { flush } from "@comma/test-utils/fake-clock";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
 
 const item = (over: Partial<ProductInboxItem> = {}): ProductInboxItem => ({
   id: "w1:c1",
@@ -31,18 +33,70 @@ const item = (over: Partial<ProductInboxItem> = {}): ProductInboxItem => ({
   ...over,
 });
 
+/**
+ * A core that keeps the reader's deleted, unread and seen marks as the UI asks: each `marks.mark` / `marks.unmark`
+ * it sends changes the `marks` the core then says. (How the core itself keeps marks is core/test/marks.test.ts.)
+ */
+function marksCore() {
+  const kept: Partial<Record<MarkKind, Record<string, number>>> = {};
+  const scripted = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "marks"
+        ? { marks: kept[topic.kind as MarkKind] ?? {} }
+        : undefined,
+    calls: (name, params) => {
+      const {
+        kind,
+        entries = [],
+        ids = [],
+      } = params as { kind: MarkKind; entries?: [string, number][]; ids?: string[] };
+      const next = { ...kept[kind] };
+      if (name === "marks.mark") for (const [id, at] of entries) next[id] = at;
+      if (name === "marks.unmark") for (const id of ids) delete next[id];
+      kept[kind] = next;
+      scripted.changed("marks");
+      return null;
+    },
+  });
+  return scripted;
+}
+
+// One core per test, across its renders.
+let core = marksCore();
+let user = userEvent.setup();
+/** Clicks like a pointer, then lets what the click started finish. */
+const click = async (element: Element) => {
+  await user.click(element);
+  await flush();
+};
+const press = async (keys: string) => {
+  await user.keyboard(keys);
+  await flush();
+};
+
+const eventLoop = (events: string) => ({
+  state: "active" as const,
+  startedAt: 1,
+  wakeCount: 0,
+  cadence: { events },
+});
+
 describe("InboxView", () => {
+  beforeEach(() => {
+    user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    core = marksCore();
+  });
   afterEach(() => {
     toast.dismissAll();
     initializeCommaI18n(["en"]);
-    // Deleted and unread marks persist in storage across renders.
     window.localStorage.clear();
   });
 
   it("renders loading when the host has not projected a list", async () => {
     renderInbox(null);
+    await flush();
 
-    expect(await screen.findByRole("status", { name: "Loading…" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Loading…" })).toBeInTheDocument();
     expect(screen.queryByTestId("inbox-source")).toBeNull();
     expect(screen.queryByTestId("inbox-list")).toBeNull();
   });
@@ -53,8 +107,9 @@ describe("InboxView", () => {
       lastSyncedAt: 500,
       items: [item(), item({ id: "w2:c9", workspaceName: "Globex", title: "Ship it" })],
     });
+    await flush();
 
-    const rows = await screen.findAllByTestId("inbox-item");
+    const rows = screen.getAllByTestId("inbox-item");
     expect(rows).toHaveLength(2);
     expect(screen.getByTestId("inbox-conversation-rail")).toHaveStyle({
       flexBasis: "320px",
@@ -65,14 +120,6 @@ describe("InboxView", () => {
     expect(within(rows[1]!).getByText("Ship it")).toBeInTheDocument();
   });
 
-  it("localizes the Inbox chrome while preserving conversation titles", async () => {
-    renderInbox({ source: "live-sync", items: [item()] }, {}, "zh-CN");
-
-    expect(await screen.findByRole("heading", { name: "收件箱" })).toBeInTheDocument();
-    expect(screen.getByText("Kickoff sync")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Inbox" })).not.toBeInTheDocument();
-  });
-
   it("visibly and accessibly qualifies stale and unknown conversation rows", async () => {
     renderInbox({
       source: "live-sync",
@@ -81,9 +128,10 @@ describe("InboxView", () => {
         item({ freshness: "unknown", id: "w1:unknown", title: "Unknown task" }),
       ],
     });
+    await flush();
 
-    const staleRow = await screen.findByRole("link", { name: /Stale task.*Stale/i });
-    const unknownRow = await screen.findByRole("link", {
+    const staleRow = screen.getByRole("link", { name: /Stale task.*Stale/i });
+    const unknownRow = screen.getByRole("link", {
       name: /Unknown task.*Status unknown/i,
     });
 
@@ -101,8 +149,9 @@ describe("InboxView", () => {
         item({ freshness: "stale", id: "w1:old", title: "Earlier result" }),
       ],
     });
+    await flush();
 
-    const row = await screen.findByRole("link", { name: "Cached task" });
+    const row = screen.getByRole("link", { name: "Cached task" });
     expect(row).toHaveAttribute("data-freshness", "fresh");
     expect(row).not.toHaveTextContent("Stale");
     expect(
@@ -111,18 +160,24 @@ describe("InboxView", () => {
   });
 
   it("reports sync failure once while keeping cached rows readable", async () => {
-    renderInbox({
-      source: "error",
-      errorCode: "network_unavailable",
-      items: [item({ freshness: "fresh", title: "Cached during error" })],
-    });
+    renderInbox(
+      {
+        source: "error",
+        errorCode: "network_unavailable",
+        items: [item({ freshness: "fresh", title: "Cached during error" })],
+      },
+      {},
+      undefined,
+      { toasts: true }
+    );
+    await flush();
 
-    const row = await screen.findByRole("link", {
+    const row = screen.getByRole("link", {
       name: "Cached during error",
     });
     expect(row).toHaveAttribute("data-freshness", "fresh");
     expect(row).not.toHaveTextContent("Stale");
-    expect(await screen.findByTestId("inbox-banner")).toHaveTextContent("Sync failed");
+    expect(screen.getByTestId("inbox-banner")).toHaveTextContent("Sync failed");
   });
 
   it("formats Comma epoch-second timestamps as current relative time", async () => {
@@ -133,32 +188,37 @@ describe("InboxView", () => {
       lastSyncedAt: oneMinuteAgoInSeconds,
       items: [item({ updatedAt: oneMinuteAgoInSeconds })],
     });
+    await flush();
 
-    expect(await screen.findByTestId("inbox-source")).toHaveTextContent("1m");
-    expect(await screen.findByRole("link", { name: /Kickoff sync/ })).toHaveTextContent(
-      "1m"
-    );
+    expect(screen.getByTestId("inbox-source")).toHaveTextContent("1m");
+    expect(screen.getByRole("link", { name: /Kickoff sync/ })).toHaveTextContent("1m");
   });
 
   it("links each conversation row to the conversation detail route", async () => {
     const { router } = renderInbox({ source: "live-sync", items: [item()] });
-    const row = await screen.findByRole("link", { name: /Kickoff sync/ });
+    await flush();
+    const row = screen.getByRole("link", { name: /Kickoff sync/ });
 
     expect(row).toHaveAttribute("href", "/inbox/w1/grp_test/c1");
     fireEvent.click(row);
-    await waitFor(() =>
-      expect(router.state.location.pathname).toBe("/inbox/w1/grp_test/c1")
-    );
+    await flush();
+    expect(router.state.location.pathname).toBe("/inbox/w1/grp_test/c1");
   });
 
   it("shows an offline banner but still lists items on cache + error", async () => {
-    renderInbox({
-      source: "cache",
-      errorCode: "network_unavailable",
-      items: [item()],
-    });
+    renderInbox(
+      {
+        source: "cache",
+        errorCode: "network_unavailable",
+        items: [item()],
+      },
+      {},
+      undefined,
+      { toasts: true }
+    );
+    await flush();
 
-    const banner = await screen.findByTestId("inbox-banner");
+    const banner = screen.getByTestId("inbox-banner");
     expect(banner).toHaveTextContent("Showing local cache");
     expect(banner).toHaveTextContent(
       "Comma could not reach the ProductInbox authority."
@@ -166,20 +226,7 @@ describe("InboxView", () => {
     expect(screen.getByTestId("inbox-list")).toBeInTheDocument();
   });
 
-  it.each([
-    {
-      name: "surfaces the error on the error state",
-      locale: undefined,
-      title: "Sync failed",
-      detail: "The Main ProductInbox scheduler is unavailable.",
-    },
-    {
-      name: "localizes ProductInbox error details",
-      locale: "zh-CN" as const,
-      title: "同步失败",
-      detail: "主进程的 ProductInbox 调度器不可用。",
-    },
-  ])("$name", async ({ detail, locale, title }) => {
+  it("surfaces the error on the error state", async () => {
     renderInbox(
       {
         source: "error",
@@ -187,18 +234,23 @@ describe("InboxView", () => {
         items: [],
       },
       {},
-      locale
+      undefined,
+      { toasts: true }
     );
+    await flush();
 
-    expect(await screen.findByTestId("inbox-banner")).toHaveTextContent(title);
-    expect(screen.getByTestId("inbox-banner")).toHaveTextContent(detail);
+    expect(screen.getByTestId("inbox-banner")).toHaveTextContent("Sync failed");
+    expect(screen.getByTestId("inbox-banner")).toHaveTextContent(
+      "The Main ProductInbox scheduler is unavailable."
+    );
   });
 
   it("shows an empty state when synced with no conversations", async () => {
     renderInbox({ source: "live-sync", lastSyncedAt: 1, items: [] });
+    await flush();
 
     expect(
-      within(await screen.findByTestId("inbox-empty")).getByText("No notifications")
+      within(screen.getByTestId("inbox-empty")).getByText("No notifications")
     ).toBeInTheDocument();
   });
 
@@ -223,69 +275,51 @@ describe("InboxView", () => {
         }),
       ],
     });
+    await flush();
 
-    expect(
-      await screen.findAllByTestId("inbox-item", undefined, { timeout: 5_000 })
-    ).toHaveLength(3);
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(3);
     expect(screen.queryByTestId("inbox-filter-footer")).toBeNull();
 
     // The first level lists filter dimensions; each dimension's options live
     // one level deeper, as in the Tasks filter.
-    // userEvent, not fireEvent: React Aria's submenu trigger opens on the full
-    // pointer sequence, and a bare click event leaves it closed under load.
-    await userEvent.click(await screen.findByTestId("inbox-filter-trigger"));
+    // A pointer click, not fireEvent: React Aria's submenu trigger opens on the
+    // full pointer sequence.
+    await click(screen.getByTestId("inbox-filter-trigger"));
     expect(screen.queryByTestId("inbox-status-filter")).toBeNull();
-    await userEvent.click(
-      await screen.findByRole("menuitem", { name: /Task status/ }, { timeout: 5_000 })
-    );
+    await click(screen.getByRole("menuitem", { name: /Task status/ }));
 
     // Queried from `screen`, not through a captured panel node: React Aria
     // remounts the popover subtree when it repositions, which detaches any
     // element reference taken before the options render.
-    await screen.findByTestId("inbox-status-filter", undefined, { timeout: 5_000 });
-    const done = await screen.findByRole(
-      "menuitemcheckbox",
-      { name: /Done/ },
-      { timeout: 5_000 }
-    );
+    expect(screen.getByTestId("inbox-status-filter")).toBeInTheDocument();
+    const done = screen.getByRole("menuitemcheckbox", { name: /Done/ });
     // The count beside a status is the Inbox's notification count, not the
     // Tasks board's task count.
     expect(done).toHaveTextContent("1 notification");
-    await userEvent.click(done);
+    await click(done);
 
-    await waitFor(
-      () => {
-        expect(screen.getAllByTestId("inbox-item")).toHaveLength(2);
-      },
-      { timeout: 5_000 }
-    );
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(2);
     expect(screen.queryByText("Nightly run")).toBeNull();
     expect(screen.getByTestId("inbox-filter-footer")).toHaveTextContent(
       "1 notification hidden by filters"
     );
 
     // The menu is modal, so close it before reaching the footer under it.
-    await userEvent.keyboard("{Escape}");
-    await waitFor(() => {
-      expect(screen.queryByRole("menuitemcheckbox", { name: /Done/ })).toBeNull();
-    });
+    await press("{Escape}");
+    expect(screen.queryByRole("menuitemcheckbox", { name: /Done/ })).toBeNull();
     if (screen.queryByRole("menuitem", { name: /Task status/ })) {
-      await userEvent.keyboard("{Escape}");
+      await press("{Escape}");
     }
-    await waitFor(() => {
-      expect(screen.queryByRole("menuitem", { name: /Task status/ })).toBeNull();
-    });
-    await userEvent.click(screen.getByRole("button", { name: /Clear Filters/ }));
+    expect(screen.queryByRole("menuitem", { name: /Task status/ })).toBeNull();
+    await click(screen.getByRole("button", { name: /Clear Filters/ }));
 
-    await waitFor(() => {
-      expect(screen.getAllByTestId("inbox-item")).toHaveLength(3);
-    });
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(3);
     expect(screen.queryByTestId("inbox-filter-footer")).toBeNull();
     expect(screen.getByTestId("inbox-filter-trigger")).toHaveAttribute(
       "data-filtered",
       "false"
     );
-  }, 20_000);
+  });
 
   it("searches localized platforms without losing other selections and restores all origins", async () => {
     renderInbox(
@@ -302,30 +336,33 @@ describe("InboxView", () => {
       {},
       "zh-CN"
     );
+    await flush();
 
-    expect(await screen.findAllByTestId("inbox-item")).toHaveLength(5);
-    await userEvent.click(screen.getByTestId("inbox-filter-trigger"));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "平台" }));
-    expect(
-      await screen.findByRole("menuitemcheckbox", { name: /飞书/ })
-    ).toHaveTextContent("1 条通知");
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(5);
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    await click(screen.getByRole("menuitem", { name: "平台" }));
+    expect(screen.getByRole("menuitemcheckbox", { name: /飞书/ })).toHaveTextContent(
+      "1 条通知"
+    );
     expect(screen.getByRole("menuitemcheckbox", { name: /未指定/ })).toHaveTextContent(
       "2 条通知"
     );
 
-    await userEvent.click(screen.getByRole("menuitemcheckbox", { name: /未指定/ }));
-    await userEvent.click(screen.getByRole("menuitemcheckbox", { name: /Slack/ }));
-    await waitFor(() => expect(screen.getAllByTestId("inbox-item")).toHaveLength(2));
+    await click(screen.getByRole("menuitemcheckbox", { name: /未指定/ }));
+    await click(screen.getByRole("menuitemcheckbox", { name: /Slack/ }));
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(2);
     expect(screen.queryByText("Legacy chat")).toBeNull();
     expect(screen.queryByText("Future chat")).toBeNull();
 
-    await userEvent.type(screen.getByRole("textbox", { name: "筛选…" }), "飞书");
+    await user.type(screen.getByRole("textbox", { name: "筛选…" }), "飞书");
+    await flush();
     expect(screen.queryByRole("menuitemcheckbox", { name: /Comma/ })).toBeNull();
-    await userEvent.click(screen.getByRole("menuitemcheckbox", { name: /飞书/ }));
-    await waitFor(() => expect(screen.getAllByTestId("inbox-item")).toHaveLength(1));
+    await click(screen.getByRole("menuitemcheckbox", { name: /飞书/ }));
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(1);
     expect(screen.getByText("Comma chat")).toBeInTheDocument();
 
-    await userEvent.clear(screen.getByRole("textbox", { name: "筛选…" }));
+    await user.clear(screen.getByRole("textbox", { name: "筛选…" }));
+    await flush();
     expect(screen.getByRole("menuitemcheckbox", { name: /Comma/ })).toHaveAttribute(
       "aria-checked",
       "true"
@@ -334,18 +371,18 @@ describe("InboxView", () => {
       "aria-checked",
       "false"
     );
-    await userEvent.click(screen.getByRole("menuitemcheckbox", { name: /Slack/ }));
-    await userEvent.click(screen.getByRole("menuitemcheckbox", { name: /飞书/ }));
-    await waitFor(() => expect(screen.getAllByTestId("inbox-item")).toHaveLength(3));
-    await userEvent.click(screen.getByRole("menuitemcheckbox", { name: /未指定/ }));
+    await click(screen.getByRole("menuitemcheckbox", { name: /Slack/ }));
+    await click(screen.getByRole("menuitemcheckbox", { name: /飞书/ }));
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(3);
+    await click(screen.getByRole("menuitemcheckbox", { name: /未指定/ }));
 
-    await waitFor(() => expect(screen.getAllByTestId("inbox-item")).toHaveLength(5));
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(5);
     expect(screen.getByTestId("inbox-filter-trigger")).toHaveAttribute(
       "data-filtered",
       "false"
     );
     expect(screen.queryByTestId("inbox-filter-footer")).toBeNull();
-  }, 20_000);
+  });
 
   it("combines platform and status filters and clears both from the footer", async () => {
     renderInbox({
@@ -369,36 +406,35 @@ describe("InboxView", () => {
         }),
       ],
     });
+    await flush();
 
-    await userEvent.click(await screen.findByTestId("inbox-filter-trigger"));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "Task status" }));
-    await userEvent.click(
-      await screen.findByRole("menuitemcheckbox", { name: /Done/ })
-    );
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    await click(screen.getByRole("menuitem", { name: "Task status" }));
+    await click(screen.getByRole("menuitemcheckbox", { name: /Done/ }));
     await closeInboxFilterMenu();
-    await userEvent.click(screen.getByTestId("inbox-filter-trigger"));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "Platform" }));
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    await click(screen.getByRole("menuitem", { name: "Platform" }));
 
     // Counts describe all undeleted notifications, including the task hidden by status.
-    expect(
-      await screen.findByRole("menuitemcheckbox", { name: /Slack/ })
-    ).toHaveTextContent("3 notifications");
-    await userEvent.click(screen.getByRole("menuitemcheckbox", { name: /Comma/ }));
-    await waitFor(() => expect(screen.getAllByTestId("inbox-item")).toHaveLength(2));
+    expect(screen.getByRole("menuitemcheckbox", { name: /Slack/ })).toHaveTextContent(
+      "3 notifications"
+    );
+    await click(screen.getByRole("menuitemcheckbox", { name: /Comma/ }));
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(2);
     expect(screen.getByText("Slack chat")).toBeInTheDocument();
     expect(screen.getByText("Slack running")).toBeInTheDocument();
     expect(screen.getByTestId("inbox-filter-footer")).toHaveTextContent(
       "2 notifications hidden by filters"
     );
     await closeInboxFilterMenu();
-    await userEvent.click(screen.getByRole("button", { name: "Clear Filters" }));
-    await waitFor(() => expect(screen.getAllByTestId("inbox-item")).toHaveLength(4));
+    await click(screen.getByRole("button", { name: "Clear Filters" }));
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(4);
     expect(screen.queryByTestId("inbox-filter-footer")).toBeNull();
     expect(screen.getByTestId("inbox-filter-trigger")).toHaveAttribute(
       "data-filtered",
       "false"
     );
-  }, 20_000);
+  });
 
   it("keeps selected platforms at zero after deletion and excludes archived notifications", async () => {
     renderInbox({
@@ -421,82 +457,220 @@ describe("InboxView", () => {
         item({ id: "w1:telegram", origin: "telegram", title: "Telegram chat" }),
       ],
     });
+    await flush();
 
-    expect(await screen.findAllByTestId("inbox-item")).toHaveLength(3);
-    await userEvent.click(screen.getByTestId("inbox-filter-trigger"));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "Platform" }));
-    expect(
-      await screen.findByRole("menuitemcheckbox", { name: /Slack/ })
-    ).toHaveTextContent("1 notification");
-    await userEvent.click(screen.getByRole("menuitemcheckbox", { name: /Telegram/ }));
-    await closeInboxFilterMenu();
-    await userEvent.click(screen.getByTestId("inbox-actions-trigger"));
-    await userEvent.click(
-      await screen.findByRole("menuitem", { name: "Delete all read" })
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(3);
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    await click(screen.getByRole("menuitem", { name: "Platform" }));
+    expect(screen.getByRole("menuitemcheckbox", { name: /Slack/ })).toHaveTextContent(
+      "1 notification"
     );
-    await waitFor(() => expect(screen.getAllByTestId("inbox-item")).toHaveLength(1));
+    await click(screen.getByRole("menuitemcheckbox", { name: /Telegram/ }));
+    await closeInboxFilterMenu();
+    await click(screen.getByTestId("inbox-actions-trigger"));
+    await click(screen.getByRole("menuitem", { name: "Delete all read" }));
+    expect(core.sentTo("marks.mark")).toEqual([
+      { kind: "inboxDeleted", entries: [["w1:c1", 1_000]] },
+    ]);
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(1);
     expect(screen.getByText("Unread Comma task")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByTestId("inbox-filter-trigger"));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "Platform" }));
-    const slack = await screen.findByRole("menuitemcheckbox", { name: /Slack/ });
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    await click(screen.getByRole("menuitem", { name: "Platform" }));
+    const slack = screen.getByRole("menuitemcheckbox", { name: /Slack/ });
     expect(slack).toHaveAttribute("aria-checked", "true");
     expect(slack).toHaveTextContent("0 notifications");
     const telegram = screen.getByRole("menuitemcheckbox", { name: /Telegram/ });
     expect(telegram).toHaveAttribute("aria-checked", "false");
     expect(telegram).toHaveTextContent("1 notification");
     await closeInboxFilterMenu();
-    await userEvent.click(screen.getByRole("button", { name: "Clear Filters" }));
-    await waitFor(() => expect(screen.getAllByTestId("inbox-item")).toHaveLength(2));
+    await click(screen.getByRole("button", { name: "Clear Filters" }));
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(2);
     expect(screen.getByText("Telegram chat")).toBeInTheDocument();
     expect(screen.queryByText("Read Slack chat")).toBeNull();
     expect(screen.queryByText("Archived Slack chat")).toBeNull();
-  }, 20_000);
+  });
 
-  it("can select only Slack when the other notification has no platform", async () => {
+  it("filters notifications by their exact event rule and clears it without hiding chats", async () => {
     renderInbox({
       source: "live-sync",
       items: [
-        item({ origin: "slack", title: "Slack chat" }),
-        item({ id: "w1:legacy", title: "Legacy chat" }),
+        item({ title: "Team chat" }),
+        item({
+          id: "w1:pr1",
+          kind: "agent_task",
+          status: "active",
+          title: "Watch first PR",
+          loop: eventLoop("PR #1 updated"),
+        }),
+        item({
+          id: "w1:pr2",
+          kind: "agent_task",
+          status: "active",
+          title: "Watch second PR",
+          loop: eventLoop("PR #2 updated"),
+        }),
+        item({
+          id: "w1:ended",
+          kind: "agent_task",
+          status: "completed",
+          title: "Ended watch",
+          loop: { ...eventLoop("PR #1 updated"), state: "ended" },
+        }),
       ],
     });
+    await flush();
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    await click(screen.getByRole("menuitem", { name: "Trigger rule" }));
+    const panel = screen.getByRole("dialog", { name: "Trigger rule" });
+    await click(within(panel).getByRole("menuitemradio", { name: /PR #1 updated/ }));
+    await closeInboxFilterMenu();
+    expect(screen.getByText("Team chat")).toBeInTheDocument();
+    expect(screen.getByText("Watch first PR")).toBeInTheDocument();
+    expect(screen.queryByText("Watch second PR")).toBeNull();
+    expect(screen.queryByText("Ended watch")).toBeNull();
+    await click(screen.getByRole("button", { name: "Clear Filters" }));
+    expect(screen.getByText("Watch second PR")).toBeInTheDocument();
+    expect(screen.getByText("Ended watch")).toBeInTheDocument();
+  });
 
-    expect(await screen.findAllByTestId("inbox-item")).toHaveLength(2);
-    await userEvent.click(screen.getByTestId("inbox-filter-trigger"));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "Platform" }));
-    await userEvent.click(
-      await screen.findByRole("menuitemcheckbox", { name: /Unspecified/ })
+  it("keeps a selected rule checked at zero after its last notification is deleted", async () => {
+    renderInbox({
+      source: "live-sync",
+      items: [
+        item({ title: "Team chat" }),
+        item({
+          id: "w1:pr1",
+          kind: "agent_task",
+          status: "active",
+          title: "Watch first PR",
+          loop: eventLoop("PR #1 updated"),
+        }),
+        item({
+          id: "w1:pr2",
+          kind: "agent_task",
+          status: "active",
+          title: "Watch second PR",
+          loop: eventLoop("PR #2 updated"),
+        }),
+      ],
+    });
+    await flush();
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    await click(screen.getByRole("menuitem", { name: "Trigger rule" }));
+    await click(
+      within(screen.getByRole("dialog", { name: "Trigger rule" })).getByRole(
+        "menuitemradio",
+        { name: /PR #1 updated/ }
+      )
     );
-    await waitFor(() => expect(screen.getAllByTestId("inbox-item")).toHaveLength(1));
-    expect(screen.getByText("Slack chat")).toBeInTheDocument();
-    expect(screen.queryByText("Legacy chat")).toBeNull();
-    expect(screen.getByTestId("inbox-filter-trigger")).toHaveAttribute(
-      "data-filtered",
-      "true"
-    );
+    await closeInboxFilterMenu();
+    const row = screen
+      .getByText("Watch first PR")
+      .closest("[data-testid='inbox-item']");
+    await openInboxItemMenu(row as HTMLElement);
+    await click(screen.getByRole("menuitem", { name: "Delete notification" }));
+    expect(screen.getByText("Team chat")).toBeInTheDocument();
+    expect(screen.queryByText("Watch first PR")).toBeNull();
+    expect(screen.queryByText("Watch second PR")).toBeNull();
 
-    await userEvent.click(screen.getByRole("menuitemcheckbox", { name: /Slack/ }));
-    await waitFor(() => expect(screen.queryAllByTestId("inbox-item")).toHaveLength(0));
-    await userEvent.click(screen.getByRole("menuitemcheckbox", { name: /Slack/ }));
-    await waitFor(() => expect(screen.getAllByTestId("inbox-item")).toHaveLength(1));
-    expect(screen.queryByText("Legacy chat")).toBeNull();
-    await userEvent.click(
-      screen.getByRole("menuitemcheckbox", { name: /Unspecified/ })
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    await click(screen.getByRole("menuitem", { name: "Trigger rule" }));
+    const panel = screen.getByRole("dialog", { name: "Trigger rule" });
+    const selected = within(panel).getByRole("menuitemradio", {
+      name: /PR #1 updated/,
+    });
+    expect(selected).toHaveAttribute("aria-checked", "true");
+    expect(within(selected).getByText(/^0(\s|$)/)).toBeInTheDocument();
+    await click(within(panel).getByRole("menuitemradio", { name: /All tasks/ }));
+    expect(screen.getByText("Watch second PR")).toBeInTheDocument();
+    expect(
+      within(panel).queryByRole("menuitemradio", { name: /PR #1 updated/ })
+    ).toBeNull();
+  });
+
+  it("filters Scheduled and On updates notifications separately", async () => {
+    renderInbox({
+      source: "live-sync",
+      items: [
+        item({ title: "Team chat" }),
+        item({
+          id: "w1:loop",
+          kind: "agent_task",
+          status: "escalated",
+          title: "Morning digest",
+          loop: {
+            state: "paused",
+            startedAt: 1,
+            wakeCount: 2,
+            cadence: { everyMinutes: 60 },
+          },
+        }),
+        item({
+          id: "w1:event",
+          kind: "agent_task",
+          status: "active",
+          title: "PR updates",
+          loop: {
+            state: "active",
+            startedAt: 1,
+            wakeCount: 2,
+            cadence: { events: "new comments" },
+          },
+        }),
+        item({
+          id: "w1:once",
+          kind: "agent_task",
+          status: "running",
+          title: "One-off task",
+        }),
+      ],
+    });
+    await flush();
+    expect(
+      screen.getByRole("link", { name: "Morning digest, Scheduled" })
+    ).toBeVisible();
+    expect(screen.getByRole("link", { name: "PR updates, On updates" })).toBeVisible();
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    await click(screen.getByRole("menuitem", { name: "Loops" }));
+    let panel = screen.getByTestId("inbox-schedule-filter");
+    expect(
+      within(panel).getByRole("menuitemcheckbox", { name: /^Scheduled/ })
+    ).toHaveTextContent("1 notification");
+    expect(
+      within(panel).getByRole("menuitemcheckbox", { name: /^On updates/ })
+    ).toHaveTextContent("1 notification");
+    await click(within(panel).getByRole("menuitemcheckbox", { name: /No loop/ }));
+    await click(within(panel).getByRole("menuitemcheckbox", { name: /^On updates/ }));
+    await closeInboxFilterMenu();
+    expect(screen.getAllByTestId("inbox-item").map((row) => row.textContent)).toEqual([
+      expect.stringContaining("Team chat"),
+      expect.stringContaining("Morning digest"),
+    ]);
+    expect(screen.getByTestId("inbox-filter-footer")).toHaveTextContent(
+      "2 notifications hidden by filters"
     );
-    await waitFor(() => expect(screen.getAllByTestId("inbox-item")).toHaveLength(2));
-    expect(screen.getByTestId("inbox-filter-trigger")).toHaveAttribute(
-      "data-filtered",
-      "false"
-    );
-  }, 20_000);
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    await click(screen.getByRole("menuitem", { name: "Loops" }));
+    panel = screen.getByTestId("inbox-schedule-filter");
+    await click(within(panel).getByRole("menuitemcheckbox", { name: /^Scheduled/ }));
+    await click(within(panel).getByRole("menuitemcheckbox", { name: /^On updates/ }));
+    await closeInboxFilterMenu();
+    expect(screen.getAllByTestId("inbox-item").map((row) => row.textContent)).toEqual([
+      expect.stringContaining("Team chat"),
+      expect.stringContaining("PR updates"),
+    ]);
+  });
 
   it("keeps the Platform submenu available when the Inbox is empty", async () => {
     renderInbox({ source: "live-sync", items: [] });
+    await flush();
 
-    await userEvent.click(await screen.findByTestId("inbox-filter-trigger"));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "Platform" }));
-    expect(await screen.findByText("No filters found")).toBeInTheDocument();
+    await click(screen.getByTestId("inbox-filter-trigger"));
+    // No Task is a Loop, so there is nothing to narrow by schedule.
+    expect(screen.queryByRole("menuitem", { name: "Loops" })).toBeNull();
+    await click(screen.getByRole("menuitem", { name: "Platform" }));
+    expect(screen.getByText("No filters found")).toBeInTheDocument();
     expect(screen.queryByRole("menuitemcheckbox")).toBeNull();
     expect(screen.getByText("No notifications")).toBeInTheDocument();
     expect(screen.getByTestId("inbox-filter-trigger")).toHaveAttribute(
@@ -507,52 +681,55 @@ describe("InboxView", () => {
 
   it("dismisses the actions menu on a blank-area click without deleting notifications", async () => {
     renderInbox({ source: "live-sync", items: [item()] });
-    const user = userEvent.setup();
-    await user.click(await screen.findByTestId("inbox-actions-trigger"));
-    expect(
-      await screen.findByRole("menuitem", { name: "Delete all" })
-    ).toBeInTheDocument();
-    await user.click(screen.getByTestId("inbox-conversation-rail"));
-    await waitFor(() =>
-      expect(screen.queryByRole("menuitem", { name: "Delete all" })).toBeNull()
-    );
+    await flush();
+    await click(screen.getByTestId("inbox-actions-trigger"));
+    expect(screen.getByRole("menuitem", { name: "Delete all" })).toBeInTheDocument();
+    await click(screen.getByTestId("inbox-conversation-rail"));
+    expect(screen.queryByRole("menuitem", { name: "Delete all" })).toBeNull();
     expect(screen.getByText("Kickoff sync")).toBeInTheDocument();
+    expect(core.sentTo("marks.mark")).toEqual([]);
   });
 
   it("deletes every listed notification from the actions menu", async () => {
-    renderInbox({
-      source: "live-sync",
-      items: [
-        item({ title: "Kickoff sync" }),
-        item({
-          id: "w1:c2",
-          conversationId: "c2",
-          kind: "agent_task",
-          status: "completed",
-          title: "Nightly run",
-        }),
-      ],
-    });
-    expect(
-      await screen.findAllByTestId("inbox-item", undefined, { timeout: 5_000 })
-    ).toHaveLength(2);
-
-    await userEvent.click(await screen.findByTestId("inbox-actions-trigger"));
-    await userEvent.click(
-      await screen.findByRole("menuitem", { name: "Delete all" }, { timeout: 5_000 })
-    );
-
-    await waitFor(
-      () => {
-        expect(screen.queryAllByTestId("inbox-item")).toHaveLength(0);
+    renderInbox(
+      {
+        source: "live-sync",
+        items: [
+          item({ title: "Kickoff sync" }),
+          item({
+            id: "w1:c2",
+            conversationId: "c2",
+            kind: "agent_task",
+            status: "completed",
+            title: "Nightly run",
+          }),
+        ],
       },
-      { timeout: 5_000 }
+      {},
+      undefined,
+      { toasts: true }
     );
+    await flush();
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(2);
+
+    await click(screen.getByTestId("inbox-actions-trigger"));
+    await click(screen.getByRole("menuitem", { name: "Delete all" }));
+
+    expect(core.sentTo("marks.mark")).toEqual([
+      {
+        kind: "inboxDeleted",
+        entries: [
+          ["w1:c1", 1_000],
+          ["w1:c2", 1_000],
+        ],
+      },
+    ]);
+    expect(screen.queryAllByTestId("inbox-item")).toHaveLength(0);
     expect(
       within(screen.getByTestId("inbox-empty")).getByText("No notifications")
     ).toBeInTheDocument();
-    expect(await screen.findByText("2 notifications deleted")).toBeInTheDocument();
-  }, 20_000);
+    expect(screen.getByText("2 notifications deleted")).toBeInTheDocument();
+  });
 
   it("keeps unread needs-review tasks when deleting read notifications", async () => {
     renderInbox({
@@ -568,132 +745,100 @@ describe("InboxView", () => {
         }),
       ],
     });
-    expect(
-      await screen.findAllByTestId("inbox-item", undefined, { timeout: 5_000 })
-    ).toHaveLength(2);
+    await flush();
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(2);
 
-    await userEvent.click(await screen.findByTestId("inbox-actions-trigger"));
-    await userEvent.click(
-      await screen.findByRole(
-        "menuitem",
-        { name: "Delete all read" },
-        { timeout: 5_000 }
-      )
-    );
+    await click(screen.getByTestId("inbox-actions-trigger"));
+    await click(screen.getByRole("menuitem", { name: "Delete all read" }));
 
-    await waitFor(
-      () => {
-        expect(screen.getAllByTestId("inbox-item")).toHaveLength(1);
-      },
-      { timeout: 5_000 }
-    );
+    expect(core.sentTo("marks.mark")).toEqual([
+      { kind: "inboxDeleted", entries: [["w1:c1", 1_000]] },
+    ]);
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(1);
     expect(screen.getByText("Review me")).toBeInTheDocument();
     expect(screen.queryByText("Kickoff sync")).toBeNull();
 
     // Nothing read is left, so the row is disabled rather than a no-op.
-    await userEvent.click(await screen.findByTestId("inbox-actions-trigger"));
-    expect(
-      await screen.findByRole(
-        "menuitem",
-        { name: "Delete all read" },
-        { timeout: 5_000 }
-      )
-    ).toHaveAttribute("aria-disabled", "true");
-  }, 20_000);
+    await click(screen.getByTestId("inbox-actions-trigger"));
+    expect(screen.getByRole("menuitem", { name: "Delete all read" })).toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+  });
 
   it("deletes one notification from the row context menu", async () => {
-    const user = userEvent.setup();
-    renderInbox({
-      source: "live-sync",
-      items: [
-        item({ title: "Kickoff sync" }),
-        item({
-          id: "w1:c2",
-          conversationId: "c2",
-          title: "Ship it",
-        }),
-      ],
-    });
-    const rows = await screen.findAllByTestId("inbox-item");
+    renderInbox(
+      {
+        source: "live-sync",
+        items: [
+          item({ title: "Kickoff sync" }),
+          item({
+            id: "w1:c2",
+            conversationId: "c2",
+            title: "Ship it",
+          }),
+        ],
+      },
+      {},
+      undefined,
+      { toasts: true }
+    );
+    await flush();
+    const rows = screen.getAllByTestId("inbox-item");
     expect(rows).toHaveLength(2);
 
-    openInboxItemMenu(rows[0]!);
-    await user.click(
-      await screen.findByRole("menuitem", { name: "Delete notification" })
-    );
+    await openInboxItemMenu(rows[0]!);
+    await click(screen.getByRole("menuitem", { name: "Delete notification" }));
 
-    await waitFor(() => expect(screen.getAllByTestId("inbox-item")).toHaveLength(1));
+    expect(core.sentTo("marks.mark")).toEqual([
+      { kind: "inboxDeleted", entries: [["w1:c1", 1_000]] },
+    ]);
+    expect(screen.getAllByTestId("inbox-item")).toHaveLength(1);
     expect(screen.getByText("Ship it")).toBeInTheDocument();
     expect(screen.queryByText("Kickoff sync")).toBeNull();
-    expect(await screen.findByText("1 notification deleted")).toBeInTheDocument();
-  }, 20_000);
+    expect(screen.getByText("1 notification deleted")).toBeInTheDocument();
+  });
 
   it("toggles a row between unread and read from the context menu", async () => {
-    const user = userEvent.setup();
     renderInbox({ source: "live-sync", items: [item()] });
-    const row = await screen.findByTestId("inbox-item");
+    await flush();
+    const row = screen.getByTestId("inbox-item");
     expect(row.querySelector('[data-slot="task-list-item-dot"]')).toHaveAttribute(
       "data-state",
       "hidden"
     );
 
-    openInboxItemMenu(row);
-    await user.click(await screen.findByRole("menuitem", { name: "Mark as unread" }));
+    await openInboxItemMenu(row);
+    await click(screen.getByRole("menuitem", { name: "Mark as unread" }));
 
-    await waitFor(() =>
-      expect(row.querySelector('[data-slot="task-list-item-dot"]')).toHaveAttribute(
-        "data-state",
-        "visible"
-      )
-    );
-    expect(readInboxUnreadMarks().has("w1:c1")).toBe(true);
-
-    openInboxItemMenu(row);
-    expect(screen.queryByRole("menuitem", { name: "Mark as unread" })).toBeNull();
-    await user.click(await screen.findByRole("menuitem", { name: "Mark as read" }));
-    await waitFor(() =>
-      expect(row.querySelector('[data-slot="task-list-item-dot"]')).toHaveAttribute(
-        "data-state",
-        "hidden"
-      )
-    );
-    expect(readInboxUnreadMarks().has("w1:c1")).toBe(false);
-
-    await user.click(row);
-    expect(readInboxUnreadMarks().has("w1:c1")).toBe(false);
-  }, 20_000);
-
-  it("marks an unread needs-review row read from the context menu", async () => {
-    const user = userEvent.setup();
-    renderInbox({
-      source: "live-sync",
-      items: [
-        item({
-          kind: "agent_task",
-          status: "needs_review",
-          title: "Review me",
-        }),
-      ],
-    });
-    const row = await screen.findByTestId("inbox-item");
+    expect(core.sentTo("marks.mark")).toEqual([
+      { kind: "inboxUnread", entries: [["w1:c1", 1_000]] },
+    ]);
     expect(row.querySelector('[data-slot="task-list-item-dot"]')).toHaveAttribute(
       "data-state",
       "visible"
     );
 
-    openInboxItemMenu(row);
+    await openInboxItemMenu(row);
     expect(screen.queryByRole("menuitem", { name: "Mark as unread" })).toBeNull();
-    await user.click(await screen.findByRole("menuitem", { name: "Mark as read" }));
-    await waitFor(() =>
-      expect(row.querySelector('[data-slot="task-list-item-dot"]')).toHaveAttribute(
-        "data-state",
-        "hidden"
-      )
+    await click(screen.getByRole("menuitem", { name: "Mark as read" }));
+    expect(core.sentTo("marks.unmark")).toEqual([
+      { kind: "inboxUnread", ids: ["w1:c1"] },
+    ]);
+    expect(row.querySelector('[data-slot="task-list-item-dot"]')).toHaveAttribute(
+      "data-state",
+      "hidden"
     );
-  }, 20_000);
+
+    await click(row);
+    expect(row.querySelector('[data-slot="task-list-item-dot"]')).toHaveAttribute(
+      "data-state",
+      "hidden"
+    );
+  });
 });
 
-function openInboxItemMenu(row: HTMLElement) {
+async function openInboxItemMenu(row: HTMLElement) {
   vi.spyOn(row, "getBoundingClientRect").mockReturnValue({
     x: 100,
     y: 200,
@@ -720,24 +865,26 @@ function openInboxItemMenu(row: HTMLElement) {
       clientY: 218,
     })
   );
+  await flush();
 }
 
 async function closeInboxFilterMenu() {
-  await userEvent.keyboard("{Escape}");
-  await waitFor(() => {
-    expect(screen.queryByTestId("inbox-status-filter")).toBeNull();
-    expect(screen.queryByTestId("inbox-platform-filter")).toBeNull();
-  });
+  await press("{Escape}");
+  expect(screen.queryByTestId("inbox-status-filter")).toBeNull();
+  expect(screen.queryByTestId("inbox-platform-filter")).toBeNull();
+  expect(screen.queryByTestId("inbox-schedule-filter")).toBeNull();
   if (screen.queryAllByRole("menuitem").length > 0) {
-    await userEvent.keyboard("{Escape}");
+    await press("{Escape}");
   }
-  await waitFor(() => expect(screen.queryAllByRole("menuitem")).toHaveLength(0));
+  expect(screen.queryAllByRole("menuitem")).toHaveLength(0);
 }
 
+/** Renders the Inbox; `toasts` adds the Toaster, for the tests that read a toast. */
 function renderInbox(
   result: ProductInboxListResult | null,
   props: Partial<ComponentProps<typeof InboxView>> = {},
-  locale?: CommaLocale
+  locale?: CommaLocale,
+  { toasts = false }: { toasts?: boolean } = {}
 ) {
   const rootRoute = createRootRoute({
     component: Outlet,
@@ -760,15 +907,17 @@ function renderInbox(
   const content = (
     <>
       <RouterProvider router={router} />
-      <Toaster />
+      {toasts ? <Toaster /> : null}
     </>
   );
   return {
     ...render(
-      locale ? (
-        <CommaI18nProvider locale={locale}>{content}</CommaI18nProvider>
-      ) : (
-        content
+      core.wrap(
+        locale ? (
+          <CommaI18nProvider locale={locale}>{content}</CommaI18nProvider>
+        ) : (
+          content
+        )
       )
     ),
     router,

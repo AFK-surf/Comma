@@ -22,7 +22,7 @@ defmodule SalixAnalytics.BillingSourceEvent do
     attrs = TypedEvent.atomize(attrs)
     require_fields!(attrs)
 
-    occurred_at = get(attrs, :occurred_at) || get(attrs, :created_at) || DateTime.utc_now()
+    occurred_at = get(attrs, :occurred_at) || get(attrs, :created_at) || SystemsClock.utc_now()
 
     %{
       resource_kind: "billing_source",
@@ -31,7 +31,7 @@ defmodule SalixAnalytics.BillingSourceEvent do
       version: get(attrs, :version) || 1,
       event_date: date(occurred_at),
       occurred_at: timestamp(occurred_at),
-      created_at: timestamp(get(attrs, :created_at) || DateTime.utc_now()),
+      created_at: timestamp(get(attrs, :created_at) || SystemsClock.utc_now()),
       surface: get(attrs, :surface),
       billing_account_id: get(attrs, :billing_account_id),
       product_owner_type: get(attrs, :product_owner_type),
@@ -85,7 +85,7 @@ defmodule SalixAnalytics.BillingSourceEvent do
   defp timestamp(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp timestamp(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)
   defp timestamp(value) when is_binary(value), do: value
-  defp timestamp(_), do: DateTime.utc_now() |> DateTime.to_iso8601()
+  defp timestamp(_), do: SystemsClock.utc_now() |> DateTime.to_iso8601()
 
   defp get(attrs, key), do: attrs[key] || attrs[to_string(key)]
 end

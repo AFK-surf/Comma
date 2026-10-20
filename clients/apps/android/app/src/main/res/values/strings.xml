@@ -1,0 +1,66 @@
+<resources>
+<plurals name="photo_count">
+        <item quantity="other">%d 张照片</item>
+    </plurals>
+    <string name="photo_more_count" translatable="false">+%1$d</string>
+    <string name="title_conversations" translatable="false">CHATS</string>
+    <string name="action_close_conversations">关闭会话列表</string>
+    <string name="action_delete_conversation">删除这场会话</string>
+    <string name="conversations_empty">还没有会话。说一句话，这里就会出现。</string>
+    <string name="conversation_untitled">未命名会话</string>
+    <string name="time_today">今天 %1$s</string>
+    <string name="time_yesterday">昨天 %1$s</string>
+    <string name="action_copy_message">复制消息</string>
+    <string name="action_copy_code">复制代码</string>
+    <!-- The button in a code block's header. -->
+    <string name="code_block_copy">复制</string>
+    <string name="action_select_text">选择文本</string>
+    <string name="copied">已复制</string>
+    <string name="empty_title">问我就行</string>
+    <string name="empty_subtitle">文字与图片，清晰地交流。</string>
+    <string name="message_source_voice">语音</string>
+    <string name="device_phone">手机</string>
+    <string name="device_mac">Mac</string>
+    <string name="image_preview_title">图片</string>
+    <string name="image_retry">重试</string>
+    <string name="image_preview_unavailable">原图没能加载。轻点重试。</string>
+    <string name="image_preview_other_core">这张图属于另一个 Cloud Agent 配置，当前设置里取不到。</string>
+    <string name="conversation_loading">正在打开会话…</string>
+    <string name="empty_conversation">开始一个新会话</string>
+    <string name="replay_reply">播放流式回复</string>
+    <string name="reply_playing">正在回复…</string>
+    <string name="reply_complete">回复完成</string>
+    <string name="conversation_ready">会话已就绪</string>
+    <string name="composer_hint">发送消息</string>
+    <string name="composer_attach">添加附件</string>
+    <string name="composer_attach_close">关闭附件面板</string>
+    <string name="composer_attach_camera">相机</string>
+    <string name="composer_attach_photos">相册</string>
+    <string name="composer_attach_files">文件</string>
+    <plurals name="composer_attach_full">
+        <item quantity="other">已添加 %1$d 张图片，达到上限</item>
+    </plurals>
+    <string name="composer_send">发送</string>
+    <string name="composer_mic">语音输入。点一下听写，按住说话</string>
+    <string name="composer_voice_unavailable">语音暂不可用</string>
+    <string name="composer_dictation_cancel">取消听写</string>
+    <string name="composer_dictation_confirm">完成听写</string>
+    <string name="composer_listening">正在听…</string>
+    <string name="composer_recognizing">正在识别…</string>
+    <string name="composer_hold_hint">松手发送，上滑取消</string>
+    <string name="composer_hold_cancel_hint">松手取消</string>
+    <string name="composer_hold_auto_end">%1$d 秒后自动发送</string>
+    <string name="composer_voice_empty">没有听清，再说一次</string>
+    <string name="composer_attach_limit">最多添加 %1$d 张图片</string>
+    <string name="composer_attach_dropped">最多 %1$d 张，多选的 %2$d 张没有添加</string>
+    <string name="composer_camera_unavailable">没有可用的相机</string>
+    <string name="composer_uploads_pending">图片还在上传，稍等一下</string>
+    <string name="composer_attachment_remove">移除图片</string>
+    <string name="composer_attachment_retry">上传失败，轻点重试</string>
+    <string name="composer_mic_denied">没有麦克风权限，无法使用语音输入</string>
+    <string name="composer_mic_denied_forever">麦克风权限已被拒绝，请到系统设置中开启</string>
+    <string name="composer_mic_granted_hold">麦克风已开启，按住即可说话</string>
+    <string name="composer_asr_network">语音识别连接失败，请检查网络</string>
+    <string name="composer_asr_microphone">麦克风被占用，无法录音</string>
+    <string name="composer_asr_failed">语音识别出错了，请再试一次</string>
+</resources>

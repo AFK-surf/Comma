@@ -1,6 +1,6 @@
 import { getActiveCommaConfig } from "@comma/config";
 import { useCommaMessages } from "@comma/i18n/react";
-import { BellIcon, EyeIcon, WindowCursorIcon } from "@comma/ui";
+import { BellIcon, EyeIcon, WindowCursorIcon } from "@comma/ui/components/icons";
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { withRouterNameSpacing } from "../../router-identity/routerNameSpacing";
 import { OnboardingCardFooter, OnboardingPrimaryButton } from "../OnboardingCard";

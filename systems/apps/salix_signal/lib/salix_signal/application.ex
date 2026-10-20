@@ -23,20 +23,27 @@ defmodule SalixSignal.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      {DynamicSupervisor, name: SalixSignal.CallMedia.Supervisor, strategy: :one_for_one},
-      {DynamicSupervisor, name: SalixSignal.CallSignaling.Supervisor, strategy: :one_for_one},
-      {Registry, keys: :unique, name: SalixSignal.GroupCall.Registry},
-      {Task.Supervisor, name: SalixSignal.GroupCall.TaskSupervisor},
-      {DynamicSupervisor, name: SalixSignal.GroupCall.Supervisor, strategy: :one_for_one},
-      {Registry, keys: :unique, name: SalixSignal.Account.Registry},
-      {DynamicSupervisor, name: SalixSignal.Account.Supervisor, strategy: :one_for_one}
+      {SystemsRuntime.DynamicSupervisor,
+       name: SalixSignal.CallMedia.Supervisor, strategy: :one_for_one},
+      {SystemsRuntime.DynamicSupervisor,
+       name: SalixSignal.CallSignaling.Supervisor, strategy: :one_for_one},
+      {SystemsRuntime.Registry, keys: :unique, name: SalixSignal.GroupCall.Registry},
+      {SystemsRuntime.TaskSupervisor, name: SalixSignal.GroupCall.TaskSupervisor},
+      {SystemsRuntime.DynamicSupervisor,
+       name: SalixSignal.GroupCall.Supervisor, strategy: :one_for_one},
+      {SystemsRuntime.Registry, keys: :unique, name: SalixSignal.Account.Registry},
+      {SystemsRuntime.DynamicSupervisor,
+       name: SalixSignal.Account.Supervisor, strategy: :one_for_one}
     ]
 
     children =
-      if Application.get_env(:salix_signal, :account_keeper, true),
+      if SystemsRuntime.get_env(:salix_signal, :account_keeper, true),
         do: children ++ [SalixSignal.Account.Keeper],
         else: children
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: SalixSignal.Supervisor)
+    SystemsRuntime.Supervisor.start_link(children,
+      strategy: :one_for_one,
+      name: SalixSignal.Supervisor
+    )
   end
 end

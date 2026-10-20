@@ -57,7 +57,7 @@ defmodule SalixSignalProto.Group.Params do
 
   @doc "A new master key from 32 bytes of randomness (CRS-09a section 6.1)."
   @spec generate_master_key(<<_::256>>) :: <<_::256>>
-  def generate_master_key(randomness \\ :crypto.strong_rand_bytes(32))
+  def generate_master_key(randomness \\ SystemsRuntime.Proc.random_bytes(32))
 
   def generate_master_key(<<_::binary-size(32)>> = randomness) do
     {master_key, _state} = @generate_label |> Sho.derive(randomness) |> Sho.squeeze(32)

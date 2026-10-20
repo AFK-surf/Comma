@@ -1,3 +1,5 @@
+import { uiClock } from "../../clock";
+
 interface ImeKeyEventLike {
   isComposing?: boolean;
   keyCode?: number;
@@ -26,7 +28,7 @@ export function consumeWebKitImeConfirmation(lastCompositionEndAtRef: {
 }): boolean {
   const endedAt = lastCompositionEndAtRef.current;
   if (endedAt === null || !isWebKitBrowser()) return false;
-  if (Date.now() - endedAt >= WEBKIT_COMPOSITION_CONFIRM_WINDOW_MS) return false;
+  if (uiClock.now() - endedAt >= WEBKIT_COMPOSITION_CONFIRM_WINDOW_MS) return false;
   lastCompositionEndAtRef.current = null;
   return true;
 }

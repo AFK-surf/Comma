@@ -21,6 +21,7 @@ defmodule SalixMeet.OwnerAttributionSnapshot do
 
   @slack_id_pattern ~r/\A[UW][A-Z0-9]+\z/
   @feishu_open_id_pattern ~r/\Aou_[A-Za-z0-9_-]{1,128}\z/
+  @lark_open_id_pattern ~r/\Aou_[A-Za-z0-9_-]{1,128}\z/
   @max_display_name_graphemes 100
 
   @type snapshot :: %{required(String.t()) => term()}
@@ -143,7 +144,7 @@ defmodule SalixMeet.OwnerAttributionSnapshot do
       "summary_fingerprint" => fingerprint(clean_summary),
       "items" => items,
       "outcome" => if(map_size(items) > 0, do: "resolved", else: "unresolved"),
-      "completed_at" => Keyword.get(opts, :completed_at, System.system_time(:millisecond))
+      "completed_at" => Keyword.get(opts, :completed_at, SystemsClock.system_time(:millisecond))
     }
   end
 
@@ -424,6 +425,15 @@ defmodule SalixMeet.OwnerAttributionSnapshot do
        }),
        do:
          is_binary(id) and Regex.match?(@feishu_open_id_pattern, id) and
+           valid_display_name?(display_name, false)
+
+  defp valid_provider_identity?(%{
+         "provider" => "lark",
+         "user_id" => id,
+         "display_name" => display_name
+       }),
+       do:
+         is_binary(id) and Regex.match?(@lark_open_id_pattern, id) and
            valid_display_name?(display_name, false)
 
   defp valid_provider_identity?(_identity), do: false

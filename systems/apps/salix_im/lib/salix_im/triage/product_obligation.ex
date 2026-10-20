@@ -40,13 +40,24 @@ defmodule SalixIM.Triage.ProductObligation do
     expression_context =
       get_in(authorization.raw_bundle, ["raw_context", "slack_context", "expression_context"])
 
+    # Execution follows the evaluated decision target: the newest batch message
+    # still present in the frozen source, not a deleted newer batch message.
     target =
-      if is_map(authority),
-        do:
-          authority
-          |> ChannelBatch.target(authorization.raw_bundle["sealed_events"])
-          |> Map.take(@required_authority),
-        else: authority
+      if is_map(authority) do
+        authority
+        |> ChannelBatch.present_target(
+          authorization.raw_bundle["sealed_events"],
+          List.wrap(
+            get_in(authorization.raw_bundle, ["raw_context", "slack_context", "messages"])
+          )
+        )
+        |> case do
+          %{} = present_target -> Map.take(present_target, @required_authority)
+          nil -> nil
+        end
+      else
+        authority
+      end
 
     product_identity =
       if is_map(identity), do: Map.take(identity, @required_identity), else: identity

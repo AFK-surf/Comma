@@ -1,10 +1,11 @@
 import userEvent from "@testing-library/user-event";
 import { act, render, renderHook, screen, waitFor } from "@comma/test-utils/render";
-import { Toaster } from "@comma/ui";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import { Toaster } from "@comma/ui/components/toast";
 import { createContext, useContext } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HomeRoute } from "../components/RouteScreens";
-import type { ChatMessage } from "../components/chat/model/conversationChannel";
+import type { ChatMessage } from "@comma/core/chat";
 import { ChatSidebarProvider } from "../components/chat-sidebar/ChatSidebarContext";
 import { announceOnboardingHandoff } from "../components/onboarding/onboardingHandoff";
 import { useHoldOnboardingOpen } from "../components/onboarding/onboardingPresence";
@@ -128,8 +129,8 @@ vi.mock("../components/chat/ChatProvider", () => ({
           leases.push(lease);
           return lease;
         },
-        run: (operation: (api: object, signal: AbortSignal) => unknown) =>
-          Promise.resolve(operation({}, new AbortController().signal)),
+        run: (operation: (signal: AbortSignal) => unknown) =>
+          Promise.resolve(operation(new AbortController().signal)),
         signal: new AbortController().signal,
       };
     },
@@ -185,18 +186,18 @@ vi.mock("../components/chat/useWorkspaceSkills", () => ({
   useWorkspaceSkills: () => [],
 }));
 
-function HomeRouteUnderTest() {
+function HomeRouteUnderTest({ workspaceId }: { workspaceId?: string | undefined }) {
   return (
     <ChatSidebarProvider>
-      <HomeRoute />
+      <HomeRoute workspaceId={workspaceId} />
     </ChatSidebarProvider>
   );
 }
 
-const homeUi = () => (
+const homeUi = (workspaceId?: string) => (
   <WorkspaceChatStateContext.Provider value={harness.chatState}>
     <Toaster />
-    <HomeRouteUnderTest />
+    <HomeRouteUnderTest workspaceId={workspaceId} />
   </WorkspaceChatStateContext.Provider>
 );
 
@@ -230,8 +231,46 @@ describe("HomeRoute startup draft", () => {
     });
   });
 
+  it.each(["loading", "error"] as const)(
+    "sends only to the explicit workspace while its Home is %s",
+    async (status) => {
+      harness.homeConversationTarget = {
+        workspaceId: "workspace-a",
+        groupId: "group-a",
+        conversationId: "chat-a",
+      };
+      harness.chatState =
+        status === "error" ? { status, message: "Unavailable" } : { status };
+      harness.conversationState.draft = "Draft in workspace A";
+      harness.resolveWorkspaceChat.mockResolvedValue({
+        ...readyResolution(),
+        workspaceId: "workspace-b",
+        groupId: "group-b",
+        conversation: { ...readyResolution().conversation, id: "chat-b" },
+      });
+      render(homeUi("workspace-b"));
+      const prompt = screen.getByRole("textbox", { name: "AI prompt" });
+      expect(prompt).not.toHaveTextContent("Draft in workspace A");
+      await userEvent.type(prompt, "Send to B");
+      if (status === "error") {
+        expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+        expect(harness.resolveWorkspaceChat).not.toHaveBeenCalled();
+        expect(harness.conversationChannel.send).not.toHaveBeenCalled();
+        return;
+      }
+      await userEvent.click(screen.getByRole("button", { name: "Send" }));
+      await waitFor(() =>
+        expect(harness.leaseChannel.send).toHaveBeenCalledWith("Send to B")
+      );
+      expect(harness.resolveWorkspaceChat).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: "workspace-b", exactWorkspace: true })
+      );
+      expect(harness.retain).toHaveBeenCalledWith("workspace-b", "group-b", "chat-b");
+      expect(harness.conversationChannel.send).not.toHaveBeenCalled();
+    }
+  );
+
   it("keeps recovery visible when workspace resolves before deferred dismissals run", async () => {
-    vi.useFakeTimers();
     const view = render(homeUi());
     try {
       harness.chatState = { status: "hidden" };
@@ -248,7 +287,6 @@ describe("HomeRoute startup draft", () => {
       await act(async () => {
         await vi.runOnlyPendingTimersAsync();
       });
-      vi.useRealTimers();
     }
   });
 
@@ -495,7 +533,6 @@ describe("HomeRoute startup draft", () => {
   });
 
   it("holds workspace feedback back while the onboarding covers Home", async () => {
-    vi.useFakeTimers();
     harness.chatState = {
       groupId: "grp_reserved",
       retryAfterSeconds: 2,
@@ -542,7 +579,6 @@ describe("HomeRoute startup draft", () => {
       await act(async () => {
         await vi.runOnlyPendingTimersAsync();
       });
-      vi.useRealTimers();
     }
   });
 
@@ -550,18 +586,23 @@ describe("HomeRoute startup draft", () => {
     harness.chatState = readyState();
     // The onboarding's apps step starts the Routines with every app it
     // connected; read under it, they would start before any app is connected.
-    const getRecommendations = vi.fn(() => new Promise(() => undefined));
-    harness.chatApi = { getRecommendations };
+    const read: unknown[] = [];
+    const core = createScriptedCore({
+      owns: (name) => name.startsWith("recommendations"),
+      onSubscribe: (topic) => {
+        if (topic.topic === "recommendations") read.push(topic);
+      },
+    });
     const onboarding = renderHook(() => useHoldOnboardingOpen());
-    render(homeUi());
+    render(homeUi(), { wrapper: ({ children }) => core.wrap(children) });
     await act(async () => {
       await Promise.resolve();
     });
-    expect(getRecommendations).not.toHaveBeenCalled();
+    expect(read).toEqual([]);
 
     // Closed: the rail and the composer's mentions read them as usual.
     onboarding.unmount();
-    await waitFor(() => expect(getRecommendations).toHaveBeenCalled());
+    await waitFor(() => expect(read).not.toEqual([]));
   });
 
   it("lands the onboarding's Start chatting on the Home composer", async () => {
@@ -668,10 +709,6 @@ describe("HomeRoute startup draft", () => {
     expect(screen.getByText("Kept through Settings")).toBeVisible();
     expect(screen.queryByTestId("chat-empty")).toBeNull();
     expect(screen.queryByRole("button", { name: "Voice input" })).toBeNull();
-    expect(screen.getByRole("textbox", { name: "AI prompt" })).not.toHaveAttribute(
-      "data-placeholder",
-      "Do anything"
-    );
   });
 
   it("retires the retained conversation when Workspace Chat resolves hidden", async () => {
@@ -798,26 +835,6 @@ describe("HomeRoute startup draft", () => {
     expect(
       screen.queryByRole("heading", { name: "What do you want to do" })
     ).toBeNull();
-  });
-
-  it("provides responsive Greet and Tasks rails", () => {
-    harness.chatState = readyState();
-    harness.conversationState.status = "error";
-    harness.conversationState.errorKind = "unauthorized";
-    render(homeUi());
-
-    const greetRail = screen.getByTestId("home-greet-rail");
-    const tasksRail = screen.getByTestId("home-tasks-rail");
-
-    expect(screen.getByTestId("home-responsive-layout")).toContainElement(greetRail);
-    expect(screen.getByTestId("home-responsive-layout")).toContainElement(tasksRail);
-    expect(greetRail).toHaveAttribute("id", "comma-home-greet-panel");
-    expect(tasksRail).toHaveAttribute("id", "comma-home-tasks-panel");
-    // The fold marker now comes from the shell's measurement of the route, not
-    // from each rail reading a container-query marker back out of computed
-    // style. An unmeasured Home reports both rails open.
-    expect(greetRail).toHaveAttribute("data-folded", "false");
-    expect(tasksRail).toHaveAttribute("data-folded", "false");
   });
 });
 

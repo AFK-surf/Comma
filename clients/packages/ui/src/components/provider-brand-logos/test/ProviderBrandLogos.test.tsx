@@ -23,6 +23,7 @@ describe("ProviderBrandLogos", () => {
     ["google-calendar", "google-calendar"],
     ["linear", "linear"],
     ["notion", "notion"],
+    ["outlook", "outlook"],
     ["slack", "slack"],
     ["Telegram", "telegram"],
     ["Signal", "signal"],

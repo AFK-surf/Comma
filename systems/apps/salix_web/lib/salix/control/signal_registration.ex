@@ -411,7 +411,11 @@ defmodule Salix.Control.SignalRegistration do
   defp step_reason(reason, _step), do: reason
 
   defp put_session(flow, session),
-    do: %{flow | session: session, fetched_at: DateTime.utc_now() |> DateTime.truncate(:second)}
+    do: %{
+      flow
+      | session: session,
+        fetched_at: SystemsClock.utc_now() |> DateTime.truncate(:second)
+    }
 
   defp transport(opts, environment) do
     case Keyword.get(opts, :transport) do

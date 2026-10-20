@@ -12,8 +12,12 @@ import {
   createRouter,
 } from "@tanstack/react-router";
 import { act } from "react";
+import {
+  createNativeStateBridgeMock,
+  installNativeBridgeMock,
+} from "@comma/test-utils/native-bridge";
 import { render, screen, waitFor, within } from "@comma/test-utils/render";
-import { sequenceKeybinding } from "@comma/ui";
+import { sequenceKeybinding } from "@comma/ui/components/settings-shortcut";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WindowBar } from "../components/WindowBar";
 import { ChatSidebarProvider } from "../components/chat-sidebar/ChatSidebarContext";
@@ -123,7 +127,7 @@ describe("WindowBar", () => {
   it("opens and closes the Chat Sidebar from the window bar", async () => {
     renderWindowBar();
 
-    const toggle = await screen.findByRole("button", { name: "Toggle chat sidebar" });
+    const toggle = await screen.findByRole("button", { name: "New tab" });
     expect(toggle).toHaveClass("comma-chat-sidebar-toggle");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
 
@@ -191,6 +195,72 @@ describe("WindowBar", () => {
     expect(items).toHaveLength(1);
     expect(items[0]).toContainElement(emptyState);
     expect(within(menu).queryByRole("group")).toBeNull();
+  });
+
+  it("draws Windows' window buttons after a divider and acts on the window", async () => {
+    const windowControl = vi.fn(async () => undefined);
+    installNativeBridgeMock({
+      os: "windows",
+      platform: "electron",
+      surfaces: { windowControl },
+    });
+    renderWindowBar();
+
+    const buttons = await screen.findByTestId("comma-window-buttons");
+    expect(screen.getByTestId("comma-window-bar")).toContainElement(buttons);
+    // The divider leads, between the bar's own icons and the window's.
+    expect(buttons.firstElementChild).toBe(
+      within(buttons).getByTestId("comma-window-buttons-divider")
+    );
+
+    await userEvent.click(within(buttons).getByRole("button", { name: "Minimize" }));
+    await userEvent.click(within(buttons).getByRole("button", { name: "Maximize" }));
+    await userEvent.click(within(buttons).getByRole("button", { name: "Close" }));
+
+    expect(windowControl.mock.calls).toEqual([
+      [{ action: "minimize" }],
+      [{ action: "toggleMaximize" }],
+      [{ action: "close" }],
+    ]);
+  });
+
+  it("offers Restore while the Windows window is maximized", async () => {
+    installNativeBridgeMock({
+      os: "windows",
+      platform: "electron",
+      surfaces: {
+        windowMaximized: createNativeStateBridgeMock(() => ({ maximized: true })),
+      },
+    });
+    renderWindowBar();
+
+    const buttons = await screen.findByTestId("comma-window-buttons");
+    expect(
+      await within(buttons).findByRole("button", { name: "Restore" })
+    ).toBeInTheDocument();
+    expect(within(buttons).queryByRole("button", { name: "Maximize" })).toBeNull();
+  });
+
+  it("leaves the window buttons out while the window is full screen", async () => {
+    installNativeBridgeMock({
+      os: "windows",
+      platform: "electron",
+      surfaces: {
+        windowFullScreen: createNativeStateBridgeMock(() => ({ fullScreen: true })),
+      },
+    });
+    renderWindowBar();
+    await screen.findByRole("button", { name: "Back" });
+    await waitFor(() =>
+      expect(screen.queryByTestId("comma-window-buttons")).toBeNull()
+    );
+  });
+
+  it("leaves the window buttons to macOS' traffic lights", async () => {
+    installNativeBridgeMock({ os: "macos", platform: "electron" });
+    renderWindowBar();
+    await screen.findByRole("button", { name: "Back" });
+    expect(screen.queryByTestId("comma-window-buttons")).toBeNull();
   });
 });
 

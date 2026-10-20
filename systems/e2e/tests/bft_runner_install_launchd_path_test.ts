@@ -1,110 +1,112 @@
+import { setDefaultTimeout, test } from "bun:test";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Builds and subprocesses here take longer than the five-second default.
+setDefaultTimeout(30 * 60_000);
+
 const REPO_ROOT = new URL("../../..", import.meta.url).pathname;
 const INSTALLER =
   `${REPO_ROOT}/systems/connector/mac-mini-provisioner-install.sh`;
 
-Deno.test({
-  name: "BFT runner install writes launchd HOME and PATH",
-  async fn() {
-    const root = await Deno.makeTempDir({ prefix: "bft-runner-install-e2e-" });
+test("BFT runner install writes launchd HOME and PATH", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bft-runner-install-e2e-"));
 
-    try {
-      const paths = await writeArtifacts(root);
-      const home = `${root}/home`;
-      const prefix = `${root}/install`;
-      await Deno.mkdir(home, { recursive: true });
+  try {
+    const paths = await writeArtifacts(root);
+    const home = `${root}/home`;
+    const prefix = `${root}/install`;
+    await mkdir(home, { recursive: true });
 
-      const result = await run("sh", [INSTALLER], {
-        cwd: REPO_ROOT,
-        env: installEnv({
-          HOME: home,
-          PATH: `${paths.toolDir}:${Deno.env.get("PATH") ?? ""}`,
-          BFT_INSTALL_PREFIX: prefix,
-          BFT_SALIX_CONNECTOR_URL: paths.salixConnector.path,
-          BFT_SALIX_CONNECTOR_SHA256: paths.salixConnector.sha256,
-          BFT_SALIX_CONNECTOR_SIZE: String(paths.salixConnector.size),
-          BFT_RUNNER_URL: paths.runner.path,
-          BFT_RUNNER_SHA256: paths.runner.sha256,
-          BFT_RUNNER_SIZE: String(paths.runner.size),
-          BFT_AGENT_VMM_HOST_URL: paths.agentVMMHost.path,
-          BFT_AGENT_VMM_HOST_SHA256: paths.agentVMMHost.sha256,
-          BFT_AGENT_VMM_HOST_SIZE: String(paths.agentVMMHost.size),
-          BFT_API_BASE_URL: "https://bridge.example.test",
-          BFT_ORG_ID: "org_test",
-          BFT_RUNNER_TOKEN: "bft_secret_token_should_not_be_logged",
-        }),
-      });
+    const result = await run("sh", [INSTALLER], {
+      cwd: REPO_ROOT,
+      env: installEnv({
+        HOME: home,
+        PATH: `${paths.toolDir}:${process.env.PATH ?? ""}`,
+        BFT_INSTALL_PREFIX: prefix,
+        BFT_SALIX_CONNECTOR_URL: paths.salixConnector.path,
+        BFT_SALIX_CONNECTOR_SHA256: paths.salixConnector.sha256,
+        BFT_SALIX_CONNECTOR_SIZE: String(paths.salixConnector.size),
+        BFT_RUNNER_URL: paths.runner.path,
+        BFT_RUNNER_SHA256: paths.runner.sha256,
+        BFT_RUNNER_SIZE: String(paths.runner.size),
+        BFT_AGENT_VMM_HOST_URL: paths.agentVMMHost.path,
+        BFT_AGENT_VMM_HOST_SHA256: paths.agentVMMHost.sha256,
+        BFT_AGENT_VMM_HOST_SIZE: String(paths.agentVMMHost.size),
+        BFT_API_BASE_URL: "https://bridge.example.test",
+        BFT_ORG_ID: "org_test",
+        BFT_RUNNER_TOKEN: "bft_secret_token_should_not_be_logged",
+      }),
+    });
 
-      if (result.code !== 0) {
-        throw new Error(result.combined);
-      }
-
-      const plist = await readPlist(
-        `${prefix}/com.bridgeforteams.runner.plist`,
-      );
-      assertHasKey(plist, "EnvironmentVariables");
-      assertEquals(plist.EnvironmentVariables.HOME, home);
-      const launchdPath = String(plist.EnvironmentVariables.PATH).split(":");
-
-      assertIncludes(launchdPath, `${home}/.local/bin`);
-      assertIncludes(launchdPath, `${home}/.npm-global/bin`);
-      assertIncludes(launchdPath, `${home}/.asdf/shims`);
-      assertIncludes(launchdPath, "/opt/homebrew/bin");
-      assertIncludes(launchdPath, "/usr/local/bin");
-      assertIncludes(launchdPath, "/usr/bin");
-      assertArrayEquals(plist.ProgramArguments, [`${prefix}/bin/bft-runner`]);
-    } finally {
-      await Deno.remove(root, { recursive: true }).catch(() => {});
+    if (result.code !== 0) {
+      throw new Error(result.combined);
     }
-  },
+
+    const plist = await readPlist(
+      `${prefix}/com.bridgeforteams.runner.plist`,
+    );
+    assertHasKey(plist, "EnvironmentVariables");
+    assertEquals(plist.EnvironmentVariables.HOME, home);
+    const launchdPath = String(plist.EnvironmentVariables.PATH).split(":");
+
+    assertIncludes(launchdPath, `${home}/.local/bin`);
+    assertIncludes(launchdPath, `${home}/.npm-global/bin`);
+    assertIncludes(launchdPath, `${home}/.asdf/shims`);
+    assertIncludes(launchdPath, "/opt/homebrew/bin");
+    assertIncludes(launchdPath, "/usr/local/bin");
+    assertIncludes(launchdPath, "/usr/bin");
+    assertArrayEquals(plist.ProgramArguments, [`${prefix}/bin/bft-runner`]);
+  } finally {
+    await rm(root, { recursive: true }).catch(() => {});
+  }
 });
 
-Deno.test({
-  name: "BFT runner install accepts an explicit launchd PATH",
-  async fn() {
-    const root = await Deno.makeTempDir({ prefix: "bft-runner-install-e2e-" });
+test("BFT runner install accepts an explicit launchd PATH", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bft-runner-install-e2e-"));
 
-    try {
-      const paths = await writeArtifacts(root);
-      const home = `${root}/home`;
-      const prefix = `${root}/install`;
-      const launchdPath = "/custom/bin:/usr/bin:/bin";
-      await Deno.mkdir(home, { recursive: true });
+  try {
+    const paths = await writeArtifacts(root);
+    const home = `${root}/home`;
+    const prefix = `${root}/install`;
+    const launchdPath = "/custom/bin:/usr/bin:/bin";
+    await mkdir(home, { recursive: true });
 
-      const result = await run("sh", [INSTALLER], {
-        cwd: REPO_ROOT,
-        env: installEnv({
-          HOME: home,
-          PATH: `${paths.toolDir}:${Deno.env.get("PATH") ?? ""}`,
-          BFT_INSTALL_PREFIX: prefix,
-          BFT_SALIX_CONNECTOR_URL: paths.salixConnector.path,
-          BFT_SALIX_CONNECTOR_SHA256: paths.salixConnector.sha256,
-          BFT_SALIX_CONNECTOR_SIZE: String(paths.salixConnector.size),
-          BFT_RUNNER_URL: paths.runner.path,
-          BFT_RUNNER_SHA256: paths.runner.sha256,
-          BFT_RUNNER_SIZE: String(paths.runner.size),
-          BFT_AGENT_VMM_HOST_URL: paths.agentVMMHost.path,
-          BFT_AGENT_VMM_HOST_SHA256: paths.agentVMMHost.sha256,
-          BFT_AGENT_VMM_HOST_SIZE: String(paths.agentVMMHost.size),
-          BFT_API_BASE_URL: "https://bridge.example.test",
-          BFT_ORG_ID: "org_test",
-          BFT_RUNNER_TOKEN: "bft_secret_token_should_not_be_logged",
-          BFT_LAUNCHD_PATH: launchdPath,
-        }),
-      });
+    const result = await run("sh", [INSTALLER], {
+      cwd: REPO_ROOT,
+      env: installEnv({
+        HOME: home,
+        PATH: `${paths.toolDir}:${process.env.PATH ?? ""}`,
+        BFT_INSTALL_PREFIX: prefix,
+        BFT_SALIX_CONNECTOR_URL: paths.salixConnector.path,
+        BFT_SALIX_CONNECTOR_SHA256: paths.salixConnector.sha256,
+        BFT_SALIX_CONNECTOR_SIZE: String(paths.salixConnector.size),
+        BFT_RUNNER_URL: paths.runner.path,
+        BFT_RUNNER_SHA256: paths.runner.sha256,
+        BFT_RUNNER_SIZE: String(paths.runner.size),
+        BFT_AGENT_VMM_HOST_URL: paths.agentVMMHost.path,
+        BFT_AGENT_VMM_HOST_SHA256: paths.agentVMMHost.sha256,
+        BFT_AGENT_VMM_HOST_SIZE: String(paths.agentVMMHost.size),
+        BFT_API_BASE_URL: "https://bridge.example.test",
+        BFT_ORG_ID: "org_test",
+        BFT_RUNNER_TOKEN: "bft_secret_token_should_not_be_logged",
+        BFT_LAUNCHD_PATH: launchdPath,
+      }),
+    });
 
-      if (result.code !== 0) {
-        throw new Error(result.combined);
-      }
-
-      const plist = await readPlist(
-        `${prefix}/com.bridgeforteams.runner.plist`,
-      );
-      assertHasKey(plist, "EnvironmentVariables");
-      assertEquals(plist.EnvironmentVariables.PATH, launchdPath);
-    } finally {
-      await Deno.remove(root, { recursive: true }).catch(() => {});
+    if (result.code !== 0) {
+      throw new Error(result.combined);
     }
-  },
+
+    const plist = await readPlist(
+      `${prefix}/com.bridgeforteams.runner.plist`,
+    );
+    assertHasKey(plist, "EnvironmentVariables");
+    assertEquals(plist.EnvironmentVariables.PATH, launchdPath);
+  } finally {
+    await rm(root, { recursive: true }).catch(() => {});
+  }
 });
 
 type Artifact = {
@@ -115,11 +117,13 @@ type Artifact = {
 
 type RunOptions = {
   cwd?: string;
-  env?: Record<string, string>;
+  env?: Record<string, string | undefined>;
 };
 
-function installEnv(values: Record<string, string>): Record<string, string> {
-  const env = Deno.env.toObject();
+function installEnv(
+  values: Record<string, string>,
+): Record<string, string | undefined> {
+  const env = { ...process.env };
   delete env.BFT_LAUNCHD_PATH;
   return { ...env, ...values };
 }
@@ -127,8 +131,8 @@ function installEnv(values: Record<string, string>): Record<string, string> {
 async function writeArtifacts(root: string) {
   const dir = `${root}/artifacts`;
   const toolDir = `${root}/tools`;
-  await Deno.mkdir(dir, { recursive: true });
-  await Deno.mkdir(toolDir, { recursive: true });
+  await mkdir(dir, { recursive: true });
+  await mkdir(toolDir, { recursive: true });
 
   const salixConnector = await writeExecutable(
     `${dir}/salix-connector`,
@@ -168,8 +172,8 @@ async function writeArtifacts(root: string) {
 }
 
 async function writeExecutable(path: string, body: string): Promise<Artifact> {
-  await Deno.writeTextFile(path, body);
-  await Deno.chmod(path, 0o755);
+  await writeFile(path, body);
+  await chmod(path, 0o755);
 
   return artifactAt(path);
 }
@@ -177,8 +181,8 @@ async function writeExecutable(path: string, body: string): Promise<Artifact> {
 async function artifactAt(path: string): Promise<Artifact> {
   return {
     path,
-    sha256: await sha256Hex(await Deno.readFile(path)),
-    size: (await Deno.stat(path)).size,
+    sha256: await sha256Hex(await readFile(path)),
+    size: (await stat(path)).size,
   };
 }
 
@@ -189,8 +193,8 @@ async function writeAgentVMMHostArchive(
   const app = `${root}/bundle/Agent VMM Host.app`;
   const executable = `${app}/Contents/MacOS/agent-vmm-host`;
   const helper = `${app}/Contents/Helpers/agent-vmm-lifecycle`;
-  await Deno.mkdir(`${app}/Contents/MacOS`, { recursive: true });
-  await Deno.mkdir(`${app}/Contents/Helpers`, { recursive: true });
+  await mkdir(`${app}/Contents/MacOS`, { recursive: true });
+  await mkdir(`${app}/Contents/Helpers`, { recursive: true });
   await writeExecutable(executable, "#!/bin/sh\nexit 0\n");
   await writeExecutable(
     helper,
@@ -256,21 +260,22 @@ async function readPlist(path: string): Promise<Record<string, any>> {
 }
 
 async function run(command: string, args: string[], opts: RunOptions = {}) {
-  const child = new Deno.Command(command, {
-    args,
+  const child = Bun.spawn([command, ...args], {
     cwd: opts.cwd,
     env: opts.env,
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
-  const output = await child.output();
-  const stdout = new TextDecoder().decode(output.stdout);
-  const stderr = new TextDecoder().decode(output.stderr);
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
 
   return {
-    code: output.code,
-    success: output.success,
+    code,
+    success: code === 0,
     stdout,
     stderr,
     combined: stdout + stderr,

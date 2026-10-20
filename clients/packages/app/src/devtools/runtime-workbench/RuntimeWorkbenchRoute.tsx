@@ -15,7 +15,6 @@ import {
   type WorkbenchTabId,
 } from "./domain-adapters";
 import { TweakpaneControlPane } from "./TweakpaneControlPane";
-import { SideChatBackdropPanel } from "./SideChatBackdropPanel";
 import "./runtime-workbench.css";
 
 type WorkbenchTabStatus = "ready" | "partial" | "planned" | "fail";
@@ -104,19 +103,12 @@ export function RuntimeWorkbenchRoute() {
   const activeTab =
     tabs.find((tab) => tab.id === activeTabId) ?? getFirstWorkbenchTab(tabs);
 
-  useEffect(() => {
-    const followEntry = () => setActiveTabId(readEntryTab());
-    window.addEventListener("hashchange", followEntry);
-    return () => window.removeEventListener("hashchange", followEntry);
-  }, []);
-
   const selectTab = (tabId: WorkbenchTabId) => {
     setActiveTabId(tabId);
     const [path, query] = window.location.hash.split("?");
     const params = new URLSearchParams(query);
     params.set("tab", tabId);
-    // Keep the native menu's target distinct after a manual tab switch, so an
-    // existing workbench receives a hashchange when it opens Side Chat again.
+    // The address keeps the selected tab across a reload.
     window.history.replaceState(
       window.history.state,
       "",
@@ -249,65 +241,57 @@ export function RuntimeWorkbenchRoute() {
         <p className="prove">{activeTab.proves}</p>
       </div>
 
-      <main
-        className={`comma-runtime-workbench__body${activeTab.id === "side-chat" ? " comma-runtime-workbench__body--side-chat" : ""}`}
-      >
-        {activeTab.id === "side-chat" ? (
-          <SideChatBackdropPanel platform={nativeInfo?.platform} os={nativeInfo?.os} />
-        ) : (
-          <>
-            <section className="comma-runtime-workbench__control">
-              <ObservedFlows flows={activeTab.flows} />
+      <main className="comma-runtime-workbench__body">
+        <section className="comma-runtime-workbench__control">
+          <ObservedFlows flows={activeTab.flows} />
 
-              <SurfaceSummary windows={windows} />
+          <SurfaceSummary windows={windows} />
 
-              <TweakpaneControlPane controls={controls} />
+          <TweakpaneControlPane controls={controls} />
 
-              <p className="note">
-                参数面板 = <b>Tweakpane · Comma compact light theme</b>（只有右侧
-                evidence wells 保持 dark）。ready 控件读真实 capability；尚未接入的
-                mutation 控件标 <code>needs-capability</code> 且不可交互（Phase B）。
-              </p>
-            </section>
+          <p className="note">
+            参数面板 = <b>Tweakpane · Comma compact light theme</b>（只有右侧 evidence
+            wells 保持 dark）。ready 控件读真实 capability；尚未接入的 mutation 控件标{" "}
+            <code>needs-capability</code> 且不可交互（Phase B）。
+          </p>
+        </section>
 
-            <aside className="comma-runtime-workbench__obs" aria-label="Observation">
-              {showMatrix ? <CommMatrix edges={commEdges} /> : null}
+        <aside className="comma-runtime-workbench__obs" aria-label="Observation">
+          {showMatrix ? <CommMatrix edges={commEdges} /> : null}
 
-              <p className="comma-runtime-workbench__olabel">
-                Evidence
-                <span className="code">input · channel · result / error envelope</span>
-              </p>
-              <div className="comma-runtime-workbench__ev-tabs" role="tablist">
-                {EVIDENCE_TABS.map((type) => {
-                  const count = evidence.filter((entry) => entry.type === type).length;
-                  return (
-                    <button
-                      aria-selected={type === evidenceTab}
-                      key={type}
-                      onClick={() => setEvidenceTab(type)}
-                      role="tab"
-                      type="button"
-                    >
-                      {EVIDENCE_LABEL[type]}
-                      {count > 0 ? <span className="n"> {count}</span> : null}
-                    </button>
-                  );
-                })}
-              </div>
+          <p className="comma-runtime-workbench__olabel">
+            Evidence
+            <span className="code">input · channel · result / error envelope</span>
+          </p>
+          <div className="comma-runtime-workbench__ev-tabs" role="tablist">
+            {EVIDENCE_TABS.map((type) => {
+              const count = evidence.filter((entry) => entry.type === type).length;
+              return (
+                <button
+                  aria-selected={type === evidenceTab}
+                  key={type}
+                  onClick={() => setEvidenceTab(type)}
+                  role="tab"
+                  type="button"
+                >
+                  {EVIDENCE_LABEL[type]}
+                  {count > 0 ? <span className="n"> {count}</span> : null}
+                </button>
+              );
+            })}
+          </div>
 
-              {visibleEvidence.length === 0 ? (
-                <p className="ev-empty">
-                  还没有 {EVIDENCE_LABEL[evidenceTab]} evidence ——
-                  触发一个控件后这里会记录 input / channel / result envelope。
-                </p>
-              ) : (
-                visibleEvidence.map((entry) => (
-                  <EvidenceWell entry={entry} key={entry.id} />
-                ))
-              )}
-            </aside>
-          </>
-        )}
+          {visibleEvidence.length === 0 ? (
+            <p className="ev-empty">
+              还没有 {EVIDENCE_LABEL[evidenceTab]} evidence —— 触发一个控件后这里会记录
+              input / channel / result envelope。
+            </p>
+          ) : (
+            visibleEvidence.map((entry) => (
+              <EvidenceWell entry={entry} key={entry.id} />
+            ))
+          )}
+        </aside>
       </main>
 
       <footer className="comma-runtime-workbench__foot">

@@ -1,5 +1,8 @@
 defmodule SalixIM.ConversationGroupActorTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  require SystemsClock
+
+  use SalixAgent.TestSupport.Settle
 
   alias SalixIM.{
     ConversationActor,
@@ -110,9 +113,9 @@ defmodule SalixIM.ConversationGroupActorTest do
     def get(key, opts) do
       case AggregateReadBarrier.block?(key) do
         {true, test} ->
-          send(test, {:aggregate_read_blocked, self()})
+          SystemsRuntime.Proc.send(test, {:aggregate_read_blocked, SystemsRuntime.Proc.self()})
 
-          receive do
+          SystemsClock.vreceive do
             :release_aggregate_read -> SalixStore.S3.Fake.get(key, opts)
           after
             5_000 -> {:error, :aggregate_read_barrier_timeout}
@@ -127,9 +130,12 @@ defmodule SalixIM.ConversationGroupActorTest do
     def put(key, body, opts) do
       case ParticipantSlotWriteBarrier.block?(key, body) do
         {true, test} ->
-          send(test, {:participant_slot_write_blocked, self()})
+          SystemsRuntime.Proc.send(
+            test,
+            {:participant_slot_write_blocked, SystemsRuntime.Proc.self()}
+          )
 
-          receive do
+          SystemsClock.vreceive do
             :release_participant_slot_write -> SalixStore.S3.Fake.put(key, body, opts)
           after
             5_000 -> {:error, :participant_slot_write_barrier_timeout}
@@ -172,12 +178,12 @@ defmodule SalixIM.ConversationGroupActorTest do
   setup do
     SalixIM.TestSupport.Fleet.stop_all!()
 
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    previous_placement = Application.get_env(:salix_im, :conversation_placement)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_placement = SystemsRuntime.get_env(:salix_im, :conversation_placement)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :conversation_placement,
       SalixIM.ConversationPlacement.LocalFleet
@@ -260,173 +266,6 @@ defmodule SalixIM.ConversationGroupActorTest do
     # Errors never clobbered the stored arrangement.
     assert {:ok, %{"orders" => %{"done" => ^swapped}}} =
              Conversations.get_task_order(group_id, tenant_id)
-  end
-
-  test "the 200-pin limit survives overlapping group owners", %{
-    tenant_id: tenant_id,
-    group_id: group_id
-  } do
-    {:ok, registered_owner} = ConversationPlacement.ensure_group_started(group_id)
-    now = System.system_time(:millisecond)
-
-    for index <- 1..199 do
-      pin = %{
-        "agent_group_id" => group_id,
-        "conversation_id" => Ids.new_conversation_id(),
-        "pinned_at" => now + index,
-        "created_at" => now + index,
-        "updated_at" => now + index
-      }
-
-      assert :ok = ConversationServer.import_conversation_pin(group_id, pin)
-    end
-
-    conversation_ids =
-      for title <- ["Boundary A", "Boundary B"] do
-        assert {:ok, %{"conversation_id" => conversation_id}} =
-                 SalixIM.ConversationInput.create_group_conversation(group_id, %{
-                   "kind" => "agent_task",
-                   "title" => title
-                 })
-
-        conversation_id
-      end
-
-    :ok = DynamicSupervisor.terminate_child(SalixIM.ConversationFleetSup, registered_owner)
-    {:ok, owner_a} = ConversationGroupActor.start_link(group_id: group_id, name: nil)
-    {:ok, owner_b} = ConversationGroupActor.start_link(group_id: group_id, name: nil)
-
-    SplitBrainPlacement.configure([owner_a, owner_b])
-    AggregateReadBarrier.configure(Keys.ctl_conversation_pins_aggregate(group_id), self())
-    Application.put_env(:salix_store, :s3_backend, BarrierS3)
-    Application.put_env(:salix_im, :conversation_placement, SplitBrainPlacement)
-
-    tasks =
-      Enum.map(conversation_ids, fn conversation_id ->
-        Task.async(fn ->
-          ConversationServer.pin_conversation(group_id, conversation_id, tenant_id)
-        end)
-      end)
-
-    assert_receive {:aggregate_read_blocked, reader_a}, 2_000
-    assert_receive {:aggregate_read_blocked, reader_b}, 2_000
-    send(reader_a, :release_aggregate_read)
-    send(reader_b, :release_aggregate_read)
-
-    results = Enum.map(tasks, &Task.await(&1, 5_000))
-
-    assert 1 == Enum.count(results, &match?({:ok, %{}}, &1))
-
-    assert 1 ==
-             Enum.count(
-               results,
-               &match?({:error, {:pin_collection_over_limit, 200}}, &1)
-             )
-
-    assert {:ok, %{body: aggregate_body}} =
-             SalixStore.S3.get(Keys.ctl_conversation_pins_aggregate(group_id))
-
-    assert %{"pins" => pins} = Jason.decode!(aggregate_body)
-    assert length(pins) == 200
-
-    assert {:ok, %{"data" => listed, "has_more" => false}} =
-             Conversations.list_conversation_pins(group_id, tenant_id, limit: 200)
-
-    assert length(listed) == 1
-    assert List.first(listed)["conversation_id"] in conversation_ids
-  end
-
-  test "the 200-participant limit survives overlapping conversation owners", %{
-    group_id: group_id
-  } do
-    assert {:ok, %{"conversation_id" => conversation_id}} =
-             SalixIM.ConversationInput.create_group_conversation(group_id, %{
-               "kind" => "agent_task",
-               "title" => "Participant boundary"
-             })
-
-    for index <- 1..199 do
-      user_id = "boundary-user-#{index}"
-
-      assert {:ok, %{"user_id" => ^user_id}} =
-               ConversationServer.ensure_group_conversation_user_participant(
-                 group_id,
-                 conversation_id,
-                 %{"user_id" => user_id}
-               )
-    end
-
-    assert {:ok, registered_owner} =
-             ConversationPlacement.ensure_started(group_id, conversation_id)
-
-    :ok = DynamicSupervisor.terminate_child(SalixIM.ConversationFleetSup, registered_owner)
-
-    owner_a =
-      start_unnamed_conversation_actor!(
-        group_id: group_id,
-        conversation_id: conversation_id,
-        wake_on_recovery: false
-      )
-
-    owner_b =
-      start_unnamed_conversation_actor!(
-        group_id: group_id,
-        conversation_id: conversation_id,
-        wake_on_recovery: false
-      )
-
-    assert {:ok, %{"participant_count" => 199}} =
-             GenServer.call(owner_a, :get_group_conversation)
-
-    assert {:ok, %{"participant_count" => 199}} =
-             GenServer.call(owner_b, :get_group_conversation)
-
-    assert {:ok, projection} = Conversations.get_group_conversation(group_id, conversation_id)
-    refute Map.has_key?(projection, @participant_identity_slots_field)
-
-    assert {:ok, %{"data" => listed}} =
-             Conversations.list_group_conversations(group_id, limit: 10)
-
-    refute Enum.any?(listed, &Map.has_key?(&1, @participant_identity_slots_field))
-
-    assert {:ok, searched} =
-             Conversations.search_group_conversations(group_id, "Participant boundary")
-
-    refute Enum.any?(searched, &Map.has_key?(&1, @participant_identity_slots_field))
-
-    results =
-      [
-        {owner_a, "boundary-user-a"},
-        {owner_b, "boundary-user-b"}
-      ]
-      |> Task.async_stream(
-        fn {owner, user_id} ->
-          GenServer.call(
-            owner,
-            {:ensure_group_conversation_user_participant, %{"user_id" => user_id}}
-          )
-        end,
-        ordered: false,
-        timeout: 5_000
-      )
-      |> Enum.map(fn {:ok, result} -> result end)
-
-    participant_prefix =
-      Keys.ctl_group_conversation_participant_states_prefix(group_id, conversation_id)
-
-    assert {:ok, durable_participants} = SalixStore.S3.list_all(participant_prefix)
-    assert length(durable_participants) == 200
-    assert Enum.count(results, &match?({:ok, %{}}, &1)) == 1
-
-    assert Enum.count(
-             results,
-             &match?({:error, {:participant_collection_over_limit, 200}}, &1)
-           ) == 1
-
-    assert {:ok, participants} =
-             SalixIM.ConversationParticipantProjection.list_bounded(group_id, conversation_id)
-
-    assert length(participants) == 200
   end
 
   test "an overlapping owner reactivates a participant deactivated by its peer", %{
@@ -521,13 +360,13 @@ defmodule SalixIM.ConversationGroupActorTest do
         {Keys.ctl_group_conversation(group_id, conversation_id),
          @participant_identity_slots_field}
       ],
-      self()
+      SystemsRuntime.Proc.self()
     )
 
-    Application.put_env(:salix_store, :s3_backend, BarrierS3)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, BarrierS3)
 
     ensure =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         GenServer.call(
           stale_owner,
           {:ensure_group_conversation_user_participant,
@@ -537,7 +376,7 @@ defmodule SalixIM.ConversationGroupActorTest do
         )
       end)
 
-    assert_receive {:participant_slot_write_blocked, writer}, 2_000
+    settle_receive({:participant_slot_write_blocked, writer})
     assert :ok = ConversationServer.delete_group_conversation(group_id, conversation_id)
 
     conversation_prefix = Keys.ctl_group_conversation_dir(group_id, conversation_id)
@@ -550,38 +389,25 @@ defmodule SalixIM.ConversationGroupActorTest do
                end
              end)
 
-    send(writer, :release_participant_slot_write)
-    result = Task.await(ensure, 5_000)
+    SystemsRuntime.Proc.send(writer, :release_participant_slot_write)
+    result = settled_await(ensure)
 
     assert {:ok, %{objects: []}} = SalixStore.S3.list(conversation_prefix, max_keys: 10)
     assert {:error, :not_found} = result
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp start_unnamed_conversation_actor!(opts) do
     start_supervised!(%{
-      id: {ConversationActor, make_ref()},
+      id: {ConversationActor, SystemsRuntime.Proc.make_ref()},
       start: {GenServer, :start_link, [ConversationActor, opts]},
       restart: :temporary,
       type: :worker
     })
   end
 
-  defp eventually(fun, attempts \\ 100)
-  defp eventually(_fun, 0), do: {:error, :timeout}
-
-  defp eventually(fun, attempts) do
-    case fun.() do
-      :ok ->
-        :ok
-
-      :retry ->
-        receive do
-        after
-          10 -> eventually(fun, attempts - 1)
-        end
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 end

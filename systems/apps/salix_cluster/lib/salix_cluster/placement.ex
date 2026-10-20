@@ -54,7 +54,7 @@ defmodule SalixCluster.Placement do
     case SalixStore.Agent.peek_in_scope(agent_id) do
       {:ok, %{owner_node: holder, lease_until: until}}
       when is_binary(holder) and is_integer(until) ->
-        if until > System.system_time(:millisecond) do
+        if until > SystemsClock.system_time(:millisecond) do
           # Never turn a persisted name into a new atom. Only already-connected
           # visible peers (and ourselves) may be selected as the live holder.
           case Enum.find([node() | Node.list(:visible)], &(to_string(&1) == holder)) do

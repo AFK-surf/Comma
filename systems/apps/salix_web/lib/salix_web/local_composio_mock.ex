@@ -60,7 +60,7 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
     def get(_tenant_id), do: {:ok, settings()}
     def settings(_tenant_id), do: {:ok, settings()}
 
-    def reset!, do: :persistent_term.put(@state_key, %{})
+    def reset!, do: SystemsRuntime.PersistentTerm.put(@state_key, %{})
 
     def list_connected_accounts(_settings, group_id), do: accounts(group_id)
     def list_connected_accounts_all(_settings, group_id, _opts \\ []), do: accounts(group_id)
@@ -315,7 +315,7 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
       group_id = to_string(group_id)
 
       accounts =
-        :global.trans({__MODULE__, :state}, fn ->
+        SystemsRuntime.Proc.global_trans({__MODULE__, :state}, fn ->
           state = state()
 
           case Map.fetch(state, group_id) do
@@ -324,7 +324,7 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
 
             :error ->
               accounts = Enum.map(@toolkits, &account(group_id, &1))
-              :persistent_term.put(@state_key, Map.put(state, group_id, accounts))
+              SystemsRuntime.PersistentTerm.put(@state_key, Map.put(state, group_id, accounts))
               accounts
           end
         end)
@@ -340,7 +340,7 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
       group_id = to_string(group_id)
       toolkit = normalize_toolkit(toolkit)
 
-      :global.trans({__MODULE__, :state}, fn ->
+      SystemsRuntime.Proc.global_trans({__MODULE__, :state}, fn ->
         state = state()
         existing = Map.get(state, group_id, [])
         # An id is never reissued after a delete: the suffix grows past every
@@ -353,18 +353,23 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
           |> Kernel.+(1)
 
         new_account = account(group_id, toolkit, repeat)
-        :persistent_term.put(@state_key, Map.put(state, group_id, [new_account | existing]))
+
+        SystemsRuntime.PersistentTerm.put(
+          @state_key,
+          Map.put(state, group_id, [new_account | existing])
+        )
+
         new_account
       end)
     end
 
     defp update(fun) do
-      :global.trans({__MODULE__, :state}, fn ->
-        :persistent_term.put(@state_key, fun.(state()))
+      SystemsRuntime.Proc.global_trans({__MODULE__, :state}, fn ->
+        SystemsRuntime.PersistentTerm.put(@state_key, fun.(state()))
       end)
     end
 
-    defp state, do: :persistent_term.get(@state_key, %{})
+    defp state, do: SystemsRuntime.PersistentTerm.get(@state_key, %{})
     defp all_accounts, do: state() |> Map.values() |> List.flatten()
 
     defp account_repeat(id, group_id, toolkit) do
@@ -386,7 +391,7 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
         "user_id" => group_id,
         "toolkit" => %{"slug" => toolkit},
         "status" => "ACTIVE",
-        "created_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+        "created_at" => SystemsClock.utc_now() |> DateTime.to_iso8601()
       }
     end
 

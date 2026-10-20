@@ -6,17 +6,19 @@ import {
   defaultAppPreferences,
   defaultCommaClientSettings,
   defaultOpenCommaShortcut,
+  retiredCommaClientSettings,
+  withoutRetiredAppPreferences,
   type AppPreferences,
   type AppPreferencesPatch,
   type CommaClientSettings,
   type KeepAwakeWhenLidClosedStatus,
+  type GlobalShortcutBinding,
   type SystemNotificationsStatus,
-  type SideChatShortcutBinding,
 } from "@comma/native-bridge";
 import type { LaunchAtLoginReadback } from "./launch-at-login";
 
 export interface AppPreferencesPlatform {
-  setOpenCommaShortcut?(shortcut: SideChatShortcutBinding): void;
+  setOpenCommaShortcut?(shortcut: GlobalShortcutBinding): void;
   /** macOS: whether the sleep guard daemon may run, as Login Items shows it. */
   getKeepAwakeWhenLidClosedStatus?(): KeepAwakeWhenLidClosedStatus;
   /**
@@ -81,13 +83,17 @@ export class AppPreferencesService {
     onStateChanged?: (preferences: AppPreferences) => void;
     platform: AppPreferencesPlatform;
   }) {
-    const { defaultsRevision, preferences: stored } =
-      await readStoredPreferences(filePath);
+    const {
+      defaultsRevision,
+      found,
+      preferences: stored,
+    } = await readStoredPreferences(filePath);
     const persisted =
       defaultsRevision < currentDefaultsRevision ? withCurrentDefaults(stored) : stored;
-    if (defaultsRevision < currentDefaultsRevision) {
-      // Saved now, so a shortcut the user sets later is never moved again. A
-      // failed write moves it again on the next launch, to the same value.
+    if (defaultsRevision < currentDefaultsRevision || !found) {
+      // Saved now, so a shortcut the user sets later is never moved again, and
+      // a later launch reads this install's defaults rather than guessing. A
+      // failed write repeats this on the next launch, to the same value.
       await writePreferences(filePath, persisted).catch(() => undefined);
     }
     const preferences = withKeepAwakeWhenLidClosedStatusReadback(
@@ -202,6 +208,25 @@ export class AppPreferencesService {
           }
         }
       }
+      if (samePreferenceValues(next, previous)) return this.state();
+      this.#preferences = withNextRevision(next, previous);
+      const snapshot = this.state();
+      this.#onStateChanged(snapshot);
+      return snapshot;
+    });
+  }
+
+  /**
+   * Publishes whether this Mac can run Quick Chat, which Settings offers with
+   * its switch and shortcut. Like the readbacks it is never saved.
+   */
+  async setQuickChatSupported(supported: boolean) {
+    return this.#enqueue(async () => {
+      const previous = this.#preferences;
+      const next = appPreferencesSchema.parse({
+        ...previous,
+        quickChatSupported: supported,
+      });
       if (samePreferenceValues(next, previous)) return this.state();
       this.#preferences = withNextRevision(next, previous);
       const snapshot = this.state();
@@ -467,9 +492,10 @@ async function readStoredPreferences(filePath: string) {
   try {
     stored = JSON.parse(await readFile(filePath, "utf8"));
   } catch {
-    // No file yet: a new install, on the current defaults.
+    // No file yet: on the current defaults.
     return {
       defaultsRevision: currentDefaultsRevision,
+      found: false,
       preferences: { ...defaultAppPreferences },
     };
   }
@@ -480,11 +506,13 @@ async function readStoredPreferences(filePath: string) {
   try {
     return {
       defaultsRevision: typeof defaultsRevision === "number" ? defaultsRevision : 0,
-      preferences: appPreferencesSchema.parse(rest),
+      found: true,
+      preferences: appPreferencesSchema.parse(withoutRetiredAppPreferences(rest)),
     };
   } catch {
     return {
       defaultsRevision: currentDefaultsRevision,
+      found: true,
       preferences: { ...defaultAppPreferences },
     };
   }
@@ -494,8 +522,15 @@ async function writePreferences(filePath: string, preferences: AppPreferences) {
   await mkdir(dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.tmp`;
   const persisted = {
+    // Builds with Side Chat parse this file strictly and need its settings;
+    // Side Chat stays off if one of them is run again.
     ...(preferences.clientSettings
-      ? { clientSettings: preferences.clientSettings }
+      ? {
+          clientSettings: {
+            ...preferences.clientSettings,
+            ...retiredCommaClientSettings,
+          },
+        }
       : {}),
     airDropName: preferences.airDropName,
     defaultsRevision: currentDefaultsRevision,
@@ -504,11 +539,12 @@ async function writePreferences(filePath: string, preferences: AppPreferences) {
     notchSideWidth: preferences.notchSideWidth,
     notificationSound: preferences.notificationSound,
     notifyRouterMessages: preferences.notifyRouterMessages,
+    quickChatEnabled: preferences.quickChatEnabled,
     showInAirDrop: preferences.showInAirDrop,
     showInDock: preferences.showInDock,
     showInMenuBar: preferences.showInMenuBar,
     showInNotch: preferences.showInNotch,
-    sideChatEnabled: preferences.sideChatEnabled,
+    sideChatEnabled: false,
     systemNotifications: preferences.systemNotifications,
   };
   await writeFile(temporaryPath, `${JSON.stringify(persisted, null, 2)}\n`, {
@@ -517,13 +553,13 @@ async function writePreferences(filePath: string, preferences: AppPreferences) {
   await rename(temporaryPath, filePath);
 }
 
-// Modeled in tla/app-preferences/AppPreferences.tla: the serialized
-// mutation, monotonic revision, rollback, replay ordering, and shutdown-drain
-// invariants implemented by this service and its renderer consumer.
+// This service and its renderer consumer keep these invariants: serialized
+// mutation, monotonic revision, rollback, replay ordering, and shutdown drain.
 function samePreferenceValues(left: AppPreferences, right: AppPreferences) {
   return (
     sameClientSettings(left.clientSettings, right.clientSettings) &&
     left.openCommaShortcutStatus === right.openCommaShortcutStatus &&
+    left.quickChatSupported === right.quickChatSupported &&
     left.airDropName === right.airDropName &&
     left.keepAwakeWhenLidClosed === right.keepAwakeWhenLidClosed &&
     left.keepAwakeWhenLidClosedStatus === right.keepAwakeWhenLidClosedStatus &&
@@ -532,11 +568,11 @@ function samePreferenceValues(left: AppPreferences, right: AppPreferences) {
     left.notchSideWidth === right.notchSideWidth &&
     left.notificationSound === right.notificationSound &&
     left.notifyRouterMessages === right.notifyRouterMessages &&
+    left.quickChatEnabled === right.quickChatEnabled &&
     left.showInAirDrop === right.showInAirDrop &&
     left.showInDock === right.showInDock &&
     left.showInMenuBar === right.showInMenuBar &&
     left.showInNotch === right.showInNotch &&
-    left.sideChatEnabled === right.sideChatEnabled &&
     left.systemNotifications === right.systemNotifications &&
     left.systemNotificationsStatus === right.systemNotificationsStatus
   );

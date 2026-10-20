@@ -5,7 +5,7 @@ defmodule SalixAgent.SessionKernelCompactionQueryTest do
   The request window keeps the current activation's project knowledge in
   place, once, and drops project knowledge from earlier activations.
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.InternalSession.State
   alias SalixVerifiedKernel.Session, as: Resident
@@ -27,7 +27,7 @@ defmodule SalixAgent.SessionKernelCompactionQueryTest do
   defp runtime_message(id, extra),
     do: Map.merge(%{id: id, role: "runtime", content: "note", type: "wait_expired"}, extra)
 
-  test "the request keeps the current activation's project knowledge in place, once" do
+  test "live windows leave out duplicate project knowledge" do
     state =
       base(%{
         next_message_id: 8,
@@ -43,70 +43,85 @@ defmodule SalixAgent.SessionKernelCompactionQueryTest do
       })
 
     assert Enum.map(ask(state, :request_live_messages), & &1.id) == [1, 2, 3, 4, 6, 7]
-    assert Enum.map(ask(state, :compaction_live_messages), & &1.id) == [1, 3, 4, 6]
-
-    state =
-      base(%{
-        next_message_id: 6,
-        messages: [
-          user_message(1),
-          runtime_message(2, %{type: "project_knowledge", content: "facts-a"}),
-          assistant_message(3),
-          user_message(4),
-          runtime_message(5, %{type: "project_knowledge", content: "facts-a"})
-        ]
-      })
-
-    assert Enum.map(ask(state, :request_live_messages), & &1.id) == [1, 3, 4, 5]
+    assert Enum.map(ask(state, :compaction_live_messages), & &1.id) == [1, 2, 3, 4, 6, 7]
   end
 
-  test "a selected provider context equals the same selection of the full context" do
-    state =
-      base(%{
-        next_message_id: 8,
-        messages: [
-          user_message(1),
-          %{
-            id: 2,
-            role: "assistant",
-            content: "checking",
-            tool_calls: [
-              %{id: "call-1", name: "call", args: %{}},
-              %{id: "call-2", name: "call", args: %{}}
-            ]
-          },
-          %{id: 3, role: "tool", tool_call_id: "call-1", content: ~s({"ok":true})},
-          %{id: 4, role: "tool", tool_call_id: "call-2", content: "plain text"},
-          runtime_message(5, %{runtime_message_id: "rtm-5", content: "first"}),
-          runtime_message(6, %{"runtime_message_id" => "rtm-6", content: "second"}),
-          user_message(7)
-        ]
-      })
-
-    session = Resident.open(state)
-    context = Resident.query(session, :provider_context, nil)
-
-    for selector <- [
-          {:tool_ids, [3, 4]},
-          {:tool_ids, [4]},
-          {:tool_ids, [1, 99]},
-          {:runtime_message_id, "rtm-5"},
-          {:runtime_message_id, "rtm-6"},
-          {:runtime_message_id, "missing"}
-        ] do
-      expected = Enum.filter(context, &selected?(selector, &1))
-      assert Resident.query(session, :provider_context_where, selector) == expected
+  test "the conversation tail is what people and Agents received and sent, not raw model text" do
+    send = fn id, tool, params ->
+      %{id: id, name: "call", args: %{"tool" => tool, "params" => params}}
     end
 
-    assert [%{id: 3}, %{id: 4}] =
-             Resident.query(session, :provider_context_where, {:tool_ids, [3, 4]})
-  end
+    state =
+      base(%{
+        next_message_id: 9,
+        compacted_through: 1,
+        messages: [
+          user_message(1, %{content: "compacted away"}),
+          user_message(2, %{content: "Ship 2.4 on Friday."}),
+          %{
+            id: 3,
+            role: "assistant",
+            content: "private reasoning text",
+            tool_calls: [
+              send.("c1", "im_api.internal.send_message", %{
+                "conversation_id" => "conv-1",
+                "content" => [%{"type" => "text", "text" => "On it."}]
+              }),
+              send.("c2", "fs.read_file", %{"path" => "/plan.md"}),
+              send.("c3", "im_api.internal.task.create", %{"content" => "Draft release notes."})
+            ]
+          },
+          tool_message(4),
+          runtime_message(5, %{content: "note"}),
+          user_message(6, %{
+            content: [%{"type" => "text", "text" => "Notes drafted."}],
+            trusted_origin: %{"source_actor_type" => "agent"}
+          }),
+          user_message(7, %{content: [%{"type" => "image", "url" => "x"}]}),
+          %{
+            id: 8,
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              %{
+                id: "c4",
+                name: "end_turn",
+                args: %{
+                  "outcome" => "done",
+                  "reply" => %{
+                    "tool" => "im_api.slack.reply_message",
+                    "params" => %{"text" => "Done: notes are ready."}
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      })
 
-  defp selected?({:runtime_message_id, id}, message),
-    do: (message["runtime_message_id"] || message[:runtime_message_id]) == id
+    assert ask(state, :request_conversation_tail, 16) == [
+             %{"direction" => "in", "from" => "user", "text" => "Ship 2.4 on Friday."},
+             %{
+               "direction" => "out",
+               "tool" => "im_api.internal.send_message",
+               "text" => "On it."
+             },
+             %{
+               "direction" => "out",
+               "tool" => "im_api.internal.task.create",
+               "text" => "Draft release notes."
+             },
+             %{"direction" => "in", "from" => "agent", "text" => "Notes drafted."},
+             %{
+               "direction" => "out",
+               "tool" => "im_api.slack.reply_message",
+               "text" => "Done: notes are ready."
+             }
+           ]
 
-  defp selected?({:tool_ids, ids}, message) do
-    field = fn name -> Map.get(message, name, Map.get(message, Atom.to_string(name))) end
-    field.(:role) == "tool" and field.(:id) in ids
+    assert [%{"text" => "Notes drafted."}, %{"text" => "Done: notes are ready."}] =
+             ask(state, :request_conversation_tail, 2)
+
+    assert ask(state, :request_conversation_tail, 0) == []
   end
 end

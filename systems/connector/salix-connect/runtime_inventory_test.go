@@ -7,12 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestRuntimeInventorySingleflightsSameTarget(t *testing.T) {
@@ -126,11 +124,7 @@ func (ctx *countingProbeContext) Done() <-chan struct{} {
 
 func waitForProbeContextCall(t *testing.T, observed <-chan struct{}, description string) {
 	t.Helper()
-	select {
-	case <-observed:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timed out waiting for %s", description)
-	}
+	<-observed
 }
 
 func TestRuntimeInventoryJoinedStaleProbeRetriesForAllCallers(t *testing.T) {
@@ -269,15 +263,25 @@ func TestOperatorProbePublishesMetadataBeforeReturning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	target := runtimeProbeTarget{provider: "codex", identityMaterial: "/test/codex"}
 	c.runtimeInventory.runtimes[target.key()] = map[string]any{
 		"provider": "codex", "identity_material": "/test/codex", "ready": false,
 	}
+	sibling := runtimeProbeTarget{provider: "codex", identityMaterial: "/other/codex"}
+	siblingObservation := map[string]any{
+		"provider": "codex", "identity_material": sibling.identityMaterial,
+		"ready": false, "version": "old-installation", "readiness_checked_at": int64(1),
+	}
+	c.runtimeInventory.runtimes[sibling.key()] = cloneRuntimeObservation(siblingObservation)
 	c.runtimeInventory.run = func(target runtimeProbeTarget) map[string]any {
+		if target.identityMaterial != "/test/codex" {
+			t.Errorf("probe selected another installation: %q", target.identityMaterial)
+		}
 		return map[string]any{
 			"provider": target.provider, "identity_material": target.identityMaterial,
-			"ready": true, "status": "available", "readiness_checked_at": time.Now().UnixMilli(),
+			"ready": true, "status": "available", "version": "updated-installation",
+			"readiness_checked_at": runtimeAuthTestObservedAt,
 		}
 	}
 
@@ -288,10 +292,12 @@ func TestOperatorProbePublishesMetadataBeforeReturning(t *testing.T) {
 	}, nil)
 	defer session.close(context.Canceled)
 	returned := make(chan error, 1)
+	replies := make(chan map[string]any, 1)
 	go func() {
-		_, err := c.methodRuntimeProbe(context.Background(), session, map[string]any{
+		reply, err := c.methodRuntimeProbe(context.Background(), session, map[string]any{
 			"provider": "codex", "identity_material": "/test/codex",
 		})
+		replies <- reply
 		returned <- err
 	}()
 
@@ -301,20 +307,37 @@ func TestOperatorProbePublishesMetadataBeforeReturning(t *testing.T) {
 			t.Fatalf("first frame type = %q, want metadata", msg.Type)
 		}
 		runtimes := msg.Capabilities["agent_runtimes"].([]map[string]any)
-		if len(runtimes) != 1 || runtimes[0]["ready"] != true {
+		if len(runtimes) != 2 {
 			t.Fatalf("published runtimes = %#v", runtimes)
 		}
-		if runtimes[0]["probe_trigger"] != "operator" {
-			t.Fatalf("published probe trigger = %#v, want operator", runtimes[0]["probe_trigger"])
-		}
-		if _, ok := runtimes[0]["probe_duration_ms"].(int64); !ok {
-			t.Fatalf("published probe duration = %#v, want int64", runtimes[0]["probe_duration_ms"])
+		for _, runtime := range runtimes {
+			if runtime["identity_material"] == sibling.identityMaterial {
+				for key, value := range siblingObservation {
+					if !reflect.DeepEqual(runtime[key], value) {
+						t.Fatalf("unselected installation changed %s: got %#v, want %#v", key, runtime[key], value)
+					}
+				}
+				continue
+			}
+			if runtime["identity_material"] != target.identityMaterial || runtime["ready"] != true || runtime["version"] != "updated-installation" {
+				t.Fatalf("selected installation was not refreshed: %#v", runtime)
+			}
+			if runtime["probe_trigger"] != "operator" {
+				t.Fatalf("published probe trigger = %#v, want operator", runtime["probe_trigger"])
+			}
+			if _, ok := runtime["probe_duration_ms"].(int64); !ok {
+				t.Fatalf("published probe duration = %#v, want int64", runtime["probe_duration_ms"])
+			}
 		}
 	case err := <-returned:
 		t.Fatalf("probe returned before metadata was sent: %v", err)
 	}
 	if err := <-returned; err != nil {
 		t.Fatal(err)
+	}
+	runtimes := (<-replies)["runtimes"].([]map[string]any)
+	if len(runtimes) != 1 || runtimes[0]["provider"] != target.provider || runtimes[0]["identity_material"] != target.identityMaterial || runtimes[0]["ready"] != true || runtimes[0]["version"] != "updated-installation" {
+		t.Fatalf("probe reply did not identify the refreshed installation: %#v", runtimes)
 	}
 }
 
@@ -366,7 +389,7 @@ func TestRuntimeInventoryAppliesWorkspaceReadinessToEveryProbePath(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	assertWorkspaceUnavailable := func(trigger string, provider, identityMaterial string) {
 		t.Helper()
 		runtimes, err := c.runtimeInventory.probe(context.Background(), provider, identityMaterial, trigger)
@@ -439,15 +462,13 @@ func TestConnectorHealthIsBoundedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 
 	health := c.connectorHealth()
 	want := []string{
 		"schema_version", "observed_at", "process_started_at", "request_inflight",
 		"request_capacity", "runtime_proxy_inflight", "runtime_proxy_capacity",
-		"managed_processes", "resumable_runtime_sessions", "recoverable_runtime_sessions", "pending_input_batches",
-		"pending_runtime_events", "runtime_settlements_action_required", "oldest_runtime_settlement_seconds",
-		"runtime_host_orphans", "runtime_host_orphans_action_required",
+		"managed_processes",
 	}
 	if len(health) != len(want) {
 		t.Fatalf("health fields = %#v", health)
@@ -456,77 +477,6 @@ func TestConnectorHealthIsBoundedSnapshot(t *testing.T) {
 		if _, ok := health[key]; !ok {
 			t.Fatalf("health missing %q: %#v", key, health)
 		}
-	}
-}
-
-func TestRuntimeSessionSnapshotFollowsDurableOwnershipAndExactRuntime(t *testing.T) {
-	root := t.TempDir()
-	c, err := newConnector(config{name: "laptop", root: root, systemInfoInterval: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	targets := []runtimeProbeTarget{
-		{provider: "codex", identityMaterial: "/runtime/a"},
-		{provider: "codex", identityMaterial: "/runtime/b"},
-	}
-	for _, target := range targets {
-		c.runtimeInventory.runtimes[target.key()] = map[string]any{
-			"provider": target.provider, "identity_material": target.identityMaterial,
-		}
-	}
-
-	firstID, secondID := canonicalSessionID(2), canonicalSessionID(1)
-	if err := c.externalRuntimeState.watch(testRecoveryRecord(firstID, "/runtime/a")); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.externalRuntimeState.watch(testRecoveryRecord(secondID, "/runtime/a")); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.externalRuntimeState.watch(testRecoveryRecord(canonicalSessionID(3), "/unmatched")); err != nil {
-		t.Fatal(err)
-	}
-
-	runtimes := c.metadata().Capabilities["agent_runtimes"].([]map[string]any)
-	first := runtimes[0]["session_snapshot"].(map[string]any)
-	second := runtimes[1]["session_snapshot"].(map[string]any)
-	if !reflect.DeepEqual(first["session_ids"], []string{secondID, firstID}) || first["session_count"] != 2 || first["truncated"] != false {
-		t.Fatalf("exact runtime snapshot = %#v", first)
-	}
-	if !reflect.DeepEqual(second["session_ids"], []string{}) || second["session_count"] != 0 {
-		t.Fatalf("unmatched ownership leaked to another runtime: %#v", second)
-	}
-	if keys := sortedMapKeys(first); !reflect.DeepEqual(keys, []string{"observed_at", "schema_version", "session_count", "session_ids", "truncated"}) {
-		t.Fatalf("snapshot exposed private fields: %v", keys)
-	}
-	observedAt := first["observed_at"].(int64)
-	unchanged := c.metadata().Capabilities["agent_runtimes"].([]map[string]any)[0]["session_snapshot"].(map[string]any)
-	if unchanged["observed_at"] != observedAt {
-		t.Fatalf("metadata read changed ownership observation time: before=%d after=%v", observedAt, unchanged["observed_at"])
-	}
-
-	c.externalRuntimeState.forget("codex", firstID)
-	first = c.metadata().Capabilities["agent_runtimes"].([]map[string]any)[0]["session_snapshot"].(map[string]any)
-	if !reflect.DeepEqual(first["session_ids"], []string{secondID}) || first["session_count"] != 1 {
-		t.Fatalf("snapshot after durable forget = %#v", first)
-	}
-	if first["observed_at"].(int64) <= observedAt {
-		t.Fatalf("ownership observation time did not advance: before=%d after=%d", observedAt, first["observed_at"])
-	}
-	c.closeExternalRuntimes()
-
-	restarted, err := newConnector(config{name: "laptop", root: root, systemInfoInterval: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer restarted.closeExternalRuntimes()
-	for _, target := range targets {
-		restarted.runtimeInventory.runtimes[target.key()] = map[string]any{
-			"provider": target.provider, "identity_material": target.identityMaterial,
-		}
-	}
-	first = restarted.metadata().Capabilities["agent_runtimes"].([]map[string]any)[0]["session_snapshot"].(map[string]any)
-	if !reflect.DeepEqual(first["session_ids"], []string{secondID}) || first["session_count"] != 1 {
-		t.Fatalf("restart did not rebuild durable ownership: %#v", first)
 	}
 }
 
@@ -542,66 +492,4 @@ func TestRuntimeAuthNonReadySnapshotsInvalidateDispatch(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestRuntimeSessionSnapshotEnforcesPerRuntimeAndFrameBounds(t *testing.T) {
-	c, err := newConnector(config{name: "laptop", root: t.TempDir(), systemInfoInterval: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.closeExternalRuntimes()
-
-	for runtimeIndex := range 5 {
-		target := runtimeProbeTarget{provider: "codex", identityMaterial: fmt.Sprintf("/runtime/%d", runtimeIndex)}
-		c.runtimeInventory.runtimes[target.key()] = map[string]any{
-			"provider": target.provider, "identity_material": target.identityMaterial,
-		}
-		for sessionIndex := range 65 {
-			record := testRecoveryRecord(canonicalSessionID(runtimeIndex*100+sessionIndex), target.identityMaterial)
-			c.externalRuntimeState.mu.Lock()
-			c.externalRuntimeState.addRuntimeSessionLocked(externalRuntimeIdentityFromRecovery(record))
-			c.externalRuntimeState.mu.Unlock()
-		}
-	}
-	c.externalRuntimeState.mu.Lock()
-	c.externalRuntimeState.rebuildRuntimeSessionSnapshotsLocked()
-	c.externalRuntimeState.markSessionsObservedLocked()
-	c.externalRuntimeState.mu.Unlock()
-
-	runtimes := c.metadata().Capabilities["agent_runtimes"].([]map[string]any)
-	total := 0
-	for index, runtime := range runtimes {
-		snapshot := runtime["session_snapshot"].(map[string]any)
-		ids := snapshot["session_ids"].([]string)
-		if len(ids) > externalRuntimeSessionsPerRuntime {
-			t.Fatalf("runtime %d returned %d session ids", index, len(ids))
-		}
-		total += len(ids)
-		if snapshot["session_count"] != 65 || snapshot["truncated"] != true {
-			t.Fatalf("runtime %d bound metadata = %#v", index, snapshot)
-		}
-	}
-	if total != externalRuntimeSessionsPerMetadata {
-		t.Fatalf("metadata returned %d ids, want %d", total, externalRuntimeSessionsPerMetadata)
-	}
-}
-
-func testRecoveryRecord(sessionID, command string) externalRuntimeRecoveryRecord {
-	return externalRuntimeRecoveryRecord{
-		Provider: "codex", SessionID: sessionID, Token: "capability", Command: command,
-		Workspace: "/workspace", Payload: map[string]any{"thread_id": "thread-" + sessionID},
-	}
-}
-
-func canonicalSessionID(index int) string {
-	return fmt.Sprintf("ses1_%019d", index+1)
-}
-
-func sortedMapKeys(value map[string]any) []string {
-	keys := make([]string, 0, len(value))
-	for key := range value {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
 }

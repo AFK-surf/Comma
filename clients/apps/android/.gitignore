@@ -1,0 +1,19 @@
+.gradle/
+.kotlin/
+.idea/
+build/
+local.properties
+*.iml
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+dist/
+__pycache__/
+*.keystore
+*.jks
+google-services.json
+# The repository root ignores **/release/; keep the release source set tracked.
+!/app/src/release/

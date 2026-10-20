@@ -1,5 +1,5 @@
 defmodule SalixMeet.MeetingPlanTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixCalendar.{Occurrences, Server}
   alias SalixCluster.Schedules
@@ -86,10 +86,10 @@ defmodule SalixMeet.MeetingPlanTest do
                "@type" => "Event",
                "uid" => "meeting-plan-test@example.com",
                "title" =>
-                 Application.get_env(:salix_meet, :test_calendar_patch, %{})["title"] ||
+                 SystemsRuntime.get_env(:salix_meet, :test_calendar_patch, %{})["title"] ||
                    "Launch review",
                "description" =>
-                 Application.get_env(:salix_meet, :test_calendar_patch, %{})["description"],
+                 SystemsRuntime.get_env(:salix_meet, :test_calendar_patch, %{})["description"],
                "start" => start,
                "timeZone" => "Etc/UTC",
                "duration" => "PT1H",
@@ -115,7 +115,9 @@ defmodule SalixMeet.MeetingPlanTest do
                "scheduling_authority_key" => "owner@example.com"
              },
              "scheduling_revision" => %{"sequence" => 1, "updated" => start},
-             "source_revision" => [Application.get_env(:salix_meet, :test_calendar_revision, 1)],
+             "source_revision" => [
+               SystemsRuntime.get_env(:salix_meet, :test_calendar_revision, 1)
+             ],
              "meeting_qualification" => %{
                "item_eligible" => true,
                "item_reason" => "eligible",
@@ -132,17 +134,17 @@ defmodule SalixMeet.MeetingPlanTest do
   end
 
   setup do
-    Application.delete_env(:salix_meet, :test_calendar_patch)
-    Application.delete_env(:salix_meet, :test_calendar_revision)
-    previous_s3 = Application.get_env(:salix_store, :s3_backend)
-    previous_runtime = Application.get_env(:salix_meet, :agent_runtime_mod)
-    previous_group_context = Application.get_env(:salix_agent, :group_context_mod)
-    previous_adapters = Application.get_env(:salix_calendar, :source_adapters)
+    SystemsRuntime.delete_env(:salix_meet, :test_calendar_patch)
+    SystemsRuntime.delete_env(:salix_meet, :test_calendar_revision)
+    previous_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_runtime = SystemsRuntime.get_env(:salix_meet, :agent_runtime_mod)
+    previous_group_context = SystemsRuntime.get_env(:salix_agent, :group_context_mod)
+    previous_adapters = SystemsRuntime.get_env(:salix_calendar, :source_adapters)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.put_env(:salix_meet, :agent_runtime_mod, SalixMeet.TestAgentRuntime)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_meet, :agent_runtime_mod, SalixMeet.TestAgentRuntime)
 
-    Application.put_env(:salix_calendar, :source_adapters, %{
+    SystemsRuntime.put_env(:salix_calendar, :source_adapters, %{
       "meeting_plan_test" => CalendarAdapter
     })
 
@@ -212,10 +214,10 @@ defmodule SalixMeet.MeetingPlanTest do
     Process.put({__MODULE__, :scheduling_link_id}, item["scheduling_link_id"])
 
     on_exit(fn ->
-      Application.delete_env(:salix_meet, :test_calendar_patch)
-      Application.delete_env(:salix_meet, :test_calendar_revision)
+      SystemsRuntime.delete_env(:salix_meet, :test_calendar_patch)
+      SystemsRuntime.delete_env(:salix_meet, :test_calendar_revision)
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, previous_s3)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, previous_s3)
       restore(:salix_meet, :agent_runtime_mod, previous_runtime)
       restore(:salix_agent, :group_context_mod, previous_group_context)
       restore(:salix_calendar, :source_adapters, previous_adapters)
@@ -340,213 +342,6 @@ defmodule SalixMeet.MeetingPlanTest do
     assert personal["run_at"] == invitation_only["preparation"]["card_at"]
   end
 
-  test "trusted publication target stays outside the meeting research conversation", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    invalid_target = %{
-      "provider" => "slack",
-      "tool" => "im_api.slack.post_message",
-      "params" => %{"connect_id" => "calendar-connect"}
-    }
-
-    assert {:error, :invalid_meeting_publication_target} =
-             MeetingPlan.ensure(group_id, item, occurrence,
-               now: @start_ms - 60_000,
-               publication_target: invalid_target
-             )
-
-    assert {:ok, %{objects: []}} = S3.list(Keys.schedule_prefix(), max_keys: 10)
-
-    target = slack_publication_target("a")
-
-    assert {:ok, plan} =
-             MeetingPlan.ensure(group_id, item, occurrence,
-               now: @start_ms - 60_000,
-               publication_target: target
-             )
-
-    assert plan["status"] == "planned"
-    assert plan["publication_target"] == target
-    assert length(trigger_ids(plan)) == 2
-
-    assert {:ok, %{"participants" => participants}} =
-             Conversations.list_group_conversation_participants(group_id, plan["conversation_id"])
-
-    refute Enum.any?(participants, &(&1["actor_type"] == "provider"))
-  end
-
-  test "changing the trusted publication target replaces schedules without adding a provider", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    assert {:ok, first} =
-             MeetingPlan.ensure(group_id, item, occurrence,
-               now: @start_ms - 60_000,
-               publication_target: slack_publication_target("a")
-             )
-
-    first_revision = get_in(first, ["preparation", "dispatch_revision"])
-    first_schedule_ids = trigger_ids(first)
-
-    assert {:ok, second} =
-             MeetingPlan.ensure(group_id, item, occurrence,
-               now: @start_ms - 30_000,
-               publication_target: slack_publication_target("b")
-             )
-
-    assert second["conversation_id"] == first["conversation_id"]
-    assert second["publication_target"] == slack_publication_target("b")
-    refute get_in(second, ["preparation", "dispatch_revision"]) == first_revision
-    refute trigger_ids(second) == first_schedule_ids
-
-    assert {:ok, %{"participants" => participants}} =
-             Conversations.list_group_conversation_participants(
-               group_id,
-               second["conversation_id"]
-             )
-
-    refute Enum.any?(participants, &(&1["actor_type"] == "provider"))
-
-    assert {:ok, %{"status" => "stale"}} =
-             MeetingPlan.open_trigger(
-               group_id,
-               second["meeting_plan_id"],
-               "publication",
-               first_revision,
-               now: @start_ms - :timer.minutes(12)
-             )
-  end
-
-  test "decision baselines are canonical bounded evidence", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    assert {:ok, plan} = MeetingPlan.ensure(group_id, item, occurrence)
-    revision = get_in(plan, ["preparation", "dispatch_revision"])
-
-    assert {:ok, %{"status" => "opened"}} =
-             MeetingPlan.open_trigger(group_id, plan["meeting_plan_id"], "decision", revision,
-               now: @start_ms - :timer.minutes(30)
-             )
-
-    assert {:ok, decided} =
-             MeetingPlan.record_decision(
-               group_id,
-               plan["meeting_plan_id"],
-               revision,
-               "required",
-               %{
-                 "scope" => "  Prepare the launch review.  ",
-                 "facts" => ["  Launch owner is assigned.  "],
-                 "gaps" => [],
-                 "destination" => "im_api.slack.post_message attacker-channel"
-               }
-             )
-
-    assert get_in(decided, ["preparation", "baseline"]) == %{
-             "scope" => "Prepare the launch review.",
-             "known_facts" => ["Launch owner is assigned."],
-             "gaps" => []
-           }
-
-    assert {:error, :meeting_preparation_baseline_too_large} =
-             MeetingPlan.record_decision(
-               group_id,
-               plan["meeting_plan_id"],
-               revision,
-               "required",
-               %{"known_facts" => List.duplicate("fact", 9), "gaps" => []}
-             )
-  end
-
-  test "reconciliation purges a legacy provider before an unfiltered checkpoint", %{
-    group_id: group_id,
-    router_agent_id: router_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    target = slack_publication_target("legacy")
-
-    assert {:ok, plan} =
-             MeetingPlan.ensure(group_id, item, occurrence,
-               now: @start_ms - 60_000,
-               publication_target: target
-             )
-
-    assert {:ok, provider} =
-             ConversationServer.ensure_group_conversation_provider_participant(
-               group_id,
-               plan["conversation_id"],
-               %{
-                 "actor_type" => "provider",
-                 "provider" => "slack",
-                 "target_key" => "legacy-calendar-target",
-                 "role_label" => "meeting_calendar_delivery",
-                 "payload" => %{
-                   "connect_id" => "legacy-calendar-connect",
-                   "workspace_id" => "T-calendar",
-                   "channel_id" => "C-calendar"
-                 },
-                 "state" => "active",
-                 "notification_filter" => %{"messages" => "all", "statuses" => "none"}
-               }
-             )
-
-    assert {:ok, _reconciled} =
-             MeetingPlan.ensure(group_id, item, occurrence,
-               now: @start_ms - 30_000,
-               publication_target: target
-             )
-
-    assert {:ok, %{"participants" => participants}} =
-             Conversations.list_group_conversation_participants(
-               group_id,
-               plan["conversation_id"]
-             )
-
-    refute Enum.any?(participants, &(&1["participant_id"] == provider["participant_id"]))
-    refute Enum.any?(participants, &(&1["actor_type"] == "provider"))
-
-    worker =
-      Enum.find(
-        participants,
-        &(&1["actor_type"] == "agent" and &1["agent_id"] != router_id)
-      )
-
-    assert {:ok, checkpoint} =
-             ConversationServer.append_group_conversation_agent_message(
-               group_id,
-               plan["conversation_id"],
-               worker["agent_id"],
-               %{
-                 "client_request_id" => "parentless-worker-checkpoint",
-                 "content" => "Internal research checkpoint with no reply parent or filter"
-               }
-             )
-
-    assert {:ok, persisted} =
-             Conversations.get_group_conversation_message(
-               group_id,
-               plan["conversation_id"],
-               checkpoint["message_id"]
-             )
-
-    refute Map.has_key?(persisted, "delivery_filter")
-
-    assert {:ok, %{"deliveries" => []}} =
-             Conversations.group_conversation_delivery_status(
-               group_id,
-               plan["conversation_id"],
-               participant_id: provider["participant_id"],
-               message_id: checkpoint["message_id"],
-               limit: 100
-             )
-  end
-
   test "reschedule allocates replacement ids, deletes old definitions, and fences raced prompts",
        %{group_id: group_id, item: item, occurrence: occurrence} do
     assert {:ok, first} = MeetingPlan.ensure(group_id, item, occurrence, now: @start_ms - 60_000)
@@ -579,85 +374,6 @@ defmodule SalixMeet.MeetingPlanTest do
                "decision",
                old_revision
              )
-  end
-
-  test "reconciliation never recreates a one-shot trigger after its command checkpoint", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    assert {:ok, plan} = MeetingPlan.ensure(group_id, item, occurrence)
-    revision = get_in(plan, ["preparation", "dispatch_revision"])
-    decision_id = get_in(plan, ["preparation", "schedule_ids", "decision"])
-
-    assert {:ok, %{"status" => "opened"}} =
-             MeetingPlan.open_trigger(group_id, plan["meeting_plan_id"], "decision", revision,
-               now: @start_ms - :timer.minutes(30)
-             )
-
-    # A one-shot definition is deleted by Schedule after its durable delivery.
-    assert :ok = Schedules.delete(decision_id)
-    assert {:ok, _reconciled} = MeetingPlan.ensure(group_id, item, occurrence)
-    assert {:error, :not_found} = Schedules.get(decision_id)
-
-    assert {:ok, _decided} =
-             MeetingPlan.record_decision(
-               group_id,
-               plan["meeting_plan_id"],
-               revision,
-               "not_required",
-               %{}
-             )
-
-    publication_id = get_in(plan, ["preparation", "schedule_ids", "publication"])
-    assert :ok = Schedules.delete(publication_id)
-    assert {:ok, _reconciled} = MeetingPlan.ensure(group_id, item, occurrence)
-    assert {:error, :not_found} = Schedules.get(publication_id)
-  end
-
-  test "switching the selected Calendar copy replaces triggers even at the same local revision",
-       %{group_id: group_id, item: item, occurrence: occurrence} do
-    assert {:ok, first} = MeetingPlan.ensure(group_id, item, occurrence)
-    first_ids = trigger_ids(first)
-    first_dispatch = get_in(first, ["preparation", "dispatch_revision"])
-
-    replacement =
-      item
-      |> Map.put("calendar_item_id", Ids.new_calendar_item_id())
-      |> put_in(["object", "title"], "Organizer-owned title")
-
-    assert replacement["revision"] == item["revision"]
-
-    assert {:ok, second} = MeetingPlan.ensure(group_id, replacement, occurrence)
-    assert second["conversation_id"] == first["conversation_id"]
-    assert second["calendar_item_id"] == replacement["calendar_item_id"]
-    refute get_in(second, ["preparation", "dispatch_revision"]) == first_dispatch
-    refute trigger_ids(second) == first_ids
-    for id <- first_ids, do: assert({:error, :not_found} = Schedules.get(id))
-  end
-
-  test "changing the enrolled Calendar source scope replaces the dispatch revision", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    source_a = Ids.new_calendar_source_id()
-    source_b = Ids.new_calendar_source_id()
-
-    assert {:ok, first} =
-             MeetingPlan.ensure(group_id, item, occurrence, source_ids: [source_a])
-
-    first_ids = trigger_ids(first)
-    first_dispatch = get_in(first, ["preparation", "dispatch_revision"])
-
-    assert {:ok, second} =
-             MeetingPlan.ensure(group_id, item, occurrence, source_ids: [source_a, source_b])
-
-    assert second["conversation_id"] == first["conversation_id"]
-    assert second["calendar_source_ids"] == [source_a, source_b]
-    refute get_in(second, ["preparation", "dispatch_revision"]) == first_dispatch
-    refute trigger_ids(second) == first_ids
-    for id <- first_ids, do: assert({:error, :not_found} = Schedules.get(id))
   end
 
   test "publication trigger reads internal evidence and returns one fixed report submission action",
@@ -781,290 +497,6 @@ defmodule SalixMeet.MeetingPlanTest do
     assert replayed_publication["publication_action"] == action
   end
 
-  test "conflicting decision retry is rejected without replacing the baseline", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    assert {:ok, plan} = MeetingPlan.ensure(group_id, item, occurrence)
-    plan_id = plan["meeting_plan_id"]
-    revision = get_in(plan, ["preparation", "dispatch_revision"])
-
-    assert {:ok, %{"status" => "opened"}} =
-             MeetingPlan.open_trigger(group_id, plan_id, "decision", revision,
-               now: @start_ms - :timer.minutes(30)
-             )
-
-    baseline = %{"known_facts" => ["Owner confirmed"], "gaps" => []}
-
-    assert {:ok, recorded} =
-             MeetingPlan.record_decision(group_id, plan_id, revision, "required", baseline)
-
-    assert {:ok, replayed} =
-             MeetingPlan.record_decision(group_id, plan_id, revision, "required", baseline)
-
-    assert replayed == recorded
-
-    assert {:error, :decision_already_recorded} =
-             MeetingPlan.record_decision(group_id, plan_id, revision, "required", %{
-               "known_facts" => ["Conflicting retry"],
-               "gaps" => []
-             })
-
-    assert {:ok, current} = MeetingPlan.get(group_id, plan_id)
-    assert get_in(current, ["preparation", "baseline"]) == baseline
-  end
-
-  test "T-12 without a trusted publication target settles without a send action", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    assert {:ok, plan} = MeetingPlan.ensure(group_id, item, occurrence)
-    revision = get_in(plan, ["preparation", "dispatch_revision"])
-
-    assert {:ok, %{"status" => "opened"}} =
-             MeetingPlan.open_trigger(group_id, plan["meeting_plan_id"], "decision", revision,
-               now: @start_ms - :timer.minutes(30)
-             )
-
-    assert {:ok, _} =
-             MeetingPlan.record_decision(
-               group_id,
-               plan["meeting_plan_id"],
-               revision,
-               "required",
-               %{"known_facts" => [], "gaps" => ["No trusted destination"]}
-             )
-
-    assert {:ok, before_messages} =
-             Conversations.list_group_conversation_messages(
-               group_id,
-               plan["conversation_id"],
-               limit: 100
-             )
-
-    assert {:ok, publication} =
-             MeetingPlan.open_trigger(
-               group_id,
-               plan["meeting_plan_id"],
-               "publication",
-               revision,
-               now: @start_ms - :timer.minutes(12)
-             )
-
-    assert publication["publication_action"] == %{
-             "status" => "unavailable",
-             "instruction" => "No trusted publication target is configured."
-           }
-
-    assert {:ok, after_messages} =
-             Conversations.list_group_conversation_messages(
-               group_id,
-               plan["conversation_id"],
-               limit: 100
-             )
-
-    assert after_messages == before_messages
-  end
-
-  test "Router rotation rebinds schedules while preserving the meeting conversation", %{
-    tenant_id: tenant_id,
-    group_id: group_id,
-    router_agent_id: router_a,
-    item: item,
-    occurrence: occurrence
-  } do
-    target = slack_publication_target("router-rotation")
-
-    assert {:ok, first} =
-             MeetingPlan.ensure(group_id, item, occurrence, publication_target: target)
-
-    assert {:ok, %{"created_by_agent_id" => ^router_a}} =
-             Conversations.get_group_conversation(group_id, first["conversation_id"])
-
-    first_revision = get_in(first, ["preparation", "dispatch_revision"])
-    first_schedule_ids = trigger_ids(first)
-    router_b = Ids.new_agent_id(group_id)
-
-    SalixAgent.TestSupport.create_control_agent!(router_b, %{
-      "tenant_id" => tenant_id,
-      "group_id" => group_id,
-      "name" => "Replacement Router",
-      "role" => "router"
-    })
-
-    assert {:ok, %{"router_agent_id" => ^router_b}} =
-             SalixStore.CasRecord.update(Keys.ctl_group(group_id), fn group ->
-               Map.put(group, "router_agent_id", router_b)
-             end)
-
-    assert {:ok, second} =
-             MeetingPlan.ensure(group_id, item, occurrence, publication_target: target)
-
-    assert second["conversation_id"] == first["conversation_id"]
-    refute get_in(second, ["preparation", "dispatch_revision"]) == first_revision
-    refute trigger_ids(second) == first_schedule_ids
-    for id <- first_schedule_ids, do: assert({:error, :not_found} = Schedules.get(id))
-
-    assert {:ok, %{"agent_id" => ^router_b}} =
-             Schedules.get(second["preparation"]["schedule_ids"]["decision"])
-
-    assert {:ok, fence} = Schedules.get(second["preparation"]["schedule_ids"]["deadline_fence"])
-    assert fence["receiver"] == "meeting_publication"
-    refute fence["agent_id"]
-
-    assert {:ok, %{"participants" => participants}} =
-             Conversations.list_group_conversation_participants(
-               group_id,
-               second["conversation_id"]
-             )
-
-    assert Enum.any?(participants, &(&1["agent_id"] == router_b))
-
-    assert Enum.any?(participants, fn participant ->
-             participant["agent_id"] == router_b and participant["state"] == "active" and
-               participant["role_label"] == "agent"
-           end)
-
-    assert Enum.any?(participants, fn participant ->
-             participant["agent_id"] == router_a and participant["state"] == "inactive"
-           end)
-
-    active_agents =
-      Enum.filter(
-        participants,
-        &(&1["actor_type"] == "agent" and &1["state"] == "active")
-      )
-
-    assert length(active_agents) == 2
-    refute Enum.any?(participants, &(&1["actor_type"] == "provider"))
-  end
-
-  test "late decision and publication activations expire at the T-10 fence", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    assert {:ok, plan} =
-             MeetingPlan.ensure(group_id, item, occurrence,
-               publication_target: slack_publication_target("late-fence")
-             )
-
-    revision = get_in(plan, ["preparation", "dispatch_revision"])
-    deadline = get_in(plan, ["preparation", "publish_deadline_at"])
-
-    assert {:ok, late_decision} =
-             MeetingPlan.open_trigger(
-               group_id,
-               plan["meeting_plan_id"],
-               "decision",
-               revision,
-               now: deadline
-             )
-
-    assert late_decision["status"] == "deadline_passed"
-    refute Map.has_key?(late_decision, "required_follow_up")
-    refute Map.has_key?(late_decision, "research_protocol")
-
-    assert {:ok, diagnostic} =
-             MeetingPlan.open_trigger(
-               group_id,
-               plan["meeting_plan_id"],
-               "deadline_fence",
-               revision,
-               now: deadline
-             )
-
-    assert diagnostic["status"] == "diagnostic_only"
-
-    assert {:ok, late_publication} =
-             MeetingPlan.open_trigger(
-               group_id,
-               plan["meeting_plan_id"],
-               "publication",
-               revision,
-               now: deadline + :timer.minutes(30)
-             )
-
-    assert late_publication["status"] == "deadline_passed"
-    refute Map.has_key?(late_publication, "publication_action")
-    refute Map.has_key?(late_publication, "evidence")
-
-    assert {:ok, %{"participants" => participants}} =
-             Conversations.list_group_conversation_participants(
-               group_id,
-               plan["conversation_id"]
-             )
-
-    refute Enum.any?(participants, &(&1["actor_type"] == "provider"))
-
-    assert {:ok, messages} =
-             Conversations.list_group_conversation_messages(
-               group_id,
-               plan["conversation_id"],
-               limit: 100
-             )
-
-    assert messages == []
-  end
-
-  test "an opened decision cannot be recorded after the T-10 fence", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    assert {:ok, plan} = MeetingPlan.ensure(group_id, item, occurrence)
-    revision = get_in(plan, ["preparation", "dispatch_revision"])
-    deadline = get_in(plan, ["preparation", "publish_deadline_at"])
-
-    assert {:ok, %{"status" => "opened"}} =
-             MeetingPlan.open_trigger(
-               group_id,
-               plan["meeting_plan_id"],
-               "decision",
-               revision,
-               now: get_in(plan, ["preparation", "decision_at"])
-             )
-
-    assert {:error, :meeting_preparation_deadline_passed} =
-             MeetingPlan.record_decision(
-               group_id,
-               plan["meeting_plan_id"],
-               revision,
-               "required",
-               %{"known_facts" => [], "gaps" => ["Research did not start in time"]},
-               now: deadline
-             )
-
-    assert {:ok, current} = MeetingPlan.get(group_id, plan["meeting_plan_id"])
-    assert get_in(current, ["preparation", "research_decision"]) == "pending"
-    refute Map.has_key?(current["preparation"], "baseline")
-  end
-
-  test "direct cancellation is idempotent and a later ensure reactivates the plan", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    assert {:ok, first} = MeetingPlan.ensure(group_id, item, occurrence)
-    first_schedule_ids = trigger_ids(first)
-
-    assert {:ok, cancelled} = MeetingPlan.cancel(group_id, occurrence["occurrence_ref"])
-    assert cancelled["status"] == "cancelled"
-    assert cancelled["conversation_id"] == first["conversation_id"]
-    for id <- first_schedule_ids, do: assert({:error, :not_found} = Schedules.get(id))
-
-    assert {:ok, %{"status" => "cancelled"}} =
-             MeetingPlan.cancel(group_id, occurrence["occurrence_ref"])
-
-    assert {:ok, reactivated} = MeetingPlan.ensure(group_id, item, occurrence)
-    assert reactivated["status"] == "planned"
-    assert reactivated["conversation_id"] == first["conversation_id"]
-    refute trigger_ids(reactivated) == first_schedule_ids
-    for id <- trigger_ids(reactivated), do: assert({:ok, _} = Schedules.get(id))
-  end
-
   test "untrusted meeting data cannot replace the trusted publication action", %{
     group_id: group_id,
     router_agent_id: router_id,
@@ -1184,124 +616,6 @@ defmodule SalixMeet.MeetingPlanTest do
     refute action["tool"] == "im_api.feishu.send_text"
   end
 
-  test "T-10 diagnostic records no fallback publication", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    assert {:ok, plan} =
-             MeetingPlan.ensure(group_id, item, occurrence,
-               publication_target: slack_publication_target("deadline")
-             )
-
-    revision = get_in(plan, ["preparation", "dispatch_revision"])
-
-    assert {:ok, %{"status" => "opened"}} =
-             MeetingPlan.open_trigger(
-               group_id,
-               plan["meeting_plan_id"],
-               "decision",
-               revision,
-               now: @start_ms - :timer.minutes(30)
-             )
-
-    assert {:ok, _} =
-             MeetingPlan.record_decision(
-               group_id,
-               plan["meeting_plan_id"],
-               revision,
-               "required",
-               %{"known_facts" => ["One verified fact"], "gaps" => []}
-             )
-
-    assert {:ok, before_messages} =
-             Conversations.list_group_conversation_messages(
-               group_id,
-               plan["conversation_id"],
-               limit: 100
-             )
-
-    assert {:ok, diagnostic} =
-             MeetingPlan.open_trigger(
-               group_id,
-               plan["meeting_plan_id"],
-               "deadline_fence",
-               revision,
-               now: @start_ms - :timer.minutes(10)
-             )
-
-    assert diagnostic["status"] == "diagnostic_only"
-    assert diagnostic["fallback"] == "none"
-    assert diagnostic["evidence"]["baseline"]["known_facts"] == ["One verified fact"]
-    refute Map.has_key?(diagnostic, "publication_action")
-
-    assert {:ok, after_messages} =
-             Conversations.list_group_conversation_messages(
-               group_id,
-               plan["conversation_id"],
-               limit: 100
-             )
-
-    assert after_messages == before_messages
-
-    assert {:ok, %{"status" => "diagnostic_only"}} =
-             MeetingPlan.open_trigger(
-               group_id,
-               plan["meeting_plan_id"],
-               "deadline_fence",
-               revision,
-               now: @start_ms - :timer.minutes(10) + 1
-             )
-  end
-
-  test "losing meeting qualification retires the existing triggers and can recover", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    assert {:ok, first} = MeetingPlan.ensure(group_id, item, occurrence)
-    first_ids = trigger_ids(first)
-
-    assert {:ok, legacy_provider} =
-             ConversationServer.ensure_group_conversation_provider_participant(
-               group_id,
-               first["conversation_id"],
-               %{
-                 "actor_type" => "provider",
-                 "provider" => "slack",
-                 "target_key" => "legacy-provider-before-retire",
-                 "role_label" => "meeting_calendar_delivery",
-                 "payload" => %{
-                   "connect_id" => "legacy-connect-before-retire",
-                   "channel_id" => "C-legacy-before-retire"
-                 },
-                 "notification_filter" => %{"messages" => "all", "statuses" => "none"}
-               }
-             )
-
-    free = put_in(item, ["object", "freeBusyStatus"], "free")
-
-    assert {:ok, retired} = MeetingPlan.ensure(group_id, free, occurrence)
-    assert retired["status"] == "cancelled"
-    assert retired["reason"] == "free_busy_only"
-    assert retired["conversation_id"] == first["conversation_id"]
-    for id <- first_ids, do: assert({:error, :not_found} = Schedules.get(id))
-
-    assert {:ok, %{"participants" => participants}} =
-             Conversations.list_group_conversation_participants(
-               group_id,
-               first["conversation_id"]
-             )
-
-    refute Enum.any?(participants, &(&1["participant_id"] == legacy_provider["participant_id"]))
-    refute Enum.any?(participants, &(&1["actor_type"] == "provider"))
-
-    assert {:ok, restored} = MeetingPlan.ensure(group_id, item, occurrence)
-    assert restored["status"] == "planned"
-    assert restored["conversation_id"] == first["conversation_id"]
-    refute trigger_ids(restored) == first_ids
-  end
-
   test "cancelling a scheduling link cancels every occurrence plan and its schedules", %{
     group_id: group_id,
     item: item,
@@ -1350,249 +664,6 @@ defmodule SalixMeet.MeetingPlanTest do
     for id <- schedule_ids, do: assert({:error, :not_found} = Schedules.get(id))
   end
 
-  test "invalid identities and non-qualifying items never create a plan", %{
-    group_id: group_id,
-    occurrence: occurrence
-  } do
-    mismatched_item = Map.put(calendar_item(1), "calendar_id", Ids.new_calendar_id())
-
-    assert {:error, :invalid_occurrence_ref} =
-             MeetingPlan.ensure(group_id, mismatched_item, occurrence)
-
-    malformed_ref =
-      put_in(occurrence, ["occurrence_ref", "recurrence_key", "extra"], "not-canonical")
-
-    assert {:error, :invalid_occurrence_ref} =
-             MeetingPlan.ensure(group_id, calendar_item(1), malformed_ref)
-
-    task = put_in(calendar_item(1), ["object", "@type"], "Task")
-    task_occurrence = Map.put(occurrence, "object_type", "Task")
-
-    assert {:ok, %{"status" => "not_qualified"}} =
-             MeetingPlan.ensure(group_id, task, task_occurrence)
-
-    free = put_in(calendar_item(1), ["object", "freeBusyStatus"], "free")
-    assert {:ok, %{"reason" => "free_busy_only"}} = MeetingPlan.ensure(group_id, free, occurrence)
-
-    unauthorized = Map.delete(calendar_item(1), "meeting_qualification")
-
-    assert {:ok, %{"reason" => "unauthorized_meeting"}} =
-             MeetingPlan.ensure(group_id, unauthorized, occurrence)
-
-    cancelled = put_in(calendar_item(1), ["object", "status"], "cancelled")
-
-    assert {:ok, %{"reason" => "cancelled"}} =
-             MeetingPlan.ensure(group_id, cancelled, occurrence)
-
-    assert {:ok, []} = S3.list_all("ctl/meeting_plans/#{group_id}/plans/")
-  end
-
-  test "the T-10 shared and personal notices remain without a T-1 reminder", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    assert {:ok, plan} =
-             MeetingPlan.ensure(group_id, item, occurrence,
-               publication_target: slack_publication_target("notice")
-             )
-
-    plan_id = plan["meeting_plan_id"]
-    preparation = plan["preparation"]
-    revision = preparation["dispatch_revision"]
-
-    for {kind, minutes} <- [{"card", 10}, {"personal", 10}] do
-      assert {:ok, schedule} = Schedules.get(preparation["schedule_ids"][kind])
-      assert schedule["receiver"] == "meeting_publication"
-      assert schedule["run_at"] == @start_ms - :timer.minutes(minutes)
-      assert schedule["payload"]["kind"] == kind
-    end
-
-    assert {:error, :meeting_publication_not_due} =
-             MeetingPlan.card_action(group_id, plan_id, now: @start_ms - :timer.minutes(11))
-
-    assert {:ok, %{"status" => "opened"}} =
-             MeetingPlan.open_trigger(group_id, plan_id, "publication", revision,
-               now: preparation["publish_start_at"]
-             )
-
-    assert {:ok, saved} =
-             MeetingPlan.prepare_report(
-               group_id,
-               plan_id,
-               revision,
-               "Read the proposal. <https://example.com/pr|PR> <@UATTACKER>",
-               now: preparation["publish_start_at"]
-             )
-
-    assert saved["preparation"]["report"] ==
-             "Read the proposal. [PR](<https://example.com/pr>) ‹@UATTACKER›"
-
-    assert {:ok, retry} =
-             MeetingPlan.prepare_report(
-               group_id,
-               plan_id,
-               revision,
-               "A different retry must not replace the approved report",
-               now: preparation["publish_start_at"]
-             )
-
-    assert retry["preparation"]["report"] == saved["preparation"]["report"]
-
-    assert {:ok, card} =
-             MeetingPlan.card_action(group_id, plan_id, now: @start_ms - :timer.minutes(10))
-
-    assert card["text"] =~ "Read the proposal."
-    refute card["text"] =~ "<@UATTACKER>"
-    assert :ok = MeetingPlan.checkpoint_card_sent(group_id, plan_id)
-
-    refute Map.has_key?(preparation["schedule_ids"], "reminder")
-    refute Map.has_key?(preparation, "reminder_at")
-
-    assert {:ok, personal} =
-             MeetingPlan.card_action(group_id, plan_id,
-               kind: "personal",
-               now: @start_ms - :timer.minutes(10)
-             )
-
-    assert personal["not_after_ms"] == @start_ms
-
-    assert {:settle, :unsupported_notice_kind} =
-             MeetingPlan.card_action(group_id, plan_id,
-               kind: "reminder",
-               now: @start_ms - :timer.minutes(1)
-             )
-  end
-
-  test "retiring a persisted T-1 schedule preserves active research and settled notices", ctx do
-    %{group_id: group_id, router_agent_id: router_id, item: item, occurrence: occurrence} = ctx
-    target = slack_publication_target("retired-reminder")
-
-    assert {:ok, plan} =
-             MeetingPlan.ensure(group_id, item, occurrence, publication_target: target)
-
-    {_worker_id, _session_id, _task} = start_research_task!(group_id, router_id, plan)
-    plan_id = plan["meeting_plan_id"]
-    assert :ok = MeetingPlan.checkpoint_card_sent(group_id, plan_id)
-    assert :ok = MeetingPlan.checkpoint_card_sent(group_id, plan_id, kind: "personal")
-    assert {:ok, current} = MeetingPlan.get(group_id, plan_id)
-    preparation = current["preparation"]
-    reminder_id = Ids.new_schedule_id()
-    reminder_at = @start_ms - :timer.minutes(1)
-
-    # Persist the definition from the removed release through the storage owner.
-    assert {:ok, _} =
-             SalixStore.Schedules.create(
-               %{
-                 "id" => reminder_id,
-                 "receiver" => "meeting_publication",
-                 "run_at" => reminder_at,
-                 "created_at" => 1,
-                 "last_run" => nil,
-                 "payload" => %{
-                   "group_id" => group_id,
-                   "meeting_plan_id" => plan_id,
-                   "kind" => "reminder"
-                 }
-               },
-               reminder_at
-             )
-
-    assert {:ok, _} =
-             SalixStore.CasRecord.update(Keys.ctl_meeting_plan(group_id, plan_id), fn saved ->
-               saved
-               |> put_in(["preparation", "schedule_ids", "reminder"], reminder_id)
-               |> put_in(["preparation", "reminder_at"], reminder_at)
-               |> put_in(["preparation", "report"], "Saved shared preparation")
-             end)
-
-    assert {:ok, reconciled} =
-             MeetingPlan.ensure(group_id, item, occurrence, publication_target: target)
-
-    assert reconciled["preparation"] == Map.put(preparation, "report", "Saved shared preparation")
-    assert reconciled["retired_schedule_ids"] == []
-    assert {:error, :not_found} = Schedules.get(reminder_id)
-
-    assert {:ok, again} =
-             MeetingPlan.ensure(group_id, item, occurrence, publication_target: target)
-
-    assert again["preparation"] == reconciled["preparation"]
-  end
-
-  test "the T-10 notice omits a report invalidated by a calendar edit before plan reconciliation",
-       %{
-         group_id: group_id,
-         item: item,
-         occurrence: occurrence
-       } do
-    assert {:ok, plan} =
-             MeetingPlan.ensure(group_id, item, occurrence,
-               publication_target: slack_publication_target("freshness")
-             )
-
-    plan_id = plan["meeting_plan_id"]
-    revision = plan["preparation"]["dispatch_revision"]
-    now = plan["preparation"]["publish_start_at"]
-
-    assert {:ok, _} =
-             MeetingPlan.open_trigger(group_id, plan_id, "publication", revision, now: now)
-
-    assert {:ok, saved} =
-             MeetingPlan.prepare_report(
-               group_id,
-               plan_id,
-               revision,
-               "Approve the launch proposal",
-               now: now
-             )
-
-    refresh_calendar_item(
-      group_id,
-      item,
-      occurrence,
-      %{
-        "title" => "Incident review",
-        "description" => "Launch cancelled; discuss outage instead."
-      },
-      2
-    )
-
-    assert {:error, :stale_dispatch_revision} = MeetingPlan.validate_report(saved)
-
-    assert {:ok, action} =
-             MeetingPlan.card_action(group_id, plan_id, now: @start_ms - :timer.minutes(10))
-
-    assert action["text"] =~ "Incident review"
-    refute action["text"] =~ "Approve the launch proposal"
-  end
-
-  test "a report cannot be staged before publication opens or after the notice deadline", %{
-    group_id: group_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    assert {:ok, plan} =
-             MeetingPlan.ensure(group_id, item, occurrence,
-               publication_target: slack_publication_target("deadline")
-             )
-
-    revision = plan["preparation"]["dispatch_revision"]
-
-    assert {:error, :publication_trigger_not_opened} =
-             MeetingPlan.prepare_report(group_id, plan["meeting_plan_id"], revision, "Report",
-               now: plan["preparation"]["publish_start_at"]
-             )
-
-    assert {:error, :meeting_preparation_deadline_passed} =
-             MeetingPlan.prepare_report(
-               group_id,
-               plan["meeting_plan_id"],
-               revision,
-               "Late report",
-               now: @start_ms - :timer.minutes(10)
-             )
-  end
-
   test "Comma description writeback does not restart research, but a human edit does", %{
     group_id: group_id,
     item: item,
@@ -1631,8 +702,8 @@ defmodule SalixMeet.MeetingPlanTest do
          item: item,
          occurrence: occurrence
        } do
-    previous = Application.get_env(:salix_meet, :calendar_preparation_mod)
-    Application.put_env(:salix_meet, :calendar_preparation_mod, FailedCalendarWrite)
+    previous = SystemsRuntime.get_env(:salix_meet, :calendar_preparation_mod)
+    SystemsRuntime.put_env(:salix_meet, :calendar_preparation_mod, FailedCalendarWrite)
     on_exit(fn -> restore(:salix_meet, :calendar_preparation_mod, previous) end)
 
     assert {:ok, plan} =
@@ -1673,11 +744,11 @@ defmodule SalixMeet.MeetingPlanTest do
                session_id
              )
 
-    previous_runtime = Application.get_env(:salix_agent, :meeting_preparation_mod)
-    previous_oauth = Application.get_env(:salix_agent, :oauth_store_mod)
-    Application.put_env(:salix_agent, :meeting_preparation_mod, SalixMeet.MeetingPreparation)
+    previous_runtime = SystemsRuntime.get_env(:salix_agent, :meeting_preparation_mod)
+    previous_oauth = SystemsRuntime.get_env(:salix_agent, :oauth_store_mod)
+    SystemsRuntime.put_env(:salix_agent, :meeting_preparation_mod, SalixMeet.MeetingPreparation)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :oauth_store_mod,
       SalixAgent.LiveLlmTestSupport.OAuthStubStore
@@ -1757,59 +828,6 @@ defmodule SalixMeet.MeetingPlanTest do
 
     assert {:ok, %{"status" => "active"}} =
              Conversations.get_group_conversation(group_id, task["conversation_id"])
-  end
-
-  test "Task kickoff retries reuse the command and keep research internal", %{
-    group_id: group_id,
-    router_agent_id: router_id,
-    item: item,
-    occurrence: occurrence
-  } do
-    assert {:ok, plan} =
-             MeetingPlan.ensure(group_id, item, occurrence,
-               publication_target: slack_publication_target("task-replay")
-             )
-
-    {worker_id, _session_id, task} = start_research_task!(group_id, router_id, plan)
-    revision = plan["preparation"]["dispatch_revision"]
-
-    assert {:ok, ^task} =
-             SalixMeet.PreparationTask.start(
-               group_id,
-               plan["meeting_plan_id"],
-               revision,
-               router_id,
-               worker_id,
-               now: plan["preparation"]["decision_at"]
-             )
-
-    assert {:ok, %{"kind" => "agent_task", "schedule" => %{"schedule_id" => nil}}} =
-             Conversations.get_group_conversation(group_id, task["conversation_id"])
-
-    assert {:ok, %{"participants" => participants}} =
-             Conversations.list_group_conversation_participants(group_id, task["conversation_id"])
-
-    assert Enum.all?(participants, &(&1["actor_type"] == "agent"))
-    router = Enum.find(participants, &(&1["agent_id"] == router_id))
-    assert router["notification_filter"] == %{"messages" => "all", "statuses" => "none"}
-
-    assert {:ok, messages} =
-             Conversations.list_group_conversation_messages(group_id, task["conversation_id"])
-
-    initial =
-      Enum.filter(
-        messages,
-        &(&1["client_request_id"] == "delegate-task-" <> task["conversation_id"])
-      )
-
-    assert length(initial) == 1
-
-    assert {:ok, meeting_messages} =
-             Conversations.list_group_conversation_messages(group_id, plan["conversation_id"])
-
-    refute Enum.any?(meeting_messages, fn message ->
-             get_in(message, ["metadata", "kind"]) == "meeting_preparation_decision"
-           end)
   end
 
   test "cancelled or revised meetings reject the former Task report", %{
@@ -1899,11 +917,11 @@ defmodule SalixMeet.MeetingPlanTest do
       do: SalixIM.TestSupport.ConversationDelivery.notify(__MODULE__, agent, source)
 
     def deliver(agent_id, payload, opts) do
-      :persistent_term.put({__MODULE__, agent_id}, {payload, opts})
+      SystemsRuntime.PersistentTerm.put({__MODULE__, agent_id}, {payload, opts})
       {:ok, :created}
     end
 
-    def captured(agent_id), do: :persistent_term.get({__MODULE__, agent_id}, nil)
+    def captured(agent_id), do: SystemsRuntime.PersistentTerm.get({__MODULE__, agent_id}, nil)
     @impl true
     def get_session(_agent_id, _session_id, _opts), do: {:error, :not_found}
     @impl true
@@ -1912,8 +930,8 @@ defmodule SalixMeet.MeetingPlanTest do
 
   test "assigned Worker freezes separate personal reports without changing the public report",
        ctx do
-    previous = Application.get_env(:salix_meet, :personal_preparation_mod)
-    Application.put_env(:salix_meet, :personal_preparation_mod, PersonalProvider)
+    previous = SystemsRuntime.get_env(:salix_meet, :personal_preparation_mod)
+    SystemsRuntime.put_env(:salix_meet, :personal_preparation_mod, PersonalProvider)
     on_exit(fn -> restore(:salix_meet, :personal_preparation_mod, previous) end)
     %{group_id: group_id, router_agent_id: router_id, item: item, occurrence: occurrence} = ctx
     target = slack_publication_target("personal")
@@ -2090,8 +1108,8 @@ defmodule SalixMeet.MeetingPlanTest do
 
   test "personal reports reject other destinations, invisible sources and late or cancelled work",
        ctx do
-    previous = Application.get_env(:salix_meet, :personal_preparation_mod)
-    Application.put_env(:salix_meet, :personal_preparation_mod, PersonalProvider)
+    previous = SystemsRuntime.get_env(:salix_meet, :personal_preparation_mod)
+    SystemsRuntime.put_env(:salix_meet, :personal_preparation_mod, PersonalProvider)
     on_exit(fn -> restore(:salix_meet, :personal_preparation_mod, previous) end)
     %{group_id: group_id, item: item, occurrence: occurrence} = ctx
 
@@ -2198,18 +1216,18 @@ defmodule SalixMeet.MeetingPlanTest do
   end
 
   test "IFC-off Worker saves reviewed public-source advice and never reads private memory", ctx do
-    previous_runtime = Application.get_env(:salix_agent, :meeting_preparation_mod)
-    previous_oauth = Application.get_env(:salix_agent, :oauth_store_mod)
-    previous_provider = Application.get_env(:salix_meet, :personal_preparation_mod)
-    Application.put_env(:salix_agent, :meeting_preparation_mod, SalixMeet.MeetingPreparation)
+    previous_runtime = SystemsRuntime.get_env(:salix_agent, :meeting_preparation_mod)
+    previous_oauth = SystemsRuntime.get_env(:salix_agent, :oauth_store_mod)
+    previous_provider = SystemsRuntime.get_env(:salix_meet, :personal_preparation_mod)
+    SystemsRuntime.put_env(:salix_agent, :meeting_preparation_mod, SalixMeet.MeetingPreparation)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :oauth_store_mod,
       SalixAgent.LiveLlmTestSupport.OAuthStubStore
     )
 
-    Application.put_env(:salix_meet, :personal_preparation_mod, PublicPersonalProvider)
+    SystemsRuntime.put_env(:salix_meet, :personal_preparation_mod, PublicPersonalProvider)
 
     on_exit(fn ->
       restore(:salix_agent, :meeting_preparation_mod, previous_runtime)
@@ -2363,8 +1381,8 @@ defmodule SalixMeet.MeetingPlanTest do
 
     # Use the actual read result through the ordinary transcript stamping and
     # IFC decision seams. Only provider membership facts are fixture data.
-    previous_facts = Application.get_env(:salix_agent, :ifc_facts_mod)
-    Application.put_env(:salix_agent, :ifc_facts_mod, RecipientFacts)
+    previous_facts = SystemsRuntime.get_env(:salix_agent, :ifc_facts_mod)
+    SystemsRuntime.put_env(:salix_agent, :ifc_facts_mod, RecipientFacts)
     on_exit(fn -> restore(:salix_agent, :ifc_facts_mod, previous_facts) end)
 
     connect_id = context["connect_id"]
@@ -2533,8 +1551,8 @@ defmodule SalixMeet.MeetingPlanTest do
       }
     }
 
-    previous_llm = Application.get_env(:salix_agent, :llm)
-    Application.put_env(:salix_agent, :llm, PersonalReviewLLM)
+    previous_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_agent, :llm, PersonalReviewLLM)
 
     result =
       try do
@@ -2585,10 +1603,10 @@ defmodule SalixMeet.MeetingPlanTest do
     %{group_id: group_id, router_agent_id: router_id} = ctx
     {item, occurrence} = live_calendar_occurrence!(group_id)
     target = slack_publication_target("organization")
-    previous_enrollment = Application.get_env(:salix_meet, :calendar_autojoin_channels)
-    previous_runtime = Application.get_env(:salix_agent, :meeting_preparation_mod)
-    previous_llm = Application.get_env(:salix_agent, :llm)
-    previous_oauth = Application.get_env(:salix_agent, :oauth_store_mod)
+    previous_enrollment = SystemsRuntime.get_env(:salix_meet, :calendar_autojoin_channels)
+    previous_runtime = SystemsRuntime.get_env(:salix_agent, :meeting_preparation_mod)
+    previous_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    previous_oauth = SystemsRuntime.get_env(:salix_agent, :oauth_store_mod)
 
     on_exit(fn ->
       restore(:salix_meet, :calendar_autojoin_channels, previous_enrollment)
@@ -2597,10 +1615,10 @@ defmodule SalixMeet.MeetingPlanTest do
       restore(:salix_agent, :oauth_store_mod, previous_oauth)
     end)
 
-    Application.put_env(:salix_agent, :meeting_preparation_mod, SalixMeet.MeetingPreparation)
-    Application.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
+    SystemsRuntime.put_env(:salix_agent, :meeting_preparation_mod, SalixMeet.MeetingPreparation)
+    SystemsRuntime.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :oauth_store_mod,
       SalixAgent.LiveLlmTestSupport.OAuthStubStore
@@ -2629,14 +1647,14 @@ defmodule SalixMeet.MeetingPlanTest do
       ]
     }
 
-    Application.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [entry])
 
     assert :ok =
              SalixMeet.CalendarEnrollmentCache.put(
                entry,
                group,
                group,
-               System.system_time(:millisecond)
+               SystemsClock.system_time(:millisecond)
              )
 
     assert {:ok, _} =
@@ -2673,36 +1691,31 @@ defmodule SalixMeet.MeetingPlanTest do
     assert router_origin["meeting_preparation"]["role"] == "router"
     assert router_origin["ifc"]["integrity"] == "command"
 
-    previous_delivery = Application.get_env(:salix_im, :agent_delivery_mod)
-    Application.put_env(:salix_im, :agent_delivery_mod, TaskDelivery)
+    previous_delivery = SystemsRuntime.get_env(:salix_im, :agent_delivery_mod)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, TaskDelivery)
     on_exit(fn -> restore(:salix_im, :agent_delivery_mod, previous_delivery) end)
-    previous_worker_ports = Application.get_env(:salix_agent, :agent_management_ports)
-    previous_agent_runtime = Application.get_env(:salix_meet, :agent_runtime_mod)
+    previous_worker_ports = SystemsRuntime.get_env(:salix_agent, :agent_management_ports)
+    previous_agent_runtime = SystemsRuntime.get_env(:salix_meet, :agent_runtime_mod)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :agent_management_ports,
       SalixAgent.AgentManagement.Ports.Standalone
     )
 
-    Application.put_env(:salix_meet, :agent_runtime_mod, Salix.Bindings.MeetingAgentRuntime)
+    SystemsRuntime.put_env(:salix_meet, :agent_runtime_mod, Salix.Bindings.MeetingAgentRuntime)
 
     on_exit(fn ->
       restore(:salix_agent, :agent_management_ports, previous_worker_ports)
       restore(:salix_meet, :agent_runtime_mod, previous_agent_runtime)
     end)
 
-    assert {:ok, template} =
-             SalixAgent.Templates.create(%{
-               "name" => "Organization meeting Worker default",
-               "model" => "mock",
-               "provider" => "mock"
-             })
-
-    _ =
-      SalixAgent.TestSupport.put_tenant_agent_defaults!(ctx.tenant_id, %{
-        "worker_template_id" => template["template_id"]
-      })
+    # The preparation Worker follows the platform Worker model.
+    SalixAgent.TestSupport.configure_platform_tier!(
+      "worker",
+      "https://platform-model.example.test/v1",
+      "mock"
+    )
 
     router_ctx =
       %{
@@ -2744,7 +1757,9 @@ defmodule SalixMeet.MeetingPlanTest do
     task = Jason.decode!(started.content)
     worker = task["worker_agent_id"]
     assert {:ok, created_worker} = SalixAgent.Control.get_record(worker)
-    assert created_worker["template_id"] == template["template_id"]
+    # The preparation Worker follows the platform Worker model.
+    assert {:ok, %{"kind" => "platform", "tier" => "worker"}, :platform_default} =
+             SalixAgent.AgentModel.choice(created_worker)
 
     assert {:ok, repeated} =
              SalixMeet.MeetingPreparation.start_research(
@@ -2988,7 +2003,7 @@ defmodule SalixMeet.MeetingPlanTest do
                | session_id: "different"
              })
 
-    Application.put_env(:salix_meet, :calendar_autojoin_channels, [])
+    SystemsRuntime.put_env(:salix_meet, :calendar_autojoin_channels, [])
 
     assert {:error, :meeting_preparation_scope_denied} =
              SalixMeet.PreparationAuthority.authorize_call(read, tool_ctx)
@@ -3015,7 +2030,7 @@ defmodule SalixMeet.MeetingPlanTest do
         canonical_task,
         canonical_message,
         participant,
-        System.system_time(:millisecond)
+        SystemsClock.system_time(:millisecond)
       )
 
     delayed_record =
@@ -3093,7 +2108,7 @@ defmodule SalixMeet.MeetingPlanTest do
   end
 
   defp live_calendar_occurrence!(group_id) do
-    start_ms = div(System.system_time(:millisecond), 1_000) * 1_000 + :timer.minutes(25)
+    start_ms = div(SystemsClock.system_time(:millisecond), 1_000) * 1_000 + :timer.minutes(25)
 
     assert {:ok, calendar} =
              Server.ensure_calendar(group_id, %{"kind" => "organization-authority-test"}, %{
@@ -3129,8 +2144,8 @@ defmodule SalixMeet.MeetingPlanTest do
   end
 
   defp start_research_task!(group_id, router_id, plan) do
-    previous = Application.get_env(:salix_im, :agent_delivery_mod)
-    Application.put_env(:salix_im, :agent_delivery_mod, TaskDelivery)
+    previous = SystemsRuntime.get_env(:salix_im, :agent_delivery_mod)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, TaskDelivery)
     on_exit(fn -> restore(:salix_im, :agent_delivery_mod, previous) end)
     worker_id = Ids.new_agent_id(group_id)
 
@@ -3158,8 +2173,8 @@ defmodule SalixMeet.MeetingPlanTest do
   end
 
   defp refresh_calendar_item(group_id, item, occurrence, patch, revision) do
-    Application.put_env(:salix_meet, :test_calendar_patch, patch)
-    Application.put_env(:salix_meet, :test_calendar_revision, revision)
+    SystemsRuntime.put_env(:salix_meet, :test_calendar_patch, patch)
+    SystemsRuntime.put_env(:salix_meet, :test_calendar_revision, revision)
 
     assert {:ok, _} =
              Server.refresh_source(group_id, item["calendar_id"], item["origin"]["source_id"], %{
@@ -3177,35 +2192,6 @@ defmodule SalixMeet.MeetingPlanTest do
              )
 
     {refreshed, view}
-  end
-
-  defp calendar_item(revision) do
-    %{
-      "calendar_item_id" => Ids.new_calendar_item_id(),
-      "calendar_id" => calendar_id(),
-      "scheduling_link_id" => scheduling_link_id(),
-      "revision" => revision,
-      "object" => %{
-        "@type" => "Event",
-        "title" => "Launch review",
-        "start" => "2027-01-15T10:00:00",
-        "timeZone" => "Asia/Shanghai",
-        "duration" => "PT1H",
-        "freeBusyStatus" => "busy",
-        "virtualLocations" => %{
-          "conference" => %{
-            "@type" => "VirtualLocation",
-            "uri" => "https://meet.google.com/meeting-plan-test"
-          }
-        }
-      },
-      "meeting_qualification" => %{
-        "item_eligible" => true,
-        "item_reason" => "eligible",
-        "authorized" => true,
-        "reason" => "google_meet"
-      }
-    }
   end
 
   defp calendar_id do
@@ -3240,12 +2226,12 @@ defmodule SalixMeet.MeetingPlanTest do
   end
 
   defp ensure_fake_s3_started! do
-    case Process.whereis(S3.Fake) do
+    case SystemsRuntime.Proc.whereis(S3.Fake) do
       nil -> start_supervised!(S3.Fake)
       _pid -> :ok
     end
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

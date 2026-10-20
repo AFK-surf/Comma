@@ -4,7 +4,7 @@ defmodule SalixSignalProto.Message.ContentTest do
   # content-encoding.json, envelope-encoding.json and
   # decryption-error-message.json, plus the receiver validity rules of
   # CRS-05 §3.1, §5 and §6.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.Message.{Content, DecryptionError, Envelope, ExpireTimer, Padding, Wire}
   alias SalixSignalProto.Test.{FieldWalk, Vectors}

@@ -1,4 +1,5 @@
-import { ScrollArea, ScrollAreaLoadMore, SearchIcon } from "@comma/ui";
+import { ScrollArea, ScrollAreaLoadMore } from "@comma/ui/components/scroll-area";
+import { SearchIcon } from "@comma/ui/components/icons";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { BftSwarm, BftSwarmsPage } from "./api";
 import { formatRelative } from "./format";

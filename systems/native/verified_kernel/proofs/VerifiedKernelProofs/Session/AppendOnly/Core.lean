@@ -1,6 +1,7 @@
 import VerifiedKernelProofs.Order
 import VerifiedKernelProofs.Session.Kernel
 import VerifiedKernelProofs.Proof.WalkTactic
+import VerifiedKernelProofs.Proof.StringKeys
 
 /-!
 Definitions, primitive lemmas and the walk tactics for the transcript proofs.
@@ -296,7 +297,7 @@ macro_rules
   `(tactic| first
       | (head_is $h [write]; simp only [write_step] at $h:ident; obtain ⟨_, frame, append, seed⟩ := $h
          first
-           | refine extends_trans (frame rfl) ?_
+           | refine extends_trans (frame (by keys_absent)) ?_
            | (refine extends_trans (append _ _ _ ?read rfl rfl) ?_; case read => assumption)
            | (refine extends_trans (seed _ _ _ ?read rfl rfl) ?_; case read => assumption))
       | (head_step $h "_step"; obtain ⟨_, stepped⟩ := $h; refine extends_trans stepped ?_))
@@ -400,5 +401,30 @@ theorem transcriptDelivery_ops {s e t : Term} {j r : List Term}
     | dsimp only at h
     | split at h
     | (generalize Term.get _ _ = discriminant at h; split at h)
+
+set_option backward.split false in
+/-- The Session operations of `transcriptSeed`: one write of the seeded transcript fields, then
+one write of `live_context_bytes`. The other binds only read the Session or the event. -/
+theorem transcriptSeed_ops {s e t : Term} {j r : List Term} (h : transcriptSeed s e j = .ok (t, r)) :
+    ∃ created activity messages next lastSeq dedupe bytes seeded : Term, ∃ j₁ j₂ r₁ : List Term,
+      write s [("created_at", created), ("last_activity_at", activity), ("messages", messages),
+        ("next_message_id", next), ("last_seq", lastSeq), ("input_dedupe", dedupe)] j₁ = .ok (seeded, r₁) ∧
+      write seeded [("live_context_bytes", bytes)] j₂ = .ok (t, r) := by
+  unfold transcriptSeed at h
+  repeat' first
+    | exact (fail_ok h).elim
+    | (head_is h [write]
+       exact ⟨_, _, _, _, _, _, _, _, _, _, _, seededCall, h⟩)
+    | (head_is h [Bind.bind]
+       have bound := bind_ok h
+       clear h
+       obtain ⟨value, _, prior, h⟩ := bound
+       first
+         | exact (fail_ok prior).elim
+         | (head_is prior [Pure.pure]; have same := pure_ok prior; subst value)
+         | (head_is prior [write]; have seededCall := prior)
+         | skip)
+    | dsimp only at h
+    | split at h
 
 end VerifiedKernel.Session

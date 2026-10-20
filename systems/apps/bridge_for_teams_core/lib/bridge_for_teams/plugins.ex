@@ -134,15 +134,31 @@ defmodule BridgeForTeams.Plugins do
   def connect_plugin(org_id, project_id, plugin_id, connection_id, redirect_after, opts \\ []) do
     with {:ok, org, project} <- fetch_org_project(org_id, project_id),
          :ok <- authorize_project_manage(project, opts),
-         :ok <- ensure_group_ready(project),
-         {:ok, setup} <-
-           client().prepare_group_plugin_setup(
-             org.salix_tenant_id,
-             project.salix_group_id,
-             trim(plugin_id),
-             trim(connection_id)
-           ) do
-      start_plugin_connection(org, project, setup, redirect_after, opts)
+         :ok <- ensure_group_ready(project) do
+      case Keyword.fetch(opts, :config_values) do
+        {:ok, values} ->
+          case client().configure_group_plugin_credentials(
+                 org.salix_tenant_id,
+                 project.salix_group_id,
+                 trim(plugin_id),
+                 trim(connection_id),
+                 values
+               ) do
+            :ok -> {:ok, %{"status" => "connected"}}
+            {:error, _} = error -> error
+          end
+
+        :error ->
+          with {:ok, setup} <-
+                 client().prepare_group_plugin_setup(
+                   org.salix_tenant_id,
+                   project.salix_group_id,
+                   trim(plugin_id),
+                   trim(connection_id)
+                 ) do
+            start_plugin_connection(org, project, setup, redirect_after, opts)
+          end
+      end
     end
   end
 
@@ -164,7 +180,27 @@ defmodule BridgeForTeams.Plugins do
              trim(plugin_id),
              trim(connection_id)
            ) do
-      disconnect_plugin_connection(org, project, setup)
+      disconnect_plugin_connection(org, project, Map.put(setup, "plugin_id", trim(plugin_id)))
+    end
+  end
+
+  defp disconnect_plugin_connection(
+         org,
+         project,
+         %{
+           "plugin_id" => plugin_id,
+           "connection" => %{"kind" => "mcp_api_key", "id" => connection_id}
+         }
+       ) do
+    case client().disconnect_group_plugin_credentials(
+           org.salix_tenant_id,
+           project.salix_group_id,
+           plugin_id,
+           connection_id
+         ) do
+      :ok -> {:ok, :ok}
+      {:ok, _} = ok -> ok
+      {:error, _} = error -> error
     end
   end
 
@@ -226,6 +262,15 @@ defmodule BridgeForTeams.Plugins do
   defp normalize_bindings({:ok, bindings}) when is_list(bindings), do: bindings
   defp normalize_bindings(bindings) when is_list(bindings), do: bindings
   defp normalize_bindings(_bindings), do: []
+
+  defp start_plugin_connection(
+         _org,
+         _project,
+         %{"connection" => %{"kind" => "mcp_api_key"}},
+         _redirect,
+         _opts
+       ),
+       do: {:error, {:bad_request, "enter the required plugin credential"}}
 
   defp start_plugin_connection(
          org,
@@ -568,7 +613,7 @@ defmodule BridgeForTeams.Plugins do
              resource_id: plugin_id || attrs["name"] || "plugin",
              resource_label: attrs["name"] || plugin_id || "Plugin",
              result: "ok",
-             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+             request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
              metadata: audit_metadata(org, project, attrs, %{"plugin_id" => plugin_id}),
              redacted_diff: Map.take(attrs, ~w(owner_scope name description plugin_id enabled))
            }) do
@@ -597,7 +642,7 @@ defmodule BridgeForTeams.Plugins do
              resource_label: attrs["name"] || attrs["plugin_id"] || "Plugin",
              result: "failed",
              reason: reason,
-             request_id: Keyword.get(opts, :request_id, Ecto.UUID.generate()),
+             request_id: Keyword.get(opts, :request_id, SystemsRuntime.Proc.uuid()),
              surface: "plugins",
              metadata: %{
                "owner_scope" => attrs["owner_scope"],

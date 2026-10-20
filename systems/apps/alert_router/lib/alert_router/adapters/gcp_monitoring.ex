@@ -71,7 +71,7 @@ defmodule AlertRouter.Adapters.GCPMonitoring do
   defp lifecycle(value), do: {:error, {:invalid_gcp_state, value}}
 
   defp environment(project) do
-    projects = Application.get_env(:alert_router, :gcp_projects, %{})
+    projects = SystemsRuntime.get_env(:alert_router, :gcp_projects, %{})
 
     case Enum.find(projects, fn {_environment, id} -> is_binary(id) and id == project end) do
       {:staging, _id} -> {:ok, "staging"}

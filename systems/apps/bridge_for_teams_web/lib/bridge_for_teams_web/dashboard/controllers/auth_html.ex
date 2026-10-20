@@ -77,7 +77,7 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthHTML do
               type="submit"
               class="w-full inline-flex items-center justify-center h-8 rounded-md bg-brand-500 px-3 text-sm font-medium text-white shadow-subtle hover:bg-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-1"
             >
-              {gettext("Continue with SSO")}
+              {if @lark_sign_in, do: gettext("Sign in with Lark"), else: gettext("Continue with SSO")}
             </button>
           </form>
 

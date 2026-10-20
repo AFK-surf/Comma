@@ -29,7 +29,11 @@ defmodule Comma.Data.RecommendationProfile do
     field(:last_error, :string)
     field(:last_requested_at, :utc_datetime_usec)
     field(:last_published_at, :utc_datetime_usec)
-    timestamps(type: :utc_datetime_usec)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 
   def runtime_changeset(profile, attrs) do

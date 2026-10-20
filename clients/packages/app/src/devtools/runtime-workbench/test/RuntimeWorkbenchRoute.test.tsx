@@ -5,7 +5,7 @@ import type {
   SurfaceList,
 } from "@comma/native-bridge";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
-import { act, render, screen, within } from "@comma/test-utils/render";
+import { render, screen, within } from "@comma/test-utils/render";
 import { describe, expect, it, vi } from "vitest";
 import { RuntimeWorkbenchRoute } from "../RuntimeWorkbenchRoute";
 
@@ -20,26 +20,6 @@ vi.mock("tweakpane", () => ({
 }));
 
 describe("RuntimeWorkbenchRoute", () => {
-  it("returns to Side Chat when the native menu navigates an existing workbench", async () => {
-    window.history.replaceState(null, "", "#/dev/workbench?tab=side-chat");
-    render(<RuntimeWorkbenchRoute />);
-    expect(screen.getByRole("tab", { name: /Side Chat/ })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
-
-    await userEvent.click(screen.getByRole("tab", { name: /^Runtime/ }));
-    expect(window.location.hash).toContain("tab=runtime");
-    act(() => {
-      window.history.replaceState(null, "", "#/dev/workbench?tab=side-chat");
-      window.dispatchEvent(new HashChangeEvent("hashchange"));
-    });
-    expect(screen.getByRole("tab", { name: /Side Chat/ })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
-    window.history.replaceState(null, "", "#/dev/workbench");
-  });
   it("renders compact tabs, acceptance strip, and ready runtime evidence", async () => {
     const surfaceList = {
       notch: { available: true, running: false },
@@ -116,7 +96,7 @@ describe("RuntimeWorkbenchRoute", () => {
     expect(screen.getByText("Comm Matrix")).toBeInTheDocument();
   });
 
-  it("keeps Local Data and Transport visible as real partial surfaces", async () => {
+  it("keeps Transport visible as a real partial surface", async () => {
     render(<RuntimeWorkbenchRoute />);
 
     const functionalTabs = screen.getAllByRole("tablist")[0];
@@ -125,22 +105,11 @@ describe("RuntimeWorkbenchRoute", () => {
     }
 
     expect(
-      await within(functionalTabs).findByRole("tab", { name: /Local Data/ })
-    ).toHaveTextContent("PARTIAL");
-    expect(
-      within(functionalTabs).getByRole("tab", { name: /Transport/ })
+      await within(functionalTabs).findByRole("tab", { name: /Transport/ })
     ).toHaveTextContent("PARTIAL");
 
     expect(within(functionalTabs).queryByRole("tab", { name: /PLANNED/ })).toBeNull();
     expect(screen.queryByText("PLANNED")).toBeNull();
-
-    await userEvent.click(
-      within(functionalTabs).getByRole("tab", { name: /Local Data/ })
-    );
-    expect(await screen.findByText("localData.status")).toHaveAttribute(
-      "data-control-status",
-      "ready"
-    );
 
     await userEvent.click(
       within(functionalTabs).getByRole("tab", { name: /Transport/ })

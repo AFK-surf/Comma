@@ -12,7 +12,7 @@ defmodule SalixAgent.SkillProjection do
 
   @doc false
   def create_table do
-    :ets.new(@cache_table, [:named_table, :public, :set, read_concurrency: true])
+    SystemsRuntime.ETS.new(@cache_table, [:named_table, :public, :set, read_concurrency: true])
   end
 
   @type ctx :: map()
@@ -38,20 +38,22 @@ defmodule SalixAgent.SkillProjection do
   @doc "Build the session-visible skill projection."
   @spec materialize(ctx()) :: {:ok, projection()} | {:error, term()}
   def materialize(ctx) when is_map(ctx) do
-    with {:ok, ctx} <- AgentRuntimeConfig.complete_context(ctx) do
-      case lookup_cache(ctx) do
-        {:ok, projection} ->
+    with {:ok, ctx} <- AgentRuntimeConfig.complete_context(ctx), do: materialize_completed(ctx)
+  end
+
+  defp materialize_completed(ctx) do
+    case lookup_cache(ctx) do
+      {:ok, projection} ->
+        {:ok, projection}
+
+      :miss ->
+        scopes = SkillStore.projection_scopes(ctx)
+
+        with {:ok, states} <- read_scopes(scopes),
+             {:ok, projection} <- build_projection(states, ctx) do
+          store_cache(ctx, projection)
           {:ok, projection}
-
-        :miss ->
-          scopes = SkillStore.projection_scopes(ctx)
-
-          with {:ok, states} <- read_scopes(scopes),
-               {:ok, projection} <- build_projection(states, ctx) do
-            store_cache(ctx, projection)
-            {:ok, projection}
-          end
-      end
+        end
     end
   end
 
@@ -98,14 +100,22 @@ defmodule SalixAgent.SkillProjection do
   @spec invalidate_cache() :: :ok
   def invalidate_cache do
     table = cache_table()
-    :ets.delete_all_objects(table)
+    SystemsRuntime.ETS.delete_all_objects(table)
     :ok
   end
 
   @doc "Return a compact revision string for prompt snapshot invalidation."
   @spec revision(ctx()) :: {:ok, String.t()} | {:error, term()}
   def revision(ctx) do
-    with {:ok, projection} <- materialize(ctx), do: {:ok, projection.revision}
+    with {:ok, ctx} <- AgentRuntimeConfig.complete_context(ctx) do
+      case cached_revision(ctx) do
+        {:ok, revision} ->
+          {:ok, revision}
+
+        :miss ->
+          with {:ok, projection} <- materialize_completed(ctx), do: {:ok, projection.revision}
+      end
+    end
   end
 
   @doc "Render the prompt skill section from the same projection used by runtime files."
@@ -220,7 +230,7 @@ defmodule SalixAgent.SkillProjection do
             %{"kind" => "index", "body" => body} ->
               {:ok, %{kind: "file", size: byte_size(body)}}
 
-            %{"kind" => "file", "entry" => entry, "skill" => skill} ->
+            %{"kind" => "file", "entry" => entry} = file ->
               {:ok,
                %{
                  kind: "file",
@@ -228,8 +238,8 @@ defmodule SalixAgent.SkillProjection do
                  hash: entry["hash"],
                  media_type: entry["media_type"],
                  modified_at: entry["modified_at"],
-                 skill_id: skill["skill_id"],
-                 editable: skill["editable"] == true
+                 skill_id: file["skill_id"],
+                 editable: file["editable"]
                }}
           end
 
@@ -249,8 +259,8 @@ defmodule SalixAgent.SkillProjection do
       path = clean(path)
 
       case Map.get(projection.paths, path) do
-        %{"kind" => "file", "skill" => skill, "rel_path" => rel_path, "entry" => entry} ->
-          {:ok, skill, rel_path, entry}
+        %{"kind" => "file", "skill_id" => skill_id, "rel_path" => rel_path, "entry" => entry} ->
+          {:ok, Enum.find(projection.skills, &(&1["skill_id"] == skill_id)), rel_path, entry}
 
         %{"kind" => "index"} ->
           {:error, "skill index is read-only"}
@@ -314,7 +324,7 @@ defmodule SalixAgent.SkillProjection do
     observability_context = SystemsObservability.Context.capture()
 
     scopes
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn scope ->
         SystemsObservability.Context.run(observability_context, fn ->
           SkillStore.read_scope(scope["layer"], scope["id"])
@@ -386,9 +396,12 @@ defmodule SalixAgent.SkillProjection do
                                                                                       acc ->
         skill["files"]
         |> Enum.reduce(acc, fn {rel_path, entry}, acc ->
+          # A path names its skill, not a copy of it: copying the projection
+          # out of ETS would copy the skill once for each of its files.
           Map.put(acc, skill_path(skill["skill_id"], rel_path), %{
             "kind" => "file",
-            "skill" => skill,
+            "skill_id" => skill["skill_id"],
+            "editable" => skill["editable"] == true,
             "rel_path" => rel_path,
             "entry" => entry
           })
@@ -503,12 +516,12 @@ defmodule SalixAgent.SkillProjection do
     with {:ok, key} <- requested_cache_key(ctx) do
       table = cache_table()
 
-      case :ets.lookup(table, key) do
+      case SystemsRuntime.ETS.lookup(table, key) do
         [{^key, projection, inserted_at}] ->
           if cache_fresh?(inserted_at) do
             {:ok, projection}
           else
-            :ets.delete(table, key)
+            SystemsRuntime.ETS.delete(table, key)
             :miss
           end
 
@@ -518,38 +531,45 @@ defmodule SalixAgent.SkillProjection do
     end
   end
 
+  # A cache key holds the revision it was stored under, so a fresh row
+  # answers the revision without copying the projection out of ETS.
+  defp cached_revision(ctx) do
+    with {:ok, {_tenant, _group, _agent, revision, _plugins, _builtin} = key} <-
+           requested_cache_key(ctx),
+         inserted_at when is_integer(inserted_at) <-
+           SystemsRuntime.ETS.lookup_element(cache_table(), key, 3, nil),
+         true <- cache_fresh?(inserted_at) do
+      {:ok, revision}
+    else
+      _ -> :miss
+    end
+  end
+
   defp store_cache(ctx, projection) do
     with {:ok, key} <- materialized_cache_key(ctx, projection) do
       table = cache_table()
-      now = System.monotonic_time(:millisecond)
+      now = SystemsClock.monotonic_time(:millisecond)
       prune_cache(table, now)
-      :ets.insert(table, {key, projection, now})
+      SystemsRuntime.ETS.insert(table, {key, projection, now})
     end
 
     :ok
   end
 
   defp cache_fresh?(inserted_at) when is_integer(inserted_at),
-    do: System.monotonic_time(:millisecond) - inserted_at <= @cache_ttl_ms
+    do: SystemsClock.monotonic_time(:millisecond) - inserted_at <= @cache_ttl_ms
 
   defp cache_fresh?(_inserted_at), do: false
 
+  # Deleting in ETS copies no projection into this process.
   defp prune_cache(table, now) do
     cutoff = now - @cache_ttl_ms
 
-    :ets.foldl(
-      fn
-        {key, _projection, inserted_at}, :ok
-        when is_integer(inserted_at) and inserted_at < cutoff ->
-          :ets.delete(table, key)
-          :ok
+    SystemsRuntime.ETS.select_delete(table, [
+      {{:_, :_, :"$1"}, [{:andalso, {:is_integer, :"$1"}, {:<, :"$1", cutoff}}], [true]}
+    ])
 
-        _entry, :ok ->
-          :ok
-      end,
-      :ok,
-      table
-    )
+    :ok
   end
 
   defp requested_cache_key(ctx), do: cache_key(ctx, value(ctx, :skill_projection_revision))

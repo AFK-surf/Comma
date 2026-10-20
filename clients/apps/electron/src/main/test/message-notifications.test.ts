@@ -1,11 +1,12 @@
+// Main's part of message notifications: showing the banners the core worded while the person is away and Comma's
+// switches allow, their sound and badge, and a banner's click and reply. Which messages get a banner and its words
+// are the core's (packages/core/test/chat/notices.test.ts).
 import type { ChatTarget } from "@comma/chat-contract";
-import type { CommaConversation } from "@comma/app/api";
-import type { ChatMessage } from "@comma/app/chat-runtime";
+import type { ChatAppendedValue } from "@comma/core/contract";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   MessageNotificationsService,
-  boundNotificationBody,
   type MessageNotificationEmission,
   type MessageNotificationShowInput,
 } from "../modules/message-notifications";
@@ -18,39 +19,27 @@ const target: ChatTarget = {
   workspaceId: "ws_1",
 };
 
-function conversation(overrides: Partial<CommaConversation> = {}): CommaConversation {
+/** The core's notice for message `messageId`, as the core words one in Home chat. */
+function notice(
+  overrides: Partial<ChatAppendedValue["notices"][number]> = {}
+): ChatAppendedValue["notices"][number] {
   return {
-    group_id: target.groupId,
-    id: target.conversationId,
-    kind: "user_chat",
-    status: "idle",
-    title: "Home",
-    ...overrides,
-  } as CommaConversation;
-}
-
-function message(overrides: Partial<ChatMessage> = {}): ChatMessage {
-  return {
-    attachments: [],
-    blocksKey: undefined,
-    clientRequestId: undefined,
-    createdAt: 1,
-    createdBy: undefined,
-    delivery: "delivered" as ChatMessage["delivery"],
-    error: undefined,
     messageId: "msg_1",
-    refs: [],
-    role: "assistant",
-    source: "server",
-    status: undefined,
-    text: "Router replied.",
+    title: "Comma",
+    body: "Router replied.",
+    replyPlaceholder: "Reply",
     ...overrides,
   };
 }
 
+/** What the core says one conversation gained: a notice per message. */
+const arrival = (...ids: string[]) => ({
+  target,
+  notices: (ids.length ? ids : ["msg_1"]).map((messageId) => notice({ messageId })),
+});
+
 function createHarness({
   deliver = true,
-  locale,
   isAppFocused = false,
   isSupported = true,
   notificationSound = true,
@@ -66,7 +55,6 @@ function createHarness({
   notifyRouterMessages?: boolean;
   replyError?: Error;
   systemNotifications?: boolean;
-  locale?: () => "en" | "zh-CN";
 } = {}) {
   const shown: MessageNotificationShowInput[] = [];
   const emitted: MessageNotificationEmission[] = [];
@@ -81,7 +69,6 @@ function createHarness({
   const warn = vi.fn();
   const service = new MessageNotificationsService({
     emitEvent: (payload) => emitted.push(payload),
-    ...(locale ? { locale } : {}),
     log: { warn },
     onDeliveryRefused,
     platform: {
@@ -105,7 +92,6 @@ function createHarness({
       notifyRouterMessages,
       systemNotifications,
     }),
-    productName: "Comma Staging",
     sendReply,
   });
   return {
@@ -121,146 +107,57 @@ function createHarness({
   };
 }
 
-describe("boundNotificationBody", () => {
-  it("hands a normal reply to the banner untouched", () => {
-    const body = "Shipped it.\n\nTests pass.\n\nReady for review.";
-    expect(boundNotificationBody(body)).toBe(body);
-  });
-
-  it("leaves line breaks alone so the banner lays the body out", () => {
-    const body = "1\n2\n3\n4\n5\n6\n7\n8";
-    expect(boundNotificationBody(body)).toBe(body);
-  });
-
-  it("adds no ellipsis of its own, leaving the overflow fade to the banner", () => {
-    expect(boundNotificationBody("a".repeat(900))).not.toContain("…");
-  });
-
-  it("bounds a runaway body to the payload budget", () => {
-    expect(boundNotificationBody("a".repeat(900))).toHaveLength(500);
-  });
-});
-
 describe("MessageNotificationsService", () => {
-  it("notifies for an unattributed assistant message in the Home chat as Comma", async () => {
-    const { emitted, service, shown } = createHarness();
-
-    await service.handleAppendedMessages({
-      // The server names the Home conversation for storage, not for the user.
-      conversation: conversation({ title: "Bridge chat" }),
-      messages: [message()],
-      target,
-    });
-
-    expect(shown).toHaveLength(1);
-    expect(shown[0]).toMatchObject({
-      body: "Router replied.",
-      playSound: true,
-      title: "Comma",
-    });
-    expect(emitted).toEqual([]);
-  });
-
-  it("writes each banner in Main's current app language", async () => {
-    let language: "en" | "zh-CN" = "en";
-    const { service, shown } = createHarness({ locale: () => language });
-
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message()],
-      target,
-    });
-    language = "zh-CN";
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message({ messageId: "msg_2" })],
-      target,
-    });
-
-    expect(shown.map((banner) => banner.replyPlaceholder)).toEqual(["Reply", "回复"]);
-  });
-
-  it("notifies for a Router-attributed message in an agent task under the task title", async () => {
-    const { service, shown } = createHarness();
-
-    await service.handleAppendedMessages({
-      conversation: conversation({ kind: "agent_task", title: "Task" }),
-      messages: [message({ actorRole: "router" })],
-      target,
-    });
-
-    expect(shown).toHaveLength(1);
-    expect(shown[0]?.title).toBe("Task");
-  });
-
-  it.each([
-    ["a worker message", { actorRole: "worker" as const }],
-    ["a user message", { role: "user" }],
-    ["an incoming WeChat message", { platformSource: "wechat", role: "user" }],
-    ["an outgoing Telegram message", { platformSource: "telegram" }],
-    [
-      "a Router-attributed external reply",
-      { actorRole: "router" as const, platformSource: "signal" },
-    ],
-    ["an empty assistant message", { text: "   " }],
-  ])("ignores %s", async (_label, overrides) => {
+  it("shows each notice as the core worded it, with the sound on the first", async () => {
     const { emitted, service, setBadgeCount, shown } = createHarness();
 
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message(overrides)],
+    await service.show({
       target,
+      notices: [
+        notice({ messageId: "msg_1", title: "Plan the offsite", body: "First." }),
+        notice({
+          messageId: "msg_2",
+          title: "Plan the offsite",
+          replyPlaceholder: "回复",
+        }),
+      ],
     });
 
-    expect(shown).toEqual([]);
+    expect(shown).toMatchObject([
+      {
+        title: "Plan the offsite",
+        body: "First.",
+        replyPlaceholder: "Reply",
+        playSound: true,
+      },
+      {
+        title: "Plan the offsite",
+        body: "Router replied.",
+        replyPlaceholder: "回复",
+        playSound: false,
+      },
+    ]);
+    expect(setBadgeCount).toHaveBeenLastCalledWith(2);
     expect(emitted).toEqual([]);
-    expect(setBadgeCount).not.toHaveBeenCalled();
-  });
-
-  it("ignores an unattributed assistant message outside the Home chat", async () => {
-    const { service, shown } = createHarness();
-
-    await service.handleAppendedMessages({
-      conversation: conversation({ kind: "agent_task" }),
-      messages: [message()],
-      target,
-    });
-
-    expect(shown).toEqual([]);
   });
 
   it.each([
     ["the window holds focus", { isAppFocused: true }],
     ["Router notifications are disabled", { notifyRouterMessages: false }],
     ["the platform cannot notify", { isSupported: false }],
+    // The master switch beats the Router-specific choice.
+    ["system notifications are switched off", { systemNotifications: false }],
   ])("raises nothing while %s", async (_label, options) => {
-    const { emitted, onDeliveryRefused, service, shown } = createHarness(options);
+    const { emitted, onDeliveryRefused, service, setBadgeCount, shown } =
+      createHarness(options);
 
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message()],
-      target,
-    });
+    await service.show(arrival());
 
     expect(shown).toEqual([]);
     expect(emitted).toEqual([]);
+    expect(setBadgeCount).not.toHaveBeenCalled();
     // Comma's own gates are not an OS refusal: nothing to re-read.
     expect(onDeliveryRefused).not.toHaveBeenCalled();
-  });
-
-  it("raises nothing while system notifications are switched off", async () => {
-    const { emitted, service, shown } = createHarness({ systemNotifications: false });
-
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message()],
-      target,
-    });
-
-    // The master switch beats the Router-specific choice: no banner and no
-    // sound event either.
-    expect(shown).toHaveLength(0);
-    expect(emitted).toEqual([]);
   });
 
   it("re-reads the OS switch when the banner is refused", async () => {
@@ -268,11 +165,7 @@ describe("MessageNotificationsService", () => {
       deliver: false,
     });
 
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message()],
-      target,
-    });
+    await service.show(arrival());
 
     expect(shown).toHaveLength(1);
     expect(onDeliveryRefused).toHaveBeenCalledOnce();
@@ -283,15 +176,7 @@ describe("MessageNotificationsService", () => {
       deliver: [false, true, true],
     });
 
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [
-        message({ messageId: "msg_1" }),
-        message({ messageId: "msg_2" }),
-        message({ messageId: "msg_3" }),
-      ],
-      target,
-    });
+    await service.show(arrival("msg_1", "msg_2", "msg_3"));
 
     expect(shown.map((input) => input.playSound)).toEqual([true, true, false]);
     expect(onDeliveryRefused).not.toHaveBeenCalled();
@@ -299,11 +184,7 @@ describe("MessageNotificationsService", () => {
 
   it("dismisses every delivered banner once the user is back in Comma", async () => {
     const { dismissAll, focusApp, service } = createHarness();
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message()],
-      target,
-    });
+    await service.show(arrival());
     expect(dismissAll).not.toHaveBeenCalled();
 
     focusApp();
@@ -317,11 +198,7 @@ describe("MessageNotificationsService", () => {
       deliver: delivery.promise,
     });
 
-    const pending = service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message({ messageId: "msg_1" }), message({ messageId: "msg_2" })],
-      target,
-    });
+    const pending = service.show(arrival("msg_1", "msg_2"));
     expect(shown).toHaveLength(1);
     focusApp();
     delivery.resolve(true);
@@ -331,33 +208,13 @@ describe("MessageNotificationsService", () => {
     expect(setBadgeCount).not.toHaveBeenCalled();
   });
 
-  it("sounds only once when all banners arrive", async () => {
-    const { service, shown, setBadgeCount } = createHarness();
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message({ messageId: "msg_1" }), message({ messageId: "msg_2" })],
-      target,
-    });
-
-    expect(shown.map((input) => input.playSound)).toEqual([true, false]);
-    expect(setBadgeCount).toHaveBeenLastCalledWith(2);
-  });
-
   it("badges the app icon with Router messages delivered while away", async () => {
     const { focusApp, service, setBadgeCount } = createHarness({
       deliver: [true, false, true],
     });
 
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message({ messageId: "msg_1" }), message({ messageId: "msg_2" })],
-      target,
-    });
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message({ messageId: "msg_3" })],
-      target,
-    });
+    await service.show(arrival("msg_1", "msg_2"));
+    await service.show(arrival("msg_3"));
 
     // A refused banner never reached the user, so it is not counted.
     expect(setBadgeCount.mock.calls).toEqual([[1], [2]]);
@@ -369,11 +226,7 @@ describe("MessageNotificationsService", () => {
   it("leaves the badge alone when nothing reached the user", async () => {
     const { focusApp, service, setBadgeCount } = createHarness({ deliver: false });
 
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message()],
-      target,
-    });
+    await service.show(arrival());
     focusApp();
 
     expect(setBadgeCount).not.toHaveBeenCalled();
@@ -382,47 +235,14 @@ describe("MessageNotificationsService", () => {
   it("leaves the banner silent when Comma's sound preference is off", async () => {
     const { service, shown } = createHarness({ notificationSound: false });
 
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message()],
-      target,
-    });
+    await service.show(arrival());
 
     expect(shown[0]).toMatchObject({ playSound: false });
   });
 
-  it("falls back to the product name for an untitled task", async () => {
-    const { service, shown } = createHarness();
-
-    await service.handleAppendedMessages({
-      conversation: conversation({ kind: "agent_task", title: "  " }),
-      messages: [message({ actorRole: "router" })],
-      target,
-    });
-
-    expect(shown[0]?.title).toBe("Comma Staging");
-  });
-
-  it("passes a multi-paragraph reply to the banner intact", async () => {
-    const { service, shown } = createHarness();
-    const text = "First.\n\nSecond.\n\nThird.\n\nFourth.";
-
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message({ text })],
-      target,
-    });
-
-    expect(shown[0]?.body).toBe(text);
-  });
-
   it("emits a click event carrying the conversation target", async () => {
     const { emitted, service, shown } = createHarness();
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message()],
-      target,
-    });
+    await service.show(arrival());
 
     shown[0]?.onClick();
 
@@ -431,11 +251,7 @@ describe("MessageNotificationsService", () => {
 
   it("routes an inline reply into the conversation", async () => {
     const { sendReply, service, shown } = createHarness();
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message()],
-      target,
-    });
+    await service.show(arrival());
 
     shown[0]?.onReply("On it");
 
@@ -446,13 +262,12 @@ describe("MessageNotificationsService", () => {
     const { service, shown, warn } = createHarness({
       replyError: new Error("offline"),
     });
-    await service.handleAppendedMessages({
-      conversation: conversation(),
-      messages: [message()],
-      target,
-    });
+    await service.show(arrival());
 
+    const warned = Promise.withResolvers<void>();
+    warn.mockImplementation(() => warned.resolve());
     shown[0]?.onReply("On it");
-    await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+    await warned.promise;
+    expect(warn).toHaveBeenCalledOnce();
   });
 });

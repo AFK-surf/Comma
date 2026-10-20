@@ -10,42 +10,37 @@ import type {
   ChatMessagePart,
 } from "@comma/chat-contract";
 import { useCommaMessages } from "@comma/i18n/react";
+import { useTopic, type ProductInboxItem } from "@comma/core-client";
+import { InlineTask, type InlineTaskProps } from "@comma/ui/components/inline-task";
+import { plainTextWithLinks } from "@comma/ui/components/markdown-stream/plainTextLinks";
 import {
-  InlineTask,
-  plainTextWithLinks,
   taskStatusBucket,
-  type InlineTaskProps,
   type TaskSummaryViewModel,
-} from "@comma/ui";
+} from "@comma/ui/components/task-workspace";
 import { Link } from "@tanstack/react-router";
 import {
   createContext,
   useContext,
   useEffect,
-  useRef,
   useState,
   type ReactNode,
   type RefObject,
 } from "react";
+import type { CommaConversationPreview } from "@comma/core/api-schemas";
+import { useProductInboxItem } from "../../../../product-inbox";
+import { inlineMessagePartPlainText } from "@comma/core/chat";
+import { modelMentionsAsWords, splitUserTaskMentionParts } from "@comma/core/chat";
+export { messagePartsHaveInlineElements, sameMessageParts } from "@comma/core/chat";
+import { stripCommaProtocolMarkersPreservingWhitespace } from "@comma/core/chat";
+import type { ChatMessage } from "@comma/core/chat";
 import {
-  CommaApiError,
-  type CommaApiClient,
-  type CommaConversationPreview,
-} from "../../../../api";
+  elementKey,
+  fromMarkdownTree,
+  markdownTreeElements,
+  partsDocument,
+  type MarkdownTree,
+} from "@comma/core/markdown";
 import {
-  useProductInboxItem,
-  type ProductInboxProjectionEnvelope,
-} from "../../../../product-inbox";
-import { inlineMessagePartPlainText } from "../../model/inlineElementContract";
-import { splitUserTaskMentionParts } from "../../model/mentionSerialization";
-export {
-  messagePartsHaveInlineElements,
-  sameMessageParts,
-} from "../../model/inlineElementContract";
-import { stripCommaProtocolMarkersPreservingWhitespace } from "../../model/protocol";
-import { loadTaskPreview } from "./taskPreviewCache";
-import {
-  compileTrustedInlineDocument,
   escapeReservedInlineTags,
   type CompiledTrustedInlineDocument,
 } from "../../../inline-elements/compileTrustedInlineDocument";
@@ -75,6 +70,30 @@ export type InlineTaskLinkAdapter = {
   openInSidebar?: ((target: InlineTaskLinkTarget) => void) | undefined;
   render(target: InlineTaskLinkTarget): NonNullable<InlineTaskProps["link"]>;
 };
+
+function inlineTaskLinkTarget(
+  adapter: InlineTaskLinkAdapter,
+  target: Omit<InlineTaskLinkTarget, "onOpenTask" | "onOpenInSidebar">
+): InlineTaskLinkTarget {
+  return {
+    ...target,
+    onOpenTask: adapter.openTask ? () => adapter.openTask?.(target) : undefined,
+    onOpenInSidebar: adapter.openInSidebar
+      ? () => adapter.openInSidebar?.(target)
+      : undefined,
+  };
+}
+
+/**
+ * A surface's link to a Task with the openers its adapter provides. Task chips
+ * and the chat's status bubble open a Task the same way.
+ */
+export function renderInlineTaskLink(
+  adapter: InlineTaskLinkAdapter,
+  target: Omit<InlineTaskLinkTarget, "onOpenTask" | "onOpenInSidebar">
+) {
+  return adapter.render(inlineTaskLinkTarget(adapter, target));
+}
 
 export const routeInlineTaskLinkAdapter = {
   render: ({
@@ -112,6 +131,11 @@ const InlineTaskLinkAdapterContext = createContext<InlineTaskLinkAdapter>(
   staticInlineTaskLinkAdapter
 );
 
+/** This surface's way to open a Task, as its Task chips use it. */
+export function useInlineTaskLinkAdapter() {
+  return useContext(InlineTaskLinkAdapterContext);
+}
+
 export function InlineTaskLinkAdapterProvider({
   adapter,
   children,
@@ -127,7 +151,11 @@ export function InlineTaskLinkAdapterProvider({
 }
 
 type InlineElementRenderContext = {
-  api?: CommaApiClient | undefined;
+  /**
+   * The surface shows the core's live data: a Task chip's hover preview and a
+   * generated UI widget. A static surface (a Task's report) shows neither.
+   */
+  live?: boolean | undefined;
   groupId: string;
   workspaceId: string;
 };
@@ -153,16 +181,28 @@ const inlineElementRenderers = {
     render: (part, context) => (
       <DynamicUiWidget
         part={part}
-        api={context.api}
+        live={context.live === true}
         groupId={context.groupId}
         workspaceId={context.workspaceId}
       />
     ),
   },
+  // Setting a device up needs a phone near it: here the offer shows as the device's name.
+  "device-setup-offer": {
+    render: (part) => <span>{part.offer.name}</span>,
+  },
+  // Drawn after the message's text by its row (MessageQuestionCards), outside the Markdown renderer.
+  question: {
+    render: () => null,
+  },
+  // The answer's own words show as the person's message; the card shows what was picked.
+  "question-answer": {
+    render: () => null,
+  },
   "inline-task": {
     render: (part, context) => (
       <MessageInlineTask
-        api={context.api}
+        live={context.live}
         groupId={context.groupId}
         task={part.task}
         workspaceId={context.workspaceId}
@@ -194,8 +234,10 @@ export function userMessageContentWithMentions(
   text: string,
   context: InlineElementRenderContext
 ): ReactNode | undefined {
-  const parts = splitUserTaskMentionParts(text);
-  if (!parts) return plainTextWithLinks(text);
+  const shown = modelMentionsAsWords(text);
+  const parts = splitUserTaskMentionParts(shown);
+  // A model mention changed the words: they are rendered even without a link.
+  if (!parts) return plainTextWithLinks(shown) ?? (shown === text ? undefined : shown);
   return parts.map((part, index) =>
     part.kind === "markdown" ? (
       // eslint-disable-next-line react/no-array-index-key -- static split of one string
@@ -208,20 +250,37 @@ export function userMessageContentWithMentions(
 }
 
 /**
- * Turns ordered, trusted message parts into one Markdown source. Only generated
- * opaque keys enter the reserved tag; resource identity remains in React state.
+ * A committed message as its Markdown renderer draws it: the core's parse of
+ * it (`ChatMessage.markdown`) as the renderer's nodes, and each Task chip or
+ * card the tree names drawn in its place. The message is never parsed here.
  */
-export function compileMessageMarkdown(
-  parts: readonly ChatMessagePart[],
+export function messageMarkdownElements(
+  message: ChatMessage,
   context: InlineElementRenderContext
-): CompiledMessageMarkdown {
-  return compileTrustedInlineDocument(parts, {
-    markdownText: (part) => (part.kind === "markdown" ? part.text : undefined),
-    renderInline: (part) =>
-      part.kind === "markdown" ? null : renderInlineMessagePart(part, context),
-    isBlock: (part) => part.kind === "dynamic-ui",
-    sanitizeMarkdown: stripCommaProtocolMarkersPreservingWhitespace,
+): CompiledTrustedInlineDocument | undefined {
+  if (!message.markdown) return undefined;
+  // Only the elements the parse kept: one inside a private fence is not shown.
+  const shown = markdownTreeElements(message.markdown as MarkdownTree);
+  const inlineElements = new Map<string, ReactNode>();
+  (message.parts ?? []).forEach((part, index) => {
+    if (part.kind !== "markdown" && shown.has(elementKey(index)))
+      inlineElements.set(elementKey(index), renderInlineMessagePart(part, context));
   });
+  return {
+    // The document's text, each element as its tag: the source the renderer's nodes came from.
+    content: partsDocument(message.parts ?? [], {
+      markdownText: (part) =>
+        part.kind === "markdown"
+          ? part.text
+          : part.kind === "question"
+            ? ""
+            : undefined,
+      isBlock: (part) => part.kind === "dynamic-ui",
+      sanitizeMarkdown: stripCommaProtocolMarkersPreservingWhitespace,
+    }).content,
+    inlineElements,
+    nodes: fromMarkdownTree(message.markdown as MarkdownTree),
+  };
 }
 
 export function messagePartsPlainText(
@@ -274,13 +333,14 @@ function replaceInlineSentinels(
 
 /** One Task named inline: the chip with its hover preview and link, kept canonical. */
 export function MessageInlineTask({
-  api,
+  live = false,
   groupId,
   showHoverPreview: showHoverPreviewOverride,
   task,
   workspaceId,
 }: {
-  api?: CommaApiClient | undefined;
+  /** Reads the Task's preview when its hover card opens. */
+  live?: boolean | undefined;
   groupId: string;
   /** Overrides the adapter's choice; a card that is itself about the Task needs no preview. */
   showHoverPreview?: boolean | undefined;
@@ -289,12 +349,29 @@ export function MessageInlineTask({
 }) {
   const messages = useCommaMessages();
   const taskLinkAdapter = useContext(InlineTaskLinkAdapterContext);
+  // Each opening of the card asks the core again (it reads again only once what it keeps is old); what it answered
+  // last stays shown meanwhile.
+  const [asked, setAsked] = useState<{ conversationId: string; read: number }>();
   const [preview, setPreview] = useState<CommaConversationPreview>();
   const [revokedConversationId, setRevokedConversationId] = useState<string>();
-  const requestGeneration = useRef(0);
   const conversationId = task.conversationId;
-  const canonical = useTaskSummary(api, groupId, conversationId ?? "");
-  const archiveAction = useArchiveAction(api, groupId, conversationId ?? "");
+  const { value: answer } = useTopic(
+    asked && asked.conversationId === conversationId && live
+      ? {
+          topic: "taskPreview",
+          group: groupId,
+          conversation: asked.conversationId,
+          read: String(asked.read),
+        }
+      : null
+  );
+  useEffect(() => {
+    if (!asked || asked.conversationId !== conversationId) return;
+    if (answer?.status === "ready") setPreview(answer.preview);
+    if (answer?.status === "revoked") setRevokedConversationId(conversationId);
+  }, [answer, asked, conversationId]);
+  const canonical = useTaskSummary(groupId, conversationId ?? "");
+  const archiveAction = useArchiveAction(groupId, conversationId ?? "");
   // Only this Task's item: another Task's update leaves this chip as it is.
   const projectedTask = useProductInboxItem(groupId, conversationId ?? "");
   const revoked = revokedConversationId === conversationId;
@@ -312,17 +389,13 @@ export function MessageInlineTask({
   // Group's shared catalog names the labels. Subscribed ahead of the early
   // returns below so live archive updates preserve hook order.
   const { catalog } = useTaskLabelsCatalogShared(
-    showHoverPreview ? api : undefined,
-    groupId
+    showHoverPreview ? groupId : undefined
   );
 
   useEffect(() => {
-    requestGeneration.current += 1;
+    setAsked(undefined);
     setPreview(undefined);
     setRevokedConversationId(undefined);
-    return () => {
-      requestGeneration.current += 1;
-    };
   }, [task.conversationId]);
 
   if (unavailable) {
@@ -362,50 +435,32 @@ export function MessageInlineTask({
     (id) => catalog?.labels.find((label) => label.id === id) ?? []
   );
   const badgeOrigin = taskOriginKey(latest?.origin);
+  // The preview read carries no Loop; the summary and the list do.
+  const badgeLoop = canonical?.loop ?? projectedTask?.loop;
   const badges =
-    badgeLabels.length > 0 || badgeOrigin ? (
-      <TaskBadgeChips labels={badgeLabels} origin={badgeOrigin} />
+    badgeLabels.length > 0 || badgeOrigin || badgeLoop ? (
+      <TaskBadgeChips labels={badgeLabels} loop={badgeLoop} origin={badgeOrigin} />
     ) : undefined;
   const handleOpenChange = (open: boolean) => {
-    if (!open || !api) return;
-    const generation = ++requestGeneration.current;
-    void loadTaskPreview(api, groupId, conversationId).then(
-      (nextPreview) => {
-        if (requestGeneration.current === generation) setPreview(nextPreview);
-      },
-      (error: unknown) => {
-        if (
-          requestGeneration.current === generation &&
-          error instanceof CommaApiError &&
-          (error.status === 403 || error.status === 404)
-        ) {
-          setRevokedConversationId(conversationId);
-        }
-      }
-    );
+    if (!open || !live) return;
+    setAsked((current) => ({ conversationId, read: (current?.read ?? 0) + 1 }));
   };
 
-  const target = {
+  const target = inlineTaskLinkTarget(taskLinkAdapter, {
     ariaLabel: messages.tasks_open({ title }),
     conversationId,
     groupId,
     title,
     workspaceId,
-  };
-  const onOpenTask = taskLinkAdapter.openTask
-    ? () => taskLinkAdapter.openTask?.(target)
-    : undefined;
-  const onOpenInSidebar = taskLinkAdapter.openInSidebar
-    ? () => taskLinkAdapter.openInSidebar?.(target)
-    : undefined;
+  });
   return (
     <InlineTask
       archiveAction={archiveAction}
       badges={badges}
       dataTestId={`chat-inline-task-${conversationId}`}
-      link={taskLinkAdapter.render({ ...target, onOpenTask, onOpenInSidebar })}
-      onOpenTask={onOpenTask}
-      onOpenInSidebar={onOpenInSidebar}
+      link={taskLinkAdapter.render(target)}
+      onOpenTask={target.onOpenTask}
+      onOpenInSidebar={target.onOpenInSidebar}
       previewBoundaryRef={taskLinkAdapter.previewBoundaryRef}
       {...(showHoverPreview ? { onOpenChange: handleOpenChange } : {})}
       showHoverPreview={showHoverPreview}
@@ -414,10 +469,10 @@ export function MessageInlineTask({
   );
 }
 
-function taskSummary(
+export function taskSummary(
   task: ChatInlineTask,
   preview: CommaConversationPreview | undefined,
-  projectedTask?: ProductInboxProjectionEnvelope["snapshot"]["items"][number]
+  projectedTask?: ProductInboxItem
 ): TaskSummaryViewModel {
   const status = projectedTask?.status ?? preview?.status ?? task.status ?? "unknown";
   return {

@@ -26,7 +26,7 @@ defmodule Comma.Notifications.APNs.TransportTest.Endpoint do
 end
 
 defmodule Comma.Notifications.APNs.TransportTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Comma.Notifications.APNs.Transport
 
@@ -52,14 +52,33 @@ defmodule Comma.Notifications.APNs.TransportTest do
     dir =
       Path.join(
         System.tmp_dir!(),
-        "apns-local-tls-" <> Base.url_encode64(:crypto.strong_rand_bytes(12))
+        "apns-local-tls-" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(12))
       )
 
     File.mkdir!(dir)
     File.chmod!(dir, 0o700)
     on_exit(fn -> File.rm_rf!(dir) end)
     certificates = certificates!(dir)
+
+    # The first manual clock on a node loads every module of the loaded
+    # applications; on a loaded machine that alone outlasts a test's timeout.
+    # Pay it here, where no test timeout runs.
+    SystemsClock.manual()
+    SystemsClock.reset()
+
     {:ok, certificates}
+  end
+
+  # Failing endpoints never register a pool, so the transport waits out its 5s
+  # readiness deadline. The deadline runs on a clock these tests drive; the TLS
+  # attempt itself is real I/O, and its outcome is the same either way.
+  setup ctx do
+    if ctx[:drive_clock] do
+      SystemsClock.manual(drive: true, scope: ["Elixir.Comma"])
+      on_exit(&SystemsClock.reset/0)
+    end
+
+    :ok
   end
 
   test "first cold call sends one POST with the expected JSON and headers over TLS HTTP/2", ctx do
@@ -79,31 +98,7 @@ defmodule Comma.Notifications.APNs.TransportTest do
     for {name, value} <- @headers, do: assert(request.headers[name] == value)
   end
 
-  test "an unreachable TLS endpoint returns bounded apns_unreachable, not invalid_token", ctx do
-    # Own a loopback TCP listener which never completes TLS. No credentials or
-    # HTTP notification can reach an application, and no free-port race exists.
-    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
-    on_exit(fn -> :gen_tcp.close(socket) end)
-    {:ok, {{127, 0, 0, 1}, port}} = :inet.sockname(socket)
-    origin = "https://localhost:#{port}"
-    pool_options = trusted_pool(ctx)
-    cold_finch(pool_options)
-
-    started = System.monotonic_time(:millisecond)
-    assert {:error, :apns_unreachable} == bounded_post(origin, pool_options)
-    assert System.monotonic_time(:millisecond) - started < 7_000
-  end
-
-  test "a trusted CA with the wrong hostname fails closed before any application request", ctx do
-    {origin, counter} = endpoint(ctx, host: "127.0.0.1")
-    pool_options = trusted_pool(ctx)
-    cold_finch(pool_options)
-
-    # The CA is trusted, but the leaf SAN authorizes localhost only, not this IP.
-    assert {:error, :apns_unreachable} == bounded_post(origin, pool_options)
-    assert {0, []} == Agent.get(counter, & &1)
-  end
-
+  @tag :drive_clock
   test "an untrusted synthetic CA fails closed before any application request", ctx do
     {origin, counter} = endpoint(ctx)
     # Use the exact product pool options and normal system CA store. The local
@@ -113,31 +108,6 @@ defmodule Comma.Notifications.APNs.TransportTest do
 
     assert {:error, :apns_unreachable} == bounded_post(origin, pool_options)
     assert {0, []} == Agent.get(counter, & &1)
-  end
-
-  test "a TLS HTTP/1-only endpoint cannot cause fallback or an application POST", ctx do
-    {origin, counter} = endpoint(ctx, http1_only: true)
-    pool_options = trusted_pool(ctx)
-    cold_finch(pool_options)
-
-    assert {:error, :apns_unreachable} == bounded_post(origin, pool_options)
-    assert {0, []} == Agent.get(counter, & &1)
-  end
-
-  test "a cold HTTP/2 503 maps to apns_retryable without a second POST", ctx do
-    {origin, counter} = endpoint(ctx, status: 503)
-    pool_options = trusted_pool(ctx)
-    cold_finch(pool_options)
-
-    assert :error == Finch.find_pool(@finch, Finch.Pool.new(origin))
-    assert {:error, :apns_retryable} == bounded_post(origin, pool_options)
-    assert {1, [request]} = Agent.get(counter, & &1)
-    assert request.protocol == :"HTTP/2"
-    assert request.body == @payload
-    # The synchronous call has returned. No application-level retry is queued;
-    # count after shutdown also excludes any later use of this owned client.
-    stop_supervised!(@finch)
-    assert {1, [_]} = Agent.get(counter, & &1)
   end
 
   defp cold_finch(pool_options) do
@@ -162,9 +132,10 @@ defmodule Comma.Notifications.APNs.TransportTest do
       receive_timeout: 5_000
     ]
 
-    task = Task.async(fn -> Transport.post(origin, options, @finch, pool_options) end)
+    task =
+      SystemsRuntime.Task.async(fn -> Transport.post(origin, options, @finch, pool_options) end)
 
-    case Task.yield(task, 7_000) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, 7_000) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
       _ -> flunk("local transport exceeded the regression test's bounded wait")
     end

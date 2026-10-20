@@ -62,6 +62,67 @@ defmodule SalixAgent.LLM.Error do
   def retryable?(%{} = meta), do: (meta["retryable"] || meta[:retryable]) == true
   def retryable?(_), do: false
 
+  # Provider wording for an account that has no balance or quota left. Generic
+  # "quota exceeded" and "exceeded your current quota" text is excluded:
+  # providers also use it for per-minute rate limits, which recover on retry.
+  @provider_quota_markers [
+    "insufficient_quota",
+    "billing_error",
+    "credit balance is too low",
+    "insufficient credits",
+    "insufficient_credits",
+    "insufficient balance",
+    "insufficient_balance"
+  ]
+
+  @doc """
+  Whether a structured HTTP failure says the provider account itself has run
+  out of balance or quota, rather than being briefly rate limited.
+  """
+  @spec provider_quota_exhausted?(term()) :: boolean()
+  def provider_quota_exhausted?(%{} = meta) do
+    status = meta["status"] || meta[:status]
+    body = (meta["body"] || meta[:body] || "") |> to_string() |> String.downcase()
+
+    status == 402 or
+      (is_integer(status) and Enum.any?(@provider_quota_markers, &String.contains?(body, &1)))
+  end
+
+  def provider_quota_exhausted?(_), do: false
+
+  @doc """
+  The failure of a model call paid by the member's own key or subscription
+  whose provider account has run out. It stops the input like a Comma credit
+  refusal, without retries, and names the provider account as the cause.
+  """
+  @spec provider_quota(term()) :: term()
+  def provider_quota(result), do: exhausted_account_stop(result, "provider_quota_exhausted")
+
+  @doc """
+  The failure of a platform-funded model call whose provider account has run
+  out. Retries repeat the refusal, and the member can neither top up the
+  platform's account nor cover it with Comma credits. The input stops the same
+  way, and the cause is reported as `model_unavailable`: the member can choose
+  another model or try again later.
+  """
+  @spec platform_provider_quota(term()) :: term()
+  def platform_provider_quota(result), do: exhausted_account_stop(result, "model_unavailable")
+
+  defp exhausted_account_stop({:error, %{} = meta} = error, reason) do
+    if provider_quota_exhausted?(meta) do
+      {:error,
+       Map.merge(meta, %{
+         "error_class" => "billing_unavailable",
+         "reason" => reason,
+         "retryable" => false
+       })}
+    else
+      error
+    end
+  end
+
+  defp exhausted_account_stop(result, _reason), do: result
+
   @spec preview(term()) :: String.t()
   def preview(value) when is_binary(value), do: truncate_utf8(value, @preview_bytes)
 

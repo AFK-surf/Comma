@@ -186,18 +186,29 @@ defmodule SalixStore.AgentVMMHostClient do
     end
   end
 
-  defp resolve_current(workload_id) do
+  defp resolve_current(workload_id), do: resolve_ready(workload_id, :command)
+
+  defp resolve_ready(workload_id, authority) do
     workload = SalixStore.Repo.get(SalixStore.Compute.Workload, workload_id)
     update = workload && workload.runtime_update
 
     if update && update["phase"] in ["stopping", "replacing", "verifying"] do
       {:error, :workload_updating}
     else
-      with {:ok, session} <- AgentVMM.current_session_for_workload(workload_id) do
+      with {:ok, session} <- current_session(workload, authority) do
         resolve_session(session, workload_id)
       end
     end
   end
+
+  # Shell runs the Host command service, not a Runtime Agent protocol peer.
+  defp current_session(%Compute.Workload{id: id, kind: "shell"}, :command),
+    do: AgentVMM.current_host_session_for_workload(id)
+
+  defp current_session(%Compute.Workload{id: id}, _authority),
+    do: AgentVMM.current_session_for_workload(id)
+
+  defp current_session(nil, _authority), do: {:error, :not_found}
 
   defp resolve_provider(workload_id) do
     with {:ok, session} <- AgentVMM.current_host_session_for_workload(workload_id) do
@@ -215,7 +226,7 @@ defmodule SalixStore.AgentVMMHostClient do
         resolve_provider(workload_id)
 
       _ ->
-        resolve_current(workload_id)
+        resolve_ready(workload_id, :runtime)
     end
   end
 
@@ -259,14 +270,14 @@ defmodule SalixStore.AgentVMMHostClient do
   end
 
   defp gateway_url(instance_id) do
-    case Application.get_env(:salix_store, :agent_vmm_gateway_instances, %{}) do
+    case SystemsRuntime.get_env(:salix_store, :agent_vmm_gateway_instances, %{}) do
       %{^instance_id => url} when is_binary(url) -> {:ok, String.trim_trailing(url, "/")}
       _ -> gateway_url_from_template(instance_id)
     end
   end
 
   defp gateway_url_from_template(instance_id) do
-    template = Application.get_env(:salix_store, :agent_vmm_gateway_url_template)
+    template = SystemsRuntime.get_env(:salix_store, :agent_vmm_gateway_url_template)
 
     if is_binary(template) and Regex.match?(~r/\A[a-z0-9](?:[-a-z0-9]*[a-z0-9])?\z/, instance_id) and
          String.contains?(template, "{instance_id}") do
@@ -431,7 +442,7 @@ defmodule SalixStore.AgentVMMHostClient do
   defp valid_execution_deadline?(kind, value)
        when kind in ~w(auth_operation migration_export migration_import exec process build) do
     case Integer.parse(value) do
-      {deadline, ""} -> deadline > System.system_time(:nanosecond)
+      {deadline, ""} -> deadline > SystemsClock.system_time(:nanosecond)
       _ -> false
     end
   end
@@ -548,7 +559,7 @@ defmodule SalixStore.AgentVMMHostClient do
   defp validate_process_start(_), do: {:error, :invalid_command}
 
   defp ensure_request_id(args) do
-    request_id = Map.get(args, "request_id", Ecto.UUID.generate())
+    request_id = Map.get(args, "request_id", SystemsRuntime.Proc.uuid())
 
     if is_binary(request_id) and Regex.match?(@request_id_pattern, request_id) do
       {:ok, Map.put(args, "request_id", request_id)}
@@ -579,7 +590,7 @@ defmodule SalixStore.AgentVMMHostClient do
          "archiveSha256" => archive_sha256,
          "manifestDigest" => "sha256:" <> manifest_sha256
        })
-       when class in ["shell", "external", "meeting"] and is_binary(reference) and
+       when class in ["shell", "meeting", "station"] and is_binary(reference) and
               byte_size(reference) in 1..255 and is_binary(archive_url) and is_integer(size) and
               size > 0 and
               size <= 8_589_934_592 and byte_size(archive_sha256) == 64 and
@@ -618,7 +629,7 @@ defmodule SalixStore.AgentVMMHostClient do
 
   defp unexpired(%DateTime{} = expires_at),
     do:
-      if(DateTime.compare(expires_at, DateTime.utc_now()) == :gt,
+      if(DateTime.compare(expires_at, SystemsClock.utc_now()) == :gt,
         do: :ok,
         else: {:error, :expired}
       )
@@ -626,7 +637,10 @@ defmodule SalixStore.AgentVMMHostClient do
   defp unexpired(_), do: {:error, :expired}
 
   defp authority_covers?(%DateTime{} = expires_at, required_seconds) do
-    if DateTime.compare(expires_at, DateTime.add(DateTime.utc_now(), required_seconds, :second)) ==
+    if DateTime.compare(
+         expires_at,
+         DateTime.add(SystemsClock.utc_now(), required_seconds, :second)
+       ) ==
          :gt,
        do: :ok,
        else: {:error, :insufficient_session_authority}
@@ -635,12 +649,12 @@ defmodule SalixStore.AgentVMMHostClient do
   defp authority_covers?(_, _), do: {:error, :insufficient_session_authority}
 
   defp maybe_request_id(operation, args) when operation in @side_effecting,
-    do: Map.put_new(args, "request_id", Ecto.UUID.generate())
+    do: Map.put_new(args, "request_id", SystemsRuntime.Proc.uuid())
 
   defp maybe_request_id(_, args), do: args
 
   defp http_client,
-    do: Application.get_env(:salix_store, :agent_vmm_host_http_client, __MODULE__.HTTP)
+    do: SystemsRuntime.get_env(:salix_store, :agent_vmm_host_http_client, __MODULE__.HTTP)
 
   defmodule HTTP do
     @moduledoc false
@@ -678,7 +692,7 @@ defmodule SalixStore.AgentVMMHostClient do
       ]
 
       options =
-        case Application.get_env(:salix_store, :agent_vmm_gateway_tls, []) do
+        case SystemsRuntime.get_env(:salix_store, :agent_vmm_gateway_tls, []) do
           tls when is_list(tls) and tls != [] ->
             Keyword.put(options, :connect_options, transport_opts: tls)
 
@@ -719,7 +733,7 @@ defmodule SalixStore.AgentVMMHostClient do
       ]
 
       options =
-        case Application.get_env(:salix_store, :agent_vmm_gateway_tls, []) do
+        case SystemsRuntime.get_env(:salix_store, :agent_vmm_gateway_tls, []) do
           tls when is_list(tls) and tls != [] ->
             Keyword.put(options, :connect_options, transport_opts: tls)
 

@@ -13,7 +13,7 @@ defmodule BridgeForTeams.TriageInvestigationReasoningProbeTest do
   that any candidate fixes the original production-path failure.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   @moduletag :live_llm
   @moduletag :triage_reasoning_probe
@@ -92,7 +92,7 @@ defmodule BridgeForTeams.TriageInvestigationReasoningProbeTest do
 
     samples =
       Enum.map(reports ++ controls, fn item ->
-        Map.put(item, :id, "sample-" <> Base.encode16(:crypto.strong_rand_bytes(8)))
+        Map.put(item, :id, "sample-" <> Base.encode16(SystemsRuntime.Proc.random_bytes(8)))
       end)
 
     judge_messages = [

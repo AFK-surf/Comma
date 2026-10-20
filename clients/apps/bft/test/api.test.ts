@@ -72,7 +72,6 @@ const projectOverview = {
         name: null,
         role: "router",
         lifecycle: "active",
-        runtime: "internal",
       },
     ],
     truncated: false,
@@ -170,11 +169,7 @@ describe("BFT API client", () => {
           ...projectOverview,
           project: { ...projectOverview.project, role: "owner" },
           usage: { ...projectOverview.usage, status: "exploded" },
-          agents: {
-            status: "degraded",
-            truncated: true,
-            items: [{ ...projectOverview.agents.items[0], runtime: "quantum" }],
-          },
+          agents: { ...projectOverview.agents, status: "degraded" },
         },
       })
     );
@@ -186,7 +181,6 @@ describe("BFT API client", () => {
     expect(parsed.project.role).toBe("user");
     expect(parsed.usage.status).toBe("missing");
     expect(parsed.agents.status).toBe("unavailable");
-    expect(parsed.agents.items[0]?.runtime).toBe("internal");
   });
 
   it("reports a missing project with its error code", async () => {

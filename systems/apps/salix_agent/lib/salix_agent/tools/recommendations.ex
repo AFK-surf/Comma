@@ -74,7 +74,7 @@ defmodule SalixAgent.Tools.Recommendations do
   def fail(_args, _ctx), do: raise("run_id and reason are required")
 
   defp adapter,
-    do: Application.get_env(:salix_agent, :recommendation_adapter_mod)
+    do: SystemsRuntime.get_env(:salix_agent, :recommendation_adapter_mod)
 
   defp read_schema do
     %{

@@ -181,7 +181,7 @@ defmodule SalixStore.Agent do
   end
 
   @spec lease_expired?(Head.t(), integer()) :: boolean()
-  def lease_expired?(%Head{} = head, now \\ System.system_time(:millisecond)) do
+  def lease_expired?(%Head{} = head, now \\ SystemsClock.system_time(:millisecond)) do
     lease_stale?(head, now)
   end
 
@@ -275,7 +275,7 @@ defmodule SalixStore.Agent do
           | {:error, :not_found}
           | {:error, term()}
   def claim(agent_id, node_id, sm, opts \\ []) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = do_claim(agent_id, node_id, sm, opts, @claim_retries)
 
     CommaLog.log("store_claim", %{
@@ -419,7 +419,7 @@ defmodule SalixStore.Agent do
   @spec commit(Owned.t(), [map()], keyword()) ::
           {:ok, Owned.t()} | {:error, :fenced} | {:error, term()}
   def commit(%Owned{} = o, events, opts \\ []) when is_list(events) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
     result = do_commit(o, events, opts)
 
     CommaLog.log("store_commit", %{
@@ -429,7 +429,7 @@ defmodule SalixStore.Agent do
       event_count: length(events),
       event_types: Enum.map(events, &(&1["type"] || &1[:type])),
       hwm: opts[:hwm],
-      duration_ms: System.monotonic_time(:millisecond) - started,
+      duration_ms: SystemsClock.monotonic_time(:millisecond) - started,
       result: result_label(result)
     })
 
@@ -540,7 +540,7 @@ defmodule SalixStore.Agent do
 
   @spec renew(Owned.t(), keyword()) :: {:ok, Owned.t()} | {:error, :fenced} | {:error, term()}
   def renew(%Owned{} = o, opts \\ []) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     now = opts[:now] || now_ms()
     %Head{} = head = o.head
     new_head = %Head{head | lease_until: now + o.ttl_ms}
@@ -608,9 +608,9 @@ defmodule SalixStore.Agent do
   end
 
   defp emit_runtime_operation(operation, result, started) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{
         component: "salix_agent",
         operation: operation,
@@ -725,9 +725,9 @@ defmodule SalixStore.Agent do
     S3.put(Keys.lease(o.node_id, o.agent_id), body)
   end
 
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 
   defp uuid do
-    :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+    SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower)
   end
 end

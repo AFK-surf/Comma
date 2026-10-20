@@ -84,7 +84,7 @@ theorem KernelHistory.invariant {state : Term} {sealed : List Term} (history : K
     have sequence := inner_history_numbers call ih.sorted ih.numbers
     exact ⟨nonretiring_inner_ready ih.ready safe call, (inner_format call).trans ih.format,
       inner_ledger_header ih.header call,
-      nonretiring_inner_ledger_supported ih.ready ih.format safe ih.supported call, sequence.1, sequence.2⟩
+      nonretiring_inner_ledger_supported ih.ready safe ih.supported call, sequence.1, sequence.2⟩
   | materialize before planned execution ih =>
     have sequence := resident_batch_history_numbers execution ih.sorted ih.numbers
     exact ⟨materialize_resident_ready ih.ready planned execution,

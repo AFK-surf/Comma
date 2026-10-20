@@ -99,7 +99,9 @@ defmodule SalixStore.FeishuTenantApps do
     }
   end
 
-  defp to_record(%Row{} = row) do
+  @doc false
+  # Shared with the memory implementation.
+  def to_record(%Row{} = row) do
     %{
       "tenant_id" => row.tenant_id,
       "app_id" => row.app_id,
@@ -110,7 +112,8 @@ defmodule SalixStore.FeishuTenantApps do
     }
   end
 
-  defp from_record(record) do
+  @doc false
+  def from_record(record) do
     %Row{
       tenant_id: record["tenant_id"],
       app_id: record["app_id"] || "",

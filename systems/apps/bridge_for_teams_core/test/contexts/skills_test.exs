@@ -4,7 +4,7 @@ defmodule BridgeForTeams.SkillsTest do
   (what the Plugins upload gate enforces) and name slugging. The erpc-backed
   reads/writes are exercised through the Agent Swarm page tests.
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias BridgeForTeams.Skills
 

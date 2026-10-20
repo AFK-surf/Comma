@@ -1,7 +1,7 @@
 defmodule SalixMCP.Builtins do
   @moduledoc false
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -15,6 +15,8 @@ defmodule SalixMCP.Builtins do
   @google_workspace_mcp_id "mcp1_0000000000000000006"
   @notion_mcp_id "mcp1_0000000000000000007"
   @slack_mcp_id "mcp1_0000000000000000008"
+  @x_mcp_id "mcp1_0000000000000000009"
+  @lark_mcp_id "mcp1_0000000000000000010"
 
   def child_spec(opts) do
     %{
@@ -25,7 +27,7 @@ defmodule SalixMCP.Builtins do
     }
   end
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
   def init(opts), do: {:ok, opts, {:continue, :seed}}
@@ -66,6 +68,46 @@ defmodule SalixMCP.Builtins do
 
   defp builtin_definitions do
     [
+      %{
+        "mcp_id" => @x_mcp_id,
+        "name" => "X",
+        "description" =>
+          "Use X with your account's OAuth permissions, or read public data with an App-only Bearer Token.",
+        "server_metadata" => %{
+          "name" => "X",
+          "remotes" => [
+            %{
+              "target_ref" => "remote:x",
+              "transport" => "streamable-http",
+              "url" => "https://api.x.com/mcp",
+              "headers_schema" => %{
+                "Authorization" => %{
+                  "isRequired" => true,
+                  "isSecret" => true,
+                  "value" => "Bearer ${X_BEARER_TOKEN}"
+                }
+              }
+            }
+          ]
+        },
+        "supports_server" => true,
+        "recommended_placement" => "server",
+        "supported_placements" => ["server"],
+        "declared_capabilities" => %{"tools" => true},
+        "environment_requirements" => %{"server" => ["public_network"]},
+        "salix_metadata" => %{
+          # App-only credentials permit public reads. Managed OAuth uses the
+          # official server's tools and the account's granted scopes.
+          "app_only_tool_allowlist" => ~w(
+            get_posts_by_id get_posts_by_ids get_posts_counts_recent
+            get_posts_liking_users get_posts_quoted_posts get_posts_reposted_by
+            get_users_by_id get_users_by_username get_users_by_usernames get_users_posts
+            search_posts_all search_users get_news search_news get_trends_by_woeid
+          )
+        },
+        "trust" => %{"source" => "system_builtin"},
+        "created_by" => "system"
+      },
       %{
         "mcp_id" => @context7_mcp_id,
         "tenant_id" => "",
@@ -261,6 +303,34 @@ defmodule SalixMCP.Builtins do
         "environment_requirements" => %{"server" => ["public_network"]},
         "server_support_note" =>
           "Uses Feishu's official hosted MCP with OAuth discovery, PKCE, and dynamic client registration.",
+        "trust" => %{"source" => "system_builtin"},
+        "created_by" => "system"
+      },
+      %{
+        "mcp_id" => @lark_mcp_id,
+        "tenant_id" => "",
+        "name" => "Lark",
+        "description" => "Official hosted Lark MCP for documents, people, and messages.",
+        "server_metadata" => %{
+          "name" => "Lark",
+          "description" => "Official hosted Lark MCP for documents, people, and messages.",
+          "remotes" => [
+            %{
+              "target_ref" => "remote:lark",
+              "transport" => "streamable-http",
+              "url" => "https://mcp.larksuite.com/mcp",
+              "headers_schema" => %{}
+            }
+          ]
+        },
+        "supports_server" => true,
+        "recommended_placement" => "server",
+        "supported_placements" => ["server"],
+        "auth_requirements" => %{"lark" => ["oauth"]},
+        "declared_capabilities" => %{"tools" => true},
+        "environment_requirements" => %{"server" => ["public_network"]},
+        "server_support_note" =>
+          "Uses Lark's official hosted MCP with OAuth discovery, PKCE, and dynamic client registration.",
         "trust" => %{"source" => "system_builtin"},
         "created_by" => "system"
       },

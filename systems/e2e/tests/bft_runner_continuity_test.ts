@@ -1,3 +1,20 @@
+import { afterAll, beforeAll, describe, setDefaultTimeout, test } from "bun:test";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Builds and subprocesses here take longer than the five-second default.
+setDefaultTimeout(30 * 60_000);
+
 const REPO_ROOT = new URL("../../..", import.meta.url).pathname;
 const RUNNER_DIR = `${REPO_ROOT}/systems/connector/mac-mini-provisioner`;
 
@@ -16,221 +33,219 @@ function activeProvisionRequestRead(
   }
 }
 
-Deno.test({
-  name: "BFT runner keeps running when one control response is not valid JSON",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn() {
-    const root = await Deno.makeTempDir({ prefix: "bft-runner-continuity-" });
-    let registerCount = 0;
-    let heartbeatCount = 0;
-    let recoveredBeforeRegistration = false;
-    const connectorStarts = `${root}/connector-starts`;
-    const connectorPIDs = `${root}/connector-pids`;
-    const requests: string[] = [];
-    const server = Deno.serve(
-      { hostname: "127.0.0.1", port: 0, onListen: () => {} },
-      async (request) => {
-        const url = new URL(request.url);
-        requests.push(url.pathname);
-        await request.text();
+test("BFT runner keeps running when one control response is not valid JSON", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bft-runner-continuity-"));
+  let registerCount = 0;
+  let heartbeatCount = 0;
+  let recoveredBeforeRegistration = false;
+  const connectorStarts = `${root}/connector-starts`;
+  const connectorPIDs = `${root}/connector-pids`;
+  const requests: string[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      const url = new URL(request.url);
+      requests.push(url.pathname);
+      await request.text();
 
-        if (url.pathname === "/v1/orgs/org-e2e/runners") {
-          registerCount++;
-          if (registerCount <= 30) {
-            return new Response("runner-e2e-register-502", {
-              status: 502,
-              headers: { "content-type": "text/html; charset=utf-8" },
-            });
-          }
-          const starts = (
-            await Deno.readTextFile(connectorStarts).catch(() => "")
-          )
-            .trim()
-            .split("\n")
-            .filter(Boolean);
-          const pids = (await Deno.readTextFile(connectorPIDs).catch(() => ""))
-            .trim()
-            .split("\n")
-            .filter(Boolean);
-          recoveredBeforeRegistration = starts.length >= 2 &&
-            pids.length >= 2 &&
-            processAlive(Number(pids[1]));
-          return Response.json(
-            { runner: { id: "runner-e2e" } },
-            {
-              status: 201,
-            },
-          );
-        }
-        if (url.pathname === "/v1/orgs/org-e2e/runners/runner-e2e/heartbeat") {
-          heartbeatCount++;
-          if (heartbeatCount === 1) {
-            return new Response("runner-e2e-upstream-502", {
-              status: 502,
-              headers: { "content-type": "text/html; charset=utf-8" },
-            });
-          }
-          return Response.json({ runner: { id: "runner-e2e" }, updates: {} });
-        }
-        if (url.pathname === "/v1/orgs/org-e2e/runners/runner-e2e/claim") {
-          return new Response(null, { status: 204 });
-        }
-        if (
-          url.pathname ===
-            "/v1/orgs/org-e2e/runners/runner-e2e/provision-requests/request-e2e"
-        ) {
-          return Response.json({
-            provision_request: { id: "request-e2e", status: "running" },
+      if (url.pathname === "/v1/orgs/org-e2e/runners") {
+        registerCount++;
+        if (registerCount <= 30) {
+          return new Response("runner-e2e-register-502", {
+            status: 502,
+            headers: { "content-type": "text/html; charset=utf-8" },
           });
         }
-        return new Response("not found", { status: 404 });
+        const starts = (
+          await readFile(connectorStarts, "utf8").catch(() => "")
+        )
+          .trim()
+          .split("\n")
+          .filter(Boolean);
+        const pids = (await readFile(connectorPIDs, "utf8").catch(() => ""))
+          .trim()
+          .split("\n")
+          .filter(Boolean);
+        recoveredBeforeRegistration = starts.length >= 2 &&
+          pids.length >= 2 &&
+          processAlive(Number(pids[1]));
+        return Response.json(
+          { runner: { id: "runner-e2e" } },
+          {
+            status: 201,
+          },
+        );
+      }
+      if (url.pathname === "/v1/orgs/org-e2e/runners/runner-e2e/heartbeat") {
+        heartbeatCount++;
+        if (heartbeatCount === 1) {
+          return new Response("runner-e2e-upstream-502", {
+            status: 502,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          });
+        }
+        return Response.json({ runner: { id: "runner-e2e" }, updates: {} });
+      }
+      if (url.pathname === "/v1/orgs/org-e2e/runners/runner-e2e/claim") {
+        return new Response(null, { status: 204 });
+      }
+      if (
+        url.pathname ===
+          "/v1/orgs/org-e2e/runners/runner-e2e/provision-requests/request-e2e"
+      ) {
+        return Response.json({
+          provision_request: { id: "request-e2e", status: "running" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+
+  try {
+    const binary = `${root}/bft-runner`;
+    const connector = `${root}/salix-connect`;
+    const config = `${root}/runner.json`;
+    await buildRunner(binary);
+    await writeVersionedConnector(connector, "connector-e2e-v1");
+    await writeRunnerConfig(config, root, connector, serverURL(server));
+    await writeStoredConnector(root, "request-e2e");
+
+    const result = await run(
+      binary,
+      [
+        "run",
+        "--config",
+        config,
+        "--start=true",
+        "--loop=true",
+        "--max-iterations=2",
+        "--interval=0.01",
+        "--timeout=1",
+      ],
+      {
+        CONNECTOR_PID_FILE: connectorPIDs,
+        CONNECTOR_START_FILE: connectorStarts,
+        CONNECTOR_STATUS_FILE:
+          `${root}/state/connectors/request-e2e.status.json`,
       },
     );
 
-    try {
-      const binary = `${root}/bft-runner`;
-      const connector = `${root}/salix-connect`;
-      const config = `${root}/runner.json`;
-      await buildRunner(binary);
-      await writeVersionedConnector(connector, "connector-e2e-v1");
-      await writeRunnerConfig(config, root, connector, serverURL(server));
-      await writeStoredConnector(root, "request-e2e");
-
-      const result = await run(
-        binary,
-        [
-          "run",
-          "--config",
-          config,
-          "--start=true",
-          "--loop=true",
-          "--max-iterations=2",
-          "--interval=0.01",
-          "--timeout=1",
-        ],
-        {
-          CONNECTOR_PID_FILE: connectorPIDs,
-          CONNECTOR_START_FILE: connectorStarts,
-          CONNECTOR_STATUS_FILE:
-            `${root}/state/connectors/request-e2e.status.json`,
-        },
-      );
-
-      const failures: string[] = [];
-      if (result.code !== 0) {
-        failures.push(`runner exited with ${result.code}`);
-      }
-      if (heartbeatCount !== 2) {
-        failures.push(
-          `expected 2 heartbeats after recovery, got ${heartbeatCount}`,
-        );
-      }
-      if (registerCount !== 31) {
-        failures.push(
-          `expected 31 registration attempts, got ${registerCount}`,
-        );
-      }
-      if (!recoveredBeforeRegistration) {
-        failures.push(
-          "connector was not recovered while registration remained unavailable",
-        );
-      }
-      for (
-        const evidence of [
-          "HTTP 502",
-          "text/html",
-          "runner-e2e-upstream-502",
-        ]
-      ) {
-        if (!result.combined.includes(evidence)) {
-          failures.push(
-            `missing diagnostic evidence ${JSON.stringify(evidence)}`,
-          );
-        }
-      }
-      if (!requests.includes("/v1/orgs/org-e2e/runners/runner-e2e/claim")) {
-        failures.push("runner did not resume the control loop after recovery");
-      }
-      const pids = (await Deno.readTextFile(connectorPIDs)).trim().split("\n");
-      if (pids.length !== 2 || !processAlive(Number(pids[1]))) {
-        failures.push(`connector recovery did not settle: ${pids.join(",")}`);
-      }
-      const runnerStatus = JSON.parse(
-        await Deno.readTextFile(`${root}/state/runner-status.json`),
-      );
-      if (
-        runnerStatus.status !== "connected" ||
-        runnerStatus.managed_connectors?.[0]?.attached !== true ||
-        runnerStatus.managed_connectors?.[0]?.connector_run_id !== "run-e2e"
-      ) {
-        failures.push(
-          `runner ignored connected local connector state: ${
-            JSON.stringify(
-              runnerStatus,
-            )
-          }`,
-        );
-      }
-      if (failures.length > 0) {
-        throw new Error(`${failures.join("\n")}\n${result.combined}`);
-      }
-    } finally {
-      await killRecordedProcesses(`${root}/connector-pids`);
-      await server.shutdown();
-      await Deno.remove(root, { recursive: true }).catch(() => {});
+    const failures: string[] = [];
+    if (result.code !== 0) {
+      failures.push(`runner exited with ${result.code}`);
     }
-  },
+    if (heartbeatCount !== 2) {
+      failures.push(
+        `expected 2 heartbeats after recovery, got ${heartbeatCount}`,
+      );
+    }
+    if (registerCount !== 31) {
+      failures.push(
+        `expected 31 registration attempts, got ${registerCount}`,
+      );
+    }
+    if (!recoveredBeforeRegistration) {
+      failures.push(
+        "connector was not recovered while registration remained unavailable",
+      );
+    }
+    for (
+      const evidence of [
+        "HTTP 502",
+        "text/html",
+        "runner-e2e-upstream-502",
+      ]
+    ) {
+      if (!result.combined.includes(evidence)) {
+        failures.push(
+          `missing diagnostic evidence ${JSON.stringify(evidence)}`,
+        );
+      }
+    }
+    if (!requests.includes("/v1/orgs/org-e2e/runners/runner-e2e/claim")) {
+      failures.push("runner did not resume the control loop after recovery");
+    }
+    const pids = (await readFile(connectorPIDs, "utf8")).trim().split("\n");
+    if (pids.length !== 2 || !processAlive(Number(pids[1]))) {
+      failures.push(`connector recovery did not settle: ${pids.join(",")}`);
+    }
+    const runnerStatus = JSON.parse(
+      await readFile(`${root}/state/runner-status.json`, "utf8"),
+    );
+    if (
+      runnerStatus.status !== "connected" ||
+      runnerStatus.managed_connectors?.[0]?.attached !== true ||
+      runnerStatus.managed_connectors?.[0]?.connector_run_id !== "run-e2e"
+    ) {
+      failures.push(
+        `runner ignored connected local connector state: ${
+          JSON.stringify(
+            runnerStatus,
+          )
+        }`,
+      );
+    }
+    if (failures.length > 0) {
+      throw new Error(`${failures.join("\n")}\n${result.combined}`);
+    }
+  } finally {
+    await killRecordedProcesses(`${root}/connector-pids`);
+    await server.stop();
+    await rm(root, { recursive: true }).catch(() => {});
+  }
 });
 
-Deno.test({
-  name:
-    "BFT runner restarts an attached connector when status reporting is rejected",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn(t) {
-    const buildRoot = await Deno.makeTempDir({
-      prefix: "bft-runner-recovery-build-",
+describe(
+  "BFT runner restarts an attached connector when status reporting is rejected",
+  () => {
+    let buildRoot: string;
+    let binary: string;
+    beforeAll(async () => {
+      buildRoot = await mkdtemp(
+        join(tmpdir(), "bft-runner-recovery-build-"),
+      );
+      binary = `${buildRoot}/bft-runner`;
+      await buildRunner(binary);
     });
-    try {
-      const binary = `${buildRoot}/bft-runner`;
-      await buildRunner(binary);
-      await t.step(
-        "recovers across repeated process exits",
-        () => runRejectedStatusRecoveryScenario(binary, false),
-      );
-      await t.step(
-        "keeps restart-pending truth when replacement spawn fails",
-        () => runRejectedStatusRecoveryScenario(binary, true),
-      );
-      await t.step(
-        "retries a host-restored connector after a transient spawn failure",
-        () => runHostRestoreRetryScenario(binary),
-      );
-      await t.step(
-        "does not project a connector that exits during heartbeat as connected",
-        () => runExitDuringControlCallScenario(binary, "heartbeat"),
-      );
-      await t.step(
-        "does not project a connector that exits during claim as connected",
-        () => runExitDuringControlCallScenario(binary, "claim"),
-      );
-    } finally {
-      await Deno.remove(buildRoot, { recursive: true }).catch(() => {});
-    }
+    afterAll(async () => {
+      await rm(buildRoot, { recursive: true }).catch(() => {});
+    });
+
+    test(
+      "recovers across repeated process exits",
+      () => runRejectedStatusRecoveryScenario(binary, false),
+    );
+    test(
+      "keeps restart-pending truth when replacement spawn fails",
+      () => runRejectedStatusRecoveryScenario(binary, true),
+    );
+    test(
+      "retries a host-restored connector after a transient spawn failure",
+      () => runHostRestoreRetryScenario(binary),
+    );
+    test(
+      "does not project a connector that exits during heartbeat as connected",
+      () => runExitDuringControlCallScenario(binary, "heartbeat"),
+    );
+    test(
+      "does not project a connector that exits during claim as connected",
+      () => runExitDuringControlCallScenario(binary, "claim"),
+    );
   },
-});
+);
 
 async function runRejectedStatusRecoveryScenario(
   binary: string,
   failReplacementSpawn: boolean,
 ) {
-  const root = await Deno.makeTempDir({ prefix: "bft-runner-recovery-" });
+  const root = await mkdtemp(join(tmpdir(), "bft-runner-recovery-"));
   let heartbeatCount = 0;
   let rejectedStatusCount = 0;
-  const server = Deno.serve(
-    { hostname: "127.0.0.1", port: 0, onListen: () => {} },
-    async (request) => {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
       const url = new URL(request.url);
       await request.text();
 
@@ -259,7 +274,7 @@ async function runRejectedStatusRecoveryScenario(
       return activeProvisionRequestRead(request, url) ??
         new Response("not found", { status: 404 });
     },
-  );
+  });
 
   try {
     const connector = `${root}/salix-connect`;
@@ -326,12 +341,12 @@ async function runRejectedStatusRecoveryScenario(
       },
     );
 
-    const starts = (await Deno.readTextFile(connectorStarts))
+    const starts = (await readFile(connectorStarts, "utf8"))
       .trim()
       .split("\n");
-    const pids = (await Deno.readTextFile(connectorPIDs)).trim().split("\n");
+    const pids = (await readFile(connectorPIDs, "utf8")).trim().split("\n");
     const runnerStatus = JSON.parse(
-      await Deno.readTextFile(`${root}/state/runner-status.json`),
+      await readFile(`${root}/state/runner-status.json`, "utf8"),
     );
     const managed = runnerStatus.managed_connectors?.[0] ?? {};
     const failures: string[] = [];
@@ -394,17 +409,18 @@ async function runRejectedStatusRecoveryScenario(
     }
   } finally {
     await killRecordedProcesses(`${root}/connector-pids`);
-    await server.shutdown();
-    await Deno.remove(root, { recursive: true }).catch(() => {});
+    await server.stop();
+    await rm(root, { recursive: true }).catch(() => {});
   }
 }
 
 async function runHostRestoreRetryScenario(binary: string) {
-  const root = await Deno.makeTempDir({ prefix: "bft-runner-host-restore-" });
+  const root = await mkdtemp(join(tmpdir(), "bft-runner-host-restore-"));
   let heartbeatCount = 0;
-  const server = Deno.serve(
-    { hostname: "127.0.0.1", port: 0, onListen: () => {} },
-    async (request) => {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
       const url = new URL(request.url);
       await request.text();
       if (url.pathname === "/v1/orgs/org-e2e/runners") {
@@ -431,7 +447,7 @@ async function runHostRestoreRetryScenario(binary: string) {
       return activeProvisionRequestRead(request, url) ??
         new Response("not found", { status: 404 });
     },
-  );
+  });
 
   try {
     const connector = `${root}/salix-connect`;
@@ -439,10 +455,10 @@ async function runHostRestoreRetryScenario(binary: string) {
     const connectorStatus = `${root}/state/connectors/request-e2e.status.json`;
     const config = `${root}/runner.json`;
     await writeVersionedConnector(connector, "connector-e2e-v1");
-    await Deno.chmod(connector, 0o644);
+    await chmod(connector, 0o644);
     const repairConnector = new Promise<void>((resolve) => {
       setTimeout(async () => {
-        await Deno.chmod(connector, 0o755);
+        await chmod(connector, 0o755);
         resolve();
       }, 250);
     });
@@ -469,12 +485,12 @@ async function runHostRestoreRetryScenario(binary: string) {
     );
     await repairConnector;
 
-    const pids = (await Deno.readTextFile(connectorPIDs).catch(() => ""))
+    const pids = (await readFile(connectorPIDs, "utf8").catch(() => ""))
       .trim()
       .split("\n")
       .filter(Boolean);
     const runnerStatus = JSON.parse(
-      await Deno.readTextFile(`${root}/state/runner-status.json`),
+      await readFile(`${root}/state/runner-status.json`, "utf8"),
     );
     const failures: string[] = [];
     if (result.code !== 0) {
@@ -503,8 +519,8 @@ async function runHostRestoreRetryScenario(binary: string) {
     }
   } finally {
     await killRecordedProcesses(`${root}/connector-pids`);
-    await server.shutdown();
-    await Deno.remove(root, { recursive: true }).catch(() => {});
+    await server.stop();
+    await rm(root, { recursive: true }).catch(() => {});
   }
 }
 
@@ -512,27 +528,26 @@ async function runExitDuringControlCallScenario(
   binary: string,
   killDuring: "heartbeat" | "claim",
 ) {
-  const root = await Deno.makeTempDir({
-    prefix: `bft-runner-exit-during-${killDuring}-`,
-  });
+  const root = await mkdtemp(join(tmpdir(), `bft-runner-exit-during-${killDuring}-`));
   const connectorPIDs = `${root}/connector-pids`;
   const connectorStatus = `${root}/state/connectors/request-e2e.status.json`;
   let killedPID = 0;
   const killCurrentConnector = async () => {
     await waitUntil(async () => {
-      const raw = await Deno.readTextFile(connectorPIDs).catch(() => "");
+      const raw = await readFile(connectorPIDs, "utf8").catch(() => "");
       killedPID = Number(raw.trim().split("\n").filter(Boolean).at(-1) ?? 0);
-      const statusExists = await Deno.stat(connectorStatus)
+      const statusExists = await stat(connectorStatus)
         .then(() => true)
         .catch(() => false);
       return killedPID > 0 && statusExists;
     });
-    Deno.kill(killedPID, "SIGKILL");
+    process.kill(killedPID, "SIGKILL");
     await waitUntil(() => !processAlive(killedPID));
   };
-  const server = Deno.serve(
-    { hostname: "127.0.0.1", port: 0, onListen: () => {} },
-    async (request) => {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
       const url = new URL(request.url);
       await request.text();
       if (url.pathname === "/v1/orgs/org-e2e/runners") {
@@ -553,7 +568,7 @@ async function runExitDuringControlCallScenario(
       return activeProvisionRequestRead(request, url) ??
         new Response("not found", { status: 404 });
     },
-  );
+  });
 
   try {
     const connector = `${root}/salix-connect`;
@@ -606,7 +621,7 @@ async function runExitDuringControlCallScenario(
     );
     assertEquals(result.code, 0, result.combined);
     const runnerStatus = JSON.parse(
-      await Deno.readTextFile(`${root}/state/runner-status.json`),
+      await readFile(`${root}/state/runner-status.json`, "utf8"),
     );
     const managed = runnerStatus.managed_connectors?.[0] ?? {};
     if (
@@ -626,8 +641,8 @@ async function runExitDuringControlCallScenario(
     }
   } finally {
     await killRecordedProcesses(connectorPIDs);
-    await server.shutdown();
-    await Deno.remove(root, { recursive: true }).catch(() => {});
+    await server.stop();
+    await rm(root, { recursive: true }).catch(() => {});
   }
 }
 
@@ -641,140 +656,135 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>) {
   }
 }
 
-Deno.test({
-  name:
-    "BFT runner system service stop fails closed without administrator access",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn() {
-    const root = await Deno.makeTempDir({ prefix: "bft-runner-service-" });
-    try {
-      const binary = `${root}/bft-runner`;
-      const binDir = `${root}/bin`;
-      const launchctlLog = `${root}/launchctl.log`;
-      const sourcePlist = `${root}/source.plist`;
-      const installPlist =
-        `${root}/Library/LaunchDaemons/com.bridgeforteams.runner.plist`;
-      const config = `${root}/runner.json`;
-      await buildRunner(binary);
-      await Deno.mkdir(binDir, { recursive: true });
-      await Deno.mkdir(new URL(".", `file://${installPlist}`).pathname, {
-        recursive: true,
-      });
-      await Deno.writeTextFile(sourcePlist, "plist\n");
-      await Deno.writeTextFile(installPlist, "plist\n");
-      await writeExecutable(
-        `${binDir}/launchctl`,
-        [
-          "#!/bin/sh",
-          `printf '%s\\n' "$*" >> ${shellQuote(launchctlLog)}`,
-          'if [ "$*" = "bootout system/com.bridgeforteams.runner" ]; then exit 0; fi',
-          "exit 42",
-          "",
-        ].join("\n"),
-      );
-      await Deno.writeTextFile(
-        config,
-        JSON.stringify({
-          api_base_url: "http://127.0.0.1:1",
-          org_id: "org-e2e",
-          runner_token: "runner-token",
-          paths: {
-            state_dir: `${root}/state`,
-            runner_install_status: `${root}/runner-install-status.json`,
-          },
-          launchd: {
-            label: "com.bridgeforteams.runner",
-            domain: "system",
-            source_plist: sourcePlist,
-            install_plist: installPlist,
-          },
-        }),
-      );
-
-      const result = await run(
-        binary,
-        ["service", "stop", "--config", config],
-        { PATH: `${binDir}:${Deno.env.get("PATH") ?? ""}` },
-      );
-
-      if (result.code === 0) {
-        throw new Error(
-          `system service stop unexpectedly succeeded:\n${result.combined}`,
-        );
-      }
-      assertIncludes(
-        result.combined,
-        "service.system_administrator_action_required",
-      );
-      assertIncludes(result.combined, "administrator");
-      assertIncludes(
-        result.combined,
-        "agent-vmm-service-executor stop --job runner",
-      );
-      if (await pathExists(launchctlLog)) {
-        throw new Error("unprivileged service stop invoked launchctl");
-      }
-    } finally {
-      await Deno.remove(root, { recursive: true }).catch(() => {});
-    }
-  },
-});
-
-Deno.test({
-  name:
-    "BFT runner applies only exact connector artifacts and preserves continuity",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn(t) {
-    const buildRoot = await Deno.makeTempDir({
-      prefix: "bft-runner-update-build-",
+test("BFT runner system service stop fails closed without administrator access", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bft-runner-service-"));
+  try {
+    const binary = `${root}/bft-runner`;
+    const binDir = `${root}/bin`;
+    const launchctlLog = `${root}/launchctl.log`;
+    const sourcePlist = `${root}/source.plist`;
+    const installPlist =
+      `${root}/Library/LaunchDaemons/com.bridgeforteams.runner.plist`;
+    const config = `${root}/runner.json`;
+    await buildRunner(binary);
+    await mkdir(binDir, { recursive: true });
+    await mkdir(new URL(".", `file://${installPlist}`).pathname, {
+      recursive: true,
     });
-    try {
-      const binary = `${buildRoot}/bft-runner`;
-      await buildRunner(binary);
-      await t.step(
-        "applies an exact URL, digest, and size and reports the observed digest",
-        () => runVerifiedConnectorUpdate(binary),
+    await writeFile(sourcePlist, "plist\n");
+    await writeFile(installPlist, "plist\n");
+    await writeExecutable(
+      `${binDir}/launchctl`,
+      [
+        "#!/bin/sh",
+        `printf '%s\\n' "$*" >> ${shellQuote(launchctlLog)}`,
+        'if [ "$*" = "bootout system/com.bridgeforteams.runner" ]; then exit 0; fi',
+        "exit 42",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(
+      config,
+      JSON.stringify({
+        api_base_url: "http://127.0.0.1:1",
+        org_id: "org-e2e",
+        runner_token: "runner-token",
+        paths: {
+          state_dir: `${root}/state`,
+          runner_install_status: `${root}/runner-install-status.json`,
+        },
+        launchd: {
+          label: "com.bridgeforteams.runner",
+          domain: "system",
+          source_plist: sourcePlist,
+          install_plist: installPlist,
+        },
+      }),
+    );
+
+    const result = await run(
+      binary,
+      ["service", "stop", "--config", config],
+      { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    );
+
+    if (result.code === 0) {
+      throw new Error(
+        `system service stop unexpectedly succeeded:\n${result.combined}`,
       );
-      await t.step(
-        "does not download an artifact whose digest is already installed",
-        () => runSameDigestNoop(binary),
-      );
-      await t.step(
-        "rejects corrupt bytes without replacing the installed connector",
-        () => runRejectedConnectorUpdate(binary, "corrupt_bytes"),
-      );
-      await t.step(
-        "rolls back when the staged connector fails its health probe",
-        () => runRejectedConnectorUpdate(binary, "health_probe"),
-      );
-    } finally {
-      await Deno.remove(buildRoot, { recursive: true }).catch(() => {});
     }
-  },
+    assertIncludes(
+      result.combined,
+      "service.system_administrator_action_required",
+    );
+    assertIncludes(result.combined, "administrator");
+    assertIncludes(
+      result.combined,
+      "agent-vmm-service-executor stop --job runner",
+    );
+    if (await pathExists(launchctlLog)) {
+      throw new Error("unprivileged service stop invoked launchctl");
+    }
+  } finally {
+    await rm(root, { recursive: true }).catch(() => {});
+  }
 });
+
+describe(
+  "BFT runner applies only exact connector artifacts and preserves continuity",
+  () => {
+    let buildRoot: string;
+    let binary: string;
+    beforeAll(async () => {
+      buildRoot = await mkdtemp(join(tmpdir(), "bft-runner-update-build-"));
+      binary = `${buildRoot}/bft-runner`;
+      await buildRunner(binary);
+    });
+    afterAll(async () => {
+      await rm(buildRoot, { recursive: true }).catch(() => {});
+    });
+
+    test(
+      "applies an exact URL, digest, and size and reports the observed digest",
+      () => runVerifiedConnectorUpdate(binary),
+    );
+    test(
+      "does not download an artifact whose digest is already installed",
+      () => runSameDigestNoop(binary),
+    );
+    test(
+      "rejects corrupt bytes without replacing the installed connector",
+      () => runRejectedConnectorUpdate(binary, "corrupt_bytes"),
+    );
+    test(
+      "rolls back when the staged connector fails its health probe",
+      () => runRejectedConnectorUpdate(binary, "health_probe"),
+    );
+  },
+);
 
 async function runVerifiedConnectorUpdate(binary: string) {
-  const root = await Deno.makeTempDir({ prefix: "bft-runner-update-" });
+  const root = await mkdtemp(join(tmpdir(), "bft-runner-update-"));
   const heartbeatDigests: Array<string | undefined> = [];
   const targetVersion = "connector-e2e-v2";
   const artifact = versionedConnectorScript(targetVersion);
   const artifactSHA = await sha256Hex(new TextEncoder().encode(artifact));
   let heartbeatCount = 0;
-  const artifactServer = Deno.serve(
-    { hostname: "127.0.0.1", port: 0, onListen: () => {} },
-    (request) => {
+  const artifactServer = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) => {
       if (new URL(request.url).pathname === "/connector-v2") {
         return new Response(artifact, { status: 200 });
       }
       return new Response("not found", { status: 404 });
     },
-  );
+  });
   const artifactURL = `${serverURL(artifactServer)}/connector-v2`;
-  const server = Deno.serve(
-    { hostname: "127.0.0.1", port: 0, onListen: () => {} },
-    async (request): Promise<Response> => {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request): Promise<Response> => {
       const url = new URL(request.url);
       const body = request.method === "POST"
         ? JSON.parse((await request.text()) || "{}")
@@ -812,7 +822,7 @@ async function runVerifiedConnectorUpdate(binary: string) {
       return activeProvisionRequestRead(request, url) ??
         new Response("not found", { status: 404 });
     },
-  );
+  });
   try {
     const connector = `${root}/salix-connect`;
     const config = `${root}/runner.json`;
@@ -837,7 +847,7 @@ async function runVerifiedConnectorUpdate(binary: string) {
     assertEquals(
       heartbeatDigests,
       [
-        await sha256Hex(await Deno.readFile(`${connector}.previous`)),
+        await sha256Hex(await readFile(`${connector}.previous`)),
         artifactSHA,
       ],
       result.combined,
@@ -845,25 +855,26 @@ async function runVerifiedConnectorUpdate(binary: string) {
     const version = await run(connector, ["version", "--json"]);
     assertEquals(JSON.parse(version.stdout).version, targetVersion);
   } finally {
-    await server.shutdown();
-    await artifactServer.shutdown();
-    await Deno.remove(root, { recursive: true }).catch(() => {});
+    await server.stop();
+    await artifactServer.stop();
+    await rm(root, { recursive: true }).catch(() => {});
   }
 }
 
 async function runSameDigestNoop(binary: string) {
-  const root = await Deno.makeTempDir({ prefix: "bft-runner-update-noop-" });
+  const root = await mkdtemp(join(tmpdir(), "bft-runner-update-noop-"));
   const artifact = versionedConnectorScript("connector-e2e-v1");
   const artifactBytes = new TextEncoder().encode(artifact);
   const artifactSHA = await sha256Hex(artifactBytes);
   let artifactRequests = 0;
-  const artifactServer = Deno.serve(
-    { hostname: "127.0.0.1", port: 0, onListen: () => {} },
-    () => {
+  const artifactServer = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => {
       artifactRequests++;
       return new Response(artifact);
     },
-  );
+  });
   const server = updateServer({
     artifactURL: `${serverURL(artifactServer)}/connector-v1`,
     artifactSHA,
@@ -874,7 +885,7 @@ async function runSameDigestNoop(binary: string) {
     const config = `${root}/runner.json`;
     await writeExecutable(connector, artifact);
     await writeRunnerConfig(config, root, connector, serverURL(server));
-    const before = await sha256Hex(await Deno.readFile(connector));
+    const before = await sha256Hex(await readFile(connector));
 
     const result = await run(binary, [
       "run",
@@ -889,11 +900,11 @@ async function runSameDigestNoop(binary: string) {
 
     assertEquals(result.code, 0, result.combined);
     assertEquals(artifactRequests, 0, result.combined);
-    assertEquals(await sha256Hex(await Deno.readFile(connector)), before);
+    assertEquals(await sha256Hex(await readFile(connector)), before);
   } finally {
-    await server.shutdown();
-    await artifactServer.shutdown();
-    await Deno.remove(root, { recursive: true }).catch(() => {});
+    await server.stop();
+    await artifactServer.stop();
+    await rm(root, { recursive: true }).catch(() => {});
   }
 }
 
@@ -901,9 +912,7 @@ async function runRejectedConnectorUpdate(
   binary: string,
   mode: "corrupt_bytes" | "health_probe",
 ) {
-  const root = await Deno.makeTempDir({
-    prefix: `bft-runner-update-${mode}-`,
-  });
+  const root = await mkdtemp(join(tmpdir(), `bft-runner-update-${mode}-`));
   const advertisedArtifact = mode === "health_probe"
     ? "#!/bin/sh\nexit 23\n"
     : versionedConnectorScript("connector-e2e-v2");
@@ -913,16 +922,17 @@ async function runRejectedConnectorUpdate(
   const advertisedBytes = new TextEncoder().encode(advertisedArtifact);
   const artifactSHA = await sha256Hex(advertisedBytes);
   let artifactRequests = 0;
-  const artifactServer = Deno.serve(
-    { hostname: "127.0.0.1", port: 0, onListen: () => {} },
-    (request) => {
+  const artifactServer = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) => {
       if (new URL(request.url).pathname === "/connector-v2") {
         artifactRequests++;
         return new Response(servedArtifact, { status: 200 });
       }
       return new Response("not found", { status: 404 });
     },
-  );
+  });
   const server = updateServer({
     artifactURL: `${serverURL(artifactServer)}/connector-v2`,
     artifactSHA,
@@ -933,7 +943,7 @@ async function runRejectedConnectorUpdate(
     const config = `${root}/runner.json`;
     await writeVersionedConnector(connector, "connector-e2e-v1");
     await writeRunnerConfig(config, root, connector, serverURL(server));
-    const before = await sha256Hex(await Deno.readFile(connector));
+    const before = await sha256Hex(await readFile(connector));
 
     const result = await run(
       binary,
@@ -951,13 +961,13 @@ async function runRejectedConnectorUpdate(
 
     assertEquals(result.code, 0, result.combined);
     assertEquals(artifactRequests, 1, result.combined);
-    assertEquals(await sha256Hex(await Deno.readFile(connector)), before);
+    assertEquals(await sha256Hex(await readFile(connector)), before);
     const version = await run(connector, ["version", "--json"]);
     assertEquals(JSON.parse(version.stdout).version, "connector-e2e-v1");
   } finally {
-    await server.shutdown();
-    await artifactServer.shutdown();
-    await Deno.remove(root, { recursive: true }).catch(() => {});
+    await server.stop();
+    await artifactServer.stop();
+    await rm(root, { recursive: true }).catch(() => {});
   }
 }
 
@@ -966,9 +976,10 @@ function updateServer(target: {
   artifactSHA: string;
   artifactSize: number;
 }) {
-  return Deno.serve(
-    { hostname: "127.0.0.1", port: 0, onListen: () => {} },
-    async (request): Promise<Response> => {
+  return Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request): Promise<Response> => {
       const url = new URL(request.url);
       await request.text();
       if (url.pathname === "/v1/orgs/org-e2e/runners") {
@@ -993,7 +1004,7 @@ function updateServer(target: {
       return activeProvisionRequestRead(request, url) ??
         new Response("not found", { status: 404 });
     },
-  );
+  });
 }
 
 async function buildRunner(path: string) {
@@ -1012,8 +1023,8 @@ async function writeRunnerConfig(
   connector: string,
   apiBaseURL: string,
 ) {
-  await Deno.mkdir(`${root}/state`, { recursive: true });
-  await Deno.writeTextFile(
+  await mkdir(`${root}/state`, { recursive: true });
+  await writeFile(
     path,
     JSON.stringify({
       api_base_url: apiBaseURL,
@@ -1070,9 +1081,9 @@ function versionedConnectorScript(version: string) {
 async function writeStoredConnector(root: string, requestID: string) {
   const directory = `${root}/state/connectors`;
   const connectorRoot = `${root}/connector-root`;
-  await Deno.mkdir(directory, { recursive: true });
-  await Deno.mkdir(connectorRoot, { recursive: true });
-  await Deno.writeTextFile(
+  await mkdir(directory, { recursive: true });
+  await mkdir(connectorRoot, { recursive: true });
+  await writeFile(
     `${directory}/${requestID}.json`,
     JSON.stringify({
       connector: {
@@ -1085,7 +1096,7 @@ async function writeStoredConnector(root: string, requestID: string) {
 
 function processAlive(pid: number) {
   try {
-    Deno.kill(pid, "SIGCONT");
+    process.kill(pid, "SIGCONT");
     return true;
   } catch {
     return false;
@@ -1093,12 +1104,12 @@ function processAlive(pid: number) {
 }
 
 async function killRecordedProcesses(path: string) {
-  const raw = await Deno.readTextFile(path).catch(() => "");
+  const raw = await readFile(path, "utf8").catch(() => "");
   for (const value of raw.trim().split("\n")) {
     const pid = Number(value);
     if (Number.isInteger(pid) && pid > 0) {
       try {
-        Deno.kill(pid, "SIGKILL");
+        process.kill(pid, "SIGKILL");
       } catch {
         // Process already exited.
       }
@@ -1111,13 +1122,12 @@ async function writeVersionedConnector(path: string, version: string) {
 }
 
 async function writeExecutable(path: string, body: string) {
-  await Deno.writeTextFile(path, body);
-  await Deno.chmod(path, 0o755);
+  await writeFile(path, body);
+  await chmod(path, 0o755);
 }
 
-function serverURL(server: Deno.HttpServer) {
-  const address = server.addr as Deno.NetAddr;
-  return `http://127.0.0.1:${address.port}`;
+function serverURL(server: Bun.Server<undefined>) {
+  return `http://127.0.0.1:${server.port}`;
 }
 
 async function run(
@@ -1126,17 +1136,19 @@ async function run(
   env?: Record<string, string>,
   cwd?: string,
 ) {
-  const output = await new Deno.Command(command, {
-    args,
+  const child = Bun.spawn([command, ...args], {
     cwd,
-    env,
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  const stdout = new TextDecoder().decode(output.stdout);
-  const stderr = new TextDecoder().decode(output.stderr);
+    env: { ...process.env, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
   return {
-    code: output.code,
+    code,
     stdout,
     stderr,
     combined: stdout + stderr,
@@ -1166,10 +1178,10 @@ function assertIncludes(haystack: string, needle: string) {
 
 async function pathExists(path: string) {
   try {
-    await Deno.lstat(path);
+    await lstat(path);
     return true;
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return false;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
 }

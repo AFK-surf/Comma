@@ -4,7 +4,7 @@ defmodule SalixIM.TestSupport.ConversationDelivery do
   # Payload-oriented IM tests replace the runtime boundary. Runtime admission,
   # crash recovery and atomic progress use real Sessions in ConversationLogTest.
   def notify(module, agent_id, source) do
-    :global.trans({{__MODULE__, source}, self()}, fn ->
+    SystemsRuntime.Proc.global_trans({{__MODULE__, source}, SystemsRuntime.Proc.self()}, fn ->
       alias SalixIM.ConversationSource
       alias SalixStore.CasRecord
       key = "test/conversation-delivery/#{source.participant_id}"
@@ -37,7 +37,7 @@ defmodule SalixIM.TestSupport.ConversationDelivery do
       {:ok, entry}
     else
       _error when attempts > 1 ->
-        Process.sleep(100)
+        SystemsRuntime.Proc.sleep(100)
         admit(module, agent, binding, message, attempts - 1)
 
       error ->

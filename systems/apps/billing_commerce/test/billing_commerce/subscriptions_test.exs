@@ -1,5 +1,5 @@
 defmodule BillingCommerce.SubscriptionsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias BillingCommerce.{PackageCatalog, Subscriptions}
 
@@ -11,10 +11,14 @@ defmodule BillingCommerce.SubscriptionsTest do
       start: {Agent, :start_link, [fn -> [] end, [name: __MODULE__.ProjectionLog]]}
     })
 
-    Application.put_env(:billing_commerce, :billing_source_typed_sink, __MODULE__.ProjectionSink)
+    SystemsRuntime.put_env(
+      :billing_commerce,
+      :billing_source_typed_sink,
+      __MODULE__.ProjectionSink
+    )
 
     on_exit(fn ->
-      Application.delete_env(:billing_commerce, :billing_source_typed_sink)
+      SystemsRuntime.delete_env(:billing_commerce, :billing_source_typed_sink)
     end)
 
     seed_package("comma_monthly", "comma")
@@ -194,7 +198,12 @@ defmodule BillingCommerce.SubscriptionsTest do
   end
 
   test "one-time purchase cannot mutate an existing account to another surface" do
-    insert_billing_account!("example-ba-wsp_existing_purchase", "comma", "workspace", "wsp_existing")
+    insert_billing_account!(
+      "example-ba-wsp_existing_purchase",
+      "comma",
+      "workspace",
+      "wsp_existing"
+    )
 
     attrs =
       purchase_attrs(%{

@@ -12,6 +12,9 @@ import { chatSmokeWorkspace, startChatSmokeStub } from "../../../e2e/p0/chat-stu
 
 const slackHref = "https://comma-local.slack.com/archives/C01234567/p1787900000000200";
 const githubHref = "https://github.com/AFK-surf/Comma/pull/845";
+const outlookEventHref = "https://outlook.office.com/calendar/item/AAEv1";
+const outlookInboxHref = "https://outlook.office.com/mail/inbox";
+const outlookStartsAt = Date.UTC(2026, 9, 6, 9);
 
 const slackPreview = {
   kind: "slack_message",
@@ -22,19 +25,46 @@ const slackPreview = {
   postedAt: 1_787_900_000_000,
 };
 
-test("hovering a rich chat link shows the Slack preview card", async ({ page }) => {
+test("hovering rich chat links shows the Slack and Outlook preview cards", async ({
+  page,
+}) => {
   const stub = await startChatSmokeStub({
-    assistantReply: `请看 [deploy update](${slackHref}) 这条消息。`,
+    assistantReply: `请看 [deploy update](${slackHref}) 这条消息。\n\n[planning event](${outlookEventHref})\n\n[mail inbox](${outlookInboxHref})`,
   });
   let previewRequests = 0;
+  const outlookRequests = new Map<string, number>();
+  let inboxAnswered!: () => void;
+  const inboxRead = new Promise<void>((resolve) => {
+    inboxAnswered = resolve;
+  });
 
   try {
     await page.route("**/recommendations/link-preview**", async (route) => {
-      previewRequests += 1;
       const url = new URL(route.request().url());
       expect(url.pathname).toContain(`/v1/comma/workspaces/${chatSmokeWorkspace.id}/`);
-      expect(url.searchParams.get("href")).toBe(slackHref);
-      await route.fulfill({ json: slackPreview });
+      const href = url.searchParams.get("href") ?? "";
+      if (href === slackHref) {
+        previewRequests += 1;
+        await route.fulfill({ json: slackPreview });
+        return;
+      }
+      outlookRequests.set(href, (outlookRequests.get(href) ?? 0) + 1);
+      if (href === outlookEventHref) {
+        await route.fulfill({
+          json: {
+            kind: "outlook_event",
+            href: outlookEventHref,
+            title: "Quarterly planning",
+            excerpt: "Agenda and owners",
+            sender: null,
+            startsAt: outlookStartsAt,
+          },
+        });
+        return;
+      }
+      expect(href).toBe(outlookInboxHref);
+      await route.fulfill({ status: 404, json: { error: "not_found" } });
+      inboxAnswered();
     });
     await installBrowserTestSession(page, {
       apiBaseUrl: stub.baseUrl,
@@ -59,18 +89,100 @@ test("hovering a rich chat link shows the Slack preview card", async ({ page }) 
 
     // The decorator only wraps links once the stream is final, so the first
     // hover can land while the turn is still settling; retry from rest until
-    // the card answers. Repeat hovers hit the preview cache, not the network.
+    // the card answers.
     const card = page.getByTestId("recommendation-link-card");
     await expect(async () => {
       await prompt.hover();
       await link.hover();
-      await expect(card).toBeVisible({ timeout: 1500 });
+      await expect(card).toBeVisible();
     }).toPass();
     await expect(card).toHaveAttribute("data-kind", "slack_message");
     await expect(card).toContainText("#release");
     await expect(card).toContainText("Are we go for the 0.9 release?");
     await expect(card).toContainText("dana");
-    expect(previewRequests).toBe(1);
+
+    // A private card is never reused: each open reauthorizes server-side.
+    const settledRequests = previewRequests;
+    expect(settledRequests).toBeGreaterThanOrEqual(1);
+    await prompt.hover();
+    await expect(card).toHaveCount(0);
+    await link.hover();
+    await expect(card).toContainText("Are we go for the 0.9 release?");
+    expect(previewRequests).toBe(settledRequests + 1);
+
+    // An Outlook event the member's source collected shows its card, with the
+    // start time localized rather than Graph's raw string.
+    const eventLink = content.getByRole("link", { name: "planning event" });
+    await prompt.hover();
+    await expect(card).toHaveCount(0);
+    await eventLink.hover();
+    await expect(card).toHaveAttribute("data-kind", "outlook_event");
+    await expect(card).toContainText("Quarterly planning");
+    await expect(card).toContainText("Agenda and owners");
+    await expect(card.locator("time")).toHaveAttribute(
+      "datetime",
+      new Date(outlookStartsAt).toISOString()
+    );
+
+    // An Outlook URL with no collected item answers 404; that answer carries
+    // no content, so it is remembered and a re-hover does not ask again.
+    const inboxLink = content.getByRole("link", { name: "mail inbox" });
+    const hoverCard = page.getByRole("tooltip");
+    await prompt.hover();
+    await expect(hoverCard).toHaveCount(0);
+    await inboxLink.hover();
+    await inboxRead;
+    await expect(hoverCard).toContainText("outlook.office.com/mail/inbox");
+    await prompt.hover();
+    await expect(hoverCard).toHaveCount(0);
+    await inboxLink.hover();
+    await expect(hoverCard).toContainText("outlook.office.com/mail/inbox");
+    await expect(page.getByTestId("recommendation-link-card-skeleton")).toHaveCount(0);
+    expect(outlookRequests.get(outlookInboxHref)).toBe(1);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("a link with no rich preview still shows its destination card without a read", async ({
+  page,
+}) => {
+  const docsHref = "https://docs.example.com/guide/setup";
+  const stub = await startChatSmokeStub({
+    assistantReply: `请看 [setup guide](${docsHref}) 这份文档。`,
+  });
+  let previewRequests = 0;
+
+  try {
+    await page.route("**/recommendations/link-preview**", async (route) => {
+      previewRequests += 1;
+      await route.fulfill({ status: 404, json: { error: "not_found" } });
+    });
+    await installBrowserTestSession(page, {
+      apiBaseUrl: stub.baseUrl,
+      email: "comma-link-preview-plain@comma.local",
+      token: "comma_sess_link_preview_plain",
+    });
+    await page.goto("/");
+
+    const content = page.getByRole("region", { name: "Content" });
+    const prompt = content.getByRole("textbox", { name: "AI prompt" });
+    await prompt.fill("看下文档");
+    await content.getByRole("button", { name: "Send" }).click();
+
+    const link = content.getByRole("link", { name: "setup guide" });
+    await expect(link).toBeVisible();
+
+    const hoverCard = page.getByRole("tooltip");
+    await expect(async () => {
+      await prompt.hover();
+      await link.hover();
+      await expect(hoverCard).toContainText("docs.example.com/guide/setup");
+    }).toPass();
+    await expect(hoverCard).toContainText("setup guide");
+    await expect(page.getByTestId("recommendation-link-card-skeleton")).toHaveCount(0);
+    // The server has no preview for this shape, so hovering never asks.
+    expect(previewRequests).toBe(0);
   } finally {
     await stub.close();
   }
@@ -111,7 +223,7 @@ test("a rich link opens on the card's skeleton and settles into the card", async
     await expect(async () => {
       await prompt.hover();
       await link.hover();
-      await expect(skeleton).toBeVisible({ timeout: 1500 });
+      await expect(skeleton).toBeVisible();
     }).toPass();
 
     // The placeholder is the card it is about to become: same width, and the
@@ -134,66 +246,6 @@ test("a rich link opens on the card's skeleton and settles into the card", async
     // a hard cut.
     await expect(card).toHaveCSS("transition-property", "opacity, filter, transform");
     await expect(card).toHaveCSS("transition-duration", "0.15s, 0.15s, 0.15s");
-  } finally {
-    await stub.close();
-  }
-});
-
-test("a link the server cannot read settles on the generic card and stays there on re-hover", async ({
-  page,
-}) => {
-  const stub = await startChatSmokeStub({
-    assistantReply: `请看 [pull request](${githubHref}) 这个 PR。`,
-  });
-  let previewRequests = 0;
-
-  try {
-    // A GitHub PR the connected account cannot see: the provider read fails
-    // and the server answers 503.
-    await page.route("**/recommendations/link-preview**", async (route) => {
-      previewRequests += 1;
-      await route.fulfill({ status: 503, json: { error: "workspace_unavailable" } });
-    });
-    await installBrowserTestSession(page, {
-      apiBaseUrl: stub.baseUrl,
-      email: "comma-link-preview-failed@comma.local",
-      token: "comma_sess_link_preview_failed",
-    });
-    await page.goto("/");
-
-    const content = page.getByRole("region", { name: "Content" });
-    const prompt = content.getByRole("textbox", { name: "AI prompt" });
-    await prompt.fill("看下 PR");
-    await content.getByRole("button", { name: "Send" }).click();
-
-    const link = content.getByRole("link", { name: "pull request" });
-    await expect(link).toBeVisible();
-
-    const hoverCard = page.getByRole("tooltip");
-    const skeleton = page.getByTestId("recommendation-link-card-skeleton");
-    await expect(async () => {
-      await prompt.hover();
-      await link.hover();
-      await expect(hoverCard).toContainText(
-        "GitHub · github.com/AFK-surf/Comma/pull/845",
-        {
-          timeout: 1500,
-        }
-      );
-    }).toPass();
-    await expect(skeleton).toHaveCount(0);
-    expect(previewRequests).toBe(1);
-
-    // The failure is remembered: hovering again opens straight on the generic
-    // card, with no skeleton and no second request.
-    await prompt.hover();
-    await expect(hoverCard).toHaveCount(0);
-    await link.hover();
-    await expect(hoverCard).toContainText(
-      "GitHub · github.com/AFK-surf/Comma/pull/845"
-    );
-    await expect(skeleton).toHaveCount(0);
-    expect(previewRequests).toBe(1);
   } finally {
     await stub.close();
   }

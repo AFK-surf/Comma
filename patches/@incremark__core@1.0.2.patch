@@ -1,0 +1,13 @@
+diff --git a/dist/index.js b/dist/index.js
+index faa5fdd7802e63ed4af212be76e705ce7f7098db..d9e63edc5ca527924895aaa5c03aacb6b78972be 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -500,7 +500,7 @@ var BoundaryDetector = class {
+       tempContext = updateContext(line, tempContext, this.containerConfig);
+       this.contextCache.set(i, { ...tempContext });
+       if (wasInFencedCode && !tempContext.inFencedCode) {
+-        if (i < lines.length - 1) {
++        if (i < lines.length - 1 && !tempContext.inList) {
+           stableLine = i;
+           stableContext = { ...tempContext };
+         }

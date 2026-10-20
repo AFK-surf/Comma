@@ -1,7 +1,7 @@
 defmodule SystemsObservability.Metrics do
   @moduledoc "The VM-local metric definition composition root."
 
-  @allowed_labels ~w(component surface endpoint route method status_class provider profile model_key operation outcome result repo queue state kind sink reason trigger transport mode phase source_mode lane variant)a
+  @allowed_labels ~w(component surface endpoint route method status_class provider profile model_key operation outcome result repo queue state kind sink reason trigger transport mode phase source_mode lane variant canary)a
 
   def enabled_metrics(subsystems) do
     SystemsObservability.Telemetry.metrics()

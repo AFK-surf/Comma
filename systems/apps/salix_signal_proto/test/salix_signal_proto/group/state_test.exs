@@ -3,7 +3,7 @@ defmodule SalixSignalProto.Group.StateTest do
   # "server" here is a test server built from CRS-09a: it issues
   # credentials, fills ciphertexts into accepted changes and signs them with
   # its notary key, as CRS-09b sections 4.6 and 5.2 describe.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.Group.{
     Change,

@@ -5,6 +5,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import localGroupSelectors from "../../vite/comma-tailwind";
 import { commaBrandHtmlPlugin } from "../../vite/comma-brand-html";
+import { commaLogoAnimationMarkupPlugin } from "../../vite/comma-logo-animation-markup";
 import { commaI18nVitePlugin } from "@comma/i18n/vite";
 import { getCommaReleaseConfig } from "./src/release-config";
 import { layoutInspectorSourcePlugin } from "../../packages/layout-inspector/src/vite";
@@ -36,6 +37,13 @@ export default defineConfig({
       ),
       "@comma/chat-contract": resolve("../../packages/chat-contract/src/index.ts"),
       "@comma/config": resolve("../../packages/config/src/index.ts"),
+      "@comma/core/contract": resolve("../../packages/core/src/contract.ts"),
+      "@comma/core/chat": resolve("../../packages/core/src/chat/public.ts"),
+      "@comma/core/markdown": resolve("../../packages/core/src/markdown/index.ts"),
+      "@comma/core/api-schemas": resolve(
+        "../../packages/core/src/comma/api-schemas.ts"
+      ),
+      "@comma/core-client": resolve("../../packages/core-client/src/index.tsx"),
       "@comma/i18n/react": resolve("../../packages/i18n/src/react.tsx"),
       "@comma/i18n": resolve("../../packages/i18n/src/index.ts"),
       "@comma/native-bridge": resolve("../../packages/native-bridge/src/index.ts"),
@@ -43,7 +51,7 @@ export default defineConfig({
         "../../packages/session-contract/src/index.ts"
       ),
       "@comma/ui/styles.css": resolve("../../packages/ui/src/styles.css"),
-      "@comma/ui": resolve("../../packages/ui/src/index.ts"),
+      "@comma/ui": resolve("../../packages/ui/src"),
     },
   },
   plugins: [
@@ -55,6 +63,7 @@ export default defineConfig({
       channel: releaseConfig.flavor,
       productName: releaseConfig.productName,
     }),
+    commaLogoAnimationMarkupPlugin(),
     react(),
     tailwindcss(),
     localGroupSelectors(),

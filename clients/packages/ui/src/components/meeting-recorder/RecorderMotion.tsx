@@ -1,5 +1,10 @@
 import { Component, createRef, type ReactNode } from "react";
-import { isReducedMotionEnabled, motionDuration, motionEasing } from "../../tokens";
+import {
+  cssTimeMs,
+  isReducedMotionEnabled,
+  motionDuration,
+  motionEasing,
+} from "../../tokens";
 
 type Pose = {
   bounds: DOMRect;
@@ -138,7 +143,7 @@ export class RecorderMotion extends Component<Props> {
     const card = this.root.current.querySelector<HTMLElement>(
       '[data-slot="meeting-recorder"]'
     );
-    const resizeDuration = Number.parseFloat(
+    const resizeDuration = cssTimeMs(
       getComputedStyle(this.root.current).getPropertyValue("--resize-dur")
     );
     const previousCard = snapshot.get("card");

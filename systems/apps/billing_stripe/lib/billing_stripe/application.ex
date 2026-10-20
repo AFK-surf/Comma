@@ -5,6 +5,6 @@ defmodule BillingStripe.Application do
 
   @impl true
   def start(_type, _args) do
-    Supervisor.start_link([], strategy: :one_for_one, name: BillingStripe.Supervisor)
+    SystemsRuntime.Supervisor.start_link([], strategy: :one_for_one, name: BillingStripe.Supervisor)
   end
 end

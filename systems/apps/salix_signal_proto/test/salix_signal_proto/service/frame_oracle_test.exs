@@ -5,7 +5,7 @@ defmodule SalixSignalProto.Service.FrameOracleTest do
   # response messages; Comma decodes the same message inside its frame. Strings
   # are valid UTF-8 because the oracle's test server cannot send anything
   # else. Run with `--include signal_oracle` and COMMA_SIGNAL_ORACLE=host:port.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.Service.Frame

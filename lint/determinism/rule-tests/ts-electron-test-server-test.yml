@@ -1,0 +1,12 @@
+id: ts-electron-test-server
+valid:
+  - |
+    const server = await startElectronTestServer((request, response) => response.end("ok"));
+  # A fixture server that builds what it serves is not an HTTP server made by hand.
+  - |
+    const server = await createBuiltFixtureServer({ root });
+invalid:
+  - |
+    const server = createServer((request, response) => response.end("ok"));
+  - |
+    const resources = createHttpsServer({ key, cert }, handler);

@@ -54,7 +54,7 @@ defmodule Comma.Auth.GoogleClaims do
       email_snapshot: claims.email,
       email_verified: claims.email_verified == true,
       hosted_domain: valid_hosted_domain(claims.hosted_domain),
-      last_authenticated_at: DateTime.utc_now()
+      last_authenticated_at: SystemsClock.utc_now()
     }
   end
 

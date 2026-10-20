@@ -37,7 +37,7 @@ describe("BFT router", () => {
     expect(matchRoute("/orgs/acme/projects/%E0%A4%A")).toEqual({ name: "unknown" });
   });
 
-  it("serves an Agent Swarm's Agents, Devices, Tasks and Settings, and opens its retired pages", () => {
+  it("serves every Agent Swarm page, and opens its retired pages", () => {
     const at = { org: "acme", project: "p1" };
     expect(matchRoute("/orgs/acme/projects/p1/tasks")).toEqual({
       name: "project-tasks",
@@ -77,6 +77,15 @@ describe("BFT router", () => {
     expect(matchRoute("/orgs/acme/projects/p1/agents/a1/config")).toEqual({
       name: "unknown",
     });
+    // A task opens in place; the retired session inspector is not a page.
+    expect(matchRoute("/orgs/acme/projects/p1/tasks/cnv1%20a/")).toEqual({
+      name: "project-task",
+      ...at,
+      task: "cnv1 a",
+    });
+    expect(matchRoute("/orgs/acme/projects/p1/tasks/cnv1_a/session")).toEqual({
+      name: "unknown",
+    });
     expect(matchRoute("/orgs/acme/projects/p1/devices/")).toEqual({
       name: "project-devices",
       ...at,
@@ -84,9 +93,32 @@ describe("BFT router", () => {
     expect(matchRoute("/orgs/acme/projects/p1/devices/dev1")).toEqual({
       name: "unknown",
     });
-    // Task detail stays a LiveView page.
-    expect(matchRoute("/orgs/acme/projects/p1/tasks/cnv1_a")).toEqual({
+    // A plugin's address opens its page under Plugins.
+    expect(matchRoute("/orgs/acme/projects/p1/plugins/")).toEqual({
+      name: "project-plugins",
+      ...at,
+    });
+    expect(matchRoute("/orgs/acme/projects/p1/plugins/android%2Dcontrol")).toEqual({
+      name: "project-plugins",
+      ...at,
+      plugin: "android-control",
+    });
+    expect(matchRoute("/orgs/acme/projects/p1/plugins/linear/edit")).toEqual({
       name: "unknown",
+    });
+    expect(matchRoute("/orgs/acme/projects/p1/skills")).toEqual({
+      name: "project-skills",
+      ...at,
+    });
+    // Integrations is the messaging section of Connections.
+    expect(matchRoute("/orgs/acme/projects/p1/connections/")).toEqual({
+      name: "project-connections",
+      ...at,
+    });
+    expect(matchRoute("/orgs/acme/projects/p1/integrations")).toEqual({
+      name: "project-connections",
+      ...at,
+      retired: true,
     });
   });
 
@@ -197,7 +229,7 @@ describe("BFT router", () => {
       name: "org-settings",
       org: "acme",
       page: "models",
-      legacySection: "templates",
+      legacySection: "allowed",
     });
     expect(matchRoute("/orgs/acme/settings/subscriptions/")).toEqual({
       name: "org-settings",
@@ -218,5 +250,22 @@ describe("BFT router", () => {
     expect(matchRoute("/cli/device-login/ABCD2345/approve")).toEqual({
       name: "unknown",
     });
+  });
+
+  it("serves each onboarding wizard step outside any organization", () => {
+    expect(matchRoute("/onboarding")).toEqual({
+      name: "onboarding",
+      step: "capabilities",
+    });
+    expect(matchRoute("/onboarding/profile/")).toEqual({
+      name: "onboarding",
+      step: "profile",
+    });
+    expect(matchRoute("/onboarding/integrations")).toEqual({
+      name: "onboarding",
+      step: "integrations",
+    });
+    // Phoenix redirects the retired tasks step; the SPA does not own it.
+    expect(matchRoute("/onboarding/tasks")).toEqual({ name: "unknown" });
   });
 });

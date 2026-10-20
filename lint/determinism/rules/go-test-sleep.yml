@@ -1,0 +1,27 @@
+id: go-test-sleep
+language: go
+severity: error
+message: "A test sleeps real time outside a synctest bubble."
+note: |
+  Run the test in synctest.Test, where time is virtual and synctest.Wait
+  waits until every goroutine is blocked, or wait for the event itself.
+metadata:
+  category: sleep
+rule:
+  all:
+    - kind: selector_expression
+    - regex: "^time\\.Sleep$"
+
+    - not:
+        inside:
+          kind: call_expression
+          has:
+            field: function
+            regex: "^synctest\\.(Test|Run)$"
+          stopBy: end
+files:
+  - "**/*_test.go"
+# Live tests reach real services and skip unless their credentials are given;
+# CI never runs them.
+ignores:
+  - "**/*_live_test.go"

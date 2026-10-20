@@ -14,6 +14,8 @@ const zoomIcon = new URL("./fixtures/zoom.png", import.meta.url).href;
 import type { MeetingRecorderPhase, MeetingRecorderProps } from "./types";
 
 const meta = {
+  // Draws the recording waveform on a canvas.
+  tags: ["browser"],
   title: "App components/Meeting Recorder",
   component: MeetingRecorder,
   parameters: {

@@ -60,11 +60,14 @@ describe("recommendation contract", () => {
       ...snapshot,
       prompts: { s1r1: { ...snapshot.prompts.s1r1, sourceUrl: link.href } },
     };
+    const withUrlDecoded = recommendationSnapshotSchema.parse(withUrl);
     const withUrlCard = recommendationGeneratedCardSchema.parse(
-      recommendationSnapshotSchema.parse(withUrl).cards[0]
+      withUrlDecoded.cards[0]
     );
     expect(withUrlCard.items[0]!.action).toMatchObject({
       prompt: "Verify the fix\n\nhttps://example.com/task",
+      sourceId: "slack",
+      sourceUrl: "https://example.com/task",
     });
     expect(
       recommendationSnapshotSchema.safeParse({
@@ -90,7 +93,11 @@ describe("recommendation contract", () => {
       memberTask: true,
       prompt: "Verify the fix",
       requiresConfirmation: true,
+      sourceId: "slack",
     });
+    expect(item.action).not.toHaveProperty("sourceUrl");
+    // A decoded snapshot (the core's cached view shape) reads back as it is.
+    expect(recommendationSnapshotSchema.parse(withUrlDecoded)).toEqual(withUrlDecoded);
     expect(decoded.summary[0]).toMatchObject({
       link: {
         label: "Slack source",

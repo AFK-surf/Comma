@@ -2,8 +2,9 @@ defmodule SalixSignal.Account.RegistrationStoreTest do
   # Registration through SalixSignal.Accounts (CRS-02 §3): the new keys are
   # durable before the registration request leaves, a failed request keeps
   # them, and the retry sends the same keys and activates the account.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SystemsClock.Test, scope: ["Elixir.SalixStore", "Elixir.SalixSignal"]
   alias SalixSignal.{Accounts, Storage}
   alias SalixSignal.Service.Response
   alias SalixSignal.Storage.Cipher
@@ -30,13 +31,18 @@ defmodule SalixSignal.Account.RegistrationStoreTest do
       body = opts[:json]
       {:ok, %{id: id, state: :registering}} = Storage.find_account({:number, @number})
       {:ok, %{account: stored}} = Storage.registration(id)
-      send(test, {:request, id, body, Base.encode64(stored.aci.identity.public)})
+
+      SystemsRuntime.Proc.send(
+        test,
+        {:request, id, body, Base.encode64(stored.aci.identity.public)}
+      )
+
       {:ok, response}
     end
   end
 
   test "keys are stored before the request, kept after a failure and sent again" do
-    test = self()
+    test = SystemsRuntime.Proc.self()
     unavailable = %Response{status: 503}
 
     assert {:error, {:unavailable, 503}, id} =

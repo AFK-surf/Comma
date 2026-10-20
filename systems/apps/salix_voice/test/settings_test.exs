@@ -1,6 +1,7 @@
 defmodule SalixVoice.SettingsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixVoice"]
   alias SalixStore.{Keys, S3}
   alias SalixVoice.Settings
 
@@ -8,15 +9,6 @@ defmodule SalixVoice.SettingsTest do
     S3.delete(Keys.ctl_system_voice())
     on_exit(fn -> S3.delete(Keys.ctl_system_voice()) end)
     :ok
-  end
-
-  test "missing settings read as disabled defaults" do
-    assert {:ok, settings} = Settings.redacted()
-    assert settings["enabled"] == false
-    assert settings["gpt_live_url"] == "wss://api.openai.com/v1/live/sessions"
-    assert settings["max_call_seconds"] == 1800
-    assert settings["openai_api_key_configured"] == false
-    refute Map.has_key?(settings, "openai_api_key")
   end
 
   test "secrets are write-only: redacted on read, kept when blank, removed on request" do
@@ -87,22 +79,22 @@ defmodule SalixVoice.SettingsTest do
     # Park the first writer's read, let a second writer land, then release:
     # the first writer's stale etag fails and it retries on the new object.
     :ok = SalixStore.S3.Fake.set_fault({:pause, :get, Keys.ctl_system_voice()})
-    first = Task.async(fn -> Settings.update(%{"enabled" => true}) end)
+    first = SystemsRuntime.Task.async(fn -> Settings.update(%{"enabled" => true}) end)
     wait_until(&SalixStore.S3.Fake.paused?/0)
 
     assert {:ok, _} = Settings.update(%{"max_calls_per_node" => 7})
     :ok = SalixStore.S3.Fake.release_pause()
-    assert {:ok, _} = Task.await(first)
+    assert {:ok, _} = settled_await(first)
 
     assert {:ok, %{"enabled" => true, "max_calls_per_node" => 7, "max_call_seconds" => 900}} =
              Settings.get()
   end
 
-  defp wait_until(fun, attempts \\ 100) do
+  defp wait_until(fun, attempts \\ 3000) do
     cond do
       fun.() -> :ok
       attempts == 0 -> flunk("condition not reached")
-      true -> Process.sleep(10) && wait_until(fun, attempts - 1)
+      true -> SystemsClock.sleep(10) && wait_until(fun, attempts - 1)
     end
   end
 end

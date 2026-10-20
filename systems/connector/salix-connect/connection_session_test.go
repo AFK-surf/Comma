@@ -10,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -55,11 +56,7 @@ func TestConnectionReplacementDetachesBlockedWriteAndServesNewRequests(t *testin
 	}, nil) {
 		t.Fatal("old stream was not admitted")
 	}
-	select {
-	case <-file.started:
-	case <-time.After(time.Second):
-		t.Fatal("old stream did not block in Write")
-	}
+	<-file.started
 
 	responses := make(chan message, 1)
 	newSession := c.claimConnection(context.Background(), func(_ context.Context, m message) error {
@@ -70,13 +67,9 @@ func TestConnectionReplacementDetachesBlockedWriteAndServesNewRequests(t *testin
 	if !newSession.startRequest(message{ID: "new-1", Type: "request", Method: "process_list"}, nil) {
 		t.Fatal("replacement connection did not admit a request")
 	}
-	select {
-	case response := <-responses:
-		if response.Type != "response" || response.ID != "new-1" {
-			t.Fatalf("replacement response = %#v", response)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("blocked old stream delayed replacement request")
+	response := <-responses
+	if response.Type != "response" || response.ID != "new-1" {
+		t.Fatalf("replacement response = %#v", response)
 	}
 	if !old.wait() {
 		t.Fatal("old connection worker did not drain after file cleanup")
@@ -201,11 +194,13 @@ func TestBlockedFilesystemRequestDeadlineDoesNotOwnTransport(t *testing.T) {
 		responses <- msg
 		return nil
 	}
-	session.deadline = func(message) time.Duration { return 20 * time.Millisecond }
+	// The request's deadline has passed before the read starts.
+	session.deadline = func(message) time.Duration { return 0 }
 	if !session.startRequest(message{ID: "blocked-read", Type: "request", Method: "read", Params: map[string]any{"path": path}}, nil) {
 		t.Fatal("blocked read was not admitted")
 	}
-	time.Sleep(50 * time.Millisecond)
+	// Past its deadline, the read waits in the kernel to open the FIFO.
+	waitUntilParked(t, "syscall", "(*connector).methodRead(")
 	select {
 	case err := <-closed:
 		t.Fatalf("request deadline closed transport: %v", err)
@@ -222,13 +217,9 @@ func TestBlockedFilesystemRequestDeadlineDoesNotOwnTransport(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case response := <-responses:
-		if response.ID != "blocked-read" || response.Type != "response" {
-			t.Fatalf("response = %#v", response)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("released filesystem request did not finish")
+	response := <-responses
+	if response.ID != "blocked-read" || response.Type != "response" {
+		t.Fatalf("response = %#v", response)
 	}
 }
 
@@ -267,13 +258,9 @@ func TestCleanupQueueExhaustionIsTerminalForRemoteAndVM(t *testing.T) {
 	}
 	c.enqueueCleanup(io.NopCloser(&zeroReader{}))
 	c.enqueueCleanup(io.NopCloser(&zeroReader{}))
-	select {
-	case err := <-c.fatalErrors:
-		if !isConnectorFatal(err) || !terminalConnectionError(err) {
-			t.Fatalf("cleanup exhaustion was not terminal: %T %v", err, err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("cleanup exhaustion did not report a fatal error")
+	err := <-c.fatalErrors
+	if !isConnectorFatal(err) || !terminalConnectionError(err) {
+		t.Fatalf("cleanup exhaustion was not terminal: %T %v", err, err)
 	}
 }
 
@@ -284,6 +271,9 @@ func (*zeroReader) Read([]byte) (int, error) { return 0, io.EOF }
 type gatedProcessStdin struct {
 	entered chan struct{}
 	release chan struct{}
+	// now is the clock that write deadlines pass on, the one the code under
+	// test reads; with nil, no deadline passes.
+	now func() time.Time
 
 	mu        sync.Mutex
 	active    int
@@ -292,8 +282,8 @@ type gatedProcessStdin struct {
 	unblock   sync.Once
 }
 
-func newGatedProcessStdin() *gatedProcessStdin {
-	return &gatedProcessStdin{entered: make(chan struct{}, 2), release: make(chan struct{})}
+func newGatedProcessStdin(now func() time.Time) *gatedProcessStdin {
+	return &gatedProcessStdin{entered: make(chan struct{}, 2), release: make(chan struct{}), now: now}
 }
 
 func (s *gatedProcessStdin) Write(data []byte) (int, error) {
@@ -317,7 +307,7 @@ func (s *gatedProcessStdin) SetWriteDeadline(deadline time.Time) error {
 	s.mu.Lock()
 	s.deadline = deadline
 	s.mu.Unlock()
-	if !deadline.IsZero() && !deadline.After(time.Now()) {
+	if s.now != nil && !deadline.IsZero() && !deadline.After(s.now()) {
 		s.unblock.Do(func() { close(s.release) })
 	}
 	return nil
@@ -330,7 +320,7 @@ func (s *gatedProcessStdin) snapshot() (int, time.Time) {
 }
 
 func TestProcessWritesAreSerializedPerProcess(t *testing.T) {
-	stdin := newGatedProcessStdin()
+	stdin := newGatedProcessStdin(nil)
 	proc := &managedProcess{name: "serial", stdin: stdin, stdinSlot: make(chan struct{}, 1), status: "running"}
 	c := &connector{processes: map[string]*managedProcess{"serial": proc}}
 	results := make(chan error, 2)
@@ -341,17 +331,15 @@ func TestProcessWritesAreSerializedPerProcess(t *testing.T) {
 	go write("first")
 	<-stdin.entered
 	go write("second")
+	// The second write waits for the stdin slot that the first one holds.
+	waitUntilParked(t, "select", "(*connector).methodProcessWrite(")
 	select {
 	case <-stdin.entered:
 		t.Fatal("second stdin write entered before the first completed")
-	case <-time.After(20 * time.Millisecond):
+	default:
 	}
 	stdin.release <- struct{}{}
-	select {
-	case <-stdin.entered:
-	case <-time.After(time.Second):
-		t.Fatal("second stdin write did not run after the first")
-	}
+	<-stdin.entered
 	stdin.release <- struct{}{}
 	for range 2 {
 		if err := <-results; err != nil {
@@ -364,26 +352,26 @@ func TestProcessWritesAreSerializedPerProcess(t *testing.T) {
 	}
 }
 
+// The cancellation sets a deadline of now, which has passed on the bubble's
+// clock that the fake stdin reads too.
 func TestCancelledProcessWriteCannotRestoreAnExpiredDeadline(t *testing.T) {
-	stdin := newGatedProcessStdin()
-	proc := &managedProcess{name: "cancel", stdin: stdin, stdinSlot: make(chan struct{}, 1), status: "running"}
-	c := &connector{processes: map[string]*managedProcess{"cancel": proc}}
-	ctx, cancel := context.WithCancel(context.Background())
-	result := make(chan error, 1)
-	go func() {
-		_, err := c.methodProcessWrite(ctx, map[string]any{"process_name": "cancel", "data": "blocked"})
-		result <- err
-	}()
-	<-stdin.entered
-	cancel()
-	select {
-	case <-result:
-	case <-time.After(time.Second):
-		t.Fatal("cancelled process write did not return")
-	}
-	time.Sleep(20 * time.Millisecond)
-	_, deadline := stdin.snapshot()
-	if !deadline.IsZero() {
-		t.Fatalf("cancellation watcher changed deadline after cleanup: %v", deadline)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		stdin := newGatedProcessStdin(time.Now)
+		proc := &managedProcess{name: "cancel", stdin: stdin, stdinSlot: make(chan struct{}, 1), status: "running"}
+		c := &connector{processes: map[string]*managedProcess{"cancel": proc}}
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() {
+			_, err := c.methodProcessWrite(ctx, map[string]any{"process_name": "cancel", "data": "blocked"})
+			result <- err
+		}()
+		<-stdin.entered
+		cancel()
+		// The write returns only after its cancellation watcher has exited.
+		<-result
+		_, deadline := stdin.snapshot()
+		if !deadline.IsZero() {
+			t.Fatalf("cancellation watcher changed deadline after cleanup: %v", deadline)
+		}
+	})
 }

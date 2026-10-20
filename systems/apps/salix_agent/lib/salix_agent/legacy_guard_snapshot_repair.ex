@@ -11,17 +11,17 @@ defmodule SalixAgent.LegacyGuardSnapshotRepair do
   alias SalixStore.S3.Settle
 
   def read_limit,
-    do: Application.get_env(:salix_agent, :snapshot_read_max_bytes, 64 * 1024 * 1024)
+    do: SystemsRuntime.get_env(:salix_agent, :snapshot_read_max_bytes, 64 * 1024 * 1024)
 
   def recover(key) do
-    timeout = Application.get_env(:salix_agent, :snapshot_repair_timeout_ms, 30_000)
+    timeout = SystemsRuntime.get_env(:salix_agent, :snapshot_repair_timeout_ms, 30_000)
 
     task =
-      Task.Supervisor.async_nolink(SalixAgent.TaskSup, fn ->
-        case Registry.register(SalixAgent.Registry, :snapshot_repair_lane, nil) do
+      SystemsRuntime.TaskSupervisor.async_nolink(SalixAgent.TaskSup, fn ->
+        case SystemsRuntime.Registry.register(SalixAgent.Registry, :snapshot_repair_lane, nil) do
           {:ok, _} ->
             # OTP owns this timer even if the original reader dies.
-            {:ok, timer} = :timer.exit_after(timeout, self(), :kill)
+            {:ok, timer} = :timer.exit_after(timeout, SystemsRuntime.Proc.self(), :kill)
 
             try do
               run(key, 256 * 1024 * 1024)
@@ -34,7 +34,7 @@ defmodule SalixAgent.LegacyGuardSnapshotRepair do
         end
       end)
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, timeout) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
       _ -> {:error, :snapshot_repair_failed}
     end

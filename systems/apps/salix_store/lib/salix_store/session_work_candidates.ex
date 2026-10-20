@@ -15,9 +15,9 @@ defmodule SalixStore.SessionWorkCandidates do
 
   import Ecto.Query
 
-  alias SalixStore.{Ids, Repo, SessionWorkNotifications}
+  alias SalixStore.{Repo, SessionWorkNotifications}
 
-  @runtime_kinds ~w(internal external)
+  @runtime_kinds ~w(internal)
 
   defmodule Row do
     @moduledoc false
@@ -29,16 +29,13 @@ defmodule SalixStore.SessionWorkCandidates do
       field(:agent_id, :string)
       field(:runtime_kind, :string)
       field(:session_id, :string)
-      field(:workload_id, :string)
-      field(:group_id, :string)
-      field(:device_runtime_id, :string)
       field(:base_revision, :string)
       field(:due_at_ms, :integer)
       field(:reasons, {:array, :string})
 
       # Seconds, despite the physical column name. The value is the work
       # marker's own `updated_at`, minted by
-      # `SalixAgent.SessionWorkIndex.mark/5` as `System.system_time(:second)`,
+      # `SalixAgent.SessionWorkIndex.mark/5` as `SystemsClock.system_time(:second)`,
       # and it is projected straight back out as `"updated_at"` — it is never
       # compared against a clock here. Contrast `due_at_ms` above, which really
       # is milliseconds and IS compared against `now_ms` in `due_page/2`: two
@@ -89,8 +86,14 @@ defmodule SalixStore.SessionWorkCandidates do
         end
       end)
       |> case do
-        {:ok, :ok} -> :ok
-        {:error, _reason} -> {:error, :unavailable}
+        {:ok, :ok} ->
+          # The listener hears this after the commit, over its own
+          # connection: a test clock counts it as work still under way.
+          SessionWorkNotifications.expect_delivery(notification)
+          :ok
+
+        {:error, _reason} ->
+          {:error, :unavailable}
       end
     else
       _ -> {:error, :invalid}
@@ -113,9 +116,6 @@ defmodule SalixStore.SessionWorkCandidates do
              :agent_id,
              :runtime_kind,
              :session_id,
-             :workload_id,
-             :group_id,
-             :device_runtime_id,
              :base_revision,
              :due_at_ms,
              :reasons,
@@ -252,69 +252,14 @@ defmodule SalixStore.SessionWorkCandidates do
   def list_eager(opts \\ []) do
     limit = bounded_limit(opts[:limit])
 
-    base = Row |> for_workload(opts[:workload_id]) |> after_eager(opts[:after])
-
-    query =
-      if is_nil(opts[:group_id]) do
-        # Keep each lane indexable and page it before merging. An OR with the
-        # readiness subquery would scan unrelated deferred work before LIMIT.
-        ordinary = from(r in subquery(base |> for_external_input_group(nil) |> eager_page(limit)))
-        ready = from(r in subquery(base |> for_ready_runtime() |> eager_page(limit)))
-        from(r in subquery(union(ordinary, ^ready))) |> eager_page(limit)
-      else
-        base |> for_external_input_group(opts[:group_id]) |> eager_page(limit)
-      end
-
-    page(query, limit)
+    Row
+    |> after_eager(opts[:after])
+    |> eager_ready()
+    |> eager_page(limit)
+    |> page(limit)
   rescue
     _ -> {:error, :unavailable}
   end
-
-  @doc "Bounded conservative demand check for a Group's connected external workers."
-  def ready_for_external_group?(group_id) do
-    prefix = Ids.agent_id_prefix_for_group!(group_id)
-
-    {:ok,
-     Repo.exists?(
-       from(r in Row,
-         where:
-           r.agent_id >= ^prefix and r.agent_id < ^(prefix <> "~") and
-             r.runtime_kind == "external" and is_nil(r.workload_id) and
-             (fragment("? @> ARRAY['runtime_wait']::text[]", r.reasons) or
-                fragment(
-                  "? <= floor(extract(epoch FROM statement_timestamp()) * 1000)::bigint",
-                  r.due_at_ms
-                ) or
-                (is_nil(r.due_at_ms) and
-                   not fragment(
-                     "? <@ ARRAY['external_callback_tool_call','capability_deadline','wait_deadline','llm_retry','runtime_wait','provider_cutover_parked']::text[]",
-                     r.reasons
-                   )))
-       )
-     )}
-  rescue
-    _ -> {:error, :unavailable}
-  end
-
-  @doc "Return whether one Workload has an eager or due Session candidate."
-  @spec ready_for_workload?(String.t()) :: boolean()
-  def ready_for_workload?(workload_id) when is_binary(workload_id) and workload_id != "" do
-    Repo.exists?(
-      from(r in Row,
-        where:
-          r.workload_id == ^workload_id and
-            (is_nil(r.due_at_ms) or
-               fragment(
-                 "? <= floor(extract(epoch FROM statement_timestamp()) * 1000)::bigint",
-                 r.due_at_ms
-               ))
-      )
-    )
-  rescue
-    _ -> false
-  end
-
-  def ready_for_workload?(_workload_id), do: false
 
   @spec list_due(integer(), keyword()) ::
           {:ok, %{records: [candidate_record()], eof: boolean()}} | {:error, :unavailable}
@@ -444,7 +389,8 @@ defmodule SalixStore.SessionWorkCandidates do
     {:ok, %{records: rows |> Enum.take(limit) |> Enum.map(&to_record/1), eof: eof}}
   end
 
-  defp to_record(%Row{} = row) do
+  @doc false
+  def to_record(%Row{} = row) do
     %{
       "agent_id" => row.agent_id,
       "runtime_kind" => row.runtime_kind,
@@ -455,17 +401,13 @@ defmodule SalixStore.SessionWorkCandidates do
       "updated_at" => row.updated_at_seconds
     }
     |> maybe_put("recover_after_ms", row.due_at_ms)
-    |> maybe_put("workload_id", row.workload_id)
-    |> maybe_put("device_runtime_id", row.device_runtime_id)
   end
 
-  defp valid_row?(row) do
+  @doc false
+  def valid_row?(row) do
     is_binary(row.candidate_token) and row.candidate_token != "" and
       is_binary(row.agent_id) and row.agent_id != "" and
       row.runtime_kind in @runtime_kinds and is_binary(row.session_id) and
-      (is_nil(row.workload_id) or
-         (row.runtime_kind == "external" and is_binary(row.workload_id) and
-            row.workload_id != "")) and
       (is_nil(row.base_revision) or
          (is_binary(row.base_revision) and row.base_revision != "")) and
       (is_nil(row.due_at_ms) or is_integer(row.due_at_ms)) and
@@ -473,15 +415,13 @@ defmodule SalixStore.SessionWorkCandidates do
       is_integer(row.updated_at_seconds)
   end
 
-  defp row_from_record(record) do
+  @doc false
+  def row_from_record(record) do
     %{
       candidate_token: record["token"],
       agent_id: record["agent_id"],
       runtime_kind: record["runtime_kind"],
       session_id: record["session_id"],
-      workload_id: record["workload_id"],
-      device_runtime_id: record["device_runtime_id"],
-      group_id: if(record["device_runtime_id"], do: Ids.group_id_from_agent!(record["agent_id"])),
       base_revision: record["base_revision"],
       due_at_ms: record["recover_after_ms"],
       reasons: record["reasons"],
@@ -489,15 +429,9 @@ defmodule SalixStore.SessionWorkCandidates do
     }
   end
 
-  defp bounded_limit(value) when is_integer(value) and value > 0, do: min(value, 128)
-  defp bounded_limit(_value), do: 100
-
-  defp for_workload(query, nil), do: query
-
-  defp for_workload(query, workload_id) when is_binary(workload_id) and workload_id != "",
-    do: from(row in query, where: row.workload_id == ^workload_id)
-
-  defp for_workload(query, _invalid), do: from(row in query, where: false)
+  @doc false
+  def bounded_limit(value) when is_integer(value) and value > 0, do: min(value, 128)
+  def bounded_limit(_value), do: 100
 
   defp eager_page(query, limit) do
     from(r in query,
@@ -506,20 +440,8 @@ defmodule SalixStore.SessionWorkCandidates do
     )
   end
 
-  defp for_ready_runtime(query) do
-    from(r in query,
-      where:
-        r.runtime_kind == "external" and
-          fragment("? @> ARRAY['runtime_wait']::text[]", r.reasons) and
-          fragment(
-            "EXISTS (SELECT 1 FROM device_runtime_locators d WHERE d.group_id = ? AND d.device_runtime_id = ? AND d.ready_until_ms > floor(extract(epoch FROM statement_timestamp()) * 1000)::bigint)",
-            r.group_id,
-            r.device_runtime_id
-          )
-    )
-  end
-
-  defp for_external_input_group(query, nil) do
+  # Matches the partial index session_work_candidates_ready_eager_cursor_idx.
+  defp eager_ready(query) do
     from(r in query,
       where:
         is_nil(r.due_at_ms) and
@@ -530,25 +452,6 @@ defmodule SalixStore.SessionWorkCandidates do
              ))
     )
   end
-
-  defp for_external_input_group(query, group_id) when is_binary(group_id) do
-    if Ids.valid_group_id?(group_id) do
-      prefix = Ids.agent_id_prefix_for_group!(group_id)
-
-      # agent_id is C-collated and the only suffix after this prefix is a
-      # fixed-width decimal snowflake, so '~' is an exclusive group bound.
-      from(r in query,
-        where:
-          r.agent_id >= ^prefix and r.agent_id < ^(prefix <> "~") and
-            r.runtime_kind == "external" and
-            fragment("? && ARRAY['unacked_queue_item','runtime_wait']::text[]", r.reasons)
-      )
-    else
-      from(r in query, where: false)
-    end
-  end
-
-  defp for_external_input_group(query, _invalid), do: from(r in query, where: false)
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

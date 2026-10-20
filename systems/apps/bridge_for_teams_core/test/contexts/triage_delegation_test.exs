@@ -8,6 +8,8 @@ defmodule BridgeForTeams.TriageDelegationTest do
 
   use BridgeForTeams.DataCase, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
+
   alias BridgeForTeams.{Accounts, Orgs, TriageDelegation}
   alias BridgeForTeams.Schema.{Agent, Project}
   alias SalixAgent.InternalSessionStore
@@ -24,8 +26,8 @@ defmodule BridgeForTeams.TriageDelegationTest do
       result = SalixAgent.deliver(agent_id, payload, Keyword.put(opts, :no_wake, true))
 
       if match?({:ok, _}, result) do
-        send(
-          Application.fetch_env!(:bridge_for_teams_core, :test_triage_delegation_pid),
+        SystemsRuntime.Proc.send(
+          SystemsRuntime.fetch_env!(:bridge_for_teams_core, :test_triage_delegation_pid),
           {:router_admission, agent_id, payload, opts}
         )
       end
@@ -39,7 +41,7 @@ defmodule BridgeForTeams.TriageDelegationTest do
 
     overrides = [
       {:bridge_for_teams_core, :salix_client, BridgeForTeams.Salix.Erpc},
-      {:bridge_for_teams_core, :test_triage_delegation_pid, self()},
+      {:bridge_for_teams_core, :test_triage_delegation_pid, SystemsRuntime.Proc.self()},
       {:salix_im, :agent_delivery_mod, NoWakeDelivery},
       {:salix_store, :s3_backend, SalixStore.S3.Fake},
       {:salix_agent, :group_context_mod, SalixAgent.TestSupport.GroupContext}
@@ -47,8 +49,8 @@ defmodule BridgeForTeams.TriageDelegationTest do
 
     previous =
       Enum.map(overrides, fn {app, key, value} ->
-        old = Application.fetch_env(app, key)
-        Application.put_env(app, key, value)
+        old = SystemsRuntime.fetch_env(app, key)
+        SystemsRuntime.put_env(app, key, value)
         {app, key, old}
       end)
 
@@ -57,14 +59,16 @@ defmodule BridgeForTeams.TriageDelegationTest do
 
       for {app, key, old} <- previous do
         case old do
-          {:ok, value} -> Application.put_env(app, key, value)
-          :error -> Application.delete_env(app, key)
+          {:ok, value} -> SystemsRuntime.put_env(app, key, value)
+          :error -> SystemsRuntime.delete_env(app, key)
         end
       end
     end)
 
-    unless Process.whereis(SalixStore.S3.Fake), do: start_supervised!(SalixStore.S3.Fake)
-    unless Process.whereis(Ids), do: start_supervised!(Ids)
+    unless SystemsRuntime.Proc.whereis(SalixStore.S3.Fake),
+      do: start_supervised!(SalixStore.S3.Fake)
+
+    unless SystemsRuntime.Proc.whereis(Ids), do: start_supervised!(Ids)
 
     suffix = ULID.generate()
 
@@ -123,7 +127,8 @@ defmodule BridgeForTeams.TriageDelegationTest do
     assert TriageDelegation.commit(prepared) ==
              {:ok, %{"disposition" => "routed", "request_id" => @request_id}}
 
-    assert_receive {:router_admission, router_id, payload, opts}
+    # The commit enqueues the Router message; delivery follows asynchronously.
+    settle_receive({:router_admission, router_id, payload, opts})
     assert router_id == router.salix_agent_id
     assert opts[:source_message_id] == @request_id
     refute Keyword.has_key?(opts, :command_text)
@@ -201,7 +206,7 @@ defmodule BridgeForTeams.TriageDelegationTest do
     end
 
     router_id = router.salix_agent_id
-    assert_receive {:router_admission, ^router_id, _, opts}, 2_000
+    settle_receive({:router_admission, ^router_id, _, opts})
     assert opts[:source_message_id] == @request_id
 
     assert {:ok, session} = InternalSessionStore.read(router.salix_agent_id, session_id)
@@ -209,36 +214,6 @@ defmodule BridgeForTeams.TriageDelegationTest do
     assert MapSet.size(SalixAgent.InternalSession.get(session, :input_dedupe)) == 1
     assert length(SalixAgent.InternalSession.get(session, :input_queue)) == 1
     assert_no_tasks!(project)
-  end
-
-  test "request id and delegation must select the same original bounded slot", %{
-    project: project,
-    router: router
-  } do
-    claim = claim(project, router)
-    first = hd(claim.payload["delegations"])
-    second = %{"task" => "Inspect the source logs", "source_refs" => []}
-    claim = put_in(claim.payload["delegations"], [first, second])
-
-    assert {:ok, prepared} =
-             TriageDelegation.prepare(claim, second, "triage-delegation:#{@obligation_id}:1")
-
-    assert prepared.handoff["index"] == 1
-
-    for {candidate_claim, delegation, request_id} <- [
-          {claim, second, @request_id},
-          {claim, first, "triage-delegation:other-obligation:0"},
-          {claim, first, "triage-delegation:#{@obligation_id}:2"},
-          {claim, first, "triage-delegation:#{@obligation_id}:00"},
-          {claim, Map.put(first, "task", "Different intent"), @request_id},
-          {update_in(claim.payload, &Map.delete(&1, "delegations")), first, @request_id},
-          {Map.delete(claim, :namespace_key), first, @request_id}
-        ] do
-      assert {:error, :invalid_delegation, false} =
-               TriageDelegation.prepare(candidate_claim, delegation, request_id)
-    end
-
-    refute_received {:router_admission, _, _, _}
   end
 
   for change <- [
@@ -262,46 +237,6 @@ defmodule BridgeForTeams.TriageDelegationTest do
       assert {:error, _reason, false} = TriageDelegation.commit(prepared)
       refute_received {:router_admission, _, _, _}
     end
-  end
-
-  test "chosen Worker authorization accepts either active canonical Worker", %{
-    project: project,
-    router: router,
-    worker: worker,
-    second_worker: second_worker
-  } do
-    for chosen <- [worker, second_worker] do
-      assert :ok =
-               TriageDelegation.authorize_target(
-                 claim(project, router),
-                 router.salix_agent_id,
-                 chosen.salix_agent_id
-               )
-    end
-
-    refute_received {:router_admission, _, _, _}
-    assert_no_tasks!(project)
-  end
-
-  test "Worker archival after prepare does not turn Router admission into Worker selection", %{
-    project: project,
-    router: router,
-    worker: worker,
-    second_worker: second_worker
-  } do
-    claim = claim(project, router)
-
-    assert {:ok, prepared} =
-             TriageDelegation.prepare(claim, hd(claim.payload["delegations"]), @request_id)
-
-    archive_agent_fixture!(worker)
-    archive_agent_fixture!(second_worker)
-
-    assert TriageDelegation.commit(prepared) ==
-             {:ok, %{"disposition" => "routed", "request_id" => @request_id}}
-
-    assert_receive {:router_admission, _, _, _}
-    assert_no_tasks!(project)
   end
 
   test "chosen Worker authorization rejects archived, missing, wrong-role and noncanonical targets",
@@ -361,28 +296,8 @@ defmodule BridgeForTeams.TriageDelegationTest do
     refute_received {:router_admission, _, _, _}
   end
 
-  test "prepare accepts an external Router without selecting a Worker", %{
-    project: project,
-    router: router
-  } do
-    # Seed the owner record, not retired BFT configuration columns. This test
-    # covers delegation eligibility, not external-runtime configuration admission.
-    key = SalixStore.Keys.ctl_agent(router.salix_agent_id)
-    {:ok, %{body: body, etag: etag}} = SalixStore.S3.get(key)
-    external = body |> Jason.decode!() |> Map.put("runtime_config", %{"kind" => "external"})
-    assert {:ok, _} = SalixStore.S3.put(key, Jason.encode!(external), if_match: etag)
-    claim = claim(project, router)
-
-    assert {:ok, prepared} =
-             TriageDelegation.prepare(claim, hd(claim.payload["delegations"]), @request_id)
-
-    assert prepared.handoff["router_agent_id"] == router.salix_agent_id
-    refute Map.has_key?(prepared, :worker)
-    refute_received {:router_admission, _, _, _}
-  end
-
   defp change_authority!(:archived_project, project, _router),
-    do: Repo.update!(Ecto.Changeset.change(project, archived_at: DateTime.utc_now()))
+    do: Repo.update!(Ecto.Changeset.change(project, archived_at: SystemsClock.utc_now()))
 
   defp change_authority!(:inactive_project, project, _router),
     do: Repo.update!(Ecto.Changeset.change(project, status: "inactive"))

@@ -30,7 +30,7 @@ defmodule SalixAgent.MemoryConsultation do
 
       results =
         targets
-        |> Task.async_stream(
+        |> SystemsClock.async_stream(
           &consult(&1, question, ctx),
           max_concurrency: @max_targets,
           ordered: true,

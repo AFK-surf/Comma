@@ -23,5 +23,5 @@ defmodule SalixEnv.Connector do
   @spec dispatch(connector_run_id(), request()) :: {:ok, response()} | {:error, term()}
   def dispatch(connector_run_id, request), do: backend().dispatch(connector_run_id, request)
 
-  defp backend, do: Application.get_env(:salix_env, :connector, SalixEnv.Connector.Fake)
+  defp backend, do: SystemsRuntime.get_env(:salix_env, :connector, SalixEnv.Connector.Fake)
 end

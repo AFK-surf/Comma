@@ -7,12 +7,15 @@ defmodule SalixEnv.Protocol do
       %{
         "id"      => correlation uuid (request/response pairs),
         "type"    => "request" | "response" | "error" | "stream"
-                     | "metadata" | "heartbeat",
+                     | "response_chunk" | "metadata" | "heartbeat",
         "method"  => RPC method ("exec", "read", "write", "computer_use", …),
         "params"  => method params (request),
         "result"  => method result (response),
         "error"   => error string (type "error"),
         "stream"  => %{"channel","data"(base64),"eof","seq"} (incremental output),
+        # response_chunk-only (an HTTP request with response_mode "chunks"):
+        "seq"      => frame number from 0,
+        "data_b64" => base64 body bytes,
         # metadata-only:
         "skills"       => [...],
         "capabilities" => %{...},
@@ -47,7 +50,18 @@ defmodule SalixEnv.Protocol do
     "process_tail" => 35_000,
     "process_stop" => 30_000,
     "http_request" => 120_000,
-    "agent_runtime_input" => 30_000,
+    "lan_http_request" => 40_000,
+    # A gateway HTTP request whose body returns in `response_chunk` frames.
+    # The T-Circle allows the whole transfer 110 seconds: it paces frames
+    # during a voice call. The connector socket also times out each gap
+    # between frames.
+    "http_request_chunks" => 120_000,
+    # The gateway dials for at most 15 seconds.
+    "lan_tcp_dial" => 20_000,
+    # The gateway's discovery window is at most 8 seconds.
+    "lan_discover" => 15_000,
+    # The gateway collects UDP replies for at most 10 seconds.
+    "udp_request" => 15_000,
     # Default for deployments without calendar autojoin (manual joins run in
     # no bounded task). Calendar deployments override this through
     # :protocol_timeouts with a bound derived from their configured
@@ -56,8 +70,6 @@ defmodule SalixEnv.Protocol do
     # supported budget, not just the 30s default.
     "meeting_join" => 20_000,
     "meeting_session_status" => 15_000,
-    "external_runtime_event" => 30_000,
-    "external_runtime_events" => 30_000,
     "runtime_probe" => 30_000,
     "runtime_auth_read" => 30_000,
     "runtime_auth_status" => 30_000,
@@ -84,7 +96,8 @@ defmodule SalixEnv.Protocol do
 
   @doc "A fresh correlation id (`req_` + url-safe random)."
   @spec new_id() :: String.t()
-  def new_id, do: "req_" <> (:crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false))
+  def new_id,
+    do: "req_" <> (SystemsRuntime.Proc.random_bytes(12) |> Base.url_encode64(padding: false))
 
   @doc "Build a request envelope for `method` with `params`."
   @spec request(String.t(), map(), String.t() | nil) :: map()
@@ -110,7 +123,14 @@ defmodule SalixEnv.Protocol do
       method == "exec" and params["timeout"] ->
         timeout_from_param(params["timeout"], base)
 
-      method == "http_request" and params["timeout_seconds"] ->
+      method in ["http_request", "lan_http_request"] and params["response_mode"] == "chunks" ->
+        max(
+          base,
+          configured_timeout("http_request_chunks") ||
+            scale_timeout(@timeouts["http_request_chunks"])
+        )
+
+      method in ["http_request", "lan_http_request"] and params["timeout_seconds"] ->
         timeout_from_param(params["timeout_seconds"], base)
 
       true ->
@@ -125,7 +145,7 @@ defmodule SalixEnv.Protocol do
 
   @doc false
   def meeting_artifact_timeout_contract do
-    configured = Application.get_env(:salix_env, :meeting_artifact_timeout_contract, %{})
+    configured = SystemsRuntime.get_env(:salix_env, :meeting_artifact_timeout_contract, %{})
 
     Enum.reduce(@meeting_artifact_timeout_contract, %{}, fn {key, default}, acc ->
       value = Map.get(configured, key, Map.get(configured, Atom.to_string(key), default))
@@ -171,7 +191,7 @@ defmodule SalixEnv.Protocol do
 
   defp configured_timeout(method) do
     :salix_env
-    |> Application.get_env(:protocol_timeouts, %{})
+    |> SystemsRuntime.get_env(:protocol_timeouts, %{})
     |> configured_timeout(method)
   end
 
@@ -202,7 +222,7 @@ defmodule SalixEnv.Protocol do
   end
 
   defp scale_timeout(ms) do
-    factor = Application.get_env(:salix_env, :timeout_factor, 1)
+    factor = SystemsRuntime.get_env(:salix_env, :timeout_factor, 1)
 
     cond do
       is_integer(factor) and factor > 0 -> ms * factor

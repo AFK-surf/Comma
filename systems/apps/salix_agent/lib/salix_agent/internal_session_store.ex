@@ -1,4 +1,6 @@
 defmodule SalixAgent.InternalSessionStore do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Durable store for Salix-managed internal runtime sessions.
 
@@ -176,41 +178,32 @@ defmodule SalixAgent.InternalSessionStore do
     do_create(agent_id, session_id, attrs, opts)
   end
 
-  # STORE-LAYER birth authority (#873 round 8): every internal-session
-  # CREATION — whichever public function or ingress reached it — claims the
-  # per-session birth marker inside the store, immediately before the
-  # create-once write. Routing's earlier claim (SessionDelivery) is a
-  # same-side re-claim here and answers :ok; a creator racing a lost birth
-  # (the marker records :external) is refused with zero session writes —
-  # no caller can fabricate an internal session for an externally-born id.
-  # The three creating branches below (do_create, do_seed's absent branch,
+  # Every internal-session CREATION claims the per-session birth marker
+  # inside the store, immediately before the create-once write. Routing's
+  # earlier claim (SessionDelivery) is a re-claim here and answers :ok. The
+  # three creating branches below (do_create, do_seed's absent branch,
   # write_state with no base etag) are the ONLY code paths that produce a
-  # first PUT of the internal session object; see the creation-point audit
-  # in docs/salix/conversation-owner-actor.md clause 2b.
-  # Marker ABSENCE is not birth authority for the markerless legacy
-  # population (#873 round 9): before claiming, an unmarked id must
-  # reconcile the OPPOSITE store with the same tri-state/fail-closed
-  # semantics routing uses — a legacy external session found there refuses
-  # the internal create (and backfills its truthful marker); a probe error
-  # refuses fail-closed. Creation-only cost, never per-delivery.
+  # first PUT of the internal session object.
+  # A retired Session (`SalixAgent.RetiredSessions`) keeps its id: an
+  # unmarked id checks that history first, and a probe error refuses
+  # fail-closed. Creation-only cost, never per-delivery.
   defp claim_internal_birth(agent_id, session_id) do
     case SalixAgent.SessionBirth.side(agent_id, session_id) do
       {:ok, :internal} ->
         :ok
 
-      {:ok, :external} ->
-        {:error, :session_born_external}
+      {:ok, :retired} ->
+        {:error, :session_read_only}
 
       {:error, :not_found} ->
-        case SalixAgent.ExternalSessionStore.probe(agent_id, session_id) do
+        case SalixAgent.RetiredSessions.probe(agent_id, session_id) do
           :present ->
-            _ = SalixAgent.SessionBirth.claim(agent_id, session_id, :external)
-            {:error, :session_born_external}
+            {:error, :session_read_only}
 
           :absent ->
-            case SalixAgent.SessionBirth.claim(agent_id, session_id, :internal) do
+            case SalixAgent.SessionBirth.claim(agent_id, session_id) do
               {:ok, :internal} -> :ok
-              {:ok, :external} -> {:error, :session_born_external}
+              {:ok, :retired} -> {:error, :session_read_only}
               {:error, _} = err -> err
             end
 
@@ -612,20 +605,20 @@ defmodule SalixAgent.InternalSessionStore do
          {:ok, epoch} <- local_runtime_epoch(agent_id, session_id) do
       {baseline, events, hwm, pending} = pending_fence(revision)
       observability_context = SystemsObservability.Context.capture()
-      prerequisite_ref = make_ref()
-      owner = self()
+      prerequisite_ref = SystemsRuntime.Proc.make_ref()
+      owner = SystemsRuntime.Proc.self()
 
       delegated_prerequisite =
         if prerequisite do
           fn ->
-            receive do
+            SystemsRuntime.Proc.receive do
               {:fence_prerequisite, ^prerequisite_ref, result} -> result
             end
           end
         end
 
       task =
-        Task.Supervisor.async_nolink(SalixAgent.TaskSup, fn ->
+        SystemsRuntime.TaskSupervisor.async_nolink(SalixAgent.TaskSup, fn ->
           # Delegate the owner's frozen epoch, never the worker's ambient cell.
           Process.put({__MODULE__, :fence_epoch}, {agent_id, session_id, epoch, owner})
 
@@ -647,7 +640,7 @@ defmodule SalixAgent.InternalSessionStore do
       # Mutation-free Session results have no workspace prerequisite.
       if prerequisite do
         result = run_commit_prerequisite(prerequisite)
-        send(task.pid, {:fence_prerequisite, prerequisite_ref, result})
+        SystemsRuntime.Proc.send(task.pid, {:fence_prerequisite, prerequisite_ref, result})
       end
 
       {:ok, task}
@@ -666,7 +659,7 @@ defmodule SalixAgent.InternalSessionStore do
   end
 
   defp do_await_durable_fence(%Task{} = task) do
-    case Task.yield(task, :infinity) do
+    case SystemsClock.yield(task, :infinity) do
       {:ok, result} -> result
       {:exit, reason} -> {:error, {:durable_fence_failed, reason}}
     end
@@ -690,7 +683,7 @@ defmodule SalixAgent.InternalSessionStore do
     revision = revision_from_cursor(revision.cursor)
 
     with :ok <- ensure_session_owner(agent_id, session_id) do
-      started = System.monotonic_time(:millisecond)
+      started = SystemsClock.monotonic_time(:millisecond)
 
       result =
         if InternalSession.revision_pending?(revision.cursor) do
@@ -718,7 +711,7 @@ defmodule SalixAgent.InternalSessionStore do
         event_count: dynamic_result_event_count(result),
         event_types: dynamic_result_event_types(result),
         hwm: dynamic_result_hwm(result),
-        duration_ms: System.monotonic_time(:millisecond) - started,
+        duration_ms: SystemsClock.monotonic_time(:millisecond) - started,
         result: result_label(result)
       })
 
@@ -756,7 +749,7 @@ defmodule SalixAgent.InternalSessionStore do
   # rejects — an unscrubbed byte here surfaces only when the next LLM request
   # fails to encode, and by then it is durable and wedges the session.
   defp do_commit_with_log(agent_id, session_id, events, opts) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
     events = events |> Enum.map(&SalixAgent.Utf8.scrub_term/1) |> timestamp_lifecycle_events()
     result = do_commit(agent_id, session_id, events, opts, @max_commit_retries)
 
@@ -766,7 +759,7 @@ defmodule SalixAgent.InternalSessionStore do
       event_count: length(events),
       event_types: Enum.map(events, &(&1["type"] || &1[:type])),
       hwm: opts[:hwm],
-      duration_ms: System.monotonic_time(:millisecond) - started,
+      duration_ms: SystemsClock.monotonic_time(:millisecond) - started,
       result: result_label(result)
     })
 
@@ -774,7 +767,7 @@ defmodule SalixAgent.InternalSessionStore do
   end
 
   defp do_commit_dynamic_with_log(agent_id, session_id, builder, opts) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
     result = do_commit_dynamic(agent_id, session_id, builder, opts, @max_commit_retries)
 
     CommaLog.log("store_commit", %{
@@ -783,7 +776,7 @@ defmodule SalixAgent.InternalSessionStore do
       event_count: dynamic_result_event_count(result),
       event_types: dynamic_result_event_types(result),
       hwm: dynamic_result_hwm(result),
-      duration_ms: System.monotonic_time(:millisecond) - started,
+      duration_ms: SystemsClock.monotonic_time(:millisecond) - started,
       result: result_label(result)
     })
 
@@ -799,7 +792,7 @@ defmodule SalixAgent.InternalSessionStore do
          prerequisite,
          prepared_pending \\ nil
        ) do
-    started = System.monotonic_time(:millisecond)
+    started = SystemsClock.monotonic_time(:millisecond)
     events = events |> Enum.map(&SalixAgent.Utf8.scrub_term/1) |> timestamp_lifecycle_events()
 
     result =
@@ -820,7 +813,7 @@ defmodule SalixAgent.InternalSessionStore do
       event_count: length(events),
       event_types: Enum.map(events, &(&1["type"] || &1[:type])),
       hwm: opts[:hwm],
-      duration_ms: System.monotonic_time(:millisecond) - started,
+      duration_ms: SystemsClock.monotonic_time(:millisecond) - started,
       result: result_label(result)
     })
 
@@ -828,8 +821,13 @@ defmodule SalixAgent.InternalSessionStore do
   end
 
   defp ensure_session_owner(agent_id, session_id) do
-    case Registry.lookup(SalixAgent.Registry, InternalSessionActor.key(agent_id, session_id)) do
-      [{pid, _}] when pid == self() -> :ok
+    systems_self = SystemsRuntime.Proc.self()
+
+    case SystemsRuntime.Registry.lookup(
+           SalixAgent.Registry,
+           InternalSessionActor.key(agent_id, session_id)
+         ) do
+      [{pid, _}] when pid == systems_self -> :ok
       _ -> {:error, :not_session_owner}
     end
   end
@@ -863,7 +861,7 @@ defmodule SalixAgent.InternalSessionStore do
   #     design doc's deployment section.
 
   defp fence_enforced?,
-    do: Application.get_env(:salix_agent, :session_fence_enforce, true)
+    do: SystemsRuntime.get_env(:salix_agent, :session_fence_enforce, true)
 
   # Which epoch does this writer run under? Resolution order:
   #
@@ -888,11 +886,13 @@ defmodule SalixAgent.InternalSessionStore do
   defp resolve_local_runtime_epoch(agent_id, session_id) do
     key = InternalSessionActor.key(agent_id, session_id)
 
-    case Registry.lookup(SalixAgent.Registry, key) do
-      [{pid, %{runtime_epoch: captured}}] when pid == self() and is_integer(captured) ->
+    systems_self = SystemsRuntime.Proc.self()
+
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key) do
+      [{pid, %{runtime_epoch: captured}}] when pid == systems_self and is_integer(captured) ->
         actor_epoch_with_fence(agent_id, captured)
 
-      [{pid, _}] when pid == self() ->
+      [{pid, _}] when pid == systems_self ->
         # First ownership resolution for this actor: bind its immutable
         # generation NOW, before its first durable write, to whatever is
         # visible — including "nothing". An absent cell pins the actor as
@@ -918,7 +918,7 @@ defmodule SalixAgent.InternalSessionStore do
 
           frozen when is_integer(frozen) ->
             _ =
-              Registry.update_value(SalixAgent.Registry, key, fn _ ->
+              SystemsRuntime.Registry.update_value(SalixAgent.Registry, key, fn _ ->
                 %{runtime_epoch: frozen}
               end)
 
@@ -989,7 +989,11 @@ defmodule SalixAgent.InternalSessionStore do
   defp stamp_runtime_epoch(state, nil), do: state
 
   defp stamp_runtime_epoch(state, epoch) when is_integer(epoch),
-    do: InternalSession.stamp(state, runtime_epoch: epoch, runtime_node: to_string(node()))
+    do:
+      InternalSession.stamp(state,
+        runtime_epoch: epoch,
+        runtime_node: to_string(SystemsRuntime.Proc.node())
+      )
 
   # Seed/create bodies are built fresh, so an unstamped (absent-cell) writer
   # must carry the overwritten object's stamp forward instead of resetting a
@@ -1020,7 +1024,7 @@ defmodule SalixAgent.InternalSessionStore do
 
     unless already_fenced do
       _ =
-        Task.Supervisor.start_child(SalixAgent.TaskSup, fn ->
+        SystemsRuntime.TaskSupervisor.start_child(SalixAgent.TaskSup, fn ->
           SalixAgent.Fleet.abort_agent_runtime(agent_id, observed_epoch, :session_epoch_fenced)
         end)
     end
@@ -1267,7 +1271,7 @@ defmodule SalixAgent.InternalSessionStore do
           metadata =
             {work_index.work_index_token, work_index.work_index_reasons,
              activity_revision_value(state, next_state), SessionStorageRevision.new(),
-             SessionStorageRevision.new(), local_epoch, to_string(node())}
+             SessionStorageRevision.new(), local_epoch, to_string(SystemsRuntime.Proc.node())}
 
           fence = InternalSession.stamp_revision_fence(fence, metadata)
 
@@ -1460,7 +1464,7 @@ defmodule SalixAgent.InternalSessionStore do
         observability_context = SystemsObservability.Context.capture()
 
         task =
-          Task.Supervisor.async_nolink(SalixAgent.TaskSup, fn ->
+          SystemsRuntime.TaskSupervisor.async_nolink(SalixAgent.TaskSup, fn ->
             SystemsObservability.Context.run(observability_context, marker)
           end)
 
@@ -1495,7 +1499,7 @@ defmodule SalixAgent.InternalSessionStore do
   end
 
   defp await_commit_prerequisite(task) do
-    case Task.yield(task, :infinity) do
+    case SystemsClock.yield(task, :infinity) do
       {:ok, result} -> result
       {:exit, reason} -> {:error, {:work_index_task_failed, reason}}
       nil -> {:error, :work_index_task_timeout}
@@ -1671,7 +1675,7 @@ defmodule SalixAgent.InternalSessionStore do
   defp sleep_commit_retry(retries_left) do
     attempt = max(@max_commit_retries - retries_left + 1, 1)
     delay_ms = min(attempt * @commit_retry_backoff_ms, @commit_retry_backoff_max_ms)
-    Process.sleep(delay_ms)
+    SystemsClock.sleep(delay_ms)
   end
 
   defp dynamic_commit_meta(meta, events, commit_opts) when is_map(meta) do
@@ -1685,7 +1689,7 @@ defmodule SalixAgent.InternalSessionStore do
     do: dynamic_commit_meta(%{}, events, commit_opts)
 
   defp timestamp_lifecycle_events(events) do
-    timestamp = System.system_time(:second)
+    timestamp = SystemsClock.system_time(:second)
 
     Enum.map(events, fn event ->
       type = event["type"] || event[:type]
@@ -2154,9 +2158,8 @@ defmodule SalixAgent.InternalSessionStore do
   end
 
   @doc """
-  The COMMITTED archived range of the session's log, in seq order, redaction
-  overlays applied to message records read-side — archived bytes carry the
-  original content and are never rewritten.
+  The COMMITTED archived range of the session's log, in seq order, as the
+  immutable archived bytes hold it.
 
   This explicit full-history reader transfers the committed archive. Paged
   transcript and exact-result reads select only their required catalog spans.
@@ -2169,22 +2172,16 @@ defmodule SalixAgent.InternalSessionStore do
   `{:error, {:archive_incomplete, ...}}` — a hard failure, never a silently
   shortened history.
   """
-  @spec archived_records(String.t(), InternalSession.t(), keyword()) ::
+  @spec archived_records(String.t(), InternalSession.t()) ::
           {:ok, [ArchiveLog.log_record()]} | {:error, term()}
-  def archived_records(agent_id, session, opts \\ []) do
+  def archived_records(agent_id, session) do
     archived_through = InternalSession.archived_through(session) || 0
 
     if (InternalSession.storage_format(session) || 1) >= 2 and archived_through > 0 do
       with {:ok, catalog} <- committed_spans(session),
            {:ok, records} <- read_spans(agent_id, session, catalog),
            :ok <- assert_committed_coverage(records, archived_through) do
-        # `mask: false` answers the raw immutable history for verification;
-        # every runtime reader keeps the redaction overlay.
-        if Keyword.get(opts, :mask, true),
-          do:
-            {:ok,
-             mask_archived_message_records(records, InternalSession.get(session, :redactions))},
-          else: {:ok, records}
+        {:ok, records}
       end
     else
       {:ok, []}
@@ -2203,7 +2200,7 @@ defmodule SalixAgent.InternalSessionStore do
   @doc """
   The bounded logical transcript — the ONE message view every reader uses.
 
-  * `:window` — the masked live window, saying whether history was archived
+  * `:window` — the live window, saying whether history was archived
     out of it (`truncated?`); agent-facing surfaces serve this scope and
     state the truncation instead of silently shortening.
   * `{:tail, n}` — the newest `n` messages: the window completed backwards
@@ -2215,12 +2212,11 @@ defmodule SalixAgent.InternalSessionStore do
   * `:full` — the entire committed archive ahead of the window. UNBOUNDED
     (every span, whole history in memory) and therefore
     has NO runtime callers: recovery files read `archived_records/2`
-    directly and the microcompact selector uses the persisted id HWM. It
-    survives as the whole-history oracle for the archive suites and as an
+    directly. It survives as the whole-history oracle for the archive suites and as an
     operator-only escape hatch. Never call it from a request path — pages
     take `{:tail, n}` / `{:before, seq, n}`, agent surfaces take `:window`.
 
-  Every scope applies the redaction overlay; archived message maps carry
+  Every scope reads messages as stored; archived message maps carry
   string keys (seq restored from the record), window maps atom keys.
   """
   @spec transcript(
@@ -2233,7 +2229,7 @@ defmodule SalixAgent.InternalSessionStore do
 
     {:ok,
      %{
-       messages: InternalSession.masked_messages(session),
+       messages: InternalSession.get(session, :messages),
        archived_through: archived_through,
        truncated?: archived_through > 0,
        has_older?: archived_through > 0
@@ -2246,7 +2242,7 @@ defmodule SalixAgent.InternalSessionStore do
     with {:ok, records} <- archived_records(agent_id, session) do
       {:ok,
        %{
-         messages: archived_message_maps(records) ++ InternalSession.masked_messages(session),
+         messages: archived_message_maps(records) ++ InternalSession.get(session, :messages),
          archived_through: archived_through,
          truncated?: false,
          has_older?: false
@@ -2256,7 +2252,7 @@ defmodule SalixAgent.InternalSessionStore do
 
   def transcript(agent_id, session, {:tail, n}) when is_integer(n) and n > 0 do
     archived_through = InternalSession.archived_through(session) || 0
-    window = InternalSession.masked_messages(session)
+    window = InternalSession.get(session, :messages)
     missing = n - length(window)
 
     if missing <= 0 or archived_through == 0 do
@@ -2295,7 +2291,7 @@ defmodule SalixAgent.InternalSessionStore do
     # the window cannot cover — never skip the hot range.
     window_older =
       session
-      |> InternalSession.masked_messages()
+      |> InternalSession.get(:messages)
       |> Enum.filter(&(is_integer(&1[:seq]) and &1[:seq] < before_seq))
 
     window_page = Enum.take(window_older, -n)
@@ -2352,7 +2348,6 @@ defmodule SalixAgent.InternalSessionStore do
            {:ok, records} <- read_spans(agent_id, session, spans) do
         {:ok,
          records
-         |> mask_archived_message_records(InternalSession.get(session, :redactions))
          |> archived_message_maps()
          |> Enum.filter(&(&1["seq"] < before_seq))
          |> Enum.take(-count)}
@@ -2408,69 +2403,6 @@ defmodule SalixAgent.InternalSessionStore do
       nil -> %{expected: min(length(seqs) + 1, archived_through), got: :absent}
     end
   end
-
-  defp mask_archived_message_records(records, redactions) when redactions in [nil, []],
-    do: records
-
-  defp mask_archived_message_records(records, redactions) do
-    by_seq =
-      Map.new(
-        for entry <- redactions,
-            is_integer(entry["seq"]),
-            do: {entry["seq"], entry["replacement"]}
-      )
-
-    by_id =
-      Map.new(
-        for entry <- redactions,
-            not is_nil(entry["message_id"]),
-            do: {entry["message_id"], entry["replacement"]}
-      )
-
-    predicates =
-      Enum.filter(
-        redactions,
-        &(&1["kind"] in ["tool_messages_through", "non_model_messages_over_bytes_through"])
-      )
-
-    Enum.map(records, fn
-      %{kind: "message", seq: seq, data: data} = record ->
-        replacement =
-          Map.get(by_seq, seq) || Map.get(by_id, data["id"]) ||
-            predicate_replacement(predicates, data["role"], data["id"], data["content"])
-
-        case replacement do
-          nil -> record
-          replacement -> %{record | data: Map.put(data, "content", replacement)}
-        end
-
-      record ->
-        record
-    end)
-  end
-
-  # Redaction predicates over archived message records. The same rule masks
-  # the live window inside the kernel (`masked_messages`); archived bytes
-  # live outside it, so the predicate is applied here read-side.
-  defp predicate_replacement(predicates, role, id, content) when is_integer(id) do
-    Enum.find_value(predicates, fn
-      %{"kind" => "tool_messages_through"} = entry when role == "tool" ->
-        if id <= (entry["through_id"] || 0), do: entry["replacement"]
-
-      %{"kind" => "non_model_messages_over_bytes_through"} = entry
-      when role != "assistant" ->
-        max_bytes = entry["max_bytes"]
-
-        if is_integer(max_bytes) and max_bytes > 0 and is_binary(content) and
-             id <= (entry["through_id"] || 0) and byte_size(content) > max_bytes,
-           do: entry["replacement"]
-
-      _entry ->
-        nil
-    end)
-  end
-
-  defp predicate_replacement(_predicates, _role, _id, _content), do: nil
 
   # Settlement retains the original uploaded bytes through its final read-only
   # budget. A matching marker alone cannot identify the committed candidate.
@@ -2607,12 +2539,17 @@ defmodule SalixAgent.InternalSessionStore do
   # owner so its next processing entry reads; the owner's own writes are
   # what its revision already is.
   defp notify_owner_of_foreign_write(agent_id, session_id) do
-    case Registry.lookup(SalixAgent.Registry, InternalSessionActor.key(agent_id, session_id)) do
-      [{pid, _}] when pid != self() ->
+    systems_self = SystemsRuntime.Proc.self()
+
+    case SystemsRuntime.Registry.lookup(
+           SalixAgent.Registry,
+           InternalSessionActor.key(agent_id, session_id)
+         ) do
+      [{pid, _}] when pid != systems_self ->
         case Process.get({__MODULE__, :fence_epoch}) do
           # The initiating owner joins this writer and retains its committed revision.
           {^agent_id, ^session_id, _epoch, ^pid} -> :ok
-          _ -> send(pid, {:session_written_elsewhere, session_id})
+          _ -> SystemsRuntime.Proc.send(pid, {:session_written_elsewhere, session_id})
         end
 
       _ ->
@@ -2665,7 +2602,7 @@ defmodule SalixAgent.InternalSessionStore do
   end
 
   defp snapshot_etf(body) do
-    if Application.get_env(:salix_agent, :snapshot_recovery_enabled, false),
+    if SystemsRuntime.get_env(:salix_agent, :snapshot_recovery_enabled, false),
       do: Codec.snapshot_etf_bounded(body, SalixAgent.LegacyGuardSnapshotRepair.read_limit()),
       else: {:ok, Codec.snapshot_etf(body)}
   end

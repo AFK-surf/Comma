@@ -112,7 +112,7 @@ describe("Timeline outcomes", () => {
     ).toBe("Would reply");
   });
 
-  it("does not count a Worker assignment as a final silence", () => {
+  it("does not count a Task assignment as a final silence", () => {
     const assigned = outcome({
       communication: {
         ...outcome().communication,
@@ -120,7 +120,7 @@ describe("Timeline outcomes", () => {
         reason: "worker_pending",
       },
     });
-    expect(outcomeLabel(assigned)).toBe("Assigned to Worker");
+    expect(outcomeLabel(assigned)).toBe("Assigned to a Task");
     expect(activityCounts([assigned]).silence).toBe(0);
   });
 
@@ -133,7 +133,7 @@ describe("Timeline outcomes", () => {
       ],
     });
     expect(effectSummary(item)).toBe(
-      "2 context effects · 1 worker task created · 1 worker task proposed"
+      "2 context effects · 1 Task created · 1 Task proposed"
     );
   });
 

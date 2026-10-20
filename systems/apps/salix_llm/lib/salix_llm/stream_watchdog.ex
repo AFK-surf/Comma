@@ -1,4 +1,8 @@
 defmodule SalixLlm.StreamWatchdog do
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
   @moduledoc """
   Stall detection for streamed provider responses.
 
@@ -13,8 +17,14 @@ defmodule SalixLlm.StreamWatchdog do
     * `:idle_timeout` — the longest quiet gap tolerated after that
       (`SalixAgent.LLM.stream_idle_timeout_ms/0`, 30 s by default).
 
-  Every byte of response body counts as activity, so provider pings, thinking
-  deltas and tool-argument fragments keep a stream alive exactly like text.
+  Any SSE line other than a comment counts as an event, so provider `ping`
+  events, thinking deltas and tool-argument fragments keep a stream alive
+  exactly like text. A comment line (one that starts with `:`) is not an
+  event: SSE clients ignore it, and providers such as DeepSeek send
+  `: keep-alive` comments for as long as a request waits to be scheduled. A
+  stream of comments alone therefore ends on the active phase's allowance
+  instead of holding the request until its total budget runs out. A response
+  body that is not SSE (a JSON error, a non-streamed reply) counts as events.
 
   `post/3` is a drop-in for `Req.post/2` with an `into:` function. The HTTP
   request runs in a linked relay task that forwards each body chunk to the
@@ -26,7 +36,7 @@ defmodule SalixLlm.StreamWatchdog do
   captured context, so the provider request keeps the caller's surface, Logger
   metadata and parent span.
 
-  A quiet gap longer than the active phase's allowance kills the relay — the
+  A gap without events longer than the active phase's allowance kills the relay — the
   pool then drops its connection — and yields
   `{:error, {:stream_idle_timeout, meta}, partial}`. Every error carries the
   caller-side response accumulated so far (or `nil` when no response had
@@ -92,8 +102,8 @@ defmodule SalixLlm.StreamWatchdog do
       streaming: timeout_opt(opts, :idle_timeout, &SalixAgent.LLM.stream_idle_timeout_ms/0)
     }
 
-    owner = self()
-    ref = make_ref()
+    owner = SystemsRuntime.Proc.self()
+    ref = SystemsRuntime.Proc.make_ref()
     req_opts = Keyword.put(req_opts, :retry, false)
 
     progress = %{
@@ -102,6 +112,8 @@ defmodule SalixLlm.StreamWatchdog do
       first_body_at: nil,
       received_bytes: 0,
       received_chunks: 0,
+      last_event_at: nil,
+      sse_line: :line_start,
       observed_http_status: nil
     }
 
@@ -111,11 +123,11 @@ defmodule SalixLlm.StreamWatchdog do
     context = SystemsObservability.Context.capture()
 
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         SystemsObservability.Context.run(context, fn -> relay(owner, ref, url, req_opts) end)
       end)
 
-    await(task, ref, into, nil, :first_event, timeouts, url, progress)
+    await(task, ref, into, nil, arm(timeouts, :first_event), url, progress)
   end
 
   # ---- relay (runs in the linked task) ----
@@ -124,14 +136,14 @@ defmodule SalixLlm.StreamWatchdog do
     into = fn {:data, data}, {req, resp} ->
       resp =
         if Req.Response.get_private(resp, :stream_watchdog_announced, false) do
-          send(owner, {ref, :chunk, nil, data})
+          SystemsRuntime.Proc.send(owner, {ref, :chunk, nil, data})
           resp
         else
           # The first chunk of every response Req delivers carries the
           # request/response pair, so the owner can seed a fresh accumulator
           # with that response's status and headers. A followed redirect that
           # has a body announces itself here too, before the final response.
-          send(owner, {ref, :chunk, {req, resp}, data})
+          SystemsRuntime.Proc.send(owner, {ref, :chunk, {req, resp}, data})
           Req.Response.put_private(resp, :stream_watchdog_announced, true)
         end
 
@@ -147,28 +159,30 @@ defmodule SalixLlm.StreamWatchdog do
 
   # ---- owner side ----
 
-  defp await(%Task{ref: task_ref} = task, ref, into, acc, phase, timeouts, url, progress) do
-    timeout = Map.fetch!(timeouts, phase)
+  defp await(%Task{ref: task_ref} = task, ref, into, acc, watch, url, progress) do
+    %{phase: phase} = watch
 
-    receive do
+    SystemsClock.vreceive do
       {^ref, :chunk, initial, data} ->
         # A non-nil `initial` is a new response starting; it replaces whatever
         # an earlier response (a redirect with a body) accumulated.
         acc = initial || acc
-        progress = received(progress, initial, data)
+        {event?, progress} = received(progress, initial, data)
 
         case into.({:data, data}, acc) do
           {:cont, acc} ->
-            await(task, ref, into, acc, next_phase(acc), timeouts, url, progress)
+            # A chunk of comments alone keeps the current phase and deadline.
+            watch = if event?, do: arm(watch.timeouts, next_phase(acc)), else: watch
+            await(task, ref, into, acc, watch, url, progress)
 
           {:halt, {_req, resp}} ->
-            _ = Task.shutdown(task, :brutal_kill)
+            _ = SystemsRuntime.Task.shutdown(task, :brutal_kill)
             flush(ref)
             {:ok, resp}
         end
 
       {^task_ref, result} ->
-        Process.demonitor(task_ref, [:flush])
+        SystemsRuntime.Proc.demonitor(task_ref, [:flush])
         flush(ref)
         log_failure(result, phase, progress, url)
         finish(result, acc)
@@ -178,8 +192,9 @@ defmodule SalixLlm.StreamWatchdog do
         log_failure({:error, {:stream_relay_exit, reason}}, phase, progress, url)
         {:error, {:stream_relay_exit, reason}, partial(acc)}
     after
-      timeout ->
-        _ = Task.shutdown(task, :brutal_kill)
+      wait_ms(watch.deadline) ->
+        timeout = Map.fetch!(watch.timeouts, phase)
+        _ = SystemsRuntime.Task.shutdown(task, :brutal_kill)
         flush(ref)
 
         log_failure({:idle_timeout, timeout}, phase, progress, url)
@@ -199,6 +214,8 @@ defmodule SalixLlm.StreamWatchdog do
             | first_body_at: at,
               received_bytes: 0,
               received_chunks: 0,
+              last_event_at: nil,
+              sse_line: :line_start,
               observed_http_status: resp.status
           }
 
@@ -206,13 +223,60 @@ defmodule SalixLlm.StreamWatchdog do
           progress
       end
 
-    %{
-      progress
-      | last_body_at: at,
-        received_bytes: progress.received_bytes + byte_size(data),
-        received_chunks: progress.received_chunks + 1
-    }
+    {event?, sse_line} = sse_events(data, progress.sse_line)
+
+    {event?,
+     %{
+       progress
+       | last_body_at: at,
+         last_event_at: if(event?, do: at, else: progress.last_event_at),
+         sse_line: sse_line,
+         received_bytes: progress.received_bytes + byte_size(data),
+         received_chunks: progress.received_chunks + 1
+     }}
   end
+
+  @doc false
+  # Whether `data` carries any SSE event bytes, and the kind of line it ends
+  # inside. A chunk can end mid-line, so `carry` is the kind of the line the
+  # previous chunk ended inside: `:line_start`, `:comment` or `:field`. Any
+  # non-comment line is a field line here, so a body that is not SSE counts.
+  @spec sse_events(binary(), :line_start | :comment | :field) ::
+          {boolean(), :line_start | :comment | :field}
+  def sse_events(data, carry) do
+    [first | rest] = :binary.split(data, ["\r\n", "\n", "\r"], [:global])
+    first_kind = if carry == :line_start, do: line_kind(first), else: carry
+
+    event? =
+      (first_kind == :field and first != "") or
+        Enum.any?(rest, &(line_kind(&1) == :field))
+
+    carry =
+      case rest do
+        [] when first == "" -> carry
+        [] -> first_kind
+        _ -> rest |> List.last() |> line_kind()
+      end
+
+    {event?, carry}
+  end
+
+  defp line_kind(""), do: :line_start
+  defp line_kind(":" <> _comment), do: :comment
+  defp line_kind(_field), do: :field
+
+  defp arm(timeouts, phase) do
+    deadline =
+      case Map.fetch!(timeouts, phase) do
+        :infinity -> :infinity
+        timeout -> now() + timeout
+      end
+
+    %{phase: phase, timeouts: timeouts, deadline: deadline}
+  end
+
+  defp wait_ms(:infinity), do: :infinity
+  defp wait_ms(deadline), do: max(deadline - now(), 0)
 
   defp log_failure({:ok, _response}, _phase, _progress, _url), do: :ok
 
@@ -224,8 +288,9 @@ defmodule SalixLlm.StreamWatchdog do
       failure: failure,
       phase: phase,
       elapsed_ms: at - progress.started_at,
-      silent_ms: at - (progress.last_body_at || progress.started_at),
+      silent_ms: at - (progress.last_event_at || progress.started_at),
       first_body_ms: if(progress.first_body_at, do: progress.first_body_at - progress.started_at),
+      last_body_ms: if(progress.last_body_at, do: progress.last_body_at - progress.started_at),
       received_bytes: progress.received_bytes,
       received_chunks: progress.received_chunks,
       observed_http_status: progress.observed_http_status
@@ -266,7 +331,7 @@ defmodule SalixLlm.StreamWatchdog do
   defp failure_metadata({:stream_watchdog_catch, kind, reason, stack}),
     do: {:relay_exception, [crash_reason: {{kind, reason}, stack}]}
 
-  defp now, do: System.monotonic_time(:millisecond)
+  defp now, do: SystemsClock.monotonic_time(:millisecond)
 
   defp finish({:ok, %Req.Response{} = relay_resp}, {_req, %Req.Response{} = resp}) do
     # The owner's copy carries what the `into:` function accumulated; the
@@ -304,7 +369,7 @@ defmodule SalixLlm.StreamWatchdog do
   defp partial(nil), do: nil
 
   defp flush(ref) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {^ref, :chunk, _initial, _data} -> flush(ref)
     after
       0 -> :ok

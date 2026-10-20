@@ -35,7 +35,7 @@ defmodule CommaWeb.ProactiveBriefing do
            MailInteraction.notification_budget(
              conversation,
              profile.user_id,
-             System.system_time(:millisecond),
+             SystemsClock.system_time(:millisecond),
              "critical"
            ) do
       current = MailInteraction.entries(conversation)[key()]
@@ -70,16 +70,27 @@ defmodule CommaWeb.ProactiveBriefing do
           :ok
 
         {:error, reason} ->
-          Logger.info("proactive_briefing handoff skipped reason=#{inspect(reason)}")
+          Logger.info(
+            "proactive_briefing handoff skipped reason=#{inspect(reason)}",
+            log_ids(workspace, profile)
+          )
       end
     end
 
     :ok
   rescue
     error ->
-      Logger.warning("proactive_briefing handoff failed #{Exception.message(error)}")
+      Logger.warning(
+        "proactive_briefing handoff failed #{Exception.message(error)}",
+        log_ids(workspace, profile)
+      )
+
       :ok
   end
+
+  # The caller's process is not this handoff's, so its lines carry the IDs.
+  defp log_ids(workspace, profile),
+    do: [user_id: profile.user_id, workspace_id: workspace["id"], profile_id: profile.id]
 
   # Evidence for the Router, never sent as is: the most urgent items first.
   defp text(items) do

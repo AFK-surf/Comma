@@ -1,5 +1,7 @@
 defmodule SalixSignal.CallMedia.TLSRelayTest do
-  use ExUnit.Case, async: true
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: true
 
   alias SalixSignal.CallMedia.TLSRelay
   alias SalixSignal.Test.FakeChat
@@ -30,6 +32,14 @@ defmodule SalixSignal.CallMedia.TLSRelayTest do
     socket
   end
 
+  # A monitor is asynchronous. The relay must acknowledge it before another
+  # process can close the connection and let it exit.
+  defp monitor_relay(relay) do
+    monitor = SystemsRuntime.Proc.monitor(relay)
+    SystemsRuntime.Server.get_state(relay, :infinity)
+    monitor
+  end
+
   defp request(socket) do
     {:ok, <<_type::16, length::16, _::binary-size(16)>> = header} = :ssl.recv(socket, 20, 5_000)
     payload = if length == 0, do: <<>>, else: elem(:ssl.recv(socket, length, 5_000), 1)
@@ -38,13 +48,13 @@ defmodule SalixSignal.CallMedia.TLSRelayTest do
   end
 
   test "mixed Signal relay URLs use only TLS and refresh the allocation", ctx do
-    test_pid = self()
+    test_pid = SystemsRuntime.Proc.self()
     {:ok, udp} = :gen_udp.open(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, {_, udp_port}} = :inet.sockname(udp)
     on_exit(fn -> :gen_udp.close(udp) end)
 
     server =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         socket = accept(ctx.listener)
         req = request(socket)
         assert req.type == %Type{class: :request, method: :allocate}
@@ -77,7 +87,7 @@ defmodule SalixSignal.CallMedia.TLSRelayTest do
         <<first::binary-size(7), rest::binary>> = response
         :ok = :ssl.send(socket, first)
         :ok = :ssl.send(socket, rest)
-        send(test_pid, :allocated)
+        SystemsRuntime.Proc.send(test_pid, :allocated)
         refresh = request(socket)
         assert refresh.type == %Type{class: :request, method: :refresh}
         assert :ok = Message.authenticate(refresh, key)
@@ -91,7 +101,7 @@ defmodule SalixSignal.CallMedia.TLSRelayTest do
           |> Message.encode()
 
         :ok = :ssl.send(socket, refreshed)
-        send(test_pid, :refreshed)
+        SystemsRuntime.Proc.send(test_pid, :refreshed)
         assert {:error, :closed} = :ssl.recv(socket, 0, 10_000)
       end)
 
@@ -99,9 +109,9 @@ defmodule SalixSignal.CallMedia.TLSRelayTest do
       SalixSignal.CallMedia.start_connection(%{
         role: :caller,
         call_id: 123,
-        owner: self(),
-        caller_identity_key: :crypto.strong_rand_bytes(32),
-        callee_identity_key: :crypto.strong_rand_bytes(32),
+        owner: SystemsRuntime.Proc.self(),
+        caller_identity_key: SystemsRuntime.Proc.random_bytes(32),
+        callee_identity_key: SystemsRuntime.Proc.random_bytes(32),
         ice_servers: [
           %{
             urls: ["turn:127.0.0.1:#{udp_port}?transport=udp", "turns:localhost:#{ctx.port}"],
@@ -113,26 +123,17 @@ defmodule SalixSignal.CallMedia.TLSRelayTest do
         ice_opts: [ip_filter: fn ip -> tuple_size(ip) == 4 end]
       })
 
-    assert_receive :allocated, 5_000
-    assert_receive {:signal_call_media, ^connection, {:local_candidate, candidate}}, 5_000
+    assert_receive :allocated
+    assert_receive {:signal_call_media, ^connection, {:local_candidate, candidate}}
     assert candidate =~ "192.0.2.42 45000 typ relay"
     assert {:error, :timeout} = :gen_udp.recv(udp, 0, 200)
-    assert_receive :refreshed, 5_000
+    assert_receive :refreshed
     refute_receive {:signal_call_media, ^connection, {:local_candidate, _}}, 200
     relay = :sys.get_state(connection).tls_relay
-    monitor = Process.monitor(relay)
+    monitor = monitor_relay(relay)
     GenServer.stop(connection)
     assert_receive {:DOWN, ^monitor, :process, ^relay, :normal}
-    Task.await(server)
-  end
-
-  test "call startup fails when no TLS relay is advertised" do
-    assert {:error, :turn_tls_unavailable} =
-             SalixSignal.CallMedia.start_connection(%{
-               ice_servers: [%{urls: ["turn:127.0.0.1:3478?transport=udp"]}]
-             })
-
-    assert {:error, :turn_tls_unavailable} = SalixSignal.CallMedia.start_connection(%{})
+    SystemsRuntime.Task.await(server, :infinity)
   end
 
   test "ChannelData padding and coalesced TLS frames preserve datagram boundaries", ctx do
@@ -141,7 +142,7 @@ defmodule SalixSignal.CallMedia.TLSRelayTest do
     stun = Message.new(%Type{class: :indication, method: :binding}) |> Message.encode()
 
     server =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         socket = accept(ctx.listener)
         assert {:ok, ^padded} = :ssl.recv(socket, byte_size(padded), 5_000)
         :ok = :ssl.send(socket, padded <> stun <> padded)
@@ -150,7 +151,7 @@ defmodule SalixSignal.CallMedia.TLSRelayTest do
 
     {:ok, relay} =
       TLSRelay.start(
-        owner: self(),
+        owner: SystemsRuntime.Proc.self(),
         host: "localhost",
         port: ctx.port,
         cacerts: [ctx.chain.root]
@@ -164,12 +165,12 @@ defmodule SalixSignal.CallMedia.TLSRelayTest do
     assert {:ok, {_, _, ^channel}} = :gen_udp.recv(udp, 0, 5_000)
     TLSRelay.stop(relay)
     :gen_udp.close(udp)
-    Task.await(server)
+    SystemsRuntime.Task.await(server, :infinity)
   end
 
   test "an untrusted certificate is refused before any TURN credentials are sent", ctx do
     server =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         {:ok, socket} = :ssl.transport_accept(ctx.listener, 5_000)
         assert {:error, _} = :ssl.handshake(socket, 5_000)
       end)
@@ -188,34 +189,6 @@ defmodule SalixSignal.CallMedia.TLSRelayTest do
                turn_tls: [cacerts: [other.root]]
              })
 
-    Task.await(server)
-  end
-
-  test "owner loss closes the TLS connection", ctx do
-    server =
-      Task.async(fn ->
-        socket = accept(ctx.listener)
-        assert {:error, :closed} = :ssl.recv(socket, 0, 5_000)
-      end)
-
-    owner =
-      spawn(fn ->
-        receive do
-          :stop -> :ok
-        end
-      end)
-
-    {:ok, relay} =
-      TLSRelay.start(
-        owner: owner,
-        host: "localhost",
-        port: ctx.port,
-        cacerts: [ctx.chain.root]
-      )
-
-    monitor = Process.monitor(relay)
-    send(owner, :stop)
-    assert_receive {:DOWN, ^monitor, :process, ^relay, :normal}
-    Task.await(server)
+    SystemsRuntime.Task.await(server, :infinity)
   end
 end

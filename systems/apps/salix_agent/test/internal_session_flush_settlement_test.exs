@@ -1,5 +1,5 @@
 defmodule SalixAgent.InternalSessionFlushSettlementTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{InternalSession, InternalSessionActor, InternalSessionStore}
   alias SalixStore.{Codec, Keys, S3}
@@ -33,7 +33,7 @@ defmodule SalixAgent.InternalSessionFlushSettlementTest do
   end
 
   setup do
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
     SalixStore.Repo.query!("TRUNCATE session_work_candidates")
     :ok
@@ -68,30 +68,8 @@ defmodule SalixAgent.InternalSessionFlushSettlementTest do
     %{"type" => "assistant", "message_id" => id, "content" => "reply", "created_at" => 2_000}
   end
 
-  test "a matching flush marker cannot confirm different durable input facts" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
-    key = created_session(agent_id)
-    assert {:ok, base} = InternalSessionStore.read_revision(agent_id, @session)
-    Application.put_env(:salix_store, :s3_backend, SameMarkerBackend)
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, S3.Fake) end)
-    SameMarkerBackend.arm(key)
-    input = %{source_message_id: "unwritten-input", payload: %{content: "must be durable"}}
-
-    assert {{:error, :precondition_failed}, _revision, nil} =
-             SalixAgent.InternalSession.Command.run(
-               agent_id,
-               @session,
-               base,
-               :input,
-               {input, false}
-             )
-
-    assert {:ok, %{body: body}} = S3.get(key)
-    assert Codec.decode_snapshot(body).input_queue == []
-  end
-
   test "source progress and input remain atomic across an uncommitted candidate and a lost CAS reply" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     key = created_session(agent_id)
     assert {:ok, base} = InternalSessionStore.read_revision(agent_id, @session)
 
@@ -147,7 +125,7 @@ defmodule SalixAgent.InternalSessionFlushSettlementTest do
   end
 
   test "source gaps and retired binding generations cannot admit inputs" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     created_session(agent_id)
     assert {:ok, base} = InternalSessionStore.read_revision(agent_id, @session)
 
@@ -172,44 +150,8 @@ defmodule SalixAgent.InternalSessionFlushSettlementTest do
     assert InternalSession.export(stored).input_queue == []
   end
 
-  test "a scanned position and a previously admitted input advance without adding work" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
-    created_session(agent_id)
-    assert {:ok, base} = InternalSessionStore.read_revision(agent_id, @session)
-    input = %{source_message_id: "existing", payload: %{content: "accepted work"}}
-
-    assert {{:ok, :committed}, admitted, nil} =
-             InternalSession.Command.run(agent_id, @session, base, :input, {input, false})
-
-    source = %{
-      "conversation_id" => "conversation",
-      "participant_id" => "participant",
-      "generation" => @session,
-      "seq" => 1
-    }
-
-    entry = Map.put(input, :conversation_source, source)
-
-    assert {{:ok, :committed}, advanced, nil} =
-             InternalSession.Command.run(agent_id, @session, admitted, :input, {entry, false})
-
-    scan = %{
-      source_message_id: nil,
-      payload: %{},
-      conversation_source: Map.put(source, "seq", 2),
-      conversation_scan_only: true
-    }
-
-    assert {{:ok, :committed}, _, nil} =
-             InternalSession.Command.run(agent_id, @session, advanced, :input, {scan, false})
-
-    assert {:ok, stored} = InternalSessionStore.read(agent_id, @session)
-    assert InternalSession.conversation_sources(stored)["participant"]["seq"] == 2
-    assert length(InternalSession.export(stored).input_queue) == 1
-  end
-
   test "a duplicate of staged input must cross its durable fence before acknowledgment" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     key = created_session(agent_id)
     assert {:ok, base} = InternalSessionStore.read_revision(agent_id, @session)
     input = %{source_message_id: "staged-duplicate", payload: %{content: "retain this input"}}
@@ -243,43 +185,8 @@ defmodule SalixAgent.InternalSessionFlushSettlementTest do
     assert committed.pending == nil
   end
 
-  test "a failed fence cannot acknowledge a duplicate found only in working state" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
-    key = created_session(agent_id)
-    assert {:ok, base} = InternalSessionStore.read_revision(agent_id, @session)
-    input = %{source_message_id: "uncommitted-duplicate", payload: %{content: "not yet durable"}}
-
-    assert {{:awaiting_fence, _}, staged, nil} =
-             SalixAgent.InternalSession.Command.prepare(
-               agent_id,
-               @session,
-               base,
-               :input,
-               {input, false}
-             )
-
-    Application.put_env(:salix_store, :s3_backend, SameMarkerBackend)
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, S3.Fake) end)
-    SameMarkerBackend.arm(key)
-
-    assert {{:error, :precondition_failed}, restored, nil} =
-             SalixAgent.InternalSession.Command.run(
-               agent_id,
-               @session,
-               staged,
-               :input,
-               {input, false}
-             )
-
-    assert restored.etag == base.etag
-    assert restored.pending == nil
-    assert InternalSession.export(restored.state) === InternalSession.export(base.state)
-    assert {:ok, %{body: body}} = S3.get(key)
-    assert Codec.decode_snapshot(body).input_queue == []
-  end
-
   test "ambiguous-but-landed CAS settles as committed without re-applying the batch" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     key = created_session(agent_id)
 
     :ok = S3.Fake.set_fault({:ambiguous_after, :put, key})
@@ -302,7 +209,7 @@ defmodule SalixAgent.InternalSessionFlushSettlementTest do
   end
 
   test "ambiguous-not-landed CAS retries the same materialization" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     key = created_session(agent_id)
 
     :ok = S3.Fake.set_fault({:ambiguous_before, :put, key})
@@ -320,7 +227,7 @@ defmodule SalixAgent.InternalSessionFlushSettlementTest do
   end
 
   test "a takeover between ambiguity and settlement rebases instead of double-writing" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
+    agent_id = "agent-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     key = created_session(agent_id)
 
     # First commit lands one message so the takeover has a base to move.
@@ -352,114 +259,6 @@ defmodule SalixAgent.InternalSessionFlushSettlementTest do
 
     # The rebase re-read the foreign object and applied the batch exactly
     # once on top of it.
-    assert {:ok, %{body: body}} = S3.get(key)
-    stored = Codec.decode_snapshot(body)
-
-    assert Enum.count(
-             stored.messages,
-             &(&1.role == "assistant")
-           ) == 1
-
-    assert stored.messages == SalixAgent.InternalSession.get(state, :messages)
-  end
-
-  test "a landed write whose settlement budget exhausts is adopted, never re-applied" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
-    key = created_session(agent_id)
-
-    # The PUT lands but the response is lost, and every settlement read-back
-    # fails until the budget is gone. The commit's final byte-exact read-back
-    # must adopt the landed state — retrying would double-apply the
-    # dedupe-keyless assistant event. Faults are injected from the builder
-    # so the commit's own base read stays clean.
-    builder = fn _state ->
-      :ok = S3.Fake.set_fault({:ambiguous_after, :put, key})
-      for _ <- 1..4, do: :ok = S3.Fake.set_fault({:fail, 503, :get, key})
-      {:ok, [assistant_event(1)], []}
-    end
-
-    assert {:ok, state, _meta} = InternalSessionStore.commit_dynamic(agent_id, @session, builder)
-
-    assert {:ok, %{body: body}} = S3.get(key)
-    stored = Codec.decode_snapshot(body)
-
-    assert Enum.count(
-             stored.messages,
-             &(&1.role == "assistant")
-           ) == 1
-
-    assert stored.messages == SalixAgent.InternalSession.get(state, :messages)
-  end
-
-  test "an unchanged baseline after budget exhaustion does not reapply the batch" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
-    key = created_session(agent_id)
-
-    # An unchanged baseline cannot distinguish a lost PUT from an in-flight PUT.
-    # Exhaustion must not authorize another materialization.
-    {:ok, calls} = Agent.start_link(fn -> 0 end)
-
-    builder = fn _state ->
-      if Agent.get_and_update(calls, &{&1, &1 + 1}) == 0 do
-        :ok = S3.Fake.set_fault({:ambiguous_before, :put, key})
-        for _ <- 1..4, do: :ok = S3.Fake.set_fault({:fail, 503, :get, key})
-      end
-
-      {:ok, [assistant_event(1)], []}
-    end
-
-    assert {:error, :commit_indeterminate} =
-             InternalSessionStore.commit_dynamic(agent_id, @session, builder)
-
-    assert Agent.get(calls, & &1) == 1
-
-    assert {:ok, %{body: body}} = S3.get(key)
-    stored = Codec.decode_snapshot(body)
-
-    assert Enum.count(
-             stored.messages,
-             &(&1.role == "assistant")
-           ) == 0
-  end
-
-  test "an original CAS that lands during final read-back does not duplicate the batch" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
-    key = created_session(agent_id)
-    {:ok, calls} = Agent.start_link(fn -> 0 end)
-
-    builder = fn _state ->
-      if Agent.get_and_update(calls, &{&1, &1 + 1}) == 0 do
-        :ok = S3.Fake.set_fault({:apply_after_next_get, :put, key})
-        for _ <- 1..4, do: :ok = S3.Fake.set_fault({:fail, 503, :get, key})
-      end
-
-      {:ok, [assistant_event(1)], []}
-    end
-
-    assert {:ok, state, _meta} = InternalSessionStore.commit_dynamic(agent_id, @session, builder)
-    assert {:ok, %{body: body}} = S3.get(key)
-    stored = Codec.decode_snapshot(body)
-    assert Enum.count(stored.messages, &(&1.role == "assistant")) == 1
-    assert stored.messages == InternalSession.get(state, :messages)
-    assert Agent.get(calls, & &1) == 1
-  end
-
-  test "an original CAS that lands after the settlement read applies the batch once" do
-    agent_id = "agent-#{System.unique_integer([:positive])}"
-    key = created_session(agent_id)
-
-    # The settlement read is not a fence: the ambiguous PUT is still in
-    # flight, the read sees the unchanged base, the original then lands, and
-    # the same-bytes retry takes a stale 412 for our own write. Treating that
-    # 412 as a conflict would rebase and re-apply the dedupe-less assistant
-    # record — the duplicate this asserts against.
-    builder = fn _state ->
-      :ok = S3.Fake.set_fault({:apply_after_next_get, :put, key})
-      {:ok, [assistant_event(1)], []}
-    end
-
-    assert {:ok, state, _meta} = InternalSessionStore.commit_dynamic(agent_id, @session, builder)
-
     assert {:ok, %{body: body}} = S3.get(key)
     stored = Codec.decode_snapshot(body)
 

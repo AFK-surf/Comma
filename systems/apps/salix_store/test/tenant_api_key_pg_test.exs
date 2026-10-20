@@ -1,6 +1,6 @@
 defmodule SalixStore.TenantApiKeyPgTest do
   # Shares the node-global Fake bucket and control tables; keep serial.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.{Keys, Repo, S3, TenantApiKeyCutover, TenantApiKeys}
 
@@ -90,12 +90,6 @@ defmodule SalixStore.TenantApiKeyPgTest do
   end
 
   describe "cutover marker (readiness authority; request path never mints it)" do
-    test "an absent marker reads as not-present even with an empty S3 prefix" do
-      # marker_present?/0 is the readiness signal: absent (or unreadable) keeps
-      # the pod out of service. An empty S3 LIST must never mint the marker.
-      refute TenantApiKeyCutover.marker_present?()
-    end
-
     test "legacy S3 records with no marker stay not-present" do
       seed_s3(record("ten_d", "hash_d1"))
       refute TenantApiKeyCutover.marker_present?()

@@ -188,7 +188,11 @@ defmodule SalixMeet.PersonalPreparation do
   end
 
   def pending(plan, opts \\ []),
-    do: Store.pending(identity(plan), Keyword.get(opts, :now, System.system_time(:millisecond)))
+    do:
+      Store.pending(
+        identity(plan),
+        Keyword.get(opts, :now, SystemsClock.system_time(:millisecond))
+      )
 
   def has_pending?(%{"personal_preparation" => false}), do: {:ok, false}
   def has_pending?(plan), do: Store.has_pending?(identity(plan))
@@ -237,7 +241,7 @@ defmodule SalixMeet.PersonalPreparation do
   defp source_labels(_), do: {:error, :meeting_personal_source_authorization_required}
 
   defp writable(plan, opts) do
-    now = Keyword.get(opts, :now, System.system_time(:millisecond))
+    now = Keyword.get(opts, :now, SystemsClock.system_time(:millisecond))
     deadline = get_in(plan, ["preparation", "publish_deadline_at"])
 
     with true <- get_in(plan, ["publication_target", "provider"]) == "slack",

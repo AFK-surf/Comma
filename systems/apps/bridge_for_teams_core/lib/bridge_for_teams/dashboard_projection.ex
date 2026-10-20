@@ -19,39 +19,11 @@ defmodule BridgeForTeams.DashboardProjection do
   @call_timeout_ms 5_000
   @billing_timeout_ms 1_000
 
-  def topic(project_id), do: "bft:dashboard_projection:#{project_id}"
-
-  def subscribe(project_id) do
-    pubsub = Module.concat(Phoenix, PubSub)
-
-    with true <- Code.ensure_loaded?(pubsub),
-         pid when is_pid(pid) <- Process.whereis(BridgeForTeamsWeb.PubSub) do
-      apply(pubsub, :subscribe, [BridgeForTeamsWeb.PubSub, topic(project_id)])
-    else
-      _ -> :ok
-    end
-  end
-
-  def broadcast_refreshed(project_id) do
-    pubsub = Module.concat(Phoenix, PubSub)
-
-    with true <- Code.ensure_loaded?(pubsub),
-         pid when is_pid(pid) <- Process.whereis(BridgeForTeamsWeb.PubSub) do
-      apply(pubsub, :broadcast, [
-        BridgeForTeamsWeb.PubSub,
-        topic(project_id),
-        {:dashboard_projection_refreshed, project_id}
-      ])
-    else
-      _ -> :ok
-    end
-  end
-
   def enqueue_refresh(%Project{} = project), do: enqueue_refresh(project.id)
   def enqueue_refresh(nil), do: :ok
 
   def enqueue_refresh(project_id) when is_binary(project_id) do
-    if Application.get_env(:bridge_for_teams_core, :dashboard_projection_auto_refresh, true) do
+    if SystemsRuntime.get_env(:bridge_for_teams_core, :dashboard_projection_auto_refresh, true) do
       BridgeForTeams.DashboardProjection.Reconciler.enqueue(project_id)
     else
       :ok
@@ -84,7 +56,7 @@ defmodule BridgeForTeams.DashboardProjection do
   def mark_stale(%Project{} = project), do: mark_stale(project.id)
 
   def mark_stale(project_id) when is_binary(project_id) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     case Repo.get(ProjectDashboardSnapshot, project_id) do
       nil ->
@@ -107,15 +79,15 @@ defmodule BridgeForTeams.DashboardProjection do
     if not Keyword.get(opts, :durable_claim, false) do
       _ =
         update_snapshot_state(project, %{
-          refreshing_at: DateTime.utc_now(),
+          refreshing_at: SystemsClock.utc_now(),
           refresh_error: nil
         })
     end
 
     metadata = %{project_id: project.id, org_id: project.org_id}
-    start_time = System.monotonic_time()
+    start_time = SystemsClock.monotonic_time()
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:bridge_for_teams, :dashboard_projection, :refresh, :start],
       %{},
       metadata
@@ -132,7 +104,7 @@ defmodule BridgeForTeams.DashboardProjection do
         |> snapshot_attrs_from_sources(meetings, providers, token_usage)
         |> Map.merge(%{
           refresh_generation: Keyword.get(opts, :refresh_generation, 0),
-          refreshed_at: DateTime.utc_now(),
+          refreshed_at: SystemsClock.utc_now(),
           stale_at: nil,
           refreshing_at: nil,
           refresh_error: nil
@@ -157,7 +129,6 @@ defmodule BridgeForTeams.DashboardProjection do
           snapshot
         end)
 
-      broadcast_refreshed(project.id)
       emit_refresh_stop(start_time, metadata, :ok)
       {:ok, snapshot}
     rescue
@@ -168,7 +139,6 @@ defmodule BridgeForTeams.DashboardProjection do
           _ = update_snapshot_state(project, %{refreshing_at: nil, refresh_error: reason})
         end
 
-        broadcast_refreshed(project.id)
         emit_refresh_stop(start_time, metadata, :error)
         {:error, reason}
     catch
@@ -179,7 +149,6 @@ defmodule BridgeForTeams.DashboardProjection do
           _ = update_snapshot_state(project, %{refreshing_at: nil, refresh_error: message})
         end
 
-        broadcast_refreshed(project.id)
         emit_refresh_stop(start_time, metadata, :error)
         {:error, reason}
     end
@@ -197,7 +166,7 @@ defmodule BridgeForTeams.DashboardProjection do
     timeout = opts |> Keyword.get(:timeout, 30_000) |> positive_integer(30_000)
 
     projects
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn project ->
         if dry_run? do
           {:dry_run, project.id, stale_or_missing?(project)}
@@ -356,7 +325,7 @@ defmodule BridgeForTeams.DashboardProjection do
 
   defp call_with_retry(fun, attempts_left, timeout_ms) do
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         try do
           {:ok, fun.()}
         rescue
@@ -366,7 +335,8 @@ defmodule BridgeForTeams.DashboardProjection do
         end
       end)
 
-    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+    case SystemsRuntime.Task.yield(task, timeout_ms) ||
+           SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, {:ok, result}} ->
         result
 
@@ -385,7 +355,7 @@ defmodule BridgeForTeams.DashboardProjection do
   end
 
   defp emit_refresh_stop(start_time, metadata, status) do
-    duration = System.monotonic_time() - start_time
+    duration = SystemsClock.monotonic_time() - start_time
 
     BridgeForTeams.Telemetry.emit_operation(
       :projection_refresh,
@@ -393,7 +363,7 @@ defmodule BridgeForTeams.DashboardProjection do
       duration
     )
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:bridge_for_teams, :dashboard_projection, :refresh, :stop],
       %{duration: duration},
       Map.put(metadata, :status, status)
@@ -522,6 +492,6 @@ defmodule BridgeForTeams.DashboardProjection do
   defp timestamp(_), do: nil
 
   defp stale_datetime?(%DateTime{} = refreshed_at) do
-    DateTime.diff(DateTime.utc_now(), refreshed_at) > @stale_after_seconds
+    DateTime.diff(SystemsClock.utc_now(), refreshed_at) > @stale_after_seconds
   end
 end

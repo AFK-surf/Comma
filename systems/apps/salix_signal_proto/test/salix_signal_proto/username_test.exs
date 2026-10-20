@@ -1,7 +1,7 @@
 defmodule SalixSignalProto.UsernameTest do
   # Usernames (CRS-02 §10) against the CRS-02 vectors username-hash.json,
   # username-from-parts.json, username-proof.json and username-link.json.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.Test.Vectors
   alias SalixSignalProto.Username
@@ -89,13 +89,15 @@ defmodule SalixSignalProto.UsernameTest do
   end
 
   test "an encrypted link decrypts to its username and has the CRS-02 length" do
-    entropy = :crypto.strong_rand_bytes(32)
+    entropy = SystemsRuntime.Proc.random_bytes(32)
 
     for username <- ["vectorbot.42", "x2345678901234567890123456789012.55", "Vector_Bot.1234567"] do
       assert {:ok, encrypted} = Username.encrypt_link(username, entropy)
       assert byte_size(encrypted) == 112
       assert Username.decrypt_link(entropy, encrypted) == {:ok, username}
-      refute Username.decrypt_link(:crypto.strong_rand_bytes(32), encrypted) == {:ok, username}
+
+      refute Username.decrypt_link(SystemsRuntime.Proc.random_bytes(32), encrypted) ==
+               {:ok, username}
     end
 
     long = String.duplicate("a", 48) <> ".18446744073709551615"

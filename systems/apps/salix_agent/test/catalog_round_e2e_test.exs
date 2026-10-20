@@ -8,7 +8,7 @@ defmodule SalixAgent.CatalogRoundE2ETest do
   `SalixLlm.Provider`, real API-key Profiles and their real endpoints. A Req
   adapter answers in place of the network and records what each provider got.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{AccountPool, InternalSessionStore, Round}
 
@@ -25,19 +25,12 @@ defmodule SalixAgent.CatalogRoundE2ETest do
 
   defmodule Resolver do
     @moduledoc false
-    def resolve(_agent_id), do: {:ok, :persistent_term.get({__MODULE__, :route})}
+    def resolve(_agent_id), do: {:ok, SystemsRuntime.PersistentTerm.get({__MODULE__, :route})}
   end
 
   defmodule NoKnowledge do
     @moduledoc false
     def retrieve(_agent_id, _question, _context), do: {:ok, []}
-  end
-
-  setup_all do
-    poller = Process.whereis(SalixAgent.SubscriptionQuotaWorker)
-    if poller, do: :sys.suspend(poller)
-    on_exit(fn -> if poller && Process.alive?(poller), do: :sys.resume(poller) end)
-    :ok
   end
 
   setup do
@@ -50,26 +43,26 @@ defmodule SalixAgent.CatalogRoundE2ETest do
       {:req, :default_options}
     ]
 
-    previous = for {app, key} <- settings, do: {app, key, Application.fetch_env(app, key)}
+    previous = for {app, key} <- settings, do: {app, key, SystemsRuntime.fetch_env(app, key)}
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      :persistent_term.erase({Resolver, :route})
+      SystemsRuntime.PersistentTerm.erase({Resolver, :route})
 
       for {app, key, value} <- previous do
         case value do
-          {:ok, value} -> Application.put_env(app, key, value)
-          :error -> Application.delete_env(app, key)
+          {:ok, value} -> SystemsRuntime.put_env(app, key, value)
+          :error -> SystemsRuntime.delete_env(app, key)
         end
       end
     end)
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
-    Application.put_env(:salix_agent, :llm, SalixLlm.Provider)
-    Application.put_env(:salix_agent, :llm_metering_mod, Metering)
-    Application.put_env(:salix_agent, :llm_resolver, Resolver)
-    Application.put_env(:salix_agent, :project_knowledge_provider_mod, NoKnowledge)
+    SystemsRuntime.put_env(:salix_agent, :llm, SalixLlm.Provider)
+    SystemsRuntime.put_env(:salix_agent, :llm_metering_mod, Metering)
+    SystemsRuntime.put_env(:salix_agent, :llm_resolver, Resolver)
+    SystemsRuntime.put_env(:salix_agent, :project_knowledge_provider_mod, NoKnowledge)
 
     agent = SalixAgent.TestSupport.new_agent_id()
     group_id = SalixStore.Ids.group_id_from_agent!(agent)
@@ -126,20 +119,30 @@ defmodule SalixAgent.CatalogRoundE2ETest do
     assert openrouter.headers["authorization"] == ["Bearer sk-or-v1-e2e-0123456789abcdef"]
   end
 
-  test "an Anthropic candidate gets an Anthropic Messages request", %{
+  # A Session's own model choice (SalixAgent.ModelChoice) replaces its
+  # Agent's model for that Session only.
+  test "a Session with its own model sends that model, not its Agent's", %{
     agent: agent,
     tenant: tenant
   } do
     {:ok, _} = key(tenant, "anthropic", "sk-ant-e2e-0123456789abcdef")
+    {:ok, _} = key(tenant, "openrouter", "sk-or-v1-e2e-0123456789abcdef")
     providers = capture(:refuse)
+
+    {:ok, _} =
+      InternalSessionStore.prepare_commit(agent, @session, [
+        %{
+          "type" => "session_update",
+          "session_id" => @session,
+          "model" => %{"kind" => "catalog", "model" => "gpt-5.5", "allow_paid" => true}
+        }
+      ])
 
     run_round(agent, tenant, "claude-haiku-4-5")
 
-    assert [anthropic | _] = sent(providers)
-    assert anthropic.url == "https://api.anthropic.com/v1/messages"
-    assert anthropic.body["model"] == "claude-haiku-4-5"
-    assert is_list(anthropic.body["messages"])
-    assert anthropic.headers["x-api-key"] == ["sk-ant-e2e-0123456789abcdef"]
+    assert [_ | _] = sent = sent(providers)
+    assert Enum.all?(sent, &(&1.url == "https://openrouter.ai/api/v1/chat/completions"))
+    assert Enum.all?(sent, &(&1.body["model"] == "openai/gpt-5.5"))
   end
 
   # The site LLM proxy (runtime proxy, meeting summary and copilot, site APIs)
@@ -172,7 +175,7 @@ defmodule SalixAgent.CatalogRoundE2ETest do
         tenant
       )
 
-    :persistent_term.put({Resolver, :route}, route)
+    SystemsRuntime.PersistentTerm.put({Resolver, :route}, route)
     # The providers refuse, so the Round ends without a reply. What matters is
     # what reached each provider.
     _ = Round.run(%{agent_id: agent, session_id: @session}, @session)

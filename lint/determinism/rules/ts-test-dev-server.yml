@@ -1,0 +1,20 @@
+id: ts-test-dev-server
+language: typescript
+severity: error
+message: "A test serves its page from a development server."
+note: |
+  A development server compiles a module on its first request and re-bundles
+  dependencies its scan missed, reloading the page under the test, so when the
+  page is ready depends on the machine. Build the page and serve the build
+  (`vite build`, then `vite preview`).
+metadata:
+  category: dev-server
+rule:
+  all:
+    - kind: string_fragment
+    - regex: "(^| )vite --"
+files:
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"

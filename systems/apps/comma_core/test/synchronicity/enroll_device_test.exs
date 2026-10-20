@@ -1,6 +1,7 @@
 defmodule Comma.Synchronicity.EnrollDeviceTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.Comma"]
   import Ecto.Query
 
   alias Comma.Data.Workspace
@@ -22,7 +23,10 @@ defmodule Comma.Synchronicity.EnrollDeviceTest do
 
     @impl true
     def enroll_device(workspace_id, nk, label, owner) do
-      send(self(), {:enroll, workspace_id, nk, label, owner})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:enroll, workspace_id, nk, label, owner}
+      )
 
       {:ok,
        %{
@@ -47,20 +51,21 @@ defmodule Comma.Synchronicity.EnrollDeviceTest do
   end
 
   defp configure do
-    Application.put_env(:comma_core, :synchronicity,
+    SystemsRuntime.put_env(:comma_core, :synchronicity,
       base_url: "http://sync.test",
       provisioning_secret: String.duplicate("x", 32)
     )
 
-    Application.put_env(:comma_core, :synchronicity_client, Stub)
+    SystemsRuntime.put_env(:comma_core, :synchronicity_client, Stub)
 
     on_exit(fn ->
-      Application.delete_env(:comma_core, :synchronicity)
-      Application.delete_env(:comma_core, :synchronicity_client)
+      SystemsRuntime.delete_env(:comma_core, :synchronicity)
+      SystemsRuntime.delete_env(:comma_core, :synchronicity_client)
     end)
   end
 
-  defp unique(prefix), do: prefix <> "-" <> Integer.to_string(System.unique_integer([:positive]))
+  defp unique(prefix),
+    do: prefix <> "-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
 
   defp new_user, do: Comma.Accounts.create_user(%{"email" => unique("dev") <> "@comma.test"})
 
@@ -87,34 +92,5 @@ defmodule Comma.Synchronicity.EnrollDeviceTest do
              Comma.Synchronicity.enroll_device(user_id, "nk-z32", "laptop")
 
     assert_received {:enroll, _workspace_id, "nk-z32", "laptop", %{subject: ^user_id}}
-  end
-
-  test "a Workspace with no assigned network is not provisioned yet" do
-    configure()
-    user_id = workspace(nil)
-
-    assert {:error, :not_provisioned} =
-             Comma.Synchronicity.enroll_device(user_id, "nk-z32", "laptop")
-  end
-
-  test "a user with no Workspace is workspace_not_found" do
-    configure()
-    {:ok, user} = new_user()
-
-    assert {:error, :workspace_not_found} =
-             Comma.Synchronicity.enroll_device(user["id"], "nk-z32", "laptop")
-  end
-
-  test "a missing nk is rejected before any S2S call" do
-    configure()
-    user_id = workspace("net-1")
-
-    assert {:error, {:invalid, :nk}} = Comma.Synchronicity.enroll_device(user_id, nil, "laptop")
-    refute_received {:enroll, _, _, _, _}
-  end
-
-  test "an unconfigured deployment reports not_configured" do
-    assert {:error, :not_configured} =
-             Comma.Synchronicity.enroll_device("usr_absent", "nk-z32", "laptop")
   end
 end

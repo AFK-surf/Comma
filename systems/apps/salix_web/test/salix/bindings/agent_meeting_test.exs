@@ -1,5 +1,5 @@
 defmodule Salix.Bindings.AgentMeetingTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Bindings.AgentMeeting
   alias Salix.Control
@@ -15,12 +15,12 @@ defmodule Salix.Bindings.AgentMeetingTest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    previous_s3 = Application.get_env(:salix_store, :s3_backend)
-    previous_runtime_driver = Application.get_env(:salix_meet, :runtime_driver)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    Application.delete_env(:salix_meet, :runtime_driver)
+    previous_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_runtime_driver = SystemsRuntime.get_env(:salix_meet, :runtime_driver)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.delete_env(:salix_meet, :runtime_driver)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -45,12 +45,12 @@ defmodule Salix.Bindings.AgentMeetingTest do
       SalixAgent.TestSupport.stop_all_agents()
 
       if previous_s3,
-        do: Application.put_env(:salix_store, :s3_backend, previous_s3),
-        else: Application.delete_env(:salix_store, :s3_backend)
+        do: SystemsRuntime.put_env(:salix_store, :s3_backend, previous_s3),
+        else: SystemsRuntime.delete_env(:salix_store, :s3_backend)
 
       if previous_runtime_driver,
-        do: Application.put_env(:salix_meet, :runtime_driver, previous_runtime_driver),
-        else: Application.delete_env(:salix_meet, :runtime_driver)
+        do: SystemsRuntime.put_env(:salix_meet, :runtime_driver, previous_runtime_driver),
+        else: SystemsRuntime.delete_env(:salix_meet, :runtime_driver)
     end)
 
     {:ok, tenant_id: tenant_id, group_id: group_id, router_id: router_id}
@@ -170,7 +170,7 @@ defmodule Salix.Bindings.AgentMeetingTest do
                  "metadata" => metadata,
                  "content" => "https://meet.google.com/abc-defg-hij",
                  "source_message_id" => source_message_id,
-                 "created_at" => System.system_time(:millisecond)
+                 "created_at" => SystemsClock.system_time(:millisecond)
                },
                provider_participant["participant_id"],
                router_participant["participant_id"],

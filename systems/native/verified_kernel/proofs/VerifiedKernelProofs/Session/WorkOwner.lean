@@ -84,15 +84,18 @@ theorem transcriptLog_owner {s e t : Term} {j r : List Term}
   unfold transcriptLog at h
   owner_compose h
 
+/-- Compose the two writes of `transcriptSeed` (`transcriptSeed_ops`). -/
 theorem transcriptSeed_owner {s e t : Term} {j r : List Term}
     (h : transcriptSeed s e j = .ok (t, r)) : OwnerFrame s t := by
-  unfold transcriptSeed at h
-  owner_compose h
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, seeded, bytes⟩ := transcriptSeed_ops h
+  exact (owner_write bytes rfl).trans (owner_write seeded rfl)
 
+/-- Compose the Session operations of `runtimeAppend` (`runtimeAppend_ops`). -/
 theorem runtimeAppend_owner {s e t : Term} {j r : List Term}
     (h : runtimeAppend s e j = .ok (t, r)) : OwnerFrame s t := by
-  unfold runtimeAppend at h
-  owner_compose h
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, appended, written, bumped, reset⟩ := runtimeAppend_ops h
+  exact (resetFresh_owner reset).trans ((bumpHwm_owner bumped).trans
+    ((owner_write written rfl).trans (appendFields_owner appended)))
 
 theorem transcriptRuntime_owner {s e t : Term} {j r : List Term}
     (h : transcriptRuntime s e j = .ok (t, r)) : OwnerFrame s t := by
@@ -106,10 +109,14 @@ theorem transcriptRuntime_owner {s e t : Term} {j r : List Term}
     | (obtain ⟨_, _, prior, h⟩ := bind_ok h
        try (head_is prior [argumentError, VerifiedKernel.fail]; simp only [argumentError, fail_ok_iff] at prior))
 
+/-- Compose the Session operations of `transcriptDelivery` (`transcriptDelivery_ops`). -/
 theorem transcriptDelivery_owner {s e t : Term} {j r : List Term}
     (h : transcriptDelivery s e j = .ok (t, r)) : OwnerFrame s t := by
-  unfold transcriptDelivery at h
-  owner_compose h
+  rcases transcriptDelivery_ops h with rfl | ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+    appended, written, obligated, bumped, reset⟩
+  · rfl
+  · exact (resetFresh_owner reset).trans ((bumpHwm_owner bumped).trans ((addObligation_owner obligated).trans
+      ((owner_write written rfl).trans (appendFields_owner appended))))
 
 theorem metadataCreated_owner {s e t : Term} {j r : List Term}
     (h : metadataCreated s e j = .ok (t, r)) : OwnerFrame s t := by

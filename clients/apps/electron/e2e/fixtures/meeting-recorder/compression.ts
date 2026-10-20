@@ -1,5 +1,5 @@
-// Real Main capture finalization, Apple encoder, Drive files and ASR client.
-// Only the live tap and ASR provider are deterministic fixtures.
+// Real Main capture finalization, Apple encoder and Drive files. Only the live
+// tap and the client core's ASR call are deterministic fixtures.
 import { execFile } from "node:child_process";
 import {
   copyFile,
@@ -24,19 +24,20 @@ import { AudioCaptureService } from "../../../src/main/modules/audio-capture";
 import { HelperRecordingEncoder } from "../../../src/main/modules/audio-capture/encoder";
 import { DriveRecordingStore } from "../../../src/main/modules/audio-capture/drive-recordings";
 import { RecordingTranscriptionService } from "../../../src/main/modules/audio-capture/transcription";
-import { MainProductCredentialAuthority } from "../../../src/main/modules/session/main-product-credential-authority";
+import { MainCredentialGate } from "../../../src/main/modules/session/main-credential-gate";
 import { MainNativeSessionAdmissionGuard } from "../../../src/main/modules/session/native-session-admission";
+import { acceptVerified } from "../../../src/test-support/session-gate";
 
 export async function compressionScenario(sampleRate: number, helperPath: string) {
   const directory = await mkdtemp(join(tmpdir(), "comma-compression-e2e-"));
   const localRoot = join(directory, "Drive");
   const recordingsDir = join(directory, "recordings");
-  const authority = new MainProductCredentialAuthority({
+  const authority = new MainCredentialGate({
     authorityInstanceId: "compression-e2e",
     trustedAudience: "https://comma.example",
   });
   const session = sessionProductLease(
-    authority.acceptVerifiedCredential({
+    acceptVerified(authority, {
       audience: "https://comma.example",
       email: "fixture@example.com",
       expiresAtEpochSeconds: Math.floor(Date.now() / 1000) + 600,
@@ -66,6 +67,8 @@ export async function compressionScenario(sampleRate: number, helperPath: string
         await writeFile(join(localRoot, path), Buffer.from(content, "base64"));
         return { status: "done" };
       },
+      // Only a meeting's recording looks for a free name.
+      list: async () => ({ entries: [], nextCursor: "" }),
     },
     async (path) => {
       openedPath = path;
@@ -73,18 +76,19 @@ export async function compressionScenario(sampleRate: number, helperPath: string
     }
   );
   let uploadIsM4A = false;
-  const asr = new RecordingTranscriptionService(store, () => ({
-    url: new URL("https://comma.example/v1/comma/me/recordings/transcribe"),
-    assertCurrent() {},
-    fetch: async (_url, init) => {
-      const bytes = Buffer.from(await (init!.body as Blob).arrayBuffer());
-      uploadIsM4A = bytes.toString("ascii", 4, 8) === "ftyp";
-      return new Response(
-        `event: transcription\ndata: ${JSON.stringify({ status: "ready", result: { transcript: "[00:00] Speaker: Meeting fixture", duration_seconds: 5, chunks: [] } })}\n\n`,
-        { headers: { "content-type": "text/event-stream" } }
-      );
-    },
-  }));
+  // The client core's transcription, as the server's ASR answers it: Main hands it the saved audio.
+  const asr = new RecordingTranscriptionService(
+    store,
+    () => ({ assertCurrent() {} }),
+    async (audio) => {
+      uploadIsM4A = Buffer.from(audio).toString("ascii", 4, 8) === "ftyp";
+      return {
+        transcript: "[00:00] Speaker: Meeting fixture",
+        duration_seconds: 5,
+        chunks: [],
+      };
+    }
+  );
   const transcriptionDone = Promise.withResolvers<void>();
   const service = new AudioCaptureService({
     recordingsDir,

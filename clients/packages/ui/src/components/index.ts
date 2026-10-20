@@ -100,10 +100,10 @@ export type {
   TooltipRow,
   TooltipShortcutKey,
 } from "./tooltip";
-export { HoverCard } from "./hover-card";
+export { HOVER_PANEL_ITEM, HoverCard, HoverPanel } from "./hover-card";
 export { SelectionBar, selectionBarButtonClasses } from "./selection-bar";
 export type { SelectionBarProps } from "./selection-bar";
-export type { HoverCardProps } from "./hover-card";
+export type { HoverCardProps, HoverPanelProps } from "./hover-card";
 export { OverlayPortalProvider } from "./portal";
 export type { OverlayPortalProviderProps } from "./portal";
 export { InlineTask } from "./inline-task";
@@ -276,6 +276,7 @@ export {
   isPollingTerminalTaskStatus,
   normalizeTaskStatus,
   taskFreshnessLabel,
+  taskNeutralIcon,
   taskProgressLabel,
   taskStatusBucket,
   taskStatusIcon,
@@ -349,6 +350,13 @@ export {
   SettingsDialog,
   SettingsPage,
   DeviceSettings,
+  DeviceSettingsSection,
+  DeviceSettingsRow,
+  DeviceSettingsFacts,
+  DeviceSettingsStatus,
+  DeviceSettingsSteps,
+  DeviceSettingsResource,
+  DeviceSettingsDetail,
   CreatedSecretPanel,
   NotchWidthSetting,
 } from "./settings";

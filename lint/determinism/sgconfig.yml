@@ -1,0 +1,6 @@
+ruleDirs:
+  - rules
+languageGlobs:
+  typescript: ["*.mts", "*.cts", "*.js", "*.mjs", "*.cjs"]
+testConfigs:
+  - testDir: rule-tests

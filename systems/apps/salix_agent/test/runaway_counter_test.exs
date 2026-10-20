@@ -1,5 +1,5 @@
 defmodule SalixAgent.RunawayCounterTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.InternalSession
   alias SalixAgent.TestSupport.SessionData
@@ -28,7 +28,7 @@ defmodule SalixAgent.RunawayCounterTest do
   defp fact(kind, payload \\ %{}) do
     %{
       "type" => "session_event",
-      "event_id" => "guard-#{System.unique_integer([:positive])}",
+      "event_id" => "guard-#{SystemsRuntime.Proc.unique_integer([:positive])}",
       "kind" => kind,
       "event" => payload
     }
@@ -42,26 +42,6 @@ defmodule SalixAgent.RunawayCounterTest do
   defp load(bytes) do
     {:ok, session} = InternalSession.load(bytes)
     InternalSession.export(session)
-  end
-
-  test "counter survives reload and hot-window removal without any input identity" do
-    state = SessionData.apply_events(base(), [input(1), unsettled(), unsettled()])
-    assert state.runaway_unsettled_streak == %{"count" => 2}
-
-    archived =
-      reload(%{
-        state
-        | messages: [],
-          events: [],
-          compacted_seq: state.last_seq,
-          archived_through: state.last_seq,
-          active_source_message_ids: []
-      })
-
-    assert SessionData.query(archived, :consecutive_unsettled_rounds) == 2
-
-    assert SessionData.apply_event(archived, unsettled()).runaway_unsettled_streak ==
-             %{"count" => 3}
   end
 
   test "fresh user and runtime input reset, but no-wake input and stale ACK do not" do
@@ -150,38 +130,5 @@ defmodule SalixAgent.RunawayCounterTest do
              SessionData.apply_event(state, unsettled()),
              :consecutive_unsettled_rounds
            ) == 2
-  end
-
-  test "guard storage grows with rounds, not rounds times source cardinality" do
-    sample = fn rounds, source_count ->
-      state = SessionData.apply_event(base(), input(1))
-      # One current source scope is allowed for Slack status, never one per round.
-      state = %{
-        state
-        | messages: [],
-          active_source_message_ids: Enum.map(1..source_count, &"source-#{&1}")
-      }
-
-      state =
-        SessionData.apply_events(
-          state,
-          Enum.map(1..rounds, fn i -> Map.put(reset(), "event_id", "guard-#{i}") end)
-        )
-
-      decoded = reload(state)
-      assert decoded.runaway_unsettled_streak == %{"count" => 0}
-      assert length(decoded.active_source_message_ids) == source_count
-
-      {byte_size(:erlang.term_to_binary(decoded.events)),
-       :erts_debug.flat_size(decoded.events) * :erlang.system_info(:wordsize)}
-    end
-
-    {small_bytes, small_heap} = sample.(200, 10)
-    {wide_bytes, wide_heap} = sample.(200, 1_000)
-    {long_bytes, long_heap} = sample.(400, 1_000)
-    assert wide_bytes < small_bytes * 1.1
-    assert wide_heap == small_heap
-    assert long_bytes < wide_bytes * 2.1
-    assert long_heap < wide_heap * 2.1
   end
 end

@@ -1,0 +1,25 @@
+id: test-build-per-test
+language: typescript
+severity: error
+message: "A test builds its fixture before every test."
+note: |
+  A bundle a test loads is the same for every test of a file: build it once
+  per file (test.beforeAll) or once per run (sharedBuildDir,
+  clients/e2e/helpers/shared-build.ts). The dynamic UI spec bundled three
+  files in beforeEach, 41 times a run.
+rule:
+  any:
+    - pattern: build($$$)
+    - pattern: $M.build($$$)
+  inside:
+    stopBy: end
+    any:
+      - pattern: test.beforeEach($$$)
+      - pattern: beforeEach($$$)
+      - pattern: test.afterEach($$$)
+files:
+  - "clients/**/*.spec.ts"
+  - "clients/**/*.spec.tsx"
+  - "clients/**/*.test.ts"
+  - "clients/**/*.test.tsx"
+  - "clients/**/e2e/**/*.ts"

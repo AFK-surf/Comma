@@ -73,7 +73,7 @@ defmodule SalixAgent.TriageWorker do
       "source" => source,
       "revision" => revision,
       "router_agent_id" => router_id,
-      "changed_at" => System.system_time(:millisecond)
+      "changed_at" => SystemsClock.system_time(:millisecond)
     }
 
   defp selection(_group, _router, nil), do: {:ok, nil, "unassigned"}
@@ -94,18 +94,8 @@ defmodule SalixAgent.TriageWorker do
       not Control.visible?(record) ->
         %{"status" => "unavailable", "issue" => "worker_inactive"}
 
-      Control.external_runtime?(record) ->
-        case SalixAgent.RuntimeBindingResolver.status(
-               record["runtime_config"],
-               record["tenant_id"],
-               record["group_id"]
-             ) do
-          {:ok, status} -> Map.take(status, ~w(status issue))
-          _ -> %{"status" => "unknown"}
-        end
-
       true ->
-        case SalixAgent.Templates.resolve_template_for_record(record) do
+        case SalixAgent.AgentModel.resolve(record) do
           {:ok, _, _} -> %{"status" => "configured", "issue" => "execution_not_probed"}
           _ -> %{"status" => "unavailable", "issue" => "model_configuration_unavailable"}
         end

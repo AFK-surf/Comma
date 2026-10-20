@@ -8,9 +8,8 @@ defmodule SalixStore.SessionWorkNotifications do
   before the authoritative Session S3 CAS. Consumers must never delete a
   candidate or infer Session state from it.
 
-  Runtime-ready payloads request catch-up against the existing locator and
-  candidate projections. They carry no execution authority. Implementation
-  tests cover publication and recovery; the notification TLA+ model is retired.
+  Implementation tests cover publication and recovery; the notification TLA+
+  model is retired.
   """
 
   @channel "salix_session_work_v1"
@@ -24,7 +23,7 @@ defmodule SalixStore.SessionWorkNotifications do
           version: 1,
           candidate_token: String.t(),
           agent_id: String.t(),
-          runtime: :internal | :external,
+          runtime: :internal,
           session_id: String.t()
         }
 
@@ -55,13 +54,26 @@ defmodule SalixStore.SessionWorkNotifications do
     end
   end
 
-  @doc "Signal that the durable runtime-ready projection has new eligible work."
-  def runtime_ready_payload, do: ~s({"v":1,"kind":"runtime_ready"})
+  @listener :"Elixir.SalixCluster.SessionWorkNotificationListener"
+
+  @doc """
+  After a commit that published `payload`, tells a test clock that the
+  listener of this node has a notification on its way. Nothing happens
+  without a listener or a test clock.
+  """
+  @spec expect_delivery(String.t()) :: :ok
+  def expect_delivery(payload) when is_binary(payload) do
+    if SystemsRuntime.Proc.whereis(@listener), do: SystemsClock.expect_signal({@channel, payload})
+    :ok
+  end
+
+  @doc "The listener received `payload`; see `expect_delivery/1`."
+  @spec delivered(String.t()) :: :ok
+  def delivered(payload) when is_binary(payload),
+    do: SystemsClock.signal_arrived({@channel, payload})
 
   @doc "Decode and strictly validate one v1 notification payload."
-  @spec decode(String.t()) :: {:ok, notification() | :runtime_ready} | {:error, :invalid}
-  def decode(~s({"v":1,"kind":"runtime_ready"})), do: {:ok, :runtime_ready}
-
+  @spec decode(String.t()) :: {:ok, notification()} | {:error, :invalid}
   def decode(payload) when is_binary(payload) and byte_size(payload) <= @max_payload_bytes do
     with {:ok,
           %{
@@ -74,14 +86,14 @@ defmodule SalixStore.SessionWorkNotifications do
          true <- map_size(decoded) == 5,
          true <- bounded_binary?(token, @max_token_bytes),
          true <- bounded_binary?(agent_id, @max_agent_id_bytes),
-         true <- runtime_kind in ["internal", "external"],
+         true <- runtime_kind == "internal",
          true <- bounded_binary?(session_id, @max_session_id_bytes) do
       {:ok,
        %{
          version: @version,
          candidate_token: token,
          agent_id: agent_id,
-         runtime: String.to_existing_atom(runtime_kind),
+         runtime: :internal,
          session_id: session_id
        }}
     else
@@ -100,7 +112,7 @@ defmodule SalixStore.SessionWorkNotifications do
 
     with true <- bounded_binary?(token, @max_token_bytes),
          true <- bounded_binary?(agent_id, @max_agent_id_bytes),
-         true <- runtime_kind in ["internal", "external"],
+         true <- runtime_kind == "internal",
          true <- bounded_binary?(session_id, @max_session_id_bytes) do
       {:ok,
        %{

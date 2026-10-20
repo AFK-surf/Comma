@@ -5,6 +5,7 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
 
   alias SalixEnv.Connector.Live
   alias SalixEnv.Registry
+  alias Salix.Bindings.MeetingNativeRuntime
   alias SalixStore.Ids
   alias SalixMeet.Store
 
@@ -26,6 +27,9 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
 
       {:ok, "compute_workload"} ->
         SalixMeet.MeetingComputeCarrier.join(payload)
+
+      {:ok, "native_runtime"} ->
+        MeetingNativeRuntime.join(payload)
 
       {:error, _} = error ->
         error
@@ -62,6 +66,9 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
 
       group_id == "" ->
         {:error, :missing_group_id}
+
+      SalixMeet.MeetingRuntimePolicy.select(payload) == {:ok, "native_runtime"} ->
+        MeetingNativeRuntime.session_status(payload)
 
       true ->
         with {:ok, "connected_runtime"} <- SalixMeet.MeetingRuntimePolicy.select(payload),
@@ -100,6 +107,12 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
     )
   end
 
+  defp send_chat_for_source("native_runtime", payload, meeting_id, text) do
+    MeetingNativeRuntime.send_chat(
+      Map.merge(payload, %{"meeting_id" => meeting_id, "text" => text})
+    )
+  end
+
   defp send_chat_for_source("connected_runtime", payload, meeting_id, text) do
     group_id = to_string(payload["group_id"] || "")
 
@@ -133,11 +146,7 @@ defmodule Salix.Bindings.MeetingConnectDispatch do
           "agent_id" => agent_id
         }
 
-        case SalixAgent.ExternalAgentRuntime.mint_llm_capability(
-               agent,
-               session_id,
-               connector_run_id
-             ) do
+        case SalixAgent.MeetingLLMCapability.mint(agent, session_id, connector_run_id) do
           {:ok, cap} ->
             _ = store_llm_capability_hash(payload["meeting_id"], cap["token_hash"])
             {:ok, Map.put(payload, "llm_capability_token", cap["token"])}

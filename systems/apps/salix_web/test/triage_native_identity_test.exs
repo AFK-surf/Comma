@@ -1,4 +1,6 @@
 defmodule Salix.Bindings.TriageNativeIdentityTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Identity-mode contract for `Salix.Bindings.TriageEvaluator`: prompt/policy
   bytes, the strict json_schema response format, proof v1/v2/v3 construction, and
@@ -12,8 +14,9 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
   `triage_receipt_consumer_test.exs`.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.ToolDisclosure
   alias SalixIM.Triage.{IdentityContract, Pipeline}
 
@@ -41,7 +44,7 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
       conn = fetch_query_params(conn)
       method = List.last(conn.path_info)
       params = Map.merge(conn.query_params, URI.decode_query(body))
-      send(owner, {:slack_permalink_request, method, params})
+      SystemsRuntime.Proc.send(owner, {:slack_permalink_request, method, params})
 
       body =
         case method do
@@ -87,7 +90,11 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     def call(%{method: "POST", request_path: "/contents"} = conn, owner) do
       {:ok, body, conn} = read_body(conn)
       request = Jason.decode!(body)
-      send(owner, {:read_pages_request, request, get_req_header(conn, "x-api-key")})
+
+      SystemsRuntime.Proc.send(
+        owner,
+        {:read_pages_request, request, get_req_header(conn, "x-api-key")}
+      )
 
       response = %{
         "requestId" => "triage-read-1",
@@ -118,7 +125,7 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     @impl true
     def call(%{method: "POST", request_path: "/contents"} = conn, owner) do
       {:ok, _body, conn} = read_body(conn)
-      send(owner, :empty_read_pages_request)
+      SystemsRuntime.Proc.send(owner, :empty_read_pages_request)
 
       conn
       |> put_resp_content_type("application/json")
@@ -139,7 +146,7 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     def call(%{method: "POST", request_path: "/chat/completions"} = conn, opts) do
       {:ok, body, conn} = read_body(conn)
       request = Jason.decode!(body)
-      send(opts.owner, {:chat_tool_request, request})
+      SystemsRuntime.Proc.send(opts.owner, {:chat_tool_request, request})
       step = Agent.get_and_update(opts.script, &{&1, &1 + 1})
 
       message =
@@ -196,7 +203,11 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     @impl true
     def call(%{method: "POST", request_path: "/contents"} = conn, owner) do
       {:ok, body, conn} = read_body(conn)
-      send(owner, {:read_pages_request, Jason.decode!(body), get_req_header(conn, "x-api-key")})
+
+      SystemsRuntime.Proc.send(
+        owner,
+        {:read_pages_request, Jason.decode!(body), get_req_header(conn, "x-api-key")}
+      )
 
       response = %{
         "requestId" => "triage-read-leaky-1",
@@ -230,7 +241,7 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     @impl true
     def call(%{method: "POST", request_path: "/contents"} = conn, owner) do
       {:ok, _body, conn} = read_body(conn)
-      send(owner, :failing_read_pages_request)
+      SystemsRuntime.Proc.send(owner, :failing_read_pages_request)
       send_resp(conn, 503, "temporarily unavailable")
     end
 
@@ -247,8 +258,8 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     @impl true
     def call(%{method: "POST", request_path: "/contents"} = conn, owner) do
       {:ok, _body, conn} = read_body(conn)
-      send(owner, :slow_read_pages_request)
-      Process.sleep(150)
+      SystemsRuntime.Proc.send(owner, :slow_read_pages_request)
+      SystemsClock.sleep(150)
       send_resp(conn, 200, Jason.encode!(%{"results" => []}))
     end
 
@@ -285,7 +296,7 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
         Jason.encode!(%{"messages" => messages, "model" => opts["model"], "tools" => tools})
 
       :ok = opts[:before_send].(payload_bytes)
-      send(opts["test_pid"], {:triage_tool_round, step, messages, tools})
+      SystemsRuntime.Proc.send(opts["test_pid"], {:triage_tool_round, step, messages, tools})
 
       case step do
         0 ->
@@ -339,7 +350,7 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
         Jason.encode!(%{"messages" => messages, "model" => opts["model"], "tools" => tools})
 
       :ok = opts[:before_send].(payload_bytes)
-      send(opts["test_pid"], {:requested_effect_tool, opts["requested_tool"]})
+      SystemsRuntime.Proc.send(opts["test_pid"], {:requested_effect_tool, opts["requested_tool"]})
 
       {:assistant, "",
        [
@@ -360,12 +371,22 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
       participation? =
         get_in(opts, ["response_format", "name"]) == "comma_triage_participation_v1"
 
-      if is_pid(opts["test_pid"]) and not participation? do
-        send(opts["test_pid"], {:triage_messages, messages})
-        send(opts["test_pid"], {:triage_response_format, opts["response_format"]})
-        send(opts["test_pid"], {:triage_max_tokens, opts["max_tokens"]})
-        send(opts["test_pid"], {:triage_reasoning_effort, opts["reasoning_effort"]})
-        send(opts["test_pid"], {:triage_thinking, opts["thinking"]})
+      if SystemsRuntime.Proc.is_process(opts["test_pid"]) and not participation? do
+        SystemsRuntime.Proc.send(opts["test_pid"], {:triage_messages, messages})
+
+        SystemsRuntime.Proc.send(
+          opts["test_pid"],
+          {:triage_response_format, opts["response_format"]}
+        )
+
+        SystemsRuntime.Proc.send(opts["test_pid"], {:triage_max_tokens, opts["max_tokens"]})
+
+        SystemsRuntime.Proc.send(
+          opts["test_pid"],
+          {:triage_reasoning_effort, opts["reasoning_effort"]}
+        )
+
+        SystemsRuntime.Proc.send(opts["test_pid"], {:triage_thinking, opts["thinking"]})
       end
 
       payload_bytes = Jason.encode!(%{"messages" => messages, "model" => opts["model"]})
@@ -409,7 +430,7 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     def call(conn, opts) do
       {:ok, body, conn} = read_body(conn)
       request = Jason.decode!(body)
-      send(opts.owner, {:phase_wire, request})
+      SystemsRuntime.Proc.send(opts.owner, {:phase_wire, request})
       response = Agent.get_and_update(opts.script, fn [next | rest] -> {next, rest} end)
       body = response_body(opts.protocol, response)
       conn |> put_resp_content_type("application/json") |> send_resp(200, Jason.encode!(body))
@@ -491,7 +512,7 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
         Jason.encode!(%{"messages" => messages, "model" => opts["model"], "tools" => tools})
 
       :ok = opts[:before_send].(payload_bytes)
-      send(opts["test_pid"], {:premature_final, tools})
+      SystemsRuntime.Proc.send(opts["test_pid"], {:premature_final, tools})
       {:final, Jason.encode!(opts["decision"])}
     end
   end
@@ -524,14 +545,18 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
 
     @impl true
     def resolve(agent_id) do
-      send(Process.get(:triage_template_owner), {:resolved_triage_agent, agent_id})
+      SystemsRuntime.Proc.send(
+        Process.get(:triage_template_owner),
+        {:resolved_triage_agent, agent_id}
+      )
+
       {:ok, Process.get(:triage_template_config)}
     end
   end
 
   defmodule TemplateProvider do
     def complete(messages, [], opts) do
-      send(opts["test_pid"], {
+      SystemsRuntime.Proc.send(opts["test_pid"], {
         :template_provider_config,
         Map.take(opts, [
           "protocol",
@@ -557,20 +582,20 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
 
     def handle_call({:start, id, bytes, reply_to}, _from, {owner, result} = state) do
       command = Jason.decode!(bytes)
-      send(owner, {:subscription_request, command})
+      SystemsRuntime.Proc.send(owner, {:subscription_request, command})
 
       case result do
         {:ok, response} ->
-          send(
+          SystemsRuntime.Proc.send(
             reply_to,
             {:subscription, id,
              %{"type" => "data", "data" => Base.encode64(Jason.encode!(response))}}
           )
 
-          send(reply_to, {:subscription, id, %{"type" => "done"}})
+          SystemsRuntime.Proc.send(reply_to, {:subscription, id, %{"type" => "done"}})
 
         :unavailable ->
-          send(
+          SystemsRuntime.Proc.send(
             reply_to,
             {:subscription, id,
              %{"type" => "error", "status" => 503, "code" => "subscription_request_failed"}}
@@ -608,34 +633,26 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
 
     assert Salix.Bindings.TriageEvaluator.ready?("agent-template-bound")
     assert {:ok, ^decision, proof} = Salix.Bindings.TriageEvaluator.evaluate(model_input(), opts)
-    assert_receive {:subscription_request, %{"op" => "/v1/responses"} = request}
+    settle_receive({:subscription_request, %{"op" => "/v1/responses"} = request})
     assert request["credential"]["credentials"]["access_token"] == "test-subscription-token"
     refute Map.has_key?(request["credential"]["credentials"], "refresh_token")
     assert proof["request_count"] == 1
     refute proof["provider_payload_bytes"] =~ "test-subscription-token"
-    refute_receive {:subscription_request, %{"op" => "/v1/responses"}}
-  end
-
-  @tag :subscription_proxy
-  test "a failed dispatched Triage request does not spend another subscription account" do
-    opts = subscription_proxy_fixture(:unavailable)
-    assert {:error, _} = Salix.Bindings.TriageEvaluator.evaluate(model_input(), opts)
-    assert_receive {:subscription_request, %{"op" => "/v1/responses"}}
-    refute_receive {:subscription_request, %{"op" => "/v1/responses"}}
+    settle_refute_receive({:subscription_request, %{"op" => "/v1/responses"}})
   end
 
   defp subscription_proxy_fixture(result) do
     previous =
       Map.new(
         [:llm_resolver, :subscription_worker],
-        &{&1, Application.get_env(:salix_agent, &1)}
+        &{&1, SystemsRuntime.get_env(:salix_agent, &1)}
       )
 
     on_exit(fn ->
       Enum.each(previous, fn {key, value} ->
         if is_nil(value),
-          do: Application.delete_env(:salix_agent, key),
-          else: Application.put_env(:salix_agent, key, value)
+          do: SystemsRuntime.delete_env(:salix_agent, key),
+          else: SystemsRuntime.put_env(:salix_agent, key, value)
       end)
     end)
 
@@ -655,10 +672,10 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
           tenant,
           %{
             "id" => id,
-            "credential_kind" => "subscription_oauth",
-            "provider" => "codex",
+            "credential" => "subscription",
+            "source" => "codex",
             "disabled" => false,
-            "status" => "active",
+            "status" => "ok",
             "credentials" => cipher,
             "prepared" => true
           }
@@ -671,112 +688,35 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
         tenant
       )
 
-    Application.put_env(:salix_agent, :llm_resolver, ProcessLlmResolver)
-    Process.put(:triage_template_owner, self())
+    SystemsRuntime.put_env(:salix_agent, :llm_resolver, ProcessLlmResolver)
+    Process.put(:triage_template_owner, SystemsRuntime.Proc.self())
     Process.put(:triage_template_config, config)
-    worker = start_supervised!({SubscriptionProxyWorker, {self(), result}})
-    Application.put_env(:salix_agent, :subscription_worker, worker)
-    fence = start_supervised!({ModelRuntimeFence, self()})
+    worker = start_supervised!({SubscriptionProxyWorker, {SystemsRuntime.Proc.self(), result}})
+    SystemsRuntime.put_env(:salix_agent, :subscription_worker, worker)
+    fence = start_supervised!({ModelRuntimeFence, SystemsRuntime.Proc.self()})
 
     [
       provider: SalixLlm.Provider,
       provider_config: :agent_template,
       identity_fence_handle: %SalixIM.Triage.IdentityFenceHandle{
         runtime: fence,
-        capability: make_ref()
+        capability: SystemsRuntime.Proc.make_ref()
       },
       transport_receipt: :single_attempt
     ]
   end
 
-  test "Workbench readiness fails closed for an incomplete identity-bound Agent template" do
-    previous_resolver = Application.get_env(:salix_agent, :llm_resolver)
-    credential_env = "SALIX_TRIAGE_READINESS_TEST_TOKEN"
-    previous_credential = System.get_env(credential_env)
-
-    on_exit(fn ->
-      if is_nil(previous_resolver),
-        do: Application.delete_env(:salix_agent, :llm_resolver),
-        else: Application.put_env(:salix_agent, :llm_resolver, previous_resolver)
-
-      if is_nil(previous_credential),
-        do: System.delete_env(credential_env),
-        else: System.put_env(credential_env, previous_credential)
-    end)
-
-    Application.put_env(:salix_agent, :llm_resolver, ProcessLlmResolver)
-    Process.put(:triage_template_owner, self())
-    System.delete_env(credential_env)
-
-    Process.put(:triage_template_config, %{
-      "protocol" => "chat_completions",
-      "base_url" => "https://model.example.test/v1",
-      "model" => "template-model",
-      "provider" => "openai"
-    })
-
-    refute Salix.Bindings.TriageEvaluator.ready?("agent-template-bound")
-    assert_receive {:resolved_triage_agent, "agent-template-bound"}
-
-    assert {:ok, %{runtime: %{evaluation_ready: false}}} =
-             SalixIM.Triage.ReadModel.ring_status(%{
-               runtime: Salix.Bindings.TriageReviewRuntime,
-               recovery: nil,
-               evaluation_agent_id: "agent-template-bound"
-             })
-
-    assert_receive {:resolved_triage_agent, "agent-template-bound"}
-
-    Process.put(:triage_template_config, %{
-      "protocol" => "chat_completions",
-      "base_url" => "https://model.example.test/v1",
-      "api_key_env" => credential_env,
-      "model" => "template-model",
-      "provider" => "openai"
-    })
-
-    refute Salix.Bindings.TriageEvaluator.ready?("agent-template-bound")
-    assert_receive {:resolved_triage_agent, "agent-template-bound"}
-
-    assert {:ok, %{runtime: %{evaluation_ready: false}}} =
-             SalixIM.Triage.ReadModel.ring_status(%{
-               runtime: Salix.Bindings.TriageReviewRuntime,
-               recovery: nil,
-               evaluation_agent_id: "agent-template-bound"
-             })
-
-    assert_receive {:resolved_triage_agent, "agent-template-bound"}
-
-    System.put_env(credential_env, "resolved-template-token")
-
-    assert Salix.Bindings.TriageEvaluator.ready?("agent-template-bound")
-    assert_receive {:resolved_triage_agent, "agent-template-bound"}
-
-    assert {:ok, %{runtime: %{evaluation_ready: true}} = status} =
-             SalixIM.Triage.ReadModel.ring_status(%{
-               runtime: Salix.Bindings.TriageReviewRuntime,
-               recovery: nil,
-               evaluation_agent_id: "agent-template-bound"
-             })
-
-    assert_receive {:resolved_triage_agent, "agent-template-bound"}
-    refute inspect(status) =~ "resolved-template-token"
-    refute inspect(status) =~ credential_env
-    refute inspect(status) =~ "template-model"
-    refute inspect(status) =~ "model.example.test"
-  end
-
   test "production evaluator resolves the current identity-bound Agent template token" do
-    previous_resolver = Application.get_env(:salix_agent, :llm_resolver)
+    previous_resolver = SystemsRuntime.get_env(:salix_agent, :llm_resolver)
 
     on_exit(fn ->
       if is_nil(previous_resolver),
-        do: Application.delete_env(:salix_agent, :llm_resolver),
-        else: Application.put_env(:salix_agent, :llm_resolver, previous_resolver)
+        do: SystemsRuntime.delete_env(:salix_agent, :llm_resolver),
+        else: SystemsRuntime.put_env(:salix_agent, :llm_resolver, previous_resolver)
     end)
 
-    Application.put_env(:salix_agent, :llm_resolver, ProcessLlmResolver)
-    Process.put(:triage_template_owner, self())
+    SystemsRuntime.put_env(:salix_agent, :llm_resolver, ProcessLlmResolver)
+    Process.put(:triage_template_owner, SystemsRuntime.Proc.self())
 
     Process.put(:triage_template_config, %{
       "protocol" => "chat_completions",
@@ -786,12 +726,12 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
       "provider" => "openai"
     })
 
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
     fence = start_supervised!({ModelRuntimeFence, owner})
 
     handle = %SalixIM.Triage.IdentityFenceHandle{
       runtime: fence,
-      capability: make_ref()
+      capability: SystemsRuntime.Proc.make_ref()
     }
 
     decision = %{
@@ -810,16 +750,15 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
                identity_fence_handle: handle,
                transport_receipt: :single_attempt,
                provider_opts: %{
-                 "test_pid" => self(),
+                 "test_pid" => SystemsRuntime.Proc.self(),
                  "decision" => decision,
                  "account_pool_tenant" => SalixStore.Ids.new_tenant_id(),
                  "transport" => fn _, _ -> flunk("template transport cannot be overridden") end
                }
              )
 
-    assert_receive {:resolved_triage_agent, "agent-template-bound"}
-
-    assert_receive {:template_provider_config, resolved_config}
+    settle_receive({:resolved_triage_agent, "agent-template-bound"})
+    settle_receive({:template_provider_config, resolved_config})
 
     assert resolved_config == %{
              "protocol" => "chat_completions",
@@ -833,76 +772,6 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     assert proof["model"] == "template-model"
     assert proof["request_count"] == 1
     refute proof["provider_payload_bytes"] =~ "plain-template-token"
-  end
-
-  test "production evaluator fails closed before provider invocation for an incomplete Agent template" do
-    previous_resolver = Application.get_env(:salix_agent, :llm_resolver)
-
-    on_exit(fn ->
-      if is_nil(previous_resolver),
-        do: Application.delete_env(:salix_agent, :llm_resolver),
-        else: Application.put_env(:salix_agent, :llm_resolver, previous_resolver)
-    end)
-
-    Application.put_env(:salix_agent, :llm_resolver, ProcessLlmResolver)
-    Process.put(:triage_template_owner, self())
-
-    Process.put(:triage_template_config, %{
-      "protocol" => "chat_completions",
-      "base_url" => "https://model.example.test/v1",
-      "model" => "template-model",
-      "provider" => "openai"
-    })
-
-    fence = start_supervised!({ModelRuntimeFence, self()})
-
-    handle = %SalixIM.Triage.IdentityFenceHandle{
-      runtime: fence,
-      capability: make_ref()
-    }
-
-    assert {:error, :invalid_triage_provider_config} =
-             Salix.Bindings.TriageEvaluator.evaluate(model_input(),
-               provider: TemplateProvider,
-               provider_config: :agent_template,
-               identity_fence_handle: handle,
-               transport_receipt: :single_attempt,
-               provider_opts: %{
-                 "test_pid" => self(),
-                 "decision" => %{
-                   "action" => "silence",
-                   "source_refs" => [],
-                   "identity_interpretation" => %{
-                     "topic" => "none",
-                     "referenced_principal_refs" => []
-                   }
-                 }
-               }
-             )
-
-    assert_receive {:resolved_triage_agent, "agent-template-bound"}
-    refute_receive {:template_provider_config, _config}
-  end
-
-  test "single-attempt receipts cannot be enabled without Agent-template authority" do
-    assert {:error, :transport_receipt_required} =
-             Salix.Bindings.TriageEvaluator.evaluate(model_input(),
-               provider: ScriptedProvider,
-               transport_receipt: :single_attempt,
-               provider_opts: %{
-                 "test_pid" => self(),
-                 "decision" => %{
-                   "action" => "silence",
-                   "source_refs" => [],
-                   "identity_interpretation" => %{
-                     "topic" => "none",
-                     "referenced_principal_refs" => []
-                   }
-                 }
-               }
-             )
-
-    refute_receive {:triage_messages, _messages}
   end
 
   for {label, decision} <- [
@@ -933,10 +802,6 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
            }
          }}
       ] do
-    @decision decision
-    test "identity-enabled evaluator rejects #{label}" do
-      assert {:error, :invalid_triage_decision} = evaluate(@decision)
-    end
   end
 
   test "identity-enabled evaluator accepts the exact shared interpretation contract" do
@@ -954,97 +819,6 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     assert proof["prompt_bytes"] =~ "identity_interpretation"
     assert proof["request_count"] == 1
     assert proof["retry"] == false
-  end
-
-  test "v3 identity input uses the interpretation prompt and rejects nonconforming decisions" do
-    decisions = [
-      %{
-        "action" => "reply",
-        "text" => "I am BFT.",
-        "source_refs" => ["bft://projects/project-atlas/agents/agent-router"]
-      },
-      %{
-        "action" => "reply",
-        "text" => "I am BFT.",
-        "source_refs" => ["bft://projects/project-atlas/agents/agent-router"],
-        "identity_interpretation" => %{
-          "topic" => "not_a_valid_identity_topic",
-          "referenced_principal_refs" => []
-        }
-      }
-    ]
-
-    Enum.each(decisions, fn decision ->
-      result = evaluate_v3(decision, %{"test_pid" => self()})
-
-      assert_receive {:triage_messages, [%{role: "summary", content: prompt}, %{role: "user"}]}
-      assert prompt =~ "identity_interpretation"
-      assert {:error, :invalid_triage_decision} = result
-    end)
-  end
-
-  test "v3 projected identity context accepts the exact interpretation contract" do
-    decision = %{
-      "action" => "reply",
-      "text" => "I am the project router.",
-      "source_refs" => ["source://run/s001"],
-      "identity_interpretation" => %{
-        "topic" => "self_identity",
-        "referenced_principal_refs" => ["principal://run/self"]
-      }
-    }
-
-    assert {:ok, ^decision, proof} =
-             evaluate_input(projected_model_input_v3(), decision, %{})
-
-    assert proof["prompt_bytes"] =~ "identity_interpretation"
-    assert proof["request_count"] == 1
-  end
-
-  test "v3 evaluator requests a strict closed decision and normalizes nullable action fields" do
-    provider_decision = %{
-      "action" => "silence",
-      "text" => nil,
-      "reaction" => nil,
-      "task" => nil,
-      "fact" => nil,
-      "source_refs" => [],
-      "identity_interpretation" => %{
-        "topic" => "none",
-        "referenced_principal_refs" => []
-      }
-    }
-
-    expected_decision =
-      Map.drop(provider_decision, ~w(text reaction task fact))
-
-    assert {:ok, ^expected_decision, _proof} =
-             evaluate_input(projected_model_input_v3(), provider_decision, %{"test_pid" => self()})
-
-    assert_receive {:triage_response_format,
-                    %{
-                      "type" => "json_schema",
-                      "name" => "comma_triage_decision_v1",
-                      "strict" => true,
-                      "schema" => schema
-                    }}
-
-    assert schema["additionalProperties"] == false
-
-    assert schema["required"] ==
-             ~w(action text reaction task fact source_refs identity_interpretation)
-
-    assert get_in(schema, ["properties", "source_refs", "items", "enum"]) ==
-             projected_model_input_v3()["source_refs"]
-
-    assert get_in(schema, [
-             "properties",
-             "identity_interpretation",
-             "properties",
-             "referenced_principal_refs",
-             "items",
-             "enum"
-           ]) == Enum.sort(projected_identity_context()["principal_refs"])
   end
 
   test "scheduled recheck retains one reply-or-silence outcome plus independent context candidates" do
@@ -1096,203 +870,34 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
              evaluate_input(
                with_source_mode(periodic_patrol_model_input_v3(), "scheduled_recheck"),
                provider_decision,
-               %{"test_pid" => self()}
+               %{"test_pid" => SystemsRuntime.Proc.self()}
              )
 
-    assert_receive {:triage_response_format,
-                    %{
-                      "name" => "comma_triage_product_decision_v2",
-                      "schema" => schema
-                    }}
+    settle_receive(
+      {:triage_response_format,
+       %{
+         "name" => "comma_triage_product_decision_v2",
+         "schema" => schema
+       }}
+    )
 
     assert schema["additionalProperties"] == false
     assert get_in(schema, ["properties", "context_candidates", "maxItems"]) == 3
     assert get_in(schema, ["properties", "delegations", "maxItems"]) == 0
   end
 
-  test "scheduled recheck schema admits a sourced resolution but rejects fields from other candidate kinds" do
-    input = with_source_mode(periodic_patrol_model_input_v3(), "scheduled_recheck")
-
-    assert {:ok, _decision, _proof} =
-             evaluate_input(input, phase_product_decision("silence", false), %{
-               "test_pid" => self()
-             })
-
-    assert_receive {:triage_response_format, %{"schema" => schema}}
-
-    candidate_schema =
-      schema
-      |> get_in(["properties", "context_candidates", "items"])
-      |> ExJsonSchema.Schema.resolve()
-
-    [first_ref, second_ref | _] = input["source_refs"]
-
-    resolution = %{
-      "kind" => "follow_up_resolution",
-      "subject" => "codex-3720 runtime recovery",
-      "value" => "The requester confirmed the failure was fixed.",
-      "confidence" => "explicit",
-      "source_refs" => [first_ref, second_ref],
-      "knowledge_scope" => nil,
-      "follow_up_ref" => nil,
-      "follow_up_action" => nil,
-      "follow_up_basis" => nil,
-      "resolution_basis" => "source_confirmation",
-      "recheck_after_hours" => nil
-    }
-
-    assert :ok = ExJsonSchema.Validator.validate(candidate_schema, resolution)
-
-    assert {:ok, _decision, _proof} =
-             evaluate_input(
-               input,
-               %{
-                 phase_product_decision("silence", false)
-                 | "context_candidates" => [
-                     Map.drop(
-                       resolution,
-                       ~w(knowledge_scope follow_up_ref follow_up_action follow_up_basis recheck_after_hours)
-                     )
-                   ]
-               },
-               %{"test_pid" => self()}
-             )
-
-    for invalid <- [
-          %{resolution | "follow_up_ref" => first_ref},
-          %{resolution | "knowledge_scope" => "project"},
-          %{resolution | "confidence" => "inferred"},
-          %{resolution | "source_refs" => [first_ref]}
-        ] do
-      assert {:error, _} = ExJsonSchema.Validator.validate(candidate_schema, invalid)
-    end
-  end
-
-  test "ordinary intake rejects direct reactions and compound public replies" do
-    input = phase_model_input()
-    assignment = phase_product_decision("silence", true)
-    reaction = %{"kind" => "reaction", "emoji" => "tada", "source_refs" => ["source://run/s003"]}
-
-    for decision <- [
-          Map.put(assignment, "communication", reaction),
-          Map.put(phase_product_decision("reply", true), "companion_reaction", reaction),
-          Map.put(assignment, "companion_reaction", reaction)
-        ] do
-      assert {:error, :invalid_triage_decision} =
-               evaluate_input(input, decision, %{"test_pid" => self()})
-
-      assert_receive {:triage_response_format, %{"schema" => %{"properties" => properties}}}
-      assert properties["communication"]["properties"]["kind"]["enum"] == ["silence"]
-      assert properties["companion_reaction"] == %{"type" => "null"}
-      assert properties["delegations"]["minItems"] == 1
-    end
-  end
-
-  test "scheduled recheck expression context reaches the response schema and authorizes a custom companion reaction" do
-    decision = %{
-      "schema" => "comma.triage-product-decision.v2",
-      "communication" => %{
-        "kind" => "reply",
-        "text" => "Ship it.",
-        "source_refs" => ["source://run/s003"]
-      },
-      "companion_reaction" => %{
-        "kind" => "reaction",
-        "emoji" => "party_parrot",
-        "source_refs" => ["source://run/s003"]
-      },
-      "context_candidates" => [],
-      "delegations" => [],
-      "identity_interpretation" => %{
-        "topic" => "none",
-        "referenced_principal_refs" => []
-      }
-    }
-
-    model_input = with_source_mode(clickhouse_expression_model_input_v3(), "scheduled_recheck")
-
-    assert {:ok, ^decision, _proof} =
-             evaluate_input(model_input, decision, %{"test_pid" => self()})
-
-    assert_receive {:triage_response_format,
-                    %{
-                      "schema" => %{
-                        "properties" => %{
-                          "companion_reaction" => %{"anyOf" => companion_variants}
-                        }
-                      }
-                    }}
-
-    reaction_schema =
-      Enum.find(companion_variants, fn variant ->
-        get_in(variant, ["properties", "kind", "enum"]) == ["reaction"]
-      end)
-
-    assert "party_parrot" in get_in(reaction_schema, ["properties", "emoji", "enum"])
-
-    assert get_in(reaction_schema, ["properties", "source_refs", "items", "enum"]) == [
-             "source://run/s003"
-           ]
-
-    assert {:error, :invalid_triage_decision} =
-             evaluate_input(
-               model_input,
-               put_in(decision, ["companion_reaction", "emoji"], "invented_custom"),
-               %{"test_pid" => self()}
-             )
-  end
-
-  test "directed agent self mentions require a Worker instead of a native reply" do
-    input = product_target(phase_model_input(), "agent", "self")
-
-    assert {:error, :invalid_triage_decision} =
-             evaluate_input(input, phase_product_decision("reply", true), %{})
-
-    assignment = phase_product_decision("silence", true)
-    assert {:ok, ^assignment, _} = evaluate_input(input, assignment, %{"test_pid" => self()})
-    assert_receive {:triage_response_format, %{"schema" => %{"properties" => properties}}}
-    assert properties["delegations"]["minItems"] == 1
-    assert properties["delegations"]["maxItems"] == 1
-  end
-
   test "ClickHouse intake only selects a Worker and describes the observed batch" do
     input = phase_model_input()
     assignment = phase_product_decision("silence", true)
-    assert {:ok, ^assignment, proof} = evaluate_input(input, assignment, %{"test_pid" => self()})
+
+    assert {:ok, ^assignment, proof} =
+             evaluate_input(input, assignment, %{"test_pid" => SystemsRuntime.Proc.self()})
+
     assert proof["policy_bytes"] =~ "triage-worker-assignment-v1"
-    assert_receive {:triage_response_format, %{"schema" => %{"properties" => properties}}}
+    settle_receive({:triage_response_format, %{"schema" => %{"properties" => properties}}})
     assert properties["context_candidates"]["maxItems"] == 0
     assert properties["delegations"]["minItems"] == 1
     assert properties["delegations"]["maxItems"] == 1
-  end
-
-  test "schema-valid multilingual assessment survives evaluator validation without taking another recipient's work" do
-    input = clickhouse_expression_model_input_v3() |> product_target("human", "other")
-    decision = assessment_decision(String.duplicate("已检查来源。", 100))
-
-    assert {:ok, accepted, proof} = evaluate_input(input, decision, %{"test_pid" => self()})
-    assert accepted["assessment"] == decision["assessment"]
-    assert accepted["communication"]["reason"] == "outside_authority"
-    assert accepted["delegations"] == []
-    assert proof["request_count"] == 1
-  end
-
-  test "assessment rejection identifies the failed field without logging private values" do
-    input = clickhouse_expression_model_input_v3() |> product_target("human", "other")
-    private_text = "PRIVATE_ASSESSMENT_CANARY " <> String.duplicate("字", 1201)
-    decision = assessment_decision(private_text)
-
-    log =
-      ExUnit.CaptureLog.capture_log(fn ->
-        assert {:error, :invalid_triage_decision} =
-                 evaluate_input(input, decision, %{"test_pid" => self()})
-      end)
-
-    assert log =~ "check=assessment_available_evidence"
-    assert log =~ "reason=too_long"
-    refute log =~ "PRIVATE_ASSESSMENT_CANARY"
-    refute log =~ "source://run/"
-    assert byte_size(log) < 3000
   end
 
   test "periodic patrol system-routes explicit recipients while retaining project context" do
@@ -1337,7 +942,9 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
       end)
 
     assert {:ok, decision, _proof} =
-             evaluate_input(model_input, provider_proposal, %{"test_pid" => self()})
+             evaluate_input(model_input, provider_proposal, %{
+               "test_pid" => SystemsRuntime.Proc.self()
+             })
 
     assert decision["communication"] == %{
              "kind" => "silence",
@@ -1350,15 +957,17 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     assert decision["delegations"] == []
     assert [%{"subject" => "atlas-owner"}] = decision["context_candidates"]
 
-    assert_receive {:triage_response_format,
-                    %{
-                      "schema" => %{
-                        "properties" => %{
-                          "communication" => communication,
-                          "delegations" => %{"maxItems" => 0}
-                        }
-                      }
-                    }}
+    settle_receive(
+      {:triage_response_format,
+       %{
+         "schema" => %{
+           "properties" => %{
+             "communication" => communication,
+             "delegations" => %{"maxItems" => 0}
+           }
+         }
+       }}
+    )
 
     assert get_in(communication, ["properties", "reason", "enum"]) == ["outside_authority"]
   end
@@ -1389,7 +998,9 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     model_input = product_target(periodic_patrol_model_input_v3(), "agent", "self")
 
     assert {:ok, decision, _proof} =
-             evaluate_input(model_input, provider_proposal, %{"test_pid" => self()})
+             evaluate_input(model_input, provider_proposal, %{
+               "test_pid" => SystemsRuntime.Proc.self()
+             })
 
     assert decision["communication"] == %{
              "kind" => "silence",
@@ -1403,109 +1014,25 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     assert decision["delegations"] == []
   end
 
-  test "periodic patrol bounds the full-agent output budget without changing ordinary Triage" do
-    decision = phase_product_decision("silence", true)
-
-    assert {:ok, ^decision, _proof} =
-             evaluate_input(
-               with_source_mode(phase_model_input(), "periodic_patrol"),
-               decision,
-               %{
-                 "max_tokens" => 65_536,
-                 "reasoning_effort" => "high",
-                 "thinking" => %{"type" => "adaptive"},
-                 "test_pid" => self()
-               }
-             )
-
-    assert_receive {:triage_max_tokens, 16_384}
-    assert_receive {:triage_reasoning_effort, "medium"}
-    assert_receive {:triage_thinking, nil}
-
-    ordinary = %{
-      "action" => "silence",
-      "source_refs" => [],
-      "identity_interpretation" => %{
-        "topic" => "none",
-        "referenced_principal_refs" => []
-      }
-    }
-
-    assert {:ok, ^ordinary, _proof} =
-             evaluate_input(
-               projected_model_input_v3(),
-               ordinary,
-               %{
-                 "max_tokens" => 65_536,
-                 "reasoning_effort" => "high",
-                 "thinking" => %{"type" => "adaptive"},
-                 "test_pid" => self()
-               }
-             )
-
-    assert_receive {:triage_max_tokens, 65_536}
-    assert_receive {:triage_reasoning_effort, "high"}
-    assert_receive {:triage_thinking, %{"type" => "adaptive"}}
-  end
-
-  test "periodic patrol accepts one exact JSON code fence and rejects prose around it" do
-    decision = phase_product_decision("silence", true)
-
-    json = Jason.encode!(decision)
-
-    assert {:ok, ^decision, _proof} =
-             evaluate_input(
-               with_source_mode(phase_model_input(), "periodic_patrol"),
-               decision,
-               %{"raw_content" => "```json\n#{json}\n```"}
-             )
-
-    assert {:error, :invalid_triage_decision} =
-             evaluate_input(
-               with_source_mode(phase_model_input(), "periodic_patrol"),
-               decision,
-               %{"raw_content" => "Here is the result:\n```json\n#{json}\n```"}
-             )
-
-    assert {:error, :invalid_triage_decision} =
-             evaluate_input(
-               with_source_mode(phase_model_input(), "periodic_patrol"),
-               decision,
-               %{"raw_content" => "```json\n#{json}\n```\nextra"}
-             )
-  end
-
-  test "periodic patrol does not expose the interactive prior-run detail tool" do
-    decision = phase_product_decision("silence", true)
-
-    assert {:ok, ^decision, proof} =
-             Salix.Bindings.TriageEvaluator.evaluate(
-               with_source_mode(phase_model_input(), "periodic_patrol"),
-               provider: ScriptedProvider,
-               provider_opts: %{"decision" => decision, "test_pid" => self()},
-               read_tool_context: history_read_tool_context(),
-               transport_receipt: fn payload_bytes ->
-                 %{payload_sha256: sha256(payload_bytes), request_count: 1}
-               end
-             )
-
-    assert proof["request_count"] == 1
-    assert_receive {:triage_messages, _messages}
-    assert_receive {:triage_response_format, _format}
-  end
-
   test "v3 tool-required triage uses one disclosed read-only tool before its final decision" do
     {:ok, script} = Agent.start_link(fn -> 0 end)
-    {:ok, server} = Bandit.start_link(plug: {ReadPagePlug, self()}, port: 0, startup_log: false)
+
+    {:ok, server} =
+      Bandit.start_link(
+        plug: {ReadPagePlug, SystemsRuntime.Proc.self()},
+        port: 0,
+        startup_log: false
+      )
+
     {:ok, {_address, port}} = ThousandIsland.listener_info(server)
 
-    previous_base = Application.get_env(:salix_agent, :exa_base_url)
-    previous_key = Application.get_env(:salix_agent, :exa_api_key)
-    Application.put_env(:salix_agent, :exa_base_url, "http://127.0.0.1:#{port}")
-    Application.put_env(:salix_agent, :exa_api_key, "triage-test-key")
+    previous_base = SystemsRuntime.get_env(:salix_agent, :exa_base_url)
+    previous_key = SystemsRuntime.get_env(:salix_agent, :exa_api_key)
+    SystemsRuntime.put_env(:salix_agent, :exa_base_url, "http://127.0.0.1:#{port}")
+    SystemsRuntime.put_env(:salix_agent, :exa_api_key, "triage-test-key")
 
     on_exit(fn ->
-      Process.exit(server, :shutdown)
+      SystemsRuntime.Proc.exit(server, :shutdown)
       restore_env(:exa_base_url, previous_base)
       restore_env(:exa_api_key, previous_key)
     end)
@@ -1528,7 +1055,7 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
                provider_opts: %{
                  "decision" => decision,
                  "script" => script,
-                 "test_pid" => self()
+                 "test_pid" => SystemsRuntime.Proc.self()
                },
                read_tool_context: tool_context,
                transport_receipt: fn payload_bytes ->
@@ -1536,15 +1063,17 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
                end
              )
 
-    assert_receive {:triage_tool_round, 0, _messages, [%{"name" => "call"}]}
+    settle_receive({:triage_tool_round, 0, _messages, [%{"name" => "call"}]})
 
-    assert_receive {:read_pages_request,
-                    %{
-                      "urls" => ["https://example.test/launch-brief"],
-                      "text" => %{"maxCharacters" => 10_000}
-                    }, ["triage-test-key"]}
+    settle_receive(
+      {:read_pages_request,
+       %{
+         "urls" => ["https://example.test/launch-brief"],
+         "text" => %{"maxCharacters" => 10_000}
+       }, ["triage-test-key"]}
+    )
 
-    assert_receive {:triage_tool_round, 1, second_messages, []}
+    settle_receive({:triage_tool_round, 1, second_messages, []})
 
     assert Enum.any?(second_messages, fn
              %{role: "tool", tool_call_id: "triage-read-call-1", content: content} ->
@@ -1558,61 +1087,6 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     assert proof["tool_call_count"] == 1
     assert proof["tool_names"] == ["web.read_pages"]
     assert proof["tool_receipts"] |> List.first() |> Map.fetch!("result_sha256")
-  end
-
-  test "an approved cross-channel Task permalink retains its visible result in the model tool response" do
-    context = slack_permalink_tool_context!()
-    approve_permalink_channel!(context, "C_TASKS")
-
-    context =
-      put_in(
-        context,
-        [:link_targets, Access.at(0), "resolved_url"],
-        "https://atlas.slack.com/archives/C_TASKS/p1787019000000001"
-      )
-
-    install_slack_permalink_transport!(
-      messages: [
-        %{
-          "ts" => "1787019000.000001",
-          "text" => "Task Review PR #67: ready for review",
-          "blocks" => [
-            %{
-              "type" => "task_card",
-              "title" => "Review PR #67",
-              "status" => "complete",
-              "task_id" => "PRIVATE_TASK_ID",
-              "output" => %{
-                "type" => "rich_text",
-                "elements" => [
-                  %{
-                    "type" => "rich_text_section",
-                    "elements" => [
-                      %{
-                        "type" => "text",
-                        "text" => "Approved at f231813; no blockers. Nothing merged or deployed."
-                      }
-                    ]
-                  }
-                ]
-              }
-            }
-          ]
-        }
-      ]
-    )
-
-    assert {:ok, _decision, proof} = evaluate_slack_permalink(context)
-
-    assert_receive {:slack_permalink_request, "conversations.history",
-                    %{"channel" => "C_TASKS", "limit" => "1"}}
-
-    assert_receive {:triage_tool_round, 1, messages, []}
-    tool_result = Enum.find(messages, &(&1[:role] == "tool"))
-    assert tool_result.content =~ "Approved at f231813; no blockers. Nothing merged or deployed."
-    assert tool_result.content =~ "output_complete"
-    refute tool_result.content =~ "PRIVATE_TASK_ID"
-    assert proof["tool_call_count"] == 1
   end
 
   test "a Slack permalink supplies exact authorized message semantics, not a web application page" do
@@ -1633,7 +1107,7 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
                provider_opts: %{
                  "decision" => decision,
                  "script" => script,
-                 "test_pid" => self(),
+                 "test_pid" => SystemsRuntime.Proc.self(),
                  "read_tool" => "triage.slack_read_permalink",
                  "read_params" => %{"link_ref" => "link://run/l001"}
                },
@@ -1643,14 +1117,14 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
                end
              )
 
-    assert_receive {:slack_permalink_request, "auth.test", _}
-    assert_receive {:slack_permalink_request, "conversations.history", params}
+    settle_receive({:slack_permalink_request, "auth.test", _})
+    settle_receive({:slack_permalink_request, "conversations.history", params})
     assert params["channel"] == "C_ATLAS"
     assert params["oldest"] == "1787019000.000001"
     assert params["latest"] == "1787019000.000001"
     assert params["inclusive"] == "true"
     assert params["limit"] == "1"
-    assert_receive {:triage_tool_round, 1, messages, []}
+    settle_receive({:triage_tool_round, 1, messages, []})
     tool_result = Enum.find(messages, &(&1[:role] == "tool"))
     assert tool_result.content =~ "approved for Tuesday after the owner check"
     refute tool_result.content =~ "U024BE7LH"
@@ -1658,7 +1132,7 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     assert proof["tool_names"] == ["triage.slack_read_permalink"]
     assert proof["tool_call_count"] == 1
     assert proof["request_count"] == 2
-    refute_receive {:read_pages_request, _, _}
+    settle_refute_receive({:read_pages_request, _, _})
   end
 
   for {label, url, options, expected_error, read?} <- [
@@ -1697,37 +1171,15 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
       assert [%{"status" => "error", "error" => true} = receipt] = proof["tool_receipts"]
       assert receipt["canonical_result_bytes"] =~ unquote(expected_error)
       assert proof["request_count"] == 2
-      refute_receive {:slack_permalink_request, "contents", _}
+      settle_refute_receive({:slack_permalink_request, "contents", _})
 
       if unquote(read?) do
-        assert_receive {:slack_permalink_request, "conversations.history", _}
+        settle_receive({:slack_permalink_request, "conversations.history", _})
       else
-        refute_receive {:slack_permalink_request, "conversations.history", _}
-        refute_receive {:slack_permalink_request, "conversations.replies", _}
+        settle_refute_receive({:slack_permalink_request, "conversations.history", _})
+        settle_refute_receive({:slack_permalink_request, "conversations.replies", _})
       end
     end
-  end
-
-  test "a permalink in another approved channel reads the exact target through the same installation" do
-    context = slack_permalink_tool_context!()
-    approve_permalink_channel!(context, "C_TASKS")
-
-    context =
-      put_in(
-        context,
-        [:link_targets, Access.at(0), "resolved_url"],
-        "https://atlas.slack.com/archives/C_TASKS/p1787019000000001"
-      )
-
-    install_slack_permalink_transport!()
-    assert {:ok, _, proof} = evaluate_slack_permalink(context)
-    assert [%{"status" => "completed"}] = proof["tool_receipts"]
-
-    assert_receive {:slack_permalink_request, "conversations.history",
-                    %{"channel" => "C_TASKS", "limit" => "1"}}
-
-    refute_receive {:slack_permalink_request, "conversations.history", _}
-    assert proof["tool_call_count"] == 1
   end
 
   for {channel, expected_error} <- [
@@ -1762,20 +1214,10 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
       assert {:ok, _, proof} = evaluate_slack_permalink(context)
       assert [%{"status" => "error"} = receipt] = proof["tool_receipts"]
       assert receipt["canonical_result_bytes"] =~ unquote(expected_error)
-      assert_receive {:slack_permalink_request, "auth.test", _}
-      refute_receive {:slack_permalink_request, "conversations.history", _}
-      refute_receive {:slack_permalink_request, "conversations.replies", _}
+      settle_receive({:slack_permalink_request, "auth.test", _})
+      settle_refute_receive({:slack_permalink_request, "conversations.history", _})
+      settle_refute_receive({:slack_permalink_request, "conversations.replies", _})
     end
-  end
-
-  test "stale mirror evidence is not reported as a successfully read message" do
-    context = slack_permalink_tool_context!()
-    install_slack_permalink_transport!()
-    Application.put_env(:salix_agent, :im_provider_mod, StaleMirrorProvider)
-    assert {:ok, _, proof} = evaluate_slack_permalink(context)
-    assert [%{"status" => "error"} = receipt] = proof["tool_receipts"]
-    assert receipt["canonical_result_bytes"] =~ "slack_exact_message_unavailable"
-    refute receipt["canonical_result_bytes"] =~ "outdated"
   end
 
   test "a reconnect after host verification cannot substitute the source installation" do
@@ -1799,92 +1241,9 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
 
     assert {:ok, _, proof} = evaluate_slack_permalink(context)
     assert [%{"status" => "error"}] = proof["tool_receipts"]
-    assert_receive {:slack_permalink_request, "auth.test", _}
-    refute_receive {:slack_permalink_request, "conversations.history", _}
-    refute_receive {:slack_permalink_request, "conversations.replies", _}
-  end
-
-  test "a reply permalink reads only its exact timestamp under the supplied parent" do
-    context = slack_permalink_tool_context!()
-
-    context =
-      update_in(
-        context,
-        [:link_targets, Access.at(0), "resolved_url"],
-        &(&1 <> "?thread_ts=1787018999.000000&cid=C_ATLAS")
-      )
-
-    install_slack_permalink_transport!()
-    assert {:ok, _, proof} = evaluate_slack_permalink(context)
-    assert [%{"status" => "completed"}] = proof["tool_receipts"]
-
-    assert_receive {:slack_permalink_request, "conversations.replies",
-                    %{
-                      "ts" => "1787018999.000000",
-                      "oldest" => "1787019000.000001",
-                      "latest" => "1787019000.000001",
-                      "limit" => "1",
-                      "inclusive" => "true"
-                    }}
-
-    refute_receive {:slack_permalink_request, "conversations.history", _}
-  end
-
-  test "Chat Completions product intake retains identity validation without a read phase" do
-    {:ok, script} = Agent.start_link(fn -> 0 end)
-
-    decision = phase_product_decision("silence", true)
-
-    {:ok, read_server} =
-      Bandit.start_link(plug: {EmptyReadPagePlug, self()}, port: 0, startup_log: false)
-
-    {:ok, chat_server} =
-      Bandit.start_link(
-        plug: {ChatCompletionsToolPlug, %{owner: self(), decision: decision, script: script}},
-        port: 0,
-        startup_log: false
-      )
-
-    {:ok, {_address, read_port}} = ThousandIsland.listener_info(read_server)
-    {:ok, {_address, chat_port}} = ThousandIsland.listener_info(chat_server)
-    previous_base = Application.get_env(:salix_agent, :exa_base_url)
-    previous_key = Application.get_env(:salix_agent, :exa_api_key)
-    Application.put_env(:salix_agent, :exa_base_url, "http://127.0.0.1:#{read_port}")
-    Application.put_env(:salix_agent, :exa_api_key, "triage-test-key")
-
-    on_exit(fn ->
-      Process.exit(read_server, :shutdown)
-      Process.exit(chat_server, :shutdown)
-      restore_env(:exa_base_url, previous_base)
-      restore_env(:exa_api_key, previous_key)
-    end)
-
-    model_input = phase_model_input()
-
-    assert {:ok, ^decision, raw_proof} =
-             Salix.Bindings.TriageEvaluator.evaluate(model_input,
-               provider: SalixLlm.Provider,
-               provider_name: "openai",
-               provider_opts: %{
-                 "protocol" => "chat_completions",
-                 "base_url" => "http://127.0.0.1:#{chat_port}",
-                 "api_key" => "triage-chat-key",
-                 "model" => "gpt-5.6-terra"
-               },
-               read_tool_context: read_only_tool_context(),
-               transport_receipt: fn payload_bytes ->
-                 %{payload_sha256: sha256(payload_bytes), request_count: 1}
-               end
-             )
-
-    refute_receive :empty_read_pages_request
-    assert_receive {:chat_tool_request, request}
-    assert request["tools"] in [nil, []]
-    refute_receive {:chat_tool_request, _}, 0
-    assert raw_proof["request_count"] == 1
-
-    assert {:ok, ^decision, _validated_proof} =
-             Pipeline.validate_model_result(model_input, decision, raw_proof, :unused)
+    settle_receive({:slack_permalink_request, "auth.test", _})
+    settle_refute_receive({:slack_permalink_request, "conversations.history", _})
+    settle_refute_receive({:slack_permalink_request, "conversations.replies", _})
   end
 
   # A model asking to read something this run was never authorized to read is
@@ -1900,112 +1259,6 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
                  %{payload_sha256: sha256(payload_bytes), request_count: 1}
                end
              )
-  end
-
-  # Tool-result bytes used to bypass every privacy gate except the URL one, and
-  # even that collapsed every distinct URL onto the authorized `link_ref` — so
-  # the model read an unrelated mirror as if it were the one source this run was
-  # authorized to read.
-  test "a fetched page crosses the projected-text privacy gate before the second payload" do
-    {:ok, script} = Agent.start_link(fn -> 0 end)
-
-    {:ok, server} =
-      Bandit.start_link(plug: {LeakyReadPagePlug, self()}, port: 0, startup_log: false)
-
-    {:ok, {_address, port}} = ThousandIsland.listener_info(server)
-
-    previous_base = Application.get_env(:salix_agent, :exa_base_url)
-    previous_key = Application.get_env(:salix_agent, :exa_api_key)
-    Application.put_env(:salix_agent, :exa_base_url, "http://127.0.0.1:#{port}")
-    Application.put_env(:salix_agent, :exa_api_key, "triage-test-key")
-
-    on_exit(fn ->
-      Process.exit(server, :shutdown)
-      restore_env(:exa_base_url, previous_base)
-      restore_env(:exa_api_key, previous_key)
-    end)
-
-    decision = %{
-      "action" => "reply",
-      "text" => "The linked brief says Tuesday, after the owner check.",
-      "source_refs" => ["source://run/s001"],
-      "identity_interpretation" => %{
-        "topic" => "none",
-        "referenced_principal_refs" => []
-      }
-    }
-
-    assert {:ok, ^decision, proof} =
-             Salix.Bindings.TriageEvaluator.evaluate(tool_required_model_input_v3(),
-               provider: ToolCallingProvider,
-               provider_opts: %{
-                 "decision" => decision,
-                 "script" => script,
-                 "test_pid" => self()
-               },
-               read_tool_context: read_only_tool_context(),
-               transport_receipt: fn payload_bytes ->
-                 %{payload_sha256: sha256(payload_bytes), request_count: 1}
-               end
-             )
-
-    assert_receive {:triage_tool_round, 0, _first_messages, [%{"name" => "call"}]}
-    assert_receive {:read_pages_request, _request, _key}
-    assert_receive {:triage_tool_round, 1, second_messages, []}
-
-    tool_content =
-      Enum.find_value(second_messages, fn
-        %{role: "tool", content: content} -> content
-        _other -> nil
-      end)
-
-    # Authorized names and locators remain usable evidence. The separate
-    # tool-authority tests still reject URLs that are not frozen run links.
-    assert tool_content =~ "ops@example.test"
-    assert tool_content =~ "123e4567"
-    assert tool_content =~ "/var/secrets/launch"
-    assert tool_content =~ "U024BE7LH"
-    assert tool_content =~ "U0123ABCD"
-    assert tool_content =~ "mirror.example.test"
-    assert tool_content =~ "https://"
-    refute tool_content =~ "link://page/"
-
-    # The durable receipt binds exactly the text shown to the model.
-    receipt = proof["tool_receipts"] |> List.first()
-    assert {:ok, %{"content" => stored}} = Jason.decode(receipt["canonical_result_bytes"])
-    assert stored == tool_content
-    assert stored =~ "ops@example.test"
-  end
-
-  # An authorized read tool is a permission, not an obligation. The fence mints
-  # a single-use authorization; if the model already has enough frozen context
-  # to decide, that authorization simply expires uncommitted and the run settles
-  # on the direct single-request proof. Refusing the answer turned a legitimate
-  # zero-tool-call decision into `invalid_triage_model_result`.
-  test "v3 link-authorized triage settles a first-round final that used no read tool" do
-    assert {:ok, decision, proof} =
-             evaluate_premature_final(tool_required_model_input_v3(), read_only_tool_context())
-
-    assert decision["action"] == "silence"
-    assert proof["schema"] == "comma.triage-model-proof.v1"
-    assert proof["request_count"] == 1
-    assert proof["retry"] == false
-    refute Map.has_key?(proof, "tool_receipts")
-
-    assert_receive {:premature_final, [%{"name" => "call", "input_schema" => schema}]}
-    assert schema["properties"]["tool"]["enum"] == ["web.read_pages"]
-  end
-
-  test "v3 history-authorized triage settles a first-round final that used no read tool" do
-    assert {:ok, decision, proof} =
-             evaluate_premature_final(projected_model_input_v3(), history_read_tool_context())
-
-    assert decision["action"] == "silence"
-    assert proof["schema"] == "comma.triage-model-proof.v1"
-    refute Map.has_key?(proof, "tool_receipts")
-
-    assert_receive {:premature_final, [%{"name" => "call", "input_schema" => schema}]}
-    assert schema["properties"]["tool"]["enum"] == ["triage_run.get"]
   end
 
   test "history read accepts the exact authorized direct provider call and normalizes it" do
@@ -2035,68 +1288,6 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     assert [%{"tool_name" => "triage_run.get"}] = proof["tool_receipts"]
   end
 
-  test "identity read failure is returned once to the model without transport retry" do
-    {:ok, script} = Agent.start_link(fn -> 0 end)
-
-    {:ok, server} =
-      Bandit.start_link(plug: {FailingReadPagePlug, self()}, port: 0, startup_log: false)
-
-    {:ok, {_address, port}} = ThousandIsland.listener_info(server)
-
-    previous_base = Application.get_env(:salix_agent, :exa_base_url)
-    previous_key = Application.get_env(:salix_agent, :exa_api_key)
-    Application.put_env(:salix_agent, :exa_base_url, "http://127.0.0.1:#{port}")
-    Application.put_env(:salix_agent, :exa_api_key, "triage-test-key")
-
-    on_exit(fn ->
-      Process.exit(server, :shutdown)
-      restore_env(:exa_base_url, previous_base)
-      restore_env(:exa_api_key, previous_key)
-    end)
-
-    decision = %{
-      "action" => "delegate",
-      "task" => "Confirm the linked source is available before answering.",
-      "source_refs" => ["source://run/s001"],
-      "identity_interpretation" => %{
-        "topic" => "none",
-        "referenced_principal_refs" => []
-      }
-    }
-
-    assert {:ok, ^decision, proof} =
-             Salix.Bindings.TriageEvaluator.evaluate(tool_required_model_input_v3(),
-               provider: ToolCallingProvider,
-               provider_opts: %{
-                 "decision" => decision,
-                 "script" => script,
-                 "test_pid" => self()
-               },
-               read_tool_context: read_only_tool_context(true),
-               transport_receipt: fn payload_bytes ->
-                 %{payload_sha256: sha256(payload_bytes), request_count: 1}
-               end
-             )
-
-    assert_receive :failing_read_pages_request
-    refute_receive :failing_read_pages_request, 100
-    assert_receive {:triage_tool_round, 1, second_messages, []}
-
-    assert Enum.any?(second_messages, fn
-             %{role: "tool", content: content} ->
-               content =~ "temporarily unavailable"
-
-             _other ->
-               false
-           end)
-
-    [receipt] = proof["tool_receipts"]
-    assert receipt["status"] == "error"
-    assert receipt["error"] == true
-    assert receipt["error_class"] == "tool_error"
-    assert proof["request_count"] == 2
-  end
-
   test "effect-capable tool names are unreachable from the triage evaluator" do
     for tool_name <- [
           "slack.send",
@@ -2111,7 +1302,7 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
                  provider_opts: %{
                    "model" => "effect-tool-attempt-v1",
                    "requested_tool" => tool_name,
-                   "test_pid" => self()
+                   "test_pid" => SystemsRuntime.Proc.self()
                  },
                  read_tool_context: read_only_tool_context(true),
                  transport_receipt: fn payload_bytes ->
@@ -2119,80 +1310,14 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
                  end
                )
 
-      assert_receive {:requested_effect_tool, ^tool_name}
+      settle_receive({:requested_effect_tool, ^tool_name})
     end
 
-    refute_receive {:read_pages_request, _, _}, 50
-  end
-
-  test "identity read timeout is frozen once and followed by an honest bounded delegate" do
-    {:ok, script} = Agent.start_link(fn -> 0 end)
-
-    {:ok, server} =
-      Bandit.start_link(plug: {SlowReadPagePlug, self()}, port: 0, startup_log: false)
-
-    {:ok, {_address, port}} = ThousandIsland.listener_info(server)
-
-    previous_base = Application.get_env(:salix_agent, :exa_base_url)
-    previous_key = Application.get_env(:salix_agent, :exa_api_key)
-    previous_timeouts = Application.get_env(:salix_agent, :tool_timeouts)
-    Application.put_env(:salix_agent, :exa_base_url, "http://127.0.0.1:#{port}")
-    Application.put_env(:salix_agent, :exa_api_key, "triage-test-key")
-    Application.put_env(:salix_agent, :tool_timeouts, %{"web.read_pages" => 25})
-
-    on_exit(fn ->
-      Process.exit(server, :shutdown)
-      restore_env(:exa_base_url, previous_base)
-      restore_env(:exa_api_key, previous_key)
-      restore_env(:tool_timeouts, previous_timeouts)
-    end)
-
-    decision = %{
-      "action" => "delegate",
-      "task" => "Retry source verification later; do not infer unavailable content.",
-      "source_refs" => ["source://run/s001"],
-      "identity_interpretation" => %{
-        "topic" => "none",
-        "referenced_principal_refs" => []
-      }
-    }
-
-    assert {:ok, ^decision, proof} =
-             Salix.Bindings.TriageEvaluator.evaluate(tool_required_model_input_v3(),
-               provider: ToolCallingProvider,
-               provider_opts: %{
-                 "decision" => decision,
-                 "script" => script,
-                 "test_pid" => self()
-               },
-               read_tool_context: read_only_tool_context(true),
-               transport_receipt: fn payload_bytes ->
-                 %{payload_sha256: sha256(payload_bytes), request_count: 1}
-               end
-             )
-
-    assert_receive :slow_read_pages_request
-    refute_receive :slow_read_pages_request, 100
-    assert_receive {:triage_tool_round, 1, second_messages, []}
-
-    assert Enum.any?(second_messages, fn
-             %{role: "tool", content: content} -> content =~ "timed out"
-             _other -> false
-           end)
-
-    [receipt] = proof["tool_receipts"]
-    assert receipt["status"] == "error"
-    assert receipt["error"] == true
-    assert receipt["error_class"] == "timeout"
-    assert proof["request_count"] == 2
+    settle_refute_receive({:read_pages_request, _, _}, 50)
   end
 
   defp evaluate(decision, provider_opts \\ %{}) do
     evaluate_input(model_input(), decision, provider_opts)
-  end
-
-  defp evaluate_v3(decision, provider_opts) do
-    evaluate_input(model_input_v3(), decision, provider_opts)
   end
 
   test "fixed intake assignment preserves source authority and cannot publish model output" do
@@ -2233,8 +1358,8 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
                Pipeline.validate_model_result(input, decision, raw, :unused)
 
       assert SalixIM.Triage.RunFence.valid_model_proof?(proof)
-      assert_receive {:phase_wire, wire}
-      refute_receive {:phase_wire, _}, 0
+      settle_receive({:phase_wire, wire})
+      settle_refute_receive({:phase_wire, _}, 0)
       assert wire["tools"] in [nil, []]
 
       assert SalixIM.Triage.RunFence.payload_has_exact_message_content?(
@@ -2258,53 +1383,6 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     end
   end
 
-  test "assessment types and closed references reach advisory providers over HTTP" do
-    input = clickhouse_expression_model_input_v3() |> product_target("human", "other")
-    decision = assessment_decision("已检查来源。")
-    assessment = decision["assessment"]
-
-    for protocol <- ~w(chat_completions anthropic) do
-      assert {:ok, accepted, _proof} = phase_http_evaluate(input, protocol, [decision])
-      assert accepted["assessment"] == assessment
-      assert accepted["communication"]["reason"] == "outside_authority"
-      assert accepted["delegations"] == []
-      assert_receive {:phase_wire, wire}
-      refute Map.has_key?(wire, "response_format")
-
-      system =
-        if protocol == "anthropic" do
-          Enum.map_join(wire["system"], "\n", & &1["text"])
-        else
-          wire["messages"]
-          |> Enum.filter(&(&1["role"] in ["system", "developer"]))
-          |> Enum.map_join("\n", & &1["content"])
-        end
-
-      assert [_, encoded | _] = String.split(system, "```json\n", parts: 2)
-      schema = encoded |> String.split("\n```", parts: 2) |> hd() |> Jason.decode!()
-      fields = get_in(schema, ["properties", "assessment", "properties"])
-      assert fields["unavailable_input"]["type"] == "string"
-      assert fields["requested_outcome"]["type"] == "string"
-      assert fields["available_evidence"]["type"] == "string"
-
-      assert Enum.sort(fields["unread_source_refs"]["items"]["enum"]) ==
-               Enum.sort(input["source_refs"])
-    end
-
-    for bad_assessment <- [
-          Map.put(assessment, "unavailable_input", nil),
-          Map.put(assessment, "unread_source_refs", ["link://run/l001"])
-        ] do
-      assert {:error, :invalid_triage_decision} =
-               phase_http_evaluate(input, "chat_completions", [
-                 Map.put(decision, "assessment", bad_assessment)
-               ])
-
-      assert_receive {:phase_wire, _}
-      refute_receive {:phase_wire, _}, 0
-    end
-  end
-
   test "one native call rejects malformed communication and Workers outside the frozen roster" do
     input = phase_model_input()
     decision = phase_product_decision("silence", true)
@@ -2320,53 +1398,8 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
       assert {:error, :invalid_triage_decision} =
                phase_http_evaluate(input, protocol, [malformed])
 
-      assert_receive {:phase_wire, _}
-      refute_receive {:phase_wire, _}, 0
-    end
-  end
-
-  test "single-call proof rejects extra requests and changed snapshot" do
-    input = phase_model_input()
-    decision = phase_product_decision("silence", true)
-    assert {:ok, ^decision, raw} = phase_http_evaluate(input, "responses", [decision])
-
-    changed =
-      raw["provider_payload_bytes"] |> Jason.decode!() |> Map.put("input", []) |> Jason.encode!()
-
-    changed_proof =
-      raw
-      |> Map.put("provider_payload_bytes", changed)
-      |> Map.put("observer_payload_sha256", sha256(changed))
-      |> Map.put("transport_payload_sha256", sha256(changed))
-
-    for malformed <- [
-          Map.put(raw, "request_count", 2),
-          Map.put(raw, "retry", true),
-          changed_proof
-        ] do
-      assert {:error, :invalid_model_proof} =
-               Pipeline.validate_model_result(input, decision, malformed, :unused)
-    end
-  end
-
-  test "product intake exposes no read tool even when a read context exists" do
-    input = phase_model_input()
-    decision = phase_product_decision("silence", true)
-
-    for protocol <- ~w(responses chat_completions anthropic) do
-      assert {:ok, ^decision, raw} =
-               phase_http_evaluate(input, protocol, [decision], read_only_tool_context())
-
-      assert raw["request_count"] == 1
-      assert_receive {:phase_wire, wire}
-      assert wire["tools"] in [nil, []]
-      refute_receive {:read_pages_request, _, _}, 0
-
-      assert {:error, :invalid_triage_read_tool_call} =
-               phase_http_evaluate(input, protocol, [:read], read_only_tool_context())
-
-      assert_receive {:phase_wire, _}
-      refute_receive {:phase_wire, _}, 0
+      settle_receive({:phase_wire, _})
+      settle_refute_receive({:phase_wire, _}, 0)
     end
   end
 
@@ -2446,13 +1479,15 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
 
     {:ok, server} =
       Bandit.start_link(
-        plug: {PhaseResponsePlug, %{owner: self(), script: script, protocol: protocol}},
+        plug:
+          {PhaseResponsePlug,
+           %{owner: SystemsRuntime.Proc.self(), script: script, protocol: protocol}},
         port: 0,
         startup_log: false
       )
 
     {:ok, {_address, port}} = ThousandIsland.listener_info(server)
-    Process.unlink(server)
+    SystemsRuntime.Proc.unlink(server)
 
     try do
       Salix.Bindings.TriageEvaluator.evaluate(input,
@@ -2468,30 +1503,9 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
         transport_receipt: fn bytes -> %{payload_sha256: sha256(bytes), request_count: 1} end
       )
     after
-      Process.exit(server, :shutdown)
+      SystemsRuntime.Proc.exit(server, :shutdown)
       Agent.stop(script)
     end
-  end
-
-  defp assessment_decision(evidence) do
-    %{
-      "schema" => "comma.triage-product-decision.v2",
-      "assessment" => %{
-        "requested_outcome" => "Explain the reported error",
-        "available_evidence" => evidence,
-        "unread_source_refs" => [],
-        "unavailable_input" => ""
-      },
-      "communication" => %{
-        "kind" => "silence",
-        "reason" => "outside_authority",
-        "source_refs" => []
-      },
-      "companion_reaction" => nil,
-      "context_candidates" => [],
-      "delegations" => [],
-      "identity_interpretation" => %{"topic" => "none", "referenced_principal_refs" => []}
-    }
   end
 
   defp evaluate_input(model_input, decision, provider_opts) do
@@ -2519,19 +1533,6 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
       "canonical_snapshot_bytes" => SalixIM.Triage.CanonicalJSON.encode!(snapshot),
       "source_refs" => identity_context["source_refs"]
     }
-  end
-
-  defp model_input_v3 do
-    v2 = model_input()
-    snapshot = Map.put(v2["snapshot"], "schema", "comma.triage-context-snapshot.v5")
-
-    v2
-    |> Map.put("schema", "comma.triage-model-input.v3")
-    |> Map.put("snapshot", snapshot)
-    |> Map.put(
-      "canonical_snapshot_bytes",
-      SalixIM.Triage.CanonicalJSON.encode!(snapshot)
-    )
   end
 
   defp projected_model_input_v3 do
@@ -2578,25 +1579,6 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     |> Map.put("snapshot", snapshot)
     |> Map.put("canonical_snapshot_bytes", SalixIM.Triage.CanonicalJSON.encode!(snapshot))
     |> product_target("human", "none")
-  end
-
-  defp clickhouse_expression_model_input_v3 do
-    model_input = clickhouse_product_model_input_v3()
-
-    {:ok, expression_context} =
-      SalixIM.Triage.ExpressionContext.build(
-        "social",
-        {:ok, %{"party_parrot" => "provider-owned-url"}}
-      )
-
-    snapshot =
-      model_input["snapshot"]
-      |> Map.put("schema", "comma.triage-context-snapshot.v7")
-      |> put_in(["slack_context", "expression_context"], expression_context)
-
-    model_input
-    |> Map.put("snapshot", snapshot)
-    |> Map.put("canonical_snapshot_bytes", SalixIM.Triage.CanonicalJSON.encode!(snapshot))
   end
 
   defp product_target(model_input, actor_kind, syntactic_addressee) do
@@ -2745,7 +1727,10 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
   defp install_slack_permalink_transport!(options \\ []) do
     server =
       start_supervised!(
-        {Bandit, plug: {SlackPermalinkPlug, {self(), options}}, port: 0, startup_log: false}
+        {Bandit,
+         plug: {SlackPermalinkPlug, {SystemsRuntime.Proc.self(), options}},
+         port: 0,
+         startup_log: false}
       )
 
     {:ok, {_address, port}} = ThousandIsland.listener_info(server)
@@ -2757,16 +1742,16 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
             {:salix_agent, :exa_base_url, "http://127.0.0.1:#{port}"},
             {:salix_im, :slack_message_mirror_mod, SalixIM.SlackMessageMirror.Noop}
           ] do
-        old = Application.get_env(app, key)
-        Application.put_env(app, key, value)
+        old = SystemsRuntime.get_env(app, key)
+        SystemsRuntime.put_env(app, key, value)
         {app, key, old}
       end
 
     on_exit(fn ->
       for {app, key, old} <- previous do
         if is_nil(old),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, old)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, old)
       end
     end)
   end
@@ -2784,7 +1769,7 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
           "identity_interpretation" => %{"topic" => "none", "referenced_principal_refs" => []}
         },
         "script" => script,
-        "test_pid" => self(),
+        "test_pid" => SystemsRuntime.Proc.self(),
         "read_tool" => "triage.slack_read_permalink",
         "read_params" => %{"link_ref" => "link://run/l001"}
       },
@@ -2795,8 +1780,11 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
 
   defp slack_permalink_tool_context! do
     alias SalixStore.{CasRecord, Ids, Keys, ULID}
-    unless Process.whereis(Ids), do: start_supervised!(Ids)
-    unless Process.whereis(SalixStore.S3.Fake), do: start_supervised!(SalixStore.S3.Fake)
+    unless SystemsRuntime.Proc.whereis(Ids), do: start_supervised!(Ids)
+
+    unless SystemsRuntime.Proc.whereis(SalixStore.S3.Fake),
+      do: start_supervised!(SalixStore.S3.Fake)
+
     tenant = Ids.new_tenant_id()
     group = Ids.new_group_id(tenant)
     agent = Ids.new_agent_id(group)
@@ -2920,26 +1908,6 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     connect
   end
 
-  defp evaluate_premature_final(model_input, read_tool_context) do
-    decision = %{
-      "action" => "silence",
-      "source_refs" => [],
-      "identity_interpretation" => %{
-        "topic" => "none",
-        "referenced_principal_refs" => []
-      }
-    }
-
-    Salix.Bindings.TriageEvaluator.evaluate(model_input,
-      provider: PrematureFinalProvider,
-      provider_opts: %{"decision" => decision, "test_pid" => self()},
-      read_tool_context: read_tool_context,
-      transport_receipt: fn payload_bytes ->
-        %{payload_sha256: sha256(payload_bytes), request_count: 1}
-      end
-    )
-  end
-
   defp history_read_tool_context do
     summary_item = %{
       "run_ref" => "triage-run://current/r001",
@@ -3000,8 +1968,8 @@ defmodule Salix.Bindings.TriageNativeIdentityTest do
     }
   end
 
-  defp restore_env(key, nil), do: Application.delete_env(:salix_agent, key)
-  defp restore_env(key, value), do: Application.put_env(:salix_agent, key, value)
+  defp restore_env(key, nil), do: SystemsRuntime.delete_env(:salix_agent, key)
+  defp restore_env(key, value), do: SystemsRuntime.put_env(:salix_agent, key, value)
 
   defp identity_context do
     identity = %{

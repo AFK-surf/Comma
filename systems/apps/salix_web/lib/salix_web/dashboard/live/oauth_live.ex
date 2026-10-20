@@ -188,6 +188,23 @@ defmodule SalixWeb.Dashboard.OAuthLive do
             class="space-y-3"
           >
             <input type="hidden" name="provider" value={app["provider"]} />
+            <aside
+              :if={app["provider"] == "x"}
+              aria-label="Platform-wide X configuration and billing"
+              class="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+            >
+              <p class="font-semibold">Platform-wide X configuration and billing</p>
+              <p>
+                All tenants in this deployment without their own complete X app credentials
+                use this app. X charges API usage through this app to its developer account.
+              </p>
+              <p>
+                Before saving, check the billing account and spending limit in the
+                <a href="https://console.x.com" target="_blank" rel="noopener noreferrer" class="underline">
+                  X Developer Console
+                </a>.
+              </p>
+            </aside>
             <.input name="client_id" label="Client ID" value={app["client_id"]} />
             <.input
               type="password"

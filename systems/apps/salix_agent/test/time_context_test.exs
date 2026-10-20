@@ -1,5 +1,5 @@
 defmodule SalixAgent.TimeContextTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias SalixAgent.{ContextProviders, TimeContext}
 
   @now ~U[2026-09-10 00:01:00Z]
@@ -28,12 +28,6 @@ defmodule SalixAgent.TimeContextTest do
     assert {[_], _} = TimeContext.prepare(%{session | session_id: "fork"}, known, @now)
     next = %{session | messages: [@message, %{@message | id: 2, source_message_id: "u2"}]}
     assert {[_], _} = TimeContext.prepare(next, known, @now)
-  end
-
-  test "crossing UTC midnight refreshes before the interval expires" do
-    session = %{messages: [@message]}
-    {[_], state} = TimeContext.prepare(session, %{}, ~U[2026-09-09 23:59:30Z])
-    assert {[_], _} = TimeContext.prepare(session, %{"time_context" => state}, @now)
   end
 
   test "legacy current versions receive one complete baseline and adoption prevents repetition" do

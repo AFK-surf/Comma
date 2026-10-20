@@ -1,4 +1,6 @@
 defmodule SalixWeb.ConnectorDrain do
+  require SystemsClock
+
   @moduledoc """
   Close local connector sockets before a graceful node shutdown. A socket's
   teardown notification is not death proof: persist cleanup only after its
@@ -9,9 +11,9 @@ defmodule SalixWeb.ConnectorDrain do
   alias SalixEnv.{Bridge, Registry}
 
   def drain do
-    task = Task.async(&drain_local/0)
+    task = SystemsRuntime.Task.async(&drain_local/0)
 
-    case Task.yield(task, 15_000) || Task.shutdown(task, :brutal_kill) do
+    case SystemsClock.yield(task, 15_000) || SystemsRuntime.Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
       _ -> {:error, :connector_drain_deadline}
     end
@@ -21,9 +23,9 @@ defmodule SalixWeb.ConnectorDrain do
     Elixir.Registry.select(Bridge.registry(), [
       {{:"$1", :"$2", :connector}, [], [{{:"$1", :"$2"}}]}
     ])
-    |> Task.async_stream(&stop/1,
+    |> SystemsClock.async_stream(&stop/1,
       max_concurrency: 16,
-      timeout: 10_000,
+      timeout: SystemsClock.timeout(10_000),
       on_timeout: :kill_task,
       ordered: false
     )
@@ -34,13 +36,13 @@ defmodule SalixWeb.ConnectorDrain do
   end
 
   defp stop({transport_id, owner}) do
-    ref = Process.monitor(owner)
-    send(owner, {:connector_drain, self(), ref})
+    ref = SystemsRuntime.Proc.monitor(owner)
+    SystemsRuntime.Proc.send(owner, {:connector_drain, SystemsRuntime.Proc.self(), ref})
 
     try do
-      receive do
+      SystemsClock.vreceive do
         {:connector_drain, ^ref, context} ->
-          receive do
+          SystemsClock.vreceive do
             {:DOWN, ^ref, :process, ^owner, _reason} -> confirm_stopped(context, transport_id)
           after
             5_000 -> {:error, :owner_stop_unconfirmed}
@@ -58,7 +60,7 @@ defmodule SalixWeb.ConnectorDrain do
     catch
       _, _ -> {:error, :connector_drain_failed}
     after
-      Process.demonitor(ref, [:flush])
+      SystemsRuntime.Proc.demonitor(ref, [:flush])
     end
   end
 

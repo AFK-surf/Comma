@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SynchronicityState } from "@comma/native-bridge";
 import { DriveRecordingStore } from "../modules/audio-capture/drive-recordings";
+import { MEETING_APPS } from "../modules/meeting-presence";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -32,6 +33,8 @@ async function fixture() {
     spaces: [{ id: "comma-drive", sourcePath: localRoot }],
   } as SynchronicityState;
   const imported: Buffer[] = [];
+  /** The space's files, as its listing has them. */
+  const listed: string[] = [];
   const drive = {
     state: vi.fn(async () => state),
     write: vi.fn(async () => ({ status: "done" as const })),
@@ -41,10 +44,24 @@ async function fixture() {
         return { status: "done" as const };
       }
     ),
+    list: vi.fn(async ({ prefix = "" }: { space: string; prefix?: string }) => ({
+      entries: listed
+        .filter((path) => path.startsWith(prefix))
+        .map((path) => ({
+          path,
+          kind: "file" as const,
+          contentRoot: "",
+          mtimeMs: 0,
+          origin: "",
+          size: 0,
+          versions: 1,
+        })),
+      nextCursor: "",
+    })),
   };
   const openPath = vi.fn(async (_path: string) => "");
   const store = new DriveRecordingStore(drive, openPath);
-  return { directory, drive, imported, localRoot, openPath, state, store };
+  return { directory, drive, imported, listed, localRoot, openPath, state, store };
 }
 
 describe("recordings in Drive", () => {
@@ -77,6 +94,41 @@ describe("recordings in Drive", () => {
         size: bytes.length,
       },
     });
+  });
+
+  it("keeps a meeting's name for the outputs left after its recording was removed", async () => {
+    const { directory, listed, store } = await fixture();
+    const sourcePath = join(directory, "scratch.m4a");
+    await writeFile(sourcePath, "M4A");
+    listed.push("recording/2026-10-09/Zoom 2026-10-09 14.30-15.15.summary.md");
+    const startedAtMs = new Date(2026, 9, 9, 14, 30, 5).getTime();
+    const result = await store.save(sourcePath, await store.target(), startedAtMs, {
+      platform: "Zoom",
+      startedAtMs,
+      endedAtMs: startedAtMs + 45 * 60_000,
+    });
+    expect(result.driveFile.path).toBe(
+      "recording/2026-10-09/Zoom 2026-10-09 14.30-15.15 (2).m4a"
+    );
+  });
+
+  it("saves a recording of every meeting app's call under a valid Drive name", async () => {
+    const { directory, store } = await fixture();
+    const sourcePath = join(directory, "scratch.m4a");
+    await writeFile(sourcePath, "M4A");
+    const startedAtMs = new Date(2026, 9, 9, 9, 5).getTime();
+    // Comma's own browser names its Google Meet page by the platform.
+    const platforms = new Set(MEETING_APPS.map((app) => app.name)).add("Google Meet");
+    for (const platform of platforms)
+      await expect(
+        store.save(sourcePath, await store.target(), startedAtMs, {
+          platform,
+          startedAtMs,
+          endedAtMs: startedAtMs + 60_000,
+        })
+      ).resolves.toMatchObject({
+        file: { name: `${platform} 2026-10-09 09.05-09.06.m4a` },
+      });
   });
 
   it("refuses to silently move a recording when its Drive source changes", async () => {

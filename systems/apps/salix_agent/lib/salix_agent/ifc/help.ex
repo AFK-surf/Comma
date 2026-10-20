@@ -15,7 +15,7 @@ defmodule SalixAgent.IFC.Help do
   The runtime checks authorization and supplies labels, readers, policies, and receipts. Do not invent those facts or emit Lean proofs.
   Declare the content dependencies of each effect. Do not accumulate sources merely because you read them.
 
-  - `Ref` maps to a complete visible `src:…` reference. Inputs show `[src:…]`. Synchronous results use `src:t-` plus tool_call_id. Asynchronous notifications show their own ref. Read remaining pages before using a partial result to establish a fact.
+  - `Ref` maps to a complete visible `src:…` reference. Inputs show `[src:…]`. Synchronous results use `src:t-` plus tool_call_id. Asynchronous notifications are runtime messages: use their `ref` or `[src:…]` marker, not the call ID. Read remaining pages before using a partial result to establish a fact.
   - `Effect.request` maps to `ifc.request`: the command you act on, including an assigned organization Task command.
   - `Effect.sources` and `Expression.sources` map to `ifc.sources`: refs whose content the effect carries or derives from. Instructions about action, destination, style, or format are not content sources unless you also use their content.
   - Declare `sources: []` when the effect uses no source content. Omitted sources select `Sources.context`. Omitted request uses the activation's singular request authority.

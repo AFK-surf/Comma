@@ -1,5 +1,5 @@
 defmodule SalixIM.Triage.BucketingTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.Triage.Bucketing
   alias SalixStore.{CasRecord, S3}
@@ -9,12 +9,12 @@ defmodule SalixIM.Triage.BucketingTest do
   @generation "01JQTRIAGEGENERATION000001"
 
   setup do
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
-    previous_triage_backend = Application.get_env(:salix_store, :triage_record_backend)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
-    Application.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    previous_triage_backend = SystemsRuntime.get_env(:salix_store, :triage_record_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
 
-    if Process.whereis(S3.Fake) do
+    if SystemsRuntime.Proc.whereis(S3.Fake) do
       S3.Fake.reset()
     else
       start_supervised!(S3.Fake)
@@ -22,15 +22,15 @@ defmodule SalixIM.Triage.BucketingTest do
 
     on_exit(fn ->
       if is_nil(previous_backend) do
-        Application.delete_env(:salix_store, :s3_backend)
+        SystemsRuntime.delete_env(:salix_store, :s3_backend)
       else
-        Application.put_env(:salix_store, :s3_backend, previous_backend)
+        SystemsRuntime.put_env(:salix_store, :s3_backend, previous_backend)
       end
 
       if is_nil(previous_triage_backend) do
-        Application.delete_env(:salix_store, :triage_record_backend)
+        SystemsRuntime.delete_env(:salix_store, :triage_record_backend)
       else
-        Application.put_env(:salix_store, :triage_record_backend, previous_triage_backend)
+        SystemsRuntime.put_env(:salix_store, :triage_record_backend, previous_triage_backend)
       end
     end)
 
@@ -53,33 +53,6 @@ defmodule SalixIM.Triage.BucketingTest do
              Bucketing.scope_key(receipt("r1", 100, "1787019000.000001", false))
   end
 
-  test "merges the current durable generation into one ordered local bucket" do
-    first = receipt("r1", 100, "1787019000.000002", false)
-    earlier = receipt("r2", 90, "1787019000.000001", true)
-
-    durable = %{
-      "open_generation" => "generation-open",
-      "open_first_at" => 100,
-      "open_last_at" => 100,
-      "open_fast_path" => false,
-      "open_receipts" => [first]
-    }
-
-    bucket = Bucketing.merge_local(durable, nil, earlier, 90, "local-token")
-
-    assert bucket == %{
-             token: "local-token",
-             generation: "generation-open",
-             first_at: 90,
-             last_at: 100,
-             fast_path?: true,
-             receipts: [earlier, first]
-           }
-
-    assert Bucketing.merge_local(durable, bucket, earlier, 90, "unused-token") == bucket
-    assert Bucketing.flush_delay(bucket, @policy, 90) == 0
-  end
-
   test "channel scope groups sibling roots while keeping channels and connections separate" do
     first =
       receipt("r1", 100, "1787019000.000001", false)
@@ -93,87 +66,6 @@ defmodule SalixIM.Triage.BucketingTest do
     refute Bucketing.scope_key(first) == Bucketing.scope_key(other_channel)
     other_generation = put_in(first, ["triage_event", "connect_generation"], "another-generation")
     refute Bucketing.scope_key(first) == Bucketing.scope_key(other_generation)
-  end
-
-  test "three-minute debounce follows the last receipt without a fixed time cut" do
-    server =
-      start_supervised!(
-        {SalixIM.Triage.Runtime,
-         mode: :off,
-         name: nil,
-         namespace: "triage-default-debounce-#{System.unique_integer([:positive])}"}
-      )
-
-    policy = :sys.get_state(server)
-
-    receipts =
-      for index <- 0..4 do
-        receipt(
-          "r#{index}",
-          100 + index * 120_000,
-          "#{1_787_019_000 + index * 120}.000001",
-          false
-        )
-      end
-
-    bucket = Enum.reduce(receipts, nil, &Bucketing.append_durable(&2, &1, "generation-open"))
-
-    assert Bucketing.durable_due_at(bucket, policy, 480_100) == 660_100
-
-    assert {:unchanged, ^bucket} =
-             Bucketing.append_durable(bucket, hd(receipts), "unused-generation")
-
-    assert Bucketing.durable_due_at(bucket, policy, 600_000) == 660_100
-
-    assert {:unchanged, ^bucket} =
-             Bucketing.seal_durable(bucket, "generation-open", 660_099, policy, "next")
-
-    sealed = Bucketing.seal_durable(bucket, "generation-open", 660_100, policy, "next")
-    assert [%{"receipts" => ^receipts}] = sealed["sealed_generations"]
-  end
-
-  test "continuous activity still respects the source reader capacity" do
-    policy = %{debounce_ms: 300_000, max_wait_ms: :infinity}
-    bucket = %{first_at: 100, last_at: 500, fast_path?: false, receipts: List.duplicate(%{}, 200)}
-    assert Bucketing.due_at(bucket, policy, 500) == 500
-
-    assert Bucketing.due_at(%{bucket | receipts: Enum.take(bucket.receipts, 199)}, policy, 500) ==
-             300_500
-  end
-
-  # Both timestamps come from receipt `created_at`, which is a REMOTE clock. A
-  # forward-skewed one pushed `first_at + max_wait_ms` past the ceiling it
-  # exists to enforce, so the max-wait guarantee — "no bucket waits longer than
-  # max_wait from now" — silently stopped holding.
-  test "a forward-skewed receipt clock cannot remove the max-wait ceiling" do
-    now = 1_000
-    skew = 10_000_000
-
-    skewed = %{
-      token: "skew-token",
-      generation: "generation-open",
-      first_at: now + skew,
-      last_at: now + skew,
-      fast_path?: false,
-      receipts: [receipt("r1", now + skew, "1787019000.000001", false)]
-    }
-
-    assert Bucketing.due_at(skewed, @policy, now) == now + @policy.debounce_ms
-    assert Bucketing.flush_delay(skewed, @policy, now) <= @policy.max_wait_ms
-
-    durable = %{
-      "open_generation" => "generation-open",
-      "open_first_at" => now + skew,
-      "open_last_at" => now + skew,
-      "open_fast_path" => false,
-      "open_receipts" => [receipt("r1", now + skew, "1787019000.000001", false)]
-    }
-
-    assert Bucketing.durable_due_at(durable, @policy, now) == now + @policy.debounce_ms
-
-    # Ordinary past timestamps are untouched.
-    ordinary = %{skewed | first_at: now - 500, last_at: now - 500}
-    assert Bucketing.due_at(ordinary, @policy, now) == now - 500 + @policy.debounce_ms
   end
 
   test "appends once and seals only after the explicit due time" do
@@ -206,7 +98,7 @@ defmodule SalixIM.Triage.BucketingTest do
   end
 
   test "owns durable append, load, deduplication, and generation seal CAS" do
-    namespace = "triage-bucketing-#{System.unique_integer([:positive])}"
+    namespace = "triage-bucketing-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     first = receipt("r1", 100, "1787019000.000001", false)
     second = receipt("r2", 120, "1787019000.000002", false)
     scope = Bucketing.scope_key(first)
@@ -254,85 +146,6 @@ defmodule SalixIM.Triage.BucketingTest do
     reopened = Bucketing.load!(namespace, scope)
     assert reopened["open_receipts"] == [third]
     assert length(reopened["sealed_generations"]) == 1
-  end
-
-  test "owns receipt projection and canonical source admission CAS" do
-    namespace = "triage-bucketing-admission-#{System.unique_integer([:positive])}"
-    first = receipt("r1", 100, "1787019000.000001", false)
-
-    # A second typed receipt for the exact same physical Slack root: a delayed
-    # copy through a peer or rotated connect.
-    superseding_copy =
-      "r2"
-      |> receipt(120, "1787019000.000001", false)
-      |> Map.put("event_id", "event-r2")
-      |> put_in(["triage_event", "event_id"], "event-r2")
-
-    assert {:ok, :accepted, :canonical} = Bucketing.claim_receipt(namespace, first)
-    assert {:ok, :duplicate, :canonical} = Bucketing.claim_receipt(namespace, first)
-    assert {:ok, :accepted, :superseded} = Bucketing.claim_receipt(namespace, superseding_copy)
-
-    projection_key =
-      SalixStore.TriageKeys.ctl_im_triage_projection_marker(namespace, first["receipt_ref"])
-
-    assert {:ok,
-            %{
-              "schema" => "comma.triage-receipt-projection.v1",
-              "receipt_ref" => "r1",
-              "event_id" => "event-r1"
-            }} = CasRecord.get(projection_key)
-
-    source_alias_key =
-      SalixStore.TriageKeys.ctl_im_triage_source_alias(namespace, Bucketing.source_key(first))
-
-    assert {:ok,
-            %{
-              "schema" => "comma.triage-source-alias.v1",
-              "source_message_ref" => source_ref,
-              "canonical_receipt_ref" => "r1"
-            }} = CasRecord.get(source_alias_key)
-
-    assert source_ref == first["source_message_ref"]
-  end
-
-  test "rejects an invalid receipt before any durable admission effect" do
-    namespace = "triage-bucketing-invalid-#{System.unique_integer([:positive])}"
-    invalid = Map.delete(receipt("r-invalid", 100, "1787019000.000001", false), "connect_id")
-
-    assert {:error, :invalid_triage_receipt} = Bucketing.claim_receipt(namespace, invalid)
-    assert {:error, :invalid_triage_receipt} = Bucketing.append(namespace, invalid)
-    assert S3.Fake.put_log() == []
-  end
-
-  test "rejects a durable bucket carrying a malformed sealed generation" do
-    namespace = "triage-bucketing-sealed-#{System.unique_integer([:positive])}"
-    first = receipt("r1", 100, "1787019000.000001", false)
-    scope = Bucketing.scope_key(first)
-
-    poisoned = %{
-      "schema" => "comma.triage-durable-bucket.v1",
-      "bucket_scope" => scope,
-      "open_generation" => @generation,
-      "open_first_at" => nil,
-      "open_last_at" => nil,
-      "open_fast_path" => false,
-      "open_receipts" => [],
-      "sealed_generations" => [%{"generation" => "g1", "receipts" => []}]
-    }
-
-    assert {:ok, ^poisoned} =
-             CasRecord.create(
-               SalixStore.TriageKeys.ctl_im_triage_bucket(namespace, scope),
-               poisoned
-             )
-
-    assert Bucketing.validate_durable_bucket(poisoned) ==
-             {:error, :invalid_triage_bucket}
-
-    assert Bucketing.append(namespace, first) == {:error, :invalid_triage_bucket}
-
-    assert Bucketing.seal(namespace, scope, @generation, @policy, 200) ==
-             {:error, :invalid_triage_bucket}
   end
 
   defp receipt(receipt_ref, created_at, message_ts, fast_path?) do

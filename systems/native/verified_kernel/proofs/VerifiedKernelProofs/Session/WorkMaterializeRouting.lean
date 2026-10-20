@@ -1,6 +1,5 @@
+import VerifiedKernelProofs.Session.WorkCanonical
 import VerifiedKernelProofs.Session.WorkEncoding
-import VerifiedKernelProofs.Session.WorkInput
-import VerifiedKernelProofs.Session.WorkAllocation
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data StateQuery
@@ -75,7 +74,7 @@ theorem queueItemEvent_routed {session item id hwm event nextId nextHwm : Term} 
     have same : event = emitted := congrArg Prod.fst (pure_ok h)
     subst emitted
     first
-      | exact runtime_routed encoded
+      | (head_is encoded [runtimeEvent]; exact runtime_routed encoded)
       | exact delivery_routed encoded
 
 theorem materializeItems_routed {session : Term} {items : List Term}

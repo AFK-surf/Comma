@@ -206,3 +206,34 @@ it("handles simultaneous inputs and a window containing only idle endpoints", ()
   expect(zoomed.position(10_000)).toBe(0.5);
   expect(zoomed.timeAt(0.5)).toBe(10_000);
 });
+
+it("locates each bar edge among thousands of folds without scanning them", () => {
+  // 2,500 turns, each an input and a final model response, then idle time.
+  const spans = Array.from({ length: 2500 }, (_, turn) => [
+    span(0, turn * 5000, turn * 5000, "input", "point"),
+    span(1, turn * 5000 + 20, turn * 5000 + 100),
+  ]).flat();
+  const timeline = model(spans);
+  const axis = sessionTimelineAxis(timeline);
+  expect(axis.folds).toHaveLength(2499);
+  let reads = 0;
+  for (const fold of axis.folds)
+    for (const key of ["start", "end", "left"] as const) {
+      const value = fold[key];
+      Object.defineProperty(fold, key, {
+        get: () => {
+          reads++;
+          return value;
+        },
+      });
+    }
+  const bars = sessionTimelineBars(timeline, axis, 1100);
+  const fractions = Array.from({ length: 1000 }, (_, index) => index / 1000);
+  const times = fractions.map((fraction) => axis.timeAt(fraction));
+  expect(bars).toHaveLength(5000);
+  expect(times.every(Number.isFinite)).toBe(true);
+  // A binary search reads about log2(2499) = 12 folds per lookup; a scan of
+  // the earlier folds reads over a thousand on average.
+  const lookups = bars.length * 2 + fractions.length;
+  expect(reads / lookups).toBeLessThan(2 * Math.log2(axis.folds.length) + 4);
+});

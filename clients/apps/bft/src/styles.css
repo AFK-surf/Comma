@@ -441,6 +441,10 @@ body {
   border-left-color: var(--bft-error);
 }
 
+.bft-oauth-waiting {
+  flex: none;
+}
+
 .bft-page {
   display: flex;
   height: 100%;
@@ -573,11 +577,6 @@ body {
 
 .bft-table .bft-col-role {
   width: 110px;
-}
-
-.bft-table .bft-col-runtime {
-  width: 150px;
-  color: var(--bft-text-2);
 }
 
 .bft-quiet-row {
@@ -968,12 +967,6 @@ body {
 
 @container (max-width: 640px) {
   .bft-table .bft-col-refreshed {
-    display: none;
-  }
-}
-
-@container (max-width: 560px) {
-  .bft-table .bft-col-runtime {
     display: none;
   }
 }
@@ -1793,7 +1786,12 @@ p.bft-health-reasons {
   max-width: none;
 }
 
-/* Two columns on wide screens: OAuth, Composio and Signal; then Feishu. */
+/* Only catches edits for EditableData; lays out as its children. */
+.bft-editable {
+  display: contents;
+}
+
+/* Two columns on wide screens; one below 1100px. */
 .bft-settings-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1818,7 +1816,8 @@ p.bft-health-reasons {
   gap: 12px;
 }
 
-.bft-form-section-head h2 {
+.bft-form-section-head h2,
+.bft-form-section-head h3 {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
@@ -1895,10 +1894,172 @@ p.bft-health-reasons {
   white-space: nowrap;
 }
 
+/* A row's state: the status with its dot, then a quiet detail that truncates. */
+.bft-setting-state {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.bft-setting-state > .bft-status {
+  flex: none;
+}
+
+/* What a Feishu app is used for, under its row: sign-in, then the bot's swarms. */
+.bft-app-uses {
+  margin: 0 0 var(--spacing-lg);
+  color: var(--bft-text-2);
+  font-size: 12.5px;
+  gap: var(--spacing-sm) var(--spacing-xl);
+}
+
+.bft-app-routes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bft-app-use {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--spacing-lg);
+}
+
+/* Fields inside a numbered step sit a little below its title. */
+.bft-step-form {
+  margin-top: var(--spacing-xs);
+}
+
+.bft-step-link {
+  align-self: flex-start;
+  font-size: 12.5px;
+}
+
+.bft-model-filter {
+  width: min(320px, 100%);
+  margin-bottom: var(--spacing-lg);
+}
+
 .bft-checklist {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* AI models: the allowed models by the account that serves them. A group's
+   list scrolls inside a fixed height so the page stays short. */
+.bft-model-picker {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.bft-model-picker .bft-model-filter {
+  margin-bottom: 0;
+}
+
+.bft-model-group {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  border-top: 1px solid var(--bft-line);
+  padding-top: var(--spacing-md);
+}
+
+.bft-model-group-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.bft-model-group-toggle {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: var(--spacing-sm);
+  border: 0;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.bft-model-group-chevron {
+  display: inline-flex;
+  flex: none;
+  color: var(--bft-text-3);
+  transition: transform 120ms ease;
+}
+
+.bft-model-group-chevron[data-open] {
+  transform: rotate(90deg);
+}
+
+.bft-model-group-title {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.bft-model-group-count {
+  margin-left: auto;
+  color: var(--bft-text-3);
+  font-size: 12px;
+}
+
+.bft-model-group-note {
+  margin: 0;
+  color: var(--bft-text-3);
+  font-size: 12px;
+}
+
+.bft-model-group[data-muted] .bft-model-group-title {
+  color: var(--bft-text-3);
+}
+
+.bft-model-group-viewport {
+  max-height: 240px;
+}
+
+.bft-model-group-viewport .bft-checklist {
+  padding: var(--spacing-sm) 0 var(--spacing-xs) 26px;
+}
+
+.bft-model-more {
+  margin-top: 0;
+  color: var(--bft-text-2);
+}
+
+.bft-model-platform {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  margin: var(--spacing-xs) 0 0;
+  font-size: 13px;
+}
+
+.bft-model-platform div {
+  display: flex;
+  gap: var(--spacing-lg);
+}
+
+.bft-model-platform dt {
+  min-width: 120px;
+  color: var(--bft-text-3);
+}
+
+.bft-model-platform dd {
+  margin: 0;
 }
 
 .bft-notice {
@@ -1915,19 +2076,6 @@ p.bft-health-reasons {
 
 .bft-notice p {
   margin: 0;
-}
-
-.bft-routes {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 0 0 10px 2px;
-  border-left: 1px solid var(--bft-line);
-  padding-left: 12px;
-}
-
-.bft-route {
-  padding: 4px 0;
 }
 
 .bft-route-connect {
@@ -2262,7 +2410,7 @@ p.bft-health-reasons {
     monospace;
 }
 
-/* AI models: private templates and organization accounts */
+/* AI models: organization accounts */
 
 .bft-row-title {
   display: flex;
@@ -2330,6 +2478,100 @@ p.bft-health-reasons {
 
 .bft-standalone-section {
   margin: 0;
+}
+
+/* First-run onboarding wizard: a standalone page with hairline sections */
+
+.bft-standalone.bft-wizard-page {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.bft-wizard-scroll {
+  min-height: 0;
+  flex: 1;
+}
+
+.bft-standalone-main.bft-wizard {
+  max-width: 640px;
+  gap: 16px;
+  padding-bottom: 0;
+}
+
+.bft-wizard-progress {
+  margin: 0 0 -10px;
+  color: var(--bft-text-3);
+  font-size: 12.5px;
+}
+
+.bft-wizard-sections {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.bft-wizard-group,
+.bft-wizard-section {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--bft-line);
+  padding: 14px 0 16px;
+}
+
+.bft-wizard-section h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.bft-wizard-items {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 26px;
+}
+
+.bft-wizard-quiet {
+  margin: 0;
+  color: var(--bft-text-3);
+  font-size: 12.5px;
+}
+
+.bft-wizard-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  font-size: 13px;
+}
+
+.bft-wizard-aside {
+  display: flex;
+  flex: none;
+  align-items: center;
+  font-size: 12.5px;
+}
+
+/* The step's one primary action stays in view while the step scrolls. */
+.bft-wizard-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--bft-line);
+  background: var(--bft-canvas);
+  padding: 14px 0 24px;
+}
+
+.bft-wizard-spacer {
+  flex: 1;
 }
 
 .bft-mono {
@@ -2643,15 +2885,6 @@ p.bft-health-reasons {
   background: var(--bft-brand-wash);
 }
 
-.bft-tag-link {
-  text-decoration: none;
-}
-
-.bft-tag-link:hover {
-  color: var(--bft-brand-strong);
-  text-decoration: underline;
-}
-
 .bft-agent-rail {
   flex: 0 1 auto;
 }
@@ -2706,39 +2939,6 @@ p.bft-health-reasons {
 
 .bft-quiet-row-flush {
   padding: 0;
-}
-
-.bft-readiness {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 13px;
-}
-
-.bft-readiness p {
-  margin: 0;
-}
-
-.bft-readiness-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  color: var(--bft-text-3);
-}
-
-.bft-picker-tools {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 16px;
-}
-
-.bft-picker-tools .bft-filter {
-  width: auto;
-  flex: 1 1 200px;
-  margin-left: 0;
 }
 
 .bft-choices {
@@ -2824,6 +3024,20 @@ p.bft-health-reasons {
   vertical-align: top;
 }
 
+/* A device that cannot take tasks: how to upgrade it, under its row. */
+.bft-devices tr[data-notice] td {
+  border-bottom-color: transparent;
+}
+
+.bft-devices .bft-device-notice-row td {
+  padding-top: 0;
+  white-space: normal;
+}
+
+.bft-table tbody tr.bft-device-notice-row:hover {
+  background: none;
+}
+
 .bft-table .bft-col-runtimes,
 .bft-table .bft-col-host,
 .bft-table .bft-col-cpu {
@@ -2834,17 +3048,8 @@ p.bft-health-reasons {
   width: 136px;
 }
 
-.bft-table .bft-col-provider {
-  width: 110px;
-}
-
 .bft-table .bft-col-state {
   width: 120px;
-}
-
-.bft-table .bft-col-auth-action {
-  width: 100px;
-  text-align: right;
 }
 
 .bft-devices .bft-col-status {
@@ -2874,23 +3079,6 @@ p.bft-health-reasons {
   }
 }
 
-.bft-auth-requests {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.bft-auth-request {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 0;
-  font-size: 13px;
-}
-
 .bft-android-device {
   display: flex;
   min-width: 0;
@@ -2900,58 +3088,735 @@ p.bft-health-reasons {
   font-size: 13px;
 }
 
-/* Runtime authentication dialog */
+/* Agent Swarm Plugins: hairline rows with the switch at the end */
 
-.bft-auth {
-  gap: 16px;
+.bft-swarm-plugin {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
 }
 
-.bft-auth-target p,
-.bft-auth-bound p,
-.bft-auth-ceremony p {
-  margin: 0;
+.bft-swarm-plugin-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bft-swarm-plugin-name {
+  overflow: hidden;
+  color: var(--bft-text);
+  font-size: 13.5px;
+  font-weight: 500;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bft-swarm-plugin-name:hover {
+  color: var(--bft-brand-strong);
+  text-decoration: underline;
+}
+
+.bft-swarm-plugin-main .bft-status {
+  font-size: 12px;
+}
+
+.bft-swarm-plugin-scope {
+  flex: none;
+  width: 88px;
+  color: var(--bft-text-3);
+  font-size: 12.5px;
+}
+
+.bft-mcp {
+  padding: 10px 0;
+}
+
+.bft-mcp-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
   font-size: 13px;
 }
 
-.bft-auth-target {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  color: var(--bft-text-2);
+.bft-mcp-head .bft-status {
+  margin-left: auto;
 }
 
-.bft-auth-section,
-.bft-auth-bound,
-.bft-auth-ceremony {
+/* An MCP server's credentials sit under it, set in by a hairline. */
+.bft-mcp .bft-credentials {
+  margin: 6px 0 0 2px;
+  border-left: 1px solid var(--bft-line);
+  padding-left: 12px;
+}
+
+.bft-credential {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  font-size: 13px;
+}
+
+.bft-credential-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.bft-credential > .bft-status {
+  flex: none;
+  width: 170px;
+}
+
+.bft-credential-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.bft-credential-hint {
+  max-width: 220px;
+  font-size: 12px;
+}
+
+/* Agent Swarm Skills */
+
+.bft-skill {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.bft-skill-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  cursor: pointer;
+  flex-direction: column;
+  gap: 2px;
+  border: 0;
+  background: none;
+  padding: 10px 4px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.bft-skill-main:hover {
+  background: var(--bft-hover);
+}
+
+.bft-skill-main:focus-visible {
+  outline: 2px solid var(--bft-brand);
+  outline-offset: -2px;
+}
+
+.bft-skill-reason {
+  flex: none;
+  font-size: 12.5px;
+}
+
+.bft-skill-meta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--bft-text-3);
+  font-size: 12px;
+}
+
+.bft-skill-meta .bft-mono {
+  overflow-wrap: anywhere;
+}
+
+.bft-skill-body {
+  border-top: 1px solid var(--bft-line);
+  padding-top: 12px;
+}
+
+@media (max-width: 1000px) {
+  .bft-swarm-plugin-scope {
+    display: none;
+  }
+
+  .bft-credential > .bft-status {
+    width: auto;
+  }
+}
+
+/* Agent Swarm Connections: a titled column of hairline sections each. */
+
+.bft-connections-group {
+  min-width: 0;
+}
+
+.bft-connections-group-head {
+  padding: 4px 0 12px;
+}
+
+.bft-connections-group-head h2 {
+  margin: 0;
+  color: var(--bft-text-3);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.bft-connections-group-head p {
+  margin: 2px 0 0;
+  color: var(--bft-text-3);
+  font-size: 12.5px;
+}
+
+.bft-connections-state {
+  border-top: 1px solid var(--bft-line);
+  padding: 14px 0;
+}
+
+.bft-connect {
   display: flex;
   min-width: 0;
   flex-direction: column;
+  gap: 4px;
+  padding: 10px 0;
+  font-size: 13px;
+}
+
+.bft-connect-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.bft-connect-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.bft-connect-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
   gap: 10px;
 }
 
-.bft-auth-section {
+.bft-connect-title .bft-status {
+  flex: none;
+  font-size: 12px;
+}
+
+.bft-connect-url {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.bft-connect-url .bft-field-label {
+  flex: none;
+  color: var(--bft-text-3);
+  font-size: 12px;
+}
+
+.bft-connect-url .bft-mono {
+  min-width: 0;
+  flex: 1;
+}
+
+/* One repeated group of fields in a form, such as a menu shortcut. */
+.bft-form-group {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0;
+  border: 0;
   border-top: 1px solid var(--bft-line);
-  padding-top: 14px;
+  padding: 12px 0;
 }
 
-.bft-auth-status {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 500;
+.bft-form-group > .bft-form-field {
+  width: 100%;
 }
 
-.bft-auth-feedback {
-  min-height: 1.5em;
-  margin: 0;
-  color: var(--bft-text-2);
-  font-size: 13px;
+.bft-connect-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--bft-line);
+  padding-top: 12px;
 }
 
-.bft-file-field {
+.bft-connect-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 10px 14px;
+}
+
+.bft-connect-form .bft-form-actions .bft-form-section-note {
+  margin-right: auto;
+}
+
+.bft-connect-checks {
+  display: flex;
+}
+
+.bft-disclosure > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--bft-text-3);
+  font-size: 12.5px;
+}
+
+.bft-disclosure[open] > summary {
+  margin-bottom: 8px;
+}
+
+.bft-disclosure .bft-kv {
+  margin: 6px 0;
+}
+
+/* Values such as callback URLs and check evidence wrap instead of truncating. */
+.bft-kv-wrap dd {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.bft-checks {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  border-top: 1px solid var(--bft-line);
+  padding-top: 10px;
+}
+
+.bft-check {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 0;
+  font-size: 13px;
+}
+
+.bft-check-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bft-check-head > .bft-setting-row-sub {
+  flex: none;
+}
+
+.bft-check-text {
+  color: var(--bft-text-2);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+/* A manifest is long; it scrolls inside its own frame in the dialog. */
+.bft-manifest {
+  border: 1px solid var(--bft-line);
+  border-radius: 7px;
+  background: var(--bft-sidebar);
+}
+
+.bft-manifest-scroll {
+  max-height: 220px;
+}
+
+.bft-manifest .bft-code {
+  border: 0;
+}
+
+.bft-signal-code {
+  gap: 8px;
+}
+
+.bft-signal-code .bft-signal-command {
+  align-self: stretch;
+}
+
+@media (max-width: 680px) {
+  .bft-connect-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Task detail: the conversation and its composer, and a rail with the
+   schedule and participants; the rail narrows with the collapsed sidebar. */
+
+.bft-task-meta {
+  margin-top: 4px;
+  color: var(--bft-text-3);
+  font-size: 13px;
+}
+
+.bft-task-meta .bft-tag {
+  border: 1px solid var(--bft-line);
+  border-radius: 999px;
+  padding: 0 8px;
+}
+
+.bft-task-grid {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+}
+
+.bft-task-thread {
+  min-height: 0;
+  flex: 1;
+}
+
+.bft-task-rail {
+  min-height: 0;
+  align-self: start;
+  max-height: 100%;
+}
+
+.bft-task-rail .bft-rail-section:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* Older messages are put back above the reader's place by the page itself. */
+.bft-task-scroll {
+  overflow-anchor: none;
+}
+
+.bft-thread {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bft-message {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  border-bottom: 1px solid var(--bft-line);
+  padding: 12px 14px;
+  font-size: 13.5px;
+}
+
+.bft-message:last-child {
+  border-bottom: 0;
+}
+
+.bft-message-head {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--bft-text-3);
+  font-size: 12.5px;
+}
+
+.bft-message-author {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--bft-text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bft-message[data-person] .bft-message-author {
+  color: var(--bft-text-2);
+}
+
+.bft-markdown {
+  min-width: 0;
+  color: var(--bft-text);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.bft-markdown > :first-child {
+  margin-top: 0;
+}
+
+.bft-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.bft-markdown p,
+.bft-markdown ul,
+.bft-markdown ol,
+.bft-markdown blockquote,
+.bft-markdown pre,
+.bft-markdown table {
+  margin: 6px 0;
+}
+
+.bft-markdown p {
+  white-space: pre-wrap;
+}
+
+.bft-markdown ul,
+.bft-markdown ol {
+  padding-left: 20px;
+}
+
+.bft-markdown a {
+  color: var(--bft-brand-strong);
+}
+
+.bft-markdown blockquote {
+  border-left: 2px solid var(--bft-line-strong);
+  padding-left: 10px;
+  color: var(--bft-text-2);
+}
+
+.bft-markdown code {
+  border-radius: 4px;
+  background: var(--bft-hover);
+  padding: 1px 4px;
+  font:
+    12px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+/* Long lines wrap rather than widen the thread. */
+.bft-markdown pre {
+  border: 1px solid var(--bft-line);
+  border-radius: 7px;
+  background: var(--bft-sidebar);
+  padding: 8px 10px;
+  white-space: pre-wrap;
+}
+
+.bft-markdown pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.bft-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.bft-markdown th,
+.bft-markdown td {
+  border: 1px solid var(--bft-line);
+  padding: 4px 8px;
+}
+
+.bft-attachment {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border-left: 2px solid var(--bft-line-strong);
+  padding: 2px 0 2px 10px;
+  font-size: 13px;
+}
+
+.bft-attachment-name {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.bft-attachment-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--bft-text-3);
+  font-size: 12px;
+}
+
+.bft-attachment-path {
+  color: var(--bft-text-3);
+  font:
+    12px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  overflow-wrap: anywhere;
+}
+
+.bft-composer {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--bft-line);
+  padding: 10px 14px 12px;
+}
+
+.bft-composer-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 64px;
+  max-height: 200px;
+}
+
+.bft-composer-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.bft-composer-actions > :first-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.bft-composer-hint {
+  color: var(--bft-text-4);
+  font-size: 12px;
+}
+
+.bft-task-section {
+  align-items: stretch;
+}
+
+.bft-task-section-head {
+  display: flex;
+  min-width: 0;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.bft-task-note {
+  margin: 0;
+  color: var(--bft-text-3);
+  font-size: 13px;
+}
+
+.bft-task-recurrence {
+  margin: 0;
+  font-weight: 500;
+}
+
+.bft-task-label {
+  margin-top: 6px;
+  color: var(--bft-text-3);
+  font-size: 12px;
+}
+
+.bft-link-button {
+  align-self: flex-start;
+  margin-top: 6px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+}
+
+.bft-link-danger {
+  color: var(--bft-error);
+}
+
+.bft-task-participants {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bft-task-participants li {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  border-bottom: 1px solid var(--bft-line);
+  padding: 8px 0;
+}
+
+.bft-task-participants li:last-child {
+  border-bottom: 0;
+}
+
+.bft-task-participants li > .bft-truncate {
+  max-width: 100%;
+}
+
+.bft-task-role {
+  color: var(--bft-text-3);
+  font-size: 12px;
+}
+
+.bft-task-thread-link {
+  font-size: 12.5px;
+}
+
+.bft-task-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.bft-task-modes legend {
+  margin-bottom: 6px;
+  padding: 0;
   color: var(--bft-text-2);
   font-size: 13px;
   font-weight: 500;
+}
+
+.bft-task-mode {
+  display: inline-flex;
+  cursor: pointer;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.bft-task-mode input {
+  margin: 0;
+  accent-color: var(--bft-brand);
+}
+
+.bft-task-interval {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px;
+  align-items: end;
+  gap: 10px;
+}
+
+.bft-task-preview {
+  color: var(--bft-text-2);
+  font-size: 13px;
+}
+
+@media (max-width: 1099px) {
+  .bft-task-grid {
+    grid-template-columns: minmax(0, 1fr) 250px;
+  }
 }

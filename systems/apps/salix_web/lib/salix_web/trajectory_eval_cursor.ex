@@ -57,8 +57,8 @@ defmodule SalixWeb.TrajectoryEvalCursor do
 
   defp signing_key do
     secret =
-      Application.get_env(:salix_web, :trajectory_eval_cursor_secret) ||
-        Application.get_env(:salix_web, :api_token)
+      SystemsRuntime.get_env(:salix_web, :trajectory_eval_cursor_secret) ||
+        SystemsRuntime.get_env(:salix_web, :api_token)
 
     if is_binary(secret) and secret != "" do
       {:ok, :crypto.mac(:hmac, :sha256, secret, @domain)}

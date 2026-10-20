@@ -41,7 +41,7 @@ defmodule SalixAgent.Tools.History do
   def entries do
     [
       {"history.search",
-       "Search original messages and tool results in this Session, including content removed from model context by compaction. No cross-Session search. Literal normalized substring matching. Inspect complete and indexed_through: no matches in an incomplete index does not establish absence. Use history.get on a hit to read its original text.",
+       "Search original messages and tool results in this Session, including content removed from model context by compaction.\n\nNo cross-Session search. Literal normalized substring matching. Inspect complete and indexed_through: no matches in an incomplete index does not establish absence. Use history.get on a hit to read its original text.",
        @search, &__MODULE__.search/2, @normal, [safety: "read", runtimes: [:internal]]},
       {"history.list",
        "List brief original-history records in this Session, newest first. One entry per record, with seq, type, tool name and a short preview. Inspect complete for index coverage. Use history.get for details.",

@@ -11,6 +11,12 @@ export interface ComputeNodeRuntimeObservation {
   salix: ComputeNodeState["observed"]["salix"];
   registration?: "present" | "absent" | "unreadable";
   registrationState?: "enabled" | "draining" | "revoked";
+  installationFailure?: {
+    operationId: string;
+    stage: string;
+    code: string;
+    retryable: boolean;
+  };
   reason?:
     | "operator_unavailable"
     | "registration_unreadable"
@@ -77,6 +83,7 @@ export class AgentVMMCommandAdapter implements ComputeNodeRuntimeAdapter {
           ? value.registrationState
           : undefined;
       const observed: ComputeNodeRuntimeObservation = {
+        ...readInstallationFailure(value.operation),
         ...(registration ? { registration } : {}),
         ...(registrationId && registrationState ? { registrationState } : {}),
         ...(registrationId && !value.registrationRead
@@ -179,6 +186,33 @@ export class AgentVMMCommandAdapter implements ComputeNodeRuntimeAdapter {
       ? this.run(this.lifecyclePath, args)
       : this.run(this.lifecyclePath, args, stdin, timeoutMs);
   }
+}
+
+function readInstallationFailure(
+  value: unknown
+): Pick<ComputeNodeRuntimeObservation, "installationFailure"> {
+  if (!value || typeof value !== "object") return {};
+  const operation = value as Record<string, unknown>;
+  if (
+    operation.kind !== "install-managed" ||
+    operation.outcome !== "failed" ||
+    typeof operation.operationId !== "string" ||
+    !operation.operationId ||
+    typeof operation.failureStage !== "string" ||
+    typeof operation.failureCode !== "string" ||
+    !Number.isSafeInteger(operation.attempt) ||
+    Number(operation.attempt) < 1
+  )
+    return {};
+  return {
+    installationFailure: {
+      operationId: operation.operationId,
+      stage: operation.failureStage,
+      code: operation.failureCode,
+      // Native omits false when it serializes this receipt.
+      retryable: operation.retryable === true,
+    },
+  };
 }
 
 function lifecycleArgs(operation: string, requestId?: string) {

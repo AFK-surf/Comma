@@ -1,0 +1,49 @@
+id: ex-test-wait
+valid:
+  - |
+    defmodule PlainTest do
+      use ExUnit.Case
+
+      test "an immediate yield", do: Task.yield(task, 0)
+    end
+  - |
+    defmodule AwaitForeverTest do
+      use ExUnit.Case
+
+      test "waits for the task", do: SystemsRuntime.Task.await(task, :infinity)
+    end
+invalid:
+  # The runtime's Task waits as Task does.
+  - |
+    defmodule RuntimeAwaitTest do
+      use ExUnit.Case
+
+      test "a default deadline", do: SystemsRuntime.Task.await(task)
+    end
+  - |
+    defmodule RuntimeYieldTest do
+      use ExUnit.Case
+
+      test "a real-time yield", do: SystemsRuntime.Task.yield(task, 1_000)
+    end
+  - |
+    defmodule SetupTest do
+      use ExUnit.Case
+
+      setup do
+        assert_receive :message
+        :ok
+      end
+    end
+  - |
+    defmodule PlainTest do
+      use ExUnit.Case
+
+      test "body", do: assert_receive(:plain)
+    end
+  - |
+    defmodule ClockTest do
+      use SystemsClock.Case
+
+      test "body", do: Task.await(task)
+    end

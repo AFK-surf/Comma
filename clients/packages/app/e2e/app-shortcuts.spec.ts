@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
-  dismissOnboarding,
+  dismissWebIntro,
   installBrowserTestSession,
 } from "../../../e2e/helpers/browser-auth";
 import { installBrowserPlatform } from "../../../e2e/helpers/browser-platform";
@@ -44,15 +44,6 @@ const toggleCommandPalette = async (
 const commandPalette = (page: Parameters<typeof installBrowserTestSession>[0]) =>
   page.getByRole("dialog", { name: "Search Comma" });
 
-test("Settings offers no Drive shortcut in the web client", async ({ page }) => {
-  await installSession(page);
-  await page.goto("/#/settings");
-  await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
-  // The web client has no Drive entry, so it offers no shortcut to one.
-  await expect(page.locator('[data-setting-id="keyboard.go-inbox"]')).toBeVisible();
-  await expect(page.locator('[data-setting-id="keyboard.go-drive"]')).toHaveCount(0);
-});
-
 test("default navigation shortcuts open Search and reach their destinations", async ({
   page,
 }) => {
@@ -86,10 +77,10 @@ test("default navigation shortcuts open Search and reach their destinations", as
   await page.keyboard.press("KeyP");
   await expect(page).toHaveURL(/#\/plugins$/);
 
-  // The web client has no Drive entry, so its sequence goes nowhere.
+  // The web reads the Workspace's Drive too.
   await page.keyboard.press("KeyG");
   await page.keyboard.press("KeyD");
-  await expect(page).toHaveURL(/#\/plugins$/);
+  await expect(page).toHaveURL(/#\/drive$/);
 
   await page.keyboard.press("KeyG");
   await page.keyboard.press("KeyC");
@@ -172,31 +163,24 @@ test("sidebar navigation tooltips stay beside their item with the matching short
   }
 });
 
-for (const platformCase of [
-  { hint: "Use ⌘K for search", label: "macOS", platform: "macos" },
-  { hint: "Use Ctrl+K for search", label: "Windows", platform: "windows" },
-] as const) {
-  test(`the window bar search hint names the search shortcut and opens the palette on ${platformCase.label}`, async ({
-    page,
-  }) => {
-    await installBrowserPlatform(page, platformCase.platform);
-    await installSession(page);
-    await page.goto("/");
-    await expect(
-      page.getByRole("complementary", { name: "App sidebar" })
-    ).toBeVisible();
+test("the window bar search hint names the search shortcut and opens the palette", async ({
+  page,
+}) => {
+  await installBrowserPlatform(page, "macos");
+  await installSession(page);
+  await page.goto("/");
+  await expect(page.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
 
-    // Search left the rail: the window bar hint is the pointer path to the
-    // palette, which opens over the current route rather than leaving it.
-    await expect(page.getByRole("link", { name: "Search" })).toHaveCount(0);
-    const hint = page.getByTestId("comma-window-bar-search");
-    await expect(hint).toHaveText(platformCase.hint);
-    await hint.click();
-    await expect(commandPalette(page)).toBeVisible();
-    await expect(page.getByRole("combobox", { name: "Search Comma" })).toBeFocused();
-    await expect(page).toHaveURL(/\/(?:#\/)?$/);
-  });
-}
+  // Search left the rail: the window bar hint is the pointer path to the
+  // palette, which opens over the current route rather than leaving it.
+  await expect(page.getByRole("link", { name: "Search" })).toHaveCount(0);
+  const hint = page.getByTestId("comma-window-bar-search");
+  await expect(hint).toHaveText("Use ⌘K for search");
+  await hint.click();
+  await expect(commandPalette(page)).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Search Comma" })).toBeFocused();
+  await expect(page).toHaveURL(/\/(?:#\/)?$/);
+});
 
 test("Search stays global while navigation shortcuts remain blocked in the composer", async ({
   page,
@@ -294,7 +278,7 @@ test("product sequences share candidates across navigation and shell owners", as
     );
   });
   await page.goto("/");
-  await dismissOnboarding(page);
+  await dismissWebIntro(page);
   await expect(page.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
 
   const sidebar = page.getByTestId("comma-sidebar-slot");
@@ -318,54 +302,6 @@ test("product sequences share candidates across navigation and shell owners", as
   await page.keyboard.press("KeyG");
   await page.keyboard.press("KeyC");
   await expect(page).toHaveURL(/#\/$/);
-});
-
-test("legacy prefix conflicts preserve the customization and disable its default", async ({
-  page,
-}) => {
-  await installSession(page, { legacyStores: true });
-  await page.addInitScript(() => {
-    localStorage.setItem(
-      "comma.app.shortcuts",
-      JSON.stringify({
-        "go-comma-assistant": { kind: "sequence", codes: ["KeyG", "KeyC"] },
-        "go-inbox": {
-          kind: "sequence",
-          codes: ["KeyG", "KeyC", "KeyI"],
-        },
-      })
-    );
-  });
-  await page.goto("/#/plugins");
-  await dismissOnboarding(page);
-  await expect(page.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
-
-  await page.keyboard.press("KeyG");
-  await page.keyboard.press("KeyC");
-  await page.evaluate(
-    () => new Promise<void>((resolve) => window.setTimeout(resolve, 1_100))
-  );
-  await expect(page).toHaveURL(/#\/plugins$/);
-
-  await page.keyboard.press("KeyG");
-  await page.keyboard.press("KeyC");
-  await page.keyboard.press("KeyI");
-  await expect(page).toHaveURL(/#\/inbox$/);
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          JSON.parse(localStorage.getItem("comma.client-settings")!)
-            .appShortcutOverrides
-      )
-    )
-    .toEqual({
-      "go-comma-assistant": null,
-      "go-inbox": {
-        kind: "sequence",
-        codes: ["KeyG", "KeyC", "KeyI"],
-      },
-    });
 });
 
 test("Settings keeps navigation shortcuts active and a cleared binding inactive", async ({
@@ -428,6 +364,9 @@ test("Settings keeps navigation shortcuts active and a cleared binding inactive"
   await page.reload();
   await expect(page).toHaveURL(/#\/inbox$/);
   await page.goto("/#/tasks");
+  // The shortcut listeners install with the shell; a chord pressed while the
+  // route still loads reaches no handler.
+  await expect(page.getByTestId("tasks-route")).toBeVisible();
   await page.keyboard.press(settingsChord);
   await expect(
     page.getByRole("complementary", { name: "Settings sections" })

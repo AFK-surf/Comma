@@ -370,7 +370,7 @@ defmodule BridgeForTeamsWeb.DashboardRunners do
         true -> user.id
       end
 
-    [actor_user_id: user.id, actor_label: label, request_id: Ecto.UUID.generate()]
+    [actor_user_id: user.id, actor_label: label, request_id: SystemsRuntime.Proc.uuid()]
   end
 
   defp cast_id(value, not_found) do

@@ -1,8 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type {
-  ChatImagePreviewRef,
-  LocalFilePreview,
-} from "../../model/conversationChannel";
+import type { ChatImagePreviewRef, LocalFilePreview } from "@comma/core/chat";
 
 const LOCAL_FILE_REF_PATTERN = /^lfi1_[A-Za-z0-9_-]{43}$/;
 

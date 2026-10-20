@@ -37,6 +37,8 @@ const LEVEL_RELEASE = 0.65;
 const SILENCE_SUSPECT_MS = 4_000;
 const MACOS_AUDIO_CAPTURE_SETTINGS_URL =
   "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture";
+/** Windows' own page for which apps may use the microphone. */
+const WINDOWS_MICROPHONE_SETTINGS_URL = "ms-settings:privacy-microphone";
 
 export type ScreenAccessStatus =
   | "granted"
@@ -89,6 +91,8 @@ type ActiveCapture = {
   source: AudioCaptureSource;
   startedAtMs: number;
   archiveAtMs: number;
+  /** The meeting's platform, for a meeting's recording: it names the file with the recording's times. */
+  platform: string | undefined;
   stopped: boolean;
   tap: NativeAudioTap;
 };
@@ -179,7 +183,11 @@ export class AudioCaptureService implements AudioCaptureProvider {
 
   async openPermissionSettings(): Promise<{ opened: boolean }> {
     try {
-      await this.#openExternalUrl(MACOS_AUDIO_CAPTURE_SETTINGS_URL);
+      await this.#openExternalUrl(
+        process.platform === "win32"
+          ? WINDOWS_MICROPHONE_SETTINGS_URL
+          : MACOS_AUDIO_CAPTURE_SETTINGS_URL
+      );
       return { opened: true };
     } catch {
       return { opened: false };
@@ -206,9 +214,10 @@ export class AudioCaptureService implements AudioCaptureProvider {
     }
   }
 
+  /** `meeting`: the meeting it records, its platform and the time its recording is archived by. */
   async start(
     input: AudioCaptureStartInput,
-    archiveAtMs?: number
+    meeting?: { platform: string; archiveAtMs?: number | undefined }
   ): Promise<AudioCaptureState> {
     const admission = getCurrentNativeSessionAdmission();
     if (this.#closed) throw new Error("Audio capture is closed.");
@@ -221,7 +230,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
       throw new Error("A recording is already in progress.");
     }
     this.#startCancelled = false;
-    const starting = this.#start(input, admission.principalUserId, archiveAtMs);
+    const starting = this.#start(input, admission.principalUserId, meeting);
     this.#starting = starting;
     try {
       return await starting;
@@ -233,7 +242,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
   async #start(
     input: AudioCaptureStartInput,
     ownerUserId: string,
-    archiveAtMs?: number
+    meeting?: { platform: string; archiveAtMs?: number | undefined }
   ): Promise<AudioCaptureState> {
     const native = await this.#resolveNative();
     if (!native || this.#startCancelled) return this.#snapshot();
@@ -243,7 +252,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
       throw new Error("A recording is already in progress.");
     }
 
-    // RecordingSave.tla: Begin fixes this recording's owner and logical target.
+    // Fix this recording's owner and logical target at the start.
     const driveTarget = await this.#drive.target();
     if (this.#startCancelled) return this.#snapshot();
     const startedAtMs = this.#now();
@@ -307,7 +316,8 @@ export class AudioCaptureService implements AudioCaptureProvider {
       sink: undefined,
       source: input.source,
       startedAtMs,
-      archiveAtMs: archiveAtMs ?? startedAtMs,
+      archiveAtMs: meeting?.archiveAtMs ?? startedAtMs,
+      platform: meeting?.platform,
       stopped: false,
       tap,
     };
@@ -324,7 +334,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
         path,
         sampleRate: tap.sampleRate,
       });
-      // CaptureInitialization.tla: LateOpen is owned until cancellation drains.
+      // A late open stays owned until cancellation drains.
       if (this.#startCancelled) {
         await sink.discard();
         return this.#snapshot();
@@ -360,8 +370,9 @@ export class AudioCaptureService implements AudioCaptureProvider {
       };
     }
 
-    // RecordingSave.tla: ClaimStop admits exactly one finalizer.
+    // Claiming the stop admits exactly one finalizer.
     this.#publish({ status: "finalizing" });
+    const endedAtMs = this.#now();
     this.#stopTap(capture);
     this.#active = undefined;
     const micSummary = await this.#finishMicrophone(capture);
@@ -405,9 +416,12 @@ export class AudioCaptureService implements AudioCaptureProvider {
       const saved = await this.#drive.save(
         encodedPath,
         capture.driveTarget,
-        capture.archiveAtMs
+        capture.archiveAtMs,
+        capture.platform === undefined
+          ? undefined
+          : { platform: capture.platform, startedAtMs: capture.startedAtMs, endedAtMs }
       );
-      // RecordingSave.tla: Ack -> Cleanup. Cleanup failure leaves a spare copy;
+      // Ack -> Cleanup. Cleanup failure leaves a spare copy;
       // it cannot turn a confirmed Drive save into a reported failure.
       await rm(capture.path, { force: true }).catch(() => undefined);
       const recording = {
@@ -440,7 +454,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
     } catch {
       const reason =
         "The recording could not be saved to Drive. The WAV and M4A are retained in Comma's local recordings folder on this device.";
-      // RecordingSave.tla: Fail retains the completed file without retrying Put.
+      // Failure retains the completed file without retrying Put.
       this.#publish({ reason, status: "idle" });
       return { reason, status: "unavailable" };
     } finally {
@@ -467,7 +481,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
   }
 
   async #cancel(): Promise<AudioCaptureState> {
-    // CaptureInitialization.tla: Cancel invalidates admission even before a tap exists.
+    // Cancel invalidates admission even before a tap exists.
     this.#startCancelled = true;
     const capture = this.#active;
     if (!capture && !this.#starting) return this.#snapshot();
@@ -550,7 +564,7 @@ export class AudioCaptureService implements AudioCaptureProvider {
     return this.#snapshot();
   }
 
-  /** MicrophoneSelection.tla: one transition; retire callbacks before stopping the helper. */
+  /** One transition: retire callbacks before stopping the helper. */
   #changeMicrophone(capture: ActiveCapture, deviceId: string | null): Promise<void> {
     const task = this.#replaceMicrophone(capture, deviceId);
     capture.micTask = task;

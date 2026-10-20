@@ -29,6 +29,8 @@ defmodule CommaCore.MixProject do
 
   defp deps do
     [
+      {:systems_clock, in_umbrella: true},
+      {:systems_runtime, in_umbrella: true},
       {:systems_observability, in_umbrella: true},
       {:billing_core, in_umbrella: true},
       {:salix_store, in_umbrella: true},
@@ -51,6 +53,7 @@ defmodule CommaCore.MixProject do
       {:jason, "~> 1.4"},
       {:ex_json_schema, "~> 0.11"},
       {:req, "~> 0.6"},
+      {:posthog, "~> 2.16"},
       {:gen_smtp, "~> 1.3"}
     ]
   end
@@ -59,7 +62,12 @@ defmodule CommaCore.MixProject do
     [
       "ecto.setup": ["ecto.create", "ecto.migrate"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
-      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"]
+      test: [&prepare_test_database/1, "test"]
     ]
+  end
+
+  defp prepare_test_database(_args) do
+    Mix.Task.run("ecto.create", ["--quiet"])
+    Mix.Task.run("ecto.migrate", ["--quiet"])
   end
 end

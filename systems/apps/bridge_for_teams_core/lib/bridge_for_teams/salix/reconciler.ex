@@ -19,8 +19,8 @@ defmodule BridgeForTeams.Salix.Reconciler do
     * `"create_group"`         — `%{"attrs" => map}`            → `create_group/1`
     * `"delete_group_im_connects"` — tenant/group-scoped route retirement after archival
     * `"update_group"`         — `%{"group_id" =>, "tenant_id" =>, "attrs" =>}` → `update_group/3`
+      (`attrs.cloud_vm_enabled` is the Project's Cloud VM switch, `Project.vm_enabled`)
     * `"update_agent"`         — `%{"agent_id" =>, "tenant_id" =>, "attrs" =>}` → `update_agent/3`
-    * `"apply_external_worker_binding"` — monotonic Connected/Compute binding CAS
 
   ## Outcome handling
 
@@ -29,7 +29,7 @@ defmodule BridgeForTeams.Salix.Reconciler do
       `last_error` recorded — retried next drain.
     * any other `{:error, _}` or unknown op → row `failed`, `attempts` bumped.
   """
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -46,7 +46,7 @@ defmodule BridgeForTeams.Salix.Reconciler do
   @doc "Start the reconcile worker."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc "Enqueue a reconcile op (called inside the domain mutation's transaction)."
@@ -77,7 +77,7 @@ defmodule BridgeForTeams.Salix.Reconciler do
   @spec drain_once(keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def drain_once(opts \\ []) do
     limit = Keyword.get(opts, :limit, @default_limit)
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     try do
       result =
@@ -97,11 +97,11 @@ defmodule BridgeForTeams.Salix.Reconciler do
         end
 
       outcome = if match?({:ok, _}, public_result), do: "ok", else: "error"
-      Telemetry.emit_operation(:reconcile, outcome, System.monotonic_time() - started)
+      Telemetry.emit_operation(:reconcile, outcome, SystemsClock.monotonic_time() - started)
       public_result
     rescue
       e ->
-        Telemetry.emit_operation(:reconcile, "error", System.monotonic_time() - started)
+        Telemetry.emit_operation(:reconcile, "error", SystemsClock.monotonic_time() - started)
         Logger.error("bridge_for_teams.salix_reconcile.failed", error_class: "internal")
         {:error, {:exception, e}}
     end
@@ -111,7 +111,7 @@ defmodule BridgeForTeams.Salix.Reconciler do
 
   @impl true
   def init(opts) do
-    cfg = Application.get_env(:bridge_for_teams_core, __MODULE__, [])
+    cfg = SystemsRuntime.get_env(:bridge_for_teams_core, __MODULE__, [])
 
     state = %{
       interval: opts[:interval_ms] || cfg[:interval_ms] || 5_000,
@@ -130,7 +130,8 @@ defmodule BridgeForTeams.Salix.Reconciler do
     {:noreply, state}
   end
 
-  defp schedule(interval), do: Process.send_after(self(), :drain, interval)
+  defp schedule(interval),
+    do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :drain, interval)
 
   # ---- Draining -----------------------------------------------------------
 
@@ -225,7 +226,7 @@ defmodule BridgeForTeams.Salix.Reconciler do
   end
 
   defp apply_op("update_group", payload) do
-    Client.impl().update_group(
+    update_group(
       fetch(payload, "group_id"),
       fetch(payload, "tenant_id"),
       fetch(payload, "attrs", %{})
@@ -238,66 +239,30 @@ defmodule BridgeForTeams.Salix.Reconciler do
   end
 
   defp apply_op("create_agent", payload) do
-    attrs = fetch(payload, "attrs", %{})
-
-    case create_agent(attrs) do
-      {:ok, _agent} = created ->
-        maybe_apply_created_external_binding(created, payload, attrs)
-
-      other ->
-        other
-    end
+    create_agent(fetch(payload, "attrs", %{}))
   end
 
-  # Product-wide VM policy remains a BFT operation. Its immutable delivery
-  # command does not write or read an Agent configuration snapshot in BFT.
+  # Rows written before the Project's Cloud VM switch moved to its Group: the
+  # Project's switch, sent for one of its Agents, is its Group's switch.
   defp apply_op(
          "apply_product_vm_default",
          %{"attrs" => %{"vm" => %{"enabled" => enabled}}} = payload
        )
        when is_boolean(enabled) do
-    Client.impl().configure_agent(fetch(payload, "agent_id"), fetch(payload, "tenant_id"), %{
-      "vm" => %{"enabled" => enabled}
-    })
-    |> case do
-      {:error, reason}
-      when reason in [:agent_archived, :agent_archiving, :agent_permanently_archived] ->
-        {:ok, :skipped_archived_agent}
+    agent_id = fetch(payload, "agent_id")
 
-      result ->
-        result
-    end
+    update_group(
+      SalixStore.Ids.group_id_from_agent!(agent_id),
+      fetch(payload, "tenant_id"),
+      %{"cloud_vm_enabled" => enabled}
+    )
   end
 
   defp apply_op("update_agent", payload) do
-    agent_id = fetch(payload, "agent_id")
-    tenant_id = fetch(payload, "tenant_id")
-    attrs = fetch(payload, "attrs", %{})
-
-    case Client.impl().update_agent(agent_id, tenant_id, attrs) do
-      # Enabling VM with no configured provider (tenant or platform default)
-      # fails soft: drop the VM request so the rest of the update still lands
-      # and the agent simply stays VM-less until a provider is configured.
-      {:error, {:bad_request, message}} = error ->
-        stripped = Map.delete(attrs, "vm")
-
-        cond do
-          not vm_config_missing?(message) -> error
-          not Map.has_key?(attrs, "vm") -> error
-          stripped == %{} -> :ok
-          true -> Client.impl().update_agent(agent_id, tenant_id, stripped)
-        end
-
-      result ->
-        result
-    end
-  end
-
-  defp apply_op("apply_external_worker_binding", payload) do
-    Client.impl().apply_external_worker_binding(
+    Client.impl().update_agent(
       fetch(payload, "agent_id"),
       fetch(payload, "tenant_id"),
-      fetch(payload, "runtime_config", %{})
+      fetch(payload, "attrs", %{})
     )
   end
 
@@ -306,18 +271,28 @@ defmodule BridgeForTeams.Salix.Reconciler do
   defp create_agent(attrs),
     do: create_agent_with(attrs, fn attrs -> Client.impl().create_agent(attrs) end)
 
-  defp create_agent_with(attrs, create) do
-    case create.(attrs) do
-      # A VM-enabled swarm whose tenant (and the platform) has no VM provider
-      # configured would otherwise strand its router: default-on VM must not
-      # block provisioning. Retry once without the VM request — the agent comes
-      # up VM-less, and enabling VM later (once a provider is configured) is an
-      # ordinary update.
+  defp create_agent_with(attrs, create), do: create.(attrs)
+
+  # A Project's Cloud VM is on by default. When its tenant (and the platform)
+  # has no VM provider configured, turning on its Group's switch fails soft: the
+  # rest of the update still lands and the Group stays without a Cloud VM;
+  # turning the switch on again once a provider is configured is an ordinary
+  # update.
+  #
+  # During a rolling release a Salix node of the release before does not know
+  # the switch and refuses the field: the row stays pending until a node of
+  # this release takes it.
+  defp update_group(group_id, tenant_id, attrs) do
+    case Client.impl().update_group(group_id, tenant_id, attrs) do
       {:error, {:bad_request, message}} = error ->
-        if vm_config_missing?(message) and Map.has_key?(attrs, "vm") do
-          create.(Map.delete(attrs, "vm"))
-        else
-          error
+        stripped = Map.delete(attrs, "cloud_vm_enabled")
+
+        cond do
+          not Map.has_key?(attrs, "cloud_vm_enabled") -> error
+          cloud_vm_switch_unknown?(message) -> {:error, {:transient, :cloud_vm_switch_unknown}}
+          not vm_config_missing?(message) -> error
+          stripped == %{} -> {:ok, :cloud_vm_not_configured}
+          true -> Client.impl().update_group(group_id, tenant_id, stripped)
         end
 
       result ->
@@ -325,25 +300,19 @@ defmodule BridgeForTeams.Salix.Reconciler do
     end
   end
 
-  defp maybe_apply_created_external_binding(created, payload, attrs) do
-    case fetch(payload, "external_binding") do
-      binding when is_map(binding) ->
-        Client.impl().apply_external_worker_binding(
-          fetch(attrs, "agent_id"),
-          fetch(attrs, "tenant_id"),
-          binding
-        )
-
-      _ ->
-        created
-    end
-  end
-
-  # Salix's "vm.enabled requires tenant vm provider configuration[: provider]".
+  # Salix's "the Cloud VM requires tenant vm provider configuration[: provider]".
   defp vm_config_missing?(message) when is_binary(message),
     do: String.contains?(message, "vm provider configuration")
 
   defp vm_config_missing?(_message), do: false
+
+  # A node of the release before: "unsupported group update fields: cloud_vm_enabled".
+  defp cloud_vm_switch_unknown?(message) when is_binary(message),
+    do:
+      String.starts_with?(message, "unsupported group update fields") and
+        String.contains?(message, "cloud_vm_enabled")
+
+  defp cloud_vm_switch_unknown?(_message), do: false
 
   # ---- Row updates --------------------------------------------------------
 
@@ -362,7 +331,7 @@ defmodule BridgeForTeams.Salix.Reconciler do
       status: status,
       attempts: row.attempts + 1,
       last_error: clamp_error(last_error),
-      processed_at: DateTime.utc_now()
+      processed_at: SystemsClock.utc_now()
     })
     |> Repo.update()
   end
@@ -479,7 +448,7 @@ defmodule BridgeForTeams.Salix.Reconciler do
         reconcile_outbox_id: row.id
       },
       correlation_id: "reconcile:#{row.id}",
-      occurred_at: row.processed_at || DateTime.utc_now()
+      occurred_at: row.processed_at || SystemsClock.utc_now()
     }
   end
 

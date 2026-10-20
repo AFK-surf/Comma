@@ -62,7 +62,8 @@ defmodule SalixStore.DriveSettings do
     :ok
   end
 
-  defp to_record(%Row{} = row) do
+  @doc false
+  def to_record(%Row{} = row) do
     %{
       "base_url" => row.base_url,
       "enabled" => row.enabled,
@@ -70,7 +71,8 @@ defmodule SalixStore.DriveSettings do
     }
   end
 
-  defp from_record(scope, record) do
+  @doc false
+  def from_record(scope, record) do
     %Row{
       scope: scope,
       base_url: record["base_url"] || "",

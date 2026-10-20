@@ -32,10 +32,10 @@ def defaults : List (String × Term) :=
    ("context_provider_states", empty), ("miniskills", empty), ("live_context_bytes", nil), ("storage_format", i 1),
    ("last_seq", i 0), ("compacted_seq", i 0), ("archived_through", i 0), ("archive_chunks", list []),
    ("segment_catalog", list []), ("flush_id", nil), ("async_results", list []),
-   ("async_result_refs", empty), ("redactions", list []), ("llm_failure_streak", nil), ("context_overflow_recovery", nil),
+   ("async_result_refs", empty), ("llm_failure_streak", nil), ("context_overflow_recovery", nil),
    ("runaway_unsettled_streak", nil), ("repeated_tool_result_streak", nil), ("input_round_streak", nil),
    ("active_source_message_ids", list []), ("last_compaction_recovery", nil),
-   ("compact_results", empty), ("fork_request_id", nil)]
+   ("compact_results", empty), ("fork_request_id", nil), ("model", nil)]
 
 /-- `%State{}` with every default. -/
 def blank : Term :=
@@ -334,7 +334,6 @@ def normalize (state : Term) : KernelM Term := do
      ("async_results", (← field state "async_results").default (list [])),
      ("async_result_refs", (← field state "async_result_refs").default empty),
      ("runtime_epoch", runtimeEpoch (← field state "runtime_epoch")),
-     ("redactions", (← field state "redactions").default (list [])),
      ("llm_failure_streak", optionalMap (← field state "llm_failure_streak")),
      ("runaway_unsettled_streak", streak),
      ("repeated_tool_result_streak", optionalMap (← field state "repeated_tool_result_streak")),
@@ -366,7 +365,8 @@ def create (_state args : Term) : KernelM Term := do
      ("source_session_id", ← pick "source_session_id"),
      ("conversation_sources", (← pick "conversation_sources").default empty),
      ("source_schedule_id", ← pick "source_schedule_id"),
-     ("system_prompt", ← pick "system_prompt")])
+     ("system_prompt", ← pick "system_prompt"),
+     ("model", optionalMap (← pick "model"))])
 
 /-- `State.persistable/1`: the state without `context_provider_states`. -/
 def persistable (state : Term) : KernelM Term := put state (a "context_provider_states") empty

@@ -47,7 +47,7 @@ defmodule BillingTelemetry do
   end
 
   def emit_operation(operation, surface, outcome, duration, metadata \\ %{}) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:billing, :operation, :stop],
       %{duration: duration},
       Map.merge(metadata, %{

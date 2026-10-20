@@ -18,6 +18,10 @@ defmodule SalixMeet.TestAgentRuntime do
     do: SalixAgent.AgentWorkspace.discard_prepared_write(event)
 
   @impl true
+  def prepare_workspace_write_stream(agent_id, path, stream),
+    do: SalixAgent.MeetingRuntime.prepare_workspace_write_stream(agent_id, path, stream)
+
+  @impl true
   def stream_workspace_write(agent_id, _env_id, dst_path, src_path) do
     stream = File.stream!(src_path, 64 * 1024)
     SalixAgent.MeetingRuntime.prepare_workspace_write_stream(agent_id, dst_path, stream)

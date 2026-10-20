@@ -205,7 +205,8 @@ defmodule SalixStore.LocalFileRefs do
     end
   end
 
-  defp require_same_registration(existing, expected) do
+  @doc false
+  def require_same_registration(existing, expected) do
     if Map.take(existing, @registration_keys) == Map.take(expected, @registration_keys) and
          existing["state"] == "registered" do
       {:ok, existing}
@@ -214,7 +215,8 @@ defmodule SalixStore.LocalFileRefs do
     end
   end
 
-  defp registration_row(record) do
+  @doc false
+  def registration_row(record) do
     %Row{
       ref_digest: ref_digest(record["local_file_ref"]),
       version: record["version"],
@@ -228,7 +230,8 @@ defmodule SalixStore.LocalFileRefs do
     }
   end
 
-  defp to_record(%Row{} = row, ref) do
+  @doc false
+  def to_record(%Row{} = row, ref) do
     %{
       "version" => row.version,
       "local_file_ref" => ref,
@@ -250,13 +253,16 @@ defmodule SalixStore.LocalFileRefs do
   defp put_optional(map, _key, nil), do: map
   defp put_optional(map, key, value), do: Map.put(map, key, value)
 
-  defp active_expired?(%Row{expires_at: expires_at}, now),
+  @doc false
+  def active_expired?(%Row{expires_at: expires_at}, now),
     do: DateTime.compare(expires_at, datetime(now)) != :gt
 
-  defp datetime(ms) when is_integer(ms), do: DateTime.from_unix!(ms * 1_000, :microsecond)
+  @doc false
+  def datetime(ms) when is_integer(ms), do: DateTime.from_unix!(ms * 1_000, :microsecond)
   defp millis(nil), do: nil
   defp millis(%DateTime{} = value), do: DateTime.to_unix(value, :millisecond)
 
-  defp bounded_limit(value) when is_integer(value) and value > 0, do: min(value, 10_000)
-  defp bounded_limit(_), do: 1_000
+  @doc false
+  def bounded_limit(value) when is_integer(value) and value > 0, do: min(value, 10_000)
+  def bounded_limit(_), do: 1_000
 end

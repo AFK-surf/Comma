@@ -57,7 +57,7 @@ defmodule SalixWeb.SubscriptionBinding do
   defp managed_issue(_), do: nil
 
   def observe(deliver) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = deliver.()
 
     try do
@@ -68,7 +68,7 @@ defmodule SalixWeb.SubscriptionBinding do
         "subscription_runtime_delivery",
         "system",
         outcome,
-        System.monotonic_time() - started
+        SystemsClock.monotonic_time() - started
       )
     rescue
       _ -> :ok
@@ -80,7 +80,7 @@ defmodule SalixWeb.SubscriptionBinding do
   end
 
   def observe_configuration(action, configure) when action in [:bind, :unbind] do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = configure.()
 
     try do
@@ -89,7 +89,7 @@ defmodule SalixWeb.SubscriptionBinding do
         "subscription_runtime_configuration",
         Atom.to_string(action),
         if(match?({:ok, _}, result), do: "accepted", else: "error"),
-        System.monotonic_time() - started
+        SystemsClock.monotonic_time() - started
       )
     rescue
       _ -> :ok
@@ -120,10 +120,10 @@ defmodule SalixWeb.SubscriptionBinding do
                  AND (NOT b.enabled OR NOT EXISTS (SELECT 1 FROM subscription_accounts a
                    WHERE a.tenant_id=b.tenant_id AND a.id=b.account_id
                      AND a.value->>'disabled'='false' AND (
-                       a.value->>'credential_kind'='provider_api_key'
-                       OR (a.value->>'credential_kind'='subscription_oauth' AND (
-                         a.value->>'status'='active'
-                         OR (a.value->>'status'='reauthorization_required' AND
+                       a.value->>'credential'='api_key'
+                       OR (a.value->>'credential'='subscription' AND (
+                         a.value->>'status'='ok'
+                         OR (a.value->>'status'='login' AND
                            COALESCE((a.value->>'refresh_deadline')::bigint,0)>extract(epoch from now()))
                        ))
                      )))
@@ -164,11 +164,16 @@ defmodule SalixWeb.SubscriptionBinding do
              FROM subscription_accounts a
              WHERE b.id=$1
                AND b.enabled=true AND b.account_id=$4 AND a.tenant_id=b.tenant_id AND a.id=b.account_id AND a.version=$2
-               AND a.value->>'credential_kind'=$3 AND a.value->>'disabled'='false'
-               AND (a.value->>'credential_kind'='provider_api_key' OR a.value->>'status'='active')
+               AND a.value->>'credential'=$3 AND a.value->>'disabled'='false'
+               AND (a.value->>'credential'='api_key' OR a.value->>'status'='ok')
              RETURNING b.revision
              """,
-             [id, access["account_version"], access["credential_kind"], account]
+             [
+               id,
+               access["account_version"],
+               SubscriptionStore.stored_kind(access["credential_kind"]),
+               account
+             ]
            ) do
       {:ok,
        access

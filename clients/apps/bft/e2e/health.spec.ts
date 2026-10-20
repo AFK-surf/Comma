@@ -240,3 +240,69 @@ test("the Health sidebar link opens the page in place", async ({ page }) => {
     await page.evaluate(() => (window as unknown as { bftMarker?: boolean }).bftMarker)
   ).toBe(true);
 });
+
+test("pages appended to a cached audit page start over when the fresh page arrives", async ({
+  page,
+}) => {
+  await stubApi(page, {
+    "/orgs/acme/context": ok(context),
+    "/orgs/acme/health": ok({ ...health, events: [] }),
+    "/orgs/acme/members": ok({
+      viewer: {
+        user_id: "user-1",
+        role: "owner",
+        can_manage: true,
+        can_grant_owner: true,
+      },
+      members: [],
+    }),
+  });
+  // After the first visit, the first page has a new entry on top; its read is held.
+  let revisited = false;
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  await page.route("**/dashboard/api/v1/orgs/acme/audit*", async (route) => {
+    const cursor = new URL(route.request().url()).searchParams.get("cursor");
+    if (cursor === "page-2")
+      return route.fulfill({
+        json: { ok: true, data: { entries: [entry(31)], next_cursor: null } },
+      });
+    if (!revisited)
+      return route.fulfill({
+        json: { ok: true, data: { entries: firstPage, next_cursor: "page-2" } },
+      });
+    await held;
+    return route.fulfill({
+      json: {
+        ok: true,
+        data: {
+          entries: Array.from({ length: 30 }, (_, index) => entry(index)),
+          next_cursor: "page-2b",
+        },
+      },
+    });
+  });
+
+  await page.goto("/orgs/acme/operations");
+  const audit = page.getByRole("region", { name: "Audit log" });
+  await expect(audit.getByRole("listitem")).toHaveCount(30);
+  const nav = page.getByRole("navigation", { name: "Organization navigation" });
+  await nav.getByRole("link", { name: "Members" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Members" })).toBeVisible();
+  revisited = true;
+  await nav.getByRole("link", { name: "Health" }).click();
+
+  // The cached first page shows; scrolling appends its next page.
+  await expect(audit.getByRole("listitem")).toHaveCount(30);
+  await audit.getByText("action.number_1", { exact: true }).hover();
+  for (let step = 0; step < 10; step += 1) {
+    if ((await audit.getByRole("listitem").count()) === 31) break;
+    await page.mouse.wheel(0, 600);
+    await page.waitForTimeout(100);
+  }
+  await expect(audit.getByRole("listitem")).toHaveCount(31);
+
+  release();
+  await expect(audit.getByText("action.number_0", { exact: true })).toBeVisible();
+  await expect(audit.getByRole("listitem")).toHaveCount(30);
+  await expect(audit.getByText("action.number_31", { exact: true })).toHaveCount(0);
+});

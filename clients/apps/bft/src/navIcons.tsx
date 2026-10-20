@@ -9,7 +9,7 @@ import {
   SettingsIcon,
   ShieldCheckIcon,
   SquareGridCircleIcon,
-} from "@comma/ui";
+} from "@comma/ui/components/icons";
 import type { ComponentType } from "react";
 import type { NavIconName } from "./navSpec";
 

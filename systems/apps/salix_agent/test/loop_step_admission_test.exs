@@ -1,5 +1,5 @@
 defmodule SalixAgent.LoopStepAdmissionTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.InternalSession
 

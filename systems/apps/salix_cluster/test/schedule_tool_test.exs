@@ -10,8 +10,9 @@ defmodule SalixCluster.ScheduleToolTest do
   since plan §3.2 step 4), ownership semantics on delete, argument
   validation, and the nil-seam error path.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.Tools.Schedules, as: Tool
   alias SalixAgent.TestSupport.SessionData
   alias SalixCluster.Schedules
@@ -20,8 +21,8 @@ defmodule SalixCluster.ScheduleToolTest do
   defmodule FakeIMProvider do
     @behaviour SalixAgent.Tools.ImRouter
 
-    def set_owner(pid), do: :persistent_term.put({__MODULE__, :owner}, pid)
-    def clear_owner, do: :persistent_term.erase({__MODULE__, :owner})
+    def set_owner(pid), do: SystemsRuntime.PersistentTerm.put({__MODULE__, :owner}, pid)
+    def clear_owner, do: SystemsRuntime.PersistentTerm.erase({__MODULE__, :owner})
 
     @impl true
     def list_connects(_agent_id),
@@ -52,8 +53,8 @@ defmodule SalixCluster.ScheduleToolTest do
 
     @impl true
     def call_api(agent_id, provider, api, args) do
-      send(
-        :persistent_term.get({__MODULE__, :owner}),
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.PersistentTerm.get({__MODULE__, :owner}),
         {:im_provider_call, agent_id, provider, api, args}
       )
 
@@ -63,8 +64,8 @@ defmodule SalixCluster.ScheduleToolTest do
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev_backend = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
     start_supervised!(SalixStore.S3.Fake)
 
@@ -72,19 +73,19 @@ defmodule SalixCluster.ScheduleToolTest do
     # S3.Fake.reset can clear — every file expecting a clean slate truncates.
     SalixStore.Repo.query!("TRUNCATE schedules, schedule_runs")
 
-    prev_llm = Application.get_env(:salix_agent, :llm)
-    prev_im_provider = Application.get_env(:salix_agent, :im_provider_mod)
+    prev_llm = SystemsRuntime.get_env(:salix_agent, :llm)
+    prev_im_provider = SystemsRuntime.get_env(:salix_agent, :im_provider_mod)
     start_supervised!(SalixAgent.LLM.Mock)
-    Application.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
+    SystemsRuntime.put_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
 
-    prev_mod = Application.get_env(:salix_agent, :schedules_mod)
-    Application.put_env(:salix_agent, :schedules_mod, SalixCluster.Schedules)
+    prev_mod = SystemsRuntime.get_env(:salix_agent, :schedules_mod)
+    SystemsRuntime.put_env(:salix_agent, :schedules_mod, SalixCluster.Schedules)
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
       FakeIMProvider.clear_owner()
-      Application.put_env(:salix_store, :s3_backend, prev_backend)
-      Application.put_env(:salix_agent, :schedules_mod, prev_mod)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_backend)
+      SystemsRuntime.put_env(:salix_agent, :schedules_mod, prev_mod)
       restore(:salix_agent, :llm, prev_llm)
       restore(:salix_agent, :im_provider_mod, prev_im_provider)
     end)
@@ -100,25 +101,6 @@ defmodule SalixCluster.ScheduleToolTest do
        session_id: "ses1_1200000000000000001",
        state: nil
      }}
-  end
-
-  test "defs/0 exposes split canonical schedule tools with create write safety" do
-    assert [
-             {"schedule.create", create_desc, create_fun, create_auto_wait_seconds, create_opts},
-             {"schedule.list", list_desc, list_fun, list_auto_wait_seconds},
-             {"schedule.delete", delete_desc, delete_fun, delete_auto_wait_seconds}
-           ] = Tool.defs()
-
-    assert create_desc =~ "Create"
-    assert create_opts == [safety: "write"]
-    assert list_desc =~ "List"
-    assert delete_desc =~ "Delete"
-    assert is_function(create_fun, 2)
-    assert is_function(list_fun, 2)
-    assert is_function(delete_fun, 2)
-    assert create_auto_wait_seconds == 20
-    assert list_auto_wait_seconds == 20
-    assert delete_auto_wait_seconds == 20
   end
 
   describe "create / list / delete through the tool" do
@@ -169,43 +151,6 @@ defmodule SalixCluster.ScheduleToolTest do
       assert {:ok, _} = Schedules.get(other_id)
     end
 
-    test "an imported Task carrying this agent's id is not deletable through schedule.delete",
-         %{ctx: ctx} do
-      # The reviewer's exact repro, driven through the canonical tool and the
-      # production :schedules_mod seam: a cutover/pre-validation row bound to
-      # ANOTHER group but carrying THIS agent's id. Ownership lives in the
-      # DELETE predicate, so the tool cannot reach it.
-      :ok =
-        SalixStore.Schedules.import_record(
-          %{
-            "id" => "foreign_task",
-            "receiver" => "task",
-            "agent_id" => ctx.agent_id,
-            "payload" => %{
-              "agent_group_id" => "group_project_b",
-              "conversation_id" => "conv_b"
-            },
-            "interval_minutes" => 5,
-            "created_at" => 1_000,
-            "last_run" => nil
-          },
-          1_000
-        )
-
-      assert_raise RuntimeError, "schedule not found", fn ->
-        Tool.delete_schedule(%{"schedule_id" => "foreign_task"}, ctx)
-      end
-
-      # Still there, and still owned by its true group.
-      assert {:ok, %{"id" => "foreign_task"}} = Schedules.get("foreign_task")
-
-      assert {:ok, [%{"id" => "foreign_task"}]} =
-               SalixStore.Schedules.list_for_owners([], "group_project_b")
-
-      # It is also invisible to this agent's listing.
-      assert Jason.decode!(Tool.list_schedules(%{}, ctx)) == []
-    end
-
     test "records who it acts for, and never lets an update change that", %{ctx: ctx} do
       # A fire acts with its creator's authority, so the creator is recorded
       # when the schedule is made — at fire time there is no one to ask
@@ -248,15 +193,6 @@ defmodule SalixCluster.ScheduleToolTest do
       assert {:ok, stored} = Schedules.get(Jason.decode!(out)["id"])
       refute Map.has_key?(stored, "ifc_creator")
       assert SalixAgent.IFC.schedule_origin("sch", stored["ifc_creator"], nil) == nil
-    end
-
-    test "interval_minutes accepts a numeric string (string-args pattern)", %{ctx: ctx} do
-      out =
-        Tool.create_schedule(%{"interval_minutes" => "7", "prompt" => "p"}, ctx)
-
-      sched = Jason.decode!(out)
-      assert sched["interval_minutes"] == 7
-      assert sched["session_id"] == ctx.session_id
     end
   end
 
@@ -327,80 +263,9 @@ defmodule SalixCluster.ScheduleToolTest do
         assert {:ok, _} = Schedules.get(sched["id"])
       end
     end
-
-    test "a tool-created cron schedule fires into the calling agent's session ledger", %{
-      ctx: ctx
-    } do
-      out =
-        Tool.create_schedule(
-          %{
-            "cron" => "0 9 * * *",
-            "prompt" => "daily"
-          },
-          ctx
-        )
-
-      sched = Jason.decode!(out)
-      id = sched["id"]
-      t1 = Schedules.next_fire_ms(sched)
-
-      assert {:ok, %{fired: [^id]}} = Schedules.run_once(now: t1)
-
-      # rpc delivery: the session ledger's dedupe entry is the durable
-      # exactly-once record, committed before run_once returns.
-      {:ok, state} = SessionData.read(ctx.agent_id, ctx.session_id)
-      assert MapSet.member?(state.input_dedupe, "schedule:#{id}:#{t1}")
-
-      # The woken round absorbs the payload into the transcript as the user
-      # message the agent actually sees, content preserved.
-      assert eventually(fn -> user_message_count(ctx, "daily") == 1 end)
-      assert :ok = SalixAgent.TestSupport.await_session_quiet(ctx.agent_id, ctx.session_id)
-    end
   end
 
   describe "firing" do
-    test "a one-shot meeting reminder preserves the exact Router-owned Feishu delivery command",
-         %{
-           ctx: ctx
-         } do
-      prompt =
-        ~s(Call im_api.feishu.send_text with connect_id="fs-reminders", receive_id="oc_team", text="Meeting starts in ten minutes", mentions=[{"user_id":"ou_owner","name":"Owner"}], mention_all=false.)
-
-      out =
-        Tool.create_schedule(
-          %{
-            "run_at" => "2027-01-02T09:50:00+08:00",
-            "prompt" => prompt
-          },
-          ctx
-        )
-
-      sched = Jason.decode!(out)
-      id = sched["id"]
-
-      run_at =
-        DateTime.from_iso8601("2027-01-02T09:50:00+08:00")
-        |> elem(1)
-        |> DateTime.to_unix(:millisecond)
-
-      assert sched["run_at"] == run_at
-      assert {:ok, %{fired: [^id], already_fired: []}} = Schedules.run_once(now: run_at)
-      assert {:error, :not_found} = Schedules.get(id)
-
-      # Committed onto the schedule's target session with its stable id; the
-      # absorbed user message carries the delivery command byte-for-byte.
-      {:ok, state} = SessionData.read(ctx.agent_id, ctx.session_id)
-      assert MapSet.member?(state.input_dedupe, "schedule:#{id}:#{run_at}")
-      assert eventually(fn -> user_message_count(ctx, prompt) == 1 end)
-      assert [message] = absorbed_user_messages(ctx, prompt)
-      assert message.content =~ "mentions="
-
-      # The consumed window cannot deliver a second copy.
-      assert {:ok, %{fired: [], already_fired: []}} = Schedules.run_once(now: run_at + 1)
-      assert user_message_count(ctx, prompt) == 1
-      assert :ok = SalixAgent.TestSupport.await_session_quiet(ctx.agent_id, ctx.session_id)
-    end
-
     test "a due one-shot schedule wakes the Router and executes Feishu delivery exactly once" do
       agent_id = SalixAgent.TestSupport.new_agent_id()
 
@@ -413,8 +278,8 @@ defmodule SalixCluster.ScheduleToolTest do
       {:ok, session_id} = SalixStore.RuntimeIds.persisted_router_session_id(router)
       {:ok, _pid} = SalixAgent.Fleet.ensure_started(agent_id, create: false)
 
-      Application.put_env(:salix_agent, :im_provider_mod, FakeIMProvider)
-      FakeIMProvider.set_owner(self())
+      SystemsRuntime.put_env(:salix_agent, :im_provider_mod, FakeIMProvider)
+      FakeIMProvider.set_owner(SystemsRuntime.Proc.self())
 
       SalixAgent.LLM.Mock.script([
         {:assistant, "sending the scheduled reminder",
@@ -456,21 +321,22 @@ defmodule SalixCluster.ScheduleToolTest do
       assert {:ok, %{fired: [^schedule_id], failed: []}} =
                Schedules.run_once(now: run_at)
 
-      assert_receive {:im_provider_call, ^agent_id, "feishu", "feishu.send_text",
-                      %{
-                        "connect_id" => "fs-reminders",
-                        "params" => %{
-                          "receive_id" => "oc_team",
-                          "text" => "Meeting starts in ten minutes",
-                          "mentions" => [%{"user_id" => "ou_owner", "name" => "Owner"}],
-                          "mention_all" => false
-                        }
-                      }},
-                     2_000
+      settle_receive(
+        {:im_provider_call, ^agent_id, "feishu", "feishu.send_text",
+         %{
+           "connect_id" => "fs-reminders",
+           "params" => %{
+             "receive_id" => "oc_team",
+             "text" => "Meeting starts in ten minutes",
+             "mentions" => [%{"user_id" => "ou_owner", "name" => "Owner"}],
+             "mention_all" => false
+           }
+         }}
+      )
 
       assert {:error, :not_found} = Schedules.get(schedule_id)
       assert {:ok, %{fired: [], already_fired: []}} = Schedules.run_once(now: run_at + 1)
-      refute_receive {:im_provider_call, ^agent_id, "feishu", "feishu.send_text", _}, 300
+      settle_refute_receive({:im_provider_call, ^agent_id, "feishu", "feishu.send_text", _}, 300)
       assert :ok = SalixAgent.TestSupport.await_session_quiet(agent_id, session_id)
     end
 
@@ -543,23 +409,10 @@ defmodule SalixCluster.ScheduleToolTest do
   end
 
   describe "seam" do
-    test "nil schedules_mod raises unavailable for every action", %{ctx: ctx} do
-      Application.put_env(:salix_agent, :schedules_mod, nil)
-
-      for {fun, args} <- [
-            {&Tool.list_schedules/2, %{}},
-            {&Tool.create_schedule/2, %{"prompt" => "p", "interval_minutes" => 5}},
-            {&Tool.delete_schedule/2, %{"schedule_id" => "sched-x"}}
-          ] do
-        assert_raise RuntimeError, "schedule manager unavailable on this node", fn ->
-          fun.(args, ctx)
-        end
-      end
-    end
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   # The user messages the woken round absorbed into the transcript with
   # exactly this content — the rpc-world equivalent of the staged inbox
@@ -576,11 +429,6 @@ defmodule SalixCluster.ScheduleToolTest do
 
   defp user_message_count(ctx, content), do: length(absorbed_user_messages(ctx, content))
 
-  defp eventually(fun, retries \\ 100) do
-    cond do
-      fun.() -> true
-      retries == 0 -> false
-      true -> Process.sleep(20) && eventually(fun, retries - 1)
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 end

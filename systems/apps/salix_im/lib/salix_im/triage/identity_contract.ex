@@ -320,8 +320,13 @@ defmodule SalixIM.Triage.IdentityContract do
     {@raw_path, "@path"}
   ]
   @projected_alias ~r/(?<![\p{L}\p{N}_])@(?:self|(?:agent|human|unknown|project|member):[A-Za-z0-9_-]+)\b/u
+  # Owner decision: Slack Triage receipts and the source reader withhold Bearer
+  # spans before hashing, so message text never rejects a run for Bearer.
+  # Bearer elsewhere in a bundle and every other literal keep rejecting.
+  @bearer_credential ~r/\bBearer\s+\S+/i
+  @bearer_withheld "[Bearer-credential withheld]"
   @credential_literal_patterns [
-    ~r/\bBearer\s+\S+/i,
+    @bearer_credential,
     ~r/\bxox[baprs]-[A-Za-z0-9-]+\b/i,
     ~r/\bsk-(?:live|test)-[A-Za-z0-9_-]+\b/i,
     ~r/\bsk-[A-Za-z0-9_-]{12,}\b/,
@@ -2519,17 +2524,21 @@ defmodule SalixIM.Triage.IdentityContract do
 
   defp valid_projected_reactions?(_reactions), do: false
 
+  # Mirrors the context port: the newest batch event message still present in
+  # the source read is the target.
   defp project_decision_target(messages, projected, bundle, registry) do
-    target_key =
+    event_keys =
       bundle["target_cutoff"]["event_message_timestamps"]
-      |> Enum.map(&slack_ts_key/1)
-      |> Enum.max()
+      |> MapSet.new(&slack_ts_key/1)
 
     with {raw_target, index} <-
            messages
            |> Enum.with_index(1)
-           |> Enum.find(fn {message, _index} ->
-             slack_ts_key(message["message_ts"]) == target_key
+           |> Enum.filter(fn {message, _index} ->
+             MapSet.member?(event_keys, slack_ts_key(message["message_ts"]))
+           end)
+           |> Enum.max_by(fn {message, _index} -> slack_ts_key(message["message_ts"]) end, fn ->
+             nil
            end),
          projected_target when is_map(projected_target) <- Enum.at(projected, index - 1) do
       {:ok,
@@ -2731,6 +2740,22 @@ defmodule SalixIM.Triage.IdentityContract do
   end
 
   def redact_untrusted_text(_text), do: ""
+
+  @doc "Withhold Bearer credential spans from Slack Triage source text."
+  # Text carrying any other credential stays raw, so that credential still
+  # rejects; rewriting must never split another pattern's match.
+  @spec withhold_bearer_credentials(binary()) :: binary()
+  def withhold_bearer_credentials(text) when is_binary(text) do
+    if non_bearer_credential?(text),
+      do: text,
+      else: Regex.replace(@bearer_credential, text, @bearer_withheld)
+  end
+
+  defp non_bearer_credential?(text) do
+    Regex.match?(@credential_assignment, text) or
+      Enum.any?(tl(@credential_literal_patterns), &Regex.match?(&1, text)) or
+      credential_url?(text)
+  end
 
   defp source_display_alias(text, fallback, %{source_visible?: true}) do
     case trim(text) do

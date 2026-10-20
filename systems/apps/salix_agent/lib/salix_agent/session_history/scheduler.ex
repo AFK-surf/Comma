@@ -1,14 +1,14 @@
 defmodule SalixAgent.SessionHistory.Scheduler do
   @moduledoc "Pod-local session serialization and fair tenant admission for history workers."
-  use GenServer
+  use SystemsRuntime.Server
   alias SalixAgent.SessionHistory.Worker
   @limit 4
   @tenant_limit 2
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
-  def claim, do: GenServer.call(__MODULE__, :claim)
-  def maintenance(key), do: GenServer.call(__MODULE__, {:maintenance, key})
-  def complete, do: GenServer.call(__MODULE__, :complete)
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
+  def claim, do: SystemsRuntime.Server.call(__MODULE__, :claim)
+  def maintenance(key), do: SystemsRuntime.Server.call(__MODULE__, {:maintenance, key})
+  def complete, do: SystemsRuntime.Server.call(__MODULE__, :complete)
 
   def init(_) do
     Worker.init_queue()
@@ -76,7 +76,7 @@ defmodule SalixAgent.SessionHistory.Scheduler do
   end
 
   defp admit(state, pid, {agent, _} = key) do
-    task = %{key: key, tenant: tenant(agent), ref: Process.monitor(pid)}
+    task = %{key: key, tenant: tenant(agent), ref: SystemsRuntime.Proc.monitor(pid)}
     queued_tenants = Enum.map(Worker.pending_hints(), fn {{a, _}, _} -> tenant(a) end)
     active_tenants = Enum.map(state.active, fn {_, t} -> t.tenant end)
     served = Map.take(state.served, queued_tenants ++ active_tenants)
@@ -95,7 +95,7 @@ defmodule SalixAgent.SessionHistory.Scheduler do
         state
 
       {%{ref: ref}, active} ->
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         %{state | active: active}
     end
   end

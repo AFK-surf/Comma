@@ -1,0 +1,29 @@
+id: ts-electron-test-running-app
+valid:
+  # Given at launch: it is in place before the app's own code runs.
+  - |
+    const app = await electron.launch({
+      args,
+      main: {
+        arg: downloads,
+        beforeApp: ({ app: nativeApp }, path) => nativeApp.setPath("downloads", path),
+        whenReady: ({ session }) => {
+          session.defaultSession.protocol.handle("https", () => new Response("ok"));
+        },
+      },
+    });
+  - |
+    await setElectronCookie(app, { url, name: "a", value: "b" });
+  - |
+    await app.evaluate(({ session }) => session.defaultSession.cookies.get({}));
+invalid:
+  - |
+    await app.evaluate(({ session }) => {
+      session.defaultSession.protocol.handle("https", () => new Response("ok"));
+    });
+  - |
+    await app.evaluate(({ session }, url) => session.defaultSession.cookies.set({ url, name: "a", value: "b" }), url);
+  - |
+    await app.evaluate(({ app: nativeApp }, path) => nativeApp.setPath("downloads", path), downloads);
+  - |
+    await app.evaluate(({ app: nativeApp }) => nativeApp.dock!.hide());

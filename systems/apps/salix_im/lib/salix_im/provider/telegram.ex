@@ -40,7 +40,7 @@ defmodule SalixIM.Provider.Telegram do
           do: Map.put(placement, "reply_markup", %{"remove_keyboard" => true}),
           else: placement
 
-      send_message(connect, placement, rendered, System.monotonic_time())
+      send_message(connect, placement, rendered, SystemsClock.monotonic_time())
     end
     |> reply_sent(agent_id, connect, params)
   end
@@ -63,6 +63,7 @@ defmodule SalixIM.Provider.Telegram do
         Req.post(
           "#{telegram_api_base(connect)}/bot#{connect["bot_token"]}/#{telegram_send_file_method(api)}",
           form_multipart: fields,
+          plugins: [SalixIM.Multipart],
           retry: false
         )
       end
@@ -214,9 +215,9 @@ defmodule SalixIM.Provider.Telegram do
   defp emit_send(connect, outcome, started) do
     surface = if connect["managed_by"] == "comma_product", do: "comma", else: "salix"
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{
         component: "salix_im",
         operation: "telegram_send_message",
@@ -256,7 +257,7 @@ defmodule SalixIM.Provider.Telegram do
   defp telegram_api_base(_connect),
     do:
       :salix_im
-      |> Application.get_env(:telegram_api_base_url, "https://api.telegram.org")
+      |> SystemsRuntime.get_env(:telegram_api_base_url, "https://api.telegram.org")
       |> str()
       |> default_base("https://api.telegram.org")
 

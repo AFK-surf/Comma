@@ -1,16 +1,17 @@
 defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
-  The private templates and organization accounts sections of Settings → AI
-  models, through their API and the real subscription worker: importing,
-  disabling and removing a subscription, write-only Provider API keys,
-  starting an authorization, using a reset credit, account usage, model
-  discovery, template editing with guarded deletion, the owner/admin rule,
-  CSRF protection, and query counts that do not grow with the lists.
+  The organization accounts section of Settings → AI models, through its API
+  and the real subscription worker: importing, disabling and removing a
+  subscription, write-only Provider API keys, starting an authorization, using
+  a reset credit, account usage, the owner/admin rule, CSRF protection, and
+  query counts that do not grow with the lists.
   """
   use BridgeForTeamsWeb.DashboardCase, async: false
 
-  alias BridgeForTeams.{Memberships, Models, Observability, Orgs, Subscriptions}
-  alias SalixAgent.{AccountPool, Templates}
+  alias BridgeForTeams.{Memberships, Models, Observability, Subscriptions}
+  alias SalixAgent.AccountPool
   alias SalixAgent.SubscriptionStore, as: Store
 
   defmodule ResetWorker do
@@ -20,12 +21,12 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
 
     def handle_call({:start, id, data, to}, _, parent) do
       if Jason.decode!(data)["op"] == "/quota/reset" do
-        send(parent, :reset_called)
+        SystemsRuntime.Proc.send(parent, :reset_called)
         reply = Base.encode64(Jason.encode!(%{"code" => "reset"}))
-        send(to, {:subscription, id, %{"type" => "data", "data" => reply}})
-        send(to, {:subscription, id, %{"type" => "done"}})
+        SystemsRuntime.Proc.send(to, {:subscription, id, %{"type" => "data", "data" => reply}})
+        SystemsRuntime.Proc.send(to, {:subscription, id, %{"type" => "done"}})
       else
-        send(
+        SystemsRuntime.Proc.send(
           to,
           {:subscription, id,
            %{"type" => "error", "status" => 502, "code" => "quota_unavailable"}}
@@ -38,35 +39,65 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
     def handle_cast(_, state), do: {:noreply, state}
   end
 
-  defmodule ModelsWorker do
+  # A worker whose `/prepare` (credential refresh) waits until the test lets
+  # it answer, so a user's change can land between the refresh's claim and
+  # its write-back. `/quota` answers at once; other operations fail.
+  defmodule GatedWorker do
     use GenServer
     def start_link(parent), do: GenServer.start_link(__MODULE__, parent)
-    def init(parent), do: {:ok, parent}
+    def init(parent), do: {:ok, %{parent: parent, held: nil}}
 
-    def handle_call({:start, id, data, to}, _, parent) do
-      send(parent, {:discovery, Jason.decode!(data)["op"]})
+    def handle_call({:start, id, data, to}, _, state) do
+      case Jason.decode!(data)["op"] do
+        "/prepare" ->
+          SystemsRuntime.Proc.send(state.parent, {:prepare_held, SystemsRuntime.Proc.self()})
+          {:reply, :ok, %{state | held: {id, to}}}
 
-      result = %{
-        "data" => [
-          %{"id" => "gpt-test-codex", "name" => "Codex Test Model", "supports_images" => false}
-        ],
-        "truncated" => false
-      }
+        "/quota" ->
+          answer(to, id, %{"body" => %{"plan_type" => "pro"}})
+          {:reply, :ok, state}
 
-      send(
-        to,
-        {:subscription, id, %{"type" => "data", "data" => Base.encode64(Jason.encode!(result))}}
-      )
+        _ ->
+          SystemsRuntime.Proc.send(
+            to,
+            {:subscription, id, %{"type" => "error", "status" => 502, "code" => "unavailable"}}
+          )
 
-      send(to, {:subscription, id, %{"type" => "done"}})
-      {:reply, :ok, parent}
+          {:reply, :ok, state}
+      end
     end
 
     def handle_cast(_, state), do: {:noreply, state}
+
+    def handle_info({:release, answer}, %{held: {id, to}} = state) do
+      case answer do
+        {:error, status, code} ->
+          SystemsRuntime.Proc.send(
+            to,
+            {:subscription, id, %{"type" => "error", "status" => status, "code" => code}}
+          )
+
+        body ->
+          answer(to, id, body)
+      end
+
+      {:noreply, %{state | held: nil}}
+    end
+
+    defp answer(to, id, body) do
+      data = Base.encode64(Jason.encode!(body))
+      SystemsRuntime.Proc.send(to, {:subscription, id, %{"type" => "data", "data" => data}})
+      SystemsRuntime.Proc.send(to, {:subscription, id, %{"type" => "done"}})
+    end
   end
 
   setup_all do
-    dir = Path.join(System.tmp_dir!(), "bft-subscriptions-#{System.unique_integer([:positive])}")
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "bft-subscriptions-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
     File.mkdir_p!(dir)
     binary = Path.join(dir, "worker")
 
@@ -83,15 +114,15 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
 
   setup %{binary: binary, conn: conn} do
     %{org: org, user: user} = org_with_owner_fixture()
-    old = Application.get_env(:salix_agent, :subscription_worker)
+    old = SystemsRuntime.get_env(:salix_agent, :subscription_worker)
     worker = start_supervised!({SalixAgent.SubscriptionWorker, name: nil, command: {binary, []}})
     quota_worker = start_supervised!({SalixWeb.TestSubscriptionQuotaWorker, worker})
-    Application.put_env(:salix_agent, :subscription_worker, quota_worker)
+    SystemsRuntime.put_env(:salix_agent, :subscription_worker, quota_worker)
 
     on_exit(fn ->
       if old,
-        do: Application.put_env(:salix_agent, :subscription_worker, old),
-        else: Application.delete_env(:salix_agent, :subscription_worker)
+        do: SystemsRuntime.put_env(:salix_agent, :subscription_worker, old),
+        else: SystemsRuntime.delete_env(:salix_agent, :subscription_worker)
     end)
 
     {:ok, org: org, user: user, conn: log_in_user(conn, user), scope: {org.id, user.id}}
@@ -167,7 +198,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
                  "endpoint" => "https://models.example.test/v1",
                  "protocol" => "anthropic_messages"
                },
-               "compatible_runtimes" => ["pi", "claude"]
+               "compatible_runtimes" => ["claude"]
              } = account
 
       assert {:ok, %{"accounts" => [stored]}} = AccountPool.list(ctx.org.salix_tenant_id)
@@ -201,8 +232,8 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
 
     test "a reset reports its outcome apart from the quota refresh and rechecks membership",
          ctx do
-      worker = start_supervised!({ResetWorker, self()})
-      Application.put_env(:salix_agent, :subscription_worker, worker)
+      worker = start_supervised!({ResetWorker, SystemsRuntime.Proc.self()})
+      SystemsRuntime.put_env(:salix_agent, :subscription_worker, worker)
 
       account =
         subscription_fixture(ctx.org, %{
@@ -256,8 +287,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
       assert binding == %{
                "project" => %{"id" => visible.id, "name" => "Visible project"},
                "workload_id" => "visible-workload",
-               "href" =>
-                 "/orgs/#{ctx.org.slug}/projects/#{visible.id}/devices?runtime_auth_target=visible-workload"
+               "href" => "/orgs/#{ctx.org.slug}/projects/#{visible.id}/devices"
              }
 
       small = query_count(ctx.conn, path)
@@ -276,6 +306,62 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
       for _ <- 1..3, do: provider_key_fixture(ctx.org)
       assert %{"accounts" => [_, _, _]} = get_data(ctx.conn, accounts_path(ctx.org))
       assert query_count(ctx.conn, accounts_path(ctx.org)) == small
+    end
+
+    test "the models page says which account serves each model", ctx do
+      path = "/dashboard/api/v1/orgs/#{ctx.org.slug}/settings/models"
+      subscription_fixture(ctx.org)
+      option = fn data, key -> Enum.find(data["catalog"], &(&1["key"] == key)) end
+
+      data = get_data(ctx.conn, path)
+      assert data["servable_status"] == "ok"
+
+      assert %{"served_by" => "subscription", "plans" => ["codex"], "key_sources" => []} =
+               option.(data, "catalog:gpt-5.5")
+
+      assert %{"served_by" => nil} = option.(data, "catalog:claude-opus-4-8")
+      refute option.(data, "catalog:claude-opus-4-8+paid")
+
+      {:ok, _key} =
+        AccountPool.create(ctx.org.salix_tenant_id, %{
+          "credential_kind" => "provider_api_key",
+          "source" => "openrouter",
+          "api_key" => "sk-or-v1-0123456789abcdef"
+        })
+
+      # Pay-per-use is a choice of its own, naming the keys that may serve it.
+      data = get_data(ctx.conn, path)
+      refute option.(data, "catalog:claude-opus-4-8")
+
+      assert %{
+               "served_by" => "api_key",
+               "key_sources" => ["OpenRouter"],
+               "choice" => %{"allow_paid" => true} = paid
+             } = option.(data, "catalog:claude-opus-4-8+paid")
+
+      assert %{"served_by" => "subscription", "key_sources" => ["OpenRouter"]} =
+               option.(data, "catalog:gpt-5.5")
+
+      assert %{"served_by" => "api_key"} = option.(data, "catalog:gpt-5.5+paid")
+
+      # Allowing it and making it the Worker default lets a Router choose it
+      # pay-per-use, the way a Worker can run it.
+      data =
+        ctx.conn
+        |> put(path, %{"allowed_models" => [paid], "default_task_model" => paid})
+        |> json_response(200)
+        |> data()
+
+      assert [%{"key" => "catalog:claude-opus-4-8+paid"}] = data["allowed_models"]
+      assert %{"key" => "catalog:claude-opus-4-8+paid"} = data["default_task_model"]
+
+      project = bare_project_fixture(ctx.org, %{name: "Paid"})
+      assert {:ok, ^paid} = Models.router_choice(project.id, nil)
+
+      assert {:ok, %{"allow_paid" => true}} = Models.router_choice(project.id, paid)
+
+      assert {:error, :model_not_allowed} =
+               Models.router_choice(project.id, %{paid | "allow_paid" => false})
     end
 
     test "writes need the page's CSRF token", ctx do
@@ -298,219 +384,183 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
     end
   end
 
-  describe "private templates" do
-    test "discovery offers the subscription's models and the template keeps the display name",
+  # The quota poll and credential refresh write an account in the background.
+  # A user's change made against the version the page showed applies when only
+  # such writes came in between; a change from another user in between is
+  # still a conflict.
+  describe "a user's change and background writes" do
+    test "a second user's change against the same version is still a conflict", ctx do
+      account = subscription_fixture(ctx.org)
+      [listed] = get_data(ctx.conn, accounts_path(ctx.org))["accounts"]
+      credentials = %{"access_token" => "replaced-secret", "email" => "replaced@example.com"}
+
+      changes = [
+        %{"disabled" => true},
+        %{"name" => "Renamed account"},
+        %{"credentials" => credentials}
+      ]
+
+      for first <- changes, second <- changes do
+        version =
+          Store.get(ctx.org.salix_tenant_id, account["id"]) |> elem(1) |> Map.get("version")
+
+        assert ctx.conn
+               |> patch(account_path(ctx.org, account["id"]), Map.put(first, "version", version))
+               |> json_response(200)
+
+        assert ctx.conn
+               |> patch(account_path(ctx.org, account["id"]), Map.put(second, "version", version))
+               |> json_response(409)
+      end
+
+      assert listed["version"] !=
+               Store.get(ctx.org.salix_tenant_id, account["id"]) |> elem(1) |> Map.get("version")
+    end
+
+    test "replacing credentials after a background write succeeds; the background write cannot undo it",
          ctx do
-      worker = start_supervised!({ModelsWorker, self()})
-      Application.put_env(:salix_agent, :subscription_worker, worker)
-      subscription_fixture(ctx.org)
+      tenant = ctx.org.salix_tenant_id
+      account = subscription_fixture(ctx.org)
+      [listed] = get_data(ctx.conn, accounts_path(ctx.org))["accounts"]
+      assert {:ok, _} = AccountPool.quota(tenant, account["id"])
 
-      assert %{"models" => [model], "truncated" => false} =
+      # A credential refresh that read the account before the replacement.
+      {:ok, before} = Store.get(tenant, account["id"])
+
+      assert %{"accounts" => [%{"email" => "replaced@example.com"}]} =
                ctx.conn
-               |> post(templates_path(ctx.org, "/discover"), %{"subscription_provider" => "codex"})
-               |> json_response(200)
-               |> data()
-
-      assert %{"id" => "gpt-test-codex", "name" => "Codex Test Model"} = model
-      assert_receive {:discovery, "/models"}
-
-      assert %{"templates" => [%{"name" => "Internal alias"}]} =
-               ctx.conn
-               |> post(templates_path(ctx.org), %{
-                 "name" => "Internal alias",
-                 "subscription_provider" => "codex",
-                 "model" => "gpt-test-codex",
-                 "model_display_name" => "Codex Test Model",
-                 "max_tokens" => "65536"
+               |> patch(account_path(ctx.org, account["id"]), %{
+                 "version" => listed["version"],
+                 "credentials" => %{
+                   "access_token" => "replaced-secret",
+                   "email" => "replaced@example.com"
+                 }
                })
                |> json_response(200)
                |> data()
 
-      assert {:ok, [template]} = Templates.list_private(ctx.org.salix_tenant_id)
-      assert template["model_display_name"] == "Codex Test Model"
-      assert Templates.public_json(template)["model_icon"] == "codex"
+      {:ok, replaced} = Store.get(tenant, account["id"])
 
-      {:ok, _} = Memberships.put_org_member(ctx.org.id, ctx.user.id, "member")
-
-      assert %{"error" => %{"code" => "forbidden"}} =
-               ctx.conn
-               |> post(templates_path(ctx.org, "/discover"), %{"subscription_provider" => "codex"})
-               |> json_response(403)
-
-      refute_receive {:discovery, _}
-    end
-
-    test "templates are edited, offered as models and deleted only when unused", ctx do
-      fields = %{
-        "subscription_provider" => "codex",
-        "model" => "gpt-5.6-sol",
-        "max_tokens" => "8192"
-      }
-
-      assert %{"templates" => [%{"template_id" => id, "name" => "Team Codex"}]} =
-               ctx.conn
-               |> post(templates_path(ctx.org), Map.put(fields, "name", "Team Codex"))
-               |> json_response(200)
-               |> data()
-
-      {:ok, [template]} = Templates.list_private(ctx.org.salix_tenant_id)
-      assert template["provider_config"] == %{"account_pool" => "codex"}
-      {:ok, catalog} = Models.catalog(ctx.org)
-      assert Enum.any?(catalog, &(&1["template_id"] == id))
-
-      assert %{"templates" => [%{"name" => "Updated Codex", "max_tokens" => 8192}]} =
-               ctx.conn
-               |> put(templates_path(ctx.org, "/#{id}"), Map.put(fields, "name", "Updated Codex"))
-               |> json_response(200)
-               |> data()
-
-      assert %{"ok" => true} =
-               ctx.conn
-               |> put("/dashboard/api/v1/orgs/#{ctx.org.slug}/settings/models", %{
-                 "allowed_template_ids" => [id],
-                 "default_template_id" => id
-               })
-               |> json_response(200)
-
-      assert %{"error" => %{"code" => "conflict", "message" => message}} =
-               ctx.conn |> delete(templates_path(ctx.org, "/#{id}")) |> json_response(409)
-
-      assert message =~ "default and allowed models first"
-
-      {:ok, org} = Orgs.get_org(ctx.org.id)
-
-      {:ok, _} =
-        Orgs.update_org(org, %{"default_template_id" => nil, "allowed_template_ids" => []})
-
-      assert %{"templates" => []} =
-               ctx.conn
-               |> delete(templates_path(ctx.org, "/#{id}"))
-               |> json_response(200)
-               |> data()
-
-      assert {:error, :not_found} = Templates.get(id, ctx.org.salix_tenant_id)
-    end
-
-    test "invalid input is refused with the editor's message", ctx do
-      assert %{"error" => %{"code" => "invalid", "message" => message}} =
-               ctx.conn
-               |> post(templates_path(ctx.org), %{
-                 "name" => "",
-                 "subscription_provider" => "codex"
-               })
-               |> json_response(422)
-
-      assert message =~ "Enter a name"
-    end
-
-    test "forged scope and platform config cannot escape the organization editor", ctx do
-      attrs = %{
-        "name" => "Private",
-        "model" => "gpt-5",
-        "subscription_provider" => "codex",
-        "tenant_id" => "foreign",
-        "scope" => "global",
-        "provider_config" => %{"base_url" => "http://internal", "api_key" => "secret"}
-      }
-
-      assert {:ok, template} = Subscriptions.save_template(ctx.scope, nil, attrs)
-      refute Map.has_key?(template, "provider_config")
-      {:ok, stored} = Templates.get(template["template_id"], ctx.org.salix_tenant_id)
-      assert stored["provider_config"] == %{"account_pool" => "codex"}
-      assert stored["tenant_id"] == ctx.org.salix_tenant_id
-      other = org_with_owner_fixture()
-
-      assert {:error, _} =
-               Subscriptions.save_template(
-                 {other.org.id, other.user.id},
-                 template["template_id"],
-                 attrs
+      assert {:error, :conflict} =
+               Store.update_background(
+                 tenant,
+                 Map.put(before, "credential_revision", "refreshed"),
+                 before["version"]
                )
 
-      {:ok, global} = Templates.create(%{"name" => "Global", "model" => "gpt-5"})
-      assert {:error, _} = Subscriptions.save_template(ctx.scope, global["template_id"], attrs)
-    end
-
-    test "deletion sees Agent records without template-shaped fields", ctx do
-      template = template_fixture(ctx.scope, "Referenced")
-      key = agent_key(ctx.org, "reference.json")
-
-      {:ok, _} =
-        SalixStore.S3.put(key, Jason.encode!(%{"template_id" => template["template_id"]}))
-
-      assert {:error, {:conflict, message}} =
-               Subscriptions.delete_template(ctx.scope, template["template_id"])
-
-      assert message =~ "assigned to an Agent"
-      assert {:ok, _} = Templates.get(template["template_id"], ctx.org.salix_tenant_id)
-      :ok = SalixStore.S3.delete(key)
-    end
-
-    test "deletion fails closed when reference records cannot be decoded", ctx do
-      template = template_fixture(ctx.scope, "Unreadable references")
-      key = agent_key(ctx.org, "unreadable.json")
-      {:ok, _} = SalixStore.S3.put(key, "not json")
-
-      assert {:error, {:conflict, message}} =
-               Subscriptions.delete_template(ctx.scope, template["template_id"])
-
-      assert message =~ "Could not verify Agent references"
-      assert {:ok, _} = Templates.get(template["template_id"], ctx.org.salix_tenant_id)
-      :ok = SalixStore.S3.delete(key)
-    end
-
-    test "deletion bounds its Agent reference scan", ctx do
-      template = template_fixture(ctx.scope, "Bounded deletion")
-
-      keys =
-        for n <- 1..101 do
-          key = agent_key(ctx.org, "bounded-#{n}.json")
-          {:ok, _} = SalixStore.S3.put(key, "{}")
-          key
-        end
-
-      assert {:error, {:conflict, message}} =
-               Subscriptions.delete_template(ctx.scope, template["template_id"])
-
-      assert message =~ "scan limit"
-      assert {:ok, _} = Templates.get(template["template_id"], ctx.org.salix_tenant_id)
-      Enum.each(keys, &SalixStore.S3.delete/1)
+      assert {:ok, ^replaced} = Store.get(tenant, account["id"])
     end
   end
 
-  test "members, non-members and revoked admins cannot manage templates or accounts", ctx do
+  describe "a user's change during a credential refresh" do
+    setup ctx do
+      worker = start_supervised!({GatedWorker, SystemsRuntime.Proc.self()})
+      SystemsRuntime.put_env(:salix_agent, :subscription_worker, worker)
+      # An unprepared account refreshes its credentials before the quota read.
+      account = subscription_fixture(ctx.org, %{"prepared" => false})
+      [listed] = get_data(ctx.conn, accounts_path(ctx.org))["accounts"]
+      tenant = ctx.org.salix_tenant_id
+      poll = SystemsRuntime.Task.async(fn -> AccountPool.quota(tenant, account["id"]) end)
+      worker = SystemsRuntime.Proc.receive(do: ({:prepare_held, pid} -> pid))
+      {:ok, claimed} = Store.get(tenant, account["id"])
+      assert claimed["status"] == "login"
+      {:ok, account: account, listed: listed, tenant: tenant, poll: poll, worker: worker}
+    end
+
+    @refreshed %{
+      "credentials" => %{"access_token" => "refreshed-token", "expired" => "2099-01-01T00:00:00Z"},
+      "email" => "bft@example.com"
+    }
+
+    test "a toggle between the claim and the write-back keeps both", ctx do
+      assert ctx.conn
+             |> patch(account_path(ctx.org, ctx.account["id"]), %{
+               "version" => ctx.listed["version"],
+               "disabled" => true
+             })
+             |> json_response(200)
+
+      SystemsRuntime.Proc.send(ctx.worker, {:release, @refreshed})
+      SystemsRuntime.Task.await(ctx.poll, :infinity)
+      {:ok, saved} = Store.get(ctx.tenant, ctx.account["id"])
+
+      assert %{"status" => "ok", "disabled" => true, "prepared" => true} = saved
+
+      assert {:ok, %{"access_token" => "refreshed-token"}} =
+               Store.open(ctx.tenant, saved["id"], saved["credentials"])
+    end
+
+    test "credentials replaced between the claim and the write-back win", ctx do
+      {:ok, replaced} =
+        Store.update_edition(ctx.tenant, ctx.account["id"], ctx.listed["version"], fn current ->
+          {:ok, cipher} = Store.seal(ctx.tenant, current["id"], %{"access_token" => "user-token"})
+
+          current
+          |> Map.merge(%{
+            "credentials" => cipher,
+            "credential_revision" => Store.id(),
+            "status" => "ok"
+          })
+          |> then(&Store.update(ctx.tenant, &1, current["version"]))
+        end)
+
+      SystemsRuntime.Proc.send(ctx.worker, {:release, @refreshed})
+      assert {:error, :conflict} = SystemsRuntime.Task.await(ctx.poll, :infinity)
+      assert {:ok, ^replaced} = Store.get(ctx.tenant, ctx.account["id"])
+
+      assert {:ok, %{"access_token" => "user-token"}} =
+               Store.open(ctx.tenant, replaced["id"], replaced["credentials"])
+    end
+
+    test "an account deleted between the claim and the write-back stays deleted", ctx do
+      {:ok, current} = Store.get(ctx.tenant, ctx.account["id"])
+      assert {:ok, nil} = Store.delete(ctx.tenant, ctx.account["id"], current["version"])
+      SystemsRuntime.Proc.send(ctx.worker, {:release, @refreshed})
+      assert {:error, :not_found} = SystemsRuntime.Task.await(ctx.poll, :infinity)
+      assert {:error, :not_found} = Store.get(ctx.tenant, ctx.account["id"])
+    end
+  end
+
+  describe "a rejected refresh lifting its claim" do
+    setup ctx do
+      worker = start_supervised!({GatedWorker, SystemsRuntime.Proc.self()})
+      SystemsRuntime.put_env(:salix_agent, :subscription_worker, worker)
+      account = subscription_fixture(ctx.org, %{"prepared" => false})
+      [listed] = get_data(ctx.conn, accounts_path(ctx.org))["accounts"]
+      tenant = ctx.org.salix_tenant_id
+      poll = SystemsRuntime.Task.async(fn -> AccountPool.quota(tenant, account["id"]) end)
+      worker = SystemsRuntime.Proc.receive(do: ({:prepare_held, pid} -> pid))
+      {:ok, account: account, listed: listed, tenant: tenant, poll: poll, worker: worker}
+    end
+  end
+
+  test "members, non-members and revoked admins cannot manage accounts", ctx do
     member = user_fixture()
     {:ok, _} = Memberships.put_org_member(ctx.org.id, member.id, "member")
     member_conn = log_in_user(build_conn(), member)
     outsider_conn = log_in_user(build_conn(), user_fixture())
 
-    for path <- [templates_path(ctx.org), accounts_path(ctx.org)] do
-      assert %{"error" => %{"code" => "forbidden"}} =
-               member_conn |> get(path) |> json_response(403)
+    assert %{"error" => %{"code" => "forbidden"}} =
+             member_conn |> get(accounts_path(ctx.org)) |> json_response(403)
 
-      assert %{"error" => %{"code" => "org_not_found"}} =
-               outsider_conn |> get(path) |> json_response(404)
-    end
+    assert %{"error" => %{"code" => "org_not_found"}} =
+             outsider_conn |> get(accounts_path(ctx.org)) |> json_response(404)
 
-    template = %{"name" => "Denied", "subscription_provider" => "codex", "model" => "gpt-5"}
+    key = %{"provider" => "openai", "credentials" => %{"api_key" => "sk-denied"}}
 
     assert %{"error" => %{"code" => "forbidden"}} =
-             member_conn |> post(templates_path(ctx.org), template) |> json_response(403)
+             member_conn |> post(accounts_path(ctx.org), key) |> json_response(403)
 
     assert [%{result: "denied"}] =
-             Observability.list_audit_logs(ctx.org.id, action: "model_template.saved")
+             Observability.list_audit_logs(ctx.org.id, action: "model_account.created")
 
     {:ok, _} = Memberships.put_org_member(ctx.org.id, ctx.user.id, "member")
 
     assert %{"error" => %{"code" => "forbidden"}} =
-             ctx.conn |> post(templates_path(ctx.org), template) |> json_response(403)
+             ctx.conn |> get(accounts_path(ctx.org)) |> json_response(403)
 
     assert {:error, :forbidden} = Subscriptions.list(ctx.scope, "")
-    assert {:ok, []} = Templates.list_private(ctx.org.salix_tenant_id)
   end
-
-  defp templates_path(org, rest \\ ""),
-    do: "/dashboard/api/v1/orgs/#{org.slug}/settings/models/templates#{rest}"
 
   defp accounts_path(org, rest \\ ""),
     do: "/dashboard/api/v1/orgs/#{org.slug}/settings/models/accounts#{rest}"
@@ -530,9 +580,9 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
         Map.merge(
           %{
             "id" => id,
-            "credential_kind" => "subscription_oauth",
-            "provider" => "codex",
-            "status" => "active",
+            "credential" => "subscription",
+            "source" => "codex",
+            "status" => "ok",
             "prepared" => true,
             "disabled" => false,
             "credentials" => cipher
@@ -568,30 +618,17 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
       )
   end
 
-  defp template_fixture(scope, name) do
-    {:ok, template} =
-      Subscriptions.save_template(scope, nil, %{
-        "name" => name,
-        "model" => "gpt-5",
-        "subscription_provider" => "codex"
-      })
-
-    template
-  end
-
-  defp agent_key(org, name),
-    do: SalixStore.Keys.ctl_agents_prefix_for_tenant(org.salix_tenant_id) <> name
-
   defp query_count(conn, path) do
-    test_pid = self()
-    handler = "model-accounts-query-count-#{System.unique_integer([:positive])}"
+    test_pid = SystemsRuntime.Proc.self()
+    handler = "model-accounts-query-count-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:bridge_for_teams, :repo, :query],
         fn _event, _measurements, _metadata, _config ->
-          if self() == test_pid, do: send(test_pid, :repo_query)
+          if SystemsRuntime.Proc.self() == test_pid,
+            do: SystemsRuntime.Proc.send(test_pid, :repo_query)
         end,
         nil
       )
@@ -600,12 +637,12 @@ defmodule BridgeForTeamsWeb.DashboardAPIModelAccountsTest do
       conn |> get(path) |> json_response(200)
       count_messages(0)
     after
-      :telemetry.detach(handler)
+      SystemsRuntime.Telemetry.detach(handler)
     end
   end
 
   defp count_messages(count) do
-    receive do
+    SystemsRuntime.Proc.receive do
       :repo_query -> count_messages(count + 1)
     after
       0 -> count

@@ -5,6 +5,8 @@
  * production bundles never include it.
  */
 
+import type { BftQqMenuItem } from "./api";
+
 const user = { id: "usr_01", name: "Maya Chen", email: "maya@acme-robotics.com" };
 const orgs = [
   { slug: "acme", name: "Acme Robotics" },
@@ -33,10 +35,17 @@ const globexProjects = Array.from({ length: 18 }, (_, index) => ({
 
 // The first-run checklist on the Overview; skipping it hides it until reload.
 let setupDismissed = false;
+let setupReminded = false;
 
 function setupChecklist() {
   if (setupDismissed) {
-    return { active: false, steps: [], first_project_id: null, oauth_configured: null };
+    return {
+      active: false,
+      steps: [],
+      first_project_id: null,
+      oauth_configured: null,
+      oauth_reminded: false,
+    };
   }
   const swarm = !noSwarms();
   return {
@@ -48,7 +57,135 @@ function setupChecklist() {
     ],
     first_project_id: swarm ? "prj_support" : null,
     oauth_configured: false,
+    oauth_reminded: setupReminded,
   };
+}
+
+/*
+ * The first-run onboarding wizard at /onboarding. Gmail is connected; the
+ * other toolkits can be connected. `?no-swarm` previews a user without an
+ * organization. Finishing or skipping opens the dashboard again.
+ */
+const wizardGroups = [
+  [
+    "inbox",
+    [
+      "inbox.label_new_mail",
+      "inbox.archive_unimportant",
+      "inbox.assist_scheduling",
+      "inbox.draft_replies",
+      "inbox.decline_cold_outreach",
+    ],
+  ],
+  ["informed", ["informed.competitive_intel", "informed.github_reports"]],
+  ["meetings", ["meetings.meeting_briefing", "meetings.contact_dossier"]],
+  ["calendar", ["calendar.schedule_optimizer"]],
+  ["notifications", ["notifications.im_updates"]],
+  ["memory", ["memory.semantic_profile"]],
+] as const;
+
+const wizard = {
+  status: "in_progress",
+  step: "capabilities",
+  capabilities: Object.fromEntries(
+    wizardGroups.flatMap(([, keys]) =>
+      keys.map((key) => [key, key !== "inbox.archive_unimportant"])
+    )
+  ) as Record<string, boolean>,
+};
+
+const noWizardOrg = () => new URLSearchParams(window.location.search).has("no-swarm");
+
+function wizardData() {
+  const none = noWizardOrg();
+  return {
+    ...wizard,
+    capability_groups: wizardGroups.map(([key, keys]) => ({ key, capabilities: keys })),
+    user,
+    org: none ? null : { slug: "acme", name: "Acme Robotics", role: "owner" },
+    teammates: none
+      ? { total: 0, sample: [] }
+      : {
+          total: 37,
+          sample: [
+            { name: "Daniel Okafor", email: "daniel@acme-robotics.com", role: "admin" },
+            { name: "Priya Raman", email: "priya@acme-robotics.com", role: "member" },
+            { name: null, email: "ops-oncall@acme-robotics.com", role: "member" },
+            { name: "Wen Li", email: "wen.li@acme-robotics.com", role: "member" },
+          ],
+        },
+  };
+}
+
+function wizardIntegrations() {
+  if (noWizardOrg()) {
+    return {
+      project: null,
+      can_connect: false,
+      org_admin: false,
+      composio: { status: "ok", configured: false },
+      toolkits: [],
+      messaging: [],
+      connected_providers: [],
+    };
+  }
+  return {
+    project: { id: "prj_support", name: "Maya's Swarm" },
+    can_connect: true,
+    org_admin: true,
+    composio: { status: "ok", configured: true },
+    toolkits: [
+      "gmail",
+      "googlecalendar",
+      "google_admin",
+      "github",
+      "linear",
+      "notion",
+      "slack",
+    ].map((toolkit) => ({
+      toolkit,
+      state: toolkit === "gmail" ? "connected" : "connectable",
+    })),
+    messaging: [
+      { provider: "slack", connected: true },
+      { provider: "feishu", connected: false },
+    ],
+    connected_providers: ["google"],
+  };
+}
+
+function wizardReply(method: string, rest: string, body: Record<string, unknown>) {
+  const ok = (data: unknown) => reply(200, { ok: true, data });
+  if (method === "GET") {
+    if (rest === "") return ok(wizardData());
+    if (rest === "/integrations") return ok(wizardIntegrations());
+    return notFound();
+  }
+  switch (rest) {
+    case "/capabilities":
+      Object.assign(wizard.capabilities, body.capabilities);
+      wizard.step = "profile";
+      return ok(wizardData());
+    case "/profile":
+      wizard.step = "integrations";
+      return ok(wizardData());
+    case "/connect":
+      return failure(
+        503,
+        "runtime_unavailable",
+        "Salix is unavailable right now. Retry shortly."
+      );
+    case "/complete":
+    case "/skip":
+      // The mock keeps the wizard open so it can be walked again.
+      wizard.step = "capabilities";
+      return ok({
+        redirect: noWizardOrg() ? "/" : "/orgs/acme",
+        notice: rest === "/complete" ? "You're all set." : null,
+      });
+    default:
+      return notFound();
+  }
 }
 
 function globexOverview() {
@@ -177,13 +314,12 @@ function overview(slug: string) {
   };
 }
 
-const agent = (
-  id: string,
-  name: string | null,
-  role: string,
-  lifecycle: string,
-  runtime: string
-) => ({ id, name, role, lifecycle, runtime });
+const agent = (id: string, name: string | null, role: string, lifecycle: string) => ({
+  id,
+  name,
+  role,
+  lifecycle,
+});
 
 const conversation = (
   slug: string,
@@ -202,8 +338,9 @@ const conversation = (
 
 /*
  * Support Desk: a full page. Sales Assistant: the agent list is unavailable.
- * Eng On-call: a truncated agent list. HR Helpdesk: a non-admin viewer with
- * nothing connected yet. Globex swarms stress long names.
+ * Eng On-call: many conversations. HR Helpdesk: a non-admin viewer with
+ * nothing connected yet. Globex swarms stress long names. The Agents panel
+ * lists the Router only: Workers are retired.
  */
 function projectOverview(slug: string, projectId: string) {
   const list = slug === "globex" ? globexProjects : slug === "acme" ? projects : [];
@@ -256,19 +393,7 @@ function projectOverview(slug: string, projectId: string) {
         agents: {
           status: "ok",
           truncated: false,
-          items: [
-            agent("agt_front", "Front desk", "router", "active", "internal"),
-            agent("agt_billing", "Billing specialist", "worker", "active", "internal"),
-            agent("agt_repro", "Repro engineer", "worker", "active", "connected"),
-            agent(
-              "agt_docs",
-              "Help center writer",
-              "worker",
-              "provisioning",
-              "compute"
-            ),
-            agent("agt_old", null, "worker", "archived", "internal"),
-          ],
+          items: [agent("agt_front", "Front desk", "router", "active")],
         },
       };
     case "prj_sales":
@@ -309,16 +434,8 @@ function projectOverview(slug: string, projectId: string) {
         connected_providers: ["slack", "github", "pagerduty"],
         agents: {
           status: "ok",
-          truncated: true,
-          items: Array.from({ length: 12 }, (_, index) =>
-            agent(
-              `agt_o${index}`,
-              `On-call responder ${index + 1}`,
-              index === 0 ? "router" : "worker",
-              "active",
-              index % 2 ? "compute" : "internal"
-            )
-          ),
+          truncated: false,
+          items: [agent("agt_oncall", "On-call router", "router", "active")],
         },
       };
     case "prj_hr":
@@ -341,13 +458,7 @@ function projectOverview(slug: string, projectId: string) {
           status: "ok",
           truncated: false,
           items: [
-            agent(
-              `${projectId}_a`,
-              `${project.name} router`,
-              "router",
-              "active",
-              "internal"
-            ),
+            agent(`${projectId}_a`, `${project.name} router`, "router", "active"),
           ],
         },
       };
@@ -868,15 +979,47 @@ function runnerWrite(slug: string, method: string, rest: string) {
 export const mockCsrfToken = "mock-csrf-token";
 
 /*
- * Agent Swarm Devices. Support Desk has a bit of everything; Sales Assistant
- * shows Compute and Android unavailable; Eng On-call has no Android
- * entitlement; HR Helpdesk is seen by a member. A new device request is
- * "provisioned" eight seconds after it is created.
+ * Agent Swarm Devices. Support Desk has a bit of everything and its Cloud VM
+ * runs on the Lab Mac mini; Sales Assistant shows Compute and Android
+ * unavailable and its Cloud VM sleeps on Cloudflare; Eng On-call has no
+ * Android entitlement and no Cloud VM yet, so its admin can choose a Runner;
+ * HR Helpdesk is seen by a member. A new device request is "provisioned"
+ * eight seconds after it is created.
  */
-const deviceState: Record<
-  string,
-  { cloud: boolean; removed: Set<string>; until: number }
-> = {};
+interface MockCloudVmRunner {
+  name: string;
+  status: string;
+}
+
+interface DeviceState {
+  cloud: boolean;
+  removed: Set<string>;
+  until: number;
+  runner: MockCloudVmRunner | null;
+}
+
+const deviceState: Record<string, DeviceState> = {};
+
+const newDeviceState = (projectId: string): DeviceState => ({
+  cloud: true,
+  removed: new Set(),
+  until: 0,
+  runner:
+    projectId === "prj_support" ? { name: "Lab Mac mini", status: "ready" } : null,
+});
+
+const mockVm = (projectId: string) => {
+  switch (projectId) {
+    case "prj_support":
+      return { status: "ready", location: { kind: "runner", name: "Lab Mac mini" } };
+    case "prj_sales":
+      return { status: "archived", location: { kind: "cloudflare" } };
+    case "prj_oncall":
+      return null;
+    default:
+      return { status: "waking", location: { kind: "cloudflare" } };
+  }
+};
 
 const deviceRuntime = (provider: string, runtimeId: string, version: string) => ({
   id: runtimeId,
@@ -887,11 +1030,7 @@ const deviceRuntime = (provider: string, runtimeId: string, version: string) => 
 function devicesData(slug: string, projectId: string) {
   const swarm = projectOverview(slug, projectId);
   if (!swarm) return undefined;
-  const state = (deviceState[projectId] ??= {
-    cloud: true,
-    removed: new Set(),
-    until: 0,
-  });
+  const state = (deviceState[projectId] ??= newDeviceState(projectId));
   const { id, name, role } = swarm.project;
   const support = projectId === "prj_support";
   const now = Date.now();
@@ -953,13 +1092,20 @@ function devicesData(slug: string, projectId: string) {
           last_seen_at: minutesAgo(60 * 26),
           info_updated_at: null,
           android: null,
+          station_notice: {
+            reason: "device_needs_station",
+            tasks: null,
+            required_tasks: 2,
+            message:
+              "This device runs the old connector, which cannot take tasks. Install the Comma desktop app on it (it includes the station), or install the station with the command from Add station in Comma.",
+          },
         },
       ].filter((device) => !state.removed.has(device.id))
     : [];
   const sales = projectId === "prj_sales";
   return {
     project: { id, name, role },
-    cloud: { enabled: state.cloud, manageable: role === "admin" },
+    cloud_vm: cloudVmData(projectId, state, role === "admin"),
     devices,
     provisioning: state.until > now,
     android: {
@@ -1000,33 +1146,22 @@ function devicesData(slug: string, projectId: string) {
               ]
             : [],
         },
-    runtime_auth: {
-      targets: support
-        ? [
-            {
-              id: "wl_support_router",
-              provider: "codex",
-              status: "running",
-              target: { kind: "compute_workload", workload_id: "wl_support_router" },
-              managed: true,
-            },
-            ...devices.flatMap((device) =>
-              device.runtimes.map((item) => ({
-                id: item.id,
-                provider: item.provider,
-                status: device.status,
-                target: {
-                  kind: "connected_runtime",
-                  device_id: device.id,
-                  runtime_id: item.id,
-                },
-                managed: item.provider !== "pi",
-              }))
-            ),
-          ]
-        : [],
-      request: null,
-    },
+  };
+}
+
+function cloudVmData(projectId: string, state: DeviceState, admin: boolean) {
+  const vm = mockVm(projectId);
+  return {
+    enabled: state.cloud,
+    manageable: admin,
+    vm,
+    runner: state.runner,
+    next_location:
+      state.runner?.status === "ready"
+        ? { kind: "runner", name: state.runner.name }
+        : { kind: "cloudflare" },
+    runner_choosable: admin && vm === null && state.runner === null,
+    runner_removable: admin && state.runner !== null && vm?.location.kind !== "runner",
   };
 }
 
@@ -1040,12 +1175,12 @@ function devicesReply(
   const data = devicesData(slug, projectId);
   if (!orgs.some((org) => org.slug === slug)) return notFound();
   if (!data) return notFound("project_not_found", "Agent Swarm not found.");
-  const state = deviceState[projectId] ?? { cloud: true, removed: new Set(), until: 0 };
+  const state = (deviceState[projectId] ??= newDeviceState(projectId));
   const ok = (value: unknown, status = 200) => reply(status, { ok: true, data: value });
   const admin = data.project.role === "admin";
   const forbidden = () =>
     failure(403, "forbidden", "Only Agent Swarm admins can manage devices.");
-  const key = `${method} ${rest.replace(/^\/(devices|compute)\/(?!cloud$|runners$|provisioning$)[^/]+/, "/$1/:id")}`;
+  const key = `${method} ${rest.replace(/^\/(devices|compute)\/(?!cloud$|cloud-vm\/|runners$|provisioning$)[^/]+/, "/$1/:id")}`;
   switch (key) {
     case "GET /devices":
       return ok(data);
@@ -1071,6 +1206,20 @@ function devicesReply(
           ? "Cloud computer enabled for this Agent Swarm."
           : "Cloud computer disabled for this Agent Swarm.",
       });
+    case "PUT /devices/cloud-vm/runner":
+      if (!admin) return forbidden();
+      if (state.runner)
+        return failure(
+          409,
+          "runner_already_chosen",
+          "This Agent Swarm already has a runner. Remove it before you choose another runner."
+        );
+      state.runner = { name: "Lab Mac mini", status: "processing" };
+      return ok({ notice: "The runner was asked to get ready for the Cloud VM." });
+    case "DELETE /devices/cloud-vm/runner":
+      if (!admin) return forbidden();
+      state.runner = null;
+      return ok({ notice: "Runner removed from this Agent Swarm." });
     case "POST /devices/:id/disconnect":
       return admin ? ok({ notice: "Device disconnected." }) : forbidden();
     case "DELETE /devices/:id":
@@ -1094,76 +1243,55 @@ function devicesReply(
   }
 }
 
-// The browser-owned runtime-auth endpoints: a self-configured Codex runtime
-// that can be bound to one organization account.
-let mockBinding: Record<string, unknown> | null = null;
-
-function runtimeAuthReply(rest: string, method: string, body: Record<string, unknown>) {
-  const ok = (value: unknown) => reply(200, { ok: true, data: value });
-  if (rest === "/runtime-auth/requests") {
-    return ok({
-      runtime_auth_requests: [
-        {
-          request_id: "rar_support_1",
-          action: "verify",
-          target: { workload_id: "wl_support_router" },
-        },
-      ],
-      next_cursor: null,
-    });
-  }
-  if (rest === "/runtime-auth") {
-    if (body.action !== "status")
-      return failure(409, "runtime_busy", "The runtime is running a task.");
-    return ok({
-      runtime_auth: {
-        provider: "codex",
-        auth: { status: "unauthenticated" },
-        native_ready: true,
-        dispatch_ready: false,
-        methods: [
-          { backend: "openai", method: "credential_import", form: "api_key" },
-          { backend: "openai", method: "verify", form: "api_key" },
-          { backend: "chatgpt", method: "native_login", form: "device_code" },
-        ],
-        attempt: null,
-      },
-    });
-  }
-  if (rest.endsWith("/managed-auth")) {
-    const account = { id: "acct_team", version: "v1", name: "Acme team ChatGPT" };
-    if (method === "PUT")
-      mockBinding = { id: 1, account_id: account.id, enabled: true };
-    if (method === "DELETE") mockBinding = null;
-    return ok({
-      mode: "managed_auth",
-      managed_auth: mockBinding
-        ? {
-            source: "organization",
-            state: "configured",
-            provider: "codex",
-            binding: mockBinding,
-            account,
-            accounts: [account],
-            actions: ["bind", "retry", "unbind"],
-            can_configure: true,
-            can_self_configure: true,
-          }
-        : {
-            source: "self_configured",
-            state: "unbound",
-            provider: "codex",
-            binding: null,
-            account: null,
-            accounts: [account],
-            actions: ["bind"],
-            can_configure: true,
-            can_self_configure: true,
-          },
-    });
-  }
-  return notFound("not_found", "Not found");
+type MockModelChoice = Record<string, unknown> & { kind: string };
+interface MockModelOption {
+  key: string;
+  choice: MockModelChoice;
+  label: string;
+  vendor: string | null;
 }
+
+const catalogOption = (
+  model: string,
+  label: string,
+  vendor: string,
+  served_by: "subscription" | "api_key" | null = null,
+  plans: string[] = []
+) => ({
+  key: `catalog:${model}`,
+  choice: { kind: "catalog", model },
+  label,
+  vendor,
+  served_by,
+  plans,
+});
+
+/** A few of the Salix catalog models an admin can allow. */
+const mockCatalog: MockModelOption[] = [
+  catalogOption("claude-sonnet-4-6", "Claude Sonnet 4.6", "anthropic", "api_key"),
+  catalogOption("claude-opus-4-8", "Claude Opus 4.8", "anthropic", "api_key"),
+  catalogOption("gpt-5.5", "GPT-5.5", "openai", "subscription", ["codex"]),
+  catalogOption("gemini-3-pro", "Gemini 3 Pro", "google"),
+  catalogOption("deepseek-v4-flash", "DeepSeek V4 Flash", "deepseek"),
+];
+
+/** The mock's stand-in for the server's option keys. */
+const mockOptionOf = (choice: MockModelChoice): MockModelOption => {
+  const key =
+    choice.kind === "catalog"
+      ? `catalog:${String(choice.model)}`
+      : choice.kind === "platform"
+        ? `platform:${String(choice.tier)}`
+        : `${choice.kind}:${String(choice.provider)}:${String(choice.model)}`;
+  return (
+    mockCatalog.find((option) => option.key === key) ?? {
+      key,
+      choice,
+      label: String(choice.model ?? choice.tier ?? key),
+      vendor: null,
+    }
+  );
+};
 
 /*
  * Settings: one shared fixture for every org. Writes to General, AI models,
@@ -1202,31 +1330,22 @@ const settings = {
   },
   models: {
     catalog_status: "ok",
-    catalog: [
-      { template_id: "tpl_sonnet", label: "Claude Sonnet" },
-      { template_id: "tpl_opus", label: "Claude Opus" },
-      { template_id: "tpl_gpt", label: "GPT-5 — Research" },
-    ],
-    allowed_template_ids: ["tpl_sonnet", "tpl_opus"],
-    default_template_id: "tpl_sonnet",
-    default_router_template_id: null as string | null,
+    servable_status: "ok",
+    catalog: mockCatalog,
+    allowed_models: mockCatalog.slice(0, 2),
+    default_router_model: null as MockModelOption | null,
+    default_task_model: mockCatalog[0] as MockModelOption | null,
     default_options: {
-      router: [
-        { value: "tpl_sonnet", label: "Claude Sonnet" },
-        { value: "tpl_opus", label: "Claude Opus" },
-      ],
-      worker: [
-        { value: "tpl_sonnet", label: "Claude Sonnet" },
-        { value: "tpl_opus", label: "Claude Opus" },
-      ],
+      router: mockCatalog.slice(0, 2),
+      task: mockCatalog.slice(0, 2),
     },
     platform_defaults: {
-      router: { label: "Claude Haiku" },
-      worker: { label: "Claude Sonnet" },
+      router: { label: "Claude Haiku", model_icon: null },
+      task: { label: "Claude Sonnet", model_icon: null },
     },
   },
   sso: {
-    connection: null,
+    connection: null as Record<string, unknown> | null,
     feishu_app: {
       app_id: "cli_a1b2c3",
       display_name: "Acme Feishu",
@@ -1239,16 +1358,17 @@ const settings = {
     oauth: {
       status: "ok",
       apps: [
-        ["github", "GitHub", "Iv1.8a61f9b3a7aba766", true],
-        ["linear", "Linear", null, false],
-        ["notion", "Notion", null, false],
-      ].map(([provider, label, clientId, configured]) => ({
+        ["github", "GitHub", "Iv1.8a61f9b3a7aba766", "org"],
+        ["linear", "Linear", null, null],
+        ["notion", "Notion", null, null],
+        ["slack", "Slack", null, "default"],
+      ].map(([provider, label, clientId, source]) => ({
         provider,
         label,
         client_id: clientId,
-        client_secret_configured: configured,
-        source: configured ? "org" : null,
-        configured,
+        client_secret_configured: source === "org",
+        source,
+        configured: source !== null,
         setup_href: `https://example.com/${String(provider)}/new-app`,
       })),
       waiting_members: { names: [], truncated: false },
@@ -1283,64 +1403,50 @@ const settings = {
               project_name: "Support Desk",
               connect_id: "conn_1",
               disabled: false,
-              href: "/orgs/acme/projects/prj_support/integrations",
+              href: "/orgs/acme/projects/prj_support/connections?provider=feishu",
             },
           ],
         },
       ],
       apps_truncated: false,
       routes_status: "ok",
-      projects,
+      projects_shown: projects.length,
       projects_truncated: false,
       redirect_uri: "https://bft.example.com/auth/callback",
-      scope_cards: ["sso", "bot", "combined"].map((id) => ({
-        id,
-        title: id,
-        description: null,
-        json: JSON.stringify(
-          { scopes: { user: ["contact:user.base:readonly"] } },
-          null,
-          2
-        ),
-      })),
-      optional_scopes: [
+      scope_cards: [
         {
-          scope: "im:message.group_at_msg.include_bot:readonly",
-          label: "Receive @mentions sent by other bots",
-          note: "Only needed for bot-to-bot workflows.",
+          id: "sso",
+          description: "Use when the app only signs users into Bridge For Teams.",
+          json: '{\n  "scopes": {\n    "user": [\n      "contact:user.base:readonly"\n    ]\n  }\n}',
+          title: "SSO login",
+        },
+        {
+          id: "bot",
+          description:
+            "App-identity permissions for messaging, directory access, meetings, and approval processing.",
+          json: '{\n  "scopes": {\n    "tenant": [\n      "im:message:send_as_bot",\n      "im:message.group_at_msg:readonly",\n      "im:message.p2p_msg:readonly",\n      "im:message:readonly",\n      "im:message.group_msg",\n      "im:chat:read",\n      "im:chat.members:read",\n      "im:message:update",\n      "im:message:recall",\n      "im:message.reactions:read",\n      "im:message.reactions:write_only",\n      "im:message.pins:read",\n      "im:message.pins:write_only",\n      "im:resource",\n      "contact:contact.base:readonly",\n      "contact:user.base:readonly",\n      "contact:department.base:readonly",\n      "im:message.group_at_msg.include_bot:readonly",\n      "contact:user.email:readonly",\n      "contact:user.department:readonly",\n      "vc:meeting.bot.join:write",\n      "vc:meeting.bot.manage:write",\n      "vc:meeting.interaction:write",\n      "vc:meeting.message:write",\n      "vc:meeting.meetingevent:read",\n      "approval:approval.list:readonly",\n      "approval:instance",\n      "approval:task"\n    ]\n  }\n}',
+          title: "Group bot",
+        },
+        {
+          id: "combined",
+          description:
+            "Default integration permissions, including editing, sending mail, and processing approvals.",
+          json: '{\n  "scopes": {\n    "tenant": [\n      "im:message:send_as_bot",\n      "im:message.group_at_msg:readonly",\n      "im:message.p2p_msg:readonly",\n      "im:message:readonly",\n      "im:message.group_msg",\n      "im:chat:read",\n      "im:chat.members:read",\n      "im:message:update",\n      "im:message:recall",\n      "im:message.reactions:read",\n      "im:message.reactions:write_only",\n      "im:message.pins:read",\n      "im:message.pins:write_only",\n      "im:resource",\n      "contact:contact.base:readonly",\n      "contact:user.base:readonly",\n      "contact:department.base:readonly",\n      "im:message.group_at_msg.include_bot:readonly",\n      "contact:user.email:readonly",\n      "contact:user.department:readonly",\n      "vc:meeting.bot.join:write",\n      "vc:meeting.bot.manage:write",\n      "vc:meeting.interaction:write",\n      "vc:meeting.message:write",\n      "vc:meeting.meetingevent:read",\n      "approval:approval.list:readonly",\n      "approval:instance",\n      "approval:task"\n    ],\n    "user": [\n      "contact:user.base:readonly",\n      "contact:user:search",\n      "minutes:minutes.basic:read",\n      "minutes:minutes.search:read",\n      "minutes:minutes.transcript:export",\n      "minutes:minutes.artifacts:read",\n      "calendar:calendar:readonly",\n      "calendar:calendar",\n      "vc:meeting.meetingid:read",\n      "vc:meeting.meetingevent:read",\n      "minutes:minutes.media:export",\n      "minutes:minutes.statistics:read",\n      "docx:document:readonly",\n      "docs:document:export",\n      "docx:document",\n      "bitable:app:readonly",\n      "board:whiteboard:node:read",\n      "task:task:read",\n      "task:tasklist:read",\n      "task:comment:read",\n      "task:task:write",\n      "task:tasklist:write",\n      "task:comment:write",\n      "mail:user_mailbox:readonly",\n      "mail:user_mailbox.message:readonly",\n      "mail:user_mailbox.message.address:read",\n      "mail:user_mailbox.message.subject:read",\n      "mail:user_mailbox.message.body:read",\n      "mail:user_mailbox.message:modify",\n      "mail:user_mailbox.message:send",\n      "okr:okr:readonly",\n      "okr:okr"\n    ]\n  }\n}',
+          title: "SSO + group bot",
         },
       ],
+      optional_scopes: [],
     },
   },
 };
 
 /*
- * AI models: private templates and organization accounts. Writes change this
+ * AI models: organization accounts. Writes change this
  * state; a Codex device authorization connects on its second poll.
  */
 type MockAccount = Record<string, unknown> & { id: string; version: string };
 
 const modelState = {
-  templates: [
-    {
-      template_id: "tpl_team_codex",
-      name: "Team Codex",
-      model: "gpt-5.6-sol",
-      model_display_name: "GPT-5.6 Sol",
-      model_vendor: "openai",
-      max_tokens: 65536,
-      subscription_provider: "codex",
-    },
-    {
-      template_id: "tpl_team_claude",
-      name: "Claude for support triage",
-      model: "claude-sonnet-4-6",
-      model_display_name: null,
-      model_vendor: null,
-      max_tokens: 32000,
-      subscription_provider: "claude",
-    },
-  ] as Record<string, unknown>[],
   accounts: [
     {
       id: "acct_codex",
@@ -1403,42 +1509,9 @@ const modelState = {
   polls: 0,
 };
 
-const discovered = [
-  ["gpt-5.6-sol", "GPT-5.6 Sol"],
-  ["gpt-5.6-terra", "GPT-5.6 Terra"],
-  ["gpt-5.5-codex", "GPT-5.5 Codex"],
-  ["claude-sonnet-4-6", "Claude Sonnet 4.6"],
-  ["claude-opus-4-8", "Claude Opus 4.8"],
-].map(([id, name]) => ({ id, name, vendor: null }));
-
 function modelsReply(method: string, rest: string, body: Record<string, unknown>) {
   const ok = (data: unknown) => reply(200, { ok: true, data });
   const page = () => ok({ accounts: modelState.accounts, next: null });
-  const templates = () => ok({ templates: modelState.templates });
-  if (rest === "/templates") {
-    if (method === "POST") {
-      modelState.templates.push({
-        ...body,
-        template_id: `tpl_${Date.now()}`,
-        max_tokens: Number(body.max_tokens) || 65536,
-      });
-    }
-    return templates();
-  }
-  if (rest === "/templates/discover")
-    return ok({ models: discovered, truncated: false });
-  const template = /^\/templates\/([^/]+)$/.exec(rest)?.[1];
-  if (template) {
-    modelState.templates =
-      method === "DELETE"
-        ? modelState.templates.filter((item) => item.template_id !== template)
-        : modelState.templates.map((item) =>
-            item.template_id === template
-              ? { ...item, ...body, max_tokens: Number(body.max_tokens) || 65536 }
-              : item
-          );
-    return templates();
-  }
   if (rest === "/accounts") {
     if (method === "POST") {
       const key = body.kind === "provider_api_key";
@@ -1496,7 +1569,7 @@ function modelsReply(method: string, rest: string, body: Record<string, unknown>
           {
             project: { id: "prj_support", name: "Support Desk" },
             workload_id: "wl_support_router",
-            href: "/orgs/acme/projects/prj_support/devices?runtime_auth_target=wl_support_router",
+            href: "/orgs/acme/projects/prj_support/devices",
           },
         ],
         hidden_count: 1,
@@ -1586,10 +1659,52 @@ function settingsReply(method: string, rest: string, body: Record<string, unknow
     return ok(general.cli);
   }
   if (rest === "/models") {
-    Object.assign(models, body);
+    const option = (value: unknown) =>
+      value ? mockOptionOf(value as MockModelChoice) : null;
+    if (Array.isArray(body.allowed_models))
+      models.allowed_models = (body.allowed_models as MockModelChoice[]).map(
+        mockOptionOf
+      );
+    if ("default_router_model" in body)
+      models.default_router_model = option(body.default_router_model);
+    if ("default_task_model" in body)
+      models.default_task_model = option(body.default_task_model);
+    const offered =
+      models.allowed_models.length > 0 ? models.allowed_models : models.catalog;
+    const withDefault = (current: MockModelOption | null) =>
+      current && !offered.some((item) => item.key === current.key)
+        ? [...offered, current]
+        : offered;
+    models.default_options = {
+      router: withDefault(models.default_router_model),
+      task: withDefault(models.default_task_model),
+    };
     return ok(models);
   }
-  if (rest === "/sso") return ok(settings.sso);
+  if (rest === "/sso") {
+    if (method === "PUT") {
+      const config = (body.provider_config ?? {}) as Record<string, unknown>;
+      const stored = settings.sso.connection;
+      const feishu = body.provider === "feishu";
+      settings.sso.connection = {
+        provider: body.provider,
+        issuer: body.issuer ?? null,
+        client_id: feishu ? settings.sso.feishu_app.app_id : (body.client_id ?? null),
+        // Secrets are write-only: the mock keeps only whether one is stored.
+        client_secret_configured:
+          feishu ||
+          !!body.client_secret ||
+          (stored?.provider === body.provider && !!stored?.client_secret_configured),
+        allowed_domains: [],
+        default_role: body.default_role ?? "member",
+        provider_config: {
+          scope: config.scope ?? null,
+          provisioning_policy: config.provisioning_policy ?? "jit",
+        },
+      };
+    }
+    return ok(settings.sso);
+  }
   if (rest === "/sso/checks") {
     return ok({
       checks: {
@@ -1765,6 +1880,1018 @@ const pluginCatalog = [
     "org_composio"
   ),
 ];
+
+/*
+ * An Agent Swarm's Plugins and Skills. Support Desk has every kind of
+ * plugin and credential; Sales Assistant is read by a member; Eng On-call's
+ * runtime is down. Writes change this in-memory state.
+ */
+type MockCredential = {
+  id: string;
+  kind: string;
+  label: string;
+  state: string;
+  dependent_mcps: string[];
+  action: "connect" | "reconnect" | null;
+  disconnectable: boolean;
+  integrations_href: string | null;
+};
+
+const credential = (
+  id: string,
+  kind: string,
+  label: string,
+  state: string,
+  dependent_mcps: string[] = []
+): MockCredential => ({
+  id,
+  kind,
+  label,
+  state,
+  dependent_mcps,
+  action:
+    kind === "im_connect" ? null : state === "connected" ? "reconnect" : "connect",
+  disconnectable: kind !== "im_connect" && state === "connected",
+  integrations_href: null,
+});
+
+const swarmPluginState: Record<
+  string,
+  {
+    enabled: Set<string>;
+    created: { id: string; name: string; description: string | null }[];
+  }
+> = {};
+
+function swarmPluginRows(slug: string, projectId: string) {
+  const swarm = projectOverview(slug, projectId);
+  if (!swarm) return undefined;
+  const state = (swarmPluginState[projectId] ??= {
+    enabled: new Set(["tenant.knowledge", "linear"]),
+    created: [],
+  });
+  const admin = projectId !== "prj_sales";
+  const row = (
+    plugin_id: string,
+    name: string,
+    description: string | null,
+    owner_scope: "system" | "tenant" | "group",
+    extra: { locked?: boolean; attention?: string[]; android?: boolean } = {}
+  ) => ({
+    plugin_id,
+    name,
+    description,
+    owner_scope,
+    enabled: extra.locked === true || state.enabled.has(plugin_id),
+    locked: extra.locked === true,
+    toggleable: admin && extra.locked !== true && extra.android !== true,
+    editable: admin && owner_scope === "group",
+    attention: extra.attention ?? [],
+    refs: emptyRefs(),
+    setup_destination: null,
+  });
+  const plugins = [
+    row(
+      "system.search",
+      "Core Search",
+      "Search the web and the organization's sources.",
+      "system",
+      {
+        locked: true,
+      }
+    ),
+    row(
+      "tenant.knowledge",
+      "Knowledge Pack",
+      "Organization-owned knowledge tools.",
+      "tenant"
+    ),
+    row("linear", "Linear", "Read and update Linear issues and projects.", "system", {
+      attention: state.enabled.has("linear") ? ["linear"] : [],
+    }),
+    row("slack", "Slack", "Workspace messaging through Slack.", "system", {
+      attention: ["Slack messaging"],
+    }),
+    row(
+      "android-control",
+      "Android Control",
+      "Operate Android phones from a connected device.",
+      "system",
+      {
+        android: true,
+      }
+    ),
+    row(
+      "group.release",
+      "Release Helper",
+      "Project-owned release checklist and changelog automation for every service this Agent Swarm ships.",
+      "group"
+    ),
+    ...state.created.map((item) => row(item.id, item.name, item.description, "group")),
+  ].toSorted((a, b) => a.name.localeCompare(b.name));
+  return {
+    project: {
+      id: projectId,
+      name: swarm.project.name,
+      role: admin ? "admin" : "user",
+    },
+    plugins,
+    android: { status: "ok", entitled: false },
+  };
+}
+
+function swarmPluginSetup(slug: string, projectId: string, pluginId: string) {
+  const integrations = `/orgs/${slug}/projects/${projectId}/connections?provider=slack`;
+  if (pluginId === "linear") {
+    return {
+      mcps: [
+        {
+          alias: "linear",
+          placement: "server",
+          state: "waiting_for_oauth",
+          connections: [
+            credential(
+              "linear-native",
+              "native_mcp_oauth",
+              "Linear MCP OAuth",
+              "not_connected",
+              ["linear"]
+            ),
+            credential("linear-managed", "managed_oauth", "Linear OAuth", "connected", [
+              "linear",
+            ]),
+          ],
+        },
+      ],
+      connections: [
+        credential("linear-composio", "composio", "Linear via Composio", "external"),
+      ],
+    };
+  }
+  if (pluginId === "slack") {
+    return {
+      mcps: [
+        {
+          alias: "slack",
+          placement: "server",
+          state: "waiting_for_oauth",
+          connections: [
+            credential(
+              "slack-managed",
+              "managed_oauth",
+              "Slack OAuth",
+              "not_connected",
+              ["slack"]
+            ),
+          ],
+        },
+      ],
+      connections: [
+        {
+          ...credential("slack-im", "im_connect", "Slack messaging", "not_connected"),
+          integrations_href: integrations,
+        },
+      ],
+    };
+  }
+  return null;
+}
+
+function swarmPluginsReply(
+  slug: string,
+  projectId: string,
+  rest: string,
+  method: string,
+  body: Record<string, unknown>
+) {
+  if (!orgs.some((org) => org.slug === slug)) return notFound();
+  if (projectId === "prj_oncall")
+    return failure(503, "runtime_unavailable", "Salix is unavailable. Retry shortly.");
+  const data = swarmPluginRows(slug, projectId);
+  if (!data) return notFound("project_not_found", "Agent Swarm not found.");
+  const ok = (value: unknown, status = 200) => reply(status, { ok: true, data: value });
+  const admin = data.project.role === "admin";
+  const forbidden = () =>
+    failure(403, "forbidden", "Only Agent Swarm admins can manage plugins.");
+  const state = swarmPluginState[projectId];
+  const parts = rest.split("/").filter(Boolean).map(decodeURIComponent);
+  const [, pluginId, section, connectionId, action] = parts;
+  if (method === "GET" && !pluginId) return ok(data);
+  if (method === "GET" && pluginId && !section) {
+    const found = data.plugins.find((item) => item.plugin_id === pluginId);
+    return ok({
+      project: data.project,
+      plugin: found
+        ? { ...found, setup: swarmPluginSetup(slug, projectId, pluginId) }
+        : null,
+      android: pluginId === "android-control" ? data.android : null,
+    });
+  }
+  if (!admin) return forbidden();
+  if (method === "POST" && !pluginId) {
+    const id = `group.p${Date.now()}`;
+    state?.created.push({
+      id,
+      name: String(body.name ?? id),
+      description:
+        typeof body.description === "string" && body.description
+          ? body.description
+          : null,
+    });
+    return ok({ plugin_id: id, notice: `Plugin created: ${id}.` }, 201);
+  }
+  if (method === "PUT" && pluginId && !section)
+    return ok({ notice: "Plugin updated." });
+  if (method === "PUT" && section === "enablement") {
+    if (pluginId === "android-control")
+      return failure(
+        409,
+        "android_not_entitled",
+        "Android connector access is not enabled for this organization."
+      );
+    if (body.enabled === true) state?.enabled.add(pluginId ?? "");
+    else state?.enabled.delete(pluginId ?? "");
+    return ok({
+      notice: body.enabled === true ? "Plugin enabled." : "Plugin disabled.",
+    });
+  }
+  if (method === "POST" && section === "connections" && connectionId) {
+    if (action === "disconnect") return ok({ notice: "Connection disconnected." });
+    return connectionId === "linear-managed"
+      ? ok({ notice: "Connected" })
+      : failure(
+          422,
+          "provider_not_configured",
+          "That platform isn't configured for your organization yet."
+        );
+  }
+  return notFound();
+}
+
+/*
+ * Agent Swarm Connections: Support Desk has a Feishu route, a Slack app and
+ * a Signal chat; Sales Assistant is read by a member; Eng On-call's runtime
+ * is down, so only Composio answers.
+ */
+const connectionState: Record<
+  string,
+  {
+    feishu: { connect_id: string; disabled: boolean }[];
+    slack: {
+      connect_id: string;
+      disabled: boolean;
+      installed: boolean;
+      /** Where its messages go, as the connect row names it. */
+      inbound_agent: string;
+    }[];
+    lark: {
+      connect_id: string;
+      disabled: boolean;
+      app_id: string;
+      verification_token_configured: boolean;
+      encrypt_key_configured: boolean;
+    }[];
+    qq: {
+      connect_id: string;
+      disabled: boolean;
+      app_id: string;
+      command_menu: BftQqMenuItem[];
+    }[];
+    accounts: {
+      binding_id: string;
+      provider: string;
+      alias: string;
+      enabled: boolean;
+    }[];
+    signal: { binding_id: string; display_name: string | null; kind: string }[];
+    composio: Record<string, string>;
+    tailnet: {
+      state: string;
+      tags: string[];
+      accept_routes: boolean;
+      expected_tailnet: string | null;
+    };
+  }
+> = {};
+
+const mockGate = (
+  gate_id: string,
+  label: string,
+  status: string,
+  next_action: string,
+  reason_class: string | null = null,
+  evidence: Record<string, unknown> = {}
+) => ({ gate_id, label, status, reason_class, next_action, required: true, evidence });
+
+// A Slack connection that makes each new thread a Task runs one of these.
+const mockSlackTaskModels = [
+  { key: "", choice: null, label: "Default Task model" },
+  ...mockCatalog.slice(0, 2).map(({ key, choice, label }) => ({ key, choice, label })),
+];
+
+function connectionsData(slug: string, projectId: string) {
+  const swarm = projectOverview(slug, projectId);
+  if (!swarm) return undefined;
+  const support = projectId === "prj_support";
+  const state = (connectionState[projectId] ??= {
+    feishu: support ? [{ connect_id: "imc1_feishu_support", disabled: false }] : [],
+    slack: support
+      ? [
+          {
+            connect_id: "imc1_slack_support",
+            disabled: false,
+            installed: true,
+            inbound_agent: "Router · router",
+          },
+        ]
+      : [],
+    lark: [],
+    qq: [],
+    accounts: support
+      ? [{ binding_id: "ob_notion", provider: "notion", alias: "Docs", enabled: true }]
+      : [],
+    signal: support
+      ? [{ binding_id: "sb_1", display_name: "Support rota", kind: "group" }]
+      : [],
+    composio: support ? { notion: "ca_notion" } : {},
+    tailnet: {
+      state: support ? "running" : "disabled",
+      tags: ["tag:comma-agent"],
+      accept_routes: false,
+      expected_tailnet: support ? "acme.com" : null,
+    },
+  });
+  const down = projectId === "prj_oncall";
+  const live = <T>(value: T) => (down ? null : value);
+  const routeReady = state.feishu.some((connect) => !connect.disabled);
+  return {
+    project: {
+      id: projectId,
+      name: swarm.project.name,
+      role: projectId === "prj_sales" ? "user" : "admin",
+    },
+    org_admin: projectId !== "prj_sales",
+    messaging: {
+      status: down ? "unavailable" : "ok",
+      feishu: live({
+        apps: [{ app_id: "cli_a1b2c3", name: "Acme Feishu" }],
+        connects: state.feishu.map((connect) => ({
+          ...connect,
+          status: "connected",
+          app_id: "cli_a1b2c3",
+          webhook_url:
+            "https://salix.example.com/v1/im/feishu/events?app_id=cli_a1b2c3",
+          app_secret_configured: true,
+          verification_token_configured: true,
+          encrypt_key_configured: false,
+          updated_at: minutesAgo(180),
+        })),
+        route: {
+          status:
+            state.feishu.length === 0
+              ? "not_connected"
+              : routeReady
+                ? "ready"
+                : "disabled",
+          connect_id: state.feishu[0]?.connect_id ?? null,
+          router: state.feishu.length === 0 ? null : "Router",
+        },
+      }),
+      slack: live({
+        app_name: swarm.project.name,
+        manifest: mockManifest(swarm.project.name),
+        inbound_agents: [{ id: "agt_router", label: "Router · router" }],
+        inbound_agents_truncated: false,
+        default_inbound_agent_id: "agt_router",
+        task_models: mockSlackTaskModels,
+        connects: state.slack.map((connect) => ({
+          ...connect,
+          inbound: connect.inbound_agent.startsWith("Tasks") ? "tasks" : "agent",
+          workspace: "Acme Robotics",
+          install_url: "https://slack.com/oauth/v2/authorize?client_id=1",
+          client_secret_configured: true,
+          signing_secret_configured: true,
+          updated_at: minutesAgo(60 * 26),
+        })),
+      }),
+      lark: live({
+        connects: state.lark.map((connect) => ({
+          ...connect,
+          status: "connected",
+          app_name: "Acme Lark bot",
+          webhook_url: `https://salix.example.com/v1/im/lark/events?app_id=${connect.app_id}`,
+          app_secret_configured: true,
+          updated_at: minutesAgo(5),
+        })),
+        route: {
+          status:
+            state.lark.length === 0
+              ? "not_connected"
+              : state.lark.some((connect) => !connect.disabled)
+                ? "ready"
+                : "disabled",
+          connect_id: state.lark[0]?.connect_id ?? null,
+          router: state.lark.length === 0 ? null : "Router",
+        },
+        scope_json: JSON.stringify(
+          {
+            scopes: {
+              tenant: [
+                "im:message",
+                "im:message:send_as_bot",
+                "im:message.group_msg",
+                "im:resource",
+                "im:chat:readonly",
+              ],
+            },
+          },
+          null,
+          2
+        ),
+      }),
+      qq: live({
+        connects: state.qq.map((connect) => ({
+          ...connect,
+          status: "connected",
+          bot_name: "Acme helper",
+          webhook_url: `https://salix.example.com/v1/im/qq/events?app_id=${connect.app_id}`,
+          app_secret_configured: true,
+          command_menu_sync: { private: "synced", group: "synced" },
+          updated_at: minutesAgo(5),
+        })),
+        route: {
+          status:
+            state.qq.length === 0
+              ? "not_connected"
+              : state.qq.some((connect) => !connect.disabled)
+                ? "ready"
+                : "disabled",
+          connect_id: state.qq[0]?.connect_id ?? null,
+          router: state.qq.length === 0 ? null : "Router",
+        },
+      }),
+    },
+    signal: down
+      ? { status: "unavailable", number: null, bindings: [], bindings_truncated: false }
+      : {
+          status: "ok",
+          number: "+15550100",
+          bindings: state.signal.map((binding) => ({
+            ...binding,
+            number: "+15550142",
+          })),
+          bindings_truncated: false,
+        },
+    accounts: down
+      ? { status: "unavailable", connections: [], providers: [] }
+      : {
+          status: "ok",
+          connections: state.accounts.map((account) => ({
+            ...account,
+            account: "Acme Workspace",
+            scopes: ["read_content"],
+            status: "active",
+          })),
+          providers: ["github", "google", "linear", "notion", "slack"].map(
+            (provider) => ({
+              provider,
+              ready: provider === "notion" || provider === "github",
+            })
+          ),
+        },
+    composio: {
+      status: "ok",
+      configured: projectId !== "prj_hr",
+      toolkits: [
+        "gmail",
+        "googlecalendar",
+        "google_admin",
+        "github",
+        "linear",
+        "notion",
+        "slack",
+      ].map((toolkit) => ({ toolkit, account_id: state.composio[toolkit] ?? null })),
+    },
+    tailnet: down ? { status: "unavailable" } : mockTailnet(state.tailnet),
+  };
+}
+
+function mockTailnet(tailnet: {
+  state: string;
+  tags: string[];
+  accept_routes: boolean;
+  expected_tailnet: string | null;
+}) {
+  const running = tailnet.state === "running";
+  return {
+    status: "ok",
+    enabled: tailnet.state !== "disabled",
+    state: tailnet.state,
+    approved: running,
+    login_url:
+      tailnet.state === "needs_login" ? "https://login.tailscale.com/a/mock0123" : null,
+    tailnet: running ? "acme.com" : null,
+    node_name: running ? "comma-support.tail1234.ts.net" : null,
+    login_name: null,
+    node_tags: running ? tailnet.tags : [],
+    addresses: running ? ["100.101.102.103", "fd7a:115c:a1e0::1"] : [],
+    key_expiry: null,
+    error: null,
+    settings: {
+      tags: tailnet.tags,
+      accept_routes: tailnet.accept_routes,
+      expected_tailnet: tailnet.expected_tailnet,
+    },
+  };
+}
+
+function mockManifest(name: string) {
+  const manifest = {
+    display_information: { name },
+    features: { bot_user: { display_name: name, always_online: true } },
+    oauth_config: {
+      scopes: { bot: ["app_mentions:read", "chat:write", "files:read"] },
+    },
+  };
+  return {
+    json: JSON.stringify(manifest, null, 2),
+    create_url: `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`,
+    redirect_url: "https://salix.example.com/v1/im/slack/oauth/callback",
+    events_url: "https://salix.example.com/v1/im/slack/events",
+    interactions_url: "https://salix.example.com/v1/im/slack/interactions",
+  };
+}
+
+function connectionsReply(
+  slug: string,
+  projectId: string,
+  rest: string,
+  method: string,
+  url: URL,
+  body: Record<string, unknown>
+) {
+  if (!orgs.some((org) => org.slug === slug)) return notFound();
+  const data = connectionsData(slug, projectId);
+  if (!data) return notFound("project_not_found", "Agent Swarm not found.");
+  const ok = (value: unknown, status = 200) => reply(status, { ok: true, data: value });
+  const state = connectionState[projectId];
+  if (!state) return notFound();
+  if (method === "GET" && rest === "") return ok(data);
+  if (method === "GET" && rest === "/slack/manifest")
+    return ok({ manifest: mockManifest(url.searchParams.get("app_name") ?? "Comma") });
+  if (data.project.role !== "admin")
+    return failure(
+      403,
+      "forbidden",
+      "Only Agent Swarm admins can manage integrations."
+    );
+  const parts = rest.split("/").filter(Boolean).map(decodeURIComponent);
+  const [section, id, action] = parts;
+  if (section === "feishu" && id === "checks")
+    return ok({
+      checks: {
+        ran_at: new Date().toISOString(),
+        gates: [
+          mockGate(
+            "bot.callback",
+            "Callback reachable + URL verification",
+            "ok",
+            "Callback reachable and URL verification passed.",
+            "url_verification_passed",
+            { app_id: "cli_a1b2c3", url_verification: "ok" }
+          ),
+          mockGate(
+            "bot.chat_access",
+            "Bot chat access + Agent Swarm route",
+            "skipped",
+            "Route and bot identity are ready; chat/member probing needs a runtime call that is not wired yet.",
+            "chat_probe_missing",
+            { router_agent_name: "Router", route_status: "ready" }
+          ),
+          mockGate(
+            "bot.calendar",
+            "Google Calendar meeting notifications",
+            "needs_manual",
+            "Initial calendar sync has not completed yet; a retry becomes eligible at the time below.",
+            "calendar_initial_sync_pending",
+            { next_retry_at: "2026-10-02T10:00:00Z" }
+          ),
+          mockGate(
+            "bot.first_message",
+            "First message round-trips (@Bridge -> reply)",
+            "needs_manual",
+            "Send a real @Bridge message in the target Feishu group and watch for a reply.",
+            "explicit_admin_action_required"
+          ),
+        ],
+      },
+      recorded: true,
+      warning: null,
+    });
+  if (section === "lark" && action === "checks") {
+    if (!state.lark.some((item) => item.connect_id === id))
+      return failure(404, "connect_not_found", "That connect no longer exists.");
+    return ok({
+      checks: {
+        ran_at: new Date().toISOString(),
+        gates: [
+          mockGate(
+            "bot.callback",
+            "Callback reachable + URL verification",
+            "ok",
+            "Callback reachable and URL verification passed.",
+            "url_verification_passed",
+            { connect_id: id, encrypted_callback: "true" }
+          ),
+          mockGate(
+            "bot.chat_access",
+            "Bot chat access + Agent Swarm route",
+            "skipped",
+            "Route and bot identity are ready; chat/member probing needs a runtime call that is not wired yet.",
+            "chat_probe_missing",
+            { router_agent_name: "Router", route_status: "ready" }
+          ),
+          mockGate(
+            "bot.first_message",
+            "First message round-trips (@bot -> reply)",
+            "needs_manual",
+            "Mention the bot in a Lark group it is in, or write to it in a private chat, and watch for a reply.",
+            "explicit_admin_action_required"
+          ),
+          mockGate(
+            "bot.manual",
+            "Lark Developer Console steps completed",
+            "needs_manual",
+            "In the Lark Developer Console, import the scope JSON, save the request URL, subscribe to the events, and publish a version of the app.",
+            "lark_console_steps_required"
+          ),
+        ],
+      },
+      recorded: true,
+      warning: null,
+    });
+  }
+  if (section === "slack" && action === "checks")
+    return ok({
+      checks: {
+        ran_at: new Date().toISOString(),
+        gates: [
+          mockGate(
+            "slack.calendar",
+            "Google Calendar meeting auto-join",
+            "skipped",
+            "Meeting auto-join is optional; configure a Slack channel and explicit watched calendars to enable it.",
+            "calendar_policy_not_configured"
+          ),
+        ],
+      },
+      recorded: true,
+      warning: null,
+    });
+  if (method === "POST" && section === "feishu") {
+    if (state.feishu.length > 0)
+      return ok(
+        {
+          notice:
+            "Reused the existing Feishu connect and refreshed its credentials from the org app.",
+        },
+        201
+      );
+    state.feishu.push({ connect_id: `imc1_feishu_${Date.now()}`, disabled: false });
+    return ok({ notice: "Feishu webhook connect ready." }, 201);
+  }
+  if (method === "POST" && section === "lark") {
+    const appId = typeof body.app_id === "string" ? body.app_id : "";
+    if (!appId || typeof body.app_secret !== "string" || !body.app_secret)
+      return failure(422, "missing_credentials", "Connect is missing required fields.");
+    const token =
+      typeof body.verification_token === "string" && body.verification_token !== "";
+    const key = typeof body.encrypt_key === "string" && body.encrypt_key !== "";
+    if (!token && !key)
+      return reply(422, {
+        ok: false,
+        error: {
+          code: "missing_credentials",
+          message:
+            "Enter the Verification Token or the Encrypt Key of the Lark app. Lark signs events with them.",
+          details: { fields: ["verification_token"] },
+        },
+      });
+    const known = state.lark.find((item) => item.app_id === appId);
+    if (known) {
+      known.verification_token_configured = token;
+      known.encrypt_key_configured = key;
+      return ok({ notice: "Updated the Lark app's credentials." }, 201);
+    }
+    state.lark.push({
+      connect_id: `imc1_lark_${Date.now()}`,
+      disabled: false,
+      app_id: appId,
+      verification_token_configured: token,
+      encrypt_key_configured: key,
+    });
+    return ok(
+      {
+        notice:
+          "Lark app connected. Save the request URL in the Lark Developer Console.",
+      },
+      201
+    );
+  }
+  if (method === "POST" && section === "qq") {
+    const appId = typeof body.app_id === "string" ? body.app_id : "";
+    if (!appId || typeof body.app_secret !== "string" || !body.app_secret)
+      return failure(422, "missing_credentials", "Connect is missing required fields.");
+    state.qq.push({
+      connect_id: `imc1_qq_${Date.now()}`,
+      disabled: false,
+      app_id: appId,
+      command_menu: [
+        {
+          name: "总结群聊",
+          description: "总结最近的群聊内容",
+          prompt: "总结这个群最近的聊天内容，列出要点、结论和待办事项。",
+          scope: "group",
+          admin_only: false,
+        },
+      ],
+    });
+    return ok(
+      { notice: "QQ bot connected. Save the callback address in the QQ bot console." },
+      201
+    );
+  }
+  if (method === "PUT" && section === "qq" && id && action === "menu") {
+    const connect = state.qq.find((item) => item.connect_id === id);
+    if (!connect)
+      return failure(404, "connect_not_found", "That connect no longer exists.");
+    const items = Array.isArray(body.items) ? (body.items as BftQqMenuItem[]) : [];
+    if (items.some((item) => !item.name || /\s/.test(item.name)))
+      return failure(422, "invalid_menu", "a menu item needs a name without spaces");
+    connect.command_menu = items;
+    return ok({ notice: "Menu saved and sent to QQ." });
+  }
+  if (method === "POST" && section === "slack") {
+    const tasks = body.inbound_tasks as { model?: MockModelChoice | null } | undefined;
+    const model = tasks?.model
+      ? mockSlackTaskModels.find(
+          (row) =>
+            row.choice && JSON.stringify(row.choice) === JSON.stringify(tasks.model)
+        )
+      : undefined;
+    if (tasks?.model && !model)
+      return failure(
+        422,
+        "model_not_allowed",
+        "Choose a model this organization allows."
+      );
+    if (!tasks && body.inbound_agent_id && body.inbound_agent_id !== "agt_router")
+      return failure(
+        422,
+        "invalid_inbound_agent",
+        "Choose the Router of this Agent Swarm, or Tasks."
+      );
+    state.slack.push({
+      connect_id: `imc1_slack_${Date.now()}`,
+      disabled: false,
+      installed: false,
+      inbound_agent: tasks
+        ? `Tasks · ${model?.label ?? "default Task model"}`
+        : "Router · router",
+    });
+    return ok(
+      {
+        notice:
+          "Slack connect created. Open the install URL to finish the OAuth install.",
+      },
+      201
+    );
+  }
+  if (section === "im" && id) {
+    const connects = [...state.feishu, ...state.lark, ...state.slack, ...state.qq];
+    const connect = connects.find((item) => item.connect_id === id);
+    if (!connect)
+      return failure(404, "connect_not_found", "That connect no longer exists.");
+    if (method === "DELETE") {
+      state.feishu = state.feishu.filter((item) => item.connect_id !== id);
+      state.slack = state.slack.filter((item) => item.connect_id !== id);
+      state.lark = state.lark.filter((item) => item.connect_id !== id);
+      state.qq = state.qq.filter((item) => item.connect_id !== id);
+      return ok({ notice: "Connect deleted." });
+    }
+    connect.disabled = body.enabled !== true;
+    return ok({ notice: connect.disabled ? "Connect disabled." : "Connect enabled." });
+  }
+  if (section === "signal" && id === "claims")
+    return ok(
+      { claim: { number: "+15550100", command: "comma connect K7QD-M2XP" } },
+      201
+    );
+  if (section === "signal" && id === "bindings") {
+    state.signal = state.signal.filter((item) => item.binding_id !== action);
+    return ok({ notice: "Signal chat disconnected." });
+  }
+  if (section === "accounts" && !id)
+    return failure(
+      422,
+      "provider_not_configured",
+      "That platform isn't configured for your organization yet."
+    );
+  if (section === "accounts" && id) {
+    const account = state.accounts.find((item) => item.binding_id === id);
+    if (method === "DELETE") {
+      state.accounts = state.accounts.filter((item) => item.binding_id !== id);
+      return ok({ notice: "Account disconnected." });
+    }
+    if (account) account.enabled = body.enabled === true;
+    return ok({
+      notice: body.enabled === true ? "Account enabled." : "Account disabled.",
+    });
+  }
+  if (section === "composio" && action === "connect")
+    return failure(
+      422,
+      "composio_not_configured",
+      "Composio isn't configured for your organization yet."
+    );
+  if (section === "composio" && id && method === "DELETE") {
+    for (const [toolkit, accountId] of Object.entries(state.composio))
+      if (accountId === id) delete state.composio[toolkit];
+    return ok({ notice: "Account disconnected." });
+  }
+  if (section === "tailnet" && method === "PUT") {
+    const tags = Array.isArray(body.tags) ? body.tags.map(String) : state.tailnet.tags;
+    if (tags.some((tag) => !/^tag:[A-Za-z][A-Za-z0-9-]{0,62}$/.test(tag)))
+      return failure(
+        422,
+        "invalid_tags",
+        "Use tags like tag:name (at most 8) and a tailnet name of at most 253 characters."
+      );
+    state.tailnet = {
+      state: state.tailnet.state === "running" ? "running" : "needs_login",
+      tags,
+      accept_routes: body.accept_routes === true,
+      expected_tailnet:
+        typeof body.expected_tailnet === "string" && body.expected_tailnet
+          ? body.expected_tailnet
+          : null,
+    };
+    return ok({ tailnet: mockTailnet(state.tailnet), notice: null });
+  }
+  if (section === "tailnet" && method === "DELETE") {
+    state.tailnet = { ...state.tailnet, state: "disabled" };
+    return ok({
+      tailnet: mockTailnet(state.tailnet),
+      notice: "Tailscale disconnected.",
+    });
+  }
+  return notFound();
+}
+
+type MockSkill = {
+  id: string;
+  location: string;
+  name: string;
+  description: string | null;
+  source: string;
+  activation: string;
+  deletable: boolean;
+  delete_reason: string | null;
+  content: string;
+};
+
+const mockSkill = (
+  id: string,
+  name: string,
+  description: string | null,
+  source: "custom" | "imported" | "system",
+  extra: Partial<MockSkill> = {}
+): MockSkill => ({
+  id,
+  location: `/.runtime/skills/${id}/SKILL.md`,
+  name,
+  description,
+  source,
+  activation: "regular",
+  deletable: source !== "system",
+  delete_reason: source === "system" ? "read_only" : null,
+  content: `---\nname: ${name}\ndescription: ${description ?? ""}\n---\n\n## ${name}\n\n1. Read the request and the linked ticket.\n2. Check the runbook before answering.\n3. Reply in the thread with the outcome and next step.\n`,
+  ...extra,
+});
+
+const skillState: Record<string, MockSkill[]> = {};
+
+// The list carries no content; one skill's content is read when it opens.
+const listedSkills = (skills: MockSkill[]) =>
+  skills.map(({ content: _content, ...fields }) => fields);
+
+function swarmSkillsReply(
+  slug: string,
+  projectId: string,
+  rest: string,
+  method: string,
+  body: Record<string, unknown>
+) {
+  if (!orgs.some((org) => org.slug === slug)) return notFound();
+  const swarm = projectOverview(slug, projectId);
+  if (!swarm) return notFound("project_not_found", "Agent Swarm not found.");
+  const admin = projectId !== "prj_sales";
+  const custom = (skillState[projectId] ??= [
+    mockSkill(
+      "release-checklist",
+      "Release checklist",
+      "Use before every production release.",
+      "custom"
+    ),
+    mockSkill(
+      "weekly-recap",
+      "Weekly recap",
+      "Summarize the week's support tickets every Friday.",
+      "custom",
+      {
+        activation: "per-message",
+      }
+    ),
+    mockSkill(
+      "incident-review",
+      "Incident review",
+      "Imported from the organization's playbook library.",
+      "imported",
+      {
+        deletable: false,
+        delete_reason: "managed_at_source",
+      }
+    ),
+  ]);
+  const ok = (value: unknown, status = 200) => reply(status, { ok: true, data: value });
+  const down = projectId === "prj_oncall";
+  const system = [
+    mockSkill(
+      "skill-creator",
+      "Skill creator",
+      "Write a new SKILL.md from a conversation.",
+      "system"
+    ),
+    mockSkill("pdf", "PDF", "Read, fill and merge PDF files.", "system"),
+  ];
+  if (method === "GET" && rest !== "/skills") {
+    const id = decodeURIComponent(rest.split("/")[2] ?? "");
+    const found = down
+      ? undefined
+      : [...custom, ...system].find((entry) => entry.id === id);
+    return found
+      ? ok({ skill: found })
+      : failure(404, "skill_not_found", "Skill not found.");
+  }
+  if (method === "GET") {
+    return ok({
+      project: {
+        id: projectId,
+        name: swarm.project.name,
+        role: admin ? "admin" : "user",
+      },
+      status: down ? "unavailable" : "ok",
+      agent:
+        projectId === "prj_hr" ? null : { id: "agt_router", name: "Support Router" },
+      custom: down ? [] : listedSkills(custom),
+      system: down ? [] : listedSkills(system),
+      miniskill_status: projectId === "prj_support" ? "ready" : null,
+      agents_href: `/orgs/${slug}/projects/${projectId}/agents`,
+      limits: { max_bytes: 200_000, extensions: [".md", ".markdown"] },
+    });
+  }
+  if (!admin)
+    return failure(403, "forbidden", "Only Agent Swarm admins can manage skills.");
+  if (method === "DELETE") {
+    const id = decodeURIComponent(rest.split("/")[2] ?? "");
+    skillState[projectId] = custom.filter((entry) => entry.id !== id);
+    return ok({ notice: "Skill deleted." });
+  }
+  const name =
+    rest === "/skills/upload"
+      ? (/^name:\s*(.+)$/m.exec(String(body.content ?? ""))?.[1] ?? "")
+      : String(body.name ?? "");
+  const id = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!id)
+    return failure(422, "invalid_skill", "Give the skill a name (letters or numbers).");
+  if (custom.some((entry) => entry.id === id))
+    return failure(409, "duplicate_skill", "A skill with that name already exists.");
+  custom.push(
+    mockSkill(
+      id,
+      name,
+      typeof body.description === "string" ? body.description : null,
+      "custom"
+    )
+  );
+  return ok(
+    { notice: rest === "/skills/upload" ? "Skill uploaded." : "Skill created." },
+    201
+  );
+}
 
 function pluginsReply(
   slug: string,
@@ -2029,8 +3156,6 @@ const triageChannels = [
 const triageState = {
   enabled: true,
   channels: triageChannels,
-  worker: "w-investigator" as string | null,
-  revision: 3,
 };
 
 function triageOverview() {
@@ -2247,11 +3372,6 @@ function triageHeatmap() {
   };
 }
 
-const triageWorkers = [
-  { id: "w-investigator", name: "Investigator", status: "ready" },
-  { id: "w-billing", name: "Billing specialist", status: "configured" },
-];
-
 function triageKnowledge() {
   const subjects = [
     { kind: "person", id: "usr_01", name: "Maya Chen" },
@@ -2322,19 +3442,12 @@ function triageReply(
 ) {
   if (slug !== "acme") return notFound();
   const ok = (data: unknown) => reply(200, { ok: true, data });
-  if (method === "PUT" && rest === "/worker") {
-    if (body.revision !== triageState.revision)
-      return failure(
-        409,
-        "worker_conflict",
-        "The Worker selection changed in another session. Review the current selection before saving again."
-      );
-    triageState.worker = (body.worker_id as string | null) ?? null;
-    triageState.revision += 1;
-    return ok({
-      notice: "Triage Worker updated. Existing assignments keep their Worker.",
-    });
-  }
+  if (method === "PUT" && rest === "/worker")
+    return failure(
+      410,
+      "workers_retired",
+      "Triage Tasks run at the Agent Swarm's default place and model. Set them in the swarm's Settings."
+    );
   if (method === "PUT" && /^\/sources\/slack-main$/.test(rest)) {
     triageState.enabled = body.enabled === true;
     return ok({
@@ -2414,21 +3527,11 @@ function triageReply(
         })),
         next_cursor: url.searchParams.get("cursor") ? null : "more",
       });
-    case "/worker": {
-      const preview = url.searchParams.get("preview");
-      const find = (id: string | null) =>
-        triageWorkers.find((worker) => worker.id === id) ?? null;
+    case "/worker":
       return ok({
-        can_manage: true,
-        worker_id: triageState.worker,
-        revision: triageState.revision,
-        worker: find(triageState.worker),
-        preview: find(preview),
-        candidates: triageWorkers,
-        next_cursor: null,
+        settings_href: "/orgs/acme/projects/prj_support/settings",
         tools_ready: true,
       });
-    }
     case "/activity":
       return ok(
         url.searchParams.get("cursor")
@@ -2542,6 +3645,102 @@ const swarmSchedules: Record<string, Record<string, unknown>[]> = {
   ],
 };
 
+// Each swarm's default Task model key; none set runs the org default Task model.
+const swarmTaskModels: Record<string, string> = {};
+const taskModelRows = [
+  {
+    key: "platform:worker",
+    choice: { kind: "platform", tier: "worker" },
+    label: "Platform model (claude-sonnet-4-5)",
+    disabled: false,
+    group: "Platform",
+  },
+  ...[
+    ["claude-sonnet-4-5", "claude-sonnet-4-5", "Anthropic"],
+    ["gpt-5.5", "GPT-5.5", "OpenAI"],
+    ["deepseek-v4-flash", "DeepSeek V4 Flash", "DeepSeek"],
+  ].map(([model, label, group]) => ({
+    key: `catalog:${model}`,
+    choice: { kind: "catalog", model, allow_paid: false },
+    label,
+    disabled: false,
+    group,
+  })),
+];
+
+const swarmTaskModel = (projectId: string) => {
+  const key = swarmTaskModels[projectId];
+  const unset = {
+    key: "",
+    choice: null,
+    label: "Organization default (claude-sonnet-4-5)",
+    disabled: false,
+    group: "Platform",
+  };
+  return {
+    status: "ok",
+    key: key ?? "",
+    label: taskModelRows.find((row) => row.key === key)?.label ?? unset.label,
+    models: [unset, ...taskModelRows],
+  };
+};
+
+// Each swarm's default place to run Tasks; none set runs them inside Salix.
+const swarmTaskPlaces: Record<string, Record<string, unknown>> = {};
+
+const swarmTaskPlace = (projectId: string) => {
+  const place = swarmTaskPlaces[projectId] ?? { kind: "salix" };
+  const label =
+    place.kind === "cloud_vm"
+      ? "The Cloud VM"
+      : place.kind === "station"
+        ? (mockStations.find((station) => station.id === place.device_id)?.label ??
+          String(place.device_id))
+        : "Salix";
+  return { status: "ok", place, label };
+};
+
+// Where a new Task can run: Salix, the Cloud VM and the stations that take
+// Tasks now, the swarm's default place marked; and the models inside Salix.
+const taskTargets = (projectId: string) => {
+  const place = swarmTaskPlaces[projectId] ?? { kind: "salix" };
+  const isDefault = (kind: string, deviceId?: string) =>
+    place.kind === kind && (kind !== "station" || place.device_id === deviceId);
+  const model = swarmTaskModel(projectId).label;
+  return {
+    places: [
+      {
+        id: "salix",
+        kind: "salix",
+        label: "Salix",
+        default: isDefault("salix"),
+        models: {},
+      },
+      {
+        id: "cloud_vm",
+        kind: "cloud_vm",
+        label: "The Cloud VM",
+        default: isDefault("cloud_vm"),
+        models: { codex: ["gpt-5.5"], claude: [] },
+      },
+      ...mockStations
+        .filter((station) => station.connected && station.selectable)
+        .map((station) => ({
+          id: station.id,
+          kind: "station",
+          device_id: station.id,
+          label: station.label,
+          default: isDefault("station", station.id),
+          models: station.models,
+        })),
+    ],
+    models: [
+      { key: "", choice: null, label: `Swarm default (${model})` },
+      ...taskModelRows.map(({ key, choice, label }) => ({ key, choice, label })),
+    ],
+  };
+};
+
 const swarmGrants: Record<string, Record<string, unknown>[]> = {
   prj_support: [
     {
@@ -2567,6 +3766,331 @@ const swarmGrants: Record<string, Record<string, unknown>[]> = {
     },
   ],
 };
+
+/*
+ * Task detail. Each task of the list opens with a short conversation; task 0
+ * of Support Desk is long (130 messages, so older pages load on scroll-up),
+ * task 1 waits for review, task 3 has a schedule, and a sent message gets an
+ * agent reply on the next poll a few seconds later.
+ */
+interface MockTaskMessage {
+  id: string;
+  seq: number;
+  author: string;
+  from_person: boolean;
+  created_at: string;
+  blocks: Record<string, unknown>[];
+}
+
+interface MockTaskState {
+  header: Record<string, unknown>;
+  schedule: Record<string, unknown>;
+  messages: MockTaskMessage[];
+  replyDue: number | null;
+}
+
+const mockTasks = new Map<string, MockTaskState>();
+
+const textBlock = (html: string): Record<string, unknown> => ({ type: "text", html });
+
+const scheduleForm = (form: Partial<Record<string, string>> = {}) => ({
+  mode: "cron",
+  interval_value: "1",
+  interval_unit: "days",
+  cron: "",
+  timezone: "UTC",
+  command: "",
+  ...form,
+});
+
+function mockRecurrence(form: Record<string, string>) {
+  if (form.mode === "interval") {
+    const count = Number(form.interval_value);
+    if (!Number.isInteger(count) || count < 1) return "Set a valid schedule";
+    const unit =
+      form.interval_unit === "hours"
+        ? "hour"
+        : form.interval_unit === "minutes"
+          ? "minute"
+          : "day";
+    return count === 1 ? `Every ${unit}` : `Every ${count} ${unit}s`;
+  }
+  const cron = (form.cron ?? "").trim();
+  if (cron === "") return null;
+  if (cron === "30 18 * * 3")
+    return `Every Wednesday at 6:30 PM (${form.timezone || "UTC"})`;
+  if (cron === "0 9 * * 1-5")
+    return `Every weekday at 9 AM (${form.timezone || "UTC"})`;
+  return `Custom schedule (${form.timezone || "UTC"})`;
+}
+
+function mockTask(slug: string, projectId: string, taskId: string) {
+  const index = Number(taskId.split("_").at(-1));
+  const listed = swarmTaskList(slug, projectId).find((task) => task.id === taskId);
+  if (!listed || Number.isNaN(index)) return undefined;
+  let state = mockTasks.get(taskId);
+  if (!state) {
+    const script: [string, boolean, string][] =
+      index === 0
+        ? Array.from({ length: 130 }, (_, n) =>
+            n % 2 === 0
+              ? [
+                  "Maya Chen",
+                  true,
+                  `<p>Update ${n + 1}: the customer replied with new logs.</p>`,
+                ]
+              : [
+                  "Front desk",
+                  false,
+                  `<p>Noted. I compared the logs with the previous run (${n + 1}).</p>`,
+                ]
+          )
+        : [
+            [
+              "Slack · Dana Ops",
+              true,
+              "<p>Customer says the refund for order <code>A-1043</code> is still pending. Can you check?</p>",
+            ],
+            [
+              "Billing specialist",
+              false,
+              '<p>I found the refund in the payment provider. It is above the <strong>$500</strong> limit, so it needs approval.</p>\n<ul>\n<li>Amount: $742.10</li>\n<li>Requested: 2 days ago</li>\n</ul>\n<p>Policy: <a href="https://example.com/refunds" target="_blank" rel="noopener noreferrer">Refund limits</a></p>',
+            ],
+            [
+              "Maya Chen",
+              true,
+              "<p>Approved. Please send the confirmation to the customer.</p>",
+            ],
+            [
+              "Billing specialist",
+              false,
+              "<p>Done. The confirmation went out, and the summary is attached.</p>",
+            ],
+          ];
+    const messages = script.map(([author, person, html], n) => ({
+      id: `msg_${taskId}_${n + 1}`,
+      seq: n + 1,
+      author,
+      from_person: person,
+      created_at: minutesAgo((script.length - n) * 7),
+      blocks: [textBlock(html)],
+    }));
+    const last = messages.at(-1);
+    if (index !== 0 && last) {
+      last.blocks.push({
+        type: "attachment",
+        kind: "file",
+        name: "refund-summary.pdf",
+        path: "/reports/refund-summary.pdf",
+        mime: "application/pdf",
+        href: `/orgs/${slug}/projects/${projectId}/tasks/${taskId}/messages/${last.id}/attachments/1`,
+      });
+    }
+    const scheduled = index === 3;
+    state = {
+      header: {
+        id: taskId,
+        title: listed.title,
+        status: index === 1 ? "ready_for_review" : listed.status,
+        kind: listed.kind,
+        scheduled,
+        schedulable: listed.kind === "agent_task",
+        review_version: index === 1 ? 1_780_000_100_000 : null,
+        terminal: false,
+        updated_at: listed.updated_at,
+      },
+      schedule: scheduled
+        ? {
+            status: "ok",
+            recurrence: "Every Wednesday at 6:30 PM (Asia/Shanghai)",
+            command: "Post the weekly churn report to #support-leads.",
+            form: scheduleForm({
+              cron: "30 18 * * 3",
+              timezone: "Asia/Shanghai",
+              command: "Post the weekly churn report to #support-leads.",
+            }),
+          }
+        : { status: "none", recurrence: null, command: null, form: scheduleForm() },
+      messages,
+      replyDue: null,
+    };
+    mockTasks.set(taskId, state);
+  }
+  return state;
+}
+
+function taskDetailReply(
+  slug: string,
+  projectId: string,
+  rest: string,
+  method: string,
+  url: URL,
+  body: Record<string, unknown>,
+  project: { id: string; name: string; role: string },
+  down: boolean
+) {
+  const ok = (data: unknown, status = 200) => reply(status, { ok: true, data });
+  const [, , rawId = "", ...tail] = rest.split("/");
+  const taskId = decodeURIComponent(rawId);
+  const sub = tail.join("/");
+  if (down) {
+    return failure(
+      503,
+      "runtime_unavailable",
+      "Could not load this task. Salix is unavailable — retry shortly."
+    );
+  }
+  const state = mockTask(slug, projectId, taskId);
+  if (!state) return notFound("task_not_found", "Task not found.");
+  // A sent message gets its agent reply once it is due.
+  if (state.replyDue !== null && Date.now() >= state.replyDue) {
+    state.replyDue = null;
+    const seq = (state.messages.at(-1)?.seq ?? 0) + 1;
+    state.messages.push({
+      id: `msg_${taskId}_${seq}`,
+      seq,
+      author: "Front desk",
+      from_person: false,
+      created_at: new Date().toISOString(),
+      blocks: [textBlock("<p>On it. I will report back here when it is done.</p>")],
+    });
+  }
+  const page = (messages: MockTaskMessage[], hasMore: boolean) => ({
+    task: state.header,
+    messages,
+    has_more: hasMore,
+  });
+  switch (`${method} ${sub}`) {
+    case "GET ":
+      return ok({
+        project,
+        task: state.header,
+        schedule: state.schedule,
+        participants: [
+          {
+            id: "worker",
+            label: "Billing specialist",
+            role_label: "worker",
+            agent_href: `/orgs/${slug}/projects/${projectId}/agents/agt_billing`,
+            thread_url: null,
+          },
+          {
+            id: "slack",
+            label: "Dana Ops",
+            role_label: "slack_thread",
+            agent_href: null,
+            thread_url: "https://app.slack.com/client/T1/C1/thread/C1-100.000",
+          },
+          {
+            id: "router",
+            label: "Front desk",
+            role_label: "delegator",
+            agent_href: `/orgs/${slug}/projects/${projectId}/agents/agt_front`,
+            thread_url: null,
+          },
+        ],
+        messages: state.messages.slice(-50),
+        has_older: state.messages.length > 50,
+      });
+    case "GET messages": {
+      const after = url.searchParams.get("after");
+      const before = url.searchParams.get("before");
+      const at = (id: string | null) =>
+        state.messages.findIndex((message) => message.id === id);
+      if (after) {
+        const newer = state.messages.slice(at(after) + 1, at(after) + 51);
+        return ok(page(newer, at(after) + 51 < state.messages.length));
+      }
+      if (before) {
+        const end = Math.max(at(before), 0);
+        return ok(page(state.messages.slice(Math.max(end - 50, 0), end), end - 50 > 0));
+      }
+      return ok(page(state.messages.slice(-50), state.messages.length > 50));
+    }
+    case "POST messages": {
+      const text = String(body.text ?? "").trim();
+      if (text === "")
+        return failure(422, "message_required", "Write a message first.");
+      const seq = (state.messages.at(-1)?.seq ?? 0) + 1;
+      const id = `msg_${taskId}_${seq}`;
+      const escaped = text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      state.messages.push({
+        id,
+        seq,
+        author: user.name,
+        from_person: true,
+        created_at: new Date().toISOString(),
+        blocks: [textBlock(`<p>${escaped}</p>`)],
+      });
+      state.header = {
+        ...state.header,
+        status: "active",
+        terminal: false,
+        review_version: null,
+      };
+      state.replyDue = Date.now() + 4_000;
+      return ok({ message_id: id }, 201);
+    }
+    case "POST review":
+      if (body.review_version !== state.header.review_version) {
+        return failure(
+          409,
+          "review_changed",
+          "The task changed. Review it again before completing it."
+        );
+      }
+      state.header = {
+        ...state.header,
+        status: "completed",
+        terminal: true,
+        review_version: null,
+      };
+      return ok({ task: state.header });
+    case "PUT schedule": {
+      if (project.role !== "admin")
+        return failure(
+          403,
+          "forbidden",
+          "Only Agent Swarm admins can manage schedules."
+        );
+      const form = scheduleForm(body as Record<string, string>);
+      const recurrence = mockRecurrence(form);
+      if (!recurrence || recurrence === "Set a valid schedule")
+        return failure(422, "invalid_schedule", "Enter a valid schedule.");
+      if (form.command.trim() === "")
+        return failure(
+          422,
+          "command_required",
+          "Enter the command this schedule runs."
+        );
+      state.header = { ...state.header, scheduled: true };
+      state.schedule = { status: "ok", recurrence, command: form.command.trim(), form };
+      return ok({ task: state.header, schedule: state.schedule });
+    }
+    case "DELETE schedule":
+      if (project.role !== "admin")
+        return failure(
+          403,
+          "forbidden",
+          "Only Agent Swarm admins can manage schedules."
+        );
+      state.header = { ...state.header, scheduled: false };
+      state.schedule = {
+        status: "none",
+        recurrence: null,
+        command: null,
+        form: scheduleForm(),
+      };
+      return ok({ task: state.header, schedule: state.schedule });
+    case "GET schedule/preview":
+      return ok({ recurrence: mockRecurrence(Object.fromEntries(url.searchParams)) });
+    default:
+      return notFound("not_found", "Not found");
+  }
+}
 
 function swarmPageReply(
   slug: string,
@@ -2594,6 +4118,8 @@ function swarmPageReply(
       runtime_id: `grp1_${projectId}_7f3a9c2e`,
     },
     org_runtime_id: `ten1_${slug}_41d0b7`,
+    task_model: swarmTaskModel(projectId),
+    task_place: swarmTaskPlace(projectId),
     access: { members: (swarmGrants[projectId] ??= []), truncated: false },
   });
   const schedules = () => ({
@@ -2603,27 +4129,25 @@ function swarmPageReply(
     truncated: false,
   });
 
+  if (rest.startsWith("/tasks/") && rest !== "/tasks/targets")
+    return taskDetailReply(slug, projectId, rest, method, url, body, project, down);
+
   switch (`${method} ${rest.replace(/^\/(access|schedules)\/.+$/, "/$1/:id")}`) {
     case "GET /tasks": {
       const all = swarmTaskList(slug, projectId);
       const start = Number(url.searchParams.get("cursor") ?? 0);
       const end = start + 100;
-      const agents = swarm.agents.items.map((item) => ({
-        id: item.id,
-        name: item.name ?? "Unnamed agent",
-      }));
       return ok({
         project,
         status: down ? "unavailable" : "ok",
         tasks: down ? [] : all.slice(start, end),
         next_cursor: !down && end < all.length ? String(end) : null,
-        ...(start === 0
-          ? { agents: { status: down ? "unavailable" : "ok", items: agents } }
-          : {}),
       });
     }
+    case "GET /tasks/targets":
+      return ok(taskTargets(projectId));
     case "POST /tasks":
-      return admin
+      return String(body.content ?? "").trim()
         ? ok(
             {
               id: "cnv1_new",
@@ -2631,7 +4155,7 @@ function swarmPageReply(
             },
             201
           )
-        : forbidden();
+        : failure(422, "invalid_task", "Say what the task should do.");
     case "GET /schedules":
       return ok(schedules());
     case "DELETE /schedules/:id": {
@@ -2685,6 +4209,45 @@ function swarmPageReply(
       if (listed) listed.name = renamed;
       return ok(settingsPage());
     }
+    case "PUT /settings/task-model": {
+      if (!admin) return forbidden();
+      const choice = body.model as Record<string, unknown> | null | undefined;
+      const key =
+        choice?.kind === "platform"
+          ? "platform:worker"
+          : `catalog:${String(choice?.model)}`;
+      const row = taskModelRows.find((candidate) => candidate.key === key);
+      if (!row)
+        return failure(
+          422,
+          "invalid_model",
+          "Choose a model from the list before saving."
+        );
+      swarmTaskModels[projectId] = row.key;
+      return ok(settingsPage());
+    }
+    case "DELETE /settings/task-model":
+      if (!admin) return forbidden();
+      delete swarmTaskModels[projectId];
+      return ok(settingsPage());
+    case "PUT /settings/task-place": {
+      if (!admin) return forbidden();
+      const place = (body.place ?? {}) as Record<string, unknown>;
+      const station = mockStations.find(
+        (candidate) => candidate.id === place.device_id && candidate.selectable
+      );
+      if (place.kind === "salix" || place.kind === "cloud_vm")
+        swarmTaskPlaces[projectId] = { kind: place.kind };
+      else if (place.kind === "station" && station)
+        swarmTaskPlaces[projectId] = { kind: "station", device_id: station.id };
+      else
+        return failure(
+          422,
+          "invalid_place",
+          "Choose Salix, the Cloud VM or a station that takes Tasks."
+        );
+      return ok(settingsPage());
+    }
     case "POST /archive":
       if (!admin) return forbidden();
       return projectId === "prj_support"
@@ -2727,20 +4290,18 @@ function swarmPageReply(
 }
 
 /*
- * Agents. Support Desk has a Router, a Triage Worker, workers on a connected
- * device and on a Compute Workload, and enough workers to page; Sales
- * Assistant's runtime is down; HR Helpdesk is seen by a swarm member.
+ * Agents. Each swarm lists its Router; Workers are retired. Support Desk keeps
+ * a Worker made before as history, which a Task's participants link to;
+ * Sales Assistant's runtime is down; HR Helpdesk is seen by a swarm member.
  */
 interface MockAgent {
   id: string;
   name: string | null;
   role: string;
   lifecycle: string;
-  runtime: string;
   model: string | null;
   system_prompt: string | null;
-  template_id: string;
-  binding: Record<string, unknown> | null;
+  model_key: string;
   session?: string;
 }
 
@@ -2750,18 +4311,15 @@ const base = (
   id: string,
   name: string | null,
   role: string,
-  runtime: string,
   extra: Partial<MockAgent> = {}
 ): MockAgent => ({
   id,
   name,
   role,
   lifecycle: "active",
-  runtime,
   model: null,
   system_prompt: null,
-  template_id: "",
-  binding: null,
+  model_key: "",
   ...extra,
 });
 
@@ -2770,91 +4328,66 @@ function swarmAgentList(projectId: string): MockAgent[] {
   const list =
     projectId === "prj_support"
       ? [
-          base("agt_front", "Front desk", "router", "internal", {
+          base("agt_front", "Front desk", "router", {
             model: "claude-sonnet-4-5",
-            template_id: "tmpl_sonnet",
+            model_key: "catalog:claude-sonnet-4-5",
             system_prompt:
-              "Answer customers in their language. Hand refunds above $500 to the Billing specialist and crashes to the Repro engineer.",
+              "Answer customers in their language. Hand refunds above $500 and crashes to Tasks.",
             session: "ses1_7f3a9c2e41d0b7aa",
           }),
-          base("agt_billing", "Billing specialist", "worker", "internal", {
+          base("agt_billing", "Billing specialist", "worker", {
             model: "gpt-5",
-            template_id: "tmpl_gpt5",
+            model_key: "catalog:gpt-5",
           }),
-          base("agt_repro", "Repro engineer", "worker", "connected", {
-            binding: {
-              summary: "Codex · d6d51b1cd455",
-              revision: 2,
-              location: "connected",
-              device_id: "dev_mac_studio",
-              device_runtime_id: "d6d51b1cd455dd2c",
-              provider: "codex",
-              workload_id: null,
-            },
-          }),
-          base("agt_docs", "Help center writer", "worker", "compute", {
-            lifecycle: "provisioning",
-            binding: {
-              summary: "Pi · wkl1_8a2c41f0",
-              revision: 1,
-              location: "compute",
-              device_id: null,
-              device_runtime_id: null,
-              provider: "pi",
-              workload_id: "wkl1_8a2c41f0",
-            },
-          }),
-          ...Array.from({ length: 118 }, (_, index) =>
-            base(
-              `agt_w${index}`,
-              index % 23 === 7 ? null : `Ticket worker ${index + 1}`,
-              "worker",
-              "internal"
-            )
-          ),
         ]
       : projectId === "prj_oncall"
-        ? [
-            base("agt_oncall", "On-call router", "router", "internal"),
-            base("agt_pager", "Pager summarizer", "worker", "internal"),
-          ]
+        ? [base("agt_oncall", "On-call router", "router")]
         : projectId === "prj_hr"
-          ? [base("agt_hr", "HR router", "router", "internal")]
-          : [base(`agt_${projectId}`, "Router", "router", "internal")];
+          ? [base("agt_hr", "HR router", "router")]
+          : [base(`agt_${projectId}`, "Router", "router")];
   mockAgents[projectId] = list;
   return list;
 }
 
-const mockTriageWorker: Record<string, string> = { prj_support: "agt_billing" };
+const mockStations = [
+  {
+    id: "dev_mac_studio",
+    label: "Mac Studio / dev_mac_studio",
+    connected: true,
+    selectable: true,
+    issue: null,
+    models: { codex: ["gpt-5.5", "gpt-5.5-mini"], claude: ["claude-opus-5-5"] },
+  },
+  {
+    id: "dev_laptop",
+    label: "Ada's laptop / dev_laptop",
+    connected: false,
+    selectable: true,
+    issue: null,
+    models: {},
+  },
+  {
+    id: "dev_linux_ci",
+    label: "Linux CI runner / dev_linux_ci",
+    connected: true,
+    selectable: false,
+    issue: "This device runs an old connector. Update it to run a station.",
+    models: {},
+  },
+];
 
-const mockWorkloads = ["codex", "pi", "claude"].flatMap((provider) =>
-  Array.from({ length: provider === "pi" ? 63 : 3 }, (_, index) => ({
-    id: `wkl1_${provider}_${index + 1}`,
-    label: `${provider[0]?.toUpperCase()}${provider.slice(1)} Workload · ${index + 1}`,
-    provider,
-    node: index % 2 ? "VMM host ap-east-1b" : "Mac Studio (Shanghai office)",
-    selectable: index % 7 !== 3,
-    availability:
-      index % 7 === 3
-        ? "Runtime not ready"
-        : index % 5 === 4
-          ? "Sleeping · starts when work arrives"
-          : "Ready to select",
-    tone: index % 7 === 3 ? "warn" : index % 5 === 4 ? "neutral" : "ok",
-    issue:
-      index % 7 === 3
-        ? "code=resource_capacity_exhausted / stage=import_admission / resource=storage_headroom"
-        : null,
-    selection_fence: { workload_generation: index + 1 },
-  }))
-);
+const mockAgentRow = (item: MockAgent) => ({
+  id: item.id,
+  name: item.name,
+  role: item.role,
+  lifecycle: item.lifecycle,
+});
 
 function agentsReply(
   slug: string,
   projectId: string,
   rest: string,
   method: string,
-  url: URL,
   body: Record<string, unknown>
 ) {
   const swarm = projectOverview(slug, projectId);
@@ -2868,162 +4401,59 @@ function agentsReply(
   const forbidden = () =>
     failure(403, "forbidden", "Only Agent Swarm admins can manage agents.");
   const list = swarmAgentList(projectId);
-  const triageHref = `/orgs/${slug}/triage?agent=${list[0]?.id ?? ""}#triage-worker-configuration`;
-  const row = (item: MockAgent) => ({
-    id: item.id,
-    name: item.name,
-    role: item.role,
-    lifecycle: item.lifecycle,
-    runtime: item.runtime,
-    triage: mockTriageWorker[projectId] === item.id,
-    group_router: item.role === "router",
-    rebindable: item.binding !== null,
-  });
+  const retired = () =>
+    failure(
+      410,
+      "workers_retired",
+      "Workers are retired. Tasks run at this Agent Swarm's default place and model; set them in Settings."
+    );
   const detail = (item: MockAgent) => ({
     project,
     agent: {
-      ...row(item),
+      ...mockAgentRow(item),
       created_at: minutesAgo(60 * 24 * 9),
       runtime_id: `agt1_${projectId}_${item.id}`,
       model: item.model,
       system_prompt: item.system_prompt,
-      binding: item.binding,
-    },
-    triage: {
-      status: "ok",
-      used: mockTriageWorker[projectId] === item.id,
-      revision: mockTriageWorker[projectId] === item.id ? 3 : null,
+      read_only: item.role !== "router",
     },
     router_session:
       item.role === "router" ? { status: "ok", id: item.session ?? "ses1_new" } : null,
-    triage_href: triageHref,
+    triage_href: item.role === "router" ? `/orgs/${slug}/triage` : null,
   });
   const segments = rest.split("/").filter(Boolean).map(decodeURIComponent);
   const agentId = segments[1];
   const found = list.find((item) => item.id === agentId);
   const key = `${method} /${segments
-    .map((segment, index) =>
-      index === 1 && !["targets", "workloads"].includes(segment) ? ":id" : segment
-    )
+    .map((segment, index) => (index === 1 && segment !== "targets" ? ":id" : segment))
     .join("/")}`;
 
   switch (key) {
-    case "GET /agents": {
-      if (down)
-        return ok({
-          project,
-          status: "unavailable",
-          agents: [],
-          next_cursor: null,
-          triage_href: null,
-        });
-      const start = Number(url.searchParams.get("cursor") ?? 0);
-      const end = start + 100;
+    case "GET /agents":
       return ok({
         project,
-        status: "ok",
-        agents: list.slice(start, end).map(row),
-        next_cursor: end < list.length ? String(end) : null,
-        triage_href: triageHref,
+        status: down ? "unavailable" : "ok",
+        agents: down
+          ? []
+          : list.filter((item) => item.role === "router").map(mockAgentRow),
+        next_cursor: null,
+        triage_href: down ? null : `/orgs/${slug}/triage`,
       });
-    }
-    case "POST /agents": {
-      if (!admin) return forbidden();
-      const agentName =
-        typeof body.name === "string" && body.name.trim() ? body.name.trim() : null;
-      const target = (body.target ?? {}) as Record<string, unknown>;
-      if (body.type === "external") {
-        if (
-          target.kind === "compute_workload" ? !target.workload_id : !target.device_id
-        )
-          return failure(
-            422,
-            "invalid_target",
-            target.kind === "compute_workload"
-              ? "Select a Compute Workload."
-              : "Select a connected device."
-          );
-        if (target.kind !== "compute_workload" && !target.device_runtime_id)
-          return failure(422, "invalid_target", "Select an external runtime.");
-      }
-      list.splice(1, 0, {
-        id: `agt_new_${Date.now()}`,
-        name: agentName,
-        role: "worker",
-        lifecycle: "provisioning",
-        runtime:
-          body.type === "external"
-            ? target.kind === "compute_workload"
-              ? "compute"
-              : "connected"
-            : "internal",
-        model: null,
-        system_prompt: null,
-        template_id: "",
-        binding: null,
-      });
-      return ok(
-        {
-          id: "agt_new",
-          notice: "Agent creation accepted. Refresh the list after provisioning.",
-        },
-        201
-      );
-    }
+    case "POST /agents":
+    case "PUT /agents/:id/runtime":
+    case "POST /agents/:id/archive":
+      return admin ? retired() : forbidden();
     case "GET /agents/targets":
       return admin
         ? ok({
-            devices: [
-              {
-                id: "dev_mac_studio",
-                label: "Mac Studio / dev_mac_studio",
-                runtimes: [
-                  {
-                    id: "d6d51b1cd455dd2c",
-                    label: "codex / d6d51b1cd455dd2c / codex-cli 1.4.2",
-                    ready: true,
-                    status: "ready",
-                    version: "codex-cli 1.4.2",
-                    checked_at: minutesAgo(3),
-                    issue: null,
-                  },
-                  {
-                    id: "8e1f0c2b7a9d4e55",
-                    label: "claude / 8e1f0c2b7a9d4e55 / 2.1.0",
-                    ready: false,
-                    status: "readiness_incomplete",
-                    version: "2.1.0",
-                    checked_at: minutesAgo(41),
-                    issue: "auth_required",
-                  },
-                ],
-              },
-              {
-                id: "dev_linux_ci",
-                label: "Linux CI runner / dev_linux_ci",
-                runtimes: [],
-              },
-            ],
+            stations: mockStations,
+            cloud_vm: {
+              selectable: true,
+              issue: null,
+              models: { codex: ["gpt-5.5"], claude: [] },
+            },
           })
         : forbidden();
-    case "GET /agents/workloads": {
-      if (!admin) return forbidden();
-      const provider = url.searchParams.get("provider") ?? "codex";
-      const query = (url.searchParams.get("query") ?? "").toLowerCase();
-      const all = url.searchParams.get("include_unavailable") === "true";
-      const start = Number(url.searchParams.get("cursor") ?? 0);
-      const matching = mockWorkloads.filter(
-        (item) =>
-          item.provider === provider &&
-          (all || item.selectable) &&
-          (query === "" || `${item.label} ${item.node}`.toLowerCase().includes(query))
-      );
-      return ok({
-        status: "ok",
-        items: matching.slice(start, start + 50),
-        next_cursor: start + 50 < matching.length ? String(start + 50) : null,
-      });
-    }
     case "GET /agents/:id":
       return found
         ? ok(detail(found))
@@ -3031,41 +4461,37 @@ function agentsReply(
     case "GET /agents/:id/config": {
       if (!admin) return forbidden();
       if (!found) return failure(404, "agent_not_found", "Agent not found.");
+      if (found.role !== "router") return retired();
       return ok({
         agent: { id: found.id, name: found.name, role: found.role },
-        template_id: found.template_id,
+        model_key: found.model_key,
         system_prompt: found.system_prompt ?? "",
         available: true,
         models: [
           {
-            id: "",
+            key: "",
+            choice: null,
             label: "Default (claude-sonnet-4-5)",
             disabled: false,
             group: "Platform billing",
           },
-          {
-            id: "tmpl_sonnet",
-            label: "claude-sonnet-4-5",
+          ...[
+            ["claude-sonnet-4-5", "claude-sonnet-4-5"],
+            ["gpt-5", "gpt-5"],
+            ["deepseek-v4-flash", "DeepSeek V4 Flash"],
+          ].map(([model, label]) => ({
+            key: `catalog:${model}`,
+            choice: { kind: "catalog", model },
+            label,
             disabled: false,
             group: "Platform billing",
-          },
+          })),
           {
-            id: "tmpl_gpt5",
-            label: "gpt-5",
+            key: "runtime:codex:gpt-5.6-sol",
+            choice: { kind: "runtime", provider: "codex", model: "gpt-5.6-sol" },
+            label: "gpt-5.6-sol (Codex)",
             disabled: false,
-            group: "Platform billing",
-          },
-          {
-            id: "tmpl_flash",
-            label: "deepseek-flash — Fast drafts",
-            disabled: false,
-            group: "Platform billing",
-          },
-          {
-            id: "tmpl_codex",
-            label: "gpt-5.6-sol — Team Codex",
-            disabled: false,
-            group: "BYOK",
+            group: "Organization accounts",
           },
         ],
       });
@@ -3073,50 +4499,19 @@ function agentsReply(
     case "PATCH /agents/:id": {
       if (!admin) return forbidden();
       if (!found) return failure(404, "agent_not_found", "Agent not found.");
-      if (typeof body.template_id === "string") {
-        found.template_id = body.template_id;
-        found.model =
-          body.template_id === "" ? null : body.template_id.replace("tmpl_", "");
+      if (found.role !== "router") return retired();
+      if ("model" in body) {
+        const choice = body.model as Record<string, unknown> | null;
+        found.model = choice ? String(choice.model ?? choice.tier) : null;
+        found.model_key = choice
+          ? choice.kind === "runtime"
+            ? `runtime:${String(choice.provider)}:${found.model}`
+            : `${String(choice.kind)}:${found.model}`
+          : "";
       }
       if (typeof body.system_prompt === "string")
         found.system_prompt = body.system_prompt.trim() || found.system_prompt;
       return ok({ ...detail(found), notice: "Agent configuration saved." });
-    }
-    case "PUT /agents/:id/runtime": {
-      if (!admin) return forbidden();
-      if (!found?.binding)
-        return failure(
-          422,
-          "unsupported_runtime_binding",
-          "Only existing external workers can be rebound."
-        );
-      const target = body.target as Record<string, unknown>;
-      found.binding = {
-        ...found.binding,
-        revision: Number(found.binding.revision) + 1,
-        summary:
-          target.kind === "compute_workload"
-            ? `Workload · ${String(target.workload_id).slice(0, 12)}`
-            : `Codex · ${String(target.device_runtime_id).slice(0, 12)}`,
-      };
-      return ok({ ...detail(found), notice: "Agent runtime rebound." });
-    }
-    case "POST /agents/:id/archive": {
-      if (!admin) return forbidden();
-      if (!found) return failure(404, "agent_not_found", "Agent not found.");
-      if (found.role === "router")
-        return failure(422, "router_agent", "Router agents cannot be archived.");
-      if (mockTriageWorker[projectId] === found.id && body.triage_revision !== 3)
-        return failure(
-          409,
-          "triage_confirmation_required",
-          "This Worker is now assigned to Triage. Open Archive again to review the impact."
-        );
-      list.splice(list.indexOf(found), 1);
-      return ok({
-        redirect: `/orgs/${slug}/projects/${projectId}/agents`,
-        notice: "Agent archived.",
-      });
     }
     case "POST /agents/:id/router-session": {
       if (!admin) return forbidden();
@@ -3254,6 +4649,14 @@ export const mockFetch: typeof fetch = async (input, init) => {
       body
     );
   }
+  const wizardPath = /^\/dashboard\/api\/v1\/onboarding(\/[a-z]+)?$/.exec(url.pathname);
+  if (wizardPath) {
+    const body =
+      typeof init?.body === "string"
+        ? (JSON.parse(init.body) as Record<string, unknown>)
+        : {};
+    return wizardReply(method, wizardPath[1] ?? "", body);
+  }
   if (url.pathname === "/dashboard/api/v1/session") {
     // `?no-orgs` previews the state of a user outside every organization.
     const none = new URLSearchParams(window.location.search).has("no-orgs");
@@ -3273,7 +4676,6 @@ export const mockFetch: typeof fetch = async (input, init) => {
       decodeURIComponent(swarmAgents[2] ?? ""),
       swarmAgents[3] ?? "",
       method,
-      url,
       body
     );
   }
@@ -3281,6 +4683,34 @@ export const mockFetch: typeof fetch = async (input, init) => {
     typeof init?.body === "string"
       ? (JSON.parse(init.body) as Record<string, unknown>)
       : {};
+  const swarmCatalog =
+    /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/projects\/([^/]+)(\/(plugins|skills)(?:\/[^/]+){0,4})$/.exec(
+      url.pathname
+    );
+  if (swarmCatalog) {
+    const handle = swarmCatalog[4] === "plugins" ? swarmPluginsReply : swarmSkillsReply;
+    return handle(
+      decodeURIComponent(swarmCatalog[1] ?? ""),
+      decodeURIComponent(swarmCatalog[2] ?? ""),
+      swarmCatalog[3] ?? "",
+      method,
+      payload
+    );
+  }
+  const swarmConnections =
+    /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/projects\/([^/]+)\/connections((?:\/[^/]+){0,3})$/.exec(
+      url.pathname
+    );
+  if (swarmConnections) {
+    return connectionsReply(
+      decodeURIComponent(swarmConnections[1] ?? ""),
+      decodeURIComponent(swarmConnections[2] ?? ""),
+      swarmConnections[3] ?? "",
+      method,
+      url,
+      payload
+    );
+  }
   const swarmDevices =
     /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/projects\/([^/]+)(\/(?:devices|compute)(?:\/[^/]+){0,2})$/.exec(
       url.pathname
@@ -3294,12 +4724,8 @@ export const mockFetch: typeof fetch = async (input, init) => {
       payload
     );
   }
-  const runtimeAuth = /^\/dashboard\/orgs\/[^/]+\/projects\/[^/]+(\/.*)$/.exec(
-    url.pathname
-  );
-  if (runtimeAuth) return runtimeAuthReply(runtimeAuth[1] ?? "", method, payload);
   const swarmPage =
-    /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/projects\/([^/]+)(\/(?:tasks|schedules|websites|settings|archive|access)(?:\/[^/]+)?)$/.exec(
+    /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/projects\/([^/]+)(\/(?:tasks|schedules|websites|settings|archive|access)(?:\/[^/]+)*)$/.exec(
       url.pathname
     );
   if (swarmPage) {
@@ -3329,10 +4755,13 @@ export const mockFetch: typeof fetch = async (input, init) => {
       : notFound("project_not_found", "Agent Swarm not found.");
   }
   const checklist =
-    /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/onboarding(\/dismiss)?$/.exec(url.pathname);
+    /^\/dashboard\/api\/v1\/orgs\/([^/]+)\/onboarding(\/dismiss|\/remind-admins)?$/.exec(
+      url.pathname
+    );
   if (checklist) {
     if (!context(decodeURIComponent(checklist[1] ?? ""))) return notFound();
-    if (method === "POST") setupDismissed = true;
+    if (method === "POST" && checklist[2] === "/dismiss") setupDismissed = true;
+    if (method === "POST" && checklist[2] === "/remind-admins") setupReminded = true;
     return reply(200, { ok: true, data: setupChecklist() });
   }
   const match =

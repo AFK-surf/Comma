@@ -32,7 +32,7 @@ defmodule SalixStore.AgentVMMInstallMaterial do
   def issue(_operation, _enrollment), do: {:error, :install_material_unavailable}
 
   defp catalog do
-    case Application.get_env(:salix_store, :agent_vmm_install_material) do
+    case SystemsRuntime.get_env(:salix_store, :agent_vmm_install_material) do
       value when is_map(value) -> {:ok, value}
       _ -> {:error, :missing_catalog}
     end

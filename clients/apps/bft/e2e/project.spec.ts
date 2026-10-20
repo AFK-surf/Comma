@@ -44,18 +44,10 @@ const projectOverview = {
         id: "a-1",
         name: "Front desk",
         role: "router",
-        lifecycle: "active",
-        runtime: "internal",
-      },
-      {
-        id: "a-2",
-        name: "Repro engineer",
-        role: "worker",
         lifecycle: "provisioning",
-        runtime: "connected",
       },
     ],
-    truncated: true,
+    truncated: false,
   },
 };
 
@@ -103,14 +95,14 @@ test("an Agent Swarm overview shows agents, recent conversations and links", asy
   await expect(
     main.getByRole("heading", { name: "Recent conversations" }).first()
   ).toBeVisible();
-  await expect(main.getByText("2+", { exact: true }).first()).toBeVisible();
 
   await expect(main.getByRole("link", { name: "Front desk" })).toHaveAttribute(
     "href",
     "/orgs/acme/projects/p-1/agents/a-1"
   );
-  await expect(main.getByText("Connected device")).toBeVisible();
-  await expect(main.getByText("Setting up")).toBeVisible();
+  const router = main.getByRole("row", { name: /Front desk/ });
+  await expect(router.getByText("Router", { exact: true })).toBeVisible();
+  await expect(router.getByText("Setting up")).toBeVisible();
   await expect(
     main.getByRole("link", { name: "Refund above the $500 limit" })
   ).toHaveAttribute("href", "/orgs/acme/projects/p-1/tasks/c-1");
@@ -286,7 +278,6 @@ test("the sidebar expands the active Agent Swarm's pages and moves in place", as
     ["Tasks", "/tasks"],
     ["Devices", "/devices"],
     ["Skills", "/skills"],
-    ["Integrations", "/integrations"],
     ["Connections", "/connections"],
   ] as const) {
     await expect(nav.getByRole("link", { name: label, exact: true })).toHaveAttribute(

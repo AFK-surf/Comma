@@ -7,11 +7,12 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
   @gmail "https://gmail.googleapis.com/gmail/v1/users/me"
   @calendar "https://www.googleapis.com/calendar/v3/calendars/primary"
   @drive "https://www.googleapis.com/drive/v3"
+  @graph "https://graph.microsoft.com/v1.0"
 
   # Confirmation reads only the account's own identity. It never fetches mail,
   # messages, events, or files before the owner approves this exact account.
   def identify(workspace, toolkit, id)
-      when toolkit in ~w(slack gmail googlecalendar googledrive) and is_binary(id) do
+      when toolkit in ~w(slack gmail googlecalendar googledrive outlook) and is_binary(id) do
     with {:ok, settings} <- settings().get(workspace["salix_tenant_id"]),
          {:ok, identity} <-
            with_proxy(
@@ -81,6 +82,22 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
     end
   end
 
+  defp identity("outlook", request) do
+    with {:ok, %{"id" => id} = me} <-
+           request.("GET", @graph <> "/me?$select=id,mail,userPrincipalName", []),
+         true <- is_binary(id) and id != "" do
+      mailbox =
+        if is_binary(me["mail"]) and me["mail"] != "",
+          do: me["mail"],
+          else: me["userPrincipalName"]
+
+      {:ok, %{"subject" => %{"provider_user_id" => id}, "display" => display(mailbox, id)}}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, :member_identity_or_source_unavailable}
+    end
+  end
+
   defp identity("googledrive", request) do
     with {:ok, %{"user" => %{"permissionId" => id} = user}} <-
            request.("GET", @drive <> "/about?fields=user", []),
@@ -111,7 +128,7 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
         now,
         deadline
       )
-      when toolkit in ~w(slack gmail googlecalendar googledrive) do
+      when toolkit in ~w(slack gmail googlecalendar googledrive outlook) do
     id = source["connectionId"]
 
     with %{"connection_id" => ^id} = consent <-
@@ -141,8 +158,56 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
   def read(_workspace, _user_id, _source, _now, _deadline),
     do: {:error, :member_source_unsupported}
 
+  # Read only an id from an exact, previously collected member item. The
+  # proxy is pinned to that account and Graph enforces current resource ACL.
+  def preview_outlook(workspace, account_id, provider_user_id, kind, resource_id, href)
+      when kind in ~w(message event) and is_binary(resource_id) and
+             byte_size(resource_id) in 1..512 do
+    with {:ok, settings} <- settings().get(workspace["salix_tenant_id"]),
+         {:ok, data} <-
+           with_proxy(
+             settings,
+             workspace,
+             account_id,
+             "outlook",
+             RecommendationMemberRead.deadline(),
+             fn request ->
+               {path, fields} =
+                 if kind == "message",
+                   do: {"messages/", "id,webLink,subject,bodyPreview,from,receivedDateTime"},
+                   else: {"events/", "id,webLink,subject,bodyPreview,start,end,isCancelled"}
+
+               endpoint =
+                 @graph <>
+                   "/me/" <>
+                   path <>
+                   URI.encode(resource_id, &URI.char_unreserved?/1) <> "?$select=" <> fields
+
+               with {:ok, %{"id" => ^provider_user_id}} <-
+                      request.("GET", @graph <> "/me?$select=id", []),
+                    {:ok, %{"id" => ^resource_id, "webLink" => ^href} = data} <-
+                      request.("GET", endpoint, []),
+                    true <- kind != "event" or data["isCancelled"] != true do
+                 {:ok, data}
+               else
+                 _ -> {:error, :member_identity_or_source_unavailable}
+               end
+             end,
+             true
+           ) do
+      {:ok, data}
+    else
+      _ -> {:error, :member_identity_or_source_unavailable}
+    end
+  end
+
+  def preview_outlook(_, _, _, _, _, _), do: {:error, :member_source_unsupported}
+
   defp provider_read("slack", request, now),
     do: CommaWeb.RecommendationSlackMemberSource.read(request, now)
+
+  defp provider_read("outlook", request, now),
+    do: CommaWeb.RecommendationOutlookMemberSource.read(request, now)
 
   defp provider_read(toolkit, request, now),
     do: CommaWeb.RecommendationGoogleMemberSource.read(toolkit, request, now)
@@ -171,7 +236,7 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
   # The account check and the session start are independent; no provider read
   # runs before the account is verified. Each request ends by the read
   # deadline, and cleanup does not spend it.
-  defp with_proxy(settings, workspace, id, toolkit, deadline, read) do
+  defp with_proxy(settings, workspace, id, toolkit, deadline, read, verify_after? \\ false) do
     [account, session] =
       RecommendationMemberRead.map(
         [
@@ -191,17 +256,31 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
         try do
           with {:ok, account} <- account,
                true <- valid_account?(account, workspace, toolkit, id) do
-            read.(fn method, endpoint, opts ->
-              RecommendationMemberRead.request(deadline, fn ->
-                proxy(settings, session, toolkit, method, endpoint, opts)
+            result =
+              read.(fn method, endpoint, opts ->
+                RecommendationMemberRead.request(deadline, fn ->
+                  proxy(settings, session, toolkit, method, endpoint, opts)
+                end)
               end)
-            end)
+
+            if verify_after? do
+              with {:ok, ^account} <-
+                     RecommendationMemberRead.request(deadline, fn ->
+                       client().get_connected_account(settings, id)
+                     end) do
+                result
+              else
+                _ -> {:error, :member_identity_or_source_unavailable}
+              end
+            else
+              result
+            end
           else
             {:error, _} = error -> error
             _ -> {:error, :member_identity_or_source_unavailable}
           end
         after
-          Task.start(fn -> client().delete_proxy_session(settings, session) end)
+          SystemsRuntime.Task.start(fn -> client().delete_proxy_session(settings, session) end)
         end
 
       {:error, _} = error ->
@@ -216,7 +295,10 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
     case client().proxy_execute(
            settings,
            session,
-           %{"toolkit_slug" => toolkit, "endpoint" => endpoint, "method" => method},
+           opts
+           |> Keyword.take([:parameters])
+           |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+           |> Map.merge(%{"toolkit_slug" => toolkit, "endpoint" => endpoint, "method" => method}),
            error_mode: :structured,
            max_response_bytes: Keyword.get(opts, :max_bytes, 512_000)
          ) do
@@ -234,8 +316,8 @@ defmodule CommaWeb.RecommendationComposioMemberSource do
     end
   end
 
-  defp client, do: Application.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
+  defp client, do: SystemsRuntime.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
 
   defp settings,
-    do: Application.get_env(:salix_web, :composio_settings_mod, Salix.Control.ComposioSettings)
+    do: SystemsRuntime.get_env(:salix_web, :composio_settings_mod, Salix.Control.ComposioSettings)
 end

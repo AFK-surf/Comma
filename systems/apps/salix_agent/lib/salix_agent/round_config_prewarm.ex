@@ -13,14 +13,15 @@ defmodule SalixAgent.RoundConfigPrewarm do
   it, the same way it invalidates the actor's own cache.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   @table __MODULE__
   @fresh_ms 5_000
   @poll_ms 5
 
   # The table needs an owner that outlives the delivery tasks that fill it.
-  def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
+  def start_link(_opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, :ok, name: __MODULE__)
 
   @impl true
   def init(:ok) do
@@ -53,7 +54,7 @@ defmodule SalixAgent.RoundConfigPrewarm do
   @doc "Forgets any build for the agent (a configuration write landed)."
   @spec discard(String.t()) :: :ok
   def discard(agent_id) when is_binary(agent_id) do
-    :ets.delete(table(), agent_id)
+    SystemsRuntime.ETS.delete(table(), agent_id)
     :ok
   rescue
     ArgumentError -> :ok
@@ -64,11 +65,11 @@ defmodule SalixAgent.RoundConfigPrewarm do
 
     case lookup(agent_id) do
       {:ready, result, at} when now - at < @fresh_ms ->
-        :ets.delete(table(), agent_id)
+        SystemsRuntime.ETS.delete(table(), agent_id)
         result
 
       {:building, _ref, started} when now - started < @fresh_ms and now < deadline ->
-        Process.sleep(@poll_ms)
+        SystemsClock.sleep(@poll_ms)
         await(agent_id, build, deadline)
 
       _stale_absent_or_late ->
@@ -77,13 +78,13 @@ defmodule SalixAgent.RoundConfigPrewarm do
   end
 
   defp spawn_build(agent_id, now) do
-    ref = make_ref()
+    ref = SystemsRuntime.Proc.make_ref()
 
-    if :ets.insert_new(table(), {agent_id, {:building, ref, now}}) do
+    if SystemsRuntime.ETS.insert_new(table(), {agent_id, {:building, ref, now}}) do
       read_scope = SalixStore.ReadScope.capture() || %{}
       context = SystemsObservability.Context.capture()
 
-      case Task.Supervisor.start_child(SalixAgent.TaskSup, fn ->
+      case SystemsRuntime.TaskSupervisor.start_child(SalixAgent.TaskSup, fn ->
              SystemsObservability.Context.run(context, fn ->
                result =
                  SalixStore.ReadScope.run(read_scope, fn ->
@@ -104,7 +105,7 @@ defmodule SalixAgent.RoundConfigPrewarm do
                # actor already took or discarded stays empty.
                case lookup(agent_id) do
                  {:building, ^ref, _} ->
-                   :ets.insert(table(), {agent_id, {:ready, result, now_ms()}})
+                   SystemsRuntime.ETS.insert(table(), {agent_id, {:ready, result, now_ms()}})
 
                  _ ->
                    :ok
@@ -127,7 +128,7 @@ defmodule SalixAgent.RoundConfigPrewarm do
   end
 
   defp lookup(agent_id) do
-    case :ets.lookup(table(), agent_id) do
+    case SystemsRuntime.ETS.lookup(table(), agent_id) do
       [{^agent_id, entry}] -> entry
       [] -> :absent
     end
@@ -136,10 +137,10 @@ defmodule SalixAgent.RoundConfigPrewarm do
   end
 
   defp table do
-    case :ets.whereis(@table) do
+    case SystemsRuntime.ETS.whereis(@table) do
       :undefined ->
         try do
-          :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+          SystemsRuntime.ETS.new(@table, [:named_table, :public, :set, read_concurrency: true])
         rescue
           ArgumentError -> @table
         end
@@ -149,5 +150,5 @@ defmodule SalixAgent.RoundConfigPrewarm do
     end
   end
 
-  defp now_ms, do: System.monotonic_time(:millisecond)
+  defp now_ms, do: SystemsClock.monotonic_time(:millisecond)
 end

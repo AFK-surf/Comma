@@ -1,6 +1,7 @@
 defmodule SalixAnalytics.EventArchiveTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SystemsClock.Test, scope: ["Elixir.SalixStore", "Elixir.SalixAnalytics"]
   alias SalixAnalytics.EventArchive
   alias SalixAnalytics.EventArchive.{Completeness, Item, Recipients, Sequence, Worker}
   alias SalixStore.Age
@@ -41,9 +42,9 @@ defmodule SalixAnalytics.EventArchiveTest do
     {recipient_string, identity_string} = Age.generate_keypair()
     {:ok, identity} = Age.parse_identity(identity_string)
 
-    previous = Application.get_env(:salix_analytics, :event_archive)
+    previous = SystemsRuntime.get_env(:salix_analytics, :event_archive)
 
-    Application.put_env(:salix_analytics, :event_archive,
+    SystemsRuntime.put_env(:salix_analytics, :event_archive,
       enabled: true,
       recipients: [%{key_id: "test-key", public_key: recipient_string}]
     )
@@ -56,9 +57,9 @@ defmodule SalixAnalytics.EventArchiveTest do
 
     on_exit(fn ->
       if previous do
-        Application.put_env(:salix_analytics, :event_archive, previous)
+        SystemsRuntime.put_env(:salix_analytics, :event_archive, previous)
       else
-        Application.delete_env(:salix_analytics, :event_archive)
+        SystemsRuntime.delete_env(:salix_analytics, :event_archive)
       end
 
       Recipients.reset()
@@ -73,7 +74,7 @@ defmodule SalixAnalytics.EventArchiveTest do
     end
 
     test "is disabled when not enabled, even with recipients present", %{recipient_string: r} do
-      Application.put_env(:salix_analytics, :event_archive,
+      SystemsRuntime.put_env(:salix_analytics, :event_archive,
         enabled: false,
         recipients: [%{key_id: "k", public_key: r}]
       )
@@ -83,7 +84,7 @@ defmodule SalixAnalytics.EventArchiveTest do
     end
 
     test "rejects an invalid public key rather than archiving to nothing" do
-      Application.put_env(:salix_analytics, :event_archive,
+      SystemsRuntime.put_env(:salix_analytics, :event_archive,
         enabled: true,
         recipients: [%{key_id: "k", public_key: "age1notarealkey"}]
       )
@@ -100,7 +101,7 @@ defmodule SalixAnalytics.EventArchiveTest do
       # The lopsided trade this exists for: rejecting the bad key costs its
       # holder these events, rejecting the LIST costs everyone every event,
       # permanently, with no record that they ever happened.
-      Application.put_env(:salix_analytics, :event_archive,
+      SystemsRuntime.put_env(:salix_analytics, :event_archive,
         enabled: true,
         recipients: [
           %{key_id: "good", public_key: r},
@@ -115,7 +116,7 @@ defmodule SalixAnalytics.EventArchiveTest do
     end
 
     test "a rejected key is reported rather than absorbed", %{recipient_string: r} do
-      Application.put_env(:salix_analytics, :event_archive,
+      SystemsRuntime.put_env(:salix_analytics, :event_archive,
         enabled: true,
         recipients: [
           %{key_id: "good", public_key: r},
@@ -134,7 +135,7 @@ defmodule SalixAnalytics.EventArchiveTest do
     end
 
     test "only the usable recipients are sealed to", %{recipient_string: r} do
-      Application.put_env(:salix_analytics, :event_archive,
+      SystemsRuntime.put_env(:salix_analytics, :event_archive,
         enabled: true,
         recipients: [
           %{key_id: "good", public_key: r},
@@ -154,7 +155,7 @@ defmodule SalixAnalytics.EventArchiveTest do
     test "a load error is not cached, so fixing config recovers without a restart", %{
       recipient_string: r
     } do
-      Application.put_env(:salix_analytics, :event_archive,
+      SystemsRuntime.put_env(:salix_analytics, :event_archive,
         enabled: true,
         recipients: [%{key_id: "k", public_key: "garbage"}]
       )
@@ -162,7 +163,7 @@ defmodule SalixAnalytics.EventArchiveTest do
       Recipients.reset()
       assert {:error, _} = Recipients.load()
 
-      Application.put_env(:salix_analytics, :event_archive,
+      SystemsRuntime.put_env(:salix_analytics, :event_archive,
         enabled: true,
         recipients: [%{key_id: "k", public_key: r}]
       )
@@ -324,7 +325,7 @@ defmodule SalixAnalytics.EventArchiveTest do
     end
 
     test "is a no-op when no recipients are configured" do
-      Application.put_env(:salix_analytics, :event_archive, enabled: false)
+      SystemsRuntime.put_env(:salix_analytics, :event_archive, enabled: false)
       Recipients.reset()
 
       assert :ok = EventArchive.record(base_fact())
@@ -400,7 +401,7 @@ defmodule SalixAnalytics.EventArchiveTest do
     end
 
     test "an unredeemed reservation consumes its seq, which is the entire point" do
-      # This is the `Process.exit(pid, :kill)` case: the response is never
+      # This is the `SystemsRuntime.Proc.exit(pid, :kill)` case: the response is never
       # produced, so nothing redeems the position. Without the reservation the
       # run would read 1,2 — contiguous, healthy, and wrong.
       #
@@ -480,7 +481,7 @@ defmodule SalixAnalytics.EventArchiveTest do
     end
 
     test "reserves nothing when there is nothing to archive" do
-      Application.put_env(:salix_analytics, :event_archive, enabled: false)
+      SystemsRuntime.put_env(:salix_analytics, :event_archive, enabled: false)
       Recipients.reset()
 
       assert EventArchive.reserve(base_fact()) == nil
@@ -639,8 +640,8 @@ defmodule SalixAnalytics.EventArchiveTest do
         for _ <- 1..unquote(count), do: EventArchive.record(base_fact())
         Worker.flush()
 
-        assert_receive {:archive_lost, %{count: unquote(count)}, %{reason: unquote(reason)}}
-        :telemetry.detach(handler)
+        settle_receive({:archive_lost, %{count: unquote(count)}, %{reason: unquote(reason)}})
+        SystemsRuntime.Telemetry.detach(handler)
       end
     end
   end
@@ -650,9 +651,9 @@ defmodule SalixAnalytics.EventArchiveTest do
     # so every request fails at the transport — which is exactly the case that
     # must NOT stop the writes forever.
     setup do
-      previous = Application.get_env(:salix_analytics, :clickhouse)
+      previous = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
-      Application.put_env(:salix_analytics, :clickhouse,
+      SystemsRuntime.put_env(:salix_analytics, :clickhouse,
         base_url: "http://127.0.0.1:1",
         database: "nope",
         archive_receive_timeout_ms: 100
@@ -660,8 +661,8 @@ defmodule SalixAnalytics.EventArchiveTest do
 
       on_exit(fn ->
         if previous,
-          do: Application.put_env(:salix_analytics, :clickhouse, previous),
-          else: Application.delete_env(:salix_analytics, :clickhouse)
+          do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, previous),
+          else: SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
       end)
 
       :ok
@@ -676,12 +677,12 @@ defmodule SalixAnalytics.EventArchiveTest do
       EventArchive.record(base_fact())
       Worker.flush()
 
-      assert :sys.get_state(pid).layout == :unchecked
+      assert :sys.get_state(pid, :infinity).layout == :unchecked
     end
 
     test "a confirmed mismatch latches and refuses to write" do
       pid = start_supervised!({Worker, flush_ms: 10_000, batch_size: 10_000})
-      :sys.replace_state(pid, &%{&1 | layout: :mismatch})
+      :sys.replace_state(pid, &%{&1 | layout: :mismatch}, :infinity)
 
       handler = attach_lost_handler()
 
@@ -691,22 +692,22 @@ defmodule SalixAnalytics.EventArchiveTest do
       # Refused rather than written, and counted rather than silent. Writing
       # into a ReplacingMergeTree whose sorting key is wrong is not a failed
       # insert — it is the engine merging archived events away.
-      assert_receive {:archive_lost, %{count: 1}, %{reason: :table_layout_mismatch}}
-      assert :sys.get_state(pid).layout == :mismatch
+      settle_receive({:archive_lost, %{count: 1}, %{reason: :table_layout_mismatch}})
+      assert :sys.get_state(pid, :infinity).layout == :mismatch
 
-      :telemetry.detach(handler)
+      SystemsRuntime.Telemetry.detach(handler)
     end
   end
 
   defp attach_lost_handler do
-    handler = "archive-lost-#{System.unique_integer([:positive])}"
-    test = self()
+    handler = "archive-lost-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+    test = SystemsRuntime.Proc.self()
 
-    :telemetry.attach(
+    SystemsRuntime.Telemetry.attach(
       handler,
       [:salix_analytics, :event_archive, :lost],
       fn _event, measurements, metadata, _config ->
-        send(test, {:archive_lost, measurements, metadata})
+        SystemsRuntime.Proc.send(test, {:archive_lost, measurements, metadata})
       end,
       nil
     )
@@ -715,8 +716,8 @@ defmodule SalixAnalytics.EventArchiveTest do
   end
 
   defp put_archive_config(extra) do
-    config = Application.get_env(:salix_analytics, :event_archive, [])
-    Application.put_env(:salix_analytics, :event_archive, Keyword.merge(config, extra))
+    config = SystemsRuntime.get_env(:salix_analytics, :event_archive, [])
+    SystemsRuntime.put_env(:salix_analytics, :event_archive, Keyword.merge(config, extra))
     Recipients.reset()
     :ok
   end
@@ -749,9 +750,6 @@ defmodule SalixAnalytics.EventArchiveTest do
     }
   end
 
-  defp eventually(check, attempts \\ 50) do
-    Enum.reduce_while(1..attempts, false, fn _, _ ->
-      if check.(), do: {:halt, true}, else: Process.sleep(10) && {:cont, false}
-    end)
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 end

@@ -13,7 +13,7 @@ import {
   grayLightMode,
   hexToOklch,
   oklchChromaGainFromSample,
-} from "@comma/ui";
+} from "@comma/ui/tokens";
 import {
   createContext,
   useCallback,

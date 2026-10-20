@@ -49,16 +49,16 @@ defmodule BridgeForTeams.CommaBftSharedStorageContractTest do
     comma_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(Comma.Repo, shared: true)
 
     previous = %{
-      bft_client: Application.get_env(:bridge_for_teams_core, :salix_client),
-      comma_client: Application.get_env(:comma_core, :salix_client),
-      delivery: Application.get_env(:salix_im, :agent_delivery_mod),
-      s3: Application.get_env(:salix_store, :s3_backend)
+      bft_client: SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client),
+      comma_client: SystemsRuntime.get_env(:comma_core, :salix_client),
+      delivery: SystemsRuntime.get_env(:salix_im, :agent_delivery_mod),
+      s3: SystemsRuntime.get_env(:salix_store, :s3_backend)
     }
 
-    Application.put_env(:salix_store, :s3_backend, Fake)
-    Application.put_env(:comma_core, :salix_client, CommaWeb.SalixClient)
-    Application.put_env(:bridge_for_teams_core, :salix_client, BridgeForTeams.Salix.Erpc)
-    Application.put_env(:salix_im, :agent_delivery_mod, NoopAgentDelivery)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, Fake)
+    SystemsRuntime.put_env(:comma_core, :salix_client, CommaWeb.SalixClient)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, BridgeForTeams.Salix.Erpc)
+    SystemsRuntime.put_env(:salix_im, :agent_delivery_mod, NoopAgentDelivery)
 
     SalixAgent.TestSupport.stop_all_agents()
     Fake.reset()
@@ -80,7 +80,7 @@ defmodule BridgeForTeams.CommaBftSharedStorageContractTest do
   end
 
   test "Comma and BFT coexist, remain isolated, and restore from one Salix bucket" do
-    suffix = Ecto.UUID.generate()
+    suffix = SystemsRuntime.Proc.uuid()
 
     {:ok, comma_user} =
       Comma.Accounts.create_user(%{"email" => "comma-shared-#{suffix}@example.com"})
@@ -103,6 +103,17 @@ defmodule BridgeForTeams.CommaBftSharedStorageContractTest do
     assert {:ok, comma_workspace} = Comma.Workspaces.get(comma_workspace["id"])
     assert :ok = issue_comma_billing_grant(comma_workspace)
 
+    # A new Comma Workspace has no Worker until one is created.
+    {:ok, comma_worker} =
+      SalixAgent.Control.create(
+        %{
+          "group_id" => comma_workspace["default_group_id"],
+          "role" => "worker",
+          "name" => "Ines"
+        },
+        comma_workspace["salix_tenant_id"]
+      )
+
     {:ok, bft_user} =
       Accounts.create_user(%{"email" => "bft-shared-#{suffix}@example.com", "name" => "BFT"})
 
@@ -117,7 +128,7 @@ defmodule BridgeForTeams.CommaBftSharedStorageContractTest do
       )
 
     {:ok, _worker} =
-      Agents.create_agent(bft_project.id, %{
+      BridgeForTeams.TestSupport.LegacyWorker.create(bft_project.id, %{
         "name" => "Shared Bucket Worker",
         "role" => "worker",
         "slot" => "worker"
@@ -205,7 +216,7 @@ defmodule BridgeForTeams.CommaBftSharedStorageContractTest do
              TaskSchedules.create_task_conversation(
                comma_workspace["default_group_id"],
                comma_workspace["router_agent_id"],
-               comma_workspace["default_worker_agent_id"],
+               comma_worker["agent_id"],
                %{
                  "title" => "Comma scheduled task",
                  "content" => "Run the Comma task",
@@ -438,7 +449,8 @@ defmodule BridgeForTeams.CommaBftSharedStorageContractTest do
            billing_account_id: account_id,
            credits: 100,
            valid_from: ~U[2026-06-17 00:00:00Z],
-           expires_at: DateTime.utc_now() |> DateTime.add(30, :day) |> DateTime.truncate(:second),
+           expires_at:
+             SystemsClock.utc_now() |> DateTime.add(30, :day) |> DateTime.truncate(:second),
            source_type: "shared_storage_contract",
            source_id: "shared-storage:#{workspace_id}",
            source_event_id: "shared-storage:#{workspace_id}",
@@ -466,6 +478,6 @@ defmodule BridgeForTeams.CommaBftSharedStorageContractTest do
     end)
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

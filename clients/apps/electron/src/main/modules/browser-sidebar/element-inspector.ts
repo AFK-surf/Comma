@@ -2,10 +2,17 @@ import type { BrowserSidebarInspectResult } from "@comma/native-bridge";
 
 type BrowserSidebarElementSelectionResult =
   | Exclude<BrowserSidebarInspectResult, { status: "selected" }>
-  | Omit<Extract<BrowserSidebarInspectResult, { status: "selected" }>, "userMessage">;
+  | Omit<
+      Extract<BrowserSidebarInspectResult, { status: "selected" }>,
+      "screenshot" | "userMessage"
+    >;
 
 type InspectionController = {
   cancel(): void;
+  /** Outlines the selected element again, once Main has captured it without the outline. */
+  highlight(): void;
+  /** Where the selected element is now, in the page's CSS pixels; undefined when none is selected. */
+  rect(): { height: number; width: number; x: number; y: number } | undefined;
   start(): Promise<BrowserSidebarElementSelectionResult>;
 };
 
@@ -38,6 +45,8 @@ function runBrowserSidebarElementInspector(): Promise<BrowserSidebarElementSelec
   let active = false;
   let hoveredElement: Element | undefined;
   let selectedElement: Element | undefined;
+  // From the click until Main has captured the element: no outline is drawn, even when the page scrolls.
+  let capturing = false;
   let resolveSelection:
     | ((result: BrowserSidebarElementSelectionResult) => void)
     | undefined;
@@ -122,6 +131,7 @@ function runBrowserSidebarElementInspector(): Promise<BrowserSidebarElementSelec
   };
   const finish = (result: BrowserSidebarElementSelectionResult) => {
     active = false;
+    capturing = false;
     hoveredElement = undefined;
     selectedElement = undefined;
     host.style.display = "none";
@@ -247,14 +257,13 @@ function runBrowserSidebarElementInspector(): Promise<BrowserSidebarElementSelec
     }
     active = false;
     selectedElement = element;
-    showBox(element);
+    // Main captures the element as the page shows it: the outline goes first,
+    // and the selection settles once a frame without it has been painted.
+    // Until then the selection stays open: a cancel or the timeout still ends it.
+    capturing = true;
+    hideBox();
     const resolve = resolveSelection;
-    resolveSelection = undefined;
-    if (selectionTimeout !== undefined) {
-      globalThis.clearTimeout(selectionTimeout);
-      selectionTimeout = undefined;
-    }
-    resolve?.({
+    const selection: BrowserSidebarElementSelectionResult = {
       element: {
         attributes,
         outerHTML: sanitizedElementHtml(element),
@@ -273,16 +282,38 @@ function runBrowserSidebarElementInspector(): Promise<BrowserSidebarElementSelec
         `inspection-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       page: { title: document.title || undefined, url: globalThis.location.href },
       status: "selected",
-    });
+    };
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (!resolve || resolveSelection !== resolve) return;
+        resolveSelection = undefined;
+        if (selectionTimeout !== undefined) {
+          globalThis.clearTimeout(selectionTimeout);
+          selectionTimeout = undefined;
+        }
+        resolve(selection);
+      })
+    );
   };
   const cancel = () => finish({ status: "cancelled" });
+  const selectedRect = () => {
+    if (!selectedElement) return undefined;
+    const { height, width, x, y } = selectedElement.getBoundingClientRect();
+    return { height, width, x, y };
+  };
+  const highlight = () => {
+    capturing = false;
+    if (selectedElement) showBox(selectedElement);
+  };
   const updateOverlay = () => {
+    if (capturing) return;
     const element = selectedElement ?? (active ? hoveredElement : undefined);
     if (element) showBox(element);
   };
   const start = () => {
     if (resolveSelection) finish({ status: "cancelled" });
     active = true;
+    capturing = false;
     host.style.display = "block";
     hoveredElement = undefined;
     selectedElement = undefined;
@@ -300,7 +331,8 @@ function runBrowserSidebarElementInspector(): Promise<BrowserSidebarElementSelec
   document.addEventListener(
     "keydown",
     (event) => {
-      if (active && event.key === "Escape") cancel();
+      // Until the selection settles, including the frames it waits for after the click.
+      if (resolveSelection && event.key === "Escape") cancel();
     },
     true
   );
@@ -308,7 +340,7 @@ function runBrowserSidebarElementInspector(): Promise<BrowserSidebarElementSelec
   globalThis.addEventListener("resize", updateOverlay);
   globalThis.addEventListener("pagehide", cancel);
 
-  const controller = { cancel, start };
+  const controller = { cancel, highlight, rect: selectedRect, start };
   globalThis.commaBrowserSidebarElementInspector = controller;
   return controller.start();
 }
@@ -318,3 +350,9 @@ export const browserSidebarElementInspectorSource = `(${runBrowserSidebarElement
 
 export const browserSidebarElementInspectorCancelSource =
   "globalThis.commaBrowserSidebarElementInspector?.cancel();";
+
+export const browserSidebarElementInspectorRectSource =
+  "globalThis.commaBrowserSidebarElementInspector?.rect();";
+
+export const browserSidebarElementInspectorHighlightSource =
+  "globalThis.commaBrowserSidebarElementInspector?.highlight();";

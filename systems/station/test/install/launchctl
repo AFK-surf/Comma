@@ -1,0 +1,30 @@
+#!/bin/sh
+# A stand-in for launchd, for test/install-e2e.sh: the installer's launchctl calls on one service, in a test HOME.
+#   bootstrap gui/<uid> <plist>   runs the plist's program with its environment, in the background (no KeepAlive)
+#   bootout gui/<uid>/<label>     stops it (SIGTERM, then waits for it to go)
+#   print gui/<uid>/<label>       0 while it runs, else 1
+set -u
+state="$HOME/.fake-launchd"
+mkdir -p "$state"
+echo "launchctl $*" >> "$state/calls"
+running() { [ -f "$state/pid" ] && kill -0 "$(cat "$state/pid")" 2>/dev/null; }
+case "$1" in
+  bootstrap)
+    plist=$3
+    program=$(sed -n 's#.*<key>ProgramArguments</key><array><string>\([^<]*\)</string><string>\([^<]*\)</string></array>.*#\1 \2#p' "$plist")
+    path=$(sed -n 's#.*<key>PATH</key><string>\([^<]*\)</string>.*#\1#p' "$plist")
+    data=$(sed -n 's#.*<key>STILLFAIL_DATA</key><string>\([^<]*\)</string>.*#\1#p' "$plist")
+    running && exit 1
+    # shellcheck disable=SC2086
+    nohup env -i HOME="$HOME" PATH="$path" STILLFAIL_DATA="$data" $program >> "$data/stillfail.log" 2>&1 &
+    echo $! > "$state/pid"
+    ;;
+  bootout)
+    running || exit 0
+    kill "$(cat "$state/pid")"
+    for _ in $(seq 1 40); do running || break; sleep 0.25; done
+    rm -f "$state/pid"
+    ;;
+  print) running ;;
+  *) exit 0 ;;
+esac

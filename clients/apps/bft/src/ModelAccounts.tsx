@@ -1,18 +1,17 @@
+import { Button } from "@comma/ui/components/Button";
+import { ChevronDownSmallIcon, MoreHorizontalIcon } from "@comma/ui/components/icons";
+import { Dialog } from "@comma/ui/components/dialog";
+import { Dropdown } from "@comma/ui/components/dropdown";
 import {
-  Button,
-  ChevronDownSmallIcon,
-  Dialog,
-  Dropdown,
   Menu,
   MenuItem,
   MenuPopover,
   MenuSeparator,
   MenuTrigger,
-  MoreHorizontalIcon,
-  ScrollArea,
-  SubscriptionCredentialInput,
-  Toggle,
-} from "@comma/ui";
+} from "@comma/ui/components/menu";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import { SubscriptionCredentialInput } from "@comma/ui/components/subscription-accounts/SubscriptionCredentialInput";
+import { Toggle } from "@comma/ui/components/toggle";
 import { useEffect, useRef, useState } from "react";
 import {
   BftApiError,
@@ -27,7 +26,7 @@ import {
 import { ConfirmDialog, CopyButton, DialogError, writeErrorMessage } from "./dialogs";
 import { formatRelative, humanize } from "./format";
 import { messages } from "./messages";
-import { useApi, useResource } from "./resource";
+import { useApi, useResource, useStateFor } from "./resource";
 import {
   FormDialog,
   FormSection,
@@ -130,7 +129,14 @@ function newRequestId() {
  * The organization's subscriptions and Provider API keys. Each write returns
  * the refreshed page, so a row change needs no second read.
  */
-export function AccountsSection({ org }: { org: string }) {
+/** `onChange` runs after a write changes the accounts. */
+export function AccountsSection({
+  org,
+  onChange,
+}: {
+  org: string;
+  onChange?: () => void;
+}) {
   const api = useApi();
   const [cursor, setCursor] = useState<string | null>(null);
   const [resource, retry] = useResource(`accounts:${org}:${cursor ?? ""}`, (signal) =>
@@ -148,7 +154,10 @@ export function AccountsSection({ org }: { org: string }) {
     setNotice(null);
     setCursor(next);
   };
-  const apply = (next: BftAccountsPage) => setWritten(next);
+  const apply = (next: BftAccountsPage) => {
+    setWritten(next);
+    onChange?.();
+  };
   const replaceAccount = (account: BftAccount) =>
     page &&
     setWritten({
@@ -366,6 +375,7 @@ export function AccountsSection({ org }: { org: string }) {
         />
       ) : dialog?.kind === "usage" ? (
         <UsageDialog
+          account={dialog.account.id}
           load={(next, signal) =>
             api.accountUsage(org, dialog.account.id, next, signal)
           }
@@ -889,14 +899,22 @@ function KeyDialog({
 
 /** The workloads bound to a Provider API key, a page at a time. */
 function UsageDialog({
+  account,
   load,
   onClose,
 }: {
+  account: string;
   load: (cursor: number | null, signal?: AbortSignal) => Promise<BftAccountUsage>;
   onClose: () => void;
 }) {
-  const [first, retry] = useResource("usage", (signal) => load(null, signal));
-  const [more, setMore] = useState<BftAccountUsage[]>([]);
+  const [first, retry] = useResource(`usage:${account}`, (signal) =>
+    load(null, signal)
+  );
+  // Fresh data for the first page (after a cached one) starts the list over.
+  const [more, setMore] = useStateFor<BftAccountUsage[]>(
+    first.state === "ready" ? first.data : undefined,
+    []
+  );
   const write = useWrite();
   const pages = first.state === "ready" ? [first.data, ...more] : [];
   const last = pages.at(-1);

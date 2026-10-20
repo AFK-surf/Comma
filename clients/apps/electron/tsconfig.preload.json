@@ -4,6 +4,17 @@
     "tsBuildInfoFile": "../../../node_modules/.tmp/tsconfig.electron.preload.tsbuildinfo",
     "types": ["node"]
   },
-  "include": ["src/preload.ts", "src/preload/**/*.ts"],
-  "exclude": ["**/*.test.*", "**/*.spec.*"]
+  "include": ["src/preload.ts", "src/browser-page-preload.ts", "src/preload/**/*.ts"],
+  "exclude": ["**/*.test.*", "**/*.spec.*"],
+  "references": [
+    {
+      "path": "../../packages/chat-contract"
+    },
+    {
+      "path": "../../packages/native-bridge"
+    },
+    {
+      "path": "../../packages/session-contract"
+    }
+  ]
 }

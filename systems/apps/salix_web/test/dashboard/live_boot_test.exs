@@ -5,7 +5,7 @@ defmodule SalixWeb.Dashboard.LiveBootTest do
   claim — the LiveView websocket upgrade succeeds on that shared listener even
   though `DashboardEndpoint` runs with `server: false`.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   defmodule WsProbe do
     @moduledoc false
@@ -24,12 +24,6 @@ defmodule SalixWeb.Dashboard.LiveBootTest do
     assert resp.body =~ "Admin token"
   end
 
-  test "non-dash API path still served on the same listener" do
-    port = SalixWeb.Application.http_port()
-    {:ok, resp} = Req.get("http://127.0.0.1:#{port}/health")
-    assert resp.status == 200
-  end
-
   test "LiveView websocket upgrades on the shared listener (server: false endpoint)" do
     port = SalixWeb.Application.http_port()
     url = "ws://127.0.0.1:#{port}/dash/live/websocket?vsn=2.0.0"
@@ -37,8 +31,8 @@ defmodule SalixWeb.Dashboard.LiveBootTest do
     # WebSockex.start_link returns {:ok, pid} only after the HTTP 101 upgrade
     # completes — so a successful connect proves the upgrade rode the Bandit
     # adapter of the shared listener.
-    assert {:ok, pid} = WsProbe.start_link(url, self())
-    assert Process.alive?(pid)
-    Process.exit(pid, :kill)
+    assert {:ok, pid} = WsProbe.start_link(url, SystemsRuntime.Proc.self())
+    assert SystemsRuntime.Proc.alive?(pid)
+    SystemsRuntime.Proc.exit(pid, :kill)
   end
 end

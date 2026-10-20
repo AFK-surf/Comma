@@ -53,7 +53,7 @@ defmodule SalixSignalProto.Crypto.MlKem768 do
   @spec keypair(<<_::512>>) :: {binary(), binary()}
   def keypair(<<d::binary-size(32), z::binary-size(32)>>) do
     case KemBackend.select!(:mlkem768) do
-      :openssl -> :crypto.generate_key(:mlkem768, [])
+      :openssl -> SystemsRuntime.Proc.generate_key(:mlkem768, [])
       :plain -> keypair_from_seed(d, z)
     end
   end

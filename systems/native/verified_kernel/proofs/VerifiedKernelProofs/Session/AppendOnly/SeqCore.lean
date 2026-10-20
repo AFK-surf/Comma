@@ -210,28 +210,6 @@ theorem seq_of_sublist {s t : Term} {xs ys : List Term} (read : s.get (a "messag
   obtain rfl := Term.list.inj hm
   exact ⟨ys, n, messages, by rw [lastSeq, last]; exact hl, fun m hm => hs m (sub.subset hm), hp.sublist sub⟩
 
-/-- A map that keeps every `seq` stamp keeps the invariant with `last_seq` unchanged. -/
-theorem seq_of_map {s t : Term} {xs ys : List Term} (read : s.get (a "messages") = .list xs)
-    (stamps : ys.map (fun m => m.get (a "seq")) = xs.map (fun m => m.get (a "seq")))
-    (messages : t.get (a "messages") = .list ys)
-    (last : t.get (a "last_seq") = s.get (a "last_seq")) : SeqStep s t := by
-  rintro ⟨xs', n, hm, hl, hs, hp⟩
-  rw [read] at hm
-  obtain rfl := Term.list.inj hm
-  refine ⟨ys, n, messages, by rw [lastSeq, last]; exact hl, ?_, ?_⟩
-  · intro m hm
-    have : m.get (a "seq") ∈ xs.map (fun m => m.get (a "seq")) := by
-      rw [← stamps]
-      exact List.mem_map_of_mem hm
-    obtain ⟨m', hm', heq⟩ := List.mem_map.mp this
-    obtain ⟨k, hk, hkn⟩ := hs m' hm'
-    exact ⟨k, by rw [← heq, hk], hkn⟩
-  · have : List.Pairwise (fun v v' : Term => integerValue v ≤ integerValue v') (ys.map (fun m => m.get (a "seq"))) := by
-      rw [stamps, List.pairwise_map]
-      exact hp
-    rw [List.pairwise_map] at this
-    exact this
-
 /-- Folding `f` and consing keeps `g` of the accumulator in step with the input. -/
 theorem foldlM_cons_map {f : Term → KernelM Term} (g : Term → Term)
     (keep : ∀ x y s' r', f x s' = .ok (y, r') → g y = g x) (xs : List Term) {acc0 acc : List Term}
@@ -252,25 +230,12 @@ theorem foldlM_cons_map {f : Term → KernelM Term} (g : Term → Term)
     rw [ih h]
     simp [keep x y _ _ hy]
 
-/-- `enumMap` over a list with a stamp-preserving function preserves the stamps. -/
-theorem enumMap_stamps {xs ys : List Term} {f : Term → KernelM Term} {s r : List Term}
-    (keep : ∀ x y s' r', f x s' = .ok (y, r') → y.get (a "seq") = x.get (a "seq"))
-    (h : enumMap (.list xs) f s = .ok (ys, r)) :
-    ys.map (fun m => m.get (a "seq")) = xs.map (fun m => m.get (a "seq")) := by
-  unfold enumMap at h
-  obtain ⟨acc, _, hfold, h⟩ := bind_ok h
-  simp only [pure_ok_iff, Prod.mk.injEq] at h
-  obtain ⟨items, hitems, hxs⟩ := enumFold_ok hfold
-  rw [hxs xs rfl] at hitems
-  rw [h.1, List.map_reverse, foldlM_cons_map _ keep xs hitems]
-  simp
-
 /-! ### Walking a reducer for the invariant
 
 Same shape as `transcript_walk`, with `SeqStep` goals and `<name>_seq` / `<name>_sstep` lemmas. -/
 
 /-- Reducers that only appear once history events are included. -/
-def historySteps : List Lean.Name := [`mergePredicate, `microcompactIds, `microcompact, `archiveAdvance]
+def historySteps : List Lean.Name := [`archiveAdvance]
 
 syntax "sorted_step" ident : tactic
 macro_rules
@@ -278,7 +243,7 @@ macro_rules
   `(tactic| first
       | (head_is $h [write]; simp only [write_sstep] at $h:ident; obtain ⟨_, frame, bump, append⟩ := $h
          first
-           | refine seq_trans (frame rfl) ?_
+           | refine seq_trans (frame (by keys_absent)) ?_
            | (refine seq_trans (bump _ ?add rfl rfl) ?_; case add => assumption)
            | (refine seq_trans (append _ _ _ ?add ?read rfl rfl) ?_; (case add => assumption); (case read => assumption)))
       | (head_step $h "_sstep"; obtain ⟨_, stepped⟩ := $h; refine seq_trans stepped ?_))

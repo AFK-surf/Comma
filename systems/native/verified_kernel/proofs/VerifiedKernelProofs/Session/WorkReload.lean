@@ -1,7 +1,7 @@
-import VerifiedKernelProofs.IFC.Transfer
-import VerifiedKernelProofs.AgentLoop.Dispatch
-import VerifiedKernelProofs.Provider.Dispatch
-import VerifiedKernelProofs.Session.WorkSnapshot
+import VerifiedKernel.Dispatch
+import VerifiedKernelProofs.AgentLoop.Round
+import VerifiedKernelProofs.IFC.Identity
+import VerifiedKernelProofs.Session.WorkPersistence
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

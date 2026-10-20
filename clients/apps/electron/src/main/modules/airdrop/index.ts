@@ -1,10 +1,11 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
+import { spawnAirDropHelper, type SpawnAirDropHelper } from "./helper-process";
 
 const offerSchema = z.object({
   version: z.literal(1),
@@ -102,6 +103,7 @@ export interface AirDropOptions {
     signal: AbortSignal
   ) => Promise<AirDropIntake | undefined>;
   log?: { warn(message: string): void };
+  spawn?: SpawnAirDropHelper;
 }
 interface PendingOffer {
   controller: AbortController;
@@ -183,7 +185,7 @@ export class AirDropService {
       this.#error = undefined;
       this.#port = undefined;
       this.#phase = "starting";
-      const child = spawn(
+      const child = (this.#options.spawn ?? spawnAirDropHelper)(
         this.#options.binaryPath!,
         [
           "receive",
@@ -200,8 +202,7 @@ export class AirDropService {
           "--exit-on-stdin-close",
           "--max-connections",
           "4",
-        ],
-        { stdio: ["pipe", "pipe", "pipe"], shell: false }
+        ]
       );
       this.#child = child;
       const decoder = new StringDecoder("utf8");

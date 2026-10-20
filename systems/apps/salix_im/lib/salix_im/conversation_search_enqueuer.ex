@@ -23,7 +23,7 @@ defmodule SalixIM.ConversationSearchEnqueuer do
   end
 
   def start_link(opts \\ []) do
-    Task.Supervisor.start_link(
+    SystemsRuntime.TaskSupervisor.start_link(
       Keyword.merge([name: __MODULE__, max_children: @max_children], opts)
     )
   end
@@ -44,7 +44,7 @@ defmodule SalixIM.ConversationSearchEnqueuer do
   @doc false
   def pending_count do
     __MODULE__
-    |> Task.Supervisor.children()
+    |> SystemsRuntime.TaskSupervisor.children()
     |> length()
   catch
     :exit, _reason -> 0
@@ -57,7 +57,7 @@ defmodule SalixIM.ConversationSearchEnqueuer do
     do: ConversationSearch.enqueue_delete(group_id, conversation_id)
 
   defp start_task(fun) do
-    case Task.Supervisor.start_child(__MODULE__, fun, restart: :temporary) do
+    case SystemsRuntime.TaskSupervisor.start_child(__MODULE__, fun, restart: :temporary) do
       {:ok, _pid} -> :ok
       {:error, :max_children} -> {:error, :full}
       {:error, _reason} -> {:error, :unavailable}

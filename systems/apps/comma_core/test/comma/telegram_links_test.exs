@@ -1,5 +1,5 @@
 defmodule Comma.TelegramLinksTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Comma.Data.{Workspace, WorkspaceMembership}
   alias Comma.TelegramLinks
@@ -14,7 +14,7 @@ defmodule Comma.TelegramLinksTest do
     {user, workspace} = account_with_workspace("claim")
 
     assert {:ok, ^workspace, claim} = TelegramLinks.create_claim(user, %{}, workspace["id"])
-    assert DateTime.compare(claim.expires_at, DateTime.utc_now()) == :gt
+    assert DateTime.compare(claim.expires_at, SystemsClock.utc_now()) == :gt
     assert {:ok, %{workspace: prepared}} = TelegramLinks.take_claim(claim.code)
     assert prepared["id"] == workspace["id"]
 
@@ -155,5 +155,6 @@ defmodule Comma.TelegramLinksTest do
     )
   end
 
-  defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive, :monotonic])}"
+  defp unique(prefix),
+    do: "#{prefix}-#{SystemsRuntime.Proc.unique_integer([:positive, :monotonic])}"
 end

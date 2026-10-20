@@ -1,14 +1,11 @@
 import { initializeCommaI18n } from "@comma/i18n";
 import { CommaI18nProvider } from "@comma/i18n/react";
-import { Button } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import "../../styles.css";
-import {
-  defaultOpenCommaShortcut,
-  defaultSideChatShortcut,
-} from "@comma/native-bridge";
+import { defaultOpenCommaShortcut } from "@comma/native-bridge";
 import { OnboardingOverlay, type OnboardingPermissionsSlot } from "./OnboardingOverlay";
 import type {
   OnboardingPresentation,
@@ -64,7 +61,9 @@ function StoryAppBackdrop() {
       </div>
       <div className="mt-5xl flex flex-1 flex-col gap-3xl rounded-xl bg-main-panel-bg p-7xl shadow-sm">
         <div className="mt-auto flex h-10xl flex-col justify-between rounded-2xl bg-primary p-xl shadow-md ring-1 ring-primary">
-          <span className="text-md text-placeholder">Ask anything</span>
+          <span className="text-md text-placeholder">
+            Type / for commands, @ for context
+          </span>
           <span className="size-8 self-end rounded-full bg-brand-solid" />
         </div>
       </div>
@@ -201,17 +200,14 @@ function StoryPermissions({
 }
 
 type OnboardingStoryArgs = {
-  /** In the product window (web), or full screen over the desktop (macOS app). */
+  /** In the product window (off macOS), or full screen over the desktop (macOS app). */
   presentation: OnboardingPresentation;
   start: OnboardingStart;
   /** Items answered on the way to `start` were skipped, instead of done. */
   skipped: boolean;
   /** The macOS app: a third exchange, "Let me work on this Mac". */
   mac: boolean;
-  /**
-   * The macOS app's shortcuts: Comma tells of the Side Chat's, and the Open
-   * Comma shortcut comes before the welcome page.
-   */
+  /** The macOS app's Open Comma shortcut, which comes before the welcome page. */
   shortcuts: boolean;
   macState: StoryMac;
   workspace: OnboardingWorkspace["status"];
@@ -300,7 +296,6 @@ function OnboardingStory(args: OnboardingStoryArgs) {
           }
           routerName={routerName}
           openShortcut={args.shortcuts ? defaultOpenCommaShortcut : undefined}
-          sideChatShortcut={args.shortcuts ? defaultSideChatShortcut : undefined}
           workspace={workspace}
         />
       ) : (
@@ -341,6 +336,8 @@ function ChineseMessages({ children }: { children: ReactNode }) {
 
 const meta = {
   title: "App components/Onboarding",
+  // Screen events, media playback and window presentation need a real browser.
+  tags: ["browser"],
   parameters: { layout: "fullscreen" },
   args: {
     catalog: "ready",
@@ -403,7 +400,7 @@ const onboardingOf = (canvasElement: HTMLElement) =>
   within(canvasElement.ownerDocument.body);
 
 /**
- * The whole flow on the web, as the product starts it: the screen dims, the
+ * The whole flow in the product window, as the product starts it: the screen dims, the
  * Comma mark welcomes the user, and Start begins the conversation. It replays
  * once it exits.
  */
@@ -514,8 +511,13 @@ export const NameTyped: Story = {
   play: async ({ canvasElement }) => {
     await typeName(canvasElement, "Atlas", false);
     const canvas = onboardingOf(canvasElement);
-    await expect(canvas.getByRole("button", { name: "Continue" })).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Skip" })).toBeVisible();
+    // The actions fade in once the field has a name.
+    await waitFor(() =>
+      expect(canvas.getByRole("button", { name: "Continue" })).toBeVisible()
+    );
+    await waitFor(() =>
+      expect(canvas.getByRole("button", { name: "Skip" })).toBeVisible()
+    );
   },
 };
 

@@ -27,7 +27,7 @@ defmodule SalixIM.Migrations.RetireTaskGraph do
          |> Map.drop(~w(workflow workflow_runtime))
          |> Map.put(
            "updated_at",
-           max(System.system_time(:millisecond), (record["updated_at"] || 0) + 1)
+           max(SystemsClock.system_time(:millisecond), (record["updated_at"] || 0) + 1)
          )
          |> Map.put("metadata", Map.put(metadata, @history_key, history))}
       end

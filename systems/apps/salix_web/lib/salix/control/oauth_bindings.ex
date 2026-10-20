@@ -32,8 +32,48 @@ defmodule Salix.Control.OAuthBindings do
   def get(group_id, binding_id),
     do: Store.get_record(Keys.ctl_oauth_group_binding(group_id, binding_id))
 
-  def put(tenant_id, group_id, provider, alias_name, connection_id),
-    do: put(tenant_id, group_id, provider, alias_name, connection_id, 5)
+  # Only a complete lookup can establish absence or a unique account.
+  # The conventional alias is an explicit choice and can return immediately.
+  def select_provider_record(group_id, provider, preferred_alias) do
+    with {:ok, %{objects: objects, next: next}} <-
+           SalixStore.S3.list(Keys.ctl_oauth_group_bindings_prefix(group_id), max_keys: 64) do
+      Enum.reduce_while(objects, {:candidates, []}, fn %{key: key}, {:candidates, found} ->
+        case Store.get_record(key) do
+          {:ok, %{"provider" => ^provider, "alias" => ^preferred_alias} = binding} ->
+            {:halt, {:ok, binding}}
+
+          {:ok, %{"provider" => ^provider} = binding} ->
+            {:cont, {:candidates, [binding | found]}}
+
+          {:ok, _other} ->
+            {:cont, {:candidates, found}}
+
+          {:error, reason} ->
+            {:halt, {:error, {:oauth_binding_read_failed, reason}}}
+        end
+      end)
+      |> case do
+        {:candidates, _} when not is_nil(next) -> {:error, :oauth_binding_lookup_incomplete}
+        {:candidates, []} -> {:error, :not_found}
+        {:candidates, [binding]} -> {:ok, binding}
+        {:candidates, _} -> {:error, :ambiguous_oauth_accounts}
+        result -> result
+      end
+    else
+      {:error, reason} -> {:error, {:oauth_binding_lookup_failed, reason}}
+    end
+  end
+
+  def put(tenant_id, group_id, provider, alias_name, connection_id) do
+    case put(tenant_id, group_id, provider, alias_name, connection_id, 5) do
+      {:ok, binding, _previous} = result ->
+        Salix.Bindings.MCPCredentials.oauth_binding_changed(binding)
+        result
+
+      error ->
+        error
+    end
+  end
 
   def put_remote_mcp(tenant_id, group_id, provider_key, alias_name, connection_id, metadata) do
     put_provider_kind(
@@ -378,7 +418,7 @@ defmodule Salix.Control.OAuthBindings do
             else: binding["env_hints"] || %{}
 
         with {:ok, enabled} <- binding_enabled(attrs, binding),
-             {:ok, _rec} <-
+             {:ok, updated} <-
                Store.update_record(Keys.ctl_oauth_group_binding(group_id, binding_id), fn rec ->
                  rec
                  |> Map.put("alias", new_alias)
@@ -386,6 +426,8 @@ defmodule Salix.Control.OAuthBindings do
                  |> Map.put("enabled", enabled)
                  |> Map.put("updated_at", Store.now())
                end) do
+          Salix.Bindings.MCPCredentials.oauth_binding_changed(updated)
+
           {:ok,
            %{
              "binding_id" => binding_id,
@@ -397,8 +439,21 @@ defmodule Salix.Control.OAuthBindings do
     end
   end
 
-  def delete(group_id, binding_id),
-    do: Store.delete_record(Keys.ctl_oauth_group_binding(group_id, binding_id))
+  def delete(group_id, binding_id) do
+    case get(group_id, binding_id) do
+      {:ok, binding} ->
+        with :ok <- Store.delete_record(Keys.ctl_oauth_group_binding(group_id, binding_id)) do
+          Salix.Bindings.MCPCredentials.oauth_binding_changed(binding)
+          :ok
+        end
+
+      {:error, :not_found} ->
+        :ok
+
+      error ->
+        error
+    end
+  end
 
   defp oauth_binding_detail(binding, conn) do
     enabled = enabled?(binding)

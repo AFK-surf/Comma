@@ -1,19 +1,15 @@
-import { taskStatusBucketLabel } from "@comma/i18n";
+import { taskStatusLabel } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import {
-  Button,
-  LoadingIndicator,
-  MarkdownStream,
-  taskStatusBucket,
-  taskStatusIcon,
-} from "@comma/ui";
-import { useCallback, useContext, useEffect, useMemo, useState } from "react";
-import type { CommaApiClient, CommaConversationPreview } from "../../api";
-import type {
-  ChatImagePreviewRef,
-  ChatMessage,
-} from "../chat/model/conversationChannel";
-import { MAX_ATTACHMENT_BYTES } from "../chat/model/protocol";
+import { Button } from "@comma/ui/components/Button";
+import { LoadingIndicator } from "@comma/ui/components/LoadingIndicator";
+import { MarkdownStream } from "@comma/ui/components/markdown-stream";
+import { taskStatusBucket, taskStatusIcon } from "@comma/ui/components/task-workspace";
+import { useCallback, useContext, useMemo, useState } from "react";
+import { useCall } from "@comma/core-client";
+import { readFileBlob } from "../../runtime-files/fileSources";
+import type { CommaConversationPreview } from "@comma/core/api-schemas";
+import type { ChatImagePreviewRef, ChatMessage } from "@comma/core/chat";
+import { MAX_ATTACHMENT_BYTES } from "@comma/core/chat";
 import { attachmentLabel } from "../chat/thread/attachments/attachmentLabels";
 import {
   InlineTaskLinkAdapterProvider,
@@ -29,8 +25,8 @@ import { MessageBlockExtras } from "../chat/thread/rows/MessageBlockExtras";
 import { useCompiledMessageMarkdown } from "../chat/thread/rows/assistant/useCompiledMessageMarkdown";
 import { ThreadFileSourceContext } from "../chat/thread/threadContexts";
 import { useCommaUiThemeName } from "../commaUiTheme";
-import { loadTaskConversationPreview } from "../search/taskConversationPreviewLoader";
-import { normalizeUnixTimestampMs } from "../search/normalizeUnixTimestampMs";
+import { useTaskConversation } from "../search/taskConversationPreviewLoader";
+import { useTimeLabel } from "./useTimeLabel";
 
 const MESSAGE_LIMIT = 20;
 /** Longer replies start folded, so the lead and the progress fit one screen. */
@@ -66,43 +62,29 @@ type LoadState =
  * earlier message. Router instructions and earlier replies stay one tap away.
  */
 export function TaskPanelReport({
-  api,
   conversation,
   workspaceId,
 }: {
-  api: CommaApiClient;
   conversation: CommaConversationPreview;
   workspaceId: string;
 }) {
   const messages = useCommaMessages();
-  const [state, setState] = useState<LoadState>({ status: "loading" });
   const [retry, setRetry] = useState(0);
   const { id, group_id: groupId, status, title, updated_at: updatedAt } = conversation;
 
-  const fileSource = useMemo(
-    () => ({ api, groupId, conversationId: id }),
-    [api, groupId, id]
-  );
+  const fileSource = useMemo(() => ({ groupId, conversationId: id }), [groupId, id]);
 
-  useEffect(() => {
-    const request = new AbortController();
-    setState({ status: "loading" });
-    loadTaskConversationPreview(
-      api,
-      { conversationId: id, groupId, status, title, updatedAt, workspaceId },
-      AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
-      MESSAGE_LIMIT
-    ).then(
-      (data) => {
-        if (!request.signal.aborted)
-          setState({ status: "ready", messages: data.messages });
-      },
-      () => {
-        if (!request.signal.aborted) setState({ status: "error" });
-      }
-    );
-    return () => request.abort();
-  }, [api, groupId, id, retry, status, title, updatedAt, workspaceId]);
+  const answer = useTaskConversation(
+    { conversationId: id, groupId, status, title, updatedAt, workspaceId },
+    MESSAGE_LIMIT,
+    retry
+  );
+  const state: LoadState =
+    answer?.status === "ready"
+      ? { status: "ready", messages: answer.messages ?? [] }
+      : answer?.status === "failed"
+        ? { status: "error" }
+        : { status: "loading" };
 
   if (state.status === "loading") {
     return (
@@ -300,7 +282,7 @@ function Progress({
               <span aria-hidden className="comma-embedded-task-step-status">
                 {taskStatusIcon(bucket)}
               </span>
-              {taskStatusBucketLabel(bucket, locale)}
+              {taskStatusLabel(conversation.status, locale)}
             </span>
           </div>
         </li>
@@ -322,8 +304,15 @@ function MessageContent({
 }) {
   const isDark = useCommaUiThemeName() === "Dark mode";
   // The panel uses message snapshots, without live Task subscriptions or actions.
-  const compiled = useCompiledMessageMarkdown(message, undefined, groupId, workspaceId);
+  // The core's parse is of the whole message: a reply shown after its lead is drawn from its text.
+  const compiled = useCompiledMessageMarkdown(
+    content === message.text ? message : undefined,
+    false,
+    groupId,
+    workspaceId
+  );
   const source = useContext(ThreadFileSourceContext);
+  const call = useCall();
   const previewImage = useCallback(
     async (ref: ChatImagePreviewRef, signal?: AbortSignal) => {
       const attachment = message.attachments.find((candidate) => {
@@ -334,24 +323,23 @@ function MessageContent({
       });
       if (!source || attachment?.attachmentIndex === undefined) return undefined;
       // Read the authorized message attachment, never a caller-supplied blob locator.
-      const blob = await source.api.fetchConversationAttachment(
-        source.groupId,
-        source.conversationId,
-        message.messageId,
-        attachment.attachmentIndex,
+      const blob = await readFileBlob(
+        call,
         {
-          signal: AbortSignal.any([
-            ...(signal ? [signal] : []),
-            AbortSignal.timeout(10_000),
-          ]),
-        }
+          source: "attachment",
+          group: source.groupId,
+          conversation: source.conversationId,
+          message: message.messageId,
+          index: attachment.attachmentIndex,
+        },
+        AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10_000)])
       );
       if (signal?.aborted || !blob.size || blob.size > MAX_ATTACHMENT_BYTES)
         return undefined;
       const url = URL.createObjectURL(blob);
       return { url, release: () => URL.revokeObjectURL(url) };
     },
-    [message.attachments, message.messageId, source]
+    [call, message.attachments, message.messageId, source]
   );
   return (
     <>
@@ -374,20 +362,4 @@ function MessageContent({
       />
     </>
   );
-}
-
-/** Time of day for today, with the date for older messages. */
-function useTimeLabel() {
-  const locale = useCommaLocale();
-  return (timestamp: number | undefined) => {
-    const ms = normalizeUnixTimestampMs(timestamp);
-    if (ms === undefined) return "";
-    const date = new Date(ms);
-    const today = new Date().toDateString() === date.toDateString();
-    return new Intl.DateTimeFormat(locale, {
-      hour: "2-digit",
-      minute: "2-digit",
-      ...(today ? {} : { month: "numeric", day: "numeric" }),
-    }).format(date);
-  };
 }

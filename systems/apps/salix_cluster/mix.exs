@@ -29,6 +29,7 @@ defmodule SalixCluster.MixProject do
   defp deps do
     [
       {:salix_store, in_umbrella: true},
+      {:systems_clock, in_umbrella: true},
       {:salix_agent, in_umbrella: true},
       {:salix_calendar, in_umbrella: true},
       {:salix_env, in_umbrella: true},

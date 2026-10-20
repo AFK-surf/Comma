@@ -1,4 +1,6 @@
 defmodule BridgeForTeams.Salix.Erpc do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Real `:erpc` implementation of `BridgeForTeams.Salix.Client` (design §4.2).
 
@@ -54,6 +56,9 @@ defmodule BridgeForTeams.Salix.Erpc do
   @oauth_apps Salix.Control.OAuthApps
   @composio_settings Salix.Control.ComposioSettings
   @signal Salix.Control.Signal
+  @tailnet Salix.Control.Tailnet
+  # Connect and disconnect wait up to 15 s for the Group's node.
+  @tailnet_write_timeout 30_000
   @composio Salix.Composio
   @plugins Salix.Control.Plugins
   @remote_mcp_oauth Salix.Control.RemoteMCPOAuth
@@ -70,8 +75,8 @@ defmodule BridgeForTeams.Salix.Erpc do
   @ifc_admin SalixIM.IFC.Admin
   @meet SalixMeet
   @provider_http SalixIM.ProviderHTTP
-  @capability_requests SalixAgent.CapabilityRequests
   @feishu_checks SalixIM.FeishuChecks
+  @lark_checks SalixIM.LarkChecks
   @meeting_calendar_policy Salix.Bindings.MeetingCalendarPolicy
   @meeting_calendar_status Salix.Bindings.MeetingCalendarStatus
   @meeting_summary_replay Salix.Bindings.MeetingSummaryReplay
@@ -82,9 +87,12 @@ defmodule BridgeForTeams.Salix.Erpc do
   @agent_runtime SalixAgent.Runtime
   @activity_surface SalixAgent.ActivitySurface
   @agent_workspace SalixAgent.Workspace
-  @agent_templates SalixAgent.Templates
-  @agent_defaults SalixAgent.AgentDefaults
-  @external_worker_targets SalixStore.ExternalWorkerTargets
+  @agent_model SalixAgent.AgentModel
+  @model_choice SalixAgent.ModelChoice
+  @models SalixAgent.Models
+  @task_model SalixAgent.TaskModel
+  @task_place SalixAgent.TaskPlace
+  @task_placement SalixIM.TaskPlacement
   @skill_catalog SalixAgent.SkillCatalog
   @env_control SalixEnv.Control
   @connector_tokens SalixEnv.ConnectorTokens
@@ -148,18 +156,15 @@ defmodule BridgeForTeams.Salix.Erpc do
       )
 
   @impl true
-  def get_group_conversation(group_id, conversation_id),
-    do: call(@conversations, :get_group_conversation, [group_id, conversation_id], hint: group_id)
+  def create_placed_task_conversation(group_id, router_agent_id, attrs),
+    do:
+      @task_placement
+      |> call(:create_task_conversation, [group_id, router_agent_id, attrs], hint: group_id)
+      |> unknown_before_release(@task_placement)
 
   @impl true
-  def subscribe_group_conversation(group_id, conversation_id, subscriber),
-    do:
-      call(
-        @conversation_server,
-        :subscribe_group_conversation,
-        [group_id, conversation_id, subscriber],
-        hint: group_id
-      )
+  def get_group_conversation(group_id, conversation_id),
+    do: call(@conversations, :get_group_conversation, [group_id, conversation_id], hint: group_id)
 
   @impl true
   def get_group_conversation_with_messages(group_id, conversation_id, opts),
@@ -405,6 +410,40 @@ defmodule BridgeForTeams.Salix.Erpc do
       )
 
   @impl true
+  def create_qq_im_connect(tenant_id, group_id, attrs),
+    do:
+      call(@provider_connects, :create_qq_im_connect, [tenant_id, group_id, attrs],
+        hint: group_id
+      )
+
+  @impl true
+  def update_qq_im_connect(tenant_id, group_id, connect_id, attrs),
+    do:
+      call(
+        @provider_connects,
+        :update_qq_im_connect,
+        [tenant_id, group_id, connect_id, attrs],
+        hint: group_id
+      )
+
+  @impl true
+  def create_lark_im_connect(tenant_id, group_id, attrs),
+    do:
+      call(@provider_connects, :create_lark_im_connect, [tenant_id, group_id, attrs],
+        hint: group_id
+      )
+
+  @impl true
+  def update_lark_im_connect(tenant_id, group_id, connect_id, attrs),
+    do:
+      call(
+        @provider_connects,
+        :update_lark_im_connect,
+        [tenant_id, group_id, connect_id, attrs],
+        hint: group_id
+      )
+
+  @impl true
   def feishu_callback_preflight(params),
     do: call(@feishu_checks, :callback_preflight, [params])
 
@@ -419,6 +458,20 @@ defmodule BridgeForTeams.Salix.Erpc do
   def feishu_bot_identity(params),
     do:
       call(@feishu_checks, :bot_identity, [params],
+        hint: params["connect_id"] || params[:connect_id]
+      )
+
+  @impl true
+  def lark_callback_preflight_for_connect(params),
+    do:
+      call(@lark_checks, :callback_preflight_for_connect, [params],
+        hint: params["connect_id"] || params[:connect_id]
+      )
+
+  @impl true
+  def lark_bot_identity(params),
+    do:
+      call(@lark_checks, :bot_identity, [params],
         hint: params["connect_id"] || params[:connect_id]
       )
 
@@ -587,7 +640,7 @@ defmodule BridgeForTeams.Salix.Erpc do
       results =
         if length(nodes) <= @triage_status_max_nodes do
           nodes
-          |> Task.async_stream(
+          |> SystemsClock.async_stream(
             &triage_ring_status_on_node(&1, refs),
             ordered: false,
             max_concurrency: @triage_status_max_nodes,
@@ -739,34 +792,20 @@ defmodule BridgeForTeams.Salix.Erpc do
       )
 
   @impl true
-  def ensure_triage_worker(group_id, router_id),
-    do: call(Salix.Bindings.TriageWorker, :ensure, [group_id, router_id], hint: group_id)
+  def ensure_task_agent(tenant_id, group_id),
+    do:
+      SalixAgent.TaskAgent
+      |> call(:ensure, [%{tenant_id: tenant_id, group_id: group_id}], hint: group_id)
+      |> unknown_before_release(SalixAgent.TaskAgent)
 
   @impl true
-  def triage_worker_binding(group_id),
+  def triage_tools(group_id),
     do:
-      call(Salix.Bindings.TriageWorker, :get, [group_id],
+      call(Salix.Bindings.TriageWorker, :tools, [group_id],
         hint: group_id,
         timeout: @triage_read_timeout
       )
-
-  @impl true
-  def triage_worker_configuration(group_id, opts),
-    do:
-      call(Salix.Bindings.TriageWorker, :view, [group_id, opts],
-        hint: group_id,
-        timeout: @triage_read_timeout
-      )
-
-  @impl true
-  def configure_triage_worker(group_id, router_id, worker_id, revision, audit),
-    do:
-      call(
-        Salix.Bindings.TriageWorker,
-        :configure,
-        [group_id, router_id, worker_id, revision, audit],
-        hint: group_id
-      )
+      |> unknown_before_release(Salix.Bindings.TriageWorker)
 
   @impl true
   def triage_provision(tenant_id, group_id, connect_id, approved_channel_id),
@@ -829,6 +868,26 @@ defmodule BridgeForTeams.Salix.Erpc do
   @impl true
   def remove_group_signal_binding(group_id, tenant_id, binding_id),
     do: call(@signal, :remove_binding, [group_id, tenant_id, binding_id], hint: group_id)
+
+  @impl true
+  def get_group_tailnet(group_id, tenant_id),
+    do: call(@tailnet, :status, [group_id, tenant_id], hint: group_id)
+
+  @impl true
+  def connect_group_tailnet(group_id, tenant_id, attrs, actor),
+    do:
+      call(@tailnet, :connect, [group_id, tenant_id, attrs, actor],
+        hint: group_id,
+        timeout: @tailnet_write_timeout
+      )
+
+  @impl true
+  def disconnect_group_tailnet(group_id, tenant_id, actor),
+    do:
+      call(@tailnet, :disconnect, [group_id, tenant_id, actor],
+        hint: group_id,
+        timeout: @tailnet_write_timeout
+      )
 
   @impl true
   def get_composio_settings(tenant_id),
@@ -924,6 +983,26 @@ defmodule BridgeForTeams.Salix.Erpc do
       )
 
   @impl true
+  def configure_group_plugin_credentials(tenant_id, group_id, plugin_id, connection_id, values),
+    do:
+      call(
+        @plugins,
+        :configure_group_credentials,
+        [tenant_id, group_id, plugin_id, connection_id, values],
+        hint: group_id
+      )
+
+  @impl true
+  def disconnect_group_plugin_credentials(tenant_id, group_id, plugin_id, connection_id),
+    do:
+      call(
+        @plugins,
+        :disconnect_group_credentials,
+        [tenant_id, group_id, plugin_id, connection_id],
+        hint: group_id
+      )
+
+  @impl true
   def disconnect_remote_mcp_authorization(tenant_id, group_id, binding_id),
     do: call(@remote_mcp_oauth, :disconnect, [tenant_id, group_id, binding_id], hint: group_id)
 
@@ -987,42 +1066,62 @@ defmodule BridgeForTeams.Salix.Erpc do
   end
 
   @impl true
-  def compute_managed_auth_operation(tenant, project, workload, action, attrs)
-      when action in [:read, :bind, :unbind] and is_map(attrs) do
-    call(
-      SalixWeb.ComputeSubscriptionAuth,
-      :managed,
-      [tenant, project, workload, action, attrs],
-      hint: tenant,
-      timeout: 65_000
-    )
-  end
-
-  @impl true
-  def private_template_operation(tenant, action, args)
-      when action in [:list, :save, :delete, :discover] do
-    call(SalixAgent.SubscriptionTemplates, action, [tenant | args], hint: tenant, timeout: 20_000)
-  end
-
-  @impl true
-  def list_templates(tenant_id) do
-    case call(@agent_templates, :list_available, [tenant_id], hint: tenant_id) do
-      {:ok, templates} -> templates
-      error -> error
+  def model_catalog do
+    case call(@models, :list, []) do
+      models when is_list(models) -> {:ok, models}
+      {:error, _reason} = error -> error
     end
   end
 
   @impl true
-  def get_template(template_id, tenant_id),
-    do: call(@agent_templates, :get_public, [template_id, tenant_id], hint: tenant_id)
+  def servable_models(tenant_id),
+    do: call(SalixAgent.AccountPool, :servable_models, [tenant_id, [limit: 500]], hint: tenant_id)
 
   @impl true
-  def effective_agent_defaults(tenant_id) do
-    case call(@agent_defaults, :effective_role_defaults, [tenant_id], hint: tenant_id) do
-      {:error, _} = error -> error
-      defaults when is_map(defaults) -> {:ok, defaults}
+  def choose_model(choice, tenant_id),
+    do: call(@model_choice, :choose, [choice, tenant_id], hint: tenant_id)
+
+  @impl true
+  def public_model(choice, tenant_id),
+    do: call(@model_choice, :public, [choice, tenant_id], hint: tenant_id)
+
+  @impl true
+  def platform_model(role), do: call(@agent_model, :platform_public, [role])
+
+  @impl true
+  def get_group_task_model(group_id), do: call(@task_model, :get, [group_id], hint: group_id)
+
+  @impl true
+  def put_group_task_model(tenant_id, group_id, choice),
+    do: call(@task_model, :put, [tenant_id, group_id, choice], hint: group_id)
+
+  @impl true
+  def get_group_task_place(group_id),
+    do:
+      @task_place
+      |> call(:get, [group_id], hint: group_id)
+      |> unknown_before_release(@task_place)
+
+  @impl true
+  def put_group_task_place(tenant_id, group_id, place),
+    do:
+      @task_place
+      |> call(:put, [tenant_id, group_id, place], hint: group_id)
+      |> unknown_before_release(@task_place)
+
+  @doc """
+  During a rolling release a Salix node of the release before has no `module`:
+  the call is unavailable there, as on a node that is gone, and can be asked
+  again once a node of this release answers.
+  """
+  def unknown_before_release({:error, {:error, reason}} = result, module) do
+    case reason do
+      {:exception, :undef, [{^module, _fun, _args, _location} | _stack]} -> {:error, :unavailable}
+      _other -> result
     end
   end
+
+  def unknown_before_release(result, _module), do: result
 
   @impl true
   def create_owned_agent(attrs) do
@@ -1055,12 +1154,9 @@ defmodule BridgeForTeams.Salix.Erpc do
     do: call(@agent_control, :delete, [agent_id, tenant_id], hint: tenant_id)
 
   @impl true
-  def rebind_agent_configuration(agent_id, tenant_id, target, expected, invocation),
+  def rebind_station_worker(agent_id, tenant_id, binding, expected),
     do:
-      call(
-        @agent_control,
-        :rebind_external_worker,
-        [agent_id, tenant_id, target, expected, invocation],
+      call(@agent_control, :rebind_station_worker, [agent_id, tenant_id, binding, expected],
         hint: tenant_id
       )
 
@@ -1086,62 +1182,6 @@ defmodule BridgeForTeams.Salix.Erpc do
   @impl true
   def get_agent_projection(agent_id, tenant_id),
     do: call(@agent_control, :get, [agent_id, tenant_id], hint: tenant_id)
-
-  @impl true
-  def page_external_worker_targets(
-        tenant_id,
-        owner_type,
-        owner_id,
-        group_id,
-        provider,
-        opts
-      ) do
-    scope = %{
-      tenant_id: tenant_id,
-      owner_type: owner_type,
-      owner_id: owner_id,
-      group_id: group_id,
-      provider: provider
-    }
-
-    call(@external_worker_targets, :page, [scope, opts], hint: tenant_id)
-  end
-
-  @impl true
-  def validate_external_worker_target(
-        tenant_id,
-        owner_type,
-        owner_id,
-        group_id,
-        provider,
-        workload_id,
-        selection_fence
-      ) do
-    scope = %{
-      tenant_id: tenant_id,
-      owner_type: owner_type,
-      owner_id: owner_id,
-      group_id: group_id,
-      provider: provider
-    }
-
-    call(
-      @external_worker_targets,
-      :validate,
-      [scope, workload_id, selection_fence],
-      hint: tenant_id
-    )
-  end
-
-  @impl true
-  def apply_external_worker_binding(agent_id, tenant_id, runtime_config),
-    do:
-      call(
-        @agent_control,
-        :apply_external_worker_binding,
-        [agent_id, tenant_id, runtime_config],
-        hint: tenant_id
-      )
 
   defp pop_tenant(attrs) do
     {Map.get(attrs, "tenant_id"), Map.delete(attrs, "tenant_id")}
@@ -1181,10 +1221,6 @@ defmodule BridgeForTeams.Salix.Erpc do
         hint: agent_id,
         timeout: @triage_read_timeout
       )
-
-  @impl true
-  def session_records(agent_id, session_id, opts),
-    do: call(@agent_runtime, :session_records, [agent_id, session_id, opts], hint: agent_id)
 
   @impl true
   def session_trace(agent_id, session_id, opts),
@@ -1326,6 +1362,14 @@ defmodule BridgeForTeams.Salix.Erpc do
       )
 
   @impl true
+  def runtime_catalog(provider) do
+    case call(SalixAgent.Models, :served_by, [[provider]]) do
+      models when is_list(models) -> {:ok, models}
+      {:error, _} = error -> error
+    end
+  end
+
+  @impl true
   def runtime_auth_read(device_id, device_runtime_id, group_id, tenant_id),
     do:
       call(
@@ -1364,42 +1408,11 @@ defmodule BridgeForTeams.Salix.Erpc do
           timeout: @runtime_auth_timeout
         )
 
-  @impl true
-  def list_runtime_auth_requests(group_id, tenant_id, opts),
-    do:
-      call(
-        @capability_requests,
-        :list_runtime_auth_page,
-        [group_id, tenant_id, opts],
-        hint: group_id
-      )
-
-  @impl true
-  def get_runtime_auth_request(group_id, request_id, tenant_id),
-    do:
-      call(
-        @capability_requests,
-        :get_runtime_auth,
-        [group_id, request_id, tenant_id],
-        hint: group_id
-      )
-
-  @impl true
-  def complete_runtime_auth_request(group_id, request_id, attrs, tenant_id),
-    do:
-      call(
-        @capability_requests,
-        :complete_runtime_auth,
-        [group_id, request_id, attrs, tenant_id],
-        hint: group_id,
-        timeout: @runtime_auth_timeout
-      )
-
   @doc false
   def runtime_auth_timeout, do: @runtime_auth_timeout
 
   defp triage_status_nodes do
-    case Application.get_env(:bridge_for_teams_core, :salix_nodes_override) do
+    case SystemsRuntime.get_env(:bridge_for_teams_core, :salix_nodes_override) do
       nodes when is_list(nodes) ->
         # An explicit directory names expected members, including members that
         # may currently be down. Omissions therefore stay observable.
@@ -1407,7 +1420,7 @@ defmodule BridgeForTeams.Salix.Erpc do
         {nodes, complete?, :static_directory}
 
       _unset ->
-        topologies = Application.get_env(:salix_cluster, :topologies, [])
+        topologies = SystemsRuntime.get_env(:salix_cluster, :topologies, [])
         observed = triage_status_candidates()
 
         {candidates, directory_complete?} =
@@ -1550,7 +1563,7 @@ defmodule BridgeForTeams.Salix.Erpc do
 
   defp bounded_triage_directory_lookup(resolver, service) do
     [service]
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn service -> resolver.(to_charlist(service)) end,
       ordered: true,
       max_concurrency: 1,
@@ -1602,7 +1615,7 @@ defmodule BridgeForTeams.Salix.Erpc do
           bounded_candidates
           |> Enum.uniq()
           |> Enum.sort()
-          |> Task.async_stream(
+          |> SystemsClock.async_stream(
             fn candidate -> {candidate, probe.(candidate)} end,
             ordered: false,
             max_concurrency: @triage_status_max_nodes,
@@ -1829,13 +1842,13 @@ defmodule BridgeForTeams.Salix.Erpc do
   end
 
   defp observe_result(fun) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = fun.()
 
     BridgeForTeams.Telemetry.emit_operation(
       :salix_erpc,
       outcome(result),
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     result
@@ -1866,34 +1879,40 @@ defmodule BridgeForTeams.Salix.Erpc do
   end
 
   defp remote_call(node, mod, fun, args, remote_args, timeout) do
-    :erpc.call(node, __MODULE__, :receive_call, remote_args, timeout + 5_000)
+    :erpc.call(
+      node,
+      __MODULE__,
+      :receive_call,
+      remote_args,
+      SystemsClock.timeout(timeout + 5_000)
+    )
   catch
     :error,
     {:exception, :undef, [{__MODULE__, :receive_call, ^remote_args, _location} | _stack]} ->
-      :erpc.call(node, mod, fun, args, timeout + 5_000)
+      :erpc.call(node, mod, fun, args, SystemsClock.timeout(timeout + 5_000))
   end
 
   defp local_call(mod, fun, args, timeout) do
-    caller = self()
-    ref = make_ref()
+    caller = SystemsRuntime.Proc.self()
+    ref = SystemsRuntime.Proc.make_ref()
     callers = [caller | List.wrap(Process.get(:"$callers"))] |> Enum.uniq()
 
     coordinator =
-      spawn(fn ->
+      SystemsRuntime.Proc.spawn(fn ->
         local_call_coordinator(caller, ref, mod, fun, args, callers)
       end)
 
-    monitor_ref = Process.monitor(coordinator)
+    monitor_ref = SystemsRuntime.Proc.monitor(coordinator)
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {^ref, result} ->
-        Process.demonitor(monitor_ref, [:flush])
+        SystemsRuntime.Proc.demonitor(monitor_ref, [:flush])
         result
 
       {:DOWN, ^monitor_ref, :process, ^coordinator, reason} ->
         {:error, {:exit, reason}}
     after
-      timeout ->
+      SystemsClock.timeout(timeout) ->
         cancel_local_call(coordinator, monitor_ref, ref)
         flush_local_result(ref)
         {:error, :timeout}
@@ -1905,9 +1924,9 @@ defmodule BridgeForTeams.Salix.Erpc do
   # lifetime cancellation without letting an untrappable target exit (for
   # example, :kill) take down a Phoenix/LiveView caller.
   defp local_call_coordinator(caller, ref, mod, fun, args, callers) do
-    Process.flag(:trap_exit, true)
-    caller_monitor = Process.monitor(caller)
-    coordinator = self()
+    SystemsRuntime.Proc.trap_exit(true)
+    caller_monitor = SystemsRuntime.Proc.monitor(caller)
+    coordinator = SystemsRuntime.Proc.self()
 
     {target, target_monitor} =
       :erlang.spawn_opt(
@@ -1921,17 +1940,17 @@ defmodule BridgeForTeams.Salix.Erpc do
               kind, reason -> {:error, {kind, reason}}
             end
 
-          send(coordinator, {ref, result})
+          SystemsRuntime.Proc.send(coordinator, {ref, result})
         end,
         [:link, :monitor]
       )
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {^ref, result} ->
-        send(caller, {ref, result})
+        SystemsRuntime.Proc.send(caller, {ref, result})
 
       {:DOWN, ^target_monitor, :process, ^target, reason} ->
-        send(caller, {ref, {:error, {:exit, reason}}})
+        SystemsRuntime.Proc.send(caller, {ref, {:error, {:exit, reason}}})
 
       {:DOWN, ^caller_monitor, :process, ^caller, _reason} ->
         stop_local_target(target, target_monitor)
@@ -1942,31 +1961,31 @@ defmodule BridgeForTeams.Salix.Erpc do
   end
 
   defp cancel_local_call(coordinator, monitor_ref, ref) do
-    send(coordinator, {:cancel, ref})
+    SystemsRuntime.Proc.send(coordinator, {:cancel, ref})
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {:DOWN, ^monitor_ref, :process, ^coordinator, _reason} ->
         :ok
     after
       1_000 ->
-        Process.exit(coordinator, :kill)
+        SystemsRuntime.Proc.exit(coordinator, :kill)
 
-        receive do
+        SystemsRuntime.Proc.receive do
           {:DOWN, ^monitor_ref, :process, ^coordinator, _reason} -> :ok
         end
     end
   end
 
   defp stop_local_target(target, target_monitor) do
-    Process.exit(target, :kill)
+    SystemsRuntime.Proc.exit(target, :kill)
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {:DOWN, ^target_monitor, :process, ^target, _reason} -> :ok
     end
   end
 
   defp flush_local_result(ref) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {^ref, _result} -> :ok
     after
       0 -> :ok

@@ -11,7 +11,7 @@ defmodule SalixAgent.TelegramInteraction do
 
   def request(type, args, ctx) do
     scope = ctx[:terminal_reply_context]
-    mod = Application.get_env(:salix_agent, :telegram_interaction_mod)
+    mod = SystemsRuntime.get_env(:salix_agent, :telegram_interaction_mod)
 
     unless is_map(scope) and scope["eligible"] == true and ctx[:llm_tool_envelope] == true,
       do:

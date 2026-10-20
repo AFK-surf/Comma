@@ -41,7 +41,7 @@ describe("Comma web release API binding", () => {
           build: {
             emptyOutDir: true,
             lib: {
-              entry: resolve(clientsRoot, "packages/app/src/api/config.ts"),
+              entry: resolve(clientsRoot, "packages/app/src/apiBaseUrl.ts"),
               formats: ["es"],
               fileName: () => "comma-api-resolver.js",
             },

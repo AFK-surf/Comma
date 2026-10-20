@@ -1,6 +1,10 @@
 import "../../../../../packages/app/src/styles.css";
 
-import { createSettingsRegistry, NotchWidthSetting, SettingsDialog } from "@comma/ui";
+import {
+  createSettingsRegistry,
+  NotchWidthSetting,
+  SettingsDialog,
+} from "@comma/ui/components/settings";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -119,6 +123,10 @@ function NotchWidthFixture() {
     />
   );
 }
+
+// Each mount starts with empty records, as a page load did.
+window.notchWidthCommits = [];
+window.notchWidthPreviews = [];
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

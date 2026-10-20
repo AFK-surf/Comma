@@ -134,6 +134,32 @@ defmodule Salix.Bindings.MeetingCalendarPolicy do
 
   defp policy_evidence(
          %{
+           "provider" => "lark",
+           "create_calendar" => %{
+             "account_id" => account_id,
+             "calendar_id" => calendar_id,
+             "name" => calendar_name
+           },
+           "chat_id" => chat_id
+         },
+         entry,
+         connect_id
+       ) do
+    {:ok,
+     %{
+       "connect_id" => connect_id,
+       "connected_account_id" => account_id,
+       "calendar_id" => calendar_id,
+       "calendar_name" => calendar_name,
+       "watched_calendars" => entry["calendars"],
+       "mode" => "notify",
+       "chat_id" => chat_id,
+       "readiness" => "ACTIVE"
+     }}
+  end
+
+  defp policy_evidence(
+         %{
            "provider" => "slack",
            "calendar_id" => meeting_calendar_id,
            "calendars" => calendars,

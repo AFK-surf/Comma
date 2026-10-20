@@ -134,7 +134,8 @@ defmodule SalixVoice.Profile do
   """
   @spec resolve(String.t(), integer()) :: {:ok, map()} | {:error, String.t()}
   def resolve(group_id, deadline_ms) do
-    decider = Application.get_env(:salix_voice, :profile_decider_mod, SalixAgent.RouterDecision)
+    decider =
+      SystemsRuntime.get_env(:salix_voice, :profile_decider_mod, SalixAgent.RouterDecision)
 
     case decider.decide(group_id, @purpose, questions(),
            entrypoint: "voice_profile",

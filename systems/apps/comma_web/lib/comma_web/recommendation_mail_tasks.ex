@@ -9,17 +9,21 @@ defmodule CommaWeb.RecommendationMailTasks do
   alias SalixIM.Conversations
   alias SalixStore.ConversationSearch
 
-  # A member's Gmail source has at most 40 records. Canonical reads are capped
+  # A member's consented mail source has at most 40 records. Canonical reads are capped
   # across this generation, not per card or render. No polling is introduced.
   def prepare(collection, workspace) do
-    deadline = System.monotonic_time(:millisecond) + 1_500
+    deadline = SystemsClock.monotonic_time(:millisecond) + 1_500
 
     stopped = stopped_sources(workspace)
 
+    mail_count = Enum.count(collection.facts, &(&1["toolkit"] in ~w(gmail outlook)))
+    per_source = if mail_count > 1, do: 20, else: 40
+
     {facts, _budget} =
       Enum.map_reduce(collection.facts, 40, fn fact, budget ->
-        if fact["toolkit"] == "gmail" do
-          {prepare_fact(fact, workspace, budget, deadline, stopped), 0}
+        if fact["toolkit"] in ~w(gmail outlook) do
+          allowance = min(budget, per_source)
+          {prepare_fact(fact, workspace, allowance, deadline, stopped), budget - allowance}
         else
           {fact, budget}
         end
@@ -60,7 +64,7 @@ defmodule CommaWeb.RecommendationMailTasks do
         {:ok, hits} ->
           hits
           |> Enum.take(budget)
-          |> Task.async_stream(
+          |> SystemsClock.async_stream(
             fn hit ->
               with {:ok, task} <-
                      Conversations.get_group_conversation_record(group, hit.conversation_id),
@@ -75,7 +79,10 @@ defmodule CommaWeb.RecommendationMailTasks do
               end
             end,
             max_concurrency: 4,
-            timeout: max(div(deadline - System.monotonic_time(:millisecond), 10), 1),
+            timeout:
+              SystemsClock.timeout(
+                max(div(deadline - SystemsClock.monotonic_time(:millisecond), 10), 1)
+              ),
             on_timeout: :kill_task
           )
           |> Enum.flat_map(fn
@@ -137,7 +144,7 @@ defmodule CommaWeb.RecommendationMailTasks do
   def project(snapshot, facts) do
     links =
       facts
-      |> Enum.filter(&(&1["toolkit"] == "gmail"))
+      |> Enum.filter(&(&1["toolkit"] in ~w(gmail outlook)))
       |> Enum.flat_map(fn fact ->
         for {url, %{} = task} <- fact["mailTasks"] || %{}, do: {{fact["sourceId"], url}, task}
       end)

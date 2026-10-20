@@ -1,4 +1,4 @@
-import { _electron as electron, expect, test } from "@playwright/test";
+import { electron, expect, test } from "../../apps/electron/e2e/electron-test";
 import {
   encodeSessionPresenceExpectation,
   sessionExpectation,
@@ -22,6 +22,7 @@ import {
 } from "./chat-stub";
 
 import { computerUseAppName } from "../../apps/electron/scripts/native-paths";
+import { closeElectronTestApp } from "../../apps/electron/e2e/close-electron-test-app";
 
 const electronAppDir = resolve(process.cwd(), "apps/electron");
 const electronMain = resolve(electronAppDir, ".vite/build/main.js");
@@ -141,7 +142,7 @@ test("electron app boots with an isolated native bridge", async ({
     failed = true;
     throw error;
   } finally {
-    await app.close();
+    await closeElectronTestApp(app);
     const videoPath = await video?.path();
     if (videoPath && failed) {
       await testInfo.attach("electron-video", {
@@ -240,17 +241,13 @@ test("electron routes one Chat send through the Main-owned /v1 proxy", async ({
       };
       return windowWithRecorder.commaSmokeAssetsFetches ?? [];
     });
-    expect(rendererAssetsFetches.length).toBeGreaterThan(0);
-    expect(
-      rendererAssetsFetches.flatMap((fetchRecord) =>
-        fetchRecord.headers.filter(([name]) => name === "authorization")
-      )
-    ).toEqual([]);
+    // The core sends this Chat's requests through Main; the window sends none itself.
+    expect(rendererAssetsFetches).toEqual([]);
   } catch (error) {
     failed = true;
     throw error;
   } finally {
-    await app.close();
+    await closeElectronTestApp(app);
     await stub.close();
     await rm(userDataDir, { force: true, recursive: true });
     const videoPath = await video?.path();
@@ -311,6 +308,8 @@ test("electron assets proxy streams SSE chunks incrementally", async ({
         const response = await fetch("assets://./v1/streaming-flush-probe", {
           headers: {
             accept: "text/event-stream",
+            // Main strips the window's own credential and adds the session's bearer.
+            authorization: "Bearer renderer-forged-token",
             [expectationHeaderName]: expectationHeader,
           },
         });
@@ -342,6 +341,7 @@ test("electron assets proxy streams SSE chunks incrementally", async ({
     );
 
     expect(result.status).toBe(200);
+    expect(stub.probeAuthorizations).toEqual(["Bearer p0-smoke-session-token"]);
     expect(result.contentType).toContain("text/event-stream");
     expect(result.chunks.map((chunk) => chunk.text).join("")).toContain('"step":3');
     expect(result.durationMs).toBeGreaterThanOrEqual(1_000);
@@ -351,7 +351,7 @@ test("electron assets proxy streams SSE chunks incrementally", async ({
     failed = true;
     throw error;
   } finally {
-    await app.close();
+    await closeElectronTestApp(app);
     await stub.close();
     await rm(userDataDir, { force: true, recursive: true });
     const videoPath = await video?.path();
@@ -408,6 +408,7 @@ function installAssetsFetchRecorder() {
 
 function startStreamingFlushStub() {
   const session = createE2eSessionProjection({ email: "smoke@comma.local" });
+  const probeAuthorizations: (string | undefined)[] = [];
   const server = createServer((req, res) => {
     res.setHeader("access-control-allow-origin", "*");
     res.setHeader("access-control-allow-headers", "authorization,content-type,accept");
@@ -433,6 +434,7 @@ function startStreamingFlushStub() {
     }
 
     if (req.method === "GET" && req.url === "/v1/streaming-flush-probe") {
+      probeAuthorizations.push(req.headers.authorization);
       res.writeHead(200, {
         "cache-control": "no-cache",
         connection: "keep-alive",
@@ -457,6 +459,7 @@ function startStreamingFlushStub() {
   return new Promise<{
     baseUrl: string;
     close: () => Promise<void>;
+    probeAuthorizations: (string | undefined)[];
     userId: string;
   }>((resolveStub) => {
     server.listen(0, "127.0.0.1", () => {
@@ -465,6 +468,7 @@ function startStreamingFlushStub() {
         baseUrl: `http://127.0.0.1:${port}`,
         close: () =>
           new Promise<void>((done) => (server as Server).close(() => done())),
+        probeAuthorizations,
         userId: session.user.id,
       });
     });

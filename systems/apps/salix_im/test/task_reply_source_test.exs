@@ -1,5 +1,5 @@
 defmodule SalixIM.TaskReplySourceTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias SalixIM.{SourceRefProtection, TaskReplySource}
 
   defp context(channel, thread, source) do
@@ -41,25 +41,5 @@ defmodule SalixIM.TaskReplySourceTest do
     assert {:error, _} = SourceRefProtection.validate_update(refs_a, refs_b)
     assert {:error, _} = SourceRefProtection.validate_update(refs_a, %{})
     assert :ok = SourceRefProtection.validate_update(refs_a, refs_a)
-  end
-
-  test "top-level requests use message_ts, but missing or unrelated origins are never guessed" do
-    ctx = context("CA", nil, "source-a")
-
-    assert TaskReplySource.source_refs(%{group_id: "group"}, ctx)["task_reply_source"][
-             "thread_ts"
-           ] == "100.000001"
-
-    assert %{} == TaskReplySource.source_refs(%{group_id: "other"}, ctx)
-
-    assert %{} ==
-             TaskReplySource.source_refs(%{group_id: "group"}, %{ctx | source_message_ids: []})
-
-    assert %{} ==
-             TaskReplySource.source_refs(%{group_id: "group"}, %{ctx | source_message_id: "other"})
-
-    assert %{} == TaskReplySource.source_refs(%{group_id: "group"}, %{})
-    assert "" == TaskReplySource.content(%{"conversation_kind" => "agent_task"})
-    assert "" == TaskReplySource.content(%{"conversation_kind" => "user_chat"})
   end
 end

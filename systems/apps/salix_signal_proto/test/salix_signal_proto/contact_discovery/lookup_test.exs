@@ -1,7 +1,7 @@
 defmodule SalixSignalProto.ContactDiscovery.LookupTest do
   # CRS-11 §6 and §7: lookup request and response messages and the
   # enclave's close codes.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.ContactDiscovery.Lookup
 

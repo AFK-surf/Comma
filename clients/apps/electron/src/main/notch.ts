@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { app, BrowserWindow } from "electron";
 import log from "electron-log/main";
+import { baseLocale, messages } from "@comma/i18n";
 import {
   notchSideWidthRange,
   type NotchHostEvent,
@@ -12,7 +13,9 @@ import {
   type NotchPreviewInput,
   type NotchScenePayload,
   type NotchStatus,
+  type NotchTaskItem,
 } from "@comma/native-bridge";
+import { readMainLocale, type MainLocaleSource } from "./main-locale";
 import { isMacOS } from "./os";
 
 /** The reader's Notch settings, which Main applies to every scene writer. */
@@ -38,10 +41,42 @@ interface NotchHostGeneration {
 }
 
 /**
+ * One of Main's rows. `standsFor` names the renderer Task the row became (a
+ * Quick Chat message the Router answered with that Task): while the renderer
+ * lists that Task, the Notch shows it under this row's id, so the row changes
+ * in place instead of a second row appearing.
+ */
+export interface MainNotchTaskItem extends NotchTaskItem {
+  standsFor?: string | undefined;
+}
+
+/**
+ * Main's own Tasks in the Notch (Quick Chat's), shown beside the renderer's.
+ */
+export interface MainNotchTasks {
+  /**
+   * Replaces Main's Tasks. `notify` brings the newest Task to the front of the
+   * compact Notch with the arrival bounce.
+   */
+  setMainTasks(
+    items: readonly MainNotchTaskItem[],
+    options?: { notify?: boolean }
+  ): void;
+  /** Whether the Notch shows Main's Task with this id, and no renderer Task has it. */
+  showsMainTask(id: string): boolean;
+}
+
+/**
  * A host that ends on its own comes back with the kept scene at most this
  * often, so a host that cannot run is not restarted in a loop.
  */
 const notchHostRestoreIntervalMs = 60_000;
+
+/**
+ * The Notch lists at most this many Tasks, the newest first: what each writer
+ * sends, and what Main sends on, so NotchHost's limit of 100 is never reached.
+ */
+export const NOTCH_TASK_LIST_LENGTH = 20;
 
 type SpawnNotchHost = (
   executablePath: string,
@@ -50,6 +85,8 @@ type SpawnNotchHost = (
 
 export interface NotchServiceOptions {
   isSupportedPlatform?: (() => boolean) | undefined;
+  /** Main's language: the Task list's labels until a renderer sends its own. */
+  locale?: MainLocaleSource | undefined;
   pathExists?: ((path: string) => boolean) | undefined;
   resolveHostPath?: (() => string) | undefined;
   spawnHost?: SpawnNotchHost | undefined;
@@ -112,8 +149,9 @@ export function isNotchHostEvent(value: unknown): value is NotchHostEvent {
   );
 }
 
-export class NotchService {
+export class NotchService implements MainNotchTasks {
   readonly #isSupportedPlatform: () => boolean;
+  readonly #locale: MainLocaleSource;
   readonly #pathExists: (path: string) => boolean;
   readonly #resolveHostPath: () => string;
   readonly #spawnHost: SpawnNotchHost;
@@ -126,19 +164,31 @@ export class NotchService {
   };
   /**
    * The scene the writers have described since the last `hide`, merged the way
-   * NotchHost merges it. Writes keep arriving while the Notch is turned off,
-   * and turning it back on shows this scene instead of an empty one.
+   * NotchHost merges it, except the Tasks below. Writes keep arriving while the
+   * Notch is turned off, and turning it back on shows this scene instead of an
+   * empty one.
    */
-  private retainedScene: NotchHostScenePayload = {};
+  private retainedScene: Omit<NotchHostScenePayload, "tasks"> = {};
+  /**
+   * The renderer's Tasks since the last `hide`, and Main's own. NotchHost
+   * replaces its whole list with each `tasks` it receives, so every write of
+   * either part carries both: the renderer's, and Main's that no renderer
+   * Task has the id of, the newest NOTCH_TASK_LIST_LENGTH of them. The
+   * renderer's copy of a Task carries its Worker step.
+   */
+  private rendererTasks: NotchTaskItem[] | undefined;
+  private mainTasks: MainNotchTaskItem[] = [];
   private lastHostRestore = Number.NEGATIVE_INFINITY;
 
   constructor({
     isSupportedPlatform = isMacOS,
+    locale = baseLocale,
     pathExists = existsSync,
     resolveHostPath = defaultNotchHostPath,
     spawnHost = defaultSpawnNotchHost,
   }: NotchServiceOptions = {}) {
     this.#isSupportedPlatform = isSupportedPlatform;
+    this.#locale = locale;
     this.#pathExists = pathExists;
     this.#resolveHostPath = resolveHostPath;
     this.#spawnHost = spawnHost;
@@ -197,8 +247,9 @@ export class NotchService {
     }
     if (!previous.visible) {
       // A new host is configured as it starts, so only the scene needs writing.
-      if (Object.keys(this.retainedScene).length > 0) {
-        this.command("update", this.retainedScene).catch((error: unknown) => {
+      const scene = this.keptScene();
+      if (Object.keys(scene).length > 0) {
+        this.command("update", scene).catch((error: unknown) => {
           log.warn(`NotchHost could not restore its scene: ${errorMessage(error)}`);
         });
       }
@@ -219,18 +270,43 @@ export class NotchService {
 
   show(payload: NotchScenePayload = {}) {
     this.retainScene(payload);
-    return this.command("show", { notify: true, ...payload });
+    return this.command("show", { notify: true, ...this.withAllTasks(payload) });
   }
 
-  /** Renderers send scene payloads; Main also writes its AirDrop scene here. */
+  /**
+   * Renderers send scene payloads, the only ones with `tasks`; Main also
+   * writes its AirDrop scene here.
+   */
   update(payload: NotchHostScenePayload) {
     this.retainScene(payload);
-    return this.command("update", payload);
+    return this.command("update", this.withAllTasks(payload));
   }
 
+  /** The renderer's scene ends; Main's own Tasks stay. */
   hide() {
     this.retainedScene = {};
-    return this.command("hide");
+    this.rendererTasks = undefined;
+    if (this.mainTasks.length === 0) return this.command("hide");
+    // Everything `hide` takes away goes, AirDrop included, but Main's Tasks.
+    return this.command("update", { airDrop: {}, ...this.taskScene() });
+  }
+
+  setMainTasks(items: readonly MainNotchTaskItem[], { notify = false } = {}) {
+    if (items.length === 0 && this.mainTasks.length === 0) return;
+    this.mainTasks = [...items];
+    this.command("update", {
+      ...this.taskScene(),
+      ...(notify ? { notify } : {}),
+    }).catch((error: unknown) => {
+      log.warn(`NotchHost could not show Main's Tasks: ${errorMessage(error)}`);
+    });
+  }
+
+  showsMainTask(id: string) {
+    return (
+      this.mainTasks.some((task) => task.id === id) &&
+      !this.rendererTasks?.some((task) => task.id === id)
+    );
   }
 
   open() {
@@ -275,11 +351,71 @@ export class NotchService {
     this.stopHost();
   }
 
+  /**
+   * Back to how a launch finds it (the app reset): no host, no scene, the default presentation until the
+   * preferences apply theirs. Its event listeners are Main's, for the process.
+   */
+  reset() {
+    this.stopHost();
+    this.retainedScene = {};
+    // Tasks are part of the scene: neither the renderer's nor Main's come back after a reset.
+    this.rendererTasks = undefined;
+    this.mainTasks = [];
+    this.lastHostRestore = Number.NEGATIVE_INFINITY;
+    this.presentation = { sideWidth: notchSideWidthRange.default, visible: true };
+  }
+
   private retainScene(payload: NotchHostScenePayload) {
     // The notification comma belongs to the moment it was sent; a restored scene
     // appears without one. Absent fields keep their last value, as in NotchHost.
-    const { notify: _notify, ...scene } = payload;
+    const { notify: _notify, tasks, ...scene } = payload;
+    if (tasks) this.rendererTasks = [...tasks];
     this.retainedScene = { ...this.retainedScene, ...definedFields(scene) };
+  }
+
+  /** A renderer write with its Tasks completed by Main's. */
+  private withAllTasks<Payload extends NotchHostScenePayload>(payload: Payload) {
+    return payload.tasks ? { ...payload, ...this.taskScene() } : payload;
+  }
+
+  /** Every Task the Notch shows, the newest first, with the list's labels. */
+  private taskScene(): NotchHostScenePayload {
+    const rendererTasks = this.rendererTasks ?? [];
+    const rendererById = new Map(rendererTasks.map((task) => [task.id, task]));
+    const shownInPlace = new Set<string>();
+    const mainTasks = this.mainTasks
+      .filter((task) => !rendererById.has(task.id))
+      .map(({ standsFor, ...task }): NotchTaskItem => {
+        const renderer =
+          standsFor === undefined ? undefined : rendererById.get(standsFor);
+        if (!renderer) return task;
+        shownInPlace.add(renderer.id);
+        return { ...renderer, id: task.id };
+      });
+    const tasks = [
+      ...rendererTasks.filter((task) => !shownInPlace.has(task.id)),
+      ...mainTasks,
+    ]
+      .toSorted((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, NOTCH_TASK_LIST_LENGTH);
+    const locale = { locale: readMainLocale(this.#locale) };
+    return {
+      hasActivity: tasks.length > 0,
+      // Until a renderer labels the list, Main does, so it reads in Main's language.
+      listSubtitle:
+        this.retainedScene.listSubtitle ?? messages.notch_tasks_subtitle({}, locale),
+      listTitle: this.retainedScene.listTitle ?? messages.notch_tasks_title({}, locale),
+      openChatLabel:
+        this.retainedScene.openChatLabel ?? messages.inbox_open_chat({}, locale),
+      tasks,
+    };
+  }
+
+  /** What a new host, or a Notch turned back on, shows. */
+  private keptScene(): NotchHostScenePayload {
+    return this.rendererTasks || this.mainTasks.length > 0
+      ? { ...this.retainedScene, ...this.taskScene() }
+      : this.retainedScene;
   }
 
   private command(
@@ -582,7 +718,8 @@ export class NotchService {
    * otherwise the Notch stays empty until a writer's next change.
    */
   private restoreScene() {
-    if (!this.presentation.visible || Object.keys(this.retainedScene).length === 0) {
+    const scene = this.keptScene();
+    if (!this.presentation.visible || Object.keys(scene).length === 0) {
       return;
     }
     const now = Date.now();
@@ -591,7 +728,7 @@ export class NotchService {
       return;
     }
     this.lastHostRestore = now;
-    this.command("update", this.retainedScene).catch((error: unknown) => {
+    this.command("update", scene).catch((error: unknown) => {
       log.warn(`NotchHost could not restore its scene: ${errorMessage(error)}`);
     });
   }

@@ -39,7 +39,7 @@ defmodule Comma.MemberSourceItems do
   its items are history, not arrivals. Returns the arrivals and changes
   consumers will see.
   """
-  def record(profile_id, collection, enabled_source_ids, now \\ DateTime.utc_now())
+  def record(profile_id, collection, enabled_source_ids, now \\ SystemsClock.utc_now())
       when is_binary(profile_id) and is_list(enabled_source_ids) do
     Repo.transaction(fn ->
       # The provider read may predate a settings change. Only the locked
@@ -177,8 +177,25 @@ defmodule Comma.MemberSourceItems do
       is_nil(state.collected_at) or
         DateTime.compare(state.attempted_at, state.collected_at) == :gt
 
+  @doc """
+  The owner's pool item for one source URL in a Workspace, or nil. The Router
+  reads it for a matter the check handed over before a Routine snapshot names it.
+  """
+  def find(workspace_id, user_id, source_id, url) do
+    from(i in MemberSourceItem,
+      join: p in RecommendationProfile,
+      on: p.id == i.profile_id,
+      where:
+        p.workspace_id == ^workspace_id and p.user_id == ^user_id and
+          i.source_id == ^source_id and i.url == ^url,
+      order_by: [desc: i.changed_at],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
   @doc "Whether every enabled source was attempted within `max_age_s` seconds."
-  def fresh?(profile_id, enabled_source_ids, max_age_s, now \\ DateTime.utc_now()) do
+  def fresh?(profile_id, enabled_source_ids, max_age_s, now \\ SystemsClock.utc_now()) do
     cutoff = DateTime.add(now, -max_age_s, :second)
 
     attempted =
@@ -259,7 +276,7 @@ defmodule Comma.MemberSourceItems do
     existing =
       from(i in MemberSourceItem,
         where: i.profile_id == ^profile_id and i.source_id == ^source_id and i.item_key in ^keys,
-        select: {i.item_key, {i.id, i.fingerprint}}
+        select: {i.item_key, {i.id, i.fingerprint, i.quote}}
       )
       |> Repo.all()
       |> Map.new()
@@ -273,7 +290,7 @@ defmodule Comma.MemberSourceItems do
       MemberSourceItem,
       Enum.map(fresh, fn item ->
         Map.merge(item, %{
-          id: Ecto.UUID.generate(),
+          id: SystemsRuntime.Proc.uuid(),
           profile_id: profile_id,
           source_id: source_id,
           baseline: baseline,
@@ -287,14 +304,23 @@ defmodule Comma.MemberSourceItems do
     # Changed source text is new evidence: the item returns to every consumer,
     # unless this recording is a baseline.
     for item <- changed do
-      {id, _fingerprint} = existing[item.item_key]
+      {id, _fingerprint, _quoted} = existing[item.item_key]
 
       from(i in MemberSourceItem, where: i.id == ^id)
       |> Repo.update_all(
         set:
-          Enum.to_list(Map.take(item, @content)) ++
+          Enum.to_list(Map.take(item, [:quote | @content])) ++
             [baseline: baseline, attention: nil, changed_at: now, last_seen_at: now]
       )
+    end
+
+    # The quote is display text, not evidence. A new wording keeps the item's
+    # version, its outcomes and its place in the queue.
+    for item <- unchanged,
+        {id, _fingerprint, quote} = existing[item.item_key],
+        quote != item.quote do
+      from(i in MemberSourceItem, where: i.id == ^id)
+      |> Repo.update_all(set: [quote: item.quote])
     end
 
     stale = DateTime.add(now, -@touch_after_s, :second)
@@ -333,14 +359,16 @@ defmodule Comma.MemberSourceItems do
       excerpt: String.slice(item["excerpt"] || "", 0, 1_200),
       context: bounded_map(item["context"], 1_200),
       prompt_context: String.slice(item["prompt_context"] || "", 0, 600),
+      quote: bounded_quote(item["quote"]),
       relationship: item["relationship"],
       recipient: item["recipient"],
       facts: bounded_map(item["facts"], 1_000) || %{},
-      provider_ids: bounded_map(item["provider_ids"], 300) || %{}
+      provider_ids: bounded_map(item["provider_ids"], 1_200) || %{}
     }
 
     # Version the complete stored evidence, not the shortened prompt alone.
     # Dates, roles and surrounding context can change the required action.
+    # The quote is display text outside the version.
     version = Enum.map(@content -- [:fingerprint], &[&1, content[&1]])
     fingerprint = :crypto.hash(:sha256, Jason.encode!(version)) |> Base.encode16(case: :lower)
     Map.put(content, :fingerprint, fingerprint)
@@ -353,6 +381,12 @@ defmodule Comma.MemberSourceItems do
   end
 
   defp bounded_map(_value, _limit), do: nil
+
+  # Collection bounds a quote's lines. A larger quote is not stored.
+  defp bounded_quote(quote) when is_map(quote) and map_size(quote) > 0,
+    do: if(byte_size(Jason.encode!(quote)) <= 4_000, do: quote)
+
+  defp bounded_quote(_quote), do: nil
 
   # An arrived or changed item without an outcome waits for consumers while
   # its source's latest successful collection still returns it and no later
@@ -496,7 +530,7 @@ defmodule Comma.MemberSourceItems do
       )
 
   @doc "Deletes up to `batch` items that collection has not seen for the retention period."
-  def expire(now \\ DateTime.utc_now(), batch \\ 1_000) do
+  def expire(now \\ SystemsClock.utc_now(), batch \\ 1_000) do
     cutoff = DateTime.add(now, -@retention_days * 86_400, :second)
 
     ids =

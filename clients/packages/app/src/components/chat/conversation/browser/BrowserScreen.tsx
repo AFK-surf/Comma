@@ -1,6 +1,7 @@
+import { uiClock } from "@comma/ui/clock";
 import { useCommaMessages } from "@comma/i18n/react";
 import { useRef, type MouseEvent, type RefObject } from "react";
-import type { BrowserInput } from "../../../../api/browser";
+import type { BrowserViewInput as BrowserInput } from "@comma/core/contract";
 import {
   keyDownInput,
   keyUpInput,
@@ -27,7 +28,7 @@ export function BrowserScreen({
   viewport: RefObject<BrowserViewport>;
 }) {
   const messages = useCommaMessages();
-  const lastMove = useRef(0);
+  const lastMove = useRef(Number.NEGATIVE_INFINITY);
   const pointer = (event: MouseEvent<HTMLCanvasElement>, type: PointerInputType) => {
     if (!controlling) return;
     event.preventDefault();
@@ -44,8 +45,9 @@ export function BrowserScreen({
       className="block aspect-video w-full bg-black outline-none focus-visible:ring-2"
       onContextMenu={(event) => event.preventDefault()}
       onPointerMove={(event) => {
-        if (Date.now() - lastMove.current < 100) return;
-        lastMove.current = Date.now();
+        const now = uiClock.monotonic();
+        if (now - lastMove.current < 100) return;
+        lastMove.current = now;
         pointer(event, "mouseMoved");
       }}
       onPointerDown={(event) => {

@@ -390,9 +390,8 @@ real unsupported claim. Model assessment is fallible, not an authority.
 The search flattener previously used as a card observer deduplicated repeated
 inline fragments, dropping a later `token_expired` within a sentence. The current
 test-only `TriageTaskCardText` observes the actual native-card fields in order,
-preserves repeated inline text, and fails on unknown shapes. A deterministic
-test renders a real native card containing repeated code, earlier details, lists
-and source links. Raw Slack wire payloads are retained by future live runs.
+preserves repeated inline text, and fails on unknown shapes. Raw Slack wire
+payloads are retained by future live runs.
 Operational references are no longer themselves treated as extra diagnostic
 claims by the assessor. This is wire-text observation, not Slack-client pixel
 acceptance; production search behavior is unchanged. No fresh quality pass is

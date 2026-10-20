@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@comma/test-utils/render";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LayoutInspector } from "../LayoutInspector";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 describe("LayoutInspector", () => {
   beforeEach(() => {
@@ -122,31 +123,24 @@ describe("LayoutInspector", () => {
       .fn()
       .mockRejectedValueOnce(new Error("Clipboard denied"))
       .mockResolvedValueOnce(undefined);
-    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
-    Object.defineProperty(navigator, "clipboard", {
+    stubProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
-    try {
-      render(<InspectorFixture />);
-      const target = screen.getByTestId("inspect-target");
-      fireEvent.pointerMove(target, { clientX: 140, clientY: 100 });
-      fireEvent.pointerDown(target, { button: 0, clientX: 140, clientY: 100 });
-      const copySource = screen.getByRole("button", { name: "Copy source" });
-      fireEvent.click(copySource);
-      expect(await screen.findByText("Retry copy")).toBeInTheDocument();
-      expect(document.querySelector("textarea")).toBeNull();
-      fireEvent.click(copySource);
-      expect(await screen.findByText("Copied")).toBeInTheDocument();
-      expect(writeText).toHaveBeenLastCalledWith(
-        expect.stringContaining('[data-testid="inspect-target"]')
-      );
-      expect(screen.getByTestId("copy-layout-prompt")).toBeDisabled();
-    } finally {
-      if (clipboardDescriptor)
-        Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
-      else Reflect.deleteProperty(navigator, "clipboard");
-    }
+    render(<InspectorFixture />);
+    const target = screen.getByTestId("inspect-target");
+    fireEvent.pointerMove(target, { clientX: 140, clientY: 100 });
+    fireEvent.pointerDown(target, { button: 0, clientX: 140, clientY: 100 });
+    const copySource = screen.getByRole("button", { name: "Copy source" });
+    fireEvent.click(copySource);
+    expect(await screen.findByText("Retry copy")).toBeInTheDocument();
+    expect(document.querySelector("textarea")).toBeNull();
+    fireEvent.click(copySource);
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
+    expect(writeText).toHaveBeenLastCalledWith(
+      expect.stringContaining('[data-testid="inspect-target"]')
+    );
+    expect(screen.getByTestId("copy-layout-prompt")).toBeDisabled();
   });
 
   it("uses Escape to release a pin and then exit", () => {

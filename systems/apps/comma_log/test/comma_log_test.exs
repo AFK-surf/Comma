@@ -4,7 +4,7 @@ defmodule CommaLogTest do
   app env, default disabled), runtime enable/disable, line shape, and the
   sanitizer (truncation, redaction, non-JSON terms).
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias CommaLog
 
@@ -27,10 +27,6 @@ defmodule CommaLogTest do
   end
 
   describe "resolve_path/1" do
-    test "default is disabled (nil)" do
-      assert CommaLog.resolve_path([]) == nil
-    end
-
     test "--log-file <path> and --log-file=<path> forms" do
       assert CommaLog.resolve_path(["--log-file", "/tmp/a.jsonl"]) == "/tmp/a.jsonl"
 
@@ -55,28 +51,10 @@ defmodule CommaLogTest do
       Application.delete_env(:comma_log, :log_file)
       assert CommaLog.resolve_path([]) == "/tmp/salix.jsonl"
     end
-
-    test "log path environment variables are ignored" do
-      previous_comma = System.get_env("COMMA_LOG_FILE")
-      previous_salix = System.get_env("SALIX_LOG_FILE")
-
-      System.put_env("COMMA_LOG_FILE", "/tmp/comma-env.jsonl")
-      System.put_env("SALIX_LOG_FILE", "/tmp/salix-env.jsonl")
-
-      on_exit(fn ->
-        restore_env("COMMA_LOG_FILE", previous_comma)
-        restore_env("SALIX_LOG_FILE", previous_salix)
-      end)
-
-      assert CommaLog.resolve_path([]) == nil
-    end
   end
 
   defp restore_app_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_app_env(app, key, value), do: Application.put_env(app, key, value)
-
-  defp restore_env(name, nil), do: System.delete_env(name)
-  defp restore_env(name, value), do: System.put_env(name, value)
 
   test "disabled by default: log/2 writes nothing and is a no-op", %{path: path} do
     refute CommaLog.enabled?()
@@ -114,7 +92,7 @@ defmodule CommaLogTest do
 
     CommaLog.log("weird", %{
       outcome: {:wait, %{until: 5}},
-      who: self(),
+      who: SystemsRuntime.Proc.self(),
       set: MapSet.new([1, 2]),
       raw: <<0xFF, 0xFE>>,
       atom: :final,

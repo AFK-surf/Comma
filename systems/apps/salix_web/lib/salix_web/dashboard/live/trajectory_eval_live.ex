@@ -185,7 +185,7 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLive do
     opts =
       [
         from: DateTime.new!(from, ~T[00:00:00], "Etc/UTC"),
-        to: DateTime.utc_now() |> DateTime.truncate(:second),
+        to: SystemsClock.utc_now() |> DateTime.truncate(:second),
         limit: @never_checked_shown
       ] ++
         case nilify(filter_group) do
@@ -200,7 +200,7 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLive do
   end
 
   defp queries_mod do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :salix_web,
       :trajectory_eval_queries_mod,
       SalixAnalytics.TrajectoryEvalQueries
@@ -266,7 +266,7 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLive do
 
   defp global_judge_provider do
     :salix_agent
-    |> Application.get_env(:trajectory_eval, [])
+    |> SystemsRuntime.get_env(:trajectory_eval, [])
     |> Keyword.get(:judge_provider)
   end
 
@@ -286,7 +286,7 @@ defmodule SalixWeb.Dashboard.TrajectoryEvalLive do
   # so read the same default the runner falls back to when a tenant is unset.
   defp judge_default do
     :salix_agent
-    |> Application.get_env(:trajectory_eval, [])
+    |> SystemsRuntime.get_env(:trajectory_eval, [])
     |> Keyword.get(:judge_enabled, false)
   end
 

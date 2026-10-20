@@ -384,12 +384,12 @@ defmodule AlertRouter.Workers.DeliverIncident do
   end
 
   defp client do
-    Application.get_env(:alert_router, :slack, [])
+    SystemsRuntime.get_env(:alert_router, :slack, [])
     |> Keyword.get(:client, AlertRouter.Slack.ReqClient)
   end
 
   defp lifecycle_event_reader do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :alert_router,
       :lifecycle_event_reader,
       AlertRouter.LifecycleEventReader.Repo

@@ -1,39 +1,75 @@
 defmodule SalixWeb.SiteRateLimitTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixWeb.SiteAPI
 
+  alias SalixStore.RedisLimit
+
+  @prefix "salix:test:site-two-pods"
+
+  # Two pods' limiters, each with its own Redis connection.
   defmodule PodA do
-    use Hammer,
-      backend: Hammer.Redis,
-      algorithm: :sliding_window,
-      prefix: "salix:test:site-two-pods",
-      timeout: 2_000
+    use Hammer, backend: Hammer.Redis, timeout: 2_000
   end
 
   defmodule PodB do
-    use Hammer,
-      backend: Hammer.Redis,
-      algorithm: :sliding_window,
-      prefix: "salix:test:site-two-pods",
-      timeout: 2_000
+    use Hammer, backend: Hammer.Redis, timeout: 2_000
   end
 
   test "two independently connected pods share one sliding window" do
-    url = Application.fetch_env!(:salix_web, :site_rate_limit_redis_url)
+    url = SystemsRuntime.fetch_env!(:salix_web, :site_rate_limit_redis_url)
     start_supervised!({PodA, url: url})
     start_supervised!({PodB, url: url})
     key = "two-pods-" <> unique()
 
     results =
       [PodA, PodB, PodA, PodB]
-      |> Enum.map(fn limiter ->
-        Task.async(fn -> limiter.hit(key, 60_000, 3) end)
+      |> Enum.map(fn pod ->
+        SystemsRuntime.Task.async(fn ->
+          RedisLimit.sliding_window(pod, @prefix, key, 60_000, 3, 2_000)
+        end)
       end)
-      |> Task.await_many(5_000)
+      |> SystemsRuntime.Task.await_many(:infinity)
 
     assert Enum.count(results, &match?({:allow, _}, &1)) == 3
     assert Enum.count(results, &match?({:deny, _}, &1)) == 1
+  end
+
+  test "a burst that reaches Redis in one read counts each request" do
+    url = SystemsRuntime.fetch_env!(:salix_web, :site_rate_limit_redis_url)
+    start_supervised!({PodA, url: url})
+    key = "burst-" <> unique()
+
+    # Pipelined requests made at one time.
+    now = SystemsClock.system_time(:microsecond)
+
+    {:ok, replies} =
+      Redix.pipeline(
+        PodA,
+        List.duplicate(RedisLimit.sliding_window_command(@prefix, key, 60_000, 3, now), 5)
+      )
+
+    assert [{:allow, 1}, {:allow, 2}, {:allow, 3}, {:deny, _}, {:deny, _}] =
+             Enum.map(replies, &RedisLimit.decision/1)
+  end
+
+  test "the window moves with the application's clock" do
+    url = SystemsRuntime.fetch_env!(:salix_web, :site_rate_limit_redis_url)
+    start_supervised!({PodA, url: url})
+    key = "clock-" <> unique()
+    hit = fn -> RedisLimit.sliding_window(PodA, @prefix, key, 60_000, 2, 2_000) end
+    SystemsClock.manual()
+    on_exit(&SystemsClock.reset/0)
+
+    assert {:allow, 1} = hit.()
+    SystemsClock.advance(30_000)
+    assert {:allow, 2} = hit.()
+    assert {:deny, 30_000} = hit.()
+
+    # The first request leaves the window; the second is still in it.
+    SystemsClock.advance(30_000)
+    assert {:allow, 2} = hit.()
+    assert {:deny, 30_000} = hit.()
   end
 
   test "the production limiter shares quota across concurrent callers" do
@@ -42,9 +78,9 @@ defmodule SalixWeb.SiteRateLimitTest do
     results =
       1..4
       |> Enum.map(fn _ ->
-        Task.async(fn -> SiteAPI.State.allow?(agent_id, 3) end)
+        SystemsRuntime.Task.async(fn -> SiteAPI.State.allow?(agent_id, 3) end)
       end)
-      |> Task.await_many(5_000)
+      |> SystemsRuntime.Task.await_many(:infinity)
 
     assert Enum.count(results, & &1) == 3
     assert Enum.count(results, &(not &1)) == 1
@@ -69,5 +105,5 @@ defmodule SalixWeb.SiteRateLimitTest do
   end
 
   defp unique,
-    do: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+    do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(9), padding: false)
 end

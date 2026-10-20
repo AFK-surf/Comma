@@ -94,7 +94,7 @@ defmodule SalixStore.Blob do
   end
 
   defp do_put_stream(init, stream) do
-    state_key = {__MODULE__, :put_stream_state, make_ref()}
+    state_key = {__MODULE__, :put_stream_state, SystemsRuntime.Proc.make_ref()}
     init = Map.put(init, :state_key, state_key)
     checkpoint_stream_state(init)
 
@@ -158,7 +158,7 @@ defmodule SalixStore.Blob do
   defp put_stream_init_prepared(agent_id) do
     key = Keys.blob(uuid())
     cleanup_key = Keys.prepared_blob_cleanup(key_uuid(key))
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     record = %{
       "version" => 1,
@@ -469,7 +469,7 @@ defmodule SalixStore.Blob do
   defp update_cleanup_intent(cleanup_key, fun) do
     with {:ok, %{body: body}} <- S3.get(cleanup_key),
          {:ok, record} <- Jason.decode(body),
-         next <- fun.(record) |> Map.put("updated_at", System.system_time(:second)),
+         next <- fun.(record) |> Map.put("updated_at", SystemsClock.system_time(:second)),
          {:ok, _} <- S3.put(cleanup_key, Jason.encode!(next)) do
       :ok
     end
@@ -512,7 +512,7 @@ defmodule SalixStore.Blob do
   defp ref_size(%{"size" => s}), do: s
   defp ref_size(_), do: 0
 
-  defp uuid, do: :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+  defp uuid, do: SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower)
   defp key_uuid(key), do: key |> String.split("/") |> List.last()
   defp hash(content), do: SalixStore.Crypto.hex(content)
 end

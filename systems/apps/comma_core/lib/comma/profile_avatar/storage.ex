@@ -30,18 +30,18 @@ defmodule Comma.ProfileAvatar.Storage do
     end
   end
 
-  def config, do: Application.get_env(:comma_core, :profile_avatar, [])
+  def config, do: SystemsRuntime.get_env(:comma_core, :profile_avatar, [])
 
   defp adapter, do: config()[:adapter] || Comma.ProfileAvatar.Storage.GCS
 
   defp timed(operation, fun) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = fun.()
 
     CommaProduct.Telemetry.emit_operation(
       profile_operation(operation),
       result_tag(result),
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     result

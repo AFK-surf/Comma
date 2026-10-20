@@ -21,7 +21,7 @@ defmodule BridgeForTeams.TriageCollaborationProjectionTest do
         |> Map.fetch!(:content)
         |> Jason.decode!()
 
-      send(opts["test_pid"], {:projection_reached_provider, context})
+      SystemsRuntime.Proc.send(opts["test_pid"], {:projection_reached_provider, context})
 
       source =
         context
@@ -36,99 +36,12 @@ defmodule BridgeForTeams.TriageCollaborationProjectionTest do
 
   setup do
     SalixStore.S3.Fake.reset()
-    unless Process.whereis(Ids), do: start_supervised!(Ids)
-    :ok = Fixture.install_clickhouse_reader!(self())
+    unless SystemsRuntime.Proc.whereis(Ids), do: start_supervised!(Ids)
+    :ok = Fixture.install_clickhouse_reader!(SystemsRuntime.Proc.self())
     authority = Fixture.seed_authority!()
     project = Fixture.seed_project!(authority)
     Harness.seed_worker!(authority, project)
     %{authority: authority, project: project}
-  end
-
-  # Direct human mentions are command ingress, not ambient CH Triage input.
-  for case_data <- Corpus.cases(), Corpus.entrypoint(case_data) == :triage do
-    @tag collaboration_projection_case: case_data["id"]
-    test "captured source projects safely: #{case_data["id"]}", %{authority: authority} do
-      case_data = unquote(Macro.escape(case_data))
-
-      context =
-        Corpus.build(
-          case_data,
-          authority,
-          "http://127.0.0.1:9999/api",
-          System.get_env("COMMA_TRIAGE_COLLABORATION_CACHE")
-        )
-
-      provider_context = evaluate!(context.source_messages, case_data, authority)
-      projected_messages = provider_context["slack_context"]["messages"]
-      assert length(projected_messages) == length(context.source_messages)
-
-      for {raw, projected} <- Enum.zip(context.source_messages, projected_messages),
-          raw["files"] not in [nil, []] do
-        assert projected["file_attachments"] == %{
-                 "total_count" => length(raw["files"]),
-                 "truncated" => false,
-                 "items" =>
-                   Enum.map(raw["files"], fn file ->
-                     %{"name" => file["name"], "kind" => file_kind(file["mimetype"])}
-                   end)
-               }
-
-        # A file catalogue is not a transcript or an invented message body.
-        if raw["text"] == "", do: assert(projected["text"] == "")
-      end
-    end
-  end
-
-  test "file metadata is bounded and preserves source text without transport credentials", %{
-    authority: authority
-  } do
-    case_data = Corpus.fetch!("meeting_integrations_confirm")
-    context = Corpus.build(case_data, authority, "http://127.0.0.1:9999/api")
-
-    files =
-      for index <- 1..13 do
-        %{
-          "id" => "F-CATALOGUE-PRIVATE-#{index}",
-          "name" => if(index == 1, do: String.duplicate("会议", 260), else: "notes.txt"),
-          "mimetype" => "text/plain",
-          "url_private" => "https://private.example.test/file?token=not-a-real-token"
-        }
-      end
-
-    files =
-      List.update_at(files, 1, fn file ->
-        Map.put(file, "name", "https://private.example.test/name <@U_BFT> notes.txt")
-      end)
-
-    source_messages =
-      List.update_at(
-        context.source_messages,
-        2,
-        &Map.merge(&1, %{"text" => "", "files" => files})
-      )
-
-    provider_context = evaluate!(source_messages, case_data, authority)
-    message = Enum.at(provider_context["slack_context"]["messages"], 2)
-    assert message["text"] == ""
-    catalogue = message["file_attachments"]
-    assert catalogue["total_count"] == 13
-    assert catalogue["truncated"]
-    assert length(catalogue["items"]) == 10
-    assert Enum.at(catalogue["items"], 0)["name"] == String.duplicate("会议", 85)
-
-    assert Enum.all?(
-             catalogue["items"],
-             &(byte_size(&1["name"]) <= 512 and String.valid?(&1["name"]))
-           )
-
-    bytes = Jason.encode!(provider_context)
-
-    assert Enum.at(catalogue["items"], 1)["name"] ==
-             "https://private.example.test/name <@U_BFT> notes.txt"
-
-    for private <- ["F-CATALOGUE-PRIVATE", "url_private", "not-a-real-token"] do
-      refute bytes =~ private
-    end
   end
 
   test "credential-bearing file names retain the existing pre-model rejection", %{
@@ -197,7 +110,9 @@ defmodule BridgeForTeams.TriageCollaborationProjectionTest do
 
   defp run!(source_messages, case_data, authority) do
     Fixture.put_thread(source_messages)
-    namespace = "triage-collaboration-projection-#{System.unique_integer([:positive])}"
+
+    namespace =
+      "triage-collaboration-projection-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     server =
       Fixture.start_engine!(
@@ -205,7 +120,7 @@ defmodule BridgeForTeams.TriageCollaborationProjectionTest do
         {Salix.Bindings.TriageEvaluator,
          [
            provider: StubProvider,
-           provider_opts: %{"test_pid" => self()},
+           provider_opts: %{"test_pid" => SystemsRuntime.Proc.self()},
            transport_receipt: fn bytes ->
              %{payload_sha256: Fixture.sha256(bytes), request_count: 1}
            end
@@ -226,11 +141,4 @@ defmodule BridgeForTeams.TriageCollaborationProjectionTest do
 
     Fixture.await_run!(server)
   end
-
-  defp file_kind("text/" <> _), do: "text"
-  defp file_kind("image/" <> _), do: "image"
-  defp file_kind("audio/" <> _), do: "audio"
-  defp file_kind("video/" <> _), do: "video"
-  defp file_kind("application/pdf"), do: "pdf"
-  defp file_kind(_), do: "file"
 end

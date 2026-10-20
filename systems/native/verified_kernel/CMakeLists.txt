@@ -8,13 +8,34 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# A source archive, kept in COMMA_TOOL_CACHE when CI provides one: the office
+# runners take minutes to fetch it from GitHub, longer than a pull request job.
+function(verified_kernel_source name url)
+  if(DEFINED ENV{COMMA_TOOL_CACHE})
+    string(SHA256 key "${url}")
+    set(archive "$ENV{COMMA_TOOL_CACHE}/verified-kernel-${name}-${key}.tar.gz")
+    if(NOT EXISTS "${archive}")
+      string(RANDOM partial)
+      file(DOWNLOAD "${url}" "${archive}.${partial}" STATUS status)
+      list(GET status 0 code)
+      if(code EQUAL 0)
+        file(RENAME "${archive}.${partial}" "${archive}")
+      else()
+        file(REMOVE "${archive}.${partial}")
+      endif()
+    endif()
+    if(EXISTS "${archive}")
+      set(url "${archive}")
+    endif()
+  endif()
+  FetchContent_Declare(${name} URL "${url}" SOURCE_SUBDIR salix-download-only)
+endfunction()
+
 # Same sources as the pinned Lean 4.33.1 compiler and its mimalloc dependency.
-FetchContent_Declare(lean
-  URL https://codeload.github.com/leanprover/lean4/tar.gz/819816b2e0a3bf405af45ae5c7af2491d8f5bee6
-  SOURCE_SUBDIR salix-download-only)
-FetchContent_Declare(mimalloc
-  URL https://codeload.github.com/microsoft/mimalloc/tar.gz/94036de6fe20bfd8a73d4a6d142fcf532ea604d9
-  SOURCE_SUBDIR salix-download-only)
+verified_kernel_source(lean
+  https://codeload.github.com/leanprover/lean4/tar.gz/819816b2e0a3bf405af45ae5c7af2491d8f5bee6)
+verified_kernel_source(mimalloc
+  https://codeload.github.com/microsoft/mimalloc/tar.gz/94036de6fe20bfd8a73d4a6d142fcf532ea604d9)
 FetchContent_MakeAvailable(lean mimalloc)
 
 find_package(PkgConfig REQUIRED)

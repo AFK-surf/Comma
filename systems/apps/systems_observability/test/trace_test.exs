@@ -1,5 +1,5 @@
 defmodule SystemsObservability.TraceTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SystemsObservability.Trace
 

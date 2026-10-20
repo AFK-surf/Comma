@@ -1,12 +1,8 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, expect, it, vi } from "vitest";
-import {
-  copyTextToClipboard,
-  openUrlInExternalBrowser,
-  resolveHttpLinkFromEventTarget,
-} from "../linkActions";
+import { describe, expect, it } from "vitest";
+import { resolveHttpLinkFromEventTarget } from "../linkActions";
 
 describe("linkActions", () => {
   it("resolves http(s) anchors inside the root", () => {
@@ -34,27 +30,5 @@ describe("linkActions", () => {
 
     expect(resolveHttpLinkFromEventTarget(anchor, root)).toBeNull();
     document.body.removeChild(root);
-  });
-
-  it("opens web urls with window.open", async () => {
-    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
-    await openUrlInExternalBrowser("https://example.com/docs");
-    expect(openSpy).toHaveBeenCalledWith(
-      "https://example.com/docs",
-      "_blank",
-      "noopener,noreferrer"
-    );
-    openSpy.mockRestore();
-  });
-
-  it("copies text through the clipboard API", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
-
-    await copyTextToClipboard("https://example.com/docs");
-    expect(writeText).toHaveBeenCalledWith("https://example.com/docs");
   });
 });

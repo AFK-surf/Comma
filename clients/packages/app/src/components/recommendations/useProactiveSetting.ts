@@ -1,70 +1,33 @@
-import { useEffect, useRef, useState } from "react";
-import { CommaApiError, type CommaApiClient } from "../../api";
-import { readActiveWorkspaceId } from "../activeWorkspace";
+import { useCall, useTopic, type ProactiveValue } from "@comma/core-client";
+import { useState } from "react";
+import { useWorkspacePreference } from "../activeWorkspace";
 
-export type ProactiveSetting =
-  | { kind: "loading" }
-  // Automatic messages belong to the workspace owner's Home conversation.
-  | { kind: "owner-only" }
-  | { kind: "ready"; groupId: string; enabled: boolean };
+export type ProactiveSetting = ProactiveValue;
 
-// The owner's automatic proactive messages, read when Routines settings open.
+// The owner's automatic proactive messages, read by the core when Routines settings open.
 // A failed save keeps the saved value on screen and reports the failure.
-export function useProactiveSetting(api: CommaApiClient, active: boolean) {
-  const [setting, setSetting] = useState<ProactiveSetting>({ kind: "loading" });
+export function useProactiveSetting(active: boolean) {
+  const call = useCall();
+  const prefer = useWorkspacePreference();
+  const { value } = useTopic(
+    active && prefer !== undefined ? { topic: "proactive", prefer } : null
+  );
+  const setting: ProactiveSetting = value ?? { kind: "loading" };
   const [pending, setPending] = useState(false);
-  const [failure, setFailure] = useState<"load" | "save">();
-  const revision = useRef(0);
-
-  useEffect(() => {
-    if (!active) return;
-    const current = ++revision.current;
-    const controller = new AbortController();
-    setSetting({ kind: "loading" });
-    setFailure(undefined);
-    void (async () => {
-      const workspaces = await api.listWorkspaces({ signal: controller.signal });
-      const workspace =
-        workspaces.find((candidate) => candidate.id === readActiveWorkspaceId()) ??
-        workspaces[0];
-      if (!workspace) throw new Error("workspace unavailable");
-      const saved = await api.getProactiveSettings(workspace.group_id, {
-        signal: controller.signal,
-      });
-      if (current === revision.current)
-        setSetting({
-          kind: "ready",
-          groupId: workspace.group_id,
-          enabled: saved.enabled,
-        });
-    })().catch((error: unknown) => {
-      if (current !== revision.current || controller.signal.aborted) return;
-      if (error instanceof CommaApiError && error.status === 403)
-        setSetting({ kind: "owner-only" });
-      else setFailure("load");
-    });
-    return () => {
-      revision.current = current + 1;
-      controller.abort();
-    };
-  }, [active, api]);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const failure: "load" | "save" | undefined =
+    setting.kind === "failed" ? "load" : saveFailed ? "save" : undefined;
 
   const toggle = async (enabled: boolean) => {
     if (setting.kind !== "ready" || pending) return;
-    const current = revision.current;
     setPending(true);
-    setFailure(undefined);
+    setSaveFailed(false);
     try {
-      const saved = await api.updateProactiveSettings(setting.groupId, {
-        enabled,
-        requestId: crypto.randomUUID(),
-      });
-      if (current === revision.current)
-        setSetting({ ...setting, enabled: saved.enabled });
+      await call("proactive.set", { prefer: prefer ?? "", enabled });
     } catch {
-      if (current === revision.current) setFailure("save");
+      setSaveFailed(true);
     } finally {
-      if (current === revision.current) setPending(false);
+      setPending(false);
     }
   };
 

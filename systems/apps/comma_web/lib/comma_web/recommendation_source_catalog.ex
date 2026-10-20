@@ -8,6 +8,7 @@ defmodule CommaWeb.RecommendationSourceCatalog do
     "googledrive" => "Google Drive",
     "linear" => "Linear",
     "notion" => "Notion",
+    "outlook" => "Microsoft Outlook",
     "slack" => "Slack"
   }
   @supported_toolkits Map.keys(@app_names)
@@ -53,6 +54,19 @@ defmodule CommaWeb.RecommendationSourceCatalog do
       {:ok,
        {"GMAIL_FETCH_EMAILS",
         %{"include_payload" => false, "max_results" => 12, "query" => "newer_than:1d"}}}
+
+  def recipe("outlook", now),
+    do:
+      {:ok,
+       {"OUTLOOK_OUTLOOK_LIST_MESSAGES",
+        %{
+          "received_date_time_ge" => now |> DateTime.add(-86_400) |> DateTime.to_iso8601(),
+          "folder" => "inbox",
+          "top" => 12,
+          "user_id" => "me",
+          "orderby" => ["receivedDateTime desc"],
+          "select" => ~w(id conversationId subject from receivedDateTime bodyPreview webLink)
+        }}}
 
   def recipe("googlecalendar", now) do
     {:ok,

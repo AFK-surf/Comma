@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 
 export type ReplyChainReveal = {
   arrived: () => void;
@@ -12,9 +13,9 @@ export function useReplyChainHighlight(scope: string) {
   const [highlight, setHighlight] = useState<Highlight | null>(null);
   const current = useRef<Highlight | null>(null);
   // At most one arrival timer per transcript. Hover never fetches history.
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const timer = useRef<CancelUiTimer | undefined>(undefined);
   const clearTimer = useCallback(() => {
-    clearTimeout(timer.current);
+    timer.current?.();
     timer.current = undefined;
   }, []);
   const clear = useCallback(() => {
@@ -61,7 +62,7 @@ export function useReplyChainHighlight(scope: string) {
         arrived: () => {
           if (current.current !== next) return;
           clearTimer();
-          timer.current = setTimeout(cancel, REPLY_CHAIN_ARRIVAL_HOLD_MS);
+          timer.current = uiClock.after(REPLY_CHAIN_ARRIVAL_HOLD_MS, cancel);
         },
         cancel,
       };

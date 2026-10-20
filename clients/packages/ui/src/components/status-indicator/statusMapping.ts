@@ -1,6 +1,5 @@
 import {
   visibleTaskStatusBuckets as taskStatusBuckets,
-  type TaskStatusBucket,
   type VisibleTaskStatusBucket,
 } from "@comma/i18n";
 import type { StatusId } from "./StatusIndicator";
@@ -10,7 +9,6 @@ import type { StatusId } from "./StatusIndicator";
  * and the status-indicator element's hyphenated segment ids.
  */
 export const BUCKET_TO_STATUS_ID: Record<VisibleTaskStatusBucket, StatusId> = {
-  backlog: "backlog",
   cancelled: "cancel",
   done: "done",
   in_progress: "in-progress",
@@ -19,12 +17,12 @@ export const BUCKET_TO_STATUS_ID: Record<VisibleTaskStatusBucket, StatusId> = {
 
 const STATUS_ID_TO_BUCKET = Object.fromEntries(
   taskStatusBuckets.map((bucket) => [BUCKET_TO_STATUS_ID[bucket], bucket])
-) as Record<StatusId, TaskStatusBucket>;
+) as Record<StatusId, VisibleTaskStatusBucket>;
 
-export function taskStatusToIndicatorId(bucket: TaskStatusBucket): StatusId {
-  return bucket === "archived" ? "backlog" : BUCKET_TO_STATUS_ID[bucket];
+export function taskStatusToIndicatorId(bucket: VisibleTaskStatusBucket): StatusId {
+  return BUCKET_TO_STATUS_ID[bucket];
 }
 
-export function indicatorIdToTaskStatus(id: StatusId): TaskStatusBucket {
+export function indicatorIdToTaskStatus(id: StatusId): VisibleTaskStatusBucket {
   return STATUS_ID_TO_BUCKET[id];
 }

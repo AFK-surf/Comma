@@ -318,5 +318,5 @@ defmodule SalixSignal.Groups do
   defp status_error(%Response{status: 423}), do: :terminated
   defp status_error(%Response{} = response), do: Response.outcome(response)
 
-  defp now(opts), do: Keyword.get(opts, :now, fn -> System.os_time(:second) end)
+  defp now(opts), do: Keyword.get(opts, :now, fn -> SystemsClock.system_time(:second) end)
 end

@@ -4,7 +4,10 @@ defmodule SalixSignal.RouterIngressTest do
   # binds the peer with a claim code, and the peer's next message reaches
   # the bound Group's Router Conversation. The account stores the envelope
   # GUID as raw UUID bytes, so only the real pipeline exercises it.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.SalixSignal", "Elixir.ThousandIsland", "Elixir.Bandit"]
 
   alias SalixSignal.{Accounts, IMHandler}
   alias SalixSignal.Messaging.Pipeline
@@ -22,7 +25,12 @@ defmodule SalixSignal.RouterIngressTest do
   setup %{chain: chain} do
     SalixAgent.TestSupport.configure_control_fixtures!()
     {:ok, upgrades} = Agent.start_link(fn -> [] end)
-    server = start_supervised!({Bandit, FakeChat.bandit_options(self(), chain, upgrades)})
+
+    server =
+      start_supervised!(
+        {Bandit, FakeChat.bandit_options(SystemsRuntime.Proc.self(), chain, upgrades)}
+      )
+
     {:ok, service} = MockService.start_link()
     alice = SignalAccount.new(service, @alice)
     comma = SignalAccount.new(service, @comma, store: :postgres)
@@ -51,8 +59,7 @@ defmodule SalixSignal.RouterIngressTest do
       SalixAgent.TestSupport.stop_all_agents()
     end)
 
-    assert_receive {:fake_chat, :connected, socket}, 30_000
-
+    settle_receive({:fake_chat, :connected, socket})
     tenant = SalixAgent.TestSupport.new_tenant_id()
     group_id = Ids.new_group_id(tenant)
 
@@ -113,7 +120,7 @@ defmodule SalixSignal.RouterIngressTest do
              ~r/\A[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\z/
 
     # Nothing waits for a retry: later messages are not held behind it.
-    delivery = :sys.get_state(:sys.get_state(ctx.pid).delivery)
+    delivery = :sys.get_state(:sys.get_state(ctx.pid).delivery, :infinity)
     assert delivery.timer == nil
   end
 
@@ -125,7 +132,7 @@ defmodule SalixSignal.RouterIngressTest do
     |> Enum.with_index(first_request_id)
     |> Enum.each(fn {{guid, bytes}, request_id} ->
       request = %Frame.Request{verb: "PUT", path: "/api/v1/message", id: request_id, body: bytes}
-      send(ctx.socket, {:send, Frame.encode_request(request)})
+      SystemsRuntime.Proc.send(ctx.socket, {:send, Frame.encode_request(request)})
       MockService.ack(ctx.service, @comma, 1, guid)
     end)
 
@@ -148,17 +155,6 @@ defmodule SalixSignal.RouterIngressTest do
         do: origin
   end
 
-  defp eventually(fun, tries \\ 400) do
-    case fun.() do
-      result when result in [nil, false] and tries > 0 ->
-        Process.sleep(25)
-        eventually(fun, tries - 1)
-
-      result when result in [nil, false] ->
-        flunk("condition not met")
-
-      result ->
-        result
-    end
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 end

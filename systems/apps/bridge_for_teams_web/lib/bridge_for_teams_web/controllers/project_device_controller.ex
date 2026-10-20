@@ -12,95 +12,9 @@ defmodule BridgeForTeamsWeb.ProjectDeviceController do
 
   alias BridgeForTeams.Environments
   alias BridgeForTeams.RuntimeAuth
-  alias BridgeForTeams.{Orgs, Projects}
   alias BridgeForTeams.Schema.{MacMiniProvisioner, Organization}
   alias BridgeForTeamsWeb.{LimitParams, ProjectScope}
   alias SalixStore.RuntimeIds
-
-  def runtime_auth_management(conn, %{"project_id" => project_id} = params) do
-    user = ProjectScope.current_user(conn)
-
-    with {:ok, project} <- Projects.get_project(project_id),
-         {:ok, org} <- Orgs.get_org(project.org_id),
-         :ok <- ProjectScope.authorize_org(user, org, "member"),
-         :ok <- ProjectScope.authorize_project(user, project, :read) do
-      query = runtime_auth_management_query(params)
-
-      suffix = if query == "", do: "", else: "?" <> query
-      redirect(conn, to: "/orgs/#{org.slug}/projects/#{project.id}/devices" <> suffix)
-    else
-      _ -> conn |> send_resp(404, "not found") |> halt()
-    end
-  end
-
-  defp runtime_auth_management_query(%{"target" => target} = params)
-       when is_binary(target) and byte_size(target) in 1..256 do
-    %{"runtime_auth_target" => target}
-    |> then(fn query ->
-      case params["request"] do
-        request when is_binary(request) and byte_size(request) in 1..256 ->
-          Map.put(query, "runtime_auth_request", request)
-
-        _ ->
-          query
-      end
-    end)
-    |> URI.encode_query()
-  end
-
-  defp runtime_auth_management_query(_params), do: ""
-
-  def runtime_auth_requests(conn, params) do
-    conn = put_resp_header(conn, "cache-control", "no-store")
-
-    with {:ok, org} <- require_org(params["org"]),
-         :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
-         {:ok, project} <- require_project(conn, org, params["project"]),
-         :ok <- ProjectScope.authorize_project_for_conn(conn, project, :read),
-         {:ok, page} <-
-           RuntimeAuth.list_requests(
-             ProjectScope.current_user(conn).id,
-             project.id,
-             cursor: params["cursor"]
-           ) do
-      send_ok(conn, %{
-        "runtime_auth_requests" => page["requests"],
-        "next_cursor" => page["next_cursor"]
-      })
-    else
-      error ->
-        send_runtime_auth_error(conn, error, "Could not list runtime authentication requests.")
-    end
-  end
-
-  def complete_runtime_auth_request(conn, %{"request_id" => request_id} = params) do
-    conn = put_resp_header(conn, "cache-control", "no-store")
-
-    with %{"outcome" => outcome} <- conn.body_params,
-         true <- Map.keys(conn.body_params) == ["outcome"],
-         {:ok, org} <- require_org(params["org"]),
-         :ok <- ProjectScope.authorize_org_for_conn(conn, org, "member"),
-         {:ok, project} <- require_project(conn, org, params["project"]),
-         :ok <- ProjectScope.authorize_project_for_conn(conn, project, :write),
-         {:ok, request} <-
-           RuntimeAuth.complete_request(
-             ProjectScope.current_user(conn).id,
-             project.id,
-             request_id,
-             outcome
-           ) do
-      send_ok(conn, %{"runtime_auth_request" => request})
-    else
-      false ->
-        send_error(conn, 400, "invalid_runtime_auth_request", "Invalid completion.", %{})
-
-      %{} ->
-        send_error(conn, 400, "invalid_runtime_auth_request", "Invalid completion.", %{})
-
-      error ->
-        send_runtime_auth_error(conn, error, "Could not complete runtime authentication request.")
-    end
-  end
 
   def private_runtime_auth(conn, params) do
     conn = put_resp_header(conn, "cache-control", "no-store")
@@ -653,7 +567,7 @@ defmodule BridgeForTeamsWeb.ProjectDeviceController do
   defp devices_next_action(org, project, devices, requests) do
     cond do
       devices != [] ->
-        "Use `bft agents list --org #{org.slug} --project #{project.slug}` to inspect external agent runtime status."
+        "Use `bft agents list --org #{org.slug} --project #{project.slug}` to inspect the agents bound to these stations."
 
       Enum.any?(
         requests,
@@ -672,7 +586,7 @@ defmodule BridgeForTeamsWeb.ProjectDeviceController do
     [
       actor_user_id: user.id,
       actor_label: actor_label(user),
-      request_id: List.first(get_req_header(conn, "x-request-id")) || Ecto.UUID.generate()
+      request_id: List.first(get_req_header(conn, "x-request-id")) || SystemsRuntime.Proc.uuid()
     ]
   end
 

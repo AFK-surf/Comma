@@ -1,4 +1,10 @@
-import { ChevronRightSmallIcon, ExclamationTriangleIcon, ScrollArea } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import {
+  ChevronRightSmallIcon,
+  ExclamationTriangleIcon,
+  XIcon,
+} from "@comma/ui/components/icons";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
 import { useState } from "react";
 import type {
   BftOnboarding,
@@ -57,6 +63,10 @@ export function OverviewPage({
       ) : (
         <div className="bft-overview-grid">
           <div className="bft-overview-main">
+            <OAuthWaitingNotice
+              org={org}
+              waiting={overview.state === "ready" ? overview.data.oauth_waiting : null}
+            />
             <OnboardingPanel org={org} />
             <Metrics
               overview={overview.state === "ready" ? overview.data : undefined}
@@ -89,11 +99,68 @@ export function OverviewPage({
   );
 }
 
+const oauthDismissedKey = (org: string) => `bft:oauth-waiting-dismissed:${org}`;
+
 /**
- * The first-run checklist: the steps still to do, each with a link to the
- * page where it happens. The LiveView shell shows the same steps on Agent
- * Swarm pages; skipping here ends it there too. Nothing shows while it loads,
- * after it was skipped or finished, or when it cannot be read.
+ * Tells an org admin that members wait for an OAuth client. Dismissing it
+ * hides it until the list of waiting members changes.
+ */
+function OAuthWaitingNotice({
+  org,
+  waiting,
+}: {
+  org: string;
+  waiting: BftOverview["oauth_waiting"];
+}) {
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return window.localStorage.getItem(oauthDismissedKey(org));
+    } catch {
+      return null;
+    }
+  });
+  if (!waiting || waiting.names.length === 0) return null;
+  const seen = JSON.stringify(waiting);
+  if (dismissed === seen) return null;
+  const s = messages.settings.integrations.oauth;
+
+  return (
+    <output className="bft-notice bft-flash-notice bft-oauth-waiting">
+      <span>
+        {s.waiting(waiting.names.length, waiting.names.join(", "), waiting.truncated)}{" "}
+        <a
+          className="bft-link"
+          href={orgHref(org, "/settings/integrations#oauth")}
+          onClick={spaLinkClick}
+        >
+          {t.oauthWaitingAction}
+        </a>
+      </span>
+      <Button
+        aria-label={messages.common.dismiss}
+        hierarchy="tertiary-gray"
+        iconLeading={<XIcon />}
+        iconOnly
+        onPress={() => {
+          setDismissed(seen);
+          try {
+            window.localStorage.setItem(oauthDismissedKey(org), seen);
+          } catch {
+            // Storage is unavailable: it stays dismissed for this page.
+          }
+        }}
+        size="xs"
+      />
+    </output>
+  );
+}
+
+/**
+ * The quick-setup checklist: the steps still to do, each with a link to the
+ * page where it happens. A member whose connect step waits for an OAuth
+ * client can remind the admins once. Skipping it ends it for good. Nothing
+ * shows while it loads, after it was skipped or finished, or when it cannot be
+ * read.
  */
 function OnboardingPanel({ org }: { org: string }) {
   const api = useApi();
@@ -108,14 +175,21 @@ function OnboardingPanel({ org }: { org: string }) {
 
   const done = data.steps.filter((step) => step.done).length;
   const complete = done === data.steps.length;
-  const dismiss = () => {
+  const write = (action: () => Promise<BftOnboarding>) => {
     setBusy(true);
     setError(undefined);
-    api.dismissOnboarding(org).then(setClosed, (caught: unknown) => {
-      setBusy(false);
-      setError(writeErrorMessage(caught));
-    });
+    action().then(
+      (next) => {
+        setBusy(false);
+        setClosed(next);
+      },
+      (caught: unknown) => {
+        setBusy(false);
+        setError(writeErrorMessage(caught));
+      }
+    );
   };
+  const dismiss = () => write(() => api.dismissOnboarding(org));
 
   return (
     <section
@@ -155,12 +229,15 @@ function OnboardingPanel({ org }: { org: string }) {
               data.oauth_configured === false &&
               !data.steps.some((other) => other.id === "oauth" && other.done)
             }
+            busy={busy}
             done={step.done}
             firstProject={data.first_project_id}
             id={step.id}
             key={step.id}
             manager={data.steps.some((other) => other.id === "oauth")}
+            onRemind={() => write(() => api.remindOnboardingAdmins(org))}
             org={org}
+            reminded={data.oauth_reminded}
           />
         ))}
       </ol>
@@ -175,6 +252,9 @@ function OnboardingStep({
   blocked,
   manager,
   firstProject,
+  reminded,
+  busy,
+  onRemind,
 }: {
   org: string;
   id: BftOnboardingStep;
@@ -182,17 +262,17 @@ function OnboardingStep({
   blocked: boolean;
   manager: boolean;
   firstProject: string | null;
+  reminded: boolean;
+  busy: boolean;
+  onRemind: () => void;
 }) {
   const copy = t.onboardingSteps[id];
-  // Connections is an Agent Swarm page outside the SPA: a full page load.
-  const [href, spa] =
-    id === "swarm"
-      ? [orgHref(org, "/projects"), true]
-      : id === "oauth"
-        ? [orgHref(org, "/settings/integrations"), true]
-        : firstProject
-          ? [projectHref(org, firstProject, "/connections"), false]
-          : [orgHref(org, "/projects"), true];
+  const href =
+    id === "oauth"
+      ? orgHref(org, "/settings/integrations")
+      : id === "connect" && firstProject
+        ? projectHref(org, firstProject, "/connections")
+        : orgHref(org, "/projects");
 
   return (
     <li className="bft-onboarding-step" data-done={done || undefined} data-step={id}>
@@ -202,7 +282,9 @@ function OnboardingStep({
           {blocked
             ? manager
               ? t.onboardingBlockedAdmin
-              : t.onboardingBlockedMember
+              : reminded
+                ? t.onboardingReminded
+                : t.onboardingBlockedMember
             : copy.body}
         </span>
       </span>
@@ -210,11 +292,22 @@ function OnboardingStep({
         <span className="bft-status" data-tone="ok">
           {t.onboardingStepDone}
         </span>
-      ) : blocked ? null : (
+      ) : blocked ? (
+        manager || reminded ? null : (
+          <button
+            className="bft-btn bft-btn-sm bft-onboarding-action"
+            disabled={busy}
+            onClick={onRemind}
+            type="button"
+          >
+            {t.onboardingRemind}
+          </button>
+        )
+      ) : (
         <a
           className="bft-link bft-onboarding-action"
           href={href}
-          onClick={spa ? spaLinkClick : undefined}
+          onClick={spaLinkClick}
         >
           {copy.action}
         </a>

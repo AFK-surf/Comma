@@ -20,7 +20,7 @@ defmodule Salix.Bindings.GoogleCalendarWatch do
          do: repair(group_id, calendar_id, source_id)
   end
 
-  def ensure(group_id, calendar_id, source_id, now \\ System.system_time(:millisecond)) do
+  def ensure(group_id, calendar_id, source_id, now \\ SystemsClock.system_time(:millisecond)) do
     callback =
       SalixWeb.Application.public_base_url() <>
         "/v1/calendar/google/notifications/#{group_id}/#{calendar_id}/#{source_id}"
@@ -32,7 +32,7 @@ defmodule Salix.Bindings.GoogleCalendarWatch do
     end
   end
 
-  def repair(group_id, calendar_id, source_id, now \\ System.system_time(:millisecond)) do
+  def repair(group_id, calendar_id, source_id, now \\ SystemsClock.system_time(:millisecond)) do
     with {:ok, source} <- Server.get_source(group_id, calendar_id, source_id) do
       last_error = SourceSyncOutcome.last_error(source)
 
@@ -71,7 +71,7 @@ defmodule Salix.Bindings.GoogleCalendarWatch do
   def receive(_, _, _, _), do: {:error, :invalid_notification}
 
   defp create(source, callback) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
     result = create_and_rotate(source, callback)
 
     Salix.Telemetry.emit_operation(
@@ -79,15 +79,15 @@ defmodule Salix.Bindings.GoogleCalendarWatch do
       "watch",
       "system",
       if(match?({:ok, _}, result), do: "ok", else: "error"),
-      System.monotonic_time() - started_at
+      SystemsClock.monotonic_time() - started_at
     )
 
     result
   end
 
   defp create_and_rotate(source, callback) do
-    channel_id = Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
-    token = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+    channel_id = Base.encode16(SystemsRuntime.Proc.random_bytes(16), case: :lower)
+    token = Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
 
     with {:ok, watch} <- GoogleCalendarSource.start_watch(source, callback, channel_id, token),
          watch <-

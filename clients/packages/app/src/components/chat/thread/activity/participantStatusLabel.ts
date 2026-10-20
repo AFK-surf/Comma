@@ -1,16 +1,35 @@
+import type { CommaLocale } from "@comma/i18n";
 import type { useCommaMessages } from "@comma/i18n/react";
-import type { ChatParticipantStatus } from "../../model/conversationChannel";
+import {
+  formatFundingReset,
+  fundingSourceName,
+  fundingStopKind,
+} from "../../../billing/fundingStops";
+import type {
+  ChatParticipantIssueDetail,
+  ChatParticipantStatus,
+} from "@comma/core/chat";
+import { formatConversationTimestamp } from "../layout/messageTimestamp";
 
 type CommaMessages = ReturnType<typeof useCommaMessages>;
 
 // Reason codes come from the agent runtime (SalixAgent.SessionActivity and
-// its kernel) and from external runtimes' terminal issues
-// (SalixAgent.ExternalSessionStatus). A code without wording reads as the
-// generic line; its runtime text is never shown.
-function issueLabel(messages: CommaMessages, issue: string | undefined): string {
+// its kernel). A code without wording reads as the generic line; its runtime
+// text is never shown.
+function issueLabel(
+  messages: CommaMessages,
+  issue: string | undefined,
+  detail: ChatParticipantIssueDetail | undefined,
+  locale: CommaLocale | undefined
+): string {
+  const provider = fundingSourceName(detail?.source);
   switch (issue) {
     case "model_connection_failed":
-      return messages.chat_model_unreachable();
+      return detail?.trigger === "background"
+        ? messages.chat_issue_model_request_failed_background()
+        : detail?.trigger === "voice_call"
+          ? messages.chat_issue_model_request_failed_voice_call()
+          : messages.chat_issue_model_request_failed();
     case "visible_reply_repair_exhausted":
       return messages.chat_issue_reply_unfinished();
     case "runaway_guard_parked":
@@ -31,7 +50,11 @@ function issueLabel(messages: CommaMessages, issue: string | undefined): string 
     case "runtime_observation_lost":
       return messages.chat_issue_connection_lost();
     case "quota_exhausted":
-      return messages.chat_issue_usage_limit();
+      return detail?.resetAt
+        ? messages.chat_issue_usage_limit_reset({
+            time: formatFundingReset(detail.resetAt, locale),
+          })
+        : messages.chat_issue_usage_limit();
     case "rate_limited":
       return messages.chat_issue_rate_limited();
     case "authentication_required":
@@ -40,6 +63,19 @@ function issueLabel(messages: CommaMessages, issue: string | undefined): string 
       return messages.chat_issue_model_unavailable();
     case "insufficient_credits":
       return messages.chat_insufficient_credits();
+    case "provider_quota_exhausted":
+      if (fundingStopKind(issue, detail) === "subscription") {
+        return messages.chat_issue_usage_limit();
+      }
+      if (provider && detail?.profileName) {
+        return messages.chat_issue_provider_quota_named({
+          profile: detail.profileName,
+          provider,
+        });
+      }
+      return provider
+        ? messages.chat_issue_provider_quota_source({ provider })
+        : messages.chat_issue_provider_quota();
     case "account_inactive":
       return messages.chat_billing_account_inactive();
     case "missing_account":
@@ -56,13 +92,30 @@ function issueLabel(messages: CommaMessages, issue: string | undefined): string 
  */
 export function participantStatusLabel(
   messages: CommaMessages,
-  participantStatus: ChatParticipantStatus
+  participantStatus: ChatParticipantStatus,
+  locale?: CommaLocale
 ): string | undefined {
   switch (participantStatus.state) {
     case "active":
       return messages.chat_activity_working();
-    case "error":
-      return issueLabel(messages, participantStatus.issue);
+    case "error": {
+      const label = issueLabel(
+        messages,
+        participantStatus.issue,
+        participantStatus.issueDetail,
+        locale
+      );
+      // The line stays under the newest message until new input arrives, so a
+      // failed model request says when it failed rather than reading as the
+      // last reply failing.
+      const failedAt =
+        participantStatus.issue === "model_connection_failed" &&
+        locale &&
+        participantStatus.updatedAt > 0
+          ? formatConversationTimestamp(participantStatus.updatedAt, locale)?.label
+          : undefined;
+      return failedAt ? `${failedAt} · ${label}` : label;
+    }
     default:
       return undefined;
   }

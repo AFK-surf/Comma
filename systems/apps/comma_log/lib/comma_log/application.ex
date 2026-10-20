@@ -9,6 +9,10 @@ defmodule CommaLog.Application do
   @impl true
   def start(_type, _args) do
     children = [CommaLog]
-    Supervisor.start_link(children, strategy: :one_for_one, name: CommaLog.Supervisor)
+
+    SystemsRuntime.Supervisor.start_link(children,
+      strategy: :one_for_one,
+      name: CommaLog.Supervisor
+    )
   end
 end

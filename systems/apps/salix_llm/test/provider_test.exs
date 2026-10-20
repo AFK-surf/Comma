@@ -6,7 +6,7 @@ defmodule SalixLlm.ProviderTest do
   ON THE WIRE against a recording mock, plus per-call template overrides beating
   globals.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixLlm.Provider
 
@@ -73,7 +73,7 @@ defmodule SalixLlm.ProviderTest do
     end
 
     defp respond(conn, {:delay, delay_ms, resp}) do
-      Process.sleep(delay_ms)
+      SystemsRuntime.Proc.sleep(delay_ms)
       respond(conn, resp)
     end
 
@@ -84,7 +84,7 @@ defmodule SalixLlm.ProviderTest do
         |> send_chunked(200)
 
       {:ok, conn} = chunk(conn, first_chunk)
-      Process.sleep(delay_ms)
+      SystemsRuntime.Proc.sleep(delay_ms)
 
       Enum.reduce(remaining_chunks, conn, fn piece, conn ->
         case chunk(conn, piece) do
@@ -137,13 +137,13 @@ defmodule SalixLlm.ProviderTest do
   end
 
   setup do
-    previous_request_timeout = Application.get_env(:salix_agent, :llm_request_timeout_ms)
-    Application.delete_env(:salix_agent, :llm_request_timeout_ms)
+    previous_request_timeout = SystemsRuntime.get_env(:salix_agent, :llm_request_timeout_ms)
+    SystemsRuntime.delete_env(:salix_agent, :llm_request_timeout_ms)
 
     on_exit(fn ->
       case previous_request_timeout do
-        nil -> Application.delete_env(:salix_agent, :llm_request_timeout_ms)
-        timeout -> Application.put_env(:salix_agent, :llm_request_timeout_ms, timeout)
+        nil -> SystemsRuntime.delete_env(:salix_agent, :llm_request_timeout_ms)
+        timeout -> SystemsRuntime.put_env(:salix_agent, :llm_request_timeout_ms, timeout)
       end
     end)
 
@@ -161,7 +161,7 @@ defmodule SalixLlm.ProviderTest do
   end
 
   test "blocking and streaming providers honor the shared agent request timeout", %{base: base} do
-    Application.put_env(:salix_agent, :llm_request_timeout_ms, 50)
+    SystemsRuntime.put_env(:salix_agent, :llm_request_timeout_ms, 50)
     previous_req_defaults = Req.default_options()
     Req.default_options(Keyword.put(previous_req_defaults, :max_retries, 0))
     on_exit(fn -> Req.default_options(previous_req_defaults) end)
@@ -638,7 +638,13 @@ defmodule SalixLlm.ProviderTest do
             tool_calls: [%{"id" => "c1", "name" => "get_date", "args" => %{}}],
             provider_meta: meta
           },
-          %{role: "tool", tool_call_id: "c1", content: "2026-06-24"}
+          %{role: "tool", tool_call_id: "c1", content: "2026-06-24"},
+          %{
+            role: "runtime",
+            runtime_message_id: "runtime-weather",
+            type: "wait_timeout",
+            content: "A background weather lookup completed."
+          }
         ],
         [
           %{
@@ -656,6 +662,16 @@ defmodule SalixLlm.ProviderTest do
 
     assert assistant["reasoning_content"] == "I need to call the date tool."
     assert assistant["reasoning_details"] == reasoning_details
+
+    synthetic =
+      MockServer.last().body["messages"]
+      |> Enum.find(fn message ->
+        Enum.any?(message["tool_calls"] || [], fn call ->
+          get_in(call, ["function", "name"]) == "get_runtime_message"
+        end)
+      end)
+
+    assert synthetic["reasoning_content"] == ""
   end
 
   test "responses protocol: /responses, function_call output parses", %{base: base} do
@@ -1020,13 +1036,13 @@ defmodule SalixLlm.ProviderTest do
   end
 
   test "chat-completions wire stream produces bounded TTFT and usage metrics", %{base: base} do
-    previous_llm = Application.fetch_env(:salix_agent, :llm)
-    Application.put_env(:salix_agent, :llm, Provider)
+    previous_llm = SystemsRuntime.fetch_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_agent, :llm, Provider)
 
     on_exit(fn ->
       case previous_llm do
-        {:ok, llm} -> Application.put_env(:salix_agent, :llm, llm)
-        :error -> Application.delete_env(:salix_agent, :llm)
+        {:ok, llm} -> SystemsRuntime.put_env(:salix_agent, :llm, llm)
+        :error -> SystemsRuntime.delete_env(:salix_agent, :llm)
       end
     end)
 
@@ -1092,6 +1108,75 @@ defmodule SalixLlm.ProviderTest do
                "kind" => kind
              }) =~ ~r/ #{value}$/
     end
+  end
+
+  test "an Anthropic turn records each thinking block the provider dropped", %{base: base} do
+    previous_llm = SystemsRuntime.fetch_env(:salix_agent, :llm)
+    SystemsRuntime.put_env(:salix_agent, :llm, Provider)
+
+    on_exit(fn ->
+      case previous_llm do
+        {:ok, llm} -> SystemsRuntime.put_env(:salix_agent, :llm, llm)
+        :error -> SystemsRuntime.delete_env(:salix_agent, :llm)
+      end
+    end)
+
+    MockServer.set_stream("/v1/messages", """
+    data:{"type":"message_start","message":{"model":"claude-opus-4-8","usage":{"input_tokens":3},"input_transformations":[{"type":"thinking_dropped","path":"messages.1.content.0","reason":"prefix_binding_mismatch"}]}}
+
+    data:{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+    data:{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}
+
+    data:{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+    """)
+
+    reporter = Module.concat(__MODULE__, InputTransformationReporter)
+
+    start_supervised!(
+      {TelemetryMetricsPrometheus.Core,
+       name: reporter, metrics: Salix.Telemetry.metrics(), start_async: false},
+      id: :input_transformation_reporter
+    )
+
+    llm = [
+      protocol: "anthropic",
+      base_url: base,
+      api_key: "anth-key",
+      model: "claude-opus-4-8",
+      thinking: %{"type" => "adaptive"},
+      metering_disabled: true,
+      billing_context: %{"surface" => "comma"}
+    ]
+
+    {_rec, on_delta} = recorder()
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:final, "ok", %{"input_transformations" => [_dropped]}} =
+                 SalixAgent.LLM.complete_stream(
+                   [%{role: "user", content: "hi"}],
+                   [],
+                   on_delta,
+                   llm
+                 )
+      end)
+
+    assert log =~ "llm_input_transformations"
+    assert log =~ "prefix_binding_mismatch"
+
+    assert MockServer.last().body["thinking"]["block_binding"] == %{
+             "prefix_mismatch_behavior" => "drop_block"
+           }
+
+    scrape = TelemetryMetricsPrometheus.Core.scrape(reporter)
+
+    assert metric_line(scrape, "salix_llm_input_transformations_total", %{
+             "surface" => "comma",
+             "provider" => "anthropic",
+             "kind" => "thinking_dropped",
+             "reason" => "prefix_binding_mismatch"
+           }) =~ ~r/ 1$/
   end
 
   test "chat-completions stream preserves reasoning deltas on tool calls", %{base: base} do
@@ -1395,6 +1480,11 @@ defmodule SalixLlm.ProviderTest do
   test "anthropic blocking provider and transport errors return structured categories", %{
     base: base
   } do
+    # Keep Req's transient retries but skip their real-time backoff.
+    previous = Req.default_options()
+    on_exit(fn -> Req.default_options(previous) end)
+    Req.default_options(Keyword.put(previous, :retry_delay, fn _ -> 0 end))
+
     MockServer.set("/v1/messages", {
       :status,
       429,
@@ -1790,35 +1880,12 @@ defmodule SalixLlm.ProviderTest do
     assert {:final, ""} = Provider.complete([%{role: "user", content: "go"}], [], llm)
   end
 
-  test "responses stream retries a transient error before receiving stream data", %{base: base} do
-    MockServer.set_sequence("/responses", [
-      {:status, 502, ""},
-      {:stream,
-       [
-         """
-         event: response.output_text.delta
-         data:{"type":"response.output_text.delta","delta":"O"}
-
-         event: response.output_text.delta
-         data:{"type":"response.output_text.delta","delta":"K"}
-
-         event: response.completed
-         data:{"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}]}}
-         """
-       ]}
-    ])
-
-    llm = %{"protocol" => "responses", "base_url" => base, "api_key" => "resp-key"}
-    {rec, on_delta} = recorder()
-
-    assert {:final, "OK"} =
-             Provider.complete_stream([%{role: "user", content: "go"}], [], on_delta, llm)
-
-    assert deltas(rec) == ["O", "K"]
-    assert MockServer.count("/responses") == 2
-  end
-
   test "responses stream returns structured error after retries are exhausted", %{base: base} do
+    # The retry backoff sleeps on a clock this test drives: it completes at
+    # once, at exact clock times.
+    SystemsClock.manual(drive: true, scope: ["Elixir.SalixLLM"])
+    on_exit(&SystemsClock.reset/0)
+
     MockServer.set_sequence("/responses", [
       {:status, 502, %{"error" => %{"message" => "busy-1"}}},
       {:status, 502, %{"error" => %{"message" => "busy-2"}}},

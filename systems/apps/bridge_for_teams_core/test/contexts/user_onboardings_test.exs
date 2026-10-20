@@ -63,7 +63,7 @@ defmodule BridgeForTeams.UserOnboardingsTest do
   defp user_fixture do
     {:ok, user} =
       Accounts.create_user(%{
-        "email" => "onboarding-#{System.unique_integer([:positive])}@example.com",
+        "email" => "onboarding-#{SystemsRuntime.Proc.unique_integer([:positive])}@example.com",
         "name" => "Onboarding User"
       })
 

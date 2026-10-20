@@ -19,9 +19,9 @@ for (const width of [1440, 1024, 768, 390]) {
     await expect.poll(() => page.locator("main").evaluate(el => el.scrollWidth - el.clientWidth)).toBe(0);
 
     const tabs = page.locator("main nav").getByRole("link");
-    // Overview through Inbound API, then Voice and Signal.
-    await expect(tabs).toHaveCount(11);
-    for (let index = 0; index < 11; index++) {
+    // Overview through Inbound API, then Voice, Signal and Tailscale.
+    await expect(tabs).toHaveCount(12);
+    for (let index = 0; index < 12; index++) {
       const tab = tabs.nth(index);
       await tab.focus();
       const box = await tab.boundingBox();

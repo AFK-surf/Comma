@@ -30,15 +30,7 @@ input.on("line", (line) => {
     return;
   }
 
-  if (hostName === "host-b") {
-    respond({
-      payload: { value: "host-b-command-pending" },
-      type: "fixture",
-    });
-  }
-
-  const delay = hostName === "host-b" && command.method === "start" ? 400 : 0;
-  setTimeout(() => {
+  const result = () =>
     respond({
       id: command.id,
       payload: {
@@ -48,18 +40,27 @@ input.on("line", (line) => {
       },
       type: "result",
     });
-  }, delay);
+  // Host B holds its start result until the test sends SIGUSR1, once host A
+  // has closed, so A's late output, error and exit all land while B starts.
+  if (hostName === "host-b" && command.method === "start") {
+    process.once("SIGUSR1", result);
+    respond({
+      payload: { value: "host-b-command-pending" },
+      type: "fixture",
+    });
+    return;
+  }
+  result();
 });
 
+// Stopped, host A stays until the test sends SIGUSR2 once host B is starting,
+// then finishes its partial line, writes to stderr and exits.
 if (hostName === "host-a") {
-  process.on("SIGTERM", () => {
-    setTimeout(() => {
-      process.stdout.write('host-a-late-stdout"}}\n');
-      process.stderr.write("host-a-late-stderr\n");
-    }, 180);
-    setTimeout(() => {
-      process.exit(23);
-    }, 240);
+  process.on("SIGTERM", () => {});
+  process.on("SIGUSR2", () => {
+    process.stdout.write('host-a-late-stdout"}}\n', () => {
+      process.stderr.write("host-a-late-stderr\n", () => process.exit(23));
+    });
   });
 }
 

@@ -9,7 +9,7 @@ defmodule SalixAnalytics.SlackMessageSearch do
   def active?, do: SlackSemanticIndex.active?()
 
   def candidates(scope, connects, request) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = do_candidates(scope, connects, request)
 
     outcome =

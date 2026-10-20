@@ -1,10 +1,11 @@
 defmodule BillingCore.AccountsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   setup_all do
-    unless Process.whereis(BillingCore.Repo) do
-      {:ok, _pid} = BillingCore.Repo.start_link()
-    end
+    # Supervised by ExUnit, the Repo stops before the next module starts. A
+    # linked Repo stopped asynchronously after the module, while the next
+    # module could already have found it running.
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo), do: start_supervised!(BillingCore.Repo)
 
     Ecto.Migrator.run(BillingCore.Repo, :up, all: true)
     Ecto.Adapters.SQL.Sandbox.mode(BillingCore.Repo, :manual)

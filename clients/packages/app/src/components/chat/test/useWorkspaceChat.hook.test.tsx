@@ -1,88 +1,70 @@
-import { act, renderHook, waitFor } from "@comma/test-utils/render";
-import type { CommaApiClient } from "@comma/app";
+import { renderHook, waitFor } from "@comma/test-utils/render";
+import type { WorkspaceChatValue } from "@comma/core/contract";
 import type { ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import { describe, expect, it } from "vitest";
 import { testProductLease } from "../../../test/productInboxProjectionHarness";
 import { ChatProvider } from "../ChatProvider";
 import { useWorkspaceChat } from "../useWorkspaceChat";
 
-describe("useWorkspaceChat bootstrap polling", () => {
-  it("keeps raw provider failures out of the user-facing state", async () => {
-    const api = {
-      bootstrapWorkspace: vi.fn(async () => {
-        throw new Error("upstream secret: request-id=private-123");
-      }),
-    } as Partial<CommaApiClient> as CommaApiClient;
-
-    const { result } = renderHook(() => useWorkspaceChat({ api }), {
-      wrapper: ({ children }: { children: ReactNode }) => (
-        <ChatProvider api={api} productLease={testProductLease}>
-          {children}
-        </ChatProvider>
+/** The hook on a core whose `workspaceChat` is `value`. */
+function render(value: WorkspaceChatValue) {
+  installNativeBridgeMock();
+  const core = createScriptedCore({
+    values: (topic) => (topic.topic === "workspaceChat" ? value : undefined),
+  });
+  return renderHook(() => useWorkspaceChat({}), {
+    wrapper: ({ children }: { children: ReactNode }) =>
+      core.wrap(
+        <ChatProvider productLease={testProductLease}>{children}</ChatProvider>
       ),
-    });
+  });
+}
 
+describe("useWorkspaceChat", () => {
+  it("says a failed resolution failed in its own words, and shows a chat found before through it", async () => {
+    const failed = render({ status: "error", chat: null, kept: false });
     await waitFor(() =>
-      expect(result.current.state).toEqual({
+      expect(failed.result.current.state).toEqual({
         message: "Chat is temporarily unavailable",
         status: "error",
       })
     );
-    expect(JSON.stringify(result.current.state)).not.toContain("private-123");
+
+    const kept = render({
+      status: "error",
+      chat: { workspaceId: "wsp_1", groupId: "grp_1", conversationId: "cnv_1" },
+      kept: true,
+    });
+    await waitFor(() =>
+      expect(kept.result.current.state).toMatchObject({
+        status: "ready",
+        workspaceId: "wsp_1",
+        groupId: "grp_1",
+        conversation: { id: "cnv_1", group_id: "grp_1" },
+      })
+    );
   });
 
-  it("caps provider delay and stops after three automatic provisioning retries", async () => {
-    vi.useFakeTimers();
-    const bootstrapWorkspace = vi.fn(async () => ({
-      retry_after_seconds: 60,
-      status: "provisioning" as const,
-      workspace: {
-        group_id: "grp_reserved",
-        id: "wsp_reserved",
-        name: "Default workspace",
-        status: "provisioning" as const,
-      },
-    }));
-    const api = {
-      bootstrapWorkspace,
-      ensureGroupChat: vi.fn(),
-    } as Partial<CommaApiClient> as CommaApiClient;
-
-    const { result } = renderHook(() => useWorkspaceChat({ api }), {
-      wrapper: ({ children }: { children: ReactNode }) => (
-        <ChatProvider api={api} productLease={testProductLease}>
-          {children}
-        </ChatProvider>
-      ),
-    });
-
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(bootstrapWorkspace).toHaveBeenCalledTimes(1);
-    expect(result.current.state).toEqual({
-      groupId: "grp_reserved",
-      retryAfterSeconds: 60,
+  it("says the workspace is still being made while the core waits for it", async () => {
+    const { result } = render({
       status: "provisioning",
-      workspaceId: "wsp_reserved",
+      chat: null,
+      kept: false,
+      provisioning: {
+        workspaceId: "wsp_reserved",
+        groupId: "grp_reserved",
+        retryAfterSeconds: 3,
+      },
     });
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(9_999);
-    });
-    expect(bootstrapWorkspace).toHaveBeenCalledTimes(1);
-
-    for (let expectedCalls = 2; expectedCalls <= 4; expectedCalls += 1) {
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(expectedCalls === 2 ? 1 : 10_000);
-      });
-      expect(bootstrapWorkspace).toHaveBeenCalledTimes(expectedCalls);
-    }
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(30_000);
-    });
-    expect(bootstrapWorkspace).toHaveBeenCalledTimes(4);
-    expect(api.ensureGroupChat).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(result.current.state).toEqual({
+        groupId: "grp_reserved",
+        retryAfterSeconds: 3,
+        status: "provisioning",
+        workspaceId: "wsp_reserved",
+      })
+    );
   });
 });

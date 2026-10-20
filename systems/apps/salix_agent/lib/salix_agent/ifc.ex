@@ -214,7 +214,7 @@ defmodule SalixAgent.IFC do
   end
 
   @doc false
-  def facts_mod, do: Application.get_env(:salix_agent, :ifc_facts_mod)
+  def facts_mod, do: SystemsRuntime.get_env(:salix_agent, :ifc_facts_mod)
 
   @doc "Reads a mode out of a resolver reply or a group record."
   @spec mode(term()) :: :off | :audit | :enforce
@@ -338,11 +338,13 @@ defmodule SalixAgent.IFC do
     end
   end
 
-  # The delivery's own account of who authored it: the integrity class ingress
-  # sealed when it labelled the message, and the actor type it came in with
-  # when there is no sealed block. Anything else — an agent, a system post, a
-  # delivery that says nothing — is not a person.
-  defp human_authored?(trusted_origin) do
+  @doc """
+  The delivery's own account of who authored it: the integrity class ingress
+  sealed when it labelled the message, and the actor type it came in with
+  when there is no sealed block. Anything else — an agent, a system post, a
+  delivery that says nothing — is not a person.
+  """
+  def human_authored?(trusted_origin) when is_map(trusted_origin) do
     case value(trusted_origin, "ifc") do
       %{} = ifc when is_map_key(ifc, "integrity") ->
         text(value(ifc, "integrity")) == "command"
@@ -351,6 +353,8 @@ defmodule SalixAgent.IFC do
         text(value(trusted_origin, "source_actor_type")) in ["user", "provider_user"]
     end
   end
+
+  def human_authored?(_trusted_origin), do: false
 
   @doc false
   def value(map, key) when is_map(map) do

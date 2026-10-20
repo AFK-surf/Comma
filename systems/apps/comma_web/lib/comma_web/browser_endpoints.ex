@@ -1,4 +1,6 @@
 defmodule CommaWeb.BrowserEndpoints do
+  require SystemsRuntime.Proc
+
   @moduledoc "Authenticated Comma browser control and bounded SSE frames."
   import Plug.Conn
   alias SalixStore.{BrowserBindings, BrowserSettings}
@@ -86,7 +88,7 @@ defmodule CommaWeb.BrowserEndpoints do
   def stream(conn, workspace_id, agent, session_id) do
     tab = conn.query_params["tab_id"]
     viewer = conn.query_params["viewer_id"]
-    stream_id = Ecto.UUID.generate()
+    stream_id = SystemsRuntime.Proc.uuid()
 
     with {:ok, workspace, user, session} <- authorize(conn, workspace_id),
          true <- valid_viewer?(viewer),
@@ -104,7 +106,7 @@ defmodule CommaWeb.BrowserEndpoints do
         |> put_resp_content_type("text/event-stream")
         |> send_chunked(200)
 
-      deadline = System.monotonic_time(:millisecond) + 30_000
+      deadline = SystemsClock.monotonic_time(:millisecond) + 30_000
 
       try do
         stream_loop(
@@ -114,14 +116,14 @@ defmodule CommaWeb.BrowserEndpoints do
           pid,
           tab,
           deadline,
-          {System.monotonic_time(:millisecond), row},
+          {SystemsClock.monotonic_time(:millisecond), row},
           principal(user, session, viewer),
           nil
         )
       after
         # The driver shares observations, so another viewer may still use it.
         # Each stream is bounded. Subsequent stream admission restarts frames.
-        GenServer.cast(pid, {:stop_stream, tab, stream_id})
+        SystemsRuntime.Server.cast(pid, {:stop_stream, tab, stream_id})
       end
     else
       _ -> json(conn, 403, %{error: "browser_stream_unavailable"})
@@ -141,7 +143,7 @@ defmodule CommaWeb.BrowserEndpoints do
          principal,
          previous_frame
        ) do
-    now = System.monotonic_time(:millisecond)
+    now = SystemsClock.monotonic_time(:millisecond)
 
     with true <- now < deadline,
          {:ok, validation, row} <-
@@ -156,10 +158,10 @@ defmodule CommaWeb.BrowserEndpoints do
                  browser: BrowserBindings.public(row),
                  can_control:
                    row.controller == principal and not is_nil(row.controller_expires_at) and
-                     DateTime.compare(row.controller_expires_at, DateTime.utc_now()) == :gt
+                     DateTime.compare(row.controller_expires_at, SystemsClock.utc_now()) == :gt
                }) <> "\n\n"
            ) do
-      receive do
+      SystemsRuntime.Proc.receive do
       after
         100 -> :ok
       end

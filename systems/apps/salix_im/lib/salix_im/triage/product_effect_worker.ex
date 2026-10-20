@@ -21,7 +21,7 @@ defmodule SalixIM.Triage.ProductEffectWorker do
   lanes are modeled in `tla/salix/TriageCompoundCommunication.tla`.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -40,7 +40,7 @@ defmodule SalixIM.Triage.ProductEffectWorker do
   end
 
   def start_link(opts) when is_list(opts) do
-    GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
   @doc "Executes one bounded batch; exposed for release checks and focused tests."
@@ -183,7 +183,7 @@ defmodule SalixIM.Triage.ProductEffectWorker do
 
     settle_fun = Keyword.get(opts, :settle_fun, &TriageProductRuntime.settle_claim/2)
 
-    if is_atom(adapter) and Code.ensure_loaded?(adapter) and
+    if is_atom(adapter) and SystemsRuntime.Proc.ensure_loaded?(adapter) and
          function_exported?(adapter, :apply, 2) and
          is_binary(holder) and holder != "" and byte_size(holder) <= 200 and
          is_integer(interval_ms) and interval_ms in 100..@max_interval_ms and
@@ -191,7 +191,7 @@ defmodule SalixIM.Triage.ProductEffectWorker do
          is_integer(batch_size) and batch_size in 1..50 and
          is_integer(lease_ms) and lease_ms in 1_000..300_000 and
          is_integer(max_attempts) and max_attempts in 1..20 and
-         is_atom(delegation_effect) and Code.ensure_loaded?(delegation_effect) and
+         is_atom(delegation_effect) and SystemsRuntime.Proc.ensure_loaded?(delegation_effect) and
          function_exported?(delegation_effect, :apply, 2) and
          is_function(claim_fun, 2) and is_function(settle_fun, 2) do
       {:ok,
@@ -219,7 +219,7 @@ defmodule SalixIM.Triage.ProductEffectWorker do
 
   defp default_holder do
     node_name = node() |> Atom.to_string() |> String.slice(0, 120)
-    "#{node_name}:#{System.unique_integer([:positive])}"
+    "#{node_name}:#{SystemsRuntime.Proc.unique_integer([:positive])}"
   end
 
   defp adapter_name(SalixIM.Triage.AuditSink), do: :audit_sink
@@ -242,5 +242,7 @@ defmodule SalixIM.Triage.ProductEffectWorker do
   end
 
   defp increment(summary, key), do: Map.update!(summary, key, &(&1 + 1))
-  defp schedule_tick(delay_ms), do: Process.send_after(self(), :tick, delay_ms)
+
+  defp schedule_tick(delay_ms),
+    do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, delay_ms)
 end

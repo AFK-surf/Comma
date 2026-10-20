@@ -1,4 +1,5 @@
 import VerifiedKernelProofs.Session.WorkEventKeyAdmission
+import VerifiedKernelProofs.Proof.OwnerControlFrameTactic
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data
@@ -129,5 +130,20 @@ theorem finish_tool_batch_ordinary {state hwm wait checkpoint results returned :
          | (have same := pure_ok prior; cases same)
          | skip)
     | split at call
+
+theorem raw_ordinary_filter {events : List Term} (safe : RawOrdinaryBatch events) (f : Term → Bool) :
+    RawOrdinaryBatch (events.filter f) := fun e member => safe e (List.mem_filter.mp member).1
+
+syntax "solve_raw_batch" : tactic
+macro_rules
+  | `(tactic| solve_raw_batch) => `(tactic|
+    (try simp only [raw_ordinary_append, raw_ordinary_pair]
+     repeat' first
+       | assumption
+       | exact (status_event_ordinary _).raw
+       | exact (ack_event_ordinary _ _).raw
+       | exact ordinary_nil.raw
+       | apply And.intro
+       | split))
 
 end VerifiedKernel.Session.WorkConservation

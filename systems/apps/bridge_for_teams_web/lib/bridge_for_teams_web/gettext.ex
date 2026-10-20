@@ -5,8 +5,7 @@ defmodule BridgeForTeamsWeb.Gettext do
   Call sites bring the `gettext/1,2`, `dgettext/3`, `ngettext/3`, … macros into
   scope with `use Gettext, backend: BridgeForTeamsWeb.Gettext` — this is wired
   into the shared `html_helpers/0` (see `BridgeForTeamsWeb.Dashboard`) so every
-  LiveView, component, and HTML controller can translate without extra
-  boilerplate.
+  component and HTML controller can translate without extra boilerplate.
 
   Catalogs live under `priv/gettext/{en,zh_Hans}/LC_MESSAGES/`. The supported
   locales and default are configured in `config/config.exs` and mirrored in

@@ -1,18 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCall, useTopic, type SignalCode } from "@comma/core-client";
 import type { CommaLocale } from "@comma/i18n";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import { Button } from "@comma/ui/components/Button";
+import { SignalProviderLogo } from "@comma/ui/components/provider-brand-logos";
 import {
-  Button,
-  SignalProviderLogo,
   type SettingsControl,
   type SettingsPanelItem,
-} from "@comma/ui";
-import {
-  CommaApiError,
-  type CommaApiClient,
-  type CommaSignalIntegration,
-  type CommaSignalNumber,
-} from "../../api";
+} from "@comma/ui/components/settings-panel";
 import {
   SignalCodePanel,
   SignalDialog,
@@ -35,18 +30,11 @@ function formatTime(ms: number, locale: CommaLocale): string {
 
 /** A refused number, in words the person can act on. */
 function numberErrorMessage(error: unknown, m: Messages): string {
-  const code = error instanceof CommaApiError ? error.body?.error : undefined;
+  const code = (error as { code?: unknown } | null)?.code;
   if (code === "signal_account_not_found") return m.settings_signal_number_not_found();
   if (code === "signal_account_scope") return m.settings_signal_number_scope();
   if (code === "signal_account_inactive") return m.settings_signal_number_inactive();
   return m.settings_signal_save_failed();
-}
-
-/** One-time connection code: its message lives only in this hook's state. */
-interface CreatedCode {
-  claimId: string;
-  command: string;
-  number: string;
 }
 
 function Row({
@@ -85,152 +73,73 @@ function Row({
  * dismisses it or leaves the category.
  */
 export function useSignalIntegration(
-  api: CommaApiClient,
   workspaceId: string | undefined,
   active: boolean
 ): { item: SettingsPanelItem; overlay: ReactNode } {
   const m = useCommaMessages();
   const locale = useCommaLocale();
-  const [integration, setIntegration] = useState<CommaSignalIntegration>();
-  const [number, setNumber] = useState<CommaSignalNumber>();
-  const [loadError, setLoadError] = useState(false);
+  const call = useCall();
+  const { value: shown } = useTopic(
+    active && workspaceId ? { topic: "signal", workspace: workspaceId } : null
+  );
+  const integration = shown?.integration ?? undefined;
+  const number = shown?.number ?? undefined;
+  const loadError = shown?.error ?? false;
+  const busy = shown?.busy ?? false;
   const [saveError, setSaveError] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [created, setCreated] = useState<CreatedCode>();
+  const [created, setCreated] = useState<SignalCode>();
   const [dialog, setDialog] = useState<SignalDialogState>();
   const [dialogError, setDialogError] = useState<string>();
-  const action = useRef<AbortController | undefined>(undefined);
-
-  const load = useCallback(
-    async (signal: AbortSignal) => {
-      if (!workspaceId) return;
-      try {
-        const [status, own] = await Promise.all([
-          api.getSignalIntegration(workspaceId, { signal }),
-          api.getSignalNumber(workspaceId, { signal }),
-        ]);
-        if (signal.aborted) return;
-        setIntegration(status);
-        setNumber(own);
-        setLoadError(false);
-      } catch {
-        if (!signal.aborted) setLoadError(true);
-      }
-    },
-    [api, workspaceId]
-  );
 
   useEffect(() => {
-    setIntegration(undefined);
-    setNumber(undefined);
-    setLoadError(false);
     setSaveError(false);
-    setBusy(false);
     setCreated(undefined);
     setDialog(undefined);
     setDialogError(undefined);
-    const controller = new AbortController();
-    if (active && workspaceId) void load(controller.signal);
-    return () => {
-      controller.abort();
-      action.current?.abort();
-    };
-  }, [active, workspaceId, load]);
-
-  // While a code is unused, check every three seconds whether its chat has
-  // connected. One open Settings view makes at most one request at a time,
-  // and the server drops a code after ten minutes, which ends the polling.
-  const waiting =
-    active &&
-    Boolean(workspaceId) &&
-    !loadError &&
-    (integration?.pending_claims.length ?? 0) > 0;
-  useEffect(() => {
-    if (!waiting || !workspaceId) return;
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      try {
-        const next = await api.getSignalIntegration(workspaceId, {
-          signal: controller.signal,
-        });
-        if (controller.signal.aborted) return;
-        setIntegration(next);
-        if (next.pending_claims.length > 0) timer = setTimeout(() => void poll(), 3000);
-      } catch {
-        if (!controller.signal.aborted) setLoadError(true);
-      }
-    };
-    timer = setTimeout(() => void poll(), 3000);
-    return () => {
-      controller.abort();
-      clearTimeout(timer);
-    };
-  }, [api, workspaceId, waiting]);
+  }, [active, workspaceId]);
 
   const openDialog = useCallback((next: SignalDialogState | undefined) => {
     setDialogError(undefined);
     setDialog(next);
   }, []);
 
-  const write = (
-    run: (workspace: string, signal: AbortSignal) => Promise<void>,
-    inDialog: boolean
-  ) => {
+  const write = (run: (workspace: string) => Promise<void>, inDialog: boolean) => {
     if (busy || !workspaceId) return;
-    const controller = new AbortController();
-    action.current?.abort();
-    action.current = controller;
-    setBusy(true);
+    const workspace = workspaceId;
     setSaveError(false);
     setDialogError(undefined);
     void (async () => {
       try {
-        await run(workspaceId, controller.signal);
-        if (inDialog && !controller.signal.aborted) openDialog(undefined);
+        await run(workspace);
+        if (inDialog) openDialog(undefined);
       } catch (error) {
-        if (controller.signal.aborted) return;
         if (inDialog) setDialogError(numberErrorMessage(error, m));
         else setSaveError(true);
-      } finally {
-        if (!controller.signal.aborted) setBusy(false);
       }
     })();
   };
 
   const refresh = () => {
-    setLoadError(false);
-    write((_workspace, signal) => load(signal), false);
+    if (busy || !workspaceId) return;
+    setSaveError(false);
+    void call("signal.refresh", { workspace: workspaceId }).catch(() => undefined);
   };
   const newCode = () =>
-    write(async (workspace, signal) => {
-      const next = await api.startSignalClaim(workspace, { signal });
-      if (signal.aborted) return;
-      setIntegration(next);
-      if (next.claim)
-        setCreated({
-          claimId: next.claim.claim_id,
-          command: next.claim.command,
-          number: next.claim.number ?? "",
-        });
+    write(async (workspace) => {
+      const code = await call("signal.newCode", { workspace });
+      if (code) setCreated(code);
     }, false);
-  const cancelCode = (claimId: string) =>
-    write(async (workspace, signal) => {
-      const next = await api.cancelSignalClaim(workspace, claimId, { signal });
-      if (!signal.aborted) setIntegration(next);
+  const cancelCode = (claim: string) =>
+    write(async (workspace) => {
+      await call("signal.cancelCode", { workspace, claim });
     }, false);
   const saveNumber = (value: string, inDialog: boolean) =>
-    write(async (workspace, signal) => {
-      const own = await api.setSignalNumber(workspace, value, { signal });
-      const status = await api.getSignalIntegration(workspace, { signal });
-      if (signal.aborted) return;
-      setNumber(own);
-      setIntegration(status);
+    write(async (workspace) => {
+      await call("signal.setNumber", { workspace, number: value });
     }, inDialog);
-  const disconnect = (bindingId: string) =>
-    write(async (workspace, signal) => {
-      const next = await api.removeSignalBinding(workspace, bindingId, { signal });
-      if (!signal.aborted) setIntegration(next);
+  const disconnect = (binding: string) =>
+    write(async (workspace) => {
+      await call("signal.disconnect", { workspace, binding });
     }, true);
 
   const loaded = Boolean(integration && number);
@@ -244,7 +153,8 @@ export function useSignalIntegration(
   const own = number?.override?.e164;
   const platform = number?.platform?.e164;
 
-  let description = m.settings_signal_description();
+  // The subtitle reports only trouble or progress.
+  let description: string | undefined;
   if (loadError) description = m.settings_signal_error();
   else if (saveError) description = m.settings_signal_save_failed();
   else if (!workspaceId || !loaded) description = m.settings_telegram_loading();
@@ -376,7 +286,7 @@ export function useSignalIntegration(
       id: "signal.connection",
       title: m.settings_signal(),
       icon: <SignalProviderLogo />,
-      description,
+      ...(description ? { description } : {}),
       descriptionLoading: !loadError && Boolean(workspaceId) && !loaded,
       control,
       keywords: [

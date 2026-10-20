@@ -1,6 +1,6 @@
 defmodule SystemsObservability.HistogramReporter do
   @moduledoc false
-  use GenServer
+  use SystemsRuntime.Server
 
   alias Telemetry.Metrics.Distribution
   alias TelemetryMetricsPrometheus.Core.Exporter
@@ -10,16 +10,16 @@ defmodule SystemsObservability.HistogramReporter do
   @max_cas_attempts 32
 
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: Keyword.fetch!(opts, :name))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: Keyword.fetch!(opts, :name))
   end
 
   def scrape(reporter) do
     %{metrics: metrics, series_table: series_table, shard_table: shard_table, shards: shards} =
-      GenServer.call(reporter, :scrape_config)
+      SystemsRuntime.Server.call(reporter, :scrape_config)
 
     time_series =
       series_table
-      |> :ets.tab2list()
+      |> SystemsRuntime.ETS.tab2list()
       |> Enum.reduce(%{}, fn {{metric_id, labels}, series_id}, acc ->
         metric = Map.fetch!(metrics, metric_id)
         aggregation = aggregate(metric, series_id, shard_table, shards)
@@ -38,7 +38,7 @@ defmodule SystemsObservability.HistogramReporter do
     |> then(&Exporter.export(time_series, &1))
   end
 
-  def stats(reporter), do: GenServer.call(reporter, :stats)
+  def stats(reporter), do: SystemsRuntime.Server.call(reporter, :stats)
 
   @impl true
   def init(opts) do
@@ -58,11 +58,13 @@ defmodule SystemsObservability.HistogramReporter do
       raise ArgumentError, "HistogramReporter accepts only distribution metrics"
     end
 
-    series_table = :ets.new(:systems_observability_histogram_series, table_options())
-    shard_table = :ets.new(:systems_observability_histogram_shards, table_options())
-    stats_table = :ets.new(:systems_observability_histogram_stats, table_options())
+    series_table =
+      SystemsRuntime.ETS.new(:systems_observability_histogram_series, table_options())
 
-    :ets.insert(stats_table, [
+    shard_table = SystemsRuntime.ETS.new(:systems_observability_histogram_shards, table_options())
+    stats_table = SystemsRuntime.ETS.new(:systems_observability_histogram_stats, table_options())
+
+    SystemsRuntime.ETS.insert(stats_table, [
       {:reserved_series, 0},
       {:dropped_series, 0},
       {:dropped_updates, 0},
@@ -93,7 +95,7 @@ defmodule SystemsObservability.HistogramReporter do
         }
 
         :ok =
-          :telemetry.attach(
+          SystemsRuntime.Telemetry.attach(
             handler_id,
             metric.event_name,
             &__MODULE__.handle_event/4,
@@ -125,9 +127,9 @@ defmodule SystemsObservability.HistogramReporter do
       dropped_series: counter(state.stats_table, :dropped_series),
       dropped_updates: counter(state.stats_table, :dropped_updates),
       invalid_events: counter(state.stats_table, :invalid_events),
-      series: :ets.info(state.series_table, :size),
+      series: SystemsRuntime.ETS.info(state.series_table, :size),
       series_limit: state.series_limit,
-      shard_entries: :ets.info(state.shard_table, :size),
+      shard_entries: SystemsRuntime.ETS.info(state.shard_table, :size),
       shards: state.shards
     }
 
@@ -136,14 +138,14 @@ defmodule SystemsObservability.HistogramReporter do
 
   @impl true
   def terminate(_reason, state) do
-    Enum.each(state.handlers, &:telemetry.detach/1)
+    Enum.each(state.handlers, &SystemsRuntime.Telemetry.detach/1)
     :ok
   end
 
   @doc false
   def handle_event(_event, measurements, metadata, config) do
-    if :ets.info(config.series_table) == :undefined do
-      :telemetry.detach(config.handler_id)
+    if SystemsRuntime.ETS.info(config.series_table) == :undefined do
+      SystemsRuntime.Telemetry.detach(config.handler_id)
     else
       record(measurements, metadata, config)
     end
@@ -212,7 +214,7 @@ defmodule SystemsObservability.HistogramReporter do
   defp series(config, labels) do
     key = {config.metric_id, labels}
 
-    case :ets.lookup(config.series_table, key) do
+    case SystemsRuntime.ETS.lookup(config.series_table, key) do
       [{^key, series_id}] ->
         {:ok, series_id}
 
@@ -222,13 +224,13 @@ defmodule SystemsObservability.HistogramReporter do
   end
 
   defp create_series(config, key) do
-    reserved = :ets.update_counter(config.stats_table, :reserved_series, {2, 1})
+    reserved = SystemsRuntime.ETS.update_counter(config.stats_table, :reserved_series, {2, 1})
 
     cond do
       reserved > config.max_series ->
-        :ets.update_counter(config.stats_table, :reserved_series, {2, -1})
+        SystemsRuntime.ETS.update_counter(config.stats_table, :reserved_series, {2, -1})
 
-        case :ets.lookup(config.series_table, key) do
+        case SystemsRuntime.ETS.lookup(config.series_table, key) do
           [{^key, series_id}] -> {:ok, series_id}
           [] -> drop_series(config)
         end
@@ -236,13 +238,13 @@ defmodule SystemsObservability.HistogramReporter do
       true ->
         series_id = :erlang.unique_integer([:positive, :monotonic])
 
-        if :ets.insert_new(config.series_table, {key, series_id}) do
+        if SystemsRuntime.ETS.insert_new(config.series_table, {key, series_id}) do
           initialize_shards(config, series_id)
           {:ok, series_id}
         else
-          :ets.update_counter(config.stats_table, :reserved_series, {2, -1})
+          SystemsRuntime.ETS.update_counter(config.stats_table, :reserved_series, {2, -1})
 
-          case :ets.lookup(config.series_table, key) do
+          case SystemsRuntime.ETS.lookup(config.series_table, key) do
             [{^key, existing_id}] -> {:ok, existing_id}
             [] -> {:error, :series_race}
           end
@@ -255,7 +257,11 @@ defmodule SystemsObservability.HistogramReporter do
 
     Enum.each(0..(config.shards - 1), fn shard ->
       row_id = row_id(series_id, shard, config.shards)
-      :ets.insert_new(config.shard_table, {row_id, series_id, shard, 0, zeros, 0, 0})
+
+      SystemsRuntime.ETS.insert_new(
+        config.shard_table,
+        {row_id, series_id, shard, 0, zeros, 0, 0}
+      )
     end)
   end
 
@@ -266,7 +272,7 @@ defmodule SystemsObservability.HistogramReporter do
   defp update_shard(config, series_id, shard, bucket, measurement, attempts) do
     row_id = row_id(series_id, shard, config.shards)
 
-    case :ets.lookup(config.shard_table, row_id) do
+    case SystemsRuntime.ETS.lookup(config.shard_table, row_id) do
       [{^row_id, ^series_id, ^shard, version, bins, count, sum}] ->
         updated_bins = put_elem(bins, bucket, elem(bins, bucket) + 1)
 
@@ -277,7 +283,7 @@ defmodule SystemsObservability.HistogramReporter do
           {{row_id, series_id, shard, version, :"$1", :"$2", :"$3"}, [], [{:const, replacement}]}
         ]
 
-        case :ets.select_replace(config.shard_table, match_spec) do
+        case SystemsRuntime.ETS.select_replace(config.shard_table, match_spec) do
           1 -> :ok
           0 -> update_shard(config, series_id, shard, bucket, measurement, attempts - 1)
         end
@@ -286,7 +292,7 @@ defmodule SystemsObservability.HistogramReporter do
         bins = List.duplicate(0, length(config.buckets) + 1) |> List.to_tuple()
         bins = put_elem(bins, bucket, 1)
 
-        if :ets.insert_new(
+        if SystemsRuntime.ETS.insert_new(
              config.shard_table,
              {row_id, series_id, shard, 1, bins, 1, measurement}
            ) do
@@ -305,7 +311,7 @@ defmodule SystemsObservability.HistogramReporter do
       Enum.reduce(0..(shards - 1), {empty_bins, 0, 0}, fn shard, {bins, count, sum} ->
         row_id = row_id(series_id, shard, shards)
 
-        case :ets.lookup(shard_table, row_id) do
+        case SystemsRuntime.ETS.lookup(shard_table, row_id) do
           [{^row_id, ^series_id, ^shard, _version, shard_bins, shard_count, shard_sum}] ->
             merged_bins =
               Enum.zip_with(bins, Tuple.to_list(shard_bins), fn left, right -> left + right end)
@@ -344,11 +350,11 @@ defmodule SystemsObservability.HistogramReporter do
   end
 
   defp increment(table, key) do
-    :ets.update_counter(table, key, {2, 1}, {key, 0})
+    SystemsRuntime.ETS.update_counter(table, key, {2, 1}, {key, 0})
     :ok
   end
 
-  defp counter(table, key), do: :ets.lookup_element(table, key, 2)
+  defp counter(table, key), do: SystemsRuntime.ETS.lookup_element(table, key, 2)
 
   defp row_id(series_id, shard, shards), do: series_id * shards + shard
 

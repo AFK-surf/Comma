@@ -6,18 +6,18 @@ defmodule SalixWeb.InboundApiToolTest do
   The tools run through the real dispatcher against the real control plane, so
   what these tests assert is what an external service would actually present.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Control.{GroupApiKeys, Groups, Tenants}
 
   setup do
     SalixAgent.TestSupport.stop_all_agents()
-    prev_store = Application.get_env(:salix_store, :s3_backend)
-    prev_binding = Application.get_env(:salix_agent, :inbound_api_key_store_mod)
-    prev_base = Application.get_env(:salix_web, :public_base_url)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev_store = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    prev_binding = SystemsRuntime.get_env(:salix_agent, :inbound_api_key_store_mod)
+    prev_base = SystemsRuntime.get_env(:salix_web, :public_base_url)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    if Process.whereis(SalixStore.S3.Fake) do
+    if SystemsRuntime.Proc.whereis(SalixStore.S3.Fake) do
       SalixStore.S3.Fake.reset()
     else
       start_supervised!(SalixStore.S3.Fake)
@@ -25,17 +25,17 @@ defmodule SalixWeb.InboundApiToolTest do
 
     SalixStore.Repo.query!("DELETE FROM agent_group_api_keys")
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_agent,
       :inbound_api_key_store_mod,
       Salix.Bindings.AgentInboundApiKeys
     )
 
-    Application.put_env(:salix_web, :public_base_url, "https://salix.example.test")
+    SystemsRuntime.put_env(:salix_web, :public_base_url, "https://salix.example.test")
 
     on_exit(fn ->
       SalixAgent.TestSupport.stop_all_agents()
-      Application.put_env(:salix_store, :s3_backend, prev_store)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, prev_store)
       restore(:salix_agent, :inbound_api_key_store_mod, prev_binding)
       restore(:salix_web, :public_base_url, prev_base)
     end)
@@ -171,7 +171,7 @@ defmodule SalixWeb.InboundApiToolTest do
   end
 
   test "the tools fail closed when no control-plane binding is attached", ctx do
-    Application.put_env(:salix_agent, :inbound_api_key_store_mod, nil)
+    SystemsRuntime.put_env(:salix_agent, :inbound_api_key_store_mod, nil)
 
     result = invoke(ctx, "inbound_api.create", %{"name" => "Nowhere"})
     assert result.error
@@ -180,8 +180,8 @@ defmodule SalixWeb.InboundApiToolTest do
 
   defp restore(app, key, value) do
     if is_nil(value),
-      do: Application.delete_env(app, key),
-      else: Application.put_env(app, key, value)
+      do: SystemsRuntime.delete_env(app, key),
+      else: SystemsRuntime.put_env(app, key, value)
   end
 
   defp invoke(ctx, name, args) do

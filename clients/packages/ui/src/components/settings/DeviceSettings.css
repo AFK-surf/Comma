@@ -1,7 +1,18 @@
+/*
+ * Devices follows the settings panel geometry: a 640px column with a
+ * --spacing-xl gutter, cards on the gutter, and every line of text one more
+ * --spacing-xl in. The page title, the list headings and the content of each
+ * card therefore share one left edge, and every trailing control one right edge.
+ *
+ * Inside a card, a hairline has --spacing-xl of space on both sides and a row
+ * has --spacing-lg above and below its content. A section heading sits
+ * --spacing-lg above its first row, closer than the hairline above it.
+ */
 .comma-devices {
   --device-ink: var(--color-text-primary);
   --device-muted: var(--color-text-tertiary);
   --device-line: var(--color-border-primary);
+  --device-hairline: var(--border-width-0-5) solid var(--device-line);
   --device-wash: var(--color-bg-secondary);
   --device-green: var(--color-text-success-primary);
   display: flex;
@@ -12,218 +23,334 @@
   color: var(--device-ink);
   font-family: var(--font-sans);
   font-size: var(--text-sm);
-  line-height: 1.4;
+  line-height: var(--text-sm--line-height);
   container-type: inline-size;
 }
-.comma-devices__content {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  width: 100%;
-}
-.comma-devices__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
+.comma-devices__column {
   width: 100%;
   max-width: 640px;
   margin: 0 auto;
-  padding: 24px 32px;
-  flex-shrink: 0;
+  padding: var(--spacing-3xl) var(--spacing-xl);
+}
+.comma-devices__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--spacing-xs) var(--spacing-xl);
+  padding-inline: var(--spacing-xl);
 }
 .comma-devices__header h1 {
   margin: 0;
   font-size: var(--text-xl);
-  line-height: 1.3;
+  line-height: var(--text-xl--line-height);
   font-weight: 500;
   letter-spacing: var(--text-xl--letter-spacing);
+  overflow-wrap: anywhere;
 }
 .comma-devices__header p {
-  margin: 9px 0 0;
+  grid-column: 1 / -1;
+  margin: 0;
   color: var(--device-muted);
   font-size: var(--text-sm);
-  line-height: 1.6;
+  line-height: var(--text-sm--line-height);
 }
-.comma-devices__connect {
-  flex-shrink: 0;
+.comma-devices__list {
+  margin-top: var(--spacing-3xl);
 }
-.comma-devices__scroll-content {
-  width: 100%;
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 0 32px 24px;
-}
-.comma-devices__summary {
-  margin-bottom: 18px;
+.comma-devices__summary,
+.comma-devices__notice,
+.comma-devices__explanation {
+  display: block;
+  margin: 0 0 var(--spacing-md);
+  padding-inline: var(--spacing-xl);
   color: var(--device-muted);
   font-size: var(--text-xs);
-  line-height: 1.6;
+  line-height: var(--text-xs--line-height);
+}
+.comma-devices__notice[role="alert"] {
+  color: var(--color-text-error-primary);
+}
+.comma-devices__explanation {
+  margin: var(--spacing-3xl) 0 0;
+}
+.comma-devices__pagination {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--spacing-xl);
+  padding-inline: var(--spacing-xl);
 }
 .comma-devices__grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
-  gap: 18px;
+  gap: var(--spacing-xl);
 }
+
 .comma-device {
   min-width: 0;
-  border: 0.5px solid var(--device-line);
+  border: var(--device-hairline);
   border-radius: var(--radius-2xl);
   background: var(--color-main-panel-item-bg);
   overflow: hidden;
 }
 .comma-device__header {
-  padding: 23px 22px 19px;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-xl);
 }
 .comma-device__icon {
-  width: 46px;
-  height: 46px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 11px;
+  width: var(--spacing-5xl);
+  height: var(--spacing-5xl);
+  flex-shrink: 0;
+  border-radius: var(--radius-lg);
   background: var(--device-wash);
   color: var(--color-fg-secondary);
-  flex-shrink: 0;
 }
 .comma-device__identity {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
   min-width: 0;
 }
 .comma-device__name {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--spacing-xs) var(--spacing-md);
 }
 .comma-device__name h3 {
   margin: 0;
-  font-size: var(--text-md);
-  line-height: 1.4;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
   font-weight: 500;
   letter-spacing: normal;
   overflow-wrap: anywhere;
 }
 .comma-device__identity p {
-  margin: 5px 0 0;
+  margin: 0;
+  color: var(--device-muted);
   font-size: var(--text-xs);
-  line-height: 1.5;
+  line-height: var(--text-xs--line-height);
+}
+.comma-device__identity .comma-device__tasks[data-ready="true"] {
+  color: var(--device-green);
+}
+.comma-device__local {
+  padding-inline: var(--spacing-sm);
+  border-radius: var(--radius-xs);
+  background: var(--device-wash);
+  color: var(--device-muted);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+.comma-device__trailing {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: var(--spacing-xs);
+}
+/* The icon button's own padding hangs past the edge, so the icon sits on it. */
+.comma-device__menu {
+  display: flex;
+  margin-right: calc(-1 * var(--spacing-sm));
+}
+.comma-device__connection {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  color: var(--device-green);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+.comma-device__dot {
+  width: var(--spacing-sm);
+  height: var(--spacing-sm);
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+/* On a narrow page each card keeps the name its width and reports the
+   connection under it. */
+@container (max-width: 480px) {
+  .comma-device__header {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    row-gap: var(--spacing-xxs);
+  }
+  .comma-device__icon {
+    grid-row: 1 / span 2;
+  }
+  .comma-device__trailing {
+    display: contents;
+  }
+  .comma-device__connection {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .comma-device__menu {
+    grid-column: 3;
+    grid-row: 1;
+    /* Centred on the name's line. */
+    margin-top: calc(-1 * var(--spacing-xs));
+  }
+}
+.comma-device[data-connected="false"] .comma-device__icon,
+.comma-device[data-connected="false"] .comma-device__connection,
+.comma-device[data-connected="false"] .comma-device__name {
   color: var(--device-muted);
 }
 .comma-device__facts {
   list-style: none;
-  margin: 0 0 24px;
+  margin: 0 0 var(--spacing-3xl);
   padding: 0;
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
-  line-height: 1.6;
+  line-height: var(--text-sm--line-height);
+}
+/* In the access dialog, outside the page: theme tokens, not the page's. */
+.comma-device__access-title {
+  margin: 0 0 var(--spacing-md);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--text-sm--line-height);
 }
 .comma-device__facts li {
-  padding: 8px 0;
+  padding-block: var(--spacing-md);
+  border-bottom: var(--device-hairline);
   overflow-wrap: anywhere;
-  border-bottom: 0.5px solid var(--color-border-primary);
 }
-.comma-device__local {
-  background: var(--device-wash);
-  padding: 2px 5px;
-  border-radius: 4px;
-  font-size: var(--text-xs);
-  color: var(--device-muted);
-}
-.comma-device__menu {
-  margin-left: auto;
-  align-self: flex-start;
-  color: var(--device-muted);
-}
-.comma-device__menu button {
-  min-width: 24px;
-  padding: 0;
-  color: var(--device-muted);
-}
-.comma-device__connection {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: 6px;
-  color: var(--device-green);
-  font-size: var(--text-xs);
-  line-height: 1.5;
-}
-.comma-device__dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: currentColor;
-}
-.comma-device__agents {
-  margin: 0 22px;
-  border-top: 1px solid var(--device-line);
-  padding-top: 17px;
+
+/* A card section: a hairline, a heading and its rows. */
+.comma-device__section {
+  margin-inline: var(--spacing-xl);
+  padding-block: var(--spacing-xs);
+  border-top: var(--device-hairline);
 }
 .comma-device__section-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 5px;
+  gap: var(--spacing-md);
+  min-height: var(--spacing-2xl);
+  padding-top: var(--spacing-lg);
+  box-sizing: content-box;
   color: var(--device-muted);
   font-size: var(--text-xs);
-  line-height: 1.5;
-  letter-spacing: normal;
+  line-height: var(--text-xs--line-height);
 }
 .comma-device__section-title h4 {
   margin: 0;
   font: inherit;
 }
+.comma-device__section-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+}
+/* A button overhangs the heading's line, so the heading keeps one height. */
+.comma-device__section-meta > button {
+  margin-block: calc(-1 * var(--spacing-xs));
+}
+.comma-device__note {
+  margin: 0;
+  padding-top: var(--spacing-xs);
+  color: var(--device-muted);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  overflow-wrap: anywhere;
+}
+.comma-device__note:last-child {
+  padding-bottom: var(--spacing-lg);
+}
+.comma-device__note[role="alert"] {
+  color: var(--color-text-error-primary);
+}
+
+.comma-device__agent-group + .comma-device__agent-group {
+  border-top: var(--device-hairline);
+}
+.comma-device__agent-group summary,
 .comma-device__agent {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--device-line);
+  gap: var(--spacing-lg);
+  padding-block: var(--spacing-lg);
 }
-.comma-device__agent:last-child {
-  border-bottom: 0;
+.comma-device__agent-group summary {
+  cursor: var(--cursor-interaction, default);
+  list-style: none;
+}
+.comma-device__agent-group summary::-webkit-details-marker {
+  display: none;
+}
+.comma-device__agent-group summary:focus-visible {
+  outline: 2px solid var(--color-border-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+.comma-device__agent-group[open] .comma-device__expand {
+  transform: rotate(90deg);
+}
+.comma-device__expand {
+  flex-shrink: 0;
+  color: var(--device-muted);
+}
+/* One provider's runtimes, indented under its row. */
+.comma-device__agent-group > .comma-device__agent {
+  padding-top: 0;
+  padding-left: var(--spacing-xl);
+}
+.comma-device__agent-group > .comma-device__agent + .comma-device__agent {
+  padding-top: var(--spacing-lg);
+  border-top: var(--device-hairline);
 }
 .comma-device__agent-mark {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: var(--spacing-4xl);
+  height: var(--spacing-4xl);
   flex-shrink: 0;
-  border: 0.5px solid var(--device-line);
-  border-radius: 8px;
+  border: var(--device-hairline);
+  border-radius: var(--radius-md);
   background: var(--device-wash);
   color: var(--color-text-secondary);
 }
 .comma-device__agent-info {
-  font-size: var(--text-xs);
-  line-height: 1.5;
-  min-width: 0;
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  min-width: 0;
+}
+.comma-device__agent-group summary .comma-device__agent-name {
+  flex: 1;
+  min-width: 0;
 }
 .comma-device__agent-name {
-  display: block;
-  font-size: var(--text-xs);
-  line-height: 1.5;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  font-weight: 500;
+  overflow-wrap: anywhere;
 }
 .comma-device__agent-info p {
-  margin: 4px 0 0;
-  font-size: var(--text-xs);
-  line-height: 1.6;
+  margin: 0;
   color: var(--device-muted);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
   overflow-wrap: anywhere;
 }
 .comma-device__agent-status {
   flex-shrink: 0;
   max-width: 45%;
-  font-size: var(--text-xs);
-  line-height: 1.5;
   color: var(--device-muted);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
   text-align: right;
 }
 .comma-device__agent-status[data-ready="true"] {
@@ -232,96 +359,19 @@
 .comma-device__agent-status[data-attention="true"] {
   color: var(--color-text-warning-primary);
 }
-.comma-device__footer {
-  margin-top: 12px;
-  padding: 12px 22px;
-  border-top: 1px solid var(--device-line);
-  background: var(--device-wash);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: var(--text-xs);
-  line-height: 1.5;
-  color: var(--device-muted);
-}
-.comma-device__details {
-  padding: 0;
-  min-height: 20px;
-  gap: 5px;
-  color: var(--device-muted);
-  font-size: var(--text-xs);
-  font-weight: 400;
-}
-.comma-device[data-connected="false"] .comma-device__icon,
-.comma-device[data-connected="false"] .comma-device__connection,
-.comma-device[data-connected="false"] .comma-device__name {
-  color: var(--device-muted);
-}
-.comma-device__empty {
-  padding: 13px 0;
-  margin: 0;
-  color: var(--device-muted);
-  font-size: var(--text-xs);
-}
-.comma-devices__explanation {
-  margin: 23px 2px 0;
-  font-size: var(--text-xs);
-  line-height: 1.8;
-  color: var(--device-muted);
-}
-.comma-devices__notice {
-  display: block;
-  margin: 0 0 18px;
-  font-size: var(--text-xs);
-}
-.comma-devices__pagination {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 20px;
-}
-@container (max-width: 730px) {
-  .comma-devices__header {
-    padding: 28px 22px;
-  }
-  .comma-devices__scroll-content {
-    padding: 0 22px 28px;
-  }
-  .comma-devices__header {
-    flex-wrap: wrap;
-  }
-}
 
-.comma-device__agent-group {
-  border-bottom: 0.5px solid var(--device-line);
-}
-.comma-device__agent-group:last-child {
-  border-bottom: 0;
-}
-.comma-device__agent-group summary {
+.comma-device__footer {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 0;
-  cursor: pointer;
-}
-.comma-device__expand {
+  justify-content: space-between;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-lg) var(--spacing-xl);
+  border-top: var(--device-hairline);
+  background: var(--device-wash);
   color: var(--device-muted);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
 }
-.comma-device__agent-group[open] .comma-device__expand {
-  transform: rotate(90deg);
-}
-.comma-device__agent-group summary .comma-device__agent-name {
-  flex: 1;
-}
-.comma-device__agent-group summary:focus-visible {
-  outline: 2px solid var(--color-border-primary);
-  outline-offset: 2px;
-}
-.comma-device__agent-group > .comma-device__agent {
-  padding-left: 12px;
-}
-.comma-device__agent-name,
-.comma-device__agent-status {
-  font-size: var(--text-sm);
+h2.comma-devices__summary {
+  font-weight: 500;
 }

@@ -60,7 +60,7 @@ defmodule CommaWeb.MemberSourceTriggers do
   how many reads it scheduled.
   """
   def signal(group_id, trigger_id, account_id) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     trigger_id
     |> MemberSourceItems.triggered(account_id, group_id)
@@ -74,8 +74,8 @@ defmodule CommaWeb.MemberSourceTriggers do
     end)
   end
 
-  defp client, do: Application.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
+  defp client, do: SystemsRuntime.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
 
   defp settings,
-    do: Application.get_env(:salix_web, :composio_settings_mod, Salix.Control.ComposioSettings)
+    do: SystemsRuntime.get_env(:salix_web, :composio_settings_mod, Salix.Control.ComposioSettings)
 end

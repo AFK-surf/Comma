@@ -14,7 +14,7 @@ defmodule SalixStore.SlackSearchWindows do
   def put(scope, request, candidates, expires_at)
       when is_list(candidates) and length(candidates) <= 200 do
     safe(fn ->
-      id = Ecto.UUID.generate()
+      id = SystemsRuntime.Proc.uuid()
 
       Repo.query!(
         """

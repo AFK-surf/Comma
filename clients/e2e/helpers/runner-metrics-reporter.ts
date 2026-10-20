@@ -9,7 +9,12 @@ import type {
 
 export default class RunnerMetricsReporter implements Reporter {
   private timer: ReturnType<typeof setInterval> | undefined;
-  private samples: Array<{ seconds: number; load: number[]; freeMiB: number }> = [];
+  private samples: Array<{
+    seconds: number;
+    load: number[];
+    freeMiB: number;
+    busiest?: string[] | undefined;
+  }> = [];
   private started = 0;
   private operations = new Map<string, { calls: number; totalMs: number }>();
 
@@ -71,7 +76,27 @@ export default class RunnerMetricsReporter implements Reporter {
       seconds: Math.round((performance.now() - this.started) / 1000),
       load: loadavg().map((value) => Math.round(value * 100) / 100),
       freeMiB: Math.round(freemem() / 1024 ** 2),
+      busiest: this.busiestProcesses(),
     });
+  }
+
+  /**
+   * The five processes using the most CPU, as "percent name". A job that
+   * starts on a VM still busy from its boot runs every step about a tenth
+   * slower; the load average alone does not say what is running.
+   */
+  private busiestProcesses() {
+    if (platform() !== "darwin") return undefined;
+    try {
+      return execFileSync("/bin/ps", ["-Aro", "pcpu=,comm="], { encoding: "utf8" })
+        .split("\n", 5)
+        .map((line) => {
+          const [, percent = "", command = ""] = /^\s*(\S+)\s+(.*)$/.exec(line) ?? [];
+          return `${percent} ${command.split("/").at(-1) ?? ""}`;
+        });
+    } catch {
+      return undefined;
+    }
   }
 
   private swapUsage() {

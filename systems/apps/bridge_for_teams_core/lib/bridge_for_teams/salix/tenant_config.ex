@@ -73,7 +73,6 @@ defmodule BridgeForTeams.Salix.TenantConfig do
 
     with true <- tenant_id != "",
          {:ok, _tenant} <- Client.impl().get_tenant(tenant_id),
-         :ok <- publish_role_defaults(org, tenant_id),
          {:ok, expected} <- expected_conversation_links_config(),
          {:ok, current} <-
            Client.impl().get_tenant_config(tenant_id, @conversation_links_config, %{}) do
@@ -128,22 +127,6 @@ defmodule BridgeForTeams.Salix.TenantConfig do
     end
   end
 
-  # The org's per-role defaults are the Salix tenant layer. A nil org default
-  # clears the tenant pointer so the role defers to the platform default.
-  defp publish_role_defaults(org, tenant_id) do
-    with {:ok, current} <- Client.impl().get_tenant_config(tenant_id, "agent_defaults", %{}),
-         {:ok, _} <-
-           Client.impl().update_tenant_config(
-             tenant_id,
-             "agent_defaults",
-             current
-             |> Map.put("router_template_id", org.default_router_template_id)
-             |> Map.put("worker_template_id", org.default_template_id)
-           ) do
-      :ok
-    end
-  end
-
   defp write_and_verify(org, tenant_id, expected) do
     with {:ok, _written} <-
            Client.impl().update_tenant_config(tenant_id, @conversation_links_config, expected),
@@ -185,7 +168,7 @@ defmodule BridgeForTeams.Salix.TenantConfig do
   end
 
   defp public_base_url do
-    case Application.get_env(:bridge_for_teams_web, :public_base_url) |> trim() do
+    case SystemsRuntime.get_env(:bridge_for_teams_web, :public_base_url) |> trim() do
       "" -> {:error, :public_base_url_not_configured}
       base_url -> {:ok, String.trim_trailing(base_url, "/")}
     end

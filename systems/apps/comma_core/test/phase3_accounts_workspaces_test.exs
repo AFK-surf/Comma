@@ -1,6 +1,9 @@
 defmodule Comma.Phase3AccountsWorkspacesTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.Comma"]
   alias Comma.Accounts.AuthSession
   alias Comma.Data.{Workspace, WorkspaceMembership}
 
@@ -155,11 +158,11 @@ defmodule Comma.Phase3AccountsWorkspacesTest do
     opts = [name: nil, pool: DBConnection.ConnectionPool, pool_size: 1]
     {:ok, repo_a} = Comma.Repo.start_link(opts)
     {:ok, repo_b} = Comma.Repo.start_link(opts)
-    Process.unlink(repo_a)
-    Process.unlink(repo_b)
+    SystemsRuntime.Proc.unlink(repo_a)
+    SystemsRuntime.Proc.unlink(repo_b)
 
     on_exit(fn ->
-      for repo <- [repo_a, repo_b], Process.alive?(repo), do: Supervisor.stop(repo)
+      for repo <- [repo_a, repo_b], SystemsRuntime.Proc.alive?(repo), do: Supervisor.stop(repo)
     end)
 
     {repo_a, repo_b}
@@ -170,20 +173,20 @@ defmodule Comma.Phase3AccountsWorkspacesTest do
   end
 
   defp concurrent_with_values(repo_a, value_a, repo_b, value_b, fun) do
-    parent = self()
-    ref = make_ref()
+    parent = SystemsRuntime.Proc.self()
+    ref = SystemsRuntime.Proc.make_ref()
 
     tasks =
       for {repo, value} <- [{repo_a, value_a}, {repo_b, value_b}] do
-        Task.async(fn ->
-          send(parent, {ref, :ready, self()})
-          receive do: ({^ref, :go} -> on_repo(repo, fn -> fun.(value) end))
+        SystemsRuntime.Task.async(fn ->
+          SystemsRuntime.Proc.send(parent, {ref, :ready, SystemsRuntime.Proc.self()})
+          SystemsRuntime.Proc.receive(do: ({^ref, :go} -> on_repo(repo, fn -> fun.(value) end)))
         end)
       end
 
-    for task <- tasks, do: assert_receive({^ref, :ready, pid} when pid == task.pid)
-    for task <- tasks, do: send(task.pid, {ref, :go})
-    Enum.map(tasks, &Task.await(&1, 10_000))
+    for task <- tasks, do: settle_receive({^ref, :ready, pid} when pid == task.pid)
+    for task <- tasks, do: SystemsRuntime.Proc.send(task.pid, {ref, :go})
+    Enum.map(tasks, &settled_await/1)
   end
 
   defp on_repo(repo, fun) do
@@ -198,5 +201,5 @@ defmodule Comma.Phase3AccountsWorkspacesTest do
   end
 
   defp unique(prefix),
-    do: prefix <> "_" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+    do: prefix <> "_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(9), padding: false)
 end

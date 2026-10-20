@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   defaultAppPreferences,
   defaultCommaClientSettings,
+  retiredCommaClientSettings,
   type KeepAwakeWhenLidClosedStatus,
   type SystemNotificationsStatus,
 } from "@comma/native-bridge";
@@ -105,6 +106,65 @@ describe("AppPreferencesService", () => {
       expect(kept.state().clientSettings?.openCommaShortcut).toEqual(chosen);
       await kept.close();
     }
+  });
+
+  it("keeps the saved preferences of a file a build with Side Chat and Stations wrote", async () => {
+    const filePath = await temporaryPreferencesPath();
+    const { revision: _revision, ...preferences } = defaultAppPreferences;
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        ...preferences,
+        clientSettings: {
+          ...defaultCommaClientSettings,
+          appShortcutOverrides: { "go-stations": null },
+          localePreference: "zh-CN",
+          sessionHistoryEnabled: true,
+          sideChatAppearance: "dark",
+          sideChatShortcut: {
+            key: "z",
+            modifiers: { alt: false, control: true, meta: false, shift: false },
+          },
+        },
+        defaultsRevision: 1,
+        notificationSound: false,
+        sideChatEnabled: true,
+        stationsEnabled: true,
+      })
+    );
+
+    const service = await AppPreferencesService.open({
+      filePath,
+      platform: createPlatform(),
+    });
+    expect(service.state()).toMatchObject({
+      clientSettings: { localePreference: "zh-CN", sessionHistoryEnabled: true },
+      notificationSound: false,
+    });
+    await service.close();
+  });
+
+  it("writes the Side Chat settings an earlier build requires, with Side Chat off", async () => {
+    const filePath = await temporaryPreferencesPath();
+    const service = await AppPreferencesService.open({
+      filePath,
+      platform: createPlatform(),
+    });
+    await service.update({ clientSettings: { sessionHistoryEnabled: true } });
+    await service.close();
+
+    const persisted = JSON.parse(await readFile(filePath, "utf8"));
+    expect(persisted).toMatchObject({
+      clientSettings: { ...retiredCommaClientSettings, sessionHistoryEnabled: true },
+      sideChatEnabled: false,
+    });
+    const reopened = await AppPreferencesService.open({
+      filePath,
+      platform: createPlatform(),
+    });
+    expect(reopened.state().clientSettings).not.toHaveProperty("sideChatAppearance");
+    expect(reopened.state().clientSettings?.sessionHistoryEnabled).toBe(true);
+    await reopened.close();
   });
 
   it("registers Open Comma by default, persists clearing, and restores after a failed edit", async () => {
@@ -254,12 +314,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 0,
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -440,12 +500,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -461,12 +521,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -479,11 +539,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
+      sideChatEnabled: false,
       systemNotifications: true,
     });
     const reopened = await AppPreferencesService.open({ filePath, platform });
@@ -495,12 +556,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 0,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -512,12 +573,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 0,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -531,12 +592,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -572,12 +633,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -589,12 +650,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -622,12 +683,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 2,
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -639,11 +700,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
+      sideChatEnabled: false,
       systemNotifications: true,
     });
     expect(onStateChanged).toHaveBeenLastCalledWith({
@@ -654,12 +716,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 2,
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -697,12 +759,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 0,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -746,12 +808,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -763,12 +825,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -801,12 +863,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -817,12 +879,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 2,
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -833,12 +895,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 2,
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -850,11 +912,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
-      sideChatEnabled: true,
+      sideChatEnabled: false,
       systemNotifications: true,
     });
   });
@@ -889,6 +952,7 @@ describe("AppPreferencesService", () => {
       keepAwakeWhenLidClosed: false,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: false,
@@ -956,12 +1020,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -976,12 +1040,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -993,11 +1057,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       showInAirDrop: true,
       showInDock: false,
       showInMenuBar: false,
       showInNotch: true,
-      sideChatEnabled: true,
+      sideChatEnabled: false,
       systemNotifications: true,
     });
   });
@@ -1064,13 +1129,38 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: true,
       showInNotch: true,
-      sideChatEnabled: true,
+      sideChatEnabled: false,
       systemNotifications: false,
     });
+  });
+
+  it("publishes whether Quick Chat runs, for Settings, without persisting it", async () => {
+    const filePath = await temporaryPreferencesPath();
+    const onStateChanged = vi.fn();
+    const service = await AppPreferencesService.open({
+      filePath,
+      onStateChanged,
+      platform: createPlatform(),
+    });
+
+    await expect(service.setQuickChatSupported(true)).resolves.toMatchObject({
+      quickChatSupported: true,
+      revision: 1,
+    });
+    expect(onStateChanged).toHaveBeenCalledOnce();
+    // The same answer again is not a change.
+    await service.setQuickChatSupported(true);
+    expect(onStateChanged).toHaveBeenCalledOnce();
+
+    await service.update({ showInDock: false });
+    expect(JSON.parse(await readFile(filePath, "utf8"))).not.toHaveProperty(
+      "quickChatSupported"
+    );
   });
 
   it("asks the OS about notifications without holding up preference writes, then publishes its answer", async () => {
@@ -1153,12 +1243,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: false,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });
@@ -1169,12 +1259,12 @@ describe("AppPreferencesService", () => {
       notchSideWidth: 156,
       notificationSound: true,
       notifyRouterMessages: true,
+      quickChatEnabled: true,
       revision: 1,
       showInAirDrop: true,
       showInDock: true,
       showInMenuBar: false,
       showInNotch: true,
-      sideChatEnabled: true,
       systemNotifications: true,
       systemNotificationsStatus: "available",
     });

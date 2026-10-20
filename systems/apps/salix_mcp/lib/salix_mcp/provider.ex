@@ -305,7 +305,6 @@ defmodule SalixMCP.Provider do
 
     %{
       "internal_llm" => %{"tool" => "call", "arguments" => %{"tool" => op_id, "params" => params}},
-      "external_runtime" => %{"tool" => op_id, "arguments" => params},
       "script" => %{
         "call" =>
           "sf_host_call(\"salix.call\", " <>

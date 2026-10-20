@@ -43,8 +43,8 @@ export function createSitePermissionPlatform(
           ? `${origin} 请求使用${media.map(mediaName).join("和")}`
           : `${origin} wants to use your ${media.map(mediaName).join(" and ").toLowerCase()}`,
         detail: zh
-          ? "选择将仅为此网站保存。可通过地址栏的网站权限修改。"
-          : "Your choice is saved for this website. Change it from Site permissions in the address bar.",
+          ? "选择将仅为此网站保存。可在地址栏的“更多操作”菜单中修改。"
+          : "Your choice is saved for this website. Change it from More actions in the address bar.",
         buttons: [
           choiceName("allow"),
           choiceName("block"),

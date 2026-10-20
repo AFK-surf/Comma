@@ -1,22 +1,22 @@
 defmodule BillingCore.FeeControl.Server do
   @moduledoc false
 
-  use GenServer
+  use SystemsRuntime.Server
 
   alias BillingCore.{FeeControl, State}
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
   end
 
   def check(attrs, opts \\ []) do
     timeout = opts[:timeout] || 5_000
-    GenServer.call(opts[:server] || __MODULE__, {:check, attrs, timeout}, timeout)
+    SystemsRuntime.Server.call(opts[:server] || __MODULE__, {:check, attrs, timeout}, timeout)
   end
 
   @impl true
   def init(_opts) do
-    {:ok, supervisor} = Task.Supervisor.start_link()
+    {:ok, supervisor} = SystemsRuntime.TaskSupervisor.start_link()
     {:ok, %{supervisor: supervisor, cache: %{}, pending: %{}, sequence: 0}}
   end
 
@@ -27,14 +27,15 @@ defmodule BillingCore.FeeControl.Server do
     context = SystemsObservability.Context.capture()
 
     task =
-      Task.Supervisor.async_nolink(state.supervisor, fn ->
+      SystemsRuntime.TaskSupervisor.async_nolink(state.supervisor, fn ->
         SystemsObservability.Context.run(context, fn -> run_check(attrs, key, cached) end)
       end)
 
     timer =
       if timeout == :infinity,
         do: nil,
-        else: Process.send_after(self(), {:check_timeout, task.ref}, timeout)
+        else:
+          SystemsClock.send_after(SystemsRuntime.Proc.self(), {:check_timeout, task.ref}, timeout)
 
     sequence = state.sequence + 1
     pending = %{from: from, key: key, sequence: sequence, timer: timer, pid: task.pid}
@@ -48,7 +49,7 @@ defmodule BillingCore.FeeControl.Server do
         {:noreply, state}
 
       {pending, rest} ->
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         cancel_timer(pending.timer)
         # Concurrent queries can finish out of order. Only a newer started
         # successful refresh can replace this key's shadow-cache entry.
@@ -59,7 +60,7 @@ defmodule BillingCore.FeeControl.Server do
             do: Map.put(state.cache, pending.key, {pending.sequence, entry}),
             else: state.cache
 
-        GenServer.reply(pending.from, {:ok, result})
+        SystemsRuntime.Server.reply(pending.from, {:ok, result})
         {:noreply, %{state | pending: rest, cache: cache}}
     end
   end
@@ -74,14 +75,14 @@ defmodule BillingCore.FeeControl.Server do
         {:noreply, state}
 
       pending ->
-        Process.exit(pending.pid, :kill)
-        Process.demonitor(ref, [:flush])
+        SystemsRuntime.Proc.exit(pending.pid, :kill)
+        SystemsRuntime.Proc.demonitor(ref, [:flush])
         finish_error(state, ref, :fee_control_check_timeout)
     end
   end
 
   @impl true
-  def terminate(_reason, state), do: Supervisor.stop(state.supervisor)
+  def terminate(_reason, state), do: SystemsRuntime.Supervisor.stop(state.supervisor)
 
   defp finish_error(state, ref, reason) do
     case Map.pop(state.pending, ref) do
@@ -90,16 +91,16 @@ defmodule BillingCore.FeeControl.Server do
 
       {pending, rest} ->
         cancel_timer(pending.timer)
-        GenServer.reply(pending.from, {:error, reason})
+        SystemsRuntime.Server.reply(pending.from, {:error, reason})
         {:noreply, %{state | pending: rest}}
     end
   end
 
   defp cancel_timer(nil), do: :ok
-  defp cancel_timer(timer), do: Process.cancel_timer(timer)
+  defp cancel_timer(timer), do: SystemsClock.cancel_timer(timer)
 
   defp run_check(attrs, key, cached) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     cache = if is_nil(cached), do: %{}, else: %{key => cached}
 
     try do
@@ -110,7 +111,7 @@ defmodule BillingCore.FeeControl.Server do
         :fee_control,
         surface(attrs),
         "ok",
-        System.monotonic_time() - started
+        SystemsClock.monotonic_time() - started
       )
 
       entry = next_state.fee_control_cache[key]
@@ -123,7 +124,7 @@ defmodule BillingCore.FeeControl.Server do
           :fee_control,
           surface(attrs),
           "error",
-          System.monotonic_time() - started
+          SystemsClock.monotonic_time() - started
         )
 
         reraise exception, __STACKTRACE__
@@ -140,7 +141,7 @@ defmodule BillingCore.FeeControl.Server do
 
   defp do_maybe_write_check(result, attrs) do
     with sink when not is_nil(sink) <-
-           attrs[:typed_sink] || Application.get_env(:billing_core, :fee_control_typed_sink),
+           attrs[:typed_sink] || SystemsRuntime.get_env(:billing_core, :fee_control_typed_sink),
          context when is_map(context) <- attrs[:row_context] do
       row =
         context
@@ -148,7 +149,7 @@ defmodule BillingCore.FeeControl.Server do
           source: attrs[:source] || "fee_control",
           source_key:
             attrs[:source_key] ||
-              "fee:#{context["billing_account_id"] || context[:billing_account_id]}:#{System.unique_integer([:positive])}",
+              "fee:#{context["billing_account_id"] || context[:billing_account_id]}:#{SystemsRuntime.Proc.unique_integer([:positive])}",
           resource_kind: :fee_control,
           provider: attrs[:provider],
           sku: attrs[:sku],

@@ -5,7 +5,7 @@ defmodule SalixIM.SlackRouterStatusActor do
   `tla/salix/SlackRouterStatusDelivery.tla`.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -47,13 +47,13 @@ defmodule SalixIM.SlackRouterStatusActor do
 
   def start_link(opts) do
     connect_id = Keyword.fetch!(opts, :connect_id)
-    GenServer.start_link(__MODULE__, opts, name: via(connect_id))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: via(connect_id))
   end
 
   def key(connect_id), do: {:slack_router_status, connect_id}
 
   def activate(pid, connect, message, router_agent_id, session_id) do
-    GenServer.cast(
+    SystemsRuntime.Server.cast(
       pid,
       {:activate, router_activation(connect, message, router_agent_id, session_id)}
     )
@@ -66,7 +66,7 @@ defmodule SalixIM.SlackRouterStatusActor do
         owner_agent_id,
         conversation_id
       ) do
-    GenServer.cast(
+    SystemsRuntime.Server.cast(
       pid,
       {:activate,
        conversation_activation(
@@ -79,7 +79,7 @@ defmodule SalixIM.SlackRouterStatusActor do
   end
 
   def provider_reply_sent(pid, channel_id, thread_ts),
-    do: GenServer.cast(pid, {:provider_reply_sent, {str(channel_id), str(thread_ts)}})
+    do: SystemsRuntime.Server.cast(pid, {:provider_reply_sent, {str(channel_id), str(thread_ts)}})
 
   @impl true
   def init(opts) do
@@ -479,9 +479,14 @@ defmodule SalixIM.SlackRouterStatusActor do
         cancel_tick(state)
 
       delay ->
-        token = make_ref()
+        token = SystemsRuntime.Proc.make_ref()
         state = cancel_tick(state)
-        %{state | tick_ref: {Process.send_after(self(), {:tick, token}, delay), token}}
+
+        %{
+          state
+          | tick_ref:
+              {SystemsClock.send_after(SystemsRuntime.Proc.self(), {:tick, token}, delay), token}
+        }
     end
   end
 
@@ -512,7 +517,7 @@ defmodule SalixIM.SlackRouterStatusActor do
 
   defp cancel_tick(state) do
     {timer_ref, _token} = state.tick_ref
-    Process.cancel_timer(timer_ref)
+    SystemsClock.cancel_timer(timer_ref)
     %{state | tick_ref: nil}
   end
 
@@ -810,7 +815,7 @@ defmodule SalixIM.SlackRouterStatusActor do
 
   defp forward_activation(state, attrs) do
     case SlackRouterStatusPlacement.ensure_started(attrs["agent_id"], state.connect_id) do
-      {:ok, pid} -> GenServer.cast(pid, {:activate, attrs})
+      {:ok, pid} -> SystemsRuntime.Server.cast(pid, {:activate, attrs})
       {:error, reason} -> Logger.warning("slack status owner unavailable: #{inspect(reason)}")
     end
   end
@@ -852,16 +857,16 @@ defmodule SalixIM.SlackRouterStatusActor do
   defp window_key(connect_id), do: Keys.ctl_im_slack_router_status_window(connect_id)
 
   defp via(connect_id),
-    do: {:via, Registry, {SalixIM.SlackRouterStatusRegistry, key(connect_id)}}
+    do: {:via, SystemsRuntime.Registry, {SalixIM.SlackRouterStatusRegistry, key(connect_id)}}
 
   defp refresh_ms, do: config_ms(:slack_router_status_refresh_ms, @default_refresh_ms)
 
   defp config_ms(key, default) do
-    case Application.get_env(:salix_im, key, default) do
+    case SystemsRuntime.get_env(:salix_im, key, default) do
       value when is_integer(value) and value > 0 -> value
       _other -> default
     end
   end
 
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 end

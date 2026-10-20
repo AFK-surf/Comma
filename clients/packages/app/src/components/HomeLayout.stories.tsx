@@ -1,6 +1,9 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import type { VisibleTaskStatusBucket } from "@comma/i18n";
 import type { RecommendationEnvelope } from "@comma/recommendation-contract";
-import { GlobeIcon, HomeTasks, RightSidebar } from "@comma/ui";
+import { GlobeIcon } from "@comma/ui/components/icons";
+import { HomeTasks } from "@comma/ui/components/home-tasks";
+import { RightSidebar } from "@comma/ui/components/right-sidebar";
 import {
   useCallback,
   useEffect,
@@ -9,8 +12,8 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import type { CommaApiClient } from "../api";
 import "../styles.css";
+import { RailStoryCore } from "./recommendations/RailStoryCore";
 import { RecommendationRail } from "./recommendations/RecommendationRail";
 import { HomeRail } from "./RouteScreens";
 import { HomeLayout, HomeRailFoldProvider, HomeRailFolds } from "./home/HomeRailFolds";
@@ -88,11 +91,6 @@ const envelope = {
   state: "fresh",
 } satisfies RecommendationEnvelope;
 
-const api = {
-  getRecommendations: async () => envelope,
-  refreshRecommendations: async () => ({ envelope, run: { id: "run-1" } }),
-} as unknown as CommaApiClient;
-
 const tasks = [
   {
     activityStatus: "running",
@@ -104,10 +102,10 @@ const tasks = [
     worker: "claude",
   },
   {
-    activityStatus: "queued",
+    activityStatus: "ready_for_review",
     freshness: "fresh",
     id: "task-library",
-    statusBucket: "backlog",
+    statusBucket: "needs_review",
     title: "Start on the refraction UI library",
     updatedAt: 1_777_939_200,
   },
@@ -136,7 +134,7 @@ function HomeLayoutStory({ frameWidth, sidebarWidth }: HomeLayoutStoryProps) {
   const toggleCollapsed = useCallback((rail: CommaHomeRailName) => {
     setCollapsed((previous) => ({ ...previous, [rail]: !previous[rail] }));
   }, []);
-  const [taskStatus, setTaskStatus] = useState<"backlog" | "in_progress">("backlog");
+  const [taskStatus, setTaskStatus] = useState<VisibleTaskStatusBucket>("in_progress");
   const frameRef = useRef<HTMLDivElement | null>(null);
   const routeRef = useRef<HTMLElement | null>(null);
   const chatRef = useRef<HTMLDivElement | null>(null);
@@ -223,13 +221,14 @@ function HomeLayoutStory({ frameWidth, sidebarWidth }: HomeLayoutStoryProps) {
           <HomeRailFoldProvider state={railState}>
             <HomeLayout>
               <HomeRail id="storybook-home-greet-panel" label="Greet" name="greet">
-                <RecommendationRail
-                  api={api}
-                  onOpenTask={noop}
-                  onOpenUrl={noop}
-                  onUsePrompt={noop}
-                  workspaceId="storybook-home-layout"
-                />
+                <RailStoryCore envelope={envelope}>
+                  <RecommendationRail
+                    onOpenTask={noop}
+                    onOpenUrl={noop}
+                    onUsePrompt={noop}
+                    workspaceId="storybook-home-layout"
+                  />
+                </RailStoryCore>
               </HomeRail>
               <HomeRailCollapseHandle
                 controls="storybook-home-greet-panel"
@@ -250,9 +249,7 @@ function HomeLayoutStory({ frameWidth, sidebarWidth }: HomeLayoutStoryProps) {
               <HomeRail id="storybook-home-tasks-panel" label="Tasks" name="tasks">
                 <HomeTasks
                   onOpenTask={noop}
-                  onStatusChange={(status) =>
-                    setTaskStatus(status === "in_progress" ? "in_progress" : "backlog")
-                  }
+                  onStatusChange={setTaskStatus}
                   status={taskStatus}
                   tasks={[...tasks]}
                 />

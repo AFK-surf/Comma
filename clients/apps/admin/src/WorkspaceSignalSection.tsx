@@ -1,186 +1,93 @@
-import { Button } from "@comma/ui";
-import { useEffect, useState } from "react";
-import {
-  createIdempotencyKey,
-  isAdminAccessDenied,
-  isAdminSessionRejection,
-  type AdminApi,
-  type AdminWorkspaceSignalNumber,
-} from "./adminApi";
-import { adminErrorMessage, guardedAdminCommand } from "./adminErrors";
-import {
-  AdminConfirmationDialog,
-  AdminNotice,
-  DetailList,
-  NativeField,
-  ReasonField,
-} from "./adminUi";
+import { Button } from "@comma/ui/components/Button";
+import { confirmationBusy } from "./adminModel";
+import { useAdminCommand, useAdminState } from "./adminRuntime";
+import { InputField } from "@comma/ui/components/input";
+import { useId } from "react";
+import { AdminConfirmationDialog, AdminNotice, AdminRow } from "./adminUi";
+import { workspaceSignalForm, type WorkspaceSignalModel } from "./WorkspaceSignalModel";
+import { messages } from "@comma/i18n";
 
-const E164 = /^\+[1-9]\d{6,14}$/;
-
-/**
- * The Workspace's own Signal number, which overrides the platform number for
- * new Signal connections (docs/messaging-voice.md). Salix owns the setting;
- * the change is an audited Admin command.
- */
-export function WorkspaceSignalSection({
-  api,
-  onAccessDenied,
-  userId,
-}: {
-  api: AdminApi;
-  onAccessDenied: () => void;
-  userId: string;
-}) {
-  const [view, setView] = useState<AdminWorkspaceSignalNumber>();
-  const [loadError, setLoadError] = useState<string>();
-  const [number, setNumber] = useState("");
-  const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [notice, setNotice] = useState<string>();
-  const [idempotencyKey, setIdempotencyKey] = useState(() =>
-    createIdempotencyKey("workspace-signal-number")
-  );
-
-  useEffect(() => {
-    const request = new AbortController();
-    void api
-      .getUserWorkspaceSignalNumber(userId, { signal: request.signal })
-      .then((loaded) => {
-        if (request.signal.aborted) return;
-        setView(loaded);
-        setNumber(loaded.override?.e164 ?? "");
-      })
-      .catch((error: unknown) => {
-        if (request.signal.aborted || isAdminSessionRejection(error)) return;
-        if (isAdminAccessDenied(error)) {
-          onAccessDenied();
-          return;
-        }
-        setLoadError(
-          adminErrorMessage(error, "Unable to load the Workspace Signal number.")
-        );
-      });
-    return () => request.abort();
-  }, [api, onAccessDenied, userId]);
-
-  const value = number.trim();
-  const saved = view?.override?.e164 ?? "";
-  const expected = `workspace-signal-number:${userId}:${value}`;
-  const valid = value === "" || E164.test(value);
+/** The Workspace's own Signal number (WorkspaceSignalModel.ts). */
+export function WorkspaceSignalSection({ model }: { model: WorkspaceSignalModel }) {
+  const run = useAdminCommand();
+  const state = useAdminState(model.state);
+  const busy = useAdminState(model.confirmation.state, confirmationBusy);
+  const { editing, loadError, notice, number, view } = state;
+  const { canReview, saved, valid } = workspaceSignalForm(state, busy);
+  const titleId = useId();
 
   return (
-    <section aria-labelledby="workspace-signal-title" className="admin-agent-models">
-      <div className="admin-drawer-section-header">
-        <div>
-          <h3 id="workspace-signal-title">Signal number</h3>
-          <p>The number that new Signal connections of this Workspace message</p>
-        </div>
-      </div>
+    <section aria-labelledby={titleId} className="admin-row-group">
+      <AdminRow
+        description={
+          view
+            ? messages.admin_signal_detail({
+                current: view.effective?.e164 ?? messages.admin_none(),
+                platform: view.platform?.e164 ?? messages.admin_not_set(),
+              })
+            : undefined
+        }
+        title={messages.admin_signal_number()}
+        titleId={titleId}
+      >
+        {view && !editing ? (
+          <>
+            <span className="admin-row-value">
+              {saved || messages.admin_platform_number()}
+            </span>
+            <Button
+              aria-label={messages.admin_change_signal_number()}
+              hierarchy="secondary-gray"
+              onPress={() => run(model.edit)}
+              size="sm"
+            >
+              {messages.admin_change()}
+            </Button>
+          </>
+        ) : null}
+      </AdminRow>
       {notice ? (
-        <AdminNotice message={notice} onDismiss={() => setNotice(undefined)} />
+        <AdminNotice message={notice} onDismiss={() => run(model.dismissNotice)} />
       ) : null}
       {loadError ? <AdminNotice message={loadError} tone="error" /> : null}
-      {view ? (
-        <>
-          <DetailList
-            items={[
-              { label: "Workspace number", value: saved || "Not set" },
-              { label: "Platform number", value: view.platform?.e164 ?? "Not set" },
-              { label: "In use", value: view.effective?.e164 ?? "No Signal number" },
-            ]}
+      {view && editing ? (
+        <form
+          className="admin-row admin-row-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            run(model.review);
+          }}
+        >
+          <InputField
+            aria-label={messages.admin_workspace_signal_number()}
+            className="w-full"
+            disabled={busy}
+            hint={
+              valid
+                ? messages.admin_signal_hint()
+                : messages.admin_signal_hint_invalid()
+            }
+            inputMode="tel"
+            maxLength={16}
+            onChange={(event) => run(model.setNumber(event.target.value))}
+            value={number}
           />
-          <p className="admin-drawer-note">
-            Leave the field empty to use the platform number. Connected chats keep the
-            number they connected with.
-          </p>
-          {!editing ? (
-            <div className="admin-command-actions">
-              <Button hierarchy="secondary-gray" onPress={() => setEditing(true)}>
-                Change Signal number
-              </Button>
-            </div>
-          ) : null}
-          {editing ? (
-            <form
-              className="admin-command-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                setConfirming(true);
-              }}
+          <div className="admin-row-end">
+            <Button
+              hierarchy="secondary-gray"
+              isDisabled={busy}
+              onPress={() => run(model.cancelEdit)}
+              size="sm"
             >
-              <NativeField
-                hint={
-                  valid
-                    ? "E.164, for example +15551234567"
-                    : "Enter + and the country code."
-                }
-                label="Workspace Signal number"
-              >
-                <input
-                  disabled={busy}
-                  inputMode="tel"
-                  maxLength={16}
-                  onChange={(event) => {
-                    setNumber(event.target.value.replace(/[\s()-]/g, ""));
-                    setIdempotencyKey(createIdempotencyKey("workspace-signal-number"));
-                  }}
-                  value={number}
-                />
-              </NativeField>
-              <ReasonField
-                onChange={(next) => {
-                  setReason(next);
-                  setIdempotencyKey(createIdempotencyKey("workspace-signal-number"));
-                }}
-                value={reason}
-              />
-              <div className="admin-command-actions">
-                <Button
-                  isDisabled={
-                    busy || !valid || value === saved || reason.trim().length < 3
-                  }
-                  type="submit"
-                >
-                  Review Signal number change
-                </Button>
-              </div>
-            </form>
-          ) : null}
-        </>
+              {messages.admin_cancel()}
+            </Button>
+            <Button isDisabled={!canReview} size="sm" type="submit">
+              {messages.admin_save_signal_number()}
+            </Button>
+          </div>
+        </form>
       ) : null}
-      <AdminConfirmationDialog
-        expected={expected}
-        isOpen={confirming}
-        onBusyChange={setBusy}
-        onConfirm={async () => {
-          const updated = await guardedAdminCommand(
-            api.updateUserWorkspaceSignalNumber(userId, {
-              number: value,
-              reason: reason.trim(),
-              confirmation: expected,
-              idempotencyKey,
-            }),
-            onAccessDenied
-          );
-          setView(updated);
-          setNumber(updated.override?.e164 ?? "");
-          setReason("");
-          setEditing(false);
-          setIdempotencyKey(createIdempotencyKey("workspace-signal-number"));
-          setNotice(
-            updated.override?.e164
-              ? `Signal number set to ${updated.override.e164}.`
-              : "The Workspace now uses the platform Signal number."
-          );
-        }}
-        onOpenChange={setConfirming}
-        title={
-          value ? "Set the Workspace Signal number?" : "Use the platform Signal number?"
-        }
-      />
+      <AdminConfirmationDialog confirmation={model.confirmation} />
     </section>
   );
 }

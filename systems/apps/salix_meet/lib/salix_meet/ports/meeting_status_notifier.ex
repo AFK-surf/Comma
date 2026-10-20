@@ -8,7 +8,7 @@ defmodule SalixMeet.Ports.MeetingStatusNotifier do
 
   defp impl,
     do:
-      Application.get_env(
+      SystemsRuntime.get_env(
         :salix_meet,
         :meeting_status_notifier_mod,
         __MODULE__.None

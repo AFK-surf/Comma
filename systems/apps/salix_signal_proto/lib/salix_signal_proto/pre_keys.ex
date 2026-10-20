@@ -75,7 +75,7 @@ defmodule SalixSignalProto.PreKeys do
   """
   @spec random_id() :: pos_integer()
   def random_id do
-    <<n::32>> = :crypto.strong_rand_bytes(4)
+    <<n::32>> = SystemsRuntime.Proc.random_bytes(4)
     rem(n, @max_id) + 1
   end
 

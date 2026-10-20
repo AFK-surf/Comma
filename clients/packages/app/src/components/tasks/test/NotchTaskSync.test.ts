@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleNotchTaskOpen, toNotchTaskItems } from "../NotchTaskSync";
+import {
+  handleNotchTaskOpen,
+  notchStepFeedTasks,
+  toNotchTaskItems,
+  withWorkerSteps,
+} from "../NotchTaskSync";
 import type { TaskViewModel } from "../useWorkspaceTasks";
 
 describe("toNotchTaskItems", () => {
@@ -8,7 +13,7 @@ describe("toNotchTaskItems", () => {
       toNotchTaskItems(
         [
           task("running", "in_progress", 20),
-          task("queued", "backlog", 10),
+          task("review", "needs_review", 10),
           task("done", "done", 5),
         ],
         "In progress"
@@ -28,9 +33,48 @@ describe("toNotchTaskItems", () => {
   });
 
   it("returns an empty projection when no task is in progress", () => {
-    expect(toNotchTaskItems([task("queued", "backlog", 10)], "In progress")).toEqual(
-      []
+    expect(
+      toNotchTaskItems([task("review", "needs_review", 10)], "In progress")
+    ).toEqual([]);
+  });
+
+  it("lists at most twenty running Tasks, the most recently updated first", () => {
+    const many = Array.from({ length: 25 }, (_, n) =>
+      task(`t${n + 1}`, "in_progress", n + 1)
     );
+
+    const ids = toNotchTaskItems(many, "In progress").map((item) => item.id);
+    expect(ids).toHaveLength(20);
+    expect(ids[0]).toBe("t25");
+    expect(ids.at(-1)).toBe("t6");
+  });
+
+  it("shows a followed Worker's latest step in place of the status", () => {
+    const tasks = toNotchTaskItems(
+      [task("old", "in_progress", 10), task("new", "in_progress", 20)],
+      "In progress"
+    );
+    const steps = new Map([["new", "Read SKILL.md"]]);
+
+    expect(
+      withWorkerSteps(tasks, steps).map(({ id, subtitle }) => ({ id, subtitle }))
+    ).toEqual([
+      { id: "new", subtitle: "Read SKILL.md" },
+      { id: "old", subtitle: "In progress" },
+    ]);
+  });
+
+  it("follows at most two running Tasks, the most recently updated first", () => {
+    const tasks = toNotchTaskItems(
+      [
+        task("a", "in_progress", 10),
+        task("b", "in_progress", 30),
+        task("c", "in_progress", 20),
+      ],
+      "In progress"
+    );
+
+    expect(notchStepFeedTasks(tasks).map((item) => item.id)).toEqual(["b", "c"]);
   });
 
   it("closes the Notch, focuses Comma, and opens the selected task chat", () => {

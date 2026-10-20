@@ -38,7 +38,8 @@ const SHEAR_STIFFNESS = 0.48;
 const BEND_STIFFNESS = 0.24;
 const CONSTRAINT_ITERATIONS = 5;
 const FIXED_STEP_SECONDS = 1 / 120;
-const MAX_FRAME_SECONDS = 1 / 30;
+/** The mesh moves in fixed steps of this many ms: its state at a time is the steps up to it. */
+export const softBodyStepMs = FIXED_STEP_SECONDS * 1000;
 const REST_DISTANCE = 0.025;
 const REST_SPEED = 0.12;
 
@@ -214,18 +215,20 @@ const integrateStep = (mesh: SoftBodyMesh, dtSeconds: number) => {
   }
 };
 
-export const stepSoftBodyMesh = (mesh: SoftBodyMesh, frameSeconds: number) => {
-  let remaining = Math.min(Math.max(frameSeconds, 0), MAX_FRAME_SECONDS);
-  while (remaining > Number.EPSILON) {
-    const dtSeconds = Math.min(FIXED_STEP_SECONDS, remaining);
-    integrateStep(mesh, dtSeconds);
-    remaining -= dtSeconds;
+/**
+ * Runs `steps` fixed steps, the same however many frames they are spread
+ * over. A released mesh that comes to rest stops there, back in its rest
+ * shape; the return says whether it still moves.
+ */
+export const stepSoftBodyMesh = (mesh: SoftBodyMesh, steps: number) => {
+  for (let step = 0; step < steps; step += 1) {
+    integrateStep(mesh, FIXED_STEP_SECONDS);
+    if (!mesh.drag && !isSoftBodyMoving(mesh)) {
+      resetSoftBodyMesh(mesh);
+      return false;
+    }
   }
-  const moving = isSoftBodyMoving(mesh);
-  if (!moving && !mesh.drag) {
-    resetSoftBodyMesh(mesh);
-  }
-  return moving;
+  return isSoftBodyMoving(mesh);
 };
 
 export const isSoftBodyMoving = (mesh: SoftBodyMesh) => {

@@ -1,12 +1,13 @@
 defmodule SalixAgent.NotifierTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   @pid_key {__MODULE__, :pid}
 
   def send_event(kind, agent_id, event) do
-    case :persistent_term.get(@pid_key, nil) do
+    case SystemsRuntime.PersistentTerm.get(@pid_key, nil) do
       nil -> :ok
-      pid -> send(pid, {:notifier, kind, agent_id, event})
+      pid -> SystemsRuntime.Proc.send(pid, {:notifier, kind, agent_id, event})
     end
 
     :ok
@@ -41,13 +42,13 @@ defmodule SalixAgent.NotifierTest do
   end
 
   setup do
-    prev_notifier = Application.get_env(:salix_agent, :notifier)
-    prev_notifiers = Application.get_env(:salix_agent, :notifiers)
+    prev_notifier = SystemsRuntime.get_env(:salix_agent, :notifier)
+    prev_notifiers = SystemsRuntime.get_env(:salix_agent, :notifiers)
 
-    :persistent_term.put(@pid_key, self())
+    SystemsRuntime.PersistentTerm.put(@pid_key, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
-      :persistent_term.erase(@pid_key)
+      SystemsRuntime.PersistentTerm.erase(@pid_key)
       restore(:notifier, prev_notifier)
       restore(:notifiers, prev_notifiers)
     end)
@@ -56,16 +57,21 @@ defmodule SalixAgent.NotifierTest do
   end
 
   test "notifier fan-out preserves legacy notifier and continues after a bad subscriber" do
-    Application.put_env(:salix_agent, :notifier, LegacyNotifier)
-    Application.put_env(:salix_agent, :notifiers, [RaisingNotifier, CommaNotifier, SalixNotifier])
+    SystemsRuntime.put_env(:salix_agent, :notifier, LegacyNotifier)
+
+    SystemsRuntime.put_env(:salix_agent, :notifiers, [
+      RaisingNotifier,
+      CommaNotifier,
+      SalixNotifier
+    ])
 
     assert :ok = SalixAgent.Notifier.notify("agent-1", {:delta, "main", "hi"})
 
-    assert_receive {:notifier, :legacy, "agent-1", {:delta, "main", "hi"}}
-    assert_receive {:notifier, :comma, "agent-1", {:delta, "main", "hi"}}
-    assert_receive {:notifier, :salix, "agent-1", {:delta, "main", "hi"}}
+    settle_receive({:notifier, :legacy, "agent-1", {:delta, "main", "hi"}})
+    settle_receive({:notifier, :comma, "agent-1", {:delta, "main", "hi"}})
+    settle_receive({:notifier, :salix, "agent-1", {:delta, "main", "hi"}})
   end
 
-  defp restore(key, nil), do: Application.delete_env(:salix_agent, key)
-  defp restore(key, value), do: Application.put_env(:salix_agent, key, value)
+  defp restore(key, nil), do: SystemsRuntime.delete_env(:salix_agent, key)
+  defp restore(key, value), do: SystemsRuntime.put_env(:salix_agent, key, value)
 end

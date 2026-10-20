@@ -1,11 +1,11 @@
 import { useRef, useState } from "react";
 import { Dialog, DialogTrigger, Modal, ModalOverlay } from "react-aria-components";
 import { createRoot } from "react-dom/client";
+import { AiInput } from "@comma/ui/components/ai-input";
+import { Button } from "@comma/ui/components/Button";
+import { OverlayPortalProvider } from "@comma/ui/components/portal";
+import { Dropdown } from "@comma/ui/components/dropdown";
 import {
-  AiInput,
-  Button,
-  OverlayPortalProvider,
-  Dropdown,
   Menu,
   MenuItem,
   MenuPopover,
@@ -13,7 +13,7 @@ import {
   SubmenuTrigger,
   CopyContextMenu,
   useTextEditContextMenuState,
-} from "@comma/ui";
+} from "@comma/ui/components/menu";
 import { InlineTextEditor } from "../../src/components/tasks/InlineTextEditor";
 import { InboxActionsMenu } from "../../src/components/inbox/InboxActionsMenu";
 import { initializeCommaI18n } from "@comma/i18n";

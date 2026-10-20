@@ -200,7 +200,7 @@ defmodule SalixMCP.Store do
     # bound storage concurrency instead of serializing two reads per binding.
     Keys.ctl_mcp_group_bindings_prefix(trim(tenant_id), trim(group_id))
     |> list_state_keys()
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn key ->
         SystemsObservability.Context.run(context, fn ->
           with {:ok, rec} <- get_record(key),
@@ -552,8 +552,14 @@ defmodule SalixMCP.Store do
     binding
     |> Map.drop(["config_values"])
     |> Map.update("oauth_binding_refs", %{}, &public_oauth_refs/1)
-    |> Map.put("config_configured", map_size(normalize_map(binding["config_values"])) > 0)
+    |> Map.put("config_configured", config_configured?(binding))
   end
+
+  defp config_configured?(%{"mcp_id" => "mcp1_0000000000000000009"} = binding),
+    do: trim(get_in(binding, ["config_values", "X_BEARER_TOKEN"])) != ""
+
+  defp config_configured?(binding),
+    do: map_size(normalize_map(binding["config_values"])) > 0
 
   def public_connection(conn) do
     conn
@@ -1652,7 +1658,7 @@ defmodule SalixMCP.Store do
     end
   end
 
-  defp now, do: System.system_time(:second)
+  defp now, do: SystemsClock.system_time(:second)
 
   defp int(value, _default) when is_integer(value), do: value
 

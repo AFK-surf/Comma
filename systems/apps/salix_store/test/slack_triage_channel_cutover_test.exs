@@ -1,6 +1,9 @@
 defmodule SalixStore.SlackTriageChannelCutoverTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
+  use SystemsClock.Case, async: false
+
+  use SystemsClock.Test, scope: ["Elixir.SalixStore"]
   alias SalixStore.{Repo, SlackTriageChannelCutover}
 
   setup do
@@ -18,24 +21,28 @@ defmodule SalixStore.SlackTriageChannelCutoverTest do
     assert {:error, :invalid_evidence} = SlackTriageChannelCutover.mark_ready(%{})
     assert :legacy = SlackTriageChannelCutover.mode()
 
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     writer =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         SlackTriageChannelCutover.with_authority_write(fn ->
-          send(parent, :writer_entered)
-          receive do: (:release_writer -> :written)
+          SystemsRuntime.Proc.send(parent, :writer_entered)
+          SystemsRuntime.Proc.receive(do: (:release_writer -> :written))
         end)
       end)
 
-    assert_receive :writer_entered
+    settle_receive(:writer_entered)
 
-    freezer = Task.async(fn -> SlackTriageChannelCutover.begin_preparing(preparation()) end)
-    assert nil == Task.yield(freezer, 50)
+    freezer =
+      SystemsRuntime.Task.async(fn ->
+        SlackTriageChannelCutover.begin_preparing(preparation())
+      end)
 
-    send(writer.pid, :release_writer)
-    assert :written = Task.await(writer)
-    assert {:ok, "release-2026-08-21"} = Task.await(freezer)
+    assert nil == SystemsClock.yield(freezer, 50)
+
+    SystemsRuntime.Proc.send(writer.pid, :release_writer)
+    assert :written = settled_await(writer)
+    assert {:ok, "release-2026-08-21"} = settled_await(freezer)
 
     assert :legacy = SlackTriageChannelCutover.mode()
 

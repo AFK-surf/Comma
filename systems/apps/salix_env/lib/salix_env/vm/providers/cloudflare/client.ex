@@ -12,6 +12,7 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
             secret: nil,
             profile_key: "cf-standard-2",
             group_id: nil,
+            expected_owner: nil,
             control: nil,
             worker_name: nil,
             worker_version_id: nil,
@@ -36,7 +37,7 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     cfg =
-      case Application.get_env(:salix_env, :cloudflare_vm_gateway, []) do
+      case SystemsRuntime.get_env(:salix_env, :cloudflare_vm_gateway, []) do
         cfg when is_list(cfg) -> cfg
         cfg when is_map(cfg) -> Map.to_list(cfg)
       end
@@ -58,6 +59,7 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
       secret: secret,
       profile_key: Keyword.get(merged, :profile_key, "cf-standard-2"),
       group_id: Keyword.get(merged, :group_id),
+      expected_owner: Keyword.get_lazy(merged, :expected_owner, fn -> capture_owner(merged) end),
       control: Keyword.get(merged, :control),
       worker_name: Keyword.get(merged, :worker_name),
       worker_version_id: Keyword.get(merged, :worker_version_id),
@@ -67,10 +69,20 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
     }
   end
 
+  defp capture_owner(opts) do
+    if group = opts[:group_id] do
+      case SalixStore.Compute.group_workload(group) do
+        {:ok, record} -> Map.take(record, ~w(workload_id generation))
+        error -> error
+      end
+    end
+  end
+
   @spec ensure(t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def ensure(%__MODULE__{} = client, sandbox_id, opts \\ []) do
+    # The Container's station connects out with this server and credential.
     body =
-      %{"sandbox_id" => sandbox_id}
+      %{"sandbox_id" => sandbox_id, "station" => Keyword.fetch!(opts, :station)}
       |> maybe_put("keep_alive", Keyword.get(opts, :keep_alive))
 
     with {:ok, observation} <- open_control(client, sandbox_id),
@@ -181,7 +193,7 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
     case get_in(observation, ["control", "pending", "action"]) do
       "ensure" ->
         case status(client, id) do
-          {:ok, %{"status" => "ready"} = result} -> {:ok, result}
+          {:ok, %{"status" => "running"} = result} -> {:ok, Map.put(result, "status", "started")}
           _ -> {:error, :container_start_unsettled}
         end
 
@@ -218,34 +230,6 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
     end
   end
 
-  def connector_control(client, id, action, scope \\ "full") when action in ["open", "seal"] do
-    with control when is_map(control) <- owner_control(client),
-         {:ok, %Req.Response{status: status, body: body}} <-
-           proxy(client, id, "/control",
-             method: :post,
-             purpose: if(action == "seal", do: :archive, else: :normal),
-             req_options: [receive_timeout: 100_000],
-             body: %{"action" => action, "control" => control, "scope" => scope}
-           ) do
-      if status in 200..299,
-        do: {:ok, normalize_body(body)},
-        else: {:error, error_reason(status, body)}
-    else
-      nil -> {:error, :cloudflare_control_unbound}
-      {:error, _} = error -> error
-    end
-  end
-
-  def open_connector(%{group_id: nil, control: nil}, _id), do: :ok
-
-  def open_connector(client, id) do
-    case connector_control(client, id, "open") do
-      {:ok, _} -> :ok
-      {:error, {:api_error, 404, _}} -> :ok
-      {:error, _} = error -> error
-    end
-  end
-
   def resume_control(client, id) do
     case owner_control(client) do
       {:error, _} = error ->
@@ -269,18 +253,8 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
                  },
                  id,
                  :archive
-               ),
-             {:ok, response} <-
-               proxy(client, id, "/control",
-                 method: :post,
-                 purpose: :archive,
-                 body: %{"action" => "open", "control" => control}
                ) do
-          case response.status do
-            status when status in 200..299 -> {:ok, :managed}
-            404 -> {:ok, :legacy}
-            status -> {:error, error_reason(status, response.body)}
-          end
+          {:ok, :managed}
         end
     end
   end
@@ -294,16 +268,27 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
       SalixStore.Compute.prepare_cloudflare_control(
         client.group_id,
         location_key(client, id),
-        action
+        action,
+        client.expected_owner
       )
 
   defp owner_control(%{group_id: nil, control: control}), do: control
 
   defp owner_control(client) do
     case SalixStore.Compute.cloudflare_control(client.group_id) do
-      {:ok, control} -> control
-      {:error, :cloudflare_control_unbound} -> nil
-      {:error, _} = error -> error
+      {:ok, control} ->
+        if client.expected_owner == %{
+             "workload_id" => control["owner_id"],
+             "generation" => control["generation"]
+           },
+           do: control,
+           else: {:error, :stale_generation}
+
+      {:error, :cloudflare_control_unbound} ->
+        nil
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -395,15 +380,6 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
     end
   end
 
-  defp proxy_action("/control", :post, _), do: "connector_control"
-  defp proxy_action("/archive", :post, %{"action" => "status"}), do: "observe"
-  defp proxy_action("/archive", _, _), do: "import"
-
-  defp proxy_action("/archive/export" <> _, method, _) when method in [:post, :put, :delete],
-    do: "export"
-
-  defp proxy_action(_, _, _), do: "observe"
-
   @spec destroy(t(), String.t()) :: :ok | {:error, term()}
   def destroy(%__MODULE__{} = client, sandbox_id, opts \\ []) do
     with {:ok, _} <- seal_control(client, sandbox_id) do
@@ -421,48 +397,114 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
     end
   end
 
-  @spec checkpoint(t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def checkpoint(%__MODULE__{} = client, sandbox_id, opts \\ []) do
-    case archive_get(client, sandbox_id) do
-      {:ok, archive} ->
-        {:ok, %{"archive" => archive}}
+  @doc "Destroy the disk covered by an already persisted Workload disposal operation."
+  def discard(%__MODULE__{group_id: group} = client, id, expected) when is_binary(group) do
+    with {:ok, record} <- SalixStore.Compute.group_workload(group),
+         true <-
+           record["archive_reason"] == "disposable_reset" and
+             is_map(record["cloudflare_control"]) and
+             Map.take(record, ~w(workload_id generation cloudflare_control archive_operation_id)) ==
+               Map.take(
+                 expected,
+                 ~w(workload_id generation cloudflare_control archive_operation_id)
+               ) and
+             is_binary(record["provider_resource_name"]) and
+             get_in(record, ["provider_spec", "profile_key"]) in ~w(cf-standard-1 cf-standard-2) and
+             location_key(client, id) ==
+               get_in(record, ["provider_spec", "profile_key"]) <>
+                 ":" <>
+                 record["provider_resource_name"] do
+      permit = Map.put(record["cloudflare_control"], "claim_id", record["archive_operation_id"])
 
-      {:error, reason} ->
-        if Keyword.get(opts, :provider_neutral_required, false) do
-          {:error, reason}
+      with {:ok, observation} <- control_observation(client, id) do
+        if discarded_carrier?(observation, permit) do
+          {:ok, observation}
         else
-          body = %{"dir" => Keyword.get(opts, :dir, "/workspace")}
+          with :ok <- bind_discard_control(client, id, permit, observation),
+               :ok <- seal_discard_control(client, id, permit) do
+            result =
+              discard_request(client, id, "destroy", %{"discard" => true}, permit)
 
-          request_json(
-            client,
-            :post,
-            sandbox_path(client, sandbox_id, "checkpoint"),
-            body,
-            sandbox_id
-          )
+            # A lost response reads the same durable command. It never creates
+            # another native destroy or a new Gateway attempt ledger entry.
+            case control_observation(client, id) do
+              {:ok, terminal} ->
+                if discarded_carrier?(terminal, permit),
+                  do: {:ok, terminal},
+                  else: {:error, {:cloudflare_discard_unconfirmed, result}}
+
+              {:error, _} = error ->
+                error
+            end
+          end
+        end
+      end
+    else
+      false -> {:error, :cloudflare_discard_target_changed}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp bind_discard_control(client, id, permit, %{"control" => nil}) do
+    case discard_request(
+           client,
+           id,
+           "control",
+           %{"action" => "open", "control" => permit},
+           permit
+         ) do
+      {:ok, _} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp bind_discard_control(_client, _id, _permit, _observation), do: :ok
+
+  defp seal_discard_control(client, id, permit) do
+    case discard_request(
+           client,
+           id,
+           "control",
+           %{"action" => "seal", "control" => permit},
+           permit
+         ) do
+      {:ok, _} ->
+        :ok
+
+      {:error, _} = error ->
+        case control_observation(client, id) do
+          {:ok, %{"control" => %{"sealed" => true} = control}} ->
+            if Map.take(control, ~w(owner_id operation_id generation revision)) ==
+                 Map.take(permit, ~w(owner_id operation_id generation revision)),
+               do: :ok,
+               else: error
+
+          _ ->
+            error
         end
     end
   end
 
-  @spec backup(t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def backup(%__MODULE__{} = client, sandbox_id, opts \\ []) do
-    body = %{"dir" => Keyword.get(opts, :dir, "/workspace")}
-    request_json(client, :post, sandbox_path(client, sandbox_id, "checkpoint"), body, sandbox_id)
+  defp discard_request(client, id, suffix, body, permit) do
+    path = sandbox_path(client, id, suffix) |> controlled_path(permit)
+
+    {_certainty, result} =
+      attempt(client, :post, path, encode_body(body), id, 0, client.backoff_ms)
+
+    result
   end
 
-  @spec restore(t(), String.t(), term()) :: {:ok, map()} | {:error, term()}
-  def restore(%__MODULE__{} = client, sandbox_id, %{"type" => "connector_tar_gz"} = archive),
-    do: archive_put(client, sandbox_id, archive)
+  defp discarded_carrier?(observation, permit) do
+    control = observation["control"]
+    terminal = is_map(control) && control["last_terminal"]
+    keys = ~w(owner_id operation_id generation revision claim_id)
 
-  def restore(%__MODULE__{} = client, sandbox_id, archive),
-    do:
-      request_json(
-        client,
-        :post,
-        sandbox_path(client, sandbox_id, "restore"),
-        %{"archive" => archive},
-        sandbox_id
-      )
+    observation["running"] == false and observation["managed_commands_settled"] == true and
+      is_map(control) and control["sealed"] == true and control["pending"] == nil and
+      is_map(terminal) and terminal["action"] == "destroy" and terminal["outcome"] == "completed" and
+      Map.take(control, keys -- ["claim_id"]) == Map.take(permit, keys -- ["claim_id"]) and
+      Map.take(terminal, keys) == Map.take(permit, keys)
+  end
 
   @spec keepalive(t(), String.t(), boolean()) :: {:ok, map()} | {:error, term()}
   def keepalive(%__MODULE__{} = client, sandbox_id, keep_alive, opts \\ []),
@@ -477,224 +519,6 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
         sandbox_id,
         Keyword.get(opts, :purpose, :normal)
       )
-
-  @spec proxy(t(), String.t(), String.t(), keyword()) ::
-          {:ok, Req.Response.t()} | {:error, term()}
-  def proxy(%__MODULE__{} = client, sandbox_id, path, opts \\ []) do
-    proxy_path = sandbox_path(client, sandbox_id, "proxy/" <> String.trim_leading(path, "/"))
-    method = Keyword.get(opts, :method, :get)
-    body = Keyword.get(opts, :body)
-    encoded_body = encode_body(body)
-
-    with_gateway_attempt(
-      client,
-      Keyword.get(opts, :purpose, :normal),
-      sandbox_id,
-      proxy_action(path, method, body),
-      fn permit ->
-        proxy_path = controlled_path(proxy_path, permit)
-
-        case Req.request(
-               [
-                 method: method,
-                 url: client.base_url <> proxy_path,
-                 headers: request_headers(client, method, proxy_path, encoded_body, sandbox_id),
-                 body: encoded_body,
-                 retry: false
-               ] ++ client.req_options ++ Keyword.get(opts, :req_options, [])
-             ) do
-          {:ok, %Req.Response{status: status}} = result when status in 200..299 ->
-            {:settled, result}
-
-          {:ok, %Req.Response{} = response} = result ->
-            if Req.Response.get_header(response, "x-salix-container-response") == ["1"] or
-                 (response.status in 400..499 and response.status not in [408, 429]),
-               do: {:settled, result},
-               else: {:uncertain, result}
-
-          {:error, _} = result ->
-            {:uncertain, result}
-        end
-      end
-    )
-  end
-
-  @spec archive_get(t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def archive_get(%__MODULE__{} = client, sandbox_id) do
-    case proxy(client, sandbox_id, "/archive", purpose: :archive) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
-        with {:ok, raw} <- archive_body(body) do
-          {:ok,
-           %{
-             "type" => "connector_tar_gz",
-             "encoding" => "base64",
-             "byte_size" => byte_size(raw),
-             "data" => Base.encode64(raw)
-           }}
-        end
-
-      {:ok, %Req.Response{status: status, body: body}} ->
-        {:error, error_reason(status, body)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @doc "Begin a quiesced Connector export, or read its durable spool status."
-  def archive_export(
-        %__MODULE__{} = client,
-        sandbox_id,
-        operation,
-        method \\ :get,
-        format \\ nil,
-        transfers \\ nil,
-        scope \\ "full"
-      )
-      when method in [:get, :post, :delete] do
-    query =
-      if method == :post and is_binary(format),
-        do: %{"operation" => operation, "format" => format, "scope" => scope},
-        else: %{"operation" => operation}
-
-    path = "/archive/export?" <> URI.encode_query(query)
-    archive_export_request(client, sandbox_id, path, method, transfers)
-  end
-
-  @doc "Read one fixed-size chunk of a completed Connector export."
-  def archive_export_part(%__MODULE__{} = client, sandbox_id, operation, offset)
-      when is_integer(offset) and offset >= 0 do
-    path =
-      "/archive/export?" <>
-        URI.encode_query(%{"operation" => operation, "offset" => offset})
-
-    archive_export_request(client, sandbox_id, path, :get, nil)
-  end
-
-  @doc "Have Connector upload one local archive part directly to signed object URLs."
-  def archive_export_signed_part(%__MODULE__{} = client, sandbox_id, operation, offset, urls)
-      when is_integer(offset) and offset >= 0 and is_map(urls) do
-    path =
-      "/archive/export?" <>
-        URI.encode_query(%{"operation" => operation, "offset" => offset})
-
-    case proxy(client, sandbox_id, path,
-           method: :put,
-           body: urls,
-           purpose: :archive,
-           req_options: [receive_timeout: 75_000]
-         ) do
-      {:ok, %Req.Response{status: status, body: body}}
-      when status in 200..299 and is_map(body) ->
-        {:ok, body}
-
-      {:ok, %Req.Response{status: status, body: body}} ->
-        {:error, error_reason(status, body)}
-
-      {:error, _} = error ->
-        error
-    end
-  end
-
-  defp archive_export_request(client, sandbox_id, path, method, transfers) do
-    case proxy(client, sandbox_id, path,
-           method: method,
-           body: if(method == :post and is_list(transfers), do: %{"transfers" => transfers}),
-           purpose: :archive,
-           req_options: [receive_timeout: 20_000]
-         ) do
-      {:ok, %Req.Response{status: status, body: body}}
-      when status in 200..299 and is_map(body) ->
-        {:ok, body}
-
-      {:ok, %Req.Response{status: status, body: body}} ->
-        {:error, error_reason(status, body)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @doc "Write or complete a replayable chunked Connector import on a fresh Sandbox."
-  def archive_import(%__MODULE__{} = client, sandbox_id, body) when is_map(body) do
-    options = if body["action"] == "stream", do: [receive_timeout: 900_000], else: []
-
-    result =
-      if body["action"] == "status" and is_map(owner_control(client)),
-        do:
-          request_json(
-            client,
-            :get,
-            sandbox_path(client, sandbox_id, "receipt") <>
-              "?" <> URI.encode_query(%{"operation" => body["operation"]}),
-            nil,
-            sandbox_id,
-            :archive
-          ),
-        else:
-          proxy(client, sandbox_id, "/archive", method: :post, body: body, req_options: options)
-
-    case result do
-      {:ok, result} when is_map(result) and not is_struct(result) ->
-        with :ok <- confirm_control_terminal(client, sandbox_id), do: {:ok, result}
-
-      {:ok, %Req.Response{status: status, body: result}}
-      when status in 200..299 and is_map(result) ->
-        {:ok, result}
-
-      {:ok, %Req.Response{status: status, body: result}} ->
-        {:error, error_reason(status, result)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @spec archive_put(t(), String.t(), map()) :: {:ok, map()} | {:error, term()}
-  def archive_put(
-        %__MODULE__{} = client,
-        sandbox_id,
-        %{"encoding" => "base64", "data" => data} = archive
-      )
-      when is_binary(data) do
-    path =
-      case archive["restore_operation"] do
-        operation when is_binary(operation) ->
-          "/archive?" <> URI.encode_query(%{"operation" => operation})
-
-        _ ->
-          "/archive"
-      end
-
-    with {:ok, raw} <- Base.decode64(data),
-         {:ok, %Req.Response{status: status, body: body}} when status in 200..299 <-
-           proxy(client, sandbox_id, path, method: :put, body: raw) do
-      {:ok,
-       %{
-         "archive" => %{"type" => "connector_tar_gz"},
-         "restore" => normalize_archive_response(body)
-       }}
-    else
-      {:ok, %Req.Response{status: status, body: body}} -> {:error, error_reason(status, body)}
-      :error -> {:error, :invalid_archive_encoding}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @spec connect_request(t(), String.t()) :: signed_request()
-  def connect_request(%__MODULE__{} = client, sandbox_id, opts \\ []) do
-    path = sandbox_path(client, sandbox_id, "connect")
-
-    path =
-      if Keyword.get(opts, :archive_repair, false), do: path <> "?archive_repair=true", else: path
-
-    path = controlled_path(path, control_permit(client, Keyword.get(opts, :claim_id)))
-
-    %{
-      url: ws_url(client.base_url <> path),
-      headers: request_headers(client, :get, path, "", sandbox_id)
-    }
-  end
 
   defp request_json(client, method, path, body, sandbox_id, purpose \\ :normal) do
     encoded_body = encode_body(body)
@@ -735,7 +559,8 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
         action
       )
       when is_binary(group_id) do
-    operation_id = "gateway-" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+    operation_id =
+      "gateway-" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(12), padding: false)
 
     case attempt_metadata(client, action) do
       {:error, _} = error ->
@@ -747,7 +572,7 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
           operation_id,
           purpose,
           location_key(client, target_resource),
-          metadata
+          Map.put(metadata, "expected_owner", client.expected_owner)
         )
     end
   end
@@ -820,7 +645,10 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
                   )
               end
 
-              if match?({:ok, %{"status" => "ready"}}, result) and
+              if match?(
+                   {:ok, %{"status" => status}} when status in ["started", "running"],
+                   result
+                 ) and
                    is_binary(client.group_id) and is_binary(target_resource) do
                 case finish_gateway_starting(client, target_resource) do
                   :ok ->
@@ -887,7 +715,7 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
       {:ok, %Req.Response{status: status, body: body}} ->
         if retryable?(status) and n < client.max_retries and
              not String.contains?(path, "salix_control=") do
-          Process.sleep(backoff)
+          SystemsClock.sleep(backoff)
           attempt(client, method, path, encoded_body, sandbox_id, n + 1, backoff * 2)
         else
           result = {:error, error_reason(status, body)}
@@ -903,7 +731,7 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
   end
 
   defp sign_headers(client, method, path, encoded_body) do
-    timestamp = System.system_time(:second) |> Integer.to_string()
+    timestamp = SystemsClock.system_time(:second) |> Integer.to_string()
     nonce = random_hex(16)
     request_id = random_hex(16)
     signature = signature(client.secret, method, path, timestamp, nonce, encoded_body)
@@ -1000,20 +828,6 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
   defp normalize_body(body) when is_binary(body), do: Jason.decode!(body)
   defp normalize_body(body), do: body
 
-  defp normalize_archive_response(body) when is_map(body), do: body
-
-  defp normalize_archive_response(body) when is_binary(body) do
-    case Jason.decode(body) do
-      {:ok, decoded} -> decoded
-      {:error, _} -> %{"body" => body}
-    end
-  end
-
-  defp normalize_archive_response(body), do: body
-
-  defp archive_body(body) when is_binary(body), do: {:ok, body}
-  defp archive_body(_body), do: {:error, :not_binary_archive}
-
   defp error_reason(status, %{"error" => %{"code" => code, "message" => message}}),
     do: {:api_error, status, code, message}
 
@@ -1024,8 +838,6 @@ defmodule SalixEnv.VM.Providers.Cloudflare.Client do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
-  defp random_hex(bytes), do: :crypto.strong_rand_bytes(bytes) |> Base.encode16(case: :lower)
-
-  defp ws_url("https://" <> rest), do: "wss://" <> rest
-  defp ws_url("http://" <> rest), do: "ws://" <> rest
+  defp random_hex(bytes),
+    do: SystemsRuntime.Proc.random_bytes(bytes) |> Base.encode16(case: :lower)
 end

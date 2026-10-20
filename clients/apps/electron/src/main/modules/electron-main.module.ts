@@ -1,9 +1,9 @@
 import { LocalComputeOperator } from "./compute-node/local-operator";
+import { observeDesktopLaunch } from "../analytics-launch";
+import { ComputeNodeInstallAuthorization } from "./compute-node/install-authorization";
 import { LocalHostMaintenance } from "./compute-node/host-maintenance";
 import { homedir } from "node:os";
 import { AccountComputeNodeService } from "./compute-node/account-service";
-import { TokenDanceAuthorizationService } from "../tokendance-authorization";
-import { SubscriptionAuthorizationService } from "../subscription-authorization";
 import { getCommaReleaseConfig } from "../../release-config";
 import {
   AgentVMMHostPreparation,
@@ -11,8 +11,8 @@ import {
 } from "./compute-node/host-preparation";
 import type { ConnectorService } from "../connector";
 import { unavailableComputerUseBridge } from "@comma/native-bridge";
-import { DriveCatalogService } from "./synchronicity/catalog";
 import { AirDropService } from "./airdrop";
+import type { SpawnAirDropHelper } from "./airdrop/helper-process";
 import { AirDropSender } from "./airdrop/sender";
 import { resolveAirDropVfsPath } from "./airdrop/vfs-source";
 import { approveAirDropForChat } from "./airdrop/chat-intake";
@@ -21,21 +21,14 @@ import {
   type AirDropNotch,
   type AirDropPresentationPlatform,
 } from "./airdrop/reception";
-import { MeetingTaskService } from "./meeting-recorder/tasks";
 import { defaultLocalRoots } from "./synchronicity/default-root";
-import {
-  createCallerBoundSessionHistoryProvider,
-  type NativeSessionHistoryProvider,
-} from "./native";
-import { CommaAppRuntime } from "@comma/app/host-runtime";
 import {
   StatusTrayInProgressTasks,
   statusTrayPreferenceContent,
   type StatusTrayContent,
 } from "../status-tray";
-import { sessionHistoryStateChangedEvent } from "@comma/native-bridge";
+import { StatusTrayUsage } from "../status-tray-usage";
 import {
-  driveCatalogChangedEvent,
   type MeetingRecorderWindowLayout,
   type MeetingRecorderWindowDrag,
   defaultCommaClientSettings,
@@ -44,42 +37,40 @@ import {
   appPreferencesChangedEvent,
   browserSidebarChangedEvent,
   browserSidebarOpenTabRequestedEvent,
-  chatDraftsChangedEvent,
-  chatStateChangedEvent,
   connectorRuntimeStateChangedEvent,
   generatedNativeCapabilityManifest,
   messageNotificationsEvent,
-  productInboxStateChangedEvent,
   sessionStateChangedEvent,
   surfacesChangedEvent,
   audioCaptureStateChangedEvent,
   meetingPresenceStateChangedEvent,
-  meetingRecorderStateChangedEvent,
-  audioCaptureStartCapability,
-  audioCaptureStopCapability,
-  audioCaptureSelectMicrophoneCapability,
-  type MeetingRecorderState,
   computeNodeStateChangedEvent,
   unavailableBrowserSidebarState,
   type AppPreferences,
   type CommaOperatingSystem,
 } from "@comma/native-bridge";
+import { rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { baseLocale, type CommaLocale } from "@comma/i18n";
 import {
-  snapshotMatchesSessionProductLease,
   sessionProductLease,
   type SessionLifecycleSnapshot,
-  type SessionProductLease,
 } from "@comma/session-contract";
 import { randomBytes } from "node:crypto";
-import { ATTACHMENT_TRANSCODED_IMAGE_EXTENSIONS } from "@comma/app/chat-runtime";
-import { createMainChatCoordinatorOptions, type ChatCoordinator } from "./chat";
-import { createDarwinImageTranscoder } from "./chat/image-transcoder";
+import { ATTACHMENT_TRANSCODED_IMAGE_EXTENSIONS } from "@comma/core/chat";
+import { MainChat } from "./chat";
+import { createCoreChatPick } from "./chat/pick";
 import {
   MessageNotificationsService,
   type MessageNotificationsPlatform,
 } from "./message-notifications";
+import type { ProductInboxListResult, QuickChatMessage } from "@comma/core/contract";
+import {
+  CoreChannelService,
+  CoreHostService,
+  type CoreAppUpdates,
+  type LocalDriveSource,
+} from "./core";
 import {
   IpcGateway,
   NativeEventBus,
@@ -91,14 +82,10 @@ import {
   type NativeIpcLogger,
 } from "./ipc";
 import {
-  createCallerBoundProductInboxProvider,
   createSessionBoundChatProvider,
-  currentChatDraftsEnvelope,
-  currentChatStateEnvelope,
   ElectronClipboardService,
   NativeInfoService,
   ElectronShellService,
-  LocalDataDiagnosticsService,
   SessionService,
   TransportDiagnosticsService,
   registerNativeBridgeHandlers,
@@ -106,9 +93,8 @@ import {
   type ClipboardProvider,
   type NotchProvider,
   type PeersProvider,
-  type ProductInboxProvider,
+  type CoreProvider,
   type ShellProvider,
-  type SideChatProvider,
   type WindowAppearanceProvider,
   type WindowsProvider,
   type ComputeNodeProvider,
@@ -117,6 +103,7 @@ import {
 import { AppPreferencesService, type AppPreferencesPlatform } from "../app-preferences";
 import type { OnboardingWindowProvider } from "../onboarding-window";
 import type { NotchPresentation } from "../notch";
+import { QuickChatService, type QuickChatNotch } from "../quick-chat";
 import {
   openSystemNotificationSettings,
   systemNotificationsMayPost,
@@ -126,7 +113,6 @@ import type { DesktopGoogleAuthProvider } from "../google-desktop-auth";
 import { DownloadsService, type FilesProvider } from "./files/downloads";
 import type { FileApplicationsPlatform } from "./files/open-applications";
 import { SynchronicityNodeService, type SynchronicityProvider } from "./synchronicity";
-import { FileStore } from "./local-data";
 import {
   CHAT_UPLOAD_IMAGE_EXTENSIONS,
   LocalFilePickerService,
@@ -136,13 +122,10 @@ import {
 } from "./local-files";
 import {
   WorkspaceConnectorRuntimeService,
+  type StationHost,
   type WorkspaceConnectorRuntimeLike,
 } from "./connector-runtime";
 import { canonicalizeSessionAudience } from "./session/credential";
-import { startActivityReporter } from "./session/activity-reporter";
-import { openElectronLocalDataRepository } from "./local-data/electron-utility-host";
-import type { LocalDataRepository } from "../../shared/local-data";
-import { ProductInboxNativeDemandProvider, ProductInboxRuntime } from "./product-inbox";
 import { MainNativeSessionAdmissionGuard } from "./session";
 import { NativeSurfaceService } from "./surfaces";
 import {
@@ -153,7 +136,6 @@ import {
 } from "./browser-sidebar";
 import {
   AgentVMMCommandAdapter,
-  ComputeNodeInstallAuthorization,
   runCommand,
   type ComputeNodeRuntimeAdapter,
 } from "./compute-node";
@@ -171,16 +153,25 @@ import {
   BrowserSitePermissions,
   type SitePermissionPlatform,
 } from "./browser-sidebar/site-permissions";
+import type { BrowserImportPlatform } from "./browser-sidebar/browser-import";
+import type { HybridPasskeys } from "./browser-sidebar/hybrid";
 import { HelperRecordingEncoder } from "./audio-capture/encoder";
+import type { NativeAudioCapture } from "./audio-capture/native-audio";
 import { DriveRecordingStore } from "./audio-capture/drive-recordings";
 import { RecordingTranscriptionService } from "./audio-capture/transcription";
-import {
-  createCurrentMainSessionApiBinding,
-  createMainSessionFetch,
-} from "./session/main-session-transport";
+import { createCurrentMainSessionApiBinding } from "./session/main-session-transport";
 import { getCurrentNativeSessionAdmission } from "./session/native-session-admission";
+import type { RecordingTranscript } from "@comma/core/contract";
+import { profileName } from "./core/profile";
+import { authorizationReturnCsp } from "../authorization-return";
+import { loopbackAuthorizationPages } from "../subscription-authorization-page";
 import { MeetingPresenceService } from "./meeting-presence";
-import { MeetingRecorderService } from "./meeting-recorder";
+import {
+  createNativeAudioCaptureLoader,
+  type NativeAudioLogger,
+} from "./audio-capture/native-audio";
+import { MeetingRecorderMain } from "./meeting-recorder";
+import type { MeetingRecorderValue } from "@comma/core/contract";
 import { createMeetingAppIconReader } from "./meeting-presence/app-icon";
 import {
   ClientControlApiServer,
@@ -197,7 +188,8 @@ export interface ElectronMainRuntimeDeps {
   >;
   /** Receives the menu-bar menu's shortcuts and recent Tasks as they change. */
   onStatusTrayChanged?: (content: StatusTrayContent) => void;
-  onMeetingRecorderStateChanged?: (state: MeetingRecorderState) => void;
+  /** The client core's meeting recorder as it changes (the recorder window follows it). */
+  onMeetingRecorderStateChanged?: (state: MeetingRecorderValue) => void;
   confirmLocalDisposal?: (preview: {
     kind: "environment" | "registration";
     label: string;
@@ -211,6 +203,13 @@ export interface ElectronMainRuntimeDeps {
   layoutMeetingRecorderWindow?: (input: MeetingRecorderWindowLayout) => void;
   dragMeetingRecorderWindow?: (input: MeetingRecorderWindowDrag) => void;
   setMeetingRecorderInteractive?: (interactive: boolean) => void;
+  /**
+   * Loads the native audio SDK that meeting detection watches the machine's
+   * apps through. Defaults to the real SDK.
+   */
+  loadMeetingPresenceNative?:
+    | (() => Promise<NativeAudioCapture | undefined>)
+    | undefined;
   appPreferencesFilePath: string;
   appPreferencesPlatform: AppPreferencesPlatform;
   /** Bundle id used to open this app's row in the macOS Notifications pane. */
@@ -226,17 +225,44 @@ export interface ElectronMainRuntimeDeps {
   isDevelopment: boolean;
   fetch?: typeof fetch;
   googleAuth?: DesktopGoogleAuthProvider;
-  localDataDatabasePath: string;
-  localDataFileStorePath: string;
+  /**
+   * Where the client core keeps its databases. Absent (tests that do not run
+   * the core), `core.open` fails and no core process starts.
+   */
+  coreDataDir?: string | undefined;
+  /** The core's utility bundle; next to Main's by default. */
+  coreModulePath?: string | undefined;
+  /** An Electron e2e's: the core's clock moves only when the test says (`CoreHostService.advanceClock`). */
+  coreTestClock?: boolean | undefined;
+  /** An Electron e2e's: where its stations listen, by endpoint id. */
+  coreStationPeers?: Record<string, string[]> | undefined;
+  /** The mesh addon of the station the app carries: the core reaches stations on it. */
+  coreMeshAddon?: string | undefined;
+  /** The app's own updates, which the core schedules (absent: the app does not update itself). */
+  appUpdates?: CoreAppUpdates | undefined;
+  /**
+   * Brings the whole app back to a new install's state (Main's windows and services), as the client core asks once it
+   * cleared what it keeps. Absent: the core cannot reset the app.
+   */
+  resetApp?: (() => void) | undefined;
+  /**
+   * The cache of Tasks Main kept before the client core (`comma.sqlite`): the
+   * core brings an account's rows over once, when its own database is new.
+   */
+  legacyTasksDatabasePath?: string | undefined;
   localFileIndexRoot: string;
   /**
-   * Resolved salix-connect binary path for the Main-owned per-workspace
-   * connector runtime. Absent (tests, unbuilt dev) the runtime fails closed
-   * and local-file registration reports the connector as unavailable.
+   * This machine's station, where the Main-owned per-workspace connections
+   * run. Absent (tests, unbuilt dev) the runtime fails closed and local-file
+   * registration reports the connector as unavailable.
    */
-  connectorBinaryPath?: string | undefined;
+  station?: StationHost | undefined;
+  /** The Computer Use helper the app carries, for the connections' Computer Use. */
+  computerUseHelperApp?: string | undefined;
   airDropBinaryPath?: string | undefined;
   airDropSenderBinaryPath?: string | undefined;
+  /** Starts both AirDrop helpers. Absent, the binaries above run as processes. */
+  spawnAirDropHelper?: SpawnAirDropHelper | undefined;
   getAirDropSurfaceId?: () => string | undefined;
   /**
    * Toast focus, Notch actions, QuickLook previews and Finder. Absent (tests)
@@ -247,9 +273,9 @@ export interface ElectronMainRuntimeDeps {
   connectorFileRoot?: string | undefined;
   /** Per-workspace connector state root; defaults next to localFileIndexRoot. */
   connectorsRootDir?: string | undefined;
-  /** Stable release namespace propagated across the connector process boundary. */
+  /** Stable release namespace given to the station's connections. */
   connectorRuntimeNamespace?: string | undefined;
-  /** Electron-owned runtime root propagated across the connector process boundary. */
+  /** Electron-owned runtime root given to the station's connections. */
   connectorRuntimeRoot?: string | undefined;
   /**
    * E2E-only override: resolve registration targets from this legacy status
@@ -261,6 +287,18 @@ export interface ElectronMainRuntimeDeps {
   screenAccessStatus?: (() => ScreenAccessStatus) | undefined;
   /** Path to the MicCaptureHost helper; absent means system audio only. */
   microphoneHostPath?: string | undefined;
+  /**
+   * Quick Chat on macOS 26 and later: the QuickChatHost helper, the Notch that
+   * shows message delivery, and how its Home opens. Absent (tests) no helper runs.
+   */
+  quickChat?:
+    | {
+        hostPath: string;
+        notch: QuickChatNotch;
+        /** Shows the main window at an app route (Home, a Task's chat). */
+        openRoute(route: string): void;
+      }
+    | undefined;
   /**
    * The bundled synchronicity node. Absent binary (tests, unbuilt dev): the
    * node reports itself unavailable and nothing is spawned. `enabled: false`
@@ -280,13 +318,9 @@ export interface ElectronMainRuntimeDeps {
     | undefined;
   /** Stands in for the node behind the `synchronicity` bridge (the E2E's node in memory). */
   synchronicityProvider?: SynchronicityProvider | undefined;
-  openLocalDataRepository?:
-    | ((input: {
-        databasePath: string;
-        isCurrentSessionLease: (lease: SessionProductLease) => boolean;
-      }) => Promise<LocalDataRepository>)
-    | undefined;
   logger?: NativeIpcLogger;
+  /** Where the native audio loader reports how its first CoreAudio call went. */
+  nativeAudioLogger?: NativeAudioLogger | undefined;
   /** Main's language at startup; it then follows the stored app language. */
   locale?: CommaLocale;
   /** The stored app language changed; Main surfaces outside this module follow it. */
@@ -305,9 +339,6 @@ export interface ElectronMainRuntimeDeps {
    */
   notch: NotchProvider &
     AirDropNotch & { setPresentation(presentation: NotchPresentation): void };
-  productName?: string | undefined;
-  /** Main applies the General Side Chat switch to it. */
-  sideChat: SideChatProvider & { setEnabled(enabled: boolean): void };
   windowAppearance: WindowAppearanceProvider;
   observability?: NativeObservabilitySink;
   observabilityFileLocation?: string;
@@ -339,9 +370,10 @@ export interface ElectronMainRuntimeDeps {
     | undefined;
   browserAppBundleIdentifier?: string | undefined;
   browserSitePermissionPlatform?: SitePermissionPlatform | undefined;
-  createBrowserSidebarView?:
-    | ((cornerRadius: number) => BrowserSidebarViewLike)
-    | undefined;
+  browserImportPlatform?: BrowserImportPlatform | undefined;
+  /** Answers passkey requests of browser tabs with a phone. */
+  browserHybridPasskeys?: HybridPasskeys | undefined;
+  createBrowserSidebarView?: (() => BrowserSidebarViewLike) | undefined;
   createBrowserInspectionComposerView?: (() => BrowserSidebarViewLike) | undefined;
   browserInspectionComposerUrl?: string | undefined;
   readClipboardImage: () => Uint8Array | null;
@@ -367,41 +399,41 @@ export type AudioCaptureRuntime = AudioCaptureProvider &
 
 export interface ElectronMainContext {
   airdrop: AirDropService;
+  core: CoreProvider;
+  coreHost: CoreHostService | undefined;
   airDropReception: AirDropReception;
   airdropSender: AirDropSender;
   appPreferences: AppPreferencesRuntime;
   audioCapture: AudioCaptureRuntime;
   meetingPresence: MeetingPresenceService;
-  meetingRecorder: MeetingRecorderService;
+  meetingRecorder: MeetingRecorderMain;
   browserSidebar: BrowserSidebarProvider;
-  chat: ChatCoordinator;
+  chat: MainChat;
   clipboard: ClipboardProvider;
   connectorRuntime: WorkspaceConnectorRuntimeLike;
   files: FilesProvider;
-  fileStore: FileStore;
-  driveCatalog: DriveCatalogService;
   synchronicity: SynchronicityProvider;
   gateway: IpcGateway;
-  localData: LocalDataRepository;
-  localDataDiagnostics: LocalDataDiagnosticsService;
   localFiles: LocalFileSnapshotStore;
   localFilePicker: LocalFilePickerProvider;
   nativeEventBus: NativeEventBus;
   nativeInfo: NativeInfoService;
-  sessionHistory: NativeSessionHistoryProvider;
-  productInbox: ProductInboxProvider;
-  productInboxDemand: ProductInboxNativeDemandProvider<string>;
-  productInboxRuntime: ProductInboxRuntime;
   recommendationMedia: RecommendationMediaProvider;
   peers: PeersProvider;
   runtimeDeps: ElectronMainRuntimeDeps;
   secureSessionStore: SecureSessionStore;
   session: SessionService;
   sessionAdmissionGuard: MainNativeSessionAdmissionGuard;
-  subscriptionAuthorization: SubscriptionAuthorizationService;
-  tokenDanceAuthorization: TokenDanceAuthorizationService;
   shell: ShellProvider;
-  sideChat: SideChatProvider;
+  /**
+   * Quick Chat listens, as when ⌘ is held: the menu-bar item's click. False
+   * while it is not running (another platform, signed out, or its helper is down).
+   */
+  startQuickChat(): boolean;
+  /** The menu-bar menu opened: its usage is read again when a minute old. */
+  statusTrayUsageOpened(): void;
+  /** The menu-bar menu's Refresh: its usage is read again now. */
+  refreshStatusTrayUsage(): void;
   surfaces: NativeSurfaceService;
   transport: TransportDiagnosticsService;
   computeNode: ComputeNodeProvider;
@@ -409,6 +441,12 @@ export interface ElectronMainContext {
   windowAppearance: WindowAppearanceProvider;
   windows: WindowsProvider;
   close(): Promise<void>;
+  /**
+   * After `close`: deletes what the services kept on this device (preferences, the credential store, local file
+   * snapshots, connector, Drive node, recording, AirDrop and compute state, the Tasks and meeting files Main kept
+   * before the client core), so services started again find a new install's. The core clears its own.
+   */
+  erase(): Promise<void>;
 }
 
 const generatedNativePermissions = generatedNativeCapabilityManifest.map(
@@ -418,67 +456,6 @@ const mainWindowNativePermissions = generatedNativePermissions;
 const devWorkbenchNativePermissions = generatedNativeCapabilityManifest
   .filter(({ id }) => !id.startsWith("session.") || id === "session.state")
   .map(({ permission }) => permission);
-// Each window that shows the Router's name reads whether the onboarding window,
-// which can rename the Router, is open, and reads the name again once it closes.
-const sideChatWindowCapabilityIds = new Set([
-  "appPreferences.state",
-  "appearance.fontFamilies",
-  "appearance.setResolvedTheme",
-  "clipboard.readText",
-  "clipboard.readImage",
-  "clipboard.writeText",
-  "localFiles.pick",
-  "localFiles.preview",
-  "onboarding.window",
-  "session.state",
-  "windows.focus",
-  "sessionHistory.state",
-  "sessionHistory.load",
-  "sessionHistory.retain",
-  "sessionHistory.release",
-  "productInbox.state",
-  "productInbox.retain",
-  "productInbox.release",
-  "productInbox.refresh",
-  "sideChat.presentation",
-  "sideChat.setContentSize",
-  "sideChat.setInteractiveProgress",
-  "sideChat.finishInteractiveProgress",
-  "sideChat.close",
-  "sideChat.openSettings",
-  "sideChat.openTestWindow",
-  "shell.openExternal",
-]);
-const sideChatWindowNativePermissions = [
-  ...new Set(
-    generatedNativeCapabilityManifest
-      .filter(({ id }) => sideChatWindowCapabilityIds.has(id) || id.startsWith("chat."))
-      .map(({ permission }) => permission)
-  ),
-];
-const sideChatTestWindowNativePermissions = [
-  ...new Set(
-    generatedNativeCapabilityManifest
-      .filter(
-        ({ id }) =>
-          id === "session.state" ||
-          id === "appPreferences.state" ||
-          id === "clipboard.readText" ||
-          id === "clipboard.readImage" ||
-          id === "clipboard.writeText" ||
-          id === "localFiles.preview" ||
-          id === "onboarding.window" ||
-          id === "shell.openExternal" ||
-          id === "sideChat.presentation" ||
-          id === "sideChat.openTestWindow" ||
-          id === "sideChat.closeTestWindow" ||
-          id.startsWith("browserSidebar.") ||
-          id.startsWith("sessionHistory.") ||
-          id.startsWith("chat.")
-      )
-      .map(({ permission }) => permission)
-  ),
-];
 // The onboarding window reads the session and client settings, opens the
 // browser for plugin authorization, asks for the macOS grants, reads the
 // output volume for its sound, and closes itself; Main records its
@@ -489,6 +466,7 @@ const onboardingWindowCapabilityIds = new Set([
   "appPreferences.requestNotificationAuthorization",
   "computerUse.getPermissions",
   "computerUse.openPermissionFlow",
+  "core.open",
   "onboarding.closeWindow",
   "onboarding.outputVolume",
   "onboarding.window",
@@ -506,9 +484,23 @@ export async function createElectronMainContext(
   deps: ElectronMainRuntimeDeps
 ): Promise<ElectronMainContext> {
   const webContentsRegistry = new WebContentsRegistry();
+  const desktopLaunch = await observeDesktopLaunch({
+    appVersion: deps.appVersion,
+    filePath: join(dirname(deps.appPreferencesFilePath), "analytics-launch.json"),
+    priorProfilePaths: [
+      deps.appPreferencesFilePath,
+      deps.secureSessionFilePath,
+      deps.coreDataDir,
+      deps.legacyTasksDatabasePath,
+      deps.localFileIndexRoot,
+      deps.synchronicity?.dataDir ??
+        join(dirname(deps.localFileIndexRoot), "synchronicity"),
+    ].filter((path): path is string => path !== undefined),
+  });
   const nativeInfo = new NativeInfoService(
     () => ({
       appVersion: deps.appVersion,
+      ...(desktopLaunch ? { desktopLaunch } : {}),
       os: deps.getOperatingSystem(),
       platform: "electron",
     }),
@@ -564,7 +556,7 @@ export async function createElectronMainContext(
     }),
     registry: webContentsRegistry,
   });
-  let meetingRecorder: MeetingRecorderService | undefined;
+  let meetingRecorder: MeetingRecorderMain | undefined;
   let airdrop: AirDropService | undefined;
   let airDropShown: boolean | undefined;
   let airDropSavedName: string | null | undefined;
@@ -574,17 +566,18 @@ export async function createElectronMainContext(
       visible: preferences.showInNotch,
     });
   let statusTrayTasks: StatusTrayInProgressTasks | undefined;
+  let statusTrayUsage: StatusTrayUsage | undefined;
   let statusTrayPreferences: AppPreferences | undefined;
   // Preference and session callbacks can run before the ProductInbox runtime
   // exists; the menu-bar projection starts once it does.
   function followStatusTrayTasks() {
     if (!statusTrayTasks || !statusTrayPreferences) return;
     try {
-      statusTrayTasks.follow(
-        statusTrayPreferences.showInMenuBar
-          ? sessionProductLease(session.state())
-          : undefined
-      );
+      const lease = statusTrayPreferences.showInMenuBar
+        ? sessionProductLease(session.state())
+        : undefined;
+      statusTrayTasks.follow(lease);
+      statusTrayUsage?.follow(lease);
     } catch (error) {
       // The menu keeps its last Tasks; sign-in and preference changes continue.
       deps.logger?.warn("Menu-bar Tasks could not follow the session.", {
@@ -595,14 +588,20 @@ export async function createElectronMainContext(
   function publishStatusTray() {
     if (!statusTrayTasks || !statusTrayPreferences) return;
     deps.onStatusTrayChanged?.({
-      ...statusTrayPreferenceContent(statusTrayPreferences, deps.getOperatingSystem()),
+      ...statusTrayPreferenceContent(statusTrayPreferences),
       inProgressTasks: statusTrayTasks.tasks,
+      quickChat: quickChatAvailable,
+      usage: statusTrayUsage?.snapshot,
     });
   }
   // The app language is an account setting the renderer stores in client
   // settings; long-lived Main services read it at each use.
   let mainLocale: CommaLocale = deps.locale ?? baseLocale;
+  let chatLocaleChanged: ((locale: CommaLocale) => void) | undefined;
   const currentMainLocale = () => mainLocale;
+  let quickChat: QuickChatService | undefined;
+  /** A left click on the menu-bar item starts Quick Chat while it runs. */
+  let quickChatAvailable = false;
   const appPreferencesService = await AppPreferencesService.open({
     filePath: deps.appPreferencesFilePath,
     onStateChanged: (preferences) => {
@@ -610,10 +609,13 @@ export async function createElectronMainContext(
       if (preference && preference !== "system" && preference !== mainLocale) {
         mainLocale = preference;
         deps.onLocaleChanged?.(preference);
+        quickChat?.localeChanged();
+        // The core words chat's notices in it.
+        chatLocaleChanged?.(preference);
       }
       nativeEventBus.emit(appPreferencesChangedEvent, preferences);
       applyNotchPreferences(preferences);
-      deps.sideChat.setEnabled(preferences.sideChatEnabled);
+      quickChat?.setEnabled(preferences.quickChatEnabled);
       statusTrayPreferences = preferences;
       followStatusTrayTasks();
       publishStatusTray();
@@ -640,8 +642,6 @@ export async function createElectronMainContext(
   });
   // Before any window can write a scene, so a Notch turned off never starts.
   applyNotchPreferences(appPreferencesService.state());
-  // Before the helper starts, so Side Chat turned off never takes the chord.
-  deps.sideChat.setEnabled(appPreferencesService.state().sideChatEnabled);
   // Whether the OS lets Comma notify is read once at open and again around the
   // renderer's own state reads (it already re-reads on window focus for the
   // login item), so a change made in System Settings shows up without new
@@ -699,11 +699,21 @@ export async function createElectronMainContext(
   const appPreferences = deps.decorateAppPreferencesProvider
     ? deps.decorateAppPreferencesProvider(appPreferencesRuntime)
     : appPreferencesRuntime;
-  let chat: ChatCoordinator | undefined;
+  // Main's part of chat: the conversations are the client core's (`coreHost`, made below).
+  const chat = new MainChat(() => coreHost?.client());
+  // A window's file pick the core asks for: the dialog on that window, its files registered under the core's intake.
+  const pickForCore = createCoreChatPick({
+    chat,
+    picker: () => localFilePicker,
+    guard: {
+      runLease: (lease, handler) => sessionAdmissionGuard.runLease(lease, handler),
+    },
+    windowContents: (surfaceId) =>
+      webContentsRegistry.getWindowRegistration(surfaceId)?.window.webContents.id,
+  });
   const messageNotifications = deps.messageNotificationsPlatform
     ? new MessageNotificationsService({
         emitEvent: (payload) => nativeEventBus.emit(messageNotificationsEvent, payload),
-        locale: currentMainLocale,
         log: {
           warn: (message) =>
             deps.logger?.warn(message, { source: "message-notifications" }),
@@ -713,13 +723,10 @@ export async function createElectronMainContext(
         // The E2E decoration only gates response timing, so the owning service
         // is the synchronous read a notification decision needs.
         preferences: () => appPreferencesService.state(),
-        productName: deps.productName ?? "Comma",
         // A banner reply is a Main-owned command: no renderer call admits it,
         // so it takes the current-session fence itself.
         sendReply: async (target, text) => {
-          await sessionAdmissionGuard.runOwned(() =>
-            chat!.sendDetachedMessage(target, text)
-          );
+          await sessionAdmissionGuard.runOwned(() => chat.sendDetached(target, text));
         },
       })
     : undefined;
@@ -735,17 +742,19 @@ export async function createElectronMainContext(
     publish: (state) => nativeEventBus.emit(airDropStateChangedEvent, state),
   });
   let publishedSessionGeneration = 0;
+  let coreHost: CoreHostService | undefined;
+  let localDrive: LocalDriveSource | undefined;
   let computeNodeSession: AccountComputeNodeService | undefined;
 
+  // The client core runs the session lifecycle; Main keeps the credential, its gate, and the Google window.
   const session = new SessionService({
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
     ...(deps.googleAuth ? { googleAuth: deps.googleAuth } : {}),
     onSnapshotChanged: (state) => {
-      meetingRecorder?.sessionChanged();
       computeNodeSession?.sessionChanged(state);
+      quickChat?.sessionChanged(state);
       if (state.generation !== publishedSessionGeneration) {
         publishedSessionGeneration = state.generation;
-        chat?.reset();
         airDropReception.reset();
         void airdropSender?.reset();
         void airdrop
@@ -784,18 +793,65 @@ export async function createElectronMainContext(
     store: secureSessionStore,
     trustedAudience: deps.authApiBaseUrl,
   });
-  await session.initialize();
-  const localData = await (
-    deps.openLocalDataRepository ?? ((input) => openElectronLocalDataRepository(input))
-  )({
-    databasePath: deps.localDataDatabasePath,
-    isCurrentSessionLease: (lease) =>
-      snapshotMatchesSessionProductLease(session.state(), lease),
-  });
-  const fileStore = FileStore.open({
-    localData,
-    rootDir: deps.localDataFileStorePath,
-  });
+  const legacyMeetingTasksPath = join(
+    dirname(deps.secureSessionFilePath),
+    "meeting-tasks.json"
+  );
+  coreHost = deps.coreDataDir
+    ? new CoreHostService({
+        dataDir: deps.coreDataDir,
+        logger: deps.logger,
+        modulePath: deps.coreModulePath,
+        legacyTasksPath: deps.legacyTasksDatabasePath,
+        legacyMeetingTasksPath,
+        session,
+        testClock: deps.coreTestClock,
+        stationPeers: deps.coreStationPeers,
+        meshAddon: deps.coreMeshAddon,
+        desktop: {
+          start: {
+            app: {
+              urlScheme: getCommaReleaseConfig().urlScheme,
+              productName: getCommaReleaseConfig().productName,
+            },
+            pages: loopbackAuthorizationPages(deps.authorizationReturn?.url),
+            csp: authorizationReturnCsp,
+          },
+          // Present means a Router reply in Home reaches the person as a banner
+          // or in the open window; otherwise reminders also go to their
+          // Telegram/WeChat chats.
+          presence: () => {
+            const userActivity = deps.userActivity;
+            const preferences = appPreferencesService.state();
+            return {
+              idleSeconds: userActivity?.systemIdleSeconds() ?? 0,
+              homeRepliesShown:
+                !!userActivity &&
+                !!deps.messageNotificationsPlatform &&
+                userActivity.mainWindowOpen() &&
+                preferences.systemNotifications &&
+                preferences.notifyRouterMessages &&
+                systemNotificationsMayPost(preferences.systemNotificationsStatus),
+            };
+          },
+          openExternal: deps.openExternalUrl,
+          returnToApp: () => deps.authorizationReturn?.open(),
+          pickAttachments: (request, signal) => pickForCore(request, signal),
+          saveDownload: (input) => fileDownloads.saveDownload(input),
+          updates: deps.appUpdates,
+          reset: deps.resetApp,
+        },
+        // Asked by the client core, outside any native call: never cut short by one.
+        renderImagePreview: (input) =>
+          localFilePicker.renderImagePreview(input, new AbortController().signal),
+        // Set once the Drive node below exists; until then the core's reads say Drive is unavailable.
+        localDrive: () => localDrive,
+      })
+    : undefined;
+  coreHost?.start();
+  // The first windows depend on the session (the onboarding hold): wait for the core's startup probe, bounded so a
+  // core that cannot start leaves Main usable (its gate stays shut).
+  if (coreHost) await session.settled(15_000);
   const localFiles = await LocalFileSnapshotStore.open({
     rootDir: deps.localFileIndexRoot,
   });
@@ -804,22 +860,26 @@ export async function createElectronMainContext(
   const synchronicityDataDir =
     deps.synchronicity?.dataDir ??
     join(dirname(deps.localFileIndexRoot), "synchronicity");
+  const connectorsRootDir =
+    deps.connectorsRootDir ?? join(dirname(deps.localFileIndexRoot), "connectors");
   const connectorRuntime =
     deps.connectorRuntime ??
     new WorkspaceConnectorRuntimeService({
-      binaryPath: deps.connectorBinaryPath,
+      station: deps.station,
+      computerUseHelperApp: deps.computerUseHelperApp,
       clientControl: () => clientControlCredentials,
       connectorFileRoot: deps.connectorFileRoot ?? dirname(deps.localFileIndexRoot),
-      connectorsRootDir:
-        deps.connectorsRootDir ?? join(dirname(deps.localFileIndexRoot), "connectors"),
+      connectorsRootDir,
       runtimeNamespace: deps.connectorRuntimeNamespace,
       runtimeRoot: deps.connectorRuntimeRoot,
       synchBinaryPath: deps.synchronicity?.binaryPath,
       synchDataDir: synchronicityDataDir,
-      ...(deps.fetch ? { fetch: deps.fetch } : {}),
+      core: () => coreHost?.client(),
       localFileIndexRoot: deps.localFileIndexRoot,
-      onScopeStateChanged: (snapshot) =>
-        nativeEventBus.emit(connectorRuntimeStateChangedEvent, snapshot),
+      onScopeStateChanged: (snapshot) => {
+        nativeEventBus.emit(connectorRuntimeStateChangedEvent, snapshot);
+        chat.setClientDevices(clientDevices(snapshot));
+      },
       ...(deps.logger
         ? {
             log: {
@@ -860,12 +920,14 @@ export async function createElectronMainContext(
   if (deps.synchronicity?.enabled !== false) {
     void synchronicity.start();
   }
-  const driveCatalog = new DriveCatalogService(
-    deps.synchronicityProvider ?? synchronicity,
-    (state) => nativeEventBus.emit(driveCatalogChangedEvent, state)
-  );
+  const driveNode = deps.synchronicityProvider ?? synchronicity;
+  localDrive = driveNode;
+  const stopDriveChanges = driveNode.subscribeChanges?.(() => coreHost?.driveChanged());
   const localFileRegistrar = new LocalFileRouteRegistrationService({
-    ...(deps.fetch ? { fetch: deps.fetch } : {}),
+    call: (name, params) =>
+      coreHost
+        ? coreHost.client().call(name, params)
+        : Promise.reject(new Error("The Comma core is not running.")),
     onConnectorReconfigurationRequired: (workspaceId) =>
       connectorRuntime.recycle(workspaceId),
     prewarmTarget: (workspaceId) => connectorRuntime.prewarm(workspaceId),
@@ -873,123 +935,109 @@ export async function createElectronMainContext(
       connectorRuntime.registrationTarget(workspaceId, options),
     store: localFiles,
   });
-  const transcodeAttachment = createDarwinImageTranscoder();
   const localFilePicker = new LocalFilePickerService({
     registrar: localFileRegistrar,
     store: localFiles,
     uploadImageExtensions: [
       ...CHAT_UPLOAD_IMAGE_EXTENSIONS,
-      ...(transcodeAttachment ? ATTACHMENT_TRANSCODED_IMAGE_EXTENSIONS : []),
+      // The core transcodes HEIC on macOS (its utility process runs `sips`).
+      ...(process.platform === "darwin" ? ATTACHMENT_TRANSCODED_IMAGE_EXTENSIONS : []),
     ],
   });
-  const appRuntime = new CommaAppRuntime({
-    chat: createMainChatCoordinatorOptions({
-      getClientDeviceId: (workspaceId) =>
-        connectorRuntime
-          .scopeSnapshot()
-          .scopes.find((scope) => scope.workspaceId === workspaceId)?.deviceId,
-      ...(deps.fetch ? { fetch: deps.fetch } : {}),
-      locale: currentMainLocale,
-      ...(messageNotifications
-        ? {
-            onCanonicalMessagesAppended: (input) => {
-              void messageNotifications.handleAppendedMessages(input);
-            },
-          }
-        : {}),
-      ...(transcodeAttachment ? { transcodeAttachment } : {}),
-      onLocalFilesCommitted: async (files, committedAtMs) => {
-        await Promise.all(
-          files.map((file) => localFiles.markBound(file.localFileRef, committedAtMs))
-        );
-      },
-      onStateChanged: (state) => {
-        const envelope = currentChatStateEnvelope(session, state);
-        if (envelope) nativeEventBus.emit(chatStateChangedEvent, envelope);
-      },
-      renderGroupImagePreview: (input) => localFilePicker.renderImagePreview(input),
-      session,
-    }),
-    sessionHistory: {
-      authority: session.authority,
-      ...(deps.fetch ? { fetch: deps.fetch } : {}),
-    },
-    productInbox: {
-      authority: session.authority,
-      ...(deps.fetch ? { fetch: deps.fetch } : {}),
-      localData,
-      reportUnauthorized: (credential) => session.reportUnauthorized(credential),
-    },
+  const stopFollowingChat = chat.follow({
+    ...(messageNotifications
+      ? {
+          onAppended: (appended) => void messageNotifications.show(appended),
+        }
+      : {}),
+    onCommitted: (committed) =>
+      void Promise.all(
+        committed.files.map((file) =>
+          localFiles.markBound(file.localFileRef, committed.committedAtMs ?? undefined)
+        )
+      ),
   });
-  chat = appRuntime.chat;
-  chat.subscribeDrafts((drafts) => {
-    const envelope = currentChatDraftsEnvelope(session, drafts);
-    if (envelope) nativeEventBus.emit(chatDraftsChangedEvent, envelope);
-  });
-  const localDataDiagnostics = new LocalDataDiagnosticsService({
-    fileStore,
-    localData,
-    observabilityLocation: deps.observabilityFileLocation,
-  });
-  const sessionHistoryRuntime = appRuntime.sessionHistory;
-  const sessionHistory = createCallerBoundSessionHistoryProvider(sessionHistoryRuntime);
-  const stopSessionHistory = sessionHistoryRuntime.subscribe((envelope) => {
-    void nativeEventBus.emit(sessionHistoryStateChangedEvent, envelope);
-  });
-  const productInboxRuntime = appRuntime.productInbox;
-  const productInboxDemand = new ProductInboxNativeDemandProvider<string>({
-    publish: (windowId, envelope) =>
-      nativeEventBus.emit(productInboxStateChangedEvent, envelope, {
-        target: { type: "window", windowId },
-      }),
-    runtime: productInboxRuntime,
-  });
-  const releaseProductInboxDemand = webContentsRegistry.onWindowUnregistered(
-    (registration) => {
-      sessionHistoryRuntime.releaseAll(`${registration.id}:`);
-      productInboxDemand.releaseAll(registration.id);
-    }
-  );
-  const productInbox = createCallerBoundProductInboxProvider({
-    demand: productInboxDemand,
-  });
+  chat.setClientDevices(clientDevices(connectorRuntime.scopeSnapshot()));
+  chat.setLocale(currentMainLocale());
+  chatLocaleChanged = (locale) => chat.setLocale(locale);
   statusTrayPreferences = appPreferencesService.state();
   statusTrayTasks = new StatusTrayInProgressTasks({
     onChanged: publishStatusTray,
-    subscribe: (lease, listener) => productInboxRuntime.subscribe(lease, listener),
+    subscribe: (listener) =>
+      coreHost
+        ? coreHost.client().subscribe(
+            { topic: "tasks", workspace: "" },
+            // Null while the core has not read a list yet: nothing to show.
+            (value) => {
+              if (value) listener(value as ProductInboxListResult);
+            },
+            () => undefined
+          )
+        : () => undefined,
   });
+  if (coreHost) {
+    const host = coreHost;
+    statusTrayUsage = new StatusTrayUsage({
+      client: {
+        subscribe: (topic, onValue, onError) =>
+          host.client().subscribe(topic as never, onValue, onError),
+        call: (name, params) => host.client().call(name as never, params as never),
+      },
+      onChanged: publishStatusTray,
+    });
+  }
   followStatusTrayTasks();
   publishStatusTray();
-  const subscriptionAuthorization = new SubscriptionAuthorizationService(
-    () => ({
-      ...createCurrentMainSessionApiBinding({ session }),
-      signal: getCurrentNativeSessionAdmission().credential.signal,
-    }),
-    deps.openExternalUrl,
-    undefined,
-    deps.authorizationReturn
-  );
-  const tokenDanceAuthorization = new TokenDanceAuthorizationService(
-    () => ({
-      ...createCurrentMainSessionApiBinding({ session }),
-      signal: getCurrentNativeSessionAdmission().credential.signal,
-    }),
-    deps.openExternalUrl,
-    undefined,
-    undefined,
-    deps.authorizationReturn
-  );
   const transport = new TransportDiagnosticsService({
     messagePortRegistered: Boolean(deps.createPeerMessageChannel),
     observabilityLocation: deps.observabilityFileLocation,
   });
   const recommendationMedia = new RecommendationMediaService();
   const sessionAdmissionGuard = new MainNativeSessionAdmissionGuard(session.authority);
-  const recorderSession = () => {
-    const lease = sessionProductLease(session.state());
-    if (!lease) throw new Error("Sign in before recording a meeting.");
-    return lease;
-  };
+  if (deps.quickChat && coreHost) {
+    const host = coreHost;
+    quickChat = new QuickChatService({
+      sendMessage: async (params) =>
+        (await sessionAdmissionGuard.runOwned(() =>
+          host.client().call("quickChat.sendMessage", params)
+        )) as QuickChatMessage,
+      transcribe: async (audio, purpose) =>
+        (
+          (await sessionAdmissionGuard.runOwned(() =>
+            host.client().call("recordings.transcribe", { audio, purpose })
+          )) as RecordingTranscript
+        ).transcript,
+      hostPath: deps.quickChat.hostPath,
+      locale: currentMainLocale,
+      notch: deps.quickChat.notch,
+      onAvailableChanged: (available) => {
+        quickChatAvailable = available;
+        publishStatusTray();
+      },
+      // Turned off in Settings, no helper starts: it takes neither ⌘ nor the microphone.
+      enabled: appPreferencesService.state().quickChatEnabled,
+      openRoute: deps.quickChat.openRoute,
+      selectWorkspace: async (workspace) => {
+        await sessionAdmissionGuard.runOwned(() =>
+          host.client().call("workspace.select", { workspace })
+        );
+      },
+      productName: getCommaReleaseConfig().productName,
+      subscribeTasks: (listener) =>
+        host.client().subscribe(
+          { topic: "tasks", workspace: "" },
+          // Null while the core has not read a list yet.
+          (value) => {
+            if (value) listener(value as ProductInboxListResult);
+          },
+          () => undefined
+        ),
+    });
+    quickChat.sessionChanged(session.state());
+    // Settings offers the switch, and the shortcut, where this Mac can run it.
+    if (quickChat.supported)
+      appPreferencesService.setQuickChatSupported(true).catch(() => undefined);
+  }
   const recordingDrive = new DriveRecordingStore(
     deps.synchronicityProvider ?? synchronicity,
     deps.openDownloadedFilePath
@@ -999,196 +1047,120 @@ export async function createElectronMainContext(
     () => {
       const { credential } = getCurrentNativeSessionAdmission();
       return {
-        fetch: createMainSessionFetch({ credential, session }),
-        url: new URL("/v1/comma/me/recordings/transcribe", credential.audience),
         assertCurrent: () => {
           if (!session.authority.isCurrentProductCredential(credential)) {
             throw new Error("The recording's session ended.");
           }
         },
       };
-    }
+    },
+    (audio) =>
+      coreHost
+        ? (coreHost
+            .client()
+            .call("recordings.transcribe", { audio }) as Promise<RecordingTranscript>)
+        : Promise.reject(
+            new Error("Transcription is unavailable. The audio remains in Drive.")
+          )
   );
-  const meetingTasks = await MeetingTaskService.open({
-    reportFailure: (details) => deps.logger?.warn("Meeting submission failed", details),
-    writeOutput: (input) => (deps.synchronicityProvider ?? synchronicity).write(input),
-    filePath: join(dirname(deps.secureSessionFilePath), "meeting-tasks.json"),
-    account: () => {
-      const state = session.state();
-      return state.phase === "signed_in"
-        ? `${deps.authApiBaseUrl}:${state.principal.userId}`
-        : undefined;
-    },
-    runOwned: async (handler) => sessionAdmissionGuard.runOwned(handler),
-    publish: (key, state) => meetingRecorder?.acceptTask(key, state),
-    resolveRecovery: async (name) => {
-      if (!deps.resolveMeetingRecovery)
-        throw new Error("Open Comma to resolve the previous meeting Task.");
-      return deps.resolveMeetingRecovery(name);
-    },
-    bindSession: () => createCurrentMainSessionApiBinding({ session }),
-    ownerUserId: () => getCurrentNativeSessionAdmission().principalUserId,
-    files: localFiles,
-    registrar: localFileRegistrar,
+  // Audio capture and meeting detection share one SDK load, so the first
+  // CoreAudio call is made once, off Main's thread.
+  const loadNativeAudio = createNativeAudioCaptureLoader({
+    logger: deps.nativeAudioLogger,
   });
+  const recordingsDir = join(dirname(deps.localFileIndexRoot), "recordings");
   const audioCapture = new AudioCaptureService({
+    loadNative: loadNativeAudio,
     encoder: new HelperRecordingEncoder(deps.microphoneHostPath),
     onSaved: (recording, target, sourcePath) =>
       recordingTranscription.process(recording, target, sourcePath),
     onStateChanged: (state) => {
       nativeEventBus.emit(audioCaptureStateChangedEvent, state);
-      meetingRecorder?.acceptCapture(state);
+      meetingRecorder?.captureChanged(state);
     },
     openExternalUrl: deps.openExternalUrl,
-    recordingsDir: join(dirname(deps.localFileIndexRoot), "recordings"),
+    recordingsDir,
     microphone: deps.microphoneHostPath
       ? new HelperMicrophoneCapture({ executablePath: deps.microphoneHostPath })
       : undefined,
     screenAccessStatus: deps.screenAccessStatus,
     drive: recordingDrive,
   });
-  meetingRecorder = new MeetingRecorderService({
-    preferences: () =>
-      appPreferencesService.state().clientSettings ?? defaultCommaClientSettings,
-    account: () => {
-      const state = session.state();
-      return state.phase === "signed_in" ? state.principal.userId : undefined;
-    },
-    enterMeeting: (meeting) => meetingTasks.enter(meeting),
-    changeMeeting: (meeting, action) => meetingTasks.change(meeting, action),
-    retryMeetings: () => meetingTasks.retryPending(),
-    start: async (source, meeting) => {
-      if (!appPreferencesService.state().clientSettings?.meetingHideRecorder)
-        await deps.prepareMeetingRecorderWindow?.();
-      const input = {
-        session: recorderSession(),
-        source,
-        microphone: true,
+  // The client core runs the meeting recorder; Main captures, shows its window and keeps its files.
+  meetingRecorder = new MeetingRecorderMain({
+    capture: audioCapture,
+    guard: sessionAdmissionGuard,
+    files: localFiles,
+    registrar: localFileRegistrar,
+    write: (input) => (deps.synchronicityProvider ?? synchronicity).write(input),
+    preferences: () => {
+      const settings =
+        appPreferencesService.state().clientSettings ?? defaultCommaClientSettings;
+      return {
+        meetingStartRecording: settings.meetingStartRecording,
+        meetingHideRecorder: settings.meetingHideRecorder,
+        meetingSmartSummary: settings.meetingSmartSummary,
       };
-      return sessionAdmissionGuard.run({
-        contract: audioCaptureStartCapability.contract,
-        input,
-        handler: () => {
-          let archiveAtMs: number | undefined;
-          try {
-            archiveAtMs = meetingTasks.archiveTime(meeting.key);
-          } catch {
-            /* Audio remains available when Task sync is blocked. */
-          }
-          return audioCapture.start(input, archiveAtMs);
-        },
-      });
     },
-    stop: async ({ smartSummary, meetingKey }) => {
-      const input = { session: recorderSession() };
-      return sessionAdmissionGuard.run({
-        contract: audioCaptureStopCapability.contract,
-        input,
-        handler: async () => {
-          let finish!: (
-            receipt?: Awaited<ReturnType<MeetingTaskService["finalize"]>>
-          ) => void;
-          let fail!: (error: unknown) => void;
-          const summary = new Promise<Awaited<
-            ReturnType<MeetingTaskService["finalize"]>
-          > | void>((resolve, reject) => {
-            finish = resolve;
-            fail = reject;
-          });
-          // Attach a rejection handler immediately; the receipt owner observes the same promise.
-          void summary.catch(() => undefined);
-          const result = await audioCapture.stop(
-            input,
-            async (recording, _target, sourcePath) => {
-              try {
-                const receipt = await meetingTasks.finalize(
-                  meetingKey,
-                  recording,
-                  sourcePath,
-                  smartSummary
-                );
-                finish(receipt);
-              } catch (error) {
-                fail(error);
-              }
-            }
-          );
-          if (result.status !== "ready") {
-            finish();
-            return result;
-          }
-          return { ...result, summary };
-        },
-      });
+    ...(deps.prepareMeetingRecorderWindow
+      ? { prepareWindow: deps.prepareMeetingRecorderWindow }
+      : {}),
+    ...(deps.resolveMeetingRecovery
+      ? { resolveRecovery: deps.resolveMeetingRecovery }
+      : {}),
+    window: {
+      layout: (input) => deps.layoutMeetingRecorderWindow?.(input),
+      drag: (input) => deps.dragMeetingRecorderWindow?.(input),
+      setInteractive: (interactive) =>
+        deps.setMeetingRecorderInteractive?.(interactive),
     },
-    selectMicrophone: async (deviceId) => {
-      const input = { session: recorderSession(), deviceId };
-      return sessionAdmissionGuard.run({
-        contract: audioCaptureSelectMicrophoneCapability.contract,
-        input,
-        handler: () => audioCapture.selectMicrophone(input),
-      });
-    },
-    pause: () => audioCapture.pause(),
-    resume: () => audioCapture.resume(),
-    cancel: () => audioCapture.cancel(),
-    publish: (state) => {
-      nativeEventBus.emit(meetingRecorderStateChangedEvent, state);
-      deps.onMeetingRecorderStateChanged?.(state);
-    },
-    layoutWindow: (input) => deps.layoutMeetingRecorderWindow?.(input),
-    dragWindow: (input) => deps.dragMeetingRecorderWindow?.(input),
-    setInteractive: (interactive) => deps.setMeetingRecorderInteractive?.(interactive),
   });
+  const meetingRecorderMain = meetingRecorder;
+  if (coreHost) {
+    const host = coreHost;
+    meetingRecorderMain.connect((event) => host.meetingEvent(event));
+    host.setMeeting({
+      command: (call) => meetingRecorderMain.command(call),
+      events: () => meetingRecorderMain.events(),
+    });
+    host.client().subscribe(
+      { topic: "meetingRecorder" },
+      (value) => deps.onMeetingRecorderStateChanged?.(value as MeetingRecorderValue),
+      () => undefined
+    );
+  }
   const meetingPresence = new MeetingPresenceService({
     browserBundleIdentifier: deps.browserAppBundleIdentifier,
+    // Test apps skip the native SDK; otherwise detection shares the worker-first load.
+    loadNative: deps.loadMeetingPresenceNative ?? loadNativeAudio,
     readBrowserMeetings: async () => browserSidebarService?.readMeetings() ?? [],
     readAppIcon: createMeetingAppIconReader(deps.microphoneHostPath),
     onStateChanged: (state) => {
       nativeEventBus.emit(meetingPresenceStateChangedEvent, state);
-      meetingRecorder?.acceptPresence(state);
+      meetingRecorder?.presenceChanged(state);
     },
   });
-  void meetingTasks.retryPending();
   void audioCapture
     .state()
-    .then((state) => meetingRecorder?.acceptCapture(state))
+    .then((state) => meetingRecorder?.captureChanged(state))
     .catch(() => undefined);
-  const userActivity = deps.userActivity;
-  const activityReporter =
-    userActivity && deps.messageNotificationsPlatform
-      ? startActivityReporter({
-          // Present means a Router reply in Home reaches the person as a
-          // banner or in the open window; otherwise reminders also go to
-          // their Telegram/WeChat chats.
-          canShowHomeReplies: () => {
-            const preferences = appPreferencesService.state();
-            return (
-              userActivity.mainWindowOpen() &&
-              preferences.systemNotifications &&
-              preferences.notifyRouterMessages &&
-              systemNotificationsMayPost(preferences.systemNotificationsStatus)
-            );
-          },
-          fetcher: deps.fetch ?? fetch,
-          session,
-          systemIdleSeconds: userActivity.systemIdleSeconds,
-        })
-      : undefined;
-  const installAuthorization = new ComputeNodeInstallAuthorization(
-    session,
-    deps.fetch ?? fetch
+  const installAuthorization = new ComputeNodeInstallAuthorization(session, () =>
+    coreHost?.client()
   );
   const hostConfiguration = resolveHostConfiguration(getCommaReleaseConfig().flavor);
+  const localComputeJournalDirectory = join(
+    dirname(deps.secureSessionFilePath),
+    "local-compute-disposals"
+  );
   const localCompute = new LocalComputeOperator({
     lifecyclePath: deps.computeNodeLifecyclePath ?? hostConfiguration.lifecyclePath,
-    journalDirectory: join(
-      dirname(deps.secureSessionFilePath),
-      "local-compute-disposals"
-    ),
+    journalDirectory: localComputeJournalDirectory,
     run: runCommand,
     ...(deps.confirmLocalDisposal ? { confirm: deps.confirmLocalDisposal } : {}),
   });
+  const computeNodeFilePath =
+    deps.computeNodeFilePath ??
+    join(dirname(deps.secureSessionFilePath), "compute-node-intent.json");
   const computeNode = new AccountComputeNodeService(
     {
       adapter:
@@ -1201,12 +1173,11 @@ export async function createElectronMainContext(
       ...(!deps.computeNodeAdapter && !deps.computeNodeLifecyclePath
         ? { preparation: new AgentVMMHostPreparation(hostConfiguration, runCommand) }
         : {}),
-      filePath:
-        deps.computeNodeFilePath ??
-        join(dirname(deps.secureSessionFilePath), "compute-node-intent.json"),
+      filePath: computeNodeFilePath,
       onStateChanged: (state) =>
         nativeEventBus.emit(computeNodeStateChangedEvent, state),
       installAuthorization,
+      log: (line) => deps.logger?.warn(line, { source: "compute-node" }),
     },
     session.state(),
     localCompute,
@@ -1226,22 +1197,19 @@ export async function createElectronMainContext(
       nativeEventBus.emit(surfacesChangedEvent, state);
     },
   });
+  const browserSitePermissionsPath = join(
+    dirname(deps.appPreferencesFilePath),
+    "browser-site-permissions.json"
+  );
   browserSidebarService = deps.createBrowserSidebarView
     ? new NativeBrowserSidebarService({
-        createView: (windowId) =>
-          deps.createBrowserSidebarView!(
-            webContentsRegistry.getWindowRegistration(windowId)?.role ===
-              "side-chat-test-window"
-              ? 20
-              : 0
-          ),
+        hybridPasskeys: deps.browserHybridPasskeys,
+        createView: deps.createBrowserSidebarView,
+        browserImport: deps.browserImportPlatform,
         sitePermissions: deps.browserSitePermissionPlatform
           ? new BrowserSitePermissions(
               deps.browserSitePermissionPlatform,
-              join(
-                dirname(deps.appPreferencesFilePath),
-                "browser-site-permissions.json"
-              )
+              browserSitePermissionsPath
             )
           : undefined,
         createComposerView: deps.createBrowserInspectionComposerView,
@@ -1272,6 +1240,7 @@ export async function createElectronMainContext(
   const clientControlToken = randomBytes(32).toString("base64url");
   airdropSender = new AirDropSender({
     binaryPath: deps.airDropSenderBinaryPath,
+    ...(deps.spawnAirDropHelper ? { spawn: deps.spawnAirDropHelper } : {}),
     resolveVfs: (path) =>
       resolveAirDropVfsPath(path, deps.synchronicityProvider ?? synchronicity),
     bindSession: () => {
@@ -1282,9 +1251,11 @@ export async function createElectronMainContext(
       };
     },
   });
+  const airDropDataDir = join(dirname(deps.secureSessionFilePath), "airdrop");
   airdrop = new AirDropService({
     binaryPath: deps.airDropBinaryPath,
-    dataDir: join(dirname(deps.secureSessionFilePath), "airdrop"),
+    ...(deps.spawnAirDropHelper ? { spawn: deps.spawnAirDropHelper } : {}),
+    dataDir: airDropDataDir,
     resolveName: async () => {
       const saved = appPreferencesService.state().airDropName;
       if (saved !== null) return saved;
@@ -1293,11 +1264,9 @@ export async function createElectronMainContext(
         throw new Error("AirDrop starts only for a signed-in account.");
       let name: string | null | undefined;
       try {
-        ({ name } = await sessionAdmissionGuard.runOwned(() =>
-          createCurrentMainSessionApiBinding({ session }).api.getProfile({
-            signal: AbortSignal.timeout(5_000),
-          })
-        ));
+        name = await sessionAdmissionGuard.runOwned(() =>
+          coreHost ? profileName(coreHost.client(), 5_000) : Promise.resolve(null)
+        );
       } catch {
         // Offline, AirDrop still works nearby and the email names the account.
       }
@@ -1311,7 +1280,7 @@ export async function createElectronMainContext(
           offer,
           signal,
           surfaceId: deps.getAirDropSurfaceId?.(),
-          chat: appRuntime.chat,
+          chat,
           picker: localFilePicker,
           reception: airDropReception,
         });
@@ -1340,6 +1309,10 @@ export async function createElectronMainContext(
   if (session.state().phase === "signed_in" && airDropShown) {
     void airdrop.start().catch(() => deps.logger?.warn("AirDrop could not start.", {}));
   }
+  const clientControlArtifactRoot = join(
+    dirname(deps.secureSessionFilePath),
+    "client-control-artifacts"
+  );
   const clientControlApi = await ClientControlApiServer.open({
     registry: createCommaClientControlRegistry({
       airdrop,
@@ -1353,10 +1326,7 @@ export async function createElectronMainContext(
         cancel: (id) => sessionAdmissionGuard.runOwned(() => airdropSender!.cancel(id)),
       },
       appPreferences,
-      artifactRoot: join(
-        dirname(deps.secureSessionFilePath),
-        "client-control-artifacts"
-      ),
+      artifactRoot: clientControlArtifactRoot,
       browser: clientControlBrowser,
       deviceAccess: async (workspaceId, allow) => {
         const state = await connectorRuntime.setScope(
@@ -1377,6 +1347,9 @@ export async function createElectronMainContext(
   const windows =
     deps.createWindowCommands?.({ surfaces, webContentsRegistry }) ??
     unavailableWindowsProvider;
+  const core = coreHost
+    ? new CoreChannelService({ host: coreHost, registry: webContentsRegistry })
+    : unavailableCoreProvider;
   const peers = deps.createPeerMessageChannel
     ? new NativePeerBrokerService({
         createMessageChannel: deps.createPeerMessageChannel,
@@ -1407,6 +1380,8 @@ export async function createElectronMainContext(
   return {
     appPreferences,
     airdrop,
+    core,
+    coreHost,
     airDropReception,
     airdropSender,
     audioCapture,
@@ -1417,30 +1392,22 @@ export async function createElectronMainContext(
     clipboard,
     connectorRuntime,
     files: fileDownloads,
-    fileStore,
-    driveCatalog,
     synchronicity: deps.synchronicityProvider ?? synchronicity,
     gateway,
-    localData,
-    localDataDiagnostics,
     localFiles,
     localFilePicker,
     nativeEventBus,
     nativeInfo,
-    sessionHistory,
-    productInbox,
-    productInboxDemand,
-    productInboxRuntime,
     recommendationMedia,
     peers,
     runtimeDeps: deps,
     secureSessionStore,
     session,
     sessionAdmissionGuard,
-    subscriptionAuthorization,
-    tokenDanceAuthorization,
     shell,
-    sideChat: deps.sideChat,
+    startQuickChat: () => quickChat?.listen() ?? false,
+    statusTrayUsageOpened: () => statusTrayUsage?.opened(),
+    refreshStatusTrayUsage: () => statusTrayUsage?.refresh(),
     surfaces,
     transport,
     computeNode,
@@ -1448,37 +1415,53 @@ export async function createElectronMainContext(
     windowAppearance: deps.windowAppearance,
     windows,
     async close() {
-      // Modeled in tla/app-preferences/AppPreferences.tla: seal admission and
-      // drain every accepted preference mutation before teardown can complete.
+      // Seal admission and drain every accepted preference mutation before
+      // teardown can complete.
       await appPreferences.close();
-      activityReporter?.close();
       await airdrop?.close();
       airDropReception.close();
       await airdropSender?.close();
       // A live tap must not outlive Main; drop it before the snapshot store goes.
       await meetingPresence.close();
-      meetingRecorder?.close();
-      await meetingTasks.close();
       await audioCapture.close();
       clearInterval(localFileCleanupTimer);
       await localFileStartupCleanup.close();
       // Workspace connector children must not outlive Main; stop them before
       // the snapshot store and Session credential gate go away.
       await connectorRuntime.close();
-      driveCatalog.close();
+      stopDriveChanges?.();
       await synchronicity.close();
       await clientControlApi.close();
       await localFiles.close();
-      subscriptionAuthorization.dispose();
-      tokenDanceAuthorization.dispose();
       await browserSidebarService?.dispose();
       statusTrayTasks?.follow(undefined);
-      releaseProductInboxDemand();
-      stopSessionHistory();
-      productInboxDemand.close();
-      appRuntime.close();
+      // The helper takes ⌘ and the microphone; it must not outlive Main.
+      quickChat?.close();
+      stopFollowingChat();
+      coreHost?.close();
       await session.close();
-      await localData.close();
+      gateway.close();
+    },
+    async erase() {
+      await Promise.all(
+        [
+          deps.appPreferencesFilePath,
+          deps.secureSessionFilePath,
+          legacyMeetingTasksPath,
+          deps.legacyTasksDatabasePath,
+          deps.localFileIndexRoot,
+          connectorsRootDir,
+          synchronicityDataDir,
+          recordingsDir,
+          computeNodeFilePath,
+          localComputeJournalDirectory,
+          airDropDataDir,
+          clientControlArtifactRoot,
+          browserSitePermissionsPath,
+        ].map(
+          (path) => path && rm(path, { force: true, maxRetries: 2, recursive: true })
+        )
+      );
     },
   };
 }
@@ -1517,27 +1500,21 @@ export function registerNativeBridgeHandlersFromContext(context: ElectronMainCon
       : {}),
     chat: createSessionBoundChatProvider(context.chat, context.localFilePicker),
     clipboard: context.clipboard,
+    core: context.core,
     files: context.files,
     gateway: context.gateway,
-    localData: context.localDataDiagnostics,
     localFiles: context.localFilePicker,
     nativeInfo: context.nativeInfo,
     notch: context.runtimeDeps.notch,
-    sessionHistory: context.sessionHistory,
-    productInbox: context.productInbox,
     recommendationMedia: context.recommendationMedia,
     peers: context.peers,
     session: context.session,
     sessionAdmissionGuard: context.sessionAdmissionGuard,
-    subscriptionAuthorization: context.subscriptionAuthorization,
-    tokenDanceAuthorization: context.tokenDanceAuthorization,
     shell: context.shell,
-    sideChat: context.sideChat,
     surfaces: context.surfaces,
     transport: context.transport,
     computeNode: context.computeNode,
     connectorRuntime,
-    driveCatalog: context.driveCatalog,
     synchronicity: context.synchronicity,
     windowAppearance: context.windowAppearance,
     windows: context.windows,
@@ -1556,6 +1533,12 @@ const unavailableWindowsProvider: WindowsProvider = {
   },
 };
 
+const unavailableCoreProvider: CoreProvider = {
+  open(_input?: void) {
+    throw new Error("The Comma core is unavailable in this runtime.");
+  },
+};
+
 const unavailablePeersProvider: PeersProvider = {
   connect() {
     throw new Error("Peer channels are unavailable in this runtime.");
@@ -1563,6 +1546,12 @@ const unavailablePeersProvider: PeersProvider = {
 };
 
 const unavailableBrowserSidebarProvider: BrowserSidebarProvider = {
+  listImportProfiles() {
+    return { profiles: [] };
+  },
+  importCookies() {
+    return { status: "unavailable" };
+  },
   showPermissions() {
     return { status: "unavailable" };
   },
@@ -1570,6 +1559,9 @@ const unavailableBrowserSidebarProvider: BrowserSidebarProvider = {
     return { status: "unavailable" };
   },
   close() {
+    return unavailableBrowserSidebarState;
+  },
+  dismissPasskey() {
     return unavailableBrowserSidebarState;
   },
   inspect() {
@@ -1651,8 +1643,7 @@ function grantsByRole({ isDevelopment }: { isDevelopment: boolean }) {
     "main-window": mainWindowNativePermissions,
     "site-permission-menu": ["site-permission-menu.control", "app-preferences.read"],
     "meeting-recorder-window": [
-      "meeting-recorder.read",
-      "meeting-recorder.control",
+      "core.open",
       "meeting-recorder.window",
       "audio-capture.read",
       "audio-capture.settings",
@@ -1660,8 +1651,6 @@ function grantsByRole({ isDevelopment }: { isDevelopment: boolean }) {
       "app-preferences.read",
     ],
     "onboarding-window": onboardingWindowNativePermissions,
-    "side-chat-test-window": sideChatTestWindowNativePermissions,
-    "side-chat-window": sideChatWindowNativePermissions,
     ...(isDevelopment ? { "dev-workbench": devWorkbenchNativePermissions } : {}),
   };
 }
@@ -1670,4 +1659,14 @@ function createNativePermissionPolicy({ isDevelopment }: { isDevelopment: boolea
   return createRolePermissionPolicy({
     grantsByRole: grantsByRole({ isDevelopment }),
   });
+}
+
+/** The connector's device id in each workspace it serves. */
+function clientDevices(snapshot: {
+  scopes: readonly { workspaceId: string; deviceId?: string | undefined }[];
+}): Record<string, string> {
+  const devices: Record<string, string> = {};
+  for (const scope of snapshot.scopes)
+    if (scope.deviceId) devices[scope.workspaceId] = scope.deviceId;
+  return devices;
 }

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_developer">Developer</string>
+    <string name="settings_developer_backend">Backend</string>
+    <string name="settings_developer_build">Build</string>
+    <string name="settings_developer_generation">Session generation</string>
+    <string name="settings_developer_network_log">Network error log</string>
+    <string name="settings_developer_network_log_empty">No network errors yet.</string>
+    <string name="settings_developer_unset">None</string>
+</resources>

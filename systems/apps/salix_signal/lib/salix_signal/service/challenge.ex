@@ -112,7 +112,7 @@ defmodule SalixSignal.Service.Challenge do
 
     case result do
       {:retry, _reason} when n < retries ->
-        Process.sleep(Backoff.delay_ms(n, backoff))
+        SystemsClock.sleep(Backoff.delay_ms(n, backoff))
         attempt(chat, answer, n + 1, retries, backoff)
 
       {:retry, reason} ->

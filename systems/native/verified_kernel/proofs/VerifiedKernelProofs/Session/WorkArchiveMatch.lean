@@ -4,6 +4,7 @@ import VerifiedKernelProofs.Provider.Dispatch
 import VerifiedKernelProofs.Session.WorkValueSemantics
 import VerifiedKernel.Session.ArchiveMatch
 import VerifiedKernel.Dispatch
+import VerifiedKernelProofs.Loop.QueryAnswers
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data
@@ -19,7 +20,8 @@ local instance : LawfulBEq ByteArray where
     exact beq_self_eq_true _
 
 theorem archive_match_registered :
-    lookupOp queryTable (a "archive_match_prefix") = some ArchiveMatch.check := rfl
+    lookupOp queryTable (a "archive_match_prefix") = some ArchiveMatch.check :=
+  LoopProof.QueryAnswers.archive_match_prefix
 
 theorem archive_match_dispatch {s args result : Term} {j r : List Term}
     (admitted : Schema.admissible (list j) = true)

@@ -1,22 +1,18 @@
 import userEvent from "@testing-library/user-event";
-import { render, screen, waitFor } from "@comma/test-utils/render";
+import type { ResolvedWorkspace } from "@comma/core/contract";
+import { flush } from "@comma/test-utils/fake-clock";
+import { act, render, screen } from "@comma/test-utils/render";
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ConnectorRuntimeScopeSnapshot,
   NativeStateBridge,
 } from "@comma/native-bridge";
-import { writeActiveWorkspaceId } from "../components/activeWorkspace";
 import { useCommaConnectorScope } from "../components/useCommaConnectorScope";
 
-const api = {
-  listWorkspaces: async () => {
-    const response = await fetch("https://api.example/v1/comma/workspaces");
-    return (await response.json()).data;
-  },
-};
 function ScopeConsumer() {
-  const scope = useCommaConnectorScope(true, api);
+  const scope = useCommaConnectorScope(true);
   return (
     <input
       type="checkbox"
@@ -31,7 +27,24 @@ function ScopeConsumer() {
     />
   );
 }
-const renderScope = () => render(<ScopeConsumer />);
+/**
+ * Renders the hook over a core that answers the workspace the app works in with `workspaceId` (`selected`: whether
+ * the user ever selected one; the core falls back to the first when the selected one is gone,
+ * core/test/workspace.test.ts).
+ */
+function renderScope(workspaceId: string, selected = true) {
+  const core = createScriptedCore({
+    values: (topic) =>
+      topic.topic === "workspace"
+        ? ({
+            status: "ready",
+            workspace: { id: workspaceId, groupId: "grp-1", name: "Workspace 1" },
+            selected,
+          } satisfies ResolvedWorkspace)
+        : undefined,
+  });
+  render(core.wrap(<ScopeConsumer />));
+}
 function createConnectorRuntimeState(initial: ConnectorRuntimeScopeSnapshot) {
   let current = initial;
   const listeners = new Set<(snapshot: ConnectorRuntimeScopeSnapshot) => void>();
@@ -54,33 +67,9 @@ function createConnectorRuntimeState(initial: ConnectorRuntimeScopeSnapshot) {
   };
 }
 
-function installWorkspaceList(workspaceIds: readonly string[]) {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(input.toString(), "https://api.example");
-      if (url.pathname !== "/v1/comma/workspaces") {
-        throw new Error(`Unexpected request: ${url.pathname}`);
-      }
-      return new Response(
-        JSON.stringify({
-          data: workspaceIds.map((id, index) => ({
-            group_id: `grp-${index + 1}`,
-            id,
-            name: `Workspace ${index + 1}`,
-          })),
-        }),
-        { headers: { "content-type": "application/json" }, status: 200 }
-      );
-    })
-  );
-}
-
 describe("useCommaConnectorScope", () => {
   afterEach(() => vi.unstubAllGlobals());
   it("changes Connector scope for only the explicit active workspace", async () => {
-    writeActiveWorkspaceId("wsp_settings");
-    installWorkspaceList(["wsp_settings"]);
     const connectorState = createConnectorRuntimeState({
       revision: 1,
       scopes: [
@@ -117,25 +106,23 @@ describe("useCommaConnectorScope", () => {
       connectorRuntime: { scope, setScope, state: connectorState.state },
       platform: "electron",
     });
-    renderScope();
+    renderScope("wsp_settings");
+    await flush();
 
     const toggle = screen.getByRole("switch", { name: "Connector scope" });
-    await waitFor(() => expect(toggle).toBeEnabled());
+    expect(toggle).toBeEnabled();
     expect(toggle).toBeChecked();
-    await userEvent.click(toggle);
+    await userEvent.setup({ advanceTimers: vi.advanceTimersByTime }).click(toggle);
+    await flush();
 
-    await waitFor(() =>
-      expect(setScope).toHaveBeenCalledWith({
-        scope: "local_file_read",
-        workspaceId: "wsp_settings",
-      })
-    );
-    await waitFor(() => expect(toggle).not.toBeChecked());
+    expect(setScope).toHaveBeenCalledWith({
+      scope: "local_file_read",
+      workspaceId: "wsp_settings",
+    });
+    expect(toggle).not.toBeChecked();
   });
 
   it("applies a newer runtime-pushed restricted scope", async () => {
-    writeActiveWorkspaceId("wsp_restart");
-    installWorkspaceList(["wsp_restart"]);
     const connectorState = createConnectorRuntimeState({
       revision: 1,
       scopes: [
@@ -159,71 +146,58 @@ describe("useCommaConnectorScope", () => {
       },
       platform: "electron",
     });
-    renderScope();
+    renderScope("wsp_restart");
+    await flush();
 
     const toggle = screen.getByRole("switch", { name: "Connector scope" });
-    await waitFor(() => expect(toggle).toBeChecked());
-    connectorState.emit({
-      revision: 2,
-      scopes: [
-        {
-          available: true,
-          scope: "local_file_read",
-          workspaceId: "wsp_restart",
-        },
-      ],
-    });
+    expect(toggle).toBeChecked();
+    act(() =>
+      connectorState.emit({
+        revision: 2,
+        scopes: [
+          {
+            available: true,
+            scope: "local_file_read",
+            workspaceId: "wsp_restart",
+          },
+        ],
+      })
+    );
+    await flush();
 
-    await waitFor(() => expect(toggle).not.toBeChecked());
-    connectorState.emit({
-      revision: 1,
-      scopes: [
-        {
-          available: true,
-          scope: "",
-          workspaceId: "wsp_restart",
-        },
-      ],
-    });
-    await Promise.resolve();
+    expect(toggle).not.toBeChecked();
+    act(() =>
+      connectorState.emit({
+        revision: 1,
+        scopes: [
+          {
+            available: true,
+            scope: "",
+            workspaceId: "wsp_restart",
+          },
+        ],
+      })
+    );
+    await flush();
     expect(toggle).not.toBeChecked();
     expect(scope).toHaveBeenCalledTimes(1);
   });
 
-  it("validates a stale persisted workspace before starting its Connector", async () => {
-    writeActiveWorkspaceId("wsp_deleted");
-    installWorkspaceList(["wsp_live"]);
-    const connectorState = createConnectorRuntimeState({
-      revision: 1,
-      scopes: [
-        {
-          available: true,
-          scope: "local_file_read",
-          workspaceId: "wsp_live",
-        },
-      ],
-    });
-    const scope = vi.fn(async ({ workspaceId }: { workspaceId: string }) => ({
-      available: true,
-      scope: "local_file_read" as const,
-      workspaceId,
-    }));
+  it("starts no Connector before the user selected a workspace", async () => {
+    const scope = vi.fn();
     installNativeBridgeMock({
       connectorRuntime: {
         scope,
         setScope: vi.fn(),
-        state: connectorState.state,
+        state: createConnectorRuntimeState({ revision: 1, scopes: [] }).state,
       },
       platform: "electron",
     });
 
-    renderScope();
+    renderScope("wsp_first", false);
+    await flush();
 
-    await waitFor(() =>
-      expect(screen.getByRole("switch", { name: "Connector scope" })).toBeEnabled()
-    );
-    expect(scope).toHaveBeenCalledWith({ workspaceId: "wsp_live" });
-    expect(scope).not.toHaveBeenCalledWith({ workspaceId: "wsp_deleted" });
-    expect(localStorage.getItem("comma.activeWorkspaceId")).toBe("wsp_live");
+    expect(screen.getByRole("switch", { name: "Connector scope" })).toBeDisabled();
+    expect(scope).not.toHaveBeenCalled();
   });
 });

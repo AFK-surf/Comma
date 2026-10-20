@@ -92,7 +92,7 @@ defmodule BridgeForTeams.TriageOnlineCaseFixture do
     # Replay the captured input through the current runtime profile and product
     # policy. Historical wire options describe the old run, not this treatment.
     authority = Fixture.seed_authority!()
-    Harness.seed_agent_template!(authority, profile)
+    Harness.seed_router!(authority, profile)
 
     assert {:ok, provider_opts} =
              SalixAgent.LlmResolver.resolve_runtime(authority["inbound_agent_id"])

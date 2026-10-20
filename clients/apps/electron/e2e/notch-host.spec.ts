@@ -9,54 +9,58 @@ const canRunNotchHost = process.platform === "darwin" && existsSync(hostPath);
 
 test.skip(!canRunNotchHost, "The native NotchHost binary is available only on macOS.");
 
-test("native NotchHost appears for an in-progress Task and hides for an empty projection", async () => {
-  const host = spawn(hostPath, [], {
-    env: {
-      LANG: process.env.LANG ?? "en_US.UTF-8",
-      PATH: process.env.PATH ?? "/usr/bin:/bin",
-    },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  const lines = createInterface({ input: host.stdout });
-  const harness = new NotchHostHarness(host, lines);
-
-  try {
-    await expect(harness.nextEvent()).resolves.toMatchObject({
-      payload: { hasActivity: false, running: true },
-      type: "ready",
+test(
+  "native NotchHost appears for an in-progress Task and hides for an empty projection",
+  { tag: "@mac" },
+  async () => {
+    const host = spawn(hostPath, [], {
+      env: {
+        LANG: process.env.LANG ?? "en_US.UTF-8",
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+      },
+      stdio: ["pipe", "pipe", "pipe"],
     });
+    const lines = createInterface({ input: host.stdout });
+    const harness = new NotchHostHarness(host, lines);
 
-    await expect(
-      harness.command("update", {
-        listSubtitle: "Open a conversation to inspect its latest state.",
-        listTitle: "Conversation activity",
-        openChatLabel: "Open chat",
-        tasks: [
-          {
-            conversationId: "conversation-1",
-            groupId: "group-1",
-            id: "task-1",
-            status: "in_progress",
-            subtitle: "In progress",
-            title: "Ship the Notch",
-            updatedAt: 1_787_563_200,
-            workspaceId: "workspace-1",
-          },
-        ],
-      })
-    ).resolves.toMatchObject({
-      payload: { hasActivity: true, method: "update", running: true },
-      type: "ack",
-    });
+    try {
+      await expect(harness.nextEvent()).resolves.toMatchObject({
+        payload: { hasActivity: false, running: true },
+        type: "ready",
+      });
 
-    await expect(harness.command("update", { tasks: [] })).resolves.toMatchObject({
-      payload: { hasActivity: false, method: "update", running: true },
-      type: "ack",
-    });
-  } finally {
-    await harness.close();
+      await expect(
+        harness.command("update", {
+          listSubtitle: "Open a conversation to inspect its latest state.",
+          listTitle: "Conversation activity",
+          openChatLabel: "Open chat",
+          tasks: [
+            {
+              conversationId: "conversation-1",
+              groupId: "group-1",
+              id: "task-1",
+              status: "in_progress",
+              subtitle: "In progress",
+              title: "Ship the Notch",
+              updatedAt: 1_787_563_200,
+              workspaceId: "workspace-1",
+            },
+          ],
+        })
+      ).resolves.toMatchObject({
+        payload: { hasActivity: true, method: "update", running: true },
+        type: "ack",
+      });
+
+      await expect(harness.command("update", { tasks: [] })).resolves.toMatchObject({
+        payload: { hasActivity: false, method: "update", running: true },
+        type: "ack",
+      });
+    } finally {
+      await harness.close();
+    }
   }
-});
+);
 
 class NotchHostHarness {
   private readonly iterator: AsyncIterator<string>;

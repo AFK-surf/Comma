@@ -128,7 +128,7 @@ defmodule SalixIM.TelegramFiles do
   defp size_allowed(_), do: :ok
 
   defp stream(agent_id, url) do
-    state_key = {__MODULE__, make_ref()}
+    state_key = {__MODULE__, SystemsRuntime.Proc.make_ref()}
     Process.put(state_key, Blob.put_stream_init(agent_id))
 
     try do
@@ -195,7 +195,7 @@ defmodule SalixIM.TelegramFiles do
   end
 
   defp api_base do
-    Application.get_env(:salix_im, :telegram_api_base_url, "https://api.telegram.org")
+    SystemsRuntime.get_env(:salix_im, :telegram_api_base_url, "https://api.telegram.org")
     |> String.trim_trailing("/")
   end
 end

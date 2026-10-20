@@ -65,7 +65,7 @@ test("desktop-only settings in the browser offer the Mac app and keep their valu
     ["Meeting", "switch", "Smart summary", "Meeting recording"],
     ["Computer use", "button", "Manage permissions", "Computer use"],
     ["Computer use", "button", "Refresh status", "Computer use"],
-    ["Compute node", "button", "Enable this Mac", "Compute node"],
+    ["Devices", "button", "Open the desktop app", "Compute node"],
   ] as const;
   for (const [category, role, name, feature] of cases) {
     await page.getByRole("button", { name: category, exact: true }).click();

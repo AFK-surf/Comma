@@ -1,4 +1,6 @@
 defmodule SalixAgent.SSH.TailcatGateway do
+  require SystemsClock
+
   @moduledoc """
   The node's Tailcat gateway (`priv/tailcat_gateway`, built from
   `systems/tailcat-gateway`): one Go process per node for every outbound SSH
@@ -24,7 +26,7 @@ defmodule SalixAgent.SSH.TailcatGateway do
   node-wide connection limit; the SSH session limit per Agent session applies.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -35,11 +37,11 @@ defmodule SalixAgent.SSH.TailcatGateway do
   @type dial_error :: %{String.t() => term()}
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
   @doc "The gateway server the SSH connections use."
-  def server, do: Application.get_env(:salix_agent, :tailcat_gateway, __MODULE__)
+  def server, do: SystemsRuntime.get_env(:salix_agent, :tailcat_gateway, __MODULE__)
 
   @doc """
   Dial `port` on the Tailcat server that `target` (a tailcat address or a DNS
@@ -74,7 +76,7 @@ defmodule SalixAgent.SSH.TailcatGateway do
   end
 
   defp endpoint do
-    GenServer.call(server(), :endpoint, @start_timeout_ms + 1_000)
+    SystemsClock.call(server(), :endpoint, @start_timeout_ms + 1_000)
   catch
     :exit, reason -> {:error, unavailable({:gateway_down, reason})}
   end
@@ -122,7 +124,7 @@ defmodule SalixAgent.SSH.TailcatGateway do
 
   @impl true
   def init(opts) do
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
     {:ok, %{opts: opts, port: nil, dir: nil, path: nil, token: nil}}
   end
 
@@ -172,7 +174,7 @@ defmodule SalixAgent.SSH.TailcatGateway do
       state = %{state | port: port, dir: dir, path: path, token: token}
       true = Port.command(port, config)
 
-      receive do
+      SystemsClock.vreceive do
         {^port, {:data, data}} when byte_size(data) <= @frame_limit ->
           case Jason.decode(data) do
             {:ok, %{"type" => "ready"}} -> {:ok, state}
@@ -215,10 +217,10 @@ defmodule SalixAgent.SSH.TailcatGateway do
   # Configuration: start options first (tests), then the application env.
   defp option(state, key, default) do
     Keyword.get_lazy(state.opts, key, fn ->
-      :salix_agent |> Application.get_env(:tailcat, []) |> Keyword.get(key, default)
+      :salix_agent |> SystemsRuntime.get_env(:tailcat, []) |> Keyword.get(key, default)
     end)
   end
 
   defp random(bytes),
-    do: bytes |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    do: bytes |> SystemsRuntime.Proc.random_bytes() |> Base.url_encode64(padding: false)
 end

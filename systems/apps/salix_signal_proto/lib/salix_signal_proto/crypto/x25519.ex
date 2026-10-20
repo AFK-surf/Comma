@@ -20,12 +20,12 @@ defmodule SalixSignalProto.Crypto.X25519 do
 
   @doc "Returns a new random private key, clamped."
   @spec generate_private_key() :: private_key()
-  def generate_private_key, do: clamp(:crypto.strong_rand_bytes(@key_bytes))
+  def generate_private_key, do: clamp(SystemsRuntime.Proc.random_bytes(@key_bytes))
 
   @doc "Returns the public key `X25519(private_key, 9)`."
   @spec public_key(private_key()) :: public_key()
   def public_key(<<_::binary-size(@key_bytes)>> = private_key) do
-    {public_key, _private_key} = :crypto.generate_key(:eddh, :x25519, private_key)
+    {public_key, _private_key} = SystemsRuntime.Proc.generate_key(:eddh, :x25519, private_key)
     public_key
   end
 

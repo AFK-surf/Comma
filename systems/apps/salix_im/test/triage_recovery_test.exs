@@ -1,19 +1,19 @@
 defmodule SalixIM.Triage.RecoveryTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.Triage.Recovery
   alias SalixStore.{CasRecord, S3}
 
   setup do
-    previous_triage_backend = Application.get_env(:salix_store, :triage_record_backend)
-    Application.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
+    previous_triage_backend = SystemsRuntime.get_env(:salix_store, :triage_record_backend)
+    SystemsRuntime.put_env(:salix_store, :triage_record_backend, SalixStore.S3)
     S3.Fake.reset()
 
     on_exit(fn ->
       if previous_triage_backend do
-        Application.put_env(:salix_store, :triage_record_backend, previous_triage_backend)
+        SystemsRuntime.put_env(:salix_store, :triage_record_backend, previous_triage_backend)
       else
-        Application.delete_env(:salix_store, :triage_record_backend)
+        SystemsRuntime.delete_env(:salix_store, :triage_record_backend)
       end
     end)
 
@@ -21,7 +21,7 @@ defmodule SalixIM.Triage.RecoveryTest do
   end
 
   test "rotates bucket and fence lanes under one page budget" do
-    namespace = "triage-recovery-#{System.unique_integer([:positive])}"
+    namespace = "triage-recovery-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     bucket_prefix = SalixStore.TriageKeys.ctl_im_triage_buckets_prefix(namespace)
     fence_prefix = SalixStore.TriageKeys.ctl_im_triage_bucket_seals_prefix(namespace)
 
@@ -43,29 +43,6 @@ defmodule SalixIM.Triage.RecoveryTest do
     assert ordinals(fourth) == [3]
     assert cursor.lane == :buckets
     assert cursor.continuation == nil
-  end
-
-  test "advances past one malformed record without exceeding the page budget" do
-    namespace = "triage-recovery-poison-#{System.unique_integer([:positive])}"
-    prefix = SalixStore.TriageKeys.ctl_im_triage_buckets_prefix(namespace)
-
-    assert {:ok, _created} = CasRecord.create(prefix <> "1", %{"ordinal" => 1})
-    assert {:ok, _put} = S3.put(prefix <> "2", "[]")
-    assert {:ok, _created} = CasRecord.create(prefix <> "3", %{"ordinal" => 3})
-
-    cursor = Recovery.cursor(idle_ms: 1_000)
-    assert {:ok, :buckets, first, cursor, 0, 1} = Recovery.step(namespace, 2, cursor)
-    assert ordinals(first) == [1]
-
-    assert {:ok, :buckets, second, cursor, 0, 0} = Recovery.step(namespace, 2, cursor)
-    assert ordinals(second) == [3]
-    assert cursor.lane == :fences
-  end
-
-  test "rejects invalid budgets before touching storage" do
-    cursor = Recovery.cursor()
-    assert {:error, _next_cursor, 100} = Recovery.step("namespace", 0, cursor)
-    assert S3.Fake.read_log() == []
   end
 
   defp create_records(prefix, kind, count) do

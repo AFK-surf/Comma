@@ -10,13 +10,32 @@ defmodule Comma.Data.IMessageDMClaimCode do
     field(:owner_user_id, :string)
     field(:expires_at, :utc_datetime_usec)
     field(:consumed_at, :utc_datetime_usec)
-    timestamps(type: :utc_datetime_usec, updated_at: false)
+    field(:transport, :string, default: "relay")
+    field(:sender_handle, :string)
+    field(:line_handle, :string)
+    field(:assignment_id, :string)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      updated_at: false,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 
   def changeset(claim, attrs) do
     claim
-    |> cast(attrs, [:code, :workspace_id, :owner_user_id, :expires_at])
+    |> cast(attrs, [
+      :code,
+      :workspace_id,
+      :owner_user_id,
+      :expires_at,
+      :transport,
+      :sender_handle,
+      :line_handle,
+      :assignment_id
+    ])
     |> validate_required([:code, :workspace_id, :owner_user_id, :expires_at])
+    |> validate_inclusion(:transport, ~w(relay photon))
     |> foreign_key_constraint(:workspace_id)
     |> foreign_key_constraint(:owner_user_id)
     |> unique_constraint(:code, name: :comma_imessage_dm_claim_codes_pkey)

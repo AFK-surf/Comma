@@ -24,4 +24,20 @@ export type {
   NotchWidthSettingProps,
 } from "./NotchWidthSetting";
 export type { CreatedSecretPanelProps } from "./CreatedSecretPanel";
-export type { DeviceSettingsProps, DeviceSettingsItem } from "./DeviceSettings";
+export type {
+  DeviceAccessLevel,
+  DeviceSettingsProps,
+  DeviceSettingsItem,
+} from "./DeviceSettings";
+
+export {
+  DeviceSettingsSection,
+  DeviceSettingsRow,
+  DeviceSettingsFacts,
+  DeviceSettingsStatus,
+  DeviceSettingsSteps,
+  DeviceSettingsResource,
+  DeviceSettingsDetail,
+  deviceSettingsButtonClassName,
+  deviceSettingsMenuClassName,
+} from "./DeviceSettingsContent";

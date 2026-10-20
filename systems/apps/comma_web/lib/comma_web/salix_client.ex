@@ -1,12 +1,13 @@
 defmodule CommaWeb.SalixClient do
+  require SystemsRuntime.Proc
+
   @moduledoc false
 
   @behaviour Comma.Salix.Client
 
-  alias SalixAgent.Templates
+  alias SalixAgent.{AgentModel, ModelChoice, TaskModel, TaskPlace}
 
   @max_workspace_file_read_bytes 10_000_001
-  @max_workspace_model_templates 100
   # Attachment downloads are saved to disk rather than rendered inline, so they
   # carry the client's own download bound rather than the inline-image one.
 
@@ -15,7 +16,6 @@ defmodule CommaWeb.SalixClient do
     tenant_id = workspace["salix_tenant_id"]
     group_id = workspace["default_group_id"]
     router_agent_id = workspace["router_agent_id"]
-    worker_agent_id = workspace["default_worker_agent_id"]
 
     billing_owner = %{
       "surface" => "comma",
@@ -29,7 +29,7 @@ defmodule CommaWeb.SalixClient do
       "charge_policy" => "platform_paid"
     }
 
-    with {:ok, template_id} <- ensure_default_agent_template(),
+    with :ok <- ensure_default_platform_models(),
          {:ok, tenant_config} <- workspace_tenant_config(workspace),
          :ok <-
            ensure_salix_tenant(
@@ -46,6 +46,7 @@ defmodule CommaWeb.SalixClient do
              "name" => workspace["name"],
              "billing_owner" => billing_owner
            }),
+         :ok <- set_group_cloud_vm(group_id, tenant_id, workspace["vm"]),
          :ok <-
            ensure_salix_agent(
              router_agent_id,
@@ -57,40 +58,18 @@ defmodule CommaWeb.SalixClient do
                "role" => "router",
                "purpose" => router_purpose(workspace)
              }
-             |> maybe_put_template_id(template_id)
-             |> maybe_put("vm", workspace["vm"])
            ),
-         :ok <- ensure_salix_group_router_if_absent(group_id, tenant_id, router_agent_id),
-         :ok <- ensure_default_worker(workspace, worker_agent_id, template_id) do
+         :ok <- ensure_salix_group_router_if_absent(group_id, tenant_id, router_agent_id) do
       :ok
     end
   end
 
-  # A guest Workspace has only its Router agent.
-  defp ensure_default_worker(%{"kind" => "guest"}, nil, _template_id), do: :ok
-
-  defp ensure_default_worker(workspace, worker_agent_id, template_id)
-       when is_binary(worker_agent_id) do
-    ensure_salix_agent(
-      worker_agent_id,
-      workspace["salix_tenant_id"],
-      %{
-        "agent_id" => worker_agent_id,
-        "group_id" => workspace["default_group_id"],
-        "name" => workspace["name"] <> " Worker",
-        "role" => "worker",
-        "purpose" => "comma_workspace_default_worker"
-      }
-      |> maybe_put_template_id(template_id)
-      |> maybe_put("vm", workspace["vm"])
-    )
-  end
-
-  defp ensure_default_worker(_workspace, _worker_agent_id, _template_id),
-    do: {:error, :workspace_scope_conflict}
+  # A Workspace gets only its Router agent here. Its Tasks run on its Group's
+  # Task agent (`SalixAgent.TaskAgent`), which Salix makes when the first Task
+  # needs it; a stored default Worker id is no longer provisioned or checked.
 
   defp router_purpose(%{"kind" => "guest"}), do: SalixStore.TenantProfiles.guest_router_purpose()
-  defp router_purpose(_workspace), do: "comma_workspace_router"
+  defp router_purpose(_workspace), do: SalixAgent.ToolPolicy.comma_router_purpose()
 
   @impl true
   def ensure_guest_tenant(tenant_id, dependency_max_children)
@@ -109,15 +88,12 @@ defmodule CommaWeb.SalixClient do
     tenant_id = workspace["salix_tenant_id"]
     group_id = workspace["default_group_id"]
     router_agent_id = workspace["router_agent_id"]
-    worker_agent_id = workspace["default_worker_agent_id"]
 
     with {:ok, %{"tenant_id" => ^tenant_id}} <- Salix.Control.Tenants.get(tenant_id),
          {:ok, group} <- Salix.Control.Groups.get(group_id, tenant_id),
          :ok <- verify_workspace_group(group, workspace),
          {:ok, router} <- SalixAgent.Control.get(router_agent_id, tenant_id),
-         :ok <- verify_workspace_agent(router, router_agent_id, tenant_id, group_id, "router"),
-         {:ok, worker} <- SalixAgent.Control.get(worker_agent_id, tenant_id),
-         :ok <- verify_workspace_agent(worker, worker_agent_id, tenant_id, group_id, "worker") do
+         :ok <- verify_workspace_agent(router, router_agent_id, tenant_id, group_id, "router") do
       :ok
     else
       {:ok, _mismatched_record} -> {:error, :workspace_scope_conflict}
@@ -151,12 +127,17 @@ defmodule CommaWeb.SalixClient do
     end
   end
 
+  # A chat runs its Router's model. A Task runs its Session's own model
+  # choice when it has one (the Router's, or the Workspace's default Task
+  # model), else its Agent's.
   @impl true
   def conversation_uses_private_model?(workspace, binding) do
-    agent_result =
+    tenant_id = workspace["salix_tenant_id"]
+
+    choice =
       case binding["kind"] do
         "user_chat" ->
-          {:ok, workspace["router_agent_id"]}
+          agent_model_choice(workspace, workspace["router_agent_id"])
 
         "agent_task" ->
           with {:ok, conversation} <-
@@ -164,197 +145,194 @@ defmodule CommaWeb.SalixClient do
                    workspace,
                    get_in(binding, ["internal", "salix_conversation_id"])
                  ) do
-            {:ok, conversation["task_worker_agent_id"]}
+            task_model_choice(workspace, conversation)
           end
 
         _ ->
           {:error, :not_found}
       end
 
-    with {:ok, id} when is_binary(id) <- agent_result,
-         {:ok, agent} <- SalixAgent.Control.get(id, workspace["salix_tenant_id"]),
-         true <- agent["group_id"] == workspace["default_group_id"],
-         {:ok, llm} when is_map(llm) <- Templates.resolve_llm_for_record(agent) do
+    with {:ok, choice} <- choice,
+         {:ok, llm} when is_map(llm) <- ModelChoice.resolve_llm(choice, tenant_id) do
       llm["credential_scope"] == "tenant"
     else
       _ -> false
     end
   end
 
+  defp task_model_choice(workspace, conversation) do
+    case SalixIM.TaskCardProjection.task_session_model(conversation) do
+      %{} = choice -> {:ok, choice}
+      nil -> agent_model_choice(workspace, conversation["task_worker_agent_id"])
+    end
+  end
+
+  defp agent_model_choice(workspace, agent_id) when is_binary(agent_id) do
+    with {:ok, agent} <- SalixAgent.Control.get(agent_id, workspace["salix_tenant_id"]),
+         true <- agent["group_id"] == workspace["default_group_id"],
+         {:ok, choice, _source} <- AgentModel.choice(agent) do
+      {:ok, choice}
+    else
+      false -> {:error, :not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp agent_model_choice(_workspace, _agent_id), do: {:error, :not_found}
+
   @impl true
   def get_workspace_agent_models(workspace) when is_map(workspace) do
     observe_salix(:salix_boundary, fn ->
       with {:ok, resolved_workspace} <- resolve_workspace_scope(workspace),
            {:ok, router} <- workspace_agent_model(resolved_workspace, "router"),
-           {:ok, worker} <- workspace_agent_model(resolved_workspace, "worker"),
-           {:ok, workers} <- workspace_worker_models(resolved_workspace),
-           {:ok, defaults} <-
-             SalixAgent.AgentDefaults.tenant(resolved_workspace["salix_tenant_id"]),
-           {:ok, available_models} <-
-             Templates.list_available(
-               resolved_workspace["salix_tenant_id"],
-               @max_workspace_model_templates
-             ) do
-        tenant_id = resolved_workspace["salix_tenant_id"]
-
+           {:ok, worker} <- task_agent_model(resolved_workspace),
+           {:ok, task_model} <- TaskModel.get(resolved_workspace["default_group_id"]),
+           {:ok, task_place} <- TaskPlace.get(resolved_workspace["default_group_id"]) do
         {:ok,
          %{
            "workspace_id" => resolved_workspace["id"],
            "agents" => %{"router" => router, "worker" => worker},
-           "workers" => workers,
-           "worker_default_template_id" => defaults["worker_template_id"],
-           # What each role uses when nothing is chosen for it in this
-           # workspace: the platform default, described so the UI can name it.
+           # The model a Task runs when it names none (`SalixAgent.TaskModel`).
+           "task_model" => %{"selection" => task_selection(task_model)},
+           # Where a Task runs when it names no place (`SalixAgent.TaskPlace`):
+           # inside Salix unless a member chose the Cloud VM or a station.
+           "task_place" => %{"place" => task_place || TaskPlace.salix()},
+           # Kept only for old clients: desktop apps already shipped require
+           # this page and no longer get any Worker in it.
+           "workers" => empty_worker_page(),
+           # What each role uses when nothing is chosen for it: the platform
+           # model, described so the UI can name it.
            "platform_defaults" => %{
-             "router" => platform_default_model("router", tenant_id),
-             "worker" => platform_default_model("worker", tenant_id)
-           },
-           "available_models" =>
-             Enum.map(
-               SalixAgent.AgentDefaults.selectable(available_models),
-               &public_model_template/1
-             )
+             "router" => platform_default_model("router"),
+             "worker" => platform_default_model("worker")
+           }
          }}
       end
     end)
   end
 
-  def get_user_workspace_agent_models(workspace) do
-    with {:ok, policy} <- Comma.ModelSelectionPolicy.get(),
-         {:ok, models} <- Comma.Salix.Client.get_workspace_agent_models(workspace) do
-      available =
-        Enum.filter(models["available_models"], fn template ->
-          template["scope"] == "tenant" or
-            Comma.ModelSelectionPolicy.allowed?(policy, template["template_id"])
-        end)
-
-      {:ok, Map.put(models, "available_models", available)}
-    end
+  @doc "Choose Comma's built-in model or a catalog model."
+  def update_user_workspace_agent_selection(workspace, target, %{"kind" => "builtin"} = selection)
+      when map_size(selection) == 1 do
+    Comma.Salix.Client.update_workspace_agent_model(workspace, target, nil)
   end
 
-  def update_user_workspace_agent_model(workspace, target, template_id) do
-    with :ok <- user_model_choice_allowed(workspace, template_id) do
-      Comma.Salix.Client.update_workspace_agent_model(workspace, target, template_id)
-    end
+  # The Agent stores the catalog choice itself (`SalixAgent.ModelChoice`).
+  def update_user_workspace_agent_selection(
+        workspace,
+        target,
+        %{"kind" => "catalog", "allow_paid" => allow_paid} = selection
+      )
+      when is_boolean(allow_paid) do
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, scope} <- resolve_workspace_scope(workspace),
+           tenant_id = scope["salix_tenant_id"],
+           {:ok, agent} <- model_target(scope, target),
+           :ok <- agent_model_writable(agent),
+           {:ok, choice} <- ModelChoice.choose(selection, tenant_id),
+           {:ok, updated} <- assign_agent_choice(agent, choice, tenant_id) do
+        workspace_worker_model(updated)
+      end
+    end)
+  end
+
+  def update_user_workspace_agent_selection(_workspace, _target, _selection),
+    do: {:error, :invalid_model_configuration}
+
+  @doc """
+  Set the Workspace's default Task model (`SalixAgent.TaskModel`): Comma's
+  built-in model or a catalog model. Answers the stored selection.
+  """
+  def update_workspace_task_model(workspace, %{"kind" => "builtin"} = selection)
+      when map_size(selection) == 1,
+      do: put_task_model(workspace, TaskModel.platform())
+
+  def update_workspace_task_model(
+        workspace,
+        %{"kind" => "catalog", "allow_paid" => allow_paid} = selection
+      )
+      when is_boolean(allow_paid) do
+    choice =
+      selection
+      |> Map.take(~w(kind model reasoning_effort allow_paid profile_id))
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
+
+    put_task_model(workspace, choice)
+  end
+
+  def update_workspace_task_model(_workspace, _selection),
+    do: {:error, :invalid_model_configuration}
+
+  defp put_task_model(workspace, choice) do
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, scope} <- resolve_workspace_scope(workspace),
+           {:ok, stored} <-
+             TaskModel.put(scope["salix_tenant_id"], scope["default_group_id"], choice),
+           do: {:ok, %{"selection" => task_selection(stored)}}
+    end)
   end
 
   @doc """
-  Choose Comma's built-in model, a catalog model, or (for a Worker on a
-  Codex or Claude Code compute runtime) the model its runtime runs.
+  Set the Workspace's default place to run Tasks (`SalixAgent.TaskPlace`):
+  inside Salix (`{kind: salix}`), its Cloud VM while the Workspace's Cloud VM
+  is on, or a station of the Workspace (`{kind: station, device_id}`, which
+  the caller checks). Answers the stored place.
   """
-  def update_user_workspace_agent_selection(workspace, target, %{"kind" => "runtime"} = selection) do
+  def update_workspace_task_place(workspace, place) do
     observe_salix(:salix_boundary, fn ->
-      with {:ok, model, effort} <- runtime_selection(selection),
-           {:ok, scope} <- resolve_workspace_scope(workspace),
-           tenant_id = scope["salix_tenant_id"],
-           {:ok, agent} <- model_target(scope, target),
-           {:ok, provider} <- runtime_model_writable(agent),
-           {:ok, updated} <- assign_runtime_choice(agent, provider, model, effort, tenant_id),
-           {:ok, result} <- workspace_worker_model(updated) do
-        if agent["template_id"] != updated["template_id"],
-          do: Templates.release_private_catalog(agent["template_id"], tenant_id)
-
-        {:ok, result}
-      else
-        {:error, :invalid_model_configuration} -> {:error, :invalid_runtime_model}
-        error -> error
-      end
+      with {:ok, scope} <- resolve_workspace_scope(workspace),
+           {:ok, stored} <-
+             TaskPlace.put(scope["salix_tenant_id"], scope["default_group_id"], place || %{}),
+           do: {:ok, %{"place" => stored || TaskPlace.salix()}}
     end)
   end
 
-  def update_user_workspace_agent_selection(workspace, target, selection) do
-    with {:ok, template_id} <- selection_template(selection),
-         {:ok, scope} <- resolve_workspace_scope(workspace),
-         tenant_id = scope["salix_tenant_id"],
-         {:ok, agent} <- model_target(scope, target),
-         # Check the Agent before creating a template it could not use.
-         :ok <- template_model_writable(agent),
-         :ok <- own_login_choice_allowed(agent, selection["kind"] == "builtin"),
-         {:ok, result, template_id} <- assign_selection(workspace, target, template_id, tenant_id) do
-      if agent["template_id"] != template_id,
-        do: Templates.release_private_catalog(agent["template_id"], tenant_id)
-
-      {:ok, result}
-    end
-  end
-
-  # The same lock as `assign_selection/4`: a concurrent release must not delete
-  # the runtime template before the Agent takes it.
-  defp assign_runtime_choice(agent, provider, model, effort, tenant_id) do
-    Templates.with_catalog_lock(tenant_id, fn ->
-      with {:ok, template} <-
-             Templates.resolve_private_runtime(provider, model, effort, tenant_id) do
-        case assign_agent_template(agent, template["template_id"], tenant_id) do
-          {:ok, updated} ->
-            {:ok, updated}
-
-          error ->
-            Templates.release_private_catalog(template["template_id"], tenant_id)
-            error
-        end
-      end
+  @doc """
+  Set how the Workspace's Router writes to people (`reply_style`): `default`
+  or `concise`. Answers the stored style.
+  """
+  def update_workspace_reply_style(workspace, style) when style in ["default", "concise"] do
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, scope} <- resolve_workspace_scope(workspace),
+           {:ok, router} <- workspace_agent(scope, "router"),
+           {:ok, updated} <-
+             SalixAgent.Control.configure(
+               router["agent_id"],
+               %{"reply_style" => style},
+               scope["salix_tenant_id"]
+             ),
+           do: {:ok, %{"reply_style" => reply_style(updated)}}
     end)
   end
 
-  # Resolve and assign under the catalog lock: a release that checks the
-  # template's Agents in between would find none and delete it. A template
-  # that the Agent did not take is released again, so no orphan stays.
-  defp assign_selection(workspace, target, template_id, tenant_id) do
-    Templates.with_catalog_lock(tenant_id, fn ->
-      with {:ok, template_id} <- template_id.(tenant_id) do
-        case Comma.Salix.Client.update_workspace_agent_model(workspace, target, template_id) do
-          {:ok, result} ->
-            {:ok, result, template_id}
+  def update_workspace_reply_style(_workspace, _style), do: {:error, :invalid_reply_style}
 
-          error ->
-            Templates.release_private_catalog(template_id, tenant_id)
-            error
-        end
-      end
-    end)
+  defp reply_style(agent), do: agent["reply_style"] || "default"
+
+  @doc """
+  The Worker list old clients read (`GET …/agent-models/workers`): always an
+  empty page. Kept only for old clients, which require it; a Task's model is
+  the Workspace's default Task model now.
+  """
+  def empty_worker_page, do: %{"items" => [], "next_cursor" => nil}
+
+  # Comma's built-in model is the platform model, whether set or never chosen.
+  defp task_selection(%{"kind" => "catalog"} = choice),
+    do: %{
+      "kind" => "catalog",
+      "model" => choice["model"],
+      "reasoning_effort" => choice["reasoning_effort"],
+      "allow_paid" => choice["allow_paid"] == true,
+      "profile_id" => choice["profile_id"]
+    }
+
+  defp task_selection(_platform_or_none), do: %{"kind" => "builtin"}
+
+  defp assign_agent_choice(agent, choice, tenant_id) do
+    if agent["model"] == choice,
+      do: {:ok, agent},
+      else: SalixAgent.Control.configure(agent["agent_id"], %{"model" => choice}, tenant_id)
   end
-
-  defp selection_template(%{"kind" => "builtin"} = selection) when map_size(selection) == 1,
-    do: {:ok, fn _tenant -> {:ok, nil} end}
-
-  defp selection_template(
-         %{"kind" => "catalog", "model" => model, "allow_paid" => allow_paid} = selection
-       )
-       when map_size(selection) <= 5 do
-    if Enum.all?(
-         Map.keys(selection),
-         &(&1 in ~w(kind model allow_paid reasoning_effort profile_id))
-       ) do
-      {:ok,
-       fn tenant_id ->
-         with {:ok, template} <-
-                Templates.resolve_private_catalog(
-                  model,
-                  selection["reasoning_effort"],
-                  allow_paid,
-                  tenant_id,
-                  selection["profile_id"]
-                ),
-              do: {:ok, template["template_id"]}
-       end}
-    else
-      {:error, :invalid_model_configuration}
-    end
-  end
-
-  defp selection_template(_), do: {:error, :invalid_model_configuration}
-
-  defp runtime_selection(%{"kind" => "runtime", "model" => model} = selection)
-       when is_binary(model) do
-    effort = selection["reasoning_effort"]
-
-    if Enum.all?(Map.keys(selection), &(&1 in ~w(kind model reasoning_effort))) and
-         (is_nil(effort) or is_binary(effort)),
-       do: {:ok, model, effort},
-       else: {:error, :invalid_runtime_model}
-  end
-
-  defp runtime_selection(_), do: {:error, :invalid_runtime_model}
 
   @doc "Rename the workspace's Router or one of its Workers."
   def rename_workspace_agent(workspace, target, name) when is_binary(name) do
@@ -378,44 +356,21 @@ defmodule CommaWeb.SalixClient do
 
   def rename_workspace_agent(_, _, _), do: {:error, :invalid_agent_name}
 
-  def update_user_workspace_worker_default(workspace, template_id) do
-    with :ok <- user_model_choice_allowed(workspace, template_id) do
-      update_workspace_worker_default(workspace, template_id)
-    end
-  end
-
-  defp user_model_choice_allowed(_workspace, nil), do: :ok
-
-  defp user_model_choice_allowed(workspace, id) when is_binary(id) do
-    with {:ok, policy} <- Comma.ModelSelectionPolicy.get(),
-         {:ok, template} <- Templates.get(id, workspace["salix_tenant_id"]) do
-      cond do
-        template["hidden"] == true -> {:error, :invalid_model_template}
-        template["tenant_id"] != nil -> :ok
-        Comma.ModelSelectionPolicy.allowed?(policy, id) -> :ok
-        true -> {:error, :model_not_user_selectable}
-      end
-    else
-      {:error, :not_found} -> {:error, :invalid_model_template}
-      error -> error
-    end
-  end
-
-  defp user_model_choice_allowed(_workspace, _id), do: {:error, :invalid_model_template}
-
-  @doc "Update one existing Agent. Role aliases address the workspace's initial Agents."
+  @doc """
+  Set the model of one existing Agent: a model choice (`SalixAgent.ModelChoice`),
+  or nil to follow the platform model of its role. Role aliases address the
+  workspace's initial Agents.
+  """
   @impl true
-  def update_workspace_agent_model(workspace, target, template_id)
-      when is_map(workspace) and is_binary(target) and
-             (is_binary(template_id) or is_nil(template_id)) do
+  def update_workspace_agent_model(workspace, target, model)
+      when is_map(workspace) and is_binary(target) and (is_map(model) or is_nil(model)) do
     observe_salix(:salix_boundary, fn ->
       with {:ok, scope} <- resolve_workspace_scope(workspace),
            tenant_id = scope["salix_tenant_id"],
-           {:ok, template_id} <- validate_model_choice(template_id, tenant_id),
            {:ok, agent} <- model_target(scope, target),
-           :ok <- template_model_writable(agent),
-           :ok <- own_login_choice_allowed(agent, is_nil(template_id)),
-           {:ok, updated} <- assign_agent_template(agent, template_id, tenant_id) do
+           :ok <- agent_model_writable(agent),
+           {:ok, model} <- checked_choice(model, tenant_id),
+           {:ok, updated} <- assign_agent_choice(agent, model, tenant_id) do
         workspace_worker_model(updated)
       end
     end)
@@ -423,13 +378,8 @@ defmodule CommaWeb.SalixClient do
 
   def update_workspace_agent_model(_, _, _), do: {:error, :invalid_workspace_agent_model}
 
-  def update_workspace_worker_default(workspace, template_id) do
-    with {:ok, scope} <- resolve_workspace_scope(workspace),
-         {:ok, id} <- validate_model_choice(template_id, scope["salix_tenant_id"]),
-         :ok <- write_worker_default(scope["salix_tenant_id"], id) do
-      {:ok, %{"template_id" => id}}
-    end
-  end
+  defp checked_choice(nil, _tenant_id), do: {:ok, nil}
+  defp checked_choice(model, tenant_id), do: ModelChoice.choose(model, tenant_id)
 
   defp model_target(workspace, role) when role in ["router", "worker"],
     do: workspace_agent(workspace, role)
@@ -445,119 +395,21 @@ defmodule CommaWeb.SalixClient do
     end
   end
 
-  # One native page, at most 50 candidate records and no scan-ahead or polling.
-  def workspace_worker_models(workspace, cursor \\ nil) do
-    with {:ok, scope} <- resolve_workspace_scope(workspace),
-         {:ok, page} <-
-           SalixAgent.Control.page_agents(scope["salix_tenant_id"], scope["default_group_id"],
-             role: "worker",
-             limit: 50,
-             cursor: cursor
-           ) do
-      Enum.reduce_while(page.items, {:ok, []}, fn agent, {:ok, acc} ->
-        case workspace_worker_model(agent) do
-          {:ok, model} ->
-            {:cont, {:ok, [model | acc]}}
-
-          error ->
-            {:halt, error}
-        end
-      end)
-      |> case do
-        {:ok, items} ->
-          {:ok, %{"items" => Enum.reverse(items), "next_cursor" => page.next_cursor}}
-
-        error ->
-          error
-      end
-    end
-  end
-
   defp workspace_worker_model(agent) do
     settings = runtime_model_settings(agent)
 
-    cond do
-      settings ->
-        runtime_settings_model(agent, settings)
-
-      is_nil(agent["template_id"]) and own_login_compute?(agent) ->
-        {:ok, runtime_default_model(agent)}
-
-      true ->
-        template_worker_model(agent)
-    end
+    if settings,
+      do: runtime_settings_model(agent, settings),
+      else: chosen_worker_model(agent)
   end
 
-  # Codex and Claude Code without a chosen template run their own default model
-  # (`ExternalSessionStore.resolve_compute_runtime_model/3`).
-  defp own_login_compute?(%{
-         "runtime_config" => %{
-           "kind" => "compute_workload",
-           "runtime_spec" => %{"provider" => provider}
-         }
-       }),
-       do: provider in ~w(codex claude)
-
-  defp own_login_compute?(_agent), do: false
-
-  # Codex and Claude Code run only their own subscription's models, so they
-  # take the runtime default or a runtime choice, never a Comma catalog model.
-  defp own_login_choice_allowed(agent, builtin?) do
-    if builtin? or not own_login_compute?(agent),
-      do: :ok,
-      else:
-        {:error,
-         {:bad_request,
-          "This Worker's runtime runs only its own models. Choose the runtime default or a runtime model."}}
+  defp chosen_worker_model(agent) do
+    with {:ok, model, source} <- AgentModel.resolve_public(agent),
+         do: {:ok, public_workspace_agent_model(agent, model, source)}
   end
-
-  defp runtime_default_model(agent) do
-    put_compute_runtime(
-      %{
-        "agent_id" => agent["agent_id"],
-        "name" => agent["name"] || agent["agent_id"],
-        "role" => agent["role"],
-        "source" => "runtime_default",
-        "model" => nil,
-        "provider" => nil,
-        "reasoning_effort" => nil,
-        "selection" => %{"kind" => "builtin"}
-      },
-      agent
-    )
-  end
-
-  defp template_worker_model(agent) do
-    with {:ok, template, source} <- Templates.resolve_public_template_for_record(agent) do
-      if stale_runtime_choice?(template, agent),
-        do: {:ok, runtime_default_model(agent)},
-        else:
-          {:ok,
-           agent
-           |> public_workspace_agent_model(template, source)
-           |> put_compute_runtime(agent)}
-    end
-  end
-
-  # Dispatch sends Codex and Claude Code only a runtime choice made for them,
-  # and Pi any template except another runtime's choice (for example before a
-  # rebind). Otherwise the runtime runs its own default
-  # (`ExternalSessionStore.resolve_compute_runtime_model/3`).
-  defp stale_runtime_choice?(template, %{
-         "runtime_config" => %{"kind" => "compute_workload", "runtime_spec" => spec}
-       })
-       when is_map(spec) do
-    chosen_for = template["runtime_provider"]
-
-    if spec["provider"] in ~w(codex claude),
-      do: chosen_for != spec["provider"],
-      else: is_binary(chosen_for) and chosen_for != spec["provider"]
-  end
-
-  defp stale_runtime_choice?(_template, _agent), do: false
 
   defp runtime_settings_model(agent, settings) do
-    runtime = SalixAgent.AgentManagement.Projection.runtime(agent["runtime_config"])
+    runtime = SalixAgent.AgentManagement.Projection.worker_runtime(agent)
 
     {:ok,
      %{
@@ -573,92 +425,25 @@ defmodule CommaWeb.SalixClient do
      }}
   end
 
-  # A compute Worker without pinned binding model fields runs its template's
-  # model. Name the runtime (Pi too) so the page can choose the right picker.
-  defp put_compute_runtime(model, %{"runtime_config" => %{"kind" => "compute_workload"} = rc}),
-    do:
-      Map.put(
-        model,
-        "runtime",
-        Map.take(SalixAgent.AgentManagement.Projection.runtime(rc), ~w(kind provider))
-      )
-
-  defp put_compute_runtime(model, _agent), do: model
-
-  # Compute inherits the Agent template only when its runtime model is absent.
-  # Mapping: ExternalSessionStore.resolve_compute_runtime_model/3.
-  defp runtime_model_settings(%{"runtime_config" => %{"kind" => kind} = runtime})
-       when kind in ~w(external connected_runtime),
-       do: runtime
-
-  defp runtime_model_settings(%{
-         "runtime_config" => %{"kind" => "compute_workload", "runtime_spec" => settings}
-       })
-       when is_map(settings) do
-    if runtime_spec_pinned?(settings), do: settings
-  end
+  # A Worker bound to a station runs the runtime model of its binding
+  # (`SalixAgent.StationBinding`); rebinding changes it.
+  defp runtime_model_settings(%{"station_binding" => %{"runs_on" => %{}, "model" => model}})
+       when is_map(model),
+       do: %{"model" => model["model"], "reasoning_effort" => model["reasoning_effort"]}
 
   defp runtime_model_settings(_), do: nil
 
   defp present_model?(model), do: is_binary(model) and String.trim(model) != ""
 
-  # Dispatch merges the template's model, provider and effort under the binding,
-  # so any of them set on the binding wins over the Agent's template.
-  defp runtime_spec_pinned?(spec),
-    do: Enum.any?(~w(model model_provider reasoning_effort), &present_model?(spec[&1]))
-
-  defp template_model_writable(agent) do
+  defp agent_model_writable(agent) do
     if is_nil(runtime_model_settings(agent)),
       do: :ok,
-      else:
-        {:error,
-         {:bad_request, "This Worker's model is controlled by its runtime configuration."}}
+      else: {:error, {:bad_request, "This Worker's model is set by its station binding."}}
   end
 
-  # A runtime choice is the template of a Codex or Claude Code compute Worker.
-  # Dispatch uses the template only for fields the binding leaves blank. Such
-  # binding fields predate binding revisions; changing them is out of scope.
-  # Pi is excluded: it needs a Pi provider id, which the catalog does not name.
-  defp runtime_model_writable(%{
-         "runtime_config" => %{
-           "kind" => "compute_workload",
-           "runtime_spec" => %{"provider" => provider} = spec
-         }
-       })
-       when provider in ~w(codex claude) do
-    if runtime_spec_pinned?(spec),
-      do: {:error, :runtime_model_pinned},
-      else: {:ok, provider}
-  end
-
-  defp runtime_model_writable(_agent),
-    do:
-      {:error, {:bad_request, "This Worker's model is controlled by its runtime configuration."}}
-
-  defp validate_model_choice(nil, _tenant_id), do: {:ok, nil}
-
-  defp validate_model_choice(template_id, tenant_id) when is_binary(template_id) do
-    with {:ok, template} <- visible_model_template(template_id, tenant_id) do
-      {:ok, template["template_id"]}
-    end
-  end
-
-  defp validate_model_choice(_, _), do: {:error, :invalid_model_template}
-
-  defp write_worker_default(tenant_id, template_id) do
-    case Salix.Control.Tenants.update_config(tenant_id, "agent_defaults", %{
-           "worker_template_id" => template_id
-         }) do
-      {:ok, _config} -> :ok
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp platform_default_model(role, tenant_id) do
-    with {:ok, id, _} <- SalixAgent.AgentDefaults.resolve_platform_default(role),
-         {:ok, template} <- Templates.get_public(id, tenant_id) do
-      public_model_template(template)
-    else
+  defp platform_default_model(role) do
+    case AgentModel.platform_public(role) do
+      {:ok, model} -> public_model(model)
       _ -> nil
     end
   end
@@ -671,142 +456,112 @@ defmodule CommaWeb.SalixClient do
     end
   end
 
+  # The Group's Task agent, which shipped apps show as the "worker"; nil
+  # before the Group has one.
+  defp task_agent_model(workspace) do
+    case workspace_agent_model(workspace, "worker") do
+      {:error, :workspace_agent_model_unavailable} -> {:ok, nil}
+      result -> result
+    end
+  end
+
   defp workspace_agent_model(workspace, role) do
     with {:ok, agent} <- workspace_agent(workspace, role),
-         {:ok, template, source} <- Templates.resolve_public_template_for_record(agent),
-         true <- valid_public_model_template?(template) do
-      {:ok, public_workspace_agent_model(agent, template, source)}
+         {:ok, model, source} <- AgentModel.resolve_public(agent),
+         true <- valid_public_model?(model) do
+      {:ok, public_workspace_agent_model(agent, model, source)}
     else
       false -> {:error, :workspace_agent_model_unavailable}
       {:error, :not_found} -> {:error, :workspace_agent_model_unavailable}
-      {:error, :agent_template_unresolved} -> {:error, :workspace_agent_model_unavailable}
+      {:error, :agent_model_unresolved} -> {:error, :workspace_agent_model_unavailable}
+      {:error, :platform_model_unconfigured} -> {:error, :workspace_agent_model_unavailable}
       {:error, _reason} = error -> error
       _invalid -> {:error, :workspace_agent_model_unavailable}
     end
   end
 
   defp workspace_agent(workspace, role) when role in ["router", "worker"] do
-    agent_id =
-      case role do
-        "router" -> workspace["router_agent_id"]
-        "worker" -> workspace["default_worker_agent_id"]
-      end
-
     tenant_id = workspace["salix_tenant_id"]
     group_id = workspace["default_group_id"]
 
-    with true <- is_binary(agent_id) and agent_id != "",
+    with {:ok, agent_id} <- workspace_agent_id(workspace, role),
+         true <- is_binary(agent_id) and agent_id != "",
          {:ok, agent} <- SalixAgent.Control.get(agent_id, tenant_id),
          :ok <- verify_workspace_agent(agent, agent_id, tenant_id, group_id, role) do
       {:ok, agent}
     else
-      false -> {:error, :workspace_agent_not_found}
+      # The "worker" alias names the Group's Task agent, which a Group gets
+      # with its first Task.
+      false -> {:error, :not_found}
       {:error, _reason} = error -> error
     end
   end
 
-  defp visible_model_template(template_id, tenant_id) do
-    template_id = String.trim(template_id)
+  defp workspace_agent_id(workspace, "router"), do: {:ok, workspace["router_agent_id"]}
 
-    if template_id == "" do
-      {:error, :invalid_model_template}
-    else
-      case Templates.get(template_id, tenant_id) do
-        {:ok, %{"hidden" => true}} ->
-          {:error, :invalid_model_template}
-
-        {:ok, template} ->
-          public = public_model_template(Templates.public_json(template))
-
-          if public["template_id"] == template_id and valid_public_model_template?(public),
-            do: {:ok, public},
-            else: {:error, :invalid_model_template}
-
-        {:error, :not_found} ->
-          {:error, :invalid_model_template}
-
-        {:error, _reason} = error ->
-          error
-      end
-    end
-  end
-
-  defp assign_agent_template(agent, template_id, tenant_id) do
-    if agent["template_id"] == template_id,
-      do: {:ok, agent},
-      else:
-        SalixAgent.Control.configure(
-          agent["agent_id"],
-          %{"template_id" => template_id},
-          tenant_id
-        )
-  end
+  defp workspace_agent_id(workspace, "worker"),
+    do: SalixAgent.TaskAgent.get(workspace["default_group_id"])
 
   defp public_source(:platform_default), do: "platform_default"
   defp public_source(_chosen), do: "pinned"
 
-  defp public_workspace_agent_model(agent, template, source) do
+  defp public_workspace_agent_model(agent, model, source) do
     %{
       "agent_id" => agent["agent_id"],
       "name" => agent["name"] || agent["agent_id"],
       "role" => agent["role"],
       "source" => public_source(source),
-      "template_id" => template["template_id"],
-      "template_name" => template["name"],
-      "model" => template["model"],
-      "provider" => template["provider"]
+      "model" => model["model"],
+      "provider" => model["provider"]
     }
     |> Map.merge(
       Map.take(
-        template,
+        model,
         ~w(model_display_name model_vendor model_icon account_pool scope reasoning_effort)
       )
     )
-    |> Map.put("selection", selection(template, source))
+    |> Map.put("selection", selection(model, source))
+    |> put_reply_style(agent)
   end
 
-  # What the Agent chose: Comma's built-in model, or a catalog model, effort and
-  # whether pay-per-use Profiles may serve it. Other private templates predate
-  # the catalog and report as a template choice.
-  defp selection(_template, :platform_default), do: %{"kind" => "builtin"}
+  defp put_reply_style(public, %{"role" => "router"} = agent),
+    do: Map.put(public, "reply_style", reply_style(agent))
 
-  defp selection(%{"runtime_model" => model} = template, _source),
+  defp put_reply_style(public, _agent), do: public
+
+  # What the Agent chose: Comma's built-in model, or a catalog model, effort and
+  # whether pay-per-use Profiles may serve it, or a compute runtime's model.
+  defp selection(_model, :platform_default), do: %{"kind" => "builtin"}
+  # The platform model is Comma's built-in model, whether followed or chosen.
+  defp selection(%{"platform_tier" => _}, _source), do: %{"kind" => "builtin"}
+
+  defp selection(%{"runtime_model" => model} = public, _source),
     do: %{
       "kind" => "runtime",
       "model" => model,
-      "reasoning_effort" => template["reasoning_effort"]
+      "reasoning_effort" => public["reasoning_effort"]
     }
 
-  defp selection(%{"catalog_model" => model} = template, _source),
+  defp selection(%{"catalog_model" => model} = public, _source),
     do: %{
       "kind" => "catalog",
       "model" => model,
-      "reasoning_effort" => template["reasoning_effort"],
-      "allow_paid" => template["allow_paid"] == true,
-      "profile_id" => template["profile_id"]
+      "reasoning_effort" => public["reasoning_effort"],
+      "allow_paid" => public["allow_paid"] == true,
+      "profile_id" => public["profile_id"]
     }
 
-  defp selection(template, _source),
-    do: %{"kind" => "template", "template_id" => template["template_id"]}
-
-  defp public_model_template(template) do
+  defp public_model(model) do
     Map.take(
-      template,
-      ~w(template_id name model provider scope model_display_name model_vendor model_icon account_pool reasoning_effort)
+      model,
+      ~w(name model provider scope model_display_name model_vendor model_icon account_pool reasoning_effort)
     )
   end
 
-  defp valid_public_model_template?(%{
-         "template_id" => template_id,
-         "name" => name,
-         "model" => model,
-         "provider" => provider
-       }) do
-    Enum.all?([template_id, name, model, provider], &is_binary/1) and
-      template_id != "" and name != "" and model != ""
-  end
+  defp valid_public_model?(%{"name" => name, "model" => model, "provider" => provider}),
+    do: Enum.all?([name, model, provider], &(is_binary(&1) and &1 != ""))
 
-  defp valid_public_model_template?(_template), do: false
+  defp valid_public_model?(_model), do: false
 
   @impl true
   def update_workspace_vm(workspace, vm) when is_map(workspace) and is_map(vm) do
@@ -814,48 +569,41 @@ defmodule CommaWeb.SalixClient do
 
     with {:ok, workspace} <- resolve_workspace_scope(workspace),
          {:ok, tenant_config} <- workspace_tenant_config(workspace),
-         :ok <- ensure_salix_tenant_config(workspace["salix_tenant_id"], tenant_config),
-         :ok <- update_workspace_agent_vms(workspace, vm) do
-      :ok
+         :ok <- ensure_salix_tenant_config(workspace["salix_tenant_id"], tenant_config) do
+      set_group_cloud_vm(workspace["default_group_id"], workspace["salix_tenant_id"], vm)
     end
   end
 
-  @doc false
-  def ensure_default_agent_template do
-    case Application.get_env(:comma_core, :default_agent_template) do
+  # The Workspace's `vm.enabled` is its Group's Cloud VM switch, which decides
+  # for every Agent of the Group (`SalixAgent.CloudVM.allowed?/1`).
+  defp set_group_cloud_vm(group_id, tenant_id, vm) when is_map(vm) do
+    normalize_created(
+      Salix.Control.Groups.update(
+        group_id,
+        %{"cloud_vm_enabled" => vm["enabled"] == true},
+        tenant_id
+      )
+    )
+  end
+
+  defp set_group_cloud_vm(_group_id, _tenant_id, _vm), do: :ok
+
+  # A deployment that names its one model (`llm.default_template`: a local or
+  # self-hosted installation) runs it as the platform model of every role not
+  # configured yet. Its Routers and Workers follow that platform model.
+  defp ensure_default_platform_models do
+    case SystemsRuntime.get_env(:comma_core, :default_agent_template) do
       template when is_map(template) ->
-        template = stringify_keys(template)
-        id = template["template_id"] || "comma-e2e-default"
-
-        attrs =
-          template
-          |> Map.put("template_id", id)
-          |> Map.put_new("name", "Comma E2E Default")
-
-        case Templates.get(id) do
-          {:ok, _existing} ->
-            case Templates.update(id, attrs) do
-              {:ok, _template} -> {:ok, id}
-              {:error, reason} -> {:error, reason}
-            end
-
-          {:error, :not_found} ->
-            case Templates.create(attrs) do
-              {:ok, _template} -> {:ok, id}
-              {:error, reason} -> {:error, reason}
-            end
-
-          {:error, reason} ->
-            {:error, reason}
+        case SalixAgent.Migrations.PlatformModels.seed(stringify_keys(template)) do
+          {:ok, _tiers} -> :ok
+          {:error, _reason} = error -> error
         end
 
       _ ->
-        {:ok, nil}
+        :ok
     end
   end
 
-  defp maybe_put_template_id(attrs, nil), do: attrs
-  defp maybe_put_template_id(attrs, template_id), do: Map.put(attrs, "template_id", template_id)
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
@@ -941,12 +689,45 @@ defmodule CommaWeb.SalixClient do
 
   @impl true
   def subscribe_group_conversation_list(workspace, kind, subscriber)
-      when is_map(workspace) and kind in ["agent_task", "user_chat"] and is_pid(subscriber) do
+      when is_map(workspace) and kind in ["agent_task", "user_chat"] and
+             SystemsRuntime.Proc.is_process(subscriber) do
     observe_salix(:salix_boundary, fn ->
       with {:ok, workspace} <- resolve_workspace_scope(workspace) do
         SalixIM.ConversationServer.subscribe_group_conversation_list(
           workspace["default_group_id"],
           kind,
+          subscriber
+        )
+      end
+    end)
+  end
+
+  @impl true
+  def list_station_tasks(workspace) when is_map(workspace) do
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, workspace} <- resolve_workspace_scope(workspace) do
+        {:ok, SalixWeb.StationTaskIndex.list(workspace["default_group_id"])}
+      end
+    end)
+  end
+
+  @impl true
+  def subscribe_station_tasks(workspace, subscriber)
+      when is_map(workspace) and SystemsRuntime.Proc.is_process(subscriber) do
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, workspace} <- resolve_workspace_scope(workspace) do
+        SalixWeb.StationTaskIndex.subscribe(workspace["default_group_id"], subscriber)
+      end
+    end)
+  end
+
+  @impl true
+  def subscribe_group_conversation_mutations(workspace, subscriber)
+      when is_map(workspace) and SystemsRuntime.Proc.is_process(subscriber) do
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, workspace} <- resolve_workspace_scope(workspace) do
+        SalixIM.ConversationServer.subscribe_group_conversation_mutations(
+          workspace["default_group_id"],
           subscriber
         )
       end
@@ -970,6 +751,13 @@ defmodule CommaWeb.SalixClient do
   def list_group_conversations(workspace, opts) when is_map(workspace) and is_list(opts) do
     observe_salix(:salix_boundary, fn ->
       SalixIM.Conversations.list_group_conversations(workspace["default_group_id"], opts)
+    end)
+  end
+
+  @impl true
+  def list_group_activity_tasks(workspace) when is_map(workspace) do
+    observe_salix(:salix_boundary, fn ->
+      SalixIM.ConversationServer.list_group_activity_tasks(workspace["default_group_id"])
     end)
   end
 
@@ -1036,6 +824,82 @@ defmodule CommaWeb.SalixClient do
         workspace["salix_tenant_id"]
       )
     end)
+  end
+
+  @impl true
+  def get_group_condensed_workspace(workspace) when is_map(workspace) do
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, group} <-
+             Salix.Control.Groups.get(workspace["default_group_id"], workspace["salix_tenant_id"]),
+           {:ok, condensed} <- SalixStore.CondensedWorkspaces.get(group["group_id"]) do
+        {:ok, condensed_workspace_view(group, condensed)}
+      end
+    end)
+  end
+
+  @impl true
+  def set_group_condensed_workspace_enabled(workspace, enabled)
+      when is_map(workspace) and is_boolean(enabled) do
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, _group} <-
+             Salix.Control.Groups.update(
+               workspace["default_group_id"],
+               %{"condensed_workspace_enabled" => enabled},
+               workspace["salix_tenant_id"]
+             ) do
+        get_group_condensed_workspace(workspace)
+      end
+    end)
+  end
+
+  # People edit without the Agent suitability check: they are the authority
+  # on what the Group's Agents should know.
+  @impl true
+  def update_group_condensed_workspace(workspace, operations, user_id)
+      when is_map(workspace) and is_binary(user_id) do
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, group} <-
+             Salix.Control.Groups.get(workspace["default_group_id"], workspace["salix_tenant_id"]) do
+        case SalixStore.CondensedWorkspaces.apply_operations(
+               group["group_id"],
+               operations,
+               %{"kind" => "user", "user_id" => user_id}
+             ) do
+          {:ok, condensed, removed} ->
+            {:ok,
+             group
+             |> condensed_workspace_view(condensed)
+             |> Map.put("removed_ids", removed)}
+
+          {:error, {:conflict, missing, condensed}} ->
+            {:error,
+             {:conflict,
+              %{
+                "message" => "No statement has id #{Enum.join(missing, ", ")}. Nothing changed.",
+                "condensed_workspace" => condensed_workspace_view(group, condensed)
+              }}}
+
+          {:error, {:invalid, message}} ->
+            {:error, {:bad_request, message}}
+
+          {:error, _reason} ->
+            {:error, {:unavailable, :condensed_workspace}}
+        end
+      end
+    end)
+  end
+
+  defp condensed_workspace_view(group, condensed) do
+    %{
+      "enabled" => group["condensed_workspace_enabled"] == true,
+      "revision" => condensed.revision,
+      "statements" => condensed.statements,
+      "bytes" => SalixStore.CondensedWorkspaces.rendered_bytes(condensed.statements),
+      "recommended_max_bytes" => SalixStore.CondensedWorkspaces.recommended_bytes(),
+      "max_bytes" => SalixStore.CondensedWorkspaces.hard_limit_bytes(),
+      "updated_by_kind" => condensed.updated_by["kind"],
+      "updated_at" => condensed.updated_at && DateTime.to_unix(condensed.updated_at)
+    }
   end
 
   @impl true
@@ -1153,7 +1017,7 @@ defmodule CommaWeb.SalixClient do
 
   @impl true
   def subscribe_group_conversation(workspace, conversation_id, subscriber)
-      when is_map(workspace) and is_pid(subscriber) do
+      when is_map(workspace) and SystemsRuntime.Proc.is_process(subscriber) do
     observe_salix(:salix_boundary, fn ->
       SalixIM.ConversationServer.subscribe_group_conversation(
         workspace["default_group_id"],
@@ -1170,7 +1034,7 @@ defmodule CommaWeb.SalixClient do
         participant_id,
         subscriber
       )
-      when is_map(workspace) and is_pid(subscriber) do
+      when is_map(workspace) and SystemsRuntime.Proc.is_process(subscriber) do
     observe_salix(:salix_boundary, fn ->
       SalixIM.ConversationServer.subscribe_group_conversation_participant(
         workspace["default_group_id"],
@@ -1275,6 +1139,19 @@ defmodule CommaWeb.SalixClient do
   end
 
   @impl true
+  def set_task_status(workspace, conversation_id, status, version, user_id) do
+    observe_salix(:salix_boundary, fn ->
+      SalixIM.ConversationServer.set_task_status(
+        workspace["default_group_id"],
+        conversation_id,
+        status,
+        version,
+        user_id
+      )
+    end)
+  end
+
+  @impl true
   def accept_task_review(workspace, conversation_id, review_version)
       when is_map(workspace) and is_integer(review_version) and review_version > 0 do
     observe_salix(:salix_boundary, fn ->
@@ -1310,23 +1187,38 @@ defmodule CommaWeb.SalixClient do
   end
 
   defp observe_salix_result(operation, fun) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     try do
       result = fun.()
       outcome = if match?({:error, _}, result), do: "error", else: "ok"
-      CommaProduct.Telemetry.emit_operation(operation, outcome, System.monotonic_time() - started)
+
+      CommaProduct.Telemetry.emit_operation(
+        operation,
+        outcome,
+        SystemsClock.monotonic_time() - started
+      )
+
       result
     rescue
       exception ->
         CommaProduct.Telemetry.emit_operation(
           operation,
           "error",
-          System.monotonic_time() - started
+          SystemsClock.monotonic_time() - started
         )
 
         reraise exception, __STACKTRACE__
     end
+  end
+
+  # The Loop runtime owns the Loop rows; one indexed read for the Tasks.
+  @impl true
+  def task_loops(workspace, conversation_ids)
+      when is_map(workspace) and is_list(conversation_ids) do
+    observe_salix(:salix_boundary, fn ->
+      SalixAgent.Loops.task_loops(workspace["default_group_id"], conversation_ids)
+    end)
   end
 
   @impl true
@@ -1367,6 +1259,134 @@ defmodule CommaWeb.SalixClient do
         _ -> {:error, :not_found}
       end
     end)
+  end
+
+  @doc """
+  Where a Task runs and the model it runs, which Task panels show instead of
+  its Agent. `place` is `{kind: salix}`, `{kind: cloud_vm}` or
+  `{kind: station, device_id, name}`. `model` is `{kind: platform}`,
+  `{kind: catalog, name, vendor}`, `{kind: runtime, provider, name, vendor}`
+  (`name` nil when the station runs its runtime's default), or nil when it is
+  not known. `vendor` is the model's maker (`anthropic`, `openai`, …), whose
+  mark clients show for the Task's Worker; nil when it is not known.
+  """
+  @impl true
+  def task_run(workspace, conversation_id) do
+    group_id = workspace["default_group_id"]
+
+    observe_salix(:salix_boundary, fn ->
+      with {:ok, %{"kind" => "agent_task"} = conversation} <-
+             SalixIM.Conversations.get_group_conversation(group_id, conversation_id),
+           {:ok, stations} <- SalixStore.StationTaskSessions.of_task(group_id, conversation_id) do
+        case stations do
+          [] ->
+            {:ok,
+             %{"place" => TaskPlace.salix(), "model" => salix_task_model(workspace, conversation)}}
+
+          [station | _] ->
+            {:ok, station_task_run(workspace, station)}
+        end
+      else
+        {:ok, _not_a_task} -> {:error, :not_found}
+        {:error, _reason} = error -> error
+      end
+    end)
+  end
+
+  defp salix_task_model(workspace, conversation) do
+    case task_model_choice(workspace, conversation) do
+      {:ok, choice} -> public_task_model(choice, workspace["salix_tenant_id"])
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp public_task_model(%{"kind" => "platform"}, _tenant_id), do: %{"kind" => "platform"}
+
+  defp public_task_model(%{"kind" => kind} = choice, tenant_id)
+       when kind in ["catalog", "runtime"] do
+    public =
+      case ModelChoice.public(choice, tenant_id) do
+        {:ok, public} -> public
+        {:error, _reason} -> %{}
+      end
+
+    name =
+      case public["model_display_name"] do
+        name when is_binary(name) and name != "" -> name
+        _unknown -> choice["model"]
+      end
+
+    if kind == "runtime",
+      do: %{
+        "kind" => "runtime",
+        "provider" => choice["provider"],
+        "name" => name,
+        "vendor" => public["model_vendor"] || runtime_vendor(choice["provider"])
+      },
+      else: %{"kind" => "catalog", "name" => name, "vendor" => public["model_vendor"]}
+  end
+
+  defp public_task_model(_choice, _tenant_id), do: nil
+
+  # A station's Session runs what it was invited with (`start`). The Cloud VM
+  # runs the platform model with Codex when the Task names no model
+  # (`SalixWeb.StationTasks`); another station runs its runtime's default.
+  defp station_task_run(workspace, %{device_id: device_id} = station) do
+    group_id = workspace["default_group_id"]
+    tenant_id = workspace["salix_tenant_id"]
+    start = if is_map(station.start), do: station.start, else: %{}
+    cloud_vm? = device_id == SalixStore.RuntimeIds.cloud_vm_device_id(group_id)
+    runtime = start["runtime"]
+
+    place =
+      if cloud_vm?,
+        do: TaskPlace.cloud_vm(),
+        else: %{
+          "kind" => "station",
+          "device_id" => device_id,
+          "name" => station_name(workspace, device_id)
+        }
+
+    model =
+      cond do
+        is_binary(start["model"]) and start["model"] != "" ->
+          public_task_model(
+            %{"kind" => "runtime", "provider" => runtime, "model" => start["model"]},
+            tenant_id
+          )
+
+        cloud_vm? and runtime in [nil, "", "codex"] ->
+          %{"kind" => "platform"}
+
+        is_binary(runtime) and runtime != "" ->
+          %{
+            "kind" => "runtime",
+            "provider" => runtime,
+            "name" => nil,
+            "vendor" => runtime_vendor(runtime)
+          }
+
+        true ->
+          nil
+      end
+
+    %{"place" => place, "model" => model}
+  end
+
+  # The maker of the models a runtime runs by default.
+  defp runtime_vendor("claude"), do: "anthropic"
+  defp runtime_vendor("codex"), do: "openai"
+  defp runtime_vendor(_runtime), do: nil
+
+  defp station_name(workspace, device_id) do
+    case SalixEnv.Control.get_environment(
+           device_id,
+           workspace["default_group_id"],
+           workspace["salix_tenant_id"]
+         ) do
+      {:ok, device} -> Comma.Devices.display_name(device)
+      {:error, _reason} -> nil
+    end
   end
 
   @impl true
@@ -1440,6 +1460,44 @@ defmodule CommaWeb.SalixClient do
         {:error, _reason} = error ->
           error
       end
+    end
+  end
+
+  @impl true
+  def list_agent_files(workspace, dir, opts) when is_map(workspace) and is_binary(dir) do
+    with {:ok, scope} <- resolve_workspace_scope(workspace),
+         do: CommaWeb.AgentFiles.list(scope, dir, opts)
+  end
+
+  @impl true
+  def read_agent_file_as(workspace, path, max_bytes, reader)
+      when is_map(workspace) and is_binary(path) and is_integer(max_bytes) and max_bytes > 0 and
+             is_binary(reader) do
+    max_bytes = min(max_bytes, @max_workspace_file_read_bytes)
+
+    with {:ok, scope} <- resolve_workspace_scope(workspace),
+         do: CommaWeb.AgentFiles.read(scope, path, max_bytes, reader)
+  end
+
+  @impl true
+  def write_agent_file_as(workspace, path, body, opts)
+      when is_map(workspace) and is_binary(path) and is_binary(body) and is_list(opts) do
+    with {:ok, scope} <- resolve_workspace_scope(workspace),
+         do: CommaWeb.AgentFiles.write(scope, path, body, opts)
+  end
+
+  @impl true
+  def delete_agent_file(workspace, path, opts)
+      when is_map(workspace) and is_binary(path) and is_list(opts) do
+    with {:ok, scope} <- resolve_workspace_scope(workspace),
+         do: CommaWeb.AgentFiles.delete(scope, path, opts)
+  end
+
+  @impl true
+  def get_router_instructions(workspace) when is_map(workspace) do
+    with {:ok, scope} <- resolve_workspace_scope(workspace),
+         {:ok, router} <- workspace_agent(scope, "router") do
+      {:ok, SalixAgent.ToolPolicy.system_prompt("router", router) || ""}
     end
   end
 
@@ -1610,9 +1668,7 @@ defmodule CommaWeb.SalixClient do
   defp ensure_salix_agent(id, tenant_id, attrs) do
     case SalixAgent.Control.get(id, tenant_id) do
       {:ok, agent} ->
-        with :ok <- validate_agent_identity(agent, attrs) do
-          maybe_update_agent(id, tenant_id, agent, attrs)
-        end
+        validate_agent_identity(agent, attrs)
 
       {:error, :not_found} ->
         attrs = Map.delete(attrs, "agent_id")
@@ -1630,38 +1686,6 @@ defmodule CommaWeb.SalixClient do
       {:error, :workspace_scope_conflict}
     end
   end
-
-  defp update_workspace_agent_vms(workspace, vm) do
-    [workspace["router_agent_id"], workspace["default_worker_agent_id"]]
-    |> Enum.reduce_while(:ok, fn agent_id, :ok ->
-      case SalixAgent.Control.configure(agent_id, %{"vm" => vm}, workspace["salix_tenant_id"]) do
-        {:ok, _agent} -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  defp maybe_update_agent(id, tenant_id, agent, attrs) do
-    updates =
-      %{}
-      |> maybe_update_vm(agent, attrs)
-
-    if updates == %{} do
-      :ok
-    else
-      normalize_created(SalixAgent.Control.configure(id, updates, tenant_id))
-    end
-  end
-
-  defp maybe_update_vm(updates, agent, %{"vm" => vm}) when is_map(vm) do
-    if strip_vm_command_flags(agent["vm"] || %{}) == strip_vm_command_flags(vm) do
-      updates
-    else
-      Map.put(updates, "vm", vm)
-    end
-  end
-
-  defp maybe_update_vm(updates, _agent, _attrs), do: updates
 
   defp workspace_tenant_config(%{"vm" => %{"enabled" => true, "provider" => provider}}) do
     with {:ok, providers} <- configured_vm_providers(provider) do
@@ -1698,7 +1722,7 @@ defmodule CommaWeb.SalixClient do
   defp default_cloudflare_provider do
     cfg =
       :salix_env
-      |> Application.get_env(:cloudflare_vm_gateway, %{})
+      |> SystemsRuntime.get_env(:cloudflare_vm_gateway, %{})
       |> normalize_map()
 
     base_url = cfg["base_url"]
@@ -1710,7 +1734,7 @@ defmodule CommaWeb.SalixClient do
   end
 
   defp comma_vm_config do
-    case Application.get_env(:comma_core, :salix_vm, %{}) do
+    case SystemsRuntime.get_env(:comma_core, :salix_vm, %{}) do
       cfg when is_map(cfg) -> cfg
       cfg when is_list(cfg) -> Map.new(cfg)
       _ -> %{}
@@ -1718,7 +1742,6 @@ defmodule CommaWeb.SalixClient do
   end
 
   defp strip_vm_command_flags(vm) when is_map(vm), do: Map.delete(normalize_map(vm), "recreate")
-  defp strip_vm_command_flags(_vm), do: %{}
 
   defp normalize_map(map) when is_map(map) do
     Map.new(map, fn {key, value} ->

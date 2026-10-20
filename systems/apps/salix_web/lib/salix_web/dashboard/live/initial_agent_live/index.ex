@@ -43,8 +43,8 @@ defmodule SalixWeb.Dashboard.InitialAgentLive.Index do
         <div>
           <h1 class="text-xl font-semibold">Initial agents</h1>
           <p class="mt-1 text-sm text-neutral-500">
-            Seed agents provisioned for new groups in this tenant. Each slot names a
-            template; the default slot seeds new groups when no agent is specified.
+            Seed agents provisioned for new groups in this tenant. Each slot may choose
+            a model; the default slot seeds new groups when no agent is specified.
           </p>
         </div>
         <.button variant="primary" navigate="/dash/initial-agents/new">
@@ -55,8 +55,9 @@ defmodule SalixWeb.Dashboard.InitialAgentLive.Index do
       <.table :if={@agents != []} id="initial-agents" rows={@agents}>
         <:col :let={a} label="Slot"><span class="font-mono text-xs">{a["slot"]}</span></:col>
         <:col :let={a} label="Name">{a["display_name"]}</:col>
-        <:col :let={a} label="Template">{a["template_name"]}</:col>
-        <:col :let={a} label="Model"><span class="font-mono text-xs">{a["model"]}</span></:col>
+        <:col :let={a} label="Model">
+          <span class="font-mono text-xs">{(a["model"] && a["model"]["model"]) || "Platform model"}</span>
+        </:col>
         <:col :let={a} label="Role">{a["role"]}</:col>
         <:col :let={a} label="Default">{if a["is_default"], do: "yes", else: "—"}</:col>
         <:col :let={a} label="Enabled">{if a["enabled"], do: "yes", else: "no"}</:col>

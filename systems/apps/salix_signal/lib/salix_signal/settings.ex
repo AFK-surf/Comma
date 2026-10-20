@@ -86,7 +86,7 @@ defmodule SalixSignal.Settings do
             "tenant_id" => tenant_id,
             "name" => @tenant_config,
             "value" => %{"account_id" => account_id},
-            "updated_at" => System.system_time(:second)
+            "updated_at" => SystemsClock.system_time(:second)
           })
       end
 

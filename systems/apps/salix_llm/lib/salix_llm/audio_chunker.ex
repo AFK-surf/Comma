@@ -1,4 +1,6 @@
 defmodule SalixLlm.AudioChunker do
+  require SystemsClock
+
   @moduledoc false
 
   @segment_seconds 300
@@ -149,9 +151,9 @@ defmodule SalixLlm.AudioChunker do
   end
 
   defp write_audio_input_bounded(input, audio_source, timeout_ms) do
-    task = Task.async(fn -> write_audio_input(input, audio_source) end)
+    task = SystemsRuntime.Task.async(fn -> write_audio_input(input, audio_source) end)
 
-    case Task.yield(task, timeout_ms) do
+    case SystemsClock.yield(task, timeout_ms) do
       {:ok, result} ->
         result
 
@@ -159,7 +161,7 @@ defmodule SalixLlm.AudioChunker do
         {:error, {:asr_audio_stream_exit, reason}}
 
       nil ->
-        _ = Task.shutdown(task, :brutal_kill)
+        _ = SystemsRuntime.Task.shutdown(task, :brutal_kill)
         {:error, :asr_batch_timeout}
     end
   end
@@ -478,7 +480,7 @@ defmodule SalixLlm.AudioChunker do
 
   defp probe_decoded_source_audio(ffprobe, input, timeout_ms) do
     probe_timeout = min(timeout_ms, @probe_timeout_ms)
-    deadline = System.monotonic_time(:millisecond) + probe_timeout
+    deadline = SystemsClock.monotonic_time(:millisecond) + probe_timeout
 
     with {:ok, sample_rate_timeout_ms} <- remaining_probe_timeout(deadline),
          {:ok, sample_rate} <- probe_sample_rate(ffprobe, input, sample_rate_timeout_ms),
@@ -504,7 +506,7 @@ defmodule SalixLlm.AudioChunker do
   end
 
   defp remaining_probe_timeout(deadline) do
-    case deadline - System.monotonic_time(:millisecond) do
+    case deadline - SystemsClock.monotonic_time(:millisecond) do
       remaining when remaining > 0 -> {:ok, remaining}
       _remaining -> {:error, :ffprobe_timeout}
     end
@@ -575,7 +577,7 @@ defmodule SalixLlm.AudioChunker do
 
     case collect_sample_count_port(
            port,
-           System.monotonic_time(:millisecond) + probe_timeout,
+           SystemsClock.monotonic_time(:millisecond) + probe_timeout,
            "",
            0,
            false
@@ -600,9 +602,9 @@ defmodule SalixLlm.AudioChunker do
   end
 
   defp collect_sample_count_port(port, deadline, remainder, total, invalid?) do
-    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    remaining = max(deadline - SystemsClock.monotonic_time(:millisecond), 0)
 
-    receive do
+    SystemsClock.vreceive do
       {^port, {:data, data}} when is_binary(data) ->
         {next_remainder, next_total, next_invalid?} =
           reduce_sample_count_data(remainder <> data, total, invalid?)
@@ -676,7 +678,7 @@ defmodule SalixLlm.AudioChunker do
   defp phase_timeout(timeout_ms, nil), do: {:ok, timeout_ms}
 
   defp phase_timeout(timeout_ms, deadline_ms) when is_integer(deadline_ms) do
-    remaining = deadline_ms - System.monotonic_time(:millisecond)
+    remaining = deadline_ms - SystemsClock.monotonic_time(:millisecond)
 
     if remaining > 0,
       do: {:ok, min(timeout_ms, remaining)},
@@ -705,15 +707,15 @@ defmodule SalixLlm.AudioChunker do
         args: args
       ])
 
-    collect_port(port, System.monotonic_time(:millisecond) + timeout_ms, "")
+    collect_port(port, SystemsClock.monotonic_time(:millisecond) + timeout_ms, "")
   rescue
     error -> {:error, {:start_failed, Exception.message(error)}}
   end
 
   defp collect_port(port, deadline, output) do
-    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    remaining = max(deadline - SystemsClock.monotonic_time(:millisecond), 0)
 
-    receive do
+    SystemsClock.vreceive do
       {^port, {:data, data}} when is_binary(data) ->
         collect_port(port, deadline, append_limited(output, data))
 
@@ -749,7 +751,7 @@ defmodule SalixLlm.AudioChunker do
     dir =
       Path.join(
         System.tmp_dir!(),
-        "salix-meeting-audio-#{System.unique_integer([:positive, :monotonic])}"
+        "salix-meeting-audio-#{SystemsRuntime.Proc.unique_integer([:positive, :monotonic])}"
       )
 
     case File.mkdir(dir) do

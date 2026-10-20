@@ -50,6 +50,19 @@ defmodule CommaWeb.OAuthCommit do
                {:error, :stale_plugin_operation}
              end
            end) do
+      if match?({:ok, _}, result) do
+        Comma.Analytics.capture(
+          user_id,
+          "comma_integration_connected",
+          "#{workspace_id}:#{plugin_id}:#{generation}",
+          %{
+            "workspace_id" => workspace_id,
+            "integration" => "plugin",
+            "initiator_kind" => "human"
+          }
+        )
+      end
+
       result
     else
       _ -> {:error, "authorization operation changed or expired"}

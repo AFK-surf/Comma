@@ -1,15 +1,13 @@
 /* oxlint-disable jsx-a11y/no-autofocus -- The onboarding is a modal flow: while Comma talks, its full-window control takes focus so Return and Space hurry it along. */
 import { useCommaMessages } from "@comma/i18n/react";
-import type { SideChatShortcut } from "@comma/native-bridge";
-import {
-  Button,
-  isMediaMuteShortcut,
-  NativeSurfaceSuppressor,
-  Tooltip,
-  XIcon,
-  motionDuration,
-  spacing,
-} from "@comma/ui";
+import type { GlobalShortcut } from "@comma/native-bridge";
+import { Button } from "@comma/ui/components/Button";
+import { isMediaMuteShortcut } from "@comma/ui/components/chat-panel";
+import { NativeSurfaceSuppressor } from "@comma/ui/components/native-surface/NativeSurfaceSuppressor";
+import { Tooltip } from "@comma/ui/components/tooltip";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
+import { XIcon } from "@comma/ui/components/icons";
+import { motionDuration, spacing } from "@comma/ui/tokens";
 import {
   useCallback,
   useEffect,
@@ -144,13 +142,7 @@ export type OnboardingOverlayProps = {
    * conversation and the welcome page; otherwise the welcome page follows the
    * conversation.
    */
-  openShortcut?: SideChatShortcut | undefined;
-  /**
-   * The Side Chat shortcut, where the Side Chat can be brought out (the macOS
-   * app, with the shortcut set). Given, Comma tells of the Side Chat and its
-   * shortcut once every item is answered.
-   */
-  sideChatShortcut?: SideChatShortcut | undefined;
+  openShortcut?: GlobalShortcut | undefined;
 };
 
 /**
@@ -191,7 +183,6 @@ export const onboardingVoicedKeys = [
   "onboarding_bridge_permissions_allowed",
   "onboarding_bridge_permissions_skipped",
   "onboarding_bridge_permissions_partial",
-  "onboarding_side_chat",
   "onboarding_recap",
 ] as const satisfies readonly (keyof Messages)[];
 type VoicedKey = (typeof onboardingVoicedKeys)[number];
@@ -247,8 +238,7 @@ const cardFrame = 2 * spacing.md + spacing.lg + spacing["5xl"];
  * then, under the mark, Comma greets the user and asks for each setup item in
  * turn: its question comes with a card of the item's controls, the user's
  * answer is sent back as their reply, and Comma acknowledges it before asking
- * for the next. Where the Side Chat can be brought out, Comma then tells of it
- * and its shortcut. Where an Open Comma shortcut is set, the conversation then
+ * for the next. Where an Open Comma shortcut is set, the conversation then
  * steps back for it (OnboardingShortcut.tsx): the user presses its keys, they
  * turn green, and a beat later a white light sweeping up
  * the screen clears the conversation (or the shortcut) for the welcome page,
@@ -275,7 +265,6 @@ export function OnboardingOverlay({
   presentation,
   renderPermissions,
   routerName,
-  sideChatShortcut,
   voice = "calm",
   workspace,
 }: OnboardingOverlayProps) {
@@ -295,11 +284,10 @@ export function OnboardingOverlay({
     undefined,
     (): ReturnType<typeof initialOnboardingThread> =>
       initialOnboardingThread({
-        at: performance.now(),
+        at: uiClock.monotonic(),
         items: onboardingItemsFor({ permissions: renderPermissions !== undefined }),
         results: initialResults,
         shortcut: openShortcut !== undefined,
-        sideChat: sideChatShortcut,
         speaker: storedName,
         start: initialStage,
       })
@@ -345,8 +333,8 @@ export function OnboardingOverlay({
   const launchpadRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLFieldSetElement>(null);
   const skipRef = useRef<HTMLDivElement>(null);
-  const focusTimer = useRef<number>(undefined);
-  useEffect(() => () => window.clearTimeout(focusTimer.current), []);
+  const focusTimer = useRef<CancelUiTimer>(undefined);
+  useEffect(() => () => focusTimer.current?.(), []);
 
   const spaceName = messages.onboarding_shortcut_space();
   const commaName = messages.onboarding_shortcut_comma();
@@ -398,7 +386,7 @@ export function OnboardingOverlay({
       }
       if (!content || from === undefined) return;
       const play = () => playThreadMove(content, from, { reducedMotion, withSend });
-      if (withSend) requestAnimationFrame(play);
+      if (withSend) uiClock.frame(play);
       else play();
     },
     [reducedMotion]
@@ -431,7 +419,7 @@ export function OnboardingOverlay({
     if (dialogRef.current) takeFocus(dialogRef.current);
   }, [takeFocus]);
   const begin = useCallback(
-    () => dispatch({ type: "begin", at: performance.now() }),
+    () => dispatch({ type: "begin", at: uiClock.monotonic() }),
     []
   );
 
@@ -442,12 +430,12 @@ export function OnboardingOverlay({
    */
   const toWelcome = useCallback(() => {
     if (phase !== "intro" && phase !== "conversation" && phase !== "shortcut") return;
-    window.clearTimeout(focusTimer.current);
+    focusTimer.current?.();
     focusDialog();
     // What is still to do is skipped: a name that waits for the workspace is
     // never sent. One already on its way cannot be recalled.
     setNameSave((save) => (save.status === "waiting" ? { status: "idle" } : save));
-    flushSync(() => dispatch({ type: "welcome", at: performance.now() }));
+    flushSync(() => dispatch({ type: "welcome", at: uiClock.monotonic() }));
     const stage = stageRef.current;
     const content = stageContentRef.current;
     const light = lightRef.current;
@@ -475,7 +463,7 @@ export function OnboardingOverlay({
         move(
           {
             type: "say",
-            at: performance.now(),
+            at: uiClock.monotonic(),
             line: step.line,
             source: measureOutgoingBubbleSource(launchpadRef.current),
             speaker,
@@ -487,7 +475,7 @@ export function OnboardingOverlay({
         move(
           {
             type: "reply",
-            at: performance.now(),
+            at: uiClock.monotonic(),
             source: measureOutgoingBubbleSource(launchpadRef.current),
           },
           true
@@ -499,11 +487,8 @@ export function OnboardingOverlay({
         // Hold focus on the dialog while the thread makes room, so a second
         // Return that hurried Comma along cannot also press the card's action.
         dialogRef.current?.focus({ preventScroll: true });
-        window.clearTimeout(focusTimer.current);
-        focusTimer.current = window.setTimeout(
-          focusCard,
-          motionDuration.onboardingSettle
-        );
+        focusTimer.current?.();
+        focusTimer.current = uiClock.after(motionDuration.onboardingSettle, focusCard);
         return;
       }
       case "shortcut": {
@@ -512,9 +497,9 @@ export function OnboardingOverlay({
           toWelcome();
           return;
         }
-        window.clearTimeout(focusTimer.current);
+        focusTimer.current?.();
         focusDialog();
-        flushSync(() => dispatch({ type: "shortcut", at: performance.now() }));
+        flushSync(() => dispatch({ type: "shortcut", at: uiClock.monotonic() }));
         if (columnRef.current) playThreadRecede(columnRef.current, reducedMotion);
         return;
       }
@@ -531,23 +516,18 @@ export function OnboardingOverlay({
   useEffect(() => {
     const next = nextOnboardingStep(thread, timing);
     if (!next) return undefined;
-    const timer = window.setTimeout(
-      () => runStepRef.current(next.step),
-      Math.max(0, next.at - performance.now())
+    const timer = uiClock.after(Math.max(0, next.at - uiClock.monotonic()), () =>
+      runStepRef.current(next.step)
     );
-    return () => window.clearTimeout(timer);
+    return () => timer();
   }, [thread]);
 
-  // Whether the Open Comma shortcut step is offered, and the Side Chat
-  // shortcut Comma tells of, follow the settings until the conversation is
-  // over.
+  // Whether the Open Comma shortcut step is offered follows the settings
+  // until the conversation is over.
   const shortcutOffered = openShortcut !== undefined;
   useEffect(() => {
     dispatch({ type: "offer-shortcut", offered: shortcutOffered });
   }, [shortcutOffered]);
-  useEffect(() => {
-    dispatch({ type: "offer-side-chat", shortcut: sideChatShortcut });
-  }, [sideChatShortcut]);
 
   // The shortcut is turned off mid-step: nothing is left to press, so on to
   // the welcome page.
@@ -555,12 +535,12 @@ export function OnboardingOverlay({
   useEffect(() => {
     if (!shortcutGone) return undefined;
     // Out of the commit, as every step runs (the sweep flushes its state).
-    const timer = window.setTimeout(toWelcome);
-    return () => window.clearTimeout(timer);
+    const timer = uiClock.after(0, toWelcome);
+    return () => timer();
   }, [shortcutGone, toWelcome]);
 
   const shortcutPressed = useCallback(
-    () => dispatch({ type: "shortcut-pressed", at: performance.now() }),
+    () => dispatch({ type: "shortcut-pressed", at: uiClock.monotonic() }),
     []
   );
   const skipShortcut = () => {
@@ -569,7 +549,7 @@ export function OnboardingOverlay({
   };
 
   const landed = useCallback(
-    (id: number) => dispatch({ type: "landed", id, at: performance.now() }),
+    (id: number) => dispatch({ type: "landed", id, at: uiClock.monotonic() }),
     []
   );
 
@@ -581,10 +561,15 @@ export function OnboardingOverlay({
     if (phase !== "conversation" || thread.card !== result.item || thread.finishing) {
       return;
     }
-    window.clearTimeout(focusTimer.current);
+    focusTimer.current?.();
     dialogRef.current?.focus({ preventScroll: true });
     flushSync(() =>
-      dispatch({ type: "finish", result, at: performance.now(), speaker: previousName })
+      dispatch({
+        type: "finish",
+        result,
+        at: uiClock.monotonic(),
+        speaker: previousName,
+      })
     );
     if (cardRef.current) playCardLeave(cardRef.current, reducedMotion);
     onItemAnswered?.(result);
@@ -594,7 +579,7 @@ export function OnboardingOverlay({
     finishItemRef.current = finishItem;
   });
 
-  const hurry = () => move({ type: "hurry", at: performance.now(), speaker }, false);
+  const hurry = () => move({ type: "hurry", at: uiClock.monotonic(), speaker }, false);
 
   const start = () => {
     if (phase !== "welcome") return;
@@ -620,11 +605,11 @@ export function OnboardingOverlay({
   useEffect(() => {
     if (phase !== "exit") return undefined;
     // The page leaves, then the light lifts; reduced motion has nothing to fade.
-    const timer = window.setTimeout(
-      onExited,
-      reducedMotion ? 0 : motionDuration.revealItem + motionDuration.onboardingExit
+    const timer = uiClock.after(
+      reducedMotion ? 0 : motionDuration.revealItem + motionDuration.onboardingExit,
+      onExited
     );
-    return () => window.clearTimeout(timer);
+    return () => timer();
   }, [onExited, phase, reducedMotion]);
 
   // Name: saving is a request. Unchanged, the item moves on without one;
@@ -636,14 +621,13 @@ export function OnboardingOverlay({
     async (name: string, workspaceId: string, previousName: string) => {
       const attempt = ++saveAttempt.current;
       setNameSave({ status: "saving" });
-      let timer: number | undefined;
+      let cancelTimer: (() => void) | undefined;
       try {
         await Promise.race([
           onSaveRouterName(name, workspaceId),
           new Promise<never>((_, reject) => {
-            timer = window.setTimeout(
-              () => reject(new Error("rename timed out")),
-              nameSaveTimeoutMs
+            cancelTimer = uiClock.after(nameSaveTimeoutMs, () =>
+              reject(new Error("rename timed out"))
             );
           }),
         ]);
@@ -651,7 +635,7 @@ export function OnboardingOverlay({
         if (attempt === saveAttempt.current) setNameSave({ status: "failed" });
         return;
       } finally {
-        window.clearTimeout(timer);
+        cancelTimer?.();
       }
       if (attempt !== saveAttempt.current) return;
       setNameSave({ status: "idle" });
@@ -1051,16 +1035,6 @@ export function onboardingLineText(
       )();
     case "bridge":
       return onboardingBridgeText(line.result, line.index, messages, voice);
-    case "side-chat":
-      // Each modifier by its symbol, then the key (⌃ + Z).
-      return say("onboarding_side_chat")({
-        keys: onboardingKeycaps(line.shortcut, {
-          comma: messages.onboarding_shortcut_comma(),
-          space: messages.onboarding_shortcut_space(),
-        })
-          .map(({ glyph, name }) => glyph ?? name)
-          .join(" + "),
-      });
     case "recap":
       return withRouterNameSpacing(
         say("onboarding_recap")({

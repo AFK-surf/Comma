@@ -2,59 +2,42 @@ defmodule BridgeForTeams.RuntimeAuth do
   @moduledoc """
   Credential-free validation and projection for project runtime-auth APIs.
 
-  The retired connector models are historical evidence only; see
-  `tla/connector/README.md`. Contract changes require runtime regression tests.
+  Contract changes require runtime regression tests.
   """
 
-  import Ecto.Query
   alias BridgeForTeams.{Memberships, Orgs, Projects}
-  alias SalixStore.{Compute, Repo}
 
-  @doc "Run an administrator operation with identity and scope owned by BFT."
+  @doc """
+  Run an administrator operation on a device runtime (Codex or Claude Code on
+  a device or station) with identity and scope owned by BFT.
+  """
   def call(actor_id, project_id, request) when is_binary(actor_id) and is_map(request) do
     with :ok <- Memberships.authorize(actor_id, :write, %{project_id: project_id}),
          {:ok, project} <- Projects.get_project(project_id),
          {:ok, org} <- Orgs.get_org(project.org_id),
          {:ok, operation, target, input} <- private_operation(request) do
-      result =
-        case target do
-          %{"kind" => "compute_workload", "workload_id" => workload_id} ->
-            with {:ok, attrs} <-
-                   resolve_compute_target(org.salix_tenant_id, project.id, workload_id),
-                 :ok <-
-                   ensure_self_configured(
-                     operation,
-                     org.salix_tenant_id,
-                     project.id,
-                     workload_id
-                   ) do
-              SalixEnv.ComputeRuntimeAuth.call(
-                operation,
-                Map.merge(input, Map.put(attrs, :actor_id, actor_id))
-              )
-            end
+      %{"device_id" => device_id, "runtime_id" => runtime_id} = target
 
-          %{"kind" => "connected_runtime", "device_id" => device_id, "runtime_id" => runtime_id} ->
-            with :ok <-
-                   ensure_device_self_configured(
-                     operation,
-                     org.salix_tenant_id,
-                     project.salix_group_id,
-                     device_id,
-                     runtime_id
-                   ) do
-              BridgeForTeams.Salix.Client.impl().runtime_auth(
-                operation,
-                Map.merge(input, %{
-                  actor_id: actor_id,
-                  tenant_id: org.salix_tenant_id,
-                  project_id: project.id,
-                  group_id: project.salix_group_id,
-                  device_id: device_id,
-                  runtime_id: runtime_id
-                })
-              )
-            end
+      result =
+        with :ok <-
+               ensure_device_self_configured(
+                 operation,
+                 org.salix_tenant_id,
+                 project.salix_group_id,
+                 device_id,
+                 runtime_id
+               ) do
+          BridgeForTeams.Salix.Client.impl().runtime_auth(
+            operation,
+            Map.merge(input, %{
+              actor_id: actor_id,
+              tenant_id: org.salix_tenant_id,
+              project_id: project.id,
+              group_id: project.salix_group_id,
+              device_id: device_id,
+              runtime_id: runtime_id
+            })
+          )
         end
 
       case result do
@@ -68,22 +51,6 @@ defmodule BridgeForTeams.RuntimeAuth do
   end
 
   def call(_actor_id, _project_id, _request), do: {:error, :invalid_runtime_auth_request}
-
-  defp ensure_self_configured(:status, _tenant, _project, _workload), do: :ok
-
-  defp ensure_self_configured(_operation, tenant, project, workload) do
-    case BridgeForTeams.Salix.Client.impl().compute_managed_auth_operation(
-           tenant,
-           project,
-           workload,
-           :read,
-           %{}
-         ) do
-      {:ok, %{"source" => "self_configured"}} -> :ok
-      {:ok, %{"source" => "organization"}} -> {:error, :managed_auth_conflict}
-      _ -> {:error, :runtime_auth_unavailable}
-    end
-  end
 
   defp ensure_device_self_configured(:status, _, _, _, _), do: :ok
 
@@ -102,123 +69,6 @@ defmodule BridgeForTeams.RuntimeAuth do
       {:error, :not_found} -> :ok
       _ -> {:error, :runtime_auth_unavailable}
     end
-  end
-
-  @doc "List pending Router requests for one project without exposing request internals."
-  def list_requests(actor_id, project_id, opts \\ [])
-
-  def list_requests(actor_id, project_id, opts)
-      when is_binary(actor_id) and is_binary(project_id) and is_list(opts) do
-    with {:ok, cursor} <- runtime_auth_request_cursor(Keyword.get(opts, :cursor)),
-         :ok <- Memberships.authorize(actor_id, :read, %{project_id: project_id}),
-         {:ok, project} <- Projects.get_project(project_id),
-         {:ok, org} <- Orgs.get_org(project.org_id),
-         {:ok, page} <-
-           BridgeForTeams.Salix.Client.impl().list_runtime_auth_requests(
-             project.salix_group_id,
-             org.salix_tenant_id,
-             cursor: cursor,
-             limit: 50
-           ) do
-      requests =
-        page["requests"]
-        |> Enum.filter(
-          &(get_in(&1, ["request_payload", "runtime_auth", "target", "project_id"]) == project.id)
-        )
-        |> Enum.map(&public_request/1)
-
-      {:ok, %{"requests" => requests, "next_cursor" => page["next_cursor"]}}
-    end
-  end
-
-  def list_requests(_actor_id, _project_id, _opts), do: {:error, :invalid_runtime_auth_request}
-
-  @doc "Read one pending Router request for a project by its opaque identity."
-  def get_request(actor_id, project_id, request_id)
-      when is_binary(actor_id) and is_binary(project_id) and is_binary(request_id) and
-             byte_size(request_id) in 1..256 do
-    with :ok <- Memberships.authorize(actor_id, :read, %{project_id: project_id}),
-         {:ok, project} <- Projects.get_project(project_id),
-         {:ok, org} <- Orgs.get_org(project.org_id),
-         {:ok, request} <-
-           BridgeForTeams.Salix.Client.impl().get_runtime_auth_request(
-             project.salix_group_id,
-             request_id,
-             org.salix_tenant_id
-           ),
-         true <- request["status"] == "pending",
-         true <-
-           get_in(request, ["request_payload", "runtime_auth", "target", "project_id"]) ==
-             project.id do
-      {:ok, public_request(request)}
-    else
-      false -> {:error, :runtime_auth_target_changed}
-      error -> error
-    end
-  end
-
-  def get_request(_actor_id, _project_id, _request_id),
-    do: {:error, :invalid_runtime_auth_request}
-
-  defp runtime_auth_request_cursor(nil), do: {:ok, nil}
-  defp runtime_auth_request_cursor(""), do: {:ok, nil}
-
-  defp runtime_auth_request_cursor(cursor)
-       when is_binary(cursor) and byte_size(cursor) <= 4_096,
-       do: {:ok, cursor}
-
-  defp runtime_auth_request_cursor(_cursor), do: {:error, :invalid_runtime_auth_request}
-
-  @doc "Complete one pending Router request after the current target state is revalidated."
-  def complete_request(actor_id, project_id, request_id, outcome)
-      when is_binary(actor_id) and is_binary(project_id) and is_binary(request_id) and
-             outcome in ~w(saved_unverified authenticated canceled failed unknown) do
-    with :ok <- Memberships.authorize(actor_id, :write, %{project_id: project_id}),
-         {:ok, project} <- Projects.get_project(project_id),
-         {:ok, org} <- Orgs.get_org(project.org_id),
-         {:ok, request} <-
-           BridgeForTeams.Salix.Client.impl().get_runtime_auth_request(
-             project.salix_group_id,
-             request_id,
-             org.salix_tenant_id
-           ),
-         true <- request["status"] == "pending",
-         true <-
-           get_in(request, ["request_payload", "runtime_auth", "target", "project_id"]) ==
-             project.id,
-         {:ok, completed} <-
-           BridgeForTeams.Salix.Client.impl().complete_runtime_auth_request(
-             project.salix_group_id,
-             request_id,
-             %{"actor_id" => actor_id, "outcome" => outcome},
-             org.salix_tenant_id
-           ),
-         true <-
-           get_in(completed, ["request_payload", "runtime_auth", "target", "project_id"]) ==
-             project.id do
-      {:ok, public_request(completed)}
-    else
-      false -> {:error, :runtime_auth_target_changed}
-      error -> error
-    end
-  end
-
-  def complete_request(_actor_id, _project_id, _request_id, _outcome),
-    do: {:error, :invalid_runtime_auth_request}
-
-  defp public_request(request) do
-    payload = get_in(request, ["request_payload", "runtime_auth"]) || %{}
-
-    %{
-      "request_id" => request["request_id"],
-      "status" => request["status"],
-      "action" => payload["action"],
-      "method" => payload["method"],
-      "backend" => payload["backend"],
-      "attempt_id" => payload["attempt_id"],
-      "target" => payload["target"],
-      "expires_at" => request["expires_at"]
-    }
   end
 
   defp private_operation(%{"action" => action, "target" => target} = request) do
@@ -260,52 +110,14 @@ defmodule BridgeForTeams.RuntimeAuth do
 
   defp private_operation(_request), do: {:error, :invalid_runtime_auth_request}
 
-  defp valid_private_target?(%{"kind" => kind} = target) do
-    fields =
-      case kind do
-        "compute_workload" -> ~w(kind workload_id)
-        "connected_runtime" -> ~w(kind device_id runtime_id)
-        _ -> []
-      end
+  defp valid_private_target?(%{"kind" => "connected_runtime"} = target) do
+    fields = ~w(kind device_id runtime_id)
 
-    fields != [] and exact_keys?(target, fields) and
+    exact_keys?(target, fields) and
       Enum.all?(fields, fn key -> is_binary(target[key]) and byte_size(target[key]) in 1..256 end)
   end
 
   defp valid_private_target?(_target), do: false
-
-  defp resolve_compute_target(tenant_id, project_id, workload_id) do
-    target =
-      Repo.one(
-        from(w in Compute.Workload,
-          join: e in Compute.Environment,
-          on: e.id == w.environment_id,
-          join: r in Compute.RuntimeInstance,
-          on: r.workload_id == w.id and r.generation == w.generation,
-          where:
-            w.id == ^workload_id and e.tenant_id == ^tenant_id and
-              e.owner_type == "project" and e.owner_id == ^project_id and
-              r.status == "connected",
-          select: %{
-            tenant_id: e.tenant_id,
-            project_id: e.owner_id,
-            workload_id: w.id,
-            runtime_instance_id: r.id,
-            generation: r.generation,
-            connection_epoch: r.connection_epoch,
-            template: w.template_key
-          }
-        )
-      )
-
-    case target do
-      %{template: "external." <> provider} when provider in ["codex", "pi", "claude"] ->
-        {:ok, target |> Map.delete(:template) |> Map.put(:provider, provider)}
-
-      _ ->
-        {:error, :runtime_auth_target_changed}
-    end
-  end
 
   @snapshot_required ~w(schema_version status requires_openai_auth observed_at)
   @snapshot_optional ~w(mode issue backend)
@@ -454,7 +266,8 @@ defmodule BridgeForTeams.RuntimeAuth do
   defp valid_ceremony_expiry?(value) do
     valid_timestamp?(value) and
       value <=
-        System.system_time(:millisecond) + @connector_attempt_ttl_ms + @ceremony_clock_skew_ms
+        SystemsClock.system_time(:millisecond) + @connector_attempt_ttl_ms +
+          @ceremony_clock_skew_ms
   end
 
   defp optional_enum?(map, key, values) do

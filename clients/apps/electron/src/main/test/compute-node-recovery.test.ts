@@ -1,12 +1,19 @@
 import { createHash } from "node:crypto";
+import { mainCoreRequests } from "../../test-support/main-core-requests";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signedInSessionSnapshotSchema } from "@comma/session-contract";
-import { describe, expect, it, vi } from "vitest";
+import { testEpoch } from "@comma/test-utils/test-clock";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountComputeNodeService } from "../modules/compute-node/account-service";
 import { ComputeNodeInstallAuthorization } from "../modules/compute-node/install-authorization";
 import { LocalComputeOperator } from "../modules/compute-node/local-operator";
+
+// The file's timers run on the test's clock: a test moves it.
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 
 const snapshot = (userId: string, generation: number) =>
   signedInSessionSnapshotSchema.parse({
@@ -63,7 +70,7 @@ async function fixture() {
     registration_id: binding.registration_id,
     nonce: "original-nonce",
     revision: 9,
-    expires_at: Math.floor(Date.now() / 1000) + 120,
+    expires_at: Math.floor(testEpoch / 1000) + 120,
   };
   let verified = true;
   let mapped = true;
@@ -121,7 +128,7 @@ async function fixture() {
     if (args[0] === "local-environments")
       return JSON.stringify({
         bootId: "boot",
-        collectedAt: new Date().toISOString(),
+        collectedAt: new Date(testEpoch).toISOString(),
         environments: [
           {
             id: "native-environment",
@@ -135,7 +142,10 @@ async function fixture() {
         ],
       });
     if (args[0] === "local-disk")
-      return JSON.stringify({ bootId: "boot", collectedAt: new Date().toISOString() });
+      return JSON.stringify({
+        bootId: "boot",
+        collectedAt: new Date(testEpoch).toISOString(),
+      });
     if (args[0] === "local-registrations")
       return JSON.stringify({
         registrations: [{ id: binding.registration_id, revision: "8" }],
@@ -176,7 +186,7 @@ async function fixture() {
         arch: "arm64",
         installAuthorization: new ComputeNodeInstallAuthorization(
           session as never,
-          fetcher as never
+          mainCoreRequests(session as never, fetcher as never)
         ),
       },
       sessionState,
@@ -255,9 +265,9 @@ describe("original compute connection recovery", () => {
       })
     );
     f.setVerified(false);
-    expect(
-      (await f.service.recoveryCandidates({ workspaceId: "workspace" })).candidates
-    ).toEqual([]);
+    await expect(
+      f.service.recoveryCandidates({ workspaceId: "workspace" })
+    ).rejects.toThrow("previous connection could not be verified");
     f.setVerified(true);
     const page = await f.service.recoveryCandidates({ workspaceId: "workspace" });
     expect(page.candidates).toHaveLength(1);
@@ -304,7 +314,7 @@ describe("original compute connection recovery", () => {
         key: page.candidates[0]!.key,
         confirmationId: page.confirmationId,
       })
-    ).rejects.toThrow("Network response lost");
+    ).rejects.toThrow("The workspace service could not be reached");
     expect(JSON.parse(await readFile(f.accountFile("A"), "utf8"))).toMatchObject({
       recoveryPending: {
         operationId: f.binding.id,

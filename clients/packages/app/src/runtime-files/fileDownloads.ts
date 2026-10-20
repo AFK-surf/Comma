@@ -1,3 +1,4 @@
+import { uiClock } from "@comma/ui/clock";
 import { messages, type CommaLocale } from "@comma/i18n";
 import {
   fileDownloadMaxBytes,
@@ -5,12 +6,12 @@ import {
   type CommaNativeBridge,
   type FilesSaveDownloadResult,
 } from "@comma/native-bridge";
+import { toast } from "@comma/ui/components/toast";
 import {
-  toast,
   type ChatPanelMediaDownloadCapability,
   type ChatPanelMediaDownloadResult,
-} from "@comma/ui";
-import { CommaApiError } from "../api";
+} from "@comma/ui/components/chat-panel";
+import { CoreError } from "@comma/core-client";
 
 /**
  * The client's single download path.
@@ -18,9 +19,9 @@ import { CommaApiError } from "../api";
  * A caller only says what the file is called and how to get its bytes; this
  * module owns everything after that — placing the file, telling the user where
  * it went, and turning the toast's actions back into operating-system calls.
- * Bytes are resolved in the renderer because that is where the authenticated
- * transport lives; Main owns the Downloads directory and hands back an opaque
- * handle, so no host path ever reaches this side.
+ * The caller's resolver gets the bytes (the core's `files.read` for chat files);
+ * Main owns the Downloads directory and hands back an opaque handle, so no host
+ * path ever reaches this side.
  */
 export type ResolveFileBytes = (signal?: AbortSignal) => Promise<Blob>;
 
@@ -52,17 +53,26 @@ const failedDownload: ChatPanelMediaDownloadResult = {
 type DownloadError = Extract<ChatPanelMediaDownloadResult, { status: "error" }>;
 
 const retrievalError = (error: unknown): DownloadError => {
-  if (!(error instanceof CommaApiError)) {
+  // A file the core read: refused by the server (its code and status), over the
+  // limit, or with no answer.
+  if (
+    error instanceof CoreError &&
+    error.code === "too_large" &&
+    error.status === undefined
+  )
+    return { code: "too-large", retryable: false, status: "error" };
+  const refusal =
+    error instanceof CoreError && error.status !== undefined
+      ? { httpStatus: error.status, reason: error.code }
+      : undefined;
+  if (!refusal) {
     return { code: "network", retryable: true, status: "error" };
   }
 
-  const { status: httpStatus } = error;
+  const { httpStatus, reason } = refusal;
   let code: DownloadError["code"] = "unsupported";
   if (httpStatus === 404 || httpStatus === 410) code = "not-found";
-  else if (
-    httpStatus === 401 ||
-    (httpStatus === 409 && error.body?.error === "session_changed")
-  )
+  else if (httpStatus === 401 || (httpStatus === 409 && reason === "session_changed"))
     code = "unauthorized";
   else if (httpStatus === 403) code = "forbidden";
   else if (httpStatus === 413) code = "too-large";
@@ -200,7 +210,7 @@ export const saveThroughBrowser = (blob: Blob, fileName: string) => {
     anchor.click();
   } finally {
     anchor.remove();
-    globalThis.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+    uiClock.after(0, () => URL.revokeObjectURL(objectUrl));
   }
 };
 

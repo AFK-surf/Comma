@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Placeholder: a filled error circle with an exclamation mark. To be replaced by the icon set. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="20dp" android:height="20dp" android:viewportWidth="20" android:viewportHeight="20">
+    <path android:fillColor="@color/token_fg_error"
+        android:pathData="M10,0A10,10 0,1 1,10,20A10,10 0,1 1,10,0Z" />
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M8.9,4.8h2.2l-0.35,7.2h-1.5z M10,13.4a1.3,1.3 0,1 1,0,2.6a1.3,1.3 0,1 1,0,-2.6z" />
+</vector>

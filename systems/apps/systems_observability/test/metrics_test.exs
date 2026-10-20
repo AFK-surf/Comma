@@ -1,5 +1,5 @@
 defmodule SystemsObservability.MetricsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   test "hostile HTTP paths scrape only as the bounded unmatched family" do
     name = Module.concat(__MODULE__, HTTPReporter)
@@ -17,7 +17,7 @@ defmodule SystemsObservability.MetricsTest do
 
     hostile = "/users/550e8400-e29b-41d4-a716-446655440000?token=secret"
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:comma_system, :http, :stop],
       %{duration: System.convert_time_unit(1, :millisecond, :native)},
       %{endpoint: :comma_product_api, route: hostile, method: :get, status: 200}
@@ -35,7 +35,7 @@ defmodule SystemsObservability.MetricsTest do
 
     refute Enum.any?(core_metrics, &match?(%Telemetry.Metrics.Distribution{}, &1))
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:comma_system, :http, :stop],
       %{duration: System.convert_time_unit(2, :millisecond, :native)},
       %{endpoint: :comma_product_api, route: "/health", method: :get, status: 204}

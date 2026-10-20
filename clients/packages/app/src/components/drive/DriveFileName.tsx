@@ -1,4 +1,4 @@
-import { cx } from "@comma/ui";
+import { cx } from "@comma/ui/components/utils";
 
 /**
  * How much of a name's end stays visible when it has to lose its middle.

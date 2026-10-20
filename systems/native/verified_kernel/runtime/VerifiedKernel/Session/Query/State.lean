@@ -146,54 +146,6 @@ def totalMessageCount (state : Term) : KernelM Term := do
     | _ => pure acc) (i 0)
   add archived (i (← asList ((← field state "messages").default (list []))).length)
 
-/-- `State.predicate_replacement/4` for an integer id: the first matching predicate's
-replacement. A non-integer id falls to the catch-all clause and masks nothing. -/
-def predicateReplacement (role id content : Term) : List Term → KernelM Term
-  | [] => pure nil
-  | entry :: rest => do
-    if !id.isInteger then return nil
-    let kind ← access entry (b "kind")
-    let found ←
-      if kind == b "tool_messages_through" && role == b "tool" then do
-        if ← atMost id ((← access entry (b "through_id")).default (i 0)) then
-          access entry (b "replacement")
-        else pure nil
-      else if kind == b "non_model_messages_over_bytes_through" && role != b "assistant" then do
-        let limit ← access entry (b "max_bytes")
-        let .binary bytes := content | pure nil
-        if limit.isInteger && integerValue limit > 0 &&
-            (← atMost id ((← access entry (b "through_id")).default (i 0))) &&
-            (← greater (i bytes.size) limit) then access entry (b "replacement")
-        else pure nil
-      else pure nil
-    if found.truthy then return found
-    predicateReplacement role id content rest
-
-/-- `State.masked_messages/1`: the window read through its redaction overlay. -/
-def maskedMessages (state : Term) : KernelM Term := do
-  let redactions ← field state "redactions"
-  let messages := (← field state "messages").default (list [])
-  if redactions == nil || redactions == list [] then return messages
-  let overlays ← asList redactions
-  let bySeq ← overlays.foldlM (fun acc entry => do
-    let seq ← access entry (b "seq")
-    if seq.isInteger then put acc seq (← access entry (b "replacement")) else pure acc) empty
-  let byId ← overlays.foldlM (fun acc entry => do
-    let id ← access entry (b "message_id")
-    if id != nil then put acc id (← access entry (b "replacement")) else pure acc) empty
-  let predicates ← overlays.filterM (fun entry => do
-    let kind ← access entry (b "kind")
-    return kind == b "tool_messages_through" || kind == b "non_model_messages_over_bytes_through")
-  let masked ← (← asList messages).mapM (fun message => do
-    let direct := (bySeq.get (← pick message "seq")).default (byId.get (← pick message "id"))
-    let replacement ← if direct.truthy then pure direct else
-      predicateReplacement (← pick message "role") (← pick message "id")
-        (← pick message "content") predicates
-    if replacement == nil then return message
-    if message.has (a "content") then put message (a "content") replacement
-    else put message (b "content") replacement)
-  return list masked
-
 /-! ### Wait timeouts -/
 
 private def timeoutTail (count : Term) : List Term → KernelM Term
@@ -233,16 +185,10 @@ def shouldCompact (state args : Term) : KernelM Term := do
     | _ => fail "function_clause"
   let threshold ← if threshold.truthy then pure threshold
     else observe (.tuple [a "config", a "salix_agent", a "compaction_threshold", nil])
-  -- Optional instruction bodies live outside transcript/compaction summaries.
-  -- Reserve one token per UTF-8 byte, conservatively, before provider dispatch.
-  let selected := (state.get (a "miniskills")).get (b "inputs")
-  let bytes := (wrap selected).foldl (fun total input =>
-    total + (wrap (input.get (b "skills"))).foldl (fun n skill =>
-      n + (match skill.get (b "content") with | .binary text => text.size | _ => 0)) 0) 0
-  if threshold.isInteger then return Term.bool (← greater (← add (← contextBytes state) (i bytes)) threshold)
+  if threshold.isInteger then return Term.bool (← greater (← contextBytes state) threshold)
   if threshold != nil then fail "case_clause" [threshold]
   let trigger ← observedPromptTokens state model
-  return Term.bool (← greater (← add trigger (i bytes)) (← triggerLimit (window.default (i 128000))))
+  return Term.bool (← greater trigger (← triggerLimit (window.default (i 128000))))
 
 /-! ### Registry -/
 
@@ -300,7 +246,6 @@ def table : OpTable :=
      if !args.isBinary then fail "function_clause" else resolveResult state args),
    ("covered_seq", coveredSeq),
    ("total_message_count", query totalMessageCount),
-   ("masked_messages", query maskedMessages),
    ("human_source_origin?", fun _ args => return Term.bool (← humanSourceOrigin args)),
    ("pending_assistant_id", query pendingAssistantId),
    ("decision_required?", predicate decisionRequired),

@@ -2,7 +2,7 @@ defmodule BillingStripe.Telemetry do
   @moduledoc false
 
   def observe(operation, surface, fun) when is_function(fun, 0) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     try do
       result = fun.()
@@ -12,7 +12,7 @@ defmodule BillingStripe.Telemetry do
         operation,
         surface,
         outcome,
-        System.monotonic_time() - started
+        SystemsClock.monotonic_time() - started
       )
 
       maybe_emit_rate_limit(result, surface)
@@ -23,7 +23,7 @@ defmodule BillingStripe.Telemetry do
           operation,
           surface,
           "error",
-          System.monotonic_time() - started
+          SystemsClock.monotonic_time() - started
         )
 
         reraise exception, __STACKTRACE__
@@ -44,7 +44,7 @@ defmodule BillingStripe.Telemetry do
 
   defp maybe_emit_rate_limit({:error, %Stripe.Error{code: code}}, surface)
        when code in [:rate_limit, "rate_limit"] do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:billing, :stripe, :rate_limit],
       %{},
       %{surface: surface}

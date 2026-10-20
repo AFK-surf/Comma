@@ -6,7 +6,11 @@ defmodule BridgeForTeams.Schema.ProjectDeviceProjection do
 
   @primary_key false
   @foreign_key_type :binary_id
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   schema "project_device_projections" do
     belongs_to :project, BridgeForTeams.Schema.Project, primary_key: true

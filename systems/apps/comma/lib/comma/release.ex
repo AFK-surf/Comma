@@ -7,6 +7,24 @@ defmodule Comma.Release do
   retained only as offline baseline evidence.
   """
 
+  # The pages after the rollout that moved the Cloud VM switch onto the Group
+  # (docs/architecture/DOMAIN_CONCEPTS.md, Group): no server of the release
+  # before is left to write an Agent's `vm`. Salix converges the Groups no
+  # product owns from their Agents and removes `vm` from every Agent
+  # (`SalixAgent.Migrations.GroupCloudVMSwitch`); then each product sets its
+  # Groups' switch from its own fact: the Comma Workspace's `vm`, the BFT
+  # Project's `vm_enabled`. Each stage runs on a node that serves it, else
+  # passes. The marker `group_cloud_vm_switch_v1` records the stage and cursor
+  # of the next page (`GroupCloudVMSwitch.after_rollout_page/1`): a run cut off
+  # resumes there, and once the last page is done the stages do nothing. The
+  # release after this one deletes these stages.
+  @group_cloud_vm_steps [
+    {"group_cloud_vm", :salix, [SalixAgent, Migrations, GroupCloudVMSwitch], :page},
+    {"workspace_cloud_vm", :comma_product, [Comma, Workspaces], :converge_group_cloud_vm_page},
+    {"project_cloud_vm", :bridge_for_teams, [BridgeForTeams, Projects],
+     :converge_group_cloud_vm_page}
+  ]
+
   @doc """
   One bounded Agent handoff page, called by the release runner ONLY after core
   rollout success. Use release RPC on a serving node; no application bootstrap,
@@ -26,6 +44,12 @@ defmodule Comma.Release do
 
         is_map(decoded) and decoded["stage"] == "group_compute" ->
           transfer_group_compute_page(decoded["source"])
+
+        is_map(decoded) and decoded["stage"] == "station_roster" ->
+          finish_station_roster()
+
+        is_map(decoded) and decoded["stage"] == "group_cloud_vm" ->
+          group_cloud_vm_page()
 
         true ->
           with {:ok, phase} <- apply(rollout, :state, []) do
@@ -83,46 +107,97 @@ defmodule Comma.Release do
     migration = Module.concat([SalixStore, CloudflareProfileHandoff])
 
     case apply(migration, :transfer_page, [cursor]) do
+      {:ok, %{next_cursor: nil} = summary} ->
+        {:ok, %{summary | next_cursor: %{"stage" => "station_roster"}}}
+
       {:ok, %{next_cursor: next} = summary} ->
-        wrapped = if next, do: %{"stage" => "cloudflare_profile", "source" => next}
-        {:ok, %{summary | next_cursor: wrapped}}
+        {:ok, %{summary | next_cursor: %{"stage" => "cloudflare_profile", "source" => next}}}
 
       error ->
         error
     end
   end
 
-  @doc "Publish the desired Runtime catalog from the successful release's immutable image."
-  def publish_runtime_release(release_id, helm_revision) do
-    case apply(Module.concat([SalixStore, ComputeRuntimeRelease]), :publish, [
-           release_id,
-           helm_revision
-         ]) do
-      :ok -> :ok
-      {:error, reason} -> raise "Runtime publication failed: #{inspect(reason)}"
+  # Core rollout has succeeded, so no server of the release
+  # before is left to write Comma's station tables: what they wrote is merged
+  # into Salix once more and the window closes
+  # (`Comma.Stations.SalixCopy.finish/1`). Done already, it does nothing. A
+  # node without the Comma product has no such tables.
+  defp finish_station_roster do
+    copy = Module.concat([Comma, Stations, SalixCopy])
+    repo = Module.concat([Comma, Repo])
+
+    if enabled?(:comma_product, enabled_subsystems()) and Code.ensure_loaded?(copy) and
+         SystemsRuntime.Proc.whereis(repo) != nil do
+      case apply(copy, :finish, [repo]) do
+        {:ok, _} ->
+          {:ok, %{processed: 1, next_cursor: %{"stage" => "group_cloud_vm"}}}
+
+        {:error, reason} ->
+          {:error, {:station_roster, reason}}
+      end
+    else
+      {:ok, %{processed: 0, next_cursor: %{"stage" => "group_cloud_vm"}}}
     end
   end
 
-  @doc "Read a bounded page of Runtime update results, independently of core deployment status."
-  def runtime_release_status(cursor \\ ""),
-    do: apply(Module.concat([SalixStore, ComputeRuntimeRelease]), :status_page, [cursor])
+  defp group_cloud_vm_page do
+    switch = Module.concat([SalixAgent, Migrations, GroupCloudVMSwitch])
 
-  @doc "Start or inspect one operator-authorized Workload update on a serving node."
-  def workload_update(action, attrs)
-      when action in ~w(start status retry cancel forward_repair) and is_map(attrs) do
-    operation =
-      case action do
-        "start" -> :start
-        "status" -> :status
-        "retry" -> :retry
-        "cancel" -> :cancel
-        "forward_repair" -> :forward_repair
-      end
+    case apply(switch, :after_rollout_page, [&group_cloud_vm_step/1]) do
+      {:ok, %{processed: processed, done: true}} ->
+        {:ok, %{processed: processed, next_cursor: nil}}
 
-    apply(Module.concat([SalixEnv, ComputeWorkloadUpdate]), operation, [attrs])
+      {:ok, %{processed: processed, done: false}} ->
+        {:ok, %{processed: processed, next_cursor: %{"stage" => "group_cloud_vm"}}}
+
+      {:error, reason} ->
+        {:error, {:group_cloud_vm, reason}}
+    end
   end
 
-  def workload_update(_, _), do: {:error, :invalid_workload_update}
+  # One page of the stage at `position` (nil: the first stage's first page);
+  # answers the position of the next page, nil after the last stage.
+  defp group_cloud_vm_step(position) do
+    {stage, source} =
+      case position do
+        %{"stage" => stage, "source" => source} -> {stage, source}
+        nil -> {@group_cloud_vm_steps |> hd() |> elem(0), nil}
+      end
+
+    case Enum.find_index(@group_cloud_vm_steps, &(elem(&1, 0) == stage)) do
+      nil -> {:error, {:unknown_stage, stage}}
+      index -> group_cloud_vm_step(index, source)
+    end
+  end
+
+  defp group_cloud_vm_step(index, source) do
+    {stage, subsystem, module, fun} = Enum.at(@group_cloud_vm_steps, index)
+    module = Module.concat(module)
+
+    next_stage =
+      case Enum.at(@group_cloud_vm_steps, index + 1) do
+        {next, _subsystem, _module, _fun} -> %{"stage" => next, "source" => nil}
+        nil -> nil
+      end
+
+    args = if stage == "group_cloud_vm", do: [source, [after_rollout: true]], else: [source]
+
+    if enabled?(subsystem, enabled_subsystems()) and Code.ensure_loaded?(module) do
+      case apply(module, fun, args) do
+        {:ok, %{processed: processed, next_cursor: nil}} ->
+          {:ok, %{processed: processed, next: next_stage}}
+
+        {:ok, %{processed: processed, next_cursor: next}} ->
+          {:ok, %{processed: processed, next: %{"stage" => stage, "source" => next}}}
+
+        {:error, reason} ->
+          {:error, {stage, reason}}
+      end
+    else
+      {:ok, %{processed: 0, next: next_stage}}
+    end
+  end
 
   @synchronicity_default_limit 100
   @synchronicity_max_limit 1_000
@@ -394,20 +469,23 @@ defmodule Comma.Release do
       migrate_alert_router_schema()
     end
 
-    if enabled?(:comma_product, enabled) do
-      migrate_comma_schema()
-      sync_billing_catalog(provider_sync: false)
-    end
-
-    if enabled?(:bridge_for_teams, enabled) do
-      Module.concat([BridgeForTeams, Release])
-      |> apply(:migrate, [])
-    end
-
+    # Salix before the products: a product migration may read or fill a Salix
+    # table (the manifest's salix-before-bridge/comma ordering constraints).
     if enabled?(:salix, enabled) do
       migrate_salix_schema()
 
       Module.concat([SalixAnalytics, Migrations])
+      |> apply(:migrate, [])
+    end
+
+    if enabled?(:comma_product, enabled) do
+      migrate_comma_schema()
+      sync_billing_catalog(provider_sync: false)
+      finish_station_roster_offline(enabled)
+    end
+
+    if enabled?(:bridge_for_teams, enabled) do
+      Module.concat([BridgeForTeams, Release])
       |> apply(:migrate, [])
     end
 
@@ -625,14 +703,14 @@ defmodule Comma.Release do
   end
 
   defp billing_core_repos do
-    Application.get_env(:billing_core, :ecto_repos, [])
+    SystemsRuntime.get_env(:billing_core, :ecto_repos, [])
   end
 
   defp migrate_comma_schema do
     Application.load(:comma_core)
     migrator = Module.concat([Ecto, Migrator])
 
-    for repo <- Application.get_env(:comma_core, :ecto_repos, []) do
+    for repo <- SystemsRuntime.get_env(:comma_core, :ecto_repos, []) do
       {:ok, _, _} =
         apply(migrator, :with_repo, [
           repo,
@@ -641,11 +719,37 @@ defmodule Comma.Release do
     end
   end
 
+  # This one-shot path runs with no server up (Compose stops the stack for an
+  # upgrade), so the station roster's move to Salix has no rollout window:
+  # the last merge and the `complete` marker follow the schema at once.
+  defp finish_station_roster_offline(enabled) do
+    salix_repo = Module.concat([SalixStore, Repo])
+
+    if enabled?(:salix, enabled) and
+         salix_repo in SystemsRuntime.get_env(:salix_store, :ecto_repos, []) do
+      stop_salix_store_without_repo!()
+      {:ok, _} = Application.ensure_all_started(:salix_store)
+      migrator = Module.concat([Ecto, Migrator])
+
+      for repo <- SystemsRuntime.get_env(:comma_core, :ecto_repos, []) do
+        {:ok, {:ok, _}, _} =
+          apply(migrator, :with_repo, [
+            repo,
+            fn started ->
+              apply(Module.concat([Comma, Stations, SalixCopy]), :finish, [started])
+            end
+          ])
+      end
+    end
+
+    :ok
+  end
+
   defp migrate_alert_router_schema do
     Application.load(:alert_router)
     migrator = Module.concat([Ecto, Migrator])
 
-    for repo <- Application.get_env(:alert_router, :ecto_repos, []) do
+    for repo <- SystemsRuntime.get_env(:alert_router, :ecto_repos, []) do
       {:ok, _, _} =
         apply(migrator, :with_repo, [
           repo,
@@ -661,7 +765,7 @@ defmodule Comma.Release do
     Application.load(:salix_store)
     migrator = Module.concat([Ecto, Migrator])
 
-    for repo <- Application.get_env(:salix_store, :ecto_repos, []) do
+    for repo <- SystemsRuntime.get_env(:salix_store, :ecto_repos, []) do
       {:ok, _, _} =
         apply(migrator, :with_repo, [
           repo,
@@ -693,13 +797,15 @@ defmodule Comma.Release do
       ]
       |> Enum.filter(&Code.ensure_loaded?/1)
 
-    if Application.get_env(:salix_store, :start_repo, false) and cutovers != [] do
+    if SystemsRuntime.get_env(:salix_store, :start_repo, false) and cutovers != [] do
       # `bin/comma eval` (docker-compose comma-migrate) does not start applications,
       # and the migrator's with_repo only starts/stops the repo. The cutovers
       # need the whole :salix_store app up — the S3 client's Finch pool and
       # storage config — exactly as the production release-migration files do
       # before calling run/0. Without this the eval crashes and the dev stack
       # never boots (worse than the uncertified state PR-A set out to fix).
+      stop_salix_store_without_repo!()
+
       case Application.ensure_all_started(:salix_store) do
         {:ok, _started} -> :ok
         {:error, reason} -> raise "could not start salix_store for cutover: #{inspect(reason)}"
@@ -717,6 +823,20 @@ defmodule Comma.Release do
       apply(participant_release, :migrate_conversation_participant_states, [
         [confirm_no_writers: true]
       ])
+    end
+  end
+
+  # A schema migration may start :salix_store while the migrator's with_repo
+  # owns SalixStore.Repo. SalixStore.Application does not supervise that Repo,
+  # and with_repo stops it once the migrations finish, so the application keeps
+  # running without a Repo and `Application.ensure_all_started/1` is a no-op.
+  # Stop it so whoever starts it next gets a supervised Repo.
+  defp stop_salix_store_without_repo! do
+    started? =
+      Enum.any?(Application.started_applications(), fn {app, _, _} -> app == :salix_store end)
+
+    if started? and is_nil(SystemsRuntime.Proc.whereis(Module.concat([SalixStore, Repo]))) do
+      :ok = Application.stop(:salix_store)
     end
   end
 
@@ -770,7 +890,7 @@ defmodule Comma.Release do
           do: String.to_integer(version)
 
     if analytics != [] do
-      clickhouse_opts = Application.get_env(:comma, :release_clickhouse_opts, [])
+      clickhouse_opts = SystemsRuntime.get_env(:comma, :release_clickhouse_opts, [])
 
       case apply(SalixAnalytics.Migrations, :migrate_versions, [analytics, clickhouse_opts]) do
         {:ok, _} -> :ok
@@ -798,7 +918,7 @@ defmodule Comma.Release do
 
   defp run_ecto_migration(repo, app, version_text) do
     version = String.to_integer(version_text)
-    source = Application.get_env(:comma, :release_ecto_sources, %{}) |> Map.get(app, [])
+    source = SystemsRuntime.get_env(:comma, :release_ecto_sources, %{}) |> Map.get(app, [])
     repo = Keyword.get(source, :repo, repo)
 
     # A migration authored in priv/release_migrations (exclusive cutover steps)
@@ -845,6 +965,10 @@ defmodule Comma.Release do
     if result not in [:ok, :already_up],
       do: raise("unexpected Ecto migration result: #{inspect(result)}")
 
+    # A later step of another owner may write to Salix (a product's copy into
+    # a Salix table) and starts :salix_store for its Repo.
+    stop_salix_store_without_repo!()
+
     :ok
   end
 
@@ -854,7 +978,7 @@ defmodule Comma.Release do
   # exactly as production would. Mirrors run_ecto_migration's resolution without
   # running the migration.
   def authorized_migration_path(app, version) when is_atom(app) and is_integer(version) do
-    source = Application.get_env(:comma, :release_ecto_sources, %{}) |> Map.get(app, [])
+    source = SystemsRuntime.get_env(:comma, :release_ecto_sources, %{}) |> Map.get(app, [])
 
     case Keyword.fetch(source, :migration_dir) do
       {:ok, dir} -> resolve_migration_file(dir, app, version)

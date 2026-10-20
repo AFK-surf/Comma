@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { useProductInboxSnapshot } from "../../../product-inbox/react";
-import { markTaskReviewSeen } from "../../tasks/taskReviewAttention";
+import { useMarkTaskReviewSeen } from "../../tasks/taskReviewAttention";
 
 const subscribeDocumentVisibility = (listener: () => void) => {
   if (typeof document === "undefined") return () => undefined;
@@ -34,12 +34,13 @@ export function useMarkLoadedTaskReviewSeen({
   workspaceId?: string | undefined;
 }) {
   const productInbox = useProductInboxSnapshot();
+  const markTaskReviewSeen = useMarkTaskReviewSeen();
   const visible = useSyncExternalStore(
     subscribeDocumentVisibility,
     documentIsVisible,
     documentIsVisible
   );
-  const projectionUpdatedAt = productInbox?.snapshot.items.find(
+  const projectionUpdatedAt = productInbox?.items.find(
     (item) =>
       item.kind === "agent_task" &&
       item.workspaceId === workspaceId &&
@@ -57,5 +58,5 @@ export function useMarkLoadedTaskReviewSeen({
   useEffect(() => {
     if (!enabled || !visible || !conversationId || seenRevision === undefined) return;
     markTaskReviewSeen(conversationId, seenRevision);
-  }, [conversationId, enabled, seenRevision, visible]);
+  }, [conversationId, enabled, markTaskReviewSeen, seenRevision, visible]);
 }

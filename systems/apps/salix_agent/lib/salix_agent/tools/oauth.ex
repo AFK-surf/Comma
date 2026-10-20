@@ -217,7 +217,7 @@ defmodule SalixAgent.Tools.OAuth do
         {:error, why} -> raise "build authorization url: #{format_reason(why)}"
       end
 
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
     expires_at = now + timeout_seconds * 1000
 
     record = %{
@@ -421,7 +421,7 @@ defmodule SalixAgent.Tools.OAuth do
 
   # 32 random bytes, base64url without padding (willow oauth.NewState /
   # NewCodeVerifier equivalents).
-  defp random_token, do: Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+  defp random_token, do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
 
   # ---- oauth.complete_authorization (willow complete_oauth_auth.go) ----
 
@@ -575,7 +575,7 @@ defmodule SalixAgent.Tools.OAuth do
   end
 
   defp adapters_fn do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :salix_agent,
       :oauth_adapters_fn,
       &SalixStore.OAuth.Adapters.for_provider/1
@@ -596,7 +596,7 @@ defmodule SalixAgent.Tools.OAuth do
     end
   end
 
-  defp random_id, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower)
 
   defp format_reason(reason) when is_binary(reason), do: reason
   defp format_reason(reason), do: inspect(reason)

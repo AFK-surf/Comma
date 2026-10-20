@@ -359,7 +359,7 @@ defmodule SalixSignal.Attachments do
       height: opts[:height],
       caption: opts[:caption],
       upload_timestamp:
-        Keyword.get_lazy(opts, :now_ms, fn -> System.system_time(:millisecond) end),
+        Keyword.get_lazy(opts, :now_ms, fn -> SystemsClock.system_time(:millisecond) end),
       incremental_mac_chunk_size: chunk_size,
       incremental_mac: macs,
       client_uuid: Keyword.get_lazy(opts, :client_uuid, &random_uuid/0)
@@ -367,7 +367,7 @@ defmodule SalixSignal.Attachments do
   end
 
   defp random_uuid do
-    <<a::48, _::4, b::12, _::2, c::62>> = :crypto.strong_rand_bytes(16)
+    <<a::48, _::4, b::12, _::2, c::62>> = SystemsRuntime.Proc.random_bytes(16)
     <<a::48, 4::4, b::12, 2::2, c::62>>
   end
 

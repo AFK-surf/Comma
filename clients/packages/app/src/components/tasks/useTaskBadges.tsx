@@ -1,8 +1,16 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import { useCallback, useMemo, type ReactNode } from "react";
-import type { CommaApiClient, CommaTaskLabel, CommaTaskLabelCatalog } from "../../api";
+import type { CommaTaskLabel, CommaTaskLabelCatalog } from "@comma/core/api-schemas";
+import type { TaskLoop } from "@comma/core/contract";
 import { useTaskLabelsCatalog } from "../chat/tasks/labels/useTaskLabelsCatalog";
-import { TaskLabelChip, TaskLabelOverflowChip, TaskPlatformChip } from "./taskChips";
+import {
+  TaskLabelChip,
+  TaskHostChip,
+  TaskLabelOverflowChip,
+  TaskPlatformChip,
+  TaskScheduleChip,
+} from "./taskChips";
+import { taskLoopFilterKey } from "./taskLoopLabels";
 import { taskOriginKey, taskOriginLabel, type TaskOriginKey } from "./taskOrigin";
 import type { TasksFilterLink } from "./taskChips";
 
@@ -16,6 +24,16 @@ type LoadedTask = {
   conversationId: string;
   labels?: readonly string[] | undefined;
   clientPlatform?: string | undefined;
+  /** Set on a Loop Task only. */
+  loop?: TaskLoop | undefined;
+  /** Set on a Task a station hosts. */
+  host?: TaskHostFacts | undefined;
+};
+
+type TaskHostFacts = {
+  machine: string | null;
+  online: boolean | null;
+  model: string | null;
 };
 
 export interface TaskBadges {
@@ -34,7 +52,6 @@ export interface TaskBadges {
  * Membership changes refresh the catalog to include newly created labels.
  */
 export function useTaskBadges(
-  api: CommaApiClient,
   groupId: string | undefined,
   tasks: readonly LoadedTask[],
   onOpen?: ((filter: TasksFilterLink) => void) | undefined
@@ -46,7 +63,7 @@ export function useTaskBadges(
       ),
     [tasks]
   );
-  const { catalog } = useTaskLabelsCatalog(api, groupId, true, labelIds);
+  const { catalog } = useTaskLabelsCatalog(groupId, true, labelIds);
   const catalogById = useMemo(() => {
     const byId = new Map<string, CommaTaskLabel>();
     for (const label of catalog?.labels ?? []) byId.set(label.id, label);
@@ -77,40 +94,89 @@ export function useTaskBadges(
       ),
     [tasks]
   );
+  const loops = useMemo(
+    () =>
+      new Map(
+        tasks.flatMap((task) =>
+          task.loop ? [[task.conversationId, task.loop] as const] : []
+        )
+      ),
+    [tasks]
+  );
+
+  const hosts = useMemo(
+    () =>
+      new Map(
+        tasks.flatMap((task) =>
+          task.host ? [[task.conversationId, task.host] as const] : []
+        )
+      ),
+    [tasks]
+  );
 
   const renderTaskBadges = useCallback(
     (task: { conversationId: string; origin?: string | undefined }): ReactNode => {
+      const host = hosts.get(task.conversationId);
       const origin = taskOriginKey(task.origin);
+      const loop = loops.get(task.conversationId);
       const labels =
         metaById
           .get(task.conversationId)
           ?.labels.flatMap((id) => catalogById.get(id) ?? []) ?? [];
-      if (labels.length === 0 && !origin) return null;
-      return <TaskBadgeChips labels={labels} onOpen={onOpen} origin={origin} />;
+      // A Task a station hosts says where it runs before its labels.
+      if (host)
+        return (
+          <>
+            <TaskHostChip host={host} nested testId="task-card-host" />
+            {labels.length > 0 ? (
+              <TaskBadgeChips labels={labels} onOpen={onOpen} origin={undefined} />
+            ) : null}
+          </>
+        );
+      if (labels.length === 0 && !origin && !loop) return null;
+      return (
+        <TaskBadgeChips labels={labels} loop={loop} onOpen={onOpen} origin={origin} />
+      );
     },
-    [catalogById, metaById, onOpen]
+    [catalogById, hosts, loops, metaById, onOpen]
   );
 
   return { catalog, catalogById, metaById, renderTaskBadges };
 }
 
 /**
- * The chips every Task card wears: its labels, then its platform, then the
- * "+N labels" fold for squeezed list rows. With `onOpen` each chip opens the
- * Tasks page narrowed to it; without, they are plain (a hover card).
+ * The chips every Task card wears: the trigger type on a Loop Task, its labels, the
+ * "+N labels" fold for squeezed list rows, then its platform. With `onOpen`
+ * each chip opens the Tasks page narrowed to it; without, they are plain (a
+ * hover card).
  */
 export function TaskBadgeChips({
   labels,
+  loop,
   onOpen,
   origin,
 }: {
   labels: readonly CommaTaskLabel[];
+  /** A Loop Task: one a Loop runs or ran. */
+  loop?: TaskLoop | undefined;
   onOpen?: ((filter: TasksFilterLink) => void) | undefined;
   origin: TaskOriginKey | undefined;
 }) {
   const messages = useCommaMessages();
+  // A squeezed row keeps two chips; the trigger chip takes the first place.
+  const folded = labels.length - (loop ? 1 : 2);
   return (
     <>
+      {loop ? (
+        <TaskScheduleChip
+          loop={loop}
+          nested
+          onOpen={
+            onOpen ? () => onOpen({ schedule: taskLoopFilterKey(loop) }) : undefined
+          }
+          testId="task-card-schedule"
+        />
+      ) : null}
       {labels.map((label) => (
         <TaskLabelChip
           color={label.color}
@@ -121,7 +187,7 @@ export function TaskBadgeChips({
           testId="task-card-label"
         />
       ))}
-      {labels.length > 2 ? <TaskLabelOverflowChip count={labels.length - 2} /> : null}
+      {folded > 0 ? <TaskLabelOverflowChip count={folded} /> : null}
       {origin ? (
         <TaskPlatformChip
           label={taskOriginLabel(messages, origin)}

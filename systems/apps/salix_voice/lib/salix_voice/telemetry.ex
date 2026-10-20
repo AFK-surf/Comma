@@ -18,19 +18,27 @@ defmodule SalixVoice.Telemetry do
 
   @doc "Emit the end of a call."
   def call_stop(duration, transport, reason) do
-    :telemetry.execute([:salix, :voice, :call, :stop], %{duration: max(duration, 0)}, %{
-      transport: transport_tag(transport),
-      reason: reason_tag(reason)
-    })
+    SystemsRuntime.Telemetry.execute(
+      [:salix, :voice, :call, :stop],
+      %{duration: max(duration, 0)},
+      %{
+        transport: transport_tag(transport),
+        reason: reason_tag(reason)
+      }
+    )
   rescue
     _ -> :ok
   end
 
   @doc "Emit the end of a delegation (`answered`, `failed` or `abandoned`)."
   def delegation_stop(duration, outcome) do
-    :telemetry.execute([:salix, :voice, :delegation, :stop], %{duration: max(duration, 0)}, %{
-      outcome: outcome
-    })
+    SystemsRuntime.Telemetry.execute(
+      [:salix, :voice, :delegation, :stop],
+      %{duration: max(duration, 0)},
+      %{
+        outcome: outcome
+      }
+    )
   rescue
     _ -> :ok
   end
@@ -42,9 +50,13 @@ defmodule SalixVoice.Telemetry do
   def profile_stop(duration, outcome) do
     outcome = if outcome in @profile_outcomes, do: outcome, else: "error"
 
-    :telemetry.execute([:salix, :voice, :profile, :stop], %{duration: max(duration, 0)}, %{
-      outcome: outcome
-    })
+    SystemsRuntime.Telemetry.execute(
+      [:salix, :voice, :profile, :stop],
+      %{duration: max(duration, 0)},
+      %{
+        outcome: outcome
+      }
+    )
   rescue
     _ -> :ok
   end

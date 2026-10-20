@@ -44,7 +44,7 @@ defmodule Comma.TelegramLinks do
 
   def create_claim(user, session, workspace_id) do
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id) do
-      expires_at = DateTime.add(DateTime.utc_now(), @claim_ttl_seconds, :second)
+      expires_at = DateTime.add(SystemsClock.utc_now(), @claim_ttl_seconds, :second)
       create_claim(workspace, user["id"], expires_at, 0)
     end
   end
@@ -52,7 +52,7 @@ defmodule Comma.TelegramLinks do
   def create_oidc_attempt(user, session, workspace_id, attrs) when is_map(attrs) do
     with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
          true <- Enum.all?(~w(state nonce pkce_verifier), &nonblank?(attrs[&1])) do
-      expires_at = DateTime.add(DateTime.utc_now(), @oidc_attempt_ttl_seconds, :second)
+      expires_at = DateTime.add(SystemsClock.utc_now(), @oidc_attempt_ttl_seconds, :second)
 
       Repo.transaction(fn ->
         lock_workspace!(workspace_id)
@@ -80,7 +80,7 @@ defmodule Comma.TelegramLinks do
   end
 
   def take_oidc_attempt(state) when is_binary(state) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     Repo.transaction(fn ->
       attempt =
@@ -108,7 +108,7 @@ defmodule Comma.TelegramLinks do
   def take_oidc_attempt(_state), do: {:error, :invalid_telegram_oidc_attempt}
 
   def take_claim(code) when is_binary(code) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     normalized_code = normalize_code(code)
 
     Repo.transaction(fn ->
@@ -259,7 +259,7 @@ defmodule Comma.TelegramLinks do
     do: Repo.get_by(TelegramDMLink, telegram_user_id: normalize_user_id(telegram_user_id))
 
   def get_active_claim(workspace_id) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     Repo.one(
       from(claim in TelegramDMClaimCode,
@@ -271,7 +271,7 @@ defmodule Comma.TelegramLinks do
   end
 
   defp create_claim(workspace, user_id, expires_at, attempts) when attempts < 3 do
-    code = :crypto.strong_rand_bytes(@claim_bytes) |> Base.url_encode64(padding: false)
+    code = SystemsRuntime.Proc.random_bytes(@claim_bytes) |> Base.url_encode64(padding: false)
 
     Repo.transaction(fn ->
       lock_workspace!(workspace["id"])
@@ -313,7 +313,7 @@ defmodule Comma.TelegramLinks do
   defp require_current_attempt!(%module{} = proof, workspace_id, user_id)
        when module in [TelegramDMClaimCode, TelegramOIDCAttempt] do
     [{key, value}] = Ecto.primary_key(proof)
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     current = Repo.get_by(module, [{key, value}])
 

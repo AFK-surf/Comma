@@ -10,7 +10,7 @@ defmodule Comma.Workers.MemberSourceItemRetention do
 
   @impl Oban.Worker
   def perform(%Oban.Job{}) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     Enum.reduce_while(1..@max_batches, :ok, fn _batch, :ok ->
       if MemberSourceItems.expire(now, @batch_size) < @batch_size,

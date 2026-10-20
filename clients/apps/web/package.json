@@ -18,13 +18,13 @@
     "@comma/config": "workspace:*",
     "@comma/i18n": "workspace:*",
     "@comma/native-bridge": "workspace:*",
-    "@comma/product-inbox-runtime": "workspace:*",
     "@comma/session-contract": "workspace:*",
     "@vitejs/plugin-react": "^6.0.2",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "vite": "^8.0.16",
-    "@comma/session-history-runtime": "workspace:*"
+    "@comma/core": "workspace:*",
+    "@comma/core-client": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",

@@ -68,8 +68,9 @@ defmodule SalixAgent.Egress.Destination do
     end
   end
 
+  # `:inet`, or a test's stand-in (SystemsRuntime.Test.NoDNS).
   defp lookup(host, family) do
-    case :inet.getaddrs(host, family) do
+    case SystemsRuntime.get_env(:salix_agent, :resolver, :inet).getaddrs(host, family) do
       {:ok, addresses} -> addresses
       {:error, _} -> []
     end

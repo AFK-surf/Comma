@@ -1,5 +1,6 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Button, MenuPopover, menuSurfaceClasses } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { MenuPopover, menuSurfaceClasses } from "@comma/ui/components/menu";
 import { useEffect, useState } from "react";
 import {
   ColorArea,

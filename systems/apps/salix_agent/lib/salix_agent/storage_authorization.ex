@@ -230,7 +230,7 @@ defmodule SalixAgent.StorageAuthorization do
   defp billing_account_id(_context), do: nil
 
   defp impl do
-    Application.get_env(:salix_agent, :storage_authorization_mod, __MODULE__.Noop)
+    SystemsRuntime.get_env(:salix_agent, :storage_authorization_mod, __MODULE__.Noop)
   end
 
   defmodule Noop do

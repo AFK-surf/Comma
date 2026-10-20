@@ -15,7 +15,7 @@ defmodule SalixAgent.AgentActor do
 
   @type agent_record :: %{optional(String.t()) => term()}
   @type inbox_entry :: map()
-  @type wake_target :: %{runtime: :internal | :external, session_id: String.t()}
+  @type wake_target :: %{runtime: :internal, session_id: String.t()}
 
   @roles ~w(router worker meeting)
 
@@ -191,180 +191,6 @@ defmodule SalixAgent.AgentActor do
     end
   end
 
-  @spec commit_connector_event(map(), map(), keyword()) :: {:ok, map()} | {:error, term()}
-  def commit_connector_event(%{"agent_id" => agent_id} = capability, params, opts \\ [])
-      when is_binary(agent_id) and is_map(params) do
-    route_to_owner(agent_id, :commit_connector_event_local, [capability, params, opts])
-  end
-
-  @doc false
-  def commit_connector_event_local(
-        %{"agent_id" => agent_id} = capability,
-        params,
-        opts \\ []
-      )
-      when is_binary(agent_id) and is_map(params) do
-    run_command(agent_id, opts, fn _agent ->
-      SessionCommand.commit_connector_event(capability, params)
-    end)
-  end
-
-  @spec accept_external_session(String.t(), String.t(), map(), keyword()) ::
-          {:ok, :accepted | :stale, map()} | {:error, term()}
-  def accept_external_session(agent_id, session_id, attrs, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_map(attrs) do
-    route_to_owner(agent_id, :accept_external_session_local, [
-      agent_id,
-      session_id,
-      attrs,
-      opts
-    ])
-  end
-
-  @doc false
-  def accept_external_session_local(agent_id, session_id, attrs, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_map(attrs) do
-    run_command(agent_id, opts, fn _agent ->
-      SessionCommand.accept_external_session(agent_id, session_id, attrs)
-    end)
-  end
-
-  @spec begin_external_session(String.t(), String.t(), String.t(), map(), keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def begin_external_session(agent_id, session_id, tenant_id, runtime, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_binary(tenant_id) and
-             is_map(runtime) do
-    route_to_owner(agent_id, :begin_external_session_local, [
-      agent_id,
-      session_id,
-      tenant_id,
-      runtime,
-      opts
-    ])
-  end
-
-  @doc false
-  def begin_external_session_local(agent_id, session_id, tenant_id, runtime, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_binary(tenant_id) and
-             is_map(runtime) do
-    run_command(agent_id, opts, fn _agent ->
-      SessionCommand.begin_external_session(agent_id, session_id, tenant_id, runtime)
-    end)
-  end
-
-  @spec update_external_session(String.t(), String.t(), map(), keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def update_external_session(agent_id, session_id, attrs, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_map(attrs) do
-    route_to_owner(agent_id, :update_external_session_local, [agent_id, session_id, attrs, opts])
-  end
-
-  @doc false
-  def update_external_session_local(agent_id, session_id, attrs, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_map(attrs) do
-    run_command(agent_id, opts, fn _agent ->
-      SessionCommand.update_external_session(agent_id, session_id, attrs)
-    end)
-  end
-
-  @spec complete_external_session(String.t(), String.t(), map(), keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def complete_external_session(agent_id, session_id, attrs \\ %{}, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_map(attrs) do
-    route_to_owner(agent_id, :complete_external_session_local, [
-      agent_id,
-      session_id,
-      attrs,
-      opts
-    ])
-  end
-
-  @doc false
-  def complete_external_session_local(agent_id, session_id, attrs, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_map(attrs) do
-    run_command(agent_id, opts, fn _agent ->
-      SessionCommand.complete_external_session(agent_id, session_id, attrs)
-    end)
-  end
-
-  @spec fail_external_session(String.t(), String.t(), term(), map(), keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def fail_external_session(agent_id, session_id, reason, attrs \\ %{}, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_map(attrs) do
-    route_to_owner(agent_id, :fail_external_session_local, [
-      agent_id,
-      session_id,
-      reason,
-      attrs,
-      opts
-    ])
-  end
-
-  @doc false
-  def fail_external_session_local(agent_id, session_id, reason, attrs \\ %{}, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_map(attrs) do
-    run_command(agent_id, opts, fn _agent ->
-      SessionCommand.fail_external_session(agent_id, session_id, reason, attrs)
-    end)
-  end
-
-  @spec append_external_event(String.t(), String.t(), map(), keyword()) ::
-          {:ok, map(), map()} | {:error, term()}
-  def append_external_event(agent_id, session_id, attrs, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_map(attrs) do
-    route_to_owner(agent_id, :append_external_event_local, [agent_id, session_id, attrs, opts])
-  end
-
-  @doc false
-  def append_external_event_local(agent_id, session_id, attrs, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_map(attrs) do
-    run_command(agent_id, opts, fn _agent ->
-      SessionCommand.append_external_event(agent_id, session_id, attrs)
-    end)
-  end
-
-  @spec commit_external_session_events(String.t(), String.t(), [map()], keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def commit_external_session_events(agent_id, session_id, events, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_list(events) do
-    route_to_owner(agent_id, :commit_external_session_events_local, [
-      agent_id,
-      session_id,
-      events,
-      opts
-    ])
-  end
-
-  @doc false
-  def commit_external_session_events_local(agent_id, session_id, events, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_list(events) do
-    run_command(agent_id, opts, fn _agent ->
-      SessionCommand.commit_external_session_events(agent_id, session_id, events)
-    end)
-  end
-
-  @spec stage_external_delivery(String.t(), String.t(), map(), keyword()) ::
-          {:ok, :external} | {:error, term()}
-  def stage_external_delivery(agent_id, session_id, delivery, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_map(delivery) do
-    route_to_owner(agent_id, :stage_external_delivery_local, [
-      agent_id,
-      session_id,
-      delivery,
-      opts
-    ])
-  end
-
-  @doc false
-  def stage_external_delivery_local(agent_id, session_id, delivery, opts \\ [])
-      when is_binary(agent_id) and is_binary(session_id) and is_map(delivery) do
-    run_command(agent_id, opts, fn agent ->
-      with {:ok, session_id, delivery} <- external_delivery_target(agent, session_id, delivery) do
-        SessionCommand.stage_external_delivery(agent_id, session_id, delivery)
-      end
-    end)
-  end
-
   @spec consult_worker_session(String.t(), String.t(), String.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def consult_worker_session(agent_id, session_id, question, request_id, opts \\ [])
@@ -445,15 +271,17 @@ defmodule SalixAgent.AgentActor do
   # names another owner while this node holds a live claim predates that
   # claim (placement took the agent over from an expired lease after the
   # read); the fence then reads the head again instead of refusing a
-  # delivery the durable head would admit.
+  # delivery the durable head would admit. Placement returns once the Server
+  # is registered, before its claim lands, so the fence first waits out a
+  # local claim still in flight.
   defp verify_rpc_delivery_owner(agent_id) do
     case SalixStore.Agent.peek_in_scope(agent_id) do
       {:ok, head} ->
         cond do
-          is_nil(head.owner_node) or head.owner_node == to_string(node()) ->
+          is_nil(head.owner_node) or head.owner_node == to_string(SystemsRuntime.Proc.node()) ->
             :ok
 
-          match?({:ok, _epoch}, SalixAgent.OwnershipCell.fetch(agent_id)) ->
+          local_claim_installed?(agent_id) ->
             SalixStore.ReadScope.invalidate({:head, agent_id})
             verify_rpc_delivery_owner_freshly(agent_id)
 
@@ -469,10 +297,15 @@ defmodule SalixAgent.AgentActor do
     end
   end
 
+  defp local_claim_installed?(agent_id) do
+    :ok = SalixAgent.Fleet.await_ownership_installed(agent_id)
+    match?({:ok, _epoch}, SalixAgent.OwnershipCell.fetch(agent_id))
+  end
+
   defp verify_rpc_delivery_owner_freshly(agent_id) do
     case SalixStore.Agent.peek(agent_id) do
       {:ok, head} ->
-        if is_nil(head.owner_node) or head.owner_node == to_string(node()) do
+        if is_nil(head.owner_node) or head.owner_node == to_string(SystemsRuntime.Proc.node()) do
           :ok
         else
           # This fresh head supersedes the local placement hint. Preserve any
@@ -535,12 +368,12 @@ defmodule SalixAgent.AgentActor do
   @doc false
   def notify_conversation(agent_id, source, opts \\ []) when is_map(source) do
     case {SalixAgent.Fleet.server_running?(agent_id),
-          Registry.lookup(SalixAgent.Registry, key(agent_id))} do
+          SystemsRuntime.Registry.lookup(SalixAgent.Registry, key(agent_id))} do
       {true, [{pid, _}]} ->
-        GenServer.cast(
+        SystemsRuntime.Server.cast(
           pid,
           {:conversation_source, source,
-           {SalixStore.ReadScope.capture(), System.monotonic_time(:millisecond)}}
+           {SalixStore.ReadScope.capture(), SystemsClock.monotonic_time(:millisecond)}}
         )
 
       _ ->
@@ -558,10 +391,10 @@ defmodule SalixAgent.AgentActor do
   def notify_conversation_local(agent_id, source, _opts) do
     with {:ok, agent} <- SalixAgent.Control.get_record(agent_id),
          {:ok, pid} <- ensure_started(agent) do
-      GenServer.cast(
+      SystemsRuntime.Server.cast(
         pid,
         {:conversation_source, source,
-         {SalixStore.ReadScope.capture(), System.monotonic_time(:millisecond)}}
+         {SalixStore.ReadScope.capture(), SystemsClock.monotonic_time(:millisecond)}}
       )
     end
   end
@@ -572,25 +405,9 @@ defmodule SalixAgent.AgentActor do
     with :ok <- require_role(agent), do: start_actor(agent)
   end
 
-  @doc false
-  def migrate_external_sessions(agent_id, tenant_id, target, operation_id, opts \\ []) do
-    route_to_owner(agent_id, :migrate_external_sessions_local, [
-      agent_id,
-      tenant_id,
-      target,
-      operation_id,
-      opts
-    ])
-  end
-
-  @doc false
-  def migrate_external_sessions_local(agent_id, tenant_id, target, operation_id, opts) do
-    SalixAgent.ExternalSessionMigration.run(agent_id, tenant_id, target, operation_id, opts)
-  end
-
   @spec stop(String.t()) :: :ok
   def stop(agent_id) when is_binary(agent_id) do
-    case Registry.lookup(SalixAgent.Registry, key(agent_id)) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key(agent_id)) do
       [{pid, _}] -> SalixAgent.Fleet.terminate_child(pid)
       [] -> :ok
     end
@@ -706,7 +523,7 @@ defmodule SalixAgent.AgentActor do
       do: {:error, :invalid_prepared_workspace_operation}
 
   defp local_actor_pid(agent_id) do
-    case Registry.lookup(SalixAgent.Registry, key(agent_id)) do
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key(agent_id)) do
       [{pid, _}] ->
         {:ok, pid}
 
@@ -735,12 +552,12 @@ defmodule SalixAgent.AgentActor do
 
   def key(agent_id), do: {:agent_actor, agent_id}
 
-  def via(agent_id), do: {:via, Registry, {SalixAgent.Registry, key(agent_id)}}
+  def via(agent_id), do: {:via, SystemsRuntime.Registry, {SalixAgent.Registry, key(agent_id)}}
 
   @doc false
   def local_owner_process?(agent_id) when is_binary(agent_id) do
-    case Registry.lookup(SalixAgent.Registry, key(agent_id)) do
-      [{pid, _}] -> pid == self()
+    case SystemsRuntime.Registry.lookup(SalixAgent.Registry, key(agent_id)) do
+      [{pid, _}] -> pid == SystemsRuntime.Proc.self()
       [] -> false
     end
   end
@@ -757,9 +574,6 @@ defmodule SalixAgent.AgentActor do
 
   defp wake_target(agent_id, %{runtime: :internal, session_id: session_id}),
     do: SalixAgent.InternalSessionFleet.wake(agent_id, session_id)
-
-  defp wake_target(agent_id, %{runtime: :external, session_id: session_id}),
-    do: SalixAgent.ExternalSessionFleet.wake(agent_id, session_id)
 
   defp wake_target(_agent_id, target), do: {:error, {:invalid_wake_target, target}}
 
@@ -808,25 +622,6 @@ defmodule SalixAgent.AgentActor do
     end
   end
 
-  # Router deliveries always route to the canonical group router session. A
-  # delivery `session_id` is source context, not a routing decision, for
-  # router agents.
-  defp external_delivery_target(%{"role" => "router"} = agent, _session_id, delivery) do
-    payload = delivery[:payload] || delivery["payload"] || %{}
-
-    with {:ok, router_session_id} <- SalixStore.RuntimeIds.persisted_router_session_id(agent) do
-      payload =
-        payload
-        |> Map.drop([:session_id, "session_id"])
-        |> Map.merge(%{:session_id => router_session_id, "session_id" => router_session_id})
-
-      {:ok, router_session_id,
-       delivery |> Map.drop([:payload, "payload"]) |> Map.put(:payload, payload)}
-    end
-  end
-
-  defp external_delivery_target(_agent, session_id, delivery), do: {:ok, session_id, delivery}
-
   defp require_role(%{"role" => role}) when role in @roles, do: :ok
   defp require_role(agent), do: {:error, {:unsupported_agent_role, agent["role"]}}
 
@@ -840,9 +635,9 @@ defmodule SalixAgent.AgentActor do
     with {:ok, _agent} <- SalixAgent.Control.get_record(agent_id),
          :ok <- SalixAgent.Control.ensure_not_stopped(agent_id),
          {:ok, pid} <- SalixAgent.Placement.ensure_started(agent_id, owner_start_opts(opts)) do
-      owner_node = node(pid)
+      owner_node = SystemsRuntime.Proc.node(pid)
 
-      if owner_node == node() do
+      if owner_node == SystemsRuntime.Proc.node() do
         apply(__MODULE__, local_fun, args)
       else
         :erpc.call(owner_node, __MODULE__, local_fun, args, timeout)
@@ -867,7 +662,7 @@ defmodule SalixAgent.AgentActor do
   defp start_actor(agent) do
     opts = [agent_id: agent["agent_id"], agent: agent]
 
-    case DynamicSupervisor.start_child(SalixAgent.FleetSup, {AgentRoleActor, opts}) do
+    case SystemsRuntime.DynamicSupervisor.start_child(SalixAgent.FleetSup, {AgentRoleActor, opts}) do
       {:ok, pid} -> {:ok, pid}
       {:error, {:already_started, pid}} -> {:ok, pid}
       {:error, reason} -> {:error, reason}

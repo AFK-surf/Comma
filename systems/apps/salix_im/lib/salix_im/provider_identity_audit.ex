@@ -60,7 +60,7 @@ defmodule SalixIM.ProviderIdentityAudit do
   alias SalixIM.ProviderIdentity
   alias SalixStore.{Keys, S3}
 
-  @providers ~w(slack feishu)
+  @providers ~w(slack feishu qq lark)
 
   @doc """
   Classify every authority key against the canonical corpus. Returns

@@ -93,6 +93,10 @@ defmodule BillingCore.Pricing do
   defp context_threshold(%{provider: "x-ai", sku: sku})
        when sku in ~w(grok-4.6 x-ai/grok-4.6), do: 200_000
 
+  defp context_threshold(%{provider: "anthropic", sku: sku})
+       when sku in ~w(claude-haiku-5-5 claude-haiku-5.5 anthropic/claude-haiku-5.5),
+       do: 100_000
+
   defp context_threshold(_), do: nil
 
   defp matches?(price, account_id, provider, sku, resource_kind, component, meter_unit, at) do

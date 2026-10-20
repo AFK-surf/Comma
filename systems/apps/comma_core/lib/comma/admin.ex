@@ -24,7 +24,6 @@ defmodule Comma.Admin do
   @max_audit_page 100
   @default_audit_lease_seconds 2 * 60
   @comma_transaction_actions ~w(
-    update_model_selection_policy
     update_free_router_models
     create_user
     update_user
@@ -70,7 +69,7 @@ defmodule Comma.Admin do
 
   @spec admin_email?(term()) :: boolean()
   def admin_email?(email) do
-    if Application.get_env(:comma_core, :selfhost, false) do
+    if SystemsRuntime.get_env(:comma_core, :selfhost, false) do
       false
     else
       hosted_admin_email?(email)
@@ -89,7 +88,7 @@ defmodule Comma.Admin do
   end
 
   defp admin_email_domain do
-    Application.get_env(:comma_core, :admin_email_domain, @default_admin_email_domain)
+    SystemsRuntime.get_env(:comma_core, :admin_email_domain, @default_admin_email_domain)
     |> String.downcase()
   end
 
@@ -119,6 +118,136 @@ defmodule Comma.Admin do
       {:ok, decorate_user(user)}
     end
   end
+
+  @lookup_limit 8
+  @lookup_max_bytes 320
+
+  @doc """
+  The accounts an operator's search names: a User by id, the owner of a Workspace named by its id, Salix tenant id or
+  Agent group id, and Users whose email starts with the query. Each read is an exact or prefix lookup on a unique or
+  pattern index, and the result holds at most #{@lookup_limit} accounts.
+  """
+  @spec lookup(term()) :: {:ok, map()} | {:error, :invalid_filter}
+  def lookup(query) when is_binary(query) do
+    term = String.trim(query)
+
+    if term == "" or byte_size(term) > @lookup_max_bytes do
+      {:error, :invalid_filter}
+    else
+      by_id = lookup_user_by_id(term)
+      by_workspace = lookup_workspace_owners(term)
+      by_email = Accounts.search_users_by_email_prefix(term, @lookup_limit)
+
+      matches =
+        (by_id ++ by_workspace ++ Enum.map(by_email, &{&1, "email", nil}))
+        |> Enum.uniq_by(fn {user, _match, _workspace} -> user["id"] end)
+        |> Enum.take(@lookup_limit)
+
+      users = matches |> Enum.map(fn {user, _match, _workspace} -> user end) |> decorate_users()
+
+      results =
+        Enum.zip_with(matches, users, fn {_user, match, workspace}, decorated ->
+          %{"match" => match, "user" => decorated, "workspace" => workspace}
+        end)
+
+      {:ok, %{"data" => results}}
+    end
+  end
+
+  def lookup(_query), do: {:error, :invalid_filter}
+
+  defp lookup_user_by_id(term) do
+    with true <- Comma.Accounts.UserId.persisted_valid?(term),
+         {:ok, user} <- Accounts.get_user(term) do
+      [{user, "user_id", nil}]
+    else
+      _ -> []
+    end
+  end
+
+  defp lookup_workspace_owners(term) do
+    from(workspace in Workspace,
+      where:
+        workspace.status != "deleted" and
+          (workspace.id == ^term or workspace.salix_tenant_id == ^term or
+             workspace.salix_group_id == ^term),
+      limit: ^@lookup_limit
+    )
+    |> Repo.all()
+    |> Enum.flat_map(fn workspace ->
+      case Accounts.get_user(workspace.owner_user_id) do
+        {:ok, user} ->
+          match =
+            cond do
+              workspace.id == term -> "workspace_id"
+              workspace.salix_tenant_id == term -> "tenant_id"
+              true -> "group_id"
+            end
+
+          [
+            {user, match,
+             %{
+               "id" => workspace.id,
+               "name" => workspace.name,
+               "tenant_id" => workspace.salix_tenant_id,
+               "group_id" => workspace.salix_group_id
+             }}
+          ]
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  @stats_days 14
+
+  @doc """
+  Registered accounts: how many there are, how many of them use the Admin email domain (the team), and how many
+  others signed up on each of the last #{@stats_days} UTC days. Guests are not counted. The daily counts read the
+  `inserted_at` index over the window only; the two totals count the account table, which Admin reads only when an
+  operator opens the overview.
+  """
+  @spec user_stats(keyword()) :: {:ok, map()}
+  def user_stats(opts \\ []) do
+    now = Keyword.get_lazy(opts, :now, &SystemsClock.utc_now/0)
+    today = DateTime.to_date(now)
+    first_day = Date.add(today, -(@stats_days - 1))
+    {:ok, window_start} = DateTime.new(first_day, ~T[00:00:00], "Etc/UTC")
+    team_pattern = "%@" <> team_email_domain()
+
+    registered = from(user in User, where: user.kind == "registered")
+
+    total = Repo.aggregate(registered, :count)
+
+    team =
+      Repo.aggregate(from(user in registered, where: like(user.email, ^team_pattern)), :count)
+
+    counts =
+      from(user in registered,
+        where: user.created_at >= ^window_start and not like(user.email, ^team_pattern),
+        group_by: fragment("(?)::date", user.created_at),
+        select: {fragment("(?)::date", user.created_at), count(user.id)}
+      )
+      |> Repo.all()
+      |> Map.new()
+
+    days =
+      Enum.map(0..(@stats_days - 1), fn offset ->
+        date = Date.add(first_day, offset)
+        %{"date" => Date.to_iso8601(date), "count" => Map.get(counts, date, 0)}
+      end)
+
+    {:ok,
+     %{
+       "registered_total" => total,
+       "registered_team" => team,
+       "team_email_domain" => team_email_domain(),
+       "new_by_day" => days
+     }}
+  end
+
+  defp team_email_domain, do: String.downcase(admin_email_domain())
 
   def get_user_workspace_billing(user_id) when is_binary(user_id) do
     with {:ok, _user} <- Accounts.get_user(user_id) do
@@ -214,44 +343,32 @@ defmodule Comma.Admin do
 
   def get_user_workspace_agent_models(_user_id), do: {:error, :not_found}
 
-  def update_user_workspace_agent_model(user_id, role, nil)
-      when is_binary(user_id) and role in ["router", "worker"] do
-    with {:ok, workspace} <- ready_user_workspace(user_id) do
-      Comma.Salix.Client.update_workspace_agent_model(
-        workspace_agent_model_payload(workspace),
-        role,
-        nil
-      )
-    end
-  end
-
-  def update_user_workspace_agent_model(user_id, role, template_id)
-      when is_binary(user_id) and role in ["router", "worker"] and is_binary(template_id) do
-    template_id = String.trim(template_id)
-
-    if bounded_string?(template_id, 1, 200) do
-      with {:ok, workspace} <- ready_user_workspace(user_id),
-           {:ok, projection} <-
-             Comma.Salix.Client.update_workspace_agent_model(
-               workspace_agent_model_payload(workspace),
-               role,
-               template_id
-             ) do
-        {:ok, projection}
-      else
-        {:error, reason} -> normalize_workspace_agent_model_error(reason)
-      end
+  @doc """
+  Set the model of a user's Workspace Router or default Worker: a model choice
+  (`SalixAgent.ModelChoice`), or nil to follow the platform model of the role.
+  """
+  def update_user_workspace_agent_model(user_id, role, model)
+      when is_binary(user_id) and role in ["router", "worker"] and
+             (is_nil(model) or is_map(model)) do
+    with {:ok, workspace} <- ready_user_workspace(user_id),
+         {:ok, projection} <-
+           Comma.Salix.Client.update_workspace_agent_model(
+             workspace_agent_model_payload(workspace),
+             role,
+             model
+           ) do
+      {:ok, projection}
     else
-      {:error, :invalid_model_template}
+      {:error, reason} -> normalize_workspace_agent_model_error(reason)
     end
   end
 
-  def update_user_workspace_agent_model(_user_id, role, _template_id)
+  def update_user_workspace_agent_model(_user_id, role, _model)
       when role not in ["router", "worker"],
       do: {:error, :invalid_workspace_agent_role}
 
-  def update_user_workspace_agent_model(_user_id, _role, _template_id),
-    do: {:error, :invalid_model_template}
+  def update_user_workspace_agent_model(_user_id, _role, _model),
+    do: {:error, :invalid_workspace_agent_model}
 
   def get_user_workspace_credit_target(user_id) when is_binary(user_id) do
     with {:ok, _user} <- Accounts.get_user(user_id) do
@@ -277,7 +394,8 @@ defmodule Comma.Admin do
   def list_audit_events(opts \\ []) do
     limit = opts |> Keyword.get(:limit, @default_audit_page) |> clamp_audit_limit()
 
-    with {:ok, cursor} <- AuditPageCursor.decode(Keyword.get(opts, :cursor), opts) do
+    with {:ok, filters} <- audit_filters(opts),
+         {:ok, cursor} <- AuditPageCursor.decode(Keyword.get(opts, :cursor), filters, opts) do
       rows =
         from(event in AuditEvent,
           left_join: actor in User,
@@ -286,13 +404,14 @@ defmodule Comma.Admin do
           limit: ^(limit + 1),
           select: {event, actor.email}
         )
+        |> filter_audit_events(filters)
         |> audit_events_after_cursor(cursor)
         |> Repo.all()
 
       page = Enum.take(rows, limit)
       has_more = length(rows) > limit
 
-      with {:ok, next_cursor} <- next_audit_cursor(page, has_more, opts) do
+      with {:ok, next_cursor} <- next_audit_cursor(page, has_more, filters, opts) do
         {:ok,
          %{
            "data" => Enum.map(page, &public_audit_event/1),
@@ -331,6 +450,38 @@ defmodule Comma.Admin do
     end
   end
 
+  def update_user(id, %{"review_login_code" => code} = attrs) do
+    Repo.transaction(fn ->
+      user = Repo.one(from(user in User, where: user.id == ^id, lock: "FOR UPDATE"))
+      if is_nil(user), do: Repo.rollback(:not_found)
+
+      hash =
+        if is_nil(code) do
+          nil
+        else
+          unless user.kind == "registered" and
+                   match?(%AccessOverride{decision: "deny"}, Repo.get(AccessOverride, id)) do
+            Repo.rollback(:review_login_requires_admin_denial)
+          end
+
+          case Comma.AuthChallenges.review_code_hash(code) do
+            {:ok, value} -> value
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end
+
+      with {:ok, _} <- Accounts.update_user(id, Map.delete(attrs, "review_login_code")),
+           {:ok, updated} <-
+             user |> Ecto.Changeset.change(review_login_code_hash: hash) |> Repo.update() do
+        # Account updates can change status and name in the same command.
+        {:ok, public} = Accounts.get_user(updated.id)
+        decorate_user(public)
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
   def update_user(id, attrs) do
     with {:ok, user} <- Accounts.update_user(id, attrs) do
       {:ok, decorate_user(user)}
@@ -345,6 +496,10 @@ defmodule Comma.Admin do
 
         if is_nil(user) do
           Repo.rollback(:not_found)
+        end
+
+        if user.review_login_code_hash != nil and decision != "deny" do
+          Repo.rollback(:review_login_requires_admin_denial)
         end
 
         case put_access_override(user_id, decision, actor, reason) do
@@ -641,7 +796,7 @@ defmodule Comma.Admin do
   defp validate_session_scope(:restricted, _attrs), do: :ok
 
   defp session_ttl(:full, %{"local_dev" => true} = attrs) do
-    case Application.get_env(:comma_core, :local_dev_session_ttl_seconds) do
+    case SystemsRuntime.get_env(:comma_core, :local_dev_session_ttl_seconds) do
       max_ttl when is_integer(max_ttl) and max_ttl > 0 ->
         bounded_ttl(Map.get(attrs, "ttl_seconds", max_ttl), max_ttl)
 
@@ -714,13 +869,19 @@ defmodule Comma.Admin do
       end
 
     ssh_users = ssh_login_users(user_ids)
+    review_users = review_login_users(user_ids)
 
     Enum.map(users, fn user ->
       user
       |> Map.put("admin_access", access_state(user, overrides[user["id"]]))
       |> Map.put(
         "login_methods",
-        login_methods(user, identities[user["id"]], MapSet.member?(ssh_users, user["id"]))
+        login_methods(
+          user,
+          identities[user["id"]],
+          MapSet.member?(ssh_users, user["id"]),
+          MapSet.member?(review_users, user["id"])
+        )
       )
     end)
   end
@@ -798,13 +959,16 @@ defmodule Comma.Admin do
       "salix_tenant_id" => workspace.salix_tenant_id,
       "default_group_id" => workspace.salix_group_id,
       "router_agent_id" => workspace.salix_router_agent_id,
+      # nil for a Workspace created without a default Worker.
       "default_worker_agent_id" => workspace.salix_worker_agent_id
     }
   end
 
+  defp normalize_workspace_agent_model_error(:invalid_model_configuration),
+    do: {:error, :invalid_workspace_agent_model}
+
   defp normalize_workspace_agent_model_error(reason)
        when reason in [
-              :invalid_model_template,
               :invalid_workspace_agent_model,
               :invalid_workspace_agent_role,
               :model_catalog_too_large,
@@ -815,8 +979,10 @@ defmodule Comma.Admin do
             ],
        do: {:error, reason}
 
-  defp normalize_workspace_agent_model_error(:admin_user_not_found),
-    do: {:error, :not_found}
+  # A Workspace created without a default Worker has no "worker" role target.
+  defp normalize_workspace_agent_model_error(reason)
+       when reason in [:admin_user_not_found, :not_found],
+       do: {:error, :not_found}
 
   defp normalize_workspace_agent_model_error(_reason),
     do: {:error, :workspace_agent_models_unavailable}
@@ -842,7 +1008,7 @@ defmodule Comma.Admin do
   defp workspace_credit_target(_workspace), do: {:error, :billing_account_not_found}
 
   defp workspace_billing_grants(billing_account_id, account_status) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     with {:ok, %{rows: [[credits]]}} <-
            Ecto.Adapters.SQL.query(
@@ -985,11 +1151,19 @@ defmodule Comma.Admin do
           {nil, nil}
       end
 
+    review? = MapSet.member?(review_login_users([user["id"]]), user["id"])
+
     user
+    |> Map.put("review_login_configured", review?)
     |> Map.put("admin_access", access_state(user, override))
     |> Map.put(
       "login_methods",
-      login_methods(user, identity, MapSet.member?(ssh_login_users([user["id"]]), user["id"]))
+      login_methods(
+        user,
+        identity,
+        MapSet.member?(ssh_login_users([user["id"]]), user["id"]),
+        review?
+      )
     )
   end
 
@@ -1004,9 +1178,15 @@ defmodule Comma.Admin do
     |> MapSet.new()
   end
 
-  defp login_methods(user, identity, ssh?) do
+  defp review_login_users(ids) do
+    from(u in User, where: u.id in ^ids and not is_nil(u.review_login_code_hash), select: u.id)
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  defp login_methods(user, identity, ssh?, review?) do
     email_otp = %{
-      "method" => "email_otp",
+      "method" => if(review?, do: "review_code", else: "email_otp"),
       "email" => user["email"]
     }
 
@@ -1075,11 +1255,87 @@ defmodule Comma.Admin do
     )
   end
 
-  defp next_audit_cursor(_page, false, _opts), do: {:ok, nil}
+  defp next_audit_cursor(_page, false, _filters, _opts), do: {:ok, nil}
 
-  defp next_audit_cursor(page, true, opts) do
+  defp next_audit_cursor(page, true, filters, opts) do
     {event, _actor_email} = List.last(page)
-    AuditPageCursor.encode(event, opts)
+    AuditPageCursor.encode(event, filters, opts)
+  end
+
+  # The filters a page of the Audit log was read with: an action, the operator (by email, read once to a User id),
+  # and the target. Each one narrows an indexed read: (action), (actor_user_id) and (target_type, target_id), each
+  # ordered by time.
+  defp audit_filters(opts) do
+    with {:ok, action} <- audit_action_filter(Keyword.get(opts, :action)),
+         {:ok, actor_user_id} <- audit_actor_filter(Keyword.get(opts, :actor_email)),
+         {:ok, target} <-
+           audit_target_filter(Keyword.get(opts, :target_type), Keyword.get(opts, :target_id)) do
+      {:ok,
+       %{
+         "action" => action,
+         "actor_user_id" => actor_user_id,
+         "target_type" => target && elem(target, 0),
+         "target_id" => target && elem(target, 1)
+       }}
+    end
+  end
+
+  defp audit_action_filter(blank) when blank in [nil, ""], do: {:ok, nil}
+
+  defp audit_action_filter(action) when is_binary(action) do
+    if action in AuditEvent.actions(), do: {:ok, action}, else: {:error, :invalid_filter}
+  end
+
+  defp audit_action_filter(_action), do: {:error, :invalid_filter}
+
+  defp audit_actor_filter(blank) when blank in [nil, ""], do: {:ok, nil}
+
+  defp audit_actor_filter(email) do
+    with {:ok, normalized} <- Email.normalize(email) do
+      case Repo.one(from(user in User, where: user.email == ^normalized, select: user.id)) do
+        # An unknown operator matches no event; the empty id keeps the page bound to that filter.
+        nil -> {:ok, ""}
+        user_id -> {:ok, user_id}
+      end
+    else
+      {:error, :invalid_email} -> {:error, :invalid_filter}
+    end
+  end
+
+  defp audit_target_filter(blank_type, blank_id)
+       when blank_type in [nil, ""] and blank_id in [nil, ""],
+       do: {:ok, nil}
+
+  defp audit_target_filter(type, id)
+       when is_binary(type) and type != "" and is_binary(id) and id != "" and
+              byte_size(type) <= 64 and byte_size(id) <= 320,
+       do: {:ok, {type, String.trim(id)}}
+
+  defp audit_target_filter(_type, _id), do: {:error, :invalid_filter}
+
+  defp filter_audit_events(query, filters) do
+    query
+    |> then(fn query ->
+      case filters["action"] do
+        nil -> query
+        action -> from(event in query, where: event.action == ^action)
+      end
+    end)
+    |> then(fn query ->
+      case filters["actor_user_id"] do
+        nil -> query
+        actor_user_id -> from(event in query, where: event.actor_user_id == ^actor_user_id)
+      end
+    end)
+    |> then(fn query ->
+      case {filters["target_type"], filters["target_id"]} do
+        {nil, nil} ->
+          query
+
+        {type, id} ->
+          from(event in query, where: event.target_type == ^type and event.target_id == ^id)
+      end
+    end)
   end
 
   defp public_audit_event({%AuditEvent{} = event, actor_email}) do
@@ -1216,7 +1472,7 @@ defmodule Comma.Admin do
        ) do
     with true <- action in AuditEvent.actions(),
          {:ok, actor} <- actor_attrs(actor_user) do
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
 
       attrs =
         actor
@@ -1285,7 +1541,7 @@ defmodule Comma.Admin do
   end
 
   defp reclaim_started_event(%AuditEvent{} = event) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     if is_struct(event.lease_expires_at, DateTime) and
          DateTime.compare(event.lease_expires_at, now) != :gt do
@@ -1443,7 +1699,7 @@ defmodule Comma.Admin do
          outcome,
          error_code
        ) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     update =
       from(candidate in AuditEvent,
@@ -1486,7 +1742,7 @@ defmodule Comma.Admin do
          {:ok, actor} <- actor_attrs(actor_user) do
       reason = rejected_reason(attrs["reason"])
 
-      idempotency_key = "rejected:" <> Ecto.UUID.generate()
+      idempotency_key = "rejected:" <> SystemsRuntime.Proc.uuid()
 
       actor
       |> Map.merge(%{
@@ -1551,13 +1807,13 @@ defmodule Comma.Admin do
   defp normalize_fingerprint_code(attrs), do: attrs
 
   defp request_fingerprint_key do
-    auth_config = Application.fetch_env!(:comma_core, :auth)
+    auth_config = SystemsRuntime.fetch_env!(:comma_core, :auth)
     secret = Keyword.fetch!(auth_config, :secret)
     :crypto.mac(:hmac, :sha256, secret, "comma-admin-command-fingerprint-v1")
   end
 
   defp audit_lease_seconds do
-    Application.get_env(:comma_core, :admin_audit_lease_seconds, @default_audit_lease_seconds)
+    SystemsRuntime.get_env(:comma_core, :admin_audit_lease_seconds, @default_audit_lease_seconds)
   end
 
   defp canonical_term(value) when is_map(value) do

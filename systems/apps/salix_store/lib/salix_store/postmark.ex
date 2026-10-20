@@ -108,7 +108,7 @@ defmodule SalixStore.Postmark do
 
   defp config_string(key) do
     :salix_store
-    |> Application.get_env(key)
+    |> SystemsRuntime.get_env(key)
     |> to_string()
     |> String.trim()
   end

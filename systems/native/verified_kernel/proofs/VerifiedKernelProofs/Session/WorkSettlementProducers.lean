@@ -1,4 +1,7 @@
 import VerifiedKernelProofs.Session.WorkPresentationProducers
+import VerifiedKernelProofs.Session.WorkApplication
+import VerifiedKernelProofs.Session.WorkBatch
+import VerifiedKernelProofs.Session.WorkMaterializeRouting
 import VerifiedKernelProofs.Proof.NativeProducerTactic
 
 namespace VerifiedKernel.Session.WorkConservation
@@ -6,8 +9,31 @@ open Data
 set_option Elab.async false
 set_option maxHeartbeats 1000000
 
-theorem raw_ordinary_filter {events : List Term} (safe : RawOrdinaryBatch events) (f : Term → Bool) :
-    RawOrdinaryBatch (events.filter f) := fun e member => safe e (List.mem_filter.mp member).1
+open StateQuery in
+/-- A consumed completion wake becomes the runtime message that materializing it would write. -/
+theorem notice_raw_ordinary {sid wake id e : Term} {j r : List Term}
+    (h : Settlement.notice sid wake id j = .ok (e, r)) : RawOrdinary e := by
+  unfold Settlement.notice at h
+  obtain ⟨_, _, _, h⟩ := bind_ok h
+  obtain ⟨_, _, _, h⟩ := bind_ok h
+  have shape := runtime_event_shape h
+  unfold StateQuery.runtimeEvent at h
+  repeat obtain ⟨_, _, _, h⟩ := bind_ok h
+  obtain rfl := pure_ok h
+  refine OrdinaryBatch.raw ?_ _ (List.mem_singleton_self _)
+  intro event member
+  simp only [List.mem_singleton] at member
+  subst event
+  refine ⟨stringKeyed_binary_keys _, ?_⟩
+  rcases shape.2 with t | t <;> rw [t] <;> simp +decide [OrdinaryKind, b, Term.text]
+
+theorem notices_raw_ordinary {sid start : Term} {wakes notices : List Term} {j r : List Term}
+    (h : Settlement.notices sid start wakes j = .ok (notices, r)) : RawOrdinaryBatch notices := by
+  unfold Settlement.notices at h
+  intro e member
+  obtain ⟨_, _, _, _, call⟩ := mapM_outputs h e member
+  obtain ⟨_, _, _, call⟩ := bind_ok call
+  exact notice_raw_ordinary call
 
 theorem terminal_events_ordinary {state record result output : Term} {input journal rest : List Term}
     (safe : RawOrdinaryBatch input)
@@ -28,6 +54,7 @@ theorem terminal_events_ordinary {state record result output : Term} {input jour
       | apply And.intro
       | exact raw_ordinary_filter safe _
       | exact ordinary_nil.raw
+      | (apply notices_raw_ordinary; assumption)
       | split
   all_goals apply OrdinaryBatch.raw
   all_goals simp +decide [OrdinaryBatch, OrdinaryKind, BinaryKeys, Term.get,
@@ -104,18 +131,6 @@ theorem guard_settlement_events_ordinary {state result output : Term} {input jou
          | rfl
        done)
     | split
-
-syntax "solve_raw_batch" : tactic
-macro_rules
-  | `(tactic| solve_raw_batch) => `(tactic|
-    (try simp only [raw_ordinary_append, raw_ordinary_pair]
-     repeat' first
-       | assumption
-       | exact (status_event_ordinary _).raw
-       | exact (ack_event_ordinary _ _).raw
-       | exact ordinary_nil.raw
-       | apply And.intro
-       | split))
 
 theorem settlement_batch_events_ordinary {state track unsettled reset router output : Term}
     {input results journal rest : List Term}

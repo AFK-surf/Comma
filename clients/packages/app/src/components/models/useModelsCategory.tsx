@@ -1,55 +1,56 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useCommaMessages } from "@comma/i18n/react";
+import { Button } from "@comma/ui/components/Button";
+import { Dialog } from "@comma/ui/components/dialog";
+import { InputField } from "@comma/ui/components/input";
 import {
-  Button,
-  Dialog,
-  EditBigIcon,
-  InputField,
   ModelPicker,
-  ModelVendorIcon,
-  MoreHorizontalIcon,
   type ModelPickerAccount,
   type ModelPickerModel,
   type ModelPickerValue,
-  Toggle,
-  toast,
+} from "@comma/ui/components/model-picker";
+import { ModelVendorIcon } from "@comma/ui/components/model-icons/ModelVendorIcon";
+import { MoreHorizontalIcon } from "@comma/ui/components/icons";
+import { Toggle } from "@comma/ui/components/toggle";
+import { toast } from "@comma/ui/components/toast";
+import {
   type SettingsCategoryDefinition,
   type SettingsCategoryDetail,
+} from "@comma/ui/components/settings";
+import {
+  type SettingsControl,
   type SettingsPanelItem,
-} from "@comma/ui";
-import { CommaApiError, type CommaApiClient } from "../../api";
-import type {
-  AgentModels,
-  AgentSelection,
-  CatalogModel,
-  ModelCatalog,
-  ModelProtocol,
-  SettingsAgent,
-} from "../../api/modelCatalog";
-import type {
-  SubscriptionAccount,
-  SubscriptionPage,
-} from "../../api/subscriptionAccounts";
-import { readActiveWorkspaceId, subscribeActiveWorkspace } from "../activeWorkspace";
+} from "@comma/ui/components/settings-panel";
+import {
+  useCall,
+  useTopic,
+  type AgentSelection,
+  type CatalogModel,
+  type ModelProtocol,
+  type ProviderPreset,
+  type SettingsAgent,
+  type ShownModel,
+  type ShownProfile,
+  type TaskModelSelection,
+  type TaskPlace,
+} from "@comma/core-client";
+import {
+  nativePlatformClipboard,
+  openNativePlatformExternalUrlFromUserAction,
+} from "../../nativePlatformActions";
+import { useWorkspacePreference } from "../activeWorkspace";
 import { CommaProductMark } from "../CommaProductMark";
 import { ProviderMark, QuotaMeters } from "./ProviderMarks";
-import {
-  canServeAgents,
-  catalogPresets,
-  isSubscription,
-  presetForSource,
-  presetGroups,
-  profileRoute,
-  quotaMeters,
-  servingProfiles,
-  vendorNames,
-  type ProviderPreset,
-} from "./providerPresets";
+import { presetGroups } from "./providerPresets";
 import { useRouterRenamed } from "../router-identity/RouterIdentityProvider";
 import { useSubscriptionSignIn } from "./useSubscriptionSignIn";
 import { tokenDanceAvailable, useTokenDanceConnect } from "./useTokenDanceConnect";
 
 type ConnectMethod = "api_key" | "subscription";
+
+/** A place to run Tasks as a dropdown option's id. */
+const placeId = (place: TaskPlace) =>
+  place.kind === "station" ? `station:${place.device_id}` : place.kind;
 
 type View =
   | { kind: "pick" }
@@ -69,25 +70,10 @@ type View =
     }
   | { kind: "tokendance" }
   | { kind: "profile"; id: string }
-  | { kind: "model"; modelId: string; from: string }
-  | {
-      kind: "rename-profile";
-      id: string;
-      name: string;
-      busy: boolean;
-      error?: string | undefined;
-    }
   | {
       kind: "replace-key";
       id: string;
       key: string;
-      busy: boolean;
-      error?: string | undefined;
-    }
-  | {
-      kind: "rename-agent";
-      agentId: string;
-      name: string;
       busy: boolean;
       error?: string | undefined;
     };
@@ -99,27 +85,15 @@ const protocolLabels: Record<ModelProtocol, string> = {
 };
 
 const tokenDanceName = "TokenDance";
-/** Compute runtimes whose model the page chooses among their plan's models. */
-const runtimePlans = new Set(["codex", "claude"]);
-/** A Custom profile on TokenDance's gateway, as one-click connect saves it. */
-const isTokenDance = (account: SubscriptionAccount) =>
-  account.source === "custom" &&
-  !!account.connection?.endpoint?.startsWith("https://tokendance.space/");
-
 const tileClass =
   "flex min-w-0 cursor-pointer items-center gap-sm rounded-lg px-md py-sm text-left text-sm text-primary transition-colors duration-150 ease-out hover:bg-secondary focus-visible:bg-secondary focus-visible:outline-none";
+/** Custom has no brand to show, so it reads as a plain button instead of a logo tile. */
+const customTileClass =
+  "flex min-w-0 cursor-pointer items-center justify-self-start rounded-lg bg-secondary px-md py-sm text-left text-sm text-primary transition-colors duration-150 ease-out hover:bg-tertiary focus-visible:bg-tertiary focus-visible:outline-none";
 
 /** Which form a view is, whatever its field values. */
 const formKey = (view: View) =>
-  `${view.kind}:${"preset" in view ? view.preset : "id" in view ? view.id : "agentId" in view ? view.agentId : ""}`;
-
-const endpointHost = (url: string) => {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-};
+  `${view.kind}:${"preset" in view ? view.preset : "id" in view ? view.id : ""}`;
 
 /** One of two ways to connect a provider, as a large button. */
 function Choice({
@@ -207,37 +181,45 @@ const nameField = (
   },
 });
 
-/** A literal identifier shown as code. */
-const codeControl = (value: string) => ({
-  type: "custom" as const,
-  content: (
-    <code className="rounded-md bg-secondary px-sm py-xxs font-mono text-xs text-secondary">
-      {value}
-    </code>
-  ),
-});
-
 /**
  * Settings → Model & API: the profiles (subscriptions and API keys) the
- * system may route through, and the model each Agent runs on.
+ * system may route through, the model the Router runs on, and the model a
+ * Task runs when it names none and where it runs when the Router names no
+ * place.
  */
-export function useModelsCategory(
-  api: CommaApiClient,
-  enabled: boolean
-): { category: SettingsCategoryDefinition } {
+export function useModelsCategory(enabled: boolean): {
+  category: SettingsCategoryDefinition;
+  openProfile: (id: string) => void;
+} {
   const m = useCommaMessages();
+  const call = useCall();
   // A renamed Router's name shows in this window's chats at once.
   const routerRenamed = useRouterRenamed();
-  const [workspace, setWorkspace] = useState(readActiveWorkspaceId);
-  const [catalog, setCatalog] = useState<ModelCatalog>();
-  const [page, setPage] = useState<SubscriptionPage>();
-  const [agents, setAgents] = useState<AgentModels>();
-  const [workerCursor, setWorkerCursor] = useState<string>();
+  const prefer = useWorkspacePreference();
+  // The core reads the page while it shows; what it read for the workspace
+  // stays across a tab switch, so the page does not collapse and grow back.
+  const { value: shownPage } = useTopic(
+    enabled && prefer !== undefined ? { topic: "models", prefer } : null
+  );
+  // The computers and Cloud VM a Task can run on, as Settings › Devices lists them.
+  const { value: shownDevices } = useTopic(
+    enabled && prefer !== undefined ? { topic: "devices", prefer } : null
+  );
   const [checking, setChecking] = useState<ReadonlySet<string>>(new Set());
-  const [error, setError] = useState<string>();
+  const [actionError, setActionError] = useState<string>();
   const [agentErrors, setAgentErrors] = useState<Record<string, string>>({});
+  const [taskModelError, setTaskModelError] = useState<string>();
+  const [taskPlaceError, setTaskPlaceError] = useState<string>();
   const [view, setView] = useState<View>();
   const [removing, setRemoving] = useState<{ id: string; busy: boolean }>();
+  /** A name being edited in the rename dialog: an Agent's or a profile's. */
+  const [rename, setRename] = useState<{
+    kind: "agent" | "profile";
+    id: string;
+    name: string;
+    busy: boolean;
+    error?: string | undefined;
+  }>();
   const [resetting, setResetting] = useState<{
     id: string;
     busy: boolean;
@@ -245,15 +227,16 @@ export function useModelsCategory(
     /** The provider answered; nothing is left to retry. */
     settled?: boolean;
   }>();
-  // A reset retried after an unconfirmed attempt reuses its request id, so the
-  // provider redeems one credit at most.
-  const resetKeys = useRef(new Map<string, string>());
+  // Answers that arrive after the workspace changed are not shown.
   const generation = useRef(0);
-  const heldWorkspace = useRef(workspace);
+  /** Whether there was no profile yet when the sign-in now under way started. */
+  const firstProfile = useRef(false);
 
   const message = useCallback(
     (reason: unknown) => {
-      const code = reason instanceof Error ? reason.message : "";
+      const code =
+        (reason as { code?: unknown } | null)?.code ??
+        (reason instanceof Error ? reason.message : "");
       if (code === "conflict") return m.settings_providers_conflict();
       if (code === "authorization_port_in_use")
         return m.settings_providers_port_in_use();
@@ -264,142 +247,92 @@ export function useModelsCategory(
     [m]
   );
 
-  useEffect(() => subscribeActiveWorkspace(setWorkspace), []);
-
-  const loadAgents = useCallback(
-    async (id: string, cursor: string | undefined, signal?: AbortSignal) => {
-      const next = await api.getAgentModels(id, signal ? { signal } : {});
-      if (cursor) next.workers = await api.getWorkerModels(id, cursor);
-      return next;
-    },
-    [api]
-  );
-
+  // Another workspace: its own page.
+  const shownPrefer = useRef(prefer);
   useEffect(() => {
-    const current = ++generation.current;
-    // Kept across a tab switch: the data is the workspace's, and dropping it
-    // would collapse the page and grow it back when the reader returns.
-    if (heldWorkspace.current !== workspace) {
-      heldWorkspace.current = workspace;
-      setPage(undefined);
-      setAgents(undefined);
-      setWorkerCursor(undefined);
-      setView(undefined);
-    }
-    if (!enabled) return;
-    const controller = new AbortController();
-    const { signal } = controller;
-    void (async () => {
-      const id = workspace ?? (await api.listWorkspaces({ signal }))[0]?.id;
-      if (!id) throw new Error("workspace_unavailable");
-      if (signal.aborted) return;
-      if (id !== workspace) {
-        setWorkspace(id);
-        return;
-      }
-      const [nextCatalog, nextPage, nextAgents] = await Promise.all([
-        api.getModelCatalog({ signal }),
-        api.listSubscriptionAccounts(id, "", { signal }),
-        loadAgents(id, workerCursor, signal),
-      ]);
-      if (signal.aborted || current !== generation.current) return;
-      setCatalog(nextCatalog);
-      setPage(nextPage);
-      setAgents(nextAgents);
-      setError(undefined);
-    })().catch((reason: unknown) => {
-      if (!signal.aborted && current === generation.current) setError(message(reason));
-    });
-    return () => controller.abort();
-  }, [api, enabled, workspace, workerCursor, loadAgents, message]);
+    if (shownPrefer.current === prefer) return;
+    shownPrefer.current = prefer;
+    generation.current += 1;
+    setTaskModelError(undefined);
+    setTaskPlaceError(undefined);
+    setView(undefined);
+    setRename(undefined);
+    setResetting(undefined);
+    setActionError(undefined);
+  }, [prefer]);
 
-  const profiles = useMemo(() => page?.accounts ?? [], [page]);
-  const presets = useMemo(() => catalogPresets(catalog), [catalog]);
-  // Catalog models, then the models a Custom endpoint lists that the catalog
-  // does not know, such as a local Ollama model; those run as listed.
-  const models = useMemo(() => {
-    const known = new Set((catalog?.models ?? []).map((model) => model.id));
-    const listed = [
-      ...new Set(
-        profiles
-          .filter((account) => account.source === "custom")
-          .flatMap((account) => account.models ?? [])
-          .filter((id) => !known.has(id))
+  // Entering the page reads it again: the menu-bar item can hold this topic,
+  // which then does not start (and read) as the page opens.
+  useEffect(() => {
+    if (enabled) void call("models.refresh", {}).catch(() => null);
+  }, [call, enabled]);
+
+  const workspace = shownPage?.workspace ?? undefined;
+  const catalog = shownPage?.catalog ?? undefined;
+  const profiles = useMemo(() => shownPage?.profiles ?? [], [shownPage]);
+  const agents = shownPage?.agents ?? undefined;
+  const presets = shownPage?.presets ?? [];
+  const error =
+    actionError ?? (shownPage?.error ? m.settings_providers_error() : undefined);
+  // Models a Custom endpoint lists that the catalog does not know form one group.
+  const models = useMemo(
+    () =>
+      (shownPage?.models ?? []).map((model) =>
+        model.custom ? { ...model, family: m.settings_providers_custom() } : model
       ),
-    ];
-    return [
-      ...(catalog?.models ?? []),
-      ...listed.map(
-        // One group for them all, rather than one per model.
-        (id): CatalogModel => ({
-          id,
-          name: id,
-          family: m.settings_providers_custom(),
-          vendor: "custom",
-          efforts: [],
-          routes: {},
-        })
-      ),
-    ];
-  }, [catalog, profiles, m]);
+    [shownPage, m]
+  );
   const modelById = useMemo(
     () => new Map(models.map((model) => [model.id, model])),
     [models]
   );
+  const profileById = useMemo(
+    () => new Map(profiles.map((account) => [account.id, account])),
+    [profiles]
+  );
 
-  const replaceProfile = (account: SubscriptionAccount) =>
-    setPage((previous) =>
-      previous
-        ? {
-            ...previous,
-            accounts: previous.accounts.map((entry) =>
-              entry.id === account.id ? account : entry
-            ),
-          }
-        : previous
-    );
-
-  const reloadProfiles = async () => {
-    if (!workspace) return [];
-    const next = await api.listSubscriptionAccounts(workspace, "");
-    setPage(next);
-    return next.accounts;
-  };
-
-  /** Runs a write; a failure shows on the page and a stale version reloads. */
-  const write = async (operation: () => Promise<void>) => {
+  /** Runs a change; a failure shows on the page, a success clears it. */
+  const write = (operation: () => Promise<unknown>) => {
     const current = generation.current;
-    try {
-      await operation();
-      if (current === generation.current) setError(undefined);
-    } catch (reason) {
-      if (current !== generation.current) return;
-      setError(message(reason));
-      if (reason instanceof Error && reason.message === "conflict")
-        await reloadProfiles().catch(() => undefined);
-    }
+    return operation().then(
+      () => {
+        if (current === generation.current) setActionError(undefined);
+      },
+      (reason: unknown) => {
+        if (current === generation.current) setActionError(message(reason));
+      }
+    );
   };
 
   // A subscription is named for its account; the reader may rename it later.
-  const signIn = useSubscriptionSignIn(api, workspace, async () => {
+  const signIn = useSubscriptionSignIn(workspace, () => {
     const connect = view?.kind === "connect" ? view : undefined;
-    const first = profiles.length === 0;
-    await reloadProfiles().catch(() => profiles);
-    if (first && !connect?.reconnect) confirmFirstProfile();
+    if (firstProfile.current && !connect?.reconnect) confirmFirstProfile();
     setView(undefined);
   });
 
   /** Says once that nothing else is needed: Agents pick profiles themselves. */
   const confirmFirstProfile = () => toast.success(m.settings_providers_first_added());
 
-  const tokenDance = useTokenDanceConnect(workspace, tokenDanceName, async () => {
-    const first = profiles.length === 0;
-    await reloadProfiles().catch(() => undefined);
-    if (first) confirmFirstProfile();
+  // The core saved the key as a profile and read the profiles again.
+  const tokenDance = useTokenDanceConnect(workspace, tokenDanceName, () => {
+    if (firstProfile.current) confirmFirstProfile();
     setView(undefined);
   });
 
-  const presetById = (id: string | undefined) =>
+  /** Starts a plan's sign-in; `reconnect` renews that profile. */
+  const beginSignIn = (
+    entry: ProviderPreset,
+    reconnect?: { account_id: string; version: string }
+  ) => {
+    firstProfile.current = profiles.length === 0;
+    signIn.begin(entry.subscriptionSource!, {
+      device: !!entry.deviceSignIn,
+      ...(reconnect ? { reconnect } : {}),
+    });
+  };
+
+  const presetById = (id: string | null | undefined) =>
     presets.find((entry) => entry.id === id);
   const presetName = (entry: ProviderPreset | undefined, fallback = "") => {
     if (!entry) return fallback;
@@ -409,17 +342,15 @@ export function useModelsCategory(
     return catalog?.sources[source]?.name ?? entry.name ?? source;
   };
   const sourceName = (source: string) => catalog?.sources[source]?.name ?? source;
-  const profilePreset = (account: SubscriptionAccount) =>
-    presetForSource(presets, account.source);
-  const providerName = (account: SubscriptionAccount) => {
-    if (isTokenDance(account)) return tokenDanceName;
-    const entry = profilePreset(account);
+  const providerName = (account: ShownProfile) => {
+    if (account.tokenDance) return tokenDanceName;
+    const entry = presetById(account.preset);
     return entry ? presetName(entry) : sourceName(account.source);
   };
-  const profileName = (account: SubscriptionAccount) =>
+  const profileName = (account: ShownProfile) =>
     shown(account.name) || shown(account.email) || providerName(account);
-  const profileSummary = (account: SubscriptionAccount) => {
-    if (isSubscription(account)) {
+  const profileSummary = (account: ShownProfile) => {
+    if (account.subscription) {
       const plan = account.quota?.plan_type?.trim();
       return m.settings_providers_row_sub({
         provider: providerName(account),
@@ -433,7 +364,7 @@ export function useModelsCategory(
       hint: account.key_hint?.trim() || "—",
     });
   };
-  const profileStatus = (account: SubscriptionAccount) => {
+  const profileStatus = (account: ShownProfile) => {
     if (account.disabled)
       return { label: m.settings_providers_off(), color: "gray" as const };
     if (checking.has(account.id) || account.status === "checking")
@@ -459,26 +390,31 @@ export function useModelsCategory(
     setView(undefined);
   };
 
-  const toggleProfile = (account: SubscriptionAccount) => {
+  const toggleProfile = (account: ShownProfile) => {
     if (!workspace) return;
-    void write(async () => {
-      replaceProfile(
-        await api.updateSubscriptionAccount(workspace, account.id, {
-          version: account.version,
-          disabled: !account.disabled,
-        })
-      );
-    });
+    void write(() =>
+      call("models.updateProfile", {
+        workspace,
+        profile: account.id,
+        disabled: !account.disabled,
+      })
+    );
   };
 
-  const refreshProfile = (account: SubscriptionAccount) => {
+  /** Turns models on or off for a profile: shown at once, saved in order by the core. */
+  const offerModels = (account: ShownProfile, ids: string[], on: boolean) => {
+    if (!workspace) return;
+    void write(() =>
+      call("models.offer", { workspace, profile: account.id, models: ids, on })
+    );
+  };
+
+  const refreshProfile = (account: ShownProfile) => {
     if (!workspace || checking.has(account.id)) return;
     setChecking((previous) => new Set(previous).add(account.id));
-    void write(async () => {
-      if (isSubscription(account))
-        replaceProfile(await api.refreshSubscriptionQuota(workspace, account.id));
-      else await reloadProfiles();
-    }).finally(() =>
+    void write(() =>
+      call("models.refreshQuota", { workspace, profile: account.id })
+    ).finally(() =>
       setChecking((previous) => {
         const next = new Set(previous);
         next.delete(account.id);
@@ -487,25 +423,19 @@ export function useModelsCategory(
     );
   };
 
-  const removeProfile = (account: SubscriptionAccount) => {
+  const removeProfile = (account: ShownProfile) => {
     if (!workspace) return;
     setRemoving({ id: account.id, busy: true });
     void write(async () => {
-      await api.deleteSubscriptionAccount(workspace, account.id, account.version);
-      setPage((previous) =>
-        previous
-          ? {
-              ...previous,
-              accounts: previous.accounts.filter((entry) => entry.id !== account.id),
-            }
-          : previous
+      await call("models.deleteProfile", { workspace, profile: account.id });
+      setView((open) =>
+        open && "id" in open && open.id === account.id ? undefined : open
       );
-      if (view && "id" in view && view.id === account.id) setView(undefined);
     }).finally(() => setRemoving(undefined));
   };
 
-  const reauthorize = (account: SubscriptionAccount) => {
-    const entry = profilePreset(account);
+  const reauthorize = (account: ShownProfile) => {
+    const entry = presetById(account.preset);
     if (!entry?.subscriptionSource) return;
     signIn.reset();
     setView({
@@ -518,31 +448,16 @@ export function useModelsCategory(
       reconnect: { id: account.id, version: account.version },
     });
     // Renewing has nothing to fill in either: sign in at once.
-    signIn.begin(entry.subscriptionSource, {
-      account_id: account.id,
-      version: account.version,
-    });
+    beginSignIn(entry, { account_id: account.id, version: account.version });
   };
 
-  const resetQuota = (account: SubscriptionAccount) => {
+  const resetQuota = (account: ShownProfile) => {
     if (!workspace || resetting?.busy) return;
     const current = generation.current;
-    const slot = `${workspace}:${account.id}:${account.version}`;
-    const requestId =
-      account.reset_attempt?.outcome === "pending"
-        ? account.reset_attempt.request_id
-        : (resetKeys.current.get(slot) ?? crypto.randomUUID());
-    resetKeys.current.set(slot, requestId);
     setResetting({ id: account.id, busy: true });
-    void api
-      .resetSubscriptionQuota(workspace, account.id, {
-        version: account.version,
-        request_id: requestId,
-      })
-      .then((result) => {
+    call("models.resetQuota", { workspace, profile: account.id }).then(
+      (result) => {
         if (current !== generation.current) return;
-        resetKeys.current.delete(slot);
-        replaceProfile(result.account);
         const outcomes = {
           reset: m.settings_providers_reset_done(),
           already_redeemed: m.settings_providers_reset_redeemed(),
@@ -557,19 +472,21 @@ export function useModelsCategory(
             outcomes[result.outcome] +
             (result.quota_refreshed ? "" : ` ${m.settings_providers_reset_stale()}`),
         });
-      })
-      .catch((reason: unknown) => {
+      },
+      (reason: unknown) => {
         if (current !== generation.current) return;
-        const status = reason instanceof CommaApiError ? reason.status : 0;
-        // The profile changed or another reset holds it: show the current
-        // state, then the reader may try again with it.
+        const { code, status = 0 } = (reason ?? {}) as {
+          code?: string;
+          status?: number;
+        };
+        // The profile changed or another reset holds it: the core shows the
+        // current state, then the reader may try again with it.
         if (status === 409) {
-          void reloadProfiles().catch(() => undefined);
           setResetting({
             id: account.id,
             busy: false,
             outcome:
-              reason instanceof Error && reason.message === "reset_in_progress"
+              code === "reset_in_progress"
                 ? m.settings_providers_reset_in_progress()
                 : m.settings_providers_conflict(),
           });
@@ -591,58 +508,22 @@ export function useModelsCategory(
           busy: false,
           outcome: m.settings_providers_reset_pending(),
         });
-      });
-  };
-
-  /** The model ids an endpoint lists, as many as a profile keeps. */
-  const discoverModelIds = async (
-    baseUrl: string,
-    protocol: ModelProtocol,
-    key: string
-  ) => {
-    if (!workspace) throw new Error("workspace_unavailable");
-    const found = await api.discoverModels(workspace, {
-      base_url: baseUrl,
-      protocol,
-      ...(key ? { api_key: key } : {}),
-    });
-    const encoder = new TextEncoder();
-    const ids = [
-      ...new Set(
-        found.data
-          .map((model) => model.id)
-          .filter((id) => id && encoder.encode(id).length <= 200)
-      ),
-    ].slice(0, 500);
-    if (!ids.length) throw new Error("no_models");
-    return ids;
+      }
+    );
   };
 
   const loadMoreProfiles = () => {
-    if (!workspace || !page?.next) return;
-    const after = page.next;
-    void write(async () => {
-      const next = await api.listSubscriptionAccounts(workspace, after);
-      setPage((previous) => ({
-        accounts: [
-          ...(previous?.accounts ?? []),
-          ...next.accounts.filter(
-            (entry) => !previous?.accounts.some((known) => known.id === entry.id)
-          ),
-        ],
-        next: next.next,
-      }));
-    });
+    if (!workspace) return;
+    void write(() => call("models.moreProfiles", { workspace }));
   };
 
-  const profileRow = (account: SubscriptionAccount): SettingsPanelItem => {
+  const profileRow = (account: ShownProfile): SettingsPanelItem => {
     const name = profileName(account);
-    const entry = profilePreset(account);
-    const meters =
-      isSubscription(account) && !account.disabled ? quotaMeters(account) : [];
+    const entry = presetById(account.preset);
+    const meters = account.subscription && !account.disabled ? account.meters : [];
     const signedIn = ["active", "connected"].includes(account.status);
     const expired =
-      isSubscription(account) &&
+      account.subscription &&
       !account.disabled &&
       !signedIn &&
       account.status !== "checking" &&
@@ -659,9 +540,7 @@ export function useModelsCategory(
       title: name,
       icon: (
         <ProviderMark
-          brand={
-            isTokenDance(account) ? "tokendance" : (entry?.brand ?? account.source)
-          }
+          brand={account.tokenDance ? "tokendance" : (entry?.brand ?? account.source)}
           name={providerName(account)}
         />
       ),
@@ -719,9 +598,9 @@ export function useModelsCategory(
             id: "rename",
             label: m.settings_providers_rename(),
             onPress: () =>
-              setView({ kind: "rename-profile", id: account.id, name, busy: false }),
+              setRename({ kind: "profile", id: account.id, name, busy: false }),
           },
-          ...(isSubscription(account)
+          ...(account.subscription
             ? [
                 {
                   id: "reauth",
@@ -775,74 +654,67 @@ export function useModelsCategory(
 
   // ---- Agents ----
 
-  const writeAgent = (agent: SettingsAgent, operation: () => Promise<void>) => {
+  // The core shows a choice at once and saves one Agent's choices in order; a
+  // failed save reads the Agents again, so the page shows what holds.
+  const selectAgentModel = (agent: SettingsAgent, selection: AgentSelection) => {
+    if (!workspace) return;
     const current = generation.current;
     setAgentErrors(({ [agent.agent_id]: _cleared, ...rest }) => rest);
-    return operation().catch((reason: unknown) => {
+    call("models.setAgentModel", {
+      workspace,
+      agent: agent.agent_id,
+      selection,
+    }).catch((reason: unknown) => {
       if (current !== generation.current) return;
       setAgentErrors((previous) => ({
         ...previous,
         [agent.agent_id]: message(reason),
       }));
-      throw reason;
     });
   };
 
-  const patchAgent = (agentId: string, patch: Partial<SettingsAgent>) =>
-    setAgents((previous) =>
-      previous
-        ? {
-            ...previous,
-            agents: {
-              ...previous.agents,
-              router:
-                previous.agents.router.agent_id === agentId
-                  ? { ...previous.agents.router, ...patch }
-                  : previous.agents.router,
-            },
-            workers: {
-              ...previous.workers,
-              items: previous.workers.items.map((agent) =>
-                agent.agent_id === agentId ? { ...agent, ...patch } : agent
-              ),
-            },
-          }
-        : previous
-    );
-
-  // Saves for one Agent run in order, so the server ends on the reader's last
-  // choice; a failed save reloads the Agents, so the page shows what holds.
-  const agentSaves = useRef(new Map<string, Promise<void>>());
-  const selectAgentModel = (agent: SettingsAgent, selection: AgentSelection) => {
+  // The same for the workspace's default Task model.
+  const selectTaskModel = (selection: TaskModelSelection) => {
     if (!workspace) return;
-    patchAgent(agent.agent_id, { selection });
-    const previous = agentSaves.current.get(agent.agent_id) ?? Promise.resolve();
-    const save = previous.then(() =>
-      writeAgent(agent, () =>
-        api
-          .setAgentModel(workspace, agent.agent_id, selection)
-          // Saves run in order, so a success is what the server now holds,
-          // even after an earlier failure reloaded the page.
-          .then(() => patchAgent(agent.agent_id, { selection }))
-      ).catch(async () => {
-        const current = generation.current;
-        const next = await loadAgents(workspace, workerCursor).catch(() => undefined);
-        if (next && current === generation.current) setAgents(next);
-      })
-    );
-    agentSaves.current.set(agent.agent_id, save);
+    const current = generation.current;
+    setTaskModelError(undefined);
+    call("models.setTaskModel", { workspace, selection }).catch((reason: unknown) => {
+      if (current === generation.current) setTaskModelError(message(reason));
+    });
   };
+
+  // The same for where the workspace's Tasks run.
+  const selectTaskPlace = (place: TaskPlace) => {
+    if (!workspace) return;
+    const current = generation.current;
+    setTaskPlaceError(undefined);
+    call("models.setTaskPlace", { workspace, place }).catch((reason: unknown) => {
+      if (current !== generation.current) return;
+      const code = (reason as { code?: unknown } | null)?.code;
+      setTaskPlaceError(
+        code === "cloud_vm_disabled"
+          ? m.settings_providers_task_place_cloud_vm_off()
+          : code === "not_found"
+            ? m.settings_providers_task_place_missing()
+            : message(reason)
+      );
+    });
+  };
+
+  /** The usable profiles that serve a model, in the page's order. */
+  const servingOf = (model: ShownModel) =>
+    model.serving.flatMap((id) => {
+      const account = profileById.get(id);
+      return account ? [account] : [];
+    });
 
   /**
    * Catalog models some enabled profile serves, as the picker lists them:
    * families in catalog order, the newest model of each first.
    */
   const pickerModels = (chosen: string | undefined): ModelPickerModel[] => {
-    const usable = profiles.filter(canServeAgents);
     const served = models.filter(
-      (model) =>
-        model.id === chosen ||
-        servingProfiles(model, usable, catalog?.sources).length > 0
+      (model) => model.id === chosen || model.serving.length > 0
     );
     const families = [...new Set(served.map((model) => familyKey(model)))];
     return families.flatMap((key) =>
@@ -870,18 +742,14 @@ export function useModelsCategory(
   ): ModelPickerAccount[] => {
     const model = modelById.get(modelId);
     if (!model) return [];
-    const serving = servingProfiles(
-      model,
-      profiles.filter(canServeAgents),
-      catalog?.sources
-    );
+    const serving = servingOf(model);
     const lost =
       pinned && !serving.some((account) => account.id === pinned)
         ? [
             {
               id: pinned,
               name: (() => {
-                const account = profiles.find((entry) => entry.id === pinned);
+                const account = profileById.get(pinned);
                 return account
                   ? profileName(account)
                   : m.settings_providers_pinned_removed();
@@ -894,14 +762,14 @@ export function useModelsCategory(
     return [
       ...lost,
       ...serving.map((account) => {
-        const meters = isSubscription(account) ? quotaMeters(account) : [];
+        const meters = account.subscription ? account.meters : [];
         const low = meters.some((meter) => meter.percent <= 10);
         return {
           id: account.id,
           name: profileName(account),
           icon: (
             <ProviderMark
-              brand={presetForSource(presets, account.source)?.brand ?? account.source}
+              brand={presetById(account.preset)?.brand ?? account.source}
               name={providerName(account)}
             />
           ),
@@ -921,19 +789,17 @@ export function useModelsCategory(
 
   /** Why this agent's choice cannot run, if it cannot. */
   const runWarning = (
-    model: CatalogModel | undefined,
+    model: ShownModel | undefined,
     paid: boolean,
     pinned: string | null | undefined
   ) => {
-    const serving = model
-      ? servingProfiles(model, profiles.filter(canServeAgents), catalog?.sources)
-      : [];
+    const serving = model ? servingOf(model) : [];
     if (pinned)
       return serving.some((account) => account.id === pinned)
         ? undefined
         : m.settings_providers_pinned_unavailable();
     if (paid) return serving.length ? undefined : m.settings_providers_no_profile();
-    return serving.some(isSubscription)
+    return serving.some((account) => account.subscription)
       ? undefined
       : m.settings_providers_allow_paid_none();
   };
@@ -951,114 +817,35 @@ export function useModelsCategory(
     allowPaidHint: m.settings_providers_allow_paid_on(),
   };
 
-  /** Models a compute runtime runs on its own sign-in: its plan's models. */
-  const runtimeModels = (provider: string, chosen: string | undefined) =>
-    (catalog?.models ?? [])
-      .filter((model) => model.id === chosen || provider in model.routes)
-      .map((model) => ({
-        id: model.id,
-        name: model.name,
-        ...(model.family ? { family: model.family } : {}),
-        icon: <ModelVendorIcon vendor={model.vendor} />,
-        efforts: model.efforts,
-      }));
+  /** The row's own actions, apart from the model it runs. */
+  const agentMenu = (agent: SettingsAgent): SettingsControl => ({
+    type: "menu",
+    label: m.settings_providers_actions({ name: agent.name }),
+    icon: <MoreHorizontalIcon className="size-4" />,
+    items: [
+      {
+        id: "rename",
+        label: m.settings_providers_rename(),
+        onPress: () =>
+          setRename({
+            kind: "agent",
+            id: agent.agent_id,
+            name: agent.name,
+            busy: false,
+          }),
+      },
+    ],
+  });
 
-  const agentRow = (agent: SettingsAgent): SettingsPanelItem => {
-    // A runtime whose binding names its model sets it; the page shows it.
-    if (agent.runtime && !agent.selection) {
-      const effort = agent.reasoning_effort ? ` · ${agent.reasoning_effort}` : "";
-      return {
-        id: `models.agent.${agent.agent_id}`,
-        title: agent.name,
-        description: m.settings_providers_runtime_role({
-          runtime:
-            vendorNames[agent.runtime.provider] ?? titleCase(agent.runtime.provider),
-        }),
-        control: {
-          type: "custom",
-          content: (
-            <span
-              className="text-sm text-secondary"
-              title={m.settings_providers_runtime_model_hint()}
-            >
-              {agent.model
-                ? `${modelById.get(agent.model)?.name ?? agent.model}${effort}`
-                : m.settings_providers_runtime_default()}
-            </span>
-          ),
-        },
-      };
-    }
-    const selection: AgentSelection = agent.selection ?? { kind: "builtin" };
-    const runtime = agent.runtime;
-    // Codex and Claude Code run their plan's models on their own sign-in.
-    // Other runtimes take the catalog choice below.
-    if (runtime && runtimePlans.has(runtime.provider)) {
-      // A compute Worker runs on the runtime's own sign-in: no profile serves
-      // it, so the choice is a model and an effort.
-      const current = selection.kind === "runtime" ? selection : undefined;
-      const errorMessage = agentErrors[agent.agent_id];
-      return {
-        id: `models.agent.${agent.agent_id}`,
-        title: agent.name,
-        description: m.settings_providers_runtime_role({
-          runtime: vendorNames[runtime.provider] ?? titleCase(runtime.provider),
-        }),
-        ...(errorMessage ? { errorMessage } : {}),
-        control: {
-          type: "custom",
-          content: (
-            <ModelPicker
-              label={agent.name}
-              value={{
-                model:
-                  current?.model ?? (selection.kind === "builtin" ? null : "earlier"),
-                effort: current?.reasoning_effort ?? null,
-                profile: null,
-                allowPaid: false,
-              }}
-              builtin={{
-                label: m.settings_providers_runtime_default(),
-                icon: (
-                  <ProviderMark
-                    brand={runtime.provider}
-                    name={vendorNames[runtime.provider] ?? titleCase(runtime.provider)}
-                  />
-                ),
-              }}
-              {...(selection.kind === "catalog" || selection.kind === "template"
-                ? {
-                    currentLabel: m.settings_providers_legacy_choice({
-                      name:
-                        agent.model_display_name ||
-                        agent.template_name ||
-                        agent.model ||
-                        "",
-                    }),
-                  }
-                : {})}
-              models={runtimeModels(runtime.provider, current?.model)}
-              accountsFor={() => []}
-              labels={pickerLabels}
-              chooseAccount={false}
-              disabled={!workspace || !catalog}
-              onChange={(next) =>
-                selectAgentModel(
-                  agent,
-                  next.model === null
-                    ? { kind: "builtin" }
-                    : {
-                        kind: "runtime",
-                        model: next.model,
-                        reasoning_effort: next.effort,
-                      }
-                )
-              }
-            />
-          ),
-        },
-      };
-    }
+  /**
+   * The model picker for a choice, and why that choice cannot run if it
+   * cannot. A choice outside the catalog reads as Comma's own.
+   */
+  const choice = (
+    label: string,
+    selection: AgentSelection,
+    onChange: (next: TaskModelSelection) => void
+  ) => {
     const model =
       selection.kind === "catalog" ? modelById.get(selection.model) : undefined;
     const value: ModelPickerValue =
@@ -1069,97 +856,48 @@ export function useModelsCategory(
             profile: selection.profile_id ?? null,
             allowPaid: selection.allow_paid,
           }
-        : // A private template from before the catalog stays until replaced.
-          {
-            model:
-              selection.kind === "template"
-                ? `template:${selection.template_id}`
-                : null,
-            effort: null,
-            profile: null,
-            allowPaid: false,
-          };
+        : { model: null, effort: null, profile: null, allowPaid: false };
     const warning =
       selection.kind === "catalog"
         ? runWarning(model, selection.allow_paid, selection.profile_id)
         : undefined;
-    const errorMessage = agentErrors[agent.agent_id];
     return {
-      id: `models.agent.${agent.agent_id}`,
-      title: agent.name,
-      description:
-        agent.role === "router"
-          ? m.settings_providers_router_role()
-          : m.settings_providers_worker_role(),
-      ...(errorMessage ? { errorMessage } : {}),
       controlLeading: (
-        <Button
-          hierarchy="tertiary-gray"
-          size="sm"
-          aria-label={m.settings_providers_rename_agent({ name: agent.name })}
-          onPress={() =>
-            setView({
-              kind: "rename-agent",
-              agentId: agent.agent_id,
-              name: agent.name,
-              busy: false,
-            })
+        <ModelPicker
+          label={label}
+          value={value}
+          builtin={{
+            label: m.settings_providers_builtin(),
+            icon: <CommaProductMark className="size-4 shrink-0" />,
+          }}
+          models={pickerModels(
+            selection.kind === "catalog" ? selection.model : undefined
+          )}
+          accountsFor={(id) =>
+            pickerAccounts(
+              id,
+              selection.kind === "catalog" && id === selection.model
+                ? selection.profile_id
+                : null
+            )
           }
-        >
-          <EditBigIcon className="size-4" />
-        </Button>
+          labels={pickerLabels}
+          disabled={!workspace || !catalog}
+          onChange={(next) =>
+            onChange(
+              next.model === null
+                ? { kind: "builtin" }
+                : {
+                    kind: "catalog",
+                    model: next.model,
+                    reasoning_effort: next.effort,
+                    allow_paid: next.allowPaid,
+                    profile_id: next.profile,
+                  }
+            )
+          }
+        />
       ),
-      control: {
-        type: "custom",
-        content: (
-          <ModelPicker
-            label={agent.name}
-            value={value}
-            builtin={{
-              label: m.settings_providers_builtin(),
-              icon: <CommaProductMark className="size-4 shrink-0" />,
-            }}
-            {...(selection.kind === "template"
-              ? {
-                  currentLabel: m.settings_providers_legacy_choice({
-                    name:
-                      agent.model_display_name ||
-                      agent.template_name ||
-                      agent.model ||
-                      "",
-                  }),
-                }
-              : {})}
-            models={pickerModels(
-              selection.kind === "catalog" ? selection.model : undefined
-            )}
-            accountsFor={(id) =>
-              pickerAccounts(
-                id,
-                selection.kind === "catalog" && id === selection.model
-                  ? selection.profile_id
-                  : null
-              )
-            }
-            labels={pickerLabels}
-            disabled={!workspace || !catalog}
-            onChange={(next) =>
-              selectAgentModel(
-                agent,
-                next.model === null || next.model.startsWith("template:")
-                  ? { kind: "builtin" }
-                  : {
-                      kind: "catalog",
-                      model: next.model,
-                      reasoning_effort: next.effort,
-                      allow_paid: next.allowPaid,
-                      profile_id: next.profile,
-                    }
-              )
-            }
-          />
-        ),
-      },
       content: warning ? (
         <p role="alert" className="text-pretty text-xs text-warning-primary">
           {warning}
@@ -1168,37 +906,78 @@ export function useModelsCategory(
     };
   };
 
+  const routerRow = (agent: SettingsAgent): SettingsPanelItem => {
+    const errorMessage = agentErrors[agent.agent_id];
+    return {
+      id: `models.agent.${agent.agent_id}`,
+      title: agent.name,
+      description: m.settings_providers_router_role(),
+      ...(errorMessage ? { errorMessage } : {}),
+      ...choice(agent.name, agent.selection ?? { kind: "builtin" }, (selection) =>
+        selectAgentModel(agent, selection)
+      ),
+      control: agentMenu(agent),
+    };
+  };
+
+  /**
+   * Where Tasks run when the Router names no place: Comma's cloud, the Cloud
+   * VM when the workspace has one, or one of the person's computers. The place
+   * held shows even when the list does not offer it (yet).
+   */
+  const placeRow = (held: TaskPlace): SettingsPanelItem => {
+    const places = new Map<string, { place: TaskPlace; label: string }>([
+      [
+        "salix",
+        { place: { kind: "salix" }, label: m.settings_providers_task_place_salix() },
+      ],
+    ]);
+    if (shownDevices?.cloud || held.kind === "cloud_vm")
+      places.set("cloud_vm", {
+        place: { kind: "cloud_vm" },
+        label: m.settings_providers_task_place_cloud_vm(),
+      });
+    for (const device of shownDevices?.devices ?? [])
+      places.set(`station:${device.device_id}`, {
+        place: { kind: "station", device_id: device.device_id },
+        label: device.alias || device.name,
+      });
+    if (!places.has(placeId(held)) && held.kind === "station")
+      places.set(placeId(held), { place: held, label: held.device_id });
+    return {
+      id: "models.task-place",
+      title: m.settings_providers_task_place(),
+      description: m.settings_providers_task_place_hint(),
+      ...(taskPlaceError ? { errorMessage: taskPlaceError } : {}),
+      control: {
+        type: "dropdown",
+        ariaLabel: m.settings_providers_task_place(),
+        value: placeId(held),
+        disabled: !workspace,
+        items: [...places].map(([id, { label }]) => ({ id, label })),
+        onChange: (id) => {
+          const chosen = places.get(id);
+          if (chosen && id !== placeId(held)) selectTaskPlace(chosen.place);
+        },
+      },
+    };
+  };
+
   const agentItems: SettingsPanelItem[] = agents
     ? [
-        agentRow(agents.agents.router),
-        ...agents.workers.items.map(agentRow),
-        ...(agents.workers.next_cursor
-          ? [
-              {
-                id: "models.workers.next",
-                title: m.settings_providers_next_workers(),
-                control: {
-                  type: "button" as const,
-                  label: m.settings_providers_next_workers(),
-                  onPress: () =>
-                    setWorkerCursor(agents.workers.next_cursor ?? undefined),
-                },
-              },
-            ]
-          : []),
-        ...(workerCursor
-          ? [
-              {
-                id: "models.workers.first",
-                title: m.settings_providers_first_workers(),
-                control: {
-                  type: "button" as const,
-                  label: m.settings_providers_first_workers(),
-                  onPress: () => setWorkerCursor(undefined),
-                },
-              },
-            ]
-          : []),
+        routerRow(agents.agents.router),
+        {
+          id: "models.task-model",
+          title: m.settings_providers_task_model(),
+          description: m.settings_providers_task_model_hint(),
+          ...(taskModelError ? { errorMessage: taskModelError } : {}),
+          ...choice(
+            m.settings_providers_task_model(),
+            agents.task_model.selection,
+            selectTaskModel
+          ),
+        },
+        placeRow(agents.task_place.place),
       ]
     : [
         {
@@ -1213,6 +992,50 @@ export function useModelsCategory(
   const resettingProfile =
     resetting && profiles.find((entry) => entry.id === resetting.id);
   const resetSettled = !!resetting?.settled;
+  const renamingAgent =
+    rename?.kind === "agent" && agents?.agents.router.agent_id === rename.id
+      ? agents.agents.router
+      : undefined;
+  const renamingProfile =
+    rename?.kind === "profile"
+      ? profiles.find((entry) => entry.id === rename.id)
+      : undefined;
+  const nameBefore =
+    renamingAgent?.name ?? (renamingProfile && profileName(renamingProfile));
+  const renamedTo = rename?.name.trim() ?? "";
+  const canRename =
+    nameBefore !== undefined &&
+    !!renamedTo &&
+    renamedTo !== nameBefore &&
+    !rename?.busy;
+  const saveRename = () => {
+    if (!rename || !workspace || !canRename) return;
+    const form = rename;
+    const requested = generation.current;
+    setRename({ ...form, busy: true, error: undefined });
+    const saved = renamingAgent
+      ? call("models.renameAgent", {
+          workspace,
+          agent: renamingAgent.agent_id,
+          name: renamedTo,
+        }).then(() => {
+          if (requested !== generation.current) return;
+          routerRenamed(renamedTo, workspace);
+        })
+      : call("models.updateProfile", { workspace, profile: form.id, name: renamedTo });
+    void saved
+      .then(() => {
+        if (requested === generation.current) setRename(undefined);
+      })
+      .catch((reason: unknown) => {
+        if (requested === generation.current)
+          setRename((open) =>
+            open?.kind === form.kind && open.id === form.id
+              ? { ...open, busy: false, error: message(reason) }
+              : open
+          );
+      });
+  };
 
   const category: SettingsCategoryDefinition = {
     id: "models",
@@ -1226,11 +1049,15 @@ export function useModelsCategory(
         items: [
           {
             id: "models.profiles.add",
-            title: m.settings_providers_add_profile(),
+            // The row states what the reader has; the button says what to do.
+            title:
+              shownPage?.profiles && !profiles.length
+                ? m.settings_providers_empty_title()
+                : m.settings_providers_add_profile_title(),
             description: profiles.length
               ? m.settings_providers_add_profile_hint()
               : m.settings_providers_empty_hint(),
-            descriptionLoading: !page && !error,
+            descriptionLoading: !shownPage?.profiles && !error,
             ...(error ? { errorMessage: error } : {}),
             control: {
               type: "button",
@@ -1240,7 +1067,7 @@ export function useModelsCategory(
             },
           },
           ...profiles.map(profileRow),
-          ...(page?.next
+          ...(shownPage?.moreProfiles
             ? [
                 {
                   id: "models.profiles.more",
@@ -1330,12 +1157,64 @@ export function useModelsCategory(
               </Dialog>
             ),
           }
-        : {}),
+        : rename && nameBefore !== undefined
+          ? {
+              overlay: (
+                <Dialog
+                  isOpen
+                  isDismissable={!rename.busy}
+                  onOpenChange={(open) => {
+                    if (!open && !rename.busy) setRename(undefined);
+                  }}
+                  title={
+                    rename.kind === "agent"
+                      ? m.settings_providers_rename_agent()
+                      : m.settings_providers_rename_title()
+                  }
+                  variant="input"
+                  input={{
+                    label:
+                      rename.kind === "agent"
+                        ? m.settings_providers_agent_name()
+                        : m.settings_providers_profile_name(),
+                    autoFocus: true,
+                    value: rename.name,
+                    disabled: rename.busy,
+                    ...(rename.error ? { errorMessage: rename.error } : {}),
+                    onChange: (event) =>
+                      setRename({
+                        ...rename,
+                        name: event.target.value,
+                        error: undefined,
+                      }),
+                  }}
+                  actions={[
+                    {
+                      label: m.settings_providers_cancel(),
+                      hierarchy: "secondary-gray",
+                      disabled: rename.busy,
+                      onPress: () => setRename(undefined),
+                    },
+                    {
+                      label: m.settings_providers_save(),
+                      hierarchy: "primary",
+                      disabled: !canRename,
+                      onPress: saveRename,
+                    },
+                  ]}
+                />
+              ),
+            }
+          : {}),
   };
 
-  if (!view) return { category };
+  const openProfile = (id: string) => setView({ kind: "profile", id });
+  if (!view) return { category, openProfile };
   const detail = detailView(view);
-  return { category: detail ? { ...category, detail } : category };
+  return {
+    category: detail ? { ...category, detail } : category,
+    openProfile,
+  };
 
   function detailView(current: View): SettingsCategoryDetail | undefined {
     const back = m.settings_models_title();
@@ -1352,7 +1231,7 @@ export function useModelsCategory(
         <button
           key={entry.id}
           type="button"
-          className={tileClass}
+          className={entry.id === "custom" ? customTileClass : tileClass}
           onClick={() => {
             const only = !entry.keySource
               ? "subscription"
@@ -1368,10 +1247,12 @@ export function useModelsCategory(
               busy: false,
             });
             // A plan alone has nothing to fill in: its sign-in starts now.
-            if (only === "subscription") signIn.begin(entry.subscriptionSource!);
+            if (only === "subscription") beginSignIn(entry);
           }}
         >
-          <ProviderMark brand={entry.brand} name={presetName(entry)} />
+          {entry.id === "custom" ? null : (
+            <ProviderMark brand={entry.brand} name={presetName(entry)} />
+          )}
           <span className="truncate">{presetName(entry)}</span>
         </button>
       );
@@ -1382,14 +1263,14 @@ export function useModelsCategory(
         backLabel: back,
         onBack: close,
         content: (
-          <div className="flex flex-col gap-lg">
+          <div className="flex flex-col gap-3xl">
             {presetGroups.map((group) => {
               const entries = presets.filter((entry) => entry.group === group);
               return entries.length ? (
                 <section
                   key={group}
                   aria-label={groupLabel[group]}
-                  className="flex flex-col gap-xs"
+                  className="flex flex-col gap-xxs"
                 >
                   <h3 className="text-xs font-medium text-tertiary">
                     {groupLabel[group]}
@@ -1401,6 +1282,7 @@ export function useModelsCategory(
                         className={tileClass}
                         onClick={() => {
                           setView({ kind: "tokendance" });
+                          firstProfile.current = profiles.length === 0;
                           tokenDance.start();
                         }}
                       >
@@ -1442,9 +1324,7 @@ export function useModelsCategory(
             </p>
           ) : (
             <output className="text-sm text-secondary">
-              {state.status === "saving"
-                ? m.settings_providers_tokendance_saving()
-                : m.settings_providers_tokendance_waiting()}
+              {m.settings_providers_tokendance_waiting()}
             </output>
           ),
       };
@@ -1480,12 +1360,16 @@ export function useModelsCategory(
                 hint={m.settings_providers_method_subscription_hint({ plan })}
                 onPress={() => {
                   setView({ ...current, method: "subscription" });
-                  signIn.begin(entry.subscriptionSource!);
+                  beginSignIn(entry);
                 }}
               />
               <Choice
                 label={m.settings_providers_method_api()}
-                hint={m.settings_providers_method_api_hint({ name })}
+                hint={
+                  entry.keyUsesPlan
+                    ? m.settings_providers_method_api_plan_hint({ plan })
+                    : m.settings_providers_method_api_hint({ name })
+                }
                 onPress={() => setView({ ...current, method: "api_key" })}
               />
             </div>
@@ -1554,7 +1438,49 @@ export function useModelsCategory(
         );
 
       const attempt = signIn.state.attempt;
-      if (!isKey && attempt) {
+      // A browser sign-in that hands back a code is two steps, one row each:
+      // open the page, then paste what it shows.
+      if (!isKey && attempt && attempt.mode !== "device" && !signIn.state.native)
+        fields.push(
+          {
+            id: "models.connect.signin",
+            title: m.settings_providers_callback_step({ name }),
+            description: m.settings_providers_callback_hint({ name }),
+            control: {
+              type: "button",
+              label: m.settings_providers_open_signin({ name }),
+              onPress: signIn.openAuthorization,
+            },
+          },
+          {
+            id: "models.connect.code",
+            title: m.settings_providers_callback_code(),
+            description: m.settings_providers_callback_code_hint(),
+            layout: "field",
+            control: {
+              type: "custom",
+              content: (
+                <InputField
+                  className="w-full"
+                  fieldSize="sm"
+                  aria-label={m.settings_providers_callback_code()}
+                  autoComplete="off"
+                  type="password"
+                  disabled={busy}
+                  value={signIn.state.code}
+                  onChange={(event) => signIn.setCode(event.target.value)}
+                  onPaste={(event) => {
+                    // A pasted callback address or code finishes on its own;
+                    // typing still waits for "Finish sign-in".
+                    const value = event.clipboardData.getData("text");
+                    if (pastedCallback(value)) signIn.complete(value);
+                  }}
+                />
+              ),
+            },
+          }
+        );
+      else if (!isKey && attempt) {
         fields.push({
           id: "models.connect.signin",
           title:
@@ -1582,46 +1508,21 @@ export function useModelsCategory(
                 <Button
                   size="sm"
                   onPress={() => {
-                    // One press: the code is on the clipboard when the page opens.
-                    void navigator.clipboard
-                      ?.writeText(attempt.user_code ?? "")
-                      .catch(() => undefined);
-                    signIn.openAuthorization();
+                    void openNativePlatformExternalUrlFromUserAction(async () => {
+                      await nativePlatformClipboard.writeText(attempt.user_code ?? "");
+                      return attempt.url;
+                    }).catch(() => {
+                      toast.error(m.settings_providers_copy_and_open_failed());
+                    });
                   }}
                 >
-                  {m.settings_providers_copy_and_open()}
+                  {m.settings_providers_copy_and_open({ name })}
                 </Button>
                 <output className="text-xs text-tertiary">
                   {m.settings_providers_device_waiting()}
                 </output>
               </div>
-            ) : (
-              <div className="flex flex-col gap-md">
-                <p className="text-sm text-secondary">
-                  {m.settings_providers_callback_hint()}
-                </p>
-                <div>
-                  <Button size="sm" onPress={signIn.openAuthorization}>
-                    {m.settings_providers_open_signin()}
-                  </Button>
-                </div>
-                <InputField
-                  className="w-full"
-                  label={m.settings_providers_callback_code()}
-                  autoComplete="off"
-                  type="password"
-                  disabled={busy}
-                  value={signIn.state.code}
-                  onChange={(event) => signIn.setCode(event.target.value)}
-                  onPaste={(event) => {
-                    // A pasted callback address or code finishes on its own;
-                    // typing still waits for "Finish sign-in".
-                    const value = event.clipboardData.getData("text");
-                    if (pastedCallback(value)) signIn.complete(value);
-                  }}
-                />
-              </div>
-            ),
+            ) : null,
           },
         });
       }
@@ -1638,8 +1539,8 @@ export function useModelsCategory(
         if (!isKey) {
           if (attempt) signIn.complete();
           else
-            signIn.begin(
-              entry.subscriptionSource!,
+            beginSignIn(
+              entry,
               current.reconnect && {
                 account_id: current.reconnect.id,
                 version: current.reconnect.version,
@@ -1647,55 +1548,49 @@ export function useModelsCategory(
             );
           return;
         }
-        const source = entry.keySource!;
         const requested = generation.current;
         const key = current.key.trim();
         const baseUrl = current.baseUrl.trim();
+        const first = profiles.length === 0;
         setView({ ...current, busy: true, error: undefined });
-        void (async () => {
+        call("models.createProfile", {
+          workspace,
+          source: entry.keySource!,
+          ...(key ? { api_key: key } : {}),
+          // A key is named for its provider, and a Custom endpoint (by the
+          // core) for its host; the reader may rename it later.
+          ...(entry.id === "custom" ? {} : { name }),
+          ...(entry.baseUrl ? { base_url: baseUrl } : {}),
+          ...(protocol ? { protocol } : {}),
           // An endpoint outside the catalog lists its models first; the
           // profile serves those ids.
-          const listed =
-            entry.discover && protocol
-              ? await discoverModelIds(baseUrl, protocol, key)
-              : undefined;
-          return api.createSubscriptionAccount(workspace, {
-            credential_kind: "provider_api_key",
-            source,
-            ...(key || !entry.keyOptional ? { api_key: key } : {}),
-            // A key is named for its provider, and a Custom endpoint for its
-            // host; the reader may rename it later.
-            name: entry.id === "custom" ? endpointHost(baseUrl) : name,
-            ...(entry.baseUrl ? { base_url: baseUrl } : {}),
-            ...(protocol ? { protocol } : {}),
-            ...(listed ? { models: listed } : {}),
-          });
-        })()
-          .then((account) => {
+          ...(entry.discover && protocol ? { discover: true } : {}),
+        }).then(
+          () => {
             if (requested !== generation.current) return;
-            if (profiles.length === 0) confirmFirstProfile();
-            setPage((previous) => ({
-              accounts: [...(previous?.accounts ?? []), account],
-              next: previous?.next ?? "",
-            }));
+            if (first) confirmFirstProfile();
             settleForm(current, undefined);
-          })
-          .catch((reason: unknown) => {
+          },
+          (reason: unknown) => {
             if (requested !== generation.current) return;
+            const { code, status } = (reason ?? {}) as {
+              code?: string;
+              status?: number;
+            };
             settleForm(current, {
               ...current,
               busy: false,
               error:
-                reason instanceof Error && reason.message === "no_models"
+                code === "no_models"
                   ? m.settings_providers_discover_none()
-                  : reason instanceof CommaApiError &&
-                      (reason.status === 400 || reason.status === 422)
+                  : status === 400 || status === 422
                     ? entry.discover
                       ? m.settings_providers_discover_error()
                       : m.settings_providers_key_error({ name })
                     : message(reason),
             });
-          });
+          }
+        );
       };
       return {
         id: `models.connect.${entry.id}`,
@@ -1742,237 +1637,192 @@ export function useModelsCategory(
     }
 
     if (current.kind === "profile") {
-      const account = profiles.find((entry) => entry.id === current.id);
+      const account = profileById.get(current.id);
       if (!account) return undefined;
-      const served = models.filter((model) =>
-        profileRoute(model, account, catalog?.sources)
-      );
+      // Every model the profile can serve, in the picker's families: catalog
+      // order, the newest model of each first. Only those left on reach it.
+      const servable = account.servable.flatMap(({ model: id, request }) => {
+        const model = modelById.get(id);
+        return model ? [{ model, request }] : [];
+      });
+      const turnedOff = (id: string) => !!account.disabled_models?.includes(id);
+      const families = [...new Set(servable.map(({ model }) => familyKey(model)))];
+      const sections = families.map((key) => {
+        const inFamily = servable.filter(({ model }) => familyKey(model) === key);
+        // Catalog families list newest first; listed Custom ids keep their order.
+        const members =
+          inFamily[0]!.model.vendor === "custom" ? inFamily : inFamily.toReversed();
+        const family = members[0]!.model.family ?? members[0]!.model.name;
+        const ids = members.map(({ model }) => model.id);
+        const allOn = ids.every((id) => !turnedOff(id));
+        return {
+          id: `models.profile.family.${key}`,
+          title: family,
+          ...(members.length > 1
+            ? {
+                titleAction: (
+                  <Button
+                    hierarchy="link-gray"
+                    size="xs"
+                    aria-label={
+                      allOn
+                        ? m.settings_providers_family_off_named({ family })
+                        : m.settings_providers_family_on_named({ family })
+                    }
+                    onPress={() => offerModels(account, ids, !allOn)}
+                  >
+                    {allOn
+                      ? m.settings_providers_family_off()
+                      : m.settings_providers_family_on()}
+                  </Button>
+                ),
+              }
+            : {}),
+          // One dense list per family: a checkbox and the model; its ids on hover.
+          items: [
+            {
+              id: `models.profile.family.${key}.models`,
+              title: family,
+              layout: "stack" as const,
+              control: {
+                type: "custom" as const,
+                content: (
+                  <ul className="-mx-sm grid w-full grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-x-md">
+                    {members.map(({ model, request }) => {
+                      const on = !turnedOff(model.id);
+                      return (
+                        <li
+                          key={model.id}
+                          className="flex min-w-0 items-center gap-xs rounded-md px-sm hover:bg-secondary"
+                        >
+                          <label
+                            // The ids are for the curious: shown on hover.
+                            title={
+                              request === model.id
+                                ? model.id
+                                : m.settings_providers_model_ids_hover({
+                                    id: model.id,
+                                    request,
+                                  })
+                            }
+                            className="flex min-w-0 flex-1 cursor-pointer items-center gap-sm py-xs text-sm text-primary"
+                          >
+                            <input
+                              type="checkbox"
+                              className="size-4 shrink-0 cursor-pointer accent-brand-solid"
+                              checked={on}
+                              onChange={() => offerModels(account, [model.id], !on)}
+                            />
+                            <ModelVendorIcon vendor={model.vendor} />
+                            <span className="truncate">{model.name}</span>
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ),
+              },
+            },
+          ],
+        };
+      });
       return {
         id: `models.profile.${account.id}`,
         title: profileName(account),
-        description: profileSummary(account),
+        description: (
+          <span className="flex flex-col gap-xxs">
+            <span>{profileSummary(account)}</span>
+            {sections.length ? (
+              <span>{m.settings_providers_profile_models_hint()}</span>
+            ) : null}
+          </span>
+        ),
         backLabel: back,
         onBack: close,
-        sections: [
-          {
-            id: "models.profile.models",
-            title: m.settings_providers_models(),
-            items: served.length
-              ? served.map((model) => ({
-                  id: `models.profile.model.${model.id}`,
-                  title: model.name,
-                  icon: <ModelVendorIcon vendor={model.vendor} />,
-                  description: m.settings_providers_model_request({
-                    id: profileRoute(model, account, catalog?.sources)!.model,
-                  }),
-                  control: {
-                    type: "button" as const,
-                    label: m.settings_providers_details(),
-                    onPress: () =>
-                      setView({ kind: "model", modelId: model.id, from: account.id }),
-                  },
-                }))
-              : [
+        // A save that failed says so where the reader made it.
+        ...(error
+          ? {
+              content: (
+                <p role="alert" className="text-pretty text-sm text-error-primary">
+                  {error}
+                </p>
+              ),
+            }
+          : {}),
+        sections: sections.length
+          ? sections
+          : [
+              {
+                id: "models.profile.models",
+                title: m.settings_providers_models(),
+                items: [
                   {
                     id: "models.profile.models.empty",
                     title: m.settings_providers_profile_models_empty(),
                   },
                 ],
-          },
-        ],
-      };
-    }
-
-    if (current.kind === "model") {
-      const model = modelById.get(current.modelId);
-      if (!model) return undefined;
-      const sources = Object.entries(model.routes);
-      return {
-        id: `models.model.${model.id}`,
-        title: model.name,
-        description: m.settings_providers_model_detail_hint(),
-        backLabel: m.settings_providers_view_models(),
-        onBack: () => setView({ kind: "profile", id: current.from }),
-        sections: [
-          {
-            id: "models.model.ids",
-            title: m.settings_providers_model_ids(),
-            items: [
-              {
-                id: "models.model.id",
-                title: m.settings_providers_model_id(),
-                description: m.settings_providers_model_id_hint(),
-                control: codeControl(model.id),
-              },
-              {
-                id: "models.model.display",
-                title: m.settings_providers_model_display(),
-                control: {
-                  type: "custom",
-                  content: <span className="text-sm text-primary">{model.name}</span>,
-                },
               },
             ],
-          },
-          {
-            id: "models.model.sources",
-            title: m.settings_providers_model_providers(),
-            // The request id belongs to the source; every profile of it sends the same one.
-            items: sources.map(([source, route]) => {
-              const users = profiles.filter((account) => account.source === source);
-              const entry = presetForSource(presets, source);
-              return {
-                id: `models.model.source.${source}`,
-                title: sourceName(source),
-                icon: (
-                  <ProviderMark
-                    brand={entry?.brand ?? source}
-                    name={sourceName(source)}
-                  />
-                ),
-                description: users.length
-                  ? m.settings_providers_model_request_profiles({
-                      id: route.model,
-                      profiles: users.map(profileName).join(", "),
-                    })
-                  : m.settings_providers_model_request({ id: route.model }),
-              };
-            }),
-          },
-        ],
       };
     }
 
-    if (current.kind === "rename-profile" || current.kind === "replace-key") {
-      const account = profiles.find((entry) => entry.id === current.id);
-      if (!account || !workspace) return undefined;
-      const renaming = current.kind === "rename-profile";
-      const value = renaming ? current.name : current.key;
-      const save = () => {
-        if (!value.trim() || current.busy) return;
-        const requested = generation.current;
-        setView({ ...current, busy: true, error: undefined });
-        void api
-          .updateSubscriptionAccount(workspace, account.id, {
-            version: account.version,
-            ...(renaming ? { name: value.trim() } : { api_key: value.trim() }),
-          })
-          .then((updated) => {
-            if (requested !== generation.current) return;
-            replaceProfile(updated);
-            settleForm(current, undefined);
-          })
-          .catch((reason: unknown) => {
-            if (requested !== generation.current) return;
-            settleForm(current, {
-              ...current,
-              busy: false,
-              error:
-                !renaming &&
-                reason instanceof CommaApiError &&
-                (reason.status === 400 || reason.status === 422)
-                  ? m.settings_providers_key_error({ name: providerName(account) })
-                  : message(reason),
-            });
-          });
-      };
-      const label = renaming
-        ? m.settings_providers_profile_name()
-        : m.settings_providers_key();
-      return {
-        id: `models.${current.kind}.${account.id}`,
-        title: renaming
-          ? m.settings_providers_rename_title()
-          : m.settings_providers_replace_key(),
-        description: profileName(account),
-        backLabel: back,
-        onBack: close,
-        onSubmit: save,
-        actions: (
-          <Button size="sm" disabled={!value.trim() || current.busy} onPress={save}>
-            {m.settings_providers_save()}
-          </Button>
-        ),
-        sections: [
-          {
-            id: `models.${current.kind}`,
-            title: "",
-            items: [
-              nameField(
-                `models.${current.kind}.field`,
-                label,
-                value,
-                (next) =>
-                  setView(
-                    current.kind === "rename-profile"
-                      ? { ...current, name: next, error: undefined }
-                      : { ...current, key: next, error: undefined }
-                  ),
-                {
-                  error: current.error,
-                  disabled: current.busy,
-                  ...(renaming
-                    ? {}
-                    : {
-                        type: "password",
-                        description: m.settings_providers_key_notice(),
-                      }),
-                }
-              ),
-            ],
-          },
-        ],
-      };
-    }
-
-    const agent = [agents?.agents.router, ...(agents?.workers.items ?? [])].find(
-      (entry) => entry?.agent_id === current.agentId
-    );
-    if (!agent || !workspace) return undefined;
+    const account = profileById.get(current.id);
+    if (!account || !workspace) return undefined;
     const save = () => {
-      const name = current.name.trim();
-      if (!name || current.busy) return;
+      const key = current.key.trim();
+      if (!key || current.busy) return;
       const requested = generation.current;
       setView({ ...current, busy: true, error: undefined });
-      void api
-        .renameAgent(workspace, agent.agent_id, name)
-        .then(() => {
+      call("models.updateProfile", {
+        workspace,
+        profile: account.id,
+        api_key: key,
+      }).then(
+        () => {
+          if (requested === generation.current) settleForm(current, undefined);
+        },
+        (reason: unknown) => {
           if (requested !== generation.current) return;
-          patchAgent(agent.agent_id, { name });
-          if (agent.role === "router") routerRenamed(name, workspace);
-          settleForm(current, undefined);
-        })
-        .catch((reason: unknown) => {
-          if (requested === generation.current)
-            settleForm(current, { ...current, busy: false, error: message(reason) });
-        });
+          const status = (reason as { status?: number } | null)?.status;
+          settleForm(current, {
+            ...current,
+            busy: false,
+            error:
+              status === 400 || status === 422
+                ? m.settings_providers_key_error({ name: providerName(account) })
+                : message(reason),
+          });
+        }
+      );
     };
     return {
-      id: `models.rename-agent.${agent.agent_id}`,
-      title: m.settings_providers_rename_agent({ name: agent.name }),
+      id: `models.replace-key.${account.id}`,
+      title: m.settings_providers_replace_key(),
+      description: profileName(account),
       backLabel: back,
       onBack: close,
       onSubmit: save,
       actions: (
-        <Button
-          size="sm"
-          disabled={!current.name.trim() || current.busy}
-          onPress={save}
-        >
+        <Button size="sm" disabled={!current.key.trim() || current.busy} onPress={save}>
           {m.settings_providers_save()}
         </Button>
       ),
       sections: [
         {
-          id: "models.rename-agent",
+          id: "models.replace-key",
           title: "",
           items: [
             nameField(
-              "models.rename-agent.name",
-              m.settings_providers_agent_name(),
-              current.name,
-              (name) => setView({ ...current, name, error: undefined }),
-              { error: current.error, disabled: current.busy }
+              "models.replace-key.field",
+              m.settings_providers_key(),
+              current.key,
+              (key) => setView({ ...current, key, error: undefined }),
+              {
+                error: current.error,
+                disabled: current.busy,
+                type: "password",
+                description: m.settings_providers_key_notice(),
+              }
             ),
           ],
         },

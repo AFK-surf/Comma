@@ -268,4 +268,30 @@ theorem input_confirmation_durable {context : Context} {staged : PendingRevision
   exact ⟨baselineEq, etagEq, etag, snapshot, event, now, first, last, item,
     same, stored, snapshotReady, snapshotFormat, generated, fact, canonical, present, kept⟩
 
+/-- The cases of `issue`, for a property `P` of its output. `split` generates the splitter of the
+`match` in `issue` again in each module that splits it, so the other proofs use this lemma. -/
+theorem issue_rec {P : Output → Prop} (context : Context) (result : Term)
+    (returned : ∀ value checkpoint, result = .tuple [.atom "return", value, checkpoint] →
+      P (some context.pack, .tuple [a "return", value, checkpoint]))
+    (write : ∀ events options hwm continuation,
+      result = .tuple [.atom "perform", .tuple [.atom "write", .list events, options], continuation] →
+      P (issueWrite context continuation events hwm))
+    (fence : ∀ continuation, result = .tuple [.atom "perform", .atom "durable_fence", continuation] →
+      P (some (.tuple [a "session_command_driver_fence", context.pack, continuation]), .tuple [a "fence"]))
+    (effect : ∀ request continuation, (∀ events options, request ≠ .tuple [.atom "write", events, options]) →
+      result = .tuple [.atom "perform", request, continuation] →
+      P (some (.tuple [a "session_command_driver_effect", context.pack, continuation, request]),
+        .tuple [a "effect", request]))
+    (failed : P invalid) : P (issue context result) := by
+  unfold issue
+  split
+  · exact returned _ _ rfl
+  · exact write _ _ _ _ rfl
+  · exact write _ _ _ _ rfl
+  · exact write _ _ _ _ rfl
+  · exact fence _ rfl
+  all_goals first
+    | exact failed
+    | exact effect _ _ (fun _ _ same => by simp at same) rfl
+
 end VerifiedKernel.Session.CommandDriver

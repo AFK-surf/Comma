@@ -6,9 +6,10 @@ import {
   useState,
   type HTMLAttributes,
 } from "react";
-import { Tooltip } from "@comma/ui";
+import { Tooltip } from "@comma/ui/components/tooltip";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import type { SessionHistoryRecord } from "../../../../runtime-chat/sessionHistoryBridge";
+import type { SessionHistoryRecord } from "../useSessionHistory";
 import {
   formatSessionDuration,
   type SessionItemPresentation,
@@ -31,14 +32,25 @@ export function useSessionTimelineHover(
   items: readonly SessionItemPresentation[]
 ) {
   const [active, setActive] = useState<{ id: string; element: HTMLElement }>();
-  const closing = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const closing = useRef<CancelUiTimer | undefined>(undefined);
+  // Whether the pointer is on a bar or on the card. The card's own hover-out
+  // closes it a moment later; by then the pointer may be on a bar, which keeps it.
+  const pointerOn = useRef(false);
   const descriptionId = useId();
-  const keepOpen = useCallback(() => clearTimeout(closing.current), []);
+  const keepOpen = useCallback(() => closing.current?.(), []);
   const closeSoon = useCallback(() => {
     keepOpen();
-    closing.current = setTimeout(() => setActive(undefined), 100);
+    closing.current = uiClock.after(100, () => setActive(undefined));
   }, [keepOpen]);
-  useEffect(() => () => clearTimeout(closing.current), []);
+  const enter = useCallback(() => {
+    pointerOn.current = true;
+    keepOpen();
+  }, [keepOpen]);
+  const leave = useCallback(() => {
+    pointerOn.current = false;
+    closeSoon();
+  }, [closeSoon]);
+  useEffect(() => () => closing.current?.(), []);
   const span = active && spans.find((candidate) => candidate.id === active.id);
   const bind = useCallback(
     (
@@ -47,10 +59,10 @@ export function useSessionTimelineHover(
       "aria-describedby": active?.id === id ? descriptionId : undefined,
       "data-inspected": active?.id === id || undefined,
       onMouseEnter: (event) => {
-        keepOpen();
+        enter();
         setActive({ id, element: event.currentTarget });
       },
-      onMouseLeave: closeSoon,
+      onMouseLeave: leave,
       onFocus: (event) => {
         keepOpen();
         setActive({ id, element: event.currentTarget });
@@ -67,7 +79,7 @@ export function useSessionTimelineHover(
         }
       },
     }),
-    [active?.id, descriptionId, keepOpen, closeSoon]
+    [active?.id, descriptionId, keepOpen, closeSoon, enter, leave]
   );
   const dismiss = useCallback(() => {
     keepOpen();
@@ -84,10 +96,10 @@ export function useSessionTimelineHover(
           placement="bottom"
           triggerRef={{ current: active.element }}
           onOpenChange={(open) => {
-            if (!open) setActive(undefined);
+            if (!open && !pointerOn.current) setActive(undefined);
           }}
           content={
-            <span id={descriptionId} onMouseEnter={keepOpen} onMouseLeave={closeSoon}>
+            <span id={descriptionId} onMouseEnter={enter} onMouseLeave={leave}>
               <SessionTimelineHoverContent
                 span={span}
                 record={records[span.index]!}

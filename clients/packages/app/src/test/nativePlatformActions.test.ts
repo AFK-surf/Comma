@@ -3,15 +3,12 @@
  */
 import { installNativeBridgeMock } from "@comma/test-utils/native-bridge";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  isAllowedAttachment,
-  isImageAttachment,
-} from "../components/chat/model/protocol";
+import { isAllowedAttachment, isImageAttachment } from "@comma/core/chat";
 import {
   nativePlatformClipboard,
   openNativePlatformExternalUrl,
   openNativePlatformExternalUrlFromUserAction,
-} from "../runtime-chat/nativePlatformActions";
+} from "../nativePlatformActions";
 
 const originalClipboard = navigator.clipboard;
 

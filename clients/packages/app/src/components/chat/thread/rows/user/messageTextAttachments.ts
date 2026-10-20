@@ -1,5 +1,5 @@
-import type { ChatAttachment } from "../../../model/conversationChannel";
-import { isImageAttachment } from "../../../model/protocol";
+import type { ChatAttachment } from "@comma/core/chat";
+import { isImageAttachment } from "@comma/core/chat";
 
 export function textAttachmentsToPills(
   attachments: { name: string; path: string }[]

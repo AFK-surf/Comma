@@ -79,7 +79,7 @@ defmodule Salix.Bindings.GoogleCalendarSource do
 
   @doc "One read-only page of upcoming meetings for the team's calendar selector."
   def upcoming_meetings(source, page_token \\ nil) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     parameters =
       [
@@ -362,7 +362,7 @@ defmodule Salix.Bindings.GoogleCalendarSource do
   end
 
   defp read_proxy_page(source, access, parameters, sync_token, proxy_session_id) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     result =
       with {:ok, data, active_session_id} <-
@@ -382,7 +382,7 @@ defmodule Salix.Bindings.GoogleCalendarSource do
       "source_sync",
       "system",
       telemetry_outcome(result),
-      System.monotonic_time() - started_at
+      SystemsClock.monotonic_time() - started_at
     )
 
     result
@@ -967,7 +967,7 @@ defmodule Salix.Bindings.GoogleCalendarSource do
          ),
        "attachment_set_state" => if(restricted?, do: "redacted", else: "not_requested"),
        "normalization_state" => normalization_state,
-       "source_fresh_at" => System.system_time(:millisecond),
+       "source_fresh_at" => SystemsClock.system_time(:millisecond),
        "meeting_qualification" => %{
          "item_eligible" => item_eligible?,
          "item_reason" => item_reason,

@@ -2,6 +2,8 @@ name: Comma
 options:
   minimumXcodeGenVersion: 2.44.1
   createIntermediateGroups: true
+  # The Hermes the iOS app runs the client core in (Vendor/hermes), fetched once per release.
+  preGenCommand: scripts/fetch-hermes.sh
   # Icon Composer bundles are single resources; actool builds the adaptive and legacy icons from them.
   fileTypes:
     icon:
@@ -16,7 +18,7 @@ configs:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "1.0"
+    MARKETING_VERSION: "1.0.2"
     CURRENT_PROJECT_VERSION: "5"
     CODE_SIGN_STYLE: Automatic
     # Kept here, not only in Xcode: `xcodegen generate` rewrites project.pbxproj.
@@ -25,6 +27,9 @@ settings:
     COMMA_API_BASE_URL: https://salix-staging.comma.surf
     COMMA_APP_NAME: Comma
     COMMA_PUSH_ENVIRONMENT: development
+    # This directory. A project generated elsewhere (the TestFlight build's) names it, as paths in settings are not
+    # rewritten.
+    COMMA_APPLE_DIR: $(SRCROOT)
     ENABLE_USER_SCRIPT_SANDBOXING: YES
   configs:
     Release:
@@ -43,14 +48,31 @@ targets:
     platform: iOS
     sources:
       - path: iOS
-        excludes: ["*.plist", "*.entitlements"]
+        excludes: ["*.plist", "*.entitlements", "Core/Comma-Bridging-Header.h"]
+      # The Watch's own conversation state and rendering stay with the Watch, which cannot run the client core; the
+      # phone reads the core instead (iOS/State, iOS/Chat).
       - path: Shared
+        excludes: ["State/**", "Chat/**"]
       - path: Resources
+      # The client core's engine, which the Android app shares.
+      - path: ../../packages/core/native
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(COMMA_PHONE_BUNDLE_ID)
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_OBJC_BRIDGING_HEADER: $(COMMA_APPLE_DIR)/iOS/Core/Comma-Bridging-Header.h
+        CLANG_CXX_LANGUAGE_STANDARD: c++20
+        HEADER_SEARCH_PATHS:
+          - $(COMMA_APPLE_DIR)/Vendor/hermes/include
+          - $(COMMA_APPLE_DIR)/../../packages/core/native
+        # The core's bundle is made from sources the build phase cannot declare one by one (scripts/bundle-core.sh).
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    preBuildScripts:
+      - name: Bundle the client core
+        script: |
+          bash "$COMMA_APPLE_DIR/scripts/bundle-core.sh"
+        basedOnDependencyAnalysis: false
     info:
       path: iOS/Info.plist
       properties:
@@ -73,8 +95,11 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSSupportsLiveActivities: true
-        NSPhotoLibraryUsageDescription: Choose images to send in your chat.
-        UIBackgroundModes: [remote-notification]
+        NSCameraUsageDescription: Take photos to send in your chat or to use as your profile photo.
+        NSPhotoLibraryUsageDescription: Show your recent photos so you can send them in your chat.
+        NSMicrophoneUsageDescription: Talk with Comma in a voice call.
+        # audio: a voice call keeps its microphone and connection while the app is in the background.
+        UIBackgroundModes: [audio, remote-notification]
         CFBundleURLTypes:
           - CFBundleURLSchemes: [comma-ios-dev, comma]
     entitlements:
@@ -84,7 +109,8 @@ targets:
         com.apple.developer.applesignin: [Default]
     dependencies:
       - package: CommaCore
-      - package: Markdown
+      - framework: Vendor/hermes/hermes.xcframework
+        embed: true
       - target: CommaLiveActivity
         embed: true
       - target: CommaWatch
@@ -96,6 +122,13 @@ targets:
       - path: LiveActivity
         excludes: ["*.plist"]
       - path: Shared/TaskActivityAttributes.swift
+      - path: Shared/CallActivity.swift
+      - path: Shared/Design/CommaTheme.swift
+      - path: Shared/Design/TaskBucketStyle.swift
+      - path: Resources/Assets.xcassets
+      - path: Resources/Localizable.xcstrings
+    dependencies:
+      - package: CommaCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(COMMA_PHONE_BUNDLE_ID).activity
@@ -114,10 +147,11 @@ targets:
     type: application
     platform: watchOS
     sources:
+      - path: iOS/Call/CallAudio.swift
       - path: Watch
         excludes: ["*.plist"]
       - path: Shared
-        excludes: [TaskActivityAttributes.swift]
+        excludes: [TaskActivityAttributes.swift, CallActivity.swift]
       - path: Resources
     settings:
       base:
@@ -132,6 +166,8 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         WKCompanionAppBundleIdentifier: $(COMMA_PHONE_BUNDLE_ID)
         WKApplication: true
+        NSMicrophoneUsageDescription: Talk with Comma in a voice call.
+        UIBackgroundModes: [audio]
         COMMA_API_BASE_URL: $(COMMA_API_BASE_URL)
         CFBundleURLTypes:
           - CFBundleURLSchemes: [comma]
@@ -139,6 +175,41 @@ targets:
     dependencies:
       - package: CommaCore
       - package: Markdown
+      - target: CommaWatchWidgets
+        embed: true
+  CommaWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    sources:
+      - path: WatchWidgets
+        excludes: ["*.plist"]
+      - path: Shared/Design/CommaTheme.swift
+      - path: Resources/Assets.xcassets
+      - path: Resources/Localizable.xcstrings
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(COMMA_PHONE_BUNDLE_ID).watch.widgets
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    info:
+      path: WatchWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Comma
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+  CommaWatchTests:
+    type: bundle.unit-test
+    platform: watchOS
+    sources: [WatchTests]
+    dependencies:
+      - target: CommaWatch
+      - package: CommaCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(COMMA_PHONE_BUNDLE_ID).watch.tests
+        GENERATE_INFOPLIST_FILE: YES
   CommaTests:
     type: bundle.unit-test
     platform: iOS
@@ -163,5 +234,7 @@ schemes:
     build:
       targets:
         CommaWatch: all
+    test:
+      targets: [CommaWatchTests]
     run:
       config: Debug

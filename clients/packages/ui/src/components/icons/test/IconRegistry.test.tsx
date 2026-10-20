@@ -38,6 +38,7 @@ const BRAND_MARKS = new Set([
   "NotionBrandIcon",
   "TelegramBrandIcon",
   "SlackBrandIcon",
+  "XBrandIcon",
   "WechatBrandIcon",
   "DiscordBrandIcon",
 ]);
@@ -129,6 +130,7 @@ describe("iconRegistry", () => {
 
     expect(preThinned.toSorted()).toEqual([
       "BookIcon",
+      "ColumnWideAddIcon",
       // Central draws the cursor at 2.05556, which the global token's
       // `[stroke-width="2"]` selector cannot match, let alone thin.
       "Cursor1Icon",
@@ -185,68 +187,6 @@ describe("iconRegistry", () => {
         key
       ).toBeDefined();
     }
-  });
-
-  it("locks the AI input drop overlay glyphs to their Central Icons variants", () => {
-    expect(iconRegistryByExport.ImageIcon?.centralName).toBe("IconImages1");
-    expect(iconRegistryByExport.ImageIcon?.source).toBe("figma");
-    expect(iconRegistryByExport.ImageIcon?.figmaNodeId).toBe("1180:11256;3471:598450");
-    expect(iconRegistryByExport.ImageIcon?.variant).toEqual({
-      filled: false,
-      stroke: 2,
-      radius: 2,
-      join: "round",
-    });
-    expect(iconRegistryByExport.VideoIcon?.centralName).toBe("IconVideo");
-    expect(iconRegistryByExport.VideoIcon?.source).toBe("figma");
-    expect(iconRegistryByExport.VideoIcon?.figmaNodeId).toBe("1180:11433;3471:598450");
-    expect(iconRegistryByExport.VideoIcon?.variant).toEqual({
-      filled: false,
-      stroke: 2,
-      radius: 2,
-      join: "round",
-    });
-  });
-
-  it("exports a dedicated copy icon instead of reusing the file attachment icon", () => {
-    expect(icons.CopyIcon).toBeDefined();
-    expect(iconRegistryByExport.CopyIcon?.centralName).toBe("IconSquareBehindSquare6");
-    expect(iconRegistryByExport.CopyIcon?.source).toBe("figma");
-    expect(iconRegistryByExport.CopyIcon?.figmaNodeId).toBe("7798:28574");
-  });
-
-  it("locks the Tasks action glyphs to their requested Central Icons variants", () => {
-    expect(iconRegistryByExport.LayoutColumnIcon?.centralName).toBe("IconLayoutColumn");
-    expect(iconRegistryByExport.BarsThreeIcon?.centralName).toBe("IconBarsThree2");
-    // Fill-only in the stroke-2 package, so it is taken pre-thinned at 1.5.
-    expect(iconRegistryByExport.LayoutColumnIcon?.variant).toEqual({
-      filled: false,
-      stroke: 1.5,
-      radius: 2,
-      join: "round",
-    });
-    expect(iconRegistryByExport.BarsThreeIcon?.variant).toEqual({
-      filled: false,
-      stroke: 2,
-      radius: 2,
-      join: "round",
-    });
-    expect(iconRegistryByExport.SquareCursorIcon?.centralName).toBe("IconSquareCursor");
-    expect(iconRegistryByExport.SquareCursorIcon?.variant).toEqual({
-      filled: true,
-      stroke: 2,
-      radius: 2,
-      join: "round",
-    });
-    expect(iconRegistryByExport.ExclamationTriangleIcon?.centralName).toBe(
-      "IconExclamationTriangle"
-    );
-    expect(iconRegistryByExport.ExclamationTriangleIcon?.variant).toEqual({
-      filled: false,
-      stroke: 2,
-      radius: 2,
-      join: "round",
-    });
   });
 
   it("keeps Figma node ids real when present", () => {

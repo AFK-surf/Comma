@@ -93,7 +93,7 @@ defmodule SalixSignalProto.CallSignaling do
   @doc "A fresh call ID: uniformly random, unsigned 64 bits (CRS-12 section 4)."
   @spec new_call_id() :: call_id()
   def new_call_id do
-    <<id::unsigned-64>> = :crypto.strong_rand_bytes(8)
+    <<id::unsigned-64>> = SystemsRuntime.Proc.random_bytes(8)
     id
   end
 

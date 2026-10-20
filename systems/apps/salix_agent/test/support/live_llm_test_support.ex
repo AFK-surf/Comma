@@ -1,4 +1,6 @@
 defmodule SalixAgent.LiveLlmTestSupport do
+  require SystemsRuntime.Proc
+
   @moduledoc false
 
   @base_url "https://opencode.ai/zen/go/v1"
@@ -35,8 +37,8 @@ defmodule SalixAgent.LiveLlmTestSupport do
 
     @impl true
     def notify(agent_id, event) do
-      if pid = Application.get_env(:salix_agent, :live_llm_test_capture_pid) do
-        send(pid, {:live_llm_test_notification, agent_id, event})
+      if pid = SystemsRuntime.get_env(:salix_agent, :live_llm_test_capture_pid) do
+        SystemsRuntime.Proc.send(pid, {:live_llm_test_notification, agent_id, event})
       end
 
       :ok
@@ -72,10 +74,10 @@ defmodule SalixAgent.LiveLlmTestSupport do
   defp opencode_session_id do
     key = {__MODULE__, :opencode_session_id}
 
-    case :persistent_term.get(key, nil) do
+    case SystemsRuntime.PersistentTerm.get(key, nil) do
       nil ->
-        id = "salix-live-llm-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
-        :persistent_term.put(key, id)
+        id = "salix-live-llm-" <> Base.encode16(SystemsRuntime.Proc.random_bytes(8), case: :lower)
+        SystemsRuntime.PersistentTerm.put(key, id)
         id
 
       id ->
@@ -100,7 +102,7 @@ defmodule SalixAgent.LiveLlmTestSupport do
   provider's message body.
   """
   def preflight!(llm) do
-    case :persistent_term.get(@preflight_key, nil) do
+    case SystemsRuntime.PersistentTerm.get(@preflight_key, nil) do
       :ok -> :ok
       nil -> run_preflight!(llm, 1)
     end
@@ -119,7 +121,7 @@ defmodule SalixAgent.LiveLlmTestSupport do
     # just for a test preflight.
     case apply(SalixLlm.Provider, :complete, [[%{role: "user", content: "ping"}], [], llm_opts]) do
       {:error, %{"retryable" => true} = error} when retries_left > 0 ->
-        Process.sleep(1_000)
+        SystemsRuntime.Proc.sleep(1_000)
         _ = error
         run_preflight!(llm, retries_left - 1)
 
@@ -127,7 +129,7 @@ defmodule SalixAgent.LiveLlmTestSupport do
         raise preflight_message(llm, error)
 
       _reachable ->
-        :persistent_term.put(@preflight_key, :ok)
+        SystemsRuntime.PersistentTerm.put(@preflight_key, :ok)
         :ok
     end
   end
@@ -170,55 +172,69 @@ defmodule SalixAgent.LiveLlmTestSupport do
           :notifier,
           :live_llm_test_capture_pid
         ],
-        &{&1, Application.get_env(:salix_agent, &1)}
+        &{&1, SystemsRuntime.get_env(:salix_agent, &1)}
       )
 
-    previous_task_create = Application.get_env(:salix_im, :task_create_mod)
+    previous_task_create = SystemsRuntime.get_env(:salix_im, :task_create_mod)
 
-    Application.put_env(:salix_agent, :llm, SalixLlm.Provider)
-    Application.delete_env(:salix_agent, :summarizer)
-    Application.put_env(:salix_agent, :oauth_store_mod, OAuthStubStore)
+    SystemsRuntime.put_env(:salix_agent, :llm, SalixLlm.Provider)
+    SystemsRuntime.delete_env(:salix_agent, :summarizer)
+    SystemsRuntime.put_env(:salix_agent, :oauth_store_mod, OAuthStubStore)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_im,
       :task_create_mod,
       Module.concat(["Salix", "Bindings", "AgentConversations"])
     )
 
-    Application.put_env(:salix_agent, :im_provider_mod, SalixIM.Provider)
-    Application.put_env(:salix_agent, :notifier, CaptureNotifier)
-    Application.put_env(:salix_agent, :live_llm_test_capture_pid, self())
+    SystemsRuntime.put_env(:salix_agent, :im_provider_mod, SalixIM.Provider)
+    SystemsRuntime.put_env(:salix_agent, :notifier, CaptureNotifier)
+    SystemsRuntime.put_env(:salix_agent, :live_llm_test_capture_pid, SystemsRuntime.Proc.self())
 
     fn ->
       Enum.each(previous, fn
-        {key, nil} -> Application.delete_env(:salix_agent, key)
-        {key, value} -> Application.put_env(:salix_agent, key, value)
+        {key, nil} -> SystemsRuntime.delete_env(:salix_agent, key)
+        {key, value} -> SystemsRuntime.put_env(:salix_agent, key, value)
       end)
 
       case previous_task_create do
-        nil -> Application.delete_env(:salix_im, :task_create_mod)
-        value -> Application.put_env(:salix_im, :task_create_mod, value)
+        nil -> SystemsRuntime.delete_env(:salix_im, :task_create_mod)
+        value -> SystemsRuntime.put_env(:salix_im, :task_create_mod, value)
       end
     end
   end
 
   def configure!(agent_id, llm, agent_config \\ %{}) do
-    llm = stringify_keys(llm)
-    agent_config = stringify_keys(agent_config)
-    provider_config = Map.drop(llm, ["model", "max_tokens"])
-
-    SalixAgent.TestSupport.create_control_agent!(
-      agent_id,
-      Map.merge(agent_config, %{
-        "model" => llm["model"],
-        "provider" => provider_config["protocol"] || "openai",
-        "provider_config" => provider_config,
-        "max_tokens" => llm["max_tokens"]
-      })
-    )
-
+    create_agent!(agent_id, llm, agent_config)
     SalixAgent.Server.info(agent_id)
     :ok
+  end
+
+  @doc "Create an Agent of `agent_config` that runs the live `llm`."
+  def create_agent!(agent_id, llm, agent_config) do
+    llm = stringify_keys(llm)
+    agent_config = stringify_keys(agent_config)
+    role = agent_config["role"] || "worker"
+
+    # The Agent follows the platform model of its role: point that tier at the
+    # live provider.
+    SalixAgent.TestSupport.configure_platform_tier!(
+      role,
+      llm["base_url"],
+      llm["model"],
+      Map.reject(
+        %{
+          "protocol" => llm["protocol"],
+          "api_key" => llm["api_key"],
+          "max_tokens" => llm["max_tokens"],
+          "context_tokens" => positive(llm["context_tokens"]),
+          "images" => llm["supports_images"]
+        },
+        fn {_key, value} -> is_nil(value) end
+      )
+    )
+
+    SalixAgent.TestSupport.create_control_agent!(agent_id, agent_config)
   end
 
   def seed_group!(tenant_id, group_id) do
@@ -231,7 +247,7 @@ defmodule SalixAgent.LiveLlmTestSupport do
   end
 
   def eventually(fun, timeout_ms \\ 180_000) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    deadline = SystemsClock.monotonic_time(:millisecond) + timeout_ms
     await_eventually(fun, deadline)
   end
 
@@ -241,14 +257,16 @@ defmodule SalixAgent.LiveLlmTestSupport do
         value
 
       :retry ->
-        if System.monotonic_time(:millisecond) > deadline, do: raise("eventually: timed out")
-        Process.sleep(1_000)
+        if SystemsClock.monotonic_time(:millisecond) > deadline,
+          do: raise("eventually: timed out")
+
+        SystemsRuntime.Proc.sleep(1_000)
         await_eventually(fun, deadline)
     end
   end
 
   def flush_notifications! do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:live_llm_test_notification, _, _} -> flush_notifications!()
     after
       0 -> :ok
@@ -256,19 +274,19 @@ defmodule SalixAgent.LiveLlmTestSupport do
   end
 
   def await_session_settled!(agent_id, session_id, timeout_ms \\ 180_000) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    deadline = SystemsClock.monotonic_time(:millisecond) + timeout_ms
     await_session_update(agent_id, session_id, deadline, nil, :settled)
   end
 
   def await_session_quiescent!(agent_id, session_id, timeout_ms \\ 180_000) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    deadline = SystemsClock.monotonic_time(:millisecond) + timeout_ms
     await_session_update(agent_id, session_id, deadline, nil, :quiescent)
   end
 
   defp await_session_update(agent_id, session_id, deadline, last_seen, expected_state) do
-    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    remaining = max(deadline - SystemsClock.monotonic_time(:millisecond), 0)
 
-    receive do
+    SystemsRuntime.Proc.receive do
       {:live_llm_test_notification, ^agent_id, {:session_updated, ^session_id}} ->
         case SalixAgent.InternalSessionStore.read(agent_id, session_id) do
           {:ok, session} ->
@@ -356,10 +374,13 @@ defmodule SalixAgent.LiveLlmTestSupport do
         do: block["conversation_id"]
   end
 
-  def unique_suffix, do: :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
+  def unique_suffix, do: SystemsRuntime.Proc.random_bytes(4) |> Base.encode16(case: :lower)
 
-  def restore_env(key, nil), do: Application.delete_env(:salix_agent, key)
-  def restore_env(key, value), do: Application.put_env(:salix_agent, key, value)
+  def restore_env(key, nil), do: SystemsRuntime.delete_env(:salix_agent, key)
+  def restore_env(key, value), do: SystemsRuntime.put_env(:salix_agent, key, value)
 
   defp stringify_keys(map), do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
+
+  defp positive(value) when is_integer(value) and value > 0, do: value
+  defp positive(_value), do: nil
 end

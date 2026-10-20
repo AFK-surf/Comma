@@ -12,22 +12,6 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:405
-msgid "Actions"
-msgstr "操作"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1238
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6293
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6398
-msgid "Add"
-msgstr "添加"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1308
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4110
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4113
-msgid "Admin"
-msgstr "管理员"
-
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:416
 #: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:135
 #: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:266
@@ -38,20 +22,6 @@ msgstr "管理员"
 msgid "Agent"
 msgstr "Agent"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6579
-msgid "Agent Swarm"
-msgstr "Agent Swarm"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:160
-msgid "Agent Swarm activity"
-msgstr "Agent Swarm 活动"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6301
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6817
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7211
-msgid "Agent Swarm is still preparing"
-msgstr "Agent Swarm 仍在准备中"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4855
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4866
 msgid "Agent Swarm is still preparing. Retry shortly."
@@ -61,44 +31,20 @@ msgstr "Agent Swarm 仍在准备中，请稍后重试。"
 msgid "Agent Swarm not found."
 msgstr "未找到 Agent Swarm。"
 
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:247
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:607
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:333
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:148
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3721
-msgid "Agent Swarms"
-msgstr "Agent Swarms"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1083
 msgid "Agent archived."
 msgstr "已归档 Agent。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3684
-msgid "Agent configuration saved. Reconcile enqueued."
-msgstr "已保存 Agent 配置。已加入协调队列。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:944
-msgid "Agent created. Configuration is reconciling."
-msgstr "已创建 Agent。配置正在协调中。"
-
 msgid "Agent not found."
 msgstr "未找到 Agent。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6691
-msgid "App ID"
-msgstr "应用 ID"
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_plugins.ex
+msgid "Android admission status is unavailable. Try again shortly."
+msgstr "Android 准入状态暂不可用，请稍后重试。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6690
-msgid "App name"
-msgstr "应用名称"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:263
-msgid "Browse organizations"
-msgstr "浏览组织"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:218
-msgid "Cache"
-msgstr "缓存"
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_plugins.ex
+msgid "Android connector access is not enabled for this organization."
+msgstr "此组织未开通 Android 连接器访问。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_members.ex
 msgid "Can't demote the last owner."
@@ -124,33 +70,6 @@ msgstr "无法移除最后一位所有者。"
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7918
 msgid "Cancel"
 msgstr "取消"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6692
-msgid "Client ID"
-msgstr "客户端 ID"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6693
-msgid "Client secret"
-msgstr "客户端密钥"
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:493
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:583
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:1483
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:461
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2690
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4404
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7545
-msgid "Close"
-msgstr "关闭"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:393
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4416
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5528
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6350
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6384
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6398
-msgid "Configure"
-msgstr "配置"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1528
 msgid "Connect deleted."
@@ -246,15 +165,6 @@ msgstr "无法更新组织。"
 msgid "Couldn't update role."
 msgstr "无法更新角色。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5471
-msgid "Create a router or worker agent for this Agent Swarm."
-msgstr "为此 Agent Swarm 创建 router 或 worker Agent。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6506
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6704
-msgid "Create connect"
-msgstr "创建连接"
-
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:231
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:318
 msgid "Create organization"
@@ -263,10 +173,6 @@ msgstr "创建组织"
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:86
 msgid "Create organization with invite code"
 msgstr "使用邀请码创建组织"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:162
-msgid "Created vs used"
-msgstr "已创建 vs 已使用"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:758
 msgid "Email can't be blank."
@@ -292,28 +198,9 @@ msgstr "已断开设备连接。"
 msgid "Devices"
 msgstr "设备"
 
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1196
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6327
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6443
-msgid "Feishu"
-msgstr "飞书"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2197
 msgid "Feishu webhook connect ready."
 msgstr "飞书 webhook 连接已就绪。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5143
-msgid "General"
-msgstr "常规"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:135
-msgid "Here's an overview of your workspace."
-msgstr "以下是你的工作区概览。"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:41
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:43
-msgid "Home"
-msgstr "首页"
 
 #: lib/bridge_for_teams_web/dashboard/controllers/impersonation_html/new.html.heex:29
 msgid "Impersonate"
@@ -322,10 +209,6 @@ msgstr "模拟登录"
 #: lib/bridge_for_teams_web/dashboard/controllers/impersonation_html/new.html.heex:4
 msgid "Impersonate user"
 msgstr "模拟登录用户"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:206
-msgid "Input"
-msgstr "输入"
 
 #: lib/bridge_for_teams_web/dashboard/components/layouts.ex:396
 #: lib/bridge_for_teams_web/dashboard/components/layouts.ex:617
@@ -337,18 +220,9 @@ msgstr "集成"
 msgid "Invite code"
 msgstr "邀请码"
 
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:532
-msgid "Language"
-msgstr "语言"
-
 #: lib/bridge_for_teams_web/controllers/dashboard_members.ex
 msgid "Member not found."
 msgstr "未找到成员。"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:450
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:623
-msgid "Members"
-msgstr "成员"
 
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:433
 #: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:270
@@ -366,18 +240,6 @@ msgstr "消息"
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7723
 msgid "Name"
 msgstr "名称"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6487
-msgid "No Feishu connects yet"
-msgstr "暂无飞书连接"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:876
-msgid "No messages yet"
-msgstr "暂无消息"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4630
-msgid "Not configured"
-msgstr "未配置"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:732
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:798
@@ -400,33 +262,9 @@ msgstr "未找到组织。"
 msgid "Organization slug"
 msgstr "组织标识 (slug)"
 
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:212
-msgid "Output"
-msgstr "输出"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:240
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:606
-msgid "Overview"
-msgstr "概览"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1016
-msgid "Participants"
-msgstr "参与者"
-
 #: lib/bridge_for_teams_web/controllers/dashboard_plugins.ex:104
 msgid "Plugins are unavailable right now. Retry shortly."
 msgstr "插件暂时不可用，请稍后重试。"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:371
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4899
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5319
-msgid "Remove"
-msgstr "移除"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5828
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6583
-msgid "Router"
-msgstr "Router"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4860
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4886
@@ -437,25 +275,6 @@ msgstr "Salix 不可用，请稍后重试。"
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4887
 msgid "Salix timed out. Retry shortly."
 msgstr "Salix 超时，请稍后重试。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6159
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6308
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6824
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7718
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7940
-msgid "Salix unavailable"
-msgstr "Salix 不可用"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:249
-msgid "Save changes"
-msgstr "保存更改"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:454
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:621
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:625
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3761
-msgid "Settings"
-msgstr "设置"
 
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:26
 msgid "Sign in"
@@ -469,21 +288,14 @@ msgstr "使用 SSO 登录"
 msgid "Sign in with your organization account."
 msgstr "使用你的组织账号登录。"
 
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:556
-msgid "Sign out"
-msgstr "退出登录"
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_skills.ex
+msgid "Skill not found."
+msgstr "未找到该技能。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1476
 msgid ""
 "Slack connect created. Open the install URL to finish the OAuth install."
 msgstr "已创建 Slack 连接。打开安装 URL 以完成 OAuth 安装。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5166
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5502
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6857
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7729
-msgid "Status"
-msgstr "状态"
 
 #: lib/bridge_for_teams_web/dashboard/controllers/impersonation_html/new.html.heex:6
 msgid "Switch your dashboard session to another Bridge For Teams user."
@@ -510,63 +322,14 @@ msgstr "服务方拒绝了此连接设置。请检查应用凭据后重试。"
 msgid "The runtime is not ready yet. Retry shortly."
 msgstr "运行时尚未就绪，请稍后重试。"
 
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:194
-msgid "Token usage"
-msgstr "Token 用量"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:240
-msgid "Top Agent Swarm usage"
-msgstr "用量最高的 Agent Swarm"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:200
-msgid "Total tokens"
-msgstr "Token 总数"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:184
-msgid "Unused"
-msgstr "未使用"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6535
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6749
-msgid "Updated"
-msgstr "更新时间"
-
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:233
 msgid "Use your invite code to create your organization and owner account."
 msgstr "使用你的邀请码创建组织和所有者账号。"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:167
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:178
-msgid "Used"
-msgstr "已使用"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:265
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4110
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4114
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5282
-msgid "User"
-msgstr "用户"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:152
-msgid "View agent swarms"
-msgstr "查看 Agent Swarms"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:143
-msgid "View all"
-msgstr "查看全部"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:134
-msgid "Welcome back"
-msgstr "欢迎回来"
 
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:151
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:290
 msgid "Work email"
 msgstr "工作邮箱"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5828
-msgid "Worker"
-msgstr "Worker"
 
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:432
 msgid "You"
@@ -580,178 +343,6 @@ msgstr "你的姓名"
 #: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2080
 msgid "[image]"
 msgstr "[图片]"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5723
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5822
-msgid "agent"
-msgstr "Agent"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4913
-msgid "missing"
-msgstr "缺失"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4912
-msgid "set"
-msgstr "已设置"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:249
-msgid "tokens"
-msgstr "tokens"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1132
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1138
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4416
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4431
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4456
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6512
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6590
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6713
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6941
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7032
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7038
-msgid "Connect"
-msgstr "连接"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6522
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6739
-msgid "Credentials"
-msgstr "凭据"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6245
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6564
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6786
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7535
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7587
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7832
-msgid "Delete"
-msgstr "删除"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6562
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6784
-msgid "Delete this connect? This releases the provider app reservation."
-msgstr "要删除此连接吗？这将释放服务方应用的占用。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6545
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6767
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6868
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7810
-msgid "Disable"
-msgstr "停用"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4442
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5084
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6887
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7023
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7821
-msgid "Disconnect"
-msgstr "断开连接"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:196
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2128
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5382
-msgid "Done"
-msgstr "完成"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6554
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6776
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6877
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7810
-msgid "Enable"
-msgstr "启用"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6674
-msgid "Events URL"
-msgstr "事件 URL"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6727
-msgid "Install"
-msgstr "安装"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6702
-msgid "No Slack connects yet"
-msgstr "暂无 Slack 连接"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6735
-msgid "Open install URL"
-msgstr "打开安装 URL"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6670
-msgid "Redirect URL"
-msgstr "重定向 URL"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6694
-msgid "Signing secret"
-msgstr "签名密钥"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6361
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6614
-msgid "Slack"
-msgstr "Slack"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6632
-msgid "Step 1 · Create the Slack app from this manifest"
-msgstr "第 1 步 · 使用此清单创建 Slack 应用"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6682
-msgid "Step 2 · Paste the created app's credentials"
-msgstr "第 2 步 · 粘贴已创建应用的凭据"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6519
-msgid "Webhook URL"
-msgstr "Webhook URL"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:237
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:606
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:607
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:608
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:609
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:610
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:626
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6721
-msgid "Workspace"
-msgstr "工作区"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6717
-msgid "awaiting install"
-msgstr "等待安装"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6742
-msgid "client"
-msgstr "客户端"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6516
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6718
-msgid "disabled"
-msgstr "已停用"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6531
-msgid "encryption"
-msgstr "加密"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6716
-msgid "installed"
-msgstr "已安装"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6525
-msgid "secret"
-msgstr "应用密钥"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6745
-msgid "signing"
-msgstr "登录"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6528
-msgid "verification"
-msgstr "验证令牌"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:713
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6851
-msgid "Account"
-msgstr "账号"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:710
-msgid "Select org"
-msgstr "选择组织"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:904
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:919
@@ -789,19 +380,6 @@ msgstr "只有组织管理员才能管理设置。"
 msgid "Only organization admins can remove members."
 msgstr "只有组织管理员才能移除成员。"
 
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:256
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:608
-msgid "Fin"
-msgstr "Fin"
-
-#: lib/bridge_for_teams_web/dashboard/components/device_provisioning.ex:43
-msgid "Runner"
-msgstr "置备程序"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex
-msgid "Single sign-on"
-msgstr "单点登录"
-
 #: lib/bridge_for_teams_web/controllers/dashboard_runners.ex
 msgid "Runner API key not found."
 msgstr "未找到置备程序 API 密钥。"
@@ -822,12 +400,6 @@ msgstr "保存前请从列表中选择一个模型。"
 msgid "Couldn't save the model settings."
 msgstr "无法保存模型设置。"
 
-msgid "Default model"
-msgstr "默认模型"
-
-msgid "No default"
-msgstr "无默认"
-
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
 msgid "The default model must be one of the allowed models."
 msgstr "默认模型必须是允许的模型之一。"
@@ -837,47 +409,11 @@ msgstr "默认模型必须是允许的模型之一。"
 msgid "Account disconnected."
 msgstr "已断开账号连接。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6894
-msgid "Connect an account"
-msgstr "连接账号"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6839
-msgid ""
-"Connect an account below to let this Agent Swarm's agents act on your behalf."
-msgstr "在下方连接账号，让此 Agent Swarm 的 Agent 代表你执行操作。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6810
-msgid "Connect third-party accounts for"
-msgstr "连接第三方账号至"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6833
-msgid "Connected accounts"
-msgstr "已连接的账号"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:397
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:618
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3739
-msgid "Connections"
-msgstr "连接"
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:741
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3123
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3196
 msgid "Could not connect the account. Please try again."
 msgstr "无法连接账号，请重试。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6885
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7021
-msgid "Disconnect this account? Agents will lose access to it."
-msgstr "确定断开此账号？Agent 将无法再访问它。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6937
-msgid "Label (optional)"
-msgstr "标签（可选）"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6838
-msgid "No connected accounts yet"
-msgstr "尚无已连接的账号"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1536
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1615
@@ -892,20 +428,12 @@ msgstr "只有 Agent Swarm 管理员才能连接账号。"
 msgid "Only Agent Swarm admins can manage connected accounts."
 msgstr "只有 Agent Swarm 管理员才能管理已连接的账号。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6843
-msgid "Platform"
-msgstr "平台"
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:738
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2873
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3120
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3193
 msgid "Salix is unavailable right now. Retry shortly."
 msgstr "Salix 不可用，请稍后重试。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6854
-msgid "Scopes"
-msgstr "权限范围"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3111
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3114
@@ -929,11 +457,6 @@ msgstr "无法连接该账号，请重试。"
 msgid "Could not delete the schedule."
 msgstr "无法删除该计划任务。"
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:386
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6160
-msgid "Could not load schedules from Salix. Retry shortly."
-msgstr "无法从 Salix 加载计划任务，请稍后重试。"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1184
 msgid "Only Agent Swarm admins can manage schedules."
 msgstr "只有 Agent Swarm 管理员才能管理计划任务。"
@@ -942,15 +465,6 @@ msgstr "只有 Agent Swarm 管理员才能管理计划任务。"
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1202
 msgid "That schedule no longer exists."
 msgstr "该计划任务已不存在。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6363
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6616
-msgid "connected"
-msgstr "已连接"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6644
-msgid "Create app on Slack"
-msgstr "在 Slack 上创建应用"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3038
 msgid "Agent Swarm \"%{name}\" archived."
@@ -977,63 +491,6 @@ msgstr "只有 Agent Swarm 管理员才能归档此 Agent Swarm。"
 msgid "Only Agent Swarm admins can rename this Agent Swarm."
 msgstr "只有 Agent Swarm 管理员才能重命名此 Agent Swarm。"
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1067
-msgid "Open Slack thread"
-msgstr "打开 Slack 讨论串"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2362
-msgid "%{count} attendee"
-msgid_plural "%{count} attendees"
-msgstr[0] "%{count} 位参会者"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2400
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5075
-msgid "%{count} captions"
-msgstr "%{count} 条字幕"
-
-#: lib/bridge_for_teams_web/dashboard/relative_time.ex:28
-msgid "%{count}d ago"
-msgstr "%{count} 天前"
-
-#: lib/bridge_for_teams_web/dashboard/relative_time.ex:22
-msgid "%{count}h ago"
-msgid_plural "%{count}h ago"
-msgstr[0] "%{count} 小时前"
-
-#: lib/bridge_for_teams_web/dashboard/relative_time.ex:19
-msgid "%{count}m ago"
-msgid_plural "%{count}m ago"
-msgstr[0] "%{count} 分钟前"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5118
-msgid "%{date} · %{count} attendees"
-msgstr "%{date} · %{count} 位参会者"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1300
-msgid "%{name} — %{role} at %{org}"
-msgstr "%{name} — %{org} 的%{role}"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3169
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3868
-msgid "%{prs} PRs · %{commits} commits"
-msgstr "%{prs} 个 PR · %{commits} 次提交"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:63
-msgid "A daily digest of mail, meetings, and news."
-msgstr "邮件、会议与新闻的每日摘要。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:143
-msgid "A persistent model of you and your team."
-msgstr "关于你和团队的持久模型。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4680
-msgid "Action items"
-msgstr "行动项"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:142
-msgid "Agent Memory"
-msgstr "Agent 记忆"
-
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:1075
 #: lib/bridge_for_teams_web/dashboard/components/layouts.ex:387
 #: lib/bridge_for_teams_web/dashboard/components/layouts.ex:612
@@ -1048,26 +505,6 @@ msgid ""
 "app instead."
 msgstr "已有飞书应用的 App ID 无法修改。请删除后重新添加应用。"
 
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:34
-msgid "Archive unimportant emails"
-msgstr "归档不重要的邮件"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4692
-msgid "Artifacts"
-msgstr "产物"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5327
-msgid "Ask your agent anything"
-msgstr "问你的 Agent 任何问题"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:39
-msgid "Assist with scheduling"
-msgstr "协助安排日程"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5315
-msgid "Assistant unavailable"
-msgstr "助理不可用"
-
 msgid "At least one runner heartbeat is stale or unknown."
 msgstr "至少有一个 Runner 的心跳已过期或未知。"
 
@@ -1077,91 +514,14 @@ msgstr "至少有一个 Runner 已离线或失败。"
 msgid "At least one runner reports a critical status."
 msgstr "至少有一个 Runner 报告了严重状态。"
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5845
-msgid "Attach files or images"
-msgstr "添加文件或图片"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:1268
-msgid "Attached files in your workspace:"
-msgstr "已放入你工作区的附件:"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5526
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6235
-msgid "Audit"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:810
-msgid "Back"
-msgstr "返回"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4542
-msgid "Body"
-msgstr "正文"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2425
-msgid "Call ended — writing the summary."
-msgstr "通话结束——正在撰写摘要。"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:233
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:301
-msgid "Capabilities"
-msgstr "能力"
-
 #: lib/bridge_for_teams_web/controllers/dashboard_runners.ex
 msgid "Check local posture"
 msgstr "检查本机状态"
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:782
-msgid "Checks"
-msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7993
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
 msgid "Checks ran, but Operations could not record them."
 msgstr "检查已运行，但运维记录写入失败。"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
-msgid "Choose a bot-enabled Feishu app first."
-msgstr "请先选择已启用机器人的飞书应用。"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
-msgid "Choose an Agent Swarm before connecting the bot."
-msgstr "连接机器人前请先选择 Agent Swarm。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:68
-msgid "Clean digests of your newsletters, on a schedule."
-msgstr "定期把订阅邮件整理成干净的摘要。"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:136
-msgid "Collapse"
-msgstr "收起"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1006
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1201
-msgid "Command"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1015
-msgid "Communication Style"
-msgstr "沟通风格"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:72
-msgid "Competitive intel briefing"
-msgstr "竞争情报简报"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:824
-msgid "Completed and archived."
-msgstr "已完成并归档。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1153
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7051
-msgid "Configure in Settings"
-msgstr "前往设置配置"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6496
-#, fuzzy
-msgid "Connect name"
-msgstr "连接"
 
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1124
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1177
@@ -1170,18 +530,6 @@ msgstr "连接"
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7014
 msgid "Connected"
 msgstr "已连接"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5292
-msgid "Connecting to your agent…"
-msgstr "正在连接你的 Agent……"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1085
-msgid "Connections help your agent do more work — all optional."
-msgstr "连接让 Agent 能做更多事——全部可选。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:95
-msgid "Contact research dossier"
-msgstr "联系人研究档案"
 
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:206
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:823
@@ -1213,10 +561,6 @@ msgstr "无法运行 SSO 检查。"
 msgid "Could not save the Feishu app. Check the App ID and secret."
 msgstr "无法保存飞书应用。请检查 App ID 和密钥。"
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:951
-msgid "Could not save the draft."
-msgstr "草稿保存失败。"
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:674
 msgid "Could not save. Please try again."
 msgstr "保存失败,请重试。"
@@ -1233,234 +577,27 @@ msgstr "无法移除飞书应用（%{reason}）。"
 msgid "Create an Agent Swarm first to connect accounts."
 msgstr "请先创建 Agent Swarm 再连接账号。"
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5301
-msgid "Create an Agent Swarm with an agent, then come back."
-msgstr "先创建一个带 Agent 的 Agent Swarm,再回来。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4274
-msgid ""
-"Create the Feishu connect below. Feishu callback HTTP 200 alone does not "
-"prove this Agent Swarm will reply."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6503
-msgid ""
-"Current limitation: one Feishu app can be connected to one Agent Swarm. If "
-"this app is already used elsewhere, delete that connect or choose another "
-"app."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4216
-msgid "Daily"
-msgstr "每日"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:49
-msgid "Decline cold outreach"
-msgstr "谢绝陌生推销"
-
 msgid "Delivery"
 msgstr "发送设置"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:402
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4856
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6199
-msgid "Details"
-msgstr "详情"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5646
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5745
-msgid "Device"
-msgstr ""
 
 msgid "Diagnostic recorded"
 msgstr "已记录诊断"
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4608
-msgid "Download .md"
-msgstr "下载 .md"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:1442
-msgid "Draft opened in Gmail — hit send there."
-msgstr "草稿已在 Gmail 中打开——在那里点击发送。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4468
-msgid "Draft preview"
-msgstr "草稿预览"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:44
-msgid "Draft replies to important emails"
-msgstr "为重要邮件起草回复"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:1445
-msgid "Draft saved."
-msgstr "草稿已保存。"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:990
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3728
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4487
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7112
-msgid "Edit"
-msgstr "编辑"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4512
-msgid "Edit draft"
-msgstr "编辑草稿"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4261
-msgid "Enable this Feishu connect before testing the group bot."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:368
-msgid "Engineering activity from your portfolio's repositories."
-msgstr "来自被投公司仓库的工程活动。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:78
-msgid "Engineering activity summaries from connected repos."
-msgstr "来自已连接仓库的工程活动摘要。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5515
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6225
-#, fuzzy
-msgid "Events"
-msgstr "事件 URL"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:96
-msgid "Executive-ready briefings for new contacts."
-msgstr "为新联系人生成高管级背景简报。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5621
-msgid "External Codex"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:425
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex:464
 msgid "External user"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:832
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:402
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2132
-msgid "Failed"
-msgstr "失败"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6491
-#, fuzzy
-msgid "Feishu app"
-msgstr "飞书"
+msgstr "外部用户"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
 msgid "Feishu app not found."
 msgstr "未找到飞书应用。"
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4933
-msgid "Follow up in chat"
-msgstr "在聊天中跟进"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2354
-msgid "Follow-ups are drafted in your inbox for anything that needs a reply."
-msgstr "需要回复的事项已在收件箱中拟好跟进邮件。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2458
-msgid "From: %{title}"
-msgstr "来自:%{title}"
-
 #, fuzzy
 msgid "Gate"
 msgstr "授予时间"
 
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:117
-msgid "Get pinged where you already work."
-msgstr "在你常用的工具里收到提醒。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:77
-msgid "GitHub reports"
-msgstr "GitHub 报告"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:359
-msgid "Gmail, Calendar, Drive, and Contacts power inbox and meeting features."
-msgstr "Gmail、日历、云端硬盘与通讯录支撑收件箱与会议功能。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2148
-msgid "Good afternoon"
-msgstr "下午好"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2149
-msgid "Good evening"
-msgstr "晚上好"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2147
-msgid "Good morning"
-msgstr "早上好"
-
-msgid "Health"
-msgstr "运行状况"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:939
-msgid ""
-"Here's the model your agent starts from. It sharpens as you work together."
-msgstr "这是你的 Agent 的初始模型,会在协作中不断完善。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2348
-msgid "Highlights"
-msgstr "要点"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4911
-msgid "How your agent did it"
-msgstr "Agent 的执行过程"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:1267
-msgid "I've attached some files:"
-msgstr "我附上了一些文件:"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:121
-msgid "IM updates"
-msgstr "IM 通知"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:396
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:411
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2129
-msgid "In progress"
-msgstr "进行中"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6697
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6724
-msgid "Inbound agent"
-msgstr ""
-
 #: lib/bridge_for_teams_web/controllers/dashboard_runners.ex
 msgid "Inspect status and logs"
 msgstr "检查状态与日志"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1102
-msgid ""
-"Integrations attach to an Agent Swarm. You can connect accounts later from "
-"its Connections tab."
-msgstr "集成挂载在 Agent Swarm 上。之后可以在其 Connections 标签页里连接账号。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:371
-msgid "Issue tracking visibility across teams."
-msgstr "跨团队的 issue 追踪可见性。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5330
-msgid ""
-"It sees your dashboard and can create tasks, draft mail, and dig through "
-"your tools."
-msgstr "它能看到你的仪表盘,可以创建任务、起草邮件、翻查你的工具。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:50
-msgid "Keep your inbox clear of unsolicited pitches."
-msgstr "让收件箱远离不请自来的推销。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:972
-msgid "Key Contacts Sample"
-msgstr "关键联系人样本"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4670
-msgid "Key points"
-msgstr "要点"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:29
-msgid "Label new mail"
-msgstr "为新邮件打标签"
 
 msgid "Latest check snapshots are healthy."
 msgstr "最近的检查快照均正常。"
@@ -1471,100 +608,15 @@ msgstr "最近检查：%{summary}"
 msgid "Latest diagnostic: %{summary}"
 msgstr "最近诊断：%{summary}"
 
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1059
-msgid "Learning"
-msgstr "学习中"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:148
-msgid "Maintain a durable profile of your preferences and context."
-msgstr "持续维护你的偏好与上下文档案。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:103
-msgid "Manage Your Calendar"
-msgstr "管理你的日历"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:24
-msgid "Manage Your Inbox"
-msgstr "管理你的收件箱"
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:831
-msgid "Manual"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4954
-msgid "Mark reviewed"
-msgstr "标记已确认"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4599
-msgid "Markdown"
-msgstr "Markdown"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:888
-msgid "Marked as reviewed."
-msgstr "已标记确认。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:90
-msgid "Meeting briefing"
-msgstr "会议简报"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2434
-msgid "Meeting cancelled."
-msgstr "会议已取消。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2430
-msgid "Meeting failed: %{error}"
-msgstr "会议失败:%{error}"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:314
-msgid "Meetings"
-msgstr "会议"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1309
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1310
-msgid "Member"
-msgstr "成员"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5719
-msgid "Message your agent…"
-msgstr "给你的 Agent 发消息……"
-
 #: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:115
 #: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:502
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1159
 msgid "Messaging"
 msgstr "消息"
 
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:62
-msgid "Morning briefing"
-msgstr "晨间简报"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:35
-msgid "Move low-signal mail out of the inbox automatically."
-msgstr "自动把低价值邮件移出收件箱。"
-
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:71
-msgid "New Home"
-msgstr "新主页"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:67
-msgid "Newsletter digest"
-msgstr "Newsletter 摘要"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2352
-msgid "Next steps"
-msgstr "后续行动"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1100
-msgid "No Agent Swarm yet"
-msgstr "还没有 Agent Swarm"
-
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
 msgid "No Feishu app is enabled for sign-in yet."
 msgstr "尚未有飞书应用启用登录。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5298
-msgid "No agent to chat with yet"
-msgstr "还没有可对话的 Agent"
 
 msgid "No check result observed"
 msgstr "尚未观测到检查结果"
@@ -1572,143 +624,16 @@ msgstr "尚未观测到检查结果"
 msgid "No gates recorded"
 msgstr "未记录检查项"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6587
-msgid "No group router selected"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6471
-msgid "No org Feishu app has bot enabled yet."
-msgstr "尚未启用组织级飞书机器人应用。"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1020
-msgid "No participants recorded."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:999
-msgid "No teammates yet — contacts appear here as your organization grows."
-msgstr "还没有同事——随着组织壮大,联系人会出现在这里。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6592
-msgid "Not created yet"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2500
-msgid "Nothing here yet"
-msgstr "这里还没有内容"
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:830
-msgid "OK"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5147
-msgid "On track"
-msgstr "进展正常"
-
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
 msgid ""
 "Only one Feishu app can be enabled for the group bot right now. Disable the "
 "existing bot app before enabling another."
 msgstr "目前只能为群机器人启用一个飞书应用。请先停用现有的机器人应用，再启用其他应用。"
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5310
-msgid "Open Agent Swarms"
-msgstr "打开 Agent Swarms"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4502
-msgid "Open in Gmail"
-msgstr "在 Gmail 中打开"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3660
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4793
-msgid "Open site"
-msgstr "打开网站"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:264
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:609
-msgid "Operations"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:449
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7256
-msgid "Organization"
-msgstr "组织"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1307
-msgid "Owner"
-msgstr "所有者"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4614
-msgid "PDF"
-msgstr "PDF"
-
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:734
 #, fuzzy
 msgid "Participant"
 msgstr "参与者"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:147
-msgid "Personal memory"
-msgstr "个人记忆"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:91
-msgid "Prep notes before internal and external meetings."
-msgstr "内外部会议前的准备笔记。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:85
-msgid "Prepare for Meetings"
-msgstr "会议准备"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:45
-msgid "Prepare replies for your review — nothing sends itself."
-msgstr "草稿仅供你审阅——不会自动发送。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3776
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3918
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4589
-msgid "Preview"
-msgstr "预览"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3718
-msgid "Preview Draft"
-msgstr "预览草稿"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:116
-msgid "Proactive Notifications"
-msgstr "主动通知"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:945
-msgid "Professional Identity"
-msgstr "职业身份"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:450
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7257
-msgid "Project"
-msgstr "项目"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2134
-msgid "Queued"
-msgstr "排队中"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1171
-msgid "Reach your agent from where your team chats."
-msgstr "在团队聊天的地方直接找到你的 Agent。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:374
-msgid "Read and create pages in your workspace."
-msgstr "读取并创建工作区中的页面。"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:399
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2130
-msgid "Ready for review"
-msgstr "待审阅"
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:794
-msgid "Reason"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:109
-msgid "Rebalance your week and protect focus time."
-msgstr "重排一周日程,守住专注时间。"
 
 msgid "Recent bounded execution runs failed or were canceled."
 msgstr "最近的执行运行失败或被取消。"
@@ -1734,70 +659,14 @@ msgstr "最近的运行事件包含错误。"
 msgid "Recent runs need manual follow-up or were skipped."
 msgstr "最近的运行需要人工跟进或已跳过。"
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2446
-msgid "Recording"
-msgstr "录制中"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:130
-msgid "Recurring work your agent runs on a schedule."
-msgstr "Agent 按计划执行的周期性工作。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5780
-msgid "Remove attachment"
-msgstr "移除附件"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4218
-msgid "Report"
-msgstr "报告"
-
 msgid "Resource"
 msgstr "资源"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:400
-msgid "Result"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5320
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7215
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7226
-msgid "Retry"
-msgstr "重试"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4270
-msgid ""
-"Retry checks shortly; Salix route/router readiness could not be verified."
-msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2192
 msgid ""
 "Reused the existing Feishu connect and refreshed its credentials from the "
 "org app."
 msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3670
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3966
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4023
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4146
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4186
-msgid "Review"
-msgstr "查看"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5094
-msgid "Review result"
-msgstr "查看结果"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4961
-msgid "Reviewed"
-msgstr "已确认"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6452
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6759
-msgid "Run checks"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:135
-msgid "Run recurring jobs on cron — briefings, reports, cleanups."
-msgstr "用 cron 运行周期任务——简报、报告、清理。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_health.ex
 msgid "Runners"
@@ -1807,156 +676,9 @@ msgstr "Runner 列表"
 msgid "SSO"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4557
-msgid "Save draft"
-msgstr "保存草稿"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:108
-msgid "Schedule optimizer"
-msgstr "日程优化"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:129
-msgid "Scheduled Routines"
-msgstr "定时例程"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:134
-msgid "Scheduled routines"
-msgstr "定时例程"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:377
-msgid "Search and send messages on your behalf."
-msgstr "代表你搜索和发送消息。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4561
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5704
-msgid "Send"
-msgstr "发送"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4256
-msgid ""
-"Send a real @Bridge message in the Feishu group after the Feishu console "
-"steps pass."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4553
-msgid "Send opens Gmail with this draft prefilled."
-msgstr "点击发送会在 Gmail 中打开预填好的草稿。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:122
-msgid "Send updates in Slack or Feishu when something needs you."
-msgstr "有事需要你时,在 Slack 或飞书里通知你。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1183
-msgid "Set up in Agent Swarm"
-msgstr "在 Agent Swarm 中设置"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4703
-msgid "Shared back to the Slack thread that started the meeting."
-msgstr "已回发到发起会议的 Slack 会话。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6498
-msgid "Shown in Salix. Defaults to the app's display name."
-msgstr ""
-
-msgid "Signal"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:202
 msgid "Signing you in..."
 msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:953
-msgid "Signs in as %{email}"
-msgstr "登录邮箱:%{email}"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:831
-msgid "Skip for now"
-msgstr "暂时跳过"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:817
-msgid "Skip onboarding"
-msgstr "跳过引导"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:814
-msgid "Skip onboarding? You can revisit these settings later."
-msgstr "跳过引导?之后仍可在设置中调整这些选项。"
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:833
-msgid "Skipped"
-msgstr "已跳过"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1195
-msgid "Slack Bot"
-msgstr "Slack 机器人"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2397
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5063
-msgid "Slack · Google Meet"
-msgstr "Slack · Google Meet"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:104
-msgid "Smarter weeks, fewer back-to-backs."
-msgstr "更聪明的一周,更少的连轴转。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:91
-msgid "Something went wrong. Please try again."
-msgstr "出了点问题,请重试。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:30
-msgid "Sort incoming email into topical labels."
-msgstr "按主题为新到邮件自动分类。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4874
-msgid "Source"
-msgstr "来源"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:40
-msgid "Spot scheduling requests and propose times."
-msgstr "识别约时间的请求并提议时段。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:58
-msgid "Start your day knowing exactly what matters."
-msgstr "每天开始时就知道什么最重要。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4477
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4532
-msgid "Subject"
-msgstr "主题"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2135
-msgid "Suggested"
-msgstr "建议"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:267
-msgid "Summary"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1083
-msgid "Supercharge your agent."
-msgstr "为你的 Agent 加满能量。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1316
-msgid "Teammate"
-msgstr "同事"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2429
-msgid "The bot couldn't complete this meeting."
-msgstr "机器人未能完成这场会议。"
-
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:155
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4774
-msgid "The result is on your board."
-msgstr "结果已在你的看板上。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1094
-msgid ""
-"The runtime is unreachable right now — connection status may be incomplete. "
-"You can continue and connect later."
-msgstr "运行时暂时不可达——连接状态可能不完整。你可以先继续,稍后再连接。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5317
-msgid "The runtime is unreachable right now."
-msgstr "运行时暂时不可达。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_cli_login.ex
 msgid "This CLI login has expired."
@@ -1981,103 +703,6 @@ msgid ""
 "connect or use a different app."
 msgstr "这个飞书应用已连接到另一个 Agent Swarm。当前限制：一个飞书应用只能服务一个 Agent Swarm；请删除现有连接，或改用其他应用。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5694
-msgid "This runtime is not ready. The agent may fail to start."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4473
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4522
-msgid "To"
-msgstr "收件人"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3704
-msgid "To: %{to}"
-msgstr "收件人:%{to}"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:870
-msgid "Toggle any on or off — you can change these later."
-msgstr "任意开关均可切换——之后随时可以更改。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:73
-msgid "Track the companies you care about. Stay ahead."
-msgstr "跟踪你关注的公司,先人一步。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2445
-msgid "Transcript"
-msgstr "转写"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:862
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5226
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5459
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5918
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6076
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6151
-msgid "View audit"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6283
-msgid "View checks"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4945
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4967
-msgid "View delivery"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:856
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4953
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4970
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5451
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5912
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6070
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6143
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7703
-msgid "View events"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6275
-#, fuzzy
-msgid "View in Operations"
-msgstr "在 Fin 中查看"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7695
-msgid "View runners"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:86
-msgid "Walk in knowing who you'll meet and why."
-msgstr "进会议室前就知道见谁、为何而见。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4217
-msgid "Weekly"
-msgstr "每周"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:63
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:66
-msgid "Welcome"
-msgstr "欢迎"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:868
-msgid "What may your agent do for you?"
-msgstr "你的 Agent 可以为你做什么?"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1005
-msgid "Work Patterns"
-msgstr "工作模式"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:958
-msgid "Works with %{count} teammate in %{org}"
-msgid_plural "Works with %{count} teammates in %{org}"
-msgstr[0] "与 %{count} 位同事一起在 %{org} 工作"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1025
-msgid "Writing Style Reference"
-msgstr "写作风格参考"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1038
-msgid "You can edit this later in your agent's memory."
-msgstr "之后可以在 Agent 的记忆中编辑这些内容。"
-
 #: lib/bridge_for_teams_web/controllers/dashboard_cli_login.ex
 msgid "You do not have permission to approve CLI login requests."
 msgstr "你没有批准 CLI 登录请求的权限。"
@@ -2086,448 +711,26 @@ msgstr "你没有批准 CLI 登录请求的权限。"
 msgid "You're all set."
 msgstr "一切就绪。"
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2502
-msgid "Your agent adds work here as it learns your mail, meetings, and tools."
-msgstr "Agent 会在了解你的邮件、会议与工具后,把工作添加到这里。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2422
-msgid "Your agent is in the call, taking notes."
-msgstr "你的 Agent 正在通话中记录笔记。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2419
-msgid "Your agent is joining the call…"
-msgstr "你的 Agent 正在加入通话……"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:581
-msgid "Your agent isn't connected yet — try again shortly."
-msgstr "你的 Agent 尚未连接——请稍后再试。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:25
-msgid "Your inbox, organized without the work."
-msgstr "收件箱井井有条,无需亲自动手。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1292
-msgid "Your profile"
-msgstr "你的档案"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4249
-#, fuzzy
-msgid "connect disabled"
-msgstr "已停用连接。"
-
-#, fuzzy
-msgid "enabled"
-msgstr "启用"
-
-#: lib/bridge_for_teams_web/dashboard/relative_time.ex:16
-msgid "just now"
-msgstr "刚刚"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4251
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6363
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6616
-msgid "not connected"
-msgstr "未连接"
-
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:53
 msgid "or"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6920
-msgid "ready"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4248
-msgid "route ready"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4252
-msgid "route unknown"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4250
-msgid "router missing"
-msgstr ""
-
-#, fuzzy
-msgid "stale"
-msgstr "已安装"
-
 msgid "system"
 msgstr "系统"
-
-#, fuzzy
-msgid "unknown"
-msgstr "时长未知"
 
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:426
 #, fuzzy
 msgid "user"
 msgstr "用户"
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:1436
-msgid "Draft saved, but your agent's copy couldn't be updated just now."
-msgstr "草稿已保存，但暂时无法更新您智能助手中的副本。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1018
-msgid ""
-"Learns how direct and detailed you like messages from how you write in Gmail."
-msgstr "从你在 Gmail 中的写作方式，了解你偏好的消息直接与详尽程度。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1028
-msgid ""
-"Learns the phrases and sign-offs you use from your sent mail, so drafts "
-"sound like you."
-msgstr "从你的已发送邮件中学习你常用的措辞和落款，让草稿更像你的口吻。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1008
-msgid ""
-"Learns your meeting cadence and focus hours from your Google calendar and "
-"mail."
-msgstr "从你的 Google 日历和邮件中了解你的会议节奏和专注时段。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:975
-msgid ""
-"The teammates in your organization your agent can already address by name."
-msgstr "你的助手已能直呼其名的组织内团队成员。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1059
-msgid "When connected"
-msgstr "连接后"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1021
-msgid ""
-"Will learn how direct and detailed you like messages once you connect Google."
-msgstr "连接 Google 后，将了解你偏好的消息直接与详尽程度。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1031
-msgid "Will learn the phrases and sign-offs you use once you connect Google."
-msgstr "连接 Google 后，将学习你常用的措辞和落款。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1011
-msgid ""
-"Will learn your meeting cadence and focus hours once you connect Google."
-msgstr "连接 Google 后，将了解你的会议节奏和专注时段。"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:444
-msgid "%{count} member is waiting for OAuth clients to be configured."
-msgid_plural "%{count} members are waiting for OAuth clients to be configured."
-msgstr[0] ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:494
-msgid ""
-"Add a client ID for GitHub, Google, Linear, Notion, or Slack in Settings."
-msgstr "在设置中添加 GitHub、Google、Linear、Notion 或 Slack 的客户端 ID。"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:508
-msgid "Admins reminded — waiting for configuration"
-msgstr "已提醒管理员，等待配置"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:519
-msgid "Agent Swarm created and an account connected. Your agent is ready."
-msgstr "Agent Swarm 已创建，账号已连接。你的 Agent 已就绪。"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:514
-msgid ""
-"Agent Swarm created, OAuth configured, and an account connected. Your agent "
-"team is ready."
-msgstr "Agent Swarm 已创建，OAuth 已配置，账号已连接。你的 Agent 团队已就绪。"
-
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:624
 msgid "Attachment"
 msgstr "附件"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:497
-msgid "Authorize agents to act on your behalf on the connected platforms."
-msgstr "授权 Agent 在已连接的平台上代表你执行操作。"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:483
-msgid "Complete setup in %{total} steps to put your agent to work."
-msgstr "用 %{total} 个步骤完成设置，让你的 Agent 开始工作。"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:413
-msgid "Complete the action on the page"
-msgstr "在页面中完成上述操作"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:478
-msgid ""
-"Complete the initial setup in %{total} steps to put your team's agents to "
-"work."
-msgstr "用 %{total} 个步骤完成初始设置，让团队的 Agent 开始工作。"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:486
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:395
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:407
-#, fuzzy
-msgid "Configure OAuth clients"
-msgstr "配置 OAuth 客户端"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:487
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:424
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:468
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:480
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:492
-#, fuzzy
-msgid "Connect a third-party account"
-msgstr "连接第三方账号"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:485
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:365
-#, fuzzy
-msgid "Create an Agent Swarm"
-msgstr "创建 Agent Swarm"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:491
-msgid "Each member can create one agent cluster."
-msgstr "每位成员可创建 1 个 Agent 集群。"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:398
-msgid "Exit tour"
-msgstr "退出引导"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:565
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5811
-#, fuzzy
-msgid "File"
-msgstr "文件"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:454
-msgid "Go to Settings → Integrations"
-msgstr "前往设置 → 集成"
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:409
-msgid "Go to Settings → Integrations. Members can only connect a platform in an Agent Swarm after a client ID is configured."
-msgstr "进入「设置 → 集成」。只有配置了客户端 ID，成员才能在 Agent Swarm 中连接对应平台。"
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:493
-msgid "Head back to Agent Swarms and open your Swarm."
-msgstr "回到 Agent Swarms，打开你的 Swarm。"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:557
-msgid "Image"
-msgstr "图片"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:101
-msgid "Maybe later"
-msgstr "稍后再说"
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:454
-msgid ""
-"No OAuth client is configured yet. Finish step 2 (Settings → OAuth apps) "
-"first, then platforms appear here."
-msgstr ""
-"尚未配置 OAuth 客户端。先完成第 2 步（设置 → OAuth 应用），这里才会出现可连接"
-"的平台。"
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:452
-#, fuzzy
-msgid "One step missing"
-msgstr "应用密钥"
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:481
-msgid "Open the “Connections” tab."
-msgstr "打开「连接」标签页。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_projects.ex:85
 msgid ""
 "Org members can create only one Agent Swarm; you have already created yours."
 msgstr "普通成员只能创建一个 Agent Swarm；你已经创建过了。"
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:426
-msgid ""
-"Pick a platform, click “Connect”, and finish the authorization on the "
-"provider's page."
-msgstr "选择一个平台，点击「连接」，并在提供方页面完成授权。"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:129
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:361
-msgid "Quick setup"
-msgstr "快速上手"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:292
-msgid "Remind the admins"
-msgstr "提醒管理员"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:289
-msgid "Reminded"
-msgstr "已提醒"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:505
-msgid "Requires “Configure OAuth clients” first"
-msgstr "需先完成「配置 OAuth 客户端」"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:490
-msgid "Set up your first agent cluster."
-msgstr "建立你的第一个 Agent 集群。"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:175
-msgid "Setup complete!"
-msgstr "设置完成！"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:165
-msgid "Skip setup"
-msgstr "跳过设置"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:411
-msgid "Skip this step"
-msgstr "跳过此步"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:108
-msgid "Start setup"
-msgstr "开始设置"
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:322
-msgid "Step %{n} of %{total}"
-msgstr "第 %{n} 步，共 %{total} 步"
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:268
-msgid ""
-"The admins were already notified — hang tight while they configure OAuth."
-msgstr "已提醒过管理员，请等待配置完成。"
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:438
-msgid "Waiting for an admin"
-msgstr "等待管理员配置"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:510
-msgid "Waiting for an admin to configure OAuth"
-msgstr "等待管理员配置 OAuth"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:73
-#, fuzzy
-msgid "Welcome, %{name}"
-msgstr "欢迎"
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:276
-msgid "Your org admins were asked to configure OAuth under Settings → Integrations."
-msgstr "已通知组织管理员在「设置 → 集成」中完成配置。"
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:440
-msgid ""
-"Your organization has no OAuth clients configured yet. Click “Remind the "
-"admins” — once configured, the platforms appear here."
-msgstr ""
-"组织还没有配置 OAuth 客户端。点击「提醒管理员」，配置完成后这里会出现可连接的"
-"平台。"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:145
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4597
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4634
-msgid "Disabled"
-msgstr "已停用"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:141
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:143
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4596
-msgid "Enabled"
-msgstr "已启用"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4891
-#, fuzzy
-msgid "Add task"
-msgstr "添加任务"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5844
-msgid "Attach files or images — or drop them anywhere on this box"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4878
-msgid "Category"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:401
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3676
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3734
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3782
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3924
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3972
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4029
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4103
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4152
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4192
-msgid "Completed"
-msgstr "已完成"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4097
-#, fuzzy
-msgid "Delete task"
-msgstr "删除"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2869
-msgid "Drag to rearrange"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4867
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7478
-#, fuzzy
-msgid "Instructions"
-msgstr "集成"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3874
-msgid "Live from connected repos"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4087
-msgid "Mark as Complete"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5165
-#, fuzzy
-msgid "New chat"
-msgstr "新建 Agent"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2545
-msgid "Nothing needs your review right now."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2536
-msgid "Show more"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:395
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:616
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:497
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3752
-msgid "Skills"
-msgstr "技能"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2511
-msgid "Start a task"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5718
-msgid "Start a task…"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2550
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:319
-#, fuzzy
-msgid "Suggestions"
-msgstr "建议"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:351
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:474
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5563
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5607
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5618
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4078
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6193
-msgid "Task"
-msgstr "任务"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5453
-msgid "Task handed to your agent"
-msgstr "任务已交给你的 Agent"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:386
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:613
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:335
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:201
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2492
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3730
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5888
-msgid "Tasks"
-msgstr "任务"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1741
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2085
@@ -2547,34 +750,9 @@ msgstr "账号"
 msgid "Agent Swarms exist, but no runner is connected."
 msgstr "已有 Agent Swarm，但没有已连接的 Runner。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3708
-msgid "Agent runtime rebound. Reconcile enqueued."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2551
-msgid "Agent runtime status is unavailable right now. Retry shortly."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6957
-#, fuzzy
-msgid ""
-"An organization admin must configure this OAuth app before accounts can be "
-"connected."
-msgstr ""
-"组织管理员需先在“设置 → OAuth”中添加 OAuth 客户端 ID，之后才能连接账号。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6951
-#, fuzzy
-msgid "Configure in org settings"
-msgstr "前往设置配置"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1334
 msgid "Could not disconnect the device."
 msgstr "无法断开该设备。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2557
-msgid "Could not load agent runtime status."
-msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2548
 #, fuzzy
@@ -2585,63 +763,24 @@ msgstr "无法重新绑定运行时。"
 msgid "Couldn't create the runner install command (%{reason})."
 msgstr "无法创建 runner 安装命令（%{reason}）。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7495
-#, fuzzy
-msgid "Create skill"
-msgstr "已创建"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7636
-msgid "Custom skill"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1337
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1375
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1382
 msgid "Device not found."
 msgstr "未找到该设备。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5632
-msgid ""
-"External Codex agents run on a connected device and are created as workers."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1736
 msgid "Give the skill a name (letters or numbers)."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7569
-msgid "Imported"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7635
-msgid "Imported skill"
-msgstr ""
+msgstr "请为技能命名（使用字母或数字）。"
 
 msgid "Latest device event: %{summary}"
 msgstr "最近设备事件：%{summary}"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2554
-msgid "Loading agent runtime status timed out. Retry shortly."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7367
-msgid "New skill"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6903
-msgid "No OAuth platforms available"
-msgstr ""
 
 msgid "No device diagnostic observed"
 msgstr "尚未观测到设备诊断"
 
 msgid "No runner heartbeat observed"
 msgstr "尚未观测到 Runner 心跳"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6904
-msgid ""
-"No supported OAuth platforms were returned by the runtime. Retry shortly."
-msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:994
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:641
@@ -2656,29 +795,21 @@ msgstr "只有 Agent Swarm 管理员才能管理设备。"
 msgid "Only organization admins can manage plugins."
 msgstr "只有组织管理员才能管理插件。"
 
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:394
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:615
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3744
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3749
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7083
-msgid "Plugins"
-msgstr "插件"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2112
 msgid "SKILL.md frontmatter is missing its closing --- delimiter"
-msgstr ""
+msgstr "SKILL.md 的 frontmatter 缺少结尾的 --- 分隔符"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2115
 msgid "SKILL.md frontmatter needs a non-empty name (letters or numbers)"
-msgstr ""
+msgstr "SKILL.md 的 frontmatter 需要非空的 name（字母或数字）"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2101
 msgid "SKILL.md must be smaller than 200 KB."
-msgstr ""
+msgstr "SKILL.md 必须小于 200 KB。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2109
 msgid "SKILL.md must start with YAML frontmatter delimited by ---"
-msgstr ""
+msgstr "SKILL.md 必须以 --- 分隔的 YAML frontmatter 开头"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2512
 msgid "Select a connected device."
@@ -2691,122 +822,28 @@ msgstr "请选择一台在线的 runner。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1728
 msgid "Skill created."
-msgstr ""
+msgstr "已创建技能。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1777
 msgid "Skill deleted."
-msgstr ""
+msgstr "已删除技能。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2074
 msgid "Skill uploaded."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7621
-msgid "Stored as %{location}"
-msgstr "存储为 %{location}"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6897
-msgid ""
-"Supported OAuth platforms appear here. Organization OAuth settings control "
-"whether authorization can start."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7634
-msgid "System skill"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7432
-msgid "System skills"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2103
-msgid "The file could not be uploaded. Please try again."
-msgstr ""
+msgstr "已上传技能。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2118
-#, fuzzy
 msgid "The runtime is unreachable right now. Try again shortly."
-msgstr "运行时暂时不可达。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5804
-msgid "Too large — files can be up to 10 MB"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5805
-msgid "Unsupported file type"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7361
-msgid "Upload"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5807
-msgid "Upload failed"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5858
-msgid "Upload files"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5867
-msgid "Upload images"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5806
-msgid "You can attach up to 8 files"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6921
-msgid "setup required"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3596
-#, fuzzy
-msgid "%{count} need attention"
-msgstr "%{count} 位参会者"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3595
-#, fuzzy
-msgid "%{count} on track"
-msgstr "%{count} 条字幕"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3646
-#, fuzzy
-msgid "%{count} runs"
-msgstr "%{count} 个已完成"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3597
-#, fuzzy
-msgid "%{count} unknown"
-msgstr "%{count} 个已完成"
+msgstr "运行时暂时无法访问，请稍后重试。"
 
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:421
 msgid "%{name}'s Swarm"
 msgstr "%{name} 的 Swarm"
 
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:78
-msgid "Artifact not found."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1135
-msgid "Ask a swarm owner"
-msgstr "请联系 Swarm 所有者"
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:732
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3184
 msgid "Composio isn't configured for your organization yet."
 msgstr "你的组织尚未配置 Composio。"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:1148
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7045
-msgid ""
-"Connections need a Composio API key configured once for your organization."
-msgstr "连接第三方账号前，需要先为你的组织配置一次 Composio API Key。"
-
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:139
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4758
-msgid "Content unavailable right now."
-msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
 msgid "Couldn't remove the Composio settings (%{reason})."
@@ -2816,325 +853,35 @@ msgstr "无法移除 Composio 设置（%{reason}）。"
 msgid "Couldn't save the Composio settings (%{reason})."
 msgstr "无法保存 Composio 设置（%{reason}）。"
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2921
-msgid "Device list is unavailable right now."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2893
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5225
-msgid "Drag to resize"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4798
-msgid "Earlier runs"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2585
-msgid "Hold a card to drag it; pull the corner to resize."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:362
-msgid "Inbox triage, drafted replies, and mail digests."
-msgstr "收件箱整理、草拟回复与邮件摘要。"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:329
-msgid "Loading"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:136
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4755
-msgid "Loading the full content…"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:365
-msgid "Meeting briefings and a smarter, rebalanced week."
-msgstr "会议简报，以及更聪明、更均衡的一周日程。"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:227
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:605
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:114
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:117
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:200
-msgid "My Space"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:424
 msgid "My Swarm"
 msgstr "我的 Swarm"
 
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:176
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4814
-msgid "New"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2925
-#, fuzzy
-msgid "No devices connected yet."
-msgstr "暂无设备"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2976
-msgid "Nothing here yet — your agent fills this in."
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:208
 msgid "Only this swarm's owners can connect accounts."
 msgstr "只有该 Swarm 的所有者才能连接账号。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4783
-msgid "Open full view"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2595
-msgid "Reset layout"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/artifact_live/show.ex:161
-msgid "Run history"
-msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_cli_login.ex
 #: lib/bridge_for_teams_web/controllers/dashboard_cli_login.ex
 msgid "Select at least one organization."
 msgstr "请至少选择一个组织。"
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2582
-msgid "Space widget"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:735
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3190
 msgid "The platform rejected the connection request."
 msgstr "平台拒绝了本次连接请求。"
 
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:330
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4636
-msgid "Unavailable"
-msgstr "暂不可用"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2939
-msgid "Unnamed device"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live/artifact_blocks.ex:261
-msgid "Unrecognized content"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3385
-msgid "commit · %{repos} repos"
-msgid_plural "commits · %{repos} repos"
-msgstr[0] ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3542
-msgid "company in the portfolio"
-msgid_plural "companies in the portfolio"
-msgstr[0] ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3337
-msgid "draft waiting for review"
-msgid_plural "drafts waiting for review"
-msgstr[0] ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3430
-msgid "workspace update"
-msgid_plural "workspace updates"
-msgstr[0] ""
-
-msgid "Approve"
-msgstr ""
-
-msgid "Approved. Return to the terminal to finish login."
-msgstr ""
-
-msgid ""
-"Confirm the terminal login request before the CLI can receive a bearer "
-"session."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2260
-msgid "Deploying…"
-msgstr "部署中……"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live.ex:201
-msgid "Only organization admins can connect accounts."
-msgstr "只有组织管理员可以连接账号。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3479
-msgid "Nothing connected yet."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:167
-msgid "Won't show again"
-msgstr "不会再显示"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:295
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:502
-msgctxt "onboarding"
-msgid "Configure"
-msgstr "去配置"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:503
-msgctxt "onboarding"
-msgid "Connect"
-msgstr "去连接"
-
-#: lib/bridge_for_teams_web/dashboard/components/onboarding_components.ex:501
-msgctxt "onboarding"
-msgid "Create"
-msgstr "去创建"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2679
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5238
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5239
-msgid "Back to assistant"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5221
-msgid "Chat"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5248
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5249
-msgid "Expand chat"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5380
-msgid "Hit a wall"
-msgstr "遇到问题"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2648
-#, fuzzy
-msgid "Open chat"
-msgstr "在 Gmail 中打开"
-
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:57
-#: lib/bridge_for_teams_web/dashboard/live/onboarding_live/catalog.ex:313
-#, fuzzy
-msgid "Stay informed"
-msgstr "掌握动态"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4687
-#, fuzzy
-msgid "These are on your General tasks list — check them off there."
-msgstr "这些已在你的常规任务列表——在那里逐一勾选。"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:183
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5370
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5373
-msgid "Thinking"
-msgstr "思考中"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5377
-msgid "Typing"
-msgstr "正在输入"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5386
-msgid "Working"
-msgstr "处理中"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3156
-msgid "Gmail"
-msgstr "Gmail"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3157
-msgid "Google Calendar"
-msgstr "Google 日历"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3164
-msgid "Read and send email on your behalf."
-msgstr "代表你读取和发送邮件。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3167
-msgid "See and manage your calendar events."
-msgstr "查看和管理你的日历事件。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3170
-msgid "Work with issues, pull requests, and repositories."
-msgstr "处理 issue、pull request 和代码仓库。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3172
-msgid "Track issues and projects."
-msgstr "跟踪 issue 和项目。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3175
-msgid "Read and update your Notion workspace."
-msgstr "读取和更新你的 Notion 工作区。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3177
-msgid "Post and read messages in Slack."
-msgstr "在 Slack 中发送和读取消息。"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3187
 msgid "Could not start the connection. Please try again."
 msgstr "无法发起连接，请重试。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6982
-msgid "App connections via Composio"
-msgstr "通过 Composio 连接应用"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6985
-msgid ""
-"Connect toolkits through Composio so this Agent Swarm's agents can act in "
-"them. Managed once for your organization with a single Composio API key."
-msgstr ""
-"通过 Composio 连接工具包，让此 Agent Swarm 的 Agent 可以在其中执行操作。只需"
-"为你的组织配置一次 Composio API Key 即可统一管理。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6992
-msgid ""
-"The runtime is unreachable right now — connection status may be incomplete. "
-"Retry shortly."
-msgstr "运行时暂时不可达——连接状态可能不完整。请稍后重试。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7035
-msgid "Ask a swarm admin"
-msgstr "请联系 Swarm 管理员"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7054
-msgid ""
-"An organization admin must configure it before accounts can be connected."
-msgstr "组织管理员需要先完成配置，才能连接账号。"
 
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:172
 msgid "Back to sign in"
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5339
-msgid ""
-"Copy this token now — it is shown only once and cannot be recovered later. "
-"It expires %{at} and can seed the My Space board for this Agent Swarm."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:888
-msgid "Could not mint a data-import token."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5218
-msgid "Data import"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5335
-msgid "Data-import token"
-msgstr ""
-
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:166
 msgid "Email me a sign-in link"
 msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5363
-msgid "Import command"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:867
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:884
-#, fuzzy
-msgid "Only Agent Swarm admins can mint a data-import token."
-msgstr "只有 Agent Swarm 管理员才能管理集成。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:3946
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:4059
-#, fuzzy
-msgid "Open task"
-msgstr "打开"
 
 #: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex:146
 #, fuzzy
@@ -3152,87 +899,11 @@ msgid ""
 "instead."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5344
-#, fuzzy
-msgid "Token"
-msgstr "tokens"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:154
-msgid "%{name} is required"
-msgstr "%{name} 为必需插件"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7192
-msgid "%{enabled} enabled · %{disabled} disabled"
-msgstr "%{enabled} 个已启用 · %{disabled} 个已停用"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:403
-msgid "Add %{type} reference"
-msgstr "添加%{type}引用"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:496
-msgid "Add a canonical tool id, then press Enter."
-msgstr "输入标准工具 ID，然后按 Enter。"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:501
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:503
-msgid "Add a provider or JSON requirement, then press Enter."
-msgstr "输入提供方或 JSON 要求，然后按 Enter。"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:497
-msgid "Add a skill id or wildcard, then press Enter."
-msgstr "输入技能 ID 或通配符，然后按 Enter。"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:499
-msgid "Add an MCP binding or capability ref, then press Enter."
-msgstr "输入 MCP 绑定或能力引用，然后按 Enter。"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:413
-msgid "Advanced JSON"
-msgstr "高级 JSON"
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:67
-msgid "Agent Swarm connections"
-msgstr "Agent Swarm 连接"
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:69
-msgid "Agent Swarm devices"
-msgstr "Agent Swarm 设备"
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:68
-msgid "Agent Swarm integrations"
-msgstr "Agent Swarm 集成"
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:66
-msgid "Agent Swarm skills"
-msgstr "Agent Swarm 技能"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4595
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5945
-msgid "All"
-msgstr "全部"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7254
-msgid "All sources"
-msgstr "全部来源"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:396
-msgid "Capability reference"
-msgstr "能力引用"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1917
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1980
 #: lib/bridge_for_teams_web/controllers/dashboard_plugins.ex:76
 msgid "Choose a valid setup destination."
 msgstr "请选择有效的设置目标。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7322
-msgid "Clear filters"
-msgstr "清除筛选"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:84
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:198
-msgid "Close navigation"
-msgstr "关闭导航"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_plugins.ex:36
 msgid "Could not load plugins."
@@ -3242,121 +913,19 @@ msgstr "无法加载插件。"
 msgid "Could not update plugin state."
 msgstr "无法更新插件状态。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7313
-msgid "Create a project plugin or add one in the organization catalog."
-msgstr "创建项目插件，或从组织目录添加插件。"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1719
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2063
-#, fuzzy
 msgid "Create an Agent Swarm agent first."
-msgstr "创建 Agent Swarm"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:249
-msgid "Create plugin"
-msgstr "创建插件"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7407
-msgid "Created here, uploaded, or saved by this Agent Swarm from chat."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7405
-msgid "Custom skills"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7532
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7584
-#, fuzzy
-msgid "Delete this skill? This Agent Swarm loses it immediately."
-msgstr "删除此计划任务？它将立即停止触发。"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:218
-msgid "Description"
-msgstr "描述"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:157
-msgid "Disable %{name}"
-msgstr "停用%{name}"
+msgstr "请先创建一个 Agent Swarm 智能体。"
 
 #: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:370
 msgid "Each capability category must be an array."
 msgstr "每个能力类别都必须是数组。"
 
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:92
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:486
-msgid "Edit %{name}"
-msgstr "编辑%{name}"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:91
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:348
-msgid "Edit plugin"
-msgstr "编辑插件"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:158
-msgid "Enable %{name}"
-msgstr "启用%{name}"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:235
-msgid ""
-"Group existing capabilities into this plugin. Add one reference at a time."
-msgstr "将现有能力组合到此插件中，每次添加一个引用。"
-
 #: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:109
 #: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:498
 msgid "MCP"
 msgstr "MCP"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7351
-msgid "Managed through %{agent}."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7455
-#, fuzzy
-msgid "New Agent Swarm skill"
-msgstr "新建 Agent Swarm"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:489
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7204
-msgid "New project plugin"
-msgstr "新建项目插件"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7414
-msgid "No custom skills yet."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:60
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:274
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7100
-msgid "No description"
-msgstr "无描述"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7305
-msgid "No matching plugins"
-msgstr "没有匹配的插件"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7304
-msgid "No plugins yet"
-msgstr "暂无插件"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7389
-msgid "No runtime agent yet"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:227
-msgid "No setup link"
-msgstr "无设置链接"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7441
-msgid "No system skills are projected in this environment."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:500
-msgid "OAuth"
-msgstr "OAuth"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:367
-msgid "Object refs must be JSON objects."
-msgstr "对象引用必须是 JSON 对象。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1823
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1882
@@ -3370,30 +939,8 @@ msgstr "只有 Agent Swarm 管理员才能管理插件。"
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1715
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1758
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2060
-#, fuzzy
 msgid "Only Agent Swarm admins can manage skills."
-msgstr "只有 Agent Swarm 管理员才能管理访问权限。"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:66
-msgid "Open navigation"
-msgstr "打开导航"
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:73
-msgid "Organization Composio settings"
-msgstr "组织 Composio 设置"
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:72
-msgid "Organization Feishu settings"
-msgstr "组织飞书设置"
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:71
-msgid "Organization OAuth settings"
-msgstr "组织 OAuth 设置"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:451
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:624
-msgid "Organization plugins"
-msgstr "组织插件"
+msgstr "只有 Agent Swarm 管理员才能管理技能。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1898
 msgid "Plugin created: %{id}."
@@ -3412,35 +959,9 @@ msgstr "已停用插件。"
 msgid "Plugin enabled."
 msgstr "已启用插件。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1965
-msgid "Plugin is required."
-msgstr "必须指定插件。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7251
-msgid "Plugin source"
-msgstr "插件来源"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7264
-msgid "Plugin state"
-msgstr "插件状态"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1957
 msgid "Plugin updated."
 msgstr "已更新插件。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7222
-msgid "Plugins unavailable"
-msgstr "插件不可用"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4961
-msgid "Project operations"
-msgstr "项目操作"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7434
-msgid ""
-"Read-only playbooks projected into this Agent Swarm by the runtime and "
-"plugins."
-msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:369
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1909
@@ -3449,68 +970,9 @@ msgstr ""
 msgid "Refs JSON must be an object."
 msgstr "引用 JSON 必须是对象。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7348
-msgid "Reusable playbooks available to this Agent Swarm."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:247
-msgid "Saving..."
-msgstr "正在保存…"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7244
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7245
-msgid "Search plugins"
-msgstr "搜索插件"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:224
-msgid "Setup destination"
-msgstr "设置目标"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7620
-#, fuzzy
-msgid "Shared with this Agent Swarm as SKILL.md."
-msgstr "以 SKILL.md 形式共享给你的智能体。"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:448
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:268
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7255
-msgid "System"
-msgstr "系统"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7212
-msgid "The runtime group is not ready yet. Retry shortly."
-msgstr "运行时尚未就绪，请稍后重试。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7383
-#, fuzzy
-msgid ""
-"The runtime is unreachable right now; skills may be incomplete. Refresh to "
-"retry."
-msgstr "运行时暂时不可达。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1867
-msgid "This plugin cannot be edited here."
-msgstr "无法在此处编辑此插件。"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:496
-msgid "Tools"
-msgstr "工具"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7314
-msgid "Try a different search or clear the filters."
-msgstr "请尝试其他搜索条件或清除筛选。"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2102
 msgid "Upload a Markdown file with SKILL.md frontmatter."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7473
-msgid "When should the Agent Swarm use it?"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:368
-msgid "Enter valid JSON."
-msgstr "请输入有效的 JSON。"
+msgstr "请上传带有 SKILL.md frontmatter 的 Markdown 文件。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_runners.ex
 msgid "After the smoke succeeds, start the managed login service."
@@ -3548,75 +1010,9 @@ msgstr "运行时超时"
 msgid "runtime unavailable"
 msgstr "运行时不可用"
 
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:429
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:446
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:623
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:624
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:625
-msgid "Administration"
-msgstr "管理"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:579
-msgid "Close navigation search"
-msgstr "关闭导航搜索"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:356
-msgid "Current Agent Swarm"
-msgstr "当前 Agent Swarm"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:603
-msgid "Navigation search results"
-msgstr "导航搜索结果"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:632
-msgid "No matching navigation destinations"
-msgstr "没有匹配的导航项"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:224
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:605
-msgid "Personal"
-msgstr "个人"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:221
-msgid "Primary navigation"
-msgstr "主导航"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:214
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:588
-msgid "Search navigation"
-msgstr "搜索导航"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:596
-msgid "Search pages and Agent Swarm sections"
-msgstr "搜索页面和 Agent Swarm 分区"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:385
-msgid "Work"
-msgstr "工作"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7399
-msgid "Go to Agents"
-msgstr "前往 Agents"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1087
 msgid "Router agents cannot be archived."
 msgstr "不能归档 router Agent。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4265
-msgid ""
-"The Agent Swarm router is not ready. Retry checks shortly; if this persists, "
-"contact support."
-msgstr ""
-"Agent Swarm router 尚未就绪。请稍后重试检查；若问题持续存在，请联系支持人员。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7390
-msgid "Create or bind an Agent before managing Agent Swarm skills."
-msgstr "请先创建或绑定 Agent，再管理 Agent Swarm 技能。"
-
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:245
-msgid "%{count} task"
-msgid_plural "%{count} tasks"
-msgstr[0] "%{count} 个任务"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1173
 msgid "Choose an agent for this task."
@@ -3630,38 +1026,9 @@ msgstr "无法创建任务。"
 msgid "Only Agent Swarm admins can manage tasks."
 msgstr "只有 Agent Swarm 管理员才能管理任务。"
 
-#: lib/bridge_for_teams_web/dashboard/live/home_live.ex:196
-msgid "Recorded tasks"
-msgstr "已记录任务"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:877
-msgid "Steer this task to get started."
-msgstr "引导此任务以开始处理。"
-
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:70
 msgid "Task not found."
 msgstr "未找到任务。"
-
-#: lib/bridge_for_teams_web/dashboard/onboarding.ex:367
-msgid ""
-"Open Agent Swarms in the sidebar. Your agents, tasks, and third-party "
-"connections all live inside a Swarm."
-msgstr ""
-"从左侧导航进入 Agent Swarms。你的 Agent、任务与第三方连接都归属于一个 Swarm。"
-
-#: lib/bridge_for_teams_web/dashboard/plugin_form.ex:70
-msgid "Agent Swarm agents"
-msgstr "Agent Swarm Agent"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:343
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3972
-msgid "Untitled task"
-msgstr "未命名任务"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:372
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:373
-msgid "Agent Swarm settings"
-msgstr "Agent Swarm 设置"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:631
 msgid "Cloud computer disabled for this Agent Swarm."
@@ -3679,80 +1046,6 @@ msgstr "无法更新云电脑设置。"
 msgid "Couldn't remove the runner (%{reason})."
 msgstr "无法删除 runner（%{reason}）。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6263
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6317
-msgid "Messaging integrations"
-msgstr "消息集成"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6265
-msgid ""
-"Connect Feishu or Slack so this Agent Swarm can receive messages and reply "
-"in your team's workspace."
-msgstr "连接飞书或 Slack，让此 Agent Swarm 能在团队工作区中接收并回复消息。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6332
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6411
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6448
-msgid "Receive group mentions and route them to this Agent Swarm."
-msgstr "接收群聊中的 @消息并路由到此 Agent Swarm。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6473
-msgid ""
-"Add a Feishu app at the organization level and enable it for group bot "
-"messaging. Credentials are reused automatically."
-msgstr "在组织中添加飞书应用并启用群机器人消息；凭据会自动复用。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6477
-msgid "Configure Feishu app"
-msgstr "配置飞书应用"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6571
-msgid "Message route details"
-msgstr "消息路由详情"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6575
-msgid ""
-"Feishu group messages for this connect route to this Agent Swarm. Feishu "
-"callback HTTP 200 only proves the provider reached Salix; the message route "
-"and selected Router determine whether the bot replies."
-msgstr ""
-"飞书群消息会通过此连接路由到该 Agent Swarm。HTTP 200 仅表示服务已收到飞书回"
-"调；消息路由和选定的 Router 决定机器人是否回复。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6366
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6425
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6619
-msgid "Receive app mentions and send replies in Slack."
-msgstr "接收 Slack 中的 @应用消息并发送回复。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6627
-msgid "Set up Slack"
-msgstr "配置 Slack"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6627
-msgid "Add another Slack connect"
-msgstr "添加另一个 Slack 连接"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6634
-msgid ""
-"Open Slack with the app settings pre-filled, then choose a workspace and "
-"confirm."
-msgstr "在 Slack 中打开预填的应用配置，然后选择工作区并确认。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6650
-msgid "View manifest and callback URLs"
-msgstr "查看清单和回调 URL"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6661
-msgid "Copy manifest"
-msgstr "复制清单"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6337
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6371
-msgid "%{count} connection"
-msgid_plural "%{count} connections"
-msgstr[0] "%{count} 个连接"
-
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:271
 msgid "%{period} %{hour} o'clock"
 msgstr "%{period} %{hour} 点"
@@ -3765,10 +1058,6 @@ msgstr "%{period} %{hour} 点 %{minute} 分"
 msgid "%{schedule} (%{timezone})"
 msgstr "%{schedule}（%{timezone}）"
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1114
-msgid "At a fixed time"
-msgstr "固定时间"
-
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:184
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:192
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:201
@@ -3777,14 +1066,6 @@ msgstr "固定时间"
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:227
 msgid "Custom schedule"
 msgstr "自定义计划"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1136
-msgid "Cron expression"
-msgstr "Cron 表达式"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1186
-msgid "Days"
-msgstr "天"
 
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:207
 msgid "Enter a valid schedule."
@@ -3841,25 +1122,9 @@ msgstr "每年 %{month} 月 %{day} 日%{time}"
 msgid "Friday"
 msgstr "周五"
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1183
-msgid "Hours"
-msgstr "小时"
-
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:299
 msgid "Monday"
 msgstr "周一"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1180
-msgid "Minutes"
-msgstr "分钟"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1130
-msgid "Repeat after a duration"
-msgstr "按周期"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1162
-msgid "Repeat every"
-msgstr "每隔"
 
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:304
 msgid "Saturday"
@@ -3868,10 +1133,6 @@ msgstr "周六"
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:88
 msgid "Schedule not configured"
 msgstr "未设置计划"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1099
-msgid "Schedule type"
-msgstr "计划类型"
 
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:120
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:163
@@ -3885,10 +1146,6 @@ msgstr "周日"
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:302
 msgid "Thursday"
 msgstr "周四"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1148
-msgid "Time zone"
-msgstr "时区"
 
 #: lib/bridge_for_teams_web/dashboard/schedule_presentation.ex:300
 msgid "Tuesday"
@@ -3918,331 +1175,29 @@ msgstr "上午"
 msgid "noon"
 msgstr "中午"
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:403
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2133
-msgid "Cancelled"
-msgstr "已取消"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:990
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1219
-msgid "Add schedule"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:210
-#, fuzzy
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex:162
 msgid "Could not save the task schedule."
-msgstr "草稿保存失败。"
+msgstr "无法保存任务计划。"
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:235
-#, fuzzy
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex:173
 msgid "Could not update the task schedule."
-msgstr "无法更新访问权限。"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1226
-msgid "Delete schedule"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2283
-msgid "I accepted this suggestion — go ahead: %{title}"
-msgstr "我已接受这条建议，请开始执行：%{title}"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:499
-msgid "Loading earlier activity…"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:484
-msgid "Loading session activity…"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:486
-msgid "No session activity recorded"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:340
-msgid "Operation"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:482
-msgid "Operation timeline"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2552
-msgid "Proposed by your agent."
-msgstr "由你的 Agent 提议。"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:222
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:269
-#, fuzzy
-msgid "Runtime event"
-msgstr "运行时"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:832
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6036
-#, fuzzy
-msgid "Scheduled"
-msgstr "计划"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:55
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:476
-#, fuzzy
-msgid "Session activity"
-msgstr "会话"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:481
-msgid "Session activity timeline"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:485
-msgid "Session activity unavailable"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:239
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:282
-#, fuzzy
-msgid "Session record"
-msgstr "会话"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:64
-msgid "Session record not found."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6060
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6061
-msgid "Task actions"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:872
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:5515
-msgid "Task conversation"
-msgstr "任务会话"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:958
-msgid "Task details"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:846
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:847
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5902
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5903
-msgid "Task operations"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:981
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1091
-#, fuzzy
-msgid "Task schedule"
-msgstr "自定义计划"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:201
-msgid "Task schedule saved."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:232
-msgid "Task schedule updated."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:485
-msgid "The runtime session record could not be loaded."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:486
-msgid "This session has no records yet."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:454
-#, fuzzy
-msgid "Time unavailable"
-msgstr "运行时不可用"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:316
-msgid "Tool call"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:213
-#, fuzzy
-msgid "Tool result"
-msgstr "工具"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1218
-#, fuzzy
-msgid "Update schedule"
-msgstr "更新时间"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:548
-msgid "Restart onboarding"
-msgstr "重新开始引导流程"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2171
-#, fuzzy
-msgid "%{count} task for you to review."
-msgid_plural "%{count} tasks for you to review."
-msgstr[0] "%{count} 项任务待你审阅。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2165
-msgid "%{review} for you to review · %{working} in progress with your agent."
-msgstr "%{review} 项待你审阅 · %{working} 项你的 Agent 正在处理。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2187
-msgid "All caught up."
-msgstr "全部处理完毕。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2190
-msgid "Work you and your agent take on shows up here."
-msgstr "你和你的 Agent 接手的工作会显示在这里。"
-
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2179
-msgid "Your agent is working on %{count} task — nothing to review yet."
-msgid_plural "Your agent is working on %{count} tasks — nothing to review yet."
-msgstr[0] "你的 Agent 正在处理 %{count} 项任务——目前没有需要你审阅的内容。"
-
-#: lib/bridge_for_teams_web/dashboard/components/plugin_components.ex:72
-msgid "%{name} needs setup"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4622
-msgid "Additional access required"
-msgstr "需要额外授权"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4627
-msgid "Authorization pending"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7072
-msgid "Back to plugins"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7189
-msgid "Choose which products this Agent Swarm can use."
-msgstr "选择此 Agent Swarm 可以使用的产品。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4616
-msgid "Composio direct API"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5024
-msgid ""
-"Composio hosts the account connection. It enables direct API tools only and "
-"is never used as an MCP credential."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4635
-#, fuzzy
-msgid "Configuration conflict"
-msgstr "配置"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5080
-#, fuzzy
-msgid "Connecting..."
-msgstr "连接"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4618
-#, fuzzy
-msgid "Connection"
-msgstr "连接"
+msgstr "无法更新任务计划。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4762
-#, fuzzy
 msgid "Connection disconnected."
-msgstr "连接"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4387
-#, fuzzy
-msgid "Credential for %{names} MCP"
-msgid_plural "Credential for %{names} MCPs"
-msgstr[0] "凭据"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4633
-msgid "Degraded"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5038
-msgid "Dependent MCP servers"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4628
-msgid "Direct API connection"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5006
-msgid ""
-"Disconnecting removes this credential from the plugin and its dependent MCP "
-"servers. You can reconnect at any time."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5079
-#, fuzzy
-msgid "Disconnecting..."
-msgstr "断开连接"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4478
-msgid "MCP Server"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7124
-msgid "MCP servers"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4615
-#, fuzzy
-msgid "Managed OAuth"
-msgstr "托管"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4617
-#, fuzzy
-msgid "Messaging connection"
-msgstr "消息"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4614
-msgid "Native MCP OAuth"
-msgstr "原生 MCP OAuth"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4621
-#, fuzzy
-msgid "Not connected"
-msgstr "未连接"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5057
-msgid ""
-"Nothing is connected until you continue to the provider and approve access."
-msgstr ""
+msgstr "连接已断开。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4653
-#, fuzzy
 msgid "Only Agent Swarm admins can connect plugins."
-msgstr "只有 Agent Swarm 管理员才能连接账号。"
+msgstr "只有 Agent Swarm 管理员才能连接插件。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2545
 msgid "Only existing external workers can be rebound."
 msgstr "只有现有的外部 Worker 可以重新绑定。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2542
-msgid "Only worker agents can be rebound to an external runtime."
-msgstr "只有 Worker Agent 可以重新绑定到外部运行时。"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4704
 msgid "Plugin connection was not found."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7067
-msgid "Plugin not found"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4631
-msgid "Ready on first use"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4431
-msgid "Reconnect"
-msgstr "重新连接"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4625
-msgid "Reconnect required"
-msgstr "需要重新连接"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4632
-#, fuzzy
-msgid "Running"
-msgstr "运行"
+msgstr "未找到该插件连接。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2513
 msgid "Select an external runtime."
@@ -4253,88 +1208,9 @@ msgid ""
 "Selected external runtime is ambiguous. Select the device and runtime again."
 msgstr "所选外部运行时不唯一。请重新选择设备和运行时。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2536
-msgid "Selected external runtime is no longer available."
-msgstr "所选外部运行时已不可用。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2519
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2533
-msgid "Selected external runtime is not ready."
-msgstr "所选外部运行时尚未就绪。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5012
-msgid ""
-"The MCP server owns this OAuth flow. Comma discovers its authorization server, "
-"registers a client when supported, and stores and refreshes the resulting "
-"credential securely."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5055
-msgid ""
-"The current credential stays active until the new authorization succeeds."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5030
-msgid ""
-"This messaging connection lets the product receive workspace messages and "
-"route replies through this Agent Swarm. Continue to configure the existing "
-"provider integration."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7068
-msgid "This plugin is not available to the Agent Swarm."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:5018
-msgid ""
-"This uses the organization's OAuth app and stores the connected account in "
-"Comma. Resources that explicitly depend on this connection can use it."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:4629
-msgid "Waiting for OAuth"
-msgstr "等待 OAuth"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:340
-msgid "Guidance added."
-msgstr "已添加引导。"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:941
-msgid "Steer this task..."
-msgstr "引导此任务..."
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:948
-msgid "Steer"
-msgstr "引导"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:1058
-msgid "View timeline"
-msgstr "查看时间线"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:969
-msgid "Mark complete"
-msgstr "标记为完成"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:163
-msgid "Task marked complete."
-msgstr "任务已标记为完成。"
-
 #: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:169
 msgid "The task changed. Review it again before completing it."
 msgstr "任务已发生变化。请重新审核后再完成。"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_live/show.ex:404
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:2131
-msgid "Blocked"
-msgstr "已阻塞"
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:487
-msgid "Activity archived"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:487
-msgid "All earlier activity has been archived and is not shown here."
-msgstr ""
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:672
 msgid "Compute environment updated."
@@ -4349,40 +1225,18 @@ msgstr "无法删除该设备。"
 msgid "Could not run Slack calendar checks."
 msgstr ""
 
-#: lib/bridge_for_teams_web/dashboard/live/new_home_live.ex:600
-#, fuzzy
-msgid "Could not start this task."
-msgstr "无法启动该任务。"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:675
 msgid "Could not update Compute environment."
 msgstr "无法更新计算环境。"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
-msgid "Couldn't disable the Feishu bot route (%{reason})."
-msgstr "无法停用飞书机器人路由（%{reason}）。"
 
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:1368
 #, fuzzy
 msgid "Device deleted."
 msgstr "设备已删除。"
 
-#: lib/bridge_for_teams_web/dashboard/live/conversation_session_live/show.ex:500
-msgid "Earlier activity has been archived and is not shown here."
-msgstr ""
-
-#: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
-msgid "Feishu bot route not found."
-msgstr "未找到飞书机器人路由。"
-
 #: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:679
 msgid "Only Agent Swarm admins can manage Compute."
 msgstr "只有 Agent Swarm 管理员才能管理计算资源。"
-
-#: lib/bridge_for_teams_web/dashboard/components/core_components.ex:828
-#, fuzzy
-msgid "Pending"
-msgstr "待处理"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:1075
 msgid "%{label} is unavailable"
@@ -4414,11 +1268,6 @@ msgstr "消息正文无法显示：访问记录写入失败。"
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:279
 msgid "This organization is not connected to Salix yet."
 msgstr "本组织尚未接入 Salix。"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:272
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex:610
-msgid "Triage"
-msgstr "Triage"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:165
 msgid ""
@@ -4483,182 +1332,15 @@ msgstr ""
 "Salix 未在时限内响应，结果无法确认：改动可能已生效，也可能没有。下方状态已在"
 "本次尝试后重新读取，请先核对再重试。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3625
-msgid "Another sign-in flow is already active on this runtime."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7915
-msgid "Check again"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3263
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3394
-msgid "Codex could not complete sign-in. Start again from the runtime row."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3622
-msgid "Codex is already signed in on this runtime."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3255
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3386
-msgid "Codex is not signed in. Start sign-in again from the runtime row."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3238
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3288
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3369
-msgid "Codex is signed in."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3289
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3295
-msgid "Codex sign-in canceled."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2788
-#, fuzzy
-msgid "Continue login"
-msgstr "继续"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7889
-#, fuzzy
-msgid "Copy code"
-msgstr "复制"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3309
-msgid "Could not cancel Codex sign-in. It may still be active on the device."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3335
-msgid "Could not reach the device. Retry Codex sign-in from the runtime row."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3647
-msgid "Could not read Codex sign-in status. Check the device and try again."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3638
-#, fuzzy
-msgid "Could not start Codex sign-in."
-msgstr "无法保存配置。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7896
-msgid "Existing sign-in resumed"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2789
-msgid "Log in"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7738
-msgid "No Codex runtime"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2755
-msgid "Not reported"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2757
-msgid "Not signed in"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7874
-msgid "One-time code"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7853
-msgid ""
-"Open the verification page, enter the one-time code, and return here. Comma "
-"will detect completion automatically."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7869
-msgid "Open verification page"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6762
-msgid "Person"
-msgstr "人员"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7850
-#, fuzzy
-msgid "Sign in to Codex"
-msgstr "登录"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2760
-msgid "Sign-in error"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2759
-msgid "Sign-in not required"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2758
-msgid "Sign-in pending"
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2756
-#, fuzzy
-msgid "Signed in"
-msgstr "登录"
-
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:735
 msgid ""
 "Slack receipt details are unavailable, so source references remain visible "
 "but message text cannot be opened."
 msgstr "Slack 回执详情不可用；来源引用仍会显示，但无法打开消息正文。"
 
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:2761
-#, fuzzy
-msgid "Status unknown"
-msgstr "状态"
-
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:1067
 msgid "That Agent is no longer available."
 msgstr "这个 Agent 已不可用。"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3641
-msgid "The Codex runtime changed while sign-in was active. Start again."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3644
-msgid "The device disconnected while sign-in was active."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3628
-msgid "The device is disconnected."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3635
-msgid "The device is unavailable right now. Try again shortly."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3401
-msgid "The device returned an invalid sign-in status."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3242
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3374
-msgid "This Codex runtime does not require sign-in."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3537
-msgid "This Codex sign-in code expired. Start again from the runtime row."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:3631
-msgid "Update the device connector before signing in from Comma."
-msgstr ""
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7857
-#, fuzzy
-msgid "Verification page"
-msgstr "验证令牌"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:7894
-msgid "Waiting for browser sign-in"
-msgstr ""
 
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:259
 msgid ""
@@ -4687,360 +1369,6 @@ msgid ""
 "The Router session was already switched. The current session is shown below."
 msgstr "Router 会话已被切换。当前会话显示如下。"
 
-#~ msgid "Every assertion has a source"
-#~ msgstr "每条知识都有来源"
-
-#~ msgid "Product identities referenced by sourced assertions"
-#~ msgstr "有来源的知识所引用的产品人员身份"
-
-#~ msgid "Projects referenced by shared knowledge"
-#~ msgstr "共享知识所引用的项目"
-
-#~ msgid "Search people, projects, decisions, or facts"
-#~ msgstr "搜索人员、项目、决定或事实"
-
-#~ msgid ""
-#~ "This knowledge belongs to the project. Agents use it only through their "
-#~ "project access, with the source retained."
-#~ msgstr "这些知识属于项目。Agent 只能通过项目权限使用，并且始终保留来源。"
-
-#~ msgid "%{count} source reference"
-#~ msgid_plural "%{count} source references"
-#~ msgstr[0] "%{count} 条来源引用"
-
-#~ msgid "Acquire"
-#~ msgstr "获取"
-
-#~ msgid "Complete"
-#~ msgstr "完成"
-
-#~ msgid "Confirm and publish"
-#~ msgstr "确认并发布"
-
-#~ msgid "Connect a Slack assistant to this Agent before starting an import."
-#~ msgstr "请先为此 Agent 连接 Slack 助手，然后再开始导入。"
-
-#~ msgid "Derive"
-#~ msgstr "提取"
-
-#~ msgid "Dry run in progress"
-#~ msgstr "预演进行中"
-
-#~ msgid "Dry-run contract"
-#~ msgstr "预演约定"
-
-#~ msgid "Extracting versioned context candidates"
-#~ msgstr "正在提取带版本的上下文候选项"
-
-#~ msgid "Freezing source authority"
-#~ msgstr "正在冻结来源权限范围"
-
-#~ msgid ""
-#~ "It is safe to leave this page. Durable receipts, cursors, and derivation "
-#~ "leases let another process continue after a restart."
-#~ msgstr ""
-#~ "你可以放心离开此页面。持久化的回执、游标和提取租约会让其他进程在重启后继续"
-#~ "处理。"
-
-#~ msgid "Live listening"
-#~ msgstr "实时监听"
-
-#~ msgid "No"
-#~ msgstr "否"
-
-#~ msgid "No eligible public channels are available for this connection."
-#~ msgstr "此连接下没有可导入的公开频道。"
-
-#~ msgid "None"
-#~ msgstr "无"
-
-#~ msgid "Not started"
-#~ msgstr "尚未开始"
-
-#~ msgid ""
-#~ "Nothing below is visible to the Agent until you confirm this exact review "
-#~ "revision."
-#~ msgstr "在你确认当前这版审阅结果前，以下内容不会对 Agent 可见。"
-
-#~ msgid "Preparing the dry run"
-#~ msgstr "正在准备预演"
-
-#~ msgid "Private memory"
-#~ msgstr "私有记忆"
-
-#~ msgid "Public channels"
-#~ msgstr "公开频道"
-
-#~ msgid "Public · bot is visible"
-#~ msgstr "公开 · Bot 可见"
-
-#~ msgid "Publication rolled back"
-#~ msgstr "发布已回滚"
-
-#~ msgid ""
-#~ "Publish this exact snapshot, derivation, and review revision as shared "
-#~ "project context."
-#~ msgstr "将当前精确匹配的快照、提取结果和审阅版本发布为共享项目上下文。"
-
-#~ msgid "Published"
-#~ msgstr "已发布"
-
-#~ msgid "Published context"
-#~ msgstr "已发布的上下文"
-
-#~ msgid "Published now"
-#~ msgstr "当前已发布"
-
-#~ msgid ""
-#~ "Read a recent Slack window, review the proposed context, then publish it "
-#~ "explicitly. Live Triage listening remains a separate switch."
-#~ msgstr ""
-#~ "读取最近一段 Slack 历史，审阅建议的上下文，再明确发布。实时 Triage 监听仍"
-#~ "由独立开关控制。"
-
-#~ msgid "Reading the frozen Slack window"
-#~ msgstr "正在读取已冻结的 Slack 时间范围"
-
-#~ msgid "Review before publishing"
-#~ msgstr "发布前审阅"
-
-#~ msgid "Review before this becomes shared context"
-#~ msgstr "成为共享上下文前请先审阅"
-
-#~ msgid "Rolled back"
-#~ msgstr "已回滚"
-
-#~ msgid "Run evidence and recovery details"
-#~ msgstr "批次证据与恢复详情"
-
-#~ msgid "Selected items"
-#~ msgstr "已选项目"
-
-#~ msgid "Separate"
-#~ msgstr "独立"
-
-#~ msgid "Shared project context"
-#~ msgstr "共享项目上下文"
-
-#~ msgid ""
-#~ "Slack asked Comma to slow down. The retry time is persisted; the worker is "
-#~ "not sleeping while holding the run."
-#~ msgstr ""
-#~ "Slack 要求 Comma 降低请求频率。重试时间已保存；任务会在到点后继续，不会占用"
-#~ "运行中的工作进程等待。"
-
-#~ msgid ""
-#~ "Slack connection state does not delete this source bundle. Retention and "
-#~ "erasure belong to the shared Context Lifecycle."
-#~ msgstr ""
-#~ "Slack 连接状态不会删除这份来源数据包。保留与擦除由统一的共享上下文生命周期"
-#~ "管理。"
-
-#~ msgid "Slack history dry run started. No context has been published."
-#~ msgstr "Slack 历史预演已开始，尚未发布任何上下文。"
-
-#~ msgid ""
-#~ "Slack history onboarding is not enabled in this environment. Existing "
-#~ "published context and rollback remain independent from this launch gate."
-#~ msgstr ""
-#~ "当前环境未启用 Slack 历史导入。已发布上下文和回滚不受此上线开关影响。"
-
-#~ msgid "Slack writes"
-#~ msgstr "写入 Slack"
-
-#~ msgid "Source snapshot"
-#~ msgstr "来源快照"
-
-#~ msgid "Source snapshot frozen"
-#~ msgstr "来源快照已冻结"
-
-#~ msgid "Source writes"
-#~ msgstr "写入来源"
-
-#~ msgid "Start another dry run"
-#~ msgstr "再开始一次预演"
-
-#~ msgid "Start dry run"
-#~ msgstr "开始预演"
-
-#~ msgid "Stopped"
-#~ msgstr "已停止"
-
-#~ msgid ""
-#~ "The Slack history dry run could not be started. Check the selected public "
-#~ "channels and try again."
-#~ msgstr "无法开始 Slack 历史预演。请检查已选公开频道后重试。"
-
-#~ msgid ""
-#~ "The dry run stopped after a non-retryable validation failure. No context "
-#~ "was published."
-#~ msgstr "预演因不可重试的校验失败而停止，未发布任何上下文。"
-
-#~ msgid ""
-#~ "The preview could not be opened. Refresh the run before confirming "
-#~ "anything."
-#~ msgstr "无法打开预览。请先刷新批次状态，再进行确认。"
-
-#~ msgid "The reviewed Slack context is now published."
-#~ msgstr "审阅过的 Slack 上下文现已发布。"
-
-#~ msgid ""
-#~ "The run is paused with durable recovery evidence and will resume only "
-#~ "when its retry boundary is open."
-#~ msgstr "该批次已暂停并保存恢复证据，只会在允许重试后继续。"
-
-#~ msgid ""
-#~ "The server freezes exact UTC bounds when the run starts; reconnect never "
-#~ "reuses an old cursor or snapshot."
-#~ msgstr ""
-#~ "批次开始时，服务端会冻结精确的 UTC 边界；重连不会复用旧游标或旧快照。"
-
-#~ msgid ""
-#~ "The versioned extraction processor is temporarily unavailable. The frozen "
-#~ "Slack snapshot does not need to be fetched again."
-#~ msgstr "带版本的提取处理器暂时不可用；已经冻结的 Slack 快照无需重新获取。"
-
-#~ msgid "This import is no longer grounded"
-#~ msgstr "本次导入不再用于 Triage 上下文"
-
-#~ msgid ""
-#~ "This unfinished run lost its exact Slack source generation. Reconnect and "
-#~ "start a fresh dry run; the old run stays as evidence and is never rebound."
-#~ msgstr ""
-#~ "这个未完成批次已失去原来的 Slack 连接代次。请重连并开始一次全新预演；旧批"
-#~ "次会作为证据保留，且不会重新绑定。"
-
-#~ msgid "Unchanged"
-#~ msgstr "不变"
-
-#~ msgid "Up to 10 per dry run"
-#~ msgstr "每次预演最多 10 个"
-
-#~ msgid "Waiting"
-#~ msgstr "等待中"
-
-#~ msgid "Waiting before a safe retry"
-#~ msgstr "等待安全重试"
-
-#~ msgid "Context Lifecycle has removed this import from grounding"
-#~ msgstr "上下文生命周期已停止在请求中引用此导入"
-
-#~ msgid "Derivation identity"
-#~ msgstr "衍生版本标识"
-
-#~ msgid ""
-#~ "Preview-only mode is enabled. You can inspect reproducible evidence, but "
-#~ "publishing is disabled in this environment."
-#~ msgstr "当前为仅预览模式。你可以核对可复现证据，但此环境禁止发布。"
-
-#~ msgid "Publication identity"
-#~ msgstr "发布标识"
-
-#~ msgid "Published context unavailable"
-#~ msgstr "已发布上下文当前不可用"
-
-#~ msgid "Published, but runtime grounding is disabled"
-#~ msgstr "已发布，但运行时上下文引用已禁用"
-
-#~ msgid "Review identity"
-#~ msgstr "审阅版本标识"
-
-#~ msgid "Safety bound reached"
-#~ msgstr "已达到安全上限"
-
-#~ msgid "Shared context is active for verified public-channel requests"
-#~ msgstr "共享上下文已用于通过验证的公开频道请求"
-
-#~ msgid "Show exact source references"
-#~ msgstr "查看精确来源引用"
-
-#~ msgid ""
-#~ "Slack history dry runs are paused because the durable background executor "
-#~ "is disabled. Existing publications and rollback remain available."
-#~ msgstr ""
-#~ "Slack 历史试运行已暂停，因为持久后台执行器未启用。已发布内容和回滚功能仍然"
-#~ "可用。"
-
-#~ msgid "Source snapshot identity"
-#~ msgstr "来源快照标识"
-
-#~ msgid ""
-#~ "The stopped run remains available as audit evidence; starting another run "
-#~ "does not reuse its cursor or snapshot."
-#~ msgstr "已停止的运行仍保留为审计证据；新运行不会复用它的游标或快照。"
-
-#~ msgid ""
-#~ "This dry run reached its configured safety bound and will not retry "
-#~ "automatically. Nothing was published. Start a smaller or shorter dry run "
-#~ "after checking the recorded evidence."
-#~ msgstr ""
-#~ "此试运行已达到配置的安全上限，不会自动重试。没有发布任何内容。核对现有证据"
-#~ "后，请缩小范围或缩短时间重新试运行。"
-
-#~ msgid "This import is not active"
-#~ msgstr "此导入当前未生效"
-
-#~ msgid ""
-#~ "This run reached a configured safety bound and will not retry "
-#~ "automatically. Start a smaller dry run after reviewing its evidence."
-#~ msgstr ""
-#~ "此运行已达到配置的安全上限，不会自动重试。核对现有证据后，请缩小范围重新试"
-#~ "运行。"
-
-#~ msgid ""
-#~ "Slack history dry runs are paused because an approved processor and its "
-#~ "versioned extraction evidence are not configured. Existing publications "
-#~ "and rollback remain available."
-#~ msgstr ""
-#~ "Slack 历史试运行已暂停，因为已审批的处理器及其版本化提取证据尚未配置。已发"
-#~ "布内容和回滚功能仍然可用。"
-
-#~ msgid "Refresh after reconnect"
-#~ msgstr "重连后刷新"
-
-#~ msgid ""
-#~ "Slack has not issued a fresh installation generation yet. Start a normal "
-#~ "dry run, or reconnect Slack before using the reconnect refresh."
-#~ msgstr ""
-#~ "Slack 尚未产生新的安装代际。请启动普通试运行，或先重新连接 Slack，再使用重"
-#~ "连刷新。"
-
-#~ msgid ""
-#~ "The reconnected Slack source belongs to a different workspace, so it "
-#~ "cannot replace this run. Start a separate dry run instead."
-#~ msgstr ""
-#~ "重连后的 Slack 来源属于另一个工作区，不能替换此运行。请改为启动一个独立的"
-#~ "试运行。"
-
-#~ msgid ""
-#~ "Use the reconnect action only after Slack has issued a fresh installation "
-#~ "generation. A normal dry run creates independent additive context."
-#~ msgstr ""
-#~ "仅当 Slack 产生新的安装代际后才使用重连刷新。普通试运行会创建互相独立、可"
-#~ "叠加的上下文。"
-
-#~ msgid ""
-#~ "Every confirmed import contributes evidence to the same shared context. "
-#~ "Canonical duplicates appear once; runs stay separate here for audit and "
-#~ "rollback."
-#~ msgstr ""
-#~ "每次确认导入都会为同一个共享上下文补充证据。语义相同的内容只显示一次；导入"
-#~ "批次仍分别保留，供审计和回滚。"
-
-#~ msgid "Import evidence history"
-#~ msgstr "导入证据记录"
-
-#~ msgid "Newer imports"
-#~ msgstr "较新的导入"
-
-#~ msgid "Older imports"
-#~ msgstr "较早的导入"
-
-#: lib/bridge_for_teams_web/dashboard/live/project_live/show.ex:6679
-#, elixir-autogen, elixir-format, fuzzy
-msgid "Interactions URL"
-msgstr "集成"
-
 #: lib/bridge_for_teams_web/controllers/dashboard_runners.ex
 #, elixir-autogen, elixir-format
 msgid "Server release is unavailable."
@@ -5055,16 +1383,6 @@ msgstr "Slack 参与者"
 #, elixir-autogen, elixir-format
 msgid "Triage activity is temporarily unavailable. Listening settings are unchanged; refresh to check again."
 msgstr "Triage 活动暂不可用。监听设置未改变；请刷新后重试。"
-
-#, elixir-autogen, elixir-format
-msgid "Silence category: %{reason}. No message-specific explanation was recorded."
-msgstr "沉默分类：%{reason}。这条记录没有保存针对该消息的具体解释。"
-
-msgid "No model request details were retained for this attempt."
-msgstr "这一轮没有保存模型请求详情。"
-
-msgid "Feedback"
-msgstr "反馈"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_triage.ex:354
 #, elixir-autogen, elixir-format
@@ -5151,12 +1469,6 @@ msgstr "请选择机器人已加入的频道。"
 msgid "That conversation is no longer available. Refresh the page."
 msgstr "该会话已不可用，请刷新页面。"
 
-msgid "Slack connected"
-msgstr "已连接 Slack"
-
-msgid "Connection status incomplete"
-msgstr "连接状态不完整"
-
 #, elixir-format
 msgid "This bot's Slack permissions are unknown. Reconnect it before enabling attendee DMs."
 msgstr "无法确认当前 Bot 的 Slack 权限。请重新连接后再开启参会人私信。"
@@ -5171,396 +1483,30 @@ msgstr "Default（暂不可用）"
 msgid "Default (%{model})"
 msgstr "Default（%{model}）"
 
-msgid "Platform billing"
-msgstr "平台计费"
+msgid "Platform"
+msgstr "平台"
 
-#, elixir-format
-msgid "Evaluation finished"
-msgstr "评估已结束"
+msgid "Other"
+msgstr "其他"
 
-#, elixir-format
-msgid "Evaluation ended. Open batch details to inspect its evidence."
-msgstr "评估已结束。打开批次详情查看证据。"
+msgid "Choose a model from the list."
+msgstr "请从列表中选择模型。"
 
 #, elixir-format
 msgid "Batch evidence is unavailable. The recorded processing status is still shown."
 msgstr "批次证据暂时不可用，仍显示已记录的处理状态。"
 
 #, elixir-format
-msgid "Processing has not finished"
-msgstr "处理尚未完成"
-
-#, elixir-format
-msgid "No processing step recorded after receipt"
-msgstr "收到消息后没有记录处理步骤"
-
-#, elixir-format
-msgid "Slack history ingestion"
-msgstr "Slack 历史导入"
-
-#, elixir-format
-msgid "reminder delivered"
-msgstr "提醒已送达"
-
-#, elixir-format
-msgid "Source access could not be recorded. Refresh to retry."
-msgstr "无法记录原文访问，请刷新后重试。"
-
-#, elixir-format
-msgid "Reaction :%{emoji}: · %{status}"
-msgstr "表情回应 :%{emoji}: · %{status}"
-
-#, elixir-format
-msgid "in progress"
-msgstr "进行中"
-
-#, elixir-format
-msgid "suppressed"
-msgstr "已抑制"
-
-#, elixir-format
-msgid "added"
-msgstr "已添加"
-
-#, elixir-format
-msgid "Comma could not complete this Triage action. No successful Slack action is being claimed."
-msgstr "Comma 未能完成这次 Triage 操作。这里不声称任何 Slack 操作已成功。"
-
-#, elixir-format
-msgid "Assigned to the Worker for investigation and a participation decision."
-msgstr "已交给 Worker 调查，并由它决定是否参与。"
-
-#, elixir-format
-msgid "Assigned to Worker"
-msgstr "已交给 Worker"
-
-#, elixir-format
-msgid "Reaction"
-msgstr "表情回应"
-
-#, elixir-format
-msgid "Reaction added"
-msgstr "已添加表情回应"
-
-#, elixir-format
-msgid "Reply and reaction"
-msgstr "回复并添加表情回应"
-
-#, elixir-format
-msgid "Would react"
-msgstr "将添加表情回应"
-
-#, elixir-format
-msgid "Would reply and react"
-msgstr "将回复并添加表情回应"
-
-#, elixir-format
-msgid "Reply queued · reaction failed"
-msgstr "回复已排队 · 表情回应失败"
-
-#, elixir-format
-msgid "Reaction in progress"
-msgstr "表情回应进行中"
-
-#, elixir-format
-msgid "Action suppressed"
-msgstr "操作已抑制"
-
-#, elixir-format
-msgid "Worker task status unavailable: %{task}"
-msgstr "Worker 任务状态不可用：%{task}"
-
-#, elixir-format
-msgid "Stale worker task suppressed: %{task}"
-msgstr "已抑制过期的 Worker 任务：%{task}"
-
-#, elixir-format
-msgid "Worker task will retry: %{task}"
-msgstr "Worker 任务将重试：%{task}"
-
-#, elixir-format
-msgid "Worker task proposed: %{task}"
-msgstr "已建议 Worker 任务：%{task}"
-
-#, elixir-format
-msgid "Investigation routed: %{task}"
-msgstr "已转交调查：%{task}"
-
-#, elixir-format
-msgid "Worker task created: %{task}"
-msgstr "已创建 Worker 任务：%{task}"
-
-#, elixir-format
 msgid "Task lookup is unavailable. Try again."
 msgstr "暂时无法查询任务，请重试。"
-
-#, elixir-format
-msgid "The Task is currently unavailable."
-msgstr "任务暂时不可用。"
-
-#, elixir-format
-msgid "No Task has been created yet."
-msgstr "尚未创建任务。"
-
-#, elixir-format
-msgid "Task message"
-msgstr "任务消息"
-
-#, elixir-format
-msgid "Silence · reason unclassified"
-msgstr "保持沉默 · 原因未分类"
-
-#, elixir-format
-msgid "No useful addition"
-msgstr "没有可补充的内容"
-
-#, elixir-format
-msgid "Already handled"
-msgstr "已有人处理"
-
-#, elixir-format
-msgid "Required evidence unavailable"
-msgstr "所需证据不可用"
-
-#, elixir-format
-msgid "1 worker task status unavailable"
-msgid_plural "%{count} worker task statuses unavailable"
-msgstr[0] "%{count} 个 Worker 任务状态不可用"
-
-#, elixir-format
-msgid "1 stale worker task suppressed"
-msgid_plural "%{count} stale worker tasks suppressed"
-msgstr[0] "已抑制 %{count} 个过期的 Worker 任务"
-
-#, elixir-format
-msgid "1 worker task awaiting retry"
-msgid_plural "%{count} worker tasks awaiting retry"
-msgstr[0] "%{count} 个 Worker 任务等待重试"
-
-#, elixir-format
-msgid "1 worker task proposed"
-msgid_plural "%{count} worker tasks proposed"
-msgstr[0] "已建议 %{count} 个 Worker 任务"
-
-#, elixir-format
-msgid "1 investigation routed"
-msgid_plural "%{count} investigations routed"
-msgstr[0] "已转交 %{count} 项调查"
-
-#, elixir-format
-msgid "1 worker task created"
-msgid_plural "%{count} worker tasks created"
-msgstr[0] "已创建 %{count} 个 Worker 任务"
-
-#, elixir-format
-msgid "1 Slack reaction"
-msgstr "1 个 Slack 表情回应"
 
 #, elixir-format
 msgid "That delegation is no longer available."
 msgstr "该委派已不可用。"
 
 #, elixir-format
-msgid "1 attached file"
-msgid_plural "%{count} attached files"
-msgstr[0] "%{count} 个附件"
-
-#, elixir-format
-msgid "Unnamed file"
-msgstr "未命名文件"
-
-#, elixir-format
-msgid "File list or names shortened; file contents are not shown."
-msgstr "文件列表或文件名已截断；不显示文件内容。"
-
-#, elixir-format
-msgid "File names only; file contents are not shown."
-msgstr "仅显示文件名；不显示文件内容。"
-
-#, elixir-format
-msgid "Open Task"
-msgstr "打开任务"
-
-#, elixir-format
-msgid "Checking…"
-msgstr "正在检查…"
-
-#, elixir-format
-msgid "Refresh Task"
-msgstr "刷新任务"
-
-#, elixir-format
-msgid "Load Task"
-msgstr "加载任务"
-
-#, elixir-format
-msgid "Task content is unavailable. Open the Task or try refreshing."
-msgstr "任务内容不可用。请打开任务或刷新重试。"
-
-#, elixir-format
-msgid "The Worker finished. This Task is waiting for human review."
-msgstr "Worker 已完成，这个任务正在等待人工审阅。"
-
-#, elixir-format
-msgid "Worker delivery could not be confirmed. It may still finish. Check this Task before retrying."
-msgstr "无法确认 Worker 是否已收到任务，它仍可能完成。重试前请先检查这个任务。"
-
-#, elixir-format
-msgid "Worker decision: %{decision}"
-msgstr "Worker 决定：%{decision}"
-
-#, elixir-format
-msgid "Private Task activity · latest 20 messages"
-msgstr "私有任务动态 · 最近 20 条消息"
-
-#, elixir-format
-msgid "No Task messages yet."
-msgstr "还没有任务消息。"
-
-#, elixir-format
-msgid "Processing evidence"
-msgstr "处理证据"
-
-#, elixir-format
-msgid "Batch details"
-msgstr "批次详情"
-
-#, elixir-format
-msgid "Choose an Agent to inspect its replies, reactions, silence decisions, and collected context."
-msgstr "选择一个 Agent，查看它的回复、表情回应、沉默决定和已收集的上下文。"
-
-#, elixir-format
 msgid "Processing status is unavailable. Refresh to retry."
 msgstr "处理状态不可用，请刷新后重试。"
-
-#, elixir-format
-msgid "All activity"
-msgstr "全部动态"
-
-#, elixir-format
-msgid "Replies"
-msgstr "回复"
-
-#, elixir-format
-msgid "Reactions"
-msgstr "表情回应"
-
-#, elixir-format
-msgid "Silence"
-msgstr "沉默"
-
-#, elixir-format
-msgid "Investigations"
-msgstr "调查"
-
-#, elixir-format
-msgid "Page %{page}"
-msgstr "第 %{page} 页"
-
-#, elixir-format
-msgid "Previous"
-msgstr "上一页"
-
-#, elixir-format
-msgid "Next"
-msgstr "下一页"
-
-#, elixir-format
-msgid "No Triage activity yet"
-msgstr "暂无 Triage 动态"
-
-#, elixir-format
-msgid "A reply, reaction, deliberate silence, or blocked attempt will appear here after Slack activity is evaluated."
-msgstr "Slack 动态经过评估后，回复、表情回应、主动沉默或被阻止的尝试会显示在这里。"
-
-#, elixir-format
-msgid "1 activity"
-msgid_plural "%{count} activities"
-msgstr[0] "%{count} 条动态"
-
-#, elixir-format
-msgid "View batch details"
-msgstr "查看批次详情"
-
-#, elixir-format
-msgid "Thread started"
-msgstr "话题开始于"
-
-#, elixir-format
-msgid "Companion reaction"
-msgstr "伴随表情回应"
-
-#, elixir-format
-msgid "Source message"
-msgstr "原始消息"
-
-#, elixir-format
-msgid "Follow-up work"
-msgstr "后续事项"
-
-#, elixir-format
-msgid "Latest 20 retained follow-ups, ordered by last change. A proposed follow-up is not a scheduled reminder."
-msgstr "最近 20 条保留的后续事项，按最后变更时间排序。建议的后续事项不等于已安排的提醒。"
-
-#, elixir-format
-msgid "No follow-ups in this view."
-msgstr "当前视图中没有后续事项。"
-
-#, elixir-format
-msgid "Follow-up status is unavailable."
-msgstr "后续事项状态不可用。"
-
-#, elixir-format
-msgid "Loading Triage…"
-msgstr "正在加载 Triage…"
-
-#, elixir-format
-msgid "Worker for Triage"
-msgstr "Triage Worker"
-
-#, elixir-format
-msgid "Choose a Worker from this Swarm for new Triage tasks. It can still handle other work."
-msgstr "从这个 Swarm 中选择一个 Worker 处理新的 Triage 任务。它仍可处理其他工作。"
-
-#, elixir-format
-msgid "Find a Worker"
-msgstr "搜索 Worker"
-
-#, elixir-format
-msgid "Not assigned — pause new tasks"
-msgstr "不指定 — 暂停新任务"
-
-#, elixir-format
-msgid "Not assigned"
-msgstr "未指定"
-
-#, elixir-format
-msgid "New Triage tasks are paused when no Worker is assigned."
-msgstr "未指定 Worker 时，新的 Triage 任务会暂停。"
-
-#, elixir-format
-msgid "Changing this selection does not move existing tasks."
-msgstr "更改选择不会转移已有任务。"
-
-#, elixir-format
-msgid "Required Triage tools are disabled. Update this Swarm's plugin settings before assigning work."
-msgstr "Triage 所需的工具已被禁用。分配工作前，请先更新这个 Swarm 的插件设置。"
-
-#, elixir-format
-msgid "All channels"
-msgstr "全部频道"
-
-#, elixir-format
-msgid "No activity matches this filter"
-msgstr "没有符合筛选条件的动态"
-
-#, elixir-format
-msgid "Try another channel or activity type."
-msgstr "换一个频道或动态类型试试。"
-
-#, elixir-format
-msgid "Agent decision"
-msgstr "Agent 决定"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_api_controller.ex
 #, elixir-autogen, elixir-format
@@ -5650,11 +1596,6 @@ msgstr "角色必须是所有者、管理员或成员。"
 msgid "Runner not found."
 msgstr "未找到 Runner。"
 
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex
-#, elixir-autogen, elixir-format
-msgid "AI models"
-msgstr "AI 模型"
-
 #: lib/bridge_for_teams_web/controllers/dashboard_settings.ex
 #, elixir-autogen, elixir-format
 msgid "BFT CLI session not found."
@@ -5699,11 +1640,6 @@ msgstr "请选择有效的语言。"
 #, elixir-autogen, elixir-format
 msgid "Choose a valid mode."
 msgstr "请选择有效的模式。"
-
-#: lib/bridge_for_teams_web/dashboard/components/layouts.ex
-#, elixir-autogen, elixir-format
-msgid "Data policy"
-msgstr "数据策略"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_data_policy.ex
 #, elixir-autogen, elixir-format
@@ -5827,100 +1763,8 @@ msgid "%{model} (current; unavailable for selection)"
 msgstr "%{model}（当前选择；不可再选）"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Sleeping · starts when work arrives"
-msgstr "休眠中 · 有任务时启动"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Waiting for Host capacity"
-msgstr "正在等待 Host 容量"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Starting"
-msgstr "正在启动"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Ready to select"
-msgstr "可以选择"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Provider unsupported"
-msgstr "不支持该提供方"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Node unavailable"
-msgstr "节点不可用"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Provider binding unavailable"
-msgstr "提供方绑定不可用"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Environment not ready"
-msgstr "环境未就绪"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Allocation not ready"
-msgstr "资源分配未就绪"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Workload not ready"
-msgstr "工作负载未就绪"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Runtime missing"
-msgstr "缺少运行时"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Runtime is outdated"
-msgstr "运行时版本过旧"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Runtime not connected"
-msgstr "运行时未连接"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Runtime recovery needs operator attention"
-msgstr "运行时恢复需要运维人员处理"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Runtime not ready"
-msgstr "运行时未就绪"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Runtime catching up"
-msgstr "运行时正在同步"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Host capacity needs attention"
-msgstr "Host 容量需要处理"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Outside this Agent Swarm"
-msgstr "不属于此 Agent Swarm"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "Select a Compute Workload."
-msgstr "请选择一个 Compute 工作负载。"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
 msgid "The binding changed. Reopen the form and try again."
 msgstr "绑定已变更。请重新打开表单后再试。"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "The selected Workload changed. Refresh the list and select it again."
-msgstr "所选工作负载已变更。请刷新列表后重新选择。"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "The selected Workload is not ready: %{reason}."
-msgstr "所选工作负载尚未就绪：%{reason}。"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "The selected Workload runs a different provider. Refresh the list and select it again."
-msgstr "所选工作负载使用的是另一个提供方。请刷新列表后重新选择。"
-
-#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
-msgid "The selected Workload's provider is not supported."
-msgstr "不支持所选工作负载的提供方。"
 
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
 msgid "The agent is still being set up. Try again when it is ready."
@@ -5957,3 +1801,371 @@ msgstr "此 Agent Swarm 已归档。"
 #: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
 msgid "This Compute environment changed. Refresh and try again."
 msgstr "此 Compute 环境已变化。请刷新后重试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Choose on or off."
+msgstr "请选择开启或关闭。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Signal has no number on this server yet."
+msgstr "此服务器尚未配置 Signal 号码。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Couldn't create a Signal code."
+msgstr "无法创建 Signal 连接码。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Signal chat disconnected."
+msgstr "已断开 Signal 聊天。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Couldn't disconnect the Signal chat."
+msgstr "无法断开 Signal 聊天。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Only project admins can do this."
+msgstr "只有 Agent Swarm 管理员才能执行此操作。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Configure a Google Admin OAuth app in Composio with Directory group read scopes before connecting."
+msgstr "连接前，请先在 Composio 中配置带有 Directory 群组读取权限的 Google Admin OAuth 应用。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_plugins.ex
+msgid "Set up this messaging connection on the Connections page."
+msgstr "请在“连接”页面设置此消息连接。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "That Signal chat is no longer connected."
+msgstr "该 Signal 聊天已不再连接。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "That account is no longer connected."
+msgstr "该帐号已不再连接。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "Choose an active agent of this Agent Swarm."
+msgstr "请选择此 Agent Swarm 中处于启用状态的 agent。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "The organization's Feishu bot app is a different app now. Reload the page and choose it again."
+msgstr "组织的飞书机器人应用已更换。请刷新页面后重新选择。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+msgid "The organization's Feishu app has no app secret. An organization admin must add it in organization settings."
+msgstr "组织的飞书应用没有 app secret。需要组织管理员在组织设置中添加。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex:622
+msgid "Could not load this task. Salix is unavailable — retry shortly."
+msgstr "无法加载此任务。Salix 暂时不可用，请稍后重试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex:158
+msgid "Enter the command this schedule runs."
+msgstr "请输入此定时计划要执行的指令。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex:627
+msgid "These messages are no longer available."
+msgstr "这些消息已不可用。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex:112
+msgid "Write a message first."
+msgstr "请先输入消息。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex
+msgid "Could not complete the task. Salix is unavailable — retry shortly."
+msgstr "无法完成任务。Salix 暂时不可用，请稍后重试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex
+msgid "This task cannot be completed here."
+msgstr "此任务无法在这里完成。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_task_detail.ex
+msgid "The schedule changed. Reload the task and try again."
+msgstr "计划已变更。请重新加载任务后再试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_onboarding_wizard.ex
+msgid "That account type is not offered here."
+msgstr "这里不提供该类型的账号。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_onboarding_wizard.ex
+msgid "Choose on or off for the listed capabilities."
+msgstr "请为列出的能力选择开启或关闭。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_api_controller.ex
+msgid "Admins configure OAuth clients in Settings → Integrations."
+msgstr "管理员可在「设置 → 集成」中自行配置 OAuth 客户端。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_api_controller.ex
+#, elixir-autogen, elixir-format
+msgid "Could not remind the admins. Try again."
+msgstr "无法提醒管理员，请重试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "The device is disconnected. Reconnect it and check again."
+msgstr "设备已断开连接。请重新连接后再检查。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "This device's Connector cannot check runtimes on demand. Update the Connector."
+msgstr "此设备的 Connector 不支持即时检查运行时。请更新 Connector。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "The device did not answer in time. Check again shortly."
+msgstr "设备未及时响应。请稍后再检查。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "Could not check the runtime. Check again shortly."
+msgstr "无法检查运行时。请稍后再检查。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "Choose a model and reasoning effort from the list before saving."
+msgstr "保存前请从列表中选择模型和思考水平。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "Only a Worker on a connected Codex or Claude Code runtime can detect models."
+msgstr "只有绑定在已连接设备上的 Codex 或 Claude Code Worker 才能检测模型。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "The Worker's device is not connected. Connect it and detect again."
+msgstr "Worker 所在的设备未连接。请连接后重新检测。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "Update the connector on the Worker's device to detect its models."
+msgstr "请先更新 Worker 所在设备上的连接器，再检测模型。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_agents.ex
+#, elixir-autogen, elixir-format
+msgid "Could not list the runtime's models. Try again shortly."
+msgstr "无法列出运行时的模型。请稍后重试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "The runner was asked to get ready for the Cloud VM."
+msgstr "已请求 Runner 为云电脑做好准备。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Runner removed from this Agent Swarm."
+msgstr "已从此 Agent Swarm 移除 Runner。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "This Agent Swarm already has a runner. Remove it before you choose another runner."
+msgstr "此 Agent Swarm 已有 Runner。请先移除它，再选择其他 Runner。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "The Cloud VM already exists. The runner choice applies only when the Cloud VM is first created."
+msgstr "云电脑已存在。Runner 选择只在首次创建云电脑时生效。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "The Cloud VM runs on this runner. You cannot remove the runner."
+msgstr "云电脑运行在此 Runner 上，无法移除此 Runner。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "This Agent Swarm has no runner."
+msgstr "此 Agent Swarm 没有 Runner。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_devices.ex
+msgid "Couldn't update the runner."
+msgstr "无法更新 Runner。"
+
+#: lib/bridge_for_teams_web/station_notice.ex
+msgid "This device runs the old connector, which cannot take tasks. Install the Comma desktop app on it (it includes the station), or install the station with the command from Add station in Comma."
+msgstr "此设备运行的是旧版连接器，无法接任务。请在该设备上安装 Comma 桌面应用（内含工作站），或用 Comma 中「添加工作站」给出的命令安装工作站。"
+
+#: lib/bridge_for_teams_web/station_notice.ex
+msgid "This device's station is too old to take tasks. Update the Comma desktop app, or on a standalone station run `stillfail update` or use its Updates page."
+msgstr "此设备的工作站版本过旧，无法接任务。请更新 Comma 桌面应用；单独安装的工作站请运行 `stillfail update`，或在其「更新」页面更新。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Updated the QQ bot's credentials."
+msgstr "已更新 QQ 机器人的凭证。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Menu saved and sent to QQ."
+msgstr "菜单已保存并发送到 QQ。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Menu saved."
+msgstr "菜单已保存。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Menu saved. The bot has a command panel made in the QQ bot console, which QQ keeps showing. Delete that panel there to show this menu."
+msgstr "菜单已保存。这个机器人在 QQ 机器人管理端有一个指令面板，QQ 会继续显示它；在管理端删除那个面板后，这里的菜单才会显示。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Send the menu items as a list."
+msgstr "请以列表形式提交菜单项。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "QQ bot connected. Save the callback address in the QQ bot console."
+msgstr "QQ 机器人已连接。请在 QQ 机器人管理端保存回调地址。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "This QQ bot is already connected to another Agent Swarm. One QQ bot serves one Agent Swarm; delete the existing connect or use a different bot."
+msgstr "这个 QQ 机器人已连接到另一个 Agent Swarm。一个 QQ 机器人只能服务一个 Agent Swarm；请删除已有连接，或换一个机器人。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "QQ rejected these credentials. Check the AppID and AppSecret and retry."
+msgstr "QQ 拒绝了这组凭证。请检查 AppID 和 AppSecret 后重试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Enter the Verification Token or the Encrypt Key of the Lark app. Lark signs events with them."
+msgstr "请填写 Lark 应用的 Verification Token 或 Encrypt Key。Lark 用它们为事件签名。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Updated the Lark app's credentials."
+msgstr "已更新 Lark 应用的凭证。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Lark app connected. Save the request URL in the Lark Developer Console."
+msgstr "Lark 应用已连接。请在 Lark 开发者后台保存请求地址。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "This Lark app is already connected to another Agent Swarm. One Lark app serves one Agent Swarm; delete the existing connect or use a different app."
+msgstr "这个 Lark 应用已连接到另一个 Agent Swarm。一个 Lark 应用只能服务一个 Agent Swarm；请删除已有连接，或换一个应用。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Lark rejected these credentials. Check the App ID and App Secret, and that the app has the Bot capability and a published version."
+msgstr "Lark 拒绝了这组凭证。请检查 App ID 和 App Secret，并确认应用已开启机器人能力且已发布版本。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_connections.ex
+#, elixir-autogen, elixir-format
+msgid "Could not run Lark checks."
+msgstr "无法运行 Lark 检查。"
+
+#: lib/bridge_for_teams_web/dashboard/controllers/auth_html.ex
+#, elixir-autogen, elixir-format
+msgid "Sign in with Lark"
+msgstr "使用 Lark 登录"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Each Worker's model"
+msgstr "各 Worker 自己的模型"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Platform model"
+msgstr "平台模型"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Platform model (%{model})"
+msgstr "平台模型（%{model}）"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Only Agent Swarm admins can change the default Task model."
+msgstr "只有 Agent Swarm 管理员才能更改默认任务模型。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Could not save the default Task model."
+msgstr "无法保存默认任务模型。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Salix"
+msgstr "Salix"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "The Cloud VM"
+msgstr "云电脑"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Only Agent Swarm admins can change the default place to run Tasks."
+msgstr "只有 Agent Swarm 管理员可以更改任务的默认运行位置。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Could not save the default place to run Tasks."
+msgstr "无法保存任务的默认运行位置。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "The Cloud VM is turned off for this swarm."
+msgstr "此 Agent Swarm 的云电脑已关闭。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_settings.ex
+#, elixir-autogen, elixir-format
+msgid "Choose Salix, the Cloud VM or a station that takes Tasks."
+msgstr "请选择 Salix、云电脑或可以接收任务的工作站。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "Only Agent Swarm members can create tasks."
+msgstr "只有 Agent Swarm 成员可以创建任务。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "Say what the task should do."
+msgstr "请说明这个任务要做什么。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "Choose Salix, the Cloud VM or a station of this swarm."
+msgstr "请选择 Salix、云电脑或此 Agent Swarm 的工作站。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "That station has no profile with this model enabled. Choose another model."
+msgstr "该工作站没有启用此模型的配置。请选择其他模型。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "The organization does not allow this model. Choose another model."
+msgstr "组织不允许使用此模型。请选择其他模型。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "The station did not take the task. Check the station and try again."
+msgstr "工作站没有接收这个任务。请检查工作站后重试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "This Agent Swarm has no Router to create tasks yet."
+msgstr "此 Agent Swarm 还没有可以创建任务的 Router。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "Could not create the task. Salix is unavailable — retry shortly."
+msgstr "无法创建任务。Salix 暂时不可用，请稍后重试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "The Cloud VM is not running. Start it on the Devices page, then try again."
+msgstr "云电脑没有运行。请在设备页面启动它，然后重试。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "That station is not connected now. Choose another place."
+msgstr "该工作站现在未连接。请选择其他运行位置。"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "Swarm default (%{model})"
+msgstr "Agent Swarm 默认（%{model}）"
+
+#: lib/bridge_for_teams_web/controllers/dashboard_swarm_tasks.ex
+#, elixir-autogen, elixir-format
+msgid "Swarm default"
+msgstr "Agent Swarm 默认"

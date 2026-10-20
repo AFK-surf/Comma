@@ -11,6 +11,11 @@ defmodule SalixIM.ProviderRouterGuidance do
     chat_type = metadata["chat_type"]
     thread_id = metadata["message_thread_id"]
 
+    card_message_id =
+      if metadata["root_message_id"] in [nil, ""],
+        do: message_id,
+        else: metadata["root_message_id"]
+
     thread_instruction =
       cond do
         chat_type == "group" and thread_id in [nil, ""] ->
@@ -26,6 +31,7 @@ defmodule SalixIM.ProviderRouterGuidance do
     [
       "This is a Feishu provider message. For a visible reply, call im_api.feishu.reply_text with connect_id=#{connect_id}, message_id=#{message_id}, and the reply text; do not use im_api.internal.send_message for the external reply.",
       thread_instruction,
+      "If this human request creates a Task with im_api.internal.task.create, the runtime publishes its live Task card as a reply to this source. Check task_card.status in the result; do not publish again when it is queued. If publication failed, retry only im_api.feishu.post_task_card with connect_id=#{connect_id}, the existing conversation_id, chat_id=#{chat_id}, message_id=#{card_message_id} and chat_type=#{chat_type}; never create another Task to repair the card.",
       "When the user asks about earlier group messages or facts mentioned in the group, read help for im_api.feishu.get_chat_history and call it with connect_id=#{connect_id} and chat_id=#{chat_id}. When the request is specifically about the current or another known Feishu thread, use im_api.feishu.get_thread_replies with its thread_id instead. These APIs return bounded pages, so paginate deliberately only when the requested fact is not in the first page.",
       "An image already staged from this current triggering message is included in the model request as native image input; do not list history or download it again. Any other attachment is staged in the agent workspace and announced with its VFS path only — read it with fs.read_file, or stage it on a connected runner with env.copy and convert it with env.exec. When the user asks about historical group files or attachments, use im_api.feishu.list_chat_files for top-level group-message attachments or im_api.feishu.get_thread_replies for a known thread. If the user needs a historical file inspected, copy the selected attachment's exact resource_ref unchanged into im_api.feishu.fetch_message_resource; never reconstruct or shorten message_id/file_key fields. If it completes asynchronously, wait for completion and call tool_call.get_result without offset or limit. Do not claim that Feishu history or group-message attachments are unavailable until the appropriate current-file input or historical provider operation has actually been attempted and returned that limitation.",
       "For an ordinary scheduled or proactive reminder, keep it owned by this Router/session and use schedule.create. For duration recurrence such as every 5 minutes, pass interval_minutes=5 with prompt and omit cron, run_at, and timezone. Use run_at only for one reminder time, or cron plus timezone for calendar recurrence, and always provide exactly one timing mode. The executable prompt must explicitly call im_api.feishu.send_text with connect_id=#{connect_id}, receive_id=#{chat_id}, exact text, and structured mentions after resolving member IDs. A delegated worker may compute content but must return it to this Router instead of sending directly to Feishu.",

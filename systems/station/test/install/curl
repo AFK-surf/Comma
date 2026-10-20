@@ -1,0 +1,17 @@
+#!/bin/sh
+# A stand-in for curl, for test/install-e2e.sh: `-o FILE` gets $FAKE_RELEASE (the release under test), or for a Node
+# (…/releases/node/<file>) $FAKE_NODE/<file> (scripts/node-dist.sh's); -I and the like answer nothing.
+out=""
+url=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    -o) out=$2; shift ;;
+    http*) url=$1 ;;
+  esac
+  shift
+done
+[ -n "$out" ] || exit 0
+case $url in
+  */releases/node/*) cp "$FAKE_NODE/$(basename "$url")" "$out" ;;
+  *) cp "$FAKE_RELEASE" "$out" ;;
+esac

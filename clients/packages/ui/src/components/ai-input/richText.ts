@@ -61,6 +61,12 @@ export interface AiInputMenuItem {
   /** Retry actions keep the current trigger and menu visible. */
   keepMenuOpen?: boolean;
   /**
+   * A second level behind this row, such as a model's thinking efforts:
+   * ArrowRight or the row's chevron opens it in place of the list, and
+   * Enter or a click picks the row itself.
+   */
+  browse?: AiInputMenuBrowse;
+  /**
    * Set on the trailing "View more" row the filter appends to a group with
    * `browse`: selecting it (Enter, click, or ArrowRight) opens that group's
    * browse panel in place of the list instead of inserting a token. Product
@@ -75,6 +81,8 @@ export interface AiInputMenuItem {
  * trailing "View more" row that steps into this.
  */
 export interface AiInputMenuBrowse {
+  /** A few choices (a row's own second level): the panel fits them instead of a full-height list. */
+  compact?: boolean | undefined;
   onQueryChange?: ((query: string | null) => void) | undefined;
   /** The next page, asked for as the reader scrolls or arrows past the end. */
   onLoadMore?: (() => void) | undefined;

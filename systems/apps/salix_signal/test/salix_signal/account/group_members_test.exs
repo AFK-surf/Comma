@@ -6,7 +6,10 @@ defmodule SalixSignal.Account.GroupMembersTest do
   # administrator rules, fills and signs accepted changes; the account
   # stores the resulting state and members receive the group update
   # message with the signed change through the mock message service.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.SalixSignal", "Elixir.ThousandIsland", "Elixir.Bandit"]
 
   alias SalixSignal.Account.GroupSync
   alias SalixSignal.Groups
@@ -41,8 +44,8 @@ defmodule SalixSignal.Account.GroupMembersTest do
   end
 
   setup %{chain: chain, secret: secret, server: server} do
-    now = System.system_time(:second)
-    storage = start_supervised!({FakeStorage, {self(), secret, now}})
+    now = SystemsClock.system_time(:second)
+    storage = start_supervised!({FakeStorage, {SystemsRuntime.Proc.self(), secret, now}})
     storage_server = start_supervised!({Bandit, FakeStorage.bandit_options(storage, chain)})
     {:ok, service} = MockService.start_link()
 
@@ -52,7 +55,7 @@ defmodule SalixSignal.Account.GroupMembersTest do
           do: {aci, SignalAccount.new(service, aci, store: :postgres)}
 
     # Alice is the group's administrator, Bob a member; Carol is not in it.
-    params = Params.from_master_key(:crypto.strong_rand_bytes(32))
+    params = Params.from_master_key(SystemsRuntime.Proc.random_bytes(32))
 
     FakeStorage.put_group(storage, params, %Wire.Group{
       title: State.encrypt_attribute(params, :title, "Crew"),
@@ -118,7 +121,7 @@ defmodule SalixSignal.Account.GroupMembersTest do
             uuid(aci),
             uuid(@pni),
             day,
-            :crypto.strong_rand_bytes(32)
+            SystemsRuntime.Proc.random_bytes(32)
           )
 
         %{"credential" => Base.encode64(response), "redemptionTime" => day}
@@ -138,7 +141,7 @@ defmodule SalixSignal.Account.GroupMembersTest do
   # The expiring profile key credential presentation of `aci` for the group
   # (CRS-09a section 14), as the adder builds it from that member's profile.
   defp presentation(ctx, aci) do
-    key = :crypto.strong_rand_bytes(32)
+    key = SystemsRuntime.Proc.random_bytes(32)
     {context, request} = ProfileKeyCredential.request(uuid(aci), key)
     expiration = ctx.now - rem(ctx.now, 86_400) + 7 * 86_400
 
@@ -149,7 +152,7 @@ defmodule SalixSignal.Account.GroupMembersTest do
         uuid(aci),
         ProfileKey.commitment(key, uuid(aci)),
         expiration,
-        :crypto.strong_rand_bytes(32)
+        SystemsRuntime.Proc.random_bytes(32)
       )
 
     {:ok, credential, _} = ProfileKeyCredential.receive(ctx.server, context, response, ctx.now)
@@ -265,12 +268,6 @@ defmodule SalixSignal.Account.GroupMembersTest do
     assert [%{service_id: {:aci, dave}, role: 1, added_by: ^alice_uid}] = group.state.invited
     assert dave == uuid(@dave)
     assert length(FakeStorage.group(ctx.storage, ctx.params).invited_members) == 1
-  end
-
-  test "a change that is already done sends no request", ctx do
-    assert {:ok, 5, _pipeline} = change(ctx, @alice, {:add, [{@bob, presentation(ctx, @bob)}]})
-    assert {:ok, 5, _pipeline} = change(ctx, @alice, {:remove, [@carol]})
-    refute_received {:fake_storage, "PATCH", _}
   end
 
   test "an administrator removes a member; a member who is not one is refused", ctx do

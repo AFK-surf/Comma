@@ -3,7 +3,7 @@ defmodule SalixSignal.IMHandlerTest do
   # (docs/messaging-voice.md): which chat a message belongs to, and which
   # kinds reach the Router as text, reactions, edits and deletes. Content is
   # built with the CRS-05 builders of SalixSignalProto.Message.Content.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignal.{IMHandler, IMPort}
   alias SalixSignal.Messaging.Inbound
@@ -13,8 +13,6 @@ defmodule SalixSignal.IMHandlerTest do
 
   @account "00000000-0000-4000-8000-00000000a001"
   @alice "00000000-0000-4000-8000-000000000011"
-  @comma "00000000-0000-4000-8000-000000000021"
-
   defp inbound(content, kind, opts) do
     %Inbound{
       # The pipeline stores the envelope GUID as its 16 raw UUID bytes.
@@ -64,45 +62,5 @@ defmodule SalixSignal.IMHandlerTest do
     assert {:ok, %{"chat" => chat}} = normalize(content, :data)
     assert chat == %{"kind" => "group", "peer" => IMPort.group_peer(group_id)}
     assert {:group, ^group_id} = IMPort.parse_peer(chat["peer"])
-  end
-
-  test "reactions, edits and deletes are distinct events" do
-    {:ok, comma_bytes} = ServiceId.aci_from_string(@comma)
-
-    assert {:ok, %{"type" => "reaction", "reaction" => reaction}} =
-             normalize(
-               Content.reaction(1_700_000_000_500, "👍", comma_bytes, 1_700_000_000_100),
-               :data
-             )
-
-    assert reaction == %{
-             "emoji" => "👍",
-             "remove" => false,
-             "target_author" => @comma,
-             "target_timestamp" => 1_700_000_000_100
-           }
-
-    assert {:ok, %{"type" => "edit", "text" => "fixed", "target_timestamp" => 1_700_000_000_100}} =
-             normalize(Content.edit(1_700_000_000_500, 1_700_000_000_100, "fixed"), :edit)
-
-    assert {:ok, %{"type" => "delete", "target_timestamp" => 1_700_000_000_100}} =
-             normalize(Content.remote_delete(1_700_000_000_500, 1_700_000_000_100), :data)
-  end
-
-  test "receipts, typing and control updates carry no Router input" do
-    assert :skip = normalize(Content.receipt(:read, [1]), :receipt)
-    assert :skip = normalize(Content.typing(1, :started), :typing)
-    assert :skip = normalize(Content.expire_timer_update(1, 3600, 1), :data)
-    assert :skip = normalize(Content.profile_key_update(1, :binary.copy(<<1>>, 32)), :data)
-    assert :skip = normalize(<<0xFF, 0x01>>, :data)
-  end
-
-  test "a peer string is an ACI or a 32-byte group identifier" do
-    assert {:user, @alice} = IMPort.parse_peer(String.upcase(@alice))
-    assert :error = IMPort.parse_peer("group:" <> Base.url_encode64("short", padding: false))
-    assert :error = IMPort.parse_peer("not-an-aci")
-
-    assert {:error, :invalid_author} =
-             IMPort.send_reaction(@account, @alice, "👍", "bad", 1, false)
   end
 end

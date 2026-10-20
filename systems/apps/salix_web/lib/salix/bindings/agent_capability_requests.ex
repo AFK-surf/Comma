@@ -5,7 +5,7 @@ defmodule Salix.Bindings.AgentCapabilityRequests do
 
   @impl true
   def notify_capability_request(%{"group_id" => group_id, "request_id" => request_id} = request) do
-    if Process.whereis(SalixWeb.PubSub) do
+    if SystemsRuntime.Proc.whereis(SalixWeb.PubSub) do
       Phoenix.PubSub.broadcast(
         SalixWeb.PubSub,
         SalixAgent.CapabilityRequests.topic(group_id),

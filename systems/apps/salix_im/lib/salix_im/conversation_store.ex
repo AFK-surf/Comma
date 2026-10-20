@@ -6,9 +6,11 @@ defmodule SalixIM.ConversationStore do
   identity is fixed at startup and is never accepted by the mutation API.
   """
 
-  use GenServer
+  alias SystemsRuntime.Proc
 
-  alias SalixIM.{ConversationMessageCodec, SlackTaskCard}
+  use SystemsRuntime.Server
+
+  alias SalixIM.{ConversationMessageCodec, TaskActivityProjection, TaskCardProjection}
   alias SalixStore.{BoundedJsonl, CasRecord, Crypto, Ids, Keys}
   alias SalixIM.ConversationStore.RequestIO, as: S3
 
@@ -29,11 +31,12 @@ defmodule SalixIM.ConversationStore do
             list_repair_task: nil,
             pending_list_repair: nil
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts)
 
   def load(pid), do: call(pid, :load)
   def resident_snapshot(pid), do: call(pid, :resident_snapshot)
   def load_raw(pid), do: call(pid, :load_raw)
+  def repair_task_activity_projection(pid), do: call(pid, :repair_task_activity_projection)
   def new_slot(pid), do: call(pid, :new_slot)
   def put_new(pid, record), do: call(pid, {:put_new, record})
 
@@ -104,10 +107,12 @@ defmodule SalixIM.ConversationStore do
 
     case Process.get(key) do
       nil ->
-        GenServer.call(pid, request, @call_timeout)
+        SystemsRuntime.Server.call(pid, request, @call_timeout)
 
       memo ->
-        {reply, memo} = GenServer.call(pid, {:request_scope, memo, request}, @call_timeout)
+        {reply, memo} =
+          SystemsRuntime.Server.call(pid, {:request_scope, memo, request}, @call_timeout)
+
         Process.put(key, memo)
         reply
     end
@@ -122,7 +127,7 @@ defmodule SalixIM.ConversationStore do
     {:ok,
      %__MODULE__{
        owner: owner,
-       owner_ref: Process.monitor(owner),
+       owner_ref: Proc.monitor(owner),
        group_id: group_id,
        conversation_id: conversation_id,
        meta_key: Keys.ctl_group_conversation(group_id, conversation_id)
@@ -170,17 +175,17 @@ defmodule SalixIM.ConversationStore do
     do: {:noreply, state}
 
   def handle_info(:repair_list_index, %{pending_list_repair: pending} = state) do
-    owner = self()
+    owner = Proc.self()
 
-    case Task.Supervisor.start_child(SalixIM.ConversationProjectionTasks, fn ->
+    case SystemsRuntime.TaskSupervisor.start_child(SalixIM.ConversationProjectionTasks, fn ->
            result = repair_pending_list_index(state, pending)
-           send(owner, {:list_projection_result, self(), pending, result})
+           Proc.send(owner, {:list_projection_result, Proc.self(), pending, result})
          end) do
       {:ok, pid} ->
-        {:noreply, %{state | list_repair_task: {pid, Process.monitor(pid)}}}
+        {:noreply, %{state | list_repair_task: {pid, Proc.monitor(pid)}}}
 
       {:error, _} ->
-        Process.send_after(self(), :repair_list_index, @repair_retry_max_ms)
+        SystemsClock.send_after(Proc.self(), :repair_list_index, @repair_retry_max_ms)
         {:noreply, state}
     end
   end
@@ -189,14 +194,14 @@ defmodule SalixIM.ConversationStore do
         {:list_projection_result, pid, pending, result},
         %{list_repair_task: {pid, ref}} = state
       ) do
-    Process.demonitor(ref, [:flush])
+    Proc.demonitor(ref, [:flush])
     state = %{state | list_repair_task: nil}
 
     if result == :ok and state.pending_list_repair == pending do
       {:noreply, %{state | pending_list_repair: nil}}
     else
       retry_ms = if result == :ok, do: 0, else: pending.retry_ms
-      Process.send_after(self(), :repair_list_index, retry_ms)
+      SystemsClock.send_after(Proc.self(), :repair_list_index, retry_ms)
       pending = state.pending_list_repair
 
       pending =
@@ -211,7 +216,7 @@ defmodule SalixIM.ConversationStore do
   end
 
   def handle_info({:DOWN, ref, :process, pid, _}, %{list_repair_task: {pid, ref}} = state) do
-    Process.send_after(self(), :repair_list_index, @repair_retry_max_ms)
+    SystemsClock.send_after(Proc.self(), :repair_list_index, @repair_retry_max_ms)
     {:noreply, %{state | list_repair_task: nil}}
   end
 
@@ -244,6 +249,17 @@ defmodule SalixIM.ConversationStore do
 
   defp execute(:load, state), do: {seg_get_conversation(state.meta_key), state}
   defp execute(:load_raw, state), do: {seg_get_conversation_raw(state.meta_key), state}
+
+  defp execute(:repair_task_activity_projection, state) do
+    reply =
+      with {:ok, conversation} <- seg_get_conversation(state.meta_key),
+           :ok <- TaskActivityProjection.put_current(state.group_id, conversation, S3),
+           :ok <- repair_previous_activity_key(state.group_id, conversation) do
+        :ok
+      end
+
+    {reply, state}
+  end
 
   defp execute(:defer_list_repair, state) do
     case seg_get_conversation(state.meta_key) do
@@ -574,6 +590,21 @@ defmodule SalixIM.ConversationStore do
 
   defp execute(_request, state), do: {{:error, :unsupported_store_operation}, state}
 
+  defp repair_previous_activity_key(group_id, conversation) do
+    previous_timestamp = conversation[@list_index_previous_updated_at_field]
+
+    previous =
+      if is_integer(previous_timestamp),
+        do: Map.put(conversation, "updated_at", previous_timestamp)
+
+    with :ok <- TaskActivityProjection.delete_previous(group_id, previous, conversation, S3) do
+      if TaskActivityProjection.eligible?(conversation),
+        do: :ok,
+        else:
+          TaskActivityProjection.delete(TaskActivityProjection.key(group_id, conversation), S3)
+    end
+  end
+
   defp delete_tombstone_list_index_keys(state, tombstone) do
     if tombstone["conversation_id"] == state.conversation_id do
       current_key = seg_conversation_list_index_key(state.group_id, tombstone)
@@ -591,7 +622,17 @@ defmodule SalixIM.ConversationStore do
           nil -> []
         end
 
-      [current_key, previous_key | pending_keys]
+      activity_key = TaskActivityProjection.key(state.group_id, tombstone)
+
+      previous_activity_key =
+        if is_integer(tombstone[@list_index_previous_updated_at_field]),
+          do:
+            TaskActivityProjection.key(
+              state.group_id,
+              Map.put(tombstone, "updated_at", tombstone[@list_index_previous_updated_at_field])
+            )
+
+      [current_key, previous_key, activity_key, previous_activity_key | pending_keys]
       |> Enum.filter(&is_binary/1)
       |> Enum.uniq()
       |> Enum.reduce_while(:ok, fn key, :ok ->
@@ -677,7 +718,18 @@ defmodule SalixIM.ConversationStore do
       end
       |> cap_stale_keys()
 
-    if is_nil(state.pending_list_repair), do: send(self(), :repair_list_index)
+    stale_keys =
+      if is_map(previous) and
+           (not TaskActivityProjection.eligible?(current) or
+              TaskActivityProjection.key(state.group_id, previous) !=
+                TaskActivityProjection.key(state.group_id, current)) do
+        MapSet.put(stale_keys, TaskActivityProjection.key(state.group_id, previous))
+        |> cap_stale_keys()
+      else
+        stale_keys
+      end
+
+    if is_nil(state.pending_list_repair), do: Proc.send(Proc.self(), :repair_list_index)
     %{state | pending_list_repair: %{pending | stale_keys: stale_keys}}
   end
 
@@ -699,8 +751,15 @@ defmodule SalixIM.ConversationStore do
       {:ok, current} ->
         current_key = seg_conversation_list_index_key(state.group_id, current)
 
+        current_keys = [current_key]
+
+        current_keys =
+          if TaskActivityProjection.eligible?(current),
+            do: [TaskActivityProjection.key(state.group_id, current) | current_keys],
+            else: current_keys
+
         with :ok <- seg_put_conversation_list_index(state.group_id, nil, current),
-             :ok <- delete_pending_stale_keys(pending, current_key) do
+             :ok <- delete_pending_stale_keys(pending, current_keys) do
           observe_projection_lag(current)
           :ok
         end
@@ -715,9 +774,9 @@ defmodule SalixIM.ConversationStore do
 
   defp observe_projection_lag(%{"log_start_seq" => _, "updated_at" => updated})
        when is_integer(updated) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :conversation_log, :projection],
-      %{lag: max(System.system_time(:millisecond) - updated, 0)},
+      %{lag: max(SystemsClock.system_time(:millisecond) - updated, 0)},
       %{}
     )
   rescue
@@ -732,7 +791,7 @@ defmodule SalixIM.ConversationStore do
 
   defp delete_pending_stale_keys(pending, current_key) do
     pending.stale_keys
-    |> Enum.reject(&(&1 == current_key))
+    |> Enum.reject(&(&1 in List.wrap(current_key)))
     |> Enum.reduce_while(:ok, fn key, :ok ->
       case seg_delete_if_present(key) do
         :ok -> {:cont, :ok}
@@ -894,6 +953,17 @@ defmodule SalixIM.ConversationStore do
         )
   end
 
+  # When a Task's latest run started: its status became `active`, at creation
+  # or again later. Clients show a Task they cleared from their chat Task panel
+  # again only after it, so a rename, a label or a review acceptance does not.
+  defp run_started(%{"kind" => "agent_task", "status" => "active"} = updated, previous) do
+    if previous["status"] == "active",
+      do: updated,
+      else: Map.put(updated, "run_started_at", SystemsClock.system_time(:millisecond))
+  end
+
+  defp run_started(updated, _previous), do: updated
+
   defp conversation_update_result({:error, reason}), do: {:error, reason}
   defp conversation_update_result(updated) when is_map(updated), do: {:ok, updated}
   defp conversation_update_result(other), do: {:error, other}
@@ -952,7 +1022,7 @@ defmodule SalixIM.ConversationStore do
            seg_delete_previous_conversation_list_index(group_id, previous, updated)}
 
         {:error, _reason} = error ->
-          seg_cleanup_uncommitted_list_index(meta_key, group_id, current_key)
+          seg_cleanup_uncommitted_list_index(meta_key, group_id, current_key, updated)
           error
       end
     end
@@ -994,17 +1064,24 @@ defmodule SalixIM.ConversationStore do
   defp seg_delete_previous_conversation_list_index(group_id, previous, current) do
     previous_key = if is_map(previous), do: seg_conversation_list_index_key(group_id, previous)
     current_key = seg_conversation_list_index_key(group_id, current)
-    seg_delete_stale_conversation_list_index(previous_key, current_key)
+
+    with :ok <- seg_delete_stale_conversation_list_index(previous_key, current_key),
+         :ok <- TaskActivityProjection.put_current(group_id, current, S3),
+         :ok <- TaskActivityProjection.delete_previous(group_id, previous, current, S3),
+         do: :ok
   end
 
-  defp seg_cleanup_uncommitted_list_index(meta_key, group_id, candidate_key) do
+  defp seg_cleanup_uncommitted_list_index(meta_key, group_id, candidate_key, candidate) do
     case seg_get_conversation_raw(meta_key) do
       {:ok, current} ->
+        TaskActivityProjection.delete_previous(group_id, candidate, current, S3)
+
         if seg_conversation_list_index_key(group_id, current) == candidate_key,
           do: :ok,
           else: seg_delete_if_present(candidate_key)
 
       {:error, :not_found} ->
+        TaskActivityProjection.delete(TaskActivityProjection.key(group_id, candidate), S3)
         seg_delete_if_present(candidate_key)
 
       {:error, _reason} ->
@@ -1017,13 +1094,10 @@ defmodule SalixIM.ConversationStore do
     key = seg_conversation_list_index_key(group_id, conversation)
     previous_key = if is_map(previous), do: seg_conversation_list_index_key(group_id, previous)
 
-    with :ok <-
-           seg_put_conversation_list_index_record(
-             key,
-             seg_conversation_list_index_entry(group_id, conversation),
-             @seg_list_index_write_attempts
-           ),
-         :ok <- seg_delete_stale_conversation_list_index(previous_key, key) do
+    with :ok <- seg_put_current_conversation_list_index(group_id, conversation),
+         :ok <- seg_delete_stale_conversation_list_index(previous_key, key),
+         :ok <- TaskActivityProjection.put_current(group_id, conversation, S3),
+         :ok <- TaskActivityProjection.delete_previous(group_id, previous, conversation, S3) do
       :ok
     end
   end
@@ -1141,7 +1215,7 @@ defmodule SalixIM.ConversationStore do
   defp seg_verify_create_once_result(key, record, status, attempts_left, ownership) do
     case seg_verify_existing_json_record(key, record, status) do
       {:error, reason} when reason != :record_conflict and attempts_left > 1 ->
-        Process.sleep(5)
+        SystemsClock.sleep(5)
         seg_put_new_json_record(key, record, attempts_left - 1, ownership)
 
       result ->
@@ -1179,7 +1253,7 @@ defmodule SalixIM.ConversationStore do
         {:ok, seg_verified_write_status(failure_kind)}
 
       _other when attempts_left > 1 ->
-        Process.sleep(5)
+        SystemsClock.sleep(5)
         seg_put_json_verifying_ambiguous(key, record, opts, attempts_left - 1)
 
       {:ok, _other} when failure_kind == :precondition_failed ->
@@ -1808,7 +1882,12 @@ defmodule SalixIM.ConversationStore do
              fn -> seg_put_message_seq_index(group_id, conversation_id, message, segment_id) end,
              fn -> seg_put_message_indexes(group_id, conversation_id, message, segment_id) end
            ]),
-         :ok <- SalixStore.ConversationLogRecovery.mark(group_id, conversation_id, seq) do
+         :ok <-
+           SalixStore.ConversationLogRecovery.mark(
+             group_id,
+             conversation_id,
+             seq
+           ) do
       {:ok, updated_meta}
     end
   end
@@ -1828,7 +1907,8 @@ defmodule SalixIM.ConversationStore do
             seg_cleanup_uncommitted_list_index(
               key,
               group_id,
-              seg_conversation_list_index_key(group_id, updated)
+              seg_conversation_list_index_key(group_id, updated),
+              updated
             )
 
             error
@@ -1845,7 +1925,7 @@ defmodule SalixIM.ConversationStore do
 
   defp seg_project_task_message(meta, _message), do: meta
 
-  defp task_public_output?(_meta, message), do: SlackTaskCard.output_message?(message)
+  defp task_public_output?(_meta, message), do: TaskCardProjection.output_message?(message)
 
   defp message_conflict(existing, incoming) do
     if seg_normalize_id_part(incoming["request_identity"]) != "" and
@@ -1869,9 +1949,10 @@ defmodule SalixIM.ConversationStore do
   defp seg_conversation_meta(group_id, conversation_id, rec, previous_meta \\ %{}) do
     message_count = rec["message_count"] || previous_meta["message_count"] || 0
 
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     rec
+    |> run_started(previous_meta)
     |> Map.drop(["participants", "messages", "participant_count"])
     |> Map.put("conversation_id", conversation_id)
     |> Map.put("agent_group_id", group_id)
@@ -1975,7 +2056,7 @@ defmodule SalixIM.ConversationStore do
         |> Map.put("status", "sealed")
         |> Map.merge(facts)
         |> Map.put("next_segment_id", next_segment_id)
-        |> Map.put("updated_at", System.system_time(:millisecond))
+        |> Map.put("updated_at", SystemsClock.system_time(:millisecond))
 
       next_meta = seg_new_message_segment_index(next_segment_id, seq, current_segment_id)
 
@@ -2011,7 +2092,7 @@ defmodule SalixIM.ConversationStore do
         |> Map.put_new("start_seq", message["seq"])
         |> Map.merge(ConversationMessageCodec.segment_facts(rows, body))
         |> Map.put("status", status)
-        |> Map.put("updated_at", System.system_time(:millisecond))
+        |> Map.put("updated_at", SystemsClock.system_time(:millisecond))
         |> seg_drop_nil_values()
 
       seg_put_message_segment_index(group_id, conversation_id, segment_meta)
@@ -2064,7 +2145,7 @@ defmodule SalixIM.ConversationStore do
   end
 
   defp seg_new_message_segment_index(segment_id, start_seq, previous_segment_id) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     %{
       "segment_id" => segment_id,
@@ -2143,7 +2224,7 @@ defmodule SalixIM.ConversationStore do
     memo = S3.capture()
 
     results =
-      Task.async_stream(
+      SystemsClock.async_stream(
         writes,
         fn write ->
           {result, updated} = S3.run(memo, write)
@@ -2284,5 +2365,5 @@ defmodule SalixIM.ConversationStore do
     |> Map.new()
   end
 
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 end

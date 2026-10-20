@@ -53,7 +53,7 @@ defmodule SalixSignal.Accounts do
   @spec register(String.t(), tuple(), map(), keyword()) ::
           {:ok, String.t()} | {:error, term(), String.t() | nil}
   def register(number, verification, attributes, opts) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     with {:ok, new} <- Registration.new_account(number, now),
          {:ok, id} <-
@@ -66,7 +66,7 @@ defmodule SalixSignal.Accounts do
              password: new.password,
              identities: %{aci: new.aci.identity, pni: new.pni.identity},
              registration_ids: %{aci: new.registration_id, pni: new.pni_registration_id},
-             profile_key: :crypto.strong_rand_bytes(32),
+             profile_key: SystemsRuntime.Proc.random_bytes(32),
              pre_keys: %{aci: new.aci, pni: new.pni},
              scope: Keyword.get(opts, :scope, :platform),
              environment: Keyword.get(opts, :environment, :production)
@@ -148,7 +148,9 @@ defmodule SalixSignal.Accounts do
   @doc "The node that should own the account now."
   @spec owner_node(String.t()) :: node()
   def owner_node(id) do
-    if Process.whereis(SalixCluster.Ring), do: SalixCluster.Ring.owner(id), else: node()
+    if SystemsRuntime.Proc.whereis(SalixCluster.Ring),
+      do: SalixCluster.Ring.owner(id),
+      else: node()
   end
 
   @doc "Starts the account's owner process on its ring owner node."
@@ -168,7 +170,10 @@ defmodule SalixSignal.Accounts do
   # Starts the owner process on this node. `opts` are extra
   # `SalixSignal.Account.Server` options (tests).
   def start_local(id, opts \\ []) do
-    case DynamicSupervisor.start_child(@supervisor, {Server, [account_id: id] ++ opts}) do
+    case SystemsRuntime.DynamicSupervisor.start_child(
+           @supervisor,
+           {Server, [account_id: id] ++ opts}
+         ) do
       {:ok, pid} -> {:ok, pid}
       {:error, {:already_started, pid}} -> {:ok, pid}
       {:error, reason} -> {:error, reason}
@@ -179,14 +184,14 @@ defmodule SalixSignal.Accounts do
   def stop_local(id) do
     case whereis(id) do
       nil -> :ok
-      pid -> DynamicSupervisor.terminate_child(@supervisor, pid)
+      pid -> SystemsRuntime.DynamicSupervisor.terminate_child(@supervisor, pid)
     end
   end
 
   @doc "The account's owner process on this node, or nil."
   @spec whereis(String.t()) :: pid() | nil
   def whereis(id) do
-    case Registry.lookup(@registry, id) do
+    case SystemsRuntime.Registry.lookup(@registry, id) do
       [{pid, _}] -> pid
       [] -> nil
     end
@@ -211,7 +216,7 @@ defmodule SalixSignal.Accounts do
   @doc false
   def call_local(id, request, timeout) do
     with {:ok, pid} <- start_local(id) do
-      GenServer.call(pid, request, timeout)
+      SystemsRuntime.Server.call(pid, request, timeout)
     end
   catch
     :exit, {{:shutdown, :fenced}, _} -> {:error, :fenced}

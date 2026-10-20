@@ -79,6 +79,15 @@ elab "sata_step" : tactic => withMainContext do
 
 macro "sata_walk" : tactic => `(tactic| repeat' sata_step)
 
+open Lean Elab Tactic Meta in
+/-- Fails unless the computation of the `SatA` goal is an application of `requested`. -/
+elab "sata_head_is " requested:str : tactic => withMainContext do
+  let target ← instantiateMVars (← getMainTarget)
+  let t := target.appArg!.consumeMData.headBeta
+  let .const name _ := t.getAppFn.consumeMData | throwError "sata_head_is: no constant head"
+  unless (privateToUserName name).toString == requested.getString do
+    throwError "different SatA head: {name}"
+
 /-- The computation can answer `true`. -/
 def Holds (m : KernelM Bool) : Prop := ∃ j j', m j = .ok (true, j')
 
@@ -422,23 +431,24 @@ theorem step_materialize_run {ask : Loop.Ask} {state args : Term} :
     SatA (RunAnswered ask state) (Loop.stepWith ask state args) := by
   unfold Loop.stepWith
   sata_walk
+  -- Select the helper lemma by the head of each remaining computation.
   all_goals first
-    | exact SatA.fail
-    | exact activation_answered
-    | exact norun_answered classify_no_run
-    | exact norun_answered timeoutEntry_no_run
-    | exact norun_answered outputCommitted_no_run
-    | exact norun_answered modelFailed_no_run
-    | exact norun_answered guardNotice_no_run
-    | exact norun_answered noticeCleanup_no_run
-    | exact norun_answered guardOutcome_no_run
-    | exact norun_answered continuation_no_run
-    | exact norun_answered modelFailure_no_run
-    | exact norun_answered finalRecord_no_run
-    | exact norun_answered intentRecord_no_run
-    | exact norun_answered toolsDone_no_run
-    | exact norun_answered resultsStored_no_run
-    | exact norun_answered (SatA.mono expire_no_run (fun _ h => h))
+    | (sata_head_is "VerifiedKernel.Session.Loop.activation"; exact activation_answered)
+    | (sata_head_is "VerifiedKernel.Session.Loop.classify"; exact norun_answered classify_no_run)
+    | (sata_head_is "VerifiedKernel.Session.Loop.timeoutEntry"; exact norun_answered timeoutEntry_no_run)
+    | (sata_head_is "VerifiedKernel.Session.Loop.outputCommitted"; exact norun_answered outputCommitted_no_run)
+    | (sata_head_is "VerifiedKernel.Session.Loop.modelFailed"; exact norun_answered modelFailed_no_run)
+    | (sata_head_is "VerifiedKernel.Session.Loop.guardNotice"; exact norun_answered guardNotice_no_run)
+    | (sata_head_is "VerifiedKernel.Session.Loop.noticeCleanup"; exact norun_answered noticeCleanup_no_run)
+    | (sata_head_is "VerifiedKernel.Session.Loop.guardOutcome"; exact norun_answered guardOutcome_no_run)
+    | (sata_head_is "VerifiedKernel.Session.Loop.continuation"; exact norun_answered continuation_no_run)
+    | (sata_head_is "VerifiedKernel.Session.Loop.modelFailure"; exact norun_answered modelFailure_no_run)
+    | (sata_head_is "VerifiedKernel.Session.Loop.finalRecord"; exact norun_answered finalRecord_no_run)
+    | (sata_head_is "VerifiedKernel.Session.Loop.intentRecord"; exact norun_answered intentRecord_no_run)
+    | (sata_head_is "VerifiedKernel.Session.Loop.toolsDone"; exact norun_answered toolsDone_no_run)
+    | (sata_head_is "VerifiedKernel.Session.Loop.resultsStored"; exact norun_answered resultsStored_no_run)
+    | (sata_head_is "VerifiedKernel.Session.Loop.expire"
+       exact norun_answered (SatA.mono expire_no_run (fun _ h => h)))
     | (loop_unfold; simp [RunAnswered, Budget.outEffects_tuple, materializeRun, a]; done)
     | (loop_unfold
        intro last

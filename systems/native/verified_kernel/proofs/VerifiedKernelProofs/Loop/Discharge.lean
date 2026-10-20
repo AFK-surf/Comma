@@ -1,5 +1,6 @@
 import VerifiedKernelProofs.Loop.Shape
-import VerifiedKernelProofs.Loop.WorkEmbedding
+import VerifiedKernelProofs.Loop.QueryAnswers
+import VerifiedKernelProofs.Loop.MachineSafety
 import VerifiedKernelProofs.Loop.DischargeFrame
 import VerifiedKernel.Session.PendingRevision
 
@@ -245,7 +246,10 @@ theorem guardLocal_discharge {s output : Term} {j r : List Term}
     have guard : (reason == b "guard") = true := by
       have := cond.1
       unfold bne at this
-      cases h : (reason == b "guard") <;> simp_all
+      cases h : (reason == b "guard")
+      · rw [h] at this
+        exact absurd this (by decide)
+      · rfl
     exact ⟨beq_binary guard, cond.2⟩
   · simp +decide only [Term.get, List.find?_cons]
     rfl
@@ -295,6 +299,30 @@ theorem completedRepair_quiet (sid : Term) : RawQuiet (completedRepairOf sid) :=
 theorem withoutWake_sub {events : List Term} {id raw : Term} (member : raw ∈ Settlement.withoutWake events id) :
     raw ∈ events := (List.mem_filter.mp member).1
 
+/-- The transcript record of a consumed completion wake is a runtime message, not a discharge. -/
+theorem notice_quiet {sid wake id e : Term} {j r : List Term}
+    (h : Settlement.notice sid wake id j = .ok (e, r)) : RawQuiet e := by
+  unfold Settlement.notice at h
+  obtain ⟨_, _, _, h⟩ := bind_ok h
+  obtain ⟨_, _, _, h⟩ := bind_ok h
+  unfold StateQuery.runtimeEvent at h
+  repeat obtain ⟨_, _, _, h⟩ := bind_ok h
+  obtain rfl := pure_ok h
+  intro event j r read
+  rw [shallowStringify_binary_keys
+    (by simp [BinaryKeys, StateQuery.stringKeyed, List.all_map, b, Term.text, Term.isBinary]) read]
+  apply not_discharge <;>
+  simp only [StateQuery.stringKeyed, Term.get, List.find?_map, List.find?_filter] <;>
+  simp +decide [BEq.beq, Term.text, nil]
+
+theorem notices_quiet {sid start : Term} {wakes notices : List Term} {j r : List Term}
+    (h : Settlement.notices sid start wakes j = .ok (notices, r)) : ∀ raw ∈ notices, RawQuiet raw := by
+  unfold Settlement.notices at h
+  intro raw member
+  obtain ⟨_, _, _, _, call⟩ := WorkConservation.mapM_outputs h raw member
+  obtain ⟨_, _, _, call⟩ := bind_ok call
+  exact notice_quiet call
+
 theorem terminal_discharge {s record result output : Term} {input j r : List Term}
     (call : Settlement.terminal s record result input j = .ok (output, r)) :
     output = nil ∨ ∃ events, output = list events ∧ ∀ raw ∈ events, NormalizesTo raw DischargeEvent →
@@ -305,6 +333,9 @@ theorem terminal_discharge {s record result output : Term} {input j r : List Ter
   · left; exact pure_ok call
   rename_i first
   obtain ⟨sid, _, hsid, call⟩ := bind_ok call
+  obtain ⟨mid, _, -, call⟩ := bind_ok call
+  obtain ⟨start, _, -, call⟩ := bind_ok call
+  obtain ⟨notices, _, hnotices, call⟩ := bind_ok call
   obtain ⟨next, _, hnext, call⟩ := bind_ok call
   obtain ⟨after, _, hafter, call⟩ := bind_ok call
   obtain ⟨phase, _, hphase, call⟩ := bind_ok call
@@ -320,15 +351,19 @@ theorem terminal_discharge {s record result output : Term} {input j r : List Ter
   intro raw member normal
   simp only [Bool.not_eq_true', Bool.and_eq_true, Bool.not_eq_false] at first second
   rcases List.mem_append.mp member with pre | settled
-  · rcases List.mem_append.mp pre with kept | repair
-    · exact Or.inl (withoutWake_sub kept)
+  · rcases List.mem_append.mp pre with pre | notice
+    · rcases List.mem_append.mp pre with kept | repair
+      · exact Or.inl (withoutWake_sub kept)
+      · exfalso
+        split at repair
+        · simp only [List.mem_cons, List.not_mem_nil, or_false] at repair
+          subst raw
+          obtain ⟨event, _, _, read, found⟩ := normal
+          exact completedRepair_quiet _ _ _ _ read found
+        · simp at repair
     · exfalso
-      split at repair
-      · simp only [List.mem_cons, List.not_mem_nil, or_false] at repair
-        subst raw
-        obtain ⟨event, _, _, read, found⟩ := normal
-        exact completedRepair_quiet _ _ _ _ read found
-      · simp at repair
+      obtain ⟨event, _, _, read, found⟩ := normal
+      exact notices_quiet hnotices raw notice _ _ _ read found
   · right
     refine ⟨_, first.1.1, first.1.2, ⟨_, ⟨_, _, hmatches⟩, first.2⟩, sid, next, nid, hwm, ⟨_, _, hsid⟩,
       ⟨_, _, hnext⟩, ⟨_, ⟨_, _, hafter⟩, second.1.1.1⟩, ?_, ⟨_, _, by rw [← second.1.2]; exact hready⟩,
@@ -847,29 +882,30 @@ def guardPrepareOf : Term → Term → KernelM Term := native_decl% "VerifiedKer
 def guardCleanupEventsOf : Term → Term → KernelM Term :=
   native_decl% "VerifiedKernel.Session.Settlement.guardCleanupEvents"
 
--- These equations restate the `WorkEmbedding` answers. Each proof by `rfl` looks the query up
--- in the whole query table again.
+-- These equations restate `QueryAnswers`. Each proof by `rfl` looks the query up in the whole
+-- query table again.
 theorem ask_retire (s : Term) : Loop.queryAsk s "runaway_retirement" nil = Settlement.retireRunaway s :=
-  ask_runaway_retirement s nil
+  QueryAnswers.runaway_retirement s nil
 theorem ask_local (s : Term) :
     Loop.queryAsk s "guard_failure_local_settlement" nil = Settlement.guardLocalSettlement s :=
-  ask_guard_local s nil
+  QueryAnswers.guard_local s nil
 theorem ask_prepare (s x : Term) : Loop.queryAsk s "guard_failure_prepare" x = guardPrepareOf s x :=
-  ask_guard_prepare s x
+  QueryAnswers.guard_prepare s x
 theorem ask_cleanup (s x : Term) : Loop.queryAsk s "guard_failure_cleanup_events" x = guardCleanupEventsOf s x :=
-  ask_guard_cleanup s x
+  QueryAnswers.guard_cleanup s x
 theorem ask_finish (s x : Term) : Loop.queryAsk s "finish_output" x = finishOutputOf s x :=
-  ask_finish_output s x
+  QueryAnswers.finish_output s x
 theorem ask_batch (s x : Term) : Loop.queryAsk s "settle_tool_batch" x = Settlement.batch s x :=
-  ask_settle s x
+  QueryAnswers.settle s x
 theorem ask_timeout (s x : Term) : Loop.queryAsk s "wait_timeout_event" x = Command.waitTimeout s x :=
-  ask_wait_timeout s x
+  QueryAnswers.wait_timeout s x
 theorem ask_failure (s : Term) :
-    Loop.queryAsk s "llm_failure_ack?" nil = (do return Term.bool (← RoundQuery.llmFailureAck s)) := by rfl
+    Loop.queryAsk s "llm_failure_ack?" nil = (do return Term.bool (← RoundQuery.llmFailureAck s)) :=
+  QueryAnswers.llm_failure_ack s
 theorem ask_onboarding (s results events router : Term) :
     Loop.queryAsk s "onboarding_settlement" (.tuple [results, events, router]) =
       (do Settlement.onboarding s (← asList results) (← asList events) router.truthy) :=
-  ask_onboarding_eq s _
+  QueryAnswers.onboarding s _
 
 syntax "leaf_walk" ident : tactic
 macro_rules
@@ -1245,7 +1281,7 @@ theorem failed_send_keeps_turn_open {s record result output : Term} {input j r :
 
 theorem ask_yield (s x : Term) :
     Loop.queryAsk s "provider_wait_yield_events" x = StateQuery.waitYieldEvents s x :=
-  LoopProof.ask_yield s x
+  QueryAnswers.yield_events s x
 
 /-- The facts behind the ack of a provider-wait yield. A `wait_for` wait yields
 to queued human input. The ack is at `next_message_id - 1` and closes the
@@ -1592,7 +1628,7 @@ macro_rules
   | `(tactic| stored_step $h:ident) =>
     `(tactic| first
       | (head_is $h [write]; simp only [write_reply_frame_step] at $h:ident; obtain ⟨_, kept⟩ := $h
-         refine stored_trans (kept rfl rfl).stored ?_)
+         refine stored_trans (kept (by keys_absent) (by keys_absent)).stored ?_)
       | (head_step $h "_stored_step"; obtain ⟨_, kept⟩ := $h; refine stored_trans kept ?_)
       | (head_step $h "_reply_frame_step"; obtain ⟨_, kept⟩ := $h; refine stored_trans kept.stored ?_))
 

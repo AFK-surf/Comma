@@ -16,10 +16,10 @@ import {
   PullRequestClosedIcon,
   PullRequestIcon,
   PuzzleIcon,
-  resolveProviderBrandLogo,
-} from "@comma/ui";
+} from "@comma/ui/components/icons";
+import { resolveProviderBrandLogo } from "@comma/ui/components/provider-brand-logos";
 import { type ReactNode, useEffect, useState } from "react";
-import type { CommaRecommendationLinkPreview } from "../../api";
+import type { CommaRecommendationLinkPreview } from "@comma/core/api-schemas";
 import { loadRecommendationMedia } from "../recommendations/recommendationMedia";
 
 // One card language for every rich link (Figma 1211-13555 … 1211-13953): a
@@ -77,6 +77,9 @@ export function LinkPreviewCard({
   source?: LinkPreviewSourceLike | undefined;
 }) {
   switch (preview.kind) {
+    case "outlook_message":
+    case "outlook_event":
+      return <OutlookPreviewCard preview={preview} />;
     case "github_pull_request":
       return <PullRequestPreviewCard preview={preview} source={source} />;
     case "linear_issue":
@@ -90,6 +93,48 @@ export function LinkPreviewCard({
     case "google_drive_file":
       return <DriveFilePreviewCard preview={preview} source={source} />;
   }
+}
+
+function OutlookPreviewCard({
+  preview,
+}: {
+  preview: Extract<
+    CommaRecommendationLinkPreview,
+    { kind: "outlook_message" | "outlook_event" }
+  >;
+}) {
+  const locale = useCommaLocale();
+  return (
+    <LinkCard kind={preview.kind}>
+      <div className="comma-recommendation-link-card-stack">
+        <span className="comma-recommendation-link-card-title">{preview.title}</span>
+        {preview.sender ? (
+          <span className="comma-recommendation-link-card-detail">
+            {preview.sender}
+          </span>
+        ) : null}
+        {preview.startsAt === null ? null : (
+          <time
+            className="comma-recommendation-link-card-detail"
+            dateTime={new Date(preview.startsAt).toISOString()}
+          >
+            {formatDate(preview.startsAt, locale, {
+              day: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+              month: "short",
+              weekday: "short",
+            })}
+          </time>
+        )}
+        {preview.excerpt ? (
+          <span className="comma-recommendation-link-card-detail">
+            {preview.excerpt}
+          </span>
+        ) : null}
+      </div>
+    </LinkCard>
+  );
 }
 
 function LinkCard({

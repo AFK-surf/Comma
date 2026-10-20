@@ -259,7 +259,7 @@ defmodule SalixIM.Provider.Slack.API do
       fun.()
     else
       Process.put(@tool_rate_limit_retry_key, %{
-        deadline_ms: System.monotonic_time(:millisecond) + budget_ms,
+        deadline_ms: SystemsClock.monotonic_time(:millisecond) + budget_ms,
         retries_left: max_retries
       })
 
@@ -696,11 +696,11 @@ defmodule SalixIM.Provider.Slack.API do
   end
 
   defp observed_chain_deadline,
-    do: System.monotonic_time(:millisecond) + observed_chain_deadline_ms()
+    do: SystemsClock.monotonic_time(:millisecond) + observed_chain_deadline_ms()
 
   defp observed_chain_deadline_ms do
     configured =
-      Application.get_env(
+      SystemsRuntime.get_env(
         :salix_im,
         :slack_observed_chain_deadline_ms,
         @observed_chain_deadline_ms
@@ -718,7 +718,7 @@ defmodule SalixIM.Provider.Slack.API do
       index > @observed_page_budget ->
         {:page_budget_exceeded, Enum.reverse(pages), Enum.reverse(exchanges)}
 
-      System.monotonic_time(:millisecond) >= read.deadline ->
+      SystemsClock.monotonic_time(:millisecond) >= read.deadline ->
         {:chain_deadline_exceeded, Enum.reverse(pages), Enum.reverse(exchanges)}
 
       true ->
@@ -1760,6 +1760,7 @@ defmodule SalixIM.Provider.Slack.API do
   def upload_to_url(upload_url, filename, data) do
     case Req.post(upload_url,
            form_multipart: [file: {data, filename: filename}],
+           plugins: [SalixIM.Multipart],
            retry: false
          ) do
       {:ok, %{status: status}} when status in 200..299 ->
@@ -2065,7 +2066,7 @@ defmodule SalixIM.Provider.Slack.API do
     error in Error ->
       case reserve_tool_rate_limit_retry(error) do
         {:retry, delay_ms} ->
-          Process.sleep(delay_ms)
+          SystemsClock.sleep(delay_ms)
 
           if tool_rate_limit_retry_deadline_open?() do
             emit_tool_rate_limit_retry("ok", delay_ms)
@@ -2090,7 +2091,7 @@ defmodule SalixIM.Provider.Slack.API do
       %{deadline_ms: deadline_ms, retries_left: retries_left} = policy
       when is_integer(deadline_ms) and is_integer(retries_left) ->
         delay_ms = seconds * 1_000
-        remaining_ms = deadline_ms - System.monotonic_time(:millisecond)
+        remaining_ms = deadline_ms - SystemsClock.monotonic_time(:millisecond)
 
         if retries_left > 0 and
              delay_ms + @tool_rate_limit_final_attempt_ms <= remaining_ms do
@@ -2110,7 +2111,7 @@ defmodule SalixIM.Provider.Slack.API do
   defp tool_rate_limit_retry_deadline_open? do
     case Process.get(@tool_rate_limit_retry_key) do
       %{deadline_ms: deadline_ms} when is_integer(deadline_ms) ->
-        System.monotonic_time(:millisecond) < deadline_ms
+        SystemsClock.monotonic_time(:millisecond) < deadline_ms
 
       _no_tool_retry_scope ->
         false
@@ -2118,7 +2119,7 @@ defmodule SalixIM.Provider.Slack.API do
   end
 
   defp emit_tool_rate_limit_retry(outcome, delay_ms) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
       %{duration: System.convert_time_unit(delay_ms, :millisecond, :native)},
       %{
@@ -2158,8 +2159,10 @@ defmodule SalixIM.Provider.Slack.API do
       {:ok, %{status: status}} ->
         raise Error, message: "slack server error: #{status}", status: status
 
+      # A concurrent request is still starting the host's pool: runtime work,
+      # not product time, so the wait stays on the real clock.
       {:error, %Req.HTTPError{reason: :pool_not_available}} when pool_retries > 0 ->
-        Process.sleep(25)
+        SystemsClock.sleep(25)
 
         do_request(
           verb,
@@ -2175,16 +2178,21 @@ defmodule SalixIM.Provider.Slack.API do
   end
 
   defp request_options(verb, headers, fields, opts) do
+    # `:slack_req_options` adds Req options from app env, such as a test plug.
+    # HTTP/1 only: a request that reaches an HTTP/2 pool before its connection
+    # is up fails with :pool_not_available instead of waiting for it, so a
+    # single-attempt read (the slash-command channel check) failed at random.
     options =
-      [headers: headers, retry: false]
+      [headers: headers, retry: false, connect_options: [protocols: [:http1]]]
       |> Keyword.put(if(verb == :get, do: :params, else: :form), fields)
+      |> Keyword.merge(SystemsRuntime.get_env(:salix_im, :slack_req_options, []))
 
     case effective_request_timeout_ms(opts) do
       timeout when is_integer(timeout) and timeout > 0 ->
         options
         |> Keyword.put(:pool_timeout, timeout)
         |> Keyword.put(:receive_timeout, timeout)
-        |> Keyword.put(:connect_options, timeout: timeout)
+        |> Keyword.update!(:connect_options, &Keyword.put(&1, :timeout, timeout))
 
       _ ->
         options
@@ -2197,7 +2205,7 @@ defmodule SalixIM.Provider.Slack.API do
     remaining =
       case Process.get(@tool_rate_limit_retry_key) do
         %{deadline_ms: deadline_ms} when is_integer(deadline_ms) ->
-          max(deadline_ms - System.monotonic_time(:millisecond), 1)
+          max(deadline_ms - SystemsClock.monotonic_time(:millisecond), 1)
 
         _no_tool_retry_scope ->
           nil
@@ -2219,7 +2227,7 @@ defmodule SalixIM.Provider.Slack.API do
   end
 
   defp tool_rate_limit_retry_budget_ms do
-    case Application.get_env(
+    case SystemsRuntime.get_env(
            :salix_im,
            :slack_tool_rate_limit_retry_budget_ms,
            @default_tool_rate_limit_retry_budget_ms
@@ -2233,7 +2241,7 @@ defmodule SalixIM.Provider.Slack.API do
   end
 
   defp tool_rate_limit_max_retries do
-    case Application.get_env(
+    case SystemsRuntime.get_env(
            :salix_im,
            :slack_tool_rate_limit_max_retries,
            @default_tool_rate_limit_max_retries
@@ -2293,7 +2301,7 @@ defmodule SalixIM.Provider.Slack.API do
   defp configured_base(key, default) do
     base =
       :salix_im
-      |> Application.get_env(key, default)
+      |> SystemsRuntime.get_env(key, default)
       |> to_string()
       |> String.trim()
 

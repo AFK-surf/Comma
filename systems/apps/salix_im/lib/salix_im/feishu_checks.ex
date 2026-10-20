@@ -79,7 +79,7 @@ defmodule SalixIM.FeishuChecks do
              "app_id" => trim(connect["app_id"]),
              "connect_id" => trim(connect["connect_id"]),
              "checked_at" =>
-               DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+               SystemsClock.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
            }}
       end
     end
@@ -114,7 +114,7 @@ defmodule SalixIM.FeishuChecks do
     {raw, signing_secret} =
       build_callback_request(challenge, verification_token, encrypt_key, encrypted?)
 
-    timestamp = Integer.to_string(System.system_time(:second))
+    timestamp = Integer.to_string(SystemsClock.system_time(:second))
     request_nonce = nonce()
     signature = feishu_signature(timestamp, request_nonce, signing_secret, raw)
 
@@ -356,7 +356,7 @@ defmodule SalixIM.FeishuChecks do
   end
 
   defp poll_for_reply(router_agent_id, session_id, baseline) do
-    deadline = System.monotonic_time(:millisecond) + @reply_poll_timeout_ms
+    deadline = SystemsClock.monotonic_time(:millisecond) + @reply_poll_timeout_ms
     do_poll_for_reply(router_agent_id, session_id, baseline, deadline)
   end
 
@@ -377,8 +377,8 @@ defmodule SalixIM.FeishuChecks do
   end
 
   defp continue_or_timeout(router_agent_id, session_id, baseline, deadline) do
-    if System.monotonic_time(:millisecond) + @reply_poll_interval_ms < deadline do
-      Process.sleep(@reply_poll_interval_ms)
+    if SystemsClock.monotonic_time(:millisecond) + @reply_poll_interval_ms < deadline do
+      SystemsClock.sleep(@reply_poll_interval_ms)
       do_poll_for_reply(router_agent_id, session_id, baseline, deadline)
     else
       {:error, :no_assistant_reply}
@@ -398,7 +398,8 @@ defmodule SalixIM.FeishuChecks do
   defp reply_evidence(session_id, messages) do
     %{
       "ok" => true,
-      "checked_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+      "checked_at" =>
+        SystemsClock.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
       "check_kind" => "first_message_smoke",
       "session_id_prefix" => String.slice(to_string(session_id), 0, 12),
       "message_count" => length(messages),
@@ -491,7 +492,7 @@ defmodule SalixIM.FeishuChecks do
   # decryptor.
   defp feishu_encrypt(plaintext, encrypt_key) do
     key = :crypto.hash(:sha256, encrypt_key)
-    iv = :crypto.strong_rand_bytes(16)
+    iv = SystemsRuntime.Proc.random_bytes(16)
     cipher = :crypto.crypto_one_time(:aes_256_cbc, key, iv, pkcs7_pad(plaintext), true)
     Base.encode64(iv <> cipher)
   end
@@ -524,7 +525,8 @@ defmodule SalixIM.FeishuChecks do
   defp base_evidence(encrypted?, status) do
     %{
       "ok" => false,
-      "checked_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+      "checked_at" =>
+        SystemsClock.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
       "http_status" => status,
       "challenge_mode" => if(encrypted?, do: "encrypted", else: "plain"),
       "redacted" => true
@@ -568,7 +570,7 @@ defmodule SalixIM.FeishuChecks do
     Map.get(params, key) || Map.get(params, String.to_atom(key))
   end
 
-  defp nonce, do: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+  defp nonce, do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(9), padding: false)
 
   defp trim(nil), do: ""
   defp trim(value) when is_binary(value), do: String.trim(value)

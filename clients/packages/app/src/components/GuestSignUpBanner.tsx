@@ -1,5 +1,6 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Button, toast } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { toast } from "@comma/ui/components/toast";
 import { useState } from "react";
 import { useCommaAuth } from "./auth-context";
 

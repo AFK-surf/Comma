@@ -4,13 +4,30 @@ defmodule Salix.Bindings.AgentMeeting do
   @behaviour SalixAgent.Meetings
 
   alias SalixIM.{Conversations, ProviderConnects}
-  alias SalixMeet.ProviderDispatcher
+  alias SalixMeet.{CommaProvider, ProviderDispatcher}
 
   @impl true
   def join(group_id, params, tool_context) do
     with :ok <- require_router(group_id, tool_context),
-         {:ok, source} <- current_human_source(group_id, tool_context),
-         {:ok, connect} <-
+         {:ok, source} <- current_human_source(group_id, tool_context) do
+      join_source(group_id, source, params, tool_context)
+    end
+  end
+
+  defp join_source(group_id, %{"provider" => "comma"} = source, params, tool_context) do
+    with {:ok, group} <- SalixIM.GroupDirectory.get_group(group_id) do
+      source
+      |> Map.merge(%{
+        "tenant_id" => group["tenant_id"],
+        "group_id" => group_id,
+        "agent_id" => tool_context["agent_id"]
+      })
+      |> CommaProvider.join_from_router(params)
+    end
+  end
+
+  defp join_source(group_id, source, params, _tool_context) do
+    with {:ok, connect} <-
            ProviderConnects.get_active_connect_by_id(
              group_id,
              source["connect_id"],
@@ -53,7 +70,7 @@ defmodule Salix.Bindings.AgentMeeting do
 
   defp current_human_source(group_id, %{"trusted_origin" => %{} = origin} = tool_context) do
     case origin["provider"] do
-      provider when provider in ["slack", "feishu"] ->
+      provider when provider in ["slack", "feishu", "lark"] ->
         direct_provider_source(group_id, tool_context, origin, provider)
 
       "internal" ->
@@ -103,18 +120,49 @@ defmodule Salix.Bindings.AgentMeeting do
       else: {:error, :invalid_feishu_source}
   end
 
+  defp validate_direct_provider_target("lark", context) do
+    if nonblank?(context["chat_id"]) and nonblank?(context["message_id"]),
+      do: :ok,
+      else: {:error, :invalid_lark_source}
+  end
+
   defp conversation_source(group_id, origin) do
     with true <- origin["agent_group_id"] == group_id,
          true <- origin["conversation_kind"] == "user_chat",
-         true <- origin["source_actor_type"] == "provider_user",
+         actor_type when actor_type in ["provider_user", "user"] <- origin["source_actor_type"],
          conversation_id when is_binary(conversation_id) and conversation_id != "" <-
            origin["conversation_id"],
          message_id when is_binary(message_id) and message_id != "" <- origin["message_id"],
          {:ok, message} <-
            Conversations.get_group_conversation_message(group_id, conversation_id, message_id),
-         true <- message["actor_type"] == "provider_user",
+         true <- message["actor_type"] == actor_type do
+      conversation_message_source(message, conversation_id, message_id)
+    else
+      _ -> {:error, :router_current_human_request_required}
+    end
+  end
+
+  defp conversation_message_source(%{"actor_type" => "user"} = message, conversation_id, id) do
+    metadata = stringify(message["metadata"] || %{})
+
+    if nonblank?(message["user_id"]),
+      do:
+        {:ok,
+         %{
+           "provider" => "comma",
+           "conversation_id" => conversation_id,
+           "message_id" => id,
+           "user_id" => message["user_id"],
+           "language" => metadata["locale"],
+           "text" => content_text(message["content"])
+         }},
+      else: {:error, :router_current_human_request_required}
+  end
+
+  defp conversation_message_source(message, _conversation_id, message_id) do
+    with true <- message["actor_type"] == "provider_user",
          metadata = stringify(message["metadata"] || %{}),
-         provider when provider in ["slack", "feishu"] <- metadata["provider"],
+         provider when provider in ["slack", "feishu", "lark"] <- metadata["provider"],
          true <- human_provider_source?(provider, metadata),
          connect_id when is_binary(connect_id) and connect_id != "" <- metadata["connect_id"] do
       {:ok,
@@ -143,6 +191,9 @@ defmodule Salix.Bindings.AgentMeeting do
   # `provider_user` too. Re-prove the provider's own human-sender fields at the
   # final write-authority gate instead of treating that projection as authority.
   defp human_provider_source?("feishu", metadata),
+    do: metadata["sender_type"] == "user" and nonblank?(metadata["sender_open_id"])
+
+  defp human_provider_source?("lark", metadata),
     do: metadata["sender_type"] == "user" and nonblank?(metadata["sender_open_id"])
 
   defp human_provider_source?("slack", metadata) do

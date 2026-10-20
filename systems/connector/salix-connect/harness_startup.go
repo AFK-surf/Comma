@@ -123,7 +123,17 @@ func canRetryHarnessStartup(ctx context.Context, err error) bool {
 func stopHarnessStartup(ctx context.Context, stop func(), exited <-chan struct{}) error {
 	cleanup, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return stopExternalRuntime(cleanup, stop, exited)
+	return stopNativeProcess(cleanup, stop, exited)
+}
+
+func stopNativeProcess(ctx context.Context, stop func(), done <-chan struct{}) error {
+	stop()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (i *codexRuntimeImplementation) ensureCodexRuntime(ctx context.Context, command string) (*codexRuntime, error) {
@@ -146,12 +156,9 @@ func (i *codexRuntimeImplementation) ensureCodexRuntime(ctx context.Context, com
 		return existing, nil
 	}
 	i.mu.Unlock()
-	bridgeURL, err := i.connector.ensureRuntimeBridge()
-	if err != nil {
-		return nil, err
-	}
+	var err error
 	for _, launchCommand := range harnessLaunchCommands("codex", command) {
-		native, startErr := i.startRuntimeCommand(externalRuntimeInput{command: command}, bridgeURL, "", launchCommand)
+		native, startErr := i.startRuntimeCommand(command, launchCommand)
 		if startErr != nil {
 			err = startErr
 			if !canRetryHarnessStartup(ctx, err) {

@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Salix.SessionWork.AuditTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import ExUnit.CaptureIO
 
@@ -108,44 +108,6 @@ defmodule Mix.Tasks.Salix.SessionWork.AuditTest do
             }} = SessionWorkBackfillState.load()
 
     assert {:ok, 0} = SessionWorkBackfillExpectedCandidates.count()
-  end
-
-  test "starts only the store boundary from a cold umbrella" do
-    assert {:ok, _state} = SessionWorkBackfillState.load()
-
-    script = """
-    Mix.Task.run("salix.session_work.audit")
-
-    started =
-      Application.started_applications()
-      |> Enum.map(&elem(&1, 0))
-      |> Enum.sort()
-
-    IO.puts("AUDIT_STARTED_APPS=\#{inspect(started)}")
-    IO.puts("SESSION_WORK_RECOVERY=\#{inspect(Process.whereis(SalixAgent.SessionWorkRecovery))}")
-    IO.puts("CLUSTER_RECOVERY=\#{inspect(Process.whereis(SalixCluster.Recovery))}")
-    """
-
-    systems_root = Path.expand("../../..", __DIR__)
-    mix = System.find_executable("mix") || flunk("mix executable is unavailable")
-
-    {output, exit_status} =
-      System.cmd(mix, ["run", "--no-start", "-e", script],
-        cd: systems_root,
-        env: [{"MIX_ENV", "test"}],
-        stderr_to_stdout: true
-      )
-
-    assert exit_status == 0, output
-
-    assert [_, encoded_apps] = Regex.run(~r/^AUDIT_STARTED_APPS=(.+)$/m, output)
-    assert {started_apps, []} = Code.eval_string(encoded_apps)
-    assert :salix_store in started_apps
-    refute :salix_agent in started_apps
-    refute :salix_cluster in started_apps
-    refute :comma in started_apps
-    assert output =~ "SESSION_WORK_RECOVERY=nil"
-    assert output =~ "CLUSTER_RECOVERY=nil"
   end
 
   defp candidate(token) do

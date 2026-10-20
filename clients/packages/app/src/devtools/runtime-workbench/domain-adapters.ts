@@ -1,24 +1,15 @@
 import {
   generatedNativeCapabilityManifest,
   getNativeBridge,
-  type LocalDataStatus,
   type NativeTransportStatus,
   type SurfaceList,
 } from "@comma/native-bridge";
 import type { WorkbenchControlDescriptor } from "./control-descriptors";
 
-export type WorkbenchTabId =
-  | "runtime"
-  | "session"
-  | "notch"
-  | "side-chat"
-  | "windows"
-  | "local-data"
-  | "transport";
+export type WorkbenchTabId = "runtime" | "session" | "notch" | "windows" | "transport";
 
 export interface WorkbenchSnapshot {
   nativeInfo?: unknown;
-  localData?: LocalDataStatus | undefined;
   session?: unknown;
   surfaces?: SurfaceList | undefined;
   transport?: NativeTransportStatus | undefined;
@@ -56,7 +47,7 @@ export interface WorkbenchFlowStepModel {
 
 export async function loadRuntimeSnapshot(): Promise<WorkbenchSnapshot> {
   const bridge = getNativeBridge();
-  const [nativeInfo, surfaces, session, localData, transport] = await Promise.all([
+  const [nativeInfo, surfaces, session, transport] = await Promise.all([
     bridge.native.info(),
     // Electron's contextBridge preserves the callable state snapshot function,
     // while properties attached to that function are not guaranteed to cross
@@ -64,12 +55,10 @@ export async function loadRuntimeSnapshot(): Promise<WorkbenchSnapshot> {
     // here, matching the session consumer below.
     bridge.surfaces.state(),
     bridge.session.state(),
-    bridge.localData.status(),
     bridge.transport.status(),
   ]);
 
   return {
-    localData,
     nativeInfo,
     session,
     surfaces,
@@ -77,21 +66,12 @@ export async function loadRuntimeSnapshot(): Promise<WorkbenchSnapshot> {
   };
 }
 
-export function buildWorkbenchTabs(snapshot: WorkbenchSnapshot) {
+export function buildWorkbenchTabs(snapshot: WorkbenchSnapshot): WorkbenchTabModel[] {
   return [
     runtimeTab(snapshot),
     sessionTab(snapshot),
     notchTab(),
-    {
-      id: "side-chat",
-      label: "Side Chat",
-      status: "ready",
-      proves: "Adjust the local Side Chat background while the app is running.",
-      flows: [],
-      controls: [],
-    },
     windowsTab(snapshot.surfaces),
-    localDataTab(snapshot.localData),
     transportTab(snapshot),
   ] satisfies WorkbenchTabModel[];
 }
@@ -297,27 +277,6 @@ function windowsTab(surfaces: SurfaceList | undefined) {
   } satisfies WorkbenchTabModel;
 }
 
-function localDataTab(localData: LocalDataStatus | undefined) {
-  return {
-    controls: [
-      {
-        evidenceLabel: "localData.status",
-        id: "local-data-status",
-        kind: "json",
-        label: "localData.status",
-        status: "ready",
-        value: localData ?? {},
-      },
-    ],
-    id: "local-data",
-    label: "Local Data",
-    proves:
-      "Main-owned SQLite, FileStore, and observability diagnostics are readable without exposing raw paths or secrets.",
-    flows: buildLocalDataFlows(localData),
-    status: "partial",
-  } satisfies WorkbenchTabModel;
-}
-
 function transportTab(snapshot: WorkbenchSnapshot) {
   return {
     controls: [
@@ -345,55 +304,6 @@ function transportTab(snapshot: WorkbenchSnapshot) {
     flows: buildTransportFlows(snapshot.transport),
     status: "partial",
   } satisfies WorkbenchTabModel;
-}
-
-function buildLocalDataFlows(
-  localData: LocalDataStatus | undefined
-): readonly WorkbenchFlowModel[] {
-  return [
-    {
-      evidenceLabel: "localData.status",
-      id: "local-data-diagnostics",
-      label: "Local Data Diagnostics",
-      status: localData?.available ? "ready" : "disabled",
-      steps: [
-        flowStep({
-          id: "sqlite-schema",
-          label: "SQLite schema",
-          observes: localData
-            ? `schema ${localData.database.schemaVersion}/${localData.database.latestSchemaVersion}`
-            : "waiting",
-          source: "LocalDataDiagnosticsService",
-          status: localData?.database.status === "ready" ? "ready" : "disabled",
-          target: "LocalDataService",
-          traceIdSource: "localData.status.database",
-        }),
-        flowStep({
-          id: "file-store",
-          label: "FileStore",
-          observes: localData
-            ? `${localData.fileStore.storedEntries} entries · ${localData.fileStore.diskUsage} bytes · ${localData.fileStore.missingReferences} missing refs`
-            : "waiting",
-          source: "LocalDataDiagnosticsService",
-          status: localData?.fileStore.status === "ready" ? "ready" : "disabled",
-          target: "FileStore",
-          traceIdSource: "localData.status.fileStore",
-        }),
-        flowStep({
-          id: "observability-jsonl",
-          label: "Observability JSONL",
-          observes: localData
-            ? `${localData.observability.status} · redacted · ${localData.observability.location}`
-            : "waiting",
-          source: "LocalDataDiagnosticsService",
-          status: localData?.observability.status === "ready" ? "ready" : "disabled",
-          target: "JsonlNativeObservabilitySink",
-          traceIdSource: "localData.status.observability",
-        }),
-      ],
-      traceIdSource: "NativeObservationEvent.trace.id for localData.status",
-    },
-  ];
 }
 
 function buildTransportFlows(

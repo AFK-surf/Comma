@@ -1,3 +1,4 @@
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import {
   COMMA_SURFACE_PAUSED_ATTRIBUTE,
   COMMA_SURFACE_PAUSED_SELECTOR,
@@ -43,12 +44,12 @@ export function observeLocalImagePreview(
   // treats the oldest image groups as visible and floods Main before Chat or
   // Tasks can paint. Stick-to-bottom runs in a parent layout effect, so wait
   // one animation frame before classifying a top-pinned overflowing thread.
-  let pinFrame = 0;
+  let pinFrame: CancelUiTimer | null = null;
   if (!shouldDeferLocalImagePreviewSync(element, root)) {
     syncNearViewport();
   } else if (typeof requestAnimationFrame === "function") {
-    pinFrame = requestAnimationFrame(() => {
-      pinFrame = 0;
+    pinFrame = uiClock.frame(() => {
+      pinFrame = null;
       syncNearViewport();
     });
   }
@@ -108,7 +109,7 @@ export function observeLocalImagePreview(
   }
 
   return () => {
-    if (pinFrame !== 0) cancelAnimationFrame(pinFrame);
+    if (pinFrame !== null) pinFrame();
     pauseObserver?.disconnect();
     if (!group?.targets.delete(element)) return;
     group.activation.unobserve(element);

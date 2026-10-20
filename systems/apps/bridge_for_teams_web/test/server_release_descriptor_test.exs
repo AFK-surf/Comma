@@ -1,5 +1,5 @@
 defmodule BridgeForTeamsWeb.ServerReleaseDescriptorTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixStore.ServerReleaseDescriptor
   alias BridgeForTeamsWeb.MacMiniRelease
@@ -11,7 +11,9 @@ defmodule BridgeForTeamsWeb.ServerReleaseDescriptorTest do
     {"salix-connect", "linux-arm64", "salix-connect"},
     {"salix-connect", "darwin-amd64", "salix-connect"},
     {"salix-connect", "darwin-arm64", "salix-connect"},
-    {"agent-vmm-host", "darwin-arm64", "Agent-VMM-Host.zip"}
+    {"agent-vmm-host", "darwin-arm64", "Agent-VMM-Host.zip"},
+    {"computer-use-helper", "darwin-amd64", "comma-computer-use.tar.gz"},
+    {"computer-use-helper", "darwin-arm64", "comma-computer-use.tar.gz"}
   ]
   @build_id String.duplicate("a", 40)
 
@@ -28,6 +30,38 @@ defmodule BridgeForTeamsWeb.ServerReleaseDescriptorTest do
 
     assert {:error, {:release_target_unavailable, "runner", "linux-arm64"}} =
              ServerReleaseDescriptor.target("runner", "linux-arm64", root)
+
+    assert {:ok, helper} =
+             ServerReleaseDescriptor.target("computer-use-helper", "darwin-arm64", root)
+
+    assert helper.source =~
+             "/releases/#{@build_id}/computer-use-helper/darwin-arm64/comma-computer-use.tar.gz"
+  end
+
+  test "a descriptor without the Computer Use helper keeps the other updates" do
+    {root, descriptor} = fixture!()
+
+    without_helper =
+      Map.update!(descriptor, "artifacts", fn artifacts ->
+        Enum.reject(artifacts, &(&1["component"] == "computer-use-helper"))
+      end)
+
+    File.write!(Path.join(root, "release-descriptor.json"), Jason.encode!(without_helper))
+    target = &ServerReleaseDescriptor.target(&1, &2, root)
+
+    assert {:error, {:release_target_unavailable, "computer-use-helper", "darwin-arm64"}} =
+             target.("computer-use-helper", "darwin-arm64")
+
+    updates = MacMiniRelease.update_targets("darwin-arm64", target)
+    assert Map.keys(updates) |> Enum.sort() == ["agent-vmm", "salix-connect"]
+    assert updates["salix-connect"]["artifact_url"] =~ "/salix-connect/darwin-arm64/"
+
+    File.write!(Path.join(root, "release-descriptor.json"), Jason.encode!(descriptor))
+
+    assert %{"computer-use-helper" => %{"artifact_url" => url}} =
+             MacMiniRelease.update_targets("darwin-arm64", target)
+
+    assert url =~ "/computer-use-helper/darwin-arm64/comma-computer-use.tar.gz"
   end
 
   test "fails closed on malformed descriptor authority fields" do
@@ -82,7 +116,12 @@ defmodule BridgeForTeamsWeb.ServerReleaseDescriptorTest do
   end
 
   defp fixture! do
-    root = Path.join(System.tmp_dir!(), "comma-descriptor-#{System.unique_integer([:positive])}")
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "comma-descriptor-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
     on_exit(fn -> File.rm_rf!(root) end)
     File.mkdir_p!(root)
 

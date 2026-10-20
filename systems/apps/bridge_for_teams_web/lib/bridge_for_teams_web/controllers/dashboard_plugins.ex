@@ -60,8 +60,12 @@ defmodule BridgeForTeamsWeb.DashboardPlugins do
   defp require_admin(role) when role in @admin_roles, do: :ok
   defp require_admin(_role), do: error(:forbidden, nil)
 
-  # Capability references are strings or JSON objects, grouped by category.
-  defp definition_attrs(params) do
+  @doc """
+  The definition attributes a plugin editor sends: capability references
+  (strings or JSON objects, grouped by category) and a setup destination.
+  Agent Swarm plugins use the same editor.
+  """
+  def definition_attrs(params) do
     refs = params["refs"]
     destination = text(params["setup_destination"])
 
@@ -121,7 +125,11 @@ defmodule BridgeForTeamsWeb.DashboardPlugins do
     label =
       Enum.find([user.email, user.name], user.id, &(text(&1) != ""))
 
-    [actor_user_id: user.id, actor_label: String.trim(label), request_id: Ecto.UUID.generate()]
+    [
+      actor_user_id: user.id,
+      actor_label: String.trim(label),
+      request_id: SystemsRuntime.Proc.uuid()
+    ]
   end
 
   defp text(value) when is_binary(value), do: String.trim(value)

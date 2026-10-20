@@ -37,7 +37,7 @@ defmodule Comma.EmailDelivery do
     text = if String.contains?(text, expiry), do: text, else: text <> "\n\n" <> expiry
 
     logo_url =
-      String.trim_trailing(Application.fetch_env!(:comma_web, :web_cookie_origin), "/") <>
+      String.trim_trailing(SystemsRuntime.fetch_env!(:comma_web, :web_cookie_origin), "/") <>
         "/brand/comma/icon.png"
 
     intro =
@@ -98,6 +98,6 @@ defmodule Comma.EmailDelivery do
   end
 
   defp support_email do
-    Application.get_env(:comma_core, :support_email, "support@comma.surf")
+    SystemsRuntime.get_env(:comma_core, :support_email, "support@comma.surf")
   end
 end

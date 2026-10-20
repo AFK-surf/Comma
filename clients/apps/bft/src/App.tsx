@@ -1,4 +1,13 @@
-import { useEffect, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   BftApiError,
   BftNotFoundError,
@@ -15,29 +24,42 @@ import { MeetingsPage } from "./MeetingsPage";
 import { MembersPage } from "./MembersPage";
 import { messages } from "./messages";
 import { orgHref, projectHref, settingsPaths } from "./navSpec";
+import { OnboardingWizard } from "./OnboardingWizard";
 import { OverviewPage } from "./OverviewPage";
 import { PluginsPage } from "./PluginsPage";
 import { ProjectOverviewPage } from "./ProjectOverviewPage";
 import { RunnersPage } from "./RunnersPage";
-import { useApi, useResource, type Resource } from "./resource";
+import {
+  ResourceCache,
+  ResourceCacheContext,
+  useApi,
+  useResource,
+  type Resource,
+} from "./resource";
 import {
   matchRoute,
   navigate,
   rootRedirect,
+  spaLinkClick,
   usePathname,
+  type BftRoute,
   type SettingsPage as SettingsPageName,
 } from "./router";
 import { signOut } from "./session";
 import { SettingsGeneralPage } from "./SettingsGeneralPage";
 import { SettingsModelsPage } from "./SettingsModelsPage";
 import { SettingsSsoPage } from "./SettingsSsoPage";
-import { SettingsPage } from "./settingsForm";
+import { EditableData, SettingsPage } from "./settingsForm";
 import { Shell } from "./Shell";
 import { SwarmAgentsPage } from "./SwarmAgentsPage";
-import { deviceLink, SwarmDevicesPage } from "./SwarmDevicesPage";
+import { SwarmConnectionsPage } from "./SwarmConnectionsPage";
+import { SwarmDevicesPage } from "./SwarmDevicesPage";
+import { SwarmPluginPage, SwarmPluginsPage } from "./SwarmPluginsPage";
 import { SwarmSettingsPage } from "./SwarmSettingsPage";
+import { SwarmSkillsPage } from "./SwarmSkillsPage";
 import { SwarmsPage } from "./SwarmsPage";
 import { scheduledView, SwarmTasksPage } from "./SwarmTasksPage";
+import { TaskDetailPage, taskTitle } from "./TaskDetailPage";
 import { TriagePage } from "./TriagePage";
 import {
   ErrorState,
@@ -54,33 +76,46 @@ export function App() {
   switch (route.name) {
     case "root":
       return <RootRedirect pathname={pathname} />;
+    case "cli-login":
+      return (
+        <CliLoginPage code={route.code} key={route.code ?? ""} pathname={pathname} />
+      );
+    case "onboarding":
+      // Outside any organization: a new user may have none yet.
+      return <OnboardingWizard pathname={pathname} step={route.step} />;
+    case "unknown":
+      return <PageNotFound />;
+    default:
+      // One shell per organization: moving between its pages swaps only the page.
+      return <OrgShell key={route.org} pathname={pathname} route={route} />;
+  }
+}
+
+type OrgPageRoute = Exclude<
+  BftRoute,
+  { name: "root" | "cli-login" | "onboarding" | "unknown" }
+>;
+
+/** The page inside the organization's shell for `route`. */
+function OrgPage({ route }: { route: OrgPageRoute }) {
+  switch (route.name) {
     case "org-overview":
-      return <OrgOverview org={route.org} pathname={pathname} />;
+      return <OrgOverview org={route.org} />;
     case "org-health":
-      return <OrgHealth org={route.org} pathname={pathname} tab={route.tab} />;
+      return <OrgHealth org={route.org} tab={route.tab} />;
     case "org-members":
-      return <OrgMembers key={route.org} org={route.org} pathname={pathname} />;
+      return <OrgMembers org={route.org} />;
     case "org-runners":
-      return <OrgRunners key={route.org} org={route.org} pathname={pathname} />;
+      return <OrgRunners org={route.org} />;
     case "org-swarms":
       return (
-        <OrgRoute
-          key={route.org}
-          org={route.org}
-          pathname={pathname}
-          title={messages.swarms.title}
-        >
+        <OrgRoute title={messages.swarms.title}>
           {(context) => <SwarmsPage org={route.org} orgName={context?.org.name} />}
         </OrgRoute>
       );
     case "org-plugins":
       return (
-        <OrgRoute
-          key={route.org}
-          org={route.org}
-          pathname={pathname}
-          title={messages.plugins.title}
-        >
+        <OrgRoute title={messages.plugins.title}>
           {(context) => (
             <PluginsPage org={route.org} projects={context?.projects ?? []} />
           )}
@@ -88,12 +123,7 @@ export function App() {
       );
     case "org-meetings":
       return (
-        <OrgRoute
-          key={`${route.org}:${route.view}`}
-          org={route.org}
-          pathname={pathname}
-          title={messages.nav.meetings}
-        >
+        <OrgRoute key={route.view} title={messages.nav.meetings}>
           {(context) =>
             adminPage(context, "meetings", route.org, (ready) => (
               <MeetingsPage org={route.org} swarms={ready.projects} view={route.view} />
@@ -103,12 +133,7 @@ export function App() {
       );
     case "org-triage":
       return (
-        <OrgRoute
-          key={`${route.org}:${route.view}`}
-          org={route.org}
-          pathname={pathname}
-          title={messages.nav.slackTriage}
-        >
+        <OrgRoute key={route.view} title={messages.nav.slackTriage}>
           {(context) =>
             adminPage(context, "triage", route.org, () => (
               <TriagePage
@@ -122,12 +147,7 @@ export function App() {
       );
     case "org-data-policy":
       return (
-        <OrgRoute
-          key={route.org}
-          org={route.org}
-          pathname={pathname}
-          title={messages.dataPolicy.title}
-        >
+        <OrgRoute title={messages.dataPolicy.title}>
           {(context) =>
             adminPage(context, "information_flow", route.org, (ready) => (
               <DataPolicyPage org={route.org} swarms={ready.projects} />
@@ -138,57 +158,188 @@ export function App() {
     case "org-settings":
       return (
         <OrgSettings
-          key={`${route.org}:${route.page}`}
+          key={route.page}
           legacySection={route.legacySection}
           org={route.org}
           page={route.page}
-          pathname={pathname}
         />
       );
     case "project-devices":
+    case "project-agents":
+    case "project-skills":
+      return (
+        <SwarmPage
+          agent={route.name === "project-agents" ? route.agent : undefined}
+          key={route.project}
+          name={route.name}
+          org={route.org}
+          project={route.project}
+        />
+      );
+    case "project-plugins":
       return (
         <SwarmPage
           key={`${route.org}:${route.project}`}
           name={route.name}
           org={route.org}
-          pathname={pathname}
+          plugin={route.plugin}
           project={route.project}
+        />
+      );
+    case "project-task":
+      return (
+        <TaskRoute
+          key={`${route.project}:${route.task}`}
+          org={route.org}
+          project={route.project}
+          task={route.task}
         />
       );
     case "project-overview":
     case "project-tasks":
+    case "project-connections":
     case "project-settings":
       return route.retired ? (
-        <Replace to={retiredTarget(route.name, route.org, route.project)} />
+        <Replace
+          to={retiredTarget(
+            route.name,
+            route.org,
+            route.project,
+            window.location.search
+          )}
+        />
       ) : (
         <SwarmPage
-          key={`${route.org}:${route.project}`}
+          key={route.project}
           name={route.name}
           org={route.org}
-          pathname={pathname}
           project={route.project}
         />
       );
-    case "project-agents":
-      return (
-        <SwarmPage
-          agent={route.agent}
-          key={`${route.org}:${route.project}`}
-          name={route.name}
-          org={route.org}
-          // The selected agent is part of the Agents page: its notices stay
-          // and the sidebar keeps Agents current.
-          pathname={projectHref(route.org, route.project, "/agents")}
-          project={route.project}
-        />
-      );
-    case "cli-login":
-      return (
-        <CliLoginPage code={route.code} key={route.code ?? ""} pathname={pathname} />
-      );
-    default:
-      return <PageNotFound />;
   }
+}
+
+/** What the pages of one organization share with its shell. */
+interface OrgShellState {
+  context: Resource<BftOrgContext>;
+  ready: BftOrgContext | undefined;
+  retryContext: () => void;
+  /** The page found the organization missing: show that instead of the shell. */
+  reportMissing: () => void;
+}
+
+const OrgShellContext = createContext<OrgShellState | null>(null);
+
+function useOrgShell() {
+  const state = useContext(OrgShellContext);
+  if (!state) throw new Error("An organization page renders inside OrgShell.");
+  return state;
+}
+
+/**
+ * The shell (top bar, sidebar, command palette) and the org context, mounted
+ * once per organization and kept while its pages change. Reads inside it are
+ * cached, so a page opened again shows its last data while it is read again.
+ */
+function OrgShell({ route, pathname }: { route: OrgPageRoute; pathname: string }) {
+  const { org } = route;
+  const api = useApi();
+  // One cache per organization shell, so nothing read for one organization
+  // shows in another; it lives in memory only, and signing out loads a new page.
+  const [cache] = useState(() => new ResourceCache());
+  const [context, retryContext, refreshContext] = useResource(
+    `context:${org}`,
+    (signal) => api.orgContext(org, signal)
+  );
+  // A write can change any read and what the shell lists (a new or archived
+  // swarm, a renamed organization): drop cached reads and re-read the context
+  // in place.
+  useEffect(
+    () =>
+      api.onWrite(() => {
+        cache.clear();
+        refreshContext();
+      }),
+    [api, cache, refreshContext]
+  );
+  const [missingAt, setMissingAt] = useState<string>();
+  // Any navigation (back and forward too) checks again: the page found
+  // missing before is read anew when it is shown next.
+  if (missingAt !== undefined && missingAt !== pathname) setMissingAt(undefined);
+  const reportMissing = useCallback(() => setMissingAt(window.location.pathname), []);
+  const ready = context.state === "ready" ? context.data : undefined;
+  const state = useMemo(
+    () => ({ context, ready, retryContext, reportMissing }),
+    [context, ready, retryContext, reportMissing]
+  );
+
+  if (isNotFound(context) || missingAt === pathname) {
+    return (
+      <div className="bft-state-page">
+        <OrgNotFound />
+      </div>
+    );
+  }
+
+  return (
+    <OrgShellContext value={state}>
+      <ResourceCacheContext value={cache}>
+        <Shell
+          context={ready}
+          pathname={
+            // The selected agent is part of the Agents page: its notices stay
+            // and the sidebar keeps Agents current.
+            route.name === "project-agents"
+              ? projectHref(org, route.project, "/agents")
+              : // A plugin's page belongs to Plugins: the sidebar keeps Plugins current.
+                route.name === "project-plugins"
+                ? projectHref(org, route.project, "/plugins")
+                : // A task belongs to Tasks.
+                  route.name === "project-task"
+                  ? projectHref(org, route.project, "/tasks")
+                  : pathname
+          }
+        >
+          <OrgPage route={route} />
+        </Shell>
+      </ResourceCacheContext>
+    </OrgShellContext>
+  );
+}
+
+/** Rendered by a page that found its organization missing. */
+function OrgMissing() {
+  const { reportMissing } = useOrgShell();
+  // Before paint, so the shell never shows around a missing organization.
+  useLayoutEffect(() => reportMissing(), [reportMissing]);
+  return null;
+}
+
+/** The page area: the context's error, or the page itself. */
+function PageArea({
+  unauthenticated = false,
+  children,
+}: {
+  unauthenticated?: boolean;
+  children: ReactNode;
+}) {
+  const { context, retryContext } = useOrgShell();
+  return context.state === "error" &&
+    !unauthenticated &&
+    !isUnauthenticated(context) ? (
+    <ErrorState onRetry={retryContext} />
+  ) : (
+    children
+  );
+}
+
+/** `label · organization` once both are known. */
+function usePageTitle(label: string | undefined) {
+  const { ready } = useOrgShell();
+  useEffect(() => {
+    document.title =
+      ready && label ? `${label} · ${ready.org.name}` : messages.productName;
+  }, [ready, label]);
 }
 
 function RootRedirect({ pathname }: { pathname: string }) {
@@ -230,95 +381,42 @@ function RootRedirect({ pathname }: { pathname: string }) {
   );
 }
 
-function OrgOverview({ org, pathname }: { org: string; pathname: string }) {
+function OrgOverview({ org }: { org: string }) {
   const api = useApi();
-  const [context, retryContext] = useResource(`context:${org}`, (signal) =>
-    api.orgContext(org, signal)
-  );
+  const { context, ready } = useOrgShell();
   const [overview, retryOverview] = useResource(`overview:${org}`, (signal) =>
     api.overview(org, signal)
   );
-  const ready = context.state === "ready" ? context.data : undefined;
+  usePageTitle(messages.overview.title);
 
-  useEffect(() => {
-    document.title = ready
-      ? `${messages.overview.title} · ${ready.org.name}`
-      : messages.productName;
-  }, [ready]);
+  if (isNotFound(overview)) return <OrgMissing />;
 
-  const notFound = [context, overview].some(
-    (resource) =>
-      resource.state === "error" && resource.error instanceof BftNotFoundError
-  );
-  const unauthenticated = [context, overview].some(
-    (resource) =>
-      resource.state === "error" && resource.error instanceof BftUnauthenticatedError
-  );
-
-  if (notFound) {
-    return (
-      <div className="bft-state-page">
-        <OrgNotFound />
-      </div>
-    );
-  }
+  const unauthenticated = isUnauthenticated(context) || isUnauthenticated(overview);
 
   return (
-    <Shell context={ready} pathname={pathname}>
-      {context.state === "error" && !unauthenticated ? (
-        <ErrorState onRetry={retryContext} />
-      ) : (
-        <OverviewPage
-          canViewHealth={ready?.capabilities.operations ?? false}
-          onRetry={retryOverview}
-          org={org}
-          orgName={ready?.org.name}
-          overview={unauthenticated ? { state: "loading" } : overview}
-        />
-      )}
-    </Shell>
+    <PageArea unauthenticated={unauthenticated}>
+      <OverviewPage
+        canViewHealth={ready?.capabilities.operations ?? false}
+        onRetry={retryOverview}
+        org={org}
+        orgName={ready?.org.name}
+        overview={unauthenticated ? { state: "loading" } : overview}
+      />
+    </PageArea>
   );
 }
 
-/** The shell and org context around a page that loads its own data. */
+/** A page that loads its own data, given the org context once it is read. */
 function OrgRoute({
-  org,
-  pathname,
   title,
   children,
 }: {
-  org: string;
-  pathname: string;
   title: string;
   children: (context: BftOrgContext | undefined) => ReactNode;
 }) {
-  const api = useApi();
-  const [context, retryContext] = useResource(`context:${org}`, (signal) =>
-    api.orgContext(org, signal)
-  );
-  const ready = context.state === "ready" ? context.data : undefined;
-
-  useEffect(() => {
-    document.title = ready ? `${title} · ${ready.org.name}` : messages.productName;
-  }, [ready, title]);
-
-  if (isNotFound(context)) {
-    return (
-      <div className="bft-state-page">
-        <OrgNotFound />
-      </div>
-    );
-  }
-
-  return (
-    <Shell context={ready} pathname={pathname}>
-      {context.state === "error" && !isUnauthenticated(context) ? (
-        <ErrorState onRetry={retryContext} />
-      ) : (
-        children(ready)
-      )}
-    </Shell>
-  );
+  const { ready } = useOrgShell();
+  usePageTitle(title);
+  return <PageArea>{children(ready)}</PageArea>;
 }
 
 /** An owner/admin page, gated by the same capability as its sidebar entry. */
@@ -340,17 +438,27 @@ const isNotFound = (resource: Resource<unknown>, code?: string) =>
 const isUnauthenticated = (resource: Resource<unknown>) =>
   resource.state === "error" && resource.error instanceof BftUnauthenticatedError;
 
-/** Where a retired Agent Swarm address now lives. */
+/**
+ * Where a retired Agent Swarm address now lives. Integrations keeps its query,
+ * so a `?provider=` deep link still opens that messaging section.
+ */
 function retiredTarget(
-  name: "project-overview" | "project-tasks" | "project-settings",
+  name:
+    | "project-overview"
+    | "project-tasks"
+    | "project-connections"
+    | "project-settings",
   org: string,
-  project: string
+  project: string,
+  search: string
 ) {
   switch (name) {
     case "project-overview":
       return projectHref(org, project);
     case "project-tasks":
       return projectHref(org, project, `/tasks?view=${scheduledView}`);
+    case "project-connections":
+      return projectHref(org, project, `/connections${search}`);
     case "project-settings":
       return projectHref(org, project, "/settings#access");
   }
@@ -366,26 +474,29 @@ function SwarmPage({
   org,
   project,
   agent,
-  pathname,
+  plugin,
 }: {
   name:
     | "project-overview"
     | "project-agents"
     | "project-devices"
+    | "project-plugins"
+    | "project-skills"
     | "project-tasks"
+    | "project-connections"
     | "project-settings";
   org: string;
   project: string;
   agent?: string | undefined;
-  pathname: string;
+  plugin?: string | undefined;
 }) {
-  const common = { org, project, pathname };
+  const common = { org, project };
   switch (name) {
     case "project-agents":
       return (
         <SwarmRoute
           {...common}
-          load={(api, signal) => api.swarmAgents(org, project, null, signal)}
+          load={(api, signal) => api.swarmAgents(org, project, signal)}
           resourceKey="swarm-agents"
           title={(data) => `${messages.swarmAgents.title} · ${data.project.name}`}
         >
@@ -404,16 +515,68 @@ function SwarmPage({
       return (
         <SwarmRoute
           {...common}
-          // A Router-request management link names its target in the address.
-          load={(api, signal) =>
-            api.swarmDevices(org, project, deviceLink(window.location.search), signal)
-          }
+          load={(api, signal) => api.swarmDevices(org, project, signal)}
           resourceKey="swarm-devices"
           title={(data) => `${messages.swarmDevices.title} · ${data.project.name}`}
         >
           {(devices, retry) => (
             <SwarmDevicesPage
               first={devices}
+              onRetry={retry}
+              org={org}
+              project={project}
+            />
+          )}
+        </SwarmRoute>
+      );
+    case "project-plugins":
+      return plugin === undefined ? (
+        <SwarmRoute
+          {...common}
+          load={(api, signal) => api.swarmPlugins(org, project, signal)}
+          resourceKey="swarm-plugins"
+          title={(data) => `${messages.swarmPlugins.title} · ${data.project.name}`}
+        >
+          {(plugins, retry) => (
+            <SwarmPluginsPage
+              first={plugins}
+              onRetry={retry}
+              org={org}
+              project={project}
+            />
+          )}
+        </SwarmRoute>
+      ) : (
+        <SwarmRoute
+          {...common}
+          load={(api, signal) => api.swarmPlugin(org, project, plugin, signal)}
+          resourceKey={`swarm-plugin:${plugin}`}
+          title={(data) =>
+            `${data.plugin?.name ?? plugin} · ${messages.swarmPlugins.title} · ${data.project.name}`
+          }
+        >
+          {(detail, retry) => (
+            <SwarmPluginPage
+              first={detail}
+              onRetry={retry}
+              org={org}
+              pluginId={plugin}
+              project={project}
+            />
+          )}
+        </SwarmRoute>
+      );
+    case "project-skills":
+      return (
+        <SwarmRoute
+          {...common}
+          load={(api, signal) => api.swarmSkills(org, project, signal)}
+          resourceKey="swarm-skills"
+          title={(data) => `${messages.swarmSkills.title} · ${data.project.name}`}
+        >
+          {(skills, retry) => (
+            <SwarmSkillsPage
+              first={skills}
               onRetry={retry}
               org={org}
               project={project}
@@ -452,6 +615,24 @@ function SwarmPage({
           )}
         </SwarmRoute>
       );
+    case "project-connections":
+      return (
+        <SwarmRoute
+          {...common}
+          load={(api, signal) => api.swarmConnections(org, project, signal)}
+          resourceKey="swarm-connections"
+          title={(data) => `${messages.swarmConnections.title} · ${data.project.name}`}
+        >
+          {(connections, retry) => (
+            <SwarmConnectionsPage
+              first={connections}
+              onRetry={retry}
+              org={org}
+              project={project}
+            />
+          )}
+        </SwarmRoute>
+      );
     case "project-settings":
       return (
         <SwarmRoute
@@ -460,7 +641,7 @@ function SwarmPage({
           resourceKey="swarm-settings"
           title={(data) => `${messages.swarmSettings.title} · ${data.project.name}`}
         >
-          {(settings, retry, retryContext) => (
+          {(settings, retry) => (
             <SettingsPage
               description={
                 settings.state === "ready"
@@ -472,12 +653,11 @@ function SwarmPage({
               title={messages.swarmSettings.title}
             >
               {(data) => (
-                <SwarmSettingsPage
-                  data={data}
-                  onRenamed={retryContext}
-                  org={org}
-                  project={project}
-                />
+                <EditableData data={data}>
+                  {(shown) => (
+                    <SwarmSettingsPage data={shown} org={org} project={project} />
+                  )}
+                </EditableData>
               )}
             </SettingsPage>
           )}
@@ -486,11 +666,10 @@ function SwarmPage({
   }
 }
 
-/** The shell, org context and the page's own data around one Agent Swarm page. */
+/** The page's own data around one Agent Swarm page. */
 function SwarmRoute<T>({
   org,
   project,
-  pathname,
   resourceKey,
   load,
   title,
@@ -498,212 +677,186 @@ function SwarmRoute<T>({
 }: {
   org: string;
   project: string;
-  pathname: string;
   resourceKey: string;
   load: (api: BftApi, signal: AbortSignal) => Promise<T>;
   title: (data: T) => string;
-  children: (
-    resource: Resource<T>,
-    retry: () => void,
-    retryContext: () => void
-  ) => ReactNode;
+  children: (resource: Resource<T>, retry: () => void) => ReactNode;
 }) {
   const api = useApi();
-  const [context, retryContext] = useResource(`context:${org}`, (signal) =>
-    api.orgContext(org, signal)
-  );
+  const { context } = useOrgShell();
   const [data, retry] = useResource(`${resourceKey}:${org}:${project}`, (signal) =>
     load(api, signal)
   );
-  const ready = context.state === "ready" ? context.data : undefined;
-  const label = data.state === "ready" ? title(data.data) : undefined;
-
-  useEffect(() => {
-    document.title =
-      ready && label ? `${label} · ${ready.org.name}` : messages.productName;
-  }, [ready, label]);
+  usePageTitle(data.state === "ready" ? title(data.data) : undefined);
 
   // The organization itself is missing: nothing inside it can render.
-  if (isNotFound(context) || isNotFound(data, "org_not_found")) {
-    return (
-      <div className="bft-state-page">
-        <OrgNotFound />
-      </div>
-    );
-  }
+  if (isNotFound(data, "org_not_found")) return <OrgMissing />;
 
   const unauthenticated = isUnauthenticated(context) || isUnauthenticated(data);
 
   return (
-    <Shell context={ready} pathname={pathname}>
-      {context.state === "error" && !unauthenticated ? (
-        <ErrorState onRetry={retryContext} />
-      ) : isNotFound(data) ? (
+    <PageArea unauthenticated={unauthenticated}>
+      {isNotFound(data) ? (
         <ProjectNotFound org={org} />
       ) : (
-        children(unauthenticated ? { state: "loading" } : data, retry, retryContext)
+        children(unauthenticated ? { state: "loading" } : data, retry)
       )}
-    </Shell>
+    </PageArea>
   );
 }
 
-function OrgHealth({
+/** One task. A task missing from the swarm is said in place, with a way back. */
+function TaskRoute({
   org,
-  pathname,
-  tab,
+  project,
+  task,
 }: {
   org: string;
-  pathname: string;
-  tab: string | undefined;
+  project: string;
+  task: string;
 }) {
   const api = useApi();
-  const [context, retryContext] = useResource(`context:${org}`, (signal) =>
-    api.orgContext(org, signal)
+  const { context } = useOrgShell();
+  const [data, retry, refresh] = useResource(
+    `swarm-task:${org}:${project}:${task}`,
+    (signal) => api.swarmTask(org, project, task, signal)
   );
+  usePageTitle(
+    data.state === "ready"
+      ? `${taskTitle(data.data.task)} · ${data.data.project.name}`
+      : undefined
+  );
+
+  if (isNotFound(data, "org_not_found")) return <OrgMissing />;
+
+  const unauthenticated = isUnauthenticated(context) || isUnauthenticated(data);
+
+  return (
+    <PageArea unauthenticated={unauthenticated}>
+      {isNotFound(data, "task_not_found") ? (
+        <div className="bft-state">
+          <h2>{messages.taskDetail.notFoundTitle}</h2>
+          <p>{messages.taskDetail.notFoundBody}</p>
+          <a
+            className="bft-btn"
+            href={projectHref(org, project, "/tasks")}
+            onClick={spaLinkClick}
+          >
+            {messages.taskDetail.backToTasks}
+          </a>
+        </div>
+      ) : isNotFound(data) ? (
+        <ProjectNotFound org={org} />
+      ) : (
+        <TaskDetailPage
+          first={unauthenticated ? { state: "loading" } : data}
+          onRefresh={refresh}
+          onRetry={retry}
+          org={org}
+          project={project}
+          task={task}
+        />
+      )}
+    </PageArea>
+  );
+}
+
+function OrgHealth({ org, tab }: { org: string; tab: string | undefined }) {
+  const api = useApi();
+  const { context, ready } = useOrgShell();
   const [health, retryHealth] = useResource(`health:${org}`, (signal) =>
     api.health(org, signal)
   );
   const [audit, retryAudit] = useResource(`audit:${org}`, (signal) =>
     api.audit(org, null, signal)
   );
-  const ready = context.state === "ready" ? context.data : undefined;
 
   // The old LiveView tabs (`/operations/audit`, ...) are all this one page now.
   useEffect(() => {
     if (tab !== undefined) navigate(orgHref(org, "/operations"), { replace: true });
   }, [org, tab]);
 
-  useEffect(() => {
-    document.title = ready
-      ? `${messages.health.title} · ${ready.org.name}`
-      : messages.productName;
-  }, [ready]);
+  usePageTitle(messages.health.title);
 
   // Members get 404 from the owner/admin endpoints: same as a missing org.
-  if ([context, health, audit].some((resource) => isNotFound(resource))) {
-    return (
-      <div className="bft-state-page">
-        <OrgNotFound />
-      </div>
-    );
-  }
+  if (isNotFound(health) || isNotFound(audit)) return <OrgMissing />;
 
   const unauthenticated = [context, health, audit].some(isUnauthenticated);
 
   return (
-    <Shell context={ready} pathname={pathname}>
-      {context.state === "error" && !unauthenticated ? (
-        <ErrorState onRetry={retryContext} />
-      ) : (
-        <HealthPage
-          audit={unauthenticated ? { state: "loading" } : audit}
-          health={unauthenticated ? { state: "loading" } : health}
-          loadAudit={(cursor, signal) => api.audit(org, cursor, signal)}
-          onRetry={retryHealth}
-          onRetryAudit={retryAudit}
-          org={org}
-          orgName={ready?.org.name}
-        />
-      )}
-    </Shell>
+    <PageArea unauthenticated={unauthenticated}>
+      <HealthPage
+        audit={unauthenticated ? { state: "loading" } : audit}
+        health={unauthenticated ? { state: "loading" } : health}
+        loadAudit={(cursor, signal) => api.audit(org, cursor, signal)}
+        onRetry={retryHealth}
+        onRetryAudit={retryAudit}
+        org={org}
+        orgName={ready?.org.name}
+      />
+    </PageArea>
   );
 }
 
-function OrgMembers({ org, pathname }: { org: string; pathname: string }) {
+function OrgMembers({ org }: { org: string }) {
   const api = useApi();
-  const [context, retryContext] = useResource(`context:${org}`, (signal) =>
-    api.orgContext(org, signal)
-  );
+  const { context, ready } = useOrgShell();
   const [members, retryMembers] = useResource(`members:${org}`, (signal) =>
     api.members(org, signal)
   );
-  const ready = context.state === "ready" ? context.data : undefined;
+  usePageTitle(messages.members.title);
 
-  useEffect(() => {
-    document.title = ready
-      ? `${messages.members.title} · ${ready.org.name}`
-      : messages.productName;
-  }, [ready]);
-
-  if (isNotFound(context) || isNotFound(members)) {
-    return (
-      <div className="bft-state-page">
-        <OrgNotFound />
-      </div>
-    );
-  }
+  if (isNotFound(members)) return <OrgMissing />;
 
   const unauthenticated = isUnauthenticated(context) || isUnauthenticated(members);
 
   return (
-    <Shell context={ready} pathname={pathname}>
-      {context.state === "error" && !unauthenticated ? (
-        <ErrorState onRetry={retryContext} />
-      ) : (
-        <MembersPage
-          members={unauthenticated ? { state: "loading" } : members}
-          onRetry={retryMembers}
-          orgName={ready?.org.name}
-          writes={{
-            invite: (invite) => api.inviteMember(org, invite),
-            changeRole: (userId, role) => api.changeMemberRole(org, userId, role),
-            remove: (userId) => api.removeMember(org, userId),
-          }}
-        />
-      )}
-    </Shell>
+    <PageArea unauthenticated={unauthenticated}>
+      <MembersPage
+        members={unauthenticated ? { state: "loading" } : members}
+        onRetry={retryMembers}
+        orgName={ready?.org.name}
+        writes={{
+          invite: (invite) => api.inviteMember(org, invite),
+          changeRole: (userId, role) => api.changeMemberRole(org, userId, role),
+          remove: (userId) => api.removeMember(org, userId),
+        }}
+      />
+    </PageArea>
   );
 }
 
-function OrgRunners({ org, pathname }: { org: string; pathname: string }) {
+function OrgRunners({ org }: { org: string }) {
   const api = useApi();
-  const [context, retryContext] = useResource(`context:${org}`, (signal) =>
-    api.orgContext(org, signal)
-  );
+  const { context, ready } = useOrgShell();
   const [runners, retryRunners] = useResource(`runners:${org}`, (signal) =>
     api.runners(org, null, signal)
   );
-  const ready = context.state === "ready" ? context.data : undefined;
+  usePageTitle(messages.runners.title);
 
-  useEffect(() => {
-    document.title = ready
-      ? `${messages.runners.title} · ${ready.org.name}`
-      : messages.productName;
-  }, [ready]);
-
-  if (isNotFound(context) || isNotFound(runners, "org_not_found")) {
-    return (
-      <div className="bft-state-page">
-        <OrgNotFound />
-      </div>
-    );
-  }
+  if (isNotFound(runners, "org_not_found")) return <OrgMissing />;
 
   const unauthenticated = isUnauthenticated(context) || isUnauthenticated(runners);
 
   return (
-    <Shell context={ready} pathname={pathname}>
-      {context.state === "error" && !unauthenticated ? (
-        <ErrorState onRetry={retryContext} />
-      ) : (
-        <RunnersPage
-          api={{
-            page: (cursor, signal) => api.runners(org, cursor, signal),
-            connectors: (runnerId, cursor, signal) =>
-              api.runnerConnectors(org, runnerId, cursor, signal),
-            onboarding: (signal) => api.runnerOnboarding(org, signal),
-            createInstallCommand: () => api.createInstallCommand(org),
-            rotateKey: (keyId) => api.rotateRunnerKey(org, keyId),
-            revokeKey: (keyId) => api.revokeRunnerKey(org, keyId),
-            remove: (runnerId) => api.removeRunner(org, runnerId),
-          }}
-          first={unauthenticated ? { state: "loading" } : runners}
-          onRetry={retryRunners}
-          org={org}
-          orgName={ready?.org.name}
-        />
-      )}
-    </Shell>
+    <PageArea unauthenticated={unauthenticated}>
+      <RunnersPage
+        api={{
+          page: (cursor, signal) => api.runners(org, cursor, signal),
+          connectors: (runnerId, cursor, signal) =>
+            api.runnerConnectors(org, runnerId, cursor, signal),
+          onboarding: (signal) => api.runnerOnboarding(org, signal),
+          createInstallCommand: () => api.createInstallCommand(org),
+          rotateKey: (keyId) => api.rotateRunnerKey(org, keyId),
+          revokeKey: (keyId) => api.revokeRunnerKey(org, keyId),
+          remove: (runnerId) => api.removeRunner(org, runnerId),
+        }}
+        first={unauthenticated ? { state: "loading" } : runners}
+        onRetry={retryRunners}
+        org={org}
+        orgName={ready?.org.name}
+      />
+    </PageArea>
   );
 }
 
@@ -716,12 +869,10 @@ function OrgSettings({
   org,
   page,
   legacySection,
-  pathname,
 }: {
   org: string;
   page: SettingsPageName;
   legacySection: string | undefined;
-  pathname: string;
 }) {
   // A retired address becomes its section of the page that replaced it.
   useEffect(() => {
@@ -741,16 +892,17 @@ function OrgSettings({
           load={(api, signal) => api.settingsGeneral(org, signal)}
           org={org}
           page={page}
-          pathname={pathname}
           title={t.general.title}
         >
-          {(data, refreshContext) => (
+          {(data) => (
             <SettingsGeneralPage
               data={data}
               onSaved={(general) => {
+                // The shell re-reads the context after every write; a new
+                // slug is a new address.
                 const slug = general.organization.slug;
-                if (slug === org) refreshContext();
-                else navigate(orgHref(slug, settingsPaths.general), { replace: true });
+                if (slug !== org)
+                  navigate(orgHref(slug, settingsPaths.general), { replace: true });
               }}
               org={org}
             />
@@ -764,7 +916,6 @@ function OrgSettings({
           load={(api, signal) => api.settingsModels(org, signal)}
           org={org}
           page={page}
-          pathname={pathname}
           title={t.models.title}
         >
           {(data) => <SettingsModelsPage data={data} org={org} />}
@@ -777,7 +928,6 @@ function OrgSettings({
           load={(api, signal) => api.settingsSso(org, signal)}
           org={org}
           page={page}
-          pathname={pathname}
           title={t.sso.title}
         >
           {(data) => <SettingsSsoPage data={data} org={org} />}
@@ -790,9 +940,7 @@ function OrgSettings({
           load={(api, signal) => api.settingsIntegrations(org, signal)}
           org={org}
           page={page}
-          pathname={pathname}
           title={t.integrations.title}
-          wide
         >
           {(data) => <IntegrationsPage data={data} org={org} />}
         </SettingsRoute>
@@ -800,54 +948,36 @@ function OrgSettings({
   }
 }
 
-/** The shell around one Settings page; members get the forbidden state. */
+/** One Settings page; members get the forbidden state. */
 function SettingsRoute<T>({
   org,
   page,
-  pathname,
   title,
   description,
   load,
-  wide = false,
   children,
 }: {
   org: string;
   page: SettingsPageName;
-  pathname: string;
   title: string;
   description: (orgName: string) => string;
   load: (api: BftApi, signal: AbortSignal) => Promise<T>;
-  wide?: boolean;
-  children: (data: T, refreshContext: () => void) => ReactNode;
+  children: (data: T) => ReactNode;
 }) {
   const api = useApi();
-  const [context, retryContext] = useResource(`context:${org}`, (signal) =>
-    api.orgContext(org, signal)
-  );
+  const { context, ready } = useOrgShell();
   const [data, retryData] = useResource(`settings:${page}:${org}`, (signal) =>
     load(api, signal)
   );
-  const ready = context.state === "ready" ? context.data : undefined;
+  usePageTitle(title);
 
-  useEffect(() => {
-    document.title = ready ? `${title} · ${ready.org.name}` : messages.productName;
-  }, [ready, title]);
-
-  if (isNotFound(context) || isNotFound(data)) {
-    return (
-      <div className="bft-state-page">
-        <OrgNotFound />
-      </div>
-    );
-  }
+  if (isNotFound(data)) return <OrgMissing />;
 
   const unauthenticated = isUnauthenticated(context) || isUnauthenticated(data);
 
   return (
-    <Shell context={ready} pathname={pathname}>
-      {context.state === "error" && !unauthenticated ? (
-        <ErrorState onRetry={retryContext} />
-      ) : isForbidden(data) ? (
+    <PageArea unauthenticated={unauthenticated}>
+      {isForbidden(data) ? (
         <Forbidden org={org} />
       ) : (
         <SettingsPage
@@ -855,11 +985,10 @@ function SettingsRoute<T>({
           onRetry={retryData}
           resource={unauthenticated ? { state: "loading" } : data}
           title={title}
-          wide={wide}
         >
-          {(loaded) => children(loaded, retryContext)}
+          {(loaded) => <EditableData data={loaded}>{children}</EditableData>}
         </SettingsPage>
       )}
-    </Shell>
+    </PageArea>
   );
 }

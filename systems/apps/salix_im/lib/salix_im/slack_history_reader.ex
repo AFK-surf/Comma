@@ -296,7 +296,7 @@ defmodule SalixIM.SlackHistoryReader do
     kind = if request.stream_kind == "history", do: :history, else: :replies
     arity = if kind == :history, do: 2, else: 3
 
-    if is_atom(reader) and not is_nil(reader) and Code.ensure_loaded?(reader) and
+    if is_atom(reader) and not is_nil(reader) and SystemsRuntime.Proc.ensure_loaded?(reader) and
          function_exported?(reader, kind, arity) do
       query_archive(reader, kind, scope, request)
     else
@@ -506,7 +506,7 @@ defmodule SalixIM.SlackHistoryReader do
       stream_complete: is_nil(next_cursor),
       accepted_connect_generation: generation,
       accepted_channel_authority_revision: channel_revision,
-      observed_at: DateTime.utc_now(),
+      observed_at: SystemsClock.utc_now(),
       messages: messages
     }
   end

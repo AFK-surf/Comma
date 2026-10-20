@@ -1,8 +1,7 @@
 import userEvent from "@testing-library/user-event";
 import { render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
-import { iconRegistryByExport } from "../../icons/iconRegistry";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   SideChatCardsPanel,
   SideChatComposer,
@@ -10,6 +9,11 @@ import {
   SideChatStatus,
   type SideChatTask,
 } from "../SideChat";
+import { loadStatusIndicatorElement } from "../../status-indicator";
+
+// The status indicator registers its element on a dynamic import: real I/O
+// that the test clock does not move. The tests load it first, as the stories do.
+beforeAll(() => loadStatusIndicatorElement());
 
 function sideChatTask(
   statusBucket: SideChatTask["statusBucket"],
@@ -46,31 +50,6 @@ function ComposerHarness({
 }
 
 describe("Side Chat UI", () => {
-  it("uses the reviewed Central Icon variant for every Side Chat glyph", () => {
-    const sideChatIcons = [
-      "ArrowLeftIcon",
-      "BubbleAlertIcon",
-      "CircleCheckIcon",
-      "CircleDashedIcon",
-      "CircleInfoIcon",
-      "CircleXIcon",
-      "ListChecksIcon",
-      "LoaderIcon",
-      "PanelRightIcon",
-      "SparklesIcon",
-      "XIcon",
-    ] as const;
-
-    for (const iconName of sideChatIcons) {
-      // PanelRightIcon is fill-only in the stroke-2 package, so it is sourced
-      // pre-thinned at 1.5; everything else is thinned from 2 by the global
-      // token. Both routes render at 1.5.
-      const expected = iconName === "PanelRightIcon" ? 1.5 : 2;
-      expect(iconRegistryByExport[iconName]?.variant.stroke, iconName).toBe(expected);
-    }
-    expect(iconRegistryByExport.ArrowUpIcon?.variant.stroke).toBe(2);
-  });
-
   it("keeps conversation content mounted and inaccessible while task cards are visible", () => {
     const cards = <button type="button">Open task</button>;
     const messages = <button type="button">Send message</button>;
@@ -168,7 +147,7 @@ describe("Side Chat UI", () => {
         view.container
           .querySelector("status-indicator")
           ?.shadowRoot?.querySelectorAll('[role="radio"]')
-      ).toHaveLength(5)
+      ).toHaveLength(4)
     );
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveAttribute(

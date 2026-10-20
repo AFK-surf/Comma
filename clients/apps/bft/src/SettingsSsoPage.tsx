@@ -1,4 +1,5 @@
-import { Button, Dropdown } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Dropdown } from "@comma/ui/components/dropdown";
 import { useState } from "react";
 import {
   provisioningPolicies,
@@ -48,10 +49,44 @@ export function ssoDraft(data: BftSettingsSso) {
 type Draft = ReturnType<typeof ssoDraft>;
 
 /**
+ * The draft after the provider choice changes. The App ID, the secret and the
+ * scopes of one provider mean nothing to another, so they go back to the
+ * stored values for the stored provider and to blank for any other.
+ */
+export function ssoProviderDraft(
+  data: BftSettingsSso,
+  draft: Draft,
+  provider: BftSsoProvider
+): Draft {
+  const stored = ssoDraft(data);
+  const kept = data.connection?.provider === provider;
+  return {
+    ...draft,
+    provider,
+    client_id: kept ? stored.client_id : "",
+    client_secret: "",
+    scope: kept ? stored.scope : "",
+  };
+}
+
+/**
  * The write body for the chosen provider. A Feishu connection takes its App
  * ID and secret from the Feishu app enabled for sign-in, so it sends neither.
+ * A Lark connection sends the App ID and App Secret of its own Lark app.
  */
 export function ssoBody(draft: Draft): Record<string, unknown> {
+  if (draft.provider === "lark") {
+    return {
+      provider: "lark",
+      client_id: draft.client_id.trim(),
+      default_role: draft.default_role,
+      provider_config: {
+        scope: draft.scope.trim(),
+        provisioning_policy: draft.provisioning_policy,
+      },
+      ...(draft.client_secret ? { client_secret: draft.client_secret } : {}),
+    };
+  }
   if (draft.provider === "feishu") {
     return {
       provider: "feishu",
@@ -96,8 +131,11 @@ export function SettingsSsoPage({
   const checking = useWrite();
   const set = (patch: Partial<Draft>) => setDraft((value) => ({ ...value, ...patch }));
   const feishu = draft.provider === "feishu";
+  const lark = draft.provider === "lark";
+  // The stored secret belongs to the stored provider only.
   const secretConfigured =
-    data.connection?.provider === "generic_oidc" &&
+    !feishu &&
+    data.connection?.provider === draft.provider &&
     data.connection.client_secret_configured;
   const integrations = orgHref(org, `${settingsPaths.integrations}#feishu`);
   const roleField = (
@@ -125,7 +163,11 @@ export function SettingsSsoPage({
             label: t.providers[provider],
           }))}
           label={t.provider}
-          onChange={(value) => set({ provider: value as BftSsoProvider })}
+          onChange={(value) =>
+            setDraft((current) =>
+              ssoProviderDraft(data, current, value as BftSsoProvider)
+            )
+          }
           size="sm"
           value={draft.provider}
         />
@@ -180,6 +222,43 @@ export function SettingsSsoPage({
             />
             {roleField}
           </>
+        ) : lark ? (
+          <>
+            <p className="bft-form-section-note">{t.larkNote}</p>
+            <TextField
+              error={write.fields.client_id}
+              label={t.larkAppId}
+              onChange={(client_id) => set({ client_id })}
+              placeholder="cli_..."
+              value={draft.client_id}
+            />
+            <SecretField
+              configured={secretConfigured}
+              error={write.fields.client_secret}
+              label={t.larkAppSecret}
+              onChange={(client_secret) => set({ client_secret })}
+              value={draft.client_secret}
+            />
+            <TextField
+              error={write.fields.provider_config}
+              hint={t.larkScopeHint}
+              label={t.larkScope}
+              onChange={(scope) => set({ scope })}
+              value={draft.scope}
+            />
+            <Dropdown
+              className="bft-form-field"
+              items={provisioningPolicies.map((policy) => ({
+                id: policy,
+                label: t.larkPolicies[policy],
+              }))}
+              label={t.provisioning}
+              onChange={(value) => set({ provisioning_policy: value as Policy })}
+              size="sm"
+              value={draft.provisioning_policy}
+            />
+            {roleField}
+          </>
         ) : (
           <>
             <TextField
@@ -222,7 +301,9 @@ export function SettingsSsoPage({
             />
           </div>
           <CodeBlock label={t.redirectUri} text={data.redirect_uri} />
-          <p className="bft-form-section-note">{t.redirectUriHint}</p>
+          <p className="bft-form-section-note">
+            {lark ? t.larkRedirectUriHint : t.redirectUriHint}
+          </p>
         </div>
         <FormActions write={write}>
           <Button

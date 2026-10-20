@@ -66,9 +66,9 @@ defmodule BillingCore.Metering.PricingBackfill do
   end
 
   def run(attrs) when is_map(attrs) do
-    repo = attrs[:repo] || Application.fetch_env!(:billing_core, :repo)
+    repo = attrs[:repo] || SystemsRuntime.fetch_env!(:billing_core, :repo)
     sql = attrs[:sql_runner] || Ecto.Adapters.SQL
-    now = attrs[:now] || DateTime.utc_now()
+    now = attrs[:now] || SystemsClock.utc_now()
     limit = attrs[:limit] || 100
 
     with {:ok, %{expired_count: expired_count, active: active}} <-

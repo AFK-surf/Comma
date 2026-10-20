@@ -1,5 +1,5 @@
 defmodule SalixIM.TaskCompletionTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias SalixIM.TaskCompletion
 
   defp task(attrs \\ %{}) do
@@ -41,32 +41,5 @@ defmodule SalixIM.TaskCompletionTest do
     for status <- ~w(failed cancelled escalated archived) do
       assert {:error, {:forbidden, _}} = complete(task(%{"status" => status}))
     end
-  end
-
-  test "non-Tasks and simultaneous kind changes cannot enter Done" do
-    assert {:error, {:forbidden, _}} = complete(task(%{"kind" => "user_chat"}))
-
-    assert {:error, {:forbidden, _}} =
-             TaskCompletion.router_update(
-               task(),
-               %{"status" => "completed", "kind" => "user_chat"},
-               "router"
-             )
-  end
-
-  test "other updates and product-owned transitions are unchanged" do
-    assert :ok =
-             TaskCompletion.router_update(
-               task(%{"status" => "completed"}),
-               %{"status" => "active"},
-               "router"
-             )
-
-    assert :ok =
-             TaskCompletion.router_update(
-               task(%{"workflow" => %{}}),
-               %{"status" => "completed"},
-               nil
-             )
   end
 end

@@ -1,5 +1,5 @@
+import { useCall } from "@comma/core-client";
 import { useCallback, useMemo, useRef } from "react";
-import type { CommaApiClient } from "../../api";
 import type { OnboardingItemResult } from "./onboardingSetup";
 import type { OnboardingWorkspace } from "./useOnboardingWorkspace";
 
@@ -19,28 +19,26 @@ import type { OnboardingWorkspace } from "./useOnboardingWorkspace";
  * the Routines as it always does.
  */
 export function useOnboardingRoutines({
-  api,
   connected,
   workspace,
 }: {
-  api: Pick<CommaApiClient, "getRecommendations">;
   /** At least one app is connected now. */
   connected: boolean;
   workspace: OnboardingWorkspace;
 }) {
+  const call = useCall();
   const started = useRef(false);
   const start = useCallback(() => {
     if (workspace.status !== "ready" || started.current) return;
     started.current = true;
-    api
-      .getRecommendations(workspace.workspaceId, {
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      })
-      .catch((error: unknown) => {
-        // Home reads them again as it opens.
-        console.warn("[onboarding] Routines did not start", error);
-      });
-  }, [api, workspace]);
+    call("recommendations.start", {
+      workspace: workspace.workspaceId,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }).catch((error: unknown) => {
+      // Home reads them again as it opens.
+      console.warn("[onboarding] Routines did not start", error);
+    });
+  }, [call, workspace]);
 
   return useMemo(
     () => ({

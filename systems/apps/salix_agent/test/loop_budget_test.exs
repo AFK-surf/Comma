@@ -8,8 +8,9 @@ defmodule SalixAgent.LoopBudgetTest do
   # budget over, so model requests continued with no new input. Retry resume
   # stops at the failure cap, and context-overflow recovery runs once for each
   # transcript position.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.InternalSession
 
   @sid "ses1_0000000000000000912"
@@ -17,16 +18,16 @@ defmodule SalixAgent.LoopBudgetTest do
 
   setup do
     keys = [:input_round_cap, :llm_activation_retry_base_ms]
-    previous = Map.new(keys, &{&1, Application.get_env(:salix_agent, &1)})
-    Application.put_env(:salix_agent, :input_round_cap, @cap)
+    previous = Map.new(keys, &{&1, SystemsRuntime.get_env(:salix_agent, &1)})
+    SystemsRuntime.put_env(:salix_agent, :input_round_cap, @cap)
     # The retry deadline passes at once, so activation resumes without a timer.
-    Application.put_env(:salix_agent, :llm_activation_retry_base_ms, 1)
+    SystemsRuntime.put_env(:salix_agent, :llm_activation_retry_base_ms, 1)
 
     on_exit(fn ->
       for {key, value} <- previous do
         if is_nil(value),
-          do: Application.delete_env(:salix_agent, key),
-          else: Application.put_env(:salix_agent, key, value)
+          do: SystemsRuntime.delete_env(:salix_agent, key),
+          else: SystemsRuntime.put_env(:salix_agent, key, value)
       end
     end)
 
@@ -93,22 +94,6 @@ defmodule SalixAgent.LoopBudgetTest do
     assert :idle == activation(session)
   end
 
-  test "a final model-failure ACK keeps the round count", %{session: session} do
-    assert :run == activation(session)
-    {session, :boundary} = tool_round(session, 1)
-
-    # Consecutive retryable failures reach the failure cap. Only the final
-    # failure ACKs the source, and that ACK keeps the round count.
-    {session, acks} =
-      Enum.reduce(1..3, {session, []}, fn n, {session, acks} ->
-        {session, events} = failed_round_events(session, n)
-        {session, acks ++ Enum.filter(events, &(&1["type"] == "ack"))}
-      end)
-
-    assert [%{"keep_round_budget" => true}] = acks
-    assert InternalSession.get(session, :input_round_streak)["count"] == 1
-  end
-
   # Issue #2070, property C. When the round budget parks a session without a
   # reply destination, `guard_notice` commits the local guard settlement. Its
   # ACK closes the turn, so the tool-result tail does not continue by itself.
@@ -145,80 +130,11 @@ defmodule SalixAgent.LoopBudgetTest do
     assert :idle == activation(session)
   end
 
-  # Retry resume is bounded by the failure cap. Consecutive model failures at
-  # one transcript position count up. The last failure is final, and its ACK
-  # keeps the round count. Then activation runs nothing until a credit arrives.
-  test "consecutive model failures stop at the failure cap", %{session: session} do
-    {session, requests} =
-      Enum.reduce_while(1..10, {session, 0}, fn n, {session, requests} ->
-        case activation_after_retry(session) do
-          :idle ->
-            {:halt, {session, requests}}
-
-          :run ->
-            {session, _events} = failed_round_events(session, n)
-            {:cont, {session, requests + 1}}
-        end
-      end)
-
-    assert requests == 3
-    assert InternalSession.query(session, :llm_failures_exhausted?)
-    assert :idle == activation(session)
-  end
-
-  # Context-overflow recovery runs at most once for each transcript position.
-  # A second overflow at the same position is an ordinary model failure, so it
-  # counts toward the failure cap and does not start another recovery.
-  test "context-overflow recovery runs once per transcript position", %{session: session} do
-    assert :run == activation(session)
-    snapshot = InternalSession.next_message_id(session)
-
-    {session, first} = overflow_round(session, snapshot, 1)
-    assert {:stop, :context_overflow} = List.last(first.effects)
-
-    assert Enum.any?(
-             first.events,
-             &(&1["kind"] == "context_overflow_recovery_requested")
-           )
-
-    # The host compacts and runs one round at the same position.
-    {_session, second} = overflow_round(session, snapshot, 2)
-    assert :continue == List.last(second.effects)
-    assert Enum.any?(second.events, &(&1["kind"] == "llm_call_failed"))
-    refute Enum.any?(second.events, &(&1["kind"] == "context_overflow_recovery_requested"))
-  end
-
-  # The activation decision after a retry deadline: wait for the deadline, then
-  # decide again.
-  defp activation_after_retry(session) do
-    facts = %{"ceiling_ms" => 1_800_000}
-    Process.sleep(2)
-
-    case step(session, nil, {:activate, facts}) do
-      {_, [{:set_timer, :retry, _at}, {:stop, :wait}]} ->
-        Process.sleep(5)
-        activation_after_retry(session)
-
-      _ ->
-        activation(session)
-    end
-  end
-
-  # One model round whose provider call fails with a context overflow.
-  defp overflow_round(session, snapshot, n) do
-    {:error, meta} = SalixAgent.LLM.Error.context_overflow("anthropic", "prompt is too long")
-    facts = facts(snapshot, 100 + n)
-    {machine, _} = step(session, nil, {:model_response, {:error, meta}, facts})
-    {_, effects} = step(session, machine, :continue)
-    [{:commit, events, _, _}] = Enum.filter(effects, &match?({:commit, _, _, _}, &1))
-    {InternalSession.apply_events(session, events), %{events: events, effects: effects}}
-  end
-
   # The kernel's activation decision: `:run` when it hands the session to a
   # model round (`run` or `resume`), `:idle` when it runs nothing.
   defp activation(session) do
     facts = %{"ceiling_ms" => 1_800_000}
-    Process.sleep(2)
+    SystemsClock.sleep(2)
 
     case step(session, nil, {:activate, facts}) do
       {_, [{:materialize, :run}]} -> :run

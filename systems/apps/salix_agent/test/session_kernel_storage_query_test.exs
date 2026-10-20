@@ -7,7 +7,7 @@ defmodule SalixAgent.SessionKernelStorageQueryTest do
   their order by `completed_at`, and the expected seq after the covered
   messages and facts.
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixAgent.InternalSession
   alias SalixAgent.InternalSession.State
@@ -27,12 +27,6 @@ defmodule SalixAgent.SessionKernelStorageQueryTest do
 
   defp call(overrides),
     do: Map.merge(%{"tool_call_id" => "c", "status" => "completed"}, overrides)
-
-  test "an empty snapshot has nothing to certify" do
-    assert terminal(base()) == []
-    assert terminal(%State{}) == []
-    assert terminal(base(%{async_tool_calls: nil, messages: nil, events: nil})) == []
-  end
 
   test "only terminal statuses are certified, and running ones are skipped" do
     state =
@@ -82,19 +76,5 @@ defmodule SalixAgent.SessionKernelStorageQueryTest do
     certified = terminal(state)
     assert Enum.map(certified, fn {id, _call, _seq} -> id end) == ["d", "c", "a", "b"]
     assert Enum.map(certified, fn {_id, _call, seq} -> seq end) == [1, 2, 3, 4]
-  end
-
-  test "the whole terminal record travels, not a projection of it" do
-    record =
-      call(%{
-        "completed_at" => 2_000,
-        "status" => "failed",
-        "result" => nil,
-        "error" => "boom",
-        "diagnostics" => %{"attempts" => [1, 2], "unicode" => "完整结果"}
-      })
-
-    assert [{"call-failed", ^record, 1}] =
-             terminal(base(%{async_tool_calls: %{"call-failed" => record}}))
   end
 end

@@ -28,7 +28,7 @@ defmodule SalixIM.SlackCommandTemplates do
                  "tenant_id" => tenant_id,
                  "name" => @name,
                  "value" => %{"revision" => revision + 1, "commands" => entries},
-                 "updated_at" => System.system_time(:second)
+                 "updated_at" => SystemsClock.system_time(:second)
                }) do
           {:ok, record["value"]}
         else

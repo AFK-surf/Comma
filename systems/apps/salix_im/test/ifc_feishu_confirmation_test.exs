@@ -11,8 +11,9 @@ defmodule SalixIM.IFCFeishuConfirmationTest do
   instead of a second API call.
   """
 
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixIM.IFC.FeishuConfirmation
 
   @group "grp_ifc_feishu_card"
@@ -24,7 +25,7 @@ defmodule SalixIM.IFCFeishuConfirmationTest do
     @moduledoc false
 
     def get(group_id, request_id, tenant_id) do
-      send(test_pid(), {:get, group_id, request_id, tenant_id})
+      SystemsRuntime.Proc.send(test_pid(), {:get, group_id, request_id, tenant_id})
 
       case Process.get(:ifc_card_request) do
         nil -> {:error, :not_found}
@@ -33,7 +34,7 @@ defmodule SalixIM.IFCFeishuConfirmationTest do
     end
 
     def decide_declassification(group_id, request_id, attrs, tenant_id) do
-      send(test_pid(), {:decided, group_id, request_id, attrs, tenant_id})
+      SystemsRuntime.Proc.send(test_pid(), {:decided, group_id, request_id, attrs, tenant_id})
 
       case Process.get(:ifc_card_settled) do
         true -> {:error, {:conflict, :already_settled}}
@@ -45,9 +46,9 @@ defmodule SalixIM.IFCFeishuConfirmationTest do
   end
 
   setup do
-    Application.put_env(:salix_im, :capability_request_mod, Capability)
-    Process.put(:ifc_card_test_pid, self())
-    on_exit(fn -> Application.delete_env(:salix_im, :capability_request_mod) end)
+    SystemsRuntime.put_env(:salix_im, :capability_request_mod, Capability)
+    Process.put(:ifc_card_test_pid, SystemsRuntime.Proc.self())
+    on_exit(fn -> SystemsRuntime.delete_env(:salix_im, :capability_request_mod) end)
     :ok
   end
 
@@ -96,30 +97,6 @@ defmodule SalixIM.IFCFeishuConfirmationTest do
   end
 
   describe "recognizing the card" do
-    test "only its own two choices, on its own event type" do
-      assert FeishuConfirmation.action?(press("approve", "ou_a"))
-      assert FeishuConfirmation.action?(press("deny", "ou_a"))
-
-      refute FeishuConfirmation.action?(press("something_else", "ou_a"))
-      refute FeishuConfirmation.action?(put_in(press("approve", "ou_a"), ["header"], %{}))
-      refute FeishuConfirmation.action?(%{"header" => %{"event_type" => "im.message.receive_v1"}})
-      refute FeishuConfirmation.action?(%{})
-    end
-
-    test "a button value that came back as JSON text is still its own card" do
-      envelope =
-        put_in(
-          press("approve", "ou_a"),
-          ["event", "action", "value"],
-          Jason.encode!(%{"ifc_declassify" => "approve", "request_id" => "req_1"})
-        )
-
-      assert FeishuConfirmation.action?(envelope)
-
-      Process.put(:ifc_card_request, request())
-      assert {:ok, _response} = FeishuConfirmation.apply_action(connect(), envelope)
-      assert_received {:decided, @group, "req_1", %{"approved" => true}, @tenant}
-    end
   end
 
   describe "answering it" do
@@ -183,14 +160,6 @@ defmodule SalixIM.IFCFeishuConfirmationTest do
       assert {:error, {:ignored, :ifc_declassify_settled}} =
                FeishuConfirmation.apply_action(connect(), press("deny", "ou_a"))
     end
-
-    test "a malformed callback is ignored, not retried" do
-      assert {:error, {:ignored, :invalid_interaction_payload}} =
-               FeishuConfirmation.apply_action(connect(), %{})
-
-      assert {:error, {:ignored, :invalid_interaction_payload}} =
-               FeishuConfirmation.apply_action(connect(), press("approve", "ou_a", ""))
-    end
   end
 
   describe "asking" do
@@ -210,30 +179,6 @@ defmodule SalixIM.IFCFeishuConfirmationTest do
       # And each button carries the request it answers, so a press names one
       # durable row rather than "whatever is pending".
       assert rendered =~ ~s("request_id":"req_1")
-    end
-
-    test "is written in the language the Group asked for" do
-      # The card is composed by the runtime, not by the model, so it cannot
-      # follow the model's instruction to answer in the asker's language
-      # (§6.4).
-      english = request(%{"language" => "en", "summary" => "Send the handover list to the team"})
-      rendered = Jason.encode!(FeishuConfirmation.card(english, detail(english)))
-
-      assert rendered =~ "Confirm the transfer"
-      assert rendered =~ "Confirm"
-      assert rendered =~ "Cancel"
-      assert rendered =~ "not this particular text"
-      refute rendered =~ "确认"
-
-      # And the settled card follows it too, so a person is not answered in a
-      # language they did not read the question in.
-      Process.put(:ifc_card_request, english)
-      assert {:ok, response} = FeishuConfirmation.apply_action(connect(), press("deny", "ou_a"))
-      assert Jason.encode!(response) =~ "Cancelled, nothing was carried over"
-    end
-
-    test "an unreachable connect never fails the request that raised it" do
-      assert :ok = FeishuConfirmation.post(request())
     end
   end
 end

@@ -77,9 +77,13 @@ def responses (v : Term) : Term :=
       ("cache_read_tokens_reported", Term.bool (isNumber (coalesce [get v "cache_read_input_tokens", detail v "input_tokens_details" "cached_tokens"]))),
       ("reasoning_tokens", reasoning)])
 
-def attach (result usage model : Term) : Term :=
+/-- The trace metadata of a response: its usage, model, and the Anthropic
+`input_transformations` (the thinking blocks the API dropped or let through
+after a prefix or model change) when the response reports them. -/
+def attach (result usage model : Term) (transformations : Term := nil) : Term :=
   if usage == nil then result else
   let metadata := putOptional (obj [("usage", usage)]) "model" model
+  let metadata := if transformations.isList then metadata.put (b "input_transformations") transformations else metadata
   match result with
   | .tuple [.atom "final", text] => .tuple [a "final", text, metadata]
   | .tuple [.atom "final", text, providerMeta, traceMeta] => .tuple [a "final", text, providerMeta, mergeMaps (coalesce [traceMeta, empty]) metadata]

@@ -1,35 +1,41 @@
-import { useContext, useEffect, useState } from "react";
-import { CommaAuthContext } from "./auth-context";
+import { useCall } from "@comma/core-client";
+import { useEffect, useState } from "react";
+import { readFileBlob } from "../runtime-files/fileSources";
 
+/**
+ * The signed-in person's avatar at `avatarRevision`, as the core reads it; none without a revision. The previous
+ * image stays while a new revision loads, and its URL is revoked only once nothing shows it.
+ */
 export function useProfileAvatarUrl(avatarRevision?: string) {
-  const api = useContext(CommaAuthContext)?.api;
+  const call = useCall();
   const [url, setUrl] = useState<string>();
 
   useEffect(() => {
-    if (!api || !avatarRevision) {
+    if (!avatarRevision) {
       setUrl(undefined);
       return;
     }
 
     const controller = new AbortController();
-    let objectUrl: string | undefined;
-
-    void api
-      .fetchAvatar(avatarRevision, { signal: controller.signal })
+    void readFileBlob(
+      call,
+      { source: "avatar", revision: avatarRevision },
+      controller.signal
+    )
       .then((blob) => {
-        if (controller.signal.aborted) return;
-        objectUrl = URL.createObjectURL(blob);
-        setUrl(objectUrl);
+        if (!controller.signal.aborted) setUrl(URL.createObjectURL(blob));
       })
       .catch(() => {
         if (!controller.signal.aborted) setUrl(undefined);
       });
 
-    return () => {
-      controller.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [api, avatarRevision]);
+    return () => controller.abort();
+  }, [avatarRevision, call]);
+
+  useEffect(() => {
+    if (!url) return;
+    return () => URL.revokeObjectURL(url);
+  }, [url]);
 
   return url;
 }

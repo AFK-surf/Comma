@@ -129,8 +129,8 @@ theorem transcriptSeed_seq {s e t : Term} {j r : List Term} (h : transcriptSeed 
     obtain rfl := Term.list.inj hl
     have hmessages := write_get_key "messages" hw rfl
     have hseq := write_get_key "last_seq" hw rfl
-    have fm := write_frame_key "messages" hfinal rfl
-    have fl := write_frame_key "last_seq" hfinal rfl
+    have fm := write_frame_key "messages" hfinal (by keys_absent)
+    have fl := write_frame_key "last_seq" hfinal (by keys_absent)
     refine ⟨_, m, by rw [fm, hmessages], ?_, ?_, ?_⟩
     · rw [lastSeq, fl, hseq, default_integer]
     · intro x hx

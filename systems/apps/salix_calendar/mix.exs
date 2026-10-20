@@ -24,6 +24,7 @@ defmodule SalixCalendar.MixProject do
 
   defp deps do
     [
+      {:systems_clock, in_umbrella: true},
       {:salix_store, in_umbrella: true},
       {:jason, "~> 1.4"},
       {:tz, "~> 0.28"}

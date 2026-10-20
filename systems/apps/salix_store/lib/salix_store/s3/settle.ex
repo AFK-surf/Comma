@@ -229,7 +229,7 @@ defmodule SalixStore.S3.Settle do
         {:error, _} -> :error
       end
 
-    :telemetry.execute([:salix, :storage, :settlement], %{count: 1}, %{
+    SystemsRuntime.Telemetry.execute([:salix, :storage, :settlement], %{count: 1}, %{
       mode: mode,
       outcome: outcome
     })

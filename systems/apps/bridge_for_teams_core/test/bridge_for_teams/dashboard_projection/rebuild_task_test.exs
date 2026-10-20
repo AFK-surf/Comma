@@ -1,5 +1,6 @@
 defmodule BridgeForTeams.DashboardProjection.RebuildTaskTest do
   use BridgeForTeams.DataCase, async: false
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.{Accounts, Memberships, Orgs, Projects}
 
@@ -19,7 +20,7 @@ defmodule BridgeForTeams.DashboardProjection.RebuildTaskTest do
       "--pretty"
     ])
 
-    assert_receive {:mix_shell, :info, [json]}
+    settle_receive({:mix_shell, :info, [json]})
     decoded = Jason.decode!(json)
     assert decoded["dry_run"] == true
     assert decoded["scope"]["org_slug"] == org.slug
@@ -51,7 +52,7 @@ defmodule BridgeForTeams.DashboardProjection.RebuildTaskTest do
       "12000"
     ])
 
-    assert_receive {:mix_shell, :info, [json]}
+    settle_receive({:mix_shell, :info, [json]})
     decoded = Jason.decode!(json)
     assert decoded["scope"]["user_id"] == user.id
     assert decoded["scope"]["project_count"] == 1
@@ -62,7 +63,7 @@ defmodule BridgeForTeams.DashboardProjection.RebuildTaskTest do
   end
 
   defp fixture do
-    n = System.unique_integer([:positive])
+    n = SystemsRuntime.Proc.unique_integer([:positive])
     {:ok, user} = Accounts.create_user(%{"email" => "rebuild-#{n}@example.com"})
     {:ok, org} = Orgs.create_org(%{"name" => "Rebuild #{n}", "slug" => "rebuild-#{n}"})
     {:ok, _membership} = Memberships.put_org_member(org.id, user.id, "owner")

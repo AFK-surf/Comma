@@ -6,7 +6,7 @@ defmodule BridgeForTeams.DashboardProjection.Reconciler do
   generation, lease, retry state, and fenced acknowledgement so another Pod
   can resume a lost refresh without allowing a stale worker to commit.
   """
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -19,13 +19,15 @@ defmodule BridgeForTeams.DashboardProjection.Reconciler do
   @default_backstop_limit 100
 
   def start_link(opts \\ []) do
-    if enabled?(), do: GenServer.start_link(__MODULE__, opts, name: @name), else: :ignore
+    if Keyword.get(opts, :enabled, enabled?()),
+      do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: @name),
+      else: :ignore
   end
 
   def enqueue(project_id) when is_binary(project_id) do
     case request_refresh(project_id) do
       :ok ->
-        if Process.whereis(@name), do: GenServer.cast(@name, :drain)
+        if SystemsRuntime.Proc.whereis(@name), do: SystemsRuntime.Server.cast(@name, :drain)
         :ok
 
       {:error, reason} ->
@@ -77,41 +79,60 @@ defmodule BridgeForTeams.DashboardProjection.Reconciler do
   @impl true
   def init(opts) do
     interval_ms = Keyword.get(opts, :interval_ms, config(:interval_ms, @default_interval_ms))
-    send(self(), :drain)
-    {:ok, %{interval_ms: interval_ms, task: nil}}
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :drain)
+
+    {:ok,
+     %{
+       interval_ms: interval_ms,
+       run_opts: Keyword.get(opts, :run_opts, []),
+       task: nil,
+       rung: false
+     }}
   end
 
+  # A doorbell that rings while a drain runs can announce work requested after
+  # that drain made its claim. It is kept: the next drain starts as soon as the
+  # running one ends, not after the interval.
   @impl true
   def handle_cast(:drain, %{task: nil} = state) do
     {:noreply, start_drain(state)}
   end
 
-  def handle_cast(:drain, state), do: {:noreply, state}
+  def handle_cast(:drain, state), do: {:noreply, %{state | rung: true}}
 
   @impl true
   def handle_info(:drain, %{task: nil} = state), do: {:noreply, start_drain(state)}
   def handle_info(:drain, state), do: {:noreply, state}
 
   def handle_info({ref, result}, %{task: ref} = state) when is_reference(ref) do
-    Process.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
     log_result(result)
-    delay = if match?({:ok, %{claimed: true}}, result), do: 0, else: state.interval_ms
-    Process.send_after(self(), :drain, delay)
-    {:noreply, %{state | task: nil}}
+
+    delay =
+      if state.rung or match?({:ok, %{claimed: true}}, result), do: 0, else: state.interval_ms
+
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :drain, delay)
+    {:noreply, %{state | task: nil, rung: false}}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: ref} = state) do
     Logger.warning("dashboard_projection_refresh_worker_down reason=#{reason_class(reason)}")
-    Process.send_after(self(), :drain, state.interval_ms)
-    {:noreply, %{state | task: nil}}
+
+    SystemsClock.send_after(
+      SystemsRuntime.Proc.self(),
+      :drain,
+      if(state.rung, do: 0, else: state.interval_ms)
+    )
+
+    {:noreply, %{state | task: nil, rung: false}}
   end
 
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state), do: {:noreply, state}
 
-  defp start_drain(state) do
+  defp start_drain(%{run_opts: run_opts} = state) do
     task =
-      Task.Supervisor.async_nolink(BridgeForTeams.TaskSupervisor, fn ->
-        run_once()
+      SystemsRuntime.TaskSupervisor.async_nolink(BridgeForTeams.TaskSupervisor, fn ->
+        run_once(run_opts)
       end)
 
     %{state | task: task.ref}
@@ -149,7 +170,7 @@ defmodule BridgeForTeams.DashboardProjection.Reconciler do
 
   defp claim(repo, opts) do
     lease_ms = Keyword.get(opts, :lease_ms, config(:lease_ms, @default_lease_ms))
-    token = Ecto.UUID.generate()
+    token = SystemsRuntime.Proc.uuid()
 
     repo.transaction(fn ->
       result =
@@ -290,7 +311,7 @@ defmodule BridgeForTeams.DashboardProjection.Reconciler do
 
   defp config(key, default) do
     :bridge_for_teams_core
-    |> Application.get_env(__MODULE__, [])
+    |> SystemsRuntime.get_env(__MODULE__, [])
     |> Keyword.get(key, default)
   end
 

@@ -28,7 +28,7 @@ defmodule SalixStore.SealedSegments do
   @doc "The effective seal line in bytes."
   @spec line_bytes() :: pos_integer()
   def line_bytes,
-    do: Application.get_env(:salix_store, :seal_line_bytes, @default_line_bytes)
+    do: SystemsRuntime.get_env(:salix_store, :seal_line_bytes, @default_line_bytes)
 
   @doc """
   The next segment through the optional ceiling, including a partial tail.

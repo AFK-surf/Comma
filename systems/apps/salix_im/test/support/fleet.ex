@@ -1,4 +1,6 @@
 defmodule SalixIM.TestSupport.Fleet do
+  require SystemsRuntime.Proc
+
   @moduledoc false
 
   defmodule Cleanup do
@@ -11,7 +13,7 @@ defmodule SalixIM.TestSupport.Fleet do
 
     @impl true
     def init(opts) do
-      Process.flag(:trap_exit, true)
+      SystemsRuntime.Proc.trap_exit(true)
       {:ok, opts}
     end
 
@@ -30,6 +32,21 @@ defmodule SalixIM.TestSupport.Fleet do
 
   def stop_all! do
     stop_all!(SalixIM.ConversationFleetSup, SalixIM.ConversationRegistry)
+  end
+
+  @doc """
+  Restarts the fleet supervisor with an empty restart history. Its restart
+  intensity counts real seconds, so owner kills of earlier tests that a driven
+  clock ran in the same second would otherwise count against this test.
+  """
+  def fresh! do
+    stop_all!()
+    fleet = SystemsRuntime.Proc.whereis(SalixIM.ConversationFleetSup)
+    {:parent, parent} = Process.info(fleet, :parent)
+    {id, _, _, _} = Enum.find(Supervisor.which_children(parent), &(elem(&1, 1) == fleet))
+    :ok = Supervisor.terminate_child(parent, id)
+    {:ok, _} = Supervisor.restart_child(parent, id)
+    :ok
   end
 
   def stop_all!(supervisor, registry) do
@@ -54,20 +71,20 @@ defmodule SalixIM.TestSupport.Fleet do
         if stable_empty_observations >= @stable_empty_observations do
           :ok
         else
-          Process.sleep(@poll_ms)
+          SystemsRuntime.Proc.sleep(@poll_ms)
           quiesce(attempts_left - 1, stable_empty_observations, supervisor, registry)
         end
 
       _still_active ->
-        Process.sleep(@poll_ms)
+        SystemsRuntime.Proc.sleep(@poll_ms)
         quiesce(attempts_left - 1, 0, supervisor, registry)
     end
   end
 
   defp terminate_children(children, supervisor) do
     Enum.each(children, fn
-      {_id, pid, _type, _modules} when is_pid(pid) ->
-        case DynamicSupervisor.terminate_child(supervisor, pid) do
+      {_id, pid, _type, _modules} when SystemsRuntime.Proc.is_process(pid) ->
+        case SystemsRuntime.DynamicSupervisor.terminate_child(supervisor, pid) do
           :ok -> :ok
           {:error, :not_found} -> :ok
           {:error, reason} -> raise "failed to stop conversation fleet child: #{inspect(reason)}"
@@ -93,10 +110,11 @@ defmodule SalixIM.TestSupport.Fleet do
           %{
             id: id,
             pid: pid,
-            alive?: is_pid(pid) and Process.alive?(pid),
+            alive?: SystemsRuntime.Proc.is_process(pid) and SystemsRuntime.Proc.alive?(pid),
             type: type,
             modules: modules,
-            registry_keys: if(is_pid(pid), do: registry_keys(registry, pid), else: [])
+            registry_keys:
+              if(SystemsRuntime.Proc.is_process(pid), do: registry_keys(registry, pid), else: [])
           }
         end),
       registry_count: registry_count(registry),
@@ -110,33 +128,36 @@ defmodule SalixIM.TestSupport.Fleet do
   end
 
   defp current_children(supervisor) do
-    case Process.whereis(supervisor) do
+    case SystemsRuntime.Proc.whereis(supervisor) do
       nil -> []
-      _pid -> DynamicSupervisor.which_children(supervisor)
+      _pid -> SystemsRuntime.DynamicSupervisor.which_children(supervisor)
     end
   end
 
   defp child_counts(supervisor) do
-    case Process.whereis(supervisor) do
-      nil -> %{active: 0, specs: 0}
-      _pid -> Map.take(DynamicSupervisor.count_children(supervisor), [:active, :specs])
+    case SystemsRuntime.Proc.whereis(supervisor) do
+      nil ->
+        %{active: 0, specs: 0}
+
+      _pid ->
+        Map.take(SystemsRuntime.DynamicSupervisor.count_children(supervisor), [:active, :specs])
     end
   end
 
   defp registry_count(registry) do
-    case Process.whereis(registry) do
+    case SystemsRuntime.Proc.whereis(registry) do
       nil -> 0
-      _pid -> Registry.count(registry)
+      _pid -> SystemsRuntime.Registry.count(registry)
     end
   end
 
   defp registry_entries(registry) do
-    case Process.whereis(registry) do
+    case SystemsRuntime.Proc.whereis(registry) do
       nil ->
         []
 
       _pid ->
-        Registry.select(
+        SystemsRuntime.Registry.select(
           registry,
           [{{:"$1", :"$2", :"$3"}, [], [{{:"$1", :"$2"}}]}]
         )
@@ -144,9 +165,9 @@ defmodule SalixIM.TestSupport.Fleet do
   end
 
   defp registry_keys(registry, pid) do
-    case Process.whereis(registry) do
+    case SystemsRuntime.Proc.whereis(registry) do
       nil -> []
-      _registry -> Registry.keys(registry, pid)
+      _registry -> SystemsRuntime.Registry.keys(registry, pid)
     end
   end
 end

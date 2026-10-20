@@ -1,9 +1,10 @@
 import { WeChatProviderLogo } from "./WeChatProviderLogo";
-import type { ComponentType } from "react";
+import { createElement, type ComponentType } from "react";
 import { LarkProviderLogo } from "./LarkProviderLogo";
 import { FeishuProviderLogo } from "./FeishuProviderLogo";
 import { TelegramProviderLogo } from "./TelegramProviderLogo";
 import { SignalProviderLogo } from "./SignalProviderLogo";
+import { XBrandIcon } from "../icons";
 import {
   GithubProviderLogo,
   GmailProviderLogo,
@@ -12,6 +13,7 @@ import {
   GoogleProviderLogo,
   LinearProviderLogo,
   NotionProviderLogo,
+  OutlookProviderLogo,
   SlackProviderLogo,
   type ProviderBrandLogoProps,
 } from "./ProviderBrandLogos";
@@ -29,10 +31,13 @@ const providerBrandLogos: Record<string, ProviderBrandLogoComponent> = {
   googleworkspace: GoogleProviderLogo,
   linear: LinearProviderLogo,
   notion: NotionProviderLogo,
+  outlook: OutlookProviderLogo,
   signal: SignalProviderLogo,
   slack: SlackProviderLogo,
   telegram: TelegramProviderLogo,
   wechat: WeChatProviderLogo,
+  x: ({ className }) =>
+    createElement(XBrandIcon, className === undefined ? {} : { className }),
 };
 
 export function normalizeProviderBrandName(value: string | null | undefined) {

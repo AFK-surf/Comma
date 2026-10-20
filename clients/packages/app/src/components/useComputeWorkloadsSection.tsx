@@ -1,243 +1,139 @@
-import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useCall, useTopic } from "@comma/core-client";
 import { useCommaMessages } from "@comma/i18n/react";
-import {
-  Button,
-  type SettingsCategoryDetail,
-  type SettingsPanelSection,
-} from "@comma/ui";
-import {
-  CommaApiError,
-  type CommaApiClient,
-  type CommaComputeProjection,
-  type CommaComputeWorkload,
-} from "../api";
-import { readActiveWorkspaceId, subscribeActiveWorkspace } from "./activeWorkspace";
-import { CommaAuthContext } from "./auth-context";
+import { Dialog } from "@comma/ui/components/dialog";
+import type { ComputeWorkload as CommaComputeWorkload } from "@comma/core/contract";
+import { useWorkspacePreference } from "./activeWorkspace";
 
-type Creation = { requestId: string; environmentId: string };
-function readCreation(key: string): Creation | undefined {
-  try {
-    const value: unknown = JSON.parse(localStorage.getItem(key) ?? "null");
-    if (
-      value &&
-      typeof value === "object" &&
-      "requestId" in value &&
-      "environmentId" in value &&
-      typeof value.requestId === "string" &&
-      typeof value.environmentId === "string" &&
-      value.requestId.length > 0 &&
-      value.requestId.length <= 160 &&
-      value.environmentId.length > 0 &&
-      value.environmentId.length <= 160
-    )
-      return { requestId: value.requestId, environmentId: value.environmentId };
-  } catch {
-    /* A damaged record has no recoverable request identity. */
-  }
-  return undefined;
-}
-function clearCreation(key: string, requestId: string) {
-  const current = readCreation(key);
-  if (current && current.requestId !== requestId) return false;
-  if (current) localStorage.removeItem(key);
-  return true;
-}
 const preparing = (w: CommaComputeWorkload) =>
-  w.desired_state === "ready" &&
-  ["waiting_connection", "allocating", "starting"].includes(w.phase ?? "");
+  (!!w.deletion && !["complete", "cloud_retired"].includes(w.deletion.phase)) ||
+  (w.desired_state === "ready" &&
+    ["waiting_connection", "allocating", "starting"].includes(w.phase ?? ""));
+
+const locationUnknown = (w: CommaComputeWorkload) =>
+  w.location?.provider !== "agent_vmm" && w.location?.provider !== "cloudflare";
 
 const workloadLabel = (w: CommaComputeWorkload) =>
-  `${w.kind === "shell" ? "Shell" : w.kind} ${w.id.slice(-8)}`;
+  w.name || `${w.kind === "shell" ? "Shell" : w.kind} ${w.id.slice(-8)}`;
 
 export function useComputeWorkloadsSection(
-  api: CommaApiClient,
+  /** Whether this app reaches the Comma cloud (the core reads Compute there). */
+  cloud: boolean,
   enabled: boolean,
   observationTick?: number
 ) {
   const sharedObservation = observationTick !== undefined;
   const m = useCommaMessages();
-  const auth = useContext(CommaAuthContext);
-  const [workspaceId, setWorkspaceId] = useState(readActiveWorkspaceId);
-  const storageKey = `comma.compute.creation:${encodeURIComponent(auth?.apiBaseUrl ?? "")}:${encodeURIComponent(auth?.userId ?? auth?.userEmail ?? "")}:${workspaceId}`;
-  const [projection, setProjection] = useState<CommaComputeProjection>();
-  const [environmentId, setEnvironmentId] = useState("");
+  const call = useCall();
+  const workspacePreference = useWorkspacePreference();
   const [workloadAfter, setWorkloadAfter] = useState("");
-  const [creation, setCreation] = useState<Creation>();
-  const [accepted, setAccepted] = useState<CommaComputeWorkload>();
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState("");
-  const [revision, setRevision] = useState(0);
-  const [mode, setMode] = useState<"advanced" | "create" | "workload">();
-  const [selected, setSelected] = useState<CommaComputeWorkload>();
-  const lock = useRef(false);
-  const scope = useRef(storageKey);
-  scope.current = storageKey;
-  const submitted = useRef<Creation | undefined>(undefined);
-  const rounds = useRef(0);
-  useEffect(() => subscribeActiveWorkspace(setWorkspaceId), []);
+  const [hidden, setHidden] = useState(() => document.hidden);
   useEffect(() => {
-    setProjection(undefined);
-    setEnvironmentId("");
-    setWorkloadAfter("");
-    setCreation(readCreation(storageKey));
-    setAccepted(undefined);
-    setPending(false);
-    setError("");
-    setMode(undefined);
-    submitted.current = undefined;
-    rounds.current = 0;
-  }, [storageKey]);
-
-  const sharedObservationNeeded = useRef(true);
-  const loadRef = useRef<(() => Promise<void>) | undefined>(undefined);
-  useEffect(() => {
-    if (observationTick !== undefined && sharedObservationNeeded.current)
-      void loadRef.current?.();
-  }, [observationTick]);
-  const refresh = useCallback(() => {
-    rounds.current = 0;
-    sharedObservationNeeded.current = true;
-    setRevision((value) => value + 1);
-  }, []);
-  useEffect(() => {
-    if (!enabled || !workspaceId) return;
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let reading = false;
-    const load = async () => {
-      if (
-        controller.signal.aborted ||
-        document.hidden ||
-        reading ||
-        rounds.current >= 60
-      )
-        return;
-      if (timer) clearTimeout(timer);
-      timer = undefined;
-      reading = true;
-      rounds.current += 1;
-      try {
-        const value = await api.getCompute(workspaceId, {
-          signal: controller.signal,
-          workloadAfter,
-        });
-        if (controller.signal.aborted) return;
-        setProjection(value);
-        setError("");
-        setEnvironmentId((previous) =>
-          value.environments.some((e) => e.id === previous && e.can_create)
-            ? previous
-            : (value.environments.find((e) => e.can_create)?.id ?? "")
-        );
-        const saved = readCreation(storageKey) ?? submitted.current;
-        let awaiting = false;
-        if (saved) {
-          submitted.current = saved;
-          setCreation(saved);
-          try {
-            const result = await api.getComputeCreation(workspaceId, saved.requestId, {
-              signal: controller.signal,
-            });
-            if (controller.signal.aborted) return;
-            if (clearCreation(storageKey, saved.requestId)) {
-              submitted.current = saved;
-              setCreation(undefined);
-              setAccepted(result.workload);
-              awaiting = preparing(result.workload);
-            } else {
-              setCreation(readCreation(storageKey));
-              awaiting = true;
-            }
-          } catch (reason) {
-            if (controller.signal.aborted) return;
-            // A not-found read can race the original commit. Keep the same key.
-            awaiting = true;
-            if (!(reason instanceof CommaApiError && reason.status === 404))
-              setError(m.compute_read_failed());
-          }
-        }
-        sharedObservationNeeded.current = awaiting || value.workloads.some(preparing);
-        if (
-          !document.hidden &&
-          (awaiting || value.workloads.some(preparing)) &&
-          rounds.current < 60 &&
-          !sharedObservation
-        )
-          timer = setTimeout(() => void load(), 5_000);
-      } catch {
-        if (!controller.signal.aborted) {
-          setError(m.compute_read_failed());
-          sharedObservationNeeded.current = true;
-          if (!document.hidden && rounds.current < 60 && !sharedObservation)
-            timer = setTimeout(() => void load(), 5_000);
-        }
-      } finally {
-        reading = false;
-      }
-    };
-    loadRef.current = load;
-    const visible = () => {
-      if (!document.hidden) void load();
-      else if (timer) clearTimeout(timer);
-    };
+    const visible = () => setHidden(document.hidden);
     document.addEventListener("visibilitychange", visible);
-    void load();
-    return () => {
-      if (loadRef.current === load) loadRef.current = undefined;
-      controller.abort();
-      if (timer) clearTimeout(timer);
-      document.removeEventListener("visibilitychange", visible);
-    };
-  }, [
-    api,
-    enabled,
-    workspaceId,
-    storageKey,
-    workloadAfter,
-    revision,
-    m,
-    sharedObservation,
-  ]);
+    return () => document.removeEventListener("visibilitychange", visible);
+  }, []);
+  // The core reads Compute while the panel shows it (and the page is not hidden).
+  const { value: shown } = useTopic(
+    enabled && cloud && !hidden && workspacePreference !== undefined
+      ? {
+          topic: "compute",
+          prefer: workspacePreference,
+          after: workloadAfter,
+          shared: sharedObservation ? "1" : "",
+        }
+      : null
+  );
+  const workspaceId = shown?.workspace ?? workspacePreference;
+  const projection = shown?.projection ?? undefined;
+  const creation = shown?.creation ?? undefined;
+  const accepted = shown?.accepted ?? undefined;
+  const [environmentChoice, setEnvironmentChoice] = useState("");
+  const environmentId = projection?.environments.some(
+    (e) => e.id === environmentChoice && e.can_create
+  )
+    ? environmentChoice
+    : (projection?.environments.find((e) => e.can_create)?.id ?? "");
+  const [pending, setPending] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const error = actionError || (shown?.error ? m.compute_read_failed() : "");
+  const [mode, setMode] = useState<"create" | "workload" | "owner">();
+  const [name, setName] = useState("");
+  const [dialog, setDialog] = useState<"rename" | "delete">();
+  const [selectedUse, setSelectedUse] =
+    useState<NonNullable<CommaComputeWorkload["uses"]>[number]>();
+  const [selected, setSelected] = useState<CommaComputeWorkload>();
+  const [dialogTarget, setDialogTarget] = useState<CommaComputeWorkload>();
+  const selectionEpoch = useRef(0);
+  const lock = useRef(false);
+  const scope = useRef(workspaceId);
+  scope.current = workspaceId;
+  useEffect(() => {
+    setEnvironmentChoice("");
+    setWorkloadAfter("");
+    setPending(false);
+    setActionError("");
+    setMode(undefined);
+    selectionEpoch.current++;
+    setSelected(undefined);
+    setSelectedUse(undefined);
+    setDialogTarget(undefined);
+    setDialog(undefined);
+  }, [workspacePreference]);
+
+  // The local node's tick drives the reads while it is available.
+  useEffect(() => {
+    if (observationTick !== undefined && enabled)
+      void call("compute.observe", {}).catch(() => undefined);
+  }, [call, enabled, observationTick]);
+  const refresh = useCallback(
+    () => void call("compute.refresh", {}).catch(() => undefined),
+    [call]
+  );
 
   const create = useCallback(async () => {
-    if (!workspaceId || lock.current) return;
-    const targetKey = storageKey;
-    const target = readCreation(targetKey) ??
-      creation ??
-      submitted.current ?? {
-        requestId: crypto.randomUUID(),
-        environmentId,
-      };
+    if (!workspaceId || !cloud || lock.current) return;
+    const target = creation ?? {
+      environmentId,
+      ...(name.trim() ? { name: name.trim() } : {}),
+    };
     if (!target.environmentId) return;
+    const targetScope = workspaceId;
     lock.current = true;
     try {
-      // Persist before dispatch. If persistence fails, do not send an untracked mutation.
-      localStorage.setItem(targetKey, JSON.stringify(target));
-      submitted.current = target;
-      setCreation(target);
       setPending(true);
-      setError("");
-      const result = await api.createShellWorkload(
-        workspaceId,
-        target.environmentId,
-        target.requestId
-      );
-      const currentRequest = clearCreation(targetKey, target.requestId);
-      if (scope.current === targetKey && currentRequest) {
-        setAccepted(result.workload);
-        setCreation(undefined);
+      setActionError("");
+      await call("compute.create", {
+        workspace: workspaceId,
+        environment: target.environmentId,
+        ...(target.name ? { name: target.name } : {}),
+      });
+      if (scope.current === targetScope) setMode(undefined);
+    } catch (reason) {
+      if (scope.current === targetScope) {
         setMode(undefined);
-        refresh();
+        const failure = reason as { code?: unknown; status?: unknown } | null;
+        setActionError(
+          failure?.code === "node_offline"
+            ? m.compute_node_offline()
+            : failure?.code === "capacity_unavailable"
+              ? m.compute_capacity_unavailable()
+              : failure?.code === "runtime_template_unavailable"
+                ? m.compute_template_unavailable()
+                : failure?.status === 403
+                  ? m.compute_create_forbidden()
+                  : failure?.status === 503
+                    ? m.compute_creation_service_failed()
+                    : m.compute_creation_unknown()
+        );
       }
-    } catch {
-      if (scope.current === targetKey) setError(m.compute_creation_unknown());
     } finally {
       lock.current = false;
-      if (scope.current === targetKey) setPending(false);
+      if (scope.current === targetScope) setPending(false);
     }
-  }, [api, workspaceId, storageKey, environmentId, creation, m, refresh]);
+  }, [cloud, call, workspaceId, environmentId, name, creation, m]);
   const close = () => setMode(undefined);
-  const stateLabel = (w: CommaComputeWorkload) =>
+  const stateLabel = (w: CommaComputeWorkload): string =>
     w.desired_state === "draining" || w.observed_state === "draining"
       ? m.compute_work_draining()
       : w.desired_state === "stopped" || w.observed_state === "stopped"
@@ -255,214 +151,227 @@ export function useComputeWorkloadsSection(
                   : m.compute_work_other();
   const rows = [...(projection?.workloads ?? [])];
   if (accepted && !rows.some((w) => w.id === accepted.id)) rows.unshift(accepted);
-  const section: SettingsPanelSection = {
-    id: "compute-node.workloads",
-    title: m.compute_workspace_title(),
-    items: [
-      {
-        id: "compute-node.workload-summary",
-        title:
-          projection?.workspace_name ||
-          (workspaceId
-            ? m.compute_workspace_label({ id: workspaceId.slice(-8) })
-            : m.compute_no_workspace()),
-        description:
-          error ||
-          (!projection
-            ? m.compute_loading()
-            : rows.length === 0
-              ? m.compute_work_empty()
-              : m.compute_workspace_description()),
-        control: {
-          type: "button",
-          label: m.compute_workloads_refresh(),
-          disabled: !workspaceId || pending,
-          onPress: refresh,
-        },
+  const row = rows.find((w) => w.id === selected?.id);
+  const current =
+    selected && (!row || (selected.revision ?? 0) >= (row.revision ?? 0))
+      ? selected
+      : row;
+  const location = (w: CommaComputeWorkload): string =>
+    w.location?.provider === "agent_vmm"
+      ? m.compute_location_mac()
+      : w.location?.provider === "cloudflare"
+        ? m.compute_location_cloud()
+        : m.compute_location_unknown();
+  const openWorkload = (w: CommaComputeWorkload) => {
+    if (!workspaceId || !cloud) return;
+    const epoch = ++selectionEpoch.current;
+    setSelected(w);
+    setMode("workload");
+    const targetScope = workspaceId;
+    void call("compute.workload", { workspace: workspaceId, id: w.id }).then(
+      (workload) => {
+        if (scope.current === targetScope && selectionEpoch.current === epoch)
+          setSelected(workload);
       },
-      ...(creation
-        ? [
-            {
-              id: "compute-node.creation",
-              title: pending
-                ? m.compute_workloads_creating()
-                : m.compute_creation_unknown(),
-              description: m.compute_creation_recovery(),
-              control: {
-                type: "button" as const,
-                label: m.compute_retry_creation(),
-                disabled: pending,
-                onPress: () => void create(),
-              },
-            },
-          ]
-        : []),
-      ...rows.map((w) => ({
-        id: `compute-node.workload.${w.id}`,
-        title: workloadLabel(w),
-        description: stateLabel(w),
-        control: {
-          type: "button" as const,
-          label: m.compute_details(),
-          onPress: () => {
-            setSelected(w);
-            setMode("workload");
-          },
-        },
-      })),
-      ...(projection?.next_workload_cursor || workloadAfter
-        ? [
-            {
-              id: "compute-node.workload-pages",
-              title: m.compute_pages(),
-              control: {
-                type: "menu" as const,
-                label: m.compute_pages(),
-                items: [
-                  ...(workloadAfter
-                    ? [
-                        {
-                          id: "first",
-                          label: m.compute_first_page(),
-                          onPress: () => {
-                            setWorkloadAfter("");
-                            refresh();
-                          },
-                        },
-                      ]
-                    : []),
-                  ...(projection?.next_workload_cursor
-                    ? [
-                        {
-                          id: "next",
-                          label: m.compute_next_page(),
-                          onPress: () => {
-                            setWorkloadAfter(projection.next_workload_cursor!);
-                            refresh();
-                          },
-                        },
-                      ]
-                    : []),
-                ],
-              },
-            },
-          ]
-        : []),
-      {
-        id: "compute-node.advanced",
-        title: m.compute_advanced(),
-        description: m.compute_advanced_description(),
-        control: {
-          type: "button",
-          label: m.compute_manage(),
-          onPress: () => setMode("advanced"),
-        },
-      },
-    ],
+      () => {
+        if (scope.current === targetScope && selectionEpoch.current === epoch)
+          setActionError(m.compute_read_failed());
+      }
+    );
   };
-  let detail: SettingsCategoryDetail | undefined;
-  if (mode === "advanced" || mode === "create") {
-    detail = {
-      id: `compute-${mode}`,
-      title: mode === "create" ? m.compute_workloads_create() : m.compute_advanced(),
-      backLabel: m.compute_back(),
-      onBack: close,
-      description:
-        mode === "create"
-          ? m.compute_create_confirm()
-          : m.compute_advanced_description(),
-      sections: [
-        {
-          id: "compute-node.shell-form",
-          title: m.compute_workloads_environment(),
-          items: [
-            {
-              id: "compute-node.workload-environment",
-              title: m.compute_workloads_environment(),
-              description: m.compute_workloads_description(),
-              control: {
-                type: "dropdown",
-                value: creation?.environmentId ?? environmentId,
-                disabled: pending || !!creation,
-                items: (projection?.environments ?? []).map((e) => ({
-                  id: e.id,
-                  label: `${e.id.slice(-8)} · ${e.can_create ? m.compute_environment_configured() : m.compute_environment_unavailable()}`,
-                  disabled: !e.can_create,
-                })),
-                onChange: setEnvironmentId,
+  const retry = async (w: CommaComputeWorkload) => {
+    if (
+      !workspaceId ||
+      !cloud ||
+      lock.current ||
+      w.revision === undefined ||
+      w.generation === undefined
+    )
+      return;
+    const targetScope = workspaceId;
+    lock.current = true;
+    setPending(true);
+    try {
+      const workload = await call("compute.retry", {
+        workspace: workspaceId,
+        id: w.id,
+        revision: w.revision,
+        generation: w.generation,
+      });
+      if (scope.current === targetScope) {
+        setSelected(workload);
+        setActionError("");
+      }
+    } catch {
+      if (scope.current === targetScope)
+        setActionError(m.compute_workload_mutation_failed());
+    } finally {
+      lock.current = false;
+      if (scope.current === targetScope) setPending(false);
+    }
+  };
+  const mutate = async () => {
+    const targetWorkload = dialogTarget;
+    if (
+      !targetWorkload ||
+      !workspaceId ||
+      !cloud ||
+      lock.current ||
+      targetWorkload.revision === undefined
+    )
+      return;
+    lock.current = true;
+    setPending(true);
+    setActionError("");
+    const targetScope = workspaceId;
+    try {
+      let workload: CommaComputeWorkload;
+      if (dialog === "rename") {
+        workload = await call("compute.rename", {
+          workspace: workspaceId,
+          id: targetWorkload.id,
+          revision: targetWorkload.revision,
+          name: name.trim(),
+        });
+      } else {
+        if (targetWorkload.generation === undefined) return;
+        workload = await call("compute.delete", {
+          workspace: workspaceId,
+          id: targetWorkload.id,
+          revision: targetWorkload.revision,
+          generation: targetWorkload.generation,
+          ...(targetWorkload.deletion?.request_id
+            ? { request: targetWorkload.deletion.request_id }
+            : {}),
+        });
+      }
+      if (scope.current === targetScope) {
+        setSelected(workload);
+        setDialog(undefined);
+      }
+    } catch {
+      if (scope.current === targetScope)
+        setActionError(m.compute_workload_mutation_failed());
+    } finally {
+      lock.current = false;
+      if (scope.current === targetScope) setPending(false);
+    }
+  };
+  const canManage = !!projection && projection.can_manage !== false;
+  const canPrepare = canManage && !!environmentId;
+  const canCreate = canPrepare && !pending && !creation;
+  const createUnavailable = (): string => {
+    if (!workspaceId) return m.compute_no_workspace();
+    const reason = projection?.environments[0]?.create_unavailable_reason;
+    if (reason === "template_unavailable") return m.compute_template_unavailable();
+    if (reason === "node_unavailable") return m.compute_connection_problem();
+    if (reason === "node_not_enabled") return m.compute_node_not_enabled();
+    return m.compute_create_unavailable();
+  };
+  const openCreate = () => {
+    if (creation) return;
+    setName(m.compute_ui_new_name());
+    setMode("create");
+  };
+  const openDialog = (kind: "rename" | "delete", workload: CommaComputeWorkload) => {
+    selectionEpoch.current++;
+    setDialogTarget(workload);
+    setSelected(workload);
+    setName(workloadLabel(workload));
+    setDialog(kind);
+  };
+  const deleteLabel = (w: CommaComputeWorkload): string =>
+    w.kind === "shell" ? m.compute_delete_shell() : m.compute_ui_delete_section();
+  const openUse = (use: NonNullable<CommaComputeWorkload["uses"]>[number]) => {
+    setSelectedUse(use);
+    setMode("owner");
+  };
+  const overlay =
+    dialog && dialogTarget ? (
+      <Dialog
+        isOpen
+        isDismissable={!pending}
+        title={dialog === "rename" ? m.compute_rename() : deleteLabel(dialogTarget)}
+        description={
+          dialog === "delete"
+            ? m.compute_delete_shell_confirm({ name: workloadLabel(dialogTarget) })
+            : undefined
+        }
+        variant={dialog === "rename" ? "input" : "default"}
+        {...(dialog === "rename"
+          ? {
+              input: {
+                label: m.compute_name(),
+                value: name,
+                maxLength: 80,
+                autoFocus: true,
+                onChange: (event) => setName(event.target.value),
               },
-            },
-            ...(error ? [{ id: "compute-node.create-error", title: error }] : []),
-          ],
-        },
-      ],
-      actions: (
-        <Button
-          hierarchy="primary"
-          isDisabled={pending || !!creation || !environmentId}
-          onPress={() => {
-            if (mode === "advanced") {
-              submitted.current = undefined;
-              setMode("create");
-            } else void create();
-          }}
-        >
-          {pending
-            ? m.compute_workloads_creating()
-            : mode === "create"
-              ? m.compute_confirm_create()
-              : accepted || rows.length
-                ? m.compute_create_another()
-                : m.compute_workloads_create()}
-        </Button>
-      ),
-    };
-  } else if (mode === "workload" && selected) {
-    const current = rows.find((w) => w.id === selected.id) ?? selected;
-    detail = {
-      id: "compute-workload-detail",
-      title: workloadLabel(current),
-      backLabel: m.compute_back(),
-      onBack: close,
-      sections: [
-        {
-          id: "compute-node.workload-detail",
-          title: m.compute_details(),
-          items: [
-            {
-              id: "compute-node.workload-state",
-              title: stateLabel(current),
-              description: error || m.compute_workspace_description(),
-            },
-            {
-              id: "compute-node.workload-id",
-              title: m.compute_identifier(),
-              description: current.id,
-            },
-            {
-              id: "compute-node.workload-env",
-              title: m.compute_workloads_environment(),
-              description: current.environment_id,
-            },
-            {
-              id: "compute-node.workload-raw-state",
-              title: m.compute_diagnostics(),
-              description: `${current.desired_state ?? "unknown"} / ${current.observed_state}`,
-            },
-            ...(current.updated_at
-              ? [
-                  {
-                    id: "compute-node.workload-time",
-                    title: m.compute_last_check(),
-                    description: current.updated_at,
-                  },
-                ]
-              : []),
-          ],
-        },
-      ],
-      actions: <Button onPress={refresh}>{m.compute_workloads_refresh()}</Button>,
-    };
-  }
-  return { section, detail, close, workspaceName: projection?.workspace_name };
+            }
+          : {})}
+        onOpenChange={(open) => {
+          if (!open) setDialog(undefined);
+        }}
+        actions={[
+          {
+            label: m.settings_profile_cancel(),
+            hierarchy: "secondary-gray",
+            disabled: pending,
+            onPress: () => setDialog(undefined),
+          },
+          {
+            label:
+              dialog === "rename"
+                ? m.compute_save_name()
+                : m.compute_ui_delete_section(),
+            hierarchy: dialog === "delete" ? "destructive" : "primary",
+            disabled: pending || (dialog === "rename" && !name.trim()),
+            onPress: () => void mutate(),
+          },
+        ]}
+      >
+        {dialog === "delete" && (
+          <p className="break-words text-xs font-regular text-quaternary">
+            {m.compute_location()}: {location(dialogTarget)}.
+            {locationUnknown(dialogTarget) &&
+              ` ${m.compute_delete_shell_node_unknown()}`}
+          </p>
+        )}
+        {error ? <p role="alert">{error}</p> : null}
+      </Dialog>
+    ) : undefined;
+  return {
+    overlay,
+    close,
+    workspaceName: projection?.workspace_name,
+    projection,
+    rows,
+    current,
+    mode,
+    name,
+    setName,
+    pending,
+    error,
+    creation,
+    canCreate,
+    canPrepare,
+    canManage,
+    createUnavailable,
+    create,
+    openCreate,
+    openWorkload,
+    openDialog,
+    openUse,
+    selectedUse,
+    backToWorkload: () => setMode("workload"),
+    retry,
+    refresh,
+    workloadLabel,
+    deleteLabel,
+    stateLabel,
+    location,
+    firstPage: () => setWorkloadAfter(""),
+    nextPage: () => setWorkloadAfter(projection?.next_workload_cursor ?? ""),
+    hasPreviousPage: !!workloadAfter,
+  };
 }

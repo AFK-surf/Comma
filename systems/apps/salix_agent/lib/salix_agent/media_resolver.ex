@@ -13,7 +13,7 @@ defmodule SalixAgent.MediaResolver do
 
   @spec resolve(String.t()) :: {:ok, map() | nil} | {:error, term()}
   def resolve(agent_id) do
-    case Application.get_env(:salix_agent, :media_resolver) do
+    case SystemsRuntime.get_env(:salix_agent, :media_resolver) do
       nil -> {:ok, nil}
       mod -> mod.resolve(agent_id)
     end

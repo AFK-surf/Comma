@@ -5,10 +5,10 @@ defmodule SalixLlm.ConvertChatSystemPositionTest do
   transcripts interleave system-authored roles (`summary`, `runtime`) with the
   conversation — the compaction summary and prompt snapshot lead, the end-turn
   reminder trails, runtime facts land mid-conversation — so the chat projection
-  must keep exactly one leading `system` message and carry the rest as user
-  turns.
+  must keep exactly one leading `system` message and carry the rest as
+  synthetic `get_runtime_message` calls.
   """
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixLlm.ConvertOpenAI
 
@@ -37,14 +37,20 @@ defmodule SalixLlm.ConvertChatSystemPositionTest do
     assert [
              %{"role" => "user", "content" => "start"},
              %{"role" => "assistant", "content" => "on it"},
-             %{"role" => "user", "content" => runtime},
+             %{"role" => "assistant", "tool_calls" => [%{"id" => id}]},
+             %{"role" => "tool", "tool_call_id" => id, "content" => runtime},
              %{"role" => "user", "content" => "any update?"},
-             %{"role" => "user", "content" => reminder}
+             %{"role" => "assistant", "tool_calls" => [%{"id" => reminder_id} = call]},
+             %{"role" => "tool", "tool_call_id" => reminder_id, "content" => reminder}
            ] = rest
 
-    assert runtime =~ "<system>"
-    assert runtime =~ "summary: wait timeout reached"
-    assert reminder == "<system>\nRe-evaluate every current request.\n</system>"
+    assert Jason.decode!(runtime)["summary"] == "wait timeout reached"
+    assert call["function"]["name"] == "get_runtime_message"
+
+    assert Jason.decode!(reminder) == %{
+             "type" => "system_reminder",
+             "content" => "Re-evaluate every current request."
+           }
   end
 
   test "a leading system message survives the chat projection" do
@@ -90,9 +96,10 @@ defmodule SalixLlm.ConvertChatSystemPositionTest do
              %{"role" => "user"},
              %{"role" => "assistant", "tool_calls" => [%{"id" => "call-1"}]},
              %{"role" => "tool", "tool_call_id" => "call-1"},
-             %{"role" => "user", "content" => runtime}
+             %{"role" => "assistant", "tool_calls" => [%{"id" => id}]},
+             %{"role" => "tool", "tool_call_id" => id, "content" => runtime}
            ] = chat
 
-    assert runtime =~ "<runtime-message>"
+    assert Jason.decode!(runtime)["type"] == "tool_call_completed"
   end
 end

@@ -2,12 +2,8 @@ import { isAuthorizationReturnUrl } from "./authorization-return";
 import { installApplicationMenu } from "./application-menu";
 import { applicationMenuProvider } from "./application-menu-provider";
 import { applicationMenuCommandEvent } from "@comma/native-bridge";
-import { applyBrowserSidebarAppearance } from "./browser-sidebar-appearance";
 import { OpenCommaShortcut } from "./open-comma-shortcut";
-import {
-  defaultCommaClientSettings,
-  sitePermissionMenuChangedEvent,
-} from "@comma/native-bridge";
+import { sitePermissionMenuChangedEvent } from "@comma/native-bridge";
 import { SitePermissionMenuWindow } from "./site-permission-menu-window";
 import { createSitePermissionPlatform } from "./modules/browser-sidebar/site-permissions-platform";
 import { existsSync, readFileSync } from "node:fs";
@@ -33,25 +29,25 @@ import {
   session,
   shell,
   systemPreferences,
+  type Rectangle,
 } from "electron";
 import log from "electron-log/main";
-import type {
-  ConnectorConfig,
-  SideChatOpenTestWindowInput,
-  SystemNotificationsStatus,
-} from "@comma/native-bridge";
+import type { ConnectorConfig, SystemNotificationsStatus } from "@comma/native-bridge";
 import { baseLocale, messages, type CommaLocale } from "@comma/i18n";
 import {
   notchHostEvent,
   onboardingHandoffEvent,
   onboardingWindowChangedEvent,
-  sideChatDebugSettingsChangedEvent,
-  sideChatPresentationChangedEvent,
   surfacesWindowFullScreenChangedEvent,
+  surfacesWindowMaximizedChangedEvent,
   surfacesWindowResizeSettledEvent,
 } from "@comma/native-bridge";
-import type { SideChatPresentation } from "@comma/chat-contract";
-import { ConnectorService, resolveConnectorBinaryPath } from "./connector";
+import {
+  ConnectorService,
+  resolveComputerUseHelperApp,
+  resolveStationDir,
+} from "./connector";
+import { LocalStation } from "./station";
 import { resolveSynchBinaryPath } from "./synchronicity-paths";
 import { resolveAirDropBinaryPath } from "./airdrop-paths";
 import { renderAirDropPreview } from "./airdrop-preview";
@@ -66,46 +62,54 @@ import {
   activateElectronE2eStatusTrayOpenMainAfterRelease,
   activateElectronE2eStatusTraySettings,
   recordElectronE2eStatusTrayMenu,
-  applyElectronE2eHooks,
   awaitElectronE2eDockUpdateRelease,
   awaitElectronE2eMainReadyRelease,
   clearElectronE2eLaunchAtLoginRegistered,
+  createElectronE2eCableScanner,
   createElectronE2eSleepGuardAddon,
+  createElectronE2eUpdateFeed,
+  applyElectronE2eStartHooks,
+  exposeElectronE2eCore,
   decorateElectronE2eAppPreferencesProvider,
   recordElectronE2eLaunchAtLoginDisabled,
   recordElectronE2eLaunchAtLoginRegistered,
   recordElectronE2eMenuBarHidden,
 } from "./e2e-hooks";
+import {
+  exitOnUncaughtMainException,
+  reportMainShutdownOnExit,
+} from "./e2e-shutdown-report";
 import { configureManagedWindow } from "./managed-window";
+import type { ManagedWindowBinding } from "./managed-window";
+import type { ElectronE2eStartHookEnv } from "./e2e-start-hooks";
 import { bindRecorderClientVisibility } from "./recorder-client-visibility";
 import { MeetingRecorderWindow } from "./meeting-recorder-window";
+import type { MeetingRecorderValue } from "@comma/core/contract";
 import { initializeElectronMainI18n } from "./main-locale";
 import { readStoredLocalePreference } from "./app-preferences";
-import { NativeEventBus, WebContentsRegistry, createSenderPolicy } from "./modules/ipc";
+import { WebContentsRegistry, createSenderPolicy } from "./modules/ipc";
 import { JsonlNativeObservabilitySink } from "./modules/observability";
 import { NativeSurfaceService, NativeWindowCommandService } from "./modules/surfaces";
 import { resolveElectronStartupSession } from "./startup-session";
 import {
   BROWSER_INSPECTION_COMPOSER_WEB_PREFERENCES,
+  BROWSER_SIDEBAR_PARTITION,
   BROWSER_SIDEBAR_WEB_PREFERENCES,
   browserFacingUserAgent,
+  registerBrowserSidebarPagePreload,
 } from "./modules/browser-sidebar";
 import { NotchService } from "./notch";
-import { NativeSideChatService } from "./native-side-chat";
-import {
-  localizeSideChatTestWindowSourceFrame,
-  presentSideChatTaskHost,
-  sideChatTestWindowRoute,
-  sideChatTestWindowRouteWithSource,
-} from "./side-chat-test-window";
-import { installDetachedSideChatDevTools } from "./side-chat-devtools";
-import { loadSideChatBackdropAddon } from "../../native/macos/SideChatBackdrop";
+import { NativeStatusMenuService } from "./native-status-menu";
 import { loadFileApplicationsAddon } from "../../native/macos/FileApplications";
 import {
   loadFontFamiliesAddon,
   type FontFamiliesAddon,
 } from "../../native/macos/FontFamilies";
 import { loadNotificationAuthorizationAddon } from "../../native/macos/NotificationAuthorization";
+import { loadKeychainPasswordAddon } from "../../native/macos/KeychainPassword";
+import { electronBrowserImportPlatform } from "./modules/browser-sidebar/browser-import";
+import { loadCableScannerAddon } from "../../native/macos/CableScanner";
+import { HybridPasskeys } from "./modules/browser-sidebar/hybrid";
 import {
   runningMacAppBundleId,
   systemNotificationsStatusFromAuthorization,
@@ -141,18 +145,11 @@ import {
   type StatusTrayContent,
   type StatusTrayHost,
 } from "./status-tray";
-import {
-  applyUpdate,
-  checkForUpdate,
-  downloadUpdate,
-  getUpdateStatus,
-} from "./updates";
+import { coreAppUpdates, velopackUpdateFeed } from "./updates";
 import {
   createMainWindowOptions,
   createOnboardingWindowOptions,
   createRuntimeWorkbenchWindowOptions,
-  createSideChatTestWindowOptions,
-  createSideChatWindowOptions,
 } from "./window-options";
 import {
   MainWindowOnboardingHold,
@@ -169,7 +166,6 @@ import { OpaqueWindowBackgroundController } from "./window-background";
 import { applyCommaDockVisibility } from "./dock-visibility";
 import { openOrCreateMainWindow } from "./open-main-window";
 import { createElectronMessageNotificationsPlatform } from "./message-notifications-platform";
-import { safelyRunControl } from "./safe-control";
 import { configureElectronAboutPanel, getElectronDisplayVersion } from "../app-version";
 import {
   billingSettingsRoute,
@@ -178,7 +174,7 @@ import {
   findBillingReturnUrl,
   parseBillingReturnUrl,
 } from "./billing-return";
-import { isTelegramReturnUrl, telegramSettingsRouteForReturn } from "./telegram-return";
+import { channelSettingsRoute, isChannelReturnUrl } from "./channel-return";
 
 const {
   e2eHooks,
@@ -198,7 +194,8 @@ if (process.env.NODE_ENV === "test" && !app.commandLine.hasSwitch("lang")) {
   app.commandLine.appendSwitch("lang", "en-US");
 }
 
-const notch = new NotchService();
+// Labels Main's own Tasks (Quick Chat's) in Main's language until a window does.
+const notch = new NotchService({ locale: () => electronMainLocale });
 const opaqueWindowBackgrounds = new OpaqueWindowBackgroundController(
   nativeTheme.shouldUseDarkColors
 );
@@ -226,61 +223,57 @@ let e2eLaunchAtLoginStatus: LaunchAtLoginStatus | undefined =
     : e2eHooks.launchAtLoginStatus
       ? "not-registered"
       : undefined;
-const e2eSideChatHostPath = e2eHooks.sideChatHostPath;
+// One station per machine: the Workspaces' connections and the static connector run in it.
+const station = new LocalStation({
+  dir: resolveStationDir(),
+  data: join(app.getPath("userData"), "station"),
+  log: { warn: (message) => log.warn(`station: ${message}`) },
+});
 const connector = new ConnectorService({
   appBundleId: releaseConfig.appBundleId,
   runtimeNamespace: runtimePaths.runtimeNamespace,
+  station,
 });
 let appContext: ElectronMainContext | undefined;
-let applicationMenu: ReturnType<typeof installApplicationMenu> | undefined;
-const sideChat = new NativeSideChatService({
-  activateOpenWindow: !showTestWindowsInactive,
-  ...(e2eSideChatHostPath ? { resolveExecutablePath: () => e2eSideChatHostPath } : {}),
-  onCloseTestWindow: () => {
-    // Let the generated IPC reply settle before destroying its sender.
-    setTimeout(closeSideChatTestWindow, 0);
-  },
-  onDebugSettingsChanged: (settings) => {
-    appContext?.nativeEventBus.emit(sideChatDebugSettingsChangedEvent, settings);
-  },
-  onEnabledChanged: () => applicationMenu?.update(),
-  onOpenSettings: () => openMainAppRoute("/settings"),
-  onOpenTestWindow: (input) => openSideChatTestWindow(input),
-  onPresentationChanged: (presentation) => {
-    appContext?.nativeEventBus.emit(sideChatPresentationChangedEvent, presentation);
-    if (
-      presentation.progress > 0.002 &&
-      process.platform === "darwin" &&
-      (!sideChatBrowserWindow || sideChatBrowserWindow.isDestroyed())
-    ) {
-      void ensureSideChatWindow({ resetRecoveryBudget: true });
-    }
-  },
-});
+// The menu-bar item's own helper instance, for the life of Main.
+const statusMenu = new NativeStatusMenuService();
+
 let closeThenQuitInProgress = false;
 let closingMainServices = false;
 let mainWindowInteractionsEnabled = false;
 let pendingBillingReturn: BillingReturn | undefined;
-let pendingTelegramReturn: string | undefined;
+let pendingChannelReturn: string | undefined;
 let quitAuthorizedAfterClose = false;
+// Under test, Main reports on stdout that its own quit sequence ran to its end.
+// The E2E harness takes that as a finished close and does not wait for
+// Chromium to flush its throwaway profile.
+if (process.env.NODE_ENV === "test") {
+  reportMainShutdownOnExit(() => quitAuthorizedAfterClose);
+  exitOnUncaughtMainException();
+}
 let primaryWindow: BrowserWindow | undefined;
+/**
+ * The main window's tie to Main's services and its bounds when it opened, while it is the one a launch opens (at the
+ * root route): a reset keeps it (`keptMainWindow`).
+ */
+let primaryWindowLaunch:
+  | {
+      window: BrowserWindow;
+      binding: ManagedWindowBinding;
+      bounds: Rectangle;
+      /** A window larger than the display opens maximized. */
+      maximized: boolean;
+    }
+  | undefined;
 let runtimeWorkbenchWindow: BrowserWindow | undefined;
 let meetingRecorderWindow: MeetingRecorderWindow | undefined;
-let sideChatBrowserWindow: BrowserWindow | undefined;
-let sideChatBrowserWindowCreation: Promise<BrowserWindow | undefined> | undefined;
-let sideChatBrowserWindowGeneration = 0;
-let sideChatBrowserWindowRecoveryAttempt = 0;
-let sideChatBrowserWindowRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
-let sideChatBrowserWindowStableTimer: ReturnType<typeof setTimeout> | undefined;
-let sideChatTestBrowserWindow: BrowserWindow | undefined;
-let sideChatTestBrowserWindowGeneration = 0;
+/** The client core's meeting recorder as it last said it. */
+let meetingRecorderState: MeetingRecorderValue | undefined;
 let statusTray: ReturnType<typeof createCommaStatusTray> | undefined;
 let statusTrayContent: StatusTrayContent = { inProgressTasks: [] };
 let fontFamiliesAddon: FontFamiliesAddon | undefined;
 let statusTrayInteractionsEnabled = false;
 let statusTrayVisibleRequested = false;
-const SIDE_CHAT_WINDOW_RECOVERY_DELAYS_MS = [100, 500, 1_500] as const;
-const SIDE_CHAT_WINDOW_STABLE_RESET_MS = 5_000;
 const mainWindowIdentity = {
   id: "win_main",
   role: "main-window",
@@ -288,14 +281,6 @@ const mainWindowIdentity = {
 const runtimeWorkbenchIdentity = {
   id: "dev_workbench",
   role: "dev-workbench",
-} as const;
-const sideChatWindowIdentity = {
-  id: "win_side_chat",
-  role: "side-chat-window",
-} as const;
-const sideChatTestWindowIdentity = {
-  id: "win_side_chat_test",
-  role: "side-chat-test-window",
 } as const;
 const onboardingWindowIdentity = {
   id: "win_onboarding",
@@ -311,17 +296,52 @@ function resolveWindowIconPath() {
   return resolve(__dirname, "../../build/icons", releaseConfig.flavor, "icon.png");
 }
 
-function setDockIcon() {
-  if (process.platform === "darwin") {
-    app.dock?.setIcon(resolveWindowIconPath());
-  }
-}
-
 function resolveStatusTrayIconPath() {
+  // The template glyph is macOS's menu bar mark, black for the system to tint:
+  // a Windows or Linux tray shows it as it is, all but invisible on a dark
+  // taskbar. There the app's own colour icon reads on either.
+  if (process.platform !== "darwin") return resolveWindowIconPath();
   if (app.isPackaged) {
     return join(process.resourcesPath, "CommaTemplate.png");
   }
   return resolve(__dirname, "../../build/icons/tray/CommaTemplate.png");
+}
+
+/**
+ * Settings › Browser imports another Chromium browser's cookies into the
+ * browser sidebar. The E2E fixture replaces the browser data folder and the
+ * keychain item, so the import also runs where no real browser exists.
+ */
+function createBrowserImportPlatform() {
+  const fixturePassword = e2eHooks.browserImportKeychainPassword;
+  if (process.platform !== "darwin" && fixturePassword === undefined) return undefined;
+  const keychain =
+    fixturePassword === undefined
+      ? loadKeychainPasswordAddon({ isPackaged: app.isPackaged, logger: console })
+      : undefined;
+  return electronBrowserImportPlatform({
+    appIcon: browserAppIcon,
+    applicationSupportDirectory:
+      e2eHooks.browserImportDirectory ?? app.getPath("appData"),
+    cookies: session.fromPartition(BROWSER_SIDEBAR_PARTITION).cookies,
+    readKeychainPassword: keychain
+      ? (service, account) => keychain.readGenericPassword(service, account)
+      : async () => ({ status: "found", password: fixturePassword ?? "" }),
+    temporaryDirectory: app.getPath("temp"),
+  });
+}
+
+/** The icon of an app in /Applications or ~/Applications, at 2x for 32 points. */
+async function browserAppIcon(bundleName: string) {
+  for (const folder of ["/Applications", join(app.getPath("home"), "Applications")]) {
+    const path = join(folder, bundleName);
+    if (!existsSync(path)) continue;
+    const icon = await nativeImage
+      .createThumbnailFromPath(path, { height: 64, width: 64 })
+      .catch(() => app.getFileIcon(path, { size: "normal" }));
+    if (!icon.isEmpty()) return icon.toDataURL();
+  }
+  return undefined;
 }
 
 // Appearance lists the installed families.
@@ -342,12 +362,12 @@ applicationMenuProvider.subscribe(({ items }) => {
   statusTray?.update(statusTrayContent);
 });
 
-// macOS draws the menu-bar item in the Side Chat helper, whose main thread is
-// otherwise idle, so hovering the menu never waits on Main. A checkout without
-// the built helper, and every other platform, uses Electron's Tray, as does
-// macOS once the helper is lost, until the menu-bar item is next turned on.
+// macOS draws the menu-bar item in its own helper process, whose main thread
+// is otherwise idle, so hovering the menu never waits on Main. A checkout
+// without the built helper, and every other platform, uses Electron's Tray, as
+// does macOS once the helper is lost, until the menu-bar item is next turned on.
 function createStatusTrayHost(toolTip: string, reinstall: () => void): StatusTrayHost {
-  let drawnByHelper = operatingSystem() === "macos" && sideChat.hostAvailable();
+  let drawnByHelper = operatingSystem() === "macos" && statusMenu.hostAvailable();
   const electronHost = () =>
     electronStatusTrayHost({
       buildMenu: (template) => Menu.buildFromTemplate(template),
@@ -364,13 +384,13 @@ function createStatusTrayHost(toolTip: string, reinstall: () => void): StatusTra
   const host = drawnByHelper
     ? fallbackStatusTrayHost({
         createFallback: () => {
-          log.warn("The Side Chat helper was lost; Electron draws the menu-bar item.");
+          log.warn("The menu-bar helper was lost; Electron draws the menu-bar item.");
           drawnByHelper = false;
           return electronHost();
         },
         createPrimary: (onLost) =>
           helperStatusTrayHost({
-            helper: sideChat,
+            helper: statusMenu,
             iconPath: resolveStatusTrayIconPath(),
             onLost,
             onQuit: () => app.quit(),
@@ -381,13 +401,14 @@ function createStatusTrayHost(toolTip: string, reinstall: () => void): StatusTra
     : electronHost();
   return {
     ...host,
-    setMenu(items) {
+    // Every argument goes on: the left-click and menu-open actions too.
+    setMenu(...menu) {
       recordElectronE2eStatusTrayMenu(
         e2eHooks,
-        drawnByHelper ? "side-chat-helper" : "electron",
-        items
+        drawnByHelper ? "menu-bar-helper" : "electron",
+        menu[0]
       );
-      host.setMenu(items);
+      host.setMenu(...menu);
     },
   };
 }
@@ -400,13 +421,12 @@ function installStatusTray() {
     locale: electronMainLocale,
     onOpenMainApp: requestOpenMainApp,
     onOpenSettings: openStatusTraySettings,
-    onOpenSideChat: () => {
-      void ensureSideChatWindow({ resetRecoveryBudget: true }).then(() => {
-        safelyControlSideChat(() => sideChat.open());
-      });
-    },
     onOpenTask: (task) => requestOpenMainAppRoute(statusTrayTaskRoute(task)),
     onOpenTasks: () => requestOpenMainAppRoute("/tasks"),
+    onOpenUsageSettings: () => requestOpenMainAppRoute(billingSettingsRoute),
+    onMenuOpened: () => appContext?.statusTrayUsageOpened(),
+    onQuickChat: () => appContext?.startQuickChat(),
+    onRefreshUsage: () => appContext?.refreshStatusTrayUsage(),
     productName: releaseConfig.productName,
   });
   statusTray = installedTray;
@@ -420,7 +440,9 @@ function installStatusTray() {
 }
 
 function openStatusTraySettings() {
-  safelyControlSideChat(() => sideChat.openSettings());
+  void openMainAppRoute("/settings").catch((error: unknown) => {
+    log.error(`settings open failed: ${errorMessage(error)}`);
+  });
 }
 
 // A signed-in account that has not finished the onboarding on this Mac meets
@@ -481,16 +503,16 @@ function requestOpenBillingSettings(value: string) {
   return true;
 }
 
-function requestOpenTelegramSettings(value: string) {
-  if (!isTelegramReturnUrl(value, releaseConfig.urlScheme)) return false;
-  pendingTelegramReturn = telegramSettingsRouteForReturn(value);
+function requestOpenChannelSettings(value: string) {
+  if (!isChannelReturnUrl(value, releaseConfig.urlScheme)) return false;
+  pendingChannelReturn = channelSettingsRoute;
   if (mainWindowInteractionsEnabled) {
-    void openBillingSettings(pendingTelegramReturn)
+    void openBillingSettings(pendingChannelReturn)
       .then(() => {
-        pendingTelegramReturn = undefined;
+        pendingChannelReturn = undefined;
       })
       .catch((error: unknown) => {
-        log.error(`Telegram return open failed: ${errorMessage(error)}`);
+        log.error(`Channel return open failed: ${errorMessage(error)}`);
       });
   }
   return true;
@@ -585,14 +607,7 @@ async function setDockVisible(visible: boolean) {
   if (process.platform !== "darwin" || !app.dock) return;
   await applyCommaDockVisibility({
     dock: app.dock,
-    restoreIcon: setDockIcon,
     visible,
-  });
-}
-
-function safelyControlSideChat(control: () => Promise<unknown> | unknown) {
-  safelyRunControl(control, (error: unknown) => {
-    log.error(`native side chat unavailable: ${errorMessage(error)}`);
   });
 }
 
@@ -625,6 +640,24 @@ const notificationAuthorization = loadNotificationAuthorizationAddon({
   isPackaged: app.isPackaged,
   logger: log,
 });
+
+/**
+ * Browser tabs sign in with a passkey from a phone over Bluetooth on macOS.
+ * E2E runs use a test phone instead of Bluetooth, and no phone otherwise, so a
+ * test never shows the macOS Bluetooth prompt.
+ */
+function createHybridPasskeys() {
+  if (e2eHooks.cablePhoneOrigin) {
+    return new HybridPasskeys({
+      scanner: createElectronE2eCableScanner(e2eHooks.cablePhoneOrigin),
+      tunnelOrigin: e2eHooks.cablePhoneOrigin,
+    });
+  }
+  if (process.env.NODE_ENV === "test" || process.platform !== "darwin")
+    return undefined;
+  const scanner = loadCableScannerAddon({ isPackaged: app.isPackaged, logger: log });
+  return scanner.loaded ? new HybridPasskeys({ logger: log, scanner }) : undefined;
+}
 
 async function readSystemNotificationsStatus(): Promise<SystemNotificationsStatus> {
   if (e2eHooks.systemNotificationsStatus) return e2eHooks.systemNotificationsStatus;
@@ -739,6 +772,18 @@ async function createWindow({
   };
   mainWindow.on("enter-full-screen", publishFullScreen);
   mainWindow.on("leave-full-screen", publishFullScreen);
+  // Windows' window bar shows restore on its own maximize button while the
+  // window fills the screen.
+  const publishMaximized = () => {
+    if (mainWindow.isDestroyed()) return;
+    appContext?.nativeEventBus.emit(
+      surfacesWindowMaximizedChangedEvent,
+      { maximized: mainWindow.isMaximized() },
+      { target: { type: "window", windowId: id } }
+    );
+  };
+  mainWindow.on("maximize", publishMaximized);
+  mainWindow.on("unmaximize", publishMaximized);
   if (id === mainWindowIdentity.id) {
     primaryWindow = mainWindow;
     bindRecorderClientVisibility(
@@ -753,6 +798,7 @@ async function createWindow({
     mainWindow.on("focus", () => onboardingWindow.mainWindowFocused());
   }
 
+  let binding: ManagedWindowBinding | undefined;
   await configureManagedWindow({
     browserWindow: mainWindow,
     failureLabel: "main window",
@@ -772,6 +818,23 @@ async function createWindow({
     showInactiveOnReady: showTestWindowsInactive,
     surfaces,
     webContentsRegistry,
+    onBound: (bound) => {
+      binding = bound;
+    },
+  });
+  if (binding && id === mainWindowIdentity.id && route === "/" && !e2eHooks.rendererUrl)
+    primaryWindowLaunch = {
+      window: mainWindow,
+      binding,
+      bounds: mainWindow.getBounds(),
+      maximized: mainWindow.isMaximized(),
+    };
+  // What it is once it shows: a window larger than the display is maximized then.
+  mainWindow.once("show", () => {
+    const launch = primaryWindowLaunch;
+    if (launch?.window !== mainWindow || mainWindow.isDestroyed()) return;
+    launch.bounds = mainWindow.getBounds();
+    launch.maximized = mainWindow.isMaximized();
   });
 
   return mainWindow;
@@ -780,12 +843,11 @@ async function createWindow({
 async function createRuntimeWorkbenchWindow({
   surfaces,
   webContentsRegistry,
-  route = "/dev/workbench",
 }: {
   surfaces: NativeSurfaceService;
   webContentsRegistry: WebContentsRegistry;
-  route?: string;
 }) {
+  const route = "/dev/workbench";
   const rendererURL = e2eHooks.rendererUrl ?? appRendererUrl();
   const workbenchWindow = new BrowserWindow(
     createRuntimeWorkbenchWindowOptions({
@@ -825,462 +887,92 @@ async function createRuntimeWorkbenchWindow({
   return workbenchWindow;
 }
 
-async function openSideChatBackground() {
-  if (
-    !appContext ||
-    process.platform !== "darwin" ||
-    app.isPackaged ||
-    releaseConfig.flavor !== "dev" ||
-    !forgeRendererURL()
-  ) {
-    return;
-  }
-  const route = "/dev/workbench?tab=side-chat";
-  let workbench = runtimeWorkbenchWindow;
-  if (!workbench || workbench.isDestroyed()) {
-    workbench = await createRuntimeWorkbenchWindow({
-      surfaces: appContext.surfaces,
-      webContentsRegistry: appContext.webContentsRegistry,
-      route,
-    });
-  } else {
-    await workbench.loadURL(withHashRoute(appRendererUrl(), route));
-  }
-  if (workbench.isMinimized()) workbench.restore();
-  workbench.show();
-  workbench.focus();
-}
-
-async function createSideChatWindow({
-  generation,
-  surfaces,
-  webContentsRegistry,
-}: {
-  generation: number;
-  surfaces: NativeSurfaceService;
-  webContentsRegistry: WebContentsRegistry;
-}) {
-  const rendererURL = e2eHooks.rendererUrl ?? appRendererUrl();
-  const sideChatWindow = new BrowserWindow(
-    createSideChatWindowOptions({
-      locale: electronMainLocale,
-      preloadPath: join(__dirname, "preload.js"),
-      productName: releaseConfig.productName,
-      windowId: sideChatWindowIdentity.id,
-      windowRole: sideChatWindowIdentity.role,
-    })
-  );
-  sideChatBrowserWindow = sideChatWindow;
-  installDetachedSideChatDevTools(sideChatWindow.webContents);
-  sideChatWindow.on("closed", () => {
-    if (
-      sideChatBrowserWindow === sideChatWindow &&
-      sideChatBrowserWindowGeneration === generation
-    ) {
-      sideChatBrowserWindow = undefined;
-      scheduleSideChatWindowRecovery("window closed unexpectedly");
-    }
-  });
-  sideChatWindow.on("unresponsive", () => {
-    failSideChatWindow(sideChatWindow, generation, "renderer became unresponsive");
-  });
-  sideChatWindow.webContents.on("render-process-gone", (_event, details) => {
-    failSideChatWindow(
-      sideChatWindow,
-      generation,
-      `renderer exited (${details.reason}, code ${details.exitCode})`
-    );
-  });
-  sideChatWindow.webContents.on(
-    "did-fail-load",
-    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-      if (isMainFrame === false) return;
-      failSideChatWindow(
-        sideChatWindow,
-        generation,
-        `renderer load failed (${errorCode}: ${errorDescription}, ${validatedURL})`
-      );
-    }
-  );
-  sideChatWindow.webContents.on("did-finish-load", () => {
-    markSideChatWindowStable(sideChatWindow, generation);
-  });
-
-  // macOS: floating (3) + 18 sits just above the Dock (20). The popup
-  // level (101) can cover IME candidate windows while the composer has focus.
-  sideChatWindow.setAlwaysOnTop(true, "floating", 18);
-  sideChatWindow.setVisibleOnAllWorkspaces(true, {
-    skipTransformProcessType: true,
-    visibleOnFullScreen: true,
-  });
-  sideChatWindow.setHiddenInMissionControl(true);
-  sideChatWindow.setMenuBarVisibility(false);
-
-  const backdrop = loadSideChatBackdropAddon({
-    isPackaged: app.isPackaged,
-    logger: log,
-  });
-  sideChat.attachWindow({
-    backdrop,
-    browserWindow: sideChatWindow,
-    toElectronBounds: sideChatElectronBounds,
-  });
-
-  await configureManagedWindow({
-    browserWindow: sideChatWindow,
-    failureLabel: "side chat window",
-    id: sideChatWindowIdentity.id,
-    installWindowSecurity: () =>
-      installWindowSecurity({
-        allowedNavigationOrigins: allowedRendererOrigins(forgeRendererURL()),
-        logger: log,
-        webContents: sideChatWindow.webContents,
-      }),
-    loadUrl: withHashRoute(rendererURL, "/side-chat"),
-    logger: log,
-    role: sideChatWindowIdentity.role,
-    route: "/side-chat",
-    showOnReady: false,
-    surfaces,
-    webContentsRegistry,
-  });
-
-  return sideChatWindow;
-}
-
-async function ensureSideChatWindow({
-  resetRecoveryBudget = false,
-}: { resetRecoveryBudget?: boolean } = {}) {
-  if (process.platform !== "darwin" || closingMainServices || !appContext) {
-    return undefined;
-  }
-  const existing = sideChatBrowserWindow;
-  if (existing && !existing.isDestroyed()) return existing;
-  if (sideChatBrowserWindowCreation) return sideChatBrowserWindowCreation;
-
-  if (resetRecoveryBudget) sideChatBrowserWindowRecoveryAttempt = 0;
-  const generation = ++sideChatBrowserWindowGeneration;
-  const creation = createSideChatWindow({
-    generation,
-    surfaces: appContext.surfaces,
-    webContentsRegistry: appContext.webContentsRegistry,
-  })
-    .then((window) => {
-      if (
-        generation !== sideChatBrowserWindowGeneration ||
-        closingMainServices ||
-        sideChatBrowserWindow !== window
-      ) {
-        sideChat.handleWindowFailure(window, "stale window creation");
-        if (!window.isDestroyed()) window.destroy();
-        return undefined;
-      }
-      return window;
-    })
-    .catch((error: unknown) => {
-      const window = sideChatBrowserWindow;
-      if (generation === sideChatBrowserWindowGeneration && window) {
-        failSideChatWindow(
-          window,
-          generation,
-          `window creation failed: ${errorMessage(error)}`
-        );
-      } else if (generation === sideChatBrowserWindowGeneration) {
-        scheduleSideChatWindowRecovery(
-          `window creation failed: ${errorMessage(error)}`
-        );
-      }
-      return undefined;
-    })
-    .finally(() => {
-      if (sideChatBrowserWindowCreation === creation) {
-        sideChatBrowserWindowCreation = undefined;
-      }
-    });
-  sideChatBrowserWindowCreation = creation;
-  return creation;
-}
-
-function failSideChatWindow(window: BrowserWindow, generation: number, reason: string) {
-  if (
-    closingMainServices ||
-    generation !== sideChatBrowserWindowGeneration ||
-    sideChatBrowserWindow !== window
-  ) {
-    return;
-  }
-
-  clearSideChatWindowStableTimer();
-  sideChat.handleWindowFailure(window, reason);
-  sideChatBrowserWindow = undefined;
-  if (!window.isDestroyed()) window.destroy();
-  scheduleSideChatWindowRecovery(reason);
-}
-
-function scheduleSideChatWindowRecovery(reason: string) {
-  if (
-    closingMainServices ||
-    process.platform !== "darwin" ||
-    !appContext ||
-    sideChatBrowserWindowRecoveryTimer
-  ) {
-    return;
-  }
-
-  const delay =
-    SIDE_CHAT_WINDOW_RECOVERY_DELAYS_MS[sideChatBrowserWindowRecoveryAttempt];
-  if (delay === undefined) {
-    log.error(
-      `side-chat renderer recovery exhausted after ${sideChatBrowserWindowRecoveryAttempt} attempts (${reason}); leaving the surface fail-closed`
-    );
-    return;
-  }
-  sideChatBrowserWindowRecoveryAttempt += 1;
-  log.warn(
-    `side-chat renderer unavailable (${reason}); recreating the fail-closed surface in ${delay}ms`
-  );
-  sideChatBrowserWindowRecoveryTimer = setTimeout(() => {
-    sideChatBrowserWindowRecoveryTimer = undefined;
-    if (sideChatBrowserWindowCreation) {
-      scheduleSideChatWindowRecovery("previous creation is still settling");
-    } else {
-      void ensureSideChatWindow();
-    }
-  }, delay);
-  sideChatBrowserWindowRecoveryTimer.unref?.();
-}
-
-function markSideChatWindowStable(window: BrowserWindow, generation: number) {
-  if (
-    generation !== sideChatBrowserWindowGeneration ||
-    sideChatBrowserWindow !== window
-  ) {
-    return;
-  }
-  clearSideChatWindowStableTimer();
-  sideChatBrowserWindowStableTimer = setTimeout(() => {
-    if (
-      generation === sideChatBrowserWindowGeneration &&
-      sideChatBrowserWindow === window &&
-      !window.isDestroyed()
-    ) {
-      sideChatBrowserWindowRecoveryAttempt = 0;
-    }
-  }, SIDE_CHAT_WINDOW_STABLE_RESET_MS);
-  sideChatBrowserWindowStableTimer.unref?.();
-}
-
-function clearSideChatWindowStableTimer() {
-  if (sideChatBrowserWindowStableTimer) {
-    clearTimeout(sideChatBrowserWindowStableTimer);
-    sideChatBrowserWindowStableTimer = undefined;
-  }
-}
-
-async function openSideChatTestWindow({
-  sourceFrame,
-  target,
-}: SideChatOpenTestWindowInput) {
-  if (process.platform !== "darwin") {
-    throw new Error("The Side Chat test window is only available on macOS.");
-  }
-  if (!appContext) {
-    throw new Error("Side Chat test window is unavailable before Main is ready.");
-  }
-
-  const generation = ++sideChatTestBrowserWindowGeneration;
-  destroySideChatTestWindow();
-  await new Promise<void>((done) => setImmediate(done));
-  if (generation !== sideChatTestBrowserWindowGeneration) return;
-
-  const display = screen.getDisplayMatching(sourceFrame);
-  const displayBounds = display.bounds;
-  const localSourceFrame = localizeSideChatTestWindowSourceFrame(
-    sourceFrame,
-    displayBounds
-  );
-  const rendererURL = e2eHooks.rendererUrl ?? appRendererUrl();
-  const testWindow = new BrowserWindow(
-    createSideChatTestWindowOptions({
-      bounds: displayBounds,
-      platform: process.platform,
-      preloadPath: join(__dirname, "preload.js"),
-      productName: releaseConfig.productName,
-      windowId: sideChatTestWindowIdentity.id,
-      windowRole: sideChatTestWindowIdentity.role,
-    })
-  );
-  sideChatTestBrowserWindow = testWindow;
-  testWindow.on("closed", () => {
-    if (
-      generation === sideChatTestBrowserWindowGeneration &&
-      sideChatTestBrowserWindow === testWindow
-    ) {
-      sideChatTestBrowserWindow = undefined;
-    }
-  });
-  testWindow.on("unresponsive", () => {
-    failSideChatTestWindow(testWindow, generation, "renderer became unresponsive");
-  });
-  testWindow.webContents.on("render-process-gone", (_event, details) => {
-    failSideChatTestWindow(
-      testWindow,
-      generation,
-      `renderer exited (${details.reason}, code ${details.exitCode})`
-    );
-  });
-  testWindow.webContents.on(
-    "did-fail-load",
-    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-      if (isMainFrame === false) return;
-      failSideChatTestWindow(
-        testWindow,
-        generation,
-        `renderer load failed (${errorCode}: ${errorDescription}, ${validatedURL})`
-      );
-    }
-  );
-
-  testWindow.setAlwaysOnTop(true, "screen-saver");
-  testWindow.setVisibleOnAllWorkspaces(true, {
-    skipTransformProcessType: true,
-    visibleOnFullScreen: true,
-  });
-  testWindow.setHiddenInMissionControl(true);
-  testWindow.setMenuBarVisibility(false);
-
-  try {
-    // TaskWindowEntrance.tla: show the transparent host before LoadRenderer.
-    // AppKit must not zoom the full-display host (including its backdrop).
-    presentSideChatTaskHost(
-      testWindow,
-      loadSideChatBackdropAddon({ isPackaged: app.isPackaged, logger: log }),
-      showTestWindowsInactive
-    );
-    await configureManagedWindow({
-      browserWindow: testWindow,
-      failureLabel: "side chat test window",
-      id: sideChatTestWindowIdentity.id,
-      installWindowSecurity: () =>
-        installWindowSecurity({
-          allowedNavigationOrigins: allowedRendererOrigins(forgeRendererURL()),
-          logger: log,
-          webContents: testWindow.webContents,
-        }),
-      loadUrl: withHashRoute(
-        rendererURL,
-        sideChatTestWindowRouteWithSource(localSourceFrame, target)
-      ),
-      logger: log,
-      role: sideChatTestWindowIdentity.role,
-      route: sideChatTestWindowRoute,
-      showOnReady: false,
-      surfaces: appContext.surfaces,
-      webContentsRegistry: appContext.webContentsRegistry,
-    });
-  } catch (error) {
-    if (generation === sideChatTestBrowserWindowGeneration) {
-      failSideChatTestWindow(
-        testWindow,
-        generation,
-        `window creation failed: ${errorMessage(error)}`
-      );
-      throw error;
-    }
-    if (!testWindow.isDestroyed()) testWindow.destroy();
-    return;
-  }
-
-  if (
-    generation !== sideChatTestBrowserWindowGeneration ||
-    sideChatTestBrowserWindow !== testWindow
-  ) {
-    if (!testWindow.isDestroyed()) testWindow.destroy();
-  }
-}
-
-function closeSideChatTestWindow() {
-  sideChatTestBrowserWindowGeneration += 1;
-  destroySideChatTestWindow();
-}
-
-function destroySideChatTestWindow() {
-  const testWindow = sideChatTestBrowserWindow;
-  sideChatTestBrowserWindow = undefined;
-  if (testWindow && !testWindow.isDestroyed()) {
-    testWindow.destroy();
-  }
-}
-
-function failSideChatTestWindow(
-  testWindow: BrowserWindow,
-  generation: number,
-  reason: string
-) {
-  if (
-    generation !== sideChatTestBrowserWindowGeneration ||
-    sideChatTestBrowserWindow !== testWindow
-  ) {
-    return;
-  }
-  log.warn(`side-chat test window unavailable (${reason}); destroying it`);
-  closeSideChatTestWindow();
-}
-
 // The first-launch onboarding, presented by the main window's renderer as one
 // full-screen window over the display that holds the main window.
-const onboardingWindow = new OnboardingWindowPresenter({
-  activate: !showTestWindowsInactive,
-  // AppKit takes key status from every window of an app that resigns active.
-  appActive: () => BrowserWindow.getFocusedWindow() !== null,
-  admittedUserId: () => getCurrentNativeSessionAdmission().principalUserId,
-  createWindow: createOnboardingWindow,
-  displayMatching: (bounds) => screen.getDisplayMatching(bounds),
-  focusMainWindow: requestOpenMainApp,
-  logger: log,
-  mainWindow: () =>
-    primaryWindow && !primaryWindow.isDestroyed() ? primaryWindow : undefined,
-  onAppActiveChanged: (listener) => {
-    const becameActive = () => listener(true);
-    const resignedActive = () => listener(false);
-    app.on("did-become-active", becameActive);
-    app.on("did-resign-active", resignedActive);
-    return () => {
-      app.removeListener("did-become-active", becameActive);
-      app.removeListener("did-resign-active", resignedActive);
-    };
-  },
-  onDisplaysChanged: (listener) => {
-    screen.on("display-added", listener);
-    screen.on("display-removed", listener);
-    screen.on("display-metrics-changed", listener);
-    return () => {
-      screen.removeListener("display-added", listener);
-      screen.removeListener("display-removed", listener);
-      screen.removeListener("display-metrics-changed", listener);
-    };
-  },
-  onHandoff: (handoff) => {
-    appContext?.nativeEventBus.emit(onboardingHandoffEvent, handoff);
-  },
-  onWindowChanged: (state) => {
-    appContext?.nativeEventBus.emit(onboardingWindowChangedEvent, state);
-    // The onboarding's last step teaches the Open Comma shortcut: while it is
-    // open the keys reach its page.
-    if (!openCommaShortcut.setSuspended(state.open)) {
-      log.warn("the Open Comma shortcut was taken during the onboarding");
-    }
-    // The onboarding comes before the product; once it is over, finished or
-    // closed, the product comes up.
-    if (state.open) mainWindowOnboardingHold.onboardingOpened();
-    else mainWindowOnboardingHold.release();
-  },
-  outputVolume: () => readMacOutputVolume(),
-  preferences: {
-    state: () => readyAppContext().appPreferences.state(),
-    update: (patch) => readyAppContext().appPreferences.update(patch),
-  },
-});
+// One per start of Main's services: a reset ends it with its window and starts another.
+let onboardingWindow = createOnboardingWindowPresenter();
+
+function createOnboardingWindowPresenter() {
+  return new OnboardingWindowPresenter({
+    activate: !showTestWindowsInactive,
+    // AppKit takes key status from every window of an app that resigns active.
+    appActive: () => BrowserWindow.getFocusedWindow() !== null,
+    admittedUserId: () => getCurrentNativeSessionAdmission().principalUserId,
+    createWindow: createOnboardingWindow,
+    displayMatching: (bounds) => screen.getDisplayMatching(bounds),
+    focusMainWindow: requestOpenMainApp,
+    logger: log,
+    mainWindow: () =>
+      primaryWindow && !primaryWindow.isDestroyed() ? primaryWindow : undefined,
+    onAppActiveChanged: (listener) => {
+      if (process.platform !== "darwin") return followWindowFocus(listener);
+      const becameActive = () => listener(true);
+      const resignedActive = () => listener(false);
+      app.on("did-become-active", becameActive);
+      app.on("did-resign-active", resignedActive);
+      return () => {
+        app.removeListener("did-become-active", becameActive);
+        app.removeListener("did-resign-active", resignedActive);
+      };
+    },
+    onDisplaysChanged: (listener) => {
+      screen.on("display-added", listener);
+      screen.on("display-removed", listener);
+      screen.on("display-metrics-changed", listener);
+      return () => {
+        screen.removeListener("display-added", listener);
+        screen.removeListener("display-removed", listener);
+        screen.removeListener("display-metrics-changed", listener);
+      };
+    },
+    onHandoff: (handoff) => {
+      appContext?.nativeEventBus.emit(onboardingHandoffEvent, handoff);
+    },
+    onWindowChanged: (state) => {
+      appContext?.nativeEventBus.emit(onboardingWindowChangedEvent, state);
+      // The onboarding's last step teaches the Open Comma shortcut: while it is
+      // open the keys reach its page.
+      if (!openCommaShortcut.setSuspended(state.open)) {
+        log.warn("the Open Comma shortcut was taken during the onboarding");
+      }
+      // The onboarding comes before the product; once it is over, finished or
+      // closed, the product comes up.
+      if (state.open) mainWindowOnboardingHold.onboardingOpened();
+      else mainWindowOnboardingHold.release();
+    },
+    outputVolume: () => readMacOutputVolume(),
+    preferences: {
+      state: () => readyAppContext().appPreferences.state(),
+      update: (patch) => readyAppContext().appPreferences.update(patch),
+    },
+  });
+}
+
+/**
+ * Comma is the active app while one of its windows has focus (Electron reports
+ * app activation only on macOS). Focus moving between Comma's own windows blurs
+ * one before it focuses the other, so the answer is read once both happened.
+ */
+function followWindowFocus(listener: (active: boolean) => void) {
+  let active = BrowserWindow.getFocusedWindow() !== null;
+  let pending: NodeJS.Immediate | undefined;
+  const changed = () => {
+    pending ??= setImmediate(() => {
+      pending = undefined;
+      const now = BrowserWindow.getFocusedWindow() !== null;
+      if (now === active) return;
+      active = now;
+      listener(now);
+    });
+  };
+  app.on("browser-window-focus", changed);
+  app.on("browser-window-blur", changed);
+  return () => {
+    app.removeListener("browser-window-focus", changed);
+    app.removeListener("browser-window-blur", changed);
+    if (pending) clearImmediate(pending);
+  };
+}
 
 function createOnboardingWindow(bounds: WindowBounds) {
   const { surfaces, webContentsRegistry } = readyAppContext();
@@ -1331,52 +1023,13 @@ function readyAppContext() {
   return appContext;
 }
 
-function sideChatElectronBounds(
-  presentation: SideChatPresentation
-): { height: number; width: number; x: number; y: number } | undefined {
-  const { screenFrame, windowFrame } = presentation;
-  if (windowFrame.width <= 0 || windowFrame.height <= 0) return undefined;
-
-  const displays = screen.getAllDisplays();
-  const display =
-    displays.find(({ id }) => id === presentation.displayId) ??
-    screen.getPrimaryDisplay();
-  const x = display.bounds.x + (windowFrame.x - screenFrame.x);
-  const y =
-    display.bounds.y +
-    (screenFrame.y + screenFrame.height - (windowFrame.y + windowFrame.height));
-
-  return {
-    height: Math.round(windowFrame.height),
-    width: Math.round(windowFrame.width),
-    x: Math.round(x),
-    y: Math.round(y),
-  };
-}
-
 type LegacyIpcDeps = {
   senderPolicy: ReturnType<typeof createSenderPolicy>;
-  webContentsRegistry: WebContentsRegistry;
+  /** The running services' registry: a reset starts new ones. */
+  webContentsRegistry: () => WebContentsRegistry | undefined;
 };
 
 function registerLegacyIpc(deps: LegacyIpcDeps) {
-  ipcMain.handle("comma:updates:status", (event) => {
-    requireLegacyMainWindowSender(event, "comma:updates:status", deps);
-    return getUpdateStatus();
-  });
-  ipcMain.handle("comma:updates:check", (event) => {
-    requireLegacyMainWindowSender(event, "comma:updates:check", deps);
-    return checkForUpdate();
-  });
-  ipcMain.handle("comma:updates:download", (event, update) => {
-    requireLegacyMainWindowSender(event, "comma:updates:download", deps);
-    return downloadUpdate(update as Parameters<typeof downloadUpdate>[0]);
-  });
-  ipcMain.handle("comma:updates:apply", (event, update) => {
-    requireLegacyMainWindowSender(event, "comma:updates:apply", deps);
-    return applyUpdate(update as Parameters<typeof applyUpdate>[0]);
-  });
-
   ipcMain.handle("comma:connector:status", (event) => {
     requireLegacyMainWindowSender(event, "comma:connector:status", deps);
     return connector.status();
@@ -1408,9 +1061,9 @@ function requireLegacyMainWindowSender(
   channel: string,
   { senderPolicy, webContentsRegistry }: LegacyIpcDeps
 ) {
-  const caller = webContentsRegistry.resolveCallerContext(event);
+  const caller = webContentsRegistry()?.resolveCallerContext(event);
   const allowed =
-    caller.role === "main-window" && senderPolicy.allow({ caller, channel, event });
+    caller?.role === "main-window" && senderPolicy.allow({ caller, channel, event });
 
   if (!allowed) {
     log.warn("Legacy IPC sender rejected.", { caller, channel });
@@ -1418,9 +1071,9 @@ function requireLegacyMainWindowSender(
   }
 }
 
-function registerNativeEventSources(eventBus: NativeEventBus) {
+function registerNativeEventSources() {
   notch.onEvent((event) => {
-    eventBus.emit(notchHostEvent, event);
+    appContext?.nativeEventBus.emit(notchHostEvent, event);
   });
 }
 
@@ -1444,7 +1097,10 @@ function ensureMeetingRecorderWindow() {
 }
 
 const openCommaShortcut = new OpenCommaShortcut(globalShortcut, requestOpenMainApp);
-app.on("will-quit", () => openCommaShortcut.dispose());
+app.on("will-quit", () => {
+  openCommaShortcut.dispose();
+  statusMenu.dispose();
+});
 // Quitting needs no cleanup: the daemon restores sleep when this process's
 // connection to it closes.
 const lidSleepGuard = new LidSleepGuard({
@@ -1475,7 +1131,6 @@ async function createElectronMainContext() {
           )
         : releaseConfig.appBundleId,
     // Main applies native effects and publishes from one preferences queue.
-    // Feature-model retirement and coverage scope: tla/README.md.
     appPreferencesPlatform: {
       setOpenCommaShortcut: (shortcut) => openCommaShortcut.set(shortcut),
       authorizeSystemNotifications,
@@ -1497,6 +1152,7 @@ async function createElectronMainContext() {
     decorateAppPreferencesProvider: (provider) =>
       decorateElectronE2eAppPreferencesProvider(e2eHooks, provider),
     onMeetingRecorderStateChanged: (state) => {
+      meetingRecorderState = state;
       if (appContext && !closingMainServices)
         ensureMeetingRecorderWindow().update(state);
     },
@@ -1574,11 +1230,12 @@ async function createElectronMainContext() {
     authApiBaseUrl,
     devServerUrl: forgeRendererURL(),
     getOperatingSystem: operatingSystem,
-    // The per-workspace connector runtime owns the salix-connect lifecycle.
-    // Static Connector state is an explicit E2E fixture. NODE_ENV=test alone
-    // does not change runtime supervision, so an E2E may exercise the same
+    // The per-workspace connector runtime owns the Workspaces' connections on
+    // the station. Static Connector state is an explicit E2E fixture.
+    // NODE_ENV=test alone does not change it, so an E2E may exercise the same
     // real Connector path as local development by selecting mode "real".
-    connectorBinaryPath: resolveConnectorBinaryPath(),
+    station,
+    computerUseHelperApp: resolveComputerUseHelperApp(),
     airDropBinaryPath: resolveAirDropBinaryPath(),
     airDropSenderBinaryPath: resolveAirDropBinaryPath(),
     getAirDropSurfaceId: () => {
@@ -1665,10 +1322,20 @@ async function createElectronMainContext() {
         }),
     ipcMain,
     isDevelopment: !app.isPackaged,
-    localDataDatabasePath: join(app.getPath("userData"), "comma.sqlite"),
-    localDataFileStorePath: join(app.getPath("userData"), "blobs"),
+    coreDataDir: join(app.getPath("userData"), "core"),
+    coreTestClock: e2eHooks.coreTestClock,
+    coreStationPeers: e2eHooks.stationPeers,
+    coreMeshAddon: station.meshAddon,
+    resetApp: () => void resetMain(),
+    appUpdates: coreAppUpdates(
+      e2eHooks.updateFeed === "scripted"
+        ? createElectronE2eUpdateFeed()
+        : velopackUpdateFeed
+    ),
+    legacyTasksDatabasePath: join(app.getPath("userData"), "comma.sqlite"),
     localFileIndexRoot: join(app.getPath("userData"), "local-file-index"),
     logger: log,
+    nativeAudioLogger: log,
     locale: electronMainLocale,
     // A banner is an OS-level side effect on the machine running the suite, and
     // the E2E chat stub serves exactly the Router reply this notifies on, so
@@ -1710,7 +1377,6 @@ async function createElectronMainContext() {
       };
       statusTray?.update(statusTrayContent);
     },
-    productName: releaseConfig.productName,
     onboardingWindow: onboardingWindowFor(operatingSystem(), onboardingWindow),
     onSessionStateChanged: (state) => {
       // Signed out (or another account) before the onboarding: sign-in needs
@@ -1718,9 +1384,10 @@ async function createElectronMainContext() {
       if (state.phase !== "signed_in") mainWindowOnboardingHold.release();
       return onboardingWindow.sessionChanged(state);
     },
-    sideChat,
     windowAppearance: opaqueWindowBackgrounds,
     browserAppBundleIdentifier: releaseConfig.appBundleId,
+    browserImportPlatform: createBrowserImportPlatform(),
+    browserHybridPasskeys: createHybridPasskeys(),
     browserSitePermissionPlatform: createSitePermissionPlatform(
       app.getLocale(),
       new SitePermissionMenuWindow({
@@ -1739,12 +1406,10 @@ async function createElectronMainContext() {
         logger: log,
       })
     ),
-    createBrowserSidebarView: (radius) => {
-      const view = new WebContentsView({
+    createBrowserSidebarView: () =>
+      new WebContentsView({
         webPreferences: BROWSER_SIDEBAR_WEB_PREFERENCES,
-      });
-      return applyBrowserSidebarAppearance(view, radius);
-    },
+      }),
     createBrowserInspectionComposerView: () =>
       new WebContentsView({
         webPreferences: BROWSER_INSPECTION_COMPOSER_WEB_PREFERENCES,
@@ -1757,7 +1422,7 @@ async function createElectronMainContext() {
     createWindowCommands: ({ surfaces, webContentsRegistry }) =>
       new NativeWindowCommandService({
         // windows.focus is an explicit user action from accessory surfaces such
-        // as the Notch and Side Chat, which must reactivate the regular app.
+        // as the Notch, which must reactivate the regular app.
         activateApplication: () => app.focus({ steal: true }),
         openWindow: async ({ route, windowId }) => {
           await createWindow({
@@ -1805,9 +1470,31 @@ async function createElectronMainContext() {
           observabilityFileLocation,
         }
       : {}),
+    // Meeting detection watches which apps on the machine use a microphone.
+    // Its first CoreAudio listener asks tccd for microphone access,
+    // synchronously on Main's thread: under load that held a launched test
+    // app's startup for up to 27 s before its main window. The machine's
+    // own meetings are not what any test asserts, so test apps run without
+    // it, as with the passkey scanner and notifications.
+    ...(process.env.NODE_ENV === "test"
+      ? { loadMeetingPresenceNative: async () => undefined }
+      : {}),
     microphoneHostPath: app.isPackaged
       ? join(process.resourcesPath, "native", "macos", "MicCaptureHost")
       : join(app.getAppPath(), "dist", "native", "macos", "MicCaptureHost"),
+    // Quick Chat watches ⌘ and takes the microphone on the machine running the
+    // suite, so launched test apps run without it.
+    ...(process.env.NODE_ENV === "test"
+      ? {}
+      : {
+          quickChat: {
+            hostPath: app.isPackaged
+              ? join(process.resourcesPath, "native", "macos", "QuickChatHost")
+              : join(app.getAppPath(), "dist", "native", "macos", "QuickChatHost"),
+            notch,
+            openRoute: requestOpenMainAppRoute,
+          },
+        }),
     screenAccessStatus: () =>
       process.platform === "darwin"
         ? systemPreferences.getMediaAccessStatus("screen")
@@ -1815,10 +1502,20 @@ async function createElectronMainContext() {
     secureSessionFilePath:
       e2eHooks.secureSessionFilePath ??
       join(app.getPath("userData"), "secure-session.bin"),
-    startupSession,
+    // An E2E fixture's session is seeded as the development one is: in SecureStore before the core starts, so the
+    // core's startup probe confirms it before any window opens.
+    startupSession: e2eHooks.session ?? startupSession,
     computeNodeLifecyclePath: e2eHooks.computeNodeLifecyclePath,
   });
-  await applyElectronE2eHooks(e2eHooks, context.secureSessionStore, context.session);
+  if (process.env.NODE_ENV === "test" && !app.isPackaged)
+    exposeElectronE2eCore(
+      context.coreHost,
+      () => mainStarted,
+      (env) => {
+        nextStartHooks = env;
+      },
+      () => primaryWindow
+    );
   await awaitElectronE2eMainReadyRelease(e2eHooks);
   return context;
 }
@@ -1829,10 +1526,10 @@ if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
-    const telegramReturn = argv.find((value) =>
-      isTelegramReturnUrl(value, releaseConfig.urlScheme)
+    const channelReturn = argv.find((value) =>
+      isChannelReturnUrl(value, releaseConfig.urlScheme)
     );
-    if (telegramReturn && requestOpenTelegramSettings(telegramReturn)) return;
+    if (channelReturn && requestOpenChannelSettings(channelReturn)) return;
     const billingReturn = findBillingReturnUrl(argv, releaseConfig.urlScheme);
     if (!billingReturn || !requestOpenBillingSettings(billingReturn.url)) {
       requestOpenMainApp();
@@ -1845,77 +1542,36 @@ function startElectronApp() {
   void app
     .whenReady()
     .then(async () => {
-      // The stored app language is the account's, synced by the renderer. A
-      // device without one yet follows the operating system.
-      electronMainLocale = initializeElectronMainI18n({
-        appLocale: app.getLocale(),
-        localePreference: await readStoredLocalePreference(
-          join(app.getPath("userData"), "app-preferences.json")
-        ),
-        preferredSystemLanguages: app.getPreferredSystemLanguages(),
-      });
       configureElectronAboutPanel(app, {
         displayVersion,
         productName: releaseConfig.productName,
       });
       app.setAppUserModelId(releaseConfig.appUserModelId);
       app.userAgentFallback = browserFacingUserAgent(app.userAgentFallback);
-      setDockIcon();
+      registerBrowserSidebarPagePreload(
+        session.fromPartition(BROWSER_SIDEBAR_PARTITION),
+        join(__dirname, "browser-page-preload.js")
+      );
       const devServerUrl = forgeRendererURL();
       registerAppProtocol(devServerUrl, {
         getCredentialAuthority: () => appContext?.session,
+        getDriveStreams: () => appContext?.synchronicity,
       });
       installSessionSecurity(session.defaultSession);
       installDynamicUiNetworkSecurity(session.defaultSession);
-      appContext = await createElectronMainContext();
-      registerNativeBridgeHandlersFromContext(appContext);
-      applicationMenu = installApplicationMenu({
+      installApplicationMenu({
         isMainFocused: () => primaryWindow?.isFocused() ?? false,
         dispatch: (id) =>
           appContext?.nativeEventBus.emit(applicationMenuCommandEvent, id),
         openMain: openMainApp,
-        openSideChat: () => safelyControlSideChat(() => sideChat.open()),
-        sideChatEnabled: () => sideChat.enabled(),
-        ...(process.platform === "darwin" &&
-        !app.isPackaged &&
-        releaseConfig.flavor === "dev" &&
-        devServerUrl
-          ? {
-              openSideChatBackground: () => {
-                void openSideChatBackground().catch((error: unknown) => {
-                  log.error("Could not open Side Chat background controls", error);
-                });
-              },
-            }
-          : {}),
       });
-      ensureMeetingRecorderWindow().update(await appContext.meetingRecorder.state());
-      // Establish consent baseline only after the generated gateway and window
-      // factory are available; no automatic tap can race shell initialization.
-      void appContext.meetingPresence
-        .start()
-        .then((state) => appContext?.meetingRecorder.initializePresence(state))
-        .catch((error) => log.error("Meeting detection could not start", error));
-      registerNativeEventSources(appContext.nativeEventBus);
-      if (operatingSystem() === "macos") {
-        const savedShortcut = (await appContext.appPreferences.state()).clientSettings
-          ?.sideChatShortcut;
-        safelyControlSideChat(() =>
-          sideChat.start(
-            savedShortcut === undefined
-              ? defaultCommaClientSettings.sideChatShortcut
-              : savedShortcut
-          )
-        );
-        await ensureSideChatWindow();
-        if (e2eHooks.openSideChat) safelyControlSideChat(() => sideChat.open());
-      }
+      registerNativeEventSources();
       registerLegacyIpc({
         senderPolicy: createSenderPolicy({
           devOrigins: allowedRendererOrigins(forgeRendererURL()),
           isDevelopment: !app.isPackaged,
         }),
-        webContentsRegistry: appContext.webContentsRegistry,
+        webContentsRegistry: () => appContext?.webContentsRegistry,
       });
       void connector
         .retireManagedLaunchAgent()
@@ -1925,32 +1581,93 @@ function startElectronApp() {
         .catch((error) => {
           log.warn(`connector reconcile failed: ${errorMessage(error)}`);
         });
-      mainWindowInteractionsEnabled = true;
-      if (pendingTelegramReturn) {
-        await openBillingSettings(pendingTelegramReturn);
-        pendingTelegramReturn = undefined;
-      } else if (pendingBillingReturn) {
-        await openBillingSettings();
-      } else {
-        if (await onboardingPendingAtLaunch(appContext)) {
-          log.info("first launch: the main window waits for the onboarding");
-          mainWindowOnboardingHold.begin();
-        }
-        await openMainApp();
-      }
-      if (devServerUrl && !e2eHooks.devRendererUrl) {
-        await createRuntimeWorkbenchWindow({
-          surfaces: appContext.surfaces,
-          webContentsRegistry: appContext.webContentsRegistry,
-        });
-      }
-      enableStatusTrayInteractions();
-
+      mainStarted = startMainServices();
+      await mainStarted;
       if (operatingSystem() === "macos") {
         app.on("activate", requestOpenMainApp);
       }
     })
     .catch(handleElectronReadyError);
+}
+
+/**
+ * The main window a reset keeps, back as it opened: the one a launch opened, at its first bounds and no zoom. One a
+ * test took further from that (hidden or minimized, full screen, maximized, with DevTools open) is closed and a new
+ * one opens, as at launch.
+ */
+function keptMainWindow() {
+  const launch = primaryWindowLaunch;
+  if (!launch || launch.window !== primaryWindow || launch.window.isDestroyed())
+    return undefined;
+  const { window } = launch;
+  if (
+    !window.isVisible() ||
+    window.isFullScreen() ||
+    window.isSimpleFullScreen() ||
+    window.isMaximized() !== launch.maximized ||
+    window.webContents.isDevToolsOpened()
+  )
+    return undefined;
+  window.setBounds(launch.bounds);
+  window.webContents.setZoomLevel(0);
+  return launch;
+}
+
+/**
+ * Starts Main's services and opens the app's windows, as at launch: from what is stored on this device (a reset left
+ * nothing). `stopMainServices` ends them. After a reset, `kept` is the main window it kept: it is tied to the new
+ * services and loads the app again, as a new main window would.
+ */
+async function startMainServices(kept?: NonNullable<typeof primaryWindowLaunch>) {
+  // The stored app language is the account's, synced by the renderer. A
+  // device without one yet follows the operating system.
+  electronMainLocale = initializeElectronMainI18n({
+    appLocale: app.getLocale(),
+    localePreference: await readStoredLocalePreference(
+      join(app.getPath("userData"), "app-preferences.json")
+    ),
+    preferredSystemLanguages: app.getPreferredSystemLanguages(),
+  });
+  closingMainServices = false;
+  appContext = await createElectronMainContext();
+  registerNativeBridgeHandlersFromContext(appContext);
+  const recorderWindow = ensureMeetingRecorderWindow();
+  if (meetingRecorderState) recorderWindow.update(meetingRecorderState);
+  // Establish consent baseline only after the generated gateway and window
+  // factory are available; no automatic tap can race shell initialization.
+  void appContext.meetingPresence
+    .start()
+    .then((state) => appContext?.meetingRecorder.presenceChanged(state, true))
+    .catch((error) => log.error("Meeting detection could not start", error));
+  mainWindowInteractionsEnabled = true;
+  if (pendingChannelReturn) {
+    await openBillingSettings(pendingChannelReturn);
+    pendingChannelReturn = undefined;
+  } else if (pendingBillingReturn) {
+    await openBillingSettings();
+  } else {
+    if (await onboardingPendingAtLaunch(appContext)) {
+      log.info("first launch: the main window waits for the onboarding");
+      mainWindowOnboardingHold.begin();
+    }
+    if (kept && appContext) {
+      await kept.binding.rebind(appContext);
+      // The page a reset loads has no history before it, as a new window's.
+      kept.window.webContents.once("did-finish-load", () => {
+        if (!kept.window.isDestroyed())
+          kept.window.webContents.navigationHistory.clear();
+      });
+    }
+    await openMainApp();
+  }
+  const devServerUrl = forgeRendererURL();
+  if (devServerUrl && !e2eHooks.devRendererUrl) {
+    await createRuntimeWorkbenchWindow({
+      surfaces: appContext.surfaces,
+      webContentsRegistry: appContext.webContentsRegistry,
+    });
+  }
+  enableStatusTrayInteractions();
 }
 
 function registerBillingReturnProtocol() {
@@ -1964,11 +1681,8 @@ function registerBillingReturnProtocol() {
 
   const initialReturn = findBillingReturnUrl(process.argv, releaseConfig.urlScheme);
   if (initialReturn) pendingBillingReturn = initialReturn;
-  const telegramReturn = process.argv.find((value) =>
-    isTelegramReturnUrl(value, releaseConfig.urlScheme)
-  );
-  if (telegramReturn)
-    pendingTelegramReturn = telegramSettingsRouteForReturn(telegramReturn);
+  if (process.argv.some((value) => isChannelReturnUrl(value, releaseConfig.urlScheme)))
+    pendingChannelReturn = channelSettingsRoute;
 
   app.on("open-url", (event, value) => {
     if (isAuthorizationReturnUrl(value, releaseConfig.urlScheme)) {
@@ -1976,9 +1690,9 @@ function registerBillingReturnProtocol() {
       requestOpenMainApp();
       return;
     }
-    if (isTelegramReturnUrl(value, releaseConfig.urlScheme)) {
+    if (isChannelReturnUrl(value, releaseConfig.urlScheme)) {
       event.preventDefault();
-      requestOpenTelegramSettings(value);
+      requestOpenChannelSettings(value);
       return;
     }
     if (!parseBillingReturnUrl(value, releaseConfig.urlScheme)) return;
@@ -1991,7 +1705,10 @@ registerBillingReturnProtocol();
 
 function handleElectronReadyError(error: unknown) {
   const message = errorMessage(error);
-  log.error(`electron startup failed: ${message}`);
+  log.error(
+    `electron startup failed: ${message}`,
+    error instanceof Error ? error.stack : ""
+  );
   dialog.showErrorBox(
     messages.electron_startup_failed_title(
       { productName: releaseConfig.productName },
@@ -2021,6 +1738,17 @@ function withHashRoute(rendererURL: string, route: string) {
   url.hash = route;
   return url.toString();
 }
+
+// Electron's own listeners of a window's show, hide, minimize, maximize and
+// restore read the window. macOS can send one of these for a window that is
+// already gone as the app quits; the read then throws in Main ("Object has
+// been destroyed"). A closed window has nothing more to tell.
+app.on("browser-window-created", (_event, window) => {
+  window.once("closed", () => {
+    for (const event of ["show", "hide", "minimize", "maximize", "restore"])
+      window.removeAllListeners(event);
+  });
+});
 
 app.on("window-all-closed", () => {
   if (operatingSystem() !== "macos" && !statusTray) {
@@ -2058,6 +1786,28 @@ app.on("before-quit", (event) => {
 });
 
 async function closeMainServices() {
+  // A reset under way finishes first: its new services are the ones to close.
+  await mainReset?.catch(() => undefined);
+  // Quitting closes the windows after the services.
+  await stopMainServices({ closeWindows: false });
+  opaqueWindowBackgrounds.dispose();
+  await station.stop();
+  notch.dispose();
+}
+
+/**
+ * Ends what `startMainServices` started: Main stops taking window requests, closes its session's credential gate,
+ * closes its own windows (`closeWindows`: every window), and closes its services, each with what it runs (the client
+ * core's process with them). A rejected session close leaves everything running.
+ */
+async function stopMainServices({
+  closeWindows,
+  keep,
+}: {
+  closeWindows: boolean;
+  /** A window the close leaves open (a reset's kept main window). */
+  keep?: BrowserWindow | undefined;
+}) {
   closingMainServices = true;
   mainWindowInteractionsEnabled = false;
   suspendStatusTrayInteractions();
@@ -2070,23 +1820,91 @@ async function closeMainServices() {
     throw error;
   }
   resetStatusTrayInteractions();
+  mainWindowOnboardingHold.cancel();
   meetingRecorderWindow?.close();
   meetingRecorderWindow = undefined;
-  sideChatBrowserWindowGeneration += 1;
-  sideChatTestBrowserWindowGeneration += 1;
-  if (sideChatBrowserWindowRecoveryTimer) {
-    clearTimeout(sideChatBrowserWindowRecoveryTimer);
-    sideChatBrowserWindowRecoveryTimer = undefined;
-  }
-  clearSideChatWindowStableTimer();
-  sideChat.dispose();
-  opaqueWindowBackgrounds.dispose();
-  closeSideChatTestWindow();
+  meetingRecorderState = undefined;
   onboardingWindow.dispose();
-  sideChatBrowserWindow?.destroy();
-  sideChatBrowserWindow = undefined;
+  // The services take back what they put into windows (browser views, channels) while the windows are there.
   await appContext?.close();
-  notch.dispose();
+  if (closeWindows) {
+    // Then what else is open (the main window, windows a renderer opened, menus) goes.
+    for (const window of BrowserWindow.getAllWindows())
+      if (window !== keep) window.destroy();
+    if (!keep) {
+      primaryWindow = undefined;
+      primaryWindowLaunch = undefined;
+    }
+    runtimeWorkbenchWindow = undefined;
+    pendingBillingReturn = undefined;
+    pendingChannelReturn = undefined;
+  }
+}
+
+/**
+ * Main's own process-wide services back to how a launch finds them, and what the preferences did to this Mac taken
+ * back, as a new install has none of it: the Notch's host and scene, the station and its data, the login item, the lid sleep guard, the menu-bar item's content and a suspended
+ * Open Comma shortcut. The services
+ * started next apply the new install's preferences (the dock, the menu-bar item, the shortcut).
+ */
+async function resetProcessServices(keptAwake: boolean) {
+  notch.reset();
+  await station.reset();
+  openCommaShortcut.setSuspended(false);
+  statusTrayContent = {
+    inProgressTasks: [],
+    settingsAccelerator: statusTrayContent.settingsAccelerator,
+  };
+  if (readLaunchAtLogin().enabled) await setLaunchAtLogin(false);
+  if (keptAwake) await lidSleepGuard.set(false);
+}
+
+/** The start hooks a shared e2e app's next reset takes (`commaE2eCore.reset`); none outside e2e. */
+let nextStartHooks: ElectronE2eStartHookEnv | undefined;
+
+/** The reset under way, if one is (`resetMain`). */
+let mainReset: Promise<void> | undefined;
+/** Main's newest start of its services, the launch's or a reset's: done once its windows are open. */
+let mainStarted: Promise<void> | undefined;
+
+/**
+ * Brings the app back to a new install's state, as the client core asks once it cleared what it keeps (`app.reset`):
+ * Main stops its services and closes its windows, deletes what its services keep on this device and the windows'
+ * browser data, and starts again as at launch, with a new core. Requests that come during a reset join it.
+ */
+function resetMain(): Promise<void> {
+  if (mainReset) return mainReset;
+  // The app is quitting: nothing starts again.
+  if (closeThenQuitInProgress) return Promise.resolve();
+  mainReset = (async () => {
+    const preferences = await appContext?.appPreferences.state();
+    const kept = keptMainWindow();
+    await stopMainServices({ closeWindows: true, keep: kept?.window });
+    await appContext?.erase();
+    appContext = undefined;
+    onboardingWindow = createOnboardingWindowPresenter();
+    await resetProcessServices(preferences?.keepAwakeWhenLidClosed === true);
+    // The windows' browser data, the HTTP cache with it: a cached answer is what an earlier run was told.
+    await Promise.all(
+      [
+        session.defaultSession,
+        session.fromPartition(BROWSER_SIDEBAR_PARTITION),
+      ].flatMap((browserSession) => [
+        browserSession.clearStorageData(),
+        browserSession.clearCache(),
+        browserSession.clearAuthCache(),
+        browserSession.clearHostResolverCache(),
+      ])
+    );
+    if (nextStartHooks) applyElectronE2eStartHooks(e2eHooks, nextStartHooks);
+    nextStartHooks = undefined;
+    await startMainServices(kept);
+  })().finally(() => {
+    mainReset = undefined;
+  });
+  // A reset that cannot start the app again ends it, as a launch that cannot start does.
+  mainStarted = mainReset.catch(handleElectronReadyError);
+  return mainReset;
 }
 
 function errorMessage(error: unknown) {

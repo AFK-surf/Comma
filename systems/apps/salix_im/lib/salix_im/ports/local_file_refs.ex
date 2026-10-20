@@ -15,7 +15,7 @@ defmodule SalixIM.Ports.LocalFileRefs do
   end
 
   defp impl,
-    do: Application.get_env(:salix_im, :local_file_refs_mod, __MODULE__.Unconfigured)
+    do: SystemsRuntime.get_env(:salix_im, :local_file_refs_mod, __MODULE__.Unconfigured)
 
   defmodule Unconfigured do
     @moduledoc false

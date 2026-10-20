@@ -1,25 +1,79 @@
 defmodule SalixEnv.DeviceInstall do
-  @moduledoc "Installation commands for new devices in an already-authorized group."
+  @moduledoc """
+  Installation commands for new devices in an already-authorized group.
+
+  An optional station installer can replace the Connector command
+  (`config :salix_env, :station_install, Module`, see `c:station_command/4`).
+  When it answers `{:ok, install}`, no Connector credential is created and the
+  result has `"kind" => "station"` with the station enrollment `"command"`.
+  """
 
   alias SalixEnv.ConnectorTokens
+  alias SalixEnv.Ports.PublicURL
   alias SalixStore.{ConnectorInstall, ServerReleaseDescriptor}
 
   @platforms ConnectorInstall.platforms()
 
+  @doc """
+  The station install for a Group's new device, or `:connector` when the Group
+  keeps the Connector installer. `requester` names the member who asked:
+  `%{user_id: id}` from a signed-in surface, the tool ctx subset
+  (`tenant_id`, `group_id`, `trusted_origin`) from the Router's tool, or nil.
+  """
+  @callback station_command(
+              tenant_id :: String.t(),
+              group_id :: String.t(),
+              name :: String.t() | nil,
+              requester :: map() | nil
+            ) :: {:ok, map()} | :connector | {:error, term()}
+
   def create_command(tenant_id, group_id, name, opts \\ []) do
-    with {:ok, install, _credential} <- create_install(tenant_id, group_id, name, opts),
-         do: {:ok, install}
+    case station_command(tenant_id, group_id, name, opts[:requester]) do
+      :connector ->
+        with {:ok, install, _credential} <- create_install(tenant_id, group_id, name, opts),
+             do: {:ok, install}
+
+      result ->
+        result
+    end
   end
 
-  def create_token_command(tenant_id, group_id, attrs) do
-    with {:ok, install, credential} <-
-           create_install(tenant_id, group_id, attrs["name"], token_attrs: attrs),
-         do: {:ok, Map.put(credential, "install_command", install["command"])}
+  def create_token_command(tenant_id, group_id, attrs, opts \\ []) do
+    requester =
+      case get_in(attrs, ["meta", "owner_user_id"]) do
+        user_id when is_binary(user_id) -> %{user_id: user_id, origin: opts[:origin]}
+        _ -> nil
+      end
+
+    # The name here is the Connector's credential name; a station gets the
+    # default station name, which members can rename.
+    case station_command(tenant_id, group_id, nil, requester) do
+      :connector ->
+        with {:ok, install, credential} <-
+               create_install(tenant_id, group_id, attrs["name"], token_attrs: attrs),
+             do: {:ok, Map.put(credential, "install_command", install["command"])}
+
+      {:ok, install} ->
+        {:ok,
+         install
+         |> Map.take(["kind", "name", "expires_at", "supported_platforms"])
+         |> Map.put("install_command", install["command"])}
+
+      error ->
+        error
+    end
+  end
+
+  defp station_command(tenant_id, group_id, name, requester) do
+    case SystemsRuntime.get_env(:salix_env, :station_install) do
+      nil -> :connector
+      module -> module.station_command(tenant_id, group_id, name, requester)
+    end
   end
 
   defp create_install(tenant_id, group_id, name, opts) do
     with true <- is_binary(name) and String.trim(name) != "",
-         {:ok, artifacts} <- artifacts(opts),
+         {:ok, _artifacts} <- artifacts(opts),
          {:ok, credential} <-
            ConnectorTokens.create_group_connector_token(
              group_id,
@@ -38,7 +92,7 @@ defmodule SalixEnv.DeviceInstall do
        %{
          "device_id" => credential["device_id"],
          "name" => name,
-         "command" => command(credential, artifacts),
+         "command" => command(credential),
          "supported_platforms" => @platforms,
          "access" => "read_only",
          "run_mode" => "background_until_reboot",
@@ -52,7 +106,7 @@ defmodule SalixEnv.DeviceInstall do
   end
 
   defp artifacts(opts) do
-    case Application.get_env(:salix_env, :device_install_local_artifact_root) do
+    case SystemsRuntime.get_env(:salix_env, :device_install_local_artifact_root) do
       nil -> published_artifacts(opts)
       _ -> local_artifacts()
     end
@@ -61,7 +115,7 @@ defmodule SalixEnv.DeviceInstall do
   @doc false
   def local_artifact_path(platform) when platform in @platforms do
     with root when is_binary(root) <-
-           Application.get_env(:salix_env, :device_install_local_artifact_root),
+           SystemsRuntime.get_env(:salix_env, :device_install_local_artifact_root),
          path = Path.join([root, platform, "salix-connect"]),
          true <- File.regular?(path) do
       {:ok, path}
@@ -73,11 +127,7 @@ defmodule SalixEnv.DeviceInstall do
   def local_artifact_path(_), do: {:error, :not_found}
 
   defp local_artifacts do
-    base =
-      SalixEnv.Ports.PublicURL.connector_server_url()
-      |> String.replace_prefix("wss://", "https://")
-      |> String.replace_prefix("ws://", "http://")
-      |> String.trim_trailing("/")
+    base = http_base()
 
     Enum.reduce_while(@platforms, {:ok, %{}}, fn platform, {:ok, entries} ->
       case local_artifact_path(platform) do
@@ -102,7 +152,7 @@ defmodule SalixEnv.DeviceInstall do
         case Keyword.get(
                opts,
                :artifact_root,
-               Application.get_env(:salix_env, :device_install_artifact_root)
+               SystemsRuntime.get_env(:salix_env, :device_install_artifact_root)
              ) do
           nil -> ServerReleaseDescriptor.target("salix-connect", platform)
           root -> ServerReleaseDescriptor.target("salix-connect", platform, root)
@@ -116,8 +166,47 @@ defmodule SalixEnv.DeviceInstall do
   end
 
   @doc false
-  def command(credential, artifacts) do
-    script = """
+  # The command handed to the user is one line; the server renders the script
+  # (`install_script/1`) for whoever presents the install's Connector token.
+  def command(credential) do
+    "curl -sSL -H #{shell_quote("Authorization: Bearer " <> credential["token"])} " <>
+      "#{shell_quote(http_base() <> "/v1/device-connection/install.sh")} | sh"
+  end
+
+  @doc """
+  The installer script for a Connector token, served at
+  `GET /v1/device-connection/install.sh`. The command pipes it to `sh`, so
+  every outcome is a script; errors print a reason and exit 1.
+  """
+  def install_script(raw_token) do
+    with {:ok, _tenant_id, record} <- ConnectorTokens.validate_connector_token(raw_token),
+         {:ok, artifacts} <- artifacts([]) do
+      credential =
+        record
+        |> Map.take(["group_id", "device_id", "name"])
+        |> Map.merge(%{"token" => raw_token, "server" => PublicURL.connector_server_url()})
+
+      {:ok, script(credential, artifacts)}
+    else
+      {:error, :unauthorized} ->
+        {:error, :unauthorized,
+         failure("This install command is invalid or has expired. Ask Comma for a new one.")}
+
+      {:error, _} ->
+        {:error, :unavailable,
+         failure(
+           "The Connector release is unavailable right now. Try the same command again later."
+         )}
+    end
+  end
+
+  defp failure(message), do: "printf '%s\\n' #{shell_quote(message)} >&2\nexit 1\n"
+
+  # The braces make `sh` read the whole script before running any of it, so a
+  # truncated download runs nothing.
+  defp script(credential, artifacts) do
+    """
+    {
     set -eu
     umask 077
     printf '%s\\n' #{shell_quote("Connect this computer to Comma Group #{credential["group_id"]} at #{credential["server"]}.")}
@@ -140,17 +229,15 @@ defmodule SalixEnv.DeviceInstall do
       --server #{shell_quote(credential["server"])} --name #{shell_quote(credential["name"])} \\
       --root "$state" --reconnect </dev/null >>"$state/connector.log" 2>&1 &
     echo "Connector startup requested. Verify the connection-check.txt file through Comma. You can close this terminal."
+    }
     """
+  end
 
-    lines = MapSet.new(String.split(script, "\n"))
-
-    delimiter =
-      Enum.find_value(0..MapSet.size(lines), fn suffix ->
-        candidate = "COMMA_DEVICE_INSTALL_#{suffix}"
-        if not MapSet.member?(lines, candidate), do: candidate
-      end)
-
-    "sh <<'#{delimiter}'\n" <> script <> delimiter
+  defp http_base do
+    PublicURL.connector_server_url()
+    |> String.replace_prefix("wss://", "https://")
+    |> String.replace_prefix("ws://", "http://")
+    |> String.trim_trailing("/")
   end
 
   defp shell_quote(value), do: ConnectorInstall.shell_quote(value)

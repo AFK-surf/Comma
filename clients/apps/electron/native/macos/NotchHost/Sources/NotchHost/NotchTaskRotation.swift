@@ -9,8 +9,11 @@ struct CommaNotchTaskRotation {
         taskIDs.isEmpty ? nil : taskIDs[index]
     }
 
-    mutating func update(taskIDs: [String]) {
-        let currentID = currentTaskID
+    /// A projection update keeps the visible Task while it remains. An update
+    /// that came with a notification shows the newest Task, which leads
+    /// `taskIDs`, instead.
+    mutating func update(taskIDs: [String], showsNewest: Bool = false) {
+        let currentID = showsNewest ? nil : currentTaskID
         self.taskIDs = taskIDs
         index = currentID.flatMap { taskIDs.firstIndex(of: $0) } ?? 0
     }

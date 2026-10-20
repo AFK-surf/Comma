@@ -296,9 +296,9 @@ export class DownloadsService implements FilesProvider {
     }
   }
 
-  // FileAction.tla Dispatch/NativeEffect models the UI dispatch boundary and
-  // late outcomes of this local effect, not OS application identity or exactly
-  // once launch. The current OS-handler decision below is covered by IPC tests.
+  // The UI dispatch boundary owns late outcomes of this local effect. It does
+  // not guarantee OS application identity or exactly-once launch. IPC tests
+  // cover the current OS-handler decision below.
   async openDownload({ downloadRef, applicationId }: FilesOpenDownloadInput) {
     const path = await this.#resolveSavedPath(downloadRef);
     if (!path) return { status: "unavailable" } as const;

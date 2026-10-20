@@ -22,6 +22,14 @@ const text = z.string().regex(/\S/);
 const caption = z.string();
 const number = z.number();
 const brand = z.string();
+// Card text never holds a clock time or a time zone: the Agent cannot know
+// who reads the card or where. Moments travel as ISO times, which the
+// template shows in the viewer's own time zone.
+const untimed = z
+  .string()
+  .regex(/^(?![\s\S]*(?:\d{1,2}:\d{2}|\b(?:UTC|GMT)\b))[\s\S]*\S/)
+  .meta({ title: "untimed" });
+const moment = z.string().meta({ format: "date-time" });
 const url = z
   .string()
   .regex(/^https:\/\/[^\s/?#@]+(?:[/?#]\S*)?$/)
@@ -47,10 +55,13 @@ const delta = z
 /** Shared chrome: what the card is about and where its facts came from. */
 export const cardFrame = {
   title: text,
-  meta: text.optional().describe("short header context"),
+  meta: untimed.optional().describe("short header context"),
   source: text.optional(),
   sourceBrand: brand.optional(),
-  updatedAt: text.optional().describe('display text such as "17:05"'),
+  updatedAt: untimed
+    .optional()
+    .describe('a freshness label without a clock time, such as "截至 9/22"'),
+  observedAt: moment.optional().describe("when the facts were read"),
   actions: z
     .array(z.object({ label: text, prompt: text }))
     .meta({ limit: 2 })
@@ -343,12 +354,19 @@ const feed = z
           title: text,
           brand: brand.optional(),
           excerpt: text.optional(),
-          time: text.optional(),
+          time: untimed.optional().describe('a label such as "2 小时前"'),
+          at: moment.optional().describe("when it happened"),
           status: status.optional(),
+          tags: z.array(text).meta({ limit: 3 }).optional(),
           href: url.optional(),
+          filterKeys: z.array(text).meta({ limit: 8 }).optional(),
         })
       )
       .meta({ limit: 6 })
+      .optional(),
+    filters: z
+      .array(z.object({ key: text, label: text }))
+      .meta({ limit: 4 })
       .optional(),
     groups: z
       .array(

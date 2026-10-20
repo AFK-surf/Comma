@@ -1,37 +1,16 @@
-import { render, screen, waitFor, within } from "@comma/test-utils/render";
+import { screen, within } from "@comma/test-utils/render";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AdminApp, observabilityLinksForApiBaseUrl } from "../src/AdminApp";
+import { observabilityLinksForApiBaseUrl } from "../src/AdminApp";
+import { adminTestSession, adminTestSessionId, mountAdminApp } from "./app";
+import { jsonResponse } from "./http";
+import { review, settle } from "./support";
 
-const auth = vi.hoisted(() => {
-  const reportSessionRejection = vi.fn();
-  return {
-    reportSessionRejection,
-    sessionTransport: {
-      credentials: "include" as const,
-      signal: new AbortController().signal,
-      applyHeaders(headers: Record<string, string>) {
-        headers["x-comma-expected-auth-session-id"] =
-          "11111111-1111-4111-8111-111111111111";
-        headers["x-comma-session-lifecycle-version"] = "1";
-        headers["x-comma-session-transport"] = "cookie";
-      },
-      reportSessionRejection,
-    },
-    signOut: vi.fn(),
-  };
-});
-
-vi.mock("@comma/app/auth", () => ({
-  CommaAuthGate: ({ children }: { children: ReactNode }) => children,
-  useCommaAuth: () => ({
-    apiBaseUrl: "http://127.0.0.1:4200",
-    sessionTransport: auth.sessionTransport,
-    signOut: auth.signOut,
-    userEmail: "owner@example.com",
-  }),
-}));
+/** `query` once what is ready has run. */
+async function find<T>(query: () => T): Promise<T> {
+  await settle();
+  return query();
+}
 
 describe("AdminApp", () => {
   it("does not expose staging observability links for the production API", () => {
@@ -47,8 +26,8 @@ describe("AdminApp", () => {
   });
 
   it("keeps sign out inside the sidebar account menu", async () => {
-    vi.stubGlobal(
-      "fetch",
+    const user = userEvent.setup({ delay: null });
+    const { authRequests } = await mountAdminApp(
       vi.fn(async () =>
         jsonResponse({
           data: [],
@@ -57,9 +36,6 @@ describe("AdminApp", () => {
         })
       )
     );
-    const user = userEvent.setup();
-
-    render(<AdminApp />);
 
     expect(
       screen.queryByRole("menuitem", { name: "Sign out" })
@@ -69,9 +45,142 @@ describe("AdminApp", () => {
         name: "Account menu for owner@example.com",
       })
     );
-    await user.click(await screen.findByRole("menuitem", { name: "Sign out" }));
+    await user.click(
+      await find(() => screen.getByRole("menuitem", { name: "Sign out" }))
+    );
 
-    expect(auth.signOut).toHaveBeenCalledOnce();
+    await settle();
+
+    expect(
+      authRequests.filter((request) => request.path === "/v1/comma/auth/logout")
+    ).toEqual([
+      { body: {}, expected: adminTestSessionId, path: "/v1/comma/auth/logout" },
+    ]);
+    expect(
+      screen.getByRole("heading", { name: "Sign in to Comma" })
+    ).toBeInTheDocument();
+  });
+
+  it("signs in with an emailed code and opens the dashboard", async () => {
+    const user = userEvent.setup({ delay: null });
+    const { advance, authRequests } = await mountAdminApp(
+      vi.fn(async () => jsonResponse({ data: [], has_more: false, next_cursor: null })),
+      {
+        signedIn: false,
+        auth: (path, body) => {
+          if (path === "/v1/comma/auth/email/login") {
+            return jsonResponse({ challenge_id: "challenge_email" });
+          }
+          if (path === "/v1/comma/auth/email/verify") {
+            return (body as { code: string }).code === "123456"
+              ? adminTestSession()
+              : jsonResponse({ error: "invalid_challenge" }, 401);
+          }
+          return undefined;
+        },
+      }
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Sign in to Comma" })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Retry Google sign-in" })
+    ).toBeInTheDocument();
+    await user.click(screen.getByLabelText("Email"));
+    await user.paste("owner@example.com");
+    await user.click(screen.getByRole("button", { name: "Send code" }));
+    await settle();
+
+    expect(
+      screen.getByRole("heading", { name: "Check your email" })
+    ).toBeInTheDocument();
+    expect(screen.getByText("owner@example.com")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Verification code sent.");
+    expect(screen.getByText("Resend in 60s")).toBeInTheDocument();
+    await advance(59_000);
+    expect(screen.getByText("Resend in 1s")).toBeInTheDocument();
+    await advance(1_000);
+    await user.click(screen.getByRole("button", { name: "Resend" }));
+    await settle();
+    expect(screen.getByText("Resend in 60s")).toBeInTheDocument();
+    const code = screen.getByLabelText("Verification code");
+    await user.type(code, "000000");
+    await user.click(screen.getByRole("button", { name: "Verify code" }));
+    await settle();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "That verification code is invalid. Please try again."
+    );
+
+    await user.clear(code);
+    await user.type(code, "123456");
+    await user.click(screen.getByRole("button", { name: "Verify code" }));
+    await settle();
+
+    expect(
+      screen.getByRole("button", { name: "Account menu for owner@example.com" })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Users", level: 1 })
+    ).toBeInTheDocument();
+    expect(
+      authRequests.filter((request) => request.path.startsWith("/v1/comma/auth/email/"))
+    ).toEqual([
+      {
+        body: { email: "owner@example.com" },
+        expected: "none",
+        path: "/v1/comma/auth/email/login",
+      },
+      {
+        body: { email: "owner@example.com" },
+        expected: "none",
+        path: "/v1/comma/auth/email/login",
+      },
+      {
+        body: expect.objectContaining({
+          challenge_id: "challenge_email",
+          code: "000000",
+        }),
+        expected: "none",
+        path: "/v1/comma/auth/email/verify",
+      },
+      {
+        body: expect.objectContaining({
+          challenge_id: "challenge_email",
+          code: "123456",
+        }),
+        expected: "none",
+        path: "/v1/comma/auth/email/verify",
+      },
+    ]);
+  });
+
+  it("signs in with Google's own button", async () => {
+    const user = userEvent.setup({ delay: null });
+    const { authRequests } = await mountAdminApp(
+      vi.fn(async () => jsonResponse({ data: [], has_more: false, next_cursor: null })),
+      { googleCredential: "google-id-token", signedIn: false }
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Continue with Google (test)" })
+    );
+    await settle();
+
+    expect(
+      screen.getByRole("button", { name: "Account menu for owner@example.com" })
+    ).toBeInTheDocument();
+    expect(
+      authRequests.find((request) => request.path === "/v1/comma/auth/google")
+    ).toEqual({
+      body: expect.objectContaining({
+        attempt_id: "google_attempt",
+        credential: "google-id-token",
+        nonce: "google-nonce",
+      }),
+      expected: "none",
+      path: "/v1/comma/auth/google",
+    });
   });
 
   it("supports exact-email pagination and exposes the user operations drawer", async () => {
@@ -278,7 +387,7 @@ describe("AdminApp", () => {
       if (url.pathname === "/v1/comma/admin/billing/redemptions") {
         return jsonResponse({ data: [] });
       }
-      if (url.searchParams.get("email") === "target@example.com") {
+      if (url.searchParams.get("query") === "targ") {
         return jsonResponse({
           data: [
             {
@@ -347,15 +456,14 @@ describe("AdminApp", () => {
         next_cursor: "opaque-page-2",
       });
     });
-    vi.stubGlobal("fetch", fetchMock);
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
+    await mountAdminApp(fetchMock);
 
-    render(<AdminApp />);
-
-    const usersTable = await screen.findByRole("table", { name: "Comma users" });
+    const usersTable = await find(() =>
+      screen.getByRole("table", { name: "Comma users" })
+    );
     expect(within(usersTable).getByText("owner@example.com")).toBeInTheDocument();
-    expect(within(usersTable).getByText("Email OTP")).toBeInTheDocument();
-    expect(within(usersTable).getByText("Google")).toBeInTheDocument();
+    expect(within(usersTable).getByText("Email OTP · Google")).toBeInTheDocument();
     expect(screen.queryByText("Total users")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Comma product" })).toHaveAttribute(
       "href",
@@ -365,107 +473,82 @@ describe("AdminApp", () => {
       "target",
       "_blank"
     );
-    const manageUserButton = screen.getByRole("button", { name: "Manage" });
-    expect(manageUserButton).toHaveClass("bg-button-secondary-bg", "border");
-    await user.click(manageUserButton);
+    await user.click(screen.getByRole("button", { name: "Open owner@example.com" }));
 
-    const dialog = await screen.findByRole("dialog", { name: "Manage user" });
-    expect(within(dialog).getByText("usr_owner")).toBeInTheDocument();
-    expect(within(dialog).getByText("owner@gmail.com")).toBeInTheDocument();
-    expect(within(dialog).getByText("Verified")).toBeInTheDocument();
-    expect(within(dialog).getByText("Support session")).toBeInTheDocument();
-    expect(within(dialog).getByText("Workspace & billing")).toBeInTheDocument();
-
-    const sessionsTask = within(dialog)
-      .getByText("Sessions & devices")
-      .closest("article");
-    expect(sessionsTask).not.toBeNull();
-    await user.click(
-      within(sessionsTask as HTMLElement).getByRole("button", { name: "Open" })
-    );
-
-    expect(await within(dialog).findByText("Web on macOS")).toBeInTheDocument();
-    expect(within(dialog).getByText("Comma Desktop on Windows")).toBeInTheDocument();
-    expect(within(dialog).getByText("Comma SSH")).toBeInTheDocument();
-    expect(within(dialog).getByText("Comma Android app")).toBeInTheDocument();
-    expect(within(dialog).getByText(/Reported Android · Google/)).toBeInTheDocument();
-    expect(within(dialog).getByText("Comma on Apple Watch")).toBeInTheDocument();
+    const userPage = await find(() => screen.getByTestId("admin-user-page"));
+    expect(window.location.search).toBe("?user=usr_owner");
+    expect(within(userPage).getByText("usr_owner")).toBeInTheDocument();
+    expect(within(userPage).getByText(/owner@gmail\.com/)).toBeInTheDocument();
     expect(
-      within(dialog).getByText(/Reported Apple Watch · Paired Watch/)
+      within(userPage).getByRole("button", { name: "Support session" })
+    ).toBeInTheDocument();
+
+    await user.click(within(userPage).getByRole("tab", { name: "Sessions & devices" }));
+    expect(
+      await find(() => within(userPage).getByText("Web on macOS"))
+    ).toBeInTheDocument();
+    expect(within(userPage).getByText("Comma Desktop on Windows")).toBeInTheDocument();
+    expect(within(userPage).getByText("Comma SSH")).toBeInTheDocument();
+    expect(within(userPage).getByText("Comma Android app")).toBeInTheDocument();
+    expect(within(userPage).getByText(/Reported Android · Google/)).toBeInTheDocument();
+    expect(within(userPage).getByText("Comma on Apple Watch")).toBeInTheDocument();
+    expect(
+      within(userPage).getByText(/Reported Apple Watch · Paired Watch/)
     ).toBeInTheDocument();
     expect(
-      within(dialog).getByText(/Reported SSH · SSH public key/)
+      within(userPage).getByText(/Reported SSH · SSH public key/)
     ).toBeInTheDocument();
-    expect(within(dialog).getByText(/labels derived by Comma/)).toBeInTheDocument();
-    expect(within(dialog).getByText(/Reported Web · Google/)).toBeInTheDocument();
+    expect(within(userPage).getByText(/Reported Web · Google/)).toBeInTheDocument();
     expect(
-      within(dialog).getByText(/Reported Desktop · Email OTP/)
+      within(userPage).getByText(/Reported Desktop · Email OTP/)
     ).toBeInTheDocument();
-    expect(within(dialog).queryByText(/comma_sess_/i)).not.toBeInTheDocument();
+    expect(within(userPage).queryByText(/comma_sess_/i)).not.toBeInTheDocument();
 
-    await user.type(
-      within(dialog).getByRole("textbox", { name: "Reason" }),
-      "Remove the stale browser Session"
-    );
-    const webCard = within(dialog).getByText("Web on macOS").closest("article");
+    const webCard = within(userPage).getByText("Web on macOS").closest("article");
     expect(webCard).not.toBeNull();
     await user.click(
       within(webCard as HTMLElement).getByRole("button", { name: "Revoke" })
     );
-
-    let confirmation = await screen.findByRole("dialog", {
-      name: "Revoke this Session?",
-    });
-    await user.type(
-      within(confirmation).getByRole("textbox", { name: /Confirmation/ }),
-      "revoke-session:sess_web"
-    );
-    await user.click(within(confirmation).getByRole("button", { name: "Confirm" }));
+    await find(() => screen.getByRole("dialog", { name: "Revoke this Session?" }));
+    await review(user, "Revoke this Session?", "Remove the stale browser Session");
     expect(
-      await within(dialog).findByText("Revoked Web on macOS.")
+      await find(() => within(userPage).getByText("Revoked Web on macOS."))
     ).toBeInTheDocument();
 
-    await user.type(
-      within(dialog).getByRole("textbox", { name: "Reason" }),
-      "End all remaining Sessions"
-    );
-    const revokeAll = within(dialog).getByRole("button", { name: "Revoke all" });
-    await waitFor(() => expect(revokeAll).toBeEnabled());
+    const revokeAll = within(userPage).getByRole("button", { name: "Revoke all" });
+    await settle();
+    expect(revokeAll).toBeEnabled();
     await user.click(revokeAll);
-
-    confirmation = await screen.findByRole("dialog", {
-      name: "Revoke all Sessions?",
-    });
-    await user.type(
-      within(confirmation).getByRole("textbox", { name: /Confirmation/ }),
-      "revoke-all-sessions:usr_owner"
+    await find(() => screen.getByRole("dialog", { name: "Revoke all Sessions?" }));
+    await review(
+      user,
+      "Revoke all Sessions?",
+      "End all remaining Sessions",
+      "owner@example.com"
     );
-    await user.click(within(confirmation).getByRole("button", { name: "Confirm" }));
     expect(
-      await within(dialog).findByText("Revoked 2 active Sessions.")
+      await find(() => within(userPage).getByText("Revoked 2 active Sessions."))
     ).toBeInTheDocument();
 
-    await user.click(within(dialog).getByRole("button", { name: "Back" }));
-    const workspaceTask = within(dialog)
-      .getByText("Workspace & billing")
-      .closest("article");
-    expect(workspaceTask).not.toBeNull();
+    await user.click(within(userPage).getByRole("tab", { name: "Overview" }));
+    expect(
+      await find(() => within(userPage).getByText("Owner Workspace"))
+    ).toBeInTheDocument();
+    expect(within(userPage).getByText("billing_owner")).toBeInTheDocument();
+    expect(within(userPage).getAllByText("1,200")).toHaveLength(2);
+    expect(within(userPage).getByText("comma_monthly@v1")).toBeInTheDocument();
     await user.click(
-      within(workspaceTask as HTMLElement).getByRole("button", { name: "Open" })
+      within(userPage).getByRole("button", { name: "Apply redeem code" })
     );
 
-    expect(await within(dialog).findByText("Owner Workspace")).toBeInTheDocument();
-    expect(within(dialog).getByText("billing_owner")).toBeInTheDocument();
-    expect(within(dialog).getAllByText("1,200")).toHaveLength(2);
-    expect(within(dialog).getByText("comma_monthly@v1")).toBeInTheDocument();
-    await user.click(within(dialog).getByRole("button", { name: "Apply redeem code" }));
-
     expect(
-      await screen.findByRole("heading", { name: "Redeem codes" })
+      await find(() => screen.getByRole("heading", { name: "Redeem codes" }))
     ).toBeInTheDocument();
-    const applyDrawer = await screen.findByRole("dialog", {
-      name: "Apply redeem code",
-    });
+    const applyDrawer = await find(() =>
+      screen.getByRole("dialog", {
+        name: "Apply redeem code",
+      })
+    );
     expect(applyDrawer).toHaveTextContent("Owner Workspace");
     expect(within(applyDrawer).getByText("wsp_owner")).toBeInTheDocument();
     expect(within(applyDrawer).getByText("billing_owner")).toBeInTheDocument();
@@ -475,24 +558,14 @@ describe("AdminApp", () => {
     expect(
       within(applyDrawer).queryByRole("textbox", { name: "Owner ID" })
     ).not.toBeInTheDocument();
-    await user.type(
-      within(applyDrawer).getByRole("textbox", { name: /Reason/ }),
-      "Apply approved Workspace credit"
-    );
     await user.click(
       within(applyDrawer).getByRole("button", { name: "Review command" })
     );
+    await find(() => screen.getByRole("dialog", { name: "Apply this redeem code?" }));
+    await review(user, "Apply this redeem code?", "Apply approved Workspace credit");
 
-    confirmation = await screen.findByRole("dialog", {
-      name: "Apply this redeem code?",
-    });
-    await user.type(
-      within(confirmation).getByRole("textbox", { name: /Confirmation/ }),
-      "apply-redeem-code:billing_owner"
-    );
-    await user.click(within(confirmation).getByRole("button", { name: "Confirm" }));
-
-    await waitFor(() => {
+    await settle();
+    {
       const applyRequest = fetchMock.mock.calls.find(([input, init]) => {
         const url = new URL(String(input));
         return (
@@ -506,20 +579,23 @@ describe("AdminApp", () => {
         product_owner_id: "wsp_owner",
         product_owner_type: "workspace",
       });
-    });
+    }
 
     await user.click(screen.getByRole("button", { name: "Users" }));
+    await settle();
 
     await user.click(screen.getByRole("button", { name: "Load more" }));
-    expect(await screen.findByText("second@example.com")).toBeInTheDocument();
+    expect(
+      await find(() => screen.getByText("second@example.com"))
+    ).toBeInTheDocument();
 
-    await user.type(
-      screen.getByRole("textbox", { name: "Filter users by email" }),
-      "target@example.com"
-    );
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(screen.getByRole("searchbox", { name: "Search users" }));
+    await user.paste("targ");
+    await user.keyboard("{Enter}");
 
-    expect(await screen.findByText("target@example.com")).toBeInTheDocument();
+    expect(
+      await find(() => screen.getByText("target@example.com"))
+    ).toBeInTheDocument();
     expect(screen.queryByText("second@example.com")).not.toBeInTheDocument();
   }, 10_000);
 
@@ -585,17 +661,17 @@ describe("AdminApp", () => {
 
       return jsonResponse({ error: "not_found" }, 404);
     });
-    vi.stubGlobal("fetch", fetchMock);
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
+    await mountAdminApp(fetchMock);
 
-    render(<AdminApp />);
+    await find(() => screen.getByText("No users found"));
+    await user.click(screen.getByRole("button", { name: "Audit log" }));
 
-    await screen.findByText("No users found");
-    await user.click(screen.getByRole("button", { name: "Audited operations" }));
-
-    const table = await screen.findByRole("table", {
-      name: "Admin audit events",
-    });
+    const table = await find(() =>
+      screen.getByRole("table", {
+        name: "Admin audit events",
+      })
+    );
     expect(within(table).getByText("Revoke user session")).toBeInTheDocument();
     expect(within(table).getByText("owner@example.com")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Audit log" })).toHaveAttribute(
@@ -604,9 +680,11 @@ describe("AdminApp", () => {
     );
 
     await user.click(within(table).getByRole("button", { name: "View audit event" }));
-    const dialog = await screen.findByRole("dialog", {
-      name: "Revoke user session",
-    });
+    const dialog = await find(() =>
+      screen.getByRole("dialog", {
+        name: "Revoke user session",
+      })
+    );
     expect(
       within(dialog).getByText("Remove a stale browser Session")
     ).toBeInTheDocument();
@@ -615,20 +693,23 @@ describe("AdminApp", () => {
 
     await user.click(within(dialog).getByRole("button", { name: "Close" }));
     await user.click(screen.getByRole("button", { name: "Load more" }));
-    expect(await screen.findByText("Create user")).toBeInTheDocument();
+    expect(
+      await find(() => screen.getByText("Create user", { selector: "strong" }))
+    ).toBeInTheDocument();
     await user.click(
       within(screen.getByRole("table", { name: "Admin audit events" }))
         .getAllByRole("button", { name: "View audit event" })
         .at(-1)!
     );
     expect(
-      await screen.findByRole("dialog", { name: "Create user" })
+      await find(() => screen.getByRole("dialog", { name: "Create user" }))
     ).toHaveTextContent("invalid_confirmation");
   });
 
   it("lets operators collapse and restore the dashboard navigation", async () => {
-    vi.stubGlobal(
-      "fetch",
+    const user = userEvent.setup({ delay: null });
+    // The page is wide (the test browser reports no phone width).
+    await mountAdminApp(
       vi.fn(async () => {
         return jsonResponse({
           data: [],
@@ -637,15 +718,8 @@ describe("AdminApp", () => {
         });
       })
     );
-    vi.stubGlobal(
-      "matchMedia",
-      vi.fn(() => ({ matches: false }))
-    );
-    const user = userEvent.setup();
 
-    render(<AdminApp />);
-
-    const dashboard = await screen.findByTestId("admin-app");
+    const dashboard = await find(() => screen.getByTestId("admin-app"));
     expect(dashboard).toHaveAttribute("data-sidebar-collapsed", "false");
 
     await user.click(screen.getByRole("button", { name: "Toggle navigation" }));
@@ -715,21 +789,21 @@ describe("AdminApp", () => {
           return jsonResponse({ error: "not_found" }, 404);
       }
     });
-    vi.stubGlobal("fetch", fetchMock);
-    const user = userEvent.setup();
-
-    render(<AdminApp />);
+    const user = userEvent.setup({ delay: null });
+    await mountAdminApp(fetchMock);
 
     await user.click(screen.getByRole("button", { name: "Redeem codes" }));
-    expect(await screen.findByText("COMMA-LEGACY")).toBeInTheDocument();
+    expect(await find(() => screen.getByText("COMMA-LEGACY"))).toBeInTheDocument();
     expect(screen.getByText("comma_monthly@v1")).toBeInTheDocument();
     expect(screen.getByText(/latest 1 of up to 100 code records/i)).toBeInTheDocument();
 
     const manageCodeButton = screen.getByRole("button", { name: "Manage" });
     expect(manageCodeButton).toHaveClass("bg-button-secondary-bg", "border");
     await user.click(manageCodeButton);
-    const dialog = await screen.findByRole("dialog", { name: "COMMA-LEGACY" });
-    expect(await within(dialog).findByText("billing_1")).toBeInTheDocument();
+    const dialog = await find(() =>
+      screen.getByRole("dialog", { name: "COMMA-LEGACY" })
+    );
+    expect(await find(() => within(dialog).getByText("billing_1"))).toBeInTheDocument();
     expect(within(dialog).getByText("workspace:workspace_1")).toBeInTheDocument();
     expect(
       within(dialog).getByText(/latest 1 of up to 100 scoped records/i)
@@ -753,8 +827,8 @@ describe("AdminApp", () => {
       },
     };
 
-    vi.stubGlobal(
-      "fetch",
+    const user = userEvent.setup({ delay: null });
+    await mountAdminApp(
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = new URL(String(input));
         const method = init?.method ?? "GET";
@@ -794,60 +868,46 @@ describe("AdminApp", () => {
         return jsonResponse({ error: "not_found" }, 404);
       })
     );
-    const user = userEvent.setup();
 
-    render(<AdminApp />);
-
-    await user.click(await screen.findByRole("button", { name: "Manage" }));
-    const dialog = await screen.findByRole("dialog", { name: "Manage user" });
-    const supportTask = within(dialog).getByText("Support session").closest("article");
-    expect(supportTask).not.toBeNull();
     await user.click(
-      within(supportTask as HTMLElement).getByRole("button", { name: "Open" })
+      await find(() =>
+        screen.getByRole("button", { name: "Open support-target@example.com" })
+      )
+    );
+    const userPage = await find(() => screen.getByTestId("admin-user-page"));
+    await user.click(within(userPage).getByRole("button", { name: "Support session" }));
+    const drawer = await find(() =>
+      screen.getByRole("dialog", { name: /^Create support Session$/ })
+    );
+    await user.click(within(drawer).getByRole("button", { name: "Continue…" }));
+    await find(() => screen.getByRole("dialog", { name: "Create support Session?" }));
+    await review(
+      user,
+      "Create support Session?",
+      "Investigate a reported account issue",
+      "support-target@example.com"
     );
 
-    await user.type(
-      within(dialog).getByRole("textbox", { name: /Reason/ }),
-      "Investigate a reported account issue"
-    );
-    await user.click(within(dialog).getByRole("button", { name: "Review command" }));
+    await settle();
+    expect(detailReads).toBe(2);
+    expect(within(userPage).getByText("comma_sess_shown_once")).toBeInTheDocument();
 
-    const confirmation = await screen.findByRole("dialog", {
-      name: "Create support Session?",
-    });
-    await user.type(
-      within(confirmation).getByRole("textbox", { name: /Confirmation/ }),
-      "support-session:usr_support"
-    );
-    await user.click(within(confirmation).getByRole("button", { name: "Confirm" }));
-
-    await waitFor(() => expect(detailReads).toBe(2));
-    expect(within(dialog).getByText("comma_sess_shown_once")).toBeInTheDocument();
+    await user.click(within(userPage).getByRole("button", { name: "Done and clear" }));
     expect(
-      within(dialog).queryByRole("heading", {
-        name: "Record couldn’t be loaded",
-      })
+      within(userPage).queryByText("comma_sess_shown_once")
     ).not.toBeInTheDocument();
-
-    await user.click(within(dialog).getByRole("button", { name: "Done and clear" }));
-    expect(within(dialog).queryByText("comma_sess_shown_once")).not.toBeInTheDocument();
     expect(
-      within(dialog).getByRole("heading", {
-        name: "Record couldn’t be loaded",
+      within(userPage).getByRole("heading", {
+        name: "Account couldn’t be loaded",
       })
     ).toBeInTheDocument();
   });
 
   it("replaces the whole dashboard with server-owned access denial", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => jsonResponse({ error: "forbidden" }, 403))
-    );
-
-    render(<AdminApp />);
+    await mountAdminApp(vi.fn(async () => jsonResponse({ error: "forbidden" }, 403)));
 
     expect(
-      await screen.findByRole("heading", { name: "Admin access required" })
+      await find(() => screen.getByRole("heading", { name: "Admin access required" }))
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("complementary", { name: "Admin navigation" })
@@ -856,15 +916,12 @@ describe("AdminApp", () => {
   });
 
   it("keeps non-operator 403 errors local to the active Admin view", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => jsonResponse({ error: "disabled" }, 403))
-    );
-
-    render(<AdminApp />);
+    await mountAdminApp(vi.fn(async () => jsonResponse({ error: "disabled" }, 403)));
 
     expect(
-      await screen.findByRole("heading", { name: "Users couldn’t be loaded" })
+      await find(() =>
+        screen.getByRole("heading", { name: "Users couldn’t be loaded" })
+      )
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "Admin access required" })
@@ -876,8 +933,8 @@ describe("AdminApp", () => {
 
   it("resets to the first user page when the server rejects a stale cursor", async () => {
     let listCalls = 0;
-    vi.stubGlobal(
-      "fetch",
+    const user = userEvent.setup({ delay: null });
+    await mountAdminApp(
       vi.fn(async (input: RequestInfo | URL) => {
         const url = new URL(String(input));
         if (url.pathname !== "/v1/comma/admin/users") {
@@ -902,18 +959,16 @@ describe("AdminApp", () => {
         });
       })
     );
-    const user = userEvent.setup();
-
-    render(<AdminApp />);
 
     expect(
-      within(await screen.findByRole("table", { name: "Comma users" })).getByText(
-        "owner@example.com"
-      )
+      within(
+        await find(() => screen.getByRole("table", { name: "Comma users" }))
+      ).getByText("owner@example.com")
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Load more" }));
 
-    await waitFor(() => expect(listCalls).toBe(3));
+    await settle();
+    expect(listCalls).toBe(3);
     expect(
       within(screen.getByRole("table", { name: "Comma users" })).getByText(
         "owner@example.com"
@@ -922,10 +977,3 @@ describe("AdminApp", () => {
     expect(screen.getByRole("button", { name: "Load more" })).toBeInTheDocument();
   });
 });
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    headers: { "content-type": "application/json" },
-    status,
-  });
-}

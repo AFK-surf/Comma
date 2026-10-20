@@ -40,3 +40,5 @@ try {
   fs.rmSync(home, {recursive:true, force:true});
 }
 ' "$expected"
+sh "$root/runtime-images/test/silk2wav.sh" "$image"
+sh "$root/runtime-images/test/file-tools.sh" "$image"

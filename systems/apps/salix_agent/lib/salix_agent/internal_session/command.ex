@@ -1,4 +1,6 @@
 defmodule SalixAgent.InternalSession.Command do
+  require SystemsRuntime.Proc
+
   @moduledoc false
 
   alias SalixAgent.{InternalSession, InternalSessionStore}
@@ -120,7 +122,9 @@ defmodule SalixAgent.InternalSession.Command do
   def external_error(reason) when is_list(reason), do: Enum.map(reason, &external_error/1)
 
   def external_error(reason)
-      when is_pid(reason) or is_reference(reason) or is_function(reason) or is_port(reason),
+      when SystemsRuntime.Proc.is_process(reason) or SystemsRuntime.Proc.is_ref(reason) or
+             is_function(reason) or
+             is_port(reason),
       do: diagnostic(reason)
 
   def external_error(reason), do: reason
@@ -154,7 +158,7 @@ defmodule SalixAgent.InternalSession.Command do
     do: {SalixAgent.VisibleReply.authorize(io.agent_id, scope), io}
 
   defp execute({:random, bytes}, io),
-    do: {Base.url_encode64(:crypto.strong_rand_bytes(bytes), padding: false), io}
+    do: {Base.url_encode64(SystemsRuntime.Proc.random_bytes(bytes), padding: false), io}
 
   defp execute({:draft_clear, scope}, io) do
     SalixAgent.VisibleReply.cancel(io.agent_id, io.session_id, scope)

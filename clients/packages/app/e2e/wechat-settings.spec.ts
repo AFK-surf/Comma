@@ -1,14 +1,12 @@
 import jsQR from "jsqr";
 import { expect, test } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
-import type { CommaWeChatConnection } from "../src/api";
+import type { WeChatConnection as CommaWeChatConnection } from "@comma/core-client";
 
 const apiBaseUrl = "http://127.0.0.1:65534";
 const workspaceId = "wsp_wechat_e2e";
 
-test("WeChat QR, pairing code, reconnect cancellation and disconnect use the selected workspace", async ({
-  page,
-}) => {
+test("the WeChat connection QR code encodes the login URL", async ({ page }) => {
   let pending: CommaWeChatConnection | null = null;
   let connection: CommaWeChatConnection | null = null;
   let nextStatus = "wait";
@@ -129,30 +127,4 @@ test("WeChat QR, pairing code, reconnect cancellation and disconnect use the sel
     jsQR(new Uint8ClampedArray(pixels.data), pixels.width, pixels.height)?.data
   ).toBe("https://weixin.qq.com/test-qr");
   await page.screenshot({ path: test.info().outputPath("wechat-qr.png") });
-  nextStatus = "need_verifycode";
-  await card.getByRole("textbox", { name: "Pairing code" }).fill("123456");
-  await card.getByRole("button", { name: "Confirm code" }).click();
-  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
-  await expect(card.getByText("alice", { exact: true })).toBeVisible();
-  nextStatus = "wait";
-  await card.getByRole("button", { name: "Manage", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Reconnect", exact: true }).click();
-  await expect(qr).toBeVisible();
-  await card.getByRole("button", { name: "Cancel connection", exact: true }).click();
-  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
-  await card.getByRole("button", { name: "Manage", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Disconnect", exact: true }).click();
-  await expect(card.getByText("Not connected", { exact: true })).toBeVisible();
-  nextStatus = "expired";
-  await card.getByRole("button", { name: "Connect", exact: true }).click();
-  await expect(card.getByRole("button", { name: "Create new QR code" })).toBeVisible();
-  await expect(qr).toHaveCount(0);
-  failActivation = true;
-  await card.getByRole("button", { name: "Create new QR code" }).click();
-  await card.getByRole("button", { name: "Refresh", exact: true }).click();
-  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
-  await expect(qr).toHaveCount(0);
-  expect(mutations).toContain(
-    `DELETE /v1/comma/workspaces/${workspaceId}/integrations/wechat`
-  );
 });

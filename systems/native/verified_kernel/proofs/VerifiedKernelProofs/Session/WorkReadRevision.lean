@@ -24,6 +24,15 @@ theorem start_captured {agent session : ByteArray} {cursor objectKey : Term}
     exact ⟨keyEq.symm, valid, (Option.some.inj same.1).symm.trans (by rw [keyEq])⟩
   · cases congrArg Prod.fst call
 
+/-- `start_captured` for the start request as the Session domain receives it. A use of
+`start_captured` on this form evaluates the domain dispatch again in each proof. -/
+theorem dispatch_start_captured {agent session : ByteArray} {cursor objectKey : Term}
+    (call : SessionDomain.dispatch none (.tuple [i 1, a "session_read", i 1, a "start",
+      .tuple [.binary agent, .binary session]]) = (some cursor, response (.tuple [a "read", objectKey]))) :
+    objectKey = key agent session ∧ Session.validId (.binary session) "ses1" = true ∧
+      cursor = .tuple [a "session_read_pending", .binary agent, .binary session, objectKey] :=
+  start_captured call
+
 theorem finish_captured {agent session : ByteArray} {objectKey etag state cursor : Term}
     (versioned : (etag == nil) = false)
     (call : finish agent session objectKey etag state = (some cursor, response (.tuple [a "loaded"]))) :
@@ -173,7 +182,7 @@ theorem current_read_preserves {framing : Session.ArchivePublication.CodecFramin
         cursor = (Session.Revision.Cursor.committed state (.binary etag)).pack ∧
         ∀ item, ValueSemantics.Represented snapshot sealed item → ValueSemantics.Represented state sealed item := by
   have stored := read.snapshot_bytes current
-  obtain ⟨keyEq, _, pendingEq⟩ := start_captured started
+  obtain ⟨keyEq, _, pendingEq⟩ := dispatch_start_captured started
   subst objectKey
   rw [pendingEq] at trace
   have ready := codec.ready history.invariant.history.invariant.ready

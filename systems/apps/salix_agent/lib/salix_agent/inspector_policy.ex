@@ -55,7 +55,6 @@ defmodule SalixAgent.InspectorPolicy do
     connects = policy["slack_connect_ids"]
 
     if record["role"] == "worker" and
-         get_in(record, ["runtime_config", "kind"]) in [nil, "internal"] and
          Enum.sort(Map.keys(policy)) ==
            ~w(artifact_root composio_accounts slack_connect_ids) and
          is_map(accounts) and Enum.sort(Map.keys(accounts)) == Enum.sort(@providers) and

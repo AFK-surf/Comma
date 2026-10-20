@@ -1,0 +1,54 @@
+# Client unit test files whose two runs of the determinism proof
+# (scripts/determinism/run-unit.sh: base, and all perturbations at once) did
+# not record the same execution. They run in the deterministic unit suite and
+# stay outside determinism/manifest.txt's @unit entry until the harness gives
+# them one execution; they are fixed in batches by common cause in the
+# harness. A file leaves this list once proven. It grows only on a pull
+# request labeled determinism-list-grow.
+#
+# OnboardingOverlay: "plays once as the screen starts to dim" checks a
+#   different number of times from run to run.
+# AiInput: the first tooltip hovered in a test opens only after a pointer
+#   move in an earlier test (React Aria keeps the input modality for the
+#   document), so a shuffled order fails it.
+# Login, ConversationView: the same input modality decides whether a focused
+#   control shows data-focus-visible.
+# compute-node-recovery, ipc-gateway, driveStore, evidence-store,
+#   conversationChannel, ended-test-timers: node tests read the machine's
+#   clock (Date): the node project has no test clock yet.
+# textReveal, ConversationThread.multimodal, Plugins: names from the
+#   application's own module counters (comma-text-reveal-N, plugin-flight-N)
+#   count what earlier tests of the file made.
+# RecommendationRail: a link an earlier test hovered is previewed when it
+#   renders, not when it is hovered, so the preview's time differs.
+# onboarding-window: Vitest's mock invocationCallOrder counts the calls of
+#   earlier tests.
+# airdrop-vfs-source: memfs inode numbers count the files earlier tests made.
+# audio-capture: records the worker's process id.
+# iroh: its endpoint key comes from native code's own entropy.
+# native-bridge index: zod's lazy `shape` getter becomes a value once an
+#   earlier test reads it.
+# golden: its only test is a placeholder that runs nothing (no golden runs
+#   are kept).
+# stories: some stories' tests make no observation.
+clients/apps/electron/src/main/test/airdrop-vfs-source.test.ts
+clients/apps/electron/src/main/test/audio-capture.test.ts
+clients/apps/electron/src/main/test/compute-node-recovery.test.ts
+clients/apps/electron/src/main/test/ipc-gateway.test.ts
+clients/apps/electron/src/main/test/onboarding-window.test.ts
+clients/packages/app/src/components/chat/conversation/test/ConversationView.test.tsx
+clients/packages/app/src/components/chat/thread/test/ConversationThread.multimodal.test.tsx
+clients/packages/app/src/components/drive/test/driveStore.test.ts
+clients/packages/app/src/components/onboarding/test/OnboardingOverlay.test.tsx
+clients/packages/app/src/components/recommendations/test/RecommendationRail.test.tsx
+clients/packages/app/src/devtools/runtime-workbench/test/evidence-store.test.ts
+clients/packages/core/src/chat/model/test/conversationChannel.test.ts
+clients/packages/core/test/golden.test.ts
+clients/packages/mesh/test/iroh.test.ts
+clients/packages/native-bridge/src/test/index.test.ts
+clients/packages/test-utils/src/test/ended-test-timers.test.ts
+clients/packages/ui/src/components/ai-input/test/AiInput.test.tsx
+clients/packages/ui/src/components/login/test/Login.test.tsx
+clients/packages/ui/src/components/markdown-stream/test/textReveal.test.ts
+clients/packages/ui/src/components/plugins/test/Plugins.test.tsx
+clients/packages/ui/src/storybook/test/stories.test.tsx

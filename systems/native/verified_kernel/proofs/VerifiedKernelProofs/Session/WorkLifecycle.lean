@@ -202,17 +202,17 @@ theorem normalize_work {s t : Term} {j r : List Term}
   obtain ⟨normalized, _, written, h⟩ := bind_ok h
   have queueWritten : normalized.get (a "input_queue") = list kept := by
     iterate 6 obtain ⟨_, written⟩ := write_cons written
-    exact (write_field_frame written rfl).trans (get_put_same _ _ _)
+    exact (write_field_frame written (by keys_absent)).trans (get_put_same _ _ _)
   have ackWritten : normalized.get (a "queue_ack_id") = i ack := by
     iterate 4 obtain ⟨_, written⟩ := write_cons written
-    exact (write_field_frame written rfl).trans (get_put_same _ _ _)
+    exact (write_field_frame written (by keys_absent)).trans (get_put_same _ _ _)
   have nextWritten : normalized.get (a "next_queue_id") = i next := by
     iterate 5 obtain ⟨_, written⟩ := write_cons written
-    exact (write_field_frame written rfl).trans (get_put_same _ _ _)
+    exact (write_field_frame written (by keys_absent)).trans (get_put_same _ _ _)
   have recordsWritten : normalized.get (a "messages") =
       ((Lifecycle.fillDefaults s).get (a "messages")).default (list []) := by
     iterate 18 obtain ⟨_, written⟩ := write_cons written
-    exact (write_field_frame written rfl).trans (get_put_same _ _ _)
+    exact (write_field_frame written (by keys_absent)).trans (get_put_same _ _ _)
   obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨active, _, activityWrite, h⟩ := bind_ok h
   obtain ⟨_, _, _, h⟩ := bind_ok h

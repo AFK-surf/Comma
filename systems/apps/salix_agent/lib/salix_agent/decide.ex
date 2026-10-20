@@ -5,7 +5,7 @@ defmodule SalixAgent.Decide do
   @key ~r/\A[A-Za-z0-9_-]{1,64}\z/
 
   def guidance do
-    "Use decide inside scripts and background Loops that repeatedly classify runtime data or select sources. " <>
+    "Use decide inside scripts and background Loops that repeatedly classify runtime data or select sources.\n\n" <>
       "Complete judgments you can already make in the current conversation yourself. " <>
       "Do not call decide to outsource your reasoning or create a script for one isolated judgment. " <>
       "Its benefit is processing later data without waking you. Handle uncertainty, no match, and errors in the program."
@@ -136,9 +136,14 @@ defmodule SalixAgent.Decide do
     """
   end
 
-  defp admit(ctx, nil), do: SalixAgent.Decide.Limits.admit(ctx.tenant_id, ctx.group_id)
+  # The Condensed Workspace check has its own budget and never waits for it:
+  # a round must not stall on admission, and a refused check means `good`.
+  defp admit(ctx, _deadline, :condensed_workspace),
+    do: SalixAgent.Decide.Limits.admit_scope(ctx.tenant_id, ctx.group_id, :condensed_workspace)
 
-  defp admit(ctx, deadline),
+  defp admit(ctx, nil, _profile), do: SalixAgent.Decide.Limits.admit(ctx.tenant_id, ctx.group_id)
+
+  defp admit(ctx, deadline, _profile),
     do: SalixAgent.Decide.Limits.admit_until(ctx.tenant_id, ctx.group_id, deadline)
 
   def call(args, ctx, opts \\ []) do
@@ -171,14 +176,29 @@ defmodule SalixAgent.Decide do
     )
   end
 
+  @doc """
+  The Condensed Workspace check after a model round
+  (docs/agent-runtime.md#condensed-workspace). It accepts up to 32 KiB of
+  arguments, uses its own per-Group budget, and finishes by `deadline`
+  (monotonic ms).
+  """
+  def condensed_workspace_call(args, ctx, deadline) when is_integer(deadline) do
+    run(args, ctx, deadline,
+      entrypoint: "condensed_workspace",
+      actor_type: "system",
+      profile: :condensed_workspace,
+      deadline: deadline
+    )
+  end
+
   defp run(args, ctx, deadline, metering) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     result =
       with :ok <- validate(args, metering[:profile]),
            {:ok, config} <- config(),
            {:ok, ctx} <- context(ctx),
-           :ok <- admit(ctx, deadline) do
+           :ok <- admit(ctx, deadline, metering[:profile]) do
         SalixAgent.LLM.decide(
           args,
           config
@@ -204,7 +224,7 @@ defmodule SalixAgent.Decide do
       "decide",
       "salix",
       outcome,
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     case result do
@@ -234,21 +254,22 @@ defmodule SalixAgent.Decide do
   defp error_code(_), do: "unavailable"
 
   def config do
-    cfg = Application.get_env(:salix_agent, :decide, [])
+    cfg = SystemsRuntime.get_env(:salix_agent, :decide, [])
     endpoint = Keyword.get(cfg, :endpoint, "https://api.typesafe.ai/v1/systemone")
     key = Keyword.get(cfg, :api_key)
     model = Keyword.get(cfg, :model, "jev-1.13.0")
+    provider = Keyword.get(cfg, :provider, "typesafe")
     uri = if is_binary(endpoint), do: URI.parse(endpoint), else: %URI{}
 
-    if text?(key) and text?(model) and byte_size(model) <= 128 and
-         uri.scheme in ["http", "https"] and text?(uri.host) and is_nil(uri.userinfo) and
-         is_nil(uri.query) and is_nil(uri.fragment) do
+    if text?(key) and text?(model) and byte_size(model) <= 128 and text?(provider) and
+         byte_size(provider) <= 64 and uri.scheme in ["http", "https"] and text?(uri.host) and
+         is_nil(uri.userinfo) and is_nil(uri.query) and is_nil(uri.fragment) do
       {:ok,
        %{
          api_key: key,
          endpoint: endpoint,
          model: model,
-         provider: "typesafe",
+         provider: provider,
          protocol: "decisions"
        }}
     else
@@ -286,7 +307,13 @@ defmodule SalixAgent.Decide do
   def validate(args), do: validate(args, nil)
 
   def validate(args, profile) when is_map(args) do
-    max_args = if profile == :miniskill, do: 64 * 1024, else: @max_args
+    max_args =
+      case profile do
+        :miniskill -> 64 * 1024
+        :condensed_workspace -> 32 * 1024
+        _ -> @max_args
+      end
+
     # The encoded request bounds candidate/question cardinality. The public tool stays at eight.
     max_questions = if profile == :miniskill, do: max_args, else: 8
 

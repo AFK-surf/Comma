@@ -1,0 +1,7 @@
+{
+  "live_asr": {
+    "repository": "AFK-surf/meetnative",
+    "revision": "2a34d33dc03fd5e9be88bac1b7a5b22991963bb7",
+    "path": "elixir/live_asr"
+  }
+}

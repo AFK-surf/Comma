@@ -15,15 +15,4 @@ describe("desktop app prompt", () => {
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
-
-  it("names the feature in a browser", async () => {
-    installNativeBridgeMock({ platform: "web" });
-    render(<DesktopAppPromptHost />);
-
-    act(() => requestDesktopApp("voice"));
-
-    expect(
-      await screen.findByRole("dialog", { name: "Get Comma for Mac" })
-    ).toHaveTextContent("Voice input needs the Comma app for Mac.");
-  });
 });

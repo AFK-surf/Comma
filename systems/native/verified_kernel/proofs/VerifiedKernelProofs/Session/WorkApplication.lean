@@ -134,9 +134,8 @@ inductive AppliedBatch : Term → List Term → Term → Prop where
       (activity : afterEvent s middle e r = .ok (next, rest))
       (tail : AppliedBatch next events final) : AppliedBatch s (e :: events) final
 
-/-- Archive removal and legacy transcript rewriting are outside a materialization batch. -/
+/-- Archive removal is outside a materialization batch. -/
 def Ordinary (events : List Term) : Prop := ∀ e ∈ events,
-  (e.get (b "type") == b "session_microcompact") = false ∧
   (e.get (b "type") == b "archive_advance") = false
 
 theorem applied_batch_extends {s t : Term} {events : List Term}
@@ -145,7 +144,7 @@ theorem applied_batch_extends {s t : Term} {events : List Term}
   | nil => exact extends_refl _
   | @cons s middle next final e events j r rest prepared activity tail ih =>
     have kind := ordinary e (by simp)
-    exact extends_trans (prepare_extends kind.1 kind.2 prepared)
+    exact extends_trans (prepare_extends kind prepared)
       (extends_trans (afterEvent_extends activity)
         (ih (fun event member => ordinary event (List.mem_cons_of_mem _ member))))
 

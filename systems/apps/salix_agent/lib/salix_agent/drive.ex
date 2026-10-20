@@ -75,7 +75,7 @@ defmodule SalixAgent.Drive do
 
   @doc "The bound implementation."
   @spec impl() :: module()
-  def impl, do: Application.get_env(:salix_agent, :drive_mod, __MODULE__.Unconfigured)
+  def impl, do: SystemsRuntime.get_env(:salix_agent, :drive_mod, __MODULE__.Unconfigured)
 
   @doc "True when a product has bound a Drive implementation."
   @spec configured?() :: boolean()

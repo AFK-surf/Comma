@@ -1,5 +1,9 @@
+import { uiClock } from "@comma/ui/clock";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
-import { Button, ChatPanelFile, ContentHeader, CommaLogoAnimation } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { ChatPanelFile } from "@comma/ui/components/chat-panel";
+import { ContentHeader } from "@comma/ui/components/content-header";
+import { CommaLogoAnimation } from "@comma/ui/components/comma-mascot";
 import {
   useCallback,
   useEffect,
@@ -8,7 +12,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { CommaApiClient } from "../../api";
 import type { ConversationFileSource } from "../../runtime-files/fileSources";
 import { ConversationThread } from "../chat/thread/ConversationThread";
 import type {
@@ -16,7 +19,7 @@ import type {
   ChatImagePreviewRef,
   ChatMessage,
   LocalFilePreview,
-} from "../chat/model/conversationChannel";
+} from "@comma/core/chat";
 import {
   InlineTaskLinkAdapterProvider,
   passiveInlineTaskLinkAdapter,
@@ -212,7 +215,6 @@ function SharedTask({
   const routeRef = useRef<HTMLElement | null>(null);
   const fold = useTaskPanelFold(routeRef, true);
   const panelOpen = useTaskPanelOpen(fold);
-  const api = useMemo(() => createShareThreadApi(client), [client]);
   const linkedTask = messages.share_view_linked_task();
   const chatMessages = useMemo(
     () => sharedMessages.map((message) => toChatMessage(message, linkedTask)),
@@ -311,7 +313,7 @@ function SharedTask({
                   {!panelOpen ? files : null}
                 </>
               }
-              api={api}
+              live
               conversationId={SHARE_SCOPE}
               conversationKind="agent_task"
               groupId={SHARE_SCOPE}
@@ -439,32 +441,6 @@ function shareImageAddress(ref: { uuid: string; hash: string }) {
   };
 }
 
-/**
- * The thread reads file bytes only through `fetchConversationAttachment`,
- * addressed by the Message ID it was given (the public sequence). Every other
- * client operation is unavailable to a public reader and rejects.
- */
-function createShareThreadApi(client: PublicShareClient): CommaApiClient {
-  const implemented: Partial<CommaApiClient> = {
-    fetchConversationAttachment: (
-      _groupId,
-      _conversationId,
-      messageId,
-      index,
-      options
-    ) => client.attachment(Number(messageId), index, options?.signal),
-    getMessageContext: async () => [],
-  };
-  return new Proxy(implemented, {
-    get(target, property) {
-      if (property in target) return target[property as keyof CommaApiClient];
-      // Not a thenable, and no other member exists.
-      if (typeof property !== "string" || property === "then") return undefined;
-      return () => Promise.reject(new PublicShareError("unavailable"));
-    },
-  }) as CommaApiClient;
-}
-
 function failureReason(error: unknown): PublicShareFailure {
   return error instanceof PublicShareError ? error.reason : "unavailable";
 }
@@ -478,5 +454,5 @@ function saveBlob(blob: Blob, fileName: string) {
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  uiClock.after(30_000, () => URL.revokeObjectURL(url));
 }

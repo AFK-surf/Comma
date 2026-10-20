@@ -3,9 +3,9 @@ defmodule SalixSignalProto.Crypto.Kyber1024OpensslTest do
   # checked against the CRS-03 vectors and against the plain-Elixir
   # SalixSignalProto.Crypto.Kyber1024. OpenSSL 3.5 or later is required; the
   # release image (Debian trixie) has it. Hosts with an older OpenSSL run
-  # only the "unsupported" test; the test-signal-proto-trixie CI job runs the
-  # rest.
-  use ExUnit.Case, async: true
+  # only the "unsupported" test; test/openssl35_kem.exs runs the rest on a
+  # host that has it.
+  use SystemsClock.Case, async: true
 
   import Bitwise
 
@@ -67,14 +67,16 @@ defmodule SalixSignalProto.Crypto.Kyber1024OpensslTest do
       for keygen <- [:fips203, :round3] do
         {ek, dk} =
           @reference.keypair_from_seed(
-            :crypto.strong_rand_bytes(32),
-            :crypto.strong_rand_bytes(32),
+            SystemsRuntime.Proc.random_bytes(32),
+            SystemsRuntime.Proc.random_bytes(32),
             keygen
           )
 
         assert Kyber1024.encapsulation_key(dk) == {:ok, ek}
 
-        {:ok, {secret, ciphertext}} = @reference.encapsulate(ek, :crypto.strong_rand_bytes(32))
+        {:ok, {secret, ciphertext}} =
+          @reference.encapsulate(ek, SystemsRuntime.Proc.random_bytes(32))
+
         assert Kyber1024.decapsulate(dk, ciphertext) == {:ok, secret}, "#{keygen}"
 
         {:ok, {secret, ciphertext}} = Kyber1024.encapsulate(ek)

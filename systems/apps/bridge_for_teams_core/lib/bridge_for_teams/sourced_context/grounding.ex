@@ -933,7 +933,7 @@ defmodule BridgeForTeams.SourcedContext.Grounding do
   end
 
   defp bound(key, default) do
-    Application.get_env(:bridge_for_teams_core, :sourced_context_bounds, [])
+    SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_bounds, [])
     |> Keyword.get(key, default)
   end
 
@@ -947,7 +947,7 @@ defmodule BridgeForTeams.SourcedContext.Grounding do
 
   defp feature_enabled?(feature) do
     Keyword.get(
-      Application.get_env(:bridge_for_teams_core, :sourced_context_features, []),
+      SystemsRuntime.get_env(:bridge_for_teams_core, :sourced_context_features, []),
       feature,
       false
     )

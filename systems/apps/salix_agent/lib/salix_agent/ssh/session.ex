@@ -22,7 +22,7 @@ defmodule SalixAgent.SSH.Session do
   reason for #{5} minutes, then exits.
   """
 
-  use GenServer, restart: :temporary, shutdown: 5_000
+  use SystemsRuntime.Server, restart: :temporary, shutdown: 5_000
 
   alias SalixAgent.SSH.{Connection, Output}
   alias SalixVerifiedKernel.Terminal
@@ -65,11 +65,11 @@ defmodule SalixAgent.SSH.Session do
     Map.keys(@keys) ++ Map.keys(@cursor_keys) ++ for(c <- ?a..?z, do: "ctrl_" <> <<c>>)
   end
 
-  def start_link(spec), do: GenServer.start_link(__MODULE__, spec)
+  def start_link(spec), do: SystemsRuntime.Server.start_link(__MODULE__, spec)
 
   @doc "Call a session; a session that is gone answers `{:error, :not_found}`."
   def request(pid, message, timeout) do
-    GenServer.call(pid, message, timeout)
+    SystemsClock.call(pid, message, timeout)
   catch
     :exit, {:timeout, _} -> {:error, :busy}
     :exit, _ -> {:error, :not_found}
@@ -79,7 +79,7 @@ defmodule SalixAgent.SSH.Session do
 
   @impl true
   def init(spec) do
-    Process.flag(:trap_exit, true)
+    SystemsRuntime.Proc.trap_exit(true)
     now = now_ms()
 
     state = %{
@@ -87,7 +87,7 @@ defmodule SalixAgent.SSH.Session do
       status: :connecting,
       conn: nil,
       channel: nil,
-      ref: make_ref(),
+      ref: SystemsRuntime.Proc.make_ref(),
       host_key: nil,
       open_error: nil,
       close_reason: nil,
@@ -104,7 +104,7 @@ defmodule SalixAgent.SSH.Session do
       last_data_at: now
     }
 
-    case Registry.register(@registry, key(spec), registry_value(state)) do
+    case SystemsRuntime.Registry.register(@registry, key(spec), registry_value(state)) do
       {:ok, _} -> {:ok, state, {:continue, :connect}}
       {:error, {:already_registered, pid}} -> {:stop, {:already_started, pid}}
     end
@@ -118,7 +118,7 @@ defmodule SalixAgent.SSH.Session do
 
         case start_shell(state) do
           {:ok, channel} ->
-            Process.send_after(self(), :check, @check_ms)
+            SystemsClock.send_after(SystemsRuntime.Proc.self(), :check, @check_ms)
             now = now_ms()
 
             state =
@@ -171,7 +171,7 @@ defmodule SalixAgent.SSH.Session do
   end
 
   defp fail(state, diagnostic) do
-    Process.send_after(self(), :expire, @failed_grace_ms)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :expire, @failed_grace_ms)
     update_registry(%{state | status: :failed, open_error: diagnostic})
   end
 
@@ -299,7 +299,7 @@ defmodule SalixAgent.SSH.Session do
         {:noreply, close(state, "max_lifetime", nil)}
 
       true ->
-        Process.send_after(self(), :check, @check_ms)
+        SystemsClock.send_after(SystemsRuntime.Proc.self(), :check, @check_ms)
         {:noreply, state}
     end
   end
@@ -343,7 +343,7 @@ defmodule SalixAgent.SSH.Session do
 
   defp close(state, reason, detail) do
     safe_close(state.conn)
-    Process.send_after(self(), :expire, @closed_grace_ms)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :expire, @closed_grace_ms)
 
     %{state | status: :closed, close_reason: reason, close_detail: detail}
     |> update_registry()
@@ -402,11 +402,11 @@ defmodule SalixAgent.SSH.Session do
     now = now_ms()
 
     {done, waiting} = Enum.split_with(state.waiters, &done?(&1, state, now))
-    Enum.each(done, &GenServer.reply(&1.from, {:ok, result(state, &1)}))
+    Enum.each(done, &SystemsRuntime.Server.reply(&1.from, {:ok, result(state, &1)}))
     state = %{state | waiters: waiting}
 
     if waiting != [] and not state.tick do
-      Process.send_after(self(), :tick, @tick_ms)
+      SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, @tick_ms)
       %{state | tick: true}
     else
       state
@@ -527,7 +527,10 @@ defmodule SalixAgent.SSH.Session do
   end
 
   defp update_registry(state) do
-    Registry.update_value(@registry, key(state.spec), fn _ -> registry_value(state) end)
+    SystemsRuntime.Registry.update_value(@registry, key(state.spec), fn _ ->
+      registry_value(state)
+    end)
+
     state
   end
 
@@ -538,5 +541,5 @@ defmodule SalixAgent.SSH.Session do
   defp reason_text(reason) when is_binary(reason), do: reason
   defp reason_text(reason), do: inspect(reason)
 
-  defp now_ms, do: System.monotonic_time(:millisecond)
+  defp now_ms, do: SystemsClock.monotonic_time(:millisecond)
 end

@@ -14,7 +14,7 @@ defmodule SalixMeet.Ports.CalendarNotifier do
   def notify(group, event, occurrence_id), do: impl().notify(group, event, occurrence_id)
 
   defp impl,
-    do: Application.get_env(:salix_meet, :calendar_notifier_mod, __MODULE__.None)
+    do: SystemsRuntime.get_env(:salix_meet, :calendar_notifier_mod, __MODULE__.None)
 
   defmodule None do
     @moduledoc false

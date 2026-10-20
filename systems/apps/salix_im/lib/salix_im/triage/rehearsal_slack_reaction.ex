@@ -13,9 +13,9 @@ defmodule SalixIM.Triage.RehearsalSlackReaction do
 
   @spec reset() :: :ok
   def reset do
-    case :ets.whereis(@table) do
+    case SystemsRuntime.ETS.whereis(@table) do
       :undefined -> :ok
-      _table -> :ets.delete(@table)
+      _table -> SystemsRuntime.ETS.delete(@table)
     end
 
     _table = ensure_table()
@@ -26,7 +26,7 @@ defmodule SalixIM.Triage.RehearsalSlackReaction do
   def records do
     @table
     |> ensure_table()
-    |> :ets.tab2list()
+    |> SystemsRuntime.ETS.tab2list()
     |> Enum.map(fn {_obligation_id, record} -> record end)
     |> Enum.sort_by(& &1["obligation_id"])
   end
@@ -61,10 +61,10 @@ defmodule SalixIM.Triage.RehearsalSlackReaction do
 
       table = ensure_table()
 
-      if :ets.insert_new(table, {obligation_id, record}) do
+      if SystemsRuntime.ETS.insert_new(table, {obligation_id, record}) do
         {:ok, %{already_reacted: false}}
       else
-        case :ets.lookup(table, obligation_id) do
+        case SystemsRuntime.ETS.lookup(table, obligation_id) do
           [{^obligation_id, ^record}] -> {:ok, %{already_reacted: true}}
           _conflict -> {:error, :reaction_idempotency_conflict, false}
         end
@@ -79,10 +79,10 @@ defmodule SalixIM.Triage.RehearsalSlackReaction do
     do: {:error, :invalid_product_obligation, false}
 
   defp ensure_table(_ignored \\ nil) do
-    case :ets.whereis(@table) do
+    case SystemsRuntime.ETS.whereis(@table) do
       :undefined ->
         try do
-          :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+          SystemsRuntime.ETS.new(@table, [:named_table, :public, :set, read_concurrency: true])
         rescue
           ArgumentError -> @table
         end

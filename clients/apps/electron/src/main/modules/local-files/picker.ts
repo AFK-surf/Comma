@@ -66,17 +66,22 @@ const JPEG_HEADER_SCAN_MAX_BYTES = 1024 * 1024;
 const JPEG_HEADER_SCAN_MAX_SEGMENTS = 1_024;
 const allowNonChatLocalFileRegistration = () => {};
 
-type OpenDialog = (options: {
-  properties: Array<"multiSelections" | "openFile">;
-}) => Promise<{ canceled: boolean; filePaths: string[] }>;
+type OpenDialog = (
+  options: { properties: Array<"multiSelections" | "openFile"> },
+  /** The window the dialog is a sheet on (absent: the native caller's). */
+  ownerWebContentsId?: number
+) => Promise<{ canceled: boolean; filePaths: string[] }>;
 
 /**
  * A parentless panel opens modeless at the normal window level: behind Side
  * Chat's floating panel and, because that panel does not activate Comma, behind
  * the active app. A sheet on the calling window stays in front of it.
  */
-const openDialogOnCallerWindow: OpenDialog = (options) => {
-  const caller = webContents.fromId(getCurrentNativeCallerContext().webContentsId);
+const openDialogOnCallerWindow: OpenDialog = (
+  options,
+  ownerWebContentsId = getCurrentNativeCallerContext().webContentsId
+) => {
+  const caller = webContents.fromId(ownerWebContentsId);
   const owner = caller && BrowserWindow.fromWebContents(caller);
   return owner ? dialog.showOpenDialog(owner, options) : dialog.showOpenDialog(options);
 };
@@ -93,8 +98,14 @@ type CreatePreviewImage = (bytes: Buffer) => PreviewImage;
 export type ChatAttachmentPickInput = Readonly<{
   sources?: ChatAttachmentSource[];
   assertLocalFileRegistrationAllowed: () => void;
+  /** The chat intake the files are for: the core checks it before each registration request. */
+  localFileIntakeId?: string;
+  /** Asks the draft's owner (the client core) again whether files may still be registered for it. */
+  refreshLocalFileRegistration?: () => Promise<void>;
   /** Invoked once the native dialog resolves, before any intake work runs. */
   onDialogClosed?: () => void;
+  /** The window the dialog opens on (a pick the client core asked for); absent: the native caller's. */
+  dialogOwnerWebContentsId?: number;
   maxFiles: number;
   maxTotalSize: number;
   maxUploadFiles: number;
@@ -128,7 +139,10 @@ export interface LocalFilePickerProvider {
   pick(input: LocalFilesPickInput): Promise<LocalFilesPickResult>;
   pickForChat(input: ChatAttachmentPickInput): Promise<ChatAttachmentPickResult>;
   preview(input: LocalFilesPreviewInput): Promise<LocalFilesPreviewResult>;
-  renderImagePreview(input: ChatImagePreviewInput): Promise<Uint8Array>;
+  renderImagePreview(
+    input: ChatImagePreviewInput,
+    signal?: AbortSignal
+  ): Promise<Uint8Array>;
 }
 
 /**
@@ -190,20 +204,22 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
     }
   }
 
-  async renderImagePreview(input: ChatImagePreviewInput): Promise<Uint8Array> {
-    const admission = getCurrentNativeSessionAdmission();
+  /**
+   * A preview of image bytes. Within a native call it ends with the call's session; the client core's asks (outside
+   * any call: it fences late answers itself) pass their own `signal`.
+   */
+  async renderImagePreview(
+    input: ChatImagePreviewInput,
+    signal: AbortSignal = getCurrentNativeSessionAdmission().credential.signal
+  ): Promise<Uint8Array> {
     if (
       input.bytes.byteLength === 0 ||
       input.bytes.byteLength > chatAttachmentUploadMaxBytes
     ) {
       throw previewUnavailable();
     }
-    return this.#previewWorkQueue.run(admission.credential.signal, () =>
-      this.#renderImagePreview(
-        Buffer.from(input.bytes),
-        input.mediaType,
-        admission.credential.signal
-      )
+    return this.#previewWorkQueue.run(signal, () =>
+      this.#renderImagePreview(Buffer.from(input.bytes), input.mediaType, signal)
     );
   }
 
@@ -373,7 +389,10 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
     this.#registrar.prewarm?.(input.workspaceId);
     const selected = input.sources
       ? { canceled: false, filePaths: [] }
-      : await this.#openDialog({ properties: ["openFile", "multiSelections"] });
+      : await this.#openDialog(
+          { properties: ["openFile", "multiSelections"] },
+          input.dialogOwnerWebContentsId
+        );
     input.onDialogClosed?.();
     if (selected.canceled) return { cancelled: true, errors: [], items: [] };
 
@@ -516,11 +535,13 @@ export class LocalFilePickerService implements LocalFilePickerProvider {
         continue;
       }
       try {
+        await input.refreshLocalFileRegistration?.();
         input.assertLocalFileRegistrationAllowed();
         await this.#registrar.register(
           input.workspaceId,
           candidate.file,
-          input.assertLocalFileRegistrationAllowed
+          input.assertLocalFileRegistrationAllowed,
+          input.localFileIntakeId
         );
         items.push(candidate);
       } catch (error) {

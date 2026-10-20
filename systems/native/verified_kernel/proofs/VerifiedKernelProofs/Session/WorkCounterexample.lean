@@ -1,4 +1,6 @@
 import VerifiedKernelProofs.Session.WorkProtocol
+import VerifiedKernelProofs.Session.AppendOnly.SeqCore
+import VerifiedKernelProofs.Session.DurableConfirmation
 
 namespace VerifiedKernel.Session.WorkConservation.Counterexample
 open Data

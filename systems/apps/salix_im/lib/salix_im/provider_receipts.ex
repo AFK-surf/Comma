@@ -293,6 +293,20 @@ defmodule SalixIM.ProviderReceipts do
   def delete_feishu(connect_id, message_id),
     do: delete(Keys.ctl_im_feishu_event_receipt(connect_id, message_id))
 
+  def record_lark(connect_id, message_id),
+    do: record(Keys.ctl_im_lark_event_receipt(connect_id, message_id), connect_id, message_id)
+
+  @doc "True when a Lark message already has its receipt."
+  def lark_recorded?(connect_id, message_id) do
+    case CasRecord.get(Keys.ctl_im_lark_event_receipt(connect_id, message_id)) do
+      {:ok, _receipt} -> true
+      _missing -> false
+    end
+  end
+
+  def delete_lark(connect_id, message_id),
+    do: delete(Keys.ctl_im_lark_event_receipt(connect_id, message_id))
+
   defp record(key, connect_id, event_id) do
     event_id = trim(event_id)
 
@@ -310,6 +324,8 @@ defmodule SalixIM.ProviderReceipts do
   end
 
   defp slack_triage_recheck_receipt(authority, verified_message, occurrence) do
+    verified_message = withhold_bearer_text(verified_message)
+
     with true <- exact_keys?(authority, @slack_triage_authority_keys),
          true <- exact_keys?(verified_message, @verified_recheck_message_keys),
          true <- exact_keys?(occurrence, @recheck_occurrence_keys),
@@ -337,6 +353,8 @@ defmodule SalixIM.ProviderReceipts do
   end
 
   defp slack_triage_clickhouse_receipt(authority, verified_message, cursor_revision) do
+    verified_message = withhold_bearer_text(verified_message)
+
     with true <- exact_keys?(authority, @slack_triage_authority_keys),
          true <- exact_keys?(verified_message, @verified_clickhouse_message_keys),
          true <- valid_slack_triage_authority?(authority),
@@ -347,6 +365,14 @@ defmodule SalixIM.ProviderReceipts do
       _other -> {:error, :invalid_slack_triage_clickhouse_message}
     end
   end
+
+  # Owner decision: Bearer spans never enter a Triage receipt, so admission
+  # checks, sealed events and every later hash see only the withheld form.
+  defp withhold_bearer_text(%{"text" => text} = message) when is_binary(text),
+    do:
+      Map.put(message, "text", SalixIM.Triage.IdentityContract.withhold_bearer_credentials(text))
+
+  defp withhold_bearer_text(message), do: message
 
   defp slack_triage_receipt(authority, verified, endpoint_revision, source_mode) do
     captured_at_ms = now()
@@ -832,7 +858,7 @@ defmodule SalixIM.ProviderReceipts do
     }
 
     objects
-    |> Task.async_stream(&read_slack_triage_receipt/1,
+    |> SystemsClock.async_stream(&read_slack_triage_receipt/1,
       ordered: true,
       max_concurrency: @triage_receipt_read_concurrency,
       timeout: @triage_receipt_read_timeout,
@@ -1062,5 +1088,5 @@ defmodule SalixIM.ProviderReceipts do
   defp trim(nil), do: ""
   defp trim(value) when is_binary(value), do: String.trim(value)
   defp trim(value), do: value |> to_string() |> String.trim()
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 end

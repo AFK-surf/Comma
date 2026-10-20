@@ -32,15 +32,21 @@ const taskMoreIconOverlayClassName = "size-4";
  * that pass a function receive that same trigger so it can sit with other
  * hover actions instead of covering them. The wrapper stays mounted when
  * Archive comes and goes so the wrapped row does not remount.
+ *
+ * `overlay="task-card"` places the button on a wrapped TaskCard's title line
+ * and makes the title leave it room (task-board.css); the default keeps it in
+ * the corner.
  */
 export function TaskArchiveMenu({
   action: taskAction,
   children,
   inline = false,
+  overlay = "corner",
 }: {
   action?: TaskArchiveAction | undefined;
   children: TaskArchiveMenuChildren;
   inline?: boolean;
+  overlay?: "corner" | "task-card";
 }) {
   const action = taskAction?.disabledReason ? undefined : taskAction;
   const Wrapper = inline ? "span" : "div";
@@ -81,6 +87,9 @@ export function TaskArchiveMenu({
   return (
     <Wrapper
       data-slot={inline ? "task-archive-menu" : undefined}
+      data-task-card-action={
+        overlay === "task-card" && action && !placeTrigger ? "" : undefined
+      }
       className={`group/task-actions relative min-w-0${inline ? " inline-block" : ""}`}
       onContextMenu={(event) => {
         if (action) {
@@ -91,7 +100,15 @@ export function TaskArchiveMenu({
     >
       {content}
       {placeTrigger || !action ? null : (
-        <span className="absolute right-0.5 top-0.5">{trigger}</span>
+        <span
+          className={
+            overlay === "task-card"
+              ? "comma-task-card-action"
+              : "absolute right-0.5 top-0.5"
+          }
+        >
+          {trigger}
+        </span>
       )}
     </Wrapper>
   );
@@ -113,6 +130,10 @@ function ArchiveMenuTrigger({
   setOpen: (open: boolean) => void;
 }) {
   const messages = useCommaMessages();
+  // Lists render a trigger per Task; the menu mounts with its first opening
+  // and stays mounted so it can animate out.
+  const [opened, setOpened] = useState(open);
+  if (open && !opened) setOpened(true);
 
   return (
     <MenuTrigger isOpen={open} onOpenChange={setOpen}>
@@ -124,18 +145,20 @@ function ArchiveMenuTrigger({
       >
         <MoreHorizontalIcon className={iconClassName} />
       </Button>
-      <MenuPopover placement="bottom end">
-        <Menu aria-label={messages.tasks_archive()} onAction={onRun}>
-          <MenuItem
-            id="archive"
-            icon={<ArchiveIcon />}
-            isDisabled={pending}
-            textValue={messages.tasks_archive()}
-          >
-            {messages.tasks_archive()}
-          </MenuItem>
-        </Menu>
-      </MenuPopover>
+      {opened ? (
+        <MenuPopover placement="bottom end">
+          <Menu aria-label={messages.tasks_archive()} onAction={onRun}>
+            <MenuItem
+              id="archive"
+              icon={<ArchiveIcon />}
+              isDisabled={pending}
+              textValue={messages.tasks_archive()}
+            >
+              {messages.tasks_archive()}
+            </MenuItem>
+          </Menu>
+        </MenuPopover>
+      ) : null}
     </MenuTrigger>
   );
 }

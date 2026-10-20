@@ -1,6 +1,8 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import { getNativeBridge } from "@comma/native-bridge";
-import { MediaVolumeControl, motionDuration } from "@comma/ui";
+import { MediaVolumeControl } from "@comma/ui/components/chat-panel";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
+import { motionDuration } from "@comma/ui/tokens";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import clickSoundUrl from "./assets/onboarding-click.webm";
 import introSoundUrl from "./assets/onboarding-intro.webm";
@@ -49,7 +51,7 @@ const passiveKeys = new Set([
  * Both play at the user's volume times a gain read once from the Mac's output
  * volume (`loudOutputGain` above `loudOutput`); the intro waits for that read,
  * which Main starts as it creates the window, so it never starts loud and then
- * drops. Where the volume cannot be read (the web) the gain is 1.
+ * drops. Where the volume cannot be read (off macOS) the gain is 1.
  */
 export function useOnboardingSound({
   ending,
@@ -128,7 +130,7 @@ export function useOnboardingSound({
     if (!play || !gainKnown || !audio) return undefined;
     const target = audio.ownerDocument;
     let active = true;
-    let retry: number | undefined;
+    let retry: CancelUiTimer | undefined;
     const gestures = ["keydown", "pointerup"] as const;
     const stopWaiting = () => {
       for (const type of gestures) target.removeEventListener(type, onGesture, true);
@@ -152,15 +154,15 @@ export function useOnboardingSound({
     function onGesture(event: Event) {
       if (event instanceof KeyboardEvent && passiveKeys.has(event.key)) return;
       stopWaiting();
-      retry = window.setTimeout(() => {
+      retry = uiClock.after(0, () => {
         if (active && !endingRef.current) start(false);
-      }, 0);
+      });
     }
     start(true);
     return () => {
       active = false;
       stopWaiting();
-      window.clearTimeout(retry);
+      retry?.();
       audio.pause();
     };
   }, [gainKnown, play]);
@@ -171,15 +173,15 @@ export function useOnboardingSound({
     if (!ending || !audio || audio.paused) return undefined;
     const from = audio.volume;
     let startedAt: number | undefined;
-    let frame = requestAnimationFrame(function fade(now) {
+    let frame = uiClock.frame(function fade(now) {
       // Counted from the first frame: a frame's time can precede this effect.
       startedAt ??= now;
       const progress = Math.min(1, (now - startedAt) / motionDuration.onboardingExit);
       audio.volume = from * (1 - progress) ** 2;
-      if (progress < 1) frame = requestAnimationFrame(fade);
+      if (progress < 1) frame = uiClock.frame(fade);
       else audio.pause();
     });
-    return () => cancelAnimationFrame(frame);
+    return () => frame();
   }, [ending]);
 
   return { audioRef, click, setVolume, src: introSoundUrl, toggleMuted, volume };

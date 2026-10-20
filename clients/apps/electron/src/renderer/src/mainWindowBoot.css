@@ -1,0 +1,9 @@
+/* Centres the logo animation on the window background. */
+.comma-main-window-boot {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  /* The window has no title bar until the application draws its own. */
+  -webkit-app-region: drag;
+}

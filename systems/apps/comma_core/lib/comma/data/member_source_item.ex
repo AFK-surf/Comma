@@ -14,6 +14,7 @@ defmodule Comma.Data.MemberSourceItem do
     field(:excerpt, :string, default: "")
     field(:context, :map)
     field(:prompt_context, :string, default: "")
+    field(:quote, :map)
     field(:relationship, :string)
     field(:recipient, :string)
     field(:facts, :map, default: %{})

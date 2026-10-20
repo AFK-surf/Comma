@@ -15,7 +15,7 @@ defmodule CommaWeb.RecommendationEvidenceIntegrationTest do
       {:ok,
        %{
          "successful" => true,
-         "data" => Application.fetch_env!(:comma_web, :recommendation_evidence_provider_data)
+         "data" => SystemsRuntime.fetch_env!(:comma_web, :recommendation_evidence_provider_data)
        }}
     end
   end
@@ -27,14 +27,14 @@ defmodule CommaWeb.RecommendationEvidenceIntegrationTest do
       :recommendation_evidence_provider_data
     ]
 
-    previous = Map.new(keys, &{&1, Application.get_env(:comma_web, &1)})
-    Application.put_env(:comma_web, :recommendation_composio_client_mod, Client)
-    Application.put_env(:comma_web, :recommendation_composio_settings_mod, Settings)
+    previous = Map.new(keys, &{&1, SystemsRuntime.get_env(:comma_web, &1)})
+    SystemsRuntime.put_env(:comma_web, :recommendation_composio_client_mod, Client)
+    SystemsRuntime.put_env(:comma_web, :recommendation_composio_settings_mod, Settings)
 
     on_exit(fn ->
       Enum.each(previous, fn
-        {key, nil} -> Application.delete_env(:comma_web, key)
-        {key, value} -> Application.put_env(:comma_web, key, value)
+        {key, nil} -> SystemsRuntime.delete_env(:comma_web, key)
+        {key, value} -> SystemsRuntime.put_env(:comma_web, key, value)
       end)
     end)
 
@@ -45,7 +45,7 @@ defmodule CommaWeb.RecommendationEvidenceIntegrationTest do
     urls = for index <- 0..279, do: "https://linear.app/cm/CM-#{pad(index)}"
     target_url = List.last(urls)
 
-    Application.put_env(:comma_web, :recommendation_evidence_provider_data, %{
+    SystemsRuntime.put_env(:comma_web, :recommendation_evidence_provider_data, %{
       "issues" => %{
         "nodes" => Enum.map(urls, &%{"url" => &1})
       },
@@ -54,7 +54,8 @@ defmodule CommaWeb.RecommendationEvidenceIntegrationTest do
 
     {:ok, user} =
       Comma.Accounts.create_user(%{
-        "email" => "recommendation-evidence-#{System.unique_integer([:positive])}@comma.test"
+        "email" =>
+          "recommendation-evidence-#{SystemsRuntime.Proc.unique_integer([:positive])}@comma.test"
       })
 
     workspace = create_active_workspace!(user)
@@ -134,7 +135,7 @@ defmodule CommaWeb.RecommendationEvidenceIntegrationTest do
           "title" => "Linear"
         }
       ],
-      "generatedAt" => System.system_time(:millisecond),
+      "generatedAt" => SystemsClock.system_time(:millisecond),
       "generation" => run["generation"],
       "protocolVersion" => 1,
       "sourceRevision" => run["sourceRevision"],
@@ -161,7 +162,7 @@ defmodule CommaWeb.RecommendationEvidenceIntegrationTest do
     workspace =
       %Workspace{}
       |> Workspace.changeset(%{
-        id: "wsp-recommendation-evidence-#{System.unique_integer([:positive])}",
+        id: "wsp-recommendation-evidence-#{SystemsRuntime.Proc.unique_integer([:positive])}",
         owner_user_id: user["id"],
         salix_tenant_id: tenant_id,
         salix_group_id: group_id,

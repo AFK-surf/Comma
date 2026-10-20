@@ -9,11 +9,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -44,10 +44,16 @@ func TestModelsAdapterUsesSDKAndBodyCredential(t *testing.T) {
 					t.Errorf("wrong SDK request method or authentication")
 				}
 				if provider == "codex" {
-					if r.URL.Path != "/backend-api/codex/models" || r.URL.Query().Get("client_version") != "0.153.3" || r.Header.Get("Originator") != "codex_cli_rs" || !strings.Contains(r.UserAgent(), "0.153.3") || r.Header.Get("Chatgpt-Account-Id") != "body-account" {
+					if r.URL.Path != "/backend-api/codex/models" || r.Header.Get("Originator") != "codex_cli_rs" || r.UserAgent() != "codex_cli_rs/"+r.URL.Query().Get("client_version") || r.Header.Get("Chatgpt-Account-Id") != "body-account" {
 						t.Error("missing Codex discovery contract")
 					}
-					fmt.Fprint(w, `{"models":[{"slug":"live-codex","display_name":"Live Codex","input_modalities":["text","image"]}]}`)
+					// The provider selects the catalog by client version. Version 0.153.3
+					// omitted the Sol models; 0.159.0 lists them.
+					if r.URL.Query().Get("client_version") != "0.159.0" {
+						fmt.Fprint(w, `{"models":[{"slug":"legacy-model"}]}`)
+						return
+					}
+					fmt.Fprint(w, `{"models":[{"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","input_modalities":["text","image"]},{"slug":"gpt-6-sol","display_name":"GPT-6-Sol","input_modalities":["text","image"]}]}`)
 				} else {
 					if r.URL.Path != "/v1/models" || r.Header.Get("anthropic-beta") != "oauth-2025-04-20" || r.Header.Get("anthropic-version") != "2023-06-01" || r.URL.Query().Get("limit") != "1000" {
 						t.Error("missing Claude discovery contract")
@@ -58,8 +64,17 @@ func TestModelsAdapterUsesSDKAndBodyCredential(t *testing.T) {
 			body, _ := json.Marshal(Credential{Provider: provider, Credentials: map[string]any{"tokens": map[string]any{"access_token": "synthetic-body", "refresh_token": "must-not-refresh", "expired": "2000-01-01T00:00:00Z", "account_id": "body-account", "base_url": "https://untrusted.invalid", "headers": map[string]string{"Authorization": "wrong"}}}})
 			got := call("/models", string(body))
 			var listing modelListing
-			if got.Code != 200 || json.Unmarshal(got.Body.Bytes(), &listing) != nil || len(listing.Data) != 1 || listing.Data[0].ID != "live-"+provider || !listing.Data[0].SupportsImages || listing.Truncated || calls != 1 {
+			wantIDs := []string{"live-claude"}
+			if provider == "codex" {
+				wantIDs = []string{"gpt-6.1-sol", "gpt-6-sol"}
+			}
+			if got.Code != 200 || json.Unmarshal(got.Body.Bytes(), &listing) != nil || len(listing.Data) != len(wantIDs) || listing.Truncated || calls != 1 {
 				t.Fatalf("result=%+v body=%s calls=%d", got, got.Body, calls)
+			}
+			for i, model := range listing.Data {
+				if model.ID != wantIDs[i] || !model.SupportsImages {
+					t.Fatalf("wrong discovered model: %+v", model)
+				}
 			}
 			if !strings.Contains(got.Body.String(), `"supports_images":true`) {
 				t.Fatal("missing explicit capability")
@@ -123,39 +138,42 @@ func TestModelsPaginationAndLimits(t *testing.T) {
 			`{"data":[{"id":"e"}],"has_more":true,"last_id":"e"}`}, want: 5, truncated: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			calls := 0
-			a := &auth.Auth{Provider: tc.provider, Metadata: map[string]any{"access_token": "synthetic"}}
-			e := modelsExecutor{request: func(ctx context.Context, got *auth.Auth, req *http.Request) (*http.Response, error) {
-				if got != a {
-					t.Fatal("credential replaced")
+			// The bubble's clock stands still, so the deadline is exactly the bound.
+			synctest.Test(t, func(t *testing.T) {
+				calls := 0
+				a := &auth.Auth{Provider: tc.provider, Metadata: map[string]any{"access_token": "synthetic"}}
+				e := modelsExecutor{request: func(ctx context.Context, got *auth.Auth, req *http.Request) (*http.Response, error) {
+					if got != a {
+						t.Fatal("credential replaced")
+					}
+					deadline, ok := ctx.Deadline()
+					if !ok || time.Until(deadline) > 15*time.Second || req.Context() != ctx {
+						t.Fatal("missing shared bounded context")
+					}
+					if calls >= len(tc.pages) {
+						t.Fatal("unbounded pagination")
+					}
+					if tc.name == "complete Claude" && calls == 1 && req.URL.Query().Get("after_id") != "cursor /?&" {
+						t.Fatal("cursor not encoded")
+					}
+					body := tc.pages[calls]
+					calls++
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+				}}
+				got, err := queryModels(context.Background(), e, a)
+				if (err != nil) != tc.fail || (!tc.fail && (len(got.Data) != tc.want || got.Truncated != tc.truncated || got.Data == nil)) {
+					t.Fatalf("got=%+v err=%v", got, err)
 				}
-				deadline, ok := ctx.Deadline()
-				if !ok || time.Until(deadline) > 15*time.Second || req.Context() != ctx {
-					t.Fatal("missing shared bounded context")
+				if tc.fail && len(got.Data) != 0 {
+					t.Fatal("partial success on failed listing")
 				}
-				if calls >= len(tc.pages) {
-					t.Fatal("unbounded pagination")
+				if calls != len(tc.pages) {
+					t.Fatalf("calls=%d", calls)
 				}
-				if tc.name == "complete Claude" && calls == 1 && req.URL.Query().Get("after_id") != "cursor /?&" {
-					t.Fatal("cursor not encoded")
+				if tc.name == "complete Claude" && got.Data[1].Name != "b" {
+					t.Fatal("missing name fallback")
 				}
-				body := tc.pages[calls]
-				calls++
-				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
-			}}
-			got, err := queryModels(context.Background(), e, a)
-			if (err != nil) != tc.fail || (!tc.fail && (len(got.Data) != tc.want || got.Truncated != tc.truncated || got.Data == nil)) {
-				t.Fatalf("got=%+v err=%v", got, err)
-			}
-			if tc.fail && len(got.Data) != 0 {
-				t.Fatal("partial success on failed listing")
-			}
-			if calls != len(tc.pages) {
-				t.Fatalf("calls=%d", calls)
-			}
-			if tc.name == "complete Claude" && got.Data[1].Name != "b" {
-				t.Fatal("missing name fallback")
-			}
+			})
 		})
 	}
 	for _, n := range []int{1000, 1001} {
@@ -228,16 +246,19 @@ func TestModelsResponseBudgetAndCancellation(t *testing.T) {
 	if err == nil || calls != 2 {
 		t.Fatalf("aggregate budget: calls=%d err=%v", calls, err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	_, err = queryModelsWithRequester(ctx, &auth.Auth{Provider: "codex"}, func(ctx context.Context, _ *auth.Auth, _ *http.Request) (*http.Response, error) {
-		<-ctx.Done()
-		return nil, errors.New("secret-token")
+	// On the bubble's clock the listing ends exactly at its deadline.
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		_, err := queryModelsWithRequester(ctx, &auth.Auth{Provider: "codex"}, func(ctx context.Context, _ *auth.Auth, _ *http.Request) (*http.Response, error) {
+			<-ctx.Done()
+			return nil, errors.New("secret-token")
+		})
+		if err == nil || err.Error() != "models_unavailable" || time.Since(start) != 20*time.Millisecond {
+			t.Fatalf("cancellation after %v: %v", time.Since(start), err)
+		}
 	})
-	if err == nil || err.Error() != "models_unavailable" || time.Since(start) > time.Second {
-		t.Fatalf("cancellation: %v", err)
-	}
 }
 
 func TestModelsRedirectCannotDispatchCredentialToAnotherURL(t *testing.T) {
@@ -264,25 +285,26 @@ func TestModelsRedirectCannotDispatchCredentialToAnotherURL(t *testing.T) {
 }
 
 func TestModelsDeadlineDuringResponseBody(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"models":[`)
-		w.(http.Flusher).Flush()
-		<-r.Context().Done()
-	}))
-	defer server.Close()
-	u, _ := url.Parse(server.URL)
-	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", &rewriteTransport{url: u, handler: http.DefaultTransport})
-	ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-	defer cancel()
-	e, err := cliproxy.NewSubscriptionExecutor("codex")
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	_, err = queryModels(ctx, e, &auth.Auth{Provider: "codex", Metadata: map[string]any{"access_token": "synthetic"}})
-	if err == nil || err.Error() != "models_unavailable" || time.Since(start) > time.Second {
-		t.Fatalf("body deadline: %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		upstream := memoryTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"models":[`)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		})}
+		u, _ := url.Parse("http://upstream.test")
+		ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", &rewriteTransport{url: u, handler: upstream})
+		ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+		e, err := cliproxy.NewSubscriptionExecutor("codex")
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		_, err = queryModels(ctx, e, &auth.Auth{Provider: "codex", Metadata: map[string]any{"access_token": "synthetic"}})
+		if err == nil || err.Error() != "models_unavailable" || time.Since(start) != 50*time.Millisecond {
+			t.Fatalf("body deadline after %v: %v", time.Since(start), err)
+		}
+	})
 }
 
 func TestModelsCodexFiltersAvailabilityAndPreservesDeclaredCapabilities(t *testing.T) {

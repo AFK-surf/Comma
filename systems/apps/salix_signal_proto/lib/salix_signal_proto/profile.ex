@@ -43,7 +43,7 @@ defmodule SalixSignalProto.Profile do
 
   @doc "A new random profile key (CRS-08 section 2)."
   @spec generate() :: profile_key()
-  def generate, do: :crypto.strong_rand_bytes(32)
+  def generate, do: SystemsRuntime.Proc.random_bytes(32)
 
   @doc """
   The access key: one AES-256 block operation on `0x00 * 15 || 0x02` with
@@ -277,5 +277,5 @@ defmodule SalixSignalProto.Profile do
     if :binary.at(binary, size - 1) == 0, do: count_kept(binary, size - 1), else: size
   end
 
-  defp random_nonce, do: :crypto.strong_rand_bytes(@nonce_bytes)
+  defp random_nonce, do: SystemsRuntime.Proc.random_bytes(@nonce_bytes)
 end

@@ -1,5 +1,8 @@
 import { act, renderHook } from "@testing-library/react";
-import { chordKeybinding, sequenceKeybinding } from "@comma/ui";
+import {
+  chordKeybinding,
+  sequenceKeybinding,
+} from "@comma/ui/components/settings-shortcut";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDefaultAppShortcutBindings,

@@ -34,8 +34,8 @@ func TestGenerateValidBundle(t *testing.T) {
 	if manifest.SchemaVersion != 3 || manifest.SourceRevision != "release-7" {
 		t.Fatalf("manifest = %#v", manifest)
 	}
-	if len(manifest.Images) != 3 {
-		t.Fatalf("images = %d, want 3", len(manifest.Images))
+	if len(manifest.Images) != len(requiredClasses) {
+		t.Fatalf("images = %d, want %d", len(manifest.Images), len(requiredClasses))
 	}
 	for index, image := range manifest.Images {
 		if image.Class != requiredClasses[index] {

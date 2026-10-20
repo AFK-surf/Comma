@@ -6,10 +6,11 @@ defmodule SalixEnv.ConnectorTokens do
   group-scoped device/connector identity. Group existence and public server URL
   are supplied through ports by the composition host.
 
-  Modeled in `tla/connector/ConnectorCredentialFence.tla`: mint reservation,
-  revoke high-water fencing, exact owner-stop confirmation, and legacy
+  Mint reservation, revoke high-water fencing, exact owner-stop confirmation, and legacy
   predecessor migration are one durable retryable protocol.
   """
+
+  require Logger
 
   alias SalixEnv.Ports.{GroupDirectory, PublicURL}
   alias SalixEnv.Registry
@@ -43,7 +44,7 @@ defmodule SalixEnv.ConnectorTokens do
         group_id,
         tenant_id,
         %{
-          "name" => "Cloud Workspace",
+          "default_name" => "Cloud Workspace",
           "alias" => "cloud-vm",
           "meta" => %{"kind" => "cloud_vm", "provider" => rec["provider"]}
         },
@@ -74,7 +75,10 @@ defmodule SalixEnv.ConnectorTokens do
           :user -> "conn_" <> random_id()
         end
 
-      name = nonblank(attrs["name"], "Group Connector")
+      # A name the minter chose is the device's name; `/v1/connect` keeps it
+      # over the name the client dials with. A defaulted one yields to it.
+      pinned_name = nonblank(attrs["name"], nil)
+      name = pinned_name || nonblank(attrs["default_name"], "Group Connector")
       alias_name = nonblank(attrs["alias"], name)
 
       with {:ok, credential_generation, _device, reservation} <-
@@ -101,6 +105,7 @@ defmodule SalixEnv.ConnectorTokens do
             "expires_at" => expires_at
           }
           |> put_scope(scope)
+          |> then(fn rec -> if pinned_name, do: Map.put(rec, "pinned_name", true), else: rec end)
           |> then(fn rec ->
             if registration_expires_at,
               do: Map.put(rec, "registration_expires_at", registration_expires_at),
@@ -109,6 +114,7 @@ defmodule SalixEnv.ConnectorTokens do
 
         case put_new(Keys.ctl_connector_token(token_hash), rec) do
           {:ok, _} ->
+            if owner == :user, do: sweep_devices(rec)
             {:ok, connector_token_response(rec, raw)}
 
           {:error, _} = token_error ->
@@ -302,6 +308,78 @@ defmodule SalixEnv.ConnectorTokens do
   end
 
   def revoke_connector_token(_token_hash, _device_id, _group_id, _tenant_id), do: :ok
+
+  @doc """
+  Revoke every credential of a stable device record before the device is
+  deleted, when the caller does not hold a token hash. Revocations whose owner
+  stop is still pending are retried first, then the connected run is revoked so
+  its socket is stopped, then the latest reserved generation fences every
+  older one. Any unconfirmed stop fails the call, so the device record and its
+  pending stop targets stay as the retry handle. Token records are named only
+  by their hash, so they stay behind as rows that can no longer connect.
+  """
+  @spec revoke_device_credentials(map()) :: :ok | {:error, term()}
+  def revoke_device_credentials(device) when is_map(device) do
+    scope = {device["tenant_id"], device["group_id"], device["device_id"]}
+
+    (pending_device_credentials(device) ++
+       [
+         {device["connector_id"],
+          device["status"] == "connected" && device["credential_generation"]},
+         {device["active_connector_id"], device["latest_credential_generation"]}
+       ])
+    |> Enum.filter(fn
+      {:legacy, connector_id} -> nonblank?(connector_id)
+      {connector_id, generation} -> nonblank?(connector_id) and positive?(generation)
+    end)
+    |> Enum.uniq()
+    |> Enum.reduce_while(:ok, fn credential, :ok ->
+      case revoke_device_credential(scope, credential) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp pending_device_credentials(%{"pending_connector_revocations" => pending})
+       when is_map(pending) do
+    pending
+    |> Enum.sort()
+    |> Enum.flat_map(fn
+      {"legacy:" <> connector_id, _targets} ->
+        [{:legacy, connector_id}]
+
+      {generation, targets} ->
+        connector_id =
+          targets |> List.wrap() |> Enum.find_value(&(is_map(&1) && &1["connector_id"]))
+
+        case Integer.parse(generation) do
+          {generation, ""} -> [{connector_id, generation}]
+          _ -> []
+        end
+    end)
+  end
+
+  defp pending_device_credentials(_device), do: []
+
+  defp revoke_device_credential({tenant_id, group_id, device_id}, {:legacy, connector_id}) do
+    with {:ok, _device, stop_targets} <-
+           Registry.revoke_legacy_connector_credential(
+             tenant_id,
+             group_id,
+             device_id,
+             connector_id
+           ),
+         :ok <- stop_revoked_owners(stop_targets) do
+      Registry.confirm_legacy_connector_revocation(tenant_id, group_id, device_id, connector_id)
+    end
+  end
+
+  defp revoke_device_credential({tenant_id, group_id, device_id}, {connector_id, generation}),
+    do: revoke_generation(tenant_id, group_id, device_id, connector_id, generation)
+
+  defp nonblank?(value), do: is_binary(value) and value != ""
+  defp positive?(value), do: is_integer(value) and value > 0
 
   @doc """
   Finish one generation-bearing credential's revocation after an operator has
@@ -532,6 +610,100 @@ defmodule SalixEnv.ConnectorTokens do
     end
   end
 
+  # A client that minted a device and revoked its credential before it ever
+  # connected (a restart, a refused or failed connection) leaves that device in
+  # the workspace's list. Its owner's next mint on the same surface removes
+  # them, and removes the group's expired devices; the mint itself never
+  # depends on this cleanup.
+  defp sweep_devices(%{"meta" => %{"owner_user_id" => owner, "surface" => surface}} = rec)
+       when is_binary(owner) and owner != "" and is_binary(surface) and surface != "" do
+    case Registry.sweep_devices(
+           rec["tenant_id"],
+           rec["group_id"],
+           owner,
+           surface,
+           rec["device_id"]
+         ) do
+      {:ok, %{expired: expired}} ->
+        Enum.each(expired, &remove_expired_device/1)
+
+      {:error, reason} ->
+        Logger.warning(
+          "connector devices not swept: group=#{rec["group_id"]} reason=#{inspect(reason)}"
+        )
+    end
+  end
+
+  defp sweep_devices(_rec), do: :ok
+
+  defp remove_expired_device(device) do
+    with {:ok, current} <-
+           Registry.get_device(device["tenant_id"], device["group_id"], device["device_id"]),
+         true <- Registry.expired_device?(current, SystemsClock.system_time(:millisecond)),
+         {:error, reason} <- remove_device(current) do
+      Logger.warning(
+        "expired device not removed: group=#{device["group_id"]} reason=#{inspect(reason)}"
+      )
+    end
+  end
+
+  @doc """
+  Permanently remove one stable device: revoke every credential it holds
+  (`revoke_device_credentials/1`), then delete its record and current run.
+  Settings device removal, device expiry and the one-time duplicate cleanup
+  all take this path.
+  """
+  @spec remove_device(map()) :: :ok | {:error, term()}
+  def remove_device(device) when is_map(device) do
+    with :ok <- revoke_device_credentials(device),
+         {:ok, _record} <-
+           Registry.delete_device(device["tenant_id"], device["group_id"], device["device_id"]) do
+      :ok
+    end
+  end
+
+  @doc """
+  One-time cleanup of a group's duplicate devices: remove each offline device
+  `Registry.superseded_devices/1` selects. Before removal each device is read
+  again and must still be selected. A device that cannot be removed is kept
+  and reported in `failed`.
+  """
+  @spec remove_superseded_devices(String.t(), String.t()) ::
+          {:ok, %{removed: [String.t()], failed: [{String.t(), term()}]}} | {:error, term()}
+  def remove_superseded_devices(tenant_id, group_id) do
+    with {:ok, records} <- Registry.list_by_group(group_id) do
+      records = Enum.filter(records, &(&1["tenant_id"] == tenant_id))
+      selected = records |> Registry.superseded_devices() |> MapSet.new(& &1["device_id"])
+
+      result =
+        Enum.reduce(selected, %{removed: [], failed: []}, fn device_id, acc ->
+          case remove_superseded_device(records, tenant_id, group_id, device_id) do
+            :ok -> %{acc | removed: [device_id | acc.removed]}
+            :kept -> acc
+            {:error, reason} -> %{acc | failed: [{device_id, reason} | acc.failed]}
+          end
+        end)
+
+      {:ok, %{removed: Enum.sort(result.removed), failed: Enum.reverse(result.failed)}}
+    end
+  end
+
+  defp remove_superseded_device(records, tenant_id, group_id, device_id) do
+    with {:ok, current} <- Registry.get_device(tenant_id, group_id, device_id) do
+      others = Enum.reject(records, &(&1["device_id"] == device_id))
+
+      if Enum.any?(
+           Registry.superseded_devices([current | others]),
+           &(&1["device_id"] == device_id)
+         ),
+         do: remove_device(current),
+         else: :kept
+    else
+      {:error, :not_found} -> :kept
+      {:error, _} = error -> error
+    end
+  end
+
   defp connector_token_meta(meta) when is_map(meta) do
     meta
     |> stringify_keys()
@@ -607,26 +779,12 @@ defmodule SalixEnv.ConnectorTokens do
 
   defp revoke_record(%{"credential_generation" => generation} = record, token_hash)
        when is_integer(generation) and generation > 0 do
-    tenant_id = record["tenant_id"]
-    group_id = record["group_id"]
-    device_id = record["device_id"]
-    connector_id = record["connector_id"]
-
-    with {:ok, _device, stop_target} <-
-           Registry.revoke_connector_credential(
-             tenant_id,
-             group_id,
-             device_id,
-             connector_id,
-             generation
-           ),
-         :ok <- stop_revoked_owners(stop_target),
-         :ok <-
-           Registry.confirm_connector_revocation(
-             tenant_id,
-             group_id,
-             device_id,
-             connector_id,
+    with :ok <-
+           revoke_generation(
+             record["tenant_id"],
+             record["group_id"],
+             record["device_id"],
+             record["connector_id"],
              generation
            ) do
       delete_token_record(token_hash)
@@ -671,6 +829,26 @@ defmodule SalixEnv.ConnectorTokens do
   end
 
   defp revoke_record(_malformed_legacy_record, token_hash), do: delete_token_record(token_hash)
+
+  defp revoke_generation(tenant_id, group_id, device_id, connector_id, generation) do
+    with {:ok, _device, stop_target} <-
+           Registry.revoke_connector_credential(
+             tenant_id,
+             group_id,
+             device_id,
+             connector_id,
+             generation
+           ),
+         :ok <- stop_revoked_owners(stop_target) do
+      Registry.confirm_connector_revocation(
+        tenant_id,
+        group_id,
+        device_id,
+        connector_id,
+        generation
+      )
+    end
+  end
 
   defp stop_revoked_owners(targets) when is_list(targets) do
     Enum.reduce(targets, :ok, fn target, result ->
@@ -828,8 +1006,8 @@ defmodule SalixEnv.ConnectorTokens do
     do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
 
   defp token_hash(raw), do: :crypto.hash(:sha256, raw) |> Base.encode16(case: :lower)
-  defp random_id, do: :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
-  defp now, do: System.system_time(:second)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(16) |> Base.url_encode64(padding: false)
+  defp now, do: SystemsClock.system_time(:second)
   defp trim(nil), do: ""
   defp trim(value), do: value |> to_string() |> String.trim()
 end

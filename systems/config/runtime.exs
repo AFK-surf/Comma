@@ -8,7 +8,9 @@ if config_env() == :dev do
 end
 
 config :salix_agent,
-  snapshot_recovery_enabled: System.get_env("COMMA_SNAPSHOT_RECOVERY_ENABLED") == "true"
+  snapshot_recovery_enabled: System.get_env("COMMA_SNAPSHOT_RECOVERY_ENABLED") == "true",
+  # The user agent LMHub admits this deployment by (SalixAgent.ProviderAdapters).
+  lmhub_user_agent: System.get_env("SALIX_LMHUB_USER_AGENT")
 
 agent_vmm_gateway = %{
   url_template: System.get_env("SALIX_AGENT_VMM_GATEWAY_URL_TEMPLATE"),
@@ -450,47 +452,6 @@ if :alert_router in enabled and config_env() != :test do
     config :alert_router, :grafana_webhook, secret: grafana_secret
     config :alert_router, :github_webhook, secret: github_secret
 
-    # Independently activated, read-only canonical-log consumer. No Agent
-    # persistence or ACK path depends on these settings or the alert database.
-    runtime_field = fn key, env ->
-      SalixStore.ConfigJson.string(salix_config, ["alert_router", "runtime_log", key]) ||
-        System.get_env(env)
-    end
-
-    runtime_enabled =
-      SalixStore.ConfigJson.boolean(salix_config, ~w(alert_router runtime_log enabled)) == true or
-        System.get_env("ALERT_ROUTER_RUNTIME_LOG_ENABLED") == "true"
-
-    config :alert_router, :runtime_log,
-      enabled: runtime_enabled,
-      bucket: runtime_field.("bucket", "ALERT_ROUTER_RUNTIME_LOG_BUCKET"),
-      environment: runtime_field.("environment", "ALERT_ROUTER_RUNTIME_LOG_ENVIRONMENT"),
-      cluster: runtime_field.("cluster", "ALERT_ROUTER_RUNTIME_LOG_CLUSTER"),
-      start_at: runtime_field.("start_at", "ALERT_ROUTER_RUNTIME_LOG_START_AT")
-
-    config :alert_router, :runtime_storage_push,
-      audience: runtime_field.("push_audience", "ALERT_ROUTER_RUNTIME_STORAGE_PUSH_AUDIENCE"),
-      service_account_email:
-        runtime_field.(
-          "push_service_account_email",
-          "ALERT_ROUTER_RUNTIME_STORAGE_PUSH_SERVICE_ACCOUNT_EMAIL"
-        )
-
-    # Dedicated read-only credentials, not the business runtime's write identity.
-    # Source configuration failure affects its jobs/ingress, not core readiness.
-    if runtime_enabled and :salix not in enabled do
-      for {field, env, key} <- [
-            {"storage_endpoint", "ALERT_ROUTER_RUNTIME_STORAGE_ENDPOINT", :s3_endpoint},
-            {"bucket", "ALERT_ROUTER_RUNTIME_LOG_BUCKET", :s3_bucket},
-            {"storage_access_key_id", "ALERT_ROUTER_RUNTIME_STORAGE_ACCESS_KEY_ID",
-             :s3_access_key_id},
-            {"storage_secret_access_key", "ALERT_ROUTER_RUNTIME_STORAGE_SECRET_ACCESS_KEY",
-             :s3_secret_access_key}
-          ] do
-        config :salix_store, [{key, runtime_field.(field, env)}]
-      end
-    end
-
     # Optional, independently activated source. Credentials stay on the server.
     config :alert_router, :posthog_webhook,
       secret:
@@ -521,7 +482,7 @@ default_comma_allowed_origins =
       ["https://app-staging.comma.surf", "https://admin-staging.comma.surf"]
 
     _local_or_test ->
-      Application.get_env(:comma_web, :allowed_origins, [])
+      SystemsRuntime.get_env(:comma_web, :allowed_origins, [])
   end
 
 default_comma_web_cookie_origin =
@@ -533,7 +494,7 @@ default_comma_web_cookie_origin =
       "https://app-staging.comma.surf"
 
     _local_or_test ->
-      Application.fetch_env!(:comma_web, :web_cookie_origin)
+      SystemsRuntime.fetch_env!(:comma_web, :web_cookie_origin)
   end
 
 default_comma_admin_cookie_origin =
@@ -545,7 +506,7 @@ default_comma_admin_cookie_origin =
       "https://admin-staging.comma.surf"
 
     _local_or_test ->
-      Application.fetch_env!(:comma_web, :admin_cookie_origin)
+      SystemsRuntime.fetch_env!(:comma_web, :admin_cookie_origin)
   end
 
 comma_allowed_origins =
@@ -635,18 +596,28 @@ config :comma_web,
   web_cookie_origin: comma_web_cookie_origin,
   admin_cookie_origin: comma_admin_cookie_origin
 
-# The Routine generation job renders a briefing from server-collected facts.
-# Unset, a member briefing uses the workspace Router's template and a generic
-# briefing the worker's; set, it uses this template regardless of either, so
-# the briefing model and its provider quota are chosen for that task alone.
-comma_recommendation_template_id =
-  case System.get_env("COMMA_RECOMMENDATION_TEMPLATE_ID") ||
-         SalixStore.ConfigJson.string(salix_config, ~w(comma recommendations template_id)) do
-    value when is_binary(value) and value != "" -> String.trim(value)
-    _ -> nil
-  end
+# Station device tools travel over each station's presence socket by default.
+# COMMA_STATION_TOOLS_TRANSPORT=gateway switches them to the gateway below.
+if System.get_env("COMMA_STATION_TOOLS_TRANSPORT") == "gateway" do
+  config :comma_web, :station_tools_transport, :gateway
+end
 
-config :comma_web, recommendation_template_id: comma_recommendation_template_id
+# With the gateway transport, station device tools reach stations through the separate station
+# gateway service (systems/gateway/comma-station-gateway). The chart always
+# passes the gateway's in-cluster URL and reads its token from the gateway's
+# Secret when that Secret exists, so deploying the gateway turns the tools on.
+# A URL without a token means the gateway is not deployed: tools stay off.
+case {System.get_env("COMMA_STATION_GATEWAY_URL", ""),
+      System.get_env("COMMA_STATION_GATEWAY_TOKEN", "")} do
+  {_url, ""} ->
+    :ok
+
+  {url, token} when url != "" and byte_size(token) >= 32 ->
+    config :comma_web, :station_gateway, url: String.trim_trailing(url, "/"), token: token
+
+  _ ->
+    raise "COMMA_STATION_GATEWAY_TOKEN needs COMMA_STATION_GATEWAY_URL and at least 32 bytes"
+end
 
 # Comma product Telegram DM ingress is opt-in. Webhook registration remains an
 # explicit release operation (`mix comma.telegram.webhook --apply`); boot and
@@ -750,6 +721,41 @@ if comma_telegram_enabled? do
   config :salix_im, telegram_api_base_url: telegram_api_base_url
 end
 
+# Comma as a Linear agent is opt-in. One Linear OAuth application per
+# deployment represents Comma; its webhook signing secret authenticates the
+# `AgentSessionEvent` pushes. See docs/tools-integrations.md.
+comma_linear_agent_enabled? =
+  System.get_env("COMMA_LINEAR_AGENT_ENABLED") == "true" or
+    SalixStore.ConfigJson.get(salix_config, ~w(comma linear_agent enabled)) == true
+
+if comma_linear_agent_enabled? do
+  linear_value = fn env_name, key ->
+    case System.get_env(env_name) ||
+           SalixStore.ConfigJson.string(salix_config, ["comma", "linear_agent", key]) do
+      value when is_binary(value) and value != "" -> String.trim(value)
+      _ -> raise "#{env_name} is required when the Comma Linear agent is enabled"
+    end
+  end
+
+  linear_public_base_url = linear_value.("COMMA_LINEAR_AGENT_PUBLIC_BASE_URL", "public_base_url")
+  linear_base_uri = URI.parse(linear_public_base_url)
+  linear_schemes = if local_comma_environment?, do: ["http", "https"], else: ["https"]
+
+  unless linear_base_uri.scheme in linear_schemes and is_binary(linear_base_uri.host) and
+           linear_base_uri.host != "" and is_nil(linear_base_uri.userinfo) and
+           linear_base_uri.path in [nil, ""] and is_nil(linear_base_uri.query) and
+           is_nil(linear_base_uri.fragment) do
+    raise "COMMA_LINEAR_AGENT_PUBLIC_BASE_URL must be a bare #{Enum.join(linear_schemes, "/")} origin"
+  end
+
+  config :comma_web, :linear_agent,
+    enabled: true,
+    client_id: linear_value.("COMMA_LINEAR_AGENT_CLIENT_ID", "client_id"),
+    client_secret: linear_value.("COMMA_LINEAR_AGENT_CLIENT_SECRET", "client_secret"),
+    webhook_secret: linear_value.("COMMA_LINEAR_AGENT_WEBHOOK_SECRET", "webhook_secret"),
+    public_base_url: String.trim_trailing(linear_public_base_url, "/")
+end
+
 # One shared iMessage relay, disabled until its operator selects an identity.
 comma_imessage_enabled? =
   System.get_env("COMMA_IMESSAGE_ENABLED") == "true" or
@@ -784,6 +790,31 @@ if comma_imessage_enabled? do
     shared_identity:
       System.get_env("COMMA_IMESSAGE_SHARED_IDENTITY") ||
         SalixStore.ConfigJson.string(salix_config, ~w(comma imessage shared_identity)) || "Comma"
+end
+
+# Photon (Spectrum Cloud) shared lines: the second Comma iMessage transport.
+# Disabled until an operator configures a Photon project for this deployment.
+comma_photon_enabled? =
+  System.get_env("COMMA_PHOTON_ENABLED") == "true" or
+    SalixStore.ConfigJson.get(salix_config, ~w(comma photon enabled)) == true
+
+if comma_photon_enabled? do
+  photon_value = fn name, key ->
+    case System.get_env(name) ||
+           SalixStore.ConfigJson.string(salix_config, ["comma", "photon", key]) do
+      value when is_binary(value) and value != "" -> String.trim(value)
+      _ -> raise "#{name} is required when Comma Photon iMessage is enabled"
+    end
+  end
+
+  config :salix_im, :imessage_photon,
+    enabled: true,
+    project_id: photon_value.("COMMA_PHOTON_PROJECT_ID", "project_id"),
+    api_key: photon_value.("COMMA_PHOTON_API_KEY", "api_key"),
+    webhook_secret: photon_value.("COMMA_PHOTON_WEBHOOK_SECRET", "webhook_secret"),
+    identity:
+      System.get_env("COMMA_PHOTON_IDENTITY") ||
+        SalixStore.ConfigJson.string(salix_config, ~w(comma photon identity)) || "Comma"
 end
 
 # OAuth/OIDC IdP endpoint flag (docs/identity-security.md). Off by
@@ -910,12 +941,39 @@ if is_binary(comma_database_url) do
     telemetry_prefix: [:comma, :repo]
 end
 
+# Serving Comma nodes export to the configured PostHog project automatically.
+# Release jobs do not send product observations.
+config :comma_core, :analytics,
+  api_key:
+    if(:comma_product in enabled and System.get_env("COMMA_RELEASE_JOB") != "1",
+      do: SalixStore.ConfigJson.string(salix_config, ~w(comma analytics api_key))
+    ),
+  host: SalixStore.ConfigJson.string(salix_config, ~w(comma analytics host)),
+  environment: comma_environment,
+  internal_email_domains:
+    SalixStore.ConfigJson.get(salix_config, ~w(comma analytics internal_email_domains)) ||
+      ~w(cue.surf comma.surf),
+  excluded_user_ids:
+    SalixStore.ConfigJson.get(salix_config, ~w(comma analytics excluded_user_ids))
+    |> List.wrap()
+    |> Enum.filter(&is_binary/1)
+
 comma_apple_client_id =
   SalixStore.ConfigJson.string(salix_config, ~w(comma apple_auth client_id)) ||
     System.get_env("COMMA_APPLE_CLIENT_ID")
 
 if is_binary(comma_apple_client_id) and comma_apple_client_id != "" do
   config :comma_core, :apple_auth, client_id: comma_apple_client_id
+end
+
+# A Cloudflare TURN key lets screen stream peers on different networks connect.
+comma_screen_stream_turn =
+  for key <- ~w(key_id api_token)a do
+    {key, SalixStore.ConfigJson.string(salix_config, ["comma", "screen_stream_turn", "#{key}"])}
+  end
+
+if Enum.all?(comma_screen_stream_turn, fn {_key, value} -> is_binary(value) and value != "" end) do
+  config :comma_core, :screen_stream_turn, comma_screen_stream_turn
 end
 
 comma_google_web_client_id =
@@ -1013,6 +1071,111 @@ case System.get_env("COMMA_OAUTH_IDP_KEK") do
         raise "COMMA_OAUTH_IDP_KEK must be exactly 32 bytes, base64-encoded"
     end
 end
+
+# Station control plane (Comma.Stations). Every setting has a default
+# (Comma.Stations.Config): the signing-key KEK falls back to one derived from
+# the subscription storage key, the origin to the request's own.
+station_list = fn name ->
+  (System.get_env(name) || "")
+  |> String.split(",", trim: true)
+  |> Enum.map(&String.trim/1)
+  |> Enum.reject(&(&1 == ""))
+end
+
+station_origin =
+  case System.get_env("COMMA_STATION_ORIGIN") do
+    value when value in [nil, ""] ->
+      nil
+
+    value ->
+      origin = String.trim_trailing(value, "/")
+
+      unless Regex.match?(~r{\Ahttps?://[A-Za-z0-9.-]+(:[0-9]+)?\z}, origin),
+        do: raise("COMMA_STATION_ORIGIN must be a bare http(s) origin, got: #{inspect(value)}")
+
+      origin
+  end
+
+station_kek =
+  case System.get_env("COMMA_STATION_SIGNING_KEK") do
+    value when value in [nil, ""] ->
+      nil
+
+    encoded ->
+      case Base.decode64(encoded) do
+        {:ok, kek} when byte_size(kek) == 32 -> kek
+        _ -> raise "COMMA_STATION_SIGNING_KEK must be exactly 32 bytes, base64-encoded"
+      end
+  end
+
+# The gateway's own node id, derived from its secret key when the chart mounts
+# it, is admitted without listing it in COMMA_STATION_GATEWAY_KEYS.
+station_gateway_keys =
+  case System.get_env("COMMA_STATION_GATEWAY_SECRET_KEY", "") |> String.trim() do
+    "" ->
+      station_list.("COMMA_STATION_GATEWAY_KEYS")
+
+    secret ->
+      case Base.decode16(secret, case: :mixed) do
+        {:ok, <<seed::binary-size(32)>>} ->
+          {public, _private} = :crypto.generate_key(:eddsa, :ed25519, seed)
+
+          Enum.uniq(
+            station_list.("COMMA_STATION_GATEWAY_KEYS") ++ [Base.encode16(public, case: :lower)]
+          )
+
+        _ ->
+          raise "COMMA_STATION_GATEWAY_SECRET_KEY must be 64 hex characters"
+      end
+  end
+
+unless Enum.all?(station_gateway_keys, &Regex.match?(~r/\A[0-9a-f]{64}\z/, &1)),
+  do: raise("COMMA_STATION_GATEWAY_KEYS must be comma-separated 64-hex iroh node ids")
+
+station_release_manifest =
+  case System.get_env("COMMA_STATION_RELEASE_MANIFEST") do
+    value when value in [nil, ""] ->
+      nil
+
+    json ->
+      case Jason.decode(json) do
+        {:ok, %{"version" => version} = manifest} when is_binary(version) -> manifest
+        _ -> raise "COMMA_STATION_RELEASE_MANIFEST must be a JSON object with a string version"
+      end
+  end
+
+station_release_base =
+  case System.get_env("COMMA_STATION_RELEASE_BASE_URL") do
+    value when value in [nil, ""] ->
+      nil
+
+    value ->
+      base = String.trim_trailing(value, "/")
+
+      unless Regex.match?(~r{\Ahttps://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?\z}, base),
+        do: raise("COMMA_STATION_RELEASE_BASE_URL must be an https URL without query")
+
+      base
+  end
+
+config :comma_core,
+       :stations,
+       [
+         origin: station_origin,
+         relay_urls: station_list.("COMMA_STATION_RELAY_URLS"),
+         gateway_keys: station_gateway_keys,
+         release_manifest: station_release_manifest,
+         release_manifest_url: System.get_env("COMMA_STATION_RELEASE_MANIFEST_URL"),
+         release_base_url: station_release_base,
+         # User devices of members who use stations run station sessions and
+         # get the station installer (on unless set to "false").
+         device_cutover: System.get_env("COMMA_STATIONS_DEVICE_CUTOVER") != "false"
+       ]
+       |> Enum.reject(fn {_key, value} -> value in [nil, "", []] end)
+
+# Salix keeps the keys that sign member credentials (SalixStore.Stations),
+# those copied from Comma among them, sealed under this KEK.
+if station_kek, do: config(:salix_store, :stations, kek: station_kek)
 
 if :comma_product in enabled do
   comma_profile_avatar_bucket =
@@ -1475,6 +1638,108 @@ if :salix in enabled do
             3_600_000
       ]
 
+    # Feishu message mirror and its search. Default on wherever ClickHouse is
+    # configured; `feishu_mirror.enabled: false` is the kill switch for ingest,
+    # backfill and search. Coverage is the app's chat membership and scopes.
+    # Design: docs/tools-integrations.md
+    feishu_mirror_enabled? =
+      SalixStore.ConfigJson.boolean(salix_config, ~w(feishu_mirror enabled)) != false
+
+    config :salix_analytics,
+      feishu_mirror: [
+        batch_size:
+          SalixStore.ConfigJson.integer(salix_config, ~w(feishu_mirror batch_size)) || 200
+      ]
+
+    if feishu_mirror_enabled? do
+      config :salix_im,
+        feishu_message_mirror_mod: SalixAnalytics.FeishuMirror,
+        feishu_mirror_reader_mod: SalixAnalytics.FeishuMirror.Reader
+    end
+
+    config :salix_im,
+      feishu_message_mirror_outbox_drainer: [
+        batch_size:
+          SalixStore.ConfigJson.integer(salix_config, ~w(feishu_mirror outbox batch_size)) || 200,
+        drain_ms:
+          SalixStore.ConfigJson.integer(salix_config, ~w(feishu_mirror outbox drain_ms)) || 2_000
+      ],
+      feishu_message_mirror_backfill: [
+        # One Feishu request per this many milliseconds per app. The message
+        # list API allows far more; this leaves the budget to live tool calls.
+        pace_ms:
+          SalixStore.ConfigJson.integer(salix_config, ~w(feishu_mirror backfill pace_ms)) || 500,
+        max_concurrent_passes:
+          SalixStore.ConfigJson.integer(
+            salix_config,
+            ~w(feishu_mirror backfill max_concurrent_passes)
+          ) || 2,
+        # How often a fully indexed app is revisited; new chats are found then.
+        pass_interval_ms:
+          SalixStore.ConfigJson.integer(salix_config, ~w(feishu_mirror backfill pass_interval_ms)) ||
+            3_600_000
+      ]
+
+    # Record of QQ group messages and its search. Default on wherever
+    # ClickHouse is configured; `qq_mirror.enabled: false` is the kill switch
+    # for ingest and search. Design: SalixIM.QQMessageRecord.
+    config :salix_analytics,
+      qq_mirror: [
+        batch_size: SalixStore.ConfigJson.integer(salix_config, ~w(qq_mirror batch_size)) || 200
+      ]
+
+    if SalixStore.ConfigJson.boolean(salix_config, ~w(qq_mirror enabled)) != false do
+      config :salix_im,
+        qq_message_record_mod: SalixAnalytics.QQMirror,
+        qq_message_record_reader_mod: SalixAnalytics.QQMirror.Reader
+    end
+
+    config :salix_im,
+      qq_message_record_outbox_drainer: [
+        batch_size:
+          SalixStore.ConfigJson.integer(salix_config, ~w(qq_mirror outbox batch_size)) || 200,
+        drain_ms:
+          SalixStore.ConfigJson.integer(salix_config, ~w(qq_mirror outbox drain_ms)) || 2_000
+      ]
+
+    # Record of Lark messages and its search. Default on wherever ClickHouse
+    # is configured; `lark_mirror.enabled: false` is the kill switch for
+    # ingest, backfill and search. Coverage is the app's chat membership and
+    # scopes. Design: SalixIM.LarkMessageRecord.
+    config :salix_analytics,
+      lark_mirror: [
+        batch_size: SalixStore.ConfigJson.integer(salix_config, ~w(lark_mirror batch_size)) || 200
+      ]
+
+    if SalixStore.ConfigJson.boolean(salix_config, ~w(lark_mirror enabled)) != false do
+      config :salix_im,
+        lark_message_record_mod: SalixAnalytics.LarkMirror,
+        lark_message_record_reader_mod: SalixAnalytics.LarkMirror.Reader
+    end
+
+    config :salix_im,
+      lark_message_record_outbox_drainer: [
+        batch_size:
+          SalixStore.ConfigJson.integer(salix_config, ~w(lark_mirror outbox batch_size)) || 200,
+        drain_ms:
+          SalixStore.ConfigJson.integer(salix_config, ~w(lark_mirror outbox drain_ms)) || 2_000
+      ],
+      lark_message_record_backfill: [
+        # One Lark request per this many milliseconds per app. The message
+        # list API allows far more; this leaves the budget to live tool calls.
+        pace_ms:
+          SalixStore.ConfigJson.integer(salix_config, ~w(lark_mirror backfill pace_ms)) || 500,
+        max_concurrent_passes:
+          SalixStore.ConfigJson.integer(
+            salix_config,
+            ~w(lark_mirror backfill max_concurrent_passes)
+          ) || 2,
+        # How often a fully indexed app is revisited; new chats are found then.
+        pass_interval_ms:
+          SalixStore.ConfigJson.integer(salix_config, ~w(lark_mirror backfill pass_interval_ms)) ||
+            3_600_000
+      ]
+
     config :billing_core,
       typed_sink: SalixAnalytics.TypedSinkWorker,
       llm_typed_sink: SalixAnalytics.TypedSinkWorker,
@@ -1689,7 +1954,7 @@ if :bridge_for_teams in enabled and config_env() != :test do
     config :bridge_for_teams_web, bft_cli_sha256: sha256
   end
 
-  # Dashboard LiveView endpoint (port 4101). Boots only in prod or when
+  # Dashboard endpoint (port 4101; serves the React SPA and its JSON API). Boots only in prod or when
   # bridge_for_teams.dashboard.server=true; needs a real secret_key_base in prod.
   dash_port =
     SalixStore.ConfigJson.integer(salix_config, ~w(bridge_for_teams dashboard port)) || 4101
@@ -1705,9 +1970,6 @@ if :bridge_for_teams in enabled and config_env() != :test do
       value -> value
     end
 
-  # Dev/e2e: the listener is reached via 127.0.0.1 while :url host is
-  # "localhost", so the LiveView socket's origin check would 403. Relax it
-  # outside prod; prod keeps Phoenix's default (checked against :url host).
   # Prod: serve the fingerprinted assets written by `mix phx.digest`
   # (assets.deploy) so ~p"/assets/*" resolves to digested, far-future-
   # cacheable URLs. Manifest path is relative to the app's priv/ in the
@@ -1732,7 +1994,6 @@ if :bridge_for_teams in enabled and config_env() != :test do
     ] ++
       dash_url_config ++
       if(is_binary(dash_secret), do: [secret_key_base: dash_secret], else: []) ++
-      if(config_env() != :prod, do: [check_origin: false], else: []) ++
       if(config_env() == :prod,
         do: [cache_static_manifest: "priv/static/cache_manifest.json"],
         else: []
@@ -1761,7 +2022,8 @@ if :bridge_for_teams in enabled and config_env() != :test do
     # smokes can still drive callback/session behavior through provider fakes.
     config :bridge_for_teams_core,
       oidc_provider: BridgeForTeams.Auth.OIDC.Fake,
-      feishu_provider: BridgeForTeams.Auth.Feishu.Fake
+      feishu_provider: BridgeForTeams.Auth.Feishu.Fake,
+      lark_provider: BridgeForTeams.Auth.Lark.Fake
   end
 end
 

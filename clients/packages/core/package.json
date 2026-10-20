@@ -1,0 +1,37 @@
+{
+  "name": "@comma/core",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./contract": "./src/contract.ts",
+    "./task-loop-filter": "./src/task-loop-filter.ts",
+    "./node": "./src/hosts/node.ts",
+    "./utility-protocol": "./src/hosts/utility-protocol.ts",
+    "./web": "./src/hosts/web.ts",
+    "./testing": "./src/testing/index.ts",
+    "./api-schemas": "./src/comma/api-schemas.ts",
+    "./chat": "./src/chat/public.ts",
+    "./markdown": "./src/markdown/index.ts"
+  },
+  "dependencies": {
+    "@comma/chat-contract": "workspace:*",
+    "@comma/core-kernel": "workspace:*",
+    "@comma/i18n": "workspace:*",
+    "@comma/mesh": "workspace:*",
+    "@comma/recommendation-contract": "workspace:*",
+    "@comma/session-contract": "workspace:*",
+    "@incremark/core": "1.0.2",
+    "@sqlite.org/sqlite-wasm": "3.53.4-build2",
+    "character-entities": "2.0.2",
+    "effect": "4.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@babel/core": "7.29.7",
+    "@babel/plugin-transform-classes": "7.28.4",
+    "esbuild": "0.28.2",
+    "marked": "17.0.6"
+  }
+}

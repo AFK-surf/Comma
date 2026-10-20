@@ -1,8 +1,9 @@
+import { flush } from "@comma/test-utils/fake-clock";
 import { act, renderHook } from "@comma/test-utils/render";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ComputeNodeState, HostMaintenanceState } from "@comma/native-bridge";
-import type { SettingsPanelItem } from "@comma/ui";
-import type { CommaApiClient } from "../../api";
 
 const mock = vi.hoisted(() => ({
   state: {} as ComputeNodeState,
@@ -17,8 +18,7 @@ vi.mock("@comma/native-bridge", async (original) => ({
   getNativeBridge: () => bridge,
 }));
 vi.mock("../activeWorkspace", () => ({
-  readActiveWorkspaceId: () => "workspace",
-  subscribeActiveWorkspace: () => () => {},
+  useActiveWorkspaceId: () => "workspace",
 }));
 vi.mock("../useComputeNode", () => ({
   useComputeNode: () => ({
@@ -64,15 +64,11 @@ const bridge = {
     localOverview: async () => ({ availability: "available", environments: [] }),
   },
 };
-import { useComputeNodeCategory } from "../useComputeNodeCategory";
+import { useComputeSettingsController } from "../useComputeSettingsController";
 const installed: HostMaintenanceState = {
   installation: "installed",
   selectedReleaseId: "release",
   updateAvailable: false,
-};
-const press = (item: SettingsPanelItem | undefined) => {
-  if (item?.control?.type !== "button") throw new Error("Expected button");
-  item.control.onPress?.();
 };
 beforeEach(() => {
   mock.creation = false;
@@ -90,233 +86,156 @@ beforeEach(() => {
   mock.maintain.mockResolvedValue(installed);
 });
 afterEach(() => {
-  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
-it("shows three summaries and a single selected detail, with workload rows only in the workspace view", async () => {
-  const { result } = renderHook(() =>
-    useComputeNodeCategory({} as CommaApiClient, true)
-  );
-  await act(async () => {});
-  expect(result.current.sections.map((s) => s.id)).toEqual([
-    "compute-node.host",
-    "compute-node.local-resources",
-    "compute-node.workspace",
-  ]);
-  expect(
-    result.current.sections
-      .flatMap((s) => s.items)
-      .some((i) => i.id === "compute-node.workload.private")
-  ).toBe(false);
-  const rootRow = (id: string) =>
-    result.current.sections.flatMap((s) => s.items).find((i) => i.id === id);
-  act(() => press(rootRow("compute-node.binding")));
-  expect(result.current.detail?.id).toBe("compute-workspace");
-  expect(
-    result.current.detail?.sections?.some((s) => s.id === "compute-node.recovery")
-  ).toBe(false);
-  expect(
-    result.current.detail?.sections
-      ?.flatMap((s) => s.items)
-      .some((i) => i.id === "compute-node.workload.private")
-  ).toBe(true);
-  act(() => {
-    result.current.detail?.onBack?.();
-    press(rootRow("compute-node.local-disk"));
-  });
-  expect(result.current.detail?.id).toBe("local-compute-management");
-  act(() => result.current.detail?.onBack?.());
-  expect(result.current.detail).toBeUndefined();
-});
-
-it("makes missing capability an update action rather than a status check or enable", async () => {
+it("starts the component update for missing capability without enabling a new connection", async () => {
   mock.state = {
     ...mock.state,
     status: "action_required",
     issue: "capability_missing",
-  } as ComputeNodeState;
-  const { result } = renderHook(() =>
-    useComputeNodeCategory({} as CommaApiClient, true)
-  );
+  };
+  // The native confirmation is still open.
+  mock.maintain.mockReturnValue(new Promise(() => {}));
+  const { result } = renderHook(() => useComputeSettingsController(true, true));
   await act(async () => {});
-  const refreshes = mock.refresh.mock.calls.length;
-  act(() => press(result.current.sections[0]!.items[0]));
-  expect(result.current.detail?.id).toBe("compute-host-maintenance");
-  const submit = result.current.detail?.sections
-    ?.flatMap((s) => s.items)
-    .find((i) => i.id === "compute-node.host-submit");
-  await act(async () => press(submit));
+  await act(async () => result.current.primary());
+  expect(result.current.detail).toBe("maintenance");
   expect(mock.maintain).toHaveBeenCalledWith({
     action: "update",
     dataPolicy: "preserve",
   });
   expect(mock.configure).not.toHaveBeenCalled();
-  expect(mock.refresh).toHaveBeenCalledTimes(refreshes);
 });
-
-it("shows an unresolved creation once in the root and once in the selected workspace view", async () => {
-  mock.creation = true;
-  const { result } = renderHook(() =>
-    useComputeNodeCategory({} as CommaApiClient, true)
+it("returns from the steps page when every step it showed in progress is ready", async () => {
+  mock.state = { ...mock.state, status: "not_set", desiredEnabled: false };
+  const { result, rerender } = renderHook(() =>
+    useComputeSettingsController(true, true)
   );
   await act(async () => {});
-  expect(
-    result.current.sections
-      .flatMap((s) => s.items)
-      .filter((i) => i.id === "compute-node.creation")
-  ).toHaveLength(1);
-  act(() =>
-    press(
-      result.current.sections
-        .flatMap((s) => s.items)
-        .find((i) => i.id === "compute-node.binding")
-    )
-  );
-  expect(
-    result.current.detail?.sections
-      ?.flatMap((s) => s.items)
-      .filter((i) => i.id === "compute-node.creation")
-  ).toHaveLength(1);
+  act(() => result.current.setDetail("setup"));
+  mock.state = {
+    ...mock.state,
+    status: "processing",
+    setup: { components: "ready", connection: "connecting", shell: "not_initialized" },
+  };
+  rerender();
+  expect(result.current.detail).toBe("setup");
+  mock.state = {
+    ...mock.state,
+    status: "ready",
+    setup: { components: "ready", connection: "ready", shell: "ready" },
+  };
+  rerender();
+  expect(result.current.detail).toBeUndefined();
 });
-
-const maintenanceReceipt = {
-  requestId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
-  action: "reinstall" as const,
-  dataPolicy: "reset" as const,
-  phase: "completed" as const,
-  outcome: "succeeded" as const,
-};
-const workspaceStatus = (category: ReturnType<typeof useComputeNodeCategory>) =>
-  category.sections
-    .flatMap((s) => s.items)
-    .find((i) => i.id === "compute-node.status")!;
-
-it("withdraws the old ready state and confirmation during maintenance, then checks the original owner once", async () => {
-  vi.useFakeTimers();
-  let finishMaintenance!: (state: HostMaintenanceState) => void;
+it("reads the node on each tick while the visible steps page waits", async () => {
+  let tick = 0;
+  const core = createScriptedCore({
+    values: (topic) => (topic.topic === "computeTick" ? { tick } : undefined),
+  });
+  const wrapper = ({ children }: { children: ReactNode }) => core.wrap(children);
+  mock.state = {
+    ...mock.state,
+    status: "processing",
+    setup: { components: "ready", connection: "ready", shell: "preparing" },
+  };
+  const { result } = renderHook(() => useComputeSettingsController(true, true), {
+    wrapper,
+  });
+  await act(async () => {});
+  act(() => result.current.setDetail("setup"));
+  await act(async () => {});
+  const before = mock.refresh.mock.calls.length;
+  tick += 1;
+  core.changed("computeTick");
+  await act(() => flush());
+  // Without this read the finished Shell step shows only after a manual status check.
+  expect(mock.refresh.mock.calls.length).toBeGreaterThan(before);
+});
+it("shows a failed component setup's own error under the generic reason", async () => {
+  mock.state = {
+    ...mock.state,
+    status: "action_required",
+    issue: "preparation_failed",
+    preparation: {
+      source: "download",
+      location: "https://example.test/Host.zip",
+      instance: "shared",
+      phase: "failed",
+      error: "Host download failed (HTTP 404).",
+    },
+  };
+  const { result } = renderHook(() => useComputeSettingsController(true, true));
+  await act(async () => {});
+  expect(result.current.reason).toBe(
+    "The compute components are not ready. Continue setup."
+  );
+  expect(result.current.reasonDetail).toBe("Host download failed (HTTP 404).");
+});
+it("invalidates connection confirmation during maintenance and confirms the workspace owner after completion", async () => {
+  let finish!: (state: HostMaintenanceState) => void;
   mock.maintain.mockImplementation(
     () =>
-      new Promise<HostMaintenanceState>((resolve) => {
-        finishMaintenance = resolve;
+      new Promise((resolve) => {
+        finish = resolve;
       })
   );
-  const { result } = renderHook(() =>
-    useComputeNodeCategory({} as CommaApiClient, true)
-  );
+  const { result } = renderHook(() => useComputeSettingsController(true, true));
   await act(async () => {});
-  const actions = result.current.sections
-    .flatMap((s) => s.items)
-    .find((i) => i.id === "compute-node.actions")!.control;
-  if (actions?.type !== "menu") throw new Error("Expected connection menu");
-  act(() => actions.items.find((i) => i.id === "drain")!.onPress());
-  expect(result.current.overlay).toBeDefined();
-  const menu = result.current.sections[0]!.items[1]!.control;
-  if (menu?.type !== "menu") throw new Error("Expected maintenance entry");
-  act(() => menu.items.find((i) => i.id === "maintenance")!.onPress());
-  const maintenanceActions = result.current
-    .detail!.sections!.flatMap((s) => s.items)
-    .find((i) => i.id === "compute-node.host-actions")!.control;
-  if (maintenanceActions?.type !== "menu") throw new Error("Expected maintenance menu");
-  act(() => maintenanceActions.items.find((i) => i.id === "reinstall")!.onPress());
-  act(() =>
-    press(
-      result.current
-        .detail!.sections!.flatMap((s) => s.items)
-        .find((i) => i.id === "compute-node.host-submit")
-    )
-  );
-  expect(result.current.overlay).toBeUndefined();
-  expect(workspaceStatus(result.current).title).toBe(
-    "Operation result is not yet confirmed"
-  );
-  const callsBeforeCompletion = mock.refresh.mock.calls.length;
-  let finishCheck!: (state: ComputeNodeState) => void;
+  act(() => result.current.openConfirm("drain"));
+  expect(result.current.nodeOverlay).toBeDefined();
+  let request!: Promise<HostMaintenanceState | undefined>;
+  act(() => {
+    request = result.current.local.maintenance.submit("reinstall");
+  });
+  expect(result.current.nodeOverlay).toBeUndefined();
+  expect(result.current.workspaceUnconfirmed).toBe(true);
+  let check!: (state: ComputeNodeState) => void;
   mock.refresh.mockImplementation(
     () =>
-      new Promise<ComputeNodeState>((resolve) => {
-        finishCheck = resolve;
+      new Promise((resolve) => {
+        check = resolve;
       })
   );
-  const completed = { ...installed, operation: maintenanceReceipt };
-  mock.read.mockResolvedValue(completed);
+  const complete = {
+    ...installed,
+    operation: {
+      requestId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+      action: "reinstall" as const,
+      dataPolicy: "preserve" as const,
+      phase: "completed" as const,
+      outcome: "succeeded" as const,
+    },
+  };
+  mock.read.mockResolvedValue(complete);
   await act(async () => {
-    finishMaintenance(completed);
+    finish(complete);
+    await request;
   });
-  expect(mock.refresh).toHaveBeenCalledTimes(callsBeforeCompletion + 1);
-  expect(workspaceStatus(result.current).title).toBe(
-    "Operation result is not yet confirmed"
-  );
+  expect(result.current.workspaceUnconfirmed).toBe(true);
   await act(async () => {
-    mock.state = { ...mock.state, status: "stopped" };
-    finishCheck(mock.state);
+    check(mock.state);
   });
-  expect(workspaceStatus(result.current).title).toBe("Node disabled");
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(10_000);
-  });
-  expect(mock.refresh).toHaveBeenCalledTimes(callsBeforeCompletion + 1);
-  vi.useRealTimers();
+  expect(result.current.workspaceUnconfirmed).toBe(false);
 });
-
-it("keeps a failed maintenance verification unconfirmed until an explicit owner check succeeds", async () => {
-  const { result } = renderHook(() =>
-    useComputeNodeCategory({} as CommaApiClient, true)
-  );
+it("keeps a failed owner check unconfirmed until an explicit successful read", async () => {
+  const { result } = renderHook(() => useComputeSettingsController(true, true));
   await act(async () => {});
   mock.refresh.mockResolvedValue(undefined);
-  mock.read.mockResolvedValue({ ...installed, operation: maintenanceReceipt });
-  const menu = result.current.sections[0]!.items[1]!.control;
-  if (menu?.type !== "menu") throw new Error("Expected local menu");
-  await act(async () => {
-    menu.items.find((i) => i.id === "refresh")!.onPress();
+  mock.read.mockResolvedValue({
+    ...installed,
+    operation: {
+      requestId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+      action: "reinstall",
+      dataPolicy: "preserve",
+      phase: "completed",
+      outcome: "succeeded",
+    },
   });
-  expect(workspaceStatus(result.current).title).toBe(
-    "Operation result is not yet confirmed"
-  );
+  await act(() => result.current.local.maintenance.refresh());
+  expect(result.current.workspaceUnconfirmed).toBe(true);
   mock.refresh.mockImplementation(async () => mock.state);
-  await act(async () => press(workspaceStatus(result.current)));
-  expect(workspaceStatus(result.current).title).toBe("Available for new work");
-});
-
-it("ignores a completed check from the previous Session while the new Session is still unconfirmed", async () => {
-  const { result, rerender } = renderHook(() =>
-    useComputeNodeCategory({} as CommaApiClient, true)
-  );
-  await act(async () => {});
-  let finishOld!: (state: ComputeNodeState) => void;
-  mock.refresh.mockImplementationOnce(
-    () =>
-      new Promise<ComputeNodeState>((resolve) => {
-        finishOld = resolve;
-      })
-  );
-  mock.read.mockResolvedValue({ ...installed, operation: maintenanceReceipt });
-  const menu = result.current.sections[0]!.items[1]!.control;
-  if (menu?.type !== "menu") throw new Error("Expected local menu");
-  await act(async () => {
-    menu.items.find((i) => i.id === "refresh")!.onPress();
-  });
-  const old = mock.state;
-  let finishNew!: (state: ComputeNodeState) => void;
-  mock.refresh.mockImplementationOnce(
-    () =>
-      new Promise<ComputeNodeState>((resolve) => {
-        finishNew = resolve;
-      })
-  );
-  await act(async () => {
-    mock.state = { ...mock.state, confirmationId: "session-b" };
-    rerender();
-  });
-  await act(async () => {
-    finishOld(old);
-  });
-  expect(workspaceStatus(result.current).title).toBe(
-    "Operation result is not yet confirmed"
-  );
-  await act(async () => {
-    finishNew(mock.state);
-  });
-  expect(workspaceStatus(result.current).title).toBe("Available for new work");
+  await act(async () => result.current.checkWorkspace());
+  expect(result.current.workspaceUnconfirmed).toBe(false);
 });

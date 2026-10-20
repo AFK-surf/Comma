@@ -1,3 +1,2 @@
-export * from "./controller";
-export * from "./pages";
+export * from "./messages";
 export * from "./react";

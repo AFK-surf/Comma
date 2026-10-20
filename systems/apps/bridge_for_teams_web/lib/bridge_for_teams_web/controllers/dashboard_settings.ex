@@ -37,6 +37,7 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
   alias BridgeForTeams.{
     FeishuAppBindings,
     FeishuScopes,
+    LarkRunChecks,
     Models,
     Observability,
     Onboarding,
@@ -55,7 +56,7 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
 
   @org_fields ~w(name slug icon default_locale)
   @sso_fields ~w(provider issuer client_id client_secret allowed_domains default_role)
-  @sso_providers ~w(generic_oidc feishu)
+  @sso_providers ~w(generic_oidc feishu lark)
   @sso_roles ~w(admin member)
   @feishu_provisioning_policies ~w(jit existing_identity)
   @feishu_default_scope "contact:user.base:readonly"
@@ -66,11 +67,14 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
   # app) for the providers Salix supports. Unknown providers fall back to a
   # capitalized label and no console link.
   @oauth_provider_info %{
+    "feishu" => {"Feishu", "https://open.feishu.cn/app"},
     "github" => {"GitHub", "https://github.com/settings/applications/new"},
     "google" => {"Google", "https://console.cloud.google.com/apis/credentials"},
+    "lark" => {"Lark", "https://open.larksuite.com/app"},
     "linear" => {"Linear", "https://linear.app/settings/api/applications/new"},
     "notion" => {"Notion", "https://www.notion.so/my-integrations"},
-    "slack" => {"Slack", "https://api.slack.com/apps"}
+    "slack" => {"Slack", "https://api.slack.com/apps"},
+    "x" => {"X", "https://console.x.com"}
   }
   @oauth_app_name "Comma Bridge for Teams"
   @linear_oauth_app_create_url "https://linear.app/settings/api/applications/new"
@@ -157,53 +161,161 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
 
   # ---- AI models ----
 
-  @doc "The AI models page: the Salix catalog and the org's allowlist and defaults."
-  def models(org), do: models(org, Models.catalog(org))
+  # One save takes at most this many allowed choices (the catalog has fewer),
+  # and asks Salix to check at most this many that are neither stored nor
+  # plain catalog choices.
+  @max_allowed_models 500
+  @max_salix_checks 20
+  @default_fields %{
+    "router" => "default_router_model",
+    "task" => "default_task_model"
+  }
+
+  @doc """
+  The AI models page: the catalog choices, the org's allowed list, the
+  default Router model and the org default Task model (the Task model of a
+  swarm without its own), and the platform model that each follows.
+
+  Each option says what serves it for the org (`served_by`): `"subscription"`
+  (with its `plans`), `"api_key"`, `"platform"`, or nil when none of the org's
+  accounts does. Pay-per-use is a choice of its own: a model that Provider API
+  keys serve is offered with `allow_paid` true, its `key_sources` naming those
+  keys, beside the plain choice when a subscription serves it too (whose
+  `key_sources` then say it is also available pay-per-use). `catalog` also
+  holds allowed and default choices that the catalog does not name, and the
+  models a custom endpoint lists. `servable_status` is `"unavailable"` when
+  what serves each model could not be read.
+  """
+  def models(org), do: models(org, Models.catalog())
 
   defp models(org, catalog_result) do
+    {servable_status, served} =
+      case Models.servable(org) do
+        {:ok, served} -> {"ok", served}
+        {:error, _reason} -> {"unavailable", %{}}
+      end
+
     {status, catalog} =
       case catalog_result do
-        {:ok, templates} -> {"ok", templates}
+        {:ok, catalog} -> {"ok", offered_choices(catalog, served)}
         {:error, _reason} -> {"unavailable", []}
       end
 
+    allowed = Enum.map(org.allowed_models || [], &Models.option(&1, catalog))
+    router = default_option(org.default_router_model, catalog)
+    task = default_option(org.default_task_model, catalog)
+    offered = if allowed == [], do: catalog, else: allowed
     platform = Models.platform_defaults()
+    source = &sourced(&1, served)
 
     %{
       "catalog_status" => status,
-      "catalog" => Enum.map(catalog, &public_template/1),
-      "allowed_template_ids" => org.allowed_template_ids || [],
-      "default_router_template_id" => org.default_router_template_id,
-      "default_template_id" => org.default_template_id,
+      "servable_status" => servable_status,
+      "catalog" =>
+        (catalog ++ allowed ++ Enum.reject([router, task], &is_nil/1))
+        |> Enum.uniq_by(& &1["key"])
+        |> Enum.map(source),
+      "allowed_models" => Enum.map(allowed, source),
+      "default_router_model" => router && source.(router),
+      "default_task_model" => task && source.(task),
       "default_options" => %{
-        "router" => default_options(catalog, org.default_router_template_id),
-        "worker" => default_options(catalog, org.default_template_id)
+        "router" => offered |> with_current(router) |> Enum.map(source),
+        "task" => offered |> with_current(task) |> Enum.map(source)
       },
       "platform_defaults" => %{
-        "router" => public_platform_default(platform["router"]),
-        "worker" => public_platform_default(platform["worker"])
+        "router" => platform["router"],
+        "task" => platform["worker"]
       }
     }
   end
 
+  # The plain choice of each catalog model that a subscription serves or
+  # nothing serves, and the pay-per-use choice of each model a key serves,
+  # then the pay-per-use choices of the models a custom endpoint lists.
+  defp offered_choices(catalog, served) do
+    names = MapSet.new(catalog, & &1["choice"]["model"])
+
+    listed =
+      for {id, model} <- served, not MapSet.member?(names, id) do
+        choice = Models.normalize(%{"kind" => "catalog", "model" => id})
+
+        %{"key" => Models.key(choice), "choice" => choice, "label" => model["label"]}
+        |> Map.put("vendor", model["vendor"])
+      end
+      |> Enum.sort_by(& &1["label"])
+
+    Enum.flat_map(catalog ++ listed, fn option ->
+      case served[option["choice"]["model"]] do
+        %{"served_by" => "api_key"} -> [paid(option)]
+        %{"key_sources" => [_ | _]} -> [option, paid(option)]
+        _subscription_or_none -> [option]
+      end
+    end)
+  end
+
+  defp paid(option) do
+    choice = Map.put(option["choice"], "allow_paid", true)
+    %{option | "choice" => choice, "key" => Models.key(choice)}
+  end
+
+  defp sourced(option, served) do
+    {served_by, plans, key_sources} =
+      case option["choice"] do
+        %{"kind" => "catalog", "model" => id, "allow_paid" => true} ->
+          case served[id] do
+            %{"key_sources" => [_ | _] = sources} -> {"api_key", [], sources}
+            _none -> {nil, [], []}
+          end
+
+        %{"kind" => "catalog", "model" => id} ->
+          case served[id] do
+            %{"served_by" => "subscription"} = model ->
+              {"subscription", model["plans"], model["key_sources"]}
+
+            _none ->
+              {nil, [], []}
+          end
+
+        %{"kind" => "platform"} ->
+          {"platform", [], []}
+
+        _other ->
+          {nil, [], []}
+      end
+
+    Map.merge(option, %{"served_by" => served_by, "plans" => plans, "key_sources" => key_sources})
+  end
+
+  defp default_option(nil, _catalog), do: nil
+  defp default_option(choice, catalog), do: Models.option(choice, catalog)
+
+  defp with_current(options, nil), do: options
+
+  defp with_current(options, current) do
+    if Enum.any?(options, &(&1["key"] == current["key"])),
+      do: options,
+      else: options ++ [current]
+  end
+
   @doc """
-  Save the model allowlist and per-role defaults. An absent field keeps its
-  current value; `[]` allows the whole catalog and `null` follows the platform
-  default. When the catalog is readable, allowlist IDs that are not in it are
-  dropped, so a list of only retired models allows the whole catalog.
+  Save the allowed models, the default Router model and the org default Task
+  model, each a model choice
+  (`BridgeForTeams.Models`). An absent field keeps its current value; `[]`
+  allows every model and `null` follows the platform model. Salix checks each
+  choice; an allowed choice that Salix refuses (for example a retired model)
+  is dropped, so a list of only retired models allows every model.
   """
   def update_models(org, user, params) do
-    catalog_result = Models.catalog(org)
+    catalog_result = Models.catalog()
 
-    with {:ok, allowed} <- allowed_ids(params, org, catalog_result),
-         {:ok, worker} <- template_id(params, "default_template_id", org.default_template_id),
-         {:ok, router} <-
-           template_id(params, "default_router_template_id", org.default_router_template_id),
-         :ok <- ensure_defaults_allowed(org, user, allowed, worker, router) do
+    with {:ok, allowed} <- allowed_models(params, org, catalog_result),
+         {:ok, router} <- default_model(params, org, "router", catalog_result),
+         {:ok, task} <- default_model(params, org, "task", catalog_result),
+         :ok <- ensure_defaults_allowed(org, user, allowed, router, task) do
       attrs = %{
-        "allowed_template_ids" => allowed,
-        "default_template_id" => worker,
-        "default_router_template_id" => router
+        "allowed_models" => allowed,
+        "default_router_model" => router,
+        "default_task_model" => task
       }
 
       case Orgs.update_org(org, attrs, audit_opts(user)) do
@@ -220,14 +332,18 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
     end
   end
 
-  defp allowed_ids(params, org, catalog_result) do
-    case Map.fetch(params, "allowed_template_ids") do
+  defp allowed_models(params, org, catalog_result) do
+    case Map.fetch(params, "allowed_models") do
       :error ->
-        {:ok, org.allowed_template_ids || []}
+        {:ok, org.allowed_models || []}
 
-      {:ok, ids} when is_list(ids) ->
-        if Enum.all?(ids, &is_binary/1),
-          do: {:ok, ids |> Enum.reject(&(&1 == "")) |> Enum.uniq() |> in_catalog(catalog_result)},
+      {:ok, choices} when is_list(choices) and length(choices) <= @max_allowed_models ->
+        if Enum.all?(choices, &is_map/1),
+          do:
+            choices
+            |> Enum.map(&Models.normalize/1)
+            |> Enum.uniq()
+            |> choose_allowed(org, catalog_result),
           else: invalid_model_settings()
 
       {:ok, _other} ->
@@ -235,30 +351,83 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
     end
   end
 
-  defp in_catalog(ids, {:ok, catalog}) do
-    known = MapSet.new(catalog, & &1["template_id"])
-    Enum.filter(ids, &MapSet.member?(known, &1))
+  # A choice kept from the stored list needs no new check.
+  defp choose_allowed(choices, org, catalog_result) do
+    stored = org.allowed_models || []
+
+    salix_checks =
+      Enum.count(choices, &(&1 not in stored and not Models.in_catalog?(&1, catalog_result)))
+
+    if salix_checks > @max_salix_checks,
+      do: invalid_model_settings(),
+      else: choose_each(choices, stored, org, catalog_result)
   end
 
-  defp in_catalog(ids, {:error, _reason}), do: ids
+  defp choose_each(choices, stored, org, catalog_result) do
+    Enum.reduce_while(choices, {:ok, []}, fn choice, {:ok, acc} ->
+      result =
+        if choice in stored, do: {:ok, choice}, else: Models.choose(org, choice, catalog_result)
 
-  defp template_id(params, key, current) do
-    case Map.fetch(params, key) do
-      :error -> {:ok, current}
-      {:ok, value} when value in [nil, ""] -> {:ok, nil}
-      {:ok, value} when is_binary(value) -> {:ok, value}
-      {:ok, _other} -> invalid_model_settings()
+      case result do
+        {:ok, value} ->
+          {:cont, {:ok, [value | acc]}}
+
+        {:error, reason} when reason in [:unavailable, :timeout] ->
+          {:halt, write_failed(gettext("Couldn't save the model settings."))}
+
+        {:error, _refused} ->
+          {:cont, {:ok, acc}}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, values |> Enum.reverse() |> Enum.uniq()}
+      error -> error
+    end
+  end
+
+  defp default_model(params, org, role, catalog_result) do
+    field = @default_fields[role]
+    current = Map.fetch!(org, String.to_existing_atom(field))
+
+    case Map.fetch(params, field) do
+      :error ->
+        {:ok, current}
+
+      {:ok, nil} ->
+        {:ok, nil}
+
+      {:ok, choice} when is_map(choice) ->
+        if Models.normalize(choice) == current,
+          do: {:ok, current},
+          else: choose_default(org, field, choice, catalog_result)
+
+      {:ok, _other} ->
+        invalid_model_settings()
+    end
+  end
+
+  defp choose_default(org, field, choice, catalog_result) do
+    case Models.choose(org, choice, catalog_result) do
+      {:ok, value} ->
+        {:ok, value}
+
+      {:error, reason} when reason in [:unavailable, :timeout] ->
+        write_failed(gettext("Couldn't save the model settings."))
+
+      {:error, _refused} ->
+        {:error, 422, "invalid_model_settings", gettext("Couldn't save the model settings."),
+         %{"fields" => %{field => [gettext("Choose a model from the list.")]}}}
     end
   end
 
   defp invalid_model_settings,
     do: {:error, 422, "invalid_model_settings", gettext("Couldn't save the model settings."), %{}}
 
-  defp ensure_defaults_allowed(org, user, allowed, worker, router) do
+  defp ensure_defaults_allowed(org, user, allowed, router, task) do
     disallowed =
       for {field, default} <- [
-            {"default_template_id", worker},
-            {"default_router_template_id", router}
+            {"default_router_model", router},
+            {"default_task_model", task}
           ],
           default && allowed != [] && default not in allowed,
           do: field
@@ -275,10 +444,9 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
           resource_id: org.id,
           resource_label: org.name,
           status: "fail",
-          reason_class: "default_template_not_allowed",
+          reason_class: "default_model_not_allowed",
           evidence: %{
-            "allowed_template_count" => length(allowed),
-            "default_template_configured" => true,
+            "allowed_model_count" => length(allowed),
             "field_errors" => Map.new(disallowed, &{&1, ["must be one of the allowed models"]})
           }
         })
@@ -287,37 +455,6 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
        gettext("The default model must be one of the allowed models."), %{"fields" => disallowed}}
     end
   end
-
-  defp public_template(template) do
-    %{
-      "template_id" => template["template_id"],
-      "label" => Models.option_label(template),
-      "model" => template["model"],
-      "name" => template["name"],
-      "model_icon" => template["model_icon"]
-    }
-  end
-
-  # `Models.options/2` hides the legacy "default" template unless it is the
-  # current choice.
-  defp default_options(catalog, current) do
-    catalog
-    |> Models.options(current)
-    |> Enum.map(fn
-      {label, value} -> %{"value" => value, "label" => label}
-      [key: label, value: value] -> %{"value" => value, "label" => label}
-    end)
-  end
-
-  defp public_platform_default(%{} = template) do
-    %{
-      "template_id" => template["template_id"],
-      "label" => Models.label(template),
-      "model_icon" => template["model_icon"]
-    }
-  end
-
-  defp public_platform_default(_template), do: nil
 
   # ---- Single sign-on ----
 
@@ -337,7 +474,9 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
   @doc """
   Save the SSO connection. A Feishu connection takes its App ID from the
   Feishu app enabled for sign-in; its secret stays the one that app saved.
-  A blank `client_secret` keeps the stored secret.
+  A Lark connection holds the App ID (`client_id`) and App Secret
+  (`client_secret`) of its own Lark app. A blank `client_secret` keeps the
+  stored secret while the provider stays the same.
   """
   def update_sso(org, user, params) do
     with {:ok, attrs} <- sso_attrs(org, params) do
@@ -386,7 +525,7 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
   returns the checks, with `recorded: false`.
   """
   def run_sso_checks(org, user) do
-    case RunChecks.run_sso(org.id, redirect_uri: redirect_uri()) do
+    case run_provider_sso_checks(org) do
       {:ok, checks} ->
         recorded? =
           match?(
@@ -407,6 +546,14 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
 
       {:error, _reason} ->
         {:error, 500, "checks_failed", gettext("Could not run SSO checks."), %{}}
+    end
+  end
+
+  # Lark sign-in has its own checks; every other provider keeps the shared ones.
+  defp run_provider_sso_checks(org) do
+    case Orgs.get_sso_connection(org.id) do
+      %{provider: "lark"} -> LarkRunChecks.run_sso(org.id, redirect_uri: redirect_uri())
+      _ -> RunChecks.run_sso(org.id, redirect_uri: redirect_uri())
     end
   end
 
@@ -586,128 +733,6 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
     end
   end
 
-  @doc "Connect a bot-enabled Feishu app to an Agent Swarm (creates a Salix IM connect)."
-  def connect_feishu_route(org, user, params) do
-    app_id = trim(params["app_id"])
-
-    with {:ok, _binding} <- bot_app(org, app_id),
-         {:ok, project} <- route_project(org, params["project_id"], &project_required/0) do
-      case ProjectIMConnects.create_project_connect(
-             org.id,
-             project.id,
-             "feishu",
-             %{"app_id" => app_id},
-             audit_opts(user)
-           ) do
-        {:ok, _connect} ->
-          {:ok, feishu(org)}
-
-        {:error, reason} ->
-          connect_error(reason)
-      end
-    end
-  end
-
-  # The expected `ProjectIMConnects.create_project_connect/5` failures, with
-  # the wording the Agent Swarm integrations page uses.
-  defp connect_error(:provider_app_in_use),
-    do:
-      {:error, 409, "feishu_app_in_use",
-       gettext(
-         "This Feishu app is already connected to another Agent Swarm. Current limitation: one Feishu app can serve one Agent Swarm; delete the existing connect or use a different app."
-       ), %{}}
-
-  defp connect_error(:connect_rejected),
-    do:
-      {:error, 422, "connect_rejected",
-       gettext("The provider rejected the connect setup. Check the app credentials and retry."),
-       %{}}
-
-  defp connect_error(:group_not_ready),
-    do:
-      {:error, 409, "group_not_ready", gettext("Agent Swarm is still preparing. Retry shortly."),
-       %{}}
-
-  defp connect_error(:not_found), do: project_required()
-
-  defp connect_error(:unavailable),
-    do: runtime_error(:unavailable, gettext("Salix is unavailable. Retry shortly."))
-
-  defp connect_error(:timeout),
-    do: runtime_error(:timeout, gettext("Salix timed out. Retry shortly."))
-
-  defp connect_error(_reason), do: write_failed(gettext("Could not update the IM connect."))
-
-  @doc "Disable an active Feishu bot route of one Agent Swarm."
-  def disable_feishu_route(org, user, project_id, connect_id) do
-    with {:ok, project} <- route_project(org, project_id, &route_not_found/0),
-         :ok <- ensure_active_route(org, project, connect_id) do
-      case ProjectIMConnects.disable_project_connect(
-             org.id,
-             project.id,
-             connect_id,
-             audit_opts(user)
-           ) do
-        {:ok, _result} ->
-          {:ok, feishu(org)}
-
-        {:error, reason} ->
-          runtime_error(
-            reason,
-            gettext("Couldn't disable the Feishu bot route (%{reason}).",
-              reason: describe_error(reason)
-            )
-          )
-      end
-    end
-  end
-
-  defp bot_app(org, app_id) do
-    case app_id != "" && FeishuAppBindings.get_binding_for_app(org.id, app_id) do
-      %{bot_enabled: true} = binding ->
-        {:ok, binding}
-
-      _ ->
-        {:error, 422, "feishu_bot_app_required",
-         gettext("Choose a bot-enabled Feishu app first."), %{}}
-    end
-  end
-
-  defp route_project(org, project_id, not_found) do
-    with {:ok, project_id} <- Ecto.UUID.cast(project_id),
-         {:ok, project} <- Projects.get_project(project_id),
-         true <- project.org_id == org.id and is_nil(project.archived_at) do
-      {:ok, project}
-    else
-      _ -> not_found.()
-    end
-  end
-
-  defp ensure_active_route(org, project, connect_id) do
-    case ProjectIMConnects.list_project_connects_read_only(org.id, project.id, "feishu") do
-      {:ok, connects} when is_list(connects) ->
-        if Enum.any?(connects, &(&1["connect_id"] == connect_id and is_nil(&1["disabled_at"]))),
-          do: :ok,
-          else: route_not_found()
-
-      {:error, reason} ->
-        runtime_error(
-          reason,
-          gettext("Couldn't disable the Feishu bot route (%{reason}).",
-            reason: describe_error(reason)
-          )
-        )
-    end
-  end
-
-  defp project_required,
-    do:
-      {:error, 422, "project_required",
-       gettext("Choose an Agent Swarm before connecting the bot."), %{}}
-
-  defp route_not_found,
-    do: {:error, 404, "feishu_route_not_found", gettext("Feishu bot route not found."), %{}}
-
   defp feishu_app_not_found,
     do: {:error, 404, "feishu_app_not_found", gettext("Feishu app not found."), %{}}
 
@@ -747,9 +772,26 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
       "configured" =>
         app["client_secret_configured"] == true or (app["client_id"] || "") != "" or
           app["source"] == "default",
-      "setup_href" => provider_setup_url(provider)
+      "setup_href" => provider_setup_url(provider),
+      "setup_config" => setup_config(provider)
     }
   end
+
+  defp setup_config("x"),
+    do: %{
+      "app_name" => @oauth_app_name,
+      "callback_url" => salix_oauth_callback_url("x"),
+      "website_url" => MacMiniRelease.api_base_url()
+    }
+
+  # A Lark app is the swarm's Lark bot app: the admin adds the redirect URL
+  # under Security Settings and enters its App ID and App Secret here.
+  defp setup_config("lark"), do: %{"callback_url" => salix_oauth_callback_url("lark")}
+
+  # A Feishu app is the organization's Feishu app, set up the same way.
+  defp setup_config("feishu"), do: %{"callback_url" => salix_oauth_callback_url("feishu")}
+
+  defp setup_config(_provider), do: nil
 
   defp composio(org) do
     case OrgComposioSettings.get_org_composio_settings(org.id) do
@@ -811,7 +853,7 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
       "apps" => Enum.map(shown_apps, &public_feishu_app(&1, routes)),
       "apps_truncated" => length(apps) > @feishu_app_limit,
       "routes_status" => routes_status,
-      "projects" => Enum.map(shown_projects, &%{"id" => &1.id, "name" => &1.name}),
+      "projects_shown" => length(shown_projects),
       "projects_truncated" => length(projects) > @route_project_limit,
       "redirect_uri" => redirect_uri(),
       "scope_cards" =>
@@ -843,7 +885,7 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
           "salix_group_id" => project.salix_group_id,
           "connect_id" => connect["connect_id"],
           "disabled" => not is_nil(connect["disabled_at"]),
-          "href" => "/orgs/#{org.slug}/projects/#{project.id}/integrations"
+          "href" => "/orgs/#{org.slug}/projects/#{project.id}/connections?provider=feishu"
         }
       end
     )
@@ -994,9 +1036,9 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
     do: salix_public_base_url() <> "/v1/oauth/#{provider}/callback"
 
   defp salix_public_base_url do
-    case Application.get_env(:salix_web, :public_base_url) do
+    case SystemsRuntime.get_env(:salix_web, :public_base_url) do
       base when is_binary(base) and base != "" -> String.trim_trailing(base, "/")
-      _ -> "http://127.0.0.1:#{Application.get_env(:salix_web, :port, 4000)}"
+      _ -> "http://127.0.0.1:#{SystemsRuntime.get_env(:salix_web, :port, 4000)}"
     end
   end
 
@@ -1018,7 +1060,7 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
         resource_label: org.name,
         result: "denied",
         reason: :forbidden,
-        request_id: Ecto.UUID.generate(),
+        request_id: SystemsRuntime.Proc.uuid(),
         surface: "settings",
         metadata: %{}
       })
@@ -1030,7 +1072,7 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
   def forbidden,
     do: {:error, 403, "forbidden", gettext("Only organization admins can manage settings."), %{}}
 
-  # The Feishu SSO redirect URI an admin registers in the Feishu app.
+  # The SSO redirect URI an admin registers in the Feishu app or the Lark app.
   defp redirect_uri, do: MacMiniRelease.api_base_url() <> "/auth/callback"
 
   defp runtime_error(reason, message) when reason in [:unavailable, :timeout],
@@ -1048,7 +1090,11 @@ defmodule BridgeForTeamsWeb.DashboardSettings do
     do: Ecto.Changeset.traverse_errors(changeset, &CoreComponents.translate_error/1)
 
   defp audit_opts(user),
-    do: [actor_user_id: user.id, actor_label: actor_label(user), request_id: Ecto.UUID.generate()]
+    do: [
+      actor_user_id: user.id,
+      actor_label: actor_label(user),
+      request_id: SystemsRuntime.Proc.uuid()
+    ]
 
   defp actor_label(user) do
     cond do

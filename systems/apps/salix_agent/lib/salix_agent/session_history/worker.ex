@@ -1,25 +1,28 @@
 defmodule SalixAgent.SessionHistory.Worker do
   @moduledoc "Bounded index maintenance outside Session actors and their dependency pools."
-  use GenServer
+  use SystemsRuntime.Server
   alias SalixAgent.InternalSession
   alias SalixAgent.SessionHistory.{Hot, Source, Document}
   alias SalixStore.{S3, Codec, Keys}
   @hints __MODULE__.Hints
   @slots 1024
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts), do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   # Admission is non-blocking and bounded. Duplicate hints keep their original
   # queue position. Overflow is repaired by durable discovery, not chat retries.
   def hint(agent, session) do
-    count = :ets.update_counter(@hints, :count, {2, 1}, {:count, 0})
+    count = SystemsRuntime.ETS.update_counter(@hints, :count, {2, 1}, {:count, 0})
 
     if count <= @slots do
-      unless :ets.insert_new(@hints, {{agent, session}, System.monotonic_time()}) do
-        :ets.update_counter(@hints, :count, {2, -1})
+      unless SystemsRuntime.ETS.insert_new(
+               @hints,
+               {{agent, session}, SystemsClock.monotonic_time()}
+             ) do
+        SystemsRuntime.ETS.update_counter(@hints, :count, {2, -1})
       end
     else
-      :ets.update_counter(@hints, :count, {2, -1})
+      SystemsRuntime.ETS.update_counter(@hints, :count, {2, -1})
     end
 
     :ok
@@ -38,15 +41,15 @@ defmodule SalixAgent.SessionHistory.Worker do
   end
 
   def pending_hints do
-    @hints |> :ets.tab2list() |> Enum.reject(fn {key, _} -> key == :count end)
+    @hints |> SystemsRuntime.ETS.tab2list() |> Enum.reject(fn {key, _} -> key == :count end)
   rescue
     _ -> []
   end
 
   def take_key(key) do
-    case :ets.take(@hints, key) do
+    case SystemsRuntime.ETS.take(@hints, key) do
       [{^key, _}] ->
-        :ets.update_counter(@hints, :count, {2, -1})
+        SystemsRuntime.ETS.update_counter(@hints, :count, {2, -1})
         key
 
       [] ->
@@ -56,10 +59,11 @@ defmodule SalixAgent.SessionHistory.Worker do
     _ -> nil
   end
 
-  def init_queue, do: :ets.new(@hints, [:named_table, :public, :set, write_concurrency: true])
+  def init_queue,
+    do: SystemsRuntime.ETS.new(@hints, [:named_table, :public, :set, write_concurrency: true])
 
   def init(_) do
-    send(self(), :tick)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :tick)
     {:ok, 0}
   end
 
@@ -77,7 +81,7 @@ defmodule SalixAgent.SessionHistory.Worker do
     end)
 
     if rem(n, 10) == 0, do: safely("session_history_discovery", &discover/0)
-    Process.send_after(self(), :tick, 250)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, 250)
     {:noreply, n + 1}
   end
 
@@ -149,7 +153,11 @@ defmodule SalixAgent.SessionHistory.Worker do
 
   def cold,
     do:
-      Application.get_env(:salix_agent, :session_history_cold, SalixAnalytics.SessionHistoryIndex)
+      SystemsRuntime.get_env(
+        :salix_agent,
+        :session_history_cold,
+        SalixAnalytics.SessionHistoryIndex
+      )
 
   def discover do
     cursor = Hot.discovery_cursor()
@@ -183,7 +191,7 @@ defmodule SalixAgent.SessionHistory.Worker do
   end
 
   def safely(operation, fun) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     result =
       try do
@@ -196,9 +204,9 @@ defmodule SalixAgent.SessionHistory.Worker do
 
     outcome = if match?({:error, _}, result), do: "error", else: "ok"
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix, :operation, :stop],
-      %{duration: System.monotonic_time() - started},
+      %{duration: SystemsClock.monotonic_time() - started},
       %{component: "salix_agent", operation: operation, outcome: outcome, surface: "system"}
     )
 

@@ -12,7 +12,7 @@ defmodule CommaWeb.PluginConnections do
   alias Salix.Control.Plugins, as: SalixPlugins
 
   @legacy_connection_kinds ~w(managed_oauth native_mcp_oauth)
-  @member_toolkits ~w(slack gmail googlecalendar googledrive)
+  @member_toolkits ~w(slack gmail googlecalendar googledrive outlook)
 
   # Installation and personal use are separate facts. This owner-only status
   # projects current connection metadata and the exact Comma member receipt.
@@ -639,6 +639,14 @@ defmodule CommaWeb.PluginConnections do
     with {:ok, status} <- get(user, session, workspace_id, plugin_id),
          {:ok, installed} <- installed_plugin(user, session, workspace_id, plugin_id) do
       cond do
+        plugin_id == "x-twitter" ->
+          with {:ok, _} <- PluginInstallAttempts.invalidate_locked(attempt) do
+            install_with_credentials(user, session, workspace_id, plugin_id, installed, opts)
+          end
+
+        get_in(status, ["connection", "kind"]) == "mcp_api_key" ->
+          install_with_credentials(user, session, workspace_id, plugin_id, installed, opts)
+
         installed["installed"] == true and
             (status["connection"] == nil or
                get_in(status, ["connection", "state"]) == "connected") ->
@@ -659,6 +667,31 @@ defmodule CommaWeb.PluginConnections do
 
         true ->
           begin_fresh_install(user, session, workspace_id, plugin_id, status, attempt)
+      end
+    end
+  end
+
+  defp install_with_credentials(user, session, workspace_id, plugin_id, plugin, opts) do
+    with {:ok, workspace} <- Workspaces.authorize(user, session, workspace_id),
+         {:ok, definition} <- plugin_definition(workspace, plugin_id) do
+      if Map.has_key?(opts, "config_values") do
+        with :ok <-
+               PluginSetup.configure_credentials(
+                 workspace["salix_tenant_id"],
+                 workspace["default_group_id"],
+                 definition,
+                 opts["config_values"],
+                 if(plugin_id == "x-twitter", do: "x-api-key"),
+                 app_only: plugin_id == "x-twitter"
+               ),
+             {:ok, installed} <- Plugins.install(user, session, workspace_id, plugin_id) do
+          {:ok, install_result(installed, nil)}
+        end
+      else
+        {:ok,
+         plugin
+         |> install_result(nil)
+         |> Map.put("configuration", PluginSetup.credential_setup(definition))}
       end
     end
   end
@@ -732,7 +765,7 @@ defmodule CommaWeb.PluginConnections do
   defp record_member_consent(user, session, workspace_id, account) do
     toolkit = account_toolkit(account)
 
-    if toolkit in ~w(gmail googlecalendar googledrive slack github linear) do
+    if toolkit in ~w(gmail googlecalendar googledrive outlook slack github linear) do
       Comma.MemberSourceConsents.record(user, session, workspace_id, toolkit, account["id"])
     else
       {:ok, :ok}
@@ -996,6 +1029,8 @@ defmodule CommaWeb.PluginConnections do
     end
   end
 
+  defp plugin_auth_state?(%{"plugin_id" => "x-twitter"}, _auth), do: false
+
   defp plugin_auth_state?(definition, auth) do
     connections = get_in(definition, ["setup", "connections"]) |> List.wrap()
 
@@ -1213,12 +1248,57 @@ defmodule CommaWeb.PluginConnections do
 
     with :ok <- disconnect_composio_connections(workspace, connections),
          :ok <- disconnect_managed_oauth_connections(workspace, connections),
+         :ok <- disconnect_api_key_connections(workspace, definition, connections),
          :ok <- disconnect_native_mcp_connections(workspace, definition, connections) do
+      # A disconnected grant keeps no pooled member items: Composio accounts by
+      # toolkit, managed OAuth grants by provider (the Routine toolkit name).
       Comma.MemberSourceConsents.forget_toolkits(
         workspace["id"],
-        connections |> Enum.filter(&(&1["kind"] == "composio")) |> Enum.map(& &1["toolkit"])
+        Enum.flat_map(connections, fn
+          %{"kind" => "composio", "toolkit" => toolkit} when is_binary(toolkit) ->
+            [toolkit]
+
+          %{"kind" => "managed_oauth", "provider" => provider} when is_binary(provider) ->
+            [provider]
+
+          _ ->
+            []
+        end)
       )
     end
+  end
+
+  defp disconnect_api_key_connections(workspace, definition, connections) do
+    ids = for %{"kind" => "mcp_api_key", "id" => id} <- connections, do: id
+    mcps = get_in(definition, ["setup", "mcps"]) || []
+
+    mcps
+    |> Enum.filter(fn mcp -> Enum.any?(mcp["auth_refs"] || [], &(&1 in ids)) end)
+    |> Enum.reduce_while(:ok, fn mcp, :ok ->
+      case SalixMCP.Store.find_binding_by_alias(
+             workspace["salix_tenant_id"],
+             workspace["default_group_id"],
+             mcp["alias"]
+           ) do
+        {:ok, binding} ->
+          if binding["mcp_id"] == mcp["mcp_id"] and
+               binding["target_ref"] == mcp["target_ref"] do
+            case SalixMCP.Gateway.delete_binding(
+                   workspace["salix_tenant_id"],
+                   workspace["default_group_id"],
+                   binding["binding_id"]
+                 ) do
+              :ok -> {:cont, :ok}
+              {:error, _} = error -> {:halt, error}
+            end
+          else
+            {:cont, :ok}
+          end
+
+        {:error, :not_found} ->
+          {:cont, :ok}
+      end
+    end)
   end
 
   defp disconnect_composio_connections(workspace, connections) do
@@ -1256,7 +1336,11 @@ defmodule CommaWeb.PluginConnections do
   end
 
   defp disconnect_managed_oauth_connections(workspace, connections) do
-    managed = Enum.filter(connections, &(&1["kind"] == "managed_oauth"))
+    managed =
+      Enum.filter(
+        connections,
+        &(&1["kind"] == "managed_oauth" and &1["disconnect_on_uninstall"] != false)
+      )
 
     workspace["default_group_id"]
     |> OAuthBindings.list()
@@ -1340,7 +1424,7 @@ defmodule CommaWeb.PluginConnections do
     composio = Enum.filter(setup["connections"] || [], &(&1["kind"] == "composio"))
 
     if composio == [] do
-      preferred_connection(definition)
+      preferred_connection(definition, workspace["default_group_id"])
     else
       case Salix.Composio.list_all_group_connected_accounts(
              workspace["salix_tenant_id"],
@@ -1474,6 +1558,11 @@ defmodule CommaWeb.PluginConnections do
   defp preferred_connection(_definition),
     do: {:error, {:bad_request, "this plugin has no connectable data source"}}
 
+  defp preferred_connection(%{"plugin_id" => "x-twitter"} = definition, _group_id),
+    do: {:ok, Enum.find(get_in(definition, ["setup", "connections"]), &(&1["id"] == "x-api-key"))}
+
+  defp preferred_connection(definition, _group_id), do: preferred_connection(definition)
+
   defp legacy_connection?(connection, referenced_ids) do
     connection["kind"] in @legacy_connection_kinds and connection["id"] in referenced_ids
   end
@@ -1522,7 +1611,7 @@ defmodule CommaWeb.PluginConnections do
          group_id
        ) do
     {connection, configuration} =
-      case preferred_connection(definition) do
+      case preferred_connection(definition, group_id) do
         {:ok, %{"kind" => "composio"} = preferred} ->
           composio =
             definition

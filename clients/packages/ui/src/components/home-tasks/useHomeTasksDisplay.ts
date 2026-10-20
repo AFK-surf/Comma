@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { uiClock } from "../../clock";
 import { isReducedMotionEnabled, motionDuration } from "../../tokens";
 import type { TaskSummaryViewModel } from "../task-workspace/TaskSummaryCard";
 import type { TaskStatusBucket } from "../task-workspace/taskStatus";
 
 export const HOME_TASKS_BUCKET_ORDER: readonly TaskStatusBucket[] = [
-  "backlog",
   "in_progress",
   "needs_review",
   "done",
@@ -123,11 +123,8 @@ export function useHomeTasksDisplay<T extends TaskSummaryViewModel>(
 
   useEffect(() => {
     if (!outgoing) return undefined;
-    const timer = window.setTimeout(
-      () => setOutgoing(null),
-      motionDuration.stateChange
-    );
-    return () => window.clearTimeout(timer);
+    const timer = uiClock.after(motionDuration.stateChange, () => setOutgoing(null));
+    return () => timer();
   }, [outgoing]);
 
   useEffect(() => {
@@ -179,16 +176,16 @@ export function useHomeTasksDisplay<T extends TaskSummaryViewModel>(
 
   useEffect(() => {
     if (!current.entries.some((entry) => entry.state === "leaving")) return undefined;
-    const timer = window.setTimeout(
+    const timer = uiClock.after(
+      isReducedMotionEnabled() ? 0 : motionDuration.feedbackOut,
       () => {
         setCurrent((panel) => ({
           ...panel,
           entries: panel.entries.filter((entry) => entry.state !== "leaving"),
         }));
-      },
-      isReducedMotionEnabled() ? 0 : motionDuration.feedbackOut
+      }
     );
-    return () => window.clearTimeout(timer);
+    return () => timer();
   }, [current.entries]);
 
   // Once a "new" card's pop has finished, settle it so it rejoins the FLIP
@@ -199,7 +196,12 @@ export function useHomeTasksDisplay<T extends TaskSummaryViewModel>(
     if (newCount === 0) return undefined;
     const cascade =
       Math.min(newCount - 1, HOME_TASKS_MAX_NEW_STAGGER) * motionDuration.revealStagger;
-    const timer = window.setTimeout(
+    const timer = uiClock.after(
+      // Pop delay + duration + batch cascade, plus one extra beat so the
+      // transition is guaranteed to have finished before its rules are removed.
+      isReducedMotionEnabled()
+        ? 0
+        : motionDuration.iconSwap + 2 * motionDuration.submenuOpenDelay + cascade,
       () => {
         setCurrent((panel) => ({
           ...panel,
@@ -207,14 +209,9 @@ export function useHomeTasksDisplay<T extends TaskSummaryViewModel>(
             entry.state === "new" ? { ...entry, state: "settled" } : entry
           ),
         }));
-      },
-      // Pop delay + duration + batch cascade, plus one extra beat so the
-      // transition is guaranteed to have finished before its rules are removed.
-      isReducedMotionEnabled()
-        ? 0
-        : motionDuration.iconSwap + 2 * motionDuration.submenuOpenDelay + cascade
+      }
     );
-    return () => window.clearTimeout(timer);
+    return () => timer();
   }, [current.entries]);
 
   return { current, direction, outgoing };

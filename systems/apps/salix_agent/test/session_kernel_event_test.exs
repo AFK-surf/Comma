@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelEventTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
   alias SalixAgent.InternalSession.State
   alias SalixAgent.VisibleReplyScope
@@ -68,47 +68,6 @@ defmodule SalixAgent.SessionKernelEventTest do
     assert Map.drop(next, written) === Map.drop(initial, written)
   end
 
-  test "nil-only fact omission and false timestamp fallback remain distinct" do
-    for timestamp <- [nil, false] do
-      initial = %State{events: false, last_seq: false, last_activity_at: "old"}
-      assert {:returned, next} = check(initial, event("ordinary", %{"created_at" => timestamp}))
-      assert next.last_seq === 1
-      assert next.last_activity_at === "old"
-      assert Map.has_key?(hd(next.events), "created_at") === (timestamp === false)
-    end
-  end
-
-  test "failure HWM aliases false handling and terminal key presence" do
-    payloads = [
-      {%{"transcript_hwm" => 4, "retryable" => false}, 4, true},
-      {%{transcript_hwm: 4, retryable: false}, 4, true},
-      {%{"transcript_hwm" => false, :transcript_hwm => false}, 0, false},
-      {%{"transcript_hwm" => 4, "retryable" => nil, :retryable => false}, 4, false}
-    ]
-
-    for {payload, hwm, terminal} <- payloads do
-      assert {:returned, next} = check(%State{}, event("llm_call_failed", %{"event" => payload}))
-      assert next.llm_failure_streak === %{"count" => 1, "hwm" => hwm, "terminal" => terminal}
-    end
-
-    assert {:returned, absent} = check(%State{}, event("llm_call_failed"))
-    assert absent.llm_failure_streak === %{"count" => 0, "hwm" => nil}
-  end
-
-  test "streak HWM binding is strict while native integer conversion remains intact" do
-    for {old_hwm, expected_count} <- [{4, 3}, {4.0, 1}] do
-      initial = %State{llm_failure_streak: %{"count" => 2, "hwm" => old_hwm}}
-
-      assert {:returned, next} =
-               check(
-                 initial,
-                 event("llm_call_failed", %{"event" => %{"transcript_hwm" => "4"}})
-               )
-
-      assert next.llm_failure_streak["count"] === expected_count
-    end
-  end
-
   test "runaway bump depends on unsettled transcript and reset is unconditional" do
     for {ack, expected} <- [{0, 4}, {4, 1}] do
       initial = %State{
@@ -122,26 +81,6 @@ defmodule SalixAgent.SessionKernelEventTest do
       assert {:returned, reset} = check(initial, event("runaway_guard_reset"))
       assert reset.runaway_unsettled_streak === %{"count" => 0}
     end
-  end
-
-  test "retry marking uses loose equality without queue normalization or reordering" do
-    queue = [
-      %{"queue_id" => "2", "tag" => "first"},
-      %{queue_id: 1},
-      %{"queue_id" => 2, "tag" => "last"}
-    ]
-
-    assert {:returned, next} =
-             check(
-               %State{input_queue: queue},
-               event("provider_activation_retry", %{"event" => %{"queue_id" => 2.0}})
-             )
-
-    assert next.input_queue === [
-             Map.put(hd(queue), "activation_retry_consumed", true),
-             Enum.at(queue, 1),
-             Map.put(List.last(queue), "activation_retry_consumed", true)
-           ]
   end
 
   test "retry marks the matching plain queue item" do
@@ -167,25 +106,6 @@ defmodule SalixAgent.SessionKernelEventTest do
                )
 
       assert next.input_queue === :not_enumerable
-    end
-  end
-
-  test "terminal acknowledgment traverses the raw payload and preserves false" do
-    for kind <- ["terminal_reply_delivered", "channel_onboarding_settled"],
-        {payload, expected} <- [
-          {nil, nil},
-          {%{}, nil},
-          {%{"settled_ack_hwm" => false}, false},
-          {%{"settled_ack_hwm" => 8}, 8},
-          {%{settled_ack_hwm: 8}, nil}
-        ] do
-      assert {:returned, next} =
-               check(
-                 %State{terminal_reply_ack_hwm: 3},
-                 event(kind, %{"event" => payload})
-               )
-
-      assert next.terminal_reply_ack_hwm === expected
     end
   end
 

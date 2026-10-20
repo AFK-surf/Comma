@@ -3,7 +3,7 @@ defmodule SalixSignalProto.Group.CredentialsTest do
   # params, notary signatures, the group auth credential and the expiring
   # profile key credential. The server side (issue, verify) runs too, because
   # the mock storage service and differential tests use it.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.Group.{
     AuthCredential,

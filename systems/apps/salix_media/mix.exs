@@ -29,6 +29,7 @@ defmodule SalixMedia.MixProject do
 
   defp deps do
     [
+      {:systems_clock, in_umbrella: true},
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
       {:bandit, "~> 1.5", only: :test},

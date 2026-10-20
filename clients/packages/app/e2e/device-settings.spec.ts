@@ -16,14 +16,14 @@ test("device cards keep connection and readiness separate and target management 
   await page.addInitScript((id) => {
     localStorage.setItem("comma.activeWorkspaceId", id);
   }, workspaceId);
-  let allowsOperations = false;
+  let access = "read";
   let deviceName = "office-mini";
   let removed = false;
   let failRemove = false;
   let failNext = false;
   let failRefresh = false;
   let validUntil = Math.floor(Date.now() / 1000) + 600;
-  const accessChanges: boolean[] = [];
+  const accessChanges: string[] = [];
   const device = () => ({
     device_id: "dev_office_mac",
     name: deviceName,
@@ -36,12 +36,16 @@ test("device cards keep connection and readiness separate and target management 
     },
     disconnected_at: 1789627075,
     status: "connected",
-    allows_operations: allowsOperations,
-    device_runtimes: Array.from({ length: 3 }, (_, index) => ({
+    allows_operations: access === "full",
+    access,
+    tasks_readiness: "ready",
+    task_models: { claude: ["claude-opus-5-5"] },
+    device_runtimes: Array.from({ length: 2 }, (_, index) => ({
       device_runtime_id: `runtime_${index}`,
-      provider: index === 2 ? "pi" : index === 1 ? "claude" : "codex",
+      provider: index === 1 ? "claude" : "codex",
       status: index === 0 ? "unavailable" : "ready",
       issue: index === 0 ? "authentication_required" : undefined,
+      auth: { status: index === 0 ? "unauthenticated" : "authenticated" },
       version: `1.0.${index}`,
       readiness_checked_at: Math.floor(Date.now() / 1000),
       readiness_valid_until: validUntil,
@@ -66,12 +70,19 @@ test("device cards keep connection and readiness separate and target management 
     let body: unknown = {};
     if (path === "/v1/comma/workspaces") {
       body = { data: [{ id: workspaceId, group_id: "grp_devices_e2e", name: "Main" }] };
+    } else if (path.endsWith("/stations/enrollments") && request.method() === "POST") {
+      body = {
+        token: "tok_e2e",
+        command:
+          "curl -fsSL https://api.comma.test/stations/install.sh | sh -s -- tok_e2e",
+        expires_at: 4_102_444_800,
+      };
     } else if (path.endsWith("/probe") && request.method() === "POST") {
       body = device();
     } else if (path.endsWith("/access") && request.method() === "PUT") {
-      allowsOperations = request.postDataJSON().allow_operations;
-      accessChanges.push(allowsOperations);
-      body = { allows_operations: allowsOperations };
+      access = request.postDataJSON().access;
+      accessChanges.push(access);
+      body = { access, allows_operations: access === "full" };
     } else if (
       path.endsWith("/devices") &&
       new URL(request.url()).searchParams.has("cursor")
@@ -112,10 +123,21 @@ test("device cards keep connection and readiness separate and target management 
             device_id: `dev_extra_${i}`,
             name: `Computer ${i + 1}`,
             allows_operations: false,
+            access: "read",
             status: i === 0 ? "disconnected" : "connected",
             device_runtimes: [],
           })),
         ],
+        cloud_vm: {
+          ...device(),
+          device_id: "dev_cloud_vm",
+          name: "Cloud Workspace",
+          os: "linux",
+          system_info: {},
+          allows_operations: true,
+          access: "full",
+          device_runtimes: [],
+        },
         next_cursor: "page_2",
       };
     } else if (path.endsWith("/devices/dev_office_mac")) {
@@ -151,6 +173,32 @@ test("device cards keep connection and readiness separate and target management 
   const card = panel.getByRole("article").first();
   await expect(card.getByRole("heading", { name: "office-mini" })).toBeVisible();
   await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+  // The Cloud VM has its own section and is not one of the person's computers.
+  await expect(panel.locator(".comma-devices__summary").first()).toHaveText(
+    "19 of your computers on this page · 18 online"
+  );
+  const cloud = panel
+    .getByRole("region", { name: "Cloud VM" })
+    .getByRole("article", { name: "Cloud Workspace", exact: true });
+  await expect(cloud).toBeVisible();
+  await cloud.getByRole("button", { name: /More actions for/ }).click();
+  await expect(page.getByRole("menuitem", { name: "Rename device" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Delete device" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  // Add device is the 28px button of Drive's Transfer: 8px before its icon,
+  // 12px after its label.
+  const addDevice = panel.getByRole("button", { name: "Add device", exact: true });
+  await expect(addDevice).toBeVisible();
+  expect(
+    await addDevice.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return [
+        element.getBoundingClientRect().height,
+        style.paddingLeft,
+        style.paddingRight,
+      ];
+    })
+  ).toEqual([28, "8px", "12px"]);
   await expect(
     card
       .locator("summary")
@@ -159,7 +207,7 @@ test("device cards keep connection and readiness separate and target management 
   ).toBeVisible();
   await card.locator("summary").filter({ hasText: "Codex" }).click();
   await expect(card).toContainText("Version: 1.0.0");
-  await expect(card).toContainText("Authentication: Not reported");
+  await expect(card).toContainText("Authentication: Not signed in");
   await card.locator("summary").filter({ hasText: "Codex" }).click();
   const offline = panel.getByRole("article", { name: "Computer 1", exact: true });
   const firstCard = (await card.boundingBox())!;
@@ -172,6 +220,7 @@ test("device cards keep connection and readiness separate and target management 
   ).toBeVisible();
 
   await expect(card).toContainText("16 GB");
+  await expect(card).toContainText("Ready for Tasks");
   await expect(card).not.toContainText("Disconnected at:");
   await offline.getByRole("button", { name: "Permissions & details" }).click();
   const permissionDialog = page.getByRole("dialog", {
@@ -180,7 +229,7 @@ test("device cards keep connection and readiness separate and target management 
   });
   await expect(permissionDialog).toContainText("Disconnected at:");
   await expect(permissionDialog).toContainText("studio.local");
-  await expect(permissionDialog.getByRole("switch")).toBeDisabled();
+  await expect(permissionDialog.getByRole("radio", { name: /^Full/ })).toBeDisabled();
   await permissionDialog
     .getByRole("button", { name: "Close", exact: true })
     .last()
@@ -190,11 +239,11 @@ test("device cards keep connection and readiness separate and target management 
     name: "office-mini",
     exact: true,
   });
-  const access = localPermissions.getByRole("switch", { name: "Allow operations" });
-  await expect(access).not.toBeChecked();
-  await localPermissions.locator('[data-slot="toggle-base"]').click();
-  await expect(access).toBeChecked();
-  expect(accessChanges).toEqual([true]);
+  const full = localPermissions.getByRole("radio", { name: /^Full/ });
+  await expect(localPermissions.getByRole("radio", { name: /^Read/ })).toBeChecked();
+  await full.click();
+  await expect(full).toBeChecked();
+  expect(accessChanges).toEqual(["full"]);
   await localPermissions
     .getByRole("button", { name: "Close", exact: true })
     .last()
@@ -219,7 +268,8 @@ test("device cards keep connection and readiness separate and target management 
   await expect(
     panel.getByRole("heading", { name: "Computer 18", exact: true })
   ).toBeInViewport();
-  expect(await title.boundingBox()).toEqual(titlePosition);
+  // The title belongs to the page, so it scrolls away with the list.
+  expect((await title.boundingBox())!.y).toBeLessThan(titlePosition!.y);
   await expect
     .poll(() => viewport.evaluate((element) => element.scrollTop))
     .toBeGreaterThan(0);
@@ -249,7 +299,7 @@ test("device cards keep connection and readiness separate and target management 
   await expect(card.getByRole("heading", { name: "office-mini" })).toBeInViewport();
   await expect(
     card.locator("summary").getByText("Check passed", { exact: true })
-  ).toHaveCount(2);
+  ).toHaveCount(1);
   failRefresh = true;
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(panel.getByRole("alert")).toBeVisible();
@@ -261,7 +311,7 @@ test("device cards keep connection and readiness separate and target management 
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(
     card.locator("summary").getByText("Check expired", { exact: true })
-  ).toHaveCount(2);
+  ).toHaveCount(1);
   // The refresh dropped the page read when "Computer 18" scrolled into view.
   // Scrolling to the end asks for it again; this time it fails, and the list
   // offers Retry instead of asking again on its own.
@@ -319,251 +369,11 @@ test("device cards keep connection and readiness separate and target management 
   removed = true;
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(panel.getByRole("heading", { name: "Studio Mac" })).not.toBeVisible();
+  // Adding a computer shows the one-time station install command, in a browser too.
   await panel.getByRole("button", { name: "Add device" }).click();
-  // A browser cannot copy the connect command: it offers the Mac app instead.
-  await page.getByRole("button", { name: "Connect manually" }).click();
-  const prompt = page.getByRole("dialog", { name: "Get Comma for Mac" });
-  await expect(prompt).toContainText("Connecting a device manually needs");
-  await expect(page.getByRole("dialog", { name: "Connect manually" })).toHaveCount(0);
-  await page
-    .context()
-    .route("https://comma.surf/**", (route) =>
-      route.fulfill({ status: 200, contentType: "text/html", body: "" })
-    );
-  const [download] = await Promise.all([
-    page.waitForEvent("popup"),
-    prompt.getByRole("button", { name: "Download" }).click(),
-  ]);
-  expect(download.url()).toBe("https://comma.surf/download?start=mac");
-  await expect(prompt).not.toBeVisible();
-});
-
-test("a completed runtime check preserves an in-flight next page", async ({ page }) => {
-  await installBrowserTestSession(page, {
-    apiBaseUrl,
-    email: "device-pagination@example.com",
-    token: "comma_sess_pagination",
-    userId: "usr_pagination",
-  });
-  await page.addInitScript(
-    (id) => localStorage.setItem("comma.activeWorkspaceId", id),
-    workspaceId
+  const adding = page.getByRole("dialog", { name: "Add device" });
+  await expect(adding.getByTestId("device-install-command")).toHaveText(
+    "curl -fsSL https://api.comma.test/stations/install.sh | sh -s -- tok_e2e"
   );
-  const device = {
-    device_id: "dev_pagination",
-    name: "Checking computer",
-    status: "connected",
-    allows_operations: true,
-    device_runtimes: [
-      {
-        device_runtime_id: "runtime_pagination",
-        provider: "codex",
-        status: "ready",
-        readiness_valid_until: Math.floor(Date.now() / 1000) - 1,
-      },
-    ],
-  };
-  let finishProbe!: () => void;
-  const probe = new Promise<void>((resolve) => (finishProbe = resolve));
-  let finishPage!: () => void;
-  const nextPage = new Promise<void>((resolve) => (finishPage = resolve));
-  let pageRequested = false;
-  await page.route(`${apiBaseUrl}/v1/comma/workspaces**`, async (route) => {
-    const request = route.request();
-    const url = new URL(request.url());
-    const headers = {
-      "access-control-allow-credentials": "true",
-      "access-control-allow-headers":
-        "authorization,content-type,x-comma-session-transport",
-      "access-control-allow-methods": "GET,POST,OPTIONS",
-      "access-control-allow-origin":
-        request.headers().origin ?? "http://127.0.0.1:4173",
-      "content-type": "application/json",
-    };
-    if (request.method() === "OPTIONS") {
-      await route.fulfill({ status: 204, headers, body: "" });
-      return;
-    }
-    let body: unknown = {};
-    if (url.pathname === "/v1/comma/workspaces") {
-      body = { data: [{ id: workspaceId, group_id: "grp_pagination", name: "Main" }] };
-    } else if (url.pathname.endsWith("/probe")) {
-      await probe;
-      device.device_runtimes[0]!.readiness_valid_until =
-        Math.floor(Date.now() / 1000) + 600;
-      body = device;
-    } else if (url.pathname.endsWith("/devices")) {
-      if (url.searchParams.has("cursor")) {
-        expect(url.searchParams.get("cursor")).toBe("page_2");
-        pageRequested = true;
-        await nextPage;
-        body = {
-          devices: [{ ...device, device_id: "dev_next", name: "Next page computer" }],
-          next_cursor: null,
-        };
-      } else {
-        body = {
-          devices: [
-            device,
-            ...Array.from({ length: 18 }, (_, index) => ({
-              ...device,
-              device_id: `dev_filler_${index}`,
-              name: `Computer ${index + 1}`,
-              allows_operations: false,
-              device_runtimes: [],
-            })),
-          ],
-          next_cursor: "page_2",
-        };
-      }
-    }
-    await route.fulfill({ status: 200, headers, body: JSON.stringify(body) });
-  });
-  await page.goto("/#/settings");
-  await page.getByRole("button", { name: "Devices", exact: true }).click();
-  const panel = page.locator('[data-slot="device-settings"]');
-  const card = panel.getByRole("article", { name: "Checking computer", exact: true });
-  await expect(card.getByRole("button", { name: "Checking…" })).toBeDisabled();
-  await panel
-    .getByRole("heading", { name: "Computer 18", exact: true })
-    .scrollIntoViewIfNeeded();
-  await expect.poll(() => pageRequested).toBe(true);
-  // Move away from the pagination sentinel before the check completes. The
-  // requested page must finish without needing another scroll to restart it.
-  await card.scrollIntoViewIfNeeded();
-  finishProbe();
-  await expect(card.locator("summary")).toContainText("Check passed");
-  finishPage();
-  await expect(panel.getByRole("heading", { name: "Next page computer" })).toHaveCount(
-    1
-  );
-  await expect(card.locator("summary")).toContainText("Check passed");
-});
-
-test("expired devices check once per visit, with bounded concurrency and manual retry", async ({
-  page,
-}) => {
-  await installBrowserTestSession(page, {
-    apiBaseUrl,
-    email: "device-probe@example.com",
-    token: "comma_sess_probe",
-    userId: "usr_probe",
-  });
-  await page.addInitScript(
-    (id) => localStorage.setItem("comma.activeWorkspaceId", id),
-    workspaceId
-  );
-  const devices = [
-    "Expired A",
-    "Expired B",
-    "Expired C",
-    "Fresh",
-    "Offline",
-    "Read only",
-  ].map((name, index) => ({
-    device_id: `dev_probe_${index}`,
-    name,
-    status: index === 4 ? "disconnected" : "connected",
-    allows_operations: index !== 5,
-    device_runtimes: [
-      {
-        device_runtime_id: `runtime_probe_${index}`,
-        provider: "codex",
-        status: "ready",
-        readiness_checked_at: Math.floor(Date.now() / 1000) - 700,
-        readiness_valid_until: Math.floor(Date.now() / 1000) + (index === 3 ? 600 : -1),
-      },
-    ],
-  }));
-  const calls: string[] = [];
-  const releases = new Map<string, (success: boolean) => void>();
-  let reads = 0;
-  await page.route(`${apiBaseUrl}/v1/comma/workspaces**`, async (route) => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
-    const headers = {
-      "access-control-allow-credentials": "true",
-      "access-control-allow-headers":
-        "authorization,content-type,x-comma-session-transport",
-      "access-control-allow-methods": "GET,POST,OPTIONS",
-      "access-control-allow-origin":
-        request.headers().origin ?? "http://127.0.0.1:4173",
-      "content-type": "application/json",
-    };
-    if (request.method() === "OPTIONS") {
-      await route.fulfill({ status: 204, headers, body: "" });
-      return;
-    }
-    if (path.endsWith("/probe")) {
-      const id = path.split("/").at(-2)!;
-      calls.push(id);
-      const success = await new Promise<boolean>((resolve) =>
-        releases.set(id, resolve)
-      );
-      releases.delete(id);
-      const device = devices.find((candidate) => candidate.device_id === id)!;
-      if (success)
-        device.device_runtimes[0]!.readiness_valid_until =
-          Math.floor(Date.now() / 1000) + 600;
-      await route.fulfill({
-        status: success ? 200 : 503,
-        headers,
-        body: JSON.stringify(success ? device : { error: "unavailable" }),
-      });
-      return;
-    }
-    if (path.endsWith("/devices")) reads += 1;
-    const body =
-      path === "/v1/comma/workspaces"
-        ? { data: [{ id: workspaceId, group_id: "grp_probe", name: "Main" }] }
-        : path.endsWith("/devices")
-          ? { devices, next_cursor: null }
-          : {};
-    await route.fulfill({ status: 200, headers, body: JSON.stringify(body) });
-  });
-  await page.goto("/#/settings");
-  const enter = () =>
-    page.getByRole("button", { name: "Devices", exact: true }).click();
-  await enter();
-  const card = page.getByRole("article", { name: "Expired A", exact: true });
-  await expect(card.getByRole("button", { name: "Checking…" })).toBeDisabled();
-  await expect.poll(() => calls.length).toBe(2);
-  expect(calls).toEqual(["dev_probe_0", "dev_probe_1"]);
-  await expect(
-    page
-      .getByRole("article", { name: "Offline", exact: true })
-      .getByRole("button", { name: "Check again" })
-  ).toBeDisabled();
-  await expect(
-    page
-      .getByRole("article", { name: "Read only", exact: true })
-      .getByRole("button", { name: "Check again" })
-  ).toBeDisabled();
-  releases.get("dev_probe_1")!(true);
-  await expect.poll(() => calls.length).toBe(3);
-  releases.get("dev_probe_0")!(false);
-  releases.get("dev_probe_2")!(true);
-  await expect(card.getByRole("alert")).toContainText("Could not check agents");
-  await expect(card.locator("summary")).toContainText("Check expired");
-  const previousReads = reads;
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await expect.poll(() => reads).toBeGreaterThan(previousReads);
-  expect(calls).toHaveLength(3);
-  await card.getByRole("button", { name: "Check again" }).click();
-  await expect.poll(() => calls.length).toBe(4);
-  await expect(card.getByRole("button", { name: "Checking…" })).toBeDisabled();
-  releases.get("dev_probe_0")!(true);
-  await expect(card.locator("summary")).toContainText("Check passed");
-  await expect(card.getByRole("alert")).toHaveCount(0);
-  devices[0]!.device_runtimes[0]!.readiness_valid_until =
-    Math.floor(Date.now() / 1000) - 1;
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await expect(card.locator("summary")).toContainText("Check expired");
-  expect(calls).toHaveLength(4);
-  await page.getByRole("button", { name: "General", exact: true }).click();
-  await enter();
-  await expect.poll(() => calls.length).toBe(5);
-  expect(calls.at(-1)).toBe("dev_probe_0");
-  releases.get("dev_probe_0")!(true);
-  await expect(card.locator("summary")).toContainText("Check passed");
+  await expect(adding.getByRole("button", { name: "Ask Router" })).toBeVisible();
 });

@@ -28,12 +28,17 @@ defmodule CommaWeb.Auth do
       CommaWeb.OauthIdpConsent.authorize_path?(conn.request_path) ->
         conn
 
-      telegram_public_path?(conn.request_path) ->
+      integration_public_path?(conn.request_path) ->
         conn
 
       # A public Task Share link is its own authority. Checked before the
       # cookie surface so no session is resolved or required.
       CommaWeb.TaskShareEndpoints.public_path?(conn.request_path) ->
+        conn
+
+      # Stations hold no Comma session: install, releases and enrollment are
+      # public; connect and notify verify the station's own signature.
+      CommaWeb.StationEndpoints.public_path?(conn.request_path) ->
         conn
 
       conn.method == "GET" and conn.request_path == "/v1/comma/billing/plans" ->
@@ -67,9 +72,15 @@ defmodule CommaWeb.Auth do
   defp public_billing_path?("/v1/comma/billing/stripe/checkout/cancel"), do: true
   defp public_billing_path?(_path), do: false
 
-  defp telegram_public_path?("/v1/comma/integrations/telegram/connect/callback"), do: true
-  defp telegram_public_path?("/v1/comma/integrations/telegram/webhook"), do: true
-  defp telegram_public_path?(_path), do: false
+  defp integration_public_path?("/v1/comma/integrations/telegram/connect/callback"), do: true
+  defp integration_public_path?("/v1/comma/integrations/telegram/webhook"), do: true
+  # Linear reaches these two paths without a Comma session: the OAuth callback
+  # carries a one-time state; the webhook carries the application's HMAC.
+  defp integration_public_path?("/v1/comma/integrations/linear/connect/callback"), do: true
+  defp integration_public_path?("/v1/comma/integrations/linear/webhook"), do: true
+  # Photon reaches its webhook without a Comma session; it carries Photon's HMAC.
+  defp integration_public_path?("/v1/comma/integrations/imessage/photon/webhook"), do: true
+  defp integration_public_path?(_path), do: false
 
   defp presented(conn) do
     bearer = bearer_token(conn)
@@ -290,8 +301,8 @@ defmodule CommaWeb.Auth do
   end
 
   defp admin_token do
-    Application.get_env(:comma_web, :api_token) ||
-      Application.get_env(:salix_web, :api_token) ||
+    SystemsRuntime.get_env(:comma_web, :api_token) ||
+      SystemsRuntime.get_env(:salix_web, :api_token) ||
       config_json_admin_token()
   end
 

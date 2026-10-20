@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_title">Settings</string>
+    <string name="settings_open">Open settings</string>
+    <string name="settings_back">Back</string>
+    <string name="settings_cancel">Cancel</string>
+    <string name="settings_save">Save</string>
+
+    <string name="settings_profile">Profile</string>
+    <string name="settings_avatar">Avatar</string>
+    <string name="settings_avatar_choose">Choose image</string>
+    <string name="settings_avatar_remove">Remove avatar</string>
+    <string name="settings_avatar_too_large">This image is too large. Choose another one.</string>
+    <string name="settings_avatar_type">Use a JPEG, PNG, or WebP image.</string>
+    <string name="settings_name">Name</string>
+    <string name="settings_name_description">This is how your name appears in Comma.</string>
+    <string name="settings_name_too_long">Name must be 64 characters or fewer.</string>
+    <string name="settings_name_empty">Name cannot be empty.</string>
+    <string name="settings_email">Email</string>
+    <string name="settings_error_load_profile">Could not load your profile.</string>
+    <string name="settings_error_save_profile">Could not save your profile. Please try again.</string>
+
+    <string name="settings_general">General</string>
+    <string name="settings_language">Language</string>
+    <string name="settings_language_system">Auto detect</string>
+    <string name="settings_language_chinese">Simplified Chinese</string>
+    <string name="settings_label_changes">Label changes</string>
+    <string name="settings_label_changes_description">Let Comma create, edit, and delete workspace labels without asking.</string>
+    <string name="settings_label_changes_ask">Always ask</string>
+    <string name="settings_label_changes_auto">Auto approve</string>
+    <string name="settings_label_changes_error">Couldn’t save label permissions. Try again.</string>
+    <string name="settings_reply_notifications">Reply notifications</string>
+    <string name="settings_reply_notifications_description">Get notified when a reply finishes after you leave the app. Replies are shown only on this device.</string>
+    <string name="settings_reply_notifications_on">On</string>
+    <string name="settings_reply_notifications_off">Off</string>
+    <string name="settings_reply_notifications_blocked">Off in system settings</string>
+
+    <string name="settings_appearance">Appearance</string>
+    <string name="settings_theme">Theme</string>
+    <string name="settings_theme_system">System</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_font_size">Font size</string>
+    <string name="settings_font_size_default">Default</string>
+    <string name="settings_font_size_large">Large</string>
+    <string name="settings_error_local">Could not save this setting. Please try again.</string>
+
+    <string name="settings_account">Account</string>
+    <string name="settings_devices">Devices</string>
+    <string name="settings_devices_signed_in">Signed in</string>
+    <string name="settings_devices_loading">Loading…</string>
+    <string name="settings_devices_failed">Could not load your devices. Tap to retry.</string>
+    <string name="settings_devices_this_device">This device</string>
+    <string name="settings_devices_last_active">Last active %1$s</string>
+    <string name="settings_devices_unknown">Unknown device</string>
+    <string name="settings_devices_remove">Remove</string>
+    <string name="settings_devices_remove_named">Remove %1$s</string>
+    <string name="settings_devices_remove_title">Remove this device?</string>
+    <string name="settings_devices_remove_message">%1$s will be signed out and will need a new code to sign in.</string>
+    <string name="settings_devices_remove_failed">Could not remove this device. Please try again.</string>
+    <string name="settings_devices_sign_out_others">Sign out of all other devices</string>
+    <string name="settings_devices_sign_out_others_title">Sign out of all other devices?</string>
+    <string name="settings_devices_sign_out_others_message">Every device except this one will be signed out and will need a new code to sign in.</string>
+    <string name="settings_devices_sign_out_others_confirm">Sign out all</string>
+    <string name="settings_devices_sign_out_others_failed">Could not sign out the other devices. Please try again.</string>
+    <string name="settings_sign_out">Sign out</string>
+    <string name="settings_sign_out_title">Sign out?</string>
+    <string name="settings_sign_out_message">Sign out of Comma on this device.</string>
+
+    <string name="settings_about">About</string>
+    <string name="settings_version">Version</string>
+    <string name="settings_licenses">Open-source licenses</string>
+    <string name="settings_licenses_intro">Comma uses the following third-party components. Tap one to read its license.</string>
+    <string name="settings_licenses_commercial">Commercial license</string>
+</resources>

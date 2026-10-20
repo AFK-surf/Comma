@@ -7,18 +7,33 @@ defmodule SalixAgent.LoopEnvDispatchFixture do
   """
 
   @registered :loop_env_dispatch_test
+  @stdout_key {__MODULE__, :stdout}
 
-  def register(pid \\ self()) do
-    if Process.whereis(@registered), do: Process.unregister(@registered)
+  def register(pid \\ SystemsRuntime.Proc.self()) do
+    if SystemsRuntime.Proc.whereis(@registered), do: Process.unregister(@registered)
     Process.register(pid, @registered)
+    SystemsRuntime.PersistentTerm.put(@stdout_key, %{})
+    :ok
+  end
+
+  @doc "Answer `command` with `stdout` instead of the echo, until the next `register/1`."
+  def stdout_for(command, stdout) when is_binary(command) and is_binary(stdout) do
+    SystemsRuntime.PersistentTerm.put(
+      @stdout_key,
+      Map.put(SystemsRuntime.PersistentTerm.get(@stdout_key, %{}), command, stdout)
+    )
+
     :ok
   end
 
   def exec(agent_id, target, command, opts) do
-    if pid = Process.whereis(@registered),
-      do: send(pid, {:loop_env_exec, agent_id, target, command, opts})
+    if pid = SystemsRuntime.Proc.whereis(@registered),
+      do: SystemsRuntime.Proc.send(pid, {:loop_env_exec, agent_id, target, command, opts})
 
-    {:ok, %{"exit_code" => 0, "stdout" => "ran: " <> command, "stderr" => ""}}
+    stdout =
+      Map.get(SystemsRuntime.PersistentTerm.get(@stdout_key, %{}), command, "ran: " <> command)
+
+    {:ok, %{"exit_code" => 0, "stdout" => stdout, "stderr" => ""}}
   end
 
   def list_devices(_agent_id, _opts), do: {:error, :no_environment}

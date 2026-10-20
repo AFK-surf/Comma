@@ -69,6 +69,26 @@ defmodule CommaWeb.ProactiveMailSource do
     with {:ok, parts} <- parts(message["payload"] || %{}, 0), do: body_text(parts)
   end
 
+  @doc """
+  The body of one Gmail API message for its source quote: `{:mail, text}` from
+  its text/plain parts, else `{:mail_html, html}`, so HTML mail keeps its lines.
+  `nil` without a body.
+  """
+  def quote_body(message) when is_map(message) do
+    with {:ok, parts} <- parts(message["payload"] || %{}, 0),
+         {:ok, [{type, _data} | _] = bodies} <- bodies(parts) do
+      body = Enum.map_join(bodies, "\n", &elem(&1, 1))
+
+      cond do
+        String.trim(body) == "" -> nil
+        type == "text/html" -> {:mail_html, body}
+        true -> {:mail, body}
+      end
+    else
+      _ -> nil
+    end
+  end
+
   defp normalize_messages(messages) do
     Enum.reduce_while(messages, {:ok, []}, fn message, {:ok, acc} ->
       case normalize_message(message) do
@@ -131,37 +151,44 @@ defmodule CommaWeb.ProactiveMailSource do
   defp parts(_, _), do: {:error, :invalid_mail_mime}
 
   defp body_text(parts) do
+    with {:ok, bodies} <- bodies(parts) do
+      bodies
+      |> Enum.map_join("\n", fn
+        {"text/html", data} ->
+          case Floki.parse_document(data) do
+            {:ok, tree} -> tree |> Floki.filter_out("script,style") |> Floki.text(sep: " ")
+            _ -> ""
+          end
+
+        {_plain, data} ->
+          data
+      end)
+      |> String.trim()
+      |> then(&{:ok, &1})
+    end
+  end
+
+  # The decoded inline bodies: the text/plain parts, else the text/html parts.
+  defp bodies(parts) do
     inline = Enum.filter(parts, &(&1["filename"] in [nil, ""]))
     plain = Enum.filter(inline, &(&1["mimeType"] == "text/plain"))
 
     selected =
       if plain == [], do: Enum.filter(inline, &(&1["mimeType"] == "text/html")), else: plain
 
-    Enum.reduce_while(selected, {:ok, []}, fn part, {:ok, texts} ->
+    Enum.reduce_while(selected, {:ok, []}, fn part, {:ok, bodies} ->
       case Base.url_decode64(get_in(part, ["body", "data"]) || "", padding: false) do
         {:ok, data} when data != "" ->
-          if String.valid?(data) do
-            text =
-              if part["mimeType"] == "text/html" do
-                case Floki.parse_document(data) do
-                  {:ok, tree} -> tree |> Floki.filter_out("script,style") |> Floki.text(sep: " ")
-                  _ -> ""
-                end
-              else
-                data
-              end
-
-            {:cont, {:ok, [text | texts]}}
-          else
-            {:halt, {:error, :mail_body_encoding_unavailable}}
-          end
+          if String.valid?(data),
+            do: {:cont, {:ok, [{part["mimeType"], data} | bodies]}},
+            else: {:halt, {:error, :mail_body_encoding_unavailable}}
 
         _ ->
           {:halt, {:error, :mail_body_unavailable_or_too_large}}
       end
     end)
     |> case do
-      {:ok, texts} -> {:ok, texts |> Enum.reverse() |> Enum.join("\n") |> String.trim()}
+      {:ok, bodies} -> {:ok, Enum.reverse(bodies)}
       error -> error
     end
   end
@@ -187,5 +214,5 @@ defmodule CommaWeb.ProactiveMailSource do
   defp valid_id?(id),
     do: is_binary(id) and byte_size(id) in 1..128 and Regex.match?(~r/^[A-Za-z0-9_-]+$/, id)
 
-  defp client, do: Application.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
+  defp client, do: SystemsRuntime.get_env(:salix_web, :composio_client_mod, SalixStore.Composio)
 end

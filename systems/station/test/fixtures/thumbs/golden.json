@@ -1,0 +1,92 @@
+{
+  "shot.png": {
+    "size": 2437442,
+    "thumbnail": {
+      "type": "image/jpeg",
+      "sha256": "40d889ab9a3df8a1c0932d47d4694774944bff0c2f5c13eb7ea73a872ce0228a",
+      "bytes": 337411,
+      "width": 720,
+      "height": 480
+    },
+    "thumbhash": "HwgCBYBFRTVBQTFjZQQDY1ggl/u8"
+  },
+  "tall.png": {
+    "size": 1923887,
+    "thumbnail": {
+      "type": "image/jpeg",
+      "sha256": "2e6d087fedf50cb0935f444f30872f906a2312b1b512b6f5b414a13c05710352",
+      "bytes": 118084,
+      "width": 200,
+      "height": 600
+    },
+    "thumbhash": "HwgCAgBzBnd0Bkd2iAi4iI8="
+  },
+  "cut.png": {
+    "size": 1175225,
+    "thumbnail": {
+      "type": "image/png",
+      "sha256": "1dbaa4f7bb550252572b5b18d16ed1c56701e664371bac47a68e1faf42249460",
+      "bytes": 423825,
+      "width": 600,
+      "height": 600
+    },
+    "thumbhash": "3weCBQBYaHiSTMApCSr0kMT0gIqIiHiIiA=="
+  },
+  "icon.png": {
+    "size": 9923,
+    "thumbnail": null,
+    "thumbhash": "17YCDwRUU1YFd2VkV1iHVXZn5f3Yd/gH"
+  },
+  "clear.png": {
+    "size": 293,
+    "thumbnail": null,
+    "thumbhash": "VxuDA4BY8sA/1GzjT4sBS3CKeId4d3g="
+  },
+  "broken.png": {
+    "size": 204800,
+    "thumbnail": null,
+    "thumbhash": null
+  },
+  "moving.gif": {
+    "size": 204800,
+    "thumbnail": null,
+    "thumbhash": null
+  },
+  "notes.txt": {
+    "size": 2,
+    "thumbnail": null,
+    "thumbhash": null
+  },
+  "photo.jpg": {
+    "size": 78805,
+    "thumbnail": {
+      "type": "image/jpeg",
+      "sha256": "1cf3b46a011d6306410b5d93ddb5e1bc289853facdc9d0d3dcc700cbd190a0b7",
+      "bytes": 25367,
+      "width": 400,
+      "height": 600
+    },
+    "thumbhash": "4AcKPRp/iIGHiId3iHiIiH6ABwh4"
+  },
+  "photo-small.jpg": {
+    "size": 1521,
+    "thumbnail": null,
+    "thumbhash": "VNcGLARPClhWnWVrd4fQbbz3Rg=="
+  },
+  "icon.webp": {
+    "size": 6242,
+    "thumbnail": null,
+    "thumbhash": "17YCDwRUU1YFd2VkV1iHVXZn5f3Yd/gH"
+  },
+  "wide.webp": {
+    "size": 154864,
+    "thumbnail": {
+      "type": "image/jpeg",
+      "sha256": "4d608d8ffc325eb45a498e10be3b338434dae82f373ee0f6afe41e40df40e4c0",
+      "bytes": 23725,
+      "width": 720,
+      "height": 284
+    },
+    "thumbhash": "4AcKQ5pxeIpweIiIcHEH93c="
+  }
+}

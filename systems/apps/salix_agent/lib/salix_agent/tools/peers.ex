@@ -1,12 +1,13 @@
 defmodule SalixAgent.Tools.Peers do
   @moduledoc """
-  Remote environment tools. Agent management lives in Tools.AgentManagement;
-  environment target discovery lives in Tools.RuntimeTargets.
+  Remote environment tools. Agent management lives in Tools.AgentManagement.
   Funs follow the SalixAgent.Tools contract: (args, ctx), returning content or
   a tool failure. Context carries the owning Agent and Session identities.
 
-  Environment tools route through the `SalixAgent.EnvDispatch` seam
-  (configured via `Application.get_env(:salix_agent, :env_dispatch, ...)`,
+  A target whose device_id is `station:<id>` is a still.fail station and
+  routes through `SalixAgent.Stations.Env` (exec, process and copy only).
+  Other environment tools route through the `SalixAgent.EnvDispatch` seam
+  (configured via `SystemsRuntime.get_env(:salix_agent, :env_dispatch, ...)`,
   default `SalixAgent.EnvDispatch.None`). When the seam reports
   `{:error, :no_environment}`, tools raise willow's ToolUnavailable-shaped
   message: `tool "<name>" unavailable (not_installed): no environment
@@ -81,6 +82,7 @@ defmodule SalixAgent.Tools.Peers do
       {"env.exec",
        "Execute a shell command on a remote environment. Always provide a short description under 20 characters explaining what the command is for. Requires device_id and environment (the stable environment_id from device.get). Commands without an already-available completion continue as background tool calls and report completion through session notifications. " <>
          "Use credential_env to inject group-scoped OAuth credentials (e.g. GitHub, Linear, Notion) into specific environment variables for this single subprocess. " <>
+         "The command runs in a POSIX shell (sh) on every OS, Git Bash on Windows; on a Windows device set shell to powershell for a PowerShell command. " <>
          "On macOS, an authorized action can request native OS authorization with osascript's `do shell script ... with administrator privileges`. " <>
          "A permission error does not automatically request elevation. Set a bounded timeout that allows user interaction. " <>
          "Do not resubmit a running command. On cancellation, do not retry without renewed user authorization. " <>
@@ -95,7 +97,7 @@ defmodule SalixAgent.Tools.Peers do
        "Read recent output from a long-lived process in a connector-backed environment, optionally waiting for new output.",
        &__MODULE__.process_tail/2, @normal_auto_wait_seconds},
       {"env.copy",
-       "Copy a file between any two environments (VFS or remote). Use src_environment and dst_environment, with src_device_id/dst_device_id for each remote side; pass vfs for agent-owned files. Set src_agent_id or dst_agent_id (vfs only) to copy from or to a group-local peer agent's vfs; use known Agent ids supplied by the Router or Task context.",
+       "Copy a file between any two environments (VFS or remote).\n\nUse src_environment and dst_environment, with src_device_id/dst_device_id for each remote side; pass vfs for agent-owned files. Set src_agent_id or dst_agent_id (vfs only) to copy from or to a group-local peer agent's vfs; use known Agent ids supplied by the Router or Task context.",
        &__MODULE__.copy/2, @normal_auto_wait_seconds},
       {"device.list",
        "Discover one bounded page of devices in the current workspace. Use device.get with a device_id for its environments, permissions and runtime details. Known device and environment ids can be used directly without discovery.",
@@ -379,7 +381,7 @@ defmodule SalixAgent.Tools.Peers do
     do: copy_source_stream(FileBackend.stream(ctx, path), path)
 
   defp read_copy_source(ctx, env, path) do
-    case EnvDispatch.read_stream(ctx.agent_id, env, path) do
+    case env_dispatch(ctx, env, :read_stream, [path]) do
       {:ok, stream, size} ->
         {stream, size}
 
@@ -408,7 +410,7 @@ defmodule SalixAgent.Tools.Peers do
   end
 
   defp write_copy_destination(ctx, env, path, stream) do
-    case EnvDispatch.write_stream(ctx.agent_id, env, path, stream) do
+    case env_dispatch(ctx, env, :write_stream, [path, stream]) do
       {:ok, result} ->
         {[], write_stream_result_size(result)}
 
@@ -617,9 +619,13 @@ defmodule SalixAgent.Tools.Peers do
         wd = arg(args, "working_dir")
         if wd == "", do: m, else: Map.put(m, "working_dir", wd)
       end)
+      |> then(fn m ->
+        shell = arg(args, "shell")
+        if shell == "", do: m, else: Map.put(m, "shell", shell)
+      end)
       |> merge_credential_env(args, ctx)
 
-    case EnvDispatch.exec(ctx.agent_id, target, command, opts) do
+    case env_dispatch(ctx, target, :exec, [command, opts]) do
       {:ok, result} when is_map(result) ->
         Jason.encode!(result)
 
@@ -652,7 +658,7 @@ defmodule SalixAgent.Tools.Peers do
     if environment == "" or environment == "vfs",
       do: raise("process_list requires a remote environment")
 
-    case EnvDispatch.process_list(ctx.agent_id, environment_target!(args, environment)) do
+    case env_dispatch(ctx, environment_target!(args, environment), :process_list, []) do
       {:ok, result} ->
         Jason.encode!(result)
 
@@ -685,13 +691,11 @@ defmodule SalixAgent.Tools.Peers do
       %{}
       |> put_optional("append_newline", bool_opt(raw(args, "append_newline")))
 
-    case EnvDispatch.process_write(
-           ctx.agent_id,
-           environment_target!(args, environment),
+    case env_dispatch(ctx, environment_target!(args, environment), :process_write, [
            process_name,
            data,
            opts
-         ) do
+         ]) do
       {:ok, result} ->
         Jason.encode!(result)
 
@@ -726,12 +730,10 @@ defmodule SalixAgent.Tools.Peers do
       |> put_optional("tail_bytes", int_opt(raw(args, "tail_bytes")))
       |> put_optional("wait_seconds", int_opt(raw(args, "wait_seconds")))
 
-    case EnvDispatch.process_tail(
-           ctx.agent_id,
-           environment_target!(args, environment),
+    case env_dispatch(ctx, environment_target!(args, environment), :process_tail, [
            process_name,
            opts
-         ) do
+         ]) do
       {:ok, result} ->
         Jason.encode!(result)
 
@@ -839,7 +841,7 @@ defmodule SalixAgent.Tools.Peers do
           end
         end)
 
-      case EnvDispatch.computer_use(ctx.agent_id, environment_target!(args, environment), payload) do
+      case env_dispatch(ctx, environment_target!(args, environment), :computer_use, [payload]) do
         {:ok, response} when is_map(response) ->
           computer_use_result(action, response, environment_target!(args, environment), ctx)
 
@@ -917,7 +919,7 @@ defmodule SalixAgent.Tools.Peers do
       |> Map.put("environment", environment)
       |> Map.put("action", action)
 
-    case EnvDispatch.android(ctx.agent_id, environment_target!(args, environment), payload) do
+    case env_dispatch(ctx, environment_target!(args, environment), :android, [payload]) do
       {:ok, %{"ok" => false} = response} ->
         raise android_error(response)
 
@@ -1023,6 +1025,17 @@ defmodule SalixAgent.Tools.Peers do
   end
 
   # ---- helpers ----
+
+  # Station targets (`device_id` "station:<id>") go to the station gateway with
+  # the full tool ctx, which carries the requester the station call needs;
+  # every other target keeps the connector seam.
+  defp env_dispatch(ctx, target, fun, args) do
+    if SalixAgent.Stations.station_id(target) do
+      apply(SalixAgent.Stations.Env, fun, [ctx, target | args])
+    else
+      apply(EnvDispatch, fun, [ctx.agent_id, target | args])
+    end
+  end
 
   # willow's ToolUnavailable pattern (internal/tools/tool_unavailable_error.go):
   # the raised message keeps the `tool "X" unavailable (state): reason` shape.

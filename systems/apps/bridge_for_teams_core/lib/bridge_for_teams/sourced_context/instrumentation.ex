@@ -7,19 +7,25 @@ defmodule BridgeForTeams.SourcedContext.Instrumentation do
 
   @spec measure(atom(), (-> result)) :: result when result: var
   def measure(operation, fun) when is_atom(operation) and is_function(fun, 0) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     try do
       result = fun.()
-      Telemetry.emit_operation(operation, outcome(result), System.monotonic_time() - started_at)
+
+      Telemetry.emit_operation(
+        operation,
+        outcome(result),
+        SystemsClock.monotonic_time() - started_at
+      )
+
       result
     rescue
       error ->
-        Telemetry.emit_operation(operation, "error", System.monotonic_time() - started_at)
+        Telemetry.emit_operation(operation, "error", SystemsClock.monotonic_time() - started_at)
         reraise(error, __STACKTRACE__)
     catch
       kind, reason ->
-        Telemetry.emit_operation(operation, "error", System.monotonic_time() - started_at)
+        Telemetry.emit_operation(operation, "error", SystemsClock.monotonic_time() - started_at)
         :erlang.raise(kind, reason, __STACKTRACE__)
     end
   end

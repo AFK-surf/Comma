@@ -1,170 +1,170 @@
 # Salix VM Gateway Release
 
-Worker-only releases use per-VM rollout. A full `wrangler deploy` can replace
-Container disks. Comma Deployment publishes a Container image only after its
-selected mainline Salix release succeeds and the final drain check passes.
-An operator starts Comma Deployment. Its Gateway image job runs automatically
-after the Comma release succeeds. Use the image workflow's manual entry only to
-repair an interrupted mainline release.
+Worker-only releases use per-VM rollout. A full `wrangler deploy` can replace Container disks.
+An operator starts Comma Deployment. Its Gateway image job runs automatically after the selected mainline Salix release succeeds.
+The job publishes a Container image only after the final drain check passes.
+Use the image workflow's manual entry only to repair an interrupted mainline release.
 
 ## Gateway-Only Candidate
 
-CI publishes Worker-only candidates for pushes to `main`/`prod` and manual
-`workflow_dispatch` runs in `.github/workflows/salix-vm-gateway.yml`. The CI job
-builds the connector image payload, uploads a Worker version with explicit
-`GATEWAY_BUILD_ID` and `CONNECTOR_IMAGE_VERSION`, attaches that candidate to the
-active deployment at 0%, and verifies `/healthz` through
-`Cloudflare-Workers-Version-Overrides`. After the smoke passes, CI writes that
-candidate version to Salix `/v1/admin/vm/worker-release` as
-`desired_worker_version_id`.
+CI publishes Worker-only candidates for pushes to `main` or `prod` and for manual `workflow_dispatch` runs of `.github/workflows/salix-vm-gateway.yml`. The job:
 
-The image version is the active Worker's label; it does not prove which image
-each running Container uses. CI does not publish a new Container image, promote
-the candidate to 100%, or force-switch VMs. Salix owns the per-VM rollout.
-Connector changes on `main`/`prod` run checks without publishing an image.
+1. Builds the connector image payload.
+2. Uploads a Worker version with explicit `GATEWAY_BUILD_ID` and `CONNECTOR_IMAGE_VERSION`.
+3. Attaches that candidate to the active deployment at 0%.
+4. Verifies `/healthz` through `Cloudflare-Workers-Version-Overrides`.
+5. Writes the candidate to Salix `/v1/admin/vm/worker-release` as `desired_worker_version_id`.
+
+The image version is the active Worker's label. It does not prove which image each running Container uses.
+CI does not publish a new Container image, promote the candidate to 100%, or force-switch VMs. Salix owns the per-VM rollout.
+Station changes on `main` or `prod` run checks without publishing an image.
+
 Comma Deployment uses the revision embedded in its selected immutable Comma image.
-It skips a repeat Container deploy when the tracked Container runtime sources
-have not changed since the recorded image revision. The recorded revision
-remains the actual source of that image. A change to Comma outside those sources
-does not require a new disk archive. Worker source, package, and TypeScript
-changes do not change the Container image; they use the Worker candidate path.
-Image build recipe changes must update a tracked script or Dockerfile. The
-recorded digest is release history. The job stops if it cannot compare the
-mainline runtime sources.
+It skips a Container deploy when the tracked Container runtime sources have not changed since the recorded image revision.
+A Comma change outside those sources does not need a new disk archive.
+Worker source, package, and TypeScript changes do not change the Container image. They use the Worker candidate path.
+Image build recipe changes must update a tracked script or Dockerfile.
+The job stops if it cannot compare the mainline runtime sources.
 
 ## Container Image Release
+
+Cloudflare Group disks follow the [Cloud VM data policy](../../../docs/compute-devices.md#cloud-vm-data-policy).
+Try bounded recovery. If it fails, the owner may destroy and rebuild the exact VM without another disk-loss approval.
+Keep central Salix data, command fencing, and unknown execution outcomes under their owners.
+Do not restore old pending execution after a destructive reset.
+
+A terminal export failure or an expired restore budget lets the image-release worker request exact owner disposal:
+
+- The worker keeps the release fence and checks the Workload, generation, resource, profile, and operation before disposal.
+  A quiet check, an unknown provider result, or a changed owner does not use this path.
+- The owner seals a higher control revision and destroys the exact carrier.
+  An unresolved native destroy stays pending. A lost response needs an observation of the same completed destroy.
+- Only that receipt advances the Workload generation and removes the current restore pointer. Usable previous archives stay stored.
+- The worker resumes a persisted disposal after process loss. Final drain accepts its exact completed stop receipt without a disk archive.
+- Central unknown input stays unresolved and cannot resume automatically on the empty disk.
+
+For this Worker-only protocol change, wait for the selected mainline Worker candidate and Comma image before deployment.
+Finish the Comma rollout before disposal. The image-release worker uses the published candidate through the version override.
+Do not restore a pre-generation-admission Comma binary after a reset. Use forward repair that keeps the admission checks.
 
 The first control-protocol upgrade changes the Connector image and Gateway together.
 It uses `sandbox_image`, which skips the Worker-only candidate path.
 New Salix drains legacy full archives through the serving old Gateway before the full image deploy.
 Do not publish this Gateway first as a Worker-only upgrade. Old targets cannot prove the new command seal.
 
-Before the first dual-profile Gateway release, the Salix mainline migration
-sets known legacy Group locations to standard-2 and qualifies saved pending
-Gateway start claims. Until that release is deployed, the Gateway answers 404
-for the standard-1 sandbox collection. Salix then marks a new standard-1 Group
-VM `failed` with the error `cloud-vm Gateway does not serve Container profile`
-after one request, and the next use of that VM restarts provisioning. The post-rollout handoff repeats this bounded conversion
-after old writers exit. An unknown location stays unresolved and blocks the drain.
-When tracked Container runtime sources change, the job sets an
-ID-scoped release fence. Managed Gateway attempts
-and the standalone preflight probe use that fence and keep a claim when the
-provider result is uncertain. The job pages the affected Gateway Group
-Workloads and reads every page of each affected Cloudflare Container
-application and instance inventory. The first release can have only the existing
-standard-2 application before deploy. The pinned Wrangler JSON commands return
-only one page, so the release adapter follows Cloudflare's page token. It
-matches Container instances to persisted Group Workload resources in their exact profile.
+Before the first dual-profile Gateway release, the Salix mainline migration sets known legacy Group locations to standard-2 and qualifies saved pending Gateway start claims.
+Until that release is deployed, the Gateway returns 404 for the standard-1 sandbox collection.
+Salix then marks a new standard-1 Group VM `failed` with `cloud-vm Gateway does not serve Container profile` after one request. The next use of that VM provisions it again.
+The post-rollout handoff repeats this bounded conversion after old writers exit. An unknown location stays unresolved and blocks the drain.
+
+When tracked Container runtime sources change, the job sets an ID-scoped release fence.
+Managed Gateway attempts and the standalone preflight probe use that fence and keep a claim when the provider result is uncertain.
+The job pages the affected Gateway Group Workloads and reads every page of each affected Cloudflare Container application and instance inventory.
+It matches Container instances to persisted Group Workload resources in their exact profile.
 Only instances with a business association enter the archive and stop checks.
-Containers without a business association are disposable during image replacement.
-The job ignores them, regardless of their name or state.
-It does not wait for their archive or shutdown.
-It stops for an unsettled Group Gateway start claim, a running or unknown business instance,
-an incomplete page, or a storage error. Inactive Durable Object rows can remain.
+Containers without a business association are disposable during image replacement. The job ignores them, whatever their name or state.
+The job stops for an unsettled Group Gateway start claim, a running or unknown business instance, an incomplete page, or a storage error.
 
-WebSocket attempts retain their exact Sandbox and profile before connection.
-A refused TCP connection, failed DNS lookup, or definitive handshake rejection settles that attempt.
-An uncertain handshake retains one `pending_start` claim per Sandbox and profile.
-A successful connection or ready response settles pending starts from the same owner control revision.
-The carrier retains only its latest terminal command. Salix settles that exact claim before a retry can replace the receipt.
-A later command can replace a concurrent lost-response receipt. The existing seal path settles covered managed claims, or the operator repairs them exactly.
-Active requests retain their claims. The Workload supplies a fixed operation permit, independent of activity revisions.
-The Sandbox DO stores its seal and pending native command across restarts.
-Control and receipt observations never start a stopped Container. Managed commands bypass SDK auto-start retries.
-An exact restored import receipt can settle its pending import. An unresolved command keeps its claim.
-A sealed DO with no pending command settles only qualified claims for that exact location and generation.
-Claims have no age-based expiry. Storage failure or abrupt process loss can still require exact operator repair.
-Historical active claims without a target require operator repair. A current ready response cannot identify their original target.
+A start request keeps its exact Sandbox and profile. The one native start completes it. The Container's station then connects out to Salix by itself.
+A wake's start names the archive to restore (`station.restore`). The value holds one R2 read URL, signed for one hour, of the archive's `restore-manifest` object.
+Salix writes that object at each wake, next to the parts. The manifest lists each part's read URL, signed for the same hour. Archive cleanup deletes it with the parts.
+The Container gets the value as `SALIX_RESTORE_ARCHIVE`. Its entrypoint unpacks the archive onto the empty disk in the station's data directory, then starts the station.
+A Container that cannot restore exits with code 65 and starts no station. Salix reads that stop in `last_stop` and starts another Container inside the restore budget.
 
-Salix records each archive's storage in the Group Workload before it destroys a Sandbox.
-New Connectors use R2. Older Connectors can use Salix S3.
-The job does not survey unrelated services.
-Stopped business Container rows require one exact Group owner with a recorded archive.
-Both profiles share one 75-minute drain deadline from the release fence. Retrying the same release preserves that deadline.
+Gateway start claims:
+
+- An uncertain response keeps one `pending_start` claim per Sandbox and profile. A later completed start or running status from the same owner control revision settles it.
+- The carrier keeps only its latest terminal command. Salix settles that exact claim before a retry can replace the receipt.
+- A later command can replace a concurrent lost-response receipt. The seal path settles covered managed claims, or the operator repairs them exactly.
+- Active requests keep their claims. The Sandbox DO stores its seal and pending native command across restarts.
+- Control and receipt observations never start a stopped Container. Managed commands bypass SDK auto-start retries. An unresolved command keeps its claim.
+- A sealed DO with no pending command settles only qualified claims for that exact location and generation.
+- Claims have no age-based expiry. Storage failure or abrupt process loss can still need exact operator repair.
+- Historical active claims without a target need operator repair. A current ready response cannot identify their original target.
+
+The archive path records storage in the Group Workload before destruction. Stations use R2.
+Stopped business Container rows need one exact Group owner with a recorded archive or confirmed disposal receipt.
+Both profiles share one 75-minute drain deadline from the release fence. A retry of the same release keeps that deadline.
 A new release can take over with its own deadline. This does not reset an existing restore operation's budget.
-This is a wait
-budget, not an ownership lease. Read the exact Group and operation through
-`GET /v1/admin/vm/archive/operation?group_id=...&operation=...` to see packed
-and confirmed uploaded bytes. `packed_at` is the Connector's last pack write;
-`reported_at` is the Salix observation time. Before commit, an administrator can request
-`POST /v1/admin/vm/archive/cancel` with that Group and operation. Salix clears
-the operation only after the Connector stops and the runtime resumes. A failed
-or unknown cancel leaves the Workload in `archiving` for repair.
-An archive in `idle_committing` or `recovery_committing` cannot be cancelled because Container release may have begun.
+This is a wait budget, not an ownership lease.
+
+Read the exact Group and operation with `GET /v1/admin/vm/archive/operation?group_id=...&operation=...` to see packed and confirmed uploaded bytes.
+`packed_at` is the station's last pack write. `reported_at` is the Salix observation time.
+Before commit, an administrator can send `POST /v1/admin/vm/archive/cancel` with that Group and operation.
+Salix clears the operation only after the station stops and resumes. A failed or unknown cancel leaves the Workload in `archiving` for repair.
+An archive in `idle_committing` or `recovery_committing` cannot be cancelled, because Container release may have started.
 The owner resumes a committed archive without exporting again or replacing its previous generation.
-This cancel path requires an updated Connector. An older Connector that rejects
-DELETE needs exact, operator-led recovery; the new API cannot stop its worker.
 
-An archive repair connection accepts existing Runtime events through normal
-capability validation and per-event acknowledgement. This lets the Connector
-settle retained output and reconnect observations before quiet. The connection
-rejects tool requests, input catch-up, and other Connector-originated requests.
+The drain step checks unsettled Gateway starts and the final instance inventory. The job then records `deploying` and runs `wrangler deploy`.
+It checks the active Worker version and starts one fresh, disposable Sandbox in each profile.
+A probe passes when its Container keeps running for a fixed time. The probe can start the same Sandbox again only after control observation confirms it stopped, is unsealed, and has no pending command.
+The owner, operation, generation, and control revision must match the probe. Each retry uses a new command claim. Unknown starts keep their pending state.
+Probe cleanup is best effort and does not block the image release.
+After both probes pass, the job records the observed image digest and the source revision in Salix, then clears the exact release fence.
+The digest is diagnostic provenance and can lag the provider rollout.
 
-The drain step checks unsettled Gateway starts and the final instance inventory
-before it returns. The job then records `deploying` before `wrangler deploy`. It
-checks the active Worker version and starts one fresh, disposable Sandbox in each
-profile for up to 15 minutes. Each probe reads the source
-revision baked into the Connector binary through `/readyz`; a Worker label
-alone cannot prove the Container payload. This revision is release provenance,
-not a security signature. The job disables each probe's keepAlive and requests destruction.
-Probe cleanup is best-effort. The job does not wait for shutdown or block image release on cleanup failure.
-It records the verified source revision in Salix and clears the exact release fence.
-Connector payload verification still blocks release when the fresh probe serves the wrong revision.
+Failure handling:
 
-For a new release, a failure before `deploying` cancels only the matching `prepared` fence.
-It preserves any still-active direct Gateway claim. A failure after `deploying`
-leaves the fence in place. Rerun the failed job in the same Comma Deployment run: it repeats
-the business drain check and full deploy. Unassociated instances from any run do not block that check.
-The job then checks the active Worker and the exact Connector payload in fresh probes for both profiles. It records the image digest and clears
-the fence. If those checks
-fail, keep the fence and investigate the affected application before a
-forward repair from the same approved mainline source. Do not infer success
-from Worker `/healthz`, the release fact, or the image build alone.
-If a newer Comma release succeeds before that retry, its image job takes over
-the existing fence. It still runs the bounded drain check and full deploy before
-it clears that fence. The older run can no longer clear it.
+- A failure before `deploying` cancels only the matching `prepared` fence. It keeps any active direct Gateway claim.
+- A failure after `deploying` leaves the fence in place. Rerun the failed job in the same Comma Deployment run.
+  It repeats the business drain check, full deploy, active Worker check, and fresh probes for both profiles, then records the digest and clears the fence.
+- If those checks fail, keep the fence and investigate the affected application before a forward repair from the same approved mainline source.
+  Do not infer success from Worker `/healthz`, the release fact, or the image build alone.
+- If a newer Comma release succeeds before that retry, its image job takes over the fence. It still runs the drain check and full deploy before it clears the fence. The older run can no longer clear it.
 
 The operator investigates only the affected Group Workloads, their claims, and their associated instances.
-Cloudflare reconciliation tasks use the 55-minute provider claim lease, with 30 seconds reserved for settlement.
-A wake's restore retries share its original 45-minute deadline. An expired deadline prevents more restore writes.
-A requested reconciliation first confirms an exact connected wake before it checks the budget.
-The sweep still parks action-required claims. An exact owner reconciliation can confirm their completed wakes.
-A restored import receipt can also confirm completion after its transfer deadline. It does not authorize target deletion.
-A partial import preserves its target and retained archive. A `restoring` receipt does not authorize target deletion.
-Neither a missing connection nor a matching wake ID proves that accepted work has settled.
-For a managed `waking` target, Salix seals carrier commands and Connector admission before it selects a recovery path.
-A successful quiet seal can report that the target never admitted business work.
-That fact requires the image's consumed birth marker, an initially absent runtime state, and persistent admission history.
-An old or empty disk alone does not prove it. Salix also verifies every retained source archive chunk before deletion.
-An admitted or unknown target requires a quiet recovery checkpoint before deletion.
-Recovery retains native continuation, credentials, runtime identity, and unknown files outside the approved disposable paths.
-It omits Agent workspaces, managed dependency packages, and workspace sweep archives.
-It preserves original Salix Sessions and accepted queues. It does not replay actions with unknown outcomes.
-The restored Agent receives a recovery notice and must rebuild omitted workspace contents.
-Salix retains the previous archive for recovery. This implementation does not collect that held generation automatically.
-After confirmed destruction, the Workload keeps `waking`, its wake ID, and `archive_reason=recovery_rebuild`.
-The release fence blocks its next start until image publication completes.
-The next owner permit advances the control revision and starts one persisted restore-stage budget.
-Legacy targets retain the existing full archive path. They cannot supply new admission or recovery proofs.
-Unknown commands, unresolved work, missing continuation, or unavailable critical credentials require exact repair.
-An existing archive, a disconnected Device, or elapsed time alone cannot authorize deletion.
-The release can replace an unassociated Container disk without an archive.
-Ask the owner only for a specific data-loss choice or the documented shutdown
-or `exclusive` approval. Normal implementation and a passing drain check do
-not require another user decision.
+Automatic restore retries share one 45-minute deadline. An expired deadline parks the operation and stops more restore writes.
+
+To open one new bounded restore episode, call `ComputeReconciler.retry_group_restore(group_id, expected)`:
+
+1. Read the current Workload and claim.
+2. Pass the exact Workload ID, generation, wake ID, restore deadline, target, profile, archive operation, control permit, and claim error.
+
+The owner rejects changed facts, a live claim lease, and a sealed target. The same request cannot renew twice.
+The call keeps the wake, archive, target, permit, queues, and Gateway claims. It does not clear a restore receipt.
+A Container whose restore did not finish is replaced, never restored a second time.
+`retry_runtime_recovery` does not renew a waking Group's restore budget.
+A connected station's restore receipt can confirm completion after its transfer deadline. It does not authorize target deletion.
+A restore runs only before a station starts. A running station accepts no archive.
+
+A recovery archive can keep native continuation and opaque auth and configuration bytes without a harness launch.
+Codex uses saved thread identity and rollout metadata. Pi uses `PI_CODING_AGENT_DIR`, or `~/.pi/agent` when unset.
+A failed checkpoint does not revoke approved disk disposal.
+
+To discard a failed VM, call `Cloudflare.discard_failed_vm(group_id, expected)` after the Comma rollout completes:
+
+1. Pass a fresh exact Workload snapshot.
+2. Confirm the exact carrier stopped before you replace it.
+
+Do not clear receipts or claims through direct database edits. Unknown effects stay unresolved, even after local disk loss.
+The release fence blocks replacement starts until image publication completes.
+Deployment-wide shutdown and `exclusive` migration keep their documented human approval.
+
+## Restore before start: release order
+
+Salix, the Worker, and the image change together in one mainline revision.
+Comma Deployment releases Salix first. The image job then releases the Worker and image. These combinations occur:
+
+| Salix | Worker | Image | A wake of a VM that has an archive |
+| --- | --- | --- | --- |
+| new | old | old | The Worker drops `station.restore`. The station starts on an empty disk. Salix finds no restore receipt and fails the wake with `archive_not_restored_before_start`. |
+| new | new (Worker-only candidate) | old | The image ignores `SALIX_RESTORE_ARCHIVE`. Same failure. |
+| new | new | new | The wake completes on the restored disk. |
+| old (rollback) | new | new | Old Salix asks the station for `archive_import`. The station refuses the unknown method and the wake fails. Do not roll Comma back after the image release. |
+
+The failed wake stays `waking`, keeps `last_error` with the Worker's `connector_image_version` and `gateway_build_id`, and retries inside its 45-minute restore budget.
+The image job's drain rebuilds or disposes of that target under its rules, and the next wake runs on the new image. A wake of a VM without an archive is the same in every combination.
+Version labels do not decide this. The restore receipt on the disk does.
 
 ## Durable Object Lifecycle Migrations
 
-`wrangler versions upload` cannot perform Durable Object lifecycle migrations
-or publish a Container image. These changes require the full image release
-above. The same drain check applies to any manual repair deploy. A dry run and a
-Worker `/healthz` response do not establish disk safety.
+`wrangler versions upload` cannot perform Durable Object lifecycle migrations or publish a Container image.
+These changes need the full image release above. The same drain check applies to any manual repair deploy.
+A dry run and a Worker `/healthz` response do not prove disk safety.
 
 ## Salix controls
 
-Salix selects the desired Worker version for each VM. Use the
-[Cloud VM operations skill](../../../.codex/skills/cf-vm-ops/SKILL.md) for
-per-VM rollout, rollback, and exact Group status. A default-provider change
-affects future VM creation only. Existing Group providers remain persisted.
-For state, leak, and archive diagnostics, use the
-[Cloud VM operations reference](../../DEPLOYMENT.md#operations).
+Salix selects the desired Worker version for each VM.
+Use the [Cloud VM operations skill](../../../.codex/skills/cf-vm-ops/SKILL.md) for per-VM rollout, rollback, and exact Group status.
+A default-provider change affects future VM creation only. Existing Group providers stay persisted.
+For state, leak, and archive diagnostics, use the [Cloud VM operations reference](../../DEPLOYMENT.md#operations).

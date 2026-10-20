@@ -1,6 +1,5 @@
 import VerifiedKernel.Session.Query.Materialize
-import VerifiedKernelProofs.Session.AppendOnly
-import VerifiedKernelProofs.Session.DurableConfirmation
+import VerifiedKernelProofs.Session.AppendOnly.Core
 
 /-! Conservation of accepted input at the queue-to-record boundary.
 Queue acknowledgments retire materialized input, not completed user work.

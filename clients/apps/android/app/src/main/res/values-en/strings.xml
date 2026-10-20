@@ -1,0 +1,66 @@
+<resources>
+<plurals name="photo_count">
+        <item quantity="one">%d photo</item>
+        <item quantity="other">%d photos</item>
+    </plurals>
+    <string name="action_close_conversations">Close the conversation list</string>
+    <string name="action_delete_conversation">Delete this conversation</string>
+    <string name="conversations_empty">No conversations yet. Say something and it will show up here.</string>
+    <string name="conversation_untitled">Untitled conversation</string>
+    <string name="time_today">Today %1$s</string>
+    <string name="time_yesterday">Yesterday %1$s</string>
+
+    <string name="action_copy_message">Copy message</string>
+    <string name="action_copy_code">Copy code</string>
+    <string name="code_block_copy">Copy</string>
+    <string name="action_select_text">Select text</string>
+    <string name="copied">Copied</string>
+    <string name="empty_title">Just ask</string>
+    <string name="empty_subtitle">A clear conversation, in words and pictures.</string>
+    <string name="message_source_voice">Voice</string>
+    <string name="device_phone">Phone</string>
+    <string name="device_mac">Mac</string>
+    <string name="image_preview_title">Picture</string>
+    <string name="image_retry">Retry</string>
+    <string name="image_preview_unavailable">The full-size picture did not load. Tap to retry.</string>
+    <string name="image_preview_other_core">This picture belongs to a different Cloud Agent configuration and cannot be fetched with the current settings.</string>
+    <string name="conversation_loading">Opening conversation…</string>
+    <string name="empty_conversation">Start a conversation</string>
+    <string name="replay_reply">Replay reply</string>
+    <string name="reply_playing">Replying…</string>
+    <string name="reply_complete">Reply complete</string>
+    <string name="conversation_ready">Conversation ready</string>
+    <string name="composer_hint">Send a message</string>
+    <string name="composer_attach">Add attachment</string>
+    <string name="composer_attach_close">Close attachments</string>
+    <string name="composer_attach_camera">Camera</string>
+    <string name="composer_attach_photos">Photos</string>
+    <string name="composer_attach_files">Files</string>
+    <plurals name="composer_attach_full">
+        <item quantity="one">%1$d image added. Remove it to add another.</item>
+        <item quantity="other">All %1$d images added. Remove one to add more.</item>
+    </plurals>
+    <string name="composer_send">Send</string>
+    <string name="composer_mic">Voice input. Tap to dictate, hold to talk</string>
+    <string name="composer_voice_unavailable">Voice input is not available yet</string>
+    <string name="composer_dictation_cancel">Cancel dictation</string>
+    <string name="composer_dictation_confirm">Done</string>
+    <string name="composer_listening">Listening…</string>
+    <string name="composer_recognizing">Transcribing…</string>
+    <string name="composer_hold_hint">Release to send, slide up to cancel</string>
+    <string name="composer_hold_cancel_hint">Release to cancel</string>
+    <string name="composer_hold_auto_end">Sending in %1$d s</string>
+    <string name="composer_voice_empty">Didn\'t catch that. Try again</string>
+    <string name="composer_attach_limit">Limit reached: %1$d at most</string>
+    <string name="composer_attach_dropped">Limit is %1$d. Not added: %2$d</string>
+    <string name="composer_camera_unavailable">No camera app available</string>
+    <string name="composer_uploads_pending">Images are still uploading</string>
+    <string name="composer_attachment_remove">Remove image</string>
+    <string name="composer_attachment_retry">Upload failed. Tap to retry</string>
+    <string name="composer_mic_denied">Microphone access is needed for voice input</string>
+    <string name="composer_mic_denied_forever">Microphone access was denied. Turn it on in Settings</string>
+    <string name="composer_mic_granted_hold">Microphone is on. Hold to talk</string>
+    <string name="composer_asr_network">Voice recognition could not connect. Check your network</string>
+    <string name="composer_asr_microphone">The microphone is busy</string>
+    <string name="composer_asr_failed">Voice recognition failed. Try again</string>
+</resources>

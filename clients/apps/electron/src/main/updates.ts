@@ -3,6 +3,7 @@ import log from "electron-log/main";
 import { UpdateManager, type UpdateInfo, type VelopackAsset } from "velopack";
 import { getElectronDisplayVersion } from "../app-version";
 import { getCommaReleaseConfig } from "../release-config";
+import type { CoreAppUpdates } from "./modules/core";
 
 const releaseConfig = getCommaReleaseConfig();
 const updateUrl = releaseConfig.updateUrl;
@@ -96,4 +97,55 @@ export async function applyUpdate(update: UpdateInfo | VelopackAsset) {
   app.quit();
 
   return true;
+}
+
+/** What the core reads of `getUpdateStatus`. */
+export interface UpdateFeedStatus {
+  configured: boolean;
+  productName?: string | undefined;
+  error?: string | undefined;
+  pendingRestart?: VelopackAsset | null | undefined;
+}
+
+/** The Velopack calls the client core's update ports make (an e2e scripts the same calls). */
+export interface UpdateFeed {
+  status(): UpdateFeedStatus | Promise<UpdateFeedStatus>;
+  check(): Promise<UpdateInfo | null>;
+  download(update: UpdateInfo): Promise<boolean>;
+  apply(update: UpdateInfo | VelopackAsset): Promise<boolean>;
+}
+
+export const velopackUpdateFeed: UpdateFeed = {
+  status: getUpdateStatus,
+  check: checkForUpdate,
+  download: downloadUpdate,
+  apply: applyUpdate,
+};
+
+/**
+ * The client core's update ports (`CoreDesktopHost.updates`): the core decides when to check, download and restart;
+ * a release goes to the core with its version, and comes back as the core got it.
+ */
+export function coreAppUpdates(feed: UpdateFeed): CoreAppUpdates {
+  return {
+    status: async () => {
+      const status = await feed.status();
+      return {
+        configured: status.configured,
+        productName: status.productName,
+        error: status.error,
+        pendingRestart: status.pendingRestart
+          ? { version: status.pendingRestart.Version, release: status.pendingRestart }
+          : undefined,
+      };
+    },
+    check: async () => {
+      const update = await feed.check();
+      return update
+        ? { version: update.TargetFullRelease.Version, release: update }
+        : null;
+    },
+    download: (release) => feed.download(release.release as UpdateInfo),
+    apply: (release) => feed.apply(release.release as UpdateInfo | VelopackAsset),
+  };
 }

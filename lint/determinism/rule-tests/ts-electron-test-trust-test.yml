@@ -1,0 +1,11 @@
+id: ts-electron-test-trust
+valid:
+  - |
+    const server = await startElectronTlsTestServer(handler);
+invalid:
+  - |
+    await app.evaluate(({ session }) => {
+      session.defaultSession.setCertificateVerifyProc((_request, callback) => callback(0));
+    });
+  - |
+    const app = await electron.launch({ args: [main, "--ignore-certificate-errors"] });

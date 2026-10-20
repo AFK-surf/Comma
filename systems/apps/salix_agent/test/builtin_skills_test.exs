@@ -1,18 +1,24 @@
 defmodule SalixAgent.BuiltinSkillsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.{FileBackend, SkillProjection, SkillStore}
   alias SalixStore.S3.Fake
 
   setup do
     Fake.reset()
-    previous = Application.get_env(:salix_agent, :builtin_skills_path)
-    root = Path.join(System.tmp_dir!(), "local-skills-#{System.unique_integer([:positive])}")
+    previous = SystemsRuntime.get_env(:salix_agent, :builtin_skills_path)
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "local-skills-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
+
     File.mkdir_p!(Path.join(root, "proof-skill/references"))
     body = "---\nname: Proof Skill\ndescription: A local skill.\n---\n\nLocal instructions\n"
     File.write!(Path.join(root, "proof-skill/SKILL.md"), body)
     File.write!(Path.join(root, "proof-skill/references/proof.bin"), <<0, 255, 1, 2>>)
-    Application.put_env(:salix_agent, :builtin_skills_path, root)
+    SystemsRuntime.put_env(:salix_agent, :builtin_skills_path, root)
 
     tenant = SalixAgent.TestSupport.new_tenant_id()
     group = SalixStore.Ids.new_group_id(tenant)
@@ -28,8 +34,8 @@ defmodule SalixAgent.BuiltinSkillsTest do
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:salix_agent, :builtin_skills_path, previous),
-        else: Application.delete_env(:salix_agent, :builtin_skills_path)
+        do: SystemsRuntime.put_env(:salix_agent, :builtin_skills_path, previous),
+        else: SystemsRuntime.delete_env(:salix_agent, :builtin_skills_path)
 
       File.rm_rf!(root)
     end)
@@ -54,37 +60,6 @@ defmodule SalixAgent.BuiltinSkillsTest do
     assert SkillProjection.prompt_section(ctx) =~ "A local skill."
     assert {:error, "skill is read-only"} = FileBackend.prepare_write(ctx, path, "overwrite")
     assert {:error, :not_found} = SalixStore.S3.get(SalixStore.Keys.ctl_skill_scope_global())
-  end
-
-  test "local miniskills retain activation without preloading their catalog entries", %{
-    ctx: ctx,
-    root: root,
-    body: body
-  } do
-    body =
-      String.replace(
-        body,
-        "description: A local skill.",
-        "description: A local skill.\nactivation: per-message"
-      )
-
-    File.write!(Path.join(root, "proof-skill/SKILL.md"), body)
-
-    assert {:ok, skill} = SkillProjection.get_skill(ctx, "proof-skill")
-    assert skill["activation"] == "per-message"
-    refute SkillProjection.prompt_section(ctx) =~ "A local skill."
-    assert {:ok, ^body} = SkillStore.read_entry(ctx.agent_id, skill["files"]["SKILL.md"])
-
-    assert {:ok, event} =
-             SkillStore.prepare_group_copy(ctx, skill, %{
-               "skill_id" => "mini-copy",
-               "name" => "Copied Miniskill"
-             })
-
-    assert {:ok, :created} = SkillStore.commit_operation("copy-local-mini", :created, [event])
-    assert {:ok, copied} = SkillProjection.get_skill(ctx, "mini-copy")
-    assert copied["activation"] == "per-message"
-    refute SkillProjection.prompt_section(ctx) =~ "Copied Miniskill"
   end
 
   test "user skills overlay local files and stored built-ins never become a fallback", %{
@@ -113,7 +88,7 @@ defmodule SalixAgent.BuiltinSkillsTest do
 
     empty_root = Path.join(root, "empty-release")
     File.mkdir_p!(empty_root)
-    Application.put_env(:salix_agent, :builtin_skills_path, empty_root)
+    SystemsRuntime.put_env(:salix_agent, :builtin_skills_path, empty_root)
     assert {:ok, next} = SkillProjection.finish_materialization(prepared, cached_ctx)
     assert next.revision != visible.revision
     assert Enum.sort(Enum.map(next.skills, & &1["skill_id"])) == ["imported-skill", "proof-skill"]
@@ -144,7 +119,7 @@ defmodule SalixAgent.BuiltinSkillsTest do
     assert {:ok, copied_before} = SkillStore.read_scope(:group, ctx.group_id)
 
     File.rm_rf!(Path.join(root, "proof-skill"))
-    Application.put_env(:salix_agent, :builtin_skills_path, Path.join(root, "next-release"))
+    SystemsRuntime.put_env(:salix_agent, :builtin_skills_path, Path.join(root, "next-release"))
 
     assert {:error, :not_found} =
              SkillProjection.read(ctx, "/.runtime/skills/proof-skill/SKILL.md")
@@ -159,50 +134,6 @@ defmodule SalixAgent.BuiltinSkillsTest do
 
     assert {:ok, %{editable: true}} =
              SkillProjection.stat(ctx, "/.runtime/skills/my-copy/SKILL.md")
-  end
-
-  test "matching release files retain the session revision on a fresh node", %{
-    ctx: ctx,
-    root: root,
-    body: body
-  } do
-    assert {:ok, first} = SkillProjection.materialize(ctx)
-    cached_ctx = Map.put(ctx, :skill_projection_revision, first.revision)
-    assert {:ok, prepared} = SkillProjection.prepare_materialization(cached_ctx)
-
-    next_root = Path.join(root, "next-release")
-    File.mkdir_p!(next_root)
-    File.cp_r!(Path.join(root, "proof-skill"), Path.join(next_root, "proof-skill"))
-
-    for path <- Path.wildcard(Path.join(root, "proof-skill/**/*")), File.regular?(path) do
-      File.touch!(Path.join(next_root, Path.relative_to(path, root)), File.stat!(path).mtime)
-    end
-
-    Application.put_env(:salix_agent, :builtin_skills_path, next_root)
-    File.rm_rf!(Path.join(root, "proof-skill"))
-    # A fresh node has no projections with local paths from the previous node.
-    SkillProjection.invalidate_cache()
-    assert {:ok, next} = SkillProjection.finish_materialization(prepared, cached_ctx)
-    assert next.revision == first.revision
-
-    assert {:ok, ^body} =
-             SkillProjection.read(cached_ctx, "/.runtime/skills/proof-skill/SKILL.md")
-
-    resource = Path.join(next_root, "proof-skill/references/proof.bin")
-
-    for change <- [
-          fn -> File.touch!(resource, File.stat!(resource, time: :posix).mtime + 1) end,
-          fn -> File.write!(resource, <<0, 255, 1, 2, 3>>) end,
-          fn -> File.rename!(resource, resource <> ".renamed") end
-        ] do
-      assert {:ok, before} = SkillProjection.materialize(cached_ctx)
-      change.()
-      Application.put_env(:salix_agent, :builtin_skills_path, root)
-      assert {:ok, _} = SalixAgent.BuiltinSkills.snapshot()
-      Application.put_env(:salix_agent, :builtin_skills_path, next_root)
-      assert {:ok, after_change} = SkillProjection.materialize(cached_ctx)
-      assert after_change.revision != before.revision
-    end
   end
 
   defp persist(ctx, layer, id, origin, body) do

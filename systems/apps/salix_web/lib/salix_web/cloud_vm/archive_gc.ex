@@ -6,7 +6,7 @@ defmodule SalixWeb.CloudVM.ArchiveGC do
   every object under that exact generation prefix is gone.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
   require Logger
 
   alias SalixStore.{Compute, S3}
@@ -16,7 +16,8 @@ defmodule SalixWeb.CloudVM.ArchiveGC do
   @interval_ms 15_000
   @page_size 50
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
   def init(_opts) do
@@ -97,5 +98,6 @@ defmodule SalixWeb.CloudVM.ArchiveGC do
     end)
   end
 
-  defp schedule(after_ms), do: Process.send_after(self(), :tick, after_ms)
+  defp schedule(after_ms),
+    do: SystemsClock.send_after(SystemsRuntime.Proc.self(), :tick, after_ms)
 end

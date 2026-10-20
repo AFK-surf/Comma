@@ -3,6 +3,7 @@ import {
   commaClientSettingsSchema,
   defaultAppPreferences,
   defaultCommaClientSettings,
+  withoutRetiredAppPreferences,
 } from "@comma/native-bridge";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -22,21 +23,30 @@ export function recordElectronOnboardingCompleted(
   userDataDir: string,
   userIds: readonly string[]
 ) {
+  updateElectronPreferences(userDataDir, (stored) => {
+    const clientSettings = commaClientSettingsSchema.parse(
+      stored.clientSettings ?? defaultCommaClientSettings
+    );
+    return {
+      ...stored,
+      clientSettings: {
+        ...clientSettings,
+        onboardingCompletedUserIds: [
+          ...new Set([...clientSettings.onboardingCompletedUserIds, ...userIds]),
+        ],
+      },
+    };
+  });
+}
+
+function updateElectronPreferences(
+  userDataDir: string,
+  change: (stored: StoredPreferences) => StoredPreferences
+) {
   const filePath = join(userDataDir, "app-preferences.json");
   // Main's own bookkeeping beside the preferences, kept as it is.
   const { defaultsRevision, ...stored } = readStoredPreferences(filePath);
-  const clientSettings = commaClientSettingsSchema.parse(
-    stored.clientSettings ?? defaultCommaClientSettings
-  );
-  const preferences = {
-    ...stored,
-    clientSettings: {
-      ...clientSettings,
-      onboardingCompletedUserIds: [
-        ...new Set([...clientSettings.onboardingCompletedUserIds, ...userIds]),
-      ],
-    },
-  };
+  const preferences = change(stored);
   // Main reads a file it cannot parse as all defaults, which would drop the
   // record without a trace. Refuse to write one.
   appPreferencesSchema.parse(preferences);
@@ -53,12 +63,12 @@ export function recordElectronOnboardingCompleted(
   );
 }
 
+type StoredPreferences = Record<string, unknown> & { clientSettings?: unknown };
+
 /** The file as Main keeps it: stored choices only, no revision or readbacks. */
-function readStoredPreferences(
-  filePath: string
-): Record<string, unknown> & { clientSettings?: unknown } {
+function readStoredPreferences(filePath: string): StoredPreferences {
   try {
-    return JSON.parse(readFileSync(filePath, "utf8"));
+    return withoutRetiredAppPreferences(JSON.parse(readFileSync(filePath, "utf8")));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     const { revision: _revision, ...stored } = defaultAppPreferences;

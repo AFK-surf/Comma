@@ -1,3 +1,5 @@
+import { advance } from "@comma/test-utils/fake-clock";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
 import {
   Outlet,
   RouterProvider,
@@ -17,12 +19,19 @@ import {
 } from "@comma/test-utils/render";
 import { initializeCommaI18n } from "@comma/i18n";
 import { CommaI18nProvider } from "@comma/i18n/react";
-import { Toaster, toast } from "@comma/ui";
-import { useMemo, useState, type ComponentProps, type ReactElement } from "react";
+import { Toaster, toast } from "@comma/ui/components/toast";
+import {
+  useMemo,
+  useState,
+  type ComponentProps,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { setInteractionModality } from "react-aria/private/interactions/useFocusVisible";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CommaApiClient, CommaSkill } from "../../../../api";
+import type { CommaSkill } from "@comma/core/api-schemas";
+import type { TaskLoop } from "@comma/core-client";
 import { Composer } from "../../composer/Composer";
 import type { ComposerMentionSources } from "../../composer/useComposerMentionSources";
 import {
@@ -30,21 +39,32 @@ import {
   type ChatOutgoingLaunch,
 } from "../../thread/ConversationThread";
 import { CONVERSATION_TURN_WINDOW } from "../../thread/navigation/conversationTurnWindow";
+import { ThreadWorkerVendorContext } from "../../thread/threadContexts";
 import { ConversationView, type ConversationViewActions } from "../ConversationView";
 import { fixedDraftSource } from "../../composer/conversationDraft";
-import { LocalFilePreviewCache } from "../../../../runtime-chat/channel/preview/LocalFilePreviewCache";
+import {
+  createChatDraftSnippet,
+  DraftSnippetsProvider,
+  type ChatDraftSnippet,
+} from "../../composer/draftSnippets";
+import { stateSwapExitMs } from "../../motion/useLeaving";
+import { LocalFilePreviewCache } from "../../channel/LocalFilePreviewCache";
 import type {
   AttachmentUploadInput,
   ChatImagePreviewRef,
   ChatMessage,
+  ChatParticipantStatus,
   ConversationChannelState,
   PendingSend,
-} from "../../model/conversationChannel";
-import { composeMessageWithAttachments } from "../../model/protocol";
+} from "@comma/core/chat";
+import { composeMessageWithAttachments, decodeUserMessage } from "@comma/core/chat";
+import { messageMarkdown } from "@comma/core/markdown";
 import {
   initialResponseOwnerTurnKey,
+  replyState,
   visibleReplyIdentityKey,
-} from "../../model/visibleReplyPresentation";
+} from "@comma/core/chat";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 const { markdownRenderSpy } = vi.hoisted(() => ({
   markdownRenderSpy: vi.fn(),
@@ -59,9 +79,39 @@ vi.mock("../../../../analytics/client", () => ({
   },
 }));
 
-vi.mock("@comma/ui", async (importOriginal) => {
+// A widget frame cannot be scripted in jsdom; the stub stands in for its
+// runtime and asks for the link menu the way a right-click in the frame does.
+vi.mock("../../dynamic-ui/DynamicUiWidget", async (importOriginal) => {
   const [actual, React] = await Promise.all([
-    importOriginal<typeof import("@comma/ui")>(),
+    importOriginal<typeof import("../../dynamic-ui/DynamicUiWidget")>(),
+    import("react"),
+  ]);
+  return {
+    ...actual,
+    DynamicUiWidget: () => {
+      const openLinkMenu = React.useContext(actual.DynamicUiLinkMenuContext);
+      const frame = React.useRef<HTMLIFrameElement>(null);
+      return React.createElement(
+        React.Fragment,
+        null,
+        React.createElement("iframe", { ref: frame, sandbox: "", title: "widget" }),
+        React.createElement(
+          "button",
+          {
+            type: "button",
+            onClick: () =>
+              openLinkMenu?.("https://example.com/pr/2300", 140, 90, frame.current!),
+          },
+          "Right-click widget link"
+        )
+      );
+    },
+  };
+});
+
+vi.mock("@comma/ui/components/markdown-stream", async (importOriginal) => {
+  const [actual, React] = await Promise.all([
+    importOriginal<typeof import("@comma/ui/components/markdown-stream")>(),
     import("react"),
   ]);
 
@@ -72,6 +122,7 @@ vi.mock("@comma/ui", async (importOriginal) => {
       content,
       className,
       final,
+      inlineElements,
       maxAnimatedCharacters,
       showCursor,
       smoothStreaming,
@@ -88,6 +139,7 @@ vi.mock("@comma/ui", async (importOriginal) => {
       content: string;
       className?: string;
       final?: boolean;
+      inlineElements?: ReadonlyMap<string, ReactNode>;
       maxAnimatedCharacters?: number;
       showCursor?: boolean;
       smoothStreaming?: boolean | "auto";
@@ -117,42 +169,33 @@ vi.mock("@comma/ui", async (importOriginal) => {
           ? decorator
             ? decorator({ anchor, href: markdownLink[2] as string })
             : anchor
-          : content
+          : content,
+        ...(inlineElements ? [...inlineElements.values()] : [])
       );
     },
   };
 });
 
 describe("ConversationView", () => {
-  it.each(["route", "side-chat"] as const)(
-    "keeps media menu availability within the %s file surface",
-    async (variant) => {
-      const attachment = localImageAttachment(0);
-      const actions = createActions();
-      actions.previewLocalFile = vi.fn(async () => ({
-        url: "blob:menu-image",
-        release: vi.fn(),
-      }));
-      renderConversation(
-        <ConversationViewWithDraft
-          actions={actions}
-          state={state({
-            messages: [message("msg_menu", "user", "", { attachments: [attachment] })],
-          })}
-          variant={variant}
-        />
-      );
-      const image = await screen.findByRole("img", { name: attachment.fileName! });
-      fireEvent.contextMenu(image, { clientX: 100, clientY: 100 });
-      if (variant === "route") {
-        expect(
-          await screen.findByRole("menu", { name: "Image actions" })
-        ).toBeVisible();
-      } else {
-        expect(screen.queryByRole("menu", { name: "Image actions" })).toBeNull();
-      }
-    }
-  );
+  it("offers the media menu on a file in the transcript", async () => {
+    const attachment = localImageAttachment(0);
+    const actions = createActions();
+    actions.previewLocalFile = vi.fn(async () => ({
+      url: "blob:menu-image",
+      release: vi.fn(),
+    }));
+    renderConversation(
+      <ConversationViewWithDraft
+        actions={actions}
+        state={state({
+          messages: [message("msg_menu", "user", "", { attachments: [attachment] })],
+        })}
+      />
+    );
+    const image = await screen.findByRole("img", { name: attachment.fileName! });
+    fireEvent.contextMenu(image, { clientX: 100, clientY: 100 });
+    expect(await screen.findByRole("menu", { name: "Image actions" })).toBeVisible();
+  });
 
   it.each([
     ["runtime", "accepted"],
@@ -200,7 +243,6 @@ describe("ConversationView", () => {
     initializeCommaI18n(["en"]);
     markdownRenderSpy.mockClear();
     vi.unstubAllGlobals();
-    vi.useRealTimers();
   });
 
   it("renders loading, terminal error, and empty ready states", async () => {
@@ -248,7 +290,6 @@ describe("ConversationView", () => {
     const empty = renderConversation(
       <ConversationViewWithDraft actions={actions} state={state({ messages: [] })} />
     );
-    expect(empty.container.querySelector(".comma-chat-back")).toBeNull();
     expect(screen.queryByTestId("chat-title-loading")).not.toBeInTheDocument();
     expect(
       await screen.findByText("You start. Comma does the rest.")
@@ -296,28 +337,6 @@ describe("ConversationView", () => {
       rendered.unmount();
     }
   );
-
-  it("does not bind the Home task indicator layout to composer resize measurements", async () => {
-    const observedTargets: Element[] = [];
-
-    class MockResizeObserver {
-      readonly disconnect = vi.fn();
-      readonly observe = vi.fn((target: Element) => observedTargets.push(target));
-      readonly unobserve = vi.fn();
-    }
-
-    vi.stubGlobal("ResizeObserver", MockResizeObserver);
-
-    const rendered = renderStatefulConversation(state(), createActions(), "home");
-    const layout = await screen.findByTestId("home-responsive-layout");
-    const composer =
-      rendered.container.querySelector<HTMLElement>(".comma-chat-composer");
-    expect(layout).not.toBeNull();
-    expect(composer).not.toBeNull();
-    expect(composer).toHaveClass("ai-input-small-shell-motion");
-    expect(observedTargets).not.toContain(composer);
-    expect(layout!.style.getPropertyValue("--comma-home-composer-height")).toBe("");
-  });
 
   it("uses the localized Comma assistant identity instead of the persisted Home chat title", async () => {
     renderConversation(
@@ -423,58 +442,53 @@ describe("ConversationView", () => {
     expect(metadata).not.toHaveTextContent("ready_for_review");
   });
 
-  it("accepts only a versioned one-shot Task review", async () => {
-    const acceptTaskReview = vi.fn().mockResolvedValue(undefined);
-    const actions = { ...createActions(), acceptTaskReview };
-    const reviewable = state({
+  it("ends an in-progress Task by hand at the exact version", async () => {
+    const setTaskStatus = vi.fn().mockResolvedValue(undefined);
+    const actions = { ...createActions(), setTaskStatus };
+    const running = state({
       conversation: {
-        id: "cnv_task_review",
+        id: "cnv_task_running",
         kind: "agent_task",
-        review_version: 2,
-        status: "ready_for_review",
-        title: "Review task",
+        status: "active",
+        title: "Running task",
         group_id: "grp_1",
+        updated_at: 5,
       },
     });
 
     const rendered = renderConversation(
-      <ConversationViewWithDraft actions={actions} state={reviewable} />
+      <ConversationViewWithDraft actions={actions} state={running} />
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Done" }));
-    await waitFor(() => expect(acceptTaskReview).toHaveBeenCalledWith(2));
-    // The accept control lives in the details panel on the Task route; the
-    // transcript tail card and the header carry no second copy of it.
+    fireEvent.click(await screen.findByRole("button", { name: "In progress" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Cancelled" }));
+    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledWith("cancelled", 5));
+    // The panel has no separate Done button and the transcript no review card.
+    expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
     expect(screen.queryByTestId("task-review-action")).toBeNull();
-    expect(
-      rendered.container.querySelector(".comma-chat-header .comma-task-review-action")
-    ).toBeNull();
-    expect(await screen.findByTestId("task-panel-properties")).toContainElement(
-      screen.getByRole("button", { name: "Marking done…" })
-    );
     rendered.unmount();
 
+    // A Loop Task ends the same way: the server ends its Loop with it.
     renderConversation(
-      <ConversationViewWithDraft
-        actions={actions}
-        state={state({
-          conversation: {
-            ...reviewable.conversation!,
-            schedule: {
-              command: "Send the report",
-              schedule_id: "sch1_review",
-            },
-          },
-        })}
-      />
+      <ConversationViewWithDraft actions={actions} state={running} />,
+      loopSummaryCore(running.conversation!, {
+        state: "active",
+        cadence: { everyMinutes: 60, pattern: { kind: "interval", minutes: 60 } },
+        startedAt: 1,
+        wakeCount: 3,
+      }).wrap
     );
-
-    expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
+    // Its Loop shows once the Task's summary is read.
+    expect(await screen.findByTestId("task-panel-schedule")).toHaveTextContent(
+      "Every hour"
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "In progress" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Done" }));
+    await waitFor(() => expect(setTaskStatus).toHaveBeenLastCalledWith("completed", 5));
   });
 
-  it("swaps the panel's status in two beats and lets Done leave with the old one", async () => {
-    const acceptTaskReview = vi.fn().mockResolvedValue(undefined);
-    const actions = { ...createActions(), acceptTaskReview };
+  it("offers no review acceptance while a Loop still runs the Task", async () => {
+    const actions = { ...createActions(), acceptTaskReview: vi.fn() };
     const reviewable = state({
       conversation: {
         id: "cnv_task_review",
@@ -483,46 +497,75 @@ describe("ConversationView", () => {
         status: "ready_for_review",
         title: "Review task",
         group_id: "grp_1",
+        updated_at: 2,
       },
     });
-    const rendered = renderStatefulConversation(reviewable, actions, "route");
+    // Home has no panel: the review card is where a Task is accepted.
+    const rendered = renderConversation(
+      <ConversationViewWithDraft actions={actions} state={reviewable} variant="home" />,
+      loopSummaryCore(reviewable.conversation!, {
+        state: "paused",
+        startedAt: 1,
+        wakeCount: 1,
+      }).wrap
+    );
+    // The Loop comes with the Task's summary; once it is read the card is
+    // gone (and it stays below once the Loop ended).
+    await advance(stateSwapExitMs());
+    expect(screen.queryByTestId("task-review-action")).toBeNull();
+    rendered.unmount();
+
+    // Once its Loop ended it is a plain Task again.
+    renderConversation(
+      <ConversationViewWithDraft actions={actions} state={reviewable} variant="home" />,
+      loopSummaryCore(reviewable.conversation!, {
+        state: "ended",
+        reason: "completed",
+        startedAt: 1,
+        wakeCount: 1,
+      }).wrap
+    );
+    await advance(stateSwapExitMs());
+    expect(screen.getByTestId("task-review-action")).not.toHaveAttribute(
+      "data-leaving"
+    );
+  });
+
+  it("swaps the panel's status at once, with no leaving layer", async () => {
+    let resolveStatus: (() => void) | undefined;
+    const setTaskStatus = vi.fn().mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveStatus = resolve;
+      })
+    );
+    const actions = { ...createActions(), setTaskStatus };
+    const reviewable = state({
+      conversation: {
+        id: "cnv_task_review",
+        kind: "agent_task",
+        review_version: 2,
+        status: "ready_for_review",
+        title: "Review task",
+        group_id: "grp_1",
+        updated_at: 2,
+      },
+    });
+    renderStatefulConversation(reviewable, actions, "route");
 
     const status = await screen.findByTestId("task-conversation-status");
     expect(status).toHaveTextContent("Needs Review");
-    expect(status).not.toHaveAttribute("data-swapping");
-    const doneWrapper = () =>
-      rendered.container.querySelector(".comma-task-panel-done");
-    expect(doneWrapper()).not.toHaveAttribute("data-leaving");
 
-    fireEvent.click(screen.getByRole("button", { name: "Done" }));
-    await waitFor(() => expect(acceptTaskReview).toHaveBeenCalledWith(2));
-    act(() => {
-      rendered.setState(
-        state({ conversation: { ...reviewable.conversation!, status: "completed" } })
-      );
-    });
-
-    // The old state stays through its exit, hidden from readers, in the same
-    // cell as the new one; Done leaves alongside it, disabled.
-    expect(status).toHaveAttribute("data-swapping", "true");
-    const leaving = status.querySelector(
-      '.comma-status-swap-layer[data-leaving="true"]'
-    );
-    expect(leaving).toHaveAttribute("aria-hidden", "true");
-    expect(leaving).toHaveTextContent("Needs Review");
-    expect(
-      status.querySelector('.comma-status-swap-layer:not([data-leaving="true"])')
-    ).toHaveTextContent("Done");
-    expect(doneWrapper()).toHaveAttribute("data-leaving", "true");
-    expect(doneWrapper()!.querySelector("button")).toBeDisabled();
-
-    await waitFor(() => {
-      expect(status).not.toHaveAttribute("data-swapping");
-      expect(doneWrapper()).toBeNull();
-    });
-    expect(status.querySelectorAll(".comma-status-swap-layer")).toHaveLength(1);
+    fireEvent.click(status);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Done" }));
+    // The new status replaces the old one in the same render, before the
+    // request settles, and the old label is not kept around for an exit.
     expect(status).toHaveTextContent("Done");
     expect(status).not.toHaveTextContent("Needs Review");
+    expect(status.querySelectorAll("svg")).toHaveLength(1);
+
+    await act(async () => {
+      resolveStatus?.();
+    });
   });
 
   it("offers the details as a header popover once the route folds its column", async () => {
@@ -553,10 +596,11 @@ describe("ConversationView", () => {
         status: "ready_for_review",
         title: "Folded task",
         group_id: "grp_1",
+        updated_at: 1,
       },
     });
 
-    const actions = { ...createActions(), acceptTaskReview: vi.fn() };
+    const actions = { ...createActions(), setTaskStatus: vi.fn() };
     const rendered = renderConversation(
       <ConversationViewWithDraft actions={actions} state={folded} />
     );
@@ -572,8 +616,11 @@ describe("ConversationView", () => {
       await userEvent.click(trigger);
       const popover = await screen.findByTestId("task-panel-popover");
       expect(within(popover).getByTestId("task-panel-properties")).toContainElement(
-        within(popover).getByRole("button", { name: "Done" })
+        within(popover).getByRole("button", { name: "Needs Review" })
       );
+      expect(
+        within(popover).getByRole("button", { name: "Needs Review" })
+      ).toBeEnabled();
     } finally {
       narrow.mockRestore();
       vi.unstubAllGlobals();
@@ -581,38 +628,88 @@ describe("ConversationView", () => {
     }
   });
 
-  it("does not leak an accept error into another reviewable Task", async () => {
-    const acceptTaskReview = vi.fn().mockRejectedValue(new Error("conflict"));
-    const actions = { ...createActions(), acceptTaskReview };
-    const rendered = renderStatefulConversation(
-      state({
-        conversation: {
-          id: "cnv_task_review_a",
-          kind: "agent_task",
-          review_version: 2,
-          status: "ready_for_review",
-          title: "Review task A",
-          group_id: "grp_1",
-        },
-      }),
-      actions
-    );
+  it("keeps the chosen status after success until the canonical Task catches up", async () => {
+    const setTaskStatus = vi.fn().mockResolvedValue(undefined);
+    const actions = { ...createActions(), setTaskStatus };
+    const running = state({
+      conversation: {
+        id: "cnv_task_a",
+        kind: "agent_task",
+        status: "active",
+        title: "Task A",
+        group_id: "grp_1",
+        updated_at: 2,
+      },
+    });
+    const rendered = renderStatefulConversation(running, actions);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Done" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "The Task changed before it could be accepted. Review it again."
+    fireEvent.click(await screen.findByRole("button", { name: "In progress" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Cancelled" }));
+    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledWith("cancelled", 2));
+    const status = screen.getByTestId("task-conversation-status");
+    // Settled, but the canonical Task has not arrived: no flash back.
+    await act(async () => {});
+    expect(status).toHaveAttribute("data-status", "cancelled");
+    // The pill keeps focus, but no second change can start from the stale version.
+    expect(status).toBeEnabled();
+    fireEvent.click(status);
+    expect(await screen.findByRole("menuitem", { name: "Done" })).toHaveAttribute(
+      "aria-disabled",
+      "true"
     );
 
     act(() => {
       rendered.setState(
         state({
           conversation: {
-            id: "cnv_task_review_b",
+            ...running.conversation!,
+            status: "cancelled",
+            updated_at: 3,
+          },
+        })
+      );
+    });
+    expect(status).toHaveAttribute("data-status", "cancelled");
+  });
+
+  it("does not leak a status error into another Task", async () => {
+    const setTaskStatus = vi.fn().mockRejectedValue(new Error("conflict"));
+    const actions = { ...createActions(), setTaskStatus };
+    const rendered = renderStatefulConversation(
+      state({
+        conversation: {
+          id: "cnv_task_a",
+          kind: "agent_task",
+          status: "active",
+          title: "Task A",
+          group_id: "grp_1",
+          updated_at: 2,
+        },
+      }),
+      actions
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "In progress" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Done" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn’t change the status. The Task may have changed; check it and try again."
+    );
+    // A failed change returns to the canonical status.
+    expect(screen.getByTestId("task-conversation-status")).toHaveAttribute(
+      "data-status",
+      "in_progress"
+    );
+
+    act(() => {
+      rendered.setState(
+        state({
+          conversation: {
+            id: "cnv_task_b",
             kind: "agent_task",
-            review_version: 7,
-            status: "ready_for_review",
-            title: "Review task B",
+            status: "active",
+            title: "Task B",
             group_id: "grp_1",
+            updated_at: 7,
           },
         })
       );
@@ -621,91 +718,63 @@ describe("ConversationView", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("does not leak an in-flight accept into another reviewable Task", async () => {
-    let resolveAccept: (() => void) | undefined;
-    const acceptTaskReview = vi.fn().mockReturnValue(
+  it("does not leak an in-flight status change into another Task", async () => {
+    let resolveStatus: (() => void) | undefined;
+    const setTaskStatus = vi.fn().mockReturnValue(
       new Promise<void>((resolve) => {
-        resolveAccept = resolve;
+        resolveStatus = resolve;
       })
     );
-    const actions = { ...createActions(), acceptTaskReview };
+    const actions = { ...createActions(), setTaskStatus };
     const rendered = renderStatefulConversation(
       state({
         conversation: {
-          id: "cnv_task_review_a",
+          id: "cnv_task_a",
           kind: "agent_task",
-          review_version: 2,
-          status: "ready_for_review",
-          title: "Review task A",
+          status: "active",
+          title: "Task A",
           group_id: "grp_1",
+          updated_at: 2,
         },
       }),
       actions
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Done" }));
-    expect(await screen.findByRole("button", { name: "Marking done…" })).toBeDisabled();
+    fireEvent.click(await screen.findByRole("button", { name: "In progress" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Done" }));
+    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledWith("completed", 2));
+    // The chosen status shows before the request settles.
+    expect(screen.getByTestId("task-conversation-status")).toHaveAttribute(
+      "data-status-pending",
+      "true"
+    );
+    expect(screen.getByTestId("task-conversation-status")).toHaveAttribute(
+      "data-status",
+      "done"
+    );
 
     act(() => {
       rendered.setState(
         state({
           conversation: {
-            id: "cnv_task_review_b",
+            id: "cnv_task_b",
             kind: "agent_task",
-            review_version: 7,
-            status: "ready_for_review",
-            title: "Review task B",
+            status: "active",
+            title: "Task B",
             group_id: "grp_1",
+            updated_at: 7,
           },
         })
       );
     });
 
-    expect(screen.getByRole("button", { name: "Done" })).toBeEnabled();
+    expect(screen.getByTestId("task-conversation-status")).not.toHaveAttribute(
+      "data-status-pending"
+    );
 
     await act(async () => {
-      resolveAccept?.();
+      resolveStatus?.();
     });
-  });
-
-  it("keeps a successful accept latched until the canonical Task changes", async () => {
-    const acceptTaskReview = vi.fn().mockResolvedValue(undefined);
-    const actions = { ...createActions(), acceptTaskReview };
-    const rendered = renderStatefulConversation(
-      state({
-        conversation: {
-          id: "cnv_task_review",
-          kind: "agent_task",
-          review_version: 2,
-          status: "ready_for_review",
-          title: "Review task",
-          group_id: "grp_1",
-        },
-      }),
-      actions
-    );
-
-    fireEvent.click(await screen.findByRole("button", { name: "Done" }));
-    await waitFor(() => expect(acceptTaskReview).toHaveBeenCalledWith(2));
-
-    expect(screen.getByRole("button", { name: "Marking done…" })).toBeDisabled();
-
-    act(() => {
-      rendered.setState(
-        state({
-          conversation: {
-            id: "cnv_task_review",
-            kind: "agent_task",
-            review_version: 2,
-            status: "completed",
-            title: "Review task",
-            group_id: "grp_1",
-          },
-        })
-      );
-    });
-
-    expect(screen.queryByTestId("task-review-action")).toBeNull();
   });
 
   it("renders pending failure actions without moving failed text back into the composer", async () => {
@@ -738,65 +807,164 @@ describe("ConversationView", () => {
     expect(actions.discard).toHaveBeenCalledWith("req_1");
   });
 
-  it("shows the out-of-credits card when a send fails for insufficient credits", async () => {
-    const user = userEvent.setup();
+  it("shows a credit toast while retaining the failed send for retry or discard", async () => {
     const previousHash = window.location.hash;
     const actions = createActions();
     const pending = {
       ...pendingSend("req_billing", "继续", "failed"),
+      failureAction: "billing" as const,
       error: "You’re out of credits. Add credits or switch plans to continue.",
     };
-
     try {
       renderConversation(
         <ConversationViewWithDraft
           actions={actions}
-          state={state({
-            messages: [pendingMessage(pending)],
-            pending: [pending],
-          })}
+          state={state({ messages: [pendingMessage(pending)], pending: [pending] })}
         />
       );
-
-      const card = await screen.findByTestId("chat-out-of-credits");
-      expect(card).toHaveTextContent("Out of usage credits");
-      expect(card).toHaveTextContent("Add credits or switch plans, then retry.");
-      expect(screen.queryByTestId("chat-failed-row")).toBeNull();
-      const cardActions = within(card).getAllByRole("button");
-      expect(cardActions.map((button) => button.textContent)).toEqual([
-        "Add credits",
-        "Discard",
-        "Retry",
-      ]);
-      const addCredits = within(card).getByRole("button", { name: "Add credits" });
-      const discard = within(card).getByRole("button", { name: "Discard" });
-      const retry = within(card).getByRole("button", { name: "Retry" });
-
-      addCredits.focus();
-      await user.tab();
-      expect(discard).toHaveFocus();
-      await user.tab();
-      expect(retry).toHaveFocus();
-
-      fireEvent.click(retry);
-      fireEvent.click(discard);
+      const notice = await screen.findByTestId("out-of-credits");
+      expect(notice).toHaveTextContent("Out of Comma credits");
+      const failed = screen.getByTestId("chat-failed-row");
+      fireEvent.click(within(failed).getByRole("button", { name: "Retry" }));
+      fireEvent.click(within(failed).getByRole("button", { name: "Discard" }));
       expect(actions.retry).toHaveBeenCalledWith("req_billing");
       expect(actions.discard).toHaveBeenCalledWith("req_billing");
-
-      fireEvent.click(addCredits);
+      fireEvent.click(within(notice).getByRole("button", { name: "Add credits" }));
       expect(window.location.hash).toBe("#/settings?category=usage-billing");
     } finally {
       window.location.hash = previousHash;
     }
   });
 
-  it("disables submit while draft attachments are uploading or failed", async () => {
+  it("names what ran out and how to fix it, once per stop, in the toast and under the status line", async () => {
+    const previousHash = window.location.hash;
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const actions = createActions();
+    const control: {
+      setStop?: (stop: Pick<ChatParticipantStatus, "issue" | "issueDetail">) => void;
+    } = {};
+    function Harness() {
+      const [stop, update] = useState<
+        Pick<ChatParticipantStatus, "issue" | "issueDetail">
+      >({
+        issue: "provider_quota_exhausted",
+        issueDetail: {
+          source: "anthropic",
+          profileId: "prof_1",
+          profileName: "Team Claude key",
+        },
+      });
+      control.setStop = update;
+      return (
+        <ConversationViewWithDraft
+          actions={actions}
+          state={state({
+            messages: [message("msg_funding", "user", "Continue")],
+            participantStatus: {
+              conversationId: "cnv_1",
+              participantId: "ptp_1",
+              state: "error",
+              status: "error: stopped",
+              updatedAt: 1_780_000_000_300,
+              ...stop,
+            },
+          })}
+        />
+      );
+    }
+    try {
+      renderConversation(<Harness />);
+      const provider = await screen.findByTestId("provider-quota");
+      expect(provider).toHaveTextContent("Anthropic API key is out of funds");
+      expect(provider).toHaveTextContent(
+        "“Team Claude key” has no balance left at Anthropic, and Comma credits don’t cover it."
+      );
+      expect(screen.queryByTestId("out-of-credits")).toBeNull();
+      expect(
+        screen.getByText(
+          "“Team Claude key” (Anthropic) is out of funds. Add funds, then send again."
+        )
+      ).toBeInTheDocument();
+      fireEvent.click(
+        within(provider).getByRole("button", { name: "Open Anthropic billing" })
+      );
+      expect(open).toHaveBeenCalledWith(
+        "https://console.anthropic.com/settings/billing",
+        "_blank",
+        "noopener,noreferrer"
+      );
+      await waitFor(() => expect(screen.queryByTestId("provider-quota")).toBeNull());
+
+      // The same stop, read again, stays dismissed; its fix stays under the status line.
+      act(() =>
+        control.setStop?.({
+          issue: "provider_quota_exhausted",
+          issueDetail: {
+            source: "anthropic",
+            profileId: "prof_1",
+            profileName: "Team Claude key",
+          },
+        })
+      );
+      expect(screen.queryByTestId("provider-quota")).toBeNull();
+      fireEvent.click(
+        within(screen.getByTestId("chat-funding-actions")).getByRole("button", {
+          name: "Model & API",
+        })
+      );
+      expect(window.location.hash).toBe("#/settings?category=models&profile=prof_1");
+
+      act(() => control.setStop?.({ issue: "insufficient_credits" }));
+      expect(await screen.findByTestId("out-of-credits")).toHaveTextContent(
+        "Out of Comma credits"
+      );
+      expect(
+        within(screen.getByTestId("chat-funding-actions")).getByRole("button", {
+          name: "Add credits",
+        })
+      ).toBeVisible();
+
+      const resetAt = Math.floor(Date.now() / 1000) + 3600;
+      act(() =>
+        control.setStop?.({
+          issue: "quota_exhausted",
+          issueDetail: { source: "claude", resetAt },
+        })
+      );
+      const limit = await screen.findByTestId("provider-quota");
+      expect(limit).toHaveTextContent("Claude subscription hit its usage limit");
+      expect(limit).toHaveTextContent("It resets at");
+      expect(within(limit).getByRole("button", { name: "Switch model" })).toBeVisible();
+
+      // Without detail the copy still says who bills it and where to look.
+      act(() => control.setStop?.({ issue: "provider_quota_exhausted" }));
+      const generic = await screen.findByTestId("provider-quota");
+      expect(generic).toHaveTextContent("Your model provider account is out of funds");
+      expect(within(generic).queryByRole("button", { name: /billing/ })).toBeNull();
+
+      // A subscription plan that ran out resets; it is not an API key to top up.
+      act(() =>
+        control.setStop?.({
+          issue: "provider_quota_exhausted",
+          issueDetail: { source: "github-copilot" },
+        })
+      );
+      expect(await screen.findByTestId("provider-quota")).toHaveTextContent(
+        "GitHub Copilot subscription hit its usage limit"
+      );
+    } finally {
+      open.mockRestore();
+      window.location.hash = previousHash;
+    }
+  });
+
+  it("sends while an attachment uploads and disables submit while one failed", async () => {
     const actions = createActions();
     const uploading = renderConversation(
       <ConversationViewWithDraft
         actions={actions}
         state={state({
-          draft: "read this",
+          draft: "",
           draftAttachments: [
             {
               error: undefined,
@@ -812,7 +980,11 @@ describe("ConversationView", () => {
       />
     );
 
-    expect(await screen.findByRole("button", { name: "Send message" })).toBeDisabled();
+    // A file alone is something to send, uploaded or not.
+    const send = await screen.findByRole("button", { name: "Send message" });
+    expect(send).toBeEnabled();
+    fireEvent.click(send);
+    expect(actions.send).toHaveBeenCalledTimes(1);
     uploading.unmount();
 
     renderConversation(
@@ -985,12 +1157,12 @@ describe("ConversationView", () => {
     expect(screen.getByTestId("chat-upload-error")).toHaveTextContent("second.png");
   });
 
-  it("keeps side chat immediately reusable while authoritative pending rows animate", async () => {
+  it("keeps the composer immediately reusable while authoritative pending rows animate", async () => {
     const geometry = mockOutgoingBubbleGeometry();
 
     const onSend = vi.fn();
     try {
-      const view = renderConversation(<SideChatSendLifecycleHarness onSend={onSend} />);
+      const view = renderConversation(<SendLifecycleHarness onSend={onSend} />);
 
       fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
 
@@ -1005,7 +1177,6 @@ describe("ConversationView", () => {
         expect(bubble).not.toBeNull();
         return bubble!;
       });
-      expect(screen.getByTestId("chat-empty-exiting")).toBeInTheDocument();
       const textbox = screen.getByRole("textbox", { name: "AI prompt" });
       expect(textbox).toBeEnabled();
       expect(textbox).toHaveTextContent(/^$/);
@@ -1092,7 +1263,13 @@ describe("ConversationView", () => {
     }
   });
 
-  it("keeps the Comma outgoing transition through ACK when an external user message arrives first", async () => {
+  // Neither another platform's message nor Quick Chat's came from this composer.
+  it("keeps the Comma outgoing transition through ACK when an external user message arrives first", () =>
+    keepsOutgoingTransitionPast({ platformSource: "wechat" }));
+  it("keeps the Comma outgoing transition through ACK when a Quick Chat user message arrives first", () =>
+    keepsOutgoingTransitionPast({ messageType: "quick_chat" }));
+
+  async function keepsOutgoingTransitionPast(origin: Partial<ChatMessage>) {
     const geometry = mockOutgoingBubbleGeometry();
     const animate = vi.fn(
       (
@@ -1107,11 +1284,7 @@ describe("ConversationView", () => {
           finished: new Promise<Animation>(() => {}),
         }) as unknown as Animation
     );
-    const animateDescriptor = Object.getOwnPropertyDescriptor(
-      Element.prototype,
-      "animate"
-    );
-    Object.defineProperty(Element.prototype, "animate", {
+    stubProperty(Element.prototype, "animate", {
       configurable: true,
       value: animate,
     });
@@ -1121,9 +1294,7 @@ describe("ConversationView", () => {
       delivery: "sending",
       source: "pending",
     });
-    const external = message("msg_external", "user", "External incoming", {
-      platformSource: "wechat",
-    });
+    const external = message("msg_external", "user", "External incoming", origin);
     const launch: ChatOutgoingLaunch = {
       existingTurnKeys: new Set(),
       expiresAt: Date.now() + 4_000,
@@ -1136,7 +1307,6 @@ describe("ConversationView", () => {
         top: 672,
         width: 392,
       },
-      startedFromEmpty: false,
       text: "带动画进入",
     };
 
@@ -1232,13 +1402,8 @@ describe("ConversationView", () => {
       }
     } finally {
       geometry.mockRestore();
-      if (animateDescriptor) {
-        Object.defineProperty(Element.prototype, "animate", animateDescriptor);
-      } else {
-        Reflect.deleteProperty(Element.prototype, "animate");
-      }
     }
-  });
+  }
 
   it("keeps reduced-motion outgoing bubbles in flow during the single cross-fade", async () => {
     const geometry = mockOutgoingBubbleGeometry();
@@ -1255,11 +1420,7 @@ describe("ConversationView", () => {
           finished: new Promise<Animation>(() => {}),
         }) as unknown as Animation
     );
-    const animateDescriptor = Object.getOwnPropertyDescriptor(
-      Element.prototype,
-      "animate"
-    );
-    Object.defineProperty(Element.prototype, "animate", {
+    stubProperty(Element.prototype, "animate", {
       configurable: true,
       value: animate,
     });
@@ -1282,7 +1443,6 @@ describe("ConversationView", () => {
         top: 672,
         width: 392,
       },
-      startedFromEmpty: false,
       text: "平静地进入",
     };
 
@@ -1360,87 +1520,7 @@ describe("ConversationView", () => {
     } finally {
       document.documentElement.removeAttribute("data-comma-reduced-motion");
       geometry.mockRestore();
-      if (animateDescriptor) {
-        Object.defineProperty(Element.prototype, "animate", animateDescriptor);
-      } else {
-        Reflect.deleteProperty(Element.prototype, "animate");
-      }
     }
-  });
-
-  it("does not fabricate side-chat typing and animates only canonical replies", () => {
-    const prompt = message("msg_prompt", "user", "Prompt");
-    const view = render(
-      <ConversationThread
-        messages={[prompt]}
-        onDiscard={() => {}}
-        onRetry={() => {}}
-        variant="side-chat"
-        groupId="grp_1"
-        workspaceId="wsp_1"
-      />
-    );
-
-    expect(screen.queryByTestId("chat-assistant-typing")).toBeNull();
-    expect(view.container.querySelector(".comma-side-chat-typing-dots")).toBeNull();
-
-    view.rerender(
-      <ConversationThread
-        messages={[prompt, message("msg_reply", "assistant", "Committed reply")]}
-        onDiscard={() => {}}
-        onRetry={() => {}}
-        variant="side-chat"
-        groupId="grp_1"
-        workspaceId="wsp_1"
-      />
-    );
-    const committed = screen.getByText("Committed reply").closest("article");
-    expect(committed).toHaveClass("comma-side-chat-assistant-entry");
-  });
-
-  it("keeps the empty Side Chat shadow unclipped and masks conversation content", () => {
-    const view = render(
-      <ConversationThread
-        messages={[]}
-        onDiscard={() => {}}
-        onRetry={() => {}}
-        variant="side-chat"
-        groupId="grp_1"
-        workspaceId="wsp_1"
-      />
-    );
-
-    expect(view.container.querySelector('[data-slot="scroll-area"]')).toHaveAttribute(
-      "data-edge-effect",
-      "none"
-    );
-    expect(view.container.querySelector('[data-slot="scroll-area"]')).toHaveAttribute(
-      "data-edge-mask",
-      "false"
-    );
-    expect(screen.getByTestId("chat-empty").querySelector("img")).toHaveAttribute(
-      "src",
-      "brand/comma/icon.png"
-    );
-
-    view.rerender(
-      <ConversationThread
-        messages={[]}
-        onDiscard={() => {}}
-        onRetry={() => {}}
-        groupId="grp_1"
-        workspaceId="wsp_1"
-      />
-    );
-
-    expect(view.container.querySelector('[data-slot="scroll-area"]')).toHaveAttribute(
-      "data-edge-effect",
-      "mask"
-    );
-    expect(view.container.querySelector('[data-slot="scroll-area"]')).toHaveAttribute(
-      "data-edge-mask",
-      "true"
-    );
   });
 
   it("presents the assistant draft as a response bubble", async () => {
@@ -1485,10 +1565,7 @@ describe("ConversationView", () => {
     const onDraftChange = vi.fn();
     const onSend = vi.fn();
     renderConversation(
-      <SideChatStreamingLifecycleHarness
-        onDraftChange={onDraftChange}
-        onSend={onSend}
-      />
+      <StreamingLifecycleHarness onDraftChange={onDraftChange} onSend={onSend} />
     );
 
     const textbox = await screen.findByRole("textbox", { name: "AI prompt" });
@@ -1507,10 +1584,7 @@ describe("ConversationView", () => {
     const onDraftChange = vi.fn();
     const onSend = vi.fn();
     renderConversation(
-      <SideChatStreamingLifecycleHarness
-        onDraftChange={onDraftChange}
-        onSend={onSend}
-      />
+      <StreamingLifecycleHarness onDraftChange={onDraftChange} onSend={onSend} />
     );
 
     const textbox = await screen.findByRole("textbox", { name: "AI prompt" });
@@ -1530,7 +1604,6 @@ describe("ConversationView", () => {
           draft: "Recover after failure",
           messages: [message("msg_failed_activity", "user", "Original prompt")],
         })}
-        variant="side-chat"
       />
     );
 
@@ -1565,43 +1638,6 @@ describe("ConversationView", () => {
     expect(await screen.findByText("Thinking")).toBeInTheDocument();
     expect(screen.queryByText("is waiting for user approval")).toBeNull();
     expect(screen.queryByRole("button", { name: "Stop waiting" })).toBeNull();
-  });
-
-  it("places Side Chat tool execution after the reply as a separate bubble", async () => {
-    const prompt = message("msg_tool_prompt", "user", "Check the calendar");
-    const reply = message("msg_tool_reply", "assistant", "I will check that now.");
-    const view = renderConversation(
-      <ConversationViewWithDraft
-        actions={createActions()}
-        state={state({
-          messages: [prompt, reply],
-          activity: {
-            phase: "execution",
-            status: "running",
-            toolName: "calendar.list_items",
-            summaryClass: "public",
-            summary: "Working",
-          },
-          participantStatus: {
-            conversationId: "cnv_1",
-            participantId: "ptp_1",
-            state: "active",
-            status: "is executing a tool...",
-            updatedAt: 1,
-          },
-        })}
-        variant="side-chat"
-      />
-    );
-    const activity = await screen.findByTestId("participant-status-slot");
-    const article = containerArticle(view.container, reply.messageId);
-    expect(activity).toHaveAttribute("data-presentation", "tool-call");
-    expect(activity).toHaveTextContent("Checking your calendar");
-    expect(article).not.toContainElement(activity);
-    expect(
-      article.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING
-    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(article).toHaveTextContent("I will check that now.");
   });
 
   it("words a participant error from its issue code, never the runtime's text", async () => {
@@ -1864,28 +1900,19 @@ describe("ConversationView", () => {
     );
   });
 
-  it.each([
-    {
-      name: "keeps the generated file card without an inline download button",
-      variant: undefined,
-    },
-    {
-      name: "does not offer generated-file downloads on the Side Chat surface",
-      variant: "side-chat" as const,
-    },
-  ])("$name", async ({ variant }) => {
+  it("keeps the generated file card without an inline download button", async () => {
     const actions = createActions();
-    const fetchConversationAttachment = vi
-      .fn()
-      .mockResolvedValue(new Blob(["report bytes"], { type: "application/pdf" }));
-    const api = {
-      fetchConversationAttachment,
-    } as Partial<CommaApiClient> as CommaApiClient;
+    const core = createScriptedCore({
+      calls: (name) =>
+        name === "files.read"
+          ? { bytes: new TextEncoder().encode("report bytes"), type: "application/pdf" }
+          : null,
+    });
 
     renderConversation(
       <ConversationViewWithDraft
         actions={actions}
-        api={api}
+        live
         groupId="grp_1"
         state={state({
           messages: [
@@ -1903,9 +1930,9 @@ describe("ConversationView", () => {
             }),
           ],
         })}
-        {...(variant ? { variant } : {})}
         workspaceId="wsp_1"
-      />
+      />,
+      core.wrap
     );
 
     const fileCard = await screen.findByTestId("chat-attachment-file-msg_1-0");
@@ -1913,7 +1940,42 @@ describe("ConversationView", () => {
     expect(
       within(fileCard).queryByRole("button", { name: "Download" })
     ).not.toBeInTheDocument();
-    expect(fetchConversationAttachment).not.toHaveBeenCalled();
+    expect(core.sentTo("files.read")).toEqual([]);
+  });
+
+  it("shows an image recorded without a byte source as a file card, not a placeholder", async () => {
+    // A platform send (e.g. telegram.send_photo) is recorded in Home by name
+    // only; nothing can load its bytes, so waiting for a preview never ends.
+    const core = createScriptedCore();
+    const rendered = renderConversation(
+      <ConversationViewWithDraft
+        actions={createActions()}
+        live
+        groupId="grp_1"
+        state={state({
+          messages: [
+            message("msg_photo", "assistant", "现在看到的是客厅和餐厅。", {
+              attachments: [
+                {
+                  blockType: "image",
+                  fileName: "tilt-y-10.jpg",
+                  mimeType: "image/jpeg",
+                  title: undefined,
+                },
+              ],
+            }),
+          ],
+        })}
+        workspaceId="wsp_1"
+      />,
+      core.wrap
+    );
+
+    const fileCard = await screen.findByTestId("chat-attachment-file-msg_photo-0");
+    expect(fileCard).toHaveTextContent("tilt-y-10.jpg");
+    expect(
+      rendered.container.querySelector("[data-comma-image-group-placeholder]")
+    ).toBeNull();
   });
 
   it("hands task ref cards to the sidebar opener without navigating the main view", async () => {
@@ -1981,9 +2043,9 @@ describe("ConversationView", () => {
     expect(screen.queryByTestId("routed-conversation")).toBeNull();
   });
 
-  it("upgrades a rich external link to a hover preview through the workspace API", async () => {
+  it("upgrades a rich external link to a hover preview through the core", async () => {
     const actions = createActions();
-    const getRecommendationLinkPreview = vi.fn().mockResolvedValue({
+    const preview = {
       additions: 12,
       author: { avatarUrl: null, login: "CatsJuice" },
       changedFiles: 3,
@@ -1995,14 +2057,20 @@ describe("ConversationView", () => {
       state: "merged",
       title: "feat(chat): add inline task elements",
       updatedAt: null,
+    };
+    const asked: Record<string, unknown>[] = [];
+    const core = createScriptedCore({
+      owns: (name) => name === "linkPreview",
+      values: (topic) =>
+        topic.topic === "linkPreview" ? { status: "ready", preview } : undefined,
+      onSubscribe: (topic) => {
+        if (topic.topic === "linkPreview") asked.push(topic);
+      },
     });
-    const api = {
-      getRecommendationLinkPreview,
-    } as Partial<CommaApiClient> as CommaApiClient;
     renderConversation(
       <ConversationViewWithDraft
         actions={actions}
-        api={api}
+        live
         groupId="grp_1"
         state={state({
           messages: [
@@ -2014,7 +2082,8 @@ describe("ConversationView", () => {
           ],
         })}
         workspaceId="wsp_1"
-      />
+      />,
+      (ui) => core.wrap(ui)
     );
 
     // The hover wrapper decorates the same single anchor — link semantics and
@@ -2022,16 +2091,21 @@ describe("ConversationView", () => {
     const link = await screen.findByRole("link", { name: "PR #845" });
     expect(link).toHaveAttribute("href", "https://github.com/AFK-surf/Comma/pull/845");
     expect(screen.getAllByRole("link")).toHaveLength(1);
-    expect(getRecommendationLinkPreview).not.toHaveBeenCalled();
+    expect(asked).toEqual([]);
 
     const user = userEvent.setup();
     setInteractionModality("pointer");
     await user.hover(link);
 
     const card = await screen.findByRole("tooltip", {}, { timeout: 3_000 });
-    expect(getRecommendationLinkPreview).toHaveBeenCalledWith("wsp_1", {
-      href: "https://github.com/AFK-surf/Comma/pull/845",
-    });
+    expect(asked).toEqual([
+      {
+        topic: "linkPreview",
+        workspace: "wsp_1",
+        href: "https://github.com/AFK-surf/Comma/pull/845",
+        source: "",
+      },
+    ]);
     await waitFor(() =>
       expect(card).toHaveTextContent("feat(chat): add inline task elements")
     );
@@ -2067,7 +2141,7 @@ describe("ConversationView", () => {
     const actions = createActions();
     const onOpenInCommaBrowser = vi.fn();
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
+    stubProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
@@ -2155,6 +2229,55 @@ describe("ConversationView", () => {
     openSpy.mockRestore();
   });
 
+  it("opens the same link menu for a link inside a widget frame", async () => {
+    const user = userEvent.setup();
+    const onOpenInCommaBrowser = vi.fn();
+    renderConversation(
+      <ConversationViewWithDraft
+        actions={createActions()}
+        onOpenInCommaBrowser={onOpenInCommaBrowser}
+        state={state({
+          messages: [
+            message("msg_widget_link", "assistant", "PR review", {
+              parts: [
+                { kind: "markdown", text: "PR review" },
+                {
+                  kind: "dynamic-ui",
+                  uiRef: "prs",
+                  contentId: "blob-prs",
+                  version: 1,
+                  summary: "PR review card",
+                  conversationId: "conversation",
+                  messageId: "msg_widget_link",
+                  originTaskId: "task",
+                  attachmentIndex: 0,
+                },
+              ],
+            }),
+          ],
+        })}
+      />
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "Right-click widget link" })
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: "Open in External Browser" })
+    ).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Copy Link" })).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: "Open in Comma" }));
+    expect(onOpenInCommaBrowser).toHaveBeenCalledWith("https://example.com/pr/2300");
+
+    // A press inside the frame only shows as the window losing focus.
+    await user.click(screen.getByRole("button", { name: "Right-click widget link" }));
+    expect(await screen.findByRole("menu")).toBeInTheDocument();
+    act(() => {
+      window.dispatchEvent(new FocusEvent("blur"));
+    });
+    await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
+  });
+
   it("does not open the link menu for same-origin links", async () => {
     const actions = createActions();
     renderConversation(
@@ -2231,6 +2354,353 @@ describe("ConversationView", () => {
     } finally {
       rect.mockRestore();
     }
+  });
+
+  it("sends a staged Routine snippet as an attached text and opens its source", async () => {
+    const actions = createActions();
+    const accepted = Promise.resolve();
+    actions.send = vi.fn(() => Object.assign(accepted, { accepted }));
+    const onOpenInCommaBrowser = vi.fn();
+    const issueUrl = "https://linear.app/comma/issue/COMMA-1";
+    const snippet = createChatDraftSnippet({
+      kind: "routine",
+      source: {
+        appId: "linear",
+        appName: "Linear",
+        connectionId: "linear-account",
+        enabled: true,
+        kind: "composio",
+        label: "Linear",
+      },
+      sourceUrl: issueUrl,
+      text: `Help me investigate the P0 latency\n\n${issueUrl}`,
+    });
+    renderConversation(
+      <ConversationViewWithSnippets
+        actions={actions}
+        initial={[snippet]}
+        onOpenInCommaBrowser={onOpenInCommaBrowser}
+        state={state({ draft: "Start with the backend", messages: [] })}
+      />
+    );
+
+    const send = await screen.findByRole("button", { name: "Send message" });
+    const tile = document.querySelector<HTMLElement>(
+      '[data-slot="snippet-attachment"]'
+    )!;
+    expect(tile).toHaveTextContent("Help me investigate the P0 latency");
+    expect(tile).not.toHaveTextContent(issueUrl);
+    fireEvent.click(send);
+    await act(async () => {
+      await accepted;
+    });
+
+    expect(actions.send).toHaveBeenCalledWith(
+      `Attached text from Linear:\n> Help me investigate the P0 latency\n>\n> ${issueUrl}\n\nStart with the backend`,
+      { skills: [] }
+    );
+    expect(document.querySelector('[data-slot="snippet-attachment"]')).toBeNull();
+    expect(onOpenInCommaBrowser).toHaveBeenCalledOnce();
+    expect(onOpenInCommaBrowser).toHaveBeenCalledWith(issueUrl);
+  });
+
+  it("sends a snippet alone, moves it to the text field, or drops it", async () => {
+    const user = userEvent.setup();
+    const actions = createActions();
+    renderConversation(
+      <ConversationViewWithSnippets
+        actions={actions}
+        initial={[
+          createChatDraftSnippet({ kind: "routine", text: "Help me reply to Dana" }),
+          createChatDraftSnippet({ kind: "routine", text: "Help me review COMMA-1" }),
+        ]}
+        state={state({ draft: "Thanks", messages: [] })}
+      />
+    );
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Show Help me reply to Dana in text field",
+      })
+    );
+    // The text goes after the draft, and the tile goes away.
+    expect(actions.setDraft).toHaveBeenCalledWith("Thanks\n\nHelp me reply to Dana");
+    expect(document.querySelectorAll('[data-slot="snippet-attachment"]')).toHaveLength(
+      1
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Remove Help me review COMMA-1" })
+    );
+    expect(document.querySelector('[data-slot="snippet-attachment"]')).toBeNull();
+  });
+
+  it("stages a long paste as a snippet and leaves a short one to the prompt", async () => {
+    const actions = createActions();
+    const accepted = Promise.resolve();
+    actions.send = vi.fn(() => Object.assign(accepted, { accepted }));
+    renderConversation(
+      <ConversationViewWithDraft actions={actions} state={state({ messages: [] })} />
+    );
+    const editor = await screen.findByRole("textbox", { name: "AI prompt" });
+    const paste = (text: string) => {
+      editor.focus();
+      fireEvent.paste(editor, {
+        clipboardData: { types: ["text/plain"], files: [], getData: () => text },
+      });
+    };
+    const log = `TypeError: x is undefined\n${"    at frame\n".repeat(500)}`;
+
+    paste(log);
+    const tile = document.querySelector('[data-slot="snippet-attachment"]');
+    expect(tile).toHaveTextContent("TypeError: x is undefined");
+    expect(actions.setDraft).not.toHaveBeenCalled();
+    // A snippet alone is enough to send, even with an empty draft.
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await act(async () => {
+      await accepted;
+    });
+    expect(actions.send).toHaveBeenCalledWith(log, { skills: [] });
+    expect(document.querySelector('[data-slot="snippet-attachment"]')).toBeNull();
+
+    paste("a short note");
+    expect(document.querySelector('[data-slot="snippet-attachment"]')).toBeNull();
+    expect(actions.setDraft).toHaveBeenCalledWith("a short note");
+  });
+
+  it("restores a rejected admission's snippets", async () => {
+    const actions = createActions();
+    let rejectAccepted!: (error: Error) => void;
+    const accepted = new Promise<void>((_resolve, reject) => {
+      rejectAccepted = reject;
+    });
+    const completion = accepted.then(() => undefined);
+    void completion.catch(() => undefined);
+    actions.send = vi.fn(() => Object.assign(completion, { accepted }));
+    renderConversation(
+      <ConversationViewWithSnippets
+        actions={actions}
+        initial={[
+          createChatDraftSnippet({ kind: "routine", text: "Help me reply to Dana" }),
+        ]}
+        state={state({ messages: [] })}
+      />
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
+    expect(actions.send).toHaveBeenCalledWith(
+      "Attached text:\n> Help me reply to Dana",
+      {
+        skills: [],
+      }
+    );
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="snippet-attachment"]')).toBeNull()
+    );
+    await act(async () => {
+      rejectAccepted(new Error("attachment_admission_failed"));
+      await Promise.resolve();
+    });
+
+    expect(
+      document.querySelector('[data-slot="snippet-attachment"]')
+    ).toHaveTextContent("Help me reply to Dana");
+  });
+
+  it("keeps a conversation's snippets when the reader leaves it and comes back", async () => {
+    const user = userEvent.setup();
+    renderConversation(<SwitchingConversations actions={createActions()} />, (ui) => (
+      <DraftSnippetsProvider>{ui}</DraftSnippetsProvider>
+    ));
+    const editor = await screen.findByRole("textbox", { name: "AI prompt" });
+    const log = `TypeError: x is undefined\n${"    at frame\n".repeat(500)}`;
+    editor.focus();
+    fireEvent.paste(editor, {
+      clipboardData: { types: ["text/plain"], files: [], getData: () => log },
+    });
+    expect(
+      document.querySelector('[data-slot="snippet-attachment"]')
+    ).toHaveTextContent("TypeError: x is undefined");
+
+    await user.click(screen.getByRole("button", { name: "Open cnv_2" }));
+    expect(document.querySelector('[data-slot="snippet-attachment"]')).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Open cnv_1" }));
+    expect(
+      document.querySelector('[data-slot="snippet-attachment"]')
+    ).toHaveTextContent("TypeError: x is undefined");
+  });
+
+  it("opens a sent snippet's source only once the runtime accepts the send", async () => {
+    const issueUrl = "https://linear.app/comma/issue/COMMA-1";
+    const snippet = () =>
+      createChatDraftSnippet({
+        kind: "routine",
+        sourceUrl: issueUrl,
+        text: `Help me investigate the P0 latency\n\n${issueUrl}`,
+      });
+
+    // Refused: the tile comes back and nothing opens.
+    const refused = createActions();
+    let reject!: (error: Error) => void;
+    const refusal = new Promise<void>((_resolve, rejectAccepted) => {
+      reject = rejectAccepted;
+    });
+    refused.send = vi.fn(() => sendWithAdmission(refusal));
+    const onOpenAfterRefusal = vi.fn();
+    const first = renderConversation(
+      <ConversationViewWithSnippets
+        actions={refused}
+        initial={[snippet()]}
+        onOpenInCommaBrowser={onOpenAfterRefusal}
+        state={state({ messages: [] })}
+      />
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
+    await act(async () => {
+      reject(new Error("attachment_admission_failed"));
+      await Promise.resolve();
+    });
+    expect(document.querySelector('[data-slot="snippet-attachment"]')).not.toBeNull();
+    expect(onOpenAfterRefusal).not.toHaveBeenCalled();
+    first.unmount();
+
+    // Accepted: the source opens with the acceptance, not before it.
+    const actions = createActions();
+    let accept!: () => void;
+    const acceptance = new Promise<void>((resolve) => {
+      accept = resolve;
+    });
+    actions.send = vi.fn(() => sendWithAdmission(acceptance));
+    const onOpenInCommaBrowser = vi.fn();
+    renderConversation(
+      <ConversationViewWithSnippets
+        actions={actions}
+        initial={[snippet()]}
+        onOpenInCommaBrowser={onOpenInCommaBrowser}
+        state={state({ messages: [] })}
+      />
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Send message" }));
+    expect(onOpenInCommaBrowser).not.toHaveBeenCalled();
+    await act(async () => {
+      accept();
+      await acceptance;
+    });
+    expect(onOpenInCommaBrowser).toHaveBeenCalledExactlyOnceWith(issueUrl);
+  });
+
+  it("opens the source of a snippet moved to the text field while the draft names it", async () => {
+    const user = userEvent.setup();
+    const issueUrl = "https://linear.app/comma/issue/COMMA-1";
+    const text = `Help me investigate the P0 latency\n\n${issueUrl}`;
+    const actions = createActions();
+    const onOpenInCommaBrowser = vi.fn();
+    renderConversation(
+      <ConversationViewWithSnippets
+        actions={actions}
+        initial={[
+          createChatDraftSnippet({ kind: "routine", sourceUrl: issueUrl, text }),
+        ]}
+        onOpenInCommaBrowser={onOpenInCommaBrowser}
+        state={state({ draft: "Before", messages: [] })}
+      />
+    );
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Show Help me investigate the P0 latency in text field",
+      })
+    );
+    expect(actions.setDraft).toHaveBeenCalledWith(`Before\n\n${text}`);
+    // The reader cut the URL out of the draft, so the source stays closed.
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(actions.send).toHaveBeenCalledWith("Before", { skills: [] });
+    expect(onOpenInCommaBrowser).not.toHaveBeenCalled();
+  });
+
+  it("opens the source of a snippet moved to the text field when it is sent", async () => {
+    const user = userEvent.setup();
+    const issueUrl = "https://linear.app/comma/issue/COMMA-1";
+    const text = `Help me investigate the P0 latency\n\n${issueUrl}`;
+    const actions = createActions();
+    const onOpenInCommaBrowser = vi.fn();
+    renderConversation(
+      <ConversationViewOwningDraft
+        actions={actions}
+        initial={[
+          createChatDraftSnippet({ kind: "routine", sourceUrl: issueUrl, text }),
+        ]}
+        onOpenInCommaBrowser={onOpenInCommaBrowser}
+      />
+    );
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Show Help me investigate the P0 latency in text field",
+      })
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "AI prompt" })).toHaveTextContent(
+        "Help me investigate the P0 latency"
+      )
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(actions.send).toHaveBeenCalledWith(text, { skills: [] });
+    expect(onOpenInCommaBrowser).toHaveBeenCalledExactlyOnceWith(issueUrl);
+  });
+
+  it("replies inside a message's thread from its context menu", async () => {
+    const user = userEvent.setup();
+    const actions = createActions();
+    const accepted = Promise.resolve();
+    actions.send = vi.fn(() => Object.assign(accepted, { accepted }));
+    renderConversation(
+      <ConversationViewWithDraft
+        actions={actions}
+        state={state({
+          draft: "Make it shorter",
+          messages: [
+            message("msg_ask", "user", "Draft the launch email"),
+            message("msg_other", "user", "Unrelated question"),
+            message("msg_answer", "assistant", "Here is the launch email draft.", {
+              replyToMessageId: "msg_ask",
+              threadRootMessageId: "msg_ask",
+            }),
+          ],
+        })}
+      />
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Here is the launch email draft."), {
+      clientX: 100,
+      clientY: 100,
+    });
+    await user.click(await screen.findByRole("menuitem", { name: "Reply" }));
+
+    // The thread gathers its own messages, and only them.
+    const thread = await screen.findByRole("region", { name: "Reply thread" });
+    expect(within(thread).getByText("Draft the launch email")).toBeInTheDocument();
+    expect(
+      within(thread).getByText("Here is the launch email draft.")
+    ).toBeInTheDocument();
+    expect(within(thread).queryByText("Unrelated question")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await act(async () => {
+      await accepted;
+    });
+    expect(actions.send).toHaveBeenCalledWith("Make it shorter", {
+      replyToMessageId: "msg_answer",
+      skills: [],
+    });
+    // The thread stays open for the conversation that follows.
+    expect(screen.getByRole("region", { name: "Reply thread" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Reply thread" })).toBeNull()
+    );
   });
 
   it("restores a rejected admission's quotes without replacing later quotes", async () => {
@@ -2475,6 +2945,39 @@ describe("ConversationView", () => {
     expect(bubble.textContent).not.toContain("Quoted from this conversation:");
   });
 
+  it("shows a sent attached text as a one-line pill that shows its text on hover", async () => {
+    renderConversation(
+      <ConversationViewWithDraft
+        actions={createActions()}
+        state={state({
+          messages: [
+            message(
+              "msg_attached_text",
+              "user",
+              "Attached text from Linear:\n> Help me review COMMA-1\n>\n> https://linear.app/c/COMMA-1\n\nStart with the API"
+            ),
+          ],
+        })}
+      />
+    );
+
+    const pill = await screen.findByTestId("chat-attached-text-msg_attached_text-0");
+    // The pill shows the text's first line; the rest shows on hover, and the
+    // bubble keeps only the typed words.
+    expect(pill).toHaveAccessibleName("Help me review COMMA-1");
+    expect(pill).toHaveTextContent("Help me review COMMA-1");
+    expect(pill).not.toHaveTextContent("https://linear.app/c/COMMA-1");
+    const bubble = screen.getByTestId("chat-user-bubble-content");
+    expect(bubble).toHaveTextContent("Start with the API");
+    expect(bubble.textContent).not.toContain("Attached text");
+
+    setInteractionModality("pointer");
+    await userEvent.setup().hover(pill);
+    const tooltip = await screen.findByRole("tooltip", {}, { timeout: 3_000 });
+    expect(tooltip).toHaveTextContent("Linear");
+    expect(tooltip).toHaveTextContent("https://linear.app/c/COMMA-1");
+  });
+
   it("stacks a companioned user turn as images, quote, file pills, then bubble", async () => {
     renderConversation(
       <ConversationViewWithDraft
@@ -2490,6 +2993,7 @@ describe("ConversationView", () => {
                   {
                     blockType: "image",
                     fileName: "screenshot.png",
+                    localFileRef: `lfi1_${"a".repeat(43)}`,
                     mimeType: "image/png",
                     size: 1024,
                     title: "screenshot.png",
@@ -2540,7 +3044,7 @@ describe("ConversationView", () => {
     const user = userEvent.setup();
     const actions = createActions();
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
+    stubProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
@@ -2567,8 +3071,8 @@ describe("ConversationView", () => {
     expect(contextMenuEvent.defaultPrevented).toBe(true);
 
     const items = await screen.findAllByRole("menuitem");
-    expect(items).toHaveLength(1);
-    expect(items[0]).toHaveAccessibleName("Copy");
+    // A committed message can be answered as well as copied.
+    expect(items.map((item) => item.textContent)).toEqual(["Reply", "Copy"]);
     expect(
       screen.queryByRole("menuitem", { name: "Copy message" })
     ).not.toBeInTheDocument();
@@ -2581,7 +3085,7 @@ describe("ConversationView", () => {
     const user = userEvent.setup();
     const actions = createActions();
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
+    stubProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
@@ -2680,7 +3184,7 @@ describe("ConversationView", () => {
     const user = userEvent.setup();
     const actions = createActions();
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
+    stubProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
@@ -2707,8 +3211,8 @@ describe("ConversationView", () => {
     expect(contextMenuEvent.defaultPrevented).toBe(true);
 
     const items = await screen.findAllByRole("menuitem");
-    expect(items).toHaveLength(1);
-    expect(items[0]).toHaveAccessibleName("Copy");
+    // A committed message can be answered as well as copied.
+    expect(items.map((item) => item.textContent)).toEqual(["Reply", "Copy"]);
 
     await user.click(screen.getByRole("menuitem", { name: "Copy" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("User prompt text"));
@@ -2718,7 +3222,7 @@ describe("ConversationView", () => {
     const user = userEvent.setup();
     const actions = createActions();
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
+    stubProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
@@ -2759,7 +3263,7 @@ describe("ConversationView", () => {
     const user = userEvent.setup();
     const actions = createActions();
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
+    stubProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
@@ -2859,7 +3363,6 @@ describe("ConversationView", () => {
 
 describe("ConversationThread", () => {
   afterEach(() => {
-    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -3565,7 +4068,6 @@ describe("ConversationThread", () => {
   });
 
   it("reveals the settled images once a preview outlives the settle deadline", async () => {
-    vi.useFakeTimers();
     const attachments = Array.from({ length: 3 }, (_, index) =>
       localImageAttachment(index)
     );
@@ -4092,6 +4594,73 @@ describe("ConversationThread", () => {
     expect(firstRelease).toHaveBeenCalledOnce();
   });
 
+  it("shows an uploading image from its held bytes under a spinner, and keeps it as the upload lands", async () => {
+    const observer = installIntersectionObserverHarness();
+    const path = `/uploads/${"u".repeat(22)}-photo.png`;
+    let resolveUploaded:
+      | ((preview: { release(): void; url: string }) => void)
+      | undefined;
+    const heldRelease = vi.fn();
+    const previewLocalFile = vi.fn((previewRef: ChatImagePreviewRef) =>
+      previewRef === "draft-upload:att_1"
+        ? Promise.resolve({ release: heldRelease, url: "blob:held" })
+        : new Promise<{ release(): void; url: string }>((resolve) => {
+            resolveUploaded = resolve;
+          })
+    );
+    const uploading = message("msg_uploading", "user", "look", {
+      attachments: [
+        {
+          blockType: "image",
+          fileName: "photo.png",
+          mimeType: undefined,
+          size: 3,
+          title: undefined,
+          uploadingId: "att_1",
+        },
+      ],
+    });
+    const thread = (attachments: ChatMessage["attachments"]) => (
+      <ConversationThread
+        messages={[{ ...uploading, attachments }]}
+        onDiscard={() => {}}
+        onPreviewLocalFile={previewLocalFile}
+        onRetry={() => {}}
+        groupId="grp_1"
+        workspaceId="wsp_1"
+      />
+    );
+    const rendered = render(thread(uploading.attachments));
+
+    observer.notify("inner", observer.firstObserved(), true);
+    await waitForNamedImageSrc("photo.png", "blob:held");
+    expect(screen.getByTestId("chat-image-uploading")).toBeInTheDocument();
+
+    // Uploaded: read from the server from now on, the held image stays until that is ready.
+    rendered.rerender(
+      thread([
+        {
+          blockType: "image",
+          fileName: "photo.png",
+          mimeType: undefined,
+          size: 3,
+          title: undefined,
+          workspacePath: path,
+        },
+      ])
+    );
+    await waitFor(() =>
+      expect(previewLocalFile).toHaveBeenCalledWith(path, expect.anything())
+    );
+    expect(screen.queryByTestId("chat-image-uploading")).toBeNull();
+    await waitForNamedImageSrc("photo.png", "blob:held");
+    expect(heldRelease).not.toHaveBeenCalled();
+
+    resolveUploaded!({ release: () => {}, url: "blob:uploaded" });
+    await waitForNamedImageSrc("photo.png", "blob:uploaded");
+    await waitFor(() => expect(heldRelease).toHaveBeenCalledOnce());
+  });
+
   it("releases a preview that fails to decode without painting a fake image", async () => {
     const observer = installIntersectionObserverHarness();
     const attachment = localImageAttachment(0);
@@ -4382,57 +4951,54 @@ describe("ConversationThread", () => {
     });
   });
 
-  for (const variant of ["default", "side-chat"] as const) {
-    it(`releases response aliases with the mounted turn window in ${variant}`, async () => {
-      const user = message("window_user", "user", "First turn");
-      const draft = {
-        conversationId: "cnv_1",
-        draftId: "window_draft",
-        responseKey: "window_response",
-        sourceMessageIds: [user.messageId],
-        status: "streaming" as const,
-        text: "First response",
-      };
-      const props = {
-        onDiscard: () => {},
-        onRetry: () => {},
-        groupId: "grp_1",
-        workspaceId: "wsp_1",
-        variant,
-      };
-      const view = render(
-        <ConversationThread {...props} messages={[user]} assistantDraft={draft} />
-      );
-      const firstRow = screen.getByTestId("chat-assistant-draft");
-      const canonical = message("window_reply", "assistant", draft.text);
-      view.rerender(<ConversationThread {...props} messages={[user, canonical]} />);
-      expect(view.container.querySelector('[data-message-id="window_reply"]')).toBe(
-        firstRow
-      );
-      const messages = [user, canonical, ...historyTurns(8)];
-      view.rerender(<ConversationThread {...props} messages={messages} />);
-      expect(firstRow).not.toBeInTheDocument();
-      const viewport = view.container.querySelector<HTMLElement>(
-        '[data-slot="scroll-area-viewport"]'
-      )!;
-      mockScrollport(viewport, { clientHeight: 480, scrollHeight: 2400, scrollTop: 0 });
-      fireEvent.wheel(viewport, { deltaY: -120 });
-      fireEvent.scroll(viewport);
-      await waitFor(() =>
-        expect(
-          view.container.querySelector('[data-message-id="window_reply"]')
-        ).not.toBeNull()
-      );
-      // Remounting intentionally reads canonical history. It needs no retained
-      // conversation-wide draft alias to display the exact committed content.
-      expect(screen.getByTestId("markdown-message:window_reply")).toHaveTextContent(
-        draft.text
-      );
-      expect(view.container.querySelector('[data-message-id="window_reply"]')).not.toBe(
-        firstRow
-      );
-    });
-  }
+  it("releases response aliases with the mounted turn window", async () => {
+    const user = message("window_user", "user", "First turn");
+    const draft = {
+      conversationId: "cnv_1",
+      draftId: "window_draft",
+      responseKey: "window_response",
+      sourceMessageIds: [user.messageId],
+      status: "streaming" as const,
+      text: "First response",
+    };
+    const props = {
+      onDiscard: () => {},
+      onRetry: () => {},
+      groupId: "grp_1",
+      workspaceId: "wsp_1",
+    };
+    const view = render(
+      <ConversationThread {...props} messages={[user]} assistantDraft={draft} />
+    );
+    const firstRow = screen.getByTestId("chat-assistant-draft");
+    const canonical = message("window_reply", "assistant", draft.text);
+    view.rerender(<ConversationThread {...props} messages={[user, canonical]} />);
+    expect(view.container.querySelector('[data-message-id="window_reply"]')).toBe(
+      firstRow
+    );
+    const messages = [user, canonical, ...historyTurns(8)];
+    view.rerender(<ConversationThread {...props} messages={messages} />);
+    expect(firstRow).not.toBeInTheDocument();
+    const viewport = view.container.querySelector<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]'
+    )!;
+    mockScrollport(viewport, { clientHeight: 480, scrollHeight: 2400, scrollTop: 0 });
+    fireEvent.wheel(viewport, { deltaY: -120 });
+    fireEvent.scroll(viewport);
+    await waitFor(() =>
+      expect(
+        view.container.querySelector('[data-message-id="window_reply"]')
+      ).not.toBeNull()
+    );
+    // Remounting intentionally reads canonical history. It needs no retained
+    // conversation-wide draft alias to display the exact committed content.
+    expect(screen.getByTestId("markdown-message:window_reply")).toHaveTextContent(
+      draft.text
+    );
+    expect(view.container.querySelector('[data-message-id="window_reply"]')).not.toBe(
+      firstRow
+    );
+  });
 
   it("renders streaming assistant text in a response bubble without announcing a reply", async () => {
     const conversation = renderStatefulConversation(
@@ -4527,11 +5093,7 @@ describe("ConversationThread", () => {
     );
 
     const copyButton = await screen.findByRole("button", { name: "Copy reply" });
-    const copyStateIcon = copyButton.querySelector(".t-icon-swap");
     expect(copyButton).toHaveAttribute("data-no-press-feedback");
-    expect(copyStateIcon).toHaveAttribute("data-state", "a");
-    expect(copyStateIcon).toHaveAttribute("data-swap-blur", "none");
-    expect(copyStateIcon?.querySelectorAll(".t-icon")).toHaveLength(2);
     expect(
       screen.getByTestId("chat-message-actions-msg_1").querySelector("time")
     ).toBeNull();
@@ -4540,16 +5102,9 @@ describe("ConversationThread", () => {
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("查好了。"));
     expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
-    expect(copyStateIcon).toHaveAttribute("data-state", "b");
-    const copiedIconLayer = copyStateIcon?.querySelector('[data-icon="b"]');
-    expect(copiedIconLayer).toHaveClass("comma-chat-message-copy-success-icon");
-    expect(copiedIconLayer?.querySelector("svg")).toHaveClass(
-      "text-fg-success-primary"
-    );
     await waitFor(
       () => {
         expect(screen.getByRole("button", { name: "Copy reply" })).toBeInTheDocument();
-        expect(copyStateIcon).toHaveAttribute("data-state", "a");
       },
       { timeout: 1_200 }
     );
@@ -4750,34 +5305,149 @@ describe("ConversationThread", () => {
     expect(thirdTimestamp.nextElementSibling).toBe(thirdUser);
   });
 
-  it("omits message copy actions and conversation timestamps from side chat", () => {
+  it("times an agent message sent on its own after a quiet spell, not a reply", () => {
+    const morning = new Date();
+    morning.setHours(9, 0, 0, 0);
+    const at = (minutes: number) => morning.getTime() + minutes * 60_000;
+    const messages = [
+      message("msg_ask", "user", "Check the deploy", { createdAt: at(0) }),
+      // A reply that took minutes still belongs under its question's time.
+      message("msg_reply", "assistant", "Deploy is green.", { createdAt: at(6) }),
+      message("msg_reminder", "assistant", "Stand-up starts in 14 minutes.", {
+        createdAt: at(20),
+      }),
+      // The reminder's time covers an answer inside the same minute.
+      message("msg_answer", "user", "Thanks", { createdAt: at(20.5) }),
+      message("msg_answer_reply", "assistant", "You're welcome.", {
+        createdAt: at(20.6),
+      }),
+      message("msg_followup", "assistant", "Agenda is posted.", { createdAt: at(23) }),
+    ];
+
     render(
       <ConversationThread
-        messages={[
-          message("msg_side_chat_user", "user", "简洁问题。", { createdAt: 1 }),
-          message("msg_side_chat", "assistant", "简洁回复。", { createdAt: 1 }),
-        ]}
+        messages={messages}
         onDiscard={() => {}}
         onRetry={() => {}}
-        variant="side-chat"
         groupId="grp_1"
         workspaceId="wsp_1"
       />
     );
 
-    expect(screen.getByText("简洁问题。")).toBeInTheDocument();
-    expect(screen.getByText("简洁回复。")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copy message" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Copy reply" })).toBeNull();
-    expect(
-      screen.queryByTestId("chat-conversation-time-msg_side_chat_user")
-    ).toBeNull();
-    expect(screen.queryByTestId("chat-conversation-time-msg_side_chat")).toBeNull();
-    expect(screen.queryByTestId("chat-message-actions-msg_side_chat_user")).toBeNull();
-    expect(screen.queryByTestId("chat-message-actions-msg_side_chat")).toBeNull();
+    const reminderTime = screen.getByTestId("chat-conversation-time-msg_reminder");
+    expect(reminderTime).toHaveAttribute("dateTime", new Date(at(20)).toISOString());
+    expect(reminderTime.nextElementSibling).toHaveAttribute(
+      "data-message-id",
+      "msg_reminder"
+    );
+    expect(screen.getByTestId("chat-conversation-time-msg_ask")).toBeInTheDocument();
+    for (const id of ["msg_reply", "msg_answer", "msg_answer_reply", "msg_followup"]) {
+      expect(screen.queryByTestId(`chat-conversation-time-${id}`)).toBeNull();
+    }
   });
 
-  it("shows browser inspection context beside the user prompt", () => {
+  it("marks New on what the agent sent while the window was away, from when it is back until the user writes", () => {
+    const attended = { value: true };
+    vi.spyOn(document, "hasFocus").mockImplementation(() => attended.value);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const setAttended = (value: boolean) => {
+      attended.value = value;
+      act(() => {
+        window.dispatchEvent(new Event(value ? "focus" : "blur"));
+      });
+    };
+    const now = Date.now();
+    const at = (minutesAgo: number) => now - minutesAgo * 60_000;
+    const ask = message("msg_ask", "user", "Check the deploy", { createdAt: at(60) });
+    const reply = message("msg_reply", "assistant", "Deploy is green.", {
+      createdAt: at(59),
+    });
+    const draft = {
+      conversationId: "cnv_1",
+      draftId: "draft_reminder",
+      responseKey: "reminder_response",
+      sourceMessageIds: ["wake_reminder"],
+      status: "streaming" as const,
+      text: "Stand-up starts",
+    };
+    const props = {
+      groupId: "grp_1",
+      live: true,
+      onDiscard: () => {},
+      onRetry: () => {},
+      workspaceId: "wsp_1",
+    };
+    const view = render(<ConversationThread {...props} messages={[ask, reply]} />);
+
+    // The reminder streams in while another app has focus.
+    setAttended(false);
+    view.rerender(
+      <ConversationThread {...props} messages={[ask, reply]} assistantDraft={draft} />
+    );
+    const reminderTime = screen.getByTestId("chat-conversation-time-draft_reminder");
+    expect(reminderTime).toHaveTextContent(/^Today /);
+    expect(reminderTime.nextElementSibling).toBe(
+      screen.getByTestId("chat-assistant-draft")
+    );
+
+    // Coming back shows it as New; the question's own timestamp is not news.
+    setAttended(true);
+    expect(reminderTime).toHaveTextContent(/^New Today /);
+    expect(screen.getByTestId("chat-conversation-time-msg_ask")).toHaveTextContent(
+      /^Today /
+    );
+
+    const reminder = message("msg_reminder", "assistant", "Stand-up starts soon.", {
+      createdAt: at(0),
+    });
+    view.rerender(<ConversationThread {...props} messages={[ask, reply, reminder]} />);
+    // The landed message keeps the row it streamed under, and its news.
+    expect(screen.getByTestId("chat-conversation-time-msg_reminder")).toBe(
+      reminderTime
+    );
+    expect(reminderTime).toHaveTextContent(/^New Today /);
+
+    const thanks = message("msg_thanks", "user", "Thanks", { createdAt: at(0) });
+    view.rerender(
+      <ConversationThread {...props} messages={[ask, reply, reminder, thanks]} />
+    );
+    expect(reminderTime).toHaveTextContent(/^Today /);
+  });
+
+  it("shows no New for what the agent sends while the window is in front, or what was there when it opened", () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const now = Date.now();
+    const at = (minutesAgo: number) => now - minutesAgo * 60_000;
+    const props = {
+      groupId: "grp_1",
+      live: true,
+      onDiscard: () => {},
+      onRetry: () => {},
+      workspaceId: "wsp_1",
+    };
+    const opened = [
+      message("msg_ask", "user", "Check the deploy", { createdAt: at(60) }),
+      message("msg_reply", "assistant", "Deploy is green.", { createdAt: at(59) }),
+      message("msg_reminder", "assistant", "Stand-up starts soon.", {
+        createdAt: at(30),
+      }),
+    ];
+    const view = render(<ConversationThread {...props} messages={opened} />);
+    expect(screen.getByTestId("chat-conversation-time-msg_reminder")).toHaveTextContent(
+      /^Today /
+    );
+
+    const followup = message("msg_followup", "assistant", "Agenda is posted.", {
+      createdAt: at(0),
+    });
+    view.rerender(<ConversationThread {...props} messages={[...opened, followup]} />);
+    expect(screen.getByTestId("chat-conversation-time-msg_followup")).toHaveTextContent(
+      /^Today /
+    );
+  });
+
+  it("shows a browser inspection as the person's words, keeping its DOM context for the agent", () => {
     const inspectionMessage = [
       "为什么什么都没有",
       "",
@@ -4810,32 +5480,31 @@ describe("ConversationThread", () => {
       />
     );
 
+    // The element shows as its screenshot, an ordinary image of the message.
     expect(screen.getByText("为什么什么都没有")).toBeInTheDocument();
-    const context = screen.getByTestId("chat-browser-inspection-context");
-    expect(context).toHaveTextContent("Snake");
-    expect(context).toHaveTextContent("body > textarea");
-    expect(context).toHaveTextContent("test");
-    expect(screen.queryByText("<user-reminder>")).toBeNull();
+    expect(screen.queryByText(/body > textarea/)).toBeNull();
+    expect(screen.queryByText(/user-reminder/)).toBeNull();
   });
 
-  it("shows canonical Task agent messages with their Router and Worker sources", async () => {
-    vi.stubGlobal("crypto", process.getBuiltinModule("crypto").webcrypto);
+  it("shows canonical Task agent messages with their Router and Worker sources", () => {
     render(
-      <ConversationThread
-        messages={[
-          message("msg_router", "assistant", "I assigned the work.", {
-            actorRole: "router",
-          }),
-          message("msg_worker", "assistant", "I produced the result.", {
-            actorId: "agt1_worker_1",
-            actorRole: "worker",
-          }),
-        ]}
-        onDiscard={() => {}}
-        onRetry={() => {}}
-        groupId="grp_1"
-        workspaceId="wsp_1"
-      />
+      <ThreadWorkerVendorContext.Provider value="anthropic">
+        <ConversationThread
+          messages={[
+            message("msg_router", "assistant", "I assigned the work.", {
+              actorRole: "router",
+            }),
+            message("msg_worker", "assistant", "I produced the result.", {
+              actorId: "agt1_worker_1",
+              actorRole: "worker",
+            }),
+          ]}
+          onDiscard={() => {}}
+          onRetry={() => {}}
+          groupId="grp_1"
+          workspaceId="wsp_1"
+        />
+      </ThreadWorkerVendorContext.Provider>
     );
 
     expect(screen.getByText("Router")).toBeInTheDocument();
@@ -4849,35 +5518,12 @@ describe("ConversationThread", () => {
     ).not.toBeNull();
     expect(workerMessage).toHaveAttribute("data-actor-role", "worker");
     expect(workerMessage?.querySelector('[data-slot="comma-product-mark"]')).toBeNull();
-    await waitFor(() => {
-      expect(
-        workerMessage?.querySelector(".comma-chat-assistant-source-avatar svg")
-      ).toBeNull();
-      expect(
-        workerMessage?.querySelector<HTMLElement>(".comma-chat-assistant-source-avatar")
-          ?.style.backgroundImage
-      ).toContain("radial-gradient");
-    });
-  });
-
-  it("keeps after-message content visible in side chat", () => {
-    const { container } = render(
-      <ConversationThread
-        afterMessages={<div data-testid="side-chat-after-messages">Review action</div>}
-        messages={[message("msg_side_chat", "assistant", "Task result")]}
-        onDiscard={() => {}}
-        onRetry={() => {}}
-        variant="side-chat"
-        groupId="grp_1"
-        workspaceId="wsp_1"
-      />
+    // The Worker's messages carry the mark of the Task model's maker.
+    const workerAvatar = workerMessage?.querySelector(
+      ".comma-chat-assistant-source-avatar"
     );
-
-    const afterMessages = screen.getByTestId("side-chat-after-messages");
-    expect(afterMessages).toBeInTheDocument();
-    expect(container.querySelector(".comma-chat-column")?.lastElementChild).toBe(
-      afterMessages.parentElement
-    );
+    expect(workerAvatar).toHaveAttribute("data-model-vendor", "anthropic");
+    expect(workerAvatar?.querySelector("img")).not.toBeNull();
   });
 
   it("holds each reply-owned tail in its own reply's turn, not the newest turn", () => {
@@ -5023,7 +5669,6 @@ describe("ConversationThread", () => {
   });
 
   it("rechecks meaningful overflow when the anchored inner turn resizes", () => {
-    vi.useFakeTimers();
     let resizeCallback: ResizeObserverCallback | undefined;
     let resizeObserver: ResizeObserver | undefined;
     const observe = vi.fn();
@@ -5239,7 +5884,6 @@ describe("ConversationThread", () => {
   });
 
   it("renders an optimistic user message without a sending label", async () => {
-    vi.useFakeTimers();
     render(
       <ConversationThread
         messages={[
@@ -5305,272 +5949,247 @@ describe("ConversationThread", () => {
     expect(await screen.findByTestId("chat-assistant-draft")).toHaveTextContent(
       "正在生成真实回复"
     );
-    expect(screen.queryByText("Typing")).toBeNull();
     expect(screen.getByTestId("participant-status-slot")).toHaveAttribute(
       "data-active",
       "false"
     );
   });
 
-  for (const variant of ["route", "side-chat"] as const) {
-    it(`hands waiting to the first response and keeps later feedback after it in ${variant}`, async () => {
-      const user = message("msg_user", "user", "Start this turn");
-      const participant = {
-        conversationId: "cnv_1",
-        participantId: "router",
-        state: "active" as const,
-        status: "is thinking...",
-        updatedAt: 1,
-      };
-      const base = { messages: [user], participantStatus: participant };
-      const view = renderStatefulConversation(
-        state({ ...base, awaitingReply: true, locallyAwaitingReply: true }),
-        createActions(),
-        variant
-      );
-      const slot = await screen.findByTestId("participant-status-slot");
-      const mark = slot.querySelector('[data-slot="comma-logo-animation"]');
-      expect(slot).toHaveAttribute("data-active", "true");
+  it("hands waiting to the first response and keeps later feedback after it", async () => {
+    const user = message("msg_user", "user", "Start this turn");
+    const participant = {
+      conversationId: "cnv_1",
+      participantId: "router",
+      state: "active" as const,
+      status: "is thinking...",
+      updatedAt: 1,
+    };
+    const base = { messages: [user], participantStatus: participant };
+    const view = renderStatefulConversation(
+      state({ ...base, awaitingReply: true, locallyAwaitingReply: true }),
+      createActions()
+    );
+    const slot = await screen.findByTestId("participant-status-slot");
+    const mark = slot.querySelector('[data-slot="comma-logo-animation"]');
+    expect(slot).toHaveAttribute("data-active", "true");
+    const draft = {
+      conversationId: "cnv_1",
+      draftId: "draft_handoff",
+      responseKey: "rsp_handoff",
+      sourceMessageIds: [user.messageId],
+      status: "streaming" as const,
+      text: "",
+    };
+    act(() => view.setState(state({ ...base, assistantDraft: draft })));
+    expect(screen.queryByTestId("chat-assistant-draft")).toBeNull();
+    expect(slot).toHaveAttribute("data-active", "true");
+    expect(slot.querySelector('[data-slot="comma-logo-animation"]')).toBe(mark);
+    act(() =>
+      view.setState(
+        state({ ...base, assistantDraft: { ...draft, text: "First reply" } })
+      )
+    );
+    const article = screen.getByTestId("chat-assistant-draft");
+    expect(slot).toHaveAttribute("data-active", "false");
+    expect(
+      article.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    const canonical = message("msg_final", "assistant", "First reply");
+    act(() =>
+      view.setState(
+        state({
+          ...base,
+          messages: [user, canonical],
+          awaitingReply: true,
+          locallyAwaitingReply: true,
+        })
+      )
+    );
+    expect(view.container.querySelector('[data-message-id="msg_final"]')).toBe(article);
+    // The canonical first reply does not end the Participant's work.
+    expect(slot).toHaveAttribute("data-active", "true");
+    await waitFor(() => expect(slot).toHaveTextContent("Working"));
+    act(() =>
+      view.setState(
+        state({
+          ...base,
+          messages: [user, canonical],
+          participantStatus: {
+            ...participant,
+            issue: "runtime_failed",
+            state: "error",
+            status: "error: runtime failed",
+          },
+        })
+      )
+    );
+    expect(slot).toHaveAttribute("data-state", "error");
+    await waitFor(() =>
+      expect(slot).toHaveTextContent("Stopped because of an error. Try sending again.")
+    );
+    expect(
+      article.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    act(() =>
+      view.setState(
+        state({
+          messages: [user, canonical],
+          awaitingReply: true,
+          awaitingTimedOut: true,
+        })
+      )
+    );
+    expect(slot).toHaveAttribute("data-state", "waiting");
+    expect(
+      article.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    act(() =>
+      view.setState(
+        state({
+          messages: [user, canonical, message("msg_next", "user", "Next turn")],
+          awaitingReply: true,
+          locallyAwaitingReply: true,
+        })
+      )
+    );
+    const nextSlot = screen.getByTestId("participant-status-slot");
+    expect(nextSlot).toHaveAttribute("data-active", "true");
+    expect(nextSlot).toHaveTextContent("Thinking");
+    expect(view.container.querySelector('[data-message-id="msg_final"]')).toBe(article);
+    act(() =>
+      view.setState(
+        state({
+          messages: [user, canonical, message("msg_next", "user", "Next turn")],
+          assistantDraft: {
+            ...draft,
+            draftId: "draft_next",
+            responseKey: "rsp_next",
+            sourceMessageIds: ["msg_next"],
+            text: "Second reply",
+          },
+        })
+      )
+    );
+    expect(view.container.querySelector('[data-message-id="msg_final"]')).toBe(article);
+  });
+
+  for (const leading of [false, true]) {
+    it(`keeps reply identity through same-turn replies and prepended history (${leading ? "leading" : "user"} turn)`, async () => {
+      const user = message("identity_user", "user", "Start");
+      const prefix = leading ? [] : [user];
       const draft = {
         conversationId: "cnv_1",
-        draftId: "draft_handoff",
-        responseKey: "rsp_handoff",
-        sourceMessageIds: [user.messageId],
+        draftId: "identity_draft_1",
+        responseKey: "identity_response_1",
+        sourceMessageIds: leading ? [] : [user.messageId],
         status: "streaming" as const,
-        text: "",
+        text: "First reply",
       };
-      act(() => view.setState(state({ ...base, assistantDraft: draft })));
-      expect(screen.queryByTestId("chat-assistant-draft")).toBeNull();
-      expect(slot).toHaveAttribute("data-active", "true");
-      expect(slot.querySelector('[data-slot="comma-logo-animation"]')).toBe(mark);
+      const view = renderStatefulConversation(
+        state({ messages: prefix, assistantDraft: draft }),
+        createActions()
+      );
+      const firstRow = await screen.findByTestId("chat-assistant-draft");
+      const first = message("identity_first", "assistant", "First reply");
+      act(() => view.setState(state({ messages: [...prefix, first] })));
+      expect(view.container.querySelector('[data-message-id="identity_first"]')).toBe(
+        firstRow
+      );
+      // A second response may belong to the same user turn. Keep the first
+      // visual alias while assigning the second response its own identity.
+      const secondDraft = {
+        ...draft,
+        draftId: "identity_draft_2",
+        // One activation can send multiple Messages. The observed clear
+        // between these drafts is the new visual-row lifetime boundary.
+        responseKey: draft.responseKey,
+        text: "Second reply",
+      };
       act(() =>
         view.setState(
-          state({ ...base, assistantDraft: { ...draft, text: "First reply" } })
+          state({ messages: [...prefix, first], assistantDraft: secondDraft })
         )
       );
-      const article = screen.getByTestId("chat-assistant-draft");
-      expect(slot).toHaveAttribute("data-active", "false");
-      expect(
-        article.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING
-      ).toBeTruthy();
-      const canonical = message("msg_final", "assistant", "First reply");
+      const secondRow = screen.getByTestId("chat-assistant-draft");
+      expect(secondRow).not.toBe(firstRow);
+      const second = message("identity_second", "assistant", "Second reply");
+      act(() => view.setState(state({ messages: [...prefix, first, second] })));
+      expect(view.container.querySelector('[data-message-id="identity_first"]')).toBe(
+        firstRow
+      );
+      expect(view.container.querySelector('[data-message-id="identity_second"]')).toBe(
+        secondRow
+      );
+      // Insert older canonical rows inside this same turn; row identity must
+      // follow ids, never response ordinal or the first entry in the turn.
+      const older = message("identity_older", "assistant", "Previously loaded history");
+      const withHistory = [...prefix, older, first, second];
+      act(() => view.setState(state({ messages: withHistory })));
+      expect(view.container.querySelector('[data-message-id="identity_first"]')).toBe(
+        firstRow
+      );
+      expect(view.container.querySelector('[data-message-id="identity_second"]')).toBe(
+        secondRow
+      );
+      const historicalRow = view.container.querySelector(
+        '[data-message-id="identity_older"]'
+      );
+      // A reconnect can change draftId while preserving the composite reply.
+      const thirdDraft = {
+        ...draft,
+        draftId: "identity_draft_3",
+        responseKey: "identity_response_3",
+        text: "Third reply",
+      };
+      act(() =>
+        view.setState(state({ messages: withHistory, assistantDraft: thirdDraft }))
+      );
+      const thirdRow = screen.getByTestId("chat-assistant-draft");
       act(() =>
         view.setState(
           state({
-            ...base,
-            messages: [user, canonical],
-            awaitingReply: true,
-            locallyAwaitingReply: true,
+            messages: withHistory,
+            assistantDraft: { ...thirdDraft, draftId: "reconnected_draft" },
           })
         )
       );
-      expect(view.container.querySelector('[data-message-id="msg_final"]')).toBe(
-        article
-      );
-      expect(article).not.toHaveClass("comma-side-chat-assistant-entry");
-      // The canonical first reply does not end the Participant's work.
-      expect(slot).toHaveAttribute("data-active", "true");
-      await waitFor(() => expect(slot).toHaveTextContent("Working"));
+      expect(screen.getByTestId("chat-assistant-draft")).toBe(thirdRow);
+      // A different source binding is an independent response even when its
+      // opaque response key is reused. It cannot inherit the old pixels.
       act(() =>
         view.setState(
           state({
-            ...base,
-            messages: [user, canonical],
-            participantStatus: {
-              ...participant,
-              issue: "runtime_failed",
-              state: "error",
-              status: "error: runtime failed",
-            },
-          })
-        )
-      );
-      expect(slot).toHaveAttribute("data-state", "error");
-      await waitFor(() =>
-        expect(slot).toHaveTextContent(
-          "Stopped because of an error. Try sending again."
-        )
-      );
-      expect(
-        article.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING
-      ).toBeTruthy();
-      act(() =>
-        view.setState(
-          state({
-            messages: [user, canonical],
-            awaitingReply: true,
-            awaitingTimedOut: true,
-          })
-        )
-      );
-      expect(slot).toHaveAttribute("data-state", "waiting");
-      expect(
-        article.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING
-      ).toBeTruthy();
-      act(() =>
-        view.setState(
-          state({
-            messages: [user, canonical, message("msg_next", "user", "Next turn")],
-            awaitingReply: true,
-            locallyAwaitingReply: true,
-          })
-        )
-      );
-      const nextSlot = screen.getByTestId("participant-status-slot");
-      expect(nextSlot).toHaveAttribute("data-active", "true");
-      expect(nextSlot).toHaveTextContent("Thinking");
-      expect(view.container.querySelector('[data-message-id="msg_final"]')).toBe(
-        article
-      );
-      act(() =>
-        view.setState(
-          state({
-            messages: [user, canonical, message("msg_next", "user", "Next turn")],
+            messages: withHistory,
             assistantDraft: {
-              ...draft,
-              draftId: "draft_next",
-              responseKey: "rsp_next",
-              sourceMessageIds: ["msg_next"],
-              text: "Second reply",
+              ...thirdDraft,
+              sourceMessageIds: ["different-source"],
+              text: "Independent reply",
             },
           })
         )
       );
-      expect(view.container.querySelector('[data-message-id="msg_final"]')).toBe(
-        article
+      const independentRow = screen.getByTestId("chat-assistant-draft");
+      expect(independentRow).not.toBe(thirdRow);
+      // Clearing without a canonical replacement retires only that draft.
+      // A later ordinary canonical message must not acquire its old key.
+      act(() => view.setState(state({ messages: withHistory })));
+      const later = message("identity_later", "assistant", "Later ordinary message");
+      act(() => view.setState(state({ messages: [...withHistory, later] })));
+      const laterRow = view.container.querySelector(
+        '[data-message-id="identity_later"]'
       );
-      expect(article).not.toHaveClass("comma-side-chat-assistant-entry");
+      expect(laterRow).not.toBe(independentRow);
+      expect(screen.getByTestId("markdown-message:identity_later")).toBeInTheDocument();
+      expect(view.container.querySelector('[data-message-id="identity_first"]')).toBe(
+        firstRow
+      );
+      expect(view.container.querySelector('[data-message-id="identity_second"]')).toBe(
+        secondRow
+      );
+      expect(view.container.querySelector('[data-message-id="identity_older"]')).toBe(
+        historicalRow
+      );
     });
-  }
-
-  for (const variant of ["route", "side-chat"] as const) {
-    for (const leading of [false, true]) {
-      it(`keeps reply identity through same-turn replies and prepended history in ${variant} (${leading ? "leading" : "user"} turn)`, async () => {
-        const user = message("identity_user", "user", "Start");
-        const prefix = leading ? [] : [user];
-        const draft = {
-          conversationId: "cnv_1",
-          draftId: "identity_draft_1",
-          responseKey: "identity_response_1",
-          sourceMessageIds: leading ? [] : [user.messageId],
-          status: "streaming" as const,
-          text: "First reply",
-        };
-        const view = renderStatefulConversation(
-          state({ messages: prefix, assistantDraft: draft }),
-          createActions(),
-          variant
-        );
-        const firstRow = await screen.findByTestId("chat-assistant-draft");
-        const first = message("identity_first", "assistant", "First reply");
-        act(() => view.setState(state({ messages: [...prefix, first] })));
-        expect(view.container.querySelector('[data-message-id="identity_first"]')).toBe(
-          firstRow
-        );
-        // A second response may belong to the same user turn. Keep the first
-        // visual alias while assigning the second response its own identity.
-        const secondDraft = {
-          ...draft,
-          draftId: "identity_draft_2",
-          // One activation can send multiple Messages. The observed clear
-          // between these drafts is the new visual-row lifetime boundary.
-          responseKey: draft.responseKey,
-          text: "Second reply",
-        };
-        act(() =>
-          view.setState(
-            state({ messages: [...prefix, first], assistantDraft: secondDraft })
-          )
-        );
-        const secondRow = screen.getByTestId("chat-assistant-draft");
-        expect(secondRow).not.toBe(firstRow);
-        const second = message("identity_second", "assistant", "Second reply");
-        act(() => view.setState(state({ messages: [...prefix, first, second] })));
-        expect(view.container.querySelector('[data-message-id="identity_first"]')).toBe(
-          firstRow
-        );
-        expect(
-          view.container.querySelector('[data-message-id="identity_second"]')
-        ).toBe(secondRow);
-        // Insert older canonical rows inside this same turn; row identity must
-        // follow ids, never response ordinal or the first entry in the turn.
-        const older = message(
-          "identity_older",
-          "assistant",
-          "Previously loaded history"
-        );
-        const withHistory = [...prefix, older, first, second];
-        act(() => view.setState(state({ messages: withHistory })));
-        expect(view.container.querySelector('[data-message-id="identity_first"]')).toBe(
-          firstRow
-        );
-        expect(
-          view.container.querySelector('[data-message-id="identity_second"]')
-        ).toBe(secondRow);
-        const historicalRow = view.container.querySelector(
-          '[data-message-id="identity_older"]'
-        );
-        // A reconnect can change draftId while preserving the composite reply.
-        const thirdDraft = {
-          ...draft,
-          draftId: "identity_draft_3",
-          responseKey: "identity_response_3",
-          text: "Third reply",
-        };
-        act(() =>
-          view.setState(state({ messages: withHistory, assistantDraft: thirdDraft }))
-        );
-        const thirdRow = screen.getByTestId("chat-assistant-draft");
-        act(() =>
-          view.setState(
-            state({
-              messages: withHistory,
-              assistantDraft: { ...thirdDraft, draftId: "reconnected_draft" },
-            })
-          )
-        );
-        expect(screen.getByTestId("chat-assistant-draft")).toBe(thirdRow);
-        // A different source binding is an independent response even when its
-        // opaque response key is reused. It cannot inherit the old pixels.
-        act(() =>
-          view.setState(
-            state({
-              messages: withHistory,
-              assistantDraft: {
-                ...thirdDraft,
-                sourceMessageIds: ["different-source"],
-                text: "Independent reply",
-              },
-            })
-          )
-        );
-        const independentRow = screen.getByTestId("chat-assistant-draft");
-        expect(independentRow).not.toBe(thirdRow);
-        // Clearing without a canonical replacement retires only that draft.
-        // A later ordinary canonical message must not acquire its old key.
-        act(() => view.setState(state({ messages: withHistory })));
-        const later = message("identity_later", "assistant", "Later ordinary message");
-        act(() => view.setState(state({ messages: [...withHistory, later] })));
-        const laterRow = view.container.querySelector(
-          '[data-message-id="identity_later"]'
-        );
-        expect(laterRow).not.toBe(independentRow);
-        expect(
-          screen.getByTestId("markdown-message:identity_later")
-        ).toBeInTheDocument();
-        expect(view.container.querySelector('[data-message-id="identity_first"]')).toBe(
-          firstRow
-        );
-        expect(
-          view.container.querySelector('[data-message-id="identity_second"]')
-        ).toBe(secondRow);
-        expect(view.container.querySelector('[data-message-id="identity_older"]')).toBe(
-          historicalRow
-        );
-        expect(firstRow).not.toHaveClass("comma-side-chat-assistant-entry");
-        expect(secondRow).not.toHaveClass("comma-side-chat-assistant-entry");
-      });
-    }
   }
 
   it.each([
@@ -5950,7 +6569,7 @@ describe("Composer", () => {
     expect(onAttachFiles).not.toHaveBeenCalled();
   });
 
-  it("keeps the side-chat attachment action left of a single line and moves it to the lower-left for multiline input", () => {
+  it("keeps the compact composer's attachment action left of a single line and in the lower-left for multiline input", () => {
     const onAttachFiles = vi.fn();
     const view = render(
       <Composer
@@ -5959,7 +6578,7 @@ describe("Composer", () => {
         onDraftChange={() => {}}
         onSend={() => {}}
         submitDisabled={false}
-        variant="side-chat"
+        variant="compact"
       />
     );
 
@@ -5973,7 +6592,7 @@ describe("Composer", () => {
     const trailingToolbar = view.container.querySelector<HTMLElement>(
       '[data-slot="ai-input-toolbar-trailing"]'
     );
-    expect(shell).not.toHaveAttribute("data-side-chat-multiline");
+    expect(shell).not.toHaveAttribute("data-compact-multiline");
     expect(leadingToolbar).not.toBeNull();
     expect(trailingToolbar).not.toBeNull();
 
@@ -5994,7 +6613,7 @@ describe("Composer", () => {
       scrollHeight.mockRestore();
     }
 
-    expect(shell).toHaveAttribute("data-side-chat-multiline", "true");
+    expect(shell).toHaveAttribute("data-compact-multiline", "true");
     expect(attachButton.closest('[data-slot="ai-input-toolbar-leading"]')).toBe(
       leadingToolbar
     );
@@ -6027,7 +6646,6 @@ describe("Composer", () => {
   });
 
   it("guards Safari compositionend before Enter within the 100ms window", () => {
-    vi.useFakeTimers();
     const onSend = vi.fn();
     render(
       <Composer
@@ -6046,7 +6664,6 @@ describe("Composer", () => {
     vi.advanceTimersByTime(101);
     fireEvent.keyDown(textbox, { key: "Enter" });
     expect(onSend).toHaveBeenCalledWith("风险", { skills: [] });
-    vi.useRealTimers();
   });
 
   it("preserves the focused editor and caret when workspace skills load", () => {
@@ -6105,6 +6722,32 @@ describe("Composer", () => {
     });
   });
 
+  it("leaves miniskills out of the skill menu", () => {
+    render(
+      <ComposerHarness
+        onSend={vi.fn()}
+        skills={[
+          ...composerSkills,
+          {
+            skill_id: "taobao",
+            name: "Taobao",
+            description: "Shop on Taobao",
+            location: "/.runtime/skills/taobao/SKILL.md",
+            activation: "per-message",
+          },
+        ]}
+      />
+    );
+    const textbox = screen.getByRole("textbox", { name: "AI prompt" });
+
+    typeIntoComposerRichEditor(textbox, "/");
+    expect(screen.getByRole("listbox", { name: "Skills" })).toBeVisible();
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+      expect.stringContaining("Weekly Summary"),
+      expect.stringContaining("Code Review"),
+    ]);
+  });
+
   it("keeps menu keys out of IME confirmation and Escape closes without blur", () => {
     const onSend = vi.fn();
     render(<ComposerHarness onSend={onSend} skills={composerSkills} />);
@@ -6128,6 +6771,7 @@ describe("Composer", () => {
     render(
       <ComposerHarness
         mentionSources={{
+          models: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: {
             items: [{ id: "codex", name: "Codex", summary: "Write and review code" }],
@@ -6151,11 +6795,66 @@ describe("Composer", () => {
     expect(onSend).toHaveBeenCalledWith("Use @codex ", { skills: [] });
   });
 
+  it("names a model through @ in the Router chat, with its default effort or one chosen", () => {
+    const onSend = vi.fn();
+    render(
+      <ComposerHarness
+        mentionSources={{
+          models: {
+            items: [
+              {
+                id: "gpt-5.5",
+                name: "GPT 5.5",
+                vendor: "openai",
+                efforts: ["low", "medium", "high"],
+              },
+            ],
+            status: "ready",
+          },
+          drive: { items: [], status: "ready" },
+          plugins: { items: [], status: "ready" },
+          routines: { items: [], status: "ready" },
+          tasks: { items: [], status: "ready" },
+        }}
+        onSend={onSend}
+        skills={[]}
+      />
+    );
+    const textbox = screen.getByRole("textbox", { name: "AI prompt" });
+
+    // Enter takes the model at its default effort.
+    typeIntoComposerRichEditor(textbox, "Draft the notes @gpt");
+    expect(screen.getByRole("option", { name: /GPT 5\.5/ })).toBeVisible();
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    expect(textbox.querySelector("[data-ai-input-token]")).toHaveTextContent("GPT 5.5");
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    expect(onSend).toHaveBeenLastCalledWith(
+      "Draft the notes [GPT 5.5](comma:model/gpt-5.5) ",
+      {
+        skills: [],
+      }
+    );
+
+    // ArrowRight steps into its efforts; one chosen travels with it.
+    typeIntoComposerRichEditor(textbox, "Review it @gpt");
+    fireEvent.keyDown(textbox, { key: "ArrowRight" });
+    fireEvent.mouseDown(screen.getByRole("option", { name: "high" }));
+    expect(textbox.querySelector("[data-ai-input-token]")).toHaveTextContent(
+      "GPT 5.5 · high"
+    );
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    expect(onSend).toHaveBeenLastCalledWith(
+      "Review it [GPT 5.5 · high](comma:model/gpt-5.5?effort=high) ",
+      { skills: [] }
+    );
+  });
+
   it("mentions a Task through @ and serializes it as an agent-readable link", () => {
     const onSend = vi.fn();
     render(
       <ComposerHarness
         mentionSources={{
+          models: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "ready" },
           routines: { items: [], status: "ready" },
@@ -6198,6 +6897,7 @@ describe("Composer", () => {
     render(
       <ComposerHarness
         mentionSources={{
+          models: { items: [], status: "ready" },
           drive: {
             items: [
               {
@@ -6272,6 +6972,7 @@ describe("Composer", () => {
     render(
       <ComposerHarness
         mentionSources={{
+          models: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "ready" },
           routines: { items: [], status: "ready" },
@@ -6296,73 +6997,72 @@ describe("Composer", () => {
 
   it("scrolls keyboard-selected options into view but never hover-selected ones", () => {
     const scrollIntoView = vi.fn();
-    const original = HTMLElement.prototype.scrollIntoView;
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
-    try {
-      render(
-        <ComposerHarness
-          mentionSources={{
-            drive: { items: [], status: "ready" },
-            plugins: { items: [], status: "ready" },
-            routines: { items: [], status: "ready" },
-            tasks: {
-              items: [
-                {
-                  conversationId: "cnv1_a",
-                  statusBucket: "done",
-                  title: "Alpha task",
-                  updatedAt: 3,
-                },
-                {
-                  conversationId: "cnv1_b",
-                  statusBucket: "done",
-                  title: "Beta task",
-                  updatedAt: 2,
-                },
-                {
-                  conversationId: "cnv1_c",
-                  statusBucket: "done",
-                  title: "Gamma task",
-                  updatedAt: 1,
-                },
-              ],
-              status: "ready",
-            },
-          }}
-          onSend={vi.fn()}
-          skills={[]}
-        />
-      );
-      const textbox = screen.getByRole("textbox", { name: "AI prompt" });
+    stubProperty(HTMLElement.prototype, "scrollIntoView", {
+      value: scrollIntoView,
+      writable: true,
+    });
+    render(
+      <ComposerHarness
+        mentionSources={{
+          models: { items: [], status: "ready" },
+          drive: { items: [], status: "ready" },
+          plugins: { items: [], status: "ready" },
+          routines: { items: [], status: "ready" },
+          tasks: {
+            items: [
+              {
+                conversationId: "cnv1_a",
+                statusBucket: "done",
+                title: "Alpha task",
+                updatedAt: 3,
+              },
+              {
+                conversationId: "cnv1_b",
+                statusBucket: "done",
+                title: "Beta task",
+                updatedAt: 2,
+              },
+              {
+                conversationId: "cnv1_c",
+                statusBucket: "done",
+                title: "Gamma task",
+                updatedAt: 1,
+              },
+            ],
+            status: "ready",
+          },
+        }}
+        onSend={vi.fn()}
+        skills={[]}
+      />
+    );
+    const textbox = screen.getByRole("textbox", { name: "AI prompt" });
 
-      typeIntoComposerRichEditor(textbox, "@");
-      expect(screen.getByRole("listbox", { name: "Mentions" })).toBeVisible();
-      const baseline = scrollIntoView.mock.calls.length;
+    typeIntoComposerRichEditor(textbox, "@");
+    expect(screen.getByRole("listbox", { name: "Mentions" })).toBeVisible();
+    const baseline = scrollIntoView.mock.calls.length;
 
-      // Actual pointer movement selects without scrolling; rows moving beneath
-      // a stationary pointer do not select. Arrow keys still reveal their target.
-      fireEvent.pointerMove(screen.getByRole("option", { name: /Beta task/ }), {
-        pointerType: "mouse",
-        clientX: 40,
-        clientY: 80,
-        movementX: 1,
-        movementY: 1,
-      });
-      expect(screen.getByRole("option", { name: /Beta task/ })).toHaveAttribute(
-        "aria-selected",
-        "true"
-      );
-      expect(scrollIntoView.mock.calls.length).toBe(baseline);
+    // Actual pointer movement selects without scrolling; rows moving beneath
+    // a stationary pointer do not select. Arrow keys still reveal their target.
+    fireEvent.pointerMove(screen.getByRole("option", { name: /Beta task/ }), {
+      pointerType: "mouse",
+      clientX: 40,
+      clientY: 80,
+      movementX: 1,
+      movementY: 1,
+    });
+    expect(screen.getByRole("option", { name: /Beta task/ })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(scrollIntoView.mock.calls.length).toBe(baseline);
 
-      fireEvent.keyDown(textbox, { key: "ArrowDown" });
-      expect(screen.getByRole("option", { name: /Gamma task/ })).toHaveAttribute(
-        "aria-selected",
-        "true"
-      );
-      expect(scrollIntoView.mock.calls.length).toBe(baseline + 1);
-    } finally {
-      HTMLElement.prototype.scrollIntoView = original;
-    }
+    fireEvent.keyDown(textbox, { key: "ArrowDown" });
+    expect(screen.getByRole("option", { name: /Gamma task/ })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(scrollIntoView.mock.calls.length).toBe(baseline + 1);
   });
 
   it("keeps the @ panel open and filtering through an IME composition", () => {
@@ -6370,6 +7070,7 @@ describe("Composer", () => {
     render(
       <ComposerHarness
         mentionSources={{
+          models: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "ready" },
           routines: { items: [], status: "ready" },
@@ -6442,6 +7143,7 @@ describe("Composer", () => {
     render(
       <ComposerHarness
         mentionSources={{
+          models: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "ready" },
           routines: { items: [], status: "ready" },
@@ -6488,6 +7190,7 @@ describe("Composer", () => {
     render(
       <ComposerHarness
         mentionSources={{
+          models: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "loading" },
           routines: { items: [], status: "loading" },
@@ -6591,6 +7294,31 @@ function getComposerCaret(editor: HTMLElement) {
   return prefix.toString().length;
 }
 
+/** A core whose Task summary of `conversation` says it is a Loop Task with `loop`. */
+function loopSummaryCore(
+  conversation: NonNullable<ConversationChannelState["conversation"]>,
+  loop: TaskLoop
+) {
+  return createScriptedCore({
+    values: (topic) =>
+      topic.topic === "taskSummaries"
+        ? {
+            summaries: [
+              {
+                group_id: conversation.group_id,
+                id: conversation.id,
+                kind: "agent_task",
+                loop,
+                status: conversation.status,
+                title: conversation.title,
+                updated_at: conversation.updated_at,
+              },
+            ],
+          }
+        : undefined,
+  });
+}
+
 function createActions(): ConversationViewActions {
   return {
     attachFiles: vi.fn(),
@@ -6664,14 +7392,13 @@ function PlainPromiseFailureHarness({
     <ConversationViewWithDraft
       actions={actions}
       state={viewState}
-      variant="side-chat"
       groupId="grp_1"
       workspaceId="wsp_1"
     />
   );
 }
 
-function SideChatSendLifecycleHarness({ onSend }: { onSend: (text: string) => void }) {
+function SendLifecycleHarness({ onSend }: { onSend: (text: string) => void }) {
   const [viewState, setViewState] = useState(
     state({ draft: "Ship renderer parity", messages: [] })
   );
@@ -6686,7 +7413,7 @@ function SideChatSendLifecycleHarness({ onSend }: { onSend: (text: string) => vo
       onSend(text);
       setViewState((current) => {
         const pending = pendingSend(
-          `req_side_chat_${current.pending.length + 1}`,
+          `req_send_${current.pending.length + 1}`,
           text,
           "sending"
         );
@@ -6708,14 +7435,13 @@ function SideChatSendLifecycleHarness({ onSend }: { onSend: (text: string) => vo
     <ConversationViewWithDraft
       actions={actions}
       state={viewState}
-      variant="side-chat"
       groupId="grp_1"
       workspaceId="wsp_1"
     />
   );
 }
 
-function SideChatStreamingLifecycleHarness({
+function StreamingLifecycleHarness({
   onDraftChange,
   onSend,
 }: {
@@ -6758,7 +7484,6 @@ function SideChatStreamingLifecycleHarness({
     <ConversationViewWithDraft
       actions={actions}
       state={viewState}
-      variant="side-chat"
       groupId="grp_1"
       workspaceId="wsp_1"
     />
@@ -6777,7 +7502,10 @@ function failedImageAttachment(id: string, name: string) {
   };
 }
 
-function renderConversation(element: ReactElement) {
+function renderConversation(
+  element: ReactElement,
+  wrap: (ui: ReactElement) => ReactNode = (ui) => ui
+) {
   const rootRoute = createRootRoute({
     component: Outlet,
   });
@@ -6806,10 +7534,12 @@ function renderConversation(element: ReactElement) {
   });
 
   return render(
-    <>
-      <RouterProvider router={router} />
-      <Toaster />
-    </>
+    wrap(
+      <>
+        <RouterProvider router={router} />
+        <Toaster />
+      </>
+    )
   );
 }
 
@@ -6820,7 +7550,7 @@ function TargetConversationRoute() {
 function renderStatefulConversation(
   initialState: ConversationChannelState,
   actions = createActions(),
-  variant: "home" | "rail" | "route" | "side-chat" = "route"
+  variant: "home" | "rail" | "route" = "route"
 ) {
   let setViewState: ((next: ConversationChannelState) => void) | undefined;
 
@@ -7022,6 +7752,8 @@ function state(overrides: Partial<ConversationChannelState> = {}) {
     }
   }
 
+  // The core's reading of the reply, as it sends it with the state.
+  if (!overrides.reply) value.reply = replyState(value);
   return value;
 }
 
@@ -7118,7 +7850,19 @@ function message(
     status: "completed",
     text,
   };
-  return { ...base, ...overrides, parts: overrides.parts ?? base.parts };
+  const merged = { ...base, ...overrides, parts: overrides.parts ?? base.parts };
+  // A person's message as the core reads it out of its wire text.
+  // A person's message as the core reads it out of its wire text; an agent's as the core parses it.
+  if (role === "user")
+    return merged.platformSource || merged.display
+      ? merged
+      : { ...merged, display: decodeUserMessage(merged.text) };
+  return merged.markdown
+    ? merged
+    : {
+        ...merged,
+        markdown: messageMarkdown(merged.parts ?? []) as ChatMessage["markdown"],
+      };
 }
 
 const selectionActionBar = () =>
@@ -7278,6 +8022,7 @@ describe("Composer Drive mentions", () => {
     render(
       <ComposerHarness
         mentionSources={{
+          models: { items: [], status: "ready" },
           drive: {
             items: [
               { file, location: "Folder A", read },
@@ -7335,6 +8080,7 @@ describe("Composer Drive mentions", () => {
     render(
       <ComposerHarness
         mentionSources={{
+          models: { items: [], status: "ready" },
           drive: { items: [], status: "ready" },
           plugins: { items: [], status: "ready" },
           routines: { items: [], status: "ready" },
@@ -7351,6 +8097,74 @@ describe("Composer Drive mentions", () => {
 });
 
 /** The view fed the draft its state names, the way a channel host feeds it. */
+/** Owns staged snippets the way Home does: the view reads and clears them. */
+function ConversationViewWithSnippets({
+  initial,
+  ...props
+}: Omit<ComponentProps<typeof ConversationViewWithDraft>, "composerPresentation"> & {
+  initial: readonly ChatDraftSnippet[];
+}) {
+  const [items, setItems] = useState(initial);
+  const snippets = useMemo(() => ({ items, setItems }), [items]);
+  return <ConversationViewWithDraft {...props} composerPresentation={{ snippets }} />;
+}
+
+/** A send result whose runtime admission settles with `accepted`. */
+function sendWithAdmission(accepted: Promise<void>) {
+  const completion = accepted.then(() => undefined);
+  void completion.catch(() => undefined);
+  return Object.assign(completion, { accepted });
+}
+
+/** Snippets plus a draft that follows `setDraft`, as a channel's does. */
+function ConversationViewOwningDraft({
+  actions,
+  ...props
+}: Omit<ComponentProps<typeof ConversationViewWithSnippets>, "state">) {
+  const [draft, setDraft] = useState("");
+  const owned = useMemo<ConversationViewActions>(
+    () => ({
+      ...actions,
+      setDraft: (next) => {
+        actions.setDraft(next);
+        setDraft(next);
+      },
+    }),
+    [actions]
+  );
+  return (
+    <ConversationViewWithSnippets
+      {...props}
+      actions={owned}
+      state={state({ draft, messages: [] })}
+    />
+  );
+}
+
+/** Two conversations in one view, switched the way the sidebar switches them. */
+function SwitchingConversations({ actions }: { actions: ConversationViewActions }) {
+  const [conversationId, setConversationId] = useState("cnv_1");
+  return (
+    <>
+      <button onClick={() => setConversationId("cnv_1")}>Open cnv_1</button>
+      <button onClick={() => setConversationId("cnv_2")}>Open cnv_2</button>
+      <ConversationViewWithDraft
+        actions={actions}
+        state={state({
+          conversation: {
+            group_id: "grp_1",
+            id: conversationId,
+            kind: "user_chat",
+            status: "completed",
+            title: conversationId,
+          },
+          messages: [],
+        })}
+      />
+    </>
+  );
+}
+
 function ConversationViewWithDraft({
   state: channelState,
   ...props

@@ -15,7 +15,7 @@ defmodule SalixIM.FeishuFiles do
 
   @spec max_bytes() :: pos_integer()
   def max_bytes,
-    do: Application.get_env(:salix_im, :feishu_file_max_bytes, @default_max_bytes)
+    do: SystemsRuntime.get_env(:salix_im, :feishu_file_max_bytes, @default_max_bytes)
 
   @spec inbound_path(String.t(), String.t(), map()) :: String.t()
   def inbound_path(chat_id, message_id, attachment) do
@@ -90,78 +90,135 @@ defmodule SalixIM.FeishuFiles do
            }}
           | {:error, term()}
   def stream_to_blob(agent_id, connect, message_id, file_key, resource_type) do
+    stream_resource_to_blob(agent_id, fn into ->
+      API.stream_message_resource(connect, message_id, file_key, resource_type, into)
+    end)
+  end
+
+  @doc """
+  Stage one image or file embedded in a cloud document into the agent VFS.
+  The same staging limit applies as for message resources.
+  """
+  @spec stage_doc_media(String.t(), map(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def stage_doc_media(agent_id, connect, document_id, file_token) do
+    with {:ok, resource} <-
+           stream_resource_to_blob(agent_id, fn into ->
+             API.stream_get(
+               connect,
+               "/drive/v1/medias/#{segment(file_token)}/download",
+               %{},
+               into
+             )
+           end),
+         attachment = %{"file_name" => first([resource.file_name, file_token])},
+         path = doc_media_vfs_path(document_id, file_token, attachment, resource.mime_type),
+         {:ok, _} <- AgentWorkspace.put_ref(agent_id, path, resource.ref) do
+      {:ok,
+       %{
+         "vfs_path" => path,
+         "file_name" => first([resource.file_name, Path.basename(path)]),
+         "mime_type" => resource.mime_type,
+         "size" => resource.size
+       }}
+    end
+  end
+
+  @doc """
+  Stage the audio or video of one Minutes recording into the agent VFS from
+  the pre-signed URL Feishu returned for it.
+  """
+  @spec stage_minute_media(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def stage_minute_media(agent_id, minute_token, signed_url) do
+    with {:ok, resource} <-
+           stream_resource_to_blob(agent_id, &API.stream_signed_url(signed_url, &1)),
+         attachment = %{"file_name" => first([resource.file_name, minute_token <> ".media"])},
+         path =
+           "/feishu/minutes/#{opaque_id([minute_token])}-#{basename(Map.put(attachment, "mime_type", resource.mime_type))}",
+         {:ok, _} <- AgentWorkspace.put_ref(agent_id, path, resource.ref) do
+      {:ok,
+       %{
+         "vfs_path" => path,
+         "file_name" => first([resource.file_name, Path.basename(path)]),
+         "mime_type" => resource.mime_type,
+         "size" => resource.size
+       }}
+    end
+  end
+
+  @spec doc_media_vfs_path(String.t(), String.t(), map(), String.t()) :: String.t()
+  def doc_media_vfs_path(document_id, file_token, attachment, mime_type) do
+    source = opaque_id([document_id, file_token])
+    "/feishu/docs/media/#{source}-#{basename(Map.put(attachment, "mime_type", mime_type))}"
+  end
+
+  defp stream_resource_to_blob(agent_id, stream) do
     init = Blob.put_stream_init(agent_id)
-    state_key = {__MODULE__, :blob_state, make_ref()}
+    state_key = {__MODULE__, :blob_state, SystemsRuntime.Proc.make_ref()}
     Process.put(state_key, init)
 
     try do
       result =
-        API.stream_message_resource(
-          connect,
-          message_id,
-          file_key,
-          resource_type,
-          fn {:data, chunk}, {req, resp} ->
-            state = resp.private[:blob_state] || Process.get(state_key) || init
-            bytes = resp.private[:feishu_download_bytes] || 0
-            next_bytes = bytes + byte_size(chunk)
+        stream.(fn {:data, chunk}, {req, resp} ->
+          state = resp.private[:blob_state] || Process.get(state_key) || init
+          bytes = resp.private[:feishu_download_bytes] || 0
+          next_bytes = bytes + byte_size(chunk)
 
-            cond do
-              resp.status not in 200..299 ->
-                error_body =
-                  (resp.private[:feishu_error_body] || "")
-                  |> Kernel.<>(chunk)
-                  |> binary_part(
-                    0,
-                    min(
-                      byte_size((resp.private[:feishu_error_body] || "") <> chunk),
-                      @max_error_body_bytes
-                    )
+          cond do
+            resp.status not in 200..299 ->
+              error_body =
+                (resp.private[:feishu_error_body] || "")
+                |> Kernel.<>(chunk)
+                |> binary_part(
+                  0,
+                  min(
+                    byte_size((resp.private[:feishu_error_body] || "") <> chunk),
+                    @max_error_body_bytes
                   )
+                )
 
-                {:cont, {req, Req.Response.put_private(resp, :feishu_error_body, error_body)}}
+              {:cont, {req, Req.Response.put_private(resp, :feishu_error_body, error_body)}}
 
-              resp.private[:blob_error] != nil ->
-                {:halt, {req, resp}}
+            resp.private[:blob_error] != nil ->
+              {:halt, {req, resp}}
 
-              next_bytes > max_bytes() ->
-                Process.put(state_key, state)
+            next_bytes > max_bytes() ->
+              Process.put(state_key, state)
 
-                resp =
-                  resp
-                  |> Req.Response.put_private(:blob_state, state)
-                  |> Req.Response.put_private(
-                    :blob_error,
-                    "Feishu message resource exceeds the #{max_bytes()} byte staging limit"
-                  )
+              resp =
+                resp
+                |> Req.Response.put_private(:blob_state, state)
+                |> Req.Response.put_private(
+                  :blob_error,
+                  "Feishu resource exceeds the #{max_bytes()} byte staging limit"
+                )
 
-                {:halt, {req, resp}}
+              {:halt, {req, resp}}
 
-              true ->
-                case Blob.put_stream_step(state, chunk) do
-                  {:ok, state} ->
-                    Process.put(state_key, state)
+            true ->
+              case Blob.put_stream_step(state, chunk) do
+                {:ok, state} ->
+                  Process.put(state_key, state)
 
-                    resp =
-                      resp
-                      |> Req.Response.put_private(:blob_state, state)
-                      |> Req.Response.put_private(:feishu_download_bytes, next_bytes)
+                  resp =
+                    resp
+                    |> Req.Response.put_private(:blob_state, state)
+                    |> Req.Response.put_private(:feishu_download_bytes, next_bytes)
 
-                    {:cont, {req, resp}}
+                  {:cont, {req, resp}}
 
-                  {:error, reason, state} ->
-                    Process.put(state_key, state)
+                {:error, reason, state} ->
+                  Process.put(state_key, state)
 
-                    resp =
-                      resp
-                      |> Req.Response.put_private(:blob_state, state)
-                      |> Req.Response.put_private(:blob_error, reason)
+                  resp =
+                    resp
+                    |> Req.Response.put_private(:blob_state, state)
+                    |> Req.Response.put_private(:blob_error, reason)
 
-                    {:halt, {req, resp}}
-                end
-            end
+                  {:halt, {req, resp}}
+              end
           end
-        )
+        end)
 
       finish_stream(result, Process.get(state_key) || init)
     after
@@ -297,6 +354,8 @@ defmodule SalixIM.FeishuFiles do
 
     if cleaned == "", do: fallback, else: cleaned
   end
+
+  defp segment(value), do: value |> to_string() |> String.trim() |> URI.encode_www_form()
 
   defp first(values) do
     values

@@ -109,7 +109,7 @@ defmodule SalixAnalytics.SlackMirror do
 
   defp batch_rows do
     :salix_analytics
-    |> Application.get_env(:slack_mirror, [])
+    |> SystemsRuntime.get_env(:slack_mirror, [])
     |> Keyword.get(:batch_size, 200)
   end
 end

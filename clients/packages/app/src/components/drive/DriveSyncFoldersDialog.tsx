@@ -1,5 +1,7 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Checkbox, Dialog, Folder1Icon } from "@comma/ui";
+import { Checkbox } from "@comma/ui/components/checkbox";
+import { Dialog } from "@comma/ui/components/dialog";
+import { Folder1Icon } from "@comma/ui/components/icons";
 import { useState } from "react";
 import { formatDriveFileSize, type DriveSpace } from "./driveStore";
 

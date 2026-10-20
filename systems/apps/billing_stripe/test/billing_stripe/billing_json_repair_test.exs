@@ -1,5 +1,5 @@
 defmodule BillingStripe.BillingJSONRepairTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(BillingCore.Repo)

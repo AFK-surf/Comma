@@ -66,7 +66,7 @@ defmodule SalixWeb.TrajectoryEvalAPI do
            %{
              after_at: DateTime.add(snapshot_to, -@overlap_seconds, :second),
              after_key: "",
-             snapshot_to: DateTime.utc_now(),
+             snapshot_to: SystemsClock.utc_now(),
              filters: decoded["filters"]
            }}
         else
@@ -89,7 +89,7 @@ defmodule SalixWeb.TrajectoryEvalAPI do
        %{
          after_at: after_at,
          after_key: "",
-         snapshot_to: DateTime.utc_now(),
+         snapshot_to: SystemsClock.utc_now(),
          filters: filters
        }}
     end
@@ -109,7 +109,7 @@ defmodule SalixWeb.TrajectoryEvalAPI do
        when value not in [nil, ""],
        do: {:error, :invalid_bootstrap}
 
-  defp initial_after(%{"bootstrap" => "now"}), do: {:ok, DateTime.utc_now()}
+  defp initial_after(%{"bootstrap" => "now"}), do: {:ok, SystemsClock.utc_now()}
 
   defp initial_after(%{"bootstrap" => value}) when value not in [nil, ""],
     do: {:error, :invalid_bootstrap}
@@ -205,10 +205,9 @@ defmodule SalixWeb.TrajectoryEvalAPI do
   end
 
   defp supported_role(agent) do
-    case {Control.runtime_kind(agent), agent["role"]} do
-      {"external", _role} -> {:error, :snapshot_unavailable}
-      {_runtime, "router"} -> {:ok, "router"}
-      {_runtime, role} when role in ["worker", "worker_agent"] -> {:ok, "worker"}
+    case agent["role"] do
+      "router" -> {:ok, "router"}
+      role when role in ["worker", "worker_agent"] -> {:ok, "worker"}
       _ -> {:error, :snapshot_unavailable}
     end
   end
@@ -249,7 +248,7 @@ defmodule SalixWeb.TrajectoryEvalAPI do
   defp normalize_session_error(result), do: result
 
   defp query_module do
-    Application.get_env(
+    SystemsRuntime.get_env(
       :salix_web,
       :trajectory_eval_query_module,
       SalixAnalytics.TrajectoryEvalQueries

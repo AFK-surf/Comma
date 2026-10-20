@@ -1,5 +1,5 @@
 defmodule SalixIM.Migrations.ConversationStorageSegmentedTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixIM.{Conversations, ConversationServer, Release}
   alias SalixIM.Migrations.ConversationStorageSegmented
@@ -19,8 +19,8 @@ defmodule SalixIM.Migrations.ConversationStorageSegmentedTest do
   @runtime_session_id "ses1_1000000000000000012"
 
   setup do
-    prev_s3 = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev_s3 = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
 
     put_json!(Keys.ctl_group(@group_id), %{
@@ -41,7 +41,7 @@ defmodule SalixIM.Migrations.ConversationStorageSegmentedTest do
     conversation_id: conversation_id
   } do
     legacy_key = legacy_conversation_key(group_id, conversation_id)
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     put_json!(legacy_key, legacy_conversation(group_id, conversation_id, now))
 
@@ -149,7 +149,7 @@ defmodule SalixIM.Migrations.ConversationStorageSegmentedTest do
 
     put_json!(
       legacy_key,
-      legacy_conversation(group_id, conversation_id, System.system_time(:millisecond))
+      legacy_conversation(group_id, conversation_id, SystemsClock.system_time(:millisecond))
     )
 
     assert {:migrated, %{failed: 0}} =
@@ -188,7 +188,7 @@ defmodule SalixIM.Migrations.ConversationStorageSegmentedTest do
 
     put_json!(
       legacy_key,
-      legacy_conversation(group_id, conversation_id, System.system_time(:millisecond))
+      legacy_conversation(group_id, conversation_id, SystemsClock.system_time(:millisecond))
     )
 
     assert_raise RuntimeError, ~r/confirm_no_writers/, fn ->
@@ -270,7 +270,7 @@ defmodule SalixIM.Migrations.ConversationStorageSegmentedTest do
          conversation_id: conversation_id
        } do
     legacy_key = legacy_conversation_key(group_id, conversation_id)
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
     legacy = legacy_conversation(group_id, conversation_id, now)
     put_json!(legacy_key, legacy)
 
@@ -440,7 +440,7 @@ defmodule SalixIM.Migrations.ConversationStorageSegmentedTest do
     |> Map.fetch!("participants")
     |> Enum.find(&(&1["participant_id"] == @worker_participant_id))
     |> Map.put("payload", %{"session_id" => @runtime_session_id})
-    |> Map.put("updated_at", System.system_time(:millisecond) + 1000)
+    |> Map.put("updated_at", SystemsClock.system_time(:millisecond) + 1000)
   end
 
   defp put_json!(key, value) do
@@ -452,6 +452,6 @@ defmodule SalixIM.Migrations.ConversationStorageSegmentedTest do
     Jason.decode!(body)
   end
 
-  defp restore(app, key, nil), do: Application.delete_env(app, key)
-  defp restore(app, key, value), do: Application.put_env(app, key, value)
+  defp restore(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

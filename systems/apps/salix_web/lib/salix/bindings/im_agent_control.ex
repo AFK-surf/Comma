@@ -21,11 +21,6 @@ defmodule Salix.Bindings.IMAgentControl do
     agent_id |> SalixAgent.Runtime.compact_session(session_id) |> normalize()
   end
 
-  @impl true
-  def emergency_compact_session(agent_id, session_id) do
-    agent_id |> SalixAgent.Runtime.emergency_compact_session(session_id) |> normalize()
-  end
-
   # `Runtime` refuses a non-internal agent with the HTTP-shaped `:bad_request`
   # it shares with every other operation. That term is meaningless in a chat —
   # it reads as though the SENDER did something wrong — and its message is not

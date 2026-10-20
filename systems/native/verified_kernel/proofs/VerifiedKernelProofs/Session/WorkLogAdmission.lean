@@ -76,7 +76,7 @@ theorem log_main_start {state entry checkpoint result : Term} {journal rest : Li
   rcases log_generated call with invalid | ⟨session, now, _, sessionEq, committed⟩
   · exact Or.inl invalid
   · rw [sessionEq] at committed
-    change Command.commitInput state entry ([] ++ [logEvent (state.get (a "session_id")) entry now]) false _ = _ at committed
+    rw [← List.nil_append [logEvent (state.get (a "session_id")) entry now]] at committed
     rcases commit_input_main_start (by simp) committed with invalid | ⟨earlier, selected, before, after, accepted⟩
     · exact Or.inr (Or.inl invalid)
     · exact Or.inr (Or.inr ⟨now, earlier, selected, before, after, accepted⟩)

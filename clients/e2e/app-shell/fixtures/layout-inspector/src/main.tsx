@@ -2,18 +2,14 @@ import "@comma/ui/styles.css";
 import "./styles.css";
 
 import { LayoutInspector } from "@comma/layout-inspector";
-import { Button, Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui";
-import { resolveAuthoredLayoutValues } from "../../../../../packages/layout-inspector/src/authored-values";
+import { Button } from "@comma/ui/components/Button";
+import { Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui/components/menu";
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { fixtureSearch } from "../../../support/search";
 
 declare global {
   interface Window {
-    resolveShadowWidth?: (targetId: string) => {
-      computed: string;
-      confidence: string;
-      variables: string[];
-    };
     setFixtureHostPadding?: (value: number) => void;
   }
 }
@@ -95,21 +91,6 @@ function ShadowScopeFixture() {
         </div>
       `;
     }
-
-    window.resolveShadowWidth = (targetId) => {
-      const target = shadowRoot.getElementById(targetId);
-      if (!target) throw new Error(`Shadow target ${targetId} was unavailable.`);
-      const width = resolveAuthoredLayoutValues(target).width;
-      return {
-        computed: width.computed,
-        confidence: width.confidence,
-        variables: width.variables,
-      };
-    };
-
-    return () => {
-      delete window.resolveShadowWidth;
-    };
   }, []);
 
   return <div ref={hostRef} />;
@@ -212,9 +193,7 @@ function CrossTreeProvenanceFixture() {
 function LayoutInspectorFixture() {
   const [activationCount, setActivationCount] = useState(0);
   const [hostPadding, setHostPadding] = useState(4);
-  const openMenuForInspector = new URLSearchParams(window.location.search).has(
-    "open-menu"
-  );
+  const openMenuForInspector = new URLSearchParams(fixtureSearch()).has("open-menu");
 
   useEffect(() => {
     window.setFixtureHostPadding = setHostPadding;

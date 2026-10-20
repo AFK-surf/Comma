@@ -21,7 +21,7 @@ defmodule Comma.PodLifecycle do
 
   @doc false
   def boot(enabled) when is_list(enabled) do
-    :persistent_term.put(@state_key, %{
+    SystemsRuntime.PersistentTerm.put(@state_key, %{
       enabled: MapSet.new(enabled),
       draining: false,
       jobs_accepting: true
@@ -73,8 +73,9 @@ defmodule Comma.PodLifecycle do
   @doc """
   Execute the pod preStop order: withdraw readiness and pause local Oban
   producers, allow endpoint propagation, wait a bounded grace for running jobs,
-  then end live voice calls with a spoken notice, drain Salix actors and
-  confirm local connector socket shutdown before
+  then end live voice calls with a spoken notice, let native meeting bots
+  leave and deliver their results, drain Salix actors and confirm local
+  connector socket shutdown before
   their node becomes unreachable. Connector cleanup has a 15-second total
   deadline; failure is reported, never converted into an owner-stop proof.
   """
@@ -95,8 +96,19 @@ defmodule Comma.PodLifecycle do
         else: :ok
 
     emit_pre_stop(:voice_drain_complete, voice_result)
+
+    meeting_result =
+      if subsystem_running?(:salix),
+        do: maybe_apply(SalixMeetNative.Drain, :drain, [], :ok),
+        else: :ok
+
+    emit_pre_stop(:meeting_drain_complete, meeting_result)
     drain_result = drain_salix()
     emit_pre_stop(:salix_drain_complete, drain_result)
+
+    # Tailnet nodes stop without logging out and release their leases, so
+    # the next dial restores each one on a running node.
+    if subsystem_running?(:salix), do: maybe_apply(SalixAgent.Tailnet, :drain, [], :ok)
 
     connector_result =
       if subsystem_running?(:salix),
@@ -115,7 +127,7 @@ defmodule Comma.PodLifecycle do
   end
 
   defp state do
-    :persistent_term.get(@state_key, %{
+    SystemsRuntime.PersistentTerm.get(@state_key, %{
       enabled: MapSet.new(Comma.enabled_subsystems()),
       draining: false,
       jobs_accepting: true
@@ -123,7 +135,7 @@ defmodule Comma.PodLifecycle do
   end
 
   defp update(fun) do
-    :persistent_term.put(@state_key, fun.(state()))
+    SystemsRuntime.PersistentTerm.put(@state_key, fun.(state()))
   end
 
   defp apps_started?(subsystem) do
@@ -159,7 +171,7 @@ defmodule Comma.PodLifecycle do
   defp pause_local_queues do
     oban = Module.concat([Oban])
 
-    if Code.ensure_loaded?(oban) and Process.whereis(Comma.Oban) do
+    if Code.ensure_loaded?(oban) and SystemsRuntime.Proc.whereis(Comma.Oban) do
       Enum.each(@oban_queues, fn queue ->
         _ = apply(oban, :pause_queue, [Comma.Oban, [queue: queue, local_only: true]])
       end)
@@ -169,7 +181,7 @@ defmodule Comma.PodLifecycle do
   end
 
   defp wait_for_running_jobs(grace_ms) do
-    deadline = System.monotonic_time(:millisecond) + bounded_ms(grace_ms, 30_000)
+    deadline = SystemsClock.monotonic_time(:millisecond) + bounded_ms(grace_ms, 30_000)
     do_wait_for_running_jobs(deadline)
   end
 
@@ -178,11 +190,11 @@ defmodule Comma.PodLifecycle do
       running_job_count() == 0 ->
         :ok
 
-      System.monotonic_time(:millisecond) >= deadline ->
+      SystemsClock.monotonic_time(:millisecond) >= deadline ->
         {:error, :job_grace_exhausted}
 
       true ->
-        Process.sleep(100)
+        SystemsClock.sleep(100)
         do_wait_for_running_jobs(deadline)
     end
   end
@@ -190,7 +202,7 @@ defmodule Comma.PodLifecycle do
   defp running_job_count do
     oban = Module.concat([Oban])
 
-    if Code.ensure_loaded?(oban) and Process.whereis(Comma.Oban) do
+    if Code.ensure_loaded?(oban) and SystemsRuntime.Proc.whereis(Comma.Oban) do
       Enum.reduce(@oban_queues, 0, fn queue, count ->
         case apply(oban, :check_queue, [Comma.Oban, [queue: queue]]) do
           %{running: running} when is_list(running) -> count + length(running)
@@ -220,15 +232,15 @@ defmodule Comma.PodLifecycle do
   defp empty_salix_drain, do: {:ok, %{drained: [], handed_off: 0, failed: []}}
 
   defp propagation_ms,
-    do: Application.get_env(:comma, :pre_stop_propagation_ms, 5_000)
+    do: SystemsRuntime.get_env(:comma, :pre_stop_propagation_ms, 5_000)
 
   defp job_grace_ms,
-    do: Application.get_env(:comma, :pre_stop_job_grace_ms, 25_000)
+    do: SystemsRuntime.get_env(:comma, :pre_stop_job_grace_ms, 25_000)
 
   defp sleep_bounded(value, max) do
     case bounded_ms(value, max) do
       0 -> :ok
-      ms -> Process.sleep(ms)
+      ms -> SystemsClock.sleep(ms)
     end
   end
 
@@ -236,7 +248,7 @@ defmodule Comma.PodLifecycle do
   defp bounded_ms(_value, _max), do: 0
 
   defp emit_pre_stop(stage, result \\ :ok) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:comma, :pod_lifecycle, :pre_stop],
       %{count: 1},
       %{stage: stage, result: result}

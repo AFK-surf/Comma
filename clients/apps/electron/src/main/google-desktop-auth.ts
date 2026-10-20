@@ -4,6 +4,7 @@ import * as oidc from "openid-client";
 import * as oauth from "oauth4webapi";
 import { baseLocale, messages, type CommaLocale } from "@comma/i18n";
 import { readMainLocale, type MainLocaleSource } from "./main-locale";
+import { renderOAuthCallbackPage } from "./oauth-callback-page";
 
 const googleIssuer = new URL("https://accounts.google.com");
 const callbackPath = "/oauth2/callback";
@@ -241,20 +242,21 @@ class LoopbackCallback {
       const requestUrl = new URL(request.url ?? "/", origin);
 
       if (request.method !== "GET" || requestUrl.pathname !== callbackPath) {
-        sendCallbackResponse(
-          nextResponse,
-          404,
-          messages.auth_callback_not_found({}, { locale })
-        );
+        sendCallbackResponse(nextResponse, 404, {
+          heading: messages.auth_callback_not_found({}, { locale }),
+          locale,
+          state: "plain",
+        });
         return;
       }
 
       if (consumed) {
-        sendCallbackResponse(
-          nextResponse,
-          409,
-          messages.auth_callback_already_used({}, { locale })
-        );
+        sendCallbackResponse(nextResponse, 409, {
+          body: messages.auth_callback_already_used({}, { locale }),
+          heading: messages.auth_callback_failed_title({}, { locale }),
+          locale,
+          state: "failed",
+        });
         return;
       }
 
@@ -283,8 +285,18 @@ class LoopbackCallback {
         response,
         success ? 200 : 400,
         success
-          ? messages.auth_callback_complete({}, { locale })
-          : messages.auth_callback_failed({}, { locale })
+          ? {
+              body: messages.auth_callback_complete({}, { locale }),
+              heading: messages.auth_callback_complete_title({}, { locale }),
+              locale,
+              state: "success",
+            }
+          : {
+              body: messages.auth_callback_failed({}, { locale }),
+              heading: messages.auth_callback_failed_title({}, { locale }),
+              locale,
+              state: "failed",
+            }
       );
     };
 
@@ -343,15 +355,16 @@ function listenOnLoopback(server: Server) {
 function sendCallbackResponse(
   response: import("node:http").ServerResponse,
   status: number,
-  message: string
+  page: Parameters<typeof renderOAuthCallbackPage>[0]
 ) {
   response.writeHead(status, {
     "cache-control": "no-store",
     connection: "close",
-    "content-type": "text/plain; charset=utf-8",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'",
+    "content-type": "text/html; charset=utf-8",
     "x-content-type-options": "nosniff",
   });
-  response.end(message);
+  response.end(renderOAuthCallbackPage(page));
 }
 
 function throwIfAborted(signal: AbortSignal | undefined) {

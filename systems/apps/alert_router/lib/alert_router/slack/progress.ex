@@ -7,7 +7,7 @@ defmodule AlertRouter.Slack.Progress do
   alias AlertRouter.Workers.DeliverIncident
 
   def enabled? do
-    config = Application.get_env(:alert_router, :slack_progress, [])
+    config = SystemsRuntime.get_env(:alert_router, :slack_progress, [])
 
     Enum.all?([:signing_secret, :team_id, :app_id], fn key ->
       is_binary(config[key]) and config[key] != ""
@@ -20,11 +20,11 @@ defmodule AlertRouter.Slack.Progress do
 
   defp accept_event(%{"type" => "event_callback", "event" => event} = payload)
        when is_map(event) do
-    config = Application.get_env(:alert_router, :slack_progress, [])
+    config = SystemsRuntime.get_env(:alert_router, :slack_progress, [])
 
     if enabled?() and payload["team_id"] == config[:team_id] and
          payload["api_app_id"] == config[:app_id] and
-         Application.get_env(:alert_router, :mode) != :disabled do
+         SystemsRuntime.get_env(:alert_router, :mode) != :disabled do
       report(event)
     else
       {:error, :unauthorized}
@@ -73,7 +73,7 @@ defmodule AlertRouter.Slack.Progress do
     do: {:ok, text, "explicit"}
 
   defp report_text(text, event) do
-    config = Application.get_env(:alert_router, :slack_progress, [])
+    config = SystemsRuntime.get_env(:alert_router, :slack_progress, [])
     bot = config[:investigator_bot_id]
 
     event_app =

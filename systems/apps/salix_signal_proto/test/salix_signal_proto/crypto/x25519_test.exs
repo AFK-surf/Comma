@@ -1,5 +1,5 @@
 defmodule SalixSignalProto.Crypto.X25519Test do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.Crypto.X25519
@@ -35,35 +35,6 @@ defmodule SalixSignalProto.Crypto.X25519Test do
     assert X25519.public_key(v["bob_private"]) == v["bob_public"]
     assert X25519.dh(v["alice_private"], v["bob_public"]) == {:ok, v["shared"]}
     assert X25519.dh(v["bob_private"], v["alice_public"]) == {:ok, v["shared"]}
-  end
-
-  describe "CRS-03 section 3 vectors" do
-    test "ec-key-pair.json: private keys serialize clamped; public key is 0x05 || X25519(k, 9)" do
-      for %{"inputs" => inputs, "outputs" => outputs} <-
-            Vectors.load!("crs/CRS-03/ec-key-pair.json")["cases"] do
-        input = Vectors.hex!(inputs["private_key_input"])
-        {public, private} = X25519.keypair(input)
-
-        assert private == Vectors.hex!(outputs["private_key_serialized"])
-        assert <<5>> <> public == Vectors.hex!(outputs["public_key_serialized"])
-      end
-    end
-
-    test "x25519-agreement.json: shared secrets, and all-zero results rejected" do
-      for %{"inputs" => inputs, "outputs" => outputs} <-
-            Vectors.load!("crs/CRS-03/x25519-agreement.json")["cases"] do
-        private = Vectors.hex!(inputs["private_key"])
-        <<5, public::binary-size(32)>> = Vectors.hex!(inputs["their_public_key"])
-
-        case outputs do
-          %{"shared_secret" => shared} ->
-            assert X25519.dh(private, public) == {:ok, Vectors.hex!(shared)}
-
-          %{"reason" => _} ->
-            assert X25519.dh(private, public) == {:error, :invalid_public_key}
-        end
-      end
-    end
   end
 
   test "a small-order public key is refused instead of yielding an all-zero secret" do

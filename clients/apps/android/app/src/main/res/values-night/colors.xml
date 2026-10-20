@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="canvas_grey">#FF0E0E0E</color>
+    <color name="ink">#FFF3F3F3</color>
+    <color name="ink_muted">#FF9A9A9A</color>
+    <color name="muted_grey">#FF9A9A9A</color>
+    <color name="hint_grey">#FF8E8E8E</color>
+    <color name="rule_grey">#FF2C2C2C</color>
+    <color name="card_white">#FF1A1A1A</color>
+    <color name="chip_stroke">#33FFFFFF</color>
+    <color name="chip_pressed">#FF262626</color>
+    <color name="text_primary">#FFF3F3F3</color>
+    <color name="text_secondary">#FF9A9A9A</color>
+    <color name="bubble_user">#FF2A2A2A</color>
+    <color name="bubble_system">#FF2A2A2A</color>
+    <color name="bubble_code_user">#FF3A3A3A</color>
+    <color name="bubble_code_agent">#FF242424</color>
+    <color name="image_placeholder">#FF2A2A2A</color>
+    <color name="image_placeholder_failed">#FF333333</color>
+    <color name="image_failed_mark">#FF8A8A8A</color>
+    <color name="skeleton_base">#FF1F1F1F</color>
+    <color name="skeleton_sheen">#FF343434</color>
+
+    <!-- Xcode DVTUserInterfaceKit Default（Dark），同一来源。 -->
+    <color name="syntax_keyword">#FFFC5FA3</color>
+    <color name="syntax_string">#FFFC6A5D</color>
+    <color name="syntax_comment">#FF6C7986</color>
+    <color name="syntax_number">#FFD0BF69</color>
+    <color name="syntax_type">#FF9EF1DD</color>
+    <color name="syntax_function">#FF67B7A4</color>
+    <color name="syntax_constant">#FF67B7A4</color>
+    <color name="syntax_preprocessor">#FFFD8F3F</color>
+    <color name="syntax_attribute">#FFBF8555</color>
+    <!-- Assistant error card fill: the error background token; a tint of it in dark mode, where the token is solid. -->
+    <color name="chat_error_card_bg">#1FF04438</color>
+</resources>

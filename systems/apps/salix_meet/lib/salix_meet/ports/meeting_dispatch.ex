@@ -36,7 +36,7 @@ defmodule SalixMeet.Ports.MeetingDispatch do
   def session_status(payload), do: impl().session_status(payload)
 
   defp impl do
-    Application.get_env(:salix_meet, :meeting_dispatch_mod, __MODULE__.None)
+    SystemsRuntime.get_env(:salix_meet, :meeting_dispatch_mod, __MODULE__.None)
   end
 
   defmodule None do

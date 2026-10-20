@@ -2,8 +2,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  cableScannerAddonDistPath,
   fileApplicationsAddonDistPath,
   fontFamiliesAddonDistPath,
+  keychainPasswordAddonDistPath,
   notificationAuthorizationAddonDistPath,
 } from "./native-paths";
 
@@ -41,6 +43,16 @@ export function devNativeAddons(appDir: string): DevNativeAddon[] {
       label: "font families addon",
       output: fontFamiliesAddonDistPath(appDir),
       buildFlag: "--font-families-only",
+    },
+    {
+      label: "keychain password addon",
+      output: keychainPasswordAddonDistPath(appDir),
+      buildFlag: "--keychain-password-only",
+    },
+    {
+      label: "caBLE scanner addon",
+      output: cableScannerAddonDistPath(appDir),
+      buildFlag: "--cable-scanner-only",
     },
   ];
 }

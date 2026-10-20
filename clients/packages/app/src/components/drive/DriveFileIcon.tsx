@@ -1,4 +1,5 @@
-import { cx, FileIcon } from "@comma/ui";
+import { cx } from "@comma/ui/components/utils";
+import { FileIcon } from "@comma/ui/components/icons";
 import { driveFileKind, type DriveFile } from "./driveStore";
 import { useDriveObjectUrl } from "./useDriveObjectUrl";
 
@@ -6,7 +7,7 @@ import { useDriveObjectUrl } from "./useDriveObjectUrl";
  * An image file is its own icon: it shows its thumbnail — or its bytes,
  * when those are already here — where every other file shows the generic
  * glyph. An image with neither yet keeps the glyph until the list asks the
- * backend for a thumbnail; there is nothing to draw before that.
+ * core for a thumbnail; there is nothing to draw before that.
  */
 export function DriveFileIcon({
   file,

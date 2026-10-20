@@ -1,5 +1,5 @@
 defmodule SalixSignalProto.Crypto.HkdfTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.Crypto.Hkdf
   alias SalixSignalProto.Test.Vectors
@@ -32,7 +32,7 @@ defmodule SalixSignalProto.Crypto.HkdfTest do
   end
 
   test "output is limited to 255 hash blocks" do
-    prk = :crypto.strong_rand_bytes(32)
+    prk = SystemsRuntime.Proc.random_bytes(32)
     assert byte_size(Hkdf.expand(prk, "", 255 * 32)) == 255 * 32
     assert_raise ArgumentError, fn -> Hkdf.expand(prk, "", 255 * 32 + 1) end
     assert byte_size(Hkdf.expand(prk, "", 255 * 64, :sha512)) == 255 * 64

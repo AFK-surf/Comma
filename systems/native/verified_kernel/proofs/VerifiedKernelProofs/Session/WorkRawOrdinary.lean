@@ -48,11 +48,11 @@ theorem PhysicalHistory.raw_ordinary_step {framing : CodecFraming} {objects : Ob
       apply physical_work_transport (fun _ _ h => h) owner fields.2.2 ?_ ?_ item present
       · intro value member; simpa only [fields.1] using member
       · exact fun item present => Or.inl (nonretiring_inner_preserves
-          history.invariant.history.invariant.ready history.invariant.history.invariant.format nonretiring call [] item present)
+          history.invariant.history.invariant.ready nonretiring call [] item present)
     | record reference =>
       exact history.record_frame middleHistory fields.1
         (fun _ present => record_survives
-          (nonretiring_inner_extends history.invariant.history.invariant.format nonretiring call) present) reference present
+          (nonretiring_inner_extends nonretiring call) present) reference present
 
 theorem PhysicalHistory.raw_ordinary {framing : CodecFraming} {objects : Objects}
     {owner session : ByteArray} {state next : Term} {sealed events : List Term}

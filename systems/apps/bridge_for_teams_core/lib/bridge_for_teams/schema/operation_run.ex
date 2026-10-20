@@ -10,7 +10,11 @@ defmodule BridgeForTeams.Schema.OperationRun do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   @run_types ~w(fin_exec device_provision run_check meeting_summary_replay)
   @statuses ~w(pending running ok failed canceled skipped needs_manual unknown)

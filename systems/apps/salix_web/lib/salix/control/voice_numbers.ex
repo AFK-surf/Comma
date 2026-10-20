@@ -248,12 +248,12 @@ defmodule Salix.Control.VoiceNumbers do
 
   defp verify_limit(name) do
     :salix_web
-    |> Application.get_env(:voice_verify_rate_limits, [])
+    |> SystemsRuntime.get_env(:voice_verify_rate_limits, [])
     |> Keyword.get(name, Keyword.fetch!(@verify_limits, name))
   end
 
   defp limit(bucket, count) do
-    case RateLimit.hit("voice-verify:" <> bucket, @hour_ms, count) do
+    case RateLimit.admit("voice-verify:" <> bucket, @hour_ms, count) do
       {:allow, _} -> :ok
       {:deny, _ms} -> {:error, :rate_limited}
     end

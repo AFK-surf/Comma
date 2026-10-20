@@ -35,7 +35,7 @@ defmodule SalixMeet.Ports.Summary do
   end
 
   defp impl do
-    Application.get_env(:salix_meet, :summary_mod, __MODULE__.None)
+    SystemsRuntime.get_env(:salix_meet, :summary_mod, __MODULE__.None)
   end
 
   defmodule None do

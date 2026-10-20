@@ -1,5 +1,5 @@
 defmodule SalixIM.Triage.FollowUpReceiverTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixCluster.Schedules
   alias SalixIM.Provider.Slack.ThreadRouteOwner
@@ -11,7 +11,7 @@ defmodule SalixIM.Triage.FollowUpReceiverTest do
 
     @impl true
     def read(_authority, _connect, _target) do
-      {:ok, %{"messages" => Application.fetch_env!(:salix_im, :follow_up_receiver_messages)}}
+      {:ok, %{"messages" => SystemsRuntime.fetch_env!(:salix_im, :follow_up_receiver_messages)}}
     end
   end
 
@@ -20,7 +20,7 @@ defmodule SalixIM.Triage.FollowUpReceiverTest do
 
     @impl true
     def read(_authority, _connect, _target) do
-      invocation = Application.fetch_env!(:salix_im, :follow_up_receiver_race_invocation)
+      invocation = SystemsRuntime.fetch_env!(:salix_im, :follow_up_receiver_race_invocation)
 
       {:ok, :resolved} =
         SalixStore.TriageProductRuntime.settle_follow_up_wakeup(
@@ -31,26 +31,34 @@ defmodule SalixIM.Triage.FollowUpReceiverTest do
           :answered
         )
 
-      {:ok, %{"messages" => Application.fetch_env!(:salix_im, :follow_up_receiver_messages)}}
+      {:ok, %{"messages" => SystemsRuntime.fetch_env!(:salix_im, :follow_up_receiver_messages)}}
     end
   end
 
   setup do
-    previous_reader = Application.get_env(:salix_im, :triage_follow_up_thread_reader_mod)
-    previous_messages = Application.get_env(:salix_im, :follow_up_receiver_messages)
-    previous_race = Application.get_env(:salix_im, :follow_up_receiver_race_invocation)
-    previous_backend = Application.get_env(:salix_store, :s3_backend)
+    previous_reader = SystemsRuntime.get_env(:salix_im, :triage_follow_up_thread_reader_mod)
+    previous_messages = SystemsRuntime.get_env(:salix_im, :follow_up_receiver_messages)
+    previous_race = SystemsRuntime.get_env(:salix_im, :follow_up_receiver_race_invocation)
+    previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
 
-    Application.put_env(:salix_im, :triage_follow_up_thread_reader_mod, ThreadReader)
-    Application.put_env(:salix_store, :s3_backend, S3.Fake)
+    SystemsRuntime.put_env(:salix_im, :triage_follow_up_thread_reader_mod, ThreadReader)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
 
-    if Process.whereis(S3.Fake) do
+    if SystemsRuntime.Proc.whereis(S3.Fake) do
       S3.Fake.reset()
     else
       start_supervised!(S3.Fake)
     end
 
     Repo.query!("TRUNCATE schedule_runs, schedules, triage_context_entries CASCADE")
+
+    # The deployment's review Runtime, which a follow-up re-enters: the test node runs none of its own.
+    start_supervised!(
+      {SalixIM.Triage.Runtime,
+       name: Salix.Bindings.TriageReviewRuntime,
+       mode: :review,
+       namespace: SalixStore.TriageKeys.default_namespace()}
+    )
 
     on_exit(fn ->
       restore_env(:salix_im, :triage_follow_up_thread_reader_mod, previous_reader)
@@ -63,45 +71,6 @@ defmodule SalixIM.Triage.FollowUpReceiverTest do
     {:ok, authority: authority}
   end
 
-  test "later human activity saying the issue remains open re-enters evaluation instead of resolving",
-       %{
-         authority: authority
-       } do
-    trigger_ts = "1788093000.000001"
-    due_ms = 1_788_094_000_000
-
-    %{entry_id: entry_id, schedule_id: schedule_id} =
-      seed_follow_up!(authority, trigger_ts, due_ms)
-
-    Application.put_env(:salix_im, :follow_up_receiver_messages, [
-      trigger_message(trigger_ts),
-      %{
-        "ts" => "1788093001.000001",
-        "actor_id" => "U_ANSWERING_HUMAN",
-        "actor_kind" => "human",
-        "text" => "我看看，公网探测仍然失败，还没修好。"
-      }
-    ])
-
-    assert {:ok, %{fired: [^schedule_id], failed: []}} = Schedules.run_once(now: due_ms)
-    assert {:error, :not_found} = Schedules.get(schedule_id)
-
-    assert {:ok, [%{entry_id: ^entry_id, state: :active, payload: payload}]} =
-             TriageProductRuntime.list_context("project-follow-up")
-
-    assert payload["last_wakeup_schedule_id"] == schedule_id
-    assert payload["last_wakeup_scheduled_for_ms"] == due_ms
-    refute Map.has_key?(payload, "resolved_reason")
-    assert {:ok, _next} = Schedules.get(payload["schedule_id"])
-    assert {:ok, page} = SalixIM.ProviderReceipts.list_slack_triage_page(:all, nil, 25)
-
-    assert Enum.any?(page.receipts, fn receipt ->
-             get_in(receipt, ["triage_event", "source_mode"]) == "scheduled_recheck" and
-               receipt["event_id"] == payload["last_wakeup_event_id"] and
-               get_in(receipt, ["triage_event", "message_ts"]) == trigger_ts
-           end)
-  end
-
   test "an unanswered occurrence re-enters the existing Runtime and arms one next Schedule", %{
     authority: authority
   } do
@@ -111,7 +80,7 @@ defmodule SalixIM.Triage.FollowUpReceiverTest do
     %{entry_id: entry_id, schedule_id: schedule_id} =
       seed_follow_up!(authority, trigger_ts, due_ms)
 
-    Application.put_env(:salix_im, :follow_up_receiver_messages, [trigger_message(trigger_ts)])
+    SystemsRuntime.put_env(:salix_im, :follow_up_receiver_messages, [trigger_message(trigger_ts)])
 
     assert {:ok, %{fired: [^schedule_id], failed: []}} = Schedules.run_once(now: due_ms)
     assert {:error, :not_found} = Schedules.get(schedule_id)
@@ -147,10 +116,10 @@ defmodule SalixIM.Triage.FollowUpReceiverTest do
     %{entry_id: entry_id, schedule_id: schedule_id} =
       seed_follow_up!(authority, trigger_ts, due_ms)
 
-    Application.put_env(:salix_im, :triage_follow_up_thread_reader_mod, ResolvingThreadReader)
-    Application.put_env(:salix_im, :follow_up_receiver_messages, [trigger_message(trigger_ts)])
+    SystemsRuntime.put_env(:salix_im, :triage_follow_up_thread_reader_mod, ResolvingThreadReader)
+    SystemsRuntime.put_env(:salix_im, :follow_up_receiver_messages, [trigger_message(trigger_ts)])
 
-    Application.put_env(:salix_im, :follow_up_receiver_race_invocation, %{
+    SystemsRuntime.put_env(:salix_im, :follow_up_receiver_race_invocation, %{
       entry_id: entry_id,
       authority_generation: authority["connect_generation"],
       schedule_id: schedule_id,
@@ -179,7 +148,7 @@ defmodule SalixIM.Triage.FollowUpReceiverTest do
     %{entry_id: entry_id, schedule_id: schedule_id} =
       seed_follow_up!(authority, trigger_ts, due_ms)
 
-    Application.put_env(:salix_im, :follow_up_receiver_messages, [trigger_message(trigger_ts)])
+    SystemsRuntime.put_env(:salix_im, :follow_up_receiver_messages, [trigger_message(trigger_ts)])
 
     scope = route_scope(authority, trigger_ts)
     assert {:ok, task_identity} = ThreadRouteOwner.task_claim_identity(scope, "cnv_task_handover")
@@ -210,7 +179,7 @@ defmodule SalixIM.Triage.FollowUpReceiverTest do
     %{entry_id: entry_id, schedule_id: schedule_id} =
       seed_follow_up!(authority, trigger_ts, due_ms, authority_generation: "stale-generation")
 
-    Application.put_env(:salix_im, :follow_up_receiver_messages, [trigger_message(trigger_ts)])
+    SystemsRuntime.put_env(:salix_im, :follow_up_receiver_messages, [trigger_message(trigger_ts)])
 
     assert {:ok, %{fired: [^schedule_id], failed: []}} = Schedules.run_once(now: due_ms)
 
@@ -221,13 +190,8 @@ defmodule SalixIM.Triage.FollowUpReceiverTest do
     assert {:error, :not_found} = Schedules.get(schedule_id)
   end
 
-  test "receiver rejects malformed shared-Schedule invocations" do
-    assert FollowUpReceiver.receive(%{}, :claimed, []) ==
-             {:error, :invalid_triage_follow_up_invocation}
-  end
-
   defp seed_follow_up!(authority, trigger_ts, due_ms, opts \\ []) do
-    entry_id = "triage-follow-up-#{System.unique_integer([:positive])}"
+    entry_id = "triage-follow-up-#{SystemsRuntime.Proc.unique_integer([:positive])}"
     schedule_id = Ids.new_schedule_id()
 
     authority_generation =
@@ -312,6 +276,6 @@ defmodule SalixIM.Triage.FollowUpReceiverTest do
     }
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

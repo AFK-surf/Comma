@@ -22,8 +22,8 @@ theorem normalize_session_id {state next : Term} {journal rest : List Term}
   obtain ⟨_, _, _, call⟩ := bind_ok call
   obtain ⟨_, _, providerWrite, call⟩ := bind_ok call
   obtain ⟨_, _, _, call⟩ := bind_ok call
-  exact (write_field_frame call rfl).trans
-    ((write_field_frame providerWrite rfl).trans ((write_field_frame activityWrite rfl).trans selected))
+  exact (write_field_frame call (by keys_absent)).trans
+    ((write_field_frame providerWrite (by keys_absent)).trans ((write_field_frame activityWrite (by keys_absent)).trans selected))
 
 theorem prepare_write_session_id {state next : Term} {journal rest : List Term}
     (identified : state.get (a "session_id") ≠ nil) (format : state.get (a "storage_format") = i 3)
@@ -41,7 +41,7 @@ theorem prepare_write_session_id {state next : Term} {journal rest : List Term}
   have equal : next = written := by
     simpa only [Term.tuple.injEq, List.cons.injEq, and_true, true_and] using pure_ok call
   subst written
-  exact (write_field_frame writeCall rfl).trans (normalize_session_id identified normalizedRead)
+  exact (write_field_frame writeCall (by keys_absent)).trans (normalize_session_id identified normalizedRead)
 
 end VerifiedKernel.Session.WorkConservation
 

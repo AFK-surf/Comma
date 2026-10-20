@@ -1,5 +1,5 @@
 defmodule BillingCore.SeptemberPricingTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   Code.require_file(
     "../../priv/repo/migrations/20260928000001_seed_missing_staging_prices.exs",

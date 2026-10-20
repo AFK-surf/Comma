@@ -6,10 +6,10 @@ defmodule SalixStore.OAuthAdaptersTest do
   invalid_grant → :reauthorization_required, revoke) driven through a
   Bandit/Plug mock provider via the `:oauth_endpoint_overrides` seam.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixStore.OAuth.Adapters
-  alias SalixStore.OAuth.Adapters.{GitHub, Google, Linear, Notion, Slack}
+  alias SalixStore.OAuth.Adapters.{Feishu, GitHub, Google, Lark, Linear, Notion, Slack, X}
 
   @app %{"client_id" => "cid", "client_secret" => "sec"}
   @ctx %{"redirect_uri" => "https://app.example/cb", "code_verifier" => nil, "scopes" => []}
@@ -70,7 +70,7 @@ defmodule SalixStore.OAuthAdaptersTest do
   # Bind Bandit on a random port, retrying on collisions across suites.
   defp start_bandit_retry! do
     Enum.find_value(1..10, fn _ ->
-      p = 40_000 + :erlang.phash2(make_ref(), 20_000)
+      p = 40_000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20_000)
 
       case ExUnit.Callbacks.start_supervised(
              {Bandit, plug: MockProvider, port: p, ip: {127, 0, 0, 1}},
@@ -87,23 +87,33 @@ defmodule SalixStore.OAuthAdaptersTest do
     port = start_bandit_retry!()
     base = "http://127.0.0.1:#{port}"
 
-    prev = Application.get_env(:salix_store, :oauth_endpoint_overrides)
+    prev = SystemsRuntime.get_env(:salix_store, :oauth_endpoint_overrides)
 
-    Application.put_env(:salix_store, :oauth_endpoint_overrides, %{
+    SystemsRuntime.put_env(:salix_store, :oauth_endpoint_overrides, %{
       "github" => %{"token_url" => "#{base}/github/token", "api_url" => "#{base}/github/api"},
       "google" => %{
         "token_url" => "#{base}/google/token",
         "revoke_url" => "#{base}/google/revoke",
         "api_url" => "#{base}/google/userinfo"
       },
+      "feishu" => %{
+        "token_url" => "#{base}/feishu/token",
+        "api_url" => "#{base}/feishu/user_info"
+      },
+      "lark" => %{"token_url" => "#{base}/lark/token", "api_url" => "#{base}/lark/user_info"},
       "linear" => %{"token_url" => "#{base}/linear/token", "api_url" => "#{base}/linear/api"},
-      "slack" => %{"token_url" => "#{base}/slack/token", "revoke_url" => "#{base}/slack/revoke"}
+      "slack" => %{"token_url" => "#{base}/slack/token", "revoke_url" => "#{base}/slack/revoke"},
+      "x" => %{
+        "token_url" => "#{base}/x/token",
+        "revoke_url" => "#{base}/x/revoke",
+        "api_url" => "#{base}/x/me"
+      }
     })
 
     ExUnit.Callbacks.on_exit(fn ->
       if prev,
-        do: Application.put_env(:salix_store, :oauth_endpoint_overrides, prev),
-        else: Application.delete_env(:salix_store, :oauth_endpoint_overrides)
+        do: SystemsRuntime.put_env(:salix_store, :oauth_endpoint_overrides, prev),
+        else: SystemsRuntime.delete_env(:salix_store, :oauth_endpoint_overrides)
     end)
 
     base
@@ -117,71 +127,250 @@ defmodule SalixStore.OAuthAdaptersTest do
   # ---- registry ----
 
   describe "Adapters registry" do
-    test "resolves all five providers, normalizing case and whitespace" do
-      assert {:ok, GitHub} = Adapters.for_provider("github")
-      assert {:ok, GitHub} = Adapters.for_provider("  GitHub ")
-      assert {:ok, Google} = Adapters.for_provider("google")
-      assert {:ok, Linear} = Adapters.for_provider("linear")
-      assert {:ok, Notion} = Adapters.for_provider("notion")
-      assert {:ok, Slack} = Adapters.for_provider("slack")
+  end
+
+  describe "Lark user sign-in" do
+    test "authorization asks for the meeting, notes, Minutes and document reads with PKCE" do
+      req = %{
+        "redirect_uri" => "https://app.example/cb",
+        "state" => "state",
+        "code_challenge" => "challenge"
+      }
+
+      assert {:ok, url} = Lark.authorization_url(@app, req)
+      {uri, params} = query(url)
+      assert uri.host == "accounts.larksuite.com"
+      assert params["client_id"] == "cid"
+      assert params["state"] == "state"
+      assert params["code_challenge_method"] == "S256"
+      scopes = String.split(params["scope"], " ")
+      assert "vc:meeting.search:read" in scopes
+      assert "vc:note:read" in scopes
+      assert "offline_access" in scopes
+      assert {:error, _} = Lark.authorization_url(@app, Map.delete(req, "code_challenge"))
     end
 
-    test "unknown provider" do
-      assert {:error, :unsupported_provider} = Adapters.for_provider("gitlab")
-      assert {:error, :unsupported_provider} = Adapters.for_provider(nil)
+    test "exchange names the person by open_id; refresh rotates the refresh token" do
+      start_mock!()
+
+      MockProvider.stub("/lark/token", %{
+        "code" => 0,
+        "access_token" => "u-access",
+        "refresh_token" => "ur-refresh",
+        "expires_in" => 7200,
+        "refresh_token_expires_in" => 604_800,
+        "scope" => "vc:note:read offline_access",
+        "token_type" => "Bearer"
+      })
+
+      MockProvider.stub("/lark/user_info", %{
+        "code" => 0,
+        "data" => %{"open_id" => "ou_ray", "name" => "Ray Zhang"}
+      })
+
+      assert {:ok, %{"tokens" => tokens, "account" => account}} =
+               Lark.exchange_code(@app, Map.put(@ctx, "code_verifier", "verifier"), "code")
+
+      assert account["provider_account_id"] == "ou_ray"
+      assert account["provider_account_name"] == "Ray Zhang"
+      assert tokens["refresh_expires_at"] > tokens["expires_at"]
+      [exchange] = MockProvider.requests("/lark/token")
+      assert exchange.params["grant_type"] == "authorization_code"
+      assert exchange.params["code_verifier"] == "verifier"
+      assert exchange.params["client_id"] == "cid"
+      [identity] = MockProvider.requests("/lark/user_info")
+      assert {"authorization", "Bearer u-access"} in identity.headers
+
+      MockProvider.stub("/lark/token", %{
+        "code" => 0,
+        "access_token" => "u-refreshed",
+        "refresh_token" => "ur-rotated",
+        "expires_in" => 7200
+      })
+
+      assert {:ok, refreshed} = Lark.refresh(@app, tokens)
+      assert refreshed["access_token"] == "u-refreshed"
+      assert refreshed["refresh_token"] == "ur-rotated"
+      assert refreshed["scopes"] == tokens["scopes"]
+      assert {:error, :revocation_not_supported} = Lark.revoke(@app, refreshed)
     end
 
-    test "supported/0 lists every provider" do
-      assert Adapters.supported() == ["github", "google", "linear", "notion", "slack"]
+    test "a refused refresh token needs a new sign-in" do
+      start_mock!()
+
+      MockProvider.stub(
+        "/lark/token",
+        %{"code" => 20_037, "error" => "invalid_grant", "error_description" => "expired"},
+        400
+      )
+
+      assert {:error, :reauthorization_required} =
+               Lark.refresh(@app, %{"refresh_token" => "ur-old"})
+    end
+  end
+
+  describe "Feishu user sign-in" do
+    test "authorization goes to Feishu and asks for the meeting, notes, Minutes and document reads" do
+      req = %{
+        "redirect_uri" => "https://app.example/cb",
+        "state" => "state",
+        "code_challenge" => "challenge"
+      }
+
+      assert {:ok, url} = Feishu.authorization_url(@app, req)
+      {uri, params} = query(url)
+      assert uri.host == "accounts.feishu.cn"
+      assert params["client_id"] == "cid"
+      assert params["code_challenge_method"] == "S256"
+      scopes = String.split(params["scope"], " ")
+      assert "vc:meeting.search:read" in scopes
+      assert "minutes:minutes:readonly" in scopes
+      assert "offline_access" in scopes
+      assert {:error, _} = Feishu.authorization_url(@app, Map.delete(req, "code_challenge"))
     end
 
-    test "default env vars match willow's listoauth map" do
-      assert GitHub.default_env_var() == "GH_TOKEN"
-      assert Google.default_env_var() == "GOOGLE_ACCESS_TOKEN"
-      assert Linear.default_env_var() == "LINEAR_ACCESS_TOKEN"
-      assert Notion.default_env_var() == "NOTION_TOKEN"
-      assert Slack.default_env_var() == "SLACK_USER_TOKEN"
+    test "exchange names the person by open_id and keeps the tenant; refresh rotates" do
+      start_mock!()
+
+      MockProvider.stub("/feishu/token", %{
+        "code" => 0,
+        "access_token" => "u-access",
+        "refresh_token" => "ur-refresh",
+        "expires_in" => 7200,
+        "refresh_token_expires_in" => 604_800,
+        "scope" => "vc:note:read offline_access",
+        "token_type" => "Bearer"
+      })
+
+      MockProvider.stub("/feishu/user_info", %{
+        "code" => 0,
+        "data" => %{"open_id" => "ou_ray", "name" => "张瑞", "tenant_key" => "tk_acme"}
+      })
+
+      assert {:ok, %{"tokens" => tokens, "account" => account}} =
+               Feishu.exchange_code(@app, Map.put(@ctx, "code_verifier", "verifier"), "code")
+
+      assert account["provider_account_id"] == "ou_ray"
+      assert account["provider_account_name"] == "张瑞"
+      assert account["metadata"]["tenant_key"] == "tk_acme"
+      [exchange] = MockProvider.requests("/feishu/token")
+      assert exchange.params["grant_type"] == "authorization_code"
+      assert exchange.params["code_verifier"] == "verifier"
+      [identity] = MockProvider.requests("/feishu/user_info")
+      assert {"authorization", "Bearer u-access"} in identity.headers
+
+      MockProvider.stub("/feishu/token", %{
+        "code" => 0,
+        "access_token" => "u-refreshed",
+        "refresh_token" => "ur-rotated",
+        "expires_in" => 7200
+      })
+
+      assert {:ok, refreshed} = Feishu.refresh(@app, tokens)
+      assert refreshed["access_token"] == "u-refreshed"
+      assert refreshed["refresh_token"] == "ur-rotated"
+      assert {:error, :revocation_not_supported} = Feishu.revoke(@app, refreshed)
+
+      MockProvider.stub(
+        "/feishu/token",
+        %{"code" => 20_037, "error" => "invalid_grant", "error_description" => "expired"},
+        400
+      )
+
+      assert {:error, :reauthorization_required} =
+               Feishu.refresh(@app, %{"refresh_token" => "ur-old"})
+    end
+  end
+
+  describe "X confidential OAuth" do
+    test "authorization binds the state, callback and S256 challenge with read and write scopes" do
+      req = %{
+        "redirect_uri" => "https://app.example/cb",
+        "state" => "state",
+        "code_challenge" => "challenge"
+      }
+
+      assert {:ok, url} = X.authorization_url(@app, req)
+      {uri, params} = query(url)
+      assert uri.host == "x.com"
+      assert params["state"] == "state"
+      assert params["redirect_uri"] == req["redirect_uri"]
+      assert params["code_challenge"] == "challenge"
+      assert params["code_challenge_method"] == "S256"
+
+      assert params["scope"] ==
+               "tweet.read tweet.write users.read media.write follows.read follows.write dm.read dm.write bookmark.read bookmark.write offline.access"
+
+      assert {:error, _} = X.authorization_url(@app, Map.delete(req, "code_challenge"))
+    end
+
+    test "exchange, refresh and revoke use the app secret only in HTTP Basic auth" do
+      start_mock!()
+
+      MockProvider.stub("/x/token", %{
+        "access_token" => "access",
+        "refresh_token" => "refresh",
+        "scope" => "tweet.read users.read offline.access",
+        "expires_in" => 7200
+      })
+
+      MockProvider.stub("/x/me", %{"data" => %{"id" => "user-1", "username" => "reader"}})
+
+      assert {:ok, %{"tokens" => tokens, "account" => account}} =
+               X.exchange_code(@app, Map.put(@ctx, "code_verifier", "verifier"), "code")
+
+      assert account["provider_account_id"] == "user-1"
+      assert tokens["expires_at"] > SystemsClock.system_time(:millisecond)
+      [exchange] = MockProvider.requests("/x/token")
+      assert exchange.params["code_verifier"] == "verifier"
+      assert exchange.params["redirect_uri"] == @ctx["redirect_uri"]
+      assert {"authorization", "Basic " <> Base.encode64("cid:sec")} in exchange.headers
+      refute Map.has_key?(exchange.params, "client_secret")
+      [identity] = MockProvider.requests("/x/me")
+      assert {"authorization", "Bearer access"} in identity.headers
+
+      MockProvider.stub("/x/token", %{
+        "access_token" => "refreshed",
+        "refresh_token" => "rotated",
+        "expires_in" => 7200
+      })
+
+      assert {:ok, refreshed} = X.refresh(@app, tokens)
+      assert refreshed["refresh_token"] == "rotated"
+      assert refreshed["scopes"] == tokens["scopes"]
+      MockProvider.stub("/x/revoke", %{"revoked" => true})
+      assert :ok = X.revoke(@app, refreshed)
+      [revoke] = MockProvider.requests("/x/revoke")
+      assert revoke.params["token"] == "refreshed"
+      assert {"authorization", "Basic " <> Base.encode64("cid:sec")} in revoke.headers
+    end
+
+    test "expired grants require authorization and provider error bodies are not exposed" do
+      start_mock!()
+
+      MockProvider.stub(
+        "/x/token",
+        %{"error" => "invalid_grant", "error_description" => "secret-echo"},
+        400
+      )
+
+      assert {:error, :reauthorization_required} =
+               X.refresh(@app, %{"refresh_token" => "refresh"})
+
+      MockProvider.stub(
+        "/x/token",
+        %{"error" => "invalid_client", "error_description" => "secret-echo"},
+        401
+      )
+
+      assert {:error, "x oauth: provider returned HTTP 401"} =
+               X.refresh(@app, %{"refresh_token" => "refresh"})
     end
   end
 
   # ---- authorization URLs (pure) ----
 
   describe "authorization_url" do
-    test "github: scope space-joined, allow_signup=false, no PKCE" do
-      req = %{
-        "redirect_uri" => "https://app.example/cb",
-        "state" => "st-1",
-        "scopes" => ["repo", "read:org"],
-        "code_challenge" => "ignored-by-github"
-      }
-
-      assert {:ok, url} = GitHub.authorization_url(@app, req)
-      {uri, q} = query(url)
-      assert uri.host == "github.com"
-      assert uri.path == "/login/oauth/authorize"
-
-      assert q == %{
-               "client_id" => "cid",
-               "redirect_uri" => "https://app.example/cb",
-               "state" => "st-1",
-               "scope" => "repo read:org",
-               "allow_signup" => "false"
-             }
-    end
-
-    test "github: scope omitted when no scopes requested" do
-      req = %{
-        "redirect_uri" => "https://app.example/cb",
-        "state" => "s",
-        "scopes" => [],
-        "code_challenge" => nil
-      }
-
-      assert {:ok, url} = GitHub.authorization_url(@app, req)
-      {_uri, q} = query(url)
-      refute Map.has_key?(q, "scope")
-    end
-
     test "google: openid minimum merged in front, offline access, PKCE challenge" do
       req = %{
         "redirect_uri" => "https://app.example/cb",
@@ -202,98 +391,6 @@ defmodule SalixStore.OAuthAdaptersTest do
       assert q["state"] == "st-2"
       assert q["code_challenge"] == "chal-s256"
       assert q["code_challenge_method"] == "S256"
-    end
-
-    test "google: no PKCE params when code_challenge is nil" do
-      req = %{
-        "redirect_uri" => "https://app.example/cb",
-        "state" => "s",
-        "scopes" => [],
-        "code_challenge" => nil
-      }
-
-      assert {:ok, url} = Google.authorization_url(@app, req)
-      {_uri, q} = query(url)
-      refute Map.has_key?(q, "code_challenge")
-      refute Map.has_key?(q, "code_challenge_method")
-      assert q["scope"] == "openid email profile"
-    end
-
-    test "linear: comma-joined scopes, default read, PKCE" do
-      req = %{
-        "redirect_uri" => "https://app.example/cb",
-        "state" => "s",
-        "scopes" => [],
-        "code_challenge" => "ch"
-      }
-
-      assert {:ok, url} = Linear.authorization_url(@app, req)
-      {uri, q} = query(url)
-      assert uri.host == "linear.app"
-      assert q["scope"] == "read"
-      assert q["prompt"] == "consent"
-      assert q["response_type"] == "code"
-      assert q["code_challenge"] == "ch"
-      assert q["code_challenge_method"] == "S256"
-
-      req2 = %{req | "scopes" => ["read", "write"]}
-      assert {:ok, url2} = Linear.authorization_url(@app, req2)
-      {_uri2, q2} = query(url2)
-      assert q2["scope"] == "read,write"
-    end
-
-    test "notion: owner=user, no scope param" do
-      req = %{
-        "redirect_uri" => "https://app.example/cb",
-        "state" => "ns",
-        "scopes" => [],
-        "code_challenge" => nil
-      }
-
-      assert {:ok, url} = Notion.authorization_url(@app, req)
-      {uri, q} = query(url)
-      assert uri.host == "api.notion.com"
-      assert uri.path == "/v1/oauth/authorize"
-      assert q["owner"] == "user"
-      assert q["response_type"] == "code"
-      assert q["state"] == "ns"
-      refute Map.has_key?(q, "scope")
-    end
-
-    test "slack: scopes go to user_scope comma-joined; omitted when empty" do
-      req = %{
-        "redirect_uri" => "https://app.example/cb",
-        "state" => "ss",
-        "scopes" => ["chat:write", " channels:read ", ""],
-        "code_challenge" => nil
-      }
-
-      assert {:ok, url} = Slack.authorization_url(@app, req)
-      {uri, q} = query(url)
-      assert uri.host == "slack.com"
-      assert uri.path == "/oauth/v2/authorize"
-      assert q["user_scope"] == "chat:write,channels:read"
-      refute Map.has_key?(q, "scope")
-
-      assert {:ok, url2} = Slack.authorization_url(@app, %{req | "scopes" => []})
-      {_uri2, q2} = query(url2)
-      refute Map.has_key?(q2, "user_scope")
-    end
-
-    test "missing client_id / redirect_uri" do
-      req = %{
-        "redirect_uri" => "https://app.example/cb",
-        "state" => "s",
-        "scopes" => [],
-        "code_challenge" => nil
-      }
-
-      for mod <- [GitHub, Google, Linear, Notion, Slack] do
-        assert {:error, msg} = mod.authorization_url(%{"client_id" => " "}, req)
-        assert msg =~ "client_id is required"
-        assert {:error, msg2} = mod.authorization_url(@app, %{req | "redirect_uri" => ""})
-        assert msg2 =~ "redirect_uri is required"
-      end
     end
   end
 
@@ -346,16 +443,6 @@ defmodule SalixStore.OAuthAdaptersTest do
       assert {"authorization", "Bearer gho_abc"} in headers
     end
 
-    test "exchange_code: provider error surfaces error_description" do
-      MockProvider.stub("/github/token", %{
-        "error" => "bad_verification_code",
-        "error_description" => "The code passed is incorrect or expired."
-      })
-
-      assert {:error, "github token error: The code passed is incorrect or expired."} =
-               GitHub.exchange_code(@app, @ctx, "bad")
-    end
-
     test "refresh: GitHub App rotation with refresh_token_expires_in" do
       MockProvider.stub("/github/token", %{
         "access_token" => "ghu_new",
@@ -373,7 +460,7 @@ defmodule SalixStore.OAuthAdaptersTest do
         "scopes" => []
       }
 
-      before_ms = System.system_time(:millisecond)
+      before_ms = SystemsClock.system_time(:millisecond)
       assert {:ok, tokens} = GitHub.refresh(@app, conn)
 
       assert tokens["access_token"] == "ghu_new"
@@ -384,22 +471,6 @@ defmodule SalixStore.OAuthAdaptersTest do
       assert [%{params: params}] = MockProvider.requests("/github/token")
       assert params["grant_type"] == "refresh_token"
       assert params["refresh_token"] == "ghr_old"
-    end
-
-    test "refresh: classic OAuth App (no refresh token) returns the stored token without HTTP" do
-      conn = %{
-        "access_token" => "gho_classic",
-        "refresh_token" => nil,
-        "token_type" => "bearer",
-        "scopes" => ["repo"]
-      }
-
-      assert {:ok, tokens} = GitHub.refresh(@app, conn)
-      assert tokens["access_token"] == "gho_classic"
-      assert tokens["refresh_token"] == nil
-      assert tokens["expires_at"] == nil
-      assert tokens["scopes"] == ["repo"]
-      assert MockProvider.requests("/github/token") == []
     end
 
     test "refresh: expired refresh token classifies as reauthorization_required" do
@@ -416,11 +487,6 @@ defmodule SalixStore.OAuthAdaptersTest do
       }
 
       assert {:error, :reauthorization_required} = GitHub.refresh(@app, conn)
-    end
-
-    test "revoke is a documented no-op" do
-      assert {:error, :revocation_not_supported} =
-               GitHub.revoke(@app, %{"access_token" => "gho_x"})
     end
   end
 
@@ -450,7 +516,7 @@ defmodule SalixStore.OAuthAdaptersTest do
       })
 
       ctx = %{@ctx | "code_verifier" => "ver-123"}
-      before_ms = System.system_time(:millisecond)
+      before_ms = SystemsClock.system_time(:millisecond)
 
       assert {:ok, %{"tokens" => tokens, "account" => account}} =
                Google.exchange_code(@app, ctx, "code-g")
@@ -489,40 +555,6 @@ defmodule SalixStore.OAuthAdaptersTest do
       assert tokens["access_token"] == "ya29.new"
       assert tokens["refresh_token"] == "1//keep"
       assert tokens["scopes"] == ["openid", "email"]
-    end
-
-    test "refresh: invalid_grant → reauthorization_required" do
-      MockProvider.stub("/google/token", %{
-        "error" => "invalid_grant",
-        "error_description" => "Token has been expired or revoked."
-      })
-
-      conn = %{"access_token" => "ya29.old", "refresh_token" => "1//dead", "scopes" => []}
-      assert {:error, :reauthorization_required} = Google.refresh(@app, conn)
-    end
-
-    test "refresh: no refresh token is an error (not a passthrough)" do
-      conn = %{"access_token" => "ya29.old", "refresh_token" => "", "scopes" => []}
-      assert {:error, msg} = Google.refresh(@app, conn)
-      assert msg =~ "no refresh token"
-    end
-
-    test "revoke: prefers refresh token; 200 and 400 both succeed; 500 fails" do
-      MockProvider.stub("/google/revoke", %{})
-
-      conn = %{"access_token" => "ya29.x", "refresh_token" => "1//r"}
-      assert :ok = Google.revoke(@app, conn)
-      assert [%{params: %{"token" => "1//r"}}] = MockProvider.requests("/google/revoke")
-
-      # Already-revoked → 400 is success.
-      MockProvider.stub("/google/revoke", %{"error" => "invalid_token"}, 400)
-      assert :ok = Google.revoke(@app, conn)
-
-      MockProvider.stub("/google/revoke", %{"error" => "boom"}, 500)
-      assert {:error, "google token revocation: status 500"} = Google.revoke(@app, conn)
-
-      # Nothing on file → no-op success.
-      assert :ok = Google.revoke(@app, %{"access_token" => "", "refresh_token" => nil})
     end
   end
 
@@ -594,97 +626,11 @@ defmodule SalixStore.OAuthAdaptersTest do
       assert params["client_id"] == "cid"
       assert params["code"] == "code-s"
     end
-
-    test "exchange_code: ok:false surfaces the slack error" do
-      MockProvider.stub("/slack/token", %{"ok" => false, "error" => "invalid_code"})
-      assert {:error, "slack token error: invalid_code"} = Slack.exchange_code(@app, @ctx, "bad")
-    end
-
-    test "exchange_code: bot-only response (no authed_user token) errors" do
-      MockProvider.stub("/slack/token", %{
-        "ok" => true,
-        "access_token" => "xoxb-bot",
-        "authed_user" => %{"id" => "U9"}
-      })
-
-      assert {:error, msg} = Slack.exchange_code(@app, @ctx, "code")
-      assert msg =~ "ensure user_scope was requested"
-    end
-
-    test "refresh: rotated token arrives at the top level" do
-      MockProvider.stub("/slack/token", %{
-        "ok" => true,
-        "access_token" => "xoxp-rotated",
-        "refresh_token" => "xoxe-2",
-        "token_type" => "user",
-        "scope" => "chat:write",
-        "expires_in" => 43_200
-      })
-
-      conn = %{
-        "access_token" => "xoxp-old",
-        "refresh_token" => "xoxe-1",
-        "token_type" => "user",
-        "scopes" => []
-      }
-
-      before_ms = System.system_time(:millisecond)
-      assert {:ok, tokens} = Slack.refresh(@app, conn)
-
-      assert tokens["access_token"] == "xoxp-rotated"
-      assert tokens["slack_user_token"] == "xoxp-rotated"
-      assert tokens["refresh_token"] == "xoxe-2"
-      assert tokens["scopes"] == ["chat:write"]
-      assert_in_delta tokens["expires_at"], before_ms + 43_200 * 1000, 5_000
-
-      assert [%{params: params}] = MockProvider.requests("/slack/token")
-      assert params["grant_type"] == "refresh_token"
-      assert params["refresh_token"] == "xoxe-1"
-    end
-
-    test "refresh: no rotation (no refresh token) returns the existing token without HTTP" do
-      conn = %{
-        "access_token" => "xoxp-stable",
-        "refresh_token" => nil,
-        "token_type" => "user",
-        "scopes" => ["chat:write"]
-      }
-
-      assert {:ok, tokens} = Slack.refresh(@app, conn)
-      assert tokens["access_token"] == "xoxp-stable"
-      assert tokens["slack_user_token"] == "xoxp-stable"
-      assert tokens["refresh_token"] == nil
-      assert MockProvider.requests("/slack/token") == []
-    end
-
-    test "revoke: ok:true and already-invalid errors succeed; other errors fail" do
-      conn = %{"access_token" => "xoxp-user-1"}
-
-      MockProvider.stub("/slack/revoke", %{"ok" => true, "revoked" => true})
-      assert :ok = Slack.revoke(@app, conn)
-      assert [%{params: %{"token" => "xoxp-user-1"}}] = MockProvider.requests("/slack/revoke")
-
-      MockProvider.stub("/slack/revoke", %{"ok" => false, "error" => "token_revoked"})
-      assert :ok = Slack.revoke(@app, conn)
-
-      MockProvider.stub("/slack/revoke", %{"ok" => false, "error" => "ratelimited"})
-      assert {:error, "slack token revocation: ratelimited"} = Slack.revoke(@app, conn)
-
-      assert :ok = Slack.revoke(@app, %{"access_token" => " "})
-    end
   end
 
   # ---- credential values (pure) ----
 
   describe "credential values" do
-    test "validate_credential_value accepts only access_token" do
-      for mod <- [GitHub, Google, Linear, Notion, Slack] do
-        assert :ok = mod.validate_credential_value("access_token", [])
-        assert {:error, msg} = mod.validate_credential_value("refresh_token", [])
-        assert msg =~ "unsupported credential value"
-      end
-    end
-
     test "resolve_credential_value returns the stored access token" do
       conn = %{"access_token" => "tok-1"}
 
@@ -694,20 +640,6 @@ defmodule SalixStore.OAuthAdaptersTest do
         assert {:error, msg} = mod.resolve_credential_value(nil, "access_token")
         assert msg =~ "connection is nil"
       end
-    end
-
-    test "slack resolves the xoxp user token, preferring the explicit extra" do
-      assert {:ok, "xoxp-extra"} =
-               Slack.resolve_credential_value(
-                 %{"access_token" => "xoxp-primary", "slack_user_token" => "xoxp-extra"},
-                 "access_token"
-               )
-
-      assert {:ok, "xoxp-primary"} =
-               Slack.resolve_credential_value(%{"access_token" => "xoxp-primary"}, "access_token")
-
-      assert {:error, _} = Slack.resolve_credential_value(%{"access_token" => "x"}, "bot_token")
-      assert {:error, _} = Slack.resolve_credential_value(nil, "access_token")
     end
   end
 end

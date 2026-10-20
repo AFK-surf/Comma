@@ -1,41 +1,26 @@
-import { openAsBlob } from "node:fs";
-import { createParser } from "eventsource-parser";
-import { z } from "zod";
+import { readFile } from "node:fs/promises";
 import type { AudioCaptureRecording } from "@comma/native-bridge";
+import type { RecordingTranscript } from "@comma/core/contract";
 import type { DriveRecordingStore, RecordingDriveTarget } from "./drive-recordings";
 
-const transcriptResult = z.discriminatedUnion("status", [
-  z.object({
-    status: z.literal("ready"),
-    result: z.object({
-      transcript: z.string().max(8_000_000),
-      duration_seconds: z.number().int().nonnegative(),
-      chunks: z
-        .array(
-          z.object({
-            index: z.number().int().nonnegative(),
-            offset_seconds: z.number().nonnegative(),
-            transcript: z.string().max(8_000_000),
-          })
-        )
-        .max(48),
-    }),
-  }),
-  z.object({ status: z.literal("error"), reason: z.string().max(500) }),
-]);
+/** The client core's transcription (`recordings.transcribe`): the audio's transcript, or why there is none. */
+export type TranscribeRecording = (audio: Uint8Array) => Promise<RecordingTranscript>;
 
-export interface RecordingASRSession {
-  fetch: typeof fetch;
-  url: URL;
+export interface RecordingTranscriptSession {
+  /** Fails once the account the recording was made under is no longer the session's. */
   assertCurrent(): void;
 }
 
-/** Audio is already in Drive. ASR failures cannot change its saved receipt. */
+/**
+ * Audio is already in Drive. Main hands its bytes to the client core, which asks the server's ASR (and bounds how many
+ * at once), and writes what it answers beside the audio: the text and a JSON receipt, or a JSON error. ASR failures
+ * cannot change the saved audio.
+ */
 export class RecordingTranscriptionService {
-  #active = 0;
   constructor(
     private readonly drive: Pick<DriveRecordingStore, "writeTranscript">,
-    private readonly bindSession: () => RecordingASRSession
+    private readonly bindSession: () => RecordingTranscriptSession,
+    private readonly transcribe: TranscribeRecording
   ) {}
 
   async process(
@@ -44,18 +29,8 @@ export class RecordingTranscriptionService {
     sourcePath: string
   ): Promise<void> {
     const session = this.bindSession();
-    let admitted = false;
     try {
-      // At most two ASR requests per client, with no queue or automatic replay.
-      if (this.#active >= 2)
-        throw new Error("Transcription is busy. The audio remains in Drive.");
-      admitted = true;
-      this.#active++;
-      if (recording.file.size > 30 * 1024 * 1024)
-        throw new Error(
-          "ASR accepts recordings up to 30 MiB. The audio remains in Drive."
-        );
-      const result = await transcribeRecording(session, sourcePath);
+      const result = await this.transcribe(new Uint8Array(await readFile(sourcePath)));
       session.assertCurrent();
       await this.drive.writeTranscript(recording, target, "txt", result.transcript);
       session.assertCurrent();
@@ -64,11 +39,7 @@ export class RecordingTranscriptionService {
         target,
         "json",
         JSON.stringify(
-          {
-            status: "ready",
-            source: recording.driveFile,
-            ...result,
-          },
+          { status: "ready", source: recording.driveFile, ...result },
           null,
           2
         )
@@ -84,7 +55,7 @@ export class RecordingTranscriptionService {
             status: "error",
             source: recording.driveFile,
             reason:
-              error instanceof Error
+              error instanceof Error && error.message
                 ? error.message.slice(0, 500)
                 : "Transcription failed. The audio remains in Drive.",
           },
@@ -92,48 +63,6 @@ export class RecordingTranscriptionService {
           2
         )
       );
-    } finally {
-      if (admitted) this.#active--;
     }
   }
-}
-
-async function transcribeRecording(session: RecordingASRSession, sourcePath: string) {
-  const response = await session.fetch(session.url, {
-    method: "POST",
-    headers: { "content-type": "audio/mp4", accept: "text/event-stream" },
-    body: await openAsBlob(sourcePath, { type: "audio/mp4" }),
-    signal: AbortSignal.timeout(620_000),
-  });
-  if (!response.ok || !response.body)
-    throw new Error("Transcription is unavailable. The audio remains in Drive.");
-  let result: z.infer<typeof transcriptResult> | undefined;
-  const parser = createParser({
-    maxBufferSize: 16 * 1024 * 1024,
-    onEvent(event) {
-      if (event.event === "transcription")
-        result = transcriptResult.parse(JSON.parse(event.data));
-    },
-    onError(error) {
-      throw error;
-    },
-  });
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      parser.feed(decoder.decode(value, { stream: true }));
-      if (result) break;
-    }
-    parser.feed(decoder.decode());
-  } finally {
-    await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
-  }
-  if (!result)
-    throw new Error("Transcription was interrupted. The audio remains in Drive.");
-  if (result.status === "error") throw new Error(result.reason);
-  return result.result;
 }

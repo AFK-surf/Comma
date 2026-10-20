@@ -88,16 +88,8 @@ defmodule SalixAgent.Activity do
 
   defp session_activity_state(session) do
     cond do
-      session_value(session, "runtime_kind") == "external" and
-          session_value(session, "status") in [
-            "starting",
-            "running",
-            "waiting",
-            "failed",
-            "unknown",
-            "idle"
-          ] ->
-        session_value(session, "status")
+      session_value(session, "runtime_kind") == "retired" ->
+        "idle"
 
       is_map(session_wait(session)) ->
         "waiting"

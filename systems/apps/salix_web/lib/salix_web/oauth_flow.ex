@@ -85,7 +85,7 @@ defmodule SalixWeb.OAuthFlow do
 
       case adapter.authorization_url(app, authorization_request) do
         {:ok, url} ->
-          now = System.system_time(:millisecond)
+          now = SystemsClock.system_time(:millisecond)
 
           record = %{
             "state" => state,
@@ -218,7 +218,7 @@ defmodule SalixWeb.OAuthFlow do
   defp start_managed_mcp_refresh(auth, provider) do
     case auth["mcp_binding_ids"] do
       [_ | _] = binding_ids ->
-        case Task.Supervisor.start_child(SalixWeb.OAuthMCPRefreshSupervisor, fn ->
+        case SystemsRuntime.TaskSupervisor.start_child(SalixWeb.OAuthMCPRefreshSupervisor, fn ->
                refresh_managed_mcps(auth, provider, binding_ids)
              end) do
           {:ok, _pid} ->
@@ -304,7 +304,7 @@ defmodule SalixWeb.OAuthFlow do
   # `SalixStore.OAuth.valid_token/3` refreshes), account ids/names are
   # top-level, remaining account fields land under "metadata".
   defp connection_record(connection_id, auth, provider, tokens, account) do
-    now = System.system_time(:millisecond)
+    now = SystemsClock.system_time(:millisecond)
 
     extra_metadata =
       account
@@ -544,9 +544,9 @@ defmodule SalixWeb.OAuthFlow do
 
   defp clean_scopes(_scopes), do: []
 
-  defp new_token, do: Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+  defp new_token, do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(32), padding: false)
 
-  defp random_hex, do: :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+  defp random_hex, do: SystemsRuntime.Proc.random_bytes(16) |> Base.encode16(case: :lower)
 
   defp code_challenge_s256(verifier),
     do: Base.url_encode64(:crypto.hash(:sha256, verifier), padding: false)

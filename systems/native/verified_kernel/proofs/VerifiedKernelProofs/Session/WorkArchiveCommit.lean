@@ -17,13 +17,13 @@ theorem pruneResultRefs_catalog {s t : Term} {j r : List Term}
     obtain ⟨_, _, _, h⟩ := bind_ok h
     obtain ⟨_, _, _, h⟩ := bind_ok h
     obtain ⟨_, _, _, h⟩ := bind_ok h
-    exact write_field_frame h rfl
+    exact write_field_frame h (by keys_absent)
 
 theorem recomputeContext_catalog {s t : Term} {j r : List Term}
     (h : recomputeContext s j = .ok (t, r)) : t.get (a "segment_catalog") = s.get (a "segment_catalog") := by
   unfold recomputeContext at h
   obtain ⟨_, _, _, h⟩ := bind_ok h
-  exact write_field_frame h rfl
+  exact write_field_frame h (by keys_absent)
 
 theorem pruneResultRefs_field {s t : Term} {key : String} {j r : List Term}
     (different : key ≠ "async_result_refs")
@@ -95,8 +95,8 @@ theorem archiveAdvance_storage_fields {s e t : Term} {j r : List Term}
           exact write_get_key "segment_catalog" written rfl
         · rw [frame "archived_through" (by decide) (by decide)]
           exact write_get_key "archived_through" written rfl
-        · exact (frame "agent_id" (by decide) (by decide)).trans (write_field_frame written rfl)
-        · exact (frame "session_id" (by decide) (by decide)).trans (write_field_frame written rfl)
+        · exact (frame "agent_id" (by decide) (by decide)).trans (write_field_frame written (by keys_absent))
+        · exact (frame "session_id" (by decide) (by decide)).trans (write_field_frame written (by keys_absent))
 
 theorem archiveAdvance_catalog {s e t : Term} {j r : List Term}
     (h : archiveAdvance s e j = .ok (t, r)) :

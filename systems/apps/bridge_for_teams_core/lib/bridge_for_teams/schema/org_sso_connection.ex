@@ -2,17 +2,22 @@ defmodule BridgeForTeams.Schema.OrgSsoConnection do
   @moduledoc """
   Per-org SSO IdP configuration (design §5 `org_sso_connections`, §7).
   `client_secret` is stored as-is (no encryption at rest). `allowed_domains`
-  gates generic OIDC provisioning; Feishu uses an org-scoped provider subject
-  instead of email-domain admission. `default_role` is the provisioned org role.
+  gates generic OIDC provisioning; Feishu and Lark use an org-scoped provider
+  subject instead of email-domain admission. `default_role` is the provisioned
+  org role.
   """
   use Ecto.Schema
   import Ecto.Changeset
 
-  @providers ~w(generic_oidc feishu)
+  @providers ~w(generic_oidc feishu lark)
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   schema "org_sso_connections" do
     field :provider, :string, default: "generic_oidc"
@@ -58,6 +63,7 @@ defmodule BridgeForTeams.Schema.OrgSsoConnection do
     case get_field(changeset, :provider) do
       "generic_oidc" -> validate_required(changeset, [:issuer])
       "feishu" -> validate_required(changeset, [:client_secret])
+      "lark" -> validate_required(changeset, [:client_secret])
       _ -> changeset
     end
   end

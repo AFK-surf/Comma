@@ -1,11 +1,13 @@
 defmodule BillingStripe.SubscriptionChangesTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
   alias BillingStripe.SubscriptionChanges
 
   setup tags do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(BillingCore.Repo, sandbox: tags[:sandbox] != false)
-    old = Application.get_env(:billing_stripe, :stripe_api)
-    Application.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
+    old = SystemsRuntime.get_env(:billing_stripe, :stripe_api)
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, BillingStripe.TestAPI)
 
     start_supervised!(%{
       id: BillingStripe.TestAPI.Recorder,
@@ -13,7 +15,7 @@ defmodule BillingStripe.SubscriptionChangesTest do
     })
 
     {:ok, _} = BillingStripe.sync_prices(Comma.Billing.PricingV1.catalog())
-    Application.put_env(:billing_stripe, :stripe_api, __MODULE__.API)
+    SystemsRuntime.put_env(:billing_stripe, :stripe_api, __MODULE__.API)
 
     start_supervised!(%{
       id: __MODULE__.State,
@@ -25,7 +27,7 @@ defmodule BillingStripe.SubscriptionChangesTest do
          ]}
     })
 
-    on_exit(fn -> Application.put_env(:billing_stripe, :stripe_api, old) end)
+    on_exit(fn -> SystemsRuntime.put_env(:billing_stripe, :stripe_api, old) end)
     :ok
   end
 
@@ -109,7 +111,7 @@ defmodule BillingStripe.SubscriptionChangesTest do
     assert {:error, :timeout} =
              SubscriptionChanges.change(command(attrs, "comma_value_v1", "old_downgrade"))
 
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     try do
       {:ok, task} =
@@ -120,15 +122,15 @@ defmodule BillingStripe.SubscriptionChangesTest do
           )
 
           task =
-            Task.async(fn ->
+            SystemsRuntime.Task.async(fn ->
               Ecto.Adapters.SQL.Sandbox.unboxed_run(repo, fn ->
                 [[pid]] = Ecto.Adapters.SQL.query!(repo, "SELECT pg_backend_pid()").rows
-                send(owner, {:backend, pid})
+                SystemsRuntime.Proc.send(owner, {:backend, pid})
                 SubscriptionChanges.reconcile("sub_change", current())
               end)
             end)
 
-          assert_receive {:backend, pid}, 5_000
+          assert_receive {:backend, pid}
           assert wait_for_owner_lock(repo, pid, 100)
 
           Ecto.Adapters.SQL.query!(
@@ -139,7 +141,7 @@ defmodule BillingStripe.SubscriptionChangesTest do
           task
         end)
 
-      assert {:error, :subscription_quote_changed} = Task.await(task, 5_000)
+      assert {:error, :subscription_quote_changed} = SystemsRuntime.Task.await(task, :infinity)
 
       [[%{"change_operation" => %{"key" => "new_downgrade"}}]] =
         Ecto.Adapters.SQL.query!(
@@ -169,7 +171,7 @@ defmodule BillingStripe.SubscriptionChangesTest do
         true
 
       _ ->
-        receive do
+        SystemsRuntime.Proc.receive do
         after
           20 -> :ok
         end
@@ -228,7 +230,7 @@ defmodule BillingStripe.SubscriptionChangesTest do
 
   defp subscription(period, key) do
     plan = plan(key)
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     starts = DateTime.new!(Date.new!(now.year, now.month, 1), ~T[00:00:00], "Etc/UTC")
     ends = DateTime.shift(starts, month: if(period == "month", do: 1, else: 12))
 
@@ -306,7 +308,7 @@ defmodule BillingStripe.SubscriptionChangesTest do
       Map.merge(attrs, %{
         provider_price_id: plan(key).provider_price_id,
         current_price_id: current_price(),
-        proration_date: System.system_time(:second),
+        proration_date: SystemsClock.system_time(:second),
         idempotency_key: request,
         success_url: "https://comma.test/return"
       })
@@ -314,7 +316,7 @@ defmodule BillingStripe.SubscriptionChangesTest do
   defp change(attrs, key),
     do:
       SubscriptionChanges.change(
-        command(attrs, key, "change_#{System.unique_integer([:positive])}")
+        command(attrs, key, "change_#{SystemsRuntime.Proc.unique_integer([:positive])}")
       )
 
   defp state, do: Agent.get(__MODULE__.State, & &1)
@@ -418,7 +420,7 @@ defmodule BillingStripe.SubscriptionChangesTest do
             |> Map.put("latest_invoice", invoice_id)
             |> Map.put(
               "pending_update",
-              if(paid, do: nil, else: %{"expires_at" => System.system_time(:second) + 3600})
+              if(paid, do: nil, else: %{"expires_at" => SystemsClock.system_time(:second) + 3600})
             )
 
           current =

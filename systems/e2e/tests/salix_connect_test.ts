@@ -1,5 +1,7 @@
-import { external, observability, remote } from "./salix_connect_cases.ts";
+import { setDefaultTimeout, test } from "bun:test";
+import { remote } from "./salix_connect_cases.ts";
 
-Deno.test(remote);
-Deno.test(observability);
-Deno.test(external);
+// Builds and subprocesses here take longer than the five-second default.
+setDefaultTimeout(30 * 60_000);
+
+test(remote.name, remote.fn);

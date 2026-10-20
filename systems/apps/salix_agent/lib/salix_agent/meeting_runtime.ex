@@ -16,8 +16,7 @@ defmodule SalixAgent.MeetingRuntime do
     InternalSession,
     InternalSessionStore,
     Placement,
-    StorageAuthorization,
-    Templates
+    StorageAuthorization
   }
 
   alias SalixStore.Agent, as: StoreAgent
@@ -36,7 +35,6 @@ defmodule SalixAgent.MeetingRuntime do
              request["agent_id"],
              request["session_id"]
            ),
-         {:ok, request} <- ensure_meeting_template(request),
          :ok <- ensure_agent_record(request),
          :ok <- ensure_agent_state(request) do
       :ok
@@ -157,40 +155,6 @@ defmodule SalixAgent.MeetingRuntime do
     end
   end
 
-  defp ensure_meeting_template(request) do
-    ref = request["template_id"]
-
-    case existing_template_id(ref) do
-      {:ok, id} ->
-        {:ok, Map.put(request, "template_id", id)}
-
-      :none ->
-        rec = %{
-          "template_id" => ref,
-          "name" => request["name"],
-          "model" => "internal/noop",
-          "provider" => "internal/noop",
-          "provider_config" => %{},
-          "request_headers" => %{},
-          "image_config" => %{},
-          "video_config" => %{},
-          "vision_describer_config" => %{},
-          "analyze_config" => %{},
-          "max_tokens" => 65_536,
-          "context_tokens" => 0,
-          "hidden" => true,
-          "purpose" => "meeting",
-          "created_at" => request["now"]
-        }
-
-        case S3.put(Keys.ctl_template(ref), Jason.encode!(rec), if_none_match: "*") do
-          {:ok, _} -> {:ok, request}
-          {:error, :precondition_failed} -> {:ok, request}
-          {:error, _} = err -> err
-        end
-    end
-  end
-
   defp validate_identity(request) do
     tenant_id = request["tenant_id"]
     group_id = request["group_id"]
@@ -203,19 +167,6 @@ defmodule SalixAgent.MeetingRuntime do
       :ok
     else
       invalid(:invalid_agent_identity)
-    end
-  end
-
-  defp existing_template_id(ref) do
-    cond do
-      match?({:ok, _}, Templates.get(ref)) ->
-        {:ok, ref}
-
-      true ->
-        case Enum.find(Templates.list_admin(), &(&1["name"] == ref)) do
-          %{"template_id" => id} when is_binary(id) and id != "" -> {:ok, id}
-          _ -> :none
-        end
     end
   end
 
@@ -266,16 +217,13 @@ defmodule SalixAgent.MeetingRuntime do
       "name" => request["name"],
       "system_prompt" => request["system_prompt"],
       "router_system_prompt" => "",
-      "template_id" => request["template_id"],
-      "provider" => "internal/noop",
       "db_namespace" => "salix:" <> request["agent_id"],
       "status" => "idle",
       "purpose" => "meeting",
       "hidden" => true,
       "created_at" => request["now"],
       "heartbeat_schedule_id" => Ids.new_schedule_id(),
-      "tool_router_enabled" => false,
-      "vm" => %{"enabled" => false}
+      "tool_router_enabled" => false
     }
 
     case S3.put(Keys.ctl_agent(request["agent_id"]), Jason.encode!(rec), if_none_match: "*") do

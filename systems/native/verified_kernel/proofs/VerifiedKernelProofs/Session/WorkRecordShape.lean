@@ -11,6 +11,33 @@ def atomFields (fields : List (String × Term)) : Term :=
 
 def SafeName (name : String) : Prop := name ≠ "__struct__" ∧ name ≠ "nil"
 
+theorem safe_name_of {name : String} (notStruct : name ≠ "__struct__") (notNil : name ≠ "nil") :
+    SafeName name := ⟨notStruct, notNil⟩
+
+theorem safe_names_nil : ∀ name ∈ ([] : List String), SafeName name := nofun
+
+theorem safe_names_cons {name : String} {names : List String} (head : SafeName name)
+    (tail : ∀ other ∈ names, SafeName other) : ∀ other ∈ name :: names, SafeName other := by
+  intro other member
+  rcases List.mem_cons.mp member with rfl | member
+  · exact head
+  · exact tail other member
+
+end RecordShape
+
+/-- `RecordShape.SafeName` of a string literal, with `string_ne` in place of `decide`. -/
+macro "safe_name" : tactic =>
+  `(tactic| exact RecordShape.safe_name_of (by string_ne) (by string_ne))
+
+/-- `∀ name ∈ names, RecordShape.SafeName name` for a literal list `names`. -/
+macro "safe_names" : tactic =>
+  `(tactic| repeat' first
+    | exact RecordShape.safe_names_nil
+    | refine RecordShape.safe_names_cons ?_ ?_
+    | safe_name)
+
+namespace RecordShape
+
 def WellFormed (record : Term) : Prop :=
   ∃ fields : List (String × Term), record = atomFields fields ∧
     (∀ pair ∈ fields, SafeName pair.1) ∧ fields.Pairwise (fun left right => left.1 ≠ right.1)
@@ -116,11 +143,11 @@ macro_rules
   | `(tactic| record_shape) => `(tactic|
       repeat' first
         | assumption
-        | apply RecordShape.WellFormed.put (safeName := by simp +decide [RecordShape.SafeName])
+        | apply RecordShape.WellFormed.put (safeName := by safe_name)
         | apply RecordShape.WellFormed.present
         | (apply RecordShape.merge_shape
             (keys := trace_fields_keys (by assumption))
-            (safe := by simp +decide [RecordShape.SafeName]) (h := by assumption))
+            (safe := by safe_names) (h := by assumption))
         | (apply RecordShape.map_literal <;> simp +decide [RecordShape.SafeName, a, List.pairwise_cons])
         | split)
 

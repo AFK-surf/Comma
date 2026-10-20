@@ -221,5 +221,5 @@ defmodule SalixIM.WeChatConnects do
   defp nonblank?(value),
     do: is_binary(value) and String.trim(value) != "" and byte_size(value) <= 4096
 
-  defp now, do: System.system_time(:second)
+  defp now, do: SystemsClock.system_time(:second)
 end

@@ -200,14 +200,14 @@ defmodule SalixStore.S3 do
   # Duration/outcome are terminal-state observations; the surrounding
   # Inflight.track is what keeps a still-running operation visible.
   defp observe_terminal(operation, fun) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
 
     try do
       result = fun.()
 
-      :telemetry.execute(
+      SystemsRuntime.Telemetry.execute(
         [:salix, :operation, :stop],
-        %{duration: System.monotonic_time() - started},
+        %{duration: SystemsClock.monotonic_time() - started},
         %{
           component: "salix_store",
           operation: operation,
@@ -219,9 +219,9 @@ defmodule SalixStore.S3 do
       result
     rescue
       exception ->
-        :telemetry.execute(
+        SystemsRuntime.Telemetry.execute(
           [:salix, :operation, :stop],
-          %{duration: System.monotonic_time() - started},
+          %{duration: SystemsClock.monotonic_time() - started},
           %{
             component: "salix_store",
             operation: operation,

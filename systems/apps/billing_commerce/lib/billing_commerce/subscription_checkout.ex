@@ -2,7 +2,7 @@ defmodule BillingCommerce.SubscriptionCheckout do
   @moduledoc "The Billing Account owns its single pending subscription Checkout."
 
   def create(attrs, create_session, retrieve_session) do
-    repo = Application.fetch_env!(:billing_commerce, :repo)
+    repo = SystemsRuntime.fetch_env!(:billing_commerce, :repo)
     account_id = attrs[:billing_account_id] || attrs["billing_account_id"]
 
     with {:ok, pending} <- reserve(repo, account_id, attrs),
@@ -35,12 +35,12 @@ defmodule BillingCommerce.SubscriptionCheckout do
   defp new_pending(repo, account_id, attrs) do
     key =
       "comma:subscription-checkout:" <>
-        Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
+        Base.url_encode64(SystemsRuntime.Proc.random_bytes(24), padding: false)
 
     request =
       attrs
       |> Map.put(:idempotency_key, key)
-      |> Map.put(:expires_at, DateTime.to_unix(DateTime.utc_now()) + 86_400)
+      |> Map.put(:expires_at, DateTime.to_unix(SystemsClock.utc_now()) + 86_400)
       |> Map.new(fn {k, v} -> {to_string(k), v} end)
 
     pending = %{

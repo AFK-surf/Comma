@@ -1,7 +1,9 @@
 defmodule CommaWeb.ParticipantHistoryStream do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Authorized, exact-Participant execution-history read stream. It changes no
-  Conversation or runtime state. Modeled in tla/session-history/SessionHistoryLive.tla.
+  Conversation or runtime state.
 
   Each backfill reads at most 50 records at a time from one fixed Session, with
   an immutable before cursor. Recent-window batches never enter the manual
@@ -15,9 +17,9 @@ defmodule CommaWeb.ParticipantHistoryStream do
 
   def send(conn, context, after_id, window_ms \\ 55_000) do
     topic = CommaWeb.PubSubNotifier.topic(context.agent["agent_id"])
-    pubsub = Application.get_env(:comma_core, :pubsub_server, CommaWeb.PubSub)
+    pubsub = SystemsRuntime.get_env(:comma_core, :pubsub_server, CommaWeb.PubSub)
     :ok = Phoenix.PubSub.subscribe(pubsub, topic)
-    deadline = System.monotonic_time(:millisecond) + window_ms
+    deadline = SystemsClock.monotonic_time(:millisecond) + window_ms
 
     conn =
       conn
@@ -60,7 +62,7 @@ defmodule CommaWeb.ParticipantHistoryStream do
   end
 
   defp batches(conn, context, page, after_id, phase, deadline) do
-    cutoff = System.system_time(:millisecond) - 180_000
+    cutoff = SystemsClock.system_time(:millisecond) - 180_000
 
     records =
       Enum.filter(page["records"], fn record ->
@@ -69,8 +71,7 @@ defmodule CommaWeb.ParticipantHistoryStream do
             cutoff
         else
           # Nil means an empty Session was observed: its first committed batch
-          # must be sent before advancing the checkpoint. Modeled by CatchUp in
-          # SessionHistoryLive.tla (UnsafeEmptyUpdate reproduces the old guard).
+          # must be sent before advancing the checkpoint.
           after_id == nil or newer?(record["id"], after_id)
         end
       end)
@@ -79,7 +80,7 @@ defmodule CommaWeb.ParticipantHistoryStream do
 
     with {:ok, conn} <- frame(conn, context, records, phase, nil) do
       cond do
-        System.monotonic_time(:millisecond) >= deadline ->
+        SystemsClock.monotonic_time(:millisecond) >= deadline ->
           {:error, :timeout}
 
         continue ->
@@ -100,12 +101,12 @@ defmodule CommaWeb.ParticipantHistoryStream do
   end
 
   defp loop(conn, context, head, deadline) do
-    remaining = deadline - System.monotonic_time(:millisecond)
+    remaining = deadline - SystemsClock.monotonic_time(:millisecond)
 
     if remaining <= 0 do
       conn
     else
-      receive do
+      SystemsRuntime.Proc.receive do
         {:salix_agent_event, agent_id, {:execution_history_updated, session_id}} ->
           if agent_id == context.agent["agent_id"] and session_id == context.session_id do
             case frame(conn, with_live(context), [], "checkpoint", head) do
@@ -166,7 +167,7 @@ defmodule CommaWeb.ParticipantHistoryStream do
         "phase" => phase,
         "checkpoint" => checkpoint,
         "live_records" => context.live_records,
-        "server_time_ms" => System.system_time(:millisecond)
+        "server_time_ms" => SystemsClock.system_time(:millisecond)
       })
 
     chunk(conn, ["event: history\ndata: ", Jason.encode!(data), "\n\n"])

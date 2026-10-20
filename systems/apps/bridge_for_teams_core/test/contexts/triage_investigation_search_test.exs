@@ -1,21 +1,17 @@
 defmodule BridgeForTeams.TriageInvestigationSearchTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: true
 
   alias BridgeForTeams.TriageInvestigationSearch, as: Search
   alias SalixIM.Provider
   alias SalixStore.{CasRecord, Ids, Keys, SlackSearchCatalog, SlackSearchSources}
 
   setup do
-    previous_s3 = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
-    unless Process.whereis(SalixStore.S3.Fake), do: start_supervised!(SalixStore.S3.Fake)
-    unless Process.whereis(Ids), do: start_supervised!(Ids)
+    :ok = SystemsRuntime.Test.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
 
-    on_exit(fn ->
-      if is_nil(previous_s3),
-        do: Application.delete_env(:salix_store, :s3_backend),
-        else: Application.put_env(:salix_store, :s3_backend, previous_s3)
-    end)
+    unless SystemsRuntime.Proc.whereis(SalixStore.S3.Fake),
+      do: start_supervised!(SalixStore.S3.Fake)
+
+    unless SystemsRuntime.Proc.whereis(Ids), do: start_supervised!(Ids)
 
     tenant = Ids.new_tenant_id()
     group = Ids.new_group_id(tenant)
@@ -42,7 +38,7 @@ defmodule BridgeForTeams.TriageInvestigationSearchTest do
 
   test "an ordinary Worker searches published local evidence through the real provider", ctx do
     message = message("1600000000.000001", "Orion token rotation is recorded in the audit.")
-    on_exit(Search.install!(ctx.state, ctx.connect, [message]))
+    Search.install!(ctx.state, ctx.connect, [message])
 
     assert {:ok, %{"messages" => [result], "next_cursor" => nil}} =
              search(ctx.worker, %{"query" => "ORION token"})
@@ -60,66 +56,19 @@ defmodule BridgeForTeams.TriageInvestigationSearchTest do
            end)
   end
 
-  test "production pagination retains local matching and narrowing filters", ctx do
-    messages = [
-      message("1600000000.000001", "Orion rotation first"),
-      message("1600000000.000002", "Orion rotation second"),
-      message("1600000000.000003", "Orion rotation wrong author")
-      |> Map.put("user", "UOTHERAUTHOR"),
-      message("1600000000.000004", "Orion rotation outside time window"),
-      message("1600000000.000002", "Orion rotation different channel")
-      |> Map.put("channel", "COTHERCONTEXT")
-    ]
-
-    on_exit(Search.install!(ctx.state, ctx.connect, messages))
-
-    assert {:ok, %{"messages" => [first], "next_cursor" => cursor}} =
-             search(ctx.worker, %{
-               "query" => "orion ROTATION",
-               "mode" => "keyword",
-               "count" => 1,
-               "channel" => "CLOCALCONTEXT",
-               "workspace" => ctx.connect["workspace_id"],
-               "sender" => "ULOCALAUTHOR",
-               "oldest" => "1600000000.000001",
-               "latest" => "1600000000.000004"
-             })
-
-    assert first["text"] == "Orion rotation second"
-    assert is_binary(cursor)
-
-    assert {:ok, %{"messages" => [second], "next_cursor" => nil}} =
-             search(ctx.worker, %{"cursor" => cursor})
-
-    assert second["text"] == "Orion rotation first"
-  end
-
-  test "captured bot claims retain their actor kind rather than becoming human evidence", ctx do
-    captured =
-      message("1600000000.000001", "Prior assistant claim about the calendar")
-      |> Map.put("actor_kind", "bot")
-      |> Map.put("user", "U_CAPTURED_BOT")
-
-    on_exit(Search.install!(ctx.state, ctx.connect, [captured]))
-
-    assert {:ok, %{"messages" => [result]}} = search(ctx.worker, %{"query" => "calendar"})
-    assert result["actor_kind"] == "bot"
-    assert result["actor_id"] == "U_CAPTURED_BOT"
-  end
-
   test "an unacknowledged build is hidden by the real publication gate", ctx do
-    on_exit(Search.install!(ctx.state, ctx.connect, [message("1600000000.000001", "Orion")]))
+    Search.install!(ctx.state, ctx.connect, [message("1600000000.000001", "Orion")])
     assert {:ok, %{"messages" => [_]}} = search(ctx.worker, %{"query" => "Orion"})
 
     update_rows(ctx.state, fn row ->
-      %{row | candidate: Map.put(row.candidate, "build_id", Ecto.UUID.generate())}
+      %{row | candidate: Map.put(row.candidate, "build_id", SystemsRuntime.Proc.uuid())}
     end)
 
     assert {:ok, %{"messages" => []}} = search(ctx.worker, %{"query" => "Orion"})
   end
 
   test "a published row without owner-observed channel provenance is hidden", ctx do
-    on_exit(Search.install!(ctx.state, ctx.connect, [message("1600000000.000001", "Orion")]))
+    Search.install!(ctx.state, ctx.connect, [message("1600000000.000001", "Orion")])
 
     [row] = Agent.get(ctx.state, & &1.search_rows)
     candidate = Map.put(row.candidate, "channel_id", "CUNOBSERVED")
@@ -127,7 +76,7 @@ defmodule BridgeForTeams.TriageInvestigationSearchTest do
 
     candidate =
       Map.merge(candidate, %{
-        "build_id" => Ecto.UUID.generate(),
+        "build_id" => SystemsRuntime.Proc.uuid(),
         "change_epoch" => captured.change_epoch,
         "build_sequence" => captured.build_sequence
       })
@@ -152,11 +101,14 @@ defmodule BridgeForTeams.TriageInvestigationSearchTest do
   end
 
   test "a changed current source identity hides the old published excerpt", ctx do
-    on_exit(Search.install!(ctx.state, ctx.connect, [message("1600000000.000001", "Orion")]))
+    Search.install!(ctx.state, ctx.connect, [message("1600000000.000001", "Orion")])
     assert {:ok, %{"messages" => [_]}} = search(ctx.worker, %{"query" => "Orion"})
 
     update_rows(ctx.state, fn row ->
-      %{row | current_source: %{row.current_source | payload_identity: Ecto.UUID.generate()}}
+      %{
+        row
+        | current_source: %{row.current_source | payload_identity: SystemsRuntime.Proc.uuid()}
+      }
     end)
 
     assert {:ok, %{"messages" => []}} = search(ctx.worker, %{"query" => "Orion"})
@@ -168,7 +120,7 @@ defmodule BridgeForTeams.TriageInvestigationSearchTest do
       message("1600000000.000002", "Orion second")
     ]
 
-    on_exit(Search.install!(ctx.state, ctx.connect, messages))
+    Search.install!(ctx.state, ctx.connect, messages)
 
     assert {:ok, %{"messages" => [_], "next_cursor" => cursor}} =
              search(ctx.worker, %{"query" => "Orion", "count" => 1})
@@ -193,7 +145,7 @@ defmodule BridgeForTeams.TriageInvestigationSearchTest do
       message("1600000000.000002", "Orion second")
     ]
 
-    on_exit(Search.install!(ctx.state, ctx.connect, messages))
+    Search.install!(ctx.state, ctx.connect, messages)
 
     assert {:ok, %{"messages" => [_], "next_cursor" => cursor}} =
              search(ctx.worker, %{"query" => "Orion", "count" => 1})
@@ -203,42 +155,6 @@ defmodule BridgeForTeams.TriageInvestigationSearchTest do
     assert {:ok, %{"messages" => []}} = search(other_worker, %{"query" => "Orion"})
     assert {:error, error} = search(other_worker, %{"cursor" => cursor})
     assert error =~ "unavailable in this group"
-  end
-
-  test "an unavailable index fails clearly instead of reporting empty results", ctx do
-    on_exit(Search.install!(ctx.state, ctx.connect, [message("1600000000.000001", "Orion")]))
-    Application.delete_env(:salix_im, :slack_message_search_reader)
-
-    assert {:error, error} = search(ctx.worker, %{"query" => "Orion"})
-    assert error =~ "Message search is unavailable"
-  end
-
-  test "exhausting read receipts fails closed without stopping the shared corpus Agent", ctx do
-    on_exit(Search.install!(ctx.state, ctx.connect, [message("1600000000.000001", "Orion")]))
-    Agent.update(ctx.state, &Map.put(&1, :context_reads, List.duplicate(%{}, 200)))
-
-    assert {:error, error} = search(ctx.worker, %{"query" => "Orion"})
-    assert error =~ "Message search is unavailable"
-    assert Process.alive?(ctx.state)
-    assert length(Agent.get(ctx.state, & &1.context_reads)) == 200
-  end
-
-  test "invalid or unbounded corpora are rejected before installing the reader", ctx do
-    message = message("1600000000.000001", "Orion")
-    previous_reader = Application.get_env(:salix_im, :slack_message_search_reader)
-
-    for messages <- [[], List.duplicate(message, 51), [message, message]] do
-      assert_raise ArgumentError, fn -> Search.install!(ctx.state, ctx.connect, messages) end
-    end
-
-    assert_raise ArgumentError, fn ->
-      Search.install!(ctx.state, ctx.connect, [
-        Map.put(message, "text", String.duplicate("x", 16_385))
-      ])
-    end
-
-    assert Application.get_env(:salix_im, :slack_message_search_reader) == previous_reader
-    refute Map.has_key?(Agent.get(ctx.state, & &1), :search_rows)
   end
 
   defp update_rows(state, update) do

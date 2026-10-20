@@ -17,7 +17,7 @@ defmodule SalixMeet.Ports.CalendarEnrollment do
   @spec resolve(map()) :: {:ok, map()} | {:error, term()}
   def resolve(entry), do: impl().resolve(entry)
 
-  defp impl, do: Application.get_env(:salix_meet, :calendar_enrollment_mod, __MODULE__.None)
+  defp impl, do: SystemsRuntime.get_env(:salix_meet, :calendar_enrollment_mod, __MODULE__.None)
 
   defmodule None do
     @moduledoc false

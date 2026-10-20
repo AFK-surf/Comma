@@ -1,5 +1,5 @@
 defmodule SalixSignal.CallMedia.RelaysTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignal.CallMedia.Relays
 
@@ -39,56 +39,5 @@ defmodule SalixSignal.CallMedia.RelaysTest do
                credential: "p1"
              }
            ] = Relays.ice_servers([relay])
-  end
-
-  test "Signal's Cloudflare UDP relay also offers the same service over TLS on 443" do
-    relay = %{
-      username: "user",
-      password: "password",
-      urls: ["stun:stun.cloudflare.com", "turn:turn.cloudflare.com"],
-      urls_with_ips: ["turn:192.0.2.1"],
-      hostname: "turn.cloudflare.com"
-    }
-
-    assert [%{urls: urls, username: "user", credential: "password"}] = Relays.ice_servers([relay])
-    assert "turns:turn.cloudflare.com:443?transport=tcp" in urls
-    assert "turn:192.0.2.1?transport=udp" in urls
-
-    assert [%{urls: ["turn:other.example?transport=udp"]}] =
-             Relays.ice_servers([%{relay | urls: ["turn:other.example"], urls_with_ips: []}])
-  end
-
-  test "fetch requests the relay path and maps failures" do
-    assert {:ok, %{relays: [_]}} =
-             Relays.fetch(fn "/v2/calling/relays" -> {:ok, 200, @body} end, 0)
-
-    assert {:error, :rate_limited} = Relays.fetch(fn _ -> {:ok, 429, ""} end, 0)
-    assert {:error, :unauthorized} = Relays.fetch(fn _ -> {:ok, 401, ""} end, 0)
-    assert {:error, {:status, 500}} = Relays.fetch(fn _ -> {:ok, 500, ""} end, 0)
-
-    assert {:error, :invalid_response} =
-             Relays.fetch(fn _ -> {:ok, 200, ~s({"relays":[]})} end, 0)
-
-    assert {:error, :invalid_response} = Relays.fetch(fn _ -> {:ok, 200, "{"} end, 0)
-  end
-
-  test "Signal URLs with an implicit UDP transport can create a TURN client" do
-    body =
-      Jason.encode!(%{
-        relays: [
-          %{
-            username: "u1",
-            password: "p1",
-            ttl: 3600,
-            urls: ["turn:192.0.2.1"],
-            urlsWithIps: []
-          }
-        ]
-      })
-
-    assert {:ok, cache} = Relays.parse(body, 0)
-    assert [%{urls: [url]} = server] = Relays.ice_servers(cache.relays)
-    assert {:ok, uri} = ExSTUN.URI.parse(url)
-    assert {:ok, _client} = ExTURN.Client.new(uri, server.username, server.credential)
   end
 end

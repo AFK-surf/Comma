@@ -63,7 +63,7 @@ defmodule SalixStore.Timers do
   minute for later.
   """
   @spec sweep(integer(), integer(), keyword()) :: {:ok, [timer_record()]} | {:error, term()}
-  def sweep(minute_bucket, now_ms \\ System.system_time(:millisecond), opts \\ []) do
+  def sweep(minute_bucket, now_ms \\ SystemsClock.system_time(:millisecond), opts \\ []) do
     case list_bucket(minute_bucket, Keyword.get(opts, :limit)) do
       {:ok, objs} ->
         due =

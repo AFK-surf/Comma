@@ -1,14 +1,8 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import {
-  InboxDeleteIcon,
-  Menu,
-  MenuItem,
-  MenuPopover,
-  MenuTrigger,
-  MoreHorizontalIcon,
-  spacing,
-  taskToolbarIconButtonClassName,
-} from "@comma/ui";
+import { InboxDeleteIcon, MoreHorizontalIcon } from "@comma/ui/components/icons";
+import { Menu, MenuItem, MenuPopover, MenuTrigger } from "@comma/ui/components/menu";
+import { spacing } from "@comma/ui/tokens";
+import { taskToolbarIconButtonClassName } from "@comma/ui/components/task-workspace";
 import { Button as AriaButton } from "react-aria-components";
 
 export interface InboxActionsMenuProps {

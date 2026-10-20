@@ -141,7 +141,7 @@ defmodule SalixSignalProto.Group.State do
       params,
       plaintext,
       0,
-      Keyword.get(opts, :randomness, :crypto.strong_rand_bytes(32))
+      Keyword.get(opts, :randomness, SystemsRuntime.Proc.random_bytes(32))
     )
   end
 

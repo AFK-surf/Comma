@@ -124,6 +124,28 @@ defmodule Comma.ReleaseManifestV2 do
                             "historical-runtime-rollout-compatibility-cleanup-withdrawn-v1",
                           "transactional" => true
                         },
+                        # #3582 added `domain` to the Feishu app tables; #3589 removed
+                        # its readers before any production release ran the
+                        # migrations. Staging keeps the ledger fact; no other
+                        # environment adds the columns.
+                        %{
+                          "id" => "salix-20261013000001",
+                          "owner" => "salix_store",
+                          "store" => "postgres",
+                          "version" => 20_261_013_000_001,
+                          "source" => "historical-ledger-only",
+                          "checksum" => "historical-feishu-app-domain-withdrawn-v1",
+                          "transactional" => true
+                        },
+                        %{
+                          "id" => "bridge-20261013000101",
+                          "owner" => "bridge_for_teams",
+                          "store" => "postgres",
+                          "version" => 20_261_013_000_101,
+                          "source" => "historical-ledger-only",
+                          "checksum" => "historical-feishu-app-domain-withdrawn-v1",
+                          "transactional" => true
+                        },
                         %{
                           "id" => "comma-local-seed",
                           "owner" => "comma_billing",

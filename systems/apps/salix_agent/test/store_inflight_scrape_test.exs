@@ -1,4 +1,6 @@
 defmodule Salix.StoreInflightScrapeTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The full export pipeline for the in-flight store gauges: Poller.publish →
   telemetry event → `Salix.Telemetry` metric definitions → Prometheus
@@ -7,8 +9,9 @@ defmodule Salix.StoreInflightScrapeTest do
   definition typo (event name, measurement key, tag mismatch) would break
   while every raw-event test stays green.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle
   alias SalixStore.Inflight
 
   @reporter Module.concat(__MODULE__, Reporter)
@@ -20,32 +23,32 @@ defmodule Salix.StoreInflightScrapeTest do
   end
 
   test "in-flight gauges flow through the reporter to scrape, and fall back to zero" do
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Inflight.track("store_put", fn ->
-          send(parent, :tracked)
+          SystemsRuntime.Proc.send(parent, :tracked)
 
-          receive do
+          SystemsRuntime.Proc.receive do
             :release -> :ok
           end
         end)
       end)
 
     foreign_task =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Inflight.track("store_get", fn ->
-          send(parent, :foreign_tracked)
+          SystemsRuntime.Proc.send(parent, :foreign_tracked)
 
-          receive do
+          SystemsRuntime.Proc.receive do
             :release -> :ok
           end
         end)
       end)
 
-    assert_receive :tracked, 1_000
-    assert_receive :foreign_tracked, 1_000
+    settle_receive(:tracked)
+    settle_receive(:foreign_tracked)
 
     metrics =
       [:salix]
@@ -76,8 +79,8 @@ defmodule Salix.StoreInflightScrapeTest do
     {age_seconds, _rest} = Float.parse(age)
     assert age_seconds >= 0.0
 
-    send(task.pid, :release)
-    Task.await(task, 5_000)
+    SystemsRuntime.Proc.send(task.pid, :release)
+    settled_await(task)
 
     # The next poll zero-fills the gauge back down — the property an
     # event-driven emitter cannot provide.
@@ -87,8 +90,8 @@ defmodule Salix.StoreInflightScrapeTest do
 
     assert scrape =~ ~r/salix_store_inflight_ops\{operation="store_put"\} 0(\.0)?(\s|$)/
 
-    send(foreign_task.pid, :release)
-    Task.await(foreign_task, 5_000)
+    SystemsRuntime.Proc.send(foreign_task.pid, :release)
+    settled_await(foreign_task)
   end
 
   defp scoped_inflight_metrics(metrics) do

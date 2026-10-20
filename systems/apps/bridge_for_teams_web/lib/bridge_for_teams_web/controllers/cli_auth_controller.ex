@@ -282,7 +282,7 @@ defmodule BridgeForTeamsWeb.CLIAuthController do
   end
 
   defp dashboard_base_url(conn) do
-    case Application.get_env(:bridge_for_teams_web, :public_base_url) do
+    case SystemsRuntime.get_env(:bridge_for_teams_web, :public_base_url) do
       base when is_binary(base) and base != "" ->
         String.trim_trailing(base, "/")
 

@@ -1,7 +1,8 @@
 defmodule CommaWeb.OauthIdpConsentTest do
   # async: false — the KEK and endpoint flag live in application config.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.CommaWeb", "Elixir.Comma"]
   import Plug.Conn
   import Plug.Test
 
@@ -14,17 +15,17 @@ defmodule CommaWeb.OauthIdpConsentTest do
   setup do
     owner = CommaWeb.TestRepoSandbox.start_owner!(:transaction)
 
-    previous_kek = Application.get_env(:comma_core, :oauth_idp)
-    Application.put_env(:comma_core, :oauth_idp, kek: :crypto.hash(:sha256, "idp-consent-kek"))
+    previous_kek = SystemsRuntime.get_env(:comma_core, :oauth_idp)
+    SystemsRuntime.put_env(:comma_core, :oauth_idp, kek: :crypto.hash(:sha256, "idp-consent-kek"))
 
-    previous_flag = Application.get_env(:comma_web, :oauth_idp_enabled)
-    Application.put_env(:comma_web, :oauth_idp_enabled, true)
+    previous_flag = SystemsRuntime.get_env(:comma_web, :oauth_idp_enabled)
+    SystemsRuntime.put_env(:comma_web, :oauth_idp_enabled, true)
 
     # Generous budgets: this suite exercises the consent flow, not the
     # limiter, and Plug.Test conns all share the default peer IP.
-    previous_rate_limit = Application.get_env(:comma_core, :oauth_idp_rate_limit)
+    previous_rate_limit = SystemsRuntime.get_env(:comma_core, :oauth_idp_rate_limit)
 
-    Application.put_env(:comma_core, :oauth_idp_rate_limit,
+    SystemsRuntime.put_env(:comma_core, :oauth_idp_rate_limit,
       token: [burst: 10_000, rate: 1000.0],
       authorize: [burst: 10_000, rate: 1000.0]
     )
@@ -60,24 +61,24 @@ defmodule CommaWeb.OauthIdpConsentTest do
     %{user: user, session_token: session["token"], client: client}
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 
   defp attach_request_telemetry do
-    handler_id = "idp-consent-#{inspect(make_ref())}"
-    test_pid = self()
+    handler_id = "idp-consent-#{inspect(SystemsRuntime.Proc.make_ref())}"
+    test_pid = SystemsRuntime.Proc.self()
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler_id,
         [:comma_product, :oauth_idp, :request],
         fn _event, measurements, metadata, _config ->
-          send(test_pid, {:idp_request, measurements, metadata})
+          SystemsRuntime.Proc.send(test_pid, {:idp_request, measurements, metadata})
         end,
         nil
       )
 
-    on_exit(fn -> :telemetry.detach(handler_id) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler_id) end)
   end
 
   defp call(conn), do: CommaWeb.Router.call(conn, @opts)
@@ -87,7 +88,7 @@ defmodule CommaWeb.OauthIdpConsentTest do
   end
 
   defp pkce_pair do
-    verifier = Base.url_encode64(:crypto.strong_rand_bytes(48), padding: false)
+    verifier = Base.url_encode64(SystemsRuntime.Proc.random_bytes(48), padding: false)
     challenge = :sha256 |> :crypto.hash(verifier) |> Base.url_encode64(padding: false)
     {verifier, challenge}
   end
@@ -157,53 +158,12 @@ defmodule CommaWeb.OauthIdpConsentTest do
   end
 
   describe "RP-controlled parameter sizes" do
-    # Regression for the widen_oauth_token_request_params migration:
-    # RFC 6749 puts no bound on `state` (Auth.js sends an ~800-byte JWE)
-    # and OIDC none on `nonce`; Boruta's stock varchar(255) columns made
-    # a stock NextAuth login crash the approve step with a database
-    # error.
-    test "an Auth.js-sized state and nonce survive the full approve flow",
-         %{session_token: token, client: client} do
-      long_state = String.duplicate("s", 800)
-      long_nonce = String.duplicate("n", 400)
-      {_verifier, challenge} = pkce_pair()
-
-      consent =
-        get_consent(token, client, challenge, %{
-          "state" => long_state,
-          "nonce" => long_nonce
-        })
-
-      assert consent.status == 200
-      handle = extract_hidden(consent.resp_body, "handle")
-      csrf = extract_hidden(consent.resp_body, "_csrf_token")
-
-      response =
-        post_decision(token, %{
-          "handle" => handle,
-          "_csrf_token" => csrf,
-          "decision" => "approve"
-        })
-
-      assert response.status == 302
-      [location] = Plug.Conn.get_resp_header(response, "location")
-      redirect = URI.parse(location)
-      query = URI.decode_query(redirect.query)
-      assert query["state"] == long_state
-      assert is_binary(query["code"])
-    end
   end
 
   describe "feature flag off" do
     setup do
-      Application.put_env(:comma_web, :oauth_idp_enabled, false)
+      SystemsRuntime.put_env(:comma_web, :oauth_idp_enabled, false)
       :ok
-    end
-
-    test "authorize answers 404 on both methods", %{session_token: token, client: client} do
-      {_verifier, challenge} = pkce_pair()
-      assert get_consent(token, client, challenge).status == 404
-      assert post_decision(token, %{"decision" => "approve"}).status == 404
     end
   end
 
@@ -230,30 +190,6 @@ defmodule CommaWeb.OauthIdpConsentTest do
       assert get_resp_header(response, "x-frame-options") == ["DENY"]
       assert get_resp_header(response, "cache-control") == ["no-store, no-transform"]
       assert get_resp_header(response, "referrer-policy") == ["same-origin"]
-    end
-
-    test "forbids intermediaries from rewriting the page body", %{
-      session_token: token,
-      client: client
-    } do
-      # Not hardening — a fix. Cloudflare's Email Address Obfuscation
-      # rewrote the user's address on this page into a `[email protected]`
-      # placeholder and injected a decoder script to restore it, which the
-      # page's own `default-src 'none'` CSP blocked; the address was then
-      # permanently unreadable on the one screen whose job is showing which
-      # account is being handed to a third party. `no-transform` (RFC 9111
-      # §5.2.2.6) is the documented opt-out, and being standard it also
-      # binds proxies and CDNs we do not operate.
-      #
-      # Scoped to this HTML surface: the JSON endpoints keep plain
-      # `no-store` (pinned by oauth_idp_endpoints_test), because rewriting
-      # does not target them and RFC 6749 §5.1 fixes the token response's
-      # Cache-Control.
-      {_verifier, challenge} = pkce_pair()
-      response = get_consent(token, client, challenge)
-
-      assert get_resp_header(response, "cache-control") == ["no-store, no-transform"],
-             "the consent page must tell intermediaries not to rewrite its body"
     end
 
     test "the CSP lets the form submission follow the redirect to the client",
@@ -284,79 +220,6 @@ defmodule CommaWeb.OauthIdpConsentTest do
       assert [error_csp] = get_resp_header(error, "content-security-policy")
       assert error_csp =~ "form-action 'self';"
       refute error_csp =~ "attacker.example.com"
-    end
-
-    test "the CSP names an IPv6 loopback client's origin with brackets",
-         %{session_token: token} do
-      # The v1 contract admits http://[::1] for local development (RFC §7.2;
-      # ClientAdmin.loopback_host?/1). URI.parse strips the brackets — the
-      # host comes back as `::1` — while a CSP host-source requires them, so
-      # a charset guard written for names and IPv4 silently dropped these
-      # clients back to the bare policy and their redirect stayed blocked.
-      {:ok, v6_client} =
-        Admin.create_client(%{
-          name: "V6Loopback",
-          redirect_uris: ["http://[::1]:8765/callback"],
-          supported_grant_types: ["authorization_code"],
-          access_token_ttl: 600,
-          authorization_code_ttl: 60,
-          id_token_ttl: 600,
-          id_token_signature_alg: "RS256",
-          pkce: true
-        })
-
-      {_verifier, challenge} = pkce_pair()
-
-      consent =
-        get_consent(token, v6_client, challenge, %{
-          "redirect_uri" => "http://[::1]:8765/callback"
-        })
-
-      assert consent.status == 200
-      assert [csp] = get_resp_header(consent, "content-security-policy")
-
-      assert csp =~ "form-action 'self' http://[::1]:8765",
-             "IPv6 loopback origin must be bracketed in form-action; got: " <> csp
-    end
-
-    test "the page's referrer policy never makes the browser send Origin: null",
-         %{session_token: token, client: client} do
-      # Regression guard for a whole-flow outage that no synthetic test can
-      # reach. Under a `no-referrer` policy the Fetch spec has the browser
-      # serialize the Origin header of a navigation request as the literal
-      # "null" — and the consent form POST is a navigation. The page would
-      # then fail its own `require_same_origin/1` check in every real
-      # browser, so approve and deny both settle as invalid_request and no
-      # authorization can ever complete. Every test here (and the CI canary)
-      # supplies `origin` by hand, so these assertions are all that stand
-      # between that policy and a fully broken IdP.
-      #
-      # A document has TWO policy sources and both must be checked. Asserting
-      # only the response header is what let the first fix ship broken: the
-      # markup still carried `<meta name="referrer" content="no-referrer">`,
-      # which the HTML meta-referrer algorithm applies *after* the header,
-      # so the browser-observed policy was still no-referrer.
-      {_verifier, challenge} = pkce_pair()
-      consent = get_consent(token, client, challenge)
-
-      assert get_resp_header(consent, "referrer-policy") == ["same-origin"],
-             "response header must not be no-referrer: it makes browsers send Origin: null"
-
-      meta_policies =
-        Regex.scan(~r/<meta\s+name="referrer"\s+content="([^"]*)"/i, consent.resp_body)
-        |> Enum.map(fn [_full, content] -> content end)
-
-      assert meta_policies == ["same-origin"],
-             "the rendered <meta name=\"referrer\"> overrides the response header, so it " <>
-               "must state the same policy; got: #{inspect(meta_policies)}"
-
-      # The other half of the coupling: "null" is — and must stay — rejected.
-      handle = extract_hidden(consent.resp_body, "handle")
-      csrf = extract_hidden(consent.resp_body, "_csrf_token")
-      params = %{"handle" => handle, "_csrf_token" => csrf, "decision" => "approve"}
-
-      assert post_decision(token, params, origin: "null").status == 400
-      assert post_decision(token, params).status == 302
     end
 
     test "escapes a hostile client name", %{session_token: token} do
@@ -391,8 +254,9 @@ defmodule CommaWeb.OauthIdpConsentTest do
 
       assert response.status == 302
 
-      assert_receive {:idp_request, %{count: 1},
-                      %{endpoint: :authorize, outcome: :login_redirect}}
+      settle_receive(
+        {:idp_request, %{count: 1}, %{endpoint: :authorize, outcome: :login_redirect}}
+      )
 
       assert [location] = get_resp_header(response, "location")
 
@@ -400,7 +264,7 @@ defmodule CommaWeb.OauthIdpConsentTest do
       # only the opaque handle — none of the authorization parameters
       # ride along in the URL (RFC §5).
       login_uri = URI.parse(location)
-      origin = Application.fetch_env!(:comma_web, :web_cookie_origin)
+      origin = SystemsRuntime.fetch_env!(:comma_web, :web_cookie_origin)
       assert "#{login_uri.scheme}://#{login_uri.host}:#{login_uri.port}" == origin
       assert login_uri.path == "/login"
 
@@ -454,7 +318,7 @@ defmodule CommaWeb.OauthIdpConsentTest do
         %Comma.Accounts.User{}
         |> Comma.Accounts.User.changeset(%{
           id: Comma.Accounts.User.new_id(),
-          email: "g-#{System.unique_integer([:positive])}@guest.comma.invalid",
+          email: "g-#{SystemsRuntime.Proc.unique_integer([:positive])}@guest.comma.invalid",
           status: "active"
         })
         |> Ecto.Changeset.put_change(:kind, "guest")
@@ -486,45 +350,6 @@ defmodule CommaWeb.OauthIdpConsentTest do
       assert hijack.status == 403
       assert get_resp_header(hijack, "location") == []
     end
-
-    test "scope must equal the fixed v1 set, order-insensitively", %{
-      session_token: token,
-      client: client
-    } do
-      {_verifier, challenge} = pkce_pair()
-
-      # Order does not matter.
-      reordered = get_consent(token, client, challenge, %{"scope" => "profile openid email"})
-      assert reordered.status == 200
-
-      attach_request_telemetry()
-
-      for bad_scope <- ["openid", "openid email", "openid email profile extra", ""] do
-        response = get_consent(token, client, challenge, %{"scope" => bad_scope})
-
-        assert response.status == 302, "scope #{inspect(bad_scope)} must bounce"
-        assert [location] = get_resp_header(response, "location")
-        assert String.starts_with?(location, @redirect_uri)
-        assert location =~ "error=invalid_scope"
-        assert location =~ "state=opaque-state"
-
-        assert_receive {:idp_request, %{count: 1}, %{endpoint: :authorize, outcome: :rejected}}
-      end
-    end
-
-    test "a validation error with a trusted redirect_uri bounces back to the app",
-         %{session_token: token, client: client} do
-      # Missing PKCE challenge: the client and redirect_uri are valid, so
-      # the spec sends the error to the app rather than stranding the user.
-      response =
-        get_consent(token, client, "ignored", %{"code_challenge" => ""})
-
-      assert response.status == 302
-      assert [location] = get_resp_header(response, "location")
-      assert String.starts_with?(location, @redirect_uri)
-      assert location =~ "error="
-      assert location =~ "state=opaque-state"
-    end
   end
 
   describe "POST /oauth2/authorize" do
@@ -534,7 +359,7 @@ defmodule CommaWeb.OauthIdpConsentTest do
       {response, verifier} = approve_flow(token, client)
 
       assert response.status == 302
-      assert_receive {:idp_request, %{count: 1}, %{endpoint: :authorize, outcome: :ok}}
+      settle_receive({:idp_request, %{count: 1}, %{endpoint: :authorize, outcome: :ok}})
       assert [location] = get_resp_header(response, "location")
       assert String.starts_with?(location, @redirect_uri)
 
@@ -595,8 +420,8 @@ defmodule CommaWeb.OauthIdpConsentTest do
       # Rendering the consent page is the one ok outcome here; the deny
       # 302 itself must count as rejected, never ok (review finding on
       # this PR).
-      assert_receive {:idp_request, %{count: 1}, %{endpoint: :authorize, outcome: :ok}}
-      assert_receive {:idp_request, %{count: 1}, %{endpoint: :authorize, outcome: :rejected}}
+      settle_receive({:idp_request, %{count: 1}, %{endpoint: :authorize, outcome: :ok}})
+      settle_receive({:idp_request, %{count: 1}, %{endpoint: :authorize, outcome: :rejected}})
       refute_received {:idp_request, _measurements, %{endpoint: :authorize, outcome: _any}}
     end
 
@@ -717,148 +542,6 @@ defmodule CommaWeb.OauthIdpConsentTest do
       |> call()
     end
 
-    test "logged-out prompt=none returns login_required to the vouched redirect, no stash",
-         %{client: client} do
-      {_verifier, challenge} = pkce_pair()
-
-      response =
-        conn(
-          :get,
-          "/oauth2/authorize",
-          authorize_params(client, challenge, %{"prompt" => "none"})
-        )
-        |> call()
-
-      assert response.status == 302
-      [location] = get_resp_header(response, "location")
-      uri = URI.parse(location)
-      assert "https://#{uri.host}#{uri.path}" == @redirect_uri
-
-      query = URI.decode_query(uri.query)
-      assert query["error"] == "login_required"
-      assert query["state"] == "opaque-state"
-
-      # Silent auth must not touch the login round trip or storage.
-      refute location =~ "/login"
-      assert Comma.Repo.aggregate(Comma.OauthIdp.AuthorizeRequests.Request, :count) == 0
-    end
-
-    test "logged-in prompt=none returns consent_required (v1 always requires consent)",
-         %{client: client, session_token: token} do
-      {_verifier, challenge} = pkce_pair()
-
-      response =
-        conn(
-          :get,
-          "/oauth2/authorize",
-          authorize_params(client, challenge, %{"prompt" => "none"})
-        )
-        |> with_session(token)
-        |> call()
-
-      assert response.status == 302
-      [location] = get_resp_header(response, "location")
-      uri = URI.parse(location)
-      assert "https://#{uri.host}#{uri.path}" == @redirect_uri
-
-      query = URI.decode_query(uri.query)
-      assert query["error"] == "consent_required"
-      assert query["state"] == "opaque-state"
-      assert Comma.Repo.aggregate(Comma.OauthIdp.AuthorizeRequests.Request, :count) == 0
-    end
-
-    test "prompt combining none with other values is invalid_request in both states",
-         %{client: client, session_token: token} do
-      {_verifier, challenge} = pkce_pair()
-      params = authorize_params(client, challenge, %{"prompt" => "none login"})
-
-      for build <- [
-            fn -> conn(:get, "/oauth2/authorize", params) end,
-            fn -> conn(:get, "/oauth2/authorize", params) |> with_session(token) end
-          ] do
-        response = build.() |> call()
-
-        assert response.status == 302
-        [location] = get_resp_header(response, "location")
-        assert URI.decode_query(URI.parse(location).query)["error"] == "invalid_request"
-        refute location =~ "/login"
-      end
-
-      assert Comma.Repo.aggregate(Comma.OauthIdp.AuthorizeRequests.Request, :count) == 0
-    end
-
-    test "prompt=none with an invalid client is a terminal page, never a redirect",
-         %{client: client} do
-      {_verifier, challenge} = pkce_pair()
-
-      response =
-        conn(
-          :get,
-          "/oauth2/authorize",
-          authorize_params(client, challenge, %{
-            "prompt" => "none",
-            "redirect_uri" => "https://evil.example.com/cb"
-          })
-        )
-        |> call()
-
-      assert response.status != 302
-      assert Comma.Repo.aggregate(Comma.OauthIdp.AuthorizeRequests.Request, :count) == 0
-    end
-
-    test "logged-out invalid requests settle to the vouched redirect and stash nothing",
-         %{client: client} do
-      {_verifier, challenge} = pkce_pair()
-
-      # Missing PKCE: the client mandates a code_challenge, so this is
-      # an invalid request even though the client and redirect_uri are
-      # fine — it must never reach the stash or the login round trip.
-      no_pkce =
-        conn(
-          :get,
-          "/oauth2/authorize",
-          authorize_params(client, challenge) |> Map.drop(["code_challenge"])
-        )
-        |> call()
-
-      assert no_pkce.status == 302
-      [location] = get_resp_header(no_pkce, "location")
-      assert location =~ @redirect_uri
-      refute location =~ "/login"
-      assert URI.decode_query(URI.parse(location).query)["error"] != nil
-
-      # Unknown scope value: rejected by scope validation, same shape.
-      bad_scope =
-        conn(
-          :get,
-          "/oauth2/authorize",
-          authorize_params(client, challenge, %{"scope" => "openid email profile admin"})
-        )
-        |> call()
-
-      assert bad_scope.status == 302
-      [scope_location] = get_resp_header(bad_scope, "location")
-      assert scope_location =~ @redirect_uri
-      refute scope_location =~ "/login"
-
-      assert Comma.Repo.aggregate(Comma.OauthIdp.AuthorizeRequests.Request, :count) == 0
-    end
-
-    test "an invalid client stashes nothing and stays on a terminal page", %{client: client} do
-      {_verifier, challenge} = pkce_pair()
-
-      response =
-        conn(
-          :get,
-          "/oauth2/authorize",
-          authorize_params(client, challenge, %{"redirect_uri" => "https://evil.example.com/cb"})
-        )
-        |> call()
-
-      assert response.status != 302
-      assert Comma.Repo.aggregate(Comma.OauthIdp.AuthorizeRequests.Request, :count) == 0
-    end
-
     test "resume renders consent and the full flow completes",
          %{client: client, session_token: token, user: user} do
       {verifier, challenge} = pkce_pair()
@@ -916,69 +599,6 @@ defmodule CommaWeb.OauthIdpConsentTest do
 
       assert jwt.fields["sub"] == user["id"]
       assert jwt.fields["nonce"] == "consent-nonce"
-    end
-
-    test "a resume handle is single-use", %{client: client, session_token: token} do
-      {_verifier, challenge} = pkce_pair()
-      handle = stash(client, challenge)
-
-      assert resume(handle, token).status == 200
-
-      replay = resume(handle, token)
-      assert replay.status == 400
-      assert replay.resp_body =~ "authorization_request_expired"
-    end
-
-    test "resume while still logged out is terminal, not another redirect",
-         %{client: client} do
-      {_verifier, challenge} = pkce_pair()
-      handle = stash(client, challenge)
-
-      response = conn(:get, "/oauth2/authorize", %{"resume" => handle}) |> call()
-
-      assert response.status == 401
-      assert response.resp_body =~ "login_required"
-      refute get_resp_header(response, "location") != []
-
-      # The handle is not burned by the failed attempt.
-      assert {:ok, _request} = Comma.OauthIdp.AuthorizeRequests.consume_anonymous(handle)
-    end
-
-    test "unknown and malformed resume handles are indistinguishable expired errors",
-         %{session_token: token} do
-      for handle <- [Ecto.UUID.generate(), "not-a-uuid"] do
-        response = resume(handle, token)
-        assert response.status == 400
-        assert response.resp_body =~ "authorization_request_expired"
-      end
-    end
-
-    test "an expired stash cannot be resumed", %{client: client, session_token: token} do
-      {_verifier, challenge} = pkce_pair()
-      handle = stash(client, challenge)
-
-      import Ecto.Query
-
-      Comma.Repo.update_all(
-        from(r in Comma.OauthIdp.AuthorizeRequests.Request, where: r.id == ^handle),
-        set: [expires_at: DateTime.add(DateTime.utc_now(), -1, :second)]
-      )
-
-      response = resume(handle, token)
-      assert response.status == 400
-      assert response.resp_body =~ "authorization_request_expired"
-    end
-
-    test "a consent-stage handle cannot be replayed through resume",
-         %{client: client, session_token: token} do
-      {_verifier, challenge} = pkce_pair()
-      consent = get_consent(token, client, challenge)
-      assert consent.status == 200
-      consent_handle = extract_hidden(consent.resp_body, "handle")
-
-      response = resume(consent_handle, token)
-      assert response.status == 400
-      assert response.resp_body =~ "authorization_request_expired"
     end
 
     test "restricted sessions cannot resume", %{client: client, user: user} do

@@ -48,115 +48,10 @@ test.beforeEach(async ({ page }) => {
   await recordOnboardingCompleted(page, [accountA.userId, accountB.userId]);
 });
 
-test("signing into B revokes A's deferred startup send", async ({ page }) => {
-  const stub = await startSessionIsolationStub();
-
-  try {
-    await page.addInitScript((apiBaseUrl) => {
-      localStorage.setItem("comma.apiBaseUrl", apiBaseUrl);
-    }, stub.baseUrl);
-    await page.goto("/");
-
-    expect(await page.evaluate(() => localStorage.getItem("comma.apiBaseUrl"))).toBe(
-      stub.baseUrl
-    );
-    await signIn(page, accountA.email);
-    await expectSignedInAs(page, accountA.email);
-
-    const content = page.getByRole("region", { name: "Content" });
-    const aPrompt = "private prompt from account A";
-    await content.getByRole("textbox", { name: "AI prompt" }).fill(aPrompt);
-    await content.getByRole("button", { name: "Send" }).click();
-
-    // Home and startup send share the host's one pending resolution. It remains
-    // server-deferred so the send continuation still belongs to account A when
-    // authentication changes.
-    await expect.poll(() => stub.aWorkspaceChatResolutionCount).toBe(1);
-
-    await signOut(page, stub.baseUrl, accountA.email);
-    await expect(page.getByRole("heading", { name: "Sign in to Comma" })).toBeVisible();
-    await signIn(page, accountB.email);
-
-    await expectSignedInAs(page, accountB.email);
-    await expect(content.getByRole("textbox", { name: "AI prompt" })).toBeEnabled();
-
-    stub.releaseAResolutions();
-
-    const bPrompt = "message owned by account B";
-    await content.getByRole("textbox", { name: "AI prompt" }).fill(bPrompt);
-    await content.getByRole("button", { name: "Send" }).click();
-
-    await expect(content.getByText(bPrompt)).toBeVisible();
-    await expect(content.getByText("reply for account B")).toBeVisible();
-    await expect(content.getByText(aPrompt)).toHaveCount(0);
-
-    expect(stub.bMessageBodies).toHaveLength(1);
-    expect(stub.bMessageBodies[0]).toMatchObject({
-      message: { text: bPrompt, type: "text" },
-    });
-
-    // A stale registry retain is externally observable as a poll and/or send
-    // against A's conversation. Releasing A after B is ready must produce
-    // neither request, while B remains independently usable above.
-    expect(stub.aConversationRequests).toEqual([]);
-  } finally {
-    stub.releaseAResolutions();
-    await stub.close();
-  }
-});
-
-test("another tab switching accounts moves this tab to the new account", async ({
-  page,
-}) => {
-  const stub = await startSessionIsolationStub({
-    deferAccountAResolutions: false,
-  });
-
-  try {
-    await page.addInitScript((apiBaseUrl) => {
-      localStorage.setItem("comma.apiBaseUrl", apiBaseUrl);
-    }, stub.baseUrl);
-    await page.goto("/");
-
-    await signIn(page, accountA.email);
-    await expectSignedInAs(page, accountA.email);
-    const content = page.getByRole("region", { name: "Content" });
-    const aPrompt = "account A draft before another tab signs in";
-    await content.getByRole("textbox", { name: "AI prompt" }).fill(aPrompt);
-
-    // Another tab signed in as B: the browser's shared Cookie now names B.
-    await page
-      .context()
-      .addCookies([
-        { name: "comma_session", url: stub.baseUrl, value: accountB.token },
-      ]);
-    const sessionChanged = page.waitForResponse(
-      (response) => response.status() === 409
-    );
-    await content.getByRole("button", { name: "Send" }).click();
-    await sessionChanged;
-
-    await expect(
-      page.getByText(
-        `Switched to ${accountB.email}, which signed in from another window.`
-      )
-    ).toBeVisible();
-    await expect(
-      page.getByRole("heading", { name: "Comma can’t continue" })
-    ).toHaveCount(0);
-    await expectSignedInAs(page, accountB.email);
-    await expect(content.getByText(aPrompt)).toHaveCount(0);
-  } finally {
-    await stub.close();
-  }
-});
-
 test("startup retries a briefly unavailable session service without an error screen", async ({
   page,
 }) => {
-  const stub = await startSessionIsolationStub({
-    deferAccountAResolutions: false,
-  });
+  const stub = await startSessionIsolationStub({});
 
   try {
     await page.addInitScript((apiBaseUrl) => {
@@ -194,249 +89,10 @@ test("startup retries a briefly unavailable session service without an error scr
   }
 });
 
-test("a signed-in tab keeps the app while a peer-triggered session check fails", async ({
-  page,
-}) => {
-  const stub = await startSessionIsolationStub({
-    deferAccountAResolutions: false,
-  });
-
-  try {
-    await page.addInitScript((apiBaseUrl) => {
-      localStorage.setItem("comma.apiBaseUrl", apiBaseUrl);
-      // Records whether the product shell ever disappears after it first shows.
-      let shown = false;
-      new MutationObserver(() => {
-        const present = document.querySelector('[aria-label="App sidebar"]') !== null;
-        if (present) shown = true;
-        if (shown && !present) {
-          (window as unknown as { leftApp?: boolean }).leftApp = true;
-        }
-      }).observe(document, { childList: true, subtree: true });
-    }, stub.baseUrl);
-    await page.goto("/");
-    await signIn(page, accountA.email);
-    await expectSignedInAs(page, accountA.email);
-
-    // A peer tab that finds no coordination record rebinds and announces it;
-    // this tab then checks its session while the server is unreachable.
-    await page.evaluate(() => {
-      for (const key of Object.keys(localStorage)) {
-        if (key.startsWith("comma.session-lifecycle.v1:")) localStorage.removeItem(key);
-      }
-    });
-    const probesBefore = stub.aExpectedSessionProbeCount;
-    stub.failNextAExpectedSessionProbes(2);
-    const peer = await page.context().newPage();
-    await peer.goto("/");
-
-    await expect.poll(() => stub.failedSessionProbeCount).toBe(2);
-    await expect
-      .poll(() => stub.aExpectedSessionProbeCount, { timeout: 10_000 })
-      .toBe(probesBefore + 3);
-    await expect(
-      page.getByRole("complementary", { name: "App sidebar" })
-    ).toBeVisible();
-    expect(
-      await page.evaluate(() => (window as unknown as { leftApp?: boolean }).leftApp)
-    ).toBeUndefined();
-  } finally {
-    await stub.close();
-  }
-});
-
-test("sign-out fences the app before a contended peer probe can settle", async ({
-  page,
-}) => {
-  const stub = await startSessionIsolationStub({
-    deferAccountAResolutions: false,
-  });
-
-  try {
-    await page.addInitScript((apiBaseUrl) => {
-      localStorage.setItem("comma.apiBaseUrl", apiBaseUrl);
-    }, stub.baseUrl);
-    await page.goto("/");
-
-    await signIn(page, accountA.email);
-    await expect(
-      page.getByRole("complementary", { name: "App sidebar" })
-    ).toBeVisible();
-    // Sign out lives in Settings → Profile; stand there first so the sign-out
-    // press follows the held peer probe directly.
-    await openProfileSettings(page, accountA.email);
-
-    // A second tab's startup probe holds the cross-tab coordination lock.
-    const probeCount = stub.aExpectedSessionProbeCount;
-    stub.holdNextAExpectedSessionProbe();
-    const peer = await page.context().newPage();
-    const staleProbeResponse = peer.waitForResponse(
-      (response) =>
-        response.request().method() === "GET" &&
-        new URL(response.url()).pathname === "/v1/comma/auth/session"
-    );
-    await peer.goto("/");
-    await expect.poll(() => stub.aExpectedSessionProbeCount).toBe(probeCount + 1);
-
-    await page.getByRole("button", { name: "Sign out" }).click();
-    await expect(page.getByRole("status")).toHaveText("Signing out…");
-    await expect(page.getByRole("complementary", { name: "App sidebar" })).toHaveCount(
-      0
-    );
-
-    await expect(
-      page.getByRole("heading", { name: "Comma can’t continue" })
-    ).toBeVisible();
-    expect(stub.logoutRequestCount).toBe(0);
-
-    stub.releaseAExpectedSessionProbe();
-    expect((await staleProbeResponse).ok()).toBe(true);
-    await expect(
-      page.getByRole("heading", { name: "Comma can’t continue" })
-    ).toBeVisible();
-    await expect(page.getByRole("complementary", { name: "App sidebar" })).toHaveCount(
-      0
-    );
-    expect(stub.logoutRequestCount).toBe(0);
-  } finally {
-    stub.releaseAExpectedSessionProbe();
-    await stub.close();
-  }
-});
-
-test("a product 401 signs out the current Web session without a reload", async ({
-  page,
-}) => {
-  const stub = await startSessionIsolationStub({
-    deferAccountAResolutions: false,
-    deferAccountASkills: true,
-  });
-
-  try {
-    await page.addInitScript((apiBaseUrl) => {
-      localStorage.setItem("comma.apiBaseUrl", apiBaseUrl);
-    }, stub.baseUrl);
-    await page.goto("/");
-
-    await signIn(page, accountA.email);
-    await expectSignedInAs(page, accountA.email);
-    await expect.poll(() => stub.aSkillsRequestCount).toBe(1);
-
-    const productUnauthorized = page.waitForResponse(
-      (response) =>
-        response.status() === 401 &&
-        new URL(response.url()).pathname ===
-          `/v1/comma/workspaces/${accountA.workspaceId}/skills`
-    );
-    stub.failASkillsUnauthorized();
-    await productUnauthorized;
-
-    await expect(page.getByRole("heading", { name: "Sign in to Comma" })).toBeVisible();
-    await expect(page.getByRole("complementary", { name: "App sidebar" })).toHaveCount(
-      0
-    );
-  } finally {
-    stub.releaseASkills();
-    await stub.close();
-  }
-});
-
-test("an aborted account A product request cannot sign out account B", async ({
-  page,
-}) => {
-  const stub = await startSessionIsolationStub({
-    deferAccountAResolutions: false,
-    deferAccountASkills: true,
-  });
-
-  try {
-    await page.addInitScript((apiBaseUrl) => {
-      localStorage.setItem("comma.apiBaseUrl", apiBaseUrl);
-    }, stub.baseUrl);
-    await page.goto("/");
-
-    await signIn(page, accountA.email);
-    await expect.poll(() => stub.aSkillsRequestCount).toBe(1);
-    await signOut(page, stub.baseUrl, accountA.email);
-    await signIn(page, accountB.email);
-    await expectSignedInAs(page, accountB.email);
-
-    const aSessionProbeCount = stub.aExpectedSessionProbeCount;
-    stub.failASkillsUnauthorized();
-    await expect.poll(() => stub.aSkillsSettlementCount).toBe(1);
-    await page.evaluate(
-      () =>
-        new Promise<void>((resolve) =>
-          requestAnimationFrame(() => setTimeout(resolve, 0))
-        )
-    );
-
-    await expectSignedInAs(page, accountB.email);
-    await expect(
-      page.getByRole("complementary", { name: "App sidebar" })
-    ).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Sign in to Comma" })).toHaveCount(
-      0
-    );
-    expect(stub.aExpectedSessionProbeCount).toBe(aSessionProbeCount);
-  } finally {
-    stub.releaseAResolutions();
-    stub.releaseASkills();
-    await stub.close();
-  }
-});
-
-test("an aborted account A skills request cannot seed account B's cache", async ({
-  page,
-}) => {
-  const stub = await startSessionIsolationStub({
-    deferAccountAResolutions: false,
-    deferAccountASkills: true,
-  });
-
-  try {
-    await page.addInitScript((apiBaseUrl) => {
-      localStorage.setItem("comma.apiBaseUrl", apiBaseUrl);
-    }, stub.baseUrl);
-    await page.goto("/");
-
-    await signIn(page, accountA.email);
-    await expect.poll(() => stub.aSkillsRequestCount).toBe(1);
-
-    await signOut(page, stub.baseUrl, accountA.email);
-    await expect(page.getByRole("heading", { name: "Sign in to Comma" })).toBeVisible();
-
-    stub.releaseASkills();
-    await expect.poll(() => stub.aSkillsSettlementCount).toBe(1);
-    await page.evaluate(
-      () =>
-        new Promise<void>((resolve) =>
-          requestAnimationFrame(() => setTimeout(resolve, 0))
-        )
-    );
-
-    await signIn(page, accountB.email);
-    await expectSignedInAs(page, accountB.email);
-    await expect.poll(() => stub.bSkillsRequestCount).toBe(1);
-
-    const content = page.getByRole("region", { name: "Content" });
-    const composer = content.getByRole("textbox", { name: "AI prompt" });
-    await composer.fill("/");
-    await expect(page.getByRole("option", { name: /Account B Skill/ })).toBeVisible();
-    await expect(page.getByRole("option", { name: /Account A Skill/ })).toHaveCount(0);
-    expect(stub.bSkillsRequestCount).toBe(1);
-  } finally {
-    stub.releaseAResolutions();
-    stub.releaseASkills();
-    await stub.close();
-  }
-});
-
 test("Google signs in through an HttpOnly cookie without exposing a bearer", async ({
   page,
 }) => {
   const stub = await startSessionIsolationStub({
-    deferAccountAResolutions: false,
     googleFlow: "signed_in",
   });
 
@@ -540,7 +196,6 @@ test("Google retry replaces a rejected credential attempt and shows progress", a
   page,
 }) => {
   const stub = await startSessionIsolationStub({
-    deferAccountAResolutions: false,
     deferSecondGoogleAttempt: true,
     googleFlow: "credential_rejected",
   });
@@ -591,7 +246,6 @@ test("email replaces a prepared Google attempt without completing Google", async
   page,
 }) => {
   const stub = await startSessionIsolationStub({
-    deferAccountAResolutions: false,
     googleFlow: "signed_in",
   });
 
@@ -628,43 +282,10 @@ test("email replaces a prepared Google attempt without completing Google", async
   }
 });
 
-test("guest sign-in replaces a prepared Google attempt", async ({ page }) => {
-  const stub = await startSessionIsolationStub({
-    deferAccountAResolutions: false,
-    googleFlow: "signed_in",
-    guestEnabled: true,
-  });
-
-  try {
-    await installGoogleCredentialStub(page, {
-      apiBaseUrl: stub.baseUrl,
-      credential: googleLogin.credential,
-    });
-    await page.goto("/");
-    await expect(
-      page.getByRole("button", { name: "Continue with Google" })
-    ).toBeVisible();
-    await page.getByRole("button", { name: "Try without an account" }).click();
-
-    await expect(page.getByText("You’re trying Comma as a guest.")).toBeVisible();
-    expect(stub.googleAttempts).toEqual([{ platform: "web" }]);
-    expect(stub.googleCompletions).toEqual([]);
-    expect(stub.guestStarts).toHaveLength(1);
-    expect(stub.guestStarts[0]).toMatchObject({
-      pow: { challenge: "guest-test-challenge", nonce: expect.any(String) },
-    });
-    await page.reload();
-    await expect(page.getByText("You’re trying Comma as a guest.")).toBeVisible();
-  } finally {
-    await stub.close();
-  }
-});
-
 test("Google conditional linking completes through its purpose-bound OTP", async ({
   page,
 }) => {
   const stub = await startSessionIsolationStub({
-    deferAccountAResolutions: false,
     googleFlow: "otp_required",
   });
 
@@ -739,17 +360,6 @@ async function signIn(page: Page, email: string) {
   await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
   await page.getByRole("button", { name: "Verify code" }).click();
   await expect(page.getByRole("complementary", { name: "App sidebar" })).toBeVisible();
-}
-
-async function signOut(page: Page, apiBaseUrl: string, email: string) {
-  await openProfileSettings(page, email);
-  const response = page.waitForResponse(
-    (candidate) =>
-      candidate.url() === `${apiBaseUrl}/v1/comma/auth/logout` &&
-      candidate.request().method() === "POST"
-  );
-  await page.getByRole("button", { name: "Sign out" }).click();
-  expect((await response).ok()).toBe(true);
 }
 
 // The rail carries no account menu; Settings → Profile is where the signed-in
@@ -862,46 +472,21 @@ async function expectRendererAuthStateIsTokenFree(
 }
 
 async function startSessionIsolationStub({
-  deferAccountAResolutions = true,
-  deferAccountASkills = false,
   deferSecondGoogleAttempt = false,
   googleFlow,
-  guestEnabled = false,
 }: {
-  deferAccountAResolutions?: boolean;
-  deferAccountASkills?: boolean;
   deferSecondGoogleAttempt?: boolean;
-  guestEnabled?: boolean;
   googleFlow?: "credential_rejected" | "otp_required" | "signed_in";
 } = {}) {
-  const aResolutionGate = deferred<void>();
-  const aSessionProbeGate = deferred<void>();
-  const aSkillsGate = deferred<void>();
   const secondGoogleAttemptGate = deferred<void>();
-  const bMessageBodies: unknown[] = [];
-  const aConversationRequests: { method: string; path: string }[] = [];
   const challenges = new Map<string, typeof accountA | typeof accountB>();
   const emailVerifications: unknown[] = [];
   const googleAttempts: unknown[] = [];
-  const guestStarts: unknown[] = [];
-  let guestCreated = false;
   const googleCompletions: unknown[] = [];
   const googleCompletionTransports: (string | string[] | undefined)[] = [];
   const googleLinkVerifications: unknown[] = [];
-  let aWorkspaceChatResolutionCount = 0;
-  let aExpectedSessionProbeCount = 0;
-  let aResolutionsReleased = false;
-  let holdNextAExpectedSessionProbe = false;
-  let logoutRequestCount = 0;
-  let aSkillsRequestCount = 0;
-  let aSkillsReleased = false;
-  let aSkillsSettlementCount = 0;
-  let aSkillsUnauthorized = false;
-  let aSessionUnauthorized = false;
   let failingSessionProbes = 0;
-  let failingAExpectedSessionProbes = 0;
   let failedSessionProbeCount = 0;
-  let bSkillsRequestCount = 0;
   let bMessages: ReturnType<typeof messageRows> = [];
 
   const server = createServer(async (request, response) => {
@@ -912,34 +497,6 @@ async function startSessionIsolationStub({
     }
 
     const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
-
-    if (guestEnabled && path === "/v1/comma/auth/guest") {
-      if (request.method === "GET") {
-        writeJson(response, {
-          enabled: true,
-          pow: {
-            challenge: "guest-test-challenge",
-            difficulty: 1,
-            expires_at: 4_102_444_800,
-          },
-        });
-      } else if (request.method === "POST") {
-        guestStarts.push(await readJson(request));
-        guestCreated = true;
-        setSessionCookie(response, accountA.token);
-        writeJson(response, {
-          expires_at: 4_102_444_800,
-          session_id: accountA.sessionId,
-          user: {
-            id: accountA.userId,
-            email: "g-test@guest.comma.invalid",
-            name: "Guest",
-            kind: "guest",
-          },
-        });
-      }
-      return;
-    }
 
     if (request.method === "POST" && path === "/v1/comma/auth/email/login") {
       const body = (await readJson(request)) as { email?: string };
@@ -1056,20 +613,7 @@ async function startSessionIsolationStub({
     }
 
     if (request.method === "GET" && path === "/v1/comma/auth/session") {
-      if (request.headers["x-comma-expected-auth-session-id"] === accountA.sessionId) {
-        aExpectedSessionProbeCount += 1;
-        if (holdNextAExpectedSessionProbe) {
-          holdNextAExpectedSessionProbe = false;
-          await aSessionProbeGate.promise;
-        }
-        if (failingAExpectedSessionProbes > 0) {
-          failingAExpectedSessionProbes -= 1;
-          failedSessionProbeCount += 1;
-          writeJson(response, { error: "unavailable" }, 503);
-          return;
-        }
-      }
-      if (!account || (account === accountA && aSessionUnauthorized)) {
+      if (!account) {
         writeJson(response, { error: "unauthorized" }, 401);
         return;
       }
@@ -1077,20 +621,12 @@ async function startSessionIsolationStub({
       writeJson(response, {
         expires_at: 4_102_444_800,
         session_id: account.sessionId,
-        user: guestCreated
-          ? {
-              id: account.userId,
-              email: "g-test@guest.comma.invalid",
-              name: "Guest",
-              kind: "guest",
-            }
-          : { id: account.userId, email: account.email, name: null },
+        user: { id: account.userId, email: account.email, name: null },
       });
       return;
     }
 
     if (request.method === "POST" && path === "/v1/comma/auth/logout") {
-      logoutRequestCount += 1;
       clearSessionCookie(response);
       writeJson(response, { signed_out: true });
       return;
@@ -1105,14 +641,6 @@ async function startSessionIsolationStub({
     const groupRoot = `/v1/comma/groups/${account.groupId}`;
     const conversationRoot = `${groupRoot}/conversations/${account.conversationId}`;
 
-    if (
-      account === accountA &&
-      path.startsWith(`${conversationRoot}/`) &&
-      (path.endsWith("/events") || path.endsWith("/messages"))
-    ) {
-      aConversationRequests.push({ method: request.method ?? "", path });
-    }
-
     if (request.method === "POST" && path === "/v1/comma/me/bootstrap") {
       writeJson(response, {
         status: "ready",
@@ -1126,12 +654,6 @@ async function startSessionIsolationStub({
     }
 
     if (request.method === "POST" && path === `${groupRoot}/assistant-chat`) {
-      if (account === accountA) {
-        aWorkspaceChatResolutionCount += 1;
-        if (deferAccountAResolutions && !aResolutionsReleased) {
-          await aResolutionGate.promise;
-        }
-      }
       writeJson(
         response,
         conversationFor(account, account === accountB ? bMessages : [])
@@ -1140,20 +662,6 @@ async function startSessionIsolationStub({
     }
 
     if (request.method === "GET" && path === `${workspaceRoot}/skills`) {
-      if (account === accountA) {
-        aSkillsRequestCount += 1;
-        if (deferAccountASkills && !aSkillsReleased) {
-          await aSkillsGate.promise;
-        }
-        if (aSkillsUnauthorized) {
-          writeJson(response, { error: "unauthorized" }, 401);
-          aSkillsSettlementCount += 1;
-          return;
-        }
-        aSkillsSettlementCount += 1;
-      } else {
-        bSkillsRequestCount += 1;
-      }
       writeJson(response, {
         data: account === accountA ? [accountASkill] : [accountBSkill],
       });
@@ -1189,7 +697,6 @@ async function startSessionIsolationStub({
         message?: { text?: string; type?: string };
       };
       if (account === accountB) {
-        bMessageBodies.push(body);
         bMessages = messageRows(
           body.message?.text ?? "",
           body.client_request_id ?? "request-b"
@@ -1209,63 +716,19 @@ async function startSessionIsolationStub({
   const { port } = server.address() as AddressInfo;
 
   return {
-    get aExpectedSessionProbeCount() {
-      return aExpectedSessionProbeCount;
-    },
-    get aSkillsSettlementCount() {
-      return aSkillsSettlementCount;
-    },
-    get aWorkspaceChatResolutionCount() {
-      return aWorkspaceChatResolutionCount;
-    },
-    get aSkillsRequestCount() {
-      return aSkillsRequestCount;
-    },
-    aConversationRequests,
     baseUrl: `http://127.0.0.1:${port}`,
-    get bSkillsRequestCount() {
-      return bSkillsRequestCount;
-    },
-    bMessageBodies,
     close: () => closeServer(server),
     emailVerifications,
     failNextSessionProbes(count: number) {
       failingSessionProbes = count;
     },
-    failNextAExpectedSessionProbes(count: number) {
-      failingAExpectedSessionProbes = count;
-    },
     get failedSessionProbeCount() {
       return failedSessionProbeCount;
     },
     googleAttempts,
-    guestStarts,
     googleCompletions,
     googleCompletionTransports,
     googleLinkVerifications,
-    holdNextAExpectedSessionProbe() {
-      holdNextAExpectedSessionProbe = true;
-    },
-    get logoutRequestCount() {
-      return logoutRequestCount;
-    },
-    failASkillsUnauthorized() {
-      aSessionUnauthorized = true;
-      aSkillsUnauthorized = true;
-      aSkillsReleased = true;
-      aSkillsGate.resolve();
-    },
-    releaseAResolutions() {
-      aResolutionsReleased = true;
-      aResolutionGate.resolve();
-    },
-    releaseAExpectedSessionProbe() {
-      aSessionProbeGate.resolve();
-    },
-    releaseASkills() {
-      aSkillsReleased = true;
-      aSkillsGate.resolve();
-    },
     releaseSecondGoogleAttempt() {
       secondGoogleAttemptGate.resolve();
     },

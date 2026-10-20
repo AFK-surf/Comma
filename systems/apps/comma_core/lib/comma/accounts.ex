@@ -7,6 +7,7 @@ defmodule Comma.Accounts do
   alias Comma.Repo
 
   @max_user_page 100
+  @max_user_search_bytes 320
 
   def create_user(attrs) when is_map(attrs) do
     attrs = stringify(attrs)
@@ -20,8 +21,12 @@ defmodule Comma.Accounts do
       })
 
     case Repo.insert(changeset) do
-      {:ok, user} -> {:ok, public_user(user)}
-      {:error, changeset} -> {:error, changeset}
+      {:ok, user} ->
+        Comma.Analytics.registered(user.id)
+        {:ok, public_user(user)}
+
+      {:error, changeset} ->
+        {:error, changeset}
     end
   end
 
@@ -31,7 +36,8 @@ defmodule Comma.Accounts do
     limit = opts |> Keyword.get(:limit, @max_user_page) |> clamp_user_limit()
 
     with {:ok, email} <- normalize_user_email_filter(Keyword.get(opts, :email)),
-         filters = %{"email" => email},
+         {:ok, search} <- normalize_user_search_filter(Keyword.get(opts, :query)),
+         filters = user_page_filters(email, search),
          {:ok, cursor} <- UserPageCursor.decode(Keyword.get(opts, :cursor), filters, opts) do
       users =
         from(user in User,
@@ -39,6 +45,7 @@ defmodule Comma.Accounts do
           limit: ^(limit + 1)
         )
         |> filter_users_by_email(email)
+        |> filter_users_by_search(search)
         |> users_after_cursor(cursor)
         |> Repo.all()
 
@@ -56,12 +63,51 @@ defmodule Comma.Accounts do
     end
   end
 
+  @doc """
+  At most `limit` registered or guest Users whose normalized email starts with `prefix`, in email order. The
+  `text_pattern_ops` index on `normalized_email` answers the prefix range without scanning the table.
+  """
+  @spec search_users_by_email_prefix(String.t(), pos_integer()) :: [map()]
+  def search_users_by_email_prefix(prefix, limit)
+      when is_binary(prefix) and is_integer(limit) and limit > 0 do
+    pattern = escape_like(String.downcase(String.trim(prefix))) <> "%"
+
+    from(user in User,
+      where: like(user.email, ^pattern),
+      order_by: [asc: user.email],
+      limit: ^min(limit, @max_user_page)
+    )
+    |> Repo.all()
+    |> Enum.map(&public_user/1)
+  end
+
   def get_user(id) do
     case Repository.get_user(id) do
       {:ok, user} -> {:ok, public_user(user)}
       {:error, _reason} = error -> error
     end
   end
+
+  @doc """
+  The language and time zone an Agent should assume for a Workspace member:
+  the account `locale` and the member's Routine profile `timezone`. Each is
+  nil when not known. Two primary-key or unique-index reads.
+  """
+  def agent_context(user_id, workspace_id) when is_binary(user_id) and is_binary(workspace_id) do
+    locale = Repo.one(from(u in User, where: u.id == ^user_id, select: u.locale))
+
+    timezone =
+      Repo.one(
+        from(p in Comma.Data.RecommendationProfile,
+          where: p.workspace_id == ^workspace_id and p.user_id == ^user_id,
+          select: p.timezone
+        )
+      )
+
+    %{"locale" => locale, "timezone" => timezone}
+  end
+
+  def agent_context(_user_id, _workspace_id), do: %{"locale" => nil, "timezone" => nil}
 
   def get_user_by_email(email) do
     case Repository.get_user_by_email(email) do
@@ -73,9 +119,15 @@ defmodule Comma.Accounts do
 
   def get_or_create_user_by_email(email) do
     case Repository.ensure_user_by_email(email) do
-      {:ok, user} -> {:ok, public_user(user)}
-      {:error, :invalid_email} -> {:error, :not_found}
-      {:error, _reason} = error -> error
+      {:ok, user, creation} ->
+        if creation == :created, do: Comma.Analytics.registered(user.id)
+        {:ok, public_user(user)}
+
+      {:error, :invalid_email} ->
+        {:error, :not_found}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -92,6 +144,8 @@ defmodule Comma.Accounts do
   def update_user(_id, _attrs), do: {:error, :not_found}
 
   defp update_user_fields(id, attrs) do
+    since = SystemsClock.system_time(:second)
+
     Repo.transaction(fn ->
       user = Repo.one(from(row in User, where: row.id == ^id, lock: "FOR UPDATE"))
 
@@ -110,6 +164,9 @@ defmodule Comma.Accounts do
                 repo: Repo,
                 reason: "user_disabled"
               )
+
+            # Credentials of expired sessions are not covered by `sid` rows.
+            _ = Comma.Stations.Revocations.user_revoked(Repo, updated.id)
           end
 
           public_user(updated)
@@ -119,8 +176,15 @@ defmodule Comma.Accounts do
       end
     end)
     |> case do
-      {:ok, user} -> {:ok, user}
-      {:error, reason} -> {:error, reason}
+      {:ok, user} ->
+        if user["status"] == "disabled",
+          do: Comma.Stations.Revocations.publish_since(user["id"], since)
+
+        Comma.Analytics.identify(user["id"])
+        {:ok, user}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -183,7 +247,7 @@ defmodule Comma.Accounts do
     if locale in User.locales() do
       case Repo.update_all(
              from(row in User, where: row.id == ^user_id and is_nil(row.locale)),
-             set: [locale: locale, updated_at: DateTime.utc_now()]
+             set: [locale: locale, updated_at: SystemsClock.timestamp(:utc_datetime_usec)]
            ) do
         {1, _} -> :adopted
         {0, _} -> :unchanged
@@ -233,6 +297,32 @@ defmodule Comma.Accounts do
   defp filter_users_by_email(query, nil), do: query
   defp filter_users_by_email(query, email), do: from(user in query, where: user.email == ^email)
 
+  defp normalize_user_search_filter(nil), do: {:ok, nil}
+
+  defp normalize_user_search_filter(search) when is_binary(search) do
+    trimmed = String.trim(search)
+
+    if trimmed != "" and byte_size(trimmed) <= @max_user_search_bytes and String.valid?(trimmed),
+      do: {:ok, trimmed},
+      else: {:error, :invalid_filter}
+  end
+
+  defp normalize_user_search_filter(_search), do: {:error, :invalid_filter}
+
+  # A cursor issued before the search filter existed stays valid for unsearched pages.
+  defp user_page_filters(email, nil), do: %{"email" => email}
+  defp user_page_filters(email, search), do: %{"email" => email, "query" => search}
+
+  defp filter_users_by_search(query, nil), do: query
+
+  defp filter_users_by_search(query, search) do
+    pattern = "%" <> String.replace(search, ["\\", "%", "_"], &("\\" <> &1)) <> "%"
+
+    from(user in query,
+      where: user.id == ^search or ilike(user.email, ^pattern) or ilike(user.name, ^pattern)
+    )
+  end
+
   defp users_after_cursor(query, nil), do: query
 
   defp users_after_cursor(query, {created_at, id}) do
@@ -247,6 +337,13 @@ defmodule Comma.Accounts do
 
   defp next_user_cursor(page, true, filters, opts),
     do: page |> List.last() |> UserPageCursor.encode(filters, opts)
+
+  defp escape_like(value),
+    do:
+      value
+      |> String.replace("\\", "\\\\")
+      |> String.replace("%", "\\%")
+      |> String.replace("_", "\\_")
 
   defp stringify(attrs), do: Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
   defp unix(nil), do: nil

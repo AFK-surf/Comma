@@ -13,6 +13,15 @@ import { Button } from "../Button";
 import { CommaLogoAnimation } from "../comma-mascot";
 import { ResetIcon } from "../icons";
 import { Tooltip } from "../tooltip";
+import { uiClock, type CancelUiTimer } from "../../clock";
+import {
+  createSpring,
+  placeSpring,
+  retargetSpring,
+  springAtRest,
+  springStateAt,
+  type Spring,
+} from "../../motion";
 import { isReducedMotionEnabled, motionNotchResize } from "../../tokens";
 import { cx } from "../utils";
 
@@ -57,9 +66,8 @@ const keyPageStep = 16;
 /** A held key keeps moving the preview; the write waits for it to stop. */
 const keyCommitDelayMs = 400;
 
-// Fixed simulation steps keep the curve the same at 60Hz and 120Hz.
-const springStepMs = 4;
-const springMaxFrameMs = 64;
+// The spring's state at a frame is computed from the time since it started
+// (../../motion): the curve is the same at any frame rate.
 const springRestDistance = 0.1;
 const springRestVelocity = 2;
 
@@ -103,12 +111,9 @@ interface Drag {
   settled: number;
 }
 
-interface Spring {
-  position: number;
-  velocity: number;
-  target: number;
-  frame: number;
-  clock: number;
+interface SpringMotion {
+  spring: Spring;
+  frame: CancelUiTimer | null;
 }
 
 const clamp = (value: number, min: number, max: number) =>
@@ -141,14 +146,11 @@ export const NotchWidthSetting = ({
   const fillRef = useRef<HTMLSpanElement>(null);
   const readoutRef = useRef<HTMLSpanElement>(null);
   const dragRef = useRef<Drag | null>(null);
-  const springRef = useRef<Spring>({
-    clock: 0,
-    frame: 0,
-    position: value,
-    target: value,
-    velocity: 0,
+  const springRef = useRef<SpringMotion>({
+    spring: createSpring(motionNotchResize, value, 0),
+    frame: null,
   });
-  const keyCommitRef = useRef<{ timer: number; value: number } | null>(null);
+  const keyCommitRef = useRef<{ timer: CancelUiTimer; value: number } | null>(null);
   const committedRef = useRef(value);
   // Timers and the unmount flush call the owner's latest callback.
   const onValueCommitRef = useRef(onValueCommit);
@@ -213,58 +215,38 @@ export const NotchWidthSetting = ({
     if (root) root.dataset.dragging = dragging ? "true" : "false";
   }, []);
 
-  const stopSpring = useCallback(() => {
-    const spring = springRef.current;
-    if (spring.frame) cancelAnimationFrame(spring.frame);
-    spring.frame = 0;
-    spring.velocity = 0;
-  }, []);
-
   const step = useCallback(
     (now: number) => {
-      const spring = springRef.current;
-      spring.frame = 0;
-      let elapsed = Math.min(now - spring.clock, springMaxFrameMs);
-      spring.clock = now;
-      const { stiffness, damping } = motionNotchResize;
-      for (; elapsed > 0; elapsed -= springStepMs) {
-        const seconds = Math.min(springStepMs, elapsed) / 1000;
-        const acceleration =
-          -stiffness * (spring.position - spring.target) - damping * spring.velocity;
-        spring.velocity += acceleration * seconds;
-        spring.position += spring.velocity * seconds;
-      }
-      if (
-        Math.abs(spring.position - spring.target) < springRestDistance &&
-        Math.abs(spring.velocity) < springRestVelocity
-      ) {
-        spring.position = spring.target;
-        spring.velocity = 0;
-        paint(spring.position);
+      const motion = springRef.current;
+      motion.frame = null;
+      const { spring } = motion;
+      const state = springStateAt(spring, now);
+      if (springAtRest(state, spring.target, springRestDistance, springRestVelocity)) {
+        placeSpring(spring, now, spring.target);
+        paint(spring.target);
         return;
       }
-      paint(spring.position);
-      spring.frame = requestAnimationFrame(step);
+      paint(state.position);
+      motion.frame = uiClock.frame(step);
     },
     [paint]
   );
 
   const animateTo = useCallback(
     (target: number, velocity?: number) => {
-      const spring = springRef.current;
-      spring.target = target;
-      if (velocity !== undefined) spring.velocity = velocity;
+      const motion = springRef.current;
+      const now = uiClock.monotonic();
       if (isReducedMotionEnabled()) {
-        stopSpring();
-        spring.position = target;
+        motion.frame?.();
+        motion.frame = null;
+        placeSpring(motion.spring, now, target);
         paint(target);
         return;
       }
-      if (spring.frame) return;
-      spring.clock = performance.now();
-      spring.frame = requestAnimationFrame(step);
+      retargetSpring(motion.spring, now, target, velocity);
+      motion.frame ??= uiClock.frame(step);
     },
-    [paint, step, stopSpring]
+    [paint, step]
   );
 
   const commit = useCallback((next: number) => {
@@ -276,7 +258,7 @@ export const NotchWidthSetting = ({
   const flushKeyCommit = useCallback(() => {
     const pending = keyCommitRef.current;
     if (!pending) return;
-    window.clearTimeout(pending.timer);
+    pending.timer();
     keyCommitRef.current = null;
     commit(pending.value);
   }, [commit]);
@@ -289,8 +271,7 @@ export const NotchWidthSetting = ({
     setSpokenValue(value);
     if (!paintedRef.current) {
       paintedRef.current = true;
-      springRef.current.position = value;
-      springRef.current.target = value;
+      placeSpring(springRef.current.spring, uiClock.monotonic(), value);
       paint(value);
       return;
     }
@@ -299,7 +280,7 @@ export const NotchWidthSetting = ({
 
   useEffect(
     () => () => {
-      cancelAnimationFrame(springRef.current.frame);
+      springRef.current.frame?.();
       flushKeyCommit();
       // Settings closing under a held drag keeps the width it was dragged to.
       const drag = dragRef.current;
@@ -338,9 +319,12 @@ export const NotchWidthSetting = ({
     const box = field.getBoundingClientRect();
     const pointsPerPixel = (max - min) / box.width;
     const pointed = min + (event.clientX - box.left) * pointsPerPixel;
-    const current = springRef.current.position;
+    const current = springStateAt(
+      springRef.current.spring,
+      uiClock.monotonic()
+    ).position;
     const drag: Drag = {
-      lastTime: event.timeStamp,
+      lastTime: uiClock.monotonic(),
       lastWidth: current,
       originX: box.left,
       pointerId: event.pointerId,
@@ -367,25 +351,25 @@ export const NotchWidthSetting = ({
     if (!drag || event.pointerId !== drag.pointerId) return;
     const pulled = min + (event.clientX - drag.originX) * drag.pointsPerPixel;
     const { snapped, width } = shape(pulled);
-    const elapsed = event.timeStamp - drag.lastTime;
+    const now = uiClock.monotonic();
+    const elapsed = now - drag.lastTime;
     if (elapsed > 0) {
       // Smoothed, so one uneven frame cannot fling the release.
       const instant = ((width - drag.lastWidth) / elapsed) * 1000;
       drag.velocity = drag.velocity * 0.6 + instant * 0.4;
     }
-    drag.lastTime = event.timeStamp;
+    drag.lastTime = now;
     drag.lastWidth = width;
     drag.width = width;
     drag.settled = clamp(Math.round(width), min, max);
     setSnapped(snapped);
-    const spring = springRef.current;
-    if (spring.frame) {
+    const { spring, frame } = springRef.current;
+    if (frame) {
       // The glide from the press is still under way; it chases the pointer.
-      spring.target = width;
+      retargetSpring(spring, now, width);
       return;
     }
-    spring.position = width;
-    spring.target = width;
+    placeSpring(spring, now, width);
     paint(width);
   };
 
@@ -406,7 +390,7 @@ export const NotchWidthSetting = ({
   };
 
   const reset = () => {
-    if (keyCommitRef.current) window.clearTimeout(keyCommitRef.current.timer);
+    keyCommitRef.current?.timer();
     keyCommitRef.current = null;
     animateTo(defaultValue);
     setSpokenValue(defaultValue);
@@ -415,7 +399,7 @@ export const NotchWidthSetting = ({
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (disabled || dragRef.current) return;
-    const from = keyCommitRef.current?.value ?? springRef.current.target;
+    const from = keyCommitRef.current?.value ?? springRef.current.spring.target;
     const coarse = event.shiftKey ? keyPageStep : keyStep;
     let next: number;
     switch (event.key) {
@@ -446,19 +430,20 @@ export const NotchWidthSetting = ({
     next = clamp(Math.round(next), min, max);
     animateTo(next);
     setSpokenValue(next);
-    if (keyCommitRef.current) window.clearTimeout(keyCommitRef.current.timer);
+    keyCommitRef.current?.timer();
     keyCommitRef.current = {
-      timer: window.setTimeout(() => {
+      timer: uiClock.after(keyCommitDelayMs, () => {
         keyCommitRef.current = null;
         commit(next);
-      }, keyCommitDelayMs),
+      }),
       value: next,
     };
   };
 
   const previewOnNotch = () => {
     // The real Notch shows the width the reader sees here, saved first.
-    const width = keyCommitRef.current?.value ?? Math.round(springRef.current.target);
+    const width =
+      keyCommitRef.current?.value ?? Math.round(springRef.current.spring.target);
     flushKeyCommit();
     onPreview?.(clamp(width, min, max));
   };

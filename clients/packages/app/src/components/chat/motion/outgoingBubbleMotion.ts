@@ -3,8 +3,10 @@ import {
   motionEasing,
   motionMessageSend,
   type MessageSendMotionConfig,
-} from "@comma/ui";
+} from "@comma/ui/tokens";
+import { scheduleLayoutRead, uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import tailSVG from "../assets/message-tail.svg?raw";
+import { materialKeyframes } from "./materialKeyframes";
 import { createOutgoingBubbleTimeline } from "./outgoingBubbleMotionModel";
 
 // The supplied tail uses absolute M/C coordinates. Transform the same outline
@@ -338,20 +340,20 @@ export function animateOutgoingBubble({
   let slotAnimation: Animation | undefined;
   let liftAnimations: Animation[] = [];
   let turnAnimation: Animation | undefined;
-  let startFrame: number | undefined;
-  let frame: number | undefined;
-  let timer: number | undefined;
+  let startFrame: CancelUiTimer | undefined;
+  let frame: CancelUiTimer | undefined;
+  let timer: CancelUiTimer | undefined;
   let popoverOpen = false;
   let settled = false;
-  let updateReserve: (() => void) | undefined;
+  let readReserve: (() => { delta: number; height: number } | undefined) | undefined;
   let reserve: HTMLElement | undefined;
 
   const settle = (notify: boolean) => {
     if (settled) return;
     settled = true;
-    if (frame !== undefined) cancelAnimationFrame(frame);
-    if (startFrame !== undefined) cancelAnimationFrame(startFrame);
-    if (timer !== undefined) clearTimeout(timer);
+    if (frame !== undefined) frame();
+    if (startFrame !== undefined) startFrame();
+    if (timer !== undefined) timer();
     animation?.cancel();
     materialAnimation?.cancel();
     contentAnimation?.cancel();
@@ -476,15 +478,18 @@ export function animateOutgoingBubble({
       column.append(reserve);
       const tail = reserve;
       // Transfer existing tail space to the growing turn without locking history.
-      updateReserve = () => {
-        if (!previous.element.isConnected) return;
+      readReserve = () => {
+        if (!previous.element.isConnected) return undefined;
+        const current = tail.getBoundingClientRect().height;
         const naturalHeight =
           column.getBoundingClientRect().bottom -
           previous.element.getBoundingClientRect()[previous.edge] -
-          tail.getBoundingClientRect().height;
-        tail.style.height = `${Math.max(0, previous.height - naturalHeight)}px`;
+          current;
+        const height = Math.max(0, previous.height - naturalHeight);
+        return { delta: height - current, height };
       };
-      updateReserve();
+      const initial = readReserve();
+      if (initial) tail.style.height = `${initial.height}px`;
     }
     // A larger material plane is clipped into the changing rounded rectangle.
     // Its dimensions are fixed for the flight and never reflow the transcript.
@@ -532,7 +537,7 @@ export function animateOutgoingBubble({
         };
       });
   if (typeof bubble.animate !== "function") {
-    timer = window.setTimeout(() => settle(true), duration / playbackRate);
+    timer = uiClock.after(duration / playbackRate, () => settle(true));
     return { cleanup: () => settle(false) };
   }
   const timing = {
@@ -548,15 +553,12 @@ export function animateOutgoingBubble({
     // shape, the flight's only material: the bubble's own background stays
     // clear, or a translucent material would show twice over its box.
     materialAnimation = bubble.animate(
-      [
-        { offset: 0, backgroundColor: source.background ?? targetBackground },
-        {
-          offset: materialStart / duration,
-          backgroundColor: source.background ?? targetBackground,
-        },
-        { offset: materialEnd / duration, backgroundColor: targetBackground },
-        { offset: 1, backgroundColor: targetBackground },
-      ],
+      materialKeyframes(
+        source.background ?? targetBackground,
+        targetBackground,
+        materialStart / duration,
+        materialEnd / duration
+      ),
       { ...timing, pseudoElement: "::before" }
     );
     materialAnimation.pause?.();
@@ -608,8 +610,8 @@ export function animateOutgoingBubble({
   // A paused frame zero must be painted before the clock starts. Starting
   // against the commit's timeline timestamp can skip the input state when
   // the rest of the transcript takes time to render.
-  startFrame = requestAnimationFrame(() => {
-    startFrame = requestAnimationFrame(() => {
+  startFrame = uiClock.frame(() => {
+    startFrame = uiClock.frame(() => {
       if (settled) return;
       const startTime = document.timeline?.currentTime;
       for (const active of [
@@ -632,16 +634,18 @@ export function animateOutgoingBubble({
   // Resolve the final slot edge without its animated height. History, errors,
   // and viewport changes can move it independently of the height spring.
   // Retarget from the current correction on the same playback clock.
-  const bottomAligned = Boolean(
-    slot.closest('.comma-chat-route[data-variant="side-chat"]')
-  );
   let correction = 0;
   let correctionFrom = 0;
   let correctionTarget = 0;
   let correctionStartedAt = 0;
+  // Every frame of the flight reads in the frame's shared layout read phase
+  // and writes after it. Writing the reserve before reading the slot forced a
+  // second layout of the transcript in each frame.
   const maintainReserve = () => {
-    if (settled) return;
-    updateReserve?.();
+    frame = undefined;
+    if (settled) return undefined;
+    const nextReserve = readReserve?.();
+    let translate: string | undefined;
     if (viewport) {
       const elapsed = Number(animation.currentTime ?? 0);
       const channel = timeline.channels.position;
@@ -656,8 +660,9 @@ export function animateOutgoingBubble({
       // Slot expansion temporarily clamps the already-measured route anchor
       // to a smaller scroll range. Remove that predictable displacement before
       // retargeting, or a second spring chases our own layout and lands late.
+      // The reserve written below changes the scroll range by its own delta.
       const anchorClamp =
-        bottomAligned || targetScrollTop === undefined
+        targetScrollTop === undefined
           ? 0
           : Math.max(
               -Math.max(
@@ -666,26 +671,34 @@ export function animateOutgoingBubble({
               ),
               Math.min(
                 targetScrollTop,
-                Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+                Math.max(
+                  0,
+                  viewport.scrollHeight +
+                    (nextReserve?.delta ?? 0) -
+                    viewport.clientHeight
+                )
               ) - targetScrollTop
             );
-      const destinationBottom = bottomAligned
-        ? slotBox.bottom
-        : slotBox.top + target.height + anchorClamp;
+      const destinationBottom = slotBox.top + target.height + anchorClamp;
       const displacement = destinationBottom - target.bottom;
       if (Math.abs(displacement - correctionTarget) > 0.5) {
         correctionFrom = correction;
         correctionTarget = displacement;
         correctionStartedAt = elapsed;
       }
-      bubble.style.translate = `0px ${correction}px`;
+      translate = `0px ${correction}px`;
     }
-    frame = requestAnimationFrame(maintainReserve);
+    return () => {
+      if (settled) return;
+      if (nextReserve && reserve) reserve.style.height = `${nextReserve.height}px`;
+      if (translate !== undefined) bubble.style.translate = translate;
+      frame = scheduleLayoutRead(maintainReserve);
+    };
   };
-  if (!reducedMotion) frame = requestAnimationFrame(maintainReserve);
+  if (!reducedMotion) frame = scheduleLayoutRead(maintainReserve);
   void animation.finished.then(
     () => {
-      frame = requestAnimationFrame(() => settle(true));
+      frame = uiClock.frame(() => settle(true));
     },
     () => undefined
   );

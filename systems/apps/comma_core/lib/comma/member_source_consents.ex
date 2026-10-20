@@ -12,10 +12,10 @@ defmodule Comma.MemberSourceConsents do
   alias Comma.Data.MemberSourceConsent
 
   def record(user, session, workspace_id, toolkit, connection_id)
-      when toolkit in ~w(gmail googlecalendar googledrive slack github linear) and
+      when toolkit in ~w(gmail outlook googlecalendar googledrive slack github linear) and
              is_binary(connection_id) and byte_size(connection_id) in 1..256 do
     with {:ok, _workspace} <- Workspaces.authorize(user, session, workspace_id) do
-      now = DateTime.utc_now()
+      now = SystemsClock.utc_now()
       previous = connection_id(workspace_id, user["id"], toolkit)
 
       %MemberSourceConsent{

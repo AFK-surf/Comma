@@ -5,6 +5,7 @@ export {
   TaskSummaryCard,
   taskAriaLabel,
   taskFreshnessLabel,
+  taskNeutralIcon,
   taskProgressLabel,
   taskStatusIcon,
   taskStatusLabel,
@@ -16,6 +17,8 @@ export type {
   TaskWorker,
   TaskWorkspaceMessage,
 } from "./TaskSummaryCard";
+export { TaskProgressContext, useTaskProgress } from "./taskProgress";
+export type { TaskProgressSource } from "./taskProgress";
 export {
   isPollingTerminalTaskStatus,
   normalizeTaskStatus,

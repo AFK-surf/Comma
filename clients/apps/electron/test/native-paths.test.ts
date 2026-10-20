@@ -3,17 +3,18 @@ import { describe, expect, it } from "vitest";
 import {
   computerUseAppName,
   computerUseDistAppPath,
+  menuBarHostBundleId,
+  menuBarHostDistAppPath,
+  menuBarHostExecutablePath,
   nativeDistRoot,
   notchHostDistPath,
   packagedComputerUseAppPath,
   packagedNotchHostPath,
-  packagedSideChatHostAppPath,
+  packagedMenuBarHostAppPath,
+  packagedQuickChatHostPath,
   platformNativeDistDir,
-  salixConnectBinaryName,
-  salixConnectBinaryPath,
-  sideChatHostDistAppPath,
-  sideChatHostBundleId,
-  sideChatHostExecutablePath,
+  quickChatHostDistPath,
+  stationLauncherDistPath,
 } from "../scripts/native-paths";
 
 describe("native release paths", () => {
@@ -39,34 +40,40 @@ describe("native release paths", () => {
     expect(packagedNotchHostPath(appBundle)).toBe(
       resolve(appBundle, "Contents/Resources/native/macos/NotchHost")
     );
-    expect(sideChatHostDistAppPath(appDir)).toBe(
-      resolve(appDir, "dist/native/macos/CommaSideChatHost.app")
+    // Main runs Quick Chat from these two places (index.ts).
+    expect(quickChatHostDistPath(appDir)).toBe(
+      resolve(appDir, "dist/native/macos/QuickChatHost")
     );
-    expect(sideChatHostExecutablePath(appDir)).toBe(
+    expect(packagedQuickChatHostPath(appBundle)).toBe(
+      resolve(appBundle, "Contents/Resources/native/macos/QuickChatHost")
+    );
+    expect(menuBarHostDistAppPath(appDir)).toBe(
+      resolve(appDir, "dist/native/macos/CommaMenuBarHost.app")
+    );
+    expect(menuBarHostExecutablePath(appDir)).toBe(
       resolve(
         appDir,
-        "dist/native/macos/CommaSideChatHost.app/Contents/MacOS/CommaSideChatHost"
+        "dist/native/macos/CommaMenuBarHost.app/Contents/MacOS/CommaMenuBarHost"
       )
     );
-    expect(packagedSideChatHostAppPath(appBundle)).toBe(
-      resolve(appBundle, "Contents/Resources/native/macos/CommaSideChatHost.app")
+    expect(packagedMenuBarHostAppPath(appBundle)).toBe(
+      resolve(appBundle, "Contents/Resources/native/macos/CommaMenuBarHost.app")
     );
   });
 
-  it("derives the Side Chat helper identity from the release bundle identity", () => {
-    expect(sideChatHostBundleId("surf.comma.desktop.staging")).toBe(
+  // macOS keeps the menu-bar item's place and its Menu Bar setting by this id.
+  it("keeps the menu-bar helper's earlier bundle identity", () => {
+    expect(menuBarHostBundleId("surf.comma.desktop.staging")).toBe(
       "surf.comma.desktop.staging.side-chat"
     );
   });
 
-  it("resolves platform salix-connect binaries under the arch-specific directory", () => {
-    expect(salixConnectBinaryName("darwin")).toBe("salix-connect");
-    expect(salixConnectBinaryName("win32")).toBe("salix-connect.exe");
+  it("resolves the platform directory and the bundled station's launcher", () => {
     expect(platformNativeDistDir(appDir, "darwin", "arm64")).toBe(
       resolve(appDir, "dist/native/darwin/arm64")
     );
-    expect(salixConnectBinaryPath(appDir, "win32", "x64")).toBe(
-      resolve(appDir, "dist/native/win32/x64/salix-connect.exe")
+    expect(stationLauncherDistPath(appDir)).toBe(
+      resolve(appDir, "dist/native/station/mesh/target/release/stillfail-station")
     );
   });
 });

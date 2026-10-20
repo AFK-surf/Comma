@@ -80,7 +80,7 @@ defmodule BridgeForTeams.Meetings do
     Observability.update_operation_run(run, %{
       status: "failed",
       reason_class: reason_class,
-      finished_at: DateTime.utc_now(),
+      finished_at: SystemsClock.utc_now(),
       evidence: Map.put(run.evidence, "passed", false)
     })
   end
@@ -115,7 +115,7 @@ defmodule BridgeForTeams.Meetings do
       external_run_id: external_run_id,
       request_id: String.replace_prefix(external_run_id, "meeting_summary_replay:", ""),
       status: "running",
-      started_at: DateTime.utc_now(),
+      started_at: SystemsClock.utc_now(),
       evidence: %{
         "meeting_id" => meeting_id,
         "mode" => if(run_model, do: "model_replay", else: "plan_only")
@@ -168,7 +168,7 @@ defmodule BridgeForTeams.Meetings do
     Observability.update_operation_run(run, %{
       status: if(passed, do: "ok", else: "failed"),
       reason_class: if(passed, do: nil, else: "quality_gate_failed"),
-      finished_at: DateTime.utc_now(),
+      finished_at: SystemsClock.utc_now(),
       evidence:
         Map.merge(run.evidence, %{
           "report_json" => Jason.encode!(report),
@@ -181,7 +181,7 @@ defmodule BridgeForTeams.Meetings do
     Observability.update_operation_run(run, %{
       status: "failed",
       reason_class: replay_reason_class(reason),
-      finished_at: DateTime.utc_now(),
+      finished_at: SystemsClock.utc_now(),
       evidence: Map.put(run.evidence, "passed", false)
     })
   end
@@ -308,11 +308,12 @@ defmodule BridgeForTeams.Meetings do
       context = Context.capture()
 
       task =
-        Task.Supervisor.async_nolink(BridgeForTeams.TaskSupervisor, fn ->
+        SystemsRuntime.TaskSupervisor.async_nolink(BridgeForTeams.TaskSupervisor, fn ->
           Context.run(context, fn -> client.list_group_meetings_bounded(group_id, source_opts) end)
         end)
 
-      case Task.yield(task, deadline_ms) || Task.shutdown(task, :brutal_kill) do
+      case SystemsRuntime.Task.yield(task, deadline_ms) ||
+             SystemsRuntime.Task.shutdown(task, :brutal_kill) do
         {:ok,
          {:ok, %{"meetings" => meetings, "completeness" => "complete", "truncated" => false}}}
         when is_list(meetings) ->

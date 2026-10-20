@@ -7,7 +7,7 @@ defmodule SalixStore.Ids do
   own snowflake body.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
   import Bitwise
 
   # Version 1 IDs already use this epoch. A different epoch requires a new ID
@@ -83,7 +83,8 @@ defmodule SalixStore.Ids do
     task_label_proposal: @snowflake_body_regex
   }
 
-  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(opts \\ []),
+    do: SystemsRuntime.Server.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl true
   def init(opts) do
@@ -94,6 +95,12 @@ defmodule SalixStore.Ids do
   def valid_private_template_id?(id), do: valid?(:private_template, id)
 
   def new_tenant_id, do: new(:tenant)
+
+  @doc """
+  The reserved tenant that owns platform-funded Profiles. No snowflake id is
+  all zeros, so no real Tenant can have it.
+  """
+  def platform_tenant_id, do: "ten1_0000000000000000000"
   def new_group_id(tenant_id), do: new_with_parent(:group, :tenant, tenant_id)
   def new_agent_id(group_id), do: new_with_parent(:agent, :group, group_id)
   def new_session_id, do: new(:session)
@@ -243,7 +250,7 @@ defmodule SalixStore.Ids do
 
   defp body_regex!(kind), do: Map.fetch!(@body_regexes, kind)
 
-  defp next_body, do: GenServer.call(__MODULE__, :next_body)
+  defp next_body, do: SystemsRuntime.Server.call(__MODULE__, :next_body)
 
   @impl true
   def handle_call(:next_body, _from, state) do
@@ -287,19 +294,21 @@ defmodule SalixStore.Ids do
 
   defp wait_next_ms(ms) do
     if current_ms() <= ms do
-      Process.sleep(1)
+      SystemsClock.sleep(1)
       wait_next_ms(ms)
     else
       :ok
     end
   end
 
-  defp current_ms, do: System.system_time(:millisecond)
+  # Identity, not time: a test's clock can run ahead and must not leave ids
+  # ordered after every id minted on the real clock later in the VM.
+  defp current_ms, do: SystemsRuntime.Proc.system_time(:millisecond)
 
   defp configured_worker_id(opts) do
     worker_id =
       opts[:worker_id]
-      |> fallback(Application.get_env(:salix_store, :snowflake_worker_id))
+      |> fallback(SystemsRuntime.get_env(:salix_store, :snowflake_worker_id))
 
     case worker_id do
       nil -> raise ArgumentError, "SALIX_SNOWFLAKE_WORKER_ID is required"

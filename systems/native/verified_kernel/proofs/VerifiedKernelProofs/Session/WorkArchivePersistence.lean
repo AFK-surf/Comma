@@ -79,10 +79,10 @@ theorem normalize_archive_fields {s t : Term} {catalog : List Term} {base : Int}
   obtain ⟨_, _, providersWrite, h⟩ := bind_ok h
   obtain ⟨_, _, _, h⟩ := bind_ok h
   constructor
-  · exact (write_field_frame h rfl).trans
-      ((write_field_frame providersWrite rfl).trans ((write_field_frame activityWrite rfl).trans catalogWritten))
-  · exact (write_field_frame h rfl).trans
-      ((write_field_frame providersWrite rfl).trans ((write_field_frame activityWrite rfl).trans baseWritten))
+  · exact (write_field_frame h (by keys_absent)).trans
+      ((write_field_frame providersWrite (by keys_absent)).trans ((write_field_frame activityWrite (by keys_absent)).trans catalogWritten))
+  · exact (write_field_frame h (by keys_absent)).trans
+      ((write_field_frame providersWrite (by keys_absent)).trans ((write_field_frame activityWrite (by keys_absent)).trans baseWritten))
 
 theorem prepareWrite_archive_fields {s prepared : Term} {catalog : List Term} {base : Int} {j r : List Term}
     (format : s.get (a "storage_format") = i 3)
@@ -104,7 +104,7 @@ theorem prepareWrite_archive_fields {s prepared : Term} {catalog : List Term} {b
   have afterEq := pure_ok h
   simp only [Term.tuple.injEq, List.cons.injEq, true_and, and_true] at afterEq
   subst after
-  exact ⟨(write_field_frame written rfl).trans fields.1, (write_field_frame written rfl).trans fields.2⟩
+  exact ⟨(write_field_frame written (by keys_absent)).trans fields.1, (write_field_frame written (by keys_absent)).trans fields.2⟩
 
 theorem persistable_archive_fields {s snapshot : Term} {j r : List Term}
     (h : Lifecycle.persistable s j = .ok (snapshot, r)) :

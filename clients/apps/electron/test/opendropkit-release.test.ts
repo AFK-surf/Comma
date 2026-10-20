@@ -150,6 +150,21 @@ describe.skipIf(!archivePath || process.platform !== "darwin")(
       expect(existsSync(invalid.helper)).toBe(false);
     });
 
+    it("installs from a download cache another build filled, without fetching", async () => {
+      const first = fixture();
+      const shared = join(first.options.appDir, "host-downloads");
+      first.fetch.mockResolvedValueOnce(new Response(new Uint8Array(first.archive)));
+      await fetchOpenDropKit({ ...first.options, downloadCache: shared });
+
+      const second = fixture();
+      second.fetch.mockRejectedValue(new Error("offline"));
+      await fetchOpenDropKit({ ...second.options, downloadCache: shared });
+      expect(second.fetch).not.toHaveBeenCalled();
+      expect(execFileSync(second.helper, ["--help"], { encoding: "utf8" })).toContain(
+        "AirDrop"
+      );
+    });
+
     it("fails a build when the selected release is unavailable", async () => {
       const f = fixture();
       f.fetch.mockResolvedValueOnce(new Response("missing", { status: 404 }));

@@ -11,11 +11,12 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   GlobeIcon,
+  MoreHorizontalIcon,
   ReloadIcon,
   SquareCursorIcon,
-  SettingsSliderHorizontalIcon,
   XIcon,
 } from "../icons";
+import { uiClock, type CancelUiTimer } from "../../clock";
 import { isReducedMotionEnabled, motionDuration } from "../../tokens/motion";
 import { Tooltip } from "../tooltip";
 import { cx } from "../utils";
@@ -39,9 +40,14 @@ export type RightSidebarBrowserToolbarProps = Omit<
   onBack: () => void;
   onForward: () => void;
   onInspect?: (() => void) | undefined;
-  /** Hands the page to the system browser; independent of `disabled`. */
+  /**
+   * Hands the page to the system browser; independent of `disabled`. Shown as
+   * its own button where the page menu is absent or `disabled` (an inactive or
+   * unavailable page), so the page can always leave for the system browser.
+   */
   onOpenExternal?: (() => void) | undefined;
-  onPermissions?:
+  /** Opens the native page menu below its "More actions" button, when not `disabled`. */
+  onPageMenu?:
     | ((anchor: { x: number; y: number; width: number; height: number }) => void)
     | undefined;
   onReload: () => void;
@@ -83,12 +89,14 @@ export const RightSidebarBrowserToolbar = ({
   onForward,
   onInspect,
   onOpenExternal,
-  onPermissions,
+  onPageMenu,
   onReload,
   onStop,
   ...formProps
 }: RightSidebarBrowserToolbarProps) => {
   const messages = useCommaMessages();
+  // A disabled page has no page menu; open-in-browser stands in for it.
+  const pageMenu = disabled ? undefined : onPageMenu;
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (disabled) return;
@@ -104,16 +112,16 @@ export const RightSidebarBrowserToolbar = ({
   const reloadSwapOwedRef = useRef(false);
   const reloadMotionPhaseRef = useRef<ReloadMotionPhase>("idle");
   const reloadIconSlotRef = useRef<HTMLSpanElement>(null);
-  const reloadFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reloadFrameRef = useRef<number | null>(null);
+  const reloadFallbackTimerRef = useRef<CancelUiTimer | null>(null);
+  const reloadFrameRef = useRef<CancelUiTimer | null>(null);
 
   const clearReloadPhaseFallback = () => {
     if (reloadFallbackTimerRef.current !== null) {
-      clearTimeout(reloadFallbackTimerRef.current);
+      reloadFallbackTimerRef.current();
       reloadFallbackTimerRef.current = null;
     }
     if (reloadFrameRef.current !== null) {
-      cancelAnimationFrame(reloadFrameRef.current);
+      reloadFrameRef.current();
       reloadFrameRef.current = null;
     }
   };
@@ -129,9 +137,9 @@ export const RightSidebarBrowserToolbar = ({
    */
   const armReloadPhaseFallback = (duration: number, done: () => void) => {
     clearReloadPhaseFallback();
-    reloadFrameRef.current = requestAnimationFrame(() => {
+    reloadFrameRef.current = uiClock.frame(() => {
       reloadFrameRef.current = null;
-      const timer = setTimeout(() => {
+      const timer = uiClock.after(duration + reloadTransitionFallbackBufferMs, () => {
         const finish = () => {
           // An event, unmount, or newer press may have retired this watchdog
           // while its animation promise was pending.
@@ -152,14 +160,14 @@ export const RightSidebarBrowserToolbar = ({
             if (reloadFallbackTimerRef.current !== timer) return;
             // finished promises settle before transitionend is dispatched.
             // Let the event retire this phase before using its lost-event path.
-            reloadFrameRef.current = requestAnimationFrame(() => {
+            reloadFrameRef.current = uiClock.frame(() => {
               reloadFrameRef.current = null;
               finish();
             });
           };
           void rotation.finished.then(afterTransitionEvents, afterTransitionEvents);
         } else finish();
-      }, duration + reloadTransitionFallbackBufferMs);
+      });
       reloadFallbackTimerRef.current = timer;
     });
   };
@@ -345,29 +353,8 @@ export const RightSidebarBrowserToolbar = ({
         />
       </label>
 
-      {onPermissions || onInspect || onOpenExternal ? (
+      {onInspect || pageMenu || onOpenExternal ? (
         <div className="flex shrink-0 items-center gap-xs">
-          {onPermissions ? (
-            <button
-              type="button"
-              className={toolbarButtonClassName}
-              aria-label="Site permissions"
-              title="Site permissions"
-              disabled={disabled}
-              onClick={(event) => {
-                const { x, y, width, height } =
-                  event.currentTarget.getBoundingClientRect();
-                onPermissions({
-                  x: Math.round(x),
-                  y: Math.round(y),
-                  width: Math.round(width),
-                  height: Math.round(height),
-                });
-              }}
-            >
-              <SettingsSliderHorizontalIcon className="size-5" />
-            </button>
-          ) : null}
           {onInspect ? (
             <button
               aria-label={inspecting ? "Cancel element selection" : "Select element"}
@@ -384,7 +371,26 @@ export const RightSidebarBrowserToolbar = ({
               <SquareCursorIcon className="size-5" />
             </button>
           ) : null}
-          {onOpenExternal ? (
+          {pageMenu ? (
+            <button
+              aria-label={messages.browser_more_actions()}
+              className={toolbarButtonClassName}
+              onClick={(event) => {
+                const { x, y, width, height } =
+                  event.currentTarget.getBoundingClientRect();
+                pageMenu({
+                  x: Math.round(x),
+                  y: Math.round(y),
+                  width: Math.round(width),
+                  height: Math.round(height),
+                });
+              }}
+              title={messages.browser_more_actions()}
+              type="button"
+            >
+              <MoreHorizontalIcon className="size-5" />
+            </button>
+          ) : onOpenExternal ? (
             <Tooltip content={messages.chat_open_in_default_browser()} placement="left">
               <Focusable>
                 <button

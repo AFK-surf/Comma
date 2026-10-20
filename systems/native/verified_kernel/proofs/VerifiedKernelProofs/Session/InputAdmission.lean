@@ -65,13 +65,12 @@ theorem commit_input_requires_distinct {state entry result : Term} {trailing : L
     | false => exact Or.inl (pure_ok h)
     | true => exact Or.inr ⟨events, _, j₂, j₃, read, by simpa using allowed, checked⟩
 
-/-- A checked delivery batch contains neither queue retirement nor destructive history events. -/
+/-- A checked delivery batch contains neither queue retirement nor archive removal. -/
 theorem admitted_event_no_retirement {events : List Term} {event : Term}
     (allowed : events.all inputEventAllowed = true) (member : event ∈ events) :
     event.get (b "type") ≠ b "queue_ack" ∧
     event.get (b "type") ≠ b "queue_consume" ∧
-    event.get (b "type") ≠ b "archive_advance" ∧
-    event.get (b "type") ≠ b "session_microcompact" := by
+    event.get (b "type") ≠ b "archive_advance" := by
   have h := List.all_eq_true.mp allowed event member
   unfold inputEventAllowed at h
   repeat' apply And.intro

@@ -1,5 +1,6 @@
 defmodule SalixAgent.BrowserDriverTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixAgent.TestSupport.Settle
   alias SalixAgent.Browser.{Driver, Connection}
   @moduletag :browser_local
   @moduletag timeout: 60_000
@@ -34,7 +35,7 @@ defmodule SalixAgent.BrowserDriverTest do
   end
 
   setup do
-    directory = Path.join(System.tmp_dir!(), "browser-native-#{Ecto.UUID.generate()}")
+    directory = Path.join(System.tmp_dir!(), "browser-native-#{SystemsRuntime.Proc.uuid()}")
     File.mkdir_p!(directory)
     executable = System.fetch_env!("BROWSER_DRIVER_CHROMIUM")
 
@@ -266,26 +267,26 @@ defmodule SalixAgent.BrowserDriverTest do
              Driver.request(driver, "stream_start", %{"tab_id" => tab, "viewer_id" => "old"})
 
     assert eventually(fn -> match?({:ok, %{"data" => _}}, Driver.frame(driver, tab)) end)
-    conn = :sys.get_state(driver).commands.conn
-    :sys.suspend(conn)
+    conn = :sys.get_state(driver, :infinity).commands.conn
+    :sys.suspend(conn, :infinity)
     GenServer.cast(driver, {:stop_stream, tab, "old"})
-    assert :sys.get_state(driver).pending != nil
-    parent = self()
+    assert :sys.get_state(driver, :infinity).pending != nil
+    parent = SystemsRuntime.Proc.self()
 
-    spawn(fn ->
-      send(
+    SystemsRuntime.Proc.spawn(fn ->
+      SystemsRuntime.Proc.send(
         parent,
         {:started,
          Driver.request(driver, "stream_start", %{"tab_id" => tab, "viewer_id" => "new"})}
       )
     end)
 
-    assert eventually(fn -> :queue.len(:sys.get_state(driver).queue) == 1 end)
-    :sys.resume(conn)
-    assert_receive {:started, {:ok, %{"streaming" => true}}}, 10_000
+    assert eventually(fn -> :queue.len(:sys.get_state(driver, :infinity).queue) == 1 end)
+    :sys.resume(conn, :infinity)
+    settle_receive({:started, {:ok, %{"streaming" => true}}})
     assert eventually(fn -> match?({:ok, %{"data" => _}}, Driver.frame(driver, tab)) end)
     {:ok, before} = Driver.frame(driver, tab)
-    Process.sleep(120)
+    SystemsClock.sleep(120)
     set_content(driver, tab, "<body style='background:red'>New viewer</body>")
 
     assert eventually(fn ->
@@ -302,10 +303,10 @@ defmodule SalixAgent.BrowserDriverTest do
   } do
     assert {:ok, _} = Driver.request(driver, "stream_start", %{"tab_id" => tab})
     assert eventually(fn -> match?({:ok, %{"data" => _}}, Driver.frame(driver, tab)) end)
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
-    spawn(fn ->
-      send(
+    SystemsRuntime.Proc.spawn(fn ->
+      SystemsRuntime.Proc.send(
         parent,
         {:waited,
          Driver.request(driver, "wait", %{
@@ -316,7 +317,7 @@ defmodule SalixAgent.BrowserDriverTest do
       )
     end)
 
-    assert eventually(fn -> :sys.get_state(driver).pending != nil end)
+    assert eventually(fn -> :sys.get_state(driver, :infinity).pending != nil end)
     assert {:ok, %{"data" => _}} = Driver.frame(driver, tab)
 
     assert {:error, :browser_driver_busy} =
@@ -325,11 +326,11 @@ defmodule SalixAgent.BrowserDriverTest do
                "input" => %{"type" => "text", "text" => "never"}
              })
 
-    conn = :sys.get_state(driver).commands.conn
-    monitor = Process.monitor(driver)
+    conn = :sys.get_state(driver, :infinity).commands.conn
+    monitor = SystemsRuntime.Proc.monitor(driver)
     GenServer.stop(conn, :normal)
-    assert_receive {:waited, {:error, :browser_outcome_unknown}}, 5000
-    assert_receive {:DOWN, ^monitor, :process, ^driver, _}, 5000
+    settle_receive({:waited, {:error, :browser_outcome_unknown}})
+    settle_receive({:DOWN, ^monitor, :process, ^driver, _})
   end
 
   defp set_content(driver, tab, html) do
@@ -341,7 +342,7 @@ defmodule SalixAgent.BrowserDriverTest do
   end
 
   defp eval(driver, tab, expression) do
-    state = :sys.get_state(driver).commands
+    state = :sys.get_state(driver, :infinity).commands
 
     assert {:ok, result} =
              Connection.command(
@@ -355,16 +356,6 @@ defmodule SalixAgent.BrowserDriverTest do
     result["result"]["value"]
   end
 
-  defp eventually(fun, count \\ 100)
-  defp eventually(_, 0), do: false
-
-  defp eventually(fun, count) do
-    if fun.(),
-      do: true,
-      else:
-        (
-          Process.sleep(50)
-          eventually(fun, count - 1)
-        )
-  end
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 end

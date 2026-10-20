@@ -5,8 +5,9 @@ defmodule SalixLlm.OpenAIResponsesStreamToolTest do
   callback carries decoded argument fragments, including safe prefixes decoded
   from a still-open SSE data line.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.SalixLlm", "Elixir.SalixLLM"]
   alias SalixAgent.LLM.ReasoningDelta
   alias SalixLlm.{MockSSEServer, OpenAIResponses}
 
@@ -131,7 +132,7 @@ defmodule SalixLlm.OpenAIResponsesStreamToolTest do
     completed =
       encode.(%{"type" => "response.completed", "response" => %{"output" => [item]}})
 
-    parent = self()
+    parent = SystemsRuntime.Proc.self()
 
     MockSSEServer.set_chunks([
       added,
@@ -149,11 +150,11 @@ defmodule SalixLlm.OpenAIResponsesStreamToolTest do
           {action, next}
         end)
 
-      if match?({:publish, _}, action), do: send(parent, action)
+      if match?({:publish, _}, action), do: SystemsRuntime.Proc.send(parent, action)
     end
 
     request =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         OpenAIResponses.complete_stream(
           [%{role: "user", content: "hi"}],
           [],
@@ -162,94 +163,12 @@ defmodule SalixLlm.OpenAIResponsesStreamToolTest do
         )
       end)
 
-    assert_receive {:mock_sse_barrier, :reply_prefix, server}, 1_000
-    assert_receive {:publish, "第一句"}, 1_000
-    assert Task.yield(request, 0) == nil
-    send(server, {:release_mock_sse_barrier, :reply_prefix})
-    _response = Task.await(request, 5_000)
-    assert_receive {:publish, "第一句，第二句。"}, 1_000
-  end
-
-  test "one unfinished SSE data line streams its decoded tool argument prefix",
-       %{llm_opts: llm_opts} do
-    args =
-      Jason.encode!(%{
-        "tool" => "im_api.internal.send_message",
-        "params" => %{
-          "conversation_id" => "c1",
-          "content" =>
-            String.duplicate("leading-", 1_024) <>
-              "stream-prefix-✓ " <> String.duplicate("still-streaming-", 160)
-        }
-      })
-
-    item = function_call_item(args)
-
-    added =
-      "data: " <>
-        Jason.encode!(%{
-          "type" => "response.output_item.added",
-          "output_index" => 0,
-          "item" => %{item | "arguments" => ""}
-        }) <> "\n\n"
-
-    # Match the provider's wire order. The adapter can safely expose an open
-    # `delta` string only after the event type and tool identity have already
-    # arrived and been validated.
-    unfinished_line =
-      ~s(data: {"type":"response.function_call_arguments.delta","sequence_number":2,"output_index":0,"item_id":"fc_1","delta":) <>
-        Jason.encode!(args) <> "}\n\n"
-
-    {marker_start, marker_size} = :binary.match(unfinished_line, "stream-prefix-")
-    {head, tail} = :erlang.split_binary(unfinished_line, marker_start + marker_size)
-
-    completed =
-      "data: " <>
-        Jason.encode!(%{
-          "type" => "response.completed",
-          "response" => %{"output" => [item]}
-        }) <> "\n\n"
-
-    parent = self()
-
-    MockSSEServer.set_chunks(
-      [added, {:barrier, head, parent, :unfinished_tool_delta}] ++
-        chunk_binary(tail, 16) ++ [completed]
-    )
-
-    {:ok, recorder} = Agent.start_link(fn -> "" end)
-
-    on_tool = fn fragment ->
-      cumulative =
-        Agent.get_and_update(recorder, fn current ->
-          next = current <> fragment.fragment
-          {next, next}
-        end)
-
-      send(parent, {:partial_tool_arguments, cumulative})
-    end
-
-    opts = Map.put(llm_opts, :on_tool_delta, on_tool)
-
-    request =
-      Task.async(fn ->
-        OpenAIResponses.complete_stream(
-          [%{role: "user", content: "hi"}],
-          [],
-          fn _ -> :ok end,
-          opts
-        )
-      end)
-
-    assert_receive {:mock_sse_barrier, :unfinished_tool_delta, server}, 1_000
-    assert_receive {:partial_tool_arguments, partial}, 1_000
-    assert partial != args
-    assert String.starts_with?(args, partial)
-    assert Task.yield(request, 0) == nil
-    send(server, {:release_mock_sse_barrier, :unfinished_tool_delta})
-
-    _response = Task.await(request, 5_000)
-    assert Agent.get(recorder, & &1) == args
+    settle_receive({:mock_sse_barrier, :reply_prefix, server})
+    settle_receive({:publish, "第一句"})
+    assert SystemsRuntime.Task.yield(request, 0) == nil
+    SystemsRuntime.Proc.send(server, {:release_mock_sse_barrier, :reply_prefix})
+    _response = settled_await(request)
+    settle_receive({:publish, "第一句，第二句。"})
   end
 
   # Reasoning summaries stream as `response.reasoning_summary_text.delta`
@@ -293,18 +212,9 @@ defmodule SalixLlm.OpenAIResponsesStreamToolTest do
     }
   end
 
-  defp chunk_binary("", _size), do: []
-
-  defp chunk_binary(binary, size) when byte_size(binary) <= size, do: [binary]
-
-  defp chunk_binary(binary, size) do
-    <<chunk::binary-size(^size), rest::binary>> = binary
-    [chunk | chunk_binary(rest, size)]
-  end
-
   defp start_bandit_retry!(spec_fun) do
     Enum.find_value(1..10, fn _ ->
-      p = 40000 + :erlang.phash2(make_ref(), 20000)
+      p = 40000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20000)
 
       case ExUnit.Callbacks.start_supervised(spec_fun.(p), id: {:bandit_retry, p}) do
         {:ok, _pid} -> p

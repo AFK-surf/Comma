@@ -1,7 +1,7 @@
 defmodule SalixSignalProto.PreKeysTest do
   # Pre-key generation, JSON forms and lifecycle (CRS-03 §4, §9, §10), and
   # the responder side through a real pre-key session (CRS-03 §10.2).
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.{Address, Keys, PreKeyBundle, PreKeys, Session}
   alias SalixSignalProto.PreKeys.Store

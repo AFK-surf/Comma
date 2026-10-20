@@ -11,7 +11,7 @@ export interface AiInputRichEditorProps {
     readText(): Promise<string>;
     writeText(text: string): Promise<void>;
   };
-  onPasteFilesFromMenu?: (() => Promise<boolean>) | undefined;
+  onPasteFromMenu?: (() => Promise<boolean>) | undefined;
   placeholder: string;
   className?: string | undefined;
   disabled?: boolean | undefined;

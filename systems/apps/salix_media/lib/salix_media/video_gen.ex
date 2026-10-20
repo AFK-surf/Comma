@@ -83,7 +83,7 @@ defmodule SalixMedia.VideoGen do
   end
 
   defp poll_seedance(base, task_id, provider) do
-    deadline = System.monotonic_time(:millisecond) + poll_deadline_ms()
+    deadline = SystemsClock.monotonic_time(:millisecond) + poll_deadline_ms()
     do_poll_seedance(base, task_id, provider, deadline)
   end
 
@@ -98,10 +98,10 @@ defmodule SalixMedia.VideoGen do
           {:error, {:provider, get_in(task, ["error", "message"]) || status}}
 
         _ ->
-          if System.monotonic_time(:millisecond) >= deadline do
+          if SystemsClock.monotonic_time(:millisecond) >= deadline do
             {:error, {:timeout, task_id}}
           else
-            Process.sleep(poll_interval_ms())
+            SystemsClock.sleep(poll_interval_ms())
             do_poll_seedance(base, task_id, provider, deadline)
           end
       end
@@ -160,8 +160,10 @@ defmodule SalixMedia.VideoGen do
     end
   end
 
-  defp poll_interval_ms, do: Application.get_env(:salix_media, :video_poll_interval_ms, 5_000)
-  defp poll_deadline_ms, do: Application.get_env(:salix_media, :video_poll_deadline_ms, 900_000)
+  defp poll_interval_ms, do: SystemsRuntime.get_env(:salix_media, :video_poll_interval_ms, 5_000)
+
+  defp poll_deadline_ms,
+    do: SystemsRuntime.get_env(:salix_media, :video_poll_deadline_ms, 900_000)
 
   defp put_if(map, _k, nil), do: map
   defp put_if(map, _k, ""), do: map

@@ -1,9 +1,15 @@
 defmodule CommaSSH.Chat do
+  require SystemsRuntime.Proc
+
   @moduledoc "One authorized, bounded Router Conversation subscription per terminal."
-  use GenServer
+  use SystemsRuntime.Server
   alias Comma.{Accounts, AssistantChats, Conversations, Workspaces}
 
-  def start_link(context), do: GenServer.start_link(__MODULE__, context)
+  # A failed Task-list subscription retries with this backoff, one timer per chat.
+  @task_retry_min_ms 1_000
+  @task_retry_max_ms 30_000
+
+  def start_link(context), do: SystemsRuntime.Server.start_link(__MODULE__, context)
 
   def init(state) do
     Process.flag(:sensitive, true)
@@ -15,8 +21,8 @@ defmodule CommaSSH.Chat do
          {:ok, snapshot, _, context} <-
            Conversations.events(user, session, workspace["default_group_id"], conversation["id"]) do
       for key <- [:owner_pid, :participant_owner_pid],
-          is_pid(context[key]),
-          do: Process.monitor(context[key])
+          SystemsRuntime.Proc.is_process(context[key]),
+          do: SystemsRuntime.Proc.monitor(context[key])
 
       state =
         Map.merge(state, %{
@@ -27,7 +33,8 @@ defmodule CommaSSH.Chat do
           refresh: nil,
           task_owner: nil,
           task_count: nil,
-          tasks_dirty: false
+          tasks_dirty: false,
+          task_retry_ms: @task_retry_min_ms
         })
         |> subscribe_tasks(user, session)
         |> refresh_tasks(user, session)
@@ -50,7 +57,7 @@ defmodule CommaSSH.Chat do
         else
           Conversations.send_message(user, session, group(state), state.conversation, %{
             "content" => text,
-            "client_request_id" => Ecto.UUID.generate()
+            "client_request_id" => SystemsRuntime.Proc.uuid()
           })
         end
       end
@@ -71,19 +78,25 @@ defmodule CommaSSH.Chat do
   end
 
   def handle_info(:refresh, state) do
-    if elem(Process.info(self(), :message_queue_len), 1) > 256 do
-      send(state.ui, {:chat_close, self()})
+    if elem(Process.info(SystemsRuntime.Proc.self(), :message_queue_len), 1) > 256 do
+      SystemsRuntime.Proc.send(state.ui, {:chat_close, SystemsRuntime.Proc.self()})
       {:stop, :normal, state}
     else
       {:noreply, refresh(%{state | refresh: nil})}
     end
   end
 
+  # The list owner exits when placement moves it or it restarts. Subscribe
+  # again through current placement; the new subscription starts dirty, so the
+  # count is re-read once. A replacement owner that is not ready yet retries.
   def handle_info({:DOWN, _, :process, owner, _}, %{task_owner: owner} = state) do
-    state = %{state | task_owner: nil, task_count: nil, tasks_dirty: false}
-    emit(state, {:task_count, nil})
+    state = resubscribe_tasks(%{state | task_owner: nil, task_count: nil, tasks_dirty: false})
+    emit(state, {:task_count, state.task_count})
     {:noreply, state}
   end
+
+  def handle_info(:subscribe_tasks, %{task_owner: nil} = state),
+    do: {:noreply, resubscribe_tasks(state)}
 
   def handle_info({:DOWN, _, :process, _, _}, state) do
     emit(state, {:screen, :workspace, ["Chat owner changed. Enter /workspace to reconnect."]})
@@ -98,7 +111,7 @@ defmodule CommaSSH.Chat do
     do: {:noreply, schedule(state)}
 
   def handle_info({:group_conversation_list_invalidated, group_id, "agent_task", _, _}, state) do
-    if group_id == group(state) and is_pid(state.task_owner),
+    if group_id == group(state) and SystemsRuntime.Proc.is_process(state.task_owner),
       do: {:noreply, schedule(%{state | tasks_dirty: true})},
       else: {:noreply, state}
   end
@@ -106,7 +119,7 @@ defmodule CommaSSH.Chat do
   def handle_info(_, state), do: {:noreply, state}
 
   defp schedule(%{refresh: nil} = state),
-    do: %{state | refresh: Process.send_after(self(), :refresh, 250)}
+    do: %{state | refresh: SystemsClock.send_after(SystemsRuntime.Proc.self(), :refresh, 250)}
 
   defp schedule(state), do: state
 
@@ -118,7 +131,7 @@ defmodule CommaSSH.Chat do
       state
     else
       _ ->
-        send(state.ui, {:chat_close, self()})
+        SystemsRuntime.Proc.send(state.ui, {:chat_close, SystemsRuntime.Proc.self()})
         state
     end
   end
@@ -130,7 +143,9 @@ defmodule CommaSSH.Chat do
     end
   end
 
-  defp emit(state, event), do: send(state.ui, {:chat_ui, self(), event})
+  defp emit(state, event),
+    do: SystemsRuntime.Proc.send(state.ui, {:chat_ui, SystemsRuntime.Proc.self(), event})
+
   defp group(state), do: state.workspace["default_group_id"]
 
   defp publish(state) do
@@ -141,12 +156,23 @@ defmodule CommaSSH.Chat do
 
   defp subscribe_tasks(state, user, session) do
     case Conversations.list_events(user, session, group(state)) do
-      {:ok, %{owner_pid: owner}} when is_pid(owner) ->
-        Process.monitor(owner)
-        %{state | task_owner: owner, tasks_dirty: true}
+      {:ok, %{owner_pid: owner}} when SystemsRuntime.Proc.is_process(owner) ->
+        SystemsRuntime.Proc.monitor(owner)
+        %{state | task_owner: owner, tasks_dirty: true, task_retry_ms: @task_retry_min_ms}
 
       _ ->
-        state
+        retry_ms = Map.get(state, :task_retry_ms, @task_retry_min_ms)
+        SystemsClock.send_after(SystemsRuntime.Proc.self(), :subscribe_tasks, retry_ms)
+        %{state | task_retry_ms: min(retry_ms * 2, @task_retry_max_ms)}
+    end
+  end
+
+  # Authorization is checked again before each attempt. A revoked session stops
+  # retrying; the next chat refresh closes the terminal.
+  defp resubscribe_tasks(state) do
+    case authorized(state) do
+      {:ok, user, session} -> state |> subscribe_tasks(user, session) |> schedule()
+      _ -> state
     end
   end
 

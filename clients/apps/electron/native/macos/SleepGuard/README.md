@@ -5,16 +5,13 @@ backs the "Keep awake with lid closed" setting.
 
 ## Why a privileged daemon
 
-Power assertions (`caffeinate`, `powerSaveBlocker`, `IOPMAssertion`) stop
-idle sleep only. Closing the lid starts clamshell sleep, which ignores
-assertions. Only the kernel's `SleepDisabled` flag, set by
-`pmset -a disablesleep 1`, overrides clamshell sleep. Setting the flag requires
-root.
+Power assertions do not stop clamshell sleep. Only the kernel's `SleepDisabled`
+flag (`pmset -a disablesleep 1`) does, and setting it requires root.
 
 The flag is system-wide and persists until something clears it. Comma must
-not leave it set after Comma quits or crashes. A root daemon that holds the
-flag per XPC connection gives that guarantee: when Comma's process ends, the
-kernel closes the connection and the daemon clears the flag.
+not leave it set after Comma quits or crashes. A root daemon holds the flag per
+XPC connection. When Comma's process ends, the kernel closes the connection and
+the daemon clears the flag.
 
 ## Parts
 
@@ -23,8 +20,8 @@ kernel closes the connection and the daemon clears the flag.
   same team as itself, with Comma's bundle identifier. An ad-hoc signed
   development build checks the bundle identifier only. It sets the flag for
   the first holder and clears it after the last holder leaves. It does not
-  clear a flag that was already set before Comma set it. It exits after 30
-  seconds without clients.
+  clear a flag that was already set before Comma set it. It exits after an idle period without
+  clients.
 - The flag is stored on disk and survives a reboot. While a daemon holds the
   flag for Comma, it keeps a marker file in `/var/db/comma-sleep-guard`, one
   per app flavor. When the daemon starts, it removes its own marker and clears
@@ -49,9 +46,7 @@ kernel closes the connection and the daemon clears the flag.
 
 macOS requires the user to approve the daemon once in System Settings ›
 General › Login Items. Comma reads the approval back as
-`keepAwakeWhenLidClosedStatus`. Main reads it when it opens and on each
-renderer state read, for example when a window gets focus. Comma does not
-persist the status.
+`keepAwakeWhenLidClosedStatus`. Comma does not persist the status.
 
 - macOS reports a daemon that was never registered as `notFound` or
   `notRegistered`. Comma shows both as `not-registered`.

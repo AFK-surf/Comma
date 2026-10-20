@@ -128,7 +128,7 @@ defmodule Salix.Bindings.MeetingChannel do
   defp ensure_root_message(meeting_id, event, target, token, allow_repost?) do
     attempt_id = random_ref()
     event_type = root_event_type(meeting_id)
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
 
     intent = %{
       "attempt_id" => attempt_id,
@@ -276,7 +276,7 @@ defmodule Salix.Bindings.MeetingChannel do
 
   defp root_not_found(meeting_id, intent) do
     attempts = (intent["reconcile_attempts"] || 0) + 1
-    now = System.system_time(:second)
+    now = SystemsClock.system_time(:second)
     started_at = intent["started_at"] || now
 
     if attempts >= @reconcile_min_attempts and now - started_at >= @reconcile_grace_seconds do
@@ -404,7 +404,8 @@ defmodule Salix.Bindings.MeetingChannel do
 
   defp put_oldest(opts, _started_at), do: opts
 
-  defp random_ref, do: 16 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+  defp random_ref,
+    do: 16 |> SystemsRuntime.Proc.random_bytes() |> Base.url_encode64(padding: false)
 
   defp positive?(value) when is_integer(value), do: value > 0
 

@@ -1,39 +1,76 @@
+import { useCall } from "@comma/core-client";
 import { useEffect, useState } from "react";
+import { getNativeBridge } from "@comma/native-bridge";
 import { useCommaMessages } from "@comma/i18n/react";
-import { Dialog, type SettingsCategoryDefinition } from "@comma/ui";
-import { CommaApiError, type CommaApiClient } from "../../api";
-import { readActiveWorkspaceId, subscribeActiveWorkspace } from "../activeWorkspace";
+import { Dialog } from "@comma/ui/components/dialog";
+import { type SettingsCategoryDefinition } from "@comma/ui/components/settings";
+import { useActiveWorkspaceId } from "../activeWorkspace";
+import { BrowserImportDialog } from "./BrowserImportDialog";
 
-/** The Settings › Browser category: the workspace's shared browser logins. */
-export function useBrowserSettingsCategory(api: CommaApiClient) {
+/**
+ * Settings › Browser entry for importing another browser's sign-ins into the
+ * browser sidebar. The browser sidebar toolbar opens the same dialog.
+ */
+function useBrowserImportSection() {
   const m = useCommaMessages();
-  const [workspaceId, setWorkspaceId] = useState(readActiveWorkspaceId);
+  const bridge = getNativeBridge();
+  // The import reads another browser's cookies through the macOS keychain;
+  // Windows' app has no importer behind the button.
+  const available = bridge.platform === "electron" && bridge.os !== "windows";
+  const [open, setOpen] = useState(false);
+  if (!available) return { section: undefined, overlay: undefined };
+  return {
+    section: {
+      id: "browser.import",
+      title: m.settings_browser_import_title(),
+      items: [
+        {
+          id: "browser.import-run",
+          title: m.settings_browser_import_action(),
+          description: m.settings_browser_import_action_description(),
+          keywords: ["chrome", "arc", "edge", "cookie", "import", "导入", "登录"],
+          control: {
+            type: "button" as const,
+            label: m.settings_browser_import_button(),
+            onPress: () => setOpen(true),
+          },
+        },
+      ],
+    },
+    overlay: open ? <BrowserImportDialog onClose={() => setOpen(false)} /> : undefined,
+  };
+}
+
+/**
+ * The Settings › Browser category: the workspace's shared browser logins, and
+ * sign-ins imported from another browser on this Mac.
+ */
+export function useBrowserSettingsCategory() {
+  const m = useCommaMessages();
+  const call = useCall();
+  const browserImport = useBrowserImportSection();
+  const workspaceId = useActiveWorkspaceId();
   const [confirmation, setConfirmation] = useState<string>();
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<{ workspace: string; message: string }>();
-  useEffect(
-    () =>
-      subscribeActiveWorkspace((id) => {
-        setWorkspaceId(id);
-        setConfirmation(undefined);
-        setResult(undefined);
-      }),
-    []
-  );
+  // A confirmation names the workspace it clears: another workspace starts over.
+  useEffect(() => {
+    setConfirmation(undefined);
+    setResult(undefined);
+  }, [workspaceId]);
   const clear = async () => {
     if (!confirmation || pending) return;
     const workspace = confirmation;
     setPending(true);
     try {
-      await api.clearBrowserStorage(workspace);
+      await call("browser.clearStorage", { workspace });
       setResult({ workspace, message: m.settings_browser_storage_success() });
       setConfirmation(undefined);
     } catch (error) {
       setResult({
         workspace,
         message:
-          error instanceof CommaApiError &&
-          error.body?.error === "browser_shared_profile_in_use"
+          (error as { code?: unknown } | null)?.code === "browser_shared_profile_in_use"
             ? m.settings_browser_storage_busy()
             : m.settings_browser_storage_failed(),
       });
@@ -69,6 +106,7 @@ export function useBrowserSettingsCategory(api: CommaApiClient) {
           },
         ],
       },
+      ...(browserImport.section ? [browserImport.section] : []),
     ],
     overlay: confirmation ? (
       <Dialog
@@ -98,7 +136,9 @@ export function useBrowserSettingsCategory(api: CommaApiClient) {
           },
         ]}
       />
-    ) : undefined,
+    ) : (
+      browserImport.overlay
+    ),
   };
   return category;
 }

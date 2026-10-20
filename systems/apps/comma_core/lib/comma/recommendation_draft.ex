@@ -45,7 +45,7 @@ defmodule Comma.RecommendationDraft do
       sources: sources,
       references: references,
       input: Enum.reverse(input),
-      prepared_at: DateTime.utc_now()
+      prepared_at: SystemsClock.utc_now()
     }
 
     if mode == "member",
@@ -94,7 +94,7 @@ defmodule Comma.RecommendationDraft do
       sources: sources,
       references: references,
       input: [],
-      prepared_at: DateTime.utc_now(),
+      prepared_at: SystemsClock.utc_now(),
       member_candidates: candidates
     }
   end
@@ -115,10 +115,11 @@ defmodule Comma.RecommendationDraft do
          context = Map.put(context, :locale, opts[:locale]),
          {:ok, paragraphs} <- map_ok(draft["paragraphs"], &parts(&1, context)),
          {:ok, cards} <- map_ok(draft["routines"], &card(&1, context)),
+         cards = unique_card_ids(cards),
          snapshot = %{
            "protocolVersion" => 1,
            "templateCatalogVersion" => 1,
-           "generatedAt" => Keyword.get(opts, :now_ms, System.system_time(:millisecond)),
+           "generatedAt" => Keyword.get(opts, :now_ms, SystemsClock.system_time(:millisecond)),
            "generation" => run.generation,
            "sourceRevision" => run.source_revision,
            "summary" =>
@@ -158,7 +159,7 @@ defmodule Comma.RecommendationDraft do
            "sourceId" => context.references[id]["sourceId"],
            "sourceUrl" => context.references[id]["href"],
            "objective" => objective,
-           "context" => prompt_context(candidates[id]),
+           "context" => quoted_context(candidates[id], locale),
            "contextLabel" => context_label
          }}
       end
@@ -174,11 +175,89 @@ defmodule Comma.RecommendationDraft do
   defp member_prompt_context(context, _draft, _run, _locale), do: context
 
   @doc """
-  The quoted source excerpt of a member candidate. A change is new evidence.
-  A pooled item carries the excerpt its collection recorded.
+  The source excerpt that a pooled item version covers. A change is new
+  evidence. It stays a version input, so existing versions, and the consumer
+  outcomes and observations keyed by them, keep their identity. The hover
+  shows `quoted_context/2` instead.
   """
-  def prompt_context(%{"promptContext" => text}) when is_binary(text), do: text
   def prompt_context(candidate), do: source_excerpt(prompt_source(candidate))
+
+  @doc """
+  The hover text of a member candidate. It renders the quote that the
+  product adapter built at collection (`CommaWeb.RecommendationSourceQuote`):
+  the title, the status facts in the member's language, and the quoted words
+  after their author, one line per source line, within 600 UTF-16 units. A
+  candidate without a quote, or whose quote holds only an author, shows its
+  title. It is display text, not evidence, so the item version does not cover
+  it.
+  """
+  def quoted_context(candidate, locale) do
+    text =
+      case candidate["quote"] do
+        %{} = quote ->
+          [quote["title"], facts(quote["facts"] || [], locale)] ++
+            byline(quote["author"], quote["lines"] || [], locale)
+
+        _ ->
+          []
+      end
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> case do
+        [] -> escape(candidate["title"] || "")
+        lines -> Enum.join(lines, "\n")
+      end
+
+    excerpt = fit(text, ~r{<[^>]*>|&(?:amp|lt|gt);|https?://[^\s<>"']+})
+    if excerpt == text, do: text, else: String.trim_trailing(excerpt) <> "…"
+  end
+
+  defp facts(facts, locale) do
+    case Enum.flat_map(facts, &fact(&1, locale)) do
+      [] -> nil
+      words -> Enum.join(words, " · ")
+    end
+  end
+
+  defp fact(%{"kind" => "status", "value" => value}, "zh-CN"), do: ["状态：" <> value]
+  defp fact(%{"kind" => "status", "value" => value}, _locale), do: ["Status: " <> value]
+
+  defp fact(%{"kind" => kind} = fact, locale) do
+    words = %{
+      {"checks", "passing"} => {"检查通过", "Checks passed"},
+      {"checks", "failing"} => {"检查未通过", "Checks failing"},
+      {"checks", "pending"} => {"检查进行中", "Checks running"},
+      {"review", "approved"} => {"已批准", "Approved"},
+      {"review", "changes_requested"} => {"需要修改", "Changes requested"},
+      {"review", "review_required"} => {"待审核", "Review required"},
+      {"draft", nil} => {"草稿", "Draft"}
+    }
+
+    case words[{kind, fact["value"]}] do
+      {zh, _en} when locale == "zh-CN" -> [zh]
+      {_zh, en} -> [en]
+      nil -> []
+    end
+  end
+
+  defp fact(_fact, _locale), do: []
+
+  # The author leads the quoted words.
+  defp byline(author, [first | rest], locale) when is_binary(author) do
+    separator = if locale == "zh-CN", do: "：", else: ": "
+
+    if String.starts_with?(first, "• "),
+      do: [author <> String.trim_trailing(separator), first | rest],
+      else: [author <> separator <> first | rest]
+  end
+
+  defp byline(_author, lines, _locale), do: lines
+
+  defp escape(text),
+    do:
+      text
+      |> String.replace("&", "&amp;")
+      |> String.replace("<", "&lt;")
+      |> String.replace(">", "&gt;")
 
   defp prompt_source(candidate) do
     # The record is primary. Neighboring messages do not replace a Slack request.
@@ -193,7 +272,12 @@ defmodule Comma.RecommendationDraft do
 
   defp source_excerpt(text) do
     text = text |> String.replace(~r/\s+/u, " ") |> String.trim()
+    excerpt = fit(text, ~r{<[^>]*>|https?://[^\s<>"']+})
+    excerpt <> if(excerpt != text, do: "…", else: "")
+  end
 
+  # The longest prefix within 600 UTF-16 units that splits no `atoms` match.
+  defp fit(text, atoms) do
     {kept, _units} =
       text
       |> String.graphemes()
@@ -209,13 +293,12 @@ defmodule Comma.RecommendationDraft do
     boundary = byte_size(excerpt)
 
     cut =
-      Regex.scan(~r{<[^>]*>|https?://[^\s<>"']+}, text, return: :index)
+      Regex.scan(atoms, text, return: :index)
       |> Enum.find_value(boundary, fn [{start, size}] ->
         if start < boundary and start + size > boundary, do: start
       end)
 
-    excerpt = binary_part(excerpt, 0, cut)
-    excerpt <> if(excerpt != text, do: "…", else: "")
+    binary_part(excerpt, 0, cut)
   end
 
   defp project(draft, context, %{relevance_mode: "member"}, locale),
@@ -279,6 +362,18 @@ defmodule Comma.RecommendationDraft do
       "paragraphs" => array(parts, 1, 4),
       "routines" => array(%{"anyOf" => [text_routine, media_routine]}, 0, 6)
     })
+  end
+
+  # A card is named after its app. Another card of the same app, from a second
+  # account or a continued source, takes the next number.
+  defp unique_card_ids(cards) do
+    cards
+    |> Enum.map_reduce(%{}, fn card, seen ->
+      count = Map.get(seen, card["id"], 0) + 1
+      id = if count == 1, do: card["id"], else: "#{card["id"]}-#{count}"
+      {Map.put(card, "id", id), Map.put(seen, card["id"], count)}
+    end)
+    |> elem(0)
   end
 
   defp card(draft, context) do

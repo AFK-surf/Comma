@@ -1,4 +1,7 @@
 defmodule SalixIM.ConversationActor do
+  require SystemsRuntime.Proc, as: Proc
+  require SystemsClock
+
   @moduledoc """
   Single owner for one conversation aggregate.
 
@@ -14,7 +17,7 @@ defmodule SalixIM.ConversationActor do
   `tla/salix/ConversationMutationSubscription.tla`.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -29,8 +32,9 @@ defmodule SalixIM.ConversationActor do
     Conversations,
     GroupDirectory,
     ProviderRecipientIdentity,
-    SlackTaskCard,
     SourceRefProtection,
+    StationTaskWatch,
+    TaskCardProjection,
     TaskWorkerWatch
   }
 
@@ -55,6 +59,9 @@ defmodule SalixIM.ConversationActor do
   @list_index_previous_updated_at_field "_list_index_previous_updated_at"
   @egress_archive_broker_key :egress_archive_reservation_broker
   @egress_archive_reservation_key :egress_archive_reservation
+  # The appended Message, handed to the station Task watch with the reply and
+  # never returned to a caller.
+  @appended_message_key :appended_message
   @egress_archive_request_tag :salix_egress_archive_reserve
   @egress_archive_reply_tag :salix_egress_archive_reserved
   @egress_archive_reserve_timeout_ms 50
@@ -67,6 +74,9 @@ defmodule SalixIM.ConversationActor do
             worker_watch_pid: nil,
             worker_watch_ref: nil,
             worker_watch_capability: nil,
+            station_watch_pid: nil,
+            station_watch_ref: nil,
+            station_watch_capability: nil,
             memberships: %{},
             participant_slots: %{},
             membership_index: %{},
@@ -95,7 +105,7 @@ defmodule SalixIM.ConversationActor do
   def start_link(opts) do
     group_id = Keyword.fetch!(opts, :group_id)
     conversation_id = Keyword.fetch!(opts, :conversation_id)
-    GenServer.start_link(__MODULE__, opts, name: via(group_id, conversation_id))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: via(group_id, conversation_id))
   end
 
   @spec key(String.t(), String.t()) :: {:conversation, String.t(), String.t()}
@@ -116,12 +126,24 @@ defmodule SalixIM.ConversationActor do
     do: call(pid, {:send_system_message, participant_id, attrs})
 
   @doc false
-  def task_worker_watch(pid), do: GenServer.call(pid, :task_worker_watch, @call_timeout)
+  def notify_qq_task_activity(pid, session_ref, activity),
+    do: call(pid, {:notify_qq_task_activity, session_ref, activity})
 
-  defp call(pid, request), do: GenServer.call(pid, {:conversation_api, request}, @call_timeout)
+  @doc false
+  def task_worker_watch(pid),
+    do: SystemsRuntime.Server.call(pid, :task_worker_watch, @call_timeout)
+
+  @doc false
+  def station_task_watch(pid),
+    do: SystemsRuntime.Server.call(pid, :station_task_watch, @call_timeout)
+
+  defp call(pid, request),
+    do: SystemsRuntime.Server.call(pid, {:conversation_api, request}, @call_timeout)
 
   defp via(group_id, conversation_id),
-    do: {:via, Registry, {SalixIM.ConversationRegistry, key(group_id, conversation_id)}}
+    do:
+      {:via, SystemsRuntime.Registry,
+       {SalixIM.ConversationRegistry, key(group_id, conversation_id)}}
 
   @impl true
   def init(opts) do
@@ -130,29 +152,42 @@ defmodule SalixIM.ConversationActor do
 
     {:ok, store_pid} =
       ConversationStore.start_link(
-        owner: self(),
+        owner: Proc.self(),
         group_id: group_id,
         conversation_id: conversation_id
       )
 
-    worker_watch_capability = make_ref()
+    worker_watch_capability = Proc.make_ref()
 
     {:ok, worker_watch_pid} =
       TaskWorkerWatch.start_link(
-        owner: self(),
+        owner: Proc.self(),
         group_id: group_id,
         conversation_id: conversation_id,
         capability: worker_watch_capability
+      )
+
+    station_watch_capability = Proc.make_ref()
+
+    {:ok, station_watch_pid} =
+      StationTaskWatch.start_link(
+        owner: Proc.self(),
+        group_id: group_id,
+        conversation_id: conversation_id,
+        capability: station_watch_capability
       )
 
     state = %__MODULE__{
       group_id: group_id,
       conversation_id: conversation_id,
       store_pid: store_pid,
-      store_ref: Process.monitor(store_pid),
+      store_ref: Proc.monitor(store_pid),
       worker_watch_pid: worker_watch_pid,
-      worker_watch_ref: Process.monitor(worker_watch_pid),
+      worker_watch_ref: Proc.monitor(worker_watch_pid),
       worker_watch_capability: worker_watch_capability,
+      station_watch_pid: station_watch_pid,
+      station_watch_ref: Proc.monitor(station_watch_pid),
+      station_watch_capability: station_watch_capability,
       wake_on_recovery?: Keyword.get(opts, :wake_on_recovery, true)
     }
 
@@ -225,7 +260,7 @@ defmodule SalixIM.ConversationActor do
 
       {:reply,
        {:ok, SalixIM.ConversationSource.sources(conversation, participants),
-        {self(), state.recovery_membership_revision}}, state}
+        {Proc.self(), state.recovery_membership_revision}}, state}
     else
       {:error, reason, state} -> {:reply, {:error, reason}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
@@ -236,7 +271,7 @@ defmodule SalixIM.ConversationActor do
     # Membership changes can expose an older suffix (the first Triage join).
     # Cleanup must serialize with those mutations, including owner restart.
     reply =
-      if observed_memberships == {self(), state.recovery_membership_revision},
+      if observed_memberships == {Proc.self(), state.recovery_membership_revision},
         do:
           SalixStore.ConversationLogRecovery.complete(%{
             group_id: state.group_id,
@@ -273,13 +308,17 @@ defmodule SalixIM.ConversationActor do
     {:reply, ConversationStore.defer_list_repair(state.store_pid), state}
   end
 
+  def handle_call(:repair_task_activity_projection, _from, state) do
+    {:reply, ConversationStore.repair_task_activity_projection(state.store_pid), state}
+  end
+
   def handle_call(:delete_group_conversation, _from, state) do
     reply = do_delete_group_conversation(state)
     state = notify_conversation_change(state, reply, :delete)
 
     case reply do
       {:ok, _tombstone} ->
-        send(self(), :cleanup_deleted_conversation)
+        Proc.send(Proc.self(), :cleanup_deleted_conversation)
 
         {:reply, :ok,
          %{
@@ -321,13 +360,13 @@ defmodule SalixIM.ConversationActor do
     {:reply, public, state}
   end
 
-  # The Conversation API is private to the Task Worker watch.
+  # The Conversation API is private to the Task's two watches.
   def handle_call(
         {:conversation_api, _request},
         {caller, _tag},
-        %{worker_watch_pid: worker_watch_pid} = state
+        %{worker_watch_pid: worker_watch_pid, station_watch_pid: station_watch_pid} = state
       )
-      when caller != worker_watch_pid,
+      when caller != worker_watch_pid and caller != station_watch_pid,
       do: {:reply, {:error, :unauthorized_conversation_api_caller}, state}
 
   def handle_call(
@@ -373,6 +412,36 @@ defmodule SalixIM.ConversationActor do
     {:reply, ConversationStore.message_by_id(state.store_pid, message_id), state}
   end
 
+  # One indexed QQ status destination per Task. Only this owner's Worker watch
+  # can invoke the private API. Activity is presentation, never Task status.
+  def handle_call(
+        {:conversation_api, {:notify_qq_task_activity, {agent_id, session_id}, activity}},
+        _from,
+        state
+      ) do
+    with {:ok,
+          %{"kind" => "agent_task", "status" => "active", "task_worker_agent_id" => ^agent_id}} <-
+           ConversationStore.load_raw(state.store_pid),
+         {:ok, worker_id} <- unique_membership_id(state, {:agent, agent_id}),
+         %{"session_id" => ^session_id} <- get_in(state.memberships, [worker_id, "payload"]),
+         {:ok, card_id} <-
+           unique_membership_id(state, {:provider, "qq", SalixIM.QQTaskCard.target_key()}),
+         %{"state" => activity_state, "version" => version} <- activity,
+         true <-
+           activity_state in ~w(active error stopped) and is_binary(version) and version != "" do
+      attrs = %{
+        "idempotency_key" => "qq-task-activity:" <> session_id <> ":" <> version,
+        "content" => "Task execution status",
+        "metadata" => %{"qq_task_activity" => Map.take(activity, ~w(state issue))}
+      }
+
+      {reply, state} = append_provider_effect(state, card_id, attrs, [])
+      {:reply, reply, state}
+    else
+      _ -> {:reply, {:error, :qq_task_activity_not_applicable}, state}
+    end
+  end
+
   def handle_call(
         {:conversation_api, {:send_system_message, participant_id, attrs}},
         _from,
@@ -388,6 +457,9 @@ defmodule SalixIM.ConversationActor do
 
   def handle_call(:task_worker_watch, _from, state),
     do: {:reply, {:ok, state.worker_watch_pid}, state}
+
+  def handle_call(:station_task_watch, _from, state),
+    do: {:reply, {:ok, state.station_watch_pid}, state}
 
   def handle_call({:create_group_conversation, attrs}, _from, state) do
     reply =
@@ -425,7 +497,7 @@ defmodule SalixIM.ConversationActor do
         {:ok, conversation} ->
           publish_conversation_status(state, conversation)
           notify_status_subscribers(state, conversation["status"])
-          reconcile_worker_watch(state)
+          reconcile_task_watches(state)
 
         _ ->
           :ok
@@ -537,6 +609,42 @@ defmodule SalixIM.ConversationActor do
     {:reply, reply, state}
   end
 
+  def handle_call({:set_task_status, status, version, user_id}, _from, state) do
+    result =
+      ConversationStore.update_with_previous(state.store_pid, fn conversation ->
+        SalixIM.TaskManualStatus.transition(
+          conversation,
+          status,
+          version,
+          user_id,
+          next_updated_at(conversation)
+        )
+      end)
+
+    case result do
+      {:ok, previous, updated} ->
+        reply = {:ok, conversation_record_for_api(updated)}
+
+        state =
+          if previous != updated do
+            publish_conversation_status(state, updated)
+            notify_status_subscribers(state, updated["status"])
+            reconcile_task_watches(state)
+
+            state
+            |> notify_conversation_change(reply, :upsert)
+            |> announce_manual_task_status(updated)
+          else
+            state
+          end
+
+        {:reply, reply, state}
+
+      error ->
+        {:reply, error, state}
+    end
+  end
+
   def handle_call({:link_task_mail, router_id, ref}, _from, state) do
     reply =
       ConversationStore.update(state.store_pid, fn rec ->
@@ -612,13 +720,112 @@ defmodule SalixIM.ConversationActor do
     end
   end
 
+  def handle_call(
+        {:restart_task_loop, request, command, router_id, source, human_at},
+        _from,
+        state
+      ) do
+    with {:ok, state} <- ensure_participants_loaded(state),
+         {:ok, router_participant_id} <- unique_membership_id(state, {:agent, router_id}),
+         %{"state" => "active"} = router <- state.memberships[router_participant_id],
+         %{} = worker <-
+           Enum.find(
+             Map.values(state.memberships),
+             &(&1["actor_type"] == "agent" and &1["role_label"] == "worker" and
+                 &1["state"] == "active")
+           ),
+         {:ok, previous, reopened} <-
+           ConversationStore.update_with_previous(state.store_pid, fn record ->
+             with :ok <- SalixIM.TaskLoop.restart_allowed(record, router_id, human_at) do
+               if record["status"] == "active",
+                 do: record,
+                 else:
+                   record
+                   |> SalixIM.TaskManualStatus.clear_on_status_change(%{"status" => "active"})
+                   |> Map.put("status", "active")
+                   |> Map.put("updated_at", next_updated_at(record))
+             end
+           end) do
+      if previous["status"] != reopened["status"] do
+        publish_conversation_status(state, reopened)
+        notify_status_subscribers(state, reopened["status"])
+        reconcile_task_watches(state)
+      end
+
+      attrs = %{
+        "actor_type" => "agent",
+        "agent_id" => router_id,
+        "content" => command,
+        "idempotency_key" => "task-loop-restart:" <> source,
+        "delivery_filter" => %{"participant_ids" => [worker["participant_id"]]},
+        :task_loop_request => request
+      }
+
+      reply =
+        ConversationStore.with_request(state.store_pid, fn ->
+          do_append_group_conversation_message(state, attrs, router, [worker["participant_id"]])
+        end)
+
+      {reply, state} = reply_and_wake_participants(reply, state, router_id)
+
+      case reply do
+        {:ok, _} ->
+          reply = {:ok, conversation_record_for_api(reopened)}
+          {:reply, reply, notify_conversation_update(state, reply, "agent_task")}
+
+        error ->
+          {:reply, error, state}
+      end
+    else
+      {:error, reason, state} -> {:reply, {:error, reason}, state}
+      {:error, _} = error -> {:reply, error, state}
+      _ -> {:reply, {:error, {:conflict, "The Task needs its active Router and Worker"}}, state}
+    end
+  end
+
+  def handle_call({:task_loop_wake, loop, payload, source_id}, _from, state) do
+    with {:ok, state} <- ensure_participants_loaded(state),
+         {:ok, participant_id} <- task_loop_participant(state, loop) do
+      attrs = %{
+        "actor_type" => "system",
+        "content" => payload[:content],
+        "source_message_id" => source_id,
+        "idempotency_key" => "task-loop-wake:" <> source_id,
+        "delivery_filter" => %{"participant_ids" => [participant_id]},
+        :agent_input => task_loop_input(state, loop, payload)
+      }
+
+      reply =
+        ConversationStore.with_request(state.store_pid, fn ->
+          do_append_group_conversation_message(state, attrs, :system, [participant_id])
+        end)
+
+      state = notify_message_created(state, reply, "")
+      {reply, state} = finish_owned_append(reply, state)
+
+      result =
+        case reply do
+          {:ok, %{"inserted" => inserted}} -> {:ok, if(inserted, do: :created, else: :duplicate)}
+          other -> other
+        end
+
+      {:reply, result, state}
+    else
+      {:error, reason, state} -> {:reply, {:error, reason}, state}
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:task_loop_ended, loop, fact}, _from, state) do
+    {reply, state} = task_loop_ended(state, loop, fact)
+    {:reply, reply, state}
+  end
+
   def handle_call({:replace_task_schedule, current, replacement}, _from, state) do
     reply =
-      do_replace_task_schedule(
-        state.store_pid,
-        current,
-        replacement
-      )
+      with :ok <- schedule_beside_loop(state, replacement) do
+        do_replace_task_schedule(state.store_pid, current, replacement)
+      end
 
     state = notify_conversation_change(state, reply, :upsert)
     {:reply, reply, state}
@@ -692,7 +899,11 @@ defmodule SalixIM.ConversationActor do
         :agent_input => Map.delete(payload, :session_id)
       }
 
-      reply = do_append_group_conversation_message(state, attrs, :system, [participant_id])
+      reply =
+        ConversationStore.with_request(state.store_pid, fn ->
+          do_append_group_conversation_message(state, attrs, :system, [participant_id])
+        end)
+
       state = notify_message_created(state, reply, "")
       {reply, state} = finish_owned_append(reply, state)
       {:reply, reply, state}
@@ -752,6 +963,22 @@ defmodule SalixIM.ConversationActor do
         end
       end)
 
+    {:reply, reply, state}
+  end
+
+  def handle_call({:append_product_event, event_type, data, idempotency_key}, _from, state) do
+    attrs = %{
+      "actor_type" => "system",
+      "kind" => "app_event",
+      "content" => [],
+      "metadata" => Map.put(data, "event_type", event_type),
+      "idempotency_key" => "product-event:" <> idempotency_key,
+      "delivery_filter" => %{"participant_ids" => []}
+    }
+
+    reply = do_append_group_conversation_message(state, attrs, :system, [])
+    state = notify_message_created(state, reply, "")
+    {reply, state} = finish_owned_append(reply, state)
     {:reply, reply, state}
   end
 
@@ -1003,7 +1230,7 @@ defmodule SalixIM.ConversationActor do
           }
 
           {reply, state} = append_initial_task_message(state, spec, worker_id)
-          {:reply, reply, state}
+          {:reply, strip_internal_result_fields(reply), state}
         else
           error -> {:reply, error, state}
         end
@@ -1196,7 +1423,7 @@ defmodule SalixIM.ConversationActor do
         if previous["status"] != conversation["status"] do
           publish_conversation_status(state, conversation)
           notify_status_subscribers(state, conversation["status"])
-          reconcile_worker_watch(state)
+          reconcile_task_watches(state)
         end
 
         {:reply, reply, notify_conversation_update(state, reply, conversation_kind(previous))}
@@ -1208,6 +1435,14 @@ defmodule SalixIM.ConversationActor do
 
   def handle_call({:send_provider_participant_message, participant_id, attrs, opts}, _from, state) do
     {reply, state} = append_provider_effect(state, participant_id, attrs, opts)
+
+    if match?({:ok, _}, reply) and
+         get_in(state.memberships, [participant_id, "provider"]) == "qq" and
+         get_in(state.memberships, [participant_id, "target_key"]) ==
+           SalixIM.QQTaskCard.target_key() do
+      reconcile_task_watches(state)
+    end
+
     {:reply, reply, state}
   end
 
@@ -1302,7 +1537,7 @@ defmodule SalixIM.ConversationActor do
     {:reply, reply, state}
   end
 
-  def handle_call({:subscribe, subscriber}, _from, state) when is_pid(subscriber) do
+  def handle_call({:subscribe, subscriber}, _from, state) when Proc.is_process(subscriber) do
     case Conversations.get_group_conversation(state.group_id, state.conversation_id) do
       {:ok, conversation} ->
         state = put_subscriber(state, subscriber)
@@ -1310,7 +1545,7 @@ defmodule SalixIM.ConversationActor do
         {:reply,
          {:ok,
           %{
-            "owner_pid" => self(),
+            "owner_pid" => Proc.self(),
             "tail_seq" => conversation_tail_seq(conversation)
           }}, state}
 
@@ -1420,7 +1655,8 @@ defmodule SalixIM.ConversationActor do
        Map.drop(result, [
          "wakeup_participant_ids",
          "participant_upserts",
-         "participant_cursor_advance"
+         "participant_cursor_advance",
+         @appended_message_key
        ])}
 
   defp strip_internal_result_fields(reply), do: reply
@@ -1792,7 +2028,6 @@ defmodule SalixIM.ConversationActor do
   defp create_task_with_initial_message(state, spec) do
     conversation_attrs = spec["conversation"]
     worker_agent_id = participant_id_string(spec["worker_agent_id"])
-    delegator_agent_id = participant_id_string(spec["delegator_agent_id"])
 
     with true <- is_map(conversation_attrs) and worker_agent_id != "",
          {:ok, state} <- load_task_participants(state),
@@ -1809,19 +2044,20 @@ defmodule SalixIM.ConversationActor do
            |> maybe_put_task_materialization(spec["materialization"]),
          staged = Enum.reduce(record["participants"], state, &put_membership(&2, &1)),
          {:ok, worker_id} <- unique_membership_id(staged, {:agent, worker_agent_id}),
-         {:ok, delegator_id} <- unique_membership_id(staged, {:agent, delegator_agent_id}),
+         {:ok, author_id} <-
+           unique_membership_id(staged, initial_author(spec, spec["initial_message"])),
          :ok <- ConversationStore.discard_uncommitted_messages(state.store_pid) do
-      {attrs, targets} = initial_task_delivery(spec, delegator_id, worker_id)
+      {attrs, targets} = initial_task_delivery(spec, author_id, worker_id)
 
       case do_append_group_conversation_message(
              staged,
              attrs,
-             staged.memberships[delegator_id],
+             staged.memberships[author_id],
              targets,
              record
            ) do
         {:ok, initial_message} ->
-          reconcile_worker_watch(staged)
+          reconcile_task_watches(staged)
 
           with {:ok, created} <- ConversationStore.load(staged.store_pid) do
             {{:ok,
@@ -1859,19 +2095,19 @@ defmodule SalixIM.ConversationActor do
 
   defp initial_task_delivery(
          %{"initial_delivery" => :context, "initial_message" => attrs},
-         delegator_id,
+         author_id,
          _worker_id
        ) do
     {attrs
      |> Map.delete("mentions")
      |> Map.delete(:mentions)
-     |> Map.put("participant_id", delegator_id)
+     |> Map.put("participant_id", author_id)
      |> Map.put("delivery_filter", %{"participant_ids" => []}), []}
   end
 
-  defp initial_task_delivery(%{"initial_message" => attrs}, delegator_id, worker_id) do
+  defp initial_task_delivery(%{"initial_message" => attrs}, author_id, worker_id) do
     {attrs
-     |> Map.put("participant_id", delegator_id)
+     |> Map.put("participant_id", author_id)
      |> Map.put("delivery_filter", %{"participant_ids" => [worker_id]}), [worker_id]}
   end
 
@@ -1880,7 +2116,7 @@ defmodule SalixIM.ConversationActor do
       {{:ok, materialized}, state} ->
         case append_task_initial_message(state, spec, materialized) do
           {{:ok, initial_message}, state} ->
-            reconcile_worker_watch(state)
+            reconcile_task_watches(state)
 
             result =
               materialized
@@ -1915,7 +2151,10 @@ defmodule SalixIM.ConversationActor do
           "task_id" => value["task_id"],
           "suggested_text" => command["text"],
           "automatic" => command["automatic"] == true,
-          "urgency" => command["urgency"]
+          "urgency" => command["urgency"],
+          "assessment" => command["assessment"],
+          "continues" => command["continues"],
+          "linked" => command["linked"]
         }
 
         payload = %{
@@ -2103,7 +2342,7 @@ defmodule SalixIM.ConversationActor do
 
   defp task_followup_source?(_task, _ref), do: false
 
-  defp mail_schedules_module, do: Application.fetch_env!(:salix_agent, :schedules_mod)
+  defp mail_schedules_module, do: SystemsRuntime.fetch_env!(:salix_agent, :schedules_mod)
 
   defp delete_mail_schedule(nil), do: :ok
 
@@ -2230,11 +2469,8 @@ defmodule SalixIM.ConversationActor do
   end
 
   defp append_task_context(state, %{"initial_message" => attrs} = spec) when is_map(attrs) do
-    delegator_agent_id = participant_id_string(spec["delegator_agent_id"])
-
-    with {:ok, delegator_id} <-
-           unique_membership_id(state, {:agent, delegator_agent_id}) do
-      participant = state.memberships[delegator_id]
+    with {:ok, author_id} <- unique_membership_id(state, initial_author(spec, attrs)) do
+      participant = state.memberships[author_id]
 
       reply =
         do_append_group_conversation_message(
@@ -2242,7 +2478,7 @@ defmodule SalixIM.ConversationActor do
           attrs
           |> Map.delete("mentions")
           |> Map.delete(:mentions)
-          |> Map.put("participant_id", delegator_id)
+          |> Map.put("participant_id", author_id)
           |> Map.put("delivery_filter", %{"participant_ids" => []}),
           participant,
           []
@@ -2261,17 +2497,14 @@ defmodule SalixIM.ConversationActor do
 
   defp append_initial_task_message(state, %{"initial_message" => attrs} = spec, worker_id)
        when is_map(attrs) do
-    delegator_agent_id = participant_id_string(spec["delegator_agent_id"])
-
-    with {:ok, delegator_id} <-
-           unique_membership_id(state, {:agent, delegator_agent_id}) do
-      participant = state.memberships[delegator_id]
+    with {:ok, author_id} <- unique_membership_id(state, initial_author(spec, attrs)) do
+      participant = state.memberships[author_id]
 
       reply =
         do_append_group_conversation_message(
           state,
           attrs
-          |> Map.put("participant_id", delegator_id)
+          |> Map.put("participant_id", author_id)
           |> Map.put("delivery_filter", %{"participant_ids" => [worker_id]}),
           participant,
           [worker_id]
@@ -2289,9 +2522,17 @@ defmodule SalixIM.ConversationActor do
   defp append_initial_task_message(state, _spec, _worker_id),
     do: {{:ok, %{"inserted" => false}}, state}
 
+  # Who writes a Task's first Message: the delegating Agent, or the person
+  # who asked when the words are theirs (`SalixCluster.TaskSchedules`).
+  defp initial_author(_spec, %{"actor_type" => "user", "user_id" => user_id}),
+    do: {:user, participant_id_string(user_id)}
+
+  defp initial_author(spec, _attrs),
+    do: {:agent, participant_id_string(spec["delegator_agent_id"])}
+
   defp merge_task_initial_message(result, initial_message)
        when is_map(initial_message),
-       do: Map.merge(result, initial_message)
+       do: Map.merge(result, Map.delete(initial_message, @appended_message_key))
 
   defp merge_task_initial_message(result, _initial_message), do: result
 
@@ -2390,12 +2631,9 @@ defmodule SalixIM.ConversationActor do
                worker_agent_id,
                materialization
              ) do
-        conversation =
-          conversation
-          |> Map.put("task_worker_agent_id", worker_agent_id)
-          |> maybe_put_task_materialization(materialization)
-
         conversation
+        |> Map.put("task_worker_agent_id", worker_agent_id)
+        |> maybe_put_task_materialization(materialization)
       end
     end)
     |> case do
@@ -2632,7 +2870,8 @@ defmodule SalixIM.ConversationActor do
     # API projections omit the publication version. Read the owning Store so
     # every caller publishes the same durable status and idempotency key.
     with {:ok, current} <- ConversationStore.load_raw(state.store_pid),
-         :ok <- observe_task_status(current) do
+         :ok <- observe_task_status(current),
+         :ok <- SalixIM.TaskLoop.converge(current) do
       append_conversation_status(state, current)
     end
   end
@@ -2641,10 +2880,12 @@ defmodule SalixIM.ConversationActor do
 
   # The product observes owned Task status changes, for example to tell the
   # owner that a Task needs them. The observer only queues its own work; a
-  # failure leaves the publication recovery row, so the sweeper retries.
+  # failure leaves the publication recovery row, so the sweeper retries. An
+  # ended Task ends its Background Loop the same way
+  # (`SalixIM.TaskLoop.converge/1`).
   defp observe_task_status(%{"kind" => "agent_task", "owner_user_id" => owner} = conversation)
        when is_binary(owner) and owner != "" do
-    case Application.get_env(:salix_im, :task_status_observer) do
+    case SystemsRuntime.get_env(:salix_im, :task_status_observer) do
       nil ->
         :ok
 
@@ -2704,7 +2945,7 @@ defmodule SalixIM.ConversationActor do
     event =
       {:conversation_status_changed, state.group_id, state.conversation_id, status}
 
-    Enum.each(Map.keys(state.subscribers), &send(&1, event))
+    Enum.each(Map.keys(state.subscribers), &Proc.send(&1, event))
   end
 
   defp reconcile_owned_agent_participants(state, attrs) do
@@ -3086,7 +3327,7 @@ defmodule SalixIM.ConversationActor do
   end
 
   defp put_membership(state, participant) when is_map(participant) do
-    state = %{state | recovery_membership_revision: make_ref()}
+    state = %{state | recovery_membership_revision: Proc.make_ref()}
     participant_id = participant_id_string(participant["participant_id"])
     slot = Map.take(participant, @participant_slot_fields)
 
@@ -3113,7 +3354,7 @@ defmodule SalixIM.ConversationActor do
   end
 
   defp delete_membership(state, participant_id) do
-    state = %{state | recovery_membership_revision: make_ref()}
+    state = %{state | recovery_membership_revision: Proc.make_ref()}
     memberships = Map.delete(state.memberships, participant_id_string(participant_id))
 
     %{
@@ -3284,7 +3525,7 @@ defmodule SalixIM.ConversationActor do
   defp wake_participant_ids(state, participant_ids) do
     case participant_ids(participant_ids) do
       [] -> :ok
-      ids -> send(self(), {:wake_participants, ids})
+      ids -> Proc.send(Proc.self(), {:wake_participants, ids})
     end
 
     state
@@ -3323,11 +3564,11 @@ defmodule SalixIM.ConversationActor do
           0
         )
 
-        Process.send_after(self(), :cleanup_deleted_conversation, delay)
+        SystemsClock.send_after(Proc.self(), :cleanup_deleted_conversation, delay)
         {:noreply, %{state | search_delete_retry_attempt: attempt + 1}}
 
       _more_or_error ->
-        Process.send_after(self(), :cleanup_deleted_conversation, @delete_retry_ms)
+        SystemsClock.send_after(Proc.self(), :cleanup_deleted_conversation, @delete_retry_ms)
         {:noreply, %{state | search_delete_retry_attempt: 0}}
     end
   end
@@ -3346,7 +3587,46 @@ defmodule SalixIM.ConversationActor do
         {:stop, {:task_worker_watch_exit, reason},
          %{state | worker_watch_pid: nil, worker_watch_ref: nil}}
 
+  def handle_info(
+        {:DOWN, ref, :process, watch_pid, reason},
+        %{station_watch_ref: ref, station_watch_pid: watch_pid} = state
+      ),
+      do:
+        {:stop, {:station_task_watch_exit, reason},
+         %{state | station_watch_pid: nil, station_watch_ref: nil}}
+
   def handle_info(_message, %{deleted?: true} = state), do: {:noreply, state}
+
+  # Placement moved this conversation to another node; a deleting copy is
+  # caught above and finishes its cleanup. The Task worker watch is linked but
+  # ignores a normal exit, so stop it here. It keeps no state outside the
+  # Conversation and appends with epoch-keyed idempotency keys, so the current
+  # owner's watch recomputes the same decision. Subscribers see the exit and
+  # reconnect through current placement.
+  def handle_info(:release_non_owner, state) do
+    if Proc.is_process(state.worker_watch_pid) do
+      Proc.demonitor(state.worker_watch_ref, [:flush])
+      Proc.unlink(state.worker_watch_pid)
+      Proc.exit(state.worker_watch_pid, :shutdown)
+    end
+
+    # The station Task watch keeps only a timer: the current owner's watch
+    # rebuilds it from the Messages.
+    if Proc.is_process(state.station_watch_pid) do
+      Proc.demonitor(state.station_watch_ref, [:flush])
+      Proc.unlink(state.station_watch_pid)
+      Proc.exit(state.station_watch_pid, :shutdown)
+    end
+
+    {:stop, :normal,
+     %{
+       state
+       | worker_watch_pid: nil,
+         worker_watch_ref: nil,
+         station_watch_pid: nil,
+         station_watch_ref: nil
+     }}
+  end
 
   def handle_info({:wake_participants, participant_ids}, state) do
     Enum.each(participant_ids, &wake_participant(state, &1))
@@ -3543,10 +3823,174 @@ defmodule SalixIM.ConversationActor do
 
   defp projection_target_ids(state, message, target_ids) do
     Enum.reduce(state.memberships, target_ids, fn {participant_id, participant}, ids ->
-      if SlackTaskCard.participant?(participant) and SlackTaskCard.timeline_message?(message),
-        do: [participant_id | ids],
-        else: ids
+      if TaskCardProjection.participant?(participant) and
+           TaskCardProjection.timeline_message?(message),
+         do: [participant_id | ids],
+         else: ids
     end)
+  end
+
+  # The status is already committed. A failed notice is logged and does not
+  # undo the user's change; the Router still reads the status on its next turn.
+  defp announce_manual_task_status(state, conversation) do
+    change = conversation[SalixIM.TaskManualStatus.field()]
+    key = "task-manual-status:" <> Integer.to_string(conversation["updated_at"])
+
+    metadata = %{
+      "message_type" => SalixIM.TaskManualStatus.message_type(),
+      "task_manual_status" => Map.take(change, ["status", "from_status", "user_id"])
+    }
+
+    state =
+      send_runtime_notice(
+        state,
+        conversation["created_by_agent_id"],
+        key <> ":router",
+        SalixIM.TaskManualStatus.router_notice(conversation),
+        metadata
+      )
+
+    if change["status"] == "cancelled",
+      do:
+        send_runtime_notice(
+          state,
+          conversation["task_worker_agent_id"],
+          key <> ":worker",
+          SalixIM.TaskManualStatus.worker_notice(),
+          metadata
+        ),
+      else: state
+  end
+
+  # One runtime notice to one Agent participant of this Conversation, at most
+  # once per `key`. A failed notice is logged; the change it reports stays.
+  defp send_runtime_notice(state, agent_id, key, content, metadata)
+       when is_binary(agent_id) and agent_id != "" do
+    with {:ok, state} <- ensure_participants_loaded(state),
+         {:ok, participant_id} <- unique_membership_id(state, {:agent, agent_id}) do
+      attrs = %{
+        "idempotency_key" => key,
+        "role_label" => "runtime",
+        "content" => content,
+        "metadata" => metadata
+      }
+
+      {reply, state} = send_owned_system_message(state, participant_id, attrs)
+      {reply, state} = reply_and_wake_participants(reply, state)
+
+      with {:error, reason} <- reply do
+        Logger.warning(
+          "task notice #{state.conversation_id} #{metadata["message_type"]}: append failed: #{inspect(reason)}"
+        )
+      end
+
+      state
+    else
+      {:error, reason, state} ->
+        Logger.warning(
+          "task notice #{state.conversation_id} #{metadata["message_type"]}: participants unavailable: #{inspect(reason)}"
+        )
+
+        state
+
+      {:error, reason} ->
+        Logger.warning(
+          "task notice #{state.conversation_id} #{metadata["message_type"]}: no Agent participant: #{inspect(reason)}"
+        )
+
+        state
+    end
+  end
+
+  defp send_runtime_notice(state, _agent_id, _key, _content, _metadata), do: state
+
+  defp task_loop_input(state, loop, payload) do
+    # Accepted input outlives the Loop's run. Preserve Task scope for the
+    # final Worker round even when a run limit ends that Loop before delivery.
+    origin =
+      Map.merge(payload[:trusted_origin] || %{}, %{
+        "provider" => "loop",
+        "loop_id" => loop["loop_id"],
+        "conversation_kind" => "agent_task",
+        "conversation_id" => state.conversation_id,
+        "agent_group_id" => state.group_id
+      })
+
+    payload |> Map.delete(:session_id) |> Map.put(:trusted_origin, origin)
+  end
+
+  defp task_loop_participant(state, loop) do
+    with {:ok, id} <- unique_membership_id(state, {:agent, loop["agent_id"]}),
+         %{"payload" => %{"session_id" => session}} <- state.memberships[id],
+         true <- session == loop["session_id"] do
+      {:ok, id}
+    else
+      _ -> {:error, :task_worker_missing}
+    end
+  end
+
+  # The Task's Loop ended (`SalixIM.TaskLoop`): the Task takes the status
+  # that the end implies, unless it has ended or is archived already. The
+  # Router hears of a run limit or an end time once.
+  defp task_loop_ended(state, loop, fact) do
+    reason = fact["ended_reason"]
+    status = SalixIM.TaskLoop.ended_status(reason)
+
+    result =
+      ConversationStore.update_with_previous(state.store_pid, fn
+        %{"kind" => "agent_task", "status" => current} = record
+        when current not in ~w(completed cancelled failed archived) ->
+          record
+          |> SalixIM.TaskManualStatus.clear_on_status_change(%{"status" => status})
+          |> Map.put("status", status)
+          |> Map.put("updated_at", next_updated_at(record))
+
+        record ->
+          record
+      end)
+
+    case result do
+      {:ok, previous, updated} ->
+        state =
+          if previous != updated do
+            publish_conversation_status(state, updated)
+            notify_status_subscribers(state, updated["status"])
+            reconcile_task_watches(state)
+
+            notify_conversation_change(
+              state,
+              {:ok, conversation_record_for_api(updated)},
+              :upsert
+            )
+          else
+            state
+          end
+
+        notice = if updated["status"] == status, do: SalixIM.TaskLoop.ended_notice(reason, fact)
+
+        state =
+          case notice do
+            content when is_binary(content) ->
+              send_runtime_notice(
+                state,
+                updated["created_by_agent_id"],
+                "task-loop-ended:" <> to_string(loop["loop_id"]),
+                content,
+                %{
+                  "message_type" => SalixIM.TaskLoop.message_type(),
+                  SalixIM.TaskLoop.message_type() => %{"event" => "ended", "reason" => reason}
+                }
+              )
+
+            _ ->
+              state
+          end
+
+        {{:ok, :ended}, state}
+
+      {:error, _reason} = error ->
+        {error, state}
+    end
   end
 
   defp send_owned_system_message(state, participant_id, attrs)
@@ -3684,16 +4128,18 @@ defmodule SalixIM.ConversationActor do
     # connection once, at concurrency four. Stop scheduling after two seconds;
     # each in-flight read has at most one more second.
     # Retired routes are not active Topics; storage failure is not retirement.
-    deadline = System.monotonic_time(:millisecond) + 2_000
+    deadline = SystemsClock.monotonic_time(:millisecond) + 2_000
+    # Bound here so each read task captures the id, not the actor state.
+    group_id = state.group_id
 
     state.memberships
     |> Map.values()
     |> Enum.filter(&task_topic_participant?/1)
     |> Enum.group_by(&get_in(&1, ["payload", "connect_id"]))
-    |> Task.async_stream(
+    |> SystemsClock.async_stream(
       fn {connect_id, participants} ->
         case SalixIM.ProviderConnects.get_active_connect_by_id(
-               state.group_id,
+               group_id,
                connect_id,
                "telegram"
              ) do
@@ -3722,7 +4168,7 @@ defmodule SalixIM.ConversationActor do
         {:halt, {:ok, true}}
 
       {:ok, {:ok, false}}, acc ->
-        if System.monotonic_time(:millisecond) < deadline,
+        if SystemsClock.monotonic_time(:millisecond) < deadline,
           do: {:cont, acc},
           else: {:halt, {:error, :telegram_topic_connection_unavailable}}
 
@@ -3837,14 +4283,14 @@ defmodule SalixIM.ConversationActor do
 
   defp notify_message_created(
          state,
-         {:ok, %{"inserted" => true, "message_id" => message_id, "seq" => seq}},
+         {:ok, %{"inserted" => true, "message_id" => message_id, "seq" => seq} = committed},
          sender_agent_id
        )
        when is_integer(seq) do
     event =
       {:conversation_message_created, state.group_id, state.conversation_id, message_id, seq}
 
-    Enum.each(Map.keys(state.subscribers), &send(&1, event))
+    Enum.each(Map.keys(state.subscribers), &Proc.send(&1, event))
 
     agent_ids = conversation_agent_ids(state)
 
@@ -3862,9 +4308,16 @@ defmodule SalixIM.ConversationActor do
       seq: seq
     })
 
-    if state.conversation_kind == "agent_task",
-      do: queue_search_projection(state, {:message, message_id, seq}),
-      else: state
+    if state.conversation_kind == "agent_task" do
+      # Stations whose Sessions take part in the Task are given it (`SalixIM.Ports.TaskStations`); never waited for.
+      SalixIM.Ports.TaskStations.appended(state.group_id, state.conversation_id)
+      # The station Task watch is handed the Message itself, so a Message
+      # costs it no read.
+      notify_station_watch_appended(state, committed[@appended_message_key] || committed)
+      queue_search_projection(state, {:message, message_id, seq})
+    else
+      state
+    end
   end
 
   defp notify_message_created(state, _reply, _sender_agent_id), do: state
@@ -3982,7 +4435,7 @@ defmodule SalixIM.ConversationActor do
   end
 
   defp notify_agents(agent_ids, event) do
-    case Application.get_env(:salix_im, :conversation_notifier) do
+    case SystemsRuntime.get_env(:salix_im, :conversation_notifier) do
       notifier when is_function(notifier, 2) -> Enum.each(agent_ids, &notifier.(&1, event))
       _ -> :ok
     end
@@ -3992,7 +4445,7 @@ defmodule SalixIM.ConversationActor do
     if Map.has_key?(state.subscribers, subscriber) do
       state
     else
-      %{state | subscribers: Map.put(state.subscribers, subscriber, Process.monitor(subscriber))}
+      %{state | subscribers: Map.put(state.subscribers, subscriber, Proc.monitor(subscriber))}
     end
   end
 
@@ -4228,11 +4681,24 @@ defmodule SalixIM.ConversationActor do
     with {:ok, conversation} <- Conversations.get_group_conversation(group_id, conversation_id),
          {:ok, updates} <- conversation_update_attrs(attrs),
          :ok <- validate_product_owned_source_refs_update(conversation, updates),
-         :ok <- SalixIM.Triage.Investigation.protect_update(conversation, updates) do
+         :ok <- SalixIM.Triage.Investigation.protect_update(conversation, updates),
+         :ok <- SalixIM.TaskLoop.status_allowed(conversation, updates) do
       ConversationStore.update_with_previous(store_pid, fn rec ->
-        with :ok <- SalixIM.TaskArchive.ordinary_update(rec, attrs),
-             :ok <- SalixIM.TaskCompletion.router_update(rec, updates, attrs[:router_agent_id]) do
-          updated = rec |> Map.merge(updates) |> Map.put("updated_at", next_updated_at(rec))
+        with :ok <- validate_title_condition(rec, attrs),
+             :ok <- SalixIM.TaskArchive.ordinary_update(rec, attrs),
+             :ok <- SalixIM.TaskCompletion.router_update(rec, updates, attrs[:router_agent_id]),
+             :ok <-
+               SalixIM.TaskManualStatus.router_update(
+                 rec,
+                 updates,
+                 attrs[:router_agent_id],
+                 attrs[:router_human_turn_at]
+               ) do
+          updated =
+            rec
+            |> SalixIM.TaskManualStatus.clear_on_status_change(updates)
+            |> Map.merge(updates)
+            |> Map.put("updated_at", next_updated_at(rec))
 
           if Map.has_key?(updates, "labels"),
             do: put_task_labels(updated, updates["labels"], nil),
@@ -4248,6 +4714,17 @@ defmodule SalixIM.ConversationActor do
       end
     end
   end
+
+  # An internal title job supplies the initial title it intends to replace.
+  # Check it on the owner's current record so a concurrent manual rename wins.
+  # This condition is not a stored identity or an authorization decision.
+  defp validate_title_condition(rec, %{if_title: expected}) do
+    if rec["title"] == expected,
+      do: :ok,
+      else: {:error, {:conflict, "conversation title changed"}}
+  end
+
+  defp validate_title_condition(_rec, _attrs), do: :ok
 
   defp update_task_labels(state, update) do
     case ConversationStore.update_with_previous(state.store_pid, update) do
@@ -4325,6 +4802,26 @@ defmodule SalixIM.ConversationActor do
   defp do_accept_task_review_record(_conversation, _review_version),
     do: {:error, {:bad_request, "Review acceptance is only supported on agent_task"}}
 
+  # A Loop Task runs on its Loop; a Schedule beside it would run the work
+  # twice.
+  defp schedule_beside_loop(state, %{"schedule_id" => id}) when is_binary(id) do
+    case SalixIM.TaskLoop.get(state.group_id, state.conversation_id) do
+      {:ok, %{"trigger" => %{}}} ->
+        {:error,
+         {:bad_request,
+          "this Task is a Loop Task and runs on its Loop, so it takes no schedule. To " <>
+            "change its cadence, end the Task and use task.update with loop and command"}}
+
+      {:ok, _view} ->
+        :ok
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp schedule_beside_loop(_state, _replacement), do: :ok
+
   defp do_replace_task_schedule(store_pid, current, replacement)
        when is_map(current) and is_map(replacement) do
     with :ok <- validate_task_schedule_map(replacement) do
@@ -4393,7 +4890,7 @@ defmodule SalixIM.ConversationActor do
 
             case recover_triage_completion(state, conversation) do
               {:ok, state} ->
-                if state.wake_on_recovery?, do: reconcile_worker_watch(state)
+                if state.wake_on_recovery?, do: reconcile_task_watches(state)
                 if state.wake_on_recovery?, do: wake_all_participants(state), else: state
 
               {:error, reason, state} ->
@@ -4456,15 +4953,36 @@ defmodule SalixIM.ConversationActor do
     end
   end
 
-  defp reconcile_worker_watch(%{worker_watch_pid: pid} = state) when is_pid(pid),
-    do: TaskWorkerWatch.reconcile(pid, state.worker_watch_capability)
+  # Both watches re-read the Task; each decides for itself whether it is its
+  # kind of Task (a Worker Session of Salix, or a station's).
+  defp reconcile_task_watches(state) do
+    if Proc.is_process(state.worker_watch_pid),
+      do:
+        TaskWorkerWatch.reconcile(
+          state.worker_watch_pid,
+          state.worker_watch_capability,
+          match?(
+            {:ok, _},
+            unique_membership_id(state, {:provider, "qq", SalixIM.QQTaskCard.target_key()})
+          )
+        )
 
-  defp reconcile_worker_watch(_state), do: :ok
+    if Proc.is_process(state.station_watch_pid),
+      do: StationTaskWatch.reconcile(state.station_watch_pid, state.station_watch_capability)
+
+    :ok
+  end
+
+  defp notify_station_watch_appended(%{station_watch_pid: pid} = state, message)
+       when Proc.is_process(pid),
+       do: StationTaskWatch.appended(pid, state.station_watch_capability, message)
+
+  defp notify_station_watch_appended(_state, _message), do: :ok
 
   defp recover_deleted_conversation(state, tombstone) do
     case converge_deleted_conversation(state, tombstone) do
       {:ok, converged_tombstone} ->
-        send(self(), :cleanup_deleted_conversation)
+        Proc.send(Proc.self(), :cleanup_deleted_conversation)
 
         %{
           state
@@ -4520,8 +5038,14 @@ defmodule SalixIM.ConversationActor do
          reason
        ) do
     state = log_conversation_recovery_failure_once(state, reason)
-    token = make_ref()
-    Process.send_after(self(), {:retry_conversation_recovery, token}, @recovery_retry_ms)
+    token = Proc.make_ref()
+
+    SystemsClock.send_after(
+      Proc.self(),
+      {:retry_conversation_recovery, token},
+      @recovery_retry_ms
+    )
+
     %{state | recovery_retry_token: token}
   end
 
@@ -4576,6 +5100,7 @@ defmodule SalixIM.ConversationActor do
          {:ok, group_owner} <- ConversationPlacement.ensure_group_started(state.group_id),
          :ok <- ConversationGroupActor.remove_deleted_pin(group_owner, state.conversation_id),
          :ok <- ensure_search_delete_admitted(state, tombstone),
+         :ok <- delete_task_loops(state, tombstone),
          :ok <- ConversationStore.finish_delete(state.store_pid, tombstone) do
       :done
     else
@@ -4583,6 +5108,12 @@ defmodule SalixIM.ConversationActor do
       {:error, _reason} = error -> error
     end
   end
+
+  # A deleted Task takes its Background Loops with it.
+  defp delete_task_loops(state, %{"kind" => "agent_task"}),
+    do: SalixIM.TaskLoop.delete_loops(state.group_id, state.conversation_id)
+
+  defp delete_task_loops(_state, _tombstone), do: :ok
 
   defp ensure_search_delete_admitted(state, _tombstone) do
     # Durable admission before canonical tombstone cleanup maps to
@@ -5027,6 +5558,7 @@ defmodule SalixIM.ConversationActor do
          :ok <- prefetch_append(store_pid, rec, create),
          {:ok, request_disposition} <- message_request_disposition(store_pid, rec),
          {:ok, rec} <- assign_reply_thread(store_pid, rec, request_disposition),
+         :ok <- admit_question_answer(store_pid, rec, request_disposition),
          :ok <- admit_archive_message(store_pid, conversation, rec, request_disposition),
          :ok <-
            maybe_validate_inline_task_ref_targets(
@@ -5058,7 +5590,8 @@ defmodule SalixIM.ConversationActor do
                     "conversation_id" => conversation["conversation_id"],
                     "message_id" => message["message_id"],
                     "seq" => message["seq"],
-                    "inserted" => status == :inserted
+                    "inserted" => status == :inserted,
+                    @appended_message_key => message
                   }
                   |> put_egress_archive_reservation(egress_archive_reservation)
 
@@ -5186,6 +5719,29 @@ defmodule SalixIM.ConversationActor do
   defp assign_reply_thread(_store_pid, rec, :uncommitted),
     do: {:ok, assign_standalone_thread(rec)}
 
+  # An answer to a question card must pick from the question it replies to.
+  # The reply target was already found in this Conversation above.
+  defp admit_question_answer(_store_pid, _rec, :committed_retry), do: :ok
+
+  defp admit_question_answer(store_pid, rec, :uncommitted) do
+    case SalixIM.ConversationQuestion.answer_block(rec["content"]) do
+      nil ->
+        :ok
+
+      answer ->
+        case ConversationStore.message_by_id(store_pid, rec["reply_to_message_id"]) do
+          {:ok, question_message} ->
+            SalixIM.ConversationQuestion.admit_answer(answer, question_message)
+
+          {:error, :not_found} ->
+            {:error, {:bad_request, "question_answer: reply to a question in this conversation"}}
+
+          {:error, _reason} = error ->
+            error
+        end
+    end
+  end
+
   # Reservation can reuse an earlier message ID. Standalone roots must use that
   # final identity; reply roots were inherited from the committed parent above.
   defp assign_standalone_thread(%{"reply_to_message_id" => target} = rec) when is_binary(target),
@@ -5198,11 +5754,13 @@ defmodule SalixIM.ConversationActor do
 
   defp reserve_egress_archive(attrs, :uncommitted) when is_map(attrs) do
     case attrs[@egress_archive_broker_key] do
-      {pid, token} when is_pid(pid) and is_reference(token) ->
-        request_ref = make_ref()
-        send(pid, {@egress_archive_request_tag, token, request_ref, self()})
+      {pid, token}
+      when Proc.is_process(pid) and
+             is_reference(token) ->
+        request_ref = Proc.make_ref()
+        Proc.send(pid, {@egress_archive_request_tag, token, request_ref, Proc.self()})
 
-        receive do
+        SystemsClock.vreceive do
           {@egress_archive_reply_tag, ^token, ^request_ref, reservation} -> reservation
         after
           @egress_archive_reserve_timeout_ms -> nil
@@ -6282,5 +6840,5 @@ defmodule SalixIM.ConversationActor do
     max(candidate, previous + 1)
   end
 
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 end

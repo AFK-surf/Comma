@@ -5,9 +5,9 @@ import {
   aiInputQuotePreview,
   aiInputQuotePreviewText,
   aiInputQuotePreviewTitle,
-  CloseQuoteIcon,
-  HoverCard,
-} from "@comma/ui";
+} from "@comma/ui/components/ai-input";
+import { CloseQuoteIcon } from "@comma/ui/components/icons";
+import { HoverCard } from "@comma/ui/components/hover-card";
 
 /**
  * Passages the sender quoted from the thread. Each one is the same icon-only

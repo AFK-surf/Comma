@@ -10,7 +10,7 @@ defmodule Salix.RemoteShell.Registrations do
   end
 
   def start_link(_opts) do
-    Redix.start_link(Application.fetch_env!(:salix_web, :site_rate_limit_redis_url),
+    Redix.start_link(SystemsRuntime.fetch_env!(:salix_web, :site_rate_limit_redis_url),
       name: @connection
     )
   end

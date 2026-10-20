@@ -9,7 +9,7 @@ theorem pruneResultRefs_ack {s t : Term} {j r : List Term}
     (h : pruneResultRefs s j = .ok (t, r)) : t.get (a "queue_ack_id") = s.get (a "queue_ack_id") := by
   unfold pruneResultRefs at h
   repeat' first
-    | exact write_field_frame h rfl
+    | exact write_field_frame h (by keys_absent)
     | (have same := pure_ok h; subst t; rfl)
     | split at h
     | (obtain ⟨_, _, _, h⟩ := bind_ok h)
@@ -19,13 +19,13 @@ theorem queueConsume_ack {s e t : Term} {j r : List Term}
   unfold queueConsume at h
   iterate 4 obtain ⟨_, _, _, h⟩ := bind_ok h
   obtain ⟨_, _, written, pruned⟩ := bind_ok h
-  exact (pruneResultRefs_ack pruned).trans (write_field_frame written rfl)
+  exact (pruneResultRefs_ack pruned).trans (write_field_frame written (by keys_absent))
 
 theorem queueAppend_ack {s e t : Term} {j r : List Term}
     (h : queueAppend s e j = .ok (t, r)) : t.get (a "queue_ack_id") = s.get (a "queue_ack_id") := by
   unfold queueAppend at h
   repeat' first
-    | exact write_field_frame h rfl
+    | exact write_field_frame h (by keys_absent)
     | (have same := pure_ok h; subst t; rfl)
     | (exact (fail_ok h).elim)
     | split at h
@@ -56,7 +56,7 @@ theorem queueAck_watermark {s e t : Term} {previous requested : Int} {j r : List
   obtain ⟨_, _, written, pruned⟩ := bind_ok h
   rw [pruneResultRefs_ack pruned]
   obtain ⟨_, written⟩ := write_cons written
-  exact (write_field_frame written rfl).trans (get_put_same _ _ _)
+  exact (write_field_frame written (by keys_absent)).trans (get_put_same _ _ _)
 
 theorem inner_ack_frame {s e t : Term} {j r : List Term}
     (notAck : e.get (b "type") ≠ b "queue_ack")

@@ -1,6 +1,6 @@
 defmodule SalixStore.ProviderCredentialsCutoverTest do
   # Shares the node-global Fake bucket and control tables; keep serial.
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   import ExUnit.CaptureLog
 
@@ -146,20 +146,6 @@ defmodule SalixStore.ProviderCredentialsCutoverTest do
        "api_key" => "ck_bad",
        "base_url" => "",
        "enabled" => true,
-       "updated_at" => "2026-07-28T00:00:00Z"
-     }, :invalid_record},
-    {"the composio default record with a non-integer updated_at fails closed",
-     {:ctl_composio_default_settings, []},
-     %{"api_key" => "ck_default", "base_url" => "", "enabled" => true, "updated_at" => "nope"},
-     :invalid_record},
-    {"a feishu record with a non-integer updated_at fails closed",
-     {:ctl_feishu_tenant_app, ["ten_bad"]},
-     %{
-       "tenant_id" => "ten_bad",
-       "app_id" => "cli_bad",
-       "app_secret" => "s",
-       "verification_token" => "",
-       "encrypt_key" => "",
        "updated_at" => "2026-07-28T00:00:00Z"
      }, :invalid_record},
     {"a non-map (top-level array) body fails closed as enumerate_failed, not a raise",

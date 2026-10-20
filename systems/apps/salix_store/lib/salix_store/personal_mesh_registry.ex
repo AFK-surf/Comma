@@ -130,7 +130,7 @@ defmodule SalixStore.PersonalMeshRegistry do
         issuer = active_member!(mesh_id, issuer_device_id)
         ensure_manager!(issuer)
 
-        if DateTime.compare(expires_at, DateTime.utc_now()) != :gt do
+        if DateTime.compare(expires_at, SystemsClock.utc_now()) != :gt do
           Repo.rollback(:expired)
         end
 
@@ -143,7 +143,7 @@ defmodule SalixStore.PersonalMeshRegistry do
                 mesh_id: mesh.id,
                 invite_digest: invite_digest,
                 expires_at: expires_at,
-                created_at: DateTime.utc_now()
+                created_at: SystemsClock.timestamp(:utc_datetime_usec)
               }
             ],
             on_conflict: :nothing,
@@ -199,7 +199,7 @@ defmodule SalixStore.PersonalMeshRegistry do
   end
 
   def publish_endpoint(attrs) when is_map(attrs) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     with :ok <- rate_limit("endpoint", attrs.mesh_id, rate_limit_value("endpoint", 120)),
          true <- DateTime.compare(attrs.expires_at, now) == :gt,
@@ -328,7 +328,7 @@ defmodule SalixStore.PersonalMeshRegistry do
   end
 
   defp create_genesis!(attrs) do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     {1, _} =
       Repo.insert_all(Mesh, [
@@ -376,7 +376,7 @@ defmodule SalixStore.PersonalMeshRegistry do
             mesh_id: mesh.id,
             invite_digest: attrs.invite_digest,
             expires_at: attrs.expires_at,
-            created_at: DateTime.utc_now()
+            created_at: SystemsClock.timestamp(:utc_datetime_usec)
           }
         ],
         on_conflict: :nothing,
@@ -392,7 +392,8 @@ defmodule SalixStore.PersonalMeshRegistry do
         )
       )
 
-    if invite.consumed_at != nil or DateTime.compare(invite.expires_at, DateTime.utc_now()) != :gt or
+    if invite.consumed_at != nil or
+         DateTime.compare(invite.expires_at, SystemsClock.utc_now()) != :gt or
          invite.invite_digest != attrs.invite_digest,
        do: Repo.rollback(:invalid_invite)
 
@@ -406,7 +407,7 @@ defmodule SalixStore.PersonalMeshRegistry do
        do: Repo.rollback(:member_limit)
 
     revision = mesh.revision + 1
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     {1, _} =
       Repo.update_all(from(i in Invite, where: i.id == ^invite.id and is_nil(i.consumed_at)),
@@ -438,7 +439,7 @@ defmodule SalixStore.PersonalMeshRegistry do
     target = active_member!(mesh.id, attrs.device_id)
     revision = mesh.revision + 1
     epoch = mesh.policy_epoch + 1
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     digest = :crypto.hash(:sha256, attrs.canonical_payload)
 
     Repo.delete_all(
@@ -513,7 +514,7 @@ defmodule SalixStore.PersonalMeshRegistry do
         )
       )
 
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
 
     endpoints =
       Repo.all(
@@ -547,7 +548,7 @@ defmodule SalixStore.PersonalMeshRegistry do
         from(m in Member,
           where:
             m.mesh_id == ^mesh_id and m.device_id == ^device_id and
-              m.expires_at > ^DateTime.utc_now()
+              m.expires_at > ^SystemsClock.utc_now()
         )
       )
 
@@ -560,7 +561,11 @@ defmodule SalixStore.PersonalMeshRegistry do
   defp advance_mesh!(mesh, revision, epoch),
     do:
       Repo.update_all(from(m in Mesh, where: m.id == ^mesh.id and m.revision == ^mesh.revision),
-        set: [revision: revision, policy_epoch: epoch, updated_at: DateTime.utc_now()]
+        set: [
+          revision: revision,
+          policy_epoch: epoch,
+          updated_at: SystemsClock.timestamp(:utc_datetime_usec)
+        ]
       )
 
   defp insert_operation!(attrs, revision, now) do
@@ -590,7 +595,7 @@ defmodule SalixStore.PersonalMeshRegistry do
 
   @doc "Bounded retention worker for expired projections, rate buckets, and old audit rows."
   def prune_retention(limit \\ 500) when limit > 0 and limit <= 1_000 do
-    now = DateTime.utc_now()
+    now = SystemsClock.utc_now()
     audit_before = DateTime.add(now, -90, :day)
     old_window = div(DateTime.to_unix(now), 60) - 24 * 60
 
@@ -618,7 +623,7 @@ defmodule SalixStore.PersonalMeshRegistry do
   end
 
   defp rate_limit(scope, subject_id, limit) when is_binary(subject_id) and subject_id != "" do
-    window = div(System.system_time(:second), 60)
+    window = div(SystemsClock.system_time(:second), 60)
 
     case Repo.query!(
            "INSERT INTO personal_mesh_rate_buckets (scope, subject_id, window_start, count) VALUES ($1, $2, $3, 1) ON CONFLICT (scope, subject_id, window_start) DO UPDATE SET count = personal_mesh_rate_buckets.count + 1 RETURNING count",
@@ -635,7 +640,7 @@ defmodule SalixStore.PersonalMeshRegistry do
 
   defp rate_limit_value(scope, fallback),
     do:
-      Application.get_env(:salix_store, :personal_mesh_registry_rate_limits, %{})
+      SystemsRuntime.get_env(:salix_store, :personal_mesh_registry_rate_limits, %{})
       |> Map.get(scope, fallback)
 
   defp audit!(mesh_id, actor, action, outcome, digest) do
@@ -646,7 +651,7 @@ defmodule SalixStore.PersonalMeshRegistry do
         action: action,
         outcome: outcome,
         operation_digest: digest,
-        created_at: DateTime.utc_now()
+        created_at: SystemsClock.timestamp(:utc_datetime_usec)
       }
     ])
   end
@@ -731,7 +736,7 @@ defmodule SalixStore.PersonalMeshRegistry do
         proof.root_key_revision == attrs.root_key_revision and
         proof.root_public_key == attrs.root_public_key and proof_permissions == permissions and
         byte_size(proof.context_digest) == 32 and not is_nil(expires_at) and
-        DateTime.compare(expires_at, DateTime.utc_now()) == :gt and
+        DateTime.compare(expires_at, SystemsClock.utc_now()) == :gt and
         DateTime.compare(expires_at, attrs.expires_at) != :gt and
         P256Signature.verify(
           PersonalMeshProto.pairing_proof_signing_input(signing_attrs),
@@ -820,7 +825,7 @@ defmodule SalixStore.PersonalMeshRegistry do
         [:deterministic]
       )
 
-    signer = Application.get_env(:salix_store, :personal_mesh_registry_receipt_signer)
+    signer = SystemsRuntime.get_env(:salix_store, :personal_mesh_registry_receipt_signer)
 
     case signer && signer.(payload) do
       {key_id, signature}

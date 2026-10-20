@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { MeetingPresenceState } from "@comma/native-bridge";
+import { testEpoch } from "@comma/test-utils/test-clock";
 
 import {
   MEETING_APPS,
@@ -49,30 +50,40 @@ function harness(
     >;
     nativeAvailable?: boolean;
     readAppIcon?: (bundleIdentifier: string) => Promise<string | undefined>;
+    /** Leaves the poll on the global timers and clock, which the test fakes. */
+    globalTimers?: boolean;
   } = {}
 ) {
   const native = new FakeNative();
   const published: MeetingPresenceState[] = [];
+  const publishWaiters: Array<(state: MeetingPresenceState) => void> = [];
   let nowMs = 1_700_000_000_000;
   const intervals: Array<() => void> = [];
   let cleared = 0;
   const service = new MeetingPresenceService({
-    clearInterval: () => {
-      cleared += 1;
-    },
     inactiveGraceMs: 20_000,
     ...(overrides.readBrowserMeetings
       ? { readBrowserMeetings: overrides.readBrowserMeetings }
       : {}),
     ...(overrides.readAppIcon ? { readAppIcon: overrides.readAppIcon } : {}),
+    ...(overrides.globalTimers
+      ? {}
+      : {
+          clearInterval: () => {
+            cleared += 1;
+          },
+          now: () => nowMs,
+          setInterval: (fn: () => void) => {
+            intervals.push(fn);
+            return intervals.length;
+          },
+        }),
     loadNative: async () => (overrides.nativeAvailable === false ? undefined : native),
-    now: () => nowMs,
-    onStateChanged: (state) => published.push(state),
-    pollIntervalMs: 2_000,
-    setInterval: (fn) => {
-      intervals.push(fn);
-      return intervals.length;
+    onStateChanged: (state) => {
+      published.push(state);
+      for (const resolve of publishWaiters.splice(0)) resolve(state);
     },
+    pollIntervalMs: 2_000,
   });
   return {
     advance: (ms: number) => {
@@ -81,6 +92,12 @@ function harness(
     clearedCount: () => cleared,
     intervals,
     native,
+    /** Resolves with the next state the service publishes. */
+    nextPublished: () => {
+      const next = Promise.withResolvers<MeetingPresenceState>();
+      publishWaiters.push(next.resolve);
+      return next.promise;
+    },
     published,
     service,
   };
@@ -102,9 +119,6 @@ const spotify = {
   name: "Spotify",
   processId: 77,
 };
-
-/** Lets a poll the test fired settle its async tick. */
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("matchMeetingApp", () => {
   it("collapses helper processes onto their parent catalog entry", () => {
@@ -299,16 +313,18 @@ describe("MeetingPresenceService", () => {
     expect(h.published.at(-1)?.meetings).toHaveLength(1);
   });
 
+  // The fakes answer at once, so a poll's tick has settled by the time
+  // advancing the fake clock past it returns.
   it("polls known meeting apps' microphones and re-lists processes only on list events", async () => {
-    const h = harness();
+    vi.useFakeTimers({ now: testEpoch });
+    const h = harness({ globalTimers: true });
     h.native.apps = [zoom, spotify];
     await h.service.start();
     const reads = h.native.listReads;
 
     // The 2 s backstop sees a mic flip without listing every audio process.
     h.native.mic.add(4242);
-    h.intervals[0]!();
-    await flush();
+    await vi.advanceTimersByTimeAsync(2_000);
     expect((await h.service.state()).meetings).toMatchObject([
       { name: "Zoom", status: "active" },
     ]);
@@ -317,14 +333,13 @@ describe("MeetingPresenceService", () => {
     // A meeting app that starts audio later arrives with a process-list event.
     h.native.apps = [zoom, spotify, chrome];
     h.native.mic.add(900);
-    h.intervals[0]!();
-    await flush();
+    await vi.advanceTimersByTimeAsync(2_000);
     expect((await h.service.state()).meetings.map(({ name }) => name)).toEqual([
       "Zoom",
     ]);
+    const listed = h.nextPublished();
     h.native.emitListChanged();
-    await flush();
-    expect((await h.service.state()).meetings.map(({ name }) => name)).toEqual([
+    expect((await listed).meetings.map(({ name }) => name)).toEqual([
       "Zoom",
       "Google Chrome",
     ]);
@@ -333,7 +348,8 @@ describe("MeetingPresenceService", () => {
   });
 
   it("re-lists processes on a slow backstop when no list event arrives", async () => {
-    const h = harness();
+    vi.useFakeTimers({ now: testEpoch });
+    const h = harness({ globalTimers: true });
     h.native.apps = [spotify];
     await h.service.start();
     const reads = h.native.listReads;
@@ -341,15 +357,11 @@ describe("MeetingPresenceService", () => {
     // Zoom starts its call, but the process-list event never fires.
     h.native.apps = [zoom, spotify];
     h.native.mic.add(4242);
-    h.advance(2_000);
-    h.intervals[0]!();
-    await flush();
+    await vi.advanceTimersByTimeAsync(2_000);
     expect((await h.service.state()).meetings).toEqual([]);
     expect(h.native.listReads).toBe(reads);
 
-    h.advance(28_000);
-    h.intervals[0]!();
-    await flush();
+    await vi.advanceTimersByTimeAsync(28_000);
     expect((await h.service.state()).meetings).toMatchObject([
       { name: "Zoom", status: "active" },
     ]);

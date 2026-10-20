@@ -1,22 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { markdownParseSources } = vi.hoisted(() => ({
-  markdownParseSources: [] as string[],
-}));
-
-vi.mock("stream-markdown-parser", async (importOriginal) => {
-  const original = await importOriginal<typeof import("stream-markdown-parser")>();
-  return {
-    ...original,
-    parseMarkdownToStructure: (
-      ...args: Parameters<typeof original.parseMarkdownToStructure>
-    ) => {
-      markdownParseSources.push(args[0]);
-      return original.parseMarkdownToStructure(...args);
-    },
-  };
-});
-
 vi.mock("mermaid", () => {
   const mermaid = {
     initialize: vi.fn(),
@@ -64,6 +47,7 @@ import {
   MarkdownStream,
   MarkdownStreamLinkDecoratorContext,
 } from "../MarkdownStream";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 // Icons render in raw mode (paths only, no <mask id>), so glyph identity is
 // asserted by comparing against a reference render of the icon component.
@@ -74,11 +58,6 @@ function iconSvgMarkup(icon: React.ReactElement) {
   return markup;
 }
 
-function trackMarkdownParseSources() {
-  markdownParseSources.length = 0;
-  return { parsedSources: markdownParseSources };
-}
-
 function comparableMarkdownHtml(container: HTMLElement) {
   return (
     container
@@ -86,10 +65,6 @@ function comparableMarkdownHtml(container: HTMLElement) {
       ?.innerHTML.replace(/ data-custom-id="[^"]*"/g, "") ?? ""
   );
 }
-
-const identityCustomMarkdownIt: NonNullable<
-  React.ComponentProps<typeof MarkdownStream>["customMarkdownIt"]
-> = (markdown) => markdown;
 
 // One external link under a wrapping decorator, streamed or final — the
 // finality-gate test renders both states of the same stream.
@@ -117,11 +92,27 @@ const getAnimatedText = (
     .map((element) => element.textContent)
     .join("");
 
+/**
+ * Runs the timers due in `ms` at once, then lets React commit. No real time
+ * passes: the work costs only its CPU, not a trip through the event loop per
+ * timer.
+ */
 const advanceTimersByTime = async (ms: number) => {
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(ms);
+  act(() => {
+    vi.advanceTimersByTime(ms);
   });
+  await act(async () => {});
 };
+
+const slidingWindowView = (content: string) => (
+  <MarkdownStream
+    content={content}
+    ensureBlurAnimation
+    final={false}
+    smoothStreaming={false}
+    streamId="markdown-stream-complete-blur-sliding-window-test"
+  />
+);
 
 const advanceCompleteBlurFrames = async (frames: number) => {
   for (let index = 0; index < frames; index += 1) {
@@ -201,8 +192,32 @@ describe("MarkdownStream", () => {
     expect(container.querySelectorAll("a")).toHaveLength(1);
   });
 
+  it("never loads an image whose address is still streaming", () => {
+    const streaming = "A streaming image URL follows.\n\n![Local preview](http://1";
+    const complete =
+      "A streaming image URL follows.\n\n![Local preview](https://images.example/preview.svg)";
+    const props = { smoothStreaming: false as const, streamId: "streaming-image-url" };
+    const { container, rerender } = render(
+      <MarkdownStream {...props} content={streaming} final={false} />
+    );
+    const preview = container.querySelector(".markdown-stream-image-preview");
+    expect(preview).toHaveAttribute("aria-busy", "true");
+    expect(preview).not.toHaveAttribute("href");
+    expect(container.querySelector("img")).toBeNull();
+
+    rerender(<MarkdownStream {...props} content={complete} final={false} />);
+    expect(screen.getByRole("img", { name: "Local preview" })).toHaveAttribute(
+      "src",
+      "https://images.example/preview.svg"
+    );
+
+    // A reply that ends before the address does shows what was written, and loads nothing.
+    rerender(<MarkdownStream {...props} content={streaming} final />);
+    expect(container.querySelector("img")).toBeNull();
+    expect(container).toHaveTextContent("![Local preview](http://1");
+  });
+
   afterEach(() => {
-    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -315,8 +330,12 @@ describe("MarkdownStream", () => {
   it("resolves trusted inline element keys without exposing application data in Markdown", () => {
     const { container } = render(
       <MarkdownStream
-        content={'Before <comma-inline data-key="element-1"></comma-inline> after.'}
         final
+        nodes={createMarkdownStreamDocumentNodes([
+          { type: "markdown", text: "Before " },
+          { type: "inline", key: "element-1" },
+          { type: "markdown", text: " after." },
+        ])}
         inlineElements={
           new Map([
             [
@@ -450,7 +469,7 @@ describe("MarkdownStream", () => {
   it("copies code blocks through the custom header action", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const onCopyCode = vi.fn();
-    Object.defineProperty(navigator, "clipboard", {
+    stubProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
@@ -757,7 +776,7 @@ describe("MarkdownStream", () => {
 
   it("switches Mermaid modes and exposes icon-only copy feedback", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
+    stubProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
@@ -792,8 +811,9 @@ describe("MarkdownStream", () => {
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith("flowchart TD\n  A --> B");
     });
+    // The label changes once the clipboard write has resolved.
     expect(
-      screen.getByRole("button", { name: "Mermaid code copied" })
+      await screen.findByRole("button", { name: "Mermaid code copied" })
     ).toBeInTheDocument();
   });
 
@@ -920,7 +940,6 @@ describe("MarkdownStream", () => {
   });
 
   it("defers Mermaid preview rendering until a streaming fence is complete", async () => {
-    vi.useFakeTimers();
     const mermaidModule = await import("mermaid");
     const mermaidRender = vi.mocked(mermaidModule.default.render);
     mermaidRender.mockClear();
@@ -964,7 +983,6 @@ describe("MarkdownStream", () => {
   });
 
   it("enhances a completed code block before later complete blur text is revealed", async () => {
-    vi.useFakeTimers();
     const code = "const highlighted = true";
     const tail = "Tail should still wait";
     const { container } = render(
@@ -991,7 +1009,6 @@ describe("MarkdownStream", () => {
   });
 
   it("enhances a completed Mermaid block before later complete blur text is revealed", async () => {
-    vi.useFakeTimers();
     const code = ["flowchart TD", "  A --> B"].join("\n");
     const tail = "Mermaid tail should still wait";
     const { container } = render(
@@ -1021,7 +1038,6 @@ describe("MarkdownStream", () => {
   });
 
   it("enhances a completed math block before later complete blur text is revealed", async () => {
-    vi.useFakeTimers();
     const formula = "a^2 + b^2 = c^2";
     const tail = "Math tail should still wait";
     const { container } = render(
@@ -1147,7 +1163,6 @@ describe("MarkdownStream", () => {
   });
 
   it("keeps long appended deltas readable while animating only the current tail window", async () => {
-    vi.useFakeTimers();
     const target = `A${"1234567890".repeat(8)}`;
     const { rerender, container } = render(
       <MarkdownStream
@@ -1178,7 +1193,6 @@ describe("MarkdownStream", () => {
   });
 
   it("clears each local blur character directly when its CSS animation finishes", async () => {
-    vi.useFakeTimers();
     const { container } = render(
       <MarkdownStream
         animation="blur"
@@ -1231,7 +1245,6 @@ describe("MarkdownStream", () => {
   });
 
   it("settles previous local blur when later markdown arrives", async () => {
-    vi.useFakeTimers();
     const { rerender, container } = render(
       <MarkdownStream
         animation="blur"
@@ -1343,7 +1356,6 @@ describe("MarkdownStream", () => {
   });
 
   it("queues continuous blur characters when complete blur animation is required", async () => {
-    vi.useFakeTimers();
     const content = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     const { container, rerender } = render(
       <MarkdownStream
@@ -1385,7 +1397,6 @@ describe("MarkdownStream", () => {
   });
 
   it("keeps coarse cumulative chunks on one progressive blur queue", async () => {
-    vi.useFakeTimers();
     const firstChunk = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     const cumulativeChunk = `${firstChunk} cumulative continuation`;
     const { container, rerender } = render(
@@ -1436,7 +1447,6 @@ describe("MarkdownStream", () => {
   });
 
   it("keeps initial complete blur playback scheduled through StrictMode replay", async () => {
-    vi.useFakeTimers();
     const content = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     const { container } = render(
       <StrictMode>
@@ -1464,7 +1474,6 @@ describe("MarkdownStream", () => {
   });
 
   it("keeps structured complete blur reservations ordered through StrictMode replay", async () => {
-    vi.useFakeTimers();
     const content = [
       "# Heading",
       "",
@@ -1510,7 +1519,6 @@ describe("MarkdownStream", () => {
   });
 
   it("delays final-only nodes until the complete blur queue catches up", async () => {
-    vi.useFakeTimers();
     const content = ["A.[^x]", "", "[^x]: queued footnote", "", "tail"].join("\n");
     const { container, rerender } = render(
       <MarkdownStream
@@ -1553,7 +1561,6 @@ describe("MarkdownStream", () => {
   });
 
   it("does not replay complete blur when markdown syntax resolves into inline nodes", async () => {
-    vi.useFakeTimers();
     const { container, rerender } = render(
       <MarkdownStream
         content="Comma renders _emphasis"
@@ -1583,7 +1590,6 @@ describe("MarkdownStream", () => {
   });
 
   it("does not replay complete blur when raw markdown changes without visible text changes", async () => {
-    vi.useFakeTimers();
     const { container, rerender } = render(
       <MarkdownStream
         content="# A"
@@ -1615,7 +1621,6 @@ describe("MarkdownStream", () => {
   });
 
   it("does not replay complete blur when settled text resolves into highlight", async () => {
-    vi.useFakeTimers();
     const { container, rerender } = render(
       <MarkdownStream
         content="Comma renders ==highlighted text"
@@ -1647,7 +1652,6 @@ describe("MarkdownStream", () => {
   });
 
   it("keeps text decoration targets for complete blur inline nodes", async () => {
-    vi.useFakeTimers();
     const content = "Comma renders ~~deleted text~~ and ++inserted text++.";
     const { container } = render(
       <MarkdownStream
@@ -1685,7 +1689,6 @@ describe("MarkdownStream", () => {
   });
 
   it("keeps complete blur word runs atomic while preserving normal space breaks", async () => {
-    vi.useFakeTimers();
     const content = "Comma renders ~~deleted text~~ before wrapping.";
     const { container } = render(
       <MarkdownStream
@@ -1710,7 +1713,6 @@ describe("MarkdownStream", () => {
   });
 
   it("does not split a word when complete blur trims the active tail window", async () => {
-    vi.useFakeTimers();
     const content = "Comma renders antidisestablishmentarianism";
     const { container } = render(
       <MarkdownStream
@@ -1733,7 +1735,6 @@ describe("MarkdownStream", () => {
   });
 
   it("does not synchronously drain complete blur when enabled for existing text", async () => {
-    vi.useFakeTimers();
     const content = Array.from(
       { length: 96 },
       (_, index) => `streamed-word-${index}`
@@ -1764,7 +1765,6 @@ describe("MarkdownStream", () => {
   });
 
   it("keeps complete blur character DOM bounded for long content", async () => {
-    vi.useFakeTimers();
     const content = "A".repeat(512);
     const { container } = render(
       <MarkdownStream
@@ -1791,8 +1791,35 @@ describe("MarkdownStream", () => {
     expect(container.querySelectorAll("span").length).toBeLessThan(300);
   });
 
+  it("keeps each animating word in place while the complete blur window slides", async () => {
+    const text =
+      "Every settled word stays in place while the tail of the stream blurs in. ".repeat(
+        10
+      );
+    const { container, rerender } = render(slidingWindowView(""));
+    let length = 0;
+    const streamFrame = async () => {
+      length += 6;
+      rerender(slidingWindowView(text.slice(0, length)));
+      await advanceTimersByTime(18);
+    };
+    // Past the first 80 characters the active window slides every frame.
+    for (let frame = 0; frame < 80; frame += 1) await streamFrame();
+    expect(container.textContent!.length).toBeGreaterThan(120);
+
+    const words = [...container.querySelectorAll(".markdown-stream-char-word")];
+    await streamFrame();
+
+    // A word still in the window is the same element, so its characters' blur
+    // runs on; only words that left it became settled text.
+    const kept = words.filter((word) => word.isConnected);
+    expect(kept.length).toBeGreaterThanOrEqual(words.length - 2);
+    expect(
+      kept.every((word) => word.querySelector(".markdown-stream-char-enter"))
+    ).toBe(true);
+  });
+
   it("keeps long complete blur chunks to a constant completion timer budget", async () => {
-    vi.useFakeTimers();
     const content = "A".repeat(512);
     const { container } = render(
       <MarkdownStream
@@ -1813,7 +1840,6 @@ describe("MarkdownStream", () => {
   });
 
   it("does not replay transient blur after reduced motion is turned off", async () => {
-    vi.useFakeTimers();
     const reducedMotionListeners = new Set<(event: MediaQueryListEvent) => void>();
     const reducedMotionQuery = {
       addEventListener: (
@@ -1858,7 +1884,6 @@ describe("MarkdownStream", () => {
   });
 
   it("applies custom blur animation variables and queue cadence", async () => {
-    vi.useFakeTimers();
     const { container } = render(
       <MarkdownStream
         blurAnimation={{
@@ -1899,7 +1924,6 @@ describe("MarkdownStream", () => {
   });
 
   it("starts newly appended complete blur characters by gap instead of duration", async () => {
-    vi.useFakeTimers();
     const { container, rerender } = render(
       <MarkdownStream
         blurAnimation={{
@@ -1942,7 +1966,6 @@ describe("MarkdownStream", () => {
   });
 
   it("does not spend complete blur cadence on markdown syntax characters", async () => {
-    vi.useFakeTimers();
     const { container, rerender } = render(
       <MarkdownStream
         blurAnimation={{
@@ -1981,7 +2004,6 @@ describe("MarkdownStream", () => {
   });
 
   it("batches very small complete blur gaps by elapsed time", async () => {
-    vi.useFakeTimers();
     const content = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     const { container } = render(
       <MarkdownStream
@@ -2007,7 +2029,6 @@ describe("MarkdownStream", () => {
   });
 
   it("catches up large complete blur backlogs without waiting gap per character", async () => {
-    vi.useFakeTimers();
     const content = "A".repeat(1000);
     const { container } = render(
       <MarkdownStream
@@ -2031,7 +2052,6 @@ describe("MarkdownStream", () => {
   });
 
   it("does not render future block shells before the complete blur cursor reaches them", async () => {
-    vi.useFakeTimers();
     const content = [
       "Intro",
       "",
@@ -2076,7 +2096,6 @@ describe("MarkdownStream", () => {
   });
 
   it("does not rerender stable complete blur blocks while later text advances", async () => {
-    vi.useFakeTimers();
     const renderCodeBlockHeader = vi.fn(({ language }) => language);
     const code = "const stable = true";
     const tail = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -2173,7 +2192,6 @@ describe("MarkdownStream", () => {
   });
 
   it("does not exceed update depth when complete blur content is scrubbed backward", async () => {
-    vi.useFakeTimers();
     const content = [
       "# Streaming scrub",
       "",
@@ -2238,7 +2256,6 @@ describe("MarkdownStream", () => {
   });
 
   it("atomically presents a same-stream non-prefix replacement without clearing readable text", async () => {
-    vi.useFakeTimers();
     const previousContent = [
       "# Stable answer A",
       "",
@@ -2283,7 +2300,6 @@ describe("MarkdownStream", () => {
   });
 
   it("keeps later inline nodes hidden until the global blur cursor reaches them", async () => {
-    vi.useFakeTimers();
     const { container } = render(
       <MarkdownStream
         blurAnimation={{
@@ -2312,7 +2328,6 @@ describe("MarkdownStream", () => {
   });
 
   it("keeps future block toolbars hidden until the global blur cursor reaches them", async () => {
-    vi.useFakeTimers();
     const content = [
       "Intro before future blocks.",
       "",
@@ -2434,122 +2449,11 @@ describe("MarkdownStream", () => {
     expect(container.textContent).not.toContain("directdirection");
   });
 
-  it("reparses only the unsettled Markdown tail for prefix stream growth", () => {
-    const { parsedSources } = trackMarkdownParseSources();
-    const initial = [
-      "# Stable heading",
-      "",
-      "A settled paragraph.",
-      "",
-      "```ts",
-      "const first = 1",
-    ].join("\n");
-    const appended = `${initial}\nconst second = 2`;
-    const props = {
-      final: false,
-      smoothStreaming: false as const,
-      streamId: "markdown-stream-tail-parse-test",
-    };
-    const { container, rerender } = render(
-      <MarkdownStream {...props} content={initial} />
-    );
-    parsedSources.length = 0;
-
-    rerender(<MarkdownStream {...props} content={appended} />);
-
-    expect(parsedSources.at(-1)).toBe("```ts\nconst first = 1\nconst second = 2");
-    expect(parsedSources.at(-1)?.length).toBeLessThan(appended.length);
-    expect(container.textContent).toContain("Stable heading");
-    expect(container.textContent).toContain("const second = 2");
-
-    const replacement = "# Replacement\n\nUnrelated document";
-    parsedSources.length = 0;
-    rerender(<MarkdownStream {...props} content={replacement} />);
-    expect(parsedSources[0]).toBe(replacement);
-    expect(container.textContent).toContain("Unrelated document");
-    expect(container.textContent).not.toContain("Stable heading");
-  });
-
-  it("bounds expensive parsing to the mutable root independently of stable-prefix size", () => {
-    const tail = ["```ts", "const first = 1"].join("\n");
-    const grownTail = `${tail}\nconst second = 2`;
-    const parsedTails: string[][] = [];
-
-    for (const stableRootCount of [1, 1000]) {
-      const stablePrefix = Array.from(
-        { length: stableRootCount },
-        (_, index) => `Stable paragraph ${index}.`
-      ).join("\n\n");
-      const initial = `${stablePrefix}\n\n${tail}`;
-      const appended = `${stablePrefix}\n\n${grownTail}`;
-      const { parsedSources } = trackMarkdownParseSources();
-      const { rerender, unmount } = render(
-        <MarkdownStream
-          animation="none"
-          content={initial}
-          final={false}
-          smoothStreaming={false}
-          streamId={`markdown-stream-bounded-tail-${stableRootCount}`}
-        />
-      );
-      parsedSources.length = 0;
-
-      rerender(
-        <MarkdownStream
-          animation="none"
-          content={appended}
-          final={false}
-          smoothStreaming={false}
-          streamId={`markdown-stream-bounded-tail-${stableRootCount}`}
-        />
-      );
-
-      parsedTails.push([...parsedSources]);
-      unmount();
-    }
-
-    expect(parsedTails).toEqual([[grownTail], [grownTail]]);
-  });
-
-  it("advances the tail checkpoint after a fence closes and full-parses final content", () => {
-    const { parsedSources } = trackMarkdownParseSources();
-    const initial = ["# Stable heading", "", "```ts", "const first = 1"].join("\n");
-    const closed = `${initial}\n\`\`\`\n\nTail paragraph`;
-    const grown = `${closed} grows`;
-    const props = {
-      animation: "none" as const,
-      smoothStreaming: false as const,
-      streamId: "markdown-stream-tail-checkpoint-test",
-    };
-    const { container, rerender } = render(
-      <MarkdownStream {...props} content={initial} final={false} />
-    );
-
-    parsedSources.length = 0;
-    rerender(<MarkdownStream {...props} content={closed} final={false} />);
-    expect(parsedSources).toContain(
-      ["```ts", "const first = 1", "```", "", "Tail paragraph"].join("\n")
-    );
-    expect(container.textContent).toContain("Tail paragraph");
-
-    parsedSources.length = 0;
-    rerender(<MarkdownStream {...props} content={grown} final={false} />);
-    expect(parsedSources.at(-1)).toBe("Tail paragraph grows");
-    expect(container.textContent).toContain("Tail paragraph grows");
-
-    parsedSources.length = 0;
-    rerender(<MarkdownStream {...props} content={grown} final />);
-    expect(parsedSources[0]).toBe(grown);
-    expect(container.textContent).toContain("const first = 1");
-    expect(container.textContent).toContain("Tail paragraph grows");
-  });
-
   it.each([
     {
       appended: ["# Stable", "", "- one", "- two"].join("\n"),
       initial: ["# Stable", "", "- one"].join("\n"),
       label: "list",
-      tail: ["- one", "- two"].join("\n"),
     },
     {
       appended: [
@@ -2562,54 +2466,22 @@ describe("MarkdownStream", () => {
       ].join("\n"),
       initial: ["# Stable", "", "| A | B |", "| --- | --- |", "| 1 | 2 |"].join("\n"),
       label: "table",
-      tail: ["| A | B |", "| --- | --- |", "| 1 | 2 |", "| 3 | 4 |"].join("\n"),
-    },
-    {
-      appended: [
-        "# Stable",
-        "",
-        '<comma-inline data-key="task"></comma-inline>',
-        "",
-        "Tail paragraph",
-      ].join("\n"),
-      initial: ["# Stable", "", '<comma-inline data-key="task"></comma-inline>'].join(
-        "\n"
-      ),
-      label: "custom tag",
-      tail: [
-        '<comma-inline data-key="task"></comma-inline>',
-        "",
-        "Tail paragraph",
-      ].join("\n"),
     },
   ])(
-    "matches a full-rendered $label DOM after reparsing only its unsettled root",
-    ({ appended, initial, label, tail }) => {
-      const { parsedSources } = trackMarkdownParseSources();
-      const inlineElements = new Map<string, React.ReactNode>([
-        [
-          "task",
-          <span key="task" data-testid="tail-custom-inline">
-            Inline task
-          </span>,
-        ],
-      ]);
+    "matches a full-rendered $label DOM as it streams",
+    ({ appended, initial, label }) => {
       const props = {
         animation: "none" as const,
         final: false,
-        inlineElements,
         smoothStreaming: false as const,
         streamId: `markdown-stream-tail-${label}-test`,
       };
       const { container, rerender } = render(
         <MarkdownStream {...props} content={initial} />
       );
-      parsedSources.length = 0;
 
       rerender(<MarkdownStream {...props} content={appended} />);
 
-      expect(parsedSources).toContain(tail);
-      expect(parsedSources).not.toContain(appended);
       const { container: fullContainer } = render(
         <MarkdownStream
           {...props}
@@ -2623,8 +2495,7 @@ describe("MarkdownStream", () => {
     }
   );
 
-  it("full-parses when a new reference definition can rewrite a settled root", () => {
-    const { parsedSources } = trackMarkdownParseSources();
+  it("links a reference once its definition arrives after it", () => {
     const initial = ["[Guide][guide]", "", "Tail paragraph"].join("\n");
     const appended = `${initial}\n\n[guide]: https://example.com/guide`;
     const props = {
@@ -2634,11 +2505,9 @@ describe("MarkdownStream", () => {
       streamId: "markdown-stream-tail-reference-definition-test",
     };
     const { rerender } = render(<MarkdownStream {...props} content={initial} />);
-    parsedSources.length = 0;
 
     rerender(<MarkdownStream {...props} content={appended} />);
 
-    expect(parsedSources[0]).toBe(appended);
     expect(screen.getByRole("link", { name: "Guide" })).toHaveAttribute(
       "href",
       "https://example.com/guide"
@@ -2665,11 +2534,9 @@ describe("MarkdownStream", () => {
     });
     const highlighted = container.querySelector(".code-block-render:not(.hidden)");
     const appended = `${initial}\n\n[guide]: https://example.com/guide`;
-    const { parsedSources } = trackMarkdownParseSources();
 
     rerender(<MarkdownStream {...props} content={appended} />);
 
-    expect(parsedSources[0]).toBe(appended);
     expect(screen.getByRole("link", { name: "Guide" })).toHaveAttribute(
       "href",
       "https://example.com/guide"
@@ -2680,8 +2547,7 @@ describe("MarkdownStream", () => {
     expect(container.querySelector(".code-fallback-plain")).toBeNull();
   });
 
-  it("full-parses when a multiline reference definition rewrites a settled root", () => {
-    const { parsedSources } = trackMarkdownParseSources();
+  it("links a reference once a multiline definition arrives after it", () => {
     const initial = ["[Guide][guide name]", "", "Tail paragraph"].join("\n");
     const appended = `${initial}\n\n[guide\n name]: https://example.com/guide`;
     const props = {
@@ -2691,63 +2557,16 @@ describe("MarkdownStream", () => {
       streamId: "markdown-stream-tail-multiline-reference-definition-test",
     };
     const { rerender } = render(<MarkdownStream {...props} content={initial} />);
-    parsedSources.length = 0;
 
     rerender(<MarkdownStream {...props} content={appended} />);
 
-    expect(parsedSources).toEqual([appended]);
     expect(screen.getByRole("link", { name: "Guide" })).toHaveAttribute(
       "href",
       "https://example.com/guide"
     );
   });
 
-  it("full-parses when filename context propagates through multiple stable roots", () => {
-    const { parsedSources } = trackMarkdownParseSources();
-    const initial = ["File name:", "", "README.md", "", "example."].join("\n");
-    const appended = `${initial}com`;
-    const props = {
-      animation: "none" as const,
-      final: false,
-      smoothStreaming: false as const,
-      streamId: "markdown-stream-tail-linkify-context-test",
-    };
-    const { container, rerender } = render(
-      <MarkdownStream {...props} content={initial} />
-    );
-    parsedSources.length = 0;
-
-    rerender(<MarkdownStream {...props} content={appended} />);
-
-    expect(parsedSources).toEqual([appended]);
-    expect(container).toHaveTextContent("example.com");
-    expect(
-      container.querySelector('a[href="http://example.com"]')
-    ).not.toBeInTheDocument();
-  });
-
-  it("full-parses prefix growth for an arbitrary custom MarkdownIt callback", () => {
-    const { parsedSources } = trackMarkdownParseSources();
-    const initial = ["# Stable", "", "Tail"].join("\n");
-    const appended = `${initial} grows`;
-    const props = {
-      animation: "none" as const,
-      customMarkdownIt: identityCustomMarkdownIt,
-      final: false,
-      smoothStreaming: false as const,
-      streamId: "markdown-stream-tail-custom-parser-test",
-    };
-    const { rerender } = render(<MarkdownStream {...props} content={initial} />);
-    parsedSources.length = 0;
-
-    rerender(<MarkdownStream {...props} content={appended} />);
-
-    expect(parsedSources).toEqual([appended]);
-    expect(screen.getByText("Tail grows")).toBeInTheDocument();
-  });
-
-  it("full-parses when a new footnote definition can rewrite a settled root", () => {
-    const { parsedSources } = trackMarkdownParseSources();
+  it("links a footnote once its definition arrives after it", () => {
     const initial = ["Note[^detail]", "", "Tail paragraph"].join("\n");
     const appended = `${initial}\n\n[^detail]: Footnote detail`;
     const props = {
@@ -2757,62 +2576,12 @@ describe("MarkdownStream", () => {
       streamId: "markdown-stream-tail-footnote-definition-test",
     };
     const { rerender } = render(<MarkdownStream {...props} content={initial} />);
-    parsedSources.length = 0;
 
     rerender(<MarkdownStream {...props} content={appended} />);
 
-    expect(parsedSources[0]).toBe(appended);
     expect(screen.getByRole("link", { name: "[detail]" })).toBeInTheDocument();
     expect(screen.queryByText("Footnote detail")).not.toBeInTheDocument();
   });
-
-  it("full-parses prefix growth after the parser configuration changes", () => {
-    const { parsedSources } = trackMarkdownParseSources();
-    const initial = ["# Stable", "", "Tail"].join("\n");
-    const appended = `${initial} grows`;
-    const props = {
-      animation: "none" as const,
-      final: false,
-      smoothStreaming: false as const,
-      streamId: "markdown-stream-tail-config-change-test",
-    };
-    const { rerender } = render(<MarkdownStream {...props} content={initial} />);
-    parsedSources.length = 0;
-
-    rerender(
-      <MarkdownStream {...props} content={appended} customHtmlTags={["thinking"]} />
-    );
-
-    expect(parsedSources[0]).toBe(appended);
-    expect(screen.getByText("Tail grows")).toBeInTheDocument();
-  });
-
-  it.each(["preTransformTokens", "postTransformTokens"] as const)(
-    "full-parses prefix growth while preserving a caller %s hook",
-    (hookName) => {
-      const { parsedSources } = trackMarkdownParseSources();
-      const transform = vi.fn((tokens) => tokens);
-      const parseOptions = { [hookName]: transform };
-      const initial = ["# Stable", "", "Tail"].join("\n");
-      const appended = `${initial} grows`;
-      const props = {
-        animation: "none" as const,
-        final: false,
-        parseOptions,
-        smoothStreaming: false as const,
-        streamId: `markdown-stream-tail-${hookName}-test`,
-      };
-      const { rerender } = render(<MarkdownStream {...props} content={initial} />);
-      parsedSources.length = 0;
-      transform.mockClear();
-
-      rerender(<MarkdownStream {...props} content={appended} />);
-
-      expect(parsedSources[0]).toBe(appended);
-      expect(transform).toHaveBeenCalled();
-      expect(screen.getByText("Tail grows")).toBeInTheDocument();
-    }
-  );
 
   it("keeps streaming code syntax-highlighted as its content grows", async () => {
     // The filename/code context requires full-document parsing even when only

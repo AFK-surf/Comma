@@ -141,7 +141,7 @@ defmodule BridgeForTeams.AccountRecovery do
         maybe_record_recovery_audits("account_recovery.redeemed", user, used_link, %{
           "actor_user_id" => user.id,
           "actor_label" => audit_actor_label(user),
-          "request_id" => Ecto.UUID.generate()
+          "request_id" => SystemsRuntime.Proc.uuid()
         })
 
         result
@@ -229,7 +229,7 @@ defmodule BridgeForTeams.AccountRecovery do
   defp recovery_url(path, _base_url), do: path
 
   defp generate_token do
-    "bft_recovery_" <> Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
+    "bft_recovery_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(24), padding: false)
   end
 
   defp token_hash(token), do: token |> normalize_token() |> Sessions.hash_token()
@@ -288,7 +288,7 @@ defmodule BridgeForTeams.AccountRecovery do
        when is_binary(request_id) and request_id != "",
        do: request_id
 
-  defp audit_request_id(_attrs), do: Ecto.UUID.generate()
+  defp audit_request_id(_attrs), do: SystemsRuntime.Proc.uuid()
 
   defp recovery_audit_metadata(user, link, action) do
     %{
@@ -329,5 +329,5 @@ defmodule BridgeForTeams.AccountRecovery do
     Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
   end
 
-  defp now, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+  defp now, do: SystemsClock.utc_now() |> DateTime.truncate(:microsecond)
 end

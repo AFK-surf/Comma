@@ -42,7 +42,7 @@ defmodule Comma.Accounts.SSHIdentities do
             public_key: blob,
             email_snapshot: owner.email,
             email_verified: true,
-            last_authenticated_at: DateTime.utc_now()
+            last_authenticated_at: SystemsClock.utc_now()
           }
 
           case Repo.insert(Identity.changeset(%Identity{}, attrs)) do
@@ -68,7 +68,7 @@ defmodule Comma.Accounts.SSHIdentities do
            ),
          {:ok, _user, _session} <- Accounts.resolve_session(session["token"]) do
       Repo.update_all(from(i in Identity, where: i.id == ^identity.id),
-        set: [last_authenticated_at: DateTime.utc_now()]
+        set: [last_authenticated_at: SystemsClock.utc_now()]
       )
 
       {:ok, session["token"]}
@@ -101,7 +101,7 @@ defmodule Comma.Accounts.SSHIdentities do
           from(i in Identity,
             where: i.user_id == ^user_id and i.id == ^uuid and i.provider == "ssh"
           ),
-          set: [disabled_at: DateTime.utc_now()]
+          set: [disabled_at: SystemsClock.utc_now()]
         )
 
       if count == 1, do: :ok, else: {:error, :not_found}

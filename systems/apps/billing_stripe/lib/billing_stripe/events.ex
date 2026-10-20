@@ -423,7 +423,7 @@ defmodule BillingStripe.Events do
   defp paid_periods(invoice, period, _billing_period, prior_tier) when is_integer(prior_tier) do
     # A paid upgrade allocates within existing paid cycles. Rebuilding from a
     # proration date shifts monthly anchors and can duplicate annual cycles.
-    repo = Application.fetch_env!(:billing_stripe, :repo)
+    repo = SystemsRuntime.fetch_env!(:billing_stripe, :repo)
 
     rows =
       Ecto.Adapters.SQL.query!(
@@ -524,12 +524,12 @@ defmodule BillingStripe.Events do
   defp payment_intent_id(%{id: id}), do: id
 
   defp stripe_config do
-    case Application.get_env(:billing_stripe, :secret_key) do
+    case SystemsRuntime.get_env(:billing_stripe, :secret_key) do
       key when is_binary(key) and key != "" ->
         {:ok,
          %{
            secret_key: key,
-           api: Application.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
+           api: SystemsRuntime.get_env(:billing_stripe, :stripe_api, BillingStripe.StripityAPI)
          }}
 
       _ ->

@@ -1,21 +1,28 @@
 /* oxlint-disable jsx-a11y/no-autofocus, jsx-a11y/prefer-tag-over-role -- The popover moves focus to its active panel; the pad is a 2D OKLCH control and the theme list is a custom picker, so native input/select would change the interaction and layout. */
-import { useCommaMessages } from "@comma/i18n/react";
+import { uiClock } from "@comma/ui/clock";
 import {
-  Button,
-  ChevronLeftSmallIcon,
+  createSpring,
+  placeSpring,
+  retargetSpring,
+  springAtRest,
+  springStateAt,
+  type Spring,
+} from "@comma/ui/motion";
+import { useCommaMessages } from "@comma/i18n/react";
+import { Button } from "@comma/ui/components/Button";
+import { ChevronLeftSmallIcon, MoonIcon, SunIcon } from "@comma/ui/components/icons";
+import {
   commaThemeChromaGainMax,
   commaThemeLightnessMax,
   commaThemeLightnessMin,
   commaThemeLightnessToPad,
   commaThemePadToLightness,
-  Dropdown,
   isReducedMotionEnabled,
-  MenuPopover,
-  MoonIcon,
   oklchChromaEnvelope,
-  SunIcon,
   subscribeToReducedMotion,
-} from "@comma/ui";
+} from "@comma/ui/tokens";
+import { Dropdown } from "@comma/ui/components/dropdown";
+import { MenuPopover } from "@comma/ui/components/menu";
 import {
   useCallback,
   useEffect,
@@ -73,7 +80,11 @@ export const indicatorGlyphs = {
   hue: "H",
 } as const;
 
-type SpringState = { x: number; y: number; vx: number; vy: number };
+// Each axis of an indicator settles on its own critically damped spring,
+// computed from the time since it last started (@comma/ui/motion).
+type ChannelSpring = { x: Spring; y: Spring };
+const settleOmega = (2 * Math.PI) / SETTLE_RESPONSE;
+const settleSpring = { stiffness: settleOmega * settleOmega, damping: 2 * settleOmega };
 type ChannelPoint = { x: number; y: number };
 type ChannelColor = { hue: number; chroma: number; lightness: number };
 
@@ -169,23 +180,10 @@ const capturePointer = (target: HTMLElement, pointerId: number) => {
   }
 };
 
-const stepSpring = (
-  state: SpringState,
-  targetX: number,
-  targetY: number,
-  dt: number,
-  omega: number
-) => {
-  const damping = 2 * omega;
-  const ax = omega * omega * (targetX - state.x) - damping * state.vx;
-  const ay = omega * omega * (targetY - state.y) - damping * state.vy;
-  state.vx += ax * dt;
-  state.vy += ay * dt;
-  state.x += state.vx * dt;
-  state.y += state.vy * dt;
-};
-
-const emptySpring = (): SpringState => ({ x: 0, y: 0, vx: 0, vy: 0 });
+const emptySpring = (): ChannelSpring => ({
+  x: createSpring(settleSpring, 0, 0),
+  y: createSpring(settleSpring, 0, 0),
+});
 
 export const clampChannelCenter = (
   point: ChannelPoint,
@@ -376,21 +374,36 @@ export function CustomThemeStudio() {
   const lightnessPercent = lightnessToPercent(lightness);
   const roundedHue = Math.round(clamp(hue, HUE_MIN, HUE_MAX));
 
+  // A new target starts the indicator's springs toward it now, from where
+  // they are.
+  const setChannelTarget = useCallback(
+    (channel: IndicatorChannel, point: ChannelPoint) => {
+      targets.current[channel] = point;
+      const now = uiClock.monotonic();
+      retargetSpring(springs.current[channel].x, now, point.x);
+      retargetSpring(springs.current[channel].y, now, point.y);
+    },
+    []
+  );
+
   const applyChannelTargets = useCallback(
     (color: ChannelColor, width: number, height: number) => {
       for (const channel of indicatorChannels) {
-        targets.current[channel] = channelTarget(
+        setChannelTarget(
           channel,
-          color.hue,
-          color.chroma,
-          color.lightness,
-          width,
-          height
+          channelTarget(
+            channel,
+            color.hue,
+            color.chroma,
+            color.lightness,
+            width,
+            height
+          )
         );
       }
       wakeAnimation.current?.();
     },
-    []
+    [setChannelTarget]
   );
 
   const handleScheme = useCallback(
@@ -400,41 +413,52 @@ export function CustomThemeStudio() {
     [setCustomScheme]
   );
 
-  const handlePadPointer = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    const canvas = canvasRef.current;
-    const plane = draggingChannel.current;
-    if (!canvas || plane === null) return;
-    if (event.pointerId !== padPointer.current) return;
-    const rect = canvas.getBoundingClientRect();
-    const next = mapPadPointer(event.clientX, event.clientY, rect);
-    const sample = sampleFromPlane(plane, next.visualX, next.visualY, colorRef.current);
-    const activeSize = INDICATOR_VISUAL_SIZE * INDICATOR_ACTIVE_SCALE;
-    for (const channel of indicatorChannels) {
-      const size = channel === plane ? activeSize : INDICATOR_VISUAL_SIZE;
-      targets.current[channel] = clampChannelCenter(
-        channelFollow(
-          channel,
-          plane,
-          next.visualX,
-          next.visualY,
-          sample,
-          rect.width,
-          rect.height
-        ),
-        rect.width,
-        rect.height,
-        size
+  const handlePadPointer = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const canvas = canvasRef.current;
+      const plane = draggingChannel.current;
+      if (!canvas || plane === null) return;
+      if (event.pointerId !== padPointer.current) return;
+      const rect = canvas.getBoundingClientRect();
+      const next = mapPadPointer(event.clientX, event.clientY, rect);
+      const sample = sampleFromPlane(
+        plane,
+        next.visualX,
+        next.visualY,
+        colorRef.current
       );
-      const fill = fillNodes.current[channel];
-      if (fill) {
-        paintChannelFill(fill, channel, sample);
+      const activeSize = INDICATOR_VISUAL_SIZE * INDICATOR_ACTIVE_SCALE;
+      for (const channel of indicatorChannels) {
+        const size = channel === plane ? activeSize : INDICATOR_VISUAL_SIZE;
+        setChannelTarget(
+          channel,
+          clampChannelCenter(
+            channelFollow(
+              channel,
+              plane,
+              next.visualX,
+              next.visualY,
+              sample,
+              rect.width,
+              rect.height
+            ),
+            rect.width,
+            rect.height,
+            size
+          )
+        );
+        const fill = fillNodes.current[channel];
+        if (fill) {
+          paintChannelFill(fill, channel, sample);
+        }
       }
-    }
-    snapIndicator.current = false;
-    colorRef.current = sample;
-    setDraft(sample);
-    wakeAnimation.current?.();
-  }, []);
+      snapIndicator.current = false;
+      colorRef.current = sample;
+      setDraft(sample);
+      wakeAnimation.current?.();
+    },
+    [setChannelTarget]
+  );
 
   const handlePadPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -544,11 +568,10 @@ export function CustomThemeStudio() {
     const rect = canvas.getBoundingClientRect();
     applyChannelTargets({ hue, chroma, lightness }, rect.width, rect.height);
     if (!seeded.current) {
+      const now = uiClock.monotonic();
       for (const channel of indicatorChannels) {
-        springs.current[channel].x = targets.current[channel].x;
-        springs.current[channel].y = targets.current[channel].y;
-        springs.current[channel].vx = 0;
-        springs.current[channel].vy = 0;
+        placeSpring(springs.current[channel].x, now, targets.current[channel].x);
+        placeSpring(springs.current[channel].y, now, targets.current[channel].y);
       }
       seeded.current = true;
     }
@@ -574,58 +597,53 @@ export function CustomThemeStudio() {
   }, [applyChannelTargets]);
 
   useEffect(() => {
-    let frame = 0;
-    let last = performance.now();
+    let frame: (() => void) | undefined;
     let reduced = isReducedMotionEnabled();
     const half = INDICATOR_VISUAL_SIZE / 2;
 
     const tick = (now: number) => {
-      frame = 0;
-      const dt = Math.min(0.032, (now - last) / 1000);
-      last = now;
+      frame = undefined;
       let moving = false;
       const dragging = padPointer.current !== null;
       const snap = snapIndicator.current;
       if (snap) snapIndicator.current = false;
       for (const channel of indicatorChannels) {
         const node = indicatorNodes.current[channel];
-        const state = springs.current[channel];
+        const spring = springs.current[channel];
         const target = targets.current[channel];
         if (!node) continue;
+        let x = target.x;
+        let y = target.y;
         if (dragging || reduced || snap) {
-          state.x = target.x;
-          state.y = target.y;
-          state.vx = 0;
-          state.vy = 0;
+          placeSpring(spring.x, now, target.x);
+          placeSpring(spring.y, now, target.y);
         } else {
-          stepSpring(state, target.x, target.y, dt, (2 * Math.PI) / SETTLE_RESPONSE);
+          const atX = springStateAt(spring.x, now);
+          const atY = springStateAt(spring.y, now);
           if (
-            Math.abs(state.x - target.x) < 0.01 &&
-            Math.abs(state.y - target.y) < 0.01 &&
-            Math.abs(state.vx) < 0.05 &&
-            Math.abs(state.vy) < 0.05
+            springAtRest(atX, target.x, 0.01, 0.05) &&
+            springAtRest(atY, target.y, 0.01, 0.05)
           ) {
-            state.x = target.x;
-            state.y = target.y;
-            state.vx = 0;
-            state.vy = 0;
+            placeSpring(spring.x, now, target.x);
+            placeSpring(spring.y, now, target.y);
           } else {
+            x = atX.position;
+            y = atY.position;
             moving = true;
           }
         }
         node.dataset.dragging = draggingChannel.current === channel ? "true" : "false";
-        node.style.transform = `translate3d(${state.x - half}px, ${state.y - half}px, 0)`;
+        node.style.transform = `translate3d(${x - half}px, ${y - half}px, 0)`;
         const fill = fillNodes.current[channel];
         if (fill) {
           paintChannelFill(fill, channel, colorRef.current);
         }
       }
-      if (moving) frame = requestAnimationFrame(tick);
+      if (moving) frame = uiClock.frame(tick);
     };
     const wake = () => {
       if (frame) return;
-      last = performance.now();
-      frame = requestAnimationFrame(tick);
+      frame = uiClock.frame(tick);
     };
     wakeAnimation.current = wake;
     const unsubscribe = subscribeToReducedMotion(() => {
@@ -635,7 +653,7 @@ export function CustomThemeStudio() {
     wake();
     return () => {
       wakeAnimation.current = undefined;
-      cancelAnimationFrame(frame);
+      frame?.();
       unsubscribe();
     };
   }, []);

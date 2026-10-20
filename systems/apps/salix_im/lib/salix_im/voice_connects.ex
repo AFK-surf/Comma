@@ -81,7 +81,7 @@ defmodule SalixIM.VoiceConnects do
 
           {:error, {:voice_identity_in_use, _holder}} ->
             # Another writer won the election and is writing its connect.
-            Process.sleep(50)
+            SystemsClock.sleep(50)
             ensure_record(tenant_id, group_id, attempts - 1)
 
           other ->
@@ -446,7 +446,7 @@ defmodule SalixIM.VoiceConnects do
   # meanwhile makes this attempt count for nothing. The CAS function may run
   # more than once; the outcome of the committed run is the last one stored.
   defp record_pin_attempt(rec, carrier, line, e164, hash, match?, max_failures, lockout_ms, now) do
-    outcome_key = {__MODULE__, :pin_outcome, make_ref()}
+    outcome_key = {__MODULE__, :pin_outcome, SystemsRuntime.Proc.make_ref()}
     Process.put(outcome_key, {:error, :not_found})
 
     result =
@@ -501,7 +501,7 @@ defmodule SalixIM.VoiceConnects do
 
   @doc false
   def hash_pin(pin) do
-    salt = :crypto.strong_rand_bytes(16)
+    salt = SystemsRuntime.Proc.random_bytes(16)
     digest = :crypto.pbkdf2_hmac(:sha256, pin, salt, @pbkdf2_iterations, 32)
 
     Enum.join(
@@ -620,5 +620,5 @@ defmodule SalixIM.VoiceConnects do
   defp trim(value) when is_binary(value), do: String.trim(value)
   defp trim(value), do: value |> to_string() |> String.trim()
 
-  defp now, do: System.system_time(:millisecond)
+  defp now, do: SystemsClock.system_time(:millisecond)
 end

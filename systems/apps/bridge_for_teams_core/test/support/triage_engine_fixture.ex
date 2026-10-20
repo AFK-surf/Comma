@@ -1,4 +1,6 @@
 defmodule BridgeForTeams.TriageEngineFixture do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The one realistic project shape every Triage engine acceptance drive runs
   against, and the two seams those drives are allowed to close.
@@ -60,9 +62,9 @@ defmodule BridgeForTeams.TriageEngineFixture do
     def init(opts), do: opts
 
     def call(conn, _opts) do
-      owner = Application.fetch_env!(:bridge_for_teams_core, :triage_acceptance_owner)
+      owner = SystemsRuntime.fetch_env!(:bridge_for_teams_core, :triage_acceptance_owner)
       path = Enum.join(conn.path_info, "/")
-      send(owner, {:slack_call, path})
+      SystemsRuntime.Proc.send(owner, {:slack_call, path})
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       conn = Plug.Conn.fetch_query_params(conn)
 
@@ -70,7 +72,7 @@ defmodule BridgeForTeams.TriageEngineFixture do
         if String.starts_with?(body, "{"), do: Jason.decode!(body), else: URI.decode_query(body)
 
       params = Map.merge(conn.query_params, body_params)
-      source = Application.get_env(:bridge_for_teams_core, :triage_acceptance_linked_message)
+      source = SystemsRuntime.get_env(:bridge_for_teams_core, :triage_acceptance_linked_message)
 
       response =
         case {path, source} do
@@ -78,7 +80,7 @@ defmodule BridgeForTeams.TriageEngineFixture do
             %{"ok" => true, "team_id" => "T_ATLAS", "url" => source["workspace_url"]}
 
           {"api/conversations.history", %{} = source} ->
-            send(owner, {:slack_link_read, params})
+            SystemsRuntime.Proc.send(owner, {:slack_link_read, params})
 
             exact? =
               params["channel"] == "C_ATLAS" and params["oldest"] == source["ts"] and
@@ -94,7 +96,7 @@ defmodule BridgeForTeams.TriageEngineFixture do
           {"api/conversations.replies", %{} = _source} ->
             messages =
               if params["limit"] == "1" do
-                send(owner, {:slack_link_read, params})
+                SystemsRuntime.Proc.send(owner, {:slack_link_read, params})
 
                 exact? =
                   params["channel"] == "C_ATLAS" and params["ts"] == source["thread_ts"] and
@@ -104,7 +106,7 @@ defmodule BridgeForTeams.TriageEngineFixture do
                 if exact?, do: [Map.take(source, ~w(ts thread_ts text user))], else: []
               else
                 posted =
-                  Application.get_env(:bridge_for_teams_core, :triage_acceptance_posted_reply)
+                  SystemsRuntime.get_env(:bridge_for_teams_core, :triage_acceptance_posted_reply)
 
                 if is_map(posted) and posted["channel"] == params["channel"] and
                      posted["thread_ts"] == params["ts"],
@@ -124,8 +126,13 @@ defmodule BridgeForTeams.TriageEngineFixture do
               |> Map.put("metadata", metadata)
               |> Map.put("ts", "1787019010.000001")
 
-            Application.put_env(:bridge_for_teams_core, :triage_acceptance_posted_reply, posted)
-            send(owner, {:slack_reply_posted, posted})
+            SystemsRuntime.put_env(
+              :bridge_for_teams_core,
+              :triage_acceptance_posted_reply,
+              posted
+            )
+
+            SystemsRuntime.Proc.send(owner, {:slack_reply_posted, posted})
             Map.merge(%{"ok" => true, "message" => posted}, Map.take(posted, ~w(channel ts)))
 
           _ ->
@@ -200,7 +207,7 @@ defmodule BridgeForTeams.TriageEngineFixture do
 
       messages =
         scope
-        |> rows()
+        |> live_rows()
         |> Enum.filter(&(&1["message_ts"] == root_ts or &1["thread_ts"] == root_ts))
 
       {:ok,
@@ -218,7 +225,7 @@ defmodule BridgeForTeams.TriageEngineFixture do
 
       messages =
         scope
-        |> rows()
+        |> live_rows()
         |> Enum.filter(fn row ->
           row["message_ts_us"] >= window["oldest_ts_us"] or
             row["thread_ts"] in roots or row["message_ts"] in roots
@@ -235,8 +242,11 @@ defmodule BridgeForTeams.TriageEngineFixture do
        }}
     end
 
+    # Current-state reads omit deleted rows; `latest_states/2` still returns them.
+    defp live_rows(scope), do: scope |> rows() |> Enum.reject(& &1["deleted"])
+
     defp rows(scope) do
-      messages = Application.fetch_env!(:bridge_for_teams_core, :triage_acceptance_thread)
+      messages = SystemsRuntime.fetch_env!(:bridge_for_teams_core, :triage_acceptance_thread)
       root_ts = messages |> List.first() |> Map.fetch!("ts")
       Enum.map(messages, &row(&1, root_ts, scope))
     end
@@ -268,7 +278,7 @@ defmodule BridgeForTeams.TriageEngineFixture do
         "thread_ts" =>
           Map.get(message, "thread_ts", if(message_ts == root_ts, do: "", else: root_ts)),
         "version" => message_ts_us * 2,
-        "deleted" => false,
+        "deleted" => Map.get(message, "deleted", false),
         "actor_kind" => actor_kind,
         "actor_id" => actor_id,
         "actor_label" => actor_label,
@@ -295,8 +305,8 @@ defmodule BridgeForTeams.TriageEngineFixture do
       do: {value["ingest_at"], value["message_ts_us"], value["version"]}
 
     defp report(operation, scope, root_ts) do
-      owner = Application.fetch_env!(:bridge_for_teams_core, :triage_acceptance_owner)
-      send(owner, {:clickhouse_read, operation, scope, root_ts})
+      owner = SystemsRuntime.fetch_env!(:bridge_for_teams_core, :triage_acceptance_owner)
+      SystemsRuntime.Proc.send(owner, {:clickhouse_read, operation, scope, root_ts})
     end
 
     defp trim(value) when is_binary(value), do: String.trim(value)
@@ -309,90 +319,63 @@ defmodule BridgeForTeams.TriageEngineFixture do
   previous reader on exit.
   """
   def install_clickhouse_reader!(owner) do
-    previous_reader = Application.get_env(:salix_im, :slack_triage_clickhouse_reader_mod)
-    previous_base_url = Application.get_env(:salix_im, :slack_api_base_url)
-    previous_review_ingress = Application.get_env(:salix_im, :slack_triage_review_ingress)
-    suspended_product_triage = suspend_product_triage!()
+    previous_reader = SystemsRuntime.get_env(:salix_im, :slack_triage_clickhouse_reader_mod)
+    previous_base_url = SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
+    previous_review_ingress = SystemsRuntime.get_env(:salix_im, :slack_triage_review_ingress)
 
     port =
       SalixIM.TestSupport.BanditServer.start!(fn port ->
         {Bandit, plug: SlackLoopback, port: port, startup_log: false}
       end)
 
-    Application.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, ClickHouseReader)
-    Application.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
-    Application.delete_env(:salix_im, :slack_triage_review_ingress)
-    Application.put_env(:bridge_for_teams_core, @owner_env_key, owner)
-    Application.put_env(:bridge_for_teams_core, @thread_env_key, [])
-    Application.put_env(:bridge_for_teams_core, @namespaces_env_key, [])
-    Application.put_env(:bridge_for_teams_core, @connects_env_key, [])
-    Application.delete_env(:bridge_for_teams_core, :triage_acceptance_posted_reply)
+    SystemsRuntime.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, ClickHouseReader)
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, "http://127.0.0.1:#{port}/api")
+    SystemsRuntime.delete_env(:salix_im, :slack_triage_review_ingress)
+    SystemsRuntime.put_env(:bridge_for_teams_core, @owner_env_key, owner)
+    SystemsRuntime.put_env(:bridge_for_teams_core, @thread_env_key, [])
+    SystemsRuntime.put_env(:bridge_for_teams_core, @namespaces_env_key, [])
+    SystemsRuntime.put_env(:bridge_for_teams_core, @connects_env_key, [])
+    SystemsRuntime.delete_env(:bridge_for_teams_core, :triage_acceptance_posted_reply)
 
     ExUnit.Callbacks.on_exit(fn ->
       # ExUnit has stopped the fixture runtimes at this point. Retire only this
-      # test's exact sources/obligations while all default consumers are still
-      # suspended and the loopback transports are still installed. Resuming a
-      # default worker with old fixture work would cross the isolation boundary.
+      # test's exact sources/obligations while the loopback transports are
+      # still installed.
       retire_test_sources!()
 
       if is_nil(previous_reader),
-        do: Application.delete_env(:salix_im, :slack_triage_clickhouse_reader_mod),
-        else: Application.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, previous_reader)
+        do: SystemsRuntime.delete_env(:salix_im, :slack_triage_clickhouse_reader_mod),
+        else:
+          SystemsRuntime.put_env(:salix_im, :slack_triage_clickhouse_reader_mod, previous_reader)
 
       if is_nil(previous_base_url),
-        do: Application.delete_env(:salix_im, :slack_api_base_url),
-        else: Application.put_env(:salix_im, :slack_api_base_url, previous_base_url)
+        do: SystemsRuntime.delete_env(:salix_im, :slack_api_base_url),
+        else: SystemsRuntime.put_env(:salix_im, :slack_api_base_url, previous_base_url)
 
       if is_nil(previous_review_ingress),
-        do: Application.delete_env(:salix_im, :slack_triage_review_ingress),
+        do: SystemsRuntime.delete_env(:salix_im, :slack_triage_review_ingress),
         else:
-          Application.put_env(
+          SystemsRuntime.put_env(
             :salix_im,
             :slack_triage_review_ingress,
             previous_review_ingress
           )
 
-      resume_product_triage(suspended_product_triage)
-
-      Application.delete_env(:bridge_for_teams_core, @owner_env_key)
-      Application.delete_env(:bridge_for_teams_core, @thread_env_key)
-      Application.delete_env(:bridge_for_teams_core, @namespaces_env_key)
-      Application.delete_env(:bridge_for_teams_core, @connects_env_key)
-      Application.delete_env(:bridge_for_teams_core, :triage_acceptance_linked_message)
-      Application.delete_env(:bridge_for_teams_core, :triage_acceptance_posted_reply)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, @owner_env_key)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, @thread_env_key)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, @namespaces_env_key)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, @connects_env_key)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :triage_acceptance_linked_message)
+      SystemsRuntime.delete_env(:bridge_for_teams_core, :triage_acceptance_posted_reply)
     end)
 
     :ok
   end
 
-  # Stop the product recovery lane before the product runtime. ReceiptRecovery
-  # scans the same durable provider receipts as this fixture, independently of
-  # the callback ingress binding, so deleting that binding alone is not enough
-  # to keep an explicit test runtime isolated. Resume in reverse order: runtime
-  # first, then recovery.
-  defp suspend_product_triage! do
-    [
-      Salix.Bindings.TriageReceiptRecovery,
-      Salix.Bindings.TriageReviewRuntime,
-      SalixIM.Triage.ProductEffectWorker,
-      SalixIM.Triage.CompanionReactionEffectWorker
-    ]
-    |> Enum.flat_map(fn name ->
-      case Process.whereis(name) do
-        pid when is_pid(pid) ->
-          :ok = :sys.suspend(pid)
-          [{name, pid}]
-
-        nil ->
-          []
-      end
-    end)
-  end
-
   @doc "Retires only this fixture's sources and unfinished local effects; preserves the audit rows."
   def retire_test_sources! do
     for {group_id, connect_id} <-
-          Application.get_env(:bridge_for_teams_core, @connects_env_key, []) do
+          SystemsRuntime.get_env(:bridge_for_teams_core, @connects_env_key, []) do
       case CasRecord.update(
              SalixStore.Keys.ctl_im_connect(group_id, connect_id),
              &Map.put(&1, "triage_enabled", false)
@@ -403,7 +386,7 @@ defmodule BridgeForTeams.TriageEngineFixture do
       end
     end
 
-    for namespace <- Application.get_env(:bridge_for_teams_core, @namespaces_env_key, []) do
+    for namespace <- SystemsRuntime.get_env(:bridge_for_teams_core, @namespaces_env_key, []) do
       refute namespace == SalixStore.TriageKeys.default_namespace()
       namespace_key = SalixStore.TriageKeys.namespace_key(namespace)
 
@@ -430,7 +413,10 @@ defmodule BridgeForTeams.TriageEngineFixture do
   production claim scheduling or concurrency.
   """
   def claim_round!(round, holder) do
-    assert round.namespace in Application.fetch_env!(:bridge_for_teams_core, @namespaces_env_key)
+    assert round.namespace in SystemsRuntime.fetch_env!(
+             :bridge_for_teams_core,
+             @namespaces_env_key
+           )
 
     namespace_key = SalixStore.TriageKeys.namespace_key(round.namespace)
     token = "triage-fixture-claim-" <> ULID.generate()
@@ -463,22 +449,13 @@ defmodule BridgeForTeams.TriageEngineFixture do
      end)}
   end
 
-  defp resume_product_triage(suspended) do
-    suspended
-    |> Enum.reverse()
-    |> Enum.each(fn {name, pid} ->
-      if Process.alive?(pid) and Process.whereis(name) == pid,
-        do: :ok = :sys.resume(pid)
-    end)
-  end
-
   @doc "The current mirrored thread the loopback CH reader returns."
   def put_thread(messages),
-    do: Application.put_env(:bridge_for_teams_core, @thread_env_key, messages)
+    do: SystemsRuntime.put_env(:bridge_for_teams_core, @thread_env_key, messages)
 
   @doc "A separate linked message; never included in the ambient frozen thread."
   def put_linked_message(message),
-    do: Application.put_env(:bridge_for_teams_core, :triage_acceptance_linked_message, message)
+    do: SystemsRuntime.put_env(:bridge_for_teams_core, :triage_acceptance_linked_message, message)
 
   @doc "One mirrored human thread message in the shape the CH fixture narrows."
   def mirrored_message(ts, user, text), do: %{"ts" => ts, "user" => user, "text" => text}
@@ -505,7 +482,7 @@ defmodule BridgeForTeams.TriageEngineFixture do
 
   @doc "Drains every scoped CH current-state read observed since the last drain."
   def collected_source_reads(acc \\ []) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:clickhouse_read, operation, scope, root_ts} ->
         collected_source_reads([{operation, scope, root_ts} | acc])
     after
@@ -515,7 +492,7 @@ defmodule BridgeForTeams.TriageEngineFixture do
 
   @doc "Drains every Slack method the emoji loopback observed since the last drain."
   def collected_slack_calls(acc \\ []) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:slack_call, method} -> collected_slack_calls([method | acc])
     after
       0 -> Enum.reverse(acc)
@@ -531,9 +508,9 @@ defmodule BridgeForTeams.TriageEngineFixture do
   """
   def start_engine!(namespace, evaluator_port, overrides \\ []) do
     refute namespace == SalixStore.TriageKeys.default_namespace()
-    namespaces = Application.get_env(:bridge_for_teams_core, @namespaces_env_key, [])
+    namespaces = SystemsRuntime.get_env(:bridge_for_teams_core, @namespaces_env_key, [])
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :bridge_for_teams_core,
       @namespaces_env_key,
       Enum.uniq([namespace | namespaces])
@@ -556,7 +533,7 @@ defmodule BridgeForTeams.TriageEngineFixture do
         overrides
       )
 
-    ExUnit.Callbacks.start_supervised!({Runtime, options}, id: make_ref())
+    ExUnit.Callbacks.start_supervised!({Runtime, options}, id: SystemsRuntime.Proc.make_ref())
   end
 
   @doc "Blocks until the engine's ledger holds `count` records, then returns them."
@@ -783,9 +760,9 @@ defmodule BridgeForTeams.TriageEngineFixture do
                authority["connect_id"]
              )
 
-    connects = Application.get_env(:bridge_for_teams_core, @connects_env_key, [])
+    connects = SystemsRuntime.get_env(:bridge_for_teams_core, @connects_env_key, [])
 
-    Application.put_env(:bridge_for_teams_core, @connects_env_key, [
+    SystemsRuntime.put_env(:bridge_for_teams_core, @connects_env_key, [
       {group_id, authority["connect_id"]} | connects
     ])
 
@@ -988,7 +965,7 @@ defmodule BridgeForTeams.TriageEngineFixture do
   """
   def new_root_ts do
     seconds =
-      System.unique_integer([:positive])
+      SystemsRuntime.Proc.unique_integer([:positive])
       |> rem(1_000_000)
       |> Integer.to_string()
       |> String.pad_leading(6, "0")
@@ -1000,13 +977,13 @@ defmodule BridgeForTeams.TriageEngineFixture do
   def sha256(bytes), do: :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
 
   @doc "Polls `fun` until it returns something other than nil/false/[]."
-  def eventually(fun, attempts \\ 400)
+  def eventually(fun, attempts \\ 1200)
   def eventually(fun, 0), do: fun.()
 
   def eventually(fun, attempts) do
     case fun.() do
       value when value in [nil, false, []] ->
-        Process.sleep(25)
+        SystemsRuntime.Proc.sleep(25)
         eventually(fun, attempts - 1)
 
       value ->

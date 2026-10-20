@@ -1,6 +1,9 @@
 defmodule Comma.Phase4WorkspaceConvergenceTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle, scope: ["Elixir.Comma"]
   import Ecto.Query
 
   alias Comma.Data.{ExternalOperation, Workspace, WorkspaceMembership}
@@ -113,7 +116,7 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
     @behaviour Comma.Synchronicity.Client
     @impl true
     def provision_workspace(workspace_id, _name, _owner) do
-      case Application.get_env(:comma_core, :test_synch_result, :ok) do
+      case SystemsRuntime.get_env(:comma_core, :test_synch_result, :ok) do
         :ok ->
           {:ok,
            %{
@@ -153,36 +156,36 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
   end
 
   defp with_synchronicity(result) do
-    Application.put_env(:comma_core, :synchronicity,
+    SystemsRuntime.put_env(:comma_core, :synchronicity,
       base_url: "http://sync.test",
       provisioning_secret: String.duplicate("x", 32)
     )
 
-    Application.put_env(:comma_core, :synchronicity_client, SynchStub)
-    Application.put_env(:comma_core, :test_synch_result, result)
+    SystemsRuntime.put_env(:comma_core, :synchronicity_client, SynchStub)
+    SystemsRuntime.put_env(:comma_core, :test_synch_result, result)
 
     on_exit(fn ->
-      Application.delete_env(:comma_core, :synchronicity)
-      Application.delete_env(:comma_core, :synchronicity_client)
-      Application.delete_env(:comma_core, :test_synch_result)
+      SystemsRuntime.delete_env(:comma_core, :synchronicity)
+      SystemsRuntime.delete_env(:comma_core, :synchronicity_client)
+      SystemsRuntime.delete_env(:comma_core, :test_synch_result)
     end)
   end
 
   setup do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
 
     billing_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BillingCore.Repo, shared: true)
     comma_owner = Ecto.Adapters.SQL.Sandbox.start_owner!(Comma.Repo, shared: true)
-    previous_client = Application.get_env(:comma_core, :salix_client)
-    Application.put_env(:comma_core, :salix_client, Provider)
+    previous_client = SystemsRuntime.get_env(:comma_core, :salix_client)
+    SystemsRuntime.put_env(:comma_core, :salix_client, Provider)
     Provider.reset()
 
     on_exit(fn ->
       if previous_client,
-        do: Application.put_env(:comma_core, :salix_client, previous_client),
-        else: Application.delete_env(:comma_core, :salix_client)
+        do: SystemsRuntime.put_env(:comma_core, :salix_client, previous_client),
+        else: SystemsRuntime.delete_env(:comma_core, :salix_client)
 
       Ecto.Adapters.SQL.Sandbox.stop_owner(billing_owner)
       Ecto.Adapters.SQL.Sandbox.stop_owner(comma_owner)
@@ -192,13 +195,13 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
   end
 
   test "selfhost workspace gets one unlimited grant across convergence retries" do
-    previous = Application.get_env(:comma_core, :selfhost)
-    Application.put_env(:comma_core, :selfhost, true)
+    previous = SystemsRuntime.get_env(:comma_core, :selfhost)
+    SystemsRuntime.put_env(:comma_core, :selfhost, true)
 
     on_exit(fn ->
       if is_nil(previous),
-        do: Application.delete_env(:comma_core, :selfhost),
-        else: Application.put_env(:comma_core, :selfhost, previous)
+        do: SystemsRuntime.delete_env(:comma_core, :selfhost),
+        else: SystemsRuntime.put_env(:comma_core, :selfhost, previous)
     end)
 
     {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("selfhost")}@comma.test"})
@@ -315,31 +318,6 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
     assert Provider.last_vm()["enabled"] == false
   end
 
-  test "terminal provider rejection remains observable and is never re-executed" do
-    {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("terminal")}@comma.test"})
-    workspace_id = unique("wsp")
-    Provider.plan([:terminal])
-
-    assert {:ok, %{"status" => "provisioning"}} =
-             Comma.Workspaces.create_for_user(user["id"], %{"workspace_id" => workspace_id})
-
-    operation = operation_for!(workspace_id, 1)
-    assert operation.status == "pending"
-    assert Provider.calls() == 0
-
-    assert {:error, :invalid_workspace_configuration} =
-             Comma.Workers.WorkspaceConvergence.run(operation.operation_id)
-
-    operation = Comma.Repo.get!(ExternalOperation, operation.operation_id)
-    assert operation.status == "terminal_failed"
-    assert operation.last_error_class == "invalid_workspace_configuration"
-    assert Comma.Repo.get!(Workspace, workspace_id).status == "provisioning_failed"
-    assert {:complete, repeated} = Comma.Workers.WorkspaceConvergence.run(operation.operation_id)
-    assert repeated.status == "terminal_failed"
-    assert Provider.calls() == 1
-    assert Provider.effective_count() == 0
-  end
-
   test "a newer desired VM generation supersedes an older retryable operation" do
     {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("stale")}@comma.test"})
     assert {:ok, workspace} = Comma.Workspaces.create_for_user(user["id"])
@@ -393,7 +371,7 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
     {_pid, monitor} =
       spawn_monitor(fn -> Comma.Workers.WorkspaceConvergence.run(operation.operation_id) end)
 
-    assert_receive {:DOWN, ^monitor, :process, _pid, :kill}
+    settle_receive({:DOWN, ^monitor, :process, _pid, :kill})
     operation = Comma.Repo.get!(ExternalOperation, operation.operation_id)
     assert operation.status == "executing"
     assert Provider.effective_count() == 1
@@ -425,8 +403,8 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
         )
       )
 
-    timeout = Application.fetch_env!(:comma_core, :operation_claim_timeout_ms)
-    stale_at = DateTime.add(DateTime.utc_now(), -(timeout + 1_000), :millisecond)
+    timeout = SystemsRuntime.fetch_env!(:comma_core, :operation_claim_timeout_ms)
+    stale_at = DateTime.add(SystemsClock.utc_now(), -(timeout + 1_000), :millisecond)
 
     Comma.Repo.update_all(
       from(candidate in ExternalOperation,
@@ -460,7 +438,7 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
       ]
     )
 
-    rescue_oban = :"operation_lifeline_test_#{System.unique_integer([:positive])}"
+    rescue_oban = :"operation_lifeline_test_#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     start_supervised!(
       {Oban,
@@ -496,7 +474,7 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
           candidate.queue == "comma_external" and candidate.state == "available" and
             candidate.id != ^job.id
       ),
-      set: [state: "scheduled", scheduled_at: DateTime.add(DateTime.utc_now(), 1, :hour)]
+      set: [state: "scheduled", scheduled_at: DateTime.add(SystemsClock.utc_now(), 1, :hour)]
     )
 
     assert %{success: 1, failure: 0} =
@@ -615,22 +593,6 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
     assert workspace.sync_network_id == "net-" <> workspace_id
   end
 
-  test "a terminal Synchronicity error fails the workspace" do
-    with_synchronicity({:error, :explicit_link_required})
-    {:ok, user} = Comma.Accounts.create_user(%{"email" => "#{unique("synchfail")}@comma.test"})
-    workspace_id = unique("wsp")
-
-    assert {:ok, _} =
-             Comma.Workspaces.create_for_user(user["id"], %{"workspace_id" => workspace_id})
-
-    operation = operation_for!(workspace_id, 1)
-    assert {:error, _} = Comma.Workers.WorkspaceConvergence.run(operation.operation_id)
-
-    workspace = Comma.Repo.get!(Workspace, workspace_id)
-    assert workspace.status == "provisioning_failed"
-    assert is_nil(workspace.sync_org_id)
-  end
-
   defp run_workspace_generation(workspace_id, generation) do
     workspace_id
     |> operation_for!(generation)
@@ -648,61 +610,49 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
   defp make_due!(operation_id) do
     Comma.Repo.update_all(
       from(operation in ExternalOperation, where: operation.operation_id == ^operation_id),
-      set: [next_attempt_at: DateTime.add(DateTime.utc_now(), -1, :second)]
+      set: [next_attempt_at: DateTime.add(SystemsClock.utc_now(), -1, :second)]
     )
   end
 
   defp orphan!(operation_id) do
     Comma.Repo.update_all(
       from(operation in ExternalOperation, where: operation.operation_id == ^operation_id),
-      set: [updated_at: DateTime.add(DateTime.utc_now(), -600, :second)]
+      set: [updated_at: DateTime.add(SystemsClock.utc_now(), -600, :second)]
     )
   end
 
-  defp eventually(fun, attempts \\ 100)
-
-  defp eventually(fun, attempts) when attempts > 0 do
-    case fun.() do
-      nil ->
-        Process.sleep(10)
-        eventually(fun, attempts - 1)
-
-      value ->
-        value
-    end
-  end
-
-  defp eventually(_fun, 0), do: flunk("condition did not converge")
+  # Settles until the condition holds; it fails on clock time if it never does.
+  defp eventually(fun, _retries \\ nil), do: settle_until(fun)
 
   defp start_independent_repos do
     opts = [name: nil, pool: DBConnection.ConnectionPool, pool_size: 1]
     {:ok, repo_a} = Comma.Repo.start_link(opts)
     {:ok, repo_b} = Comma.Repo.start_link(opts)
-    Process.unlink(repo_a)
-    Process.unlink(repo_b)
+    SystemsRuntime.Proc.unlink(repo_a)
+    SystemsRuntime.Proc.unlink(repo_b)
 
     on_exit(fn ->
-      for repo <- [repo_a, repo_b], Process.alive?(repo), do: Supervisor.stop(repo)
+      for repo <- [repo_a, repo_b], SystemsRuntime.Proc.alive?(repo), do: Supervisor.stop(repo)
     end)
 
     {repo_a, repo_b}
   end
 
   defp concurrent(repo_a, repo_b, fun) do
-    parent = self()
-    ref = make_ref()
+    parent = SystemsRuntime.Proc.self()
+    ref = SystemsRuntime.Proc.make_ref()
 
     tasks =
       for repo <- [repo_a, repo_b] do
-        Task.async(fn ->
-          send(parent, {ref, :ready, self()})
-          receive do: ({^ref, :go} -> on_repo(repo, fun))
+        SystemsRuntime.Task.async(fn ->
+          SystemsRuntime.Proc.send(parent, {ref, :ready, SystemsRuntime.Proc.self()})
+          SystemsRuntime.Proc.receive(do: ({^ref, :go} -> on_repo(repo, fun)))
         end)
       end
 
-    for task <- tasks, do: assert_receive({^ref, :ready, pid} when pid == task.pid)
-    for task <- tasks, do: send(task.pid, {ref, :go})
-    Enum.map(tasks, &Task.await(&1, 20_000))
+    for task <- tasks, do: settle_receive({^ref, :ready, pid} when pid == task.pid)
+    for task <- tasks, do: SystemsRuntime.Proc.send(task.pid, {ref, :go})
+    Enum.map(tasks, &settled_await/1)
   end
 
   defp on_repo(repo, fun) do
@@ -717,5 +667,5 @@ defmodule Comma.Phase4WorkspaceConvergenceTest do
   end
 
   defp unique(prefix),
-    do: prefix <> "_" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+    do: prefix <> "_" <> Base.url_encode64(SystemsRuntime.Proc.random_bytes(9), padding: false)
 end

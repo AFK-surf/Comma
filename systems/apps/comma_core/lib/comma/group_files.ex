@@ -6,7 +6,7 @@ defmodule Comma.GroupFiles do
   @image_upload_extensions ~w(.png .jpg .jpeg .gif .webp)
   @text_upload_extensions ~w(.md .markdown .txt .csv .tsv .json .jsonl .xml .yaml .yml .toml .html .htm .log)
   # Stored verbatim for the agent; only the image set is ever read back as media.
-  @document_upload_extensions ~w(.pdf .doc .docx .xls .xlsx .ppt .pptx .svg)
+  @document_upload_extensions ~w(.pdf .doc .docx .xls .xlsx .ppt .pptx .svg .zip)
   @media_upload_extensions ~w(.mp3 .wav .m4a .aac .flac .ogg .mp4 .mov .m4v .webm)
   @max_upload_bytes 10_000_000
   @max_image_read_bytes @max_upload_bytes + 1
@@ -29,6 +29,7 @@ defmodule Comma.GroupFiles do
     do:
       @image_upload_extensions ++
         @text_upload_extensions ++ @document_upload_extensions ++ @media_upload_extensions
+
   def max_upload_bytes, do: @max_upload_bytes
 
   def store(group_scope, filename, binary)
@@ -208,7 +209,7 @@ defmodule Comma.GroupFiles do
       |> String.trim("-")
       |> safe_upload_name(filename)
 
-    token = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+    token = Base.url_encode64(SystemsRuntime.Proc.random_bytes(16), padding: false)
 
     "/uploads/#{token}-#{safe}"
   end

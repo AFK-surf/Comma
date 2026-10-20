@@ -1,5 +1,5 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { PageLoading } from "@comma/ui";
+import { PageLoading } from "@comma/ui/components/PageLoading";
 
 export function FilePreviewLoading() {
   const messages = useCommaMessages();

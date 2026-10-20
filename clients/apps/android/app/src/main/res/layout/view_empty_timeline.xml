@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Two groups, not one block. The headline sits high on the page; the suggestions sit
+     on the composer, because that is what they are: things to say into it. The controller
+     places both (see ChatScreenController.positionEmptyState). -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:id="@+id/emptyHeadline"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_horizontal"
+        android:orientation="vertical">
+
+        <!-- The gap belongs to the field, not to the title: a short viewport hides the
+             field, and a LinearLayout drops a GONE child's own margins with it. Hung off
+             the title instead, the 14dp would survive the field and the controller's
+             arithmetic would be 14dp out. See ChatScreenController.positionEmptyState. -->
+        <surf.comma.android.ui.widget.DotMatrixView
+            android:id="@+id/emptyGlyph"
+            android:layout_width="154dp"
+            android:layout_height="@dimen/empty_glyph_height"
+            android:layout_marginBottom="@dimen/empty_glyph_gap" />
+
+        <TextView
+            android:id="@+id/emptyTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:paddingHorizontal="28dp"
+            android:text="@string/empty_title"
+            android:textColor="@color/text_primary"
+            android:textSize="26sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:gravity="center_horizontal"
+            android:paddingHorizontal="28dp"
+            android:text="@string/empty_subtitle"
+            android:textColor="@color/hint_grey"
+            android:textSize="14sp" />
+    </LinearLayout>
+
+    <!-- clipToPadding=false so the row runs to the screen edges while it scrolls, and the
+         padding is the page gutter: the first chip is whole, the last one can be reached. -->
+    <surf.comma.android.scroll.widget.ScrollContainer
+        android:id="@+id/emptySuggestionRow"
+        android:orientation="horizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:clipToPadding="false"
+        android:overScrollMode="never"
+        android:paddingStart="@dimen/screen_gutter"
+        android:paddingEnd="@dimen/screen_gutter"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:id="@+id/suggestions"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal" />
+    </surf.comma.android.scroll.widget.ScrollContainer>
+</FrameLayout>

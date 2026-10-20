@@ -28,6 +28,7 @@ defmodule SalixMigrate.MixProject do
 
   defp deps do
     [
+      {:systems_clock, in_umbrella: true},
       {:salix_store, in_umbrella: true},
       {:salix_agent, in_umbrella: true},
       {:jason, "~> 1.4"}

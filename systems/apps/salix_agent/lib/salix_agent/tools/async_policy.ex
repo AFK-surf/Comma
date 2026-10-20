@@ -11,7 +11,7 @@ defmodule SalixAgent.Tools.AsyncPolicy do
 
   # One readiness budget for the tool deadline and the Group VM waiter.
   def exec_readiness_timeout_ms do
-    Application.get_env(:salix_agent, :cloud_vm_exec_readiness_timeout_ms, 300_000)
+    SystemsRuntime.get_env(:salix_agent, :cloud_vm_exec_readiness_timeout_ms, 300_000)
     |> max(0)
     |> min(300_000)
   end
@@ -25,5 +25,5 @@ defmodule SalixAgent.Tools.AsyncPolicy do
   # many consecutive wait timeouts have woken the session with no new external
   # input in between. Configurable; 0 disables the budget.
   def wait_for_activation_cap,
-    do: Application.get_env(:salix_agent, :wait_for_activation_cap, @wait_for_activation_cap)
+    do: SystemsRuntime.get_env(:salix_agent, :wait_for_activation_cap, @wait_for_activation_cap)
 end

@@ -5,29 +5,34 @@ defmodule SalixAnalytics.TrajectoryEvalTest do
   out one row per finding — plus a `clean` denominator row when a round has
   no findings.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
+  use SystemsClock.Test, scope: ["Elixir.SalixStore", "Elixir.SalixAnalytics"]
   alias SalixAnalytics.{TrajectoryEvalEvent, TrajectoryEvalRecorder}
 
   defmodule CaptureSink do
     @moduledoc false
     def enqueue(rows, _opts \\ []) do
-      send(:persistent_term.get({SalixAnalytics.TrajectoryEvalTest, :test_pid}), {:rows, rows})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.PersistentTerm.get({SalixAnalytics.TrajectoryEvalTest, :test_pid}),
+        {:rows, rows}
+      )
+
       :ok
     end
   end
 
   setup do
-    prev = Application.get_env(:salix_analytics, :trajectory_eval_sink)
-    Application.put_env(:salix_analytics, :trajectory_eval_sink, CaptureSink)
-    :persistent_term.put({__MODULE__, :test_pid}, self())
+    prev = SystemsRuntime.get_env(:salix_analytics, :trajectory_eval_sink)
+    SystemsRuntime.put_env(:salix_analytics, :trajectory_eval_sink, CaptureSink)
+    SystemsRuntime.PersistentTerm.put({__MODULE__, :test_pid}, SystemsRuntime.Proc.self())
 
     on_exit(fn ->
-      :persistent_term.erase({__MODULE__, :test_pid})
+      SystemsRuntime.PersistentTerm.erase({__MODULE__, :test_pid})
 
       if prev,
-        do: Application.put_env(:salix_analytics, :trajectory_eval_sink, prev),
-        else: Application.delete_env(:salix_analytics, :trajectory_eval_sink)
+        do: SystemsRuntime.put_env(:salix_analytics, :trajectory_eval_sink, prev),
+        else: SystemsRuntime.delete_env(:salix_analytics, :trajectory_eval_sink)
     end)
 
     :ok
@@ -78,8 +83,7 @@ defmodule SalixAnalytics.TrajectoryEvalTest do
     ]
 
     assert :ok = TrajectoryEvalRecorder.record(fact(findings))
-    assert_receive {:rows, rows}
-
+    settle_receive({:rows, rows})
     assert Enum.map(rows, & &1["metric"]) == ["confusion", "tool_loop"]
 
     assert Enum.map(rows, & &1["source_key"]) ==
@@ -94,8 +98,7 @@ defmodule SalixAnalytics.TrajectoryEvalTest do
 
   test "a clean round still emits a denominator row" do
     assert :ok = TrajectoryEvalRecorder.record(fact([]))
-    assert_receive {:rows, [row]}
-
+    settle_receive({:rows, [row]})
     assert row["metric"] == "clean"
     assert row["score"] == 0.0
     assert row["source_key"] == "agent-1:sess-1:9:heuristic:clean"
@@ -117,7 +120,7 @@ defmodule SalixAnalytics.TrajectoryEvalTest do
       |> Map.merge(%{evaluator: "judge", evaluator_version: "1"})
 
     assert :ok = TrajectoryEvalRecorder.record(judge_fact)
-    assert_receive {:rows, rows}
+    settle_receive({:rows, rows})
 
     assert Enum.map(rows, & &1["source_key"]) ==
              ["agent-1:sess-1:9:judge:confusion", "agent-1:sess-1:9:judge:goal_drift"]
@@ -134,8 +137,7 @@ defmodule SalixAnalytics.TrajectoryEvalTest do
       |> Map.put(:billing_context, %{"salix_tenant_id" => "bc-tenant"})
 
     assert :ok = TrajectoryEvalRecorder.record(fact)
-    assert_receive {:rows, [row]}
-
+    settle_receive({:rows, [row]})
     assert row["tenant_id"] == "bc-tenant"
     assert row["group_id"] == "unknown"
   end

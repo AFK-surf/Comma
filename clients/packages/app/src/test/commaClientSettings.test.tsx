@@ -17,6 +17,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CommaClientSettingsI18nProvider,
   CommaElectronClientSettingsProvider,
+  commaClientSettingsStorageKey,
+  readWebCommaClientSettings,
   useCommaClientSettings,
   useCommaClientSettingsPending,
 } from "../components/commaClientSettings";
@@ -305,5 +307,33 @@ describe("CommaElectronClientSettingsProvider", () => {
       String(!defaultCommaClientSettings.sessionHistoryEnabled)
     );
     expect(settingsRenders).toBe(settledSettings + 1);
+  });
+});
+
+describe("readWebCommaClientSettings", () => {
+  afterEach(() => localStorage.clear());
+
+  it("keeps the settings an earlier build stored with its Side Chat keys", () => {
+    const stored = {
+      ...structuredClone(defaultCommaClientSettings),
+      localePreference: "zh-CN",
+      openCommaShortcut: null,
+      sessionHistoryEnabled: !defaultCommaClientSettings.sessionHistoryEnabled,
+      sideChatAppearance: "dark",
+      sideChatShortcut: {
+        key: "z",
+        modifiers: { alt: false, control: true, meta: false, shift: false },
+      },
+    };
+    localStorage.setItem(commaClientSettingsStorageKey, JSON.stringify(stored));
+
+    expect(readWebCommaClientSettings()).toEqual(
+      commaClientSettingsSchema.parse({
+        ...defaultCommaClientSettings,
+        localePreference: "zh-CN",
+        openCommaShortcut: null,
+        sessionHistoryEnabled: !defaultCommaClientSettings.sessionHistoryEnabled,
+      })
+    );
   });
 });

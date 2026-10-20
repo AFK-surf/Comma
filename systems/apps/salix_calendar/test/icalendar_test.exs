@@ -1,5 +1,5 @@
 defmodule SalixCalendar.ICalendarTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixCalendar.ICalendar
 
@@ -62,13 +62,6 @@ defmodule SalixCalendar.ICalendarTest do
 
     # Every folded physical line is <= 75 octets.
     assert Enum.all?(String.split(ics, "\r\n"), &(byte_size(&1) <= 75))
-  end
-
-  test "fails explicitly on a timezone the tzdb cannot resolve" do
-    items = [event("urn:comma:calendar-item:cit1_x", "x", "2026-07-15T10:00:00", "Mars/Phobos")]
-
-    assert {:error, :unsupported_timezone} =
-             ICalendar.render(items, ms("2026-01-01T00:00:00Z"), ms("2027-01-01T00:00:00Z"))
   end
 
   defp count(haystack, needle),

@@ -4,7 +4,7 @@
 #   elixir --sname resetup_$RANDOM --cookie comma-dev-cookie .claude/skills/reset-dev-db/resetup.exs
 #
 # All work happens via :erpc on the dev node; this script needs no mix deps.
-# The LLM template credentials are read from ~/.pi/agent/models.json (volces-ark
+# The platform model credentials are read from ~/.pi/agent/models.json (volces-ark
 # provider) at runtime — never hardcode them here, this file is committed.
 
 {:ok, host} = :inet.gethostname()
@@ -16,8 +16,8 @@ call = fn mod, fun, args -> :erpc.call(node, mod, fun, args, 60_000) end
 
 [model | _] = prov["models"]
 
-# ---- 1. Templates first (create-once: tenant bootstrap must land on these) ----
-base_tpl = %{
+# ---- 1. Platform model (Agents follow it; set only while a tier is unset) ----
+platform_model = %{
   "name" => model["name"],
   "model" => model["id"],
   "provider" => "openai",
@@ -29,14 +29,9 @@ base_tpl = %{
   }
 }
 
-for tpl_id <- ["default", "seed-2-1"] do
-  case call.(SalixAgent.Templates, :create, [Map.put(base_tpl, "template_id", tpl_id)]) do
-    {:ok, _} -> IO.puts("template #{tpl_id}: created")
-    {:error, :exists} ->
-      {:ok, _} = call.(SalixAgent.Templates, :update, [tpl_id, base_tpl])
-      IO.puts("template #{tpl_id}: updated")
-    other -> IO.puts("template #{tpl_id}: FAILED #{inspect(other)}")
-  end
+case call.(SalixAgent.Migrations.PlatformModels, :seed, [platform_model]) do
+  {:ok, tiers} -> IO.puts("platform model: tiers #{Enum.join(tiers, ", ")}")
+  other -> IO.puts("platform model: FAILED #{inspect(other)}")
 end
 
 # ---- 2. Billing catalog ----
@@ -86,17 +81,6 @@ orgs =
     IO.puts("org #{slug}: created, owner #{email}")
     {slug, org, user}
   end
-
-# ---- 4. Org template settings (before swarm creation so routers snapshot it) ----
-for {slug, _org, _user} <- orgs, slug in ["afk-ai", "test-1"] do
-  {:ok, _} =
-    call.(BridgeForTeams.Orgs, :update_org, [
-      call.(BridgeForTeams.Repo, :get_by!, [BridgeForTeams.Schema.Organization, [slug: slug]]),
-      %{"allowed_template_ids" => ["seed-2-1"], "default_template_id" => "seed-2-1"}
-    ])
-
-  IO.puts("org #{slug}: template seed-2-1 allowed + default")
-end
 
 # ---- 5. Billing grants ----
 month = Calendar.strftime(Date.utc_today(), "%Y-%m")
@@ -164,7 +148,7 @@ for {slug, project} <- projects do
     end)
 
   case agent do
-    %{salix_agent_id: sid} -> IO.puts("router #{slug}: #{sid} template=#{agent.template_id}")
+    %{salix_agent_id: sid} -> IO.puts("router #{slug}: #{sid}")
     nil -> IO.puts("router #{slug}: NOT provisioned after 60s")
   end
 end

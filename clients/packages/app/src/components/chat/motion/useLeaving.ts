@@ -1,7 +1,8 @@
-import { motionDuration } from "@comma/ui";
+import { uiClock } from "@comma/ui/clock";
+import { motionDuration } from "@comma/ui/tokens";
 import { useEffect, useState } from "react";
 
-type Swap<T> = { at: number; from: T; to: T };
+type Swap<T> = { from: T; to: T };
 
 /**
  * The value `value` just moved away from, for `durationMs` after the move;
@@ -22,15 +23,15 @@ export function useLeaving<T>(
   const [swap, setSwap] = useState<Swap<T>>();
   if (!Object.is(settled, value)) {
     setSettled(value);
-    setSwap({ at: Date.now(), from: settled, to: value });
+    setSwap({ from: settled, to: value });
   }
   useEffect(() => {
     if (!swap) return undefined;
-    const timer = window.setTimeout(
-      () => setSwap(undefined),
-      typeof durationMs === "function" ? durationMs() : durationMs
+    // motion
+    return uiClock.after(
+      typeof durationMs === "function" ? durationMs() : durationMs,
+      () => setSwap(undefined)
     );
-    return () => window.clearTimeout(timer);
   }, [durationMs, swap]);
   return swap && Object.is(swap.to, value) ? swap.from : undefined;
 }

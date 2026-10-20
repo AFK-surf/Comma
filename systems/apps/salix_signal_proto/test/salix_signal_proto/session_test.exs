@@ -3,7 +3,7 @@ defmodule SalixSignalProto.SessionTest do
   # delivery in any order across post-quantum epochs, pending sessions,
   # session promotion, trust, pre-key use, limits, and failure without side
   # effects.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   import SalixSignalProto.Test.SessionFixtures
@@ -16,7 +16,7 @@ defmodule SalixSignalProto.SessionTest do
 
   defp start(opts \\ []) do
     bob = responder(Keyword.take(opts, [:one_time]))
-    alice_ctx = context(:crypto.strong_rand_bytes(32), 1234, @alice_address, @bob_address)
+    alice_ctx = context(SystemsRuntime.Proc.random_bytes(32), 1234, @alice_address, @bob_address)
 
     bob_ctx = %{
       identity: bob.identity,
@@ -146,7 +146,7 @@ defmodule SalixSignalProto.SessionTest do
 
     test "a pending session is not used for sending after 30 days" do
       s = start()
-      now = System.system_time(:millisecond)
+      now = SystemsClock.system_time(:millisecond)
 
       assert {:ok, {3, _}, _} =
                Session.encrypt(s.alice, "x", s.alice_ctx, now_ms: now + 29 * 86_400_000)

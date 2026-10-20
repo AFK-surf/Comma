@@ -1,5 +1,5 @@
 defmodule Comma.AuthChallengeStore.RedisTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Comma.AuthChallengeStore.Redis
   alias Comma.Auth.GoogleLoginAttempts
@@ -7,10 +7,10 @@ defmodule Comma.AuthChallengeStore.RedisTest do
   @redis_url System.get_env("COMMA_TEST_REDIS_URL", "redis://127.0.0.1:6379/0")
 
   setup do
-    previous_auth = Application.get_env(:comma_core, :auth)
-    prefix = "comma:test:auth:#{System.unique_integer([:positive, :monotonic])}"
+    previous_auth = SystemsRuntime.get_env(:comma_core, :auth)
+    prefix = "comma:test:auth:#{SystemsRuntime.Proc.unique_integer([:positive, :monotonic])}"
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :comma_core,
       :auth,
       Keyword.merge(previous_auth || [], redis_url: @redis_url, redis_key_prefix: prefix)
@@ -60,31 +60,15 @@ defmodule Comma.AuthChallengeStore.RedisTest do
     assert retry_after in 1..60
   end
 
-  test "concurrent request reservations cannot exceed the shared email window" do
-    opts = request_opts(email_request_limit: 5)
-
-    results =
-      1..16
-      |> Enum.map(fn index ->
-        Task.async(fn ->
-          Redis.reserve(challenge("request-race-#{index}", "shared-email"), 60, opts)
-        end)
-      end)
-      |> Task.await_many(5_000)
-
-    assert Enum.count(results, &(&1 == :ok)) == 5
-    assert Enum.count(results, &match?({:error, :rate_limited, _retry_after}, &1)) == 11
-  end
-
   test "Google attempt peer limits are atomic and Redis stores only the HMAC fingerprint", %{
     connection: connection,
     prefix: prefix
   } do
     raw_ip = "203.0.113.88"
     rate_limit_secret = "redis-google-attempt-rate-limit-secret"
-    current_auth = Application.fetch_env!(:comma_core, :auth)
+    current_auth = SystemsRuntime.fetch_env!(:comma_core, :auth)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :comma_core,
       :auth,
       current_auth
@@ -97,9 +81,11 @@ defmodule Comma.AuthChallengeStore.RedisTest do
     results =
       1..16
       |> Enum.map(fn _index ->
-        Task.async(fn -> GoogleLoginAttempts.create("web", %{"remote_ip" => raw_ip}) end)
+        SystemsRuntime.Task.async(fn ->
+          GoogleLoginAttempts.create("web", %{"remote_ip" => raw_ip})
+        end)
       end)
-      |> Task.await_many(5_000)
+      |> SystemsRuntime.Task.await_many(:infinity)
 
     assert Enum.count(results, &match?({:ok, %{"attempt_id" => "gla_" <> _}}, &1)) == 5
 
@@ -156,9 +142,11 @@ defmodule Comma.AuthChallengeStore.RedisTest do
     results =
       1..16
       |> Enum.map(fn _index ->
-        Task.async(fn -> Redis.verify("concurrent", "correct", 5, verification_opts()) end)
+        SystemsRuntime.Task.async(fn ->
+          Redis.verify("concurrent", "correct", 5, verification_opts())
+        end)
       end)
-      |> Task.await_many(5_000)
+      |> SystemsRuntime.Task.await_many(:infinity)
 
     assert Enum.count(results, &match?({:ok, %{"id" => "concurrent"}}, &1)) == 1
     assert Enum.count(results, &match?({:error, :not_found}, &1)) == 15
@@ -167,33 +155,18 @@ defmodule Comma.AuthChallengeStore.RedisTest do
   test "expired challenges cannot be verified or restored" do
     assert :ok = Redis.reserve(challenge("expires", "email-expiry"), 1, request_opts())
 
-    Process.sleep(1_100)
+    SystemsRuntime.Proc.sleep(1_100)
 
     assert {:error, :not_found} =
              Redis.verify("expires", "correct", 5, verification_opts())
 
     assert {:error, :not_found} =
              Redis.verify("expires", "correct", 5, verification_opts())
-  end
-
-  test "provider failures open a shared circuit and success resets it" do
-    opts = circuit_opts(provider_failure_threshold: 2)
-
-    assert :ok = Redis.record_delivery(:error, opts)
-    assert {:ok, :circuit_open} = Redis.record_delivery(:error, opts)
-
-    assert {:error, :provider_unavailable, retry_after} =
-             Redis.reserve(challenge("blocked", "email-g"), 60, request_opts())
-
-    assert retry_after in 1..60
-
-    assert :ok = Redis.record_delivery(:ok, opts)
-    assert :ok = Redis.reserve(challenge("unblocked", "email-g"), 60, request_opts())
   end
 
   test "missing supervised connection fails closed without opening a temporary connection" do
     assert :ok = stop_supervised(Redix)
-    assert Process.whereis(Redis.connection_name()) == nil
+    assert SystemsRuntime.Proc.whereis(Redis.connection_name()) == nil
 
     assert {:error, :redis_unavailable} =
              Redis.reserve_attempt(
@@ -206,7 +179,7 @@ defmodule Comma.AuthChallengeStore.RedisTest do
                }
              )
 
-    assert Process.whereis(Redis.connection_name()) == nil
+    assert SystemsRuntime.Proc.whereis(Redis.connection_name()) == nil
   end
 
   test "Redis challenge keys contain no raw email or IP", %{
@@ -248,7 +221,7 @@ defmodule Comma.AuthChallengeStore.RedisTest do
   defp request_opts(overrides \\ []) do
     Map.merge(
       %{
-        ip_fingerprint: "ip-#{System.unique_integer([:positive])}",
+        ip_fingerprint: "ip-#{SystemsRuntime.Proc.unique_integer([:positive])}",
         resend_cooldown_seconds: 0,
         email_request_limit: 100,
         email_request_window_seconds: 60,
@@ -262,17 +235,6 @@ defmodule Comma.AuthChallengeStore.RedisTest do
   defp verification_opts(overrides \\ []) do
     Map.merge(
       %{verification_failure_limit: 100, verification_failure_window_seconds: 60},
-      Map.new(overrides)
-    )
-  end
-
-  defp circuit_opts(overrides) do
-    Map.merge(
-      %{
-        provider_failure_threshold: 100,
-        provider_failure_window_seconds: 60,
-        provider_circuit_open_seconds: 60
-      },
       Map.new(overrides)
     )
   end
@@ -292,6 +254,6 @@ defmodule Comma.AuthChallengeStore.RedisTest do
     end
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

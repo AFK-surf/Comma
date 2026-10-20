@@ -1,5 +1,6 @@
 /* oxlint-disable jsx-a11y/prefer-tag-over-role -- Canvas waveform is a named graphic, not a raster image. */
 import { useEffect, useRef } from "react";
+import { uiClock, type CancelUiTimer } from "../../../clock";
 import {
   isReducedMotionEnabled,
   motionEasing,
@@ -191,9 +192,11 @@ export const AiInputVoiceWaveform = ({
       { length: voiceWaveformBarCountForWidth(cssWidth) + 2 },
       () => ({ level: 0, introducedAt: 0 })
     );
-    let elapsedSinceStep = 0;
-    let lastTimestamp: number | null = null;
-    let frameId = 0;
+    // Bars shift on a fixed grid of steps from when the waveform started: the
+    // bars and their phase at a moment are the same at any frame rate.
+    let origin = uiClock.monotonic();
+    let stepsDone = 0;
+    let frameId: CancelUiTimer | null = null;
     let reducedMotion = isReducedMotionEnabled();
 
     const syncWidth = (nextWidth: number) => {
@@ -220,40 +223,34 @@ export const AiInputVoiceWaveform = ({
 
       if (reducedMotion) {
         paintBars(context, bars, colors, 0, timestamp, cssWidth);
-        frameId = 0;
+        frameId = null;
         return;
       }
 
-      const previous = lastTimestamp ?? timestamp;
-      elapsedSinceStep += Math.min(48, timestamp - previous);
-      lastTimestamp = timestamp;
-
-      while (elapsedSinceStep >= AI_INPUT_VOICE_WAVEFORM_STEP_MS) {
-        elapsedSinceStep -= AI_INPUT_VOICE_WAVEFORM_STEP_MS;
+      const steps = (timestamp - origin) / AI_INPUT_VOICE_WAVEFORM_STEP_MS;
+      const due = Math.floor(steps + 1e-6);
+      // Only the newest bars stay on screen: older steps need no drawing.
+      stepsDone = Math.max(stepsDone, due - bars.length);
+      for (; stepsDone < due; ) {
+        stepsDone += 1;
+        const stepTime = origin + stepsDone * AI_INPUT_VOICE_WAVEFORM_STEP_MS;
         bars.shift();
         const measured = levelRef.current;
         bars.push({
           level:
             measured === undefined
-              ? simulatedVoiceLevel(timestamp)
+              ? simulatedVoiceLevel(stepTime)
               : Math.min(1, Math.max(0, measured)),
-          introducedAt: timestamp,
+          introducedAt: stepTime,
         });
       }
 
-      paintBars(
-        context,
-        bars,
-        colors,
-        elapsedSinceStep / AI_INPUT_VOICE_WAVEFORM_STEP_MS,
-        timestamp,
-        cssWidth
-      );
-      frameId = window.requestAnimationFrame(tick);
+      paintBars(context, bars, colors, Math.max(0, steps - due), timestamp, cssWidth);
+      frameId = uiClock.frame(tick);
     };
 
     syncWidth(viewport.clientWidth);
-    frameId = window.requestAnimationFrame(tick);
+    frameId = uiClock.frame(tick);
 
     const resizeObserver =
       typeof ResizeObserver === "undefined"
@@ -266,14 +263,15 @@ export const AiInputVoiceWaveform = ({
 
     const unsubscribeReducedMotion = subscribeToReducedMotion(() => {
       reducedMotion = isReducedMotionEnabled();
-      lastTimestamp = null;
-      if (!reducedMotion && frameId === 0) {
-        frameId = window.requestAnimationFrame(tick);
+      origin = uiClock.monotonic();
+      stepsDone = 0;
+      if (!reducedMotion && frameId === null) {
+        frameId = uiClock.frame(tick);
       }
     });
 
     return () => {
-      window.cancelAnimationFrame(frameId);
+      frameId?.();
       resizeObserver?.disconnect();
       unsubscribeReducedMotion();
     };

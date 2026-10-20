@@ -1,5 +1,5 @@
 defmodule Salix.Bindings.CalendarFeedTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Bindings.CalendarFeed
   alias SalixCalendar.Server
@@ -53,7 +53,7 @@ defmodule Salix.Bindings.CalendarFeedTest do
     }
 
     assert {:ok, %{"id" => feed_id, "secret" => secret}} =
-             CalendarFeedSubscriptions.issue(scope, System.system_time(:millisecond))
+             CalendarFeedSubscriptions.issue(scope, SystemsClock.system_time(:millisecond))
 
     {:ok, feed_id: feed_id, secret: secret}
   end
@@ -75,7 +75,9 @@ defmodule Salix.Bindings.CalendarFeedTest do
   test "rejects a wrong secret and a revoked subscription without disclosure", ctx do
     assert {:error, :unauthorized} = CalendarFeed.serve(ctx.feed_id, "wrong-secret", "")
 
-    assert :ok = CalendarFeedSubscriptions.revoke(ctx.feed_id, System.system_time(:millisecond))
+    assert :ok =
+             CalendarFeedSubscriptions.revoke(ctx.feed_id, SystemsClock.system_time(:millisecond))
+
     assert {:error, :revoked} = CalendarFeed.serve(ctx.feed_id, ctx.secret, "")
   end
 end

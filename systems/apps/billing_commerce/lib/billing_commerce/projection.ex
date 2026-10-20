@@ -4,13 +4,18 @@ defmodule BillingCommerce.Projection do
   @spec emit(map()) :: :ok
   def emit(attrs) when is_map(attrs) do
     sink =
-      attrs[:typed_sink] || Application.get_env(:billing_commerce, :billing_source_typed_sink)
+      attrs[:typed_sink] || SystemsRuntime.get_env(:billing_commerce, :billing_source_typed_sink)
 
     sink =
       case sink do
-        nil -> Application.get_env(:salix_analytics, :typed_sink, SalixAnalytics.TypedSinkWorker)
-        false -> nil
-        other -> other
+        nil ->
+          SystemsRuntime.get_env(:salix_analytics, :typed_sink, SalixAnalytics.TypedSinkWorker)
+
+        false ->
+          nil
+
+        other ->
+          other
       end
 
     if sink do

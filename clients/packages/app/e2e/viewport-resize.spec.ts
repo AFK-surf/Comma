@@ -1,49 +1,17 @@
 import { expect, test as baseTest } from "@playwright/test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { build, preview } from "vite";
+import { writeFile } from "node:fs/promises";
+import { serveAppFixtures } from "../../../e2e/helpers/app-fixtures";
 
 const test = baseTest.extend<{}, { resizeBaseURL: string }>({
   resizeBaseURL: [
+    // Playwright requires fixture dependencies to use object destructuring.
     // eslint-disable-next-line no-empty-pattern
     async ({}, use) => {
-      const root = fileURLToPath(new URL("../../../apps/web/", import.meta.url));
-      const outDir = await mkdtemp(join(tmpdir(), "comma-resize-"));
-      const previousCwd = process.cwd();
-      let server: Awaited<ReturnType<typeof preview>>;
+      const fixtures = await serveAppFixtures();
       try {
-        process.chdir(root);
-        const configFile = join(root, "vite.config.ts");
-        await build({
-          root: fileURLToPath(new URL("./fixtures/", import.meta.url)),
-          configFile,
-          logLevel: "error",
-          build: {
-            outDir,
-            emptyOutDir: true,
-            rolldownOptions: {
-              input: fileURLToPath(
-                new URL("./fixtures/viewport-resize.html", import.meta.url)
-              ),
-            },
-          },
-        });
-        server = await preview({
-          root,
-          configFile,
-          build: { outDir },
-          preview: { host: "127.0.0.1", port: 0, strictPort: false },
-        });
+        await use(new URL("viewport-resize.html", fixtures.url).href);
       } finally {
-        process.chdir(previousCwd);
-      }
-      try {
-        await use(new URL("viewport-resize.html", server.resolvedUrls!.local[0]!).href);
-      } finally {
-        await new Promise<void>((done) => server.httpServer.close(() => done()));
-        await rm(outDir, { recursive: true, force: true });
+        await fixtures.close();
       }
     },
     { scope: "worker" },

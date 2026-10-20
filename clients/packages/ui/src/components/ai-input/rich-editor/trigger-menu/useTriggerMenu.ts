@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { isReducedMotionEnabled } from "../../../../tokens";
+import { afterAnimations, isReducedMotionEnabled } from "../../../../tokens";
 import { filterAiInputMenuGroups, type AiInputMenuRegistration } from "../../richText";
 import { readEditorSnapshot, type EditorReadSnapshot } from "../dom/readEditor";
 import type { ActiveMenu, RichEditorState } from "../state/useRichEditorState";
@@ -85,22 +85,21 @@ export function useTriggerMenu(
     return () => sourceQueryChanged?.(null);
   }, [sourceQueryChanged, sourceQuery]);
 
-  // The exit ghost: when the menu closes, keep its last render mounted just
-  // long enough for the 80ms fade (a generous timer stands in for
-  // transitionend on an already-inert node). Opening again replaces the
-  // ghost immediately, and reduced motion skips it entirely.
+  // The exit ghost: when the menu closes, keep its last render mounted until
+  // its fade ends. Opening again replaces the ghost immediately, and reduced
+  // motion skips it entirely.
   useEffect(() => {
     const previous = previousMenuRef.current;
     previousMenuRef.current = activeMenu;
-    if (activeMenu || !previous || isReducedMotionEnabled()) {
-      setClosingMenu(null);
-      return undefined;
-    }
-
-    setClosingMenu(previous);
-    const timer = window.setTimeout(() => setClosingMenu(null), 160);
-    return () => window.clearTimeout(timer);
+    setClosingMenu(
+      activeMenu || !previous || isReducedMotionEnabled() ? null : previous
+    );
   }, [activeMenu]);
+  useEffect(() => {
+    const panel = menuPanelRef.current;
+    if (!closingMenu || !panel) return undefined;
+    return afterAnimations(panel, 160, () => setClosingMenu(null));
+  }, [closingMenu]);
 
   const refreshMenu = useCallback(
     (preferredSnapshot?: EditorReadSnapshot) => {

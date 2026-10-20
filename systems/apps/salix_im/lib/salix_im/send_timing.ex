@@ -20,15 +20,15 @@ defmodule SalixIM.SendTiming do
         :salix_im_send,
         %{component: "salix_im", operation: stage, surface: Context.current_surface()},
         fn ->
-          started = System.monotonic_time()
+          started = SystemsClock.monotonic_time()
 
           try do
             result = fun.()
-            emit(stage, outcome(result), System.monotonic_time() - started)
+            emit(stage, outcome(result), SystemsClock.monotonic_time() - started)
             result
           catch
             kind, reason ->
-              emit(stage, "error", System.monotonic_time() - started)
+              emit(stage, "error", SystemsClock.monotonic_time() - started)
               :erlang.raise(kind, reason, __STACKTRACE__)
           end
         end
@@ -39,12 +39,12 @@ defmodule SalixIM.SendTiming do
   end
 
   def envelope(agent_id, attrs) do
-    {:observed_agent_message, Context.inject(), {node(), System.monotonic_time()}, agent_id,
+    {:observed_agent_message, Context.inject(), {node(), SystemsClock.monotonic_time()}, agent_id,
      attrs}
   end
 
   def receive_message(context, {sender_node, started}, fun) do
-    received = System.monotonic_time()
+    received = SystemsClock.monotonic_time()
 
     Context.run(Context.extract(context), fn ->
       # Monotonic timestamps are comparable only within one VM.
@@ -60,7 +60,7 @@ defmodule SalixIM.SendTiming do
   defp outcome(_), do: "ok"
 
   defp emit(stage, outcome, duration) do
-    :telemetry.execute([:salix, :operation, :stop], %{duration: duration}, %{
+    SystemsRuntime.Telemetry.execute([:salix, :operation, :stop], %{duration: duration}, %{
       component: "salix_im",
       operation: stage,
       surface: Context.current_surface(),

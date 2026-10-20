@@ -47,7 +47,7 @@ defmodule Comma.OauthIdp.HashedCodes do
             is_nil(t.revoked_at)
       )
 
-    case repo().update_all(claim, set: [revoked_at: DateTime.utc_now()]) do
+    case repo().update_all(claim, set: [revoked_at: SystemsClock.utc_now()]) do
       {1, _} ->
         row = repo().one!(from(t in Ecto.Token, where: t.type == "code" and t.value == ^hashed))
         %{OauthMapper.to_oauth_schema(row) | revoked_at: nil}

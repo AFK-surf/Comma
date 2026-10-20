@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { uiClock } from "../../clock";
 import { Button } from "../Button";
 import { ChevronLeftSmallIcon } from "../icons";
 import { ScrollArea } from "../scroll-area";
@@ -56,10 +57,10 @@ export const SettingsDetailView = ({
     const page = pageRef.current;
     if (!page) return undefined;
     page.focus();
-    const frame = requestAnimationFrame(() => {
+    const frame = uiClock.frame(() => {
       if (!page.contains(document.activeElement)) page.focus();
     });
-    return () => cancelAnimationFrame(frame);
+    return () => frame();
   }, []);
 
   // Bound on the element rather than through a JSX handler: the page is a

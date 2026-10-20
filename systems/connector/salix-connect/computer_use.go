@@ -224,6 +224,7 @@ func (c *connector) computerUseSocketReady(ctx context.Context) bool {
 }
 
 func (c *connector) shutdownComputerUseDaemon() {
+	c.screenStreams.stopAll()
 	if runtime.GOOS != "darwin" || strings.TrimSpace(c.cfg.computerUseSocketPath) == "" {
 		return
 	}

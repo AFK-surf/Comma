@@ -1,17 +1,19 @@
 defmodule SalixWeb.TestSupport.ProtectedMCP do
+  require SystemsRuntime.Proc
+
   @moduledoc false
   use GenServer
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
   def base_url(pid), do: GenServer.call(pid, :base_url)
   def calls(pid), do: GenServer.call(pid, :calls)
-  def release(pid), do: send(pid, :release_paused_call)
+  def release(pid), do: SystemsRuntime.Proc.send(pid, :release_paused_call)
 
   @impl true
   def init(opts) do
     {:ok, bandit} =
       Bandit.start_link(
-        plug: {__MODULE__.Plug, self()},
+        plug: {__MODULE__.Plug, SystemsRuntime.Proc.self()},
         port: 0,
         ip: {127, 0, 0, 1},
         startup_log: false
@@ -40,9 +42,12 @@ defmodule SalixWeb.TestSupport.ProtectedMCP do
 
     state =
       if authorized and method == state.pause_authorized_method do
-        send(state.pause_notify, {:protected_mcp_paused, self(), method})
+        SystemsRuntime.Proc.send(
+          state.pause_notify,
+          {:protected_mcp_paused, SystemsRuntime.Proc.self(), method}
+        )
 
-        receive do
+        SystemsRuntime.Proc.receive do
           :release_paused_call -> %{state | pause_authorized_method: nil}
         end
       else

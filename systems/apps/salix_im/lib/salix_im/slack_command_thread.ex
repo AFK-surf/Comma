@@ -30,7 +30,7 @@ defmodule SalixIM.SlackCommandThread do
     key =
       Keys.ctl_im_slack_command_thread(connect["connect_id"], params["trigger_id"])
 
-    owner = Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+    owner = Base.encode16(SystemsRuntime.Proc.random_bytes(16), case: :lower)
 
     fingerprint =
       [
@@ -51,7 +51,7 @@ defmodule SalixIM.SlackCommandThread do
       "fingerprint" => fingerprint,
       "owner" => owner,
       "state" => "posting",
-      "created_at" => System.system_time(:millisecond)
+      "created_at" => SystemsClock.system_time(:millisecond)
     }
 
     with true <-

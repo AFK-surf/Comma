@@ -1,4 +1,6 @@
 defmodule SalixIM.SlackMessageMirror.BackfillRunner do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Schedules Slack mirror backfill passes.
 
@@ -33,7 +35,7 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
   rather than duplicate work on the same one.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   require Logger
 
@@ -59,8 +61,8 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
 
   def start_link(opts \\ []) do
     case Keyword.get(opts, :name, __MODULE__) do
-      nil -> GenServer.start_link(__MODULE__, opts)
-      name -> GenServer.start_link(__MODULE__, opts, name: name)
+      nil -> SystemsRuntime.Server.start_link(__MODULE__, opts)
+      name -> SystemsRuntime.Server.start_link(__MODULE__, opts, name: name)
     end
   end
 
@@ -73,8 +75,8 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
     state = %{opts: opts, passes: %{}, discover_task: nil, discover_cursor: nil}
 
     delay = setting(opts, :start_delay_ms, 0)
-    Process.send_after(self(), :discover_tick, delay)
-    Process.send_after(self(), :work_tick, delay)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :discover_tick, delay)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :work_tick, delay)
 
     {:ok, state}
   end
@@ -84,24 +86,27 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
   # scheduler would die with the pass rather than reschedule it. The claim a
   # crashed pass held expires on its own.
   #
-  # One pass Task per tick. A tick that leaves a slot free schedules the next
-  # one at once, so the slots fill; every finished pass schedules exactly one
-  # tick, so the number of pending ticks and running passes together never
-  # exceeds the slots. An empty queue costs one claim per slot per
-  # `work_idle_ms`.
+  # A tick fills every free slot at once and never ticks itself: a pass that
+  # failed at once had freed its slot before a self-sent tick arrived, so
+  # those ticks started pass after pass without end. Every finished pass
+  # schedules exactly one tick, so the passes running never exceed the slots.
+  # An empty queue costs one claim per slot per `work_idle_ms`.
   @impl true
   def handle_info(:work_tick, state) do
     slots = setting(state.opts, :max_concurrent_passes, @default_max_concurrent_passes)
+    opts = state.opts
 
-    if map_size(state.passes) < slots do
-      opts = state.opts
-      task = Task.Supervisor.async_nolink(task_supervisor(state), fn -> run_once(opts) end)
-      passes = Map.put(state.passes, task.ref, task)
-      if map_size(passes) < slots, do: send(self(), :work_tick)
-      {:noreply, %{state | passes: passes}}
-    else
-      {:noreply, state}
-    end
+    passes =
+      Enum.reduce((map_size(state.passes) + 1)..slots//1, state.passes, fn _slot, passes ->
+        task =
+          SystemsRuntime.TaskSupervisor.async_nolink(task_supervisor(state), fn ->
+            run_once(opts)
+          end)
+
+        Map.put(passes, task.ref, task)
+      end)
+
+    {:noreply, %{state | passes: passes}}
   end
 
   def handle_info(:discover_tick, %{discover_task: nil} = state) do
@@ -109,7 +114,9 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
     opts = state.opts
 
     task =
-      Task.Supervisor.async_nolink(task_supervisor(state), fn -> discover_once(cursor, opts) end)
+      SystemsRuntime.TaskSupervisor.async_nolink(task_supervisor(state), fn ->
+        discover_once(cursor, opts)
+      end)
 
     {:noreply, %{state | discover_task: task}}
   end
@@ -117,29 +124,29 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
   def handle_info(:discover_tick, state), do: {:noreply, state}
 
   def handle_info({ref, result}, %{discover_task: %Task{ref: ref}} = state) do
-    Process.demonitor(ref, [:flush])
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
     {cursor, delay} = discover_next(state, result)
-    Process.send_after(self(), :discover_tick, delay)
-    send(self(), :work_tick)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :discover_tick, delay)
+    SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :work_tick)
     {:noreply, %{state | discover_task: nil, discover_cursor: cursor}}
   end
 
   def handle_info({ref, result}, state) when is_map_key(state.passes, ref) do
-    Process.demonitor(ref, [:flush])
-    Process.send_after(self(), :work_tick, work_delay(state, result))
+    SystemsRuntime.Proc.demonitor(ref, [:flush])
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :work_tick, work_delay(state, result))
     {:noreply, %{state | passes: Map.delete(state.passes, ref)}}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{discover_task: %Task{ref: ref}} = state) do
     Logger.warning("slack mirror backfill discovery crashed: #{inspect(reason)}")
-    Process.send_after(self(), :discover_tick, @failure_backoff_ms)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :discover_tick, @failure_backoff_ms)
     {:noreply, %{state | discover_task: nil, discover_cursor: nil}}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state)
       when is_map_key(state.passes, ref) do
     Logger.warning("slack mirror backfill pass crashed: #{inspect(reason)}")
-    Process.send_after(self(), :work_tick, @failure_backoff_ms)
+    SystemsClock.send_after(SystemsRuntime.Proc.self(), :work_tick, @failure_backoff_ms)
     {:noreply, %{state | passes: Map.delete(state.passes, ref)}}
   end
 
@@ -156,8 +163,8 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
     if SlackMessageMirror.enabled?() do
       _ = ledger([]).kick_connect(connect)
 
-      case Process.whereis(__MODULE__) do
-        pid when is_pid(pid) -> send(pid, :work_tick)
+      case SystemsRuntime.Proc.whereis(__MODULE__) do
+        pid when SystemsRuntime.Proc.is_process(pid) -> SystemsRuntime.Proc.send(pid, :work_tick)
         nil -> :ok
       end
     end
@@ -220,7 +227,7 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
       ledger: ledger(opts),
       writer: opts[:writer] || SlackMessageMirror,
       reader: opts[:reader] || Backfill.SlackReader,
-      sleep: opts[:sleep] || (&Process.sleep/1)
+      sleep: opts[:sleep] || (&SystemsClock.sleep/1)
     )
   end
 
@@ -332,7 +339,9 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
 
   # Labels stay finite and carry no tenant, workspace, channel or content.
   defp emit(outcome) do
-    :telemetry.execute([:salix, :slack_mirror, :backfill, :pass], %{count: 1}, %{outcome: outcome})
+    SystemsRuntime.Telemetry.execute([:salix, :slack_mirror, :backfill, :pass], %{count: 1}, %{
+      outcome: outcome
+    })
 
     :ok
   rescue
@@ -348,7 +357,7 @@ defmodule SalixIM.SlackMessageMirror.BackfillRunner do
 
   defp config(key, default) do
     :salix_im
-    |> Application.get_env(:slack_message_mirror_backfill, [])
+    |> SystemsRuntime.get_env(:slack_message_mirror_backfill, [])
     |> Keyword.get(key, default)
   end
 end

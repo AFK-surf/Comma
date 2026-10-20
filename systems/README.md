@@ -1,180 +1,80 @@
 # Comma Systems
 
-The backend runtime boundary of [Comma](../README.md): one Elixir/Mix umbrella,
-one `mix release comma`, multiple **subsystems**. Each subsystem is a family of
-OTP apps under [`apps/`](apps) (named `<subsystem>_*`) that are bundled into the
-single release; per-node behavior emerges at runtime, not from build-time
-configuration.
+The backend of [Comma](../README.md) is one Elixir/Mix umbrella with one
+release, `mix release comma`. The release holds several **subsystems**. Each
+subsystem is a set of OTP apps under [`apps/`](apps).
 
-| Subsystem          | Apps                                            | What                                                                                                                                        |
-| ------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Salix**          | `salix_*`                                       | The distributed, multi-tenant multi-agent runtime with optional remote VM environments (see below)                                          |
-| **Comma product**    | `comma_core`, `comma_web`                           | Comma product backend/API: users, workspaces, sessions, conversations, and product policy; drives Salix through a small anti-corruption layer |
-| **BridgeForTeams** | `bridge_for_teams_core`, `bridge_for_teams_web` | Parallel teams/business backend and dashboard; owns org/Agent Swarm/member/integration domain and shares the Salix runtime substrate        |
+| Subsystem          | `COMMA_SUBSYSTEMS` name | What                                                                                    |
+| ------------------ | ----------------------- | --------------------------------------------------------------------------------------- |
+| **Salix**          | `salix`                 | The distributed, multi-tenant multi-agent runtime with optional remote VM environments |
+| **Comma product**  | `comma_product`         | Comma product backend and API. It drives Salix through the `Comma.Salix.*` boundary     |
+| **BridgeForTeams** | `bridge_for_teams`      | Teams backend and dashboard. It shares the Salix runtime                                |
+| **Alert Router**   | `alert_router`          | Comma notification router                                                               |
+
+`Comma`'s `@subsystems` map in [`apps/comma/lib/comma.ex`](apps/comma/lib/comma.ex)
+lists the apps of each subsystem.
 
 ### Selecting subsystems per node
 
-One image, one release — but a pod runs only the subsystems you select with
-`COMMA_SUBSYSTEMS` (comma-separated; unset = all):
+A pod runs only the subsystems in `COMMA_SUBSYSTEMS` (comma-separated). When it
+is unset, the pod runs all subsystems:
 
 ```sh
-COMMA_SUBSYSTEMS=salix bin/comma start          # this pod runs only Salix
+COMMA_SUBSYSTEMS=salix bin/comma start
 COMMA_SUBSYSTEMS=comma_product,salix bin/comma start
 COMMA_SUBSYSTEMS=bridge_for_teams,salix bin/comma start
 ```
 
-In the release, unselected subsystems' apps stay loaded-but-not-started; the
-`:comma` launcher app starts the selected ones at boot ([`apps/comma`](apps/comma)).
-An unknown subsystem name fails fast at startup. (Under `mix run`/`mix test`,
-Mix starts all umbrella apps regardless — selection applies to the release.)
-
-### Adding a subsystem
-
-1. Drop its apps under `apps/<subsystem>_*`.
-2. List them as `:load` in the release in [`mix.exs`](mix.exs)
-   (`subsystem_apps/0`).
-3. Register the subsystem → apps mapping in `Comma`'s `@subsystems`
-   ([`apps/comma/lib/comma.ex`](apps/comma/lib/comma.ex)).
-
-Subsystem config is keyed per-OTP-app in [`config/`](config), so it composes
-without touching other subsystems.
+An unknown subsystem name stops startup. The selection applies only to the
+release. `mix run` and `mix test` start all umbrella apps.
 
 ---
 
 ## Salix
 
-The distributed, multi-tenant multi-agent runtime with optional remote VM
-environments. It uses native BEAM/OTP for process orchestration, object storage
-for aggregate state and content, and PostgreSQL for queried control and
-coordination data. See the current
-[storage boundary](../docs/storage-search.md) and the historical
-[migration record](../docs/product-features.md);
-production deployment in [`DEPLOYMENT.md`](DEPLOYMENT.md).
-
-### How it works, in one screen
-
-Every former serializable transaction becomes: _mutate in memory → append an
-immutable journal segment → CAS one per-agent `head.json` whose ETag is the
-fencing token._
-
-- **Commit protocol** (`SalixStore.Agent`): claim / commit / renew / release
-  with epoch fencing — every commit revalidates the head ETag, so a stale
-  owner _categorically cannot_ persist. Journal segments are keyed
-  `journal/{epoch}/{seq}` and written create-once; replay resolves
-  highest-epoch-per-seq, making fenced writers' orphan segments harmless.
-  Snapshots bound replay; ambiguous PUTs (timeout/5xx) settle by GET-and-check
-  on `commit_uuid`.
-- **Delivery** (`SalixAgent.deliver/3`) is a single rpc ingress: it stages
-  directly into the owner-routed role actor and acks only after the target
-  session's ledger commit is durable (internal `input_dedupe`/`input_queue`,
-  external `state.json` ledger) — no inbox object or queue marker exists. A
-  timeout acks nothing; the caller retries with the same source id and the
-  session ledger dedupes. Lost or failed wakes are rediscovered from durable
-  session state via the Postgres SessionWork candidate projection, which the
-  lease-gated recovery singleton sweeps to re-wake exact targets through
-  placement.
-- **Distribution**: one agent ⇒ one `gen_statem` somewhere in the cluster,
-  placed by a libring consistent-hash ring — but placement is advisory; the
-  S3 head CAS fences durable commits. Cluster singletons
-  (recovery, GC, timers, schedules, analytics mirror) are S3-CAS leases, so
-  every node runs the same release with no roles.
-- **Agents** run the wake → round (LLM → tools → ordered commit) →
-  park/passivate cycle under the lease guard; paused agents are pure S3
-  objects (zero compute). Per-agent
-  LLM provider config is a journaled template snapshot (anthropic /
-  chat-completions / responses protocols), with global env only as fallback.
+Salix uses BEAM/OTP for process orchestration, object storage for aggregate
+state and content, and PostgreSQL for queried control and coordination data.
+See the [storage boundary](../docs/storage-search.md), the
+[agent runtime](../docs/agent-runtime.md), and the
+[Salix TLA+ specs](../tla/salix/README.md). Production deployment is in
+[`DEPLOYMENT.md`](DEPLOYMENT.md).
 
 Production Salix requires object storage with conditional writes, PostgreSQL
-configured through `salix.database.url`, and Redis through `REDIS_URL` or
-`COMMA_REDIS_URL`. Missing database or Redis configuration rejects production
-startup. PostgreSQL migrations and control-data cutover readiness must complete
-before serving. See [the deployment guide](DEPLOYMENT.md) for subsystem-specific
-configuration and [runtime configuration](config/runtime.exs) for startup requirements.
-
-AWS/MinIO use S3 ETag conditionals
-(`If-None-Match: *` / `If-Match: <etag>` on PUT); GCS XML API deployments must
-set `storage.atomic_operations` to `"gcp"` so Salix uses object generation
-preconditions instead.
-
-### Salix apps
-
-| App           | What                                                                                                                                                                           |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `salix_store` | Storage kernel: S3 interface (AWS SigV4 + fault-injecting fake), head-CAS protocol, journal/snapshots, blobs, leases, OAuth records, timers, spill, time travel                |
-| `salix_agent` | Agent runtime: domain state machine, per-agent `gen_statem`, rounds, the tool registry, VFS, repair, compaction, LocalCache, GroupCommit, spinfoam Loops and `script.run`                 |
-| `salix_web`   | HTTP API + SSE (Bandit/Plug): deliveries, transcripts, streams, HTML previews, health                                                                                          |
-| `salix_im`    | IM provider connects and provider operations: internal IM, Slack/Feishu/Telegram/WeChat/voice provider manuals, inbound webhooks/pollers, outbound provider APIs, Slack file staging |
-| `salix_voice` | Voice calls: one `CallActor` per call, GPT-Live model, Twilio and `comma.voice.v1` WebSocket carriers, delegation bridge, drain and metering ([contract](../docs/messaging-voice.md)) |
-
-### Product apps
-
-| App                     | What                                                                                                                                                                                                                                                                                                                     |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `comma`                   | Release launcher only: selects and starts subsystems from `COMMA_SUBSYSTEMS`; it intentionally has no product-domain dependencies                                                                                                                                                                                          |
-| `comma_core`              | Comma product domain: accounts, sessions, workspaces, conversations, product events, and `Comma.Salix.*` runtime boundary                                                                                                                                                                                                    |
-| `comma_web`               | Comma product/admin HTTP API and SSE endpoint, separate from `salix_web`                                                                                                                                                                                                                                                   |
-| `bridge_for_teams_core` | BridgeForTeams commercial domain and Salix reconcile/outbox layer                                                                                                                                                                                                                                                        |
-| `bridge_for_teams_web`  | BridgeForTeams dashboard                                                                                                                                                                                                                                                                                                 |
-| `salix_llm`             | Provider clients: Anthropic Messages, OpenAI Chat Completions, OpenAI Responses (thinking-preserving item replay), SSE streaming, per-call provider config                                                                                                                                                               |
-| `salix_cluster`         | Ring placement, recovery/GC/timers/schedules singletons, S3 leases, drain, multi-node tests                                                                                                                                                                                                                              |
-| `salix_env`             | Device connector runs: connector WebSocket bridge (`SalixEnv.Bridge`/`Connector.Live`, multi-node via `:erpc`), connector-run registry, inter-node transfer server (one-time tokens), and cloud-VM providers including Sprites and the Cloudflare sandbox gateway. A real connector lives in [`connector/`](connector/). |
-| `salix_media`           | Image/video generation + vision clients, per-turn caps                                                                                                                                                                                                                                                                   |
-| `salix_analytics`       | Journal tailer, ClickHouse sink (ReplacingMergeTree / Cloud SharedReplacingMergeTree dedup), metering, lease-gated mirror                                                                                                                                                                                                |
-| `salix_migrate`         | Go→Salix migration: import (snapshot+head materialization), one-way cutover flag, cohorts; pairs with `cmd/willow-salix-export`                                                                                                                                                                                          |
-| `salix_meet`            | Meetings: group-owned worker agent lifecycle, dedicated meeting inbound, and meeting-state CAS                                                                                                                                                                                                                           |
-| `salix_signal_proto`    | Pure Signal protocol core with no processes; a libsodium NIF holds the secret-dependent curve operations                                                                                                                                                                                                                 |
-| `salix_signal`          | Signal runtime on top of `salix_signal_proto`: processes, storage and network |
+through `salix.database.url`, and Redis through `REDIS_URL` or
+`COMMA_REDIS_URL`. Production startup fails when the database or Redis
+configuration is missing. PostgreSQL migrations and control-data cutover
+readiness must complete before Salix serves. See [`DEPLOYMENT.md`](DEPLOYMENT.md)
+for storage conditionals (including `storage.atomic_operations` for GCS) and
+[`config/runtime.exs`](config/runtime.exs) for startup requirements.
 
 ### Getting started
 
-The recommended team setup requires only Docker Desktop or OrbStack. The
-committed [Dev Container](../.devcontainer/devcontainer.json) pins Elixir,
-OTP, Node, pnpm, native build tools, and service dependencies, so team members
-do not need a matching host Elixir toolchain.
-
-For the one-click editor path, install a Dev Containers-compatible editor,
-open the repository, and choose **Reopen in Container**. It automatically:
-
-- builds the toolchain image on the first open;
-- mounts the checkout at `/workspace/Comma`;
-- starts MinIO, Postgres, ClickHouse, Redis, Mailpit, and the deterministic LLM;
-- compiles the source-mounted backend, runs local migrations, and seeds the
-  reusable developer account and Group;
-- marks the service healthy only after both the Salix and Comma APIs are ready.
-
-The toolchain image, Mix dependencies/build output, service data, and the Linux
-spinfoam binary live in Docker volumes. Ordinary restarts therefore compile
-only changed source and never build a Comma release image. The spinfoam volume
-also keeps the container's Linux binary from overwriting the host's binary.
-
-The same stack has a one-command path from any terminal. From the repository
-root:
+The team setup needs only Docker Desktop or OrbStack. The Dev Container image
+pins Elixir, OTP, Node, pnpm, native build tools, and service dependencies.
+From the repository root:
 
 ```sh
 make dev-backend
 ```
 
-The editor can attach while a first-time Mix compile is still running; follow
-`make dev-systems-logs` from the host when desired. The terminal
-`make dev-backend` entrypoint blocks until the service is healthy.
+This starts MinIO, Postgres, ClickHouse, Redis, Mailpit, and the deterministic
+LLM. It compiles the source-mounted backend, runs local migrations, and seeds
+the developer account and Group. It returns when the Salix and Comma APIs are
+healthy. Build output and service data stay in Docker volumes, so a restart
+compiles only changed source.
 
-Useful lifecycle commands:
+Lifecycle commands:
 
 ```sh
 make dev-container-status
 make dev-container-shell
 make dev-container-restart  # recompile changed backend source, then wait for health
 make dev-systems-logs
-make dev-systems-down       # stop containers and retain every volume
+make dev-systems-down       # stop containers and keep every volume
+make dev-container-rebuild  # only when the Dev Container Dockerfile or toolchain changes
 ```
 
-Run `make dev-container-rebuild` only when the Dev Container Dockerfile or its
-pinned toolchain changes. The first build can take several minutes; subsequent
-`make dev-backend` and editor reopen operations reuse it.
-
-Web and native Electron are still launched from the host, using host-installed
-client dependencies. This avoids mixing Linux `node_modules` with the macOS
-Electron toolchain:
+Run Web and Electron from the host with host-installed client dependencies:
 
 ```sh
 pnpm --dir clients install # first host setup only
@@ -182,9 +82,7 @@ make dev                  # container backend + host Web on :5174
 make dev-electron         # container backend + native Electron
 ```
 
-The backend includes the Comma API, Salix runtime, local migration bootstrap,
-MinIO, Postgres, ClickHouse, Redis, Mailpit, and a deterministic local LLM.
-After it is ready, these checks should succeed:
+When the backend is ready, these checks must succeed:
 
 ```sh
 curl http://127.0.0.1:4000/health   # Salix API
@@ -192,20 +90,15 @@ curl http://127.0.0.1:4200/health   # Comma product API
 nc -vz 127.0.0.1 4400               # transfer server
 ```
 
-The source-mode entrypoint runs ClickHouse and Comma/Postgres migrations before
-starting the serving apps. On a completely empty local database, its
-development-only bootstrap also records the empty legacy-import boundary and
-executes the required Comma schema cutover. That path is guarded to
-`MIX_ENV=dev`, `COMMA_ENVIRONMENT=local`, the local database name, and empty
-product tables; it fails closed rather than touching populated or remote data.
-Release containers continue to use the normal one-shot `comma-migrate` service.
-
-The stack exposes:
+The development-only bootstrap runs the Comma schema cutover on an empty local
+database. It requires `MIX_ENV=dev`, `COMMA_ENVIRONMENT=local`, the local
+database name, and empty product tables. It fails closed for populated or
+remote data. Release containers use the one-shot `comma-migrate` service.
 
 | Service              | Local address                                       |
 | -------------------- | --------------------------------------------------- |
 | Salix API/dashboard  | `http://127.0.0.1:4000`                             |
-| Comma product API      | `http://127.0.0.1:4200`                             |
+| Comma product API    | `http://127.0.0.1:4200`                             |
 | Salix transfer       | `127.0.0.1:4400`                                    |
 | Mailpit inbox / SMTP | `http://127.0.0.1:8025` / `127.0.0.1:1025`          |
 | MinIO API / console  | `http://127.0.0.1:19000` / `http://127.0.0.1:19001` |
@@ -214,20 +107,17 @@ The stack exposes:
 
 #### Run isolated Salix-only sandboxes in parallel
 
-For Salix backend work that does not need the Comma product, each worktree can run
-an independent Compose project. Only Salix HTTP and transfer are published to
-the host; Postgres, MinIO, Redis, ClickHouse, and the deterministic LLM mock use
-their default ports on the project's private network.
+For Salix work without the Comma product, each worktree can run its own
+Compose project. Only Salix HTTP and transfer are published to the host:
 
 ```sh
 make salix-dev-up
 make salix-dev-info
 ```
 
-The worktree path determines a stable project suffix and two host ports. The
-command prints the assigned API, dashboard, and transfer addresses. Override
-the readable label or either port when necessary. Before creating containers,
-the command refuses to start if either host port belongs to another service:
+The worktree path sets the project suffix and the two host ports. The command
+refuses to start if a host port belongs to another service. To override the
+label or ports:
 
 ```sh
 SALIX_DEV_ID=router-memory \
@@ -236,19 +126,12 @@ SALIX_DEV_TRANSFER_PORT=45001 \
 make salix-dev-up
 ```
 
-There is deliberately no source watcher. After changing Salix code, rebuild
-the image, stop the old Salix process, run the one-shot migration, and start the
-new Salix release explicitly; dependency containers and their named volumes
-remain running and in place:
+Repeat explicit port overrides for each lifecycle command. There is no source
+watcher. After a Salix code change, rebuild:
 
 ```sh
 make salix-dev-rebuild
 make salix-dev-logs
-```
-
-Useful lifecycle commands:
-
-```sh
 make salix-dev-status  # addresses plus container health
 make salix-dev-psql    # psql inside this worktree's private Postgres
 make salix-dev-shell   # shell inside the running Salix release container
@@ -256,96 +139,62 @@ make salix-dev-down    # stop containers, keep data
 make salix-dev-reset   # delete only this worktree's containers and volumes
 ```
 
-Generated configuration lives under `.local/salix-dev/` and is ignored by
-Git. An optional `compose.override.yml` in the generated project directory
-applies to all lifecycle commands. Use it for local integration services and
-private environment files. Keep these files in the ignored project directory.
-Repeat explicit port overrides when you run lifecycle commands. Salix reaches dependencies through Compose DNS (`postgres:5432`,
-`minio:9000`, `redis:6379`, `clickhouse:8123`); none of those ports is bound on
-the host. The transfer listener remains on container port `4400`, while the
-generated `transfer.advertise_port` carries its mapped host port in URLs used
-for Salix node-to-node byte transfer when a peer reaches this sandbox through
-the host mapping. Salix Connector does not use this endpoint; connector traffic
-continues to use its JSON/frame stream.
+Generated configuration is in the ignored `.local/salix-dev/` directory. An
+optional `compose.override.yml` in the generated project directory applies to
+all lifecycle commands. Keep private environment files there.
 
 #### Inspect the complete Salix system prompt
 
-Dump a complete prompt through the production composer without starting Salix
-or reading S3, Postgres, agent control records, plugins, IM connects, or MCP
-bindings:
+Dump a complete prompt through the production composer. This does not start
+Salix or read storage:
 
 ```sh
 cd systems
 mix salix.prompt.dump
-mix salix.prompt.dump --role worker --runtime external --no-skill
+mix salix.prompt.dump --role worker --runtime script --no-skill
 mix salix.prompt.dump --agent-prompt "Additional diagnostic instructions"
 ```
 
-The default emulation is an internal Router with its full role-eligible static
-tool registry, a valid synthetic agent identity, one representative projected
-skill, and diagnostic agent instructions. Dynamic provider operations are
-absent because there are no emulated live connections. In an OTP release, use
-the same renderer through:
+In an OTP release:
 
 ```sh
 bin/comma eval 'SalixAgent.Release.dump_system_prompt()'
 ```
 
-The Dev Container seeds automatically before it becomes healthy.
-`make dev-systems-seed` is an idempotent manual rerun: it creates or reuses
-`comma-local@example.com`, its generated default Workspace and Salix Group
-Router/Worker, a 20M local credit grant, and the user Chat. It prints the
-generated Workspace ID and an API session token for curl or other local tooling.
-`make dev-electron` stores that Session in the gitignored
-`.local/comma-dev-session.json` and signs the unpackaged client in through its
-normal Main-owned Session startup path; Electron Forge Main restarts re-read
-the same file. Web, or Electron launched directly with
-`pnpm --dir clients dev:electron`, still use the real passwordless login flow:
-request a code for that email and read it from Mailpit.
+#### Local seed data
 
-Local Compose builds include the recommendation mock capability, but it starts
-disabled. Start the ordinary local stack and toggle it from **Settings > Debug**:
+The Dev Container seeds before it becomes healthy. `make dev-systems-seed` is
+an idempotent rerun. It creates or reuses `comma-local@example.com`, its default
+Workspace, the Salix Group Router and Worker, a local credit grant, and the user
+Chat. It prints the Workspace ID and an API session token for local tools.
 
-```sh
-make dev-systems-up
-```
+`make dev-electron` stores that Session in the ignored
+`.local/comma-dev-session.json` and signs the unpackaged client in. Web, and
+Electron started with `pnpm --dir clients dev:electron`, use the real
+passwordless login. Request a code for that email and read it in Mailpit.
 
-The Dev Container passes `COMMA_LOCAL_RECOMMENDATION_MOCK=true` while compiling
-the source checkout. Production release builds still default that compile-time
-capability to `false`, so they omit the mock implementation and routes. The
-Debug switch changes the process-local runtime state without rebuilding.
-Enabling it exercises the
-production recommendation boundaries around the mock: Comma Web discovers a
-group-scoped Composio connection, its bounded server collector executes the
-fixed read-only recipe, the hidden recommendation renderer receives only those
-collected facts and publishes through the validated, persisted recommendation
-protocol, and Comma Center reads the result. The renderer is not disclosed
-Composio, MCP, IM, discovery, web, or other source tools, and this flow neither
-creates nor calls an MCP binding. Disabling the mock restores the original
-provider targets; connections created while mock mode was enabled must be
-reconnected to a real provider.
-
-When that local grant is exhausted, explicitly advance its generation to issue
-one more idempotent 20M grant through the same audited redeem-code API:
+To issue one more credit grant, advance the generation. Repeating a generation
+issues nothing:
 
 ```sh
 COMMA_LOCAL_CREDIT_GRANT_GENERATION=2 make dev-systems-seed
 ```
 
-Increment the generation for each later top-up. Repeating the same generation
-does not issue another grant.
+The seed command mutates users, sessions, workspaces, billing grants, and Chat
+data. It rejects a non-loopback `COMMA_LOCAL_API_BASE_URL`. Only an intentional
+remote-data operation may set
+`COMMA_LOCAL_DEV_SEED_ALLOW_NON_LOOPBACK=I_UNDERSTAND_THIS_MUTATES_REMOTE_DATA`.
+Never set it for local development.
+
+Local builds compile the recommendation mock with
+`COMMA_LOCAL_RECOMMENDATION_MOCK=true`. It starts disabled. Toggle it in
+**Settings > Debug**. Production builds omit the mock. Connections created
+while the mock is on must be reconnected to a real provider.
 
 #### Validate passwordless authentication locally
 
-The default acceptance suite is fully local and deterministic. It does **not**
-need a Google Cloud project or a real Google account: repository tests cover the
-Web GIS callback and backend OIDC discovery, JWKS rotation, signature, audience,
-nonce, and expiry with local providers. The live Web smoke below covers Email
-OTP, cookie custody, revocation, and Workspace bootstrap; it does not pretend to
-perform a real Google sign-in.
-
-Start the backend and Web in separate terminals, then run the auth smoke from a
-third terminal:
+The default suite is local and deterministic. It needs no Google project or
+account. Start the backend and Web, then run the smoke in a third terminal:
 
 ```sh
 make dev-backend
@@ -353,62 +202,39 @@ pnpm --dir clients dev:web
 pnpm --dir clients smoke:auth:local
 ```
 
-The smoke uses the real local Comma API, Redis, SMTP/Mailpit, PostgreSQL, and a
-browser. It requests a unique Email OTP, proves HttpOnly cookie custody and
-token-free renderer state, reloads and revokes the Session, then proves the
-owner-only Workspace reaches `ready` and repeated bootstrap returns the same
-Workspace. It signs out its test Session before exiting. Stop the backend with
-`make dev-systems-down`; this keeps the local volumes.
-
-With the same backend running, the Electron smoke exercises the real renderer →
-preload → Main → local Comma API path and reads its OTP from Mailpit:
+With the same backend running, the Electron smoke tests the renderer, preload,
+Main, and local API path. The test is opt-in:
 
 ```sh
 pnpm --dir clients smoke:auth:electron:local
 ```
 
-It builds Electron, proves Main owns OTP request/verification and the bearer,
-waits for the owner Workspace, reloads, then signs out and replays the captured
-Main-held bearer directly against the server to prove it changed from `200` to
-`401`. The bearer is read only by the Playwright test process from Electron's
-temporary `safeStorage` envelope; it never enters renderer state or test output.
-The test is opt-in, so ordinary client E2E remains deterministic when the local
-backend is not running.
+A real Google sign-in is an optional manual canary. Use one Web OAuth Client ID
+per environment:
 
-A real Google sign-in is an optional manual canary, not a prerequisite for the
-deterministic suite. Comma uses one Web OAuth Client ID per environment so a
-development origin or revoked credential cannot affect production:
-
-| Runtime     | Google Cloud boundary                             | OAuth client | Authorized JavaScript origins  |
-| ----------- | ------------------------------------------------- | ------------ | ------------------------------ |
-| Local Web   | Development/testing project                       | Web: Dev     | `http://127.0.0.1:5174`        |
+| Runtime     | Google Cloud boundary                             | OAuth client | Authorized JavaScript origins    |
+| ----------- | ------------------------------------------------- | ------------ | -------------------------------- |
+| Local Web   | Development/testing project                       | Web: Dev     | `http://127.0.0.1:5174`          |
 | Staging Web | Development/testing project, or dedicated staging | Web: Staging | `https://app-staging.comma.surf` |
 | Production  | Production/publishing project                     | Web: Prod    | `https://app.comma.surf`         |
 
-This means three Web Client IDs are the recommended Comma layout, but the Google
-policy boundary is that production must be in a separate project from
-development/testing. Never add localhost or staging origins to the production
-OAuth client. Origins are exact `scheme + host + port` values with no wildcard.
-The GIS JavaScript callback flow does not need a Web redirect URI or a client
-secret.
+Production must be in a separate Google project from development and testing.
+Never add localhost or staging origins to the production OAuth client. Origins
+are exact `scheme + host + port` values. The GIS callback flow needs no
+redirect URI or client secret.
 
-The checked-in local stack uses `127.0.0.1` for both Web and API so its
-host-only `SameSite=Lax` cookie is same-site. If you intentionally use
-`http://localhost:5174`, also expose/configure the API as
-`http://localhost:4200` and register that exact Web origin; do not mix
-`localhost` with `127.0.0.1` in one login flow.
+The local stack uses `127.0.0.1` for Web and API so the `SameSite=Lax` cookie
+is same-site. Do not mix `localhost` and `127.0.0.1` in one login flow.
 
-To run the optional Web canary, add the Google account as a test user when the
-development project's audience is still in Testing, then start the local stack
-with the public Dev Client ID:
+To run the Web canary, add the Google account as a test user while the
+development project is in Testing:
 
 ```sh
 COMMA_GOOGLE_WEB_CLIENT_ID="YOUR_DEV_WEB_CLIENT_ID" make dev
 ```
 
-Electron is a different OAuth application type. Create a **Desktop app** client
-for the non-production build (and a separate production Desktop client), then
-run its optional canary with:
+Electron needs a separate **Desktop app** client for non-production and for
+production:
 
 ```sh
 COMMA_GOOGLE_ELECTRON_CLIENT_ID="YOUR_DEV_DESKTOP_CLIENT_ID" \
@@ -416,36 +242,26 @@ COMMA_GOOGLE_ELECTRON_CLIENT_SECRET="YOUR_DEV_DESKTOP_CLIENT_SECRET" \
 make dev-electron
 ```
 
-The Desktop flow uses the system browser plus a random loopback callback and
-exchanges the one-time authorization code on the Comma backend. The matching
-Desktop OAuth client secret stays in server configuration and is never bundled
-into Electron; Comma uses it only because Google's token endpoint requires it for
-this client registration. Restart the backend after changing the client ID or
-secret. See Google's [GIS Web client setup](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid)
+The Comma backend exchanges the Desktop authorization code. The Desktop client
+secret stays in server configuration and is never bundled into Electron.
+Restart the backend after you change the client ID or secret. See Google's
+[GIS Web client setup](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid)
 and [production OAuth policy](https://developers.google.com/identity/protocols/oauth2/production-readiness/policy-compliance).
 
-The seed command rejects a non-loopback `COMMA_LOCAL_API_BASE_URL` by default
-because it mutates users, sessions, workspaces, billing grants, and Chat data.
-Only an intentional remote-data operation may opt in with
-`COMMA_LOCAL_DEV_SEED_ALLOW_NON_LOOPBACK=I_UNDERSTAND_THIS_MUTATES_REMOTE_DATA`;
-never set that variable for ordinary local development.
+#### Local LLM
 
-The default local LLM is intentionally deterministic, so local Chat and Task
-testing never waits on a provider key or spends money:
+The default local LLM is deterministic. It needs no provider key:
 
-- Send an ordinary Chat message and wait for a reply containing
-  `LOCAL_CHAT_OK`.
-- Send `LOCAL_CREATE_TASK` and verify a Task card appears, opens by its public
-  Comma conversation ID, and reaches `completed` with `LOCAL_TASK_DONE`.
-- The mock has a hard 20-visible-send cap and treats Worker self-delivery as a
-  no-op, so a faulty local scenario cannot create an unbounded reply loop.
+- Send an ordinary Chat message. The reply contains `LOCAL_CHAT_OK`.
+- Send `LOCAL_CREATE_TASK`. A Task card appears, opens by its public Comma
+  conversation ID, and reaches `completed` with `LOCAL_TASK_DONE`.
 
 #### Use a real LLM locally
 
-Real-provider credentials stay in the ignored `.local/` directory. Do not put
-an API key in `systems/config/compose-dev.json`, a tracked Compose file, or a
-Salix Template record. The Template should reference an environment variable
-through `api_key_env` instead.
+Keep real-provider credentials in the ignored `.local/` directory. Do not put an
+API key in `systems/config/compose-dev.json`, a tracked Compose file, or a Salix
+Template record. The Template references an environment variable through
+`api_key_env`.
 
 Create the two private files from the repository root:
 
@@ -455,9 +271,8 @@ cp systems/config/compose-dev.json .local/compose-dev-real-llm.json
 chmod 600 .local/compose-dev-real-llm.json
 ```
 
-In `.local/compose-dev-real-llm.json`, replace only
-`llm.default_template` with the approved provider settings. For an
-OpenAI-compatible Responses endpoint, the shape is:
+In `.local/compose-dev-real-llm.json`, replace only `llm.default_template`. For
+an OpenAI-compatible Responses endpoint:
 
 ```json
 {
@@ -475,34 +290,24 @@ OpenAI-compatible Responses endpoint, the shape is:
 }
 ```
 
-Put the matching credential in `.local/comma-real-llm.env`:
+Put the credential in `.local/comma-real-llm.env` and restrict it:
 
 ```dotenv
 COMMA_REAL_LLM_API_KEY=YOUR_LOCAL_PROVIDER_KEY
 ```
 
-Then restrict its permissions:
-
 ```sh
 chmod 600 .local/comma-real-llm.env
-```
-
-Then start Web or Electron with the fixed entrypoint:
-
-```sh
 make dev-real-llm
 # or: make dev-electron-real-llm
 ```
 
-The committed `systems/docker-compose.devcontainer.real-llm.yml` only mounts
-those ignored files into the source-mode Dev Container; it contains no
-credentials. The default mock container may still run, but the Router and
-Worker use the Template mounted from `.local/compose-dev-real-llm.json`.
+`systems/docker-compose.devcontainer.real-llm.yml` only mounts those ignored
+files. It holds no credentials.
 
-Salix Templates are journaled in the local data volume. If this checkout has
-already been seeded with the deterministic mock, changing the mounted JSON
-does not rewrite the existing `comma-local-dev` Template. Reset the disposable
-local volumes before switching providers, then start again:
+The local data volume keeps the journaled Template. If the checkout was seeded
+with the mock, the mounted JSON does not replace the existing `comma-local-dev`
+Template. Reset the local volumes before you switch providers:
 
 ```sh
 docker compose \
@@ -512,39 +317,24 @@ docker compose \
 make dev-real-llm
 ```
 
-This deletes only local Compose data. A successful real-provider smoke should
-answer a non-deterministic Chat prompt, create a Router-requested Worker Task,
-and return the Worker result without `401` or provider errors in the `comma`
-logs. If replies still contain `LOCAL_CHAT_OK`, the old mock Template is still
-present in the volume. If the provider returns `401`, verify that
-`api_key_env` exactly matches the variable name in
-`.local/comma-real-llm.env`; do not print the rendered Compose configuration
+This deletes only local Compose data. If replies still contain
+`LOCAL_CHAT_OK`, the mock Template is still in the volume. If the provider
+returns `401`, check that `api_key_env` matches the variable name in
+`.local/comma-real-llm.env`. Do not print the rendered Compose configuration,
 because it expands `env_file` secrets.
 
-`make dev` and `make dev-electron` own the client process in the foreground;
-Ctrl-C stops that client while leaving the Docker backend available for the
-next run. `make dev-electron` seeds and auto-signs in the local developer
-through the unpackaged client's shared startup Session path. Local development
-and E2E both write the seed through `SecureSessionStore` and then run
-`SessionService.initialize`; E2E profile isolation and Connector fixtures do
-not participate in authentication. The local launcher uses the normal Comma Dev
-profile and selects real per-workspace Connector supervision by leaving the
-explicit E2E Connector fixture unset.
-Web is fixed to `5174` so Electron Forge can keep its renderer dev server on
-`5173`; both clients use the local Comma API defaults without manual environment
-variables. If the backend is already running, the frontend-native entrypoints
-are `pnpm --dir clients dev:web` and `pnpm --dir clients dev:electron`; the
-direct Electron command keeps the ordinary manual login flow.
+#### Client processes and local data
 
-When several Comma worktrees are open, quit other `Comma Dev`/Electron processes
-before an Electron smoke. macOS can otherwise leave an older build running
-under the same display name and shared app-data location, which makes the
-smoke inspect the wrong binary or stale local database. Confirm the process
-path points at this checkout when diagnosing an unexpected schema error.
+`make dev` and `make dev-electron` run the client in the foreground. Ctrl-C
+stops the client and leaves the backend running. Web uses port `5174` and
+Electron Forge uses `5173`. When the backend already runs, use
+`pnpm --dir clients dev:web` and `pnpm --dir clients dev:electron`.
 
-Use `make dev-systems-logs` to follow the Comma and mock-LLM logs and
-`make dev-systems-down` to stop without deleting state. To deliberately reset
-all local data and rerun every migration from an empty store:
+With several worktrees open, quit other `Comma Dev` Electron processes before an
+Electron smoke. macOS can keep an older build under the same name and app-data
+location.
+
+To reset all local data and rerun every migration:
 
 ```sh
 docker compose \
@@ -554,18 +344,18 @@ docker compose \
 make dev-systems-up
 ```
 
-The default compose scope is the complete Comma product path
-(`salix,comma_product`). BridgeForTeams dashboard/onboarding and real external
-providers are separate integration environments; they are not silently faked
-by this stack.
+The default Compose scope is `salix,comma_product`. This stack does not fake
+the BridgeForTeams dashboard or real external providers. For BFT Dashboard
+work, see [Bridge For Teams](../docs/bridge-for-teams/design.md). For the Agent
+configuration handoff after migrations, see
+[Local model switching](../docs/development.md#local-model-switching).
 
-For persistent BFT Dashboard development, follow the
-[BFT local development guide](../docs/bridge-for-teams/design.md).
-It includes the explicit Agent configuration handoff required after migrations.
+#### Host-native setup
 
-For a host-native setup, install the libsodium headers and `pkg-config` first
-(`brew install libsodium pkg-config` or `apt-get install libsodium-dev
-pkg-config`); the `salix_signal_proto` NIF links libsodium.
+Install the libsodium, Opus, and libsrtp2 headers, `pkg-config`, and a Rust
+toolchain (`brew install libsodium opus srtp pkg-config rustup`, or
+`apt-get install libsodium-dev libopus-dev libsrtp2-dev pkg-config` with
+rustup).
 
 ```sh
 # MinIO on :19000 with buckets salix-dev + salix-test
@@ -578,21 +368,20 @@ mix test                       # full suite (fake backend + real MinIO)
 mix run --no-halt              # API on :4000, transfer on :4400
 ```
 
-Runtime config is loaded from `/etc/salix/config.json` or `systems/config.json`
-when present. Keep local `systems/config.json` private (`0600`) and untracked;
-use [`config/config.example.json`](config/config.example.json) for committed
-examples. Set `SALIX_CONFIG_PATH=/absolute/path/to/config.json` when a local
-run should use an isolated config file without touching `systems/config.json`.
+Salix loads runtime config from `/etc/salix/config.json` or
+`systems/config.json`. Keep a local `systems/config.json` private (`0600`) and
+untracked. Use [`config/config.example.json`](config/config.example.json) for
+committed examples. Set `SALIX_CONFIG_PATH=/absolute/path/to/config.json` to
+use another config file.
 
-The top-level `vm` section in config JSON is the deployment's platform VM
-configuration. It may define Sprites and Cloudflare providers and is consumed by
-Comma workspaces directly. BridgeForTeams organizations do not inherit that
-platform config by default: a tenant must either provide organization-owned
-`vm.providers` config, or be explicitly marked with `vm.config_source` set to
-`"platform"` by an operator. Legacy tenant `"sprites"` config is treated as
-organization-owned VM config for migration compatibility.
+The platform VM configuration is `ctl/vm/default_config.json`, managed from
+the Salix dashboard or `/v1/admin/vm/default-config`. When it is absent, Salix
+uses the top-level `vm` section of the config JSON. Comma workspaces use the
+platform configuration. A BridgeForTeams tenant with its own VM config keeps
+it, unless an operator sets `vm.config_source` to `"platform"`. A tenant with
+no VM config uses the platform configuration. Sprites is retired.
 
-Talk to it:
+Call the API:
 
 ```sh
 curl -X POST localhost:4000/v1/comma/admin/users \
@@ -601,90 +390,69 @@ curl -X POST localhost:4000/v1/comma/admin/users \
   -d '{"email":"demo@example.com"}'
 ```
 
-This curl demonstrates the deployment-bearer compatibility path. The separately
-deployed human [Comma Admin Web](../docs/identity-security.md) uses its
-path-scoped Cookie origin for the documented query and named command allowlists.
-Human commands additionally require a server-derived Admin actor, reason,
-target-bound confirmation, idempotency, and durable redacted audit evidence.
+This uses the deployment bearer. Human admins use
+[Comma Admin Web](../docs/identity-security.md). Its commands require a
+server-derived Admin actor, a reason, target-bound confirmation, idempotency,
+and durable redacted audit evidence.
 
-New Comma Workspaces default to `vm.enabled: true` and use the configured platform
-VM provider. Explicit `vm.enabled: false` is preserved; existing Workspaces are
-not migrated. In Comma Admin, **Users → Workspace & billing → Cloud VM** exposes
-the desired setting for each ready Workspace. Changes require an audited reason
-and target-bound confirmation, preserve the Workspace's provider choice, and
-queue the existing Workspace convergence job rather than calling the VM provider
-inline. Configuration sync is not VM readiness. Disabling updates the Router and
-default Worker; the shared VM is only removed when no other agents or runtime
-installation intents require it.
+New Comma Workspaces default to `vm.enabled: true`. Explicit
+`vm.enabled: false` is kept. In Comma Admin, **Users → Workspace & billing →
+Cloud VM** sets the value for a ready Workspace. A change requires an audited
+reason and target-bound confirmation, and queues the Workspace convergence job.
+Configuration sync is not VM readiness. Salix removes the shared VM only when
+no other agent or runtime installation intent needs it.
 
-Set `ANTHROPIC_API_KEY` (or a per-agent template via
-Salix agent templates/control records — protocol/model/base_url/api_key — for real
-rounds; without a key, rounds settle with an LLM-error message.
+Real rounds need provider configuration in the agent's Template
+(`protocol`, `model`, `base_url`, and `api_key` or `api_key_env`). There is no
+cluster-wide fallback key. Without a key, the round fails at the provider and
+settles with an LLM-error message.
+
+#### Verbose JSONL logging
+
+The log is disabled by default. Enable it with `--log-file <path>`, or with
+`log.file` in config.json for a release:
+
+```sh
+mix run --no-halt -- --log-file salix.jsonl
+```
+
+Each agent step becomes one JSON object per line. Credential-looking fields are
+redacted. The logger is `CommaLog` (app `comma_log`), shared by all subsystems.
 
 ### Salix emergency agent recovery
 
 `SalixAgent.force_recover/2` is a break-glass IEx API for an internal-runtime
-agent that is stuck in a running or queued state and is not making progress.
-Run it from a trusted shell on a prod Salix/Comma release node.
-
-Pasteable form:
-
-```elixir
-agent_id = "agent_..."
-session_id = "..."
-
-SalixAgent.force_recover(agent_id,
-  session_id: session_id,
-  timeout: 5_000
-)
-```
-
-The API stops the live runtime/session processes, repairs the durable internal
-session state, appends an operator recovery delivery, and wakes the session on
-the owning node. It does not archive, cancel, or delete the agent. The default
-target status is `:queued`, so the recovered session should immediately resume
-from durable state.
-
-When the exact session is unknown, omit `session_id:` to recover all active,
-queued, or waiting internal sessions for the agent:
-
-```elixir
-SalixAgent.force_recover("agent_...", timeout: 5_000)
-```
-
-To park a stuck session without resuming it, pass `status: :idle`:
+agent that is stuck in a running or queued state. Run it from a trusted shell
+on a prod Salix/Comma release node:
 
 ```elixir
 SalixAgent.force_recover("agent_...",
   session_id: "...",
-  status: :idle,
   timeout: 5_000
 )
 ```
 
-Expected success shape:
+It stops the live runtime and session processes, repairs the durable internal
+session state, appends an operator recovery message, and wakes the session on
+the owning node. It does not archive, cancel, or delete the agent.
 
-```elixir
-{:ok,
- %{
-   "agent_id" => "agent_...",
-   "status" => "queued",
-   "sessions" => [
-     %{"session_id" => "...", "status" => "queued", "events" => n}
-   ]
- }}
-```
+Omit `session_id:` to recover every internal session of the agent that has
+pending work. To clear the stuck state without a wake, pass `wake: false`. The
+session goes back to idle, and pending durable work stays for normal
+activation.
 
-This API currently supports Salix-managed internal runtime agents. For external
-runtime agents, recover the external runtime/session through its dedicated
-control plane instead of this function.
+The result is `{:ok, %{"agent_id" => ..., "wake_requested" => ..., "sessions" => [...]}}`.
+Each session entry has its `"status"`, its event count, and its wake result,
+or an `"error"`.
+
+The API supports only Salix-managed internal runtime agents. Recover an
+external runtime agent through its own control plane.
 
 ### BridgeForTeams system-admin shell operations
 
-BridgeForTeams keeps privileged bootstrap and recovery operations out of the
-dashboard. A system admin should run them from an Elixir shell on a trusted
-release node or from a trusted `MIX_ENV=prod` maintenance shell with the same
-database configuration. The generated secret is returned once; do not persist it
+Run privileged bootstrap and recovery operations from an Elixir shell on a
+trusted release node, or from a trusted `MIX_ENV=prod` maintenance shell with
+the same database configuration. The secret is returned once. Do not persist it
 outside the operator handoff.
 
 To create a one-time organization invite code:
@@ -698,103 +466,18 @@ To create a one-time organization invite code:
   )
 ```
 
-Give the code to the intended owner. They redeem it at the dashboard signup
-flow to create both the organization and their owner account. The organization
-name and slug are bound to the invite code; the owner cannot change the slug
-while redeeming it. Invite codes default to a 30-day expiry, are stored only as
-hashes, and cannot be reused. Useful options are `:ttl_seconds`, `:expires_at`,
-`:note`, and, for tests only, `:code`.
+Give the code to the owner. They redeem it in the dashboard signup flow to
+create the organization and their owner account. The name and slug are bound to
+the code. Codes are stored only as hashes and cannot be reused.
 
-For staging mini-machine smoke tests, prefer the manual GitHub Actions workflow
-`Comma Staging Bootstrap Invite` instead of requiring local GKE credentials. Run
-it from the trusted `main` ref with:
+For staging smoke tests, use the manual GitHub Actions workflow
+`Comma Staging Bootstrap Invite` from the trusted `main` ref. It needs no local
+GKE credentials. Inputs are `org_name`, `org_slug`, `note`, and `ttl_seconds`.
+Download the one-day `comma-staging-bootstrap-invite-*` artifact and open its
+`signup_url` in the staging dashboard. Treat the artifact as a short-lived
+secret.
 
-- `org_name`: the staging organization display name.
-- `org_slug`: the staging organization slug.
-
-### BridgeForTeams CLI
-
-BridgeForTeams has a terminal entrypoint for admin and agent workflows. The
-distributed product CLI lives in `systems/cli/bft` and builds to a standalone Go
-binary, so customer/admin machines do not need Elixir/Erlang installed. In a
-source checkout:
-
-```sh
-go build -o /tmp/bft ./cli/bft/cmd/bft
-/tmp/bft --help
-go test -C cli/bft ./...
-cli/bft/scripts/build-release.sh
-```
-
-Release artifacts are published by the `BFT CLI Release` GitHub workflow to
-`${CLOUDFLARE_R2_PUBLIC_BASE_URL}/bft-cli`. Comma deployments consume that fixed
-release path through hidden environment configuration. The dashboard
-installer example uses `https://releases.example.com/bft-cli` and `latest`. The runtime
-maps those values to `:bft_cli_artifact_base_url` / `:bft_cli_release_id` for
-the dashboard installer.
-
-Use the built binary when validating non-zero exit codes. `go run` wraps
-program exits such as `64` as a Go tool failure and the shell sees `1`, which is
-not the installed `bft` behavior.
-
-The older `systems/bin/bft` / `mix bft` Elixir entrypoint has been retired.
-Use the built Go binary for CLI behavior and the backend `/v1/cli/*` tests for
-server-side contract coverage.
-
-The CLI has two output modes:
-
-- Human mode prints guided setup steps and copyable URLs.
-- Agent mode uses stable JSON plus exit codes. Non-TTY stdout defaults to JSON;
-  in a TTY, pass `--json` or `--output json`. Use `--output text` to force
-  human text in redirected or piped runs. Exit codes are `0` success, `2`
-  onboarding step needs manual action, `64` usage/context error, `66` not
-  found, `69` runtime unavailable, `70` unexpected backend error. Use `--limit`
-  and `--filter` on list commands to keep agent context bounded, and
-  `--fields mode,commands` to project only selected top-level JSON data fields.
-
-Common commands:
-
-```sh
-/tmp/bft agent help onboarding --json
-/tmp/bft commands --json --fields mode,commands
-/tmp/bft auth login --url <bft-api-base-url> --output text
-/tmp/bft orgs list --limit 20 --filter acme
-/tmp/bft projects list --org acme --limit 20
-/tmp/bft context --org acme --project bridge --json
-/tmp/bft conversations redeliver \
-  --org acme --project bridge \
-  --conversation cnv1_... --participant ptp1_... --message msg1_... \
-  --request recovery-20260722-1 --confirm-mutating --json
-
-/tmp/bft feishu app upsert \
-  --org acme \
-  --app-id cli_app \
-  --bot \
-  --app-secret-env BFT_FEISHU_APP_SECRET \
-  --verification-token-env BFT_FEISHU_VERIFICATION_TOKEN \
-  --confirm-mutating
-
-/tmp/bft feishu connect ensure --org acme --project bridge --app-id cli_app --confirm-mutating --json
-/tmp/bft feishu checks --org acme --project bridge --json
-/tmp/bft onboarding smoke --step cli-login --org acme --json
-/tmp/bft onboarding smoke --step feishu-cli --lark-cli lark-cli --assist-lark-app-init --json
-/tmp/bft slack setup --org acme --project bridge --json
-/tmp/bft completion zsh
-```
-
-Credential values should be passed by environment variable reference, not as
-literal command-line arguments. The CLI redacts secret fields and secret-bearing
-URL query parameters before printing human or JSON output.
-
-- `note`: why the invite was minted.
-- `ttl_seconds`: invite lifetime; defaults to 24 hours and is capped at seven days.
-
-After the workflow finishes, download the one-day
-`comma-staging-bootstrap-invite-*` artifact and open the `signup_url` value in the
-staging dashboard. The workflow masks the URL for logs and does not print the raw
-invite code during normal execution; treat the artifact as a short-lived secret.
-
-To recover an existing account when organization SSO is misconfigured:
+To recover an account when organization SSO is misconfigured:
 
 ```elixir
 {:ok, %{url: url}} =
@@ -805,43 +488,237 @@ To recover an existing account when organization SSO is misconfigured:
   )
 ```
 
-Send the generated `url` to the account owner through a trusted channel. The
-link signs that account in once at `/auth/recovery`, then marks the recovery
-token used before issuing a normal dashboard session. Recovery links default to
-a one-hour expiry, are stored only as hashes, require an active existing user,
-and cannot be reused. `create_recovery_link/2` accepts a `%User{}`, user id, or
-email address; useful options are `:base_url`, `:ttl_seconds`, `:expires_at`,
-`:note`, and, for tests only, `:token`.
+Send the `url` to the account owner through a trusted channel. The link signs
+that account in once at `/auth/recovery`. Links are stored only as hashes,
+require an active user, and cannot be reused.
+
+### BridgeForTeams CLI
+
+The product CLI is a standalone Go binary in `systems/cli/bft`. It needs no
+Elixir or Erlang. In a source checkout:
+
+```sh
+go build -o /tmp/bft ./cli/bft/cmd/bft
+/tmp/bft --help
+/tmp/bft commands --json
+go test -C cli/bft ./...
+cli/bft/scripts/build-release.sh
+```
+
+The `BFT CLI Release` workflow publishes releases to
+`${CLOUDFLARE_R2_PUBLIC_BASE_URL}/bft-cli`. The dashboard installer reads
+`:bft_cli_artifact_base_url` and `:bft_cli_release_id`.
+
+Test exit codes with the built binary. `go run` turns a non-zero exit such as
+`64` into `1`.
+
+Output modes:
+
+- Human mode prints guided setup steps and copyable URLs.
+- Agent mode prints stable JSON. Non-TTY stdout defaults to JSON. In a TTY,
+  pass `--json` or `--output json`. Pass `--output text` to force text. Use
+  `--limit`, `--filter`, and `--fields` to bound the output.
+- Exit codes: `0` success, `2` onboarding step needs manual action, `64`
+  usage or context error, `66` not found, `69` runtime unavailable, `70`
+  unexpected backend error.
+
+Pass credentials by environment variable reference (for example
+`--app-secret-env BFT_FEISHU_APP_SECRET`), not as literal arguments. The CLI
+redacts secret fields and secret-bearing URL query parameters in its output.
+
+### QQ bot
+
+A QQ open platform bot connects to one Agent Swarm. The behavior is in the
+moduledocs of `SalixIM.QQInbound`, `SalixIM.Provider.QQ`,
+`SalixIM.Provider.QQ.Groups`, `SalixIM.Provider.QQ.Menu`, and
+`SalixIM.QQMessageRecord`.
+
+Setup:
+
+1. Create a bot in the QQ open platform. Copy its AppID and AppSecret.
+2. Connect it on the Swarm Connections page, or with `bft qq connect`. Salix
+   checks the credentials with QQ.
+3. In the QQ bot console, choose Webhook delivery and save the callback address
+   `<public base URL>/v1/im/qq/events?app_id=<AppID>`. Subscribe to the private
+   chat, group, interaction, and group member events. QQ accepts only HTTPS on
+   port 80, 443, 8080, or 8443.
+4. If the console has an IP allowlist, add the deployment's egress addresses.
+   Salix calls `https://api.bot.qq.com`.
+
+Operator notes:
+
+- Salix verifies each callback with the Ed25519 key that QQ derives from the
+  AppSecret.
+- A group takes proactive messages only after a group admin turns on
+  "机器人主动在群聊内发言" for the bot.
+- The group record has every message only when a group admin sets
+  "机器人可获取的群聊消息范围" to "获取群内全部消息". Private chats are not
+  recorded.
+- A bare group mention uses the context QQ attached; without it, Salix reads
+  up to 10 earlier recorded messages of that group (1.5-second budget, at most
+  32 concurrent reads per node). The Router asks for clarification when no
+  clear request is found.
+- A Task created from a human QQ request posts a Markdown status card to that
+  chat, and a new one on each state change (QQ cannot edit messages). Cards use
+  QQ's reply allowance; later group cards need proactive-message permission.
+- A command panel made in the QQ bot console replaces the Swarm's menu. Delete
+  it in the console to show the menu. A Swarm admin edits shortcuts on the
+  Swarm Connections page or with `bft qq menu`.
+- `qq.list_members` and `qq.get_member` work only for bots on QQ's allowlist.
+  Other bots get error 11253. Ask the QQ open platform to add the bot.
+
+The record uses the Postgres outbox `qq_mirror_outbox` and the ClickHouse table
+`qq_messages`. It is on wherever ClickHouse is configured.
+`qq_mirror.enabled: false` in the Salix config turns it off.
+
+### Lark bot
+
+A custom app of the Lark open platform (`open.larksuite.com`) connects to one
+Agent Swarm. A Lark connect holds its own credentials and does not use the
+organization's Feishu app. The behavior is in the moduledocs of
+`SalixIM.LarkInbound`, `SalixIM.Provider.Lark`, `SalixIM.Provider.Lark.Docs`,
+`SalixIM.Provider.Lark.Minutes`, `SalixIM.LarkMessageRecord`, and
+`SalixIM.Provider.Lark.Manual`.
+
+Setup:
+
+1. Create a custom app in the Lark Developer Console and add the Bot
+   capability. Copy the App ID, the App Secret, and the Verification Token or
+   the Encrypt Key from Events & Callbacks.
+2. Connect it on the Swarm Connections page, or with `bft lark connect`.
+3. In Events & Callbacks, choose "Send events to developer's server" and save
+   the request URL `<public base URL>/v1/im/lark/events?app_id=<App ID>`.
+   Subscribe to `im.message.receive_v1` and `im.message.recalled_v1`. Under
+   Callbacks, use the same URL and subscribe to `card.action.trigger`. Without
+   it, confirmation card buttons do nothing.
+4. Import the scopes. Use **Copy JSON** in the Lark section of the Swarm
+   Connections page, or `bft lark scopes --output text`
+   (`BridgeForTeams.LarkScopes`). In Permissions & Scopes, use the batch
+   import. Without `im:message.group_msg`, the bot gets only messages that
+   mention it.
+5. Create a version of the app and publish it. Scopes and events take effect
+   with the published version.
+6. Run the checks: **Run checks** on the connect's row, or
+   `bft lark checks --org <org> --project <project>` (`--connect-id` for one of
+   several apps). `mix bridge_for_teams.run_checks --surface lark_bot` prints
+   the same result. The gates are in `SalixIM.LarkChecks`.
+   `bot.first_message` and `bot.manual` are always `needs_manual`.
+
+Security and data notes:
+
+- Salix accepts a callback when its signature or decryption proves the Encrypt
+  Key, or its token equals the Verification Token.
+- A confirmation for content that crosses an audience boundary goes to the
+  requester's private chat with the bot (`SalixIM.IFC.LarkConfirmation`). Only
+  that person's press decides it. The press never reaches the Router.
+- Information flow control reads the chat from Lark. A chat with `external` is
+  shared with another tenant. A `public` group has the audience of the whole
+  connect. Any other group is a room of the members that Lark lists.
+- Documents and Minutes are read as the bot. The bot opens a document only when
+  it is shared with a chat that includes the bot, shared with the app, or open
+  by link inside the tenant. Information flow control labels reads and decides
+  writes with the rules of
+  [Feishu cloud documents](../docs/architecture/DOMAIN_CONCEPTS.md#feishu-cloud-documents).
+- A document link must be on a `larksuite.com` host. Feishu links go to a
+  Feishu connect.
+- Meetings, their AI notes, transcripts and recordings are read as a person.
+  People sign in with their Lark account on the swarm's Connections page
+  (Accounts). Each sign-in is a Group OAuth Binding of provider `lark`
+  (`SalixStore.OAuth.Adapters.Lark`); the organization's OAuth app for Lark is
+  the bot's Lark app with the redirect URL `/v1/oauth/lark/callback` and the
+  user scopes of the batch import. `lark.search_meetings`, `lark.get_meeting`
+  and `lark.get_note` run as every signed-in account, or as the one named by
+  `account`. Document and Minutes reads take the same `account` parameter.
+  A unified note has no transcript document: `lark.get_note` with
+  `include_transcript` reads its transcript page by page from
+  `/vc/v1/notes/:id/unified_note_transcript`.
+- A Worker holds the document and Minutes operations of a Lark connect and
+  every read operation (chat history, threads, search, chats, members,
+  directory). The Router holds all of them.
+- A finished Lark meeting reaches the Router as context. A turn from that
+  message calls no Lark operation
+  (`SalixIM.Provider.Lark.MeetingActivationAuthorization`).
+- The message record uses the outbox `lark_mirror_outbox`, the ClickHouse table
+  `lark_messages`, and the switch `lark_mirror.enabled`. A recall removes the
+  message from search. The record does not import history from before the
+  connect.
+
+Not connected for Lark: run checks for meetings and calendar, and the meeting
+preparation and history pages of the Dashboard.
+
+#### Lark plugin and hosted MCP
+
+The system plugin `lark` (`Salix.Control.Plugins`) holds the Swarm's Lark
+connect (`lark-im`) and `im_api.lark.*`. It adds the Lark hosted MCP server
+`https://mcp.larksuite.com/mcp` (target `remote:lark`, tools `mcp.lark.*`). It
+is on by default in BridgeForTeams. Comma does not list it.
+
+- The MCP connection `lark-native` uses native MCP OAuth
+  (`Salix.Control.RemoteMCPOAuth`). A Swarm admin selects **Connect** on the
+  plugin page and signs in to Lark. The token is that person's Lark user token.
+  It is kept on the Swarm's MCP binding, and every Agent of the Swarm uses it.
+  The bot credentials are not used.
+- Salix requests the same read scopes as for Feishu, plus `offline_access`.
+
+#### Sign-in with Lark
+
+An organization can sign members in to the Dashboard with Lark
+(`BridgeForTeams.Auth.Lark`), as SSO provider `lark`. It is separate from the
+provider `feishu` and from any Swarm's Lark connect. An organization has one SSO
+connection, so Lark replaces Feishu or generic OIDC.
+
+1. Create or select a custom app in the Lark Developer Console. BFT stores its
+   credentials for sign-in only.
+2. Open **Settings → Single sign-on**, select **Lark**, and enter the App ID
+   and App Secret. The secret is write-only. A blank secret keeps the stored
+   one while the provider stays Lark.
+3. Copy the Redirect URI from the page (`<public base URL>/auth/callback`). In
+   **Security Settings** of the Lark app, add it to the redirect URLs.
+4. Select **Run checks**, or run `bft sso checks --org <org>`.
+5. Sign in with a test account in a new browser session at `/login?o=<slug>`.
+
+Rules:
+
+- Sign-in needs no scope. Lark returns the email only with
+  `contact:user.email:readonly`. Enter extra scopes on the Single sign-on page.
+  The Lark app must have them.
+- The login key of a member is the Lark `union_id`, or else the `open_id`, in
+  one organization. The `user_id` is never the key.
+- A Lark identity never matches a Feishu identity or an email. After a switch
+  to Lark, members sign in as new members with the first-sign-in role.
+- A change to or from Lark keeps no scope, tenant binding, or first-sign-in
+  policy of the previous provider, and it needs the new secret.
+- Tenant binding. Threat: a Lark app that more than one tenant can use lets a
+  person of another company sign in and become a member. Authority: the
+  `tenant_key` in the Lark user info, read with the server's token. The
+  expected value is `provider_config["tenant_key"]` of the SSO connection. An
+  operator sets it with `BridgeForTeams.Orgs.upsert_sso_connection/3`. The
+  Dashboard does not write it. Owner: `BridgeForTeams.Auth` compares the two at
+  each sign-in. Result: on a mismatch the person gets no session, identity, or
+  membership, and Operations records `sso.login.failed` with
+  `lark_tenant_mismatch`. A connection without the key has no tenant check.
+  Feishu has the same check with `feishu_tenant_mismatch`.
 
 ### Bridge ToB local acceptance
 
-Before running live Feishu acceptance, configure the Feishu app/connect using
-the BridgeForTeams [Feishu Setup Runbook](../docs/bridge-for-teams/design.md).
-That runbook lists the required credentials, permissions/events, manual Feishu
-admin steps, automated Bridge/Salix probes, Q&A, and troubleshooting matrix.
+Before live Feishu acceptance, configure the Feishu app and connect. See
+[Feishu](../docs/bridge-for-teams/design.md#feishu).
 
-For a reusable BridgeForTeams → Salix Feishu setup-to-first-message smoke, use
-the repo-local acceptance harness after the local Systems app and public
-callback/tunnel are already running:
+For a setup-to-first-message smoke, start the local Systems app and the public
+callback tunnel, then run:
 
 ```sh
 systems/scripts/bridge_tob_acceptance_harness.sh --print-env-template
 systems/scripts/bridge_tob_acceptance_harness.sh
 ```
 
-The harness reads repo-local `.env` plus 0600 local secret files, checks Salix
-and public callback readiness, performs Feishu URL verification, posts a
-synthetic group-message-style inbound event, and reports the observed result.
-It intentionally owns the acceptance scenario rather than the full dev
-environment lifecycle.
+The harness reads repo-local `.env` and `0600` local secret files. It checks
+readiness, performs Feishu URL verification, posts a synthetic inbound event,
+and reports the result.
 
-For an explicitly live Feishu follow-up after the app/tenant is configured,
-the optional live smoke can verify bot-visible chats and run a signed public
-callback preflight with the active runtime connect. When the callback rejects
-the signed preflight, the result includes a redacted `failure_code` and
-`next_action` (for example, synchronizing the Feishu console Verification Token
-or Encrypt Key with the runtime connect). Only when explicitly enabled does it
-send one real redacted outbound smoke message:
+The live smoke checks bot-visible chats and a signed callback preflight. It is
+read-only by default. `BRIDGE_TOB_LIVE_FEISHU_SEND=true` sends one real
+redacted message:
 
 ```sh
 cd systems
@@ -849,13 +726,8 @@ mix run --no-start scripts/bridge_tob_feishu_live_smoke.exs
 BRIDGE_TOB_LIVE_FEISHU_SEND=true mix run --no-start scripts/bridge_tob_feishu_live_smoke.exs
 ```
 
-The default mode is read-only. The signed callback preflight is synthetic and
-does not prove a human-inbound first message; send mode proves real outbound
-only. A user-visible first-message pass requires a real Feishu-sourced user
-message followed by the assistant reply in that same group. Use the target chat
-name or redacted ID prefix to select the group. Other marker, browser-surface,
-screenshot, and report inputs are optional diagnostics and do not change that
-pass condition:
+A first-message pass requires a real Feishu user message and the assistant
+reply in the same group. Select the group by name or redacted ID prefix:
 
 ```sh
 BRIDGE_TOB_LIVE_FEISHU_TARGET_CHAT_NAME="your smoke group name" \
@@ -865,62 +737,33 @@ BRIDGE_TOB_LIVE_FEISHU_MARKER_PREFIX=bridge-tob-live-real-xxxx \
   mix run --no-start scripts/bridge_tob_feishu_live_smoke.exs
 ```
 
-When the only bot-visible chat is a bot p2p conversation or no suitable group is
-available, the live smoke can optionally create a dedicated smoke group using
-the visible member as the human member. This external Feishu side effect is
-disabled by default and must be explicitly enabled:
+To create a dedicated smoke group in Feishu (an external side effect, off by
+default):
 
 ```sh
 BRIDGE_TOB_LIVE_FEISHU_CREATE_DEDICATED_GROUP=true \
   mix run --no-start scripts/bridge_tob_feishu_live_smoke.exs
 ```
 
-#### Verbose JSONL logging
-
-Disabled by default; enable with `--log-file <path>`:
-
-```sh
-mix run --no-halt -- --log-file salix.jsonl
-```
-
-(equivalently `SALIX_LOG_FILE=salix.jsonl` or `log.file` in config.json — the
-release-friendly forms). Every agent step becomes one JSON object per line:
-claim / wake / delivery staging, each LLM request and response, each tool
-execution (args, result, duration), every journal commit (event types, epoch,
-seq, outcome), park / passivate. Long strings are truncated and
-credential-looking fields (`api_key`, `token`, …) are redacted. The logger is
-the shared `CommaLog` (app `comma_log`), used by every subsystem.
-
 ### Test matrix
 
-| Command                                                                                                              | What                                                                                                                                                                         |
-| -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mix test`                                                                                                           | the full suite — unit, property (stateful S3-CAS linearizability), chaos (fault injection), integration                                                                      |
-| `mix test --include multinode`                                                                                       | cross-node head-CAS fencing on two real BEAM nodes sharing MinIO (`epmd -daemon` first)                                                                                      |
-| `mix test --include clickhouse`                                                                                      | analytics sink against a live ClickHouse at `127.0.0.1:8123`                                                                                                                 |
-| `mix test --include go_exporter`                                                                                     | Go-side migration exporter round-trip (needs `go`, `sqlite3`)                                                                                                                |
-| `SALIX_E2E_LLM_API_KEY=... mix test apps/salix_agent/test/live_llm*_e2e_test.exs --include live_llm --only live_llm` | real OpenCode Go `deepseek-v4-flash` checks for provider/runtime, Chat/Task semantics, and dynamic integrations; set `SALIX_LIVE_LLM_S3_BACKEND=aws` to exercise local MinIO |
+| Command                                                                                                              | What                                                                    |
+| -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `mix test`                                                                                                           | the full suite                                                          |
+| `mix test --include multinode`                                                                                       | cross-node tests on two real BEAM nodes (`epmd -daemon` first)          |
+| `mix test --include clickhouse`                                                                                      | analytics sink against a live ClickHouse at `127.0.0.1:8123`            |
+| `mix test --include go_exporter`                                                                                     | Go-side migration exporter round-trip (needs `go`, `sqlite3`)           |
+| `SALIX_E2E_LLM_API_KEY=... mix test apps/salix_agent/test/live_llm*_e2e_test.exs --include live_llm --only live_llm` | real-provider checks. `SALIX_LIVE_LLM_S3_BACKEND=aws` uses local MinIO |
 
-CI (`.github/workflows/systems-ci.yml`) runs the suite against a MinIO
-container, the multi-node test, and a ClickHouse service on every PR touching
-`systems/**`. Pull requests skip the credentialed live-LLM shards; main pushes
-and manual dispatches run them against MinIO as diagnostic evidence because the
-external endpoint and model can be unavailable. `systems-docker.yml` publishes
-the systems image to `ghcr.io/<owner>/<repo>`.
+CI is in `.github/workflows/systems-ci.yml`.
 
 ### Production
 
-`mix release comma` builds the single everything-included release;
-`Dockerfile` produces the deployable image (release + the pinned spinfoam binary).
-Configuration is environment-driven via `config/runtime.exs` — see
-[`DEPLOYMENT.md`](DEPLOYMENT.md) for the env reference, S3/IAM requirements,
-Kubernetes/compose sketches, drain semantics, and the migration runbook.
+`mix release comma` builds the release. `Dockerfile` builds the deployable
+image. Configuration comes from the environment through `config/runtime.exs`.
+See [`DEPLOYMENT.md`](DEPLOYMENT.md).
 
 ## Platform telemetry
 
-Feature authors must follow the
-[`systems_observability` guide](apps/systems_observability/GUIDE.md). Stable
-metric/query contracts live in the
-[metric catalog](../docs/observability.md), and deployment,
-failure handling, rollout, and the future Grafana boundary are documented in
-[platform telemetry](../docs/observability.md).
+Follow the [`systems_observability` guide](apps/systems_observability/GUIDE.md)
+and [Observability](../docs/observability.md).

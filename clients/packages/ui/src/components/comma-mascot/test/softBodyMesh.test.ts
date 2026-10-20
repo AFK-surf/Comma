@@ -23,7 +23,7 @@ describe("Comma mascot soft-body mesh", () => {
     beginSoftBodyDrag(mesh, source);
     moveSoftBodyDrag(mesh, { x: -1_000, y: -1_000 });
     for (let frame = 0; frame < 8; frame += 1) {
-      stepSoftBodyMesh(mesh, 1 / 60);
+      stepSoftBodyMesh(mesh, 2);
     }
     const after = warpPoint(mesh, source);
     const farEdgeAfter = warpPoint(mesh, farEdge);
@@ -55,7 +55,7 @@ describe("Comma mascot soft-body mesh", () => {
     beginSoftBodyDrag(mesh, { x: 104, y: 104 });
     moveSoftBodyDrag(mesh, { x: 156, y: 104 });
     for (let frame = 0; frame < 5; frame += 1) {
-      stepSoftBodyMesh(mesh, 1 / 60);
+      stepSoftBodyMesh(mesh, 2);
     }
     const draggedIndex = mesh.drag!.index;
     const restX = getSoftBodyNode(mesh, draggedIndex)!.rest.x;
@@ -64,7 +64,7 @@ describe("Comma mascot soft-body mesh", () => {
     let crossedRest = false;
     let furthestOvershoot = 0;
     let frame = 0;
-    while (stepSoftBodyMesh(mesh, 1 / 60) && frame < 600) {
+    while (stepSoftBodyMesh(mesh, 2) && frame < 600) {
       const overshoot = restX - getSoftBodyNode(mesh, draggedIndex)!.position.x;
       furthestOvershoot = Math.max(furthestOvershoot, overshoot);
       if (overshoot > 0) {

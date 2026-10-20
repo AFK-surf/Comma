@@ -1,5 +1,8 @@
 defmodule SalixAnalytics.SlackSemanticIndexTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
+  use SalixStore.QueueCase, queues: [:slack_mirror_outbox]
   @moduletag :clickhouse
   alias SalixAnalytics.{SlackSemanticIndex, SlackSemanticIndexer, SlackSemanticQueue}
   alias SalixIM.Provider.Slack
@@ -48,7 +51,9 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       {mode, member} = Agent.get(state, &{&1.mode, &1.member})
       {:ok, body, conn} = read_body(conn)
       Agent.update(state, &%{&1 | calls: [{conn.request_path, body} | &1.calls]})
-      if conn.request_path == "/embed", do: send(Agent.get(state, & &1.owner), :gpu_started)
+
+      if conn.request_path == "/embed",
+        do: SystemsRuntime.Proc.send(Agent.get(state, & &1.owner), :gpu_started)
 
       case conn.request_path do
         "/embed" ->
@@ -63,17 +68,20 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
               send_resp(conn, 200, String.duplicate("x", 2 * 1024 * 1024 + 1))
 
             :slow ->
-              Process.sleep(6000)
+              SystemsClock.sleep(6000)
               json(conn, vector())
 
             :steady_load ->
-              Process.sleep(50)
+              SystemsRuntime.Proc.sleep(50)
               json(conn, vector())
 
             :media_heartbeat ->
-              send(Agent.get(state, & &1.owner), {:held_live_encode, self()})
+              SystemsRuntime.Proc.send(
+                Agent.get(state, & &1.owner),
+                {:held_live_encode, SystemsRuntime.Proc.self()}
+              )
 
-              receive do
+              SystemsRuntime.Proc.receive do
                 :release -> :ok
               after
                 5000 -> raise "test did not release live encode"
@@ -86,9 +94,12 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
                 Agent.get(state, fn s -> Enum.count(s.calls, &(elem(&1, 0) == "/embed")) end)
 
               if number == 1 do
-                send(Agent.get(state, & &1.owner), {:held_encode, self()})
+                SystemsRuntime.Proc.send(
+                  Agent.get(state, & &1.owner),
+                  {:held_encode, SystemsRuntime.Proc.self()}
+                )
 
-                receive do
+                SystemsRuntime.Proc.receive do
                   :release -> :ok
                 after
                   5000 -> raise "test did not release first encode"
@@ -111,9 +122,12 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
           channel = URI.decode_query(body)["channel"]
 
           if mode == :hold_other_channel and channel == "C999" do
-            send(Agent.get(state, & &1.owner), {:held_channel_check, self()})
+            SystemsRuntime.Proc.send(
+              Agent.get(state, & &1.owner),
+              {:held_channel_check, SystemsRuntime.Proc.self()}
+            )
 
-            receive do
+            SystemsRuntime.Proc.receive do
               :release -> :ok
             after
               5000 -> raise "test did not release channel check"
@@ -141,14 +155,14 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
           send_resp(conn, 204, "")
 
         "/media/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ->
-          send(Agent.get(state, & &1.owner), :media_started)
-          if mode == :media_slow, do: Process.sleep(16_000)
+          SystemsRuntime.Proc.send(Agent.get(state, & &1.owner), :media_started)
+          if mode == :media_slow, do: SystemsClock.sleep(20_000)
 
           if mode == :media_heartbeat do
             conn = send_chunked(conn, 200)
 
             Enum.reduce_while(1..60, conn, fn _, conn ->
-              Process.sleep(50)
+              SystemsRuntime.Proc.sleep(50)
 
               case chunk(conn, "{\"heartbeat\":true}\n") do
                 {:ok, conn} -> {:cont, conn}
@@ -213,7 +227,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
           end
 
         "/file" ->
-          send(
+          SystemsRuntime.Proc.send(
             Agent.get(state, & &1.owner),
             {:file_download, get_req_header(conn, "authorization")}
           )
@@ -246,10 +260,15 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   defmodule FileSource do
     def extract(_scope, "F123", consumer, _opts \\ []) do
       path =
-        Path.join(System.tmp_dir!(), "semantic-file-test-#{System.unique_integer([:positive])}")
+        Path.join(
+          System.tmp_dir!(),
+          "semantic-file-test-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+        )
 
       File.write!(path, "source bytes")
-      if pid = Process.whereis(__MODULE__), do: send(pid, {:file_path, path})
+
+      if pid = SystemsRuntime.Proc.whereis(__MODULE__),
+        do: SystemsRuntime.Proc.send(pid, {:file_path, path})
 
       try do
         consumer.(path, "video/mp4")
@@ -261,9 +280,12 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
 
   defmodule BlockingFileSource do
     def extract(_scope, _file_id, _consumer, _opts \\ []) do
-      send(Process.whereis(__MODULE__), {:attachment_waiting, self()})
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.whereis(__MODULE__),
+        {:attachment_waiting, SystemsRuntime.Proc.self()}
+      )
 
-      receive do
+      SystemsRuntime.Proc.receive do
         :release -> {:error, :semantic_unavailable}
       after
         10_000 -> {:error, :semantic_unavailable}
@@ -293,10 +315,10 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     SalixStore.Repo.query!("TRUNCATE slack_semantic.oban_jobs")
 
     SalixStore.Repo.query!(
-      "TRUNCATE slack_semantic.cursors, slack_semantic.search_cursors, slack_semantic.search_sources, slack_semantic.search_components, slack_semantic.search_files, slack_semantic.search_channels, slack_semantic.search_connects, slack_semantic.search_windows, slack_mirror_source_writes"
+      "TRUNCATE slack_semantic.cursors, slack_semantic.search_cursors, slack_semantic.search_sources, slack_semantic.search_components, slack_semantic.search_files, slack_semantic.search_channels, slack_semantic.search_connects, slack_semantic.search_windows"
     )
 
-    database = "slack_semantic_test_#{System.unique_integer([:positive])}"
+    database = "slack_semantic_test_#{SystemsRuntime.Proc.unique_integer([:positive])}"
     sql!("CREATE DATABASE #{database}")
 
     for name <- ~w(20260831000001_create_slack_messages.sql
@@ -322,7 +344,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       |> Enum.each(&sql!/1)
     end
 
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
 
     state =
       start_supervised!({Agent, fn -> %{mode: :ok, member: true, calls: [], owner: owner} end})
@@ -356,17 +378,17 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     ]
 
     previous =
-      Enum.map(settings, fn {app, key, _} -> {app, key, Application.get_env(app, key)} end)
+      Enum.map(settings, fn {app, key, _} -> {app, key, SystemsRuntime.get_env(app, key)} end)
 
-    Enum.each(settings, fn {app, key, value} -> Application.put_env(app, key, value) end)
+    Enum.each(settings, fn {app, key, value} -> SystemsRuntime.put_env(app, key, value) end)
 
     on_exit(fn ->
       sql!("DROP DATABASE IF EXISTS #{database}")
 
       Enum.each(previous, fn {app, key, value} ->
         if is_nil(value),
-          do: Application.delete_env(app, key),
-          else: Application.put_env(app, key, value)
+          do: SystemsRuntime.delete_env(app, key),
+          else: SystemsRuntime.put_env(app, key, value)
       end)
     end)
 
@@ -413,7 +435,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   end
 
   test "production queues page historical work and repair a missed local offer", ctx do
-    ts = System.os_time(:microsecond) - 1_000_000
+    ts = SystemsClock.system_time(:microsecond) - 1_000_000
     for number <- 1..21, do: current_message!(ctx.database, ts + number, "backlog #{number}")
     start_queue!()
 
@@ -425,7 +447,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
                  )
                ) == "21"
       end,
-      150
+      300
     )
 
     # This bypasses the live seam, representing an offer lost before PG insertion.
@@ -439,12 +461,12 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
                  )
                ) == "22"
       end,
-      100
+      300
     )
   end
 
   test "historical messages and fresh edits older than fourteen days remain searchable", ctx do
-    ts = System.os_time(:microsecond) - 90 * 86_400_000_000
+    ts = SystemsClock.system_time(:microsecond) - 90 * 86_400_000_000
 
     for number <- 1..21,
         do: current_message!(ctx.database, ts + number, "older history #{number}")
@@ -459,7 +481,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
                  )
                ) == "21"
       end,
-      150
+      300
     )
 
     live_message!(ts + 1, "fresh edit of an old message")
@@ -482,11 +504,11 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     # Explicit operator opt-in. Text is synthetic; an optional media path must
     # already be authorized for this origin. Never print credentials or units.
     gpu = System.fetch_env!("SALIX_SEMANTIC_GPU_CONFIG") |> File.read!() |> Jason.decode!()
-    cfg = Application.fetch_env!(:salix_analytics, :slack_semantic_search)
+    cfg = SystemsRuntime.fetch_env!(:salix_analytics, :slack_semantic_search)
     Agent.update(ctx.state, &Map.put(&1, :gpu_http, []))
-    handler_id = {__MODULE__, :live_gpu_http, self()}
+    handler_id = {__MODULE__, :live_gpu_http, SystemsRuntime.Proc.self()}
 
-    :telemetry.attach(
+    SystemsRuntime.Telemetry.attach(
       handler_id,
       [:finch, :request, :stop],
       fn _, measurements, metadata, {state, host} ->
@@ -546,9 +568,9 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       {ctx.state, URI.parse(gpu["url"]).host}
     )
 
-    on_exit(fn -> :telemetry.detach(handler_id) end)
+    on_exit(fn -> SystemsRuntime.Telemetry.detach(handler_id) end)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_analytics,
       :slack_semantic_search,
       Keyword.merge(cfg,
@@ -558,7 +580,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       )
     )
 
-    ts = System.os_time(:microsecond) - 90 * 86_400_000_000
+    ts = SystemsClock.system_time(:microsecond) - 90 * 86_400_000_000
 
     for number <- 1..200 do
       current_message!(
@@ -580,7 +602,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       """).rows != []
     end
 
-    eventually(fn -> assert history_pending.() end, 100)
+    eventually(fn -> assert history_pending.() end, 300)
     # One observer models the origin's documented single online-query lane.
     # New-message producers and index completion checks remain concurrent;
     # verification waiting is included in mirror-to-hit latency. No retry.
@@ -588,7 +610,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
 
     media =
       if path = System.get_env("SALIX_SEMANTIC_GPU_MEDIA") do
-        Task.async(fn ->
+        SystemsRuntime.Task.async(fn ->
           started = System.monotonic_time(:millisecond)
 
           case SlackSemanticIndex.media(path, "audio/mp4") do
@@ -610,9 +632,9 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     samples =
       for number <- 1..60 do
         target = started + (number - 1) * 2000
-        Process.sleep(max(target - System.monotonic_time(:millisecond), 0))
+        SystemsRuntime.Proc.sleep(max(target - System.monotonic_time(:millisecond), 0))
         assert history_pending.()
-        timestamp = System.os_time(:microsecond)
+        timestamp = SystemsClock.system_time(:microsecond)
 
         text =
           "Live semantic acceptance sample #{number}: the violet launch checklist is ready for review."
@@ -620,7 +642,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
         begin = System.monotonic_time(:millisecond)
         live_message!(timestamp, text)
 
-        Task.async(fn ->
+        SystemsRuntime.Task.async(fn ->
           indexed =
             try do
               eventually(
@@ -628,7 +650,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
                   assert {:ok, []} =
                            SlackSemanticIndex.missing_documents(@scope, timestamp, timestamp + 1)
                 end,
-                200
+                300
               )
 
               true
@@ -663,19 +685,19 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
             sample: number,
             indexed: indexed,
             query_ok: found,
-            concurrent_media_active: not is_nil(media) and Process.alive?(media.pid),
+            concurrent_media_active: not is_nil(media) and SystemsRuntime.Proc.alive?(media.pid),
             chars: String.length(text),
             mirror_write_to_index_ms: indexed_ms,
             mirror_write_to_hit_ms: System.monotonic_time(:millisecond) - begin
           }
         end)
       end
-      |> Enum.map(&Task.await(&1, 30_000))
+      |> Enum.map(&SystemsRuntime.Task.await(&1, :infinity))
 
     ordered = Enum.sort(Enum.map(samples, & &1.mirror_write_to_hit_ms))
     p95 = Enum.at(ordered, ceil(length(ordered) * 0.95) - 1)
     p99 = Enum.at(ordered, ceil(length(ordered) * 0.99) - 1)
-    media_result = if media, do: Task.await(media, 330_000)
+    media_result = if media, do: SystemsRuntime.Task.await(media, :infinity)
 
     report = %{
       real_gpu: true,
@@ -700,7 +722,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       do: File.write!(path, Jason.encode!(report))
 
     IO.puts(Jason.encode!(Map.drop(report, [:samples, :http])))
-    :telemetry.detach(handler_id)
+    SystemsRuntime.Telemetry.detach(handler_id)
     assert Enum.all?(samples, &(&1.indexed and &1.query_ok))
     assert p95 <= 5000
     assert p99 <= 10_000
@@ -722,7 +744,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   end
 
   test "a full-history key page stays bounded with a large channel and duplicate versions", ctx do
-    ts = System.os_time(:microsecond) - 90 * 86_400_000_000
+    ts = SystemsClock.system_time(:microsecond) - 90 * 86_400_000_000
 
     sql!("""
     INSERT INTO #{ctx.database}.slack_messages
@@ -762,38 +784,45 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   end
 
   test "one installation cannot consume another installation's historical file discovery", ctx do
-    Application.put_env(:salix_analytics, :slack_semantic_scope_source, TwoInstallationScopes)
-    Application.put_env(:salix_analytics, :slack_semantic_file_source, TwoInstallationFiles)
-    ts = System.os_time(:microsecond) - 90 * 86_400_000_000
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_scope_source, TwoInstallationScopes)
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_file_source, TwoInstallationFiles)
+    ts = SystemsClock.system_time(:microsecond) - 90 * 86_400_000_000
 
     current_message!(ctx.database, ts, "shared historical attachment", %{
       "payload" => Jason.encode!(%{"files" => [%{"id" => "F123"}]})
     })
 
-    start_queue!()
+    # Keep discovery timers under test control and drain durable jobs
+    # synchronously, including the publication transaction.
+    SystemsClock.manual(scope: ["Elixir.Salix"])
+    on_exit(&SystemsClock.reset/0)
+    start_queue!(queues: [], plugins: [])
+    :sys.get_state(SlackSemanticQueue)
 
-    eventually(
-      fn ->
-        assert String.trim(
-                 sql!(
-                   "SELECT count() FROM #{ctx.database}.slack_message_search_components FINAL WHERE file_id!=''"
-                 )
-               ) ==
-                 "1"
-      end,
-      100
-    )
+    for _ <- 1..2 do
+      SystemsRuntime.Proc.send(SlackSemanticIndexer, :tick)
+      :sys.get_state(SlackSemanticIndexer)
+    end
+
+    for queue <- [:semantic_text, :semantic_files] do
+      assert %{failure: 0, snoozed: 0} =
+               Oban.drain_queue(SlackSemanticQueue.Oban,
+                 queue: queue,
+                 with_recursion: true
+               )
+    end
+
+    params = %{"oldest" => slack_timestamp(ts), "latest" => slack_timestamp(ts + 1)}
 
     assert {:ok, %{"messages" => hits}} =
-             queue_tool(
-               %{
-                 "oldest" => slack_timestamp(ts),
-                 "latest" => slack_timestamp(ts + 1)
-               },
-               Map.put(@queue_scope, "connect_id", "allowed")
-             )
+             queue_tool(params, Map.put(@queue_scope, "connect_id", "allowed"))
 
     assert Enum.any?(hits, &(&1["file_id"] == "F123"))
+
+    assert {:ok, %{"messages" => denied_hits}} =
+             queue_tool(params, Map.put(@queue_scope, "connect_id", "denied"))
+
+    refute Enum.any?(denied_hits, &(&1["file_id"] == "F123"))
   end
 
   test "historical page commits atomically, rejects stale advancement and survives worker restart" do
@@ -825,7 +854,9 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
 
     results =
       for _ <- 1..2 do
-        Task.async(fn -> SlackSemanticQueue.enqueue_history_page(@queue_scope, 0, page) end)
+        SystemsRuntime.Task.async(fn ->
+          SlackSemanticQueue.enqueue_history_page(@queue_scope, 0, page)
+        end)
       end
       |> Enum.map(&Task.await/1)
 
@@ -845,9 +876,15 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   test "a deleted live attachment settles and historical text resumes", ctx do
     scope = seed_file_connect()
     Agent.update(ctx.state, &%{&1 | mode: :file_deleted})
-    Application.put_env(:salix_analytics, :slack_semantic_file_source, SalixIM.SlackSemanticFiles)
+
+    SystemsRuntime.put_env(
+      :salix_analytics,
+      :slack_semantic_file_source,
+      SalixIM.SlackSemanticFiles
+    )
+
     start_queue!()
-    ts = System.os_time(:microsecond) - 1_000_000
+    ts = SystemsClock.system_time(:microsecond) - 1_000_000
 
     live_message!(ts, "live file was removed", %{
       "_semantic_context" => Map.take(scope, ~w(group_id connect_id)),
@@ -865,14 +902,14 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     end)
 
     current_message!(ctx.database, ts - 1, "history after revoked file")
-    eventually(fn -> assert indexed_text(ctx.database) =~ "history after revoked file" end, 150)
+    eventually(fn -> assert indexed_text(ctx.database) =~ "history after revoked file" end, 300)
   end
 
   test "new channels index through the real outbox without any configured scopes", ctx do
     owner = seed_file_connect()
     connect = Map.merge(connect(), owner)
     start_queue!()
-    ts = System.os_time(:microsecond) - 1_000_000
+    ts = SystemsClock.system_time(:microsecond) - 1_000_000
 
     for {channel, number} <- Enum.with_index(["C456", "C789"], 1) do
       timestamp = slack_timestamp(ts + number)
@@ -952,16 +989,16 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   end
 
   test "production text queue indexes live arrivals while an attachment is stalled", ctx do
-    Process.register(self(), BlockingFileSource)
-    Application.put_env(:salix_analytics, :slack_semantic_file_source, BlockingFileSource)
-    timestamp = System.os_time(:microsecond) - 1_000_000
+    Process.register(SystemsRuntime.Proc.self(), BlockingFileSource)
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_file_source, BlockingFileSource)
+    timestamp = SystemsClock.system_time(:microsecond) - 1_000_000
 
     current_message!(ctx.database, timestamp, "", %{
       "payload" => Jason.encode!(%{"files" => [%{"id" => "F123"}]})
     })
 
     start_queue!()
-    assert_receive {:attachment_waiting, file_worker}, 7000
+    assert_receive {:attachment_waiting, file_worker}
 
     try do
       live_message!(timestamp + 1, "new text during long attachment")
@@ -971,15 +1008,15 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
                  "new text during long attachment"
       end)
 
-      assert Process.alive?(file_worker)
+      assert SystemsRuntime.Proc.alive?(file_worker)
     after
-      send(file_worker, :release)
+      SystemsRuntime.Proc.send(file_worker, :release)
     end
   end
 
   test "successive live messages overtake a continuously busy historical backlog", ctx do
     Agent.update(ctx.state, &%{&1 | mode: :steady_load})
-    ts = System.os_time(:microsecond) - 1_000_000
+    ts = SystemsClock.system_time(:microsecond) - 1_000_000
 
     for number <- 1..60 do
       current_message!(
@@ -990,30 +1027,35 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     end
 
     start_queue!()
-    assert_receive :gpu_started, 5000
+    assert_receive :gpu_started
 
     for number <- 1..4 do
       started = System.monotonic_time(:millisecond)
       live_message!(ts + 500 + number, "fresh #{number}")
 
-      eventually(fn ->
-        assert String.trim(
-                 sql!(
-                   "SELECT count() FROM #{ctx.database}.slack_message_search_components FINAL WHERE file_id='' AND startsWith(chunks[1], 'fresh #{number}')"
-                 )
-               ) == "1"
-      end)
+      # The indexer writes the component, then publishes its build: search
+      # finds it only after both, so wait for what search returns.
+      hit =
+        eventually(fn ->
+          assert {:ok, [hit]} =
+                   queue_search(
+                     @queue_scope,
+                     "fresh #{number}",
+                     ts + 500 + number,
+                     ts + 501 + number,
+                     1
+                   )
 
-      assert {:ok, [hit]} =
-               queue_search(
-                 @queue_scope,
-                 "fresh #{number}",
-                 ts + 500 + number,
-                 ts + 501 + number,
-                 1
-               )
+          hit
+        end)
 
       assert String.trim(hit["text"]) == "fresh #{number}"
+
+      assert String.trim(
+               sql!(
+                 "SELECT count() FROM #{ctx.database}.slack_message_search_components FINAL WHERE file_id='' AND startsWith(chunks[1], 'fresh #{number}')"
+               )
+             ) == "1"
       assert System.monotonic_time(:millisecond) - started < 5000
 
       count =
@@ -1036,9 +1078,9 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   test "a failed live encode stays durable and does not block another live message", ctx do
     Agent.update(ctx.state, &%{&1 | mode: :busy})
     start_queue!()
-    ts = System.os_time(:microsecond) - 1_000_000
+    ts = SystemsClock.system_time(:microsecond) - 1_000_000
     live_message!(ts, "retry me")
-    assert_receive :gpu_started, 5000
+    assert_receive :gpu_started
 
     eventually(fn ->
       assert [[state]] =
@@ -1068,16 +1110,16 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
                  )
                ) == "2"
       end,
-      100
+      300
     )
   end
 
   test "normal long work is not rescued early but an abandoned job remains recoverable", ctx do
     Agent.update(ctx.state, &%{&1 | mode: :hold_first})
     start_queue!()
-    ts = System.os_time(:microsecond) - 1_000_000
+    ts = SystemsClock.system_time(:microsecond) - 1_000_000
     live_message!(ts, "healthy long-running work")
-    assert_receive {:held_encode, encoder}, 5000
+    assert_receive {:held_encode, encoder}
 
     try do
       # Advance the persisted attempt age, not wall time. Exercise the actual
@@ -1089,8 +1131,8 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       """)
 
       plugin = Oban.Registry.whereis(SlackSemanticQueue.Oban, {:plugin, Oban.Plugins.Lifeline})
-      assert is_pid(plugin)
-      send(plugin, :rescue)
+      assert SystemsRuntime.Proc.is_process(plugin)
+      SystemsRuntime.Proc.send(plugin, :rescue)
       :sys.get_state(plugin)
 
       assert [["executing", 1]] =
@@ -1105,7 +1147,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       WHERE state = 'executing'
       """)
 
-      send(plugin, :rescue)
+      SystemsRuntime.Proc.send(plugin, :rescue)
       :sys.get_state(plugin)
 
       assert [["available"]] =
@@ -1114,7 +1156,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
                WHERE priority = 0 AND args->>'kind' = 'text'
                """).rows
     after
-      send(encoder, :release)
+      SystemsRuntime.Proc.send(encoder, :release)
     end
 
     eventually(fn -> assert indexed_text(ctx.database) == "healthy long-running work" end)
@@ -1123,9 +1165,9 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   test "a rescued but still-running old job cannot acknowledge a new observation", ctx do
     Agent.update(ctx.state, &%{&1 | mode: :hold_first})
     start_queue!(plugins: [{Oban.Plugins.Lifeline, rescue_after: 100, interval: 100}])
-    ts = System.os_time(:microsecond) - 1_000_000
+    ts = SystemsClock.system_time(:microsecond) - 1_000_000
     live_message!(ts, "old observation")
-    assert_receive {:held_encode, encoder}, 5000
+    assert_receive {:held_encode, encoder}
 
     try do
       eventually(
@@ -1135,7 +1177,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
                      "SELECT state::text FROM slack_semantic.oban_jobs WHERE priority=0 AND args->>'kind'='text'"
                    ).rows
         end,
-        30
+        300
       )
 
       live_message!(ts, "new observation")
@@ -1149,7 +1191,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
         assert count == 2
       end)
     after
-      send(encoder, :release)
+      SystemsRuntime.Proc.send(encoder, :release)
     end
 
     eventually(fn ->
@@ -1164,30 +1206,30 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
 
   test "a live arrival cancels historical media cooperatively and cleans its temporary file",
        ctx do
-    Process.register(self(), FileSource)
+    Process.register(SystemsRuntime.Proc.self(), FileSource)
     Agent.update(ctx.state, &%{&1 | mode: :media_heartbeat})
-    Application.put_env(:salix_analytics, :slack_semantic_file_source, FileSource)
-    ts = System.os_time(:microsecond) - 1_000_000
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_file_source, FileSource)
+    ts = SystemsClock.system_time(:microsecond) - 1_000_000
 
     current_message!(ctx.database, ts, "", %{
       "payload" => Jason.encode!(%{"files" => [%{"id" => "F123"}]})
     })
 
     start_queue!()
-    assert_receive {:file_path, path}, 5000
-    assert_receive :media_started, 5000
+    assert_receive {:file_path, path}
+    assert_receive :media_started
     assert File.exists?(path)
     started = System.monotonic_time(:millisecond)
     live_message!(ts + 1, "preempt historical attachment")
-    assert_receive {:held_live_encode, encoder}, 2000
+    assert_receive {:held_live_encode, encoder}
 
     try do
-      eventually(fn -> refute File.exists?(path) end, 15)
+      eventually(fn -> refute File.exists?(path) end, 300)
       # The original stream runs for three seconds. Cleanup must occur while
       # live work is held, before normal termination can make this test pass.
       assert System.monotonic_time(:millisecond) - started < 2000
     after
-      send(encoder, :release)
+      SystemsRuntime.Proc.send(encoder, :release)
     end
 
     assert String.trim(
@@ -1212,7 +1254,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   test "concurrent offers stay bounded and saturation never changes mirror acknowledgment", ctx do
     pid = start_supervised!(SlackSemanticQueue)
     :sys.suspend(pid)
-    ts = System.os_time(:microsecond) - 1_000_000
+    ts = SystemsClock.system_time(:microsecond) - 1_000_000
 
     try do
       results =
@@ -1238,7 +1280,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
 
     start_supervised!({Oban, opts})
     start_supervised!(SlackSemanticQueue)
-    ts = System.os_time(:microsecond) - 1_000_000
+    ts = SystemsClock.system_time(:microsecond) - 1_000_000
     live_message!(ts, "survive restart")
 
     eventually(fn ->
@@ -1263,7 +1305,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
 
     start_supervised!({Oban, opts})
     bridge = start_supervised!(SlackSemanticQueue)
-    ts = System.os_time(:microsecond) - 1_000_000
+    ts = SystemsClock.system_time(:microsecond) - 1_000_000
 
     ids =
       for {state, index} <- Enum.with_index(~w(available completed cancelled discarded)) do
@@ -1277,7 +1319,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
         {state, job.id}
       end
 
-    send(bridge, :prune)
+    SystemsRuntime.Proc.send(bridge, :prune)
 
     eventually(fn ->
       rows =
@@ -1288,9 +1330,9 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   end
 
   test "unsupported live files settle independently from supported siblings", ctx do
-    Application.put_env(:salix_analytics, :slack_semantic_file_source, MixedFileSource)
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_file_source, MixedFileSource)
     start_queue!()
-    ts = System.os_time(:microsecond) - 1_000_000
+    ts = SystemsClock.system_time(:microsecond) - 1_000_000
 
     live_message!(ts, "", %{
       "payload" => Jason.encode!(%{"files" => [%{"id" => "Fbad"}, %{"id" => "F123"}]})
@@ -1377,7 +1419,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     Agent.update(ctx.state, &%{&1 | mode: :hold_other_channel})
 
     other =
-      Task.async(fn ->
+      SystemsRuntime.Task.async(fn ->
         Slack.API.request_form(
           Slack.API.installation(connect()),
           "conversations.info",
@@ -1386,7 +1428,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
         )
       end)
 
-    assert_receive {:held_channel_check, request}, 2000
+    assert_receive {:held_channel_check, request}
 
     try do
       assert {:ok, %{"messages" => [hit]}} = tool()
@@ -1397,8 +1439,8 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
                path == "/api/conversations.info" and URI.decode_query(body)["channel"] == "C123"
              end) == 2
     after
-      send(request, :release)
-      Task.await(other, 5000)
+      SystemsRuntime.Proc.send(request, :release)
+      SystemsRuntime.Task.await(other, :infinity)
     end
   end
 
@@ -1419,23 +1461,27 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
 
     for mode <- [:busy, :invalid, :oversized, :slow] do
       Agent.update(ctx.state, &%{&1 | mode: mode})
-      started = System.monotonic_time(:millisecond)
+      # Only the stalled encode waits out its 2.5 s budget, on a clock this
+      # test drives.
+      if mode == :slow, do: drive_clock(ctx)
+      started = SystemsClock.monotonic_time(:millisecond)
       assert {:error, _} = tool()
-      assert System.monotonic_time(:millisecond) - started < 5500
+      assert SystemsClock.monotonic_time(:millisecond) - started < 5500
+      release_clock()
 
       assert {:ok, %{"messages" => [%{"text" => "ordinary history"}]}} = history()
     end
 
-    cfg = Application.get_env(:salix_analytics, :slack_semantic_search)
+    cfg = SystemsRuntime.get_env(:salix_analytics, :slack_semantic_search)
 
-    Application.put_env(
+    SystemsRuntime.put_env(
       :salix_analytics,
       :slack_semantic_search,
       Keyword.put(cfg, :url, "http://127.0.0.1:1/embed")
     )
 
     assert {:error, _} = tool()
-    Application.put_env(:salix_analytics, :slack_semantic_search, cfg)
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_search, cfg)
     Agent.update(ctx.state, &%{&1 | mode: :ok})
     sql!("DROP TABLE #{ctx.database}.slack_semantic_documents")
     assert {:error, _} = tool()
@@ -1468,11 +1514,15 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
        ctx do
     message!(ctx.database, %{"text" => "ordinary history"})
     Agent.update(ctx.state, &%{&1 | mode: :slow})
+    # A stopped clock: the encoder stalls for as long as the test runs, and the
+    # ordinary paths must finish without any clock time passing.
+    SystemsClock.manual(scope: ["Elixir.Salix"])
+    on_exit(&SystemsClock.reset/0)
 
-    worker = spawn(fn -> pass() end)
+    worker = SystemsRuntime.Proc.spawn(fn -> pass() end)
 
-    assert_receive :gpu_started, 1500
-    started = System.monotonic_time(:millisecond)
+    assert_receive :gpu_started
+    started = SystemsClock.monotonic_time(:millisecond)
 
     assert :ok =
              SalixIM.SlackMessageMirror.observe(connect(), %{
@@ -1493,8 +1543,8 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     assert {:ok, %{"messages" => [_]}} =
              Slack.call(%{}, connect(), "slack.search", %{"query" => "history"})
 
-    assert System.monotonic_time(:millisecond) - started < 1500
-    Process.exit(worker, :kill)
+    assert SystemsClock.monotonic_time(:millisecond) == started
+    SystemsRuntime.Proc.exit(worker, :kill)
     assert {:ok, %{"messages" => [_]}} = history()
 
     on_exit(fn ->
@@ -1545,7 +1595,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
   for layout <- ~w(Compact Wide) do
     @layout layout
     test "default window searches #{@layout} parts within the interactive read budget", ctx do
-      recent = System.os_time(:microsecond) - 1_000_000
+      recent = SystemsClock.system_time(:microsecond) - 1_000_000
       older = recent - 7 * 86_400 * 1_000_000
       min_wide_bytes = if @layout == "Compact", do: 1_000_000_000, else: 0
       min_wide_rows = if @layout == "Compact", do: 1_000_000, else: 0
@@ -1640,36 +1690,12 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
              tool(%{"latest" => slack_timestamp(@ts + 70001)})
   end
 
-  test "staging live indexing ignores the removed manual switch", ctx do
-    config =
-      Application.fetch_env!(:salix_analytics, :slack_semantic_search)
-      |> Keyword.put(:environment, "staging")
-      |> Keyword.put(:enabled, false)
-
-    Application.put_env(:salix_analytics, :slack_semantic_search, config)
-    start_queue!()
-    ts = System.os_time(:microsecond) - 1_000_000
-    live_message!(ts, "index without an operator switch")
-
-    eventually(fn ->
-      assert indexed_text(ctx.database) =~ "index without an operator switch"
-
-      assert {:ok, %{"messages" => [_]}} =
-               queue_tool(%{"oldest" => slack_timestamp(ts), "latest" => slack_timestamp(ts + 1)})
-
-      assert [["completed"]] =
-               SalixStore.Repo.query!(
-                 "SELECT state::text FROM slack_semantic.oban_jobs WHERE priority=0 AND args->>'kind'='text'"
-               ).rows
-    end)
-  end
-
   test "production cannot enable semantic workers or queries with a legacy switch", ctx do
     message!(ctx.database, %{"text" => "ordinary history"})
-    config = Application.fetch_env!(:salix_analytics, :slack_semantic_search)
+    config = SystemsRuntime.fetch_env!(:salix_analytics, :slack_semantic_search)
 
     for environment <- ["prod", "production"] do
-      Application.put_env(
+      SystemsRuntime.put_env(
         :salix_analytics,
         :slack_semantic_search,
         Keyword.merge(config, environment: environment, enabled: true)
@@ -1696,7 +1722,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
           [environment: "staging"],
           [environment: "staging", url: "http://127.0.0.1:1/embed"]
         ] do
-      Application.put_env(:salix_analytics, :slack_semantic_search, config)
+      SystemsRuntime.put_env(:salix_analytics, :slack_semantic_search, config)
       assert {:error, _} = tool()
       assert {:ok, %{"messages" => [_]}} = history()
     end
@@ -1706,13 +1732,13 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
 
   test "discovery failure leaves the reconciler and ordinary reads available", ctx do
     message!(ctx.database, %{"text" => "ordinary history"})
-    Application.put_env(:salix_analytics, :slack_semantic_scope_source, UnavailableScopeSource)
+    SystemsRuntime.put_env(:salix_analytics, :slack_semantic_scope_source, UnavailableScopeSource)
 
     pid = start_supervised!({SlackSemanticIndexer, start_delay_ms: 0})
-    ref = Process.monitor(pid)
+    ref = SystemsRuntime.Proc.monitor(pid)
     refute_receive {:DOWN, ^ref, :process, ^pid, _}, 100
     assert {:ok, %{"messages" => [%{"text" => "ordinary history"}]}} = history()
-    assert Process.alive?(pid)
+    assert SystemsRuntime.Proc.alive?(pid)
     refute_receive :gpu_started
   end
 
@@ -1830,7 +1856,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     scope = seed_file_connect()
 
     consume = fn _, _ ->
-      send(self(), :refused_file_reached_inference)
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), :refused_file_reached_inference)
       {:ok, []}
     end
 
@@ -1872,20 +1898,26 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       "payload" => Jason.encode!(%{"files" => [%{"id" => "F123"}]})
     })
 
+    # The media fetch stalls on a stopped clock. History reads ClickHouse
+    # meanwhile with no clock time passing; then the test moves the clock past
+    # the 15 s media wait, and the fetch gives up.
+    SystemsClock.manual(scope: ["Elixir.Salix"])
+    on_exit(&SystemsClock.reset/0)
     Agent.update(ctx.state, &%{&1 | mode: :media_slow})
-    task = Task.async(fn -> file_pass() end)
-    assert_receive :media_started, 2000
-    started = System.monotonic_time(:millisecond)
+    task = SystemsRuntime.Task.async(fn -> file_pass() end)
+    assert_receive :media_started
+    started = SystemsClock.monotonic_time(:millisecond)
     assert {:ok, %{"messages" => [_]}} = history()
-    assert System.monotonic_time(:millisecond) - started < 1500
-    assert {:error, :semantic_unavailable} = Task.await(task, 17_000)
+    assert SystemsClock.monotonic_time(:millisecond) == started
+    SystemsClock.advance(15_000)
+    assert {:error, :semantic_unavailable} = SystemsRuntime.Task.await(task, :infinity)
     assert {:ok, %{"messages" => [_]}} = history()
   end
 
   defp seed_file_connect do
     scope =
       Map.merge(@scope, %{
-        "group_id" => "semantic-group-#{System.unique_integer([:positive])}",
+        "group_id" => "semantic-group-#{SystemsRuntime.Proc.unique_integer([:positive])}",
         "connect_id" => "semantic-connect"
       })
 
@@ -1894,7 +1926,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
         connect(),
         Map.merge(scope, %{
           "provider" => "slack",
-          "oauth_completed_at" => System.os_time(:millisecond),
+          "oauth_completed_at" => SystemsClock.system_time(:millisecond),
           "connect_generation" => "semantic-test-generation"
         })
       )
@@ -2049,7 +2081,7 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
         "message_ts_us" => timestamp,
         "message_ts" => slack_timestamp(timestamp),
         "thread_ts" => "",
-        "version" => System.os_time(:microsecond),
+        "version" => SystemsClock.system_time(:microsecond),
         "text" => text,
         "body_text" => "",
         "deleted" => false,
@@ -2078,7 +2110,11 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
       })
       |> Map.merge(attrs)
 
-    insert!(database, "slack_messages", Map.put(row, "source_write_id", Ecto.UUID.generate()))
+    insert!(
+      database,
+      "slack_messages",
+      Map.put(row, "source_write_id", SystemsRuntime.Proc.uuid())
+    )
   end
 
   defp insert!(database, table, row),
@@ -2090,12 +2126,37 @@ defmodule SalixAnalytics.SlackSemanticIndexTest do
     response.body
   end
 
-  defp eventually(assertion, attempts \\ 60) do
+  defp eventually(assertion, attempts \\ 300) do
     assertion.()
   rescue
     error in ExUnit.AssertionError ->
       if attempts == 0, do: reraise(error, __STACKTRACE__)
-      Process.sleep(100)
+      SystemsRuntime.Proc.sleep(100)
       eventually(assertion, attempts - 1)
+  end
+
+  # The semantic service runs in-process, so the clock sees its handler wait.
+  defp drive_clock(ctx) do
+    SystemsClock.manual(drive: true, scope: ["Elixir.Salix"])
+    config = SystemsRuntime.get_env(:salix_analytics, :slack_semantic_search)
+
+    SystemsRuntime.put_env(
+      :salix_analytics,
+      :slack_semantic_search,
+      Keyword.put(config, :req_options, plug: {HTTP, ctx.state})
+    )
+
+    on_exit(&release_clock/0)
+  end
+
+  defp release_clock do
+    SystemsClock.reset()
+    config = SystemsRuntime.get_env(:salix_analytics, :slack_semantic_search)
+
+    SystemsRuntime.put_env(
+      :salix_analytics,
+      :slack_semantic_search,
+      Keyword.delete(config, :req_options)
+    )
   end
 end

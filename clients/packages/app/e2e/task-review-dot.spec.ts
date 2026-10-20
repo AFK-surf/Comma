@@ -11,15 +11,6 @@ const inboxTabBadge = (page: Page) =>
     .getByRole("complementary", { name: "App sidebar" })
     .getByRole("link", { name: "Inbox" })
     .locator('[data-slot="left-rail-item-badge"]');
-const taskProjectionUpdatedAt = chatSmokeTaskConversation.updated_at * 1_000;
-
-const taskSeenRevision = (page: Page) =>
-  page.evaluate((conversationId) => {
-    const raw = window.localStorage.getItem("comma.taskReviewSeen");
-    if (raw === null) return null;
-    return (JSON.parse(raw) as Record<string, number>)[conversationId] ?? null;
-  }, chatSmokeTaskConversation.id);
-
 /**
  * The needs-review attention dot across surfaces: an unviewed needs-review task
  * carries a dot in the Inbox rail and in the Chat Sidebar's task panel, and
@@ -129,7 +120,6 @@ test("viewing a needs-review task in Chat Sidebar clears its attention", async (
     await expect(
       content.getByTestId(`chat-sidebar-conversation-${chatSmokeTaskConversation.id}`)
     ).toBeVisible();
-    await expect.poll(() => taskSeenRevision(page)).toBe(taskProjectionUpdatedAt);
     await expect(panelDot).toHaveAttribute("data-state", "hidden");
   } finally {
     await stub.close();
@@ -160,13 +150,13 @@ test("does not clear task attention before its detail is loaded", async ({ page 
     await mainRow.click();
     await stub.waitForDelayedTaskDetail();
 
-    expect(await taskSeenRevision(page)).toBeNull();
+    await expect(dotIn(mainRow)).toHaveAttribute("data-state", "visible");
 
     stub.releaseDelayedTaskDetail();
     await expect(
       page.getByRole("heading", { name: chatSmokeTaskConversation.title })
     ).toBeVisible();
-    await expect.poll(() => taskSeenRevision(page)).toBe(taskProjectionUpdatedAt);
+    await expect(dotIn(mainRow)).toHaveAttribute("data-state", "hidden");
   } finally {
     await stub.close();
   }
@@ -179,7 +169,6 @@ test("keeps refreshed task attention until the newer detail is rendered", async 
   const updatedReply = "Updated review detail.";
   const updatedTitle = "冒烟任务（已更新）";
   const updatedAt = chatSmokeTaskConversation.updated_at + 10;
-  const updatedProjectionRevision = updatedAt * 1_000;
   const stub = await startChatSmokeStub({
     includeTaskInInbox: true,
     taskAssistantMessages: [initialReply],
@@ -203,7 +192,7 @@ test("keeps refreshed task attention until the newer detail is rendered", async 
       page.getByRole("heading", { name: chatSmokeTaskConversation.title })
     ).toBeVisible();
     await expect(page.getByText(initialReply)).toBeVisible();
-    await expect.poll(() => taskSeenRevision(page)).toBe(taskProjectionUpdatedAt);
+    await expect(dotIn(initialRow)).toHaveAttribute("data-state", "hidden");
     await expect.poll(() => stub.activeTaskListEventStreams).toBeGreaterThan(0);
 
     stub.holdNextTaskDetail();
@@ -215,8 +204,8 @@ test("keeps refreshed task attention until the newer detail is rendered", async 
     await stub.waitForDelayedTaskDetail();
 
     // ProductInbox already exposes revision N while the Task view still renders
-    // N-1. The dot must re-arm, and the seen mark must stay at N-1 until the
-    // matching detail response reaches the screen.
+    // N-1. The dot must re-arm, and stay until the matching detail response
+    // reaches the screen.
     const updatedRow = page.getByTestId("inbox-item").filter({ hasText: updatedTitle });
     await expect(updatedRow).toBeVisible();
     await expect(
@@ -224,13 +213,11 @@ test("keeps refreshed task attention until the newer detail is rendered", async 
     ).toBeVisible();
     await expect(page.getByText(initialReply)).toBeVisible();
     await expect(page.getByText(updatedReply)).toHaveCount(0);
-    expect(await taskSeenRevision(page)).toBe(taskProjectionUpdatedAt);
     await expect(dotIn(updatedRow)).toHaveAttribute("data-state", "visible");
 
     stub.releaseDelayedTaskDetail();
     await expect(page.getByRole("heading", { name: updatedTitle })).toBeVisible();
     await expect(page.getByText(updatedReply)).toBeVisible();
-    await expect.poll(() => taskSeenRevision(page)).toBe(updatedProjectionRevision);
     await expect(dotIn(updatedRow)).toHaveAttribute("data-state", "hidden");
   } finally {
     await stub.close();

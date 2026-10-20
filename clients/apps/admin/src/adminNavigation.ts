@@ -1,23 +1,25 @@
 export type AdminSection =
+  | "overview"
   | "users"
   | "oauth"
   | "compute"
   | "billing"
-  | "models"
+  | "free-models"
   | "guest"
   | "audit";
 
 const defaultAdminSection: AdminSection = "users";
 const sectionParam = "section";
 // View-scoped parameters belong to the section that wrote them.
-const viewParams = ["tenant", "registration"];
+const viewParams = ["tenant", "registration", "user"];
 
 export function adminSectionFromSearch(search: string): AdminSection {
   const section = new URLSearchParams(search).get(sectionParam);
-  return section === "oauth" ||
+  return section === "overview" ||
+    section === "oauth" ||
     section === "compute" ||
     section === "billing" ||
-    section === "models" ||
+    section === "free-models" ||
     section === "guest" ||
     section === "audit"
     ? section
@@ -33,18 +35,4 @@ export function adminSectionHref(section: AdminSection, currentHref: string): st
     url.searchParams.set(sectionParam, section);
   }
   return `${url.pathname}${url.search}${url.hash}`;
-}
-
-export function replaceAdminViewParams(params: Record<string, string | undefined>) {
-  const url = new URL(window.location.href);
-  for (const [name, value] of Object.entries(params)) {
-    if (value) {
-      url.searchParams.set(name, value);
-    } else {
-      url.searchParams.delete(name);
-    }
-  }
-  if (url.href !== window.location.href) {
-    window.history.replaceState(window.history.state, "", url);
-  }
 }

@@ -166,6 +166,10 @@ defmodule SalixIM.Triage.Pipeline do
   def result_parts({:error, :triage_source_target_unavailable}, :identity),
     do: identity_failed_parts("triage_source_target_unavailable")
 
+  # The mirror proved every batch message deleted before evaluation.
+  def result_parts({:error, :triage_source_deleted}, :identity),
+    do: {"skipped_source_deleted", %{"action" => "silence"}, %{}}
+
   def result_parts({:error, :invalid_triage_decision}, :identity),
     do: identity_failed_parts("identity_decision_invalid")
 
@@ -419,7 +423,7 @@ defmodule SalixIM.Triage.Pipeline do
       "link_ref" => link_target["link_ref"],
       "source_refs" => link_target["source_refs"],
       "receipt" => receipt,
-      "committed_at_ms" => System.system_time(:millisecond)
+      "committed_at_ms" => SystemsClock.system_time(:millisecond)
     }
   end
 
@@ -432,7 +436,7 @@ defmodule SalixIM.Triage.Pipeline do
       "tool_name" => "triage_run.get",
       "run_ref" => target["run_ref"],
       "receipt" => receipt,
-      "committed_at_ms" => System.system_time(:millisecond)
+      "committed_at_ms" => SystemsClock.system_time(:millisecond)
     }
   end
 
@@ -639,7 +643,7 @@ defmodule SalixIM.Triage.Pipeline do
            "status" => "skipped_already_answered",
            "decision" => %{"action" => "silence"},
            "evaluator" => %{"schema" => "comma.triage-answered-skip.v1"},
-           "settled_at" => System.system_time(:millisecond)
+           "settled_at" => SystemsClock.system_time(:millisecond)
          }}
 
       {:error, _reason} = error ->

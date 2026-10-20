@@ -35,9 +35,12 @@ defmodule SalixAgent.LLM do
   `complete/2` (no deltas fire).
   """
 
+  require Logger
+
   alias SalixAgent.{LLMMetering, LLMProvider}
 
   @default_request_timeout_ms 600_000
+  @default_router_request_timeout_ms 300_000
   @default_stream_idle_timeout_ms 30_000
   @default_stream_first_event_timeout_ms 120_000
   # RFC 4122 OID namespace; the key must only be stable, not secret.
@@ -73,7 +76,7 @@ defmodule SalixAgent.LLM do
   @type on_reasoning_delta :: (SalixAgent.LLM.ReasoningDelta.t() -> any())
 
   @typedoc """
-  Per-agent provider overrides (the agent's template snapshot — willow's
+  Per-agent provider overrides (the agent's resolved model — willow's
   `ResolveAgentProviderConfig`): model / protocol / api_key / api_key_env /
   base_url / max_tokens / default_headers. String- or atom-keyed.
   """
@@ -82,19 +85,48 @@ defmodule SalixAgent.LLM do
   @doc "Total request budget shared by agent LLM dependencies and provider transports."
   @spec request_timeout_ms() :: pos_integer()
   def request_timeout_ms do
-    case Application.get_env(:salix_agent, :llm_request_timeout_ms, @default_request_timeout_ms) do
+    case SystemsRuntime.get_env(
+           :salix_agent,
+           :llm_request_timeout_ms,
+           @default_request_timeout_ms
+         ) do
       timeout when is_integer(timeout) and timeout > 0 -> timeout
       _invalid -> @default_request_timeout_ms
     end
   end
 
   @doc """
+  Request budget for one agent model request made by a session of `role`.
+
+  A Router answers people and dispatches work, so its model request gets a
+  shorter budget (`:router_llm_request_timeout_ms`, 300 s by default) than
+  other roles. The Router budget never exceeds `request_timeout_ms/0`.
+  Compaction is not a round request and keeps `request_timeout_ms/0`.
+  """
+  @spec request_timeout_ms(String.t() | atom() | nil) :: pos_integer()
+  def request_timeout_ms(role) when role in ["router", :router] do
+    router =
+      case SystemsRuntime.get_env(
+             :salix_agent,
+             :router_llm_request_timeout_ms,
+             @default_router_request_timeout_ms
+           ) do
+        timeout when is_integer(timeout) and timeout > 0 -> timeout
+        _invalid -> @default_router_request_timeout_ms
+      end
+
+    min(router, request_timeout_ms())
+  end
+
+  def request_timeout_ms(_role), do: request_timeout_ms()
+
+  @doc """
   Longest quiet gap tolerated between two SSE events of a streamed provider
   response once the first event has arrived. A stream that goes silent for
   longer is abandoned as a transport failure well before `request_timeout_ms/0`
-  would end it. Every event on the wire counts as activity — pings, thinking
-  and tool-argument deltas included — not only text deltas. `:infinity`
-  disables the check.
+  would end it. Every SSE event counts as activity — pings, thinking and
+  tool-argument deltas included — not only text deltas. SSE comment lines
+  (`: keep-alive`) do not. `:infinity` disables the check.
   """
   @spec stream_idle_timeout_ms() :: pos_integer() | :infinity
   def stream_idle_timeout_ms do
@@ -104,7 +136,8 @@ defmodule SalixAgent.LLM do
   @doc """
   How long a streamed provider request may wait for its first SSE event. This
   covers time-to-first-token — prompt processing, cache writes and provider
-  queueing — so it is deliberately longer than `stream_idle_timeout_ms/0`.
+  queueing, including a queue the provider fills with SSE comment keep-alives
+  — so it is deliberately longer than `stream_idle_timeout_ms/0`.
   `:infinity` disables the check.
   """
   @spec stream_first_event_timeout_ms() :: pos_integer() | :infinity
@@ -113,7 +146,7 @@ defmodule SalixAgent.LLM do
   end
 
   defp stream_timeout_env(key, default) do
-    case Application.get_env(:salix_agent, key, default) do
+    case SystemsRuntime.get_env(:salix_agent, key, default) do
       timeout when is_integer(timeout) and timeout > 0 -> timeout
       :infinity -> :infinity
       _invalid -> default
@@ -136,8 +169,8 @@ defmodule SalixAgent.LLM do
   Who a dispatch belongs to: `agent_id`, `session_id`, `round_id`, `tenant_id`.
 
   Separate from `llm_opts` because it is a different KIND of thing. `llm_opts`
-  is the template's provider config — resolved per template, identical for
-  every agent sharing one — and it cannot answer "whose round is this?".
+  is the model's provider config — resolved per model, identical for every
+  agent sharing one — and it cannot answer "whose round is this?".
   Callers pass identity explicitly so that the archive and dispatch metering
   can attribute a call without the seam having to guess. Anything absent is
   derived where it can be (tenant from the agent id) and empty where it
@@ -145,7 +178,7 @@ defmodule SalixAgent.LLM do
   """
   @type identity :: keyword() | map()
 
-  @doc "Dispatch a template-owned Codex image request through the subscription pool."
+  @doc "Dispatch a Codex image request through the owning tenant's subscription pool."
   def generate_image(prompt, opts, identity) do
     cfg = Keyword.fetch!(opts, :config)
 
@@ -227,7 +260,7 @@ defmodule SalixAgent.LLM do
     call = fn _ ->
       remaining =
         if is_integer(config[:deadline]),
-          do: max(config.deadline - System.monotonic_time(:millisecond), 0),
+          do: max(config.deadline - SystemsClock.monotonic_time(:millisecond), 0),
           else: 2_000
 
       case SalixAgent.DependencyJob.start(
@@ -296,13 +329,13 @@ defmodule SalixAgent.LLM do
       when is_function(on_delta, 1) do
     llm_opts = put_prompt_cache_key(llm_opts, identity)
     mod = impl()
-    started = System.monotonic_time()
-    first_delta = :atomics.new(1, signed: true)
+    started = SystemsClock.monotonic_time()
+    first_delta = SystemsRuntime.Atomics.new(1, signed: true)
     # Any output delivered to the caller: text, a tool-call fragment (the
     # Router streams its visible reply this way) or reasoning. Once set, a
     # catalog dispatch must not hand the request to another Profile. Kept
     # apart from `first_delta`, which times the first TEXT delta only.
-    output = :atomics.new(1, [])
+    output = SystemsRuntime.Atomics.new(1, [])
 
     # Archive accumulation. Streamed text and reasoning exist ONLY as they fly
     # past these callbacks: `:private_reasoning` deltas never appear in the
@@ -311,8 +344,10 @@ defmodule SalixAgent.LLM do
     accumulator = SalixAgent.EventArchive.Accumulator.new()
 
     measured_delta = fn delta ->
-      _ = :atomics.compare_exchange(first_delta, 1, 0, System.monotonic_time())
-      :atomics.put(output, 1, 1)
+      _ =
+        SystemsRuntime.Atomics.compare_exchange(first_delta, 1, 0, SystemsClock.monotonic_time())
+
+      SystemsRuntime.Atomics.put(output, 1, 1)
       SalixAgent.EventArchive.Accumulator.text(accumulator, delta)
       on_delta.(delta)
     end
@@ -388,9 +423,9 @@ defmodule SalixAgent.LLM do
   end
 
   defp exported?(mod, fun, arity),
-    do: Code.ensure_loaded?(mod) and function_exported?(mod, fun, arity)
+    do: SystemsRuntime.Proc.ensure_loaded?(mod) and function_exported?(mod, fun, arity)
 
-  defp impl, do: Application.get_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
+  defp impl, do: SystemsRuntime.get_env(:salix_agent, :llm, SalixAgent.LLM.Mock)
 
   @doc """
   The provider request configuration a dispatch of `llm_opts` uses:
@@ -431,13 +466,17 @@ defmodule SalixAgent.LLM do
     reservation = reserve_response(llm_opts, archive)
 
     try do
-      result = do_metered_call(llm_opts, call, identity(archive), stream_timing)
+      result =
+        llm_opts
+        |> do_metered_call(call, identity(archive), stream_timing)
+        |> exhausted_provider_account(llm_opts)
+
       archive_response(kind, llm_opts, archive, result, reservation)
 
       emit_platform_telemetry(
         llm_opts,
         result,
-        System.monotonic_time() - started,
+        SystemsClock.monotonic_time() - started,
         ttft_duration(stream_timing, started)
       )
 
@@ -455,7 +494,7 @@ defmodule SalixAgent.LLM do
         emit_platform_telemetry(
           llm_opts,
           {:error, exception},
-          System.monotonic_time() - started,
+          SystemsClock.monotonic_time() - started,
           ttft_duration(stream_timing, started)
         )
 
@@ -468,7 +507,7 @@ defmodule SalixAgent.LLM do
       # response AND orphaned the accumulator's ETS row — up to 8 MiB of
       # already-received text and private reasoning, leaked until node restart.
       #
-      # This arm does NOT cover every death. `Process.exit(pid, :kill)` is
+      # This arm does NOT cover every death. `SystemsRuntime.Proc.exit(pid, :kill)` is
       # untrappable, and `DependencyJob.drop_job/4` uses it to cancel a job, so
       # a cancelled dispatch runs none of this. The accumulator's row is then
       # reclaimed by `Accumulator.sweep/0`'s stale window rather than here, and
@@ -486,7 +525,7 @@ defmodule SalixAgent.LLM do
         emit_platform_telemetry(
           llm_opts,
           {:error, reason},
-          System.monotonic_time() - started,
+          SystemsClock.monotonic_time() - started,
           ttft_duration(stream_timing, started)
         )
 
@@ -537,7 +576,7 @@ defmodule SalixAgent.LLM do
   defp do_metered_call(llm_opts, call, identity, stream_timing) do
     started? = fn ->
       case stream_timing do
-        {_, _, output} -> :atomics.get(output, 1) != 0
+        {_, _, output} -> SystemsRuntime.Atomics.get(output, 1) != 0
         _ -> false
       end
     end
@@ -555,11 +594,11 @@ defmodule SalixAgent.LLM do
           {:error, {:billing_unavailable, fee_control_error_decision(context, reason)}}
 
         _ ->
-          started = System.monotonic_time(:millisecond)
+          started = SystemsClock.monotonic_time(:millisecond)
 
           try do
             result = SalixAgent.AccountPool.dispatch(llm_opts, call, started?, identity)
-            duration_ms = System.monotonic_time(:millisecond) - started
+            duration_ms = SystemsClock.monotonic_time(:millisecond) - started
 
             _ =
               LLMMetering.after_llm_call(dispatch_meter_result(context, result, duration_ms))
@@ -567,7 +606,7 @@ defmodule SalixAgent.LLM do
             result
           rescue
             exception ->
-              duration_ms = System.monotonic_time(:millisecond) - started
+              duration_ms = SystemsClock.monotonic_time(:millisecond) - started
 
               _ =
                 LLMMetering.after_llm_call(
@@ -610,7 +649,29 @@ defmodule SalixAgent.LLM do
 
     response = response_meta(result)
     emit_usage(response["usage"] || response[:usage] || %{}, metadata)
+    emit_input_transformations(response["input_transformations"], metadata, context)
   end
+
+  # Anthropic reports each replayed thinking block that it dropped, or let
+  # through, after the request's conversation prefix or model changed.
+  defp emit_input_transformations([_ | _] = transformations, metadata, context) do
+    entries =
+      for %{} = entry <- transformations do
+        Salix.Telemetry.emit_llm_input_transformation(
+          Map.merge(metadata, %{kind: entry["type"], reason: entry["reason"]})
+        )
+
+        Map.take(entry, ["type", "reason", "path"])
+      end
+
+    Logger.warning(
+      "llm_input_transformations agent_id=#{context.salix_agent_id} " <>
+        "session_id=#{context.session_id} model=#{context.model} " <>
+        "transformations=#{Jason.encode!(entries)}"
+    )
+  end
+
+  defp emit_input_transformations(_transformations, _metadata, _context), do: :ok
 
   defp emit_usage(usage, metadata) when is_map(usage) do
     for {kind, keys} <- [
@@ -642,10 +703,10 @@ defmodule SalixAgent.LLM do
   defp emit_usage(_usage, _metadata), do: :ok
 
   defp stream_started({started, _first_delta, _output}), do: started
-  defp stream_started(nil), do: System.monotonic_time()
+  defp stream_started(nil), do: SystemsClock.monotonic_time()
 
   defp ttft_duration({_started, first_delta, _output}, started) do
-    case :atomics.get(first_delta, 1) do
+    case SystemsRuntime.Atomics.get(first_delta, 1) do
       0 -> nil
       first -> max(first - started, 0)
     end
@@ -688,7 +749,7 @@ defmodule SalixAgent.LLM do
       round_id: opt(identity, :round_id) || opt(llm_opts, :round_id),
       request_id: new_request_id(),
       app_revision: SalixAgent.AppRevision.value(),
-      started_at_ms: System.system_time(:millisecond)
+      started_at_ms: SystemsClock.system_time(:millisecond)
     }
   end
 
@@ -699,7 +760,7 @@ defmodule SalixAgent.LLM do
     |> Map.merge(%{
       status: dispatch_status(result),
       duration_ms: duration_ms,
-      completed_at_ms: System.system_time(:millisecond),
+      completed_at_ms: SystemsClock.system_time(:millisecond),
       response_kind: elem_or(result, 0),
       usage: dispatch_usage(meta, context, result),
       provider_model: meta["model"] || meta[:model]
@@ -739,7 +800,7 @@ defmodule SalixAgent.LLM do
   defp dispatch_status(_result), do: "ok"
 
   defp new_request_id do
-    "req-" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+    "req-" <> Base.encode16(SystemsRuntime.Proc.random_bytes(16), case: :lower)
   end
 
   defp maybe_put(map, _key, nil), do: map
@@ -756,7 +817,7 @@ defmodule SalixAgent.LLM do
 
     if is_function(callback, 1) do
       wrapped = fn delta ->
-        :atomics.put(output, 1, 1)
+        SystemsRuntime.Atomics.put(output, 1, 1)
         callback.(delta)
       end
 
@@ -773,6 +834,22 @@ defmodule SalixAgent.LLM do
   defp mark_output(llm_opts, _key, _output), do: llm_opts
 
   defp metering_disabled?(llm_opts), do: opt(llm_opts, :metering_disabled) == true
+
+  # A provider account that has run out cannot be fixed by retrying or by Comma
+  # credits. When the member funds it (their own key, which every tenant-scoped
+  # template carries, or a subscription pool), the stop names that account. Any
+  # other route is platform-funded: the member cannot top up that account, so the
+  # stop reports the model as unavailable rather than as a connection failure
+  # that invites another send. Round does not pass its billing context here, so
+  # ownership is read from the route itself rather than from the surface.
+  defp exhausted_provider_account({:error, %{}} = result, llm_opts) do
+    if opt(llm_opts, :credential_scope) == "tenant" or
+         SalixAgent.AccountPool.owns_route?(llm_opts),
+       do: SalixAgent.LLM.Error.provider_quota(result),
+       else: SalixAgent.LLM.Error.platform_provider_quota(result)
+  end
+
+  defp exhausted_provider_account(result, _llm_opts), do: result
 
   defp fee_control_error_decision(context, reason) do
     %{

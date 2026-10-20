@@ -1,4 +1,5 @@
-import { Button, Dropdown } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { Dropdown } from "@comma/ui/components/dropdown";
 import { useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type {
   BftTriageAgent,
@@ -14,6 +15,7 @@ import { formatDateTime } from "./format";
 import { DetailDialog } from "./MeetingsPage";
 import { messages } from "./messages";
 import { useApi, useResource } from "./resource";
+import { spaLinkClick } from "./router";
 import { FormSection } from "./settingsForm";
 import { Skeleton } from "./states";
 import {
@@ -707,7 +709,7 @@ function Delegation({
         <p className="bft-row-title">
           <span className="bft-plugin-name">{delegationLabel(delegation)}</span>
           {data?.href ? (
-            <a className="bft-link" href={data.href}>
+            <a className="bft-link" href={data.href} onClick={spaLinkClick}>
               {tl.openTask}
             </a>
           ) : null}

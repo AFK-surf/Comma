@@ -33,17 +33,17 @@ theorem rebuild_refs_receipt_supported {state next : Term} {journal rest sealed 
   repeat
     fail_if_success (head_is call [write]; change write _ _ _ = .ok (next, rest) at call)
     obtain ⟨_, _, _, call⟩ := bind_ok call
-  have ledger : LedgerFrame state next := write_field_frame call rfl
-  have fields : WorkFieldsPreserved state next := ⟨write_field_frame call rfl, write_field_frame call rfl⟩
+  have ledger : LedgerFrame state next := write_field_frame call (by keys_absent)
+  have fields : WorkFieldsPreserved state next := ⟨write_field_frame call (by keys_absent), write_field_frame call (by keys_absent)⟩
   intro source present
   rw [ledger] at present
   obtain ⟨originInput, fact, origin, represented⟩ := supported source present
   exact ⟨originInput, fact, origin, identity_fact_work_fields fields represented⟩
 
 theorem fork_finish_receipt_supported {source session attrs next : Term} {copy : Bool}
-    {messages facts results remapped clamped journal rest sealed : List Term}
+    {messages facts results journal rest sealed : List Term}
     {lastSeq lastAck forkThrough nextId created : Term}
-    (call : forkFinish source session attrs copy messages facts results remapped clamped
+    (call : forkFinish source session attrs copy messages facts results
       lastSeq lastAck forkThrough nextId created journal = .ok (next, rest)) : ReceiptSupported next sealed := by
   cases copy <;> unfold forkFinish at call <;> simp only [Bool.false_eq_true, ↓reduceIte] at call
   all_goals repeat
@@ -62,7 +62,7 @@ theorem current_fork_receipt_supported {source session attrs maxId next : Term} 
   rw [current_fork_factor] at call
   unfold forkSelection at call
   repeat' first
-    | exact fork_finish_receipt_supported call
+    | (head_is call [forkFinish]; exact fork_finish_receipt_supported call)
     | (obtain ⟨_, _, _, call⟩ := bind_ok call)
     | split at call
     | dsimp only at call

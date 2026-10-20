@@ -7,7 +7,7 @@ defmodule SalixSignalProto.ProfileAttachmentOracleTest do
   # The oracle has no attachment or profile-field encryption operation
   # (ORACLE_INTERFACE.md section 7); those checks build the expected bytes
   # from the oracle's AES and HMAC operations with the same keys and nonces.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   import Bitwise

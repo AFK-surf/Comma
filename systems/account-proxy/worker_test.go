@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -52,107 +53,101 @@ func (c *wireClient) send(t *testing.T, id, kind, op string) {
 		t.Fatal(err)
 	}
 }
+
+// next waits for the worker's next event. The tests run in synctest bubbles,
+// so an event that can never come is a deadlock the bubble reports.
 func (c *wireClient) next(t *testing.T) event {
 	t.Helper()
-	select {
-	case e, ok := <-c.events:
-		if !ok {
-			t.Fatal("worker exited")
-		}
-		return e
-	case <-time.After(3 * time.Second):
-		t.Fatal("worker did not respond")
-		return event{}
+	e, ok := <-c.events
+	if !ok {
+		t.Fatal("worker exited")
 	}
+	return e
 }
 func TestWireSlowConsumerAndCancellationDoNotBlockAnotherCall(t *testing.T) {
-	cancelled := make(chan struct{})
-	c := wire(t, func(ctx context.Context, op string, _ json.RawMessage, _ Credential, emit emitter) error {
-		if op == "slow" {
-			defer close(cancelled)
-			return emit([]byte(strings.Repeat("s", chunkSize*2)))
+	synctest.Test(t, func(t *testing.T) {
+		cancelled := make(chan struct{})
+		c := wire(t, func(ctx context.Context, op string, _ json.RawMessage, _ Credential, emit emitter) error {
+			if op == "slow" {
+				defer close(cancelled)
+				return emit([]byte(strings.Repeat("s", chunkSize*2)))
+			}
+			return emit([]byte("fast"))
+		})
+		c.send(t, "slow", "call", "slow")
+		first := c.next(t)
+		if first.ID != "slow" || len(first.Data) != chunkSize {
+			t.Fatal(first)
 		}
-		return emit([]byte("fast"))
+		// No acknowledgement for slow: another request still completes.
+		c.send(t, "fast", "call", "fast")
+		second := c.next(t)
+		if second.ID != "fast" || string(second.Data) != "fast" {
+			t.Fatal(second)
+		}
+		c.send(t, "fast", "ack", "")
+		if done := c.next(t); done.ID != "fast" || done.Type != "done" {
+			t.Fatal(done)
+		}
+		c.send(t, "slow", "cancel", "")
+		if result := c.next(t); result.ID != "slow" || result.Status != 499 {
+			t.Fatal(result)
+		}
+		<-cancelled
 	})
-	c.send(t, "slow", "call", "slow")
-	first := c.next(t)
-	if first.ID != "slow" || len(first.Data) != chunkSize {
-		t.Fatal(first)
-	}
-	// No acknowledgement for slow: another request still completes.
-	c.send(t, "fast", "call", "fast")
-	second := c.next(t)
-	if second.ID != "fast" || string(second.Data) != "fast" {
-		t.Fatal(second)
-	}
-	c.send(t, "fast", "ack", "")
-	if done := c.next(t); done.ID != "fast" || done.Type != "done" {
-		t.Fatal(done)
-	}
-	c.send(t, "slow", "cancel", "")
-	if result := c.next(t); result.ID != "slow" || result.Status != 499 {
-		t.Fatal(result)
-	}
-	select {
-	case <-cancelled:
-	case <-time.After(time.Second):
-		t.Fatal("upstream was not cancelled")
-	}
 }
 func TestWireAcknowledgedFramesReassembleExactly(t *testing.T) {
-	payload := strings.Repeat("中文\n", chunkSize)
-	c := wire(t, func(_ context.Context, _ string, _ json.RawMessage, _ Credential, emit emitter) error {
-		return emit([]byte(payload))
+	synctest.Test(t, func(t *testing.T) {
+		payload := strings.Repeat("中文\n", chunkSize)
+		c := wire(t, func(_ context.Context, _ string, _ json.RawMessage, _ Credential, emit emitter) error {
+			return emit([]byte(payload))
+		})
+		c.send(t, "one", "call", "echo")
+		var got strings.Builder
+		for {
+			e := c.next(t)
+			if e.Type == "done" {
+				break
+			}
+			if e.Type != "data" || len(e.Data) > chunkSize {
+				t.Fatal(e)
+			}
+			got.Write(e.Data)
+			c.send(t, "one", "ack", "")
+		}
+		if got.String() != payload {
+			t.Fatal("framing lost or reordered bytes")
+		}
 	})
-	c.send(t, "one", "call", "echo")
-	var got strings.Builder
-	for {
-		e := c.next(t)
-		if e.Type == "done" {
-			break
-		}
-		if e.Type != "data" || len(e.Data) > chunkSize {
-			t.Fatal(e)
-		}
-		got.Write(e.Data)
-		c.send(t, "one", "ack", "")
-	}
-	if got.String() != payload {
-		t.Fatal("framing lost or reordered bytes")
-	}
 }
 func TestWireAdmissionIsBounded(t *testing.T) {
-	c := wire(t, func(ctx context.Context, _ string, _ json.RawMessage, _ Credential, _ emitter) error {
-		<-ctx.Done()
-		return ctx.Err()
+	synctest.Test(t, func(t *testing.T) {
+		c := wire(t, func(ctx context.Context, _ string, _ json.RawMessage, _ Credential, _ emitter) error {
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		for i := 0; i < maxCalls+1; i++ {
+			c.send(t, string(rune('a'+i)), "call", "hold")
+		}
+		if e := c.next(t); e.Type != "error" || e.Status != 429 {
+			t.Fatal(e)
+		}
 	})
-	for i := 0; i < maxCalls+1; i++ {
-		c.send(t, string(rune('a'+i)), "call", "hold")
-	}
-	if e := c.next(t); e.Type != "error" || e.Status != 429 {
-		t.Fatal(e)
-	}
 }
 func TestWireParentDeathCancelsUpstream(t *testing.T) {
-	started, cancelled := make(chan struct{}), make(chan struct{})
-	c := wire(t, func(ctx context.Context, _ string, _ json.RawMessage, _ Credential, _ emitter) error {
-		close(started)
-		<-ctx.Done()
-		close(cancelled)
-		return ctx.Err()
+	synctest.Test(t, func(t *testing.T) {
+		started, cancelled := make(chan struct{}), make(chan struct{})
+		c := wire(t, func(ctx context.Context, _ string, _ json.RawMessage, _ Credential, _ emitter) error {
+			close(started)
+			<-ctx.Done()
+			close(cancelled)
+			return ctx.Err()
+		})
+		c.send(t, "one", "call", "hold")
+		<-started
+		_ = c.in.Close()
+		<-cancelled
 	})
-	c.send(t, "one", "call", "hold")
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("not started")
-	}
-	_ = c.in.Close()
-	select {
-	case <-cancelled:
-	case <-time.After(time.Second):
-		t.Fatal("orphan upstream call")
-	}
 }
 
 // This child runs the real framed worker and native executors against the
@@ -231,96 +226,82 @@ func TestRequestFrameBoundary(t *testing.T) {
 }
 
 func TestWireByteBudgetRetainsCancelledExecutors(t *testing.T) {
-	started := make(chan string, 16)
-	cancelled := make(chan struct{})
-	release := make(chan struct{})
-	releaseFirst := make(chan struct{})
-	unblockFirst := sync.OnceFunc(func() { close(releaseFirst) })
-	t.Cleanup(unblockFirst)
-	t.Cleanup(func() { close(release) })
-	c := wire(t, func(ctx context.Context, op string, _ json.RawMessage, _ Credential, emit emitter) error {
-		if op == "small" {
-			return emit([]byte("ok"))
+	synctest.Test(t, func(t *testing.T) {
+		started := make(chan string, 16)
+		cancelled := make(chan struct{})
+		release := make(chan struct{})
+		releaseFirst := make(chan struct{})
+		unblockFirst := sync.OnceFunc(func() { close(releaseFirst) })
+		t.Cleanup(unblockFirst)
+		t.Cleanup(func() { close(release) })
+		c := wire(t, func(ctx context.Context, op string, _ json.RawMessage, _ Credential, emit emitter) error {
+			if op == "small" {
+				return emit([]byte("ok"))
+			}
+			started <- op
+			<-ctx.Done()
+			if op == "hold0" {
+				close(cancelled)
+				<-releaseFirst
+			} else {
+				<-release
+			}
+			return ctx.Err()
+		})
+		// Twelve almost-full frames leave space for small requests, not a thirteenth large one.
+		body := json.RawMessage(`{"padding":"` + strings.Repeat("x", 16*1024*1024-4096) + `"}`)
+		sendLarge := func(id string) {
+			t.Helper()
+			data, err := json.Marshal(command{ID: id, Type: "call", Op: id, Body: body})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writeFrame(c.in, data); err != nil {
+				t.Fatal(err)
+			}
 		}
-		started <- op
-		<-ctx.Done()
-		if op == "hold0" {
-			close(cancelled)
-			<-releaseFirst
-		} else {
-			<-release
-		}
-		return ctx.Err()
-	})
-	// Twelve almost-full frames leave space for small requests, not a thirteenth large one.
-	body := json.RawMessage(`{"padding":"` + strings.Repeat("x", 16*1024*1024-4096) + `"}`)
-	sendLarge := func(id string) {
-		t.Helper()
-		data, err := json.Marshal(command{ID: id, Type: "call", Op: id, Body: body})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := writeFrame(c.in, data); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i := 0; i < 12; i++ {
-		id := fmt.Sprintf("hold%d", i)
-		sendLarge(id)
-		select {
-		case got := <-started:
-			if got != id {
+		for i := 0; i < 12; i++ {
+			id := fmt.Sprintf("hold%d", i)
+			sendLarge(id)
+			if got := <-started; got != id {
 				t.Fatal(got)
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("call not admitted")
 		}
-	}
-	sendLarge("full")
-	if e := c.next(t); e.ID != "full" || e.Code != "worker_busy" {
-		t.Fatal(e)
-	}
-	c.send(t, "small", "call", "small")
-	if e := c.next(t); e.ID != "small" || string(e.Data) != "ok" {
-		t.Fatal(e)
-	}
-	c.send(t, "small", "ack", "")
-	if e := c.next(t); e.ID != "small" || e.Type != "done" {
-		t.Fatal(e)
-	}
-	c.send(t, "hold0", "cancel", "")
-	select {
-	case <-cancelled:
-	case <-time.After(time.Second):
-		t.Fatal("cancel not delivered")
-	}
-	sendLarge("still-full")
-	if e := c.next(t); e.ID != "still-full" || e.Code != "worker_busy" {
-		t.Fatal(e)
-	}
-	unblockFirst()
-	if e := c.next(t); e.ID != "hold0" || e.Status != 499 {
-		t.Fatal(e)
-	}
-	// A terminal write can precede the deferred capacity release by one scheduling turn.
-	for attempt := 0; attempt < 20; attempt++ {
+		sendLarge("full")
+		if e := c.next(t); e.ID != "full" || e.Code != "worker_busy" {
+			t.Fatal(e)
+		}
+		c.send(t, "small", "call", "small")
+		if e := c.next(t); e.ID != "small" || string(e.Data) != "ok" {
+			t.Fatal(e)
+		}
+		c.send(t, "small", "ack", "")
+		if e := c.next(t); e.ID != "small" || e.Type != "done" {
+			t.Fatal(e)
+		}
+		c.send(t, "hold0", "cancel", "")
+		<-cancelled
+		sendLarge("still-full")
+		if e := c.next(t); e.ID != "still-full" || e.Code != "worker_busy" {
+			t.Fatal(e)
+		}
+		unblockFirst()
+		if e := c.next(t); e.ID != "hold0" || e.Status != 499 {
+			t.Fatal(e)
+		}
+		// The terminal write can precede the deferred capacity release: wait
+		// until every goroutine of the worker is blocked, so the release ran.
+		synctest.Wait()
 		data, _ := json.Marshal(command{ID: "recovered", Type: "call", Op: "small", Body: body})
 		if err := writeFrame(c.in, data); err != nil {
 			t.Fatal(err)
 		}
-		e := c.next(t)
-		if e.Code == "worker_busy" {
-			time.Sleep(time.Millisecond)
-			continue
-		}
-		if e.ID != "recovered" || string(e.Data) != "ok" {
+		if e := c.next(t); e.ID != "recovered" || string(e.Data) != "ok" {
 			t.Fatal(e)
 		}
 		c.send(t, "recovered", "ack", "")
 		if done := c.next(t); done.ID != "recovered" || done.Type != "done" {
 			t.Fatal(done)
 		}
-		return
-	}
-	t.Fatal("completed cancellation did not restore byte capacity")
+	})
 }

@@ -23,7 +23,7 @@ defmodule SalixStore.Crypto do
   @spec seal_runtime_capability(String.t()) :: {:ok, String.t()} | {:error, atom()}
   def seal_runtime_capability(token) when is_binary(token) and token != "" do
     with {:ok, key} <- runtime_capability_key() do
-      iv = :crypto.strong_rand_bytes(12)
+      iv = SystemsRuntime.Proc.random_bytes(12)
 
       {ciphertext, tag} =
         :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, token, @runtime_capability_aad, true)
@@ -64,7 +64,7 @@ defmodule SalixStore.Crypto do
   @doc "Envelope-encrypt one bounded Agent VMM install exchange response."
   def seal_install_material(material) when is_binary(material) and material != "" do
     with {:ok, key} <- derived_key("agent-vmm-install-material-seal") do
-      iv = :crypto.strong_rand_bytes(12)
+      iv = SystemsRuntime.Proc.random_bytes(12)
 
       {ciphertext, tag} =
         :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, material, @install_material_aad, true)
@@ -105,7 +105,7 @@ defmodule SalixStore.Crypto do
   # tenant's record. Decryption is only used by the admin sync boundary.
   def seal_slack_configuration(value, tenant_id) do
     with {:ok, key} <- derived_key("slack-configuration-seal") do
-      iv = :crypto.strong_rand_bytes(12)
+      iv = SystemsRuntime.Proc.random_bytes(12)
       aad = "slack-configuration-v1:" <> tenant_id
       {ciphertext, tag} = :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, value, aad, true)
       {:ok, "v1." <> Base.url_encode64(iv <> tag <> ciphertext, padding: false)}
@@ -146,7 +146,7 @@ defmodule SalixStore.Crypto do
   """
   @spec derived_key(String.t()) :: {:ok, binary()} | {:error, :credential_sealer_unavailable}
   def derived_key(purpose) when is_binary(purpose) do
-    case Application.get_env(:salix_store, :compute_workload_credential_secret) do
+    case SystemsRuntime.get_env(:salix_store, :compute_workload_credential_secret) do
       secret when is_binary(secret) and byte_size(secret) >= 32 ->
         {:ok, :crypto.hash(:sha256, purpose <> "\0" <> secret)}
 

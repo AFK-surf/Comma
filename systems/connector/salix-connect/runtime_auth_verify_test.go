@@ -8,34 +8,30 @@ import (
 )
 
 func TestRuntimeAuthVerificationOwnership(t *testing.T) {
-	for _, scenario := range []string{"verified", "canceled", "disconnected", "concurrent_native_call", "wrong_backend", "credential_changed", "permission_denied", "timeout", "expired", "changed_model", "claude_owner_replaced", "reconnected_after_verify"} {
+	for _, scenario := range []string{"verified", "canceled", "disconnected", "wrong_backend", "permission_denied", "timeout", "expired", "changed_model", "reconnected_after_verify"} {
 		t.Run(scenario, func(t *testing.T) {
-			c := newEventTestConnector(t, t.TempDir())
-			defer c.externalRuntimeState.close()
+			c := newBareTestConnector(t, t.TempDir())
 			deactivate := activateRuntimeTransportForTest(c, func(message) error { return nil })
 			defer deactivate()
 			carrier := c.getActiveTransport()
 			c.runtimeInventory = newRuntimeInventory()
 			implementation := newCodexRuntimeImplementation(c)
-			claude := newClaudeRuntimeImplementation(c)
-			c.runtimeImplementations = map[string]externalRuntimeImplementation{"codex": implementation, "claude": claude}
+			claude := newClaudeRuntimeImplementation()
+			c.runtimeImplementations = map[string]runtimeImplementation{"codex": implementation, "claude": claude}
 			c.runtimeInventory.commitGuard = implementation.commitRuntimeProbe
 			c.cfg.runtimeAgent = true
 			c.cfg.computeRuntimeKind = "external_worker"
-			provider, backend := "pi", "openrouter"
-			if scenario == "claude_owner_replaced" {
-				provider, backend = "claude", "anthropic"
-			}
+			provider, backend := "claude", "openrouter"
 			c.cfg.computeRuntimeProvider = provider
 			m := implementation.auth
+			// The coordinator's clock moves only when the test moves it.
+			var elapsed atomic.Int64
+			m.now = func() time.Time { return runtimeAuthTestEpoch.Add(time.Duration(elapsed.Load())) }
 			if scenario == "expired" {
 				m.ttl = 150 * time.Millisecond
 			}
 			target := runtimeProbeTarget{provider: provider, identityMaterial: "test-" + provider}
 			binding := runtimeAuthInputContext{ActorID: "admin", TenantID: "tenant", ProjectID: "project", TargetKind: "compute_workload", WorkloadID: "workload", Provider: provider, Backend: backend, Method: "verify", Form: "api_key", SchemaVersion: 1, ConnectionEpoch: "epoch"}
-			if provider == "claude" {
-				binding.NativeGeneration, binding.AuthEpoch = claude.authFence()
-			}
 			local := &runtimeAuthPrivateTarget{carrier: carrier}
 			current := func() bool { return c.getActiveTransport() == carrier }
 			var connected *connectionSession
@@ -53,17 +49,13 @@ func TestRuntimeAuthVerificationOwnership(t *testing.T) {
 				if scenario == "wrong_backend" {
 					observedBackend = "other"
 				}
-				return map[string]any{"kind": "external", "provider": "pi", "identity_material": target.identityMaterial,
+				return map[string]any{"kind": "external", "provider": provider, "identity_material": target.identityMaterial,
 					"model": selectedModel, "version_detected": true, "native_server_startable": true, "app_server_startable": true, "ready": false,
-					"readiness_issue": "verification_required", "readiness_valid_until": time.Now().Add(time.Hour).UnixMilli(),
-					"auth": map[string]any{"schema_version": 1, "status": "configured", "requires_openai_auth": false, "observed_at": time.Now().UnixMilli(), "backend": observedBackend}}
+					"readiness_issue": "verification_required", "readiness_valid_until": m.now().Add(time.Hour).UnixMilli(),
+					"auth": map[string]any{"schema_version": 1, "status": "configured", "requires_openai_auth": false, "observed_at": m.now().UnixMilli(), "backend": observedBackend}}
 			}
 			if _, err := c.runtimeInventory.probeOne(context.Background(), target, "connect"); err != nil {
 				t.Fatal(err)
-			}
-			if scenario == "concurrent_native_call" {
-				leave := m.enterNativeCall(target)
-				defer leave()
 			}
 			var calls atomic.Int32
 			verify := func(ctx context.Context, model string) runtimeAuthVerificationOutcome {
@@ -98,7 +90,7 @@ func TestRuntimeAuthVerificationOwnership(t *testing.T) {
 			if calls.Load() != wantCalls {
 				t.Fatalf("provider requests = %d", calls.Load())
 			}
-			wantVerified := scenario == "verified" || scenario == "concurrent_native_call" || scenario == "credential_changed" || scenario == "expired" || scenario == "changed_model" || scenario == "claude_owner_replaced" || scenario == "reconnected_after_verify"
+			wantVerified := scenario == "verified" || scenario == "expired" || scenario == "changed_model" || scenario == "reconnected_after_verify"
 			if (result.Status == "authenticated") != wantVerified {
 				t.Fatalf("verification = %+v", result)
 			}
@@ -107,14 +99,6 @@ func TestRuntimeAuthVerificationOwnership(t *testing.T) {
 			}
 			if scenario == "changed_model" {
 				selectedModel = "different-model"
-			}
-			if scenario == "claude_owner_replaced" {
-				outcome := claude.commitAuthSettings(context.Background(), binding.NativeGeneration, binding.AuthEpoch, func() runtimeAuthSaveOutcome {
-					return runtimeAuthSaveOutcome{SaveResult: "committed"}
-				})
-				if outcome.SaveResult != "committed" {
-					t.Fatalf("replace Claude auth owner: %+v", outcome)
-				}
 			}
 			if scenario == "reconnected_after_verify" {
 				deactivate()
@@ -143,17 +127,11 @@ func TestRuntimeAuthVerificationOwnership(t *testing.T) {
 					t.Fatalf("operation expiry still capped native readiness: %d <= %d", validUntil, attempt.expiresAt)
 				}
 			}
-			if scenario == "credential_changed" {
-				binding.Method = "credential_import"
-				if _, err := m.beginPrivateInput(target, binding); err != nil {
-					t.Fatal(err)
-				}
-				m.invalidatePrivateVerification(target)
-			}
 			verifiedAt := int64(0)
 			if scenario == "verified" {
 				verifiedAt = int64Param(mapParam(m.status(context.Background(), target, "admin"), "auth"), "observed_at", 0)
-				time.Sleep(2 * time.Millisecond)
+				// A probe that rewrote the verification time would now write a later one.
+				elapsed.Add(int64(time.Second))
 			}
 			if scenario != "wrong_backend" {
 				// A later native probe is local only and cannot repeat a paid request.
@@ -161,7 +139,7 @@ func TestRuntimeAuthVerificationOwnership(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				wantReady := scenario == "verified" || scenario == "concurrent_native_call" || scenario == "expired" || scenario == "reconnected_after_verify"
+				wantReady := scenario == "verified" || scenario == "expired" || scenario == "reconnected_after_verify"
 				if (observed["ready"] == true) != wantReady {
 					t.Fatalf("stale/wrong-backend proof: %#v", observed)
 				}
@@ -173,10 +151,10 @@ func TestRuntimeAuthVerificationOwnership(t *testing.T) {
 				}
 			}
 			if scenario == "expired" {
-				deadline := time.Now().Add(2 * time.Second)
-				for m.attempt(target.key()) != nil && time.Now().Before(deadline) {
-					time.Sleep(10 * time.Millisecond)
-				}
+				// The operation's own expiry timer removes the attempt.
+				waitForCondition(t, "the verification attempt to expire", func() bool {
+					return m.attempt(target.key()) == nil
+				})
 				status := m.status(context.Background(), target, "admin")
 				if status["dispatch_ready"] != true || stringParam(mapParam(status, "auth"), "status") != "authenticated" {
 					t.Fatalf("operation expiry retired current verification: %#v", status)

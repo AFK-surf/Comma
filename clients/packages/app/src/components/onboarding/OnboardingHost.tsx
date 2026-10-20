@@ -1,5 +1,5 @@
 import { getNativeBridge } from "@comma/native-bridge";
-import { OverlayPortalProvider } from "@comma/ui";
+import { OverlayPortalProvider } from "@comma/ui/components/portal";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useCommaAuth } from "../auth-context";
 import {
@@ -26,11 +26,13 @@ type Presentation = "idle" | "presenting" | "window" | "overlay";
  * chat-consumer boundary, so a product-lease generation bump keeps its place
  * in the flow; the owner keys it by account.
  *
- * Electron presents it in a window of its own over the whole display, and the
- * product here stands down for as long as that window is open. Main records
- * its completion in the client settings, which brings it here; removing
- * the account from them (the Debug replay) presents it again. Where Main
- * presents no window (the web), the overlay covers the product here instead.
+ * Desktop app only: the web shows `WebIntroCard` instead. On macOS Electron
+ * presents it in a window of its own over the whole display, and the product
+ * here stands down for as long as that window is open. Main records its
+ * completion in the client settings, which brings it here; removing the
+ * account from them (the Debug replay) presents it again. Where Main presents
+ * no window (other operating systems), the overlay covers the product here
+ * instead.
  *
  * "Start chatting" hands the user to Home's composer once the onboarding has
  * left: after the overlay's exit, or when Main reports the hand-off after the

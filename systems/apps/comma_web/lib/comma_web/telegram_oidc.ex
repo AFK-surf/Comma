@@ -137,7 +137,7 @@ defmodule CommaWeb.TelegramOIDC do
     do: :crypto.hash(:sha256, verifier) |> Base.url_encode64(padding: false)
 
   defp random_url_token,
-    do: :crypto.strong_rand_bytes(@random_bytes) |> Base.url_encode64(padding: false)
+    do: SystemsRuntime.Proc.random_bytes(@random_bytes) |> Base.url_encode64(padding: false)
 
   defp normalize_id(value) when is_integer(value) and value > 0, do: Integer.to_string(value)
 
@@ -159,5 +159,5 @@ defmodule CommaWeb.TelegramOIDC do
 
   defp normalize_username(_value), do: nil
   defp nonblank?(value), do: is_binary(value) and String.trim(value) != ""
-  defp config, do: Application.get_env(:comma_web, :telegram, [])
+  defp config, do: SystemsRuntime.get_env(:comma_web, :telegram, [])
 end

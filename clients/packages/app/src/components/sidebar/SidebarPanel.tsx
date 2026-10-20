@@ -1,5 +1,7 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { appKeybindingKeycaps, TooltipBubble } from "@comma/ui";
+import { appKeybindingKeycaps } from "@comma/ui/components/settings-shortcut";
+import { TooltipBubble } from "@comma/ui/components/tooltip";
+import { uiClock, type CancelUiTimer } from "@comma/ui/clock";
 import {
   useCallback,
   useEffect,
@@ -112,7 +114,7 @@ function SidebarEdgeToggle() {
   const [tooltipOpen, setTooltipOpen] = useState(false);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const pointerPosition = useRef({ x: 0, y: 0 });
-  const tooltipShowTimer = useRef<number | null>(null);
+  const tooltipShowTimer = useRef<CancelUiTimer | null>(null);
 
   const positionTooltip = useCallback(() => {
     const tooltip = tooltipRef.current;
@@ -140,7 +142,7 @@ function SidebarEdgeToggle() {
   const cancelTooltipShow = useCallback(() => {
     if (tooltipShowTimer.current === null) return;
 
-    window.clearTimeout(tooltipShowTimer.current);
+    tooltipShowTimer.current();
     tooltipShowTimer.current = null;
   }, []);
 
@@ -174,10 +176,10 @@ function SidebarEdgeToggle() {
 
           trackPointer(event);
           cancelTooltipShow();
-          tooltipShowTimer.current = window.setTimeout(() => {
+          tooltipShowTimer.current = uiClock.after(edgeTooltipShowDelay, () => {
             tooltipShowTimer.current = null;
             setTooltipOpen(true);
-          }, edgeTooltipShowDelay);
+          });
         }}
         onPointerLeave={hideTooltip}
         onPointerMove={trackPointer}

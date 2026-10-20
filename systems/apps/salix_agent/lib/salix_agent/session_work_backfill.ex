@@ -5,8 +5,8 @@ defmodule SalixAgent.SessionWorkBackfill do
   Strategy v3 first pages every distinct Postgres candidate address, then pages
   the authoritative control-agent roster and reads each agent's raw local
   Session-work marker prefix exactly once. Both sources provide only an exact
-  Session address; every projection is rebuilt from the current
-  Internal/External Session. In the same Postgres transaction, that exact
+  Session address; every projection is rebuilt from the current Session. A
+  retired Session (`SalixAgent.RetiredSessions`) has no work. In the same Postgres transaction, that exact
   address is reconciled to either no candidates for stable authority or only
   the current authoritative token, then the expected row and durable cursor are
   persisted. Permanently unprojectable legacy entries advance the cursor but
@@ -22,12 +22,7 @@ defmodule SalixAgent.SessionWorkBackfill do
 
   require Logger
 
-  alias SalixAgent.{
-    ExternalSessionStore,
-    InternalSession,
-    InternalSessionStore,
-    SessionWorkIndex
-  }
+  alias SalixAgent.{InternalSession, InternalSessionStore, SessionWorkIndex}
 
   alias SalixStore.{
     Ids,
@@ -355,29 +350,8 @@ defmodule SalixAgent.SessionWorkBackfill do
     end
   end
 
-  defp read_authority(%{runtime_kind: "external", agent_id: agent_id, session_id: session_id}) do
-    case ExternalSessionStore.get_session_record_with_etag(agent_id, session_id) do
-      {:ok, session, _etag} ->
-        workload_id =
-          case get_in(session, ["runtime", "binding"]) do
-            %{"kind" => "compute_workload", "workload_id" => id} -> id
-            _ -> nil
-          end
-
-        {:ok,
-         %{
-           token: session["work_index_token"],
-           workload_id: workload_id,
-           device_runtime_id: get_in(session, ["runtime", "binding", "device_runtime_id"]),
-           reasons: ExternalSessionStore.work_reasons(session),
-           wait: ExternalSessionStore.recovery_wait(session),
-           storage_revision: session["storage_revision"]
-         }}
-
-      {:error, reason} ->
-        {:error, {:authoritative_session_read_failed, reason}}
-    end
-  end
+  defp read_authority(%{runtime_kind: "external"}),
+    do: {:ok, %{token: nil, reasons: [], wait: nil, storage_revision: nil}}
 
   defp authoritative_candidate(_address, %{reasons: []}), do: {:ok, nil}
 
@@ -403,10 +377,8 @@ defmodule SalixAgent.SessionWorkBackfill do
         if is_map(candidate) do
           {:ok,
            candidate
-           |> Map.put("workload_id", Map.get(authority, :workload_id))
-           |> Map.put("device_runtime_id", Map.get(authority, :device_runtime_id))
            |> Map.put("base_revision", authority.storage_revision)
-           |> Map.put("updated_at", System.system_time(:second))}
+           |> Map.put("updated_at", SystemsClock.system_time(:second))}
         else
           {:error, :invalid_authoritative_candidate}
         end
@@ -479,7 +451,7 @@ defmodule SalixAgent.SessionWorkBackfill do
           "uncovered_authoritative_work" => 0,
           "projection_gaps" => 0,
           "strategy_version" => SessionWorkBackfillState.strategy_version(),
-          "verified_at_ms" => System.system_time(:millisecond)
+          "verified_at_ms" => SystemsClock.system_time(:millisecond)
         }
 
         case SessionWorkBackfillState.mark_terminal(evidence) do

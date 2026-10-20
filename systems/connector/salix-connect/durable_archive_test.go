@@ -3,9 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 type archiveTransportFunc func(*http.Request) (*http.Response, error)
@@ -84,18 +83,22 @@ func TestDurableArchiveExportsAndRestoresFileAboveLegacyLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer source.closeExternalRuntimes()
+	defer source.closeRuntimes()
 	source.cloudRuntimeQuiesced = true
-	source.cloudRuntimeParkUntil = time.Now().Add(time.Minute)
+	source.cloudRuntimeParkUntil = testFarFuture
 	large := make([]byte, maxArchiveBytes+4096)
-	if _, err := io.ReadFull(rand.Reader, large); err != nil {
-		t.Fatal(err)
-	}
+	incompressibleBytes(large)
 	if err := os.WriteFile(filepath.Join(sourceRoot, "owned.bin"), large, 0600); err != nil {
 		t.Fatal(err)
 	}
-	identity := externalRuntimeSessionIdentity{Provider: "pi", SessionID: "ses1_2101612621424754688", Command: "/usr/local/bin/pi", Workspace: sourceRoot, Payload: map[string]any{}}
-	persistRuntimeIdentity(t, source.externalRuntimeState, identity)
+	// State left by an earlier release is never exported.
+	legacyState := filepath.Join(sourceState, legacyExternalRuntimeDir, "state.db")
+	if err := os.MkdirAll(filepath.Dir(legacyState), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyState, []byte("legacy"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	operation := "durable-one"
 	request := httptest.NewRequest(http.MethodPost, "/archive/export?operation="+operation, nil)
@@ -111,27 +114,23 @@ func TestDurableArchiveExportsAndRestoresFileAboveLegacyLimit(t *testing.T) {
 		Sessions    int                 `json:"sessions"`
 	}
 	// Gzipping 64 MiB of incompressible data takes 20-45s under -race on
-	// 4-vCPU CI runners, so the deadline only guards against a stuck export.
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
+	// 4-vCPU CI runners; the go test timeout stops a stuck export.
+	waitForCondition(t, "the export to finish", func() bool {
 		out = httptest.NewRecorder()
 		source.handleDurableArchiveExport(out, httptest.NewRequest(http.MethodGet, "/archive/export?operation="+operation, nil))
 		if out.Code != 200 || json.Unmarshal(out.Body.Bytes(), &status) != nil {
 			t.Fatalf("export status: %d %s", out.Code, out.Body.String())
 		}
-		if status.Phase == "exported" {
-			break
-		}
-		if status.Phase == "failed" || time.Now().After(deadline) {
+		if status.Phase == "failed" {
 			t.Fatalf("export did not complete: %+v", status)
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return status.Phase == "exported"
+	})
 	if status.Diagnostics == nil || status.Diagnostics.TotalMS <= 0 || status.Diagnostics.PackMS <= 0 || status.Diagnostics.Outcome != "exported" {
 		t.Fatalf("export timing unavailable after completion: %+v", status.Diagnostics)
 	}
-	if status.Bytes <= maxArchiveBytes || status.Sessions != 1 {
-		t.Fatalf("export omitted large file or native state: %+v", status)
+	if status.Bytes <= maxArchiveBytes || status.Sessions != 0 {
+		t.Fatalf("export omitted large file or reported Sessions: %+v", status)
 	}
 
 	targetRoot := t.TempDir()
@@ -140,7 +139,7 @@ func TestDurableArchiveExportsAndRestoresFileAboveLegacyLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer target.closeExternalRuntimes()
+	defer target.closeRuntimes()
 	oldClient := signedArchiveHTTPClient
 	defer func() { signedArchiveHTTPClient = oldClient }()
 	var storedPart []byte
@@ -221,8 +220,8 @@ func TestDurableArchiveExportsAndRestoresFileAboveLegacyLimit(t *testing.T) {
 	if err != nil || !bytes.Equal(restored, large) {
 		t.Fatalf("large file restore mismatch: %v", err)
 	}
-	if len(target.externalRuntimeState.identities) != 1 {
-		t.Fatal("native Session identity was not restored")
+	if _, err := os.Lstat(filepath.Join(targetState, legacyExternalRuntimeDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy external runtime state was archived: %v", err)
 	}
 }
 
@@ -235,9 +234,9 @@ func TestDurableArchiveCancelStopsSameOperationBeforeOrDuringExport(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.closeExternalRuntimes()
+	defer c.closeRuntimes()
 	c.cloudRuntimeQuiesced = true
-	c.cloudRuntimeParkUntil = time.Now().Add(time.Minute)
+	c.cloudRuntimeParkUntil = testFarFuture
 	if err := os.WriteFile(filepath.Join(root, "owned.txt"), []byte("retain me"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -258,21 +257,14 @@ func TestDurableArchiveCancelStopsSameOperationBeforeOrDuringExport(t *testing.T
 	if out := request(http.MethodDelete, "archive-during"); out.Code != http.StatusAccepted {
 		t.Fatalf("cancel export: %d %s", out.Code, out.Body.String())
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	waitForCondition(t, "the cancelled export to stop", func() bool {
 		out := request(http.MethodGet, "archive-during")
 		var status durableArchiveExport
 		if out.Code != 200 || json.Unmarshal(out.Body.Bytes(), &status) != nil {
 			t.Fatalf("cancel status: %d %s", out.Code, out.Body.String())
 		}
-		if status.Phase == "cancelled" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("export did not stop: %+v", status)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return status.Phase == "cancelled"
+	})
 	if data, err := os.ReadFile(filepath.Join(root, "owned.txt")); err != nil || string(data) != "retain me" {
 		t.Fatalf("cancel changed user file: %v", err)
 	}

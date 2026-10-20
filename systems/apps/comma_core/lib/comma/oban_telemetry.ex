@@ -16,7 +16,12 @@ defmodule Comma.ObanTelemetry do
   @states ~w(success failure cancelled discard snoozed exception other)
 
   def attach do
-    case :telemetry.attach_many(@handler_id, @events, &__MODULE__.handle_event/4, nil) do
+    case SystemsRuntime.Telemetry.attach_many(
+           @handler_id,
+           @events,
+           &__MODULE__.handle_event/4,
+           nil
+         ) do
       :ok -> :ok
       {:error, :already_exists} -> :ok
     end
@@ -26,7 +31,7 @@ defmodule Comma.ObanTelemetry do
       when event in [:stop, :exception] do
     job = metadata.job
 
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:comma, :oban, :job, event],
       Map.take(measurements, [:duration, :queue_time]),
       %{
@@ -42,7 +47,7 @@ defmodule Comma.ObanTelemetry do
         %{conf: %{name: Comma.Oban}} = metadata,
         _
       ) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:comma, :oban, :queue, :shutdown],
       %{elapsed: measurements[:elapsed] || 0, orphaned: length(metadata[:orphaned] || [])},
       %{queue: finite(metadata[:queue], @queues)}

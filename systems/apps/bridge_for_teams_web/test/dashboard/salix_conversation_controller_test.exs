@@ -13,17 +13,17 @@ defmodule BridgeForTeamsWeb.Dashboard.SalixConversationControllerTest do
   end
 
   setup %{conn: conn} do
-    previous_client = Application.get_env(:bridge_for_teams_core, :salix_client)
+    previous_client = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
 
     on_exit(fn ->
       if previous_client do
-        Application.put_env(:bridge_for_teams_core, :salix_client, previous_client)
+        SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous_client)
       else
-        Application.delete_env(:bridge_for_teams_core, :salix_client)
+        SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
       end
     end)
 
-    Application.put_env(:bridge_for_teams_core, :salix_client, ResolveSalixClient)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, ResolveSalixClient)
 
     %{user: user, org: org} = org_with_owner_fixture(org: %{slug: "acme", name: "Acme"})
     {:ok, project} = Projects.create_project(org.id, %{"name" => "Support", "slug" => "support"})

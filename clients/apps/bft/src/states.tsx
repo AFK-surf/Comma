@@ -16,6 +16,18 @@ export function ErrorState({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+/** A reload after a write failed: the data above it is the last one read. */
+export function StaleNotice({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="bft-quiet-row bft-quiet-row-flush" role="alert">
+      <p className="bft-quiet bft-quiet-inline">{t.staleBody}</p>
+      <button className="bft-btn bft-btn-sm" onClick={onRetry} type="button">
+        {t.retry}
+      </button>
+    </div>
+  );
+}
+
 export function OrgNotFound() {
   return (
     <div className="bft-state">

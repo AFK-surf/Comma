@@ -1,7 +1,10 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { initializeCommaI18n } from "@comma/i18n";
-import { TaskWorkspace, type TaskWorkspaceTask } from "@comma/ui";
+import {
+  TaskWorkspace,
+  type TaskWorkspaceTask,
+} from "@comma/ui/components/task-workspace";
 import "../../src/styles.css";
 
 initializeCommaI18n(["en"]);
@@ -18,7 +21,8 @@ declare global {
   }
 }
 
-const statuses = ["backlog", "in_progress", "needs_review", "done"] as const;
+// The spec collapses Done to hide task-499, so index 3 stays "done".
+const statuses = ["in_progress", "needs_review", "cancelled", "done"] as const;
 const makeTask = (index: number): TaskWorkspaceTask => ({
   id: `task-${index}`,
   conversationId: `conversation-${index}`,

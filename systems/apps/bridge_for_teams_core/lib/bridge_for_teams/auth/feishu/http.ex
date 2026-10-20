@@ -51,13 +51,13 @@ defmodule BridgeForTeams.Auth.Feishu.HTTP do
 
   @impl true
   def fetch_identity(sso, params, opts) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     result = do_fetch_identity(sso, params, opts)
 
     BridgeForTeams.Telemetry.emit_operation(
       :sso,
       if(match?({:ok, _}, result), do: :ok, else: :error),
-      System.monotonic_time() - started
+      SystemsClock.monotonic_time() - started
     )
 
     result
@@ -177,7 +177,7 @@ defmodule BridgeForTeams.Auth.Feishu.HTTP do
   defp required(_value, error), do: {:error, error}
 
   defp random_url_token(bytes \\ 32),
-    do: Base.url_encode64(:crypto.strong_rand_bytes(bytes), padding: false)
+    do: Base.url_encode64(SystemsRuntime.Proc.random_bytes(bytes), padding: false)
 
   defp get(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
 

@@ -239,7 +239,7 @@ defmodule BridgeForTeamsWeb.BFTCLIInstallController do
   end
 
   defp configured_string(key) do
-    case Application.get_env(:bridge_for_teams_web, key) do
+    case SystemsRuntime.get_env(:bridge_for_teams_web, key) do
       value when is_binary(value) ->
         case String.trim(value) do
           "" -> nil

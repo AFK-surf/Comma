@@ -1,14 +1,8 @@
+// Main's part of message notifications: the system banners and the app icon's badge. The client core says which
+// messages get a banner and words it (`chatAppended`: title, body, reply placeholder); Main shows them while the
+// person is away from Comma and its notification settings allow, and acts on a banner's click and reply.
 import type { ChatTarget } from "@comma/chat-contract";
-import type { CommaConversation } from "@comma/app/api";
-import type { ChatMessage } from "@comma/app/chat-runtime";
-import { baseLocale, messages as i18n } from "@comma/i18n";
-import { readMainLocale, type MainLocaleSource } from "../main-locale";
-
-// The banner wraps the body to a few lines and fades out the overflow itself,
-// so visual truncation belongs to the platform. This budget only keeps the
-// payload small; it sits far past anything a banner renders, so the cut is
-// never visible and never competes with the native fade.
-const NOTIFICATION_BODY_MAX_CHARS = 500;
+import type { ChatAppendedValue } from "@comma/core/contract";
 
 export interface MessageNotificationShowInput {
   body: string;
@@ -47,35 +41,12 @@ export interface MessageNotificationEmission {
   type: "clicked";
 }
 
-export function boundNotificationBody(
-  text: string,
-  maxChars = NOTIFICATION_BODY_MAX_CHARS
-): string {
-  return text.length <= maxChars ? text : text.slice(0, maxChars);
-}
-
-// Router attribution: the server stamps actor_role only on agent_task
-// conversations, so an unattributed assistant message in a user_chat is the
-// Router replying in Home chat.
-function isRouterMessage(
-  message: ChatMessage,
-  conversation: CommaConversation
-): boolean {
-  if (message.platformSource) return false;
-  if (message.role !== "assistant") return false;
-  if (message.text.trim() === "") return false;
-  if (message.actorRole === "router") return true;
-  return message.actorRole === undefined && conversation.kind === "user_chat";
-}
-
 export class MessageNotificationsService {
   readonly #platform: MessageNotificationsPlatform;
   readonly #preferences: () => MessageNotificationsPreferences;
   readonly #emitEvent: (payload: MessageNotificationEmission) => void;
   readonly #onDeliveryRefused: () => void;
   readonly #sendReply: (target: ChatTarget, text: string) => Promise<void>;
-  readonly #locale: MainLocaleSource;
-  readonly #productName: string;
   readonly #log: { warn: (message: string) => void };
   // Router messages delivered since the user was last in Comma.
   #unseenCount = 0;
@@ -85,16 +56,13 @@ export class MessageNotificationsService {
 
   constructor({
     emitEvent,
-    locale = baseLocale,
     log,
     onDeliveryRefused,
     platform,
     preferences,
-    productName,
     sendReply,
   }: {
     emitEvent: (payload: MessageNotificationEmission) => void;
-    locale?: MainLocaleSource;
     log: { warn: (message: string) => void };
     /**
      * The OS took none of the banners just raised. The authorization the
@@ -104,16 +72,13 @@ export class MessageNotificationsService {
     onDeliveryRefused: () => void;
     platform: MessageNotificationsPlatform;
     preferences: () => MessageNotificationsPreferences;
-    productName: string;
     sendReply: (target: ChatTarget, text: string) => Promise<void>;
   }) {
     this.#emitEvent = emitEvent;
-    this.#locale = locale;
     this.#log = log;
     this.#onDeliveryRefused = onDeliveryRefused;
     this.#platform = platform;
     this.#preferences = preferences;
-    this.#productName = productName;
     this.#sendReply = sendReply;
     // A banner exists to bring the user back. Once they are here, whatever
     // is still listed in Notification Center is stale and would only be
@@ -127,15 +92,11 @@ export class MessageNotificationsService {
     });
   }
 
-  async handleAppendedMessages({
-    conversation,
-    messages,
+  /** Shows the banners the core worded for the messages a conversation gained. */
+  async show({
+    notices,
     target,
-  }: {
-    conversation: CommaConversation;
-    messages: readonly ChatMessage[];
-    target: ChatTarget;
-  }): Promise<void> {
+  }: Pick<ChatAppendedValue, "notices" | "target">): Promise<void> {
     if (!this.#platform.isSupported()) return;
     const preferences = this.#preferences();
     // System notifications is the master switch; Router messages is one
@@ -144,10 +105,7 @@ export class MessageNotificationsService {
     if (!preferences.notifyRouterMessages) return;
     if (this.#platform.isAppFocused()) return;
 
-    const routerMessages = messages.filter((message) =>
-      isRouterMessage(message, conversation)
-    );
-    if (routerMessages.length === 0) return;
+    if (notices.length === 0) return;
 
     const eventTarget = {
       conversationId: target.conversationId,
@@ -157,11 +115,11 @@ export class MessageNotificationsService {
 
     const focusGeneration = this.#focusGeneration;
     let deliveredCount = 0;
-    for (const message of routerMessages) {
+    for (const notice of notices) {
       // A focus event also cancels banners not yet submitted to the OS.
       if (focusGeneration !== this.#focusGeneration) return;
       const delivered = await this.#platform.show({
-        body: boundNotificationBody(message.text),
+        body: notice.body,
         onClick: () => {
           this.#emitEvent({ target: eventTarget, type: "clicked" });
         },
@@ -176,19 +134,8 @@ export class MessageNotificationsService {
         },
         // Keep the sound until the OS accepts a banner.
         playSound: preferences.notificationSound && deliveredCount === 0,
-        replyPlaceholder: i18n.electron_notification_reply_placeholder(
-          {},
-          { locale: readMainLocale(this.#locale) }
-        ),
-        // The Router speaks as Comma. The Home chat's server title ("Bridge
-        // chat") names storage, not who is talking; a task keeps its own.
-        title:
-          conversation.kind === "user_chat"
-            ? i18n.electron_notification_router_title(
-                {},
-                { locale: readMainLocale(this.#locale) }
-              )
-            : conversation.title.trim() || this.#productName,
+        replyPlaceholder: notice.replyPlaceholder,
+        title: notice.title,
       });
       if (delivered) deliveredCount += 1;
     }

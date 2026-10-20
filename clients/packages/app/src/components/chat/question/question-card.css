@@ -1,0 +1,332 @@
+/* An Agent's question card (QuestionCard) and its one-line receipt.
+   The card's corner (radius-2xl) is the footer buttons' radius (radius-md) plus the footer's inset (spacing-md).
+   Nothing here transitions: picking, sending and closing change at once. */
+.comma-question-card {
+  width: 100%;
+  max-width: var(--container-md);
+  margin: var(--spacing-md) 0 0;
+  border-radius: var(--radius-2xl);
+  background: var(--color-bg-popup-secondary);
+  box-shadow:
+    0 0 0 var(--border-width-default) var(--color-border-primary),
+    var(--shadow-sm);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-question-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+  padding: var(--spacing-xl) var(--spacing-xl) 0;
+}
+
+.comma-question-card-prompt {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+  font-weight: var(--font-weight-semibold);
+  text-wrap: balance;
+}
+
+.comma-question-card-meta {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-question-card-list {
+  padding: var(--spacing-lg) var(--spacing-md) 0;
+}
+
+/* The other answer: a label, a field that grows with its text, an image button, the images under it. */
+.comma-question-card-other-label {
+  grid-area: label;
+  padding-block: var(--spacing-sm);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  cursor: text;
+}
+
+.comma-question-card-other-field {
+  grid-area: field;
+  display: block;
+  width: 100%;
+  min-height: var(--spacing-4xl);
+  max-height: var(--spacing-11xl);
+  margin: 0;
+  padding: var(--spacing-sm) 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  field-sizing: content;
+}
+
+.comma-question-card-other-field::placeholder {
+  color: var(--color-text-placeholder);
+}
+
+/* The other row's pick lies over its drawn control only, so the field and the image button keep their clicks. */
+.comma-question-card-other-pick {
+  inset: calc(var(--spacing-sm) + var(--spacing-md)) auto auto var(--spacing-lg);
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+}
+
+.comma-question-card-attach {
+  grid-area: action;
+}
+
+.comma-question-card-images {
+  grid-area: extra;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+  margin: var(--spacing-md) 0 var(--spacing-xs);
+  padding: 0;
+  list-style: none;
+}
+
+.comma-question-card-image {
+  position: relative;
+  display: grid;
+  width: var(--spacing-6xl);
+  height: var(--spacing-6xl);
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+}
+
+.comma-question-card-image img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+  outline: 1px solid oklch(0 0 0 / 0.1);
+  outline-offset: -1px;
+}
+
+:where(.dark, [data-theme="Dark mode"]) .comma-question-card-image img {
+  outline-color: oklch(1 0 0 / 0.1);
+}
+
+.comma-question-card-image[data-status="uploading"] img {
+  opacity: 0.45;
+}
+
+.comma-question-card-image-spinner {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  color: var(--color-fg-tertiary);
+}
+
+.comma-question-card-image-retry {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  border-radius: inherit;
+  background: var(--color-bg-error-primary);
+  color: var(--color-text-error-primary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+/* The remove button: 20px drawn, 24px to hit. */
+.comma-question-card-image-remove {
+  position: absolute;
+  inset-block-start: calc(var(--spacing-sm) * -1);
+  inset-inline-end: calc(var(--spacing-sm) * -1);
+  display: grid;
+  width: var(--spacing-2xl);
+  height: var(--spacing-2xl);
+  place-items: center;
+  padding: var(--spacing-xxs);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-fg-primary);
+  box-shadow: 0 0 0 2px var(--color-bg-popup-secondary);
+  color: var(--color-bg-popup-secondary);
+  cursor: pointer;
+  visibility: hidden;
+}
+
+.comma-question-card-image-remove::before {
+  position: absolute;
+  inset: calc(var(--spacing-xxs) * -1);
+  content: "";
+}
+
+.comma-question-card-image:hover .comma-question-card-image-remove,
+.comma-question-card-image-remove:focus-visible,
+.comma-choice-list-row:focus-within .comma-question-card-image-remove {
+  visibility: visible;
+}
+
+@media (hover: none) {
+  .comma-question-card-image-remove {
+    visibility: visible;
+  }
+}
+
+.comma-question-card-image-remove:focus-visible {
+  outline: 2px solid var(--color-fg-secondary);
+  outline-offset: 2px;
+}
+
+.comma-question-card-error {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin: var(--spacing-md) var(--spacing-md) 0;
+  padding: var(--spacing-xs) var(--spacing-xs) var(--spacing-xs) var(--spacing-lg);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-secondary);
+  box-shadow: inset 0 0 0 var(--border-width-default) var(--color-border-primary);
+  color: var(--color-text-secondary);
+}
+
+.comma-question-card-error > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.comma-question-card-note {
+  display: block;
+  margin: 0;
+  padding: var(--spacing-md) var(--spacing-xl) 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-question-card-note:empty {
+  padding: 0;
+}
+
+.comma-question-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-lg) var(--spacing-md) var(--spacing-md) var(--spacing-xl);
+}
+
+.comma-question-card-hint {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-question-card-hint kbd {
+  display: inline-grid;
+  min-width: var(--spacing-xl);
+  height: var(--spacing-xl);
+  place-items: center;
+  padding-inline: var(--spacing-xxs);
+  border-radius: var(--radius-xs);
+  background: var(--color-bg-secondary);
+  box-shadow: inset 0 0 0 var(--border-width-default) var(--color-border-menu-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1;
+}
+
+.comma-question-card-hint-sep {
+  margin-inline: var(--spacing-xs);
+  color: var(--color-fg-quinary);
+}
+
+.comma-question-card-actions {
+  display: flex;
+  flex: none;
+  gap: var(--spacing-xs);
+}
+
+.comma-question-card-send-key {
+  padding: var(--spacing-xxs) var(--spacing-xs);
+  border-radius: var(--radius-xs);
+  background: rgb(255 255 255 / 0.18);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1;
+}
+
+/* The receipt a card closes into: what was asked, small, and how it ended. */
+.comma-question-receipt {
+  display: flex;
+  width: 100%;
+  max-width: var(--container-md);
+  margin-block-start: var(--spacing-md);
+  align-items: flex-start;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-lg) var(--spacing-xl) var(--spacing-lg) var(--spacing-lg);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-secondary);
+  box-shadow: 0 0 0 var(--border-width-default) var(--color-border-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+.comma-question-receipt-icon {
+  display: grid;
+  flex: none;
+  width: var(--spacing-2xl);
+  height: var(--spacing-2xl);
+  margin-block-start: var(--spacing-md);
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-brand-solid);
+  color: var(--color-text-white);
+}
+
+.comma-question-receipt-icon.is-muted {
+  background: var(--color-bg-tertiary);
+  color: var(--color-fg-tertiary);
+}
+
+.comma-question-receipt-icon svg {
+  width: var(--spacing-lg);
+  height: var(--spacing-lg);
+}
+
+.comma-question-receipt-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+}
+
+.comma-question-receipt-prompt {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+.comma-question-receipt-answer {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.comma-question-receipt-answer.is-muted {
+  color: var(--color-text-secondary);
+  font-weight: normal;
+}
+
+.comma-question-receipt-note {
+  color: var(--color-text-tertiary);
+  font-weight: normal;
+}

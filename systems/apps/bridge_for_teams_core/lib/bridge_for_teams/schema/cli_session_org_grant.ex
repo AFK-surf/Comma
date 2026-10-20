@@ -10,7 +10,11 @@ defmodule BridgeForTeams.Schema.CliSessionOrgGrant do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @timestamps_opts [type: :utc_datetime_usec, inserted_at: :created_at]
+  @timestamps_opts [
+    type: :utc_datetime_usec,
+    inserted_at: :created_at,
+    autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+  ]
 
   schema "cli_session_org_grants" do
     belongs_to(:auth_session, BridgeForTeams.Schema.AuthSession)

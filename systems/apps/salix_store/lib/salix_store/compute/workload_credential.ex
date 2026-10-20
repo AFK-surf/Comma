@@ -10,7 +10,7 @@ defmodule SalixStore.Compute.WorkloadCredential do
   """
 
   @max_ttl_seconds 900
-  @scopes ~w(bootstrap runtime workspace service_route hosting)
+  @scopes ~w(bootstrap runtime workspace service_route hosting connect)
   alias SalixStore.{Compute, Repo}
 
   def issue(workload_id, runtime_instance_id, scopes, ttl_seconds \\ 300)
@@ -23,7 +23,7 @@ defmodule SalixStore.Compute.WorkloadCredential do
          true <-
            (scopes != [] and Enum.all?(scopes, &(&1 in @scopes))) || {:error, :invalid_scope},
          {:ok, secret} <- secret() do
-      now = System.system_time(:second)
+      now = SystemsClock.system_time(:second)
 
       claims = %{
         "aud" => "salix-compute-runtime",
@@ -32,7 +32,7 @@ defmodule SalixStore.Compute.WorkloadCredential do
         "scopes" => Enum.uniq(scopes),
         "iat" => now,
         "exp" => now + ttl_seconds,
-        "nonce" => Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+        "nonce" => Base.url_encode64(SystemsRuntime.Proc.random_bytes(16), padding: false)
       }
 
       payload = claims |> Jason.encode!() |> Base.url_encode64(padding: false)
@@ -97,12 +97,32 @@ defmodule SalixStore.Compute.WorkloadCredential do
 
   @doc "Verify that a credential still names the current runtime generation."
   def verify_for_runtime(token, workload_id, runtime_instance_id, generation, required_scope)
-      when is_binary(runtime_instance_id) and is_integer(generation) and generation > 0 do
+      when is_binary(runtime_instance_id) and is_integer(generation) and generation > 0,
+      do:
+        verify_runtime(token, workload_id, runtime_instance_id, generation, required_scope, false)
+
+  def verify_for_runtime(_, _, _, _, _), do: {:error, :invalid_workload_credential}
+
+  def verify_for_settlement(token, workload_id, runtime_instance_id, generation),
+    do: verify_runtime(token, workload_id, runtime_instance_id, generation, "runtime", true)
+
+  defp verify_runtime(
+         token,
+         workload_id,
+         runtime_instance_id,
+         generation,
+         required_scope,
+         settlement
+       )
+       when is_binary(runtime_instance_id) and is_integer(generation) and generation > 0 do
     with {:ok, claims} <- verify_claims(token, workload_id, required_scope, true),
          true <- claims["runtime_instance_id"] == runtime_instance_id,
          true <- claims["generation"] == generation,
-         %Compute.Workload{generation: ^generation, desired_state: "ready"} <-
+         %Compute.Workload{generation: ^generation} = workload <-
            Repo.get(Compute.Workload, workload_id),
+         true <-
+           workload.desired_state == "ready" or
+             (settlement and Compute.runtime_settlement_open?(workload)),
          %Compute.RuntimeInstance{
            id: ^runtime_instance_id,
            workload_id: ^workload_id,
@@ -113,7 +133,7 @@ defmodule SalixStore.Compute.WorkloadCredential do
         claims["connection_epoch"] != connection_epoch ->
           {:error, :invalid_workload_credential}
 
-        runtime.status != "connected" or not Compute.runtime_control_current?(runtime) ->
+        runtime.status != "connected" or not Compute.runtime_control_current?(runtime, settlement) ->
           {:error, Compute.runtime_control_error(runtime)}
 
         true ->
@@ -124,7 +144,48 @@ defmodule SalixStore.Compute.WorkloadCredential do
     end
   end
 
-  def verify_for_runtime(_, _, _, _, _), do: {:error, :invalid_workload_credential}
+  @doc """
+  The credential a Workload's station connects to `/v1/connect` with. It names
+  the Workload and its generation and has no expiry: the station keeps it for
+  as long as the Workload's disk lives, and a reset, which advances the
+  generation, ends it.
+  """
+  def issue_connect(workload_id, generation)
+      when is_binary(workload_id) and is_integer(generation) and generation > 0 do
+    with :ok <- validate_id(workload_id),
+         {:ok, _} <- secret() do
+      {:ok,
+       sign_claims(%{
+         "aud" => "salix-compute-runtime",
+         "credential_kind" => "connect",
+         "workload_id" => workload_id,
+         "generation" => generation,
+         "scopes" => ["connect"]
+       })}
+    end
+  end
+
+  def issue_connect(_, _), do: {:error, :invalid_credential_request}
+
+  @doc "The Workload a connect credential names, while that Workload is still at its generation."
+  def verify_connect(token) when is_binary(token) do
+    with {:ok,
+          %{
+            "credential_kind" => "connect",
+            "scopes" => ["connect"],
+            "workload_id" => workload_id,
+            "generation" => generation
+          }}
+         when is_binary(workload_id) and is_integer(generation) <- verified_claims(token),
+         %Compute.Workload{generation: ^generation} = workload <-
+           Repo.get(Compute.Workload, workload_id) do
+      {:ok, workload}
+    else
+      _ -> {:error, :invalid_workload_credential}
+    end
+  end
+
+  def verify_connect(_), do: {:error, :invalid_workload_credential}
 
   def verify(token, workload_id, required_scope)
       when is_binary(token) and is_binary(workload_id) and required_scope in @scopes do
@@ -178,19 +239,19 @@ defmodule SalixStore.Compute.WorkloadCredential do
   defp credential_live?(%{"credential_kind" => "runtime_epoch"}, "runtime", true), do: true
 
   defp credential_live?(%{"exp" => exp}, _scope, _allow_runtime_epoch?) when is_integer(exp),
-    do: exp > System.system_time(:second)
+    do: exp > SystemsClock.system_time(:second)
 
   defp credential_live?(_claims, _scope, _allow_runtime_epoch?), do: false
 
   defp credential_live_unscoped?(%{"credential_kind" => "runtime_epoch"}), do: true
 
   defp credential_live_unscoped?(%{"exp" => exp}) when is_integer(exp),
-    do: exp > System.system_time(:second)
+    do: exp > SystemsClock.system_time(:second)
 
   defp credential_live_unscoped?(_claims), do: false
 
   defp secret do
-    case Application.get_env(:salix_store, :compute_workload_credential_secret) do
+    case SystemsRuntime.get_env(:salix_store, :compute_workload_credential_secret) do
       value when is_binary(value) and byte_size(value) >= 32 -> {:ok, value}
       _ -> {:error, :credential_signer_unavailable}
     end

@@ -307,6 +307,13 @@ export const iconRegistry = [
     figmaSource: "AI Input / fill / send",
   },
   {
+    exportName: "ArrowUpRightIcon",
+    centralName: "IconArrowUpRight",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Settings / integration card / external detail link",
+  },
+  {
     exportName: "FileIcon",
     centralName: "IconFileBend",
     variant: outlined,
@@ -374,6 +381,31 @@ export const iconRegistry = [
     exportName: "StopIcon",
     centralName: "IconStop",
     variant: filledMedia,
+    source: "central",
+  },
+  // The window buttons the Windows window bar draws in place of the system's.
+  {
+    exportName: "WindowMinimizeIcon",
+    centralName: "IconMinusMedium",
+    variant: outlined,
+    source: "central",
+  },
+  {
+    exportName: "WindowMaximizeIcon",
+    centralName: "IconSquarePlaceholder",
+    variant: outlined,
+    source: "central",
+  },
+  {
+    exportName: "WindowRestoreIcon",
+    centralName: "IconSquareBehindSquare6",
+    variant: outlined,
+    source: "central",
+  },
+  {
+    exportName: "WindowCloseIcon",
+    centralName: "IconCrossMedium",
+    variant: outlined,
     source: "central",
   },
   {
@@ -508,6 +540,14 @@ export const iconRegistry = [
     source: "figma",
     figmaNodeId: "7621:1033;7545:21858",
     figmaSource: "Chat panel / panel-header / collapse",
+  },
+  {
+    exportName: "ColumnWideAddIcon",
+    centralName: "IconColumnWideAdd",
+    // Central ships this one fill-only; taken pre-thinned (see preThinnedAppIconVariant).
+    variant: preThinned,
+    source: "central",
+    figmaSource: "Comma App / window bar / Chat Sidebar new tab",
   },
   {
     exportName: "TelegramBrandIcon",
@@ -845,6 +885,49 @@ export const iconRegistry = [
   },
   // Shared app/navigation icons.
   {
+    exportName: "HomeFilledIcon",
+    centralName: "IconHomeRoof",
+    variant: filled,
+    source: "central",
+    figmaSource: "Left rail / active Home / user-requested filled variant (home-roof)",
+  },
+  {
+    exportName: "InboxFilledIcon",
+    centralName: "IconBox2",
+    variant: filled,
+    source: "central",
+    figmaSource: "Left rail / active Inbox / user-requested filled variant (box-2)",
+  },
+  {
+    exportName: "Folder2FilledIcon",
+    centralName: "IconFolder2",
+    variant: filled,
+    source: "central",
+    figmaSource: "Left rail / active Drive / user-requested filled variant (folder-2)",
+  },
+  {
+    exportName: "ListChecksFilledIcon",
+    centralName: "IconPlanning",
+    variant: filled,
+    source: "central",
+    figmaSource: "Left rail / active Tasks / user-requested filled variant (planning)",
+  },
+  {
+    exportName: "DevicesFilledIcon",
+    centralName: "IconDevices",
+    variant: filled,
+    source: "central",
+    figmaSource:
+      "Left rail / active Stations / user-requested filled variant (devices)",
+  },
+  {
+    exportName: "PuzzleFilledIcon",
+    centralName: "IconPuzzle",
+    variant: filled,
+    source: "central",
+    figmaSource: "Left rail / active Plugins / user-requested filled variant (puzzle)",
+  },
+  {
     exportName: "HomeIcon",
     centralName: "IconHomeRoof",
     variant: outlined,
@@ -877,6 +960,13 @@ export const iconRegistry = [
     source: "figma",
     figmaNodeId: "7601:14308;7641:22656;7538:11870",
     figmaSource: "Left Sidebar / box-2, inbox, archive, tray, shelf",
+  },
+  {
+    exportName: "InfinityIcon",
+    centralName: "IconInfinity",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Loops / infinity, loop, boomerang",
   },
   {
     exportName: "CalendarIcon",
@@ -1124,6 +1214,14 @@ export const iconRegistry = [
     figmaSource: "Comma-App / sidebar browser tab / globus, map, earth, globe",
   },
   {
+    exportName: "SignInKeyIcon",
+    centralName: "IconKey2",
+    variant: outlined,
+    source: "central",
+    figmaSource:
+      "Sidebar browser / page menu / import sign-ins / Central Icons catalog",
+  },
+  {
     exportName: "ArrowLeftIcon",
     centralName: "IconArrowLeft",
     variant: outlined,
@@ -1347,6 +1445,13 @@ export const iconRegistry = [
     variant: outlined,
     source: "central",
     figmaSource: "Plugin integration brand artwork / Slack",
+  },
+  {
+    exportName: "XBrandIcon",
+    centralName: "IconX",
+    variant: outlined,
+    source: "central",
+    figmaSource: "Plugin integration brand artwork / X",
   },
   {
     exportName: "MergedIcon",

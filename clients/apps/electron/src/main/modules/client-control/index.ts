@@ -393,7 +393,7 @@ export function createCommaClientControlRegistry({
       apis: [
         {
           description:
-            "Read Main's current language, appearance, Side Chat, and application shortcut settings.",
+            "Read Main's current language, appearance, and shortcut settings.",
           handler: async () =>
             (await appPreferences.state()).clientSettings ??
             structuredClone(defaultCommaClientSettings),
@@ -403,7 +403,7 @@ export function createCommaClientControlRegistry({
         },
         {
           description:
-            "Update language, appearance, Side Chat preferences, or the complete application shortcut override map.",
+            "Update language, appearance, the Open Comma shortcut, or the complete application shortcut override map.",
           handler: async (input) =>
             (
               await appPreferences.update({
@@ -418,7 +418,7 @@ export function createCommaClientControlRegistry({
         },
       ],
       description:
-        "Read or update Comma's Main-owned language, appearance, Side Chat, and application shortcuts.",
+        "Read or update Comma's Main-owned language, appearance, and shortcuts.",
       id: "client-settings",
     },
     {

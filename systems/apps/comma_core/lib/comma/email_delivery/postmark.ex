@@ -46,7 +46,7 @@ defmodule Comma.EmailDelivery.Postmark do
 
   defp from_email do
     :comma_core
-    |> Application.get_env(:mail, [])
+    |> SystemsRuntime.get_env(:mail, [])
     |> Keyword.get(:from, "")
     |> to_string()
     |> String.trim()

@@ -5,6 +5,12 @@ defmodule SalixIM.TestSupport.BanditServer do
   @last_port 39_999
   @port_state_key {__MODULE__, :next_port}
 
+  # Serves `plug` on a loopback port of its own; returns its base URL.
+  def serve!(plug, opts \\ []) do
+    port = start!(fn port -> {Bandit, plug: {plug, opts}, port: port} end)
+    "http://127.0.0.1:#{port}"
+  end
+
   # Req pools connections by destination. Reusing a port after a per-test
   # Bandit exits can route a later request through that stale local pool.
   # Keep every mock destination unique for the lifetime of the test BEAM.
@@ -32,16 +38,16 @@ defmodule SalixIM.TestSupport.BanditServer do
   end
 
   defp next_port! do
-    lock_id = {@port_state_key, self()}
+    lock_id = {@port_state_key, SystemsRuntime.Proc.self()}
 
     case :global.trans(lock_id, fn ->
-           port = :persistent_term.get(@port_state_key, @first_port)
+           port = SystemsRuntime.PersistentTerm.get(@port_state_key, @first_port)
 
            if port > @last_port do
              raise "test Bandit port range #{@first_port}..#{@last_port} exhausted"
            end
 
-           :persistent_term.put(@port_state_key, port + 1)
+           SystemsRuntime.PersistentTerm.put(@port_state_key, port + 1)
            port
          end) do
       :aborted -> raise "test Bandit port allocation lock aborted"

@@ -1,4 +1,7 @@
 import VerifiedKernelProofs.Session.WorkStoredIdentity
+import VerifiedKernelProofs.Session.WorkActivationConfirmation
+import VerifiedKernelProofs.Session.WorkStorageAddress
+import VerifiedKernelProofs.Session.WorkPhysicalPreservation
 
 namespace VerifiedKernel.Session.CommandDriver
 open Data WorkConservation ArchivePublication

@@ -51,16 +51,10 @@ const overview = (enabled = false) => ({
   unavailable_projects: [],
 });
 
-const worker = { id: "w-1", name: "Investigator", status: "configured" };
-const workerConfig = (preview: string | null) => ({
-  can_manage: true,
-  worker_id: null,
-  revision: 3,
-  worker: null,
-  preview: preview ? worker : null,
-  candidates: [worker],
-  next_cursor: null,
-  tools_ready: true,
+// Where the selected Agent's Triage Tasks run.
+const taskSettings = (tools_ready: boolean | null = true) => ({
+  settings_href: "/orgs/acme/projects/p-1/settings",
+  tools_ready,
 });
 
 const now = Date.now();
@@ -171,7 +165,7 @@ const params = (request: RecordedRequest) => new URLSearchParams(request.search)
 const toggle = (page: Page, name: string) =>
   page.locator("label").filter({ has: page.getByRole("switch", { name }) });
 
-test("Overview turns monitoring on, pauses channels, adds channels and saves the Worker", async ({
+test("Overview turns monitoring on, pauses channels and adds channels", async ({
   page,
 }) => {
   let enabled = false;
@@ -184,12 +178,7 @@ test("Overview turns monitoring on, pauses channels, adds channels and saves the
         return ok(overview(enabled));
       if (path === "/orgs/acme/triage/evaluation")
         return ok({ readiness: "ready", checked_at_ms: now });
-      if (path === "/orgs/acme/triage/worker" && method === "GET")
-        return ok(workerConfig(params(request).get("preview")));
-      if (path === "/orgs/acme/triage/worker")
-        return ok({
-          notice: "Triage Worker updated. Existing assignments keep their Worker.",
-        });
+      if (path === "/orgs/acme/triage/worker") return ok(taskSettings());
       if (path === "/orgs/acme/triage/sources/c-1") {
         enabled = true;
         return ok({ notice: "Triage monitoring enabled for this assistant." });
@@ -271,22 +260,47 @@ test("Overview turns monitoring on, pauses channels, adds channels and saves the
     agent: "agt-1",
     channel_ids: ["C4"],
   });
+});
 
-  // The Worker preview reads the chosen Worker; the save sends the revision read first.
-  const section = page.locator("#triage-worker-configuration");
-  await section.getByRole("button", { name: "Worker for Triage" }).click();
-  await page.getByRole("option", { name: "Investigator" }).click();
-  await expect(section.locator("#triage-worker-preview")).toContainText(
-    "Configured, execution not tested."
+test("Triage Tasks say where they run and link to the Agent Swarm's Settings", async ({
+  page,
+}) => {
+  let toolsReady: boolean | null = true;
+  const requests = await openTriage(
+    page,
+    "/orgs/acme/triage?agent=agt-1",
+    (request) => {
+      if (request.path === "/orgs/acme/triage") return ok(overview());
+      if (request.path === "/orgs/acme/triage/evaluation")
+        return ok({ readiness: "ready", checked_at_ms: now });
+      if (request.path === "/orgs/acme/triage/worker")
+        return ok(taskSettings(toolsReady));
+      return undefined;
+    }
   );
-  await section.getByRole("button", { name: "Save" }).click();
-  await expect(section.getByText("Triage Worker updated.")).toBeVisible();
+
+  const section = page.locator("#triage-tasks");
+  await expect(section.getByRole("heading", { name: "Triage Tasks" })).toBeVisible();
+  await expect(section).toContainText(
+    "Triage Tasks run on this Agent Swarm at its default place and default Task model."
+  );
+  await expect(
+    section.getByRole("link", { name: "Change them in Settings" })
+  ).toHaveAttribute("href", "/orgs/acme/projects/p-1/settings");
+  await expect(section.getByText("Required Triage tools are disabled.")).toHaveCount(0);
   expect(
-    requests.find((r) => r.path === "/orgs/acme/triage/worker" && r.method === "PUT")
-  ).toMatchObject({
-    csrf,
-    body: { agent: "agt-1", worker_id: "w-1", revision: 3 },
-  });
+    params(requests.find((r) => r.path === "/orgs/acme/triage/worker")!).get("agent")
+  ).toBe("agt-1");
+
+  // Tools that the swarm's plugins turn off are said in place.
+  toolsReady = false;
+  await page.reload();
+  await expect(section).toContainText(
+    "Required Triage tools are disabled. Turn them on in this Swarm's plugin settings."
+  );
+
+  await section.getByRole("link", { name: "Change them in Settings" }).click();
+  await expect(page).toHaveURL(/\/orgs\/acme\/projects\/p-1\/settings$/);
 });
 
 test("a partly failed or unconfirmed channel add re-reads the source and sends only what is missing", async ({
@@ -313,7 +327,7 @@ test("a partly failed or unconfirmed channel add re-reads the source and sends o
         });
       if (path === "/orgs/acme/triage/evaluation")
         return ok({ readiness: "ready", checked_at_ms: now });
-      if (path === "/orgs/acme/triage/worker") return ok(workerConfig(null));
+      if (path === "/orgs/acme/triage/worker") return ok(taskSettings());
       if (path === "/orgs/acme/triage/channels")
         return ok({
           channels: [
@@ -380,24 +394,20 @@ test("a partly failed or unconfirmed channel add re-reads the source and sends o
   expect(adds).toEqual([["C3", "C4"], ["C4"]]);
 });
 
-test("the Agent Swarm link opens the Worker section; retired addresses open the Overview", async ({
-  page,
-}) => {
+test("retired addresses open the Overview, which fits 900 px", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 500 });
   await openTriage(page, "/orgs/acme/triage/context?agent=agt-1", (request) => {
     if (request.path === "/orgs/acme/triage") return ok(overview());
     if (request.path === "/orgs/acme/triage/evaluation")
       return ok({ readiness: "unknown", checked_at_ms: null });
-    if (request.path === "/orgs/acme/triage/worker") return ok(workerConfig(null));
+    if (request.path === "/orgs/acme/triage/worker") return ok(taskSettings());
     return undefined;
   });
   await expect(page).toHaveURL(/\/orgs\/acme\/triage\?agent=agt-1$/);
   await expect(
     page.getByText("Comma could not verify the current AI evaluation status.")
   ).toBeVisible();
-
-  await page.goto("/orgs/acme/triage?agent=agt-1#triage-worker-configuration");
-  await expect(page.locator("#triage-worker-configuration")).toBeInViewport();
+  await expect(page.locator("#triage-tasks")).toContainText("Change them in Settings");
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth > window.innerWidth
   );
@@ -412,7 +422,7 @@ test("the Agent picker keeps the chosen Agent in the address and across pages", 
     if (request.path === "/orgs/acme/triage") return ok(overview());
     if (request.path === "/orgs/acme/triage/evaluation")
       return ok({ readiness: "ready", checked_at_ms: now });
-    if (request.path === "/orgs/acme/triage/worker") return ok(workerConfig(null));
+    if (request.path === "/orgs/acme/triage/worker") return ok(taskSettings());
     return undefined;
   });
 
@@ -522,7 +532,7 @@ test("Timeline pages, filters, reveals audited text and opens batch details", as
     "href",
     "/orgs/acme/projects/p-1/tasks/t-1"
   );
-  await expect(details).toContainText("Worker decision: Already handled");
+  await expect(details).toContainText("Task decision: Already handled");
   await expect(details).toContainText("Carrier confirms a delay.");
   await expect(details.getByRole("button", { name: "Refresh Task" })).toBeVisible();
   expect(

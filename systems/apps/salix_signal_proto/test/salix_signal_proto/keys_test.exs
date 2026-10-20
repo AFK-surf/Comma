@@ -1,7 +1,7 @@
 defmodule SalixSignalProto.KeysTest do
   # Key and signature wire formats (CRS-03 §3 to §8) against the CRS-03
   # vectors, and the initiator ephemeral-key check of CRS-04 §3.4.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.Crypto.Edwards25519, as: Ed
@@ -146,7 +146,7 @@ defmodule SalixSignalProto.KeysTest do
     end
 
     test "an order-8 point, and an honest key plus a torsion component, are not" do
-      <<5, u_bytes::binary>> = Keys.ec_public(:crypto.strong_rand_bytes(32))
+      <<5, u_bytes::binary>> = Keys.ec_public(SystemsRuntime.Proc.random_bytes(32))
       {:ok, honest} = Ed.convert_mont(:binary.decode_unsigned(u_bytes, :little))
       order8 = torsion_point()
 
@@ -166,7 +166,7 @@ defmodule SalixSignalProto.KeysTest do
 
     # q times a random curve point has order dividing 8; keep one of order 8.
     defp torsion_point do
-      Stream.repeatedly(fn -> :crypto.strong_rand_bytes(32) end)
+      Stream.repeatedly(fn -> SystemsRuntime.Proc.random_bytes(32) end)
       |> Stream.map(&Ed.decode/1)
       |> Stream.filter(&match?({:ok, _}, &1))
       |> Stream.map(fn {:ok, point} -> Ed.mul(Ed.q(), point) end)

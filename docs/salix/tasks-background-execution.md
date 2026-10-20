@@ -2,234 +2,197 @@
 
 ## Canonical lifecycle
 
-Tasks use Conversation-owned status; cards only project it. Participants are Agents.
-The owning Router may complete delivered one-shot Tasks with no pending work/decision,
-not recurring, Triage or legacy Workflow Tasks. Messages never reopen Tasks.
-Escalation means blocked work needs the initiator, not routine approval.
+Tasks use Conversation-owned status. Cards only project it. Participants are Agents.
+The owning Router can complete a delivered one-shot or Loop Task with no pending work or decision. This excludes recurring, Triage, and legacy Workflow Tasks.
+Messages never reopen Tasks. Escalation means blocked work needs the initiator, not routine approval.
+Clients show an `escalated` Task as Needs input. A Worker's question card reaches the Router, which sets the Task `escalated` while the person answers and `active` when work resumes.
 
-Router prompt notices end the source reply with each Task's confirmed status and
-status-specific consequence; if already sent, follow up promptly. Report failed
-writes truthfully, suppress same-status retries, and explain reopening.
-Terminal Slack notices retain exact source/target, Session, installation and IFC
-checks, not new internal-write authority or exactly-once delivery.
-System-core TLA+ mappings are unchanged; runtime regressions cover authorization.
+A Router prompt notice ends the source reply with each Task's confirmed status and its consequence. If the reply is already sent, follow up promptly.
+Report failed writes truthfully, suppress same-status retries, and explain reopening.
+Terminal Slack notices keep exact source/target, Session, installation, and IFC checks. They add no internal-write authority and no exactly-once delivery.
 
 ## Ordinary Tasks
 
-Each Task has one Worker. Routers delegate commands and own status; Workers publish Messages.
-One create-only metadata write commits a new Task and its first command.
-Earlier failures leave no Task. A same-request retry drops uncommitted Messages.
-`SalixIM.TaskWorkerWatch` reminds a stopped, silent Worker once, then notifies the initiator without another Task.
+Each Task has one Worker. Routers delegate commands and own status. Workers publish Messages.
+One create-only metadata write commits a new Task and its first command. Earlier failures leave no Task. A same-request retry drops uncommitted Messages.
+After a grace period, `SalixIM.TaskWorkerWatch` reminds a silent Worker once, then tells the initiator once in that Task.
+If the Router stops after a Worker result on an active Task, the watch tells the Router once per result. This excludes recurring, Workflow, and Triage Tasks, and a Loop Task while its Loop is active.
+The watch covers only a Worker whose Salix Session reports activity. A [station Task](#station-tasks) has no such Session.
 
-Provider cards and client timeouts cannot independently complete, cancel, or reopen Tasks.
-Telegram review cards complete Tasks through owner review only.
+For a Task with a QQ card, the watch also posts working, blocked and paused notices to that card.
+
+Provider cards and client timeouts cannot complete, cancel, or reopen Tasks. Telegram review cards complete Tasks through owner review only.
+
+## Station Tasks
+
+A Task with `runs_on` runs on a station: the Group's Cloud VM or a person's desktop station. Its Worker is a Session of that station, not of Salix.
+`SalixWeb.StationTasks` invites the station, gives it each Message (`task.put`), and writes its posts into the Task as the Worker (`task.post`).
+The Worker participant of such a Task is delivered nothing. Its Session id names no Session that Salix runs, so `SalixIM.TaskWorkerWatch` reminds and reports nothing for it.
+
+`SalixIM.StationTaskWatch` watches a station Task instead.
+A delegation is the latest Message given to the Worker that the Worker did not write. The first Worker Message after it answers it.
+The watch keeps one timer per active station Task with an unanswered delegation. There is no scan over Tasks and no poll of the station.
+The owner hands each appended Message to the watch, so a Message costs no read. A check reads the Task's last 50 Messages and the station's standing (`SalixIM.Ports.TaskStations.standing/2`). Once the station has the delegation, the check also asks it where its Session stands (`task.status`, `session_status/2`: one request, answered at once, which starts nothing there). The next check comes after `recheck_ms` (10 minutes).
+A delegation older than the 50-Message window is still waited for. A Worker Message in the window answers it.
+The stages below come from the standing and the Session's status. Thresholds are measured from the delegation. Set them in `config :salix_im, :station_task_watch`.
+
+| Stage | Meaning | Default threshold |
+| --- | --- | --- |
+| `vm_not_ready` | The Group's Cloud VM Workload is not `ready`, or the Group has none | 10 minutes (`vm_not_ready_ms`) |
+| `station_offline` | The station's connector is not connected | 10 minutes (`station_offline_ms`) |
+| `not_given` | The station was not given the delegation yet | 10 minutes (`not_given_ms`) |
+| `running` | The station's Session runs a turn, or waits on work it started. Not a stall | 2 hours (`running_ms`), one `station_task_running` info event |
+| `idle_no_reply` | The Session runs nothing, has nothing pending, and posted nothing; or the station has no Session of the Task any more | 10 minutes (`idle_no_reply_ms`), see below |
+| `cannot_start` | Messages are pending, and the station's runtime does not start a turn. `last_failure` says why | 10 minutes (`cannot_start_ms`), or at once for a sign-in, quota or billing failure |
+| `given_no_reply` | The station has the delegation and cannot say where its Session stands: a station from before `task.status`, no answer in 10 seconds, or a Session idle with Messages pending (held, not handed over) | 30 minutes (`given_no_reply_ms`) |
+
+A standing that cannot be read is not a stage. The watch logs the failure and checks again after `recheck_ms`.
+For `idle_no_reply` the watch reminds and reports as `SalixIM.TaskWorkerWatch` does for a Worker inside Salix, with the same Messages and idempotency keys, at most once each per delegation.
+When the delegation and the Session's idleness (`for_ms`, a duration the station measures) are both `idle_no_reply_ms` old, it appends one `task_worker_nudge` to the Worker. The station gives it to the Session, which runs a turn on it. The watch logs `station_task_nudged`.
+When the Session is idle that long again after the reminder, with no reply, it appends one `task_worker_stopped` to the Router (`reason: stopped_after_reminder`). The Router's `wait_for` ends with it.
+For `cannot_start` there is no reminder. The watch appends `task_worker_stopped` (`reason: cannot_start`, with `last_failure`) once the stage is `cannot_start_ms` old, or at once when `last_failure` reads as a sign-in, quota or billing problem.
+A Session that is `running` is never reminded. Whether a reminder or a report was sent is read from the Task's Messages, so a restarted watch sends neither twice. A failed append is retried on a short timer, at most 5 times, and the stage waits for it. A Task with no Router participant to tell still gets its stall logged and counted.
+The watch logs `station_task_stalled` once per delegation and stage: for the waiting stages when the delegation is as old as the threshold, for `idle_no_reply` and `cannot_start` when the Router is told. A reminder that works is no incident.
+The event carries `group_id`, `conversation_id`, `worker_agent_id`, `stage`, `place` (`cloud_vm` or `device`), `vm_status`, `station_state`, `pending_messages`, `last_failure`, `epoch_seq`, and `age_ms`.
+The counter `salix.station_tasks.stalled.total{phase, kind}` counts the same events. The metric labels use the allowlisted names: `phase` is the stage, `kind` is the place.
+A reported delegation that the station answers later logs `station_task_recovered` with its total wait.
+Every answered delegation records `salix.station_tasks.first_reply.seconds{kind}`.
+The Cloud Monitoring policy `comma_alerting:station_task_stalled` (P2, staging) fires for `place=cloud_vm` on `vm_not_ready`, `station_offline`, `not_given`, `idle_no_reply` and `cannot_start`, and not for a canary Task. `running` and `given_no_reply` do not page.
+A Task of a Group named in `canary_group_ids` is the [Cloud VM canary](../observability.md#cloud-vm-canary). Its events and samples carry `canary`, and two more staging policies watch it.
+The station reports its own failures (a turn that failed, a runtime that did not start) as Worker Messages too, which answer the delegation.
+A desktop station that goes offline is logged and counted only. Its owner closing the laptop is not a failure.
+Release order: a station from before `task.status` answers an error, which the watch takes for `given_no_reply`, as before this request. Salix can be released before, with, or after the station and the Cloud VM image.
+A restarted watch rebuilds the delegation from the Messages. A delegation younger than `stale_ms` (24 hours) can be reported a second time. An older one is logged as `station_task_stale` and not watched, and the watch records no first reply for a delegation it did not wait for.
+A failure inside the watch is logged as `station_task_watch_failed` and the check is made again. It never stops the Task's owner.
 
 ## Continuation and containment
 
-Follow-ups use the contextually intended Task, not merely the latest active one.
-A resumed Task must preserve the authority and audience of the new request.
-Private input or a scheduled result does not become public merely because the Task already has a public reply.
+Follow-ups use the intended Task, not the latest active one. Resumed Tasks keep the new request's authority and audience.
+Private input or a scheduled result does not become public because the Task already has a public reply.
 See [IFC](../verification.md) for source and destination checks.
 
-Schedules create bounded work through existing owners.
-Keep schedule identity, trigger occurrence, and Task activation distinct for retries.
-Do not let an overdue trigger cause unbounded synchronous fan-out.
-The scheduler does not grant a broader disclosure audience than the original request.
+Schedules create bounded work through existing owners. Keep schedule identity, trigger occurrence, and Task activation distinct for retries.
+An overdue trigger must not cause unbounded synchronous fan-out. The scheduler cannot widen the original disclosure audience.
 
 ## Background loops
 
-A Loop is Agent-owned C executed by spinfoam on its lease holder, not a Schedule, Session or Task; it has no occurrences or history.
-Timers, events and host capabilities drive it. Only `agent.notify` wakes its target Session.
-This ordinary delivery uses `loop:<id>:<dedup_key>` to deduplicate guest retries.
+A Loop is Agent-owned C that spinfoam runs on its lease holder. It is not a Schedule, Session, or Task, and has no occurrences or history.
+Timers, events, and host capabilities drive it. Only `agent.notify` wakes its target Session. It uses `loop:<id>:<dedup_key>` to deduplicate guest retries.
 
-`loop.build` uses spinfoam's embedded TinyCC-to-eBPF compiler and VM on the owner node.
-`loop.sdk` supplies its `spinfoam.h`, constraints and capabilities, without a template.
-Owner-requested Comma proactive watches use one bundled Loop program. Only integer C is supported: no floating point or signed division/modulo.
-Compilation needs no host toolchain or privilege and has no alternative path.
-`loop.build` writes the ELF once to Agent VFS with the round's audience label.
-`loop.create` records its path, SHA-256, config and creator authority. Loads reread and check the hash; changed/deleted files fail.
+`loop.create` records its path, SHA-256, config, and creator authority. Each load rereads and checks the hash. Changed or deleted files fail.
 
-`SalixAgent.Server` claims adopt active Loops; passivation/fencing releases them.
-Active Loops keep the Agent resident: idle park renews its lease.
-A stranded active Loop (no object attached, or attached on a departed node) has its owner Server restarted by the next sweep, one bounded page per node per minute.
-Every load bumps the Loop's incarnation. A host call from an object that is not the current incarnation is refused.
-A checkpoint written through `loop.state.put` returns as `config.state` on the next load.
+The next sweep restarts the owner Server of a stranded active Loop, one bounded page per node per minute.
+Every load bumps the Loop's incarnation. Host calls require the current incarnation.
+A `loop.state.put` checkpoint returns as `config.state` on the next load.
 A Loop that returns is `paused(exited)`. A fault reloads it from its checkpoint at most three times an hour, then it is `failed`.
-Each terminal outcome notifies the Session once. Archive pauses Loops with reason `archive`; unarchive resumes them.
+Each terminal outcome notifies the Session once. Archive pauses Loops with reason `archive`. Unarchive resumes them.
+A Loop a Worker creates in a Task belongs to it (one per Task). Only that Task's rounds manage it, and the Task's end deletes it.
+A [Loop Task](../architecture/DOMAIN_CONCEPTS.md#loop-tasks)'s Loop is written `pending` by the Task's request and gets its program from the Worker. The Task's end or archive ends it and keeps the row as `ended`.
 
-Capabilities are a closed allowlist: `agent.notify`, `loop.state.put`, `loop.state.get`, `loop.ack`, `loop.log`, registry tools classified `safety: read`, environment tools (`env.*`, `device.*`), SSH tools (`ssh.*`), and `im_api.internal.read_conversation`, `composio.execute`, `web.http_request`, plus `decide`.
-Ordinary Loops may call the allowlist. Product Loops also enforce their pinned source and owner consent. Spinfoam refuses other names.
-`composio.execute` permits provider writes. SSH tools permit commands, terminal interaction, file transfers, and host trust changes. `ssh.download` requires a `/drive` destination. Other writes outside this allowlist are unavailable. Tools run through the same dispatch and IFC boundary as a round, with the Loop's sealed origin and the creator's tool disclosure.
-A Loop acts with its creator's authority through the kernel's delegated-principal wrapper `schedule|loop:<id>|<creator>`.
-`agent.notify` admits six wakes per ten minutes per Loop; an hour of continuous limiting pauses the Loop with reason `budget`.
+A Loop may declare a trigger (`every_minutes`, or `cron` with an IANA `timezone`) and limits (`max_runs`, `ends_at`, `stop_condition`) on its row.
+`loop.next_run` answers the trigger's next time after `after_ms`, in the trigger's timezone, and records it as `next_run_at`. After missed windows it answers the latest missed one.
+Each delivered `agent.notify` is one run (`run_count`); the same source counts once. The run that reaches `max_runs` ends the Loop.
+The first wake, `loop.next_run` or load at or after `ends_at` ends the Loop, and each node's minute sweep ends one page of the rest.
+A guest wait (`sf_sleep_ms`, `sf_event_next`) returns after at most 24 hours.
+
+Capabilities are a closed allowlist: `agent.notify`, `loop.state.put`, `loop.state.get`, `loop.ack`, `loop.log`, `loop.next_run`, registry tools classified `safety: read`, environment tools (`env.*`, `device.*`), SSH tools (`ssh.*`), `im_api.internal.read_conversation`, `composio.execute`, `web.http_request`, and `decide`.
+Spinfoam admits only allowlisted calls. Product Loops also enforce pinned source and owner consent.
+`composio.execute` permits provider writes. SSH tools permit commands, terminal interaction, file transfers, and host trust changes. `ssh.download` requires a `/drive` destination. No other writes are available.
+Tools run through the same dispatch and IFC boundary as a round, with the Loop's sealed origin and the creator's tool disclosure.
+A Loop acts with its creator's authority through the delegated principal `schedule|loop:<id>|<creator>`.
+`agent.notify` admits six wakes per ten minutes per Loop. One hour of continuous limiting pauses the Loop with reason `budget`.
+The built-ins (`agent.notify`, `loop.state.*`, `loop.ack`, `loop.log`, `loop.next_run`) bypass dependency admission, so a full Tenant cannot refuse a checkpoint or a wake. Each guest has at most one host call in flight.
+Tool calls still take a `tool` slot. The node logs refused, timed-out, or failed built-in calls with the Loop and capability.
 
 External events reach a Loop through `POST /v1/agent-groups/:group_id/loops/:loop_id/events` with a group API key.
-`202` means PostgreSQL retained the event on its Loop, not that the guest processed it.
-The guest calls `loop.ack` after a quiet decision or a durable downstream handoff.
-ACK insertion and pending removal share one transaction, fenced by the current Loop incarnation.
-Event payloads are data. They carry no authority and cannot widen the Loop's allowlist.
+`202` means PostgreSQL kept the event on its Loop, not that the guest processed it.
+The guest calls `loop.ack` after a quiet decision or a durable downstream handoff. ACK insertion and pending removal share one transaction, fenced by the current incarnation.
+Event payloads are data. They carry no authority and cannot widen the allowlist.
 
-`loop.webhook` enables, rotates, or revokes one secret inbound URL per Loop.
-Only the owning Agent can manage it. `enable` preserves an existing URL.
-`loop.list` and `loop.get` return the saved URL to the owning Agent.
-The Loop row stores the random 256-bit secret directly so these reads can recover the URL.
-The secret authorizes event submission to that Loop only. The Loop owner controls the expected secret.
-The ingress verifies it with an indexed lookup. Unknown or revoked secrets return `404` without delivery.
-Keep the URL private. Rotation or revocation rejects subsequent admission checks, but does not cancel an event already admitted or in flight.
-Deletion removes the URL. Pause and archive retain it, but reject events with `409`.
+`loop.webhook` enables, rotates, or revokes one secret inbound URL per Loop. Only the owning Agent can manage it. `enable` keeps an existing URL.
+`loop.list` and `loop.get` return the saved URL to the owning Agent. The Loop row stores the random 256-bit secret.
+The secret authorizes event submission to that Loop only. Unknown or revoked secrets return `404` without delivery.
+Keep the URL private. Rotation or revocation rejects later admissions, but does not cancel an event already admitted.
+Deletion removes the URL. Pause and archive keep it, but reject events with `409`.
 
-Send `POST /v1/loop-webhooks/:secret` with `Content-Type: application/json` and a JSON object.
-No Authorization header is required. The event topic is `webhook`, and its payload is the full object.
-The request body limit is 16 KiB before parsing. `Idempotency-Key` supplies an optional event ID of at most 128 bytes.
-Without that header, each request gets a fresh ID, including requests with identical bodies.
-The existing group-key endpoint keeps its event envelope and payload-hash default.
-Each Loop retains up to 32 pending 16 KiB events. Repeated IDs preserve the original payload and deadline.
-The Reconciler replays the same IDs after adoption and each minute, including resident Loops.
-Guests own bounded provider/model retries: spinfoam mailbox deduplication means replay cannot restart a failed call in the same object.
-After 15 minutes without ACK, the next owner sweep fails the Loop, retains pending events and explains retry/discard.
-Explicit resume grants 15 more minutes; process restart does not. Pause preserves pending work; deletion discards it.
-Summary queries omit payloads. Active Group payloads total at most 50 MiB, excluding JSON metadata and paused Loops.
-ACK, durable Session admission, visible Message append and external delivery are separate facts.
-Stable downstream deduplication keys are required; exactly-once external effects are not promised.
+Send `POST /v1/loop-webhooks/:secret` with `Content-Type: application/json` and a JSON object. No Authorization header is required.
+The event topic is `webhook`, and its payload is the full object.
+`Idempotency-Key` supplies an optional event ID of at most 128 bytes. Without it, every request gets a fresh ID.
+The group-key endpoint keeps its event envelope and payload-hash default.
+Each Loop keeps up to 32 pending 16 KiB events. Repeated IDs keep the original payload and deadline.
+The Reconciler replays the same IDs after adoption and each minute. Replay cannot restart a failed call in the same object, so guests own bounded provider and model retries.
+After 15 minutes without ACK, the next owner sweep fails the Loop and keeps pending events.
+Explicit resume grants 15 more minutes. Process restart does not. Pause keeps pending work. Deletion discards it.
+Summary queries omit payloads. Active Group payloads total at most 50 MiB, excluding metadata and paused Loops.
+ACK, Session admission, visible Message append, and external delivery are separate facts. Use stable downstream deduplication keys. Exactly-once external effects are not promised.
 
-Shared Redis admits 60 requests per Loop/minute and 6,000 globally/minute.
-Global admission precedes secret lookup; expiring per-Loop buckets follow it, bounding unknown-secret traffic.
-Limiting/full mailboxes return `429` with `Retry-After`; limiter/storage outages return `503`.
-Existing bounded HTTP and `loop_event` telemetry exclude URL secrets.
-The additive pending-events column preserves Loop facts and ownership. Pre-release volatile admissions are unrecoverable.
-Post-cutover forward repair must preserve pending events and ACKs.
+Shared Redis admits 60 requests per Loop per minute and 6,000 globally per minute. Global admission runs before secret lookup.
+Limiting and full mailboxes return `429` with `Retry-After`. Limiter or storage outages return `503`.
+Telemetry excludes URL secrets. Forward repair must keep pending events and ACKs.
 
-Composio trigger events use the provider event ID and trigger slug as the Loop event ID and topic.
-The payload is the V3 event `data` object. See [Composio triggers](../identity-security.md#composio-trigger-authorization).
+See [Composio triggers](../identity-security.md#composio-trigger-authorization).
 
-Quotas: 20 active Loops per Agent, 100 per Group, `spinfoam_max_objects` per node. Every transition into `active` (create, resume, unarchive) is admitted atomically under the Group's lock; an unarchived Loop the quota refuses stays `paused(quota)`. The spinfoam child restarts with backoff at most five times an hour, then the node reports Loops unavailable.
+Each transition into `active` (create, resume, unarchive) is admitted atomically under the Group's lock. An unarchived Loop that the quota refuses stays `paused(quota)`.
+The spinfoam child restarts with backoff at most five times an hour. Then the node reports Loops unavailable.
 Runtime facts: [SalixAgent.Loops](../../systems/apps/salix_agent/lib/salix_agent/loops.ex), [Host](../../systems/apps/salix_agent/lib/salix_agent/loops/host.ex), [Reconciler](../../systems/apps/salix_agent/lib/salix_agent/loops/reconciler.ex), [Capabilities](../../systems/apps/salix_agent/lib/salix_agent/loops/capabilities.ex).
 
 ## Scripts
 
-`script.run` and `script.run_file` run an agent-authored integer-C program once, inside the same spinfoam child, while the tool call waits.
-A script is not a Loop: it has no row, no incarnation, no checkpoint, no events and no `agent.notify`. It is a transient part of one tool call.
-The program is compiled by the embedded compiler (`sf.build.compile`, one synchronous request per run; spinfoam keeps no build cache) and the returned ELF is loaded directly. The ELF never enters the workspace.
-`script.sdk` returns the guide, the compiler rules and the exact `spinfoam.h` of the node's binary.
-
-The object is loaded with three capabilities. `salix.call {"tool", "args"}` executes any canonical tool through the calling round's own session tool dispatch, so disclosure, IFC and the outer dependency admission apply as they do to a direct call.
-A tool failure returns as data (`{"ok": false, "error"}`); a JSON-RPC error would reach the guest as a bare `SF_HOST_ERROR`.
-`script.result {"value"}` sets the return value and `script.log {"message"}` appends a console line. spinfoam's own `sf_log` frames are discarded when an object exits, so scripts do not use it.
-`script.run` and `script.run_file` cannot be called from a script. `loop.*` and `agent.notify` are not script capabilities.
-
-Limits: sources 32 files / 128 KiB, ELF 64 KiB, every JSON value and tool result 16 KiB (larger content is cut and marked `truncated`), 128 live handles, 5 s wall time counted as guest time only, at most 5 `script.run` calls per turn and `:salix_agent, :script_max_objects` (default 64) resident script objects per node.
-Return 0 for success. A non-zero return, a fault, the wall limit, a lost child or a build failure is a model-only failed tool result that keeps the journal events and tool observations of the host calls that completed before it.
-Terminal notifications are advisory: on the wall timer the run stops the object and reads its true terminal state, so a late exit notification still counts as the exit.
-All Loop and script objects share the child's one execution thread; a busy script slows the node's Loops.
-The two skill scripts that ship with the product (`ui-designer`, `website-manager`) are C programs run this way.
-Runtime facts: [ScriptRun](../../systems/apps/salix_agent/lib/salix_agent/script_run.ex), [Build](../../systems/apps/salix_agent/lib/salix_agent/spinfoam/build.ex).
+`salix.call` runs any canonical tool through the calling round's session tool dispatch. Disclosure, IFC, and dependency admission apply as for a direct call.
 
 ## Decision capability design
 
 `decide` classifies runtime data, filters events, and selects data sources for scripts and Loops.
-It returns decisions only. It does not read sources, execute selected tools, or grant authority.
-The caller supplies bounded candidate descriptions and applies thresholds in code.
+It returns decisions without reading sources, running tools, or granting authority. The caller supplies bounded candidates and applies thresholds in code.
 Use `choice` for one candidate, separate `noul` questions for multiple matches, and `score` for ordered relevance.
-An explicit `none` choice represents no suitable candidate. Uncertainty is a successful answer, not a transport error.
-
-Provider accuracy and latency require workload measurements before operational claims.
-[Jev](https://docs.typesafe.ai/introduction) evaluates independent questions against shared state.
-Its [confidence](https://docs.typesafe.ai/confidence) describes a distribution, not correctness or its largest probability.
-The official [SDKs](https://docs.typesafe.ai/sdk) target Python and JavaScript.
-Salix uses its existing Elixir HTTP library in a narrow adapter to avoid another runtime. Integration tests cover that adapter.
-
-### Request and result
-
-Arguments contain `state` (text, object, or array) and `questions` (one to eight named questions).
-Each question has `type`, textual `instructions`, and type-specific `criteria`:
-
-- `choice`: two to 32 option keys mapped to descriptions. The answer includes `choice`, `probabilities_bp`, and `confidence_bp`.
-- `noul`: optional `true` and `false` descriptions. The answer includes `probability_bp`, without an invented confidence.
-- `score`: two to ten ordered descriptions. The answer includes `score_milli`, `probabilities_bp`, and `confidence_bp`.
-
-The response contains `model` and `answers`, keyed by the caller's question IDs.
-Probability and confidence integers equal `floor(value * 10000)`. Score integers equal `floor(value * 1000)` on the original level scale.
-This supports spinfoam's integer-only C. Quantized distributions can sum to less than 10000. Conversion never selects another winner.
-Question and option keys contain at most 64 ASCII letters, digits, underscores, or hyphens.
-Arguments have a 12 KiB encoded limit. Results must fit the 16 KiB host envelope, including JSON string escaping.
-Oversized results fail before host publication. Decision JSON is never truncated.
-Missing answers, invalid distributions, unknown options, and incompatible answer types fail the entire call without a default selection.
+An explicit `none` choice means no suitable candidate. Uncertainty is a successful answer, not a transport error.
+[Jev](https://docs.typesafe.ai/introduction) [confidence](https://docs.typesafe.ai/confidence) describes a distribution, not correctness.
 
 ### Dispatch and authority
 
-The canonical registry tool is `decide`; scripts reach it through `salix.call`.
-Loops call `decide` through their explicit external-call allowlist and ordinary session tool dispatch.
-Existing Agent disclosure, IFC, Loop incarnation checks, and dependency admission remain authoritative.
+The canonical registry tool is `decide`. Scripts reach it through `salix.call`. Loops call it through their allowlist and ordinary session tool dispatch.
+Agent disclosure, IFC, Loop incarnation checks, and dependency admission stay authoritative.
 The capability adds no entity, persistent decision record, permission grant, or speculative replay eligibility.
-Provider egress follows the existing public-egress policy. Restricted sources require the existing authorized flow before any provider request. By owner decision, the server-side [voice profile](../messaging-voice.md#voice-profile) sends Router session text without IFC filtering.
-A decision preserves its source dependencies. It cannot authorize access or remove source restrictions.
+Provider egress follows the public-egress policy. Restricted sources require the authorized flow before any provider request. By owner decision, the server-side [voice profile](../messaging-voice.md#voice-profile) sends Router session text without IFC filtering.
+A decision keeps its source dependencies. It cannot authorize access or remove source restrictions.
 
 The provider endpoint, model, and key are operator configuration, never tool arguments.
-The server loads `decide.api_key`, `decide.endpoint`, and `decide.model` from `config.json` at startup.
-`endpoint` is the full request URL, including the path, and can point to a Jev-compatible service.
-Defaults are `https://api.typesafe.ai/v1/systemone` and `jev-1.13.0`.
+The server loads `decide.api_key`, `endpoint`, `model`, and `provider` from `config.json` at startup.
+`endpoint` is the full request URL and can point to a Jev-compatible service.
+Defaults: `https://api.typesafe.ai/v1/systemone`, `jev-1.13.0`, and `typesafe`.
+Cloudflare Clef uses a Workers AI `ai/run` URL, model `clef`, and provider `cloudflare`. The adapter unwraps `result`.
 An absent or empty `api_key` disables the provider. Invalid configuration returns `not_configured`.
 Provider traffic passes through the LLM metering and encrypted-archive seam with Agent, Session, round, Tenant, and billing context.
 No input, credentials, or raw provider errors enter metric labels or ordinary error messages.
 Provider bodies have a 64 KiB read cap. Oversized responses archive the bounded prefix with a truncation marker, then fail.
 
-A provider exchange has a two-second execution budget within the five-second tool deadline and makes at most one HTTP request, without redirects or automatic retries.
-Scripts and Loops share admission limits. There can be 100 active Loops per Group, so per-Loop limits alone are insufficient.
-Node-local fixed-window budgets admit 60 calls per minute and four per second for each Tenant/Group pair.
-All callers share these buckets, including direct model calls. Buckets expire and reset on node restart.
-These are not cluster quotas: a Group on N nodes can consume N times its node allowance.
-Existing dependency admission bounds in-flight work per node and Tenant. Provider calls reserve their own dependency slot.
-After dispatcher schema and authorization checks, capability failures return `{"error":{"code":"..."}}` as data.
-Codes are `invalid_request`, `not_configured`, `context_unavailable`, `rate_limited`, `billing_unavailable`, `unavailable`, `timeout`, `provider_error`, `invalid_response`, and `result_too_large`.
-Programs must check this object before reading `answers`. Dispatcher denials retain their existing guidance or host-error behavior.
-Programs choose backoff, checkpointing, or `agent.notify` within its existing notification budget. There is no automatic large-model fallback.
-
-### Model guidance and verification
-
-Tool help and both SDK guides limit `decide` guidance to repeated runtime classification and source selection.
-Agents must make current conversational judgments themselves, not create scripts for isolated reasoning.
-Programs must handle uncertainty, no match, and errors without waking the Agent unnecessarily.
-
-Prompt guidance is not a new authorization boundary.
-Runtime tests must compile real C programs, branch on integer decisions, and cover Loop calls without model completion.
-Adapter tests cover the wire request, malformed answers, timeouts, rate limits, and credential-safe errors.
-Dispatch tests cover disclosure, restricted-source refusal, metering refusal, and attributed archival.
-Existing system-core models retain ownership and authorization responsibility. This capability adds no distributed lifecycle or progress claim.
-Implementation: [Decide](../../systems/apps/salix_agent/lib/salix_agent/decide.ex),
-[HTTP adapter](../../systems/apps/salix_agent/lib/salix_agent/decide/provider.ex),
-[request limits](../../systems/apps/salix_agent/lib/salix_agent/decide/limits.ex),
-[LLM seam](../../systems/apps/salix_agent/lib/salix_agent/llm.ex).
-
 ## Archive
 
-Archive is read-only Conversation state retaining Messages, history and resources.
-`archived_from_status` and `archived_at` define restoration.
-Product authorization controls archive and restore operations.
+Archive is read-only Conversation state that keeps Messages, history, and resources.
+`archived_from_status` and `archived_at` define restoration. Product authorization controls archive and restore.
 A local hidden card is not canonical archive state.
-
-## Validation
-
-Keep regressions for Task delegation, cancellation, archive restoration, human completion, and Worker recovery.
-See [bounded Task search](../storage-search.md).
 
 ## Telegram topics
 
 Enable BotFather Threaded Mode and Disallow users to create new threads.
-General/unbound topics enter Router. Bound topics enter their Task.
-`telegram.open_task_topic` adds a text Participant. User/Worker turns skip Router by default. Router instructions skip Topic.
+General and unbound topics enter Router. Bound topics enter their Task.
+`telegram.open_task_topic` adds a text Participant. User and Worker turns skip Router by default. Router instructions skip Topic.
 Retirement restores normal routing. Explicit and saved targets stay unchanged.
-Comma owns history, files, approval, and status controls. Service events preserve Task status.
-Reserve before creation HTTP. Recover uncertain creation manually. Never retry uncertain sends. Disconnect revokes access.
-Task streams retain Worker identity during waits, apart from activity/typing.
+Comma owns history, files, approval, and status controls. Service events keep Task status.
+Reserve before the creation HTTP call. Recover uncertain creation manually. Never retry uncertain sends. Disconnect revokes access.
+Task streams keep Worker identity during waits, except for activity and typing.
 
 ## Graph retirement release
 
-The exclusive migration preserves Task IDs, history, files, Sessions, status, and the responsible Worker.
-Graph state becomes historical metadata. Extra graph Agents become inactive. Worker and initiator receive ordinary subscriptions.
-Only active Tasks receive a deduplicated handoff. Missing ownership or conflicting history fails conversion.
-Late graph tool calls cannot advance state. Old runtimes may retain instructions. External effects are not exactly-once.
+The exclusive migration keeps Task IDs, history, files, Sessions, status, and the responsible Worker.
+Graph state becomes historical metadata. Extra graph Agents become inactive. Worker and initiator get ordinary subscriptions.
+Only active Tasks get a deduplicated handoff. Missing ownership or conflicting history fails conversion.
+Late graph tool calls cannot advance state. External effects are not exactly-once.
 
-Follow [human shutdown approval and recovery](../release-operations.md). Inspect affected Tasks with bounded reads before execution. Back up affected Conversation and participant storage and record restore evidence.
-An approved mainline release runs `SalixIM.Release.retire_task_graphs(confirm_no_writers: true)`.
-Keep writers stopped through conversion and projection writes: 2,100 seconds, pages of at most 500 keys.
-Before conversion, restore the saved snapshot if needed. Afterward, forward-repair with the same history and deduplication keys. Do not use the old runtime.
+1. Follow [human shutdown approval and recovery](../release-operations.md).
+2. Inspect affected Tasks with bounded reads.
+3. Back up affected Conversation and participant storage and record restore evidence.
+4. Run `SalixIM.Release.retire_task_graphs(confirm_no_writers: true)` in an approved mainline release.
+5. Keep writers stopped through conversion and projection writes (2,100 seconds, pages of at most 500 keys).
+
+Before conversion, restore the saved snapshot if needed. After conversion, forward-repair with the same history and deduplication keys. Do not use the old runtime.

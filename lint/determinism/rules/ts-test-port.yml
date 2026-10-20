@@ -1,0 +1,85 @@
+id: ts-test-port
+language: typescript
+severity: error
+message: "A test uses a fixed network port."
+note: |
+  Two runs on one machine, or two workers, collide on a fixed port. Listen on
+  port 0 and pass the assigned port to whoever connects.
+metadata:
+  category: port
+rule:
+  any:
+    - all:
+        - kind: pair
+        - has:
+            field: key
+            regex: "^port$"
+        - has:
+            field: value
+            kind: number
+            regex: "^[1-9]"
+    - all:
+        - kind: string_fragment
+        - regex: "(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::1\\]):[1-9][0-9]{1,4}"
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"
+---
+id: tsx-test-port
+language: tsx
+severity: error
+message: "A test uses a fixed network port."
+note: |
+  Two runs on one machine, or two workers, collide on a fixed port. Listen on
+  port 0 and pass the assigned port to whoever connects.
+metadata:
+  category: port
+rule:
+  any:
+    - all:
+        - kind: pair
+        - has:
+            field: key
+            regex: "^port$"
+        - has:
+            field: value
+            kind: number
+            regex: "^[1-9]"
+    - all:
+        - kind: string_fragment
+        - regex: "(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::1\\]):[1-9][0-9]{1,4}"
+files:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.test.mts"
+  - "**/*.test.js"
+  - "**/*.test.mjs"
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.stories.tsx"
+  - "**/e2e/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/test-utils/**"
+  - "**/testing/**"
+  - "**/__tests__/**"
+  - "**/playwright*.config.ts"
+  - "**/vitest*.config.ts"
+ignores:
+  - "**/vendor/**"

@@ -48,7 +48,7 @@ defmodule SalixIM.Triage.SourcePresentation do
 
       labels =
         requests
-        |> Task.async_stream(
+        |> SystemsClock.async_stream(
           fn {key, payload} -> {key, List.first(profile_fun.(payload))} end,
           max_concurrency: 4,
           timeout: Keyword.get(opts, :timeout, 1_000),

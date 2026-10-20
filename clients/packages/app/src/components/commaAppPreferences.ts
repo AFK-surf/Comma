@@ -16,15 +16,14 @@ export function useCommaAppPreferences() {
     showInDock: available && bridge.os === "macos",
     showInMenuBar: available,
     showInNotch: available && bridge.os === "macos",
-    sideChat: available,
   };
   const showInSystemTray = available && bridge.os !== "macos";
   const [preferences, setPreferences] = useState<AppPreferences | null>(null);
   const [pending, setPending] = useState(false);
   const operationRef = useRef(0);
   const updatePendingRef = useRef(false);
-  // Modeled in tla/app-preferences/AppPreferences.tla: acknowledgements,
-  // replays, and events may arrive out of order, so only monotonic snapshots win.
+  // Acknowledgements, replays, and events may arrive out of order, so only
+  // monotonic snapshots win.
   const acceptPreferences = useCallback((snapshot: AppPreferences) => {
     setPreferences((current) =>
       current && current.revision > snapshot.revision ? current : snapshot

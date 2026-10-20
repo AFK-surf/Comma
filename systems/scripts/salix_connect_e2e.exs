@@ -1,7 +1,7 @@
 # End-to-end validation for the Go salix-connect binary.
 #
-# Run through Deno:
-#   deno test --allow-all e2e/tests/salix_connect_test.ts
+# Run through Bun, from systems/e2e:
+#   bun test tests/salix_connect_test.ts
 
 defmodule SalixConnectE2E do
   alias Salix.Control.{Groups, Tenants}

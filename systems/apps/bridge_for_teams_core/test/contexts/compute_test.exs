@@ -1,6 +1,8 @@
 defmodule BridgeForTeams.ComputeTest do
   use BridgeForTeams.DataCase, async: false
 
+  import Ecto.Query, only: [from: 2]
+
   alias BridgeForTeams.{Compute, Environments, Orgs, Projects}
   alias SalixStore.Repo
 
@@ -13,7 +15,7 @@ defmodule BridgeForTeams.ComputeTest do
   end
 
   test "project intent, workload placement, readiness projection, retention, drain and revoke are scoped" do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
     {:ok, org} = Orgs.create_org(%{name: "Compute #{suffix}", slug: "compute-#{suffix}"})
 
     {:ok, project} =
@@ -45,7 +47,7 @@ defmodule BridgeForTeams.ComputeTest do
     assert {:ok, placed} =
              Compute.create_workload(org, project, %{
                "environment_id" => environment.id,
-               "kind" => "external_worker"
+               "kind" => "service"
              })
 
     assert placed["workload"].environment_id == environment.id
@@ -99,7 +101,7 @@ defmodule BridgeForTeams.ComputeTest do
   end
 
   test "org admin pool policy updates remain outside project projection" do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
     {:ok, org} = Orgs.create_org(%{name: "Admin #{suffix}", slug: "admin-#{suffix}"})
 
     assert {:ok, pool} =
@@ -149,7 +151,7 @@ defmodule BridgeForTeams.ComputeTest do
   end
 
   test "explicit provider onboarding creates one managed default and environment omission resolves only it" do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
     {:ok, org} = Orgs.create_org(%{name: "Managed #{suffix}", slug: "managed-#{suffix}"})
 
     {:ok, project} =
@@ -176,7 +178,7 @@ defmodule BridgeForTeams.ComputeTest do
   end
 
   test "project Agent VMM onboarding binds one exact online runner and managed environment" do
-    suffix = System.unique_integer([:positive])
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
     {:ok, org} = Orgs.create_org(%{name: "VMM #{suffix}", slug: "vmm-#{suffix}"})
     {:ok, project} = Projects.create_project(org.id, %{name: "VMM", slug: "vmm-#{suffix}"})
 
@@ -215,5 +217,103 @@ defmodule BridgeForTeams.ComputeTest do
 
     assert {:ok, revoked} = Compute.revoke_agent_vmm_install(org, project, operation.id)
     assert revoked.authorization_status == "revoked"
+  end
+
+  test "Salix reads the Runner a Project's Host is on, online only while its heartbeat is recent" do
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
+    {:ok, org} = Orgs.create_org(%{name: "Seen #{suffix}", slug: "seen-#{suffix}"})
+    {:ok, project} = Projects.create_project(org.id, %{name: "Seen", slug: "seen-#{suffix}"})
+
+    {:ok, runner} =
+      Environments.register_mac_mini_provisioner(org.id, %{
+        "stable_id" => "mac-#{suffix}",
+        "name" => "Office Mac"
+      })
+
+    {:ok, operation} =
+      Compute.request_agent_vmm_install(org, project, %{
+        "request_id" => "seen-#{suffix}",
+        "runner_id" => runner.stable_id
+      })
+
+    tenant = org.salix_tenant_id
+
+    assert SalixStore.AgentVMMInstallations.bft_runner(tenant, operation.registration_id) ==
+             runner.stable_id
+
+    assert SalixStore.AgentVMMInstallations.bft_runner("other-tenant", operation.registration_id) ==
+             nil
+
+    assert {:ok, %{"name" => "Office Mac", "status" => "online"}} =
+             Compute.runner_status(tenant, runner.stable_id)
+
+    # Days without a heartbeat: offline, as the Runners and Devices pages show it.
+    BridgeForTeams.Repo.update_all(
+      from(p in BridgeForTeams.Schema.MacMiniProvisioner, where: p.id == ^runner.id),
+      set: [last_seen_at: DateTime.add(SystemsClock.utc_now(), -3 * 86_400, :second)]
+    )
+
+    assert {:ok, %{"status" => "offline"}} = Compute.runner_status(tenant, runner.stable_id)
+    assert {:error, :not_found} = Compute.runner_status("other-tenant", runner.stable_id)
+  end
+
+  test "a project has at most one live runner binding, and the choice precedes its Cloud VM" do
+    suffix = SystemsRuntime.Proc.unique_integer([:positive])
+    {:ok, org} = Orgs.create_org(%{name: "One #{suffix}", slug: "one-#{suffix}"})
+    {:ok, project} = Projects.create_project(org.id, %{name: "One", slug: "one-#{suffix}"})
+
+    [lab, spare] =
+      for name <- ["lab", "spare"] do
+        {:ok, runner} =
+          Environments.register_mac_mini_provisioner(org.id, %{
+            "stable_id" => "#{name}-#{suffix}",
+            "name" => name
+          })
+
+        runner
+      end
+
+    assert {:ok, %{"vm" => nil, "runner" => nil, "next_location" => %{"kind" => "cloudflare"}}} =
+             Compute.cloud_vm(org, project)
+
+    assert {:ok, first} = Compute.choose_cloud_vm_runner(org, project, lab.id, "choice-1")
+
+    assert {:error, :project_runner_bound} =
+             Compute.choose_cloud_vm_runner(org, project, spare.id, "choice-2")
+
+    # The project API binds through the same check.
+    assert {:error, :project_runner_bound} =
+             Compute.request_agent_vmm_install(org, project, %{
+               "request_id" => "choice-3",
+               "runner_id" => spare.stable_id
+             })
+
+    assert {:ok, %{"runner" => %{"name" => "lab", "status" => "processing"}}} =
+             Compute.cloud_vm(org, project)
+
+    assert {:ok, _revoked} = Compute.remove_cloud_vm_runner(org, project)
+    assert {:ok, %{"runner" => nil}} = Compute.cloud_vm(org, project)
+    assert {:ok, second} = Compute.choose_cloud_vm_runner(org, project, spare.id, "choice-2")
+    assert second.id != first.id
+
+    assert {:ok, _record, :created} =
+             SalixStore.Compute.ensure_group_workload(%{
+               "tenant_id" => org.salix_tenant_id,
+               "group_id" => project.salix_group_id,
+               "provider" => "cloudflare",
+               "provider_resource_id" => "vm-#{suffix}",
+               "provider_resource_name" => "vm-#{suffix}",
+               "provider_spec" => %{"profile_key" => "cf-standard-2"},
+               "status" => "archived"
+             })
+
+    # The VM exists on Cloudflare: it stays there, and no runner is chosen for it now.
+    assert {:ok, %{"vm" => %{"status" => "archived", "location" => %{"kind" => "cloudflare"}}}} =
+             Compute.cloud_vm(org, project)
+
+    assert {:ok, _revoked} = Compute.remove_cloud_vm_runner(org, project)
+
+    assert {:error, :cloud_vm_exists} =
+             Compute.choose_cloud_vm_runner(org, project, lab.id, "choice-4")
   end
 end

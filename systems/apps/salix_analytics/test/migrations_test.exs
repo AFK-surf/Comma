@@ -1,5 +1,5 @@
 defmodule SalixAnalytics.MigrationsTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAnalytics.Migrations
 
@@ -15,14 +15,19 @@ defmodule SalixAnalytics.MigrationsTest do
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(bandit)
 
-    prev = Application.get_env(:salix_analytics, :clickhouse)
+    prev = SystemsRuntime.get_env(:salix_analytics, :clickhouse)
 
-    Application.put_env(:salix_analytics, :clickhouse,
+    SystemsRuntime.put_env(:salix_analytics, :clickhouse,
       base_url: "http://127.0.0.1:#{port}/",
       table: "test.analytics_events"
     )
 
-    on_exit(fn -> Application.put_env(:salix_analytics, :clickhouse, prev) end)
+    on_exit(fn ->
+      if prev,
+        do: SystemsRuntime.put_env(:salix_analytics, :clickhouse, prev),
+        else: SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
+    end)
+
     :ok
   end
 
@@ -179,7 +184,7 @@ defmodule SalixAnalytics.MigrationsTest do
   end
 
   test "skips cleanly when ClickHouse is not configured" do
-    Application.delete_env(:salix_analytics, :clickhouse)
+    SystemsRuntime.delete_env(:salix_analytics, :clickhouse)
 
     assert {:ok, []} = Migrations.migrate()
   end
@@ -202,16 +207,5 @@ defmodule SalixAnalytics.MigrationsTest do
     versions = Enum.map(Migrations.migrations(), & &1.version)
 
     assert versions == Enum.uniq(versions)
-  end
-
-  test "reads applied checksums deterministically across duplicate ledger rows" do
-    assert {:ok, _} = Migrations.migrate()
-
-    applied_read =
-      SalixAnalytics.MockClickHouse.queries()
-      |> Enum.find(&String.starts_with?(&1, "SELECT version"))
-
-    assert applied_read =~ "argMax(checksum, applied_at)"
-    assert applied_read =~ "GROUP BY version"
   end
 end

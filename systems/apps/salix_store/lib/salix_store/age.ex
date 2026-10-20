@@ -93,7 +93,7 @@ defmodule SalixStore.Age do
   """
   @spec generate_keypair() :: {String.t(), String.t()}
   def generate_keypair do
-    {public, private} = :crypto.generate_key(:ecdh, :x25519)
+    {public, private} = SystemsRuntime.Proc.generate_key(:ecdh, :x25519)
     {:ok, recipient} = Bech32.encode(@recipient_hrp, public)
     {:ok, identity} = Bech32.encode(@identity_hrp, private)
     {recipient, String.upcase(identity)}
@@ -116,12 +116,12 @@ defmodule SalixStore.Age do
   def encrypt(_plaintext, []), do: {:error, :no_recipients}
 
   def encrypt(plaintext, recipients) when is_list(recipients) do
-    file_key = :crypto.strong_rand_bytes(@file_key_bytes)
+    file_key = SystemsRuntime.Proc.random_bytes(@file_key_bytes)
 
     case wrap_all(file_key, recipients) do
       {:ok, stanzas} ->
         header = header(stanzas, file_key)
-        nonce = :crypto.strong_rand_bytes(@payload_nonce_bytes)
+        nonce = SystemsRuntime.Proc.random_bytes(@payload_nonce_bytes)
         stream_key = hkdf(file_key, nonce, "payload", 32)
         body = encrypt_stream(IO.iodata_to_binary(plaintext), stream_key)
         {:ok, IO.iodata_to_binary([header, nonce, body])}
@@ -145,7 +145,7 @@ defmodule SalixStore.Age do
   end
 
   defp wrap(file_key, <<recipient::binary-size(32)>>) do
-    {ephemeral_public, ephemeral_secret} = :crypto.generate_key(:ecdh, :x25519)
+    {ephemeral_public, ephemeral_secret} = SystemsRuntime.Proc.generate_key(:ecdh, :x25519)
 
     case shared_secret(recipient, ephemeral_secret) do
       :error ->
@@ -303,7 +303,7 @@ defmodule SalixStore.Age do
     #   * AEAD tag mismatch — this stanza simply is not for us, which is the
     #     normal multi-recipient case; try the next one.
     with {:ok, <<share::binary-size(32)>>} <- unb64_ok(share_b64),
-         {public, _} = :crypto.generate_key(:ecdh, :x25519, identity),
+         {public, _} = SystemsRuntime.Proc.generate_key(:ecdh, :x25519, identity),
          {:ok, shared} <- shared_secret(share, identity) do
       wrap_key = hkdf(shared, share <> public, @x25519_info, 32)
       <<ciphertext::binary-size(16), tag::binary-size(16)>> = body

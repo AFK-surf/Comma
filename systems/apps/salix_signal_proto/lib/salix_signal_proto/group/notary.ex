@@ -27,7 +27,11 @@ defmodule SalixSignalProto.Group.Notary do
 
   @doc false
   # Test servers only.
-  def sign(%ServerParams.Secret{notary: x}, message, randomness \\ :crypto.strong_rand_bytes(32)) do
+  def sign(
+        %ServerParams.Secret{notary: x},
+        message,
+        randomness \\ SystemsRuntime.Proc.random_bytes(32)
+      ) do
     {proof_randomness, _state} = @sign_label |> Sho.derive(randomness) |> Sho.squeeze(32)
 
     Proof.prove(

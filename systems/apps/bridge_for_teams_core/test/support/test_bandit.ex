@@ -3,7 +3,7 @@ defmodule BridgeForTeams.TestBandit do
 
   def start_unlinked!(options) do
     {:ok, pid} = Bandit.start_link(kernel_assigned_port(options))
-    Process.unlink(pid)
+    SystemsRuntime.Proc.unlink(pid)
     endpoint(pid)
   end
 
@@ -11,7 +11,7 @@ defmodule BridgeForTeams.TestBandit do
     {:ok, pid} =
       ExUnit.Callbacks.start_supervised(
         {Bandit, kernel_assigned_port(options)},
-        id: {__MODULE__, make_ref()}
+        id: {__MODULE__, SystemsRuntime.Proc.make_ref()}
       )
 
     endpoint(pid)

@@ -1,0 +1,137 @@
+[2026-10-08 02:34:40Z INFO HostContext] No proxy settings were found based on environmental variables (http_proxy/https_proxy/HTTP_PROXY/HTTPS_PROXY)
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 02:34:40Z INFO HostContext] Well known config file 'Credentials': '/Users/admin/actions-runner/.credentials'
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 02:34:40Z INFO HostContext] Well known config file 'Runner': '/Users/admin/actions-runner/.runner'
+[2026-10-08 02:34:40Z INFO Listener] Runner is built for OSX (Arm64) - osx-arm64.
+[2026-10-08 02:34:40Z INFO Listener] RuntimeInformation: Darwin 25.2.0 Darwin Kernel Version 25.2.0: Tue Nov 18 21:09:07 PST 2025; root:xnu-12377.61.12~1/RELEASE_ARM64_VMAPPLE.
+[2026-10-08 02:34:40Z INFO Listener] Version: 2.337.0
+[2026-10-08 02:34:40Z INFO Listener] Commit: 397b032cbf865e9c3ddfab89d533ec19325e1273
+[2026-10-08 02:34:40Z INFO Listener] Culture: en-US
+[2026-10-08 02:34:40Z INFO Listener] UI Culture: en-US
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 02:34:40Z INFO Listener] Validating directory permissions for: '/Users/admin/actions-runner'
+[2026-10-08 02:34:40Z INFO CommandLineParser] Parse
+[2026-10-08 02:34:40Z INFO CommandLineParser] Parsing 1 args
+[2026-10-08 02:34:40Z INFO CommandLineParser] parsing argument
+[2026-10-08 02:34:40Z INFO CommandLineParser] HasArgs: False
+[2026-10-08 02:34:40Z INFO CommandLineParser] Adding Command: run
+[2026-10-08 02:34:40Z INFO Listener] Arguments parsed
+[2026-10-08 02:34:40Z INFO Runner] ExecuteCommand
+[2026-10-08 02:34:40Z INFO ConfigurationStore] currentAssemblyLocation: /Users/admin/actions-runner/bin/Runner.Listener.dll
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 02:34:40Z INFO ConfigurationStore] binPath: /Users/admin/actions-runner/bin
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 02:34:40Z INFO ConfigurationStore] RootFolder: /Users/admin/actions-runner
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 02:34:40Z INFO HostContext] Well known config file 'Runner': '/Users/admin/actions-runner/.runner'
+[2026-10-08 02:34:40Z INFO ConfigurationStore] ConfigFilePath: /Users/admin/actions-runner/.runner
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 02:34:40Z INFO HostContext] Well known config file 'MigratedRunner': '/Users/admin/actions-runner/.runner_migrated'
+[2026-10-08 02:34:40Z INFO ConfigurationStore] MigratedConfigFilePath: /Users/admin/actions-runner/.runner_migrated
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 02:34:40Z INFO HostContext] Well known config file 'Credentials': '/Users/admin/actions-runner/.credentials'
+[2026-10-08 02:34:40Z INFO ConfigurationStore] CredFilePath: /Users/admin/actions-runner/.credentials
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 02:34:40Z INFO HostContext] Well known config file 'MigratedCredentials': '/Users/admin/actions-runner/.credentials_migrated'
+[2026-10-08 02:34:40Z INFO ConfigurationStore] MigratedCredFilePath: /Users/admin/actions-runner/.credentials_migrated
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 02:34:40Z INFO HostContext] Well known config file 'Service': '/Users/admin/actions-runner/.service'
+[2026-10-08 02:34:40Z INFO ConfigurationStore] ServiceConfigFilePath: /Users/admin/actions-runner/.service
+[2026-10-08 02:34:40Z INFO CommandSettings] Flag 'help': 'False'
+[2026-10-08 02:34:40Z INFO CommandSettings] Flag 'version': 'False'
+[2026-10-08 02:34:40Z INFO CommandSettings] Flag 'commit': 'False'
+[2026-10-08 02:34:40Z INFO CommandSettings] Flag 'check': 'False'
+[2026-10-08 02:34:40Z INFO CommandSettings] Command 'configure': 'False'
+[2026-10-08 02:34:40Z INFO CommandSettings] Command 'remove': 'False'
+[2026-10-08 02:34:40Z INFO CommandSettings] Command 'warmup': 'False'
+[2026-10-08 02:34:40Z INFO ConfigurationManager] LoadSettings
+[2026-10-08 02:34:40Z INFO ConfigurationStore] IsConfigured()
+[2026-10-08 02:34:40Z INFO ConfigurationStore] IsConfigured: True
+[2026-10-08 02:34:40Z INFO ConfigurationManager] Is configured: True
+[2026-10-08 02:34:40Z INFO ConfigurationStore] Read setting file: 411 chars
+[2026-10-08 02:34:40Z INFO ConfigurationManager] Settings Loaded
+[2026-10-08 02:34:40Z INFO ConfigurationStore] IsServiceConfigured()
+[2026-10-08 02:34:40Z INFO ConfigurationStore] IsServiceConfigured: False
+[2026-10-08 02:34:40Z INFO CommandSettings] Command 'run': 'True'
+[2026-10-08 02:34:40Z INFO ConfigurationStore] IsConfigured()
+[2026-10-08 02:34:40Z INFO ConfigurationStore] IsConfigured: True
+[2026-10-08 02:34:40Z INFO ConfigurationManager] Is configured: True
+[2026-10-08 02:34:40Z INFO Runner] Could not parse the argument value '' for StartupType. Defaulting to Manual
+[2026-10-08 02:34:40Z INFO Runner] Set runner startup type - Manual
+[2026-10-08 02:34:40Z INFO CommandSettings] Flag 'once': 'False'
+[2026-10-08 02:34:40Z INFO CommandSettings] Flag 'once': 'False'
+[2026-10-08 02:34:40Z INFO Runner] RunAsync
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Work': '/Users/admin/actions-runner/_work'
+[2026-10-08 02:34:40Z INFO Runner] Validating directory permissions for: '/Users/admin/actions-runner/_work'
+[2026-10-08 02:34:40Z INFO ConfigurationManager] LoadMigratedSettings
+[2026-10-08 02:34:40Z INFO ConfigurationStore] IsMigratedConfigured()
+[2026-10-08 02:34:40Z INFO ConfigurationStore] IsMigratedConfigured: False
+[2026-10-08 02:34:40Z INFO Runner] Failed to load migrated settings: No migrated configuration found.
+[2026-10-08 02:34:40Z INFO Runner] Falling back to original .runner settings
+[2026-10-08 02:34:40Z INFO Runner] Using BrokerMessageListener
+[2026-10-08 02:34:40Z INFO BrokerMessageListener] Using provided settings
+[2026-10-08 02:34:40Z INFO BrokerMessageListener] {
+[2026-10-08 02:34:40Z INFO BrokerMessageListener] Loading Credentials
+[2026-10-08 02:34:40Z INFO ConfigurationStore] HasCredentials()
+[2026-10-08 02:34:40Z INFO ConfigurationStore] stored True
+[2026-10-08 02:34:40Z INFO CredentialManager] GetCredentialProvider
+[2026-10-08 02:34:40Z INFO CredentialManager] Creating type OAuth
+[2026-10-08 02:34:40Z INFO CredentialManager] Creating credential type: OAuth
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Bin': '/Users/admin/actions-runner/bin'
+[2026-10-08 02:34:40Z INFO HostContext] Well known directory 'Root': '/Users/admin/actions-runner'
+[2026-10-08 02:34:40Z INFO HostContext] Well known config file 'RSACredentials': '/Users/admin/actions-runner/.credentials_rsaparams'
+[2026-10-08 02:34:40Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 02:34:40Z INFO BrokerMessageListener] Attempt to create session.
+[2026-10-08 02:34:40Z INFO BrokerMessageListener] Connecting to the Broker Server...
+[2026-10-08 02:34:40Z INFO ConfigurationStore] HasCredentials()
+[2026-10-08 02:34:40Z INFO ConfigurationStore] stored True
+[2026-10-08 02:34:40Z INFO CredentialManager] GetCredentialProvider
+[2026-10-08 02:34:40Z INFO CredentialManager] Creating type OAuth
+[2026-10-08 02:34:40Z INFO CredentialManager] Creating credential type: OAuth
+[2026-10-08 02:34:40Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 02:34:40Z INFO BrokerMessageListener] VssConnection created
+[2026-10-08 02:34:40Z INFO BrokerMessageListener] Connecting to the Runner server...
+[2026-10-08 02:34:40Z INFO RunnerServer] EstablishVssConnection
+[2026-10-08 02:34:40Z INFO RunnerServer] Establish connection with 100 seconds timeout.
+[2026-10-08 02:34:40Z INFO GitHubActionsService] Starting operation Location.GetConnectionData
+[2026-10-08 02:34:40Z INFO RunnerServer] EstablishVssConnection
+[2026-10-08 02:34:40Z INFO RunnerServer] Establish connection with 60 seconds timeout.
+[2026-10-08 02:34:40Z INFO GitHubActionsService] Starting operation Location.GetConnectionData
+[2026-10-08 02:34:40Z INFO RunnerServer] EstablishVssConnection
+[2026-10-08 02:34:40Z INFO RunnerServer] Establish connection with 60 seconds timeout.
+[2026-10-08 02:34:40Z INFO GitHubActionsService] Starting operation Location.GetConnectionData
+[2026-10-08 02:34:41Z INFO GitHubActionsService] Finished operation Location.GetConnectionData
+[2026-10-08 02:34:41Z INFO GitHubActionsService] Finished operation Location.GetConnectionData
+[2026-10-08 02:34:41Z INFO GitHubActionsService] Finished operation Location.GetConnectionData
+[2026-10-08 02:34:42Z INFO BrokerMessageListener] VssConnection created
+[2026-10-08 02:34:42Z INFO Terminal] WRITE LINE: 
+[2026-10-08 02:34:42Z INFO Terminal] WRITE LINE: 
+[2026-10-08 02:34:42Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 02:34:42Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 02:34:43Z INFO GitHubActionsService] AAD Correlation ID for this token request: Unknown
+[2026-10-08 02:34:44Z INFO BrokerMessageListener] Session created.
+[2026-10-08 02:34:44Z INFO Terminal] WRITE LINE: Current runner version: '2.337.0'
+[2026-10-08 02:34:44Z INFO Terminal] WRITE LINE: 2026-10-08 02:34:44Z: Listening for Jobs
+[2026-10-08 02:34:44Z INFO JobDispatcher] Set runner/worker IPC timeout to 30 seconds.
+[2026-10-08 02:34:45Z INFO BrokerMessageListener] Acknowledging runner request '0b6f8f40-0107-50b3-8476-8cd899ee3a6a'.
+[2026-10-08 02:34:46Z INFO ConfigurationStore] HasCredentials()
+[2026-10-08 02:34:46Z INFO ConfigurationStore] stored True
+[2026-10-08 02:34:46Z INFO CredentialManager] GetCredentialProvider
+[2026-10-08 02:34:46Z INFO CredentialManager] Creating type OAuth
+[2026-10-08 02:34:46Z INFO CredentialManager] Creating credential type: OAuth
+[2026-10-08 02:34:46Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 02:34:46Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 02:34:46Z INFO RSAFileKeyManager] Loading RSA key parameters from file /Users/admin/actions-runner/.credentials_rsaparams
+[2026-10-08 02:34:47Z INFO GitHubActionsService] AAD Correlation ID for this token request: Unknown

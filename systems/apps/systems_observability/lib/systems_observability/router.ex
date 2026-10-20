@@ -10,7 +10,7 @@ defmodule SystemsObservability.Router do
       body = SystemsObservability.scrape()
       series = sample_series(body)
 
-      :telemetry.execute(
+      SystemsRuntime.Telemetry.execute(
         [:systems_observability, :series, :budget],
         %{value: series},
         %{}

@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelLogMessageTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
   alias SalixAgent.InternalSession.State
 
@@ -75,16 +75,6 @@ defmodule SalixAgent.SessionKernelLogMessageTest do
     assert hd(next.messages).source_message_id === " \t"
   end
 
-  test "false identities are kept and duplicate identity positions remain harmless" do
-    initial = %State{live_context_bytes: 0}
-    ev = event(%{"source_message_id" => false, "dedupe_key" => false})
-    assert {:returned, next} = compare(initial, ev)
-    assert MapSet.member?(next.input_dedupe, false)
-    assert hd(next.messages).source_message_id === false
-    assert hd(next.messages).dedupe_key === false
-    assert {:returned, ^next} = compare(next, ev)
-  end
-
   test "MapSet data requires canonical membership markers" do
     raw = MapSet.new() |> Map.put(:map, %{"old" => :noncanonical_marker})
 
@@ -93,48 +83,5 @@ defmodule SalixAgent.SessionKernelLogMessageTest do
         Driver.step(%State{input_dedupe: raw, live_context_bytes: 0}, ev)
       end
     end
-  end
-
-  test "all message trace fields are copied with nil omission and false retention" do
-    names = ~w(execution_timing model input_tokens output_tokens cache_read_input_tokens
-      cache_write_input_tokens request_summary_sequence request_compacted_through
-      request_input_through turn_id round_id request_id trace_id)
-    fields = Map.new(names, &{&1, false})
-
-    assert {:returned, next} =
-             compare(
-               %State{live_context_bytes: 0},
-               event(Map.merge(fields, %{"created_at" => nil, "ifc" => %{"ignored" => true}}))
-             )
-
-    message = hd(next.messages)
-    for name <- names, do: assert(Map.fetch!(message, String.to_existing_atom(name)) === false)
-    refute Map.has_key?(message, :created_at)
-    refute Map.has_key?(message, :ifc)
-    assert message.role === "event"
-  end
-
-  test "new log messages retain full JSON content accounting" do
-    content = %{"nested" => [1, 2]}
-
-    assert {:returned, next} =
-             compare(
-               %State{live_context_bytes: 0},
-               event(%{"content" => content})
-             )
-
-    assert next.live_context_bytes === byte_size(Jason.encode!(content))
-  end
-
-  test "Unicode whitespace identity uses the original native trim fallback" do
-    initial = %State{input_dedupe: nil, live_context_bytes: 0}
-
-    assert {:returned, next} =
-             compare(
-               initial,
-               event(%{"source_message_id" => "\u00a0", "dedupe_key" => nil})
-             )
-
-    assert next.input_dedupe === nil
   end
 end

@@ -1,3 +1,4 @@
+import { uiClock } from "@comma/ui/clock";
 export type WorkbenchEvidenceType =
   | "result"
   | "event"
@@ -25,7 +26,7 @@ export function appendEvidence(
     {
       ...entry,
       id: crypto.randomUUID(),
-      createdAt: new Date().toISOString(),
+      createdAt: new Date(uiClock.now()).toISOString(),
       input: redactEvidenceValue(entry.input),
       output: redactEvidenceValue(entry.output),
       error: redactEvidenceValue(entry.error),

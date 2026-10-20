@@ -5,10 +5,9 @@ defmodule SalixAgent.Billing do
 
   alias SalixAgent.{
     Control,
-    ExternalSessionStore,
+    RetiredSessions,
     InternalSession,
-    InternalSessionStore,
-    Templates
+    InternalSessionStore
   }
 
   alias SalixStore.{Keys, S3}
@@ -120,15 +119,12 @@ defmodule SalixAgent.Billing do
   end
 
   defp agent_round_billing_entries(agent) do
-    model = Templates.snapshot_for_record(agent)["model"] || agent["model"] || ""
+    model = SalixAgent.AgentModel.snapshot(agent)["model"] || ""
+    provider_type = agent["provider_type"] || "openai"
 
-    provider_type =
-      agent["provider_type"] || Templates.provider_type_from_config(agent["provider_config"])
-
-    case Control.runtime_kind(agent) do
-      "external" -> external_round_billing_entries(agent, model, provider_type)
-      _ -> internal_round_billing_entries(agent, model, provider_type)
-    end
+    with {:ok, internal} <- internal_round_billing_entries(agent, model, provider_type),
+         {:ok, retired} <- retired_round_billing_entries(agent, model, provider_type),
+         do: {:ok, internal ++ retired}
   end
 
   defp internal_round_billing_entries(agent, model, provider_type) do
@@ -142,16 +138,15 @@ defmodule SalixAgent.Billing do
     end
   end
 
-  defp external_round_billing_entries(agent, model, provider_type) do
-    agent_id = agent["agent_id"]
-
-    case ExternalSessionStore.list_sessions(agent_id) do
+  # Usage recorded by Sessions of the retired External Runtime.
+  defp retired_round_billing_entries(agent, model, provider_type) do
+    case RetiredSessions.list(agent) do
       {:ok, sessions} ->
         sessions
         |> Enum.reduce_while({:ok, []}, fn session, {:ok, entries} ->
-          case ExternalSessionStore.get_session(agent_id, session_value(session, "session_id")) do
-            {:ok, detail} ->
-              next = external_session_billing_entries(agent, detail, model, provider_type)
+          case RetiredSessions.all_records(agent, session["session_id"]) do
+            {:ok, records} ->
+              next = retired_session_billing_entries(session, records, model, provider_type)
               {:cont, {:ok, Enum.reverse(next, entries)}}
 
             {:error, _} = error ->
@@ -176,18 +171,13 @@ defmodule SalixAgent.Billing do
         {model, provider_type}
       )
 
-  defp external_session_billing_entries(agent, session, model, provider_type) do
-    provider_type =
-      get_in(session, ["runtime", "binding", "model_provider"]) ||
-        get_in(agent, ["runtime_config", "provider"]) ||
-        provider_type
+  defp retired_session_billing_entries(session, records, model, provider_type) do
+    provider_type = session["model_provider"] || session["runtime_provider"] || provider_type
 
-    session
-    |> session_value("events")
-    |> List.wrap()
+    records
     |> Enum.with_index(1)
     |> Enum.flat_map(fn {event, idx} ->
-      usage = external_event_usage(event)
+      usage = retired_event_usage(event)
       input = usage_prompt_tokens(usage)
       output = usage_completion_tokens(usage)
 
@@ -202,7 +192,7 @@ defmodule SalixAgent.Billing do
                 session_value(event, "model") ||
                   get_in(event, ["data", "model"]) ||
                   get_in(event, ["event", "params", "turn", "model"]) ||
-                  get_in(session, ["runtime", "binding", "model"]) ||
+                  session["model"] ||
                   model
               ),
             "provider_type" => to_string_or_empty(provider_type),
@@ -222,12 +212,12 @@ defmodule SalixAgent.Billing do
     end)
   end
 
-  defp external_event_usage(event) when is_map(event) do
+  defp retired_event_usage(event) when is_map(event) do
     session_value(event, "usage") || get_in(event, ["data", "usage"]) ||
       get_in(event, ["event", "params", "turn", "usage"]) || %{}
   end
 
-  defp external_event_usage(_event), do: %{}
+  defp retired_event_usage(_event), do: %{}
 
   defp site_llm_billing_entries(agent) do
     agent["agent_id"]
@@ -337,7 +327,7 @@ defmodule SalixAgent.Billing do
         context = SystemsObservability.Context.capture()
 
         objects
-        |> Task.async_stream(
+        |> SystemsClock.async_stream(
           fn %{key: key} ->
             SystemsObservability.Context.run(context, fn ->
               case get_record(key) do
@@ -407,5 +397,5 @@ defmodule SalixAgent.Billing do
   defp truthy_value?(value) when value in [true, "true", "1", 1, "yes", "on"], do: true
   defp truthy_value?(_value), do: false
 
-  defp now, do: System.system_time(:second)
+  defp now, do: SystemsClock.system_time(:second)
 end

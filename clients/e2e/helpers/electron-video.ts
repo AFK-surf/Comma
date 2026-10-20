@@ -1,7 +1,8 @@
 import type { TestInfo } from "@playwright/test";
 
 // electron.launch() does not inherit Playwright's context video policy.
-// Keep explicit launches aligned with the suite's first-retry CI recording.
+// Follow the suite's recording rule: CI records only with
+// PLAYWRIGHT_TRACE=1 or COMMA_PLAYWRIGHT_RECORD_ALL=1.
 export function electronVideoOptions(testInfo: TestInfo): {
   recordVideo?: { dir: string; size: { width: number; height: number } };
 } {
@@ -9,7 +10,7 @@ export function electronVideoOptions(testInfo: TestInfo): {
   if (
     process.env.CI &&
     process.env.COMMA_PLAYWRIGHT_RECORD_ALL !== "1" &&
-    testInfo.retry !== 1
+    process.env.PLAYWRIGHT_TRACE !== "1"
   ) {
     return {};
   }

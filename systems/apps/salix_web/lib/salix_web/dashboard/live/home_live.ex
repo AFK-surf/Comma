@@ -21,14 +21,12 @@ defmodule SalixWeb.Dashboard.HomeLive do
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <.home_card title="Cluster" desc="Nodes and capacity" icon="server" navigate="/dash/cluster" />
         <.home_card title="Tenants" desc="Tenants & API keys" icon="building-office" navigate="/dash/tenants" />
-        <.home_card title="Templates" desc="LLM agent templates" icon="template" navigate="/dash/templates" />
         <.home_card title="Agent Groups" desc="Groups, OAuth & router" icon="folder" navigate="/dash/groups" />
         <.home_card title="Agents" desc="Agents, sessions & chat" icon="cube" navigate="/dash/agents" />
         <.home_card title="Devices" desc="Connected and known devices" icon="bolt" navigate="/dash/environments" />
         <.home_card title="IM" desc="Provider connects & config" icon="chat" navigate="/dash/im" />
         <.home_card title="MCP" desc="Definitions & bindings" icon="plug" navigate="/dash/mcp" />
         <.home_card title="OAuth Apps" desc="Provider credentials" icon="key" navigate="/dash/oauth" />
-        <.home_card title="Config" desc="Agent defaults" icon="cog" navigate="/dash/agent-defaults" />
       </div>
     </div>
     """

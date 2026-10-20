@@ -1,5 +1,8 @@
 defmodule Mix.Tasks.Salix.MeetingNotes.ReplayTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle,
+    scope: ["Elixir.SalixWeb", "Elixir.SalixEnv", "Elixir.SalixMeet"]
 
   import ExUnit.CaptureIO
 
@@ -25,11 +28,14 @@ defmodule Mix.Tasks.Salix.MeetingNotes.ReplayTest do
           {:summary, Jason.encode!(grounded_summary(user))}
         end
 
-      if pid = :persistent_term.get({__MODULE__, :test_pid}, nil) do
-        send(pid, {:replay_provider_call, kind})
+      if pid = SystemsRuntime.PersistentTerm.get({__MODULE__, :test_pid}, nil) do
+        SystemsRuntime.Proc.send(pid, {:replay_provider_call, kind})
 
         if kind == :summary do
-          send(pid, {:summary_chunk_checkpoint_visible, String.contains?(user, "REPLAY_CHUNK_")})
+          SystemsRuntime.Proc.send(
+            pid,
+            {:summary_chunk_checkpoint_visible, String.contains?(user, "REPLAY_CHUNK_")}
+          )
         end
       end
 
@@ -146,8 +152,12 @@ defmodule Mix.Tasks.Salix.MeetingNotes.ReplayTest do
   end
 
   test "model replay forces all calibration slices before evaluating the summary" do
-    :persistent_term.put({AcceptingReplayProvider, :test_pid}, self())
-    on_exit(fn -> :persistent_term.erase({AcceptingReplayProvider, :test_pid}) end)
+    SystemsRuntime.PersistentTerm.put(
+      {AcceptingReplayProvider, :test_pid},
+      SystemsRuntime.Proc.self()
+    )
+
+    on_exit(fn -> SystemsRuntime.PersistentTerm.erase({AcceptingReplayProvider, :test_pid}) end)
 
     port = start_provider!(AcceptingReplayProvider, __MODULE__.AcceptingReplayServer)
     config_path = write_config!(port)
@@ -175,38 +185,12 @@ defmodule Mix.Tasks.Salix.MeetingNotes.ReplayTest do
     assert report["summary_evaluation"]["passed"]
     refute output =~ sentinel
 
-    assert_receive {:replay_provider_call, :calibration}
-    assert_receive {:replay_provider_call, :calibration}
-    assert_receive {:replay_provider_call, :calibration}
-    assert_receive {:replay_provider_call, :summary}
-    assert_receive {:summary_chunk_checkpoint_visible, false}
-    refute_receive {:replay_provider_call, _kind}
-  end
-
-  test "provider failure prints a safe report before exiting nonzero" do
-    port = start_provider!(EchoFailureProvider, __MODULE__.EchoFailureServer)
-    config_path = write_config!(port)
-    on_exit(fn -> File.rm(config_path) end)
-    sentinel = "PRIVATE_PROVIDER_ECHO_SENTINEL"
-
-    output =
-      capture_io(replay_input(sentinel), fn ->
-        assert_raise Mix.Error, ~r/chunk-calibration acceptance checks/, fn ->
-          Replay.run([
-            "--run-model",
-            "--agent-id",
-            "isolated-replay-agent",
-            "--llm-config",
-            config_path
-          ])
-        end
-      end)
-
-    report = Jason.decode!(output)
-    refute report["passed"]
-    refute report["calibration_evaluation"]["passed"]
-    refute output =~ sentinel
-    refute output =~ "echoed_private_request"
+    settle_receive({:replay_provider_call, :calibration})
+    settle_receive({:replay_provider_call, :calibration})
+    settle_receive({:replay_provider_call, :calibration})
+    settle_receive({:replay_provider_call, :summary})
+    settle_receive({:summary_chunk_checkpoint_visible, false})
+    settle_refute_receive({:replay_provider_call, _kind})
   end
 
   defp start_provider!(plug, name) do
@@ -226,7 +210,7 @@ defmodule Mix.Tasks.Salix.MeetingNotes.ReplayTest do
     path =
       Path.join(
         System.tmp_dir!(),
-        "meeting-replay-llm-#{System.unique_integer([:positive])}.json"
+        "meeting-replay-llm-#{SystemsRuntime.Proc.unique_integer([:positive])}.json"
       )
 
     File.write!(

@@ -168,7 +168,7 @@ defmodule SalixStore.Lease do
   end
 
   defp stale?(cur, now), do: is_nil(cur["lease_until"]) or cur["lease_until"] <= now
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
 
   defp store(key) do
     if TriageRecordStore.owned?(key), do: TriageRecordStore, else: S3

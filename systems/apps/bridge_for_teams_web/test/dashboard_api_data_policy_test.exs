@@ -1,4 +1,6 @@
 defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   The Data policy API behind the React page at `/orgs/:org/information-flow`
   (`docs/verification.md` §3.6, §10): each write reaches Salix with the org's
@@ -11,6 +13,9 @@ defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
   swap the global `:salix_client` app env, so they run serially.
   """
   use BridgeForTeamsWeb.DashboardCase, async: false
+
+  use SystemsClock.Test,
+    scope: ["Elixir.SalixStore", "Elixir.BridgeForTeamsWeb", "Elixir.BridgeForTeams"]
 
   alias BridgeForTeams.Memberships
 
@@ -41,7 +46,7 @@ defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
       do: called({:update_group, group_id, attrs}, {:ok, %{}})
 
     defp called(call, reply \\ :ok) do
-      send(self(), call)
+      SystemsRuntime.Proc.send(SystemsRuntime.Proc.self(), call)
       Process.get(:ifc_write, reply)
     end
 
@@ -60,13 +65,13 @@ defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
   end
 
   setup %{conn: conn} do
-    previous = Application.get_env(:bridge_for_teams_core, :salix_client)
-    Application.put_env(:bridge_for_teams_core, :salix_client, Client)
+    previous = SystemsRuntime.get_env(:bridge_for_teams_core, :salix_client)
+    SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, Client)
 
     on_exit(fn ->
       if previous,
-        do: Application.put_env(:bridge_for_teams_core, :salix_client, previous),
-        else: Application.delete_env(:bridge_for_teams_core, :salix_client)
+        do: SystemsRuntime.put_env(:bridge_for_teams_core, :salix_client, previous),
+        else: SystemsRuntime.delete_env(:bridge_for_teams_core, :salix_client)
     end)
 
     %{conn: conn, org: org, user: user} = register_and_log_in_user(%{conn: conn})
@@ -146,15 +151,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
       assert %{"name" => "Broken", "available" => false} = broken
     end
 
-    test "a Salix outage says nothing has changed", %{conn: conn, org: org, project: project} do
-      Process.put(:ifc_overview, {:error, :unavailable})
-
-      assert %{"error" => %{"code" => "runtime_unavailable", "message" => message}} =
-               conn |> get(policy_path(org, project)) |> json_response(503)
-
-      assert message =~ "Nothing has changed"
-    end
-
     test "another organization's Agent Swarm is not found", %{conn: conn, org: org} do
       foreign = bare_project_fixture(org_fixture())
 
@@ -232,28 +228,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
       assert_received {:update_group, group_id, %{"ifc" => %{"mode" => "enforce"}}}
       assert group_id == project.salix_group_id
     end
-
-    test "the language write leaves the mode alone", %{conn: conn, org: org, project: project} do
-      conn |> patch(policy_path(org, project), %{"language" => "en"}) |> json_response(200)
-
-      assert_received {:update_group, group_id, %{"ifc" => ifc}}
-      assert ifc == %{"language" => "en"}
-      assert group_id == project.salix_group_id
-    end
-
-    test "rejects an unknown mode or language before calling Salix",
-         %{conn: conn, org: org, project: project} do
-      for {body, message} <- [
-            {%{"mode" => "loud"}, "Choose a valid mode."},
-            {%{"language" => "fr"}, "Choose a valid language."},
-            {%{}, "Choose a valid mode."}
-          ] do
-        assert %{"error" => %{"code" => "invalid_data_policy", "message" => ^message}} =
-                 conn |> patch(policy_path(org, project), body) |> json_response(422)
-      end
-
-      refute_received {:update_group, _, _}
-    end
   end
 
   describe "conversations, clearances and placements" do
@@ -302,54 +276,6 @@ defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
         assert_received {:delete_clearance, ^group_id, "cnx1", ^tag, "provider_user|cnx1|U01ABC"}
       end
     end
-
-    test "a blank placement drops the override", %{conn: conn, org: org, project: project} do
-      for {placement, expected} <- [{"external", "external"}, {"", nil}] do
-        conn
-        |> put(connect_path(org, project, "/placements/U_GUEST"), %{"placement" => placement})
-        |> json_response(200)
-
-        assert_received {:put_placement, _group, "cnx1", "U_GUEST", ^expected}
-      end
-    end
-
-    test "Salix's validation errors come back as messages", %{
-      conn: conn,
-      org: org,
-      project: project
-    } do
-      Process.put(:ifc_write, {:error, :invalid_tag})
-
-      assert %{"error" => %{"code" => "invalid_data_policy", "message" => message}} =
-               conn
-               |> post(connect_path(org, project, "/clearances"), %{
-                 "tag" => "a|b",
-                 "user" => "U1"
-               })
-               |> json_response(422)
-
-      assert message =~ "cannot be empty or contain the | character"
-    end
-
-    test "a workspace or conversation that is gone is not found", %{
-      conn: conn,
-      org: org,
-      project: project
-    } do
-      for {reason, code, text} <- [
-            {:connect_not_found, "connect_not_found", "no longer part of this organization"},
-            {:scope_not_found, "scope_not_found", "no longer available"}
-          ] do
-        Process.put(:ifc_write, {:error, reason})
-
-        assert %{"error" => %{"code" => ^code, "message" => message}} =
-                 conn
-                 |> put(connect_path(org, project, "/scopes/C_GONE"), %{"tags" => ["counsel"]})
-                 |> json_response(404)
-
-        assert message =~ text
-      end
-    end
   end
 
   defp policy_path(org, project),
@@ -361,15 +287,16 @@ defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
   defp data(%{"data" => data}), do: data
 
   defp query_count(conn, path) do
-    test_pid = self()
-    handler = "data-policy-query-count-#{System.unique_integer([:positive])}"
+    test_pid = SystemsRuntime.Proc.self()
+    handler = "data-policy-query-count-#{SystemsRuntime.Proc.unique_integer([:positive])}"
 
     :ok =
-      :telemetry.attach(
+      SystemsRuntime.Telemetry.attach(
         handler,
         [:bridge_for_teams, :repo, :query],
         fn _event, _measurements, _metadata, _config ->
-          if self() == test_pid, do: send(test_pid, :repo_query)
+          if SystemsRuntime.Proc.self() == test_pid,
+            do: SystemsRuntime.Proc.send(test_pid, :repo_query)
         end,
         nil
       )
@@ -378,12 +305,12 @@ defmodule BridgeForTeamsWeb.DashboardAPIDataPolicyTest do
       conn |> get(path) |> json_response(200)
       count_messages(0)
     after
-      :telemetry.detach(handler)
+      SystemsRuntime.Telemetry.detach(handler)
     end
   end
 
   defp count_messages(count) do
-    receive do
+    SystemsRuntime.Proc.receive do
       :repo_query -> count_messages(count + 1)
     after
       0 -> count

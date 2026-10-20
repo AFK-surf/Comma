@@ -1,8 +1,9 @@
 defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
   @moduledoc """
   Builds the Agent Swarm Settings page payload and applies its writes for
-  `DashboardAPIController`: rename, archive and the Access list (explicit
-  swarm grants; grant, change role, remove).
+  `DashboardAPIController`: rename, the default Task model, the default place
+  to run Tasks, archive and the Access list (explicit swarm grants; grant,
+  change role, remove).
 
   Every swarm member reads; only swarm admins write. A refused write records a
   denied audit entry, as the LiveView page did. Archiving first checks that the
@@ -16,13 +17,26 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
   """
   use Gettext, backend: BridgeForTeamsWeb.Gettext
 
-  alias BridgeForTeams.{Accounts, Memberships, ProjectIMConnects, Projects, Schedules}
+  alias BridgeForTeams.{
+    Accounts,
+    Agents,
+    Memberships,
+    Models,
+    ProjectIMConnects,
+    Projects,
+    Schedules
+  }
+
   alias BridgeForTeamsWeb.Dashboard.CoreComponents
 
   @access_roles ~w(admin user)
   @access_limit 100
+  @platform_task_model %{"kind" => "platform", "tier" => "worker"}
 
-  @doc "The Settings payload: identity, runtime ids and the Access list."
+  @doc """
+  The Settings payload: identity, runtime ids, the default Task model, the
+  default place to run Tasks and the Access list.
+  """
   def page(org, project, role) do
     {:ok,
      %{
@@ -35,9 +49,143 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
          "runtime_id" => project.salix_group_id
        },
        "org_runtime_id" => org.salix_tenant_id,
+       "task_model" => task_model(org, project),
+       "task_place" => task_place(project),
        "access" => access_page(project, 0)
      }}
   end
+
+  # The default Task model and its picker, listed as the Agent Configure form
+  # lists models: "none set" (key "", choosing it clears the default: each Task
+  # runs the org default Task model), a current choice the org no longer offers
+  # (disabled), the platform model, then the org's offered choices grouped by
+  # vendor.
+  defp task_model(org, project) do
+    case Projects.default_task_model(project) do
+      {:ok, current} ->
+        current = current && Models.normalize(current)
+        offered = org_models(org)
+        platform = platform_row()
+
+        unset = org_default_label(org, offered)
+
+        {label, current_rows} =
+          cond do
+            is_nil(current) ->
+              {unset, []}
+
+            current == @platform_task_model ->
+              {platform["label"], []}
+
+            Enum.any?(offered, &(&1["choice"] == current)) ->
+              {Models.option(current, offered)["label"], []}
+
+            true ->
+              option = Models.option(current, [])
+
+              unavailable =
+                gettext("%{model} (current; unavailable for selection)", model: option["label"])
+
+              {option["label"],
+               [row(option["key"], current, unavailable, true, vendor_group(option["vendor"]))]}
+          end
+
+        %{
+          "status" => "ok",
+          "key" => if(current, do: Models.key(current), else: ""),
+          "label" => label,
+          "models" =>
+            [row("", nil, unset, false, gettext("Platform")) | current_rows] ++
+              [platform | Enum.map(offered, &offered_row/1)]
+        }
+
+      {:error, _reason} ->
+        %{"status" => "unavailable", "key" => "", "label" => nil, "models" => []}
+    end
+  end
+
+  # A swarm without its own default Task model runs the org's
+  # (`BridgeForTeams.Models.default_task_model/1`), else the platform model.
+  defp org_default_label(org, offered) do
+    model =
+      case org.default_task_model do
+        %{} = choice ->
+          Models.option(choice, offered)["label"]
+
+        nil ->
+          case Models.platform_default("worker") do
+            %{"label" => label} -> label
+            nil -> gettext("Platform model")
+          end
+      end
+
+    gettext("Organization default (%{model})", model: model)
+  end
+
+  # Where a Task runs when the Router names no place, and its name: Salix
+  # (also when none is set), the Cloud VM, or a station by its device's name.
+  # Admins choose another from the Workers' place picker (`…/agents/targets`).
+  defp task_place(project) do
+    case Projects.default_task_place(project) do
+      {:ok, place} ->
+        place = place || %{"kind" => "salix"}
+        %{"status" => "ok", "place" => place, "label" => place_label(project, place)}
+
+      {:error, _reason} ->
+        %{"status" => "unavailable", "place" => nil, "label" => nil}
+    end
+  end
+
+  defp place_label(_project, %{"kind" => "cloud_vm"}), do: gettext("The Cloud VM")
+
+  defp place_label(project, %{"kind" => "station", "device_id" => device_id}) do
+    {:ok, %{"stations" => stations}} = Agents.list_stations(project)
+
+    case Enum.find(stations, &(&1["device_id"] == device_id)) do
+      %{"name" => name} when is_binary(name) and name != "" -> name
+      _gone -> device_id
+    end
+  end
+
+  defp place_label(_project, _salix), do: gettext("Salix")
+
+  defp org_models(org) do
+    case Models.allowed(org, Models.catalog()) do
+      {:ok, options} -> options
+      {:error, _reason} -> []
+    end
+  end
+
+  defp platform_row do
+    label =
+      case Models.platform_default("worker") do
+        %{"label" => model} -> gettext("Platform model (%{model})", model: model)
+        nil -> gettext("Platform model")
+      end
+
+    row(
+      Models.key(@platform_task_model),
+      @platform_task_model,
+      label,
+      false,
+      gettext("Platform")
+    )
+  end
+
+  defp offered_row(option),
+    do:
+      row(option["key"], option["choice"], option["label"], false, vendor_group(option["vendor"]))
+
+  defp row(key, choice, label, disabled, group),
+    do: %{
+      "key" => key,
+      "choice" => choice,
+      "label" => label,
+      "disabled" => disabled,
+      "group" => group
+    }
+
+  defp vendor_group(vendor), do: Models.vendor_label(vendor) || gettext("Other")
 
   @doc "One later page of the Access list; `cursor` is a previous `next_cursor`."
   def access(project, params) do
@@ -86,6 +234,80 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
 
         {:error, _reason} ->
           {:error, 503, "write_failed", gettext("Could not rename the Agent Swarm."), %{}}
+      end
+    end
+  end
+
+  @doc """
+  Set the default Task model: `model` is the platform model or a model choice
+  the org offers now. Answers the page.
+  """
+  def set_task_model(org, user, project, role, params) do
+    with :ok <-
+           authorize(
+             role,
+             fn -> record_project_denied(project, user, "project.default_task_model_changed") end,
+             gettext("Only Agent Swarm admins can change the default Task model.")
+           ) do
+      case Projects.set_default_task_model(project, params["model"], audit_opts(user)) do
+        {:ok, _stored} ->
+          page(org, project, role)
+
+        {:error, reason} when reason in [:unavailable, :timeout, :unsupported] ->
+          write_failed(gettext("Could not save the default Task model."))
+
+        {:error, _refused} ->
+          {:error, 422, "invalid_model", gettext("Choose a model from the list before saving."),
+           %{}}
+      end
+    end
+  end
+
+  @doc """
+  Set the default place to run Tasks: `place` is `{kind: salix}`,
+  `{kind: cloud_vm}` while the swarm's Cloud VM is on, or
+  `{kind: station, device_id}` for one of its stations that takes Tasks.
+  Answers the page.
+  """
+  def set_task_place(org, user, project, role, params) do
+    with :ok <-
+           authorize(
+             role,
+             fn -> record_project_denied(project, user, "project.default_task_place_changed") end,
+             gettext("Only Agent Swarm admins can change the default place to run Tasks.")
+           ) do
+      case Projects.set_default_task_place(project, params["place"], audit_opts(user)) do
+        {:ok, _stored} ->
+          page(org, project, role)
+
+        {:error, reason} when reason in [:unavailable, :timeout, :unsupported] ->
+          write_failed(gettext("Could not save the default place to run Tasks."))
+
+        {:error, :cloud_vm_disabled} ->
+          {:error, 422, "cloud_vm_disabled",
+           gettext("The Cloud VM is turned off for this swarm."), %{}}
+
+        {:error, _refused} ->
+          {:error, 422, "invalid_place",
+           gettext("Choose Salix, the Cloud VM or a station that takes Tasks."), %{}}
+      end
+    end
+  end
+
+  @doc """
+  Clear the default Task model: each Task that names no model runs its
+  Worker's model again. Answers the page.
+  """
+  def clear_task_model(org, user, project, role) do
+    with :ok <-
+           authorize(
+             role,
+             fn -> record_project_denied(project, user, "project.default_task_model_changed") end,
+             gettext("Only Agent Swarm admins can change the default Task model.")
+           ) do
+      case Projects.clear_default_task_model(project, audit_opts(user)) do
+        {:ok, nil} -> page(org, project, role)
+        {:error, _reason} -> write_failed(gettext("Could not save the default Task model."))
       end
     end
   end
@@ -344,7 +566,11 @@ defmodule BridgeForTeamsWeb.DashboardSwarmSettings do
   defp write_failed(message), do: {:error, 503, "write_failed", message, %{}}
 
   defp audit_opts(user),
-    do: [actor_user_id: user.id, actor_label: actor_label(user), request_id: Ecto.UUID.generate()]
+    do: [
+      actor_user_id: user.id,
+      actor_label: actor_label(user),
+      request_id: SystemsRuntime.Proc.uuid()
+    ]
 
   defp actor_label(user), do: text_or_nil(user.email) || text_or_nil(user.name) || user.id
 

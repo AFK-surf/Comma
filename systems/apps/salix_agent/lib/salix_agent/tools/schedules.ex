@@ -6,7 +6,7 @@ defmodule SalixAgent.Tools.Schedules do
 
   `salix_agent` cannot depend on `salix_cluster` (dependency cycle), so the
   schedules implementation is resolved at runtime via
-  `Application.get_env(:salix_agent, :schedules_mod)` — in production this is
+  `SystemsRuntime.get_env(:salix_agent, :schedules_mod)` — in production this is
   `SalixCluster.Schedules`. When unset (`nil`), every action raises
   `"schedule manager unavailable on this node"`, which the tool dispatcher
   synthesizes into an error tool-result.
@@ -56,7 +56,7 @@ defmodule SalixAgent.Tools.Schedules do
   def defs do
     [
       {"schedule.create",
-       "Create a one-shot or recurring prompt for the calling agent and current session. Use run_at for one meeting/reminder time, cron for calendar recurrence, or interval_minutes for duration recurrence. Keep proactive Feishu delivery Router-owned: the prompt must contain the exact im_api.feishu.send_text connect_id, receive_id=chat_id, text, and structured mentions/mention_all to execute when it fires.",
+       "Create a one-shot or recurring prompt for the calling agent and current session.\n\nUse run_at for one meeting/reminder time, cron for calendar recurrence, or interval_minutes for duration recurrence. Keep proactive Feishu delivery Router-owned: the prompt must contain the exact im_api.feishu.send_text connect_id, receive_id=chat_id, text, and structured mentions/mention_all to execute when it fires.",
        &__MODULE__.create_schedule/2, @normal_auto_wait_seconds, @visible_write_opts},
       {"schedule.list", "List schedules owned by the current agent.",
        &__MODULE__.list_schedules/2, @normal_auto_wait_seconds},
@@ -217,7 +217,7 @@ defmodule SalixAgent.Tools.Schedules do
   # ---- helpers ----
 
   defp schedules_mod do
-    Application.get_env(:salix_agent, :schedules_mod) ||
+    SystemsRuntime.get_env(:salix_agent, :schedules_mod) ||
       raise "schedule manager unavailable on this node"
   end
 

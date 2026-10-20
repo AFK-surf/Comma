@@ -2,10 +2,9 @@ import { expect, test } from "@playwright/test";
 import { installBrowserTestSession } from "../../../e2e/helpers/browser-auth";
 import { chatSmokeWorkspace, startChatSmokeStub } from "../../../e2e/p0/chat-stub";
 
-// The greeting and the paragraph gap are both wall-clock and layout concerns, so
-// they are pinned in a real browser against a fixed UTC clock rather than in
-// jsdom. The model's own opener must never reach the heading, and must not be
-// left behind in the body either.
+// The paragraph gap and focus treatment are layout concerns, pinned in a real
+// browser against a fixed UTC clock. The greeting itself is covered by the
+// RecommendationRail tests.
 test.use({ timezoneId: "UTC" });
 
 const sources = [
@@ -89,44 +88,6 @@ async function openBriefing(page: import("@playwright/test").Page, baseUrl: stri
   await page.goto("/");
 }
 
-test("the briefing heading greets by time of day and drops the model's opener", async ({
-  page,
-}) => {
-  const stub = await startChatSmokeStub();
-
-  try {
-    await page.clock.setFixedTime(new Date("2026-08-27T09:15:00Z"));
-    await openBriefing(page, stub.baseUrl);
-
-    const heading = page.getByRole("heading", {
-      name: "Good morning, briefing-heading.",
-    });
-    await expect(heading).toBeVisible();
-
-    // The opener is neither promoted to the heading nor left in the body.
-    const summary = page.locator(".comma-recommendations-summary");
-    await expect(summary).not.toContainText(modelOpener);
-    await expect(summary).toContainText("A review is waiting today.");
-  } finally {
-    await stub.close();
-  }
-});
-
-test("the briefing heading follows the clock into the afternoon", async ({ page }) => {
-  const stub = await startChatSmokeStub();
-
-  try {
-    await page.clock.setFixedTime(new Date("2026-08-27T15:30:00Z"));
-    await openBriefing(page, stub.baseUrl);
-
-    await expect(
-      page.getByRole("heading", { name: "Good afternoon, briefing-heading." })
-    ).toBeVisible();
-  } finally {
-    await stub.close();
-  }
-});
-
 test("adjacent briefing paragraphs render as separated blocks", async ({ page }) => {
   const stub = await startChatSmokeStub();
 
@@ -151,6 +112,31 @@ test("adjacent briefing paragraphs render as separated blocks", async ({ page })
     await expect(slots.first()).toHaveCSS("margin-top", "0px");
     await expect(slots.nth(1)).toHaveCSS("margin-top", "8px");
     await expect(body).toHaveCSS("text-wrap", "pretty");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("the briefing scroll area takes keyboard focus without the browser's focus ring", async ({
+  page,
+}) => {
+  const stub = await startChatSmokeStub();
+
+  try {
+    await page.clock.setFixedTime(new Date("2026-08-27T09:15:00Z"));
+    await openBriefing(page, stub.baseUrl);
+
+    const viewport = page.locator(
+      ".comma-recommendations-scroll > .comma-scroll-area__viewport"
+    );
+    await expect(viewport).toBeVisible();
+
+    // A key press first, so the focus that follows matches :focus-visible and
+    // would draw the default ring around the whole rail.
+    await page.keyboard.press("Shift");
+    await viewport.focus();
+    await expect(viewport).toBeFocused();
+    await expect(viewport).toHaveCSS("outline-style", "none");
   } finally {
     await stub.close();
   }

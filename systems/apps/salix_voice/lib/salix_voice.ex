@@ -1,8 +1,10 @@
 defmodule SalixVoice do
+  require SystemsRuntime.Proc
+
   @moduledoc """
   Voice call core: admission and carrier attach (docs/messaging-voice.md).
 
-  A carrier route (Twilio webhook, or the `comma.voice.v1` WebSocket) calls
+  A carrier route (Twilio webhook, or `comma.voice.v1` over WebSocket/HTTPS) calls
   `admit/1` after it has authenticated and bound the caller, then its socket
   process calls `attach/3`. After attach the socket and the call exchange:
 
@@ -14,7 +16,7 @@ defmodule SalixVoice do
       `{:voice_call, :end, reason}`
 
   Each side monitors the other. The voice provider reaches a call with
-  `GenServer.call(pid, {:voice_provider, op, request})` after resolving the pid
+  `SystemsRuntime.Server.call(pid, {:voice_provider, op, request})` after resolving the pid
   from the `:pg` group `{:call, call_id}` in `SalixVoice.PG`.
   """
 
@@ -70,10 +72,13 @@ defmodule SalixVoice do
             call_id: call_id,
             carrier_call_id: carrier_call_id,
             settings: settings,
-            started_at_ms: System.system_time(:millisecond)
+            started_at_ms: SystemsClock.system_time(:millisecond)
           })
 
-        case DynamicSupervisor.start_child(SalixVoice.CallSupervisor, {CallActor, args}) do
+        case SystemsRuntime.DynamicSupervisor.start_child(
+               SalixVoice.CallSupervisor,
+               {CallActor, args}
+             ) do
           {:ok, _pid} -> {:ok, %{call_id: call_id, token: token}}
           {:error, _reason} -> {:error, :not_configured}
         end
@@ -83,13 +88,13 @@ defmodule SalixVoice do
 
   @doc false
   def authorize(attrs) do
-    case Application.get_env(:salix_voice, :metering_mod) do
+    case SystemsRuntime.get_env(:salix_voice, :metering_mod) do
       nil ->
         :ok
 
       mod ->
         directory =
-          Application.get_env(:salix_voice, :group_directory_mod, SalixIM.GroupDirectory)
+          SystemsRuntime.get_env(:salix_voice, :group_directory_mod, SalixIM.GroupDirectory)
 
         with {:ok, group} <- directory.get_group(attrs.group_id),
              :ok <- mod.authorize(Map.put(attrs, :owner_snapshot, group["billing_owner"])) do
@@ -113,11 +118,12 @@ defmodule SalixVoice do
   @spec attach(String.t(), pid(), keyword()) :: {:ok, pid(), map()} | {:error, term()}
   def attach(call_id_or_token, socket, opts \\ [])
 
-  def attach("vc_" <> _ = call_id, socket, opts) when is_pid(socket),
+  def attach("vc_" <> _ = call_id, socket, opts) when SystemsRuntime.Proc.is_process(socket),
     do: attach_pid(whereis(call_id), socket, Keyword.put(opts, :via, :call_id))
 
-  def attach(token, socket, opts) when is_binary(token) and is_pid(socket) do
-    case StreamToken.verify(token, System.system_time(:second)) do
+  def attach(token, socket, opts)
+      when is_binary(token) and SystemsRuntime.Proc.is_process(socket) do
+    case StreamToken.verify(token, SystemsClock.system_time(:second)) do
       {:ok, claims} ->
         attach_pid(whereis(claims["call_id"]), socket, Keyword.put(opts, :via, :token))
 
@@ -131,7 +137,7 @@ defmodule SalixVoice do
   defp attach_pid(nil, _socket, _opts), do: {:error, :call_not_found}
 
   defp attach_pid(pid, socket, opts) do
-    GenServer.call(pid, {:attach, socket, opts}, 5_000)
+    SystemsClock.call(pid, {:attach, socket, opts}, 5_000)
   catch
     :exit, _ -> {:error, :call_not_found}
   end
@@ -152,7 +158,7 @@ defmodule SalixVoice do
   def info(call_id) do
     case whereis(call_id) do
       nil -> {:error, :call_not_found}
-      pid -> GenServer.call(pid, :info, 5_000)
+      pid -> SystemsClock.call(pid, :info, 5_000)
     end
   catch
     :exit, _ -> {:error, :call_not_found}
@@ -169,7 +175,7 @@ defmodule SalixVoice do
   """
   @spec abandon(String.t(), atom()) :: :ok
   def abandon(call_id, reason) when is_atom(reason) do
-    if pid = whereis(call_id), do: send(pid, {:voice_abandon, nil, reason})
+    if pid = whereis(call_id), do: SystemsRuntime.Proc.send(pid, {:voice_abandon, nil, reason})
     :ok
   end
 
@@ -181,7 +187,7 @@ defmodule SalixVoice do
   def abandon_carrier_call(group_id, carrier_call_id, reason)
       when is_binary(group_id) and is_binary(carrier_call_id) and is_atom(reason) do
     for pid <- :pg.get_members(@pg, {:group_call, group_id}),
-        do: send(pid, {:voice_abandon, carrier_call_id, reason})
+        do: SystemsRuntime.Proc.send(pid, {:voice_abandon, carrier_call_id, reason})
 
     :ok
   end
@@ -192,9 +198,9 @@ defmodule SalixVoice do
   """
   @spec revoke_group(String.t()) :: :ok
   def revoke_group(group_id) when is_binary(group_id) do
-    if Process.whereis(@pg) do
+    if SystemsRuntime.Proc.whereis(@pg) do
       for pid <- :pg.get_members(@pg, {:group_call, group_id}),
-          do: send(pid, {:voice_group_revoked, group_id})
+          do: SystemsRuntime.Proc.send(pid, {:voice_group_revoked, group_id})
     end
 
     :ok
@@ -208,9 +214,9 @@ defmodule SalixVoice do
   """
   @spec revoke_caller(String.t(), String.t()) :: :ok
   def revoke_caller(group_id, e164) when is_binary(group_id) and is_binary(e164) do
-    if Process.whereis(@pg) do
+    if SystemsRuntime.Proc.whereis(@pg) do
       for pid <- :pg.get_members(@pg, {:group_call, group_id}),
-          do: send(pid, {:voice_caller_revoked, group_id, e164})
+          do: SystemsRuntime.Proc.send(pid, {:voice_caller_revoked, group_id, e164})
     end
 
     :ok
@@ -236,8 +242,8 @@ defmodule SalixVoice do
   @doc "A new call ID: `vc_` and 26 Crockford base32 characters, time-ordered."
   def new_call_id do
     <<value::unsigned-size(128)>> =
-      <<System.system_time(:millisecond)::unsigned-size(48),
-        :crypto.strong_rand_bytes(10)::binary>>
+      <<SystemsClock.system_time(:millisecond)::unsigned-size(48),
+        SystemsRuntime.Proc.random_bytes(10)::binary>>
 
     "vc_" <> crockford(value, 26, [])
   end
@@ -284,7 +290,7 @@ defmodule SalixVoice do
           "group_id" => attrs.group_id,
           "carrier_call_id" => carrier_call_id
         },
-        System.system_time(:second)
+        SystemsClock.system_time(:second)
       )
 
     {:ok, token}

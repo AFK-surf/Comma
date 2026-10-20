@@ -5,7 +5,7 @@ import {
   type ApplicationMenuItems,
 } from "@comma/native-bridge";
 import { useEffect, useRef } from "react";
-import { toast } from "@comma/ui";
+import { toast } from "@comma/ui/components/toast";
 import {
   isOnboardingOpen,
   subscribeOnboardingOpen,

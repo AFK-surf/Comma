@@ -6,7 +6,7 @@ defmodule SalixCalendar.Actor do
   retirement. Those belong to each `SalixCalendar.SourceActor`.
   """
 
-  use GenServer
+  use SystemsRuntime.Server
 
   alias SalixCalendar.{LocalItems, Placement, Recurrence, SchedulingLink}
   alias SalixStore.{CasRecord, Crypto, Ids, JSON, Keys}
@@ -27,13 +27,13 @@ defmodule SalixCalendar.Actor do
   def start_link(opts) do
     group_id = Keyword.fetch!(opts, :group_id)
     calendar_id = Keyword.fetch!(opts, :calendar_id)
-    GenServer.start_link(__MODULE__, opts, name: via(group_id, calendar_id))
+    SystemsRuntime.Server.start_link(__MODULE__, opts, name: via(group_id, calendar_id))
   end
 
   def key(group_id, calendar_id), do: {:calendar, group_id, calendar_id}
 
   defp via(group_id, calendar_id),
-    do: {:via, Registry, {SalixCalendar.Registry, key(group_id, calendar_id)}}
+    do: {:via, SystemsRuntime.Registry, {SalixCalendar.Registry, key(group_id, calendar_id)}}
 
   @impl true
   def init(opts) do
@@ -228,7 +228,7 @@ defmodule SalixCalendar.Actor do
       with {:ok, pid} <-
              Placement.ensure_source_started(state.group_id, state.calendar_id, source_id),
            {:ok, source_items} <-
-             GenServer.call(pid, {:list_link_items, link_id}, :infinity) do
+             SystemsRuntime.Server.call(pid, {:list_link_items, link_id}, :infinity) do
         {:cont, {:ok, source_items ++ items}}
       else
         {:error, _} = error -> {:halt, error}
@@ -312,7 +312,7 @@ defmodule SalixCalendar.Actor do
   defp text(_), do: {:error, :invalid_calendar_field}
 
   defp valid_time_zone(zone) do
-    case DateTime.shift_zone(DateTime.utc_now(), zone) do
+    case DateTime.shift_zone(SystemsClock.utc_now(), zone) do
       {:ok, _} -> :ok
       {:error, _} -> {:error, {:invalid_field, "default_time_zone"}}
     end
@@ -321,6 +321,6 @@ defmodule SalixCalendar.Actor do
   defp digest(value),
     do: value |> JSON.stringify() |> :erlang.term_to_binary([:deterministic]) |> Crypto.hex()
 
-  defp now_ms, do: System.system_time(:millisecond)
+  defp now_ms, do: SystemsClock.system_time(:millisecond)
   defp reply(result, state), do: {:reply, result, state}
 end

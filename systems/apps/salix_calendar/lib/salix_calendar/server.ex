@@ -15,7 +15,7 @@ defmodule SalixCalendar.Server do
          true <- map_size(identity) > 0,
          {:ok, calendar_id} <- ensure_calendar_id(group_id, identity),
          {:ok, pid} <- Placement.ensure_started(group_id, calendar_id) do
-      GenServer.call(pid, {:ensure_create, attrs}, @timeout)
+      SystemsRuntime.Server.call(pid, {:ensure_create, attrs}, @timeout)
     else
       false -> {:error, :invalid_calendar_owner_identity}
       {:error, _} = error -> error
@@ -28,7 +28,7 @@ defmodule SalixCalendar.Server do
     with {:ok, fingerprint} <- source_fingerprint(attrs),
          {:ok, source_id} <- call(group_id, calendar_id, {:attach_source, fingerprint}),
          {:ok, pid} <- Placement.ensure_source_started(group_id, calendar_id, source_id) do
-      GenServer.call(pid, {:ensure, attrs}, :infinity)
+      SystemsRuntime.Server.call(pid, {:ensure, attrs}, :infinity)
     end
   end
 
@@ -136,7 +136,7 @@ defmodule SalixCalendar.Server do
     with true <- Ids.valid_group_id?(group_id),
          true <- Ids.valid_calendar_id?(calendar_id),
          {:ok, pid} <- Placement.ensure_started(group_id, calendar_id) do
-      GenServer.call(pid, command, @timeout)
+      SystemsRuntime.Server.call(pid, command, @timeout)
     else
       false -> {:error, :invalid_calendar_owner_identity}
       {:error, _} = error -> error
@@ -147,12 +147,12 @@ defmodule SalixCalendar.Server do
 
   defp source_call(group_id, calendar_id, source_id, command) do
     with {:ok, pid} <- Placement.ensure_source_started(group_id, calendar_id, source_id),
-         do: GenServer.call(pid, command, :infinity)
+         do: SystemsRuntime.Server.call(pid, command, :infinity)
   end
 
   defp source_cast(group_id, calendar_id, source_id, command) do
     with {:ok, pid} <- Placement.ensure_source_started(group_id, calendar_id, source_id),
-         do: GenServer.cast(pid, command)
+         do: SystemsRuntime.Server.cast(pid, command)
   end
 
   defp selected_source_ids(group_id, calendar_id, nil), do: source_ids(group_id, calendar_id)

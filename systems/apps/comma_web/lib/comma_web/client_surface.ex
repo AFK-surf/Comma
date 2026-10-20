@@ -11,7 +11,10 @@ defmodule CommaWeb.ClientSurface do
     "/v1/comma/billing/stripe/checkout/return",
     "/v1/comma/billing/stripe/checkout/cancel",
     "/v1/comma/integrations/telegram/connect/callback",
-    "/v1/comma/integrations/telegram/webhook"
+    "/v1/comma/integrations/telegram/webhook",
+    "/v1/comma/integrations/linear/connect/callback",
+    "/v1/comma/integrations/linear/webhook",
+    "/v1/comma/integrations/imessage/photon/webhook"
   ]
   @public_auth_paths [
     "/v1/comma/auth/apple/attempt",
@@ -54,9 +57,9 @@ defmodule CommaWeb.ClientSurface do
   """
   @spec validate_configuration!() :: :ok
   def validate_configuration! do
-    allowed_origins = Application.fetch_env!(:comma_web, :allowed_origins)
-    web_cookie_origin = Application.get_env(:comma_web, :web_cookie_origin)
-    admin_cookie_origin = Application.get_env(:comma_web, :admin_cookie_origin)
+    allowed_origins = SystemsRuntime.fetch_env!(:comma_web, :allowed_origins)
+    web_cookie_origin = SystemsRuntime.get_env(:comma_web, :web_cookie_origin)
+    admin_cookie_origin = SystemsRuntime.get_env(:comma_web, :admin_cookie_origin)
 
     unless is_list(allowed_origins) and
              Enum.all?(allowed_origins, &valid_origin?/1) do
@@ -94,21 +97,21 @@ defmodule CommaWeb.ClientSurface do
 
   @spec allowed_web_origin?(String.t() | nil) :: boolean()
   def allowed_web_origin?(origin) when is_binary(origin) do
-    origin in Application.get_env(:comma_web, :allowed_origins, [])
+    origin in SystemsRuntime.get_env(:comma_web, :allowed_origins, [])
   end
 
   def allowed_web_origin?(_origin), do: false
 
   @spec web_cookie_origin?(String.t() | nil) :: boolean()
   def web_cookie_origin?(origin) when is_binary(origin) do
-    origin == Application.get_env(:comma_web, :web_cookie_origin)
+    origin == SystemsRuntime.get_env(:comma_web, :web_cookie_origin)
   end
 
   def web_cookie_origin?(_origin), do: false
 
   @spec admin_cookie_origin?(String.t() | nil) :: boolean()
   def admin_cookie_origin?(origin) when is_binary(origin) do
-    origin == Application.get_env(:comma_web, :admin_cookie_origin)
+    origin == SystemsRuntime.get_env(:comma_web, :admin_cookie_origin)
   end
 
   def admin_cookie_origin?(_origin), do: false
@@ -148,12 +151,15 @@ defmodule CommaWeb.ClientSurface do
 
   @spec admin_product_path?(String.t()) :: boolean()
   def admin_product_path?(path) when is_binary(path) do
-    path == "/v1/comma/admin/audit-events" or
+    path in [
+      "/v1/comma/admin/audit-events",
+      "/v1/comma/admin/lookup",
+      "/v1/comma/admin/stats/users"
+    ] or
       Enum.any?(
         [
           "/v1/comma/admin/users",
           "/v1/comma/admin/billing",
-          "/v1/comma/admin/model-selection-policy",
           "/v1/comma/admin/guest-mode",
           "/v1/comma/admin/oauth-clients",
           "/v1/comma/admin/compute/agent-vmm"

@@ -1,5 +1,5 @@
 defmodule CommaSSH.ModelTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   test "scroll rows refresh for new messages, width changes and help without losing the draft" do
     {model, []} =
@@ -58,13 +58,15 @@ defmodule CommaSSH.ModelTest do
   end
 
   test "task invalidations coalesce and owner loss clears the count without closing chat" do
+    # An unresolvable session cannot subscribe again, so the count stays clear.
     state = %{
+      token: nil,
       workspace: %{"default_group_id" => "group"},
-      task_owner: self(),
+      task_owner: SystemsRuntime.Proc.self(),
       tasks_dirty: false,
       refresh: nil,
       task_count: %{running: 2, partial: false},
-      ui: self()
+      ui: SystemsRuntime.Proc.self()
     }
 
     {:noreply, ^state} =
@@ -81,16 +83,22 @@ defmodule CommaSSH.ModelTest do
     Process.cancel_timer(next.refresh)
 
     {:noreply, lost} =
-      CommaSSH.Chat.handle_info({:DOWN, make_ref(), :process, self(), :normal}, next)
+      CommaSSH.Chat.handle_info(
+        {:DOWN, SystemsRuntime.Proc.make_ref(), :process, SystemsRuntime.Proc.self(), :normal},
+        next
+      )
 
     assert lost.task_count == nil
     assert_receive {:chat_ui, _, {:task_count, nil}}
     refute_receive {:chat_close, _}
 
-    stream = spawn(fn -> :ok end)
+    stream = SystemsRuntime.Proc.spawn(fn -> :ok end)
 
     assert {:noreply, %{stream: nil}} =
-             CommaSSH.Session.handle_info({:EXIT, stream, :normal}, %{stream: stream, ui: self()})
+             CommaSSH.Session.handle_info({:EXIT, stream, :normal}, %{
+               stream: stream,
+               ui: SystemsRuntime.Proc.self()
+             })
 
     assert_receive {:ui, {:task_count, nil}}
     assert_receive {:ui, {:notice, _}}
@@ -158,6 +166,12 @@ defmodule CommaSSH.ModelTest do
         "content" => "Internal status",
         "metadata" => %{"event_type" => "provider.status"}
       },
+      %{
+        "actor_type" => "system",
+        "kind" => "app_event",
+        "content" => [],
+        "metadata" => %{"event_type" => "mail.quiet"}
+      },
       %{"actor_type" => "agent", "content" => "The answer"}
     ]
 
@@ -169,6 +183,7 @@ defmodule CommaSSH.ModelTest do
     assert output =~ "The answer"
     refute output =~ "Private routing context"
     refute output =~ "Internal status"
+    refute output =~ "System"
   end
 
   test "a live transcript update cannot submit or erase a follow-up while a send is pending" do
@@ -186,8 +201,8 @@ defmodule CommaSSH.ModelTest do
     state = %{
       started: true,
       pending: nil,
-      backend: self(),
-      render: make_ref(),
+      backend: SystemsRuntime.Proc.self(),
+      render: SystemsRuntime.Proc.make_ref(),
       input: %CommaTUI.Input{},
       model: %CommaSSH.Model{stage: :chat, busy: false}
     }
@@ -197,13 +212,22 @@ defmodule CommaSSH.ModelTest do
     {:ok, state} = CommaSSH.Channel.handle_msg({:ui, {:notice, "Connection updated"}}, state)
 
     {:ok, state} =
-      CommaSSH.Channel.handle_ssh_msg({:ssh_cm, self(), {:data, 0, 0, "hello\r"}}, state)
+      CommaSSH.Channel.handle_ssh_msg(
+        {:ssh_cm, SystemsRuntime.Proc.self(), {:data, 0, 0, "hello\r"}},
+        state
+      )
 
     assert state.model.editor.text == "hello"
     refute_receive {:"$gen_cast", {:submit, _, _}}
 
     {:ok, state} = CommaSSH.Channel.handle_msg(:done, state)
-    {:ok, state} = CommaSSH.Channel.handle_ssh_msg({:ssh_cm, self(), {:data, 0, 0, "\r"}}, state)
+
+    {:ok, state} =
+      CommaSSH.Channel.handle_ssh_msg(
+        {:ssh_cm, SystemsRuntime.Proc.self(), {:data, 0, 0, "\r"}},
+        state
+      )
+
     assert_receive {:"$gen_cast", {:submit, :chat, "hello"}}
     assert state.model.editor.text == ""
     Process.cancel_timer(state.pending)
@@ -263,7 +287,11 @@ defmodule CommaSSH.ModelTest do
     assert CommaSSH.Model.view(next).footer =~ "Enter again"
 
     {:ok, ready} =
-      CommaSSH.Channel.handle_msg(:done, %{pending: nil, render: make_ref(), model: next})
+      CommaSSH.Channel.handle_msg(:done, %{
+        pending: nil,
+        render: SystemsRuntime.Proc.make_ref(),
+        model: next
+      })
 
     assert ready.model.editor.text == "draft"
     refute ready.model.busy
@@ -274,11 +302,14 @@ defmodule CommaSSH.ModelTest do
   end
 
   test "an expired previous operation cannot close the current channel" do
-    current = make_ref()
+    current = SystemsRuntime.Proc.make_ref()
     state = %{pending: current}
 
     assert {:ok, ^state} =
-             CommaSSH.Channel.handle_msg({:timeout, make_ref(), :operation_timeout}, state)
+             CommaSSH.Channel.handle_msg(
+               {:timeout, SystemsRuntime.Proc.make_ref(), :operation_timeout},
+               state
+             )
 
     assert {:ok, %{pending: nil}} =
              CommaSSH.Channel.handle_msg({:timeout, current, :operation_timeout}, %{pending: nil})

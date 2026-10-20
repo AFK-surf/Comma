@@ -1,10 +1,11 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
+import { spawnAirDropHelper, type SpawnAirDropHelper } from "./helper-process";
 
 const peerSchema = z.object({
   id: z.string().min(1).max(256),
@@ -86,6 +87,7 @@ interface AirDropSenderOptions {
   bindSession: () => SessionBoundary;
   platform?: string;
   resolveVfs?: (path: string) => Promise<string>;
+  spawn?: SpawnAirDropHelper;
 }
 
 /**
@@ -235,6 +237,11 @@ export class AirDropSender {
     return structuredClone(value);
   }
 
+  /** Resolves once no scan or send is running. */
+  idle() {
+    return this.#active?.done ?? Promise.resolve();
+  }
+
   async cancel(id: string) {
     const value = this.operation(id);
     if (this.#active?.value.operationId === id) {
@@ -313,10 +320,9 @@ export class AirDropSender {
 
   #spawn(active: ActiveOperation, args: string[]) {
     active.boundary.assertCurrent();
-    const child = spawn(
+    const child = (this.#options.spawn ?? spawnAirDropHelper)(
       this.#options.binaryPath!,
-      [...args, "--json", "--exit-on-stdin-close"],
-      { stdio: ["pipe", "pipe", "pipe"], shell: false }
+      [...args, "--json", "--exit-on-stdin-close"]
     );
     active.child = child;
     let killTimer: ReturnType<typeof setTimeout> | undefined;

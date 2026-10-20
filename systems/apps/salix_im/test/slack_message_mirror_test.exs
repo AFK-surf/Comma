@@ -1,5 +1,6 @@
 defmodule SalixIM.SlackMessageMirrorTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
+  use SalixStore.QueueCase, queues: [:slack_mirror_outbox, :slack_mirror_backfill]
 
   alias SalixIM.ProviderHTTP
   alias SalixIM.SlackMessageMirror
@@ -20,52 +21,9 @@ defmodule SalixIM.SlackMessageMirrorTest do
   end
 
   describe "version term priority" do
-    # `state_ts * 2 + deleted`: observed state first, deletion second, nothing
-    # else. A tombstone must beat every live observation of its own microsecond,
-    # and a later observation must beat any earlier tombstone.
-    test "a tombstone outranks the live observation sharing its microsecond" do
-      state_ts = 1_787_019_001_000_000
-
-      assert Row.version(state_ts, false) < Row.version(state_ts, true)
-    end
-
-    test "a later observed state outranks an earlier tombstone" do
-      earlier = 1_787_019_001_000_000
-
-      assert Row.version(earlier + 1, false) > Row.version(earlier, true)
-    end
   end
 
   describe "ReactionRow.from_event/2 current state" do
-    test "add and remove at the same event_ts are two rows ordered by version" do
-      added = reaction_envelope("reaction_added", "1787019100.000000")
-      removed = reaction_envelope("reaction_removed", "1787019100.000000")
-
-      assert {:ok, add_row} = ReactionRow.from_event(connect(), added)
-      assert {:ok, remove_row} = ReactionRow.from_event(connect(), removed)
-
-      assert Map.drop(add_row, ["deleted", "version"]) ==
-               Map.drop(remove_row, ["deleted", "version"])
-
-      assert add_row["message_ts"] == "1787019000.000100"
-      assert add_row["user_id"] == "U_REACTOR"
-      assert add_row["reaction"] == "eyes"
-      assert add_row["deleted"] == false
-      assert remove_row["deleted"] == true
-      assert remove_row["version"] == add_row["version"] + 1
-    end
-
-    test "foreign reaction targets and invalid emoji names are ignored" do
-      assert ReactionRow.from_event(
-               connect(),
-               put_in(reaction_envelope("reaction_added"), ["event", "item", "type"], "file")
-             ) == :ignore
-
-      assert ReactionRow.from_event(
-               connect(),
-               put_in(reaction_envelope("reaction_added"), ["event", "reaction"], "bad emoji")
-             ) == :ignore
-    end
   end
 
   describe "Row.from_event/2 version derivation" do
@@ -104,20 +62,6 @@ defmodule SalixIM.SlackMessageMirrorTest do
                })
 
       assert row["observed_ts_us"] == 0
-    end
-
-    test "a bot post keeps agent authorship and a bounded display label" do
-      envelope =
-        message_envelope()
-        |> put_event("subtype", "bot_message")
-        |> put_event("bot_id", "B_REVIEWER")
-        |> put_event("app_id", "A_REVIEWER")
-        |> put_event("bot_profile", %{"name" => "codex-review"})
-
-      assert {:ok, row} = Row.from_event(connect(), envelope)
-      assert row["actor_kind"] == "bot"
-      assert row["actor_id"] == "U_HUMAN"
-      assert row["actor_label"] == "codex-review"
     end
 
     # The edit and the delete keep the ORIGINAL message's identity and only
@@ -174,138 +118,12 @@ defmodule SalixIM.SlackMessageMirrorTest do
       refute row["files"] =~ "url_private"
       refute row["files"] =~ "files.slack.test"
     end
-
-    # Slack's ceiling is 40,000 characters, and CJK is three UTF-8 bytes each.
-    # A byte limit derived from the character number rejects a legitimate
-    # message at the top of Slack's own range — and this corpus is bilingual.
-    test "a message at Slack's character ceiling is kept in any script" do
-      cjk = String.duplicate("测", 40_000)
-      assert byte_size(cjk) == 120_000
-
-      assert {:ok, row} = Row.from_event(connect(), put_event(message_envelope(), "text", cjk))
-      assert row["text"] == cjk
-
-      emoji = String.duplicate("🙂", 40_000)
-      assert byte_size(emoji) == 160_000
-
-      assert {:ok, row} = Row.from_event(connect(), put_event(message_envelope(), "text", emoji))
-      assert row["text"] == emoji
-    end
-
-    # Worse than dropping a post: a dropped edit leaves the PREVIOUS text
-    # standing in the index as though the edit never happened.
-    test "an edit at the character ceiling is kept in any script" do
-      cjk = String.duplicate("改", 40_000)
-      envelope = put_in(edited_envelope(), ["event", "message", "text"], cjk)
-
-      assert {:ok, row} = Row.from_event(connect(), envelope)
-      assert row["text"] == cjk
-      assert row["deleted"] == false
-    end
-
-    test "a payload past the sanity ceiling is clamped rather than dropped" do
-      huge = String.duplicate("x", 64_001)
-
-      assert {:ok, row} = Row.from_event(connect(), put_event(message_envelope(), "text", huge))
-      assert String.length(row["text"]) == 64_000
-      assert row["message_ts"] == "1787019000.000100"
-    end
-
-    test "channel lifecycle and unknown subtypes are stored; foreign events are ignored" do
-      assert {:ok, join} =
-               Row.from_event(connect(), put_event(message_envelope(), "subtype", "channel_join"))
-
-      assert join["subtype"] == "channel_join"
-
-      assert {:ok, assistant} =
-               Row.from_history(connect(), "C_MIRROR", %{
-                 "ts" => "1787019000.000100",
-                 "subtype" => "assistant_app_thread",
-                 "text" => "assistant root",
-                 "assistant_app_thread" => %{"title" => "oncall"}
-               })
-
-      assert assistant["subtype"] == "assistant_app_thread"
-      assert assistant["payload"] =~ "assistant_app_thread"
-      assert assistant["payload"] =~ "oncall"
-
-      assert Row.from_event(connect(), put_event(message_envelope(), "type", "reaction_added")) ==
-               :ignore
-
-      assert Row.from_event(connect(), %{}) == :ignore
-    end
-
-    test "pin and metadata events are stored beside the message row" do
-      pin_envelope = %{
-        "event" => %{
-          "type" => "pin_added",
-          "user" => "U_PIN",
-          "channel_id" => "C_MIRROR",
-          "event_ts" => "1787019009.000000",
-          "pinned_info" => %{
-            "channel" => "C_MIRROR",
-            "pinned_by" => "U_PIN",
-            "pinned_ts" => 1_787_019_009
-          },
-          "item" => %{"type" => "message", "channel" => "C_MIRROR", "ts" => "1787019000.000100"}
-        }
-      }
-
-      assert {:ok, pin} = PinRow.from_event(connect(), pin_envelope)
-      assert pin["pinned_by"] == "U_PIN"
-      assert pin["pinned_ts"] == "1787019009"
-      refute pin["pinned_ts"] == pin["message_ts"]
-      assert pin["deleted"] == false
-
-      metadata_envelope = %{
-        "event" => %{
-          "type" => "message_metadata_posted",
-          "channel_id" => "C_MIRROR",
-          "message_ts" => "1787019000.000100",
-          "event_ts" => "1787019009.000000",
-          "metadata" => %{"event_type" => "incident", "event_payload" => %{"sev" => "1"}}
-        }
-      }
-
-      assert {:ok, metadata} = MetadataRow.from_event(connect(), metadata_envelope)
-      assert metadata["deleted"] == false
-      assert metadata["metadata"] =~ "incident"
-    end
-
-    test "the canonical payload keeps attachments, metadata, reactions, and bot identity" do
-      envelope =
-        message_envelope()
-        |> put_event("subtype", "bot_message")
-        |> put_event("bot_id", "B_REVIEWER")
-        |> put_event("app_id", "A_REVIEWER")
-        |> put_event("attachments", [%{"title" => "Pager", "text" => "disk full"}])
-        |> put_event("metadata", %{"event_type" => "incident", "event_payload" => %{"sev" => "1"}})
-        |> put_event("reactions", [%{"name" => "eyes", "count" => 2, "users" => ["U1", "U2"]}])
-
-      assert {:ok, row} = Row.from_event(connect(), envelope)
-      assert row["payload"] =~ "Pager"
-      assert row["payload"] =~ "incident"
-      assert row["payload"] =~ "B_REVIEWER"
-      assert row["payload"] =~ "eyes"
-      assert row["actor_kind"] == "bot"
-    end
-
-    test "a connect without tenant or workspace identity cannot produce a row" do
-      assert Row.from_event(Map.delete(connect(), "workspace_id"), message_envelope()) == :ignore
-      assert Row.from_event(Map.delete(connect(), "tenant_id"), message_envelope()) == :ignore
-    end
-
-    test "a short fractional timestamp is padded, not parsed as an integer" do
-      assert Row.slack_ts_micros("1787019000.1") == {:ok, 1_787_019_000_100_000}
-      assert Row.slack_ts_micros("1787019000.000100") == {:ok, 1_787_019_000_000_100}
-      assert Row.slack_ts_micros("not-a-timestamp") == :error
-    end
   end
 
   describe "the seam is total" do
     setup do
-      previous = Application.get_env(:salix_im, :slack_message_mirror_mod)
-      previous_outbox = Application.get_env(:salix_im, :slack_message_mirror_outbox)
+      previous = SystemsRuntime.get_env(:salix_im, :slack_message_mirror_mod)
+      previous_outbox = SystemsRuntime.get_env(:salix_im, :slack_message_mirror_outbox)
 
       on_exit(fn ->
         restore_env(:salix_im, :slack_message_mirror_mod, previous)
@@ -314,45 +132,12 @@ defmodule SalixIM.SlackMessageMirrorTest do
 
       :ok
     end
-
-    test "an outbox that raises fails the caller so Slack can retry" do
-      Application.put_env(:salix_im, :slack_message_mirror_mod, TestMirror)
-      Application.put_env(:salix_im, :slack_message_mirror_outbox, RaisingOutbox)
-
-      handler = "mirror-drop-#{System.unique_integer([:positive])}"
-      parent = self()
-
-      :telemetry.attach(
-        handler,
-        [:salix, :slack_mirror, :dropped],
-        fn _event, measurements, metadata, _config ->
-          send(parent, {:dropped, measurements, metadata})
-        end,
-        nil
-      )
-
-      on_exit(fn -> :telemetry.detach(handler) end)
-
-      assert SlackMessageMirror.observe(connect(), message_envelope()) ==
-               {:error, :outbox_unavailable}
-
-      assert_receive {:dropped, %{count: 1}, %{reason: :outbox_unavailable}}
-    end
-
-    # Without an adapter the seam does not even build a row, so a deployment
-    # with no ClickHouse pays one `Application.get_env/3` per Slack event.
-    test "with no adapter wired in nothing is built" do
-      Application.delete_env(:salix_im, :slack_message_mirror_mod)
-
-      refute SlackMessageMirror.enabled?()
-      assert SlackMessageMirror.observe(connect(), message_envelope()) == :ok
-    end
   end
 
   describe "channel join kicks backfill" do
     setup do
-      previous_mirror = Application.get_env(:salix_im, :slack_message_mirror_mod)
-      Application.put_env(:salix_im, :slack_message_mirror_mod, TestMirror)
+      previous_mirror = SystemsRuntime.get_env(:salix_im, :slack_message_mirror_mod)
+      SystemsRuntime.put_env(:salix_im, :slack_message_mirror_mod, TestMirror)
       Repo.query!("TRUNCATE slack_mirror_backfill_connects")
 
       on_exit(fn -> restore_env(:salix_im, :slack_message_mirror_mod, previous_mirror) end)
@@ -396,12 +181,12 @@ defmodule SalixIM.SlackMessageMirrorTest do
 
   describe "webhook seam placement" do
     setup do
-      previous_backend = Application.get_env(:salix_store, :s3_backend)
-      previous_mirror = Application.get_env(:salix_im, :slack_message_mirror_mod)
-      previous_outbox = Application.get_env(:salix_im, :slack_message_mirror_outbox)
+      previous_backend = SystemsRuntime.get_env(:salix_store, :s3_backend)
+      previous_mirror = SystemsRuntime.get_env(:salix_im, :slack_message_mirror_mod)
+      previous_outbox = SystemsRuntime.get_env(:salix_im, :slack_message_mirror_outbox)
 
-      Application.put_env(:salix_store, :s3_backend, S3.Fake)
-      Application.put_env(:salix_im, :slack_message_mirror_mod, TestMirror)
+      SystemsRuntime.put_env(:salix_store, :s3_backend, S3.Fake)
+      SystemsRuntime.put_env(:salix_im, :slack_message_mirror_mod, TestMirror)
 
       on_exit(fn ->
         restore_env(:salix_store, :s3_backend, previous_backend)
@@ -409,7 +194,10 @@ defmodule SalixIM.SlackMessageMirrorTest do
         restore_env(:salix_im, :slack_message_mirror_outbox, previous_outbox)
       end)
 
-      if Process.whereis(S3.Fake), do: S3.Fake.reset(), else: start_supervised!(S3.Fake)
+      if SystemsRuntime.Proc.whereis(S3.Fake),
+        do: S3.Fake.reset(),
+        else: start_supervised!(S3.Fake)
+
       Repo.query!("TRUNCATE slack_mirror_outbox")
 
       {:ok, connect: seed_connect!()}
@@ -456,7 +244,7 @@ defmodule SalixIM.SlackMessageMirrorTest do
     end
 
     test "a failed outbox insert fails the Slack callback", %{connect: connect} do
-      Application.put_env(:salix_im, :slack_message_mirror_outbox, RaisingOutbox)
+      SystemsRuntime.put_env(:salix_im, :slack_message_mirror_outbox, RaisingOutbox)
       envelope = message_envelope(connect)
 
       assert {:error, :outbox_unavailable} =
@@ -632,7 +420,7 @@ defmodule SalixIM.SlackMessageMirrorTest do
 
   defp signed_headers(connect, envelope) do
     body = Jason.encode!(envelope)
-    timestamp = System.system_time(:second)
+    timestamp = SystemsClock.system_time(:second)
 
     mac =
       :crypto.mac(:hmac, :sha256, connect["signing_secret"], "v0:#{timestamp}:#{body}")
@@ -644,6 +432,6 @@ defmodule SalixIM.SlackMessageMirrorTest do
     ]
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

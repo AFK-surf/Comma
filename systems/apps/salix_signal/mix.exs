@@ -43,6 +43,7 @@ defmodule SalixSignal.MixProject do
       # the account owner process (PLAN "Design rules").
       {:salix_store, in_umbrella: true},
       {:salix_cluster, in_umbrella: true},
+      {:systems_clock, in_umbrella: true},
       {:elixir_make, "~> 0.9", runtime: false},
       # ICE and TURN for call media (PLAN "Libraries").
       {:ex_ice, "~> 0.16.1"},

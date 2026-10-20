@@ -1,0 +1,6 @@
+[
+  {"case": "UTF-8 exceeds post limit", "unit": "中", "repeat": 11000, "format": "markdown"},
+  {"case": "ASCII exceeds post limit", "unit": "x", "repeat": 31000, "format": "markdown"},
+  {"case": "text exceeds 150 KiB", "unit": "x", "repeat": 154000, "format": "text"},
+  {"case": "double JSON escaping exceeds post limit", "unit": "\\", "repeat": 8000, "format": "markdown"}
+]

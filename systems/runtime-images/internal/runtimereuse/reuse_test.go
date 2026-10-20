@@ -17,7 +17,7 @@ func TestCopyReusesOnlyUnchangedApprovedInputs(t *testing.T) {
 	outputDir := t.TempDir()
 	inputs := runtimeinputs.Manifest{SchemaVersion: 1}
 	manifest := approvedManifest{SchemaVersion: 3}
-	for index, class := range []string{"external", "meeting", "shell"} {
+	for index, class := range []string{"station", "meeting", "shell"} {
 		inputDigest := digest(strings.Repeat(string(rune('a'+index)), 3))
 		body := []byte(class + "-approved-archive")
 		archiveSHA := sha256.Sum256(body)
@@ -40,7 +40,7 @@ func TestCopyReusesOnlyUnchangedApprovedInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(reused, ",") != "external,shell" {
+	if strings.Join(reused, ",") != "station,shell" {
 		t.Fatalf("reused = %v", reused)
 	}
 	for _, class := range reused {
@@ -60,16 +60,16 @@ func TestCopyTreatsChangedApprovedBytesAsACacheMiss(t *testing.T) {
 	writeManifest(t, approvedDir, approvedManifest{
 		SchemaVersion: 3,
 		Images: []approvedImage{{
-			Class: "external", InputDigest: inputDigest, ArchiveSize: 4,
+			Class: "shell", InputDigest: inputDigest, ArchiveSize: 4,
 			ArchiveSHA256: strings.Repeat("0", 64),
 		}},
 	})
-	if err := os.WriteFile(filepath.Join(approvedDir, "external.oci.tar"), []byte("evil"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(approvedDir, "shell.oci.tar"), []byte("evil"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	reused, err := Copy(runtimeinputs.Manifest{
 		SchemaVersion: 1,
-		Images:        []runtimeinputs.Image{{Class: "external", InputDigest: inputDigest}},
+		Images:        []runtimeinputs.Image{{Class: "shell", InputDigest: inputDigest}},
 	}, approvedDir, outputDir)
 	if err != nil || len(reused) != 0 {
 		t.Fatalf("reused = %v, error = %v", reused, err)

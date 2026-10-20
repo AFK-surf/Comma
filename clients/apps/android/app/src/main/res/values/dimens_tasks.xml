@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Radius tokens from docs/DESIGN.md §4, plus the task surfaces' own geometry.
+     Other spacing lives next to the code that lays out the prepared rows. -->
+<resources>
+    <dimen name="radius_xl">12dp</dimen>
+    <dimen name="radius_2xl">16dp</dimen>
+    <dimen name="radius_4xl">24dp</dimen>
+    <dimen name="task_pill_height">32dp</dimen>
+</resources>

@@ -1,5 +1,5 @@
 defmodule SalixWeb.VMAuthorizationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   setup do
     ensure_billing_repo_started()
@@ -230,16 +230,17 @@ defmodule SalixWeb.VMAuthorizationTest do
   end
 
   defp ensure_billing_repo_started do
-    unless Process.whereis(BillingCore.Repo) do
+    unless SystemsRuntime.Proc.whereis(BillingCore.Repo) do
       start_supervised!(BillingCore.Repo)
     end
   end
 
   defp future_expiry do
-    DateTime.utc_now()
+    SystemsClock.utc_now()
     |> DateTime.add(30, :day)
     |> DateTime.truncate(:second)
   end
 
-  defp unique_account_id(prefix), do: "#{prefix}_#{System.unique_integer([:positive])}"
+  defp unique_account_id(prefix),
+    do: "#{prefix}_#{SystemsRuntime.Proc.unique_integer([:positive])}"
 end

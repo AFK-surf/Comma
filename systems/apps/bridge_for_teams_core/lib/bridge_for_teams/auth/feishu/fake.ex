@@ -26,7 +26,9 @@ defmodule BridgeForTeams.Auth.Feishu.Fake do
   @impl true
   def authorize_url(sso, opts) do
     client_id = Map.get(sso, :client_id) || Map.get(sso, "client_id") || "fake-feishu-client"
-    state = "fake-feishu-state-" <> Integer.to_string(System.unique_integer([:positive]))
+
+    state =
+      "fake-feishu-state-" <> Integer.to_string(SystemsRuntime.Proc.unique_integer([:positive]))
 
     query =
       URI.encode_query(%{

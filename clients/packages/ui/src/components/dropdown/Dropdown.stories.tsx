@@ -78,6 +78,8 @@ const LongViewportEdgeDropdown = () => (
 );
 
 const meta = {
+  // Asserts popover geometry against the viewport and wheel scrolling.
+  tags: ["browser"],
   title: "Base components/Dropdown",
   parameters: {
     layout: "centered",

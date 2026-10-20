@@ -2,7 +2,7 @@ defmodule SalixSignalProto.CallMedia.KeysOracleTest do
   # Level 2 differential test for CRS-13 section 4: Comma's media key derivation
   # against the oracle's X25519 agreement and HKDF on the same random inputs.
   # Run with `--include signal_oracle` and COMMA_SIGNAL_ORACLE=host:port.
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   use ExUnitProperties
 
   alias SalixSignalProto.CallMedia.Keys
@@ -102,7 +102,7 @@ defmodule SalixSignalProto.CallMedia.KeysOracleTest do
   end
 
   defp oracle(socket, op, args) do
-    id = System.unique_integer([:positive])
+    id = SystemsRuntime.Proc.unique_integer([:positive])
     :ok = :gen_tcp.send(socket, [JSON.encode!(%{id: id, op: op, args: args}), "\n"])
     {:ok, line} = :gen_tcp.recv(socket, 0, 10_000)
     %{"id" => ^id} = response = JSON.decode!(line)

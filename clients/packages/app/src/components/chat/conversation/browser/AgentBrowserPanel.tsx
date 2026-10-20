@@ -1,8 +1,9 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import { useState } from "react";
-import { Button, GlobeIcon, ScrollArea } from "@comma/ui";
-import type { CommaApiClient } from "../../../../api";
-import type { BrowserBinding } from "../../../../api/browser";
+import { Button } from "@comma/ui/components/Button";
+import { GlobeIcon } from "@comma/ui/components/icons";
+import { ScrollArea } from "@comma/ui/components/scroll-area";
+import type { SessionBrowserBinding as BrowserBinding } from "@comma/core/contract";
 import {
   browserErrorText,
   browserStatusText,
@@ -36,22 +37,20 @@ export function AgentBrowserTrigger({
   );
 }
 
-/** Uses the existing main-owned /v1 transport. No renderer bearer or provider URL. */
+/** The core streams the browser (`browserView`); the panel draws it and sends the reader's control and input. */
 export function AgentBrowserPanel({
-  api,
   workspaceId,
   id,
   binding,
   onRefresh,
 }: {
-  api: CommaApiClient;
   workspaceId: string;
   id: string;
   binding: BrowserBinding;
   onRefresh: () => void;
 }) {
   const messages = useCommaMessages();
-  const session = useBrowserSession(api, workspaceId, binding, onRefresh);
+  const session = useBrowserSession(workspaceId, binding, onRefresh);
   const [text, setText] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
   return (

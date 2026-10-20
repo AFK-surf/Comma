@@ -72,7 +72,7 @@ Bridge For Teams 是面向团队的智能协作工作台。团队可以在同一
 组织 & 团队或公司的协作空间。成员、组织设置和 Agent Swarm 都归属于组织。 \\
 Agent Swarm & 围绕一个业务目标建立的工作空间，用来组织 Agent、任务、集成、设备和网站。 \\
 成员 & 被授权访问组织的用户。组织角色包括 owner、admin 和 member。 \\
-Agent & Agent Swarm 中负责接收请求或完成工作的智能助手。Router Agent 负责分配工作，Worker Agent 负责执行具体任务。 \\
+Agent & Agent Swarm 中负责接收请求并分配工作的智能助手（Router Agent）。任务在 Agent Swarm 的默认运行位置和默认任务模型上运行。 \\
 任务 & 团队交给 Agent 处理的工作。任务详情页保留后续消息和执行进展。 \\
 计划 & 按预定时间触发的工作，在任务详情中添加和编辑，在 \textbf{Tasks} 的 \textbf{Scheduled} 视图中查看和删除。 \\
 集成 & 把 Slack 或 Feishu 等消息入口连接到 Agent Swarm。 \\
@@ -120,7 +120,7 @@ Dashboard 的左侧边栏按使用范围分组：
   \item 顶部的组织切换器：列出你所属的组织，用于切换当前组织。
   \item \textbf{Workspace}：包括 \textbf{Overview}、\textbf{Agent Swarms}、\textbf{Fin}，以及按角色显示的 \textbf{Health}。
   \item 当前 Agent Swarm：包括 \textbf{Overview}、\textbf{Tasks}、\textbf{Agents}、\textbf{Devices} 和 \textbf{Settings}。
-  \item \textbf{Configure}：包括 \textbf{Plugins}、\textbf{Skills}、\textbf{Integrations} 和 \textbf{Connections}。
+  \item \textbf{Configure}：包括 \textbf{Plugins}、\textbf{Skills} 和 \textbf{Connections}。
   \item \textbf{Administration}：包括 \textbf{Members}、\textbf{Organization plugins} 和按角色显示的 \textbf{Settings}。
 \end{itemize}
 
@@ -175,11 +175,26 @@ member & 使用已获授权的 Agent Swarm 和任务，适合普通团队成员�
 
 \subsection{AI models}
 
-\textbf{AI models} 用于限制组织可使用的模型，并设置默认模型。调整前应确认现有 Agent 是否依赖即将停用的选项。
+\textbf{AI models} 用于限制组织可使用的模型，并设置默认模型：\textbf{Default Router model} 是新 Router 使用的模型；\textbf{Default Task model} 是没有设置自己默认任务模型的 Agent Swarm 中任务使用的模型。调整前应确认现有 Agent 是否依赖即将停用的选项。
 
 \subsection{Single sign-on}
 
 \textbf{Single sign-on} 用于配置组织登录方式。保存后，应使用测试帐号在新的浏览器会话中验证登录，再通知全体成员切换。
+
+每个组织只有一个登录连接，可以在 \textbf{Provider} 中选择通用 OIDC、Feishu 或 Lark。切换提供方会替换当前连接，并且需要重新填写新提供方的密钥。
+
+\textbf{使用 Lark 登录}：
+
+\begin{enumerate}
+  \item 在 Lark 开发者后台创建自建应用，或选用已有的应用，在凭证页面找到 \textbf{App ID} 和 \textbf{App Secret}。
+  \item 在 \textbf{Single sign-on} 的 \textbf{Provider} 中选择 \textbf{Lark}，填入 App ID 和 App Secret。App Secret 保存后不再显示；留空表示保留已保存的值。
+  \item 复制页面显示的 \textbf{Redirect URI}，在 Lark 开发者后台打开应用的“安全设置”，把这个地址添加到重定向 URL。
+  \item 登录本身不需要任何权限。如需记录成员的邮箱，请在 \textbf{Lark scopes} 中填写 \texttt{contact:user.email:readonly}，并在 Lark 开发者后台为应用开通这项权限。请在成员首次登录前确定权限范围。
+  \item 点击 \textbf{Save}，再点击 \textbf{Run checks}。检查只确认 App ID、App Secret 已保存并给出要登记的地址，不会向 Lark 验证密钥。
+  \item 在新的浏览器会话中打开组织的登录页，点击 \textbf{Sign in with Lark}，用测试帐号完成登录。
+\end{enumerate}
+
+这里保存的 App ID 和 App Secret 只用于登录，与 Agent Swarm 的 \textbf{Connections} 中连接的 Lark 机器人应用互不影响。Lark 帐号与 Feishu 帐号是不同的登录身份：组织从其他登录方式切换到 Lark 后，成员首次用 Lark 登录时会成为新成员，角色为 \textbf{Role on first sign-in} 中设置的角色，请在切换前安排好 owner 和 admin 的权限。
 
 \subsection{Integrations}
 
@@ -245,29 +260,13 @@ Feishu 应用先在组织级完成登记，再由 Agent Swarm 选择使用。这
 
 \section{Agents}
 
-\textbf{Agents} 列出当前 Agent Swarm 的 Router Agent 和 Worker Agent。\textbf{Group router} 标出当前接收消息的 Router；\textbf{Used by Triage} 标出 Triage 正在使用的 Worker，点击后打开 Slack 分诊中的 Worker 设置。点击 Agent 名称，会在右侧打开详情，显示角色、状态、运行位置、模型、运行时 ID 和系统提示词。详情页地址可以直接分享。
+\textbf{Agents} 列出当前 Agent Swarm 的 Router Agent。点击 Agent 名称，会在右侧打开详情，显示角色、状态、模型、运行时 ID 和系统提示词。详情页地址可以直接分享。
 
-\subsection{创建 Agent}
+Agent Swarm 不再使用 Worker Agent：任务在 Agent Swarm 的默认运行位置和默认任务模型上运行，二者在 Agent Swarm 的 \textbf{Settings} 中设置。以前创建的 Worker Agent 保留为历史记录，只能查看；进行中的任务和定时计划会照常完成。
 
-\begin{enumerate}
-  \item 进入 Agent Swarm，打开 \textbf{Agents}。
-  \item 点击 \textbf{New agent}。新建的 Agent 都是 Worker Agent。
-  \item 填写名称，并在 \textbf{Type} 中选择 \textbf{Internal} 或 \textbf{External agent}。
-  \item 选择 \textbf{External agent} 时，在 \textbf{Run on} 中选择 \textbf{Connected Device}（再选择设备和外部运行时）或 \textbf{Compute Workload}（再选择提供方和工作负载）。
-  \item 点击 \textbf{Create agent}。Agent 完成创建后，点击列表上的 \textbf{Refresh} 查看。
-\end{enumerate}
+\subsection{配置 Router Agent}
 
-\textbf{Internal} 类型由 Bridge For Teams 调度；外部 Agent 需要一个就绪的已连接设备运行时或 Compute 工作负载。若设备尚未准备好，请先完成本手册的“设备”章节。
-
-\subsection{配置、重新绑定和归档 Agent}
-
-以下操作在 Agent 详情中进行，只有 Agent Swarm 管理员可以使用：
-
-\begin{itemize}
-  \item \textbf{Configure}：选择模型并编辑系统提示词。不选择模型时，Agent 使用该角色的默认模型。修改 Router Agent 前，应确认消息仍能分配到合适的 Worker Agent。
-  \item \textbf{Rebind runtime}：把外部 Worker 的新会话改到另一个设备运行时或工作负载。进行中的任务保留当前运行时。
-  \item \textbf{Archive}：归档 Worker Agent。若该 Worker 正被 Triage 使用，确认框会说明影响；归档后，在选择其他 Worker 之前，Triage 不会分配新任务。Router Agent 不能归档。
-\end{itemize}
+Agent Swarm 管理员可以在 Router Agent 详情中点击 \textbf{Configure}，选择模型并编辑系统提示词。不选择模型时，Router 使用组织的默认 Router 模型。
 
 Router Agent 的详情中还显示 Router 标准会话。管理员可以点击 \textbf{Start new session} 开始新会话；当前工作会停止，原会话的历史记录仍可查看。
 
@@ -278,7 +277,8 @@ Router Agent 的详情中还显示 Router 标准会话。管理员可以点击 \
 \begin{enumerate}
   \item 在 Agent Swarm 中打开 \textbf{Tasks}。
   \item 点击 \textbf{New task}。
-  \item 填写目标和必要背景，选择页面提供的 Agent 或执行选项。
+  \item 填写目标和必要背景。
+  \item 在 \textbf{Run on} 中选择运行位置：Salix、Cloud VM（Agent Swarm 开启 Cloud VM 时）或一台已连接、可以运行任务的设备；在 \textbf{Model} 中选择模型。两项默认都是 Agent Swarm 的设置。Agent Swarm 的成员都可以创建任务。
   \item 提交后打开任务详情，查看进展。
   \item 需要补充信息时，在任务详情中继续发送消息。
 \end{enumerate}
@@ -289,16 +289,23 @@ Router Agent 的详情中还显示 Router 标准会话。管理员可以点击 \
 
 计划在任务详情中添加和编辑。在 \textbf{Tasks} 右上角的筛选中选择 \textbf{Scheduled}，可以查看当前 Agent Swarm 的全部定时计划，并删除不再需要的计划。创建或修改计划时，确认时区、触发时间、目标 Agent 和任务内容。
 
-\section{Integrations}
+\section{Connections}
 
-\textbf{Integrations} 管理 Agent Swarm 的消息入口。目前页面支持 Slack 和 Feishu。只有授权用户可以新增、启用、停用或删除集成。
+Agent Swarm 的 \textbf{Connections} 页面分为两部分：
+
+\begin{itemize}
+  \item \textbf{Messaging}：成员通过哪些消息渠道联系 Agent Swarm，以及 Agent Swarm 在哪里回复。目前支持 Feishu、Slack、QQ 和 Signal。
+  \item \textbf{Accounts}：Agent 代表团队使用的第三方帐号，包括 OAuth 帐号和通过 Composio 连接的应用。
+\end{itemize}
+
+Agent Swarm 的所有成员都可以查看此页面。只有 Agent Swarm 管理员可以新增、启用、停用、删除或断开连接。
 
 \subsection{连接 Feishu}
 
 \begin{enumerate}
   \item 请组织 owner 或 admin 先在 \textbf{Settings} → \textbf{Integrations} 的 \textbf{Feishu} 部分完成组织级配置，并启用 \textbf{Use for the group bot}。
-  \item 进入目标 Agent Swarm，打开 \textbf{Integrations}。
-  \item 选择 Feishu，选择组织已登记的 Feishu app，并填写 \textbf{Connect name}。
+  \item 进入目标 Agent Swarm，打开 \textbf{Connections}，找到 \textbf{Feishu} 部分。
+  \item 选择组织已登记的 Feishu app，填写 \textbf{Connect name}，点击 \textbf{Connect}。
   \item 按页面检查项，在 Feishu 管理后台完成权限、事件订阅和回调配置。
   \item 返回 Dashboard，点击 \textbf{Run checks}。
   \item 把机器人加入测试群并发送一条消息，确认任务或回复出现在预期的 Agent Swarm。
@@ -306,17 +313,84 @@ Router Agent 的详情中还显示 Router 标准会话。管理员可以点击 \
 
 如果页面提示没有可选的 Feishu app，请先返回组织设置完成登记。若 app 已连接其他 Agent Swarm，请确认影响后再调整。
 
+\textbf{飞书云文档}：Agent 以机器人身份读取和编辑飞书文档，包括知识库中的新版文档。机器人只能打开三类文档：分享给机器人所在群的文档、添加了该应用的文档，以及在组织内开放链接访问的文档。需要 Agent 处理某篇文档时，在文档的“分享”中把机器人所在的群添加为协作者。较早配置的 app 需要重新导入页面上的权限 JSON，并发布新版本，才能使用文档功能。电子表格、多维表格和旧版文档暂不支持。飞书妙记按相同规则分享给机器人所在的群后，Agent 可以读取妙记的摘要、待办、章节、文字记录和音视频，但不能编辑妙记。
+
 \subsection{连接 Slack}
 
 \begin{enumerate}
-  \item 进入 Agent Swarm 的 \textbf{Integrations}，选择 Slack。
-  \item 按侧边面板提供的 manifest 在 Slack 中创建应用。
-  \item 把页面要求的应用信息填回 Dashboard 并保存。
+  \item 进入 Agent Swarm 的 \textbf{Connections}，在 \textbf{Slack} 部分点击 \textbf{Add Slack app}。
+  \item 按对话框提供的 manifest 在 Slack 中创建应用。
+  \item 把页面要求的应用信息填回 Dashboard。在 \textbf{Deliver Slack messages to} 中选择 Router Agent（默认），或选择 \textbf{Tasks}：每个新的 Slack 话题会成为一个任务，并可为这些任务选择模型（不选时使用 Agent Swarm 的默认任务模型）。然后保存。
   \item 点击 \textbf{Open install URL}，在 Slack 中完成安装和授权。
   \item 把应用加入测试频道并发送消息，确认消息由预期 Agent Swarm 处理。
 \end{enumerate}
 
-应用权限或事件订阅发生变化后，请重新完成页面给出的检查。停用或删除集成前，先通知仍在使用对应群聊或频道的成员。
+应用权限或事件订阅发生变化后，请重新完成页面给出的检查。停用或删除 connect 前，先通知仍在使用对应群聊或频道的成员。
+
+\subsection{连接 QQ}
+
+QQ 通过 QQ 开放平台的机器人接入。每个机器人连接一个 Agent Swarm，成员可以在 QQ 群里 @机器人，也可以和机器人私聊。
+
+\begin{enumerate}
+  \item 在 QQ 开放平台创建机器人，在机器人的开发设置中找到 \textbf{AppID} 和 \textbf{AppSecret}。
+  \item 进入 Agent Swarm 的 \textbf{Connections}，在 \textbf{QQ} 部分点击 \textbf{Add QQ bot}，填入 AppID 和 AppSecret 并点击 \textbf{Connect}。
+  \item 复制页面显示的 \textbf{Callback address}。在 QQ 机器人管理端把事件接收方式选为 Webhook，保存这个回调地址，并订阅单聊事件、群聊事件、互动事件和群成员事件。
+  \item 把机器人加入测试群并 @它 发送一条消息，或直接私聊机器人，确认消息由预期的 Agent Swarm 处理。
+\end{enumerate}
+
+使用时请注意 QQ 平台的几项规则：
+
+\begin{itemize}
+  \item \textbf{回复时限}：在群里，机器人只能在被 @ 后 5 分钟内回复，最多 5 条。任务耗时更长时，需要群管理员在该群的机器人设置中打开“机器人主动在群聊内发言”，机器人才能稍后把结果发回群里。私聊中，机器人可以在 60 分钟内回复，之后也可以主动发消息，除非对方关闭了机器人的主动消息。
+  \item \textbf{消息不能修改}：QQ 不支持修改已发送的消息，机器人不会更新之前的消息，进展和结果都以新消息发出。
+  \item \textbf{群聊消息记录}：机器人收到的群消息会被记录，供 Agent 查看和搜索此前的对话。群默认只把 @机器人 的消息发给它。需要记录完整对话时，群管理员在该群的机器人设置中把“机器人可获取的群聊消息范围”改为“获取群内全部消息”；选择“获取 @机器人的最近 10 条消息”时，机器人只在被 @ 时看到此前的 10 条消息，这些消息不会被记录。切换范围时，QQ 会在群里提示全体成员。私聊不会被记录。
+  \item \textbf{指令菜单}：在输入框输入 \texttt{/} 会看到机器人的指令菜单。\texttt{/status}、\texttt{/compact} 和 \texttt{/help} 固定在菜单里，\texttt{/help} 会列出可用指令并介绍机器人能做的事。管理员可以在 \textbf{Connections} 的 QQ 机器人上点击 \textbf{Edit menu}，添加、修改或移除快捷项：每个快捷项有名称、说明、交给 Agent 的提示词、显示范围（私聊、群聊或两者），并可设为仅群管理员可点。保存后菜单立即生效。新连接的机器人默认带有群聊快捷项“总结群聊”。如果机器人在 QQ 机器人管理端已有自建的指令面板，QQ 会继续显示那个面板，需要先在管理端删除它。
+  \item \textbf{文件}：机器人可以发送图片和文件，单个文件不超过 200 MB；成员发到群里或私聊中的文件，机器人可以读取。QQ 不向机器人开放“群文件”列表，机器人读不到只存放在群文件里的文件，需要时请把文件发到群里。
+  \item \textbf{引用、@ 和按钮}：机器人可以引用某条消息回复、@群成员，也可以在消息下方附带按钮。成员点击按钮后，机器人会把这次点击当作该成员的答复继续处理。
+  \item \textbf{撤回}：机器人可以在发出后 2 分钟内撤回自己的消息。
+  \item \textbf{语音}：机器人收到语音消息时，会按 QQ 给出的识别文字理解内容。
+  \item \textbf{群信息}：机器人可以查看群名称、简介、人数，以及自己在群里是否为管理员、能否主动发言。成员加入、退出群和入群申请会记入群聊消息记录。
+  \item \textbf{需要向 QQ 申请的功能}：查看群成员列表目前只对 QQ 开放平台白名单内的机器人开放。机器人提示没有权限时，请由机器人所有者向 QQ 开放平台申请。
+\end{itemize}
+
+一个 QQ 机器人同一时间只能连接一个 Agent Swarm。更换 AppSecret 后，用同一个 AppID 再次添加即可更新凭证。
+
+\subsection{连接 Lark}
+
+Lark（国际版，open.larksuite.com）通过 Lark 开放平台的自建应用接入。每个应用连接一个 Agent Swarm，成员可以在 Lark 群里 @机器人，也可以和机器人私聊。Lark 应用在 Agent Swarm 的 Connections 页面用它自己的凭证连接，不使用组织 Integrations 页面里的飞书应用；同一个组织可以让一部分 Agent Swarm 连接飞书，另一部分连接 Lark。
+
+\begin{enumerate}
+  \item 在 Lark 开发者后台创建自建应用并添加机器人能力。在应用的凭证页面找到 \textbf{App ID} 和 \textbf{App Secret}，在“事件与回调”页面找到 \textbf{Verification Token} 或 \textbf{Encrypt Key}。
+  \item 进入 Agent Swarm 的 \textbf{Connections}，在 \textbf{Lark} 部分点击 \textbf{Add Lark app}，填入 App ID、App Secret，以及 Verification Token 和 Encrypt Key 中的至少一个，然后点击 \textbf{Connect}。
+  \item 复制页面显示的 \textbf{Request URL}。在 Lark 开发者后台的“事件与回调”中选择把事件发送到开发者服务器，保存这个请求地址，并订阅 \texttt{im.message.receive\_v1} 和 \texttt{im.message.recalled\_v1}。
+  \item 在 \textbf{Lark} 部分的 \textbf{Permission scopes} 一栏点击 \textbf{Copy JSON}，复制机器人需要的全部权限。在 Lark 开发者后台打开“权限管理”，选择批量导入，粘贴这段 JSON 并保存。
+  \item 创建应用版本并发布。权限和事件订阅在版本发布后才生效。
+  \item 回到 \textbf{Connections}，点击该应用一行的 \textbf{Run checks}。检查会向这个应用自己的请求地址发送一次验证请求，并核对消息路由和机器人身份。需要在 Lark 开发者后台或群里手动完成的步骤会列为待处理项，结果同时记入 \textbf{Health} 页面。
+  \item 把机器人加入测试群并 @它 发送一条消息，或直接私聊机器人，确认消息由预期的 Agent Swarm 处理。
+\end{enumerate}
+
+使用时请注意：
+
+\begin{itemize}
+  \item \textbf{群聊需要 @机器人}：群里没有 @机器人的消息不会交给 Agent 处理。机器人会在这条消息的话题里回复。为应用开通“获取群组中所有消息”权限并发布版本后，在机器人回复过的话题里继续发消息不用再 @它；没有这个权限时，Lark 只把 @机器人的消息发给应用，话题里的每条消息都要 @。
+  \item \textbf{消息记录}：机器人收到的消息会被记录，供 Agent 搜索此前的对话。记录从应用连接之后开始；更早的群聊内容由 Agent 直接向 Lark 读取。只有为应用开通“获取群组中所有消息”权限后，群里没有 @机器人的消息才会被记录。
+  \item \textbf{文件}：机器人可以发送图片（不超过 10 MB）和文件（不超过 30 MB），也可以读取成员发来的图片和文件。
+  \item \textbf{云文档和妙记}：Agent 以机器人身份读取和编辑 Lark 云文档、读取妙记，规则和飞书相同：机器人只能打开分享给它所在群的文档、添加了该应用的文档，或企业内凭链接可读的文档。应用不能把文档分享给部门，只能分享给群或个人。
+  \item \textbf{会议}：在群里 @机器人并附上 Google Meet 链接，或在已有会议链接的话题里请它入会；入会状态、会后纪要和文件发回同一话题。
+  \item \textbf{使用 Lark 登录}：组织可以让成员用 Lark 帐号登录 Dashboard，在 \textbf{Settings} 的 \textbf{Single sign-on} 中配置，与这里连接的机器人应用使用各自的凭证。
+\end{itemize}
+
+一个 Lark 应用同一时间只能连接一个 Agent Swarm。更换 App Secret 后，用同一个 App ID 再次添加即可更新凭证。
+
+\subsection{连接 Signal}
+
+\begin{enumerate}
+  \item 在 \textbf{Connections} 的 \textbf{Signal} 部分点击 \textbf{New code}。
+  \item 在 10 分钟内，用 Signal 把页面显示的消息发送到页面给出的号码。这条消息只显示一次。
+  \item 发送后，该个人或 Signal 群出现在聊天列表中。
+\end{enumerate}
+
+Signal 消息和通话音频会在 Comma 服务器上解密，以便 Agent 回复。要停止某个聊天，点击它旁边的 \textbf{Disconnect} 并确认；正在进行的通话会立即结束。
 
 \subsection{在 Feishu 群里使用 Google Calendar 与 Google Meet}
 
@@ -335,15 +409,12 @@ Router Agent 的详情中还显示 Router 标准会话。管理员可以点击 \
 
 普通定时提醒仍在任务详情中管理，并在 \textbf{Tasks} 的 \textbf{Scheduled} 视图中列出。Calendar 到点通知由管理员单独启用；没有明确需要时，不要再为同一会议配置一份重复提醒。
 
-\section{Connections}
-
-\textbf{Connections} 管理 Agent Swarm 可使用的第三方帐号授权。它与 Slack、Feishu 消息入口不同：集成负责接收消息，连接负责让 Agent 使用已授权服务。
+\subsection{连接第三方帐号}
 
 \begin{enumerate}
-  \item 在 Agent Swarm 中打开 \textbf{Connections}。
-  \item 选择要连接的服务。
-  \item 按页面提示完成授权。
-  \item 返回连接列表，确认状态可用。
+  \item 在 \textbf{Connections} 的 \textbf{Accounts} 部分，从 \textbf{Connect an account} 或 \textbf{Apps via Composio} 中选择要连接的服务。
+  \item 确认对话框中的说明后继续，按服务方页面提示完成授权。
+  \item 返回 \textbf{Connections}，确认帐号出现在 \textbf{Connected accounts} 中，或应用显示 \textbf{Connected}。
 \end{enumerate}
 
 如果没有所需服务，请联系组织 owner 或 admin 检查 \textbf{Settings} → \textbf{Integrations} 中的 \textbf{Composio} 配置。
@@ -354,8 +425,8 @@ Router Agent 的详情中还显示 Router 标准会话。管理员可以点击 \
 
 \begin{itemize}
   \item 组织的 \textbf{Plugins}：查看组织插件和来自 Comma 的插件，点击插件查看详情。owner 和 admin 可以新建和编辑组织插件。
-  \item Agent Swarm 的 \textbf{Plugins}：为当前 Agent Swarm 选择和配置插件。
-  \item Agent Swarm 的 \textbf{Skills}：查看技能说明，并按页面支持的方式启用或配置。
+  \item Agent Swarm 的 \textbf{Plugins}：按名称搜索插件，按来源和状态筛选，用开关启用或停用。管理员可以点击 \textbf{New project plugin} 新建仅供当前 Agent Swarm 使用的项目插件。点击插件名称打开插件页面，查看它的 MCP 服务器和凭据；管理员可以连接、重新连接或断开凭据，确认后跳转到服务方完成授权。消息类凭据点击 \textbf{Set up in Connections}，在 \textbf{Connections} 页面设置。
+  \item Agent Swarm 的 \textbf{Skills}：查看自定义技能和系统技能，点击技能名称阅读内容。管理员可以点击 \textbf{New skill} 新建技能，或点击 \textbf{Upload} 上传小于 200 KB 的 \texttt{.md} 文件（文件以 \texttt{SKILL.md} frontmatter 开头），也可以删除自定义技能。
 \end{itemize}
 
 启用前应确认插件或技能的用途和访问范围。停用前先检查依赖它的 Agent 和任务。
@@ -381,7 +452,21 @@ Router Agent 的详情中还显示 Router 标准会话。管理员可以点击 \
 
 设备不再使用时，在设备行的操作菜单中选择 \textbf{Disconnect} 或 \textbf{Delete}，确认后执行。执行前先检查仍在使用该设备的 Agent 和任务。设备状态异常时，先查看所选 Runner 是否可用，再尝试重新连接。
 
-列表第一行是由 Comma 管理的云电脑，Agent Swarm 管理员可以用该行的开关启用或停用它。同一页面还包括 \textbf{Runtime authentication}（登录外部运行时或绑定组织账号）、\textbf{Compute environments} 和 \textbf{Android setup}。
+同一页面还包括 \textbf{Compute environments} 和 \textbf{Android setup}。
+
+\subsection{云电脑}
+
+页面顶部的 \textbf{Cloud VM} 区域显示此 Agent Swarm 的云电脑：它的状态（例如 \textbf{Ready}、\textbf{Sleeping}、\textbf{Waking}）、运行位置（\textbf{Cloudflare} 或组织的某台 Runner），以及此 Agent Swarm 使用的 Runner。云电脑空闲时会休眠，有任务时自动唤醒。Agent Swarm 管理员可以用该区域的开关启用或停用云电脑。
+
+云电脑创建之前，管理员可以让它运行在组织的 Runner 上：
+
+\begin{enumerate}
+  \item 在 \textbf{Cloud VM} 区域点击 \textbf{Choose runner}。
+  \item 选择一台在线 \textbf{Runner}，点击 \textbf{Use this runner}。
+  \item Runner 状态显示为 \textbf{Installing}，安装完成后显示为 \textbf{Ready}。之后首次创建的云电脑会运行在这台 Runner 上。
+\end{enumerate}
+
+一个 Agent Swarm 只能使用一台 Runner。要改用另一台 Runner，先点击 \textbf{Remove runner}，再重新选择。Runner 的选择只在首次创建云电脑时生效；已有的云电脑不会移到其他 Runner 或 Cloudflare。没有选择 Runner 时，云电脑运行在 Cloudflare 上。
 
 \section{网站}
 
@@ -432,6 +517,27 @@ Agent Swarm 的 \textbf{Overview} 右侧的 \textbf{Websites} 面板列出当前
 
 如果“@机器人 入会”没有响应，请确认使用了 Feishu 的真实提及控件，并在机器人发送会议链接的原话题中回复。散会后只有摘要没有附件时，请检查文件是否超过 30 MB、是否被删除，或机器人是否缺少群文件权限。
 
+\subsection{Lark 没有收到回复}
+
+\begin{itemize}
+  \item 确认 Lark 开发者后台“事件与回调”中的请求地址与 \textbf{Connections} 页面显示的一致，并已订阅 \texttt{im.message.receive\_v1}。
+  \item 在 \textbf{Connections} 页面点击该应用一行的 \textbf{Run checks}，先处理第一项未通过的检查。
+  \item 确认应用已导入 \textbf{Copy JSON} 给出的权限，并且最新版本已经发布。
+  \item 更换过 Verification Token 或 Encrypt Key 后，请用同一个 App ID 重新添加，更新连接里保存的值。
+  \item 在群里需要 @机器人，并且机器人已被加入该群。
+  \item 确认连接处于启用状态，目标 Agent Swarm 中有可用 Agent。
+\end{itemize}
+
+\subsection{QQ 没有收到回复}
+
+\begin{itemize}
+  \item 确认 QQ 机器人管理端的事件接收方式为 Webhook，回调地址与 \textbf{Connections} 页面显示的一致，并已订阅单聊和群聊事件。按钮点击没有反应时，请确认已订阅互动事件。
+  \item 如果在 QQ 机器人管理端设置了 IP 白名单，请联系我们获取需要加入白名单的地址。
+  \item 在群里需要 @机器人；未认证的机器人只能被管理员加入自己担任群主的群。
+  \item 群里超过 5 分钟才有结果、却没有收到消息时，请群管理员打开“机器人主动在群聊内发言”。
+  \item 确认连接处于启用状态，目标 Agent Swarm 中有可用 Agent。
+\end{itemize}
+
 \subsection{Slack 没有收到回复}
 
 \begin{itemize}
@@ -469,7 +575,7 @@ Dashboard & Bridge For Teams 的网页管理界面。 \\
 Organization slug & 组织在链接和登录流程中使用的短标识。 \\
 Agent Swarm & 组织 Agent、任务、集成、设备和网站的工作空间。 \\
 Router Agent & 接收入口请求并分配工作的 Agent。 \\
-Worker Agent & 完成具体任务的 Agent。 \\
+Worker Agent & 以前完成具体任务的 Agent，现在只保留为历史记录。 \\
 Runner & 在 \textbf{Fin} 中管理、用于承载设备工作的机器。 \\
 Device & Agent 可使用的远程工作环境。 \\
 Integration & Slack 或 Feishu 等消息入口。 \\

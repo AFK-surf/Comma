@@ -28,10 +28,10 @@ defmodule SalixAgent.Notifier do
   defp impls do
     notifiers =
       :salix_agent
-      |> Application.get_env(:notifiers, [])
+      |> SystemsRuntime.get_env(:notifiers, [])
       |> List.wrap()
 
-    case Application.get_env(:salix_agent, :notifier) do
+    case SystemsRuntime.get_env(:salix_agent, :notifier) do
       nil -> if(notifiers == [], do: [__MODULE__.Noop], else: notifiers)
       notifier -> Enum.uniq([notifier | notifiers])
     end

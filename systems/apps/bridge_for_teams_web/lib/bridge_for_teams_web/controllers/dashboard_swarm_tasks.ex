@@ -5,29 +5,37 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
 
   Tasks are Salix conversations of the swarm's group, read one page of
   100 at a time, most recently updated first; `next_cursor` continues the
-  list. The first page also carries the swarm's agents (one bounded Salix
-  page) for the New task form. Search and the status filter run in the
-  browser over the pages loaded so far. When Salix is down, the first page
-  answers `status: "unavailable"`; a later page answers 503 so the browser
-  keeps its cursor, and a stale or malformed cursor answers 422.
+  list. Search and the status filter run in the browser over the pages
+  loaded so far. When Salix is down, the first page answers
+  `status: "unavailable"`; a later page answers 503 so the browser keeps its
+  cursor, and a stale or malformed cursor answers 422.
+
+  A new Task goes to the swarm's Task agent through its Router
+  (`BridgeForTeams.Conversations.create_project_task_conversation/4`). The
+  New task form chooses where it runs and its model from `targets/3`: inside
+  Salix, the swarm's Cloud VM while it is on, or a connected station that
+  takes Tasks, with the swarm's default place and default Task model marked.
 
   The Scheduled view lists the swarm's recurring schedules: one
   owner-filtered Salix read, cut to 200 rows. Schedules are created and
   edited in task detail; this page only deletes them.
 
-  Every swarm member reads; only swarm admins write. A refused write records a
-  denied audit entry, as the LiveView page did.
+  Every swarm member reads and creates Tasks, on any place of the swarm; only
+  swarm admins delete schedules. A refused write records a denied audit
+  entry, as the LiveView page did.
   """
   use Gettext, backend: BridgeForTeamsWeb.Gettext
 
-  alias BridgeForTeams.{Agents, Conversations, Observability, Schedules}
+  alias BridgeForTeams.{Agents, Conversations, Models, Observability, Projects, Schedules}
   alias BridgeForTeamsWeb.Dashboard.SchedulePresentation
+  alias BridgeForTeamsWeb.StationNotice
 
   @task_page 100
-  @agent_page_limit 500
   @schedule_limit 200
+  @task_roles ~w(admin user)
+  @platform_task_model %{"kind" => "platform", "tier" => "worker"}
 
-  @doc "One page of tasks; the first page adds the agents a new task can use."
+  @doc "One page of tasks."
   def page(org, project, role, params) do
     cursor = text(params["cursor"])
 
@@ -40,7 +48,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
           "status" => "ok"
         }
 
-        {:ok, if(cursor, do: data, else: Map.put(data, "agents", agents(project)))}
+        {:ok, data}
 
       {:error, :invalid_cursor} ->
         invalid_cursor()
@@ -60,8 +68,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
            "project" => public_project(project, role),
            "tasks" => [],
            "next_cursor" => nil,
-           "status" => "unavailable",
-           "agents" => agents(project)
+           "status" => "unavailable"
          }}
     end
   end
@@ -70,29 +77,27 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
     do:
       {:error, 422, "invalid_cursor", gettext("This page of tasks is no longer available."), %{}}
 
-  @doc "Create a task for one of the swarm's agents; answers its detail address."
+  @doc """
+  Create a Task with `title` and `content`; answers its detail address. It may
+  name where it runs (`runs_on`) and its model (`model`), as `targets/3` lists
+  them; without them the swarm's default place and default Task model apply.
+  An `agent_id` is ignored: the swarm's Task agent runs every Task.
+  """
   def create(org, user, project, role, params) do
-    agent_id = text(params["agent_id"])
-
-    if role == "admin" do
-      with {:ok, agents} <- agent_choices(project),
-           %{} = agent <- Enum.find(agents, &(&1.id == agent_id)),
-           {:ok, conversation} <-
-             Conversations.create_project_conversation(
+    if role in @task_roles do
+      with {:ok, attrs} <- task_attrs(params),
+           {:ok, router} <- router(project),
+           {:ok, %{"conversation_id" => id}} <-
+             Conversations.create_project_task_conversation(
                project,
-               agent,
-               %{"title" => text(params["title"]) || ""},
+               router,
+               attrs,
                audit_opts(user)
              ) do
-        id = conversation["conversation_id"]
         {:ok, %{"id" => id, "href" => task_href(org, project, id)}}
       else
-        nil ->
-          {:error, 422, "invalid_agent", gettext("Choose an agent for this task."),
-           %{"fields" => %{"agent_id" => [gettext("Choose an agent for this task.")]}}}
-
-        {:error, _reason} ->
-          {:error, 503, "write_failed", gettext("Could not create the task."), %{}}
+        {:error, _status, _code, _message, _details} = error -> error
+        {:error, reason} -> create_error(reason)
       end
     else
       record_denied(
@@ -102,10 +107,208 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
         "project_conversation.created",
         "project_conversation",
         "conversation",
-        %{"agent_id_configured" => not is_nil(agent_id)}
+        %{}
       )
 
-      forbidden(gettext("Only Agent Swarm admins can manage tasks."))
+      forbidden(gettext("Only Agent Swarm members can create tasks."))
+    end
+  end
+
+  defp task_attrs(params) do
+    content = text(params["content"])
+
+    cond do
+      is_nil(content) ->
+        message = gettext("Say what the task should do.")
+        {:error, 422, "invalid_task", message, %{"fields" => %{"content" => [message]}}}
+
+      not optional_object?(params["runs_on"]) or not optional_object?(params["model"]) ->
+        {:error, 422, "invalid_place",
+         gettext("Choose Salix, the Cloud VM or a station of this swarm."), %{}}
+
+      true ->
+        {:ok,
+         %{"title" => text(params["title"]) || "", "content" => content}
+         |> put_present("runs_on", params["runs_on"])
+         |> put_present("model", params["model"])}
+    end
+  end
+
+  defp optional_object?(value), do: is_nil(value) or is_map(value)
+
+  defp router(project) do
+    case Agents.current_router(project) do
+      {:ok, router} -> {:ok, router}
+      {:error, reason} when reason in [:unavailable, :timeout] -> {:error, :unavailable}
+      {:error, _reason} -> {:error, :router_not_configured}
+    end
+  end
+
+  # Salix refused the place or the model, or could not take the Task now. A
+  # Salix node of the release before answers unavailable: the browser asks
+  # again.
+  defp create_error({:runs_on, reason, _source}), do: place_error(reason)
+
+  defp create_error({:model, {:not_on_station, _models}}),
+    do:
+      {:error, 422, "invalid_model",
+       gettext("That station has no profile with this model enabled. Choose another model."), %{}}
+
+  defp create_error({:model, :model_not_allowed}),
+    do:
+      {:error, 422, "invalid_model",
+       gettext("The organization does not allow this model. Choose another model."), %{}}
+
+  defp create_error({:model, _reason}),
+    do: {:error, 422, "invalid_model", gettext("Choose a model from the list."), %{}}
+
+  defp create_error({:bad_request, _message}),
+    do:
+      {:error, 422, "task_refused",
+       gettext("The station did not take the task. Check the station and try again."), %{}}
+
+  defp create_error(reason)
+       when reason in [:router_not_configured, :router_changed],
+       do:
+         {:error, 409, "router_not_configured",
+          gettext("This Agent Swarm has no Router to create tasks yet."), %{}}
+
+  defp create_error(_unavailable),
+    do:
+      {:error, 503, "runtime_unavailable",
+       gettext("Could not create the task. Salix is unavailable — retry shortly."), %{}}
+
+  defp place_error(:cloud_vm_disabled),
+    do:
+      {:error, 422, "cloud_vm_disabled", gettext("The Cloud VM is turned off for this swarm."),
+       %{}}
+
+  defp place_error(:cloud_vm_not_running),
+    do:
+      {:error, 422, "cloud_vm_not_running",
+       gettext("The Cloud VM is not running. Start it on the Devices page, then try again."), %{}}
+
+  defp place_error(:device_offline),
+    do:
+      {:error, 422, "station_offline",
+       gettext("That station is not connected now. Choose another place."), %{}}
+
+  defp place_error({reason, _info}) when reason in [:device_needs_station, :station_outdated],
+    do: {:error, 422, Atom.to_string(reason), StationNotice.message(reason), %{}}
+
+  defp place_error(_reason),
+    do:
+      {:error, 422, "invalid_place",
+       gettext("Choose Salix, the Cloud VM or a station of this swarm."), %{}}
+
+  @doc """
+  The places and models the New task form offers. `places`: inside Salix
+  (always), the swarm's Cloud VM while it is on, and each connected station
+  that takes Tasks, each with the models it runs per coding agent (`models`)
+  and whether it is the swarm's default place (`default`). `models`: the
+  models a Task inside Salix can choose (the platform model and the org's
+  offered models), after the swarm's default Task model (key "").
+  """
+  def targets(org, project, role) do
+    if role in @task_roles do
+      {:ok, %{"stations" => stations, "cloud_vm" => cloud_vm}} = Agents.list_stations(project)
+
+      default =
+        case Projects.default_task_place(project) do
+          {:ok, %{} = place} -> place
+          _salix_or_unknown -> %{"kind" => "salix"}
+        end
+
+      places =
+        [%{"id" => "salix", "kind" => "salix", "label" => gettext("Salix"), "models" => %{}}] ++
+          if(cloud_vm["enabled"],
+            do: [
+              %{
+                "id" => "cloud_vm",
+                "kind" => "cloud_vm",
+                "label" => gettext("The Cloud VM"),
+                "models" => cloud_vm["task_models"]
+              }
+            ],
+            else: []
+          ) ++
+          for station <- stations,
+              station["station"] == "ready" and station["status"] == "connected" do
+            %{
+              "id" => station["device_id"],
+              "kind" => "station",
+              "device_id" => station["device_id"],
+              "label" => device_label(station),
+              "models" => station["task_models"]
+            }
+          end
+
+      {:ok,
+       %{
+         "places" => Enum.map(places, &Map.put(&1, "default", default?(&1, default))),
+         "models" => salix_models(org, project)
+       }}
+    else
+      forbidden(gettext("Only Agent Swarm members can create tasks."))
+    end
+  end
+
+  defp default?(%{"kind" => "station", "device_id" => id}, %{"kind" => "station"} = default),
+    do: default["device_id"] == id
+
+  defp default?(%{"kind" => kind}, %{"kind" => kind}), do: kind != "station"
+  defp default?(_place, _default), do: false
+
+  defp device_label(station) do
+    name = text(station["name"]) || station["device_id"]
+    if name == station["device_id"], do: name, else: "#{name} / #{station["device_id"]}"
+  end
+
+  # The swarm's default Task model first (key "": the Task names no model),
+  # then the platform model and the org's offered models.
+  defp salix_models(org, project) do
+    offered = offered(org)
+
+    default_label =
+      case Projects.default_task_model(project) do
+        {:ok, nil} -> platform_label()
+        {:ok, @platform_task_model} -> platform_label()
+        {:ok, choice} -> Models.option(choice, offered)["label"]
+        {:error, _reason} -> nil
+      end
+
+    default =
+      %{
+        "key" => "",
+        "choice" => nil,
+        "label" =>
+          if(default_label,
+            do: gettext("Swarm default (%{model})", model: default_label),
+            else: gettext("Swarm default")
+          )
+      }
+
+    platform = %{
+      "key" => Models.key(@platform_task_model),
+      "choice" => @platform_task_model,
+      "label" => platform_label()
+    }
+
+    [default, platform] ++
+      Enum.map(offered, &%{"key" => &1["key"], "choice" => &1["choice"], "label" => &1["label"]})
+  end
+
+  defp platform_label do
+    case Models.platform_default("worker") do
+      %{"label" => model} -> gettext("Platform model (%{model})", model: model)
+      nil -> gettext("Platform model")
+    end
+  end
+
+  defp offered(org) do
+    case Models.allowed(org, Models.catalog()) do
+      {:ok, options} -> options
+      {:error, _reason} -> []
     end
   end
 
@@ -185,30 +388,6 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
     end
   end
 
-  # One bounded Salix page. More agents than the page holds is refused rather
-  # than guessed, as on the LiveView page.
-  defp agent_choices(project) do
-    case Agents.page_agents(project, limit: @agent_page_limit) do
-      {:ok, %{items: items, next_cursor: nil}} -> {:ok, items}
-      {:ok, _page} -> {:error, :agent_page_required}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp agents(project) do
-    case agent_choices(project) do
-      {:ok, agents} ->
-        %{
-          "status" => "ok",
-          "items" =>
-            Enum.map(agents, &%{"id" => &1.id, "name" => &1.salix["name"] || &1.salix_agent_id})
-        }
-
-      {:error, _reason} ->
-        %{"status" => "unavailable", "items" => []}
-    end
-  end
-
   defp public_task(conversation, org, project) do
     id = conversation["conversation_id"]
 
@@ -260,7 +439,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
         resource_label: project.name,
         result: "denied",
         reason: :forbidden,
-        request_id: Ecto.UUID.generate(),
+        request_id: SystemsRuntime.Proc.uuid(),
         surface: surface,
         metadata:
           Map.merge(
@@ -279,7 +458,11 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
   defp forbidden(message), do: {:error, 403, "forbidden", message, %{}}
 
   defp audit_opts(user),
-    do: [actor_user_id: user.id, actor_label: actor_label(user), request_id: Ecto.UUID.generate()]
+    do: [
+      actor_user_id: user.id,
+      actor_label: actor_label(user),
+      request_id: SystemsRuntime.Proc.uuid()
+    ]
 
   defp actor_label(user), do: text(user.email) || text(user.name) || user.id
 
@@ -304,4 +487,7 @@ defmodule BridgeForTeamsWeb.DashboardSwarmTasks do
   end
 
   defp text(_value), do: nil
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
 end

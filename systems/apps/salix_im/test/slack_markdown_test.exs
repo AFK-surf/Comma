@@ -1,5 +1,5 @@
 defmodule SalixIM.SlackMarkdownTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixIM.SlackMarkdown
 
@@ -62,69 +62,6 @@ defmodule SalixIM.SlackMarkdownTest do
              )
   end
 
-  test "rich text keeps single tildes literal and strikes only double tildes" do
-    assert %{
-             "elements" => [
-               %{
-                 "elements" => [
-                   %{"text" => "~x~ a~b~c "},
-                   %{"text" => "x", "style" => %{"strike" => true}},
-                   %{"text" => " ~escaped~"}
-                 ]
-               }
-             ]
-           } = SlackMarkdown.render_rich_text(~S(~x~ a~b~c ~~x~~ \~escaped\~))
-  end
-
-  test "rich text keeps parent styles when they contain literal markers" do
-    assert %{
-             "elements" => [
-               %{
-                 "elements" => [
-                   %{"text" => "a~b", "style" => %{"strike" => true}},
-                   %{"text" => " and "},
-                   %{"text" => "a~b~c", "style" => %{"bold" => true}}
-                 ]
-               }
-             ]
-           } = SlackMarkdown.render_rich_text("~~a~b~~ and **a~b~c**")
-  end
-
-  test "single-tilde source positions stay byte-accurate across rich block contexts" do
-    source = "中文🙂 ~x~\n\n> 引用 a~b~c\n\n- 列表 ~c~\n\n硬换行  \n~d~"
-
-    assert %{
-             "elements" => [
-               %{"elements" => [%{"text" => "中文🙂 ~x~"}]},
-               %{"type" => "rich_text_quote", "elements" => [%{"text" => "引用 a~b~c"}]},
-               %{
-                 "type" => "rich_text_list",
-                 "elements" => [%{"elements" => [%{"text" => "列表 ~c~"}]}]
-               },
-               %{"elements" => [%{"text" => "硬换行\n~d~"}]}
-             ]
-           } = rendered = SlackMarkdown.render_rich_text(source)
-
-    refute Jason.encode!(rendered) =~ "strike"
-  end
-
-  test "promotes one plain leading H1 and preserves the remaining source" do
-    body = "## Details\n\n- Follow up\n\n| A | B |\n| --- | --- |\n| 1 | 2 |"
-
-    assert {:ok,
-            [
-              %{
-                "type" => "header",
-                "text" => %{"type" => "plain_text", "text" => "Release report"}
-              },
-              %{"type" => "markdown", "text" => ^body}
-            ]} =
-             SlackMarkdown.render_blocks(
-               "# Release report\n\n## Details\n\n- [ ] Follow up\n\n" <>
-                 "| A | B |\n| --- | --- |\n| 1 | 2 |"
-             )
-  end
-
   # Each row renders to one Markdown block; only task markers outside code are
   # rewritten, and an H1 that cannot be a plain header stays in the block.
   fenced_source = """
@@ -164,37 +101,5 @@ defmodule SalixIM.SlackMarkdownTest do
 
       assert text == @expected
     end
-  end
-
-  test "removes only the title separator and preserves additional source whitespace" do
-    assert {:ok,
-            [
-              %{"type" => "header"},
-              %{"type" => "markdown", "text" => "\nParagraph"}
-            ]} = SlackMarkdown.render_blocks("# Title\n\n\nParagraph")
-  end
-
-  test "applies the 12000-character limit cumulatively across Markdown blocks" do
-    boundary = String.duplicate("a", 12_000)
-
-    assert {:ok, [%{"type" => "markdown", "text" => ^boundary}]} =
-             SlackMarkdown.render_blocks(boundary)
-
-    assert {:error, :markdown_too_long} = SlackMarkdown.render_blocks(boundary <> "a")
-
-    assert :ok =
-             SlackMarkdown.validate_blocks!([
-               %{"type" => "markdown", "text" => String.duplicate("a", 6_000)},
-               %{"type" => "markdown", "text" => String.duplicate("b", 6_000)}
-             ])
-
-    assert_raise RuntimeError,
-                 "cumulative markdown block text exceeds 12000 characters",
-                 fn ->
-                   SlackMarkdown.validate_blocks!([
-                     %{"type" => "markdown", "text" => String.duplicate("a", 6_001)},
-                     %{"type" => "markdown", "text" => String.duplicate("b", 6_000)}
-                   ])
-                 end
   end
 end

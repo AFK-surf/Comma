@@ -4,6 +4,7 @@ packages:
   - clients/apps/*
   - clients/packages/*
   - observability/grafana
+  - systems/station
 
 ignoredBuiltDependencies:
   - "@central-icons-react/round-filled-radius-2-stroke-2"
@@ -22,8 +23,31 @@ onlyBuiltDependencies:
 # yauzl 2 uses legacy streams that stall extraction in Electron 42.
 overrides:
   "extract-zip>yauzl": "^3.4.0"
+  # Tailwind pins lightningcss 1.32, which warns on every `::highlight()` rule.
+  lightningcss: 1.33.0
 
-# Keep cancellation listeners until every CSS property has settled.
-# A once-only listener retains detached chat viewports after multiple cancellations.
 patchedDependencies:
+  # The selector engine jsdom matches `:focus-visible` with remembers the last
+  # element that had visible focus, also after it left the document. Tests on
+  # one window (a later test, a later file of a shared process) then saw a
+  # keyboard focus that was not focus-visible.
+  "@asamuzakjp/dom-selector@7.1.1": patches/@asamuzakjp__dom-selector@7.1.1.patch
+  # Vitest 4 keeps every mock in a set for `vi.clearAllMocks`. A process that
+  # runs many test files (clients/vitest.config.ts `sharedDomFiles`) kept each
+  # file's mocks and what they reach. Held weakly, as Vitest 5 does.
+  "@vitest/spy@4.1.11": patches/@vitest__spy@4.1.11.patch
+  # Incremark keeps a streaming reply's settled blocks. A fence closing inside a list item
+  # settled the list there, so the next item streamed in as another list.
+  "@incremark/core@1.0.2": patches/@incremark__core@1.0.2.patch
+  # The precompiled `space-x-*` utilities use `:not([hidden]) ~ :not([hidden])`.
+  # A sibling combinator over universal compounds makes Chromium restyle the
+  # parent's whole subtree on every insertion: each sent message restyled the
+  # entire transcript. The patch spaces the same flex rows with `column-gap`.
+  # The custom component registry also notified every renderer on any change, so
+  # a document registering its own scope re-rendered every mounted message. The
+  # patch versions each scope: a renderer re-renders only for the global mapping
+  # or its own scope, and the registry revision helpers become public exports.
+  markstream-react@0.0.52: patches/markstream-react@0.0.52.patch
+  # Keep cancellation listeners until every CSS property has settled.
+  # A once-only listener retains detached chat viewports after multiple cancellations.
   react-aria@3.49.0: patches/react-aria@3.49.0.patch

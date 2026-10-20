@@ -16,7 +16,7 @@ import (
 
 const schemaVersion = 1
 
-var classes = []string{"external", "meeting", "shell"}
+var classes = []string{"meeting", "shell", "station"}
 
 type Manifest struct {
 	SchemaVersion int     `json:"schemaVersion"`
@@ -50,14 +50,6 @@ func Generate(root string) (Manifest, error) {
 	connector := "systems/connector/salix-connect"
 	buildRecipe := "scripts/build-runtime-images.sh"
 	definitions := map[string]classInput{
-		"external": {
-			files: []string{
-				buildRecipe,
-				"systems/runtime-images/external/Dockerfile",
-				connector,
-			},
-			lockKeys: []string{"baseImages.go", "baseImages.external", "npm", "npmSecurityPatches", "codex", "claude", "pi"},
-		},
 		"meeting": {
 			files: []string{
 				buildRecipe,
@@ -66,7 +58,7 @@ func Generate(root string) (Manifest, error) {
 				"systems/runtime-images/cmd/comma-meeting-runtime",
 				connector,
 			},
-			lockKeys: []string{"baseImages.go", "baseImages.meeting", "meetnative"},
+			lockKeys: []string{"baseImages.go", "baseImages.meeting", "packageSnapshot", "meetnative"},
 		},
 		"shell": {
 			files: []string{
@@ -75,7 +67,20 @@ func Generate(root string) (Manifest, error) {
 				"systems/runtime-images/go.mod",
 				"systems/runtime-images/cmd/comma-shell-runtime",
 			},
-			lockKeys: []string{"baseImages.go", "baseImages.shell"},
+			lockKeys: []string{"baseImages.go", "baseImages.shell", "packageSnapshot"},
+		},
+		// The station release (systems/station/scripts/bundle.sh): the station, the
+		// workspace package it bundles, and the pnpm lock that resolves the rest.
+		"station": {
+			files: []string{
+				buildRecipe,
+				"systems/runtime-images/station",
+				"systems/station",
+				"clients/packages/mesh/package.json",
+				"clients/packages/mesh/src",
+				"pnpm-lock.yaml",
+			},
+			lockKeys: []string{"baseImages.station", "packageSnapshot", "npm", "npmSecurityPatches", "codex", "claude", "silkV3Decoder"},
 		},
 	}
 
@@ -172,7 +177,8 @@ func inputFiles(root string, entries []string) ([]string, error) {
 				return err
 			}
 			relative = filepath.ToSlash(relative)
-			if item.IsDir() && (item.Name() == ".git" || (relative == "systems/connector/salix-connect/native")) {
+			if item.IsDir() && (item.Name() == ".git" || (relative == "systems/connector/salix-connect/native") ||
+				generatedDir(relative, item.Name())) {
 				return filepath.SkipDir
 			}
 			if !item.IsDir() {
@@ -186,6 +192,13 @@ func inputFiles(root string, entries []string) ([]string, error) {
 	}
 	sort.Strings(result)
 	return dedupe(result), nil
+}
+
+// Build outputs and installed dependencies inside the station's sources are not
+// inputs: a checkout that has built or installed it digests as a clean one.
+func generatedDir(relative, name string) bool {
+	return strings.HasPrefix(relative, "systems/station/") &&
+		(name == "node_modules" || name == "dist" || name == "target")
 }
 
 func nestedValue(value any, path []string) (any, bool) {

@@ -1,4 +1,8 @@
 defmodule SalixAgent.ScriptRun do
+  require SystemsRuntime.Proc
+
+  require SystemsClock
+
   @moduledoc """
   One-shot scripts behind `script.run` and `script.run_file`: an
   agent-authored integer-C program compiled by spinfoam's embedded compiler
@@ -86,7 +90,7 @@ defmodule SalixAgent.ScriptRun do
   @doc "Wall limit for one run, in milliseconds (`:salix_agent, :script_wall_timeout_ms`)."
   @spec wall_timeout_ms() :: pos_integer()
   def wall_timeout_ms,
-    do: Application.get_env(:salix_agent, :script_wall_timeout_ms, @default_wall_ms)
+    do: SystemsRuntime.get_env(:salix_agent, :script_wall_timeout_ms, @default_wall_ms)
 
   @doc "Initial host state for one run."
   @spec new(ctx()) :: t()
@@ -111,7 +115,7 @@ defmodule SalixAgent.ScriptRun do
           | {:tool_observations, String.t(), [map()], [map()]}
           | {:tool_failure, String.t(), String.t(), String.t(), nil, [map()], [map()]}
   def run(files, entry, env, ctx) when is_map(files) and is_binary(entry) and is_map(env) do
-    started = System.monotonic_time()
+    started = SystemsClock.monotonic_time()
     state = new(ctx)
 
     outcome =
@@ -124,7 +128,7 @@ defmodule SalixAgent.ScriptRun do
         {:error, reason} -> {:error, reason, state}
       end
 
-    emit(outcome, System.monotonic_time() - started)
+    emit(outcome, SystemsClock.monotonic_time() - started)
     render(outcome)
   end
 
@@ -154,7 +158,7 @@ defmodule SalixAgent.ScriptRun do
   defp load(elf, env, ctx) do
     ref = %{
       kind: :script,
-      owner: self(),
+      owner: SystemsRuntime.Proc.self(),
       agent_id: ctx[:agent_id],
       session_id: ctx[:session_id],
       tenant_id: ctx[:tenant_id],
@@ -178,14 +182,14 @@ defmodule SalixAgent.ScriptRun do
     end
   end
 
-  defp deadline, do: System.monotonic_time(:millisecond) + wall_timeout_ms()
+  defp deadline, do: SystemsClock.monotonic_time(:millisecond) + wall_timeout_ms()
 
   # The wall budget is guest time: it is re-armed after every host call, so
   # a slow tool does not count against it.
   defp await(object_id, state, deadline) do
-    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    remaining = max(deadline - SystemsClock.monotonic_time(:millisecond), 0)
 
-    receive do
+    SystemsClock.vreceive do
       {:script_host_call, ^object_id, rpc_id, capability, arguments} ->
         {reply, state} = capability_call(capability, arguments, state)
         Host.host_reply(rpc_id, reply)
@@ -214,7 +218,7 @@ defmodule SalixAgent.ScriptRun do
   end
 
   defp flush(object_id) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:script_host_call, ^object_id, rpc_id, _capability, _arguments} ->
         Host.host_reply(rpc_id, {:error, "script run has ended"})
         flush(object_id)
@@ -441,6 +445,10 @@ defmodule SalixAgent.ScriptRun do
     do: "script runtime unavailable on this node: #{inspect(reason)}"
 
   defp failure_message(:host_unavailable), do: "script runtime unavailable on this node"
+
+  defp failure_message(:request_not_encodable),
+    do: "script sources and env must be valid UTF-8"
+
   defp failure_message(:build_timeout), do: "script build did not finish within the budget"
   defp failure_message(:env_too_large), do: "env exceeds #{@max_env_bytes} bytes"
   defp failure_message(:invalid_env), do: "env entries must be string names and string values"
@@ -549,7 +557,7 @@ defmodule SalixAgent.ScriptRun do
             "outer_tool_call_id" => outer_tool_call_id,
             "nested_tool_call_id" => nested_tool_call_id
           },
-          "created_at" => System.system_time(:second)
+          "created_at" => SystemsClock.system_time(:second)
         }
       ]
     else
@@ -582,7 +590,7 @@ defmodule SalixAgent.ScriptRun do
   defp ensure_map(args) when is_map(args), do: args
   defp ensure_map(_), do: %{}
 
-  defp random_id, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+  defp random_id, do: SystemsRuntime.Proc.random_bytes(8) |> Base.encode16(case: :lower)
 
   defp emit(outcome, duration) do
     Salix.Telemetry.emit_operation(

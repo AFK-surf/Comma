@@ -1,11 +1,17 @@
 import { useEffect, useState } from "react";
-import type { ChatAttachment } from "../../../model/conversationChannel";
+import type { ChatAttachment } from "@comma/core/chat";
 import type { ImagePreviews } from "./useImagePreviews";
 import type { ImagePreviewTargets } from "./useImagePreviewTargets";
 
 export function useImageGroupReveal({
   attachments,
-  images: { failedPreviewKeys, groupedImages, pendingPreviewKeys, previews },
+  images: {
+    failedPreviewKeys,
+    groupedImages,
+    groupedPreviews,
+    pendingPreviewKeys,
+    previews,
+  },
   showImages,
   targets: { imagePositions, previewImages },
 }: {
@@ -40,7 +46,9 @@ export function useImageGroupReveal({
     ? attachments.flatMap((attachment, position) => {
         if (!showImages || !imagePositions.has(position)) return [];
         const previewImage = previewImages.find((item) => item.position === position);
-        if (!previewImage) return [];
+        // Still showing the image it had before its source changed.
+        if (!previewImage || groupedPreviews.some((item) => item.position === position))
+          return [];
         const preview = previews.get(previewImage.key);
         return failedPreviewKeys.has(previewImage.key) ||
           preview?.status === "unavailable"

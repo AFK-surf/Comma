@@ -7,9 +7,14 @@ import type {
 } from "@comma/session-contract";
 import { initializeCommaI18n } from "@comma/i18n";
 import { CommaI18nProvider } from "@comma/i18n/react";
-import { act, render, screen, waitFor } from "@comma/test-utils/render";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProfileValue } from "@comma/core/contract";
+import { advance, flush } from "@comma/test-utils/fake-clock";
+import { act, render, screen } from "@comma/test-utils/render";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { CommaAuthGate, useCommaAuth } from "../components/AuthGate";
 import type { CommaApiSessionTransport, SessionHostController } from "../index";
+import { CommaSessionHostProvider } from "../session/react";
 
 vi.mock("../components/LoginScreen", () => ({
   LoginScreen: ({ guestHandoffNotice }: { guestHandoffNotice?: string }) => (
@@ -21,37 +26,19 @@ vi.mock("../components/LoginScreen", () => ({
 }));
 
 describe("CommaAuthGate with an injected Session host", () => {
-  beforeEach(() => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        jsonResponse({
-          avatar_id: "avt_profile",
-          email: "person@example.com",
-          id: "user-1",
-          name: "Profile Name",
-        })
-      )
-    );
-  });
-
   afterEach(() => {
-    vi.useRealTimers();
-    vi.unstubAllGlobals();
     initializeCommaI18n(["en"]);
   });
 
   it.each(["electron_main", "web_cookie"] as const)(
-    "bounds silent %s recovery, keeps product closed, and reconnects when the network returns",
+    "shows the core's silent %s recovery, keeps product closed, and asks again when the network returns",
     async (authorityKind) => {
       const snapshot = indeterminateSnapshot();
       const controller = new FakeSessionHostController({
         ...snapshot,
         authority: { ...snapshot.authority, kind: authorityKind },
       });
-      const { CommaAuthGate } = await import("../components/AuthGate");
-      const { CommaSessionHostProvider } = await import("../session/react");
-      vi.useFakeTimers();
+      controller.sayRecovery("trying");
       const view = render(
         <CommaSessionHostProvider controller={controller}>
           <CommaAuthGate>
@@ -59,39 +46,45 @@ describe("CommaAuthGate with an injected Session host", () => {
           </CommaAuthGate>
         </CommaSessionHostProvider>
       );
+      // The core runs the burst: the window only shows it, and asks nothing itself.
       expect(
         screen.getByRole("status", { name: "Connecting to Comma…" })
       ).toBeVisible();
       expect(screen.queryByRole("button")).toBeNull();
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(44_000);
-      });
-      expect(controller.recover).toHaveBeenCalledTimes(5);
+      act(() => window.dispatchEvent(new Event("online")));
+      expect(controller.recover).not.toHaveBeenCalled();
+
+      act(() => controller.sayRecovery("exhausted"));
       expect(screen.getByText("Comma is temporarily unavailable")).toBeVisible();
       expect(screen.queryByText("Product")).toBeNull();
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(120_000);
-      });
-      expect(controller.recover).toHaveBeenCalledTimes(5);
 
-      controller.recover.mockImplementation(async () =>
-        controller.publish(signedInSnapshot())
-      );
+      controller.recover.mockImplementation(async () => {
+        controller.sayRecovery(null);
+        controller.publish(signedInSnapshot());
+      });
       act(() => {
         window.dispatchEvent(new Event("online"));
       });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
+      await flush();
       expect(screen.getByText("Product")).toBeVisible();
-      expect(controller.recover).toHaveBeenCalledTimes(6);
+      expect(controller.recover).toHaveBeenCalledOnce();
       view.unmount();
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(120_000);
-      });
-      expect(controller.recover).toHaveBeenCalledTimes(6);
     }
   );
+
+  it("asks the core for a new recovery when the person tries again", async () => {
+    const controller = new FakeSessionHostController(indeterminateSnapshot());
+    controller.sayRecovery("exhausted");
+    render(
+      <CommaSessionHostProvider controller={controller}>
+        <CommaAuthGate>
+          <p>Product</p>
+        </CommaAuthGate>
+      </CommaSessionHostProvider>
+    );
+    await user().click(screen.getByRole("button", { name: "Try again" }));
+    expect(controller.recover).toHaveBeenCalledOnce();
+  });
 
   it("does not silently recover a failed sign-out", async () => {
     const snapshot = indeterminateSnapshot();
@@ -99,9 +92,6 @@ describe("CommaAuthGate with an injected Session host", () => {
       ...snapshot,
       problem: { ...snapshot.problem, operation: "sign_out" },
     });
-    const { CommaAuthGate } = await import("../components/AuthGate");
-    const { CommaSessionHostProvider } = await import("../session/react");
-    vi.useFakeTimers();
     const view = render(
       <CommaSessionHostProvider controller={controller}>
         <CommaAuthGate>
@@ -109,9 +99,7 @@ describe("CommaAuthGate with an injected Session host", () => {
         </CommaAuthGate>
       </CommaSessionHostProvider>
     );
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(120_000);
-    });
+    await advance(120_000);
     expect(controller.recover).not.toHaveBeenCalled();
     expect(screen.getByRole("heading", { name: "Comma can’t continue" })).toBeVisible();
     expect(screen.queryByText("Product")).toBeNull();
@@ -130,9 +118,6 @@ describe("CommaAuthGate with an injected Session host", () => {
         retryable: false,
       },
     });
-    const { CommaAuthGate } = await import("../components/AuthGate");
-    const { CommaSessionHostProvider } = await import("../session/react");
-    vi.useFakeTimers();
     const view = render(
       <CommaSessionHostProvider controller={controller}>
         <CommaAuthGate>
@@ -143,9 +128,7 @@ describe("CommaAuthGate with an injected Session host", () => {
     act(() => {
       window.dispatchEvent(new Event("online"));
     });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(120_000);
-    });
+    await advance(120_000);
     expect(controller.recover).not.toHaveBeenCalled();
     expect(screen.queryByText("Product")).toBeNull();
     expect(screen.getByRole("heading", { name: "Comma can’t continue" })).toBeVisible();
@@ -157,38 +140,27 @@ describe("CommaAuthGate with an injected Session host", () => {
 
   it("renders only the host projection and signs out its exact expectation", async () => {
     const controller = new FakeSessionHostController(signedOutSnapshot());
-    const { CommaAuthGate, useCommaAuth } = await import("../components/AuthGate");
-    const { CommaSessionHostProvider } = await import("../session/react");
-
-    function Product() {
-      const auth = useCommaAuth();
-      return (
-        <>
-          <output>{auth.userEmail}</output>
-          <button type="button" onClick={auth.signOut}>
-            Sign out
-          </button>
-        </>
-      );
-    }
 
     render(
       <CommaSessionHostProvider controller={controller}>
         <CommaAuthGate>
-          <Product />
+          <EmailAndSignOut />
         </CommaAuthGate>
       </CommaSessionHostProvider>
     );
 
-    expect(await screen.findByRole("heading", { name: "Mock login" })).toBeVisible();
+    await flush();
+    expect(screen.getByRole("heading", { name: "Mock login" })).toBeVisible();
 
     act(() => {
       controller.publish(signedInSnapshot());
     });
-    expect(await screen.findByText("person@example.com")).toBeVisible();
+    await flush();
+    expect(screen.getByText("person@example.com")).toBeVisible();
 
-    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
-    await screen.findByRole("heading", { name: "Mock login" });
+    await user().click(screen.getByRole("button", { name: "Sign out" }));
+    await flush();
+    expect(screen.getByRole("heading", { name: "Mock login" })).toBeVisible();
     expect(controller.signOutInputs).toEqual([
       {
         authorityInstanceId: "tab-authority",
@@ -201,26 +173,16 @@ describe("CommaAuthGate with an injected Session host", () => {
 
   it("shows a guest by name only and keeps the handoff notice through sign-in", async () => {
     const controller = new FakeSessionHostController(signedOutSnapshot());
-    const { CommaAuthGate, useCommaAuth } = await import("../components/AuthGate");
-    const { CommaSessionHostProvider } = await import("../session/react");
-
-    function Product() {
-      const auth = useCommaAuth();
-      return (
-        <output>
-          {auth.isGuest ? "guest" : "registered"}:{auth.userDisplayName}
-        </output>
-      );
-    }
 
     render(
       <CommaSessionHostProvider controller={controller}>
         <CommaAuthGate>
-          <Product />
+          <GuestOrRegistered />
         </CommaAuthGate>
       </CommaSessionHostProvider>
     );
-    await screen.findByRole("heading", { name: "Mock login" });
+    await flush();
+    expect(screen.getByRole("heading", { name: "Mock login" })).toBeVisible();
 
     const guest = signedInSnapshot();
     act(() => {
@@ -233,7 +195,8 @@ describe("CommaAuthGate with an injected Session host", () => {
         },
       });
     });
-    expect(await screen.findByText("guest:Guest")).toBeVisible();
+    await flush();
+    expect(screen.getByText("guest:Guest")).toBeVisible();
     expect(screen.queryByText(/guest\.comma\.invalid/)).toBeNull();
 
     act(() => {
@@ -245,7 +208,8 @@ describe("CommaAuthGate with an injected Session host", () => {
       });
     });
     const notice = "Sign in or create an account to keep your guest chat.";
-    expect(await screen.findByText(notice)).toBeVisible();
+    await flush();
+    expect(screen.getByText(notice)).toBeVisible();
     act(() => {
       const { reason: _reason, ...signedOut } = signedOutSnapshot();
       controller.publish({
@@ -255,12 +219,14 @@ describe("CommaAuthGate with an injected Session host", () => {
         revision: 4,
       });
     });
+    await flush();
     expect(screen.getByText(notice)).toBeVisible();
 
     act(() => {
       controller.publish({ ...signedInSnapshot(), generation: 3, revision: 5 });
     });
-    expect(await screen.findByText(/^registered:/)).toBeVisible();
+    await flush();
+    expect(screen.getByText(/^registered:/)).toBeVisible();
   });
 
   it("passes the host-owned product transport without an invalidate command", async () => {
@@ -269,33 +235,6 @@ describe("CommaAuthGate with an injected Session host", () => {
       signedInSnapshot(),
       productTransport(reportSessionRejection)
     );
-    const [
-      { createCommaApi },
-      { CommaAuthGate, useCommaAuth },
-      { CommaSessionHostProvider },
-    ] = await Promise.all([
-      import("../api"),
-      import("../components/AuthGate"),
-      import("../session/react"),
-    ]);
-
-    function Product() {
-      const auth = useCommaAuth();
-      const api = createCommaApi({
-        baseUrl: auth.apiBaseUrl,
-        fetch: vi.fn(async () => jsonResponse({ error: "unauthorized" }, 401)),
-        sessionTransport: auth.sessionTransport,
-        token: "",
-      });
-      return (
-        <button
-          type="button"
-          onClick={() => void api.listWorkspaces().catch(() => undefined)}
-        >
-          Load product
-        </button>
-      );
-    }
 
     render(
       <CommaSessionHostProvider controller={controller}>
@@ -305,43 +244,44 @@ describe("CommaAuthGate with an injected Session host", () => {
       </CommaSessionHostProvider>
     );
 
-    await userEvent.click(await screen.findByRole("button", { name: "Load product" }));
-    await waitFor(() => expect(reportSessionRejection).toHaveBeenCalledWith(401));
+    await flush();
+    await user().click(screen.getByRole("button", { name: "Load product" }));
+    await flush();
+    expect(reportSessionRejection).toHaveBeenCalledWith(401);
   });
 
   it("loads the current profile separately from lifecycle-v1 after sign in", async () => {
     const controller = new FakeSessionHostController(signedInSnapshot());
-    const { CommaAuthGate, useCommaAuth } = await import("../components/AuthGate");
-    const { CommaSessionHostProvider } = await import("../session/react");
 
-    function Product() {
-      const auth = useCommaAuth();
-      return (
-        <output>
-          {auth.userDisplayName}:{auth.avatarRevision}
-        </output>
-      );
-    }
-
+    // The profile as the core keeps it (core/test/profile.test.ts reads it from GET /v1/comma/me/profile).
+    const profile: ProfileValue = {
+      status: "ready",
+      profile: {
+        avatar_id: "avt_profile",
+        email: "person@example.com",
+        id: "user-1",
+        name: "Profile Name",
+      },
+    };
+    const core = createScriptedCore({
+      values: (topic) => (topic.topic === "profile" ? profile : undefined),
+    });
     render(
-      <CommaSessionHostProvider controller={controller}>
-        <CommaAuthGate>
-          <Product />
-        </CommaAuthGate>
-      </CommaSessionHostProvider>
+      core.wrap(
+        <CommaSessionHostProvider controller={controller}>
+          <CommaAuthGate>
+            <NameAndAvatar />
+          </CommaAuthGate>
+        </CommaSessionHostProvider>
+      )
     );
 
-    expect(await screen.findByText("Profile Name:avt_profile")).toBeVisible();
-    expect(fetch).toHaveBeenCalledWith(
-      "https://api.example/v1/comma/me/profile",
-      expect.objectContaining({ method: "GET" })
-    );
+    await flush();
+    expect(screen.getByText("Profile Name:avt_profile")).toBeVisible();
   });
 
   it("fails visibly when retrying cannot establish Session truth", async () => {
     const controller = new FakeSessionHostController(contractMismatchSnapshot());
-    const { CommaAuthGate } = await import("../components/AuthGate");
-    const { CommaSessionHostProvider } = await import("../session/react");
 
     render(
       <CommaSessionHostProvider controller={controller}>
@@ -351,23 +291,20 @@ describe("CommaAuthGate with an injected Session host", () => {
       </CommaSessionHostProvider>
     );
 
-    expect(
-      await screen.findByRole("heading", { name: "Comma can’t continue" })
-    ).toBeVisible();
+    await flush();
+    expect(screen.getByRole("heading", { name: "Comma can’t continue" })).toBeVisible();
     expect(
       screen.getByText(
         "This version of Comma is out of date. Refresh the page or update Comma, then try again."
       )
     ).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await user().click(screen.getByRole("button", { name: "Try again" }));
     expect(controller.recover).toHaveBeenCalledOnce();
     expect(screen.queryByText("Product")).toBeNull();
   });
 
   it("localizes Session recovery without weakening the retry boundary", async () => {
     const controller = new FakeSessionHostController(contractMismatchSnapshot());
-    const { CommaAuthGate } = await import("../components/AuthGate");
-    const { CommaSessionHostProvider } = await import("../session/react");
 
     render(
       <CommaI18nProvider locale="zh-CN">
@@ -379,17 +316,50 @@ describe("CommaAuthGate with an injected Session host", () => {
       </CommaI18nProvider>
     );
 
-    expect(
-      await screen.findByRole("heading", { name: "Comma 无法继续" })
-    ).toBeVisible();
+    await flush();
+    expect(screen.getByRole("heading", { name: "Comma 无法继续" })).toBeVisible();
     expect(
       screen.getByText("当前 Comma 版本过旧。请刷新页面或更新 Comma 后重试。")
     ).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "重试" }));
+    await user().click(screen.getByRole("button", { name: "重试" }));
     expect(controller.recover).toHaveBeenCalledOnce();
     expect(screen.queryByText("Product")).toBeNull();
   });
 });
+
+function EmailAndSignOut() {
+  const auth = useCommaAuth();
+  return (
+    <>
+      <output>{auth.userEmail}</output>
+      <button type="button" onClick={auth.signOut}>
+        Sign out
+      </button>
+    </>
+  );
+}
+
+function GuestOrRegistered() {
+  const auth = useCommaAuth();
+  return (
+    <output>
+      {auth.isGuest ? "guest" : "registered"}:{auth.userDisplayName}
+    </output>
+  );
+}
+
+function NameAndAvatar() {
+  const auth = useCommaAuth();
+  return (
+    <output>
+      {auth.userDisplayName}:{auth.avatarRevision}
+    </output>
+  );
+}
+
+function user() {
+  return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+}
 
 class FakeSessionHostController implements SessionHostController {
   readonly apiBaseUrl = "https://api.example";
@@ -401,6 +371,20 @@ class FakeSessionHostController implements SessionHostController {
     verifyGoogleLink: vi.fn(async () => {}),
   };
   readonly recover = vi.fn(async () => {});
+  /** The core's connection recovery, as the test says it. */
+  private recovery: "trying" | "exhausted" | null = null;
+  private readonly recoveryListeners = new Set<() => void>();
+  readonly connectionRecovery = {
+    get: () => this.recovery,
+    subscribe: (listener: () => void) => {
+      this.recoveryListeners.add(listener);
+      return () => void this.recoveryListeners.delete(listener);
+    },
+  };
+  sayRecovery(next: "trying" | "exhausted" | null) {
+    this.recovery = next;
+    for (const listener of Array.from(this.recoveryListeners)) listener();
+  }
   readonly signOutInputs: SessionLifecycleExpectation[] = [];
   private readonly listeners = new Set<(snapshot: SessionLifecycleSnapshot) => void>();
   private snapshot: SessionLifecycleSnapshot;
@@ -547,6 +531,19 @@ function contractMismatchSnapshot(): Extract<
   };
 }
 
+/** Reports a 401 through the product transport the gate gives. */
+function Product() {
+  const auth = useCommaAuth();
+  return (
+    <button
+      type="button"
+      onClick={() => auth.sessionTransport.reportSessionRejection(401)}
+    >
+      Load product
+    </button>
+  );
+}
+
 function productTransport(
   reportSessionRejection: (status: 401 | 409) => void = () => {}
 ): CommaApiSessionTransport {
@@ -556,11 +553,4 @@ function productTransport(
     applyHeaders() {},
     reportSessionRejection,
   };
-}
-
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    headers: { "content-type": "application/json" },
-    status,
-  });
 }

@@ -1,27 +1,28 @@
 import { useCommaMessages } from "@comma/i18n/react";
+import { Button } from "@comma/ui/components/Button";
 import {
-  Button,
   ChainLinkIcon,
   CheckIcon,
   CircleInfoIcon,
-  Dialog,
   GlobeIcon,
+  MoreHorizontalIcon,
+} from "@comma/ui/components/icons";
+import { Dialog, dialogActionButton } from "@comma/ui/components/dialog";
+import {
   Menu,
   MenuItem,
   MenuPopover,
   MenuSeparator,
   MenuTrigger,
-  MoreHorizontalIcon,
-  Tooltip,
-  cx,
-  dialogActionButton,
   menuCompactClasses,
-  spacing,
-  toast,
-} from "@comma/ui";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+} from "@comma/ui/components/menu";
+import { Tooltip } from "@comma/ui/components/tooltip";
+import { cx } from "@comma/ui/components/utils";
+import { spacing } from "@comma/ui/tokens";
+import { toast } from "@comma/ui/components/toast";
+import { useCall, useTopic, type TaskShare } from "@comma/core-client";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Button as AriaButton } from "react-aria-components";
-import type { CommaApiClient, CommaTaskShare } from "../../api";
 import {
   copyTextToClipboard,
   openUrlInExternalBrowser,
@@ -29,12 +30,10 @@ import {
 import { TaskConversationPreview } from "../search/TaskConversationPreview";
 import type { TaskConversationPreviewTarget } from "../search/taskConversationPreviewLoader";
 
-type ShareState =
-  | { kind: "loading" }
-  | { kind: "failed" }
-  | { kind: "ready"; share: CommaTaskShare | undefined };
-
 const SHARE_TOAST_ID = "task-share-feedback";
+
+/** Openings of a share dialog so far. */
+let shareVisits = 0;
 
 /** The Task panel's bounded tail: enough turns to recognize the Task. */
 const SHARE_PREVIEW_MESSAGE_LIMIT = 20;
@@ -54,7 +53,6 @@ const copyLabelClassName =
   "col-start-1 row-start-1 inline-flex items-center justify-center gap-sm";
 
 export type TaskShareButtonProps = {
-  api: CommaApiClient;
   conversationId: string;
   groupId: string;
   status?: string | undefined;
@@ -65,8 +63,8 @@ export type TaskShareButtonProps = {
 };
 
 /**
- * Opens the public-link dialog for one Task. The dialog reads the link only
- * when it opens and shows only the server's confirmed share state.
+ * Opens the public-link dialog for one Task. The core reads the link when the
+ * dialog opens (`taskShare`) and shows only the server's confirmed share state.
  */
 export function TaskShareButton(props: TaskShareButtonProps) {
   const messages = useCommaMessages();
@@ -98,7 +96,6 @@ export function TaskShareButton(props: TaskShareButtonProps) {
 }
 
 function TaskShareDialog({
-  api,
   conversationId,
   groupId,
   onClose,
@@ -108,7 +105,15 @@ function TaskShareDialog({
   workspaceId,
 }: TaskShareButtonProps & { onClose: () => void }) {
   const messages = useCommaMessages();
-  const [state, setState] = useState<ShareState>({ kind: "loading" });
+  const call = useCall();
+  // Each opening reads the link again: it is its own visit.
+  const [visit] = useState(() => String(++shareVisits));
+  const { value: state } = useTopic({
+    topic: "taskShare",
+    group: groupId,
+    conversation: conversationId,
+    visit,
+  });
   const [pending, setPending] = useState(false);
   // The link a successful copy put on the clipboard. A reset issues another
   // URL, so the button offers to copy again without a timer.
@@ -124,27 +129,7 @@ function TaskShareDialog({
     ...(status === undefined ? {} : { status }),
     ...(updatedAt === undefined ? {} : { updatedAt }),
   }));
-
-  const load = useCallback(
-    (signal?: AbortSignal) => {
-      setState({ kind: "loading" });
-      api
-        .getTaskShare(groupId, conversationId, signal ? { signal } : {})
-        .then((share) => {
-          if (!signal?.aborted) setState({ kind: "ready", share });
-        })
-        .catch(() => {
-          if (!signal?.aborted) setState({ kind: "failed" });
-        });
-    },
-    [api, conversationId, groupId]
-  );
-
-  useEffect(() => {
-    const controller = new AbortController();
-    load(controller.signal);
-    return () => controller.abort();
-  }, [load]);
+  const target = { group: groupId, conversation: conversationId };
 
   // A settled change can remove the control that held focus: Create public
   // link becomes Copy link, and Stop sharing brings Create back. Focus then
@@ -158,12 +143,10 @@ function TaskShareDialog({
   }, [state]);
 
   /** Resolves to the share the server confirmed, or undefined on failure. */
-  const run = async (change: () => Promise<CommaTaskShare | undefined>) => {
+  const run = async (change: () => Promise<TaskShare | null>) => {
     setPending(true);
     try {
-      const next = await change();
-      setState({ kind: "ready", share: next });
-      return next;
+      return (await change()) ?? undefined;
     } catch {
       toast.error(messages.task_share_failed(), { id: SHARE_TOAST_ID });
       return undefined;
@@ -189,7 +172,7 @@ function TaskShareDialog({
     }
   };
 
-  const publish = () => run(() => api.publishTaskShare(groupId, conversationId));
+  const publish = () => run(() => call("taskShare.publish", target));
   // A new link is created to be pasted somewhere, so it lands on the clipboard.
   // The write runs after the request, outside the click's user activation, and
   // Safari denies it there. That miss stays quiet: the link and Copy link are
@@ -198,7 +181,7 @@ function TaskShareDialog({
     const created = await publish();
     if (created) await copy(created.url, { reportFailure: false });
   };
-  const share = state.kind === "ready" ? state.share : undefined;
+  const share = state?.status === "ready" ? (state.share ?? undefined) : undefined;
   const copied = share !== undefined && copiedUrl === share.url;
 
   return (
@@ -221,7 +204,6 @@ function TaskShareDialog({
             first, so the link and its actions stay in view. */}
         <div className="h-[min(var(--container-xxs),calc(100vh-var(--container-xs)))] min-h-0">
           <TaskConversationPreview
-            apiClient={api}
             className="comma-task-share-preview rounded-xl shadow-none"
             messageLimit={SHARE_PREVIEW_MESSAGE_LIMIT}
             showTitle={false}
@@ -229,13 +211,13 @@ function TaskShareDialog({
           />
         </div>
 
-        {state.kind === "loading" ? (
+        {!state || state.status === "loading" ? (
           <output
             aria-busy="true"
             aria-label={messages.common_loading()}
             className="block h-4xl w-full rounded-md bg-quaternary motion-safe:animate-pulse"
           />
-        ) : state.kind === "failed" ? (
+        ) : state.status === "failed" ? (
           <div className="flex min-h-4xl items-center justify-between gap-md">
             <p className="text-sm text-error-primary" role="alert">
               {messages.task_share_load_failed()}
@@ -243,7 +225,9 @@ function TaskShareDialog({
             <Button
               className={dialogActionButton}
               hierarchy="secondary-gray"
-              onPress={() => load()}
+              onPress={() =>
+                void call("taskShare.refresh", target).catch(() => undefined)
+              }
               size="sm"
             >
               {messages.share_view_retry()}
@@ -302,12 +286,9 @@ function TaskShareDialog({
                     onAction={(key) => {
                       if (key === "open") void openUrlInExternalBrowser(share.url);
                       else if (key === "reset") {
-                        void run(() => api.resetTaskShare(groupId, conversationId));
+                        void run(() => call("taskShare.reset", target));
                       } else if (key === "stop") {
-                        void run(async () => {
-                          await api.revokeTaskShare(groupId, conversationId);
-                          return undefined;
-                        });
+                        void run(() => call("taskShare.revoke", target));
                       }
                     }}
                   >

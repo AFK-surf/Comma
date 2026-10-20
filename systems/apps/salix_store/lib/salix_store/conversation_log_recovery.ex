@@ -18,7 +18,7 @@ defmodule SalixStore.ConversationLogRecovery do
       SET target_seq = GREATEST(conversation_log_recovery.target_seq, EXCLUDED.target_seq),
           status_version = GREATEST(conversation_log_recovery.status_version, EXCLUDED.status_version)
       """,
-      [group, conversation, seq, System.system_time(:millisecond), status_version]
+      [group, conversation, seq, SystemsClock.system_time(:millisecond), status_version]
     )
     |> case do
       {:ok, _} -> :ok
@@ -28,7 +28,7 @@ defmodule SalixStore.ConversationLogRecovery do
 
   # The due index visits pending Conversations only. SKIP LOCKED lets pods
   # share discovery work. This reservation does not authorize delivery.
-  def claim(limit, now \\ System.system_time(:millisecond)) when limit in 1..8 do
+  def claim(limit, now \\ SystemsClock.system_time(:millisecond)) when limit in 1..8 do
     query(
       """
       WITH pending AS (

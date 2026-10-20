@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"time"
 )
 
@@ -29,6 +28,8 @@ type cloudProviderMigration struct {
 
 var cloudMigrationOperation = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 
+// migrationByteLimit bounds the expanded bytes of one Connector archive.
+const migrationByteLimit int64 = 16 << 30
 const cloudMigrationArchiveLimit int64 = migrationByteLimit + (64 << 20)
 const providerMigrationChunkSize = 4 << 20
 const providerMigrationRequestLimit = 8 << 20
@@ -88,7 +89,7 @@ func (c *connector) handleProviderMigrationImport(w http.ResponseWriter, r *http
 	defer c.cloudRuntimeMu.Unlock()
 	c.connectionMu.Lock()
 	defer c.connectionMu.Unlock()
-	if c.activeConnection != nil || c.externalRuntimeState == nil {
+	if c.activeConnection != nil {
 		http.Error(w, "migration target is connected", 409)
 		return
 	}
@@ -103,8 +104,6 @@ func (c *connector) handleProviderMigrationImport(w http.ResponseWriter, r *http
 		Bytes        int64               `json:"bytes"`
 		RuntimePaths []string            `json:"runtime_paths"`
 		Sessions     int                 `json:"sessions"`
-		Provider     string              `json:"provider"`
-		SessionID    string              `json:"session_id"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, providerMigrationRequestLimit)).Decode(&request) != nil || !cloudMigrationOperation.MatchString(request.Operation) {
 		http.Error(w, "invalid migration request", 400)
@@ -148,8 +147,7 @@ func (c *connector) handleProviderMigrationImport(w http.ResponseWriter, r *http
 			}
 			offset = status.Bytes
 		}
-		missing, missingCount := c.missingProviderMigrationNative()
-		writeJSONResponse(w, 200, map[string]any{"operation": status.Operation, "scope": status.Scope, "diagnostics": status.Diagnostics, "phase": status.Phase, "next_offset": offset, "runtime_paths": status.RuntimePaths, "sessions": status.Sessions, "missing_native_sessions": missing, "missing_native_count": missingCount})
+		writeJSONResponse(w, 200, map[string]any{"operation": status.Operation, "scope": status.Scope, "diagnostics": status.Diagnostics, "phase": status.Phase, "next_offset": offset, "runtime_paths": status.RuntimePaths, "sessions": status.Sessions})
 		return
 	}
 	if status.Phase == "restored" {
@@ -162,10 +160,6 @@ func (c *connector) handleProviderMigrationImport(w http.ResponseWriter, r *http
 	}
 	if status.Phase == "restoring" {
 		http.Error(w, "partial restore requires a fresh unused target", 409)
-		return
-	}
-	if !c.externalRuntimeState.emptyArchiveTarget() {
-		http.Error(w, "migration target contains runtime state", 409)
 		return
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -216,7 +210,7 @@ func (c *connector) handleProviderMigrationImport(w http.ResponseWriter, r *http
 				saveFailedImportDiagnostics(filepath.Join(dir, "diagnostics.json"), status.Operation, *status.Diagnostics)
 			}
 		}()
-		if err := restoreTarZstStateLimit(reader, c.root, c.externalRuntimeState, migrationByteLimit); err != nil {
+		if err := restoreTarZstLimit(reader, c.root, c, migrationByteLimit); err != nil {
 			logf("cloud_vm_archive stage=stream_restore_failed operation=%s downloaded_bytes=%d duration_ms=%d error=%v", request.Operation, reader.downloaded, time.Since(startedAt).Milliseconds(), err)
 			http.Error(w, "streaming restore failed: "+err.Error(), 409)
 			return
@@ -225,24 +219,14 @@ func (c *connector) handleProviderMigrationImport(w http.ResponseWriter, r *http
 			http.Error(w, "streaming restore did not read full archive", 409)
 			return
 		}
-		c.externalRuntimeState.mu.Lock()
-		count := len(c.externalRuntimeState.identities)
-		c.externalRuntimeState.mu.Unlock()
-		if count != request.Sessions {
-			http.Error(w, "restored Session count differs", 409)
-			return
-		}
-		projection, err := c.readArchiveProjection()
-		if err != nil {
-			http.Error(w, "restored archive scope unavailable", 500)
-			return
-		}
-		status.Scope = projection.Scope
+		// Archives restore files only; Session counts from earlier releases
+		// describe state this Connector no longer restores.
+		status.Scope = "full"
 		status.Diagnostics.Outcome = "restored"
 		status.Diagnostics.TotalMS = time.Since(startedAt).Milliseconds()
 		status.Diagnostics.GetMSSum = reader.fetchNS.Load() / 1_000_000
 		status.Diagnostics.DecoderWaitMS = reader.waitNS.Load() / 1_000_000
-		status.Phase, status.Bytes, status.Sessions = "restored", request.Bytes, count
+		status.Phase, status.Bytes = "restored", request.Bytes
 		if err := writeProviderMigration(receipt, status); err != nil {
 			http.Error(w, "import receipt unavailable", 500)
 			return
@@ -333,9 +317,9 @@ func (c *connector) handleProviderMigrationImport(w http.ResponseWriter, r *http
 			}
 		}()
 		if request.Format == "tar_zst" {
-			err = restoreTarZstStateLimit(f, c.root, c.externalRuntimeState, migrationByteLimit)
+			err = restoreTarZstLimit(f, c.root, c, migrationByteLimit)
 		} else if request.Format == "" || request.Format == "tar_gz" {
-			err = restoreTarGzStateLimit(f, c.root, c.externalRuntimeState, migrationByteLimit)
+			err = restoreTarGzLimit(f, c.root, c, migrationByteLimit)
 		} else {
 			err = errors.New("unsupported archive format")
 		}
@@ -361,23 +345,13 @@ func (c *connector) handleProviderMigrationImport(w http.ResponseWriter, r *http
 				return
 			}
 		}
-		c.externalRuntimeState.mu.Lock()
-		count := len(c.externalRuntimeState.identities)
-		c.externalRuntimeState.mu.Unlock()
-		if count != request.Sessions {
-			http.Error(w, "restored Session count differs", 409)
-			return
-		}
-		projection, err := c.readArchiveProjection()
-		if err != nil {
-			http.Error(w, "restored archive scope unavailable", 500)
-			return
-		}
-		status.Scope = projection.Scope
+		// Archives restore files only; Session counts from earlier releases
+		// describe state this Connector no longer restores.
+		status.Scope = "full"
 		status.Diagnostics.Outcome = "restored"
 		status.Diagnostics.ExtractMS = time.Since(startedAt).Milliseconds()
 		status.Diagnostics.TotalMS = status.Diagnostics.DownloadMS + status.Diagnostics.ExtractMS
-		status.Phase, status.Format, status.Bytes, status.RuntimePaths, status.Sessions = "restored", request.Format, offset, request.RuntimePaths, count
+		status.Phase, status.Format, status.Bytes, status.RuntimePaths = "restored", request.Format, offset, request.RuntimePaths
 		if err := writeProviderMigration(receipt, status); err != nil {
 			http.Error(w, "import receipt unavailable", 500)
 			return
@@ -399,29 +373,36 @@ func removeRestoredImportArchive(dir, archive string) error {
 	return syncDirectory(dir)
 }
 
-func (c *connector) missingProviderMigrationNative() ([]map[string]string, int) {
-	if c.externalRuntimeState == nil {
-		return nil, 0
+func copyMigrationFile(ctx context.Context, output io.Writer, input io.Reader, size int64) error {
+	limited := &io.LimitedReader{R: input, N: size}
+	if err := copyChunked(ctx, output, limited); err != nil {
+		return err
 	}
-	state := c.externalRuntimeState
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	missing := make([]map[string]string, 0, 32)
-	count := 0
-	for _, identity := range state.identities {
-		if executable(identity.Command) {
-			continue
+	if limited.N != 0 {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+
+// copyChunked copies with periodic deadline checks so a stuck copy cannot
+// outlive the surrounding context.
+func copyChunked(ctx context.Context, dst io.Writer, src io.Reader) error {
+	buffer := make([]byte, 256*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		count++
-		if len(missing) < 32 {
-			missing = append(missing, map[string]string{"provider": identity.Provider, "session_id": identity.SessionID})
+		n, err := src.Read(buffer)
+		if n > 0 {
+			if _, werr := dst.Write(buffer[:n]); werr != nil {
+				return werr
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
 		}
 	}
-	sort.Slice(missing, func(i, j int) bool {
-		if missing[i]["session_id"] == missing[j]["session_id"] {
-			return missing[i]["provider"] < missing[j]["provider"]
-		}
-		return missing[i]["session_id"] < missing[j]["session_id"]
-	})
-	return missing, count
 }

@@ -150,73 +150,12 @@ defmodule SalixWeb.Dashboard.CoreComponents do
     """
   end
 
-  @model_icon_dir Path.expand("../../../../assets/icons/providers", __DIR__)
-  @model_icons (for path <- Path.wildcard(Path.join(@model_icon_dir, "model-*.svg")), into: %{} do
-                  @external_resource path
-                  {path |> Path.basename(".svg") |> String.replace_prefix("model-", ""),
-                   "data:image/svg+xml;base64," <> Base.encode64(File.read!(path))}
-                end)
-
-  attr(:brand, :string, default: nil)
-
-  def model_icon(assigns) do
-    assigns = assign(assigns, :src, Map.get(@model_icons, assigns.brand, @model_icons["unknown"]))
-
-    ~H"""
-    <img src={@src} alt="" aria-hidden="true" width="20" height="20" class="h-5 w-5 shrink-0" />
-    """
-  end
-
-  defp model_selection(options, catalog, prompt, value, default_icon) do
-    by_id = Map.new(catalog, &{&1["template_id"], &1})
-
-    options =
-      Enum.map(options, fn
-        {label, id} ->
-          case by_id[id] do
-            nil -> {label, id}
-            template -> {SalixAgent.ModelPresentation.option_name(template), id}
-          end
-
-        option ->
-          option
-      end)
-
-    {byok, platform} =
-      Enum.split_with(options, fn option ->
-        id = if is_list(option), do: Keyword.get(option, :value), else: elem(option, 1)
-        t = by_id[id] || %{}
-
-        t["scope"] == "tenant" or not is_nil(t["tenant_id"]) or
-          t["account_pool"] in ["codex", "claude"] or
-          get_in(t, ["provider_config", "account_pool"]) in ["codex", "claude"]
-      end)
-
-    platform = if prompt, do: [{prompt, ""} | platform], else: platform
-    selected = by_id[value] || %{}
-
-    brand =
-      if value in [nil, ""],
-        do: default_icon,
-        else:
-          selected["model_icon"] || selected["account_pool"] ||
-            get_in(selected, ["provider_config", "account_pool"]) || selected["model_vendor"]
-
-    groups =
-      [{"Platform billing", platform}, {"BYOK", byok}]
-      |> Enum.reject(fn {_, choices} -> choices == [] end)
-
-    {groups, Map.get(@model_icons, brand, @model_icons["unknown"])}
-  end
-
   @doc "A labelled `<select>`. Pass `:options` as for `Phoenix.HTML.Form.options_for_select/2`."
   attr(:id, :any, default: nil)
   attr(:name, :any)
   attr(:label, :string, default: nil)
   attr(:value, :any, default: nil)
   attr(:options, :list, required: true)
-  attr(:model_catalog, :list, default: nil)
-  attr(:model_default_icon, :string, default: nil)
   attr(:prompt, :string, default: nil)
   attr(:field, Phoenix.HTML.FormField)
   attr(:errors, :list, default: [])
@@ -233,26 +172,9 @@ defmodule SalixWeb.Dashboard.CoreComponents do
   end
 
   def select(assigns) do
-    {options, icon} =
-      if assigns.model_catalog do
-        model_selection(
-          assigns.options,
-          assigns.model_catalog,
-          assigns.prompt,
-          assigns.value,
-          assigns.model_default_icon
-        )
-      else
-        {assigns.options, nil}
-      end
-
-    assigns = assign(assigns, rendered_options: options, selected_model_icon: icon)
-
     ~H"""
     <div class={@class}>
       <.field_label :if={@label} for={@id}>{@label}</.field_label>
-      <div class="flex items-center gap-2">
-      <img :if={@selected_model_icon} src={@selected_model_icon} alt="" aria-hidden="true" width="16" height="16" class="h-4 w-4 shrink-0" />
       <select
         id={@id}
         name={@name}
@@ -263,10 +185,9 @@ defmodule SalixWeb.Dashboard.CoreComponents do
         ]}
         {@rest}
       >
-        <option :if={@prompt && is_nil(@model_catalog)} value="">{@prompt}</option>
-        {Phoenix.HTML.Form.options_for_select(@rendered_options, @value)}
+        <option :if={@prompt} value="">{@prompt}</option>
+        {Phoenix.HTML.Form.options_for_select(@options, @value)}
       </select>
-      </div>
       <.error :for={msg <- @errors}>{msg}</.error>
     </div>
     """

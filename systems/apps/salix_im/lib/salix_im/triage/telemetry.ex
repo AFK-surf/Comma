@@ -70,7 +70,7 @@ defmodule SalixIM.Triage.Telemetry do
   end
 
   @spec start() :: integer()
-  def start, do: System.monotonic_time()
+  def start, do: SystemsClock.monotonic_time()
 
   @spec emit(term(), term(), term(), term(), integer()) :: :ok
   def emit(phase, outcome, source_mode, surface, started_at) do
@@ -143,7 +143,7 @@ defmodule SalixIM.Triage.Telemetry do
 
   defp safe_execute(event, measurements, metadata) do
     try do
-      :telemetry.execute(event, measurements, metadata)
+      SystemsRuntime.Telemetry.execute(event, measurements, metadata)
     rescue
       _handler_failure -> :ok
     catch
@@ -173,7 +173,7 @@ defmodule SalixIM.Triage.Telemetry do
   end
 
   defp elapsed(started_at) when is_integer(started_at),
-    do: max(0, System.monotonic_time() - started_at)
+    do: max(0, SystemsClock.monotonic_time() - started_at)
 
   defp elapsed(_started_at), do: 0
 

@@ -5,7 +5,7 @@ defmodule SalixMigrate.CutoverTest do
   is an idempotent one-way CAS, and cohort rollout selects unmigrated agents and
   reports progress as they cut over. Against the Fake backend.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixMigrate.{Import, Cutover, Cohort}
   alias SalixStore.{S3, Keys}
@@ -13,10 +13,10 @@ defmodule SalixMigrate.CutoverTest do
   @session_id "ses1_0000000000000000001"
 
   setup do
-    prev = Application.get_env(:salix_store, :s3_backend)
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    prev = SystemsRuntime.get_env(:salix_store, :s3_backend)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     start_supervised!(SalixStore.S3.Fake)
-    on_exit(fn -> Application.put_env(:salix_store, :s3_backend, prev) end)
+    on_exit(fn -> SystemsRuntime.put_env(:salix_store, :s3_backend, prev) end)
     :ok
   end
 

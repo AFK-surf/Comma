@@ -1,17 +1,21 @@
 defmodule SalixLlm.TranscribeTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixLlm.Transcribe
 
   defmodule SlowPreprocessingChunker do
     def with_mp3_chunks(audio, _source_filename, callback, opts) do
-      send(self(), {:chunker_deadline, opts[:deadline_ms]})
-      Process.sleep(25)
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:chunker_deadline, opts[:deadline_ms]}
+      )
+
+      SystemsRuntime.Proc.sleep(25)
 
       path =
         Path.join(
           System.tmp_dir!(),
-          "salix-deadline-chunk-#{System.unique_integer([:positive])}.mp3"
+          "salix-deadline-chunk-#{SystemsRuntime.Proc.unique_integer([:positive])}.mp3"
         )
 
       File.write!(path, audio)
@@ -35,12 +39,16 @@ defmodule SalixLlm.TranscribeTest do
   defmodule StreamingChunker do
     def with_mp3_chunks_stream(stream, source_size, _source_filename, callback, opts) do
       bytes = stream |> Enum.to_list() |> IO.iodata_to_binary()
-      send(self(), {:streaming_chunker_input, byte_size(bytes), source_size, opts[:deadline_ms]})
+
+      SystemsRuntime.Proc.send(
+        SystemsRuntime.Proc.self(),
+        {:streaming_chunker_input, byte_size(bytes), source_size, opts[:deadline_ms]}
+      )
 
       path =
         Path.join(
           System.tmp_dir!(),
-          "salix-streaming-chunk-#{System.unique_integer([:positive])}.mp3"
+          "salix-streaming-chunk-#{SystemsRuntime.Proc.unique_integer([:positive])}.mp3"
         )
 
       File.write!(path, bytes)
@@ -66,7 +74,7 @@ defmodule SalixLlm.TranscribeTest do
       dir =
         Path.join(
           System.tmp_dir!(),
-          "salix-manifest-chunks-#{System.unique_integer([:positive])}"
+          "salix-manifest-chunks-#{SystemsRuntime.Proc.unique_integer([:positive])}"
         )
 
       File.mkdir_p!(dir)
@@ -297,7 +305,7 @@ defmodule SalixLlm.TranscribeTest do
       transcribe = fn _cfg, audio_b64, "mp3", _prompt ->
         case Base.decode64!(audio_b64) do
           "first" ->
-            Process.sleep(40)
+            SystemsRuntime.Proc.sleep(40)
             {:ok, "[00:02] Alice: first"}
 
           "second" ->
@@ -389,7 +397,7 @@ defmodule SalixLlm.TranscribeTest do
       chunks = test_chunks(["one", "two", "three", "four"], [0, 300, 600, 900])
 
       slow_transcribe = fn _cfg, _audio_b64, "mp3", _prompt ->
-        Process.sleep(200)
+        SystemsRuntime.Proc.sleep(200)
         {:ok, "[00:01] Speaker: eventually"}
       end
 
@@ -403,6 +411,57 @@ defmodule SalixLlm.TranscribeTest do
                )
 
       assert System.monotonic_time(:millisecond) - started < 150
+    end
+  end
+
+  describe "the request" do
+    test "asks for the reasoning effort the tier names, and none otherwise" do
+      cfg = %{"reasoning_effort" => "low"}
+
+      assert %{"reasoning_effort" => "low", "model" => "gemini-audio"} =
+               Transcribe.request_body("gemini-audio", cfg, "AAAA", "mp3", "p")
+
+      refute Map.has_key?(
+               Transcribe.request_body("gemini-audio", %{}, "AAAA", "mp3", "p"),
+               "reasoning_effort"
+             )
+    end
+  end
+
+  describe "hedged/2" do
+    # Each request takes the next answer: an answer, or :hang to never answer.
+    defp scripted(answers) do
+      {:ok, script} = Agent.start_link(fn -> {answers, 0} end)
+
+      fun = fn _cfg, _audio_b64, _format, _prompt ->
+        case Agent.get_and_update(script, fn {[next | rest], n} -> {next, {rest, n + 1}} end) do
+          # Nothing sends this: the request never answers.
+          :hang -> receive(do: (:never -> nil))
+          answer -> answer
+        end
+      end
+
+      {fun, fn -> Agent.get(script, fn {_rest, n} -> n end) end}
+    end
+
+    test "a slow request is asked again and the first complete transcript wins" do
+      {fun, requests} = scripted([:hang, {:ok, "second"}])
+      assert {:ok, "second"} = Transcribe.hedged(fun, 10).(%{}, "AAAA", "mp3", "p")
+      assert requests.() == 2
+
+      {fun, requests} = scripted([{:ok, "first"}])
+      assert {:ok, "first"} = Transcribe.hedged(fun, 60_000).(%{}, "AAAA", "mp3", "p")
+      assert requests.() == 1
+    end
+
+    test "a failed request is asked again at once, and two failures return the first" do
+      cut = {:error, {:asr_incomplete_transcript, "content_filter"}}
+      {fun, _requests} = scripted([cut, {:ok, "whole"}])
+      assert {:ok, "whole"} = Transcribe.hedged(fun, 60_000).(%{}, "AAAA", "mp3", "p")
+
+      {fun, requests} = scripted([cut, {:error, :asr_provider_error}])
+      assert ^cut = Transcribe.hedged(fun, 60_000).(%{}, "AAAA", "mp3", "p")
+      assert requests.() == 2
     end
   end
 
@@ -435,10 +494,10 @@ defmodule SalixLlm.TranscribeTest do
     end
 
     test "the whole-job deadline includes preprocessing before chunk ASR" do
-      test_pid = self()
+      test_pid = SystemsRuntime.Proc.self()
 
       transcribe = fn _cfg, _audio_b64, "mp3", _prompt ->
-        send(test_pid, :chunk_asr_started_after_deadline)
+        SystemsRuntime.Proc.send(test_pid, :chunk_asr_started_after_deadline)
         {:ok, "late transcript"}
       end
 
@@ -489,7 +548,10 @@ defmodule SalixLlm.TranscribeTest do
 
   defp test_chunks(contents, offsets) do
     dir =
-      Path.join(System.tmp_dir!(), "salix-transcribe-test-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "salix-transcribe-test-#{SystemsRuntime.Proc.unique_integer([:positive])}"
+      )
 
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)

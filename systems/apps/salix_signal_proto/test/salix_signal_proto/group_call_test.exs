@@ -1,5 +1,5 @@
 defmodule SalixSignalProto.GroupCallTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixSignalProto.{CallSignaling, GroupCall, ServiceId}
   alias SalixSignalProto.Group.{Params, Uid}
@@ -51,7 +51,7 @@ defmodule SalixSignalProto.GroupCallTest do
 
     test "a low-order SFU key is rejected" do
       assert {:error, :invalid_public_key} =
-               GroupCall.srtp_keys(:crypto.strong_rand_bytes(32), <<0::256>>)
+               GroupCall.srtp_keys(SystemsRuntime.Proc.random_bytes(32), <<0::256>>)
     end
   end
 
@@ -77,7 +77,7 @@ defmodule SalixSignalProto.GroupCallTest do
     end
 
     test "the ratchet counter wraps at 256" do
-      assert {0, _} = Frame.advance({255, :crypto.strong_rand_bytes(32)}, 1)
+      assert {0, _} = Frame.advance({255, SystemsRuntime.Proc.random_bytes(32)}, 1)
     end
   end
 
@@ -125,7 +125,7 @@ defmodule SalixSignalProto.GroupCallTest do
 
   describe "frame receive rules" do
     setup do
-      secret = :crypto.strong_rand_bytes(32)
+      secret = SystemsRuntime.Proc.random_bytes(32)
       {:ok, sender: Sender.new(secret), secret: secret}
     end
 
@@ -144,7 +144,7 @@ defmodule SalixSignalProto.GroupCallTest do
     end
 
     test "a rotated key replaces nothing: the five newest keys are held" do
-      keys = for _ <- 1..6, do: {0, :crypto.strong_rand_bytes(32)}
+      keys = for _ <- 1..6, do: {0, SystemsRuntime.Proc.random_bytes(32)}
       receiver = Enum.reduce(keys, Receiver.new(), &Receiver.add_key(&2, &1))
       assert length(receiver.states) == 5
 
@@ -296,8 +296,8 @@ defmodule SalixSignalProto.GroupCallTest do
 
   describe "messages over Signal" do
     test "a media key call message reads back through the opaque payload" do
-      gid = :crypto.strong_rand_bytes(32)
-      secret = :crypto.strong_rand_bytes(32)
+      gid = SystemsRuntime.Proc.random_bytes(32)
+      secret = SystemsRuntime.Proc.random_bytes(32)
       message = GroupCall.Messages.media_key(gid, 7, secret, 48)
 
       assert {:ok, %{payload: {:opaque, data, :droppable}}} = CallSignaling.decode(message)
@@ -314,7 +314,7 @@ defmodule SalixSignalProto.GroupCallTest do
     end
 
     test "invalid media keys are ignored (section 9.1)" do
-      gid = :crypto.strong_rand_bytes(32)
+      gid = SystemsRuntime.Proc.random_bytes(32)
 
       for key <- [
             %Wire.MediaKey{ratchet_counter: 256, secret: <<1::256>>, demux_id: 16},
@@ -331,7 +331,7 @@ defmodule SalixSignalProto.GroupCallTest do
     end
 
     test "a ring intention is examined before the device message (CRS-12 section 5.4)" do
-      gid = :crypto.strong_rand_bytes(32)
+      gid = SystemsRuntime.Proc.random_bytes(32)
 
       assert {:ok, %{payload: {:opaque, data, :immediate}}} =
                CallSignaling.decode(Messages.ring(gid, :ring, -5))

@@ -17,7 +17,7 @@ defmodule BillingCommerce.DefaultEntitlements do
   @spec issue_bridge_platform_unlimited(map()) :: {:ok, map()} | {:error, term()}
   def issue_bridge_platform_unlimited(attrs) when is_map(attrs) do
     org_id = required(attrs, :organization_id)
-    valid_from = attrs[:valid_from] || attrs["valid_from"] || DateTime.utc_now()
+    valid_from = attrs[:valid_from] || attrs["valid_from"] || SystemsClock.utc_now()
     expires_at = attrs[:expires_at] || attrs["expires_at"] || @bridge_far_future_expires_at
 
     with {:ok, _package} <- ensure_bridge_platform_unlimited_package(attrs),

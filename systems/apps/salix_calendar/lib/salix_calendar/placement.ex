@@ -13,5 +13,5 @@ defmodule SalixCalendar.Placement do
     do: impl().ensure_source_started(group_id, calendar_id, source_id, opts)
 
   defp impl,
-    do: Application.get_env(:salix_calendar, :placement, SalixCalendar.Fleet)
+    do: SystemsRuntime.get_env(:salix_calendar, :placement, SalixCalendar.Fleet)
 end

@@ -29,13 +29,13 @@
 | Recommendation 有界 Source Collector 与受限 Renderer | 产品 Runtime | [`CommaWeb.RecommendationSourceCollector`](../../../systems/apps/comma_web/lib/comma_web/recommendation_source_collector.ex)<br>[`RecommendationRuntime`](../../../systems/apps/comma_web/lib/comma_web/recommendation_runtime.ex) | [HTTP refresh durably queues work before collection and publishes one stateless model response](../../../systems/apps/comma_web/test/local_recommendation_flow_test.exs) |
 | Recommendation 版本化 Contract 与 Electron Media Intake | 客户端边界 | [`@comma/recommendation-contract`](../../../clients/packages/recommendation-contract/src/index.ts)<br>[`recommendationMedia.load`](../../../clients/packages/native-bridge/src/capability-leaves.ts)<br>[`Electron Recommendation Media`](../../../clients/apps/electron/src/main/modules/recommendation-media/index.ts) | [rejects a hostname if any returned address is private](../../../clients/apps/electron/src/main/test/recommendation-media.test.ts) |
 | Internal Runtime Session | 执行 Owner | [`SalixAgent.InternalSessionActor`](../../../systems/apps/salix_agent/lib/salix_agent/internal_session_actor.ex) | — |
-| External Runtime Session | 执行 Owner | [`SalixAgent.ExternalSessionActor`](../../../systems/apps/salix_agent/lib/salix_agent/external_session_actor.ex) | — |
+| Retired Session | 执行 Owner | [`SalixAgent.RetiredSessions`](../../../systems/apps/salix_agent/lib/salix_agent/retired_sessions.ex) | — |
 
 ## 客户端 Workspace 模块
 
 | 模块 | 类型 | 产品/Peer 依赖 | 开发依赖 |
 | --- | --- | --- | --- |
-| [@comma/admin](../../../clients/apps/admin/package.json) | 应用 | @comma/app<br>@comma/config<br>@comma/ui | — |
+| [@comma/admin](../../../clients/apps/admin/package.json) | 应用 | @comma/config<br>@comma/i18n<br>@comma/ui | — |
 | [@comma/app](../../../clients/packages/app/package.json) | 包 | @comma/chat-contract<br>@comma/config<br>@comma/i18n<br>@comma/layout-inspector<br>@comma/native-bridge<br>@comma/product-inbox-runtime<br>@comma/recommendation-contract<br>@comma/session-contract<br>@comma/session-history-runtime<br>@comma/ui | — |
 | [@comma/bft](../../../clients/apps/bft/package.json) | 应用 | @comma/ui | — |
 | [@comma/chat-contract](../../../clients/packages/chat-contract/package.json) | 包 | — | — |

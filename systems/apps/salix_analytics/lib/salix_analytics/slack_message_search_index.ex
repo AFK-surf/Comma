@@ -60,7 +60,7 @@ defmodule SalixAnalytics.SlackMessageSearchIndex do
         "file_id" => "",
         "change_epoch" => captured.change_epoch,
         "build_sequence" => captured.build_sequence,
-        "build_id" => Ecto.UUID.generate(),
+        "build_id" => SystemsRuntime.Proc.uuid(),
         "unit_count" => if(source["deleted"], do: 0, else: 1)
       })
 

@@ -5,64 +5,6 @@ import VerifiedKernel.Grapheme
 namespace VerifiedKernel.Session
 open Data
 
-def mergePredicate (state kind through replacement extra : Term) : KernelM Term := do
-  let redactions := (← field state "redactions").default (list [])
-  let split ← enumFold redactions ([], []) (fun (same, rest) entry => do
-    if (← Data.event entry "kind") == kind then return (same ++ [entry], rest)
-    return (same, rest ++ [entry]))
-  let entry ← match split.1 with
-    | [] => pure (.map [(b "kind", kind), (b "through_id", through), (b "replacement", replacement)])
-    | existing :: _ => do
-      let through ← maximum ((← Data.event existing "through_id").default (i 0)) through
-      let _ ← fetch existing (b "through_id")
-      let _ ← fetch existing (b "replacement")
-      pure (existing.put (b "through_id") through |>.put (b "replacement") replacement)
-  let old ← Data.event entry "max_bytes"
-  let new ← Data.event extra "max_bytes"
-  let entry ← if old.isInteger && new.isInteger then put entry (b "max_bytes") (← minimum old new)
-    else if new.isInteger then put entry (b "max_bytes") new else pure entry
-  write state [("redactions", list (split.2 ++ [entry]))]
-
-def microcompactIds (state : Term) (ids : List Term) (replacement event : Term) : KernelM Term := do
-  let window ← enumFold ((← field state "messages").default (list [])) empty (fun acc message => do
-    let id := (← access message (a "id")).default (← access message (b "id"))
-    let seq := (← access message (a "seq")).default (← access message (b "seq"))
-    return if seq.isInteger then acc.put id seq else acc)
-  let created ← Data.event event "created_at"
-  let stamp := if created.truthy then Term.map [(b "created_at", created)] else empty
-  let items ← (← sorted ids).mapM (fun id => do
-    let base := Term.map [(b "message_id", id), (b "replacement", replacement), (b "reason", b "microcompact")]
-    let seq := window.get id
-    let withSeq := if seq == nil then base else base.put (b "seq") seq
-    merge withSeq stamp)
-  write state [("redactions", ← append ((← field state "redactions").default (list [])) (list items))]
-
-def microcompact (state event : Term) : KernelM Term := do
-  let ids ← enumMap ((← Data.event event "message_ids").default (list [])) pure
-  let ids := uniq ids
-  let replacement := (← Data.event event "new_content").default (b "[microcompacted]")
-  let format ← field state "storage_format"
-  let toolThrough ← Data.event event "tool_messages_through"
-  let otherThrough ← Data.event event "non_model_messages_over_bytes_through"
-  let maxBytes ← Data.event event "non_model_message_max_bytes"
-  if format.isInteger && integerValue format ≥ 2 then
-    if toolThrough.isInteger then mergePredicate state (b "tool_messages_through") toolThrough replacement empty
-    else if otherThrough.isInteger && maxBytes.isInteger && integerValue maxBytes > 0 then
-      mergePredicate state (b "non_model_messages_over_bytes_through") otherThrough replacement (.map [(b "max_bytes", maxBytes)])
-    else microcompactIds state ids replacement event
-  else
-    let messages ← enumMap ((← field state "messages").default (list [])) (fun message => do
-      let id := (← get? message (a "id")).default (← get? message (b "id"))
-      let role := (← get? message (a "role")).default (← get? message (b "role"))
-      let content := (← get? message (a "content")).default (← get? message (b "content"))
-      let contentSize := match content with | .binary bytes => bytes.size | _ => 0
-      let selected := ids.any (· == id) ||
-        (otherThrough.isInteger && id.isInteger && integerValue id ≤ integerValue otherThrough &&
-          role != b "assistant" && content.isBinary && maxBytes.isInteger && Int.ofNat contentSize > integerValue maxBytes)
-      if selected then put message (if message.has (a "content") then a "content" else b "content") replacement
-      else pure message)
-    write state [("messages", list messages), ("live_context_bytes", nil)]
-
 def compactedSequence (state through pinned : Term) : KernelM Term := do
   let candidate ← if pinned.isInteger then pure pinned else do
     let found ← enumFind ((← field state "messages").default (list [])) (fun message => do

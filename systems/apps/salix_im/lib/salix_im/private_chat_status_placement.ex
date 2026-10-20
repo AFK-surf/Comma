@@ -9,7 +9,7 @@ defmodule SalixIM.PrivateChatStatusPlacement do
   def local_owner?(agent_id), do: impl().local_owner?(agent_id)
 
   defp impl,
-    do: Application.get_env(:salix_im, :private_chat_status_placement, __MODULE__.Local)
+    do: SystemsRuntime.get_env(:salix_im, :private_chat_status_placement, __MODULE__.Local)
 
   defmodule Local do
     @moduledoc false

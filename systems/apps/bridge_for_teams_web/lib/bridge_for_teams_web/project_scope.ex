@@ -3,7 +3,7 @@ defmodule BridgeForTeamsWeb.ProjectScope do
   Shared org/project resolution and RBAC checks for dashboard-owned HTTP
   surfaces.
 
-  LiveView pages and CLI/API controllers may enter through different transports,
+  Dashboard API and CLI controllers may enter through different transports,
   but project-scoped product operations must resolve the same org/project refs
   and enforce the same membership rules before calling core contexts.
   """

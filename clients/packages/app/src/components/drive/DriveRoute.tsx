@@ -1,7 +1,9 @@
 import { useApplicationMenu } from "../application-menu/useApplicationMenu";
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
 import { getNativeBridge } from "@comma/native-bridge";
-import { AiInputDropOverlay, ContentHeader, toast } from "@comma/ui";
+import { AiInputDropOverlay } from "@comma/ui/components/ai-input";
+import { ContentHeader } from "@comma/ui/components/content-header";
+import { toast } from "@comma/ui/components/toast";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   useCallback,
@@ -13,23 +15,22 @@ import {
 } from "react";
 import { revealLabel } from "../../runtime-files/fileDownloads";
 import { commaDriveSpaceRailWidth } from "../shellGeometry";
-import { useCommaAuth } from "../auth-context";
+import { useCall } from "@comma/core-client";
 import {
   driveSidebarHost,
   useChatSidebar,
   useRegisterChatSidebarHost,
 } from "../chat-sidebar/ChatSidebarContext";
 import { isStaleChatSessionError, useChatRegistry } from "../chat/ChatProvider";
-import type { AttachmentUploadInput } from "../chat/model/conversationChannel";
+import type { AttachmentUploadInput } from "@comma/core/chat";
 import {
   isAllowedAttachment,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS_PER_MESSAGE,
-} from "../chat/model/protocol";
+} from "@comma/core/chat";
 import { resolveWorkspaceChat } from "../chat/useWorkspaceChat";
 import type { DriveFileMenuAction } from "./DriveFileMenu";
-import { driveVersionCount } from "./driveStore";
-import { driveSpacesRoot } from "./driveSynchronicityBackend";
+import { driveFileWritable, driveSpacesRoot } from "./driveStore";
 import { DriveFileList } from "./DriveFileList";
 import { DriveSelectionBar } from "./DriveSelectionBar";
 import { DriveDeleteDialog } from "./DriveDeleteDialog";
@@ -59,13 +60,11 @@ import {
   uploadDriveFiles,
 } from "./driveTransfers";
 import {
-  enrollDriveDevice,
+  driveNodeAvailable,
   ensureDriveFileBlob,
   ensureDriveFileThumbnail,
-  getDriveBackend,
-  refreshDrive,
-  restartDrive,
-  useDriveBackendLoad,
+  openDriveLocalRoot,
+  useDriveRefreshOnFocus,
 } from "./driveBackend";
 import { useDriveFileReveal } from "./useDriveFileReveal";
 import { collectDroppedFiles, useDriveDropZone } from "./driveDropZone";
@@ -80,19 +79,16 @@ export function DriveRoute() {
   const bridge = getNativeBridge();
   const canReveal = bridge.platform === "electron";
   const fileRevealLabel = canReveal ? revealLabel(bridge.os, locale) : undefined;
-  const backend = getDriveBackend();
+  // This device's node: Drive can change here. Without one (the web), it only reads.
+  const node = driveNodeAvailable();
   const revealSearch = useSearch({ strict: false });
   const routeRef = useRef<HTMLElement>(null);
+  const call = useCall();
   const transferDeps = useMemo(
-    () => ({ ...(backend ? { backend } : {}), bridge, locale }),
-    [backend, bridge, locale]
+    () => ({ call, bridge, locale }),
+    [bridge, call, locale]
   );
-  const { api } = useCommaAuth();
-  // Enrollment is opportunistic: a Workspace without a network yet, or no
-  // connection, leaves the node on its own key and the next launch tries again.
-  useDriveBackendLoad(store, backend, (state) => {
-    if (backend) void enrollDriveDevice(api, backend, state).catch(() => {});
-  });
+  useDriveRefreshOnFocus(call, true);
   const nodeRejected = useCallback(
     (title: string, error: unknown) => {
       toast.error(title, {
@@ -119,7 +115,7 @@ export function DriveRoute() {
     void navigate({ to: "/drive", search: {}, replace: true });
   }, [navigate]);
   const revealFileId = useDriveFileReveal({
-    backend,
+    call,
     folderPath,
     onConsumed: clearRevealSearch,
     rootRef: routeRef,
@@ -128,9 +124,7 @@ export function DriveRoute() {
     snapshot,
     store,
   });
-  const [folderDialog, setFolderDialog] = useState<
-    { kind: "create" } | { kind: "rename"; space: DriveSpace } | undefined
-  >();
+  const [folderDialog, setFolderDialog] = useState<{ space: DriveSpace } | undefined>();
   const [syncPickerOpen, setSyncPickerOpen] = useState(false);
   const [syncHistoryOpen, setSyncHistoryOpen] = useState(false);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -142,15 +136,30 @@ export function DriveRoute() {
   // The panel's X is "done with these": it hides the panel and marks the
   // finished rows for removal. The removal itself waits for the next open, so
   // the rows never vanish underneath the closing animation, and whatever
-  // opens it next — the toolbar button or a fresh upload — starts clean.
+  // opens it next — the toolbar button or a fresh upload — starts clean: the
+  // rows the core drops stay out of the panel until it has dropped them.
   const transfersDismissed = useRef(false);
+  const [dismissedTransfers, setDismissedTransfers] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
   const openTransfers = useCallback(() => {
     if (transfersDismissed.current) {
       transfersDismissed.current = false;
-      store.dismissFinishedTransfers();
+      setDismissedTransfers(
+        new Set(
+          snapshot.transfers
+            .filter((transfer) => transfer.status !== "in_progress")
+            .map((transfer) => transfer.id)
+        )
+      );
+      void call("drive.dismissTransfers", {}).catch(() => undefined);
     }
     setTransfersOpen(true);
-  }, [store]);
+  }, [call, snapshot.transfers]);
+  const shownTransfers = useMemo(
+    () => snapshot.transfers.filter((transfer) => !dismissedTransfers.has(transfer.id)),
+    [dismissedTransfers, snapshot.transfers]
+  );
   const dismissTransfers = useCallback(() => {
     transfersDismissed.current = true;
     setTransfersOpen(false);
@@ -161,24 +170,14 @@ export function DriveRoute() {
   const { closeDrivePreview, openDrivePreview } = useChatSidebar();
   useRegisterChatSidebarHost(driveSidebarHost);
 
-  const currentDevice =
-    snapshot.devices.find((device) => device.current) ?? snapshot.devices[0];
-  const currentDeviceId = currentDevice?.id ?? "";
   const selectedSpace = snapshot.spaces.find(
     (space) => space.id === snapshot.selectedSpaceId
   );
   const selectedSpaceWritable = selectedSpace?.writable !== false;
-  // The current device shows the whole unified tree; picking another device
-  // pins the list to that origin's files, Synchronicity's `--select origin=`.
+  // The core lists the picked origin device's copies already.
   const spaceFiles = useMemo(
-    () =>
-      snapshot.files.filter(
-        (file) =>
-          file.spaceId === snapshot.selectedSpaceId &&
-          (snapshot.originDeviceId === currentDeviceId ||
-            file.deviceId === snapshot.originDeviceId)
-      ),
-    [snapshot.files, snapshot.selectedSpaceId, snapshot.originDeviceId, currentDeviceId]
+    () => snapshot.files.filter((file) => file.spaceId === snapshot.selectedSpaceId),
+    [snapshot.files, snapshot.selectedSpaceId]
   );
   const openPreview = useCallback(
     (file: DriveFile) => {
@@ -196,9 +195,9 @@ export function DriveRoute() {
 
   const runDownload = useCallback(
     (file: DriveFile) => {
-      void downloadDriveFile(store, file, transferDeps);
+      void downloadDriveFile(file, transferDeps);
     },
-    [store, transferDeps]
+    [transferDeps]
   );
 
   const clearSelection = useCallback(() => {
@@ -218,8 +217,8 @@ export function DriveRoute() {
         // here; the size gate comes first so an oversized file is never read.
         const blob =
           file.blob ??
-          (backend && file.sizeBytes <= MAX_ATTACHMENT_BYTES
-            ? await ensureDriveFileBlob(store, backend, file).catch(() => undefined)
+          (file.sizeBytes <= MAX_ATTACHMENT_BYTES
+            ? await ensureDriveFileBlob(store, call, file).catch(() => undefined)
             : undefined);
         const eligible =
           blob !== undefined &&
@@ -242,11 +241,11 @@ export function DriveRoute() {
 
       const attempt = registry.beginAttempt();
       try {
-        await attempt.run(async (attemptApi, signal) => {
+        await attempt.run(async (signal) => {
           let target = registry.getHomeConversationTarget();
           if (!target) {
             const resolution = await resolveWorkspaceChat({
-              api: attemptApi,
+              core: registry.core,
               locale,
               session: registry.productLease,
               signal,
@@ -280,7 +279,7 @@ export function DriveRoute() {
         attempt.release();
       }
     },
-    [backend, clearSelection, locale, messages, navigate, registry, store]
+    [call, clearSelection, locale, messages, navigate, registry, store]
   );
 
   const onFileMenuAction = useCallback(
@@ -290,89 +289,61 @@ export function DriveRoute() {
         return;
       }
       if (action === "download") {
-        void downloadDriveFile(store, file, transferDeps);
+        runDownload(file);
         return;
       }
       if (action === "keep-offline") {
+        if (file.system) return;
         const keepOffline = !(file.keepOffline ?? false);
-        if (backend) {
-          void backend
-            .setKeepOffline(file, keepOffline)
-            .then(() => {
-              store.setKeepOffline(file.id, keepOffline);
-              toast(
-                keepOffline
-                  ? messages.drive_keep_offline_on_title()
-                  : messages.drive_keep_offline_off_title(),
-                {
-                  description: keepOffline
-                    ? messages.drive_keep_offline_on_description({ name: file.name })
-                    : messages.drive_keep_offline_off_description({ name: file.name }),
-                  id: `comma-drive-keep-offline-${file.id}`,
-                  testId: `comma-drive-keep-offline-${file.id}`,
-                }
-              );
-            })
-            .catch((error: unknown) =>
-              nodeRejected(messages.drive_keep_offline_failed_title(), error)
+        void call("drive.keepOffline", { files: [file.id], keepOffline })
+          .then(() => {
+            toast(
+              keepOffline
+                ? messages.drive_keep_offline_on_title()
+                : messages.drive_keep_offline_off_title(),
+              {
+                description: keepOffline
+                  ? messages.drive_keep_offline_on_description({ name: file.name })
+                  : messages.drive_keep_offline_off_description({ name: file.name }),
+                id: `comma-drive-keep-offline-${file.id}`,
+                testId: `comma-drive-keep-offline-${file.id}`,
+              }
             );
-          return;
-        }
-        const updated = store.setKeepOffline(file.id, keepOffline);
-        if (!updated) return;
-        toast(
-          keepOffline
-            ? messages.drive_keep_offline_on_title()
-            : messages.drive_keep_offline_off_title(),
-          {
-            description: keepOffline
-              ? messages.drive_keep_offline_on_description({ name: file.name })
-              : messages.drive_keep_offline_off_description({ name: file.name }),
-            id: `comma-drive-keep-offline-${file.id}`,
-            testId: `comma-drive-keep-offline-${file.id}`,
-          }
-        );
+          })
+          .catch((error: unknown) =>
+            nodeRejected(messages.drive_keep_offline_failed_title(), error)
+          );
         return;
       }
       // Delete leaves the space on every device, so it is confirmed first;
       // the removal itself happens in `confirmDelete`.
-      if (
-        store.getSnapshot().spaces.find((space) => space.id === file.spaceId)
-          ?.writable === false
-      )
-        return;
+      if (!driveFileWritable(file, store.getSnapshot().spaces)) return;
       setDeleteTarget([file]);
     },
-    [askCommaAgent, backend, messages, nodeRejected, store, transferDeps]
+    [askCommaAgent, call, messages, nodeRejected, runDownload, store]
   );
 
   const confirmDelete = useCallback(async () => {
     const files = deleteTarget;
     if (!files || files.length === 0) return;
-    if (
-      files.some(
-        (file) =>
-          store.getSnapshot().spaces.find((space) => space.id === file.spaceId)
-            ?.writable === false
-      )
-    )
+    if (files.some((file) => !driveFileWritable(file, store.getSnapshot().spaces)))
       return;
-    if (backend) {
-      try {
-        await Promise.all(files.map((file) => backend.deleteFile(file)));
-      } catch {
-        toast.error(messages.drive_delete_failed_title(), {
-          description: messages.drive_node_rejected_description(),
-          id: "comma-drive-delete",
-          testId: "comma-drive-delete",
-        });
-        return;
-      }
+    try {
+      await call("drive.delete", { files: files.map((file) => file.id) });
+    } catch (error) {
+      setDeleteTarget(undefined);
+      // The Router changed a System Files entry since it was shown: the latest shows, and the user decides again.
+      toast.error(messages.drive_delete_failed_title(), {
+        description:
+          (error as { code?: unknown } | null)?.code === "changed"
+            ? messages.drive_delete_changed_description({ name: files[0]!.name })
+            : messages.drive_node_rejected_description(),
+        id: "comma-drive-delete",
+        testId: "comma-drive-delete",
+      });
+      return;
     }
-    for (const file of files) {
-      store.removeFile(file.id);
-      closePreviewTab(file.id);
-    }
+    for (const file of files) closePreviewTab(file.id);
     setSelectedFileIds((fileIds) => {
       const next = new Set(fileIds);
       for (const file of files) next.delete(file.id);
@@ -387,12 +358,12 @@ export function DriveRoute() {
       id: "comma-drive-delete",
       testId: "comma-drive-delete",
     });
-  }, [backend, closePreviewTab, deleteTarget, messages, store]);
+  }, [call, closePreviewTab, deleteTarget, messages, store]);
 
   const onSpaceMenuAction = useCallback(
     (action: DriveSpaceMenuAction, space: DriveSpace) => {
       if (action === "rename") {
-        setFolderDialog({ kind: "rename", space });
+        setFolderDialog({ space });
         return;
       }
       setStopSharingTarget({
@@ -405,106 +376,41 @@ export function DriveRoute() {
     []
   );
 
-  const syncSpaceOnNode = useCallback(
-    async (space: DriveSpace, synced: boolean) => {
-      if (!backend) return;
-      // What the write will do is decided before it runs: the listing
-      // already says which paths only other devices have (they land) and
-      // which ones the cluster disagrees about (they are left, and recorded
-      // as failed so the history can retry them with the cluster's version).
-      const files = store
-        .getSnapshot()
-        .files.filter((file) => file.spaceId === space.id);
-      const arriving = files.filter(
-        (file) => file.deviceId !== store.getSnapshot().originDeviceId
-      );
-      const conflicts = files.filter((file) => driveVersionCount(file) > 1);
-      const counts = await backend.setSpaceSynced(space, synced);
-      await refreshDrive(store, backend);
-      store.recordSyncHistory([
-        {
-          direction: "download",
-          kind: "folder",
-          name: space.name,
-          operation: synced ? "added" : "removed",
-          status: "success",
-        },
-        ...(synced && counts
-          ? [
-              ...arriving.slice(0, counts.adopt).map((file) => ({
-                direction: "download" as const,
-                kind: "file" as const,
-                name: file.name,
-                operation: "added" as const,
-                sizeBytes: file.sizeBytes,
-                status: "success" as const,
-              })),
-              ...conflicts.map((file) => ({
-                direction: "download" as const,
-                errorMessage: messages.drive_sync_history_conflict_reason(),
-                fileId: file.id,
-                kind: "file" as const,
-                name: file.name,
-                operation: "updated" as const,
-                sizeBytes: file.sizeBytes,
-                status: "failed" as const,
-              })),
-            ]
-          : []),
-      ]);
-      return counts;
-    },
-    [backend, messages, store]
+  const syncSpace = useCallback(
+    (space: DriveSpace, synced: boolean) =>
+      call("drive.setSpaceSynced", { space: space.id, synced }),
+    [call]
   );
 
   const onSpaceSyncedChange = useCallback(
     (space: DriveSpace, synced: boolean) => {
-      if (backend) {
-        void syncSpaceOnNode(space, synced)
-          .then((counts) => {
-            // A space this Mac publishes reports what it took in; one it
-            // replicates is copied by the node as it goes, into its checkout.
-            const onDescription = counts
-              ? messages.drive_sync_space_on_description({
-                  count: String(counts.adopt),
-                })
-              : messages.drive_sync_space_on_replica_description({
-                  path: `${driveSpacesRoot(snapshot.localSyncRoot)}/${space.id}`,
-                });
-            toast(
-              synced
-                ? messages.drive_sync_space_on_title({ name: space.name })
-                : messages.drive_sync_space_off_title({ name: space.name }),
-              {
-                description: synced
-                  ? onDescription
-                  : messages.drive_sync_space_off_description(),
-                id: `comma-drive-space-sync-${space.id}`,
-                testId: `comma-drive-space-sync-${space.id}`,
-              }
-            );
-          })
-          .catch((error: unknown) =>
-            nodeRejected(messages.drive_sync_failed_title(), error)
+      void syncSpace(space, synced)
+        .then((counts) => {
+          // A space this device publishes reports what it took in; one it
+          // replicates is copied by the node as it goes, into its checkout.
+          const onDescription = counts
+            ? messages.drive_sync_space_on_description({ count: String(counts.adopt) })
+            : messages.drive_sync_space_on_replica_description({
+                path: `${driveSpacesRoot(snapshot.localSyncRoot)}/${space.id}`,
+              });
+          toast(
+            synced
+              ? messages.drive_sync_space_on_title({ name: space.name })
+              : messages.drive_sync_space_off_title({ name: space.name }),
+            {
+              description: synced
+                ? onDescription
+                : messages.drive_sync_space_off_description(),
+              id: `comma-drive-space-sync-${space.id}`,
+              testId: `comma-drive-space-sync-${space.id}`,
+            }
           );
-        return;
-      }
-      const result = store.setSpaceSynced(space.id, synced);
-      if (!result) return;
-      toast(
-        synced
-          ? messages.drive_sync_space_on_title({ name: space.name })
-          : messages.drive_sync_space_off_title({ name: space.name }),
-        {
-          description: synced
-            ? messages.drive_sync_space_on_description({ count: String(result.copied) })
-            : messages.drive_sync_space_off_description(),
-          id: `comma-drive-space-sync-${space.id}`,
-          testId: `comma-drive-space-sync-${space.id}`,
-        }
-      );
+        })
+        .catch((error: unknown) =>
+          nodeRejected(messages.drive_sync_failed_title(), error)
+        );
     },
-    [backend, messages, nodeRejected, snapshot.localSyncRoot, store, syncSpaceOnNode]
+    [messages, nodeRejected, snapshot.localSyncRoot, syncSpace]
   );
 
   const onRailAction = useCallback(
@@ -513,18 +419,12 @@ export function DriveRoute() {
         folderInputRef.current?.click();
         return;
       }
-      if (!backend) {
-        setFolderDialog({ kind: "create" });
-        return;
-      }
-      // With a node, a new space is a folder on this Mac published to every
-      // device: the folder is picked, and its name is the space's.
-      void backend
-        .addSpaceFromFolder()
-        .then(async (added) => {
+      // A new space is a folder on this device published to every device: the
+      // folder is picked, and its name is the space's.
+      void call("drive.addSpace", {})
+        .then((added) => {
           if (!added) return;
-          await refreshDrive(store, backend);
-          store.selectSpace(added.id);
+          store.selectSpace(added.space);
           setFolderPath([]);
           toast.success(messages.drive_space_added_title({ name: added.name }), {
             description: messages.drive_space_added_description({ path: added.path }),
@@ -536,7 +436,7 @@ export function DriveRoute() {
           nodeRejected(messages.drive_space_add_failed_title(), error)
         );
     },
-    [backend, messages, nodeRejected, store]
+    [call, messages, nodeRejected, store]
   );
 
   const submitFolderName = useCallback(
@@ -544,44 +444,22 @@ export function DriveRoute() {
       const dialog = folderDialog;
       setFolderDialog(undefined);
       if (!dialog) return;
-      if (dialog.kind === "create") {
-        const space = store.addSpace(name);
-        store.selectSpace(space.id);
-        setFolderPath([]);
-        return;
-      }
-      if (backend) {
-        void backend
-          .renameSpace(dialog.space, name)
-          .then(() => refreshDrive(store, backend))
-          .then(() => {
-            toast.success(messages.drive_folder_renamed_title(), {
-              description: messages.drive_space_renamed_description({
-                from: dialog.space.name,
-                to: name,
-              }),
-              id: "comma-drive-folder-renamed",
-              testId: "comma-drive-folder-renamed",
-            });
-          })
-          .catch((error: unknown) =>
-            nodeRejected(messages.drive_rename_failed_title(), error)
-          );
-        return;
-      }
-      const renamed = store.renameSpace(dialog.space.id, name);
-      if (renamed?.synced) {
-        toast.success(messages.drive_folder_renamed_title(), {
-          description: messages.drive_folder_renamed_description({
-            from: dialog.space.name,
-            to: name,
-          }),
-          id: "comma-drive-folder-renamed",
-          testId: "comma-drive-folder-renamed",
-        });
-      }
+      void call("drive.renameSpace", { space: dialog.space.id, name })
+        .then(() => {
+          toast.success(messages.drive_folder_renamed_title(), {
+            description: messages.drive_space_renamed_description({
+              from: dialog.space.name,
+              to: name,
+            }),
+            id: "comma-drive-folder-renamed",
+            testId: "comma-drive-folder-renamed",
+          });
+        })
+        .catch((error: unknown) =>
+          nodeRejected(messages.drive_rename_failed_title(), error)
+        );
     },
-    [backend, folderDialog, messages, nodeRejected, store]
+    [call, folderDialog, messages, nodeRejected]
   );
 
   // Turning local sync on starts with choosing what to mirror; turning it
@@ -592,22 +470,17 @@ export function DriveRoute() {
         setSyncPickerOpen(true);
         return;
       }
-      if (!backend) {
-        store.setLocalSyncEnabled(false);
-        return;
-      }
       const mirrored = snapshot.spaces.filter((space) => space.synced === true);
-      void Promise.all(mirrored.map((space) => syncSpaceOnNode(space, false))).catch(
+      void Promise.all(mirrored.map((space) => syncSpace(space, false))).catch(
         (error: unknown) => nodeRejected(messages.drive_sync_failed_title(), error)
       );
     },
-    [backend, messages, nodeRejected, snapshot.spaces, store, syncSpaceOnNode]
+    [messages, nodeRejected, snapshot.spaces, syncSpace]
   );
 
   const openLocalRoot = useCallback(() => {
-    if (!backend) return;
-    void backend
-      .openLocalRoot()
+    if (!node) return;
+    void openDriveLocalRoot()
       .then((opened) => {
         if (!opened) {
           nodeRejected(messages.drive_open_local_failed_title(), "");
@@ -616,78 +489,48 @@ export function DriveRoute() {
       .catch((error: unknown) =>
         nodeRejected(messages.drive_open_local_failed_title(), error)
       );
-  }, [backend, messages, nodeRejected]);
+  }, [messages, nodeRejected, node]);
 
   const confirmStopSharing = useCallback(() => {
     const target = stopSharingTarget;
     if (!target) return;
-    if (backend) {
-      const space =
-        target.kind === "space"
-          ? snapshot.spaces.find((entry) => entry.id === target.spaceId)
-          : undefined;
-      const file = target.kind === "file" ? store.fileById(target.fileId) : undefined;
-      const stop =
-        target.kind === "file"
-          ? file
-            ? backend.deleteFile(file)
-            : Promise.resolve()
-          : space
-            ? backend.removeSpace(space)
-            : Promise.resolve();
-      void stop
-        .then(() => refreshDrive(store, backend))
-        .then(() => {
-          if (target.kind === "file") closePreviewTab(target.fileId);
-          else {
-            for (const entry of snapshot.files) {
-              if (entry.spaceId === target.spaceId) closePreviewTab(entry.id);
-            }
-          }
-          setStopSharingTarget(undefined);
-          toast.success(messages.drive_stop_sharing_done_title(), {
-            description: messages.drive_stop_sharing_done_description({
-              name: target.name,
-            }),
-            id: "comma-drive-stop-sharing",
-            testId: "comma-drive-stop-sharing",
+    const stop =
+      target.kind === "file"
+        ? call("drive.delete", { files: [target.fileId] })
+        : call("drive.removeSpace", { space: target.spaceId });
+    void stop
+      .then(() => {
+        if (target.kind === "file") {
+          closePreviewTab(target.fileId);
+          setSelectedFileIds((fileIds) => {
+            if (!fileIds.has(target.fileId)) return fileIds;
+            const next = new Set(fileIds);
+            next.delete(target.fileId);
+            return next;
           });
-        })
-        .catch((error: unknown) =>
-          nodeRejected(messages.drive_stop_sharing_failed_title(), error)
-        );
-      return;
-    }
-    if (target.kind === "file") {
-      store.removeFile(target.fileId);
-      closePreviewTab(target.fileId);
-      setSelectedFileIds((fileIds) => {
-        if (!fileIds.has(target.fileId)) return fileIds;
-        const next = new Set(fileIds);
-        next.delete(target.fileId);
-        return next;
-      });
-    } else {
-      for (const file of snapshot.files) {
-        if (file.spaceId === target.spaceId) closePreviewTab(file.id);
-      }
-      store.removeSpace(target.spaceId);
-    }
-    setStopSharingTarget(undefined);
-    toast.success(messages.drive_stop_sharing_done_title(), {
-      description: messages.drive_stop_sharing_done_description({ name: target.name }),
-      id: "comma-drive-stop-sharing",
-      testId: "comma-drive-stop-sharing",
-    });
+        } else {
+          for (const entry of snapshot.files)
+            if (entry.spaceId === target.spaceId) closePreviewTab(entry.id);
+        }
+        setStopSharingTarget(undefined);
+        toast.success(messages.drive_stop_sharing_done_title(), {
+          description: messages.drive_stop_sharing_done_description({
+            name: target.name,
+          }),
+          id: "comma-drive-stop-sharing",
+          testId: "comma-drive-stop-sharing",
+        });
+      })
+      .catch((error: unknown) =>
+        nodeRejected(messages.drive_stop_sharing_failed_title(), error)
+      );
   }, [
-    backend,
+    call,
     closePreviewTab,
     messages,
     nodeRejected,
     snapshot.files,
-    snapshot.spaces,
     stopSharingTarget,
-    store,
   ]);
 
   const onToggleSelected = useCallback((file: DriveFile, selected: boolean) => {
@@ -721,10 +564,8 @@ export function DriveRoute() {
             ...(relativeDir ? relativeDir.split("/") : []),
           ];
           void uploadDriveFiles(
-            store,
             files,
             {
-              deviceId: currentDeviceId,
               ...(target.length > 0 ? { folderPath: target.join("/") } : {}),
               spaceId: snapshot.selectedSpaceId,
             },
@@ -734,11 +575,9 @@ export function DriveRoute() {
       });
     },
     [
-      currentDeviceId,
       folderPath,
       openTransfers,
       snapshot.selectedSpaceId,
-      store,
       transferDeps,
       selectedSpaceWritable,
     ]
@@ -756,10 +595,8 @@ export function DriveRoute() {
       if (sources.length === 0) return;
       openTransfers();
       void uploadDriveFiles(
-        store,
         sources,
         {
-          deviceId: currentDeviceId,
           ...(folderPath.length > 0 ? { folderPath: folderPath.join("/") } : {}),
           spaceId: snapshot.selectedSpaceId,
         },
@@ -767,11 +604,9 @@ export function DriveRoute() {
       );
     },
     [
-      currentDeviceId,
       folderPath,
       openTransfers,
       snapshot.selectedSpaceId,
-      store,
       transferDeps,
       selectedSpaceWritable,
     ]
@@ -779,14 +614,9 @@ export function DriveRoute() {
 
   const onRetryTransfer = useCallback(
     (transfer: DriveTransfer) => {
-      void retryDriveTransfer(
-        store,
-        transfer.id,
-        { deviceId: currentDeviceId, spaceId: snapshot.selectedSpaceId },
-        transferDeps
-      );
+      void retryDriveTransfer(transfer, transferDeps);
     },
-    [currentDeviceId, snapshot.selectedSpaceId, store, transferDeps]
+    [transferDeps]
   );
 
   const onRevealTransfer = useCallback(
@@ -843,9 +673,9 @@ export function DriveRoute() {
   const downloadSelected = useCallback(() => {
     if (selectedFiles.length === 0) return;
     openTransfers();
-    void downloadDriveFiles(store, selectedFiles, transferDeps);
+    void downloadDriveFiles(selectedFiles, transferDeps);
     clearSelection();
-  }, [clearSelection, openTransfers, selectedFiles, store, transferDeps]);
+  }, [clearSelection, openTransfers, selectedFiles, transferDeps]);
 
   // Mixed selections pin: the action only unpins once every file is already
   // pinned, so the label always names what the press will do.
@@ -854,60 +684,37 @@ export function DriveRoute() {
     selectedFiles.every((file) => file.keepOffline ?? false);
 
   const keepOfflineSelected = useCallback(() => {
-    if (selectedFiles.length === 0) return;
+    // Nothing of System Files lives on a device to keep.
+    if (selectedFiles.length === 0 || selectedFiles.some((file) => file.system)) return;
     const keepOffline = !selectionKeptOffline;
-    if (backend) {
-      const changing = selectedFiles.filter(
-        (file) => (file.keepOffline ?? false) !== keepOffline
-      );
-      void Promise.all(
-        changing.map((file) => backend.setKeepOffline(file, keepOffline))
-      )
-        .then(() => {
-          store.setKeepOfflineMany(
-            new Set(changing.map((file) => file.id)),
-            keepOffline
-          );
-          toast(
-            keepOffline
-              ? messages.drive_keep_offline_on_title()
-              : messages.drive_keep_offline_off_title(),
-            {
-              description: keepOffline
-                ? messages.drive_keep_offline_on_many({
-                    count: String(changing.length),
-                  })
-                : messages.drive_keep_offline_off_many({
-                    count: String(changing.length),
-                  }),
-              id: "comma-drive-keep-offline-selection",
-              testId: "comma-drive-keep-offline-selection",
-            }
-          );
-        })
-        .catch((error: unknown) =>
-          nodeRejected(messages.drive_keep_offline_failed_title(), error)
+    const changing = selectedFiles.filter(
+      (file) => (file.keepOffline ?? false) !== keepOffline
+    );
+    if (changing.length === 0) return;
+    void call("drive.keepOffline", {
+      files: changing.map((file) => file.id),
+      keepOffline,
+    })
+      .then(() => {
+        toast(
+          keepOffline
+            ? messages.drive_keep_offline_on_title()
+            : messages.drive_keep_offline_off_title(),
+          {
+            description: keepOffline
+              ? messages.drive_keep_offline_on_many({ count: String(changing.length) })
+              : messages.drive_keep_offline_off_many({
+                  count: String(changing.length),
+                }),
+            id: "comma-drive-keep-offline-selection",
+            testId: "comma-drive-keep-offline-selection",
+          }
         );
-      return;
-    }
-    const changed = store.setKeepOfflineMany(
-      new Set(selectedFiles.map((file) => file.id)),
-      keepOffline
-    );
-    if (changed === 0) return;
-    toast(
-      keepOffline
-        ? messages.drive_keep_offline_on_title()
-        : messages.drive_keep_offline_off_title(),
-      {
-        description: keepOffline
-          ? messages.drive_keep_offline_on_many({ count: String(changed) })
-          : messages.drive_keep_offline_off_many({ count: String(changed) }),
-        id: "comma-drive-keep-offline-selection",
-        testId: "comma-drive-keep-offline-selection",
-      }
-    );
-  }, [backend, messages, nodeRejected, selectedFiles, selectionKeptOffline, store]);
+      })
+      .catch((error: unknown) =>
+        nodeRejected(messages.drive_keep_offline_failed_title(), error)
+      );
+  }, [call, messages, nodeRejected, selectedFiles, selectionKeptOffline]);
 
   // The bar's and the selection menu's Delete both go through the same sheet.
   const deleteSelected = useCallback(() => {
@@ -924,7 +731,7 @@ export function DriveRoute() {
     },
     {
       id: "drive-add-folder",
-      enabled: Boolean(backend),
+      enabled: node,
       run: () => onRailAction("new-folder"),
     },
     { id: "drive-download", enabled: selectedFiles.length > 0, run: downloadSelected },
@@ -950,21 +757,23 @@ export function DriveRoute() {
         <ContentHeader>
           <DriveToolbar
             className="-mr-xs flex-1"
+            device={node}
             devices={snapshot.devices}
             localSyncEnabled={snapshot.localSyncEnabled}
             localSyncRoot={snapshot.localSyncRoot}
             onLocalSyncEnabledChange={onLocalSyncEnabledChange}
             onOpenLocalRoot={openLocalRoot}
             onOpenSyncHistory={() => setSyncHistoryOpen(true)}
-            onSelectDevice={(deviceId) => {
-              store.setOriginDevice(deviceId);
-              if (backend) void refreshDrive(store, backend).catch(() => undefined);
-            }}
-            onSelectVersionPolicy={(policy) => {
-              store.setVersionPolicy(policy);
-              // The node's listing is what the policy selects, so it is re-read under the new one.
-              if (backend) void refreshDrive(store, backend).catch(() => {});
-            }}
+            onSelectDevice={(deviceId) =>
+              void call("drive.setView", { originDeviceId: deviceId }).catch(
+                () => undefined
+              )
+            }
+            onSelectVersionPolicy={(policy) =>
+              void call("drive.setView", { versionPolicy: policy }).catch(
+                () => undefined
+              )
+            }
             onToggleTransfers={() =>
               transfersOpen ? setTransfersOpen(false) : openTransfers()
             }
@@ -1021,25 +830,19 @@ export function DriveRoute() {
               }}
               onToggleFiles={onToggleFiles}
               onToggleSelected={onToggleSelected}
-              onNeedThumbnail={
-                backend
-                  ? (file) =>
-                      void ensureDriveFileThumbnail(store, backend, file).catch(
-                        () => {}
-                      )
-                  : undefined
+              onNeedThumbnail={(file) =>
+                void ensureDriveFileThumbnail(store, call, file).catch(() => {})
               }
-              onRetryNode={() => {
-                if (backend) {
-                  void restartDrive(store, backend).catch((error: unknown) =>
-                    nodeRejected(messages.drive_node_error_title(), error)
-                  );
-                }
-              }}
+              onRetryNode={() =>
+                void call("drive.restart", {}).catch((error: unknown) =>
+                  nodeRejected(messages.drive_node_error_title(), error)
+                )
+              }
               onUploadFiles={openFilePicker}
               node={snapshot.node}
               selectedFileIds={selectedFileIds}
               selecting={selectedFiles.length > 0}
+              pinnable={node && selectedSpace?.remote !== true}
               selectionKeptOffline={selectionKeptOffline}
               spaceName={
                 snapshot.spaces.find((space) => space.id === snapshot.selectedSpaceId)
@@ -1078,58 +881,21 @@ export function DriveRoute() {
         <DriveFolderNameDialog
           existingNames={snapshot.spaces.map((space) => space.name)}
           location={snapshot.localSyncRoot}
-          mode={
-            folderDialog.kind === "create"
-              ? { kind: "create" }
-              : { currentName: folderDialog.space.name, kind: "rename" }
-          }
+          mode={{ currentName: folderDialog.space.name, kind: "rename" }}
           onClose={() => setFolderDialog(undefined)}
           onSubmit={submitFolderName}
-          {...(folderDialog.kind === "rename"
-            ? { synced: folderDialog.space.synced ?? false }
-            : {})}
+          synced={folderDialog.space.synced ?? false}
         />
       ) : null}
       {syncHistoryOpen ? (
         <DriveSyncHistoryDialog
           entries={snapshot.syncHistory}
           onClose={() => setSyncHistoryOpen(false)}
-          onRetryFailures={() => {
-            if (!backend) {
-              store.retryFailedSync();
-              return;
-            }
-            // The cluster's version, taken for every conflict still open.
-            const open = snapshot.syncHistory.filter(
-              (entry) =>
-                entry.status === "failed" &&
-                entry.resolved !== true &&
-                entry.fileId !== undefined
-            );
-            const files = open.flatMap((entry) => {
-              const file =
-                entry.fileId === undefined ? undefined : store.fileById(entry.fileId);
-              return file ? [file] : [];
-            });
-            void Promise.all(files.map((file) => backend.adoptNewest(file)))
-              .then(() => refreshDrive(store, backend))
-              .then(() => {
-                store.markSyncResolved(new Set(open.map((entry) => entry.id)));
-                store.recordSyncHistory(
-                  files.map((file) => ({
-                    direction: "download" as const,
-                    kind: "file" as const,
-                    name: file.name,
-                    operation: "updated" as const,
-                    sizeBytes: file.sizeBytes,
-                    status: "success" as const,
-                  }))
-                );
-              })
-              .catch((error: unknown) =>
-                nodeRejected(messages.drive_sync_failed_title(), error)
-              );
-          }}
+          onRetryFailures={() =>
+            void call("drive.retrySync", {}).catch((error: unknown) =>
+              nodeRejected(messages.drive_sync_failed_title(), error)
+            )
+          }
         />
       ) : null}
       {syncPickerOpen ? (
@@ -1139,32 +905,25 @@ export function DriveRoute() {
             const selected = snapshot.spaces.filter((space) => spaceIds.has(space.id));
             if (selected.length === 0) return;
             try {
-              if (backend) {
-                const changes = snapshot.spaces.filter(
-                  (space) => Boolean(space.synced) !== spaceIds.has(space.id)
-                );
-                const results = await Promise.allSettled(
-                  changes.map((space) => syncSpaceOnNode(space, spaceIds.has(space.id)))
-                );
-                await refreshDrive(store, backend);
-                const failed = results.find((result) => result.status === "rejected");
-                if (failed?.status === "rejected") throw failed.reason;
-              } else {
-                store.setLocalSyncEnabled(true, spaceIds);
-              }
+              const changes = snapshot.spaces.filter(
+                (space) => Boolean(space.synced) !== spaceIds.has(space.id)
+              );
+              const results = await Promise.allSettled(
+                changes.map((space) => syncSpace(space, spaceIds.has(space.id)))
+              );
+              const failed = results.find((result) => result.status === "rejected");
+              if (failed?.status === "rejected") throw failed.reason;
               setSyncPickerOpen(false);
               toast.success(messages.drive_sync_started_title(), {
                 description: messages.drive_sync_started_description({
                   count: String(selected.length),
-                  path: backend
-                    ? selected
-                        .map(
-                          (space) =>
-                            space.originPath ||
-                            `${driveSpacesRoot(snapshot.localSyncRoot)}/${space.id}`
-                        )
-                        .join(", ")
-                    : snapshot.localSyncRoot,
+                  path: selected
+                    .map(
+                      (space) =>
+                        space.originPath ||
+                        `${driveSpacesRoot(snapshot.localSyncRoot)}/${space.id}`
+                    )
+                    .join(", "),
                 }),
                 id: "comma-drive-sync-started",
                 testId: "comma-drive-sync-started",
@@ -1173,8 +932,14 @@ export function DriveRoute() {
               nodeRejected(messages.drive_sync_failed_title(), error);
             }
           }}
-          sizeOf={(spaceId) => store.spaceSizeBytes(spaceId)}
-          spaces={snapshot.spaces}
+          sizeOf={(spaceId) =>
+            snapshot.files.reduce(
+              (total, file) =>
+                file.spaceId === spaceId ? total + file.sizeBytes : total,
+              0
+            )
+          }
+          spaces={snapshot.spaces.filter((space) => !space.remote)}
         />
       ) : null}
       {stopSharingTarget ? (
@@ -1200,7 +965,7 @@ export function DriveRoute() {
         onReveal={canReveal ? onRevealTransfer : undefined}
         open={transfersOpen}
         revealActionLabel={fileRevealLabel}
-        transfers={snapshot.transfers}
+        transfers={shownTransfers}
       />
       <input
         aria-hidden

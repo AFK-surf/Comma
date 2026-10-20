@@ -1,0 +1,145 @@
+// Cue deployment of meet-master-token-factory. The source is AFK-surf/meet_tokenfactory at
+// the revision in ../source.lock.json, checked out to ../.source by CI. Wrangler resolves
+// paths relative to this file. Only the staging and stable environments are deployed.
+// Keep observability off: login links and tokens must not reach Workers Logs. D1,
+// containers, Durable Objects and migrations are not inherited, so each environment
+// repeats them. The D1 database is resolved by name.
+{
+  "name": "meet-master-token-factory",
+  "main": "../.source/master-token-factory/worker/containers.js",
+  "compatibility_date": "2026-09-29",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "enable_request_signal"
+  ],
+  "observability": {
+    "enabled": false
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "meet-mtf-dev"
+    }
+  ],
+  "containers": [
+    {
+      "class_name": "AccountBrowser",
+      "image": "../.source/master-token-factory/container/Dockerfile",
+      "image_build_context": "../.source/master-token-factory",
+      "max_instances": 3,
+      "instance_type": "standard-1",
+      "rollout_step_percentage": 100,
+      "rollout_active_grace_period": 300
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ACCOUNT",
+        "class_name": "AccountBrowser"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "AccountBrowser"
+      ]
+    }
+  ],
+  "env": {
+    "staging": {
+      "name": "meet-master-token-factory-staging",
+      "workers_dev": false,
+      "routes": [
+        {
+          "pattern": "meet-mtf-staging.afk.surf",
+          "custom_domain": true
+        }
+      ],
+      "observability": {
+        "enabled": false
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "meet-mtf-staging"
+        }
+      ],
+      "containers": [
+        {
+          "class_name": "AccountBrowser",
+          "image": "../.source/master-token-factory/container/Dockerfile",
+          "image_build_context": "../.source/master-token-factory",
+          "max_instances": 3,
+          "instance_type": "standard-1",
+          "rollout_step_percentage": 100,
+          "rollout_active_grace_period": 300
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "ACCOUNT",
+            "class_name": "AccountBrowser"
+          }
+        ]
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": [
+            "AccountBrowser"
+          ]
+        }
+      ]
+    },
+    "stable": {
+      "name": "meet-master-token-factory-stable",
+      "workers_dev": false,
+      "routes": [
+        {
+          "pattern": "meet-mtf-prod.afk.surf",
+          "custom_domain": true
+        }
+      ],
+      "observability": {
+        "enabled": false
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "meet-mtf-stable"
+        }
+      ],
+      "containers": [
+        {
+          "class_name": "AccountBrowser",
+          "image": "../.source/master-token-factory/container/Dockerfile",
+          "image_build_context": "../.source/master-token-factory",
+          "max_instances": 3,
+          "instance_type": "standard-1",
+          "rollout_step_percentage": 100,
+          "rollout_active_grace_period": 300
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "ACCOUNT",
+            "class_name": "AccountBrowser"
+          }
+        ]
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": [
+            "AccountBrowser"
+          ]
+        }
+      ]
+    }
+  }
+}

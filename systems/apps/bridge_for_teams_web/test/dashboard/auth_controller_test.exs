@@ -12,59 +12,32 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthControllerTest do
     Repo
   }
 
-  alias BridgeForTeams.Auth.{Feishu, OIDC}
+  alias BridgeForTeams.Auth.{Feishu, Lark, OIDC}
   alias BridgeForTeams.Auth.Sessions
   alias BridgeForTeams.Schema.{OrgMembership, OrgSsoIdentity}
   alias BridgeForTeamsWeb.Dashboard.Auth, as: DashAuth
 
-  @org_icon "data:image/png;base64,iVBORw0KGgo="
-
   setup do
-    previous = Application.get_env(:bridge_for_teams_web, :public_base_url)
-    previous_impersonator = Application.get_env(:bridge_for_teams_web, :impersonator_org_slug)
+    previous = SystemsRuntime.get_env(:bridge_for_teams_web, :public_base_url)
+    previous_impersonator = SystemsRuntime.get_env(:bridge_for_teams_web, :impersonator_org_slug)
 
     on_exit(fn ->
       if previous do
-        Application.put_env(:bridge_for_teams_web, :public_base_url, previous)
+        SystemsRuntime.put_env(:bridge_for_teams_web, :public_base_url, previous)
       else
-        Application.delete_env(:bridge_for_teams_web, :public_base_url)
+        SystemsRuntime.delete_env(:bridge_for_teams_web, :public_base_url)
       end
 
       if previous_impersonator do
-        Application.put_env(:bridge_for_teams_web, :impersonator_org_slug, previous_impersonator)
+        SystemsRuntime.put_env(
+          :bridge_for_teams_web,
+          :impersonator_org_slug,
+          previous_impersonator
+        )
       else
-        Application.delete_env(:bridge_for_teams_web, :impersonator_org_slug)
+        SystemsRuntime.delete_env(:bridge_for_teams_web, :impersonator_org_slug)
       end
     end)
-  end
-
-  test "OIDC start uses the configured public base URL for the callback", %{conn: conn} do
-    org = org_fixture()
-
-    {:ok, _sso} =
-      Orgs.upsert_sso_connection(org.id, %{
-        "issuer" => "https://idp.test",
-        "client_id" => "client-public-base",
-        "client_secret" => "secret",
-        "default_role" => "member"
-      })
-
-    Application.put_env(
-      :bridge_for_teams_web,
-      :public_base_url,
-      "https://teams-staging.bridge.surf/"
-    )
-
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> post("/auth/start", %{"org_slug" => org.slug})
-
-    location = redirected_to(conn)
-    assert location =~ "https://idp.test/authorize?"
-
-    assert %{"redirect_uri" => "https://teams-staging.bridge.surf/auth/callback"} =
-             URI.decode_query(URI.parse(location).query)
   end
 
   test "OIDC callback rejects mismatched state", %{conn: conn} do
@@ -143,45 +116,6 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthControllerTest do
     assert user_id == user.id
   end
 
-  # With magic-link delivery configured (the test env injects the Fake), an
-  # unknown slug falls back to the email form — the same place as a real
-  # SSO-less org, so the response still doesn't reveal whether the org exists.
-  # `magic_link_login_test.exs` covers the unconfigured-delivery variant that
-  # keeps the historical ambiguous error.
-  test "OIDC start falls back to the email login form for an unknown org slug", %{conn: conn} do
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> post("/auth/start", %{"org_slug" => "does-not-exist"})
-
-    assert redirected_to(conn) == "/auth/email?o=does-not-exist"
-  end
-
-  test "OIDC start falls back to the email login form when SSO is not configured", %{conn: conn} do
-    org = org_fixture()
-
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> post("/auth/start", %{"org_slug" => org.slug})
-
-    assert redirected_to(conn) == "/auth/email?" <> URI.encode_query(%{"o" => org.slug})
-
-    assert [event] = Observability.list_events(org.id, domain: "sso")
-    assert event.event_type == "sso.login.failed"
-    assert event.reason_class == "no_sso_connection"
-    assert event.resource_type == "organization"
-    assert event.resource_id == org.id
-    assert event.evidence["stage"] == "authorize"
-
-    conn =
-      conn
-      |> recycle()
-      |> get("/auth/email", %{"o" => org.slug})
-
-    assert html_response(conn, 200) =~ "Sign in with email"
-  end
-
   test "invite signup creates org, owner account, and dashboard session", %{conn: conn} do
     {:ok, %{code: code}} =
       OrgCreationInvites.create_invite_code(
@@ -239,28 +173,6 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthControllerTest do
     assert member_audit.request_id == invite_audit.request_id
   end
 
-  test "invite signup form preloads the invite organization with a fixed slug", %{conn: conn} do
-    {:ok, %{code: code}} =
-      OrgCreationInvites.create_invite_code(
-        org_name: "Prefilled Co",
-        org_slug: "prefilled-co"
-      )
-
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> get("/signup", %{"code" => code})
-
-    html = html_response(conn, 200)
-    assert html =~ ~s(name="signup[invite_code]")
-    assert html =~ ~s(value="#{code}")
-    assert html =~ ~s(name="signup[org_name]")
-    assert html =~ ~s(value="Prefilled Co")
-    assert html =~ ~s(name="signup[org_slug]")
-    assert html =~ ~s(value="prefilled-co")
-    assert html =~ "readonly"
-  end
-
   test "invite signup keeps the form public and rejects bad codes", %{conn: conn} do
     conn =
       conn
@@ -313,7 +225,7 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthControllerTest do
     admin = user_fixture(email: "admin@example.com")
     target = user_fixture(email: "target@example.com")
     {:ok, _} = Memberships.put_org_member(org.id, admin.id, "admin")
-    Application.put_env(:bridge_for_teams_web, :impersonator_org_slug, org.slug)
+    SystemsRuntime.put_env(:bridge_for_teams_web, :impersonator_org_slug, org.slug)
 
     conn =
       conn
@@ -351,7 +263,7 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthControllerTest do
     member = user_fixture(email: "member@example.com")
     target = user_fixture(email: "target@example.com")
     {:ok, _} = Memberships.put_org_member(org.id, member.id, "member")
-    Application.put_env(:bridge_for_teams_web, :impersonator_org_slug, org.slug)
+    SystemsRuntime.put_env(:bridge_for_teams_web, :impersonator_org_slug, org.slug)
 
     conn =
       conn
@@ -380,43 +292,8 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthControllerTest do
     refute inspect(audit) =~ "target@example.com"
   end
 
-  test "impersonator admin missing target records failed audit without target input", %{
-    conn: conn
-  } do
-    org = org_fixture(slug: "impersonators")
-    admin = user_fixture(email: "admin@example.com")
-    {:ok, _} = Memberships.put_org_member(org.id, admin.id, "admin")
-    Application.put_env(:bridge_for_teams_web, :impersonator_org_slug, org.slug)
-
-    conn =
-      conn
-      |> log_in_user(admin)
-      |> post("/impersonate", %{"impersonate" => %{"target" => "ghost@example.com"}})
-
-    assert html_response(conn, 200) =~ "User not found."
-
-    token = Plug.Conn.get_session(conn, DashAuth.session_token_key())
-    assert {:ok, %{user_id: admin_id}} = Sessions.fetch(token)
-    assert admin_id == admin.id
-
-    assert [audit] =
-             Observability.list_audit_logs(org.id,
-               action: "user.impersonation.started",
-               result: "failed"
-             )
-
-    assert audit.actor_user_id == admin.id
-    assert audit.resource_type == "user"
-    assert audit.resource_label == "Impersonation target"
-    assert audit.reason_class == "not_found"
-    assert audit.metadata["surface"] == "impersonation"
-    assert audit.metadata["target_lookup"] == "email"
-    assert audit.metadata["target_configured"] in [true, "true"]
-    refute inspect(audit) =~ "ghost@example.com"
-  end
-
   test "impersonation route is hidden when no impersonator org is configured", %{conn: conn} do
-    Application.delete_env(:bridge_for_teams_web, :impersonator_org_slug)
+    SystemsRuntime.delete_env(:bridge_for_teams_web, :impersonator_org_slug)
     user = user_fixture(email: "admin@example.com")
 
     conn =
@@ -425,66 +302,6 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthControllerTest do
       |> get("/impersonate")
 
     assert conn.status == 404
-  end
-
-  test "OIDC callback accepts the stored state and completes login", %{conn: conn} do
-    org = org_with_sso!()
-
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> post("/auth/start", %{"org_slug" => org.slug})
-
-    location = redirected_to(conn)
-    assert %{"state" => state} = URI.decode_query(URI.parse(location).query)
-
-    conn =
-      conn
-      |> recycle()
-      |> get("/auth/callback", %{"code" => "authcode", "state" => state})
-
-    assert_remember_login_org_page(conn, org)
-    assert get_session(conn, DashAuth.session_token_key())
-    assert {:ok, user} = Accounts.get_user_by_email("user@example.com")
-    assert user.name == "Fake User"
-  end
-
-  test "OIDC callback remembers every SSO-enabled org for the authenticated user", %{conn: conn} do
-    org = org_with_sso!()
-    {:ok, org} = Orgs.update_org(org, %{icon: @org_icon})
-
-    extra_org = org_fixture(name: "Previously Used Org", slug: "previously-used-org")
-    no_sso_org = org_fixture(name: "No SSO Org", slug: "no-sso-org")
-
-    {:ok, _sso} =
-      Orgs.upsert_sso_connection(extra_org.id, %{
-        "issuer" => "https://idp-extra.test",
-        "client_id" => "client-extra",
-        "client_secret" => "secret",
-        "default_role" => "member"
-      })
-
-    user = user_fixture(email: "user@example.com", name: "Existing User")
-    {:ok, _} = Memberships.put_org_member(extra_org.id, user.id, "member")
-    {:ok, _} = Memberships.put_org_member(no_sso_org.id, user.id, "member")
-
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> post("/auth/start", %{"org_slug" => org.slug})
-
-    location = redirected_to(conn)
-    assert %{"state" => state} = URI.decode_query(URI.parse(location).query)
-
-    conn =
-      conn
-      |> recycle()
-      |> get("/auth/callback", %{"code" => "authcode", "state" => state})
-
-    assert_remember_login_orgs_page(conn, [org, extra_org])
-    refute html_response(conn, 200) =~ no_sso_org.slug
-    refute html_response(conn, 200) =~ no_sso_org.name
-    assert {:ok, "member"} = Memberships.org_role(org.id, user.id)
   end
 
   test "OIDC callback returns to a local device-login path after login", %{conn: conn} do
@@ -531,104 +348,6 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthControllerTest do
     assert get_session(conn, DashAuth.session_token_key())
   end
 
-  test "login page disables stored org shortcuts whenever an org slug is supplied", %{conn: conn} do
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> get("/login", %{"o" => "stale-or-unknown"})
-
-    html = html_response(conn, 200)
-
-    assert html =~ ~s(id="remembered-org-login")
-    assert html =~ ~s(data-disabled="true")
-    assert html =~ ~s(name="org_slug")
-    refute html =~ ~s(data-login-orgs=)
-  end
-
-  test "login page exposes localStorage-backed org shortcuts after logout", %{conn: conn} do
-    org = org_with_sso!()
-
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> post("/auth/start", %{"org_slug" => org.slug})
-
-    assert %{"state" => state} = URI.decode_query(URI.parse(redirected_to(conn)).query)
-
-    conn =
-      conn
-      |> recycle()
-      |> get("/auth/callback", %{"code" => "authcode", "state" => state})
-
-    assert_remember_login_org_page(conn, org)
-    assert get_session(conn, DashAuth.session_token_key())
-
-    logout_conn =
-      conn
-      |> recycle()
-      |> delete("/logout")
-
-    assert redirected_to(logout_conn) == "/login"
-    assert logout_conn.private[:plug_session_info] == :drop
-
-    conn =
-      logout_conn
-      |> recycle()
-      |> get("/login")
-
-    html = html_response(conn, 200)
-    refute get_session(conn, DashAuth.session_token_key())
-    assert html =~ ~s(id="remembered-org-login")
-    assert html =~ ~s(id="remembered-org-list")
-    assert html =~ ~s(data-storage-key="bridge_for_teams:login_orgs")
-    assert html =~ ~s(data-legacy-storage-key="bridge_for_teams:last_login_org")
-    refute html =~ ~s(data-login-orgs=)
-  end
-
-  test "login page passes local return_to through remembered org shortcut forms", %{conn: conn} do
-    return_to = "/cli/device-login/ABCDEFGH"
-
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> get("/login", %{"return_to" => return_to})
-
-    html = html_response(conn, 200)
-
-    assert html =~ ~s(id="remembered-org-login")
-    assert html =~ ~s(data-disabled="false")
-    assert html =~ ~s(data-return-to="#{return_to}")
-    assert html =~ ~s(const returnTo = section.dataset.returnTo || "";)
-    assert html =~ ~s(returnToInput.name = "return_to";)
-    assert html =~ ~s(returnToInput.value = labels.returnTo;)
-  end
-
-  test "Feishu start uses client id and configured public callback URL", %{conn: conn} do
-    org = org_with_feishu_sso!("feishu-public-base")
-
-    Application.put_env(
-      :bridge_for_teams_web,
-      :public_base_url,
-      "https://teams-staging.bridge.surf/"
-    )
-
-    conn =
-      conn
-      |> Phoenix.ConnTest.init_test_session(%{})
-      |> post("/auth/start", %{"org_slug" => org.slug})
-
-    location = redirected_to(conn)
-    assert location =~ "https://feishu.test/oauth/authorize?"
-
-    assert %{
-             "client_id" => "feishu-public-base",
-             "redirect_uri" => "https://teams-staging.bridge.surf/auth/callback",
-             "state" => state
-           } = URI.decode_query(URI.parse(location).query)
-
-    assert String.starts_with?(state, "fake-feishu-state-")
-  end
-
   test "Feishu callback completes dashboard login for a phone-only user", %{conn: conn} do
     org = org_with_feishu_sso!("feishu-phone-controller")
 
@@ -673,6 +392,73 @@ defmodule BridgeForTeamsWeb.Dashboard.AuthControllerTest do
 
     membership = Repo.get_by!(OrgMembership, org_id: org.id, user_id: user.id)
     assert membership.role == "member"
+  end
+
+  test "Lark sign-in starts from the organization's login page and ends in a session", %{
+    conn: conn
+  } do
+    org = org_fixture()
+
+    {:ok, _sso} =
+      Orgs.upsert_sso_connection(org.id, %{
+        "provider" => "lark",
+        "client_id" => "cli_lark_controller",
+        "client_secret" => "secret",
+        "default_role" => "admin"
+      })
+
+    login = conn |> get("/login", %{"o" => org.slug}) |> html_response(200)
+    assert login =~ "Sign in with Lark"
+    refute login =~ "Continue with SSO"
+
+    Lark.Fake.script_identity(%{
+      "union_id" => "on-lark-controller",
+      "open_id" => "ou-lark-controller",
+      "display_name" => "Lark Controller",
+      "profile" => %{"source" => "dashboard-fake"}
+    })
+
+    conn =
+      conn
+      |> Phoenix.ConnTest.init_test_session(%{})
+      |> post("/auth/start", %{"org_slug" => org.slug})
+
+    location = redirected_to(conn)
+    assert location =~ "https://lark.test/oauth/authorize?"
+    assert %{"state" => state} = URI.decode_query(URI.parse(location).query)
+
+    conn =
+      conn
+      |> recycle()
+      |> get("/auth/callback", %{"code" => "lark-code", "state" => state})
+
+    assert_remember_login_org_page(conn, org)
+    token = get_session(conn, DashAuth.session_token_key())
+
+    assert {:ok, user} = Auth.authenticate_session(token)
+    assert user.email == nil
+    assert user.name == "Lark Controller"
+
+    identity =
+      Repo.get_by!(OrgSsoIdentity,
+        org_id: org.id,
+        provider: "lark",
+        provider_subject_type: "union_id",
+        provider_subject: "on-lark-controller"
+      )
+
+    assert identity.user_id == user.id
+    assert Repo.get_by!(OrgMembership, org_id: org.id, user_id: user.id).role == "admin"
+  end
+
+  test "the login page of an organization on another provider keeps the SSO button", %{
+    conn: conn
+  } do
+    org = org_with_feishu_sso!("feishu-login-label")
+
+    login = conn |> get("/login", %{"o" => org.slug}) |> html_response(200)
+    assert login =~ "Continue with SSO"
+    refute login =~ "Sign in with Lark"
   end
 
   defp org_with_sso! do

@@ -50,6 +50,10 @@ defmodule Salix.Bindings.MeetingAgentRuntime do
     do: SalixAgent.AgentWorkspace.discard_prepared_write(event)
 
   @impl true
+  def prepare_workspace_write_stream(agent_id, path, stream),
+    do: SalixAgent.MeetingRuntime.prepare_workspace_write_stream(agent_id, path, stream)
+
+  @impl true
   def stream_workspace_write(agent_id, env_id, dst_path, src_path) do
     message = SalixEnv.Protocol.request("read_stream", %{"path" => src_path})
 
@@ -72,7 +76,7 @@ defmodule Salix.Bindings.MeetingAgentRuntime do
         source_ref,
         source_size
       ) do
-    started_at = System.monotonic_time()
+    started_at = SystemsClock.monotonic_time()
 
     result =
       with :ok <- validate_source_size(source_size),
@@ -102,7 +106,7 @@ defmodule Salix.Bindings.MeetingAgentRuntime do
       "meeting_artifact",
       "system",
       artifact_outcome(result),
-      System.monotonic_time() - started_at
+      SystemsClock.monotonic_time() - started_at
     )
 
     result

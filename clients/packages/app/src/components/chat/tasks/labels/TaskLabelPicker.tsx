@@ -1,18 +1,18 @@
 /* oxlint-disable jsx-a11y/no-autofocus -- Search is the picker's primary keyboard interaction when it opens. */
 import { useCommaLocale, useCommaMessages } from "@comma/i18n/react";
+import { InputField } from "@comma/ui/components/input";
 import {
-  InputField,
   Menu,
   MenuItem,
   MenuPopover,
   MenuSeparator,
-  cx,
   menuFilterFieldClasses,
   menuSurfaceClasses,
-} from "@comma/ui";
+} from "@comma/ui/components/menu";
+import { cx } from "@comma/ui/components/utils";
 import { useMemo, useState, type RefObject } from "react";
 import { Dialog as AriaDialog } from "react-aria-components";
-import type { CommaTaskLabel } from "../../../../api";
+import type { CommaTaskLabel } from "@comma/core/api-schemas";
 import { LabelDot } from "../../../tasks/labelColor";
 
 export interface TaskLabelPickerProps {

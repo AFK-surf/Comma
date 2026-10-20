@@ -71,9 +71,11 @@ defmodule SalixIM.ConversationMessage do
     do: {:error, {:bad_request, "billing_context is delivery-only"}}
 
   def prepare(attrs) do
-    with {:ok, attrs} <- validate(attrs),
+    with {:ok, attrs} <- SalixIM.ConversationMilestone.prepare(attrs),
+         {:ok, attrs} <- validate(attrs),
          :ok <- reject_owner_identity(attrs),
-         :ok <- reject_agent_text_markers(attrs) do
+         :ok <- reject_agent_text_markers(attrs),
+         :ok <- SalixIM.ConversationQuestion.prepare(attrs) do
       {:ok, attrs}
     end
   end
@@ -100,6 +102,7 @@ defmodule SalixIM.ConversationMessage do
       owner_fields
       |> Map.merge(common_fields)
       |> Map.put("agent_input", attrs[:agent_input])
+      |> Map.put("task_loop_request", attrs[:task_loop_request])
       |> Map.put("agent_redelivery", attrs[:agent_redelivery])
       |> Map.put("provider_effect", attrs[:provider_effect])
       |> Map.put("provider_status", attrs[:provider_status])
@@ -154,7 +157,9 @@ defmodule SalixIM.ConversationMessage do
 
       true ->
         with :ok <- validate_dynamic_ui_blocks(content),
-             :ok <- validate_local_file_blocks(content) do
+             :ok <- validate_local_file_blocks(content),
+             :ok <- SalixIM.ConversationQuestion.validate_blocks(content),
+             :ok <- SalixIM.ConversationMilestone.validate_blocks(content) do
           {:ok, content}
         end
     end
@@ -209,7 +214,7 @@ defmodule SalixIM.ConversationMessage do
   """
   @spec agent_text_marker_enforcement() :: :reject | :off
   def agent_text_marker_enforcement do
-    case Application.get_env(:salix_im, @agent_text_marker_enforcement_key, :reject) do
+    case SystemsRuntime.get_env(:salix_im, @agent_text_marker_enforcement_key, :reject) do
       :off -> :off
       _other -> :reject
     end
@@ -218,15 +223,16 @@ defmodule SalixIM.ConversationMessage do
   def internal_delivery?(%{"actor_type" => "system"} = message) do
     not is_nil(message["agent_input"]) or
       (message["kind"] == "app_event" and
-         get_in(message, ["metadata", "event_type"]) in [
-           "provider.output",
-           "provider.status",
-           "provider.message",
-           "message.redelivery"
-         ])
+         internal_event?(get_in(message, ["metadata", "event_type"])))
   end
 
   def internal_delivery?(_message), do: false
+
+  # `mail.*` events record a Home mail interaction's state change and have no content.
+  defp internal_event?("mail." <> _action), do: true
+
+  defp internal_event?(event_type),
+    do: event_type in ~w(provider.output provider.status provider.message message.redelivery)
 
   def visible_text(message) do
     if internal_delivery?(message), do: "", else: text_content(message["content"])
@@ -410,7 +416,7 @@ defmodule SalixIM.ConversationMessage do
   def request_fingerprint(message) when is_map(message) do
     message
     |> Map.take(
-      ~w(kind participant_id actor_type user_id agent_id content metadata mentions delivery_filter reply_to_message_id platform_message)
+      ~w(kind participant_id actor_type user_id agent_id content metadata mentions delivery_filter reply_to_message_id platform_message task_loop_request)
     )
     |> :erlang.term_to_binary([:deterministic])
     |> Crypto.hex()
@@ -492,6 +498,24 @@ defmodule SalixIM.ConversationMessage do
         refs -> Map.put(delivery, @owner_inline_task_refs_v1_field, refs)
       end
 
+    # The Task requester's device timezone, a display hint for Agent messages.
+    delivery =
+      case conversation["metadata"] do
+        %{"origin" => %{"client_timezone" => zone}} when is_binary(zone) and zone != "" ->
+          Map.put(delivery, "conversation_origin_timezone", zone)
+
+        _other ->
+          delivery
+      end
+
+    # The Loop request that a Task's command starts, for the Worker's
+    # guidance (`SalixIM.TaskLoop.worker_guidance/2`).
+    delivery =
+      case message["task_loop_request"] do
+        %{"cadence" => %{}} = request -> Map.put(delivery, "task_loop_request", request)
+        _none -> delivery
+      end
+
     case ProviderRecipientIdentity.from_owner_record(message) do
       nil -> delivery
       identity -> Map.put(delivery, ProviderRecipientIdentity.owner_field(), identity)
@@ -566,6 +590,19 @@ defmodule SalixIM.ConversationMessage do
     end
   end
 
+  @doc """
+  Whether a participant could already see a committed Message: it wrote the
+  Message, or the Message was addressed to it.
+  """
+  @spec visible_to?(String.t() | nil, map()) :: boolean()
+  def visible_to?(participant_id, message) when is_map(message) do
+    participant_id = trim(participant_id)
+
+    participant_id != "" and
+      (participant_id == trim(message["participant_id"]) or
+         addressed_to?(participant_id, message))
+  end
+
   @spec targets_participant?(map(), map()) :: boolean()
   def targets_participant?(participant, message)
       when is_map(participant) and is_map(message) do
@@ -637,7 +674,9 @@ defmodule SalixIM.ConversationMessage do
     end
   end
 
-  defp addressed_to?(participant_id, message) do
+  @doc "Whether the Message's delivery filter and mentions select `participant_id`."
+  @spec addressed_to?(String.t(), map()) :: boolean()
+  def addressed_to?(participant_id, message) do
     selected_by_filter? =
       case message["delivery_filter"] do
         %{"participant_ids" => participant_ids} when is_list(participant_ids) ->
@@ -688,7 +727,7 @@ defmodule SalixIM.ConversationMessage do
   defp agent_text_marker_lines(_content), do: []
 
   defp emit_agent_text_marker_rejected(markers) do
-    :telemetry.execute(
+    SystemsRuntime.Telemetry.execute(
       [:salix_im, :conversation_message, :agent_text_marker],
       %{count: length(markers)},
       %{

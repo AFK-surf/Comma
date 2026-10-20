@@ -1,5 +1,7 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Button, InputField, isImeKeyEvent } from "@comma/ui";
+import { Button } from "@comma/ui/components/Button";
+import { InputField } from "@comma/ui/components/input";
+import { isImeKeyEvent } from "@comma/ui/components/utils";
 import {
   OnboardingCardFooter,
   OnboardingPrimaryButton,

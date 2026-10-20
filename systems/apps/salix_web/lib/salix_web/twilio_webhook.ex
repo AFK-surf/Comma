@@ -67,7 +67,7 @@ defmodule SalixWeb.TwilioWebhook do
     limits =
       Keyword.merge(
         @rate_limits,
-        Application.get_env(:salix_web, :twilio_webhook_rate_limits, [])
+        SystemsRuntime.get_env(:salix_web, :twilio_webhook_rate_limits, [])
       )
 
     with :ok <- limit("source:" <> source(conn), limits[:source_per_minute]),
@@ -360,7 +360,7 @@ defmodule SalixWeb.TwilioWebhook do
       "This call could not be verified. Set a PIN for this number in Comma settings to call from it."
 
   defp limit(bucket, count) do
-    case RateLimit.hit("twilio-voice:" <> bucket, 60_000, count) do
+    case RateLimit.admit("twilio-voice:" <> bucket, 60_000, count) do
       {:allow, _} -> :ok
       {:deny, ms} -> {:error, {:rate_limited, max(1, div(ms + 999, 1000))}}
     end

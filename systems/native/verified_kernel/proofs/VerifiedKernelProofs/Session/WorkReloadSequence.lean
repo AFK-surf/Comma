@@ -1,5 +1,7 @@
 import VerifiedKernelProofs.Session.WorkArchiveInitial
 import VerifiedKernelProofs.Session.WorkFillDefaults
+import VerifiedKernelProofs.Session.WorkValueSemantics
+import VerifiedKernelProofs.Session.WorkReload
 
 namespace VerifiedKernel.Session.WorkConservation
 open Data

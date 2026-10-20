@@ -7,8 +7,9 @@ import {
   within,
 } from "@comma/test-utils/render";
 import userEvent, { PointerEventsCheckLevel } from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { CommaApiClient, CommaConversation, SalixMessage } from "../../../api";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ReactNode } from "react";
+import type { CommaConversation, SalixMessage } from "@comma/core/api-schemas";
 import { CONVERSATION_TURN_WINDOW } from "../../chat/thread/navigation/conversationTurnWindow";
 import { TaskConversationPreview } from "../TaskConversationPreview";
 import { normalizeUnixTimestampMs } from "../normalizeUnixTimestampMs";
@@ -17,11 +18,11 @@ import {
   TASK_PREVIEW_SEARCH_HIGHLIGHT_OVERLAY,
   TASK_PREVIEW_SEARCH_HIGHLIGHT_RECT,
 } from "../previewSearchHighlight";
-import {
-  loadTaskConversationPreview,
-  projectTaskConversation,
-  type TaskConversationPreviewTarget,
-} from "../taskConversationPreviewLoader";
+import type { TaskConversationPreviewTarget } from "../taskConversationPreviewLoader";
+import type { TaskConversationValue } from "@comma/core-client";
+import { normalizeServerMessages } from "@comma/core/chat";
+import { createScriptedCore } from "@comma/test-utils/scripted-core";
+import { stubProperty } from "@comma/test-utils/stub-property";
 
 const FakeHighlight = class extends Set<AbstractRange> {
   constructor(...ranges: Range[]) {
@@ -29,21 +30,13 @@ const FakeHighlight = class extends Set<AbstractRange> {
   }
 };
 const previewHighlightRegistry = new Map<string, Highlight>();
-const originalHighlightDescriptor = Object.getOwnPropertyDescriptor(
-  window,
-  "Highlight"
-);
-const originalHighlightRegistryDescriptor = Object.getOwnPropertyDescriptor(
-  CSS,
-  "highlights"
-);
 
-beforeAll(() => {
-  Object.defineProperty(window, "Highlight", {
+beforeEach(() => {
+  stubProperty(window, "Highlight", {
     configurable: true,
     value: FakeHighlight,
   });
-  Object.defineProperty(CSS, "highlights", {
+  stubProperty(CSS, "highlights", {
     configurable: true,
     value: previewHighlightRegistry,
   });
@@ -51,11 +44,6 @@ beforeAll(() => {
 
 afterEach(() => {
   previewHighlightRegistry.clear();
-});
-
-afterAll(() => {
-  restoreProperty(window, "Highlight", originalHighlightDescriptor);
-  restoreProperty(CSS, "highlights", originalHighlightRegistryDescriptor);
 });
 
 describe("task conversation preview", () => {
@@ -73,24 +61,26 @@ describe("task conversation preview", () => {
     const visible = Array.from({ length: 14 }, (_, index) =>
       message(`message-${index + 1}`, index % 2 === 0 ? "user" : "assistant")
     );
-    const result = projectTaskConversation(
-      conversation("task-projection", [
-        {
-          ...message("private", "assistant"),
-          content: [{ text: "[[comma-context]]\nsecret", type: "text" }],
-        },
-        ...visible,
-        {
-          ...message("protocol", "assistant"),
-          content: [
-            {
-              text: "Visible answer\n[[comma-protocol]]\nprivate routing data",
-              type: "text",
-            },
-          ],
-        },
-      ])
-    );
+    const projected = conversation("task-projection", [
+      {
+        ...message("private", "assistant"),
+        content: [{ text: "[[comma-context]]\nsecret", type: "text" }],
+      },
+      ...visible,
+      {
+        ...message("protocol", "assistant"),
+        content: [
+          {
+            text: "Visible answer\n[[comma-protocol]]\nprivate routing data",
+            type: "text",
+          },
+        ],
+      },
+    ]);
+    // The core projects a preview's messages as a channel does (`taskConversation`).
+    const result = {
+      messages: normalizeServerMessages(projected.messages ?? [], [], projected.kind),
+    };
 
     expect(result.messages).toHaveLength(15);
     expect(result.messages[0]?.messageId).toBe("message-1");
@@ -98,37 +88,19 @@ describe("task conversation preview", () => {
     expect(result.messages.some((item) => item.messageId === "private")).toBe(false);
   });
 
-  it("serves a ready projection from the session cache", async () => {
-    const pollConversation = vi.fn<CommaApiClient["pollConversation"]>(async () => ({
-      conversation: conversation("shared", [message("answer", "assistant")]),
-      notModified: false,
-    }));
-    const apiClient = previewApi(pollConversation);
-    const task = target("shared");
-
-    const first = await loadTaskConversationPreview(apiClient, task);
-    const second = await loadTaskConversationPreview(apiClient, task);
-
-    expect(second).toBe(first);
-    expect(pollConversation).toHaveBeenCalledTimes(1);
-  });
-
   it("mounts the canonical tail first and reveals older turns on upward scroll", async () => {
     const history = Array.from({ length: 14 }, (_, index) => ({
       ...message(`history-${index + 1}`, "user"),
       content: [{ text: `History ${index + 1}`, type: "text" }],
     }));
-    const pollConversation = vi.fn<CommaApiClient["pollConversation"]>(async () => ({
+    const pollConversation = vi.fn<PollConversation>(async () => ({
       conversation: conversation("windowed", history),
       notModified: false,
     }));
-    const view = render(
+    installPreviewCore(pollConversation);
+    const view = renderPreview(
       <div className="h-[400px] w-[300px]">
-        <TaskConversationPreview
-          apiClient={previewApi(pollConversation)}
-          searchQuery="History"
-          task={target("windowed")}
-        />
+        <TaskConversationPreview searchQuery="History" task={target("windowed")} />
       </div>
     );
     const thread = await waitFor(() => {
@@ -168,7 +140,7 @@ describe("task conversation preview", () => {
   });
 
   it("renders the embedded assistant transcript as markdown", async () => {
-    const pollConversation = vi.fn<CommaApiClient["pollConversation"]>(async () => ({
+    const pollConversation = vi.fn<PollConversation>(async () => ({
       conversation: conversation("markdown", [
         {
           ...message("markdown-answer", "assistant"),
@@ -190,12 +162,10 @@ describe("task conversation preview", () => {
       notModified: false,
     }));
 
-    const view = render(
+    installPreviewCore(pollConversation);
+    const view = renderPreview(
       <div className="h-[400px] w-[451px]">
-        <TaskConversationPreview
-          apiClient={previewApi(pollConversation)}
-          task={target("markdown")}
-        />
+        <TaskConversationPreview task={target("markdown")} />
       </div>
     );
 
@@ -229,10 +199,7 @@ describe("task conversation preview", () => {
   it.each([true, false])(
     "keeps file metadata without inline downloads in task previews (blob: %s)",
     async (hasBlob) => {
-      const fetchConversationAttachment = vi
-        .fn<CommaApiClient["fetchConversationAttachment"]>()
-        .mockRejectedValue(new Error("file bytes must not load for a passive card"));
-      const pollConversation = vi.fn<CommaApiClient["pollConversation"]>(async () => ({
+      const pollConversation = vi.fn<PollConversation>(async () => ({
         conversation: conversation("attachment-task", [
           {
             ...message("attachment-message", "assistant"),
@@ -262,17 +229,11 @@ describe("task conversation preview", () => {
         ]),
         notModified: false,
       }));
-      const apiClient = {
-        fetchConversationAttachment,
-        pollConversation,
-      } as Partial<CommaApiClient> as CommaApiClient;
+      installPreviewCore(pollConversation);
 
-      render(
+      renderPreview(
         <div className="h-[400px] w-[451px]">
-          <TaskConversationPreview
-            apiClient={apiClient}
-            task={target("attachment-task")}
-          />
+          <TaskConversationPreview task={target("attachment-task")} />
         </div>
       );
 
@@ -283,22 +244,13 @@ describe("task conversation preview", () => {
       expect(
         within(fileCard).queryByRole("button", { name: "Download" })
       ).not.toBeInTheDocument();
-      expect(fetchConversationAttachment).not.toHaveBeenCalled();
+      // File bytes never load for a passive card.
+      expect(currentCore!.sentTo("files.read")).toEqual([]);
     }
   );
 
   it("keeps inline Tasks passive without loading a hover preview", async () => {
-    const getConversationPreview = vi.fn().mockResolvedValue({
-      activity_status: "idle",
-      freshness: { state: "fresh" },
-      group_id: "group-1",
-      id: "related-task",
-      kind: "agent_task",
-      status: "completed",
-      title: "Updated related task",
-      updated_at: 10,
-    });
-    const pollConversation = vi.fn<CommaApiClient["pollConversation"]>(async () => ({
+    const pollConversation = vi.fn<PollConversation>(async () => ({
       conversation: conversation("inline-task", [
         {
           ...message("inline-task-answer", "assistant"),
@@ -318,17 +270,14 @@ describe("task conversation preview", () => {
       ]),
       notModified: false,
     }));
-    const apiClient = {
-      getConversationPreview,
-      pollConversation,
-    } as Partial<CommaApiClient> as CommaApiClient;
+    installPreviewCore(pollConversation);
     const user = userEvent.setup({
       pointerEventsCheck: PointerEventsCheckLevel.Never,
     });
 
-    render(
+    renderPreview(
       <div className="h-[400px] w-[451px]">
-        <TaskConversationPreview apiClient={apiClient} task={target("inline-task")} />
+        <TaskConversationPreview task={target("inline-task")} />
       </div>
     );
 
@@ -337,11 +286,11 @@ describe("task conversation preview", () => {
 
     expect(screen.queryByRole("tooltip")).toBeNull();
     expect(document.querySelector('[data-slot="hover-card"]')).toBeNull();
-    expect(getConversationPreview).not.toHaveBeenCalled();
+    expect(currentCore!.topics).not.toContain("taskPreview");
   });
 
   it("highlights every rendered message match without changing markdown DOM", async () => {
-    const pollConversation = vi.fn<CommaApiClient["pollConversation"]>(async () => ({
+    const pollConversation = vi.fn<PollConversation>(async () => ({
       conversation: conversation("highlighted", [
         {
           ...message("highlight-user", "user"),
@@ -359,15 +308,11 @@ describe("task conversation preview", () => {
       ]),
       notModified: false,
     }));
-    const apiClient = previewApi(pollConversation);
+    installPreviewCore(pollConversation);
     const previewTask = { ...target("highlighted"), title: "Notion title" };
-    const view = render(
+    const view = renderPreview(
       <div className="h-[400px] w-[451px]">
-        <TaskConversationPreview
-          apiClient={apiClient}
-          searchQuery="notion"
-          task={previewTask}
-        />
+        <TaskConversationPreview searchQuery="notion" task={previewTask} />
       </div>
     );
 
@@ -394,13 +339,11 @@ describe("task conversation preview", () => {
     expect(view.container.querySelector("mark")).toBeNull();
 
     view.rerender(
-      <div className="h-[400px] w-[451px]">
-        <TaskConversationPreview
-          apiClient={apiClient}
-          searchQuery="archive"
-          task={previewTask}
-        />
-      </div>
+      currentCore!.wrap(
+        <div className="h-[400px] w-[451px]">
+          <TaskConversationPreview searchQuery="archive" task={previewTask} />
+        </div>
+      )
     );
     await waitFor(() =>
       expect(previewHighlightRanges().map((range) => range.toString())).toEqual([
@@ -410,13 +353,11 @@ describe("task conversation preview", () => {
     expect(pollConversation).toHaveBeenCalledOnce();
 
     view.rerender(
-      <div className="h-[400px] w-[451px]">
-        <TaskConversationPreview
-          apiClient={apiClient}
-          searchQuery=""
-          task={previewTask}
-        />
-      </div>
+      currentCore!.wrap(
+        <div className="h-[400px] w-[451px]">
+          <TaskConversationPreview searchQuery="" task={previewTask} />
+        </div>
+      )
     );
     await waitFor(() =>
       expect(previewHighlightRegistry.has(TASK_PREVIEW_SEARCH_HIGHLIGHT)).toBe(false)
@@ -424,44 +365,31 @@ describe("task conversation preview", () => {
   });
 
   it("uses clipped overlay highlights when the Custom Highlight API is missing", async () => {
-    const highlightDescriptor = Object.getOwnPropertyDescriptor(window, "Highlight");
-    const registryDescriptor = Object.getOwnPropertyDescriptor(CSS, "highlights");
-    const clientRectsDescriptor = Object.getOwnPropertyDescriptor(
-      Range.prototype,
-      "getClientRects"
-    );
-    const response =
-      deferred<Awaited<ReturnType<CommaApiClient["pollConversation"]>>>();
-    const pollConversation = vi.fn<CommaApiClient["pollConversation"]>(
-      () => response.promise
-    );
-    const apiClient = previewApi(pollConversation);
+    const response = deferred<Awaited<ReturnType<PollConversation>>>();
+    const pollConversation = vi.fn<PollConversation>(() => response.promise);
+    installPreviewCore(pollConversation);
     const previewTask = { ...target("fallback-highlighted"), title: "Notion title" };
     let visibleRangeRect = testRect(90, 190, 150, 220);
     let view: ReturnType<typeof render> | undefined;
     let rootRectSpy: ReturnType<typeof vi.spyOn> | undefined;
 
-    Object.defineProperty(window, "Highlight", {
+    stubProperty(window, "Highlight", {
       configurable: true,
       value: undefined,
     });
-    Object.defineProperty(CSS, "highlights", {
+    stubProperty(CSS, "highlights", {
       configurable: true,
       value: undefined,
     });
-    Object.defineProperty(Range.prototype, "getClientRects", {
+    stubProperty(Range.prototype, "getClientRects", {
       configurable: true,
       value: () => [visibleRangeRect, testRect(0, 0, 10, 10)] as unknown as DOMRectList,
     });
 
     try {
-      view = render(
+      view = renderPreview(
         <div className="h-[400px] w-[451px]">
-          <TaskConversationPreview
-            apiClient={apiClient}
-            searchQuery="notion"
-            task={previewTask}
-          />
+          <TaskConversationPreview searchQuery="notion" task={previewTask} />
         </div>
       );
       await waitFor(() => expect(pollConversation).toHaveBeenCalledOnce());
@@ -544,13 +472,11 @@ describe("task conversation preview", () => {
       ).toBe(overlay);
 
       view.rerender(
-        <div className="h-[400px] w-[451px]">
-          <TaskConversationPreview
-            apiClient={apiClient}
-            searchQuery="archive"
-            task={previewTask}
-          />
-        </div>
+        currentCore!.wrap(
+          <div className="h-[400px] w-[451px]">
+            <TaskConversationPreview searchQuery="archive" task={previewTask} />
+          </div>
+        )
       );
       await waitFor(() =>
         expect(
@@ -564,13 +490,11 @@ describe("task conversation preview", () => {
       expect(pollConversation).toHaveBeenCalledOnce();
 
       view.rerender(
-        <div className="h-[400px] w-[451px]">
-          <TaskConversationPreview
-            apiClient={apiClient}
-            searchQuery=""
-            task={previewTask}
-          />
-        </div>
+        currentCore!.wrap(
+          <div className="h-[400px] w-[451px]">
+            <TaskConversationPreview searchQuery="" task={previewTask} />
+          </div>
+        )
       );
       await waitFor(() =>
         expect(
@@ -582,97 +506,131 @@ describe("task conversation preview", () => {
     } finally {
       view?.unmount();
       rootRectSpy?.mockRestore();
-      restoreProperty(Range.prototype, "getClientRects", clientRectsDescriptor);
-      restoreProperty(window, "Highlight", highlightDescriptor);
-      restoreProperty(CSS, "highlights", registryDescriptor);
     }
   });
 
   it("shares a cache version across second and millisecond timestamps", async () => {
-    const pollConversation = vi.fn<CommaApiClient["pollConversation"]>(async () => ({
+    const pollConversation = vi.fn<PollConversation>(async () => ({
       conversation: conversation("shared-time", [message("answer", "assistant")]),
       notModified: false,
     }));
-    const apiClient = previewApi(pollConversation);
-
-    await loadTaskConversationPreview(apiClient, {
-      ...target("shared-time"),
-      updatedAt: 1_788_177_000,
-    });
-    await loadTaskConversationPreview(apiClient, {
-      ...target("shared-time"),
-      updatedAt: 1_788_177_000_000,
-    });
-
+    installPreviewCore(pollConversation);
+    const view = renderPreview(
+      <TaskConversationPreview
+        task={{ ...target("shared-time"), updatedAt: 1_788_177_000 }}
+      />
+    );
+    await screen.findByText("answer");
+    view.rerender(
+      currentCore!.wrap(
+        <TaskConversationPreview
+          task={{ ...target("shared-time"), updatedAt: 1_788_177_000_000 }}
+        />
+      )
+    );
+    // The same Task in seconds or milliseconds is the same version: the core reads it once.
+    const versions = currentCore!.asked.map((topic) => topic.version);
+    expect(new Set(versions).size).toBe(1);
     expect(pollConversation).toHaveBeenCalledTimes(1);
   });
 
-  it("aborts the transport when its final consumer leaves", async () => {
-    let transportSignal: AbortSignal | undefined;
-    const pollConversation = vi.fn<CommaApiClient["pollConversation"]>(
-      (_groupId, _conversationId, options) =>
-        new Promise((_resolve, reject) => {
-          transportSignal = options?.signal;
-          options?.signal?.addEventListener(
-            "abort",
-            () => reject(new DOMException("Aborted", "AbortError")),
-            { once: true }
-          );
-        })
+  it("renders a cached Task without the loading skeleton", async () => {
+    const pollConversation = vi.fn<PollConversation>(async () => ({
+      conversation: conversation("revisited", [
+        {
+          ...message("revisited-message", "assistant"),
+          content: [{ text: "Cached answer", type: "text" }],
+        },
+      ]),
+      notModified: false,
+    }));
+    installPreviewCore(pollConversation);
+    const shown = () => (
+      <div className="h-[400px] w-[300px]">
+        <TaskConversationPreview task={target("revisited")} />
+      </div>
     );
-    const apiClient = previewApi(pollConversation);
-    const controller = new AbortController();
-    const request = loadTaskConversationPreview(
-      apiClient,
-      target("cancelled-hover"),
-      controller.signal
-    );
-    await waitFor(() => expect(pollConversation).toHaveBeenCalledOnce());
+    // Shown once, then shown again: the window still has what the core said of it.
+    renderPreview(shown()).unmount();
+    await waitFor(() => expect(currentCore!.asked).toHaveLength(1));
+    await act(async () => {});
+    renderPreview(shown());
 
-    controller.abort();
-
-    await expect(request).rejects.toMatchObject({ name: "AbortError" });
-    expect(transportSignal?.aborted).toBe(true);
+    expect(screen.queryByTestId("task-conversation-preview-loading")).toBeNull();
+    expect(await screen.findByText("Cached answer")).toBeInTheDocument();
+    expect(pollConversation).toHaveBeenCalledOnce();
   });
 
-  it("bounds the full-transcript cache to the two most recently viewed tasks", async () => {
-    const pollConversation = vi.fn<CommaApiClient["pollConversation"]>(
-      async (_groupId, conversationId) => ({
-        conversation: conversation(conversationId, [
-          message(`${conversationId}-message`, "assistant"),
+  it("keeps the stale snapshot visible while the changed Task reloads", async () => {
+    const refreshed = deferred<Awaited<ReturnType<PollConversation>>>();
+    const pollConversation = vi
+      .fn<PollConversation>()
+      .mockResolvedValueOnce({
+        conversation: conversation("running", [
+          {
+            ...message("old-message", "assistant"),
+            content: [{ text: "Old answer", type: "text" }],
+          },
         ]),
         notModified: false,
       })
+      .mockReturnValueOnce(refreshed.promise);
+    installPreviewCore(pollConversation);
+    const view = renderPreview(
+      <div className="h-[400px] w-[300px]">
+        <TaskConversationPreview task={target("running")} />
+      </div>
     );
-    const apiClient = previewApi(pollConversation);
+    expect(await screen.findByText("Old answer")).toBeInTheDocument();
 
-    for (let index = 0; index < 3; index += 1) {
-      await loadTaskConversationPreview(apiClient, target(`task-${index}`));
-    }
-    await loadTaskConversationPreview(apiClient, target("task-0"));
+    view.rerender(
+      currentCore!.wrap(
+        <div className="h-[400px] w-[300px]">
+          <TaskConversationPreview task={{ ...target("running"), updatedAt: 2 }} />
+        </div>
+      )
+    );
 
-    expect(pollConversation).toHaveBeenCalledTimes(4);
+    expect(screen.queryByTestId("task-conversation-preview-loading")).toBeNull();
+    expect(screen.getByText("Old answer")).toBeInTheDocument();
+    await waitFor(() => expect(pollConversation).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      refreshed.resolve({
+        conversation: conversation("running", [
+          {
+            ...message("new-message", "assistant"),
+            content: [{ text: "New answer", type: "text" }],
+          },
+        ]),
+        notModified: false,
+      });
+      await refreshed.promise;
+    });
+    expect(await screen.findByText("New answer")).toBeInTheDocument();
   });
 
   it("never lets a late response replace the newly selected task", async () => {
-    const first = deferred<Awaited<ReturnType<CommaApiClient["pollConversation"]>>>();
-    const second = deferred<Awaited<ReturnType<CommaApiClient["pollConversation"]>>>();
+    const first = deferred<Awaited<ReturnType<PollConversation>>>();
+    const second = deferred<Awaited<ReturnType<PollConversation>>>();
     const pollConversation = vi
-      .fn<CommaApiClient["pollConversation"]>()
+      .fn<PollConversation>()
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise);
-    const apiClient = previewApi(pollConversation);
-    const view = render(
+    installPreviewCore(pollConversation);
+    const view = renderPreview(
       <div className="h-[400px] w-[300px]">
-        <TaskConversationPreview apiClient={apiClient} task={target("first")} />
+        <TaskConversationPreview task={target("first")} />
       </div>
     );
     await waitFor(() => expect(pollConversation).toHaveBeenCalledTimes(1));
 
     view.rerender(
-      <div className="h-[400px] w-[300px]">
-        <TaskConversationPreview apiClient={apiClient} task={target("second")} />
-      </div>
+      currentCore!.wrap(
+        <div className="h-[400px] w-[300px]">
+          <TaskConversationPreview task={target("second")} />
+        </div>
+      )
     );
     await waitFor(() => expect(pollConversation).toHaveBeenCalledTimes(2));
 
@@ -741,10 +699,77 @@ function message(id: string, role: "assistant" | "user"): SalixMessage {
   };
 }
 
-function previewApi(
-  pollConversation: CommaApiClient["pollConversation"]
-): CommaApiClient {
-  return { pollConversation } as Partial<CommaApiClient> as CommaApiClient;
+/**
+ * The core as these tests see it: each `taskConversation` the preview asks for is read with `pollConversation`
+ * (the server, as the core would read it), unless the core already keeps that version; the answer is the
+ * projected messages. The core's own keeping (how long, how many) is its tests' (core/test/task-conversations.test.ts).
+ */
+function previewCore(pollConversation: PollConversation) {
+  const kept = new Map<string, { version: string; value: TaskConversationValue }>();
+  const asked: Record<string, unknown>[] = [];
+  /** Every topic the UI subscribed to, by name. */
+  const topics: string[] = [];
+  const read = async (groupId: string, conversationId: string, version: string) => {
+    try {
+      const answer = await pollConversation(groupId, conversationId);
+      const found = answer.conversation!;
+      kept.set(conversationId, {
+        version,
+        value: {
+          status: "ready",
+          messages: normalizeServerMessages(found.messages ?? [], [], found.kind),
+        },
+      });
+    } catch {
+      const before = kept.get(conversationId);
+      kept.set(conversationId, {
+        version,
+        value: { ...before?.value, status: "failed" },
+      });
+    }
+    core.changed("taskConversation");
+  };
+  const core = createScriptedCore({
+    owns: (name) => name === "taskConversation",
+    values: (topic) => {
+      if (topic.topic !== "taskConversation") return undefined;
+      const known = kept.get(String(topic.conversation));
+      if (!known) return { status: "loading" };
+      return known.version === topic.version
+        ? known.value
+        : { ...known.value, status: "loading" };
+    },
+    onSubscribe: (topic) => {
+      topics.push(String(topic.topic));
+      if (topic.topic !== "taskConversation") return;
+      asked.push(topic);
+      const known = kept.get(String(topic.conversation));
+      if (known && known.version === topic.version && known.value.status === "ready")
+        return;
+      void read(String(topic.group), String(topic.conversation), String(topic.version));
+    },
+  });
+  return {
+    ...core,
+    asked,
+    topics,
+  };
+}
+
+let currentCore: ReturnType<typeof previewCore> | undefined;
+
+type PollConversation = (
+  groupId: string,
+  conversationId: string
+) => Promise<{ conversation?: CommaConversation; notModified: boolean }>;
+
+/** The core whose `taskConversation` the preview reads, answered by `pollConversation` (`currentCore`). */
+function installPreviewCore(pollConversation: PollConversation) {
+  currentCore = previewCore(pollConversation);
+}
+
+function renderPreview(ui: ReactNode) {
+  return render(currentCore!.wrap(ui));
 }
 
 function deferred<T>() {
@@ -785,16 +810,4 @@ function testRect(left: number, top: number, right: number, bottom: number): DOM
     x: left,
     y: top,
   };
-}
-
-function restoreProperty(
-  object: object,
-  key: PropertyKey,
-  descriptor: PropertyDescriptor | undefined
-) {
-  if (descriptor) {
-    Object.defineProperty(object, key, descriptor);
-  } else {
-    Reflect.deleteProperty(object, key);
-  }
 }

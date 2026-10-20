@@ -1,4 +1,4 @@
-import { ScrollArea, ScrollAreaLoadMore } from "@comma/ui";
+import { ScrollArea, ScrollAreaLoadMore } from "@comma/ui/components/scroll-area";
 import { useEffect, useRef, useState } from "react";
 import type {
   BftAuditEntry,
@@ -10,7 +10,7 @@ import type {
 import { formatRelative, humanize } from "./format";
 import { messages } from "./messages";
 import { RunnersPanel } from "./OverviewPage";
-import type { Resource } from "./resource";
+import { useStateFor, type Resource } from "./resource";
 import { ErrorState, Skeleton } from "./states";
 
 const t = messages.health;
@@ -289,14 +289,18 @@ function AuditPanel({
   onRetry: () => void;
   loadMore: (cursor: string, signal: AbortSignal) => Promise<BftAuditPage>;
 }) {
-  const [more, setMore] = useState<AuditMore>({ entries: [], cursor: undefined });
+  const page = first.state === "ready" ? first.data : undefined;
+  // Fresh data for the first page (after a cached one) starts the list over.
+  const [more, setMore] = useStateFor<AuditMore>(page, {
+    entries: [],
+    cursor: undefined,
+  });
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const controller = useRef<AbortController | null>(null);
 
   useEffect(() => () => controller.current?.abort(), []);
 
-  const page = first.state === "ready" ? first.data : undefined;
   const entries = page ? [...page.entries, ...more.entries] : undefined;
   const cursor = more.cursor === undefined ? (page?.next_cursor ?? null) : more.cursor;
 

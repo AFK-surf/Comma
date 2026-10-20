@@ -17,7 +17,11 @@ defmodule Comma.Data.User do
     field(:profile, :map, default: %{})
     field(:lock_version, :integer, default: 1)
     field(:auth_epoch, :integer, default: 0)
-    timestamps(type: :utc_datetime_usec)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 
   def changeset(user, attrs) do
@@ -65,7 +69,14 @@ defmodule Comma.Data.Workspace do
     field(:sync_network_id, :string)
     field(:wechat_connect_id, :string)
     field(:wechat_pending_connect_id, :string)
-    timestamps(type: :utc_datetime_usec)
+    # The Workspace owner reads its existing Router Conversation. This map
+    # holds positions and counts, never Message content or delivery authority.
+    field(:router_notification_state, :map, default: %{})
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 
   def changeset(workspace, attrs) do
@@ -112,12 +123,15 @@ defmodule Comma.Data.Workspace do
     |> check_constraint(:kind, name: :comma_workspaces_kind_valid)
   end
 
+  # A guest has no Worker. A standard Workspace keeps the default Worker it
+  # was created with; Workspaces created later start without one.
   defp validate_worker_for_kind(changeset) do
     case {get_field(changeset, :kind), get_field(changeset, :salix_worker_agent_id)} do
-      {"guest", nil} -> changeset
-      {"guest", _worker} -> add_error(changeset, :salix_worker_agent_id, "must be empty")
-      {_standard, nil} -> add_error(changeset, :salix_worker_agent_id, "can't be blank")
-      _valid -> changeset
+      {"guest", worker} when not is_nil(worker) ->
+        add_error(changeset, :salix_worker_agent_id, "must be empty")
+
+      _valid ->
+        changeset
     end
   end
 end
@@ -132,7 +146,11 @@ defmodule Comma.Data.WorkspaceMembership do
     field(:user_id, :string)
     field(:role, :string)
     field(:status, :string, default: "active")
-    timestamps(type: :utc_datetime_usec)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 
   def changeset(membership, attrs) do
@@ -169,7 +187,11 @@ defmodule Comma.Data.Session do
     field(:conversation_id, :string)
     field(:interaction_budget_remaining, :integer)
     field(:tool_allowlist, {:array, :string}, default: [])
-    timestamps(type: :utc_datetime_usec)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 
   def changeset(session, attrs) do
@@ -236,7 +258,11 @@ defmodule Comma.Data.ExternalOperation do
     field(:external_idempotency_key, :string)
     field(:external_identity, :string)
     field(:metadata, :map, default: %{})
-    timestamps(type: :utc_datetime_usec)
+
+    timestamps(
+      type: :utc_datetime_usec,
+      autogenerate: {SystemsClock, :timestamp, [:utc_datetime_usec]}
+    )
   end
 
   def changeset(operation, attrs) do

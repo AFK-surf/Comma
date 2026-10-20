@@ -291,6 +291,22 @@ defmodule Salix.Bindings.MeetingCalendar do
            }}
         end
 
+      {"lark", connect_id} when connect_id != "" ->
+        chat_id = trim(group["chat_id"])
+
+        if chat_id == "" do
+          {:error, :meeting_calendar_publication_target_invalid}
+        else
+          {:ok,
+           %{
+             "provider" => "lark",
+             "tool" => "im_api.lark.send_message",
+             "params" =>
+               %{"connect_id" => connect_id, "chat_id" => chat_id}
+               |> put_mentions(group["mentions"])
+           }}
+        end
+
       _incomplete ->
         {:error, :meeting_calendar_publication_target_invalid}
     end

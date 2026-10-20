@@ -9,7 +9,7 @@ defmodule Salix.SlackMirrorDropScrapeTest do
   key or tag, the rows vanish and NOTHING reports it. A raw-event test would
   stay green through exactly that.
   """
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   @reporter Module.concat(__MODULE__, Reporter)
   @scoped_event [:salix, :slack_mirror, :dropped, :scrape_test]
@@ -28,7 +28,9 @@ defmodule Salix.SlackMirrorDropScrapeTest do
          name: @reporter, metrics: scoped_metrics(), start_async: false}
       )
 
-      :telemetry.execute(@scoped_event, %{count: unquote(count)}, %{reason: unquote(reason)})
+      SystemsRuntime.Telemetry.execute(@scoped_event, %{count: unquote(count)}, %{
+        reason: unquote(reason)
+      })
 
       scrape = TelemetryMetricsPrometheus.Core.scrape(@reporter)
       label = unquote(label)

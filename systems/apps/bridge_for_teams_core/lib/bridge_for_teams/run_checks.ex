@@ -1060,6 +1060,16 @@ defmodule BridgeForTeams.RunChecks do
               "the app's Contacts & organization data scope excludes the requested user or department",
               "directory results are partial because only explicitly authorized roots are visible"
             ]
+          },
+          %{
+            "id" => "cloud_documents",
+            "required_scopes" => FeishuScopes.document_scope_ids(),
+            "failure_hints" => [
+              "permission-bearing app version is not published/installed",
+              "the document is not shared with a chat that includes the bot, with the app, or by link inside the tenant",
+              "spreadsheets, Base and legacy /doc/ documents are not supported",
+              "a Minutes recording is still being processed or is not shared with the bot"
+            ]
           }
         ]
       }
@@ -1456,7 +1466,8 @@ defmodule BridgeForTeams.RunChecks do
   defp ensure_project_in_org(%Project{org_id: org_id}, %Organization{id: org_id}), do: :ok
   defp ensure_project_in_org(_project, _org), do: {:error, :not_found}
 
-  defp ran_at(opts), do: Keyword.get_lazy(opts, :ran_at, &DateTime.utc_now/0)
+  defp ran_at(opts),
+    do: Keyword.get_lazy(opts, :ran_at, fn -> SystemsClock.timestamp(:utc_datetime_usec) end)
 
   defp serialize_time(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp serialize_time(other), do: other

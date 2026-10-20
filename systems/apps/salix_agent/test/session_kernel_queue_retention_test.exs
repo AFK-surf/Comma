@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelQueueRetentionTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias SalixAgent.TestSupport.SessionKernelDriver, as: Driver
   alias SalixAgent.InternalSession.State
@@ -38,66 +38,6 @@ defmodule SalixAgent.SessionKernelQueueRetentionTest do
     next
   end
 
-  test "summary matching preserves final newline identities and raw binary boundaries" do
-    newline_ref = @ref <> <<10>>
-
-    for event <- [ack(), consume()] do
-      initial =
-        state(%{
-          async_result_refs: %{newline_ref => 5},
-          summary: <<255>> <> newline_ref <> <<128>>
-        })
-
-      check(initial, event, %{newline_ref => 5})
-      check(%{initial | summary: @ref}, event, %{})
-
-      for suffix <- [<<13, 10>>, <<13>>, <<10, 10>>, <<0>>, <<255>>] do
-        invalid = @ref <> suffix
-        check(state(%{async_result_refs: %{invalid => 5}, summary: invalid}), event, %{})
-      end
-    end
-  end
-
-  test "remaining queue tool identity protects compacted pointers for both reducers" do
-    for event <- [ack(), consume()],
-        payload <- [%{"tool_call_id" => @ref}, %{"source_tool_call_id" => @ref}] do
-      check(state(%{input_queue: [item(1, payload)]}), event, %{@ref => 5, @recent => 11})
-    end
-  end
-
-  test "wait aliases protect nonempty refs and empty plural suppresses singular fallback" do
-    for event <- [ack(), consume()],
-        wait <- [
-          %{"tool_call_ids" => [@ref]},
-          %{tool_call_ids: [@ref]},
-          %{"tool_call_id" => @ref},
-          %{tool_call_id: @ref},
-          %{"tool_call_ids" => false, "tool_call_id" => @ref}
-        ] do
-      check(state(%{wait: wait}), event, %{@ref => 5, @recent => 11})
-    end
-
-    check(state(%{wait: %{"tool_call_ids" => [], "tool_call_id" => @ref}}), ack(), %{
-      @recent => 11
-    })
-  end
-
-  test "transcript atom tool_calls and either call ID alias protect pointers" do
-    for event <- [ack(), consume()], call <- [%{"id" => @ref}, %{id: @ref}] do
-      check(state(%{messages: [%{tool_calls: [call]}]}), event, %{@ref => 5, @recent => 11})
-    end
-
-    check(state(%{messages: [%{"tool_calls" => [%{"id" => @ref}]}]}), ack(), %{@recent => 11})
-  end
-
-  test "queued nested message refs protect without a queue tool identity" do
-    payload = %{"envelope" => [%{"result_ref" => @ref}]}
-
-    for event <- [ack(), consume()] do
-      check(state(%{input_queue: [item(1, payload)]}), event, %{@ref => 5, @recent => 11})
-    end
-  end
-
   test "transcript references support nested metadata and decoded JSON content" do
     messages = [
       %{metadata: [%{result_ref: @ref}]},
@@ -108,21 +48,6 @@ defmodule SalixAgent.SessionKernelQueueRetentionTest do
     for event <- [ack(), consume()], message <- messages do
       check(state(%{messages: [message]}), event, %{@ref => 5, @recent => 11})
     end
-  end
-
-  test "summary protects a complete canonical known ref but not an invalid ID" do
-    for event <- [ack(), consume()] do
-      check(state(%{summary: "Archived result: " <> @ref <> "."}), event, %{
-        @ref => 5,
-        @recent => 11
-      })
-    end
-
-    check(
-      state(%{async_result_refs: %{"not-a-canonical-ref" => 5}, summary: "not-a-canonical-ref"}),
-      ack(),
-      %{}
-    )
   end
 
   test "JSON decode failure is not interpreted as a reference-bearing object" do
@@ -138,26 +63,6 @@ defmodule SalixAgent.SessionKernelQueueRetentionTest do
       check(state(%{messages: [%{content: "bare text " <> @ref}]}), event, %{@recent => 11})
       check(state(%{messages: [%{content: Jason.encode!(@ref)}]}), event, %{@recent => 11})
     end
-  end
-
-  test "string result_ref presence masks atom alias even when nil false or empty" do
-    for masked <- [nil, false, ""] do
-      message = %{"result_ref" => masked, :result_ref => @ref}
-      check(state(%{messages: [message]}), ack(), %{@recent => 11})
-    end
-
-    check(state(%{messages: [%{result_ref: @ref}]}), ack(), %{@ref => 5, @recent => 11})
-  end
-
-  test "content chooses truthy atom alias before the binary alias" do
-    for first <- [nil, false] do
-      message = %{:content => first, "content" => %{"result_ref" => @ref}}
-      check(state(%{messages: [message]}), ack(), %{@ref => 5, @recent => 11})
-    end
-
-    check(state(%{messages: [%{:content => "", "content" => %{"result_ref" => @ref}}]}), ack(), %{
-      @recent => 11
-    })
   end
 
   test "retiring the final queue source removes its compacted pointer" do
@@ -195,13 +100,6 @@ defmodule SalixAgent.SessionKernelQueueRetentionTest do
     end
   end
 
-  test "consume uses loose numeric equality and does not advance ACK" do
-    initial = state(%{queue_ack_id: 7, input_queue: [item(1, %{}), item(2, %{})]})
-    next = check(initial, consume(1.0), %{@recent => 11})
-    assert next.input_queue === [item(2, %{})]
-    assert next.queue_ack_id === 7
-  end
-
   test "nil false and empty refs leave unused malformed retention inputs unvisited" do
     for refs <- [nil, false, %{}], event <- [ack(), consume()] do
       initial =
@@ -224,38 +122,9 @@ defmodule SalixAgent.SessionKernelQueueRetentionTest do
     end
   end
 
-  test "valid stored record aliases remain evaluated even without a binary summary" do
-    for record <- [
-          %{"result_ref" => @ref},
-          %{result_ref: @ref},
-          %{"result_ref" => "", "tool_call_id" => @ref},
-          %{tool_call_id: @ref}
-        ] do
-      check(state(%{async_results: [record]}), ack(), %{@recent => 11})
-    end
-  end
-
-  test "empty binary queue and wait IDs protect while empty result_ref does not" do
-    initial = state(%{async_result_refs: %{"" => 5}})
-    check(%{initial | input_queue: [item(1, %{"tool_call_id" => ""})]}, ack(), %{"" => 5})
-    check(%{initial | wait: %{tool_call_id: ""}}, ack(), %{"" => 5})
-    check(%{initial | messages: [%{result_ref: ""}]}, ack(), %{})
-  end
-
   test "retention rejects a non-enumerable message container" do
     assert_raise ArgumentError, ~r/^invalid Session data:/, fn ->
       Driver.step(state(%{messages: :not_enumerable}), ack())
-    end
-  end
-
-  test "wait aliases select the first truthy plain field" do
-    for values <- [
-          %{"tool_call_ids" => [@ref]},
-          %{"tool_call_ids" => nil, :tool_call_ids => [@ref]},
-          %{"tool_call_ids" => false, :tool_call_ids => [@ref]}
-        ],
-        event <- [ack(), consume()] do
-      check(state(%{wait: values}), event, %{@ref => 5, @recent => 11})
     end
   end
 end

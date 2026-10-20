@@ -14,22 +14,18 @@ metadata:
 
 - Use `pdftoppm -png $OUTDIR/$BASENAME.pdf $OUTDIR/$BASENAME` to convert PDFs to PNGs.
 - Then open the PNGs and read the images.
-- `pdfplumber` is also installed and can be used to read PDFs. It can be used as a complementary tool to `pdftoppm` but not replacing it.
+- `pdfplumber` and `pypdf` are also installed and can be used to read PDFs. It can be used as a complementary tool to `pdftoppm` but not replacing it.
 - Only do python printing as a last resort because you will miss important details with text extraction (e.g. figures, tables, diagrams).
 
 ## Primary tooling for creating PDFs
 
 - Generate PDFs programmatically with `reportlab` as the primary tool. In most cases, you should use `reportlab` to create PDFs.
-- If there are other packages you think are necessary for the task (eg. `pypdf`, `pyMuPDF`), you can use them but you may need to pip install them first.
+- If there are other packages you think are necessary for the task (eg. `pyMuPDF`), you can use them but you may need to pip install them first.
 
 ## Font support for non-ASCII characters
 
-- Before creating PDFs with Chinese, Japanese, Korean (CJK) or other non-ASCII characters, install the required fonts:
-  ```bash
-  apt-get update && apt-get install -y fonts-noto-cjk fonts-noto-core fonts-noto-ui-core
-  ```
-- After installing fonts, rebuild the font cache: `fc-cache -fv`
-- Verify fonts are available: `fc-list :lang=zh` (for Chinese)
+- Cloud VMs include the Noto CJK fonts for Chinese, Japanese and Korean text. Verify them with `fc-list :lang=zh` (for Chinese) before creating such PDFs.
+- If they are missing, install them: `apt-get update && apt-get install -y fonts-noto-cjk`, then rebuild the font cache with `fc-cache -fv`.
 - After **each meaningful update**—content additions, layout adjustments, or style changes—render the PDF to images to check layout fidelity:
   - `pdftoppm -png $INPUT_PDF $OUTPUT_PREFIX`
 - Inspect every exported PNG before continuing work. If anything looks off, fix the source and re-run the render → inspect loop until the pages are clean.

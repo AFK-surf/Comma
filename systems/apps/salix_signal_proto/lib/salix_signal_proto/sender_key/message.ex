@@ -121,7 +121,7 @@ defmodule SalixSignalProto.SenderKey.Message do
           ciphertext: ciphertext
         },
         <<_::binary-size(32)>> = signing_private,
-        random \\ :crypto.strong_rand_bytes(64)
+        random \\ SystemsRuntime.Proc.random_bytes(64)
       )
       when is_binary(ciphertext) do
     body =

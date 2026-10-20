@@ -42,10 +42,11 @@ export function handleMenuKeyDown(
   // the arrow's business, as ever.
   if (hasItems && event.key === "ArrowRight") {
     const item = activeMenu.items[activeIndex];
-    if (item?.browseGroupId) {
+    const browseId = item?.browseGroupId ?? (item?.browse ? item.id : undefined);
+    if (browseId) {
       event.preventDefault();
       suppressedKeyUpRef.current = event.key;
-      openBrowse(item.browseGroupId);
+      openBrowse(browseId);
       return true;
     }
   }

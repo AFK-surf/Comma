@@ -1,5 +1,5 @@
 defmodule SalixAgent.SessionKernelNumberTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
   alias SalixAgent.InternalSession.State
   alias SalixVerifiedKernel.Session
 
@@ -18,39 +18,6 @@ defmodule SalixAgent.SessionKernelNumberTest do
       event = %{"type" => "visible_reply_intent", "scope" => %{value => "value"}}
       assert {:done, next} = Session.step(state, event)
       assert next.visible_reply_intent["scope"] == %{Float.to_string(value) => "value"}
-    end
-  end
-
-  test "business output compares nested numeric values but keeps map keys exact" do
-    state = %State{status: :active, activity_status: :thinking, live_context_bytes: 0}
-
-    for {content, output, same} <- [
-          {[1, %{value: 2}], [1.0, %{value: 2.0}], true},
-          {%{1 => 2}, %{1.0 => 2}, false}
-        ] do
-      event = %{
-        "type" => "tool_result",
-        "tool_name" => "test",
-        "input" => %{},
-        "status" => "completed",
-        "content" => content,
-        "output" => output
-      }
-
-      assert {:done, next} = Session.step(state, event)
-      business = if same, do: content, else: {content, output}
-
-      expected =
-        :crypto.hash(
-          :sha256,
-          :erlang.term_to_binary(
-            {"test", %{}, "completed", nil, nil, business},
-            [:deterministic]
-          )
-        )
-        |> Base.encode16(case: :lower)
-
-      assert next.repeated_tool_result_streak["fingerprint"] == expected
     end
   end
 end

@@ -2,9 +2,10 @@ import {
   readCollapsedHomeRails,
   toggleCollapsedHomeRail,
 } from "./home/homeRailCollapse";
+import { useCall } from "@comma/core-client";
 import { useCommaMessages } from "@comma/i18n/react";
 import { getNativeBridge, type AudioCaptureRecording } from "@comma/native-bridge";
-import { toast } from "@comma/ui";
+import { toast } from "@comma/ui/components/toast";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useContext, useRef, useState } from "react";
 import { CommaAuthContext } from "./auth-context";
@@ -20,6 +21,7 @@ export function useRecordingFileActions() {
   const [pending, setPending] = useState<"reveal" | "open">();
   const [error, setError] = useState<string>();
   const busy = useRef(false);
+  const call = useCall();
 
   const reveal = useCallback(
     async (recording: AudioCaptureRecording) => {
@@ -145,11 +147,9 @@ export function useRecordingFileActions() {
                       hierarchy: "tertiary-gray" as const,
                       label: messages.common_retry(),
                       onPress: () => {
-                        void getNativeBridge()
-                          .meetingRecorder.retryTaskSync()
-                          .catch(() =>
-                            toast.error(messages.recording_summary_failed())
-                          );
+                        void call("meetingRecorder.retryTaskSync", {}).catch(() =>
+                          toast.error(messages.recording_summary_failed())
+                        );
                       },
                     },
                   ]
@@ -177,7 +177,7 @@ export function useRecordingFileActions() {
         testId,
       });
     },
-    [messages, open, reveal, router]
+    [call, messages, open, reveal, router]
   );
 
   return { error, open, pending, reveal, showSaved };

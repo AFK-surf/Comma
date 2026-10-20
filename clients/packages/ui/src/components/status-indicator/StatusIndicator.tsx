@@ -20,6 +20,10 @@ import {
   type RefObject,
 } from "react";
 import { isReducedMotionEnabled, subscribeToReducedMotion } from "../../tokens";
+import {
+  detectAppKeybindingPlatform,
+  isEditableTarget,
+} from "../settings-shortcut/appKeybinding";
 import { Tooltip } from "../tooltip";
 import { statusIconMarkup } from "./statusIconMarkup";
 
@@ -40,13 +44,14 @@ function ensureStatusIndicatorElement(): Promise<unknown> {
   return elementRegistration;
 }
 
-export const statusIds = [
-  "backlog",
-  "in-progress",
-  "needs-review",
-  "done",
-  "cancel",
-] as const;
+/** Loads and registers the `<status-indicator>` element. Stories that test
+    the element load it before render: the lazy chunk can take seconds to
+    arrive while the test server is busy, longer than a play function waits. */
+export function loadStatusIndicatorElement(): Promise<void> {
+  return ensureStatusIndicatorElement().then(() => undefined);
+}
+
+export const statusIds = ["in-progress", "needs-review", "done", "cancel"] as const;
 
 export type StatusId = (typeof statusIds)[number];
 
@@ -74,6 +79,15 @@ type StatusIndicatorTokens = CSSProperties & Record<`--si-${string}`, string | n
 const iconistsMarkup = statusIconMarkup;
 const optionKeyGlyph = "⌥";
 
+// Whether Option with a digit types a character worth keeping in a text
+// field: a dead key, an ASCII character other than the digit itself, a
+// letter or a quotation mark.
+function typesTextCharacter(key: string, digit: string): boolean {
+  return (
+    key === "Dead" || (/^[\x21-\x7e\p{L}\p{Pi}\p{Pf}]$/u.test(key) && key !== digit)
+  );
+}
+
 function statusIndexFromEvent(event: Event): number | undefined {
   const status = event
     .composedPath()
@@ -90,10 +104,6 @@ function statusIndexFromEvent(event: Event): number | undefined {
 }
 
 const BUCKET_PRESENTATION: Record<TaskStatusBucket, { color: string; icon: string }> = {
-  backlog: {
-    color: "var(--color-markdown-icon-primary)",
-    icon: iconistsMarkup.backlog,
-  },
   in_progress: {
     color: "var(--color-markdown-icon-primary)",
     icon: iconistsMarkup.inProgress,
@@ -257,10 +267,24 @@ export function StatusIndicator({
         return;
       }
 
-      const match = /^Digit([1-5])$/.exec(event.code);
-      if (!match) return;
+      const digit = /^Digit([1-5])$/.exec(event.code)?.[1];
+      if (!digit) return;
+      // In a text field the key can type a character instead: on a Mac,
+      // Option with a digit types "@" in Swedish, "[" and "“" in German and
+      // "ë" in French. ASCII characters, letters, quotation marks and dead
+      // keys win there. The symbols US Option types ("¡", "™", "£", "¢",
+      // "∞") are rare in text, so the shortcut keeps them. On Windows and
+      // Linux Alt with a digit types nothing, while event.key still reports
+      // the layout's character ("&" on French AZERTY), so the shortcut runs.
+      if (
+        isEditableTarget(event.target) &&
+        detectAppKeybindingPlatform() === "macos" &&
+        typesTextCharacter(event.key, digit)
+      ) {
+        return;
+      }
 
-      const nextStatus = statusIds[Number(match[1]) - 1];
+      const nextStatus = statusIds[Number(digit) - 1];
       if (!nextStatus) return;
 
       event.preventDefault();

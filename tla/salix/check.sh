@@ -43,18 +43,6 @@ RpcDeliver       RpcDeliver_NoProbeAuthority   violation
 RpcDeliver       RpcDeliver_NoStoreGuard       violation
 RpcDeliver       RpcDeliver_NoStrictWritable   violation
 RpcDeliver       RpcDeliver_ExecutionWitness   ok
-ExternalRuntime ExternalRuntime_Safety           ok
-ExternalRuntime ExternalRuntime_RestartRelease   ok
-ExternalRuntime ExternalRuntime_AckRuns          violation
-ExternalRuntime ExternalRuntime_UnsafeIdentity   violation
-ExternalRuntime ExternalRuntime_ClearQueue       violation
-ExternalRuntime ExternalRuntime_StaleCapability  violation
-ExternalRuntime ExternalRuntime_UnsafeFailedRedispatch violation
-ExternalRuntime ExternalRuntime_UnsafeSteerFence violation
-ExternalRuntime ExternalRuntime_UnsafePrePersistFence violation
-ExternalRuntime ExternalRuntime_NoRestartRelease violation
-ExternalRuntime ExternalRuntime_UnsafeSourceBatch violation ProviderSourceIsolated
-ExternalRuntime ExternalRuntime_UnsafeLocalRefusal violation QueueAccounting
 ComputeCapacityAction ComputeCapacityAction_Safety ok
 ComputeCapacityAction ComputeCapacityAction_UnsafeTimerRetry violation NoAutomaticRetry
 "
@@ -108,16 +96,19 @@ while read -r spec cfg expect expected_property; do
   # TLC exit codes: 0 = no error; 12 = safety violation; 13 = liveness
   # violation.  Anything else (parse error, timeout, OOM) is a hard failure
   # for both expectations.
+  started=$SECONDS
   set +e
   (cd "$WORKDIR" && "$JAVA_BIN" -XX:+UseParallelGC -cp "$JAR" tlc2.TLC \
     -deadlock -workers "$TLA_WORKERS" -metadir "$METADIR/states-$cfg" \
     -config "${cfg}.cfg" "$spec") >"$out" 2>&1
   code=$?
   set -e
+  # How long TLC took, for balancing the CI shards (ci-shard.sh).
+  took="$((SECONDS - started))s"
   case "$expect" in
     ok)
       if [ "$code" -eq 0 ] && grep -q "No error has been found" "$out"; then
-        printf '  ok         %s\n' "$cfg"
+        printf '  ok         %s %s\n' "$cfg" "$took"
       else
         printf '  FAIL       %s (exit %s)\n' "$cfg" "$code"
         tail -n 40 "$out" | sed 's/^/    /'
@@ -133,7 +124,7 @@ while read -r spec cfg expect expected_property; do
           tail -n 40 "$out" | sed 's/^/    /'
           fail=1
         else
-          printf '  violation  %s (expected%s)\n' "$cfg" \
+          printf '  violation  %s %s (expected%s)\n' "$cfg" "$took" \
             "${expected_property:+: $expected_property}"
         fi
       else

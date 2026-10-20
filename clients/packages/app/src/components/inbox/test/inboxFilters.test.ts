@@ -1,8 +1,9 @@
-import type { ProductInboxItem } from "@comma/native-bridge";
+import type { ProductInboxItem } from "@comma/core-client";
 import { describe, expect, it } from "vitest";
 import {
   applyInboxFilters,
   countInboxItemsByPlatform,
+  countInboxTasksBySchedule,
   countInboxTasksByStatus,
   isInboxFiltered,
   unfilteredInbox,
@@ -20,6 +21,11 @@ const item = (over: Partial<ProductInboxItem>): ProductInboxItem => ({
   status: "open",
   updatedAt: 1_000,
   ...over,
+});
+
+const filter = (keys: string[]) => ({
+  ...unfilteredInbox(),
+  schedules: new Set(keys),
 });
 
 describe("inboxFilters", () => {
@@ -52,10 +58,66 @@ describe("inboxFilters", () => {
 
   it("counts tasks per status bucket, ignoring chats", () => {
     expect(countInboxTasksByStatus(items)).toMatchObject({
-      backlog: 0,
+      needs_review: 0,
       done: 1,
       in_progress: 1,
     });
+  });
+
+  it("filters each trigger type, preserves chats, and keeps unknown cadences separate", () => {
+    const scheduled = {
+      ...runningTask,
+      id: "w1:scheduled",
+      loop: {
+        state: "ended" as const,
+        startedAt: 1,
+        wakeCount: 4,
+        cadence: { everyMinutes: 60 },
+      },
+    };
+    const event = {
+      ...runningTask,
+      id: "w1:event",
+      loop: {
+        state: "paused" as const,
+        startedAt: 1,
+        wakeCount: 2,
+        cadence: { events: "new comments" },
+      },
+    };
+    const unknown = {
+      ...runningTask,
+      id: "w1:unknown",
+      loop: { state: "pending" as const, startedAt: 1, wakeCount: 0 },
+    };
+    const mixed = [chat, doneTask, scheduled, event, unknown];
+    expect(countInboxTasksBySchedule(mixed)).toEqual({
+      scheduled: 1,
+      event_triggered: 1,
+      unknown: 1,
+      not_scheduled: 1,
+    });
+    expect(applyInboxFilters(mixed, filter(["scheduled"]))).toEqual([chat, scheduled]);
+    expect(applyInboxFilters(mixed, filter(["event_triggered"]))).toEqual([
+      chat,
+      event,
+    ]);
+    expect(applyInboxFilters(mixed, filter(["scheduled", "event_triggered"]))).toEqual([
+      chat,
+      scheduled,
+      event,
+    ]);
+    expect(applyInboxFilters(mixed, filter(["not_scheduled"]))).toEqual([
+      chat,
+      doneTask,
+    ]);
+    expect(applyInboxFilters(mixed, filter(["unknown"]))).toEqual([chat, unknown]);
+    expect(
+      applyInboxFilters(mixed, {
+        ...filter(["scheduled"]),
+        statuses: new Set(["done" as const]),
+      })
+    ).toEqual([chat]);
   });
 
   it("keeps unknown and missing origins until a platform is selected", () => {

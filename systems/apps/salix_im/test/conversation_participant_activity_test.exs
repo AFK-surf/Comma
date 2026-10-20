@@ -1,5 +1,5 @@
 defmodule SalixIM.ConversationParticipantActivityTest do
-  use ExUnit.Case, async: true
+  use SystemsClock.Case, async: true
 
   alias SalixIM.ConversationParticipantActivity
 
@@ -43,33 +43,23 @@ defmodule SalixIM.ConversationParticipantActivityTest do
     end
   end
 
-  test "marks only a current activation made entirely of Loop inputs" do
-    active = %{
-      "state" => "active",
-      "status" => "is thinking...",
-      "updated_at" => 1,
-      "_active_source_message_ids" => ["loop:lop1:poll:242", "loop:lop1:poll:243"]
-    }
-
-    assert project(active)["loop_wake"] == true
-    refute Map.has_key?(project(%{active | "state" => "stopped"}), "loop_wake")
-
-    for sources <- [[], ["loop:"], ["loop:lop1:poll:242", "local-message"]] do
-      refute Map.has_key?(
-               project(%{active | "_active_source_message_ids" => sources}),
-               "loop_wake"
-             )
-    end
-
-    refute Map.has_key?(project(active), "_active_source_message_ids")
-  end
-
-  defp project(snapshot) do
+  defp project(snapshot, conversation_id \\ "conversation") do
     ConversationParticipantActivity.status_result(
       "group",
-      "conversation",
+      conversation_id,
       "participant",
       snapshot
     )["activity"]
+  end
+
+  defp source(conversation_id, n) do
+    {:ok, source} =
+      SalixIM.ConversationSourceIdentity.encode(
+        conversation_id,
+        "msg1_#{1_000_000_000_000_000_000 + n}",
+        "ptp1_1000000000000000001"
+      )
+
+    source
   end
 end

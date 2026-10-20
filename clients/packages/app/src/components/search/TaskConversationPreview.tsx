@@ -1,15 +1,16 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { Button, cx, spacing } from "@comma/ui";
-import { useEffect, useId, useRef, useState } from "react";
-import type { CommaApiClient } from "../../api";
+import { Button } from "@comma/ui/components/Button";
+import { cx } from "@comma/ui/components/utils";
+import { spacing } from "@comma/ui/tokens";
+import { useId, useRef, useState } from "react";
+import type { ChatMessage } from "@comma/core/chat";
 import { ConversationThread } from "../chat/thread/ConversationThread";
 import {
   InlineTaskLinkAdapterProvider,
   passiveInlineTaskLinkAdapter,
 } from "../chat/thread/inline/MessageInlineElements";
 import {
-  loadTaskConversationPreview,
-  type TaskConversationPreviewData,
+  useTaskConversation,
   type TaskConversationPreviewTarget,
 } from "./taskConversationPreviewLoader";
 import {
@@ -18,12 +19,11 @@ import {
 } from "./previewSearchHighlight";
 
 type PreviewState =
-  | { key: string; status: "error" }
-  | { key: string; status: "loading" }
-  | { data: TaskConversationPreviewData; key: string; status: "ready" };
+  | { status: "error" }
+  | { status: "loading" }
+  | { messages: ChatMessage[]; status: "ready" };
 
 export type TaskConversationPreviewProps = {
-  apiClient: CommaApiClient;
   className?: string;
   /** Use a bounded tail for small embedded views. The search preview keeps its full snapshot. */
   messageLimit?: number;
@@ -37,7 +37,6 @@ const COMMAND_PREVIEW_EDGE_MASK = { size: spacing["4xl"] } as const;
 
 /** A compact, read-only view of the selected task's canonical conversation snapshot. */
 export function TaskConversationPreview({
-  apiClient,
   className,
   messageLimit,
   searchQuery = "",
@@ -48,67 +47,16 @@ export function TaskConversationPreview({
   const titleId = useId();
   const contentRef = useRef<HTMLDivElement>(null);
   const highlightOverlayRef = useRef<HTMLDivElement>(null);
-  const generation = useRef(0);
   const [retry, setRetry] = useState(0);
-  const { conversationId, groupId, status, title, updatedAt, workspaceId } = task;
-  const requestKey = `${workspaceId}\u0000${groupId}\u0000${conversationId}\u0000${updatedAt ?? ""}\u0000${status ?? ""}\u0000${messageLimit ?? "all"}\u0000${retry}`;
-  const [state, setState] = useState<PreviewState>({
-    key: requestKey,
-    status: "loading",
-  });
-  const visibleState: PreviewState =
-    state.key === requestKey ? state : { key: requestKey, status: "loading" };
+  const { conversationId, groupId, title, workspaceId } = task;
+  const answer = useTaskConversation(task, messageLimit, retry);
+  // What the core read last stays shown while it reads again, or after a read failed.
+  const visibleState: PreviewState = answer?.messages
+    ? { messages: answer.messages, status: "ready" }
+    : answer?.status === "failed"
+      ? { status: "error" }
+      : { status: "loading" };
   usePreviewSearchHighlight(contentRef, highlightOverlayRef, searchQuery);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const signal =
-      messageLimit === undefined
-        ? controller.signal
-        : AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]);
-    const currentGeneration = ++generation.current;
-    setState({ key: requestKey, status: "loading" });
-
-    const target: TaskConversationPreviewTarget = {
-      conversationId,
-      groupId,
-      title,
-      workspaceId,
-      ...(status === undefined ? {} : { status }),
-      ...(updatedAt === undefined ? {} : { updatedAt }),
-    };
-    void loadTaskConversationPreview(apiClient, target, signal, messageLimit).then(
-      (data) => {
-        if (generation.current === currentGeneration && !signal.aborted) {
-          setState({ data, key: requestKey, status: "ready" });
-        }
-      },
-      (error: unknown) => {
-        if (
-          generation.current === currentGeneration &&
-          !controller.signal.aborted &&
-          (signal.reason?.name === "TimeoutError" || !isAbortError(error))
-        ) {
-          setState({ key: requestKey, status: "error" });
-        }
-      }
-    );
-
-    return () => {
-      generation.current += 1;
-      controller.abort();
-    };
-  }, [
-    apiClient,
-    conversationId,
-    groupId,
-    messageLimit,
-    requestKey,
-    status,
-    title,
-    updatedAt,
-    workspaceId,
-  ]);
 
   return (
     <section
@@ -151,7 +99,7 @@ export function TaskConversationPreview({
               {messages.common_retry()}
             </Button>
           </div>
-        ) : visibleState.data.messages.length === 0 ? (
+        ) : visibleState.messages.length === 0 ? (
           <p className="flex size-full items-center justify-center px-lg text-center text-sm text-tertiary">
             {messages.task_no_messages()}
           </p>
@@ -163,11 +111,11 @@ export function TaskConversationPreview({
           >
             <InlineTaskLinkAdapterProvider adapter={passiveInlineTaskLinkAdapter}>
               <ConversationThread
-                api={apiClient}
+                live
                 conversationId={conversationId}
                 contentMode="display-only"
                 groupId={groupId}
-                messages={visibleState.data.messages}
+                messages={visibleState.messages}
                 onDiscard={ignoreMessageAction}
                 onRetry={ignoreMessageAction}
                 scrollAreaEdgeMask={COMMAND_PREVIEW_EDGE_MASK}
@@ -211,14 +159,5 @@ function TaskConversationPreviewSkeleton({ label }: { label: string }) {
         <span className="h-3 w-1/3 rounded-full bg-quaternary" />
       </div>
     </output>
-  );
-}
-
-function isAbortError(error: unknown) {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "name" in error &&
-    error.name === "AbortError"
   );
 }

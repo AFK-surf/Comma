@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/comma/salix-tailcat-gateway/internal/devderp"
 	"github.com/comma/salix-tailcat-gateway/internal/testpeer"
@@ -95,7 +94,6 @@ func TestEachDialUsesANewEphemeralClient(t *testing.T) {
 		if reply.ServerNodeKey != serverKey {
 			t.Fatalf("server key %q, want %q", reply.ServerNodeKey, serverKey)
 		}
-		c.SetDeadline(time.Now().Add(10 * time.Second))
 		io.WriteString(c, line)
 		got, err := bufio.NewReader(c).ReadString('\n')
 		if err != nil || got != line {
@@ -114,13 +112,7 @@ func TestEachDialUsesANewEphemeralClient(t *testing.T) {
 	for _, c := range conns {
 		c.Close()
 	}
-	deadline := time.Now().Add(15 * time.Second)
-	for g.Conns() != 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("open connections = %d after close, want 0", g.Conns())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	g.awaitConns(0)
 }
 
 func TestDialCannotReachAServerThatListsClients(t *testing.T) {
@@ -218,5 +210,15 @@ func TestCanonicalKeepsRelaysInTheTrustedMap(t *testing.T) {
 	leak := "x." + string(base.Addr()) + ".example.com"
 	if _, _, err := Resolve(ctx, leak, relay.MapURL); err == nil || !strings.Contains(err.Error(), "DNS label") {
 		t.Fatalf("address as a DNS label: %v", err)
+	}
+}
+
+// awaitConns returns once n connections remain open. It wakes when a client is
+// removed, so n is at most the current count.
+func (g *Gateway) awaitConns(n int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for len(g.clients) != n {
+		g.changed.Wait()
 	}
 }

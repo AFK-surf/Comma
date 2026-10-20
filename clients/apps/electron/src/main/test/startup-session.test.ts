@@ -3,7 +3,7 @@ import { resolveElectronStartupSession } from "../startup-session";
 
 const readLocalDevSessionFile = () =>
   JSON.stringify({
-    apiBaseUrl: "http://127.0.0.1:4200/",
+    apiBaseUrl: "https://api.comma.test/",
     email: " Local@Example.com ",
     sessionToken: " local-session-token ",
     version: 1,
@@ -21,12 +21,12 @@ describe("Electron startup Session", () => {
 
       expect(
         resolveElectronStartupSession({
-          apiBaseUrl: "http://127.0.0.1:4200",
+          apiBaseUrl: "https://api.comma.test",
           env,
           isPackaged: false,
         })
       ).toEqual({
-        audience: "http://127.0.0.1:4200",
+        audience: "https://api.comma.test",
         email: "local@example.com",
         expiresAtEpochSeconds: 4_102_444_800,
         sessionId: "startup-session:local@example.com",
@@ -60,7 +60,7 @@ describe("Electron startup Session", () => {
   it("does nothing without an explicit token", () => {
     expect(
       resolveElectronStartupSession({
-        apiBaseUrl: "http://127.0.0.1:4200",
+        apiBaseUrl: "https://api.comma.test",
         env: {},
         isPackaged: false,
       })
@@ -72,7 +72,7 @@ describe("Electron startup Session", () => {
 
     expect(
       resolveElectronStartupSession({
-        apiBaseUrl: "http://127.0.0.1:4200",
+        apiBaseUrl: "https://api.comma.test",
         defaultFilePath,
         env: {},
         fileExists: (path) => path === defaultFilePath,
@@ -88,7 +88,7 @@ describe("Electron startup Session", () => {
   it("does nothing when the fixed development Session file is absent", () => {
     expect(
       resolveElectronStartupSession({
-        apiBaseUrl: "http://127.0.0.1:4200",
+        apiBaseUrl: "https://api.comma.test",
         defaultFilePath: "/repo/.local/comma-dev-session.json",
         env: {},
         fileExists: () => false,
@@ -106,13 +106,13 @@ describe("Electron startup Session", () => {
     };
 
     const first = resolveElectronStartupSession({
-      apiBaseUrl: "http://127.0.0.1:4200",
+      apiBaseUrl: "https://api.comma.test",
       env,
       isPackaged: false,
       readFile: readLocalDevSessionFile,
     });
     const relaunched = resolveElectronStartupSession({
-      apiBaseUrl: "http://127.0.0.1:4200",
+      apiBaseUrl: "https://api.comma.test",
       env,
       isPackaged: false,
       readFile: readLocalDevSessionFile,
@@ -127,19 +127,19 @@ describe("Electron startup Session", () => {
   it("rejects a development Session file for another API", () => {
     expect(() =>
       resolveElectronStartupSession({
-        apiBaseUrl: "http://127.0.0.1:4200",
+        apiBaseUrl: "https://api.comma.test",
         env: {
           COMMA_ELECTRON_STARTUP_SESSION_FILE: "/repo/.local/comma-dev-session.json",
         },
         isPackaged: false,
         readFile: () =>
           JSON.stringify({
-            apiBaseUrl: "http://127.0.0.1:4300",
+            apiBaseUrl: "https://other-api.comma.test",
             email: "comma-local@example.com",
             sessionToken: "local-session-token",
             version: 1,
           }),
       })
-    ).toThrow("targets http://127.0.0.1:4300");
+    ).toThrow("targets https://other-api.comma.test");
   });
 });

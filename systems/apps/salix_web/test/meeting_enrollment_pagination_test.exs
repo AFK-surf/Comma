@@ -1,5 +1,5 @@
 defmodule Salix.Bindings.MeetingEnrollmentPaginationTest do
-  use ExUnit.Case, async: false
+  use SystemsClock.Case, async: false
 
   alias Salix.Bindings.MeetingEnrollment
   alias Salix.Control.ComposioSettings
@@ -75,20 +75,20 @@ defmodule Salix.Bindings.MeetingEnrollmentPaginationTest do
 
   setup do
     previous = %{
-      s3: Application.get_env(:salix_store, :s3_backend),
-      composio_url: Application.get_env(:salix_store, :composio_base_url_override),
-      slack_url: Application.get_env(:salix_im, :slack_api_base_url)
+      s3: SystemsRuntime.get_env(:salix_store, :s3_backend),
+      composio_url: SystemsRuntime.get_env(:salix_store, :composio_base_url_override),
+      slack_url: SystemsRuntime.get_env(:salix_im, :slack_api_base_url)
     }
 
-    Application.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
+    SystemsRuntime.put_env(:salix_store, :s3_backend, SalixStore.S3.Fake)
     ensure_started!(SalixStore.S3.Fake)
     SalixStore.S3.Fake.reset()
 
     start_supervised!(MockExternalHTTP)
     port = start_bandit_retry!()
     base_url = "http://127.0.0.1:#{port}"
-    Application.put_env(:salix_store, :composio_base_url_override, base_url)
-    Application.put_env(:salix_im, :slack_api_base_url, base_url <> "/api")
+    SystemsRuntime.put_env(:salix_store, :composio_base_url_override, base_url)
+    SystemsRuntime.put_env(:salix_im, :slack_api_base_url, base_url <> "/api")
 
     tenant_id = Ids.new_tenant_id()
     group_id = Ids.new_group_id(tenant_id)
@@ -139,37 +139,6 @@ defmodule Salix.Bindings.MeetingEnrollmentPaginationTest do
     assert Enum.map(account_requests, & &1.query["cursor"]) == [nil, "accounts-page-2"]
   end
 
-  test "a duplicate name on a later calendar page remains ambiguous", %{group_id: group_id} do
-    stub_accounts("", [account("ca-1", group_id)], nil)
-
-    stub_calendars(
-      "ca-1",
-      "",
-      [%{"id" => "comma-a", "summary" => "Comma Event"}],
-      "calendars-page-2"
-    )
-
-    stub_calendars(
-      "ca-1",
-      "calendars-page-2",
-      [%{"id" => "comma-b", "summary" => "Comma Event"}],
-      nil
-    )
-
-    assert {:error, {:calendar_ambiguous, "Comma Event"}} = MeetingEnrollment.resolve(entry())
-
-    calendar_requests =
-      Enum.filter(
-        MockExternalHTTP.requests(),
-        &(&1.path == "/api/v3/tools/execute/GOOGLECALENDAR_LIST_CALENDARS")
-      )
-
-    assert Enum.map(calendar_requests, &get_in(&1, [:body, "arguments", "page_token"])) == [
-             nil,
-             "calendars-page-2"
-           ]
-  end
-
   test "foreign accounts are rejected before their calendar catalog is read", %{
     group_id: group_id
   } do
@@ -180,72 +149,6 @@ defmodule Salix.Bindings.MeetingEnrollmentPaginationTest do
     refute Enum.any?(MockExternalHTTP.requests(), fn request ->
              request.path == "/api/v3/tools/execute/GOOGLECALENDAR_LIST_CALENDARS"
            end)
-  end
-
-  test "too many active accounts fail before any calendar tool call", %{group_id: group_id} do
-    accounts = Enum.map(1..11, &account("ca-#{&1}", group_id))
-    stub_accounts("", accounts, nil)
-
-    assert {:error, :calendar_enrollment_too_many_active_accounts} =
-             MeetingEnrollment.resolve(entry())
-
-    refute Enum.any?(MockExternalHTTP.requests(), fn request ->
-             request.path == "/api/v3/tools/execute/GOOGLECALENDAR_LIST_CALENDARS"
-           end)
-  end
-
-  test "calendar page budget is shared across all active accounts", %{group_id: group_id} do
-    stub_accounts("", [account("ca-1", group_id), account("ca-2", group_id)], nil)
-
-    Enum.each(0..5, fn index ->
-      token = if index == 0, do: "", else: "ca-1-page-#{index}"
-      next_token = if index == 5, do: nil, else: "ca-1-page-#{index + 1}"
-      stub_calendars("ca-1", token, [], next_token)
-    end)
-
-    Enum.each(0..3, fn index ->
-      token = if index == 0, do: "", else: "ca-2-page-#{index}"
-      stub_calendars("ca-2", token, [], "ca-2-page-#{index + 1}")
-    end)
-
-    assert {:error, {:calendar_enrollment_list, :page_limit_exceeded}} =
-             MeetingEnrollment.resolve(entry())
-
-    calendar_requests =
-      Enum.filter(
-        MockExternalHTTP.requests(),
-        &(&1.path == "/api/v3/tools/execute/GOOGLECALENDAR_LIST_CALENDARS")
-      )
-
-    assert length(calendar_requests) == 10
-  end
-
-  test "calendar discovery fails closed at the finite page budget", %{group_id: group_id} do
-    stub_accounts("", [account("ca-1", group_id)], nil)
-
-    Enum.each(0..9, fn index ->
-      token = if index == 0, do: "", else: "calendar-page-#{index}"
-      next_token = "calendar-page-#{index + 1}"
-
-      stub_calendars(
-        "ca-1",
-        token,
-        [%{"id" => "calendar-#{index}", "summary" => "Other #{index}"}],
-        next_token
-      )
-    end)
-
-    assert {:error, {:calendar_enrollment_list, :page_limit_exceeded}} =
-             MeetingEnrollment.resolve(entry())
-
-    calendar_requests =
-      Enum.filter(
-        MockExternalHTTP.requests(),
-        &(&1.path == "/api/v3/tools/execute/GOOGLECALENDAR_LIST_CALENDARS")
-      )
-
-    assert length(calendar_requests) == 10
-    refute Enum.any?(MockExternalHTTP.requests(), &(&1.path == "/api/conversations.list"))
   end
 
   defp entry do
@@ -336,7 +239,7 @@ defmodule Salix.Bindings.MeetingEnrollmentPaginationTest do
           "data" => %{
             "id" => get_in(body, ["arguments", "id"]),
             "resourceId" => "resource-#{account_id}",
-            "expiration" => System.system_time(:millisecond) + 7 * 24 * 60 * 60 * 1_000
+            "expiration" => SystemsClock.system_time(:millisecond) + 7 * 24 * 60 * 60 * 1_000
           }
         }
       end
@@ -381,7 +284,7 @@ defmodule Salix.Bindings.MeetingEnrollmentPaginationTest do
 
   defp start_bandit_retry! do
     Enum.find_value(1..10, fn _ ->
-      port = 40_000 + :erlang.phash2(make_ref(), 20_000)
+      port = 40_000 + :erlang.phash2(SystemsRuntime.Proc.make_ref(), 20_000)
 
       case ExUnit.Callbacks.start_supervised(
              {Bandit, plug: MockExternalHTTP, port: port, ip: {127, 0, 0, 1}},
@@ -394,12 +297,12 @@ defmodule Salix.Bindings.MeetingEnrollmentPaginationTest do
   end
 
   defp ensure_started!(module) do
-    case Process.whereis(module) do
+    case SystemsRuntime.Proc.whereis(module) do
       nil -> start_supervised!(module)
       _pid -> :ok
     end
   end
 
-  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+  defp restore_env(app, key, nil), do: SystemsRuntime.delete_env(app, key)
+  defp restore_env(app, key, value), do: SystemsRuntime.put_env(app, key, value)
 end

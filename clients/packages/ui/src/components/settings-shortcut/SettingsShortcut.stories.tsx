@@ -2,6 +2,15 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useEffect, useState, type ReactNode } from "react";
 import { expect, fireEvent, fn, userEvent, within } from "storybook/test";
 import { SettingsShortcut, type SettingsShortcutProps } from "./SettingsShortcut";
+import { appKeyModifierKeycaps } from "./appKeybinding";
+
+// The Control keycap as this machine prints it: ⌃ on macOS, Ctrl elsewhere.
+const controlKeycap = appKeyModifierKeycaps({
+  alt: false,
+  control: true,
+  meta: false,
+  shift: false,
+})[0]!;
 
 const StorySurface = ({ children }: { children: ReactNode }) => (
   <div className="flex justify-end">{children}</div>
@@ -74,7 +83,7 @@ export const Default: Story = {
       name: "Open Side Chat: Ctrl + Z",
     });
 
-    await expect(canvas.getByText("⌃")).toBeVisible();
+    await expect(canvas.getByText(controlKeycap)).toBeVisible();
     await expect(canvas.getByText("Z")).toBeVisible();
     await expect(shortcut).toHaveAttribute("data-state", "idle");
     await expect(args.onChange).not.toHaveBeenCalled();
@@ -130,7 +139,7 @@ export const RecordingCandidate: Story = {
     });
 
     await expect(shortcut).toHaveAttribute("data-state", "recording");
-    await expect(canvas.getByText("⌃")).toBeVisible();
+    await expect(canvas.getByText(controlKeycap)).toBeVisible();
     await expect(canvas.getByText("K")).toBeVisible();
   },
 };

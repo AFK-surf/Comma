@@ -1,0 +1,48 @@
+#!/bin/sh
+# Fast checks on the staged files; CI still runs the full checks.
+# `git config core.hooksPath scripts/git-hooks` installs it; `make` and
+# `mix deps.get` in systems/ set that.
+set -u
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -n "$staged" ] || exit 0
+status=0
+
+# Repository rules on the syntax tree (sgconfig.yml, lint/rules).
+printf '%s\n' "$staged" | xargs scripts/ast-grep.sh scan || status=1
+
+# Systems: mix format.
+elixir_files=$(printf '%s\n' "$staged" | sed -n 's|^systems/||p' | grep -E '\.(ex|exs|heex)$')
+if [ -n "$elixir_files" ]; then
+  if command -v mix >/dev/null 2>&1 && [ -d systems/deps ]; then
+    (cd systems && printf '%s\n' "$elixir_files" | xargs mix format --check-formatted) || {
+      echo "pre-commit: run \`mix format\` in systems/ to fix the formatting above." >&2
+      status=1
+    }
+  else
+    echo "pre-commit: mix or systems/deps is missing; skipping mix format." >&2
+  fi
+fi
+
+# Clients: Prettier and oxlint, as `pnpm ci:static` runs them, when the
+# client dependencies are installed.
+client_files=$(printf '%s\n' "$staged" | sed -n 's|^clients/||p')
+if [ -n "$client_files" ]; then
+  bin="$root/node_modules/.bin"
+  if [ -x "$bin/prettier" ] && [ -x "$bin/oxlint" ]; then
+    (cd clients && printf '%s\n' "$client_files" | xargs "$bin/prettier" --check --ignore-unknown --log-level warn) || {
+      echo "pre-commit: run \`pnpm --dir clients format\` to fix the formatting above." >&2
+      status=1
+    }
+    lint_files=$(printf '%s\n' "$client_files" | grep -E '\.(js|jsx|mjs|cjs|ts|tsx|mts|cts)$')
+    if [ -n "$lint_files" ]; then
+      (cd clients && printf '%s\n' "$lint_files" | xargs "$bin/oxlint" --quiet) || status=1
+    fi
+  else
+    echo "pre-commit: node_modules is missing; skipping Prettier and oxlint." >&2
+  fi
+fi
+
+exit $status

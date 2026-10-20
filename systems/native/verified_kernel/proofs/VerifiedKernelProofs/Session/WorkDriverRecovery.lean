@@ -22,8 +22,8 @@ theorem recovery_initial_write {context : Context} {args checkpoint saved : Term
   obtain ⟨journal, result, rest, call, _, remaining⟩ := observations_successful_query trace terminal
   rcases recovery_start (args := args) call with ⟨outcome, returned⟩ | ⟨original, hwm, scope, batch, issued⟩
   · rw [returned] at remaining
-    have impossible := remaining.fixed (by simp [issue, Command.finish, a])
-    simp [issue, Command.finish, a] at impossible
+    have impossible := remaining.fixed (by simp [issue_finish, a])
+    simp [issue_finish, a] at impossible
   · rw [issued] at remaining
     change ObservationTrace (issueWrite context (.tuple [b "durable_fence", .tuple [b "recovered", scope]]) original hwm) _ at remaining
     obtain ⟨batch, savedEq⟩ := ordinary_write_observations batch remaining
@@ -40,8 +40,8 @@ theorem recovery_initial_no_effect {context : Context} {args checkpoint saved re
   obtain ⟨journal, result, rest, call, _, remaining⟩ := observations_successful_query trace terminal
   rcases recovery_start (args := args) call with ⟨outcome, returned⟩ | ⟨original, hwm, scope, batch, issued⟩
   · rw [returned] at remaining
-    have impossible := remaining.fixed (by simp [issue, Command.finish, a])
-    simp [issue, Command.finish, a] at impossible
+    have impossible := remaining.fixed (by simp [issue_finish, a])
+    simp [issue_finish, a] at impossible
   · rw [issued] at remaining
     exact write_observations_no_effect remaining
 

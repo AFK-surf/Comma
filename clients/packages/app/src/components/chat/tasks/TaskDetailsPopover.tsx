@@ -1,5 +1,5 @@
 import { useCommaMessages } from "@comma/i18n/react";
-import { MenuPopover, menuSurfaceClasses } from "@comma/ui";
+import { MenuPopover, menuSurfaceClasses } from "@comma/ui/components/menu";
 import { Dialog as AriaDialog, DialogTrigger } from "react-aria-components";
 import { ShellIconButton } from "../../ShellIconButton";
 import { TaskDetailsPanel, type TaskDetailsPanelProps } from "./TaskDetailsPanel";
@@ -34,7 +34,21 @@ export function TaskDetailsPopover(props: TaskDetailsPopoverProps) {
           className="outline-none"
           data-testid="task-panel-popover"
         >
-          <TaskDetailsPanel {...props} layout="popover" open />
+          {({ close }) => (
+            <TaskDetailsPanel
+              {...props}
+              layout="popover"
+              // The popover covers the transcript, so it gives way to the step.
+              onRevealActivityStep={
+                props.onRevealActivityStep &&
+                ((messageId) => {
+                  close();
+                  props.onRevealActivityStep?.(messageId);
+                })
+              }
+              open
+            />
+          )}
         </AriaDialog>
       </MenuPopover>
     </DialogTrigger>

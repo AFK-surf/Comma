@@ -1,25 +1,29 @@
 import { useCommaMessages } from "@comma/i18n/react";
 import {
+  InfinityIcon,
   ChevronRightSmallIcon,
   CircleCheckIcon,
   Filter2Icon,
+  SquareGridCircleIcon,
+} from "@comma/ui/components/icons";
+import {
   Menu,
   MenuItem,
   MenuPopover,
   MenuTrigger,
   SubmenuTrigger,
-  SquareGridCircleIcon,
+} from "@comma/ui/components/menu";
+import {
   TaskSectionFilterPanel,
   TaskStatusFilterPanel,
-  cx,
-  motionDuration,
-  spacing,
-  taskStatusIcon,
+  taskNeutralIcon,
   taskToolbarIconButtonClassName,
   type TaskStatusCounts,
   type TaskFilterSection,
   type TaskFilterOption,
-} from "@comma/ui";
+} from "@comma/ui/components/task-workspace";
+import { cx } from "@comma/ui/components/utils";
+import { motionDuration, spacing } from "@comma/ui/tokens";
 import { Button as AriaButton } from "react-aria-components";
 import {
   InboxNotificationCount,
@@ -31,11 +35,13 @@ import {
   TaskOriginIcon,
   taskOriginLabel,
 } from "../../tasks/taskOrigin";
+import { taskLoopFilterOptions } from "../../tasks/taskChips";
 import {
   INBOX_NO_PLATFORM,
   isInboxFiltered,
   type InboxFilters,
   type InboxPlatformCounts,
+  type InboxScheduleCounts,
 } from "./inboxFilters";
 
 export interface InboxFilterMenuProps {
@@ -43,6 +49,8 @@ export interface InboxFilterMenuProps {
   onFiltersChange: (filters: InboxFilters) => void;
   statusCounts: TaskStatusCounts;
   platformCounts: InboxPlatformCounts;
+  scheduleCounts: InboxScheduleCounts;
+  ruleSection?: TaskFilterSection | undefined;
   workspaceSelector?: InboxWorkspaceSelector | undefined;
 }
 
@@ -61,6 +69,8 @@ export function InboxFilterMenu({
   filters,
   onFiltersChange,
   platformCounts,
+  scheduleCounts,
+  ruleSection,
   statusCounts,
   workspaceSelector,
 }: InboxFilterMenuProps) {
@@ -100,6 +110,31 @@ export function InboxFilterMenu({
     options: platformOptions,
     selected: filters.platforms ?? new Set(platformOptions.map((option) => option.id)),
   };
+  const scheduleOptions = taskLoopFilterOptions(
+    scheduleCounts,
+    messages,
+    filters.schedules
+  );
+  // Shown, as on the Tasks page, once any Task is a Loop or the filter narrows.
+  const scheduleSection: TaskFilterSection | undefined =
+    scheduleCounts.scheduled + scheduleCounts.event_triggered + scheduleCounts.unknown >
+      0 || filters.schedules !== undefined
+      ? {
+          icon: <InfinityIcon />,
+          id: "schedule",
+          label: messages.tasks_loops(),
+          onChange: (selected) =>
+            onFiltersChange({
+              ...filters,
+              schedules: scheduleOptions.every((option) => selected.has(option.id))
+                ? undefined
+                : selected,
+            }),
+          options: scheduleOptions,
+          selected:
+            filters.schedules ?? new Set(scheduleOptions.map((option) => option.id)),
+        }
+      : undefined;
 
   return (
     <MenuTrigger>
@@ -128,7 +163,7 @@ export function InboxFilterMenu({
           className="w-44 bg-popup-secondary px-sm py-sm shadow-2xl"
         >
           <SubmenuTrigger delay={motionDuration.submenuOpenDelay}>
-            <MenuItem {...submenuRowProps} icon={taskStatusIcon("backlog")} id="status">
+            <MenuItem {...submenuRowProps} icon={taskNeutralIcon()} id="status">
               {messages.inbox_filter_task_status()}
             </MenuItem>
             <MenuPopover offset={0} placement="right top">
@@ -159,6 +194,39 @@ export function InboxFilterMenu({
               </div>
             </MenuPopover>
           </SubmenuTrigger>
+          {scheduleSection ? (
+            <SubmenuTrigger delay={motionDuration.submenuOpenDelay}>
+              <MenuItem {...submenuRowProps} icon={scheduleSection.icon} id="schedule">
+                {scheduleSection.label}
+              </MenuItem>
+              <MenuPopover offset={0} placement="right top">
+                <div data-testid="inbox-schedule-filter">
+                  <TaskSectionFilterPanel
+                    panelClassName="w-72"
+                    renderCount={(count) => <InboxNotificationCount count={count} />}
+                    section={scheduleSection}
+                  />
+                </div>
+              </MenuPopover>
+            </SubmenuTrigger>
+          ) : null}
+          {/* As on the Tasks page, the trigger rule follows the Loop type. */}
+          {ruleSection ? (
+            <SubmenuTrigger delay={motionDuration.submenuOpenDelay}>
+              <MenuItem {...submenuRowProps} icon={ruleSection.icon} id="loopRule">
+                {ruleSection.label}
+              </MenuItem>
+              <MenuPopover offset={0} placement="right top">
+                <div data-testid="inbox-loop-rule-filter">
+                  <TaskSectionFilterPanel
+                    panelClassName="w-72"
+                    renderCount={(count) => <InboxNotificationCount count={count} />}
+                    section={ruleSection}
+                  />
+                </div>
+              </MenuPopover>
+            </SubmenuTrigger>
+          ) : null}
           {hasWorkspaceFilter ? (
             <SubmenuTrigger delay={motionDuration.submenuOpenDelay}>
               <MenuItem {...submenuRowProps} icon={<CircleCheckIcon />} id="workspace">

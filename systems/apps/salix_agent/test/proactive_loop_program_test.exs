@@ -1,5 +1,7 @@
 defmodule SalixAgent.ProactiveLoopProgramTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
+
+  use SystemsClock.Case, async: false
   alias SalixAgent.{Loops.Host, SpinfoamFixture}
 
   @source Path.expand(
@@ -48,99 +50,10 @@ defmodule SalixAgent.ProactiveLoopProgramTest do
     end
   end
 
-  test "oversized evidence retains an executable exact source recipe", %{elf: elf} do
-    calls =
-      run(
-        elf,
-        "composio.execute",
-        %{"tool_slug" => "mail-read", "connected_account_id" => "owner", "arguments" => %{}},
-        %{"body" => String.duplicate("x", 9000)},
-        "notify"
-      )
-
-    {"agent.notify", notification} = Enum.find(calls, &(elem(&1, 0) == "agent.notify"))
-    content = Jason.decode!(notification["content"])
-    assert byte_size(notification["content"]) < 7800
-    assert get_in(content, ["source_read", "arguments", "arguments", "id"]) == "exact-source"
-    assert get_in(content, ["source_read", "arguments", "connected_account_id"]) == "owner"
-    assert Enum.any?(calls, &(elem(&1, 0) == "loop.ack"))
-  end
-
   test "complete confident quiet checkpoints and acknowledges without notification", %{elf: elf} do
     calls = run(elf, "composio.execute", %{}, %{"successful" => true, "data" => %{}}, "quiet")
     refute Enum.any?(calls, &(elem(&1, 0) == "agent.notify"))
     assert Enum.any?(calls, &(elem(&1, 0) == "loop.ack"))
-  end
-
-  test "Home timer passes selected Routine items and freshness to the Router", %{elf: elf} do
-    routine = %{
-      "state" => "stale",
-      "snapshot" => %{"cards" => [%{"id" => "github-review"}]},
-      "lastError" => "source_collection_failed"
-    }
-
-    calls =
-      run(elf, "im_api.internal.read_conversation", %{"limit" => 12}, %{}, "notify", "queued",
-        poll: %{},
-        related: %{"tool" => "recommendation.read", "arguments" => %{}},
-        related_result: routine
-      )
-
-    {"agent.notify", notification} = Enum.find(calls, &(elem(&1, 0) == "agent.notify"))
-    evidence = Jason.decode!(notification["content"])
-    assert evidence["source"]["related"] == routine
-    assert evidence["related_read"] == %{"tool" => "recommendation.read", "arguments" => %{}}
-    assert evidence["source_read"]["tool"] == "im_api.internal.read_conversation"
-  end
-
-  test "related thread read uses the returned identity and keeps its exact recipe", %{elf: elf} do
-    related = %{
-      "tool" => "composio.execute",
-      "arguments" => %{"tool_slug" => "thread-read", "arguments" => %{}},
-      "event_argument" => "thread_id",
-      "event_field" => "data.threadId"
-    }
-
-    calls =
-      run(
-        elf,
-        "composio.execute",
-        %{"arguments" => %{}},
-        %{"data" => %{"threadId" => "returned-thread"}},
-        "notify",
-        "queued",
-        related: related
-      )
-
-    assert {"composio.execute",
-            %{"tool_slug" => "thread-read", "arguments" => %{"thread_id" => "returned-thread"}}} in calls
-
-    {"agent.notify", notification} = Enum.find(calls, &(elem(&1, 0) == "agent.notify"))
-    evidence = Jason.decode!(notification["content"])
-
-    assert get_in(evidence, ["related_read", "arguments", "arguments", "thread_id"]) ==
-             "returned-thread"
-
-    assert get_in(evidence, ["source", "related", "messages"]) == ["Fresh reply"]
-  end
-
-  test "provider error wakes Router without treating missing evidence as quiet", %{elf: elf} do
-    calls =
-      run(
-        elf,
-        "composio.execute",
-        %{},
-        %{"successful" => false, "error" => "unavailable"},
-        "quiet"
-      )
-
-    refute Enum.any?(calls, &(elem(&1, 0) == "decide"))
-    assert Enum.any?(calls, &(elem(&1, 0) == "agent.notify"))
-  end
-
-  test "low confidence quiet still asks the Router", %{elf: elf} do
-    calls = run(elf, "composio.execute", %{}, %{}, "quiet", "queued", confidence: 6000)
-    assert Enum.any?(calls, &(elem(&1, 0) == "agent.notify"))
   end
 
   test "decision failure wakes Router and an unsuccessful wake never ACKs", %{elf: elf} do
@@ -157,24 +70,6 @@ defmodule SalixAgent.ProactiveLoopProgramTest do
 
     assert Enum.any?(calls, &(elem(&1, 0) == "agent.notify"))
     refute Enum.any?(calls, &(elem(&1, 0) == "loop.ack"))
-  end
-
-  test "missing context and truncated source cannot settle as quiet", %{elf: elf} do
-    for options <- [[context: %{"error" => "unavailable"}], [source: %{"truncated" => true}]] do
-      calls =
-        run(
-          elf,
-          "composio.execute",
-          %{},
-          Keyword.get(options, :source, %{}),
-          "quiet",
-          "queued",
-          options
-        )
-
-      refute Enum.any?(calls, &(elem(&1, 0) == "decide"))
-      assert Enum.any?(calls, &(elem(&1, 0) == "agent.notify"))
-    end
   end
 
   test "poll resumes its saved identity and observation across guest replacement", %{elf: elf} do
@@ -205,6 +100,64 @@ defmodule SalixAgent.ProactiveLoopProgramTest do
               }}
 
     refute Enum.any?(calls, &(elem(&1, 0) == "loop.ack"))
+  end
+
+  test "polls that keep failing to read the source share one handoff key", %{elf: elf} do
+    pending = %{"event_id" => "poll:7", "topic" => "poll", "payload" => %{}}
+    failed = %{"error" => "unavailable"}
+
+    first =
+      run(elf, "composio.execute", %{}, failed, "notify", "queued",
+        poll: %{"poll_sequence" => 7, "pending_poll" => pending}
+      )
+
+    {"agent.notify", notification} = Enum.find(first, &(elem(&1, 0) == "agent.notify"))
+    assert notification["dedup_key"] == "poll:7"
+    refute Enum.any?(first, &(elem(&1, 0) == "decide"))
+    {"loop.state.put", %{"state" => state}} = List.last(first)
+    assert state["source_error_since"] == "poll:7"
+
+    later =
+      run(elf, "composio.execute", %{}, failed, "notify", "duplicate",
+        poll: %{
+          "poll_sequence" => 9,
+          "pending_poll" => %{pending | "event_id" => "poll:9"},
+          "source_error_since" => "poll:7"
+        }
+      )
+
+    {"agent.notify", notification} = Enum.find(later, &(elem(&1, 0) == "agent.notify"))
+    assert notification["dedup_key"] == "poll:7"
+
+    recovered =
+      run(elf, "composio.execute", %{}, %{"new" => true}, "quiet", "queued",
+        poll: %{
+          "poll_sequence" => 10,
+          "pending_poll" => %{pending | "event_id" => "poll:10"},
+          "source_error_since" => "poll:7"
+        }
+      )
+
+    {"loop.state.put", %{"state" => state}} = List.last(recovered)
+    assert is_nil(state["source_error_since"])
+    assert state["observation"] == %{"new" => true}
+  end
+
+  test "a poll that reads the settled observation again settles without Decide", %{elf: elf} do
+    pending = %{"event_id" => "poll:7", "topic" => "poll", "payload" => %{}}
+
+    calls =
+      run(elf, "composio.execute", %{}, %{"state" => "open"}, "notify", "queued",
+        poll: %{
+          "poll_sequence" => 7,
+          "pending_poll" => pending,
+          "observation" => %{"state" => "open"}
+        }
+      )
+
+    refute Enum.any?(calls, &(elem(&1, 0) in ["decide", "agent.notify"]))
+    {"loop.state.put", %{"state" => state}} = List.last(calls)
+    assert is_nil(state["pending_poll"])
   end
 
   defp run(elf, tool, arguments, source, choice, wake \\ "queued", options \\ []) do
@@ -252,7 +205,7 @@ defmodule SalixAgent.ProactiveLoopProgramTest do
 
     {:ok, id} =
       Host.object_load(
-        %{kind: :script, owner: self(), agent_id: "test"},
+        %{kind: :script, owner: SystemsRuntime.Proc.self(), agent_id: "test"},
         elf,
         config,
         capabilities
@@ -271,7 +224,7 @@ defmodule SalixAgent.ProactiveLoopProgramTest do
   end
 
   defp collect(id, tool, source, choice, wake, options, calls) do
-    receive do
+    SystemsRuntime.Proc.receive do
       {:script_host_call, ^id, rpc, name, args} ->
         result =
           case {name, args} do

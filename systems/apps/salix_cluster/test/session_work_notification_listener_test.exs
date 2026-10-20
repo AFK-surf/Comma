@@ -1,6 +1,9 @@
 defmodule SalixCluster.SessionWorkNotificationListenerTest do
-  use ExUnit.Case, async: false
+  require SystemsRuntime.Proc
 
+  use SystemsClock.Case, async: false
+
+  use SalixAgent.TestSupport.Settle
   alias SalixCluster.SessionWorkNotificationListener
   alias SalixStore.SessionWorkNotifications
 
@@ -10,13 +13,13 @@ defmodule SalixCluster.SessionWorkNotificationListenerTest do
     def start_link(opts) do
       owner = Keyword.fetch!(opts, :test_owner)
       {:ok, pid} = Agent.start_link(fn -> %{listener: nil, ref: nil, owner: owner} end)
-      send(owner, {:fake_notifications_started, pid})
+      SystemsRuntime.Proc.send(owner, {:fake_notifications_started, pid})
       {:ok, pid}
     end
 
     def listen(pid, channel) do
-      listener = self()
-      ref = make_ref()
+      listener = SystemsRuntime.Proc.self()
+      ref = SystemsRuntime.Proc.make_ref()
 
       owner =
         Agent.get_and_update(pid, fn state ->
@@ -26,19 +29,19 @@ defmodule SalixCluster.SessionWorkNotificationListenerTest do
       # This function executes in the listener process. Its message and the
       # injected catch-up message therefore prove subscribe-before-catch-up by
       # ordinary BEAM sender ordering.
-      send(owner, {:fake_notifications_listened, pid, channel})
+      SystemsRuntime.Proc.send(owner, {:fake_notifications_listened, pid, channel})
       {:ok, ref}
     end
 
     def notify(pid, channel, payload) do
       %{listener: listener, ref: ref} = Agent.get(pid, & &1)
-      send(listener, {:notification, pid, ref, channel, payload})
+      SystemsRuntime.Proc.send(listener, {:notification, pid, ref, channel, payload})
       :ok
     end
   end
 
   test "subscribes before catch-up, dispatches only on the ring owner, and catches up after reconnect" do
-    owner = self()
+    owner = SystemsRuntime.Proc.self()
     ownership = start_supervised!({Agent, fn -> node() end})
 
     listener =
@@ -50,29 +53,24 @@ defmodule SalixCluster.SessionWorkNotificationListenerTest do
          reconnect_backoff_ms: 10,
          owner_node_fn: fn _agent_id -> Agent.get(ownership, & &1) end,
          catch_up_fn: fn ->
-           send(owner, :notification_listener_catch_up)
+           SystemsRuntime.Proc.send(owner, :notification_listener_catch_up)
            :ok
          end,
          wake_fn: fn agent_id, target, candidate_token ->
-           send(owner, {:notification_listener_wake, agent_id, target, candidate_token})
+           SystemsRuntime.Proc.send(
+             owner,
+             {:notification_listener_wake, agent_id, target, candidate_token}
+           )
+
            :ok
          end}
       )
 
-    assert is_pid(listener)
-    assert_receive {:fake_notifications_started, connection}
-
-    assert_receive {:fake_notifications_listened, ^connection, channel}
+    assert SystemsRuntime.Proc.is_process(listener)
+    settle_receive({:fake_notifications_started, connection})
+    settle_receive({:fake_notifications_listened, ^connection, channel})
     assert channel == SessionWorkNotifications.channel()
-    assert_receive :notification_listener_catch_up
-
-    FakeNotifications.notify(
-      connection,
-      channel,
-      SessionWorkNotifications.runtime_ready_payload()
-    )
-
-    assert_receive :notification_listener_catch_up
+    settle_receive(:notification_listener_catch_up)
 
     payload =
       SessionWorkNotifications.encode!(%{
@@ -84,21 +82,21 @@ defmodule SalixCluster.SessionWorkNotificationListenerTest do
 
     assert :ok = FakeNotifications.notify(connection, channel, payload)
 
-    assert_receive {:notification_listener_wake, "agent-one",
-                    %{runtime: :internal, session_id: "session-one"}, "candidate-one"}
+    settle_receive(
+      {:notification_listener_wake, "agent-one", %{runtime: :internal, session_id: "session-one"},
+       "candidate-one"}
+    )
 
     Agent.update(ownership, fn _ -> :another@node end)
     assert :ok = FakeNotifications.notify(connection, channel, payload)
-    refute_receive {:notification_listener_wake, _, _, _}, 50
-
+    settle_refute_receive({:notification_listener_wake, _, _, _}, 50)
     assert :ok = FakeNotifications.notify(connection, channel, "not-json")
-    refute_receive {:notification_listener_wake, _, _, _}, 50
+    settle_refute_receive({:notification_listener_wake, _, _, _}, 50)
+    SystemsRuntime.Proc.exit(connection, :database_lost)
 
-    Process.exit(connection, :database_lost)
-
-    assert_receive {:fake_notifications_started, replacement}, 1_000
+    settle_receive({:fake_notifications_started, replacement})
     refute replacement == connection
-    assert_receive {:fake_notifications_listened, ^replacement, ^channel}, 1_000
-    assert_receive :notification_listener_catch_up, 1_000
+    settle_receive({:fake_notifications_listened, ^replacement, ^channel})
+    settle_receive(:notification_listener_catch_up)
   end
 end

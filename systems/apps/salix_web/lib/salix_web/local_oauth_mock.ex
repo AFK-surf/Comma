@@ -18,21 +18,21 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
 
     def available?, do: true
 
-    def enabled?, do: Application.get_env(:salix_web, :local_oauth_mock, false) == true
+    def enabled?, do: SystemsRuntime.get_env(:salix_web, :local_oauth_mock, false) == true
 
     def status, do: %{available: true, enabled: enabled?()}
 
     def set_enabled(enabled) when is_boolean(enabled) do
-      :global.trans({__MODULE__, :runtime_toggle}, fn ->
+      SystemsRuntime.Proc.global_trans({__MODULE__, :runtime_toggle}, fn ->
         if enabled do
           remember_configuration!()
-          Application.put_env(:salix_web, :local_oauth_mock, true)
-          Application.put_env(:salix_web, :local_recommendation_mock, true)
+          SystemsRuntime.put_env(:salix_web, :local_oauth_mock, true)
+          SystemsRuntime.put_env(:salix_web, :local_recommendation_mock, true)
           :ok = configure!()
         else
           restore_configuration!()
-          Application.put_env(:salix_web, :local_oauth_mock, false)
-          Application.put_env(:salix_web, :local_recommendation_mock, false)
+          SystemsRuntime.put_env(:salix_web, :local_oauth_mock, false)
+          SystemsRuntime.put_env(:salix_web, :local_recommendation_mock, false)
         end
 
         {:ok, status()}
@@ -57,14 +57,50 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
         {"POST", ["v1", "local-oauth", "mcp", "register"]} -> register(conn)
         {"POST", ["v1", "local-oauth", "mcp", "resource"]} -> mcp_resource(conn)
         {"POST", ["v1", "local-oauth", provider, "revoke"]} -> revoke(conn, provider)
+        {"GET", ["v1", "local-oauth", "slack", "api", method]} -> slack_api(conn, method)
         _ -> json(conn, 404, %{error: "local OAuth endpoint not found"})
       end
+    end
+
+    # The Slack Web API for managed-token reads: Routine search, link
+    # previews and member identity, answered from the local fixtures. Slack
+    # reports an unknown method inside an HTTP 200.
+    def slack_api(conn, method) do
+      conn = fetch_query_params(conn)
+      query = conn.query_params
+      alias SalixWeb.LocalProviderFixtures, as: Fixtures
+
+      data =
+        case method do
+          "auth.test" ->
+            Fixtures.slack_auth_test_data()
+
+          "search.messages" ->
+            Fixtures.slack_search_messages_data(query["query"])
+
+          "conversations.history" ->
+            Fixtures.slack_history_data(query["channel"], query["latest"])
+
+          "conversations.replies" ->
+            Fixtures.slack_replies_data(query["channel"], query["latest"])
+
+          "conversations.info" ->
+            Fixtures.slack_channel_info_data(query["channel"])
+
+          "users.info" ->
+            Fixtures.slack_user_info_data(query["user"])
+
+          _ ->
+            %{"ok" => false, "error" => "unknown_method"}
+        end
+
+      json(conn, 200, data)
     end
 
     def configure!(base_url \\ nil) do
       if enabled?() do
         base_url = String.trim_trailing(base_url || configured_base_url(), "/")
-        current = Application.get_env(:salix_store, :oauth_endpoint_overrides, %{}) || %{}
+        current = SystemsRuntime.get_env(:salix_store, :oauth_endpoint_overrides, %{}) || %{}
 
         overrides = %{
           "github" => %{
@@ -81,35 +117,37 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
           "slack" => %{
             "authorize_url" => endpoint(base_url, "slack/authorize"),
             "token_url" => endpoint(base_url, "slack/token"),
-            "revoke_url" => endpoint(base_url, "slack/revoke")
+            "revoke_url" => endpoint(base_url, "slack/revoke"),
+            "api_url" => endpoint(base_url, "slack/api")
           }
         }
 
-        Application.put_env(
+        SystemsRuntime.put_env(
           :salix_store,
           :oauth_endpoint_overrides,
           Map.merge(current, overrides)
         )
 
-        remote_targets = Application.get_env(:salix_mcp, :remote_target_overrides, %{}) || %{}
+        remote_targets = SystemsRuntime.get_env(:salix_mcp, :remote_target_overrides, %{}) || %{}
         mock_mcp_url = endpoint(base_url, "mcp/resource")
 
-        Application.put_env(
+        SystemsRuntime.put_env(
           :salix_mcp,
           :remote_target_overrides,
           Map.merge(remote_targets, %{
             "remote:feishu" => mock_mcp_url,
             "remote:github" => mock_mcp_url,
             "remote:google-workspace" => mock_mcp_url,
+            "remote:lark" => mock_mcp_url,
             "remote:linear" => mock_mcp_url,
             "remote:notion" => mock_mcp_url,
             "remote:slack" => mock_mcp_url
           })
         )
 
-        allowlist = Application.get_env(:salix_mcp, :private_http_target_allowlist, [])
+        allowlist = SystemsRuntime.get_env(:salix_mcp, :private_http_target_allowlist, [])
 
-        Application.put_env(
+        SystemsRuntime.put_env(
           :salix_mcp,
           :private_http_target_allowlist,
           Enum.uniq([mock_mcp_url | List.wrap(allowlist)])
@@ -121,10 +159,10 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
         # surfaces may still exercise the production composio.* tool plumbing,
         # while Comma's hidden recommendation renderer never receives those tools.
         SalixWeb.LocalComposioMock.reset!()
-        Application.put_env(:salix_web, :composio_settings_mod, SalixWeb.LocalComposioMock)
-        Application.put_env(:salix_web, :composio_client_mod, SalixWeb.LocalComposioMock)
-        Application.put_env(:salix_agent, :composio_store_mod, SalixWeb.LocalComposioMock)
-        Application.put_env(:salix_agent, :composio_client_mod, SalixWeb.LocalComposioMock)
+        SystemsRuntime.put_env(:salix_web, :composio_settings_mod, SalixWeb.LocalComposioMock)
+        SystemsRuntime.put_env(:salix_web, :composio_client_mod, SalixWeb.LocalComposioMock)
+        SystemsRuntime.put_env(:salix_agent, :composio_store_mod, SalixWeb.LocalComposioMock)
+        SystemsRuntime.put_env(:salix_agent, :composio_client_mod, SalixWeb.LocalComposioMock)
       end
 
       :ok
@@ -402,7 +440,7 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
     def revoke(conn, _provider), do: json(conn, 404, %{error: "unknown local OAuth provider"})
 
     defp configured_base_url do
-      case Application.get_env(:salix_web, :public_base_url) do
+      case SystemsRuntime.get_env(:salix_web, :public_base_url) do
         value when is_binary(value) and value != "" -> String.trim_trailing(value, "/")
         _ -> "http://127.0.0.1:#{SalixWeb.Application.port()}"
       end
@@ -437,19 +475,19 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
     defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
     defp remember_configuration! do
-      case :persistent_term.get(@baseline_key, :missing) do
+      case SystemsRuntime.PersistentTerm.get(@baseline_key, :missing) do
         :missing ->
-          :persistent_term.put(@baseline_key, %{
+          SystemsRuntime.PersistentTerm.put(@baseline_key, %{
             composio_client_mod: capture_env(:salix_web, :composio_client_mod),
             composio_settings_mod: capture_env(:salix_web, :composio_settings_mod),
             agent_composio_client_mod: capture_env(:salix_agent, :composio_client_mod),
             agent_composio_store_mod: capture_env(:salix_agent, :composio_store_mod),
             oauth_endpoint_overrides:
-              Application.get_env(:salix_store, :oauth_endpoint_overrides, %{}) || %{},
+              SystemsRuntime.get_env(:salix_store, :oauth_endpoint_overrides, %{}) || %{},
             private_http_target_allowlist:
-              Application.get_env(:salix_mcp, :private_http_target_allowlist, []),
+              SystemsRuntime.get_env(:salix_mcp, :private_http_target_allowlist, []),
             remote_target_overrides:
-              Application.get_env(:salix_mcp, :remote_target_overrides, %{}) || %{}
+              SystemsRuntime.get_env(:salix_mcp, :remote_target_overrides, %{}) || %{}
           })
 
         _baseline ->
@@ -458,7 +496,7 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
     end
 
     defp restore_configuration! do
-      case :persistent_term.get(@baseline_key, :missing) do
+      case SystemsRuntime.PersistentTerm.get(@baseline_key, :missing) do
         :missing ->
           :ok
 
@@ -468,37 +506,37 @@ if Application.compile_env(:salix_web, :local_recommendation_mock_compiled, fals
           restore_env(:salix_agent, :composio_client_mod, baseline.agent_composio_client_mod)
           restore_env(:salix_agent, :composio_store_mod, baseline.agent_composio_store_mod)
 
-          Application.put_env(
+          SystemsRuntime.put_env(
             :salix_store,
             :oauth_endpoint_overrides,
             baseline.oauth_endpoint_overrides
           )
 
-          Application.put_env(
+          SystemsRuntime.put_env(
             :salix_mcp,
             :remote_target_overrides,
             baseline.remote_target_overrides
           )
 
-          Application.put_env(
+          SystemsRuntime.put_env(
             :salix_mcp,
             :private_http_target_allowlist,
             baseline.private_http_target_allowlist
           )
 
-          :persistent_term.erase(@baseline_key)
+          SystemsRuntime.PersistentTerm.erase(@baseline_key)
       end
     end
 
     defp capture_env(app, key) do
-      case Application.fetch_env(app, key) do
+      case SystemsRuntime.fetch_env(app, key) do
         {:ok, value} -> {:present, value}
         :error -> :missing
       end
     end
 
-    defp restore_env(app, key, {:present, value}), do: Application.put_env(app, key, value)
-    defp restore_env(app, key, :missing), do: Application.delete_env(app, key)
+    defp restore_env(app, key, {:present, value}), do: SystemsRuntime.put_env(app, key, value)
+    defp restore_env(app, key, :missing), do: SystemsRuntime.delete_env(app, key)
 
     defp json(conn, status, body) do
       conn

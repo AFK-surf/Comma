@@ -121,7 +121,7 @@ defmodule SalixSignalProto.Group.ProfileKeyCredential do
   14.1). Returns `{context, request}`; keep the context for `receive/4`.
   """
   @spec request(<<_::128>>, ProfileKey.profile_key(), <<_::256>>) :: {binary(), binary()}
-  def request(uuid, key, randomness \\ :crypto.strong_rand_bytes(32))
+  def request(uuid, key, randomness \\ SystemsRuntime.Proc.random_bytes(32))
 
   def request(
         <<_::binary-size(16)>> = uuid,
@@ -249,7 +249,7 @@ defmodule SalixSignalProto.Group.ProfileKeyCredential do
   """
   @spec present(ServerParams.Public.t(), Params.t(), binary(), <<_::256>>) ::
           {:ok, {binary(), binary(), binary()}} | {:error, :invalid}
-  def present(server, group, credential, randomness \\ :crypto.strong_rand_bytes(32))
+  def present(server, group, credential, randomness \\ SystemsRuntime.Proc.random_bytes(32))
 
   def present(
         %ServerParams.Public{profile_key: {_c_w, i}},
